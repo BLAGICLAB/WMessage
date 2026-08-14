@@ -51,6 +51,7 @@
 | 11:07 | 挂件 logo 定 #3 深蓝双方块（老板拍板）：触发条 🗂 表情 → 24px 透明 PNG，面板头部加 20px logo；资产 `src/assets/widget-logo.png`（源 `docs/logo/assets/3/`） |
 | 11:12 | 贴顶时触发条竖变横（220×44，flex-row + 水平文字 + 上缘内阴影 `.nm-sidebar-panel-top`）；初始定位与 collapse 按 edge 选择横/竖尺寸 |
 | 11:18 | 挂件头部「全部/今日/锁定」按压态：未选中 `nm-outset` 凸起胶囊 → 选中 `nm-inset` 凹陷胶囊（与主窗口头一致） |
+| 11:22 | 文件打开/复制按钮（主窗口 TodoCard + 挂件 TaskCardContent）：新增 `.nm-btn` 动作按钮类，默认凸起、`:active` 按下瞬间凹陷（动作按钮用 momentary 按压态，不用常驻切换） |
 | 06:47 | 主窗口关闭改为隐藏（CloseRequested prevent_close + Cmd+Q 走 ExitRequested destroy） |
 | 07:09 | 挂件新建任务长条移到「全部/今日」下方，新任务从列表顶部出现 |
 | 07:28 | 挂件打勾后任务消失（挂件只显示未完成：todo + doing） |

@@ -38,6 +38,14 @@
     @apply rounded-xl bg-[#f4f7fa];
     box-shadow: 4px 4px 8px #d8dee6, -4px -4px 8px #ffffff;
   }
+  /* 动作按钮（打开/复制等）：默认凸起，按下瞬间凹陷（momentary 按压态，无选中态） */
+  .nm-btn {
+    @apply rounded-lg bg-[#f4f7fa] transition-shadow duration-100;
+    box-shadow: 3px 3px 6px #d8dee6, -3px -3px 6px #ffffff;
+  }
+  .nm-btn:active {
+    box-shadow: inset 2px 2px 4px #d8dee6, inset -2px -2px 4px #ffffff;
+  }
 
   /* === 侧边挂件面板容器（同色系统一质感） === */
   .nm-sidebar-panel {

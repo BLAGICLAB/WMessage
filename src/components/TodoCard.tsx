@@ -356,7 +356,7 @@ export function TodoCard({
           </p>
           <div className="flex items-center gap-2">
             <button
-              className="nm-inset px-2 py-0.5 text-[11px] leading-none text-gray-600"
+              className="nm-btn px-2 py-0.5 text-[11px] leading-none text-gray-600"
               title={task.fileIsDir ? "打开文件夹" : "打开文件"}
               onPointerDown={stop}
               onClick={openFile}
@@ -364,7 +364,7 @@ export function TodoCard({
               📂
             </button>
             <button
-              className="nm-inset px-2 py-0.5 text-[11px] leading-none text-gray-600"
+              className="nm-btn px-2 py-0.5 text-[11px] leading-none text-gray-600"
               title="复制文件+标题"
               onPointerDown={stop}
               onClick={copyFile}
