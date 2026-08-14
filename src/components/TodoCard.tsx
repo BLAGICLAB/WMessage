@@ -384,14 +384,14 @@ export function TodoCard({
       ) : (
         <div className="mt-3 flex items-center gap-3">
           <button
-            className="text-xs text-gray-300 hover:text-gray-500"
+            className="nm-btn px-2 py-0.5 text-xs text-gray-500 flex items-center gap-1"
             onPointerDown={stop}
             onClick={pickFile}
           >
             <span className="text-[11px] leading-none">📎</span> 绑定文件
           </button>
           <button
-            className="text-xs text-gray-300 hover:text-gray-500"
+            className="nm-btn px-2 py-0.5 text-xs text-gray-500 flex items-center gap-1"
             onPointerDown={stop}
             onClick={pickFolder}
           >
