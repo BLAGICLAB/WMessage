@@ -1,0 +1,50 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* === WMessage 新拟态 凸起卡片 基础样式 === */
+/* 注意：Tailwind 的 @apply 不能引用自定义组件类（nm-card 不是 utility，
+   @apply nm-card 会编译报错）。修复方式：合并选择器共享同一组声明。 */
+@layer components {
+  .nm-card,
+  .nm-card-hover {
+    @apply rounded-2xl bg-[#f4f7fa] transition-all duration-200 ease-out;
+    /* 核心新拟态双阴影：左上浅色高光、右下柔和阴影，做出凸起感 */
+    box-shadow: 6px 6px 12px #d8dee6, -6px -6px 12px #ffffff;
+  }
+
+  /* hover 上浮增强（悬浮动效） */
+  .nm-card-hover {
+    @apply cursor-pointer;
+  }
+  .nm-card-hover:hover {
+    transform: translateY(-3px) scale(1.01);
+    box-shadow: 8px 8px 16px #d0d6de, -8px -8px 16px #ffffff;
+  }
+
+  /* === 任务卡标题排版：大厂风格，主窗口 TodoCard 与挂件 TaskCardContent 共用 === */
+  .nm-task-title {
+    @apply text-sm font-medium text-gray-700;
+  }
+
+  /* === 内凹组件（侧边挂件触发条、按钮，与凸卡片形成对比） === */
+  .nm-inset {
+    @apply rounded-xl bg-[#f4f7fa];
+    box-shadow: inset 4px 4px 8px #d8dee6, inset -4px -4px 8px #ffffff;
+  }
+
+  /* === 外凸胶囊（未选中态，与选中凹陷 nm-inset 形成按压对比） === */
+  .nm-outset {
+    @apply rounded-xl bg-[#f4f7fa];
+    box-shadow: 4px 4px 8px #d8dee6, -4px -4px 8px #ffffff;
+  }
+
+  /* === 侧边挂件面板容器（同色系统一质感） === */
+  .nm-sidebar-panel {
+    /* 圆角由 JSX 按所在边缘动态加（rounded-l/r/b/2xl），不在这里写死 */
+    @apply bg-[#f4f7fa] p-4;
+    /* 不能用外阴影：窗口是矩形，外阴影在直边被窗口边缘裁掉、在圆角处却漏进透明切角，
+       形成一段突兀的阴影（老板 2026-08-14 反馈）。改用内阴影保持左缘层次感。 */
+    box-shadow: inset -6px 0 10px -4px #dde3ea;
+  }
+}
