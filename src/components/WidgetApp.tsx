@@ -12,6 +12,7 @@ import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { loadTasksFromDb, taskEq } from "../storage";
 import type { Task } from "../types";
 import { TaskCardContent } from "./TaskCardContent";
+import widgetLogo from "../assets/widget-logo.png";
 
 // 收起为触发条 / 展开为侧边面板
 const STRIP_W = 44;
@@ -341,7 +342,12 @@ export default function WidgetApp() {
           className={`nm-sidebar-panel ${edgeClass} !p-2 w-full h-full flex flex-col items-center justify-center gap-2 cursor-pointer select-none`}
           onMouseEnter={expand}
         >
-          <span className="text-sm leading-none">🗂</span>
+          <img
+            src={widgetLogo}
+            className="w-6 h-6"
+            alt="WMessage"
+            draggable={false}
+          />
           <span
             className="text-gray-500 text-xs tracking-widest"
             style={{ writingMode: "vertical-rl" }}
@@ -361,7 +367,15 @@ export default function WidgetApp() {
             title="按住拖动挂件"
             onPointerDown={startDrag}
           >
-            <span className="text-sm font-semibold text-gray-700">WMessage</span>
+            <div className="flex items-center gap-1.5">
+              <img
+                src={widgetLogo}
+                className="w-5 h-5"
+                alt=""
+                draggable={false}
+              />
+              <span className="text-sm font-semibold text-gray-700">WMessage</span>
+            </div>
             <div
               className="flex items-center gap-1"
               onPointerDown={(e) => e.stopPropagation()}

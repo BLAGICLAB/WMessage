@@ -48,6 +48,7 @@
 | 06:22 | 挂件圆角处阴影段修复：外阴影漏进透明切角 → 改内阴影 `inset -6px 0 10px -4px` |
 | 06:31 | 挂件新建任务 + 标题编辑（新建自动进编辑态） |
 | 06:40 | 挂件点标题 → 跳主窗口并进入该任务编辑态（`edit-task` 事件 + 主窗口 setEditingId） |
+| 11:07 | 挂件 logo 定 #3 深蓝双方块（老板拍板）：触发条 🗂 表情 → 24px 透明 PNG，面板头部加 20px logo；资产 `src/assets/widget-logo.png`（源 `docs/logo/assets/3/`） |
 | 06:47 | 主窗口关闭改为隐藏（CloseRequested prevent_close + Cmd+Q 走 ExitRequested destroy） |
 | 07:09 | 挂件新建任务长条移到「全部/今日」下方，新任务从列表顶部出现 |
 | 07:28 | 挂件打勾后任务消失（挂件只显示未完成：todo + doing） |
