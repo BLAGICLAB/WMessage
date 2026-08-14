@@ -424,7 +424,7 @@ export default function WidgetApp() {
 
           {/* 新建任务大长条：位于「全部/今日」下方，新建的任务从顶部出现 */}
           <button
-            className="nm-inset w-full mb-2 py-2 text-sm text-gray-600 shrink-0"
+            className="nm-btn w-full mb-2 py-2 text-sm text-gray-600 shrink-0"
             onClick={addTask}
           >
             + 新建任务

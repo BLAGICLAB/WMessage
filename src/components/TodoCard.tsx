@@ -402,7 +402,7 @@ export function TodoCard({
 
       {archived && (
         <button
-          className="nm-inset mt-3 px-3 py-1 text-xs text-gray-600"
+          className="nm-btn mt-3 px-3 py-1 text-xs text-gray-600"
           onPointerDown={stop}
           onClick={() =>
             onUpdate(task.id, { archived: false, completedAt: Date.now() })
@@ -415,14 +415,14 @@ export function TodoCard({
       {trashed && (
         <div className="mt-3 flex items-center gap-2">
           <button
-            className="nm-inset px-3 py-1 text-xs text-gray-600"
+            className="nm-btn px-3 py-1 text-xs text-gray-600"
             onPointerDown={stop}
             onClick={() => onUpdate(task.id, { deletedAt: undefined })}
           >
             ↩ 恢复
           </button>
           <button
-            className="nm-inset px-3 py-1 text-xs text-red-400"
+            className="nm-btn px-3 py-1 text-xs text-red-400"
             onPointerDown={stop}
             onClick={() => onDelete(task.id)}
           >
