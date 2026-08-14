@@ -57,18 +57,18 @@ fn copy_file_macos(path: &str, title: &str) -> Result<(), String> {
 
 #[cfg(windows)]
 fn copy_file_windows(path: &str, title: &str) -> Result<(), String> {
-    // TODO: 需在 Windows 上编译验证（M6 打包阶段），API 细节以编译错误为准
     use std::ffi::OsStr;
     use std::mem::size_of;
     use std::os::windows::ffi::OsStrExt;
     use std::ptr;
-    use windows::Win32::Foundation::{
-        GlobalAlloc, GlobalFree, GlobalLock, GlobalUnlock, GMEM_MOVEABLE,
-    };
+    use windows::Win32::Foundation::{GlobalFree, HANDLE};
     use windows::Win32::System::DataExchange::{
-        CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData, CF_HDROP,
-        CF_UNICODETEXT,
+        CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
     };
+    use windows::Win32::System::Memory::{
+        GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE,
+    };
+    use windows::Win32::System::Ole::{CF_HDROP, CF_UNICODETEXT};
     use windows::Win32::UI::Shell::DROPFILES;
 
     unsafe {
@@ -81,16 +81,21 @@ fn copy_file_windows(path: &str, title: &str) -> Result<(), String> {
         let file_wide: Vec<u16> = OsStr::new(path).encode_wide().chain(Some(0)).collect();
         let total = size_of::<DROPFILES>() + file_wide.len() * 2 + 2;
         let h = GlobalAlloc(GMEM_MOVEABLE, total).map_err(|e| e.to_string())?;
-        let base = GlobalLock(h).map_err(|e| e.to_string())? as *mut u8;
+        let base = GlobalLock(h) as *mut u8;
+        if base.is_null() {
+            let _ = GlobalFree(Some(h));
+            let _ = CloseClipboard();
+            return Err("锁定文件列表内存失败".into());
+        }
         let drop: *mut DROPFILES = base as *mut DROPFILES;
         (*drop).pFiles = size_of::<DROPFILES>() as u32;
-        (*drop).fWide = 1.into();
+        (*drop).fWide = true.into();
         let dst = base.add(size_of::<DROPFILES>()) as *mut u16;
         ptr::copy_nonoverlapping(file_wide.as_ptr(), dst, file_wide.len());
         *dst.add(file_wide.len()) = 0; // 双 null 结尾
         let _ = GlobalUnlock(h);
-        if SetClipboardData(CF_HDROP, h).is_err() {
-            let _ = GlobalFree(h);
+        if SetClipboardData(CF_HDROP.0 as u32, Some(HANDLE(h.0))).is_err() {
+            let _ = GlobalFree(Some(h));
             let _ = CloseClipboard();
             return Err("写入文件列表失败".into());
         }
@@ -98,11 +103,16 @@ fn copy_file_windows(path: &str, title: &str) -> Result<(), String> {
         // 2) 标题文本（CF_UNICODETEXT）
         let title_wide: Vec<u16> = OsStr::new(title).encode_wide().chain(Some(0)).collect();
         let th = GlobalAlloc(GMEM_MOVEABLE, title_wide.len() * 2).map_err(|e| e.to_string())?;
-        let tbase = GlobalLock(th).map_err(|e| e.to_string())? as *mut u16;
+        let tbase = GlobalLock(th) as *mut u16;
+        if tbase.is_null() {
+            let _ = GlobalFree(Some(th));
+            let _ = CloseClipboard();
+            return Err("锁定标题内存失败".into());
+        }
         ptr::copy_nonoverlapping(title_wide.as_ptr(), tbase, title_wide.len());
         let _ = GlobalUnlock(th);
-        if SetClipboardData(CF_UNICODETEXT, th).is_err() {
-            let _ = GlobalFree(th);
+        if SetClipboardData(CF_UNICODETEXT.0 as u32, Some(HANDLE(th.0))).is_err() {
+            let _ = GlobalFree(Some(th));
         }
 
         let _ = CloseClipboard();
