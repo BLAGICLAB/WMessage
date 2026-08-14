@@ -9,7 +9,7 @@ import { listen, emit } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { STORAGE_KEY } from "../storage";
+import { loadTasksJson } from "../storage";
 import type { Task } from "../types";
 import { TaskCardContent } from "./TaskCardContent";
 
@@ -84,22 +84,28 @@ export default function WidgetApp() {
   const anchorRef = useRef<Anchor>({ x: 0, y: TOP_Y, edge: "right" });
   const listRef = useRef<HTMLDivElement>(null);
 
-  // 任务数据同步：初始读取 + 主窗口事件 + storage 事件 + 5s 兜底轮询
+  // 任务数据同步：主窗口统一落盘 data.json，挂件只读。三层：初始读取 + tasks-changed + 5s 兜底轮询
   useEffect(() => {
-    const load = () => {
+    const load = async () => {
       try {
-        const raw = localStorage.getItem(STORAGE_KEY);
-        setTasks(raw ? (JSON.parse(raw) as Task[]) : []);
+        const raw = await loadTasksJson();
+        if (!raw) return;
+        const parsed = JSON.parse(raw) as Task[];
+        setTasks((prev) =>
+          JSON.stringify(parsed) === JSON.stringify(prev) ? prev : parsed
+        );
       } catch {
-        setTasks([]);
+        /* ignore */
       }
     };
     load();
-    window.addEventListener("storage", load);
-    const unlisten = listen("tasks-changed", load);
-    const id = setInterval(load, 5000);
+    const unlisten = listen("tasks-changed", () => {
+      load().catch(() => {});
+    });
+    const id = setInterval(() => {
+      load().catch(() => {});
+    }, 5000);
     return () => {
-      window.removeEventListener("storage", load);
       unlisten.then((f) => f());
       clearInterval(id);
     };
@@ -196,16 +202,11 @@ export default function WidgetApp() {
     getCurrentWindow().startDragging().catch(() => {});
   };
 
-  // 挂件端改动的统一出口：更新 state + 写 localStorage + emit 通知主窗口回读
+  // 挂件端改动的统一出口：更新本地 state + 携带数据上报主窗口（主窗口负责落盘 data.json）
   const applyAndSync = (fn: (prev: Task[]) => Task[]) => {
     setTasks((prev) => {
       const next = fn(prev);
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-      } catch {
-        /* ignore */
-      }
-      emit("tasks-changed").catch(() => {});
+      emit("tasks-updated", JSON.stringify(next)).catch(() => {});
       return next;
     });
   };

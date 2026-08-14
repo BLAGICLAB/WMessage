@@ -53,8 +53,14 @@
 | 07:28 | 挂件打勾后任务消失（挂件只显示未完成：todo + doing） |
 | 07:36 | 挂件自由拖动 + 贴边吸附：右/左/顶 24px 容差、圆角跟随边缘、锚点持久化（`wmessage-widget-pos`） |
 
-## 踩坑记录（避免重蹈）
+### 存储落盘（方案2）+ Logo 定稿 + Windows 交叉编译验证（09:22-10:40）
 
+- **Logo 定稿**：老板 5 张豆包渐变玻璃质感图，裁定以图片为准；去水印/透明底/多尺寸 → `docs/logo/assets/`；规范 `docs/logo/WMessage-LOGO-GUIDELINES.md`；#4 生成全套 Tauri 图标到 `src-tauri/icons/`
+- **Windows 剪贴板修复**：`copy_file_windows` 首次编译验证（cargo check 交叉目标），windows 0.61 API 修正见踩坑记录
+- **Windows 交叉编译**：产出 9.5MB 独立 exe（静态 CRT），Win10 实测可运行
+- **存储落盘（方案2）**：任务数据 localStorage → 应用数据目录 `data.json`（Win: `%APPDATA%\com.renshi.wmessage\data.json`），防清理工具误删。Rust `load_data`/`save_data`（原子写）；单写者：主窗口统一落盘，挂件只读 + `tasks-updated` 携带数据上报；旧 localStorage 首次启动自动迁移；POS_KEY（挂件锚点）仍走 localStorage
+
+## 踩坑记录（避免重蹈）
 - Tailwind `@apply` 不能引用自定义组件类（`.nm-card-hover { @apply nm-card }` 编译报错）
 - TodoCard 的 useDraggable 在 DndContext 外会崩 → 归档/回收站页必须包空 `<DndContext>`
 - 卡片内裸 `<button>` 是 inline 会并排 → 注意 display（块级化）
@@ -63,11 +69,14 @@
 - **矩形透明窗口里的圆角面板禁用外阴影**（直边被裁、圆角漏光，形成"一段阴影"）→ 用 inset 内阴影
 - 主窗口关闭=销毁会让挂件失去唤起目标 → CloseRequested 拦截改隐藏；Cmd+Q 在 ExitRequested 里 destroy 主窗口
 - Rust `get_webview_window` 需要 `use tauri::Manager;`
-- 本机 Rust 工具链 PATH 未持久化：`export PATH="$HOME/.cargo/bin:$PATH"`
+- Windows 交叉编译链路（macOS → exe）：`brew install llvm lld` + `cargo install cargo-xwin`，然后 `tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc`；缺 llvm-rc 会报 `tauri-winres NotAttempted("llvm-rc")`，缺 lld-link 链接阶段挂
+- windows crate 0.61 API 大改：`GlobalAlloc/GlobalLock/GlobalUnlock/GMEM_MOVEABLE` 在 `System::Memory`；`CF_HDROP/CF_UNICODETEXT` 在 `System::Ole` 且为 `CLIPBOARD_FORMAT(u16)` 新类型（传给 `SetClipboardData` 用 `.0 as u32`）；`SetClipboardData` 第二参是 `Option<HANDLE>`（与 `HGLOBAL` 不同新类型，需 `HANDLE(h.0)`）；`GlobalLock` 返回裸指针不是 Result；`BOOL` 只有 `From<bool>`（用 `true.into()`）
+- **localStorage 会被清理工具当缓存删**（EBWebView 目录），关键数据必须落盘到 app_data_dir 的 data.json（temp+rename 原子写）
+- 落盘架构单写者：主窗口统一写文件，挂件只上报 `tasks-updated`（携带数据）；主窗口 persist 用 `loaded` 门控，否则启动瞬间 async 加载完成前会写空数据覆盖旧档
 
 ## 后续待办
 
 - M5 全局快捷键
-- M6 打包（Win exe / macOS dmg；Windows 侧 `copy_file_windows` 未编译验证）
+- M6 打包（Win exe / macOS dmg；`copy_file_windows` 已编译验证 ✓，交叉编译链路已通：llvm+lld+cargo-xwin）
 - 挂件窗口伸缩平滑动画（当前瞬时伸缩）polish
 - 深色模式

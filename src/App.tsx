@@ -3,7 +3,7 @@ import { emit, listen } from "@tauri-apps/api/event";
 import { KanbanBoard } from "./components/KanbanBoard";
 import { ArchivePage } from "./components/ArchivePage";
 import { TrashPage } from "./components/TrashPage";
-import { STORAGE_KEY } from "./storage";
+import { loadTasksJson, saveTasksJson, STORAGE_KEY } from "./storage";
 import type { ColumnId, Task } from "./types";
 
 const SEED: Task[] = [
@@ -55,35 +55,53 @@ function applyArchiveRule(tasks: Task[]): Task[] {
   });
 }
 
-function loadTasks(): Task[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    const parsed = raw ? (JSON.parse(raw) as Task[]) : SEED;
-    return applyArchiveRule(applyTodayRule(parsed));
-  } catch {
-    return applyArchiveRule(applyTodayRule(SEED));
-  }
-}
-
 export default function App() {
-  const [tasks, setTasks] = useState<Task[]>(loadTasks);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [view, setView] = useState<"board" | "archive" | "trash">("board");
 
-  // 本地持久化 + 通知挂件窗口同步
+  // 初始加载：data.json → 旧 localStorage 迁移 → 种子数据；加载完成前不落盘
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks));
-    emit("tasks-changed").catch(() => {});
-  }, [tasks]);
+    (async () => {
+      try {
+        let raw = await loadTasksJson();
+        if (raw === null) {
+          // 迁移：方案2 之前的旧数据在 localStorage，搬到 data.json
+          try {
+            const legacy = localStorage.getItem(STORAGE_KEY);
+            if (legacy) {
+              raw = legacy;
+              localStorage.removeItem(STORAGE_KEY);
+            }
+          } catch {
+            /* ignore */
+          }
+        }
+        const parsed = raw ? (JSON.parse(raw) as Task[]) : SEED;
+        setTasks(applyArchiveRule(applyTodayRule(parsed)));
+      } catch (e) {
+        console.error("init load failed", e);
+        setTasks(applyArchiveRule(applyTodayRule(SEED)));
+      }
+      setLoaded(true);
+    })();
+  }, []);
 
-  // 挂件端改动（如点圆圈完成）写 localStorage 后 emit tasks-changed，这里回读同步。
-  // 相等守卫：自己 emit 的回声不触发 setState，避免循环。
+  // 持久化：原子写 data.json + 通知挂件窗口同步（loaded 之前不写，防启动瞬间清库）
   useEffect(() => {
-    const unlisten = listen("tasks-changed", () => {
+    if (!loaded) return;
+    saveTasksJson(JSON.stringify(tasks));
+    emit("tasks-changed").catch(() => {});
+  }, [tasks, loaded]);
+
+  // 挂件端改动：携带完整数据上报（tasks-updated），主窗口统一落盘后广播 tasks-changed。
+  // 相等守卫：回声/相同数据不触发多余写盘，避免循环。
+  useEffect(() => {
+    const unlisten = listen<string>("tasks-updated", (e) => {
       setTasks((prev) => {
         try {
-          const raw = localStorage.getItem(STORAGE_KEY);
-          const parsed = raw ? (JSON.parse(raw) as Task[]) : prev;
+          const parsed = JSON.parse(e.payload) as Task[];
           const next = applyArchiveRule(applyTodayRule(parsed));
           return JSON.stringify(next) === JSON.stringify(prev) ? prev : next;
         } catch {
