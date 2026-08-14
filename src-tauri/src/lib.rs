@@ -1,4 +1,5 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+mod db;
 use tauri::Manager;
 
 #[tauri::command]
@@ -120,30 +121,6 @@ fn copy_file_windows(path: &str, title: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 读应用数据目录下的 data.json（任务数据持久化；文件不存在返回空串）
-#[tauri::command]
-fn load_data(app: tauri::AppHandle) -> Result<String, String> {
-    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let file = dir.join("data.json");
-    match std::fs::read_to_string(&file) {
-        Ok(s) => Ok(s),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
-        Err(e) => Err(e.to_string()),
-    }
-}
-
-/// 原子写入 data.json（先写 .tmp 再 rename，避免半截文件）
-#[tauri::command]
-fn save_data(app: tauri::AppHandle, json: String) -> Result<(), String> {
-    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let tmp = dir.join("data.json.tmp");
-    let file = dir.join("data.json");
-    std::fs::write(&tmp, json.as_bytes()).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, &file).map_err(|e| e.to_string())?;
-    Ok(())
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -185,8 +162,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             greet,
             copy_file_with_title,
-            load_data,
-            save_data
+            db::db_load,
+            db::db_upsert,
+            db::db_delete
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -9,7 +9,7 @@ import { listen, emit } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { loadTasksJson } from "../storage";
+import { loadTasksFromDb, taskEq } from "../storage";
 import type { Task } from "../types";
 import { TaskCardContent } from "./TaskCardContent";
 
@@ -76,6 +76,7 @@ function anchorFromRect(
 
 export default function WidgetApp() {
   const [tasks, setTasks] = useState<Task[]>([]);
+  const tasksRef = useRef<Task[]>([]);
   const [expanded, setExpanded] = useState(false);
   const [locked, setLocked] = useState(false);
   const [view, setView] = useState<"all" | "today">("all");
@@ -84,16 +85,17 @@ export default function WidgetApp() {
   const anchorRef = useRef<Anchor>({ x: 0, y: TOP_Y, edge: "right" });
   const listRef = useRef<HTMLDivElement>(null);
 
-  // 任务数据同步：主窗口统一落盘 data.json，挂件只读。三层：初始读取 + tasks-changed + 5s 兜底轮询
+  // 任务数据同步：主窗口统一落盘 SQLite，挂件只读。三层：初始读取 + tasks-changed + 5s 兜底轮询
   useEffect(() => {
     const load = async () => {
       try {
-        const raw = await loadTasksJson();
-        if (!raw) return;
-        const parsed = JSON.parse(raw) as Task[];
-        setTasks((prev) =>
-          JSON.stringify(parsed) === JSON.stringify(prev) ? prev : parsed
-        );
+        const list = await loadTasksFromDb();
+        if (!list.length) return;
+        setTasks((prev) => {
+          const same = JSON.stringify(list) === JSON.stringify(prev);
+          if (!same) tasksRef.current = list;
+          return same ? prev : list;
+        });
       } catch {
         /* ignore */
       }
@@ -202,13 +204,22 @@ export default function WidgetApp() {
     getCurrentWindow().startDragging().catch(() => {});
   };
 
-  // 挂件端改动的统一出口：更新本地 state + 携带数据上报主窗口（主窗口负责落盘 data.json）
+  // 挂件端改动的统一出口：更新本地 state + 行级 diff 上报主窗口（主窗口负责落盘 SQLite）
   const applyAndSync = (fn: (prev: Task[]) => Task[]) => {
-    setTasks((prev) => {
-      const next = fn(prev);
-      emit("tasks-updated", JSON.stringify(next)).catch(() => {});
-      return next;
+    const prev = tasksRef.current;
+    const next = fn(prev);
+    tasksRef.current = next;
+    const prevMap = new Map(prev.map((t) => [t.id, t]));
+    const upserts = next.filter((t) => {
+      const p = prevMap.get(t.id);
+      return !p || !taskEq(p, t);
     });
+    const nextIds = new Set(next.map((t) => t.id));
+    const deletes = prev.filter((t) => !nextIds.has(t.id)).map((t) => t.id);
+    setTasks(next);
+    if (upserts.length || deletes.length) {
+      emit("tasks-updated", { upserts, deletes }).catch(() => {});
+    }
   };
 
   // 点圆圈完成/取消完成：与主窗口行为一致（完成 → 记时间；取消 → 退回待办）

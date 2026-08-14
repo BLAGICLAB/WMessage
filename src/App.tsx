@@ -1,9 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { emit, listen } from "@tauri-apps/api/event";
 import { KanbanBoard } from "./components/KanbanBoard";
 import { ArchivePage } from "./components/ArchivePage";
 import { TrashPage } from "./components/TrashPage";
-import { loadTasksJson, saveTasksJson, STORAGE_KEY } from "./storage";
+import { deleteTaskRows, loadTasksFromDb, taskEq, upsertTasks, STORAGE_KEY } from "./storage";
 import type { ColumnId, Task } from "./types";
 
 const SEED: Task[] = [
@@ -57,58 +57,85 @@ function applyArchiveRule(tasks: Task[]): Task[] {
 
 export default function App() {
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [loaded, setLoaded] = useState(false);
+  const tasksRef = useRef<Task[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [view, setView] = useState<"board" | "archive" | "trash">("board");
 
-  // 初始加载：data.json → 旧 localStorage 迁移 → 种子数据；加载完成前不落盘
+  // 初始加载：SQLite → 空库迁移（旧 data.json 在 Rust 侧处理；更早的 localStorage 在此处理）→ 种子
   useEffect(() => {
     (async () => {
       try {
-        let raw = await loadTasksJson();
-        if (raw === null) {
-          // 迁移：方案2 之前的旧数据在 localStorage，搬到 data.json
+        let list = await loadTasksFromDb();
+        if (list.length === 0) {
+          let migrated = false;
           try {
             const legacy = localStorage.getItem(STORAGE_KEY);
             if (legacy) {
-              raw = legacy;
+              const parsed = JSON.parse(legacy) as Task[];
+              if (parsed.length) {
+                await upsertTasks(parsed);
+                list = parsed;
+                migrated = true;
+              }
               localStorage.removeItem(STORAGE_KEY);
             }
           } catch {
             /* ignore */
           }
+          if (!migrated) {
+            await upsertTasks(SEED);
+            list = SEED;
+          }
         }
-        const parsed = raw ? (JSON.parse(raw) as Task[]) : SEED;
-        setTasks(applyArchiveRule(applyTodayRule(parsed)));
+        const next = applyArchiveRule(applyTodayRule(list));
+        tasksRef.current = next;
+        setTasks(next);
       } catch (e) {
         console.error("init load failed", e);
-        setTasks(applyArchiveRule(applyTodayRule(SEED)));
       }
-      setLoaded(true);
     })();
   }, []);
 
-  // 持久化：原子写 data.json + 通知挂件窗口同步（loaded 之前不写，防启动瞬间清库）
-  useEffect(() => {
-    if (!loaded) return;
-    saveTasksJson(JSON.stringify(tasks));
-    emit("tasks-changed").catch(() => {});
-  }, [tasks, loaded]);
-
-  // 挂件端改动：携带完整数据上报（tasks-updated），主窗口统一落盘后广播 tasks-changed。
-  // 相等守卫：回声/相同数据不触发多余写盘，避免循环。
-  useEffect(() => {
-    const unlisten = listen<string>("tasks-updated", (e) => {
-      setTasks((prev) => {
-        try {
-          const parsed = JSON.parse(e.payload) as Task[];
-          const next = applyArchiveRule(applyTodayRule(parsed));
-          return JSON.stringify(next) === JSON.stringify(prev) ? prev : next;
-        } catch {
-          return prev;
-        }
-      });
+  // 统一变更出口：计算新数组 → diff → 行级增量落盘 → 更新 state → 广播挂件
+  const mutate = (fn: (prev: Task[]) => Task[]) => {
+    const prev = tasksRef.current;
+    const next = fn(prev);
+    tasksRef.current = next;
+    const prevMap = new Map(prev.map((t) => [t.id, t]));
+    const upserts = next.filter((t) => {
+      const p = prevMap.get(t.id);
+      return !p || !taskEq(p, t);
     });
+    const nextIds = new Set(next.map((t) => t.id));
+    const deletes = prev.filter((t) => !nextIds.has(t.id)).map((t) => t.id);
+    upsertTasks(upserts);
+    deleteTaskRows(deletes);
+    setTasks(next);
+    if (upserts.length || deletes.length) emit("tasks-changed").catch(() => {});
+  };
+
+  // 挂件上报行级变更（tasks-updated：{upserts, deletes}），主窗口统一落盘后广播
+  useEffect(() => {
+    const unlisten = listen<{ upserts?: Task[]; deletes?: string[] }>(
+      "tasks-updated",
+      (e) => {
+        const upserts = e.payload?.upserts ?? [];
+        const deletes = e.payload?.deletes ?? [];
+        if (!upserts.length && !deletes.length) return;
+        upsertTasks(upserts);
+        deleteTaskRows(deletes);
+        setTasks((prev) => {
+          const map = new Map(prev.map((t) => [t.id, t]));
+          upserts.forEach((t) => map.set(t.id, t));
+          deletes.forEach((id) => map.delete(id));
+          const next = applyArchiveRule(applyTodayRule([...map.values()]));
+          const same = JSON.stringify(next) === JSON.stringify(prev);
+          if (!same) tasksRef.current = next;
+          return same ? prev : next;
+        });
+        emit("tasks-changed").catch(() => {});
+      }
+    );
     return () => {
       unlisten.then((f) => f());
     };
@@ -128,23 +155,24 @@ export default function App() {
     };
   }, []);
 
-  // 每分钟重套今日规则 + 归档规则：覆盖跨零点归位、完成超时归档
+  // 每分钟重套今日规则 + 归档规则：覆盖跨零点归位、完成超时归档（diff 后行级落盘）
   useEffect(() => {
     const id = setInterval(
-      () => setTasks((prev) => applyArchiveRule(applyTodayRule(prev))),
+      () => mutate((prev) => applyArchiveRule(applyTodayRule(prev))),
       60_000
     );
     return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const addTask = () => {
     const id = crypto.randomUUID();
-    setTasks((prev) => [...prev, { id, title: "新任务", column: "todo" }]);
+    mutate((prev) => [...prev, { id, title: "新任务", column: "todo" }]);
     setEditingId(id); // 新建后自动进入编辑态
   };
 
   const moveTask = (taskId: string, column: ColumnId) => {
-    setTasks((prev) =>
+    mutate((prev) =>
       prev.map((t) => {
         if (t.id !== taskId) return t;
         if (column === "done")
@@ -157,7 +185,7 @@ export default function App() {
   };
 
   const updateTask = (taskId: string, patch: Partial<Task>) => {
-    setTasks((prev) =>
+    mutate((prev) =>
       prev.map((t) => {
         if (t.id !== taskId) return t;
         const next = { ...t, ...patch };
@@ -173,7 +201,7 @@ export default function App() {
 
   // 软删除：进回收站
   const deleteTask = (taskId: string) => {
-    setTasks((prev) =>
+    mutate((prev) =>
       prev.map((t) => (t.id === taskId ? { ...t, deletedAt: Date.now() } : t))
     );
     setEditingId((cur) => (cur === taskId ? null : cur));
@@ -181,11 +209,11 @@ export default function App() {
 
   // 彻底删除（回收站）
   const hardDeleteTask = (taskId: string) => {
-    setTasks((prev) => prev.filter((t) => t.id !== taskId));
+    mutate((prev) => prev.filter((t) => t.id !== taskId));
   };
 
   const clearTrash = () => {
-    setTasks((prev) => prev.filter((t) => !t.deletedAt));
+    mutate((prev) => prev.filter((t) => !t.deletedAt));
   };
 
   return (

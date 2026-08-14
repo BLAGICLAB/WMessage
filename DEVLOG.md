@@ -60,6 +60,13 @@
 - **Windows 交叉编译**：产出 9.5MB 独立 exe（静态 CRT），Win10 实测可运行
 - **存储落盘（方案2）**：任务数据 localStorage → 应用数据目录 `data.json`（Win: `%APPDATA%\com.renshi.wmessage\data.json`），防清理工具误删。Rust `load_data`/`save_data`（原子写）；单写者：主窗口统一落盘，挂件只读 + `tasks-updated` 携带数据上报；旧 localStorage 首次启动自动迁移；POS_KEY（挂件锚点）仍走 localStorage
 
+### 存储换 SQLite（方案B，10:54 老板拍板）
+
+- 弃 data.json 全量覆盖，上 rusqlite（bundled）行级增量：`db_load`/`db_upsert`/`db_delete` 三命令（`src-tauri/src/db.rs`），表 tasks 单表，tags/subtasks 存 JSON 文本列，WAL + busy_timeout 2s
+- 前端统一变更出口 `mutate`（App.tsx）：计算新数组 → diff 出 upserts/deletes → 行级落盘 → 广播 `tasks-changed`；挂件 `applyAndSync` 同样 diff 后经 `tasks-updated` 上报 {upserts, deletes}，主窗口统一落盘（单写者不变）
+- 迁移链：SQLite 空库时 Rust 侧自动导入方案2 的 data.json 并删除；更早的 localStorage 数据由主窗口首次启动导入后清除
+- 规则（今日/归档）照旧在加载与每分钟重套，diff 后行级落盘
+
 ## 踩坑记录（避免重蹈）
 - Tailwind `@apply` 不能引用自定义组件类（`.nm-card-hover { @apply nm-card }` 编译报错）
 - TodoCard 的 useDraggable 在 DndContext 外会崩 → 归档/回收站页必须包空 `<DndContext>`
@@ -73,6 +80,7 @@
 - windows crate 0.61 API 大改：`GlobalAlloc/GlobalLock/GlobalUnlock/GMEM_MOVEABLE` 在 `System::Memory`；`CF_HDROP/CF_UNICODETEXT` 在 `System::Ole` 且为 `CLIPBOARD_FORMAT(u16)` 新类型（传给 `SetClipboardData` 用 `.0 as u32`）；`SetClipboardData` 第二参是 `Option<HANDLE>`（与 `HGLOBAL` 不同新类型，需 `HANDLE(h.0)`）；`GlobalLock` 返回裸指针不是 Result；`BOOL` 只有 `From<bool>`（用 `true.into()`）
 - **localStorage 会被清理工具当缓存删**（EBWebView 目录），关键数据必须落盘到 app_data_dir 的 data.json（temp+rename 原子写）
 - 落盘架构单写者：主窗口统一写文件，挂件只上报 `tasks-updated`（携带数据）；主窗口 persist 用 `loaded` 门控，否则启动瞬间 async 加载完成前会写空数据覆盖旧档
+- 引入 C 依赖（rusqlite bundled）后，Windows 目标裸 `cargo check` 会挂（cc-rs 用宿主 cc 编 sqlite3.c 找不到 stdlib.h），必须 `cargo xwin check --target x86_64-pc-windows-msvc`（cargo-xwin 接管 C 编译器 + SDK 头文件）
 
 ## 后续待办
 
