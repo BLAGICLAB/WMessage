@@ -54,6 +54,8 @@
 | 11:22 | 文件打开/复制按钮（主窗口 TodoCard + 挂件 TaskCardContent）：新增 `.nm-btn` 动作按钮类，默认凸起、`:active` 按下瞬间凹陷（动作按钮用 momentary 按压态，不用常驻切换） |
 | 11:24 | 绑定文件/文件夹按钮（📎/📁 幽灵文字 → `nm-btn` 凸起胶囊 + 按压态） |
 | 11:27 | 剩余动作按钮统一 `nm-btn`：归档 ↩恢复、回收站 ↩恢复/🗑彻底删除（红字保留）、挂件 +新建任务长条（常驻 nm-inset 仅保留列头/输入框/标签芯片等非动作元素） |
+| 11:32 | 出 Windows 包 v2（含 SQLite/挂件 logo/贴顶横条/按钮体系全套改动），飞书发送老板验收 |
+| 11:36 | 文档更新：README 全面刷新（SQLite 架构、单写者同步、交叉编译说明、logo 文档指针）+ DEVLOG 待办刷新 |
 | 06:47 | 主窗口关闭改为隐藏（CloseRequested prevent_close + Cmd+Q 走 ExitRequested destroy） |
 | 07:09 | 挂件新建任务长条移到「全部/今日」下方，新任务从列表顶部出现 |
 | 07:28 | 挂件打勾后任务消失（挂件只显示未完成：todo + doing） |
@@ -91,6 +93,8 @@
 ## 后续待办
 
 - M5 全局快捷键
-- M6 打包（Win exe / macOS dmg；`copy_file_windows` 已编译验证 ✓，交叉编译链路已通：llvm+lld+cargo-xwin）
+- M6 打包：交叉编译 exe 已通 ✓（v2 已发验）；剩 NSIS 安装包 + 代码签名 + macOS dmg
+- Logo 规范 2.3 单色托盘版（16/32px，现有渐变图缩到托盘尺寸会糊）
 - 挂件窗口伸缩平滑动画（当前瞬时伸缩）polish
 - 深色模式
+- 数据备份/导出（可选；SQLite 文件本身可整体拷贝）
