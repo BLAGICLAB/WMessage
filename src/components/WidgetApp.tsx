@@ -125,7 +125,11 @@ export default function WidgetApp() {
       const anchor: Anchor = saved ?? { x: sw - STRIP_W, y: TOP_Y, edge: "right" };
       anchorRef.current = anchor;
       setEdge(anchor.edge);
-      await win.setSize(new LogicalSize(STRIP_W, STRIP_H));
+      // 贴顶时触发条为横条（220×44），其余边缘为竖条（44×220）
+      const top = anchor.edge === "top";
+      await win.setSize(
+        new LogicalSize(top ? STRIP_H : STRIP_W, top ? STRIP_W : STRIP_H)
+      );
       await win.setPosition(new LogicalPosition(anchor.x, anchor.y));
     })();
   }, []);
@@ -195,7 +199,13 @@ export default function WidgetApp() {
     setEdge(e2);
     saveAnchor({ ...anchor, edge: e2 });
     await win.setPosition(new LogicalPosition(anchor.x, anchor.y));
-    await win.setSize(new LogicalSize(STRIP_W, STRIP_H));
+    // 贴顶横条 / 其余竖条
+    await win.setSize(
+      new LogicalSize(
+        e2 === "top" ? STRIP_H : STRIP_W,
+        e2 === "top" ? STRIP_W : STRIP_H
+      )
+    );
     setExpanded(false);
   };
 
@@ -337,9 +347,13 @@ export default function WidgetApp() {
   return (
     <div className="w-screen h-screen bg-transparent overflow-hidden">
       {!expanded ? (
-        /* 触发条：贴边隐藏状态 */
+        /* 触发条：贴边隐藏状态（顶缘为横条，其余为竖条） */
         <div
-          className={`nm-sidebar-panel ${edgeClass} !p-2 w-full h-full flex flex-col items-center justify-center gap-2 cursor-pointer select-none`}
+          className={`${
+            edge === "top" ? "nm-sidebar-panel-top" : "nm-sidebar-panel"
+          } ${edgeClass} !p-2 w-full h-full flex ${
+            edge === "top" ? "flex-row" : "flex-col"
+          } items-center justify-center gap-2 cursor-pointer select-none`}
           onMouseEnter={expand}
         >
           <img
@@ -350,7 +364,7 @@ export default function WidgetApp() {
           />
           <span
             className="text-gray-500 text-xs tracking-widest"
-            style={{ writingMode: "vertical-rl" }}
+            style={edge === "top" ? undefined : { writingMode: "vertical-rl" }}
           >
             WMessage
           </span>
