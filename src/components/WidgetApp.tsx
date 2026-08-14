@@ -395,24 +395,24 @@ export default function WidgetApp() {
               onPointerDown={(e) => e.stopPropagation()}
             >
               <button
-                className={`nm-inset px-2 py-0.5 text-xs ${
-                  view === "all" ? "text-gray-800 font-medium" : "text-gray-500"
+                className={`px-2 py-0.5 text-xs ${
+                  view === "all" ? "nm-inset text-gray-800 font-medium" : "nm-outset text-gray-500"
                 }`}
                 onClick={() => setView("all")}
               >
                 全部
               </button>
               <button
-                className={`nm-inset px-2 py-0.5 text-xs ${
-                  view === "today" ? "text-gray-800 font-medium" : "text-gray-500"
+                className={`px-2 py-0.5 text-xs ${
+                  view === "today" ? "nm-inset text-gray-800 font-medium" : "nm-outset text-gray-500"
                 }`}
                 onClick={() => setView("today")}
               >
                 今日
               </button>
               <button
-                className={`nm-inset px-2 py-0.5 text-xs ${
-                  locked ? "text-gray-800" : "text-gray-500"
+                className={`px-2 py-0.5 text-xs ${
+                  locked ? "nm-inset text-gray-800" : "nm-outset text-gray-500"
                 }`}
                 title={locked ? "取消常驻" : "常驻锁定"}
                 onClick={() => setLocked((v) => !v)}
