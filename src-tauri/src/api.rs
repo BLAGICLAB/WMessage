@@ -31,6 +31,8 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 
+use crate::audit::AuditLevel;
+use crate::audit_event;
 use crate::db;
 
 pub const API_PORT: u16 = 4763;
@@ -182,12 +184,14 @@ fn clear_enabled_flag(app: &AppHandle) {
 /// 启动 HTTP 服务（绑定 127.0.0.1:port）。
 /// `emit_fn`：任务变更后回调（生产环境=给主窗口发 tasks-updated，看板自动刷新）。
 /// `log_path`：访问/变更日志文件（None=不记）。
+/// `on_error`：服务器异常回调（生产走 audit_event! 写 bot.log，测试 None 即可）。
 pub fn start_api(
     port: u16,
     token: String,
     store: Arc<dyn TaskStore>,
     emit_fn: Option<Box<dyn Fn(&db::Task) + Send + Sync>>,
     log_path: Option<PathBuf>,
+    on_error: Option<Box<dyn Fn(AuditLevel, &str, &str) + Send + Sync>>,
 ) -> Result<RunningApi, String> {
     // 安全红线：只绑回环地址，绝不 0.0.0.0
     let server = Server::http(("127.0.0.1", port))
@@ -204,7 +208,9 @@ pub fn start_api(
             Ok(Some(req)) => handle_request(req, &tk, &store, &hub, &emit_fn, &log_path),
             Ok(None) => {}
             Err(e) => {
-                eprintln!("[api] recv error: {e}");
+                if let Some(log) = &on_error {
+                    log(AuditLevel::Error, "api.recv_error", &e.to_string());
+                }
                 break;
             }
         }
@@ -937,7 +943,12 @@ pub fn api_start(app: AppHandle, state: tauri::State<'_, ApiState>) -> Result<Ap
             let _ = emit_app.emit_to("main", "tasks-updated", &payload);
         }));
     let log_path = Some(db::data_dir(&app).join("api.log"));
-    let running = start_api(API_PORT, token.clone(), store, emit, log_path)?;
+    let audit_app = app.clone();
+    let on_error: Option<Box<dyn Fn(AuditLevel, &str, &str) + Send + Sync>> =
+        Some(Box::new(move |lvl, ev, msg| {
+            audit_event!(&audit_app, lvl, ev, "error" => msg);
+        }));
+    let running = start_api(API_PORT, token.clone(), store, emit, log_path, on_error)?;
     *state.0.lock().map_err(|e| e.to_string())? = Some(running);
     write_enabled_flag(&app);
     Ok(ApiInfo {
@@ -1063,7 +1074,7 @@ mod tests {
             tasks: StdMutex::new(vec![]),
         });
         let token = "test-token-123".to_string();
-        let mut running = start_api(48821, token.clone(), store.clone(), None, None).unwrap();
+        let mut running = start_api(48821, token.clone(), store.clone(), None, None, None).unwrap();
 
         // 健康检查：免鉴权
         let (st, body) = http(48821, "GET", "/api/health", None, None);
@@ -1222,7 +1233,7 @@ mod tests {
             tasks: StdMutex::new(vec![]),
         });
         let token = "test-token-123".to_string();
-        let mut running = start_api(48822, token.clone(), store.clone(), None, None).unwrap();
+        let mut running = start_api(48822, token.clone(), store.clone(), None, None, None).unwrap();
 
         // 建立 SSE 连接
         let mut s = std::net::TcpStream::connect(("127.0.0.1", 48822)).unwrap();
