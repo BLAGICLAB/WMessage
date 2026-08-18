@@ -952,8 +952,13 @@ pub async fn migration_rules_template_save(app: AppHandle) -> CommandResult<Stri
 
 /// 手动触发一次迁移
 #[tauri::command]
-pub fn migration_run(app: AppHandle) -> CommandResult<MigrationReport> {
-    run_migration(&app).map_err(CommandError::from)
+pub async fn migration_run(app: AppHandle) -> CommandResult<MigrationReport> {
+    // B3: 主线程上不能跑长 IO（跨卷拷贝可冻结算分钟级）。
+    // 扔到 spawn_blocking 线程池，AppHandle 在子线程里仍可用（是 Send）。
+    tauri::async_runtime::spawn_blocking(move || run_migration(&app))
+        .await
+        .map_err(|e| CommandError::from(format!("迁移线程 join 失败：{e}")))?
+        .map_err(CommandError::from)
 }
 
 /// 迁移日志读取：尾部 limit 行、最新在前（与机器人审计日志同模式，老板指定）
