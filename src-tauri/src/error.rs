@@ -227,6 +227,22 @@ impl From<rusqlite::Error> for CommandError {
     }
 }
 
+/// String → CommandError (Internal)，便于从 Result<T, String> 机械迁移到 Result<T, CommandError>：
+/// 现有 `Err(format!("xxx"))` （format! 返回 String）经 From<String> 自动转 CommandError::Internal。
+/// 后续可逐个改为精确变体（BotDisabled / ApiKeyMissing / TaskNotFound 等）。
+impl From<String> for CommandError {
+    fn from(s: String) -> Self {
+        Self::Internal(s)
+    }
+}
+
+/// &str → CommandError (Internal)：保留现有 `Err("literal".into())` 语法可继续使用。
+impl From<&str> for CommandError {
+    fn from(s: &str) -> Self {
+        Self::Internal(s.to_string())
+    }
+}
+
 // keyring::Error / tiny_http::Error 不直接 impl From（避免污染 CommandError 依赖）：
 // 调用方在 ? 失败时显式 .map_err(|e| CommandError::KeyringError(e.to_string())) 即可。
 

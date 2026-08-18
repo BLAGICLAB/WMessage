@@ -34,7 +34,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use crate::audit::AuditLevel;
 use crate::audit_event;
 use crate::db;
-use crate::error::CommandResult;
+use crate::error::{CommandError, CommandResult};
 
 pub const API_PORT: u16 = 4763;
 
@@ -59,10 +59,10 @@ struct TauriStore {
 
 impl TaskStore for TauriStore {
     fn load(&self) -> Result<Vec<db::Task>, String> {
-        db::db_load(self.app.clone())
+        db::db_load(self.app.clone()).map_err(|e| e.to_string())
     }
     fn upsert(&self, tasks: Vec<db::Task>) -> Result<(), String> {
-        db::db_upsert(self.app.clone(), tasks)
+        db::db_upsert(self.app.clone(), tasks).map_err(|e| e.to_string())
     }
 }
 
@@ -972,8 +972,12 @@ pub fn api_stop(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandRes
 }
 
 #[tauri::command]
-pub fn api_status(app: AppHandle, state: tauri::State<'_, ApiState>) -> Result<ApiStatus, String> {
-    let enabled = state.0.lock().map_err(|e| e.to_string())?.is_some();
+pub fn api_status(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandResult<ApiStatus> {
+    let enabled = state
+        .0
+        .lock()
+        .map_err(|e| CommandError::Internal(format!("API 状态锁失败：{e}")))?
+        .is_some();
     let token = load_or_create_token(&app)?;
     Ok(ApiStatus {
         enabled,

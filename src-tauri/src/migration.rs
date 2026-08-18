@@ -26,6 +26,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::db;
+use crate::error::{CommandError, CommandResult};
 
 /// 完成满 7 天进入归档（与前端 applyArchiveRule 的 ARCHIVE_AFTER_MS 一致）
 pub const ARCHIVE_AFTER_MS: i64 = 7 * 24 * 60 * 60 * 1000;
@@ -305,7 +306,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
         ..Default::default()
     };
     let rules = load_rules(app);
-    let tasks = db::db_load(app.clone())?;
+    let tasks = db::db_load(app.clone()).map_err(|e| e.to_string())?;
     let now = now_ms();
     let mut changed: Vec<db::Task> = vec![];
 
@@ -325,7 +326,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
         }
     }
     if !due.is_empty() {
-        db::db_upsert(app.clone(), due.clone())?;
+        db::db_upsert(app.clone(), due.clone()).map_err(|e| e.to_string())?;
         report.archived = due.len();
         let line = format!("归档到期任务 {n} 个", n = due.len());
         report.log.push(line.clone());
@@ -459,7 +460,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
 
     // 统一落盘（阶段一的 due 已包含在 changed 中，重复 upsert 幂等无害）
     if !changed.is_empty() {
-        db::db_upsert(app.clone(), changed.clone())?;
+        db::db_upsert(app.clone(), changed.clone()).map_err(|e| e.to_string())?;
         emit_upserts(app, &changed);
     }
 
@@ -572,7 +573,7 @@ fn parse_rules_csv(text: &str) -> Result<RulesFile, String> {
 /// 文件对话框导入规则表（CSV 表格 / 旧 JSON 都支持），返回导入的规则数。
 /// ⚠️ blocking 对话框不能在主线程调用（会死锁卡死 App），必须走 spawn_blocking
 #[tauri::command]
-pub async fn migration_rules_import(app: AppHandle) -> Result<usize, String> {
+pub async fn migration_rules_import(app: AppHandle) -> CommandResult<usize> {
     let handle = app.clone();
     let picked = tauri::async_runtime::spawn_blocking(move || {
         use tauri_plugin_dialog::DialogExt;
@@ -585,12 +586,14 @@ pub async fn migration_rules_import(app: AppHandle) -> Result<usize, String> {
             .blocking_pick_file()
     })
     .await
-    .map_err(|e| format!("对话框线程失败：{e}"))?;
+    .map_err(|e| CommandError::Internal(format!("对话框线程失败：{e}")))?;
     let Some(file) = picked else {
-        return Err("已取消".into());
+        return Err(CommandError::ConfirmRejected); // 取消等同拒绝（无确认超时）
     };
-    let path = file.into_path().map_err(|e| e.to_string())?;
-    let bytes = fs::read(&path).map_err(|e| format!("读取失败：{e}"))?;
+    let path = file
+        .into_path()
+        .map_err(|e| CommandError::IoError(format!("对话框路径转换失败：{e}")))?;
+    let bytes = fs::read(&path).map_err(|e| CommandError::IoError(format!("读取失败：{e}")))?;
     // 编码兜底链：UTF-8 → UTF-16 LE/BE（Excel「Unicode 文本」导出）→ GBK（Excel 默认导出）
     let text = if bytes.starts_with(&[0xFF, 0xFE]) {
         String::from_utf16_lossy(
@@ -630,7 +633,7 @@ pub async fn migration_rules_import(app: AppHandle) -> Result<usize, String> {
 /// 保存对话框下载 CSV 表格模版（Excel/WPS 可直接编辑），返回保存路径（取消返回空串）。
 /// ⚠️ blocking 对话框必须在 spawn_blocking 里跑（主线程会死锁卡死 App）
 #[tauri::command]
-pub async fn migration_rules_template_save(app: AppHandle) -> Result<String, String> {
+pub async fn migration_rules_template_save(app: AppHandle) -> CommandResult<String> {
     let handle = app.clone();
     let picked = tauri::async_runtime::spawn_blocking(move || {
         use tauri_plugin_dialog::DialogExt;
@@ -642,19 +645,22 @@ pub async fn migration_rules_template_save(app: AppHandle) -> Result<String, Str
             .blocking_save_file()
     })
     .await
-    .map_err(|e| format!("对话框线程失败：{e}"))?;
+    .map_err(|e| CommandError::Internal(format!("对话框线程失败：{e}")))?;
     let Some(file) = picked else {
         return Ok(String::new());
     };
-    let path = file.into_path().map_err(|e| e.to_string())?;
-    fs::write(&path, template_csv().as_bytes()).map_err(|e| e.to_string())?;
+    let path = file
+        .into_path()
+        .map_err(|e| CommandError::IoError(format!("对话框路径转换失败：{e}")))?;
+    fs::write(&path, template_csv().as_bytes())
+        .map_err(|e| CommandError::IoError(e.to_string()))?;
     Ok(path.to_string_lossy().to_string())
 }
 
 /// 手动触发一次迁移
 #[tauri::command]
-pub fn migration_run(app: AppHandle) -> Result<MigrationReport, String> {
-    run_migration(&app)
+pub fn migration_run(app: AppHandle) -> CommandResult<MigrationReport> {
+    run_migration(&app).map_err(CommandError::from)
 }
 
 /// 迁移日志读取：尾部 limit 行、最新在前（与机器人审计日志同模式，老板指定）

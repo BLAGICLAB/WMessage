@@ -15,24 +15,24 @@ use tauri::AppHandle;
 /// 打开文件/文件夹（Rust 侧调用 opener 插件）：绕过前端窗口的 opener scope，
 /// 挂件窗口内聊天文件按钮点击直接走这里，失败返回错误给前端兜底 revealItemInDir
 #[tauri::command]
-pub fn open_file_path(app: AppHandle, path: String) -> Result<(), String> {
+pub fn open_file_path(app: AppHandle, path: String) -> CommandResult<()> {
     use tauri_plugin_opener::OpenerExt;
     app.opener()
         .open_path(path, None::<&str>)
-        .map_err(|e| e.to_string())
+        .map_err(|e| CommandError::IoError(format!("打开路径失败：{e}")))
 }
 
 /// 文件多选对话框（Rust 侧 spawn_blocking 弹框）：挂件窗口 ➕ 添加附件用。
 /// 此前前端 dialog.open 在挂件窗口可能不弹框，与 doc_extract 弹框同方案修复。
 #[tauri::command]
-pub async fn pick_files_dialog(app: AppHandle) -> Result<Vec<String>, String> {
+pub async fn pick_files_dialog(app: AppHandle) -> CommandResult<Vec<String>> {
     let handle = app.clone();
     let picked = tauri::async_runtime::spawn_blocking(move || {
         use tauri_plugin_dialog::DialogExt;
         handle.dialog().file().blocking_pick_files()
     })
     .await
-    .map_err(|e| format!("对话框线程失败：{e}"))?;
+    .map_err(|e| CommandError::Internal(format!("对话框线程失败：{e}")))?;
     Ok(picked
         .unwrap_or_default()
         .into_iter()
@@ -58,7 +58,7 @@ const MAX_SKILL_BODY: usize = 50 * 1024;
 ///    delete_all 会逐个 component 调 trash，第一个 component `/`（根）的 parent() 是 None → TargetedRoot。
 ///    正确写法是单数 `trash::delete(p)`（内部 `delete_all(&[path])`，把整条路径当作一项处理）。
 #[tauri::command]
-pub fn delete_bound_file(path: String, is_dir: bool) -> Result<(), String> {
+pub fn delete_bound_file(path: String, is_dir: bool) -> CommandResult<()> {
     use std::path::Path;
     let p = Path::new(&path);
     if !p.exists() {
@@ -66,7 +66,7 @@ pub fn delete_bound_file(path: String, is_dir: bool) -> Result<(), String> {
     }
     let _ = is_dir; // trash::delete 内部递归处理两种类型，不再需要分流
     trash::delete(p).map_err(|e| {
-        format!(
+        CommandError::IoError(format!(
             "移到{}失败：{e}（文件可能仍在原位置，任务卡保留可重试）",
             if cfg!(target_os = "macos") {
                 "废纸篓"
@@ -75,7 +75,7 @@ pub fn delete_bound_file(path: String, is_dir: bool) -> Result<(), String> {
             } else {
                 "垃圾箱"
             }
-        )
+        ))
     })
 }
 
@@ -1451,9 +1451,9 @@ pub fn skills_list(app: AppHandle) -> Vec<SkillInfo> {
 
 /// 技能目录路径（设置页「打开目录」按钮用；目录不存在则先创建）
 #[tauri::command]
-pub fn skills_open_dir(app: AppHandle) -> Result<String, String> {
+pub fn skills_open_dir(app: AppHandle) -> CommandResult<String> {
     let dir = skills_dir(&app);
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir)?;
     Ok(dir.to_string_lossy().to_string())
 }
 
@@ -1490,15 +1490,19 @@ pub fn skills_import(app: AppHandle, path: String) -> CommandResult<String> {
 
 /// 删除技能（整目录）
 #[tauri::command]
-pub fn skills_delete(app: AppHandle, name: String) -> Result<(), String> {
+pub fn skills_delete(app: AppHandle, name: String) -> CommandResult<()> {
     if name.is_empty() || !name.chars().all(SKILL_NAME_CHARS_OK) {
-        return Err("技能名无效".into());
+        return Err(CommandError::InvalidArgument {
+            field: "name".into(),
+            value: name,
+            reason: "技能名无效（仅允许字母/数字/-/_）".into(),
+        });
     }
     let dir = skills_dir(&app).join(&name);
     if !dir.exists() {
         return Ok(());
     }
-    std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())
+    std::fs::remove_dir_all(&dir).map_err(|e| CommandError::IoError(e.to_string()))
 }
 
 fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {

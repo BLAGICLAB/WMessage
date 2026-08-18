@@ -19,8 +19,8 @@
 
 use crate::audit_event;
 use crate::bot_skills::{build_skill_block, tool_use_skill, SkillMeta};
-use crate::intent_router::RouteAction; // F-2：route_user_input 调用迁移到 middleware::run_pre_step
 use crate::error::{CommandError, CommandResult};
+use crate::intent_router::RouteAction; // F-2：route_user_input 调用迁移到 middleware::run_pre_step
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
@@ -171,11 +171,11 @@ pub fn bot_get_enabled(app: AppHandle) -> bool {
 
 /// 设置机器人聊天开关（写/删 flag，返回生效后的状态）
 #[tauri::command]
-pub fn bot_set_enabled(app: AppHandle, enabled: bool) -> Result<bool, String> {
+pub fn bot_set_enabled(app: AppHandle, enabled: bool) -> CommandResult<bool> {
     let dir = crate::db::data_dir(&app);
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir)?;
     if enabled {
-        std::fs::write(bot_flag_path(&app), b"1").map_err(|e| e.to_string())?;
+        std::fs::write(bot_flag_path(&app), b"1")?;
     } else {
         let _ = std::fs::remove_file(bot_flag_path(&app));
     }
@@ -334,16 +334,17 @@ pub fn bot_set_config(
     cfg.api_key = None;
     let dir = crate::db::data_dir(&app);
     std::fs::create_dir_all(&dir).map_err(|e| CommandError::IoError(e.to_string()))?;
-    let raw = serde_json::to_string_pretty(&cfg).map_err(|e| CommandError::IoError(e.to_string()))?;
+    let raw =
+        serde_json::to_string_pretty(&cfg).map_err(|e| CommandError::IoError(e.to_string()))?;
     std::fs::write(config_path(&app), raw).map_err(|e| CommandError::IoError(e.to_string()))
 }
 
 /// 清除已保存的 API Key
 #[tauri::command]
-pub fn bot_clear_api_key() -> Result<(), String> {
+pub fn bot_clear_api_key() -> CommandResult<()> {
     key_entry()?
         .delete_credential()
-        .map_err(|e| format!("清除 API Key 失败：{e}"))
+        .map_err(|e| CommandError::KeyringError(format!("清除 API Key 失败：{e}")))
 }
 
 // ───────────────────────── 审计日志 ─────────────────────────
@@ -1063,7 +1064,11 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>) -> CommandResult<B
                     rollback_attempted,
                 }) => {
                     // LLM 兜底：把「失败原因 + 已完成产物 + 回滚状态」拼进 system prompt 决策
-                    recovery_hint = Some(format_recovery_hint(&reason, &completed_summary, rollback_attempted));
+                    recovery_hint = Some(format_recovery_hint(
+                        &reason,
+                        &completed_summary,
+                        rollback_attempted,
+                    ));
                 }
                 Err(crate::bot_skills::DslFailure::Terminated { reason }) => {
                     return Err(CommandError::Internal(reason));
@@ -3299,26 +3304,41 @@ mod bot_chat_pure_helpers_tests {
 
     #[test]
     fn format_recovery_hint_includes_reason_summary_and_yes_no() {
-        let hint = format_recovery_hint(
-            "list_tasks 超时",
-            "- Step 1 (list_tasks): 0 个任务\n",
-            true,
+        let hint =
+            format_recovery_hint("list_tasks 超时", "- Step 1 (list_tasks): 0 个任务\n", true);
+        assert!(
+            hint.contains("【Skill 失败可恢复上下文】"),
+            "应有上下文标记：\n{hint}"
         );
-        assert!(hint.contains("【Skill 失败可恢复上下文】"), "应有上下文标记：\n{hint}");
         assert!(hint.contains("原因：list_tasks 超时"), "应含原因：\n{hint}");
-        assert!(hint.contains("- Step 1 (list_tasks): 0 个任务"), "应含已完成产物：\n{hint}");
-        assert!(hint.contains("回滚已尝试：是"), "rollback_attempted=true 应输出 是：\n{hint}");
-        assert!(hint.contains("重试 / 调整 / 告知用户"), "应含 LLM 决策提示：\n{hint}");
+        assert!(
+            hint.contains("- Step 1 (list_tasks): 0 个任务"),
+            "应含已完成产物：\n{hint}"
+        );
+        assert!(
+            hint.contains("回滚已尝试：是"),
+            "rollback_attempted=true 应输出 是：\n{hint}"
+        );
+        assert!(
+            hint.contains("重试 / 调整 / 告知用户"),
+            "应含 LLM 决策提示：\n{hint}"
+        );
 
         let hint_no = format_recovery_hint("x", "y", false);
-        assert!(hint_no.contains("回滚已尝试：否"), "rollback_attempted=false 应输出 否：\n{hint_no}");
+        assert!(
+            hint_no.contains("回滚已尝试：否"),
+            "rollback_attempted=false 应输出 否：\n{hint_no}"
+        );
     }
 
     #[test]
     fn format_recovery_hint_handles_empty_reason_and_summary() {
         let hint = format_recovery_hint("", "", false);
         assert!(hint.contains("原因："), "空 reason 也应含 key：\n{hint}");
-        assert!(hint.contains("已完成产物："), "空 summary 也应含 key：\n{hint}");
+        assert!(
+            hint.contains("已完成产物："),
+            "空 summary 也应含 key：\n{hint}"
+        );
     }
 
     #[test]
@@ -3330,9 +3350,18 @@ mod bot_chat_pure_helpers_tests {
     #[test]
     fn merge_task_refs_dedup_no_duplicates_returns_all_in_order() {
         let refs = vec![
-            TaskRef { id: "a".into(), title: "标题 A".into() },
-            TaskRef { id: "b".into(), title: "标题 B".into() },
-            TaskRef { id: "c".into(), title: "标题 C".into() },
+            TaskRef {
+                id: "a".into(),
+                title: "标题 A".into(),
+            },
+            TaskRef {
+                id: "b".into(),
+                title: "标题 B".into(),
+            },
+            TaskRef {
+                id: "c".into(),
+                title: "标题 C".into(),
+            },
         ];
         let out = merge_task_refs_dedup(refs);
         assert_eq!(out.len(), 3);
@@ -3344,23 +3373,47 @@ mod bot_chat_pure_helpers_tests {
     #[test]
     fn merge_task_refs_dedup_duplicates_keeps_first_occurrence() {
         let refs = vec![
-            TaskRef { id: "a".into(), title: "首次标题 A".into() },
-            TaskRef { id: "b".into(), title: "首次 B".into() },
-            TaskRef { id: "a".into(), title: "后续标题 A（应被丢弃）".into() },
-            TaskRef { id: "b".into(), title: "后续 B（应被丢弃）".into() },
+            TaskRef {
+                id: "a".into(),
+                title: "首次标题 A".into(),
+            },
+            TaskRef {
+                id: "b".into(),
+                title: "首次 B".into(),
+            },
+            TaskRef {
+                id: "a".into(),
+                title: "后续标题 A（应被丢弃）".into(),
+            },
+            TaskRef {
+                id: "b".into(),
+                title: "后续 B（应被丢弃）".into(),
+            },
         ];
         let out = merge_task_refs_dedup(refs);
         assert_eq!(out.len(), 2, "去重后应剩 2 条");
-        assert_eq!(out[0].title, "首次标题 A", "首次出现应保留原标题，不能用后续覆盖");
+        assert_eq!(
+            out[0].title, "首次标题 A",
+            "首次出现应保留原标题，不能用后续覆盖"
+        );
         assert_eq!(out[1].title, "首次 B");
     }
 
     #[test]
     fn merge_task_refs_dedup_consecutive_same_ids_collapses() {
         let refs = vec![
-            TaskRef { id: "x".into(), title: "X1".into() },
-            TaskRef { id: "x".into(), title: "X2".into() },
-            TaskRef { id: "x".into(), title: "X3".into() },
+            TaskRef {
+                id: "x".into(),
+                title: "X1".into(),
+            },
+            TaskRef {
+                id: "x".into(),
+                title: "X2".into(),
+            },
+            TaskRef {
+                id: "x".into(),
+                title: "X3".into(),
+            },
         ];
         let out = merge_task_refs_dedup(refs);
         assert_eq!(out.len(), 1);

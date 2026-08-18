@@ -7,6 +7,8 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 
+use crate::error::{CommandError, CommandResult};
+
 const MAX_AVATAR_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_NAME_CHARS: usize = 24;
 const AVATAR_EXTS: [&str; 5] = ["png", "jpg", "jpeg", "gif", "webp"];
@@ -123,16 +125,28 @@ pub fn profile_get(app: AppHandle) -> ProfileView {
 }
 
 #[tauri::command]
-pub fn profile_set_name(app: AppHandle, kind: String, name: String) -> Result<ProfileView, String> {
+pub fn profile_set_name(app: AppHandle, kind: String, name: String) -> CommandResult<ProfileView> {
     if !valid_kind(&kind) {
-        return Err("kind 必须为 user 或 bot".into());
+        return Err(CommandError::InvalidArgument {
+            field: "kind".into(),
+            value: kind,
+            reason: "必须为 user 或 bot".into(),
+        });
     }
     let name = name.trim();
     if name.is_empty() {
-        return Err("姓名不能为空".into());
+        return Err(CommandError::InvalidArgument {
+            field: "name".into(),
+            value: String::new(),
+            reason: "姓名不能为空".into(),
+        });
     }
     if name.chars().count() > MAX_NAME_CHARS {
-        return Err(format!("姓名最长 {MAX_NAME_CHARS} 字"));
+        return Err(CommandError::InvalidArgument {
+            field: "name".into(),
+            value: name.to_string(),
+            reason: format!("姓名最长 {MAX_NAME_CHARS} 字"),
+        });
     }
     let mut data = load_data(&app);
     let entry = if kind == "bot" {
@@ -151,9 +165,13 @@ pub fn profile_set_avatar(
     app: AppHandle,
     kind: String,
     path: String,
-) -> Result<ProfileView, String> {
+) -> CommandResult<ProfileView> {
     if !valid_kind(&kind) {
-        return Err("kind 必须为 user 或 bot".into());
+        return Err(CommandError::InvalidArgument {
+            field: "kind".into(),
+            value: kind,
+            reason: "必须为 user 或 bot".into(),
+        });
     }
     let src = std::path::PathBuf::from(&path);
     let ext = src
@@ -162,14 +180,22 @@ pub fn profile_set_avatar(
         .map(|s| s.to_ascii_lowercase())
         .unwrap_or_default();
     if !AVATAR_EXTS.contains(&ext.as_str()) {
-        return Err("仅支持 png/jpg/gif/webp 图片".into());
+        return Err(CommandError::InvalidArgument {
+            field: "path".into(),
+            value: path.clone(),
+            reason: "仅支持 png/jpg/gif/webp 图片".into(),
+        });
     }
-    let meta = std::fs::metadata(&src).map_err(|e| e.to_string())?;
+    let meta = std::fs::metadata(&src)?;
     if meta.len() > MAX_AVATAR_BYTES {
-        return Err("头像图片不能超过 5MB".into());
+        return Err(CommandError::InvalidArgument {
+            field: "path".into(),
+            value: path,
+            reason: "头像图片不能超过 5MB".into(),
+        });
     }
     let dir = profile_dir(&app);
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir)?;
     let dest = dir.join(format!("avatar-{kind}.{ext}"));
     // 清掉该 kind 的旧头像文件（扩展名可能不同）
     if let Ok(rd) = std::fs::read_dir(&dir) {
@@ -181,7 +207,7 @@ pub fn profile_set_avatar(
             }
         }
     }
-    std::fs::copy(&src, &dest).map_err(|e| e.to_string())?;
+    std::fs::copy(&src, &dest)?;
     let mut data = load_data(&app);
     let entry = if kind == "bot" {
         &mut data.bot
@@ -189,22 +215,30 @@ pub fn profile_set_avatar(
         &mut data.user
     };
     let Some(fname) = dest.file_name() else {
-        return Err("头像目标路径无效".into());
+        return Err(CommandError::InvalidArgument {
+            field: "path".into(),
+            value: dest.to_string_lossy().into_owned(),
+            reason: "头像目标路径无效".into(),
+        });
     };
     entry.avatar = Some(fname.to_string_lossy().into_owned());
     // 原子性：保存失败时删掉刚拷贝的头像文件，不留孤儿（二次审计 P3）
     if let Err(e) = save_data(&app, &data) {
         let _ = std::fs::remove_file(&dest);
-        return Err(e);
+        return Err(CommandError::IoError(e));
     }
     broadcast(&app);
     Ok(build_view(&app, &data))
 }
 
 #[tauri::command]
-pub fn profile_remove_avatar(app: AppHandle, kind: String) -> Result<ProfileView, String> {
+pub fn profile_remove_avatar(app: AppHandle, kind: String) -> CommandResult<ProfileView> {
     if !valid_kind(&kind) {
-        return Err("kind 必须为 user 或 bot".into());
+        return Err(CommandError::InvalidArgument {
+            field: "kind".into(),
+            value: kind,
+            reason: "必须为 user 或 bot".into(),
+        });
     }
     let mut data = load_data(&app);
     let entry = if kind == "bot" {

@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tauri::Manager; // F-6：Runtime 给 data_dir 泛型化
 
+use crate::error::{CommandError, CommandResult};
+
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Subtask {
@@ -436,42 +438,42 @@ fn delete_workspace(conn: &rusqlite::Connection, ids: &[String]) -> Result<(), S
 }
 
 #[tauri::command]
-pub fn workspace_load(app: tauri::AppHandle) -> Result<Vec<WorkspaceItem>, String> {
+pub fn workspace_load(app: tauri::AppHandle) -> CommandResult<Vec<WorkspaceItem>> {
     let conn = open_db(&app)?;
-    load_workspace(&conn)
+    load_workspace(&conn).map_err(CommandError::from)
 }
 
 #[tauri::command]
-pub fn workspace_upsert(app: tauri::AppHandle, items: Vec<WorkspaceItem>) -> Result<(), String> {
+pub fn workspace_upsert(app: tauri::AppHandle, items: Vec<WorkspaceItem>) -> CommandResult<()> {
     if items.is_empty() {
         return Ok(());
     }
     let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = open_db(&app)?;
-    upsert_workspace(&conn, &items)
+    upsert_workspace(&conn, &items).map_err(CommandError::from)
 }
 
 #[tauri::command]
-pub fn workspace_delete(app: tauri::AppHandle, ids: Vec<String>) -> Result<(), String> {
+pub fn workspace_delete(app: tauri::AppHandle, ids: Vec<String>) -> CommandResult<()> {
     if ids.is_empty() {
         return Ok(());
     }
     let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = open_db(&app)?;
-    delete_workspace(&conn, &ids)
+    delete_workspace(&conn, &ids).map_err(CommandError::from)
 }
 
 // ───────────────────────── 机器人聊天记录 ─────────────────────────
 
 /// 全部会话列表（按最近更新倒序）
 #[tauri::command]
-pub fn bot_sessions_load(app: tauri::AppHandle) -> Result<Vec<BotSession>, String> {
+pub fn bot_sessions_load(app: tauri::AppHandle) -> CommandResult<Vec<BotSession>> {
     let conn = open_db(&app)?;
     let mut stmt = conn
         .prepare(
             "SELECT id, title, created_at, updated_at FROM bot_sessions ORDER BY updated_at DESC",
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| CommandError::DbError(e.to_string()))?;
     let rows = stmt
         .query_map([], |r| {
             Ok(BotSession {
@@ -481,9 +483,9 @@ pub fn bot_sessions_load(app: tauri::AppHandle) -> Result<Vec<BotSession>, Strin
                 updated_at: r.get::<_, i64>(3)?,
             })
         })
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| CommandError::DbError(e.to_string()))?;
     rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())
+        .map_err(|e| CommandError::DbError(e.to_string()))
 }
 
 /// 新建会话，返回新会话（title 缺省「新对话」）
@@ -491,7 +493,7 @@ pub fn bot_sessions_load(app: tauri::AppHandle) -> Result<Vec<BotSession>, Strin
 pub fn bot_session_create(
     app: tauri::AppHandle,
     title: Option<String>,
-) -> Result<BotSession, String> {
+) -> CommandResult<BotSession> {
     let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = open_db(&app)?;
     let id = uuid::Uuid::new_v4().simple().to_string();
@@ -515,7 +517,7 @@ pub fn bot_session_create(
 
 /// 删除会话及其全部消息
 #[tauri::command]
-pub fn bot_session_delete(app: tauri::AppHandle, id: String) -> Result<(), String> {
+pub fn bot_session_delete(app: tauri::AppHandle, id: String) -> CommandResult<()> {
     let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = open_db(&app)?;
     conn.execute("DELETE FROM bot_messages WHERE session_id = ?1", [&id])
@@ -527,7 +529,7 @@ pub fn bot_session_delete(app: tauri::AppHandle, id: String) -> Result<(), Strin
 
 /// 会话改名
 #[tauri::command]
-pub fn bot_session_rename(app: tauri::AppHandle, id: String, title: String) -> Result<(), String> {
+pub fn bot_session_rename(app: tauri::AppHandle, id: String, title: String) -> CommandResult<()> {
     let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = open_db(&app)?;
     let now = chrono::Utc::now().timestamp_millis();
@@ -544,11 +546,11 @@ pub fn bot_session_rename(app: tauri::AppHandle, id: String, title: String) -> R
 pub fn bot_history_load(
     app: tauri::AppHandle,
     session_id: String,
-) -> Result<Vec<BotMsgRow>, String> {
+) -> CommandResult<Vec<BotMsgRow>> {
     let conn = open_db(&app)?;
     let mut stmt = conn
         .prepare("SELECT role, content, refs, thinking, tools FROM bot_messages WHERE session_id = ?1 ORDER BY id")
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| CommandError::DbError(e.to_string()))?;
     let rows = stmt
         .query_map([&session_id], |r| {
             Ok(BotMsgRow {
@@ -559,9 +561,9 @@ pub fn bot_history_load(
                 tools_json: r.get::<_, Option<String>>(4)?,
             })
         })
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| CommandError::DbError(e.to_string()))?;
     rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())
+        .map_err(|e| CommandError::DbError(e.to_string()))
 }
 
 /// 保存指定会话的聊天记录：全量覆盖 + 更新会话活跃时间
@@ -570,7 +572,7 @@ pub fn bot_history_save(
     app: tauri::AppHandle,
     session_id: String,
     messages: Vec<BotMsgRow>,
-) -> Result<(), String> {
+) -> CommandResult<()> {
     let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = open_db(&app)?;
     conn.execute(
@@ -609,7 +611,7 @@ pub fn bot_history_save(
 
 /// 清空指定会话的聊天记录（会话保留）
 #[tauri::command]
-pub fn bot_history_clear(app: tauri::AppHandle, session_id: String) -> Result<(), String> {
+pub fn bot_history_clear(app: tauri::AppHandle, session_id: String) -> CommandResult<()> {
     let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = open_db(&app)?;
     conn.execute(
@@ -802,37 +804,40 @@ fn migrate_data_json(app: &tauri::AppHandle, conn: &mut rusqlite::Connection) {
 static DB_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[tauri::command]
-pub fn db_load(app: tauri::AppHandle) -> Result<Vec<Task>, String> {
+pub fn db_load(app: tauri::AppHandle) -> CommandResult<Vec<Task>> {
     let mut conn = open_db(&app)?;
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| CommandError::DbError(e.to_string()))?;
     if count == 0 {
         migrate_data_json(&app, &mut conn);
     }
-    load_all(&conn)
+    load_all(&conn).map_err(CommandError::from)
 }
 
 #[tauri::command]
-pub fn db_upsert(app: tauri::AppHandle, tasks: Vec<Task>) -> Result<(), String> {
+pub fn db_upsert(app: tauri::AppHandle, tasks: Vec<Task>) -> CommandResult<()> {
     if tasks.is_empty() {
         return Ok(());
     }
     let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut conn = open_db(&app)?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    upsert_tasks(&tx, &tasks)?;
-    tx.commit().map_err(|e| e.to_string())
+    let tx = conn
+        .transaction()
+        .map_err(|e| CommandError::DbError(e.to_string()))?;
+    upsert_tasks(&tx, &tasks).map_err(CommandError::from)?;
+    tx.commit()
+        .map_err(|e| CommandError::DbError(e.to_string()))
 }
 
 #[tauri::command]
-pub fn db_delete(app: tauri::AppHandle, ids: Vec<String>) -> Result<(), String> {
+pub fn db_delete(app: tauri::AppHandle, ids: Vec<String>) -> CommandResult<()> {
     if ids.is_empty() {
         return Ok(());
     }
     let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = open_db(&app)?;
-    delete_tasks(&conn, &ids)
+    delete_tasks(&conn, &ids).map_err(CommandError::from)
 }
 
 /// 只读读取外部数据库（可能是更老版本，缺 ord / updated_at 列时按 NULL 处理）
@@ -936,7 +941,7 @@ fn load_external(conn: &rusqlite::Connection) -> Result<Vec<Task>, String> {
 /// 合并导入：按 id 并集；同 id 内容分歧时保留 updated_at 更新（外部无 updated_at 视为最旧）。
 /// 返回实际写入的任务条数。
 #[tauri::command]
-pub fn db_merge(app: tauri::AppHandle, path: String) -> Result<usize, String> {
+pub fn db_merge(app: tauri::AppHandle, path: String) -> CommandResult<usize> {
     use rusqlite::{OpenFlags, OptionalExtension};
 
     let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -978,7 +983,7 @@ pub fn db_merge(app: tauri::AppHandle, path: String) -> Result<usize, String> {
 
 /// 导出任务卡数据：全量任务（含归档、回收站）序列化为 JSON 文件，返回条数
 #[tauri::command]
-pub fn tasks_export(app: tauri::AppHandle, path: String) -> Result<usize, String> {
+pub fn tasks_export(app: tauri::AppHandle, path: String) -> CommandResult<usize> {
     let conn = open_db(&app)?;
     let tasks = load_all(&conn)?;
     let json = serde_json::to_string_pretty(&tasks).map_err(|e| e.to_string())?;
@@ -988,7 +993,7 @@ pub fn tasks_export(app: tauri::AppHandle, path: String) -> Result<usize, String
 
 /// 从 JSON 文件导入任务卡数据：按 id 并集合并，同 id 保留 updated_at 更晚者。返回写入条数。
 #[tauri::command]
-pub fn tasks_import(app: tauri::AppHandle, path: String) -> Result<usize, String> {
+pub fn tasks_import(app: tauri::AppHandle, path: String) -> CommandResult<usize> {
     use rusqlite::OptionalExtension;
 
     let raw = std::fs::read_to_string(&path).map_err(|e| format!("无法读取所选文件：{e}"))?;
