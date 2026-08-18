@@ -2,62 +2,278 @@
 @tailwind components;
 @tailwind utilities;
 
-/* === WMessage 新拟态 凸起卡片 基础样式 === */
-/* 注意：Tailwind 的 @apply 不能引用自定义组件类（nm-card 不是 utility，
-   @apply nm-card 会编译报错）。修复方式：合并选择器共享同一组声明。 */
+/* ═══════════════════════════════════════════════════════════════
+   新拟态主题变量：浅色 / 深色 两套独立定义
+   背景（页面底 ≠ 卡片表面）、双阴影、文字五级、品牌色统一管理
+   ═══════════════════════════════════════════════════════════════ */
+:root {
+  /* 表面与背景 */
+  --bg: #f4f7fa;            /* 页面底色 */
+  --surface: #f4f7fa;       /* 卡片/按钮表面 */
+  /* 新拟态双阴影（亮阴影 + 暗阴影，两套独立，不互相复用） */
+  --sh-low: #d5dbe3;        /* 右下暗阴影 */
+  --sh-high: #ffffff;       /* 左上亮阴影 */
+  --sh-low-strong: #cbd3dd; /* hover 加深暗阴影 */
+  --sh-high-strong: #ffffff;
+  --sh-top: transparent;    /* 顶部 1px 内高光（深色专属玻璃感，浅色关闭） */
+  --edge: #dde3ea;          /* 面板内阴影边 */
+  --input-bg: rgba(255, 255, 255, 0.7);
+  --hover-bg: rgba(15, 23, 42, 0.05);
+  /* 文字五级：强 > 主 > 次 > 弱 > 幽灵 */
+  --t1: #1f2937; /* 列头/强调 */
+  --t2: #374151; /* 主文字 */
+  --t3: #4b5563; /* 次要文字 */
+  --t4: #6b7280; /* 辅助文字 */
+  --t5: #9ca3af; /* 弱文字/计数 */
+  --t6: #c7ced8; /* 幽灵提示（+备注 等） */
+  /* 品牌（低饱和蓝紫灰）与语义色 */
+  --brand: #5f6f94;
+  --brand-strong: #4a5879;
+  --success: #16a34a;
+  --danger: #dc2626;
+}
+
+.dark {
+  /* 中度深灰底色（非纯黑），微带蓝调；页面底比卡片表面更暗，拉出层次 */
+  --bg: #1f242b;
+  --surface: #2d333e;
+  /* 深色专属双阴影：更深暗阴影 + 偏亮弱高光，凸起感靠阴影对比而非色差 */
+  --sh-low: #13161b;
+  --sh-high: #4a5464;
+  --sh-low-strong: #0f1116;
+  --sh-high-strong: #576173;
+  --sh-top: rgba(255, 255, 255, 0.07); /* 顶部 1px 内高光，玻璃边缘感 */
+  --edge: #333a46;
+  --input-bg: rgba(255, 255, 255, 0.07);
+  --hover-bg: rgba(255, 255, 255, 0.09);
+  /* 深色文字：主浅灰白（非纯白），逐级降亮但保证可读 */
+  --t1: #f0f3f8;
+  --t2: #dfe5ef;
+  --t3: #bcc4d4;
+  --t4: #9aa4b8;
+  --t5: #7e8898;
+  --t6: #687283;
+  /* 品牌色深色模式提亮 */
+  --brand: #a3b6dd;
+  --brand-strong: #c0cdea;
+  --success: #4ade80;
+  --danger: #f87171;
+}
+
+@layer base {
+  html,
+  body {
+    background-color: var(--bg);
+    color: var(--t2);
+  }
+  /* 主题切换平滑过渡（背景/文字/阴影，不影响 transform 动画） */
+  body {
+    transition: background-color 0.28s ease, color 0.28s ease;
+  }
+  input::placeholder,
+  textarea::placeholder {
+    color: var(--t5);
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   新拟态组件类（全部走变量，深浅两套自动生效）
+   ═══════════════════════════════════════════════════════════════ */
 @layer components {
+  /* === 凸起卡片 === */
   .nm-card,
   .nm-card-hover {
-    @apply rounded-2xl bg-[#f4f7fa] transition-all duration-200 ease-out;
-    /* 核心新拟态双阴影：左上浅色高光、右下柔和阴影，做出凸起感 */
-    box-shadow: 6px 6px 12px #d8dee6, -6px -6px 12px #ffffff;
+    @apply rounded-2xl;
+    background-color: var(--surface);
+    /* 双阴影：左上高光 + 右下暗影 → 凸起；深色模式额外加顶部 1px 内高光 */
+    box-shadow: inset 0 1px 0 var(--sh-top), 6px 6px 12px var(--sh-low),
+      -6px -6px 12px var(--sh-high);
+    transition: background-color 0.28s ease, box-shadow 0.2s ease;
   }
 
-  /* hover 上浮增强（悬浮动效） */
   .nm-card-hover {
     @apply cursor-pointer;
   }
   .nm-card-hover:hover {
     transform: translateY(-3px) scale(1.01);
-    box-shadow: 8px 8px 16px #d0d6de, -8px -8px 16px #ffffff;
+    box-shadow: inset 0 1px 0 var(--sh-top), 8px 8px 16px var(--sh-low-strong),
+      -8px -8px 16px var(--sh-high-strong);
+    transition: background-color 0.28s ease, box-shadow 0.2s ease,
+      transform 0.2s ease;
   }
 
-  /* === 任务卡标题排版：大厂风格，主窗口 TodoCard 与挂件 TaskCardContent 共用 === */
+  /* === 任务卡标题排版（共用） === */
   .nm-task-title {
-    @apply text-sm font-medium text-gray-700;
+    @apply text-sm font-medium;
+    color: var(--t2);
   }
 
-  /* === 内凹组件（侧边挂件触发条、按钮，与凸卡片形成对比） === */
+  /* === 内凹（选中/按下凹陷） === */
   .nm-inset {
-    @apply rounded-xl bg-[#f4f7fa];
-    box-shadow: inset 4px 4px 8px #d8dee6, inset -4px -4px 8px #ffffff;
+    @apply rounded-xl;
+    background-color: var(--surface);
+    box-shadow: inset 4px 4px 8px var(--sh-low),
+      inset -4px -4px 8px var(--sh-high);
+    transition: background-color 0.28s ease, box-shadow 0.2s ease;
   }
 
-  /* === 外凸胶囊（未选中态，与选中凹陷 nm-inset 形成按压对比） === */
+  /* === 外凸胶囊（未选中） === */
   .nm-outset {
-    @apply rounded-xl bg-[#f4f7fa];
-    box-shadow: 4px 4px 8px #d8dee6, -4px -4px 8px #ffffff;
+    @apply rounded-xl;
+    background-color: var(--surface);
+    box-shadow: inset 0 1px 0 var(--sh-top), 4px 4px 8px var(--sh-low),
+      -4px -4px 8px var(--sh-high);
+    transition: background-color 0.28s ease, box-shadow 0.2s ease;
   }
-  /* 动作按钮（打开/复制等）：默认凸起，按下瞬间凹陷（momentary 按压态，无选中态） */
+  .nm-outset:hover {
+    box-shadow: inset 0 1px 0 var(--sh-top), 5px 5px 10px var(--sh-low-strong),
+      -5px -5px 10px var(--sh-high-strong);
+  }
+
+  /* === 动作按钮：默认凸起，hover 上浮反馈，按下瞬间凹陷 === */
   .nm-btn {
-    @apply rounded-lg bg-[#f4f7fa] transition-shadow duration-100;
-    box-shadow: 3px 3px 6px #d8dee6, -3px -3px 6px #ffffff;
+    @apply rounded-lg;
+    background-color: var(--surface);
+    box-shadow: inset 0 1px 0 var(--sh-top), 3px 3px 6px var(--sh-low),
+      -3px -3px 6px var(--sh-high);
+    transition: background-color 0.28s ease, box-shadow 0.15s ease;
+  }
+  .nm-btn:hover {
+    box-shadow: inset 0 1px 0 var(--sh-top), 4px 4px 8px var(--sh-low-strong),
+      -4px -4px 8px var(--sh-high-strong);
   }
   .nm-btn:active {
-    box-shadow: inset 2px 2px 4px #d8dee6, inset -2px -2px 4px #ffffff;
+    box-shadow: inset 2px 2px 4px var(--sh-low),
+      inset -2px -2px 4px var(--sh-high);
   }
 
-  /* === 侧边挂件面板容器（同色系统一质感） === */
+  /* === 侧边挂件面板（内阴影保持边缘层次） === */
   .nm-sidebar-panel {
-    /* 圆角由 JSX 按所在边缘动态加（rounded-l/r/b/2xl），不在这里写死 */
-    @apply bg-[#f4f7fa] p-4;
-    /* 不能用外阴影：窗口是矩形，外阴影在直边被窗口边缘裁掉、在圆角处却漏进透明切角，
-       形成一段突兀的阴影（老板 2026-08-14 反馈）。改用内阴影保持左缘层次感。 */
-    box-shadow: inset -6px 0 10px -4px #dde3ea;
+    @apply p-4;
+    background-color: var(--surface);
+    box-shadow: inset -6px 0 10px -4px var(--edge);
+    transition: background-color 0.28s ease, box-shadow 0.28s ease;
   }
   .nm-sidebar-panel-top {
-    /* 贴顶横条专用：内阴影改为上缘方向 */
-    @apply bg-[#f4f7fa] p-4;
-    box-shadow: inset 0 -6px 10px -4px #dde3ea;
+    @apply p-4;
+    background-color: var(--surface);
+    box-shadow: inset 0 -6px 10px -4px var(--edge);
+    transition: background-color 0.28s ease, box-shadow 0.28s ease;
+  }
+
+  /* 深色模式：挂件深蓝 logo 提亮 */
+  .dark .widget-logo {
+    filter: brightness(1.9) saturate(0.85);
+  }
+
+  /* === 助手回复 Markdown 渲染（md-body 容器内） === */
+  /* 行距紧凑：气泡小字号下 leading-relaxed 过松，此处统一收紧 */
+  .md-body {
+    word-break: break-word;
+    line-height: 1.45;
+  }
+  .md-body > :first-child {
+    margin-top: 0;
+  }
+  .md-body > :last-child {
+    margin-bottom: 0;
+  }
+  /* 段落：零边距（老板拍板：所有段落间距最小；行内换行由 remark-breaks 的 <br> 承担） */
+  .md-body p {
+    margin: 0;
+  }
+  /* 标题：限高限粗，避免占满气泡。间距全零（老板拍板：所有段落间距最小） */
+  .md-body h1,
+  .md-body h2,
+  .md-body h3,
+  .md-body h4,
+  .md-body h5,
+  .md-body h6 {
+    font-weight: 600;
+    line-height: 1.3;
+    margin: 0;
+  }
+  .md-body h1 { font-size: 1.25em; }
+  .md-body h2 { font-size: 1.15em; }
+  .md-body h3 { font-size: 1.08em; }
+  .md-body h4,
+  .md-body h5,
+  .md-body h6 {
+    font-size: 1em;
+  }
+  /* 列表：段间距最小（老板拍板：有序/无序/任务列表间距最小） */
+  .md-body ul,
+  .md-body ol {
+    margin: 0;
+    padding-left: 1.3em;
+  }
+  .md-body ul {
+    list-style: disc;
+  }
+  .md-body ol {
+    list-style: decimal;
+  }
+  .md-body li {
+    margin: 0;
+  }
+  /* 列表项之间的单换行会被 remark-breaks 转成 <br>，视觉上每项后空一行——隐藏它。
+     （li 内多行内容的续行换行同样会被吞，但模型输出里极少见，优先级低于间距观感） */
+  .md-body li br {
+    display: none;
+  }
+  /* 行内代码 */
+  .md-body code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.88em;
+    background: var(--hover-bg);
+    padding: 0.1em 0.3em;
+    border-radius: 4px;
+  }
+  /* 代码块 */
+  .md-body pre {
+    margin: 0;
+    padding: 0.5em;
+    border-radius: 8px;
+    background: var(--hover-bg);
+    overflow-x: auto;
+  }
+  .md-body pre code {
+    background: none;
+    padding: 0;
+    font-size: 0.82em;
+    line-height: 1.45;
+  }
+  /* 引用 */
+  .md-body blockquote {
+    margin: 0;
+    padding-left: 0.6em;
+    border-left: 3px solid var(--edge);
+    color: var(--t4);
+  }
+  /* 表格（GFM） */
+  .md-body table {
+    margin: 0;
+    border-collapse: collapse;
+    font-size: 0.95em;
+  }
+  .md-body th,
+  .md-body td {
+    border: 1px solid var(--edge);
+    padding: 0.1em 0.5em;
+  }
+  .md-body th {
+    background: var(--hover-bg);
+    font-weight: 600;
+  }
+  /* 分隔线 */
+  .md-body hr {
+    margin: 0;
+    border: none;
+    border-top: 1px solid var(--edge);
+  }
+  /* 任务列表复选框 */
+  .md-body input[type="checkbox"] {
+    margin-right: 0.35em;
   }
 }
+

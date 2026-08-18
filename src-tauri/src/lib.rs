@@ -1,11 +1,18 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+mod api;
+mod audit;
+pub mod bot;
+mod bot_py;
+pub mod bot_skills;
+mod bot_web;
 mod db;
-use tauri::Manager;
-
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
+pub mod intent_router;
+pub mod middleware;
+mod migration;
+mod profile;
+pub mod tool_guard;
+use tauri::{Emitter, Manager};
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 /// 复制文件 + 任务标题到剪贴板：
 /// - 文件类粘贴（Finder / 飞书 / 微信）得到真实文件
@@ -24,6 +31,29 @@ fn copy_file_with_title(path: String, title: String) -> Result<(), String> {
     {
         let _ = (path, title);
         return Err("复制文件暂不支持当前平台".into());
+    }
+}
+
+/// 唤起主窗口并强制置顶（单一真相）
+///
+/// 老板 2026-08-17 11:31/11:43 规则：所有唤起主窗口的路径（widget 双击标题、聊天区 📌、
+/// 全局快捷键、托盘点击/菜单）都必须把主窗口推到桌面屏幕最顶层才能看见。
+/// 仅 setFocus 在 Windows 上不一定推到 z-order 最顶层（其他窗口抢焦点时被遮住），
+/// 需 alwaysOnTop 短暂闪烁 80ms 强制重排后再恢复（不长驻，避免干扰用户正常使用电脑）。
+pub fn bring_main_to_front(window: &tauri::WebviewWindow) {
+    let _ = window.show();
+    let _ = window.unminimize();
+    let _ = window.set_focus();
+    let _ = window.set_always_on_top(true);
+    std::thread::sleep(std::time::Duration::from_millis(80));
+    let _ = window.set_always_on_top(false);
+}
+
+/// Tauri 命令包装：供前端 src/focus.ts 调用，与 4 个 Rust 内部调用点同逻辑
+#[tauri::command]
+fn focus_main_window(app: tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        bring_main_to_front(&w);
     }
 }
 
@@ -123,10 +153,84 @@ fn copy_file_windows(path: &str, title: &str) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 全局快捷键修饰键：macOS 用 Cmd+Ctrl（避开 Cmd+Shift+N 与 Finder 新建文件夹冲突），
+    // Windows/Linux 用 Ctrl+Alt（避开 Ctrl+Shift+N 与浏览器隐身窗口冲突）
+    let hotkey_mods = if cfg!(target_os = "macos") {
+        Modifiers::SUPER | Modifiers::CONTROL
+    } else {
+        Modifiers::CONTROL | Modifiers::ALT
+    };
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .setup(|app| {
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(move |app, shortcut, event| {
+                    if event.state() != ShortcutState::Pressed {
+                        return;
+                    }
+                    let Some(main) = app.get_webview_window("main") else {
+                        return;
+                    };
+                    match shortcut.key {
+                        // 唤起/隐藏主窗口（macOS: Cmd+Ctrl+W；Win/Linux: Ctrl+Alt+W）
+                        Code::KeyW => {
+                            if main.is_visible().unwrap_or(false) {
+                                let _ = main.hide();
+                            } else {
+                                bring_main_to_front(&main);
+                            }
+                        }
+                        // 唤起主窗口 + 快速新建任务（macOS: Cmd+Ctrl+N；Win/Linux: Ctrl+Alt+N）
+                        Code::KeyN => {
+                            bring_main_to_front(&main);
+                            let _ = app.emit("quick-add", ());
+                        }
+                        // 全局切换深/浅色主题（macOS: Cmd+Ctrl+T；Win/Linux: Ctrl+Alt+T）。
+                        // 只发给主窗口，由它写 localStorage，挂件靠 storage 事件同步，避免双窗口互相触发。
+                        Code::KeyT => {
+                            let _ = app.emit_to("main", "toggle-theme", ());
+                        }
+                        _ => {}
+                    }
+                })
+                .build(),
+        )
+        .setup(move |app| {
+            // 本地 HTTP API 状态（默认关闭，设置页开关控制）
+            app.manage(api::ApiState::default());
+            // F-2 中间件注册表（Plugin/Extension 抽象层 P2）：注册 2 个内置中间件
+            app.manage(middleware::build_default_registry());
+
+            // 定时任务卡调度器：每 30s 扫一次到点任务并自动执行
+            bot::start_scheduler(app.handle().clone());
+
+            // 开关持久化：上次退出前 API 开启过，则自动恢复（写 api-enabled.flag）
+            {
+                let handle = app.handle().clone();
+                if api::should_autostart(&handle) {
+                    let state = app.state::<api::ApiState>();
+                    if let Err(e) = api::api_start(handle, state) {
+                        eprintln!("[api] auto-start failed: {e}");
+                    }
+                }
+            }
+
+            // 旧版本明文 key 迁移：bot-config.json 里的 apiKey → 系统凭据存储
+            {
+                let handle = app.handle().clone();
+                if let Err(e) = bot::migrate_legacy_key(&handle) {
+                    eprintln!("[bot] legacy key migration failed: {e}");
+                }
+            }
+
+            // 桌面清理：后台轮询线程（每 10 分钟检测到期归档任务并执行规则迁移）
+            {
+                let handle = app.handle().clone();
+                migration::spawn_polling(handle);
+            }
+
             // M4：系统侧边磁吸挂件窗口（贴边收起为触发条，悬停滑出）
             tauri::WebviewWindowBuilder::new(
                 app,
@@ -146,8 +250,21 @@ pub fn run() {
             .inner_size(44.0, 220.0)
             .build()?;
 
-            // 主窗口「关闭」改为隐藏：挂件随时能唤起它（否则关闭后挂件无法打开主窗口）。
-            // 真正退出走 Cmd+Q（见下方 RunEvent::ExitRequested）。
+            // M5 全局快捷键：唤起/隐藏主窗口 + 快速新建任务（键位见 run() 顶部注释）。
+            // 容错：快捷键被其他应用占用时只记日志，绝不让 App 启动失败（审计 P2）
+            let shortcut = app.global_shortcut();
+            for (i, key) in [Code::KeyW, Code::KeyN, Code::KeyT].iter().enumerate() {
+                if let Err(e) = shortcut.register(Shortcut::new(Some(hotkey_mods), *key)) {
+                    eprintln!(
+                        "[shortcut] 注册快捷键 {} 失败（可能被其他应用占用）：{e}",
+                        ["W（唤起主窗口）", "N（快速新建）", "T（切换主题）"][i]
+                    );
+                }
+            }
+
+            // 主窗口「关闭」改为隐藏（挂件随时能唤起它，否则关闭后挂件无法打开主窗口）。
+            // 真正退出：macOS 走 Cmd+Q（见下方 RunEvent::ExitRequested）；
+            // Windows 走托盘右键「退出」（见下方托盘菜单）。
             if let Some(main) = app.get_webview_window("main") {
                 let main2 = main.clone();
                 main.on_window_event(move |event| {
@@ -157,20 +274,112 @@ pub fn run() {
                     }
                 });
             }
+
+            // Windows 系统托盘：#3 图标，右键菜单「打开主窗口 / 退出」，
+            // 左键单击/双击恢复主窗口。
+            #[cfg(target_os = "windows")]
+            {
+                use tauri::image::Image;
+                use tauri::menu::{MenuBuilder, MenuItemBuilder};
+                use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
+
+                let open = MenuItemBuilder::with_id("tray_open", "打开主窗口").build(app)?;
+                let quit = MenuItemBuilder::with_id("tray_quit", "退出").build(app)?;
+                let menu = MenuBuilder::new(app).items(&[&open, &quit]).build()?;
+
+                let icon = Image::from_bytes(include_bytes!("../icons/tray-wm-32.png"))?;
+
+                TrayIconBuilder::with_id("main-tray")
+                    .icon(icon)
+                    .tooltip("WMessage")
+                    .menu(&menu)
+                    .show_menu_on_left_click(false)
+                    .on_menu_event(|app, event| match event.id().as_ref() {
+                        "tray_open" => {
+                            if let Some(w) = app.get_webview_window("main") {
+                                bring_main_to_front(&w);
+                            }
+                        }
+                        "tray_quit" => {
+                            app.exit(0);
+                        }
+                        _ => {}
+                    })
+                    .on_tray_icon_event(|tray, event| match event {
+                        TrayIconEvent::Click { button: MouseButton::Left, .. }
+                        | TrayIconEvent::DoubleClick { button: MouseButton::Left, .. } => {
+                            if let Some(w) = tray.app_handle().get_webview_window("main") {
+                                bring_main_to_front(&w);
+                            }
+                        }
+                        _ => {}
+                    })
+                    .build(app)?;
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            greet,
             copy_file_with_title,
+            focus_main_window,
+            bot_skills::open_file_path,
+            bot_skills::pick_files_dialog,
+            bot_skills::delete_bound_file,
             db::db_load,
             db::db_upsert,
-            db::db_delete
+            db::db_delete,
+            db::db_merge,
+            db::tasks_export,
+            db::tasks_import,
+            db::workspace_load,
+            db::workspace_upsert,
+            db::workspace_delete,
+            db::bot_history_load,
+            db::bot_history_save,
+            db::bot_history_clear,
+            db::bot_sessions_load,
+            db::bot_session_create,
+            db::bot_session_delete,
+            db::bot_session_rename,
+            api::api_start,
+            api::api_stop,
+            api::api_status,
+            api::api_rotate_token,
+            bot::bot_get_enabled,
+            bot::bot_set_enabled,
+            bot::bot_get_config,
+            bot::bot_set_config,
+            bot::bot_clear_api_key,
+            bot::bot_chat,
+            bot::bot_execute_task,
+            bot::bot_stop,
+            bot::bot_compact,
+            bot::bot_confirm_response,
+            bot::bot_log_read,
+            bot_py::py_get_enabled,
+            bot_py::py_set_enabled,
+            bot_py::py_env_check,
+            bot_skills::skills_list,
+            bot_skills::skills_import,
+            bot_skills::skills_delete,
+            bot_skills::skills_open_dir,
+            profile::profile_get,
+            profile::profile_set_name,
+            profile::profile_set_avatar,
+            profile::profile_remove_avatar,
+            migration::migration_rules_load,
+            migration::migration_rules_import,
+            migration::migration_rules_template_save,
+            migration::migration_log_read,
+            migration::migration_run,
+            migration::migration_status
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
-            // Cmd+Q 退出：主窗口 CloseRequested 被上面 prevent（改成隐藏），
-            // 这里直接销毁主窗口，让退出流程正常走完
+            // 真退出入口：macOS Cmd+Q / Windows 托盘右键「退出」（app.exit(0)）都会走到这里。
+            // 主窗口 CloseRequested 被上面 prevent（改成隐藏），这里直接销毁主窗口，
+            // 让退出流程正常走完。
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 if let Some(main) = app.get_webview_window("main") {
                     let _ = main.destroy();

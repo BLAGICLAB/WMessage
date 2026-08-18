@@ -1,4 +1,21 @@
 import { useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
+import {
+  DndContext,
+  DragEndEvent,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+} from "@dnd-kit/core";
+import type { DraggableSyntheticListeners } from "@dnd-kit/core";
+import {
+  SortableContext,
+  arrayMove,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import {
   LogicalPosition,
   LogicalSize,
@@ -7,11 +24,17 @@ import {
 } from "@tauri-apps/api/window";
 import { listen, emit } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
-import { openPath } from "@tauri-apps/plugin-opener";
-import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { loadTasksFromDb, taskEq } from "../storage";
-import type { Task } from "../types";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { linkDisplayName } from "./WorkspacePage";
+import { focusMainWindow } from "../focus";
+import { isDueToday } from "../format";
+import { loadTasksFromDb, loadWorkspaceFromDb, taskEq, sortByOrder, assignInsertOrder } from "../storage";
+import { applySetting, getSetting, subscribeSystem, subscribeTheme } from "../theme";
+import type { ThemeSetting } from "../theme";
+import type { Task, WorkspaceItem } from "../types";
 import { TaskCardContent } from "./TaskCardContent";
+import { FoldToggle } from "./FoldToggle";
+import { ChatPanel } from "./ChatPanel";
 import widgetLogo from "../assets/widget-logo.png";
 
 // 收起为触发条 / 展开为侧边面板
@@ -19,6 +42,7 @@ const STRIP_W = 44;
 const STRIP_H = 220;
 const PANEL_W = 320;
 const PANEL_H = 560;
+const CHAT_H = 280; // 聊天区高度 = 面板高度的 1/2
 const TOP_Y = 140; // 默认贴右缘的初始 Y
 
 // 挂件位置持久化（与任务数据分开的 key）
@@ -78,19 +102,53 @@ function anchorFromRect(
 export default function WidgetApp() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const tasksRef = useRef<Task[]>([]);
+  const [theme, setTheme] = useState<ThemeSetting>(getSetting);
   const [expanded, setExpanded] = useState(false);
   const [locked, setLocked] = useState(false);
-  const [view, setView] = useState<"all" | "today">("all");
+  const [view, setView] = useState<"all" | "today" | "workspace">("all");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [edge, setEdge] = useState<Edge>("right");
+  const [botOn, setBotOn] = useState(false);
+  const [selecting, setSelecting] = useState(false);
+  const [selectedTasks, setSelectedTasks] = useState<Task[]>([]);
+
+  // 机器人开关状态：挂载时读 + 监听设置页切换广播
+  useEffect(() => {
+    invoke<boolean>("bot_get_enabled")
+      .then(setBotOn)
+      .catch(() => {});
+    const unlisten = listen<boolean>("bot-changed", (e) => setBotOn(!!e.payload));
+    return () => {
+      unlisten.then((f) => f());
+    };
+  }, []);
+
+  // 机器人开关变化时：展开状态下同步调整窗口高度
+  useEffect(() => {
+    if (!expanded) return;
+    const win = getCurrentWindow();
+    win
+      .setSize(new LogicalSize(PANEL_W, botOn ? PANEL_H + CHAT_H : PANEL_H))
+      .catch(() => {});
+  }, [botOn, expanded]);
+
+  // 主题：启动时应用 + 监听主窗口切换 + 跟随系统模式监听系统外观变化
+  useEffect(() => {
+    applySetting(theme);
+  }, [theme]);
+  useEffect(() => subscribeTheme(setTheme), []);
+  useEffect(() => subscribeSystem(setTheme), []);
   const anchorRef = useRef<Anchor>({ x: 0, y: TOP_Y, edge: "right" });
   const listRef = useRef<HTMLDivElement>(null);
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
+  );
 
   // 任务数据同步：主窗口统一落盘 SQLite，挂件只读。三层：初始读取 + tasks-changed + 5s 兜底轮询
   useEffect(() => {
     const load = async () => {
       try {
-        const list = await loadTasksFromDb();
+        const list = sortByOrder(await loadTasksFromDb());
         if (!list.length) return;
         setTasks((prev) => {
           const same = JSON.stringify(list) === JSON.stringify(prev);
@@ -114,8 +172,85 @@ export default function WidgetApp() {
     };
   }, []);
 
+  // 工作区同步：只读展示（编辑在主窗口）；初始读取 + workspace-changed + 5s 兜底轮询
+  const [workspace, setWorkspace] = useState<WorkspaceItem[]>([]);
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const list = await loadWorkspaceFromDb();
+        setWorkspace((prev) => {
+          const same = JSON.stringify(list) === JSON.stringify(prev);
+          return same ? prev : list;
+        });
+      } catch {
+        /* ignore */
+      }
+    };
+    load();
+    const unlisten = listen("workspace-changed", () => {
+      load().catch(() => {});
+    });
+    const id = setInterval(() => {
+      load().catch(() => {});
+    }, 5000);
+    return () => {
+      unlisten.then((f) => f());
+      clearInterval(id);
+    };
+  }, []);
+
+  const openLink = (link: WorkspaceItem["links"][number]) => {
+    if (link.kind === "url") {
+      openUrl(link.targetUri).catch((e) => console.error("open url failed", e));
+    } else {
+      invoke("open_file_path", { path: link.targetUri }).catch((e) =>
+        console.error("open path failed", e)
+      );
+    }
+  };
+
+  /** 挂件工作区折叠切换：与任务卡一致走「上报主窗口落盘」（单写者架构），
+   *  不再直接写库（此前挂件直接 workspace_upsert 与主窗口并发写，违反挂件只读约定） */
+  const toggleWsCollapsed = (it: WorkspaceItem) => {
+    const next = workspace.map((w) =>
+      w.id === it.id ? { ...w, collapsed: !w.collapsed, updatedAt: Date.now() } : w
+    );
+    setWorkspace(next);
+    const updated = next.find((w) => w.id === it.id);
+    if (updated) {
+      emit("workspace-updated", { upserts: [updated] }).catch(() => {});
+    }
+  };
+
+  /** 挂件工作区上下排序：arrayMove 换位 → assignInsertOrder 分配 order → 上报主窗口落盘 */
+  const handleWsDragEnd = (e: DragEndEvent) => {
+    const { active, over } = e;
+    if (!over || active.id === over.id) return;
+    const ids = workspace.map((w) => w.id);
+    const from = ids.indexOf(String(active.id));
+    const to = ids.indexOf(String(over.id));
+    if (from < 0 || to < 0) return;
+    const byId = new Map(workspace.map((w) => [w.id, w]));
+    const next = assignInsertOrder(
+      arrayMove(ids, from, to).map((id) => byId.get(id)!),
+      String(active.id)
+    );
+    setWorkspace(next);
+    const prevMap = new Map(workspace.map((w) => [w.id, w]));
+    const changed = next.filter(
+      (w) => JSON.stringify(w) !== JSON.stringify(prevMap.get(w.id))
+    );
+    const now = Date.now();
+    changed.forEach((w) => (w.updatedAt = now));
+    if (changed.length) {
+      emit("workspace-updated", { upserts: changed }).catch(() => {});
+    }
+  };
+
   // 初始：透明背景 + 置顶 + 恢复到上次位置（默认贴右缘）
   useEffect(() => {
+    // 透明窗口：html/body 都必须透明，否则圆角外的缺口被底色填满，看起来像直角
+    document.documentElement.style.background = "transparent";
     document.body.style.background = "transparent";
     const win = getCurrentWindow();
     win.setAlwaysOnTop(true).catch(() => {});
@@ -134,7 +269,7 @@ export default function WidgetApp() {
     })();
   }, []);
 
-  // 拖动结束（停止移动 500ms）后：贴边吸附 + 记录锚点，圆角跟随所在边缘
+  // 拖动结束（停止移动 500ms）后：贴边吸附 + 记录锚点（圆角随贴边/悬浮切换，见 edgeClass）
   useEffect(() => {
     const win = getCurrentWindow();
     let timer: number | undefined;
@@ -176,7 +311,7 @@ export default function WidgetApp() {
     // 贴右缘：向左展开；其余情况从锚点向右/向下展开
     const px = e === "right" ? x - (PANEL_W - STRIP_W) : x;
     if (e === "right") await win.setPosition(new LogicalPosition(px, y));
-    await win.setSize(new LogicalSize(PANEL_W, PANEL_H));
+    await win.setSize(new LogicalSize(PANEL_W, botOn ? PANEL_H + CHAT_H : PANEL_H));
     await win.setPosition(new LogicalPosition(px, y));
     setExpanded(true);
   };
@@ -227,20 +362,31 @@ export default function WidgetApp() {
     });
     const nextIds = new Set(next.map((t) => t.id));
     const deletes = prev.filter((t) => !nextIds.has(t.id)).map((t) => t.id);
+    // 打最后修改时间戳（合并导入按此比较同 id 取舍）
+    const now = Date.now();
+    upserts.forEach((t) => {
+      t.updatedAt = now;
+    });
     setTasks(next);
     if (upserts.length || deletes.length) {
       emit("tasks-updated", { upserts, deletes }).catch(() => {});
     }
   };
 
-  // 点圆圈完成/取消完成：与主窗口行为一致（完成 → 记时间；取消 → 退回待办）
+  // 点圆圈完成/取消完成：与主窗口行为一致（完成 → 记时间；取消 → 截止日期是今天回今日、否则回待办，完成时间删除）
   const toggleDone = (t: Task) =>
     applyAndSync((prev) =>
       prev.map((x): Task => {
         if (x.id !== t.id) return x;
         return x.column === "done"
-          ? { ...x, column: "todo", completedAt: undefined, archived: undefined }
-          : { ...x, column: "done", completedAt: Date.now(), archived: false };
+          ? {
+              ...x,
+              column: isDueToday(x.due) ? "doing" : "todo",
+              completedAt: undefined,
+              archived: undefined,
+            }
+          : // 人完成：清机器人标记 → 显示用户头像
+            { ...x, column: "done", completedAt: Date.now(), archived: false, botAssigned: undefined };
       })
     );
 
@@ -254,10 +400,18 @@ export default function WidgetApp() {
   // 新任务插到列表顶部（从顶部出来）
   const addTask = () => {
     const id = crypto.randomUUID();
-    applyAndSync((prev) => [
-      { id, title: "新任务", column: view === "today" ? "doing" : "todo" },
-      ...prev,
-    ]);
+    applyAndSync((prev) => {
+      const min = prev.reduce((m, t) => Math.min(m, t.order ?? 0), 0);
+      return [
+        {
+          id,
+          title: "新任务",
+          column: view === "today" ? "doing" : "todo",
+          order: min - 1,
+        },
+        ...prev,
+      ];
+    });
     setEditingId(id);
   };
 
@@ -270,12 +424,34 @@ export default function WidgetApp() {
     setEditingId(null);
   };
 
+  // 定时执行规则更新（⏰ 面板；同步主窗口）
+  const setSchedule = (t: Task, schedule: string | undefined) =>
+    applyAndSync((prev) =>
+      prev.map((x) => (x.id === t.id ? { ...x, schedule } : x))
+    );
+
   const cancelTitle = () => setEditingId(null);
 
-  // 点标题 → 通知主窗口打开该任务编辑态 + 聚焦主窗口（挂件内不再内联编辑）
+  // 双击标题 → 通知主窗口打开该任务编辑态 + 唤起主窗口并强制置顶
+  // （老板 2026-08-17 11:31 规则：双击唤起后主窗口必须出现在桌面屏幕最顶层）
   const openInMain = (t: Task) => {
     emit("edit-task", { id: t.id }).catch(() => {});
-    focusMain();
+    focusMainWindow();
+  };
+
+  // 选任务模式：点标题切换选中（不打开主窗口）
+  const toggleSelectTask = (t: Task) => {
+    setSelectedTasks((prev) =>
+      prev.some((x) => x.id === t.id)
+        ? prev.filter((x) => x.id !== t.id)
+        : [...prev, t]
+    );
+  };
+
+  // 发送完成：清空选择 + 退出选任务模式
+  const finishSelection = () => {
+    setSelectedTasks([]);
+    setSelecting(false);
   };
 
   // 进入编辑态时滚回顶部，保证新建任务输入框可见（新任务在列表顶部）
@@ -303,7 +479,9 @@ export default function WidgetApp() {
   // 打开绑定文件/文件夹（与主窗口一致）
   const openFile = (t: Task) => {
     if (t.filePath)
-      openPath(t.filePath).catch((e) => console.error("open failed", e));
+      invoke("open_file_path", { path: t.filePath }).catch((e) =>
+        console.error("open failed", e)
+      );
   };
 
   // 复制文件+标题（与主窗口一致）
@@ -314,19 +492,26 @@ export default function WidgetApp() {
       );
   };
 
-  // 点击任务 → 聚焦主窗口（主窗口关闭时 Rust 侧已改为隐藏，因此始终能唤起）
-  const focusMain = async () => {
-    try {
-      const main = await WebviewWindow.getByLabel("main");
-      if (main) {
-        await main.show();
-        await main.setFocus();
-      } else {
-        console.warn("focusMain: 主窗口不存在");
+  // 挂件可见列表排序结束：重建全局顺序，只给被拖任务分配 order（行级同步主窗口）
+  const handleDragEnd = (e: DragEndEvent) => {
+    const { active, over } = e;
+    if (!over || active.id === over.id) return;
+    const ids = list.map((t) => t.id);
+    const from = ids.indexOf(String(active.id));
+    const to = ids.indexOf(String(over.id));
+    if (from < 0 || to < 0) return;
+    const newIds = arrayMove(ids, from, to);
+    applyAndSync((prev) => {
+      const visibleSet = new Set(ids);
+      const byId = new Map(prev.map((t) => [t.id, t]));
+      const arr: Task[] = [];
+      let cursor = 0;
+      for (const t of prev) {
+        if (visibleSet.has(t.id)) arr.push(byId.get(newIds[cursor++])!);
+        else arr.push(t);
       }
-    } catch (e) {
-      console.error("focusMain failed", e);
-    }
+      return assignInsertOrder(arr, String(active.id));
+    });
   };
 
   // 挂件只显示未完成：todo + doing（打勾后进完成列 → 从挂件消失）
@@ -335,14 +520,16 @@ export default function WidgetApp() {
   );
   const list = view === "today" ? visible.filter((t) => t.column === "doing") : visible;
 
-  // 圆角跟随所在边缘：贴右 → 左圆角；贴左 → 右圆角；贴顶 → 下圆角；悬浮 → 全圆角
-  const ROUNDED: Record<Edge, string> = {
-    right: "rounded-l-2xl",
-    left: "rounded-r-2xl",
-    top: "rounded-b-2xl",
-    float: "rounded-2xl",
-  };
-  const edgeClass = ROUNDED[edge];
+  // 圆角：贴屏幕那侧直角，对侧 rounded-2xl；悬浮（不贴边）四边全圆角
+  // （老板 2026-08-17 11:07 改下半句：从原「贴边全直角」改为「贴屏侧直角 + 对侧圆角」）
+  const edgeClass =
+    edge === "right"
+      ? "rounded-l-2xl"
+      : edge === "left"
+      ? "rounded-r-2xl"
+      : edge === "top"
+      ? "rounded-b-2xl"
+      : "rounded-2xl";
 
   return (
     <div className="w-screen h-screen bg-transparent overflow-hidden">
@@ -358,12 +545,12 @@ export default function WidgetApp() {
         >
           <img
             src={widgetLogo}
-            className="w-6 h-6"
+            className="widget-logo w-6 h-6"
             alt="WMessage"
             draggable={false}
           />
           <span
-            className="text-gray-500 text-xs tracking-widest"
+            className="text-[var(--t4)] text-xs tracking-widest"
             style={edge === "top" ? undefined : { writingMode: "vertical-rl" }}
           >
             WMessage
@@ -384,11 +571,11 @@ export default function WidgetApp() {
             <div className="flex items-center gap-1.5">
               <img
                 src={widgetLogo}
-                className="w-5 h-5"
+                className="widget-logo w-5 h-5"
                 alt=""
                 draggable={false}
               />
-              <span className="text-sm font-semibold text-gray-700">WMessage</span>
+              <span className="text-sm font-semibold text-[var(--t2)]">WMessage</span>
             </div>
             <div
               className="flex items-center gap-1"
@@ -396,7 +583,7 @@ export default function WidgetApp() {
             >
               <button
                 className={`px-2 py-0.5 text-xs ${
-                  view === "all" ? "nm-inset text-gray-800 font-medium" : "nm-outset text-gray-500"
+                  view === "all" ? "nm-inset text-[var(--t1)] font-medium" : "nm-outset text-[var(--t4)]"
                 }`}
                 onClick={() => setView("all")}
               >
@@ -404,7 +591,7 @@ export default function WidgetApp() {
               </button>
               <button
                 className={`px-2 py-0.5 text-xs ${
-                  view === "today" ? "nm-inset text-gray-800 font-medium" : "nm-outset text-gray-500"
+                  view === "today" ? "nm-inset text-[var(--t1)] font-medium" : "nm-outset text-[var(--t4)]"
                 }`}
                 onClick={() => setView("today")}
               >
@@ -412,7 +599,15 @@ export default function WidgetApp() {
               </button>
               <button
                 className={`px-2 py-0.5 text-xs ${
-                  locked ? "nm-inset text-gray-800" : "nm-outset text-gray-500"
+                  view === "workspace" ? "nm-inset text-[var(--t1)] font-medium" : "nm-outset text-[var(--t4)]"
+                }`}
+                onClick={() => setView("workspace")}
+              >
+                工作区
+              </button>
+              <button
+                className={`px-2 py-0.5 text-xs ${
+                  locked ? "nm-inset text-[var(--t1)]" : "nm-outset text-[var(--t4)]"
                 }`}
                 title={locked ? "取消常驻" : "常驻锁定"}
                 onClick={() => setLocked((v) => !v)}
@@ -422,49 +617,247 @@ export default function WidgetApp() {
             </div>
           </div>
 
-          {/* 新建任务大长条：位于「全部/今日」下方，新建的任务从顶部出现 */}
-          <button
-            className="nm-btn w-full mb-2 py-2 text-sm text-gray-600 shrink-0"
-            onClick={addTask}
-          >
-            + 新建任务
-          </button>
+          {/* 新建任务大长条：位于「全部/今日」下方，新建的任务从顶部出现（工作区视图不显示） */}
+          {view !== "workspace" && (
+            <button
+              className="nm-btn w-full mb-2 py-2 text-sm text-[var(--t3)] shrink-0"
+              onClick={addTask}
+            >
+              + 新建任务
+            </button>
+          )}
 
           <div
             ref={listRef}
             className="flex-1 overflow-y-auto flex flex-col gap-2 pr-0.5"
           >
-            {list.length === 0 ? (
-              <p className="text-xs text-gray-400 text-center mt-8">
+            {view === "workspace" ? (
+              workspace.length === 0 ? (
+                <p className="text-xs text-[var(--t5)] text-center mt-8">
+                  暂无工作区
+                </p>
+              ) : (
+                <DndContext
+                  sensors={sensors}
+                  collisionDetection={closestCenter}
+                  onDragEnd={handleWsDragEnd}
+                >
+                  <SortableContext
+                    items={workspace.map((w) => w.id)}
+                    strategy={verticalListSortingStrategy}
+                  >
+                    {workspace.map((it) => (
+                      <SortableWorkspaceCard key={it.id} it={it}>
+                        {(listeners) => (
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span
+                                {...listeners}
+                                title="拖拽排序"
+                                className="shrink-0 w-4 h-4 flex items-center justify-center text-[12px] leading-none text-[var(--t5)] rounded hover:bg-[var(--hover-bg)] opacity-0 group-hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing"
+                              >
+                                ☰
+                              </span>
+                              <p className="min-w-0 flex-1 truncate text-xs font-medium text-[var(--t1)]">
+                                {it.title}
+                              </p>
+                              <FoldToggle
+                                collapsed={!!it.collapsed}
+                                onToggle={() => toggleWsCollapsed(it)}
+                                alwaysVisible
+                              />
+                            </div>
+                            {!it.collapsed &&
+                              (it.links.length === 0 ? (
+                                <p className="mt-2 text-[10px] text-[var(--t5)]">还没有链接</p>
+                              ) : (
+                                <div className="mt-2 space-y-1">
+                                  {it.links.map((link) => (
+                                    <button
+                                      key={link.id}
+                                      className="nm-inset w-full flex items-center gap-2 rounded-lg px-2 py-1.5 text-left"
+                                      title={`${linkDisplayName(link)}\n${link.targetUri}`}
+                                      onClick={() => openLink(link)}
+                                    >
+                                      <span className="shrink-0 text-[10px]">
+                                        {link.kind === "url"
+                                          ? "🔗"
+                                          : link.kind === "folder"
+                                            ? "📁"
+                                            : "📄"}
+                                      </span>
+                                      <span className="min-w-0 flex-1 truncate text-xs text-[var(--t2)]">
+                                        {linkDisplayName(link)}
+                                      </span>
+                                    </button>
+                                  ))}
+                                </div>
+                              ))}
+                          </div>
+                        )}
+                      </SortableWorkspaceCard>
+                    ))}
+                  </SortableContext>
+                </DndContext>
+              )
+            ) : list.length === 0 ? (
+              <p className="text-xs text-[var(--t5)] text-center mt-8">
                 {view === "today" ? "今日暂无任务" : "暂无任务"}
               </p>
             ) : (
-              list.map((t) => (
-                <div
-                  key={t.id}
-                  className="nm-card px-3 py-2 text-left shrink-0 cursor-pointer"
-                  title="点击聚焦主窗口"
-                  onClick={focusMain}
+              <DndContext
+                sensors={sensors}
+                collisionDetection={closestCenter}
+                onDragEnd={handleDragEnd}
+              >
+                <SortableContext
+                  items={list.map((t) => t.id)}
+                  strategy={verticalListSortingStrategy}
                 >
-                  {/* 与主窗口 TodoCard 展示一致：标题（折叠 + 打勾圆圈） → 备注 → 标签 → 子任务 → 文件 → 截止 */}
-                  <TaskCardContent
-                    task={t}
-                    editingTitle={editingId === t.id}
-                    onTitleClick={() => openInMain(t)}
-                    onCommitTitle={(title) => commitTitle(t, title)}
-                    onCancelTitle={cancelTitle}
-                    onToggleDone={() => toggleDone(t)}
-                    onToggleCollapsed={() => toggleCollapsed(t)}
-                    onToggleSubtask={(sid) => toggleSubtask(t, sid)}
-                    onOpenFile={() => openFile(t)}
-                    onCopyFile={() => copyFile(t)}
-                  />
-                </div>
-              ))
+                  {list.map((t) => (
+                    <SortableTaskCard
+                      key={t.id}
+                      task={t}
+                      editingTitle={editingId === t.id}
+                      selected={selectedTasks.some((x) => x.id === t.id)}
+                      selectMode={selecting}
+                      onSelect={() => toggleSelectTask(t)}
+                      onTitleClick={selecting ? undefined : () => openInMain(t)}
+                      onCommitTitle={(title) => commitTitle(t, title)}
+                      onCancelTitle={cancelTitle}
+                      onToggleDone={() => toggleDone(t)}
+                      onToggleCollapsed={() => toggleCollapsed(t)}
+                      onToggleSubtask={(sid) => toggleSubtask(t, sid)}
+                      onOpenFile={() => openFile(t)}
+                      onCopyFile={() => copyFile(t)}
+                      onBotExecute={
+                        botOn
+                          ? () =>
+                              emit("execute-task", {
+                                id: t.id,
+                                title: t.title,
+                              }).catch(() => {})
+                          : undefined
+                      }
+                      onSetSchedule={(sched) => setSchedule(t, sched)}
+                    />
+                  ))}
+                </SortableContext>
+              </DndContext>
             )}
           </div>
+
+          {/* 聊天区：机器人开关开启时显示在任务列表下方 */}
+          {botOn && (
+            <div
+              className="mt-3 pt-3 border-t border-[var(--edge)] min-h-0 shrink-0"
+              style={{ height: CHAT_H }}
+            >
+              <ChatPanel
+                selecting={selecting}
+                onToggleSelecting={() => setSelecting((v) => !v)}
+                selectedTasks={selectedTasks}
+                onRemoveSelected={(id) =>
+                  setSelectedTasks((prev) => prev.filter((x) => x.id !== id))
+                }
+                onFinishSelection={finishSelection}
+              />
+            </div>
+          )}
         </div>
       )}
+    </div>
+  );
+}
+
+/** 挂件可排序任务卡：useSortable 注入，手柄在 TaskCardContent 的 ☰ 上 */
+function SortableTaskCard({
+  task,
+  editingTitle,
+  selected,
+  selectMode,
+  onSelect,
+  onTitleClick,
+  onCommitTitle,
+  onCancelTitle,
+  onToggleDone,
+  onToggleCollapsed,
+  onToggleSubtask,
+  onOpenFile,
+  onCopyFile,
+  onBotExecute,
+  onSetSchedule,
+}: {
+  task: Task;
+  editingTitle: boolean;
+  selected: boolean;
+  /** 选任务模式：整卡单击选中（内部交互按钮除外），标题双击去主窗口暂停 */
+  selectMode: boolean;
+  onSelect?: () => void;
+  onTitleClick?: () => void;
+  onCommitTitle: (title: string) => void;
+  onCancelTitle: () => void;
+  onToggleDone: () => void;
+  onToggleCollapsed: () => void;
+  onToggleSubtask: (subtaskId: string) => void;
+  onOpenFile: () => void;
+  onCopyFile: () => void;
+  onBotExecute?: () => void;
+  onSetSchedule?: (schedule: string | undefined) => void;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
+    useSortable({ id: task.id });
+  const style = { transform: CSS.Transform.toString(transform), transition };
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      {...attributes}
+      onClick={selectMode ? onSelect : undefined}
+      className={`group nm-card px-3 py-2 text-left shrink-0 ${
+        isDragging ? "opacity-70" : ""
+      } ${selected ? "ring-2 ring-[var(--brand)]" : ""} ${
+        selectMode ? "cursor-pointer" : ""
+      }`}
+    >
+      <TaskCardContent
+        task={task}
+        editingTitle={editingTitle}
+        handleListeners={listeners}
+        onTitleClick={onTitleClick}
+        onCommitTitle={onCommitTitle}
+        onCancelTitle={onCancelTitle}
+        onToggleDone={onToggleDone}
+        onToggleCollapsed={onToggleCollapsed}
+        onToggleSubtask={onToggleSubtask}
+        onOpenFile={onOpenFile}
+        onCopyFile={onCopyFile}
+        onBotExecute={onBotExecute}
+        onSetSchedule={onSetSchedule}
+      />
+    </div>
+  );
+}
+
+/** 挂件工作区可排序卡片：useSortable 注入，☰ 手柄 listeners 经 render prop 交给标题行 */
+function SortableWorkspaceCard({
+  it,
+  children,
+}: {
+  it: WorkspaceItem;
+  children: (listeners: DraggableSyntheticListeners | undefined) => ReactNode;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
+    useSortable({ id: it.id });
+  const style = { transform: CSS.Transform.toString(transform), transition };
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      {...attributes}
+      className={`group nm-card p-3 ${isDragging ? "opacity-70" : ""}`}
+    >
+      {children(listeners)}
     </div>
   );
 }

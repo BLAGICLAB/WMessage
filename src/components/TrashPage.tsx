@@ -1,14 +1,16 @@
-import { DndContext } from "@dnd-kit/core";
 import type { Task } from "../types";
 import { TodoCard } from "./TodoCard";
 
 export function TrashPage({
   tasks,
+  editingId,
   onUpdate,
   onDelete,
   onClearAll,
 }: {
   tasks: Task[];
+  /** 机器人 📌 引用跳转：命中任务卡自动进入标题编辑态 */
+  editingId?: string | null;
   onUpdate: (id: string, patch: Partial<Task>) => void;
   onDelete: (id: string) => void;
   onClearAll: () => void;
@@ -16,12 +18,11 @@ export function TrashPage({
   const trashed = tasks.filter((t) => t.deletedAt);
 
   return (
-    <DndContext>
-      <div className="mx-auto max-w-2xl">
+    <div>
         {trashed.length > 0 && (
           <div className="flex justify-end">
             <button
-              className="text-xs text-gray-400 hover:text-red-500"
+              className="text-xs text-[var(--t5)] hover:text-[var(--danger)]"
               onClick={() => {
                 if (
                   window.confirm(
@@ -36,22 +37,22 @@ export function TrashPage({
           </div>
         )}
 
-        <div className="mt-3 flex flex-col gap-3">
-          {trashed.length === 0 ? (
-            <p className="py-10 text-center text-sm text-gray-400">回收站是空的</p>
-          ) : (
-            trashed.map((t) => (
+        {trashed.length === 0 ? (
+          <p className="py-10 text-center text-sm text-[var(--t5)]">回收站是空的</p>
+        ) : (
+          <div className="mt-3 grid grid-cols-3 gap-4 items-start">
+            {trashed.map((t) => (
               <TodoCard
                 key={t.id}
                 task={t}
+                autoEdit={t.id === editingId}
                 onUpdate={onUpdate}
                 onDelete={onDelete}
                 trashed
               />
-            ))
-          )}
-        </div>
-      </div>
-    </DndContext>
+            ))}
+          </div>
+        )}
+    </div>
   );
 }

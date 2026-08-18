@@ -1,8 +1,8 @@
 [package]
 name = "wmessage"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "WMessage - 任务看板 + AI 助手桌面应用"
+authors = ["张晓峰 <zxf_83117@163.com>"]
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -18,13 +18,53 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["macos-private-api"] }
+tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
 tauri-plugin-opener = "2"
+tauri-plugin-global-shortcut = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri-plugin-dialog = "2"
 
 rusqlite = { version = "0.37", features = ["bundled"] }
+chrono = "0.4"
+
+# 本地 HTTP API（127.0.0.1 微服务 + SSE）
+tiny_http = "0.12"
+uuid = { version = "1", features = ["v4"] }
+
+# 内置机器人：调大模型 API（流式 SSE + 工具调用）
+reqwest = { version = "0.13", features = ["json", "stream"] }
+futures-util = "0.3"
+keyring = { version = "4.1.6", features = ["apple-native-keyring-store"] }
+
+# 联网工具：抓网页（HTML→纯文本、GBK 解码、URL 校验）
+html2text = "0.13"
+encoding_rs = "0.8"
+url = "2"
+
+# 图片附件：base64 编码后作为多模态消息发给 MiniMax
+base64 = "0.22"
+
+# 规则表 CSV 导入（Excel/WPS 表格模版）
+csv = "1"
+
+# 危险操作确认：挂件弹窗等待用户批准/拒绝（oneshot 通道 + 超时）
+tokio = { version = "1", features = ["sync", "time"] }
+
+# 前置意图路由关键词/正则匹配（老板 2026-08-17 18:14 Q1 拍板）
+regex = "1"
+once_cell = "1"
+
+# 跨平台垃圾箱：macOS 废纸篓 / Windows 回收站 / Linux gio trash（老板 2026-08-17 21:17）
+trash = "5"
+
+[dev-dependencies]
+# F-6 端到端测试：mock Tauri runtime + 集成测试 runner（2026-08-18）
+tauri = { version = "2", features = ["test"] }
+tempfile = "3"
+futures = { version = "0.3", features = ["executor"] }
+# F-6 step 3：mock LLM + reqwest 端到端需要 #[tokio::test] async 测试运行时
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
@@ -39,4 +79,3 @@ windows = { version = "0.61", features = [
     "Win32_System_Ole",
     "Win32_UI_Shell",
 ] }
-

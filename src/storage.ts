@@ -37,3 +37,78 @@ export async function deleteTaskRows(ids: string[]): Promise<void> {
     console.error("db_delete failed", e);
   }
 }
+
+/** 导出任务卡数据为 JSON 文件（全量：含归档、回收站），返回条数 */
+export async function exportTasksToFile(path: string): Promise<number> {
+  return await invoke<number>("tasks_export", { path });
+}
+
+/** 从 JSON 文件导入任务卡数据：按 id 合并，同 id 保留最后修改更晚的。返回写入条数。 */
+export async function importTasksFromFile(path: string): Promise<number> {
+  return await invoke<number>("tasks_import", { path });
+}
+
+/** 按 order 稳定排序（旧数据无 order 时保持原相对顺序） */
+export const sortByOrder = (tasks: Task[]) =>
+  [...tasks].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+
+// ───────────── 工作区（静态链接） ─────────────
+import type { WorkspaceItem } from "./types";
+
+/** 全量读取工作区条目 */
+export async function loadWorkspaceFromDb(): Promise<WorkspaceItem[]> {
+  try {
+    return await invoke<WorkspaceItem[]>("workspace_load");
+  } catch (e) {
+    console.error("workspace_load failed", e);
+    return [];
+  }
+}
+
+/** 行级增量写入工作区条目 */
+export async function upsertWorkspaceItems(items: WorkspaceItem[]): Promise<void> {
+  if (!items.length) return;
+  try {
+    await invoke("workspace_upsert", { items });
+  } catch (e) {
+    console.error("workspace_upsert failed", e);
+  }
+}
+
+/** 行级删除工作区条目 */
+export async function deleteWorkspaceRows(ids: string[]): Promise<void> {
+  if (!ids.length) return;
+  try {
+    await invoke("workspace_delete", { ids });
+  } catch (e) {
+    console.error("workspace_delete failed", e);
+  }
+}
+
+/**
+ * 给指定条目分配插入位 order：取新位置左右邻居的中点；
+ * 边界取邻居 ±1；间隙耗尽（浮点精度）时全量整数重排。
+ * 只有被拖条目生成新对象，配合 taskEq 只落盘变化行。
+ * 任务卡与工作区条目共用（只需 id + order 字段）。
+ */
+export function assignInsertOrder<T extends { id: string; order?: number }>(
+  arr: T[],
+  activeId: string
+): T[] {
+  const idx = arr.findIndex((t) => t.id === activeId);
+  if (idx === -1) return arr;
+  const lo = idx > 0 ? arr[idx - 1].order : undefined;
+  const hi = idx < arr.length - 1 ? arr[idx + 1].order : undefined;
+  let order: number | null = null;
+  if (lo !== undefined && hi !== undefined) {
+    if (hi - lo > 1e-9) order = (lo + hi) / 2;
+    else return arr.map((t, i) => ({ ...t, order: i }));
+  } else if (lo !== undefined) {
+    order = lo + 1;
+  } else if (hi !== undefined) {
+    order = hi - 1;
+  } else {
+    order = 0;
+  }
+  return arr.map((t, i) => (i === idx ? { ...t, order } : t));
+}

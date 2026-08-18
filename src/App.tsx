@@ -1,10 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import { emit, listen } from "@tauri-apps/api/event";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import { KanbanBoard } from "./components/KanbanBoard";
+import mainLogo from "./assets/main-logo.png";
 import { ArchivePage } from "./components/ArchivePage";
 import { TrashPage } from "./components/TrashPage";
-import { deleteTaskRows, loadTasksFromDb, taskEq, upsertTasks, STORAGE_KEY } from "./storage";
-import type { ColumnId, Task } from "./types";
+import { WorkspacePage } from "./components/WorkspacePage";
+import { SettingsPage } from "./components/SettingsPage";
+import { deleteTaskRows, loadTasksFromDb, taskEq, upsertTasks, exportTasksToFile, importTasksFromFile, STORAGE_KEY, sortByOrder, assignInsertOrder, upsertWorkspaceItems } from "./storage";
+import { applySetting, getSetting, subscribeSystem, subscribeTheme, toggleTheme } from "./theme";
+import { isDueToday } from "./format";
+import type { ThemeSetting } from "./theme";
+import type { Task, WorkspaceItem } from "./types";
 
 const SEED: Task[] = [
   {
@@ -26,10 +33,6 @@ function localDateStr(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
     d.getDate()
   ).padStart(2, "0")}`;
-}
-
-function isDueToday(due?: string): boolean {
-  return !!due && due.slice(0, 10) === localDateStr();
 }
 
 // 今日规则：截止日期为当天的任务自动进「今日」列（「完成」列不受影响）
@@ -59,7 +62,22 @@ export default function App() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const tasksRef = useRef<Task[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [view, setView] = useState<"board" | "archive" | "trash">("board");
+  const [view, setView] = useState<"board" | "archive" | "workspace" | "trash" | "settings">("board");
+  const [theme, setTheme] = useState<ThemeSetting>(getSetting);
+
+  // 主题：启动时应用 + 监听其他窗口（挂件）切换 + 跟随系统模式监听系统外观变化
+  useEffect(() => {
+    applySetting(theme);
+  }, [theme]);
+  useEffect(() => subscribeTheme(setTheme), []);
+  useEffect(() => subscribeSystem(setTheme), []);
+  // 全局快捷键 Cmd/Ctrl+Alt+T：Rust 侧发 toggle-theme 给主窗口
+  useEffect(() => {
+    const unlisten = listen("toggle-theme", () => setTheme(toggleTheme()));
+    return () => {
+      unlisten.then((f) => f());
+    };
+  }, []);
 
   // 初始加载：SQLite → 空库迁移（旧 data.json 在 Rust 侧处理；更早的 localStorage 在此处理）→ 种子
   useEffect(() => {
@@ -87,7 +105,19 @@ export default function App() {
             list = SEED;
           }
         }
-        const next = applyArchiveRule(applyTodayRule(list));
+        let next = applyArchiveRule(applyTodayRule(list));
+        // 老数据补 order / updatedAt（updatedAt 缺失视为最旧 0），一次性落盘
+        if (
+          next.some((t) => t.order === undefined || t.updatedAt === undefined)
+        ) {
+          next = next.map((t, i) => ({
+            ...t,
+            order: t.order ?? i,
+            updatedAt: t.updatedAt ?? 0,
+          }));
+          await upsertTasks(next);
+        }
+        next = sortByOrder(next);
         tasksRef.current = next;
         setTasks(next);
       } catch (e) {
@@ -108,27 +138,58 @@ export default function App() {
     });
     const nextIds = new Set(next.map((t) => t.id));
     const deletes = prev.filter((t) => !nextIds.has(t.id)).map((t) => t.id);
+    // 打最后修改时间戳（合并导入按此比较同 id 取舍）
+    const now = Date.now();
+    upserts.forEach((t) => {
+      t.updatedAt = now;
+    });
     upsertTasks(upserts);
     deleteTaskRows(deletes);
     setTasks(next);
     if (upserts.length || deletes.length) emit("tasks-changed").catch(() => {});
   };
 
+  // 挂件上报工作区变更（workspace-updated：{upserts}），主窗口统一落盘后广播（单写者架构）
+  useEffect(() => {
+    const unlisten = listen<{ upserts?: WorkspaceItem[] }>(
+      "workspace-updated",
+      (e) => {
+        const upserts = e.payload?.upserts ?? [];
+        if (!upserts.length) return;
+        upsertWorkspaceItems(upserts)
+          .then(() => emit("workspace-changed").catch(() => {}))
+          .catch(() => {});
+      }
+    );
+    return () => {
+      unlisten.then((f) => f());
+    };
+  }, []);
+
   // 挂件上报行级变更（tasks-updated：{upserts, deletes}），主窗口统一落盘后广播
   useEffect(() => {
-    const unlisten = listen<{ upserts?: Task[]; deletes?: string[] }>(
+    const unlisten = listen<{ upserts?: Task[]; deletes?: string[]; source?: string }>(
       "tasks-updated",
       (e) => {
         const upserts = e.payload?.upserts ?? [];
         const deletes = e.payload?.deletes ?? [];
         if (!upserts.length && !deletes.length) return;
-        upsertTasks(upserts);
-        deleteTaskRows(deletes);
+        // source:"api" / "migration" / "bot"：已由后端线程落盘，这里只合并 UI 状态，不回写，
+        // 否则主窗口的异步回写会用旧事件快照覆盖后端的新写入（归档/软删被回滚）
+        if (
+          e.payload?.source !== "api" &&
+          e.payload?.source !== "migration" &&
+          e.payload?.source !== "bot"
+        ) {
+          upsertTasks(upserts);
+          deleteTaskRows(deletes);
+        }
         setTasks((prev) => {
           const map = new Map(prev.map((t) => [t.id, t]));
           upserts.forEach((t) => map.set(t.id, t));
           deletes.forEach((id) => map.delete(id));
-          const next = applyArchiveRule(applyTodayRule([...map.values()]));
+          const merged = sortByOrder([...map.values()]);
+          const next = applyArchiveRule(applyTodayRule(merged));
           const same = JSON.stringify(next) === JSON.stringify(prev);
           if (!same) tasksRef.current = next;
           return same ? prev : next;
@@ -141,18 +202,35 @@ export default function App() {
     };
   }, []);
 
-  // 挂件点标题 → 打开该任务编辑态（切回看板视图 + 标题自动进入编辑）
+  // 挂件点标题 → 打开该任务编辑态（切回看板视图 + 标题自动进入编辑）；
+  // 机器人搜出的归档任务点 📌 → 跳归档页（归档任务不在看板）
   useEffect(() => {
     const unlisten = listen<{ id?: string }>("edit-task", (e) => {
       const id = e.payload?.id;
       if (id) {
-        setView("board");
+        const t = tasksRef.current.find((x) => x.id === id);
+        // 按任务实际所在位置跳转：回收站 → trash；归档 → archive；其余 → 看板
+        if (t?.deletedAt) setView("trash");
+        else if (t?.archived) setView("archive");
+        else setView("board");
         setEditingId(id);
       }
     });
     return () => {
       unlisten.then((f) => f());
     };
+  }, []);
+
+  // 全局快捷键快速新建（Rust 侧 Cmd+Ctrl+N / Ctrl+Alt+N）：切回看板 + 新建任务进入编辑态
+  useEffect(() => {
+    const unlisten = listen("quick-add", () => {
+      setView("board");
+      addTask();
+    });
+    return () => {
+      unlisten.then((f) => f());
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // 每分钟重套今日规则 + 归档规则：覆盖跨零点归位、完成超时归档（diff 后行级落盘）
@@ -167,21 +245,68 @@ export default function App() {
 
   const addTask = () => {
     const id = crypto.randomUUID();
-    mutate((prev) => [...prev, { id, title: "新任务", column: "todo" }]);
+    mutate((prev) => {
+      const max = prev.reduce((m, t) => Math.max(m, t.order ?? 0), 0);
+      return [...prev, { id, title: "新任务", column: "todo", order: max + 1 }];
+    });
     setEditingId(id); // 新建后自动进入编辑态
   };
 
-  const moveTask = (taskId: string, column: ColumnId) => {
-    mutate((prev) =>
-      prev.map((t) => {
-        if (t.id !== taskId) return t;
-        if (column === "done")
+  // 导出任务数据：全量任务卡（含归档、回收站）写 JSON 文件
+  const exportTasks = async () => {
+    try {
+      const path = await save({
+        defaultPath: `wmessage-tasks-${localDateStr()}.json`,
+        filters: [{ name: "JSON", extensions: ["json"] }],
+      });
+      if (!path) return; // 用户取消
+      const count = await exportTasksToFile(path);
+      alert(`导出完成：共 ${count} 条任务卡`);
+    } catch (e) {
+      console.error("export tasks failed", e);
+      alert(`导出失败：${e}`);
+    }
+  };
+
+  // 导入任务数据：JSON 文件按 id 合并，同 id 保留更晚修改；导入后重读全量 + 套规则 + 广播挂件
+  const importTasks = async () => {
+    try {
+      const selected = await open({
+        multiple: false,
+        directory: false,
+        filters: [{ name: "JSON", extensions: ["json"] }],
+      });
+      if (typeof selected !== "string") return; // 用户取消
+      const merged = await importTasksFromFile(selected);
+      // 重读全量数据（含合并结果）→ 套规则 → 排序 → 更新状态并广播挂件
+      const list = await loadTasksFromDb();
+      const next = applyArchiveRule(applyTodayRule(sortByOrder(list)));
+      tasksRef.current = next;
+      setTasks(next);
+      emit("tasks-changed").catch(() => {});
+      alert(`导入完成：本次写入 ${merged} 条任务卡`);
+    } catch (e) {
+      console.error("import tasks failed", e);
+      alert(`导入失败：${e}`);
+    }
+  };
+
+  // 看板拖拽排序提交：数组顺序已由 KanbanBoard 排好（含跨列变更），
+  // 这里补列变更完成语义（进完成列记时间、出完成列清除），再给被拖任务分配 order
+  const commitBoardOrder = (activeId: string, next: Task[]) => {
+    mutate((prev) => {
+      const prevMap = new Map(prev.map((t) => [t.id, t]));
+      const arr = next.map((t) => {
+        const p = prevMap.get(t.id);
+        if (!p || p.column === t.column) return t;
+        if (t.column === "done")
           // 进入完成列：记完成时间，取消归档
-          return { ...t, column, completedAt: Date.now(), archived: false };
+          return { ...t, completedAt: Date.now(), archived: false };
         // 拖出完成列：清除完成时间与归档标记
-        return { ...t, column, completedAt: undefined, archived: undefined };
-      })
-    );
+        return { ...t, completedAt: undefined, archived: undefined };
+      });
+      return assignInsertOrder(arr, activeId);
+    });
   };
 
   const updateTask = (taskId: string, patch: Partial<Task>) => {
@@ -217,21 +342,27 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#f4f7fa] p-6">
+    <div className="min-h-screen bg-[var(--bg)] p-6">
       <header className="mb-4 flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <h1 className="text-xl font-semibold text-gray-700">WMessage</h1>
+          <img
+              src={mainLogo}
+              alt="WMessage"
+              className="w-7 h-7 shrink-0"
+              draggable={false}
+            />
+            <h1 className="text-xl font-semibold text-[var(--t2)]">WMessage</h1>
           <div className="flex gap-1">
             <button
-              className={`min-w-[94px] px-3 py-1.5 text-sm text-gray-600 ${
+              className={`min-w-[94px] px-3 py-1.5 text-sm text-[var(--t3)] ${
                 view === "board" ? "nm-inset" : "nm-outset"
               }`}
               onClick={() => setView("board")}
             >
-              看板
+              首页
             </button>
             <button
-              className={`min-w-[94px] px-3 py-1.5 text-sm text-gray-600 ${
+              className={`min-w-[94px] px-3 py-1.5 text-sm text-[var(--t3)] ${
                 view === "archive" ? "nm-inset" : "nm-outset"
               }`}
               onClick={() => setView("archive")}
@@ -239,7 +370,15 @@ export default function App() {
               归档
             </button>
             <button
-              className={`min-w-[94px] px-3 py-1.5 text-sm text-gray-600 ${
+              className={`min-w-[94px] px-3 py-1.5 text-sm text-[var(--t3)] ${
+                view === "workspace" ? "nm-inset" : "nm-outset"
+              }`}
+              onClick={() => setView("workspace")}
+            >
+              工作区
+            </button>
+            <button
+              className={`min-w-[94px] px-3 py-1.5 text-sm text-[var(--t3)] ${
                 view === "trash" ? "nm-inset" : "nm-outset"
               }`}
               onClick={() => setView("trash")}
@@ -248,32 +387,58 @@ export default function App() {
             </button>
           </div>
         </div>
-        {view === "board" && (
+        <div className="flex items-center gap-2">
+          {view === "board" && (
+            <button
+              className="nm-btn px-3 py-1.5 text-sm text-[var(--t3)]"
+              onClick={addTask}
+            >
+              + 新建任务
+            </button>
+          )}
           <button
-            className="nm-inset px-3 py-1.5 text-sm text-gray-600"
-            onClick={addTask}
+            className={`px-3 py-1.5 text-sm text-[var(--t3)] ${
+              view === "settings" ? "nm-inset" : "nm-outset"
+            }`}
+            title="设置"
+            onClick={() => setView("settings")}
           >
-            + 新建任务
+            ⚙️
           </button>
-        )}
+        </div>
       </header>
       {view === "board" ? (
         <KanbanBoard
           tasks={tasks}
           editingId={editingId}
-          onMove={moveTask}
+          onReorder={commitBoardOrder}
           onUpdate={updateTask}
           onDelete={deleteTask}
           onOpenArchive={() => setView("archive")}
         />
       ) : view === "archive" ? (
-        <ArchivePage tasks={tasks} onUpdate={updateTask} onDelete={deleteTask} />
-      ) : (
+        <ArchivePage
+          tasks={tasks}
+          editingId={editingId}
+          onUpdate={updateTask}
+          onDelete={deleteTask}
+        />
+      ) : view === "workspace" ? (
+        <WorkspacePage />
+      ) : view === "trash" ? (
         <TrashPage
           tasks={tasks}
+          editingId={editingId}
           onUpdate={updateTask}
           onDelete={hardDeleteTask}
           onClearAll={clearTrash}
+        />
+      ) : (
+        <SettingsPage
+          theme={theme}
+          onThemeChange={setTheme}
+          onExportTasks={exportTasks}
+          onImportTasks={importTasks}
         />
       )}
     </div>
