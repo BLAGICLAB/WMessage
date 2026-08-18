@@ -43,6 +43,8 @@ use crate::error::{CommandError, CommandResult};
 const MAX_BODY_BYTES: u64 = 1_000_000;
 /// 每分钟请求上限（仅回环，防失控脚本）
 const RATE_LIMIT_PER_MIN: u32 = 120;
+/// SSE 并发连接上限（A6：每连接一个 writer 线程，不设上限可被连接洪泛耗尽线程）
+const MAX_SSE_CLIENTS: usize = 32;
 
 // ───────────────────────── 公共返回类型 ─────────────────────────
 
@@ -677,6 +679,12 @@ fn sse_connect(req: Request, store: &Arc<dyn TaskStore>, query: &str) {
     let hub = store.event_hub();
     {
         let mut clients = hub.clients.lock().unwrap_or_else(|e| e.into_inner());
+        // A6: SSE 连接数上限 —— 超限 503，防连接洪泛耗尽线程
+        if clients.len() >= MAX_SSE_CLIENTS {
+            drop(clients);
+            let _ = req.respond(json_err(StatusCode(503), "too many SSE connections"));
+            return;
+        }
         clients.push(tx);
     }
     let hub = hub.clone();
@@ -752,7 +760,8 @@ pub fn api_start(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandRe
     let token = load_or_create_token(&app)?;
     let store: Arc<dyn TaskStore> = Arc::new(TauriStore {
         app: app.clone(),
-        hub: EventHub::new(),
+        // A6: id 持久化，跨重启保持单调（否则客户端 Last-Event-ID 去重会静默丢事件）
+        hub: EventHub::persisted(db::data_dir(&app).join("api-event-id.txt")),
     });
     let emit_app = app.clone();
     let emit: Option<Box<dyn Fn(&db::Task) + Send + Sync>> =
@@ -793,11 +802,23 @@ pub fn api_stop(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandRes
 
 #[tauri::command]
 pub fn api_status(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandResult<ApiStatus> {
-    let enabled = state
+    let mut g = state
         .0
         .lock()
-        .map_err(|e| CommandError::Internal(format!("API 状态锁失败：{e}")))?
-        .is_some();
+        .map_err(|e| CommandError::Internal(format!("API 状态锁失败：{e}")))?;
+    // A6: 活性检查 —— 服务线程可能已因 recv_error 退出（panic 已被 catch_unwind 覆盖），
+    // 仅看 Option::is_some 会把死服务报成"已开启"
+    let enabled = g
+        .as_ref()
+        .and_then(|r| r.handle.as_ref())
+        .map(|h| !h.is_finished())
+        .unwrap_or(false);
+    if !enabled && g.is_some() {
+        // 清理尸体并同步开关标志，避免下次启动按 flag 自动恢复一个已死状态
+        *g = None;
+        clear_enabled_flag(&app);
+    }
+    drop(g);
     let token = load_or_create_token(&app)?;
     Ok(ApiStatus {
         enabled,
@@ -814,18 +835,32 @@ pub fn api_rotate_token(
 ) -> CommandResult<ApiInfo> {
     let dir = db::data_dir(&app);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join("api-token.txt");
+    let old = std::fs::read_to_string(&path).ok();
     let token = uuid::Uuid::new_v4().simple().to_string();
-    std::fs::write(dir.join("api-token.txt"), &token).map_err(|e| e.to_string())?;
     let was_running = state.0.lock().map_err(|e| e.to_string())?.is_some();
-    if was_running {
-        // 重启服务使新 token 立即生效（api_stop 会清 flag，api_start 会重写）
-        api_stop(app.clone(), state.clone())?;
-        return api_start(app, state);
+    if !was_running {
+        std::fs::write(&path, &token).map_err(|e| e.to_string())?;
+        return Ok(ApiInfo {
+            port: API_PORT,
+            token,
+        });
     }
-    Ok(ApiInfo {
-        port: API_PORT,
-        token,
-    })
+    // 运行中：先落新 token（api_start 从文件读取），再重启生效。
+    // A6: 重启失败则回滚旧 token 并尽力恢复服务，
+    // 避免"服务已停 + flag 已清 + token 已换"三态不一致
+    std::fs::write(&path, &token).map_err(|e| e.to_string())?;
+    api_stop(app.clone(), state.clone())?;
+    match api_start(app.clone(), state.clone()) {
+        Ok(info) => Ok(info),
+        Err(e) => {
+            if let Some(old) = old {
+                let _ = std::fs::write(&path, old);
+            }
+            let _ = api_start(app, state); // 尽力用旧 token 恢复服务
+            Err(e)
+        }
+    }
 }
 
 // ───────────────────────── 单元测试 ─────────────────────────

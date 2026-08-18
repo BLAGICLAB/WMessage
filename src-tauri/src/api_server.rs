@@ -13,12 +13,12 @@
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tiny_http::Server;
+use tiny_http::{Response, Server, StatusCode};
 
 use crate::api::TaskStore;
 use crate::audit::AuditLevel;
@@ -26,6 +26,9 @@ use crate::db;
 
 /// SSE 事件重放环形缓冲条数（断线重放窗口）
 const EVENT_HISTORY: usize = 1000;
+
+/// 并发 worker 上限（A6：thread-per-request 无上限时，慢连接会无限堆积 OS 线程）
+const MAX_WORKERS: usize = 64;
 
 /// Tauri 托管的 API 状态（`Mutex<Option<RunningApi>>`）
 #[derive(Default)]
@@ -42,15 +45,34 @@ pub struct EventHub {
     pub clients: Mutex<Vec<SyncSender<Vec<u8>>>>, // bounded SyncSender 端；client 端持 Rx
     pub next_id: AtomicU64,
     pub history: Mutex<VecDeque<(u64, String)>>,
+    /// 事件 id 持久化路径（跨重启保持单调；None=仅内存，测试用）
+    id_path: Option<PathBuf>,
 }
 
 impl EventHub {
     /// 新建中枢
+    #[allow(dead_code)] // 生产走 persisted()；new() 仅测试（MemStore / 单测）构造用
     pub fn new() -> Arc<Self> {
         Arc::new(EventHub {
             clients: Mutex::new(Vec::new()),
             next_id: AtomicU64::new(0),
             history: Mutex::new(VecDeque::new()),
+            id_path: None,
+        })
+    }
+
+    /// 带 id 持久化的中枢（A6）：启动时从文件恢复上次 id，保证跨重启单调递增。
+    /// 否则重启后 id 从 0 重计，客户端按 Last-Event-ID 去重会静默丢弃全部新事件。
+    pub fn persisted(path: PathBuf) -> Arc<Self> {
+        let start = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .unwrap_or(0);
+        Arc::new(EventHub {
+            clients: Mutex::new(Vec::new()),
+            next_id: AtomicU64::new(start),
+            history: Mutex::new(VecDeque::new()),
+            id_path: Some(path),
         })
     }
 
@@ -62,6 +84,10 @@ impl EventHub {
     /// 编号、入历史、广播给所有在线客户端
     pub fn broadcast(&self, event: serde_json::Value) {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst) + 1;
+        // A6: 每次广播落盘当前 id（事件频率为人级，开销可忽略），重启后接续递增
+        if let Some(p) = &self.id_path {
+            let _ = std::fs::write(p, id.to_string());
+        }
         let msg = format!("id: {id}\ndata: {event}\n\n");
         if let Ok(mut h) = self.history.lock() {
             h.push_back((id, msg.clone()));
@@ -121,12 +147,24 @@ pub fn start_api(
     // emit_fn: Box → Arc 包装，使每个 per-request worker 能拿到独立 clone
     let emit_fn: Option<Arc<dyn Fn(&db::Task) + Send + Sync>> =
         emit_fn.map(|b| -> Arc<dyn Fn(&db::Task) + Send + Sync> { b.into() });
+    // A6: 在飞 worker 计数（配合 MAX_WORKERS 上限，防慢连接线程堆积）
+    let active = Arc::new(AtomicUsize::new(0));
     let handle = std::thread::spawn(move || loop {
         if sd.load(Ordering::SeqCst) {
             break;
         }
         match server.recv_timeout(Duration::from_millis(400)) {
             Ok(Some(req)) => {
+                // A6: worker 数上限 —— 超限直接 503，不再无上限 spawn 线程
+                if active.load(Ordering::SeqCst) >= MAX_WORKERS {
+                    let _ = req.respond(
+                        Response::from_data(br#"{"error":"server busy"}"#.to_vec())
+                            .with_status_code(StatusCode(503)),
+                    );
+                    continue;
+                }
+                active.fetch_add(1, Ordering::SeqCst);
+                let active_w = active.clone();
                 // A1 + A4 组合：每个请求独立 worker 线程 + catch_unwind +
                 //              主线程  15s 超时 (防止 slowloris 永久卡死服务)
                 let req_url = req.url().to_string();
@@ -136,6 +174,8 @@ pub fn start_api(
                 let tk_w = tk.clone();
                 let store_w = store.clone();
                 std::thread::spawn(move || {
+                    // 配额归还守卫：无论正常完成 / panic / 超时后续跑，退出即归还
+                    let _guard = ActiveGuard(active_w);
                     let catch_result = std::panic::catch_unwind(
                         std::panic::AssertUnwindSafe(|| {
                             crate::api_handlers::handle_request(
@@ -194,6 +234,15 @@ pub fn start_api(
     })
 }
 
+/// worker 退出时归还并发配额（正常完成 / panic / 超时后续跑结束都会触发）
+struct ActiveGuard(Arc<AtomicUsize>);
+
+impl Drop for ActiveGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// 从 catch_unwind payload 提取 panic 信息（处理 &str / String / 其他三种情况）
 fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
     if let Some(s) = payload.downcast_ref::<&str>() {
@@ -202,5 +251,39 @@ fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
         s.clone()
     } else {
         "non-string panic payload".to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A6：事件 id 跨"重启"（drop 后重建 hub）保持单调递增
+    #[test]
+    fn event_hub_id_persists_across_restart() {
+        let path = std::env::temp_dir().join(format!(
+            "wmessage-test-event-id-{}.txt",
+            uuid::Uuid::new_v4()
+        ));
+        let hub = EventHub::persisted(path.clone());
+        hub.broadcast(serde_json::json!({"type":"tasks-changed","op":"created"}));
+        hub.broadcast(serde_json::json!({"type":"tasks-changed","op":"updated"}));
+        assert_eq!(hub.last_id(), 2);
+        drop(hub);
+
+        // 模拟重启：从文件恢复 id，继续递增而非归零
+        let hub2 = EventHub::persisted(path.clone());
+        assert_eq!(hub2.last_id(), 2);
+        hub2.broadcast(serde_json::json!({"type":"tasks-changed","op":"deleted"}));
+        assert_eq!(hub2.last_id(), 3);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 无持久化路径的 hub（测试/内存用）不受影响
+    #[test]
+    fn event_hub_new_starts_from_zero() {
+        let hub = EventHub::new();
+        hub.broadcast(serde_json::json!({"type":"tasks-changed","op":"created"}));
+        assert_eq!(hub.last_id(), 1);
     }
 }
