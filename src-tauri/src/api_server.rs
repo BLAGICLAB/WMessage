@@ -27,9 +27,6 @@ use crate::db;
 /// SSE 事件重放环形缓冲条数（断线重放窗口）
 const EVENT_HISTORY: usize = 1000;
 
-/// 单客户端 channel 容量（防止慢客户端撑爆内存）
-const SSE_CHANNEL_CAPACITY: usize = 256;
-
 /// Tauri 托管的 API 状态（`Mutex<Option<RunningApi>>`）
 #[derive(Default)]
 pub struct ApiState(pub Mutex<Option<RunningApi>>);
@@ -119,7 +116,7 @@ pub fn start_api(
         .map_err(|e| format!("HTTP 服务启动失败（端口 {port}）：{e}"))?;
     let shutdown = Arc::new(AtomicBool::new(false));
     let sd = shutdown.clone();
-    let hub = EventHub::new();
+    // A5: hub 不再此处构造；EventHub 现属于 store（store.event_hub() 访问）
     let tk = token.clone();
     // emit_fn: Box → Arc 包装，使每个 per-request worker 能拿到独立 clone
     let emit_fn: Option<Arc<dyn Fn(&db::Task) + Send + Sync>> =
@@ -138,7 +135,6 @@ pub fn start_api(
                 let log_path_w = log_path.clone();
                 let tk_w = tk.clone();
                 let store_w = store.clone();
-                let hub_w = hub.clone();
                 std::thread::spawn(move || {
                     let catch_result = std::panic::catch_unwind(
                         std::panic::AssertUnwindSafe(|| {
@@ -146,7 +142,6 @@ pub fn start_api(
                                 req,
                                 &tk_w,
                                 &store_w,
-                                &hub_w,
                                 &emit_fn_w,
                                 &log_path_w,
                             );

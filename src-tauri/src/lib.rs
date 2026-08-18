@@ -18,6 +18,7 @@ pub mod intent_router;
 pub mod middleware;
 mod migration;
 mod profile;
+pub mod task_out;
 pub mod tool_guard;
 use tauri::{Emitter, Manager};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};

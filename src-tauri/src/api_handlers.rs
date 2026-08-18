@@ -67,7 +67,6 @@ pub fn handle_request(
     req: Request,
     token: &str,
     store: &Arc<dyn TaskStore>,
-    hub: &Arc<EventHub>,
     emit_fn: &Option<Arc<dyn Fn(&db::Task) + Send + Sync>>,
     log: &Option<PathBuf>,
 ) {
@@ -97,14 +96,14 @@ pub fn handle_request(
 
     match (&method, path.as_str()) {
         (Method::Get, "/api/tasks") => list_tasks(req, store, &query),
-        (Method::Get, "/api/events") => sse_connect(req, hub, &query),
-        (Method::Post, "/api/tasks") => create_task(req, store, hub, emit_fn, log),
+        (Method::Get, "/api/events") => sse_connect(req, store, &query),
+        (Method::Post, "/api/tasks") => create_task(req, store, emit_fn, log),
         _ => {
             if let Some(id) = path.strip_prefix("/api/tasks/") {
                 match method {
                     Method::Get => get_task(req, store, id),
-                    Method::Put => update_task(req, store, id, hub, emit_fn, log),
-                    Method::Delete => delete_task(req, store, id, hub, emit_fn, log),
+                    Method::Put => update_task(req, store, id, emit_fn, log),
+                    Method::Delete => delete_task(req, store, id, emit_fn, log),
                     _ => {
                         let _ = req.respond(json_err(StatusCode(405), "method not allowed"));
                     }
@@ -243,22 +242,8 @@ fn read_body_limited(req: &mut Request) -> Option<String> {
 // ───────────────────────── 任务 JSON 形状 ─────────────────────────
 
 /// 对外任务对象：`db::Task` 字段 + `status`（todo/doing/done，即看板列）
-#[derive(Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct TaskOut {
-    #[serde(flatten)]
-    inner: db::Task,
-    status: String,
-}
-
-impl TaskOut {
-    fn from_task(t: &db::Task) -> Self {
-        TaskOut {
-            inner: t.clone(),
-            status: t.column.clone(),
-        }
-    }
-}
+// A5: TaskOut 抽到 crate::task_out 模块（数据层 api.rs 也需用，不能反向依赖 api_handlers）
+use crate::task_out::TaskOut;
 
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
@@ -282,20 +267,18 @@ fn over_limit(v: &str, max: usize, what: &str) -> Option<String> {
     (v.chars().count() > max).then(|| format!("{what}过长（上限 {max} 字）"))
 }
 
-/// 任务变更后：SSE 广播（带事件 id，入历史可重放）+ 前端看板刷新回调 + 变更日志
+/// 任务变更后：store 内部 SSE 广播 + 前端看板刷新回调 + 变更日志
+///
+/// A5: hub 不再传入；SSE 广播走 `store.notify_change()`，由 store 层封装 hub。
+/// 这样 handler 与 EventHub 解耦，未来加 EventBus / 持久化监听都在 store 层加。
 fn after_change(
+    store: &Arc<dyn TaskStore>,
     task: &db::Task,
     op: &str,
-    hub: &Arc<EventHub>,
     emit_fn: &Option<Arc<dyn Fn(&db::Task) + Send + Sync>>,
     log: &Option<PathBuf>,
 ) {
-    let event = serde_json::json!({
-        "type": "tasks-changed",
-        "op": op,
-        "task": TaskOut::from_task(task),
-    });
-    hub.broadcast(event);
+    store.notify_change(op, task);
     log_line(
         log,
         &format!(
@@ -384,7 +367,6 @@ struct CreateReq {
 fn create_task(
     mut req: Request,
     store: &Arc<dyn TaskStore>,
-    hub: &Arc<EventHub>,
     emit_fn: &Option<Arc<dyn Fn(&db::Task) + Send + Sync>>,
     log: &Option<PathBuf>,
 ) {
@@ -492,7 +474,7 @@ fn create_task(
         let _ = req.respond(json_err(StatusCode(500), &e));
         return;
     }
-    after_change(&task, "created", hub, emit_fn, log);
+    after_change(store, &task, "created", emit_fn, log);
     let _ = req.respond(json_ok(StatusCode(201), &TaskOut::from_task(&task)));
 }
 
@@ -514,7 +496,6 @@ fn update_task(
     mut req: Request,
     store: &Arc<dyn TaskStore>,
     id: &str,
-    hub: &Arc<EventHub>,
     emit_fn: &Option<Arc<dyn Fn(&db::Task) + Send + Sync>>,
     log: &Option<PathBuf>,
 ) {
@@ -647,7 +628,7 @@ fn update_task(
         let _ = req.respond(json_err(StatusCode(500), &e));
         return;
     }
-    after_change(&t, "updated", hub, emit_fn, log);
+    after_change(store, &t, "updated", emit_fn, log);
     let _ = req.respond(json_ok(StatusCode(200), &TaskOut::from_task(&t)));
 }
 
@@ -656,7 +637,6 @@ fn delete_task(
     req: Request,
     store: &Arc<dyn TaskStore>,
     id: &str,
-    hub: &Arc<EventHub>,
     emit_fn: &Option<Arc<dyn Fn(&db::Task) + Send + Sync>>,
     log: &Option<PathBuf>,
 ) {
@@ -683,17 +663,18 @@ fn delete_task(
         let _ = req.respond(json_err(StatusCode(500), &e));
         return;
     }
-    after_change(&t, "deleted", hub, emit_fn, log);
+    after_change(store, &t, "deleted", emit_fn, log);
     let _ = req.respond(json_ok(StatusCode(200), &TaskOut::from_task(&t)));
 }
 
 /// 注册 SSE 客户端：支持 `?since=<事件id>` 断线重放，然后用 tiny_http upgrade 直写。
-fn sse_connect(req: Request, hub: &Arc<EventHub>, query: &str) {
+fn sse_connect(req: Request, store: &Arc<dyn TaskStore>, query: &str) {
     let since = query_param(query, "since").and_then(|s| s.parse::<u64>().ok());
     // A2: sync_channel(256) — 单客户端最多积压 256 条，超出则丢事件（广播不阻塞）
     let (tx, rx) = sync_channel(256);
     // 锁中毒时用 into_inner 恢复（与 broadcast 端策略一致，审计 P3：原先静默跳过，
     // 客户端注册失败则该 SSE 连接永远收不到事件）
+    let hub = store.event_hub();
     {
         let mut clients = hub.clients.lock().unwrap_or_else(|e| e.into_inner());
         clients.push(tx);
@@ -769,7 +750,10 @@ pub fn api_start(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandRe
         }
     }
     let token = load_or_create_token(&app)?;
-    let store: Arc<dyn TaskStore> = Arc::new(TauriStore { app: app.clone() });
+    let store: Arc<dyn TaskStore> = Arc::new(TauriStore {
+        app: app.clone(),
+        hub: EventHub::new(),
+    });
     let emit_app = app.clone();
     let emit: Option<Box<dyn Fn(&db::Task) + Send + Sync>> =
         Some(Box::new(move |task: &db::Task| {
@@ -893,6 +877,7 @@ mod tests {
     fn api_auth_and_crud() {
         let store: Arc<dyn TaskStore> = Arc::new(MemStore {
             tasks: Mutex::new(vec![]),
+            hub: EventHub::new(),
         });
         let token = "test-token-123".to_string();
         let mut running = start_api(48821, token.clone(), store.clone(), None, None, None).unwrap();
@@ -1052,6 +1037,7 @@ mod tests {
     fn sse_receives_change_events() {
         let store: Arc<dyn TaskStore> = Arc::new(MemStore {
             tasks: Mutex::new(vec![]),
+            hub: EventHub::new(),
         });
         let token = "test-token-123".to_string();
         let mut running = start_api(48822, token.clone(), store.clone(), None, None, None).unwrap();
