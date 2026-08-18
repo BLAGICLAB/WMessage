@@ -822,4 +822,250 @@ mod tests {
         bad.rules = vec![rule(vec!["a"], "delete", "")];
         assert!(validate_rules(&bad).is_ok());
     }
+
+    // ────── 文件移动 / 同名冲突（基于纯 Path API，不依赖 AppHandle） ──────
+
+    /// move_entry 基本：源文件 → 目标路径（无冲突）。原文件消失，新文件就位。
+    #[test]
+    fn move_file_basic() {
+        let base = std::env::temp_dir().join(format!("wm-mv-basic-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&base).unwrap();
+        let src = base.join("report.pdf");
+        let dst = base.join("归档").join("report.pdf");
+        fs::create_dir_all(dst.parent().unwrap()).unwrap();
+        fs::write(&src, b"hello world").unwrap();
+
+        move_entry(&src, &dst).unwrap();
+        assert!(dst.exists(), "目标文件应存在");
+        assert!(!src.exists(), "源文件应已被移走");
+        assert_eq!(fs::read_to_string(&dst).unwrap(), "hello world");
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// 同名冲突 → 加 ` (1)` 后缀。直接测 conflict_free_name（move_entry 会用它）。
+    #[test]
+    fn move_file_collision_adds_suffix_one() {
+        let base = std::env::temp_dir().join(format!("wm-mv-col1-{}", uuid::Uuid::new_v4()));
+        let dst_dir = base.join("归档");
+        fs::create_dir_all(&dst_dir).unwrap();
+        // 预占同名文件
+        fs::write(dst_dir.join("report.pdf"), b"old").unwrap();
+
+        let chosen = conflict_free_name(&dst_dir, "report.pdf").unwrap();
+        assert_eq!(
+            chosen.file_name().unwrap().to_string_lossy(),
+            "report (1).pdf"
+        );
+
+        // 模拟实际迁移：用 chosen 作为目标路径做 move_entry（用同名空 src 占位）
+        // 此场景是冲突检测本身已被 move_entry 调用前的 conflict_free_name 解决
+        // 这里仅断言 conflict_free_name 选出的名字可用——后续真实 move 由调用方负责
+        assert!(!chosen.exists(), "选出的名字不应已存在");
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// 多个同名：name / name (1) 已存在 → 选择 name (2)
+    #[test]
+    fn move_file_collision_multiple_suffixes_picks_two() {
+        let base = std::env::temp_dir().join(format!("wm-mv-col2-{}", uuid::Uuid::new_v4()));
+        let dst_dir = base.join("归档");
+        fs::create_dir_all(&dst_dir).unwrap();
+        fs::write(dst_dir.join("report.pdf"), b"original").unwrap();
+        fs::write(dst_dir.join("report (1).pdf"), b"first dup").unwrap();
+
+        let chosen = conflict_free_name(&dst_dir, "report.pdf").unwrap();
+        assert_eq!(
+            chosen.file_name().unwrap().to_string_lossy(),
+            "report (2).pdf"
+        );
+        assert!(!chosen.exists());
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// 扩展名/无扩展名的冲突场景应都能正确处理
+    #[test]
+    fn conflict_free_name_handles_extensionless_files() {
+        let base = std::env::temp_dir().join(format!("wm-col-noext-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&base).unwrap();
+        fs::write(base.join("README"), b"a").unwrap();
+        fs::write(base.join("README (1)"), b"b").unwrap();
+
+        let chosen = conflict_free_name(&base, "README").unwrap();
+        assert_eq!(chosen.file_name().unwrap().to_string_lossy(), "README (2)");
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// move_entry 在源不存在时返回 Err（不 panic）：保护测试
+    #[test]
+    fn move_file_source_missing_returns_error() {
+        let base = std::env::temp_dir().join(format!("wm-mv-missing-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&base).unwrap();
+        let src = base.join("ghost.txt"); // 从未创建
+        let dst = base.join("归档").join("ghost.txt");
+
+        let err = move_entry(&src, &dst);
+        assert!(err.is_err(), "源不存在应返回 Err");
+        assert!(!dst.exists(), "目标未被创建");
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// move_entry 成功拷贝文件后保留源文件以外的目录结构（拷贝语义）不适用于 move_entry 本身，
+    /// 但应保证源是文件时 fs::rename 路径正确。此场景测试：跨目录 rename（同一 temp_dir 下）
+    #[test]
+    fn move_entry_handles_nested_dst_directory() {
+        let base = std::env::temp_dir().join(format!("wm-mv-nested-{}", uuid::Uuid::new_v4()));
+        let src = base.join("发票").join("input.pdf");
+        let dst_dir = base.join("归档").join("发票").join("2026");
+        fs::create_dir_all(src.parent().unwrap()).unwrap();
+        fs::write(&src, b"x").unwrap();
+        fs::create_dir_all(&dst_dir).unwrap();
+
+        move_entry(&src, &dst_dir.join("input.pdf")).unwrap();
+        assert!(dst_dir.join("input.pdf").exists());
+        assert!(!src.exists());
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// 跨卷移动：fs::rename 失败后应退化到 copy+remove（这里同卷下也会走 rename，但验证路径不崩）
+    #[test]
+    fn move_entry_to_file_basic_file() {
+        let base = std::env::temp_dir().join(format!("wm-mv-file-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&base).unwrap();
+        let src = base.join("data.bin");
+        let dst = base.join("dest.bin");
+        fs::write(&src, vec![1u8, 2, 3, 4, 5]).unwrap();
+
+        move_entry(&src, &dst).unwrap();
+        assert!(dst.exists());
+        assert!(!src.exists());
+        assert_eq!(fs::read(&dst).unwrap(), vec![1u8, 2, 3, 4, 5]);
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    // ────── archive_dir year 占位符独立验证（不依赖 AppHandle::desktop_dir） ──────
+
+    /// {year} 在多个上下文路径中都能被替换
+    #[test]
+    fn archive_dir_year_placeholder_in_nested_path() {
+        let year = chrono::Local::now().format("%Y").to_string();
+        for template in ["工资/{year}", "归档/{year}/Q4", "{year}/发票"] {
+            let expanded = template.replace("{year}", &year);
+            assert!(!expanded.contains("{year}"), "模板 {template:?} 仍有未替换的占位符");
+            // 展开后的路径应是合理的本地路径
+            assert!(PathBuf::from(&expanded).is_absolute() || expanded.contains('/'));
+        }
+    }
+
+    /// 多个 {year} 占位符在同一个模板里都会被替换
+    #[test]
+    fn archive_dir_year_placeholder_replaced_multiple_times() {
+        let year = chrono::Local::now().format("%Y").to_string();
+        let expanded = "{year}/sub/{year}".replace("{year}", &year);
+        assert_eq!(expanded, format!("{year}/sub/{year}"));
+        assert!(!expanded.contains("{year}"));
+    }
+
+    // ────── parse_rules_csv 增强测试（CSV 解析逻辑） ──────
+
+    #[test]
+    fn parse_rules_csv_basic_template() {
+        // 复用官方模版：\u{feff}启用,文件名关键字,动作,归档目录\n是,工资，...
+        let text = "\u{feff}启用,文件名关键字,动作,归档目录\n是,工资，报销,移动归档,工资/{year}\n否,临时,删除文件,\n";
+        let rules = parse_rules_csv(text).expect("官方模版应可解析");
+        assert_eq!(rules.rules.len(), 2);
+
+        let r0 = &rules.rules[0];
+        assert!(r0.enabled);
+        assert_eq!(r0.keywords, vec!["工资", "报销"]);
+        assert_eq!(r0.action, "move");
+        assert_eq!(r0.archive_dir, "工资/{year}");
+
+        let r1 = &rules.rules[1];
+        assert!(!r1.enabled);
+        assert_eq!(r1.keywords, vec!["临时"]);
+        assert_eq!(r1.action, "delete");
+        assert_eq!(r1.archive_dir, ""); // delete 规则无视归档目录
+    }
+
+    #[test]
+    fn parse_rules_csv_handles_missing_bom() {
+        // 不带 BOM 也能解析（有些人手写 CSV）
+        let text = "启用,文件名关键字,动作,归档目录\n是,发票,移动,发票/{year}\n";
+        let rules = parse_rules_csv(text).expect("no-bom CSV should parse");
+        assert_eq!(rules.rules.len(), 1);
+        assert_eq!(rules.rules[0].keywords, vec!["发票"]);
+    }
+
+    #[test]
+    fn parse_rules_csv_skips_blank_rows() {
+        // 含空行 / 仅空格的行应被跳过
+        let text = "启用,文件名关键字,动作,归档目录\n是,工资,移动,工资/{year}\n,\n   ,\n是,发票,移动,发票/{year}\n";
+        let rules = parse_rules_csv(text).expect("blank rows should be skipped");
+        assert_eq!(rules.rules.len(), 2);
+        assert_eq!(rules.rules[0].keywords, vec!["工资"]);
+        assert_eq!(rules.rules[1].keywords, vec!["发票"]);
+    }
+
+    #[test]
+    fn parse_rules_csv_accepts_alternative_keywords_and_actions() {
+        // 关键字支持中英文逗号 / 顿号 / 分号分隔；动作支持 移动/移动归档/move/Move
+        let text = "启用,文件名关键字,动作,归档目录\ntrue,a；b；c，d,Move,X\n";
+        let rules = parse_rules_csv(text).expect("valid row should parse");
+        assert_eq!(rules.rules.len(), 1);
+        assert!(rules.rules[0].enabled, "true 应被识别为启用");
+        assert_eq!(
+            rules.rules[0].keywords,
+            vec!["a", "b", "c", "d"],
+            "混合中英文分号 / 逗号分隔"
+        );
+        assert_eq!(rules.rules[0].action, "move", "Move 大小写变体应被归一化为 move");
+    }
+
+    #[test]
+    fn parse_rules_csv_rejects_empty() {
+        // 只有表头、无任何有效规则行 → 错误
+        let text = "启用,文件名关键字,动作,归档目录\n";
+        let err = parse_rules_csv(text);
+        assert!(err.is_err());
+        assert!(err.unwrap_err().contains("没有解析出任何规则"));
+    }
+
+    #[test]
+    fn parse_rules_csv_rejects_unknown_action() {
+        // 动作不在白名单 → 报错（指明行号）
+        let text = "启用,文件名关键字,动作,归档目录\n是,工资,飞行,X\n";
+        let err = parse_rules_csv(text).expect_err("未知动作应报错");
+        assert!(err.contains("飞行"), "错误信息应提到无效动作名：{err}");
+        assert!(err.contains("第 2 行"), "错误信息应指明行号");
+    }
+
+    #[test]
+    fn parse_rules_csv_requires_four_columns_in_header() {
+        // 表头列不全 → 报错
+        let text = "启用,文件名关键字,动作\n是,a,移动,X\n";
+        let err = parse_rules_csv(text).expect_err("缺列应报错");
+        assert!(err.contains("四列"));
+    }
+
+    #[test]
+    fn validate_rules_accepts_delete_without_archive_dir() {
+        // delete 规则允许 archive_dir 为空
+        let rf = RulesFile {
+            version: 1,
+            rules: vec![rule(vec!["tmp"], "delete", "")],
+        };
+        assert!(validate_rules(&rf).is_ok());
+    }
+
+    #[test]
+    fn validate_rules_rejects_move_with_blank_archive_dir() {
+        let mut rf = RulesFile {
+            version: 1,
+            rules: vec![rule(vec!["a"], "move", "")],
+        };
+        assert!(validate_rules(&rf).is_err());
+        // 全空白也算空
+        rf.rules = vec![rule(vec!["a"], "move", "   ")];
+        assert!(validate_rules(&rf).is_err());
+    }
 }

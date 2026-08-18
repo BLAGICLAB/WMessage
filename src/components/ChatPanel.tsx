@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen, emit } from "@tauri-apps/api/event";
 
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -8,6 +8,17 @@ import { handleCommandError, formatCommandError } from "../lib/errorHandler";
 import type { Task } from "../types";
 import { basename } from "../format";
 import { MarkdownText } from "./MarkdownText";
+
+/** 与后端 src-tauri/src/bot_chat.rs::IMAGE_EXTS 保持同步：
+ *  后端 attach_images 按此列表判断是否把路径转 base64 image_url。
+ *  改一处务必同步另一处（前端图标识别靠它）。 */
+const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "webp", "gif", "bmp"]);
+
+/** 路径后缀是否图片类型（大小写不敏感）。无后缀或未知后缀按文件处理。 */
+function isImagePath(p: string): boolean {
+  const m = p.toLowerCase().match(/\.([a-z0-9]+)$/);
+  return m ? IMAGE_EXTS.has(m[1]) : false;
+}
 
 type TaskRef = { id: string; title: string };
 
@@ -106,7 +117,7 @@ function splitAttachments(content: string): { files: string[]; text: string } {
   return { files, text: content.slice(m[0].length) };
 }
 
-/** 用户消息气泡：附件块渲染成 📎 芯片 + 正文 */
+/** 用户消息气泡：附件块渲染成 📎/🖼️ 芯片 + 正文。图片用 🖼️ 标记（与后端 IMAGE_EXTS 对齐）。 */
 function UserBubbleContent({ content }: { content: string }) {
   const { files, text } = splitAttachments(content);
   return (
@@ -119,7 +130,9 @@ function UserBubbleContent({ content }: { content: string }) {
               className="nm-inset inline-flex items-center gap-1 rounded-lg px-1.5 py-0.5 text-[10px] text-[var(--t4)] max-w-full"
               title={f}
             >
-              <span className="truncate max-w-[150px]">📎 {basename(f)}</span>
+              <span className="truncate max-w-[150px]">
+                {isImagePath(f) ? "🖼️" : "📎"} {basename(f)}
+              </span>
             </span>
           ))}
         </div>
@@ -676,7 +689,10 @@ function extractFilePaths(content: string): string[] {
 
   // ➕ 添加附件：选文件，与消息一起发送（如：加 Word 后输入「润色」）。
   // Rust 侧弹框：此前前端 dialog.open 在挂件窗口不弹框（点击无反应）
-  const pickFiles = async () => {
+  // 注意：pick_files_dialog 当前 Rust 实现未暴露 filter 参数，
+  //   imageIntent 仅用于 UI 提示（图片按钮提示用户预期选图片），不做硬过滤。
+  //   真正识别靠 isImagePath(path)（后端 IMAGE_EXTS 同步）。
+  const pickFiles = async (_imageIntent = false) => {
     try {
       const picked = await invoke<string[]>("pick_files_dialog");
       if (picked.length) {
@@ -975,23 +991,43 @@ function extractFilePaths(content: string): string[] {
       {/* 已添加附件：随消息一起发送 */}
       {files.length > 0 && (
         <div className="mb-1.5 flex flex-wrap gap-1 shrink-0">
-          {files.map((f) => (
-            <span
-              key={f}
-              className="nm-inset inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t3)] max-w-full"
-            >
-              <span className="truncate max-w-[180px]" title={f}>
-                📎 {basename(f)}
-              </span>
-              <button
-                className="text-[var(--t5)] hover:text-[var(--danger)]"
-                onClick={() => setFiles((prev) => prev.filter((x) => x !== f))}
-                title="移除"
-              >
-                ×
-              </button>
-            </span>
-          ))}
+          {files.map((f) => {
+            const isImg = isImagePath(f);
+            return (
+              <div key={f} className="relative group">
+                <span
+                  className="nm-inset inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t3)] max-w-full"
+                  title={f}
+                >
+                  <span className="truncate max-w-[180px]">
+                    {isImg ? "🖼️" : "📎"} {basename(f)}
+                  </span>
+                  <button
+                    className="text-[var(--t5)] hover:text-[var(--danger)]"
+                    onClick={() => setFiles((prev) => prev.filter((x) => x !== f))}
+                    title="移除"
+                  >
+                    ×
+                  </button>
+                </span>
+                {/* 图片附件悬停缩略图：convertFileSrc 走 asset:// 协议。
+                    tauri.conf.json 启用 assetProtocol.enable 后可读图；
+                    未启用时 <img> 加载失败自然隐藏，chip 行为不变。 */}
+                {isImg && (
+                  <img
+                    src={convertFileSrc(f)}
+                    alt={basename(f)}
+                    loading="lazy"
+                    onError={(e) => {
+                      // 资产协议未启用（403）时隐藏占位元素
+                      (e.currentTarget as HTMLImageElement).style.display = "none";
+                    }}
+                    className="pointer-events-none absolute bottom-full left-0 mb-1 hidden group-hover:block max-w-[160px] max-h-[120px] rounded-lg border border-[var(--border)] bg-[var(--bg)] shadow-lg object-contain z-10"
+                  />
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -1030,10 +1066,18 @@ function extractFilePaths(content: string): string[] {
         <button
           className="nm-btn shrink-0 px-2.5 py-1.5 text-xs text-[var(--t3)]"
           title="添加文件，和消息一起发送（如：添加 Word 后输入「润色」）"
-          onClick={pickFiles}
+          onClick={() => pickFiles(false)}
           disabled={busy}
         >
           ➕
+        </button>
+        <button
+          className="nm-btn shrink-0 px-2.5 py-1.5 text-xs text-[var(--t3)]"
+          title="添加图片，发送给机器人识别（png / jpg / jpeg / webp / gif / bmp，最大 3MB/张、最多 4 张/消息）"
+          onClick={() => pickFiles(true)}
+          disabled={busy}
+        >
+          🖼️
         </button>
         <input
           value={input}
