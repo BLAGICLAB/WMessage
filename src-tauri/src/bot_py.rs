@@ -307,11 +307,22 @@ where
 /// 审计日志钩子（bot.rs 的 audit_log 已存在，这里复用数据目录 bot.log）
 pub fn py_audit(app: &AppHandle, line: &str) {
     let p = crate::db::data_dir(app).join("bot.log");
-    crate::db::rotate_log_if_large(&p, 5 * 1024 * 1024);
+    py_audit_to(&p, line);
+}
+
+/// 锁内追加一行到指定日志文件：与 audit::write_event / bot::audit_log 共用同一把
+/// BOT_LOG_LOCK（rotate + open + write 必须在同一把锁内，否则并发 append 交错错行——
+/// 2026-08-18 事故后统一上锁，py_audit 此前漏网）。
+/// 抽成路径参数版便于单测（mock_app 的 AppHandle<MockRuntime> 与 Wry 签名不兼容）。
+fn py_audit_to(path: &std::path::Path, line: &str) {
+    let _g = crate::audit::BOT_LOG_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    crate::db::rotate_log_if_large(path, 5 * 1024 * 1024);
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(p)
+        .open(path)
     {
         let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
         let _ = writeln!(f, "[{ts}] {line}");
@@ -1094,5 +1105,48 @@ mod tests {
             tauri::async_runtime::block_on(spawn_blocking_map(|| panic!("boom")));
         let e = r.unwrap_err();
         assert!(e.starts_with("执行线程异常"), "got: {e}");
+    }
+
+    // ── py_audit_to（NEW-C-2：py_audit 必须与 write_event/audit_log 共用 BOT_LOG_LOCK）──
+
+    #[test]
+    fn py_audit_to_writes_wellformed_line() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("bot.log");
+        py_audit_to(&p, "py_exec | script: hello");
+        let content = std::fs::read_to_string(&p).unwrap();
+        let line = content.trim_end();
+        assert!(
+            line.starts_with('[') && line.contains("] py_exec | script: hello"),
+            "got: {line}"
+        );
+    }
+
+    #[test]
+    fn py_audit_to_concurrent_no_interleaved_lines() {
+        // 8 线程 × 100 行并发写：上锁后每行必须完整（无撕裂/合并），行数精确
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("bot.log");
+        let mut joins = Vec::new();
+        for t in 0..8 {
+            let p = p.clone();
+            joins.push(std::thread::spawn(move || {
+                for i in 0..100 {
+                    py_audit_to(&p, &format!("marker-{t}-{i}-{}", "x".repeat(64)));
+                }
+            }));
+        }
+        for j in joins {
+            j.join().unwrap();
+        }
+        let content = std::fs::read_to_string(&p).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 800, "行数不符（可能有错行合并/撕裂）");
+        for line in lines {
+            assert!(
+                line.starts_with("[20") && line.ends_with(&"x".repeat(64)),
+                "错行: {line}"
+            );
+        }
     }
 }
