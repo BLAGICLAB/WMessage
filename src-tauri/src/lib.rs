@@ -1,5 +1,8 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 mod api;
+mod api_auth;
+mod api_handlers;
+mod api_server;
 mod audit;
 pub mod bot;
 mod bot_py;
@@ -197,7 +200,7 @@ pub fn run() {
         )
         .setup(move |app| {
             // 本地 HTTP API 状态（默认关闭，设置页开关控制）
-            app.manage(api::ApiState::default());
+            app.manage(api_server::ApiState::default());
             // F-2 中间件注册表（Plugin/Extension 抽象层 P2）：注册 2 个内置中间件
             app.manage(middleware::build_default_registry());
 
@@ -207,9 +210,9 @@ pub fn run() {
             // 开关持久化：上次退出前 API 开启过，则自动恢复（写 api-enabled.flag）
             {
                 let handle = app.handle().clone();
-                if api::should_autostart(&handle) {
-                    let state = app.state::<api::ApiState>();
-                    if let Err(e) = api::api_start(handle, state) {
+                if api_auth::should_autostart(&handle) {
+                    let state = app.state::<api_server::ApiState>();
+                    if let Err(e) = api_handlers::api_start(handle, state) {
                         eprintln!("[api] auto-start failed: {e}");
                     }
                 }
@@ -345,10 +348,10 @@ pub fn run() {
             db::bot_session_create,
             db::bot_session_delete,
             db::bot_session_rename,
-            api::api_start,
-            api::api_stop,
-            api::api_status,
-            api::api_rotate_token,
+            api_handlers::api_start,
+            api_handlers::api_stop,
+            api_handlers::api_status,
+            api_handlers::api_rotate_token,
             bot::bot_get_enabled,
             bot::bot_set_enabled,
             bot::bot_get_config,
@@ -379,6 +382,8 @@ pub fn run() {
             migration::migration_status
         ])
         .build(tauri::generate_context!())
+        // 启动期 panic 可接受（进程起不来就退）：Tauri builder 编译失败 = 环境/配置损坏，
+        // 此时进程本来就该退出，让 OS 接管并提示用户。无业务热路径，无替代转换面。
         .expect("error while building tauri application")
         .run(|app, event| {
             // 真退出入口：macOS Cmd+Q / Windows 托盘右键「退出」（app.exit(0)）都会走到这里。
