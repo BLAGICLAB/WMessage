@@ -42,12 +42,22 @@ export async function deleteTaskRows(ids: string[]): Promise<void> {
 
 /** 导出任务卡数据为 JSON 文件（全量：含归档、回收站），返回条数 */
 export async function exportTasksToFile(path: string): Promise<number> {
-  return await invoke<number>("tasks_export", { path });
+  try {
+    return await invoke<number>("tasks_export", { path });
+  } catch (e) {
+    handleCommandError(e, "tasks_export");
+    return 0;
+  }
 }
 
 /** 从 JSON 文件导入任务卡数据：按 id 合并，同 id 保留最后修改更晚的。返回写入条数。 */
 export async function importTasksFromFile(path: string): Promise<number> {
-  return await invoke<number>("tasks_import", { path });
+  try {
+    return await invoke<number>("tasks_import", { path });
+  } catch (e) {
+    handleCommandError(e, "tasks_import");
+    return 0;
+  }
 }
 
 /** 按 order 稳定排序（旧数据无 order 时保持原相对顺序） */
