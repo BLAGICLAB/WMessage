@@ -1,0 +1,767 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>WMessage — 桌面级 Todo 看板 · 磁吸挂件 · AI 机器人</title>
+<style>
+  :root{
+    --bg:#f4f7fa;
+    --bg-2:#eef2f7;
+    --ink:#2b3445;
+    --ink-soft:#6b7889;
+    --ink-mute:#9aa6b5;
+    --brand:#3a8dff;
+    --brand-2:#5aa8ff;
+    --accent:#7c5cff;
+    --ok:#22c55e;
+    --warn:#f59e0b;
+    --danger:#ef4444;
+    --shadow-dark:#d8dee6;
+    --shadow-light:#ffffff;
+    --card-shadow: 6px 6px 12px var(--shadow-dark), -6px -6px 12px var(--shadow-light);
+    --card-shadow-hover: 10px 10px 22px var(--shadow-dark), -10px -10px 22px var(--shadow-light);
+    --inset-shadow: inset 4px 4px 8px var(--shadow-dark), inset -4px -4px 8px var(--shadow-light);
+    --inset-shadow-deep: inset 6px 6px 12px var(--shadow-dark), inset -6px -6px 12px var(--shadow-light);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",Roboto,sans-serif;line-height:1.6;-webkit-font-smoothing:antialiased}
+  a{color:inherit;text-decoration:none}
+  .container{max-width:1200px;margin:0 auto;padding:0 28px}
+
+  /* ===== Navbar ===== */
+  .nav{position:sticky;top:0;z-index:50;background:rgba(244,247,250,.85);backdrop-filter:blur(14px);border-bottom:1px solid rgba(216,222,230,.4)}
+  .nav-inner{display:flex;align-items:center;justify-content:space-between;height:64px}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:18px}
+  .brand-logo{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,var(--brand),var(--accent));box-shadow:var(--card-shadow);display:grid;place-items:center;color:#fff;font-weight:800}
+  .nav-links{display:flex;gap:4px;align-items:center}
+  .nav-links a{padding:8px 14px;border-radius:10px;color:var(--ink-soft);font-size:14px;font-weight:500;transition:.2s}
+  .nav-links a:hover{color:var(--ink);background:var(--bg-2)}
+  .nav-cta{padding:9px 18px;border-radius:12px;background:linear-gradient(135deg,var(--brand),var(--accent));color:#fff;font-weight:600;font-size:14px;box-shadow:0 6px 14px rgba(58,141,255,.32);transition:.25s}
+  .nav-cta:hover{transform:translateY(-2px);box-shadow:0 10px 22px rgba(58,141,255,.42)}
+
+  /* ===== Hero ===== */
+  .hero{padding:80px 0 60px;position:relative;overflow:hidden}
+  .hero-grid{display:grid;grid-template-columns:1.05fr 1fr;gap:60px;align-items:center}
+  .badge{display:inline-flex;align-items:center;gap:8px;padding:6px 14px;border-radius:999px;background:var(--bg);box-shadow:var(--inset-shadow);font-size:12px;font-weight:600;color:var(--ink-soft);letter-spacing:.04em}
+  .badge .dot{width:6px;height:6px;border-radius:50%;background:var(--ok);box-shadow:0 0 8px var(--ok)}
+  h1.h-title{font-size:52px;line-height:1.12;font-weight:800;letter-spacing:-.02em;margin:18px 0 18px}
+  h1.h-title span{background:linear-gradient(135deg,var(--brand),var(--accent));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .lede{font-size:17px;color:var(--ink-soft);max-width:520px;margin-bottom:28px}
+  .cta-row{display:flex;gap:14px;margin-bottom:36px;flex-wrap:wrap}
+  .btn{padding:14px 24px;border-radius:14px;font-weight:600;font-size:15px;display:inline-flex;align-items:center;gap:8px;transition:.25s;cursor:pointer;border:0}
+  .btn-primary{background:linear-gradient(135deg,var(--brand),var(--accent));color:#fff;box-shadow:0 8px 18px rgba(58,141,255,.35)}
+  .btn-primary:hover{transform:translateY(-3px);box-shadow:0 12px 26px rgba(58,141,255,.5)}
+  .btn-ghost{background:var(--bg);box-shadow:var(--card-shadow);color:var(--ink)}
+  .btn-ghost:hover{transform:translateY(-3px);box-shadow:var(--card-shadow-hover)}
+  .hero-stats{display:flex;gap:36px;flex-wrap:wrap}
+  .stat .num{font-size:28px;font-weight:800;background:linear-gradient(135deg,var(--brand),var(--accent));-webkit-background-clip:text;background-clip:text;color:transparent;line-height:1}
+  .stat .lbl{font-size:12px;color:var(--ink-soft);margin-top:6px}
+
+  /* ===== Hero device mock ===== */
+  .device-wrap{position:relative;height:460px}
+  .device{position:absolute;inset:0;background:var(--bg);border-radius:24px;box-shadow:var(--card-shadow);padding:18px;overflow:hidden}
+  .device-bar{display:flex;gap:6px;margin-bottom:14px}
+  .device-bar span{width:10px;height:10px;border-radius:50%;background:#d8dee6}
+  .device-bar span:nth-child(1){background:#ff5f57}
+  .device-bar span:nth-child(2){background:#febc2e}
+  .device-bar span:nth-child(3){background:#28c840}
+  .board{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;height:calc(100% - 28px)}
+  .col{background:var(--bg);border-radius:14px;box-shadow:var(--inset-shadow);padding:10px;display:flex;flex-direction:column;gap:8px}
+  .col-h{display:flex;align-items:center;justify-content:space-between;padding:4px 6px 8px;border-bottom:1px dashed rgba(216,222,230,.6)}
+  .col-h .t{font-size:11px;font-weight:700;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.06em}
+  .col-h .c{font-size:10px;font-weight:700;padding:2px 7px;border-radius:6px;background:var(--bg);box-shadow:var(--inset-shadow);color:var(--ink-soft)}
+  .card{background:var(--bg);border-radius:10px;box-shadow:var(--card-shadow);padding:9px 10px;font-size:11px;line-height:1.35}
+  .card .ttl{font-weight:700;color:var(--ink);margin-bottom:4px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .card .meta{display:flex;align-items:center;gap:6px;color:var(--ink-mute);font-size:10px;margin-top:6px}
+  .avatar{width:18px;height:18px;border-radius:50%;background:linear-gradient(135deg,var(--brand),var(--accent));color:#fff;font-size:9px;font-weight:700;display:grid;place-items:center}
+  .tag{font-size:9px;padding:2px 6px;border-radius:5px;background:var(--bg);box-shadow:var(--inset-shadow);color:var(--ink-soft);font-weight:600}
+  .tag-bot{color:var(--accent)}
+  .tag-attached{color:var(--brand)}
+  .tag-clock{color:var(--warn)}
+
+  /* floating widgets */
+  .float-widget{position:absolute;background:var(--bg);border-radius:18px;box-shadow:var(--card-shadow);padding:12px 14px;font-size:12px}
+  .fw-1{top:30px;right:-20px;width:170px}
+  .fw-1 .hd{display:flex;align-items:center;gap:8px;margin-bottom:8px;color:var(--ink-soft);font-weight:600}
+  .fw-1 .hd .pip{width:8px;height:8px;border-radius:50%;background:var(--ok);box-shadow:0 0 6px var(--ok)}
+  .fw-1 .row{display:flex;align-items:center;gap:6px;padding:5px 6px;border-radius:8px;background:var(--bg);box-shadow:var(--inset-shadow);margin-bottom:4px}
+  .fw-2{bottom:20px;right:30px;width:230px}
+  .fw-2 .msg{padding:8px 10px;border-radius:10px;background:var(--bg);box-shadow:var(--inset-shadow);margin-bottom:6px;font-size:11px}
+  .fw-2 .msg.me{background:linear-gradient(135deg,var(--brand),var(--accent));color:#fff;margin-left:auto;max-width:80%}
+
+  /* ===== Section base ===== */
+  section{padding:90px 0}
+  .sec-h{text-align:center;max-width:720px;margin:0 auto 56px}
+  .sec-h .kicker{font-size:12px;font-weight:700;color:var(--brand);letter-spacing:.14em;text-transform:uppercase;margin-bottom:10px}
+  .sec-h h2{font-size:40px;font-weight:800;letter-spacing:-.02em;line-height:1.2;margin-bottom:14px}
+  .sec-h p{color:var(--ink-soft);font-size:16px}
+
+  /* ===== Feature grid ===== */
+  .feat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:26px}
+  .feat{background:var(--bg);border-radius:20px;box-shadow:var(--card-shadow);padding:28px 26px;transition:.3s;position:relative;overflow:hidden}
+  .feat:hover{transform:translateY(-4px);box-shadow:var(--card-shadow-hover)}
+  .feat .ico{width:52px;height:52px;border-radius:14px;background:var(--bg);box-shadow:var(--inset-shadow);display:grid;place-items:center;margin-bottom:18px;color:var(--brand)}
+  .feat h3{font-size:18px;font-weight:700;margin-bottom:10px}
+  .feat p{color:var(--ink-soft);font-size:14px;line-height:1.7}
+
+  /* ===== Show sections ===== */
+  .show{display:grid;grid-template-columns:1fr 1.05fr;gap:60px;align-items:center;margin-bottom:90px}
+  .show.rev{grid-template-columns:1.05fr 1fr}
+  .show.rev .show-text{order:2}
+  .show-text .kicker{font-size:12px;font-weight:700;color:var(--brand);letter-spacing:.14em;text-transform:uppercase;margin-bottom:10px;display:block}
+  .show-text h3{font-size:32px;font-weight:800;letter-spacing:-.02em;line-height:1.2;margin-bottom:14px}
+  .show-text p{color:var(--ink-soft);margin-bottom:18px;font-size:15.5px;line-height:1.75}
+  .show-text ul{list-style:none}
+  .show-text ul li{padding-left:28px;position:relative;color:var(--ink);margin-bottom:10px;font-size:14.5px}
+  .show-text ul li::before{content:"";position:absolute;left:0;top:6px;width:18px;height:18px;border-radius:6px;background:var(--bg);box-shadow:var(--inset-shadow)}
+  .show-text ul li::after{content:"✓";position:absolute;left:4px;top:2px;font-size:12px;color:var(--ok);font-weight:800}
+
+  .show-vis{position:relative;height:420px}
+
+  /* kanban */
+  .kw{position:absolute;inset:0;background:var(--bg);border-radius:24px;box-shadow:var(--card-shadow);padding:20px;display:flex;flex-direction:column}
+  .kw-h{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
+  .kw-h .ttl{font-weight:700;font-size:14px}
+  .kw-h .pnls{display:flex;gap:6px}
+  .kw-h .pnl{padding:5px 10px;border-radius:8px;background:var(--bg);box-shadow:var(--inset-shadow);font-size:11px;font-weight:600;color:var(--ink-soft)}
+  .kw-h .pnl.on{color:var(--brand)}
+  .kw-cols{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;flex:1}
+  .kw-col{background:var(--bg);border-radius:12px;box-shadow:var(--inset-shadow);padding:8px;display:flex;flex-direction:column;gap:6px;overflow:hidden}
+  .kw-col-h{font-size:10px;font-weight:700;color:var(--ink-soft);text-transform:uppercase;padding:3px 4px}
+  .kw-card{background:var(--bg);border-radius:8px;box-shadow:var(--card-shadow);padding:8px;font-size:10.5px}
+  .kw-card .ttl{font-weight:700;margin-bottom:4px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .kw-card .ttl.alarm::before{content:"⏰ ";color:var(--warn)}
+  .kw-card.bot{box-shadow:var(--card-shadow);border-left:3px solid var(--accent)}
+  .kw-card .meta{display:flex;gap:4px;margin-top:4px;align-items:center}
+  .kw-card .av{width:14px;height:14px;border-radius:50%;background:linear-gradient(135deg,var(--brand),var(--accent));color:#fff;font-size:8px;font-weight:700;display:grid;place-items:center}
+  .kw-card .av.bot{background:linear-gradient(135deg,#7c5cff,#ff7eb6)}
+  .drag-ghost{position:absolute;background:var(--bg);border-radius:10px;box-shadow:0 16px 30px rgba(58,141,255,.3);padding:10px;font-size:11px;font-weight:700;color:var(--brand);display:flex;align-items:center;gap:6px}
+
+  /* sidebar widget */
+  .sb{position:absolute;right:0;top:20px;width:200px;background:var(--bg);border-radius:18px 0 0 18px;box-shadow:var(--card-shadow);padding:14px;height:380px;display:flex;flex-direction:column}
+  .sb-pin{width:40px;height:5px;background:var(--ink-mute);border-radius:3px;margin:0 auto 12px;opacity:.4}
+  .sb-h{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+  .sb-h .t{font-weight:700;font-size:13px}
+  .sb-h .lock{padding:4px 8px;border-radius:8px;background:var(--bg);box-shadow:var(--inset-shadow);font-size:10px;color:var(--ink-soft)}
+  .sb-list{display:flex;flex-direction:column;gap:6px;flex:1;overflow:hidden}
+  .sb-item{padding:8px 10px;background:var(--bg);border-radius:10px;box-shadow:var(--inset-shadow);font-size:11px;display:flex;align-items:center;gap:6px}
+  .sb-item .chk{width:14px;height:14px;border-radius:5px;background:var(--bg);box-shadow:var(--inset-shadow)}
+  .sb-item.done .ttl{text-decoration:line-through;color:var(--ink-mute)}
+  .sb-views{display:flex;gap:4px;margin-top:10px;padding:4px;background:var(--bg);border-radius:10px;box-shadow:var(--inset-shadow)}
+  .sb-views .v{flex:1;text-align:center;padding:5px 0;border-radius:6px;font-size:10px;font-weight:600;color:var(--ink-soft)}
+  .sb-views .v.on{background:var(--bg);box-shadow:var(--card-shadow);color:var(--brand)}
+  .sb-attached{padding:10px;background:linear-gradient(135deg,#f4f7fa,#e2ecf7);border-radius:12px;margin-top:10px;font-size:11px}
+
+  /* chat panel */
+  .cp{position:absolute;right:24px;bottom:0;width:340px;height:400px;background:var(--bg);border-radius:20px 20px 0 0;box-shadow:var(--card-shadow);display:flex;flex-direction:column;overflow:hidden}
+  .cp-h{display:flex;align-items:center;gap:10px;padding:14px;border-bottom:1px solid rgba(216,222,230,.5)}
+  .cp-h .av{width:34px;height:34px;border-radius:50%;background:linear-gradient(135deg,var(--brand),var(--accent));color:#fff;display:grid;place-items:center;font-weight:800}
+  .cp-h .nm{font-weight:700;font-size:14px}
+  .cp-h .st{font-size:11px;color:var(--ok)}
+  .cp-body{flex:1;padding:14px;overflow:hidden;display:flex;flex-direction:column;gap:8px}
+  .bubble{padding:9px 12px;border-radius:12px;font-size:12.5px;max-width:80%;line-height:1.5}
+  .bubble.u{background:linear-gradient(135deg,var(--brand),var(--accent));color:#fff;align-self:flex-end}
+  .bubble.a{background:var(--bg);box-shadow:var(--inset-shadow);align-self:flex-start}
+  .think{padding:8px 12px;border-radius:10px;background:var(--bg);box-shadow:var(--inset-shadow);font-size:11px;color:var(--ink-soft)}
+  .think summary{font-weight:700;color:var(--ink);cursor:pointer;list-style:none}
+  .think summary::before{content:"💭 "}
+  .tool{padding:6px 10px;border-radius:8px;background:var(--bg);box-shadow:var(--inset-shadow);font-size:11px;color:var(--ink-soft);align-self:flex-start;border-left:2px solid var(--brand)}
+  .cp-input{padding:10px;border-top:1px solid rgba(216,222,230,.5);display:flex;gap:8px;align-items:center}
+  .cp-input .box{flex:1;padding:8px 12px;border-radius:10px;background:var(--bg);box-shadow:var(--inset-shadow);font-size:12px;color:var(--ink-mute)}
+  .cp-input .send{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,var(--brand),var(--accent));color:#fff;display:grid;place-items:center;cursor:pointer;border:0}
+
+  /* cleanup / cron */
+  .tools-vis{position:absolute;inset:0;display:flex;flex-direction:column;gap:14px;padding:10px}
+  .tool-card{background:var(--bg);border-radius:16px;box-shadow:var(--card-shadow);padding:16px}
+  .tool-card h4{font-size:13px;font-weight:700;margin-bottom:10px;display:flex;align-items:center;gap:6px}
+  .rule{padding:10px;border-radius:10px;background:var(--bg);box-shadow:var(--inset-shadow);margin-bottom:6px;font-size:11.5px;display:flex;align-items:center;gap:8px}
+  .rule .sw{width:30px;height:16px;border-radius:10px;background:var(--brand);position:relative}
+  .rule .sw::after{content:"";position:absolute;right:1px;top:1px;width:14px;height:14px;border-radius:50%;background:#fff}
+  .rule .nm{flex:1;font-weight:600}
+  .rule .act{font-size:10px;color:var(--ink-soft)}
+  .cron-row{display:flex;gap:8px;align-items:center;padding:8px 10px;border-radius:10px;background:var(--bg);box-shadow:var(--inset-shadow);margin-bottom:6px;font-size:12px}
+  .cron-row .ic{width:28px;height:28px;border-radius:8px;background:var(--bg);box-shadow:var(--card-shadow);display:grid;place-items:center;color:var(--warn)}
+  .cron-row .when{flex:1;font-weight:600}
+  .cron-row .when small{display:block;font-weight:400;color:var(--ink-mute);font-size:10px;margin-top:2px}
+  .cron-row .run{font-size:10px;padding:3px 8px;border-radius:6px;background:linear-gradient(135deg,var(--brand),var(--accent));color:#fff;font-weight:700}
+
+  /* workspace */
+  .ws-list{display:flex;flex-direction:column;gap:10px}
+  .ws-card{background:var(--bg);border-radius:14px;box-shadow:var(--card-shadow);padding:14px}
+  .ws-h{display:flex;align-items:center;justify-content:space-between}
+  .ws-h .nm{font-weight:700;font-size:14px}
+  .ws-h .tg{font-size:11px;color:var(--ink-mute);display:flex;align-items:center;gap:4px}
+  .ws-links{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+  .ws-link{padding:6px 10px;border-radius:8px;background:var(--bg);box-shadow:var(--inset-shadow);font-size:11.5px;display:flex;gap:6px;align-items:center}
+
+  /* ===== Workflow ===== */
+  .steps{display:grid;grid-template-columns:repeat(4,1fr);gap:20px}
+  .step{background:var(--bg);border-radius:18px;box-shadow:var(--card-shadow);padding:24px 22px;position:relative}
+  .step .n{width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,var(--brand),var(--accent));color:#fff;display:grid;place-items:center;font-weight:800;margin-bottom:14px;box-shadow:0 6px 14px rgba(58,141,255,.4)}
+  .step h4{font-size:16px;font-weight:700;margin-bottom:8px}
+  .step p{font-size:13.5px;color:var(--ink-soft);line-height:1.7}
+
+  /* ===== Tech ===== */
+  .tech{display:flex;flex-wrap:wrap;gap:10px;justify-content:center}
+  .tchip{padding:10px 18px;background:var(--bg);box-shadow:var(--card-shadow);border-radius:12px;font-size:13px;font-weight:600;color:var(--ink)}
+  .tchip small{display:block;font-size:10.5px;color:var(--ink-mute);font-weight:500;margin-top:2px}
+
+  /* ===== CTA ===== */
+  .cta{background:var(--bg);box-shadow:var(--card-shadow);border-radius:28px;padding:60px;text-align:center;margin:0 28px 80px;max-width:1200px;margin-left:auto;margin-right:auto;position:relative;overflow:hidden}
+  .cta::before{content:"";position:absolute;top:-100px;left:-100px;width:300px;height:300px;background:radial-gradient(circle,rgba(58,141,255,.25),transparent 70%);border-radius:50%}
+  .cta::after{content:"";position:absolute;bottom:-100px;right:-100px;width:300px;height:300px;background:radial-gradient(circle,rgba(124,92,255,.2),transparent 70%);border-radius:50%}
+  .cta h2{font-size:38px;font-weight:800;letter-spacing:-.02em;margin-bottom:14px;position:relative}
+  .cta p{color:var(--ink-soft);margin-bottom:28px;position:relative}
+  .cta-row{display:flex;gap:14px;justify-content:center;position:relative;flex-wrap:wrap}
+
+  /* ===== Footer ===== */
+  footer{padding:40px 0 60px;border-top:1px solid rgba(216,222,230,.5);color:var(--ink-soft);font-size:13px}
+  .ftr{display:flex;justify-content:space-between;flex-wrap:wrap;gap:14px}
+
+  /* ===== Responsive ===== */
+  @media (max-width: 980px){
+    .hero-grid,.show,.show.rev{grid-template-columns:1fr}
+    .show.rev .show-text{order:0}
+    .feat-grid{grid-template-columns:repeat(2,1fr)}
+    .steps{grid-template-columns:repeat(2,1fr)}
+    h1.h-title{font-size:38px}
+    .device-wrap{height:380px}
+    .show-vis{height:380px}
+  }
+  @media (max-width: 600px){
+    .feat-grid,.steps{grid-template-columns:1fr}
+    .nav-links{display:none}
+    section{padding:60px 0}
+    h1.h-title{font-size:30px}
+    .sec-h h2{font-size:28px}
+    .cta{padding:40px 24px;margin:0 16px 60px}
+  }
+<style id="extra">
+.spec-plus .kicker{font-size:12px;color:var(--brand);letter-spacing:.12em;text-transform:uppercase;font-weight:600}
+.spec-plus .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:24px}
+.spec-plus .card{padding:22px}
+.spec-plus .card .icn{font-size:28px;margin-bottom:8px}
+.spec-plus .card h3{font-size:17px;margin:0 0 8px;color:var(--ink)}
+.spec-plus .card p{font-size:13.5px;color:var(--ink-soft);line-height:1.65;margin:0}
+.spec-plus .card code{background:var(--bg-2);padding:1px 6px;border-radius:4px;font-size:12.5px;color:var(--accent)}
+.meta-pill{display:inline-flex;align-items:center;gap:4px;padding:5px 12px;border-radius:999px;font-size:12.5px;color:var(--ink-soft);background:#fff;box-shadow:var(--card-shadow)}
+.meta-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:22px}
+.hero-visual .mock-window{max-width:480px;margin-left:auto}
+.hero-visual .mock-bar{display:flex;align-items:center;gap:6px;padding:10px 14px;border-bottom:1px solid #e6ebf2}
+.hero-visual .mock-bar>span{width:10px;height:10px;border-radius:50%;background:#e6ebf2}
+.hero-visual .mock-bar>span:nth-child(1){background:#ff5f57}
+.hero-visual .mock-bar>span:nth-child(2){background:#ffbd2e}
+.hero-visual .mock-bar>span:nth-child(3){background:#28c941}
+.hero-visual .mock-bar em{font-style:normal;color:var(--ink-mute);font-size:12px;margin-left:auto}
+.hero-visual .mock-body{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;padding:14px}
+.hero-visual .mock-col{background:var(--bg-2);border-radius:14px;padding:10px;min-height:180px}
+.hero-visual .col-h{font-size:12px;color:var(--ink-mute);margin-bottom:8px;font-weight:600}
+.hero-visual .card{background:#fff;border-radius:10px;padding:8px 10px;font-size:12.5px;color:var(--ink);margin-bottom:6px;box-shadow:0 2px 6px rgba(0,0,0,.04)}
+.hero-visual .card.doing{border-left:3px solid var(--brand)}
+.hero-visual .card.done{border-left:3px solid var(--ok);color:var(--ink-mute);text-decoration:line-through}
+.hero .grad{background:linear-gradient(135deg,var(--brand),var(--accent));-webkit-background-clip:text;background-clip:text;color:transparent}
+@media(max-width:880px){.spec-plus .grid{grid-template-columns:1fr 1fr}.hero-visual{display:none}}
+@media(max-width:560px){.spec-plus .grid{grid-template-columns:1fr}}
+</style>
+
+</style>
+</head>
+<body>
+
+<!-- ============== Navbar ============== -->
+<nav class="nav">
+  <div class="container nav-inner">
+    <a class="brand" href="#top">
+      <span class="brand-logo">W</span>
+      <span>WMessage</span>
+    </a>
+    <div class="nav-links">
+      <a href="#features">核心功能</a>
+      <a href="#showcase">场景演示</a>
+      <a href="#workflow">使用流程</a>
+      <a href="#tech">技术栈</a>
+    </div>
+    <a class="nav-cta" href="#download">免费下载 →</a>
+  </div>
+</nav>
+
+<!-- ============== Hero ============== -->
+<header class="hero" id="top">
+  <div class="container hero-grid">
+    <div>
+      <span class="badge"><span class="dot"></span> v1.0 已发布 · Windows / macOS</span>
+      <h1 class="h-title">桌面级 <span>Todo 看板</span><br/>贴边的 AI 协作中心</h1>
+      <p class="lede">WMessage 是一款基于 Tauri + React 的桌面待办应用,带系统侧边磁吸挂件。你在写文档、设计、敲代码时,它就在屏幕边缘待命 — 顺手加任务、滑出看今日专注,复杂任务直接交给 AI 机器人做。</p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="#download">⬇ 免费下载</a>
+        <a class="btn btn-ghost" href="#showcase">▶ 查看演示</a>
+      </div>
+      <div class="hero-stats">
+        <div class="stat"><div class="num">19+</div><div class="lbl">AI 工具</div></div>
+        <div class="stat"><div class="num">4</div><div class="lbl">调度类型</div></div>
+        <div class="stat"><div class="num">100%</div><div class="lbl">本地存储</div></div>
+        <div class="stat"><div class="num">0</div><div class="lbl">云端依赖</div></div>
+      </div>
+    </div>
+
+    <!-- Device mock -->
+    <div class="device-wrap">
+      <div class="device">
+        <div class="device-bar"><span></span><span></span><span></span></div>
+        <div class="board">
+          <div class="col">
+            <div class="col-h"><span class="t">待办</span><span class="c">4</span></div>
+            <div class="card"><div class="ttl">设计新版 Landing Page</div><div class="meta"><span class="avatar">L</span><span class="tag tag-clock">⏰ 18:00</span></div></div>
+            <div class="card"><div class="ttl">评估 graphql vs trpc</div><div class="meta"><span class="avatar">L</span><span class="tag tag-attached">📎 2</span></div></div>
+            <div class="card"><div class="ttl">📞 与客户确认方案</div><div class="meta"><span class="avatar">L</span></div></div>
+            <div class="card"><div class="ttl">阅读《设计心理学》Ch.4</div><div class="meta"><span class="avatar">L</span></div></div>
+          </div>
+          <div class="col">
+            <div class="col-h"><span class="t">进行中</span><span class="c">2</span></div>
+            <div class="card"><div class="ttl">实现拖拽看板</div><div class="meta"><span class="avatar bot" style="background:linear-gradient(135deg,#7c5cff,#ff7eb6)">AI</span><span class="tag tag-bot">执行中</span></div></div>
+            <div class="card"><div class="ttl">整理周报素材</div><div class="meta"><span class="avatar">L</span></div></div>
+          </div>
+          <div class="col">
+            <div class="col-h"><span class="t">已完成</span><span class="c">6</span></div>
+            <div class="card" style="opacity:.6"><div class="ttl">配置 Tailwind 主题</div><div class="meta"><span class="avatar">L</span></div></div>
+            <div class="card" style="opacity:.6"><div class="ttl">Tauri 项目脚手架</div><div class="meta"><span class="avatar">L</span></div></div>
+            <div class="card" style="opacity:.6"><div class="ttl">新拟态样式系统</div><div class="meta"><span class="avatar">L</span></div></div>
+          </div>
+          <div class="col">
+            <div class="col-h"><span class="t">归档</span><span class="c">12</span></div>
+            <div class="card" style="opacity:.5"><div class="ttl">8 月 OKR 复盘</div><div class="meta"><span class="avatar">L</span></div></div>
+            <div class="card" style="opacity:.5"><div class="ttl">v0.9 灰度测试</div><div class="meta"><span class="avatar">L</span></div></div>
+          </div>
+        </div>
+      </div>
+      <!-- floating widgets -->
+      <div class="float-widget fw-1">
+        <div class="hd"><span class="pip"></span> 今日专注 · 3</div>
+        <div class="row">📞 与客户确认方案</div>
+        <div class="row">📊 整理周报素材</div>
+        <div class="row">📝 阅读 Ch.4</div>
+      </div>
+      <div class="float-widget fw-2">
+        <div class="msg me">帮我润色一下产品介绍</div>
+        <div class="msg">好的,我用修订模式给到 3 个版本,你想强调哪个角度?</div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<!-- ============== Core Features ============== -->
+<section id="features" style="background:linear-gradient(180deg,transparent,rgba(238,242,247,.5))">
+  <div class="container">
+    <div class="sec-h">
+      <div class="kicker">CORE FEATURES</div>
+      <h2>一个真正属于你的桌面协作空间</h2>
+      <p>从看板到挂件,从 AI 机器人到定时任务 — WMessage 把每天的待办、文件、自动化串成一个围绕你的工作流。</p>
+    </div>
+    <div class="feat-grid">
+
+      <div class="feat">
+        <div class="ico">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+        </div>
+        <h3>拖拽看板</h3>
+        <p>列 + 卡片自由拖动,@dnd-kit 流畅交互,localStorage 本地持久化,关掉电脑明天回来一切照旧。</p>
+      </div>
+
+      <div class="feat">
+        <div class="ico">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><line x1="3" y1="20" x2="21" y2="20"/></svg>
+        </div>
+        <h3>磁吸侧边挂件</h3>
+        <p>默认贴边隐藏,鼠标靠近自动滑出。可锁定常驻,可一键切换「全部任务 / 今日专注」视图。</p>
+      </div>
+
+      <div class="feat">
+        <div class="ico">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+        </div>
+        <h3>19 工具 AI 机器人</h3>
+        <p>任务管理、文档生成(Word/Excel/PPT/PDF)、本地 Python 执行、联网搜索、抓取网页、流式回复、思考过程可视化。</p>
+      </div>
+
+      <div class="feat">
+        <div class="ico">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        </div>
+        <h3>定时任务卡</h3>
+        <p>卡片 ⏰ 按钮四档调度:一次性 / 每天 / 每周 / 每月。后台扫描器每 30s 巡检,到点自动交给机器人执行。</p>
+      </div>
+
+      <div class="feat">
+        <div class="ico">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+        </div>
+        <h3>桌面文件清理</h3>
+        <p>基于规则表自动归档已完成 7 天的任务附件,支持 {year} 占位符,JSON 规则可视化配置,完整迁移日志。</p>
+      </div>
+
+      <div class="feat">
+        <div class="ico">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+        </div>
+        <h3>工作区静态链接</h3>
+        <p>收藏常用网址、文件、文件夹三类链接,可折叠、可命名。挂件只读 + 5s 轮询同步,主窗口编辑实时下发。</p>
+      </div>
+
+      <div class="feat">
+        <div class="ico">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="15" y2="17"/></svg>
+        </div>
+        <h3>文件绑定 & 复制</h3>
+        <p>任务卡绑定本地文件一键打开;复制按钮把文件 + 任务标题文本一起扔进剪贴板,贴到任何对话都能讲清上下文。</p>
+      </div>
+
+      <div class="feat">
+        <div class="ico">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M3 21v-2a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4v2"/></svg>
+        </div>
+        <h3>归属头像系统</h3>
+        <p>谁完成的就展示谁的头像 — 自己干的显示用户头像,交给机器人的显示 AI 头像(执行完清除),完成任务清晰可追溯。</p>
+      </div>
+
+      <div class="feat">
+        <div class="ico">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M6 12h12M6 16h8"/></svg>
+        </div>
+        <h3>全局快捷键</h3>
+        <p>不挑焦点,任意应用中按一组键就能唤出 WMessage、加任务、呼出机器人 — 永远比 Alt+Tab 更快一步。</p>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ============== Showcase 1: Kanban ============== -->
+<section id="showcase">
+  <div class="container">
+    <div class="sec-h">
+      <div class="kicker">SHOWCASE</div>
+      <h2>工作流,顺手得</h2>
+      <p>把每一个高频动作都压缩到最少的步骤里。</p>
+    </div>
+
+    <!-- 看板拖拽 -->
+    <div class="show">
+      <div class="show-text">
+        <span class="kicker">01 · KANBAN</span>
+        <h3>可拖拽的看板,<br/>新拟态视觉不刺眼</h3>
+        <p>列与列之间拖动,卡片今日截止标亮,定时任务卡左侧 ⏰ 图标,机器人正在执行的任务前置归属头像。视觉统一却处处给你信号。</p>
+        <ul>
+          <li>@dnd-kit 流畅拖拽,键盘无障碍支持</li>
+          <li>localStorage 持久化,关电脑不丢</li>
+          <li>归档 / 回收站保护层 — 永不误删</li>
+          <li>列头内凹交互,卡片悬浮上浮</li>
+        </ul>
+      </div>
+      <div class="show-vis">
+        <div class="kw">
+          <div class="kw-h">
+            <div class="ttl">📋 我的看板</div>
+            <div class="pnls"><span class="pnl on">看板</span><span class="pnl">工作区</span><span class="pnl">归档</span><span class="pnl">回收站</span></div>
+          </div>
+          <div class="kw-cols">
+            <div class="kw-col">
+              <div class="kw-col-h">📥 待办 · 4</div>
+              <div class="kw-card"><div class="ttl alarm">设计 Landing Page</div><div class="meta"><div class="av">L</div><span class="tag">⏰ 18:00</span></div></div>
+              <div class="kw-card"><div class="ttl">📞 与客户确认方案</div><div class="meta"><div class="av">L</div></div></div>
+              <div class="kw-card"><div class="ttl">整理 8 月数据</div><div class="meta"><div class="av">L</div><span class="tag">📎 2</span></div></div>
+            </div>
+            <div class="kw-col">
+              <div class="kw-col-h">🚀 进行中 · 2</div>
+              <div class="kw-card bot"><div class="ttl">实现拖拽看板</div><div class="meta"><div class="av bot">AI</div><span class="tag" style="color:var(--accent)">🤖 执行</span></div></div>
+              <div class="kw-card"><div class="ttl">整理周报素材</div><div class="meta"><div class="av">L</div></div></div>
+            </div>
+            <div class="kw-col">
+              <div class="kw-col-h">✅ 已完成 · 28</div>
+              <div class="kw-card" style="opacity:.55"><div class="ttl">Tauri 脚手架</div><div class="meta"><div class="av">L</div></div></div>
+              <div class="kw-card" style="opacity:.55"><div class="ttl">Tailwind 主题</div><div class="meta"><div class="av">L</div></div></div>
+            </div>
+          </div>
+          <div class="drag-ghost" style="top:140px;left:30px">✥ 拖到「已完成」</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 挂件 -->
+    <div class="show rev">
+      <div class="show-text">
+        <span class="kicker">02 · DESKTOP WIDGET</span>
+        <h3>贴边的磁吸挂件,<br/>永远在你视野边缘</h3>
+        <p>默认贴边隐藏,鼠标靠近自动滑出 — 写文档、设计稿、敲代码的同时,你的待办就在屏幕角落待命。锁定常驻后,它就是副屏。</p>
+        <ul>
+          <li>视图切换:全部任务 ↔ 今日专注</li>
+          <li>锁定常驻开关,防止误收起</li>
+          <li>挂件 UI 与主看板视觉 100% 统一</li>
+          <li>悬停展开 / 离开收起,过渡顺滑</li>
+        </ul>
+      </div>
+      <div class="show-vis">
+        <div class="sb">
+          <div class="sb-pin"></div>
+          <div class="sb-h"><div class="t">📋 今日</div><div class="lock">🔒 常驻</div></div>
+          <div class="sb-list">
+            <div class="sb-item"><div class="chk"></div><div class="ttl">📞 与客户确认</div></div>
+            <div class="sb-item"><div class="chk"></div><div class="ttl">📊 整理周报</div></div>
+            <div class="sb-item"><div class="chk"></div><div class="ttl">📝 阅读 Ch.4</div></div>
+            <div class="sb-item done"><div class="chk" style="background:linear-gradient(135deg,var(--brand),var(--accent))"></div><div class="ttl">晨会纪要</div></div>
+            <div class="sb-item done"><div class="chk" style="background:linear-gradient(135deg,var(--brand),var(--accent))"></div><div class="ttl">回 3 封邮件</div></div>
+          </div>
+          <div class="sb-views">
+            <div class="v on">全部</div>
+            <div class="v">今日</div>
+            <div class="v">工作区</div>
+            <div class="v">🤖</div>
+          </div>
+          <div class="sb-attached">📎 已绑定 2 个本地文件,可一键复制</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- AI 机器人 -->
+    <div class="show">
+      <div class="show-text">
+        <span class="kicker">03 · AI COWORKER</span>
+        <h3>19 个工具的 AI 同事,<br/>思考过程看得见</h3>
+        <p>流式回复、思考过程(💭)可展开、工具调用逐行折叠、Markdown 渲染 — 你和 AI 的协作不再是神秘黑盒。斜杠命令、Word 修订模式、本地 Python 执行沙箱都安排上了。</p>
+        <ul>
+          <li>19 工具白名单,黑名单 Skill 独占</li>
+          <li>/stop · /compact · /retry 三个本地命令</li>
+          <li>Word 润色默认走修订模式</li>
+          <li>API Key 走系统凭据存储(keyring)</li>
+          <li>删除任务 60s 二次确认</li>
+        </ul>
+      </div>
+      <div class="show-vis">
+        <div class="cp">
+          <div class="cp-h">
+            <div class="av">AI</div>
+            <div><div class="nm">WMessage AI</div><div class="st">● 在线 · 流式中</div></div>
+          </div>
+          <div class="cp-body">
+            <div class="bubble u">帮我把这段介绍润色一下,更专业一点</div>
+            <details class="think"><summary>思考中 — 需要先读原文</summary>用户传了 SP[文档路径],先调用 extract_document 读文件,再决定润色策略。</details>
+            <div class="tool">🔧 extract_document(SPEC.md)</div>
+            <details class="think"><summary>思考中 — 工具结果已回</summary>共 12 个特性。生成 1 个 cover + 3 个 section + 内容页草稿,封面标题「WMessage · 桌面级 Todo 看板」。</details>
+            <div class="tool">🔧 create_ppt(7 slides)</div>
+            <div class="bubble a">已生成 7 页 PPT,封面用了渐变标题,放在 AI_Gen_Files 目录里。要不要我打开给你看看?</div>
+          </div>
+          <div class="cp-input">
+            <div class="box">输入 / 看可用命令</div>
+            <button class="send">➤</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 调度 + 清理 -->
+    <div class="show rev">
+      <div class="show-text">
+        <span class="kicker">04 · AUTOMATION</span>
+        <h3>定时任务 + 桌面清理,<br/>让电脑自己干活</h3>
+        <p>卡片 ⏰ 四档调度器 + 桌面文件清理规则表(JSON 可上传)。机器人到点自动跑、完成的文件自动归档,所有迁移写 migration.log — 你不在,事情也在推进。</p>
+        <ul>
+          <li>调度四档:一次性 / 每天 / 每周 / 每月</li>
+          <li>规则表支持 {year} 占位符,JSON 模版下载</li>
+          <li>回收站任务绝不被清理触碰</li>
+          <li>同名冲突自动加 (n) 后缀,不覆盖</li>
+        </ul>
+      </div>
+      <div class="show-vis">
+        <div class="tools-vis">
+          <div class="tool-card">
+            <h4>⏰ 调度器 · 4 个待执行</h4>
+            <div class="cron-row"><div class="ic">⏱</div><div class="when">每日 09:00 提醒<small>每日 daily:09:00</small></div><div class="run">执行</div></div>
+            <div class="cron-row"><div class="ic">📊</div><div class="when">每周一 10:00 周报素材汇总<small>每周 weekly:1:10:00</small></div><div class="run">已就绪</div></div>
+            <div class="cron-row"><div class="ic">🗂</div><div class="when">每月 1 号 03:00 桌面归档<small>每月 monthly:01:03:00</small></div><div class="run">已就绪</div></div>
+            <div class="cron-row"><div class="ic">📞</div><div class="when">今晚 18:00 提醒客户会议<small>一次性 at:2026-08-20 18:00</small></div><div class="run" style="background:linear-gradient(135deg,var(--warn),#f97316)">即将</div></div>
+          </div>
+          <div class="tool-card">
+            <h4>🗂 桌面清理规则 · cleanup-rules.json</h4>
+            <div class="rule"><div class="sw"></div><div class="nm">*合同*.pdf</div><div class="act">→ 归档/年终/{year} · move</div></div>
+            <div class="rule"><div class="sw"></div><div class="nm">*发票*.pdf</div><div class="act">→ 归档/财务/{year} · move</div></div>
+            <div class="rule"><div class="sw" style="background:var(--ink-mute)"></div><div class="nm">*.tmp · delete</div><div class="act" style="color:var(--danger)">未启用 · delete</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 工作区 -->
+    <div class="show">
+      <div class="show-text">
+        <span class="kicker">05 · WORKSPACE</span>
+        <h3>工作区静态链接,<br/>收藏的入口就在这</h3>
+        <p>网址、文件、文件夹三类链接一并收藏,可折叠卡片、可重命名。主窗口编辑 + 挂件只读,通过 workspace-changed 事件实时同步,5s 兜底轮询。</p>
+        <ul>
+          <li>三类链接图标:🔗 网址 / 📄 文件 / 📁 文件夹</li>
+          <li>SQLite 持久化 workspace_items 表</li>
+          <li>挂件面板也能查看,主窗口编辑实时下发</li>
+          <li>点击即打开,纯静态收藏</li>
+        </ul>
+      </div>
+      <div class="show-vis">
+        <div class="tools-vis">
+          <div class="tool-card">
+            <h4>📚 工作区 · 4 个分组</h4>
+            <div class="ws-list">
+              <div class="ws-card">
+                <div class="ws-h"><div class="nm">📂 设计资源</div><div class="tg">▾ 展开</div></div>
+                <div class="ws-links">
+                  <div class="ws-link">🔗 Figma · 项目台</div>
+                  <div class="ws-link">📁 ~/Documents/Design</div>
+                  <div class="ws-link">🔗 Dribbble 灵感</div>
+                </div>
+              </div>
+              <div class="ws-card">
+                <div class="ws-h"><div class="nm">📂 学习资料</div><div class="tg">▸ 折叠</div></div>
+              </div>
+              <div class="ws-card">
+                <div class="ws-h"><div class="nm">📂 客户项目</div><div class="tg">▾ 展开</div></div>
+                <div class="ws-links">
+                  <div class="ws-link">🔗 客户门户</div>
+                  <div class="ws-link">📄 ~/Desktop/合同-v3.pdf</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ============== Workflow ============== -->
+<section id="workflow" style="background:linear-gradient(180deg,rgba(238,242,247,.5),transparent)">
+  <div class="container">
+    <div class="sec-h">
+      <div class="kicker">HOW IT WORKS</div>
+      <h2>4 步上手,1 个下午效率翻倍</h2>
+      <p>无需配置云服务、无需注册账号,装上即用。</p>
+    </div>
+    <div class="steps">
+      <div class="step">
+        <div class="n">1</div>
+        <h4>下载安装</h4>
+        <p>Windows 绿色包 / macOS dmg(Intel + Apple Silicon),双击安装即可。</p>
+      </div>
+      <div class="step">
+        <div class="n">2</div>
+        <h4>录入第一条</h4>
+        <p>主窗口或挂件随手加任务,绑定本地文件,设置 ⏰ 提醒。</p>
+      </div>
+      <div class="step">
+        <div class="n">3</div>
+        <h4>交给 AI 跑</h4>
+        <p>复杂任务一键 🤖,机器人调用 19 工具帮你做(可选)。</p>
+      </div>
+      <div class="step">
+        <div class="n">4</div>
+        <h4>每周自动归档</h4>
+        <p>7 天前完成的任务自动迁移附件到归档目录,桌面始终干净。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============== Tech ============== -->
+<section id="tech">
+  <div class="container">
+    <div class="sec-h">
+      <div class="kicker">BUILT WITH</div>
+      <h2>现代栈 · 全本地</h2>
+      <p>前端体验 + Rust 内核 + 本地存储,无需云端依赖。</p>
+    </div>
+    <div class="tech">
+      <div class="tchip">Tauri 2<small>Rust 内核 · 桌面级性能</small></div>
+      <div class="tchip">React 19<small>最新前端框架</small></div>
+      <div class="tchip">TypeScript<small>类型安全</small></div>
+      <div class="tchip">Vite 7<small>极速 HMR</small></div>
+      <div class="tchip">Tailwind v3<small>原子化样式</small></div>
+      <div class="tchip">@dnd-kit/core<small>无障碍拖拽</small></div>
+      <div class="tchip">SQLite<small>本地数据库</small></div>
+      <div class="tchip">Keyring<small>系统凭据存储</small></div>
+      <div class="tchip">新拟态设计<small>全部组件 nm 体系</small></div>
+      <div class="tchip">Skill DSL<small>状态机调度器</small></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============== CTA ============== -->
+<section id="download" style="padding-top:30px">
+  <div class="cta">
+    <h2>把今天该做的事,<br/>交给桌面上的它</h2>
+    <p>免费、完全本地、不依赖云端。装上 WMessage,让屏幕边缘多一个不打扰的伙伴。</p>
+    <div class="cta-row">
+      <a class="btn btn-primary" href="#">⬇ 下载 Windows 版</a>
+      <a class="btn btn-primary" href="#" style="background:linear-gradient(135deg,#5e6ad2,#7c5cff)">⬇ 下载 macOS 版</a>
+    </div>
+  </div>
+<section id="spec-plus" class="spec-plus">
+  <div class="container">
+    <header class="section-head"><span class="kicker">SPEC 2026-08 后追加</span><h2>v1.0 已落地的能力增量</h2></header>
+    <div class="grid g3">
+      <div class="card nm-card nm-card-hover">
+        <div class="icn">🤖</div><h3>内置 19 工具机器人</h3>
+        <p>任务/文档/Python/联网四类工具一应俱全：<b>list_tasks / create_word / run_python / web_search / fetch_url</b> 等。Word 润色默认修订模式，产物落 AI_Gen_Files 同名 (n) 序号永不覆盖。</p>
+      </div>
+      <div class="card nm-card nm-card-hover">
+        <div class="icn">⏰</div><h3>定时任务卡</h3>
+        <p>卡片 ⏰ 四档调度：<code>at:</code> 一次 / <code>daily:</code> / <code>weekly:D:</code> / <code>monthly:DD:</code>。30s 扫描调度器，到点交给机器人执行，结果前置「⏰ 自动执行」写进备注。</p>
+      </div>
+      <div class="card nm-card nm-card-hover">
+        <div class="icn">🧹</div><h3>桌面清理 · 自动迁移</h3>
+        <p>已完成满 7 天的任务附件按 <code>cleanup-rules.json</code> 自动归档，支持 <code>{year}</code> 占位符。保护看板中任务不被动，回收站不处理。同名冲突自动加 <code> (n)</code>。</p>
+      </div>
+      <div class="card nm-card nm-card-hover">
+        <div class="icn">📎</div><h3>工作区静态链接</h3>
+        <p>网址🔗 / 文件📄 / 文件夹📁 三类收藏，主窗口编辑、挂件只读。SQLite 持久化 + 5s 轮询 + workspace-changed 事件同步。</p>
+      </div>
+      <div class="card nm-card nm-card-hover">
+        <div class="icn">🧠</div><h3>Skill DSL 调度器</h3>
+        <p>Markdown + YAML frontmatter 描述 <code>## Step N</code> + 工具调用，支持 <code>${stepN.path.field}</code> 嵌套变量替换；5 个 DslAdvanceAction 状态机 + LLM 兜底。</p>
+      </div>
+      <div class="card nm-card nm-card-hover">
+        <div class="icn">📊</div><h3>Skill 监控 UI</h3>
+        <p>每次 Skill 跑完写 <code>skill_outcomes</code> SQLite 表，设置页徽章 4 色：<b style="color:var(--ok)">绿 done</b> / <b style="color:var(--brand)">蓝 await_user</b> / <b style="color:var(--warn)">黄 failed_recoverable</b> / <b style="color:var(--danger)">红 terminated</b>。</p>
+      </div>
+      <div class="card nm-card nm-card-hover">
+        <div class="icn">📦</div><h3>Win 绿色包 · macOS DMG</h3>
+        <p>mingw 交叉编译 <code>x86_64-pc-windows-gnu</code> + Python zipfile 打绿色 zip（<b>wmessage.exe + WebView2Loader.dll</b> 必备）。Mac DMG Universal 双架构。便携模式支持 U 盘带走。</p>
+      </div>
+      <div class="card nm-card nm-card-hover">
+        <div class="icn">🪪</div><h3>归属头像</h3>
+        <p>人完成 → 用户头像；机器人执行 → 机器人头像（结束清除）。设置页上传 <code>profile.json</code> + base64 data URL 头像。</p>
+      </div>
+      <div class="card nm-card nm-card-hover">
+        <div class="icn">⌨️</div><h3>全局快捷键</h3>
+        <p>系统级唤起主窗口 / 挂件 / 机器人面板。常用动作一键直达，不打断当前焦点。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============== Footer ============== -->
+<footer>
+  <div class="container ftr">
+    <div>© 2026 WMessage · 完全本地 · 开箱即用</div>
+    <div>v1.0 · 基于 SPEC.md · 新拟态 nm 体系</div>
+  </div>
+</footer>
+
+<script>
+  // 平滑滚动
+  document.querySelectorAll('a[href^="#"]').forEach(a=>{
+    a.addEventListener('click',e=>{
+      const t=document.querySelector(a.getAttribute('href'));
+      if(t){e.preventDefault();t.scrollIntoView({behavior:'smooth',block:'start'})}
+    });
+  });
+</script>
+
+</body>
+</html>
