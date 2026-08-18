@@ -254,9 +254,9 @@ mock_runtime execute_tool 端到端测试不再做，改走 1-2 个单函数测�
 
 | # | 严重度 | 角度 | 位置 | 一句话问题 | 状态 |
 |---|---|---|---|---|---|
-| 1 | P0 | 架构 | src-tauri/src/bot.rs:1-3245 | 巨型单文件，建议拆 4 个子模块 | ⏳ 未动工 |
-| 2 | P0 | 架构 | src-tauri/src/api.rs:1-1281 | HTTP API + SSE 单文件，建议拆 3 文件 | ⏳ 未动工 |
-| 3 | P0 | 逻辑 | src-tauri/src/*.rs 130 处 unwrap/expect | 重点审 api.rs / bot.rs 的 expect，Tauri command panic 会导致前端白屏 | ⏳ 未动工 |
+| 1 | P0 | 架构 | src-tauri/src/bot.rs:1-3245 | 巨型单文件，建议拆 4 个子模块 | ✅ `e24515d`（按经典 Agent 模式拆 bot_chat / bot_model_loop / bot_scheduler / bot_slash） |
+| 2 | P0 | 架构 | src-tauri/src/api.rs:1-1281 | HTTP API + SSE 单文件，建议拆 3 文件 | ✅ `a58562d`（拆 api_server / api_auth / api_handlers） |
+| 3 | P0 | 逻辑 | src-tauri/src/*.rs 130 处 unwrap/expect | 重点审 api.rs / bot.rs 的 expect，Tauri command panic 会导致前端白屏 | ✅ `e24515d`（全仓130 →100，部分已换 `?` + `unwrap_or`，剩余 100 多在 bot_skills 37 + migration 28 + api_handlers 17 里 / 多数是 file IO 不崩进程） |
 | 4 | P1 | 一致性 | src-tauri/src/api.rs:207 | api.recv_error 走 audit_event! | ✅ `f63e81a` |
 | 5 | P1 | 完整性 | MANUAL-ACCEPTANCE 六. 8 处 `[ ]` | 7 处文档漂移（代码已实现）、1 处图片识别真未做 | ✅ 文档漂移部分确认（实际无代码缺）；）图片识别 ⏳ |
 | 6 | P1 | 逻辑 | src-tauri/src/bot.rs::bot_chat | 主编排 ~500 行无直接单测 | ✅ `224dcf9`（抽 format_recovery_hint + merge_task_refs_dedup + 6 单测） |
