@@ -149,13 +149,13 @@ bot_chat(app, messages)
 
 ## 四、发现清单
 
-| # | 严重度 | 角度 | 位置 | 一句话问题 |
-|---|---|---|---|---|
-| 1 | P1 | 完整性 | src/components/ChatPanel.tsx | ❌ **图片识别未做**（grep 无 image_url / vision） |
-| 2 | INFO | 完整性 | docs/MANUAL-ACCEPTANCE.md 六/七节 | ⚠️ **文档漂移**：8 处 `[ ]` 中 7 处代码已实现（任务引用、🎯、➕、删除确认、熔断、SkillsPanel、导入删除），只有图片识别真实未做 |
-| 3 | P1 | 逻辑性 | src-tauri/src/bot.rs::bot_chat + run_model_loop | 主编排 ~500 行无直接单测，依赖中间件层 + 状态机间接覆盖 |
-| 4 | INFO | 一致性 | src-tauri/src/* Tauri command | 错误返回混合 String/Result，缺结构化 CommandError |
-| 5 | INFO | 完整性 | MANUAL-ACCEPTANCE.md | 验收流程应改成「CI 自动勾选 + 人工复核」双轨 |
+| # | 严重度 | 角度 | 位置 | 一句话问题 | 状态 |
+|---|---|---|---|---|---|
+| 1 | P1 | 完整性 | src/components/ChatPanel.tsx | ❌ **图片识别未做**（grep 无 image_url / vision） | ⏳ 未动工 |
+| 2 | INFO | 完整性 | docs/MANUAL-ACCEPTANCE.md 六/七节 | ⚠️ **文档漂移**：8 处 `[ ]` 中 7 处代码已实现（任务引用、🎯、➕、删除确认、熔断、SkillsPanel、导入删除） | ✅ 确认（仅文档问题） |
+| 3 | P1 | 逻辑性 | src-tauri/src/bot.rs::bot_chat + run_model_loop | 主编排 ~500 行无直接单测，依赖中间件层 + 状态机间接覆盖 | ✅ `224dcf9`（抽纯函数 + 6 单测） |
+| 4 | INFO | 一致性 | src-tauri/src/* Tauri command | 错误返回混合 String/Result，缺结构化 CommandError | ✅ 全量迁移完成 `f09ccb6` + `1b14df4` + `e65aa53` |
+| 5 | INFO | 完整性 | MANUAL-ACCEPTANCE.md | 验收流程应改成「CI 自动勾选 + 人工复核」双轨 | ⏳ 未动工 |
 
 ---
 
@@ -263,12 +263,12 @@ bot_chat(app, messages)
 
 ---
 
-## 六、老板后续决策项
+## 六、老板后续决策项（2026-08-18 13:30 更新）
 
-1. **MANUAL-ACCEPTANCE 文档漂移**：要不要批量勾掉实际已实现的 7 处 `[ ]`？（`MANUAL-ACCEPTANCE.md` 全表搜索 `[ ]` 过滤机器人聊天/技能系统节）
-2. **图片识别**：要不要做？4-6h 工期，依赖 LLM API 支持多模态（MiniMax / DeepSeek 现在的版本支持）
-3. **bot_chat 单测补**：要不要做？2h 工期，建议优先
-4. **CommandError 结构化**：要不要做？4-6h 工期，建议 Q3 做
+1. ✅ **MANUAL-ACCEPTANCE 文档漂移**：已确认（代码都在，文档未勾）
+2. ⏳ **图片识别**：MiniMax vision 确认支持 + `attach_images` 已就绪，仅缺前端 ➕ image filter（~2h）
+3. ✅ **bot_chat 单测补**：`224dcf9` 抽 `format_recovery_hint` + `merge_task_refs_dedup` 纯函数 + 6 单测
+4. ✅ **CommandError 全量**：`32be5ad` / `876c40f` / `f09ccb6` / `1b14df4` / `e65aa53` 全量迁移，172 tests 通过
 
 ---
 

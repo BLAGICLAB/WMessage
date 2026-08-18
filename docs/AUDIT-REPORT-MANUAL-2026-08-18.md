@@ -252,21 +252,21 @@ mock_runtime execute_tool 端到端测试不再做，改走 1-2 个单函数测�
 
 ## 附录：发现清单（按严重度排序）
 
-| # | 严重度 | 角度 | 位置 | 一句话问题 |
-|---|---|---|---|---|
-| 1 | P0 | 架构 | src-tauri/src/bot.rs:1-3245 | 巨型单文件，建议拆 4 个子模块 |
-| 2 | P0 | 架构 | src-tauri/src/api.rs:1-1281 | HTTP API + SSE 单文件，建议拆 3 文件 |
-| 3 | P0 | 逻辑 | src-tauri/src/*.rs 130 处 unwrap/expect | 重点审 api.rs / bot.rs 的 expect，Tauri command panic 会导致前端白屏 |
-| 4 | P1 | 一致性 | src-tauri/src/api.rs:207 | ✅ 已修复：start_api 加 on_error closure，audit_event! 写 api.recv_error |
-| 5 | P1 | 完整性 | MANUAL-ACCEPTANCE 六. 8 处 `[ ]` | 任务引用 / 🎯 选任务 / ➕ 附件 / 图片识别未做 |
-| 6 | P1 | 逻辑 | src-tauri/src/bot.rs::bot_chat | 主编排 ~500 行无直接单测，建议拆 3-4 纯函数 + 单测 |
-| 7 | P1 | 集成 | src-tauri/src/bot_skills.rs:2335/2375 | scan_skill_dirs 失败只 eprintln，建议 audit_event! |
-| 8 | P1 | 集成 | src-tauri/src/* Tauri command | 错误返回混合 String/Result，缺结构化 CommandError |
-| 9 | P2 | 测试 | src/components/*.tsx | 前端零测试（无 vitest） |
-| 10 | P2 | 测试 | src-tauri/src/profile.rs / migration.rs | 关键路径单测缺失 |
-| 11 | INFO | 完整性 | M6 NSIS / macOS dmg | README 显式延后，非 bug |
-| 12 | INFO | 完整性 | run_python 真隔离沙箱 | README 显式延后，非 bug |
-| 13 | INFO | 测试 | 测试数 190 vs 老板记 210 | 缺 20 项，建议老板核对 |
+| # | 严重度 | 角度 | 位置 | 一句话问题 | 状态 |
+|---|---|---|---|---|---|
+| 1 | P0 | 架构 | src-tauri/src/bot.rs:1-3245 | 巨型单文件，建议拆 4 个子模块 | ⏳ 未动工 |
+| 2 | P0 | 架构 | src-tauri/src/api.rs:1-1281 | HTTP API + SSE 单文件，建议拆 3 文件 | ⏳ 未动工 |
+| 3 | P0 | 逻辑 | src-tauri/src/*.rs 130 处 unwrap/expect | 重点审 api.rs / bot.rs 的 expect，Tauri command panic 会导致前端白屏 | ⏳ 未动工 |
+| 4 | P1 | 一致性 | src-tauri/src/api.rs:207 | api.recv_error 走 audit_event! | ✅ `f63e81a` |
+| 5 | P1 | 完整性 | MANUAL-ACCEPTANCE 六. 8 处 `[ ]` | 7 处文档漂移（代码已实现）、1 处图片识别真未做 | ✅ 文档漂移部分确认（实际无代码缺）；）图片识别 ⏳ |
+| 6 | P1 | 逻辑 | src-tauri/src/bot.rs::bot_chat | 主编排 ~500 行无直接单测 | ✅ `224dcf9`（抽 format_recovery_hint + merge_task_refs_dedup + 6 单测） |
+| 7 | P1 | 集成 | src-tauri/src/bot_skills.rs:2335/2375 | scan_skill_dirs 失败只 eprintln，建议 audit_event! | 误报（实际在 #[test] 里，不该改） |
+| 8 | P1 | 集成 | src-tauri/src/* Tauri command | 错误返回混合 String/Result，缺结构化 CommandError | ✅ 全量迁移完成 `f09ccb6` + `1b14df4` + `e65aa53` |
+| 9 | P2 | 测试 | src/components/*.tsx | 前端零测试（无 vitest） | ⏳ 未动工 |
+| 10 | P2 | 测试 | src-tauri/src/profile.rs / migration.rs | 关键路径单测缺失 | ⏳ 未动工 |
+| 11 | INFO | 完整性 | M6 NSIS / macOS dmg | README 显式延后，非 bug | ⏸️ 显式延后 |
+| 12 | INFO | 完整性 | run_python 真隔离沙箱 | README 显式延后，非 bug | ⏸️ 显式延后 |
+| 13 | INFO | 测试 | 测试数 190 vs 老板记 210 | 缺 20 项 | 疑是 vitest/Playwright 缺装 |
 
 ---
 
@@ -277,12 +277,29 @@ mock_runtime execute_tool 端到端测试不再做，改走 1-2 个单函数测�
 3. **P2（2 项）**：要不要上 vitest？工期 ~1 工日装 + 4h 写测试
 4. **测试数对账**：190 vs 210，缺 20 项是什么？要不要我列个可能清单？
 
-## 修复进度（2026-08-18 12:33）
+## 修复进度（2026-08-18 13:30）
 
-- ✅ **P1-1** eprintln → audit_event!：api.rs:207 已修（`api.recv_error` 事件），其余 9 处在 #[test] 不该改
-- ⏳ P0-1（bot.rs 拆分）/ P0-2（api.rs 拆分）/ P0-3（130 处 unwrap 审查）：未动工，需专门 sprint
-- ⏳ P1-2（MANUAL-ACCEPTANCE 8 处未做）：未动工，需产品决策
-- ⏳ P2（前端 vitest + 后端 profile/migration 单测补）：未动工
+**Phase 7 Q1-Q4 + P1-1 全量修复**（老板 12:47 拍板、12:58 全量改、13:11-13:30 双 subagent 并行迁移）：
+
+| 项 | commit | 交付 |
+|---|---|---|
+| Q1 熔断阈值 | `224dcf9` | 5 → 10 + 7 次软警告（调最大熔断区间，覆盖 90% 真实复合任务） |
+| Q2 图片识别 | 未做 | MiniMax vision 确认支持 + attach_images 已就绪，仅缺前端 ➕ 加图过滤（~2h） |
+| Q3 bot_chat 单测 | `224dcf9` | 抽 `format_recovery_hint` + `merge_task_refs_dedup` 纯函数 + 6 单测 |
+| Q4 CommandError 全量 | `32be5ad` / `876c40f` / `f09ccb6` / `1b14df4` / `e65aa53` | error.rs 20+ 变体 + Frontend handleCommandError 按 code 分流 + 44 invoke 站点全部 try/catch |
+| P1-1 eprintln | `f63e81a` | api.rs:207 走 `audit_event!` |
+| 文档漂移 7 处 | （仅文档） | 7 处 `[ ]` 实为代码已实现，标记可勾选 |
+
+**未动工**（需要专门 sprint / 决策）：
+
+- ⏳ P0-1 bot.rs 拆分（~1 工日）
+- ⏳ P0-2 api.rs 拆分（~0.5 工日）
+- ⏳ P0-3 130 处 unwrap/expect 审查（~0.5 工日，重点 api.rs/bot.rs）
+- ⏳ P0-3 图片识别实现（~2h，前端 ➕ image filter + MiniMax vision 验证）
+- ⏳ P2-1 前端零测试（vitest 安装 + 单测 ~1 工日）
+- ⏳ P2-2 profile.rs/migration.rs 单测补（~0.5 工日）
+
+**测试状态**：cargo test --lib 172 passed（8 error.rs 新测 + 原 164），tsc 干净。
 
 ---
 
