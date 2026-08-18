@@ -291,6 +291,19 @@ pub fn run_python(
     })
 }
 
+/// 把阻塞调用挪到 blocking 线程池：doc_* 是 async 命令，直接调 run_python 会把
+/// 最长 120s 的阻塞压在 async runtime worker 上（并发几个文档操作即可拖垮 runtime，
+/// 与 py_env_check 的 spawn_blocking 同一修复模式）。
+async fn spawn_blocking_map<F, T>(f: F) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+    T: Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .map_err(|e| format!("执行线程异常：{e}"))?
+}
+
 /// 审计日志钩子（bot.rs 的 audit_log 已存在，这里复用数据目录 bot.log）
 pub fn py_audit(app: &AppHandle, line: &str) {
     let p = crate::db::data_dir(app).join("bot.log");
@@ -848,7 +861,11 @@ pub async fn doc_extract(app: AppHandle, path: Option<String>) -> Result<DocExtr
     };
     py_audit(&app, &format!("doc_extract | path: {path}"));
     let input = serde_json::json!({ "path": path }).to_string();
-    let r = run_python(&app, EXTRACT_SCRIPT, Some(&input), &[], Some(120))?;
+    let handle = app.clone();
+    let r = spawn_blocking_map(move || {
+        run_python(&handle, EXTRACT_SCRIPT, Some(&input), &[], Some(120))
+    })
+    .await?;
     if r.exit_code != Some(0) {
         py_audit(
             &app,
@@ -880,7 +897,11 @@ pub async fn doc_make_word(
     let out = gen_out_path(&app, filename.as_deref(), "docx")?;
     let input =
         serde_json::json!({ "title": title, "paragraphs": paragraphs, "out": out }).to_string();
-    let r = run_python(&app, MAKE_DOCX_SCRIPT, Some(&input), &[], Some(120))?;
+    let handle = app.clone();
+    let r = spawn_blocking_map(move || {
+        run_python(&handle, MAKE_DOCX_SCRIPT, Some(&input), &[], Some(120))
+    })
+    .await?;
     if r.exit_code != Some(0) {
         return Err(format!("生成 Word 失败：{}", r.stderr.trim()));
     }
@@ -908,13 +929,11 @@ pub async fn doc_make_word_revisions(
         "out": out
     })
     .to_string();
-    let r = run_python(
-        &app,
-        MAKE_DOCX_REVISIONS_SCRIPT,
-        Some(&input),
-        &[],
-        Some(120),
-    )?;
+    let handle = app.clone();
+    let r = spawn_blocking_map(move || {
+        run_python(&handle, MAKE_DOCX_REVISIONS_SCRIPT, Some(&input), &[], Some(120))
+    })
+    .await?;
     if r.exit_code != Some(0) {
         return Err(format!("生成修订版 Word 失败：{}", r.stderr.trim()));
     }
@@ -937,7 +956,11 @@ pub async fn doc_make_excel(
 ) -> Result<String, String> {
     let out = gen_out_path(&app, filename.as_deref(), "xlsx")?;
     let input = serde_json::json!({ "sheets": sheets, "out": out }).to_string();
-    let r = run_python(&app, MAKE_XLSX_SCRIPT, Some(&input), &[], Some(120))?;
+    let handle = app.clone();
+    let r = spawn_blocking_map(move || {
+        run_python(&handle, MAKE_XLSX_SCRIPT, Some(&input), &[], Some(120))
+    })
+    .await?;
     if r.exit_code != Some(0) {
         return Err(format!("生成 Excel 失败：{}", r.stderr.trim()));
     }
@@ -956,7 +979,11 @@ pub async fn doc_make_pdf(
     let out = gen_out_path(&app, filename.as_deref(), "pdf")?;
     let input =
         serde_json::json!({ "title": title, "paragraphs": paragraphs, "out": out }).to_string();
-    let r = run_python(&app, MAKE_PDF_SCRIPT, Some(&input), &[], Some(120))?;
+    let handle = app.clone();
+    let r = spawn_blocking_map(move || {
+        run_python(&handle, MAKE_PDF_SCRIPT, Some(&input), &[], Some(120))
+    })
+    .await?;
     if r.exit_code != Some(0) {
         return Err(format!("生成 PDF 失败：{}", r.stderr.trim()));
     }
@@ -994,7 +1021,11 @@ pub async fn doc_make_ppt(
         .unwrap_or_else(|| "blue".into());
     let input = serde_json::json!({ "title": title, "slides": slides, "out": out, "theme": theme })
         .to_string();
-    let r = run_python(&app, MAKE_PPTX_SCRIPT, Some(&input), &[], Some(120))?;
+    let handle = app.clone();
+    let r = spawn_blocking_map(move || {
+        run_python(&handle, MAKE_PPTX_SCRIPT, Some(&input), &[], Some(120))
+    })
+    .await?;
     if r.exit_code != Some(0) {
         return Err(format!("生成 PPT 失败：{}", r.stderr.trim()));
     }
@@ -1034,5 +1065,34 @@ fn truncate_for_log(s: &str, max: usize) -> String {
         let mut out: String = s.chars().take(max).collect();
         out.push('…');
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── spawn_blocking_map（NEW-C-1：doc_* async 命令不得把阻塞压在 runtime worker 上）──
+
+    #[test]
+    fn spawn_blocking_map_ok_passthrough() {
+        let r = tauri::async_runtime::block_on(spawn_blocking_map(|| Ok::<_, String>(42)));
+        assert_eq!(r.unwrap(), 42);
+    }
+
+    #[test]
+    fn spawn_blocking_map_err_passthrough() {
+        let r: Result<i32, String> =
+            tauri::async_runtime::block_on(spawn_blocking_map(|| Err("业务错误".to_string())));
+        assert_eq!(r.unwrap_err(), "业务错误");
+    }
+
+    #[test]
+    fn spawn_blocking_map_panic_mapped_to_err() {
+        // 闭包 panic → JoinError → 映射为错误字符串，而不是扩散到调用方
+        let r: Result<(), String> =
+            tauri::async_runtime::block_on(spawn_blocking_map(|| panic!("boom")));
+        let e = r.unwrap_err();
+        assert!(e.starts_with("执行线程异常"), "got: {e}");
     }
 }
