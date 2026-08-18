@@ -9,7 +9,7 @@
 //! 单靠 free-form 文本做不了统计面板。
 
 use std::io::Write;
-use tauri::{AppHandle, Runtime}; // F-6：Runtime 给 write_event 泛型化
+use tauri::AppHandle; // F-6：Runtime 给 write_event 泛型化
 
 /// 审计事件级别（post-execute 钩子分类用）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,7 +61,7 @@ pub fn format_event_line(level: AuditLevel, event: &str, kv: &[(&str, &str)]) ->
 
 /// 写一条结构化审计事件到 `bot.log`（post-execute 钩子主入口）
 /// 复用 `bot::audit_log` 的 rotate 阈值与文件路径，老日志兼容。
-pub fn write_event<R: Runtime>(app: &AppHandle<R>, level: AuditLevel, event: &str, kv: &[(&str, String)]) {
+pub fn write_event(app: &AppHandle, level: AuditLevel, event: &str, kv: &[(&str, String)]) {
     crate::db::rotate_log_if_large(
         &crate::db::data_dir(app).join("bot.log"),
         5 * 1024 * 1024,

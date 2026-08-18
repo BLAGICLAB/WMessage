@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use tauri::{Manager, Runtime}; // F-6：Runtime 给 data_dir 泛型化
+use tauri::Manager; // F-6：Runtime 给 data_dir 泛型化
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -45,7 +45,7 @@ pub struct Task {
 
 /// 便携模式：数据库优先放 exe 同目录（U盘/绿色目录随走随带）；
 /// 目录不可写（如 Program Files）时兜底到系统应用数据目录。
-fn db_dir<R: Runtime>(app: &tauri::AppHandle<R>) -> std::path::PathBuf {
+fn db_dir(app: &tauri::AppHandle) -> std::path::PathBuf {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             let probe = dir.join(".wm-write-probe");
@@ -61,7 +61,7 @@ fn db_dir<R: Runtime>(app: &tauri::AppHandle<R>) -> std::path::PathBuf {
 }
 
 /// 数据目录（供本地 HTTP API 存 token 等附属文件，便携模式跟随 exe）
-pub fn data_dir<R: Runtime>(app: &tauri::AppHandle<R>) -> std::path::PathBuf {
+pub fn data_dir(app: &tauri::AppHandle) -> std::path::PathBuf {
     db_dir(app)
 }
 
@@ -739,7 +739,7 @@ fn migrate_data_json(app: &tauri::AppHandle, conn: &mut rusqlite::Connection) {
 static DB_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[tauri::command]
-pub fn db_load<R: Runtime>(app: tauri::AppHandle<R>) -> Result<Vec<Task>, String> {
+pub fn db_load(app: tauri::AppHandle) -> Result<Vec<Task>, String> {
     let mut conn = open_db(&app)?;
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
@@ -751,7 +751,7 @@ pub fn db_load<R: Runtime>(app: tauri::AppHandle<R>) -> Result<Vec<Task>, String
 }
 
 #[tauri::command]
-pub fn db_upsert<R: Runtime>(app: tauri::AppHandle<R>, tasks: Vec<Task>) -> Result<(), String> {
+pub fn db_upsert(app: tauri::AppHandle, tasks: Vec<Task>) -> Result<(), String> {
     if tasks.is_empty() {
         return Ok(());
     }
@@ -763,7 +763,7 @@ pub fn db_upsert<R: Runtime>(app: tauri::AppHandle<R>, tasks: Vec<Task>) -> Resu
 }
 
 #[tauri::command]
-pub fn db_delete<R: Runtime>(app: tauri::AppHandle<R>, ids: Vec<String>) -> Result<(), String> {
+pub fn db_delete(app: tauri::AppHandle, ids: Vec<String>) -> Result<(), String> {
     if ids.is_empty() {
         return Ok(());
     }
@@ -856,7 +856,7 @@ fn load_external(conn: &rusqlite::Connection) -> Result<Vec<Task>, String> {
 /// 合并导入：按 id 并集；同 id 内容分歧时保留 updated_at 更新（外部无 updated_at 视为最旧）。
 /// 返回实际写入的任务条数。
 #[tauri::command]
-pub fn db_merge<R: Runtime>(app: tauri::AppHandle<R>, path: String) -> Result<usize, String> {
+pub fn db_merge(app: tauri::AppHandle, path: String) -> Result<usize, String> {
     use rusqlite::{OpenFlags, OptionalExtension};
 
     let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());

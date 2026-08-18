@@ -8,7 +8,7 @@
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, Runtime};
+use tauri::AppHandle;
 use crate::audit_event;
 
 /// 打开文件/文件夹（Rust 侧调用 opener 插件）：绕过前端窗口的 opener scope，
@@ -83,7 +83,7 @@ pub struct SkillInfo {
     pub last_outcome: Option<crate::db::PersistedSkillOutcome>,
 }
 
-fn skills_dir<R: Runtime>(app: &AppHandle<R>) -> std::path::PathBuf {
+fn skills_dir(app: &AppHandle) -> std::path::PathBuf {
     crate::db::data_dir(app).join("skills")
 }
 
@@ -113,7 +113,7 @@ fn dev_skills_dir_at(target_root: &std::path::Path) -> Option<std::path::PathBuf
 /// `#[cfg_attr(not(debug_assertions), allow(dead_code))]` —— release 模式 dev_skills_dir
 /// 不存在，整个函数仅返回一个目录（数据目录），避免 dead_code 警告。
 #[cfg_attr(not(debug_assertions), allow(dead_code))]
-fn skill_search_paths<R: Runtime>(app: &AppHandle<R>) -> Vec<std::path::PathBuf> {
+fn skill_search_paths(app: &AppHandle) -> Vec<std::path::PathBuf> {
     #[allow(unused_mut)] // release 模式：dev_skills_dir 分支被排除，paths 不需要 mut
     let mut paths = vec![skills_dir(app)];
     #[cfg(debug_assertions)]
@@ -439,7 +439,7 @@ pub fn active_skill_run() -> Option<SkillRun> {
 /// 读取技能正文 + 完整元数据（Phase 4 第 4 项 2026-08-18 07:09：多目录 fallback）
 /// 遍历 `skill_search_paths(app)`：数据目录找不到 → dev 模式 fallback target/debug/skills。
 /// 数据目录优先（用户已修改的 Skill 优先于 dev mock 版本）。
-fn load_skill_meta<R: Runtime>(app: &AppHandle<R>, name: &str) -> Result<(SkillMeta, String), String> {
+fn load_skill_meta(app: &AppHandle, name: &str) -> Result<(SkillMeta, String), String> {
     if name.is_empty() || !name.chars().all(SKILL_NAME_CHARS_OK) {
         return Err("技能名无效".into());
     }
@@ -736,7 +736,7 @@ fn preflight(meta: &SkillMeta) -> Result<(), String> {
 }
 
 /// 启动 Skill：use_skill 工具调用即启动生命周期（预审 → Running），返回文档 + 运行约束提示。
-pub fn start_skill<R: Runtime>(app: &AppHandle<R>, name: &str) -> Result<(SkillMeta, String), String> {
+pub fn start_skill(app: &AppHandle, name: &str) -> Result<(SkillMeta, String), String> {
     let (meta, body) = load_skill_meta(app, name)?;
     preflight(&meta)?;
     // 预审已通过 → 直接进入 Running（此前停在 Loaded，步骤钩子按 Running/Paused 查找，
@@ -775,7 +775,7 @@ pub fn start_skill<R: Runtime>(app: &AppHandle<R>, name: &str) -> Result<(SkillM
 }
 
 /// 工具 use_skill：读取技能文档全文返回给模型。
-pub fn tool_use_skill<R: Runtime>(app: &AppHandle<R>, args: &str) -> (String, Vec<crate::bot::TaskRef>) {
+pub fn tool_use_skill(app: &AppHandle, args: &str) -> (String, Vec<crate::bot::TaskRef>) {
     let v: serde_json::Value = serde_json::from_str(args).unwrap_or(serde_json::Value::Null);
     let Some(name) = v["name"].as_str().map(|s| s.trim().to_string()) else {
         return ("use_skill 缺少 name".into(), Vec::new());
@@ -827,7 +827,7 @@ fn step_check(run: &mut SkillRun, tool: &str, args: &str, now: i64) -> Result<()
     Ok(())
 }
 
-pub fn skill_on_step<R: Runtime>(app: &AppHandle<R>, tool: &str, args: &str) -> Result<(), String> {
+pub fn skill_on_step(app: &AppHandle, tool: &str, args: &str) -> Result<(), String> {
     let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
     let Some(run) = runs.values_mut().find(|r| r.state == SkillState::Running || r.state == SkillState::Paused) else {
         return Ok(()); // 无活动 Skill（模型自由调用工具），不干预
@@ -846,7 +846,7 @@ pub fn skill_on_step<R: Runtime>(app: &AppHandle<R>, tool: &str, args: &str) -> 
 ///
 /// 失败判定：级别 ≥ Warn 且文本含「失败/错误/error:/Error:」→ 把 Skill 标 Failed，
 /// 写入 end_reason 让 `skill_finish` 知道不再继续后续步骤。
-pub fn skill_on_step_post<R: Runtime>(
+pub fn skill_on_step_post(
     app: &AppHandle,
     tool: &str,
     result: &str,
@@ -949,7 +949,7 @@ fn rollback_section(body: &str) -> String {
 
 /// 收尾钩子：模型循环结束时调用（成功/失败/用户停止）。
 /// 返回回滚建议文本（失败且 rollback=auto 且有动作记录时非空），调用方拼进回复让模型执行逆操作。
-pub fn skill_finish<R: Runtime>(app: &AppHandle<R>, ok: bool, reason: &str) -> String {
+pub fn skill_finish(app: &AppHandle, ok: bool, reason: &str) -> String {
     let mut rollback_hint = String::new();
     let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
     for (name, run) in runs.iter_mut() {
@@ -1127,7 +1127,7 @@ pub fn format_completed_summary(ctx: &[CompletedStep]) -> String {
 }
 
 /// 强制终止所有活动 Skill（/stop 联动；用户取消时调用）
-pub fn skill_terminate_all<R: Runtime>(app: &AppHandle<R>, reason: &str) {
+pub fn skill_terminate_all(app: &AppHandle, reason: &str) {
     let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
     for (name, run) in runs.iter_mut() {
         if run.state == SkillState::Running || run.state == SkillState::Paused {

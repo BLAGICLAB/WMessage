@@ -23,7 +23,7 @@ use crate::bot_skills::{build_skill_block, tool_use_skill, SkillMeta};
 use crate::intent_router::RouteAction; // F-2：route_user_input 调用迁移到 middleware::run_pre_step
 use serde::{Deserialize, Serialize};
 use std::io::Write;
-use tauri::{AppHandle, Emitter, Manager, Runtime}; // F-6：Runtime 给 audit_log 泛型化
+use tauri::{AppHandle, Emitter, Manager}; // F-6：Runtime 给 audit_log 泛型化
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
@@ -341,11 +341,11 @@ pub fn bot_clear_api_key() -> Result<(), String> {
 
 /// 追加机器人审计日志：用户指令、工具名、入参、结果全部留痕（数据目录 bot.log）
 /// 审计日志外部钩子（bot_skills 调度器用；bot.rs 内部仍用 audit_log）
-pub fn audit_log_hook<R: Runtime>(app: &AppHandle<R>, line: &str) {
+pub fn audit_log_hook(app: &AppHandle, line: &str) {
     audit_log(app, line);
 }
 
-fn audit_log<R: Runtime>(app: &AppHandle<R>, line: &str) {
+fn audit_log(app: &AppHandle, line: &str) {
     crate::db::rotate_log_if_large(&crate::db::data_dir(app).join("bot.log"), 5 * 1024 * 1024);
     let p = crate::db::data_dir(app).join("bot.log");
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
@@ -1992,7 +1992,7 @@ pub fn start_scheduler(app: AppHandle) {
 /// 进程内执行工具，返回 (给模型的文本结果, 涉及的任务引用)
 /// `pub` 让 `bot_skills::run_skill_scheduler`（Phase 1 DSL 调度器）可调用，
 /// 不暴露给前端 — 通过 `is_atomic_tool` 黑名单 + pre-execute 校验保护。
-pub async fn execute_tool<R: Runtime>(app: &AppHandle<R>, name: &str, args: &str) -> (String, Vec<TaskRef>) {
+pub async fn execute_tool(app: &AppHandle, name: &str, args: &str) -> (String, Vec<TaskRef>) {
     let start = std::time::Instant::now();
     // 0. tool.call 结构化（F-3 第三步 2026-08-18）
     audit_event!(
@@ -2074,7 +2074,7 @@ fn parse_args(args: &str) -> serde_json::Value {
 }
 
 /// 改库后广播：挂件重读（tasks-changed）+ 主窗口合并 UI 不回写（tasks-updated, source:"bot"）
-fn broadcast_after_mutation<R: Runtime>(app: &AppHandle<R>, upserts: Vec<crate::db::Task>, deletes: Vec<String>) {
+fn broadcast_after_mutation(app: &AppHandle, upserts: Vec<crate::db::Task>, deletes: Vec<String>) {
     if !upserts.is_empty() || !deletes.is_empty() {
         let _ = app.emit("tasks-changed", ());
         let _ = app.emit(
@@ -2084,7 +2084,7 @@ fn broadcast_after_mutation<R: Runtime>(app: &AppHandle<R>, upserts: Vec<crate::
     }
 }
 
-fn active_tasks<R: Runtime>(app: &AppHandle<R>) -> Vec<crate::db::Task> {
+fn active_tasks(app: &AppHandle) -> Vec<crate::db::Task> {
     crate::db::db_load(app.clone())
         .unwrap_or_default()
         .into_iter()
@@ -2092,7 +2092,7 @@ fn active_tasks<R: Runtime>(app: &AppHandle<R>) -> Vec<crate::db::Task> {
         .collect()
 }
 
-fn tool_list_tasks<R: Runtime>(app: &AppHandle<R>) -> (String, Vec<TaskRef>) {
+fn tool_list_tasks(app: &AppHandle) -> (String, Vec<TaskRef>) {
     let tasks = active_tasks(app);
     if tasks.is_empty() {
         return ("当前没有未完成的任务".into(), Vec::new());
@@ -2120,7 +2120,7 @@ fn tool_list_tasks<R: Runtime>(app: &AppHandle<R>) -> (String, Vec<TaskRef>) {
 /// - 输出：标题/列/截止/备注/子任务/标签/绑定文件 + 归档/删除/机器人执行状态指示
 /// - 单点白名单工具（非原子黑名单），LLM 可裸调
 /// - 返回的 TaskRef 供后续 taskId 操作（complete_task / edit_task / bind_file 等）跟随引用
-fn tool_query_single_task<R: Runtime>(app: &AppHandle<R>, args: &str) -> (String, Vec<TaskRef>) {
+fn tool_query_single_task(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>) {
     let v = parse_args(args);
     let Some(id) = v["id"].as_str().map(|s| s.trim().to_string()) else {
         return ("query_single_task 缺少 id 参数".into(), Vec::new());
@@ -2191,7 +2191,7 @@ fn tool_query_single_task<R: Runtime>(app: &AppHandle<R>, args: &str) -> (String
 
 /// 搜索任务：搜所有任务卡（待办/进行中/已完成/已归档；不含回收站软删）。
 /// 关键词匹配标题/备注/标签/子任务（大小写不敏感 contains）；结果带 id 供后续 taskId 操作
-fn tool_search_tasks<R: Runtime>(app: &AppHandle<R>, args: &str) -> (String, Vec<TaskRef>) {
+fn tool_search_tasks(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>) {
     let v = parse_args(args);
     let Some(query) = v["query"].as_str().map(|s| s.trim().to_lowercase()) else {
         return ("search_tasks 缺少 query".into(), Vec::new());
@@ -2261,7 +2261,7 @@ fn tool_search_tasks<R: Runtime>(app: &AppHandle<R>, args: &str) -> (String, Vec
     (lines.join("\n"), refs)
 }
 
-fn tool_create_task<R: Runtime>(app: &AppHandle<R>, args: &str) -> (String, Vec<TaskRef>) {
+fn tool_create_task(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>) {
     let v = parse_args(args);
     let Some(title) = v["title"].as_str() else {
         return ("create_task 缺少 title".into(), Vec::new());
@@ -2323,7 +2323,7 @@ fn tool_create_task<R: Runtime>(app: &AppHandle<R>, args: &str) -> (String, Vec<
     }
 }
 
-fn tool_complete_task<R: Runtime>(app: &AppHandle<R>, args: &str) -> (String, Vec<TaskRef>) {
+fn tool_complete_task(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>) {
     let v = parse_args(args);
     let Some(kw) = v["title"].as_str().map(|s| s.trim().to_lowercase()) else {
         return ("complete_task 缺少 title".into(), Vec::new());
@@ -2351,7 +2351,7 @@ fn tool_complete_task<R: Runtime>(app: &AppHandle<R>, args: &str) -> (String, Ve
 }
 
 /// 删除任务到回收站：**弹窗确认后才执行**（危险操作护栏；60s 无响应默认拒绝）
-async fn tool_delete_task<R: Runtime>(app: &AppHandle<R>, args: &str) -> (String, Vec<TaskRef>) {
+async fn tool_delete_task(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>) {
     let v = parse_args(args);
     let task = match resolve_task(app, &v) {
         Ok(t) => t,
@@ -2407,7 +2407,7 @@ fn resolve_task(app: &AppHandle, v: &serde_json::Value) -> Result<crate::db::Tas
     Err("缺少 taskId 或 title 参数".into())
 }
 
-fn tool_edit_task<R: Runtime>(app: &AppHandle<R>, args: &str) -> (String, Vec<TaskRef>) {
+fn tool_edit_task(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>) {
     let v = parse_args(args);
     let task = match resolve_task(app, &v) {
         Ok(t) => t,
@@ -2493,7 +2493,7 @@ fn tool_edit_task<R: Runtime>(app: &AppHandle<R>, args: &str) -> (String, Vec<Ta
     }
 }
 
-fn tool_add_subtask<R: Runtime>(app: &AppHandle<R>, args: &str) -> (String, Vec<TaskRef>) {
+fn tool_add_subtask(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>) {
     let v = parse_args(args);
     let Some(text) = v["text"].as_str().map(|s| s.trim()) else {
         return ("add_subtask 缺少 text".into(), Vec::new());
@@ -2529,7 +2529,7 @@ fn tool_add_subtask<R: Runtime>(app: &AppHandle<R>, args: &str) -> (String, Vec<
     }
 }
 
-fn tool_toggle_subtask<R: Runtime>(app: &AppHandle<R>, args: &str) -> (String, Vec<TaskRef>) {
+fn tool_toggle_subtask(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>) {
     let v = parse_args(args);
     let Some(skw) = v["text"].as_str().map(|s| s.trim().to_lowercase()) else {
         return ("toggle_subtask 缺少 text".into(), Vec::new());
@@ -2575,7 +2575,7 @@ fn tool_toggle_subtask<R: Runtime>(app: &AppHandle<R>, args: &str) -> (String, V
 }
 
 /// 绑定文件/文件夹：弹系统选择框由用户挑选，结果写回任务的 filePath/fileIsDir
-async fn tool_bind_file<R: Runtime>(app: &AppHandle<R>, args: &str) -> (String, Vec<TaskRef>) {
+async fn tool_bind_file(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>) {
     let v = parse_args(args);
     let is_dir = v["isDir"].as_bool().unwrap_or(false);
     let task = match resolve_task(app, &v) {
@@ -2623,7 +2623,7 @@ fn file_path_to_string(p: tauri_plugin_dialog::FilePath) -> Option<String> {
 }
 
 /// 把文件路径绑定到任务卡（不弹框；路径必须真实存在，防模型编造）
-async fn tool_link_file_to_task<R: Runtime>(app: &AppHandle<R>, args: &str) -> (String, Vec<TaskRef>) {
+async fn tool_link_file_to_task(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>) {
     let v = parse_args(args);
     let Some(path) = v["path"]
         .as_str()
@@ -2704,7 +2704,7 @@ fn extract_path_allowed(app: &AppHandle, path: &str) -> bool {
     false
 }
 
-async fn tool_extract_document<R: Runtime>(app: &AppHandle<R>, args: &str) -> (String, Vec<TaskRef>) {
+async fn tool_extract_document(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>) {
     let v = parse_args(args);
     let path_opt = v["path"]
         .as_str()
@@ -2722,15 +2722,21 @@ async fn tool_extract_document<R: Runtime>(app: &AppHandle<R>, args: &str) -> (S
     }
     match crate::bot_py::doc_extract(app.clone(), path_opt).await {
         Ok(res) => {
-            let limited: String = res.text.chars().take(30000).collect();
-            let mut out = format!("[文档路径] {}\n[文档内容]\n{}", res.path, limited);
-            if limited.chars().count() < res.text.chars().count() {
-                out.push_str("\n\n（内容过长已截断，后面内容未提取；修订模式请把 original 参数填上你实际收到的原文行列表）");
-            }
-            (out, Vec::new())
+            (format_extract_output(&res.path, &res.text), Vec::new())
         }
         Err(e) => (format!("提取失败：{e}"), Vec::new()),
     }
+}
+
+/// extract_document 输出格式化（30000 字符截断 + 截断提示）。
+/// 抽出来便于单测，避免每次都要 mock Tauri AppHandle。
+fn format_extract_output(path: &str, text: &str) -> String {
+    let limited: String = text.chars().take(30000).collect();
+    let mut out = format!("[文档路径] {}\n[文档内容]\n{}", path, limited);
+    if limited.chars().count() < text.chars().count() {
+        out.push_str("\n\n（内容过长已截断，后面内容未提取；修订模式请把 original 参数填上你实际收到的原文行列表）");
+    }
+    out
 }
 
 /// 解析文档工具共用的 filename 参数
@@ -2739,7 +2745,7 @@ fn opt_filename(v: &serde_json::Value) -> Option<String> {
 }
 
 /// 生成 Word：润色后的段落写新文档（只产出、不覆盖，落 AI_Gen_Files）
-async fn tool_create_word<R: Runtime>(app: &AppHandle<R>, args: &str) -> (String, Vec<TaskRef>) {
+async fn tool_create_word(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>) {
     let v = parse_args(args);
     let Some(arr) = v["paragraphs"].as_array() else {
         return ("create_word 缺少 paragraphs".into(), Vec::new());
@@ -2759,7 +2765,7 @@ async fn tool_create_word<R: Runtime>(app: &AppHandle<R>, args: &str) -> (String
 }
 
 /// 修订模式 Word：回读原文 + 修订段落 diff，产出带 track changes 标记的文档
-async fn tool_create_word_revisions<R: Runtime>(app: &AppHandle<R>, args: &str) -> (String, Vec<TaskRef>) {
+async fn tool_create_word_revisions(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>) {
     let v = parse_args(args);
     // originalPath 由模型转述，同样过白名单（防回读任意文件）
     if let Some(op) = v["originalPath"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
@@ -2802,7 +2808,7 @@ async fn tool_create_word_revisions<R: Runtime>(app: &AppHandle<R>, args: &str) 
         Err(e) => (format!("生成失败：{e}"), Vec::new()),
     }
 }
-async fn tool_create_excel<R: Runtime>(app: &AppHandle<R>, args: &str) -> (String, Vec<TaskRef>) {
+async fn tool_create_excel(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>) {
     let v = parse_args(args);
     let Some(sheets) = v["sheets"].as_array() else {
         return ("create_excel 缺少 sheets".into(), Vec::new());
@@ -2817,7 +2823,7 @@ async fn tool_create_excel<R: Runtime>(app: &AppHandle<R>, args: &str) -> (Strin
 }
 
 /// 生成 PPT：slides 结构 [{title, bullets: [..]}]
-async fn tool_create_ppt<R: Runtime>(app: &AppHandle<R>, args: &str) -> (String, Vec<TaskRef>) {
+async fn tool_create_ppt(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>) {
     let v = parse_args(args);
     let Some(slides) = v["slides"].as_array() else {
         return ("create_ppt 缺少 slides".into(), Vec::new());
@@ -2835,7 +2841,7 @@ async fn tool_create_ppt<R: Runtime>(app: &AppHandle<R>, args: &str) -> (String,
 }
 
 /// 生成 PDF：title + 段落列表
-async fn tool_create_pdf<R: Runtime>(app: &AppHandle<R>, args: &str) -> (String, Vec<TaskRef>) {
+async fn tool_create_pdf(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>) {
     let v = parse_args(args);
     let Some(arr) = v["paragraphs"].as_array() else {
         return ("create_pdf 缺少 paragraphs".into(), Vec::new());
@@ -2855,7 +2861,7 @@ async fn tool_create_pdf<R: Runtime>(app: &AppHandle<R>, args: &str) -> (String,
 }
 
 /// 联网搜索：本机执行 Bing 抓取，结果回传给模型（MiniMax web_search 由客户端执行）
-async fn tool_web_search<R: Runtime>(app: &AppHandle<R>, args: &str) -> (String, Vec<TaskRef>) {
+async fn tool_web_search(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>) {
     let v = parse_args(args);
     let Some(query) = v["query"].as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
     else {
@@ -2872,7 +2878,7 @@ async fn tool_web_search<R: Runtime>(app: &AppHandle<R>, args: &str) -> (String,
 }
 
 /// 抓取网页正文：http/https 公网地址，转纯文本回传（截 30000 字）
-async fn tool_fetch_url<R: Runtime>(app: &AppHandle<R>, args: &str) -> (String, Vec<TaskRef>) {
+async fn tool_fetch_url(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>) {
     let v = parse_args(args);
     let Some(u) = v["url"].as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
     else {
@@ -2895,7 +2901,7 @@ async fn tool_fetch_url<R: Runtime>(app: &AppHandle<R>, args: &str) -> (String, 
 }
 
 /// 自由 Python 编程：开关开启才放行（超时 60s、独立临时目录、输出截断）
-fn tool_run_python<R: Runtime>(app: &AppHandle<R>, args: &str) -> (String, Vec<TaskRef>) {
+fn tool_run_python(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>) {
     let v = parse_args(args);
     let Some(code) = v["code"].as_str() else {
         return ("run_python 缺少 code".into(), Vec::new());
@@ -2945,6 +2951,46 @@ mod bot_config_tests {
         assert!(
             cfg.bypass_llm_on_pre_step_hit,
             "老配置缺字段应默认 true（开启新行为，保证 release 不破现有用户）"
+        );
+    }
+}
+
+/// Plan C 单函数测试（F-6 step 5）：tool_extract_document 输出格式化
+/// 不依赖 Tauri AppHandle，验证 30000 字符截断 + 截断提示逻辑。
+#[cfg(test)]
+mod tool_extract_document_tests {
+    use super::*;
+
+    #[test]
+    fn format_extract_output_short_text_returns_full_text_no_truncation_suffix() {
+        let text = "短文本".repeat(100); // 100 个汉字 = 300 chars，远低于 30000
+        let out = format_extract_output("/tmp/sample.md", &text);
+        assert!(
+            out.contains(&text),
+            "短文本应原样保留：\n--out--\n{out}\n--text--\n{text}"
+        );
+        assert!(
+            !out.contains("已截断"),
+            "短文本不应出现截断提示，实际输出：\n{out}"
+        );
+        assert!(out.starts_with("[文档路径] /tmp/sample.md\n[文档内容]\n"));
+    }
+
+    #[test]
+    fn format_extract_output_long_text_truncates_with_suffix() {
+        // 35000 个 'A'，远超 30000 阈值
+        let text = "A".repeat(35000);
+        let out = format_extract_output("/tmp/big.md", &text);
+        assert!(
+            out.contains("已截断"),
+            "长文本必须出现截断提示，实际输出末尾：\n{}",
+            &out[out.len().saturating_sub(200)..]
+        );
+        // 输出含有的 'A' 数量应 == 30000（截断后）
+        let a_count = out.matches('A').count();
+        assert_eq!(
+            a_count, 30000,
+            "长文本截断后应剩 30000 个 'A'，实际 {a_count}"
         );
     }
 }

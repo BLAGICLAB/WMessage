@@ -14,7 +14,7 @@
 
 use crate::intent_router::{RouteAction, route_user_input};
 use crate::tool_guard::{atomic_block_message, is_atomic_tool};
-use tauri::{Manager, Runtime}; // F-6：泛型 Runtime 以适配 mock_runtime 集成测试
+use tauri::Manager; // F-6：泛型 Runtime 以适配 mock_runtime 集成测试
 
 /// 中间件 trait（F-2 抽象层核心）
 /// 任何「可插拔行为」都实现这个 trait，然后通过 `MiddlewareRegistry::register_*` 注册
@@ -92,7 +92,7 @@ pub fn build_default_registry() -> MiddlewareRegistry {
 }
 
 /// helper：通过 Tauri State 调 run_pre_step（state 未 manage 时回退 None = legacy passthrough）
-pub fn run_pre_step<R: Runtime>(app: &tauri::AppHandle<R>, input: &str) -> Option<RouteAction> {
+pub fn run_pre_step(app: &tauri::AppHandle, input: &str) -> Option<RouteAction> {
     match app.try_state::<MiddlewareRegistry>() {
         Some(state) => state.run_pre_step(input),
         None => None,
@@ -100,8 +100,8 @@ pub fn run_pre_step<R: Runtime>(app: &tauri::AppHandle<R>, input: &str) -> Optio
 }
 
 /// helper：通过 Tauri State 调 run_pre_execute
-pub fn run_pre_execute<R: Runtime>(
-    app: &tauri::AppHandle<R>,
+pub fn run_pre_execute(
+    app: &tauri::AppHandle,
     name: &str,
     active_skill: bool,
 ) -> Option<String> {
