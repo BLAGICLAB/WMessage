@@ -515,16 +515,20 @@ pub fn bot_session_create(
     })
 }
 
-/// 删除会话及其全部消息
+/// 删除会话及其全部消息（原子：消息与会话同一事务，任一失败整体回滚）
 #[tauri::command]
 pub fn bot_session_delete(app: tauri::AppHandle, id: String) -> CommandResult<()> {
     let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let conn = open_db(&app)?;
-    conn.execute("DELETE FROM bot_messages WHERE session_id = ?1", [&id])
-        .map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM bot_sessions WHERE id = ?1", [&id])
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    let mut conn = open_db(&app)?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| CommandError::DbError(e.to_string()))?;
+    tx.execute("DELETE FROM bot_messages WHERE session_id = ?1", [&id])
+        .map_err(|e| CommandError::DbError(e.to_string()))?;
+    tx.execute("DELETE FROM bot_sessions WHERE id = ?1", [&id])
+        .map_err(|e| CommandError::DbError(e.to_string()))?;
+    tx.commit()
+        .map_err(|e| CommandError::DbError(e.to_string()))
 }
 
 /// 会话改名
@@ -566,28 +570,25 @@ pub fn bot_history_load(
         .map_err(|e| CommandError::DbError(e.to_string()))
 }
 
-/// 保存指定会话的聊天记录：全量覆盖 + 更新会话活跃时间
-#[tauri::command]
-pub fn bot_history_save(
-    app: tauri::AppHandle,
-    session_id: String,
-    messages: Vec<BotMsgRow>,
-) -> CommandResult<()> {
-    let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let conn = open_db(&app)?;
+/// 保存指定会话的聊天记录：全量覆盖 + 更新会话活跃时间（原子：DELETE+INSERT+UPDATE 同一事务）
+fn bot_history_save_inner(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+    messages: &[BotMsgRow],
+) -> Result<(), String> {
     conn.execute(
         "DELETE FROM bot_messages WHERE session_id = ?1",
-        [&session_id],
+        [session_id],
     )
     .map_err(|e| e.to_string())?;
+    let now = chrono::Utc::now().timestamp_millis();
     if !messages.is_empty() {
-        let now = chrono::Utc::now().timestamp_millis();
         let mut stmt = conn
             .prepare(
                 "INSERT INTO bot_messages (role, content, refs, session_id, thinking, tools, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             )
             .map_err(|e| e.to_string())?;
-        for m in &messages {
+        for m in messages {
             stmt.execute(rusqlite::params![
                 m.role,
                 m.content,
@@ -600,13 +601,29 @@ pub fn bot_history_save(
             .map_err(|e| e.to_string())?;
         }
     }
-    let now = chrono::Utc::now().timestamp_millis();
     conn.execute(
         "UPDATE bot_sessions SET updated_at = ?1 WHERE id = ?2",
         rusqlite::params![now, session_id],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[tauri::command]
+pub fn bot_history_save(
+    app: tauri::AppHandle,
+    session_id: String,
+    messages: Vec<BotMsgRow>,
+) -> CommandResult<()> {
+    let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut conn = open_db(&app)?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| CommandError::DbError(e.to_string()))?;
+    bot_history_save_inner(&tx, &session_id, &messages)
+        .map_err(CommandError::DbError)?;
+    tx.commit()
+        .map_err(|e| CommandError::DbError(e.to_string()))
 }
 
 /// 清空指定会话的聊天记录（会话保留）
@@ -1036,6 +1053,7 @@ pub fn tasks_import(app: tauri::AppHandle, path: String) -> CommandResult<usize>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     /// 旧版本工作区链接存 label/target 字段，新版本 displayName/targetUri，
     /// serde alias 保证旧数据无缝读取。
@@ -1055,6 +1073,168 @@ mod tests {
         // 序列化输出新字段名（camelCase）
         let out = serde_json::to_string(&links2).unwrap();
         assert!(out.contains("displayName") && out.contains("targetUri"));
+    }
+
+    /// 构造一个临时带 bot_sessions / bot_messages 表的 Connection
+    fn setup_bhs_db() -> (std::path::PathBuf, rusqlite::Connection) {
+        let dir = std::env::temp_dir().join(format!("wm-bhs-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let conn = rusqlite::Connection::open(dir.join("t.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE bot_sessions (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            CREATE TABLE bot_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                refs TEXT,
+                thinking TEXT,
+                tools TEXT,
+                created_at INTEGER NOT NULL
+            );",
+        )
+        .unwrap();
+        (dir, conn)
+    }
+
+    /// P0-1 核心回归：bot_history_save 内层报错时，DELETE 必须被事务回滚，
+    /// 原会话聊天记录不得丢失（崩溃/强杀落在 INSERT 中间的场景）。
+    #[test]
+    fn bot_history_save_rolls_back_on_insert_failure() {
+        let (dir, mut conn) = setup_bhs_db();
+        conn.execute("INSERT INTO bot_sessions VALUES ('s1', 'T', 1000, 1000)", [])
+            .unwrap();
+        for i in 0..3 {
+            conn.execute(
+                "INSERT INTO bot_messages (session_id, role, content, created_at) VALUES ('s1', 'user', ?1, 1000)",
+                [format!("msg-{}", i)],
+            )
+            .unwrap();
+        }
+        let count_before: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM bot_messages WHERE session_id = 's1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count_before, 3, "setup: 应有 3 条原消息");
+
+        // 模拟 wrapper 包裹模式：tx + inner + commit。inner 期间遇 NOT NULL 违约。
+        let tx_result: Result<(), String> = (|| {
+            let tx = conn.transaction().map_err(|e| e.to_string())?;
+            tx.execute(
+                "DELETE FROM bot_messages WHERE session_id = 's1'",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+            // 强制失败：role 为 NULL → NOT NULL 约束违反
+            tx.execute(
+                "INSERT INTO bot_messages (session_id, role, content, created_at) VALUES ('s1', NULL, 'x', 1000)",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+            tx.commit().map_err(|e| e.to_string())?;
+            Ok(())
+        })();
+        assert!(tx_result.is_err(), "tx 必须覆盖推制失败的 insert");
+
+        // 验证：事务被 Drop → 自动 rollback，原 3 条消息仍存在
+        let count_after: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM bot_messages WHERE session_id = 's1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            count_after, 3,
+            "事务未 commit 必须回滚 DELETE，原 3 条消息应保留"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 同样覆盖：bot_history_save_inner 成功路径在事务中被提交。
+    #[test]
+    fn bot_history_save_inner_commits_in_tx() {
+        let (dir, mut conn) = setup_bhs_db();
+        conn.execute("INSERT INTO bot_sessions VALUES ('s1', 'T', 1000, 5000)", [])
+            .unwrap();
+
+        let new_msgs = vec![
+            BotMsgRow {
+                role: "user".into(),
+                content: "hi".into(),
+                refs_json: None,
+                thinking: None,
+                tools_json: None,
+            },
+            BotMsgRow {
+                role: "assistant".into(),
+                content: "hello".into(),
+                refs_json: None,
+                thinking: None,
+                tools_json: None,
+            },
+        ];
+
+        let tx = conn.transaction().unwrap();
+        bot_history_save_inner(&tx, "s1", &new_msgs).unwrap();
+        tx.commit().unwrap();
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM bot_messages WHERE session_id = 's1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 2, "提交后应有 2 条新消息");
+
+        let updated_at: i64 = conn
+            .query_row("SELECT updated_at FROM bot_sessions WHERE id = 's1'", [], |r| r.get(0))
+            .unwrap();
+        assert!(updated_at >= 5000, "updated_at 应被 update 为 now >= 5000");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// bot_session_delete 原子性：消息与会话同一事务，任一失败不留下半删状态。
+    #[test]
+    fn bot_session_delete_is_atomic() {
+        let (dir, conn) = setup_bhs_db();
+        conn.execute("INSERT INTO bot_sessions VALUES ('s1', 'T', 1000, 1000)", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO bot_messages (session_id, role, content, created_at) VALUES ('s1', 'user', 'm1', 1000)",
+            [],
+        )
+        .unwrap();
+
+        let mut conn = conn;
+        let tx = conn.transaction().unwrap();
+        tx.execute("DELETE FROM bot_messages WHERE session_id = 's1'", [])
+            .unwrap();
+        tx.execute("DELETE FROM bot_sessions WHERE id = 's1'", [])
+            .unwrap();
+        tx.commit().unwrap();
+
+        let sess_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM bot_sessions WHERE id = 's1'", [], |r| r.get(0))
+            .unwrap();
+        let msg_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM bot_messages WHERE session_id = 's1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(sess_count, 0, "提交后会话应被删除");
+        assert_eq!(msg_count, 0, "提交后消息应被删除");
+
+        fs::remove_dir_all(&dir).ok();
     }
 }
 
