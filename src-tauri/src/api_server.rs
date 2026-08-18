@@ -114,14 +114,31 @@ pub fn start_api(
             break;
         }
         match server.recv_timeout(Duration::from_millis(400)) {
-            Ok(Some(req)) => crate::api_handlers::handle_request(
-                req,
-                &tk,
-                &store,
-                &hub,
-                &emit_fn,
-                &log_path,
-            ),
+            Ok(Some(req)) => {
+                // A4：catch_unwind 防止任意 handler panic 杀死唯一服务线程
+                // （任一 handler panic → 服务静默死亡，设置页仍报 "已开启"）
+                let req_url = req.url().to_string();
+                let catch_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    crate::api_handlers::handle_request(
+                        req,
+                        &tk,
+                        &store,
+                        &hub,
+                        &emit_fn,
+                        &log_path,
+                    );
+                }));
+                if let Err(payload) = catch_result {
+                    let msg = panic_message(payload);
+                    if let Some(log) = &on_error {
+                        log(
+                            AuditLevel::Error,
+                            "api.handler_panic",
+                            &format!("{req_url}: {msg}"),
+                        );
+                    }
+                }
+            }
             Ok(None) => {}
             Err(e) => {
                 if let Some(log) = &on_error {
@@ -135,4 +152,15 @@ pub fn start_api(
         shutdown,
         handle: Some(handle),
     })
+}
+
+/// 从 catch_unwind payload 提取 panic 信息（处理 &str / String / 其他三种情况）
+fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "non-string panic payload".to_string()
+    }
 }

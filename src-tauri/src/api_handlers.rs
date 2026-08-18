@@ -75,21 +75,21 @@ pub fn handle_request(
     let url = req.url().to_string();
     let (path, query) = split_query(&url);
 
-    // 健康检查：唯一免鉴权端点（仅返回服务状态，无数据泄露）
+    // 健康检查：唯一免鉴权 + 免限流端点（仅返回服务状态，无数据泄露）
     if method == Method::Get && path == "/api/health" {
         health(req);
         return;
     }
 
-    // 简单速率限制（回环单用户，防失控脚本）
-    if !rate_check() {
-        let _ = req.respond(json_err(StatusCode(429), "too many requests"));
+    // Bearer 鉴权先于限流：避免 401 风暴消耗合法用户的预算（本地 DoS）
+    if !verify_bearer(&req, token) {
+        let _ = req.respond(json_err(StatusCode(401), "unauthorized"));
         return;
     }
 
-    // Bearer 鉴权（其余所有端点）
-    if !verify_bearer(&req, token) {
-        let _ = req.respond(json_err(StatusCode(401), "unauthorized"));
+    // 限流（在鉴权后，仅作用于合法请求）
+    if !rate_check() {
+        let _ = req.respond(json_err(StatusCode(429), "too many requests"));
         return;
     }
 
