@@ -21,7 +21,7 @@
 use std::io::{Cursor, Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
-use std::sync::mpsc::{channel, RecvTimeoutError};
+use std::sync::mpsc::{sync_channel, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -690,7 +690,8 @@ fn delete_task(
 /// 注册 SSE 客户端：支持 `?since=<事件id>` 断线重放，然后用 tiny_http upgrade 直写。
 fn sse_connect(req: Request, hub: &Arc<EventHub>, query: &str) {
     let since = query_param(query, "since").and_then(|s| s.parse::<u64>().ok());
-    let (tx, rx) = channel::<Vec<u8>>();
+    // A2: sync_channel(256) — 单客户端最多积压 256 条，超出则丢事件（广播不阻塞）
+    let (tx, rx) = sync_channel(256);
     // 锁中毒时用 into_inner 恢复（与 broadcast 端策略一致，审计 P3：原先静默跳过，
     // 客户端注册失败则该 SSE 连接永远收不到事件）
     {
@@ -710,6 +711,9 @@ fn sse_connect(req: Request, hub: &Arc<EventHub>, query: &str) {
         ];
         let resp = Response::new(StatusCode(200), headers, std::io::empty(), Some(0), None);
         let mut stream = req.upgrade("text/event-stream", resp);
+        // A2: 写超时通过 recv_timeout(15s) 心跳 + 客户端断开检测协同处理
+        // tiny_http ResponseBox 不提供 set_write_timeout，故通过 recv 端超时兜底
+        
         // 连接成功事件（携带当前事件 id，供客户端决定下次 since 起点）
         let connected = format!(
             "data: {{\"type\":\"connected\",\"lastEventId\":{}}}\n\n",

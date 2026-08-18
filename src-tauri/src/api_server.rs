@@ -14,7 +14,7 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -27,6 +27,9 @@ use crate::db;
 /// SSE 事件重放环形缓冲条数（断线重放窗口）
 const EVENT_HISTORY: usize = 1000;
 
+/// 单客户端 channel 容量（防止慢客户端撑爆内存）
+const SSE_CHANNEL_CAPACITY: usize = 256;
+
 /// Tauri 托管的 API 状态（`Mutex<Option<RunningApi>>`）
 #[derive(Default)]
 pub struct ApiState(pub Mutex<Option<RunningApi>>);
@@ -37,9 +40,9 @@ pub struct RunningApi {
     pub handle: Option<std::thread::JoinHandle<()>>,
 }
 
-/// SSE 事件中枢：客户端列表 + 自增事件 id + 历史环形缓冲（断线重放）
+/// SSE 事件中枢：客户端列表（bounded 256） + 自增事件 id + 历史环形缓冲（断线重放）
 pub struct EventHub {
-    pub clients: Mutex<Vec<Sender<Vec<u8>>>>,
+    pub clients: Mutex<Vec<SyncSender<Vec<u8>>>>, // bounded SyncSender 端；client 端持 Rx
     pub next_id: AtomicU64,
     pub history: Mutex<VecDeque<(u64, String)>>,
 }
@@ -69,8 +72,17 @@ impl EventHub {
                 h.pop_front();
             }
         }
+        // A2: sync_channel(256) + try_send — 队列满时 try_send 立即返回 Err，广播不阻塞
         if let Ok(mut clients) = self.clients.lock() {
-            clients.retain(|tx| tx.send(msg.as_bytes().to_vec()).is_ok());
+            let mut i = 0;
+            while i < clients.len() {
+                // try_send: bounded 队列满时 Err 表示 client 积压过深，跳过并移除
+                if clients[i].try_send(msg.as_bytes().to_vec()).is_err() {
+                    clients.remove(i);
+                } else {
+                    i += 1;
+                }
+            }
         }
     }
 
