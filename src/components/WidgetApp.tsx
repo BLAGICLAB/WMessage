@@ -152,7 +152,9 @@ export default function WidgetApp() {
   useEffect(() => {
     const load = async () => {
       try {
-        const list = sortByOrder(await loadTasksFromDb());
+        const res = await loadTasksFromDb();
+        if (!res.ok) return; // 读失败：保持现状，等下次 tasks-changed / 轮询重试
+        const list = sortByOrder(res.tasks);
         if (!list.length) return;
         setTasks((prev) => {
           const same = JSON.stringify(list) === JSON.stringify(prev);

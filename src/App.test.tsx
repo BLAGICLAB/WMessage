@@ -12,7 +12,7 @@ const mocks = vi.hoisted(() => {
   return { invokeMock, listenMock, openMock, saveMock };
 });
 
-mocks.invokeMock.mockImplementation(async (cmd: string) => {
+const defaultInvokeImpl = async (cmd: string) => {
   if (cmd === "db_load") return []; // 空库 → 走 SEED 注入
   if (cmd === "db_upsert") return null;
   if (cmd === "db_delete") return null;
@@ -21,7 +21,8 @@ mocks.invokeMock.mockImplementation(async (cmd: string) => {
   if (cmd === "workspace_delete") return null;
   if (cmd === "tasks_export") return 3;
   return null;
-});
+};
+mocks.invokeMock.mockImplementation(defaultInvokeImpl);
 mocks.listenMock.mockImplementation(async () => () => {});
 mocks.openMock.mockImplementation(async () => null);
 mocks.saveMock.mockImplementation(async () => null);
@@ -50,6 +51,7 @@ const alertMock = vi.fn();
 const confirmMock = vi.fn(() => true);
 beforeEach(() => {
   mocks.invokeMock.mockClear();
+  mocks.invokeMock.mockImplementation(defaultInvokeImpl); // 恢复默认实现（个别用例会覆盖）
   mocks.listenMock.mockClear();
   mocks.openMock.mockClear();
   mocks.saveMock.mockClear();
@@ -140,5 +142,27 @@ describe("App", () => {
       await screen.findByText(/暂无回收站内容|回收站是空的/)
     ).toBeInTheDocument();
     expect(screen.queryByText("待办")).not.toBeInTheDocument();
+  });
+
+  it("db_load 读失败：不走种子/迁移分支、不写库、弹告警（error ≠ empty）", async () => {
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "db_load") throw new Error("database is locked");
+      return defaultInvokeImpl(cmd);
+    });
+    render(<App />);
+    // 明确告警（沿用 alert 风格）
+    await waitFor(() => {
+      expect(alertMock).toHaveBeenCalled();
+    });
+    // 不触发种子/迁移写入，也不删除任何行
+    expect(
+      mocks.invokeMock.mock.calls.filter((c) => c[0] === "db_upsert")
+    ).toHaveLength(0);
+    expect(
+      mocks.invokeMock.mock.calls.filter((c) => c[0] === "db_delete")
+    ).toHaveLength(0);
+    // 看板仍渲染（内存空数组），种子标题不出现
+    expect(screen.getByText("待办")).toBeInTheDocument();
+    expect(screen.queryByText("梳理 WMessage 需求清单")).not.toBeInTheDocument();
   });
 });

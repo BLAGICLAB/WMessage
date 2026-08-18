@@ -9,14 +9,19 @@ import type { Task } from "./types";
 /** 结构相等（用于 diff 行级变更） */
 export const taskEq = (a: Task, b: Task) => JSON.stringify(a) === JSON.stringify(b);
 
-/** 全量读取（Rust 侧自动迁移旧 data.json） */
-export async function loadTasksFromDb(): Promise<Task[]> {
+/** loadTasksFromDb 结果：区分「读失败」与「空库」，避免调用方把 error 当 empty 触发种子/迁移写入 */
+export type LoadTasksResult =
+  | { ok: true; tasks: Task[] }
+  | { ok: false; error: unknown };
+
+/** 全量读取（Rust 侧自动迁移旧 data.json）；失败返回错误载荷，由调用方决定如何展示 */
+export async function loadTasksFromDb(): Promise<LoadTasksResult> {
   try {
-    return await invoke<Task[]>("db_load");
+    const tasks = await invoke<Task[]>("db_load");
+    return { ok: true, tasks };
   } catch (e) {
-    // 后台读取失败：UI 会展示空列表，不弹 alert 打扰用户
-    handleCommandError(e, "db_load", { silent: true });
-    return [];
+    console.error("[db_load] read failed", e);
+    return { ok: false, error: e };
   }
 }
 

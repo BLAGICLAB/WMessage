@@ -84,8 +84,13 @@ export default function App() {
   useEffect(() => {
     (async () => {
       try {
-        let list = await loadTasksFromDb();
-        if (list.length === 0) {
+        const res = await loadTasksFromDb();
+        if (!res.ok) {
+          // 读失败 ≠ 空库：禁止走迁移/种子分支（避免覆盖真实数据），保持内存空数组并明确告警
+          handleCommandError(res.error, "db_load");
+          return;
+        }
+        let list = res.tasks;        if (list.length === 0) {
           let migrated = false;
           try {
             const legacy = localStorage.getItem(STORAGE_KEY);
@@ -127,8 +132,8 @@ export default function App() {
     })();
   }, []);
 
-  // 统一变更出口：计算新数组 → diff → 行级增量落盘 → 更新 state → 广播挂件
-  const mutate = (fn: (prev: Task[]) => Task[]) => {
+  // 统一变更出口：计算新数组 → diff → 行级增量落盘（await 落盘完成）→ 更新 state → 广播挂件
+  const mutate = async (fn: (prev: Task[]) => Task[]) => {
     const prev = tasksRef.current;
     const next = fn(prev);
     tasksRef.current = next;
@@ -144,10 +149,17 @@ export default function App() {
     upserts.forEach((t) => {
       t.updatedAt = now;
     });
-    upsertTasks(upserts);
-    deleteTaskRows(deletes);
+    // 先落盘再广播：挂件收到 tasks-changed 后立刻 db_load，必须读到已提交的快照
+    await upsertTasks(upserts);
+    await deleteTaskRows(deletes);
     setTasks(next);
-    if (upserts.length || deletes.length) emit("tasks-changed").catch(() => {});
+    if (upserts.length || deletes.length) {
+      try {
+        await emit("tasks-changed");
+      } catch (e) {
+        console.error("emit tasks-changed failed", e);
+      }
+    }
   };
 
   // 挂件上报工作区变更（workspace-updated：{upserts}），主窗口统一落盘后广播（单写者架构）
@@ -171,7 +183,7 @@ export default function App() {
   useEffect(() => {
     const unlisten = listen<{ upserts?: Task[]; deletes?: string[]; source?: string }>(
       "tasks-updated",
-      (e) => {
+      async (e) => {
         const upserts = e.payload?.upserts ?? [];
         const deletes = e.payload?.deletes ?? [];
         if (!upserts.length && !deletes.length) return;
@@ -182,8 +194,9 @@ export default function App() {
           e.payload?.source !== "migration" &&
           e.payload?.source !== "bot"
         ) {
-          upsertTasks(upserts);
-          deleteTaskRows(deletes);
+          // await 落盘完成后再合并/广播，避免挂件 db_load 读到未提交快照
+          await upsertTasks(upserts);
+          await deleteTaskRows(deletes);
         }
         setTasks((prev) => {
           const map = new Map(prev.map((t) => [t.id, t]));
@@ -195,7 +208,11 @@ export default function App() {
           if (!same) tasksRef.current = next;
           return same ? prev : next;
         });
-        emit("tasks-changed").catch(() => {});
+        try {
+          await emit("tasks-changed");
+        } catch (err) {
+          console.error("emit tasks-changed failed", err);
+        }
       }
     );
     return () => {
@@ -279,8 +296,9 @@ export default function App() {
       if (typeof selected !== "string") return; // 用户取消
       const merged = await importTasksFromFile(selected);
       // 重读全量数据（含合并结果）→ 套规则 → 排序 → 更新状态并广播挂件
-      const list = await loadTasksFromDb();
-      const next = applyArchiveRule(applyTodayRule(sortByOrder(list)));
+      const res = await loadTasksFromDb();
+      if (!res.ok) throw res.error;
+      const next = applyArchiveRule(applyTodayRule(sortByOrder(res.tasks)));
       tasksRef.current = next;
       setTasks(next);
       emit("tasks-changed").catch(() => {});
