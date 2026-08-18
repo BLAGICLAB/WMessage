@@ -182,6 +182,40 @@ fn kill_tree(child: &mut std::process::Child) {
     let _ = child.wait();
 }
 
+/// 主进程退出后收输出的兜底（C1）：孙进程继承 stdout/stderr 管道写端且不退出时，
+/// reader 子线程的 read_to_end 永不 EOF，`rx.iter()` 会永久阻塞 → run_python 挂死。
+/// 改为带总宽限（≤ grace）的 recv_timeout 收满 2 条（out/err）为止；
+/// 超时返回已收部分 + complete=false，调用方据此再杀一次进程组兜底。
+fn drain_output(
+    rx: &mpsc::Receiver<(&'static str, Vec<u8>)>,
+    grace: Duration,
+) -> (String, String, bool) {
+    let deadline = Instant::now() + grace;
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    let mut got = 0;
+    while got < 2 {
+        let remain = deadline.saturating_duration_since(Instant::now());
+        if remain.is_zero() {
+            break;
+        }
+        match rx.recv_timeout(remain) {
+            Ok((kind, buf)) => {
+                got += 1;
+                let text = String::from_utf8_lossy(&buf).into_owned();
+                if kind == "out" {
+                    stdout = text;
+                } else {
+                    stderr = text;
+                }
+            }
+            // Timeout（孙进程占管道）或 Disconnected（线程异常）都止损退出
+            Err(_) => break,
+        }
+    }
+    (stdout, stderr, got == 2)
+}
+
 fn truncate_output(s: String) -> String {
     let count = s.chars().count();
     if count <= OUTPUT_CAP {
@@ -271,15 +305,12 @@ pub fn run_python(
         }
         std::thread::sleep(Duration::from_millis(50));
     };
-    let mut stdout = String::new();
-    let mut stderr = String::new();
-    for (kind, buf) in rx.iter() {
-        let text = String::from_utf8_lossy(&buf).into_owned();
-        if kind == "out" {
-            stdout = text;
-        } else {
-            stderr = text;
-        }
+    let (stdout, mut stderr, drained) = drain_output(&rx, Duration::from_secs(2));
+    if !drained {
+        // 孙进程继承管道写端不肯退出（C1）：主进程已退但 reader 线程等不到 EOF，
+        // 整组再杀一次兜底，绝不在 rx 上永久阻塞
+        kill_tree(&mut child);
+        stderr.push_str("\n（输出收集超时：孙进程占用管道，已强杀进程组）");
     }
     let duration_ms = start.elapsed().as_millis();
     let _ = std::fs::remove_dir_all(&dir);
@@ -1082,6 +1113,40 @@ fn truncate_for_log(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── drain_output（C1：孙进程继承管道时 rx 收集不得永久阻塞）──
+
+    #[test]
+    fn drain_output_collects_both_channels() {
+        let (tx, rx) = mpsc::channel::<(&'static str, Vec<u8>)>();
+        tx.send(("out", b"hello".to_vec())).unwrap();
+        tx.send(("err", b"warn".to_vec())).unwrap();
+        drop(tx);
+        let (out, err, complete) = drain_output(&rx, Duration::from_secs(1));
+        assert!(complete);
+        assert_eq!(out, "hello");
+        assert_eq!(err, "warn");
+    }
+
+    #[test]
+    fn drain_output_times_out_when_grandchild_holds_pipe() {
+        // 模拟孙进程 fork 后 sleep 远超宽限、一直占着管道写端：
+        // sender 线程 10s 后才发送（且只有一个方向），drain 必须在宽限到期后返回，
+        // 而不是像原 rx.iter() 那样永久挂死
+        let (tx, rx) = mpsc::channel::<(&'static str, Vec<u8>)>();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(10));
+            let _ = tx.send(("out", b"late".to_vec()));
+        });
+        let start = Instant::now();
+        let (_out, _err, complete) = drain_output(&rx, Duration::from_millis(300));
+        assert!(!complete, "发送方卡死时不得报告收齐");
+        assert!(
+            start.elapsed() < Duration::from_secs(3),
+            "drain 挂死了：{:?}",
+            start.elapsed()
+        );
+    }
 
     // ── spawn_blocking_map（NEW-C-1：doc_* async 命令不得把阻塞压在 runtime worker 上）──
 
