@@ -66,6 +66,10 @@ futures = { version = "0.3", features = ["executor"] }
 # F-6 step 3：mock LLM + reqwest 端到端需要 #[tokio::test] async 测试运行时
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
+[target.'cfg(unix)'.dependencies]
+# Python 子进程资源限额（C2）：setrlimit RLIMIT_AS / RLIMIT_CPU
+libc = "0.2"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-app-kit = "0.3"
@@ -75,6 +79,8 @@ objc2-foundation = "0.3"
 windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_System_DataExchange",
+    "Win32_System_JobObjects",
+    "Win32_Security",
     "Win32_System_Memory",
     "Win32_System_Ole",
     "Win32_UI_Shell",

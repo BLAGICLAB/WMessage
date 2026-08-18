@@ -13,7 +13,7 @@
 老板体感：**C1 `run_python` 永久挂死（孙进程继承管道）+ C2 跑 Python 系统卡死**。约 2-3 工日。
 
 - [x] **C1** `bot_py.rs:259-282` — 孙进程继承管道 → `rx.iter()` 永久阻塞 → run_python 永久挂死
-- [ ] **C2** `bot_py.rs:198-208 + 792-806` — 无内存/CPU 限额 + `timeout_secs` 无上限钳制 → 跑 Python 系统卡死
+- [x] **C2** `bot_py.rs:198-208 + 792-806` — 无内存/CPU 限额 + `timeout_secs` 无上限钳制 → 跑 Python 系统卡死
 - [ ] **C3** `bot_py.rs:806 + 849/881` — 超时/失败路径不记审计
 - [ ] **C4** `bot_py.rs:792-806` + `bot.rs:1327` — `py_exec_sync` 同步阻塞跑在 async runtime
 - [ ] **P2-9** `bot_py.rs:234` — spawn 失败路径泄漏临时目录（无启动清扫机制）

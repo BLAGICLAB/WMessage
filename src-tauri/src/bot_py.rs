@@ -4,7 +4,9 @@
 //! - 开关：py-enabled.flag（设置页「允许机器人执行 Python」，默认关闭）——主要防护
 //! - 受限执行：每次运行独立临时目录（数据目录 py-runs/<uuid>/），只经 stdin/文件传参，永不拼 shell；
 //!   ⚠️ 不是安全沙箱：脚本以当前用户完整权限运行（可读本机文件、可联网），仅隔离工作目录
-//! - 熔断：默认超时 60s 强杀（含子进程组）；stdout/stderr 读取时硬截断 64KB
+//! - 熔断：默认超时 60s 强杀（含子进程组），用户可配但硬钳上限 300s；stdout/stderr 读取时硬截断 64KB
+//! - 限额：Unix setrlimit RLIMIT_AS（内存按 timeout 比例，256MB~2GB）/ RLIMIT_CPU（timeout+10s）；
+//!   Windows Job Object（内存 + CPU，KILL_ON_JOB_CLOSE 兜住孙进程整树）
 //! - 审计：bot.log 记录脚本摘要、耗时、退出码、输出摘要
 //! - 固定脚本模板：文档处理用预写脚本（extract/make_docx/make_xlsx），模型只填参数；
 //!   自由编程走 run_python（需开关开启）
@@ -160,10 +162,136 @@ pub struct PyRunResult {
 
 const OUTPUT_CAP: usize = 64 * 1024;
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
+/// 超时硬钳上限（C2）：超过一律钳到 300s（py_exec_sync 层面对用户请求直接拒绝）
+const MAX_TIMEOUT_SECS: u64 = 300;
+
+/// 解析超时：None → 60s 默认；> 300s → 钳到 300s 并返回 clamped=true（C2）
+fn resolve_timeout(timeout_secs: Option<u64>) -> (u64, bool) {
+    match timeout_secs {
+        None => (DEFAULT_TIMEOUT_SECS, false),
+        Some(s) if s > MAX_TIMEOUT_SECS => (MAX_TIMEOUT_SECS, true),
+        Some(s) => (s, false),
+    }
+}
+
+/// 内存限额：按 timeout 比例（8MB/s），下限 256MB、上限 2GB（C2）
+fn mem_limit_bytes(timeout_secs: u64) -> u64 {
+    timeout_secs
+        .saturating_mul(8)
+        .saturating_mul(1024 * 1024)
+        .clamp(256 * 1024 * 1024, 2 * 1024 * 1024 * 1024)
+}
+
+/// CPU 限额：timeout + 10s 宽限（C2）
+fn cpu_limit_secs(timeout_secs: u64) -> u64 {
+    timeout_secs.saturating_add(10)
+}
+
+/// Windows 资源限额：Job Object（内存 + 单进程 CPU 用户时间）。
+/// KILL_ON_JOB_CLOSE：句柄关闭即整树强杀，兜住 breakaway 之外的孙进程。
+#[cfg(windows)]
+mod win_job {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_PROCESS_MEMORY,
+        JOB_OBJECT_LIMIT_PROCESS_TIME,
+    };
+
+    pub struct JobGuard(HANDLE);
+
+    pub fn create(mem_bytes: u64, cpu_secs: u64) -> Option<JobGuard> {
+        unsafe {
+            let job = CreateJobObjectW(None, PCWSTR::null()).ok()?;
+            let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_PROCESS_MEMORY
+                | JOB_OBJECT_LIMIT_PROCESS_TIME
+                | JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            info.ProcessMemoryLimit = mem_bytes as usize;
+            // PerProcessUserTimeLimit 单位 100ns
+            info.BasicLimitInformation.PerProcessUserTimeLimit =
+                cpu_secs.saturating_mul(10_000_000) as i64;
+            let r = SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const std::ffi::c_void,
+                std::mem::size_of_val(&info) as u32,
+            );
+            if r.is_err() {
+                let _ = CloseHandle(job);
+                return None;
+            }
+            Some(JobGuard(job))
+        }
+    }
+
+    pub fn assign(job: &JobGuard, child: &std::process::Child) {
+        use std::os::windows::io::AsRawHandle;
+        unsafe {
+            let _ = AssignProcessToJobObject(job.0, HANDLE(child.as_raw_handle() as _));
+        }
+    }
+
+    pub fn terminate(job: &JobGuard) {
+        unsafe {
+            let _ = TerminateJobObject(job.0, 1);
+        }
+    }
+
+    impl Drop for JobGuard {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = CloseHandle(self.0);
+            }
+        }
+    }
+}
+
+/// 子进程资源限额守卫（C2）：Unix 在 spawn 时经 pre_exec 设 RLIMIT_AS / RLIMIT_CPU
+///（无运行时状态）；Windows 为 Job Object（终止时 TerminateJobObject 整树杀）。
+struct RunLimits {
+    #[cfg(windows)]
+    job: Option<win_job::JobGuard>,
+}
+
+impl RunLimits {
+    fn new(_mem_bytes: u64, _cpu_secs: u64) -> Self {
+        #[cfg(windows)]
+        {
+            Self {
+                job: win_job::create(_mem_bytes, _cpu_secs),
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            Self {}
+        }
+    }
+
+    /// 把子进程挂进 Job（Windows）；Unix 限额在 pre_exec 已生效，空操作
+    fn assign(&self, _child: &std::process::Child) {
+        #[cfg(windows)]
+        if let Some(j) = &self.job {
+            win_job::assign(j, _child);
+        }
+    }
+
+    /// 整树终止（Windows：TerminateJobObject）；Unix 由 kill_tree 进程组杀承担，空操作
+    fn terminate(&self) {
+        #[cfg(windows)]
+        if let Some(j) = &self.job {
+            win_job::terminate(j);
+        }
+    }
+}
 
 /// 终止 Python 进程及其全部子进程：Unix 按进程组（spawn 时 process_group(0) 成为组首），
-/// Windows 用 taskkill /T 树杀。先组杀再兜底 kill + wait。
-fn kill_tree(child: &mut std::process::Child) {
+/// Windows 先 TerminateJobObject 整树杀（Job 覆盖孙进程）再 taskkill /T 兜底。
+/// 先组杀再兜底 kill + wait。
+fn kill_tree(child: &mut std::process::Child, limits: &RunLimits) {
+    limits.terminate();
     #[cfg(unix)]
     {
         let pid = child.id() as i32;
@@ -240,7 +368,21 @@ pub fn run_python(
         // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
         return Err("本机未检测到 Python。macOS 请安装 Command Line Tools；Windows 请到 python.org 安装并勾选 Add to PATH".into());
     };
-    let timeout = Duration::from_secs(timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS));
+    // C2：超时硬钳上限 300s（钳制记审计，防 timeout_secs=None/超大值把系统跑死）
+    let (timeout_eff, clamped) = resolve_timeout(timeout_secs);
+    if clamped {
+        py_audit(
+            app,
+            &format!(
+                "run_python | timeout clamped | requested={} cap={MAX_TIMEOUT_SECS}",
+                timeout_secs.unwrap_or(0)
+            ),
+        );
+    }
+    let timeout = Duration::from_secs(timeout_eff);
+    let mem_bytes = mem_limit_bytes(timeout_eff);
+    let cpu_secs = cpu_limit_secs(timeout_eff);
+    let limits = RunLimits::new(mem_bytes, cpu_secs);
 
     // 独立临时目录
     let dir = crate::db::data_dir(app)
@@ -253,11 +395,34 @@ pub fn run_python(
     }
 
     let mut cmd = silent_cmd(&py);
-    // Unix：子进程自成进程组（组首），超时可整组强杀，不残留孙进程
+    // Unix：子进程自成进程组（组首），超时可整组强杀，不残留孙进程；
+    // 同时经 pre_exec 设资源限额（C2）：RLIMIT_AS 内存 / RLIMIT_CPU CPU
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
+        unsafe {
+            cmd.pre_exec(move || {
+                let mem = libc::rlimit {
+                    rlim_cur: mem_bytes as libc::rlim_t,
+                    rlim_max: mem_bytes as libc::rlim_t,
+                };
+                libc::setrlimit(libc::RLIMIT_AS, &mem);
+                let cpu = libc::rlimit {
+                    rlim_cur: cpu_secs as libc::rlim_t,
+                    rlim_max: cpu_secs as libc::rlim_t,
+                };
+                libc::setrlimit(libc::RLIMIT_CPU, &cpu);
+                Ok(())
+            });
+        }
+    }
+    // Windows：CREATE_NEW_PROCESS_GROUP 让子进程独立进程组（配合 Job Object 整树杀）；
+    // silent_cmd 已带 CREATE_NO_WINDOW，这里合并两个 flag
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000 | 0x00000200);
     }
     cmd.arg("run.py")
         .args(args)
@@ -266,6 +431,7 @@ pub fn run_python(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| format!("启动 Python 失败：{e}"))?;
+    limits.assign(&child);
 
     // 双线程读输出防管道死锁（stdout/stderr 先取出再交给线程）
     let child_stdout = child.stdout.take();
@@ -296,7 +462,7 @@ pub fn run_python(
             break status.code();
         }
         if start.elapsed() > timeout {
-            kill_tree(&mut child);
+            kill_tree(&mut child, &limits);
             let _ = std::fs::remove_dir_all(&dir);
             return Err(format!(
                 "执行超时（{timeout_secs}s）已强制终止",
@@ -309,7 +475,7 @@ pub fn run_python(
     if !drained {
         // 孙进程继承管道写端不肯退出（C1）：主进程已退但 reader 线程等不到 EOF，
         // 整组再杀一次兜底，绝不在 rx 上永久阻塞
-        kill_tree(&mut child);
+        kill_tree(&mut child, &limits);
         stderr.push_str("\n（输出收集超时：孙进程占用管道，已强杀进程组）");
     }
     let duration_ms = start.elapsed().as_millis();
@@ -855,6 +1021,17 @@ pub fn py_exec_sync(
             "Python 编程未开启：请到设置页「机器人设置」打开「允许机器人执行 Python」".into(),
         );
     }
+    // C2：用户/模型请求的超时硬上限 300s，超限直接拒绝并记审计
+    //（run_python 内部另有钳制兜底，双保险）
+    if let Some(t) = timeout_secs {
+        if t > MAX_TIMEOUT_SECS {
+            py_audit(
+                app,
+                &format!("py_exec err | kind=timeout_cap | requested={t} cap={MAX_TIMEOUT_SECS}"),
+            );
+            return Err(format!("timeout 超过 {MAX_TIMEOUT_SECS}s 上限"));
+        }
+    }
     py_audit(
         app,
         &format!("py_exec | script: {}", truncate_for_log(&code, 300)),
@@ -1146,6 +1323,33 @@ mod tests {
             "drain 挂死了：{:?}",
             start.elapsed()
         );
+    }
+
+    // ── resolve_timeout / 资源限额（C2：默认 60s、硬钳上限 300s、限额按 timeout 比例）──
+
+    #[test]
+    fn resolve_timeout_default_60s() {
+        assert_eq!(resolve_timeout(None), (DEFAULT_TIMEOUT_SECS, false));
+        assert_eq!(resolve_timeout(Some(30)), (30, false));
+        assert_eq!(resolve_timeout(Some(300)), (300, false));
+    }
+
+    #[test]
+    fn resolve_timeout_clamps_over_300s() {
+        // 传入 10000 应被钳到 300 并报告 clamped
+        assert_eq!(resolve_timeout(Some(10000)), (MAX_TIMEOUT_SECS, true));
+        assert_eq!(resolve_timeout(Some(u64::MAX)), (MAX_TIMEOUT_SECS, true));
+    }
+
+    #[test]
+    fn resource_limits_scale_with_timeout() {
+        // 内存：8MB/s 比例，下限 256MB，上限 2GB
+        assert_eq!(mem_limit_bytes(1), 256 * 1024 * 1024);
+        assert_eq!(mem_limit_bytes(60), 480 * 1024 * 1024);
+        assert_eq!(mem_limit_bytes(300), 2 * 1024 * 1024 * 1024);
+        // CPU：timeout + 10s 宽限，且不溢出
+        assert_eq!(cpu_limit_secs(60), 70);
+        assert_eq!(cpu_limit_secs(u64::MAX), u64::MAX);
     }
 
     // ── spawn_blocking_map（NEW-C-1：doc_* async 命令不得把阻塞压在 runtime worker 上）──
