@@ -366,23 +366,9 @@ pub fn run_python(
 ) -> Result<PyRunResult, String> {
     let Some(py) = detect_python() else {
         // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
+        py_audit(app, "run_python err | kind=no_python");
         return Err("本机未检测到 Python。macOS 请安装 Command Line Tools；Windows 请到 python.org 安装并勾选 Add to PATH".into());
     };
-    // C2：超时硬钳上限 300s（钳制记审计，防 timeout_secs=None/超大值把系统跑死）
-    let (timeout_eff, clamped) = resolve_timeout(timeout_secs);
-    if clamped {
-        py_audit(
-            app,
-            &format!(
-                "run_python | timeout clamped | requested={} cap={MAX_TIMEOUT_SECS}",
-                timeout_secs.unwrap_or(0)
-            ),
-        );
-    }
-    let timeout = Duration::from_secs(timeout_eff);
-    let mem_bytes = mem_limit_bytes(timeout_eff);
-    let cpu_secs = cpu_limit_secs(timeout_eff);
-    let limits = RunLimits::new(mem_bytes, cpu_secs);
 
     // 独立临时目录
     let dir = crate::db::data_dir(app)
@@ -394,7 +380,35 @@ pub fn run_python(
         std::fs::write(dir.join("params.json"), j).map_err(|e| e.to_string())?;
     }
 
-    let mut cmd = silent_cmd(&py);
+    let mut audit_sink = |line: &str| py_audit(app, line);
+    run_python_at(&py, &dir, args, timeout_secs, &mut audit_sink)
+}
+
+/// 执行核心（C3：不依赖 AppHandle，审计经闭包注入 —— 单测可用临时目录 + 内存收集
+/// 跑全路径）。前置：dir 已创建且 run.py / params.json 已写入。
+/// 所有失败路径（spawn_fail / wait_fail / timeout / drain_timeout）必记审计，
+/// 危险路径不留零痕迹。
+fn run_python_at(
+    py: &str,
+    dir: &std::path::Path,
+    args: &[String],
+    timeout_secs: Option<u64>,
+    audit: &mut dyn FnMut(&str),
+) -> Result<PyRunResult, String> {
+    // C2：超时硬钳上限 300s（钳制记审计，防 timeout_secs=None/超大值把系统跑死）
+    let (timeout_eff, clamped) = resolve_timeout(timeout_secs);
+    if clamped {
+        audit(&format!(
+            "run_python | timeout clamped | requested={} cap={MAX_TIMEOUT_SECS}",
+            timeout_secs.unwrap_or(0)
+        ));
+    }
+    let timeout = Duration::from_secs(timeout_eff);
+    let mem_bytes = mem_limit_bytes(timeout_eff);
+    let cpu_secs = cpu_limit_secs(timeout_eff);
+    let limits = RunLimits::new(mem_bytes, cpu_secs);
+
+    let mut cmd = silent_cmd(py);
     // Unix：子进程自成进程组（组首），超时可整组强杀，不残留孙进程；
     // 同时经 pre_exec 设资源限额（C2）：RLIMIT_AS 内存 / RLIMIT_CPU CPU
     #[cfg(unix)]
@@ -426,11 +440,20 @@ pub fn run_python(
     }
     cmd.arg("run.py")
         .args(args)
-        .current_dir(&dir)
+        .current_dir(dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = cmd.spawn().map_err(|e| format!("启动 Python 失败：{e}"))?;
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            audit(&format!(
+                "run_python err | kind=spawn_fail | {}",
+                truncate_for_log(&e.to_string(), 200)
+            ));
+            return Err(format!("启动 Python 失败：{e}"));
+        }
+    };
     limits.assign(&child);
 
     // 双线程读输出防管道死锁（stdout/stderr 先取出再交给线程）
@@ -458,16 +481,22 @@ pub fn run_python(
 
     let start = Instant::now();
     let exit_code = loop {
-        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
-            break status.code();
+        match child.try_wait() {
+            Ok(Some(status)) => break status.code(),
+            Ok(None) => {}
+            Err(e) => {
+                audit(&format!("run_python err | kind=wait_fail | {e}"));
+                return Err(format!("等待子进程状态失败：{e}"));
+            }
         }
         if start.elapsed() > timeout {
             kill_tree(&mut child, &limits);
-            let _ = std::fs::remove_dir_all(&dir);
-            return Err(format!(
-                "执行超时（{timeout_secs}s）已强制终止",
-                timeout_secs = timeout.as_secs()
+            let _ = std::fs::remove_dir_all(dir);
+            audit(&format!(
+                "run_python err | kind=timeout | timeout_secs={}",
+                timeout.as_secs()
             ));
+            return Err(format!("执行超时（{}s）已强制终止", timeout.as_secs()));
         }
         std::thread::sleep(Duration::from_millis(50));
     };
@@ -476,10 +505,11 @@ pub fn run_python(
         // 孙进程继承管道写端不肯退出（C1）：主进程已退但 reader 线程等不到 EOF，
         // 整组再杀一次兜底，绝不在 rx 上永久阻塞
         kill_tree(&mut child, &limits);
+        audit("run_python warn | kind=drain_timeout | 孙进程占用管道已强杀进程组");
         stderr.push_str("\n（输出收集超时：孙进程占用管道，已强杀进程组）");
     }
     let duration_ms = start.elapsed().as_millis();
-    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(dir);
     Ok(PyRunResult {
         stdout: truncate_output(stdout),
         stderr: truncate_output(stderr),
@@ -499,6 +529,26 @@ where
     tauri::async_runtime::spawn_blocking(f)
         .await
         .map_err(|e| format!("执行线程异常：{e}"))?
+}
+
+/// doc_* 统一执行入口（C3）：保持 NEW-C-1 的 spawn_blocking 隔离，同时给
+/// Err 分支（超时 / spawn 失败 / panic / 线程异常）补审计 —— 此前这些危险路径零痕迹。
+async fn run_doc_script(
+    app: &AppHandle,
+    name: &str,
+    script: &'static str,
+    input: String,
+) -> Result<PyRunResult, String> {
+    let handle = app.clone();
+    match spawn_blocking_map(move || run_python(&handle, script, Some(&input), &[], Some(120)))
+        .await
+    {
+        Ok(r) => Ok(r),
+        Err(e) => {
+            py_audit(app, &format!("{name} err | {}", truncate_for_log(&e, 300)));
+            Err(e)
+        }
+    }
 }
 
 /// 审计日志钩子（bot.rs 的 audit_log 已存在，这里复用数据目录 bot.log）
@@ -1036,7 +1086,13 @@ pub fn py_exec_sync(
         app,
         &format!("py_exec | script: {}", truncate_for_log(&code, 300)),
     );
-    let r = run_python(app, &code, None, &[], timeout_secs)?;
+    let r = match run_python(app, &code, None, &[], timeout_secs) {
+        Ok(r) => r,
+        Err(e) => {
+            py_audit(app, &format!("py_exec err | {}", truncate_for_log(&e, 300)));
+            return Err(e);
+        }
+    };
     py_audit(
         app,
         &format!(
@@ -1080,11 +1136,7 @@ pub async fn doc_extract(app: AppHandle, path: Option<String>) -> Result<DocExtr
     };
     py_audit(&app, &format!("doc_extract | path: {path}"));
     let input = serde_json::json!({ "path": path }).to_string();
-    let handle = app.clone();
-    let r = spawn_blocking_map(move || {
-        run_python(&handle, EXTRACT_SCRIPT, Some(&input), &[], Some(120))
-    })
-    .await?;
+    let r = run_doc_script(&app, "doc_extract", EXTRACT_SCRIPT, input).await?;
     if r.exit_code != Some(0) {
         py_audit(
             &app,
@@ -1116,12 +1168,12 @@ pub async fn doc_make_word(
     let out = gen_out_path(&app, filename.as_deref(), "docx")?;
     let input =
         serde_json::json!({ "title": title, "paragraphs": paragraphs, "out": out }).to_string();
-    let handle = app.clone();
-    let r = spawn_blocking_map(move || {
-        run_python(&handle, MAKE_DOCX_SCRIPT, Some(&input), &[], Some(120))
-    })
-    .await?;
+    let r = run_doc_script(&app, "doc_make_word", MAKE_DOCX_SCRIPT, input).await?;
     if r.exit_code != Some(0) {
+        py_audit(
+            &app,
+            &format!("doc_make_word failed | {}", truncate_for_log(&r.stderr, 200)),
+        );
         return Err(format!("生成 Word 失败：{}", r.stderr.trim()));
     }
     py_audit(&app, &format!("doc_make_word | out: {out}"));
@@ -1148,12 +1200,15 @@ pub async fn doc_make_word_revisions(
         "out": out
     })
     .to_string();
-    let handle = app.clone();
-    let r = spawn_blocking_map(move || {
-        run_python(&handle, MAKE_DOCX_REVISIONS_SCRIPT, Some(&input), &[], Some(120))
-    })
-    .await?;
+    let r = run_doc_script(&app, "doc_make_word_revisions", MAKE_DOCX_REVISIONS_SCRIPT, input).await?;
     if r.exit_code != Some(0) {
+        py_audit(
+            &app,
+            &format!(
+                "doc_make_word_revisions failed | {}",
+                truncate_for_log(&r.stderr, 200)
+            ),
+        );
         return Err(format!("生成修订版 Word 失败：{}", r.stderr.trim()));
     }
     py_audit(
@@ -1175,12 +1230,12 @@ pub async fn doc_make_excel(
 ) -> Result<String, String> {
     let out = gen_out_path(&app, filename.as_deref(), "xlsx")?;
     let input = serde_json::json!({ "sheets": sheets, "out": out }).to_string();
-    let handle = app.clone();
-    let r = spawn_blocking_map(move || {
-        run_python(&handle, MAKE_XLSX_SCRIPT, Some(&input), &[], Some(120))
-    })
-    .await?;
+    let r = run_doc_script(&app, "doc_make_excel", MAKE_XLSX_SCRIPT, input).await?;
     if r.exit_code != Some(0) {
+        py_audit(
+            &app,
+            &format!("doc_make_excel failed | {}", truncate_for_log(&r.stderr, 200)),
+        );
         return Err(format!("生成 Excel 失败：{}", r.stderr.trim()));
     }
     py_audit(&app, &format!("doc_make_excel | out: {out}"));
@@ -1198,12 +1253,12 @@ pub async fn doc_make_pdf(
     let out = gen_out_path(&app, filename.as_deref(), "pdf")?;
     let input =
         serde_json::json!({ "title": title, "paragraphs": paragraphs, "out": out }).to_string();
-    let handle = app.clone();
-    let r = spawn_blocking_map(move || {
-        run_python(&handle, MAKE_PDF_SCRIPT, Some(&input), &[], Some(120))
-    })
-    .await?;
+    let r = run_doc_script(&app, "doc_make_pdf", MAKE_PDF_SCRIPT, input).await?;
     if r.exit_code != Some(0) {
+        py_audit(
+            &app,
+            &format!("doc_make_pdf failed | {}", truncate_for_log(&r.stderr, 200)),
+        );
         return Err(format!("生成 PDF 失败：{}", r.stderr.trim()));
     }
     py_audit(&app, &format!("doc_make_pdf | out: {out}"));
@@ -1240,12 +1295,12 @@ pub async fn doc_make_ppt(
         .unwrap_or_else(|| "blue".into());
     let input = serde_json::json!({ "title": title, "slides": slides, "out": out, "theme": theme })
         .to_string();
-    let handle = app.clone();
-    let r = spawn_blocking_map(move || {
-        run_python(&handle, MAKE_PPTX_SCRIPT, Some(&input), &[], Some(120))
-    })
-    .await?;
+    let r = run_doc_script(&app, "doc_make_ppt", MAKE_PPTX_SCRIPT, input).await?;
     if r.exit_code != Some(0) {
+        py_audit(
+            &app,
+            &format!("doc_make_ppt failed | {}", truncate_for_log(&r.stderr, 200)),
+        );
         return Err(format!("生成 PPT 失败：{}", r.stderr.trim()));
     }
     py_audit(&app, &format!("doc_make_ppt | out: {out}"));
@@ -1350,6 +1405,54 @@ mod tests {
         // CPU：timeout + 10s 宽限，且不溢出
         assert_eq!(cpu_limit_secs(60), 70);
         assert_eq!(cpu_limit_secs(u64::MAX), u64::MAX);
+    }
+
+    // ── 失败路径审计（C3：超时 / spawn_fail 必留痕）──
+
+    #[test]
+    fn run_python_at_timeout_writes_audit_line() {
+        let Some(py) = detect_python() else {
+            return; // 无 Python 环境跳过（测试不强制依赖真实子进程）
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("run-timeout");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("run.py"), "import time\ntime.sleep(30)\n").unwrap();
+        let mut lines: Vec<String> = Vec::new();
+        let r = run_python_at(&py, &dir, &[], Some(1), &mut |l: &str| {
+            lines.push(l.to_string())
+        });
+        let e = match r {
+            Err(e) => e,
+            Ok(_) => panic!("1s 超时的 sleep 30 脚本不应成功"),
+        };
+        assert!(e.contains("超时"), "got: {e}");
+        assert!(
+            lines.iter().any(|l| l.contains("kind=timeout")),
+            "缺 timeout 审计行: {lines:?}"
+        );
+        assert!(!dir.exists(), "超时路径应清理临时目录");
+    }
+
+    #[test]
+    fn run_python_at_spawn_fail_writes_audit_line() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("run-spawn-fail");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("run.py"), "print(1)\n").unwrap();
+        let mut lines: Vec<String> = Vec::new();
+        let r = run_python_at("/nonexistent/python-zzz", &dir, &[], Some(1), &mut |l: &str| {
+            lines.push(l.to_string())
+        });
+        let e = match r {
+            Err(e) => e,
+            Ok(_) => panic!("无效 python 路径不应成功"),
+        };
+        assert!(e.contains("启动 Python 失败"), "got: {e}");
+        assert!(
+            lines.iter().any(|l| l.contains("kind=spawn_fail")),
+            "缺 spawn_fail 审计行: {lines:?}"
+        );
     }
 
     // ── spawn_blocking_map（NEW-C-1：doc_* async 命令不得把阻塞压在 runtime worker 上）──
