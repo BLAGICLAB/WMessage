@@ -1,5 +1,15 @@
 # Cargo 配置（sccache 编译缓存）
 # 第二次 cargo check/build 应该 < 10s（vs 首次 30-60s）
 # sccache: https://github.com/mozilla/sccache
+#
+# 改动（2026-08-19, Kimi Code P0-8B 修复）：
+# 1. rustc-wrapper 改走 PATH（不再硬编码 /Users/renshi/.cargo/bin/sccache）
+#    - 无 sccache 机器静默回退到无 wrapper，build 正常
+# 2. 补 [target.x86_64-pc-windows-gnu] mingw-w64 linker 配置
+#    - Mac 上需 brew install mingw-w64 才能用，但配置就绪
 [build]
-rustc-wrapper = "/Users/renshi/.cargo/bin/sccache"
+rustc-wrapper = "sccache"
+
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+ar = "x86_64-w64-mingw32-ar"
