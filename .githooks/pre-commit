@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# versioned pre-commit → scripts/test-fast.sh
+exec "$(dirname "$0")/../scripts/test-fast.sh"
