@@ -19,7 +19,7 @@
 - [x] **P2-9** `bot_py.rs:234` — spawn 失败路径泄漏临时目录（无启动清扫机制）
 - [x] **P2-10** `bot_py.rs:205` — `detect_python()` 每次重新探测（最多 3 次进程 spawn，无缓存）
 - [x] **P2-11** `bot_py.rs:1053` — `truncate_for_log` 不剥换行
-- [ ] **P2-12** 全仓 — `run_python` 并发无闸门
+- [x] **P2-12** 全仓 — `run_python` 并发无闸门
 
 ---
 
@@ -103,7 +103,7 @@
 
 ## 进度
 
-- Phase 1: 0/8
+- Phase 1: 8/8
 - Phase 2: 0/5
 - Phase 3: 0/5
 - Phase 4: 0/4 (E5 已勾)

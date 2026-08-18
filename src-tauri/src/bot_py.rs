@@ -415,6 +415,16 @@ fn truncate_output(s: String) -> String {
     }
 }
 
+/// run_python 并发闸门（P2-12）：同一时刻只允许一个 Python 任务在执行，
+/// 多余请求排队等待（不报错）—— 防多任务并行 spawn 互相挤兑资源。
+/// 用 std Mutex 而非 tokio Semaphore：run_python 是 sync（调用方经
+/// spawn_blocking 进入，锁不跨 .await），最朴素且正确。
+static PY_RUN_GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn py_run_gate() -> &'static std::sync::Mutex<()> {
+    &PY_RUN_GATE
+}
+
 /// run_python_at 的失败（P2-10）：区分「spawn NotFound」—— 缓存的 python 路径
 /// 被删/换 PATH 时的重探测重试依据
 struct RunFail {
@@ -431,6 +441,8 @@ pub fn run_python(
     args: &[String],
     timeout_secs: Option<u64>,
 ) -> Result<PyRunResult, String> {
+    // P2-12：并发闸门 —— 同一时刻只跑一个 Python 任务，多余请求排队等待
+    let _gate = py_run_gate().lock().unwrap_or_else(|e| e.into_inner());
     let mut py = match cached_python() {
         Some(p) => p,
         // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
@@ -1710,6 +1722,34 @@ mod tests {
         let out = escape_for_log(&long, 300);
         assert_eq!(out.chars().count(), 301);
         assert!(out.ends_with('…'));
+    }
+
+    // ── 并发闸门（P2-12：同一时刻只允许一个 Python 任务在执行）──
+
+    #[test]
+    fn py_run_gate_serializes_concurrent_runs() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static CUR: AtomicUsize = AtomicUsize::new(0);
+        static MAX: AtomicUsize = AtomicUsize::new(0);
+        let mut joins = Vec::new();
+        // 10 个并发请求同时抢闸门，临界区内 sleep 100ms 放大竞争窗口
+        for _ in 0..10 {
+            joins.push(std::thread::spawn(|| {
+                let _g = py_run_gate().lock().unwrap_or_else(|e| e.into_inner());
+                let cur = CUR.fetch_add(1, Ordering::SeqCst) + 1;
+                MAX.fetch_max(cur, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(100));
+                CUR.fetch_sub(1, Ordering::SeqCst);
+            }));
+        }
+        for j in joins {
+            j.join().unwrap();
+        }
+        assert_eq!(
+            MAX.load(Ordering::SeqCst),
+            1,
+            "闸门内并发数必须恒为 1（多余请求排队，不并行）"
+        );
     }
 
     // ── spawn_blocking_map（NEW-C-1：doc_* async 命令不得把阻塞压在 runtime worker 上）──
