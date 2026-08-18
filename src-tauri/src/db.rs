@@ -975,20 +975,18 @@ pub fn db_merge(app: tauri::AppHandle, path: String) -> CommandResult<usize> {
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let mut merged = 0usize;
     for t in &ext {
-        let cur: Option<i64> = tx
+        // B4: 读 Option<i64> 处理 NULL（2026-08-14 前老行 updated_at 为 NULL）
+        // 原代码 r.get::<_, i64> 遇 NULL 直接报 InvalidColumnType → 整次导入崩溃
+        let cur: Option<Option<i64>> = tx
             .query_row(
                 "SELECT updated_at FROM tasks WHERE id = ?1",
                 rusqlite::params![t.id],
-                |r| r.get(0),
+                |r| r.get::<_, Option<i64>>(0),
             )
             .optional()
             .map_err(|e| e.to_string())?;
-        let take = match cur {
-            // 当前库没有这条 → 直接并入
-            None => true,
-            // 同 id：保留最后修改时间更晚的
-            Some(cur_ua) => t.updated_at.unwrap_or(0) > cur_ua,
-        };
+        let cur_ua = cur.flatten().unwrap_or(0); // NULL / 无行 都视为 0
+        let take = t.updated_at.unwrap_or(0) > cur_ua;
         if take {
             upsert_tasks(&tx, std::slice::from_ref(t))?;
             merged += 1;
@@ -1027,20 +1025,17 @@ pub fn tasks_import(app: tauri::AppHandle, path: String) -> CommandResult<usize>
         if t.id.trim().is_empty() {
             continue; // 跳过无 id 的脏数据
         }
-        let cur: Option<i64> = tx
+        // B4: 同 db_merge — NULL updated_at 兼容
+        let cur: Option<Option<i64>> = tx
             .query_row(
                 "SELECT updated_at FROM tasks WHERE id = ?1",
                 rusqlite::params![t.id],
-                |r| r.get(0),
+                |r| r.get::<_, Option<i64>>(0),
             )
             .optional()
             .map_err(|e| e.to_string())?;
-        let take = match cur {
-            // 当前库没有这条 → 直接并入
-            None => true,
-            // 同 id：保留最后修改时间更晚的
-            Some(cur_ua) => t.updated_at.unwrap_or(0) > cur_ua,
-        };
+        let cur_ua = cur.flatten().unwrap_or(0);
+        let take = t.updated_at.unwrap_or(0) > cur_ua;
         if take {
             upsert_tasks(&tx, std::slice::from_ref(t))?;
             merged += 1;
@@ -1233,6 +1228,68 @@ mod tests {
             .unwrap();
         assert_eq!(sess_count, 0, "提交后会话应被删除");
         assert_eq!(msg_count, 0, "提交后消息应被删除");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// B4: 模拟 2026-08-14 前的任务行（updated_at IS NULL），验证 db_merge / tasks_import
+    /// 读取不再崩。原代码 r.get::<_, i64>(0) 遇 NULL 报 InvalidColumnType，整次导入失败。
+    /// 新代码 r.get::<_, Option<i64>>(0) + flatten + unwrap_or(0)。
+    #[test]
+    fn null_updated_at_handled_gracefully_in_import() {
+        use rusqlite::OptionalExtension;
+
+        let dir = std::env::temp_dir().join(format!("wm-b4-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let conn = rusqlite::Connection::open(dir.join("t.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tasks (id TEXT PRIMARY KEY, updated_at INTEGER);
+             INSERT INTO tasks (id) VALUES ('legacy-1');             -- NULL updated_at
+             INSERT INTO tasks (id, updated_at) VALUES ('new-1', 100); -- 有时间戳",
+        )
+        .unwrap();
+
+        // NULL 行：原本 r.get::<_, i64>(0) 报 Err，现在 r.get::<_, Option<i64>>(0) → Some(None)
+        let cur_legacy: Option<Option<i64>> = conn
+            .query_row(
+                "SELECT updated_at FROM tasks WHERE id = 'legacy-1'",
+                [],
+                |r| r.get::<_, Option<i64>>(0),
+            )
+            .optional()
+            .unwrap();
+        assert_eq!(cur_legacy, Some(None), "NULL 应读为 Some(None) 而非报错");
+        assert_eq!(cur_legacy.flatten().unwrap_or(0), 0, "NULL 抹平为 0");
+
+        // 有值行：仍正常读出
+        let cur_new: Option<Option<i64>> = conn
+            .query_row(
+                "SELECT updated_at FROM tasks WHERE id = 'new-1'",
+                [],
+                |r| r.get::<_, Option<i64>>(0),
+            )
+            .optional()
+            .unwrap();
+        assert_eq!(cur_new, Some(Some(100)));
+        assert_eq!(cur_new.flatten().unwrap_or(0), 100);
+
+        // 模拟 merge 取舍：外部 updated_at=50 vs 老行 NULL → 外部胜出（cur_ua=0, 50>0）
+        let cur_ua = cur_legacy.flatten().unwrap_or(0);
+        assert!(50_i64 > cur_ua, "外部带时间戳的应压过老行");
+        // 外部 updated_at=0 vs 老行 NULL → 老行不被动（0 不大于 0）
+        assert!(!(0_i64 > cur_ua), "外部无时间戳时不应压过老行");
+
+        // 无该 id 行：cur=None → flatten 后 unwrap_or(0) → 0 → 外部压入
+        let cur_none: Option<Option<i64>> = conn
+            .query_row(
+                "SELECT updated_at FROM tasks WHERE id = 'missing'",
+                [],
+                |r| r.get::<_, Option<i64>>(0),
+            )
+            .optional()
+            .unwrap();
+        assert_eq!(cur_none, None);
+        assert_eq!(cur_none.flatten().unwrap_or(0), 0);
 
         fs::remove_dir_all(&dir).ok();
     }
