@@ -5,6 +5,7 @@
 // JS 端只 invoke Rust 命令，不重复实现（单一真相在 Rust）。
 
 import { invoke } from "@tauri-apps/api/core";
+import { handleCommandError } from "./lib/errorHandler";
 
 /**
  * 唤起主窗口并强制置顶（不长期驻顶）。
@@ -19,6 +20,7 @@ export async function focusMainWindow(): Promise<void> {
   try {
     await invoke("focus_main_window");
   } catch (e) {
-    console.error("focusMainWindow failed", e);
+    // best-effort：唤起失败只是看不到主窗口，不打扰用户
+    handleCommandError(e, "focus_main_window", { silent: true });
   }
 }

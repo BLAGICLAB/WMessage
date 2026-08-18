@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { emit, listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openPath, openUrl } from "@tauri-apps/plugin-opener";
+import { handleCommandError } from "../lib/errorHandler";
 import {
   DndContext,
   DragEndEvent,
@@ -180,7 +181,7 @@ export function WorkspacePage() {
         kind: directory ? "folder" : "file",
       }));
     } catch (e) {
-      console.error("pick failed", e);
+      handleCommandError(e, "pick local");
     }
   };
 
@@ -226,9 +227,13 @@ export function WorkspacePage() {
 
   const openLink = (link: WorkspaceLink) => {
     if (link.kind === "url") {
-      openUrl(link.targetUri).catch((e) => console.error("open url failed", e));
+      openUrl(link.targetUri).catch((e) =>
+        handleCommandError(e, "open url", { silent: true })
+      );
     } else {
-      openPath(link.targetUri).catch((e) => console.error("open path failed", e));
+      openPath(link.targetUri).catch((e) =>
+        handleCommandError(e, "open path", { silent: true })
+      );
     }
   };
 

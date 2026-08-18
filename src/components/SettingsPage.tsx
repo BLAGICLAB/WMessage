@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
+import { handleCommandError, formatCommandError } from "../lib/errorHandler";
 import type { ThemeSetting } from "../theme";
 import { MigrationPanel } from "./MigrationPanel";
 import { setProfileName, setProfileAvatar, removeProfileAvatar } from "../profile";
@@ -57,7 +58,9 @@ function SkillsPanel() {
     try {
       setSkills(await invoke<SkillInfo[]>("skills_list"));
     } catch (e) {
-      setError(String(e));
+      // 自动加载失败：只 console 记 code，inline UI 仍展示 message
+      handleCommandError(e, "skills_list", { silent: true });
+      setError(formatCommandError(e));
     }
   };
 
@@ -77,7 +80,8 @@ function SkillsPanel() {
       setTimeout(() => setNotice(""), 3000);
       await refresh();
     } catch (e) {
-      setError(String(e));
+      handleCommandError(e, "skills_import", { silent: true });
+      setError(formatCommandError(e));
     } finally {
       setBusy(false);
     }
@@ -92,7 +96,8 @@ function SkillsPanel() {
       await invoke("skills_delete", { name });
       await refresh();
     } catch (e) {
-      setError(String(e));
+      handleCommandError(e, "skills_delete", { silent: true });
+      setError(formatCommandError(e));
     } finally {
       setBusy(false);
     }
@@ -103,7 +108,8 @@ function SkillsPanel() {
       const dir = await invoke<string>("skills_open_dir");
       openPath(dir).catch(() => {});
     } catch (e) {
-      setError(String(e));
+      handleCommandError(e, "skills_open_dir", { silent: true });
+      setError(formatCommandError(e));
     }
   };
 
@@ -198,7 +204,8 @@ function ProfileRow({
         await setProfileAvatar(kind, selected);
       }
     } catch (e) {
-      setError(String(e));
+      handleCommandError(e, `profile_set_avatar:${kind}`, { silent: true });
+      setError(formatCommandError(e));
     } finally {
       setBusy(false);
     }
@@ -211,7 +218,8 @@ function ProfileRow({
     try {
       await removeProfileAvatar(kind);
     } catch (e) {
-      setError(String(e));
+      handleCommandError(e, `profile_remove_avatar:${kind}`, { silent: true });
+      setError(formatCommandError(e));
     } finally {
       setBusy(false);
     }
@@ -232,7 +240,8 @@ function ProfileRow({
       setSaved(true);
       setTimeout(() => setSaved(false), 1500);
     } catch (e) {
-      setError(String(e));
+      handleCommandError(e, `profile_set_name:${kind}`, { silent: true });
+      setError(formatCommandError(e));
     } finally {
       setBusy(false);
     }
@@ -327,7 +336,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
   const [pyBusy, setPyBusy] = useState(false);
   const [pyEnv, setPyEnv] = useState<{ available: boolean; python: string; version: string; libs: string[] } | null>(null);
   const [pyEnvBusy, setPyEnvBusy] = useState(false);
-  /** 环境检查失败的错误文案（可见反馈，不再静默 console.error） */
+  /** 环境检查失败的错误文案（可见反馈，不再只 console.error） */
   const [pyEnvErr, setPyEnvErr] = useState("");
   const [logOpen, setLogOpen] = useState(false);
   const [logText, setLogText] = useState("");
@@ -338,7 +347,8 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
       const on = await invoke<boolean>("bot_get_enabled");
       setBotEnabled(on);
     } catch (e) {
-      console.error("bot_get_enabled failed", e);
+      // 自动加载失败：只记 console，不打扰
+      handleCommandError(e, "bot_get_enabled", { silent: true });
     }
   };
 
@@ -360,7 +370,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         bypassLlmOnPreStepHit: c.bypassLlmOnPreStepHit ?? true,
       });
     } catch (e) {
-      console.error("bot_get_config failed", e);
+      handleCommandError(e, "bot_get_config", { silent: true });
     }
   };
 
@@ -369,7 +379,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
       const on = await invoke<boolean>("py_get_enabled");
       setPyEnabled(on);
     } catch (e) {
-      console.error("py_get_enabled failed", e);
+      handleCommandError(e, "py_get_enabled", { silent: true });
     }
   };
 
@@ -381,8 +391,8 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
       const env = await invoke<{ available: boolean; python: string; version: string; libs: string[] }>("py_env_check");
       setPyEnv(env);
     } catch (e) {
-      console.error("py_env_check failed", e);
-      setPyEnvErr(String(e));
+      handleCommandError(e, "py_env_check", { silent: true });
+      setPyEnvErr(formatCommandError(e));
     } finally {
       setPyEnvBusy(false);
     }
@@ -395,7 +405,8 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     try {
       setLogText(await invoke<string>("bot_log_read", { limit: 200 }));
     } catch (e) {
-      setLogText(String(e));
+      handleCommandError(e, "bot_log_read", { silent: true });
+      setLogText(formatCommandError(e));
     } finally {
       setLogBusy(false);
     }
@@ -419,7 +430,8 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
       setPyEnabled(next);
       if (next) checkPyEnv();
     } catch (e) {
-      setBotError(String(e));
+      handleCommandError(e, "py_set_enabled", { silent: true });
+      setBotError(formatCommandError(e));
       await refreshPy();
     } finally {
       setPyBusy(false);
@@ -436,7 +448,8 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
       // 广播给挂件：展开状态下同步调整窗口高度（加/减聊天区）
       emit("bot-changed", next).catch(() => {});
     } catch (e) {
-      setBotError(String(e));
+      handleCommandError(e, "bot_set_enabled", { silent: true });
+      setBotError(formatCommandError(e));
       await refreshBot();
     } finally {
       setBotBusy(false);
@@ -462,7 +475,8 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
       setConfigSaved(true);
       setTimeout(() => setConfigSaved(false), 1500);
     } catch (e) {
-      setBotError(String(e));
+      handleCommandError(e, "bot_set_config", { silent: true });
+      setBotError(formatCommandError(e));
     } finally {
       setConfigBusy(false);
     }
@@ -477,7 +491,8 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
       await invoke("bot_clear_api_key");
       await loadConfig();
     } catch (e) {
-      setBotError(String(e));
+      handleCommandError(e, "bot_clear_api_key", { silent: true });
+      setBotError(formatCommandError(e));
     } finally {
       setConfigBusy(false);
     }
@@ -488,7 +503,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
       const s = await invoke<ApiStatus>("api_status");
       setStatus(s);
     } catch (e) {
-      console.error("api_status failed", e);
+      handleCommandError(e, "api_status", { silent: true });
     }
   };
 
@@ -508,7 +523,8 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
       }
       await refresh();
     } catch (e) {
-      setError(String(e));
+      handleCommandError(e, status.enabled ? "api_stop" : "api_start", { silent: true });
+      setError(formatCommandError(e));
       await refresh();
     } finally {
       setBusy(false);
@@ -541,7 +557,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch (e) {
-      console.error("clipboard failed", e);
+      handleCommandError(e, "clipboard", { silent: true });
     }
   };
 
@@ -554,7 +570,8 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
       await invoke("api_rotate_token");
       await refresh();
     } catch (e) {
-      setError(String(e));
+      handleCommandError(e, "api_rotate_token", { silent: true });
+      setError(formatCommandError(e));
       await refresh();
     } finally {
       setBusy(false);

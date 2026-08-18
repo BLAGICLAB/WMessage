@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { handleCommandError, formatCommandError } from "../lib/errorHandler";
 import type { MigrationRule, MigrationReport } from "../types";
 
 type MigrationStatus = {
@@ -33,7 +34,7 @@ export function MigrationPanel() {
       const st = await invoke<MigrationStatus>("migration_status");
       setStatus(st);
     } catch (e) {
-      console.error("migration refresh failed", e);
+      handleCommandError(e, "migration refresh", { silent: true });
     }
   };
 
@@ -43,7 +44,8 @@ export function MigrationPanel() {
       if (path) setNotice(`模版已保存：${path}`);
       setTimeout(() => setNotice(""), 5000);
     } catch (e) {
-      setError(String(e));
+      handleCommandError(e, "migration_rules_template_save", { silent: true });
+      setError(formatCommandError(e));
     }
   };
 
@@ -54,7 +56,8 @@ export function MigrationPanel() {
       setTimeout(() => setNotice(""), 3000);
       await refresh();
     } catch (e) {
-      setError(String(e));
+      handleCommandError(e, "migration_rules_import", { silent: true });
+      setError(formatCommandError(e));
     }
   };
 
@@ -64,7 +67,8 @@ export function MigrationPanel() {
     try {
       setLogText(await invoke<string>("migration_log_read", { limit: 500 }));
     } catch (e) {
-      setLogText(String(e));
+      handleCommandError(e, "migration_log_read", { silent: true });
+      setLogText(formatCommandError(e));
     } finally {
       setLogBusy(false);
     }
@@ -82,7 +86,8 @@ export function MigrationPanel() {
       setReport(rep);
       await refresh();
     } catch (e) {
-      setError(String(e));
+      handleCommandError(e, "migration_run", { silent: true });
+      setError(formatCommandError(e));
     } finally {
       setRunning(false);
     }

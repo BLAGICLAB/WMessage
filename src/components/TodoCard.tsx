@@ -10,6 +10,7 @@ import { emit } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { handleCommandError, formatCommandError } from "../lib/errorHandler";
 import type { Task } from "../types";
 import { basename, formatCompletedAt, formatDue, formatSchedule, isDueToday, isValidDateTimeLocal, scheduleToDatetime } from "../format";
 import { DoneCircle } from "./DoneCircle";
@@ -122,7 +123,7 @@ export function TodoCardView({
       if (typeof selected === "string")
         onUpdate(task.id, { filePath: selected, fileIsDir: false });
     } catch (e) {
-      console.error("pick file failed", e);
+      handleCommandError(e, "pick file");
     }
   };
 
@@ -132,7 +133,7 @@ export function TodoCardView({
       if (typeof selected === "string")
         onUpdate(task.id, { filePath: selected, fileIsDir: true });
     } catch (e) {
-      console.error("pick folder failed", e);
+      handleCommandError(e, "pick folder");
     }
   };
 
@@ -154,13 +155,16 @@ export function TodoCardView({
 
   const openFile = () => {
     if (task.filePath)
-      openPath(task.filePath).catch((e) => console.error("open failed", e));
+      openPath(task.filePath).catch((e) =>
+        handleCommandError(e, "open file", { silent: true })
+      );
   };
 
   const copyFile = () => {
     if (task.filePath)
       invoke("copy_file_with_title", { path: task.filePath, title: task.title }).catch((e) =>
-        console.error("copy failed", e)
+        // 复制失败：用户点了按钮，但失败通常不是关键操作（如源文件被删），不打扰
+        handleCommandError(e, "copy_file_with_title", { silent: true })
       );
   };
 
@@ -758,7 +762,9 @@ export function TodoCardView({
                     onDelete(task.id);
                     setPurgeOpen(false);
                   } catch (e) {
-                    alert(`${e}\n\n任务卡保留在回收站，可重试或手动从废纸篓/回收站清理后再试。`);
+                    // 删除失败：Toast 给完整 message + 下一步提示，任务卡仍保留在回收站可重试
+                    handleCommandError(e, "delete_bound_file");
+                    alert(`任务卡保留在回收站，可重试或手动从废纸篓/回收站清理后再试。\n\n${formatCommandError(e)}`);
                     setPurgeBusy(false);
                   }
                 }}

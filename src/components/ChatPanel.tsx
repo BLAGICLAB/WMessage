@@ -4,6 +4,7 @@ import { listen, emit } from "@tauri-apps/api/event";
 
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { focusMainWindow } from "../focus";
+import { handleCommandError, formatCommandError } from "../lib/errorHandler";
 import type { Task } from "../types";
 import { basename } from "../format";
 import { MarkdownText } from "./MarkdownText";
@@ -79,7 +80,9 @@ function RichText({ text }: { text: string }) {
             openUrl(clean).catch(() => {});
           } else {
             // 打开失败（如路径不存在）时退到在 Finder 中显示，不静默
-            invoke("open_file_path", { path: clean }).catch(() => {});
+            invoke("open_file_path", { path: clean }).catch((e) =>
+              handleCommandError(e, "open_file_path", { silent: true })
+            );
           }
         }}
       >
@@ -227,7 +230,10 @@ function extractFilePaths(content: string): string[] {
         thinking: m.thinking ?? null,
         toolsJson: m.tools?.length ? JSON.stringify(m.tools) : null,
       })),
-    }).catch((e) => console.error("bot_history_save failed", e));
+    }).catch((e) =>
+      // 后台持久化失败：UI 还能跑，不打断当前对话
+      handleCommandError(e, "bot_history_save", { silent: true })
+    );
   };
 
   /** 历史行 → 消息（回填思考/工具折叠行） */
@@ -273,7 +279,7 @@ function extractFilePaths(content: string): string[] {
           setMessages(rowsToMsgs(rows));
         }
       } catch (e) {
-        console.error("chat init failed", e);
+        handleCommandError(e, "chat init", { silent: true });
       }
     })();
   }, []);
@@ -416,7 +422,9 @@ function extractFilePaths(content: string): string[] {
     invoke("bot_confirm_response", {
       requestId: confirmReq.id,
       approved,
-    }).catch(() => {});
+    }).catch((e) =>
+      handleCommandError(e, "bot_confirm_response", { silent: true })
+    );
     setConfirmReq(null);
   };
 
@@ -445,7 +453,7 @@ function extractFilePaths(content: string): string[] {
       >("bot_history_load", { sessionId: sid });
       setMessages(rowsToMsgs(rows));
     } catch (e) {
-      console.error("bot_history_load failed", e);
+      handleCommandError(e, "bot_history_load", { silent: true });
     }
   };
 
@@ -459,7 +467,7 @@ function extractFilePaths(content: string): string[] {
       setMessages([]);
       setInput("");
     } catch (e) {
-      console.error("bot_session_create failed", e);
+      handleCommandError(e, "bot_session_create", { silent: true });
     }
   };
 
@@ -493,7 +501,7 @@ function extractFilePaths(content: string): string[] {
         }
       }
     } catch (e) {
-      console.error("bot_session_delete failed", e);
+      handleCommandError(e, "bot_session_delete");
     }
   };
 
@@ -543,16 +551,20 @@ function extractFilePaths(content: string): string[] {
               prev.map((s) => (s.id === sid ? { ...s, title: short } : s))
             )
           )
-          .catch(() => {});
+          .catch((e) =>
+            handleCommandError(e, "bot_session_rename", { silent: true })
+          );
       }
       onFinishSelection();
     } catch (e) {
       const failed: Msg[] = [
         ...history,
-        { role: "assistant", content: `⚠️ ${e}` },
+        { role: "assistant", content: `⚠️ ${formatCommandError(e)}` },
       ];
       persistHistory(sid, failed);
       if (sessionIdRef.current === sid) setMessages(failed);
+      // 流式错误已经写进消息气泡了，不重复弹 alert
+      handleCommandError(e, execTaskId ? "bot_execute_task" : "bot_chat", { silent: true });
     } finally {
       exitBusy();
     }
@@ -564,7 +576,9 @@ function extractFilePaths(content: string): string[] {
     if (cmd === "/stop") {
       setInput("");
       if (busyRef.current) {
-        invoke("bot_stop").catch(() => {});
+        invoke("bot_stop").catch((e) =>
+          handleCommandError(e, "bot_stop", { silent: true })
+        );
       } else {
         addHint("当前没有进行中的回复");
       }
@@ -600,10 +614,11 @@ function extractFilePaths(content: string): string[] {
         persistHistory(sid, compacted);
         if (sessionIdRef.current === sid) setMessages(compacted);
       } catch (e) {
-        const note: Msg = { role: "assistant", content: `⚠️ 压缩失败：${e}` };
+        const note: Msg = { role: "assistant", content: `⚠️ 压缩失败：${formatCommandError(e)}` };
         const failed = [...history, note];
         persistHistory(sid, failed);
         if (sessionIdRef.current === sid) setMessages(failed);
+        handleCommandError(e, "bot_compact", { silent: true });
       } finally {
         exitBusy();
       }
@@ -668,7 +683,7 @@ function extractFilePaths(content: string): string[] {
         setFiles((prev) => [...prev, ...picked.filter((p) => !prev.includes(p))]);
       }
     } catch (e) {
-      console.error("pick files failed", e);
+      handleCommandError(e, "pick_files_dialog", { silent: true });
     }
   };
 
@@ -679,7 +694,7 @@ function extractFilePaths(content: string): string[] {
       setCopiedIdx(idx);
       setTimeout(() => setCopiedIdx((c) => (c === idx ? null : c)), 1500);
     } catch (e) {
-      console.error("clipboard failed", e);
+      handleCommandError(e, "clipboard", { silent: true });
     }
   };
 
@@ -798,7 +813,7 @@ function extractFilePaths(content: string): string[] {
               if (!sessionId) return;
               setMessages([]);
               invoke("bot_history_clear", { sessionId }).catch((e) =>
-                console.error("bot_history_clear failed", e)
+                handleCommandError(e, "bot_history_clear", { silent: true })
               );
             }}
           >
@@ -932,7 +947,9 @@ function extractFilePaths(content: string): string[] {
                         title={`打开文件：${f}`}
                         onClick={() => {
                           // Rust 侧打开（挂件窗口 openPath 前端权限可能被拒，点击无反应）
-                          invoke("open_file_path", { path: f }).catch(() => {});
+                          invoke("open_file_path", { path: f }).catch((e) =>
+                            handleCommandError(e, "open_file_path", { silent: true })
+                          );
                         }}
                       >
                         <span className="truncate max-w-[180px]">📄 {basename(f)}</span>

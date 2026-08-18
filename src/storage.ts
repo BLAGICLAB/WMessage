@@ -3,6 +3,7 @@ export const STORAGE_KEY = "***";
 
 // —— 方案B（2026-08-14）：任务数据存 SQLite，行级增量读写 ——
 import { invoke } from "@tauri-apps/api/core";
+import { handleCommandError } from "./lib/errorHandler";
 import type { Task } from "./types";
 
 /** 结构相等（用于 diff 行级变更） */
@@ -13,7 +14,8 @@ export async function loadTasksFromDb(): Promise<Task[]> {
   try {
     return await invoke<Task[]>("db_load");
   } catch (e) {
-    console.error("db_load failed", e);
+    // 后台读取失败：UI 会展示空列表，不弹 alert 打扰用户
+    handleCommandError(e, "db_load", { silent: true });
     return [];
   }
 }
@@ -24,7 +26,7 @@ export async function upsertTasks(tasks: Task[]): Promise<void> {
   try {
     await invoke("db_upsert", { tasks });
   } catch (e) {
-    console.error("db_upsert failed", e);
+    handleCommandError(e, "db_upsert", { silent: true });
   }
 }
 
@@ -34,7 +36,7 @@ export async function deleteTaskRows(ids: string[]): Promise<void> {
   try {
     await invoke("db_delete", { ids });
   } catch (e) {
-    console.error("db_delete failed", e);
+    handleCommandError(e, "db_delete", { silent: true });
   }
 }
 
@@ -60,7 +62,7 @@ export async function loadWorkspaceFromDb(): Promise<WorkspaceItem[]> {
   try {
     return await invoke<WorkspaceItem[]>("workspace_load");
   } catch (e) {
-    console.error("workspace_load failed", e);
+    handleCommandError(e, "workspace_load", { silent: true });
     return [];
   }
 }
@@ -71,7 +73,7 @@ export async function upsertWorkspaceItems(items: WorkspaceItem[]): Promise<void
   try {
     await invoke("workspace_upsert", { items });
   } catch (e) {
-    console.error("workspace_upsert failed", e);
+    handleCommandError(e, "workspace_upsert", { silent: true });
   }
 }
 
@@ -81,7 +83,7 @@ export async function deleteWorkspaceRows(ids: string[]): Promise<void> {
   try {
     await invoke("workspace_delete", { ids });
   } catch (e) {
-    console.error("workspace_delete failed", e);
+    handleCommandError(e, "workspace_delete", { silent: true });
   }
 }
 

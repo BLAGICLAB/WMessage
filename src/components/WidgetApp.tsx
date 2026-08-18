@@ -27,6 +27,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { linkDisplayName } from "./WorkspacePage";
 import { focusMainWindow } from "../focus";
+import { handleCommandError } from "../lib/errorHandler";
 import { isDueToday } from "../format";
 import { loadTasksFromDb, loadWorkspaceFromDb, taskEq, sortByOrder, assignInsertOrder } from "../storage";
 import { applySetting, getSetting, subscribeSystem, subscribeTheme } from "../theme";
@@ -116,7 +117,10 @@ export default function WidgetApp() {
   useEffect(() => {
     invoke<boolean>("bot_get_enabled")
       .then(setBotOn)
-      .catch(() => {});
+      .catch((e) =>
+        // 自动读取机器人状态：失败只是默认 false，不打扰
+        handleCommandError(e, "bot_get_enabled", { silent: true })
+      );
     const unlisten = listen<boolean>("bot-changed", (e) => setBotOn(!!e.payload));
     return () => {
       unlisten.then((f) => f());
@@ -201,10 +205,12 @@ export default function WidgetApp() {
 
   const openLink = (link: WorkspaceItem["links"][number]) => {
     if (link.kind === "url") {
-      openUrl(link.targetUri).catch((e) => console.error("open url failed", e));
+      openUrl(link.targetUri).catch((e) =>
+        handleCommandError(e, "open url", { silent: true })
+      );
     } else {
       invoke("open_file_path", { path: link.targetUri }).catch((e) =>
-        console.error("open path failed", e)
+        handleCommandError(e, "open_file_path", { silent: true })
       );
     }
   };
@@ -480,7 +486,7 @@ export default function WidgetApp() {
   const openFile = (t: Task) => {
     if (t.filePath)
       invoke("open_file_path", { path: t.filePath }).catch((e) =>
-        console.error("open failed", e)
+        handleCommandError(e, "open_file_path", { silent: true })
       );
   };
 
@@ -488,7 +494,7 @@ export default function WidgetApp() {
   const copyFile = (t: Task) => {
     if (t.filePath)
       invoke("copy_file_with_title", { path: t.filePath, title: t.title }).catch((e) =>
-        console.error("copy failed", e)
+        handleCommandError(e, "copy_file_with_title", { silent: true })
       );
   };
 

@@ -3,6 +3,7 @@ import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { invoke } from "@tauri-apps/api/core";
+import { handleCommandError } from "../lib/errorHandler";
 
 /**
  * 助手回复的 Markdown 渲染：GFM（表格/任务列表）+ 单换行断行。
@@ -36,7 +37,9 @@ export function MarkdownText({ text }: { text: string }) {
                     openUrl(text.replace(/[.,;:!?]+$/, "")).catch(() => {});
                   } else {
                     // 挂件窗口前端 openPath 被 opener scope 拒（点击无反应）→ Rust 命令
-                    invoke("open_file_path", { path: text }).catch(() => {});
+                    invoke("open_file_path", { path: text }).catch((e) =>
+                      handleCommandError(e, "open_file_path", { silent: true })
+                    );
                   }
                 }}
               >
@@ -61,7 +64,9 @@ export function MarkdownText({ text }: { text: string }) {
                   if (isUrl) {
                     openUrl(url.replace(/[.,;:!?]+$/, "")).catch(() => {});
                   } else {
-                    invoke("open_file_path", { path: url }).catch(() => {});
+                    invoke("open_file_path", { path: url }).catch((err) =>
+                      handleCommandError(err, "open_file_path", { silent: true })
+                    );
                   }
                 }}
               >

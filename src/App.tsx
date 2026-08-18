@@ -8,6 +8,7 @@ import { TrashPage } from "./components/TrashPage";
 import { WorkspacePage } from "./components/WorkspacePage";
 import { SettingsPage } from "./components/SettingsPage";
 import { deleteTaskRows, loadTasksFromDb, taskEq, upsertTasks, exportTasksToFile, importTasksFromFile, STORAGE_KEY, sortByOrder, assignInsertOrder, upsertWorkspaceItems } from "./storage";
+import { handleCommandError } from "./lib/errorHandler";
 import { applySetting, getSetting, subscribeSystem, subscribeTheme, toggleTheme } from "./theme";
 import { isDueToday } from "./format";
 import type { ThemeSetting } from "./theme";
@@ -121,7 +122,7 @@ export default function App() {
         tasksRef.current = next;
         setTasks(next);
       } catch (e) {
-        console.error("init load failed", e);
+        handleCommandError(e, "init load", { silent: true });
       }
     })();
   }, []);
@@ -263,8 +264,7 @@ export default function App() {
       const count = await exportTasksToFile(path);
       alert(`导出完成：共 ${count} 条任务卡`);
     } catch (e) {
-      console.error("export tasks failed", e);
-      alert(`导出失败：${e}`);
+      handleCommandError(e, "tasks_export");
     }
   };
 
@@ -286,8 +286,7 @@ export default function App() {
       emit("tasks-changed").catch(() => {});
       alert(`导入完成：本次写入 ${merged} 条任务卡`);
     } catch (e) {
-      console.error("import tasks failed", e);
-      alert(`导入失败：${e}`);
+      handleCommandError(e, "tasks_import");
     }
   };
 

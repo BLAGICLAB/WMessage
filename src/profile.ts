@@ -3,6 +3,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { handleCommandError } from "./lib/errorHandler";
 
 export type ProfileEntryView = {
   name: string;
@@ -36,6 +37,9 @@ export async function loadProfile(force = false): Promise<ProfileView> {
       })
       .catch((e) => {
         loading = null;
+        // 加载失败：不静默吞错，让上层 try/catch 处理（SettingsPage ProfileRow 有 inline UI，
+        // 这里只是把异常原样上抛，避免双重提示）
+        handleCommandError(e, "profile_get", { silent: true });
         throw e;
       });
   }
