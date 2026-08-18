@@ -324,7 +324,7 @@ pub async fn execute_tool(app: &AppHandle, name: &str, args: &str) -> (String, V
         "create_excel" => tool_create_excel(app, args).await,
         "create_ppt" => tool_create_ppt(app, args).await,
         "create_pdf" => tool_create_pdf(app, args).await,
-        "run_python" => tool_run_python(app, args),
+        "run_python" => tool_run_python(app, args).await,
         "web_search" => tool_web_search(app, args).await,
         "fetch_url" => tool_fetch_url(app, args).await,
         "use_skill" => tool_use_skill(app, args),
@@ -1318,13 +1318,14 @@ async fn tool_fetch_url(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_
 }
 
 /// 自由 Python 编程：开关开启才放行（超时 60s、独立临时目录、输出截断）
-fn tool_run_python(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
+/// C4：py_exec_sync 是 sync 阻塞（最长 300s），必须经 async 包装挪到 blocking
+/// 线程池，不得占住 async runtime worker（与 NEW-C-1 doc_* 同模式）。
+async fn tool_run_python(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
     let v = parse_args(args);
     let Some(code) = v["code"].as_str() else {
         return ("run_python 缺少 code".into(), Vec::new());
     };
-    // 工具链在 async 上下文：走同步核心（py_exec 命令是 async，这里不能 await）
-    match crate::bot_py::py_exec_sync(app, code.to_string(), None) {
+    match crate::bot_py::py_exec_sync_async(app.clone(), code.to_string(), None).await {
         Ok(r) => {
             let mut out = String::new();
             if !r.stdout.trim().is_empty() {

@@ -15,7 +15,7 @@
 - [x] **C1** `bot_py.rs:259-282` — 孙进程继承管道 → `rx.iter()` 永久阻塞 → run_python 永久挂死
 - [x] **C2** `bot_py.rs:198-208 + 792-806` — 无内存/CPU 限额 + `timeout_secs` 无上限钳制 → 跑 Python 系统卡死
 - [x] **C3** `bot_py.rs:806 + 849/881` — 超时/失败路径不记审计
-- [ ] **C4** `bot_py.rs:792-806` + `bot.rs:1327` — `py_exec_sync` 同步阻塞跑在 async runtime
+- [x] **C4** `bot_py.rs:792-806` + `bot.rs:1327` — `py_exec_sync` 同步阻塞跑在 async runtime
 - [ ] **P2-9** `bot_py.rs:234` — spawn 失败路径泄漏临时目录（无启动清扫机制）
 - [ ] **P2-10** `bot_py.rs:205` — `detect_python()` 每次重新探测（最多 3 次进程 spawn，无缓存）
 - [ ] **P2-11** `bot_py.rs:1053` — `truncate_for_log` 不剥换行

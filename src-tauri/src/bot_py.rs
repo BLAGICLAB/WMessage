@@ -1105,6 +1105,17 @@ pub fn py_exec_sync(
     Ok(r)
 }
 
+/// py_exec_sync 的 async 包装（C4）：阻塞执行挪到 blocking 线程池，
+/// 与 NEW-C-1 doc_* 同一模式 —— 调用方（tool_run_python）在 async runtime 内
+/// 不得直接调 sync 版占住 worker。
+pub async fn py_exec_sync_async(
+    app: AppHandle,
+    code: String,
+    timeout_secs: Option<u64>,
+) -> Result<PyRunResult, String> {
+    spawn_blocking_map(move || py_exec_sync(&app, code, timeout_secs)).await
+}
+
 /// 提取结果：文件路径 + 文本（修订模式需要原文路径回读原文）
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
