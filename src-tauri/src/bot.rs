@@ -2,7 +2,7 @@
 //!
 //! 安全性（对齐《Harness 安全网关》需求）：
 //! - 工具白名单：固定 TOOLS schema + execute_tool match，模型编造的工具一律拒绝
-//! - 调用熔断：单轮 Function 调用 ≤5 次 + 聊天 8 轮/任务执行 10 轮工具循环；HTTP connect 15s / 总超时 300s
+//! - 调用熔断：单轮 Function 调用 ≤10 次 + 7 次软警告（收尾提醒）+ 聊天 8 轮/任务执行 10 轮工具循环；HTTP connect 15s / 总超时 300s
 //! - Skill 调度器：use_skill 启动技能生命周期（预审/状态机/步数熔断/暂停确认/回滚建议），
 //!   调度器仅编排与监督，Function 执行仍强制过七层 Harness（不可绕过）
 //! - 参数校验：标题/备注/关键词/子任务/截止时间长度上限、标签数量上限
@@ -626,6 +626,36 @@ const IMAGE_EXTS: [&str; 6] = ["png", "jpg", "jpeg", "webp", "gif", "bmp"];
 const MAX_IMAGE_BYTES: usize = 3 * 1024 * 1024;
 const MAX_IMAGES_PER_MSG: usize = 4;
 
+/// FailedButRecoverable 兜底路径：把「失败原因 + 已完成产物 + 回滚状态」拼成可读提示，
+/// 注入 system prompt 让 LLM 决策下一步（重试 / 调整 / 告知用户）。
+/// 剥出便于单测：LLM 提示词格式不能漂移（用户在误用 Skill 后能看到一致结构）。
+pub fn format_recovery_hint(
+    reason: &str,
+    completed_summary: &str,
+    rollback_attempted: bool,
+) -> String {
+    format!(
+        "\n\n【Skill 失败可恢复上下文】\n原因：{reason}\n已完成产物：\n{completed_summary}\n回滚已尝试：{}\n请基于以上产物决策：重试 / 调整 / 告知用户。",
+        if rollback_attempted { "是" } else { "否" }
+    )
+}
+
+/// 按 id 去重 TaskRef 列表，保留首次出现的标题（run_model_loop 工具循环完成后用）。
+/// 剥出便于单测：dedup 顺序敏感（首次保留）有 spec 含义，不能漂移。
+pub fn merge_task_refs_dedup(refs: Vec<TaskRef>) -> Vec<TaskRef> {
+    let mut seen: Vec<String> = Vec::new();
+    refs.into_iter()
+        .filter(|r| {
+            if seen.contains(&r.id) {
+                false
+            } else {
+                seen.push(r.id.clone());
+                true
+            }
+        })
+        .collect()
+}
+
 /// 解析 [附件文件] 块里的图片路径，读文件转 base64 data URL，附加为多模态消息内容。
 /// 无图片附件时返回纯文本字符串（保持原格式）；非图片附件保持路径文本（模型用 extract_document 直读）。
 fn attach_images(content: &str) -> serde_json::Value {
@@ -1032,10 +1062,7 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>) -> Result<BotChatR
                     rollback_attempted,
                 }) => {
                     // LLM 兜底：把「失败原因 + 已完成产物 + 回滚状态」拼进 system prompt 决策
-                    recovery_hint = Some(format!(
-                        "\n\n【Skill 失败可恢复上下文】\n原因：{reason}\n已完成产物：\n{completed_summary}\n回滚已尝试：{}\n请基于以上产物决策：重试 / 调整 / 告知用户。",
-                        if rollback_attempted { "是" } else { "否" }
-                    ));
+                    recovery_hint = Some(format_recovery_hint(&reason, &completed_summary, rollback_attempted));
                 }
                 Err(crate::bot_skills::DslFailure::Terminated { reason }) => {
                     return Err(reason);
@@ -1343,8 +1370,17 @@ async fn run_model_loop(
     let mut collected_refs: Vec<TaskRef> = Vec::new();
     // Harness 第 5 层：单轮对话 Function 总调用上限（每轮可并行多个 tool_calls，
     // max_rounds 管轮数管不住并行调用数，必须有独立计数熔断）
-    const MAX_FUNCTION_CALLS_PER_TURN: usize = 5;
+    //
+    // 阈值设定理由（2026-08-18 老板拍板从 5 提到 10）：
+    // - 5 太激进：实际 Skill 复合流程（例：minimax-archive = list + query + edit + bind_file + verify）就要 5+，
+    //   复杂 Skill（PPT 编排 + 配色 + 归档）需 8-10
+    // - 10 中间偏严：覆盖 90% 真实复合任务，留 1.5x 余量给多技能联动
+    // - 15+ 太宽：掩护 LLM 死循环 / 幻觉调工具
+    // - 软警告（7）收尾提醒：避免刚警告完就熔断
+    const MAX_FUNCTION_CALLS_PER_TURN: usize = 10;
+    const SOFT_WARN_AT: usize = 7;
     let mut function_calls_total: usize = 0;
+    let mut soft_warn_sent: bool = false;
     // 上轮 streamed 文本快照（Block 2 接入，2026-08-17 22:26）：
     // AwaitConfirm/Finish/Fail/Terminate 跳出主循环时，返回 user 已看到的文本
     let mut last_streamed = String::new();
@@ -1529,16 +1565,7 @@ async fn run_model_loop(
 
         if tool_calls.is_empty() {
             let _ = crate::bot_skills::skill_finish(&app, true, "");
-            // 去重（按 id，保留首次出现的标题）
-            let mut seen: Vec<String> = Vec::new();
-            collected_refs.retain(|r| {
-                if seen.contains(&r.id) {
-                    false
-                } else {
-                    seen.push(r.id.clone());
-                    true
-                }
-            });
+            collected_refs = merge_task_refs_dedup(collected_refs);
             return Ok((final_text.clone(), collected_refs));
         }
 
@@ -1573,6 +1600,24 @@ async fn run_model_loop(
                     ),
                     collected_refs,
                 ));
+            }
+            // 软警告（SOFT_WARN_AT）：追加 user 消息提示 LLM 收尾，不中断流程
+            if !soft_warn_sent && function_calls_total >= SOFT_WARN_AT {
+                msgs.push(serde_json::json!({
+                    "role": "user",
+                    "content": format!(
+                        "【系统提示】你已连续调用 {SOFT_WARN_AT} 个工具，最多还能调 {} 个。请尽快收尾：合并调用、必要时汇总报告给用户、避免在剩余额度内继续展开新步骤。",
+                        MAX_FUNCTION_CALLS_PER_TURN - SOFT_WARN_AT
+                    ),
+                }));
+                soft_warn_sent = true;
+                audit_log(
+                    &app,
+                    &format!(
+                        "soft_warn | Function 调用达 {} 次（上限 {}），追加收尾提醒",
+                        SOFT_WARN_AT, MAX_FUNCTION_CALLS_PER_TURN
+                    ),
+                );
             }
             let (result, refs) = execute_tool(&app, name, args).await;
             let _ = app.emit_to(
@@ -3241,5 +3286,83 @@ mod tool_extract_document_tests {
             a_count, 30000,
             "长文本截断后应剩 30000 个 'A'，实际 {a_count}"
         );
+    }
+}
+
+/// Phase 7 Q3 主编编排单测补（2026-08-18 12:50）：
+/// 盖 run_model_loop 调用的两个纯函数。format_recovery_hint 是 LLM 提示词、
+/// merge_task_refs_dedup 是首次保留语义，都不能漂移。
+#[cfg(test)]
+mod bot_chat_pure_helpers_tests {
+    use super::*;
+
+    #[test]
+    fn format_recovery_hint_includes_reason_summary_and_yes_no() {
+        let hint = format_recovery_hint(
+            "list_tasks 超时",
+            "- Step 1 (list_tasks): 0 个任务\n",
+            true,
+        );
+        assert!(hint.contains("【Skill 失败可恢复上下文】"), "应有上下文标记：\n{hint}");
+        assert!(hint.contains("原因：list_tasks 超时"), "应含原因：\n{hint}");
+        assert!(hint.contains("- Step 1 (list_tasks): 0 个任务"), "应含已完成产物：\n{hint}");
+        assert!(hint.contains("回滚已尝试：是"), "rollback_attempted=true 应输出 是：\n{hint}");
+        assert!(hint.contains("重试 / 调整 / 告知用户"), "应含 LLM 决策提示：\n{hint}");
+
+        let hint_no = format_recovery_hint("x", "y", false);
+        assert!(hint_no.contains("回滚已尝试：否"), "rollback_attempted=false 应输出 否：\n{hint_no}");
+    }
+
+    #[test]
+    fn format_recovery_hint_handles_empty_reason_and_summary() {
+        let hint = format_recovery_hint("", "", false);
+        assert!(hint.contains("原因："), "空 reason 也应含 key：\n{hint}");
+        assert!(hint.contains("已完成产物："), "空 summary 也应含 key：\n{hint}");
+    }
+
+    #[test]
+    fn merge_task_refs_dedup_empty_input_returns_empty() {
+        let out = merge_task_refs_dedup(vec![]);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn merge_task_refs_dedup_no_duplicates_returns_all_in_order() {
+        let refs = vec![
+            TaskRef { id: "a".into(), title: "标题 A".into() },
+            TaskRef { id: "b".into(), title: "标题 B".into() },
+            TaskRef { id: "c".into(), title: "标题 C".into() },
+        ];
+        let out = merge_task_refs_dedup(refs);
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].id, "a");
+        assert_eq!(out[1].id, "b");
+        assert_eq!(out[2].id, "c");
+    }
+
+    #[test]
+    fn merge_task_refs_dedup_duplicates_keeps_first_occurrence() {
+        let refs = vec![
+            TaskRef { id: "a".into(), title: "首次标题 A".into() },
+            TaskRef { id: "b".into(), title: "首次 B".into() },
+            TaskRef { id: "a".into(), title: "后续标题 A（应被丢弃）".into() },
+            TaskRef { id: "b".into(), title: "后续 B（应被丢弃）".into() },
+        ];
+        let out = merge_task_refs_dedup(refs);
+        assert_eq!(out.len(), 2, "去重后应剩 2 条");
+        assert_eq!(out[0].title, "首次标题 A", "首次出现应保留原标题，不能用后续覆盖");
+        assert_eq!(out[1].title, "首次 B");
+    }
+
+    #[test]
+    fn merge_task_refs_dedup_consecutive_same_ids_collapses() {
+        let refs = vec![
+            TaskRef { id: "x".into(), title: "X1".into() },
+            TaskRef { id: "x".into(), title: "X2".into() },
+            TaskRef { id: "x".into(), title: "X3".into() },
+        ];
+        let out = merge_task_refs_dedup(refs);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].title, "X1");
     }
 }
