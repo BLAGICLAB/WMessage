@@ -5,8 +5,12 @@ mod api_handlers;
 mod api_server;
 mod audit;
 pub mod bot;
+mod bot_chat;
+mod bot_model_loop;
 mod bot_py;
+mod bot_scheduler;
 pub mod bot_skills;
+mod bot_slash;
 mod bot_web;
 mod db;
 pub mod error;
@@ -205,7 +209,7 @@ pub fn run() {
             app.manage(middleware::build_default_registry());
 
             // 定时任务卡调度器：每 30s 扫一次到点任务并自动执行
-            bot::start_scheduler(app.handle().clone());
+            bot_scheduler::start_scheduler(app.handle().clone());
 
             // 开关持久化：上次退出前 API 开启过，则自动恢复（写 api-enabled.flag）
             {
@@ -352,16 +356,16 @@ pub fn run() {
             api_handlers::api_stop,
             api_handlers::api_status,
             api_handlers::api_rotate_token,
-            bot::bot_get_enabled,
-            bot::bot_set_enabled,
+            bot_slash::bot_get_enabled,
+            bot_slash::bot_set_enabled,
             bot::bot_get_config,
             bot::bot_set_config,
             bot::bot_clear_api_key,
-            bot::bot_chat,
-            bot::bot_execute_task,
-            bot::bot_stop,
-            bot::bot_compact,
-            bot::bot_confirm_response,
+            bot_chat::bot_chat,
+            bot_chat::bot_execute_task,
+            bot_slash::bot_stop,
+            bot_chat::bot_compact,
+            bot_slash::bot_confirm_response,
             bot::bot_log_read,
             bot_py::py_get_enabled,
             bot_py::py_set_enabled,
