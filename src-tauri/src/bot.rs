@@ -10,7 +10,7 @@
 //! 本模块保留：
 //! - 工具分发核心：execute_tool + 20+ 个 tool_* 实现 + TaskRef 构造 helpers
 //! - 配置底座：BotConfig / BotConfigView / keyring / migrate_legacy_key
-//! - 审计底座：audit_log / audit_log_hook / truncate_for_log / bot_log_read
+//! - 审计底座：audit_log / audit_log_hook / escape_for_log / bot_log_read
 //! - 参数上限常量 + check_len（bot_model_loop 拼装 tool_call 时也要用）
 //!
 //! 安全性（对齐《Harness 安全网关》需求）：
@@ -225,16 +225,29 @@ pub fn audit_log(app: &AppHandle, line: &str) {
     }
 }
 
-/// 审计日志安全截断：超长文本截到 max 字符加省略号（按字符数）
-pub(crate) fn truncate_for_log(s: &str, max: usize) -> String {
-    let count = s.chars().count();
+/// 审计日志安全转义 + 截断（P2-11）：剥换行/管道符，防伪造「INFO |」前缀与多行撕裂。
+/// 规则：`| ` → `|  `（双空格），剩余裸 `|` → `||`，`\n` → `\\n`，`\r` → `\\r`；
+/// 转义后按字符数截到 max 加省略号。与 bot_py::escape_for_log 同一规则。
+pub(crate) fn escape_for_log(s: &str, max: usize) -> String {
+    let escaped = s
+        .replace("| ", "|  ")
+        .replace('|', "||")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r");
+    let count = escaped.chars().count();
     if count <= max {
-        s.to_string()
+        escaped
     } else {
-        let mut out: String = s.chars().take(max).collect();
+        let mut out: String = escaped.chars().take(max).collect();
         out.push('…');
         out
     }
+}
+
+/// 向后兼容别名（P2-11）：bot_chat / bot_model_loop / bot_scheduler 仍用旧名，
+/// 行为即 escape_for_log（同族日志伪造问题一并修复）；新代码请直接用 escape_for_log。
+pub(crate) fn truncate_for_log(s: &str, max: usize) -> String {
+    escape_for_log(s, max)
 }
 
 /// 读取机器人审计日志（倒序，最新在前；默认 200 行，上限 2000）
@@ -284,7 +297,7 @@ pub async fn execute_tool(app: &AppHandle, name: &str, args: &str) -> (String, V
         crate::audit::AuditLevel::Info,
         "tool.call",
         "tool" => name,
-        "args_preview" => truncate_for_log(args, 80),
+        "args_preview" => escape_for_log(args, 80),
     );
     // 1. 后置拦截：原子黑名单（老板 2026-08-17 18:14 拍板）
     //    仅作为 Skill 内部子步骤、不允许裸调的底层原子 Function → 硬锁阻断
@@ -344,7 +357,7 @@ pub async fn execute_tool(app: &AppHandle, name: &str, args: &str) -> (String, V
         "tool" => name,
         "ms" => dur_ms,
         "refs" => refs.len(),
-        "preview" => truncate_for_log(&text, 80),
+        "preview" => escape_for_log(&text, 80),
     );
     if name != "use_skill" {
         crate::bot_skills::skill_on_step_post(app, name, &text, dur_ms, level);
@@ -1280,7 +1293,7 @@ async fn tool_web_search(app: &AppHandle, args: &str) -> (String, Vec<crate::bot
     }
     audit_log(
         app,
-        &format!("web_search | query: {}", truncate_for_log(&query, 100)),
+        &format!("web_search | query: {}", escape_for_log(&query, 100)),
     );
     match crate::bot_web::web_search(&query).await {
         Ok(results) => (results, Vec::new()),
@@ -1303,7 +1316,7 @@ async fn tool_fetch_url(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_
     }
     audit_log(
         app,
-        &format!("fetch_url | url: {}", truncate_for_log(&u, 100)),
+        &format!("fetch_url | url: {}", escape_for_log(&u, 100)),
     );
     match crate::bot_web::fetch_text(&u).await {
         Ok(text) => {

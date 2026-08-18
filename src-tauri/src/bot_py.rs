@@ -535,7 +535,7 @@ fn run_python_at(
         Err(e) => {
             audit(&format!(
                 "run_python err | kind=spawn_fail | {}",
-                truncate_for_log(&e.to_string(), 200)
+                escape_for_log(&e.to_string(), 200)
             ));
             // P2-9：spawn 失败时临时目录已创建，必须清理，否则磁盘泄漏
             let _ = std::fs::remove_dir_all(dir);
@@ -682,7 +682,7 @@ async fn run_doc_script(
     {
         Ok(r) => Ok(r),
         Err(e) => {
-            py_audit(app, &format!("{name} err | {}", truncate_for_log(&e, 300)));
+            py_audit(app, &format!("{name} err | {}", escape_for_log(&e, 300)));
             Err(e)
         }
     }
@@ -1221,12 +1221,12 @@ pub fn py_exec_sync(
     }
     py_audit(
         app,
-        &format!("py_exec | script: {}", truncate_for_log(&code, 300)),
+        &format!("py_exec | script: {}", escape_for_log(&code, 300)),
     );
     let r = match run_python(app, &code, None, &[], timeout_secs) {
         Ok(r) => r,
         Err(e) => {
-            py_audit(app, &format!("py_exec err | {}", truncate_for_log(&e, 300)));
+            py_audit(app, &format!("py_exec err | {}", escape_for_log(&e, 300)));
             return Err(e);
         }
     };
@@ -1236,7 +1236,7 @@ pub fn py_exec_sync(
             "py_exec done | exit={:?} {}ms | out: {}",
             r.exit_code,
             r.duration_ms,
-            truncate_for_log(&r.stdout, 300)
+            escape_for_log(&r.stdout, 300)
         ),
     );
     Ok(r)
@@ -1288,7 +1288,7 @@ pub async fn doc_extract(app: AppHandle, path: Option<String>) -> Result<DocExtr
     if r.exit_code != Some(0) {
         py_audit(
             &app,
-            &format!("doc_extract failed | {}", truncate_for_log(&r.stderr, 200)),
+            &format!("doc_extract failed | {}", escape_for_log(&r.stderr, 200)),
         );
         return Err(format!("提取失败：{}", r.stderr.trim()));
     }
@@ -1320,7 +1320,7 @@ pub async fn doc_make_word(
     if r.exit_code != Some(0) {
         py_audit(
             &app,
-            &format!("doc_make_word failed | {}", truncate_for_log(&r.stderr, 200)),
+            &format!("doc_make_word failed | {}", escape_for_log(&r.stderr, 200)),
         );
         return Err(format!("生成 Word 失败：{}", r.stderr.trim()));
     }
@@ -1354,7 +1354,7 @@ pub async fn doc_make_word_revisions(
             &app,
             &format!(
                 "doc_make_word_revisions failed | {}",
-                truncate_for_log(&r.stderr, 200)
+                escape_for_log(&r.stderr, 200)
             ),
         );
         return Err(format!("生成修订版 Word 失败：{}", r.stderr.trim()));
@@ -1382,7 +1382,7 @@ pub async fn doc_make_excel(
     if r.exit_code != Some(0) {
         py_audit(
             &app,
-            &format!("doc_make_excel failed | {}", truncate_for_log(&r.stderr, 200)),
+            &format!("doc_make_excel failed | {}", escape_for_log(&r.stderr, 200)),
         );
         return Err(format!("生成 Excel 失败：{}", r.stderr.trim()));
     }
@@ -1405,7 +1405,7 @@ pub async fn doc_make_pdf(
     if r.exit_code != Some(0) {
         py_audit(
             &app,
-            &format!("doc_make_pdf failed | {}", truncate_for_log(&r.stderr, 200)),
+            &format!("doc_make_pdf failed | {}", escape_for_log(&r.stderr, 200)),
         );
         return Err(format!("生成 PDF 失败：{}", r.stderr.trim()));
     }
@@ -1447,7 +1447,7 @@ pub async fn doc_make_ppt(
     if r.exit_code != Some(0) {
         py_audit(
             &app,
-            &format!("doc_make_ppt failed | {}", truncate_for_log(&r.stderr, 200)),
+            &format!("doc_make_ppt failed | {}", escape_for_log(&r.stderr, 200)),
         );
         return Err(format!("生成 PPT 失败：{}", r.stderr.trim()));
     }
@@ -1479,12 +1479,21 @@ fn gen_out_path(app: &AppHandle, filename: Option<&str>, ext: &str) -> Result<St
     Ok(candidate.to_string_lossy().to_string())
 }
 
-fn truncate_for_log(s: &str, max: usize) -> String {
-    let count = s.chars().count();
+/// 审计日志安全转义 + 截断（P2-11）：剥换行/管道符，防伪造「INFO |」前缀与多行撕裂。
+/// 规则：`| ` → `|  `（双空格），剩余裸 `|` → `||`，`\n` → `\\n`，`\r` → `\\r`；
+/// 转义后按字符数截到 max 加省略号。
+/// 例：`"a\nb| c"` → `"a\\nb||  c"`
+fn escape_for_log(s: &str, max: usize) -> String {
+    let escaped = s
+        .replace("| ", "|  ")
+        .replace('|', "||")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r");
+    let count = escaped.chars().count();
     if count <= max {
-        s.to_string()
+        escaped
     } else {
-        let mut out: String = s.chars().take(max).collect();
+        let mut out: String = escaped.chars().take(max).collect();
         out.push('…');
         out
     }
@@ -1678,6 +1687,29 @@ mod tests {
             Err(f) => assert!(f.spawn_not_found),
             Ok(_) => panic!("无效 python 路径不应成功"),
         }
+    }
+
+    // ── escape_for_log（P2-11：剥换行/管道符，防伪造日志行）──
+
+    #[test]
+    fn escape_for_log_strips_newlines_and_pipes() {
+        // 验收用例："a\nb| c" → "a\\nb||  c"
+        assert_eq!(escape_for_log("a\nb| c", 300), "a\\nb||  c");
+        assert_eq!(escape_for_log("x\ry", 300), "x\\ry");
+        assert_eq!(escape_for_log("plain", 300), "plain");
+        // 伪造前缀注入：剥完后无法再伪装成行首分隔符
+        assert_eq!(
+            escape_for_log("evil\n[2026-01-01 00:00:00] INFO | fake", 300),
+            "evil\\n[2026-01-01 00:00:00] INFO ||  fake"
+        );
+    }
+
+    #[test]
+    fn escape_for_log_truncates_after_escape() {
+        let long = "x".repeat(400);
+        let out = escape_for_log(&long, 300);
+        assert_eq!(out.chars().count(), 301);
+        assert!(out.ends_with('…'));
     }
 
     // ── spawn_blocking_map（NEW-C-1：doc_* async 命令不得把阻塞压在 runtime worker 上）──
