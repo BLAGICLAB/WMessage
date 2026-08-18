@@ -82,10 +82,14 @@ pub struct TauriStore {
 
 impl TaskStore for TauriStore {
     fn load(&self) -> Result<Vec<db::Task>, String> {
-        db::db_load(self.app.clone()).map_err(|e| e.to_string())
+        // B3: db_load/db_upsert 改 async 了；TaskStore trait 仍是 sync（handler 在 per-request
+        // std::thread 里跑，不在 tokio runtime 上 → block_on 不会死锁）。
+        tauri::async_runtime::block_on(async { db::db_load(self.app.clone()).await })
+            .map_err(|e| e.to_string())
     }
     fn upsert(&self, tasks: Vec<db::Task>) -> Result<(), String> {
-        db::db_upsert(self.app.clone(), tasks).map_err(|e| e.to_string())
+        tauri::async_runtime::block_on(async { db::db_upsert(self.app.clone(), tasks).await })
+            .map_err(|e| e.to_string())
     }
     fn event_hub(&self) -> &Arc<EventHub> {
         &self.hub

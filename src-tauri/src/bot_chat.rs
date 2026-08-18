@@ -592,6 +592,7 @@ pub async fn execute_task_core(
     }
     let stop = StopGuard::new(interactive);
     let task = crate::db::db_load(app.clone())
+        .await
         .unwrap_or_default()
         .into_iter()
         .find(|t| t.id == task_id && t.deleted_at.is_none())
@@ -643,10 +644,10 @@ pub async fn execute_task_core(
         serde_json::json!({"role": "user", "content": block}),
     ];
     // 交给机器人：卡片切机器人头像（前端 tasks-changed 广播后实时更新）
-    set_bot_assigned(app, &task.id, true);
+    set_bot_assigned(app, &task.id, true).await;
     let result = crate::bot_model_loop::run_model_loop(app.clone(), msgs, 10, &stop).await;
     // 执行结束（无论成败）：清除标记，恢复用户头像
-    set_bot_assigned(app, &task.id, false);
+    set_bot_assigned(app, &task.id, false).await;
     let (text, refs) = result?;
     Ok(BotChatResult {
         text,
@@ -655,8 +656,8 @@ pub async fn execute_task_core(
 }
 
 /// 翻转「交给机器人」标记：重读库后只改 bot_assigned，避免覆盖机器人工具对卡片的修改
-fn set_bot_assigned(app: &AppHandle, task_id: &str, assigned: bool) {
-    let Ok(all) = crate::db::db_load(app.clone()) else {
+async fn set_bot_assigned(app: &AppHandle, task_id: &str, assigned: bool) {
+    let Ok(all) = crate::db::db_load(app.clone()).await else {
         return;
     };
     let Some(mut t) = all
@@ -670,7 +671,7 @@ fn set_bot_assigned(app: &AppHandle, task_id: &str, assigned: bool) {
     }
     t.bot_assigned = Some(assigned);
     t.updated_at = Some(chrono::Utc::now().timestamp_millis());
-    if crate::db::db_upsert(app.clone(), vec![t.clone()]).is_ok() {
+    if crate::db::db_upsert(app.clone(), vec![t.clone()]).await.is_ok() {
         crate::bot::broadcast_after_mutation(app, vec![t], vec![]);
     }
 }

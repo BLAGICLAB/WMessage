@@ -529,18 +529,23 @@ pub fn bot_session_create(
 
 /// 删除会话及其全部消息（原子：消息与会话同一事务，任一失败整体回滚）
 #[tauri::command]
-pub fn bot_session_delete(app: tauri::AppHandle, id: String) -> CommandResult<()> {
-    let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let mut conn = open_db(&app)?;
-    let tx = conn
-        .transaction()
-        .map_err(|e| CommandError::DbError(e.to_string()))?;
-    tx.execute("DELETE FROM bot_messages WHERE session_id = ?1", [&id])
-        .map_err(|e| CommandError::DbError(e.to_string()))?;
-    tx.execute("DELETE FROM bot_sessions WHERE id = ?1", [&id])
-        .map_err(|e| CommandError::DbError(e.to_string()))?;
-    tx.commit()
-        .map_err(|e| CommandError::DbError(e.to_string()))
+pub async fn bot_session_delete(app: tauri::AppHandle, id: String) -> CommandResult<()> {
+    // B3: 高频写 + 跨表事务 → 主线程会阻塞；扔到 spawn_blocking。
+    tauri::async_runtime::spawn_blocking(move || {
+        let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut conn = open_db(&app)?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| CommandError::DbError(e.to_string()))?;
+        tx.execute("DELETE FROM bot_messages WHERE session_id = ?1", [&id])
+            .map_err(|e| CommandError::DbError(e.to_string()))?;
+        tx.execute("DELETE FROM bot_sessions WHERE id = ?1", [&id])
+            .map_err(|e| CommandError::DbError(e.to_string()))?;
+        tx.commit()
+            .map_err(|e| CommandError::DbError(e.to_string()))
+    })
+    .await
+    .map_err(|e| CommandError::from(format!("会话删除线程 join 失败：{e}")))?
 }
 
 /// 会话改名
@@ -559,27 +564,32 @@ pub fn bot_session_rename(app: tauri::AppHandle, id: String, title: String) -> C
 
 /// 加载指定会话的消息（按写入顺序）
 #[tauri::command]
-pub fn bot_history_load(
+pub async fn bot_history_load(
     app: tauri::AppHandle,
     session_id: String,
 ) -> CommandResult<Vec<BotMsgRow>> {
-    let conn = open_db(&app)?;
-    let mut stmt = conn
-        .prepare("SELECT role, content, refs, thinking, tools FROM bot_messages WHERE session_id = ?1 ORDER BY id")
-        .map_err(|e| CommandError::DbError(e.to_string()))?;
-    let rows = stmt
-        .query_map([&session_id], |r| {
-            Ok(BotMsgRow {
-                role: r.get::<_, String>(0)?,
-                content: r.get::<_, String>(1)?,
-                refs_json: r.get::<_, Option<String>>(2)?,
-                thinking: r.get::<_, Option<String>>(3)?,
-                tools_json: r.get::<_, Option<String>>(4)?,
+    // B3: 长会话（几千条消息）查询会被主线程阻塞；扔到 spawn_blocking。
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = open_db(&app)?;
+        let mut stmt = conn
+            .prepare("SELECT role, content, refs, thinking, tools FROM bot_messages WHERE session_id = ?1 ORDER BY id")
+            .map_err(|e| CommandError::DbError(e.to_string()))?;
+        let rows = stmt
+            .query_map([&session_id], |r| {
+                Ok(BotMsgRow {
+                    role: r.get::<_, String>(0)?,
+                    content: r.get::<_, String>(1)?,
+                    refs_json: r.get::<_, Option<String>>(2)?,
+                    thinking: r.get::<_, Option<String>>(3)?,
+                    tools_json: r.get::<_, Option<String>>(4)?,
+                })
             })
-        })
-        .map_err(|e| CommandError::DbError(e.to_string()))?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|e| CommandError::DbError(e.to_string()))
+            .map_err(|e| CommandError::DbError(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| CommandError::DbError(e.to_string()))
+    })
+    .await
+    .map_err(|e| CommandError::from(format!("历史读取线程 join 失败：{e}")))?
 }
 
 /// 保存指定会话的聊天记录：全量覆盖 + 更新会话活跃时间（原子：DELETE+INSERT+UPDATE 同一事务）
@@ -622,33 +632,43 @@ fn bot_history_save_inner(
 }
 
 #[tauri::command]
-pub fn bot_history_save(
+pub async fn bot_history_save(
     app: tauri::AppHandle,
     session_id: String,
     messages: Vec<BotMsgRow>,
 ) -> CommandResult<()> {
-    let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let mut conn = open_db(&app)?;
-    let tx = conn
-        .transaction()
-        .map_err(|e| CommandError::DbError(e.to_string()))?;
-    bot_history_save_inner(&tx, &session_id, &messages)
-        .map_err(CommandError::DbError)?;
-    tx.commit()
-        .map_err(|e| CommandError::DbError(e.to_string()))
+    // B3: 长会话全量覆盖写入 + fsync 重；主线程阻塞；扔到 spawn_blocking。
+    tauri::async_runtime::spawn_blocking(move || {
+        let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut conn = open_db(&app)?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| CommandError::DbError(e.to_string()))?;
+        bot_history_save_inner(&tx, &session_id, &messages)
+            .map_err(CommandError::DbError)?;
+        tx.commit()
+            .map_err(|e| CommandError::DbError(e.to_string()))
+    })
+    .await
+    .map_err(|e| CommandError::from(format!("历史保存线程 join 失败：{e}")))?
 }
 
 /// 清空指定会话的聊天记录（会话保留）
 #[tauri::command]
-pub fn bot_history_clear(app: tauri::AppHandle, session_id: String) -> CommandResult<()> {
-    let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let conn = open_db(&app)?;
-    conn.execute(
-        "DELETE FROM bot_messages WHERE session_id = ?1",
-        [&session_id],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
+pub async fn bot_history_clear(app: tauri::AppHandle, session_id: String) -> CommandResult<()> {
+    // B3: DELETE 大量消息时仍可能阻塞；扔到 spawn_blocking。
+    tauri::async_runtime::spawn_blocking(move || {
+        let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = open_db(&app)?;
+        conn.execute(
+            "DELETE FROM bot_messages WHERE session_id = ?1",
+            [&session_id],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| CommandError::from(format!("历史清空线程 join 失败：{e}")))?
 }
 
 fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), String> {
@@ -838,40 +858,55 @@ fn migrate_data_json(app: &tauri::AppHandle, conn: &mut rusqlite::Connection) {
 static DB_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[tauri::command]
-pub fn db_load(app: tauri::AppHandle) -> CommandResult<Vec<Task>> {
-    let mut conn = open_db(&app)?;
-    let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
-        .map_err(|e| CommandError::DbError(e.to_string()))?;
-    if count == 0 {
-        migrate_data_json(&app, &mut conn);
-    }
-    load_all(&conn).map_err(CommandError::from)
+pub async fn db_load(app: tauri::AppHandle) -> CommandResult<Vec<Task>> {
+    // B3: 启动加载全部任务（可能有几千条 + migrate_data_json 读 JSON 文件）；扔到 spawn_blocking。
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut conn = open_db(&app)?;
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
+            .map_err(|e| CommandError::DbError(e.to_string()))?;
+        if count == 0 {
+            migrate_data_json(&app, &mut conn);
+        }
+        load_all(&conn).map_err(CommandError::from)
+    })
+    .await
+    .map_err(|e| CommandError::from(format!("数据库读取线程 join 失败：{e}")))?
 }
 
 #[tauri::command]
-pub fn db_upsert(app: tauri::AppHandle, tasks: Vec<Task>) -> CommandResult<()> {
-    if tasks.is_empty() {
-        return Ok(());
-    }
-    let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let mut conn = open_db(&app)?;
-    let tx = conn
-        .transaction()
-        .map_err(|e| CommandError::DbError(e.to_string()))?;
-    upsert_tasks(&tx, &tasks).map_err(CommandError::from)?;
-    tx.commit()
-        .map_err(|e| CommandError::DbError(e.to_string()))
+pub async fn db_upsert(app: tauri::AppHandle, tasks: Vec<Task>) -> CommandResult<()> {
+    // B3: 高频写（挂件拖拽/编辑都走这里），批量事务含 fsync；扔到 spawn_blocking。
+    tauri::async_runtime::spawn_blocking(move || {
+        if tasks.is_empty() {
+            return Ok(());
+        }
+        let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut conn = open_db(&app)?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| CommandError::DbError(e.to_string()))?;
+        upsert_tasks(&tx, &tasks).map_err(CommandError::from)?;
+        tx.commit()
+            .map_err(|e| CommandError::DbError(e.to_string()))
+    })
+    .await
+    .map_err(|e| CommandError::from(format!("数据库 upsert 线程 join 失败：{e}")))?
 }
 
 #[tauri::command]
-pub fn db_delete(app: tauri::AppHandle, ids: Vec<String>) -> CommandResult<()> {
-    if ids.is_empty() {
-        return Ok(());
-    }
-    let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let conn = open_db(&app)?;
-    delete_tasks(&conn, &ids).map_err(CommandError::from)
+pub async fn db_delete(app: tauri::AppHandle, ids: Vec<String>) -> CommandResult<()> {
+    // B3: 批量删（回收站多选 / 清空）；扔到 spawn_blocking。
+    tauri::async_runtime::spawn_blocking(move || {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = open_db(&app)?;
+        delete_tasks(&conn, &ids).map_err(CommandError::from)
+    })
+    .await
+    .map_err(|e| CommandError::from(format!("数据库删除线程 join 失败：{e}")))?
 }
 
 /// 只读读取外部数据库（可能是更老版本，缺 ord / updated_at 列时按 NULL 处理）
@@ -975,91 +1010,106 @@ fn load_external(conn: &rusqlite::Connection) -> Result<Vec<Task>, String> {
 /// 合并导入：按 id 并集；同 id 内容分歧时保留 updated_at 更新（外部无 updated_at 视为最旧）。
 /// 返回实际写入的任务条数。
 #[tauri::command]
-pub fn db_merge(app: tauri::AppHandle, path: String) -> CommandResult<usize> {
-    use rusqlite::{OpenFlags, OptionalExtension};
+pub async fn db_merge(app: tauri::AppHandle, path: String) -> CommandResult<usize> {
+    // B3: 长文件读 + 跨表事务；扔到 spawn_blocking。
+    tauri::async_runtime::spawn_blocking(move || {
+        use rusqlite::{OpenFlags, OptionalExtension};
 
-    let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let src = rusqlite::Connection::open_with_flags(
-        &path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(|e| format!("无法打开所选数据库：{e}"))?;
-    let ext = load_external(&src)?;
-    if ext.is_empty() {
-        return Ok(0);
-    }
-    let mut conn = open_db(&app)?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let mut merged = 0usize;
-    for t in &ext {
-        // B4: 读 Option<i64> 处理 NULL（2026-08-14 前老行 updated_at 为 NULL）
-        // 原代码 r.get::<_, i64> 遇 NULL 直接报 InvalidColumnType → 整次导入崩溃
-        let cur: Option<Option<i64>> = tx
-            .query_row(
-                "SELECT updated_at FROM tasks WHERE id = ?1",
-                rusqlite::params![t.id],
-                |r| r.get::<_, Option<i64>>(0),
-            )
-            .optional()
-            .map_err(|e| e.to_string())?;
-        let cur_ua = cur.flatten().unwrap_or(0); // NULL / 无行 都视为 0
-        let take = t.updated_at.unwrap_or(0) > cur_ua;
-        if take {
-            upsert_tasks(&tx, std::slice::from_ref(t))?;
-            merged += 1;
+        let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let src = rusqlite::Connection::open_with_flags(
+            &path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(|e| format!("无法打开所选数据库：{e}"))?;
+        let ext = load_external(&src)?;
+        if ext.is_empty() {
+            return Ok(0);
         }
-    }
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(merged)
+        let mut conn = open_db(&app)?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let mut merged = 0usize;
+        for t in &ext {
+            // B4: 读 Option<i64> 处理 NULL（2026-08-14 前老行 updated_at 为 NULL）
+            // 原代码 r.get::<_, i64> 遇 NULL 直接报 InvalidColumnType → 整次导入崩溃
+            let cur: Option<Option<i64>> = tx
+                .query_row(
+                    "SELECT updated_at FROM tasks WHERE id = ?1",
+                    rusqlite::params![t.id],
+                    |r| r.get::<_, Option<i64>>(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            let cur_ua = cur.flatten().unwrap_or(0); // NULL / 无行 都视为 0
+            let take = t.updated_at.unwrap_or(0) > cur_ua;
+            if take {
+                upsert_tasks(&tx, std::slice::from_ref(t))?;
+                merged += 1;
+            }
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(merged)
+    })
+    .await
+    .map_err(|e| CommandError::from(format!("数据库合并线程 join 失败：{e}")))?
 }
 
 /// 导出任务卡数据：全量任务（含归档、回收站）序列化为 JSON 文件，返回条数
 #[tauri::command]
-pub fn tasks_export(app: tauri::AppHandle, path: String) -> CommandResult<usize> {
-    let conn = open_db(&app)?;
-    let tasks = load_all(&conn)?;
-    let json = serde_json::to_string_pretty(&tasks).map_err(|e| e.to_string())?;
-    std::fs::write(&path, json).map_err(|e| format!("写入文件失败：{e}"))?;
-    Ok(tasks.len())
+pub async fn tasks_export(app: tauri::AppHandle, path: String) -> CommandResult<usize> {
+    // B3: 大数据集导出（load_all + JSON 序列化 + 文件写）阻塞主线程；扔到 spawn_blocking。
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = open_db(&app)?;
+        let tasks = load_all(&conn)?;
+        let json = serde_json::to_string_pretty(&tasks).map_err(|e| e.to_string())?;
+        std::fs::write(&path, json).map_err(|e| format!("写入文件失败：{e}"))?;
+        Ok(tasks.len())
+    })
+    .await
+    .map_err(|e| CommandError::from(format!("任务导出线程 join 失败：{e}")))?
 }
 
 /// 从 JSON 文件导入任务卡数据：按 id 并集合并，同 id 保留 updated_at 更晚者。返回写入条数。
 #[tauri::command]
-pub fn tasks_import(app: tauri::AppHandle, path: String) -> CommandResult<usize> {
-    use rusqlite::OptionalExtension;
+pub async fn tasks_import(app: tauri::AppHandle, path: String) -> CommandResult<usize> {
+    // B3: 大文件读 + 解析 + 长事务；扔到 spawn_blocking。
+    tauri::async_runtime::spawn_blocking(move || {
+        use rusqlite::OptionalExtension;
 
-    let raw = std::fs::read_to_string(&path).map_err(|e| format!("无法读取所选文件：{e}"))?;
-    let ext: Vec<Task> =
-        serde_json::from_str(&raw).map_err(|e| format!("不是有效的任务数据 JSON：{e}"))?;
-    if ext.is_empty() {
-        return Ok(0);
-    }
-    let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let mut conn = open_db(&app)?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let mut merged = 0usize;
-    for t in &ext {
-        if t.id.trim().is_empty() {
-            continue; // 跳过无 id 的脏数据
+        let raw = std::fs::read_to_string(&path).map_err(|e| format!("无法读取所选文件：{e}"))?;
+        let ext: Vec<Task> =
+            serde_json::from_str(&raw).map_err(|e| format!("不是有效的任务数据 JSON：{e}"))?;
+        if ext.is_empty() {
+            return Ok(0);
         }
-        // B4: 同 db_merge — NULL updated_at 兼容
-        let cur: Option<Option<i64>> = tx
-            .query_row(
-                "SELECT updated_at FROM tasks WHERE id = ?1",
-                rusqlite::params![t.id],
-                |r| r.get::<_, Option<i64>>(0),
-            )
-            .optional()
-            .map_err(|e| e.to_string())?;
-        let cur_ua = cur.flatten().unwrap_or(0);
-        let take = t.updated_at.unwrap_or(0) > cur_ua;
-        if take {
-            upsert_tasks(&tx, std::slice::from_ref(t))?;
-            merged += 1;
+        let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut conn = open_db(&app)?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let mut merged = 0usize;
+        for t in &ext {
+            if t.id.trim().is_empty() {
+                continue; // 跳过无 id 的脏数据
+            }
+            // B4: 同 db_merge — NULL updated_at 兼容
+            let cur: Option<Option<i64>> = tx
+                .query_row(
+                    "SELECT updated_at FROM tasks WHERE id = ?1",
+                    rusqlite::params![t.id],
+                    |r| r.get::<_, Option<i64>>(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            let cur_ua = cur.flatten().unwrap_or(0);
+            let take = t.updated_at.unwrap_or(0) > cur_ua;
+            if take {
+                upsert_tasks(&tx, std::slice::from_ref(t))?;
+                merged += 1;
+            }
         }
-    }
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(merged)
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(merged)
+    })
+    .await
+    .map_err(|e| CommandError::from(format!("任务导入线程 join 失败：{e}")))?
 }
 
 #[cfg(test)]

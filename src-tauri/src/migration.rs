@@ -240,24 +240,30 @@ pub fn journal_replay_pending(app: &AppHandle) -> Result<(usize, usize), String>
 }
 
 fn recover_move_db(app: &AppHandle, task_id: &str, dst: &Path) -> Result<(), String> {
-    let tasks = db::db_load(app.clone()).map_err(|e| e.to_string())?;
+    // B3: db_load/db_upsert 改 async 了；recover_* 在 spawn_polling 的 std::thread 里跑，
+    // 不在 tokio runtime 上 → 用 block_on 安全桥接（不会死锁）。
+    let tasks = tauri::async_runtime::block_on(async { db::db_load(app.clone()).await })
+        .map_err(|e| e.to_string())?;
     let Some(mut t) = tasks.into_iter().find(|x| x.id == task_id) else {
         return Err(format!("task {task_id} 不存在"));
     };
     t.file_path = Some(dst.to_string_lossy().to_string());
     t.updated_at = Some(now_ms());
-    db::db_upsert(app.clone(), vec![t]).map_err(|e| e.to_string())
+    tauri::async_runtime::block_on(async { db::db_upsert(app.clone(), vec![t]).await })
+        .map_err(|e| e.to_string())
 }
 
 fn recover_delete_db(app: &AppHandle, task_id: &str) -> Result<(), String> {
-    let tasks = db::db_load(app.clone()).map_err(|e| e.to_string())?;
+    let tasks = tauri::async_runtime::block_on(async { db::db_load(app.clone()).await })
+        .map_err(|e| e.to_string())?;
     let Some(mut t) = tasks.into_iter().find(|x| x.id == task_id) else {
         return Err(format!("task {task_id} 不存在"));
     };
     t.file_path = None;
     t.file_is_dir = None;
     t.updated_at = Some(now_ms());
-    db::db_upsert(app.clone(), vec![t]).map_err(|e| e.to_string())
+    tauri::async_runtime::block_on(async { db::db_upsert(app.clone(), vec![t]).await })
+        .map_err(|e| e.to_string())
 }
 
 /// 防重入：手动触发与定时轮询互斥
@@ -527,12 +533,15 @@ pub fn run_migration(app: &AppHandle) -> Result<MigrationReport, String> {
 }
 
 fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
+    // B3: db_load/db_upsert 改 async 了；run_migration_inner 在 spawn_polling 的 std::thread
+    // 或 spawn_blocking(migration_run) 线程里跑，不在 tokio runtime 上 → 用 block_on 桥接。
     let mut report = MigrationReport {
         ts: now_ms(),
         ..Default::default()
     };
     let rules = load_rules(app);
-    let tasks = db::db_load(app.clone()).map_err(|e| e.to_string())?;
+    let tasks = tauri::async_runtime::block_on(async { db::db_load(app.clone()).await })
+        .map_err(|e| e.to_string())?;
     let now = now_ms();
     let mut changed: Vec<db::Task> = vec![];
 
@@ -552,7 +561,8 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
         }
     }
     if !due.is_empty() {
-        db::db_upsert(app.clone(), due.clone()).map_err(|e| e.to_string())?;
+        tauri::async_runtime::block_on(async { db::db_upsert(app.clone(), due.clone()).await })
+            .map_err(|e| e.to_string())?;
         report.archived = due.len();
         let line = format!("归档到期任务 {n} 个", n = due.len());
         report.log.push(line.clone());
@@ -657,7 +667,9 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
                 let mut nt = t.clone();
                 nt.file_path = Some(dst.to_string_lossy().to_string());
                 nt.updated_at = Some(now);
-                if let Err(e) = db::db_upsert(app.clone(), vec![nt.clone()]) {
+                if let Err(e) = tauri::async_runtime::block_on(async {
+                    db::db_upsert(app.clone(), vec![nt.clone()]).await
+                }) {
                     // move 成功但 db_upsert 失败 → journal 保持 pending，
                     // 下次启动 replay 时检测 dst 存在 + src 不存在，修复 DB
                     report.skipped += 1;
@@ -719,7 +731,9 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
                 nt.file_path = None;
                 nt.file_is_dir = None;
                 nt.updated_at = Some(now);
-                if let Err(e) = db::db_upsert(app.clone(), vec![nt.clone()]) {
+                if let Err(e) = tauri::async_runtime::block_on(async {
+                    db::db_upsert(app.clone(), vec![nt.clone()]).await
+                }) {
                     // delete 成功但 db_upsert 失败 → journal 保持 pending，
                     // 下次启动 replay 时检测 src 不存在 + task 仍有 file_path，
                     // 修复 DB 清 file_path
@@ -744,7 +758,10 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
 
     // 统一落盘（阶段一的 due 已包含在 changed 中，重复 upsert 幂等无害）
     if !changed.is_empty() {
-        db::db_upsert(app.clone(), changed.clone()).map_err(|e| e.to_string())?;
+        tauri::async_runtime::block_on(async {
+            db::db_upsert(app.clone(), changed.clone()).await
+        })
+        .map_err(|e| e.to_string())?;
         emit_upserts(app, &changed);
     }
 

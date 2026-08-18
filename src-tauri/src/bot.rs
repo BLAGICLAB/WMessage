@@ -303,17 +303,17 @@ pub async fn execute_tool(app: &AppHandle, name: &str, args: &str) -> (String, V
         }
     }
     let (text, refs): (String, Vec<crate::bot_chat::TaskRef>) = match name {
-        "list_tasks" => tool_list_tasks(app),
-        "query_single_task" => tool_query_single_task(app, args),
-        "create_task" => tool_create_task(app, args),
-        "complete_task" => tool_complete_task(app, args),
+        "list_tasks" => tool_list_tasks(app).await,
+        "query_single_task" => tool_query_single_task(app, args).await,
+        "create_task" => tool_create_task(app, args).await,
+        "complete_task" => tool_complete_task(app, args).await,
         "delete_task" => tool_delete_task(app, args).await,
-        "edit_task" => tool_edit_task(app, args),
-        "add_subtask" => tool_add_subtask(app, args),
-        "toggle_subtask" => tool_toggle_subtask(app, args),
+        "edit_task" => tool_edit_task(app, args).await,
+        "add_subtask" => tool_add_subtask(app, args).await,
+        "toggle_subtask" => tool_toggle_subtask(app, args).await,
         "bind_file" => tool_bind_file(app, args).await,
         "link_file_to_task" => tool_link_file_to_task(app, args).await,
-        "search_tasks" => tool_search_tasks(app, args),
+        "search_tasks" => tool_search_tasks(app, args).await,
         "extract_document" => tool_extract_document(app, args).await,
         "create_word" => tool_create_word(app, args).await,
         "create_word_revisions" => tool_create_word_revisions(app, args).await,
@@ -364,8 +364,9 @@ pub fn broadcast_after_mutation(app: &AppHandle, upserts: Vec<crate::db::Task>, 
     }
 }
 
-fn active_tasks(app: &AppHandle) -> Vec<crate::db::Task> {
+async fn active_tasks(app: &AppHandle) -> Vec<crate::db::Task> {
     crate::db::db_load(app.clone())
+        .await
         .unwrap_or_default()
         .into_iter()
         .filter(|t| t.deleted_at.is_none() && t.archived != Some(true) && t.column != "done")
@@ -374,8 +375,8 @@ fn active_tasks(app: &AppHandle) -> Vec<crate::db::Task> {
 
 // ───────────────────────── 任务管理工具实现（20+ functions） ─────────────────────────
 
-fn tool_list_tasks(app: &AppHandle) -> (String, Vec<crate::bot_chat::TaskRef>) {
-    let tasks = active_tasks(app);
+async fn tool_list_tasks(app: &AppHandle) -> (String, Vec<crate::bot_chat::TaskRef>) {
+    let tasks = active_tasks(app).await;
     if tasks.is_empty() {
         return ("当前没有未完成的任务".into(), Vec::new());
     }
@@ -409,7 +410,7 @@ fn tool_list_tasks(app: &AppHandle) -> (String, Vec<crate::bot_chat::TaskRef>) {
 /// - 输出：标题/列/截止/备注/子任务/标签/绑定文件 + 归档/删除/机器人执行状态指示
 /// - 单点白名单工具（非原子黑名单），LLM 可裸调
 /// - 返回的 TaskRef 供后续 taskId 操作（complete_task / edit_task / bind_file 等）跟随引用
-fn tool_query_single_task(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
+async fn tool_query_single_task(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
     let v = parse_args(args);
     let Some(id) = v["id"].as_str().map(|s| s.trim().to_string()) else {
         return ("query_single_task 缺少 id 参数".into(), Vec::new());
@@ -417,7 +418,7 @@ fn tool_query_single_task(app: &AppHandle, args: &str) -> (String, Vec<crate::bo
     if id.is_empty() {
         return ("query_single_task id 不能为空".into(), Vec::new());
     }
-    let Ok(tasks) = crate::db::db_load(app.clone()) else {
+    let Ok(tasks) = crate::db::db_load(app.clone()).await else {
         return ("查询失败：数据库读取错误".into(), Vec::new());
     };
     let Some(t) = tasks.into_iter().find(|t| t.id == id) else {
@@ -487,7 +488,7 @@ fn tool_query_single_task(app: &AppHandle, args: &str) -> (String, Vec<crate::bo
 
 /// 搜索任务：搜所有任务卡（待办/进行中/已完成/已归档；不含回收站软删）。
 /// 关键词匹配标题/备注/标签/子任务（大小写不敏感 contains）；结果带 id 供后续 taskId 操作
-fn tool_search_tasks(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
+async fn tool_search_tasks(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
     let v = parse_args(args);
     let Some(query) = v["query"].as_str().map(|s| s.trim().to_lowercase()) else {
         return ("search_tasks 缺少 query".into(), Vec::new());
@@ -498,7 +499,7 @@ fn tool_search_tasks(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_cha
     if let Err(e) = check_len(&query, MAX_KEYWORD, "搜索关键词") {
         return (e, Vec::new());
     }
-    let tasks = crate::db::db_load(app.clone()).unwrap_or_default();
+    let tasks = crate::db::db_load(app.clone()).await.unwrap_or_default();
     let mut hits: Vec<crate::db::Task> = tasks
         .into_iter()
         .filter(|t| {
@@ -575,7 +576,7 @@ fn tool_search_tasks(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_cha
     (lines.join("\n"), refs)
 }
 
-fn tool_create_task(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
+async fn tool_create_task(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
     let v = parse_args(args);
     let Some(title) = v["title"].as_str() else {
         return ("create_task 缺少 title".into(), Vec::new());
@@ -621,14 +622,14 @@ fn tool_create_task(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat
         bot_assigned: None,
     };
     // 插到列表顶部：取当前最小 order 减 1
-    if let Ok(all) = crate::db::db_load(app.clone()) {
+    if let Ok(all) = crate::db::db_load(app.clone()).await {
         let min = all
             .iter()
             .filter_map(|t| t.order)
             .fold(f64::INFINITY, f64::min);
         task.order = Some(if min.is_finite() { min - 1.0 } else { 0.0 });
     }
-    match crate::db::db_upsert(app.clone(), vec![task.clone()]) {
+    match crate::db::db_upsert(app.clone(), vec![task.clone()]).await {
         Ok(()) => {
             broadcast_after_mutation(app, vec![task.clone()], vec![]);
             (
@@ -643,12 +644,12 @@ fn tool_create_task(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat
     }
 }
 
-fn tool_complete_task(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
+async fn tool_complete_task(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
     let v = parse_args(args);
     let Some(kw) = v["title"].as_str().map(|s| s.trim().to_lowercase()) else {
         return ("complete_task 缺少 title".into(), Vec::new());
     };
-    let Some(task) = active_tasks(app)
+    let Some(task) = active_tasks(app).await
         .into_iter()
         .find(|t| t.title.to_lowercase().contains(&kw))
     else {
@@ -664,7 +665,7 @@ fn tool_complete_task(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_ch
     next.column = "done".into();
     next.completed_at = Some(chrono::Utc::now().timestamp_millis());
     next.updated_at = next.completed_at;
-    match crate::db::db_upsert(app.clone(), vec![next.clone()]) {
+    match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
         Ok(()) => {
             broadcast_after_mutation(app, vec![next.clone()], vec![]);
             (
@@ -682,7 +683,7 @@ fn tool_complete_task(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_ch
 /// 删除任务到回收站：**弹窗确认后才执行**（危险操作护栏；60s 无响应默认拒绝）
 async fn tool_delete_task(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
     let v = parse_args(args);
-    let task = match resolve_task(app, &v) {
+    let task = match resolve_task(app, &v).await {
         Ok(t) => t,
         Err(e) => return (e, Vec::new()),
     };
@@ -693,7 +694,7 @@ async fn tool_delete_task(app: &AppHandle, args: &str) -> (String, Vec<crate::bo
     let mut next = task.clone();
     next.deleted_at = Some(chrono::Utc::now().timestamp_millis());
     next.updated_at = next.deleted_at;
-    match crate::db::db_upsert(app.clone(), vec![next.clone()]) {
+    match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
         Ok(()) => {
             broadcast_after_mutation(app, vec![next.clone()], vec![]);
             (
@@ -709,19 +710,19 @@ async fn tool_delete_task(app: &AppHandle, args: &str) -> (String, Vec<crate::bo
 }
 
 /// 按标题关键词找第一条未完成任务（大小写不敏感）
-fn find_task_by_keyword(app: &AppHandle, kw: &str) -> Option<crate::db::Task> {
-    active_tasks(app)
+async fn find_task_by_keyword(app: &AppHandle, kw: &str) -> Option<crate::db::Task> {
+    active_tasks(app).await
         .into_iter()
         .find(|t| t.title.to_lowercase().contains(kw))
 }
 
 /// 定位任务：优先 taskId 精确匹配，其次标题关键词模糊匹配。
 /// 返回 (task, 定位说明)；找不到返回错误文案。
-fn resolve_task(app: &AppHandle, v: &serde_json::Value) -> Result<crate::db::Task, String> {
+async fn resolve_task(app: &AppHandle, v: &serde_json::Value) -> Result<crate::db::Task, String> {
     if let Some(id) = v["taskId"].as_str() {
         let id = id.trim();
         if !id.is_empty() {
-            if let Some(t) = active_tasks(app).into_iter().find(|t| t.id == id) {
+            if let Some(t) = active_tasks(app).await.into_iter().find(|t| t.id == id) {
                 return Ok(t);
             }
             return Err(format!("未找到 id={id} 的未完成任务（可能已完成或已删除）"));
@@ -730,7 +731,7 @@ fn resolve_task(app: &AppHandle, v: &serde_json::Value) -> Result<crate::db::Tas
     if let Some(kw) = v["title"].as_str() {
         let kw = kw.trim().to_lowercase();
         if !kw.is_empty() {
-            if let Some(t) = find_task_by_keyword(app, &kw) {
+            if let Some(t) = find_task_by_keyword(app, &kw).await {
                 return Ok(t);
             }
             return Err(format!(
@@ -742,9 +743,9 @@ fn resolve_task(app: &AppHandle, v: &serde_json::Value) -> Result<crate::db::Tas
     Err("缺少 taskId 或 title 参数".into())
 }
 
-fn tool_edit_task(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
+async fn tool_edit_task(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
     let v = parse_args(args);
-    let task = match resolve_task(app, &v) {
+    let task = match resolve_task(app, &v).await {
         Ok(t) => t,
         Err(e) => return (e, Vec::new()),
     };
@@ -824,7 +825,7 @@ fn tool_edit_task(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::
         return ("没有可修改的字段".into(), Vec::new());
     }
     next.updated_at = Some(chrono::Utc::now().timestamp_millis());
-    match crate::db::db_upsert(app.clone(), vec![next.clone()]) {
+    match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
         Ok(()) => {
             broadcast_after_mutation(app, vec![next.clone()], vec![]);
             (
@@ -839,7 +840,7 @@ fn tool_edit_task(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::
     }
 }
 
-fn tool_add_subtask(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
+async fn tool_add_subtask(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
     let v = parse_args(args);
     let Some(text) = v["text"].as_str().map(|s| s.trim()) else {
         return ("add_subtask 缺少 text".into(), Vec::new());
@@ -850,7 +851,7 @@ fn tool_add_subtask(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat
     if let Err(e) = check_len(text, MAX_SUBTASK_TEXT, "子任务内容") {
         return (e, Vec::new());
     }
-    let task = match resolve_task(app, &v) {
+    let task = match resolve_task(app, &v).await {
         Ok(t) => t,
         Err(e) => return (e, Vec::new()),
     };
@@ -863,7 +864,7 @@ fn tool_add_subtask(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat
     });
     next.subtasks = Some(subs);
     next.updated_at = Some(chrono::Utc::now().timestamp_millis());
-    match crate::db::db_upsert(app.clone(), vec![next.clone()]) {
+    match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
         Ok(()) => {
             broadcast_after_mutation(app, vec![next.clone()], vec![]);
             (
@@ -878,7 +879,7 @@ fn tool_add_subtask(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat
     }
 }
 
-fn tool_toggle_subtask(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
+async fn tool_toggle_subtask(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
     let v = parse_args(args);
     let Some(skw) = v["text"].as_str().map(|s| s.trim().to_lowercase()) else {
         return ("toggle_subtask 缺少 text".into(), Vec::new());
@@ -886,7 +887,7 @@ fn tool_toggle_subtask(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_c
     if let Err(e) = check_len(&skw, MAX_SUBTASK_TEXT, "子任务关键词") {
         return (e, Vec::new());
     }
-    let task = match resolve_task(app, &v) {
+    let task = match resolve_task(app, &v).await {
         Ok(t) => t,
         Err(e) => return (e, Vec::new()),
     };
@@ -909,7 +910,7 @@ fn tool_toggle_subtask(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_c
     subs2[idx].done = !subs2[idx].done;
     next.subtasks = Some(subs2);
     next.updated_at = Some(chrono::Utc::now().timestamp_millis());
-    match crate::db::db_upsert(app.clone(), vec![next.clone()]) {
+    match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
         Ok(()) => {
             broadcast_after_mutation(app, vec![next.clone()], vec![]);
             let st_text = next
@@ -947,7 +948,7 @@ fn tool_toggle_subtask(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_c
 async fn tool_bind_file(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
     let v = parse_args(args);
     let is_dir = v["isDir"].as_bool().unwrap_or(false);
-    let task = match resolve_task(app, &v) {
+    let task = match resolve_task(app, &v).await {
         Ok(t) => t,
         Err(e) => return (e, Vec::new()),
     };
@@ -972,7 +973,7 @@ async fn tool_bind_file(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_
     next.file_path = Some(path.clone());
     next.file_is_dir = Some(is_dir);
     next.updated_at = Some(chrono::Utc::now().timestamp_millis());
-    match crate::db::db_upsert(app.clone(), vec![next.clone()]) {
+    match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
         Ok(()) => {
             broadcast_after_mutation(app, vec![next.clone()], vec![]);
             (
@@ -1031,7 +1032,7 @@ async fn tool_link_file_to_task(app: &AppHandle, args: &str) -> (String, Vec<cra
             );
         }
     }
-    let task = match resolve_task(app, &v) {
+    let task = match resolve_task(app, &v).await {
         Ok(t) => t,
         Err(e) => return (e, Vec::new()),
     };
@@ -1039,7 +1040,7 @@ async fn tool_link_file_to_task(app: &AppHandle, args: &str) -> (String, Vec<cra
     next.file_path = Some(path.clone());
     next.file_is_dir = Some(false);
     next.updated_at = Some(chrono::Utc::now().timestamp_millis());
-    match crate::db::db_upsert(app.clone(), vec![next.clone()]) {
+    match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
         Ok(()) => {
             broadcast_after_mutation(app, vec![next.clone()], vec![]);
             (
@@ -1059,7 +1060,7 @@ async fn tool_link_file_to_task(app: &AppHandle, args: &str) -> (String, Vec<cra
 /// 提取文档文本：path 给定则直读（任务卡绑定文件），否则弹框选文件；返回路径 + 文本供模型阅读/润色
 /// extract_document path 白名单（二次审计 P1-2）：只允许任务卡绑定文件或 AI_Gen_Files 目录内文件。
 /// 规范化路径比较，防 ../ 绕过。无 path 时走弹框（用户亲手选，不受此限）。
-fn extract_path_allowed(app: &AppHandle, path: &str) -> bool {
+async fn extract_path_allowed(app: &AppHandle, path: &str) -> bool {
     let Ok(canon) = std::fs::canonicalize(path) else {
         return false;
     };
@@ -1071,7 +1072,7 @@ fn extract_path_allowed(app: &AppHandle, path: &str) -> bool {
         }
     }
     // 2) 任务卡绑定文件
-    if let Ok(tasks) = crate::db::db_load(app.clone()) {
+    if let Ok(tasks) = crate::db::db_load(app.clone()).await {
         for t in tasks {
             if let Some(fp) = t.file_path.as_deref() {
                 if let Ok(fc) = std::fs::canonicalize(fp) {
@@ -1093,7 +1094,7 @@ async fn tool_extract_document(app: &AppHandle, args: &str) -> (String, Vec<crat
         .filter(|s| !s.is_empty());
     // 模型直传 path 时白名单校验（无 path 走弹框，用户亲手选不受限）
     if let Some(p) = path_opt.as_deref() {
-        if !extract_path_allowed(app, p) {
+        if !extract_path_allowed(app, p).await {
             return (
                 "已拒绝读取该路径：extract_document 的 path 只允许任务卡绑定文件或 AI_Gen_Files 目录内的文件；\
 需要读取其他文件请先绑定到任务卡，或让用户通过弹框选择".into(),
@@ -1155,7 +1156,7 @@ async fn tool_create_word_revisions(app: &AppHandle, args: &str) -> (String, Vec
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        if !extract_path_allowed(app, op) {
+        if !extract_path_allowed(app, op).await {
             return (
                 "已拒绝读取原文路径：originalPath 只允许任务卡绑定文件或 AI_Gen_Files 目录内的文件"
                     .into(),

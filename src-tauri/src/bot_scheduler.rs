@@ -168,9 +168,9 @@ fn sched_last_dt(ms: Option<i64>) -> chrono::DateTime<chrono::Local> {
 /// 找出到点的定时任务（未删、未归档、未完成，且 sched_last < 触发点 ≤ now）。
 /// 顺带清理「错过的一次性任务」：at: 从未执行且时间已过 → 放弃并清掉 schedule
 ///（审计 P1：否则重启后 30s 内会补执行过期任务）
-fn find_due_tasks(app: &AppHandle) -> Vec<crate::db::Task> {
+async fn find_due_tasks(app: &AppHandle) -> Vec<crate::db::Task> {
     let now = chrono::Local::now();
-    let all = crate::db::db_load(app.clone()).unwrap_or_default();
+    let all = crate::db::db_load(app.clone()).await.unwrap_or_default();
     let stale_ids: Vec<String> = all
         .iter()
         .filter(|t| {
@@ -208,7 +208,7 @@ fn find_due_tasks(app: &AppHandle) -> Vec<crate::db::Task> {
     // 清理过期一次性任务的 schedule（基于最新数据合并，只清目标字段）。
     // 单次加载处理全部 stale id（审计 P3：原先每个 id 各开一次库，O(n) 次 db_load）
     if !stale_ids.is_empty() {
-        if let Ok(cur) = crate::db::db_load(app.clone()) {
+        if let Ok(cur) = crate::db::db_load(app.clone()).await {
             let fresh: Vec<crate::db::Task> = cur
                 .into_iter()
                 .filter(|t| stale_ids.contains(&t.id))
@@ -219,7 +219,7 @@ fn find_due_tasks(app: &AppHandle) -> Vec<crate::db::Task> {
                 })
                 .collect();
             if !fresh.is_empty() {
-                let _ = crate::db::db_upsert(app.clone(), fresh);
+                let _ = crate::db::db_upsert(app.clone(), fresh).await;
             }
         }
     }
@@ -255,11 +255,11 @@ async fn run_scheduled(app: AppHandle, task: crate::db::Task) {
     // 基于库中最新数据合并（勿用扫描快照：会覆盖用户在扫描后的编辑）。
     // 记录失败则放弃本次执行（审计 P3：否则下个 tick 会因 sched_last 未更新而重复触发）
     let mut marked = false;
-    if let Ok(cur) = crate::db::db_load(app.clone()) {
+    if let Ok(cur) = crate::db::db_load(app.clone()).await {
         if let Some(mut fresh) = cur.into_iter().find(|t| t.id == task.id) {
             fresh.sched_last = Some(now.timestamp_millis());
             fresh.updated_at = Some(now.timestamp_millis());
-            marked = crate::db::db_upsert(app.clone(), vec![fresh]).is_ok();
+            marked = crate::db::db_upsert(app.clone(), vec![fresh]).await.is_ok();
         }
     }
     if !marked {
@@ -286,7 +286,7 @@ async fn run_scheduled(app: AppHandle, task: crate::db::Task) {
         ),
         Err(e) => format!("⏰ 自动执行 {time_str} 失败：{e}"),
     };
-    if let Ok(cur) = crate::db::db_load(app.clone()) {
+    if let Ok(cur) = crate::db::db_load(app.clone()).await {
         if let Some(mut fresh) = cur.into_iter().find(|t| t.id == task.id) {
             let note = match fresh.note.as_deref().filter(|n| !n.trim().is_empty()) {
                 Some(n) => format!("{summary}\n{n}"),
@@ -303,7 +303,7 @@ async fn run_scheduled(app: AppHandle, task: crate::db::Task) {
                 fresh.schedule = None;
             }
             fresh.updated_at = Some(chrono::Local::now().timestamp_millis());
-            let _ = crate::db::db_upsert(app.clone(), vec![fresh]);
+            let _ = crate::db::db_upsert(app.clone(), vec![fresh]).await;
         }
     }
     crate::bot::audit_log(&app, &format!("sched_done | id: {}", task.id));
@@ -316,7 +316,7 @@ pub fn start_scheduler(app: AppHandle) {
         ticker.tick().await; // 消耗首个立即触发的 tick
         loop {
             ticker.tick().await;
-            let due = find_due_tasks(&app);
+            let due = find_due_tasks(&app).await;
             for t in due {
                 // 每张卡 spawn 到独立任务再 await：单张卡 panic 只废这一张，
                 // 不会杀死调度器主循环（否则后续所有定时任务静默失效，审计 P0）
