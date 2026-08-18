@@ -68,7 +68,7 @@ pub fn handle_request(
     token: &str,
     store: &Arc<dyn TaskStore>,
     hub: &Arc<EventHub>,
-    emit_fn: &Option<Box<dyn Fn(&db::Task) + Send + Sync>>,
+    emit_fn: &Option<Arc<dyn Fn(&db::Task) + Send + Sync>>,
     log: &Option<PathBuf>,
 ) {
     let method = req.method().clone();
@@ -287,7 +287,7 @@ fn after_change(
     task: &db::Task,
     op: &str,
     hub: &Arc<EventHub>,
-    emit_fn: &Option<Box<dyn Fn(&db::Task) + Send + Sync>>,
+    emit_fn: &Option<Arc<dyn Fn(&db::Task) + Send + Sync>>,
     log: &Option<PathBuf>,
 ) {
     let event = serde_json::json!({
@@ -385,7 +385,7 @@ fn create_task(
     mut req: Request,
     store: &Arc<dyn TaskStore>,
     hub: &Arc<EventHub>,
-    emit_fn: &Option<Box<dyn Fn(&db::Task) + Send + Sync>>,
+    emit_fn: &Option<Arc<dyn Fn(&db::Task) + Send + Sync>>,
     log: &Option<PathBuf>,
 ) {
     let Some(body) = read_body_limited(&mut req) else {
@@ -515,7 +515,7 @@ fn update_task(
     store: &Arc<dyn TaskStore>,
     id: &str,
     hub: &Arc<EventHub>,
-    emit_fn: &Option<Box<dyn Fn(&db::Task) + Send + Sync>>,
+    emit_fn: &Option<Arc<dyn Fn(&db::Task) + Send + Sync>>,
     log: &Option<PathBuf>,
 ) {
     let Some(body) = read_body_limited(&mut req) else {
@@ -657,7 +657,7 @@ fn delete_task(
     store: &Arc<dyn TaskStore>,
     id: &str,
     hub: &Arc<EventHub>,
-    emit_fn: &Option<Box<dyn Fn(&db::Task) + Send + Sync>>,
+    emit_fn: &Option<Arc<dyn Fn(&db::Task) + Send + Sync>>,
     log: &Option<PathBuf>,
 ) {
     let tasks = match store.load() {

@@ -109,33 +109,66 @@ pub fn start_api(
     let sd = shutdown.clone();
     let hub = EventHub::new();
     let tk = token.clone();
+    // emit_fn: Box → Arc 包装，使每个 per-request worker 能拿到独立 clone
+    let emit_fn: Option<Arc<dyn Fn(&db::Task) + Send + Sync>> =
+        emit_fn.map(|b| -> Arc<dyn Fn(&db::Task) + Send + Sync> { b.into() });
     let handle = std::thread::spawn(move || loop {
         if sd.load(Ordering::SeqCst) {
             break;
         }
         match server.recv_timeout(Duration::from_millis(400)) {
             Ok(Some(req)) => {
-                // A4：catch_unwind 防止任意 handler panic 杀死唯一服务线程
-                // （任一 handler panic → 服务静默死亡，设置页仍报 "已开启"）
+                // A1 + A4 组合：每个请求独立 worker 线程 + catch_unwind +
+                //              主线程  15s 超时 (防止 slowloris 永久卡死服务)
                 let req_url = req.url().to_string();
-                let catch_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    crate::api_handlers::handle_request(
-                        req,
-                        &tk,
-                        &store,
-                        &hub,
-                        &emit_fn,
-                        &log_path,
+                let (done_tx, done_rx) = std::sync::mpsc::channel();
+                let emit_fn_w = emit_fn.clone();
+                let log_path_w = log_path.clone();
+                let tk_w = tk.clone();
+                let store_w = store.clone();
+                let hub_w = hub.clone();
+                std::thread::spawn(move || {
+                    let catch_result = std::panic::catch_unwind(
+                        std::panic::AssertUnwindSafe(|| {
+                            crate::api_handlers::handle_request(
+                                req,
+                                &tk_w,
+                                &store_w,
+                                &hub_w,
+                                &emit_fn_w,
+                                &log_path_w,
+                            );
+                        }),
                     );
-                }));
-                if let Err(payload) = catch_result {
-                    let msg = panic_message(payload);
-                    if let Some(log) = &on_error {
-                        log(
-                            AuditLevel::Error,
-                            "api.handler_panic",
-                            &format!("{req_url}: {msg}"),
-                        );
+                    if let Err(payload) = catch_result {
+                        let msg = panic_message(payload);
+                        // worker 内调 audit_event! 不方便；通过通道传上去
+                        let _ = done_tx.send(Err(msg));
+                    } else {
+                        let _ = done_tx.send(Ok(()));
+                    }
+                });
+                match done_rx.recv_timeout(Duration::from_secs(15)) {
+                    Ok(Ok(())) => {}
+                    Ok(Err(msg)) => {
+                        if let Some(log) = &on_error {
+                            log(
+                                AuditLevel::Error,
+                                "api.handler_panic",
+                                &format!("{req_url}: {msg}"),
+                            );
+                        }
+                    }
+                    Err(_) => {
+                        // worker 仍在读 body/等客户端，bottleneck 不在本服务
+                        // 客户端断开 / body 超过 15s 都会让 worker 自行退出
+                        if let Some(log) = &on_error {
+                            log(
+                                AuditLevel::Error,
+                                "api.handler_timeout",
+                                &format!("{req_url}: 超时 15s，worker 续跑直到客户端断开"),
+                            );
+                        }
                     }
                 }
             }
