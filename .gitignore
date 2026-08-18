@@ -34,3 +34,7 @@ README.txt
 # Manual-acceptance ad-hoc test fixtures (regenerated on demand)
 archive-file-test.json
 archive-test-material.json
+
+# Vitest coverage output
+coverage/
+*.lcov
