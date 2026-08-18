@@ -6,6 +6,7 @@ mod bot_py;
 pub mod bot_skills;
 mod bot_web;
 mod db;
+pub mod error;
 pub mod intent_router;
 pub mod middleware;
 mod migration;
