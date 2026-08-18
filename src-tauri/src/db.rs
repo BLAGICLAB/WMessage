@@ -658,7 +658,12 @@ fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), Strin
                collapsed=excluded.collapsed, ord=excluded.ord,
                updated_at=excluded.updated_at,
                schedule=excluded.schedule, sched_last=excluded.sched_last,
-               bot_assigned=excluded.bot_assigned",
+               bot_assigned=excluded.bot_assigned
+             -- B2: lost update 守卫 — 只允许新数据压过老数据
+             -- current 为 NULL (老行) → 任何新数据胜出
+             -- current 有值 且 incoming >= current → 更新
+             -- current 有值 且 incoming < current → 跳过 (避免迁移中的旧快照回写覆盖用户新改)
+             WHERE tasks.updated_at IS NULL OR excluded.updated_at >= tasks.updated_at",
         )
         .map_err(|e| e.to_string())?;
     for t in tasks {
@@ -1290,6 +1295,74 @@ mod tests {
             .unwrap();
         assert_eq!(cur_none, None);
         assert_eq!(cur_none.flatten().unwrap_or(0), 0);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// B2: upsert WHERE 守卫防 lost update。
+    /// 五场景：incoming>current / incoming<current / 相等 / 老 NULL 行 / incoming NULL
+    #[test]
+    fn upsert_where_guard_prevents_lost_update() {
+        let dir = std::env::temp_dir().join(format!("wm-b2-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let conn = rusqlite::Connection::open(dir.join("t.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tasks (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                updated_at INTEGER
+            );
+            INSERT INTO tasks (id, title, updated_at) VALUES ('t1', 'old-50', 50);
+            INSERT INTO tasks (id, title) VALUES ('legacy', 'legacy-row');",
+        )
+        .unwrap();
+
+        let mut stmt = conn
+            .prepare(
+                "INSERT INTO tasks (id, title, updated_at)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(id) DO UPDATE SET
+                   title=excluded.title,
+                   updated_at=excluded.updated_at
+                 WHERE tasks.updated_at IS NULL OR excluded.updated_at >= tasks.updated_at",
+            )
+            .unwrap();
+
+        // 场景 1: incoming(100) > current(50) → 更新
+        stmt.execute(rusqlite::params!["t1", "new-100", 100]).unwrap();
+        let title: String = conn
+            .query_row("SELECT title FROM tasks WHERE id = 't1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(title, "new-100", "场景 1: 更新的应压过老的");
+
+        // 场景 2: incoming(60) < current(100) → 跳过（lost update 防护）
+        stmt.execute(rusqlite::params!["t1", "old-snapshot-60", 60]).unwrap();
+        let title: String = conn
+            .query_row("SELECT title FROM tasks WHERE id = 't1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(title, "new-100", "场景 2: 更老的不应压过更新的");
+
+        // 场景 3: 相等 timestamp → 允许更新
+        stmt.execute(rusqlite::params!["t1", "equal-100", 100]).unwrap();
+        let title: String = conn
+            .query_row("SELECT title FROM tasks WHERE id = 't1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(title, "equal-100", "场景 3: 相等 timestamp 仍允许更新");
+
+        // 场景 4: 老 NULL 行被任何 incoming 覆盖
+        stmt.execute(rusqlite::params!["legacy", "new-over-legacy", 5]).unwrap();
+        let title: String = conn
+            .query_row("SELECT title FROM tasks WHERE id = 'legacy'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(title, "new-over-legacy", "场景 4: 老 NULL 行被任何 incoming 覆盖");
+
+        // 场景 5: incoming NULL 不应覆盖 current 有值
+        conn.execute("UPDATE tasks SET title='keep-me', updated_at=200 WHERE id='t1'", []).unwrap();
+        stmt.execute(rusqlite::params!["t1", "incoming-null", Option::<i64>::None]).unwrap();
+        let title: String = conn
+            .query_row("SELECT title FROM tasks WHERE id = 't1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(title, "keep-me", "场景 5: incoming NULL 不应覆盖 current 有值");
 
         fs::remove_dir_all(&dir).ok();
     }
