@@ -451,6 +451,8 @@ fn run_python_at(
                 "run_python err | kind=spawn_fail | {}",
                 truncate_for_log(&e.to_string(), 200)
             ));
+            // P2-9：spawn 失败时临时目录已创建，必须清理，否则磁盘泄漏
+            let _ = std::fs::remove_dir_all(dir);
             return Err(format!("启动 Python 失败：{e}"));
         }
     };
@@ -516,6 +518,46 @@ fn run_python_at(
         exit_code,
         duration_ms,
     })
+}
+
+/// 启动清扫（P2-9）：删掉 py-runs 下超过 1 小时未动的残留临时目录
+///（spawn 失败/进程崩溃的兜底；正常路径用完即删，扫到的都是残留）。
+pub fn sweep_stale_py_runs(app: &AppHandle) {
+    let root = crate::db::data_dir(app).join("py-runs");
+    let removed =
+        sweep_stale_py_runs_in(&root, Duration::from_secs(3600), std::time::SystemTime::now());
+    if removed > 0 {
+        py_audit(app, &format!("py_runs sweep | removed={removed}"));
+    }
+}
+
+/// 清扫实现（路径参数版便于单测）：只删目录，返回删除数
+fn sweep_stale_py_runs_in(
+    root: &std::path::Path,
+    max_age: Duration,
+    now: std::time::SystemTime,
+) -> usize {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for e in entries.flatten() {
+        let p = e.path();
+        if !p.is_dir() {
+            continue;
+        }
+        let stale = e
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| now.duration_since(t).ok())
+            .is_some_and(|age| age >= max_age);
+        if stale {
+            let _ = std::fs::remove_dir_all(&p);
+            removed += 1;
+        }
+    }
+    removed
 }
 
 /// 把阻塞调用挪到 blocking 线程池：doc_* 是 async 命令，直接调 run_python 会把
@@ -1463,6 +1505,41 @@ mod tests {
         assert!(
             lines.iter().any(|l| l.contains("kind=spawn_fail")),
             "缺 spawn_fail 审计行: {lines:?}"
+        );
+        // P2-9：spawn 失败必须清理已创建的临时目录，否则磁盘泄漏
+        assert!(!dir.exists(), "spawn 失败后临时目录应被清理");
+    }
+
+    // ── 残留目录清扫（P2-9：启动时清 py-runs 超龄目录）──
+
+    #[test]
+    fn sweep_stale_py_runs_removes_only_stale() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("py-runs");
+        let stale = root.join("stale1");
+        let fresh = root.join("fresh1");
+        std::fs::create_dir_all(&stale).unwrap();
+        std::fs::create_dir_all(&fresh).unwrap();
+        std::fs::write(root.join("stray.txt"), b"x").unwrap();
+        let now = std::time::SystemTime::now();
+        // max_age=0 → 所有目录视为过期，全删（非目录文件不动）
+        let removed = sweep_stale_py_runs_in(&root, Duration::ZERO, now);
+        assert_eq!(removed, 2);
+        assert!(!stale.exists() && !fresh.exists());
+        assert!(root.join("stray.txt").exists(), "非目录文件不应被清扫");
+        // 重建 fresh：max_age=1h → 刚建的目录必须保留
+        std::fs::create_dir_all(&fresh).unwrap();
+        let removed = sweep_stale_py_runs_in(&root, Duration::from_secs(3600), now);
+        assert_eq!(removed, 0);
+        assert!(fresh.exists());
+        // root 不存在时静默返回 0
+        assert_eq!(
+            sweep_stale_py_runs_in(
+                &tmp.path().join("no-such-dir"),
+                Duration::ZERO,
+                now
+            ),
+            0
         );
     }
 

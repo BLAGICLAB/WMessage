@@ -242,6 +242,9 @@ pub fn run() {
                 migration::spawn_polling(handle);
             }
 
+            // P2-9：清扫残留的 py-runs 临时目录（spawn 失败/崩溃遗留，超 1 小时即删）
+            bot_py::sweep_stale_py_runs(app.handle());
+
             // M4：系统侧边磁吸挂件窗口（贴边收起为触发条，悬停滑出）
             tauri::WebviewWindowBuilder::new(
                 app,
