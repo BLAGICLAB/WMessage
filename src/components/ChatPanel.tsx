@@ -20,6 +20,14 @@ function isImagePath(p: string): boolean {
   return m ? IMAGE_EXTS.has(m[1]) : false;
 }
 
+/** execute-task 事件去重（模块级，跨组件实例/HMR 泄漏监听器共享）：
+ *  2026-08-19 事故：dev 期间挂件 webview 多次重挂载累积了 6 个 execute-task 监听器，
+ *  一次点击被投递 6 次 → 同一秒 6 个 bot_execute_task 并发 → 后端防重入拦截 5 个，
+ *  每个拒绝都弹「⚠️ 内部错误：该任务卡正在执行中」气泡，用户误以为执行失败。
+ *  去重表必须放模块级：放 useEffect 闭包里则每个泄漏监听器各持一份，去重失效。 */
+const execTaskDedup = new Map<string, number>();
+const EXEC_TASK_DEDUP_MS = 2000;
+
 type TaskRef = { id: string; title: string };
 
 /** 工具调用行：折叠显示，展开可看入参 */
@@ -454,16 +462,13 @@ function extractFilePaths(content: string): string[] {
     executeTask(id, title);
   };
   useEffect(() => {
-    // 同一任务 id 2s 内的重复 execute-task 事件只执行一次（2026-08-19 事故：
-    // 一次点击被投递多次 → 同一秒多个 bot_execute_task 并发，后端防重入拦截
-    // 弹「该任务卡正在执行中」错误气泡，用户误以为执行失败）。
-    const lastExec = new Map<string, number>();
+    // 去重表在模块级 execTaskDedup（泄漏的监听器实例间共享才有效，见文件头注释）
     const unExec = listen<{ id?: string; title?: string }>("execute-task", (e) => {
       const { id, title } = e.payload ?? {};
       if (!id) return;
       const now = Date.now();
-      if (now - (lastExec.get(id) ?? 0) < 2000) return;
-      lastExec.set(id, now);
+      if (now - (execTaskDedup.get(id) ?? 0) < EXEC_TASK_DEDUP_MS) return;
+      execTaskDedup.set(id, now);
       executeTaskRef.current(id, title ?? "");
     });
     return () => {
@@ -626,12 +631,20 @@ function extractFilePaths(content: string): string[] {
       }
       onFinishSelection();
     } catch (e) {
-      const failed: Msg[] = [
-        ...history,
-        { role: "assistant", content: `⚠️ ${formatCommandError(e)}` },
-      ];
-      persistHistory(sid, failed);
-      if (sessionIdRef.current === sid) setMessages(failed);
+      // 防重入拒绝（这张卡真在跑）不是错误：不持久化 ⚠️ 气泡、不污染会话历史，
+      // 只恢复触发前消息 + 本地提示（2026-08-19：幻影重复触发留下的错误气泡
+      // 让用户以为执行失败，实际任务在正常跑）
+      if (execTaskId && formatCommandError(e).includes("正在执行中")) {
+        if (sessionIdRef.current === sid) setMessages(history.slice(0, -1));
+        addHint("⏳ 这张卡正在执行中，跑完会实时更新；完成后再触发");
+      } else {
+        const failed: Msg[] = [
+          ...history,
+          { role: "assistant", content: `⚠️ ${formatCommandError(e)}` },
+        ];
+        persistHistory(sid, failed);
+        if (sessionIdRef.current === sid) setMessages(failed);
+      }
       // 流式错误已经写进消息气泡了，不重复弹 alert
       handleCommandError(e, execTaskId ? "bot_execute_task" : "bot_chat", { silent: true });
     } finally {
