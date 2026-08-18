@@ -1,0 +1,5 @@
+# Cargo 配置（sccache 编译缓存）
+# 第二次 cargo check/build 应该 < 10s（vs 首次 30-60s）
+# sccache: https://github.com/mozilla/sccache
+[build]
+rustc-wrapper = "/Users/renshi/.cargo/bin/sccache"

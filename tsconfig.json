@@ -21,7 +21,11 @@
     "noFallthroughCasesInSwitch": true,
 
     /* Tests */
-    "types": ["vitest/globals", "@testing-library/jest-dom"]
+    "types": ["vitest/globals", "@testing-library/jest-dom"],
+
+    /* Incremental builds — tsc 第二次 < 5s（pre-commit 钩子友好） */
+    "incremental": true,
+    "tsBuildInfoFile": "./node_modules/.cache/tsc/tsbuildinfo.json"
   },
   "include": ["src"],
   "references": [{ "path": "./tsconfig.node.json" }]
