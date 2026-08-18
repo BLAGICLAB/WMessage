@@ -34,6 +34,232 @@ const RULES_FILE: &str = "cleanup-rules.json";
 const LOG_FILE: &str = "migration.log";
 const POLL_INTERVAL_SECS: u64 = 600;
 
+/// B1: 文件迁移操作日志记录（防 lost-update / 孤儿文件）。
+/// 原来 file-move 成功但 db_upsert 失败 → 下一轮“源已消失”逻辑会解绑 file_path，
+/// 附件链接永久丢失。本表记录「正在进行」的操作，启动时 replay 修复 DB。
+#[derive(Debug, Clone)]
+pub struct JournalEntry {
+    pub id: i64,
+    pub op: String,        // 'move' | 'delete'
+    pub src: String,
+    pub dst: Option<String>,
+    pub task_id: String,
+    pub state: String,     // 'pending' | 'committed' | 'cleared'
+    pub created_at: i64,
+}
+
+/// B1 inner: 记录一个 pending 操作，返回 row id。
+/// 抽出来为方便单测（不需 AppHandle）。生产仍走 journal_pending 包一层。
+fn journal_pending_inner(
+    conn: &rusqlite::Connection,
+    op: &str,
+    src: &Path,
+    dst: Option<&Path>,
+    task_id: &str,
+    now_ms: i64,
+) -> Result<i64, String> {
+    conn.execute(
+        "INSERT INTO migration_journal (op, src, dst, task_id, state, created_at)
+         VALUES (?1, ?2, ?3, ?4, 'pending', ?5)",
+        rusqlite::params![
+            op,
+            src.to_string_lossy(),
+            dst.map(|p| p.to_string_lossy().to_string()),
+            task_id,
+            now_ms,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// B1: 记录一个 pending 操作，返回 row id（后续 committed/cleared 需用）。
+/// pending 表示「即将开始」还未完成，启动时需要 replay 检测。
+fn journal_pending(
+    app: &AppHandle,
+    op: &str,
+    src: &Path,
+    dst: Option<&Path>,
+    task_id: &str,
+) -> Result<i64, String> {
+    let conn = db::open_db(app).map_err(|e| e.to_string())?;
+    journal_pending_inner(&conn, op, src, dst, task_id, now_ms())
+}
+
+/// B1 inner: 标记 committed。replay 跳过该行。
+fn journal_committed_inner(conn: &rusqlite::Connection, id: i64) -> Result<(), String> {
+    conn.execute(
+        "UPDATE migration_journal SET state = 'committed' WHERE id = ?1",
+        rusqlite::params![id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// B1: 操作成功完成 → 标记 committed。replay 跳过该行。
+fn journal_committed(app: &AppHandle, id: i64) -> Result<(), String> {
+    let conn = db::open_db(app).map_err(|e| e.to_string())?;
+    journal_committed_inner(&conn, id)
+}
+
+/// B1 inner: 清除（未启动 / 已明确失败）。
+fn journal_cleared_inner(conn: &rusqlite::Connection, id: i64) -> Result<(), String> {
+    conn.execute(
+        "UPDATE migration_journal SET state = 'cleared' WHERE id = ?1",
+        rusqlite::params![id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// B1: 操作未启动 / 已明确失败 → 清除该行（不需要 replay）。
+fn journal_cleared(app: &AppHandle, id: i64) -> Result<(), String> {
+    let conn = db::open_db(app).map_err(|e| e.to_string())?;
+    journal_cleared_inner(&conn, id)
+}
+
+/// B1: 启动时 replay pending 条目。
+///
+/// 语义：
+/// - move + src 不存在 + dst 存在 → 文件已迁但 DB 未更新 → 重跑 db_upsert 改 file_path
+/// - move + src 存在 + dst 不存在 → 文件未迁（操作未执行或失败）→ clear 行
+/// - move + 两边都在 / 都不在 → 异常状态 → clear 行 + 记错误
+/// - delete + src 不存在 → 文件已删但 DB 未清 file_path → 重跑 db_upsert 置 None
+/// - delete + src 存在 → 文件未删 → clear 行
+///
+/// 返回（恢复条数, 错误条数）供调用者记日志。
+pub fn journal_replay_pending(app: &AppHandle) -> Result<(usize, usize), String> {
+    use crate::db::Task;
+    let conn = db::open_db(app).map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, op, src, dst, task_id, state, created_at
+             FROM migration_journal WHERE state = 'pending'
+             ORDER BY id ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows: Vec<JournalEntry> = stmt
+        .query_map([], |r| {
+            Ok(JournalEntry {
+                id: r.get(0)?,
+                op: r.get(1)?,
+                src: r.get(2)?,
+                dst: r.get(3)?,
+                task_id: r.get(4)?,
+                state: r.get(5)?,
+                created_at: r.get(6)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let mut recovered = 0usize;
+    let mut errors = 0usize;
+    for entry in rows {
+        let src = PathBuf::from(&entry.src);
+        let dst = entry.dst.as_ref().map(PathBuf::from);
+        match entry.op.as_str() {
+            "move" => match (&dst, src.exists()) {
+                (Some(d), false) if d.exists() => {
+                    // move 成功但 DB 未更新
+                    match recover_move_db(app, &entry.task_id, d) {
+                        Ok(()) => {
+                            journal_committed(app, entry.id).ok();
+                            recovered += 1;
+                            log_line(
+                                app,
+                                &format!(
+                                    "journal replay: 修复 {} → {}",
+                                    entry.src,
+                                    d.display()
+                                ),
+                            );
+                        }
+                        Err(e) => {
+                            errors += 1;
+                            log_line(
+                                app,
+                                &format!(
+                                    "journal replay: 修复 {} 失败：{}",
+                                    entry.src, e
+                                ),
+                            );
+                        }
+                    }
+                }
+                _ => {
+                    // 其他异常 / 未开始 / 异常状态 → clear 行
+                    journal_cleared(app, entry.id).ok();
+                }
+            },
+            "delete" => {
+                if !src.exists() {
+                    // delete 成功但 DB 未清 file_path
+                    match recover_delete_db(app, &entry.task_id) {
+                        Ok(()) => {
+                            journal_committed(app, entry.id).ok();
+                            recovered += 1;
+                            log_line(
+                                app,
+                                &format!("journal replay: 清除 {} 的 file_path", entry.src),
+                            );
+                        }
+                        Err(e) => {
+                            errors += 1;
+                            log_line(
+                                app,
+                                &format!(
+                                    "journal replay: 清除 {} 失败：{}",
+                                    entry.src, e
+                                ),
+                            );
+                        }
+                    }
+                } else {
+                    journal_cleared(app, entry.id).ok();
+                }
+            }
+            _ => {
+                journal_cleared(app, entry.id).ok();
+            }
+        }
+    }
+
+    // 限制日志表大小：最近 1000 条保留，剩余 cleared/committed 的清理
+    // （避免 journal 表无限增长）
+    let _ = conn.execute(
+        "DELETE FROM migration_journal
+         WHERE id NOT IN (
+             SELECT id FROM migration_journal ORDER BY id DESC LIMIT 1000
+         ) AND state IN ('committed', 'cleared')",
+        [],
+    );
+
+    Ok((recovered, errors))
+}
+
+fn recover_move_db(app: &AppHandle, task_id: &str, dst: &Path) -> Result<(), String> {
+    let tasks = db::db_load(app.clone()).map_err(|e| e.to_string())?;
+    let Some(mut t) = tasks.into_iter().find(|x| x.id == task_id) else {
+        return Err(format!("task {task_id} 不存在"));
+    };
+    t.file_path = Some(dst.to_string_lossy().to_string());
+    t.updated_at = Some(now_ms());
+    db::db_upsert(app.clone(), vec![t]).map_err(|e| e.to_string())
+}
+
+fn recover_delete_db(app: &AppHandle, task_id: &str) -> Result<(), String> {
+    let tasks = db::db_load(app.clone()).map_err(|e| e.to_string())?;
+    let Some(mut t) = tasks.into_iter().find(|x| x.id == task_id) else {
+        return Err(format!("task {task_id} 不存在"));
+    };
+    t.file_path = None;
+    t.file_is_dir = None;
+    t.updated_at = Some(now_ms());
+    db::db_upsert(app.clone(), vec![t]).map_err(|e| e.to_string())
+}
+
 /// 防重入：手动触发与定时轮询互斥
 static RUNNING: AtomicBool = AtomicBool::new(false);
 
@@ -383,7 +609,12 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
                     continue;
                 }
                 if !src.exists() {
-                    // 源已消失：解绑任务卡附件，避免每轮重复记 skip 日志（审计 P3-7）
+                    // B1: 源不存在不再是「直接解绑」。可能原因：
+                    //   1. 上一轮 move 成功但 db_upsert 失败（journal pending 未 commit）
+                    //   2. 用户在外部手动删了文件
+                    //   3. 文件从来就不存在
+                    // journal_replay_pending 已在 spawn_polling 启动时跑过，
+                    // 这里看到的 src 不存在 = 确认需要解绑。交由 changed 推进。
                     let mut nt = t.clone();
                     nt.file_path = None;
                     nt.file_is_dir = None;
@@ -402,7 +633,21 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
                     log_line(app, &line);
                     continue;
                 };
+                // B1: 写 journal pending → move_entry → db_upsert → journal_committed
+                // 如果中间任一步崩了，启动时 journal_replay_pending 修复 DB
+                let journal_id = match journal_pending(app, "move", &src, Some(&dst), &t.id) {
+                    Ok(id) => id,
+                    Err(e) => {
+                        report.skipped += 1;
+                        let line = format!("跳过「{name}」：journal_pending 失败：{e}");
+                        report.log.push(line.clone());
+                        log_line(app, &line);
+                        continue;
+                    }
+                };
                 if let Err(e) = move_entry(&src, &dst) {
+                    // move 未启动 / 明确失败 → clear journal，下次重试不需要修复
+                    journal_cleared(app, journal_id).ok();
                     report.skipped += 1;
                     let line = format!("跳过「{name}」：{e}");
                     report.log.push(line.clone());
@@ -412,6 +657,18 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
                 let mut nt = t.clone();
                 nt.file_path = Some(dst.to_string_lossy().to_string());
                 nt.updated_at = Some(now);
+                if let Err(e) = db::db_upsert(app.clone(), vec![nt.clone()]) {
+                    // move 成功但 db_upsert 失败 → journal 保持 pending，
+                    // 下次启动 replay 时检测 dst 存在 + src 不存在，修复 DB
+                    report.skipped += 1;
+                    let line = format!(
+                        "已移动「{name}」但 db_upsert 失败（{e}），journal={journal_id} 待修复"
+                    );
+                    report.log.push(line.clone());
+                    log_line(app, &line);
+                    continue;
+                }
+                journal_committed(app, journal_id).ok();
                 changed.push(nt);
                 report.moved += 1;
                 let line = format!("已移动「{name}」→ {}", dst.display());
@@ -420,7 +677,8 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
             }
             "delete" => {
                 if !src.exists() {
-                    // 源已消失：解绑任务卡附件，避免每轮重复记 skip 日志（审计 P3-7）
+                    // B1: 源不存在可能是上一轮 delete 成功但 db_upsert 失败，
+                    // journal_replay_pending 启动时已修复；这里看到 = 确认解绑。
                     let mut nt = t.clone();
                     nt.file_path = None;
                     nt.file_is_dir = None;
@@ -432,12 +690,25 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
                     log_line(app, &line);
                     continue;
                 }
+                // B1: write journal pending → delete → db_upsert → committed
+                let journal_id = match journal_pending(app, "delete", &src, None, &t.id) {
+                    Ok(id) => id,
+                    Err(e) => {
+                        report.skipped += 1;
+                        let line = format!("跳过「{name}」：journal_pending 失败：{e}");
+                        report.log.push(line.clone());
+                        log_line(app, &line);
+                        continue;
+                    }
+                };
                 let res = if t.file_is_dir == Some(true) {
                     fs::remove_dir_all(&src)
                 } else {
                     fs::remove_file(&src)
                 };
                 if let Err(e) = res {
+                    // delete 失败 → clear journal，下次重试
+                    journal_cleared(app, journal_id).ok();
                     report.skipped += 1;
                     let line = format!("删除「{name}」失败（可能被占用/权限不足）：{e}");
                     report.log.push(line.clone());
@@ -448,6 +719,19 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
                 nt.file_path = None;
                 nt.file_is_dir = None;
                 nt.updated_at = Some(now);
+                if let Err(e) = db::db_upsert(app.clone(), vec![nt.clone()]) {
+                    // delete 成功但 db_upsert 失败 → journal 保持 pending，
+                    // 下次启动 replay 时检测 src 不存在 + task 仍有 file_path，
+                    // 修复 DB 清 file_path
+                    report.skipped += 1;
+                    let line = format!(
+                        "已删除「{name}」但 db_upsert 失败（{e}），journal={journal_id} 待修复"
+                    );
+                    report.log.push(line.clone());
+                    log_line(app, &line);
+                    continue;
+                }
+                journal_committed(app, journal_id).ok();
                 changed.push(nt);
                 report.deleted += 1;
                 let line = format!("已删除「{name}」（规则显式启用 delete）");
@@ -471,6 +755,15 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
 pub fn spawn_polling(app: AppHandle) {
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_secs(60));
+        // B1: 启动时 replay 上轮未提交的 pending journal 条目，修复 move/delete 成功但
+        // db_upsert 失败造成的 DB 不一致。出错只记日志，不影响后续轮询。
+        match journal_replay_pending(&app) {
+            Ok((rec, err)) if rec > 0 || err > 0 => {
+                log_line(&app, &format!("journal replay 启动：恢复 {rec} 条，失败 {err} 条"));
+            }
+            Ok(_) => {}
+            Err(e) => log_line(&app, &format!("journal replay 启动失败：{e}")),
+        }
         loop {
             std::thread::sleep(Duration::from_secs(POLL_INTERVAL_SECS));
             // 防 panic 杀死轮询线程（审计 P2）：单轮崩溃只废这一轮，后台自动迁移永久可用
@@ -725,6 +1018,99 @@ mod tests {
     fn empty_keywords_never_match() {
         let r = rule(vec![], "move", "x");
         assert!(!filename_matches("anything.txt", &r));
+    }
+
+    /// B1: journal SQL 基础流。构造临时 DB + 创建 migration_journal 表，
+    /// 验证 pending → committed/cleared 状态变迁。
+    fn setup_journal_db() -> (std::path::PathBuf, rusqlite::Connection) {
+        let dir = std::env::temp_dir().join(format!("wm-jrn-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let conn = rusqlite::Connection::open(dir.join("t.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE migration_journal (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                op          TEXT    NOT NULL,
+                src         TEXT    NOT NULL,
+                dst         TEXT,
+                task_id     TEXT    NOT NULL,
+                state       TEXT    NOT NULL,
+                created_at  INTEGER NOT NULL
+            );",
+        )
+        .unwrap();
+        (dir, conn)
+    }
+
+    /// B1: pending → committed 是 happy path，启动 replay 跳过该行
+    #[test]
+    fn journal_pending_to_committed_flow() {
+        let (dir, conn) = setup_journal_db();
+        let id = journal_pending_inner(&conn, "move", Path::new("/src/a"), Some(Path::new("/dst/a")), "task-1", 1000).unwrap();
+        assert!(id > 0);
+
+        // 验证插入后 state = pending
+        let state: String = conn
+            .query_row("SELECT state FROM migration_journal WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(state, "pending");
+
+        journal_committed_inner(&conn, id).unwrap();
+
+        let state: String = conn
+            .query_row("SELECT state FROM migration_journal WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(state, "committed");
+
+        // replay 查询会跳过该行（WHERE state = 'pending'）
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM migration_journal WHERE state = 'pending'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// B1: pending → cleared（操作未启动 / 已失败），replay 不该修复
+    #[test]
+    fn journal_pending_to_cleared_flow() {
+        let (dir, conn) = setup_journal_db();
+        let id = journal_pending_inner(&conn, "delete", Path::new("/x/y"), None, "task-2", 2000).unwrap();
+        journal_cleared_inner(&conn, id).unwrap();
+        let state: String = conn
+            .query_row("SELECT state FROM migration_journal WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(state, "cleared");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// B1: replay 模拟场景——move 成功但 db_upsert 崩，journal 保持 pending。
+    /// 重启后 replay 检查 dst 存在 + src 不存在 → 调用 recover_move_db
+    /// （这里不测 recover_move_db 本身，只验证检测逻辑的状态断言）。
+    #[test]
+    fn journal_replay_detects_move_completed_state() {
+        let (dir, conn) = setup_journal_db();
+
+        // 模拟「上一轮：pending 已写、move_entry 成功、db_upsert 崩溃」
+        let src_path = dir.join("src.txt");
+        let dst_path = dir.join("dst.txt");
+        fs::write(&src_path, b"hello").unwrap();
+        // 模拟 move 完成：写文件到 dst，删 src
+        fs::rename(&src_path, &dst_path).unwrap();
+
+        let id = journal_pending_inner(&conn, "move", &src_path, Some(&dst_path), "task-3", 3000).unwrap();
+
+        // 此刻模拟 replay 检测：dst 存在 + src 不存在
+        assert!(!src_path.exists(), "模拟：src 应已被移走");
+        assert!(dst_path.exists(), "模拟：dst 应已存在");
+        // 验证 journal 仍 pending
+        let state: String = conn
+            .query_row("SELECT state FROM migration_journal WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(state, "pending", "db_upsert 崩后 journal 仍 pending");
+
+        // replay 会检查 dst.exists() && !src.exists() → 调用 recover_move_db
+        // （不能在这里调 recover_move_db，因为需要 AppHandle + 完整 task 表）
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

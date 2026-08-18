@@ -127,6 +127,18 @@ pub fn open_db(app: &tauri::AppHandle) -> Result<rusqlite::Connection, String> {
            ord        REAL,
            updated_at INTEGER
          );
+         -- B1: 迁移操作对账日志。pending = 操作已开始但未提交，committed/cleared = 终态
+         -- 启动时 replay pending：检测 move/delete 是否实际完成，必要时修复 DB
+         -- 表为幂等设计，多次启动不会重复修复
+         CREATE TABLE IF NOT EXISTS migration_journal (
+           id          INTEGER PRIMARY KEY AUTOINCREMENT,
+           op          TEXT    NOT NULL,    -- 'move' | 'delete'
+           src         TEXT    NOT NULL,
+           dst         TEXT,                -- 仅 move 有值；delete 为 NULL
+           task_id     TEXT    NOT NULL,
+           state       TEXT    NOT NULL,    -- 'pending' | 'committed' | 'cleared'
+           created_at  INTEGER NOT NULL
+         );
          CREATE TABLE IF NOT EXISTS bot_messages (
            id         INTEGER PRIMARY KEY AUTOINCREMENT,
            role       TEXT NOT NULL,
