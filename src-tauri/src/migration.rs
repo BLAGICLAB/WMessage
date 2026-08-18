@@ -118,6 +118,82 @@ fn journal_cleared(app: &AppHandle, id: i64) -> Result<(), String> {
     journal_cleared_inner(&conn, id)
 }
 
+/// NEW-B-1 inner: 查某任务某源路径最新一条 pending journal（轮询中就地对账用）。
+/// 抽出来为方便单测（不需 AppHandle）。
+fn journal_find_pending_inner(
+    conn: &rusqlite::Connection,
+    task_id: &str,
+    src: &Path,
+) -> Result<Option<JournalEntry>, String> {
+    use rusqlite::OptionalExtension;
+    conn.query_row(
+        "SELECT id, op, src, dst, task_id, state, created_at
+         FROM migration_journal
+         WHERE task_id = ?1 AND src = ?2 AND state = 'pending'
+         ORDER BY id DESC LIMIT 1",
+        rusqlite::params![task_id, src.to_string_lossy()],
+        |r| {
+            Ok(JournalEntry {
+                id: r.get(0)?,
+                op: r.get(1)?,
+                src: r.get(2)?,
+                dst: r.get(3)?,
+                task_id: r.get(4)?,
+                state: r.get(5)?,
+                created_at: r.get(6)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(|e| e.to_string())
+}
+
+/// NEW-B-1: 生产包装（open_db + inner）。
+fn journal_find_pending(
+    app: &AppHandle,
+    task_id: &str,
+    src: &Path,
+) -> Result<Option<JournalEntry>, String> {
+    let conn = db::open_db(app).map_err(|e| e.to_string())?;
+    journal_find_pending_inner(&conn, task_id, src)
+}
+
+/// NEW-B-1: replay 修复前提——任务 file_path 仍指向 journal 记录的 src，
+/// 即 DB 自该文件操作后未被碰过。若用户期间重新绑定了别的文件 / 已解绑，
+/// 必须跳过修复，防止旧 journal 覆盖新绑定。
+fn file_path_untouched(current: Option<&str>, expected_src: &str) -> bool {
+    current == Some(expected_src)
+}
+
+/// NEW-B-1: 「源已消失」时的处置决策（纯函数，可单测）。
+/// pending = 该 (task, src) 最新 pending journal；dst_exists 仅对 move 有意义。
+enum SrcMissingAction {
+    /// 上轮 move 成功但 DB 未更新 → 重新绑定到 dst，并提交该 journal
+    RepairMove { dst: String, journal_id: i64 },
+    /// 确认解绑；Some(id) 的 journal 在解绑落盘成功后提交（关闭对账环路）
+    Unbind { commit_journal: Option<i64> },
+}
+
+fn decide_src_missing(pending: Option<JournalEntry>, dst_exists: bool) -> SrcMissingAction {
+    match pending {
+        Some(e) if e.op == "move" && dst_exists => match e.dst {
+            Some(dst) => SrcMissingAction::RepairMove {
+                dst,
+                journal_id: e.id,
+            },
+            None => SrcMissingAction::Unbind {
+                commit_journal: Some(e.id),
+            },
+        },
+        Some(e) => SrcMissingAction::Unbind {
+            commit_journal: Some(e.id),
+        },
+        None => SrcMissingAction::Unbind {
+            commit_journal: None,
+        },
+    }
+}
+
 /// B1: 启动时 replay pending 条目。
 ///
 /// 语义：
@@ -163,8 +239,8 @@ pub fn journal_replay_pending(app: &AppHandle) -> Result<(usize, usize), String>
             "move" => match (&dst, src.exists()) {
                 (Some(d), false) if d.exists() => {
                     // move 成功但 DB 未更新
-                    match recover_move_db(app, &entry.task_id, d) {
-                        Ok(()) => {
+                    match recover_move_db(app, &entry.task_id, &entry.src, d) {
+                        Ok(true) => {
                             journal_committed(app, entry.id).ok();
                             recovered += 1;
                             log_line(
@@ -173,6 +249,18 @@ pub fn journal_replay_pending(app: &AppHandle) -> Result<(usize, usize), String>
                                     "journal replay: 修复 {} → {}",
                                     entry.src,
                                     d.display()
+                                ),
+                            );
+                        }
+                        Ok(false) => {
+                            // NEW-B-1: 任务 file_path 已不指向 src（用户重绑 / 已解绑）
+                            // → 跳过修复，避免旧 journal 覆盖新绑定
+                            journal_cleared(app, entry.id).ok();
+                            log_line(
+                                app,
+                                &format!(
+                                    "journal replay: 跳过 {}（任务附件已变更，不覆盖）",
+                                    entry.src
                                 ),
                             );
                         }
@@ -196,13 +284,24 @@ pub fn journal_replay_pending(app: &AppHandle) -> Result<(usize, usize), String>
             "delete" => {
                 if !src.exists() {
                     // delete 成功但 DB 未清 file_path
-                    match recover_delete_db(app, &entry.task_id) {
-                        Ok(()) => {
+                    match recover_delete_db(app, &entry.task_id, &entry.src) {
+                        Ok(true) => {
                             journal_committed(app, entry.id).ok();
                             recovered += 1;
                             log_line(
                                 app,
                                 &format!("journal replay: 清除 {} 的 file_path", entry.src),
+                            );
+                        }
+                        Ok(false) => {
+                            // NEW-B-1: 任务 file_path 已变更（用户重绑）→ 跳过，不清空新绑定
+                            journal_cleared(app, entry.id).ok();
+                            log_line(
+                                app,
+                                &format!(
+                                    "journal replay: 跳过 {}（任务附件已变更，不覆盖）",
+                                    entry.src
+                                ),
                             );
                         }
                         Err(e) => {
@@ -239,7 +338,14 @@ pub fn journal_replay_pending(app: &AppHandle) -> Result<(usize, usize), String>
     Ok((recovered, errors))
 }
 
-fn recover_move_db(app: &AppHandle, task_id: &str, dst: &Path) -> Result<(), String> {
+/// 返回值：Ok(true)=已修复；Ok(false)=任务 file_path 已不指向 expected_src（用户重绑/已解绑），
+/// 跳过修复防止旧 journal 覆盖新绑定（NEW-B-1）。
+fn recover_move_db(
+    app: &AppHandle,
+    task_id: &str,
+    expected_src: &str,
+    dst: &Path,
+) -> Result<bool, String> {
     // B3: db_load/db_upsert 改 async 了；recover_* 在 spawn_polling 的 std::thread 里跑，
     // 不在 tokio runtime 上 → 用 block_on 安全桥接（不会死锁）。
     let tasks = tauri::async_runtime::block_on(async { db::db_load(app.clone()).await })
@@ -247,23 +353,31 @@ fn recover_move_db(app: &AppHandle, task_id: &str, dst: &Path) -> Result<(), Str
     let Some(mut t) = tasks.into_iter().find(|x| x.id == task_id) else {
         return Err(format!("task {task_id} 不存在"));
     };
+    if !file_path_untouched(t.file_path.as_deref(), expected_src) {
+        return Ok(false);
+    }
     t.file_path = Some(dst.to_string_lossy().to_string());
     t.updated_at = Some(now_ms());
     tauri::async_runtime::block_on(async { db::db_upsert(app.clone(), vec![t]).await })
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    Ok(true)
 }
 
-fn recover_delete_db(app: &AppHandle, task_id: &str) -> Result<(), String> {
+fn recover_delete_db(app: &AppHandle, task_id: &str, expected_src: &str) -> Result<bool, String> {
     let tasks = tauri::async_runtime::block_on(async { db::db_load(app.clone()).await })
         .map_err(|e| e.to_string())?;
     let Some(mut t) = tasks.into_iter().find(|x| x.id == task_id) else {
         return Err(format!("task {task_id} 不存在"));
     };
+    if !file_path_untouched(t.file_path.as_deref(), expected_src) {
+        return Ok(false);
+    }
     t.file_path = None;
     t.file_is_dir = None;
     t.updated_at = Some(now_ms());
     tauri::async_runtime::block_on(async { db::db_upsert(app.clone(), vec![t]).await })
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    Ok(true)
 }
 
 /// 防重入：手动触发与定时轮询互斥
@@ -546,6 +660,9 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
         .map_err(|e| e.to_string())?;
     let now = now_ms();
     let mut changed: Vec<db::Task> = vec![];
+    // NEW-B-1: 解绑时确认关闭的 pending journal id——在 changed 批量落盘成功后统一提交，
+    // 避免「journal 已提交但解绑未落盘」的对账空洞。
+    let mut journals_commit_after_batch: Vec<i64> = vec![];
 
     // 阶段一：完成满 7 天且未归档的任务 → 归档（兜底：主窗口关闭时也照常到期）
     let mut due: Vec<db::Task> = vec![];
@@ -621,22 +738,63 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
                     continue;
                 }
                 if !src.exists() {
-                    // B1: 源不存在不再是「直接解绑」。可能原因：
-                    //   1. 上一轮 move 成功但 db_upsert 失败（journal pending 未 commit）
-                    //   2. 用户在外部手动删了文件
-                    //   3. 文件从来就不存在
-                    // journal_replay_pending 已在 spawn_polling 启动时跑过，
-                    // 这里看到的 src 不存在 = 确认需要解绑。交由 changed 推进。
-                    let mut nt = t.clone();
-                    nt.file_path = None;
-                    nt.file_is_dir = None;
-                    nt.updated_at = Some(now);
-                    changed.push(nt);
-                    report.skipped += 1;
-                    let line = format!("解除绑定「{name}」：源文件已不存在（{src_str}）");
-                    report.log.push(line.clone());
-                    log_line(app, &line);
-                    continue;
+                    // NEW-B-1: 源不存在时先对账 journal——「上一轮 move 成功但 db_upsert 失败」
+                    // 时 journal 仍 pending 且 dst 存在，此时应就地修复绑定到 dst，而非解绑
+                    // （旧逻辑直接解绑 → 附件链接丢失一整个会话周期，要等重启 replay 才恢复）。
+                    let pending = journal_find_pending(app, &t.id, &src).unwrap_or(None);
+                    let dst_exists = pending
+                        .as_ref()
+                        .and_then(|e| e.dst.as_ref())
+                        .map(|d| PathBuf::from(d).exists())
+                        .unwrap_or(false);
+                    match decide_src_missing(pending, dst_exists) {
+                        SrcMissingAction::RepairMove { dst, journal_id } => {
+                            let mut nt = t.clone();
+                            nt.file_path = Some(dst.clone());
+                            nt.updated_at = Some(now);
+                            match tauri::async_runtime::block_on(async {
+                                db::db_upsert(app.clone(), vec![nt.clone()]).await
+                            }) {
+                                Ok(()) => {
+                                    journal_committed(app, journal_id).ok();
+                                    changed.push(nt);
+                                    report.moved += 1;
+                                    let line = format!(
+                                        "修复绑定「{name}」→ {dst}（上轮 move 落库失败，journal={journal_id} 对账恢复）"
+                                    );
+                                    report.log.push(line.clone());
+                                    log_line(app, &line);
+                                }
+                                Err(e) => {
+                                    report.skipped += 1;
+                                    let line = format!(
+                                        "跳过「{name}」：journal 修复落库失败（{e}），journal={journal_id} 待修复"
+                                    );
+                                    report.log.push(line.clone());
+                                    log_line(app, &line);
+                                }
+                            }
+                            continue;
+                        }
+                        SrcMissingAction::Unbind { commit_journal } => {
+                            // 确认解绑：无 pending（用户外部删除/文件本就不存在），
+                            // 或 pending 为 delete（解绑本就是其终态）/ move 但 dst 也丢失。
+                            let mut nt = t.clone();
+                            nt.file_path = None;
+                            nt.file_is_dir = None;
+                            nt.updated_at = Some(now);
+                            changed.push(nt);
+                            if let Some(id) = commit_journal {
+                                journals_commit_after_batch.push(id);
+                            }
+                            report.skipped += 1;
+                            let line =
+                                format!("解除绑定「{name}」：源文件已不存在（{src_str}）");
+                            report.log.push(line.clone());
+                            log_line(app, &line);
+                            continue;
+                        }
+                    }
                 }
                 let Some(dst) = conflict_free_name(&dir, &name) else {
                     report.skipped += 1;
@@ -691,18 +849,59 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
             }
             "delete" => {
                 if !src.exists() {
-                    // B1: 源不存在可能是上一轮 delete 成功但 db_upsert 失败，
-                    // journal_replay_pending 启动时已修复；这里看到 = 确认解绑。
-                    let mut nt = t.clone();
-                    nt.file_path = None;
-                    nt.file_is_dir = None;
-                    nt.updated_at = Some(now);
-                    changed.push(nt);
-                    report.skipped += 1;
-                    let line = format!("解除绑定「{name}」：源文件已不存在");
-                    report.log.push(line.clone());
-                    log_line(app, &line);
-                    continue;
+                    // NEW-B-1: 同 move 分支——先对账 journal。pending delete 的终态本就是
+                    // 解绑，落盘后提交 journal 关闭环路；pending move 且 dst 在 → 就地修复。
+                    let pending = journal_find_pending(app, &t.id, &src).unwrap_or(None);
+                    let dst_exists = pending
+                        .as_ref()
+                        .and_then(|e| e.dst.as_ref())
+                        .map(|d| PathBuf::from(d).exists())
+                        .unwrap_or(false);
+                    match decide_src_missing(pending, dst_exists) {
+                        SrcMissingAction::RepairMove { dst, journal_id } => {
+                            let mut nt = t.clone();
+                            nt.file_path = Some(dst.clone());
+                            nt.updated_at = Some(now);
+                            match tauri::async_runtime::block_on(async {
+                                db::db_upsert(app.clone(), vec![nt.clone()]).await
+                            }) {
+                                Ok(()) => {
+                                    journal_committed(app, journal_id).ok();
+                                    changed.push(nt);
+                                    report.moved += 1;
+                                    let line = format!(
+                                        "修复绑定「{name}」→ {dst}（上轮 move 落库失败，journal={journal_id} 对账恢复）"
+                                    );
+                                    report.log.push(line.clone());
+                                    log_line(app, &line);
+                                }
+                                Err(e) => {
+                                    report.skipped += 1;
+                                    let line = format!(
+                                        "跳过「{name}」：journal 修复落库失败（{e}），journal={journal_id} 待修复"
+                                    );
+                                    report.log.push(line.clone());
+                                    log_line(app, &line);
+                                }
+                            }
+                            continue;
+                        }
+                        SrcMissingAction::Unbind { commit_journal } => {
+                            let mut nt = t.clone();
+                            nt.file_path = None;
+                            nt.file_is_dir = None;
+                            nt.updated_at = Some(now);
+                            changed.push(nt);
+                            if let Some(id) = commit_journal {
+                                journals_commit_after_batch.push(id);
+                            }
+                            report.skipped += 1;
+                            let line = format!("解除绑定「{name}」：源文件已不存在");
+                            report.log.push(line.clone());
+                            log_line(app, &line);
+                            continue;
+                        }
+                    }
                 }
                 // B1: write journal pending → delete → db_upsert → committed
                 let journal_id = match journal_pending(app, "delete", &src, None, &t.id) {
@@ -765,6 +964,11 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
         })
         .map_err(|e| e.to_string())?;
         emit_upserts(app, &changed);
+        // NEW-B-1: 解绑已落盘 → 提交对应 pending journal，关闭对账环路
+        // （若落盘失败则上面已 return，journal 保持 pending，留待下轮/启动 replay）
+        for id in journals_commit_after_batch {
+            journal_committed(app, id).ok();
+        }
     }
 
     Ok(report)
@@ -1137,6 +1341,110 @@ mod tests {
         // replay 会检查 dst.exists() && !src.exists() → 调用 recover_move_db
         // （不能在这里调 recover_move_db，因为需要 AppHandle + 完整 task 表）
         fs::remove_dir_all(&dir).ok();
+    }
+
+    /// NEW-B-1: journal_find_pending_inner happy path——按 (task_id, src) 找到最新 pending。
+    #[test]
+    fn journal_find_pending_finds_matching_entry() {
+        let (dir, conn) = setup_journal_db();
+        let src = Path::new("/src/a");
+        let id = journal_pending_inner(&conn, "move", src, Some(Path::new("/dst/a")), "task-9", 1000).unwrap();
+
+        let found = journal_find_pending_inner(&conn, "task-9", src).unwrap();
+        let e = found.expect("应找到 pending 条目");
+        assert_eq!(e.id, id);
+        assert_eq!(e.op, "move");
+        assert_eq!(e.dst.as_deref(), Some("/dst/a"));
+        assert_eq!(e.state, "pending");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// NEW-B-1: 失败路径——committed/cleared、别的 task、别的 src 都不得命中。
+    #[test]
+    fn journal_find_pending_ignores_non_pending_and_other_keys() {
+        let (dir, conn) = setup_journal_db();
+        let src = Path::new("/src/a");
+
+        // committed 的不算 pending
+        let id1 = journal_pending_inner(&conn, "move", src, Some(Path::new("/dst/a")), "task-9", 1000).unwrap();
+        journal_committed_inner(&conn, id1).unwrap();
+        assert!(journal_find_pending_inner(&conn, "task-9", src).unwrap().is_none(),
+            "committed 条目不应命中");
+
+        // cleared 的不算 pending
+        let id2 = journal_pending_inner(&conn, "delete", src, None, "task-9", 2000).unwrap();
+        journal_cleared_inner(&conn, id2).unwrap();
+        assert!(journal_find_pending_inner(&conn, "task-9", src).unwrap().is_none(),
+            "cleared 条目不应命中");
+
+        // 别的 task / 别的 src 不命中
+        journal_pending_inner(&conn, "move", src, Some(Path::new("/dst/b")), "task-other", 3000).unwrap();
+        journal_pending_inner(&conn, "move", Path::new("/src/other"), Some(Path::new("/dst/c")), "task-9", 4000).unwrap();
+        assert!(journal_find_pending_inner(&conn, "task-9", src).unwrap().is_none(),
+            "其他 task/src 的 pending 不应串扰");
+
+        // 同 task+src 多条 pending 时取最新（id 最大）
+        let id3 = journal_pending_inner(&conn, "move", src, Some(Path::new("/dst/old")), "task-9", 5000).unwrap();
+        let id4 = journal_pending_inner(&conn, "move", src, Some(Path::new("/dst/new")), "task-9", 6000).unwrap();
+        let e = journal_find_pending_inner(&conn, "task-9", src).unwrap().unwrap();
+        assert_eq!(e.id, id4, "应取最新一条 pending");
+        assert!(id4 > id3);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// NEW-B-1: decide_src_missing 全分支。
+    #[test]
+    fn decide_src_missing_all_branches() {
+        let mk = |op: &str, dst: Option<&str>| JournalEntry {
+            id: 7,
+            op: op.into(),
+            src: "/src/a".into(),
+            dst: dst.map(|s| s.into()),
+            task_id: "t".into(),
+            state: "pending".into(),
+            created_at: 1,
+        };
+
+        // move pending + dst 存在 → 就地修复绑定
+        match decide_src_missing(Some(mk("move", Some("/dst/a"))), true) {
+            SrcMissingAction::RepairMove { dst, journal_id } => {
+                assert_eq!(dst, "/dst/a");
+                assert_eq!(journal_id, 7);
+            }
+            _ => panic!("move+dst 存在应 RepairMove"),
+        }
+
+        // move pending + dst 也丢失 → 解绑并关闭 journal
+        match decide_src_missing(Some(mk("move", Some("/dst/a"))), false) {
+            SrcMissingAction::Unbind { commit_journal } => assert_eq!(commit_journal, Some(7)),
+            _ => panic!("move+dst 丢失应 Unbind"),
+        }
+
+        // move pending 但 dst 字段为 NULL（数据异常）→ 解绑并关闭 journal
+        match decide_src_missing(Some(mk("move", None)), true) {
+            SrcMissingAction::Unbind { commit_journal } => assert_eq!(commit_journal, Some(7)),
+            _ => panic!("move 无 dst 应 Unbind"),
+        }
+
+        // delete pending → 解绑本就是终态，但需提交 journal 关闭环路
+        match decide_src_missing(Some(mk("delete", None)), false) {
+            SrcMissingAction::Unbind { commit_journal } => assert_eq!(commit_journal, Some(7)),
+            _ => panic!("delete pending 应 Unbind+commit"),
+        }
+
+        // 无 pending → 纯解绑，无 journal 要关
+        match decide_src_missing(None, false) {
+            SrcMissingAction::Unbind { commit_journal } => assert_eq!(commit_journal, None),
+            _ => panic!("无 pending 应 Unbind"),
+        }
+    }
+
+    /// NEW-B-1: replay 防覆盖谓词——file_path 仍指向 src 才允许修复。
+    #[test]
+    fn file_path_untouched_guard() {
+        assert!(file_path_untouched(Some("/src/a"), "/src/a"), "仍指向 src → 允许修复");
+        assert!(!file_path_untouched(Some("/other/b"), "/src/a"), "用户重绑 → 禁止覆盖");
+        assert!(!file_path_untouched(None, "/src/a"), "已解绑 → 禁止回写");
     }
 
     #[test]
