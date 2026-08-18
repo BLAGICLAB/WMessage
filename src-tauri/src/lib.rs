@@ -76,9 +76,8 @@ fn copy_file_macos(path: &str, title: &str) -> Result<(), String> {
     // 2) 老式文件列表类型（NSFilenamesPboardType）：Electron 系应用（飞书等）读这个
     let path_str = NSString::from_str(path);
     let paths = NSArray::from_retained_slice(&[path_str]);
-    let _ok = unsafe {
-        pb.setPropertyList_forType(&paths, &NSString::from_str("NSFilenamesPboardType"))
-    };
+    let _ok =
+        unsafe { pb.setPropertyList_forType(&paths, &NSString::from_str("NSFilenamesPboardType")) };
 
     // 3) 标题文本：文本应用粘贴即标题
     let text = NSString::from_str(title);
@@ -96,9 +95,7 @@ fn copy_file_windows(path: &str, title: &str) -> Result<(), String> {
     use windows::Win32::System::DataExchange::{
         CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
     };
-    use windows::Win32::System::Memory::{
-        GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE,
-    };
+    use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
     use windows::Win32::System::Ole::{CF_HDROP, CF_UNICODETEXT};
     use windows::Win32::UI::Shell::DROPFILES;
 
@@ -306,8 +303,14 @@ pub fn run() {
                         _ => {}
                     })
                     .on_tray_icon_event(|tray, event| match event {
-                        TrayIconEvent::Click { button: MouseButton::Left, .. }
-                        | TrayIconEvent::DoubleClick { button: MouseButton::Left, .. } => {
+                        TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            ..
+                        }
+                        | TrayIconEvent::DoubleClick {
+                            button: MouseButton::Left,
+                            ..
+                        } => {
                             if let Some(w) = tray.app_handle().get_webview_window("main") {
                                 bring_main_to_front(&w);
                             }

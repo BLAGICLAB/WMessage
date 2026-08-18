@@ -5,11 +5,11 @@
 //! - 安装：设置页导入技能文件夹（拷贝进数据目录），或手动放入数据目录 skills/
 //! - 安全：技能名白名单字符集（防路径穿越）；正文读取有大小上限
 
+use crate::audit_event;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::Serialize;
 use tauri::AppHandle;
-use crate::audit_event;
 
 /// 打开文件/文件夹（Rust 侧调用 opener 插件）：绕过前端窗口的 opener scope，
 /// 挂件窗口内聊天文件按钮点击直接走这里，失败返回错误给前端兜底 revealItemInDir
@@ -65,10 +65,15 @@ pub fn delete_bound_file(path: String, is_dir: bool) -> Result<(), String> {
     }
     let _ = is_dir; // trash::delete 内部递归处理两种类型，不再需要分流
     trash::delete(p).map_err(|e| {
-        format!("移到{}失败：{e}（文件可能仍在原位置，任务卡保留可重试）",
-            if cfg!(target_os = "macos") { "废纸篓" }
-            else if cfg!(target_os = "windows") { "回收站" }
-            else { "垃圾箱" }
+        format!(
+            "移到{}失败：{e}（文件可能仍在原位置，任务卡保留可重试）",
+            if cfg!(target_os = "macos") {
+                "废纸篓"
+            } else if cfg!(target_os = "windows") {
+                "回收站"
+            } else {
+                "垃圾箱"
+            }
         )
     })
 }
@@ -105,7 +110,11 @@ fn dev_skills_dir() -> Option<std::path::PathBuf> {
 #[cfg(debug_assertions)]
 fn dev_skills_dir_at(target_root: &std::path::Path) -> Option<std::path::PathBuf> {
     let path = target_root.join("debug").join("skills");
-    if path.exists() { Some(path) } else { None }
+    if path.exists() {
+        Some(path)
+    } else {
+        None
+    }
 }
 
 /// Skill 搜索路径列表：数据目录必选 + dev 模式追加 target/debug/skills。
@@ -221,7 +230,8 @@ pub fn parse_meta(text: &str, dir_name: &str) -> SkillMeta {
                 m.enabled = !matches!(v.trim().to_ascii_lowercase().as_str(), "false" | "0" | "no");
             }
             "resumable" => {
-                m.resumable = matches!(v.trim().to_ascii_lowercase().as_str(), "true" | "1" | "yes");
+                m.resumable =
+                    matches!(v.trim().to_ascii_lowercase().as_str(), "true" | "1" | "yes");
             }
             "intents" => {
                 // 支持 ["a","b"] 或逗号分隔 "a,b"
@@ -258,15 +268,26 @@ pub fn scan_skills(app: &AppHandle) -> Vec<SkillInfo> {
     let mut out = scan_skill_dirs(&skill_search_paths(app));
     if let Ok(conn) = crate::db::open_db(app) {
         if let Ok(outcomes) = crate::db::load_all_skill_outcomes(&conn) {
-            for s in &mut out { s.last_outcome = outcomes.get(&s.name).cloned(); }
+            for s in &mut out {
+                s.last_outcome = outcomes.get(&s.name).cloned();
+            }
         }
     }
     out
 }
 
 /// Phase 5 D: persist DslOutcome to DB after run_skill_scheduler finishes (quiet failure)
-fn persist_outcome_quiet(app: &AppHandle, name: &str, kind: &str, reason: Option<&str>, summary: Option<&str>, rollback_attempted: Option<bool>) {
-    let Ok(conn) = crate::db::open_db(app) else { return };
+fn persist_outcome_quiet(
+    app: &AppHandle,
+    name: &str,
+    kind: &str,
+    reason: Option<&str>,
+    summary: Option<&str>,
+    rollback_attempted: Option<bool>,
+) {
+    let Ok(conn) = crate::db::open_db(app) else {
+        return;
+    };
     let outcome = crate::db::PersistedSkillOutcome {
         skill_name: name.to_string(),
         kind: kind.to_string(),
@@ -288,14 +309,22 @@ pub fn scan_skill_dirs(dirs: &[std::path::PathBuf]) -> Vec<SkillInfo> {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut out: Vec<SkillInfo> = Vec::new();
     for dir in dirs {
-        let Ok(rd) = std::fs::read_dir(dir) else { continue };
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            continue;
+        };
         for entry in rd.flatten() {
             let path = entry.path();
-            if !path.is_dir() { continue; }
+            if !path.is_dir() {
+                continue;
+            }
             let dir_name = entry.file_name().to_string_lossy().to_string();
-            if !seen.insert(dir_name.clone()) { continue; }
+            if !seen.insert(dir_name.clone()) {
+                continue;
+            }
             let skill_md = path.join("SKILL.md");
-            let Ok(text) = std::fs::read_to_string(&skill_md) else { continue };
+            let Ok(text) = std::fs::read_to_string(&skill_md) else {
+                continue;
+            };
             let (name, desc) = parse_frontmatter(&text, &dir_name);
             out.push(SkillInfo {
                 name,
@@ -401,8 +430,9 @@ impl SkillRun {
 }
 
 /// 活动 Skill 运行表：name → SkillRun（同一技能同轮只允许一个实例）
-static SKILL_RUNS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, SkillRun>>> =
-    std::sync::OnceLock::new();
+static SKILL_RUNS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, SkillRun>>,
+> = std::sync::OnceLock::new();
 
 fn skill_runs() -> &'static std::sync::Mutex<std::collections::HashMap<String, SkillRun>> {
     SKILL_RUNS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
@@ -415,8 +445,12 @@ fn skill_runs() -> &'static std::sync::Mutex<std::collections::HashMap<String, S
 ///
 /// 供 `tool_guard::is_skill_active` 调用（穿透 private Mutex 访问）
 pub fn is_skill_active() -> bool {
-    let Ok(guard) = skill_runs().lock() else { return false };
-    guard.values().any(|r| matches!(r.state, SkillState::Running))
+    let Ok(guard) = skill_runs().lock() else {
+        return false;
+    };
+    guard
+        .values()
+        .any(|r| matches!(r.state, SkillState::Running))
 }
 
 fn now_ms() -> i64 {
@@ -445,7 +479,9 @@ fn load_skill_meta(app: &AppHandle, name: &str) -> Result<(SkillMeta, String), S
     }
     for dir in &skill_search_paths(app) {
         let path = dir.join(name).join("SKILL.md");
-        if !path.exists() { continue; }
+        if !path.exists() {
+            continue;
+        }
         let text = std::fs::read_to_string(&path)
             .map_err(|_| format!("技能「{name}」存在但 SKILL.md 读取失败"))?;
         let meta = parse_meta(&text, name);
@@ -561,7 +597,11 @@ pub fn parse_skill_steps(body: &str) -> Result<(Vec<SkillStep>, Vec<SkillStep>),
         } else if line.starts_with('#') {
             continue;
         } else if let Some((name, args)) = parse_tool_call(line) {
-            let target = if mode == "step" { &mut current } else { &mut current_rollback };
+            let target = if mode == "step" {
+                &mut current
+            } else {
+                &mut current_rollback
+            };
             if let Some(s) = target.as_mut() {
                 s.tool_name = name;
                 s.args_json = args;
@@ -585,26 +625,21 @@ static TASK_ID_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 /// `${stepN.field}` 索引匹配（field ∈ {result, id}）
-static VAR_BY_INDEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\$\{step(\d+)\.(result|id)\}").unwrap()
-});
+static VAR_BY_INDEX: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\$\{step(\d+)\.(result|id)\}").unwrap());
 
 /// `${prev.field}` 上一步简写
-static VAR_PREV: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\$\{prev\.(result|id)\}").unwrap()
-});
+static VAR_PREV: Lazy<Regex> = Lazy::new(|| Regex::new(r"\$\{prev\.(result|id)\}").unwrap());
 
 /// `${stepN.path.to.field}` 嵌套路径（Phase 4 第 2 项 2026-08-18 06:25）
 /// 路径 ≥2 段（首段标识符 + 后续 `.xxx`），与单段 result/id 不冲突
 /// 例：`${step1.task.id}` / `${step1.list.0.title}` / `${step1.a.b.c.d}`
-static VAR_NESTED_BY_INDEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\$\{step(\d+)\.([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)*)\}").unwrap()
-});
+static VAR_NESTED_BY_INDEX: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\$\{step(\d+)\.([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)*)\}").unwrap());
 
 /// `${prev.path.to.field}` 嵌套路径简写（同样 ≥2 段）
-static VAR_NESTED_PREV: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\$\{prev\.([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)*)\}").unwrap()
-});
+static VAR_NESTED_PREV: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\$\{prev\.([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)*)\}").unwrap());
 
 /// 已完成步骤的快照（变量替换上下文，调度器维护）
 #[derive(Debug, Clone)]
@@ -625,9 +660,7 @@ pub struct CompletedStep {
 
 /// 从工具结果文本中提取第一个 UUID；找不到返回 None。
 pub fn extract_task_id(text: &str) -> Option<String> {
-    TASK_ID_RE
-        .find(text)
-        .map(|m| m.as_str().to_string())
+    TASK_ID_RE.find(text).map(|m| m.as_str().to_string())
 }
 
 /// 变量替换（Phase 2 核心）：
@@ -726,11 +759,22 @@ fn preflight(meta: &SkillMeta) -> Result<(), String> {
     }
     // 黑名单意图关键词（与系统提示词安全红线一致）：命中即拒绝启动
     const BLACKLIST: [&str; 5] = [
-        "全盘遍历", "批量删除", "无确认删除", "遍历文件系统", "清空所有",
+        "全盘遍历",
+        "批量删除",
+        "无确认删除",
+        "遍历文件系统",
+        "清空所有",
     ];
-    let hay = format!("{} {}", meta.description.to_lowercase(), meta.intents.join(" "));
+    let hay = format!(
+        "{} {}",
+        meta.description.to_lowercase(),
+        meta.intents.join(" ")
+    );
     if let Some(hit) = BLACKLIST.iter().find(|b| hay.contains(&b.to_lowercase())) {
-        return Err(format!("技能「{}」意图命中安全黑名单（{hit}），已拒绝启动", meta.name));
+        return Err(format!(
+            "技能「{}」意图命中安全黑名单（{hit}），已拒绝启动",
+            meta.name
+        ));
     }
     Ok(())
 }
@@ -756,7 +800,13 @@ pub fn start_skill(app: &AppHandle, name: &str) -> Result<(SkillMeta, String), S
         }
     }
     for n in &switched {
-        crate::bot::audit_log_hook(app, &format!("skill_completed | name: {n} | 切换技能结束 | steps: {}", runs.get(n).map(|r| r.step).unwrap_or(0)));
+        crate::bot::audit_log_hook(
+            app,
+            &format!(
+                "skill_completed | name: {n} | 切换技能结束 | steps: {}",
+                runs.get(n).map(|r| r.step).unwrap_or(0)
+            ),
+        );
     }
     runs.insert(meta.name.clone(), run);
     // 审计：skill.start 结构化（F-3 第二步 2026-08-18）
@@ -784,11 +834,18 @@ pub fn tool_use_skill(app: &AppHandle, args: &str) -> (String, Vec<crate::bot::T
         Ok((meta, body)) => {
             let hint = format!(
                 "【技能文档：{}】\n风险等级 {} · 运行模式 {} · 最多 {} 步 · 超时 {} 秒 · 回滚 {}",
-                meta.name, meta.risk_level, meta.mode, meta.max_steps, meta.timeout_secs, meta.rollback
+                meta.name,
+                meta.risk_level,
+                meta.mode,
+                meta.max_steps,
+                meta.timeout_secs,
+                meta.rollback
             );
             let mut out = hint + "\n\n" + &body;
             if meta.mode == "interactive" {
-                out.push_str("\n\n（运行约束：本技能为人机协同模式，中高危动作执行前会暂停等待用户确认）");
+                out.push_str(
+                    "\n\n（运行约束：本技能为人机协同模式，中高危动作执行前会暂停等待用户确认）",
+                );
             }
             (out, Vec::new())
         }
@@ -809,14 +866,20 @@ fn step_check(run: &mut SkillRun, tool: &str, args: &str, now: i64) -> Result<()
     if run.step > run.max_steps {
         run.state = SkillState::Failed;
         run.end_reason = format!("超过最大步数上限（{} 步）", run.max_steps);
-        return Err(format!("技能「{}」{}，已强制终止", run.name, run.end_reason));
+        return Err(format!(
+            "技能「{}」{}，已强制终止",
+            run.name, run.end_reason
+        ));
     }
     // 超时熔断
     let elapsed = (now - run.started_at_ms) / 1000;
     if elapsed > run.timeout_secs as i64 {
         run.state = SkillState::Failed;
         run.end_reason = format!("超时（超过 {} 秒）", run.timeout_secs);
-        return Err(format!("技能「{}」{}，已强制终止", run.name, run.end_reason));
+        return Err(format!(
+            "技能「{}」{}，已强制终止",
+            run.name, run.end_reason
+        ));
     }
     // 动作记录（回滚清单来源）：只记有副作用的工具，跳过只读查询
     const READONLY: [&str; 4] = ["list_tasks", "search_tasks", "use_skill", "web_search"];
@@ -829,13 +892,19 @@ fn step_check(run: &mut SkillRun, tool: &str, args: &str, now: i64) -> Result<()
 
 pub fn skill_on_step(app: &AppHandle, tool: &str, args: &str) -> Result<(), String> {
     let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
-    let Some(run) = runs.values_mut().find(|r| r.state == SkillState::Running || r.state == SkillState::Paused) else {
+    let Some(run) = runs
+        .values_mut()
+        .find(|r| r.state == SkillState::Running || r.state == SkillState::Paused)
+    else {
         return Ok(()); // 无活动 Skill（模型自由调用工具），不干预
     };
     let res = step_check(run, tool, args, now_ms());
     if let Err(e) = &res {
         let reason = run.end_reason.clone();
-        crate::bot::audit_log_hook(app, &format!("skill_failed | name: {} | {reason} | {e}", run.name));
+        crate::bot::audit_log_hook(
+            app,
+            &format!("skill_failed | name: {} | {reason} | {e}", run.name),
+        );
     }
     res
 }
@@ -917,7 +986,13 @@ pub fn skill_mark_paused(app: &AppHandle, tool: &str) {
     let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(run) = runs.values_mut().find(|r| r.state == SkillState::Running) {
         pause_state(run);
-        crate::bot::audit_log_hook(app, &format!("skill_paused | name: {} | at: {tool} | resumable: {}", run.name, run.resumable));
+        crate::bot::audit_log_hook(
+            app,
+            &format!(
+                "skill_paused | name: {} | at: {tool} | resumable: {}",
+                run.name, run.resumable
+            ),
+        );
     }
 }
 
@@ -929,7 +1004,10 @@ pub fn skill_confirm_result(app: &AppHandle, approved: bool) {
         let name = run.name.clone();
         let state = format!("{:?}", run.state);
         let reason = run.end_reason.clone();
-        crate::bot::audit_log_hook(app, &format!("skill_confirm | name: {name} | approved: {approved} | -> {state} {reason}"));
+        crate::bot::audit_log_hook(
+            app,
+            &format!("skill_confirm | name: {name} | approved: {approved} | -> {state} {reason}"),
+        );
     }
 }
 
@@ -958,11 +1036,17 @@ pub fn skill_finish(app: &AppHandle, ok: bool, reason: &str) -> String {
         }
         if ok {
             run.state = SkillState::Completed;
-            crate::bot::audit_log_hook(app, &format!("skill_completed | name: {name} | steps: {}", run.step));
+            crate::bot::audit_log_hook(
+                app,
+                &format!("skill_completed | name: {name} | steps: {}", run.step),
+            );
         } else {
             run.state = SkillState::Failed;
             run.end_reason = reason.to_string();
-            let mut log = format!("skill_failed | name: {name} | {reason} | actions: {}", run.actions.len());
+            let mut log = format!(
+                "skill_failed | name: {name} | {reason} | actions: {}",
+                run.actions.len()
+            );
             // 回滚建议（务实版）：失败 + 声明可回滚 + 有已执行动作 → 生成建议文本
             if run.rollback == "auto" && !run.actions.is_empty() {
                 log.push_str(" | rollback_suggested");
@@ -972,7 +1056,11 @@ pub fn skill_finish(app: &AppHandle, ok: bool, reason: &str) -> String {
                     .map(|a| format!("- {a}"))
                     .collect::<Vec<_>>()
                     .join("\n");
-                let rb_section = rollback_section(&load_skill_meta(app, name).map(|(_, b)| b).unwrap_or_default());
+                let rb_section = rollback_section(
+                    &load_skill_meta(app, name)
+                        .map(|(_, b)| b)
+                        .unwrap_or_default(),
+                );
                 rollback_hint = format!(
                     "\n\n【技能回滚建议】技能「{name}」执行中断（{reason}），已执行 {n} 个动作：\n{actions_text}\n{}",
                     if rb_section.is_empty() {
@@ -1117,7 +1205,11 @@ pub fn format_completed_summary(ctx: &[CompletedStep]) -> String {
     let mut out = String::new();
     for step in ctx {
         let preview: String = step.result.chars().take(200).collect();
-        let suffix = if step.result.chars().count() > 200 { "..." } else { "" };
+        let suffix = if step.result.chars().count() > 200 {
+            "..."
+        } else {
+            ""
+        };
         out.push_str(&format!(
             "- Step {} ({}): {}{}\n",
             step.index, step.title, preview, suffix
@@ -1147,10 +1239,10 @@ pub fn skill_terminate_all(app: &AppHandle, reason: &str) {
 /// - 全部成功 → 返回汇总文本
 /// - SkillRun 状态机更新由 `execute_tool` 内的 `skill_on_step` / `skill_on_step_post` 自动维护
 pub async fn run_skill_scheduler(app: &AppHandle, name: &str) -> Result<DslOutcome, DslFailure> {
-    let (meta, body) = load_skill_meta(app, name)
-        .map_err(|e| DslFailure::Terminated { reason: e })?;
-    let (steps, rollback) = parse_skill_steps(&body)
-        .map_err(|e| DslFailure::Terminated { reason: e })?;
+    let (meta, body) =
+        load_skill_meta(app, name).map_err(|e| DslFailure::Terminated { reason: e })?;
+    let (steps, rollback) =
+        parse_skill_steps(&body).map_err(|e| DslFailure::Terminated { reason: e })?;
     if steps.is_empty() {
         crate::bot::audit_log_hook(
             app,
@@ -1192,7 +1284,14 @@ pub async fn run_skill_scheduler(app: &AppHandle, name: &str) -> Result<DslOutco
                         app,
                         &format!("skill_dsl_await_user | name: {name} | step: {}", step.index),
                     );
-                    persist_outcome_quiet(app, name, "await_user", None, Some(&format_completed_summary(&ctx)), None);
+                    persist_outcome_quiet(
+                        app,
+                        name,
+                        "await_user",
+                        None,
+                        Some(&format_completed_summary(&ctx)),
+                        None,
+                    );
                     return Ok(DslOutcome::AwaitUser);
                 }
                 DslAdvanceAction::FailWithRollback(reason) => {
@@ -1218,7 +1317,14 @@ pub async fn run_skill_scheduler(app: &AppHandle, name: &str) -> Result<DslOutco
                     }
                     let final_reason = format!("技能「{name}」中止：{reason}");
                     let summary = format_completed_summary(&ctx);
-                    persist_outcome_quiet(app, name, "failed_recoverable", Some(&final_reason), Some(&summary), Some(rb_attempted));
+                    persist_outcome_quiet(
+                        app,
+                        name,
+                        "failed_recoverable",
+                        Some(&final_reason),
+                        Some(&summary),
+                        Some(rb_attempted),
+                    );
                     return Ok(DslOutcome::FailedButRecoverable {
                         reason: final_reason,
                         completed_summary: summary,
@@ -1245,7 +1351,9 @@ pub async fn run_skill_scheduler(app: &AppHandle, name: &str) -> Result<DslOutco
             app,
             &format!(
                 "skill_dsl_step | name: {name} | step: {} | tool: {} | ctx_len: {}",
-                step.index, step.tool_name, ctx.len()
+                step.index,
+                step.tool_name,
+                ctx.len()
             ),
         );
         // Phase 2 接入（2026-08-18）：变量替换 —— 把上一步结果/UUID 拼进 args_json
@@ -1281,10 +1389,7 @@ pub async fn run_skill_scheduler(app: &AppHandle, name: &str) -> Result<DslOutco
                     let rb_args = substitute_vars(&rb.args_json, &ctx);
                     let _ = crate::bot::execute_tool(app, &rb.tool_name, &rb_args).await;
                 }
-                crate::bot::audit_log_hook(
-                    app,
-                    &format!("skill_dsl_rollback_done | name: {name}"),
-                );
+                crate::bot::audit_log_hook(app, &format!("skill_dsl_rollback_done | name: {name}"));
             }
             let rb_attempted = !rollback.is_empty();
             let final_reason = format!(
@@ -1292,7 +1397,14 @@ pub async fn run_skill_scheduler(app: &AppHandle, name: &str) -> Result<DslOutco
                 step.index, step.title, text
             );
             let summary = format_completed_summary(&ctx);
-            persist_outcome_quiet(app, name, "failed_recoverable", Some(&final_reason), Some(&summary), Some(rb_attempted));
+            persist_outcome_quiet(
+                app,
+                name,
+                "failed_recoverable",
+                Some(&final_reason),
+                Some(&summary),
+                Some(rb_attempted),
+            );
             return Ok(DslOutcome::FailedButRecoverable {
                 reason: final_reason,
                 completed_summary: summary,
@@ -1353,7 +1465,8 @@ pub fn skills_import(app: AppHandle, path: String) -> Result<String, String> {
         return Err("请选择技能文件夹".into());
     }
     let skill_md = src.join("SKILL.md");
-    let text = std::fs::read_to_string(&skill_md).map_err(|_| "该文件夹没有 SKILL.md，不是有效技能".to_string())?;
+    let text = std::fs::read_to_string(&skill_md)
+        .map_err(|_| "该文件夹没有 SKILL.md，不是有效技能".to_string())?;
     let dir_name = src
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
@@ -1527,7 +1640,10 @@ mod tests {
     fn advance_dsl_paused_returns_await_user() {
         let mut run = test_run(8, 180);
         run.state = SkillState::Paused;
-        assert!(matches!(advance_dsl(&run, 1000), DslAdvanceAction::AwaitUser));
+        assert!(matches!(
+            advance_dsl(&run, 1000),
+            DslAdvanceAction::AwaitUser
+        ));
     }
 
     #[test]
@@ -1718,7 +1834,7 @@ mod tests {
         assert!(!r.terminal_after_confirm);
         confirm_state(&mut r, true);
         assert_eq!(r.state, SkillState::Running); // 确认通过恢复
-        // 再次暂停后拒绝
+                                                  // 再次暂停后拒绝
         pause_state(&mut r);
         confirm_state(&mut r, false);
         assert_eq!(r.state, SkillState::Terminated);
@@ -1896,8 +2012,20 @@ mod tests {
     fn substitute_vars_resolves_prev_alias() {
         // ${prev.*} 简写指向 ctx 最后一项
         let ctx = vec![
-            CompletedStep { index: 1, title: "a".into(), result: "first".into(), id: None, parsed: None },
-            CompletedStep { index: 2, title: "b".into(), result: "second".into(), id: Some("uuid-2".into()), parsed: None },
+            CompletedStep {
+                index: 1,
+                title: "a".into(),
+                result: "first".into(),
+                id: None,
+                parsed: None,
+            },
+            CompletedStep {
+                index: 2,
+                title: "b".into(),
+                result: "second".into(),
+                id: Some("uuid-2".into()),
+                parsed: None,
+            },
         ];
         assert_eq!(substitute_vars("${prev.result}", &ctx), "second");
         assert_eq!(substitute_vars("${prev.id}", &ctx), "uuid-2");
@@ -1940,7 +2068,8 @@ mod tests {
             Some("7c9e6679-7425-40de-944b-e07fc1f90ae7")
         );
         // 多 UUID 取首个
-        let text2 = "first 11111111-2222-3333-4444-555555555555 then 66666666-7777-8888-9999-000000000000";
+        let text2 =
+            "first 11111111-2222-3333-4444-555555555555 then 66666666-7777-8888-9999-000000000000";
         assert_eq!(
             extract_task_id(text2).as_deref(),
             Some("11111111-2222-3333-4444-555555555555")
@@ -1977,7 +2106,6 @@ mod tests {
         );
     }
 
-
     // ── Phase 4 第 2 项：嵌套路径（2026-08-18 06:25） ──
 
     fn ctx_one_step_parsed(uuid: &str, parsed_json: &str) -> Vec<CompletedStep> {
@@ -1998,24 +2126,15 @@ mod tests {
             r#"{"task": {"id": "task-uuid-aaa", "title": "买牛奶"}}"#,
         );
         let args = r#"{"ref": "${step1.task.id}"}"#;
-        assert_eq!(
-            substitute_vars(args, &ctx),
-            r#"{"ref": "task-uuid-aaa"}"#
-        );
+        assert_eq!(substitute_vars(args, &ctx), r#"{"ref": "task-uuid-aaa"}"#);
     }
 
     #[test]
     fn nested_path_resolves_prev_nested_field() {
         // `${prev.task.title}` 上一步嵌套字段
-        let ctx = ctx_one_step_parsed(
-            "uuid-1",
-            r#"{"task": {"title": "归档演示"}}"#,
-        );
+        let ctx = ctx_one_step_parsed("uuid-1", r#"{"task": {"title": "归档演示"}}"#);
         let args = r#"{"title": "${prev.task.title}"}"#;
-        assert_eq!(
-            substitute_vars(args, &ctx),
-            r#"{"title": "归档演示"}"#
-        );
+        assert_eq!(substitute_vars(args, &ctx), r#"{"title": "归档演示"}"#);
     }
 
     #[test]
@@ -2026,19 +2145,13 @@ mod tests {
             r#"[{"id": "first"}, {"id": "second"}, {"id": "third"}]"#,
         );
         let args = r#"{"id": "${step1.1.id}"}"#;
-        assert_eq!(
-            substitute_vars(args, &ctx),
-            r#"{"id": "second"}"#
-        );
+        assert_eq!(substitute_vars(args, &ctx), r#"{"id": "second"}"#);
     }
 
     #[test]
     fn nested_path_keeps_intact_when_field_missing() {
         // JSON 存在但字段缺失 → 保留 `${step1...}` 原样
-        let ctx = ctx_one_step_parsed(
-            "uuid-1",
-            r#"{"task": {"id": "x"}}"#,
-        );
+        let ctx = ctx_one_step_parsed("uuid-1", r#"{"task": {"id": "x"}}"#);
         let args = r#"{"x": "${step1.task.title}"}"#;
         assert_eq!(
             substitute_vars(args, &ctx),
@@ -2052,36 +2165,33 @@ mod tests {
         let ctx = ctx_one_step("uuid-1", "plain text response");
         assert!(ctx[0].parsed.is_none());
         let args = r#"{"x": "${step1.task.id}"}"#;
-        assert_eq!(
-            substitute_vars(args, &ctx),
-            r#"{"x": "${step1.task.id}"}"#
-        );
+        assert_eq!(substitute_vars(args, &ctx), r#"{"x": "${step1.task.id}"}"#);
     }
 
     #[test]
     fn nested_path_resolves_deep_chain() {
         // `${step1.a.b.c.d}` 深嵌套 5 层
-        let ctx = ctx_one_step_parsed(
-            "uuid-1",
-            r#"{"a": {"b": {"c": {"d": "deep-value"}}}}"#,
-        );
+        let ctx = ctx_one_step_parsed("uuid-1", r#"{"a": {"b": {"c": {"d": "deep-value"}}}}"#);
         let args = r#"{"x": "${step1.a.b.c.d}"}"#;
-        assert_eq!(
-            substitute_vars(args, &ctx),
-            r#"{"x": "deep-value"}"#
-        );
+        assert_eq!(substitute_vars(args, &ctx), r#"{"x": "deep-value"}"#);
     }
 
     #[test]
     fn nested_path_serializes_non_string_value() {
         // 终值非字符串（数字/布尔/null）→ 序列化成字符串
-        let ctx = ctx_one_step_parsed(
-            "uuid-1",
-            r#"{"n": 42, "b": true, "z": null}"#,
+        let ctx = ctx_one_step_parsed("uuid-1", r#"{"n": 42, "b": true, "z": null}"#);
+        assert_eq!(
+            substitute_vars(r#"{"v": "${step1.n}"}"#, &ctx),
+            r#"{"v": "42"}"#
         );
-        assert_eq!(substitute_vars(r#"{"v": "${step1.n}"}"#, &ctx), r#"{"v": "42"}"#);
-        assert_eq!(substitute_vars(r#"{"v": "${step1.b}"}"#, &ctx), r#"{"v": "true"}"#);
-        assert_eq!(substitute_vars(r#"{"v": "${step1.z}"}"#, &ctx), r#"{"v": "null"}"#);
+        assert_eq!(
+            substitute_vars(r#"{"v": "${step1.b}"}"#, &ctx),
+            r#"{"v": "true"}"#
+        );
+        assert_eq!(
+            substitute_vars(r#"{"v": "${step1.z}"}"#, &ctx),
+            r#"{"v": "null"}"#
+        );
     }
 
     #[test]
@@ -2151,10 +2261,7 @@ query_single_task({\"id\": \"${step1.id}\"})\n";
         // Step 2 的 args_json 模板（与 SKILL.md 一致）
         let step2_args = r#"{"id": "${step1.id}"}"#;
         let resolved = substitute_vars(step2_args, &ctx);
-        assert_eq!(
-            resolved,
-            format!(r#"{{"id": "{}"}}"#, step1_uuid)
-        );
+        assert_eq!(resolved, format!(r#"{{"id": "{}"}}"#, step1_uuid));
     }
 
     // ── Phase 3 第二步（2026-08-18 05:33）：v2 升级样板 ──
@@ -2234,9 +2341,8 @@ query_single_task({\"id\": \"${step1.id}\"})\n";
             if !skill_md.exists() {
                 continue;
             }
-            let body = std::fs::read_to_string(&skill_md).unwrap_or_else(|e| {
-                panic!("read {} failed: {}", skill_md.display(), e)
-            });
+            let body = std::fs::read_to_string(&skill_md)
+                .unwrap_or_else(|e| panic!("read {} failed: {}", skill_md.display(), e));
             let (steps, rollback) = parse_skill_steps(&body).unwrap_or_else(|e| {
                 panic!(
                     "parse_skill_steps failed for {}: {}",
@@ -2244,11 +2350,7 @@ query_single_task({\"id\": \"${step1.id}\"})\n";
                     e
                 )
             });
-            assert!(
-                !steps.is_empty(),
-                "{} 没有 step",
-                entry.path().display()
-            );
+            assert!(!steps.is_empty(), "{} 没有 step", entry.path().display());
             for (i, step) in steps.iter().enumerate() {
                 assert!(
                     !step.tool_name.is_empty(),
@@ -2354,9 +2456,14 @@ query_single_task({\"id\": \"${step1.id}\"})\n";
 
         let calls: std::cell::RefCell<Vec<(String, String)>> = std::cell::RefCell::new(Vec::new());
         let mut exec = |tool: &str, args: &str| -> String {
-            calls.borrow_mut().push((tool.to_string(), args.to_string()));
+            calls
+                .borrow_mut()
+                .push((tool.to_string(), args.to_string()));
             match tool {
-                "list_tasks" => r#"{"task": {"id": "7c9e6679-7425-40de-944b-e07fc1f90ae7", "title": "买牛奶"}}"#.to_string(),
+                "list_tasks" => {
+                    r#"{"task": {"id": "7c9e6679-7425-40de-944b-e07fc1f90ae7", "title": "买牛奶"}}"#
+                        .to_string()
+                }
                 "query_single_task" => "ok".to_string(),
                 _ => format!("未知工具: {tool}"),
             }
@@ -2374,14 +2481,26 @@ query_single_task({\"id\": \"${step1.id}\"})\n";
         assert_eq!(calls[0].1, "{}");
         assert_eq!(calls[1].0, "query_single_task");
         // 关键断言：${step1.task.id} 嵌套路径真的被替换成标准 UUID
-        assert_eq!(calls[1].1, r#"{"id": "7c9e6679-7425-40de-944b-e07fc1f90ae7"}"#);
+        assert_eq!(
+            calls[1].1,
+            r#"{"id": "7c9e6679-7425-40de-944b-e07fc1f90ae7"}"#
+        );
 
         // ctx 累积验证：Step 2 的 result 是 query 的返回值，parsed 是 None（不是 JSON）
-        assert_eq!(ctx[0].result, r#"{"task": {"id": "7c9e6679-7425-40de-944b-e07fc1f90ae7", "title": "买牛奶"}}"#);
+        assert_eq!(
+            ctx[0].result,
+            r#"{"task": {"id": "7c9e6679-7425-40de-944b-e07fc1f90ae7", "title": "买牛奶"}}"#
+        );
         assert!(ctx[0].parsed.is_some(), "Step 1 合法 JSON 应 parse 成功");
-        assert_eq!(ctx[0].id.as_deref(), Some("7c9e6679-7425-40de-944b-e07fc1f90ae7"));
+        assert_eq!(
+            ctx[0].id.as_deref(),
+            Some("7c9e6679-7425-40de-944b-e07fc1f90ae7")
+        );
         assert_eq!(ctx[1].result, "ok");
-        assert!(ctx[1].parsed.is_none(), "Step 2 'ok' 不是 JSON，parsed 应为 None");
+        assert!(
+            ctx[1].parsed.is_none(),
+            "Step 2 'ok' 不是 JSON，parsed 应为 None"
+        );
     }
 
     #[test]
@@ -2395,7 +2514,9 @@ query_single_task({\"id\": \"${step1.id}\"})\n";
 
         let calls: std::cell::RefCell<Vec<(String, String)>> = std::cell::RefCell::new(Vec::new());
         let mut exec = |tool: &str, args: &str| -> String {
-            calls.borrow_mut().push((tool.to_string(), args.to_string()));
+            calls
+                .borrow_mut()
+                .push((tool.to_string(), args.to_string()));
             match tool {
                 "create_task" => r#"{"task": {"id": "uuid-step1"}}"#.to_string(),
                 "risky_tool" => "失败：工具异常".to_string(),
@@ -2414,7 +2535,11 @@ query_single_task({\"id\": \"${step1.id}\"})\n";
 
         // 关键验证：Step 1 跑了 + Step 2 跑了 + rollback 跑了（3 次）
         let calls = calls.borrow();
-        assert_eq!(calls.len(), 3, "expected 3 tool calls (step1+step2+rollback)");
+        assert_eq!(
+            calls.len(),
+            3,
+            "expected 3 tool calls (step1+step2+rollback)"
+        );
         assert_eq!(calls[0].0, "create_task");
         assert_eq!(calls[1].0, "risky_tool");
         // Step 2 的 args 也走嵌套路径替换（验证 rollback 段、step 段共享 substitute_vars 路径）
@@ -2449,11 +2574,19 @@ query_single_task({\"id\": \"${step1.id}\"})\n";
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("终止"), "expected '终止' in error: {err}");
-        assert!(err.contains("用户 /stop"), "expected reason in error: {err}");
+        assert!(
+            err.contains("用户 /stop"),
+            "expected reason in error: {err}"
+        );
 
         // 关键验证：Terminate 在 step 1 之前就拦截 → 0 次工具调用 + rollback 跳过
         let calls = calls.borrow();
-        assert_eq!(calls.len(), 0, "expected 0 tool calls (Terminated before any step), got: {:?}", *calls);
+        assert_eq!(
+            calls.len(),
+            0,
+            "expected 0 tool calls (Terminated before any step), got: {:?}",
+            *calls
+        );
     }
 
     #[test]
@@ -2480,7 +2613,12 @@ query_single_task({\"id\": \"${step1.id}\"})\n";
 
         // 关键验证：Paused 在 step 1 之前就拦截 → 0 次工具调用
         let calls = calls.borrow();
-        assert_eq!(calls.len(), 0, "expected 0 tool calls (Paused before any step), got: {:?}", *calls);
+        assert_eq!(
+            calls.len(),
+            0,
+            "expected 0 tool calls (Paused before any step), got: {:?}",
+            *calls
+        );
     }
 
     // ── Phase 4 第 4 项：scan_skill_dirs 多目录去重（2026-08-18 07:09） ──
@@ -2511,9 +2649,8 @@ query_single_task({\"id\": \"${step1.id}\"})\n";
     fn make_mock_skill(parent: &std::path::Path, name: &str, description: &str) {
         let skill_dir = parent.join(name);
         std::fs::create_dir_all(&skill_dir).unwrap();
-        let text = format!(
-            "---\nname: {name}\ndescription: {description}\n---\n# {name}\n\nbody\n"
-        );
+        let text =
+            format!("---\nname: {name}\ndescription: {description}\n---\n# {name}\n\nbody\n");
         std::fs::write(skill_dir.join("SKILL.md"), text).unwrap();
     }
 
@@ -2563,8 +2700,9 @@ query_single_task({\"id\": \"${step1.id}\"})\n";
         std::fs::create_dir_all(&dir).unwrap();
         make_mock_skill(&dir, "test-skill", "ok");
 
-        let nonexistent = std::path::PathBuf::from("/tmp/wmessage-nonexistent-dir-xxx-does-not-exist");
-        let _ = std::fs::remove_dir_all(&nonexistent);  // 确保不存在
+        let nonexistent =
+            std::path::PathBuf::from("/tmp/wmessage-nonexistent-dir-xxx-does-not-exist");
+        let _ = std::fs::remove_dir_all(&nonexistent); // 确保不存在
         let out = scan_skill_dirs(&[nonexistent, dir]);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].name, "test-skill");
@@ -2633,9 +2771,27 @@ query_single_task({\"id\": \"${step1.id}\"})\n";
     fn format_completed_summary_renders_multiple_steps() {
         // 多 step → 每步一行，按 ctx 顺序
         let ctx = vec![
-            CompletedStep { index: 1, title: "step-a".into(), result: "result-a".into(), id: None, parsed: None },
-            CompletedStep { index: 2, title: "step-b".into(), result: "result-b".into(), id: None, parsed: None },
-            CompletedStep { index: 3, title: "step-c".into(), result: "result-c".into(), id: None, parsed: None },
+            CompletedStep {
+                index: 1,
+                title: "step-a".into(),
+                result: "result-a".into(),
+                id: None,
+                parsed: None,
+            },
+            CompletedStep {
+                index: 2,
+                title: "step-b".into(),
+                result: "result-b".into(),
+                id: None,
+                parsed: None,
+            },
+            CompletedStep {
+                index: 3,
+                title: "step-c".into(),
+                result: "result-c".into(),
+                id: None,
+                parsed: None,
+            },
         ];
         let out = format_completed_summary(&ctx);
         assert!(out.contains("Step 1 (step-a): result-a"));
@@ -2666,7 +2822,11 @@ query_single_task({\"id\": \"${step1.id}\"})\n";
         let after = &out[start..];
         // preview 部分应当是 200 个 x + "..."
         let expected_preview: String = std::iter::repeat("x").take(200).collect::<String>() + "...";
-        assert!(after.starts_with(&expected_preview), "expected preview starts with 200x + '...', got first chars: {}", &after[..after.len().min(50)]);
+        assert!(
+            after.starts_with(&expected_preview),
+            "expected preview starts with 200x + '...', got first chars: {}",
+            &after[..after.len().min(50)]
+        );
     }
 
     #[test]
@@ -2682,7 +2842,9 @@ query_single_task({\"id\": \"${step1.id}\"})\n";
     #[test]
     fn dsl_failure_terminated_carries_reason() {
         // DslFailure::Terminated 携带 reason（用户主动终止场景）
-        let failure = DslFailure::Terminated { reason: "用户 /stop".into() };
+        let failure = DslFailure::Terminated {
+            reason: "用户 /stop".into(),
+        };
         match failure {
             DslFailure::Terminated { reason } => assert_eq!(reason, "用户 /stop"),
         }
@@ -2724,11 +2886,14 @@ query_single_task({\"id\": \"${step1.id}\"})\n";
         // 端到端 smoke：扫 target/debug/skills/ 下所有 13 个 mock Skill
         // 每个 Skill 跑 run_dsl_loop_sync + 通用 mock executor
         // 验证：parse 不 panic + 整链路跑通 + ctx 累积 + 嵌套变量替换
-        let skills_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("target/debug/skills");
+        let skills_dir =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/debug/skills");
         if !skills_dir.exists() {
             // 没建 mock 跳过（防止 dev 模式第一次 cargo test 失败）
-            eprintln!("跳过：{} 不存在（dev 模式需先写出 mock Skill）", skills_dir.display());
+            eprintln!(
+                "跳过：{} 不存在（dev 模式需先写出 mock Skill）",
+                skills_dir.display()
+            );
             return;
         }
 
@@ -2738,9 +2903,13 @@ query_single_task({\"id\": \"${step1.id}\"})\n";
         for entry in entries {
             let entry = entry.expect("entry");
             let path = entry.path();
-            if !path.is_dir() { continue; }
+            if !path.is_dir() {
+                continue;
+            }
             let skill_md = path.join("SKILL.md");
-            if !skill_md.exists() { continue; }
+            if !skill_md.exists() {
+                continue;
+            }
             let name = path.file_name().unwrap().to_string_lossy().to_string();
 
             // parse
@@ -2759,9 +2928,8 @@ query_single_task({\"id\": \"${step1.id}\"})\n";
             }
 
             // 记录每个 step 的 args 在跑前是否含 ${...}（用于后续验证嵌套变量替换真的替换了）
-            let step_args_with_var: Vec<bool> = steps.iter()
-                .map(|s| s.args_json.contains("${"))
-                .collect();
+            let step_args_with_var: Vec<bool> =
+                steps.iter().map(|s| s.args_json.contains("${")).collect();
 
             // 跑 run_dsl_loop_sync
             let mut ctx: Vec<CompletedStep> = Vec::new();
@@ -2776,7 +2944,8 @@ query_single_task({\"id\": \"${step1.id}\"})\n";
             if ctx.len() != steps.len() {
                 failed.push(format!(
                     "{name}: ctx len {} != steps len {}",
-                    ctx.len(), steps.len()
+                    ctx.len(),
+                    steps.len()
                 ));
                 continue;
             }

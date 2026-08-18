@@ -17,10 +17,10 @@
 //!   聊天最多 8 轮工具循环，任务卡执行（bot_execute_task）最多 10 轮
 //! - 工具执行直接改 SQLite，改完广播 tasks-changed / tasks-updated(source:"bot")
 
-use futures_util::StreamExt;
 use crate::audit_event;
 use crate::bot_skills::{build_skill_block, tool_use_skill, SkillMeta};
 use crate::intent_router::RouteAction; // F-2：route_user_input 调用迁移到 middleware::run_pre_step
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use tauri::{AppHandle, Emitter, Manager}; // F-6：Runtime 给 audit_log 泛型化
@@ -89,7 +89,8 @@ pub fn bot_stop(app: AppHandle) {
 // ───────────────────────── 危险操作确认（删除任务弹窗） ─────────────────────────
 
 /// 待确认请求：id → oneshot 通道（挂件 bot_confirm_response 回填）
-type ConfirmMap = std::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<bool>>>;
+type ConfirmMap =
+    std::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<bool>>>;
 static CONFIRMS: std::sync::OnceLock<ConfirmMap> = std::sync::OnceLock::new();
 
 fn confirms() -> &'static ConfirmMap {
@@ -124,7 +125,10 @@ async fn ask_user_confirm(app: &AppHandle, tool: &str, detail: &str) -> bool {
         "bot-confirm",
         serde_json::json!({ "id": id, "tool": tool, "detail": detail }),
     );
-    audit_log(app, &format!("confirm | id: {} | {tool} | {detail}", &id[..8]));
+    audit_log(
+        app,
+        &format!("confirm | id: {} | {tool} | {detail}", &id[..8]),
+    );
     match tokio::time::timeout(std::time::Duration::from_secs(60), rx).await {
         Ok(Ok(approved)) => approved,
         _ => {
@@ -221,7 +225,9 @@ fn read_bypass_llm_switch(app: &AppHandle) -> bool {
     if !p.exists() {
         return true;
     }
-    let Ok(raw) = std::fs::read_to_string(&p) else { return true; };
+    let Ok(raw) = std::fs::read_to_string(&p) else {
+        return true;
+    };
     serde_json::from_str::<BotConfig>(&raw)
         .map(|c| c.bypass_llm_on_pre_step_hit)
         .unwrap_or(true)
@@ -246,7 +252,9 @@ fn has_api_key() -> bool {
 }
 
 fn write_api_key(key: &str) -> Result<(), String> {
-    key_entry()?.set_password(key).map_err(|e| format!("保存 API Key 失败：{e}"))
+    key_entry()?
+        .set_password(key)
+        .map_err(|e| format!("保存 API Key 失败：{e}"))
 }
 
 /// 返回给前端的配置视图：不含 key 本体，只有 hasApiKey 标志
@@ -348,7 +356,11 @@ pub fn audit_log_hook(app: &AppHandle, line: &str) {
 fn audit_log(app: &AppHandle, line: &str) {
     crate::db::rotate_log_if_large(&crate::db::data_dir(app).join("bot.log"), 5 * 1024 * 1024);
     let p = crate::db::data_dir(app).join("bot.log");
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(p)
+    {
         let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
         let _ = writeln!(f, "[{ts}] {line}");
     }
@@ -722,12 +734,19 @@ mod tools_schema_tests {
         let arr = v.as_array().expect("TOOLS 顶层必须是数组");
         assert!(!arr.is_empty(), "TOOLS 不能为空");
         for t in arr {
-            assert_eq!(t["type"].as_str(), Some("function"), "每项 type 必须是 function");
+            assert_eq!(
+                t["type"].as_str(),
+                Some("function"),
+                "每项 type 必须是 function"
+            );
             let name = t["function"]["name"]
                 .as_str()
                 .expect("每项必须有 function.name");
             assert!(!name.is_empty(), "工具名不能为空");
-            assert!(t["function"]["description"].as_str().is_some(), "{name} 缺 description");
+            assert!(
+                t["function"]["description"].as_str().is_some(),
+                "{name} 缺 description"
+            );
         }
         // 关键工具必须存在（与 execute_tool match 对齐，改名会在此暴露）
         let names: Vec<&str> = arr
@@ -799,23 +818,41 @@ mod sched_tests {
     #[test]
     fn daily_occurrence() {
         let after = dt(2026, 8, 16, 9, 0);
-        assert_eq!(occurrence_after("daily:10:00", after), Some(dt(2026, 8, 16, 10, 0)));
-        assert_eq!(occurrence_after("daily:09:00", after), Some(dt(2026, 8, 17, 9, 0))); // 已过 → 明天
+        assert_eq!(
+            occurrence_after("daily:10:00", after),
+            Some(dt(2026, 8, 16, 10, 0))
+        );
+        assert_eq!(
+            occurrence_after("daily:09:00", after),
+            Some(dt(2026, 8, 17, 9, 0))
+        ); // 已过 → 明天
     }
 
     #[test]
     fn weekly_occurrence() {
         // 2026-08-16 是周日（weekday=7）
         let after = dt(2026, 8, 16, 9, 0);
-        assert_eq!(occurrence_after("weekly:1:09:00", after), Some(dt(2026, 8, 17, 9, 0))); // 本周一已过 → 下周一
-        assert_eq!(occurrence_after("weekly:7:10:00", after), Some(dt(2026, 8, 16, 10, 0))); // 今天周日 10 点未到
-        assert_eq!(occurrence_after("weekly:7:08:00", after), Some(dt(2026, 8, 23, 8, 0))); // 已过 → 下周日
+        assert_eq!(
+            occurrence_after("weekly:1:09:00", after),
+            Some(dt(2026, 8, 17, 9, 0))
+        ); // 本周一已过 → 下周一
+        assert_eq!(
+            occurrence_after("weekly:7:10:00", after),
+            Some(dt(2026, 8, 16, 10, 0))
+        ); // 今天周日 10 点未到
+        assert_eq!(
+            occurrence_after("weekly:7:08:00", after),
+            Some(dt(2026, 8, 23, 8, 0))
+        ); // 已过 → 下周日
     }
 
     #[test]
     fn at_occurrence() {
         let after = dt(2026, 8, 16, 9, 0);
-        assert_eq!(occurrence_after("at:2026-08-16T10:00", after), Some(dt(2026, 8, 16, 10, 0)));
+        assert_eq!(
+            occurrence_after("at:2026-08-16T10:00", after),
+            Some(dt(2026, 8, 16, 10, 0))
+        );
         assert_eq!(occurrence_after("at:2026-08-16T08:00", after), None); // 已过，一次性不再触发
     }
 
@@ -823,14 +860,26 @@ mod sched_tests {
     fn monthly_occurrence() {
         let after = dt(2026, 8, 16, 9, 0);
         // 本月 16 日 10:00 未到 → 今天
-        assert_eq!(occurrence_after("monthly:16:10:00", after), Some(dt(2026, 8, 16, 10, 0)));
+        assert_eq!(
+            occurrence_after("monthly:16:10:00", after),
+            Some(dt(2026, 8, 16, 10, 0))
+        );
         // 本月 15 日已过 → 下月 15 日
-        assert_eq!(occurrence_after("monthly:15:10:00", after), Some(dt(2026, 9, 15, 10, 0)));
+        assert_eq!(
+            occurrence_after("monthly:15:10:00", after),
+            Some(dt(2026, 9, 15, 10, 0))
+        );
         // 2 月无 31 日 → 顺延到 3 月 31 日（after=2026-01-20）
         let jan = dt(2026, 1, 20, 9, 0);
-        assert_eq!(occurrence_after("monthly:31:08:00", jan), Some(dt(2026, 1, 31, 8, 0)));
+        assert_eq!(
+            occurrence_after("monthly:31:08:00", jan),
+            Some(dt(2026, 1, 31, 8, 0))
+        );
         let feb = dt(2026, 2, 1, 9, 0);
-        assert_eq!(occurrence_after("monthly:31:08:00", feb), Some(dt(2026, 3, 31, 8, 0)));
+        assert_eq!(
+            occurrence_after("monthly:31:08:00", feb),
+            Some(dt(2026, 3, 31, 8, 0))
+        );
     }
 
     #[test]
@@ -1072,7 +1121,10 @@ pub struct ToolCallDelta {
 pub fn parse_sse_chunk(line: &str) -> Option<ParsedChunk> {
     let data = line.strip_prefix("data:")?.trim();
     if data == "[DONE]" {
-        return Some(ParsedChunk { is_done: true, ..Default::default() });
+        return Some(ParsedChunk {
+            is_done: true,
+            ..Default::default()
+        });
     }
     let v: serde_json::Value = serde_json::from_str(data).ok()?;
     let delta = v
@@ -1184,15 +1236,23 @@ mod parse_sse_chunk_tests {
         // SSE 中 content="" 时应等同 None（不触发内容推送）
         let line = r#"data: {"choices":[{"delta":{"content":""}}]}"#;
         let parsed = parse_sse_chunk(line).unwrap();
-        assert!(parsed.content.is_none(), "空 content 应等同 None（不触发推送）");
+        assert!(
+            parsed.content.is_none(),
+            "空 content 应等同 None（不触发推送）"
+        );
     }
 
     #[test]
     fn empty_name_treated_as_append_noop() {
         // name="" 时原代码 `!name.is_empty()` 跳过 push；这里 chunk 仍 Some("") 但 caller 决定是否 append
-        let line = r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":""}}]}}]}"#;
+        let line =
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":""}}]}}]}"#;
         let parsed = parse_sse_chunk(line).unwrap();
-        assert_eq!(parsed.tool_calls[0].name_chunk.as_deref(), Some(""), "name 字段存在但为空 — caller 决定是否跳过 append");
+        assert_eq!(
+            parsed.tool_calls[0].name_chunk.as_deref(),
+            Some(""),
+            "name 字段存在但为空 — caller 决定是否跳过 append"
+        );
     }
 
     #[test]
@@ -1214,7 +1274,10 @@ mod parse_sse_chunk_tests {
     #[test]
     fn returns_none_for_missing_choices() {
         let line = r#"data: {"id":"x","error":"auth_failed"}"#;
-        assert!(parse_sse_chunk(line).is_none(), "异常响应（error 字段）应被忽略");
+        assert!(
+            parse_sse_chunk(line).is_none(),
+            "异常响应（error 字段）应被忽略"
+        );
     }
 
     #[test]
@@ -1232,7 +1295,10 @@ mod parse_sse_chunk_tests {
         let p1 = parse_sse_chunk(chunk1).unwrap();
         let p2 = parse_sse_chunk(chunk2).unwrap();
         assert_eq!(p1.tool_calls[0].arguments_chunk.as_deref(), Some(r#"{"ti"#));
-        assert_eq!(p2.tool_calls[0].arguments_chunk.as_deref(), Some(r#"tle":"x""#));
+        assert_eq!(
+            p2.tool_calls[0].arguments_chunk.as_deref(),
+            Some(r#"tle":"x""#)
+        );
         // 生产代码会按顺序 push 拼成完整 JSON
     }
 
@@ -1344,7 +1410,10 @@ async fn run_model_loop(
                 "status" => status.as_u16(),
             );
             let hint = crate::bot_skills::skill_finish(&app, false, "大模型 API 错误");
-            return Err(format!("大模型 API 错误 {status}：{}{hint}", text.chars().take(300).collect::<String>()));
+            return Err(format!(
+                "大模型 API 错误 {status}：{}{hint}",
+                text.chars().take(300).collect::<String>()
+            ));
         }
         audit_event!(
             &app,
@@ -1357,7 +1426,7 @@ async fn run_model_loop(
         let mut line_buf = String::new();
         let mut final_text = String::new();
         let mut tool_calls: Vec<(String, String, String)> = Vec::new(); // (id, name, arguments)
-        // <think> 思考块拆分：思考走 bot-think-delta，正文走 bot-chat-delta
+                                                                        // <think> 思考块拆分：思考走 bot-think-delta，正文走 bot-chat-delta
         let mut think_mode = false;
         let mut think_buf = String::new();
 
@@ -1380,11 +1449,19 @@ async fn run_model_loop(
                         if !t.is_empty() {
                             let (normal, think) = feed_think(&mut think_mode, &mut think_buf, &t);
                             if !think.is_empty() {
-                                let _ = app.emit_to("widget", "bot-think-delta", serde_json::json!({ "text": think }));
+                                let _ = app.emit_to(
+                                    "widget",
+                                    "bot-think-delta",
+                                    serde_json::json!({ "text": think }),
+                                );
                             }
                             if !normal.is_empty() {
                                 final_text.push_str(&normal);
-                                let _ = app.emit_to("widget", "bot-chat-delta", serde_json::json!({ "text": normal }));
+                                let _ = app.emit_to(
+                                    "widget",
+                                    "bot-chat-delta",
+                                    serde_json::json!({ "text": normal }),
+                                );
                             }
                         }
                     }
@@ -1397,14 +1474,22 @@ async fn run_model_loop(
                             if t.0.is_empty() {
                                 t.0 = id;
                                 // 新工具调用开始：推折叠行给挂件
-                                let _ = app.emit_to("widget", "bot-tool", serde_json::json!({ "id": t.0, "name": t.1 }));
+                                let _ = app.emit_to(
+                                    "widget",
+                                    "bot-tool",
+                                    serde_json::json!({ "id": t.0, "name": t.1 }),
+                                );
                             }
                         }
                         if let Some(name) = tc_delta.name_chunk {
                             if !name.is_empty() {
                                 t.1.push_str(&name);
                                 if !t.0.is_empty() {
-                                    let _ = app.emit_to("widget", "bot-tool-name", serde_json::json!({ "id": t.0, "name": t.1 }));
+                                    let _ = app.emit_to(
+                                        "widget",
+                                        "bot-tool-name",
+                                        serde_json::json!({ "id": t.0, "name": t.1 }),
+                                    );
                                 }
                             }
                         }
@@ -1422,10 +1507,18 @@ async fn run_model_loop(
             .replace("</think>", "");
         if !tail.is_empty() {
             if think_mode {
-                let _ = app.emit_to("widget", "bot-think-delta", serde_json::json!({ "text": tail }));
+                let _ = app.emit_to(
+                    "widget",
+                    "bot-think-delta",
+                    serde_json::json!({ "text": tail }),
+                );
             } else {
                 final_text.push_str(&tail);
-                let _ = app.emit_to("widget", "bot-chat-delta", serde_json::json!({ "text": tail }));
+                let _ = app.emit_to(
+                    "widget",
+                    "bot-chat-delta",
+                    serde_json::json!({ "text": tail }),
+                );
             }
         }
 
@@ -1468,7 +1561,10 @@ async fn run_model_loop(
                 let hint = crate::bot_skills::skill_finish(&app, false, "单轮 Function 调用超上限");
                 audit_log(
                     &app,
-                    &format!("fuse | 单轮 Function 调用超过 {} 次，已熔断", MAX_FUNCTION_CALLS_PER_TURN),
+                    &format!(
+                        "fuse | 单轮 Function 调用超过 {} 次，已熔断",
+                        MAX_FUNCTION_CALLS_PER_TURN
+                    ),
                 );
                 return Ok((
                     format!(
@@ -1479,7 +1575,11 @@ async fn run_model_loop(
                 ));
             }
             let (result, refs) = execute_tool(&app, name, args).await;
-            let _ = app.emit_to("widget", "bot-tool-done", serde_json::json!({ "id": id, "name": name, "args": args }));
+            let _ = app.emit_to(
+                "widget",
+                "bot-tool-done",
+                serde_json::json!({ "id": id, "name": name, "args": args }),
+            );
             audit_log(
                 &app,
                 &format!(
@@ -1573,7 +1673,10 @@ pub async fn bot_compact(app: AppHandle, messages: Vec<ChatMsg>) -> Result<Strin
             text.chars().take(300).collect::<String>()
         ));
     }
-    let v: serde_json::Value = resp.json().await.map_err(|e| format!("解析响应失败：{e}"))?;
+    let v: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("解析响应失败：{e}"))?;
     // 安全访问：choices 可能为空数组/缺失（网关错误对象），索引会 panic（审计 P0 已修复）
     let text = v
         .get("choices")
@@ -1634,7 +1737,11 @@ async fn execute_task_core(
     if let Some(subs) = task.subtasks.as_deref().filter(|s| !s.is_empty()) {
         block.push_str("\n子任务：");
         for s in subs {
-            block.push_str(&format!("\n- [{}] {}", if s.done { "x" } else { " " }, s.text));
+            block.push_str(&format!(
+                "\n- [{}] {}",
+                if s.done { "x" } else { " " },
+                s.text
+            ));
         }
     }
     if let Some(d) = task.due.as_deref() {
@@ -1852,8 +1959,7 @@ fn find_due_tasks(app: &AppHandle) -> Vec<crate::db::Task> {
             t.deleted_at.is_none()
                 && t.archived != Some(true)
                 && t.column != "done"
-                && t
-                    .schedule
+                && t.schedule
                     .as_deref()
                     .map(str::trim)
                     .map(|s| at_expired(s, t.sched_last, now))
@@ -1867,7 +1973,11 @@ fn find_due_tasks(app: &AppHandle) -> Vec<crate::db::Task> {
             if t.deleted_at.is_some() || t.archived == Some(true) || t.column == "done" {
                 return None;
             }
-            let Some(sched) = t.schedule.as_deref().map(str::trim).filter(|s| !s.is_empty())
+            let Some(sched) = t
+                .schedule
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
             else {
                 return None;
             };
@@ -1906,7 +2016,10 @@ async fn run_scheduled(app: AppHandle, task: crate::db::Task) {
     };
     // 机器人开关关闭时不执行定时任务（二次审计 P2-3：开关只管 UI 不管后端）
     if !bot_get_enabled(app.clone()) {
-        audit_log(&app, &format!("sched_skip | id: {} | 机器人开关未开启", task.id));
+        audit_log(
+            &app,
+            &format!("sched_skip | id: {} | 机器人开关未开启", task.id),
+        );
         return;
     }
     let now = chrono::Local::now();
@@ -1934,7 +2047,10 @@ async fn run_scheduled(app: AppHandle, task: crate::db::Task) {
     if !marked {
         audit_log(
             &app,
-            &format!("sched_skip | id: {} | 记录 sched_last 失败，放弃本次执行", task.id),
+            &format!(
+                "sched_skip | id: {} | 记录 sched_last 失败，放弃本次执行",
+                task.id
+            ),
         );
         return;
     }
@@ -1961,7 +2077,11 @@ async fn run_scheduled(app: AppHandle, task: crate::db::Task) {
             fresh.note = Some(note);
             // 一次性定时执行完清掉 schedule（⏰ 徽标消失）。
             // 用执行后的 fresh.schedule 判断（审计 P2：执行期间用户改过定时，扫描快照会误清新设置）
-            if fresh.schedule.as_deref().is_some_and(|s| s.starts_with("at:")) {
+            if fresh
+                .schedule
+                .as_deref()
+                .is_some_and(|s| s.starts_with("at:"))
+            {
                 fresh.schedule = None;
             }
             fresh.updated_at = Some(chrono::Local::now().timestamp_millis());
@@ -2104,12 +2224,19 @@ fn tool_list_tasks(app: &AppHandle) -> (String, Vec<TaskRef>) {
             "done" => "已完成",
             _ => "待办",
         };
-        let due = t.due.as_deref().map(|d| format!("，截止 {d}")).unwrap_or_default();
+        let due = t
+            .due
+            .as_deref()
+            .map(|d| format!("，截止 {d}"))
+            .unwrap_or_default();
         lines.push(format!("- [{}] {}{}（id={}）", col, t.title, due, t.id));
     }
     let refs: Vec<TaskRef> = tasks
         .iter()
-        .map(|t| TaskRef { id: t.id.clone(), title: t.title.clone() })
+        .map(|t| TaskRef {
+            id: t.id.clone(),
+            title: t.title.clone(),
+        })
         .collect();
     (lines.join("\n"), refs)
 }
@@ -2166,7 +2293,11 @@ fn tool_query_single_task(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>)
     }
     if let Some(fp) = &t.file_path {
         if !fp.is_empty() {
-            let kind = if t.file_is_dir == Some(true) { "目录" } else { "文件" };
+            let kind = if t.file_is_dir == Some(true) {
+                "目录"
+            } else {
+                "文件"
+            };
             lines.push(format!("  绑定{kind}：{fp}"));
         }
     }
@@ -2185,7 +2316,10 @@ fn tool_query_single_task(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>)
     }
     (
         lines.join("\n"),
-        vec![TaskRef { id: t.id.clone(), title: t.title.clone() }],
+        vec![TaskRef {
+            id: t.id.clone(),
+            title: t.title.clone(),
+        }],
     )
 }
 
@@ -2206,38 +2340,42 @@ fn tool_search_tasks(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>) {
     let mut hits: Vec<crate::db::Task> = tasks
         .into_iter()
         .filter(|t| {
-            t.deleted_at.is_none()
-                && {
-                    let title_hit = t.title.to_lowercase().contains(&query);
-                    let note_hit = t
-                        .note
-                        .as_deref()
-                        .map(|n| n.to_lowercase().contains(&query))
-                        .unwrap_or(false);
-                    let tag_hit = t
-                        .tags
-                        .as_deref()
-                        .map(|tags| {
-                            tags.iter()
-                                .any(|tg| tg.to_lowercase().contains(&query))
-                        })
-                        .unwrap_or(false);
-                    let sub_hit = t
-                        .subtasks
-                        .as_deref()
-                        .map(|subs| {
-                            subs.iter()
-                                .any(|s| s.text.to_lowercase().contains(&query))
-                        })
-                        .unwrap_or(false);
-                    title_hit || note_hit || tag_hit || sub_hit
-                }
+            t.deleted_at.is_none() && {
+                let title_hit = t.title.to_lowercase().contains(&query);
+                let note_hit = t
+                    .note
+                    .as_deref()
+                    .map(|n| n.to_lowercase().contains(&query))
+                    .unwrap_or(false);
+                let tag_hit = t
+                    .tags
+                    .as_deref()
+                    .map(|tags| tags.iter().any(|tg| tg.to_lowercase().contains(&query)))
+                    .unwrap_or(false);
+                let sub_hit = t
+                    .subtasks
+                    .as_deref()
+                    .map(|subs| subs.iter().any(|s| s.text.to_lowercase().contains(&query)))
+                    .unwrap_or(false);
+                title_hit || note_hit || tag_hit || sub_hit
+            }
         })
         .collect();
     if hits.is_empty() {
-        return (format!("没有找到匹配「{}」的任务", v["query"].as_str().unwrap_or("")), Vec::new());
+        return (
+            format!(
+                "没有找到匹配「{}」的任务",
+                v["query"].as_str().unwrap_or("")
+            ),
+            Vec::new(),
+        );
     }
-    hits.sort_by(|a, b| a.order.unwrap_or(f64::MAX).partial_cmp(&b.order.unwrap_or(f64::MAX)).unwrap_or(std::cmp::Ordering::Equal));
+    hits.sort_by(|a, b| {
+        a.order
+            .unwrap_or(f64::MAX)
+            .partial_cmp(&b.order.unwrap_or(f64::MAX))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     let mut lines: Vec<String> = Vec::new();
     for t in &hits {
         let col = match t.column.as_str() {
@@ -2245,18 +2383,32 @@ fn tool_search_tasks(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>) {
             "done" => "已完成",
             _ => "待办",
         };
-        let arch = if t.archived == Some(true) { "（已归档）" } else { "" };
-        let due = t.due.as_deref().map(|d| format!("，截止 {d}")).unwrap_or_default();
+        let arch = if t.archived == Some(true) {
+            "（已归档）"
+        } else {
+            ""
+        };
+        let due = t
+            .due
+            .as_deref()
+            .map(|d| format!("，截止 {d}"))
+            .unwrap_or_default();
         let tags = t
             .tags
             .as_deref()
             .map(|ts| format!("，标签：{}", ts.join("/")))
             .unwrap_or_default();
-        lines.push(format!("- [{}] {}{}{}{}（id={}）", col, t.title, arch, due, tags, t.id));
+        lines.push(format!(
+            "- [{}] {}{}{}{}（id={}）",
+            col, t.title, arch, due, tags, t.id
+        ));
     }
     let refs: Vec<TaskRef> = hits
         .iter()
-        .map(|t| TaskRef { id: t.id.clone(), title: t.title.clone() })
+        .map(|t| TaskRef {
+            id: t.id.clone(),
+            title: t.title.clone(),
+        })
         .collect();
     (lines.join("\n"), refs)
 }
@@ -2308,7 +2460,10 @@ fn tool_create_task(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>) {
     };
     // 插到列表顶部：取当前最小 order 减 1
     if let Ok(all) = crate::db::db_load(app.clone()) {
-        let min = all.iter().filter_map(|t| t.order).fold(f64::INFINITY, f64::min);
+        let min = all
+            .iter()
+            .filter_map(|t| t.order)
+            .fold(f64::INFINITY, f64::min);
         task.order = Some(if min.is_finite() { min - 1.0 } else { 0.0 });
     }
     match crate::db::db_upsert(app.clone(), vec![task.clone()]) {
@@ -2316,7 +2471,10 @@ fn tool_create_task(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>) {
             broadcast_after_mutation(app, vec![task.clone()], vec![]);
             (
                 format!("已新建任务「{}」", task.title),
-                vec![TaskRef { id: task.id.clone(), title: task.title.clone() }],
+                vec![TaskRef {
+                    id: task.id.clone(),
+                    title: task.title.clone(),
+                }],
             )
         }
         Err(e) => (format!("新建任务失败：{e}"), Vec::new()),
@@ -2332,7 +2490,13 @@ fn tool_complete_task(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>) {
         .into_iter()
         .find(|t| t.title.to_lowercase().contains(&kw))
     else {
-        return (format!("未找到匹配「{}」的未完成任务", v["title"].as_str().unwrap_or("")), Vec::new());
+        return (
+            format!(
+                "未找到匹配「{}」的未完成任务",
+                v["title"].as_str().unwrap_or("")
+            ),
+            Vec::new(),
+        );
     };
     let mut next = task.clone();
     next.column = "done".into();
@@ -2343,7 +2507,10 @@ fn tool_complete_task(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>) {
             broadcast_after_mutation(app, vec![next.clone()], vec![]);
             (
                 format!("已完成任务「{}」", task.title),
-                vec![TaskRef { id: task.id.clone(), title: task.title.clone() }],
+                vec![TaskRef {
+                    id: task.id.clone(),
+                    title: task.title.clone(),
+                }],
             )
         }
         Err(e) => (format!("完成任务失败：{e}"), Vec::new()),
@@ -2369,7 +2536,10 @@ async fn tool_delete_task(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>)
             broadcast_after_mutation(app, vec![next.clone()], vec![]);
             (
                 format!("已删除任务「{}」（进回收站）", task.title),
-                vec![TaskRef { id: task.id.clone(), title: task.title.clone() }],
+                vec![TaskRef {
+                    id: task.id.clone(),
+                    title: task.title.clone(),
+                }],
             )
         }
         Err(e) => (format!("删除任务失败：{e}"), Vec::new()),
@@ -2401,7 +2571,10 @@ fn resolve_task(app: &AppHandle, v: &serde_json::Value) -> Result<crate::db::Tas
             if let Some(t) = find_task_by_keyword(app, &kw) {
                 return Ok(t);
             }
-            return Err(format!("未找到匹配「{}」的未完成任务", v["title"].as_str().unwrap_or("")));
+            return Err(format!(
+                "未找到匹配「{}」的未完成任务",
+                v["title"].as_str().unwrap_or("")
+            ));
         }
     }
     Err("缺少 taskId 或 title 参数".into())
@@ -2431,7 +2604,11 @@ fn tool_edit_task(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>) {
                 return (e, Vec::new());
             }
         }
-        next.note = if n.trim().is_empty() { None } else { Some(n.to_string()) };
+        next.note = if n.trim().is_empty() {
+            None
+        } else {
+            Some(n.to_string())
+        };
         changed.push("备注");
     }
     if let Some(d) = v["due"].as_str() {
@@ -2440,7 +2617,11 @@ fn tool_edit_task(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>) {
                 return (e, Vec::new());
             }
         }
-        next.due = if d.trim().is_empty() { None } else { Some(d.to_string()) };
+        next.due = if d.trim().is_empty() {
+            None
+        } else {
+            Some(d.to_string())
+        };
         changed.push("截止时间");
     }
     if let Some(tags) = v["tags"].as_array() {
@@ -2486,7 +2667,10 @@ fn tool_edit_task(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>) {
             broadcast_after_mutation(app, vec![next.clone()], vec![]);
             (
                 format!("已更新任务「{}」（{}）", next.title, changed.join("、")),
-                vec![TaskRef { id: next.id.clone(), title: next.title.clone() }],
+                vec![TaskRef {
+                    id: next.id.clone(),
+                    title: next.title.clone(),
+                }],
             )
         }
         Err(e) => (format!("编辑任务失败：{e}"), Vec::new()),
@@ -2522,7 +2706,10 @@ fn tool_add_subtask(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>) {
             broadcast_after_mutation(app, vec![next.clone()], vec![]);
             (
                 format!("已给任务「{}」添加子任务「{}」", next.title, text),
-                vec![TaskRef { id: next.id.clone(), title: next.title.clone() }],
+                vec![TaskRef {
+                    id: next.id.clone(),
+                    title: next.title.clone(),
+                }],
             )
         }
         Err(e) => (format!("添加子任务失败：{e}"), Vec::new()),
@@ -2542,8 +2729,18 @@ fn tool_toggle_subtask(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>) {
         Err(e) => return (e, Vec::new()),
     };
     let subs = task.subtasks.clone().unwrap_or_default();
-    let Some(idx) = subs.iter().position(|s| s.text.to_lowercase().contains(&skw)) else {
-        return (format!("任务「{}」没有匹配「{}」的子任务", task.title, v["text"].as_str().unwrap_or("")), Vec::new());
+    let Some(idx) = subs
+        .iter()
+        .position(|s| s.text.to_lowercase().contains(&skw))
+    else {
+        return (
+            format!(
+                "任务「{}」没有匹配「{}」的子任务",
+                task.title,
+                v["text"].as_str().unwrap_or("")
+            ),
+            Vec::new(),
+        );
     };
     let mut next = task.clone();
     let mut subs2 = subs;
@@ -2566,8 +2763,18 @@ fn tool_toggle_subtask(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>) {
                 .map(|s| s.done)
                 .unwrap_or(false);
             (
-                format!("子任务「{st_text}」已{}", if done_mark { "勾选 ✓" } else { "取消勾选" }),
-                vec![TaskRef { id: next.id.clone(), title: next.title.clone() }],
+                format!(
+                    "子任务「{st_text}」已{}",
+                    if done_mark {
+                        "勾选 ✓"
+                    } else {
+                        "取消勾选"
+                    }
+                ),
+                vec![TaskRef {
+                    id: next.id.clone(),
+                    title: next.title.clone(),
+                }],
             )
         }
         Err(e) => (format!("切换子任务状态失败：{e}"), Vec::new()),
@@ -2607,8 +2814,16 @@ async fn tool_bind_file(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>) {
         Ok(()) => {
             broadcast_after_mutation(app, vec![next.clone()], vec![]);
             (
-                format!("已给任务「{}」绑定{}：{}", next.title, if is_dir { "文件夹" } else { "文件" }, path),
-                vec![TaskRef { id: next.id.clone(), title: next.title.clone() }],
+                format!(
+                    "已给任务「{}」绑定{}：{}",
+                    next.title,
+                    if is_dir { "文件夹" } else { "文件" },
+                    path
+                ),
+                vec![TaskRef {
+                    id: next.id.clone(),
+                    title: next.title.clone(),
+                }],
             )
         }
         Err(e) => (format!("绑定失败：{e}"), Vec::new()),
@@ -2640,7 +2855,8 @@ async fn tool_link_file_to_task(app: &AppHandle, args: &str) -> (String, Vec<Tas
     // 收窄：只能绑定 AI_Gen_Files 目录内的文件（工具用途 = 把机器人产物绑回任务卡，产物必在此目录）。
     // 用户亲手绑定的其他文件走 bind_file 弹框，不在此限。
     {
-        let canon = std::fs::canonicalize(&path).unwrap_or_else(|_| std::path::PathBuf::from(&path));
+        let canon =
+            std::fs::canonicalize(&path).unwrap_or_else(|_| std::path::PathBuf::from(&path));
         let gen_dir = crate::db::data_dir(app).join("AI_Gen_Files");
         let in_gen = match std::fs::canonicalize(&gen_dir) {
             Ok(gen) => canon.starts_with(&gen),
@@ -2666,7 +2882,10 @@ async fn tool_link_file_to_task(app: &AppHandle, args: &str) -> (String, Vec<Tas
             broadcast_after_mutation(app, vec![next.clone()], vec![]);
             (
                 format!("已给任务「{}」绑定文件：{path}", next.title),
-                vec![TaskRef { id: next.id.clone(), title: next.title.clone() }],
+                vec![TaskRef {
+                    id: next.id.clone(),
+                    title: next.title.clone(),
+                }],
             )
         }
         Err(e) => (format!("绑定失败：{e}"), Vec::new()),
@@ -2721,9 +2940,7 @@ async fn tool_extract_document(app: &AppHandle, args: &str) -> (String, Vec<Task
         }
     }
     match crate::bot_py::doc_extract(app.clone(), path_opt).await {
-        Ok(res) => {
-            (format_extract_output(&res.path, &res.text), Vec::new())
-        }
+        Ok(res) => (format_extract_output(&res.path, &res.text), Vec::new()),
         Err(e) => (format!("提取失败：{e}"), Vec::new()),
     }
 }
@@ -2741,7 +2958,10 @@ fn format_extract_output(path: &str, text: &str) -> String {
 
 /// 解析文档工具共用的 filename 参数
 fn opt_filename(v: &serde_json::Value) -> Option<String> {
-    v["filename"].as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    v["filename"]
+        .as_str()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// 生成 Word：润色后的段落写新文档（只产出、不覆盖，落 AI_Gen_Files）
@@ -2768,16 +2988,24 @@ async fn tool_create_word(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>)
 async fn tool_create_word_revisions(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>) {
     let v = parse_args(args);
     // originalPath 由模型转述，同样过白名单（防回读任意文件）
-    if let Some(op) = v["originalPath"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(op) = v["originalPath"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         if !extract_path_allowed(app, op) {
             return (
-                "已拒绝读取原文路径：originalPath 只允许任务卡绑定文件或 AI_Gen_Files 目录内的文件".into(),
+                "已拒绝读取原文路径：originalPath 只允许任务卡绑定文件或 AI_Gen_Files 目录内的文件"
+                    .into(),
                 Vec::new(),
             );
         }
     }
     let Some(arr) = v["revised"].as_array() else {
-        return ("create_word_revisions 缺少 revised（润色后的段落列表）".into(), Vec::new());
+        return (
+            "create_word_revisions 缺少 revised（润色后的段落列表）".into(),
+            Vec::new(),
+        );
     };
     let revised: Vec<String> = arr
         .iter()
@@ -2786,10 +3014,17 @@ async fn tool_create_word_revisions(app: &AppHandle, args: &str) -> (String, Vec
     if revised.is_empty() {
         return ("revised 不能为空".into(), Vec::new());
     }
-    let path = v["originalPath"].as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let path = v["originalPath"]
+        .as_str()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
     let original: Vec<String> = v["original"]
         .as_array()
-        .map(|arr| arr.iter().filter_map(|p| p.as_str().map(|s| s.to_string())).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|p| p.as_str().map(|s| s.to_string()))
+                .collect()
+        })
         .unwrap_or_default();
     if path.is_none() && original.is_empty() {
         return (
@@ -2834,7 +3069,9 @@ async fn tool_create_ppt(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>) 
     let title = v["title"].as_str().unwrap_or("").to_string();
     // theme：blue/navy/teal/forest/wine/sky/plum/coral/dark/green 十套；模型自选，非法回退 blue
     let theme = v["theme"].as_str().map(|s| s.to_string());
-    match crate::bot_py::doc_make_ppt(app.clone(), title, slides.clone(), opt_filename(&v), theme).await {
+    match crate::bot_py::doc_make_ppt(app.clone(), title, slides.clone(), opt_filename(&v), theme)
+        .await
+    {
         Ok(out) => (format!("已生成 PPT 演示文稿：{out}"), Vec::new()),
         Err(e) => (format!("生成失败：{e}"), Vec::new()),
     }
@@ -2863,14 +3100,20 @@ async fn tool_create_pdf(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>) 
 /// 联网搜索：本机执行 Bing 抓取，结果回传给模型（MiniMax web_search 由客户端执行）
 async fn tool_web_search(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>) {
     let v = parse_args(args);
-    let Some(query) = v["query"].as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    let Some(query) = v["query"]
+        .as_str()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
     else {
         return ("web_search 缺少 query".into(), Vec::new());
     };
     if let Err(e) = check_len(&query, MAX_KEYWORD, "搜索关键词") {
         return (e, Vec::new());
     }
-    audit_log(app, &format!("web_search | query: {}", truncate_for_log(&query, 100)));
+    audit_log(
+        app,
+        &format!("web_search | query: {}", truncate_for_log(&query, 100)),
+    );
     match crate::bot_web::web_search(&query).await {
         Ok(results) => (results, Vec::new()),
         Err(e) => (format!("搜索失败：{e}"), Vec::new()),
@@ -2880,14 +3123,20 @@ async fn tool_web_search(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>) 
 /// 抓取网页正文：http/https 公网地址，转纯文本回传（截 30000 字）
 async fn tool_fetch_url(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>) {
     let v = parse_args(args);
-    let Some(u) = v["url"].as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    let Some(u) = v["url"]
+        .as_str()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
     else {
         return ("fetch_url 缺少 url".into(), Vec::new());
     };
     if let Err(e) = check_len(&u, MAX_KEYWORD, "网址") {
         return (e, Vec::new());
     }
-    audit_log(app, &format!("fetch_url | url: {}", truncate_for_log(&u, 100)));
+    audit_log(
+        app,
+        &format!("fetch_url | url: {}", truncate_for_log(&u, 100)),
+    );
     match crate::bot_web::fetch_text(&u).await {
         Ok(text) => {
             let mut out: String = text.chars().take(30000).collect();
@@ -2946,8 +3195,8 @@ mod bot_config_tests {
     fn old_config_without_bypass_field_deserializes_to_true() {
         // 模拟老用户 bot-config.json 没有 bypass_llm_on_pre_step_hit 字段
         let raw = r#"{"baseUrl":"https://api.deepseek.com/v1","model":"deepseek-chat"}"#;
-        let cfg: BotConfig = serde_json::from_str(raw)
-            .expect("老配置应通过 struct 级 #[serde(default)] 兼容");
+        let cfg: BotConfig =
+            serde_json::from_str(raw).expect("老配置应通过 struct 级 #[serde(default)] 兼容");
         assert!(
             cfg.bypass_llm_on_pre_step_hit,
             "老配置缺字段应默认 true（开启新行为，保证 release 不破现有用户）"

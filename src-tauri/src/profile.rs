@@ -78,14 +78,25 @@ fn mime_for(ext: &str) -> &'static str {
 }
 
 fn entry_view(app: &AppHandle, kind: &str, e: &ProfileEntry) -> ProfileEntryView {
-    let name = if e.name.trim().is_empty() { default_name(kind) } else { e.name.clone() };
+    let name = if e.name.trim().is_empty() {
+        default_name(kind)
+    } else {
+        e.name.clone()
+    };
     let data_url = e.avatar.as_ref().and_then(|f| {
         let path = profile_dir(app).join(f);
         let bytes = std::fs::read(&path).ok()?;
         let ext = path.extension().and_then(|x| x.to_str()).unwrap_or("");
-        Some(format!("data:{};base64,{}", mime_for(ext), B64.encode(bytes)))
+        Some(format!(
+            "data:{};base64,{}",
+            mime_for(ext),
+            B64.encode(bytes)
+        ))
     });
-    ProfileEntryView { name, avatar_data_url: data_url }
+    ProfileEntryView {
+        name,
+        avatar_data_url: data_url,
+    }
 }
 
 fn build_view(app: &AppHandle, data: &ProfileData) -> ProfileView {
@@ -124,7 +135,11 @@ pub fn profile_set_name(app: AppHandle, kind: String, name: String) -> Result<Pr
         return Err(format!("姓名最长 {MAX_NAME_CHARS} 字"));
     }
     let mut data = load_data(&app);
-    let entry = if kind == "bot" { &mut data.bot } else { &mut data.user };
+    let entry = if kind == "bot" {
+        &mut data.bot
+    } else {
+        &mut data.user
+    };
     entry.name = name.to_string();
     save_data(&app, &data)?;
     broadcast(&app);
@@ -132,7 +147,11 @@ pub fn profile_set_name(app: AppHandle, kind: String, name: String) -> Result<Pr
 }
 
 #[tauri::command]
-pub fn profile_set_avatar(app: AppHandle, kind: String, path: String) -> Result<ProfileView, String> {
+pub fn profile_set_avatar(
+    app: AppHandle,
+    kind: String,
+    path: String,
+) -> Result<ProfileView, String> {
     if !valid_kind(&kind) {
         return Err("kind 必须为 user 或 bot".into());
     }
@@ -164,7 +183,11 @@ pub fn profile_set_avatar(app: AppHandle, kind: String, path: String) -> Result<
     }
     std::fs::copy(&src, &dest).map_err(|e| e.to_string())?;
     let mut data = load_data(&app);
-    let entry = if kind == "bot" { &mut data.bot } else { &mut data.user };
+    let entry = if kind == "bot" {
+        &mut data.bot
+    } else {
+        &mut data.user
+    };
     let Some(fname) = dest.file_name() else {
         return Err("头像目标路径无效".into());
     };
@@ -184,7 +207,11 @@ pub fn profile_remove_avatar(app: AppHandle, kind: String) -> Result<ProfileView
         return Err("kind 必须为 user 或 bot".into());
     }
     let mut data = load_data(&app);
-    let entry = if kind == "bot" { &mut data.bot } else { &mut data.user };
+    let entry = if kind == "bot" {
+        &mut data.bot
+    } else {
+        &mut data.user
+    };
     if let Some(f) = entry.avatar.take() {
         let _ = std::fs::remove_file(profile_dir(&app).join(&f));
     }

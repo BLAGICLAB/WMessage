@@ -12,7 +12,7 @@
 //! - helper 函数 run_pre_step / run_pre_execute 通过 Tauri State 访问 registry
 //! - 没有 state 时回退 None（legacy passthrough，不阻塞）
 
-use crate::intent_router::{RouteAction, route_user_input};
+use crate::intent_router::{route_user_input, RouteAction};
 use crate::tool_guard::{atomic_block_message, is_atomic_tool};
 use tauri::Manager; // F-6：泛型 Runtime 以适配 mock_runtime 集成测试
 
@@ -79,7 +79,10 @@ impl MiddlewareRegistry {
     /// introspect：列出已注册 pre-execute 中间件名（F-2 后续接入）
     #[allow(dead_code)] // SettingsPage 扩展面板接入后用
     pub fn pre_execute_list(&self) -> Vec<String> {
-        self.pre_execute.iter().map(|m| m.name().to_string()).collect()
+        self.pre_execute
+            .iter()
+            .map(|m| m.name().to_string())
+            .collect()
     }
 }
 
@@ -100,11 +103,7 @@ pub fn run_pre_step(app: &tauri::AppHandle, input: &str) -> Option<RouteAction> 
 }
 
 /// helper：通过 Tauri State 调 run_pre_execute
-pub fn run_pre_execute(
-    app: &tauri::AppHandle,
-    name: &str,
-    active_skill: bool,
-) -> Option<String> {
+pub fn run_pre_execute(app: &tauri::AppHandle, name: &str, active_skill: bool) -> Option<String> {
     match app.try_state::<MiddlewareRegistry>() {
         Some(state) => state.run_pre_execute(name, active_skill),
         None => None,
@@ -118,7 +117,9 @@ pub fn run_pre_execute(
 /// 内置：意图路由中间件（包装 intent_router::route_user_input）
 pub struct IntentRouterMiddleware;
 impl Middleware for IntentRouterMiddleware {
-    fn name(&self) -> &str { "intent_router" }
+    fn name(&self) -> &str {
+        "intent_router"
+    }
     fn pre_step(&self, input: &str) -> Option<RouteAction> {
         // PassThrough 也算 Some，让 run_pre_step 短路
         Some(route_user_input(input))
@@ -131,8 +132,12 @@ impl Middleware for IntentRouterMiddleware {
 /// 内置：原子黑名单中间件（包装 tool_guard::is_atomic_tool + is_skill_active）
 pub struct AtomicGuardMiddleware;
 impl Middleware for AtomicGuardMiddleware {
-    fn name(&self) -> &str { "atomic_guard" }
-    fn pre_step(&self, _input: &str) -> Option<RouteAction> { None }
+    fn name(&self) -> &str {
+        "atomic_guard"
+    }
+    fn pre_step(&self, _input: &str) -> Option<RouteAction> {
+        None
+    }
     fn pre_execute(&self, name: &str, active_skill: bool) -> Option<String> {
         if is_atomic_tool(name) && !active_skill {
             Some(atomic_block_message(name))
@@ -157,19 +162,27 @@ mod tests {
     fn registry_pre_step_short_circuit_first_wins() {
         struct A;
         impl Middleware for A {
-            fn name(&self) -> &str { "A" }
+            fn name(&self) -> &str {
+                "A"
+            }
             fn pre_step(&self, _input: &str) -> Option<RouteAction> {
                 Some(RouteAction::Skill("a_skill".into()))
             }
-            fn pre_execute(&self, _n: &str, _a: bool) -> Option<String> { None }
+            fn pre_execute(&self, _n: &str, _a: bool) -> Option<String> {
+                None
+            }
         }
         struct B;
         impl Middleware for B {
-            fn name(&self) -> &str { "B" }
+            fn name(&self) -> &str {
+                "B"
+            }
             fn pre_step(&self, _input: &str) -> Option<RouteAction> {
                 Some(RouteAction::Skill("b_skill".into()))
             }
-            fn pre_execute(&self, _n: &str, _a: bool) -> Option<String> { None }
+            fn pre_execute(&self, _n: &str, _a: bool) -> Option<String> {
+                None
+            }
         }
         let mut r = MiddlewareRegistry::default();
         r.register_pre_step(Box::new(A));
@@ -185,17 +198,27 @@ mod tests {
     fn registry_pre_execute_short_circuit() {
         struct Blocker;
         impl Middleware for Blocker {
-            fn name(&self) -> &str { "Blocker" }
-            fn pre_step(&self, _input: &str) -> Option<RouteAction> { None }
+            fn name(&self) -> &str {
+                "Blocker"
+            }
+            fn pre_step(&self, _input: &str) -> Option<RouteAction> {
+                None
+            }
             fn pre_execute(&self, _n: &str, _a: bool) -> Option<String> {
                 Some("BLOCKED".into())
             }
         }
         struct PassMw;
         impl Middleware for PassMw {
-            fn name(&self) -> &str { "Pass" }
-            fn pre_step(&self, _input: &str) -> Option<RouteAction> { None }
-            fn pre_execute(&self, _n: &str, _a: bool) -> Option<String> { None }
+            fn name(&self) -> &str {
+                "Pass"
+            }
+            fn pre_step(&self, _input: &str) -> Option<RouteAction> {
+                None
+            }
+            fn pre_execute(&self, _n: &str, _a: bool) -> Option<String> {
+                None
+            }
         }
         let mut r = MiddlewareRegistry::default();
         r.register_pre_execute(Box::new(PassMw));

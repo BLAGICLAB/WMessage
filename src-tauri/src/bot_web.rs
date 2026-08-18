@@ -81,7 +81,10 @@ async fn search_bing(query: &str) -> Result<Vec<(String, String, String)>, Strin
     if !resp.status().is_success() {
         return Err(format!("Bing 返回 HTTP {}", resp.status()));
     }
-    let body = resp.text().await.map_err(|e| format!("读取 Bing 结果失败：{e}"))?;
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("读取 Bing 结果失败：{e}"))?;
     let results = parse_bing(&body);
     if results.is_empty() {
         return Err("Bing 没有返回结果".into());
@@ -105,7 +108,10 @@ async fn search_baidu(query: &str) -> Result<Vec<(String, String, String)>, Stri
     if !resp.status().is_success() {
         return Err(format!("百度返回 HTTP {}", resp.status()));
     }
-    let body = resp.text().await.map_err(|e| format!("读取百度结果失败：{e}"))?;
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("读取百度结果失败：{e}"))?;
     let results = parse_baidu(&body);
     if results.is_empty() {
         return Err("百度没有返回结果（可能触发验证页）".into());
@@ -181,14 +187,19 @@ fn decode_entities(s: &str) -> String {
     while let Some(pos) = rest.find("&#") {
         out.push_str(&rest[..pos]);
         let tail = &rest[pos + 2..];
-        let (digits, consumed) = if let Some(hex) = tail.strip_prefix('x').or_else(|| tail.strip_prefix('X')) {
-            let end = hex.find(';').unwrap_or(hex.len());
-            (&hex[..end], 1 + end + usize::from(end < hex.len()))
+        let (digits, consumed) =
+            if let Some(hex) = tail.strip_prefix('x').or_else(|| tail.strip_prefix('X')) {
+                let end = hex.find(';').unwrap_or(hex.len());
+                (&hex[..end], 1 + end + usize::from(end < hex.len()))
+            } else {
+                let end = tail.find(';').unwrap_or(tail.len());
+                (&tail[..end], end + usize::from(end < tail.len()))
+            };
+        let radix = if tail.starts_with('x') || tail.starts_with('X') {
+            16
         } else {
-            let end = tail.find(';').unwrap_or(tail.len());
-            (&tail[..end], end + usize::from(end < tail.len()))
+            10
         };
-        let radix = if tail.starts_with('x') || tail.starts_with('X') { 16 } else { 10 };
         if let Ok(n) = u32::from_str_radix(digits, radix) {
             if let Some(c) = char::from_u32(n) {
                 out.push(c);
@@ -363,8 +374,7 @@ pub async fn fetch_text(raw_url: &str) -> Result<String, String> {
     // 重定向逐跳校验：不跟随 reqwest 自动重定向，3xx 时手动校验 Location 目标
     //（公网 URL 302 到内网地址是 SSRF 常见绕过，审计 P1）
     const MAX_REDIRECTS: usize = 5;
-    let mut url_cursor =
-        url::Url::parse(raw_url.trim()).map_err(|_| "网址格式无效".to_string())?;
+    let mut url_cursor = url::Url::parse(raw_url.trim()).map_err(|_| "网址格式无效".to_string())?;
     let mut hops = 0usize;
     let mut resp;
     loop {
@@ -435,9 +445,8 @@ fn ipv4_is_private(v4: std::net::Ipv4Addr) -> bool {
 
 /// 整数/十六进制/八进制形式的 IPv4 字面量识别（"2130706433"、"0x7f000001"、"017700000001"）
 fn parse_alt_ipv4(host: &str) -> Option<std::net::Ipv4Addr> {
-    let (num_str, radix): (Option<&str>, u32) = if let Some(hex) = host
-        .strip_prefix("0x")
-        .or_else(|| host.strip_prefix("0X"))
+    let (num_str, radix): (Option<&str>, u32) = if let Some(hex) =
+        host.strip_prefix("0x").or_else(|| host.strip_prefix("0X"))
     {
         (Some(hex), 16)
     } else if host.len() > 1 && host.starts_with('0') && host.chars().all(|c| c.is_ascii_digit()) {
@@ -481,10 +490,22 @@ fn decode_html(bytes: &[u8]) -> String {
     let head_len = bytes.len().min(4096);
     let head = String::from_utf8_lossy(&bytes[..head_len]).to_lowercase();
     let candidates: [(Option<&'static encoding_rs::Encoding>, &[&str]); 4] = [
-        (encoding_rs::Encoding::for_label(b"gb18030"), &["charset=gb18030", "charset=\"gb18030\""]),
-        (encoding_rs::Encoding::for_label(b"gb2312"), &["charset=gb2312", "charset=\"gb2312\""]),
-        (encoding_rs::Encoding::for_label(b"gbk"), &["charset=gbk", "charset=\"gbk\""]),
-        (encoding_rs::Encoding::for_label(b"big5"), &["charset=big5", "charset=\"big5\""]),
+        (
+            encoding_rs::Encoding::for_label(b"gb18030"),
+            &["charset=gb18030", "charset=\"gb18030\""],
+        ),
+        (
+            encoding_rs::Encoding::for_label(b"gb2312"),
+            &["charset=gb2312", "charset=\"gb2312\""],
+        ),
+        (
+            encoding_rs::Encoding::for_label(b"gbk"),
+            &["charset=gbk", "charset=\"gbk\""],
+        ),
+        (
+            encoding_rs::Encoding::for_label(b"big5"),
+            &["charset=big5", "charset=\"big5\""],
+        ),
     ];
     for (enc, needles) in candidates {
         if let Some(enc) = enc {
@@ -511,7 +532,12 @@ mod tests {
         let results = parse_bing(&html);
         assert!(!results.is_empty(), "fixture 应能解析出结果");
         assert!(results[0].1.starts_with("http"), "首条应带链接");
-        eprintln!("parsed {} results, first: {} | {}", results.len(), results[0].0, results[0].1);
+        eprintln!(
+            "parsed {} results, first: {} | {}",
+            results.len(),
+            results[0].0,
+            results[0].1
+        );
     }
 
     #[test]
@@ -523,15 +549,35 @@ mod tests {
         }
         let results = parse_baidu(&html);
         assert!(!results.is_empty(), "百度 fixture 应能解析出结果");
-        assert!(results[0].1.contains("baidu.com/link"), "链接应为百度跳转链接");
+        assert!(
+            results[0].1.contains("baidu.com/link"),
+            "链接应为百度跳转链接"
+        );
         for (t, l, s) in results.iter().take(5) {
-            eprintln!("baidu: {} | {} | snip {} 字", t.chars().take(30).collect::<String>(), l.chars().take(40).collect::<String>(), s.chars().count());
+            eprintln!(
+                "baidu: {} | {} | snip {} 字",
+                t.chars().take(30).collect::<String>(),
+                l.chars().take(40).collect::<String>(),
+                s.chars().count()
+            );
         }
     }
 
     #[test]
     fn private_host_guard() {
-        for h in ["127.0.0.1", "192.168.1.1", "10.0.0.1", "172.16.0.1", "169.254.1.1", "localhost", "nas.local", "x.internal", "::1", "fc00::1", "fe80::1"] {
+        for h in [
+            "127.0.0.1",
+            "192.168.1.1",
+            "10.0.0.1",
+            "172.16.0.1",
+            "169.254.1.1",
+            "localhost",
+            "nas.local",
+            "x.internal",
+            "::1",
+            "fc00::1",
+            "fe80::1",
+        ] {
             assert!(is_private_host(h), "应拦截 {h}");
         }
         for h in ["www.bing.com", "example.com", "api.minimaxi.com"] {
@@ -541,7 +587,10 @@ mod tests {
 
     #[test]
     fn strip_tags_entities() {
-        assert_eq!(strip_tags("<p>你好 &amp; 世界&nbsp;！</p>"), "你好 & 世界 ！");
+        assert_eq!(
+            strip_tags("<p>你好 &amp; 世界&nbsp;！</p>"),
+            "你好 & 世界 ！"
+        );
         assert_eq!(strip_tags("<a href=\"x\">标题</a>"), "标题");
     }
 
@@ -556,11 +605,16 @@ mod tests {
             Err(e) => eprintln!("search failed (环境相关): {e}"),
         }
         match tauri::async_runtime::block_on(fetch_text("https://example.com")) {
-            Ok(t) => eprintln!("FETCH OK, {} chars, head: {}", t.chars().count(), t.chars().take(80).collect::<String>()),
+            Ok(t) => eprintln!(
+                "FETCH OK, {} chars, head: {}",
+                t.chars().count(),
+                t.chars().take(80).collect::<String>()
+            ),
             Err(e) => eprintln!("fetch failed (环境相关): {e}"),
         }
         // 内网地址应被拒
-        let blocked = tauri::async_runtime::block_on(fetch_text("http://127.0.0.1:4763/api/health"));
+        let blocked =
+            tauri::async_runtime::block_on(fetch_text("http://127.0.0.1:4763/api/health"));
         assert!(blocked.is_err(), "本机地址必须被拒绝");
         let bad_scheme = tauri::async_runtime::block_on(fetch_text("file:///etc/hosts"));
         assert!(bad_scheme.is_err(), "非 http(s) 协议必须被拒绝");

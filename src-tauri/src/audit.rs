@@ -62,10 +62,7 @@ pub fn format_event_line(level: AuditLevel, event: &str, kv: &[(&str, &str)]) ->
 /// 写一条结构化审计事件到 `bot.log`（post-execute 钩子主入口）
 /// 复用 `bot::audit_log` 的 rotate 阈值与文件路径，老日志兼容。
 pub fn write_event(app: &AppHandle, level: AuditLevel, event: &str, kv: &[(&str, String)]) {
-    crate::db::rotate_log_if_large(
-        &crate::db::data_dir(app).join("bot.log"),
-        5 * 1024 * 1024,
-    );
+    crate::db::rotate_log_if_large(&crate::db::data_dir(app).join("bot.log"), 5 * 1024 * 1024);
     let p = crate::db::data_dir(app).join("bot.log");
     let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
@@ -122,8 +119,14 @@ mod tests {
 
     #[test]
     fn classify_text_normal_returns_info() {
-        assert_eq!(classify_text("foo", "当前没有未完成的任务"), AuditLevel::Info);
-        assert_eq!(classify_text("foo", "已新建任务 id=abc123"), AuditLevel::Info);
+        assert_eq!(
+            classify_text("foo", "当前没有未完成的任务"),
+            AuditLevel::Info
+        );
+        assert_eq!(
+            classify_text("foo", "已新建任务 id=abc123"),
+            AuditLevel::Info
+        );
         // "失败" 关键词的误报：接受这种 trade-off（合法场景罕见）
         assert_eq!(
             classify_text("foo", "成功完成任务，含失败回滚说明"),

@@ -25,9 +25,8 @@ fn main() {
     // 2) NSFilenamesPboardType
     let path_str = NSString::from_str(path);
     let paths = NSArray::from_retained_slice(&[path_str]);
-    let ok2 = unsafe {
-        pb.setPropertyList_forType(&paths, &NSString::from_str("NSFilenamesPboardType"))
-    };
+    let ok2 =
+        unsafe { pb.setPropertyList_forType(&paths, &NSString::from_str("NSFilenamesPboardType")) };
 
     // 3) 标题文本
     let text = NSString::from_str(title);

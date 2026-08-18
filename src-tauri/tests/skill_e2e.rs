@@ -75,10 +75,7 @@ fn pre_execute_blocks_atomic_tool_when_no_skill() {
     let registry = middleware::build_default_registry();
     let blocked = registry.run_pre_execute("create_word_revisions", false);
     let msg = blocked.expect("create_word_revisions + 非 Skill 状态应被阻断");
-    assert!(
-        msg.contains("Skill"),
-        "阻断消息应引导走 Skill；实际：{msg}"
-    );
+    assert!(msg.contains("Skill"), "阻断消息应引导走 Skill；实际：{msg}");
 }
 
 #[test]
@@ -151,10 +148,9 @@ fn intent_router_all_seven_skill_rules() {
     for (input, expected_skill) in cases {
         let route = intent_router::route_user_input(input);
         match route {
-            RouteAction::Skill(s) => assert_eq!(
-                &s, expected_skill,
-                "输入「{input}」应命中 {expected_skill}"
-            ),
+            RouteAction::Skill(s) => {
+                assert_eq!(&s, expected_skill, "输入「{input}」应命中 {expected_skill}")
+            }
             other => panic!("输入「{input}」期望命中 {expected_skill}, got {other:?}"),
         }
     }
@@ -174,8 +170,7 @@ fn real_skill_fixture_loads_via_scan_skill_dirs() {
     );
 
     // SkillInfo 只有 name/description/last_outcome 字段，body 直接读文件
-    let body = std::fs::read_to_string(ppt_path.join("SKILL.md"))
-        .expect("read fixture SKILL.md");
+    let body = std::fs::read_to_string(ppt_path.join("SKILL.md")).expect("read fixture SKILL.md");
 
     let skills = scan_skill_dirs(&[fixtures_parent_path()]);
     assert_eq!(skills.len(), 1, "fixture 目录只放 1 个 Skill");

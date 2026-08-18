@@ -93,7 +93,8 @@ pub fn open_db(app: &tauri::AppHandle) -> Result<rusqlite::Connection, String> {
         }
     }
     let conn = rusqlite::Connection::open(&db_path).map_err(|e| e.to_string())?;
-    conn.busy_timeout(Duration::from_secs(2)).map_err(|e| e.to_string())?;
+    conn.busy_timeout(Duration::from_secs(2))
+        .map_err(|e| e.to_string())?;
     conn.execute_batch(
         "PRAGMA journal_mode=WAL;
          CREATE TABLE IF NOT EXISTS tasks (
@@ -222,8 +223,11 @@ pub fn open_db(app: &tauri::AppHandle) -> Result<rusqlite::Connection, String> {
             })
             .unwrap_or(false);
         if !has {
-            conn.execute(&format!("ALTER TABLE bot_messages ADD COLUMN {col} TEXT"), [])
-                .map_err(|e| e.to_string())?;
+            conn.execute(
+                &format!("ALTER TABLE bot_messages ADD COLUMN {col} TEXT"),
+                [],
+            )
+            .map_err(|e| e.to_string())?;
         }
     }
     {
@@ -251,7 +255,10 @@ pub fn open_db(app: &tauri::AppHandle) -> Result<rusqlite::Connection, String> {
     // 启动时清残留 bot_assigned（机器人执行不可能跨重启存活；每进程仅一次）
     static RESET_ONCE: std::sync::Once = std::sync::Once::new();
     RESET_ONCE.call_once(|| {
-        let _ = conn.execute("UPDATE tasks SET bot_assigned = 0 WHERE bot_assigned = 1", []);
+        let _ = conn.execute(
+            "UPDATE tasks SET bot_assigned = 0 WHERE bot_assigned = 1",
+            [],
+        );
     });
     Ok(conn)
 }
@@ -328,20 +335,27 @@ pub fn upsert_skill_outcome(
     Ok(())
 }
 
-pub fn load_all_skill_outcomes(conn: &rusqlite::Connection) -> Result<std::collections::HashMap<String, PersistedSkillOutcome>, String> {
+pub fn load_all_skill_outcomes(
+    conn: &rusqlite::Connection,
+) -> Result<std::collections::HashMap<String, PersistedSkillOutcome>, String> {
     let mut stmt = conn.prepare("SELECT skill_name, kind, reason, completed_summary, rollback_attempted, last_at_ms FROM skill_outcomes").map_err(|e| e.to_string())?;
-    let rows = stmt.query_map([], |r| {
-        Ok(PersistedSkillOutcome {
-            skill_name: r.get(0)?,
-            kind: r.get(1)?,
-            reason: r.get(2)?,
-            completed_summary: r.get(3)?,
-            rollback_attempted: r.get::<_, Option<i64>>(4)?.map(|v| v != 0),
-            last_at_ms: r.get(5)?,
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(PersistedSkillOutcome {
+                skill_name: r.get(0)?,
+                kind: r.get(1)?,
+                reason: r.get(2)?,
+                completed_summary: r.get(3)?,
+                rollback_attempted: r.get::<_, Option<i64>>(4)?.map(|v| v != 0),
+                last_at_ms: r.get(5)?,
+            })
         })
-    }).map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?;
     let mut map = std::collections::HashMap::new();
-    for row in rows { let o = row.map_err(|e| e.to_string())?; map.insert(o.skill_name.clone(), o); }
+    for row in rows {
+        let o = row.map_err(|e| e.to_string())?;
+        map.insert(o.skill_name.clone(), o);
+    }
     Ok(map)
 }
 
@@ -454,7 +468,9 @@ pub fn workspace_delete(app: tauri::AppHandle, ids: Vec<String>) -> Result<(), S
 pub fn bot_sessions_load(app: tauri::AppHandle) -> Result<Vec<BotSession>, String> {
     let conn = open_db(&app)?;
     let mut stmt = conn
-        .prepare("SELECT id, title, created_at, updated_at FROM bot_sessions ORDER BY updated_at DESC")
+        .prepare(
+            "SELECT id, title, created_at, updated_at FROM bot_sessions ORDER BY updated_at DESC",
+        )
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |r| {
@@ -466,7 +482,8 @@ pub fn bot_sessions_load(app: tauri::AppHandle) -> Result<Vec<BotSession>, Strin
             })
         })
         .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
 /// 新建会话，返回新会话（title 缺省「新对话」）
@@ -488,7 +505,12 @@ pub fn bot_session_create(
         rusqlite::params![id, title, now],
     )
     .map_err(|e| e.to_string())?;
-    Ok(BotSession { id, title, created_at: now, updated_at: now })
+    Ok(BotSession {
+        id,
+        title,
+        created_at: now,
+        updated_at: now,
+    })
 }
 
 /// 删除会话及其全部消息
@@ -519,7 +541,10 @@ pub fn bot_session_rename(app: tauri::AppHandle, id: String, title: String) -> R
 
 /// 加载指定会话的消息（按写入顺序）
 #[tauri::command]
-pub fn bot_history_load(app: tauri::AppHandle, session_id: String) -> Result<Vec<BotMsgRow>, String> {
+pub fn bot_history_load(
+    app: tauri::AppHandle,
+    session_id: String,
+) -> Result<Vec<BotMsgRow>, String> {
     let conn = open_db(&app)?;
     let mut stmt = conn
         .prepare("SELECT role, content, refs, thinking, tools FROM bot_messages WHERE session_id = ?1 ORDER BY id")
@@ -535,7 +560,8 @@ pub fn bot_history_load(app: tauri::AppHandle, session_id: String) -> Result<Vec
             })
         })
         .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
 /// 保存指定会话的聊天记录：全量覆盖 + 更新会话活跃时间
@@ -547,8 +573,11 @@ pub fn bot_history_save(
 ) -> Result<(), String> {
     let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = open_db(&app)?;
-    conn.execute("DELETE FROM bot_messages WHERE session_id = ?1", [&session_id])
-        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM bot_messages WHERE session_id = ?1",
+        [&session_id],
+    )
+    .map_err(|e| e.to_string())?;
     if !messages.is_empty() {
         let now = chrono::Utc::now().timestamp_millis();
         let mut stmt = conn
@@ -557,8 +586,16 @@ pub fn bot_history_save(
             )
             .map_err(|e| e.to_string())?;
         for m in &messages {
-            stmt.execute(rusqlite::params![m.role, m.content, m.refs_json, session_id, m.thinking, m.tools_json, now])
-                .map_err(|e| e.to_string())?;
+            stmt.execute(rusqlite::params![
+                m.role,
+                m.content,
+                m.refs_json,
+                session_id,
+                m.thinking,
+                m.tools_json,
+                now
+            ])
+            .map_err(|e| e.to_string())?;
         }
     }
     let now = chrono::Utc::now().timestamp_millis();
@@ -575,8 +612,11 @@ pub fn bot_history_save(
 pub fn bot_history_clear(app: tauri::AppHandle, session_id: String) -> Result<(), String> {
     let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let conn = open_db(&app)?;
-    conn.execute("DELETE FROM bot_messages WHERE session_id = ?1", [&session_id])
-        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM bot_messages WHERE session_id = ?1",
+        [&session_id],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -682,9 +722,26 @@ fn load_all(conn: &rusqlite::Connection) -> Result<Vec<Task>, String> {
         .map_err(|e| e.to_string())?;
     let mut tasks = Vec::new();
     for r in rows {
-        let (id, title, due, note, tags, file_path, file_is_dir, col, subtasks,
-             completed_at, archived, deleted_at, collapsed, order, updated_at, schedule, sched_last, bot_assigned) =
-            r.map_err(|e| e.to_string())?;
+        let (
+            id,
+            title,
+            due,
+            note,
+            tags,
+            file_path,
+            file_is_dir,
+            col,
+            subtasks,
+            completed_at,
+            archived,
+            deleted_at,
+            collapsed,
+            order,
+            updated_at,
+            schedule,
+            sched_last,
+            bot_assigned,
+        ) = r.map_err(|e| e.to_string())?;
         let tags = match tags {
             Some(s) => serde_json::from_str(&s).ok(),
             None => None,
@@ -719,13 +776,19 @@ fn load_all(conn: &rusqlite::Connection) -> Result<Vec<Task>, String> {
 
 /// 库为空时迁移方案2 的 data.json：导入全部任务后删除旧文件
 fn migrate_data_json(app: &tauri::AppHandle, conn: &mut rusqlite::Connection) {
-    let Ok(dir) = app.path().app_data_dir() else { return };
+    let Ok(dir) = app.path().app_data_dir() else {
+        return;
+    };
     let file = dir.join("data.json");
     if !file.exists() {
         return;
     }
-    let Ok(json) = std::fs::read_to_string(&file) else { return };
-    let Ok(tasks) = serde_json::from_str::<Vec<Task>>(&json) else { return };
+    let Ok(json) = std::fs::read_to_string(&file) else {
+        return;
+    };
+    let Ok(tasks) = serde_json::from_str::<Vec<Task>>(&json) else {
+        return;
+    };
     let Ok(tx) = conn.transaction() else { return };
     if upsert_tasks(&tx, &tasks).is_ok() {
         if tx.commit().is_ok() {
@@ -824,9 +887,26 @@ fn load_external(conn: &rusqlite::Connection) -> Result<Vec<Task>, String> {
         .map_err(|e| e.to_string())?;
     let mut tasks = Vec::new();
     for r in rows {
-        let (id, title, due, note, tags, file_path, file_is_dir, col, subtasks,
-             completed_at, archived, deleted_at, collapsed, order, updated_at, schedule, sched_last, bot_assigned) =
-            r.map_err(|e| e.to_string())?;
+        let (
+            id,
+            title,
+            due,
+            note,
+            tags,
+            file_path,
+            file_is_dir,
+            col,
+            subtasks,
+            completed_at,
+            archived,
+            deleted_at,
+            collapsed,
+            order,
+            updated_at,
+            schedule,
+            sched_last,
+            bot_assigned,
+        ) = r.map_err(|e| e.to_string())?;
         let tags = tags.and_then(|s| serde_json::from_str(&s).ok());
         let subtasks = subtasks.and_then(|s| serde_json::from_str(&s).ok());
         tasks.push(Task {

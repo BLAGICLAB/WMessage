@@ -38,8 +38,12 @@ pub fn parse_sse_bytes(bytes: &[u8]) -> ParsedStream {
     let text = String::from_utf8_lossy(bytes);
     let mut out = ParsedStream::default();
     for line in text.lines() {
-        let Some(parsed) = parse_sse_chunk(line) else { continue };
-        if parsed.is_done { continue; }
+        let Some(parsed) = parse_sse_chunk(line) else {
+            continue;
+        };
+        if parsed.is_done {
+            continue;
+        }
         if let Some(c) = parsed.content {
             out.text.push_str(&c);
         }
@@ -79,8 +83,14 @@ async fn reqwest_post_to_mock_llm_extracts_text_reply() {
     let bytes = resp.bytes().await.expect("read body");
     let parsed = parse_sse_bytes(&bytes);
 
-    assert_eq!(parsed.text, "mock reply", "默认 TextReply 应返 'mock reply'");
-    assert!(parsed.tool_calls.is_empty(), "默认 TextReply 不含 tool_calls");
+    assert_eq!(
+        parsed.text, "mock reply",
+        "默认 TextReply 应返 'mock reply'"
+    );
+    assert!(
+        parsed.tool_calls.is_empty(),
+        "默认 TextReply 不含 tool_calls"
+    );
     assert_eq!(
         parsed.finish_reason.as_deref(),
         Some("stop"),
@@ -138,7 +148,11 @@ async fn reqwest_handles_5_round_chat_loop_with_mock_llm() {
             .expect("POST 成功");
         let bytes = resp.bytes().await.expect("read body");
         let parsed = parse_sse_bytes(&bytes);
-        assert_eq!(parsed.text, format!("reply #{i}"), "轮次 {i} 应返 reply #{i}");
+        assert_eq!(
+            parsed.text,
+            format!("reply #{i}"),
+            "轮次 {i} 应返 reply #{i}"
+        );
     }
 
     std::thread::sleep(std::time::Duration::from_millis(50));
@@ -209,7 +223,10 @@ async fn llm_blacklist_tool_call_create_word_revisions_blocked_when_no_skill() {
     let parsed = parse_sse_bytes(&bytes);
     assert_eq!(parsed.tool_calls.len(), 1, "应解析出 1 个 tool_call");
     let blocked_tool = first_tool_name(&parsed);
-    assert_eq!(blocked_tool, "create_word_revisions", "SSE 解析后 tool name 应正确");
+    assert_eq!(
+        blocked_tool, "create_word_revisions",
+        "SSE 解析后 tool name 应正确"
+    );
 
     // F-6 step 4 核心断言：SSE 解析后的 tool name → middleware 应阻断
     let registry = middleware::build_default_registry();
@@ -217,10 +234,7 @@ async fn llm_blacklist_tool_call_create_word_revisions_blocked_when_no_skill() {
     let msg = block_msg.expect(
         "黑名单 tool_call (create_word_revisions) + 非 Skill 状态应被 middleware 阻断（defense-in-depth）",
     );
-    assert!(
-        msg.contains("Skill"),
-        "阻断消息应引导走 Skill；got: {msg}"
-    );
+    assert!(msg.contains("Skill"), "阻断消息应引导走 Skill；got: {msg}");
 }
 
 #[tokio::test]
@@ -261,7 +275,9 @@ async fn llm_blacklist_tool_call_allowed_when_skill_running() {
 
     let resp = reqwest::Client::new()
         .post(format!("{}/chat/completions", server.base_url))
-        .json(&make_body("Word 修订 Skill 内 LLM 调用 create_word_revisions（合法）"))
+        .json(&make_body(
+            "Word 修订 Skill 内 LLM 调用 create_word_revisions（合法）",
+        ))
         .send()
         .await
         .expect("POST 成功");

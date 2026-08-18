@@ -18,7 +18,6 @@
 ///
 /// 注：上面用 `///` 不用 `//!`，是因为 `llm_integration.rs` 用 `include!` 把本文件作为子模块引入，
 /// `//!` 内文档注释会跟 `use` 冲突（E0753 expected outer doc comment）。
-
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -154,9 +153,7 @@ impl MockLlmServer {
 }
 
 fn find_body_start(buf: &[u8]) -> Option<usize> {
-    buf.windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .map(|p| p + 4)
+    buf.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4)
 }
 
 fn parse_content_length(buf: &[u8]) -> Option<usize> {
@@ -171,8 +168,6 @@ fn parse_content_length(buf: &[u8]) -> Option<usize> {
     }
     None
 }
-
-
 
 // ────────────────────────────────────────────────────────────────────
 // HTTP 响应构造（OpenAI 兼容 SSE）
@@ -326,13 +321,25 @@ fn mock_llm_server_returns_valid_sse_text_reply() {
 
     // 验证 SSE body 格式（与 bot.rs 解析路径对齐）
     assert!(body.starts_with("data: "), "SSE 第一行必须 data: 开头");
-    assert!(body.contains("\n\ndata: "), "SSE chunk 之间必须 \\n\\n 分隔");
-    assert!(body.trim_end().ends_with("data: [DONE]"), "SSE 必须以 [DONE] 结尾");
+    assert!(
+        body.contains("\n\ndata: "),
+        "SSE chunk 之间必须 \\n\\n 分隔"
+    );
+    assert!(
+        body.trim_end().ends_with("data: [DONE]"),
+        "SSE 必须以 [DONE] 结尾"
+    );
 
     // 验证 JSON 内容包含 role/content
     assert!(body.contains(r#""role":"assistant""#), "delta 应包含 role");
-    assert!(body.contains(r#""content":"mock reply""#), "默认 TextReply 应返回固定 mock reply 文本");
-    assert!(body.contains(r#""finish_reason":"stop""#), "末尾 chunk 应有 finish_reason=stop");
+    assert!(
+        body.contains(r#""content":"mock reply""#),
+        "默认 TextReply 应返回固定 mock reply 文本"
+    );
+    assert!(
+        body.contains(r#""finish_reason":"stop""#),
+        "末尾 chunk 应有 finish_reason=stop"
+    );
 
     // 验证 server 计数
     std::thread::sleep(Duration::from_millis(50));
@@ -352,11 +359,8 @@ fn mock_llm_server_handles_multiple_sequential_requests_chat_loop() {
         let body = format!(
             r#"{{"model":"deepseek-chat","messages":[{{"role":"user","content":"msg {i}"}}],"stream":true}}"#
         );
-        let raw = http_post_raw(
-            &format!("{}/chat/completions", server.base_url),
-            &body,
-        )
-        .expect("POST 成功");
+        let raw = http_post_raw(&format!("{}/chat/completions", server.base_url), &body)
+            .expect("POST 成功");
         let (_head, body_str) = split_response(&raw);
         assert!(
             body_str.contains(&format!("\"content\":\"reply #{i}\"")),
@@ -386,17 +390,26 @@ fn mock_llm_server_serves_tool_call_response_for_interactive_skill() {
 
     // 验证 tool_call 响应格式（与 bot.rs line 1138-1142 解析对齐）
     assert!(body.contains(r#""tool_calls""#), "应包含 tool_calls 字段");
-    assert!(body.contains(r#""function""#), "tool_call 应有 function 嵌套");
+    assert!(
+        body.contains(r#""function""#),
+        "tool_call 应有 function 嵌套"
+    );
     assert!(
         body.contains(r#""name":"list_tasks""#),
         "tool_call.function.name 应为 list_tasks"
     );
-    assert!(body.contains(r#""arguments":"{}""#), "tool_call 应传 arguments");
+    assert!(
+        body.contains(r#""arguments":"{}""#),
+        "tool_call 应传 arguments"
+    );
     assert!(
         body.contains(r#""finish_reason":"tool_calls""#),
         "tool_call 响应末尾 finish_reason 应为 tool_calls"
     );
-    assert!(body.contains(r#""id":"call_mock""#), "tool_call 应有 id 字段");
+    assert!(
+        body.contains(r#""id":"call_mock""#),
+        "tool_call 应有 id 字段"
+    );
 
     std::thread::sleep(Duration::from_millis(50));
     assert_eq!(server.request_count(), 1);
@@ -418,27 +431,40 @@ fn mock_llm_server_consumes_behavior_queue_sequentially() {
     }));
 
     let url = format!("{}/chat/completions", server.base_url);
-    let body = r#"{"model":"deepseek-chat","messages":[{"role":"user","content":"x"}],"stream":true}"#;
+    let body =
+        r#"{"model":"deepseek-chat","messages":[{"role":"user","content":"x"}],"stream":true}"#;
 
     // 第 1 个请求 → tool_call run_python
     let raw = http_post_raw(&url, body).unwrap();
     let (_, b) = split_response(&raw);
-    assert!(b.contains(r#""name":"run_python""#), "轮次 1 应返 run_python");
+    assert!(
+        b.contains(r#""name":"run_python""#),
+        "轮次 1 应返 run_python"
+    );
 
     // 第 2 个请求 → text "好的，结果是 2"
     let raw = http_post_raw(&url, body).unwrap();
     let (_, b) = split_response(&raw);
-    assert!(b.contains(r#""content":"好的，结果是 2""#), "轮次 2 应返中文文本");
+    assert!(
+        b.contains(r#""content":"好的，结果是 2""#),
+        "轮次 2 应返中文文本"
+    );
 
     // 第 3 个请求 → tool_call create_task
     let raw = http_post_raw(&url, body).unwrap();
     let (_, b) = split_response(&raw);
-    assert!(b.contains(r#""name":"create_task""#), "轮次 3 应返 create_task");
+    assert!(
+        b.contains(r#""name":"create_task""#),
+        "轮次 3 应返 create_task"
+    );
 
     // 第 4 个请求 → 队列空，回退默认 echo
     let raw = http_post_raw(&url, body).unwrap();
     let (_, b) = split_response(&raw);
-    assert!(b.contains(r#""content":"mock reply""#), "队列空时应回退默认 mock reply");
+    assert!(
+        b.contains(r#""content":"mock reply""#),
+        "队列空时应回退默认 mock reply"
+    );
 
     std::thread::sleep(Duration::from_millis(50));
     assert_eq!(server.request_count(), 4);

@@ -55,26 +55,17 @@ pub const INTENT_RULES: &[IntentRule] = &[
     },
     // Excel 生成（多步骤：数据 → 公式 → 样式）
     IntentRule {
-        patterns: &[
-            r"(?i)(做|生成).{0,15}(excel|xlsx|表格)",
-            r"(?i)做个表格",
-        ],
+        patterns: &[r"(?i)(做|生成).{0,15}(excel|xlsx|表格)", r"(?i)做个表格"],
         skill_name: "minimax-xlsx",
     },
     // PDF 生成
     IntentRule {
-        patterns: &[
-            r"(?i)(做|生成).{0,15}pdf",
-            r"(?i)做个pdf",
-        ],
+        patterns: &[r"(?i)(做|生成).{0,15}pdf", r"(?i)做个pdf"],
         skill_name: "minimax-pdf",
     },
     // 联网搜索（多步骤：搜 → 抓 → 总结）
     IntentRule {
-        patterns: &[
-            r"(?i)(搜|搜索|查).{0,5}(一下|看|找|找)",
-            r"(?i)联网搜索",
-        ],
+        patterns: &[r"(?i)(搜|搜索|查).{0,5}(一下|看|找|找)", r"(?i)联网搜索"],
         skill_name: "minimax-web-search",
     },
     // 任务汇总（多步骤：list → 分类 → 摘要输出）
@@ -87,10 +78,7 @@ pub const INTENT_RULES: &[IntentRule] = &[
     },
     // 归档迁移（多步骤：list → 过滤 → move → log）
     IntentRule {
-        patterns: &[
-            r"(?i)(归档|迁移|清理).{0,15}(文件|桌面)",
-            r"(?i)归档迁移",
-        ],
+        patterns: &[r"(?i)(归档|迁移|清理).{0,15}(文件|桌面)", r"(?i)归档迁移"],
         skill_name: "minimax-archive",
     },
 ];
@@ -233,10 +221,7 @@ mod tests {
             route_user_input("和机器人说点什么"),
             RouteAction::PassThrough
         );
-        assert_eq!(
-            route_user_input("列出我的任务"),
-            RouteAction::PassThrough
-        );
+        assert_eq!(route_user_input("列出我的任务"), RouteAction::PassThrough);
         assert_eq!(
             route_user_input("用 python 算 1+1"),
             RouteAction::PassThrough

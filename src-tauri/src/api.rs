@@ -374,15 +374,27 @@ fn rate_check() -> bool {
 fn log_line(path: &Option<PathBuf>, line: &str) {
     let Some(p) = path else { return };
     crate::db::rotate_log_if_large(p, 5 * 1024 * 1024);
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
-        let _ = writeln!(f, "[{}] {line}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"));
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(p)
+    {
+        let _ = writeln!(
+            f,
+            "[{}] {line}",
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+        );
     }
 }
 
 /// 读请求体，超过 MAX_BODY_BYTES 返回 None（调用方回 413）
 fn read_body_limited(req: &mut Request) -> Option<String> {
     let mut buf = Vec::new();
-    match req.as_reader().take(MAX_BODY_BYTES + 1).read_to_end(&mut buf) {
+    match req
+        .as_reader()
+        .take(MAX_BODY_BYTES + 1)
+        .read_to_end(&mut buf)
+    {
         Ok(n) if n as u64 > MAX_BODY_BYTES => None,
         Ok(_) => Some(String::from_utf8_lossy(&buf).into_owned()),
         Err(_) => None,
@@ -558,13 +570,23 @@ fn create_task(
         let _ = req.respond(json_err(StatusCode(400), &e));
         return;
     }
-    if let Some(n) = input.note.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(n) = input
+        .note
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         if let Some(e) = over_limit(n, API_MAX_NOTE, "备注") {
             let _ = req.respond(json_err(StatusCode(400), &e));
             return;
         }
     }
-    if let Some(d) = input.due.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(d) = input
+        .due
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         if let Some(e) = over_limit(d, API_MAX_DUE, "截止时间") {
             let _ = req.respond(json_err(StatusCode(400), &e));
             return;
@@ -572,7 +594,10 @@ fn create_task(
     }
     if let Some(tags) = input.tags.as_deref() {
         if tags.len() > API_MAX_TAGS {
-            let _ = req.respond(json_err(StatusCode(400), &format!("标签最多 {API_MAX_TAGS} 个")));
+            let _ = req.respond(json_err(
+                StatusCode(400),
+                &format!("标签最多 {API_MAX_TAGS} 个"),
+            ));
             return;
         }
         for tag in tags {
@@ -598,16 +623,16 @@ fn create_task(
             return;
         }
     };
-    let max_order = all
-        .iter()
-        .filter_map(|t| t.order)
-        .fold(0.0f64, f64::max);
+    let max_order = all.iter().filter_map(|t| t.order).fold(0.0f64, f64::max);
     let now = now_ms();
     let task = db::Task {
         id: uuid::Uuid::new_v4().to_string(),
         title,
         // due 与 note 同规则：trim 后存储（此前存原始值，首尾空格会进库）
-        due: input.due.map(|d| d.trim().to_string()).filter(|d| !d.is_empty()),
+        due: input
+            .due
+            .map(|d| d.trim().to_string())
+            .filter(|d| !d.is_empty()),
         note: input.note.filter(|n| !n.trim().is_empty()),
         tags: input.tags,
         file_path: input.file_path.filter(|p| !p.trim().is_empty()),
@@ -697,7 +722,11 @@ fn update_task(
                 return;
             }
         }
-        t.note = if nn.is_empty() { None } else { Some(nn.to_string()) };
+        t.note = if nn.is_empty() {
+            None
+        } else {
+            Some(nn.to_string())
+        };
     }
     if let Some(s) = input.status.as_deref() {
         if !s.is_empty() {
@@ -741,7 +770,11 @@ fn update_task(
                 return;
             }
         }
-        t.due = if dd.is_empty() { None } else { Some(dd.to_string()) };
+        t.due = if dd.is_empty() {
+            None
+        } else {
+            Some(dd.to_string())
+        };
     }
     if let Some(tags) = input.tags {
         if tags.len() > API_MAX_TAGS {
@@ -822,10 +855,7 @@ fn sse_connect(req: Request, hub: &Arc<EventHub>, query: &str) {
     // 锁中毒时用 into_inner 恢复（与 broadcast 端策略一致，审计 P3：原先静默跳过，
     // 客户端注册失败则该 SSE 连接永远收不到事件）
     {
-        let mut clients = hub
-            .clients
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut clients = hub.clients.lock().unwrap_or_else(|e| e.into_inner());
         clients.push(tx);
     }
     let hub = hub.clone();
@@ -896,9 +926,7 @@ pub fn api_start(app: AppHandle, state: tauri::State<'_, ApiState>) -> Result<Ap
         }
     }
     let token = load_or_create_token(&app)?;
-    let store: Arc<dyn TaskStore> = Arc::new(TauriStore {
-        app: app.clone(),
-    });
+    let store: Arc<dyn TaskStore> = Arc::new(TauriStore { app: app.clone() });
     let emit_app = app.clone();
     let emit: Option<Box<dyn Fn(&db::Task) + Send + Sync>> =
         Some(Box::new(move |task: &db::Task| {
@@ -912,14 +940,14 @@ pub fn api_start(app: AppHandle, state: tauri::State<'_, ApiState>) -> Result<Ap
     let running = start_api(API_PORT, token.clone(), store, emit, log_path)?;
     *state.0.lock().map_err(|e| e.to_string())? = Some(running);
     write_enabled_flag(&app);
-    Ok(ApiInfo { port: API_PORT, token })
+    Ok(ApiInfo {
+        port: API_PORT,
+        token,
+    })
 }
 
 #[tauri::command]
-pub fn api_stop(
-    app: AppHandle,
-    state: tauri::State<'_, ApiState>,
-) -> Result<(), String> {
+pub fn api_stop(app: AppHandle, state: tauri::State<'_, ApiState>) -> Result<(), String> {
     let mut g = state.0.lock().map_err(|e| e.to_string())?;
     if let Some(mut r) = g.take() {
         r.shutdown.store(true, Ordering::SeqCst);
@@ -958,7 +986,10 @@ pub fn api_rotate_token(
         api_stop(app.clone(), state.clone()).map_err(|e| e.to_string())?;
         return api_start(app, state);
     }
-    Ok(ApiInfo { port: API_PORT, token })
+    Ok(ApiInfo {
+        port: API_PORT,
+        token,
+    })
 }
 
 // ───────────────────────── 单元测试 ─────────────────────────
@@ -990,11 +1021,18 @@ mod tests {
         }
     }
 
-    fn http(port: u16, method: &str, path: &str, token: Option<&str>, body: Option<&str>) -> (u16, String) {
+    fn http(
+        port: u16,
+        method: &str,
+        path: &str,
+        token: Option<&str>,
+        body: Option<&str>,
+    ) -> (u16, String) {
         let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
         s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         let body = body.unwrap_or("");
-        let mut raw = format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n");
+        let mut raw =
+            format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n");
         if let Some(t) = token {
             raw.push_str(&format!("Authorization: Bearer {t}\r\n"));
         }
@@ -1057,7 +1095,13 @@ mod tests {
         assert_eq!(v["column"], "doing");
 
         // 单条
-        let (st, _) = http(48821, "GET", &format!("/api/tasks/{id}"), Some(&token), None);
+        let (st, _) = http(
+            48821,
+            "GET",
+            &format!("/api/tasks/{id}"),
+            Some(&token),
+            None,
+        );
         assert_eq!(st, 200);
 
         // 更新：title + status done → 记完成时间

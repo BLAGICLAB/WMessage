@@ -246,7 +246,10 @@ pub fn run_python(
         if start.elapsed() > timeout {
             kill_tree(&mut child);
             let _ = std::fs::remove_dir_all(&dir);
-            return Err(format!("执行超时（{timeout_secs}s）已强制终止", timeout_secs = timeout.as_secs()));
+            return Err(format!(
+                "执行超时（{timeout_secs}s）已强制终止",
+                timeout_secs = timeout.as_secs()
+            ));
         }
         std::thread::sleep(Duration::from_millis(50));
     };
@@ -274,7 +277,11 @@ pub fn run_python(
 pub fn py_audit(app: &AppHandle, line: &str) {
     let p = crate::db::data_dir(app).join("bot.log");
     crate::db::rotate_log_if_large(&p, 5 * 1024 * 1024);
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(p)
+    {
         let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
         let _ = writeln!(f, "[{ts}] {line}");
     }
@@ -765,15 +772,29 @@ print('已生成：' + out)
 // ───────────────────────── 对外命令 ─────────────────────────
 
 /// 执行同步核心（工具链在 async 上下文直接调用）
-pub fn py_exec_sync(app: &AppHandle, code: String, timeout_secs: Option<u64>) -> Result<PyRunResult, String> {
+pub fn py_exec_sync(
+    app: &AppHandle,
+    code: String,
+    timeout_secs: Option<u64>,
+) -> Result<PyRunResult, String> {
     if !py_get_enabled(app.clone()) {
-        return Err("Python 编程未开启：请到设置页「机器人设置」打开「允许机器人执行 Python」".into());
+        return Err(
+            "Python 编程未开启：请到设置页「机器人设置」打开「允许机器人执行 Python」".into(),
+        );
     }
-    py_audit(app, &format!("py_exec | script: {}", truncate_for_log(&code, 300)));
+    py_audit(
+        app,
+        &format!("py_exec | script: {}", truncate_for_log(&code, 300)),
+    );
     let r = run_python(app, &code, None, &[], timeout_secs)?;
     py_audit(
         app,
-        &format!("py_exec done | exit={:?} {}ms | out: {}", r.exit_code, r.duration_ms, truncate_for_log(&r.stdout, 300)),
+        &format!(
+            "py_exec done | exit={:?} {}ms | out: {}",
+            r.exit_code,
+            r.duration_ms,
+            truncate_for_log(&r.stdout, 300)
+        ),
     );
     Ok(r)
 }
@@ -810,7 +831,10 @@ pub async fn doc_extract(app: AppHandle, path: Option<String>) -> Result<DocExtr
     let input = serde_json::json!({ "path": path }).to_string();
     let r = run_python(&app, EXTRACT_SCRIPT, Some(&input), &[], Some(120))?;
     if r.exit_code != Some(0) {
-        py_audit(&app, &format!("doc_extract failed | {}", truncate_for_log(&r.stderr, 200)));
+        py_audit(
+            &app,
+            &format!("doc_extract failed | {}", truncate_for_log(&r.stderr, 200)),
+        );
         return Err(format!("提取失败：{}", r.stderr.trim()));
     }
     Ok(DocExtract {
@@ -835,7 +859,8 @@ pub async fn doc_make_word(
     filename: Option<String>,
 ) -> Result<String, String> {
     let out = gen_out_path(&app, filename.as_deref(), "docx")?;
-    let input = serde_json::json!({ "title": title, "paragraphs": paragraphs, "out": out }).to_string();
+    let input =
+        serde_json::json!({ "title": title, "paragraphs": paragraphs, "out": out }).to_string();
     let r = run_python(&app, MAKE_DOCX_SCRIPT, Some(&input), &[], Some(120))?;
     if r.exit_code != Some(0) {
         return Err(format!("生成 Word 失败：{}", r.stderr.trim()));
@@ -864,11 +889,23 @@ pub async fn doc_make_word_revisions(
         "out": out
     })
     .to_string();
-    let r = run_python(&app, MAKE_DOCX_REVISIONS_SCRIPT, Some(&input), &[], Some(120))?;
+    let r = run_python(
+        &app,
+        MAKE_DOCX_REVISIONS_SCRIPT,
+        Some(&input),
+        &[],
+        Some(120),
+    )?;
     if r.exit_code != Some(0) {
         return Err(format!("生成修订版 Word 失败：{}", r.stderr.trim()));
     }
-    py_audit(&app, &format!("doc_make_word_revisions | src: {} | out: {out}", original_path.unwrap_or_default()));
+    py_audit(
+        &app,
+        &format!(
+            "doc_make_word_revisions | src: {} | out: {out}",
+            original_path.unwrap_or_default()
+        ),
+    );
     Ok(out)
 }
 
@@ -898,7 +935,8 @@ pub async fn doc_make_pdf(
     filename: Option<String>,
 ) -> Result<String, String> {
     let out = gen_out_path(&app, filename.as_deref(), "pdf")?;
-    let input = serde_json::json!({ "title": title, "paragraphs": paragraphs, "out": out }).to_string();
+    let input =
+        serde_json::json!({ "title": title, "paragraphs": paragraphs, "out": out }).to_string();
     let r = run_python(&app, MAKE_PDF_SCRIPT, Some(&input), &[], Some(120))?;
     if r.exit_code != Some(0) {
         return Err(format!("生成 PDF 失败：{}", r.stderr.trim()));
@@ -922,11 +960,21 @@ pub async fn doc_make_ppt(
         .filter(|t| {
             matches!(
                 t.as_str(),
-                "blue" | "navy" | "teal" | "forest" | "wine" | "sky" | "plum" | "coral" | "dark" | "green"
+                "blue"
+                    | "navy"
+                    | "teal"
+                    | "forest"
+                    | "wine"
+                    | "sky"
+                    | "plum"
+                    | "coral"
+                    | "dark"
+                    | "green"
             )
         })
         .unwrap_or_else(|| "blue".into());
-    let input = serde_json::json!({ "title": title, "slides": slides, "out": out, "theme": theme }).to_string();
+    let input = serde_json::json!({ "title": title, "slides": slides, "out": out, "theme": theme })
+        .to_string();
     let r = run_python(&app, MAKE_PPTX_SCRIPT, Some(&input), &[], Some(120))?;
     if r.exit_code != Some(0) {
         return Err(format!("生成 PPT 失败：{}", r.stderr.trim()));
@@ -941,7 +989,12 @@ fn gen_out_path(app: &AppHandle, filename: Option<&str>, ext: &str) -> Result<St
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     // 文件名只取 basename，防路径穿越
     let base = filename
-        .map(|f| std::path::Path::new(f).file_name().map(|b| b.to_string_lossy().to_string()).unwrap_or_default())
+        .map(|f| {
+            std::path::Path::new(f)
+                .file_name()
+                .map(|b| b.to_string_lossy().to_string())
+                .unwrap_or_default()
+        })
         .filter(|f| !f.is_empty())
         .unwrap_or_else(|| format!("文档-{}", chrono::Local::now().format("%Y%m%d-%H%M%S")));
     let base = base.trim_end_matches(&format!(".{ext}"));

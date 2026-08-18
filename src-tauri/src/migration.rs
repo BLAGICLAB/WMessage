@@ -160,7 +160,11 @@ fn save_rules(app: &AppHandle, rules: &RulesFile) -> Result<(), String> {
 pub fn validate_rules(rules: &RulesFile) -> Result<(), String> {
     for (i, r) in rules.rules.iter().enumerate() {
         if r.action != "move" && r.action != "delete" {
-            return Err(format!("第 {} 条规则动作非法：{}（仅支持 move / delete）", i + 1, r.action));
+            return Err(format!(
+                "第 {} 条规则动作非法：{}（仅支持 move / delete）",
+                i + 1,
+                r.action
+            ));
         }
         if r.action == "move" && r.archive_dir.trim().is_empty() {
             return Err(format!("第 {} 条规则是移动归档，归档目录不能为空", i + 1));
@@ -252,8 +256,7 @@ fn move_entry(src: &Path, dst: &Path) -> Result<(), String> {
         // 跨卷回退：文件 copy+remove；目录递归拷贝后再删源
         if src.is_dir() {
             copy_dir_recursive(src, dst).map_err(|e| format!("跨卷复制失败：{e}"))?;
-            fs::remove_dir_all(src)
-                .map_err(|e| format!("跨卷复制成功但删除源目录失败：{e}"))?;
+            fs::remove_dir_all(src).map_err(|e| format!("跨卷复制成功但删除源目录失败：{e}"))?;
             return Ok(());
         }
         fs::copy(src, dst).map_err(|e| format!("复制失败：{e}"))?;
@@ -470,9 +473,7 @@ pub fn spawn_polling(app: AppHandle) {
         loop {
             std::thread::sleep(Duration::from_secs(POLL_INTERVAL_SECS));
             // 防 panic 杀死轮询线程（审计 P2）：单轮崩溃只废这一轮，后台自动迁移永久可用
-            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                run_migration(&app)
-            }));
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_migration(&app)));
             if let Err(e) = r {
                 let msg = e
                     .downcast_ref::<&str>()
@@ -507,9 +508,8 @@ fn parse_rules_csv(text: &str) -> Result<RulesFile, String> {
         .map_err(|e| format!("CSV 表头解析失败：{e}"))?
         .clone();
     // 表头定位（宽容匹配：包含关键字即可）
-    let find_col = |needle: &str| -> Option<usize> {
-        headers.iter().position(|h| h.contains(needle))
-    };
+    let find_col =
+        |needle: &str| -> Option<usize> { headers.iter().position(|h| h.contains(needle)) };
     let (Some(ci_enable), Some(ci_kw), Some(ci_action), Some(ci_dir)) = (
         find_col("启用"),
         find_col("关键字"),
@@ -556,7 +556,11 @@ fn parse_rules_csv(text: &str) -> Result<RulesFile, String> {
             enabled,
             keywords,
             action: action.clone(),
-            archive_dir: if action == "move" { get(ci_dir) } else { String::new() },
+            archive_dir: if action == "move" {
+                get(ci_dir)
+            } else {
+                String::new()
+            },
         });
     }
     if rules.is_empty() {
@@ -749,7 +753,10 @@ mod tests {
         fs::write(src.join("子").join("b.txt"), "B").unwrap();
         copy_dir_recursive(&src, &dst).unwrap();
         assert_eq!(fs::read_to_string(dst.join("a.txt")).unwrap(), "A");
-        assert_eq!(fs::read_to_string(dst.join("子").join("b.txt")).unwrap(), "B");
+        assert_eq!(
+            fs::read_to_string(dst.join("子").join("b.txt")).unwrap(),
+            "B"
+        );
         assert!(src.exists()); // 拷贝不改源
         fs::remove_dir_all(&base).unwrap();
     }
