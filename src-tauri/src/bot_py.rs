@@ -12,6 +12,23 @@
 use serde::Serialize;
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
+
+/// Windows 上 GUI 程序调 cmd.exe / python.exe / taskkill.exe 等控制台子进程时，
+/// 默认会为子进程开一个控制台窗口（即使立即退出）—— 视觉上就是"黑框闪一下"。
+/// CREATE_NO_WINDOW (0x08000000) 抑制父进程继承的控制台窗口创建，是 Tauri / Electron
+/// 等 GUI 框架调子进程时的标准做法。Unix 平台无此概念（不走控制台），保持直通。
+#[cfg(windows)]
+fn silent_cmd(program: &str) -> Command {
+    use std::os::windows::process::CommandExt;
+    let mut cmd = Command::new(program);
+    cmd.creation_flags(0x08000000);
+    cmd
+}
+
+#[cfg(not(windows))]
+fn silent_cmd(program: &str) -> Command {
+    Command::new(program)
+}
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use tauri::AppHandle;
@@ -57,7 +74,7 @@ pub fn detect_python() -> Option<String> {
     #[cfg(not(windows))]
     let candidates: &[&str] = &["python3", "python"];
     for c in candidates {
-        if let Ok(out) = Command::new(c).arg("--version").output() {
+        if let Ok(out) = silent_cmd(c).arg("--version").output() {
             if out.status.success() {
                 return Some(c.to_string());
             }
@@ -66,7 +83,7 @@ pub fn detect_python() -> Option<String> {
     // Windows 兜底：py 启动器
     #[cfg(windows)]
     {
-        if let Ok(out) = Command::new("py").args(["-3", "--version"]).output() {
+        if let Ok(out) = silent_cmd("py").args(["-3", "--version"]).output() {
             if out.status.success() {
                 return Some("py".to_string());
             }
@@ -85,7 +102,7 @@ fn py_env_check_blocking() -> PyEnv {
             libs: Vec::new(),
         };
     };
-    let version = Command::new(&py)
+    let version = silent_cmd(&py)
         .arg("--version")
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
@@ -100,7 +117,7 @@ for m in ["openpyxl", "docx", "pptx", "pypdf", "reportlab"]:
         print(f"{m}:缺")
 "#;
     let mut libs = Vec::new();
-    if let Ok(out) = Command::new(&py).args(["-c", probe]).output() {
+    if let Ok(out) = silent_cmd(&py).args(["-c", probe]).output() {
         if out.status.success() {
             for line in String::from_utf8_lossy(&out.stdout).lines() {
                 if line.contains(':') {
@@ -150,14 +167,14 @@ fn kill_tree(child: &mut std::process::Child) {
     #[cfg(unix)]
     {
         let pid = child.id() as i32;
-        let _ = std::process::Command::new("kill")
+        let _ = silent_cmd("kill")
             .args(["-9", &format!("-{pid}")])
             .status();
     }
     #[cfg(windows)]
     {
         let pid = child.id().to_string();
-        let _ = std::process::Command::new("taskkill")
+        let _ = silent_cmd("taskkill")
             .args(["/PID", &pid, "/T", "/F"])
             .status();
     }
@@ -200,7 +217,7 @@ pub fn run_python(
         std::fs::write(dir.join("params.json"), j).map_err(|e| e.to_string())?;
     }
 
-    let mut cmd = Command::new(&py);
+    let mut cmd = silent_cmd(&py);
     // Unix：子进程自成进程组（组首），超时可整组强杀，不残留孙进程
     #[cfg(unix)]
     {
