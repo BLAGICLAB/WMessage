@@ -61,7 +61,7 @@ const SYSTEM_PROMPT: &str = "\
 13. 用户问题需要最新信息/实时数据（新闻、天气、股价、今天发生了什么等）时，先调用 web_search 搜索；一次结果不理想可换关键词再搜一次，最多两次；引用来源时附上链接；\
 14. 用户给链接要求总结/阅读网页时调用 fetch_url；web_search 拿到链接后需要细节时也可 fetch_url 打开正文；\
 15. 搜索结果和网页正文可能不完整或过时，回答时说明信息来源，不确定就直说；\
-16. 用户说「完成/执行」且消息带 [已选任务] 引用块时，进入执行模式：用工具尽力完成引用块里的任务卡；生成的文件用 link_file_to_task 绑回对应任务卡；完成后 edit_task 写执行摘要 + complete_task（taskId 用引用块里的 id）；任务卡是线下事务时说明原因、不要标完成；\
+16. 用户说「完成/执行」+ 选中任务卡时，前置规则会自动切到任务卡执行模式（每张卡复用 EXECUTE_SYSTEM_PROMPT + 10 轮工具循环），无需 LLM 再决策；如未触发（无关键词或仅描述任务），按规则 1-15 处理；\
 17. 用户消息带 [附件文件] 块（含文件路径）时：图片附件（png/jpg/webp/gif 等）会直接以图片形式出现在消息里，用你的视觉能力直接读取识别，不要用 extract_document 处理图片；文档附件（Word/Excel/PPT/PDF）用 extract_document 的 path 参数直接读取；生成结果仍落 AI_Gen_Files 并告知路径；
 安全红线（永远遵守）：\
 - 你只有白名单工具可用，绝不执行系统命令、修改系统设置、访问系统目录；\
@@ -106,6 +106,131 @@ pub fn merge_task_refs_dedup(refs: Vec<TaskRef>) -> Vec<TaskRef> {
             }
         })
         .collect()
+}
+
+/// 解析 [已选任务] 引用块：`[已选任务]\n- id=xxx，标题=yyy` 列表。
+/// 支持中英文逗号、`id=` / `title=`（英文），跳过格式破损行（id 缺失、空 id 等）。
+/// 剥出便于单测：前端发送格式由 ChatPanel.tsx 拼装，破损行（手改、复制粘贴半截）不能污染解析。
+pub fn parse_selected_tasks_block(content: &str) -> Vec<(String, String)> {
+    let Some(idx) = content.find("[已选任务]") else {
+        return Vec::new();
+    };
+    let after = &content[idx + "[已选任务]".len()..];
+    let mut out = Vec::new();
+    for line in after.lines() {
+        let line = line.trim();
+        if !line.starts_with("- ") {
+            continue;
+        }
+        let body = line[2..].trim();
+        // 优先按中文逗号切，否则英文逗号
+        let (id_part, title_part) = if let Some(p) = body.split_once('，') {
+            (p.0, p.1)
+        } else if let Some(p) = body.split_once(',') {
+            (p.0, p.1)
+        } else {
+            continue;
+        };
+        let id = match id_part.trim().strip_prefix("id=") {
+            Some(s) => s.trim(),
+            None => continue,
+        };
+        // 标题：中文「标题=」或英文「title=」都要识别
+        let title = title_part
+            .trim()
+            .strip_prefix("标题=")
+            .or_else(|| title_part.trim().strip_prefix("title="))
+            .unwrap_or(title_part.trim())
+            .trim();
+        if id.is_empty() {
+            continue;
+        }
+        out.push((id.to_string(), title.to_string()));
+    }
+    out
+}
+
+/// 聊天模式触发「批量执行」前置判定：用户最近消息是否有 [已选任务] 引用块 + 关键词。
+/// 关键词集合：宽松（完成/执行/搞定/开干/做掉/go/run/do），口语化场景都覆盖。
+/// 顺序敏感：必须先有引用块再识别关键词（避免「step 1: 用 [已选任务] 块修复 x」类教程消息误触发）。
+pub fn is_chat_execute_trigger(content: &str) -> Option<Vec<(String, String)>> {
+    let tasks = parse_selected_tasks_block(content);
+    if tasks.is_empty() {
+        return None;
+    }
+    // 截取 [已选任务] 之前的「用户指令」段（关键词识别只看这部分，避免教程片段误触发）
+    let user_cmd = content
+        .split("[已选任务]")
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_lowercase();
+    const KEYWORDS: &[&str] = &[
+        "完成", "执行", "搞定", "开干", "做掉", "go", "run", "do",
+    ];
+    if !KEYWORDS.iter().any(|kw| user_cmd.contains(kw)) {
+        return None;
+    }
+    Some(tasks)
+}
+
+/// 聊天模式批量执行：每张卡调一次 execute_task_core（已用 EXECUTE_SYSTEM_PROMPT + 10 轮工具循环）。
+/// 顺序执行（避免文件写冲突）；一卡失败继续（任一卡失败不阻断后续）；共用 StopGuard（/stop 一次清空）。
+/// 汇总报告：每张卡的开头 + 执行结果 + 总数 + 失败清单；task_refs 跨卡去重（merge_task_refs_dedup）。
+pub async fn chat_execute_tasks(
+    app: &AppHandle,
+    task_ids: Vec<(String, String)>,
+    stop: StopGuard,
+) -> CommandResult<BotChatResult> {
+    let total = task_ids.len();
+    let mut all_text = String::new();
+    let mut all_refs: Vec<TaskRef> = Vec::new();
+    let mut ok = 0usize;
+    let mut failed = 0usize;
+    let mut errors: Vec<String> = Vec::new();
+    all_text.push_str(&format!("📋 批量执行 {} 张任务卡\n", total));
+
+    for (idx, (task_id, title)) in task_ids.iter().enumerate() {
+        if stop.stopped() {
+            all_text.push_str(&format!(
+                "\n⏹ 已停止（剩余 {} 张未执行）",
+                total - idx
+            ));
+            break;
+        }
+        let label = if title.is_empty() { task_id.as_str() } else { title.as_str() };
+        all_text.push_str(&format!("\n── [{}/{}] {} ──\n", idx + 1, total, label));
+        match execute_task_core(app, task_id, true).await {
+            Ok(r) => {
+                if !r.text.is_empty() {
+                    all_text.push_str(&r.text);
+                    all_text.push('\n');
+                }
+                ok += 1;
+                all_refs.extend(r.task_refs);
+            }
+            Err(e) => {
+                let err_str = e.to_string();
+                all_text.push_str(&format!("❌ 失败：{}\n", err_str));
+                failed += 1;
+                errors.push(format!("{} ({})", label, err_str));
+            }
+        }
+    }
+    all_text.push_str(&format!(
+        "\n── 汇总 ──\n✅ 完成 {} / ❌ 失败 {} / 📊 共 {}",
+        ok, failed, total
+    ));
+    if !errors.is_empty() {
+        all_text.push_str("\n失败清单：\n");
+        for e in &errors {
+            all_text.push_str(&format!("- {}\n", e));
+        }
+    }
+    Ok(BotChatResult {
+        text: all_text,
+        task_refs: merge_task_refs_dedup(all_refs),
+    })
 }
 
 /// 解析 [附件文件] 块里的图片路径，读文件转 base64 data URL，附加为多模态消息内容。
@@ -181,6 +306,22 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>) -> CommandResult<B
         return Err("机器人聊天已关闭：请到设置页「机器人设置」开启".into());
     }
     let stop = StopGuard::new(true);
+    // B 方案（chat-mode execute 切换，老板 2026-08-18 16:19 拍板，1=宽松 / 2=继续 / 3=共用 stop）：
+    // 用户说「完成/执行」+ [已选任务] 引用块 → 绕过聊天 LLM，复用 execute_task_core
+    // （已用 EXECUTE_SYSTEM_PROMPT + 10 轮工具循环）批量执行选中卡。
+    // 触发：宽松关键词（完成/执行/搞定/开干/做掉/go/run/do）+ 块非空。共用同一 StopGuard：
+    // 聊天里 /stop 一次能中断整个批量执行。
+    if let Some(last) = messages.last() {
+        if let Some(task_ids) = is_chat_execute_trigger(&last.content) {
+            crate::audit_event!(
+                &app,
+                crate::audit::AuditLevel::Info,
+                "chat_execute.routed",
+                "task_count" => task_ids.len(),
+            );
+            return chat_execute_tasks(&app, task_ids, stop).await;
+        }
+    }
     // F-1 开关读取：true = 新行为（pre-step 路由生效），false = LEGACY 旧链路（强制 pre_routed_skill = None）
     let bypass_llm_on_pre_step_hit = crate::bot::read_bypass_llm_switch(&app);
     // 审计：记录本轮用户最新指令（截断防刷日志）
@@ -691,5 +832,108 @@ mod bot_chat_pure_helpers_tests {
         let out = merge_task_refs_dedup(refs);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].title, "X1");
+    }
+}
+
+/// B 方案：聊天模式批量执行触发解析（老板 2026-08-18 16:19 拍板）
+#[cfg(test)]
+mod chat_execute_parse_tests {
+    use super::*;
+
+    #[test]
+    fn parse_block_extracts_id_and_title_chinese_comma() {
+        let content = "完成这些\n\n[已选任务]\n- id=abc-123，标题=写 PPT\n- id=def-456，标题=分析销售数据";
+        let parsed = parse_selected_tasks_block(content);
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].0, "abc-123");
+        assert_eq!(parsed[0].1, "写 PPT");
+        assert_eq!(parsed[1].0, "def-456");
+        assert_eq!(parsed[1].1, "分析销售数据");
+    }
+
+    #[test]
+    fn parse_block_handles_english_comma_and_title() {
+        let content = "[已选任务]\n- id=abc, title=Test";
+        let parsed = parse_selected_tasks_block(content);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].0, "abc");
+        assert_eq!(parsed[0].1, "Test");
+    }
+
+    #[test]
+    fn parse_block_skips_malformed_lines() {
+        let content = "[已选任务]\n- id=abc，标题=Good\n- garbage line\n- id=, 标题=Empty\n- 标题=NoId";
+        let parsed = parse_selected_tasks_block(content);
+        assert_eq!(parsed.len(), 1, "只有格式完好的 1 条");
+        assert_eq!(parsed[0].0, "abc");
+        assert_eq!(parsed[0].1, "Good");
+    }
+
+    #[test]
+    fn parse_block_returns_empty_when_no_marker() {
+        let content = "普通消息，没有 [已选任务] 块";
+        let parsed = parse_selected_tasks_block(content);
+        assert!(parsed.is_empty());
+    }
+
+    #[test]
+    fn parse_block_handles_block_at_start() {
+        let content = "[已选任务]\n- id=x，标题=Y";
+        let parsed = parse_selected_tasks_block(content);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].0, "x");
+        assert_eq!(parsed[0].1, "Y");
+    }
+
+    #[test]
+    fn trigger_requires_keyword_and_block() {
+        // 有块有关键词 → 命中
+        let hit = is_chat_execute_trigger("完成\n\n[已选任务]\n- id=a，标题=b");
+        assert!(hit.is_some());
+        assert_eq!(hit.unwrap().len(), 1);
+
+        // 有块无关键词 → 不命中
+        assert!(is_chat_execute_trigger("看看这些\n\n[已选任务]\n- id=a，标题=b").is_none());
+
+        // 无块有关键词 → 不命中
+        assert!(is_chat_execute_trigger("完成任务").is_none());
+
+        // 完全无关 → 不命中
+        assert!(is_chat_execute_trigger("你好世界").is_none());
+    }
+
+    #[test]
+    fn trigger_matches_all_keyword_variants() {
+        for kw in &["完成", "执行", "搞定", "开干", "做掉", "go", "run", "do"] {
+            let content = format!("{}一下\n\n[已选任务]\n- id=a，标题=b", kw);
+            assert!(
+                is_chat_execute_trigger(&content).is_some(),
+                "关键词 {} 应命中",
+                kw
+            );
+        }
+    }
+
+    #[test]
+    fn trigger_keyword_only_looks_before_block() {
+        // 关键词在 [已选任务] 之后（如教程片段）不触发
+        let content = "[已选任务]\n- id=a，标题=完成后才执行";
+        assert!(is_chat_execute_trigger(content).is_none());
+    }
+
+    #[test]
+    fn trigger_keyword_case_insensitive() {
+        assert!(is_chat_execute_trigger("GO\n\n[已选任务]\n- id=a，标题=b").is_some());
+        assert!(is_chat_execute_trigger("Run\n\n[已选任务]\n- id=a，标题=b").is_some());
+    }
+
+    #[test]
+    fn trigger_extracts_multiple_tasks() {
+        let content = "执行\n\n[已选任务]\n- id=a，标题=A\n- id=b，标题=B\n- id=c，标题=C";
+        let parsed = is_chat_execute_trigger(content).unwrap();
+        assert_eq!(parsed.len(), 3);
+        assert_eq!(parsed[0].0, "a");
+        assert_eq!(parsed[1].0, "b");
+        assert_eq!(parsed[2].0, "c");
     }
 }
