@@ -20,6 +20,7 @@
 use crate::audit_event;
 use crate::bot_skills::{build_skill_block, tool_use_skill, SkillMeta};
 use crate::intent_router::RouteAction; // F-2：route_user_input 调用迁移到 middleware::run_pre_step
+use crate::error::{CommandError, CommandResult};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
@@ -296,7 +297,7 @@ pub fn migrate_legacy_key(app: &AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn bot_get_config(app: AppHandle) -> Result<BotConfigView, String> {
+pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
     let _ = migrate_legacy_key(&app); // 兜底：设置页读配置时也确保无明文残留
     let p = config_path(&app);
     let cfg: BotConfig = if p.exists() {
@@ -321,7 +322,7 @@ pub fn bot_set_config(
     app: AppHandle,
     config: BotConfig,
     api_key: Option<String>,
-) -> Result<(), String> {
+) -> CommandResult<()> {
     if let Some(k) = api_key {
         let k = k.trim();
         if !k.is_empty() {
@@ -332,9 +333,9 @@ pub fn bot_set_config(
     let mut cfg = config;
     cfg.api_key = None;
     let dir = crate::db::data_dir(&app);
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let raw = serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?;
-    std::fs::write(config_path(&app), raw).map_err(|e| e.to_string())
+    std::fs::create_dir_all(&dir).map_err(|e| CommandError::IoError(e.to_string()))?;
+    let raw = serde_json::to_string_pretty(&cfg).map_err(|e| CommandError::IoError(e.to_string()))?;
+    std::fs::write(config_path(&app), raw).map_err(|e| CommandError::IoError(e.to_string()))
 }
 
 /// 清除已保存的 API Key
@@ -960,7 +961,7 @@ pub struct BotChatResult {
 /// 聊天入口：messages 为完整历史（含最新的用户消息），返回最终完整回复。
 /// 流式片段经 bot-chat-delta 事件实时推给挂件窗口。
 #[tauri::command]
-pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>) -> Result<BotChatResult, String> {
+pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>) -> CommandResult<BotChatResult> {
     if !bot_get_enabled(app.clone()) {
         return Err("机器人聊天已关闭：请到设置页「机器人设置」开启".into());
     }
@@ -1065,7 +1066,7 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>) -> Result<BotChatR
                     recovery_hint = Some(format_recovery_hint(&reason, &completed_summary, rollback_attempted));
                 }
                 Err(crate::bot_skills::DslFailure::Terminated { reason }) => {
-                    return Err(reason);
+                    return Err(CommandError::Internal(reason));
                 }
             }
         }
@@ -1351,7 +1352,7 @@ async fn run_model_loop(
     msgs: Vec<serde_json::Value>,
     max_rounds: usize,
     stop: &StopGuard,
-) -> Result<(String, Vec<TaskRef>), String> {
+) -> CommandResult<(String, Vec<TaskRef>)> {
     let cfg = bot_get_config(app.clone())?;
     let api_key = read_api_key()?;
     if api_key.trim().is_empty() {
@@ -1446,10 +1447,10 @@ async fn run_model_loop(
                 "status" => status.as_u16(),
             );
             let hint = crate::bot_skills::skill_finish(&app, false, "大模型 API 错误");
-            return Err(format!(
-                "大模型 API 错误 {status}：{}{hint}",
-                text.chars().take(300).collect::<String>()
-            ));
+            return Err(CommandError::LlmApiError {
+                status: status.as_u16(),
+                body_preview: format!("{}{hint}", text.chars().take(300).collect::<String>()),
+            });
         }
         audit_event!(
             &app,
@@ -1644,7 +1645,7 @@ async fn run_model_loop(
         last_streamed = final_text.clone();
     }
     let hint = crate::bot_skills::skill_finish(&app, false, "对话轮数超限");
-    Err(format!("对话轮数超限{hint}"))
+    Err(CommandError::Internal(format!("对话轮数超限{hint}")))
 }
 
 /// 任务卡执行模式系统提示词
@@ -1667,7 +1668,7 @@ const COMPACT_SYSTEM_PROMPT: &str = "\
 
 /// /compact 快捷命令：把当前会话历史交给模型总结成摘要（单次非流式请求，不带工具）
 #[tauri::command]
-pub async fn bot_compact(app: AppHandle, messages: Vec<ChatMsg>) -> Result<String, String> {
+pub async fn bot_compact(app: AppHandle, messages: Vec<ChatMsg>) -> CommandResult<String> {
     let cfg = bot_get_config(app.clone())?;
     let api_key = read_api_key()?;
     if api_key.trim().is_empty() {
@@ -1713,10 +1714,10 @@ pub async fn bot_compact(app: AppHandle, messages: Vec<ChatMsg>) -> Result<Strin
     if !resp.status().is_success() {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
-        return Err(format!(
-            "大模型 API 错误 {status}：{}",
-            text.chars().take(300).collect::<String>()
-        ));
+        return Err(CommandError::LlmApiError {
+            status: status.as_u16(),
+            body_preview: text.chars().take(300).collect::<String>(),
+        });
     }
     let v: serde_json::Value = resp
         .json()
@@ -1740,7 +1741,7 @@ pub async fn bot_compact(app: AppHandle, messages: Vec<ChatMsg>) -> Result<Strin
 /// 任务卡交给机器人执行（🤖 按钮 / 选卡说「完成它」）：把任务卡内容组装成指令，高轮数工具循环执行。
 /// 流式经 bot-chat-delta / bot-think-delta / bot-tool* 事件推给挂件。
 #[tauri::command]
-pub async fn bot_execute_task(app: AppHandle, task_id: String) -> Result<BotChatResult, String> {
+pub async fn bot_execute_task(app: AppHandle, task_id: String) -> CommandResult<BotChatResult> {
     execute_task_core(&app, &task_id, true).await
 }
 
@@ -1750,10 +1751,10 @@ async fn execute_task_core(
     app: &AppHandle,
     task_id: &str,
     interactive: bool,
-) -> Result<BotChatResult, String> {
+) -> CommandResult<BotChatResult> {
     // 开关关闭时明确拒绝（二次审计 P2-3）
     if !bot_get_enabled(app.clone()) {
-        return Err("机器人已关闭：请到设置页「机器人设置」开启".into());
+        return Err(CommandError::BotDisabled);
     }
     let stop = StopGuard::new(interactive);
     let task = crate::db::db_load(app.clone())

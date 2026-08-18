@@ -34,6 +34,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use crate::audit::AuditLevel;
 use crate::audit_event;
 use crate::db;
+use crate::error::CommandResult;
 
 pub const API_PORT: u16 = 4763;
 
@@ -921,7 +922,7 @@ fn sse_connect(req: Request, hub: &Arc<EventHub>, query: &str) {
 // ───────────────────────── tauri 命令 ─────────────────────────
 
 #[tauri::command]
-pub fn api_start(app: AppHandle, state: tauri::State<'_, ApiState>) -> Result<ApiInfo, String> {
+pub fn api_start(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandResult<ApiInfo> {
     {
         let g = state.0.lock().map_err(|e| e.to_string())?;
         if g.is_some() {
@@ -958,7 +959,7 @@ pub fn api_start(app: AppHandle, state: tauri::State<'_, ApiState>) -> Result<Ap
 }
 
 #[tauri::command]
-pub fn api_stop(app: AppHandle, state: tauri::State<'_, ApiState>) -> Result<(), String> {
+pub fn api_stop(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandResult<()> {
     let mut g = state.0.lock().map_err(|e| e.to_string())?;
     if let Some(mut r) = g.take() {
         r.shutdown.store(true, Ordering::SeqCst);
@@ -986,7 +987,7 @@ pub fn api_status(app: AppHandle, state: tauri::State<'_, ApiState>) -> Result<A
 pub fn api_rotate_token(
     app: AppHandle,
     state: tauri::State<'_, ApiState>,
-) -> Result<ApiInfo, String> {
+) -> CommandResult<ApiInfo> {
     let dir = db::data_dir(&app);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let token = uuid::Uuid::new_v4().simple().to_string();
@@ -994,7 +995,7 @@ pub fn api_rotate_token(
     let was_running = state.0.lock().map_err(|e| e.to_string())?.is_some();
     if was_running {
         // 重启服务使新 token 立即生效（api_stop 会清 flag，api_start 会重写）
-        api_stop(app.clone(), state.clone()).map_err(|e| e.to_string())?;
+        api_stop(app.clone(), state.clone())?;
         return api_start(app, state);
     }
     Ok(ApiInfo {

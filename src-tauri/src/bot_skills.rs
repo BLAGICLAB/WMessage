@@ -6,6 +6,7 @@
 //! - 安全：技能名白名单字符集（防路径穿越）；正文读取有大小上限
 
 use crate::audit_event;
+use crate::error::{CommandError, CommandResult};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::Serialize;
@@ -1459,7 +1460,7 @@ pub fn skills_open_dir(app: AppHandle) -> Result<String, String> {
 /// 导入技能文件夹：校验含 SKILL.md，拷贝到数据目录 skills/<name>（重名拒绝，需先删）。
 /// 返回技能名。
 #[tauri::command]
-pub fn skills_import(app: AppHandle, path: String) -> Result<String, String> {
+pub fn skills_import(app: AppHandle, path: String) -> CommandResult<String> {
     let src = std::path::PathBuf::from(&path);
     if !src.is_dir() {
         return Err("请选择技能文件夹".into());
@@ -1476,7 +1477,11 @@ pub fn skills_import(app: AppHandle, path: String) -> Result<String, String> {
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let dest = dir.join(&name);
     if dest.exists() {
-        return Err(format!("技能「{name}」已存在：请先在设置页删除同名技能"));
+        return Err(CommandError::SkillLoadFailed {
+            name: name.clone(),
+            reason: "同名技能已存在：请先在设置页删除".into(),
+        }
+        .into());
     }
     // 递归拷贝（技能可能带 scripts/ 等资源）
     copy_dir_all(&src, &dest)?;
