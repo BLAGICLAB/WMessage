@@ -21,7 +21,7 @@ use crate::intent_router::RouteAction;
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 
 // ───────────────────────── 聊天 ─────────────────────────
 
@@ -277,6 +277,17 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>) -> CommandResult<B
                     completed_summary,
                     rollback_attempted,
                 }) => {
+                    // SSE 推 Skill 失败给挂件（Phase 7 P2 优化：让用户看到半成品 + rollback 状态）
+                    let _ = app.emit_to(
+                        "widget",
+                        "bot-skill-failed",
+                        serde_json::json!({
+                            "skillName": meta.name,
+                            "reason": reason,
+                            "completedSummary": completed_summary,
+                            "rollbackAttempted": rollback_attempted,
+                        }),
+                    );
                     // LLM 兜底：把「失败原因 + 已完成产物 + 回滚状态」拼进 system prompt 决策
                     recovery_hint = Some(format_recovery_hint(
                         &reason,

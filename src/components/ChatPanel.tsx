@@ -25,6 +25,19 @@ type TaskRef = { id: string; title: string };
 /** 工具调用行：折叠显示，展开可看入参 */
 type ToolCall = { id: string; name: string; args?: string; done?: boolean };
 
+/** Skill 失败半成品上下文（仅本会话内存；Phase 4 第 5 项：FailedButRecoverable 兜底）。
+ *  后端 run_skill_scheduler 返回 DslOutcome::FailedButRecoverable { reason, completed_summary, rollback_attempted }
+ *  时通过 `bot-skill-failed` SSE event 推过来；前端把它存到这条消息上渲染 ⚠️ 折叠行。
+ *  - completedSummary: 失败前已成功 step 的摘要（"Step N (tool): output\nStep N (tool): ..."）
+ *  - rollbackAttempted: true 表示 rollback 段跑过且无错；false 表示没写或跑挂
+ *  - 仅本会话内存，刷新/重启后丢失（DB 持久化要改 src-tauri/，留给后续 subagent） */
+type SkillFailure = {
+  skillName: string;
+  reason: string;
+  completedSummary: string;
+  rollbackAttempted: boolean;
+};
+
 type Msg = {
   role: "user" | "assistant";
   content: string;
@@ -35,6 +48,8 @@ type Msg = {
   thinking?: string;
   /** 本轮工具调用行（折叠显示） */
   tools?: ToolCall[];
+  /** Skill 失败半成品上下文（折叠显示 ⚠️ 行；见 SkillFailure 说明） */
+  skillFailure?: SkillFailure;
 };
 
 type Session = { id: string; title: string };
@@ -192,8 +207,12 @@ export function ChatPanel({
   } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
-  /** 流式过程中的装饰（思考/工具行），bot_chat 完成后并入最终消息 */
-  const streamingMeta = useRef<{ thinking?: string; tools?: ToolCall[] }>({});
+  /** 流式过程中的装饰（思考/工具行/Skill 失败），bot_chat 完成后并入最终消息 */
+  const streamingMeta = useRef<{
+    thinking?: string;
+    tools?: ToolCall[];
+    skillFailure?: SkillFailure;
+  }>({});
   /** busy 镜像：供事件监听里同步判断。
    *  ⚠️ 必须与 setBusy 同步更新（useEffect 在重渲染后才跑，同一帧内连按会有并发窗口，审计 P2） */
   const busyRef = useRef(false);
@@ -380,12 +399,40 @@ function extractFilePaths(content: string): string[] {
         });
       }
     );
+    // Skill 失败半成品（Phase 4 第 5 项 + 审计 P2）：后端 run_skill_scheduler 返回
+    // FailedButRecoverable 时 emit `bot-skill-failed` event；前端把它挂到当前流式消息上
+    // 渲染 ⚠️ 折叠行，让用户看到哪步成功哪步失败 + 是否回滚。
+    // 注意：失败时同一条流式消息后续还会有 LLM 兜底回复，所以不要清空 streamingMeta。
+    const unSkillFailed = listen<{
+      skillName?: string;
+      reason?: string;
+      completedSummary?: string;
+      rollbackAttempted?: boolean;
+    }>("bot-skill-failed", (e) => {
+      const p = e.payload ?? {};
+      if (!p.skillName) return;
+      const failure: SkillFailure = {
+        skillName: p.skillName,
+        reason: p.reason ?? "(无原因)",
+        completedSummary: p.completedSummary ?? "(无已完成步骤)",
+        rollbackAttempted: !!p.rollbackAttempted,
+      };
+      streamingMeta.current.skillFailure = failure;
+      setMessages((prev) => {
+        const last = prev[prev.length - 1];
+        if (!last || !last.streaming) return prev;
+        const copy = [...prev];
+        copy[copy.length - 1] = { ...last, skillFailure: failure };
+        return copy;
+      });
+    });
     return () => {
       unlisten.then((f) => f());
       unThink.then((f) => f());
       unTool.then((f) => f());
       unToolName.then((f) => f());
       unToolDone.then((f) => f());
+      unSkillFailed.then((f) => f());
     };
   }, []);
 
@@ -549,6 +596,7 @@ function extractFilePaths(content: string): string[] {
           refs: full.taskRefs ?? [],
           thinking: meta.thinking,
           tools: meta.tools,
+          skillFailure: meta.skillFailure,
         },
       ];
       // 持久化始终按 sid 写；UI 只在会话未切换时更新（防旧会话消息渲染进新会话）
@@ -895,6 +943,45 @@ function extractFilePaths(content: string): string[] {
                 {m.role === "assistant" && (m.thinking?.length ?? 0) > 0 && (
                   <Fold title={<span>💭 思考过程{m.streaming ? " …" : ""}</span>}>
                     {m.thinking}
+                  </Fold>
+                )}
+                {/* Skill 失败半成品（Phase 4 第 5 项 + 审计 P2 优化项）。
+                 *  区别于 🔧 工具折叠行：用 ⚠️ 标记，视觉上提示「这不是普通工具调用」；
+                 *  默认折叠，点开才看哪个 step 成功 + 是否回滚。 */}
+                {m.role === "assistant" && m.skillFailure && (
+                  <Fold
+                    title={
+                      <span
+                        className={
+                          m.skillFailure.rollbackAttempted
+                            ? "text-[var(--t4)]"
+                            : "text-[var(--danger)]"
+                        }
+                      >
+                        ⚠️ Skill 失败：{m.skillFailure.skillName}
+                        {m.skillFailure.rollbackAttempted
+                          ? "（已回滚）"
+                          : "（未回滚，请人工核对）"}
+                      </span>
+                    }
+                  >
+                    <div className="space-y-1">
+                      <div>
+                        <span className="opacity-70">原因：</span>
+                        <span>{m.skillFailure.reason}</span>
+                      </div>
+                      <div>
+                        <span className="opacity-70">已完成步骤：</span>
+                        <pre className="opacity-80 whitespace-pre-wrap break-words">
+                          {m.skillFailure.completedSummary}
+                        </pre>
+                      </div>
+                      {!m.skillFailure.rollbackAttempted && (
+                        <div className="text-[var(--danger)]">
+                          ⚠️ 已完成步骤未回滚，请检查任务卡状态。
+                        </div>
+                      )}
+                    </div>
                   </Fold>
                 )}
                 {(m.tools?.length ?? 0) > 0 && (

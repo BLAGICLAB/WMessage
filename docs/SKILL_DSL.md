@@ -126,6 +126,38 @@ delete_task({"id": "${step1.id}"})
 
 rollback 段也走变量替换（失败前的步骤都已入 ctx），失败时按相反顺序执行。
 
+#### 4.3.1 rollback 语义详解（必读）
+
+很多开发者在写 Skill 时都会撞同一类坑，先把语义说清：
+
+- **覆盖范围**：rollback 段**只覆盖段内显式声明的工具调用**。它在失败时跑一遍这些工具调用，对**之前 step 已写入的副作用**（如 `create_task` 已落库的任务、`edit_task` 已修改的字段、`bind_file` 已绑定的文件）**不会自动 undo**。如果你想逆向一个 `create_task`，必须在 rollback 里显式写一个 `delete_task`。
+- **不是事务**：rollback 段**按声明顺序执行**（不是原子事务），rollback 中任一步失败也只算「rollback 段跑挂」，不影响其它 rollback 步继续跑。每一步的成功 / 失败都会记到 `completed_summary`（用户和 LLM 都能看到）。
+- **`rollback_attempted` 语义**：最终 `DslOutcome::FailedButRecoverable { rollback_attempted, ... }` 里这个字段是 bool。
+  - `true` = rollback 段存在**且**顺序跑完后没有 fail 步
+  - `false` = rollback 段根本没写（`rollback: none`）/ 跑挂 / 在跑之前就 panic 了
+  - 注意 `false` ≠「没有副作用」：即使 rollback_attempted=false，前面 step 的写入已经发生过了。
+- **step 工具必须幂等**：rollback 是 best-effort，可能只跑成功一半就挂了；LLM 兜底路径也可能基于「已完成产物」决定重试。所以**写操作的 step 必须幂等**（`create_task` 用稳定 key、`edit_task` 能多次执行不改坏、文件操作覆盖写入）。
+- **前置检查 step**：建议每个有副作用的 Skill 开头加一个「读」step（`list_tasks` / `query_single_task` / `search_tasks`），拿到 ID / 上下文后再走「写」。这样失败时 rollback 段能直接用 `${step1.id}`，不用再去翻状态。
+- **故意破坏性的 step 放最后**：删 / 归档 / 改状态这类 step 排到末尾，配合 rollback 段在前面抵消前面 step 的副作用，万一中间挂掉损失最小。
+
+#### 4.3.2 失败展示 UI 约定（前后端共同遵守）
+
+`run_skill_scheduler` 返回 `FailedButRecoverable` 时，会向所有窗口 emit `bot-skill-failed` event：
+
+```json
+{
+  "skillName": "minimax-archive-task",
+  "reason": "技能「minimax-archive-task」Step 2 (move_task) 失败：错误：目标目录不可写",
+  "completedSummary": "Step 1 (query_single_task): {\"id\":\"7c9e...\",\"title\":\"任务A\"}\nStep 2 (move_task): 错误：目标目录不可写",
+  "rollbackAttempted": false
+}
+```
+
+- **前端必展示**：`completedSummary` 让用户 / 开发者一眼看到哪个 step 成功、哪个挂了；`rollback_attempted` 决定提示文案。
+- **写操作 Skill 失败 + `rollback_attempted=false`**：前端**必**额外提示「已完成步骤未回滚，请人工核对任务卡状态」——这是安全护栏。
+- **rollback_attempted=true**：不弹额外提示（成功回滚了），标题里写「已回滚」即可。
+- **持久化**：本字段仅本会话内存（前端 `Msg.skillFailure`），刷新 / 重启后丢失。后续可以扩 `bot_messages` schema 加 `skill_failure_json` 列持久化。
+
 ---
 
 ## 4.4 Skill mode 与 LLM 安全边界（2026-08-18 拍板）
@@ -342,6 +374,56 @@ query_single_task({"id": "${step1.0.id}"})
 ```
 
 `${step1.0.id}` 取 `parsed[0]["id"]`（list_tasks 返回的是数组，第一个元素的 id 字段）。
+
+### 8.5 失败场景示例：重命名任务 + 「读 → 修改 → 写」流程
+
+下面是「改任务名」的读改写流程，包含 Step 1（读）、Step 2（修改）、Step 3（写）。Step 2 失败时（假设字段未通过校验），用户能在前端看到 ⚠️ Skill 失败折叠行。
+
+```markdown
+---
+name: demo-rename-task
+description: 修改任务标题（演示 rollback 语义）
+risk_level: medium
+mode: auto
+max_steps: 3
+timeout_secs: 30
+rollback: auto
+intents:
+  - 改标题
+  - 改任务名
+---
+
+## Step 1: 读取任务详情
+query_single_task({"id": "${prev.id}"})
+
+## Step 2: 修改任务标题
+edit_task({"id": "${step1.id}", "title": "新标题【】"})
+
+## Step 3: 绑定文件（可选后续产物）
+bind_file({"task_id": "${step1.id}", "path": "/tmp/out.docx"})
+
+## Rollback
+# 撤销修改：把 title 写回 step1 取到的旧值
+edit_task({"id": "${step1.id}", "title": "${step1.title}"})
+# 解绑刚才可能绑上的文件
+delete_file({"path": "/tmp/out.docx"})
+```
+
+**正确要点**：
+- rollback 显式调用 `edit_task` 把标题改回 `${step1.title}`（原值），而不是「什么都不做」——因为 Step 2 可能已经写入再失败。
+- 删除可能写入的文件，即使 bind_file 在 Step 3 才跑（前面 step 挂了 rollback 也会跑同样的工具，按风险措词是 best-effort）。
+- 三个 step 顺序合理：读 → 改 → 写，避免直接对不存在的任务 ID 写。
+
+#### ❌ 错例：rollback 只写了「重跑」
+
+```markdown
+## Rollback
+edit_task({"id": "${step1.id}", "title": "新标题【】"})
+```
+
+这是反例：rollback 段**重跑了同一个有缺陷的写入**，根本不是 undo。结果是 `rollback_attempted=true` 看着像成功了，但任务状态依然坏掉。**rollback 的目标是把状态恢复，不是重跑**。
+
+如果你的 Skill 有可能写入部分成功 / 状态不一致，rollback 段应该读 step1 的原值（`${step1.title}` / `${step1.archived}` 等）再写回去，而不是硬编码或者重复 step2 的操作。
 
 ---
 
