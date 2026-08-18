@@ -9,6 +9,9 @@
 // - 不引入新依赖：项目无 toast 库，沿用项目现状（src/App.tsx 等）使用原生 alert()
 // - silent 选项：调用方已有 inline 错误 UI（如 SettingsPage setError）时只 console
 //   不弹 alert，避免双重提示
+// - recoverable 驱动 UI（P0-6B 2026-08-18）：CommandError.recoverable === true 且调用方
+//   传了 onRetry 时改用原生 confirm() 提供「重试」选择；recoverable === false 时只 alert
+//   并引导反馈日志（hint 文案与后端 error.rs is_recoverable() 保持一致，不再误导"可重试"）
 // - formatCommandError()：供调用方取出 user-friendly 文本（替代 `String(e)`，
 //   后者对结构化对象只得到 "[object Object]"）
 
@@ -41,7 +44,7 @@ function hintForCode(code: string): string | null {
     case "API_KEY_MISSING":
       return "请先到设置页填写 API Key";
     case "KEYRING_ERROR":
-      return "可重试；如反复失败请检查系统凭据存储权限";
+      return "不可自动重试；请检查系统凭据存储权限或重启应用";
     case "HTTP_START_FAILED":
     case "PORT_IN_USE":
       return "请到设置页更换端口或关闭占用进程";
@@ -58,7 +61,7 @@ function hintForCode(code: string): string | null {
     case "SKILL_NOT_INSTALLED":
       return "请先到设置页导入对应技能";
     case "UNKNOWN_TOOL":
-      return "模型返回了不识别的工具名，可重试";
+      return "不可自动重试；请反馈日志（模型行为异常）";
     case "ATOMIC_TOOL_BLOCKED":
       return "原子工具禁止直接调用，需通过 Skill 内部使用";
     case "LLM_REQUEST_FAILED":
@@ -70,8 +73,9 @@ function hintForCode(code: string): string | null {
       return "已取消当前操作";
     case "DB_ERROR":
     case "IO_ERROR":
+      return "不可自动重试；请反馈日志（含操作步骤）";
     case "INTERNAL":
-      return "可重试；如反复出现请反馈日志";
+      return "不可自动重试；请反馈日志（含复现步骤）";
     default:
       return null;
   }
@@ -105,6 +109,12 @@ export interface HandleOptions {
    * 默认 false（弹 alert 提示用户）。
    */
   silent?: boolean;
+  /**
+   * 重试回调：仅当错误 recoverable === true 时生效——
+   * 弹 confirm 询问「是否重试」，用户确认后调用本回调重新执行失败的操作。
+   * recoverable === false（或调用方未传）时走普通 alert，不调用本回调。
+   */
+  onRetry?: () => void;
 }
 
 /**
@@ -113,6 +123,7 @@ export interface HandleOptions {
  * @param e    invoke() 抛出的 unknown
  * @param ctx  调用上下文（command 名 / 函数名），用于 console 前缀
  * @param options.silent  已有 inline UI 时设 true（只 console，不 alert）
+ * @param options.onRetry 可恢复错误的重试回调（recoverable=true 时弹 confirm 询问）
  */
 export function handleCommandError(
   e: unknown,
@@ -128,7 +139,13 @@ export function handleCommandError(
     if (options.silent) return;
     const hint = hintForCode(e.code);
     const body = hint ? `${e.message}\n\n💡 ${hint}` : e.message;
-    alert(`❌ ${body}`);
+    // recoverable 驱动 UI：可恢复 + 调用方给了重试回调 → confirm 提供「重试」选择；
+    // 不可恢复（或无回调）→ alert + hint 引导（hint 已按 code 区分「去设置页」/「反馈日志」）
+    if (e.recoverable && options.onRetry) {
+      if (confirm(`❌ ${body}\n\n🔁 是否重试？`)) options.onRetry();
+    } else {
+      alert(`❌ ${body}`);
+    }
     return;
   }
   // 非结构化错误（一般是同步抛出的 JS 异常，未被 Rust 端包装）

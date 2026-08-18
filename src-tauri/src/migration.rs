@@ -279,6 +279,7 @@ impl MigrationGuard {
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
         {
+            // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
             return Err("迁移正在进行中，请稍后再试".into());
         }
         Ok(Self)
@@ -470,6 +471,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
         let entry = entry.map_err(|e| e.to_string())?;
         let ty = entry.file_type().map_err(|e| e.to_string())?;
         if ty.is_symlink() {
+            // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
             return Err("目录包含符号链接，跨盘移动已中止（源目录未动）".into());
         }
         let s = entry.path();
@@ -827,6 +829,7 @@ fn parse_rules_csv(text: &str) -> Result<RulesFile, String> {
         find_col("动作"),
         find_col("目录"),
     ) else {
+        // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
         return Err("CSV 需包含四列表头：启用 / 文件名关键字 / 动作 / 归档目录".into());
     };
     let mut rules: Vec<MigrationRule> = Vec::new();
@@ -875,6 +878,7 @@ fn parse_rules_csv(text: &str) -> Result<RulesFile, String> {
         });
     }
     if rules.is_empty() {
+        // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
         return Err("CSV 中没有解析出任何规则".into());
     }
     Ok(RulesFile { version: 1, rules })

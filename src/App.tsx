@@ -87,7 +87,10 @@ export default function App() {
         const res = await loadTasksFromDb();
         if (!res.ok) {
           // 读失败 ≠ 空库：禁止走迁移/种子分支（避免覆盖真实数据），保持内存空数组并明确告警
-          handleCommandError(res.error, "db_load");
+          // recoverable=true 时 handleCommandError 会弹 confirm 提供「重试」（重载重新加载）
+          handleCommandError(res.error, "db_load", {
+            onRetry: () => window.location.reload(),
+          });
           return;
         }
         let list = res.tasks;        if (list.length === 0) {
@@ -281,7 +284,9 @@ export default function App() {
       const count = await exportTasksToFile(path);
       alert(`导出完成：共 ${count} 条任务卡`);
     } catch (e) {
-      handleCommandError(e, "tasks_export");
+      handleCommandError(e, "tasks_export", {
+        onRetry: () => void exportTasks(),
+      });
     }
   };
 
@@ -304,7 +309,9 @@ export default function App() {
       emit("tasks-changed").catch(() => {});
       alert(`导入完成：本次写入 ${merged} 条任务卡`);
     } catch (e) {
-      handleCommandError(e, "tasks_import");
+      handleCommandError(e, "tasks_import", {
+        onRetry: () => void importTasks(),
+      });
     }
   };
 

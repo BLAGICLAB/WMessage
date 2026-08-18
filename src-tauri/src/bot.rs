@@ -744,6 +744,7 @@ async fn resolve_task(app: &AppHandle, v: &serde_json::Value) -> Result<crate::d
             ));
         }
     }
+    // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
     Err("缺少 taskId 或 title 参数".into())
 }
 

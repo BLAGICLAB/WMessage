@@ -87,6 +87,7 @@ async fn search_bing(query: &str) -> Result<Vec<(String, String, String)>, Strin
         .map_err(|e| format!("读取 Bing 结果失败：{e}"))?;
     let results = parse_bing(&body);
     if results.is_empty() {
+        // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
         return Err("Bing 没有返回结果".into());
     }
     Ok(results)
@@ -114,6 +115,7 @@ async fn search_baidu(query: &str) -> Result<Vec<(String, String, String)>, Stri
         .map_err(|e| format!("读取百度结果失败：{e}"))?;
     let results = parse_baidu(&body);
     if results.is_empty() {
+        // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
         return Err("百度没有返回结果（可能触发验证页）".into());
     }
     Ok(results)
@@ -333,9 +335,11 @@ async fn check_public_url(url: &url::Url) -> Result<(), String> {
         .trim_end_matches('.')
         .to_lowercase();
     if host.is_empty() {
+        // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
         return Err("网址缺少主机名".into());
     }
     if is_private_host(&host) {
+        // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
         return Err("已拒绝访问本机/内网地址".into());
     }
     // DNS 解析校验：域名解析出的每个 IP 都必须是公网（防解析到 127.0.0.1 的内网域名）
@@ -349,6 +353,7 @@ async fn check_public_url(url: &url::Url) -> Result<(), String> {
         match addr.ip() {
             std::net::IpAddr::V4(v4) => {
                 if ipv4_is_private(v4) {
+                    // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
                     return Err("已拒绝：域名解析到本机/内网地址".into());
                 }
             }
@@ -358,12 +363,14 @@ async fn check_public_url(url: &url::Url) -> Result<(), String> {
                     || v6.is_unique_local()
                     || (v6.segments()[0] & 0xffc0) == 0xfe80
                 {
+                    // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
                     return Err("已拒绝：域名解析到本机/内网地址".into());
                 }
             }
         }
     }
     if !any {
+        // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
         return Err("域名没有解析到任何地址".into());
     }
     Ok(())
@@ -420,11 +427,13 @@ pub async fn fetch_text(raw_url: &str) -> Result<String, String> {
     }
     if let Some(len) = resp.content_length() {
         if len > FETCH_MAX_BYTES as u64 {
+            // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
             return Err("页面过大（超过 2MB）已拒绝".into());
         }
     }
     let bytes = resp.bytes().await.map_err(|e| format!("读取失败：{e}"))?;
     if bytes.len() > FETCH_MAX_BYTES {
+        // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
         return Err("页面过大（超过 2MB）已拒绝".into());
     }
     let text = decode_html(&bytes);
@@ -433,6 +442,7 @@ pub async fn fetch_text(raw_url: &str) -> Result<String, String> {
         .trim()
         .to_string();
     if plain.is_empty() {
+        // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
         return Err("页面没有可提取的文本内容".into());
     }
     Ok(plain)

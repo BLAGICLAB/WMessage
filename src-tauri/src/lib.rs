@@ -39,6 +39,7 @@ fn copy_file_with_title(path: String, title: String) -> Result<(), String> {
     #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = (path, title);
+        // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
         return Err("复制文件暂不支持当前平台".into());
     }
 }
@@ -110,6 +111,7 @@ fn copy_file_windows(path: &str, title: &str) -> Result<(), String> {
 
     unsafe {
         if OpenClipboard(None).is_err() {
+            // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
             return Err("打开剪贴板失败".into());
         }
         let _ = EmptyClipboard();
@@ -122,6 +124,7 @@ fn copy_file_windows(path: &str, title: &str) -> Result<(), String> {
         if base.is_null() {
             let _ = GlobalFree(Some(h));
             let _ = CloseClipboard();
+            // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
             return Err("锁定文件列表内存失败".into());
         }
         let drop: *mut DROPFILES = base as *mut DROPFILES;
@@ -134,6 +137,7 @@ fn copy_file_windows(path: &str, title: &str) -> Result<(), String> {
         if SetClipboardData(CF_HDROP.0 as u32, Some(HANDLE(h.0))).is_err() {
             let _ = GlobalFree(Some(h));
             let _ = CloseClipboard();
+            // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
             return Err("写入文件列表失败".into());
         }
 
@@ -144,6 +148,7 @@ fn copy_file_windows(path: &str, title: &str) -> Result<(), String> {
         if tbase.is_null() {
             let _ = GlobalFree(Some(th));
             let _ = CloseClipboard();
+            // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
             return Err("锁定标题内存失败".into());
         }
         ptr::copy_nonoverlapping(title_wide.as_ptr(), tbase, title_wide.len());

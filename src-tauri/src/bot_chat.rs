@@ -298,13 +298,20 @@ pub struct BotChatResult {
     pub task_refs: Vec<TaskRef>,
 }
 
+/// 机器人开关关闭 → BotDisabled（recoverable=true，引导去设置页开启）。
+/// 抽成纯函数便于单测（tauri command 绑定 Wry AppHandle，mock_app 无法直接调用）。
+fn require_bot_enabled(enabled: bool) -> CommandResult<()> {
+    if !enabled {
+        return Err(CommandError::BotDisabled);
+    }
+    Ok(())
+}
+
 /// 聊天入口：messages 为完整历史（含最新的用户消息），返回最终完整回复。
 /// 流式片段经 bot-chat-delta 事件实时推给挂件窗口。
 #[tauri::command]
 pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>) -> CommandResult<BotChatResult> {
-    if !bot_get_enabled(app.clone()) {
-        return Err("机器人聊天已关闭：请到设置页「机器人设置」开启".into());
-    }
+    require_bot_enabled(bot_get_enabled(app.clone()))?;
     let stop = StopGuard::new(true);
     // B 方案（chat-mode execute 切换，老板 2026-08-18 16:19 拍板，1=宽松 / 2=继续 / 3=共用 stop）：
     // 用户说「完成/执行」+ [已选任务] 引用块 → 绕过聊天 LLM，复用 execute_task_core
@@ -498,14 +505,21 @@ const COMPACT_SYSTEM_PROMPT: &str = "\
 你是对话压缩助手。把以下对话历史压缩成一份简明摘要，保留：任务相关决定、用户偏好、\
 未完成事项、重要上下文。用中文，不超过 300 字，只输出摘要本身。";
 
+/// 空 API Key → 专用错误 ApiKeyMissing（recoverable=true，引导用户去设置页）。
+/// 抽成纯函数便于单测（keyring 在测试环境不可用，无法覆盖 bot_compact 全链路）。
+fn require_api_key(api_key: &str) -> CommandResult<()> {
+    if api_key.trim().is_empty() {
+        return Err(CommandError::ApiKeyMissing);
+    }
+    Ok(())
+}
+
 /// /compact 快捷命令：把当前会话历史交给模型总结成摘要（单次非流式请求，不带工具）
 #[tauri::command]
 pub async fn bot_compact(app: AppHandle, messages: Vec<ChatMsg>) -> CommandResult<String> {
     let cfg = crate::bot::bot_get_config(app.clone())?;
     let api_key = crate::bot::read_api_key()?;
-    if api_key.trim().is_empty() {
-        return Err("机器人 API 未配置：请到设置页「机器人设置」填写 API Key".into());
-    }
+    require_api_key(&api_key)?;
     let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(15))
         .timeout(std::time::Duration::from_secs(60))
@@ -565,6 +579,7 @@ pub async fn bot_compact(app: AppHandle, messages: Vec<ChatMsg>) -> CommandResul
         .trim()
         .to_string();
     if text.is_empty() {
+        // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
         return Err("模型返回了空摘要".into());
     }
     Ok(text)
@@ -630,6 +645,7 @@ pub async fn execute_task_core(
             app,
             &format!("execute_task_rejected | id: {task_id} | 已有执行实例在跑（防重入拦截）"),
         );
+        // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
         return Err("该任务卡正在执行中，请等待完成后再触发".into());
     };
     let stop = StopGuard::new(interactive);
@@ -640,9 +656,11 @@ pub async fn execute_task_core(
         .find(|t| t.id == task_id && t.deleted_at.is_none())
         .ok_or("任务卡不存在或已在回收站")?;
     if task.column == "done" {
+        // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
         return Err("这张卡已标记完成；如需重新执行，先在卡片上取消完成".into());
     }
     if task.archived == Some(true) {
+        // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
         return Err("任务已归档，不能执行；请先恢复".into());
     }
     let mut block = format!(
@@ -978,5 +996,38 @@ mod chat_execute_parse_tests {
         assert_eq!(parsed[0].0, "a");
         assert_eq!(parsed[1].0, "b");
         assert_eq!(parsed[2].0, "c");
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────
+// 测试：P0-6A — Err("...".into()) 逃生舱改走专用 CommandError 变体
+// ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod command_error_mapping_tests {
+    use super::*;
+
+    /// bot_chat 的开关守卫：bot_get_enabled == false 时必须映射到 BotDisabled 专用变体
+    /// （不是 From<&str> 兜底的 Internal）
+    #[test]
+    fn bot_disabled_maps_to_dedicated_variant() {
+        let err = require_bot_enabled(false).expect_err("关闭时应返回 Err");
+        assert_eq!(err, CommandError::BotDisabled, "应为 BotDisabled 专用变体");
+        assert_eq!(err.code(), "BOT_DISABLED");
+        assert!(err.is_recoverable(), "BotDisabled 应可恢复（引导去设置页开启）");
+        assert!(err.message().contains("机器人聊天已关闭"));
+        assert!(require_bot_enabled(true).is_ok(), "开启时应通过");
+    }
+
+    /// bot_compact 的 key 守卫：空 key → ApiKeyMissing 专用变体；非空 → Ok
+    #[test]
+    fn require_api_key_empty_returns_api_key_missing() {
+        for empty in ["", "   ", "\n\t "] {
+            let err = require_api_key(empty).expect_err("空 key 应返回 Err");
+            assert_eq!(err, CommandError::ApiKeyMissing, "输入 {empty:?}");
+            assert_eq!(err.code(), "API_KEY_MISSING");
+            assert!(err.is_recoverable(), "ApiKeyMissing 应可恢复（去设置页填 key）");
+        }
+        assert!(require_api_key("sk-test-123").is_ok(), "非空 key 应通过");
     }
 }

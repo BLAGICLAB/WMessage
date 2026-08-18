@@ -496,6 +496,7 @@ pub fn clear_terminal_skill_runs() {
 /// 数据目录优先（用户已修改的 Skill 优先于 dev mock 版本）。
 fn load_skill_meta(app: &AppHandle, name: &str) -> Result<(SkillMeta, String), String> {
     if name.is_empty() || !name.chars().all(SKILL_NAME_CHARS_OK) {
+        // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
         return Err("技能名无效".into());
     }
     for dir in &skill_search_paths(app) {
@@ -880,6 +881,7 @@ pub fn tool_use_skill(app: &AppHandle, args: &str) -> (String, Vec<crate::bot::T
 /// 步骤检查纯函数（单测入口）：计数、熔断、暂停拒绝、动作记录。不改日志。
 fn step_check(run: &mut SkillRun, tool: &str, args: &str, now: i64) -> Result<(), String> {
     if run.state == SkillState::Paused {
+        // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
         return Err("技能已暂停，等待用户确认中；确认通过后才能继续下一步".into());
     }
     run.step += 1;
@@ -1486,6 +1488,7 @@ pub fn skills_open_dir(app: AppHandle) -> CommandResult<String> {
 pub fn skills_import(app: AppHandle, path: String) -> CommandResult<String> {
     let src = std::path::PathBuf::from(&path);
     if !src.is_dir() {
+        // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
         return Err("请选择技能文件夹".into());
     }
     let skill_md = src.join("SKILL.md");

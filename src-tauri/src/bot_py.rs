@@ -203,6 +203,7 @@ pub fn run_python(
     timeout_secs: Option<u64>,
 ) -> Result<PyRunResult, String> {
     let Some(py) = detect_python() else {
+        // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
         return Err("本机未检测到 Python。macOS 请安装 Command Line Tools；Windows 请到 python.org 安装并勾选 Add to PATH".into());
     };
     let timeout = Duration::from_secs(timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS));
@@ -840,6 +841,7 @@ pub async fn doc_extract(app: AppHandle, path: Option<String>) -> Result<DocExtr
             .unwrap_or(None);
             match picked.and_then(file_path_to_string) {
                 Some(p) => p,
+                // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
                 None => return Err("用户取消了选择".into()),
             }
         }

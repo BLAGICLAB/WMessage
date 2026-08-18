@@ -284,7 +284,7 @@ pub async fn run_model_loop(
     let cfg = crate::bot::bot_get_config(app.clone())?;
     let api_key = crate::bot::read_api_key()?;
     if api_key.trim().is_empty() {
-        return Err("机器人 API 未配置：请到设置页「机器人设置」填写 API Key".into());
+        return Err(CommandError::ApiKeyMissing);
     }
     let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(15))
