@@ -69,29 +69,89 @@ pub struct PyEnv {
     pub libs: Vec<String>,
 }
 
+/// 带超时的版本探测（P2-10）：PATH 里的 python 可能是损坏 shim，
+/// 原先 `.output()` 无超时会把探测本身卡死；超过 3s 不退出就杀掉按失败处理
+fn probe_version_ok(program: &str, args: &[&str]) -> bool {
+    probe_version_ok_with(program, args, Duration::from_secs(3))
+}
+
+fn probe_version_ok_with(program: &str, args: &[&str], timeout: Duration) -> bool {
+    let mut child = match silent_cmd(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) => {
+                if start.elapsed() > timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
+}
+
 /// 检测本机 Python（macOS/Linux: python3/python；Windows: python/python3/py -3）
+/// 每个候选最多 3s（P2-10 探测超时），卡死的 shim 直接跳过
 pub fn detect_python() -> Option<String> {
     #[cfg(windows)]
     let candidates: &[&str] = &["python", "python3"];
     #[cfg(not(windows))]
     let candidates: &[&str] = &["python3", "python"];
     for c in candidates {
-        if let Ok(out) = silent_cmd(c).arg("--version").output() {
-            if out.status.success() {
-                return Some(c.to_string());
-            }
+        if probe_version_ok(c, &["--version"]) {
+            return Some(c.to_string());
         }
     }
     // Windows 兜底：py 启动器
     #[cfg(windows)]
     {
-        if let Ok(out) = silent_cmd("py").args(["-3", "--version"]).output() {
-            if out.status.success() {
-                return Some("py".to_string());
-            }
+        if probe_version_ok("py", &["-3", "--version"]) {
+            return Some("py".to_string());
         }
     }
     None
+}
+
+/// 探测结果缓存（P2-10）：None=未探测；Some(inner)=已探测（inner 为 None 表示本机无 Python）。
+/// 原先每次 run_python 都 spawn 1-3 次 `python --version`，启动延迟 + 资源浪费。
+static PY_CACHE: std::sync::Mutex<Option<Option<String>>> = std::sync::Mutex::new(None);
+
+/// 实际探测次数计数（单测 spy：验证连续调用只探测一次）
+static PY_PROBE_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// 带缓存的探测：首次真正 spawn 探测，之后直接命中缓存
+fn cached_python() -> Option<String> {
+    let mut g = PY_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(cached) = &*g {
+        return cached.clone();
+    }
+    PY_PROBE_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let detected = detect_python();
+    *g = Some(detected.clone());
+    detected
+}
+
+/// 缓存失效（P2-10）：缓存的 python 路径 spawn 失败（NotFound，可能被删/换 PATH）
+/// 后调用，下次 cached_python 重新探测
+fn invalidate_python_cache() {
+    *PY_CACHE.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
 /// 同步检测核心（后台线程运行）
@@ -355,6 +415,13 @@ fn truncate_output(s: String) -> String {
     }
 }
 
+/// run_python_at 的失败（P2-10）：区分「spawn NotFound」—— 缓存的 python 路径
+/// 被删/换 PATH 时的重探测重试依据
+struct RunFail {
+    msg: String,
+    spawn_not_found: bool,
+}
+
 /// 执行一段 Python 脚本（写入独立临时目录运行）。
 /// `input_json`：可选，写入 params.json 供脚本读取；`args`：附加命令行参数。
 pub fn run_python(
@@ -364,24 +431,43 @@ pub fn run_python(
     args: &[String],
     timeout_secs: Option<u64>,
 ) -> Result<PyRunResult, String> {
-    let Some(py) = detect_python() else {
+    let mut py = match cached_python() {
+        Some(p) => p,
         // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
-        py_audit(app, "run_python err | kind=no_python");
-        return Err("本机未检测到 Python。macOS 请安装 Command Line Tools；Windows 请到 python.org 安装并勾选 Add to PATH".into());
+        None => {
+            py_audit(app, "run_python err | kind=no_python");
+            return Err("本机未检测到 Python。macOS 请安装 Command Line Tools；Windows 请到 python.org 安装并勾选 Add to PATH".into());
+        }
     };
 
-    // 独立临时目录
-    let dir = crate::db::data_dir(app)
-        .join("py-runs")
-        .join(uuid::Uuid::new_v4().simple().to_string());
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    std::fs::write(dir.join("run.py"), script).map_err(|e| e.to_string())?;
-    if let Some(j) = input_json {
-        std::fs::write(dir.join("params.json"), j).map_err(|e| e.to_string())?;
-    }
-
     let mut audit_sink = |line: &str| py_audit(app, line);
-    run_python_at(&py, &dir, args, timeout_secs, &mut audit_sink)
+    // 最多 2 次尝试：首次 spawn NotFound 说明缓存的 python 已失效（P2-10：
+    // 路径被删 / PATH 变了），作废缓存重新探测后重试一次
+    for attempt in 0..2 {
+        // 独立临时目录
+        let dir = crate::db::data_dir(app)
+            .join("py-runs")
+            .join(uuid::Uuid::new_v4().simple().to_string());
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        std::fs::write(dir.join("run.py"), script).map_err(|e| e.to_string())?;
+        if let Some(j) = input_json {
+            std::fs::write(dir.join("params.json"), j).map_err(|e| e.to_string())?;
+        }
+        match run_python_at(&py, &dir, args, timeout_secs, &mut audit_sink) {
+            Ok(r) => return Ok(r),
+            Err(f) => {
+                if attempt == 0 && f.spawn_not_found {
+                    invalidate_python_cache();
+                    if let Some(fresh) = cached_python() {
+                        py = fresh;
+                        continue;
+                    }
+                }
+                return Err(f.msg);
+            }
+        }
+    }
+    unreachable!("最多 2 次尝试，循环内必然返回")
 }
 
 /// 执行核心（C3：不依赖 AppHandle，审计经闭包注入 —— 单测可用临时目录 + 内存收集
@@ -394,7 +480,7 @@ fn run_python_at(
     args: &[String],
     timeout_secs: Option<u64>,
     audit: &mut dyn FnMut(&str),
-) -> Result<PyRunResult, String> {
+) -> Result<PyRunResult, RunFail> {
     // C2：超时硬钳上限 300s（钳制记审计，防 timeout_secs=None/超大值把系统跑死）
     let (timeout_eff, clamped) = resolve_timeout(timeout_secs);
     if clamped {
@@ -453,7 +539,10 @@ fn run_python_at(
             ));
             // P2-9：spawn 失败时临时目录已创建，必须清理，否则磁盘泄漏
             let _ = std::fs::remove_dir_all(dir);
-            return Err(format!("启动 Python 失败：{e}"));
+            return Err(RunFail {
+                msg: format!("启动 Python 失败：{e}"),
+                spawn_not_found: e.kind() == std::io::ErrorKind::NotFound,
+            });
         }
     };
     limits.assign(&child);
@@ -488,7 +577,10 @@ fn run_python_at(
             Ok(None) => {}
             Err(e) => {
                 audit(&format!("run_python err | kind=wait_fail | {e}"));
-                return Err(format!("等待子进程状态失败：{e}"));
+                return Err(RunFail {
+                    msg: format!("等待子进程状态失败：{e}"),
+                    spawn_not_found: false,
+                });
             }
         }
         if start.elapsed() > timeout {
@@ -498,7 +590,10 @@ fn run_python_at(
                 "run_python err | kind=timeout | timeout_secs={}",
                 timeout.as_secs()
             ));
-            return Err(format!("执行超时（{}s）已强制终止", timeout.as_secs()));
+            return Err(RunFail {
+                msg: format!("执行超时（{}s）已强制终止", timeout.as_secs()),
+                spawn_not_found: false,
+            });
         }
         std::thread::sleep(Duration::from_millis(50));
     };
@@ -1476,7 +1571,7 @@ mod tests {
             lines.push(l.to_string())
         });
         let e = match r {
-            Err(e) => e,
+            Err(f) => f.msg,
             Ok(_) => panic!("1s 超时的 sleep 30 脚本不应成功"),
         };
         assert!(e.contains("超时"), "got: {e}");
@@ -1498,7 +1593,7 @@ mod tests {
             lines.push(l.to_string())
         });
         let e = match r {
-            Err(e) => e,
+            Err(f) => f.msg,
             Ok(_) => panic!("无效 python 路径不应成功"),
         };
         assert!(e.contains("启动 Python 失败"), "got: {e}");
@@ -1541,6 +1636,48 @@ mod tests {
             ),
             0
         );
+    }
+
+    // ── 探测缓存（P2-10：连续调用只探测一次；探测本身带超时）──
+
+    #[test]
+    fn cached_python_probes_only_once() {
+        invalidate_python_cache();
+        let _ = cached_python(); // 首次：真正探测
+        let n1 = PY_PROBE_COUNT.load(std::sync::atomic::Ordering::SeqCst);
+        let a = cached_python();
+        let b = cached_python();
+        let n2 = PY_PROBE_COUNT.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(a, b, "缓存结果应稳定");
+        assert_eq!(n2, n1, "缓存命中后不得重复 spawn 探测");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_version_times_out_on_hanging_shim() {
+        // 卡死的 shim（sleep 远探测超时）必须在超时内按失败返回，不得挂住
+        let start = Instant::now();
+        let ok = probe_version_ok_with("sleep", &["10"], Duration::from_millis(300));
+        assert!(!ok);
+        assert!(
+            start.elapsed() < Duration::from_secs(3),
+            "探测挂死了：{:?}",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn spawn_not_found_flagged_for_cache_retry() {
+        // 无效路径 spawn → RunFail.spawn_not_found=true（run_python 据此作废缓存重试）
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("run-notfound");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("run.py"), "print(1)\n").unwrap();
+        let r = run_python_at("/nonexistent/python-zzz", &dir, &[], Some(1), &mut |_| {});
+        match r {
+            Err(f) => assert!(f.spawn_not_found),
+            Ok(_) => panic!("无效 python 路径不应成功"),
+        }
     }
 
     // ── spawn_blocking_map（NEW-C-1：doc_* async 命令不得把阻塞压在 runtime worker 上）──
