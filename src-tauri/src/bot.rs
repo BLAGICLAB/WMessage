@@ -209,6 +209,10 @@ pub fn audit_log_hook(app: &AppHandle, line: &str) {
 }
 
 pub fn audit_log(app: &AppHandle, line: &str) {
+    // 与 audit::write_event 共用同一把写锁，防并发 append 交错错行
+    let _g = crate::audit::BOT_LOG_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     crate::db::rotate_log_if_large(&crate::db::data_dir(app).join("bot.log"), 5 * 1024 * 1024);
     let p = crate::db::data_dir(app).join("bot.log");
     if let Ok(mut f) = std::fs::OpenOptions::new()

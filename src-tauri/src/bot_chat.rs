@@ -579,6 +579,39 @@ pub async fn bot_execute_task(app: AppHandle, task_id: String) -> CommandResult<
     execute_task_core(&app, &task_id, true).await
 }
 
+/// 任务卡执行防重入：同一 task_id 同时只允许一个执行实例。
+/// 覆盖三条入口（🤖 连点 / chat 批量执行 / 定时调度），防同一卡并发跑多个 LLM 循环
+/// （2026-08-18 事故：同一任务 id 被并发执行 ~10 次，日志交叠、结果互相覆盖）。
+static EXEC_RUNNING: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::OnceLock::new();
+
+fn exec_running() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    EXEC_RUNNING.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+/// 防重入 RAII 守卫：Drop（含 panic 展开）时自动释放，task_id 不残留
+struct ExecGuard(String);
+
+impl ExecGuard {
+    fn acquire(task_id: &str) -> Option<Self> {
+        let mut set = exec_running().lock().unwrap_or_else(|e| e.into_inner());
+        if set.contains(task_id) {
+            return None;
+        }
+        set.insert(task_id.to_string());
+        Some(Self(task_id.to_string()))
+    }
+}
+
+impl Drop for ExecGuard {
+    fn drop(&mut self) {
+        exec_running()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.0);
+    }
+}
+
 /// 任务卡执行核心（命令与定时调度共用）。interactive=true 表示用户直接触发（可被 /stop 停），
 /// false 表示后台定时触发（/stop 不影响）
 pub async fn execute_task_core(
@@ -590,6 +623,10 @@ pub async fn execute_task_core(
     if !bot_get_enabled(app.clone()) {
         return Err(CommandError::BotDisabled);
     }
+    // 防重入：同一任务卡已有执行实例在跑 → 直接拒绝（RAII 守卫随函数返回/panic 自动释放）
+    let Some(_exec_guard) = ExecGuard::acquire(task_id) else {
+        return Err("该任务卡正在执行中，请等待完成后再触发".into());
+    };
     let stop = StopGuard::new(interactive);
     let task = crate::db::db_load(app.clone())
         .await

@@ -295,6 +295,8 @@ pub async fn run_model_loop(
     let tools: serde_json::Value = serde_json::from_str(TOOLS).unwrap();
 
     let mut msgs = msgs;
+    // 僵尸终态清理：上轮 Skill 失败/完成的遗留 run 会在第 0 轮短路主循环（agent 假死根因）
+    crate::bot_skills::clear_terminal_skill_runs();
     // 最多 max_rounds 轮（工具循环），每轮流式输出；收到 tool_calls 则执行后把结果续进对话
     let mut collected_refs: Vec<TaskRef> = Vec::new();
     // Harness 第 5 层：单轮对话 Function 总调用上限（每轮可并行多个 tool_calls，

@@ -459,16 +459,36 @@ fn now_ms() -> i64 {
 }
 
 /// 主循环接入用（Block 2 2026-08-17 22:26）：克隆当前活动 Skill 快照（任意非 Loaded 状态）。
-/// 供 `bot_chat` 主循环调，拿快照去 `advance_skill` 决策，不再持锁。
+/// 供 `bot_chat` 主循环与 DSL 调度器调，拿快照去 `advance_skill` / `advance_dsl` 决策，不再持锁。
 ///
 /// 状态过滤说明：Loaded 是 start_skill 中的过渡态——技能预审通过后立即转为 Running，
 /// Loaded 仅在断言/异常路径短暂存在，advance_skill 返回 NoActive 与主循环预期一致。
+///
+/// ⚠️ 终态（Completed/Failed/Terminated）也会被返回——这是 DSL 调度器感知
+/// 「用户 /stop / 工具失败」所必需的；调用方若是新一轮执行的入口（run_model_loop /
+/// run_skill_scheduler），必须先 `clear_terminal_skill_runs()` 清掉上轮遗留的僵尸终态，
+/// 否则会在第 0 步被 advance 短路（2026-08-18 agent 假死事故根因）。
 pub fn active_skill_run() -> Option<SkillRun> {
     let guard = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
     guard
         .values()
         .find(|r| !matches!(r.state, SkillState::Loaded))
         .cloned()
+}
+
+/// 清理终态 SkillRun（Completed/Failed/Terminated）。
+/// SKILL_RUNS 只进不出：上轮遗留的终态 run 会被 active_skill_run 当"活动"，
+/// 在新一轮执行的第 0 步被 advance 短路——静默返回空文本、不发 LLM 请求（agent 假死）。
+/// 在每轮执行入口（run_model_loop / run_skill_scheduler）调用；
+/// 本轮执行中新进入终态的 run 不受影响（清理发生在入口，轮内状态机照常可见）。
+pub fn clear_terminal_skill_runs() {
+    let mut guard = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
+    guard.retain(|_, r| {
+        !matches!(
+            r.state,
+            SkillState::Completed | SkillState::Failed | SkillState::Terminated
+        )
+    });
 }
 
 /// 读取技能正文 + 完整元数据（Phase 4 第 4 项 2026-08-18 07:09：多目录 fallback）
@@ -1240,6 +1260,9 @@ pub fn skill_terminate_all(app: &AppHandle, reason: &str) {
 /// - 全部成功 → 返回汇总文本
 /// - SkillRun 状态机更新由 `execute_tool` 内的 `skill_on_step` / `skill_on_step_post` 自动维护
 pub async fn run_skill_scheduler(app: &AppHandle, name: &str) -> Result<DslOutcome, DslFailure> {
+    // 僵尸终态清理：上轮遗留的 Completed/Failed/Terminated run 会在第 0 步被 advance_dsl
+    // 误判为完成信号直接 break（与主循环同款假死根因）
+    clear_terminal_skill_runs();
     let (meta, body) =
         load_skill_meta(app, name).map_err(|e| DslFailure::Terminated { reason: e })?;
     let (steps, rollback) =
@@ -1554,6 +1577,37 @@ mod tests {
         // test_run 初始状态就是 Loaded
         assert_eq!(run.state, SkillState::Loaded);
         assert_eq!(advance_skill(&run, 1000), AdvanceAction::NoActive);
+    }
+
+    /// 僵尸终态清理（2026-08-18 agent 假死根因）：入口清理后终态 run 不再被当"活动"，
+    /// Running/Paused 不受影响（测试用 Paused：is_skill_active 只认 Running，避免与并行测试竞争）
+    #[test]
+    fn clear_terminal_removes_only_terminal_states() {
+        let zombie = "test-zombie-clear";
+        // 用一个 Failed 残留 + 一个 Paused 活跃
+        let mut failed = test_run(8, 180);
+        failed.name = zombie.into();
+        failed.state = SkillState::Failed;
+        let mut paused = test_run(8, 180);
+        paused.name = "test-zombie-clear-live".into();
+        paused.state = SkillState::Paused;
+        {
+            let mut g = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
+            g.insert(zombie.into(), failed);
+            g.insert("test-zombie-clear-live".into(), paused);
+        }
+        clear_terminal_skill_runs();
+        {
+            let g = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
+            assert!(g.get(zombie).is_none(), "Failed 残留应被清除");
+            assert!(
+                g.get("test-zombie-clear-live").is_some(),
+                "Paused 不应被误清"
+            );
+        }
+        // 收尾：不给其他测试留状态
+        let mut g = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
+        g.remove("test-zombie-clear-live");
     }
 
     #[test]

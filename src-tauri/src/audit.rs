@@ -59,9 +59,15 @@ pub fn format_event_line(level: AuditLevel, event: &str, kv: &[(&str, &str)]) ->
     line
 }
 
+/// bot.log 全局写锁：`write_event` 与 `bot::audit_log` 共用，
+/// 防多线程并发 append 交错（2026-08-18 事故：并发 execute_task 写日志出现错行混排）。
+/// rotate + open + write 必须在同一把锁内，否则检查大小与写入之间存在竞态。
+pub static BOT_LOG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// 写一条结构化审计事件到 `bot.log`（post-execute 钩子主入口）
 /// 复用 `bot::audit_log` 的 rotate 阈值与文件路径，老日志兼容。
 pub fn write_event(app: &AppHandle, level: AuditLevel, event: &str, kv: &[(&str, String)]) {
+    let _g = BOT_LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     crate::db::rotate_log_if_large(&crate::db::data_dir(app).join("bot.log"), 5 * 1024 * 1024);
     let p = crate::db::data_dir(app).join("bot.log");
     let Ok(mut f) = std::fs::OpenOptions::new()
