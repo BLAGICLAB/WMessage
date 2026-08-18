@@ -454,9 +454,17 @@ function extractFilePaths(content: string): string[] {
     executeTask(id, title);
   };
   useEffect(() => {
+    // 同一任务 id 2s 内的重复 execute-task 事件只执行一次（2026-08-19 事故：
+    // 一次点击被投递多次 → 同一秒多个 bot_execute_task 并发，后端防重入拦截
+    // 弹「该任务卡正在执行中」错误气泡，用户误以为执行失败）。
+    const lastExec = new Map<string, number>();
     const unExec = listen<{ id?: string; title?: string }>("execute-task", (e) => {
       const { id, title } = e.payload ?? {};
-      if (id) executeTaskRef.current(id, title ?? "");
+      if (!id) return;
+      const now = Date.now();
+      if (now - (lastExec.get(id) ?? 0) < 2000) return;
+      lastExec.set(id, now);
+      executeTaskRef.current(id, title ?? "");
     });
     return () => {
       unExec.then((f) => f());

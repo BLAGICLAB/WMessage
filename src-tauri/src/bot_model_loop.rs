@@ -312,6 +312,8 @@ pub async fn run_model_loop(
     const SOFT_WARN_AT: usize = 7;
     let mut function_calls_total: usize = 0;
     let mut soft_warn_sent: bool = false;
+    // soft_warn 待注入标志：本轮 tool 响应全部回填后才真正 push（见循环内注释）
+    let mut soft_warn_queued: bool = false;
     // 上轮 streamed 文本快照（Block 2 接入，2026-08-17 22:26）：
     // AwaitConfirm/Finish/Fail/Terminate 跳出主循环时，返回 user 已看到的文本
     let mut last_streamed = String::new();
@@ -532,16 +534,13 @@ pub async fn run_model_loop(
                     collected_refs,
                 ));
             }
-            // 软警告（SOFT_WARN_AT）：追加 user 消息提示 LLM 收尾，不中断流程
+            // 软警告（SOFT_WARN_AT）：置标志，推迟到本轮 tool 响应全部回填后再注入——
+            // 若在此直接 push user 消息，会插进 assistant(tool_calls) 与 tool 响应之间，
+            // 破坏「tool_calls 后必须紧跟 tool 消息」的协议，下一轮请求被 API 拒为
+            // 400 invalid params（2026-08-18 两次 400 均紧跟 soft_warn 注入，已实锤）
             if !soft_warn_sent && function_calls_total >= SOFT_WARN_AT {
-                msgs.push(serde_json::json!({
-                    "role": "user",
-                    "content": format!(
-                        "【系统提示】你已连续调用 {SOFT_WARN_AT} 个工具，最多还能调 {} 个。请尽快收尾：合并调用、必要时汇总报告给用户、避免在剩余额度内继续展开新步骤。",
-                        MAX_FUNCTION_CALLS_PER_TURN - SOFT_WARN_AT
-                    ),
-                }));
                 soft_warn_sent = true;
+                soft_warn_queued = true;
                 crate::bot::audit_log(
                     &app,
                     &format!(
@@ -569,6 +568,17 @@ pub async fn run_model_loop(
                 "role": "tool",
                 "tool_call_id": id,
                 "content": result
+            }));
+        }
+        // 本轮 tool 响应已全部回填（tool_calls → tool×N 序列完整），此时注入软警告才合法
+        if soft_warn_queued {
+            soft_warn_queued = false;
+            msgs.push(serde_json::json!({
+                "role": "user",
+                "content": format!(
+                    "【系统提示】你已连续调用 {SOFT_WARN_AT} 个工具，最多还能调 {} 个。请尽快收尾：合并调用、必要时汇总报告给用户、避免在剩余额度内继续展开新步骤。",
+                    MAX_FUNCTION_CALLS_PER_TURN - SOFT_WARN_AT
+                ),
             }));
         }
         // 快照上轮 streamed 文本（供 AwaitConfirm/Finish/Fail/Terminate 跳出时返回）

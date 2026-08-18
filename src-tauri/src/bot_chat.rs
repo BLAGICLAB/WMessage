@@ -625,6 +625,11 @@ pub async fn execute_task_core(
     }
     // 防重入：同一任务卡已有执行实例在跑 → 直接拒绝（RAII 守卫随函数返回/panic 自动释放）
     let Some(_exec_guard) = ExecGuard::acquire(task_id) else {
+        // 拒绝也留痕：否则无法区分「用户在前次执行未结束时重复触发」与「守卫泄漏」
+        crate::bot::audit_log(
+            app,
+            &format!("execute_task_rejected | id: {task_id} | 已有执行实例在跑（防重入拦截）"),
+        );
         return Err("该任务卡正在执行中，请等待完成后再触发".into());
     };
     let stop = StopGuard::new(interactive);
