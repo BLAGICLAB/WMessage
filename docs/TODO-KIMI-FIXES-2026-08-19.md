@@ -101,6 +101,18 @@
 
 ---
 
+## Phase 7 — P2 分批修复（35 项，7a/7b/7c/7d/7e）
+
+### Batch 7a 审计/日志安全（6 项）
+- [x] **P2-1** `api_auth.rs` — token 字符串 `==` → 手写 `ct_eq` 恒定时间比较（约束不加新依赖，未用 subtle）+ `api-token.txt` 写后 chmod 0600 — commit `8f4f998`
+- [x] **P2-2** `api_handlers.rs` — 变更日志 `task.title` 过 `escape_for_log`，堵 `\n` 伪造日志行/多行撕裂 — commit `455ee9e`
+- [x] **P2-15** `audit.rs` — `write_event` / `write_error_audit` 写失败不再 `let _ =` 全静默：抽 `append_line`，eprintln 带 path + 返回 bool 可测 — commit `a5f1dda`
+- [x] **P2-16** `audit.rs` — kv 值 `\n` / `| ` 转义：NEW-C-6 已实现，本项补回归测试锁死防回退 — commit `35281a0`
+- [x] **P2-34** `App.tsx` + `storage.test.ts` — 写数据类 invoke 已在 E1 全走 `handleCommandError`；清掉 `workspace-updated` upsert 的空 catch（console 留痕），补 export/import 失败 alert 测试 — commit `f460d27`
+- [x] **P2-35** `errorHandler.ts` — 空 msg 兜底 `code || "未知错误"`（CommandError 与非结构化两侧）；recoverable confirm 重试 UI 已有，补测试锁定 — commit `3e7a89a`
+
+---
+
 ## 进度
 
 - Phase 1: 8/8
@@ -109,6 +121,7 @@
 - Phase 4: 4/4 (E5 已勾)
 - Phase 5: 6/6
 - Phase 6: 4/11+（Batch D 原 D1-D4 已勾）
+- Phase 7: 6/35（Batch 7a 审计/日志安全 6/6）
 
 ---
 
