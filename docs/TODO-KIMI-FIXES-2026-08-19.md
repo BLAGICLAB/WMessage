@@ -119,6 +119,14 @@
 - [x] **P2-8** `migration.rs` — `save_rules` 改原子写（复用 NEW-B-6 `db::atomic_write`），崩溃不留半截 rules.json — commit `eb0dfb6`
 - [x] **P2-19** `audit.rs` + `db.rs` + `profile.rs` — 数据目录便携探针三处拷贝合一为 `audit::probe_log_dir`（含可测内核 `probe_dir` 三分支测试）— commit `cdf099e`
 
+### Batch 7c API/Middleware 健壮性（6 项）
+- [x] **P2-3** `api_server.rs` + `api_handlers.rs` — SSE replay 与在线推送竞态去重：通道载荷带事件 id，replay 返回 `(id, msg)`，writer 记录已发最大 id、在线循环 `id <= last_sent` 跳过；测试 since=5（4 个 id<5 + 6 个 id>5）只重放 6 条 — commit `e5034aa`
+- [x] **P2-13** `middleware.rs` — `run_pre_step`/`run_pre_execute` 调 `dyn Middleware` 处包 `catch_unwind(AssertUnwindSafe(..))`，panic 记 `middleware_panic` ERROR 审计（hook/middleware/panic）+ 返回 None，registry 方法加 app 参数；测试：panic 中间件兜住 + 审计 + 主流程不挂 — commit `0a8c05a`
+- [x] **P2-14** `middleware.rs` — 双 Vec 漏注册一边静默半生效：`run_pre_execute` 本侧为空时记 `pre_execute_not_registered` ERROR 审计并返回 None（调用点显式处理，合并单 Vec 不改变失败模式）；测试：只注册 pre_step 的 registry 调 pre_execute → None + 审计 — commit `1655fbc`
+- [x] **P2-27** `error.rs` — 新增 `Platform { Macos, Windows, Linux, Other }`（Serialize/Deserialize，编译期 `std::env::consts::OS` 判定），CommandError 序列化 3→4 字段带 `platform` 区分同 code 跨平台语义；测试：同 IO_ERROR 注入 Macos/Linux 序列化不同 — commit `beb1849`
+- [x] **P2-28** `error.rs` + `bot_chat.rs` — 新增 `CommandError::TaskInvalidState { reason }`（`TASK_INVALID_STATE`，recoverable=true），execute_task_core 三处业务拒绝（执行中重复触发/已完成/已归档）不再降级 INTERNAL — commit `4a419d3`
+- [x] **P2-30** `capabilities/default.json` — `opener:allow-open-path` 裸 `"**"` 收敛为 `$APPDATA/**` + `$HOME/**`（数据目录 exports/skills 与用户文件放行，/etc/passwd 等系统路径默认 deny）；lib.rs 加 capabilities 锁死测试 — commit `dcb9275`
+
 ---
 
 ## 进度
@@ -129,7 +137,7 @@
 - Phase 4: 4/4 (E5 已勾)
 - Phase 5: 6/6
 - Phase 6: 4/11+（Batch D 原 D1-D4 已勾）
-- Phase 7: 12/35（Batch 7a 审计/日志安全 6/6；Batch 7b DB 事务/迁移 6/6）
+- Phase 7: 18/35（Batch 7a 审计/日志安全 6/6；Batch 7b DB 事务/迁移 6/6；Batch 7c API/Middleware 健壮性 6/6）
 
 ---
 
