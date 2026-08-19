@@ -19,7 +19,9 @@
 //!   HTTP connect 15s / 总超时 300s
 //! - 参数校验：标题/备注/关键词/子任务/截止时间长度上限、标签数量上限
 //! - 审计日志：数据目录 bot.log 记录用户指令、工具名、参数、结果
-//! - API Key 存系统凭据存储（keyring），文件不落明文
+//! - API Key 存系统凭据存储（keyring），文件不落明文；
+//!   例外（P2-32）：Linux 无 secret-service（无 dbus 会话）时降级 bot-api-key.txt
+//!   明文文件（chmod 0600）+ WARN 审计，否则 key 根本存不住
 
 use crate::bot_skills::tool_use_skill;
 use crate::error::{CommandError, CommandResult};
@@ -92,6 +94,201 @@ fn key_entry() -> CommandResult<keyring::Entry> {
         .map_err(|e| CommandError::KeyringError(format!("系统凭据存储不可用：{e}")))
 }
 
+// ───────────────────────── P2-32：Linux secret-service 探测 + 降级 ─────────────────────────
+
+/// 凭据后端（P2-32）。Linux 的 keyring 走 secret-service（zbus/dbus）—— headless
+/// 服务器/容器/最小桌面无 dbus 会话时，keyring 调用直接 PlatformFailure，用户 key
+/// 存不住且只会看到「系统凭据存储访问失败」。运行时探测，不可用降级明文文件
+/// （chmod 0600，与 api-token.txt 同策略）+ WARN 审计。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeyBackend {
+    /// 系统凭据存储（macOS 钥匙串 / Windows 凭据管理器 / Linux secret-service）
+    System,
+    /// 降级：数据目录 bot-api-key.txt 明文文件（仅 Linux 无 secret-service 时启用）
+    PlaintextFile,
+}
+
+/// 可测内核：后端选择纯函数
+fn backend_for(secret_service_ok: bool) -> KeyBackend {
+    if secret_service_ok {
+        KeyBackend::System
+    } else {
+        KeyBackend::PlaintextFile
+    }
+}
+
+/// secret-service 运行时探测（Linux）：dbus session 总线存在即认为可用。
+/// 判据：DBUS_SESSION_BUS_ADDRESS 环境变量，或 $XDG_RUNTIME_DIR/bus socket。
+/// 其他平台恒 true（macOS/Windows 凭据存储无外部服务依赖）。
+#[cfg(target_os = "linux")]
+fn secret_service_available() -> bool {
+    secret_service_available_with(
+        std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some_and(|v| !v.is_empty()),
+        std::env::var("XDG_RUNTIME_DIR").ok().as_deref(),
+    )
+}
+
+#[cfg(not(target_os = "linux"))]
+fn secret_service_available() -> bool {
+    true
+}
+
+/// 可测内核：dbus 地址存在，或 XDG_RUNTIME_DIR 下有 bus socket
+///（非 Linux 仅测试使用：生产 secret_service_available 恒 true）
+#[cfg_attr(all(not(target_os = "linux"), not(test)), allow(dead_code))]
+fn secret_service_available_with(has_dbus_addr: bool, xdg_runtime_dir: Option<&str>) -> bool {
+    if has_dbus_addr {
+        return true;
+    }
+    xdg_runtime_dir
+        .map(|d| std::path::Path::new(d).join("bus").exists())
+        .unwrap_or(false)
+}
+
+fn key_backend() -> KeyBackend {
+    backend_for(secret_service_available())
+}
+
+/// Linux 应用数据目录（无 AppHandle 场景，P2-32 降级 key 路径用）：对齐 tauri
+/// app_data_dir 规则 —— $XDG_DATA_HOME/com.renshi.wmessage，缺省
+/// ~/.local/share/com.renshi.wmessage。非 Linux 返回 None（降级后端不会启用）。
+#[cfg(target_os = "linux")]
+fn linux_app_data_dir() -> Option<std::path::PathBuf> {
+    if let Some(x) = std::env::var_os("XDG_DATA_HOME") {
+        if !x.is_empty() {
+            return Some(std::path::PathBuf::from(x).join("com.renshi.wmessage"));
+        }
+    }
+    std::env::var_os("HOME")
+        .map(|h| std::path::PathBuf::from(h).join(".local/share/com.renshi.wmessage"))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn linux_app_data_dir() -> Option<std::path::PathBuf> {
+    None
+}
+
+/// 降级 key 文件路径（P2-32）：与数据目录同一便携策略（audit::probe_dir）——
+/// exe 同目录可写则随包走（便携模式），否则 Linux 应用数据目录。
+fn plaintext_key_path() -> std::path::PathBuf {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|p| p.to_path_buf()));
+    crate::audit::probe_dir(exe_dir.as_deref(), linux_app_data_dir()).join("bot-api-key.txt")
+}
+
+/// 降级告警（P2-32）：每进程首用降级后端时记一条 WARN 审计（避免每次读 key 刷屏）。
+/// 写在与 key 文件同目录的 bot.log（无 AppHandle，走 write_warn_audit_to）。
+fn warn_fallback_once() {
+    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if WARNED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    if let Some(dir) = plaintext_key_path().parent().map(|p| p.to_path_buf()) {
+        crate::audit::write_warn_audit_to(
+            &dir,
+            "keyring_fallback_plaintext",
+            &[(
+                "reason",
+                "secret-service 不可用（无 dbus 会话），API Key 降级明文文件存储（0600）",
+            )],
+        );
+    }
+}
+
+/// 降级文件读取（P2-32）：文件缺失 = 未配置（对齐 System 路径 NoEntry → KeyringError
+/// 同 code，前端 hint 一致）；真实 IO 故障 → KeyringError，不静默吞。
+fn read_key_file_from(p: &std::path::Path) -> CommandResult<String> {
+    match std::fs::read_to_string(p) {
+        Ok(s) => {
+            let k = s.trim().to_string();
+            if k.is_empty() {
+                return Err(CommandError::KeyringError(
+                    "未配置 API Key（降级文件存储为空）".into(),
+                ));
+            }
+            Ok(k)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(CommandError::KeyringError(
+            "未配置 API Key（降级文件存储）".into(),
+        )),
+        Err(e) => Err(CommandError::KeyringError(format!(
+            "读取 API Key 失败（降级文件存储）：{e}"
+        ))),
+    }
+}
+
+/// 降级文件写入（P2-32）：父目录不存在则创建；Unix chmod 0600（与 P2-1
+/// api-token.txt 同策略，防同机其他用户读 key）。
+fn write_key_file_to(p: &std::path::Path, key: &str) -> CommandResult<()> {
+    if let Some(dir) = p.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| {
+            CommandError::KeyringError(format!("保存 API Key 失败（降级文件存储）：{e}"))
+        })?;
+    }
+    std::fs::write(p, key).map_err(|e| {
+        CommandError::KeyringError(format!("保存 API Key 失败（降级文件存储）：{e}"))
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
+/// 按后端分发读取（可测：PlaintextFile + 注入路径即「mock secret-service 不可用」）
+fn read_api_key_at(backend: KeyBackend, file: &std::path::Path) -> CommandResult<String> {
+    match backend {
+        KeyBackend::System => classify_get_password(key_entry()?.get_password()),
+        KeyBackend::PlaintextFile => read_key_file_from(file),
+    }
+}
+
+/// 按后端分发存在性检查：缺失 → Ok(false)（对齐 classify_has_key 的 NoEntry 语义）；
+/// 真实读取故障 → Err，不吞成 false
+fn has_api_key_at(backend: KeyBackend, file: &std::path::Path) -> CommandResult<bool> {
+    match backend {
+        KeyBackend::System => match key_entry() {
+            Ok(e) => classify_has_key(e.get_password()),
+            Err(e) => Err(e),
+        },
+        KeyBackend::PlaintextFile => match std::fs::read_to_string(file) {
+            Ok(s) => Ok(!s.trim().is_empty()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(CommandError::KeyringError(format!(
+                "检查 API Key 失败（降级文件存储）：{e}"
+            ))),
+        },
+    }
+}
+
+/// 按后端分发写入
+fn write_api_key_at(backend: KeyBackend, file: &std::path::Path, key: &str) -> CommandResult<()> {
+    match backend {
+        KeyBackend::System => key_entry()?
+            .set_password(key)
+            .map_err(|e| CommandError::KeyringError(format!("保存 API Key 失败：{e}"))),
+        KeyBackend::PlaintextFile => write_key_file_to(file, key),
+    }
+}
+
+/// 按后端分发删除（幂等：文件不存在 = Ok）
+fn delete_api_key_at(backend: KeyBackend, file: &std::path::Path) -> CommandResult<()> {
+    match backend {
+        KeyBackend::System => key_entry()?
+            .delete_credential()
+            .map_err(|e| CommandError::KeyringError(format!("清除 API Key 失败：{e}"))),
+        KeyBackend::PlaintextFile => match std::fs::remove_file(file) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(CommandError::KeyringError(format!(
+                "清除 API Key 失败（降级文件存储）：{e}"
+            ))),
+        },
+    }
+}
+
 /// F1（Phase 6b）：get_password 结果分类——任何失败都映射为 KeyringError 结构化变体，
 /// 不再走 String 逃生舱（同类故障产出两种 code，前端 hintForCode 失配）。
 /// 抽成纯函数便于单测（keyring 真实存储在测试环境不可用）。
@@ -110,20 +307,27 @@ fn classify_has_key(r: Result<String, keyring::Error>) -> CommandResult<bool> {
 }
 
 pub fn read_api_key() -> CommandResult<String> {
-    classify_get_password(key_entry()?.get_password())
+    let backend = key_backend();
+    if backend == KeyBackend::PlaintextFile {
+        warn_fallback_once();
+    }
+    read_api_key_at(backend, &plaintext_key_path())
 }
 
 pub fn has_api_key() -> CommandResult<bool> {
-    match key_entry() {
-        Ok(e) => classify_has_key(e.get_password()),
-        Err(e) => Err(e),
+    let backend = key_backend();
+    if backend == KeyBackend::PlaintextFile {
+        warn_fallback_once();
     }
+    has_api_key_at(backend, &plaintext_key_path())
 }
 
 fn write_api_key(key: &str) -> CommandResult<()> {
-    key_entry()?
-        .set_password(key)
-        .map_err(|e| CommandError::KeyringError(format!("保存 API Key 失败：{e}")))
+    let backend = key_backend();
+    if backend == KeyBackend::PlaintextFile {
+        warn_fallback_once();
+    }
+    write_api_key_at(backend, &plaintext_key_path(), key)
 }
 
 /// 返回给前端的配置视图：不含 key 本体，只有 hasApiKey 标志
@@ -213,9 +417,7 @@ pub fn bot_set_config(
 /// 清除已保存的 API Key
 #[tauri::command]
 pub fn bot_clear_api_key() -> CommandResult<()> {
-    key_entry()?
-        .delete_credential()
-        .map_err(|e| CommandError::KeyringError(format!("清除 API Key 失败：{e}")))
+    delete_api_key_at(key_backend(), &plaintext_key_path())
 }
 
 // ───────────────────────── 审计日志 ─────────────────────────
@@ -1541,6 +1743,96 @@ mod f1_keyring_tests {
     #[test]
     fn has_api_key_present_is_ok_true() {
         assert!(classify_has_key(Ok("sk-test".into())).unwrap());
+    }
+}
+
+/// P2-32 单测：Linux secret-service 探测 + 降级明文文件后端。
+/// 注入 backend=PlaintextFile + 临时路径即「mock secret-service 不可用」，
+/// fallback 路径全链路走通（写 → 读 → has → 删）+ WARN 审计落行。
+#[cfg(test)]
+mod p2_32_keyring_fallback_tests {
+    use super::*;
+
+    #[test]
+    fn backend_for_selects_plaintext_when_secret_service_down() {
+        assert_eq!(backend_for(true), KeyBackend::System);
+        assert_eq!(backend_for(false), KeyBackend::PlaintextFile);
+    }
+
+    #[test]
+    fn secret_service_probe_dbus_addr_or_bus_socket() {
+        assert!(secret_service_available_with(true, None), "有 dbus 地址即可用");
+        assert!(!secret_service_available_with(false, None), "无任何线索 = 不可用");
+        let tmp = tempfile::tempdir().unwrap();
+        let d = tmp.path().to_str().unwrap();
+        assert!(
+            !secret_service_available_with(false, Some(d)),
+            "XDG_RUNTIME_DIR 无 bus socket = 不可用"
+        );
+        std::fs::write(tmp.path().join("bus"), b"").unwrap();
+        assert!(
+            secret_service_available_with(false, Some(d)),
+            "XDG_RUNTIME_DIR/bus 存在即可用"
+        );
+    }
+
+    #[test]
+    fn plaintext_backend_roundtrip_and_delete() {
+        let tmp = tempfile::tempdir().unwrap();
+        let f = tmp.path().join("bot-api-key.txt");
+        // has：文件缺失 → Ok(false)（对齐 NoEntry 语义，不吞错）
+        assert!(!has_api_key_at(KeyBackend::PlaintextFile, &f).unwrap());
+        // read：缺失 → KeyringError（与 System 路径 NoEntry 同 code，前端 hint 一致）
+        let e = read_api_key_at(KeyBackend::PlaintextFile, &f).unwrap_err();
+        assert_eq!(e.code(), "KEYRING_ERROR");
+        // write → 文件落盘 + Unix 0600（与 api-token.txt 同策略）
+        write_api_key_at(KeyBackend::PlaintextFile, &f, "sk-test-123").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&f).unwrap().permissions().mode() & 0o777,
+                0o600,
+                "降级 key 文件必须 0600"
+            );
+        }
+        assert_eq!(
+            read_api_key_at(KeyBackend::PlaintextFile, &f).unwrap(),
+            "sk-test-123"
+        );
+        assert!(has_api_key_at(KeyBackend::PlaintextFile, &f).unwrap());
+        // delete：删后不存在；再删幂等 Ok
+        delete_api_key_at(KeyBackend::PlaintextFile, &f).unwrap();
+        assert!(!f.exists());
+        delete_api_key_at(KeyBackend::PlaintextFile, &f).unwrap();
+    }
+
+    #[test]
+    fn plaintext_write_creates_parent_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let f = tmp.path().join("nested").join("bot-api-key.txt");
+        write_api_key_at(KeyBackend::PlaintextFile, &f, "sk-x").unwrap();
+        assert_eq!(
+            read_api_key_at(KeyBackend::PlaintextFile, &f).unwrap(),
+            "sk-x"
+        );
+    }
+
+    #[test]
+    fn fallback_warn_audit_lands_in_bot_log() {
+        // 降级告警：WARN 级别 + 事件名 + reason 落 bot.log（write_warn_audit_to）
+        let tmp = tempfile::tempdir().unwrap();
+        crate::audit::write_warn_audit_to(
+            tmp.path(),
+            "keyring_fallback_plaintext",
+            &[("reason", "secret-service 不可用")],
+        );
+        let log = std::fs::read_to_string(tmp.path().join("bot.log")).unwrap();
+        assert!(
+            log.contains("WARN | keyring_fallback_plaintext"),
+            "缺 WARN 审计行: {log:?}"
+        );
+        assert!(log.contains("reason=secret-service 不可用"), "got: {log:?}");
     }
 }
 

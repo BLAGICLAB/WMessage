@@ -157,7 +157,8 @@ pub(crate) fn probe_log_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> std
 }
 
 /// P2-19 可测内核：probe 三分支——exe 目录可写用它；不可写退 app_data；皆不可用退 temp。
-fn probe_dir(
+/// pub(crate)（P2-32）：bot.rs 降级 key 路径（无 AppHandle）复用同一便携策略。
+pub(crate) fn probe_dir(
     exe_dir: Option<&std::path::Path>,
     app_data: Option<std::path::PathBuf>,
 ) -> std::path::PathBuf {
@@ -191,6 +192,18 @@ pub(crate) fn write_error_audit<R: tauri::Runtime>(
     crate::db::rotate_log_if_large(&p, 5 * 1024 * 1024);
     let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
     let line = build_event_line(&ts.to_string(), AuditLevel::Error, event, kv);
+    append_line(&p, &line);
+}
+
+/// P2-32：无 AppHandle 场景的 WARN 审计（keyring 降级明文存储路径用）。
+/// 目录由调用方解析（与降级 key 文件同目录，保证同一便携位置），
+/// 行拼装复用 build_event_line，与 write_event 零漂移。
+pub(crate) fn write_warn_audit_to(dir: &std::path::Path, event: &str, kv: &[(&str, &str)]) {
+    let _g = BOT_LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let p = dir.join("bot.log");
+    crate::db::rotate_log_if_large(&p, 5 * 1024 * 1024);
+    let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+    let line = build_event_line(&ts.to_string(), AuditLevel::Warn, event, kv);
     append_line(&p, &line);
 }
 
