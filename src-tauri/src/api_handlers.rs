@@ -747,7 +747,8 @@ fn stop_sse_writers(hub_key: usize, timeout: Duration, audit: &mut dyn FnMut(&st
 fn sse_connect(req: Request, store: &Arc<dyn TaskStore>, query: &str) {
     let since = query_param(query, "since").and_then(|s| s.parse::<u64>().ok());
     // A2: sync_channel(256) — 单客户端最多积压 256 条，超出则丢事件（广播不阻塞）
-    let (tx, rx) = sync_channel(256);
+    // P2-3：载荷带事件 id，writer 端据此与断线重放去重
+    let (tx, rx) = sync_channel::<(u64, Vec<u8>)>(256);
     // 锁中毒时用 into_inner 恢复（与 broadcast 端策略一致，审计 P3：原先静默跳过，
     // 客户端注册失败则该 SSE 连接永远收不到事件）
     let hub = store.event_hub();
@@ -796,10 +797,17 @@ fn sse_connect(req: Request, store: &Arc<dyn TaskStore>, query: &str) {
             return;
         }
         // 断线重放：补发 since 之后的历史事件
-        if let Some(since) = since {
-            for msg in hub.replay(since) {
+        // P2-3：重放与在线推送存在竞态——客户端注册进 clients 之后、重放快照之前
+        // 广播的事件会同时出现在 history 与在线队列里。记录已发最大 id，
+        // 在线循环里 id <= last_sent 的一律跳过（服务器侧去重）。
+        let mut last_sent: u64 = since.unwrap_or(0);
+        if since.is_some() {
+            for (id, msg) in hub.replay(last_sent) {
                 if stream.write_all(msg.as_bytes()).is_err() {
                     return;
+                }
+                if id > last_sent {
+                    last_sent = id;
                 }
             }
             let _ = stream.flush();
@@ -812,7 +820,12 @@ fn sse_connect(req: Request, store: &Arc<dyn TaskStore>, query: &str) {
                 break;
             }
             match rx.recv_timeout(Duration::from_secs(1)) {
-                Ok(data) => {
+                Ok((id, data)) => {
+                    // P2-3：重放已覆盖的事件（id <= last_sent）跳过，不重复推
+                    if id <= last_sent {
+                        continue;
+                    }
+                    last_sent = id;
                     idle_ticks = 0;
                     if stream.write_all(&data).is_err() || stream.flush().is_err() {
                         break;

@@ -42,7 +42,9 @@ pub struct RunningApi {
 
 /// SSE 事件中枢：客户端列表（bounded 256） + 自增事件 id + 历史环形缓冲（断线重放）
 pub struct EventHub {
-    pub clients: Mutex<Vec<SyncSender<Vec<u8>>>>, // bounded SyncSender 端；client 端持 Rx
+    // P2-3：通道载荷带事件 id——断线重放与在线推送可能交叠（重放快照期间广播的新事件
+    // 既进 history 又进在线队列），writer 端靠 id 去重（id <= 已发最大 id 则跳过）
+    pub clients: Mutex<Vec<SyncSender<(u64, Vec<u8>)>>>, // bounded SyncSender 端；client 端持 Rx
     pub next_id: AtomicU64,
     pub history: Mutex<VecDeque<(u64, String)>>,
     /// 事件 id 持久化路径（跨重启保持单调；None=仅内存，测试用）
@@ -100,7 +102,7 @@ impl EventHub {
             let mut i = 0;
             while i < clients.len() {
                 // try_send: bounded 队列满时 Err 表示 client 积压过深，跳过并移除
-                if clients[i].try_send(msg.as_bytes().to_vec()).is_err() {
+                if clients[i].try_send((id, msg.as_bytes().to_vec())).is_err() {
                     clients.remove(i);
                 } else {
                     i += 1;
@@ -110,12 +112,13 @@ impl EventHub {
     }
 
     /// 重放 id > since 的历史事件（断线补齐）
-    pub fn replay(&self, since: u64) -> Vec<String> {
+    /// P2-3：返回 (id, msg)，writer 端据此与在线推送去重
+    pub fn replay(&self, since: u64) -> Vec<(u64, String)> {
         match self.history.lock() {
             Ok(h) => h
                 .iter()
                 .filter(|(id, _)| *id > since)
-                .map(|(_, m)| m.clone())
+                .map(|(id, m)| (*id, m.clone()))
                 .collect(),
             Err(_) => Vec::new(),
         }
@@ -285,5 +288,30 @@ mod tests {
         let hub = EventHub::new();
         hub.broadcast(serde_json::json!({"type":"tasks-changed","op":"created"}));
         assert_eq!(hub.last_id(), 1);
+    }
+
+    /// P2-3：since=5 断线重放——4 个 id<5 + id=5 本身都不重放，只推 id>5 的 6 条；
+    /// 且每条带回事件 id，供 writer 端与在线推送去重（重放窗口内广播的事件既进
+    /// history 又进在线队列，不带 id 就会重复推给客户端）
+    #[test]
+    fn replay_since_returns_only_newer_events_with_ids() {
+        let hub = EventHub::new();
+        for i in 1..=11u64 {
+            hub.broadcast(serde_json::json!({"type":"tasks-changed","seq":i}));
+        }
+        // id 1-4（<5）+ id 5（=since）跳过，id 6-11 共 6 条重放
+        let replayed = hub.replay(5);
+        assert_eq!(replayed.len(), 6, "只应重放 id>5 的事件: {replayed:?}");
+        for (idx, (id, msg)) in replayed.iter().enumerate() {
+            let expect_id = 6 + idx as u64;
+            assert_eq!(*id, expect_id, "重放事件 id 必须单调且连续");
+            assert!(
+                msg.starts_with(&format!("id: {expect_id}\n")),
+                "SSE 帧头 id 与返回 id 必须一致: {msg:?}"
+            );
+        }
+        // since=0（全新客户端）→ 全量 11 条；since=last_id → 空
+        assert_eq!(hub.replay(0).len(), 11);
+        assert!(hub.replay(11).is_empty());
     }
 }
