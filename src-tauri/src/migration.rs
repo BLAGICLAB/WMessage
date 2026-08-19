@@ -73,17 +73,27 @@ fn journal_pending_inner(
     Ok(conn.last_insert_rowid())
 }
 
+/// NEW-B-2: journal 写纳入 DB_WRITE_LOCK 临界区——与 db_upsert 等持锁写串行，
+/// 不再靠 2s busy_timeout 兜底并发冲突。
+/// 注意：不能在整个 run_migration_inner 入口持锁——其内部 block_on(db_upsert)
+/// 会在 spawn_blocking 线程里再抢同一把锁，std Mutex 不可重入 → 死锁。
+/// 因此只在每次 journal 写时短临界区持锁。
+fn db_write_lock() -> std::sync::MutexGuard<'static, ()> {
+    crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// B1: 记录一个 pending 操作，返回 row id（后续 committed/cleared 需用）。
 /// pending 表示「即将开始」还未完成，启动时需要 replay 检测。
+/// NEW-B-2: 复用调用方连接（不再每次 open_db 付全套 schema 检查），写持 DB_WRITE_LOCK。
 fn journal_pending(
-    app: &AppHandle,
+    conn: &rusqlite::Connection,
     op: &str,
     src: &Path,
     dst: Option<&Path>,
     task_id: &str,
 ) -> Result<i64, String> {
-    let conn = db::open_db(app).map_err(|e| e.to_string())?;
-    journal_pending_inner(&conn, op, src, dst, task_id, now_ms())
+    let _g = db_write_lock();
+    journal_pending_inner(conn, op, src, dst, task_id, now_ms())
 }
 
 /// B1 inner: 标记 committed。replay 跳过该行。
@@ -97,9 +107,10 @@ fn journal_committed_inner(conn: &rusqlite::Connection, id: i64) -> Result<(), S
 }
 
 /// B1: 操作成功完成 → 标记 committed。replay 跳过该行。
-fn journal_committed(app: &AppHandle, id: i64) -> Result<(), String> {
-    let conn = db::open_db(app).map_err(|e| e.to_string())?;
-    journal_committed_inner(&conn, id)
+/// NEW-B-2: 复用调用方连接，写持 DB_WRITE_LOCK。
+fn journal_committed(conn: &rusqlite::Connection, id: i64) -> Result<(), String> {
+    let _g = db_write_lock();
+    journal_committed_inner(conn, id)
 }
 
 /// B1 inner: 清除（未启动 / 已明确失败）。
@@ -113,9 +124,10 @@ fn journal_cleared_inner(conn: &rusqlite::Connection, id: i64) -> Result<(), Str
 }
 
 /// B1: 操作未启动 / 已明确失败 → 清除该行（不需要 replay）。
-fn journal_cleared(app: &AppHandle, id: i64) -> Result<(), String> {
-    let conn = db::open_db(app).map_err(|e| e.to_string())?;
-    journal_cleared_inner(&conn, id)
+/// NEW-B-2: 复用调用方连接，写持 DB_WRITE_LOCK。
+fn journal_cleared(conn: &rusqlite::Connection, id: i64) -> Result<(), String> {
+    let _g = db_write_lock();
+    journal_cleared_inner(conn, id)
 }
 
 /// NEW-B-1 inner: 查某任务某源路径最新一条 pending journal（轮询中就地对账用）。
@@ -148,14 +160,13 @@ fn journal_find_pending_inner(
     .map_err(|e| e.to_string())
 }
 
-/// NEW-B-1: 生产包装（open_db + inner）。
+/// NEW-B-1: 生产包装（NEW-B-2 起复用调用方连接；纯 SELECT，WAL 下读写不互斥，无需持锁）。
 fn journal_find_pending(
-    app: &AppHandle,
+    conn: &rusqlite::Connection,
     task_id: &str,
     src: &Path,
 ) -> Result<Option<JournalEntry>, String> {
-    let conn = db::open_db(app).map_err(|e| e.to_string())?;
-    journal_find_pending_inner(&conn, task_id, src)
+    journal_find_pending_inner(conn, task_id, src)
 }
 
 /// NEW-B-1: replay 修复前提——任务 file_path 仍指向 journal 记录的 src，
@@ -241,7 +252,7 @@ pub fn journal_replay_pending(app: &AppHandle) -> Result<(usize, usize), String>
                     // move 成功但 DB 未更新
                     match recover_move_db(app, &entry.task_id, &entry.src, d) {
                         Ok(true) => {
-                            journal_committed(app, entry.id).ok();
+                            journal_committed_inner(&conn, entry.id).ok();
                             recovered += 1;
                             log_line(
                                 app,
@@ -255,7 +266,7 @@ pub fn journal_replay_pending(app: &AppHandle) -> Result<(usize, usize), String>
                         Ok(false) => {
                             // NEW-B-1: 任务 file_path 已不指向 src（用户重绑 / 已解绑）
                             // → 跳过修复，避免旧 journal 覆盖新绑定
-                            journal_cleared(app, entry.id).ok();
+                            journal_cleared_inner(&conn, entry.id).ok();
                             log_line(
                                 app,
                                 &format!(
@@ -278,7 +289,7 @@ pub fn journal_replay_pending(app: &AppHandle) -> Result<(usize, usize), String>
                 }
                 _ => {
                     // 其他异常 / 未开始 / 异常状态 → clear 行
-                    journal_cleared(app, entry.id).ok();
+                    journal_cleared_inner(&conn, entry.id).ok();
                 }
             },
             "delete" => {
@@ -286,7 +297,7 @@ pub fn journal_replay_pending(app: &AppHandle) -> Result<(usize, usize), String>
                     // delete 成功但 DB 未清 file_path
                     match recover_delete_db(app, &entry.task_id, &entry.src) {
                         Ok(true) => {
-                            journal_committed(app, entry.id).ok();
+                            journal_committed_inner(&conn, entry.id).ok();
                             recovered += 1;
                             log_line(
                                 app,
@@ -295,7 +306,7 @@ pub fn journal_replay_pending(app: &AppHandle) -> Result<(usize, usize), String>
                         }
                         Ok(false) => {
                             // NEW-B-1: 任务 file_path 已变更（用户重绑）→ 跳过，不清空新绑定
-                            journal_cleared(app, entry.id).ok();
+                            journal_cleared_inner(&conn, entry.id).ok();
                             log_line(
                                 app,
                                 &format!(
@@ -316,11 +327,11 @@ pub fn journal_replay_pending(app: &AppHandle) -> Result<(usize, usize), String>
                         }
                     }
                 } else {
-                    journal_cleared(app, entry.id).ok();
+                    journal_cleared_inner(&conn, entry.id).ok();
                 }
             }
             _ => {
-                journal_cleared(app, entry.id).ok();
+                journal_cleared_inner(&conn, entry.id).ok();
             }
         }
     }
@@ -658,6 +669,9 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
     let rules = load_rules(app);
     let tasks = tauri::async_runtime::block_on(async { db::db_load(app.clone()).await })
         .map_err(|e| e.to_string())?;
+    // NEW-B-2: 本轮所有 journal 读写复用同一条连接（原来每次 journal 调用各 open_db 一次，
+    // 迁一个文件付 3 次全套 schema 检查）；journal 写由 journal_* 内部持 DB_WRITE_LOCK 串行。
+    let jconn = db::open_db(app).map_err(|e| e.to_string())?;
     let now = now_ms();
     let mut changed: Vec<db::Task> = vec![];
     // NEW-B-1: 解绑时确认关闭的 pending journal id——在 changed 批量落盘成功后统一提交，
@@ -741,7 +755,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
                     // NEW-B-1: 源不存在时先对账 journal——「上一轮 move 成功但 db_upsert 失败」
                     // 时 journal 仍 pending 且 dst 存在，此时应就地修复绑定到 dst，而非解绑
                     // （旧逻辑直接解绑 → 附件链接丢失一整个会话周期，要等重启 replay 才恢复）。
-                    let pending = journal_find_pending(app, &t.id, &src).unwrap_or(None);
+                    let pending = journal_find_pending(&jconn, &t.id, &src).unwrap_or(None);
                     let dst_exists = pending
                         .as_ref()
                         .and_then(|e| e.dst.as_ref())
@@ -756,7 +770,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
                                 db::db_upsert(app.clone(), vec![nt.clone()]).await
                             }) {
                                 Ok(()) => {
-                                    journal_committed(app, journal_id).ok();
+                                    journal_committed(&jconn, journal_id).ok();
                                     changed.push(nt);
                                     report.moved += 1;
                                     let line = format!(
@@ -805,7 +819,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
                 };
                 // B1: 写 journal pending → move_entry → db_upsert → journal_committed
                 // 如果中间任一步崩了，启动时 journal_replay_pending 修复 DB
-                let journal_id = match journal_pending(app, "move", &src, Some(&dst), &t.id) {
+                let journal_id = match journal_pending(&jconn, "move", &src, Some(&dst), &t.id) {
                     Ok(id) => id,
                     Err(e) => {
                         report.skipped += 1;
@@ -817,7 +831,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
                 };
                 if let Err(e) = move_entry(&src, &dst) {
                     // move 未启动 / 明确失败 → clear journal，下次重试不需要修复
-                    journal_cleared(app, journal_id).ok();
+                    journal_cleared(&jconn, journal_id).ok();
                     report.skipped += 1;
                     let line = format!("跳过「{name}」：{e}");
                     report.log.push(line.clone());
@@ -840,7 +854,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
                     log_line(app, &line);
                     continue;
                 }
-                journal_committed(app, journal_id).ok();
+                journal_committed(&jconn, journal_id).ok();
                 changed.push(nt);
                 report.moved += 1;
                 let line = format!("已移动「{name}」→ {}", dst.display());
@@ -851,7 +865,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
                 if !src.exists() {
                     // NEW-B-1: 同 move 分支——先对账 journal。pending delete 的终态本就是
                     // 解绑，落盘后提交 journal 关闭环路；pending move 且 dst 在 → 就地修复。
-                    let pending = journal_find_pending(app, &t.id, &src).unwrap_or(None);
+                    let pending = journal_find_pending(&jconn, &t.id, &src).unwrap_or(None);
                     let dst_exists = pending
                         .as_ref()
                         .and_then(|e| e.dst.as_ref())
@@ -866,7 +880,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
                                 db::db_upsert(app.clone(), vec![nt.clone()]).await
                             }) {
                                 Ok(()) => {
-                                    journal_committed(app, journal_id).ok();
+                                    journal_committed(&jconn, journal_id).ok();
                                     changed.push(nt);
                                     report.moved += 1;
                                     let line = format!(
@@ -904,7 +918,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
                     }
                 }
                 // B1: write journal pending → delete → db_upsert → committed
-                let journal_id = match journal_pending(app, "delete", &src, None, &t.id) {
+                let journal_id = match journal_pending(&jconn, "delete", &src, None, &t.id) {
                     Ok(id) => id,
                     Err(e) => {
                         report.skipped += 1;
@@ -921,7 +935,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
                 };
                 if let Err(e) = res {
                     // delete 失败 → clear journal，下次重试
-                    journal_cleared(app, journal_id).ok();
+                    journal_cleared(&jconn, journal_id).ok();
                     report.skipped += 1;
                     let line = format!("删除「{name}」失败（可能被占用/权限不足）：{e}");
                     report.log.push(line.clone());
@@ -946,7 +960,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
                     log_line(app, &line);
                     continue;
                 }
-                journal_committed(app, journal_id).ok();
+                journal_committed(&jconn, journal_id).ok();
                 changed.push(nt);
                 report.deleted += 1;
                 let line = format!("已删除「{name}」（规则显式启用 delete）");
@@ -967,7 +981,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
         // NEW-B-1: 解绑已落盘 → 提交对应 pending journal，关闭对账环路
         // （若落盘失败则上面已 return，journal 保持 pending，留待下轮/启动 replay）
         for id in journals_commit_after_batch {
-            journal_committed(app, id).ok();
+            journal_committed(&jconn, id).ok();
         }
     }
 
@@ -1310,6 +1324,35 @@ mod tests {
             .query_row("SELECT state FROM migration_journal WHERE id = ?1", [id], |r| r.get(0))
             .unwrap();
         assert_eq!(state, "cleared");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// NEW-B-2: journal 写持 DB_WRITE_LOCK 与 db_upsert 等写串行——锁被占时阻塞等待
+    /// 锁释放后再写（不再各起新连接靠 2s busy_timeout 兜底），全程无 busy 失败。
+    #[test]
+    fn journal_writes_serialize_on_db_write_lock() {
+        let (dir, conn) = setup_journal_db();
+        // 模拟 db_upsert 持锁临界区（spawn_blocking 线程里持锁 200ms）
+        let holder = std::thread::spawn(|| {
+            let _g = db_write_lock();
+            std::thread::sleep(Duration::from_millis(200));
+        });
+        std::thread::sleep(Duration::from_millis(50)); // 确保 holder 先拿到锁
+        let start = std::time::Instant::now();
+        // 锁被占用期间 journal 三次写都应等待而非 busy 报错
+        let id = journal_pending(&conn, "move", Path::new("/src/lock"), Some(Path::new("/dst/lock")), "task-lock").unwrap();
+        journal_committed(&conn, id).unwrap();
+        journal_cleared(&conn, id).unwrap();
+        let waited = start.elapsed();
+        holder.join().unwrap();
+        assert!(
+            waited >= Duration::from_millis(100),
+            "journal 写应等待锁释放（实测 {waited:?}），而非立即失败"
+        );
+        let state: String = conn
+            .query_row("SELECT state FROM migration_journal WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(state, "cleared", "三次写在持锁串行下全部成功落库");
         fs::remove_dir_all(&dir).ok();
     }
 

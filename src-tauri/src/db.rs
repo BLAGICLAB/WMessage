@@ -855,7 +855,8 @@ fn migrate_data_json(app: &tauri::AppHandle, conn: &mut rusqlite::Connection) {
 
 /// 写操作全局锁：主窗口（db_upsert/db_delete/db_merge）与本地 API 线程共享同一把锁，
 /// 避免 WAL 下并发写冲突（busy_timeout 只是兜底）。
-static DB_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// pub(crate)：migration 的 journal 写也纳入同一把锁（NEW-B-2）。
+pub(crate) static DB_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[tauri::command]
 pub async fn db_load(app: tauri::AppHandle) -> CommandResult<Vec<Task>> {
