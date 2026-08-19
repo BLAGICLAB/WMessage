@@ -509,10 +509,18 @@ pub fn load_rules(app: &AppHandle) -> RulesFile {
 }
 
 fn save_rules(app: &AppHandle, rules: &RulesFile) -> Result<(), String> {
-    let dir = db::data_dir(app);
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    save_rules_to(&rules_path(app), rules)
+}
+
+/// P2-8：原子写（复用 NEW-B-6 db::atomic_write，同 D3 profile 模式）——
+/// 崩溃在写中途只留 tmp 残件，rules.json 要么旧完整版要么新完整版，不留半截。
+/// 抽 path 参数便于单测（AppHandle 无法单测构造）。
+fn save_rules_to(path: &Path, rules: &RulesFile) -> Result<(), String> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
     let text = serde_json::to_string_pretty(rules).map_err(|e| e.to_string())?;
-    fs::write(rules_path(app), text).map_err(|e| e.to_string())
+    crate::db::atomic_write(path, &text)
 }
 
 /// 校验规则：action 合法；move 必须有归档目录；关键字至少一个非空
@@ -1367,6 +1375,55 @@ mod tests {
     fn empty_keywords_never_match() {
         let r = rule(vec![], "move", "x");
         assert!(!filename_matches("anything.txt", &r));
+    }
+
+    // ── P2-8：save_rules 原子写 ──
+
+    /// tmp 写失败（注入：rules.json.tmp 占成目录）→ 返回 Err，rules.json 保持原状
+    #[test]
+    fn save_rules_atomic_failure_keeps_original() {
+        let dir = std::env::temp_dir().join(format!("wm-rules-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("rules.json");
+        let original = "{\"version\":1,\"rules\":[]}";
+        fs::write(&path, original).unwrap();
+        // 失败注入：tmp 路径占成目录 → atomic_write 写临时文件必败
+        fs::create_dir_all(dir.join("rules.json.tmp")).unwrap();
+
+        let rules = RulesFile {
+            version: 1,
+            rules: vec![rule(vec!["工资"], "move", "工资/{year}")],
+        };
+        let r = save_rules_to(&path, &rules);
+        assert!(r.is_err(), "tmp 写失败必须返回 Err");
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            original,
+            "写失败时 rules.json 必须保持原状（不留半截）"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 正常写：内容完整可解析、无 tmp 残件
+    #[test]
+    fn save_rules_atomic_success_no_tmp_left() {
+        let dir = std::env::temp_dir().join(format!("wm-rules-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("rules.json");
+        let rules = RulesFile {
+            version: 1,
+            rules: vec![rule(vec!["工资"], "move", "工资/{year}")],
+        };
+        save_rules_to(&path, &rules).unwrap();
+        let parsed: RulesFile =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(parsed.rules.len(), 1);
+        assert_eq!(parsed.rules[0].keywords, vec!["工资".to_string()]);
+        assert!(
+            !dir.join("rules.json.tmp").exists(),
+            "原子写完成后不得残留 tmp 文件"
+        );
+        fs::remove_dir_all(&dir).ok();
     }
 
     /// B1: journal SQL 基础流。构造临时 DB + 创建 migration_journal 表，
