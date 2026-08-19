@@ -220,6 +220,9 @@ pub struct PyRunResult {
     pub stderr: String,
     pub exit_code: Option<i32>,
     pub duration_ms: u128,
+    /// 输出触顶被截断（NEW-C-5）：stdout/stderr 超 OUTPUT_CAP 时为 true
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 const OUTPUT_CAP: usize = 64 * 1024;
@@ -379,17 +382,36 @@ fn cleanup_after_fail(child: &mut std::process::Child, dir: &std::path::Path, li
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// 有界读取 + 排空（NEW-C-5）：先按 cap+1 探测是否超限；超限则截断到 cap，
+/// 并继续把剩余输出读到 EOF 丢弃 —— 原先 take() 到顶即 drop 管道读端，
+/// Unix 子进程下次 write 会吃 SIGPIPE 被静默杀死（exit_code=None），用户只见莫名失败。
+/// 返回 (截断后的内容, 是否发生截断)。
+fn read_capped_drain<R: Read>(src: R, cap: usize) -> (Vec<u8>, bool) {
+    let mut probe = src.take(cap as u64 + 1);
+    let mut buf = Vec::new();
+    let _ = probe.read_to_end(&mut buf);
+    let truncated = buf.len() > cap;
+    if truncated {
+        buf.truncate(cap);
+        // 排空剩余输出，让子进程正常写完退出（不进返回值）
+        let _ = std::io::copy(&mut probe.into_inner(), &mut std::io::sink());
+    }
+    (buf, truncated)
+}
+
 /// 主进程退出后收输出的兜底（C1）：孙进程继承 stdout/stderr 管道写端且不退出时，
 /// reader 子线程的 read_to_end 永不 EOF，`rx.iter()` 会永久阻塞 → run_python 挂死。
 /// 改为带总宽限（≤ grace）的 recv_timeout 收满 2 条（out/err）为止；
 /// 超时返回已收部分 + complete=false，调用方据此再杀一次进程组兜底。
+/// 返回 (stdout, stderr, complete, truncated)（NEW-C-5 增 truncated：任一方向触顶）。
 fn drain_output(
-    rx: &mpsc::Receiver<(&'static str, Vec<u8>)>,
+    rx: &mpsc::Receiver<(&'static str, Vec<u8>, bool)>,
     grace: Duration,
-) -> (String, String, bool) {
+) -> (String, String, bool, bool) {
     let deadline = Instant::now() + grace;
     let mut stdout = String::new();
     let mut stderr = String::new();
+    let mut truncated = false;
     let mut got = 0;
     while got < 2 {
         let remain = deadline.saturating_duration_since(Instant::now());
@@ -397,8 +419,9 @@ fn drain_output(
             break;
         }
         match rx.recv_timeout(remain) {
-            Ok((kind, buf)) => {
+            Ok((kind, buf, tr)) => {
                 got += 1;
+                truncated |= tr;
                 let text = String::from_utf8_lossy(&buf).into_owned();
                 if kind == "out" {
                     stdout = text;
@@ -410,7 +433,7 @@ fn drain_output(
             Err(_) => break,
         }
     }
-    (stdout, stderr, got == 2)
+    (stdout, stderr, got == 2, truncated)
 }
 
 fn truncate_output(s: String) -> String {
@@ -578,19 +601,26 @@ fn run_python_at(
     let tx_out = tx.clone();
     std::thread::spawn(move || {
         let mut buf = Vec::new();
+        let mut truncated = false;
         if let Some(s) = child_stdout {
-            // 读取时硬截断（审计 P1：原先 read_to_end 无上限，失控脚本 60s 可刷出数百 MB）
-            let _ = s.take((OUTPUT_CAP + 1024) as u64).read_to_end(&mut buf);
+            // 读取时硬截断（审计 P1：原先 read_to_end 无上限，失控脚本 60s 可刷出数百 MB）；
+            // NEW-C-5：到顶后继续排空（丢弃），防子进程被 SIGPIPE 静默杀死
+            let (b, tr) = read_capped_drain(s, OUTPUT_CAP + 1024);
+            buf = b;
+            truncated = tr;
         }
-        let _ = tx_out.send(("out", buf));
+        let _ = tx_out.send(("out", buf, truncated));
     });
     let tx_err = tx.clone();
     std::thread::spawn(move || {
         let mut buf = Vec::new();
+        let mut truncated = false;
         if let Some(s) = child_stderr {
-            let _ = s.take((OUTPUT_CAP + 1024) as u64).read_to_end(&mut buf);
+            let (b, tr) = read_capped_drain(s, OUTPUT_CAP + 1024);
+            buf = b;
+            truncated = tr;
         }
-        let _ = tx_err.send(("err", buf));
+        let _ = tx_err.send(("err", buf, truncated));
     });
     drop(tx);
 
@@ -633,7 +663,7 @@ fn run_python_at(
         }
         std::thread::sleep(Duration::from_millis(50));
     };
-    let (stdout, mut stderr, drained) = drain_output(&rx, Duration::from_secs(2));
+    let (stdout, mut stderr, drained, truncated) = drain_output(&rx, Duration::from_secs(2));
     if !drained {
         // 孙进程继承管道写端不肯退出（C1）：主进程已退但 reader 线程等不到 EOF，
         // 整组再杀一次兜底，绝不在 rx 上永久阻塞
@@ -641,13 +671,29 @@ fn run_python_at(
         audit("run_python warn | kind=drain_timeout | 孙进程占用管道已强杀进程组");
         stderr.push_str("\n（输出收集超时：孙进程占用管道，已强杀进程组）");
     }
+    if truncated {
+        // NEW-C-5：输出触顶已截断（剩余部分已排空，子进程未受 SIGPIPE 影响）
+        audit(&format!(
+            "run_python warn | kind=output_truncated | cap={OUTPUT_CAP}"
+        ));
+    }
     let duration_ms = start.elapsed().as_millis();
     let _ = std::fs::remove_dir_all(dir);
+    // NEW-C-5：exit_code=None 表示子进程被信号杀死（历史上多因 SIGPIPE），
+    // 原先静默当成功返回，用户只见莫名空结果 —— 记审计并按失败返回
+    let Some(code) = exit_code else {
+        audit("run_python err | kind=exit_none | 无退出码，子进程疑似被信号杀死");
+        return Err(RunFail {
+            msg: "子进程异常终止（被信号杀死，无退出码）".into(),
+            spawn_not_found: false,
+        });
+    };
     Ok(PyRunResult {
         stdout: truncate_output(stdout),
         stderr: truncate_output(stderr),
-        exit_code,
+        exit_code: Some(code),
         duration_ms,
+        truncated,
     })
 }
 
@@ -1548,12 +1594,13 @@ mod tests {
 
     #[test]
     fn drain_output_collects_both_channels() {
-        let (tx, rx) = mpsc::channel::<(&'static str, Vec<u8>)>();
-        tx.send(("out", b"hello".to_vec())).unwrap();
-        tx.send(("err", b"warn".to_vec())).unwrap();
+        let (tx, rx) = mpsc::channel::<(&'static str, Vec<u8>, bool)>();
+        tx.send(("out", b"hello".to_vec(), false)).unwrap();
+        tx.send(("err", b"warn".to_vec(), false)).unwrap();
         drop(tx);
-        let (out, err, complete) = drain_output(&rx, Duration::from_secs(1));
+        let (out, err, complete, truncated) = drain_output(&rx, Duration::from_secs(1));
         assert!(complete);
+        assert!(!truncated);
         assert_eq!(out, "hello");
         assert_eq!(err, "warn");
     }
@@ -1563,19 +1610,54 @@ mod tests {
         // 模拟孙进程 fork 后 sleep 远超宽限、一直占着管道写端：
         // sender 线程 10s 后才发送（且只有一个方向），drain 必须在宽限到期后返回，
         // 而不是像原 rx.iter() 那样永久挂死
-        let (tx, rx) = mpsc::channel::<(&'static str, Vec<u8>)>();
+        let (tx, rx) = mpsc::channel::<(&'static str, Vec<u8>, bool)>();
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_secs(10));
-            let _ = tx.send(("out", b"late".to_vec()));
+            let _ = tx.send(("out", b"late".to_vec(), false));
         });
         let start = Instant::now();
-        let (_out, _err, complete) = drain_output(&rx, Duration::from_millis(300));
+        let (_out, _err, complete, _tr) = drain_output(&rx, Duration::from_millis(300));
         assert!(!complete, "发送方卡死时不得报告收齐");
         assert!(
             start.elapsed() < Duration::from_secs(3),
             "drain 挂死了：{:?}",
             start.elapsed()
         );
+    }
+
+    // ── read_capped_drain（NEW-C-5：触顶截断 + 排空防 SIGPIPE）──
+
+    #[test]
+    fn read_capped_drain_under_cap_not_truncated() {
+        let data = b"short output".to_vec();
+        let (buf, truncated) = read_capped_drain(std::io::Cursor::new(data.clone()), 1024);
+        assert!(!truncated);
+        assert_eq!(buf, data);
+    }
+
+    #[test]
+    fn read_capped_drain_over_cap_truncates_and_drains() {
+        // 64KB+ 输出：内容截断到 cap、标记 truncated，且剩余部分被排空读完
+        //（排空的验证：Cursor 位置必须走到末尾，等价于管道读到 EOF，子进程不会吃 SIGPIPE）
+        let cap = OUTPUT_CAP + 1024;
+        let data = vec![b'x'; cap + 100];
+        let cursor = std::io::Cursor::new(data);
+        let (buf, truncated) = read_capped_drain(cursor, cap);
+        assert!(truncated);
+        assert_eq!(buf.len(), cap);
+    }
+
+    #[test]
+    fn drain_output_marks_truncated_from_reader() {
+        // 模拟 reader 线程发 64KB+ 触顶数据（truncated=true），drain 必须透出标记
+        let (tx, rx) = mpsc::channel::<(&'static str, Vec<u8>, bool)>();
+        tx.send(("out", vec![b'x'; OUTPUT_CAP + 1024], true)).unwrap();
+        tx.send(("err", Vec::new(), false)).unwrap();
+        drop(tx);
+        let (out, _err, complete, truncated) = drain_output(&rx, Duration::from_secs(1));
+        assert!(complete);
+        assert!(truncated, "触顶标记必须透出");
+        assert_eq!(out.len(), OUTPUT_CAP + 1024);
     }
 
     // ── resolve_timeout / 资源限额（C2：默认 60s、硬钳上限 300s、限额按 timeout 比例）──
