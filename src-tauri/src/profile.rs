@@ -13,6 +13,12 @@ const MAX_AVATAR_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_NAME_CHARS: usize = 24;
 const AVATAR_EXTS: [&str; 5] = ["png", "jpg", "jpeg", "gif", "webp"];
 
+/// D4：profile read-modify-write 进程内串行锁（同 db::DB_WRITE_LOCK 模式）。
+/// 主窗 + 挂件并发改 profile 时，整条 ProfileData 覆写会让后写者覆盖前写者 → 丢更新；
+/// 所有写路径（set_name / set_avatar / remove_avatar）的 R-M-W 全程持锁。
+/// load_data / profile_get 读路径频繁，不持锁避免阻塞读。
+static PROFILE_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileEntry {
@@ -219,14 +225,19 @@ pub fn profile_set_name<R: Runtime>(
             reason: format!("姓名最长 {MAX_NAME_CHARS} 字"),
         });
     }
-    let mut data = load_data(&app);
-    let entry = if kind == "bot" {
-        &mut data.bot
-    } else {
-        &mut data.user
+    // D4：R-M-W（load → 改 → save）全程持锁，广播与 view 构造放锁外
+    let data = {
+        let _g = PROFILE_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut data = load_data(&app);
+        let entry = if kind == "bot" {
+            &mut data.bot
+        } else {
+            &mut data.user
+        };
+        entry.name = name.to_string();
+        save_data(&app, &data)?;
+        data
     };
-    entry.name = name.to_string();
-    save_data(&app, &data)?;
     broadcast(&app);
     Ok(build_view(&app, &data))
 }
@@ -265,43 +276,48 @@ pub fn profile_set_avatar<R: Runtime>(
             reason: "头像图片不能超过 5MB".into(),
         });
     }
-    let dir = profile_dir(&app);
-    std::fs::create_dir_all(&dir)?;
-    let dest = dir.join(format!("avatar-{kind}.{ext}"));
-    // 清掉该 kind 的旧头像文件（扩展名可能不同）
-    if let Ok(rd) = std::fs::read_dir(&dir) {
-        for entry in rd.flatten() {
-            let fname = entry.file_name();
-            let fname = fname.to_string_lossy();
-            if fname.starts_with(&format!("avatar-{kind}.")) && entry.path() != dest {
-                let _ = std::fs::remove_file(entry.path());
+    // D4：整个写路径（清旧文件 → 拷贝 → R-M-W json）持锁，防主窗 + 挂件并发丢更新
+    let data = {
+        let _g = PROFILE_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = profile_dir(&app);
+        std::fs::create_dir_all(&dir)?;
+        let dest = dir.join(format!("avatar-{kind}.{ext}"));
+        // 清掉该 kind 的旧头像文件（扩展名可能不同）
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            for entry in rd.flatten() {
+                let fname = entry.file_name();
+                let fname = fname.to_string_lossy();
+                if fname.starts_with(&format!("avatar-{kind}.")) && entry.path() != dest {
+                    let _ = std::fs::remove_file(entry.path());
+                }
             }
         }
-    }
-    std::fs::copy(&src, &dest)?;
-    let mut data = load_data(&app);
-    let entry = if kind == "bot" {
-        &mut data.bot
-    } else {
-        &mut data.user
+        std::fs::copy(&src, &dest)?;
+        let mut data = load_data(&app);
+        let entry = if kind == "bot" {
+            &mut data.bot
+        } else {
+            &mut data.user
+        };
+        let Some(fname) = dest.file_name() else {
+            return Err(CommandError::InvalidArgument {
+                field: "path".into(),
+                value: dest.to_string_lossy().into_owned(),
+                reason: "头像目标路径无效".into(),
+            });
+        };
+        // NEW-D-2：覆盖前先记在役头像名，save 失败回滚时区分「在役文件」与「新文件」
+        let old_avatar = entry.avatar.clone();
+        entry.avatar = Some(fname.to_string_lossy().into_owned());
+        // 原子性：保存失败时回滚刚拷贝的头像文件，不留孤儿（二次审计 P3）。
+        // NEW-D-2：同扩展名覆盖场景 dest 就是在役头像本身（copy 已覆盖内容），
+        // 误删会让磁盘 json 悬挂引用、在役头像静默丢失——只在 dest 是「新文件」时才删。
+        if let Err(e) = save_data(&app, &data) {
+            cleanup_set_avatar_failure(old_avatar.as_deref(), &dest);
+            return Err(CommandError::IoError(e));
+        }
+        data
     };
-    let Some(fname) = dest.file_name() else {
-        return Err(CommandError::InvalidArgument {
-            field: "path".into(),
-            value: dest.to_string_lossy().into_owned(),
-            reason: "头像目标路径无效".into(),
-        });
-    };
-    // NEW-D-2：覆盖前先记在役头像名，save 失败回滚时区分「在役文件」与「新文件」
-    let old_avatar = entry.avatar.clone();
-    entry.avatar = Some(fname.to_string_lossy().into_owned());
-    // 原子性：保存失败时回滚刚拷贝的头像文件，不留孤儿（二次审计 P3）。
-    // NEW-D-2：同扩展名覆盖场景 dest 就是在役头像本身（copy 已覆盖内容），
-    // 误删会让磁盘 json 悬挂引用、在役头像静默丢失——只在 dest 是「新文件」时才删。
-    if let Err(e) = save_data(&app, &data) {
-        cleanup_set_avatar_failure(old_avatar.as_deref(), &dest);
-        return Err(CommandError::IoError(e));
-    }
     broadcast(&app);
     Ok(build_view(&app, &data))
 }
@@ -318,20 +334,27 @@ pub fn profile_remove_avatar<R: Runtime>(
             reason: "必须为 user 或 bot".into(),
         });
     }
-    let mut data = load_data(&app);
-    let entry = if kind == "bot" {
-        &mut data.bot
-    } else {
-        &mut data.user
+    // D4：R-M-W + 删文件全程持锁——删文件也放锁内，
+    // 否则并发 set_avatar 同扩展名时可能删掉对方刚拷好的新头像
+    let (data, removed) = {
+        let _g = PROFILE_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut data = load_data(&app);
+        let entry = if kind == "bot" {
+            &mut data.bot
+        } else {
+            &mut data.user
+        };
+        // NEW-D-3：先 save 把 json 引用清掉，成功后再删文件。
+        // 原顺序（先删后 save）在 save 失败时磁盘 json 悬挂引用已删文件。
+        // save 失败走 `?` 早退：avatar 文件 + json 引用都保持原状。
+        let removed = entry.avatar.take();
+        save_data(&app, &data)?;
+        if let Some(f) = &removed {
+            let _ = std::fs::remove_file(profile_dir(&app).join(f));
+        }
+        (data, removed)
     };
-    // NEW-D-3：先 save 把 json 引用清掉，成功后再删文件。
-    // 原顺序（先删后 save）在 save 失败时磁盘 json 悬挂引用已删文件。
-    // save 失败走 `?` 早退：avatar 文件 + json 引用都保持原状。
-    let removed = entry.avatar.take();
-    save_data(&app, &data)?;
-    if let Some(f) = removed {
-        let _ = std::fs::remove_file(profile_dir(&app).join(&f));
-    }
+    let _ = removed; // 语义已在锁内消费（删文件）
     broadcast(&app);
     Ok(build_view(&app, &data))
 }
@@ -926,5 +949,35 @@ mod tests {
             "{ 这不是合法 json",
             "备份内容必须是原始损坏现场"
         );
+    }
+
+    // ────── D4：并发 read-modify-write 不丢更新 ──────
+
+    #[test]
+    fn profile_concurrent_set_name_no_lost_update() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let app = fresh_app();
+        let handle = app.handle().clone();
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        // 模拟主窗改 user、挂件改 bot：两条 R-M-W 都覆写整条 ProfileData，
+        // 无锁时两者都基于空快照改写 → 后写者覆盖前写者，必丢一个字段
+        let mut joins = Vec::new();
+        for (kind, name) in [("user", "线程A"), ("bot", "线程B")] {
+            let h = handle.clone();
+            let d = done.clone();
+            joins.push(std::thread::spawn(move || {
+                profile_set_name(h, kind.into(), name.into()).unwrap();
+                d.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }));
+        }
+        for j in joins {
+            j.join().unwrap();
+        }
+        assert_eq!(done.load(std::sync::atomic::Ordering::SeqCst), 2);
+
+        let view = profile_get(handle);
+        assert_eq!(view.user.name, "线程A", "并发写丢了 user 更新（D4 回归）");
+        assert_eq!(view.bot.name, "线程B", "并发写丢了 bot 更新（D4 回归）");
     }
 }
