@@ -14,6 +14,8 @@
 //   并引导反馈日志（hint 文案与后端 error.rs is_recoverable() 保持一致，不再误导"可重试"）
 // - formatCommandError()：供调用方取出 user-friendly 文本（替代 `String(e)`，
 //   后者对结构化对象只得到 "[object Object]"）
+// - 空 message 兜底（P2-35 2026-08-19）：CommandError.message 为空时回退 code，
+//   再空回退「未知错误」；非结构化空 msg 同样兜底——不弹空 alert、不静默跳过
 
 /** Tauri 拒绝时拿到的反序列化 CommandError JSON 形状 */
 export interface CommandErrorPayload {
@@ -137,8 +139,10 @@ export function handleCommandError(
       e
     );
     if (options.silent) return;
+    // P2-35：空 message 不弹空 alert——fallback 到 code，code 也空再兜底「未知错误」
+    const msg = e.message.trim() ? e.message : e.code || "未知错误";
     const hint = hintForCode(e.code);
-    const body = hint ? `${e.message}\n\n💡 ${hint}` : e.message;
+    const body = hint ? `${msg}\n\n💡 ${hint}` : msg;
     // recoverable 驱动 UI：可恢复 + 调用方给了重试回调 → confirm 提供「重试」选择；
     // 不可恢复（或无回调）→ alert + hint 引导（hint 已按 code 区分「去设置页」/「反馈日志」）
     if (e.recoverable && options.onRetry) {
@@ -152,5 +156,6 @@ export function handleCommandError(
   const msg = formatCommandError(e);
   console.error(`${prefix} ${msg || "(empty)"}`, e);
   if (options.silent) return;
-  if (msg) alert(`❌ ${msg}`);
+  // P2-35：msg 为空也兜底「未知错误」，不弹空 alert、也不静默跳过
+  alert(`❌ ${msg || "未知错误"}`);
 }

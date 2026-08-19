@@ -87,3 +87,42 @@ describe("handleCommandError recoverable 驱动重试 UI（P0-6B）", () => {
     expect(onRetry).not.toHaveBeenCalled();
   });
 });
+
+describe("空 message 兜底（P2-35）", () => {
+  let alertSpy: ReturnType<typeof vi.spyOn>;
+  let confirmSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    alertSpy = vi.spyOn(window, "alert").mockImplementation(() => {});
+    confirmSpy = vi.spyOn(window, "confirm").mockImplementation(() => true);
+  });
+
+  it("CommandError message 为空 → alert 显示 code 而非空串", () => {
+    handleCommandError(ce("DB_ERROR", false, ""));
+    expect(alertSpy).toHaveBeenCalledTimes(1);
+    const text = alertSpy.mock.calls[0][0] as string;
+    expect(text).toContain("DB_ERROR");
+    expect(text).not.toBe("❌ ");
+  });
+
+  it("CommandError message 与 code 均空 → 兜底「未知错误」", () => {
+    handleCommandError(ce("", false, ""));
+    expect(alertSpy).toHaveBeenCalledTimes(1);
+    expect(alertSpy.mock.calls[0][0]).toContain("未知错误");
+  });
+
+  it("recoverable=true + 空 message + onRetry → confirm 重试 UI 同样用兜底文案", () => {
+    const onRetry = vi.fn();
+    handleCommandError(ce("IO_ERROR", true, ""), "test", { onRetry });
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    const text = confirmSpy.mock.calls[0][0] as string;
+    expect(text).toContain("IO_ERROR");
+    expect(text).toContain("是否重试");
+  });
+
+  it("非结构化空 msg（null）→ alert 兜底「未知错误」，不静默跳过", () => {
+    handleCommandError(null, "test");
+    expect(alertSpy).toHaveBeenCalledTimes(1);
+    expect(alertSpy.mock.calls[0][0]).toBe("❌ 未知错误");
+  });
+});
