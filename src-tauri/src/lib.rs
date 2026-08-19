@@ -27,20 +27,23 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 /// - 文件类粘贴（Finder / 飞书 / 微信）得到真实文件
 /// - 文本类粘贴得到任务标题
 #[tauri::command]
-fn copy_file_with_title(path: String, title: String) -> Result<(), String> {
+fn copy_file_with_title(path: String, title: String) -> error::CommandResult<()> {
     #[cfg(target_os = "macos")]
     {
-        return copy_file_macos(&path, &title);
+        // F2（Phase 6b）：平台 helper 仍为 Result<(), String>，经 From<String> → Internal 转换
+        return copy_file_macos(&path, &title).map_err(error::CommandError::from);
     }
     #[cfg(windows)]
     {
-        return copy_file_windows(&path, &title);
+        return copy_file_windows(&path, &title).map_err(error::CommandError::from);
     }
     #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = (path, title);
         // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
-        return Err("复制文件暂不支持当前平台".into());
+        return Err(error::CommandError::Internal(
+            "复制文件暂不支持当前平台".into(),
+        ));
     }
 }
 
@@ -408,4 +411,18 @@ pub fn run() {
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod f2_copy_file_tests {
+    /// F2（Phase 6b）：copy_file_with_title 的平台 helper 仍产 String 错误，
+    /// 经 From<String> → CommandError::Internal 转换后 code 稳定、message 不丢。
+    /// （macOS 分支直写 NSPasteboard，单测不碰真实剪贴板，只覆盖转换层。）
+    #[test]
+    fn string_error_converts_to_internal_with_message_preserved() {
+        let helper: Result<(), String> = Err("打开剪贴板失败".into());
+        let err = helper.map_err(crate::error::CommandError::from).unwrap_err();
+        assert_eq!(err.code(), "INTERNAL");
+        assert!(err.message().contains("打开剪贴板失败"));
+    }
 }

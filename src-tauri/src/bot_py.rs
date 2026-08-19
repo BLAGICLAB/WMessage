@@ -18,6 +18,8 @@ use std::process::{Command, Stdio};
 use crate::bot_slash::StopToken;
 // NEW-C-6：escape_for_log 上提到 audit 模块共享（write_event 同源规则）
 use crate::audit::escape_for_log;
+// F2（Phase 6b）：doc_* 6 个 command 迁移到结构化错误
+use crate::error::{CommandError, CommandResult};
 
 /// Windows 上 GUI 程序调 cmd.exe / python.exe / taskkill.exe 等控制台子进程时，
 /// 默认会为子进程开一个控制台窗口（即使立即退出）—— 视觉上就是"黑框闪一下"。
@@ -1352,7 +1354,7 @@ pub struct DocExtract {
 
 /// 提取文档文本（弹框选文件或给定路径，按扩展名走固定脚本）
 #[tauri::command]
-pub async fn doc_extract(app: AppHandle, path: Option<String>) -> Result<DocExtract, String> {
+pub async fn doc_extract(app: AppHandle, path: Option<String>) -> CommandResult<DocExtract> {
     let path = match path {
         Some(p) if !p.trim().is_empty() => p,
         _ => {
@@ -1364,11 +1366,7 @@ pub async fn doc_extract(app: AppHandle, path: Option<String>) -> Result<DocExtr
             })
             .await
             .unwrap_or(None);
-            match picked.and_then(file_path_to_string) {
-                Some(p) => p,
-                // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
-                None => return Err("用户取消了选择".into()),
-            }
+            resolve_doc_path(picked.and_then(file_path_to_string))?
         }
     };
     // NEW-C-6：path 来自用户/系统对话框，可能含换行，审计前必须转义
@@ -1380,12 +1378,25 @@ pub async fn doc_extract(app: AppHandle, path: Option<String>) -> Result<DocExtr
             &app,
             &format!("doc_extract failed | {}", escape_for_log(&r.stderr, 200)),
         );
-        return Err(format!("提取失败：{}", r.stderr.trim()));
+        return Err(script_fail_err("提取失败", &r.stderr));
     }
     Ok(DocExtract {
         path,
         text: r.stdout,
     })
+}
+
+/// F2（Phase 6b）：对话框未选中文件的错误构造，抽纯函数便于单测
+/// （tauri command 绑定 Wry AppHandle，mock_app 无法直接调用）。
+/// TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
+fn resolve_doc_path(picked: Option<String>) -> CommandResult<String> {
+    picked.ok_or_else(|| CommandError::Internal("用户取消了选择".into()))
+}
+
+/// F2（Phase 6b）：doc_* 脚本非零退出的统一错误构造（纯函数，6 个 command 共用）。
+/// Python 脚本失败无 1:1 CommandError 变体，走 Internal 兜底（结构化 code 一致）。
+fn script_fail_err(what: &str, stderr: &str) -> CommandError {
+    CommandError::Internal(format!("{what}：{}", stderr.trim()))
 }
 
 fn file_path_to_string(p: tauri_plugin_dialog::FilePath) -> Option<String> {
@@ -1402,7 +1413,7 @@ pub async fn doc_make_word(
     title: String,
     paragraphs: Vec<String>,
     filename: Option<String>,
-) -> Result<String, String> {
+) -> CommandResult<String> {
     let out = gen_out_path(&app, filename.as_deref(), "docx")?;
     let input =
         serde_json::json!({ "title": title, "paragraphs": paragraphs, "out": out }).to_string();
@@ -1412,7 +1423,7 @@ pub async fn doc_make_word(
             &app,
             &format!("doc_make_word failed | {}", escape_for_log(&r.stderr, 200)),
         );
-        return Err(format!("生成 Word 失败：{}", r.stderr.trim()));
+        return Err(script_fail_err("生成 Word 失败", &r.stderr));
     }
     py_audit(&app, &format!("doc_make_word | out: {out}"));
     Ok(out)
@@ -1428,7 +1439,7 @@ pub async fn doc_make_word_revisions(
     original: Vec<String>,
     revised: Vec<String>,
     filename: Option<String>,
-) -> Result<String, String> {
+) -> CommandResult<String> {
     let out = gen_out_path(&app, filename.as_deref(), "docx")?;
     let input = serde_json::json!({
         "title": title,
@@ -1447,7 +1458,7 @@ pub async fn doc_make_word_revisions(
                 escape_for_log(&r.stderr, 200)
             ),
         );
-        return Err(format!("生成修订版 Word 失败：{}", r.stderr.trim()));
+        return Err(script_fail_err("生成修订版 Word 失败", &r.stderr));
     }
     py_audit(
         &app,
@@ -1465,7 +1476,7 @@ pub async fn doc_make_excel(
     app: AppHandle,
     sheets: Vec<serde_json::Value>,
     filename: Option<String>,
-) -> Result<String, String> {
+) -> CommandResult<String> {
     let out = gen_out_path(&app, filename.as_deref(), "xlsx")?;
     let input = serde_json::json!({ "sheets": sheets, "out": out }).to_string();
     let r = run_doc_script(&app, "doc_make_excel", MAKE_XLSX_SCRIPT, input).await?;
@@ -1474,7 +1485,7 @@ pub async fn doc_make_excel(
             &app,
             &format!("doc_make_excel failed | {}", escape_for_log(&r.stderr, 200)),
         );
-        return Err(format!("生成 Excel 失败：{}", r.stderr.trim()));
+        return Err(script_fail_err("生成 Excel 失败", &r.stderr));
     }
     py_audit(&app, &format!("doc_make_excel | out: {out}"));
     Ok(out)
@@ -1487,7 +1498,7 @@ pub async fn doc_make_pdf(
     title: String,
     paragraphs: Vec<String>,
     filename: Option<String>,
-) -> Result<String, String> {
+) -> CommandResult<String> {
     let out = gen_out_path(&app, filename.as_deref(), "pdf")?;
     let input =
         serde_json::json!({ "title": title, "paragraphs": paragraphs, "out": out }).to_string();
@@ -1497,7 +1508,7 @@ pub async fn doc_make_pdf(
             &app,
             &format!("doc_make_pdf failed | {}", escape_for_log(&r.stderr, 200)),
         );
-        return Err(format!("生成 PDF 失败：{}", r.stderr.trim()));
+        return Err(script_fail_err("生成 PDF 失败", &r.stderr));
     }
     py_audit(&app, &format!("doc_make_pdf | out: {out}"));
     Ok(out)
@@ -1511,7 +1522,7 @@ pub async fn doc_make_ppt(
     slides: Vec<serde_json::Value>,
     filename: Option<String>,
     theme: Option<String>,
-) -> Result<String, String> {
+) -> CommandResult<String> {
     let out = gen_out_path(&app, filename.as_deref(), "pptx")?;
     let theme = theme
         .map(|t| t.trim().to_lowercase())
@@ -1539,7 +1550,7 @@ pub async fn doc_make_ppt(
             &app,
             &format!("doc_make_ppt failed | {}", escape_for_log(&r.stderr, 200)),
         );
-        return Err(format!("生成 PPT 失败：{}", r.stderr.trim()));
+        return Err(script_fail_err("生成 PPT 失败", &r.stderr));
     }
     py_audit(&app, &format!("doc_make_ppt | out: {out}"));
     Ok(out)
@@ -1560,9 +1571,18 @@ fn strip_known_ext(name: &str, ext: &str) -> String {
 }
 
 /// 输出路径：AI_Gen_Files/<文件名>；同名自动加 (n) 序号，永不覆盖（Harness 第 6 层）
-fn gen_out_path(app: &AppHandle, filename: Option<&str>, ext: &str) -> Result<String, String> {
-    let dir = crate::db::data_dir(app).join("AI_Gen_Files");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+fn gen_out_path(app: &AppHandle, filename: Option<&str>, ext: &str) -> CommandResult<String> {
+    gen_out_path_in(&crate::db::data_dir(app).join("AI_Gen_Files"), filename, ext)
+}
+
+/// F2（Phase 6b）：纯目录参数版便于单测（mock_app 的 AppHandle 与 Wry 签名不兼容）。
+/// create_dir_all 失败经 From<io::Error> → CommandError::IoError（结构化，不走 String 逃生舱）。
+fn gen_out_path_in(
+    dir: &std::path::Path,
+    filename: Option<&str>,
+    ext: &str,
+) -> CommandResult<String> {
+    std::fs::create_dir_all(dir)?;
     // 文件名只取 basename，防路径穿越
     let base = filename
         .map(|f| {
@@ -2012,5 +2032,88 @@ mod tests {
                 "错行: {line}"
             );
         }
+    }
+
+    // ── F2（Phase 6b）：doc_* command 结构化错误迁移 ──
+
+    /// doc_extract 错误路径：对话框未选中文件 → CommandError::Internal（code 稳定）
+    #[test]
+    fn f2_resolve_doc_path_cancel_returns_internal() {
+        let err = resolve_doc_path(None).unwrap_err();
+        assert_eq!(err.code(), "INTERNAL");
+        assert!(err.message().contains("用户取消了选择"));
+    }
+
+    /// doc_extract happy path（纯函数层）：选中文件 → 路径透传
+    #[test]
+    fn f2_resolve_doc_path_picked_passes_through() {
+        let p = resolve_doc_path(Some("/tmp/a.docx".into())).unwrap();
+        assert_eq!(p, "/tmp/a.docx");
+    }
+
+    /// 6 个 doc_* command 的脚本失败分支：统一 Internal 变体，stderr trim 后入 message
+    #[test]
+    fn f2_script_fail_err_covers_all_doc_commands() {
+        for (cmd, what) in [
+            ("doc_extract", "提取失败"),
+            ("doc_make_word", "生成 Word 失败"),
+            ("doc_make_word_revisions", "生成修订版 Word 失败"),
+            ("doc_make_excel", "生成 Excel 失败"),
+            ("doc_make_pdf", "生成 PDF 失败"),
+            ("doc_make_ppt", "生成 PPT 失败"),
+        ] {
+            let err = script_fail_err(what, "  boom\n");
+            assert_eq!(err.code(), "INTERNAL", "{cmd} 错误 code 应为 INTERNAL");
+            assert!(
+                err.message().contains(what) && err.message().contains("boom"),
+                "{cmd} message 应含操作名 + stderr：{}",
+                err.message()
+            );
+            assert!(!err.is_recoverable(), "{cmd} Internal 不可重试");
+        }
+    }
+
+    /// doc_make_* happy path（共享逻辑层）：输出路径落在目标目录 + 扩展名正确
+    #[test]
+    fn f2_gen_out_path_in_happy_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("AI_Gen_Files");
+        let out = gen_out_path_in(&dir, Some("周报"), "docx").unwrap();
+        assert!(out.starts_with(dir.to_str().unwrap()));
+        assert!(out.ends_with("周报.docx"), "out={out}");
+        assert!(dir.is_dir(), "create_dir_all 应已建目录");
+    }
+
+    /// 同名不覆盖：已存在 周报.docx → 产出 周报 (1).docx
+    #[test]
+    fn f2_gen_out_path_in_conflict_appends_sequence() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("AI_Gen_Files");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("周报.docx"), b"x").unwrap();
+        let out = gen_out_path_in(&dir, Some("周报"), "docx").unwrap();
+        assert!(out.ends_with("周报 (1).docx"), "out={out}");
+    }
+
+    /// 防路径穿越：../../etc/evil → 只取 basename
+    #[test]
+    fn f2_gen_out_path_in_strips_path_traversal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("AI_Gen_Files");
+        let out = gen_out_path_in(&dir, Some("../../etc/evil"), "xlsx").unwrap();
+        assert!(out.ends_with("evil.xlsx"), "out={out}");
+        assert!(!out.contains("etc"), "out={out}");
+    }
+
+    /// doc_make_* 错误路径（共享逻辑层）：AI_Gen_Files 被文件占用 →
+    /// create_dir_all 失败 → CommandError::IoError（不再走 String 逃生舱）
+    #[test]
+    fn f2_gen_out_path_in_io_error_maps_to_io_error_variant() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file_as_dir = tmp.path().join("AI_Gen_Files");
+        std::fs::write(&file_as_dir, b"not a dir").unwrap();
+        let err = gen_out_path_in(&file_as_dir, Some("x"), "pdf").unwrap_err();
+        assert_eq!(err.code(), "IO_ERROR");
+        assert!(!err.is_recoverable());
     }
 }
