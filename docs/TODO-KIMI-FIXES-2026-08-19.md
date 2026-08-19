@@ -92,7 +92,7 @@
 - [x] **G2** `bot_py.rs:259-282 + bot.rs:327` — `run_python` 读阶段无整体兜底超时（与 C1 同根） — commit `d9d81c2`
 
 ### Batch H H1-H2
-- [ ] **H1** `tauri.conf.json 全文` — 无 `bundle.resources`、无 `bundle.windows` 节 → `WebView2Loader.dll` 未声明为资源
+- [x] **H1** `tauri.conf.json 全文` — 无 `bundle.resources`、无 `bundle.windows` 节 → `WebView2Loader.dll` 未声明为资源
 - [ ] **H2** `tauri.conf.json 全文` — 无 `bundle.macOS` 节（signingIdentity / hardenedRuntime / entitlements）
 
 ### 原 P2 35 项（已并入除外）

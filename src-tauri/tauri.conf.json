@@ -33,6 +33,14 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "publisher": "张晓峰"
+    "publisher": "张晓峰",
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      },
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
   }
 }
