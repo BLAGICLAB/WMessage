@@ -370,6 +370,13 @@ fn kill_tree(child: &mut std::process::Child, limits: &RunLimits) {
     let _ = child.wait();
 }
 
+/// 失败路径统一收尾（NEW-C-3）：杀整树（含孙进程兜底）+ 清临时目录。
+/// try_wait Err / timeout / stopped 等危险路径共用，防孤儿进程与磁盘泄漏。
+fn cleanup_after_fail(child: &mut std::process::Child, dir: &std::path::Path, limits: &RunLimits) {
+    kill_tree(child, limits);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// 主进程退出后收输出的兜底（C1）：孙进程继承 stdout/stderr 管道写端且不退出时，
 /// reader 子线程的 read_to_end 永不 EOF，`rx.iter()` 会永久阻塞 → run_python 挂死。
 /// 改为带总宽限（≤ grace）的 recv_timeout 收满 2 条（out/err）为止；
@@ -588,6 +595,9 @@ fn run_python_at(
             Ok(Some(status)) => break status.code(),
             Ok(None) => {}
             Err(e) => {
+                // NEW-C-3：原 `?` 直返会把仍在跑的子进程留成孤儿、临时目录泄漏、无审计。
+                // 先杀进程组（含孙进程兜底）+ 清临时目录，再记审计返回。
+                cleanup_after_fail(&mut child, dir, &limits);
                 audit(&format!("run_python err | kind=wait_fail | {e}"));
                 return Err(RunFail {
                     msg: format!("等待子进程状态失败：{e}"),
@@ -596,8 +606,7 @@ fn run_python_at(
             }
         }
         if start.elapsed() > timeout {
-            kill_tree(&mut child, &limits);
-            let _ = std::fs::remove_dir_all(dir);
+            cleanup_after_fail(&mut child, dir, &limits);
             audit(&format!(
                 "run_python err | kind=timeout | timeout_secs={}",
                 timeout.as_secs()
@@ -1624,6 +1633,32 @@ mod tests {
         );
         // P2-9：spawn 失败必须清理已创建的临时目录，否则磁盘泄漏
         assert!(!dir.exists(), "spawn 失败后临时目录应被清理");
+    }
+
+    // ── cleanup_after_fail（NEW-C-3：失败路径杀进程组 + 清临时目录）──
+
+    #[test]
+    fn cleanup_after_fail_kills_child_and_removes_dir() {
+        // mock Child 难，直接 spawn `sleep` 验证：调用后子进程已退出、临时目录已删
+        //（Unix 下 RunLimits::terminate 是 no-op，kill_tree 兜底 child.kill()）
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("run-cleanup");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("run.py"), "x").unwrap();
+        let sleeper = if cfg!(windows) { "cmd" } else { "sleep" };
+        let args: &[&str] = if cfg!(windows) {
+            &["/C", "ping", "-n", "30", "127.0.0.1"]
+        } else {
+            &["30"]
+        };
+        let mut child = silent_cmd(sleeper).args(args).spawn().unwrap();
+        let limits = RunLimits::new(0, 0);
+        cleanup_after_fail(&mut child, &dir, &limits);
+        assert!(!dir.exists(), "失败路径必须清理临时目录");
+        assert!(
+            child.try_wait().unwrap().is_some(),
+            "子进程应已被杀死，不得留孤儿"
+        );
     }
 
     // ── 残留目录清扫（P2-9：启动时清 py-runs 超龄目录）──

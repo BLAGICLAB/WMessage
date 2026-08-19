@@ -27,7 +27,7 @@
 
 约 1 工日。
 
-- [ ] **NEW-C-3** `bot_py.rs:261` — `try_wait` 错误路径 `?` 直返：子进程成孤儿 + 临时目录泄漏 + 无审计
+- [x] **NEW-C-3** `bot_py.rs:261` — `try_wait` 错误路径 `?` 直返：子进程成孤儿 + 临时目录泄漏 + 无审计
 - [ ] **NEW-C-4** `bot_model_loop/bot_slash StopGuard` — `/stop` 不覆盖在途 Python 子进程（只能等 60-120s 超时）
 - [ ] **NEW-C-5** `bot_py.rs:245/253` — 输出 >64KB → reader 关管道 → 子进程被 SIGPIPE 静默杀，`exit_code=None` 无说明
 - [ ] **NEW-C-6** `audit.rs:82 + bot_py.rs:849` — `write_event` kv 值 + `doc_extract` path 审计行不剥换行（与 P2-11 同族不同 sink）
