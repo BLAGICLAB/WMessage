@@ -316,6 +316,23 @@ mod tests {
         assert!(out.ends_with('…'));
     }
 
+    // ── P2-16 回归：kv value 里的 `\n` / `| ` 不得逃逸成裸日志分隔符 ──
+    // （NEW-C-6 已在 append_kv_escaped 统一转义，此测试锁死行为防回退）
+
+    #[test]
+    fn kv_value_pipe_space_and_newline_stay_escaped() {
+        let line = format_event_line(
+            AuditLevel::Info,
+            "tool_done",
+            &[("preview", "a\nb| c"), ("note", "ok")],
+        );
+        // 行内「 | 」只允许来自结构分隔（INFO|event 1 处 + 2 个 kv = 3 处），
+        // value 里的不得多出裸分隔
+        assert_eq!(line.matches(" | ").count(), 3, "got: {line:?}");
+        assert!(!line.contains("a\nb"), "裸换行必须被剥掉: {line:?}");
+        assert!(line.contains("preview=a\\nb||  c"), "got: {line:?}");
+    }
+
     // ── NEW-D-5：format_event_line 与生产 write_event 共用 build_event_line ──
 
     #[test]
