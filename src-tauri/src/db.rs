@@ -935,27 +935,59 @@ fn load_all(conn: &rusqlite::Connection) -> Result<Vec<Task>, String> {
     Ok(tasks)
 }
 
-/// 库为空时迁移方案2 的 data.json：导入全部任务后删除旧文件
+/// 迁移方案2 的 data.json：json 里有库里缺的任务就补回，导入成功后删除旧文件。
+/// P2-7：原触发条件「库 count==0」——用户删任务后重启、老 data.json 还在时不再迁移，
+/// 数据静默丢失。改为「json 任务数 > 库内任务数」即尝试，且只补库中缺失的 id
+/// （已存在的 id 不用 json 旧值覆盖，防回滚用户的新编辑）。
 fn migrate_data_json(app: &tauri::AppHandle, conn: &mut rusqlite::Connection) {
     let Ok(dir) = app.path().app_data_dir() else {
         return;
     };
-    let file = dir.join("data.json");
+    let _ = migrate_data_json_file(&dir.join("data.json"), conn);
+}
+
+/// P2-7 可测内核：返回是否执行了迁移（成功补回并删除旧文件）。
+fn migrate_data_json_file(file: &std::path::Path, conn: &mut rusqlite::Connection) -> bool {
     if !file.exists() {
-        return;
+        return false;
     }
-    let Ok(json) = std::fs::read_to_string(&file) else {
-        return;
+    let Ok(json) = std::fs::read_to_string(file) else {
+        return false;
     };
     let Ok(tasks) = serde_json::from_str::<Vec<Task>>(&json) else {
-        return;
+        return false;
     };
-    let Ok(tx) = conn.transaction() else { return };
-    if upsert_tasks(&tx, &tasks).is_ok() {
-        if tx.commit().is_ok() {
-            let _ = std::fs::remove_file(&file);
-        }
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
+        .unwrap_or(0);
+    if tasks.len() as i64 <= count {
+        return false; // json 没有比库更多的任务，无可补
     }
+    // 只补库中缺失的 id——INSERT OR REPLACE 会用 json 旧值覆盖已有行的新编辑
+    let existing: std::collections::HashSet<String> = {
+        let mut stmt = match conn.prepare("SELECT id FROM tasks") {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+        let rows = match stmt.query_map([], |r| r.get::<_, String>(0)) {
+            Ok(r) => r,
+            Err(_) => return false,
+        };
+        rows.filter_map(|r| r.ok()).collect()
+    };
+    let missing: Vec<Task> = tasks
+        .into_iter()
+        .filter(|t| !existing.contains(&t.id))
+        .collect();
+    if missing.is_empty() {
+        return false;
+    }
+    let Ok(tx) = conn.transaction() else { return false };
+    if upsert_tasks(&tx, &missing).is_ok() && tx.commit().is_ok() {
+        let _ = std::fs::remove_file(file);
+        return true;
+    }
+    false
 }
 
 /// 写操作全局锁：主窗口（db_upsert/db_delete/db_merge）与本地 API 线程共享同一把锁，
@@ -968,12 +1000,9 @@ pub async fn db_load(app: tauri::AppHandle) -> CommandResult<Vec<Task>> {
     // B3: 启动加载全部任务（可能有几千条 + migrate_data_json 读 JSON 文件）；扔到 spawn_blocking。
     tauri::async_runtime::spawn_blocking(move || {
         let mut conn = open_db(&app)?;
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
-            .map_err(|e| CommandError::DbError(e.to_string()))?;
-        if count == 0 {
-            migrate_data_json(&app, &mut conn);
-        }
+        // P2-7：触发判定移入 migrate_data_json（json 任务数 > 库内任务数才补回），
+        // 不再「库空才迁移」——用户删任务后重启、老 data.json 还在时也能补回
+        migrate_data_json(&app, &mut conn);
         load_all(&conn).map_err(CommandError::from)
     })
     .await
@@ -1297,6 +1326,93 @@ mod tests {
         let c = rusqlite::Connection::open(&dst).unwrap();
         let n: i64 = c.query_row("SELECT COUNT(*) FROM t", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 1, "拷贝后的库应含老数据");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    // ── P2-7：migrate_data_json 触发条件放宽（json 任务数 > 库内任务数即补回） ──
+
+    fn setup_tasks_db() -> (std::path::PathBuf, rusqlite::Connection) {
+        let dir = std::env::temp_dir().join(format!("wm-mig-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let conn = rusqlite::Connection::open(dir.join("t.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tasks (
+               id TEXT PRIMARY KEY, title TEXT NOT NULL, due TEXT, note TEXT,
+               tags TEXT, file_path TEXT, file_is_dir INTEGER, col TEXT NOT NULL,
+               subtasks TEXT, completed_at INTEGER, archived INTEGER,
+               deleted_at INTEGER, collapsed INTEGER, ord REAL, updated_at INTEGER,
+               schedule TEXT, sched_last INTEGER, bot_assigned INTEGER
+             );",
+        )
+        .unwrap();
+        (dir, conn)
+    }
+
+    fn mk_task(id: &str, title: &str) -> Task {
+        Task {
+            id: id.into(),
+            title: title.into(),
+            due: None,
+            note: None,
+            tags: None,
+            file_path: None,
+            file_is_dir: None,
+            column: "todo".into(),
+            subtasks: None,
+            completed_at: None,
+            archived: None,
+            deleted_at: None,
+            collapsed: None,
+            order: None,
+            updated_at: Some(1),
+            schedule: None,
+            sched_last: None,
+            bot_assigned: None,
+        }
+    }
+
+    /// 删任务后重启场景：库里只剩 t1，老 data.json 还有 t1/t2/t3 → 补回 t2/t3，
+    /// 且已存在的 t1 不得被 json 旧值覆盖（B2 守卫之外再加 id 过滤）。
+    #[test]
+    fn migrate_data_json_backfills_missing_after_user_delete() {
+        let (dir, mut conn) = setup_tasks_db();
+        upsert_tasks(&conn, &[mk_task("t1", "新标题")]).unwrap();
+
+        let json_tasks = vec![
+            mk_task("t1", "旧标题"),
+            mk_task("t2", "被删的任务2"),
+            mk_task("t3", "被删的任务3"),
+        ];
+        let file = dir.join("data.json");
+        fs::write(&file, serde_json::to_string(&json_tasks).unwrap()).unwrap();
+
+        assert!(
+            migrate_data_json_file(&file, &mut conn),
+            "json 任务数(3) > 库内(1) 必须触发迁移补回"
+        );
+        let tasks = load_all(&conn).unwrap();
+        assert_eq!(tasks.len(), 3, "t2/t3 应补回");
+        let t1 = tasks.iter().find(|t| t.id == "t1").unwrap();
+        assert_eq!(t1.title, "新标题", "已有 id 不得被 json 旧值覆盖");
+        assert!(!file.exists(), "迁移成功后 data.json 应删除");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 库不比 json 少 → 不触发（防重复迁移）；文件保留原状
+    #[test]
+    fn migrate_data_json_skips_when_db_not_behind() {
+        let (dir, mut conn) = setup_tasks_db();
+        upsert_tasks(&conn, &[mk_task("t1", "a"), mk_task("t2", "b")]).unwrap();
+        let file = dir.join("data.json");
+        fs::write(&file, serde_json::to_string(&vec![mk_task("t1", "old")]).unwrap()).unwrap();
+
+        assert!(
+            !migrate_data_json_file(&file, &mut conn),
+            "json 任务数(1) <= 库内(2) 不得触发"
+        );
+        assert!(file.exists(), "未迁移时文件保留");
+        let tasks = load_all(&conn).unwrap();
+        assert_eq!(tasks.len(), 2, "库内容不得变化");
         fs::remove_dir_all(&dir).ok();
     }
 
