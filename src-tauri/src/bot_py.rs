@@ -1545,6 +1545,20 @@ pub async fn doc_make_ppt(
     Ok(out)
 }
 
+/// 剥掉已知扩展名（NEW-C-7，大小写不敏感）：「周报.DOCX」→「周报」；
+/// 不匹配（无扩展名或别的扩展名）则原样返回。原 trim_end_matches 大小写敏感，
+/// 「周报.DOCX」会生成「周报.DOCX.docx」双扩展名。
+fn strip_known_ext(name: &str, ext: &str) -> String {
+    let suffix = format!(".{}", ext.to_lowercase());
+    if name.to_lowercase().ends_with(&suffix) {
+        // 按字符数截取（名称可能含多字节字符，不能按字节切）
+        let keep = name.chars().count() - suffix.chars().count();
+        name.chars().take(keep).collect()
+    } else {
+        name.to_string()
+    }
+}
+
 /// 输出路径：AI_Gen_Files/<文件名>；同名自动加 (n) 序号，永不覆盖（Harness 第 6 层）
 fn gen_out_path(app: &AppHandle, filename: Option<&str>, ext: &str) -> Result<String, String> {
     let dir = crate::db::data_dir(app).join("AI_Gen_Files");
@@ -1559,7 +1573,7 @@ fn gen_out_path(app: &AppHandle, filename: Option<&str>, ext: &str) -> Result<St
         })
         .filter(|f| !f.is_empty())
         .unwrap_or_else(|| format!("文档-{}", chrono::Local::now().format("%Y%m%d-%H%M%S")));
-    let base = base.trim_end_matches(&format!(".{ext}"));
+    let base = strip_known_ext(&base, ext);
     let mut candidate = dir.join(format!("{base}.{ext}"));
     let mut n = 1;
     while candidate.exists() {
@@ -1865,6 +1879,21 @@ mod tests {
             "缺 stopped 审计行: {lines:?}"
         );
         assert!(!dir.exists(), "停止路径应清理临时目录");
+    }
+
+    // ── strip_known_ext（NEW-C-7：扩展名剥离大小写不敏感）──
+
+    #[test]
+    fn strip_known_ext_case_insensitive() {
+        // 「周报.DOCX」+ docx → 剥掉后 gen_out_path 产出「周报.docx」而非「周报.DOCX.docx」
+        assert_eq!(strip_known_ext("周报.DOCX", "docx"), "周报");
+        assert_eq!(strip_known_ext("a.docx", "docx"), "a");
+        assert_eq!(strip_known_ext("b.Docx", "docx"), "b");
+        // 不匹配：无扩展名 / 别的扩展名 / 仅后缀相似（非 .ext），一律原样
+        assert_eq!(strip_known_ext("报告", "docx"), "报告");
+        assert_eq!(strip_known_ext("a.txt", "docx"), "a.txt");
+        assert_eq!(strip_known_ext("adocx", "docx"), "adocx");
+        assert_eq!(strip_known_ext("a.docx.docx", "docx"), "a.docx");
     }
 
     // ── escape_for_log（P2-11：剥换行/管道符，防伪造日志行）──
