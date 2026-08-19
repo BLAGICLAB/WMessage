@@ -20,10 +20,10 @@
 
 use std::io::{Cursor, Read, Write};
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{sync_channel, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
@@ -669,6 +669,74 @@ fn delete_task(
     let _ = req.respond(json_ok(StatusCode(200), &TaskOut::from_task(&t)));
 }
 
+// ───────────────────────── SSE writer 生命周期（G1）─────────────────────────
+
+/// SSE writer 线程注册项（G1）：按 hub 分组，stop 标志 + JoinHandle。
+/// 原先 writer 线程 spawn 后无人追踪：api_stop / api_rotate_token 只 join accept
+/// 线程，旧 hub 的 tx 不被 drop，writer 循环发 keepalive —— 旧客户端以为活着却
+/// 永远收不到新事件，且每次 rotate 累积一批泄漏线程。
+struct SseWriterReg {
+    /// Arc<EventHub> 身份指针（仅作分组键，永不解引用）
+    hub_key: usize,
+    stop: Arc<AtomicBool>,
+    handle: std::thread::JoinHandle<()>,
+}
+
+static SSE_WRITERS: Mutex<Vec<SseWriterReg>> = Mutex::new(Vec::new());
+
+/// 当前服务实例的 hub 分组键（api_start 时记录，api_stop 据此停对应 writer）
+static API_HUB_KEY: AtomicUsize = AtomicUsize::new(0);
+
+/// writer 退出通知的兜底 join 超时（G1）：超时仍不退出的 detach + ERROR 审计
+const SSE_STOP_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn register_sse_writer(hub_key: usize, stop: Arc<AtomicBool>, handle: std::thread::JoinHandle<()>) {
+    let mut g = SSE_WRITERS.lock().unwrap_or_else(|e| e.into_inner());
+    // 顺手收割已退出（客户端断开）的 writer，防注册表无界增长
+    g.retain(|w| !w.handle.is_finished());
+    g.push(SseWriterReg {
+        hub_key,
+        stop,
+        handle,
+    });
+}
+
+/// 停掉指定 hub 的全部 SSE writer（G1）：置 stop 标志 → 带超时 join；
+/// 超时仍不退出的 drop handle（detach）并记 ERROR 审计「sse_writer_leaked」。
+fn stop_sse_writers(hub_key: usize, timeout: Duration, audit: &mut dyn FnMut(&str)) {
+    let writers = {
+        let mut g = SSE_WRITERS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut taken = Vec::new();
+        let mut i = 0;
+        while i < g.len() {
+            if g[i].hub_key == hub_key {
+                taken.push(g.remove(i));
+            } else {
+                i += 1;
+            }
+        }
+        taken
+    };
+    for w in &writers {
+        w.stop.store(true, Ordering::SeqCst);
+    }
+    let deadline = Instant::now() + timeout;
+    for w in writers {
+        let h = w.handle;
+        loop {
+            if h.is_finished() {
+                let _ = h.join();
+                break;
+            }
+            if Instant::now() >= deadline {
+                audit("sse_writer_leaked | writer join 超时未退出，已 detach");
+                break; // drop(h) = detach
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
 /// 注册 SSE 客户端：支持 `?since=<事件id>` 断线重放，然后用 tiny_http upgrade 直写。
 fn sse_connect(req: Request, store: &Arc<dyn TaskStore>, query: &str) {
     let since = query_param(query, "since").and_then(|s| s.parse::<u64>().ok());
@@ -688,7 +756,11 @@ fn sse_connect(req: Request, store: &Arc<dyn TaskStore>, query: &str) {
         clients.push(tx);
     }
     let hub = hub.clone();
-    std::thread::spawn(move || {
+    // G1：writer 线程纳入追踪 —— stop 标志供 api_stop 通知退出，JoinHandle 入注册表
+    let hub_key = Arc::as_ptr(&hub) as usize;
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_w = stop.clone();
+    let handle = std::thread::spawn(move || {
         let headers = vec![
             Header::from_bytes(
                 &b"Content-Type"[..],
@@ -700,9 +772,11 @@ fn sse_connect(req: Request, store: &Arc<dyn TaskStore>, query: &str) {
         ];
         let resp = Response::new(StatusCode(200), headers, std::io::empty(), Some(0), None);
         let mut stream = req.upgrade("text/event-stream", resp);
-        // A2: 写超时通过 recv_timeout(15s) 心跳 + 客户端断开检测协同处理
+        // A2: 写超时通过 recv_timeout 心跳 + 客户端断开检测协同处理
         // tiny_http ResponseBox 不提供 set_write_timeout，故通过 recv 端超时兜底
-        
+        // G1: recv tick 从 15s 改 1s（每 15 tick 发一次心跳，对外节奏不变），
+        //     使 stop 标志最迟 1s 内被轮询到，writer 能及时退出被 join
+
         // 连接成功事件（携带当前事件 id，供客户端决定下次 since 起点）
         let connected = format!(
             "data: {{\"type\":\"connected\",\"lastEventId\":{}}}\n\n",
@@ -724,24 +798,36 @@ fn sse_connect(req: Request, store: &Arc<dyn TaskStore>, query: &str) {
             }
             let _ = stream.flush();
         }
+        let mut idle_ticks = 0u32;
         loop {
-            match rx.recv_timeout(Duration::from_secs(15)) {
+            // G1：服务停止/重启时 api_stop 置位 —— 不停则旧客户端看着 keepalive
+            // 以为活着，却永远收不到新 hub 的事件
+            if stop_w.load(Ordering::SeqCst) {
+                break;
+            }
+            match rx.recv_timeout(Duration::from_secs(1)) {
                 Ok(data) => {
+                    idle_ticks = 0;
                     if stream.write_all(&data).is_err() || stream.flush().is_err() {
                         break;
                     }
                 }
                 Err(RecvTimeoutError::Timeout) => {
-                    // SSE 心跳注释，保持连接存活
-                    if stream.write_all(b": keepalive\n\n").is_err() {
-                        break;
+                    idle_ticks += 1;
+                    if idle_ticks >= 15 {
+                        idle_ticks = 0;
+                        // SSE 心跳注释，保持连接存活
+                        if stream.write_all(b": keepalive\n\n").is_err() {
+                            break;
+                        }
+                        let _ = stream.flush();
                     }
-                    let _ = stream.flush();
                 }
                 Err(RecvTimeoutError::Disconnected) => break,
             }
         }
     });
+    register_sse_writer(hub_key, stop, handle);
 }
 
 // ───────────────────────── tauri 命令 ─────────────────────────
@@ -778,7 +864,11 @@ pub fn api_start(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandRe
         Some(Box::new(move |lvl, ev, msg| {
             audit_event!(&audit_app, lvl, ev, "error" => msg);
         }));
+    // G1：提前取 hub 分组键（store 随后被 move 进 start_api），
+    // api_stop 据此通知并 join 该 hub 的 SSE writer
+    let hub_key = Arc::as_ptr(store.event_hub()) as usize;
     let running = start_api(API_PORT, token.clone(), store, emit, log_path, on_error)?;
+    API_HUB_KEY.store(hub_key, Ordering::SeqCst);
     *state.0.lock().map_err(|e| e.to_string())? = Some(running);
     write_enabled_flag(&app);
     Ok(ApiInfo {
@@ -795,6 +885,14 @@ pub fn api_stop(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandRes
         if let Some(h) = r.handle.take() {
             let _ = h.join();
         }
+        // G1：除 join accept 线程外，通知并 join 当前 hub 的全部 SSE writer ——
+        // 原先 writer 不被追踪，旧 hub 的 tx 永不 drop，writer 循环发 keepalive，
+        // 旧客户端僵尸挂连且线程随 rotate 无界泄漏；5s 仍不退出的 detach + ERROR 审计
+        let key = API_HUB_KEY.load(Ordering::SeqCst);
+        let audit_app = app.clone();
+        stop_sse_writers(key, SSE_STOP_JOIN_TIMEOUT, &mut |line: &str| {
+            audit_event!(&audit_app, AuditLevel::Error, "sse_writer_leaked", "error" => line);
+        });
     }
     clear_enabled_flag(&app);
     Ok(())
@@ -850,6 +948,8 @@ pub fn api_rotate_token(
     // A6: 重启失败则回滚旧 token 并尽力恢复服务，
     // 避免"服务已停 + flag 已清 + token 已换"三态不一致
     std::fs::write(&path, &token).map_err(|e| e.to_string())?;
+    // api_stop 内会停掉旧 hub 的全部 SSE writer（G1），旧 token 的连接随之断开，
+    // token 失效语义彻底；api_start 重建新 hub 接受新 writer
     api_stop(app.clone(), state.clone())?;
     match api_start(app.clone(), state.clone()) {
         Ok(info) => Ok(info),
@@ -1130,5 +1230,66 @@ mod tests {
         if let Some(h) = running.handle.take() {
             let _ = h.join();
         }
+    }
+
+    // ── SSE writer 生命周期（G1：stop 通知 + 带超时 join + 泄漏审计）──
+
+    /// 测试专用 hub 分组键：用本地 Arc 地址保证与并行测试的真实 hub 不撞
+    fn test_hub_key() -> usize {
+        Arc::as_ptr(&Arc::new(())) as usize
+    }
+
+    #[test]
+    fn sse_writer_stop_exits_within_timeout() {
+        let key = test_hub_key();
+        // 模拟一个不主动退出的 writer：事件永不来，只在 1s tick 上轮询 stop 标志
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_w = stop.clone();
+        let (_tx, rx) = sync_channel::<Vec<u8>>(1);
+        let handle = std::thread::spawn(move || loop {
+            if stop_w.load(Ordering::SeqCst) {
+                break;
+            }
+            let _ = rx.recv_timeout(Duration::from_secs(1));
+        });
+        register_sse_writer(key, stop, handle);
+        let mut audits: Vec<String> = Vec::new();
+        let start = Instant::now();
+        stop_sse_writers(
+            key,
+            SSE_STOP_JOIN_TIMEOUT,
+            &mut |l: &str| audits.push(l.to_string()),
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(4),
+            "writer 未在 stop 后及时退出：{:?}",
+            start.elapsed()
+        );
+        assert!(audits.is_empty(), "正常退出不应记泄漏审计: {audits:?}");
+    }
+
+    #[test]
+    fn sse_writer_stuck_detaches_with_leak_audit() {
+        let key = test_hub_key();
+        // 卡死 writer（不轮询 stop）：join 超时后必须 detach + ERROR 审计，不得永久挂住
+        let stop = Arc::new(AtomicBool::new(false));
+        let handle = std::thread::spawn(move || std::thread::sleep(Duration::from_secs(30)));
+        register_sse_writer(key, stop, handle);
+        let mut audits: Vec<String> = Vec::new();
+        let start = Instant::now();
+        stop_sse_writers(
+            key,
+            Duration::from_millis(300),
+            &mut |l: &str| audits.push(l.to_string()),
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(3),
+            "卡死 writer 不得拖住 stop：{:?}",
+            start.elapsed()
+        );
+        assert!(
+            audits.iter().any(|l| l.contains("sse_writer_leaked")),
+            "缺 sse_writer_leaked 审计: {audits:?}"
+        );
     }
 }
