@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import App from "./App";
+import type { Task } from "./types";
 
 // vi.mock 工厂会被提升到顶部，因此共享 mock 变量必须用 vi.hoisted 包裹
 const mocks = vi.hoisted(() => {
@@ -164,5 +165,49 @@ describe("App", () => {
     // 看板仍渲染（内存空数组），种子标题不出现
     expect(screen.getByText("待办")).toBeInTheDocument();
     expect(screen.queryByText("梳理 WMessage 需求清单")).not.toBeInTheDocument();
+  });
+
+  // E2（2026-08-19）：tasks-updated 事件合并后，规则改动（今日归位/超时归档）
+  // 必须落盘，否则只改内存 → 重启/挂件读 db 回到原始数据，三端长期不一致
+  it("tasks-updated 合并：超时归档的规则改动落盘 db_upsert + console 观测行", async () => {
+    const handlers: Record<string, (e: unknown) => Promise<void>> = {};
+    mocks.listenMock.mockImplementation(
+      async (event: string, cb: (e: unknown) => Promise<void>) => {
+        handlers[event] = cb;
+        return () => {};
+      }
+    );
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByText("梳理 WMessage 需求清单")).toBeInTheDocument();
+    });
+    expect(handlers["tasks-updated"]).toBeDefined();
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+    mocks.invokeMock.mockClear();
+    // 挂件上报：完成超过 7 天、未归档的任务 → applyArchiveRule 应标记 archived
+    const staleDone: Task = {
+      id: "w1",
+      title: "挂件完成的老任务",
+      column: "done",
+      completedAt: Date.now() - 8 * 24 * 60 * 60 * 1000,
+      order: 99,
+    };
+    await act(async () => {
+      await handlers["tasks-updated"]({
+        payload: { upserts: [staleDone], deletes: [] },
+      });
+    });
+    const upsertCalls = mocks.invokeMock.mock.calls.filter(
+      (c) => c[0] === "db_upsert"
+    );
+    // 第 1 次：事件原始行落盘；第 2 次：归档规则改动落盘（E2 修复点）
+    expect(upsertCalls.length).toBe(2);
+    const ruleWrite = upsertCalls[1][1] as { tasks: Task[] };
+    expect(ruleWrite.tasks).toHaveLength(1);
+    expect(ruleWrite.tasks[0].id).toBe("w1");
+    expect(ruleWrite.tasks[0].archived).toBe(true);
+    // 观测行：merge_tasks | N changed
+    expect(infoSpy).toHaveBeenCalledWith("[tasks-updated] merge_tasks | 1 changed");
+    infoSpy.mockRestore();
   });
 });

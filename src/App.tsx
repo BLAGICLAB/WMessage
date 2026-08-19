@@ -201,16 +201,27 @@ export default function App() {
           await upsertTasks(upserts);
           await deleteTaskRows(deletes);
         }
-        setTasks((prev) => {
-          const map = new Map(prev.map((t) => [t.id, t]));
-          upserts.forEach((t) => map.set(t.id, t));
-          deletes.forEach((id) => map.delete(id));
-          const merged = sortByOrder([...map.values()]);
-          const next = applyArchiveRule(applyTodayRule(merged));
-          const same = JSON.stringify(next) === JSON.stringify(prev);
-          if (!same) tasksRef.current = next;
-          return same ? prev : next;
-        });
+        // 合并 + 套规则（在 setTasks 之外基于 tasksRef 计算，保证 updater 纯净）
+        const map = new Map(tasksRef.current.map((t) => [t.id, t]));
+        upserts.forEach((t) => map.set(t.id, t));
+        deletes.forEach((id) => map.delete(id));
+        const merged = sortByOrder([...map.values()]);
+        const next = applyArchiveRule(applyTodayRule(merged));
+        // E2（2026-08-19）：规则改动（今日归位/超时归档）也要落盘——
+        // 否则只改内存，重启/挂件读 db 又回到原始数据，三端长期不一致
+        const mergedMap = new Map(merged.map((t) => [t.id, t]));
+        const ruleChanged = next.filter((t) => !taskEq(mergedMap.get(t.id)!, t));
+        if (ruleChanged.length) {
+          const now = Date.now();
+          ruleChanged.forEach((t) => {
+            t.updatedAt = now;
+          });
+          await upsertTasks(ruleChanged);
+          // 观测行（py_audit 是 Rust 内部函数、未暴露为前端命令，前端用 console 同格式记录）
+          console.info(`[tasks-updated] merge_tasks | ${ruleChanged.length} changed`);
+        }
+        tasksRef.current = next;
+        setTasks(next);
         try {
           await emit("tasks-changed");
         } catch (err) {
