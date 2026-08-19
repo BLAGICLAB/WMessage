@@ -589,6 +589,25 @@ fn conflict_free_name(dir: &Path, file_name: &str) -> Option<PathBuf> {
     None
 }
 
+/// P2-6 TOCTOU 防护：conflict_free_name 选定与 move_entry 实际创建之间存在竞态窗口——
+/// 两个并发迁移任务可能选中同一 dst，后写覆盖前写。实际创建前再 exists 一次；
+/// 窗口内被并发抢占（文件已出现）则递增后缀重选（上限 99 轮防活锁）。
+fn claim_dst_name(dir: &Path, file_name: &str) -> Option<PathBuf> {
+    let mut candidate = conflict_free_name(dir, file_name)?;
+    for _ in 0..99 {
+        if !candidate.exists() {
+            return Some(candidate);
+        }
+        // 竞态窗口内被抢占：重选——conflict_free_name 跳过已存在名，必然递增后缀
+        let next = conflict_free_name(dir, file_name)?;
+        if next == candidate {
+            return None; // 理论不可达（exists 时必换新名），防死循环兜底
+        }
+        candidate = next;
+    }
+    None
+}
+
 /// 递归拷贝目录（跨盘移动兜底用）：遇符号链接中止，失败时不破坏源
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
     fs::create_dir_all(dst).map_err(|e| format!("创建目录失败：{e}"))?;
@@ -852,7 +871,8 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
                     report.skipped += 1;
                     continue;
                 }
-                let Some(dst) = conflict_free_name(&dir, &name) else {
+                // P2-6：选定后落盘前复检（TOCTOU）——并发任务抢占同名时递增后缀重选
+                let Some(dst) = claim_dst_name(&dir, &name) else {
                     report.skipped += 1;
                     let line = format!("跳过「{name}」：目标目录同名冲突过多（不覆盖、不删除）");
                     report.log.push(line.clone());
@@ -1585,6 +1605,48 @@ mod tests {
         assert_eq!(got.file_name().unwrap().to_string_lossy(), "a (2).txt");
         let got2 = conflict_free_name(&dir, "b.txt").unwrap();
         assert_eq!(got2.file_name().unwrap().to_string_lossy(), "b.txt");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// P2-6 TOCTOU：两个并发任务都选定 "name (1).pdf"——先落盘者占位后，
+    /// 后走 claim_dst_name 的必须递增到 "name (2).pdf"，不覆盖前者。
+    #[test]
+    fn claim_dst_name_bumps_suffix_when_race_claimed() {
+        let dir = std::env::temp_dir().join(format!("wm-toctou-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("name.pdf"), b"original").unwrap();
+
+        // 任务 A、B 同时选定 name (1).pdf（竞态窗口：选定相同）
+        let chosen_a = conflict_free_name(&dir, "name.pdf").unwrap();
+        assert_eq!(chosen_a.file_name().unwrap().to_string_lossy(), "name (1).pdf");
+        // A 先落盘（move_entry 创建目标文件）
+        fs::write(&chosen_a, b"a-wins").unwrap();
+
+        // B 走 claim：落盘前复检发现 name (1).pdf 已被抢占 → 递增重选
+        let claimed_b = claim_dst_name(&dir, "name.pdf").unwrap();
+        assert_eq!(
+            claimed_b.file_name().unwrap().to_string_lossy(),
+            "name (2).pdf",
+            "被并发抢占后必须递增后缀，不得覆盖 A 的文件"
+        );
+        assert_eq!(
+            fs::read(dir.join("name (1).pdf")).unwrap(),
+            b"a-wins",
+            "A 的文件不得被覆盖"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// P2-6：无抢占时 claim 与 conflict_free_name 选名一致（直通路径不回归）
+    #[test]
+    fn claim_dst_name_no_race_picks_first_free() {
+        let dir = std::env::temp_dir().join(format!("wm-toctou-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("r.pdf"), b"x").unwrap();
+        let got = claim_dst_name(&dir, "r.pdf").unwrap();
+        assert_eq!(got.file_name().unwrap().to_string_lossy(), "r (1).pdf");
+        let free = claim_dst_name(&dir, "new.pdf").unwrap();
+        assert_eq!(free.file_name().unwrap().to_string_lossy(), "new.pdf");
         fs::remove_dir_all(&dir).unwrap();
     }
 
