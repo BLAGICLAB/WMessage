@@ -108,22 +108,37 @@ fn mime_for(ext: &str) -> &'static str {
     }
 }
 
+/// NEW-D-4：avatar 字段必须是纯文件名，防手改/损坏的 profile.json 路径穿越。
+/// 拒绝：空串、含 `/` / `\` 路径分隔符、含 `..` 父目录跳转。
+/// 合法例：`avatar-user.png`；非法例：`../../wmessage.db`、`/etc/passwd`、`a\b.png`。
+fn avatar_filename_only(f: &str) -> Option<&str> {
+    if f.is_empty() || f.contains('/') || f.contains('\\') || f.contains("..") {
+        return None;
+    }
+    Some(f)
+}
+
 fn entry_view<R: Runtime>(app: &AppHandle<R>, kind: &str, e: &ProfileEntry) -> ProfileEntryView {
     let name = if e.name.trim().is_empty() {
         default_name(kind)
     } else {
         e.name.clone()
     };
-    let data_url = e.avatar.as_ref().and_then(|f| {
-        let path = profile_dir(app).join(f);
-        let bytes = std::fs::read(&path).ok()?;
-        let ext = path.extension().and_then(|x| x.to_str()).unwrap_or("");
-        Some(format!(
-            "data:{};base64,{}",
-            mime_for(ext),
-            B64.encode(bytes)
-        ))
-    });
+    // NEW-D-4：先过纯文件名校验，非法值当作无头像（None），不拼路径
+    let data_url = e
+        .avatar
+        .as_deref()
+        .and_then(avatar_filename_only)
+        .and_then(|f| {
+            let path = profile_dir(app).join(f);
+            let bytes = std::fs::read(&path).ok()?;
+            let ext = path.extension().and_then(|x| x.to_str()).unwrap_or("");
+            Some(format!(
+                "data:{};base64,{}",
+                mime_for(ext),
+                B64.encode(bytes)
+            ))
+        });
     ProfileEntryView {
         name,
         avatar_data_url: data_url,
@@ -783,6 +798,57 @@ mod tests {
         assert!(
             view.user.avatar_data_url.is_some(),
             "save 失败时 json 引用应保持原状"
+        );
+    }
+
+    // ────── NEW-D-4：avatar 字段纯文件名校验（防路径穿越） ──────
+
+    #[test]
+    fn avatar_filename_only_accepts_plain_filename() {
+        assert_eq!(avatar_filename_only("avatar.png"), Some("avatar.png"));
+        assert_eq!(avatar_filename_only("avatar-user.webp"), Some("avatar-user.webp"));
+        assert_eq!(avatar_filename_only("带空格 头像.png"), Some("带空格 头像.png"));
+    }
+
+    #[test]
+    fn avatar_filename_only_rejects_traversal_and_separators() {
+        for bad in [
+            "../../wmessage.db",
+            "/etc/passwd",
+            "..\\..\\bad",
+            "",
+            "a/b.png",
+            "a\\b.png",
+            "..",
+            "foo..png",
+            "./avatar.png",
+        ] {
+            assert_eq!(avatar_filename_only(bad), None, "应拒绝: {bad:?}");
+        }
+    }
+
+    #[test]
+    fn entry_view_malicious_avatar_returns_none() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let app = fresh_app();
+        let handle = app.handle().clone();
+        // 手改 profile.json：avatar 指向数据目录内的敏感文件（相对跳一级）
+        let malicious = ProfileData {
+            user: ProfileEntry {
+                name: "x".into(),
+                avatar: Some("../wmessage.db".into()),
+            },
+            ..Default::default()
+        };
+        std::fs::write(
+            data_dir(&handle).join("profile.json"),
+            serde_json::to_string(&malicious).unwrap(),
+        )
+        .unwrap();
+        let view = profile_get(handle);
+        assert!(
+            view.user.avatar_data_url.is_none(),
+            "路径穿越的 avatar 必须被拦截为 None（NEW-D-4 回归）"
         );
     }
 }
