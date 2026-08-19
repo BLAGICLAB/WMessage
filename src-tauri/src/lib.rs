@@ -523,6 +523,37 @@ mod p2_30_capability_tests {
 }
 
 #[cfg(test)]
+mod p2_29_version_tests {
+    /// P2-29：版本号单一真相源 = src-tauri/Cargo.toml（原先 4 处手动维护漂移：
+    /// conf 1.0.0 / Cargo 0.1.0 / package.json 0.1.0 / 便携包 1.0.1）。
+    /// tauri.conf.json 不得再写 version（tauri 2 构建期回退 CARGO_PKG_VERSION，
+    /// 见 tauri-codegen context.rs）；package.json 由 pnpm prebuild 的
+    /// scripts/sync-version.mjs 同步，必须与 Cargo.toml 一致。
+    #[test]
+    fn version_single_source_is_cargo_toml() {
+        let conf_path = concat!(env!("CARGO_MANIFEST_DIR"), "/tauri.conf.json");
+        let conf: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(conf_path).expect("tauri.conf.json 必须可读"),
+        )
+        .expect("必须是合法 JSON");
+        assert!(
+            conf.get("version").is_none(),
+            "tauri.conf.json 不得写 version（单一真相源是 Cargo.toml，构建期自动回退）"
+        );
+        let pkg_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../package.json");
+        let pkg: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(pkg_path).expect("package.json 必须可读"),
+        )
+        .expect("必须是合法 JSON");
+        assert_eq!(
+            pkg["version"].as_str().expect("package.json 必须有 version"),
+            env!("CARGO_PKG_VERSION"),
+            "package.json version 与 Cargo.toml 漂移：跑 pnpm run sync-version 同步"
+        );
+    }
+}
+
+#[cfg(test)]
 mod p2_26_bring_front_tests {
     use tauri::Manager;
 
