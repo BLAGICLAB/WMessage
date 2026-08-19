@@ -77,6 +77,20 @@ pub fn rotate_log_if_large(path: &std::path::Path, size_limit: u64) {
     }
 }
 
+/// NEW-B-6: 原子写文件——先写同目录 tmp 再 rename 覆盖目标。
+/// 崩溃在写中途只留 tmp 残件，目标文件要么是旧完整版、要么是新完整版，
+/// 不会留半截 JSON。tmp 与目标同目录保证 rename 同卷原子。
+/// pub(crate)：后续 P2-8 save_rules 原子化可复用。
+pub(crate) fn atomic_write(path: &std::path::Path, contents: &str) -> Result<(), String> {
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| format!("无效的目标路径：{}", path.display()))?;
+    let tmp = path.with_file_name(format!("{}.tmp", file_name.to_string_lossy()));
+    std::fs::write(&tmp, contents).map_err(|e| format!("写入临时文件失败：{e}"))?;
+    std::fs::rename(&tmp, path).map_err(|e| format!("落盘重命名失败：{e}"))?;
+    Ok(())
+}
+
 pub fn open_db(app: &tauri::AppHandle) -> Result<rusqlite::Connection, String> {
     let dir = db_dir(app);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -1099,7 +1113,9 @@ pub async fn tasks_export(app: tauri::AppHandle, path: String) -> CommandResult<
         let conn = open_db(&app)?;
         let tasks = load_all(&conn)?;
         let json = serde_json::to_string_pretty(&tasks).map_err(|e| e.to_string())?;
-        std::fs::write(&path, json).map_err(|e| format!("写入文件失败：{e}"))?;
+        // NEW-B-6: 原子写——崩溃不留半截 JSON（先写同目录 tmp 再 rename）
+        atomic_write(std::path::Path::new(&path), &json)
+            .map_err(|e| format!("写入文件失败：{e}"))?;
         Ok(tasks.len())
     })
     .await
@@ -1640,6 +1656,59 @@ mod reset_tests {
             })
             .unwrap();
         assert_eq!(n, 0, "残留 bot_assigned 应被清掉");
+        fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod atomic_write_tests {
+    use super::*;
+    use std::fs;
+
+    /// NEW-B-6: 原子写 happy path——内容完整落盘，tmp 不残留；覆盖已有文件也正常。
+    #[test]
+    fn atomic_write_success_and_overwrite() {
+        let dir = std::env::temp_dir().join(format!("wm-aw-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("export.json");
+
+        atomic_write(&p, "{\"v\":1}").unwrap();
+        assert_eq!(fs::read_to_string(&p).unwrap(), "{\"v\":1}");
+        assert!(!dir.join("export.json.tmp").exists(), "tmp 不应残留");
+
+        // 覆盖已有目标（导出到已存在的文件）
+        atomic_write(&p, "{\"v\":2}").unwrap();
+        assert_eq!(fs::read_to_string(&p).unwrap(), "{\"v\":2}");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// NEW-B-6: tmp 写入失败（目标目录只读）→ 目标文件保持原状，不被半截覆盖。
+    #[test]
+    fn atomic_write_failure_preserves_target() {
+        let dir = std::env::temp_dir().join(format!("wm-aw-ro-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("export.json");
+        fs::write(&p, "original-complete").unwrap();
+
+        // 目录只读 → 无法创建 tmp → 写失败
+        let mut perms = fs::metadata(&dir).unwrap().permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(&dir, perms).unwrap();
+
+        let r = atomic_write(&p, "partial-json-that-must-not-land");
+
+        // 恢复可写以便清理与读回校验
+        let mut perms = fs::metadata(&dir).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        fs::set_permissions(&dir, perms).unwrap();
+
+        assert!(r.is_err(), "只读目录下 tmp 写入应失败");
+        assert_eq!(
+            fs::read_to_string(&p).unwrap(),
+            "original-complete",
+            "失败时目标文件必须保持原状"
+        );
         fs::remove_dir_all(&dir).ok();
     }
 }
