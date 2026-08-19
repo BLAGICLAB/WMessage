@@ -102,25 +102,40 @@ pub fn format_event_line(level: AuditLevel, event: &str, kv: &[(&str, &str)]) ->
 /// rotate + open + write 必须在同一把锁内，否则检查大小与写入之间存在竞态。
 pub static BOT_LOG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// 追加一行到指定日志文件（P2-15：open/write 失败不再 `let _ =` 全静默——
+/// eprintln 到 stderr 提示路径，审计丢了至少有迹可循；返回成功与否供测试断言，
+/// 不 panic、不阻塞业务）。
+fn append_line(path: &std::path::Path, line: &str) -> bool {
+    let f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path);
+    let mut f = match f {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("[audit] write failed: {} path={}", e, path.display());
+            return false;
+        }
+    };
+    if let Err(e) = writeln!(f, "{line}") {
+        eprintln!("[audit] write failed: {} path={}", e, path.display());
+        return false;
+    }
+    true
+}
+
 /// 写一条结构化审计事件到 `bot.log`（post-execute 钩子主入口）
 /// 复用 `bot::audit_log` 的 rotate 阈值与文件路径，老日志兼容。
 pub fn write_event(app: &AppHandle, level: AuditLevel, event: &str, kv: &[(&str, String)]) {
     let _g = BOT_LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     crate::db::rotate_log_if_large(&crate::db::data_dir(app).join("bot.log"), 5 * 1024 * 1024);
     let p = crate::db::data_dir(app).join("bot.log");
-    let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(p)
-    else {
-        return;
-    };
     let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
     // NEW-C-6：kv 值统一转义（剥 \n / |），防伪造日志行；调用方不得再自行预转义
     // NEW-D-5：行拼装走 build_event_line，与 format_event_line 同一份实现（防 drift）
     let kv_refs: Vec<(&str, &str)> = kv.iter().map(|(k, v)| (*k, v.as_str())).collect();
     let line = build_event_line(&ts.to_string(), level, event, &kv_refs);
-    let _ = writeln!(f, "{line}");
+    append_line(&p, &line);
 }
 
 /// 泛型 Runtime 版日志目录（D2）：与 crate::db::data_dir 同逻辑的便携探针
@@ -144,7 +159,8 @@ fn generic_log_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> std::path::P
 }
 
 /// 泛型 Runtime 的 ERROR 审计（D2/D3）：rotate + BOT_LOG_LOCK + 追加一行结构化事件。
-/// 行拼装复用 build_event_line，与 write_event 零漂移；IO 失败静默（审计不阻塞业务）。
+/// 行拼装复用 build_event_line，与 write_event 零漂移；IO 失败走 append_line 的
+/// eprintln（P2-15），不 panic、不阻塞业务。
 pub(crate) fn write_error_audit<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     event: &str,
@@ -153,16 +169,9 @@ pub(crate) fn write_error_audit<R: tauri::Runtime>(
     let _g = BOT_LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let p = generic_log_dir(app).join("bot.log");
     crate::db::rotate_log_if_large(&p, 5 * 1024 * 1024);
-    let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(p)
-    else {
-        return;
-    };
     let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
     let line = build_event_line(&ts.to_string(), AuditLevel::Error, event, kv);
-    let _ = writeln!(f, "{line}");
+    append_line(&p, &line);
 }
 
 /// 结构化审计事件宏（post-execute 钩子用，2026-08-17 22:17）
@@ -248,6 +257,32 @@ mod tests {
             &[("preview", "{\"k\":\"v\"}")],
         );
         assert!(line.contains("preview={\"k\":\"v\"}"));
+    }
+
+    // ── P2-15：写失败不再静默（eprintln + 返回 false，不 panic）──
+
+    #[test]
+    fn append_line_ok_returns_true_and_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("bot.log");
+        assert!(append_line(&p, "hello"));
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "hello\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn append_line_readonly_dir_fails_without_panic() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let ro = dir.path().join("ro");
+        std::fs::create_dir(&ro).unwrap();
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let p = ro.join("bot.log");
+        // 写失败：返回 false + eprintln（stderr 含 path），主流程不 panic
+        assert!(!append_line(&p, "x"));
+        assert!(!p.exists());
+        // 恢复权限让 tempdir 清理不掉链子
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
     // ── NEW-C-6：kv 值统一转义（剥换行/管道符）──
