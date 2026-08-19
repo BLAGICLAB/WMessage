@@ -81,14 +81,20 @@ pub fn classify_text(name: &str, text: &str) -> AuditLevel {
     AuditLevel::Info
 }
 
-/// 纯函数：把事件拼成一行（测试用，不碰磁盘）
-/// 与 write_event 同一套 kv 转义规则（NEW-C-6），测试所见即线上行为
-#[cfg_attr(not(test), allow(dead_code))]
-pub fn format_event_line(level: AuditLevel, event: &str, kv: &[(&str, &str)]) -> String {
-    let ts = "TIMESTAMP"; // 测试时占位；真实调用由 write_event 填时间
+/// 拼装一行审计日志（NEW-D-5：生产 write_event 与测试 format_event_line 共用，
+/// 消除「测试专用拷贝与生产拼装 drift 时测试照样绿」的盲区）。
+/// ts 由调用方提供（生产填真实时间戳，测试填占位串）。
+fn build_event_line(ts: &str, level: AuditLevel, event: &str, kv: &[(&str, &str)]) -> String {
     let mut line = format!("[{ts}] {} | {}", level.as_tag(), event);
     append_kv_escaped(&mut line, kv);
     line
+}
+
+/// 纯函数：把事件拼成一行（测试用，不碰磁盘）
+/// 委托 build_event_line——与 write_event 同一份拼装实现（NEW-D-5），测试所见即线上行为
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn format_event_line(level: AuditLevel, event: &str, kv: &[(&str, &str)]) -> String {
+    build_event_line("TIMESTAMP", level, event, kv)
 }
 
 /// bot.log 全局写锁：`write_event` 与 `bot::audit_log` 共用，
@@ -110,10 +116,10 @@ pub fn write_event(app: &AppHandle, level: AuditLevel, event: &str, kv: &[(&str,
         return;
     };
     let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
-    let mut line = format!("[{ts}] {} | {}", level.as_tag(), event);
     // NEW-C-6：kv 值统一转义（剥 \n / |），防伪造日志行；调用方不得再自行预转义
+    // NEW-D-5：行拼装走 build_event_line，与 format_event_line 同一份实现（防 drift）
     let kv_refs: Vec<(&str, &str)> = kv.iter().map(|(k, v)| (*k, v.as_str())).collect();
-    append_kv_escaped(&mut line, &kv_refs);
+    let line = build_event_line(&ts.to_string(), level, event, &kv_refs);
     let _ = writeln!(f, "{line}");
 }
 
@@ -231,5 +237,32 @@ mod tests {
         let out = escape_for_log(&long, KV_VALUE_MAX);
         assert_eq!(out.chars().count(), KV_VALUE_MAX + 1);
         assert!(out.ends_with('…'));
+    }
+
+    // ── NEW-D-5：format_event_line 与生产 write_event 共用 build_event_line ──
+
+    #[test]
+    fn build_event_line_is_single_source_for_format_and_write() {
+        // write_event 的行拼装 = build_event_line(ts, ...)；format_event_line = build_event_line("TIMESTAMP", ...)。
+        // write_event 是 Wry 签名无法 mock runtime 直调，这里断言两条路径对同等 kv 产出同等行——
+        // 由于二者都委托 build_event_line，该等式由同一实现保证，drift 在编译期即不可能。
+        let cases: Vec<(AuditLevel, &str, Vec<(&str, &str)>)> = vec![
+            (
+                AuditLevel::Info,
+                "tool_done",
+                vec![("tool", "list_tasks"), ("ms", "4"), ("refs", "3")],
+            ),
+            (AuditLevel::Warn, "skill_paused", vec![]),
+            (
+                AuditLevel::Error,
+                "tool.return",
+                vec![("preview", "{\"k\":\"v\"}\nnext|line"), ("reason", "denied")],
+            ),
+        ];
+        for (level, event, kv) in cases {
+            let via_format = format_event_line(level, event, &kv);
+            let via_build = build_event_line("TIMESTAMP", level, event, &kv);
+            assert_eq!(via_format, via_build, "kv={kv:?}");
+        }
     }
 }
