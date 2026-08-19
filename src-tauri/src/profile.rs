@@ -150,6 +150,17 @@ fn entry_view<R: Runtime>(app: &AppHandle<R>, kind: &str, e: &ProfileEntry) -> P
         .and_then(avatar_filename_only)
         .and_then(|f| {
             let path = profile_dir(app).join(f);
+            // P2-17：读取端同样限 5MB——写入端 profile_set_avatar 有大小校验，
+            // 但手改/损坏的 profile.json 可指向任意大文件，读出 base64 广播会撑爆 IPC
+            let meta = std::fs::metadata(&path).ok()?;
+            if meta.len() > MAX_AVATAR_BYTES {
+                crate::audit::write_error_audit(
+                    app,
+                    "profile_avatar_too_large",
+                    &[("kind", kind), ("file", f), ("len", &meta.len().to_string())],
+                );
+                return None;
+            }
             let bytes = std::fs::read(&path).ok()?;
             let ext = path.extension().and_then(|x| x.to_str()).unwrap_or("");
             Some(format!(
@@ -884,6 +895,41 @@ mod tests {
         assert!(
             view.user.avatar_data_url.is_none(),
             "路径穿越的 avatar 必须被拦截为 None（NEW-D-4 回归）"
+        );
+    }
+
+    #[test]
+    fn entry_view_oversized_avatar_returns_none_and_audits() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let app = fresh_app();
+        let handle = app.handle().clone();
+        let data_dir = data_dir(&handle);
+        let _ = std::fs::remove_file(data_dir.join("bot.log"));
+        // 绕过写入端 5MB 校验（模拟手改/旧版写入）：直接落 6MB 头像文件 + 手改 profile.json
+        let profile_d = data_dir.join("profile");
+        std::fs::create_dir_all(&profile_d).unwrap();
+        std::fs::write(profile_d.join("avatar-user.png"), vec![0u8; 6 * 1024 * 1024]).unwrap();
+        let forged = ProfileData {
+            user: ProfileEntry {
+                name: "x".into(),
+                avatar: Some("avatar-user.png".into()),
+            },
+            ..Default::default()
+        };
+        std::fs::write(
+            data_dir.join("profile.json"),
+            serde_json::to_string(&forged).unwrap(),
+        )
+        .unwrap();
+        let view = profile_get(handle);
+        assert!(
+            view.user.avatar_data_url.is_none(),
+            "超过 5MB 的头像读取端必须拦截为 None（P2-17）"
+        );
+        let log = std::fs::read_to_string(data_dir.join("bot.log")).unwrap_or_default();
+        assert!(
+            log.contains("profile_avatar_too_large"),
+            "超限读取必须记 ERROR 审计（P2-17），bot.log: {log}"
         );
     }
 
