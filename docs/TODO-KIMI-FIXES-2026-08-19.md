@@ -93,7 +93,7 @@
 
 ### Batch H H1-H2
 - [x] **H1** `tauri.conf.json 全文` — 无 `bundle.resources`、无 `bundle.windows` 节 → `WebView2Loader.dll` 未声明为资源
-- [ ] **H2** `tauri.conf.json 全文` — 无 `bundle.macOS` 节（signingIdentity / hardenedRuntime / entitlements）
+- [x] **H2** `tauri.conf.json 全文` — 无 `bundle.macOS` 节（signingIdentity / hardenedRuntime / entitlements）
 
 ### 原 P2 35 项（已并入除外）
 

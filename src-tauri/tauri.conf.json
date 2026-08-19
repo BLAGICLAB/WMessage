@@ -41,6 +41,13 @@
       "nsis": {
         "installMode": "currentUser"
       }
+    },
+    "macOS": {
+      "signingIdentity": "-",
+      "providerShortName": null,
+      "entitlements": null,
+      "hardenedRuntime": false,
+      "minimumSystemVersion": "10.15"
     }
   }
 }
