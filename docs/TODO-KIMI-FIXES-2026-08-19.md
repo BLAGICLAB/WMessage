@@ -106,7 +106,7 @@
 - Phase 1: 8/8
 - Phase 2: 0/5
 - Phase 3: 5/5
-- Phase 4: 0/4 (E5 已勾)
+- Phase 4: 4/4 (E5 已勾)
 - Phase 5: 0/6
 - Phase 6: 0/11+
 
