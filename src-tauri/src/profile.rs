@@ -87,6 +87,17 @@ fn save_data<R: Runtime>(app: &AppHandle<R>, data: &ProfileData) -> Result<(), S
     std::fs::write(profile_path(app), s).map_err(|e| e.to_string())
 }
 
+/// NEW-D-2：set_avatar 保存失败回滚——仅当新文件不是「在役头像本身」时才删。
+/// 同扩展名覆盖场景 dest 就是在役文件（copy 已覆盖其内容），再删会让磁盘 json 悬挂引用、
+/// 在役头像静默丢失。返回是否执行了删除（测试可断言）。
+fn cleanup_set_avatar_failure(old_avatar: Option<&str>, new_dest: &std::path::Path) -> bool {
+    let new_name = new_dest.file_name().and_then(|n| n.to_str());
+    if new_name.is_some() && new_name == old_avatar {
+        return false; // dest 就是在役头像，不能删
+    }
+    std::fs::remove_file(new_dest).is_ok()
+}
+
 fn mime_for(ext: &str) -> &'static str {
     match ext {
         "png" => "image/png",
@@ -243,10 +254,14 @@ pub fn profile_set_avatar<R: Runtime>(
             reason: "头像目标路径无效".into(),
         });
     };
+    // NEW-D-2：覆盖前先记在役头像名，save 失败回滚时区分「在役文件」与「新文件」
+    let old_avatar = entry.avatar.clone();
     entry.avatar = Some(fname.to_string_lossy().into_owned());
-    // 原子性：保存失败时删掉刚拷贝的头像文件，不留孤儿（二次审计 P3）
+    // 原子性：保存失败时回滚刚拷贝的头像文件，不留孤儿（二次审计 P3）。
+    // NEW-D-2：同扩展名覆盖场景 dest 就是在役头像本身（copy 已覆盖内容），
+    // 误删会让磁盘 json 悬挂引用、在役头像静默丢失——只在 dest 是「新文件」时才删。
     if let Err(e) = save_data(&app, &data) {
-        let _ = std::fs::remove_file(&dest);
+        cleanup_set_avatar_failure(old_avatar.as_deref(), &dest);
         return Err(CommandError::IoError(e));
     }
     broadcast(&app);
@@ -300,12 +315,33 @@ mod tests {
     fn fresh_app() -> tauri::App<tauri::test::MockRuntime> {
         let app = tauri::test::mock_app();
         let data_dir = data_dir(app.handle());
+        // NEW-D-2/3 的失败注入测试会把 profile.json 换成同名只读文件，残留也要清掉
         let _ = std::fs::remove_file(data_dir.join("profile.json"));
         let profile_d = data_dir.join("profile");
         if profile_d.exists() {
             let _ = std::fs::remove_dir_all(&profile_d);
         }
         app
+    }
+
+    /// NEW-D-2/3 失败注入：把 profile.json 置为只读，save_data（截断写）必然 EACCES，
+    /// 但 load_data（只读）仍成功——模拟「磁盘 json 可读、保存失败」的真实故障窗口。
+    /// 返回原权限以便恢复。
+    #[cfg(unix)]
+    fn make_profile_json_readonly(data_dir: &std::path::Path) -> std::fs::Permissions {
+        use std::os::unix::fs::PermissionsExt;
+        let p = data_dir.join("profile.json");
+        if !p.exists() {
+            std::fs::write(&p, "{}").unwrap();
+        }
+        let orig = std::fs::metadata(&p).unwrap().permissions();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o444)).unwrap();
+        orig
+    }
+
+    #[cfg(unix)]
+    fn restore_permissions(path: &std::path::Path, perm: std::fs::Permissions) {
+        let _ = std::fs::set_permissions(path, perm);
     }
 
     /// 1×1 透明 PNG 字节（最小有效 PNG，足够通过扩展名校验与大小校验）
@@ -609,5 +645,101 @@ mod tests {
         let view = profile_get(handle);
         assert!(view.user.avatar_data_url.as_ref().unwrap().starts_with("data:image/png"));
         assert!(view.bot.avatar_data_url.as_ref().unwrap().starts_with("data:image/gif"));
+    }
+
+    // ────── NEW-D-2：set_avatar save 失败回滚不得误删在役头像 ──────
+
+    #[test]
+    fn cleanup_failure_keeps_dest_when_it_is_live_avatar() {
+        // 同扩展名覆盖：dest 文件名 == 在役头像名 → 不删（纯 helper，tempfile 隔离无需锁）
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dest = tmp.path().join("avatar-1.png");
+        std::fs::write(&dest, b"live").unwrap();
+        assert!(!cleanup_set_avatar_failure(Some("avatar-1.png"), &dest));
+        assert!(dest.exists(), "在役头像不得被回滚删除");
+    }
+
+    #[test]
+    fn cleanup_failure_removes_dest_when_it_is_new_file() {
+        // 不同文件名：dest 是新文件（孤儿）→ 删掉
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dest = tmp.path().join("avatar-2.png");
+        std::fs::write(&dest, b"orphan").unwrap();
+        assert!(cleanup_set_avatar_failure(Some("avatar-1.png"), &dest));
+        assert!(!dest.exists(), "孤儿新文件应被回滚删除");
+        // 在役为 None（从未设过头像）→ 同样是孤儿，删
+        let dest2 = tmp.path().join("avatar-3.png");
+        std::fs::write(&dest2, b"orphan").unwrap();
+        assert!(cleanup_set_avatar_failure(None, &dest2));
+        assert!(!dest2.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn set_avatar_save_failure_same_ext_keeps_live_avatar() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let app = fresh_app();
+        let handle = app.handle().clone();
+        let data_dir = data_dir(&handle);
+
+        // 先成功设一张 PNG（在役 avatar-user.png）
+        let tmp = make_src_avatar("png");
+        profile_set_avatar(
+            handle.clone(),
+            "user".into(),
+            tmp.path().join("src.png").to_string_lossy().into_owned(),
+        )
+        .unwrap();
+        let live = data_dir.join("profile").join("avatar-user.png");
+        assert!(live.exists());
+
+        // 失败注入：profile.json 只读 → save_data 必败、load_data 仍可读
+        let orig = make_profile_json_readonly(&data_dir);
+
+        // 再传同扩展名 PNG → dest == 在役文件；save 失败回滚不得删它
+        let tmp2 = make_src_avatar("png");
+        let r = profile_set_avatar(
+            handle.clone(),
+            "user".into(),
+            tmp2.path().join("src.png").to_string_lossy().into_owned(),
+        );
+        restore_permissions(&data_dir.join("profile.json"), orig);
+        assert!(r.is_err(), "save_data 失败应返回 Err");
+        assert!(live.exists(), "save 失败回滚误删了在役头像（NEW-D-2 回归）");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn set_avatar_save_failure_new_ext_removes_orphan() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let app = fresh_app();
+        let handle = app.handle().clone();
+        let data_dir = data_dir(&handle);
+
+        let tmp = make_src_avatar("png");
+        profile_set_avatar(
+            handle.clone(),
+            "user".into(),
+            tmp.path().join("src.png").to_string_lossy().into_owned(),
+        )
+        .unwrap();
+
+        let orig = make_profile_json_readonly(&data_dir);
+
+        // 换 JPG → dest = avatar-user.jpg 是新文件；save 失败回滚应删孤儿
+        let jpg_tmp = tempfile::TempDir::new().unwrap();
+        let jpg_src = jpg_tmp.path().join("new.jpg");
+        std::fs::write(&jpg_src, b"\xFF\xD8\xFF\xE0fake-jpg").unwrap();
+        let r = profile_set_avatar(
+            handle.clone(),
+            "user".into(),
+            jpg_src.to_string_lossy().into_owned(),
+        );
+        restore_permissions(&data_dir.join("profile.json"), orig);
+        assert!(r.is_err());
+        assert!(
+            !data_dir.join("profile").join("avatar-user.jpg").exists(),
+            "孤儿新文件应被回滚删除"
+        );
     }
 }
