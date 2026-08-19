@@ -88,8 +88,8 @@
 - [x] **F3** `bot.rs:241` / `migration.rs:983` — `bot_log_read` / `migration_log_read` 把读文件错吞成「暂无日志」 — commit `3f6a4d4`
 
 ### Batch G G1-G2
-- [ ] **G1** `api_handlers.rs:791 + :691` — `api_stop` / `api_rotate_token` 只 join accept 线程，SSE writer 线程不被追踪/不被通知
-- [ ] **G2** `bot_py.rs:259-282 + bot.rs:327` — `run_python` 读阶段无整体兜底超时（与 C1 同根）
+- [x] **G1** `api_handlers.rs:791 + :691` — `api_stop` / `api_rotate_token` 只 join accept 线程，SSE writer 线程不被追踪/不被通知 — commit `6789920`
+- [x] **G2** `bot_py.rs:259-282 + bot.rs:327` — `run_python` 读阶段无整体兜底超时（与 C1 同根） — commit `d9d81c2`
 
 ### Batch H H1-H2
 - [ ] **H1** `tauri.conf.json 全文` — 无 `bundle.resources`、无 `bundle.windows` 节 → `WebView2Loader.dll` 未声明为资源
