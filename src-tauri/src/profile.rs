@@ -76,15 +76,38 @@ fn profile_dir<R: Runtime>(app: &AppHandle<R>) -> std::path::PathBuf {
 }
 
 fn load_data<R: Runtime>(app: &AppHandle<R>) -> ProfileData {
-    std::fs::read_to_string(profile_path(app))
-        .ok()
-        .and_then(|s| serde_json::from_str::<ProfileData>(&s).ok())
-        .unwrap_or_default()
+    let path = profile_path(app);
+    // 读失败（含首启文件不存在）→ 默认配置，不算损坏，不触发备份
+    let Ok(s) = std::fs::read_to_string(&path) else {
+        return ProfileData::default();
+    };
+    match serde_json::from_str::<ProfileData>(&s) {
+        Ok(d) => d,
+        Err(e) => {
+            // D3：损坏不再静默吞——备份现场 profile.json.bak-<ts> + ERROR 审计，
+            // 再回默认值保证程序可启动（原 unwrap_or_default 让用户资料无声消失）
+            let ts = chrono::Local::now().format("%Y%m%d-%H%M%S%.3f");
+            let bak = path.with_file_name(format!("profile.json.bak-{ts}"));
+            let backup = match std::fs::rename(&path, &bak) {
+                Ok(()) => bak.to_string_lossy().into_owned(),
+                Err(be) => format!("备份失败: {be}"),
+            };
+            let err = e.to_string();
+            crate::audit::write_error_audit(
+                app,
+                "profile_load_fail",
+                &[("backup", backup.as_str()), ("err", err.as_str())],
+            );
+            ProfileData::default()
+        }
+    }
 }
 
 fn save_data<R: Runtime>(app: &AppHandle<R>, data: &ProfileData) -> Result<(), String> {
     let s = serde_json::to_string_pretty(data).map_err(|e| e.to_string())?;
-    std::fs::write(profile_path(app), s).map_err(|e| e.to_string())
+    // D3：原子写（tmp + rename，复用 Phase 3 NEW-B-6 的 crate::db::atomic_write）——
+    // 崩溃在写中途只留 tmp 残件，profile.json 要么旧完整版要么新完整版，不留半截
+    crate::db::atomic_write(&profile_path(app), &s)
 }
 
 /// NEW-D-2：set_avatar 保存失败回滚——仅当新文件不是「在役头像本身」时才删。
@@ -334,8 +357,17 @@ mod tests {
     fn fresh_app() -> tauri::App<tauri::test::MockRuntime> {
         let app = tauri::test::mock_app();
         let data_dir = data_dir(app.handle());
-        // NEW-D-2/3 的失败注入测试会把 profile.json 换成同名只读文件，残留也要清掉
         let _ = std::fs::remove_file(data_dir.join("profile.json"));
+        // D3：失败注入会把 profile.json.tmp 占成目录，残留要清掉
+        let _ = std::fs::remove_dir_all(data_dir.join("profile.json.tmp"));
+        // D3：损坏 load 会生成 profile.json.bak-<ts> 备份，残留要清掉
+        if let Ok(rd) = std::fs::read_dir(&data_dir) {
+            for e in rd.flatten() {
+                if e.file_name().to_string_lossy().starts_with("profile.json.bak-") {
+                    let _ = std::fs::remove_file(e.path());
+                }
+            }
+        }
         let profile_d = data_dir.join("profile");
         if profile_d.exists() {
             let _ = std::fs::remove_dir_all(&profile_d);
@@ -343,24 +375,17 @@ mod tests {
         app
     }
 
-    /// NEW-D-2/3 失败注入：把 profile.json 置为只读，save_data（截断写）必然 EACCES，
-    /// 但 load_data（只读）仍成功——模拟「磁盘 json 可读、保存失败」的真实故障窗口。
-    /// 返回原权限以便恢复。
-    #[cfg(unix)]
-    fn make_profile_json_readonly(data_dir: &std::path::Path) -> std::fs::Permissions {
-        use std::os::unix::fs::PermissionsExt;
-        let p = data_dir.join("profile.json");
-        if !p.exists() {
-            std::fs::write(&p, "{}").unwrap();
-        }
-        let orig = std::fs::metadata(&p).unwrap().permissions();
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o444)).unwrap();
-        orig
+    /// D3 失败注入：把 profile.json.tmp 占成目录 → atomic_write 写临时文件必败
+    /// → save_data 必败；profile.json 本体仍可读——
+    /// 模拟「磁盘 json 可读、保存失败」的真实故障窗口。
+    /// （D3 前注入用「profile.json 只读」；atomic_write 走 tmp+rename，
+    /// rename 覆盖不看目标文件权限，旧注入已无法让 save 失败。）
+    fn make_save_fail_via_tmp_dir(data_dir: &std::path::Path) {
+        std::fs::create_dir_all(data_dir.join("profile.json.tmp")).unwrap();
     }
 
-    #[cfg(unix)]
-    fn restore_permissions(path: &std::path::Path, perm: std::fs::Permissions) {
-        let _ = std::fs::set_permissions(path, perm);
+    fn restore_save(data_dir: &std::path::Path) {
+        let _ = std::fs::remove_dir_all(data_dir.join("profile.json.tmp"));
     }
 
     /// 1×1 透明 PNG 字节（最小有效 PNG，足够通过扩展名校验与大小校验）
@@ -693,7 +718,6 @@ mod tests {
         assert!(!dest2.exists());
     }
 
-    #[cfg(unix)]
     #[test]
     fn set_avatar_save_failure_same_ext_keeps_live_avatar() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -712,8 +736,8 @@ mod tests {
         let live = data_dir.join("profile").join("avatar-user.png");
         assert!(live.exists());
 
-        // 失败注入：profile.json 只读 → save_data 必败、load_data 仍可读
-        let orig = make_profile_json_readonly(&data_dir);
+        // 失败注入：profile.json.tmp 占成目录 → save_data 必败、load_data 仍可读
+        make_save_fail_via_tmp_dir(&data_dir);
 
         // 再传同扩展名 PNG → dest == 在役文件；save 失败回滚不得删它
         let tmp2 = make_src_avatar("png");
@@ -722,12 +746,11 @@ mod tests {
             "user".into(),
             tmp2.path().join("src.png").to_string_lossy().into_owned(),
         );
-        restore_permissions(&data_dir.join("profile.json"), orig);
+        restore_save(&data_dir);
         assert!(r.is_err(), "save_data 失败应返回 Err");
         assert!(live.exists(), "save 失败回滚误删了在役头像（NEW-D-2 回归）");
     }
 
-    #[cfg(unix)]
     #[test]
     fn set_avatar_save_failure_new_ext_removes_orphan() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -743,7 +766,7 @@ mod tests {
         )
         .unwrap();
 
-        let orig = make_profile_json_readonly(&data_dir);
+        make_save_fail_via_tmp_dir(&data_dir);
 
         // 换 JPG → dest = avatar-user.jpg 是新文件；save 失败回滚应删孤儿
         let jpg_tmp = tempfile::TempDir::new().unwrap();
@@ -754,7 +777,7 @@ mod tests {
             "user".into(),
             jpg_src.to_string_lossy().into_owned(),
         );
-        restore_permissions(&data_dir.join("profile.json"), orig);
+        restore_save(&data_dir);
         assert!(r.is_err());
         assert!(
             !data_dir.join("profile").join("avatar-user.jpg").exists(),
@@ -764,7 +787,6 @@ mod tests {
 
     // ────── NEW-D-3：remove_avatar save 失败不得留下悬挂引用 ──────
 
-    #[cfg(unix)]
     #[test]
     fn remove_avatar_save_failure_keeps_avatar_file() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -783,10 +805,10 @@ mod tests {
         let avatar_path = data_dir.join("profile").join("avatar-user.png");
         assert!(avatar_path.exists());
 
-        // 失败注入：profile.json 只读 → save_data 必败
-        let orig = make_profile_json_readonly(&data_dir);
+        // 失败注入：profile.json.tmp 占成目录 → save_data 必败
+        make_save_fail_via_tmp_dir(&data_dir);
         let r = profile_remove_avatar(handle.clone(), "user".into());
-        restore_permissions(&data_dir.join("profile.json"), orig);
+        restore_save(&data_dir);
 
         assert!(r.is_err(), "save_data 失败应返回 Err");
         assert!(
@@ -849,6 +871,60 @@ mod tests {
         assert!(
             view.user.avatar_data_url.is_none(),
             "路径穿越的 avatar 必须被拦截为 None（NEW-D-4 回归）"
+        );
+    }
+
+    // ────── D3：原子写 + 损坏备份 ──────
+
+    #[test]
+    fn save_data_atomic_leaves_complete_json_and_no_tmp() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let app = fresh_app();
+        let handle = app.handle().clone();
+
+        profile_set_name(handle.clone(), "user".into(), "Alice".into()).unwrap();
+
+        // 写后 profile.json 内容完整可解析，且无 tmp 残件
+        let p = data_dir(&handle).join("profile.json");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(parsed["user"]["name"], "Alice");
+        assert!(
+            !data_dir(&handle).join("profile.json.tmp").exists(),
+            "原子写完成后不得残留 tmp 文件"
+        );
+    }
+
+    #[test]
+    fn load_data_corrupt_json_backs_up_and_returns_default() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let app = fresh_app();
+        let handle = app.handle().clone();
+
+        let p = data_dir(&handle).join("profile.json");
+        std::fs::write(&p, "{ 这不是合法 json").unwrap();
+
+        // 返回默认让程序能启动
+        let view = profile_get(handle.clone());
+        assert_eq!(view.user.name, "我");
+        assert_eq!(view.bot.name, "机器人");
+
+        // 损坏现场被备份为 profile.json.bak-<ts>，原路径已挪走
+        assert!(!p.exists(), "损坏文件应被 rename 到 .bak");
+        let baks: Vec<_> = std::fs::read_dir(data_dir(&handle))
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("profile.json.bak-")
+            })
+            .collect();
+        assert_eq!(baks.len(), 1, "应有且仅有一个损坏备份");
+        assert_eq!(
+            std::fs::read_to_string(baks[0].path()).unwrap(),
+            "{ 这不是合法 json",
+            "备份内容必须是原始损坏现场"
         );
     }
 }
