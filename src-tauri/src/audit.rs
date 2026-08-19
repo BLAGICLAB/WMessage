@@ -138,24 +138,38 @@ pub fn write_event(app: &AppHandle, level: AuditLevel, event: &str, kv: &[(&str,
     append_line(&p, &line);
 }
 
-/// 泛型 Runtime 版日志目录（D2）：与 crate::db::data_dir 同逻辑的便携探针
-/// （exe 父目录可写 → exe 目录），否则退 app_data_dir / 临时目录。
-/// write_event 写死 Wry AppHandle，middleware/profile 等泛型模块调不了，
-/// 病态路径（registry 缺失 / profile 损坏）的 ERROR 审计走这里，尽力而为不 panic。
-fn generic_log_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> std::path::PathBuf {
+/// P2-19：数据目录便携探针单一实现（原 db::db_dir / profile::data_dir /
+/// 本模块 generic_log_dir 三处拷贝，drift 风险；现统一走这里）。
+/// 优先 exe 同目录（便携模式，U盘/绿色目录随走随带）；目录不可写
+/// （如 Program Files）退 app_data_dir；再退系统临时目录。
+pub(crate) fn probe_log_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> std::path::PathBuf {
     use tauri::Manager;
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let probe = dir.join(".wm-write-probe");
-            if std::fs::File::create(&probe).is_ok() {
-                let _ = std::fs::remove_file(&probe);
-                return dir.to_path_buf();
-            }
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|p| p.to_path_buf()));
+    probe_dir(exe_dir.as_deref(), app.path().app_data_dir().ok())
+}
+
+/// P2-19 可测内核：probe 三分支——exe 目录可写用它；不可写退 app_data；皆不可用退 temp。
+fn probe_dir(
+    exe_dir: Option<&std::path::Path>,
+    app_data: Option<std::path::PathBuf>,
+) -> std::path::PathBuf {
+    if let Some(dir) = exe_dir {
+        let probe = dir.join(".wm-write-probe");
+        if std::fs::File::create(&probe).is_ok() {
+            let _ = std::fs::remove_file(&probe);
+            return dir.to_path_buf();
         }
     }
-    app.path()
-        .app_data_dir()
-        .unwrap_or_else(|_| std::env::temp_dir())
+    app_data.unwrap_or_else(std::env::temp_dir)
+}
+
+/// 泛型 Runtime 版日志目录（D2）：write_event 写死 Wry AppHandle，middleware/profile
+/// 等泛型模块调不了，病态路径（registry 缺失 / profile 损坏）的 ERROR 审计走这里，
+/// 尽力而为不 panic。P2-19 起目录解析委托 probe_log_dir（消除第三处拷贝）。
+fn generic_log_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> std::path::PathBuf {
+    probe_log_dir(app)
 }
 
 /// 泛型 Runtime 的 ERROR 审计（D2/D3）：rotate + BOT_LOG_LOCK + 追加一行结构化事件。
@@ -314,6 +328,55 @@ mod tests {
         let out = escape_for_log(&long, KV_VALUE_MAX);
         assert_eq!(out.chars().count(), KV_VALUE_MAX + 1);
         assert!(out.ends_with('…'));
+    }
+
+    // ── P2-19：probe_log_dir 三分支 + 调用方一致性 ──
+
+    #[test]
+    fn probe_dir_writable_exe_dir_wins() {
+        // 分支 1：exe 目录可写 → 用它（便携模式）
+        let exe_dir = tempfile::tempdir().unwrap();
+        let app_data = tempfile::tempdir().unwrap();
+        let got = probe_dir(Some(exe_dir.path()), Some(app_data.path().to_path_buf()));
+        assert_eq!(got, exe_dir.path());
+        // 探针文件不得残留
+        assert!(!exe_dir.path().join(".wm-write-probe").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_dir_readonly_exe_dir_falls_back_to_app_data() {
+        // 分支 2：exe 目录不可写（如 Program Files）→ 退 app_data_dir
+        use std::os::unix::fs::PermissionsExt;
+        let base = tempfile::tempdir().unwrap();
+        let ro = base.path().join("ro");
+        std::fs::create_dir(&ro).unwrap();
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let app_data = tempfile::tempdir().unwrap();
+        let got = probe_dir(Some(&ro), Some(app_data.path().to_path_buf()));
+        assert_eq!(got, app_data.path());
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn probe_dir_no_exe_no_app_data_falls_back_to_temp() {
+        // 分支 3：exe 目录不可写 且 app_data_dir 不可用 → 退系统临时目录
+        let got = probe_dir(None, None);
+        assert_eq!(got, std::env::temp_dir());
+    }
+
+    #[test]
+    fn probe_log_dir_matches_exe_parent_in_cargo_test() {
+        // 调用方一致性：cargo test 下 current_exe 父目录（target/debug/deps）可写，
+        // probe_log_dir 必须命中 exe 分支——与抽取前 db_dir/profile data_dir 行为一致
+        let app = tauri::test::mock_app();
+        let got = probe_log_dir(app.handle());
+        let exe_parent = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        assert_eq!(got, exe_parent);
     }
 
     // ── P2-16 回归：kv value 里的 `\n` / `| ` 不得逃逸成裸日志分隔符 ──

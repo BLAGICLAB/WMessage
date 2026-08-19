@@ -47,19 +47,10 @@ pub struct Task {
 
 /// 便携模式：数据库优先放 exe 同目录（U盘/绿色目录随走随带）；
 /// 目录不可写（如 Program Files）时兜底到系统应用数据目录。
+/// P2-19：目录解析委托 audit::probe_log_dir（原与 profile::data_dir /
+/// audit::generic_log_dir 三处拷贝，已合一）。
 fn db_dir(app: &tauri::AppHandle) -> std::path::PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let probe = dir.join(".wm-write-probe");
-            if std::fs::File::create(&probe).is_ok() {
-                let _ = std::fs::remove_file(&probe);
-                return dir.to_path_buf();
-            }
-        }
-    }
-    app.path()
-        .app_data_dir()
-        .unwrap_or_else(|_| std::env::temp_dir())
+    crate::audit::probe_log_dir(app)
 }
 
 /// 数据目录（供本地 HTTP API 存 token 等附属文件，便携模式跟随 exe）
