@@ -21,7 +21,10 @@
       "identifier": "opener:allow-open-path",
       "allow": [
         {
-          "path": "**"
+          "path": "$APPDATA/**"
+        },
+        {
+          "path": "$HOME/**"
         }
       ]
     },

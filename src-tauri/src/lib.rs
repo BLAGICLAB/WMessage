@@ -426,3 +426,56 @@ mod f2_copy_file_tests {
         assert!(err.message().contains("打开剪贴板失败"));
     }
 }
+
+#[cfg(test)]
+mod p2_30_capability_tests {
+    /// P2-30：opener:allow-open-path 不得裸 "**" 通配（bot prompt 注入可诱导
+    /// 打开任意路径）。收敛为 $APPDATA/** + $HOME/**：数据目录（exports/skills）
+    /// 与用户主目录内文件放行，/etc/passwd 等系统路径默认拒绝。
+    /// 本测试锁死 capabilities/default.json 防回退。
+    #[test]
+    fn opener_open_path_scope_is_not_bare_wildcard() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/capabilities/default.json"
+        );
+        let text = std::fs::read_to_string(path).expect("capabilities/default.json 必须可读");
+        let json: serde_json::Value = serde_json::from_str(&text).expect("必须是合法 JSON");
+        let perms = json["permissions"].as_array().expect("permissions 必须是数组");
+        // 找到 opener:allow-open-path 对象项
+        let open_path = perms
+            .iter()
+            .find_map(|p| {
+                (p["identifier"] == "opener:allow-open-path").then_some(p)
+            })
+            .expect("必须配置 opener:allow-open-path");
+        let allow = open_path["allow"]
+            .as_array()
+            .expect("allow 必须是数组")
+            .iter()
+            .filter_map(|e| e["path"].as_str())
+            .collect::<Vec<_>>();
+        assert!(!allow.is_empty(), "allow 列表不得为空");
+        assert!(
+            !allow.iter().any(|p| *p == "**" || *p == "/" || *p == "/*"),
+            "禁止裸通配/根目录全量放行: {allow:?}"
+        );
+        // 每个 allow 根必须落在受控变量内（数据目录 / 用户主目录）
+        for p in &allow {
+            assert!(
+                p.starts_with("$APPDATA/") || p.starts_with("$HOME/"),
+                "allow 根必须是 $APPDATA 或 $HOME: {p}"
+            );
+        }
+        // 验收：${dataDir}/exports/foo.pdf 允许（$APPDATA/** 覆盖数据目录）；
+        // /etc/passwd 拒绝（不在任何 allow 根之下 → 默认 deny）
+        assert!(
+            allow.contains(&"$APPDATA/**"),
+            "必须放行数据目录（含 exports/skills）: {allow:?}"
+        );
+        let passwd_covered = allow
+            .iter()
+            .any(|p| "/etc/passwd".starts_with(p.trim_end_matches("**").trim_end_matches('/')));
+        assert!(!passwd_covered, "/etc/passwd 不得被任何 allow 覆盖");
+    }
+}
