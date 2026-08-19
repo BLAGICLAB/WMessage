@@ -308,7 +308,7 @@ pub async fn execute_tool_with_stop(
         crate::audit::AuditLevel::Info,
         "tool.call",
         "tool" => name,
-        "args_preview" => escape_for_log(args, 80),
+        "args_preview" => args.chars().take(80).collect::<String>(),
     );
     // 1. 后置拦截：原子黑名单（老板 2026-08-17 18:14 拍板）
     //    仅作为 Skill 内部子步骤、不允许裸调的底层原子 Function → 硬锁阻断
@@ -368,7 +368,7 @@ pub async fn execute_tool_with_stop(
         "tool" => name,
         "ms" => dur_ms,
         "refs" => refs.len(),
-        "preview" => escape_for_log(&text, 80),
+        "preview" => text.chars().take(80).collect::<String>(),
     );
     if name != "use_skill" {
         crate::bot_skills::skill_on_step_post(app, name, &text, dur_ms, level);

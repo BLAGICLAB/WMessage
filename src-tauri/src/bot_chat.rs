@@ -337,7 +337,8 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>) -> CommandResult<B
             &app,
             crate::audit::AuditLevel::Info,
             "user.message",
-            "content" => crate::bot::truncate_for_log(&last.content, 300),
+            // NEW-C-6：write_event 已统一转义 kv 值，这里只做长度截断，避免二次转义
+            "content" => last.content.chars().take(300).collect::<String>(),
         );
     }
     let mut msgs: Vec<serde_json::Value> = Vec::new();

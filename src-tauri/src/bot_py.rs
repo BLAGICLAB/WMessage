@@ -16,6 +16,8 @@ use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 
 use crate::bot_slash::StopToken;
+// NEW-C-6：escape_for_log 上提到 audit 模块共享（write_event 同源规则）
+use crate::audit::escape_for_log;
 
 /// Windows 上 GUI 程序调 cmd.exe / python.exe / taskkill.exe 等控制台子进程时，
 /// 默认会为子进程开一个控制台窗口（即使立即退出）—— 视觉上就是"黑框闪一下"。
@@ -1369,7 +1371,8 @@ pub async fn doc_extract(app: AppHandle, path: Option<String>) -> Result<DocExtr
             }
         }
     };
-    py_audit(&app, &format!("doc_extract | path: {path}"));
+    // NEW-C-6：path 来自用户/系统对话框，可能含换行，审计前必须转义
+    py_audit(&app, &format!("doc_extract | path: {}", escape_for_log(&path, 300)));
     let input = serde_json::json!({ "path": path }).to_string();
     let r = run_doc_script(&app, "doc_extract", EXTRACT_SCRIPT, input).await?;
     if r.exit_code != Some(0) {
@@ -1566,25 +1569,8 @@ fn gen_out_path(app: &AppHandle, filename: Option<&str>, ext: &str) -> Result<St
     Ok(candidate.to_string_lossy().to_string())
 }
 
-/// 审计日志安全转义 + 截断（P2-11）：剥换行/管道符，防伪造「INFO |」前缀与多行撕裂。
-/// 规则：`| ` → `|  `（双空格），剩余裸 `|` → `||`，`\n` → `\\n`，`\r` → `\\r`；
-/// 转义后按字符数截到 max 加省略号。
-/// 例：`"a\nb| c"` → `"a\\nb||  c"`
-fn escape_for_log(s: &str, max: usize) -> String {
-    let escaped = s
-        .replace("| ", "|  ")
-        .replace('|', "||")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r");
-    let count = escaped.chars().count();
-    if count <= max {
-        escaped
-    } else {
-        let mut out: String = escaped.chars().take(max).collect();
-        out.push('…');
-        out
-    }
-}
+// escape_for_log 已上提到 crate::audit（NEW-C-6）；本文件经顶部 use 引入，规则不变。
+// 历史说明：P2-11 原生于本模块（剥换行/管道符防伪造日志行），现与 write_event 共享同一实现。
 
 #[cfg(test)]
 mod tests {

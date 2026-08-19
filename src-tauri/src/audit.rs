@@ -11,6 +11,39 @@
 use std::io::Write;
 use tauri::AppHandle; // F-6：Runtime 给 write_event 泛型化
 
+/// 审计日志安全转义 + 截断（P2-11 原生于 bot_py，NEW-C-6 上提本模块共享）：
+/// 剥换行/管道符，防伪造「INFO |」前缀与多行撕裂。
+/// 规则：`| ` → `|  `（双空格），剩余裸 `|` → `||`，`\n` → `\\n`，`\r` → `\\r`；
+/// 转义后按字符数截到 max 加省略号。
+/// 例：`"a\nb| c"` → `"a\\nb||  c"`
+pub(crate) fn escape_for_log(s: &str, max: usize) -> String {
+    let escaped = s
+        .replace("| ", "|  ")
+        .replace('|', "||")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r");
+    let count = escaped.chars().count();
+    if count <= max {
+        escaped
+    } else {
+        let mut out: String = escaped.chars().take(max).collect();
+        out.push('…');
+        out
+    }
+}
+
+/// kv 值写入日志前的长度上限（NEW-C-6：write_event 统一转义 + 截断）
+const KV_VALUE_MAX: usize = 500;
+
+/// 拼装 kv 段（write_event 与 format_event_line 共用）：值统一过 escape_for_log，
+/// 防用户输入 / 工具输出里的 `\n` / `|` 伪造日志行（NEW-C-6）。
+/// 键保持原样（调用方均为硬编码字面量）。
+fn append_kv_escaped(line: &mut String, kv: &[(&str, &str)]) {
+    for (k, v) in kv {
+        line.push_str(&format!(" | {k}={}", escape_for_log(v, KV_VALUE_MAX)));
+    }
+}
+
 /// 审计事件级别（post-execute 钩子分类用）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuditLevel {
@@ -49,13 +82,12 @@ pub fn classify_text(name: &str, text: &str) -> AuditLevel {
 }
 
 /// 纯函数：把事件拼成一行（测试用，不碰磁盘）
+/// 与 write_event 同一套 kv 转义规则（NEW-C-6），测试所见即线上行为
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn format_event_line(level: AuditLevel, event: &str, kv: &[(&str, &str)]) -> String {
     let ts = "TIMESTAMP"; // 测试时占位；真实调用由 write_event 填时间
     let mut line = format!("[{ts}] {} | {}", level.as_tag(), event);
-    for (k, v) in kv {
-        line.push_str(&format!(" | {k}={v}"));
-    }
+    append_kv_escaped(&mut line, kv);
     line
 }
 
@@ -79,9 +111,9 @@ pub fn write_event(app: &AppHandle, level: AuditLevel, event: &str, kv: &[(&str,
     };
     let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
     let mut line = format!("[{ts}] {} | {}", level.as_tag(), event);
-    for (k, v) in kv {
-        line.push_str(&format!(" | {k}={v}"));
-    }
+    // NEW-C-6：kv 值统一转义（剥 \n / |），防伪造日志行；调用方不得再自行预转义
+    let kv_refs: Vec<(&str, &str)> = kv.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    append_kv_escaped(&mut line, &kv_refs);
     let _ = writeln!(f, "{line}");
 }
 
@@ -161,12 +193,43 @@ mod tests {
 
     #[test]
     fn format_event_line_equals_value_unescaped() {
-        // 参数预览可能含「=」（JSON 片段），不做转义，解析端按 | 分隔再 splitn(2, '=') 即可
+        // 参数预览可能含「=」（JSON 片段），「=」不转义，解析端按 | 分隔再 splitn(2, '=') 即可
         let line = format_event_line(
             AuditLevel::Info,
             "tool_done",
             &[("preview", "{\"k\":\"v\"}")],
         );
         assert!(line.contains("preview={\"k\":\"v\"}"));
+    }
+
+    // ── NEW-C-6：kv 值统一转义（剥换行/管道符）──
+
+    #[test]
+    fn write_event_escapes_kv_newlines() {
+        // write_event 的拼装走 format_event_line 同一 append_kv_escaped：
+        // 传 ("k", "a\nb| c")，日志行必须含转义后字符串且不含原始换行
+        let line = format_event_line(AuditLevel::Info, "tool_done", &[("k", "a\nb| c")]);
+        assert!(line.contains("k=a\\nb||  c"), "got: {line}");
+        assert!(!line.contains("a\nb"), "原始换行必须被剥掉: {line:?}");
+    }
+
+    #[test]
+    fn escape_for_log_strips_newlines_and_pipes() {
+        // 迁移自 bot_py（P2-11），行为保持一致
+        assert_eq!(escape_for_log("a\nb| c", 300), "a\\nb||  c");
+        assert_eq!(escape_for_log("x\ry", 300), "x\\ry");
+        assert_eq!(escape_for_log("plain", 300), "plain");
+        assert_eq!(
+            escape_for_log("evil\n[2026-01-01 00:00:00] INFO | fake", 300),
+            "evil\\n[2026-01-01 00:00:00] INFO ||  fake"
+        );
+    }
+
+    #[test]
+    fn escape_for_log_truncates_after_escape() {
+        let long = "x".repeat(600);
+        let out = escape_for_log(&long, KV_VALUE_MAX);
+        assert_eq!(out.chars().count(), KV_VALUE_MAX + 1);
+        assert!(out.ends_with('…'));
     }
 }
