@@ -53,13 +53,19 @@ fn copy_file_with_title(path: String, title: String) -> error::CommandResult<()>
 /// 全局快捷键、托盘点击/菜单）都必须把主窗口推到桌面屏幕最顶层才能看见。
 /// 仅 setFocus 在 Windows 上不一定推到 z-order 最顶层（其他窗口抢焦点时被遮住），
 /// 需 alwaysOnTop 短暂闪烁 80ms 强制重排后再恢复（不长驻，避免干扰用户正常使用电脑）。
-pub fn bring_main_to_front(window: &tauri::WebviewWindow) {
+/// P2-26：80ms 等待挪到后台线程 —— 原先主线程 sleep(80ms)，全局快捷键/托盘点击
+/// 处理全在主线程，UI 被冻结 80ms。
+/// 泛型 Runtime（NEW-D-6 先例）：mock runtime 可直测不阻塞语义。
+pub fn bring_main_to_front<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
     let _ = window.show();
     let _ = window.unminimize();
     let _ = window.set_focus();
     let _ = window.set_always_on_top(true);
-    std::thread::sleep(std::time::Duration::from_millis(80));
-    let _ = window.set_always_on_top(false);
+    let w = window.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        let _ = w.set_always_on_top(false);
+    });
 }
 
 /// Tauri 命令包装：供前端 src/focus.ts 调用，与 4 个 Rust 内部调用点同逻辑
@@ -513,6 +519,34 @@ mod p2_30_capability_tests {
             .iter()
             .any(|p| "/etc/passwd".starts_with(p.trim_end_matches("**").trim_end_matches('/')));
         assert!(!passwd_covered, "/etc/passwd 不得被任何 allow 覆盖");
+    }
+}
+
+#[cfg(test)]
+mod p2_26_bring_front_tests {
+    use tauri::Manager;
+
+    /// P2-26：bring_main_to_front 不得阻塞调用线程 —— 80ms 置顶闪烁的等待
+    /// 在后台线程，调用方（全局快捷键/托盘事件处理，全跑主线程）立即返回。
+    #[test]
+    fn bring_main_to_front_does_not_block_caller() {
+        let app = tauri::test::mock_app();
+        let w = tauri::WebviewWindowBuilder::new(
+            app.handle(),
+            "main",
+            tauri::WebviewUrl::App("index.html".into()),
+        )
+        .build()
+        .expect("mock 窗口应创建成功");
+        let start = std::time::Instant::now();
+        super::bring_main_to_front(&w);
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_millis(80),
+            "调用线程被阻塞了 {elapsed:?}（80ms sleep 应在后台线程）"
+        );
+        // 后台线程收尾（mock 窗口的 set_always_on_top 为 no-op，最多等 80ms+ 宽限）
+        std::thread::sleep(std::time::Duration::from_millis(150));
     }
 }
 
