@@ -646,8 +646,9 @@ pub async fn execute_task_core(
             app,
             &format!("execute_task_rejected | id: {task_id} | 已有执行实例在跑（防重入拦截）"),
         );
-        // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
-        return Err("该任务卡正在执行中，请等待完成后再触发".into());
+        return Err(CommandError::TaskInvalidState {
+            reason: "该任务卡正在执行中，请等待完成后再触发".into(),
+        });
     };
     let stop = StopGuard::new(interactive);
     let task = crate::db::db_load(app.clone())
@@ -657,12 +658,14 @@ pub async fn execute_task_core(
         .find(|t| t.id == task_id && t.deleted_at.is_none())
         .ok_or("任务卡不存在或已在回收站")?;
     if task.column == "done" {
-        // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
-        return Err("这张卡已标记完成；如需重新执行，先在卡片上取消完成".into());
+        return Err(CommandError::TaskInvalidState {
+            reason: "这张卡已标记完成；如需重新执行，先在卡片上取消完成".into(),
+        });
     }
     if task.archived == Some(true) {
-        // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
-        return Err("任务已归档，不能执行；请先恢复".into());
+        return Err(CommandError::TaskInvalidState {
+            reason: "任务已归档，不能执行；请先恢复".into(),
+        });
     }
     let mut block = format!(
         "[任务卡执行]\nid={}\n标题：{}\n状态：{}",

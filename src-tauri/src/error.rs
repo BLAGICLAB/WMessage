@@ -70,6 +70,11 @@ pub enum CommandError {
     // ─────  任务 / 数据库  ─────
     /// 任务不存在
     TaskNotFound(String),
+    /// 业务状态拒绝（P2-28）：任务存在但当前状态不允许该操作
+    /// （执行中重复触发 / 已完成 / 已归档），非内部错误，不得降级 INTERNAL
+    TaskInvalidState {
+        reason: String,
+    },
     /// 参数校验失败
     InvalidArgument {
         field: String,
@@ -121,6 +126,7 @@ impl CommandError {
             Self::AuthInvalid => "AUTH_INVALID",
             Self::PayloadTooLarge => "PAYLOAD_TOO_LARGE",
             Self::TaskNotFound(_) => "TASK_NOT_FOUND",
+            Self::TaskInvalidState { .. } => "TASK_INVALID_STATE",
             Self::InvalidArgument { .. } => "INVALID_ARGUMENT",
             Self::DbError(_) => "DB_ERROR",
             Self::IoError(_) => "IO_ERROR",
@@ -149,6 +155,8 @@ impl CommandError {
             Self::AuthInvalid => true,
             Self::PayloadTooLarge => true,
             Self::TaskNotFound(_) => false,
+            // 业务状态拒绝：用户可修正状态后重试（等执行完 / 取消完成 / 恢复归档）
+            Self::TaskInvalidState { .. } => true,
             Self::InvalidArgument { .. } => true,
             Self::DbError(_) => false,
             Self::IoError(_) => false,
@@ -180,6 +188,7 @@ impl CommandError {
             Self::AuthInvalid => "Authorization token 不正确".into(),
             Self::PayloadTooLarge => "请求体超过 1MB 上限".into(),
             Self::TaskNotFound(id) => format!("任务不存在：{id}"),
+            Self::TaskInvalidState { reason } => format!("任务状态不允许该操作：{reason}"),
             Self::InvalidArgument {
                 field,
                 value,
@@ -402,6 +411,22 @@ mod tests {
         let err = CommandError::IoError("disk full".into());
         let json = serde_json::to_string(&err).unwrap();
         assert!(json.contains("\"recoverable\":false"));
+    }
+
+    // ── P2-28：业务状态拒绝专用变体，不降级 INTERNAL ──
+
+    #[test]
+    fn task_invalid_state_is_recoverable_business_rejection() {
+        // mock 一个 invalid state 场景（执行中重复触发 / 已完成 / 已归档共用此变体）
+        let err = CommandError::TaskInvalidState {
+            reason: "该任务卡正在执行中，请等待完成后再触发".into(),
+        };
+        assert_eq!(err.code(), "TASK_INVALID_STATE");
+        assert!(err.is_recoverable(), "业务状态拒绝应可由用户修正后重试");
+        assert!(err.message().contains("执行中"));
+        let json = serde_json::to_string(&err).unwrap();
+        assert!(json.contains("\"code\":\"TASK_INVALID_STATE\""));
+        assert!(json.contains("\"recoverable\":true"));
     }
 
     #[test]
