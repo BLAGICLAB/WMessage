@@ -538,7 +538,7 @@ export default function WidgetApp() {
 
   return (
     <div className="w-screen h-screen bg-transparent overflow-hidden">
-      {!expanded ? (
+      {!expanded && (
         /* 触发条：贴边隐藏状态（顶缘为横条，其余为竖条） */
         <div
           className={`${
@@ -561,10 +561,14 @@ export default function WidgetApp() {
             WMessage
           </span>
         </div>
-      ) : (
-        /* 展开面板 */
+      )}
+      {/* 展开面板：始终挂载，折叠时 display:none 隐藏而不卸载（修法 A，2026-08-19
+          修复「挂件折叠导致机器人流式回复丢失」）——保住 ChatPanel 的 messages /
+          busy / streamingMeta / bot-chat-delta 事件监听，折叠-展开循环不丢流式消息 */}
+      {
         <div
           className={`nm-sidebar-panel ${edgeClass} w-full h-full flex flex-col`}
+          style={expanded ? undefined : { display: "none" }}
           onMouseLeave={collapse}
         >
           {/* 头部：按住拖动挂件（按钮区不触发拖动） */}
@@ -770,7 +774,7 @@ export default function WidgetApp() {
             </div>
           )}
         </div>
-      )}
+      }
     </div>
   );
 }

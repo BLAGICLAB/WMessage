@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import WidgetApp from "./WidgetApp";
 
 // —— Tauri mocks ——
@@ -113,3 +113,82 @@ describe("WidgetApp 轮询报错（P2-33）", () => {
     expect(alertMock).not.toHaveBeenCalled();
   });
 });
+
+// 2026-08-19 修复：挂件折叠导致机器人流式回复丢失。
+// 修法 A：ChatPanel 始终挂载（折叠时 display:none 不卸载），messages/busy/流式事件监听跨折叠保留。
+describe("挂件折叠不丢聊天（2026-08-19 修复）", () => {
+  const setupBotMocks = () => {
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "db_load")
+        return [{ id: "t1", title: "挂件任务", column: "todo", order: 0 }];
+      if (cmd === "workspace_load") return [];
+      if (cmd === "bot_get_enabled") return true;
+      if (cmd === "bot_sessions_load") return [{ id: "s1", title: "默认会话" }];
+      if (cmd === "bot_history_load") return [];
+      if (cmd === "bot_history_save") return null;
+      if (cmd === "bot_chat") return { text: "机器人回复", taskRefs: [] };
+      return null;
+    });
+  };
+
+  /** 展开面板（含 ChatPanel 输入框的那个 .nm-sidebar-panel；另一个是触发条） */
+  const panelOf = (container: HTMLElement) =>
+    Array.from(container.querySelectorAll<HTMLElement>(".nm-sidebar-panel")).find(
+      (el) => el.querySelector("input")
+    )!;
+
+  /** 触发条（不含输入框的 .nm-sidebar-panel） */
+  const stripOf = (container: HTMLElement) =>
+    Array.from(container.querySelectorAll<HTMLElement>(".nm-sidebar-panel")).find(
+      (el) => !el.querySelector("input")
+    )!;
+
+  /** 展开/折叠是多段 await 的异步链，flush 两轮确保 setState 与被动 effect 都落地 */
+  const flush = async () => {
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(0);
+  };
+
+  it("折叠时 ChatPanel 仍挂载：display:none 隐藏但不卸载", async () => {
+    setupBotMocks();
+    const { container } = render(<WidgetApp />);
+    await flush();
+    // ChatPanel 已挂载并加载会话（初始 expanded=false 折叠态）
+    expect(mocks.invokeMock).toHaveBeenCalledWith("bot_sessions_load");
+    expect(screen.getByPlaceholderText(/和机器人说点什么/)).toBeInTheDocument();
+    // 面板处于隐藏态（display:none），不是被卸载
+    expect(panelOf(container).style.display).toBe("none");
+  });
+
+  it("折叠-展开循环中 messages 保留（ChatPanel 不卸载、不重新初始化）", async () => {
+    setupBotMocks();
+    const { container } = render(<WidgetApp />);
+    await flush();
+    // 鼠标划入触发条 → 展开（React 用 mouseover 合成 mouseenter）
+    fireEvent.mouseOver(stripOf(container));
+    await flush();
+    const panel = panelOf(container);
+    expect(panel.style.display).not.toBe("none");
+    // 发一条消息并等回复落盘渲染
+    const input = screen.getByPlaceholderText(/和机器人说点什么/);
+    fireEvent.change(input, { target: { value: "你好" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await flush();
+    expect(screen.getByText("你好")).toBeInTheDocument();
+    expect(screen.getByText("机器人回复")).toBeInTheDocument();
+    // 鼠标划出 → 折叠（非 busy，允许）
+    fireEvent.mouseOut(panel);
+    await flush();
+    expect(panel.style.display).toBe("none");
+    // 再次展开：消息仍在，且 ChatPanel 未重新挂载（bot_sessions_load 只调一次）
+    fireEvent.mouseOver(stripOf(container));
+    await flush();
+    expect(panel.style.display).not.toBe("none");
+    expect(screen.getByText("你好")).toBeInTheDocument();
+    expect(screen.getByText("机器人回复")).toBeInTheDocument();
+    expect(
+      mocks.invokeMock.mock.calls.filter((c) => c[0] === "bot_sessions_load").length
+    ).toBe(1);
+  });
+
+  });
