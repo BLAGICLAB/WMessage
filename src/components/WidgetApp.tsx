@@ -29,7 +29,7 @@ import { linkDisplayName } from "./WorkspacePage";
 import { focusMainWindow } from "../focus";
 import { handleCommandError } from "../lib/errorHandler";
 import { isDueToday } from "../format";
-import { loadTasksFromDb, loadWorkspaceFromDb, taskEq, sortByOrder, assignInsertOrder } from "../storage";
+import { loadTasksFromDb, loadWorkspaceFromDb, sortByOrder, assignInsertOrder, diffTaskRows } from "../storage";
 import { applySetting, getSetting, subscribeSystem, subscribeTheme } from "../theme";
 import type { ThemeSetting } from "../theme";
 import type { Task, WorkspaceItem } from "../types";
@@ -363,18 +363,9 @@ export default function WidgetApp() {
     const prev = tasksRef.current;
     const next = fn(prev);
     tasksRef.current = next;
-    const prevMap = new Map(prev.map((t) => [t.id, t]));
-    const upserts = next.filter((t) => {
-      const p = prevMap.get(t.id);
-      return !p || !taskEq(p, t);
-    });
-    const nextIds = new Set(next.map((t) => t.id));
-    const deletes = prev.filter((t) => !nextIds.has(t.id)).map((t) => t.id);
-    // 打最后修改时间戳（合并导入按此比较同 id 取舍）
-    const now = Date.now();
-    upserts.forEach((t) => {
-      t.updatedAt = now;
-    });
+    // 打最后修改时间戳（合并导入按此比较同 id 取舍）；
+    // P2-20：纯排序变更保留原 updatedAt（diffTaskRows 内部判定）
+    const { upserts, deletes } = diffTaskRows(prev, next, Date.now());
     setTasks(next);
     if (upserts.length || deletes.length) {
       emit("tasks-updated", { upserts, deletes }).catch(() => {});

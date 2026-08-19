@@ -7,7 +7,7 @@ import { ArchivePage } from "./components/ArchivePage";
 import { TrashPage } from "./components/TrashPage";
 import { WorkspacePage } from "./components/WorkspacePage";
 import { SettingsPage } from "./components/SettingsPage";
-import { deleteTaskRows, loadTasksFromDb, taskEq, upsertTasks, exportTasksToFile, importTasksFromFile, STORAGE_KEY, sortByOrder, assignInsertOrder, upsertWorkspaceItems } from "./storage";
+import { deleteTaskRows, diffTaskRows, loadTasksFromDb, taskEq, upsertTasks, exportTasksToFile, importTasksFromFile, STORAGE_KEY, sortByOrder, assignInsertOrder, upsertWorkspaceItems } from "./storage";
 import { handleCommandError } from "./lib/errorHandler";
 import { applySetting, getSetting, subscribeSystem, subscribeTheme, toggleTheme } from "./theme";
 import { isDueToday } from "./format";
@@ -140,18 +140,9 @@ export default function App() {
     const prev = tasksRef.current;
     const next = fn(prev);
     tasksRef.current = next;
-    const prevMap = new Map(prev.map((t) => [t.id, t]));
-    const upserts = next.filter((t) => {
-      const p = prevMap.get(t.id);
-      return !p || !taskEq(p, t);
-    });
-    const nextIds = new Set(next.map((t) => t.id));
-    const deletes = prev.filter((t) => !nextIds.has(t.id)).map((t) => t.id);
-    // 打最后修改时间戳（合并导入按此比较同 id 取舍）
-    const now = Date.now();
-    upserts.forEach((t) => {
-      t.updatedAt = now;
-    });
+    // 打最后修改时间戳（合并导入按此比较同 id 取舍）；
+    // P2-20：纯排序变更保留原 updatedAt（diffTaskRows 内部判定）
+    const { upserts, deletes } = diffTaskRows(prev, next, Date.now());
     // 先落盘再广播：挂件收到 tasks-changed 后立刻 db_load，必须读到已提交的快照
     await upsertTasks(upserts);
     await deleteTaskRows(deletes);

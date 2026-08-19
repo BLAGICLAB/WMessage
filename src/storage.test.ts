@@ -7,6 +7,8 @@ import {
   deleteWorkspaceRows,
   exportTasksToFile,
   importTasksFromFile,
+  diffTaskRows,
+  assignInsertOrder,
 } from "./storage";
 import type { Task, WorkspaceItem } from "./types";
 
@@ -94,6 +96,72 @@ describe("写路径错误传播（E1）", () => {
     await upsertWorkspaceItems([]);
     await deleteWorkspaceRows([]);
     expect(invokeMock).not.toHaveBeenCalled();
+  });
+});
+
+// P2-20（2026-08-19）：拖拽排序只改 order，不得刷新 updatedAt——
+// 否则多客户端按 updatedAt 合并时排序写互相覆盖，顺序来回乱跳。
+describe("diffTaskRows 纯排序保留 updatedAt（P2-20）", () => {
+  const base: Task[] = [0, 1, 2, 3].map((i) => ({
+    id: `t${i}`,
+    title: `任务${i}`,
+    column: "todo",
+    order: i,
+    updatedAt: 1000 + i, // 老时间戳：拖拽后必须原样保留
+  }));
+
+  it("4 个 task 拖拽重排后 updatedAt 不变，仅 order 进 upserts", () => {
+    // 模拟把 t0 拖到末尾（arrayMove 等价：手动重排 + assignInsertOrder 分配 order）
+    const moved = [base[1], base[2], base[3], base[0]];
+    const next = assignInsertOrder(moved, "t0");
+    const { upserts, deletes } = diffTaskRows(base, next, 999999);
+    expect(deletes).toEqual([]);
+    // 只有被拖的 t0 order 变了 → 只有它进 upserts
+    expect(upserts.map((t) => t.id)).toEqual(["t0"]);
+    // 关键断言：纯排序变更不刷新 updatedAt（修复前会被刷成 999999）
+    expect(upserts[0].updatedAt).toBe(1000);
+    expect(upserts[0].order).toBe(4); // 末尾邻居 3 + 1
+    // 未动的行不进 upserts，原数组对象不被修改
+    expect(base.every((t, i) => t.updatedAt === 1000 + i)).toBe(true);
+  });
+
+  it("间隙耗尽全量整数重排：所有行 order 变化但 updatedAt 全部保留", () => {
+    // 构造浮点间隙耗尽：lo/hi 差 ≤ 1e-9 → assignInsertOrder 全量重排
+    const tight: Task[] = [
+      { ...base[0], order: 0 },
+      { ...base[1], order: 1e-10 },
+      base[2],
+      base[3],
+    ];
+    // 把 t3 插到 t0/t1 之间（间隙 1e-10 < 1e-9，触发全量重排）
+    const moved = [tight[0], tight[3], tight[1], tight[2]];
+    const next = assignInsertOrder(moved, "t3");
+    const { upserts } = diffTaskRows(tight, next, 999999);
+    // 全量重排 → t3/t1/t2 的 order 变了进 upserts（t0 重排后 order 仍为 0，不进）
+    expect(upserts.map((t) => t.id).sort()).toEqual(["t1", "t2", "t3"]);
+    // 但没有任何一行的 updatedAt 被刷新（修复前全部变 999999 → 多端乱序之源）
+    for (const t of upserts) {
+      const orig = tight.find((x) => x.id === t.id)!;
+      expect(t.updatedAt).toBe(orig.updatedAt);
+    }
+  });
+
+  it("内容变更照常打 updatedAt=now（不受排序豁免影响）", () => {
+    const next = base.map((t) =>
+      t.id === "t1" ? { ...t, title: "改名了" } : t
+    );
+    const { upserts } = diffTaskRows(base, next, 999999);
+    expect(upserts).toHaveLength(1);
+    expect(upserts[0].updatedAt).toBe(999999);
+  });
+
+  it("新增行（无 prev）照常打 updatedAt=now；删除行进 deletes", () => {
+    const next = [...base, { id: "t9", title: "新", column: "todo" as const }];
+    const { upserts } = diffTaskRows(base, next, 999999);
+    expect(upserts.map((t) => t.id)).toEqual(["t9"]);
+    expect(upserts[0].updatedAt).toBe(999999);
+    const { deletes: del2 } = diffTaskRows(next, base, 999999);
+    expect(del2).toEqual(["t9"]);
   });
 });
 

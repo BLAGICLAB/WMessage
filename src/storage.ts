@@ -75,6 +75,34 @@ export async function importTasksFromFile(path: string): Promise<number> {
 export const sortByOrder = (tasks: Task[]) =>
   [...tasks].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
 
+/**
+ * 行级 diff + 打修改时间戳（主窗口 mutate 与挂件 applyAndSync 共用）。
+ * upserts = 新增/变化行，deletes = 消失行 id；变化行打 updatedAt=now。
+ * P2-20（2026-08-19）：纯排序变更（除 order 外无字段差异）保留原 updatedAt——
+ * 否则拖拽排序把被重排行的 updatedAt 全刷成 now，多客户端按 updatedAt 合并时
+ * 排序写互相覆盖，顺序来回乱跳。
+ */
+export function diffTaskRows(
+  prev: Task[],
+  next: Task[],
+  now: number
+): { upserts: Task[]; deletes: string[] } {
+  const prevMap = new Map(prev.map((t) => [t.id, t]));
+  const upserts = next.filter((t) => {
+    const p = prevMap.get(t.id);
+    return !p || !taskEq(p, t);
+  });
+  const nextIds = new Set(next.map((t) => t.id));
+  const deletes = prev.filter((t) => !nextIds.has(t.id)).map((t) => t.id);
+  upserts.forEach((t) => {
+    const p = prevMap.get(t.id);
+    // 纯 order 变更：不刷新 updatedAt（新任务 p 为 undefined，照常打戳）
+    if (p && taskEq({ ...p, order: t.order }, t)) return;
+    t.updatedAt = now;
+  });
+  return { upserts, deletes };
+}
+
 // ───────────── 工作区（静态链接） ─────────────
 import type { WorkspaceItem } from "./types";
 
