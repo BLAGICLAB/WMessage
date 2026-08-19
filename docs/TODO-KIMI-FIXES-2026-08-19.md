@@ -135,6 +135,14 @@
 - [x] **P2-23** `useInlineEdit.ts` — 抽 hook 统一 TaskCardContent（挂件）与 TodoCard（主窗口）标题内联编辑（草稿 + Enter/Escape/Blur；Escape 回滚草稿行为随 TodoCard 统一）；hook 单元测试覆盖全部路径 — commit `2364216`
 - [x] **P2-33** `WidgetApp.tsx` — 5s 兜底轮询读失败改 `handleCommandError(widget_poll)` 弹 alert（不再永久静默）；首次加载/tasks-changed 触发保持安静；测试连续 reject → alert 出现 — commit `07ab6b1`
 
+### Batch 7e 资源生命周期 + 跨平台分布（6 项）
+- [x] **P2-24** `lib.rs ExitRequested` — 退出统一清理 cleanup_on_exit：api_stop_for_exit（G1 accept+SSE join，保留 api-enabled.flag 供自动恢复）+ 终止活动 Skill + bot_py 子进程 pid 注册表 kill_all_py_children 整树杀（防孤儿）+ app_exit_cleanup 审计；链路泛型化（NEW-D-6 先例）mock 可测 — commit `4e38175`
+- [x] **P2-25** `bot_py.rs` — spawn 失败走 cleanup_after_spawn_fail（cleanup_after_fail 同族：显式 terminate 限额 + 清目录）；setup_run_dir 初始化写失败清理已建目录 + setup_fail 审计（原 `?` 直返泄漏）；测试非法 py 路径目录清零 + 只读 base 无残留 — commit `ca00d42`
+- [x] **P2-26** `lib.rs bring_main_to_front` — 主线程 sleep(80ms) 冻结 UI → 仅恢复 alwaysOnTop 的等待挪 std::thread::spawn 后台线程；函数泛型化；测试 mock 窗口计时 <80ms 返回 — commit `e132bef`
+- [x] **P2-29** 版本号 4 处漂移 — 单一真相源 = Cargo.toml：tauri.conf.json 删 version（tauri 2 构建期回退 CARGO_PKG_VERSION），scripts/sync-version.mjs 同步 package.json（pnpm prebuild 自动跑）；测试锁死 conf 无 version + package.json == CARGO_PKG_VERSION — commit `ddcf34f`
+- [x] **P2-31** `lib.rs` 托盘 — 去掉 cfg(windows)，三平台统一初始化；Linux 缺 libappindicator 时 eprintln 降级不阻断启动（原 `?` 会让 setup 失败）；测试源码锁死无平台门 + 失败降级 — commit `ad2289f`
+- [x] **P2-32** `bot.rs` keyring — Linux secret-service 运行时探测（DBUS_SESSION_BUS_ADDRESS / $XDG_RUNTIME_DIR/bus），无 dbus 降级 bot-api-key.txt 明文（0600）+ keyring_fallback_plaintext WARN 审计；F1 classify 与 System 路径零改动；测试降级后端写读删全链路 + 探测内核 + 审计落行 — commit `76fe1d2`
+
 ---
 
 ## 进度
@@ -145,7 +153,7 @@
 - Phase 4: 4/4 (E5 已勾)
 - Phase 5: 6/6
 - Phase 6: 4/11+（Batch D 原 D1-D4 已勾）
-- Phase 7: 24/35（Batch 7a 审计/日志安全 6/6；Batch 7b DB 事务/迁移 6/6；Batch 7c API/Middleware 健壮性 6/6；Batch 7d 前端 state bug 6/6）
+- Phase 7: 30/35（Batch 7a 审计/日志安全 6/6；Batch 7b DB 事务/迁移 6/6；Batch 7c API/Middleware 健壮性 6/6；Batch 7d 前端 state bug 6/6；Batch 7e 资源生命周期+跨平台分布 6/6）
 
 ---
 
