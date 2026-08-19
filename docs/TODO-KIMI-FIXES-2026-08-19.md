@@ -83,9 +83,9 @@
 - [x] **D4** `profile.rs:173/233/268` — profile read-modify-write 无锁 → 主窗 + 挂件并发丢更新 — commit `06c1dcb`
 
 ### Batch F F1-F3
-- [ ] **F1** `bot.rs:95` — `read_api_key` 走 `String` 而非 `KeyringError` → 同类故障产出两种 code + `has_api_key` 把所有错吞成 `false`
-- [ ] **F2** `bot_py.rs:48,829,872,892,931,948,967` + `lib.rs:30` — 8 个 `#[tauri::command]` 仍是 `Result<T, String>`
-- [ ] **F3** `bot.rs:241` / `migration.rs:983` — `bot_log_read` / `migration_log_read` 把读文件错吞成「暂无日志」
+- [x] **F1** `bot.rs:95` — `read_api_key` 走 `String` 而非 `KeyringError` → 同类故障产出两种 code + `has_api_key` 把所有错吞成 `false` — commit `e5591a4`
+- [x] **F2** `bot_py.rs:48,829,872,892,931,948,967` + `lib.rs:30` — 8 个 `#[tauri::command]` 仍是 `Result<T, String>` — commit `3c8a340`
+- [x] **F3** `bot.rs:241` / `migration.rs:983` — `bot_log_read` / `migration_log_read` 把读文件错吞成「暂无日志」 — commit `3f6a4d4`
 
 ### Batch G G1-G2
 - [ ] **G1** `api_handlers.rs:791 + :691` — `api_stop` / `api_rotate_token` 只 join accept 线程，SSE writer 线程不被追踪/不被通知
