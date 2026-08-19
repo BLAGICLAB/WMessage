@@ -210,4 +210,60 @@ describe("App", () => {
     expect(infoSpy).toHaveBeenCalledWith("[tasks-updated] merge_tasks | 1 changed");
     infoSpy.mockRestore();
   });
+
+  // E3（2026-08-19）：导入后必须以 DB 为单一真源——importTasksFromFile 成功后
+  // 重新 db_load 全量 → setTasks(fresh) → 再广播，而不是清空 UI 直接广播
+  // （避免其他窗口读到中间态，制造"数据全丢"假象）。实现已符合，本例为回归测试。
+  it("导入任务：tasks_import 成功后重新 db_load，UI 显示 fresh 数据", async () => {
+    const user = userEvent.setup();
+    const fresh: Task[] = [
+      { id: "imp1", title: "导入的 fresh 任务", column: "todo", order: 0, updatedAt: 1 },
+    ];
+    let dbLoadCount = 0;
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "db_load") {
+        dbLoadCount++;
+        // 首次：空库 → 走 SEED；导入后：返回合并后的 fresh 数据
+        return dbLoadCount === 1 ? [] : fresh;
+      }
+      if (cmd === "tasks_import") return 2;
+      if (cmd === "api_status") return { enabled: false, port: 4763, token: "" };
+      if (cmd === "bot_get_config")
+        return { baseUrl: "", model: "", hasApiKey: false };
+      if (cmd === "bot_get_enabled" || cmd === "py_get_enabled") return false;
+      if (cmd === "skills_list") return [];
+      if (cmd === "migration_rules_load") return { version: 1, rules: [] };
+      return defaultInvokeImpl(cmd);
+    });
+    mocks.openMock.mockResolvedValue("/tmp/import.json");
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByText("梳理 WMessage 需求清单")).toBeInTheDocument();
+    });
+    // 进设置页点「📥 导入」
+    await user.click(screen.getByTitle("设置"));
+    const importBtn = await screen.findByRole("button", { name: "📥 导入" });
+    await user.click(importBtn);
+    // 导入完成 alert（证明 importTasks 全流程走完）
+    await waitFor(() => {
+      expect(alertMock).toHaveBeenCalledWith("导入完成：本次写入 2 条任务卡");
+    });
+    // db_load 第二次调用必须发生在 tasks_import 之后（DB 是单一真源）
+    const calls = mocks.invokeMock.mock.calls;
+    const importOrder = mocks.invokeMock.mock.invocationCallOrder[
+      calls.findIndex((c) => c[0] === "tasks_import")
+    ];
+    const secondLoadIdx = calls.reduce(
+      (idx, c, i) => (c[0] === "db_load" && i > 0 ? i : idx),
+      -1
+    );
+    expect(secondLoadIdx).toBeGreaterThan(-1);
+    expect(mocks.invokeMock.mock.invocationCallOrder[secondLoadIdx]).toBeGreaterThan(
+      importOrder
+    );
+    // setTasks 收到 fresh 数据：切回看板，fresh 任务在、种子任务不在
+    await user.click(screen.getByText("首页"));
+    expect(await screen.findByText("导入的 fresh 任务")).toBeInTheDocument();
+    expect(screen.queryByText("梳理 WMessage 需求清单")).not.toBeInTheDocument();
+  });
 });

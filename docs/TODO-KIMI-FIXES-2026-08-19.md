@@ -53,7 +53,7 @@
 
 - [x] **E1** `src/storage.ts:24-41, 81-98` — 全部写路径静默吞错 → UI/DB 永久分叉
 - [x] **E2** `src/App.tsx:188-197` — 事件合并路径规则改动不落盘 → 三端长期不一致
-- [ ] **E3** `src/App.tsx:282-286` — 导入后重读失败 → 清空 UI 并广播 → 制造"数据全丢"假象
+- [x] **E3** `src/App.tsx:282-286` — 导入后重读失败 → 清空 UI 并广播 → 制造"数据全丢"假象
 - [ ] **E4** `src/components/TaskCardContent.tsx:92-95` — Escape 取消后 blur 仍提交草稿
 - [x] **E5** ~~mutate 落盘未 await 即广播（已并入 P0-5B，commit 9d8d7c8）~~
 
