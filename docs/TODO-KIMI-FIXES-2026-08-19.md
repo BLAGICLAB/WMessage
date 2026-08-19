@@ -77,10 +77,10 @@
 约 4-5 工日。
 
 ### Batch D 原 D1-D4
-- [ ] **D1** `middleware.rs:123-126` — IntentRouterMiddleware 恒返回 `Some` → pre_step 链永远短路 → 未来中间件全死代码
-- [ ] **D2** `middleware.rs:98-111` — 安全闸门 fail-open → AtomicGuard 一次误操作就被旁路
-- [ ] **D3** `profile.rs:85-88,173-183` — profile 非原子写 + 静默重置 → 用户资料消失
-- [ ] **D4** `profile.rs:173/233/268` — profile read-modify-write 无锁 → 主窗 + 挂件并发丢更新
+- [x] **D1** `middleware.rs:123-126` — IntentRouterMiddleware 恒返回 `Some` → pre_step 链永远短路 → 未来中间件全死代码 — commit `31e9986`
+- [x] **D2** `middleware.rs:98-111` — 安全闸门 fail-open → AtomicGuard 一次误操作就被旁路 — commit `007996b`
+- [x] **D3** `profile.rs:85-88,173-183` — profile 非原子写 + 静默重置 → 用户资料消失 — commit `0848c5b`
+- [x] **D4** `profile.rs:173/233/268` — profile read-modify-write 无锁 → 主窗 + 挂件并发丢更新 — commit `06c1dcb`
 
 ### Batch F F1-F3
 - [ ] **F1** `bot.rs:95` — `read_api_key` 走 `String` 而非 `KeyringError` → 同类故障产出两种 code + `has_api_key` 把所有错吞成 `false`
@@ -108,7 +108,7 @@
 - Phase 3: 5/5
 - Phase 4: 4/4 (E5 已勾)
 - Phase 5: 6/6
-- Phase 6: 0/11+
+- Phase 6: 4/11+（Batch D 原 D1-D4 已勾）
 
 ---
 
