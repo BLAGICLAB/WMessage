@@ -15,6 +15,8 @@ use serde::Serialize;
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 
+use crate::bot_slash::StopToken;
+
 /// Windows 上 GUI 程序调 cmd.exe / python.exe / taskkill.exe 等控制台子进程时，
 /// 默认会为子进程开一个控制台窗口（即使立即退出）—— 视觉上就是"黑框闪一下"。
 /// CREATE_NO_WINDOW (0x08000000) 抑制父进程继承的控制台窗口创建，是 Tauri / Electron
@@ -441,12 +443,14 @@ struct RunFail {
 
 /// 执行一段 Python 脚本（写入独立临时目录运行）。
 /// `input_json`：可选，写入 params.json 供脚本读取；`args`：附加命令行参数。
+/// `stop`：可选停止令牌（NEW-C-4），/stop 时在途执行轮询到标志即杀进程组退出。
 pub fn run_python(
     app: &AppHandle,
     script: &str,
     input_json: Option<&str>,
     args: &[String],
     timeout_secs: Option<u64>,
+    stop: Option<&StopToken>,
 ) -> Result<PyRunResult, String> {
     // P2-12：并发闸门 —— 同一时刻只跑一个 Python 任务，多余请求排队等待
     let _gate = py_run_gate().lock().unwrap_or_else(|e| e.into_inner());
@@ -472,7 +476,7 @@ pub fn run_python(
         if let Some(j) = input_json {
             std::fs::write(dir.join("params.json"), j).map_err(|e| e.to_string())?;
         }
-        match run_python_at(&py, &dir, args, timeout_secs, &mut audit_sink) {
+        match run_python_at(&py, &dir, args, timeout_secs, &mut audit_sink, stop) {
             Ok(r) => return Ok(r),
             Err(f) => {
                 if attempt == 0 && f.spawn_not_found {
@@ -499,6 +503,7 @@ fn run_python_at(
     args: &[String],
     timeout_secs: Option<u64>,
     audit: &mut dyn FnMut(&str),
+    stop: Option<&StopToken>,
 ) -> Result<PyRunResult, RunFail> {
     // C2：超时硬钳上限 300s（钳制记审计，防 timeout_secs=None/超大值把系统跑死）
     let (timeout_eff, clamped) = resolve_timeout(timeout_secs);
@@ -616,6 +621,16 @@ fn run_python_at(
                 spawn_not_found: false,
             });
         }
+        // NEW-C-4：/stop 注入检查 —— 原先只在 tool 轮次之间看 StopGuard，
+        // 在途 Python 跑满超时都停不下来；这里每 50ms 轮询一次停止令牌
+        if stop.is_some_and(|s| s.stopped()) {
+            cleanup_after_fail(&mut child, dir, &limits);
+            audit("run_python err | kind=stopped");
+            return Err(RunFail {
+                msg: "已停止".into(),
+                spawn_not_found: false,
+            });
+        }
         std::thread::sleep(Duration::from_millis(50));
     };
     let (stdout, mut stderr, drained) = drain_output(&rx, Duration::from_secs(2));
@@ -698,7 +713,8 @@ async fn run_doc_script(
     input: String,
 ) -> Result<PyRunResult, String> {
     let handle = app.clone();
-    match spawn_blocking_map(move || run_python(&handle, script, Some(&input), &[], Some(120)))
+    // doc_* 由 UI/工具触发，暂无 /stop 令牌（None）；自由编程 run_python 链路才有
+    match spawn_blocking_map(move || run_python(&handle, script, Some(&input), &[], Some(120), None))
         .await
     {
         Ok(r) => Ok(r),
@@ -1219,10 +1235,12 @@ print('已生成：' + out)
 // ───────────────────────── 对外命令 ─────────────────────────
 
 /// 执行同步核心（工具链在 async 上下文直接调用）
+/// `stop`：/stop 令牌（NEW-C-4），在途执行可被中断；UI 直调传 None
 pub fn py_exec_sync(
     app: &AppHandle,
     code: String,
     timeout_secs: Option<u64>,
+    stop: Option<&StopToken>,
 ) -> Result<PyRunResult, String> {
     if !py_get_enabled(app.clone()) {
         return Err(
@@ -1244,7 +1262,7 @@ pub fn py_exec_sync(
         app,
         &format!("py_exec | script: {}", escape_for_log(&code, 300)),
     );
-    let r = match run_python(app, &code, None, &[], timeout_secs) {
+    let r = match run_python(app, &code, None, &[], timeout_secs, stop) {
         Ok(r) => r,
         Err(e) => {
             py_audit(app, &format!("py_exec err | {}", escape_for_log(&e, 300)));
@@ -1266,12 +1284,14 @@ pub fn py_exec_sync(
 /// py_exec_sync 的 async 包装（C4）：阻塞执行挪到 blocking 线程池，
 /// 与 NEW-C-1 doc_* 同一模式 —— 调用方（tool_run_python）在 async runtime 内
 /// 不得直接调 sync 版占住 worker。
+/// `stop` 取 owned StopToken（而非 &StopGuard）：闭包要进 spawn_blocking，必须 'static。
 pub async fn py_exec_sync_async(
     app: AppHandle,
     code: String,
     timeout_secs: Option<u64>,
+    stop: Option<StopToken>,
 ) -> Result<PyRunResult, String> {
-    spawn_blocking_map(move || py_exec_sync(&app, code, timeout_secs)).await
+    spawn_blocking_map(move || py_exec_sync(&app, code, timeout_secs, stop.as_ref())).await
 }
 
 /// 提取结果：文件路径 + 文本（修订模式需要原文路径回读原文）
@@ -1599,7 +1619,7 @@ mod tests {
         let mut lines: Vec<String> = Vec::new();
         let r = run_python_at(&py, &dir, &[], Some(1), &mut |l: &str| {
             lines.push(l.to_string())
-        });
+        }, None);
         let e = match r {
             Err(f) => f.msg,
             Ok(_) => panic!("1s 超时的 sleep 30 脚本不应成功"),
@@ -1621,7 +1641,7 @@ mod tests {
         let mut lines: Vec<String> = Vec::new();
         let r = run_python_at("/nonexistent/python-zzz", &dir, &[], Some(1), &mut |l: &str| {
             lines.push(l.to_string())
-        });
+        }, None);
         let e = match r {
             Err(f) => f.msg,
             Ok(_) => panic!("无效 python 路径不应成功"),
@@ -1729,11 +1749,54 @@ mod tests {
         let dir = tmp.path().join("run-notfound");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("run.py"), "print(1)\n").unwrap();
-        let r = run_python_at("/nonexistent/python-zzz", &dir, &[], Some(1), &mut |_| {});
+        let r = run_python_at("/nonexistent/python-zzz", &dir, &[], Some(1), &mut |_| {}, None);
         match r {
             Err(f) => assert!(f.spawn_not_found),
             Ok(_) => panic!("无效 python 路径不应成功"),
         }
+    }
+
+    // ── /stop 中断在途执行（NEW-C-4：停止令牌注入轮询循环）──
+
+    #[test]
+    fn run_python_at_stop_token_interrupts_promptly() {
+        let Some(py) = detect_python() else {
+            return; // 无 Python 环境跳过
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("run-stop");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("run.py"), "import time\ntime.sleep(30)\n").unwrap();
+        let guard = crate::bot_slash::StopGuard::new(false);
+        let token = guard.token();
+        let mut lines: Vec<String> = Vec::new();
+        let start = Instant::now();
+        // 50ms 后置位停止标志（模拟 /stop）；timeout 给足 60s，
+        // 若停止检查失效就要等满 60s 才返回 —— 用耗时断言区分
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                std::thread::sleep(Duration::from_millis(50));
+                guard.force_stop();
+            });
+            let r = run_python_at(&py, &dir, &[], Some(60), &mut |l: &str| {
+                lines.push(l.to_string())
+            }, Some(&token));
+            let e = match r {
+                Err(f) => f.msg,
+                Ok(_) => panic!("被停止的脚本不应成功返回"),
+            };
+            assert!(e.contains("已停止"), "got: {e}");
+        });
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "/stop 后应立即中断，实际耗时 {:?}",
+            start.elapsed()
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("kind=stopped")),
+            "缺 stopped 审计行: {lines:?}"
+        );
+        assert!(!dir.exists(), "停止路径应清理临时目录");
     }
 
     // ── escape_for_log（P2-11：剥换行/管道符，防伪造日志行）──

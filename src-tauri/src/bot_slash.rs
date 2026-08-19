@@ -45,6 +45,28 @@ impl StopGuard {
     pub fn stopped(&self) -> bool {
         self.flag.load(std::sync::atomic::Ordering::SeqCst)
     }
+
+    /// 派生停止令牌（NEW-C-4）：与 guard 共享同一标志，但 owned + 'static，
+    /// 可跨 spawn_blocking 边界传给 run_python（&StopGuard 借用无法进 'static 闭包）
+    pub fn token(&self) -> StopToken {
+        StopToken(self.flag.clone())
+    }
+
+    /// 强制置位自身标志：单测模拟 /stop 用（不经注册表，只停本实例）
+    pub fn force_stop(&self) {
+        self.flag
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// StopGuard 的 'static 停止令牌（NEW-C-4）：只读共享标志，供阻塞执行层轮询
+#[derive(Clone)]
+pub struct StopToken(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl StopToken {
+    pub fn stopped(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
 }
 
 impl Drop for StopGuard {

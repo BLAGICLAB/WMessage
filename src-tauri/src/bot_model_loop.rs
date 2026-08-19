@@ -549,7 +549,9 @@ pub async fn run_model_loop(
                     ),
                 );
             }
-            let (result, refs) = crate::bot::execute_tool(&app, name, args).await;
+            // NEW-C-4：把 /stop 守卫透传给 execute_tool，run_python 在途可中断
+            let (result, refs) =
+                crate::bot::execute_tool_with_stop(&app, name, args, Some(stop)).await;
             let _ = app.emit_to(
                 "widget",
                 "bot-tool-done",

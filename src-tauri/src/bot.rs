@@ -290,6 +290,17 @@ pub fn check_len(value: &str, max: usize, what: &str) -> Result<(), String> {
 /// `pub` 让 `bot_skills::run_skill_scheduler`（Phase 1 DSL 调度器）可调用，
 /// 不暴露给前端 — 通过 `is_atomic_tool` 黑名单 + pre-execute 校验保护。
 pub async fn execute_tool(app: &AppHandle, name: &str, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
+    execute_tool_with_stop(app, name, args, None).await
+}
+
+/// execute_tool 的可停止版本（NEW-C-4）：携带 /stop 守卫，run_python 等长耗时工具
+/// 在执行中即可被中断；Skill 调度器等无守卫调用方走 execute_tool（stop=None）。
+pub async fn execute_tool_with_stop(
+    app: &AppHandle,
+    name: &str,
+    args: &str,
+    stop: Option<&crate::bot_slash::StopGuard>,
+) -> (String, Vec<crate::bot_chat::TaskRef>) {
     let start = std::time::Instant::now();
     // 0. tool.call 结构化（F-3 第三步 2026-08-18）
     crate::audit_event!(
@@ -337,7 +348,7 @@ pub async fn execute_tool(app: &AppHandle, name: &str, args: &str) -> (String, V
         "create_excel" => tool_create_excel(app, args).await,
         "create_ppt" => tool_create_ppt(app, args).await,
         "create_pdf" => tool_create_pdf(app, args).await,
-        "run_python" => tool_run_python(app, args).await,
+        "run_python" => tool_run_python(app, args, stop).await,
         "web_search" => tool_web_search(app, args).await,
         "fetch_url" => tool_fetch_url(app, args).await,
         "use_skill" => tool_use_skill(app, args),
@@ -1333,12 +1344,24 @@ async fn tool_fetch_url(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_
 /// 自由 Python 编程：开关开启才放行（超时 60s、独立临时目录、输出截断）
 /// C4：py_exec_sync 是 sync 阻塞（最长 300s），必须经 async 包装挪到 blocking
 /// 线程池，不得占住 async runtime worker（与 NEW-C-1 doc_* 同模式）。
-async fn tool_run_python(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
+/// NEW-C-4：透传 /stop 令牌，在途 Python 可被中断（StopGuard → owned StopToken）。
+async fn tool_run_python(
+    app: &AppHandle,
+    args: &str,
+    stop: Option<&crate::bot_slash::StopGuard>,
+) -> (String, Vec<crate::bot_chat::TaskRef>) {
     let v = parse_args(args);
     let Some(code) = v["code"].as_str() else {
         return ("run_python 缺少 code".into(), Vec::new());
     };
-    match crate::bot_py::py_exec_sync_async(app.clone(), code.to_string(), None).await {
+    match crate::bot_py::py_exec_sync_async(
+        app.clone(),
+        code.to_string(),
+        None,
+        stop.map(|s| s.token()),
+    )
+    .await
+    {
         Ok(r) => {
             let mut out = String::new();
             if !r.stdout.trim().is_empty() {
