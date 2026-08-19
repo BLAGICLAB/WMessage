@@ -487,45 +487,56 @@ fn load_workspace(conn: &rusqlite::Connection) -> Result<Vec<WorkspaceItem>, Str
     Ok(items)
 }
 
-fn upsert_workspace(conn: &rusqlite::Connection, items: &[WorkspaceItem]) -> Result<(), String> {
+/// P2-5: 循环 execute 包事务（同 P0-1 / B1 模式）——中途失败整体回滚，不留半截写入。
+fn upsert_workspace(
+    conn: &mut rusqlite::Connection,
+    items: &[WorkspaceItem],
+) -> Result<(), String> {
     if items.is_empty() {
         return Ok(());
     }
-    let mut stmt = conn
-        .prepare(
-            "INSERT INTO workspace_items (id, title, collapsed, links, ord, updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6)
-             ON CONFLICT(id) DO UPDATE SET
-               title=excluded.title, collapsed=excluded.collapsed,
-               links=excluded.links, ord=excluded.ord,
-               updated_at=excluded.updated_at",
-        )
-        .map_err(|e| e.to_string())?;
-    for it in items {
-        stmt.execute(rusqlite::params![
-            it.id,
-            it.title,
-            it.collapsed.map(|v| v as i64),
-            serde_json::to_string(&it.links).unwrap_or_else(|_| "[]".into()),
-            it.order,
-            it.updated_at,
-        ])
-        .map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    {
+        let mut stmt = tx
+            .prepare(
+                "INSERT INTO workspace_items (id, title, collapsed, links, ord, updated_at)
+                 VALUES (?1,?2,?3,?4,?5,?6)
+                 ON CONFLICT(id) DO UPDATE SET
+                   title=excluded.title, collapsed=excluded.collapsed,
+                   links=excluded.links, ord=excluded.ord,
+                   updated_at=excluded.updated_at",
+            )
+            .map_err(|e| e.to_string())?;
+        for it in items {
+            stmt.execute(rusqlite::params![
+                it.id,
+                it.title,
+                it.collapsed.map(|v| v as i64),
+                serde_json::to_string(&it.links).unwrap_or_else(|_| "[]".into()),
+                it.order,
+                it.updated_at,
+            ])
+            .map_err(|e| e.to_string())?;
+        }
     }
-    Ok(())
+    tx.commit().map_err(|e| e.to_string())
 }
 
-fn delete_workspace(conn: &rusqlite::Connection, ids: &[String]) -> Result<(), String> {
+/// P2-5: 同 upsert_workspace——批量 DELETE 包事务，中途失败回滚。
+fn delete_workspace(conn: &mut rusqlite::Connection, ids: &[String]) -> Result<(), String> {
     if ids.is_empty() {
         return Ok(());
     }
-    let mut stmt = conn
-        .prepare("DELETE FROM workspace_items WHERE id = ?1")
-        .map_err(|e| e.to_string())?;
-    for id in ids {
-        stmt.execute([id]).map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    {
+        let mut stmt = tx
+            .prepare("DELETE FROM workspace_items WHERE id = ?1")
+            .map_err(|e| e.to_string())?;
+        for id in ids {
+            stmt.execute([id]).map_err(|e| e.to_string())?;
+        }
     }
-    Ok(())
+    tx.commit().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -547,8 +558,8 @@ pub async fn workspace_upsert(app: tauri::AppHandle, items: Vec<WorkspaceItem>) 
             return Ok(());
         }
         let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let conn = open_db(&app)?;
-        upsert_workspace(&conn, &items).map_err(CommandError::from)
+        let mut conn = open_db(&app)?;
+        upsert_workspace(&mut conn, &items).map_err(CommandError::from)
     })
     .await
     .map_err(|e| CommandError::from(format!("工作区写入线程 join 失败：{e}")))?
@@ -562,8 +573,8 @@ pub async fn workspace_delete(app: tauri::AppHandle, ids: Vec<String>) -> Comman
             return Ok(());
         }
         let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let conn = open_db(&app)?;
-        delete_workspace(&conn, &ids).map_err(CommandError::from)
+        let mut conn = open_db(&app)?;
+        delete_workspace(&mut conn, &ids).map_err(CommandError::from)
     })
     .await
     .map_err(|e| CommandError::from(format!("工作区删除线程 join 失败：{e}")))?
@@ -1612,7 +1623,7 @@ mod ws_tests {
     fn workspace_collapsed_roundtrip() {
         let dir = std::env::temp_dir().join(format!("wm-ws-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
-        let conn = rusqlite::Connection::open(dir.join("t.db")).unwrap();
+        let mut conn = rusqlite::Connection::open(dir.join("t.db")).unwrap();
         conn.execute_batch(
             "CREATE TABLE workspace_items (
                id TEXT PRIMARY KEY, title TEXT NOT NULL, collapsed INTEGER,
@@ -1632,7 +1643,7 @@ mod ws_tests {
             order: Some(1.0),
             updated_at: Some(123),
         };
-        upsert_workspace(&conn, &[item]).unwrap();
+        upsert_workspace(&mut conn, &[item]).unwrap();
         let got = load_workspace(&conn).unwrap();
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].collapsed, Some(true));
@@ -1669,9 +1680,9 @@ mod ws_tests {
         let (p, it) = (db_path.clone(), item.clone());
         let r: CommandResult<()> = tauri::async_runtime::block_on(async move {
             tauri::async_runtime::spawn_blocking(move || {
-                let conn = rusqlite::Connection::open(&p)
+                let mut conn = rusqlite::Connection::open(&p)
                     .map_err(|e| CommandError::from(e.to_string()))?;
-                upsert_workspace(&conn, &[it]).map_err(CommandError::from)
+                upsert_workspace(&mut conn, &[it]).map_err(CommandError::from)
             })
             .await
             .map_err(|e| CommandError::from(format!("join 失败：{e}")))?
@@ -1697,9 +1708,9 @@ mod ws_tests {
         let p = db_path.clone();
         let r: CommandResult<()> = tauri::async_runtime::block_on(async move {
             tauri::async_runtime::spawn_blocking(move || {
-                let conn = rusqlite::Connection::open(&p)
+                let mut conn = rusqlite::Connection::open(&p)
                     .map_err(|e| CommandError::from(e.to_string()))?;
-                delete_workspace(&conn, &["w1".to_string()]).map_err(CommandError::from)
+                delete_workspace(&mut conn, &["w1".to_string()]).map_err(CommandError::from)
             })
             .await
             .map_err(|e| CommandError::from(format!("join 失败：{e}")))?
@@ -1707,6 +1718,72 @@ mod ws_tests {
         r.unwrap();
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         assert!(load_workspace(&conn).unwrap().is_empty());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// P2-5：upsert_workspace 中途失败必须整体回滚——已写入的前序行不得落库。
+    /// 用 BEFORE INSERT trigger 在第 2 条注入失败（RAISE ABORT），模拟「中途 panic/磁盘错」。
+    #[test]
+    fn upsert_workspace_rolls_back_on_mid_loop_failure() {
+        let dir = std::env::temp_dir().join(format!("wm-ws-tx-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let mut conn = rusqlite::Connection::open(dir.join("t.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE workspace_items (
+               id TEXT PRIMARY KEY, title TEXT NOT NULL, collapsed INTEGER,
+               links TEXT NOT NULL, ord REAL, updated_at INTEGER);
+             CREATE TRIGGER fail_boom BEFORE INSERT ON workspace_items
+               WHEN NEW.id = 'boom' BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
+        )
+        .unwrap();
+        // 预置旧数据：失败回滚后必须保持原状
+        conn.execute(
+            "INSERT INTO workspace_items VALUES ('w1', 'old', NULL, '[]', NULL, 1)",
+            [],
+        )
+        .unwrap();
+        let mk = |id: &str, title: &str| WorkspaceItem {
+            id: id.into(),
+            title: title.into(),
+            collapsed: None,
+            links: vec![],
+            order: None,
+            updated_at: Some(2),
+        };
+        // w1 更新 + boom（触发失败）+ w2：无事务时 w1 会被半截更新
+        let r = upsert_workspace(&mut conn, &[mk("w1", "new"), mk("boom", "x"), mk("w2", "y")]);
+        assert!(r.is_err(), "trigger 注入失败必须返回 Err");
+        let got = load_workspace(&conn).unwrap();
+        assert_eq!(got.len(), 1, "半截写入必须被回滚（w2 不得落库）");
+        assert_eq!(got[0].title, "old", "w1 必须保持旧值（事务回滚）");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// P2-5：delete_workspace 中途失败同样整体回滚——前序已删行恢复。
+    #[test]
+    fn delete_workspace_rolls_back_on_mid_loop_failure() {
+        let dir = std::env::temp_dir().join(format!("wm-ws-tx-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let mut conn = rusqlite::Connection::open(dir.join("t.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE workspace_items (
+               id TEXT PRIMARY KEY, title TEXT NOT NULL, collapsed INTEGER,
+               links TEXT NOT NULL, ord REAL, updated_at INTEGER);
+             INSERT INTO workspace_items VALUES ('w1', 'a', NULL, '[]', NULL, 1);
+             INSERT INTO workspace_items VALUES ('w2', 'b', NULL, '[]', NULL, 1);
+             INSERT INTO workspace_items VALUES ('boom', 'c', NULL, '[]', NULL, 1);
+             CREATE TRIGGER fail_del BEFORE DELETE ON workspace_items
+               WHEN OLD.id = 'boom' BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
+        )
+        .unwrap();
+        // w1 删除成功 → boom 行存在，删它触发失败 → 无事务时 w1 已被半截删掉
+        let r = delete_workspace(
+            &mut conn,
+            &["w1".to_string(), "boom".to_string(), "w2".to_string()],
+        );
+        assert!(r.is_err(), "trigger 注入失败必须返回 Err");
+        let got = load_workspace(&conn).unwrap();
+        assert_eq!(got.len(), 3, "回滚后 w1/boom/w2 都必须还在：{got:?}");
         fs::remove_dir_all(&dir).ok();
     }
 }
