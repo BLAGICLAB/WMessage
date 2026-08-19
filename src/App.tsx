@@ -136,16 +136,18 @@ export default function App() {
   }, []);
 
   // 统一变更出口：计算新数组 → diff → 行级增量落盘（await 落盘完成）→ 更新 state → 广播挂件
+  // P2-21：tasksRef/setState 必须等落盘成功后才更新——落盘失败（upsertTasks 抛错）
+  // 时内存不得先行，否则 UI 已更新而磁盘没动，重启后 UI/DB 永久分叉
   const mutate = async (fn: (prev: Task[]) => Task[]) => {
     const prev = tasksRef.current;
     const next = fn(prev);
-    tasksRef.current = next;
     // 打最后修改时间戳（合并导入按此比较同 id 取舍）；
     // P2-20：纯排序变更保留原 updatedAt（diffTaskRows 内部判定）
     const { upserts, deletes } = diffTaskRows(prev, next, Date.now());
     // 先落盘再广播：挂件收到 tasks-changed 后立刻 db_load，必须读到已提交的快照
     await upsertTasks(upserts);
     await deleteTaskRows(deletes);
+    tasksRef.current = next;
     setTasks(next);
     if (upserts.length || deletes.length) {
       try {
@@ -154,6 +156,13 @@ export default function App() {
         console.error("emit tasks-changed failed", e);
       }
     }
+  };
+
+  // mutate 的 fire-and-forget 入口：失败时 mutate 抛错（P2-21），这里终止 promise 链——
+  // 错误已经由 storage 层 alert 提示用户，call site 只留 console 痕迹，
+  // 避免 unhandled rejection 噪音
+  const mutateFire = (fn: (prev: Task[]) => Task[]) => {
+    void mutate(fn).catch((e) => console.error("[mutate] persist failed", e));
   };
 
   // 挂件上报工作区变更（workspace-updated：{upserts}），主窗口统一落盘后广播（单写者架构）
@@ -262,7 +271,7 @@ export default function App() {
   // 每分钟重套今日规则 + 归档规则：覆盖跨零点归位、完成超时归档（diff 后行级落盘）
   useEffect(() => {
     const id = setInterval(
-      () => mutate((prev) => applyArchiveRule(applyTodayRule(prev))),
+      () => mutateFire((prev) => applyArchiveRule(applyTodayRule(prev))),
       60_000
     );
     return () => clearInterval(id);
@@ -271,7 +280,7 @@ export default function App() {
 
   const addTask = () => {
     const id = crypto.randomUUID();
-    mutate((prev) => {
+    mutateFire((prev) => {
       const max = prev.reduce((m, t) => Math.max(m, t.order ?? 0), 0);
       return [...prev, { id, title: "新任务", column: "todo", order: max + 1 }];
     });
@@ -323,7 +332,7 @@ export default function App() {
   // 看板拖拽排序提交：数组顺序已由 KanbanBoard 排好（含跨列变更），
   // 这里补列变更完成语义（进完成列记时间、出完成列清除），再给被拖任务分配 order
   const commitBoardOrder = (activeId: string, next: Task[]) => {
-    mutate((prev) => {
+    mutateFire((prev) => {
       const prevMap = new Map(prev.map((t) => [t.id, t]));
       const arr = next.map((t) => {
         const p = prevMap.get(t.id);
@@ -339,7 +348,7 @@ export default function App() {
   };
 
   const updateTask = (taskId: string, patch: Partial<Task>) => {
-    mutate((prev) =>
+    mutateFire((prev) =>
       prev.map((t) => {
         if (t.id !== taskId) return t;
         const next = { ...t, ...patch };
@@ -355,7 +364,7 @@ export default function App() {
 
   // 软删除：进回收站
   const deleteTask = (taskId: string) => {
-    mutate((prev) =>
+    mutateFire((prev) =>
       prev.map((t) => (t.id === taskId ? { ...t, deletedAt: Date.now() } : t))
     );
     setEditingId((cur) => (cur === taskId ? null : cur));
@@ -363,11 +372,11 @@ export default function App() {
 
   // 彻底删除（回收站）
   const hardDeleteTask = (taskId: string) => {
-    mutate((prev) => prev.filter((t) => t.id !== taskId));
+    mutateFire((prev) => prev.filter((t) => t.id !== taskId));
   };
 
   const clearTrash = () => {
-    mutate((prev) => prev.filter((t) => !t.deletedAt));
+    mutateFire((prev) => prev.filter((t) => !t.deletedAt));
   };
 
   return (

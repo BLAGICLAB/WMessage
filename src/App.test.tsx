@@ -167,6 +167,44 @@ describe("App", () => {
     expect(screen.queryByText("梳理 WMessage 需求清单")).not.toBeInTheDocument();
   });
 
+  // P2-21（2026-08-19）：mutate 落盘失败必须抛错、tasksRef/state 不得先行更新——
+  // 修复前 tasksRef.current = next 在 await 落盘之前，失败时 UI 已更新但磁盘没动
+  it("mutate 落盘失败：抛错 + UI 不更新（tasksRef 未先行赋值）", async () => {
+    const user = userEvent.setup();
+    const dbErr = { code: "DB_ERROR", message: "disk full", recoverable: false };
+    let failUpsert = false;
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "db_upsert" && failUpsert) throw dbErr;
+      return defaultInvokeImpl(cmd);
+    });
+    // mutate 抛错 → fire-and-forget 入口（mutateFire）catch 后 console 留痕
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      render(<App />);
+      await waitFor(() => {
+        expect(screen.getByText("梳理 WMessage 需求清单")).toBeInTheDocument();
+      });
+      failUpsert = true; // 初始化种子落盘成功后，后续写入全部失败
+      alertMock.mockClear();
+      // emit mock 跨用例共享（beforeEach 不清），先清零再断言「失败不广播」
+      const { emit } = await import("@tauri-apps/api/event");
+      (emit as ReturnType<typeof vi.fn>).mockClear();
+      await user.click(screen.getByText("+ 新建任务"));
+      // storage 层 alert 已弹（upsertTasks → handleCommandError）
+      await waitFor(() => expect(alertMock).toHaveBeenCalled());
+      // mutate 抛错（错误从 upsertTasks 一路抛到 call site 的 catch）
+      await waitFor(() =>
+        expect(errSpy).toHaveBeenCalledWith("[mutate] persist failed", dbErr)
+      );
+      // tasksRef 未先行赋值 → 新任务不进 UI（不会出现标题编辑 input）
+      expect(screen.queryByDisplayValue("新任务")).not.toBeInTheDocument();
+      // 失败不广播（挂件不得读到未落盘的中间态）
+      expect(emit).not.toHaveBeenCalledWith("tasks-changed");
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
   // E2（2026-08-19）：tasks-updated 事件合并后，规则改动（今日归位/超时归档）
   // 必须落盘，否则只改内存 → 重启/挂件读 db 回到原始数据，三端长期不一致
   it("tasks-updated 合并：超时归档的规则改动落盘 db_upsert + console 观测行", async () => {
