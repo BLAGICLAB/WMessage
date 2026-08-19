@@ -150,10 +150,16 @@ export default function WidgetApp() {
 
   // 任务数据同步：主窗口统一落盘 SQLite，挂件只读。三层：初始读取 + tasks-changed + 5s 兜底轮询
   useEffect(() => {
-    const load = async () => {
+    // P2-33（2026-08-19）：5s 兜底轮询读失败不再永久静默——轮询连续失败说明
+    // 主窗口/DB 异常，弹 alert 让用户知情；首次加载与 tasks-changed 触发保持安静
+    // （任务为空/瞬态失败等下次重试即可，不打扰）
+    const load = async (fromPoll = false) => {
       try {
         const res = await loadTasksFromDb();
-        if (!res.ok) return; // 读失败：保持现状，等下次 tasks-changed / 轮询重试
+        if (!res.ok) {
+          if (fromPoll) handleCommandError(res.error, "widget_poll");
+          return; // 读失败：保持现状，等下次 tasks-changed / 轮询重试
+        }
         const list = sortByOrder(res.tasks);
         if (!list.length) return;
         setTasks((prev) => {
@@ -161,8 +167,8 @@ export default function WidgetApp() {
           if (!same) tasksRef.current = list;
           return same ? prev : list;
         });
-      } catch {
-        /* ignore */
+      } catch (e) {
+        if (fromPoll) handleCommandError(e, "widget_poll");
       }
     };
     load();
@@ -170,7 +176,7 @@ export default function WidgetApp() {
       load().catch(() => {});
     });
     const id = setInterval(() => {
-      load().catch(() => {});
+      load(true).catch((e) => handleCommandError(e, "widget_poll"));
     }, 5000);
     return () => {
       unlisten.then((f) => f());
