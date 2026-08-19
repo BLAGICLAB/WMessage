@@ -403,6 +403,29 @@ fn read_capped_drain<R: Read>(src: R, cap: usize) -> (Vec<u8>, bool) {
     (buf, truncated)
 }
 
+/// StopToken 感知的 Read 适配器（G2）：每次底层 read 前查停止令牌，置位即返回
+/// EOF（Ok(0)），read_capped_drain 据此提前收尾、返回已读部分数据。
+/// /stop 时主循环杀进程组的同时 reader 主动退出，不再盲等管道 EOF。
+struct StopReader<R> {
+    inner: R,
+    stop: Option<StopToken>,
+}
+
+impl<R> StopReader<R> {
+    fn new(inner: R, stop: Option<StopToken>) -> Self {
+        Self { inner, stop }
+    }
+}
+
+impl<R: Read> Read for StopReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.stop.as_ref().is_some_and(|s| s.stopped()) {
+            return Ok(0);
+        }
+        self.inner.read(buf)
+    }
+}
+
 /// 主进程退出后收输出的兜底（C1）：孙进程继承 stdout/stderr 管道写端且不退出时，
 /// reader 子线程的 read_to_end 永不 EOF，`rx.iter()` 会永久阻塞 → run_python 挂死。
 /// 改为带总宽限（≤ grace）的 recv_timeout 收满 2 条（out/err）为止；
@@ -438,6 +461,37 @@ fn drain_output(
         }
     }
     (stdout, stderr, got == 2, truncated)
+}
+
+/// reader 线程收尾的 join 超时（G2）：整体 deadline = timeout + 2s drain 宽限
+/// + 2s reader 收尾，超时的 reader 记 ERROR 审计后 detach
+const READER_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// 带超时 join 两个 reader 线程（G2）：原先 reader 裸 spawn detach，进程退出时
+/// 变孤儿线程无人知晓；现在所有返回路径（正常 / wait_fail / timeout / stopped）
+/// 都必须经过这里。超时仍不退出的 drop handle（detach）+ ERROR 审计
+/// 「run_python_reader_timeout / reader_leaked」，泄漏留痕可诊断。
+fn join_reader_threads(
+    out_handle: std::thread::JoinHandle<()>,
+    err_handle: std::thread::JoinHandle<()>,
+    audit: &mut dyn FnMut(&str),
+) {
+    let deadline = Instant::now() + READER_JOIN_TIMEOUT;
+    for (kind, h) in [("stdout", out_handle), ("stderr", err_handle)] {
+        loop {
+            if h.is_finished() {
+                let _ = h.join();
+                break;
+            }
+            if Instant::now() >= deadline {
+                audit(&format!(
+                    "run_python err | kind=reader_timeout | reader={kind} | join 超时（reader_leaked），已 detach"
+                ));
+                break; // drop(h) = detach
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
 }
 
 fn truncate_output(s: String) -> String {
@@ -602,25 +656,30 @@ fn run_python_at(
     let child_stdout = child.stdout.take();
     let child_stderr = child.stderr.take();
     let (tx, rx) = mpsc::channel();
+    // G2：reader 线程持 JoinHandle（不再裸 spawn detach），所有返回路径统一
+    // join_reader_threads 带超时 join 兜底；StopReader 让 /stop 置位时 read
+    // 立即返回 EOF，reader 随主循环杀进程组同步退出，不变孤儿线程
     let tx_out = tx.clone();
-    std::thread::spawn(move || {
+    let stop_out = stop.cloned();
+    let out_handle = std::thread::spawn(move || {
         let mut buf = Vec::new();
         let mut truncated = false;
         if let Some(s) = child_stdout {
             // 读取时硬截断（审计 P1：原先 read_to_end 无上限，失控脚本 60s 可刷出数百 MB）；
             // NEW-C-5：到顶后继续排空（丢弃），防子进程被 SIGPIPE 静默杀死
-            let (b, tr) = read_capped_drain(s, OUTPUT_CAP + 1024);
+            let (b, tr) = read_capped_drain(StopReader::new(s, stop_out), OUTPUT_CAP + 1024);
             buf = b;
             truncated = tr;
         }
         let _ = tx_out.send(("out", buf, truncated));
     });
     let tx_err = tx.clone();
-    std::thread::spawn(move || {
+    let stop_err = stop.cloned();
+    let err_handle = std::thread::spawn(move || {
         let mut buf = Vec::new();
         let mut truncated = false;
         if let Some(s) = child_stderr {
-            let (b, tr) = read_capped_drain(s, OUTPUT_CAP + 1024);
+            let (b, tr) = read_capped_drain(StopReader::new(s, stop_err), OUTPUT_CAP + 1024);
             buf = b;
             truncated = tr;
         }
@@ -638,6 +697,7 @@ fn run_python_at(
                 // 先杀进程组（含孙进程兜底）+ 清临时目录，再记审计返回。
                 cleanup_after_fail(&mut child, dir, &limits);
                 audit(&format!("run_python err | kind=wait_fail | {e}"));
+                join_reader_threads(out_handle, err_handle, audit);
                 return Err(RunFail {
                     msg: format!("等待子进程状态失败：{e}"),
                     spawn_not_found: false,
@@ -650,6 +710,7 @@ fn run_python_at(
                 "run_python err | kind=timeout | timeout_secs={}",
                 timeout.as_secs()
             ));
+            join_reader_threads(out_handle, err_handle, audit);
             return Err(RunFail {
                 msg: format!("执行超时（{}s）已强制终止", timeout.as_secs()),
                 spawn_not_found: false,
@@ -660,6 +721,7 @@ fn run_python_at(
         if stop.is_some_and(|s| s.stopped()) {
             cleanup_after_fail(&mut child, dir, &limits);
             audit("run_python err | kind=stopped");
+            join_reader_threads(out_handle, err_handle, audit);
             return Err(RunFail {
                 msg: "已停止".into(),
                 spawn_not_found: false,
@@ -675,6 +737,9 @@ fn run_python_at(
         audit("run_python warn | kind=drain_timeout | 孙进程占用管道已强杀进程组");
         stderr.push_str("\n（输出收集超时：孙进程占用管道，已强杀进程组）");
     }
+    // G2：reader 线程带超时 join 兜底 —— 进程组已杀，正常秒回；
+    // 2s 仍不 EOF 的极端场景 detach + ERROR 审计，不留无记录孤儿线程
+    join_reader_threads(out_handle, err_handle, audit);
     if truncated {
         // NEW-C-5：输出触顶已截断（剩余部分已排空，子进程未受 SIGPIPE 影响）
         audit(&format!(
@@ -1678,6 +1743,115 @@ mod tests {
         assert!(complete);
         assert!(truncated, "触顶标记必须透出");
         assert_eq!(out.len(), OUTPUT_CAP + 1024);
+    }
+
+    // ── reader 线程生命周期（G2：StopReader 取消 + 带超时 join 兜底）──
+
+    #[test]
+    fn stop_reader_returns_partial_when_stopped() {
+        let data = vec![b'x'; 4096];
+        let guard = crate::bot_slash::StopGuard::new(false);
+        let token = guard.token();
+        // 未停止：完整读取，行为与裸 read_capped_drain 一致
+        let (buf, tr) = read_capped_drain(
+            StopReader::new(std::io::Cursor::new(data.clone()), Some(token.clone())),
+            1024 * 1024,
+        );
+        assert!(!tr);
+        assert_eq!(buf, data);
+        // 已停止：第一次 read 即 EOF，提前返回部分（此处为空）数据，不盲等
+        guard.force_stop();
+        let (buf, tr) = read_capped_drain(
+            StopReader::new(std::io::Cursor::new(data), Some(token)),
+            1024 * 1024,
+        );
+        assert!(!tr);
+        assert!(buf.is_empty(), "stop 置位后应立即收尾返回部分数据");
+    }
+
+    #[test]
+    fn join_reader_threads_finished_no_audit() {
+        // 正常场景：reader 已完成 → 秒 join，无审计
+        let h1 = std::thread::spawn(|| {});
+        let h2 = std::thread::spawn(|| {});
+        let mut lines: Vec<String> = Vec::new();
+        join_reader_threads(h1, h2, &mut |l: &str| lines.push(l.to_string()));
+        assert!(lines.is_empty(), "正常退出不应记审计: {lines:?}");
+    }
+
+    #[test]
+    fn join_reader_threads_stuck_detaches_with_audit() {
+        // 卡死场景：stdout reader 永不退出 → 超时 detach + ERROR 审计，不得永久挂住
+        let h1 = std::thread::spawn(|| std::thread::sleep(Duration::from_secs(30)));
+        let h2 = std::thread::spawn(|| {});
+        let mut lines: Vec<String> = Vec::new();
+        let start = Instant::now();
+        join_reader_threads(h1, h2, &mut |l: &str| lines.push(l.to_string()));
+        assert!(
+            start.elapsed() < READER_JOIN_TIMEOUT + Duration::from_secs(2),
+            "卡死 reader 不得拖住收尾：{:?}",
+            start.elapsed()
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("reader_timeout") && l.contains("reader=stdout")),
+            "缺 reader_timeout 审计（含 reader 标识）: {lines:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_python_at_grandchild_pipe_readers_joined() {
+        // 孙进程继承 stdout/stderr 管道写端且不退（sleep 30）：主进程退出后
+        // drain 2s 宽限到期 → 强杀进程组 → reader 拿到 EOF 必须能 join，
+        // 不得记 reader_timeout（整体 deadline = timeout + 2s drain + 2s reader）
+        let Some(py) = detect_python() else {
+            return; // 无 Python 环境跳过
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("run-grandchild");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("run.py"),
+            "import subprocess, sys\nsubprocess.Popen(['sleep', '30'], stdout=sys.stdout, stderr=sys.stderr)\nprint('main-done', flush=True)\n",
+        )
+        .unwrap();
+        let mut lines: Vec<String> = Vec::new();
+        let start = Instant::now();
+        let r = run_python_at(
+            &py,
+            &dir,
+            &[],
+            Some(30),
+            &mut |l: &str| lines.push(l.to_string()),
+            None,
+        );
+        let ok = match r {
+            Ok(r) => r,
+            Err(f) => panic!("主进程正常退出应返回结果，got err: {}", f.msg),
+        };
+        assert_eq!(ok.exit_code, Some(0));
+        // drain 超时后主进程输出随 reader 在 kill 后才 EOF，按 C1 语义不收回，
+        // 但 stderr 必须带「输出收集超时」提示
+        assert!(
+            ok.stderr.contains("输出收集超时"),
+            "got stderr: {}",
+            ok.stderr
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("drain_timeout")),
+            "缺 drain_timeout 审计: {lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains("reader_timeout")),
+            "进程组已杀，reader 应能 join: {lines:?}"
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(15),
+            "整体兜底超时失效：{:?}",
+            start.elapsed()
+        );
     }
 
     // ── resolve_timeout / 资源限额（C2：默认 60s、硬钳上限 300s、限额按 timeout 比例）──
