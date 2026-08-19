@@ -39,11 +39,11 @@
 
 约 2 工日。
 
-- [ ] **NEW-B-2** `migration.rs journal_*` — journal 三次写各开独立 open_db 且不持写锁，靠 2s busy_timeout 兜底
-- [ ] **NEW-B-3** `db.rs / migration.rs` — B3 残留 sync 命令：workspace_*、bot_session_create/rename、migration_log_read（主线程读最大 5MB）
-- [ ] **NEW-B-4** `db.rs:270 RESET_ONCE` — 清 bot_assigned 的 UPDATE 吞错 + Once 失败不重试 → 残留 🤖 到下次重启
-- [ ] **NEW-B-5** `migration.rs move_entry 跨卷回退` — copy 成功 remove 持续失败时每轮生成新冲突名再 copy → 归档副本累积
-- [ ] **NEW-B-6** `db.rs tasks_export` — `fs::write` 非原子（与 P2-8 同类），崩溃留半截 JSON
+- [x] **NEW-B-2** `migration.rs journal_*` — journal 三次写各开独立 open_db 且不持写锁，靠 2s busy_timeout 兜底 — commit `a1c2546`
+- [x] **NEW-B-3** `db.rs / migration.rs` — B3 残留 sync 命令：workspace_*、migration_log_read（主线程读最大 5MB）— commit `f3dcaeb`（本期范围不含 bot_session_create/rename）
+- [x] **NEW-B-4** `db.rs:270 RESET_ONCE` — 清 bot_assigned 的 UPDATE 吞错 + Once 失败不重试 → 残留 🤖 到下次重启 — commit `71d07d8`
+- [x] **NEW-B-5** `migration.rs move_entry 跨卷回退` — copy 成功 remove 持续失败时每轮生成新冲突名再 copy → 归档副本累积 — commit `0f57a51`
+- [x] **NEW-B-6** `db.rs tasks_export` — `fs::write` 非原子（与 P2-8 同类），崩溃留半截 JSON — commit `87d1d75`
 
 ---
 
@@ -105,7 +105,7 @@
 
 - Phase 1: 8/8
 - Phase 2: 0/5
-- Phase 3: 0/5
+- Phase 3: 5/5
 - Phase 4: 0/4 (E5 已勾)
 - Phase 5: 0/6
 - Phase 6: 0/11+
