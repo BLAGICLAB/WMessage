@@ -450,29 +450,44 @@ fn delete_workspace(conn: &rusqlite::Connection, ids: &[String]) -> Result<(), S
 }
 
 #[tauri::command]
-pub fn workspace_load(app: tauri::AppHandle) -> CommandResult<Vec<WorkspaceItem>> {
-    let conn = open_db(&app)?;
-    load_workspace(&conn).map_err(CommandError::from)
+pub async fn workspace_load(app: tauri::AppHandle) -> CommandResult<Vec<WorkspaceItem>> {
+    // NEW-B-3: B3 残留 sync 命令——与 db_load 同模式扔到 spawn_blocking，不阻塞 UI。
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = open_db(&app)?;
+        load_workspace(&conn).map_err(CommandError::from)
+    })
+    .await
+    .map_err(|e| CommandError::from(format!("工作区读取线程 join 失败：{e}")))?
 }
 
 #[tauri::command]
-pub fn workspace_upsert(app: tauri::AppHandle, items: Vec<WorkspaceItem>) -> CommandResult<()> {
-    if items.is_empty() {
-        return Ok(());
-    }
-    let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let conn = open_db(&app)?;
-    upsert_workspace(&conn, &items).map_err(CommandError::from)
+pub async fn workspace_upsert(app: tauri::AppHandle, items: Vec<WorkspaceItem>) -> CommandResult<()> {
+    // NEW-B-3: 数据量小但仍是磁盘 IO；包 async + spawn_blocking（内部循环 execute 逻辑不动）。
+    tauri::async_runtime::spawn_blocking(move || {
+        if items.is_empty() {
+            return Ok(());
+        }
+        let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = open_db(&app)?;
+        upsert_workspace(&conn, &items).map_err(CommandError::from)
+    })
+    .await
+    .map_err(|e| CommandError::from(format!("工作区写入线程 join 失败：{e}")))?
 }
 
 #[tauri::command]
-pub fn workspace_delete(app: tauri::AppHandle, ids: Vec<String>) -> CommandResult<()> {
-    if ids.is_empty() {
-        return Ok(());
-    }
-    let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let conn = open_db(&app)?;
-    delete_workspace(&conn, &ids).map_err(CommandError::from)
+pub async fn workspace_delete(app: tauri::AppHandle, ids: Vec<String>) -> CommandResult<()> {
+    // NEW-B-3: 同 workspace_upsert——包 async + spawn_blocking（内部循环逻辑不动）。
+    tauri::async_runtime::spawn_blocking(move || {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = open_db(&app)?;
+        delete_workspace(&conn, &ids).map_err(CommandError::from)
+    })
+    .await
+    .map_err(|e| CommandError::from(format!("工作区删除线程 join 失败：{e}")))?
 }
 
 // ───────────────────────── 机器人聊天记录 ─────────────────────────
@@ -1466,6 +1481,76 @@ mod ws_tests {
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].collapsed, Some(true));
         assert_eq!(got[0].links[0].display_name, "别名");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// NEW-B-3: workspace_* 改 async + spawn_blocking 后，阻塞段逻辑与返回类型不变
+    /// （CommandResult<Vec<WorkspaceItem>> / CommandResult<()>）。AppHandle 无法单测构造，
+    /// 用临时库复刻命令体的 spawn_blocking 桥接结构，走 block_on 验证。
+    #[test]
+    fn workspace_commands_spawn_blocking_bridge() {
+        let dir = std::env::temp_dir().join(format!("wm-ws-async-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("t.db");
+        rusqlite::Connection::open(&db_path)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE workspace_items (
+                   id TEXT PRIMARY KEY, title TEXT NOT NULL, collapsed INTEGER,
+                   links TEXT NOT NULL, ord REAL, updated_at INTEGER);",
+            )
+            .unwrap();
+        let item = WorkspaceItem {
+            id: "w1".into(),
+            title: "T".into(),
+            collapsed: None,
+            links: vec![],
+            order: None,
+            updated_at: Some(1),
+        };
+
+        // upsert（桥接结构同 workspace_upsert 命令体）
+        let (p, it) = (db_path.clone(), item.clone());
+        let r: CommandResult<()> = tauri::async_runtime::block_on(async move {
+            tauri::async_runtime::spawn_blocking(move || {
+                let conn = rusqlite::Connection::open(&p)
+                    .map_err(|e| CommandError::from(e.to_string()))?;
+                upsert_workspace(&conn, &[it]).map_err(CommandError::from)
+            })
+            .await
+            .map_err(|e| CommandError::from(format!("join 失败：{e}")))?
+        });
+        r.unwrap();
+
+        // load
+        let p = db_path.clone();
+        let r: CommandResult<Vec<WorkspaceItem>> = tauri::async_runtime::block_on(async move {
+            tauri::async_runtime::spawn_blocking(move || {
+                let conn = rusqlite::Connection::open(&p)
+                    .map_err(|e| CommandError::from(e.to_string()))?;
+                load_workspace(&conn).map_err(CommandError::from)
+            })
+            .await
+            .map_err(|e| CommandError::from(format!("join 失败：{e}")))?
+        });
+        let items = r.unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].title, "T");
+
+        // delete
+        let p = db_path.clone();
+        let r: CommandResult<()> = tauri::async_runtime::block_on(async move {
+            tauri::async_runtime::spawn_blocking(move || {
+                let conn = rusqlite::Connection::open(&p)
+                    .map_err(|e| CommandError::from(e.to_string()))?;
+                delete_workspace(&conn, &["w1".to_string()]).map_err(CommandError::from)
+            })
+            .await
+            .map_err(|e| CommandError::from(format!("join 失败：{e}")))?
+        });
+        r.unwrap();
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        assert!(load_workspace(&conn).unwrap().is_empty());
         fs::remove_dir_all(&dir).ok();
     }
 }

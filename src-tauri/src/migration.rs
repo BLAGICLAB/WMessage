@@ -1201,11 +1201,21 @@ pub async fn migration_run(app: AppHandle) -> CommandResult<MigrationReport> {
 }
 
 /// 迁移日志读取：尾部 limit 行、最新在前（与机器人审计日志同模式，老板指定）
+/// NEW-B-3: 日志最大 5MB，sync 读阻塞主线程 → async + spawn_blocking（B3 同模式）
 #[tauri::command]
-pub fn migration_log_read(app: AppHandle, limit: Option<usize>) -> String {
-    let Ok(raw) = fs::read_to_string(log_path(&app)) else {
-        return "（暂无迁移日志）".into();
-    };
+pub async fn migration_log_read(app: AppHandle, limit: Option<usize>) -> String {
+    tauri::async_runtime::spawn_blocking(move || {
+        let Ok(raw) = fs::read_to_string(log_path(&app)) else {
+            return "（暂无迁移日志）".into();
+        };
+        tail_log_lines(&raw, limit)
+    })
+    .await
+    .unwrap_or_else(|e| format!("迁移日志读取线程 join 失败：{e}"))
+}
+
+/// 尾部 limit 行、最新在前（纯函数，可单测）
+fn tail_log_lines(raw: &str, limit: Option<usize>) -> String {
     let limit = limit.unwrap_or(500).clamp(1, 5000);
     let mut lines: Vec<&str> = raw.lines().collect();
     if lines.len() > limit {
@@ -1830,5 +1840,29 @@ mod tests {
         // 全空白也算空
         rf.rules = vec![rule(vec!["a"], "move", "   ")];
         assert!(validate_rules(&rf).is_err());
+    }
+
+    /// NEW-B-3: migration_log_read 尾部截取逻辑（纯函数）——最新在前、limit 截断、clamp。
+    #[test]
+    fn tail_log_lines_tail_reversed_and_clamped() {
+        let raw = "l1\nl2\nl3\nl4";
+        assert_eq!(tail_log_lines(raw, Some(2)), "l4\nl3");
+        // 默认 500 > 总行数：全量倒序
+        assert_eq!(tail_log_lines(raw, None), "l4\nl3\nl2\nl1");
+        // clamp 下限 1
+        assert_eq!(tail_log_lines(raw, Some(0)), "l4");
+        // clamp 上限 5000（不越界）
+        assert_eq!(tail_log_lines(raw, Some(9999)), "l4\nl3\nl2\nl1");
+    }
+
+    /// NEW-B-3: async wrapper 与原 sync 命令返回类型一致（String），spawn_blocking 桥接不丢内容。
+    #[test]
+    fn migration_log_read_async_wrapper_returns_string() {
+        let s: String = tauri::async_runtime::block_on(async {
+            tauri::async_runtime::spawn_blocking(|| tail_log_lines("a\nb", None))
+                .await
+                .unwrap_or_else(|e| format!("迁移日志读取线程 join 失败：{e}"))
+        });
+        assert_eq!(s, "b\na");
     }
 }
