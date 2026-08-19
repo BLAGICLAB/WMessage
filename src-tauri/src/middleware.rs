@@ -92,12 +92,22 @@ impl MiddlewareRegistry {
     }
     /// pre-execute 短路求值：任一中间件返回 Some(msg)
     /// P2-13：同 run_pre_step，panic 兜住记审计后按「不阻断」继续下一个
+    /// P2-14：pre_step / pre_execute 双 Vec 分离，漏注册一边会静默半生效——
+    /// 空注册表被调用时记 ERROR 审计（pre_execute_not_registered），不再无声放行
     pub fn run_pre_execute<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
         name: &str,
         active_skill: bool,
     ) -> Option<String> {
+        if self.pre_execute.is_empty() {
+            crate::audit::write_error_audit(
+                app,
+                "pre_execute_not_registered",
+                &[("tool", name)],
+            );
+            return None;
+        }
         for m in &self.pre_execute {
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 m.pre_execute(name, active_skill)
@@ -444,6 +454,37 @@ mod tests {
         r.register_pre_step(Box::new(Custom));
         r.register_pre_step(Box::new(IntentRouterMiddleware));
         assert_eq!(r.pre_step_list(), vec!["custom", "intent_router"]);
+    }
+
+    // ── P2-14：只注册 pre_step 的 registry，pre_execute 调用记审计不静默 ──
+
+    #[test]
+    fn pre_execute_empty_side_audits_not_registered() {
+        struct OnlyStep;
+        impl Middleware for OnlyStep {
+            fn name(&self) -> &str {
+                "only_step"
+            }
+            fn pre_step(&self, _input: &str) -> Option<RouteAction> {
+                None
+            }
+            fn pre_execute(&self, _n: &str, _a: bool) -> Option<String> {
+                unreachable!("未注册到 pre_execute 侧，不应被调用")
+            }
+        }
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let mut r = MiddlewareRegistry::default();
+        r.register_pre_step(Box::new(OnlyStep));
+        // pre_execute 侧为空：返回 None（不阻断）+ 记 pre_execute_not_registered 审计
+        assert_eq!(r.run_pre_execute(&handle, "list_tasks", false), None);
+        let log =
+            std::fs::read_to_string(crate::audit::probe_log_dir(&handle).join("bot.log"))
+                .unwrap_or_default();
+        assert!(
+            log.contains("pre_execute_not_registered") && log.contains("tool=list_tasks"),
+            "缺 pre_execute_not_registered 审计: {log}"
+        );
     }
 
     // ── P2-13：中间件 panic 不得炸掉调用方线程（catch_unwind + ERROR 审计 + None）──
