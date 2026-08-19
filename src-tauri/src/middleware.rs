@@ -46,7 +46,14 @@ impl Default for MiddlewareRegistry {
 
 impl MiddlewareRegistry {
     /// 注册 pre-step 中间件（按注册顺序短路求值）
+    /// D1：IntentRouterMiddleware 恒返回 Some 短路整条链，排它之后的中间件全是
+    /// 死代码（拿不到调用）。这里把「运行时静默死亡」提前成「注册即 panic」。
     pub fn register_pre_step(&mut self, m: Box<dyn Middleware>) {
+        assert!(
+            self.pre_step.last().map(|last| last.name()) != Some(INTENT_ROUTER_NAME),
+            "IntentRouterMiddleware 恒返回 Some 短路 pre_step 链，必须最后注册；禁止在其后追加 {}",
+            m.name()
+        );
         self.pre_step.push(m);
     }
     /// 注册 pre-execute 中间件
@@ -91,6 +98,13 @@ pub fn build_default_registry() -> MiddlewareRegistry {
     let mut r = MiddlewareRegistry::default();
     r.register_pre_step(Box::new(IntentRouterMiddleware));
     r.register_pre_execute(Box::new(AtomicGuardMiddleware));
+    // D1：显式断言 IntentRouterMiddleware 是 pre_step 链的最后一个——
+    // 它恒返回 Some 短路全链，顺序错了后续中间件静默失效。
+    // （register_pre_step 内部已拒绝「在其后追加」，这里再钉一次防未来重排顺序）
+    assert!(
+        r.pre_step.last().map(|m| m.name()) == Some(INTENT_ROUTER_NAME),
+        "IntentRouterMiddleware 必须注册为 pre_step 链最后一个"
+    );
     r
 }
 
@@ -123,10 +137,15 @@ pub fn run_pre_execute<R: tauri::Runtime>(
 // ────────────────────────────────────────────────────────────────────
 
 /// 内置：意图路由中间件（包装 intent_router::route_user_input）
+///
+/// D1：pre_step 恒返回 Some（PassThrough 也算命中），会短路整条 pre_step 链——
+/// 因此它必须是链上最后一个（register_pre_step 对「在其后追加」直接 panic）。
 pub struct IntentRouterMiddleware;
+/// D1：注册顺序断言按名字识别（与 introspect 列表同源），抽常量防拼写漂移
+const INTENT_ROUTER_NAME: &str = "intent_router";
 impl Middleware for IntentRouterMiddleware {
     fn name(&self) -> &str {
-        "intent_router"
+        INTENT_ROUTER_NAME
     }
     fn pre_step(&self, input: &str) -> Option<RouteAction> {
         // PassThrough 也算 Some，让 run_pre_step 短路
@@ -300,5 +319,37 @@ mod tests {
             Some(RouteAction::Skill(s)) => assert_eq!(s, "ppt-orchestra-skill"),
             other => panic!("expected ppt skill route, got {other:?}"),
         }
+    }
+
+    // ── D1：IntentRouterMiddleware 恒 Some 短路全链，必须最后注册 ──
+
+    #[test]
+    #[should_panic(expected = "必须最后注册")]
+    fn register_pre_step_after_intent_router_panics() {
+        // build_default_registry 已把 intent_router 放在 pre_step 链尾；
+        // 任何后续 pre_step 注册都是死代码 → 注册时直接 panic，不容静默死亡
+        let mut r = build_default_registry();
+        r.register_pre_step(Box::new(AtomicGuardMiddleware));
+    }
+
+    #[test]
+    fn register_pre_step_before_intent_router_is_allowed() {
+        struct Custom;
+        impl Middleware for Custom {
+            fn name(&self) -> &str {
+                "custom"
+            }
+            fn pre_step(&self, _input: &str) -> Option<RouteAction> {
+                None
+            }
+            fn pre_execute(&self, _n: &str, _a: bool) -> Option<String> {
+                None
+            }
+        }
+        let mut r = MiddlewareRegistry::default();
+        // 排在 intent_router 之前合法：custom 返回 None 时继续走到 intent_router
+        r.register_pre_step(Box::new(Custom));
+        r.register_pre_step(Box::new(IntentRouterMiddleware));
+        assert_eq!(r.pre_step_list(), vec!["custom", "intent_router"]);
     }
 }
