@@ -127,6 +127,14 @@
 - [x] **P2-28** `error.rs` + `bot_chat.rs` — 新增 `CommandError::TaskInvalidState { reason }`（`TASK_INVALID_STATE`，recoverable=true），execute_task_core 三处业务拒绝（执行中重复触发/已完成/已归档）不再降级 INTERNAL — commit `4a419d3`
 - [x] **P2-30** `capabilities/default.json` — `opener:allow-open-path` 裸 `"**"` 收敛为 `$APPDATA/**` + `$HOME/**`（数据目录 exports/skills 与用户文件放行，/etc/passwd 等系统路径默认 deny）；lib.rs 加 capabilities 锁死测试 — commit `dcb9275`
 
+### Batch 7d 前端 state bug（6 项）
+- [x] **P2-17** `profile.rs entry_view` — 读头像补 5MB 上限（写入端已有，读取端手改 json 可绕过）：超限返回 None + `profile_avatar_too_large` ERROR 审计；测试 6MB 文件 → None + 审计 — commit `42f207a`
+- [x] **P2-20** `storage.ts diffTaskRows` — 拖拽排序只改 `order`，纯排序变更保留原 `updatedAt`（主窗口 mutate 与挂件 applyAndSync 统一走 diffTaskRows）；测试 4 任务拖拽 + 间隙耗尽全量重排 updatedAt 均不变 — commit `efee9b3`
+- [x] **P2-21** `App.tsx mutate` — `tasksRef.current = next` 移到 await 落盘之后，失败抛错；fire-and-forget 调用点统一 `mutateFire` 终止 promise 链（错误已由 storage 层 alert，避免 unhandled rejection）；测试 db_upsert reject → 抛错 + UI 不更新 + 不广播 — commit `167ecde`
+- [x] **P2-22** `TrashPage.tsx` + `App.tsx deleteTask` — 回收站按 `updatedAt desc` 排序；软删落盘行 `schedule/schedLast` 置 null（回收站里不再到点触发）；测试 3 任务倒序 + 软删清调度 — commit `45ed553`
+- [x] **P2-23** `useInlineEdit.ts` — 抽 hook 统一 TaskCardContent（挂件）与 TodoCard（主窗口）标题内联编辑（草稿 + Enter/Escape/Blur；Escape 回滚草稿行为随 TodoCard 统一）；hook 单元测试覆盖全部路径 — commit `2364216`
+- [x] **P2-33** `WidgetApp.tsx` — 5s 兜底轮询读失败改 `handleCommandError(widget_poll)` 弹 alert（不再永久静默）；首次加载/tasks-changed 触发保持安静；测试连续 reject → alert 出现 — commit `07ab6b1`
+
 ---
 
 ## 进度
@@ -137,7 +145,7 @@
 - Phase 4: 4/4 (E5 已勾)
 - Phase 5: 6/6
 - Phase 6: 4/11+（Batch D 原 D1-D4 已勾）
-- Phase 7: 18/35（Batch 7a 审计/日志安全 6/6；Batch 7b DB 事务/迁移 6/6；Batch 7c API/Middleware 健壮性 6/6）
+- Phase 7: 24/35（Batch 7a 审计/日志安全 6/6；Batch 7b DB 事务/迁移 6/6；Batch 7c API/Middleware 健壮性 6/6；Batch 7d 前端 state bug 6/6）
 
 ---
 
