@@ -174,7 +174,10 @@ export default function App() {
         if (!upserts.length) return;
         upsertWorkspaceItems(upserts)
           .then(() => emit("workspace-changed").catch(() => {}))
-          .catch(() => {});
+          // P2-34：写失败不再空 catch 吞掉——storage 层已 alert，这里 console 留痕不重复打扰
+          .catch((e) =>
+            handleCommandError(e, "workspace-updated upsert", { silent: true })
+          );
       }
     );
     return () => {

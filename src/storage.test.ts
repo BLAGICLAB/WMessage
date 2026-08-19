@@ -5,6 +5,8 @@ import {
   deleteTaskRows,
   upsertWorkspaceItems,
   deleteWorkspaceRows,
+  exportTasksToFile,
+  importTasksFromFile,
 } from "./storage";
 import type { Task, WorkspaceItem } from "./types";
 
@@ -92,5 +94,32 @@ describe("写路径错误传播（E1）", () => {
     await upsertWorkspaceItems([]);
     await deleteWorkspaceRows([]);
     expect(invokeMock).not.toHaveBeenCalled();
+  });
+});
+
+// P2-34（2026-08-19）：导出/导入同属写数据类——invoke reject 必须弹 alert，不得静默吞。
+describe("导出/导入失败弹 alert（P2-34）", () => {
+  const alertMock = vi.fn();
+  const ioErr = { code: "IO_ERROR", message: "permission denied", recoverable: false };
+
+  beforeEach(() => {
+    invokeMock.mockReset();
+    alertMock.mockClear();
+    window.alert = alertMock;
+  });
+
+  it("tasks_export 失败 → alert 出现", async () => {
+    invokeMock.mockRejectedValue(ioErr);
+    const n = await exportTasksToFile("/tmp/x.json");
+    expect(n).toBe(0);
+    expect(alertMock).toHaveBeenCalledTimes(1);
+    expect(alertMock.mock.calls[0][0]).toContain("permission denied");
+  });
+
+  it("tasks_import 失败 → alert 出现", async () => {
+    invokeMock.mockRejectedValue(ioErr);
+    const n = await importTasksFromFile("/tmp/x.json");
+    expect(n).toBe(0);
+    expect(alertMock).toHaveBeenCalledTimes(1);
   });
 });
