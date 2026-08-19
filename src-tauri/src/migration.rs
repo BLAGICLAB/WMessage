@@ -1257,16 +1257,36 @@ pub async fn migration_run(app: AppHandle) -> CommandResult<MigrationReport> {
 
 /// 迁移日志读取：尾部 limit 行、最新在前（与机器人审计日志同模式，老板指定）
 /// NEW-B-3: 日志最大 5MB，sync 读阻塞主线程 → async + spawn_blocking（B3 同模式）
+/// F3（Phase 6b）：读失败（权限/磁盘/损坏）返回 Err(IoError) + ERROR 审计，
+/// 不再静默吞成「暂无迁移日志」；仅「文件不存在」返回占位文案。
 #[tauri::command]
-pub async fn migration_log_read(app: AppHandle, limit: Option<usize>) -> String {
-    tauri::async_runtime::spawn_blocking(move || {
-        let Ok(raw) = fs::read_to_string(log_path(&app)) else {
-            return "（暂无迁移日志）".into();
-        };
-        tail_log_lines(&raw, limit)
-    })
-    .await
-    .unwrap_or_else(|e| format!("迁移日志读取线程 join 失败：{e}"))
+pub async fn migration_log_read(app: AppHandle, limit: Option<usize>) -> CommandResult<String> {
+    let app2 = app.clone();
+    let r = tauri::async_runtime::spawn_blocking(move || read_migration_log(&log_path(&app2), limit))
+        .await
+        .map_err(|e| CommandError::Internal(format!("迁移日志读取线程 join 失败：{e}")))?;
+    match r {
+        Ok(s) => Ok(s),
+        Err(e) => {
+            let msg = e.message();
+            crate::audit::write_error_audit(
+                &app,
+                "migration_log_read_fail",
+                &[("err", msg.as_str())],
+            );
+            Err(e)
+        }
+    }
+}
+
+/// F3（Phase 6b）：纯路径参数版便于单测（tauri command 绑定 Wry AppHandle）。
+/// NotFound → Ok("（暂无迁移日志）")；其他 IO 错误 → Err(IoError)，不静默吞。
+fn read_migration_log(path: &Path, limit: Option<usize>) -> CommandResult<String> {
+    match fs::read_to_string(path) {
+        Ok(raw) => Ok(tail_log_lines(&raw, limit)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok("（暂无迁移日志）".into()),
+        Err(e) => Err(CommandError::IoError(format!("读取迁移日志失败：{e}"))),
+    }
 }
 
 /// 尾部 limit 行、最新在前（纯函数，可单测）
@@ -1910,15 +1930,38 @@ mod tests {
         assert_eq!(tail_log_lines(raw, Some(9999)), "l4\nl3\nl2\nl1");
     }
 
-    /// NEW-B-3: async wrapper 与原 sync 命令返回类型一致（String），spawn_blocking 桥接不丢内容。
+    /// F3（Phase 6b）：文件不存在 → 占位文案（Ok），日志确实没东西不算错误。
     #[test]
-    fn migration_log_read_async_wrapper_returns_string() {
-        let s: String = tauri::async_runtime::block_on(async {
-            tauri::async_runtime::spawn_blocking(|| tail_log_lines("a\nb", None))
+    fn f3_read_migration_log_missing_returns_placeholder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("migration.log");
+        assert_eq!(read_migration_log(&p, None).unwrap(), "（暂无迁移日志）");
+    }
+
+    /// F3（Phase 6b）：IO 错误（路径是目录 → read_to_string 失败且非 NotFound）
+    /// → Err(IoError)，不再静默吞成「暂无迁移日志」。
+    #[test]
+    fn f3_read_migration_log_io_error_not_swallowed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = read_migration_log(tmp.path(), None).unwrap_err();
+        assert_eq!(err.code(), "IO_ERROR");
+        assert!(!err.is_recoverable());
+    }
+
+    /// F3（Phase 6b）：内容走 tail_log_lines 同逻辑；async wrapper 桥接 CommandResult 不丢内容。
+    #[test]
+    fn f3_read_migration_log_tail_and_async_bridge() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("migration.log");
+        std::fs::write(&p, "a\nb\nc\n").unwrap();
+        assert_eq!(read_migration_log(&p, Some(2)).unwrap(), "c\nb");
+        let p2 = p.clone();
+        let s: CommandResult<String> = tauri::async_runtime::block_on(async {
+            tauri::async_runtime::spawn_blocking(move || read_migration_log(&p2, None))
                 .await
-                .unwrap_or_else(|e| format!("迁移日志读取线程 join 失败：{e}"))
+                .map_err(|e| CommandError::Internal(format!("迁移日志读取线程 join 失败：{e}")))?
         });
-        assert_eq!(s, "b\na");
+        assert_eq!(s.unwrap(), "c\nb\na");
     }
 
     /// NEW-B-5: 同一 src 的 remove 失败计数越阈后永久跳过；不同 src 互不影响。

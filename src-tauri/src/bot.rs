@@ -269,11 +269,28 @@ pub(crate) fn truncate_for_log(s: &str, max: usize) -> String {
 }
 
 /// 读取机器人审计日志（倒序，最新在前；默认 200 行，上限 2000）
+/// F3（Phase 6b）：读失败（权限/磁盘/损坏）返回 Err(IoError) + ERROR 审计，
+/// 不再静默吞成「暂无日志」；仅「文件不存在」返回占位文案。
 #[tauri::command]
-pub fn bot_log_read(app: AppHandle, limit: Option<usize>) -> String {
+pub fn bot_log_read(app: AppHandle, limit: Option<usize>) -> CommandResult<String> {
     let p = crate::db::data_dir(&app).join("bot.log");
-    let Ok(raw) = std::fs::read_to_string(p) else {
-        return "（暂无日志）".into();
+    match read_log_tail(&p, limit) {
+        Ok(s) => Ok(s),
+        Err(e) => {
+            let msg = e.message();
+            crate::audit::write_error_audit(&app, "bot_log_read_fail", &[("err", msg.as_str())]);
+            Err(e)
+        }
+    }
+}
+
+/// F3（Phase 6b）：纯路径参数版便于单测（tauri command 绑定 Wry AppHandle）。
+/// NotFound → Ok("（暂无日志）")（日志确实没东西）；其他 IO 错误 → Err(IoError)。
+fn read_log_tail(path: &std::path::Path, limit: Option<usize>) -> CommandResult<String> {
+    let raw = match std::fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok("（暂无日志）".into()),
+        Err(e) => return Err(CommandError::IoError(format!("读取日志失败：{e}"))),
     };
     let limit = limit.unwrap_or(200).clamp(1, 2000);
     let mut lines: Vec<&str> = raw.lines().collect();
@@ -281,7 +298,7 @@ pub fn bot_log_read(app: AppHandle, limit: Option<usize>) -> String {
         lines = lines[lines.len() - limit..].to_vec();
     }
     lines.reverse();
-    lines.join("\n")
+    Ok(lines.join("\n"))
 }
 
 // ───────────────────────── 参数上限（防幻觉/防刷爆） ─────────────────────────
@@ -1524,6 +1541,55 @@ mod f1_keyring_tests {
     #[test]
     fn has_api_key_present_is_ok_true() {
         assert!(classify_has_key(Ok("sk-test".into())).unwrap());
+    }
+}
+
+/// F3（Phase 6b）单测：bot_log_read 不再把读文件错吞成「暂无日志」。
+#[cfg(test)]
+mod f3_log_read_tests {
+    use super::*;
+
+    #[test]
+    fn read_log_tail_missing_file_returns_placeholder() {
+        // 文件不存在 = 日志确实没东西 → Ok 占位文案（前端按「暂无日志」显示）
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("bot.log");
+        assert_eq!(read_log_tail(&p, None).unwrap(), "（暂无日志）");
+    }
+
+    #[test]
+    fn read_log_tail_io_error_not_swallowed() {
+        // 路径是目录 → read_to_string 失败（非 NotFound）→ Err(IoError)，不静默吞
+        let tmp = tempfile::tempdir().unwrap();
+        let err = read_log_tail(tmp.path(), None).unwrap_err();
+        assert_eq!(err.code(), "IO_ERROR");
+        assert!(!err.is_recoverable());
+    }
+
+    #[test]
+    fn read_log_tail_returns_reversed_tail_with_limit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("bot.log");
+        std::fs::write(&p, "l1\nl2\nl3\n").unwrap();
+        assert_eq!(read_log_tail(&p, Some(2)).unwrap(), "l3\nl2");
+        assert_eq!(read_log_tail(&p, None).unwrap(), "l3\nl2\nl1");
+    }
+
+    #[test]
+    fn bot_log_read_fail_audit_line_written() {
+        // ERROR 审计走 write_error_audit（泛型 Runtime，mock_app 跑同一条生产代码路径）。
+        // generic_log_dir 探针命中测试二进制旁目录（target/debug/deps），读完即删。
+        let app = tauri::test::mock_app();
+        crate::audit::write_error_audit(app.handle(), "bot_log_read_fail", &[("err", "boom")]);
+        let exe = std::env::current_exe().unwrap();
+        let log = exe.parent().unwrap().join("bot.log");
+        let content = std::fs::read_to_string(&log).unwrap();
+        assert!(
+            content.contains("bot_log_read_fail"),
+            "ERROR 审计行应出现: {content}"
+        );
+        assert!(content.contains("boom"), "审计行应含 err 信息: {content}");
+        let _ = std::fs::remove_file(&log);
     }
 }
 /// 不依赖 Tauri AppHandle，验证 30000 字符截断 + 截断提示逻辑。
