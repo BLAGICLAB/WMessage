@@ -87,28 +87,43 @@ pub fn read_bypass_llm_switch(app: &AppHandle) -> bool {
         .unwrap_or(true)
 }
 
-fn key_entry() -> Result<keyring::Entry, String> {
+fn key_entry() -> CommandResult<keyring::Entry> {
     keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)
-        .map_err(|e| format!("系统凭据存储不可用：{e}"))
+        .map_err(|e| CommandError::KeyringError(format!("系统凭据存储不可用：{e}")))
 }
 
-pub fn read_api_key() -> Result<String, String> {
-    key_entry()?
-        .get_password()
-        .map_err(|e| format!("读取 API Key 失败：{e}"))
+/// F1（Phase 6b）：get_password 结果分类——任何失败都映射为 KeyringError 结构化变体，
+/// 不再走 String 逃生舱（同类故障产出两种 code，前端 hintForCode 失配）。
+/// 抽成纯函数便于单测（keyring 真实存储在测试环境不可用）。
+fn classify_get_password(r: Result<String, keyring::Error>) -> CommandResult<String> {
+    r.map_err(|e| CommandError::KeyringError(format!("读取 API Key 失败：{e}")))
 }
 
-pub fn has_api_key() -> bool {
-    match key_entry() {
-        Ok(e) => e.get_password().is_ok(),
-        Err(_) => false,
+/// F1（Phase 6b）：「key 不存在」（NoEntry）→ Ok(false)；
+/// keyring 真实故障（钥匙串锁定 / 权限拒绝）→ Err(KeyringError)，不静默吞成 false。
+fn classify_has_key(r: Result<String, keyring::Error>) -> CommandResult<bool> {
+    match r {
+        Ok(_) => Ok(true),
+        Err(keyring::Error::NoEntry) => Ok(false),
+        Err(e) => Err(CommandError::KeyringError(format!("检查 API Key 失败：{e}"))),
     }
 }
 
-fn write_api_key(key: &str) -> Result<(), String> {
+pub fn read_api_key() -> CommandResult<String> {
+    classify_get_password(key_entry()?.get_password())
+}
+
+pub fn has_api_key() -> CommandResult<bool> {
+    match key_entry() {
+        Ok(e) => classify_has_key(e.get_password()),
+        Err(e) => Err(e),
+    }
+}
+
+fn write_api_key(key: &str) -> CommandResult<()> {
     key_entry()?
         .set_password(key)
-        .map_err(|e| format!("保存 API Key 失败：{e}"))
+        .map_err(|e| CommandError::KeyringError(format!("保存 API Key 失败：{e}")))
 }
 
 /// 返回给前端的配置视图：不含 key 本体，只有 hasApiKey 标志
@@ -139,8 +154,9 @@ pub fn migrate_legacy_key(app: &AppHandle) -> Result<(), String> {
     if k.is_empty() {
         return Ok(());
     }
-    // 凭据存储里没有 key 时才写入（避免旧明文覆盖用户新存的 key）
-    if !has_api_key() && write_api_key(&k).is_err() {
+    // 凭据存储里没有 key 时才写入（避免旧明文覆盖用户新存的 key）；
+    // keyring 故障（Err）按「写不入」同等处理：保留文件明文，下次再试
+    if !has_api_key().unwrap_or(false) && write_api_key(&k).is_err() {
         return Ok(()); // 写入失败：保留文件明文，下次再试
     }
     let dir = crate::db::data_dir(app);
@@ -160,7 +176,9 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
         BotConfig::default()
     };
 
-    let has_api_key = has_api_key();
+    // F1：keyring 真实故障（钥匙串锁定/权限拒绝）不再吞成「未配置」，
+    // 结构化 KeyringError 透传给前端，设置页可提示用户检查 keychain
+    let has_api_key = has_api_key()?;
     Ok(BotConfigView {
         base_url: cfg.base_url,
         model: cfg.model,
@@ -1459,7 +1477,55 @@ mod bot_config_tests {
     }
 }
 
-/// Plan C 单函数测试（F-6 step 5）：tool_extract_document 输出格式化
+/// F1（Phase 6b）单测：keyring 错误分类纯函数。
+/// 真实 keychain 在测试环境不可用，用构造的 keyring::Error 注入故障。
+#[cfg(test)]
+mod f1_keyring_tests {
+    use super::*;
+
+    fn platform_failure() -> keyring::Error {
+        keyring::Error::PlatformFailure(Box::new(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "keychain locked",
+        )))
+    }
+
+    #[test]
+    fn read_api_key_keyring_failure_maps_to_keyring_error_variant() {
+        // keyring 故障（钥匙串锁定/权限拒绝）→ KeyringError 结构化变体，不走 String 逃生舱
+        let err = classify_get_password(Err(platform_failure())).unwrap_err();
+        assert_eq!(err.code(), "KEYRING_ERROR");
+        assert!(err.message().contains("读取 API Key 失败"));
+        // error.rs 定义：KeyringError recoverable=false（用户需先解锁 keychain，重试无意义）
+        assert!(!err.is_recoverable());
+    }
+
+    #[test]
+    fn read_api_key_success_passes_value_through() {
+        let key = classify_get_password(Ok("sk-test".into())).unwrap();
+        assert_eq!(key, "sk-test");
+    }
+
+    #[test]
+    fn has_api_key_no_entry_is_ok_false() {
+        // 「key 不存在」不是故障：Ok(false)，前端显示「未配置 API Key」
+        let r = classify_has_key(Err(keyring::Error::NoEntry)).unwrap();
+        assert!(!r);
+    }
+
+    #[test]
+    fn has_api_key_keyring_failure_not_swallowed_to_false() {
+        // keyring 真实故障不得吞成 false（「反复填 key 仍失败无提示」假象）
+        let err = classify_has_key(Err(platform_failure())).unwrap_err();
+        assert_eq!(err.code(), "KEYRING_ERROR");
+        assert!(err.message().contains("检查 API Key 失败"));
+    }
+
+    #[test]
+    fn has_api_key_present_is_ok_true() {
+        assert!(classify_has_key(Ok("sk-test".into())).unwrap());
+    }
+}
 /// 不依赖 Tauri AppHandle，验证 30000 字符截断 + 截断提示逻辑。
 #[cfg(test)]
 mod tool_extract_document_tests {
