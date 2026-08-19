@@ -269,6 +269,18 @@ fn over_limit(v: &str, max: usize, what: &str) -> Option<String> {
     (v.chars().count() > max).then(|| format!("{what}过长（上限 {max} 字）"))
 }
 
+/// 拼一行任务变更日志（P2-2：title 过 escape_for_log——标题里的 `\n` / `| ` 会伪造
+/// 日志行或撕裂多行；抽出纯函数便于单测，after_change 只做 IO）。
+fn change_log_line(op: &str, task: &db::Task) -> String {
+    format!(
+        "change op={} id={} status={} title={}",
+        op,
+        task.id,
+        task.column,
+        crate::audit::escape_for_log(&task.title, 2 * API_MAX_TITLE)
+    )
+}
+
 /// 任务变更后：store 内部 SSE 广播 + 前端看板刷新回调 + 变更日志
 ///
 /// A5: hub 不再传入；SSE 广播走 `store.notify_change()`，由 store 层封装 hub。
@@ -281,13 +293,7 @@ fn after_change(
     log: &Option<PathBuf>,
 ) {
     store.notify_change(op, task);
-    log_line(
-        log,
-        &format!(
-            "change op={} id={} status={} title={}",
-            op, task.id, task.column, task.title
-        ),
-    );
+    log_line(log, &change_log_line(op, task));
     if let Some(f) = emit_fn {
         f(task);
     }
@@ -1006,6 +1012,45 @@ mod tests {
             .unwrap_or(0);
         let body = resp.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
         (status, body)
+    }
+
+    /// 构造一个最小 db::Task（只关心 change_log_line 用到的字段）
+    fn bare_task(title: &str) -> db::Task {
+        db::Task {
+            id: "t1".into(),
+            title: title.into(),
+            due: None,
+            note: None,
+            tags: None,
+            file_path: None,
+            file_is_dir: None,
+            column: "todo".into(),
+            subtasks: None,
+            completed_at: None,
+            archived: None,
+            deleted_at: None,
+            collapsed: None,
+            order: None,
+            updated_at: None,
+            schedule: None,
+            sched_last: None,
+            bot_assigned: None,
+        }
+    }
+
+    #[test]
+    fn change_log_line_escapes_title_newline() {
+        // P2-2：标题含 \n 时日志行不得出现裸换行（防伪造日志行/多行撕裂）
+        let line = change_log_line("created", &bare_task("标题\n[2026-01-01] forged | x"));
+        assert!(!line.contains('\n'), "日志行不得含裸换行: {line:?}");
+        assert!(line.contains("标题\\n"), "换行必须转义为 \\n: {line:?}");
+        assert!(!line.contains("| x"), "裸管道符必须转义: {line:?}");
+    }
+
+    #[test]
+    fn change_log_line_plain_title_unchanged() {
+        let line = change_log_line("updated", &bare_task("普通标题"));
+        assert_eq!(line, "change op=updated id=t1 status=todo title=普通标题");
     }
 
     #[test]
