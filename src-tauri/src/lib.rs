@@ -331,52 +331,59 @@ pub fn run() {
                 });
             }
 
-            // Windows 系统托盘：#3 图标，右键菜单「打开主窗口 / 退出」，
-            // 左键单击/双击恢复主窗口。
-            #[cfg(target_os = "windows")]
+            // 系统托盘（P2-31 三平台：原仅 cfg(windows)，Linux/macOS 无托盘；tauri 2
+            // tray-icon feature 已三平台支持）：#3 图标，右键菜单「打开主窗口 / 退出」，
+            // 左键单击/双击恢复主窗口。Linux 需 libappindicator，缺失时初始化失败 ——
+            // 降级为无托盘仅记日志，绝不让 App 启动失败（与快捷键注册容错同策略，审计 P2）。
             {
                 use tauri::image::Image;
                 use tauri::menu::{MenuBuilder, MenuItemBuilder};
                 use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 
-                let open = MenuItemBuilder::with_id("tray_open", "打开主窗口").build(app)?;
-                let quit = MenuItemBuilder::with_id("tray_quit", "退出").build(app)?;
-                let menu = MenuBuilder::new(app).items(&[&open, &quit]).build()?;
+                let build_tray = || -> tauri::Result<()> {
+                    let open = MenuItemBuilder::with_id("tray_open", "打开主窗口").build(&*app)?;
+                    let quit = MenuItemBuilder::with_id("tray_quit", "退出").build(&*app)?;
+                    let menu = MenuBuilder::new(&*app).items(&[&open, &quit]).build()?;
 
-                let icon = Image::from_bytes(include_bytes!("../icons/tray-wm-32.png"))?;
+                    let icon = Image::from_bytes(include_bytes!("../icons/tray-wm-32.png"))?;
 
-                TrayIconBuilder::with_id("main-tray")
-                    .icon(icon)
-                    .tooltip("WMessage")
-                    .menu(&menu)
-                    .show_menu_on_left_click(false)
-                    .on_menu_event(|app, event| match event.id().as_ref() {
-                        "tray_open" => {
-                            if let Some(w) = app.get_webview_window("main") {
-                                bring_main_to_front(&w);
+                    TrayIconBuilder::with_id("main-tray")
+                        .icon(icon)
+                        .tooltip("WMessage")
+                        .menu(&menu)
+                        .show_menu_on_left_click(false)
+                        .on_menu_event(|app, event| match event.id().as_ref() {
+                            "tray_open" => {
+                                if let Some(w) = app.get_webview_window("main") {
+                                    bring_main_to_front(&w);
+                                }
                             }
-                        }
-                        "tray_quit" => {
-                            app.exit(0);
-                        }
-                        _ => {}
-                    })
-                    .on_tray_icon_event(|tray, event| match event {
-                        TrayIconEvent::Click {
-                            button: MouseButton::Left,
-                            ..
-                        }
-                        | TrayIconEvent::DoubleClick {
-                            button: MouseButton::Left,
-                            ..
-                        } => {
-                            if let Some(w) = tray.app_handle().get_webview_window("main") {
-                                bring_main_to_front(&w);
+                            "tray_quit" => {
+                                app.exit(0);
                             }
-                        }
-                        _ => {}
-                    })
-                    .build(app)?;
+                            _ => {}
+                        })
+                        .on_tray_icon_event(|tray, event| match event {
+                            TrayIconEvent::Click {
+                                button: MouseButton::Left,
+                                ..
+                            }
+                            | TrayIconEvent::DoubleClick {
+                                button: MouseButton::Left,
+                                ..
+                            } => {
+                                if let Some(w) = tray.app_handle().get_webview_window("main") {
+                                    bring_main_to_front(&w);
+                                }
+                            }
+                            _ => {}
+                        })
+                        .build(&*app)?;
+                    Ok(())
+                };
+                if let Err(e) = build_tray() {
+                    eprintln!("[tray] 系统托盘初始化失败（Linux 可能缺 libappindicator）：{e}");
+                }
             }
 
             Ok(())
@@ -519,6 +526,35 @@ mod p2_30_capability_tests {
             .iter()
             .any(|p| "/etc/passwd".starts_with(p.trim_end_matches("**").trim_end_matches('/')));
         assert!(!passwd_covered, "/etc/passwd 不得被任何 allow 覆盖");
+    }
+}
+
+#[cfg(test)]
+mod p2_31_tray_tests {
+    /// P2-31：托盘初始化不得限定 cfg(windows) —— tauri 2 tray-icon 三平台支持，
+    /// Linux/macOS 走同一初始化（Linux 缺 libappindicator 时降级 eprintln，不启动失败）。
+    /// 本测试锁死 lib.rs 防回退；编译通过即证明 macOS 平台托盘代码路径有效。
+    #[test]
+    fn tray_init_is_not_windows_gated() {
+        let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
+            .expect("lib.rs 必须可读");
+        let pos = text
+            .find("TrayIconBuilder::with_id")
+            .expect("必须有托盘初始化");
+        // 托盘初始化语句前 300 字符内不得有 cfg 平台门
+        let before = &text[..pos];
+        let tail = &before[before.len().saturating_sub(300)..];
+        assert!(
+            !tail.contains("#[cfg("),
+            "托盘初始化不得被 cfg 平台门限制（P2-31 三平台）: {tail:?}"
+        );
+        // 初始化失败必须降级（不得用 ? 让 setup 失败）
+        let after = &text[pos..];
+        let scope = &after[..after.len().min(2500)];
+        assert!(
+            scope.contains("eprintln!"),
+            "托盘初始化失败必须降级记日志，不得中断启动: {scope:?}"
+        );
     }
 }
 
