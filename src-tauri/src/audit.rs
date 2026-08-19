@@ -126,7 +126,13 @@ fn append_line(path: &std::path::Path, line: &str) -> bool {
 
 /// 写一条结构化审计事件到 `bot.log`（post-execute 钩子主入口）
 /// 复用 `bot::audit_log` 的 rotate 阈值与文件路径，老日志兼容。
-pub fn write_event(app: &AppHandle, level: AuditLevel, event: &str, kv: &[(&str, String)]) {
+/// 泛型 Runtime（P2-24）：mock runtime 测试可直调（与 write_error_audit 同先例）。
+pub fn write_event<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    level: AuditLevel,
+    event: &str,
+    kv: &[(&str, String)],
+) {
     let _g = BOT_LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     crate::db::rotate_log_if_large(&crate::db::data_dir(app).join("bot.log"), 5 * 1024 * 1024);
     let p = crate::db::data_dir(app).join("bot.log");

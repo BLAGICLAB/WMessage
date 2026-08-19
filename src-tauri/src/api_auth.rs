@@ -61,23 +61,23 @@ pub(crate) fn ct_eq(a: &str, b: &str) -> bool {
 }
 
 /// 开关标志文件路径：`{data_dir}/api-enabled.flag`
-pub fn enabled_flag_path(app: &AppHandle) -> PathBuf {
+pub fn enabled_flag_path<R: tauri::Runtime>(app: &AppHandle<R>) -> PathBuf {
     db::data_dir(app).join("api-enabled.flag")
 }
 
 /// 读取开关标志：上次退出时 API 是否处于开启状态（仅做 flag 文件存在判断）。
 /// 与 `should_autostart` 同义，保留两个名字给不同调用方。
-pub fn read_enabled_flag(app: &AppHandle) -> bool {
+pub fn read_enabled_flag<R: tauri::Runtime>(app: &AppHandle<R>) -> bool {
     enabled_flag_path(app).exists()
 }
 
 /// 上次退出时 API 是否处于开启状态（供启动自动恢复）。
-pub fn should_autostart(app: &AppHandle) -> bool {
+pub fn should_autostart<R: tauri::Runtime>(app: &AppHandle<R>) -> bool {
     read_enabled_flag(app)
 }
 
 /// 写开关标志（`api_start` 成功后调用）。
-pub fn write_enabled_flag(app: &AppHandle) {
+pub fn write_enabled_flag<R: tauri::Runtime>(app: &AppHandle<R>) {
     let dir = db::data_dir(app);
     if std::fs::create_dir_all(&dir).is_ok() {
         let _ = std::fs::write(enabled_flag_path(app), b"1");
@@ -85,7 +85,7 @@ pub fn write_enabled_flag(app: &AppHandle) {
 }
 
 /// 清开关标志（`api_stop` 后调用）。
-pub fn clear_enabled_flag(app: &AppHandle) {
+pub fn clear_enabled_flag<R: tauri::Runtime>(app: &AppHandle<R>) {
     let _ = std::fs::remove_file(enabled_flag_path(app));
 }
 

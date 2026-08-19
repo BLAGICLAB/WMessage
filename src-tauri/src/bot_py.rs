@@ -386,6 +386,77 @@ fn cleanup_after_fail(child: &mut std::process::Child, dir: &std::path::Path, li
     let _ = std::fs::remove_dir_all(dir);
 }
 
+// ───────────────────────── 退出清理（P2-24）─────────────────────────
+
+/// 在途 Python 子进程注册表（P2-24）：spawn 成功即登记 pid，运行结束（任意返回路径）
+/// 经 ChildRegGuard Drop 注销。子进程不随父进程退出 —— 应用退出（ExitRequested）时
+/// 按注册表整树强杀，防父进程先退留下孤儿。
+static PY_CHILDREN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<u32>>> =
+    std::sync::OnceLock::new();
+
+fn py_children() -> &'static std::sync::Mutex<std::collections::HashSet<u32>> {
+    PY_CHILDREN.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+/// 注册表条目守卫：Drop 即注销，覆盖正常 / wait_fail / timeout / stopped 全部返回路径
+struct ChildRegGuard(u32);
+
+impl ChildRegGuard {
+    fn register(child: &std::process::Child) -> Self {
+        py_children()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(child.id());
+        Self(child.id())
+    }
+}
+
+impl Drop for ChildRegGuard {
+    fn drop(&mut self) {
+        py_children()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.0);
+    }
+}
+
+/// 按 pid 整树强杀（可测内核，P2-24）：Unix 子进程 spawn 时 process_group(0) 自成组首，
+/// `kill -9 -pid` 杀整组（含孙进程，与 kill_tree 同策略）；Windows `taskkill /T /F` 杀整树。
+/// 已退出的 pid（组不存在）按未杀计，不报错。
+fn kill_py_children(pids: &[u32]) -> usize {
+    let mut killed = 0;
+    for pid in pids {
+        #[cfg(unix)]
+        let ok = silent_cmd("kill")
+            .args(["-9", &format!("-{pid}")])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        #[cfg(windows)]
+        let ok = silent_cmd("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if ok {
+            killed += 1;
+        }
+    }
+    killed
+}
+
+/// 应用退出清理（P2-24）：杀掉全部在途 Python 子进程，返回杀掉的数量。
+/// 由 lib.rs ExitRequested 清理路径调用；注册表为空的正常退出零开销。
+pub fn kill_all_py_children() -> usize {
+    let pids: Vec<u32> = py_children()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .copied()
+        .collect();
+    kill_py_children(&pids)
+}
+
 /// 有界读取 + 排空（NEW-C-5）：先按 cap+1 探测是否超限；超限则截断到 cap，
 /// 并继续把剩余输出读到 EOF 丢弃 —— 原先 take() 到顶即 drop 管道读端，
 /// Unix 子进程下次 write 会吃 SIGPIPE 被静默杀死（exit_code=None），用户只见莫名失败。
@@ -651,6 +722,9 @@ fn run_python_at(
         }
     };
     limits.assign(&child);
+    // P2-24：登记在途子进程（守卫 Drop 注销，覆盖全部返回路径）；
+    // 应用退出时 kill_all_py_children 按注册表整树强杀，防子进程变孤儿
+    let _child_reg = ChildRegGuard::register(&child);
 
     // 双线程读输出防管道死锁（stdout/stderr 先取出再交给线程）
     let child_stdout = child.stdout.take();
@@ -1955,6 +2029,43 @@ mod tests {
             child.try_wait().unwrap().is_some(),
             "子进程应已被杀死，不得留孤儿"
         );
+    }
+
+    // ── 退出清理注册表（P2-24：kill_py_children 整树杀 + 守卫注销）──
+
+    #[cfg(unix)]
+    #[test]
+    fn kill_py_children_kills_registered_process_group() {
+        // 模拟生产 spawn（process_group(0) 自成组首）：注册后按 pid 整组强杀，
+        // 子进程必须已退出（不得留孤儿）；守卫 Drop 后注册表必须清空
+        use std::os::unix::process::CommandExt;
+        let mut cmd = silent_cmd("sleep");
+        cmd.arg("30");
+        cmd.process_group(0);
+        let mut child = cmd.spawn().unwrap();
+        let pid = child.id();
+        {
+            let _guard = ChildRegGuard::register(&child);
+            assert!(
+                py_children()
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .contains(&pid),
+                "注册后必须能查到 pid"
+            );
+            assert_eq!(kill_py_children(&[pid]), 1, "应杀掉 1 个进程组");
+            let status = child.wait().unwrap();
+            assert!(!status.success(), "子进程应已被强杀");
+        }
+        assert!(
+            !py_children()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains(&pid),
+            "守卫 Drop 后必须注销（防 pid 复用误杀）"
+        );
+        // 已退出的 pid 再杀：组不存在按未杀计，不 panic
+        assert_eq!(kill_py_children(&[pid]), 0);
     }
 
     // ── 残留目录清扫（P2-9：启动时清 py-runs 超龄目录）──

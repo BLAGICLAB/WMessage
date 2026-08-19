@@ -165,6 +165,39 @@ fn copy_file_windows(path: &str, title: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// P2-24：退出前统一清理（macOS Cmd+Q / Windows 托盘「退出」都走 RunEvent::ExitRequested）。
+/// 原先只销毁主窗口：API 服务线程、SSE writer、活动 Skill、在途 Python 子进程全部
+/// 随进程强退变孤儿。顺序：停 API（不再接新请求；G1 accept + SSE writer 全 join，
+/// 保留 api-enabled.flag 供下次启动自动恢复）→ 终止活动 Skill → 按注册表杀在途
+/// Python 整树 → 结构化审计。
+/// 泛型 Runtime（与 NEW-D-6 同先例）：mock runtime 可直测全链路。
+fn cleanup_on_exit<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    cleanup_on_exit_with(app, bot_py::kill_all_py_children);
+}
+
+/// 可测内核（P2-24）：kill_py 注入 —— 测试不传全局 kill_all（会把并行测试
+/// 注册的在途子进程一起杀掉），生产固定接 bot_py::kill_all_py_children。
+fn cleanup_on_exit_with<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    kill_py: impl FnOnce() -> usize,
+) {
+    let api_stopped = match app.try_state::<api_server::ApiState>() {
+        Some(state) => api_handlers::api_stop_for_exit(app, &state).is_ok(),
+        None => false,
+    };
+    bot_skills::skill_terminate_all(app, "应用退出");
+    let py_killed = kill_py();
+    audit::write_event(
+        app,
+        audit::AuditLevel::Info,
+        "app_exit_cleanup",
+        &[
+            ("api_stopped", api_stopped.to_string()),
+            ("py_killed", py_killed.to_string()),
+        ],
+    );
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 全局快捷键修饰键：macOS 用 Cmd+Ctrl（避开 Cmd+Shift+N 与 Finder 新建文件夹冲突），
@@ -406,6 +439,9 @@ pub fn run() {
             // 主窗口 CloseRequested 被上面 prevent（改成隐藏），这里直接销毁主窗口，
             // 让退出流程正常走完。
             if let tauri::RunEvent::ExitRequested { .. } = event {
+                // P2-24：先清理资源（API server / 活动 Skill / 在途 Python 子进程），
+                // 再销毁主窗口 —— 原先只 destroy，子进程与服务线程全部变孤儿
+                cleanup_on_exit(app);
                 if let Some(main) = app.get_webview_window("main") {
                     let _ = main.destroy();
                 }
@@ -477,5 +513,95 @@ mod p2_30_capability_tests {
             .iter()
             .any(|p| "/etc/passwd".starts_with(p.trim_end_matches("**").trim_end_matches('/')));
         assert!(!passwd_covered, "/etc/passwd 不得被任何 allow 覆盖");
+    }
+}
+
+#[cfg(test)]
+mod p2_24_exit_cleanup_tests {
+    use tauri::Manager;
+
+    /// P2-24：ExitRequested 清理 —— mock 一个 Running 态 Skill + 真实启动 API server，
+    /// cleanup_on_exit 后：API 状态释放且端口关闭、Skill 终止、api-enabled.flag 保留
+    ///（退出 ≠ 用户关开关，下次启动应自动恢复）、app_exit_cleanup 审计落行。
+    #[test]
+    fn cleanup_on_exit_releases_api_and_skill() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        app.manage(crate::api_server::ApiState::default());
+        // 真实启动 API server（固定生产端口；MemStore 免 Wry 绑定的 TauriStore，
+        // server/线程/端口与 api_start 同为 start_api 真路径）
+        {
+            let store: std::sync::Arc<dyn crate::api::TaskStore> =
+                std::sync::Arc::new(crate::api::MemStore {
+                    tasks: std::sync::Mutex::new(Vec::new()),
+                    hub: crate::api_server::EventHub::new(),
+                });
+            let running = crate::api_server::start_api(
+                crate::api::API_PORT,
+                "test-token".into(),
+                store,
+                None,
+                None,
+                None,
+            )
+            .expect("API 应启动成功");
+            let state = app.state::<crate::api_server::ApiState>();
+            *state.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(running);
+        }
+        // mock 一个活动 Skill（Paused：terminate_all 覆盖 Running+Paused；
+        // 不用 Running 是避免污染并行测试的 is_skill_active 全局断言）
+        crate::bot_skills::test_insert_skill_run(
+            "p2-24-skill",
+            crate::bot_skills::SkillState::Paused,
+        );
+        // 模拟「API 开启中退出」：enabled flag 存在（api_start 成功后会写）
+        let dir = crate::db::data_dir(&handle);
+        std::fs::create_dir_all(&dir).unwrap();
+        let flag = dir.join("api-enabled.flag");
+        std::fs::write(&flag, b"1").unwrap();
+
+        // kill fn 注入 spy：全局 kill_all 会误杀并行测试注册的在途子进程，
+        // 真杀路径由 bot_py::kill_py_children 单测覆盖
+        let kill_called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let kc = kill_called.clone();
+        super::cleanup_on_exit_with(&handle, move || {
+            kc.store(true, std::sync::atomic::Ordering::SeqCst);
+            0
+        });
+        assert!(
+            kill_called.load(std::sync::atomic::Ordering::SeqCst),
+            "退出清理必须调用 Python 子进程清理"
+        );
+
+        // API 已停：state 清空 + 端口拒绝连接
+        {
+            let state = app.state::<crate::api_server::ApiState>();
+            assert!(
+                state.0.lock().unwrap_or_else(|e| e.into_inner()).is_none(),
+                "API 状态应已释放"
+            );
+        }
+        assert!(
+            std::net::TcpStream::connect(("127.0.0.1", crate::api::API_PORT)).is_err(),
+            "API 端口应已关闭"
+        );
+        // Skill 已终止
+        assert_eq!(
+            crate::bot_skills::test_skill_run_state("p2-24-skill"),
+            Some(crate::bot_skills::SkillState::Terminated),
+            "活动 Skill 应被终止"
+        );
+        // enabled flag 保留：退出路径区别于用户主动 api_stop（下次启动自动恢复）
+        assert!(flag.exists(), "退出路径不得清 api-enabled.flag");
+        // 审计落行
+        let log = std::fs::read_to_string(dir.join("bot.log")).expect("bot.log 应存在");
+        assert!(
+            log.contains("app_exit_cleanup"),
+            "缺 app_exit_cleanup 审计行"
+        );
+
+        // 收尾：清掉本测试在数据目录产生的文件与 Skill run，不污染其他测试
+        let _ = std::fs::remove_file(&flag);
+        crate::bot_skills::test_remove_skill_run("p2-24-skill");
     }
 }

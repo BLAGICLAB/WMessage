@@ -222,11 +222,11 @@ pub fn bot_clear_api_key() -> CommandResult<()> {
 
 /// 追加机器人审计日志：用户指令、工具名、入参、结果全部留痕（数据目录 bot.log）
 /// 审计日志外部钩子（bot_skills 调度器用；bot.rs 内部仍用 audit_log）
-pub fn audit_log_hook(app: &AppHandle, line: &str) {
+pub fn audit_log_hook<R: tauri::Runtime>(app: &tauri::AppHandle<R>, line: &str) {
     audit_log(app, line);
 }
 
-pub fn audit_log(app: &AppHandle, line: &str) {
+pub fn audit_log<R: tauri::Runtime>(app: &tauri::AppHandle<R>, line: &str) {
     // 与 audit::write_event 共用同一把写锁，防并发 append 交错错行
     let _g = crate::audit::BOT_LOG_LOCK
         .lock()

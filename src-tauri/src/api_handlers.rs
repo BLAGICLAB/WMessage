@@ -898,6 +898,25 @@ pub fn api_start(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandRe
 
 #[tauri::command]
 pub fn api_stop(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandResult<()> {
+    api_stop_impl(&app, &state, true)
+}
+
+/// P2-24：应用退出路径（ExitRequested）的 API 停止 —— 与 api_stop 同一清理
+///（G1：accept 线程 + SSE writer 全部通知并 join），但保留 api-enabled.flag：
+/// 退出不是用户关开关，下次启动应按 flag 自动恢复服务。
+/// 泛型 Runtime：cleanup_on_exit 的 mock runtime 测试可直调。
+pub fn api_stop_for_exit<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &ApiState,
+) -> CommandResult<()> {
+    api_stop_impl(app, state, false)
+}
+
+fn api_stop_impl<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &ApiState,
+    clear_enabled: bool,
+) -> CommandResult<()> {
     let mut g = state.0.lock().map_err(|e| e.to_string())?;
     if let Some(mut r) = g.take() {
         r.shutdown.store(true, Ordering::SeqCst);
@@ -913,7 +932,9 @@ pub fn api_stop(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandRes
             audit_event!(&audit_app, AuditLevel::Error, "sse_writer_leaked", "error" => line);
         });
     }
-    clear_enabled_flag(&app);
+    if clear_enabled {
+        clear_enabled_flag(app);
+    }
     Ok(())
 }
 

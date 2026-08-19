@@ -1242,7 +1242,8 @@ pub fn format_completed_summary(ctx: &[CompletedStep]) -> String {
 }
 
 /// 强制终止所有活动 Skill（/stop 联动；用户取消时调用）
-pub fn skill_terminate_all(app: &AppHandle, reason: &str) {
+/// 泛型 Runtime（P2-24）：cleanup_on_exit 的 mock runtime 测试可直调。
+pub fn skill_terminate_all<R: tauri::Runtime>(app: &tauri::AppHandle<R>, reason: &str) {
     let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
     for (name, run) in runs.iter_mut() {
         if run.state == SkillState::Running || run.state == SkillState::Paused {
@@ -1251,6 +1252,50 @@ pub fn skill_terminate_all(app: &AppHandle, reason: &str) {
             crate::bot::audit_log_hook(app, &format!("skill_terminated | name: {name} | {reason}"));
         }
     }
+}
+
+/// P2-24 测试辅助：直接插入一个指定状态的 skill run（绕过磁盘 SKILL.md 加载）。
+/// 与 tests::test_run 同一份字段构造，供跨模块测试（lib.rs 退出清理）使用。
+#[cfg(test)]
+pub(crate) fn test_insert_skill_run(name: &str, state: SkillState) {
+    let run = SkillRun {
+        name: name.into(),
+        state,
+        step: 0,
+        max_steps: 8,
+        started_at_ms: 0,
+        timeout_secs: 180,
+        mode: "interactive".into(),
+        risk_level: "medium".into(),
+        rollback: "auto".into(),
+        actions: Vec::new(),
+        end_reason: String::new(),
+        resumable: true,
+        terminal_after_confirm: false,
+    };
+    skill_runs()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(name.into(), run);
+}
+
+/// P2-24 测试辅助收尾：移除插入的 run，不给其他测试留状态
+#[cfg(test)]
+pub(crate) fn test_remove_skill_run(name: &str) {
+    skill_runs()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(name);
+}
+
+/// P2-24 测试辅助：读 run 当前状态（断言终止语义用）
+#[cfg(test)]
+pub(crate) fn test_skill_run_state(name: &str) -> Option<SkillState> {
+    skill_runs()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(name)
+        .map(|r| r.state.clone())
 }
 
 /// DSL 调度器入口（Phase 1 2026-08-17 23:15）。仅供 `meta.mode == "auto"` 的 Skill 调用：

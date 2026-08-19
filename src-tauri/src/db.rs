@@ -49,12 +49,12 @@ pub struct Task {
 /// 目录不可写（如 Program Files）时兜底到系统应用数据目录。
 /// P2-19：目录解析委托 audit::probe_log_dir（原与 profile::data_dir /
 /// audit::generic_log_dir 三处拷贝，已合一）。
-fn db_dir(app: &tauri::AppHandle) -> std::path::PathBuf {
+fn db_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> std::path::PathBuf {
     crate::audit::probe_log_dir(app)
 }
 
 /// 数据目录（供本地 HTTP API 存 token 等附属文件，便携模式跟随 exe）
-pub fn data_dir(app: &tauri::AppHandle) -> std::path::PathBuf {
+pub fn data_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> std::path::PathBuf {
     db_dir(app)
 }
 
