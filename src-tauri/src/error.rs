@@ -18,7 +18,31 @@
 //! ```
 
 use serde::ser::SerializeStruct;
-use serde::{Serialize, Serializer};
+use serde::{Deserialize, Serialize, Serializer};
+
+/// 运行平台分层（P2-27）：同一 `code` 在不同 OS 的底层错误语义不同
+/// （Unix errno / Windows WinError / 信号与权限模型差异），序列化附带 `platform`
+/// 字段（诊断/调试用），前端与日志可据此区分同 code 错误的实际来源。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Platform {
+    Macos,
+    Windows,
+    Linux,
+    Other,
+}
+
+impl Platform {
+    /// 当前编译目标平台（`std::env::consts::OS` 是编译期常量，零开销）
+    pub fn current() -> Self {
+        match std::env::consts::OS {
+            "macos" => Self::Macos,
+            "windows" => Self::Windows,
+            "linux" => Self::Linux,
+            _ => Self::Other,
+        }
+    }
+}
 
 /// 命令错误统一枚举。每个变体对应一个稳定 code + 人类可读 message + recoverable 标志。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -193,16 +217,33 @@ impl std::fmt::Display for CommandError {
     }
 }
 
-/// 序列化到前端：JSON 形如 `{ "code": "AUTH_MISSING", "message": "...", "recoverable": true }`
+/// 序列化到前端：JSON 形如 `{ "code": "AUTH_MISSING", "message": "...", "recoverable": true, "platform": "macos" }`
+/// P2-27：`platform` 字段区分同 code 错误的跨平台语义（诊断用）
 impl Serialize for CommandError {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("CommandError", 3)?;
+        self.serialize_with_platform(Platform::current(), serializer)
+    }
+}
+
+impl CommandError {
+    /// 带显式平台的序列化内核：生产走 Platform::current()，
+    /// pub(crate) 供测试注入异平台验证「同 code 不同 platform 序列化不同」（P2-27）
+    pub(crate) fn serialize_with_platform<S>(
+        &self,
+        platform: Platform,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("CommandError", 4)?;
         state.serialize_field("code", self.code())?;
         state.serialize_field("message", &self.message())?;
         state.serialize_field("recoverable", &self.is_recoverable())?;
+        state.serialize_field("platform", &platform)?;
         state.end()
     }
 }
@@ -311,12 +352,49 @@ mod tests {
     }
 
     #[test]
-    fn serialize_to_three_fields() {
+    fn serialize_to_four_fields() {
         let err = CommandError::BotDisabled;
         let json = serde_json::to_string(&err).unwrap();
         assert!(json.contains("\"code\":\"BOT_DISABLED\""));
         assert!(json.contains("\"message\":"));
         assert!(json.contains("\"recoverable\":true"));
+        // P2-27：platform 字段随当前编译目标平台输出
+        assert!(json.contains("\"platform\":"));
+    }
+
+    // ── P2-27：平台分层——同 code 不同 platform 序列化字段不同 ──
+
+    /// 测试注入显式平台的包装（生产 Serialize 走 Platform::current()）
+    struct WithPlatform<'a>(&'a CommandError, Platform);
+    impl Serialize for WithPlatform<'_> {
+        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            self.0.serialize_with_platform(self.1, serializer)
+        }
+    }
+
+    #[test]
+    fn same_code_serializes_differently_per_platform() {
+        // 同一底层语义错误（如权限拒绝）：macOS errno=13 vs Linux errno=13 只是巧合，
+        // Windows 则是另一套 WinError——platform 字段让诊断端能区分
+        let err = CommandError::IoError("permission denied (os error 13)".into());
+        let mac = serde_json::to_string(&WithPlatform(&err, Platform::Macos)).unwrap();
+        let linux = serde_json::to_string(&WithPlatform(&err, Platform::Linux)).unwrap();
+        assert!(mac.contains("\"code\":\"IO_ERROR\""));
+        assert!(linux.contains("\"code\":\"IO_ERROR\""));
+        assert!(mac.contains("\"platform\":\"macos\""), "got: {mac}");
+        assert!(linux.contains("\"platform\":\"linux\""), "got: {linux}");
+        assert_ne!(mac, linux, "同 code 不同 platform 序列化必须不同");
+        // current() 与编译目标一致
+        let expect = if cfg!(target_os = "macos") {
+            Platform::Macos
+        } else if cfg!(target_os = "windows") {
+            Platform::Windows
+        } else if cfg!(target_os = "linux") {
+            Platform::Linux
+        } else {
+            Platform::Other
+        };
+        assert_eq!(Platform::current(), expect);
     }
 
     #[test]
