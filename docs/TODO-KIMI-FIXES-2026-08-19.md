@@ -111,6 +111,14 @@
 - [x] **P2-34** `App.tsx` + `storage.test.ts` — 写数据类 invoke 已在 E1 全走 `handleCommandError`；清掉 `workspace-updated` upsert 的空 catch（console 留痕），补 export/import 失败 alert 测试 — commit `f460d27`
 - [x] **P2-35** `errorHandler.ts` — 空 msg 兜底 `code || "未知错误"`（CommandError 与非结构化两侧）；recoverable confirm 重试 UI 已有，补测试锁定 — commit `3e7a89a`
 
+### Batch 7b DB 事务/迁移（6 项）
+- [x] **P2-4** `db.rs open_db` — legacy 库拷贝不再吞错：checkpoint 失败/BUSY 记 WARN 审计（PRAGMA 的 BUSY 走返回行不走 Err，读 busy 列判定）；同时拷贝 `-wal`/`-shm` 边车防 WAL 写入静默丢失 — commit `dacf628`
+- [x] **P2-5** `db.rs` — `upsert_workspace`/`delete_workspace` 循环 execute 包事务（同 P0-1 模式），中途失败整体回滚；trigger 注入失败补回滚测试 — commit `eb65f43`
+- [x] **P2-6** `migration.rs` — 归档选名 TOCTOU：`claim_dst_name` 落盘前复检 exists，竞态窗口被并发抢占则递增后缀重选 — commit `0f2c605`
+- [x] **P2-7** `db.rs` — `migrate_data_json` 触发条件「库空才迁移」改「json 任务数 > 库内任务数」，删任务后重启老 data.json 仍能补回；只补缺失 id 不覆盖已有行 — commit `4f29bd9`
+- [x] **P2-8** `migration.rs` — `save_rules` 改原子写（复用 NEW-B-6 `db::atomic_write`），崩溃不留半截 rules.json — commit `eb0dfb6`
+- [x] **P2-19** `audit.rs` + `db.rs` + `profile.rs` — 数据目录便携探针三处拷贝合一为 `audit::probe_log_dir`（含可测内核 `probe_dir` 三分支测试）— commit `cdf099e`
+
 ---
 
 ## 进度
@@ -121,7 +129,7 @@
 - Phase 4: 4/4 (E5 已勾)
 - Phase 5: 6/6
 - Phase 6: 4/11+（Batch D 原 D1-D4 已勾）
-- Phase 7: 6/35（Batch 7a 审计/日志安全 6/6）
+- Phase 7: 12/35（Batch 7a 审计/日志安全 6/6；Batch 7b DB 事务/迁移 6/6）
 
 ---
 
