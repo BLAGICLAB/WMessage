@@ -25,23 +25,29 @@ export async function loadTasksFromDb(): Promise<LoadTasksResult> {
   }
 }
 
-/** 行级增量写入（INSERT OR REPLACE） */
+/**
+ * 行级增量写入（INSERT OR REPLACE）。
+ * 写失败不再静默吞错（E1 2026-08-19）：弹 alert 并把错误抛给调用方——
+ * 否则 UI 已更新而磁盘没落，重启后 UI/DB 永久分叉。
+ */
 export async function upsertTasks(tasks: Task[]): Promise<void> {
   if (!tasks.length) return;
   try {
     await invoke("db_upsert", { tasks });
   } catch (e) {
-    handleCommandError(e, "db_upsert", { silent: true });
+    handleCommandError(e, "db_upsert");
+    throw e;
   }
 }
 
-/** 行级删除 */
+/** 行级删除（失败处理同 upsertTasks：alert + 传播，不静默） */
 export async function deleteTaskRows(ids: string[]): Promise<void> {
   if (!ids.length) return;
   try {
     await invoke("db_delete", { ids });
   } catch (e) {
-    handleCommandError(e, "db_delete", { silent: true });
+    handleCommandError(e, "db_delete");
+    throw e;
   }
 }
 
@@ -82,23 +88,25 @@ export async function loadWorkspaceFromDb(): Promise<WorkspaceItem[]> {
   }
 }
 
-/** 行级增量写入工作区条目 */
+/** 行级增量写入工作区条目（失败处理同 upsertTasks：alert + 传播，不静默） */
 export async function upsertWorkspaceItems(items: WorkspaceItem[]): Promise<void> {
   if (!items.length) return;
   try {
     await invoke("workspace_upsert", { items });
   } catch (e) {
-    handleCommandError(e, "workspace_upsert", { silent: true });
+    handleCommandError(e, "workspace_upsert");
+    throw e;
   }
 }
 
-/** 行级删除工作区条目 */
+/** 行级删除工作区条目（失败处理同 upsertTasks：alert + 传播，不静默） */
 export async function deleteWorkspaceRows(ids: string[]): Promise<void> {
   if (!ids.length) return;
   try {
     await invoke("workspace_delete", { ids });
   } catch (e) {
-    handleCommandError(e, "workspace_delete", { silent: true });
+    handleCommandError(e, "workspace_delete");
+    throw e;
   }
 }
 
