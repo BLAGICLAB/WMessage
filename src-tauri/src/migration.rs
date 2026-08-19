@@ -626,6 +626,41 @@ fn move_entry(src: &Path, dst: &Path) -> Result<(), String> {
     Ok(())
 }
 
+// ───────────────────────── NEW-B-5: 跨卷 remove 持续失败防护 ─────────────────────────
+
+/// NEW-B-5: 跨卷回退「copy 成功但 remove 持续失败」（Windows 文件被占用）时，
+/// 若不加防护，每轮轮询 conflict_free_name 会生成新名再 copy → 归档目录累积副本。
+/// 这里按 src 路径计数：失败超 MAX_MOVE_REMOVE_FAILURES（5 次 × 10min/轮 ≈ 50min
+/// 持续失败）后永久跳过该 src 并记 ERROR 审计。计数进程内有效，重启清零重新尝试
+/// （占用可能已解除，重启后重试是期望行为）。
+static MOVE_REMOVE_FAILS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, u32>>,
+> = std::sync::OnceLock::new();
+
+const MAX_MOVE_REMOVE_FAILURES: u32 = 5;
+
+fn move_remove_fail_counts() -> &'static std::sync::Mutex<std::collections::HashMap<String, u32>> {
+    MOVE_REMOVE_FAILS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// 记录一次「copy 成功但 remove 失败」，返回该 src 累计失败次数
+fn record_move_remove_failure(src: &str) -> u32 {
+    let mut m = move_remove_fail_counts()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let n = m.entry(src.to_string()).or_insert(0);
+    *n += 1;
+    *n
+}
+
+/// 该 src 是否已因 remove 持续失败被永久跳过（不再 copy，防止副本累积）
+fn move_remove_permanently_failed(src: &str) -> bool {
+    let m = move_remove_fail_counts()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    m.get(src).copied().unwrap_or(0) >= MAX_MOVE_REMOVE_FAILURES
+}
+
 // ───────────────────────── 迁移引擎 ─────────────────────────
 
 fn log_line(app: &AppHandle, line: &str) {
@@ -810,6 +845,13 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
                         }
                     }
                 }
+                // NEW-B-5: 跨卷 copy 成功但 remove 持续失败（Windows 占用）的 src 永久跳过，
+                // 不再每轮生成新冲突名再 copy（归档目录不累积副本）。首次越阈时已记 ERROR，
+                // 后续轮静默跳过（10min/轮不刷屏）。
+                if move_remove_permanently_failed(src_str) {
+                    report.skipped += 1;
+                    continue;
+                }
                 let Some(dst) = conflict_free_name(&dir, &name) else {
                     report.skipped += 1;
                     let line = format!("跳过「{name}」：目标目录同名冲突过多（不覆盖、不删除）");
@@ -832,6 +874,19 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
                 if let Err(e) = move_entry(&src, &dst) {
                     // move 未启动 / 明确失败 → clear journal，下次重试不需要修复
                     journal_cleared(&jconn, journal_id).ok();
+                    // NEW-B-5: dst 已存在且 src 仍在 = copy 成功但 remove 失败
+                    // （区别于 copy 本身失败：此时 dst 不存在，不计数）。
+                    // 失败计数越阈 → 记 ERROR 审计并永久跳过该 src，防止归档副本累积。
+                    if src.exists() && dst.exists() {
+                        let n = record_move_remove_failure(src_str);
+                        if n >= MAX_MOVE_REMOVE_FAILURES {
+                            let line = format!(
+                                "ERROR「{name}」：跨卷复制后删除源持续失败 {n} 次（{src_str}），已永久跳过该源；归档目录可能已有副本，请手动处理"
+                            );
+                            report.log.push(line.clone());
+                            log_line(app, &line);
+                        }
+                    }
                     report.skipped += 1;
                     let line = format!("跳过「{name}」：{e}");
                     report.log.push(line.clone());
@@ -1864,5 +1919,63 @@ mod tests {
                 .unwrap_or_else(|e| format!("迁移日志读取线程 join 失败：{e}"))
         });
         assert_eq!(s, "b\na");
+    }
+
+    /// NEW-B-5: 同一 src 的 remove 失败计数越阈后永久跳过；不同 src 互不影响。
+    #[test]
+    fn move_remove_failure_counter_permanent_skip() {
+        let key = format!("/tmp/wm-mrf-{}", uuid::Uuid::new_v4());
+        for i in 1..MAX_MOVE_REMOVE_FAILURES {
+            assert_eq!(record_move_remove_failure(&key), i);
+            assert!(
+                !move_remove_permanently_failed(&key),
+                "第 {i} 次失败不应触发永久跳过"
+            );
+        }
+        assert_eq!(record_move_remove_failure(&key), MAX_MOVE_REMOVE_FAILURES);
+        assert!(
+            move_remove_permanently_failed(&key),
+            "第 {MAX_MOVE_REMOVE_FAILURES} 次失败后应永久跳过"
+        );
+        assert!(
+            !move_remove_permanently_failed("/tmp/wm-mrf-never-seen"),
+            "其他 src 不受影响"
+        );
+    }
+
+    /// NEW-B-5: 模拟跨卷 remove 持续失败——每轮 copy 新冲突名都成功但 src 删不掉；
+    /// 计数越阈后永久跳过，之后不再 copy（归档副本数封顶在阈值，不会无限累积）。
+    #[test]
+    fn move_remove_persistent_failure_stops_duplicate_copies() {
+        let base = std::env::temp_dir().join(format!("wm-mrf2-{}", uuid::Uuid::new_v4()));
+        let archive = base.join("归档");
+        fs::create_dir_all(&archive).unwrap();
+        let src = base.join("报告.pdf");
+        fs::write(&src, b"x").unwrap();
+        let src_str = src.to_string_lossy().to_string();
+
+        let mut copies = 0usize;
+        for _round in 1..8 {
+            // 与 run_migration_inner 同序：先查永久跳过，再 copy
+            if move_remove_permanently_failed(&src_str) {
+                break;
+            }
+            let dst = conflict_free_name(&archive, "报告.pdf").unwrap();
+            // 模拟 move_entry 跨卷回退：copy 成功 + remove 失败（Windows 占用，src 仍在）
+            fs::copy(&src, &dst).unwrap();
+            copies += 1;
+            if src.exists() && dst.exists() {
+                record_move_remove_failure(&src_str);
+            }
+        }
+        assert_eq!(
+            copies, MAX_MOVE_REMOVE_FAILURES as usize,
+            "副本数应封顶在阈值（不会无限 copy）"
+        );
+        assert!(move_remove_permanently_failed(&src_str));
+        // 归档目录里确实只有阈值个副本
+        let n = fs::read_dir(&archive).unwrap().count();
+        assert_eq!(n, MAX_MOVE_REMOVE_FAILURES as usize);
+        fs::remove_dir_all(&base).ok();
     }
 }
