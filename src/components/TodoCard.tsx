@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type { CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { useDraggable } from "@dnd-kit/core";
@@ -16,6 +16,7 @@ import { basename, formatCompletedAt, formatDue, formatSchedule, isDueToday, isV
 import { DoneCircle } from "./DoneCircle";
 import { FoldToggle } from "./FoldToggle";
 import { ActorAvatar } from "./ActorAvatar";
+import { useInlineEdit } from "./useInlineEdit";
 
 const stop = (e: React.PointerEvent) => e.stopPropagation();
 
@@ -50,7 +51,6 @@ export function TodoCardView({
 }: TodoCardViewProps & { drag?: CardDrag }) {
 
   const [editing, setEditing] = useState(autoEdit && !archived && !trashed);
-  const [draft, setDraft] = useState(task.title);
   const [dueEditing, setDueEditing] = useState(false);
   const [noteEditing, setNoteEditing] = useState(false);
   const [noteDraft, setNoteDraft] = useState("");
@@ -62,29 +62,28 @@ export function TodoCardView({
   const [purgeOpen, setPurgeOpen] = useState(false);
   const [purgeBusy, setPurgeBusy] = useState(false);
 
-  // autoEdit 切到 true 时进入编辑态 + 同步 draft 到当前 task.title
-  //（必须同步：挂件新建/改名后主窗口的 TodoCardView 因 key 不变不会重挂，
-  //  useState 初值停在第一次渲染时的旧 title；双击挂件唤起主窗口进入编辑态时
-  //  不同步就会把 input 显示成"新任务"而不是用户改后的内容）。
-  // 只在 autoEdit 由 false→true 那一瞬同步；editing 已为 true 时（用户正在编辑）
-  //  task.title 不会外部变化（commit 才会改，且会同时 setEditing(false)），
-  //  即使 task.title 进依赖也不会覆盖用户输入。
-  const prevAutoEdit = useRef(autoEdit);
+  // autoEdit 切到 true 时进入编辑态（草稿同步由 useInlineEdit 在 editing false→true 时负责：
+  // 挂件新建/改名后主窗口的 TodoCardView 因 key 不变不会重挂，hook 会把草稿重置为
+  // 当前 task.title，不会显示成旧的"新任务"）。
   useEffect(() => {
     if (autoEdit && !archived && !trashed) {
-      if (!prevAutoEdit.current) setDraft(task.title);
       setEditing(true);
     } else if (!autoEdit) {
       setEditing(false);
     }
-    prevAutoEdit.current = autoEdit;
-  }, [autoEdit, archived, trashed, task.title]);
+  }, [autoEdit, archived, trashed]);
 
-  const commitTitle = () => {
-    const title = draft.trim() || task.title;
-    if (title !== task.title) onUpdate(task.id, { title });
-    setEditing(false);
-  };
+  // 标题内联编辑：草稿 + Enter/Escape/Blur 行为统一走 useInlineEdit（P2-23，与 TaskCardContent 共用）
+  const titleEdit = useInlineEdit({
+    value: task.title,
+    editing,
+    onCommit: (d) => {
+      const title = d.trim() || task.title;
+      if (title !== task.title) onUpdate(task.id, { title });
+      setEditing(false);
+    },
+    onCancel: () => setEditing(false),
+  });
 
   const commitNote = () => {
     const note = noteDraft.trim();
@@ -210,16 +209,10 @@ export function TodoCardView({
         {editing ? (
           <input
             autoFocus
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onBlur={commitTitle}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.nativeEvent.isComposing) commitTitle();
-              if (e.key === "Escape") {
-                setDraft(task.title);
-                setEditing(false);
-              }
-            }}
+            value={titleEdit.draft}
+            onChange={(e) => titleEdit.setDraft(e.target.value)}
+            onBlur={titleEdit.onBlur}
+            onKeyDown={titleEdit.onKeyDown}
             onPointerDown={stop}
             className="flex-1 min-w-0 rounded-lg bg-[var(--input-bg)] px-2 py-1 outline-none nm-task-title"
           />
@@ -241,10 +234,7 @@ export function TodoCardView({
             onClick={
               archived
                 ? undefined
-                : () => {
-                    setDraft(task.title);
-                    setEditing(true);
-                  }
+                : () => setEditing(true)
             }
           >
             {task.title}

@@ -50,9 +50,10 @@ describe("TaskCardContent 标题编辑 Escape 取消（E4）", () => {
     fireEvent.keyDown(input, { key: "Escape" });
     fireEvent.blur(input);
     expect(onCommitTitle).not.toHaveBeenCalled();
-    // 取消标记已重置，后续 blur 正常提交当前草稿
+    // 取消标记已重置，后续 blur 正常提交当前草稿；
+    // P2-23：行为与 TodoCard 统一——Escape 已把草稿回滚为已提交值，故提交「原始标题」
     fireEvent.blur(input);
-    expect(onCommitTitle).toHaveBeenCalledWith("原始标题改");
+    expect(onCommitTitle).toHaveBeenCalledWith("原始标题");
   });
 
   it("未按 Escape 时 blur 正常提交草稿", async () => {

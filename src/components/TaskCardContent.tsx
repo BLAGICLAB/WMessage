@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import type { DraggableSyntheticListeners } from "@dnd-kit/core";
 import type { Task } from "../types";
 import { basename, formatDue, formatSchedule, scheduleToDatetime } from "../format";
 import { DoneCircle } from "./DoneCircle";
 import { FoldToggle } from "./FoldToggle";
 import { ActorAvatar } from "./ActorAvatar";
+import { useInlineEdit } from "./useInlineEdit";
 
 /**
  * 任务卡展示内容 —— 供挂件（WidgetApp）使用。
@@ -62,22 +63,13 @@ export function TaskCardContent({
   const [schedOpen, setSchedOpen] = useState(false);
   const [schedOnce, setSchedOnce] = useState("");
 
-  // 进入编辑态时初始化草稿
-  const [draft, setDraft] = useState(task.title);
-  useEffect(() => {
-    if (editingTitle) setDraft(task.title);
-  }, [editingTitle]);
-  // E4（2026-08-19）：Escape 取消标记——Escape 只取消内存草稿，但随后的 blur
-  // 会再触发 onCommit 把草稿写库，等于 Escape 没生效；取消后 blur 必须跳过提交
-  const cancelledRef = useRef(false);
-  /** blur 提交：Escape 已取消则跳过并重置标记（不污染下一轮编辑） */
-  const commitOnBlur = () => {
-    if (cancelledRef.current) {
-      cancelledRef.current = false;
-      return;
-    }
-    onCommitTitle?.(draft);
-  };
+  // 标题内联编辑：草稿 + Enter/Escape/Blur 行为统一走 useInlineEdit（P2-23，与 TodoCard 共用）
+  const titleEdit = useInlineEdit({
+    value: task.title,
+    editing: editingTitle,
+    onCommit: (d) => onCommitTitle?.(d),
+    onCancel: () => onCancelTitle?.(),
+  });
   // 挂件任务卡永远显示折叠键（老板 2026-08-17 12:33 指令：复用现有 FoldToggle，
   // 不重新设计折叠窗口）：折叠态只露标题（单行截断），展开态显示标题完整 + 🤖 + ⏰ + 其他内容
 
@@ -98,19 +90,10 @@ export function TaskCardContent({
         {editingTitle ? (
           <input
             autoFocus
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onBlur={commitOnBlur}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.nativeEvent.isComposing) {
-                cancelledRef.current = false; // 显式提交，重置取消标记
-                onCommitTitle?.(draft);
-              }
-              if (e.key === "Escape") {
-                cancelledRef.current = true;
-                onCancelTitle?.();
-              }
-            }}
+            value={titleEdit.draft}
+            onChange={(e) => titleEdit.setDraft(e.target.value)}
+            onBlur={titleEdit.onBlur}
+            onKeyDown={titleEdit.onKeyDown}
             onPointerDown={stop}
             onClick={(e) => e.stopPropagation()}
             className="flex-1 min-w-0 rounded-lg bg-[var(--input-bg)] px-2 py-1 outline-none nm-task-title"
