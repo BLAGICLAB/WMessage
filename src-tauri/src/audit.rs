@@ -123,6 +123,48 @@ pub fn write_event(app: &AppHandle, level: AuditLevel, event: &str, kv: &[(&str,
     let _ = writeln!(f, "{line}");
 }
 
+/// 泛型 Runtime 版日志目录（D2）：与 crate::db::data_dir 同逻辑的便携探针
+/// （exe 父目录可写 → exe 目录），否则退 app_data_dir / 临时目录。
+/// write_event 写死 Wry AppHandle，middleware/profile 等泛型模块调不了，
+/// 病态路径（registry 缺失 / profile 损坏）的 ERROR 审计走这里，尽力而为不 panic。
+fn generic_log_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> std::path::PathBuf {
+    use tauri::Manager;
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let probe = dir.join(".wm-write-probe");
+            if std::fs::File::create(&probe).is_ok() {
+                let _ = std::fs::remove_file(&probe);
+                return dir.to_path_buf();
+            }
+        }
+    }
+    app.path()
+        .app_data_dir()
+        .unwrap_or_else(|_| std::env::temp_dir())
+}
+
+/// 泛型 Runtime 的 ERROR 审计（D2/D3）：rotate + BOT_LOG_LOCK + 追加一行结构化事件。
+/// 行拼装复用 build_event_line，与 write_event 零漂移；IO 失败静默（审计不阻塞业务）。
+pub(crate) fn write_error_audit<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    event: &str,
+    kv: &[(&str, &str)],
+) {
+    let _g = BOT_LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let p = generic_log_dir(app).join("bot.log");
+    crate::db::rotate_log_if_large(&p, 5 * 1024 * 1024);
+    let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(p)
+    else {
+        return;
+    };
+    let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+    let line = build_event_line(&ts.to_string(), AuditLevel::Error, event, kv);
+    let _ = writeln!(f, "{line}");
+}
+
 /// 结构化审计事件宏（post-execute 钩子用，2026-08-17 22:17）
 /// 用法：
 ///   audit_event!(app, AuditLevel::Info, "tool_done",

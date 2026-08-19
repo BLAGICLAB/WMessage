@@ -10,7 +10,13 @@
 //! - `Middleware` trait 提供 name / pre_step / pre_execute 三个方法
 //! - `MiddlewareRegistry` 用 Vec<Box<dyn Middleware>> 存储，短路求值
 //! - helper 函数 run_pre_step / run_pre_execute 通过 Tauri State 访问 registry
-//! - 没有 state 时回退 None（legacy passthrough，不阻塞）
+//!
+//! ## fail 语义（D2，2026-08-19）
+//! state 未 manage（测试、初始化竞态）时两类中间件区别对待：
+//! - 安全闸门类（pre_execute / AtomicGuard）→ **fail-closed**：原子工具一律拒绝 + ERROR 审计，
+//!   安全闸门缺席时绝不能静默放行原子工具
+//! - 业务路由类（pre_step / IntentRouter）→ **fail-open**：回退 None（legacy passthrough），
+//!   无锁语义不影响业务，上层照常走模型直接对话
 
 use crate::intent_router::{route_user_input, RouteAction};
 use crate::tool_guard::{atomic_block_message, is_atomic_tool};
@@ -110,6 +116,7 @@ pub fn build_default_registry() -> MiddlewareRegistry {
 
 /// helper：通过 Tauri State 调 run_pre_step（state 未 manage 时回退 None = legacy passthrough）
 /// NEW-D-6：泛型 Runtime，与文件头「适配 mock_runtime」注释一致，D2 fail-open 回退可用 mock 单测
+/// D2：业务路由类 fail-open——无锁语义不影响业务，None 让上层走模型直接对话
 pub fn run_pre_step<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     input: &str,
@@ -120,7 +127,10 @@ pub fn run_pre_step<R: tauri::Runtime>(
     }
 }
 
-/// helper：通过 Tauri State 调 run_pre_execute（state 未 manage 时回退 None，同 D2 fail-open）
+/// helper：通过 Tauri State 调 run_pre_execute
+/// D2：安全闸门类 **fail-closed**——state 未 manage 时原子工具一律拒绝并记 ERROR 审计，
+/// 不能静默放行（registry 缺失 = AtomicGuard 缺席 = 原子工具失去唯一拦截点）。
+/// 非原子工具没有闸门诉求，仍 fail-open 回退 None；Skill 活动态与 AtomicGuard 判定口径一致。
 pub fn run_pre_execute<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     name: &str,
@@ -128,7 +138,20 @@ pub fn run_pre_execute<R: tauri::Runtime>(
 ) -> Option<String> {
     match app.try_state::<MiddlewareRegistry>() {
         Some(state) => state.run_pre_execute(name, active_skill),
-        None => None,
+        None => {
+            if is_atomic_tool(name) && !active_skill {
+                crate::audit::write_error_audit(
+                    app,
+                    "middleware_registry_missing",
+                    &[("tool", name), ("gate", "atomic_guard")],
+                );
+                Some(format!(
+                    "⚠️ 安全闸门未初始化（MiddlewareRegistry 未注册），拒绝原子工具 {name} 的直接调用。请通过对应 Skill 执行。"
+                ))
+            } else {
+                None
+            }
+        }
     }
 }
 
@@ -295,16 +318,32 @@ mod tests {
         assert_eq!(r.pre_execute_list().len(), 1);
     }
 
-    // ── NEW-D-6：helper 泛型 Runtime 化后，D2 fail-open 回退可用 mock runtime 单测 ──
+    // ── NEW-D-6：helper 泛型 Runtime 化后，D2 fail 语义可用 mock runtime 单测 ──
 
     #[test]
-    fn helper_missing_state_falls_back_to_none() {
-        // state 未 manage → fail-open 回退 None（legacy passthrough，不阻塞）。
+    fn helper_missing_state_pre_step_fail_open() {
+        // D2：业务路由类 fail-open——state 未 manage → None（legacy passthrough，不阻塞）。
         // 该测试同时证明 helper 已泛型化：mock_app 的 AppHandle<MockRuntime> 能编译通过。
         let app = tauri::test::mock_app();
         let handle = app.handle().clone();
         assert!(run_pre_step(&handle, "帮我做 PPT").is_none());
-        assert!(run_pre_execute(&handle, "create_word_revisions", false).is_none());
+    }
+
+    #[test]
+    fn helper_missing_state_pre_execute_fail_closed() {
+        // D2：安全闸门类 fail-closed——state 未 manage 时原子工具被拒绝（Some），
+        // 不能静默放行；非原子工具无闸门诉求，仍放行（None）。
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let blocked = run_pre_execute(&handle, "create_word_revisions", false);
+        let msg = blocked.expect("registry 缺失时原子工具必须被拒绝（fail-closed）");
+        assert!(msg.contains("安全闸门未初始化"), "提示语应说明原因：{msg}");
+        assert!(
+            run_pre_execute(&handle, "list_tasks", false).is_none(),
+            "非原子工具不受闸门影响，fail-open"
+        );
+        // Skill 活动态与 AtomicGuard 口径一致：活动 Skill 的原子调用不拦
+        assert!(run_pre_execute(&handle, "create_word_revisions", true).is_none());
     }
 
     #[test]
