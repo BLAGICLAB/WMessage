@@ -286,10 +286,14 @@ pub fn profile_remove_avatar<R: Runtime>(
     } else {
         &mut data.user
     };
-    if let Some(f) = entry.avatar.take() {
+    // NEW-D-3：先 save 把 json 引用清掉，成功后再删文件。
+    // 原顺序（先删后 save）在 save 失败时磁盘 json 悬挂引用已删文件。
+    // save 失败走 `?` 早退：avatar 文件 + json 引用都保持原状。
+    let removed = entry.avatar.take();
+    save_data(&app, &data)?;
+    if let Some(f) = removed {
         let _ = std::fs::remove_file(profile_dir(&app).join(&f));
     }
-    save_data(&app, &data)?;
     broadcast(&app);
     Ok(build_view(&app, &data))
 }
@@ -740,6 +744,45 @@ mod tests {
         assert!(
             !data_dir.join("profile").join("avatar-user.jpg").exists(),
             "孤儿新文件应被回滚删除"
+        );
+    }
+
+    // ────── NEW-D-3：remove_avatar save 失败不得留下悬挂引用 ──────
+
+    #[cfg(unix)]
+    #[test]
+    fn remove_avatar_save_failure_keeps_avatar_file() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let app = fresh_app();
+        let handle = app.handle().clone();
+        let data_dir = data_dir(&handle);
+
+        // 先成功设一张 PNG
+        let tmp = make_src_avatar("png");
+        profile_set_avatar(
+            handle.clone(),
+            "user".into(),
+            tmp.path().join("src.png").to_string_lossy().into_owned(),
+        )
+        .unwrap();
+        let avatar_path = data_dir.join("profile").join("avatar-user.png");
+        assert!(avatar_path.exists());
+
+        // 失败注入：profile.json 只读 → save_data 必败
+        let orig = make_profile_json_readonly(&data_dir);
+        let r = profile_remove_avatar(handle.clone(), "user".into());
+        restore_permissions(&data_dir.join("profile.json"), orig);
+
+        assert!(r.is_err(), "save_data 失败应返回 Err");
+        assert!(
+            avatar_path.exists(),
+            "save 失败时 avatar 文件必须保留（先删后 save 会留悬挂引用，NEW-D-3 回归）"
+        );
+        // json 引用也保持原状（磁盘文件未被截断写）
+        let view = profile_get(handle);
+        assert!(
+            view.user.avatar_data_url.is_some(),
+            "save 失败时 json 引用应保持原状"
         );
     }
 }
