@@ -82,6 +82,53 @@ pub(crate) fn atomic_write(path: &std::path::Path, contents: &str) -> Result<(),
     Ok(())
 }
 
+/// P2-4: 便携模式首启拷贝老库——checkpoint 失败记 warn 继续（不吞错）；
+/// 同时拷 `-wal` / `-shm` 边车文件（如存在）——只拷 `.db` 时若 checkpoint 失败，
+/// WAL 里最近写入会静默丢失。返回告警列表（调用方写审计日志）；
+/// 拷贝整体失败不致命，open_db 会继续开新库。
+fn copy_legacy_db(legacy_db: &std::path::Path, db_path: &std::path::Path) -> Vec<String> {
+    let mut warns = Vec::new();
+    match rusqlite::Connection::open(legacy_db) {
+        Ok(conn) => {
+            // PRAGMA wal_checkpoint 的 BUSY 不走 Err——返回 (busy, log, checkpointed) 行，
+            // busy=1 表示有读者未放行，WAL 未完全落主库（此时 -wal/-shm 拷贝就是救命副本）
+            match conn.query_row("PRAGMA wal_checkpoint(TRUNCATE);", [], |r| {
+                r.get::<_, i64>(0)
+            }) {
+                Ok(0) => {} // checkpoint 完成
+                Ok(_) => warns.push(
+                    "老库 WAL checkpoint 被占（BUSY），WAL 未落主库——-wal/-shm 已一并拷贝"
+                        .to_string(),
+                ),
+                Err(e) => warns.push(format!(
+                    "老库 WAL checkpoint 失败（继续拷贝，-wal/-shm 一并带走）：{e}"
+                )),
+            }
+        }
+        Err(e) => warns.push(format!("老库打开失败（跳过 checkpoint 直接拷贝）：{e}")),
+    }
+    if let Err(e) = std::fs::copy(legacy_db, db_path) {
+        warns.push(format!("老库拷贝失败：{e}"));
+        return warns;
+    }
+    for ext in ["wal", "shm"] {
+        let src = wal_sidecar(legacy_db, ext);
+        if src.exists() {
+            if let Err(e) = std::fs::copy(&src, wal_sidecar(db_path, ext)) {
+                warns.push(format!("老库 -{ext} 边车拷贝失败：{e}"));
+            }
+        }
+    }
+    warns
+}
+
+/// SQLite WAL 边车路径：`wmessage.db` → `wmessage.db-wal` / `wmessage.db-shm`
+fn wal_sidecar(db: &std::path::Path, ext: &str) -> std::path::PathBuf {
+    let mut s = db.as_os_str().to_owned();
+    s.push(format!("-{ext}"));
+    std::path::PathBuf::from(s)
+}
+
 pub fn open_db(app: &tauri::AppHandle) -> Result<rusqlite::Connection, String> {
     let dir = db_dir(app);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -92,10 +139,15 @@ pub fn open_db(app: &tauri::AppHandle) -> Result<rusqlite::Connection, String> {
         if let Ok(legacy_dir) = app.path().app_data_dir() {
             let legacy_db = legacy_dir.join("wmessage.db");
             if legacy_db.exists() && legacy_db != db_path {
-                if let Ok(conn) = rusqlite::Connection::open(&legacy_db) {
-                    let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+                // P2-4：拷贝失败/ checkpoint 失败不再 `let _` 全静默——记 WARN 审计继续
+                for w in copy_legacy_db(&legacy_db, &db_path) {
+                    crate::audit::write_event(
+                        app,
+                        crate::audit::AuditLevel::Warn,
+                        "legacy_db_copy",
+                        &[("warn", w)],
+                    );
                 }
-                let _ = std::fs::copy(&legacy_db, &db_path);
             }
         }
     }
@@ -1161,6 +1213,81 @@ pub async fn tasks_import(app: tauri::AppHandle, path: String) -> CommandResult<
 mod tests {
     use super::*;
     use std::fs;
+
+    // ── P2-4：legacy WAL copy 不吞错 + 边车文件一并拷贝 ──
+
+    /// 老库 WAL 被占（另一连接持读锁）→ checkpoint TRUNCATE 必失败（SQLITE_BUSY）、
+    /// WAL 完好——拷后三份都到位；checkpoint 出错路径产生 warn（不静默）
+    #[test]
+    fn copy_legacy_db_copies_wal_shm_and_warns_on_checkpoint_failure() {
+        let dir = std::env::temp_dir().join(format!("wm-legacy-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let legacy = dir.join("wmessage.db");
+        // 真实 WAL 库 + 未 checkpoint 的写入 → -wal/-shm 存在且非空
+        let keeper = rusqlite::Connection::open(&legacy).unwrap();
+        keeper
+            .execute_batch(
+                "PRAGMA journal_mode=WAL;
+                 CREATE TABLE t (id TEXT);
+                 INSERT INTO t VALUES ('x');",
+            )
+            .unwrap();
+        assert!(wal_sidecar(&legacy, "wal").exists(), "setup: WAL 应存在");
+        assert!(wal_sidecar(&legacy, "shm").exists(), "setup: SHM 应存在");
+        let dst = dir.join("new").join("wmessage.db");
+        fs::create_dir_all(dst.parent().unwrap()).unwrap();
+        let warns = {
+            // keeper 持「未读完的读游标」：读标记一直挂在 wal 上（已完结的 SELECT 会释放标记，
+            // TRUNCATE 就不阻塞了）；writer 追加新帧使 wal 尾继续前进 →
+            // copy_legacy_db 内 checkpoint TRUNCATE 必 BUSY 失败且 wal 不被截断
+            let mut stmt = keeper.prepare("SELECT id FROM t").unwrap();
+            let mut rows = stmt.query([]).unwrap();
+            let _ = rows.next().unwrap(); // 游标保持打开 = 读标记存活
+            let writer = rusqlite::Connection::open(&legacy).unwrap();
+            writer
+                .execute_batch("INSERT INTO t VALUES ('y');")
+                .unwrap();
+            let warns = copy_legacy_db(&legacy, &dst);
+            drop(writer);
+            warns
+        };
+
+        assert!(dst.exists(), "主库必须拷过来");
+        assert!(
+            wal_sidecar(&dst, "wal").exists(),
+            "-wal 边车必须拷过来（否则 checkpoint 失败时 WAL 写入静默丢失）"
+        );
+        assert!(
+            wal_sidecar(&dst, "shm").exists(),
+            "-shm 边车必须拷过来"
+        );
+        assert!(
+            warns.iter().any(|w| w.contains("checkpoint")),
+            "checkpoint 失败必须产生 warn，不得 let _ 吞掉；got: {warns:?}"
+        );
+        drop(keeper);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 正常老库（真 sqlite）→ checkpoint 成功，无 warn，主库内容一致
+    #[test]
+    fn copy_legacy_db_happy_path_no_warns() {
+        let dir = std::env::temp_dir().join(format!("wm-legacy-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let legacy = dir.join("wmessage.db");
+        {
+            let c = rusqlite::Connection::open(&legacy).unwrap();
+            c.execute_batch("CREATE TABLE t (id TEXT); INSERT INTO t VALUES ('x');")
+                .unwrap();
+        }
+        let dst = dir.join("wmessage-copy.db");
+        let warns = copy_legacy_db(&legacy, &dst);
+        assert!(warns.is_empty(), "happy path 不应有 warn；got: {warns:?}");
+        let c = rusqlite::Connection::open(&dst).unwrap();
+        let n: i64 = c.query_row("SELECT COUNT(*) FROM t", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1, "拷贝后的库应含老数据");
+        fs::remove_dir_all(&dir).ok();
+    }
 
     /// 旧版本工作区链接存 label/target 字段，新版本 displayName/targetUri，
     /// serde alias 保证旧数据无缝读取。
