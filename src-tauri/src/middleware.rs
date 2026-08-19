@@ -67,19 +67,55 @@ impl MiddlewareRegistry {
         self.pre_execute.push(m);
     }
     /// pre-step 短路求值：任一中间件返回 Some(_)
-    pub fn run_pre_step(&self, input: &str) -> Option<RouteAction> {
+    /// P2-13：catch_unwind 兜底——中间件 panic 不再炸掉调用方所在的
+    /// tauri::async_runtime worker 线程；记 ERROR 审计后按「未命中」处理，继续下一个
+    pub fn run_pre_step<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        input: &str,
+    ) -> Option<RouteAction> {
         for m in &self.pre_step {
-            if let Some(action) = m.pre_step(input) {
-                return Some(action);
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| m.pre_step(input))) {
+                Ok(Some(action)) => return Some(action),
+                Ok(None) => {}
+                Err(payload) => {
+                    let msg = panic_message(payload);
+                    crate::audit::write_error_audit(
+                        app,
+                        "middleware_panic",
+                        &[("hook", "pre_step"), ("middleware", m.name()), ("panic", &msg)],
+                    );
+                }
             }
         }
         None
     }
     /// pre-execute 短路求值：任一中间件返回 Some(msg)
-    pub fn run_pre_execute(&self, name: &str, active_skill: bool) -> Option<String> {
+    /// P2-13：同 run_pre_step，panic 兜住记审计后按「不阻断」继续下一个
+    pub fn run_pre_execute<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        name: &str,
+        active_skill: bool,
+    ) -> Option<String> {
         for m in &self.pre_execute {
-            if let Some(msg) = m.pre_execute(name, active_skill) {
-                return Some(msg);
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                m.pre_execute(name, active_skill)
+            })) {
+                Ok(Some(msg)) => return Some(msg),
+                Ok(None) => {}
+                Err(payload) => {
+                    let msg = panic_message(payload);
+                    crate::audit::write_error_audit(
+                        app,
+                        "middleware_panic",
+                        &[
+                            ("hook", "pre_execute"),
+                            ("middleware", m.name()),
+                            ("panic", &msg),
+                        ],
+                    );
+                }
             }
         }
         None
@@ -122,7 +158,7 @@ pub fn run_pre_step<R: tauri::Runtime>(
     input: &str,
 ) -> Option<RouteAction> {
     match app.try_state::<MiddlewareRegistry>() {
-        Some(state) => state.run_pre_step(input),
+        Some(state) => state.run_pre_step(app, input),
         None => None,
     }
 }
@@ -137,7 +173,7 @@ pub fn run_pre_execute<R: tauri::Runtime>(
     active_skill: bool,
 ) -> Option<String> {
     match app.try_state::<MiddlewareRegistry>() {
-        Some(state) => state.run_pre_execute(name, active_skill),
+        Some(state) => state.run_pre_execute(app, name, active_skill),
         None => {
             if is_atomic_tool(name) && !active_skill {
                 crate::audit::write_error_audit(
@@ -158,6 +194,17 @@ pub fn run_pre_execute<R: tauri::Runtime>(
 // ────────────────────────────────────────────────────────────────────
 // 内置中间件：包装现有 intent_router / tool_guard
 // ────────────────────────────────────────────────────────────────────
+
+/// P2-13：从 catch_unwind payload 提取 panic 信息（&str / String / 其他三种情况）
+fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "non-string panic payload".to_string()
+    }
+}
 
 /// 内置：意图路由中间件（包装 intent_router::route_user_input）
 ///
@@ -203,9 +250,11 @@ mod tests {
 
     #[test]
     fn registry_empty_returns_none() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
         let r = MiddlewareRegistry::default();
-        assert_eq!(r.run_pre_step("hello"), None);
-        assert_eq!(r.run_pre_execute("foo", false), None);
+        assert_eq!(r.run_pre_step(&handle, "hello"), None);
+        assert_eq!(r.run_pre_execute(&handle, "foo", false), None);
     }
 
     #[test]
@@ -238,7 +287,8 @@ mod tests {
         r.register_pre_step(Box::new(A));
         r.register_pre_step(Box::new(B));
         // A 先注册，短路求值返回 A 的结果
-        match r.run_pre_step("x") {
+        let app = tauri::test::mock_app();
+        match r.run_pre_step(app.handle(), "x") {
             Some(RouteAction::Skill(s)) => assert_eq!(s, "a_skill"),
             other => panic!("expected a_skill, got {other:?}"),
         }
@@ -273,7 +323,11 @@ mod tests {
         let mut r = MiddlewareRegistry::default();
         r.register_pre_execute(Box::new(PassMw));
         r.register_pre_execute(Box::new(Blocker));
-        assert_eq!(r.run_pre_execute("any_tool", false), Some("BLOCKED".into()));
+        let app = tauri::test::mock_app();
+        assert_eq!(
+            r.run_pre_execute(app.handle(), "any_tool", false),
+            Some("BLOCKED".into())
+        );
     }
 
     #[test]
@@ -390,5 +444,42 @@ mod tests {
         r.register_pre_step(Box::new(Custom));
         r.register_pre_step(Box::new(IntentRouterMiddleware));
         assert_eq!(r.pre_step_list(), vec!["custom", "intent_router"]);
+    }
+
+    // ── P2-13：中间件 panic 不得炸掉调用方线程（catch_unwind + ERROR 审计 + None）──
+
+    #[test]
+    fn middleware_panic_caught_audited_and_returns_none() {
+        struct Bomber;
+        impl Middleware for Bomber {
+            fn name(&self) -> &str {
+                "bomber"
+            }
+            fn pre_step(&self, _input: &str) -> Option<RouteAction> {
+                panic!("bomber pre_step boom")
+            }
+            fn pre_execute(&self, _n: &str, _a: bool) -> Option<String> {
+                panic!("bomber pre_execute bang")
+            }
+        }
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let mut r = MiddlewareRegistry::default();
+        r.register_pre_step(Box::new(Bomber));
+        r.register_pre_execute(Box::new(Bomber));
+        // panic 被 catch_unwind 兜住：返回 None（按未命中/不阻断处理），主流程不挂
+        assert_eq!(r.run_pre_step(&handle, "x"), None);
+        assert_eq!(r.run_pre_execute(&handle, "list_tasks", false), None);
+        // ERROR 审计落盘：事件名 + 中间件名 + panic 信息
+        let log = std::fs::read_to_string(
+            crate::audit::probe_log_dir(&handle).join("bot.log"),
+        )
+        .unwrap_or_default();
+        assert!(
+            log.contains("middleware_panic") && log.contains("middleware=bomber"),
+            "缺 middleware_panic 审计: {log}"
+        );
+        assert!(log.contains("hook=pre_step") && log.contains("hook=pre_execute"));
+        assert!(log.contains("bomber pre_step boom"), "panic 信息应入审计: {log}");
     }
 }
