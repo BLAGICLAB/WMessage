@@ -363,9 +363,14 @@ export default function App() {
   };
 
   // 软删除：进回收站
+  // P2-22（2026-08-19）：软删必须清调度字段——否则任务躺在回收站里 schedule 仍到点触发
   const deleteTask = (taskId: string) => {
     mutateFire((prev) =>
-      prev.map((t) => (t.id === taskId ? { ...t, deletedAt: Date.now() } : t))
+      prev.map((t) =>
+        t.id === taskId
+          ? { ...t, deletedAt: Date.now(), schedule: null, schedLast: null }
+          : t
+      )
     );
     setEditingId((cur) => (cur === taskId ? null : cur));
   };

@@ -205,6 +205,45 @@ describe("App", () => {
     }
   });
 
+  // P2-22（2026-08-19）：软删除必须清调度字段——否则任务躺在回收站里 schedule
+  // 仍到点触发（deletedAt 不挡调度读取）
+  it("软删除进回收站：落盘行 schedule/schedLast 清空", async () => {
+    const user = userEvent.setup();
+    const withSched: Task[] = [
+      {
+        id: "s1",
+        title: "定时任务",
+        column: "todo",
+        order: 0,
+        updatedAt: 1,
+        schedule: "daily:09:00",
+        schedLast: 123,
+      },
+    ];
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "db_load") return withSched;
+      return defaultInvokeImpl(cmd);
+    });
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByText("定时任务")).toBeInTheDocument();
+    });
+    mocks.invokeMock.mockClear();
+    await user.click(screen.getByTitle("删除任务"));
+    await waitFor(() => {
+      const calls = mocks.invokeMock.mock.calls.filter(
+        (c) => c[0] === "db_upsert"
+      );
+      expect(calls.length).toBeGreaterThan(0);
+      const written = (calls[0][1] as { tasks: Task[] }).tasks.find(
+        (t) => t.id === "s1"
+      );
+      expect(written?.deletedAt).toBeTruthy();
+      expect(written?.schedule).toBeNull();
+      expect(written?.schedLast).toBeNull();
+    });
+  });
+
   // E2（2026-08-19）：tasks-updated 事件合并后，规则改动（今日归位/超时归档）
   // 必须落盘，否则只改内存 → 重启/挂件读 db 回到原始数据，三端长期不一致
   it("tasks-updated 合并：超时归档的规则改动落盘 db_upsert + console 观测行", async () => {
