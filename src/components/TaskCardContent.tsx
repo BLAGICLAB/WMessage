@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { DraggableSyntheticListeners } from "@dnd-kit/core";
 import type { Task } from "../types";
 import { basename, formatDue, formatSchedule, scheduleToDatetime } from "../format";
@@ -67,6 +67,17 @@ export function TaskCardContent({
   useEffect(() => {
     if (editingTitle) setDraft(task.title);
   }, [editingTitle]);
+  // E4（2026-08-19）：Escape 取消标记——Escape 只取消内存草稿，但随后的 blur
+  // 会再触发 onCommit 把草稿写库，等于 Escape 没生效；取消后 blur 必须跳过提交
+  const cancelledRef = useRef(false);
+  /** blur 提交：Escape 已取消则跳过并重置标记（不污染下一轮编辑） */
+  const commitOnBlur = () => {
+    if (cancelledRef.current) {
+      cancelledRef.current = false;
+      return;
+    }
+    onCommitTitle?.(draft);
+  };
   // 挂件任务卡永远显示折叠键（老板 2026-08-17 12:33 指令：复用现有 FoldToggle，
   // 不重新设计折叠窗口）：折叠态只露标题（单行截断），展开态显示标题完整 + 🤖 + ⏰ + 其他内容
 
@@ -89,10 +100,16 @@ export function TaskCardContent({
             autoFocus
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
-            onBlur={() => onCommitTitle?.(draft)}
+            onBlur={commitOnBlur}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.nativeEvent.isComposing) onCommitTitle?.(draft);
-              if (e.key === "Escape") onCancelTitle?.();
+              if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                cancelledRef.current = false; // 显式提交，重置取消标记
+                onCommitTitle?.(draft);
+              }
+              if (e.key === "Escape") {
+                cancelledRef.current = true;
+                onCancelTitle?.();
+              }
             }}
             onPointerDown={stop}
             onClick={(e) => e.stopPropagation()}
