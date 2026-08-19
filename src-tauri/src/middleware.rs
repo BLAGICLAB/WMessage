@@ -95,15 +95,23 @@ pub fn build_default_registry() -> MiddlewareRegistry {
 }
 
 /// helper：通过 Tauri State 调 run_pre_step（state 未 manage 时回退 None = legacy passthrough）
-pub fn run_pre_step(app: &tauri::AppHandle, input: &str) -> Option<RouteAction> {
+/// NEW-D-6：泛型 Runtime，与文件头「适配 mock_runtime」注释一致，D2 fail-open 回退可用 mock 单测
+pub fn run_pre_step<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    input: &str,
+) -> Option<RouteAction> {
     match app.try_state::<MiddlewareRegistry>() {
         Some(state) => state.run_pre_step(input),
         None => None,
     }
 }
 
-/// helper：通过 Tauri State 调 run_pre_execute
-pub fn run_pre_execute(app: &tauri::AppHandle, name: &str, active_skill: bool) -> Option<String> {
+/// helper：通过 Tauri State 调 run_pre_execute（state 未 manage 时回退 None，同 D2 fail-open）
+pub fn run_pre_execute<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    name: &str,
+    active_skill: bool,
+) -> Option<String> {
     match app.try_state::<MiddlewareRegistry>() {
         Some(state) => state.run_pre_execute(name, active_skill),
         None => None,
@@ -266,5 +274,31 @@ mod tests {
         let r = build_default_registry();
         assert_eq!(r.pre_step_list().len(), 1);
         assert_eq!(r.pre_execute_list().len(), 1);
+    }
+
+    // ── NEW-D-6：helper 泛型 Runtime 化后，D2 fail-open 回退可用 mock runtime 单测 ──
+
+    #[test]
+    fn helper_missing_state_falls_back_to_none() {
+        // state 未 manage → fail-open 回退 None（legacy passthrough，不阻塞）。
+        // 该测试同时证明 helper 已泛型化：mock_app 的 AppHandle<MockRuntime> 能编译通过。
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        assert!(run_pre_step(&handle, "帮我做 PPT").is_none());
+        assert!(run_pre_execute(&handle, "create_word_revisions", false).is_none());
+    }
+
+    #[test]
+    fn helper_with_managed_state_runs_registry() {
+        // state 已 manage → helper 走 registry：atomic guard 阻断、intent router 路由
+        let app = tauri::test::mock_app();
+        app.manage(build_default_registry());
+        let handle = app.handle().clone();
+        assert!(run_pre_execute(&handle, "create_word_revisions", false).is_some());
+        assert!(run_pre_execute(&handle, "list_tasks", false).is_none());
+        match run_pre_step(&handle, "帮我做 PPT") {
+            Some(RouteAction::Skill(s)) => assert_eq!(s, "ppt-orchestra-skill"),
+            other => panic!("expected ppt skill route, got {other:?}"),
+        }
     }
 }

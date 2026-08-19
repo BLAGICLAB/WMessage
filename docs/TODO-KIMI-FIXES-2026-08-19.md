@@ -68,7 +68,7 @@
 - [x] **NEW-D-3** `profile.rs:274-277` — `remove_avatar` 先删文件后 save，save 失败 → 磁盘 json 悬挂引用已删文件
 - [x] **NEW-D-4** `profile.rs:106-115` — `entry_view` 不校验 avatar 字段是否纯文件名，手改 `profile.json` 可路径穿越读任意文件并 base64 广播
 - [x] **NEW-D-5** `audit.rs:52-60 vs 80-84` — `format_event_line` 是生产 `write_event` 行拼装的测试专用拷贝，drift 时测试照样绿
-- [ ] **NEW-D-6** `middleware.rs:17/98/106` — helper 写死 Wry `AppHandle`，与文件头「泛型 Runtime」注释自相矛盾；D2 fail-open 回退无法单测
+- [x] **NEW-D-6** `middleware.rs:17/98/106` — helper 写死 Wry `AppHandle`，与文件头「泛型 Runtime」注释自相矛盾；D2 fail-open 回退无法单测
 
 ---
 
@@ -107,7 +107,7 @@
 - Phase 2: 0/5
 - Phase 3: 5/5
 - Phase 4: 4/4 (E5 已勾)
-- Phase 5: 0/6
+- Phase 5: 6/6
 - Phase 6: 0/11+
 
 ---
