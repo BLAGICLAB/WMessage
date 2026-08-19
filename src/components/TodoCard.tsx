@@ -12,6 +12,7 @@ import { openPath } from "@tauri-apps/plugin-opener";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { handleCommandError, formatCommandError } from "../lib/errorHandler";
 import type { Task } from "../types";
+import { taskFiles, filesPatch, mergeFiles, MAX_TASK_FILES } from "../lib/taskFiles";
 import { basename, formatCompletedAt, formatDue, formatSchedule, isDueToday, isValidDateTimeLocal, scheduleToDatetime } from "../format";
 import { DoneCircle } from "./DoneCircle";
 import { FoldToggle } from "./FoldToggle";
@@ -118,9 +119,25 @@ export function TodoCardView({
 
   const pickFile = async () => {
     try {
-      const selected = await open({ multiple: false, directory: false });
-      if (typeof selected === "string")
-        onUpdate(task.id, { filePath: selected, fileIsDir: false });
+      const cur = taskFiles(task);
+      // 文件夹绑定独占（老板 2026-08-19：绑定文件夹逻辑不变，单选）：
+      // 已绑文件夹时不得再添加文件，不替换也不叠加
+      if (cur.some((f) => f.isDir)) {
+        window.alert("该任务已绑定文件夹，不能再添加文件");
+        return;
+      }
+      const selected = await open({ multiple: true, directory: false });
+      const paths = Array.isArray(selected)
+        ? selected
+        : typeof selected === "string"
+        ? [selected]
+        : [];
+      if (paths.length === 0) return;
+      // isDir 由 Rust 侧 fs::metadata 判定（前端无法 stat）
+      const added = await invoke<{ path: string; isDir: boolean }[]>("bind_files", { paths });
+      const { files, truncated } = mergeFiles(cur, added);
+      if (truncated) window.alert(`每个任务最多绑定 ${MAX_TASK_FILES} 个文件，超出部分已忽略`);
+      if (files.length !== cur.length) onUpdate(task.id, filesPatch(files));
     } catch (e) {
       handleCommandError(e, "pick file");
     }
@@ -128,12 +145,22 @@ export function TodoCardView({
 
   const pickFolder = async () => {
     try {
+      // 已绑文件夹时不替换也不叠加（老板 2026-08-19）
+      if (taskFiles(task).some((f) => f.isDir)) {
+        window.alert("该任务已绑定文件夹，不能再添加文件");
+        return;
+      }
       const selected = await open({ directory: true });
+      // 文件夹仍单选独占：替换整个绑定列表
       if (typeof selected === "string")
-        onUpdate(task.id, { filePath: selected, fileIsDir: true });
+        onUpdate(task.id, filesPatch([{ path: selected, isDir: true }]));
     } catch (e) {
       handleCommandError(e, "pick folder");
     }
+  };
+
+  const removeFile = (path: string) => {
+    onUpdate(task.id, filesPatch(taskFiles(task).filter((f) => f.path !== path)));
   };
 
   // 标题右侧圆圈：待办/今日 → 完成（自动记完成时间）；完成 → 截止日期是今天回「今日」、否则回「待办」，完成时间删除
@@ -152,19 +179,47 @@ export function TodoCardView({
     onUpdate(task.id, { collapsed: !task.collapsed });
   };
 
+  const boundFiles = taskFiles(task);
+  // 绑定文件折叠：超过 5 个收起到「还有 N 个」（2026-08-19 多文件绑定）
+  const [filesExpanded, setFilesExpanded] = useState(false);
+  // 多文件打开选择列表（📂 点击：单文件直开，多文件弹列表让用户选）
+  const [openChooser, setOpenChooser] = useState(false);
+
   const openFile = () => {
-    if (task.filePath)
-      openPath(task.filePath).catch((e) =>
-        handleCommandError(e, "open file", { silent: true })
-      );
+    if (boundFiles.length === 0) return;
+    if (boundFiles.length > 1) {
+      setOpenChooser((v) => !v);
+      return;
+    }
+    openPath(boundFiles[0].path).catch((e) =>
+      handleCommandError(e, "open file", { silent: true })
+    );
+  };
+
+  const openOneFile = (path: string) => {
+    setOpenChooser(false);
+    openPath(path).catch((e) =>
+      handleCommandError(e, "open file", { silent: true })
+    );
   };
 
   const copyFile = () => {
-    if (task.filePath)
-      invoke("copy_file_with_title", { path: task.filePath, title: task.title }).catch((e) =>
+    if (boundFiles.length === 0) return;
+    if (boundFiles.length === 1) {
+      // 单文件行为不变
+      invoke("copy_file_with_title", { path: boundFiles[0].path, title: task.title }).catch((e) =>
         // 复制失败：用户点了按钮，但失败通常不是关键操作（如源文件被删），不打扰
         handleCommandError(e, "copy_file_with_title", { silent: true })
       );
+      return;
+    }
+    // 多文件：复制全部文件，文本命名为 {title}-{basename}（Rust 侧拼接）
+    invoke("copy_files_with_title", {
+      paths: boundFiles.map((f) => f.path),
+      title: task.title,
+    }).catch((e) =>
+      handleCommandError(e, "copy_files_with_title", { silent: true })
+    );
   };
 
   // 定时执行面板
@@ -430,15 +485,41 @@ export function TodoCardView({
         </button>
       )}
 
-      {task.filePath ? (
+      {boundFiles.length > 0 ? (
         <div className="mt-3 flex flex-col gap-2">
-          <p className="text-xs text-[var(--t4)] truncate" title={task.filePath}>
-            {task.fileIsDir ? "📁" : "📎"} {basename(task.filePath)}
-          </p>
+          {/* 绑定文件 chip 列表：📁/📎 + basename + 单独移除（×）；超过 5 个折叠为「还有 N 个」 */}
+          <div className="flex flex-col gap-1">
+            {(filesExpanded ? boundFiles : boundFiles.slice(0, 5)).map((f) => (
+              <div key={f.path} className="flex items-center gap-1.5">
+                <p className="flex-1 min-w-0 text-xs text-[var(--t4)] truncate" title={f.path}>
+                  {f.isDir ? "📁" : "📎"} {basename(f.path)}
+                </p>
+                {!archived && !trashed && (
+                  <button
+                    className="shrink-0 text-[var(--t5)] hover:text-[var(--danger)] text-sm"
+                    title="移除该文件"
+                    onPointerDown={stop}
+                    onClick={() => removeFile(f.path)}
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
+            ))}
+            {boundFiles.length > 5 && (
+              <button
+                className="self-start text-[11px] text-[var(--t5)] hover:text-[var(--t3)]"
+                onPointerDown={stop}
+                onClick={() => setFilesExpanded((v) => !v)}
+              >
+                {filesExpanded ? "收起" : `还有 ${boundFiles.length - 5} 个`}
+              </button>
+            )}
+          </div>
           <div className="flex items-center gap-2">
             <button
               className="nm-btn px-2 py-0.5 text-[11px] leading-none text-[var(--t3)]"
-              title={task.fileIsDir ? "打开文件夹" : "打开文件"}
+              title={boundFiles.length > 1 ? "打开文件（多选列表）" : boundFiles[0].isDir ? "打开文件夹" : "打开文件"}
               onPointerDown={stop}
               onClick={openFile}
             >
@@ -452,17 +533,43 @@ export function TodoCardView({
             >
               📋
             </button>
+            {!archived && !trashed && !boundFiles.some((f) => f.isDir) && boundFiles.length < MAX_TASK_FILES && (
+              <button
+                className="nm-btn px-2 py-0.5 text-[11px] leading-none text-[var(--t4)]"
+                title="继续绑定文件"
+                onPointerDown={stop}
+                onClick={pickFile}
+              >
+                ＋
+              </button>
+            )}
             {!archived && !trashed && (
               <button
                 className="text-[var(--t5)] hover:text-[var(--danger)] text-sm"
-                title="解绑文件"
+                title="解绑全部文件"
                 onPointerDown={stop}
-                onClick={() => onUpdate(task.id, { filePath: undefined, fileIsDir: undefined })}
+                onClick={() => onUpdate(task.id, filesPatch([]))}
               >
                 ×
               </button>
             )}
           </div>
+          {/* 多文件打开选择列表（原生 dialog 无多选列表，退到 UI 列表） */}
+          {openChooser && boundFiles.length > 1 && (
+            <div className="nm-inset rounded-lg p-1.5 flex flex-col gap-0.5">
+              {boundFiles.map((f) => (
+                <button
+                  key={f.path}
+                  className="text-left text-xs text-[var(--t3)] px-2 py-1 rounded hover:bg-[var(--hover-bg)] truncate"
+                  title={f.path}
+                  onPointerDown={stop}
+                  onClick={() => openOneFile(f.path)}
+                >
+                  {f.isDir ? "📁" : "📎"} {basename(f.path)}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       ) : archived || trashed ? null : (
         <div className="mt-3 flex items-center gap-3">
@@ -511,7 +618,7 @@ export function TodoCardView({
               // 绑本地文件/文件夹时弹三选项（老板 2026-08-17）：
               //   全部删除 / 保留文件删除 / 取消
               // 未绑文件时保持原两选项 confirm（无需三选）
-              if (task.filePath) {
+              if (boundFiles.length > 0) {
                 setPurgeOpen(true);
                 return;
               }
@@ -712,7 +819,7 @@ export function TodoCardView({
           ⚠️ 必须用 createPortal 渲染到 document.body —— TodoCard 容器 hover 触发 transform: translateY(-3px) scale(1.01)
           (main.css .nm-card-hover:hover) + dnd-kit useSortable 的 transform style，二者都会创建 CSS 包含块，
           使 position:fixed 子元素不再相对视口定位而被裁缩到卡片边界内（老板 21:10 报 bug）。 */}
-      {purgeOpen && task.filePath && createPortal(
+      {purgeOpen && boundFiles.length > 0 && createPortal(
         <div
           className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-6"
           onPointerDown={() => { if (!purgeBusy) setPurgeOpen(false); }}
@@ -726,14 +833,20 @@ export function TodoCardView({
             </div>
             <div className="text-xs text-[var(--t3)] leading-relaxed">
               任务卡「<span className="text-[var(--t2)] font-medium">{task.title}</span>」绑定了
-              <span className="text-[var(--t2)]">{task.fileIsDir ? "文件夹" : "文件"}</span>「
-              <span className="text-[var(--t2)]">{basename(task.filePath)}</span>」。
+              {boundFiles.length > 1 ? (
+                <span className="text-[var(--t2)]"> {boundFiles.length} 个文件/文件夹</span>
+              ) : (
+                <>
+                  <span className="text-[var(--t2)]">{boundFiles[0].isDir ? "文件夹" : "文件"}</span>「
+                  <span className="text-[var(--t2)]">{basename(boundFiles[0].path)}</span>」
+                </>
+              )}。
             </div>
             <div
-              className="text-[11px] text-[var(--t5)] break-all px-2 py-1.5 rounded bg-[var(--bg)] border border-[var(--bd)]"
-              title={task.filePath}
+              className="text-[11px] text-[var(--t5)] break-all px-2 py-1.5 rounded bg-[var(--bg)] border border-[var(--bd)] max-h-28 overflow-y-auto whitespace-pre-line"
+              title={boundFiles.map((f) => f.path).join("\n")}
             >
-              完整路径：{task.filePath}
+              完整路径：{boundFiles.length > 1 ? "\n" : ""}{boundFiles.map((f) => f.path).join("\n")}
             </div>
             <div className="text-[11px] text-[var(--t4)]">
               此操作不可撤销，请选择：
@@ -745,10 +858,13 @@ export function TodoCardView({
                 onClick={async () => {
                   setPurgeBusy(true);
                   try {
-                    await invoke("delete_bound_file", {
-                      path: task.filePath,
-                      isDir: !!task.fileIsDir,
-                    });
+                    // 多文件绑定：逐个移入废纸篓/回收站
+                    for (const f of boundFiles) {
+                      await invoke("delete_bound_file", {
+                        path: f.path,
+                        isDir: f.isDir,
+                      });
+                    }
                     onDelete(task.id);
                     setPurgeOpen(false);
                   } catch (e) {
@@ -760,7 +876,7 @@ export function TodoCardView({
                 }}
               >
                 <span className="font-medium">🗑 全部删除</span>
-                <span className="text-[10px] text-[var(--t4)] font-normal">任务卡删除，并把绑定的本地{task.fileIsDir ? "文件夹" : "文件"}移到废纸篓/回收站</span>
+                <span className="text-[10px] text-[var(--t4)] font-normal">任务卡删除，并把绑定的本地{boundFiles.length > 1 ? "文件/文件夹" : boundFiles[0].isDir ? "文件夹" : "文件"}移到废纸篓/回收站</span>
               </button>
               <button
                 className="nm-btn px-3 py-2 text-xs text-[var(--t2)] flex flex-col items-start gap-0.5 disabled:opacity-50"
@@ -771,7 +887,7 @@ export function TodoCardView({
                 }}
               >
                 <span className="font-medium">📄 保留文件删除</span>
-                <span className="text-[10px] text-[var(--t4)] font-normal">只删除任务卡，本地{task.fileIsDir ? "文件夹" : "文件"}保留</span>
+                <span className="text-[10px] text-[var(--t4)] font-normal">只删除任务卡，本地{boundFiles.length > 1 ? "文件/文件夹" : boundFiles[0].isDir ? "文件夹" : "文件"}保留</span>
               </button>
               <button
                 className="nm-btn px-3 py-2 text-xs text-[var(--t3)] disabled:opacity-50"

@@ -80,3 +80,71 @@ describe("TaskCardContent 标题编辑 Escape 取消（E4）", () => {
     expect(onCommitTitle).toHaveBeenCalledWith("原始标题改");
   });
 });
+
+// —— 多文件绑定（2026-08-19）：chip 列表 / 单独移除 / 超 5 折叠 / 多文件打开列表 ——
+describe("TaskCardContent 多文件绑定", () => {
+  const multiTask: Task = {
+    id: "t2",
+    title: "多文件任务",
+    column: "todo",
+    files: [
+      { path: "/docs/a.pdf", isDir: false },
+      { path: "/docs/b.docx", isDir: false },
+    ],
+  };
+
+  it("chip 列表渲染 + onRemoveFile 时每个 chip 带 × 回调对应路径", async () => {
+    const user = userEvent.setup();
+    const onRemoveFile = vi.fn();
+    render(<TaskCardContent task={multiTask} onRemoveFile={onRemoveFile} />);
+    expect(screen.getByText("📎 a.pdf")).toBeInTheDocument();
+    expect(screen.getByText("📎 b.docx")).toBeInTheDocument();
+    const removes = screen.getAllByTitle("移除该文件");
+    expect(removes).toHaveLength(2);
+    await user.click(removes[1]);
+    expect(onRemoveFile).toHaveBeenCalledWith("/docs/b.docx");
+  });
+
+  it("不传 onRemoveFile 时不渲染 ×（只读场景）", () => {
+    render(<TaskCardContent task={multiTask} />);
+    expect(screen.getByText("📎 a.pdf")).toBeInTheDocument();
+    expect(screen.queryByTitle("移除该文件")).not.toBeInTheDocument();
+  });
+
+  it("超过 5 个折叠为「还有 N 个」，点击展开", async () => {
+    const user = userEvent.setup();
+    const seven: Task = {
+      id: "t3",
+      title: "七文件",
+      column: "todo",
+      files: Array.from({ length: 7 }, (_, i) => ({
+        path: `/f/${i}.txt`,
+        isDir: false,
+      })),
+    };
+    render(<TaskCardContent task={seven} />);
+    expect(screen.queryByText("📎 5.txt")).not.toBeInTheDocument();
+    await user.click(screen.getByText("还有 2 个"));
+    expect(screen.getByText("📎 5.txt")).toBeInTheDocument();
+    expect(screen.getByText("📎 6.txt")).toBeInTheDocument();
+  });
+
+  it("多文件打开：📂 弹选择列表，点条目回调 onOpenFilePath", async () => {
+    const user = userEvent.setup();
+    const onOpenFile = vi.fn();
+    const onOpenFilePath = vi.fn();
+    render(
+      <TaskCardContent
+        task={multiTask}
+        onOpenFile={onOpenFile}
+        onOpenFilePath={onOpenFilePath}
+      />
+    );
+    await user.click(screen.getByTitle("打开文件（多选列表）"));
+    expect(onOpenFile).not.toHaveBeenCalled();
+    // chip 行与选择列表条目文本相同，取按钮（选择列表条目是 button）
+    const items = screen.getAllByText("📎 b.docx");
+    await user.click(items[items.length - 1]);
+    expect(onOpenFilePath).toHaveBeenCalledWith("/docs/b.docx");
+  });
+});

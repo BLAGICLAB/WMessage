@@ -183,3 +183,155 @@ describe("TodoCard 测试环境", () => {
     expect(within(container).getByText("默认任务")).toBeInTheDocument();
   });
 });
+
+// —— 多文件绑定（2026-08-19）：chip 列表 / 单独移除 / 超 5 折叠 / 上限 / 文件夹独占 ——
+describe("TodoCardView 多文件绑定", () => {
+  const multiTask: Task = {
+    ...baseTask,
+    files: [
+      { path: "/docs/a.pdf", isDir: false },
+      { path: "/docs/b.docx", isDir: false },
+      { path: "/docs/c.txt", isDir: false },
+    ],
+    // 双写旧字段（迁移过渡期一致）
+    filePath: "/docs/a.pdf",
+    fileIsDir: false,
+  };
+
+  it("多 chip 列表渲染：每个文件一行（图标 + basename + 移除按钮）", () => {
+    render(<TodoCardView task={multiTask} onUpdate={vi.fn()} onDelete={vi.fn()} />);
+    expect(screen.getByText("📎 a.pdf")).toBeInTheDocument();
+    expect(screen.getByText("📎 b.docx")).toBeInTheDocument();
+    expect(screen.getByText("📎 c.txt")).toBeInTheDocument();
+    expect(screen.getAllByTitle("移除该文件")).toHaveLength(3);
+  });
+
+  it("旧字段兜底：只有 filePath 的老数据也渲染单 chip", () => {
+    const legacy: Task = { ...baseTask, filePath: "/old/legacy.pdf", fileIsDir: false };
+    render(<TodoCardView task={legacy} onUpdate={vi.fn()} onDelete={vi.fn()} />);
+    expect(screen.getByText("📎 legacy.pdf")).toBeInTheDocument();
+  });
+
+  it("chip × 单独移除：files 去掉该条，旧字段双写首条", async () => {
+    const user = userEvent.setup();
+    const onUpdate = vi.fn();
+    render(<TodoCardView task={multiTask} onUpdate={onUpdate} onDelete={vi.fn()} />);
+    await user.click(screen.getAllByTitle("移除该文件")[0]);
+    const call = onUpdate.mock.calls[0];
+    expect(call[0]).toBe("t1");
+    expect(call[1].files).toEqual([
+      { path: "/docs/b.docx", isDir: false },
+      { path: "/docs/c.txt", isDir: false },
+    ]);
+    expect(call[1].filePath).toBe("/docs/b.docx");
+    expect(call[1].fileIsDir).toBe(false);
+  });
+
+  it("超过 5 个折叠为「还有 N 个」，点击展开/收起", async () => {
+    const user = userEvent.setup();
+    const seven: Task = {
+      ...baseTask,
+      files: Array.from({ length: 7 }, (_, i) => ({
+        path: `/f/${i}.txt`,
+        isDir: false,
+      })),
+    };
+    render(<TodoCardView task={seven} onUpdate={vi.fn()} onDelete={vi.fn()} />);
+    // 默认只显示前 5 个
+    expect(screen.getByText("📎 4.txt")).toBeInTheDocument();
+    expect(screen.queryByText("📎 5.txt")).not.toBeInTheDocument();
+    expect(screen.getByText("还有 2 个")).toBeInTheDocument();
+    await user.click(screen.getByText("还有 2 个"));
+    expect(screen.getByText("📎 6.txt")).toBeInTheDocument();
+    expect(screen.getByText("收起")).toBeInTheDocument();
+  });
+
+  it("文件夹独占：已绑文件夹时不显示「＋」继续绑定按钮", () => {
+    const dirTask: Task = {
+      ...baseTask,
+      files: [{ path: "/some/dir", isDir: true }],
+    };
+    render(<TodoCardView task={dirTask} onUpdate={vi.fn()} onDelete={vi.fn()} />);
+    expect(screen.getByText("📁 dir")).toBeInTheDocument();
+    expect(screen.queryByTitle("继续绑定文件")).not.toBeInTheDocument();
+  });
+
+  it("pickFile 多选追加：merge 去重保序 + bind_files 取 isDir + 双写旧字段", async () => {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const { invoke } = await import("@tauri-apps/api/core");
+    const user = userEvent.setup();
+    const onUpdate = vi.fn();
+    const oneFile: Task = {
+      ...baseTask,
+      files: [{ path: "/docs/a.pdf", isDir: false }],
+    };
+    vi.mocked(open).mockResolvedValueOnce(["/docs/a.pdf", "/docs/new.txt"] as never);
+    vi.mocked(invoke).mockResolvedValueOnce([
+      { path: "/docs/a.pdf", isDir: false },
+      { path: "/docs/new.txt", isDir: false },
+    ] as never);
+    render(<TodoCardView task={oneFile} onUpdate={onUpdate} onDelete={vi.fn()} />);
+    await user.click(screen.getByTitle("继续绑定文件"));
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("bind_files", {
+      paths: ["/docs/a.pdf", "/docs/new.txt"],
+    });
+    const call = onUpdate.mock.calls[0];
+    // 重复的 a.pdf 不叠加，new.txt 追加在后
+    expect(call[1].files).toEqual([
+      { path: "/docs/a.pdf", isDir: false },
+      { path: "/docs/new.txt", isDir: false },
+    ]);
+    expect(call[1].filePath).toBe("/docs/a.pdf");
+  });
+
+  it("pickFile 超上限：截断到 10 并弹提示", async () => {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const { invoke } = await import("@tauri-apps/api/core");
+    const alertSpy = vi.spyOn(window, "alert").mockImplementation(() => {});
+    const user = userEvent.setup();
+    const onUpdate = vi.fn();
+    const nine: Task = {
+      ...baseTask,
+      files: Array.from({ length: 9 }, (_, i) => ({
+        path: `/f/${i}.txt`,
+        isDir: false,
+      })),
+    };
+    const added = [
+      { path: "/f/9.txt", isDir: false },
+      { path: "/f/10.txt", isDir: false },
+    ];
+    vi.mocked(open).mockResolvedValueOnce(added.map((f) => f.path) as never);
+    vi.mocked(invoke).mockResolvedValueOnce(added as never);
+    render(<TodoCardView task={nine} onUpdate={onUpdate} onDelete={vi.fn()} />);
+    // 9 个文件时仍有「＋」（< 10）
+    await user.click(screen.getByTitle("继续绑定文件"));
+    const call = onUpdate.mock.calls[0];
+    expect(call[1].files).toHaveLength(10);
+    expect(alertSpy).toHaveBeenCalled();
+    alertSpy.mockRestore();
+  });
+
+  it("多文件复制：调 copy_files_with_title（全部路径 + 标题）；单文件仍走 copy_file_with_title", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const user = userEvent.setup();
+    render(<TodoCardView task={multiTask} onUpdate={vi.fn()} onDelete={vi.fn()} />);
+    await user.click(screen.getByTitle("复制文件+标题"));
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("copy_files_with_title", {
+      paths: ["/docs/a.pdf", "/docs/b.docx", "/docs/c.txt"],
+      title: "默认任务",
+    });
+  });
+
+  it("多文件打开：📂 弹出选择列表，点条目打开对应文件", async () => {
+    const { openPath } = await import("@tauri-apps/plugin-opener");
+    const user = userEvent.setup();
+    render(<TodoCardView task={multiTask} onUpdate={vi.fn()} onDelete={vi.fn()} />);
+    await user.click(screen.getByTitle("打开文件（多选列表）"));
+    // chip 行与选择列表条目文本相同，选择列表条目是 button（chip 是 <p>）
+    const items = screen.getAllByText("📎 b.docx");
+    const btn = items.find((el) => el.tagName === "BUTTON")!;
+    await user.click(btn);
+    expect(vi.mocked(openPath)).toHaveBeenCalledWith("/docs/b.docx");
+  });
+});

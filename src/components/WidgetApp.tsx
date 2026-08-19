@@ -33,6 +33,7 @@ import { loadTasksFromDb, loadWorkspaceFromDb, sortByOrder, assignInsertOrder, d
 import { applySetting, getSetting, subscribeSystem, subscribeTheme } from "../theme";
 import type { ThemeSetting } from "../theme";
 import type { Task, WorkspaceItem } from "../types";
+import { taskFiles, filesPatch } from "../lib/taskFiles";
 import { TaskCardContent } from "./TaskCardContent";
 import { FoldToggle } from "./FoldToggle";
 import { ChatPanel } from "./ChatPanel";
@@ -481,21 +482,50 @@ export default function WidgetApp() {
       )
     );
 
-  // 打开绑定文件/文件夹（与主窗口一致）
+  // 打开绑定文件/文件夹（与主窗口一致；多文件时由 TaskCardContent 弹列表回调 onOpenFilePath）
   const openFile = (t: Task) => {
-    if (t.filePath)
-      invoke("open_file_path", { path: t.filePath }).catch((e) =>
+    const files = taskFiles(t);
+    if (files.length > 0)
+      invoke("open_file_path", { path: files[0].path }).catch((e) =>
         handleCommandError(e, "open_file_path", { silent: true })
       );
   };
 
-  // 复制文件+标题（与主窗口一致）
+  const openFilePath = (path: string) => {
+    invoke("open_file_path", { path }).catch((e) =>
+      handleCommandError(e, "open_file_path", { silent: true })
+    );
+  };
+
+  // 复制文件+标题（与主窗口一致；多文件复制全部，文本命名 {title}-{basename}）
   const copyFile = (t: Task) => {
-    if (t.filePath)
-      invoke("copy_file_with_title", { path: t.filePath, title: t.title }).catch((e) =>
+    const files = taskFiles(t);
+    if (files.length === 1) {
+      invoke("copy_file_with_title", { path: files[0].path, title: t.title }).catch((e) =>
         handleCommandError(e, "copy_file_with_title", { silent: true })
       );
+    } else if (files.length > 1) {
+      invoke("copy_files_with_title", {
+        paths: files.map((f) => f.path),
+        title: t.title,
+      }).catch((e) =>
+        handleCommandError(e, "copy_files_with_title", { silent: true })
+      );
+    }
   };
+
+  // 移除单个绑定文件（chip ×；同步主窗口落盘）
+  const removeFile = (t: Task, path: string) =>
+    applyAndSync((prev) =>
+      prev.map((x) =>
+        x.id !== t.id
+          ? x
+          : {
+              ...x,
+              ...filesPatch(taskFiles(x).filter((f) => f.path !== path)),
+            }
+      )
+    );
 
   // 挂件可见列表排序结束：重建全局顺序，只给被拖任务分配 order（行级同步主窗口）
   const handleDragEnd = (e: DragEndEvent) => {
@@ -738,7 +768,9 @@ export default function WidgetApp() {
                       onToggleCollapsed={() => toggleCollapsed(t)}
                       onToggleSubtask={(sid) => toggleSubtask(t, sid)}
                       onOpenFile={() => openFile(t)}
+                      onOpenFilePath={openFilePath}
                       onCopyFile={() => copyFile(t)}
+                      onRemoveFile={(p) => removeFile(t, p)}
                       onBotExecute={
                         botOn
                           ? () =>
@@ -793,7 +825,9 @@ function SortableTaskCard({
   onToggleCollapsed,
   onToggleSubtask,
   onOpenFile,
+  onOpenFilePath,
   onCopyFile,
+  onRemoveFile,
   onBotExecute,
   onSetSchedule,
 }: {
@@ -810,7 +844,9 @@ function SortableTaskCard({
   onToggleCollapsed: () => void;
   onToggleSubtask: (subtaskId: string) => void;
   onOpenFile: () => void;
+  onOpenFilePath: (path: string) => void;
   onCopyFile: () => void;
+  onRemoveFile: (path: string) => void;
   onBotExecute?: () => void;
   onSetSchedule?: (schedule: string | undefined) => void;
 }) {
@@ -840,7 +876,9 @@ function SortableTaskCard({
         onToggleCollapsed={onToggleCollapsed}
         onToggleSubtask={onToggleSubtask}
         onOpenFile={onOpenFile}
+        onOpenFilePath={onOpenFilePath}
         onCopyFile={onCopyFile}
+        onRemoveFile={onRemoveFile}
         onBotExecute={onBotExecute}
         onSetSchedule={onSetSchedule}
       />

@@ -644,15 +644,20 @@ pub async fn execute_tool_with_stop(
     //    - 镜像调用 skill_on_step_post：技能步骤结果/失败检测
     let dur_ms = start.elapsed().as_millis() as u64;
     let level = crate::audit::classify_text(name, &text);
-    crate::audit_event!(
-        app,
-        level,
-        "tool.return",
-        "tool" => name,
-        "ms" => dur_ms,
-        "refs" => refs.len(),
-        "preview" => text.chars().take(80).collect::<String>(),
-    );
+    // create_task/edit_task 带 files 参数时补 files_count/truncated kv（2026-08-19 多文件绑定）
+    let mut kv: Vec<(&str, String)> = vec![
+        ("tool", name.to_string()),
+        ("ms", dur_ms.to_string()),
+        ("refs", refs.len().to_string()),
+        ("preview", text.chars().take(80).collect::<String>()),
+    ];
+    if matches!(name, "create_task" | "edit_task") {
+        if let Some((cnt, truncated)) = files_audit_kv(args) {
+            kv.push(("files_count", cnt.to_string()));
+            kv.push(("truncated", truncated.to_string()));
+        }
+    }
+    crate::audit::write_event(app, level, "tool.return", &kv);
     if name != "use_skill" {
         crate::bot_skills::skill_on_step_post(app, name, &text, dur_ms, level);
     }
@@ -662,6 +667,45 @@ pub async fn execute_tool_with_stop(
 
 fn parse_args(args: &str) -> serde_json::Value {
     serde_json::from_str(args).unwrap_or(serde_json::Value::Null)
+}
+
+/// 解析 create_task/edit_task 的 files 参数（[{path, isDir}]）：
+/// 去重保序、空路径丢弃、超 MAX_TASK_FILES 截断（Rust 侧硬上限，2026-08-19）。
+/// 返回 Some((files, truncated))；无 files 字段返回 None（不改绑定）。
+fn parse_task_files_arg(v: &serde_json::Value) -> Option<(Vec<crate::db::TaskFile>, bool)> {
+    let arr = v["files"].as_array()?;
+    let truncated = arr.len() > crate::db::MAX_TASK_FILES;
+    let mut out: Vec<crate::db::TaskFile> = Vec::new();
+    for item in arr {
+        let Some(path) = item["path"].as_str().map(|s| s.trim().to_string()) else {
+            continue;
+        };
+        if path.is_empty() || out.iter().any(|f| f.path == path) {
+            continue;
+        }
+        out.push(crate::db::TaskFile {
+            path,
+            is_dir: item["isDir"].as_bool().unwrap_or(false),
+        });
+        if out.len() >= crate::db::MAX_TASK_FILES {
+            break;
+        }
+    }
+    Some((out, truncated))
+}
+
+/// files 写回任务时的双写：新 files 列 + 旧 file_path/file_is_dir 首条（过渡期旧版本可读）
+fn apply_files_to_task(t: &mut crate::db::Task, files: Vec<crate::db::TaskFile>) {
+    t.file_path = files.first().map(|f| f.path.clone());
+    t.file_is_dir = files.first().map(|f| f.is_dir);
+    t.files = if files.is_empty() { None } else { Some(files) };
+}
+
+/// tool.return 审计补充 kv（create_task/edit_task 带 files 时）：(原始条数, 是否截断)
+fn files_audit_kv(args: &str) -> Option<(usize, bool)> {
+    let v = parse_args(args);
+    let arr = v["files"].as_array()?;
+    Some((arr.len(), arr.len() > crate::db::MAX_TASK_FILES))
 }
 
 /// 改库后广播：挂件重读（tasks-changed）+ 主窗口合并 UI 不回写（tasks-updated, source:"bot"）
@@ -765,14 +809,12 @@ async fn tool_query_single_task(app: &AppHandle, args: &str) -> (String, Vec<cra
             lines.push(format!("  标签：{}", tags.join(", ")));
         }
     }
-    if let Some(fp) = &t.file_path {
-        if !fp.is_empty() {
-            let kind = if t.file_is_dir == Some(true) {
-                "目录"
-            } else {
-                "文件"
-            };
-            lines.push(format!("  绑定{kind}：{fp}"));
+    let bound_files = t.effective_files();
+    if !bound_files.is_empty() {
+        lines.push("  绑定文件：".to_string());
+        for f in &bound_files {
+            let kind = if f.is_dir { "目录" } else { "文件" };
+            lines.push(format!("    - [{kind}] {}", f.path));
         }
     }
     let mut status: Vec<&str> = Vec::new();
@@ -915,6 +957,7 @@ async fn tool_create_task(app: &AppHandle, args: &str) -> (String, Vec<crate::bo
         due: v["due"].as_str().map(|s| s.to_string()),
         note: v["note"].as_str().map(|s| s.to_string()),
         tags: None,
+        files: None,
         file_path: None,
         file_is_dir: None,
         column: match v["column"].as_str() {
@@ -932,6 +975,14 @@ async fn tool_create_task(app: &AppHandle, args: &str) -> (String, Vec<crate::bo
         sched_last: None,
         bot_assigned: None,
     };
+    // 多文件绑定（2026-08-19）：files 参数 [{path,isDir}]，超 10 截断 + 警告
+    let mut files_warn = "";
+    if let Some((files, truncated)) = parse_task_files_arg(&v) {
+        if truncated {
+            files_warn = "（绑定文件超上限，已截断为前 10 个）";
+        }
+        apply_files_to_task(&mut task, files);
+    }
     // 插到列表顶部：取当前最小 order 减 1
     if let Ok(all) = crate::db::db_load(app.clone()).await {
         let min = all
@@ -944,7 +995,7 @@ async fn tool_create_task(app: &AppHandle, args: &str) -> (String, Vec<crate::bo
         Ok(()) => {
             broadcast_after_mutation(app, vec![task.clone()], vec![]);
             (
-                format!("已新建任务「{}」", task.title),
+                format!("已新建任务「{}」{files_warn}", task.title),
                 vec![crate::bot_chat::TaskRef {
                     id: task.id.clone(),
                     title: task.title.clone(),
@@ -1118,6 +1169,15 @@ async fn tool_edit_task(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_
         next.tags = if list.is_empty() { None } else { Some(list) };
         changed.push("标签");
     }
+    // 多文件绑定（2026-08-19）：files 参数 [{path,isDir}] 整体替换列表；空数组清除；超 10 截断 + 警告
+    let mut files_warn = "";
+    if let Some((files, truncated)) = parse_task_files_arg(&v) {
+        if truncated {
+            files_warn = "（绑定文件超上限，已截断为前 10 个）";
+        }
+        apply_files_to_task(&mut next, files);
+        changed.push("绑定文件");
+    }
     if let Some(c) = v["column"].as_str() {
         let c = c.trim();
         if matches!(c, "todo" | "doing" | "done") && c != next.column {
@@ -1141,7 +1201,7 @@ async fn tool_edit_task(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_
         Ok(()) => {
             broadcast_after_mutation(app, vec![next.clone()], vec![]);
             (
-                format!("已更新任务「{}」（{}）", next.title, changed.join("、")),
+                format!("已更新任务「{}」（{}）{files_warn}", next.title, changed.join("、")),
                 vec![crate::bot_chat::TaskRef {
                     id: next.id.clone(),
                     title: next.title.clone(),
@@ -1282,8 +1342,14 @@ async fn tool_bind_file(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_
         return ("用户取消了选择，未绑定".into(), Vec::new());
     };
     let mut next = task;
-    next.file_path = Some(path.clone());
-    next.file_is_dir = Some(is_dir);
+    // 多文件绑定（2026-08-19）：等价 bind_files(vec![path])——弹框单选结果替换整个绑定列表
+    apply_files_to_task(
+        &mut next,
+        vec![crate::db::TaskFile {
+            path: path.clone(),
+            is_dir,
+        }],
+    );
     next.updated_at = Some(chrono::Utc::now().timestamp_millis());
     match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
         Ok(()) => {
@@ -1349,8 +1415,13 @@ async fn tool_link_file_to_task(app: &AppHandle, args: &str) -> (String, Vec<cra
         Err(e) => return (e, Vec::new()),
     };
     let mut next = task.clone();
-    next.file_path = Some(path.clone());
-    next.file_is_dir = Some(false);
+    apply_files_to_task(
+        &mut next,
+        vec![crate::db::TaskFile {
+            path: path.clone(),
+            is_dir: false,
+        }],
+    );
     next.updated_at = Some(chrono::Utc::now().timestamp_millis());
     match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
         Ok(()) => {
@@ -1383,11 +1454,11 @@ async fn extract_path_allowed(app: &AppHandle, path: &str) -> bool {
             return true;
         }
     }
-    // 2) 任务卡绑定文件
+    // 2) 任务卡绑定文件（多文件绑定：files 列表 + 旧字段兜底走 effective_files）
     if let Ok(tasks) = crate::db::db_load(app.clone()).await {
         for t in tasks {
-            if let Some(fp) = t.file_path.as_deref() {
-                if let Ok(fc) = std::fs::canonicalize(fp) {
+            for f in t.effective_files() {
+                if let Ok(fc) = std::fs::canonicalize(&f.path) {
                     if fc == canon {
                         return true;
                     }
@@ -1972,5 +2043,98 @@ mod early_return_events_tests {
         assert_eq!(kv_get(ret, "reason"), Some("skill_step_failed"));
         assert_eq!(kv_get(ret, "exit_code"), Some("none"));
         assert!(kv_get(ret, "duration_ms").is_some());
+    }
+}
+
+#[cfg(test)]
+mod task_files_arg_tests {
+    use super::*;
+
+    /// files 参数解析：去重保序、空白丢弃、isDir 读取、超 10 截断标记
+    #[test]
+    fn parse_task_files_arg_dedup_cap() {
+        // 正常解析 + isDir
+        let v = serde_json::json!({"files": [
+            {"path": "/a/1.pdf", "isDir": false},
+            {"path": "/a/dir", "isDir": true},
+        ]});
+        let (files, truncated) = parse_task_files_arg(&v).unwrap();
+        assert_eq!(files.len(), 2);
+        assert!(!files[0].is_dir && files[1].is_dir);
+        assert!(!truncated);
+
+        // 去重保序 + 空路径丢弃
+        let v = serde_json::json!({"files": [
+            {"path": "/a/1.pdf"}, {"path": "/a/1.pdf"}, {"path": "  "}, {"path": "/a/2.pdf"},
+        ]});
+        let (files, _) = parse_task_files_arg(&v).unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].path, "/a/1.pdf");
+        assert_eq!(files[1].path, "/a/2.pdf");
+
+        // 超上限：12 → 10 且 truncated=true
+        let many: Vec<serde_json::Value> = (0..12)
+            .map(|i| serde_json::json!({"path": format!("/f/{i}.txt"), "isDir": false}))
+            .collect();
+        let v = serde_json::json!({"files": many});
+        let (files, truncated) = parse_task_files_arg(&v).unwrap();
+        assert_eq!(files.len(), crate::db::MAX_TASK_FILES, "超 10 截断");
+        assert_eq!(files[9].path, "/f/9.txt", "保序截前 10");
+        assert!(truncated, "超上限必须标记 truncated");
+
+        // 无 files 字段 → None（不动绑定）；空数组 → Some(空)（清除绑定）
+        assert!(parse_task_files_arg(&serde_json::json!({"title": "x"})).is_none());
+        let (files, truncated) = parse_task_files_arg(&serde_json::json!({"files": []})).unwrap();
+        assert!(files.is_empty() && !truncated);
+    }
+
+    /// 双写：files 首条同步进旧 file_path/file_is_dir；空列表清三字段
+    #[test]
+    fn apply_files_to_task_dual_writes_legacy_fields() {
+        let mut t = crate::db::Task {
+            id: "t".into(),
+            title: "x".into(),
+            due: None,
+            note: None,
+            tags: None,
+            files: None,
+            file_path: Some("/old.txt".into()),
+            file_is_dir: Some(false),
+            column: "todo".into(),
+            subtasks: None,
+            completed_at: None,
+            archived: None,
+            deleted_at: None,
+            collapsed: None,
+            order: None,
+            updated_at: None,
+            schedule: None,
+            sched_last: None,
+            bot_assigned: None,
+        };
+        apply_files_to_task(
+            &mut t,
+            vec![
+                crate::db::TaskFile { path: "/n/1.pdf".into(), is_dir: false },
+                crate::db::TaskFile { path: "/n/dir".into(), is_dir: true },
+            ],
+        );
+        assert_eq!(t.file_path.as_deref(), Some("/n/1.pdf"), "旧字段=首条");
+        assert_eq!(t.file_is_dir, Some(false));
+        assert_eq!(t.files.as_deref().unwrap().len(), 2);
+
+        apply_files_to_task(&mut t, vec![]);
+        assert!(t.files.is_none() && t.file_path.is_none() && t.file_is_dir.is_none());
+    }
+
+    /// tool.return 审计 kv：files_count=原始条数（截断前）、truncated 标记；无 files 不补 kv
+    #[test]
+    fn files_audit_kv_counts_raw_and_flags_truncation() {
+        let args = r#"{"files":[{"path":"/a"},{"path":"/b"}]}"#;
+        assert_eq!(files_audit_kv(args), Some((2, false)));
+        let many: Vec<String> = (0..11).map(|i| format!("{{\"path\":\"/f/{i}\"}}")).collect();
+        let args = format!("{{\"files\":[{}]}}", many.join(","));
+        assert_eq!(files_audit_kv(&args), Some((11, true)), "超 10 → truncated");
+        assert_eq!(files_audit_kv(r#"{"title":"x"}"#), None);
     }
 }

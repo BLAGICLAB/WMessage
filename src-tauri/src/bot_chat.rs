@@ -692,8 +692,16 @@ pub async fn execute_task_core(
     if let Some(d) = task.due.as_deref() {
         block.push_str(&format!("\n截止时间：{d}"));
     }
-    if let Some(f) = task.file_path.as_deref() {
-        block.push_str(&format!("\n绑定文件：{f}"));
+    let bound = task.effective_files();
+    if !bound.is_empty() {
+        block.push_str(&format!(
+            "\n绑定文件：{}",
+            bound
+                .iter()
+                .map(|f| f.path.as_str())
+                .collect::<Vec<_>>()
+                .join("；")
+        ));
     }
     crate::bot::audit_log(
         &app,

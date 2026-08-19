@@ -16,6 +16,17 @@ pub struct Subtask {
     pub done: bool,
 }
 
+/// 任务卡绑定文件条目（2026-08-19 多文件绑定，上限 MAX_TASK_FILES）
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskFile {
+    pub path: String,
+    pub is_dir: bool,
+}
+
+/// 任务卡绑定文件数量上限（多文件绑定 2026-08-19 老板指令）
+pub const MAX_TASK_FILES: usize = 10;
+
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Task {
@@ -24,6 +35,10 @@ pub struct Task {
     pub due: Option<String>,
     pub note: Option<String>,
     pub tags: Option<Vec<String>>,
+    /// 绑定文件列表（多文件绑定）；None/空 = 未绑定
+    #[serde(default)]
+    pub files: Option<Vec<TaskFile>>,
+    /// 旧单绑定字段：迁移过渡保留（启动迁移进 files；新写入双写首条保持旧版本可读）
     pub file_path: Option<String>,
     pub file_is_dir: Option<bool>,
     pub column: String,
@@ -43,6 +58,55 @@ pub struct Task {
     /// 已交给机器人执行中（🤖 点击置真；执行结束无论成败清除；启动时残留清零）
     #[serde(default)]
     pub bot_assigned: Option<bool>,
+}
+
+impl Task {
+    /// 有效绑定文件列表：files 非空优先；否则回退旧单绑定字段（迁移过渡兜底，
+    /// 覆盖「旧数据还没跑启动迁移就被读」的窗口）。
+    pub fn effective_files(&self) -> Vec<TaskFile> {
+        if let Some(files) = &self.files {
+            if !files.is_empty() {
+                return files.clone();
+            }
+        }
+        match &self.file_path {
+            Some(p) if !p.is_empty() => vec![TaskFile {
+                path: p.clone(),
+                is_dir: self.file_is_dir.unwrap_or(false),
+            }],
+            _ => Vec::new(),
+        }
+    }
+}
+
+/// 多文件绑定元数据解析（bind_files 命令内核）：fs::metadata 判定 isDir，
+/// 去重保序、空路径丢弃、超 MAX_TASK_FILES 截断。metadata 失败（路径已消失等）按文件处理。
+pub fn resolve_task_files(paths: Vec<String>) -> Vec<TaskFile> {
+    let mut out: Vec<TaskFile> = Vec::new();
+    for p in paths {
+        let path = p.trim().to_string();
+        if path.is_empty() || out.iter().any(|f| f.path == path) {
+            continue;
+        }
+        let is_dir = std::fs::metadata(&path).map(|m| m.is_dir()).unwrap_or(false);
+        out.push(TaskFile { path, is_dir });
+        if out.len() >= MAX_TASK_FILES {
+            break;
+        }
+    }
+    out
+}
+
+/// Tauri 命令：多文件绑定元数据解析（前端选完文件后拿 isDir；上限 10 内截断）
+#[tauri::command]
+pub fn bind_files(paths: Vec<String>) -> Vec<TaskFile> {
+    resolve_task_files(paths)
+}
+
+/// Tauri 命令：旧单文件调用方兼容——直接转 bind_files(vec![path])
+#[tauri::command]
+pub fn bind_file(path: String) -> Vec<TaskFile> {
+    resolve_task_files(vec![path])
 }
 
 /// 便携模式：数据库优先放 exe 同目录（U盘/绿色目录随走随带）；
@@ -272,6 +336,18 @@ pub fn open_db(app: &tauri::AppHandle) -> Result<rusqlite::Connection, String> {
         conn.execute("ALTER TABLE tasks ADD COLUMN updated_at INTEGER", [])
             .map_err(|e| e.to_string())?;
     }
+    // 迁移：任务卡多文件绑定（2026-08-19）——tasks 补 files 列（JSON [{path,isDir}]），
+    // 老 file_path/file_is_dir 单绑定回填进 files（仅 files 为空时；老列保留不清，过渡期旧版本可读）
+    ensure_files_column(&conn)?;
+    let migrated = migrate_legacy_file_bindings(&conn)?;
+    if migrated > 0 {
+        crate::audit::write_event(
+            app,
+            crate::audit::AuditLevel::Info,
+            "task_files_migration",
+            &[("migrated", migrated.to_string())],
+        );
+    }
     // 迁移：多会话（2026-08-16）——bot_messages 补 session_id 列；老单会话消息归入「默认对话」
     let has_sid: bool = conn
         .prepare("PRAGMA table_info(bot_messages)")
@@ -335,6 +411,56 @@ pub fn open_db(app: &tauri::AppHandle) -> Result<rusqlite::Connection, String> {
             .map_err(|e| e.to_string())
     });
     Ok(conn)
+}
+
+/// 多文件绑定（2026-08-19）：tasks 补 files 列（老库 ALTER 幂等）
+fn ensure_files_column(conn: &rusqlite::Connection) -> Result<(), String> {
+    let has: bool = conn
+        .prepare("PRAGMA table_info(tasks)")
+        .and_then(|mut stmt| {
+            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+            Ok(rows.filter_map(|n| n.ok()).any(|n| n == "files"))
+        })
+        .unwrap_or(false);
+    if !has {
+        conn.execute("ALTER TABLE tasks ADD COLUMN files TEXT", [])
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// 多文件绑定（2026-08-19）：老单绑定 file_path/file_is_dir → files JSON。
+/// 仅当 files 为空（NULL/''/'[]'）时回填，已迁移/新数据不动（幂等，可每启动重跑）。
+/// 返回迁移条数。
+fn migrate_legacy_file_bindings(conn: &rusqlite::Connection) -> Result<usize, String> {
+    let rows: Vec<(String, String, Option<i64>)> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, file_path, file_is_dir FROM tasks
+                 WHERE file_path IS NOT NULL AND file_path <> ''
+                   AND (files IS NULL OR files = '' OR files = '[]')",
+            )
+            .map_err(|e| e.to_string())?;
+        let mapped = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .map_err(|e| e.to_string())?;
+        mapped.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+    };
+    let mut n = 0;
+    for (id, path, is_dir) in rows {
+        let files = serde_json::to_string(&vec![TaskFile {
+            path,
+            is_dir: is_dir.map(|v| v != 0).unwrap_or(false),
+        }])
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE tasks SET files = ?1 WHERE id = ?2",
+            rusqlite::params![files, id],
+        )
+        .map_err(|e| e.to_string())?;
+        n += 1;
+    }
+    Ok(n)
 }
 
 /// NEW-B-4: 可重试的一次性执行——done 未置位时跑 exec，仅成功才置位；
@@ -784,8 +910,8 @@ fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), Strin
         .prepare(
             "INSERT INTO tasks
                (id, title, due, note, tags, file_path, file_is_dir, col, subtasks,
-                completed_at, archived, deleted_at, collapsed, ord, updated_at, schedule, sched_last, bot_assigned)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)
+                completed_at, archived, deleted_at, collapsed, ord, updated_at, schedule, sched_last, bot_assigned, files)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)
              ON CONFLICT(id) DO UPDATE SET
                title=excluded.title, due=excluded.due, note=excluded.note,
                tags=excluded.tags, file_path=excluded.file_path,
@@ -795,7 +921,7 @@ fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), Strin
                collapsed=excluded.collapsed, ord=excluded.ord,
                updated_at=excluded.updated_at,
                schedule=excluded.schedule, sched_last=excluded.sched_last,
-               bot_assigned=excluded.bot_assigned
+               bot_assigned=excluded.bot_assigned, files=excluded.files
              -- B2: lost update 守卫 — 只允许新数据压过老数据
              -- current 为 NULL (老行) → 任何新数据胜出
              -- current 有值 且 incoming >= current → 更新
@@ -809,6 +935,10 @@ fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), Strin
             None => None,
         };
         let subtasks = match &t.subtasks {
+            Some(v) => Some(serde_json::to_string(v).map_err(|e| e.to_string())?),
+            None => None,
+        };
+        let files = match &t.files {
             Some(v) => Some(serde_json::to_string(v).map_err(|e| e.to_string())?),
             None => None,
         };
@@ -831,6 +961,7 @@ fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), Strin
             t.schedule,
             t.sched_last,
             t.bot_assigned.map(|b| b as i64),
+            files,
         ])
         .map_err(|e| e.to_string())?;
     }
@@ -853,7 +984,7 @@ fn load_all(conn: &rusqlite::Connection) -> Result<Vec<Task>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT id, title, due, note, tags, file_path, file_is_dir, col, subtasks,
-                    completed_at, archived, deleted_at, collapsed, ord, updated_at, schedule, sched_last, bot_assigned
+                    completed_at, archived, deleted_at, collapsed, ord, updated_at, schedule, sched_last, bot_assigned, files
              FROM tasks ORDER BY ord, rowid",
         )
         .map_err(|e| e.to_string())?;
@@ -878,6 +1009,7 @@ fn load_all(conn: &rusqlite::Connection) -> Result<Vec<Task>, String> {
                 row.get::<_, Option<String>>(15)?,
                 row.get::<_, Option<i64>>(16)?,
                 row.get::<_, Option<i64>>(17)?,
+                row.get::<_, Option<String>>(18)?,
             ))
         })
         .map_err(|e| e.to_string())?;
@@ -902,6 +1034,7 @@ fn load_all(conn: &rusqlite::Connection) -> Result<Vec<Task>, String> {
             schedule,
             sched_last,
             bot_assigned,
+            files,
         ) = r.map_err(|e| e.to_string())?;
         let tags = match tags {
             Some(s) => serde_json::from_str(&s).ok(),
@@ -911,12 +1044,14 @@ fn load_all(conn: &rusqlite::Connection) -> Result<Vec<Task>, String> {
             Some(s) => serde_json::from_str(&s).ok(),
             None => None,
         };
+        let files = files.and_then(|s| serde_json::from_str(&s).ok());
         tasks.push(Task {
             id,
             title,
             due,
             note,
             tags,
+            files,
             file_path,
             file_is_dir: file_is_dir.map(|v| v != 0),
             column: col,
@@ -1059,15 +1194,18 @@ fn load_external(conn: &rusqlite::Connection) -> Result<Vec<Task>, String> {
     let has_sched = cols.iter().any(|c| c == "schedule");
     let has_sched_last = cols.iter().any(|c| c == "sched_last");
     let has_ba = cols.iter().any(|c| c == "bot_assigned");
+    // 多文件绑定（2026-08-19 新列）：外部库有就读，没有按 NULL
+    let has_files = cols.iter().any(|c| c == "files");
     let sql = format!(
         "SELECT id, title, due, note, tags, file_path, file_is_dir, col, subtasks,
-                completed_at, archived, deleted_at, collapsed, {}, {}, {}, {}, {}
+                completed_at, archived, deleted_at, collapsed, {}, {}, {}, {}, {}, {}
          FROM tasks",
         if has_ord { "ord" } else { "NULL" },
         if has_ua { "updated_at" } else { "NULL" },
         if has_sched { "schedule" } else { "NULL" },
         if has_sched_last { "sched_last" } else { "NULL" },
-        if has_ba { "bot_assigned" } else { "NULL" }
+        if has_ba { "bot_assigned" } else { "NULL" },
+        if has_files { "files" } else { "NULL" }
     );
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt
@@ -1091,6 +1229,7 @@ fn load_external(conn: &rusqlite::Connection) -> Result<Vec<Task>, String> {
                 row.get::<_, Option<String>>(15)?,
                 row.get::<_, Option<i64>>(16)?,
                 row.get::<_, Option<i64>>(17)?,
+                row.get::<_, Option<String>>(18)?,
             ))
         })
         .map_err(|e| e.to_string())?;
@@ -1115,15 +1254,18 @@ fn load_external(conn: &rusqlite::Connection) -> Result<Vec<Task>, String> {
             schedule,
             sched_last,
             bot_assigned,
+            files,
         ) = r.map_err(|e| e.to_string())?;
         let tags = tags.and_then(|s| serde_json::from_str(&s).ok());
         let subtasks = subtasks.and_then(|s| serde_json::from_str(&s).ok());
+        let files = files.and_then(|s| serde_json::from_str(&s).ok());
         tasks.push(Task {
             id,
             title,
             due,
             note,
             tags,
+            files,
             file_path,
             file_is_dir: file_is_dir.map(|v| v != 0),
             column: col,
@@ -1341,7 +1483,7 @@ mod tests {
                tags TEXT, file_path TEXT, file_is_dir INTEGER, col TEXT NOT NULL,
                subtasks TEXT, completed_at INTEGER, archived INTEGER,
                deleted_at INTEGER, collapsed INTEGER, ord REAL, updated_at INTEGER,
-               schedule TEXT, sched_last INTEGER, bot_assigned INTEGER
+               schedule TEXT, sched_last INTEGER, bot_assigned INTEGER, files TEXT
              );",
         )
         .unwrap();
@@ -1355,6 +1497,7 @@ mod tests {
             due: None,
             note: None,
             tags: None,
+            files: None,
             file_path: None,
             file_is_dir: None,
             column: "todo".into(),
@@ -1413,6 +1556,158 @@ mod tests {
         assert!(file.exists(), "未迁移时文件保留");
         let tasks = load_all(&conn).unwrap();
         assert_eq!(tasks.len(), 2, "库内容不得变化");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    // ── 多文件绑定（2026-08-19）：files 列迁移 + 老数据回填 + 上限 ──
+
+    /// 老 schema（无 files 列）建库：模拟 2026-08-19 前的真实老库
+    fn setup_legacy_tasks_db() -> (std::path::PathBuf, rusqlite::Connection) {
+        let dir = std::env::temp_dir().join(format!("wm-files-mig-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let conn = rusqlite::Connection::open(dir.join("t.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tasks (
+               id TEXT PRIMARY KEY, title TEXT NOT NULL, due TEXT, note TEXT,
+               tags TEXT, file_path TEXT, file_is_dir INTEGER, col TEXT NOT NULL,
+               subtasks TEXT, completed_at INTEGER, archived INTEGER,
+               deleted_at INTEGER, collapsed INTEGER, ord REAL, updated_at INTEGER,
+               schedule TEXT, sched_last INTEGER, bot_assigned INTEGER
+             );",
+        )
+        .unwrap();
+        (dir, conn)
+    }
+
+    /// 老数据 → 新 schema 完整链路：ALTER 补 files 列 + file_path 回填 files + 读回解析。
+    /// 覆盖：文件绑定、文件夹绑定（is_dir=1）、未绑定不动、幂等重跑不重复迁移。
+    #[test]
+    fn legacy_file_binding_migrates_to_files_column() {
+        let (dir, conn) = setup_legacy_tasks_db();
+        conn.execute_batch(
+            "INSERT INTO tasks (id, title, file_path, file_is_dir, col) VALUES
+               ('t-file', '绑文件', '/tmp/a.pdf', 0, 'todo'),
+               ('t-dir',  '绑文件夹', '/tmp/dir', 1, 'todo'),
+               ('t-none', '没绑', NULL, NULL, 'todo');",
+        )
+        .unwrap();
+
+        ensure_files_column(&conn).unwrap();
+        assert_eq!(migrate_legacy_file_bindings(&conn).unwrap(), 2, "两条老绑定应迁移");
+
+        let tasks = load_all(&conn).unwrap();
+        let tf = tasks.iter().find(|t| t.id == "t-file").unwrap();
+        assert_eq!(
+            tf.files.as_deref(),
+            Some(vec![TaskFile { path: "/tmp/a.pdf".into(), is_dir: false }].as_slice()),
+            "文件绑定应迁进 files（isDir=false）"
+        );
+        let td = tasks.iter().find(|t| t.id == "t-dir").unwrap();
+        assert_eq!(
+            td.files.as_deref(),
+            Some(vec![TaskFile { path: "/tmp/dir".into(), is_dir: true }].as_slice()),
+            "文件夹绑定应迁进 files（isDir=true）"
+        );
+        let tn = tasks.iter().find(|t| t.id == "t-none").unwrap();
+        assert!(tn.files.is_none(), "未绑定任务不得产生 files");
+
+        // 老列保留（迁移过渡期旧版本仍可读 file_path/file_is_dir）
+        let fp: Option<String> = conn
+            .query_row("SELECT file_path FROM tasks WHERE id='t-file'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(fp.as_deref(), Some("/tmp/a.pdf"), "老列 file_path 保留不清");
+
+        // 幂等：再跑一次迁移条数为 0，files 不变
+        assert_eq!(migrate_legacy_file_bindings(&conn).unwrap(), 0, "重跑不得重复迁移");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 已有 files 的任务不被老列回填覆盖（files 非空 → 跳过）
+    #[test]
+    fn migration_skips_tasks_with_existing_files() {
+        let (dir, conn) = setup_legacy_tasks_db();
+        conn.execute_batch(
+            "INSERT INTO tasks (id, title, file_path, file_is_dir, col) VALUES
+               ('t1', '已迁移过', '/tmp/old.txt', 0, 'todo');",
+        )
+        .unwrap();
+        ensure_files_column(&conn).unwrap();
+        // 模拟已迁移/新写的数据：files 已有值
+        conn.execute(
+            "UPDATE tasks SET files = '[{\"path\":\"/tmp/new.txt\",\"isDir\":false}]' WHERE id='t1'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(migrate_legacy_file_bindings(&conn).unwrap(), 0);
+        let t = &load_all(&conn).unwrap()[0];
+        assert_eq!(
+            t.files.as_deref().unwrap()[0].path, "/tmp/new.txt",
+            "已有 files 不得被老 file_path 覆盖"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// files 列读写回环：upsert 多文件 → load_all 原样读回
+    #[test]
+    fn files_roundtrip_via_upsert_load() {
+        let (dir, conn) = setup_tasks_db();
+        let mut t = mk_task("t1", "多文件");
+        t.files = Some(vec![
+            TaskFile { path: "/a/1.pdf".into(), is_dir: false },
+            TaskFile { path: "/a/2.docx".into(), is_dir: false },
+        ]);
+        upsert_tasks(&conn, &[t]).unwrap();
+        let loaded = &load_all(&conn).unwrap()[0];
+        assert_eq!(loaded.files.as_deref().unwrap().len(), 2);
+        assert_eq!(loaded.files.as_deref().unwrap()[1].path, "/a/2.docx");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// effective_files 兜底：files 空时回退旧 file_path/file_is_dir（迁移窗口内读旧数据）
+    #[test]
+    fn effective_files_falls_back_to_legacy_fields() {
+        let mut t = mk_task("t1", "x");
+        assert!(t.effective_files().is_empty(), "都没绑 → 空");
+        t.file_path = Some("/tmp/legacy.pdf".into());
+        t.file_is_dir = Some(true);
+        assert_eq!(
+            t.effective_files(),
+            vec![TaskFile { path: "/tmp/legacy.pdf".into(), is_dir: true }],
+            "files 空 → 回退旧字段"
+        );
+        t.files = Some(vec![TaskFile { path: "/tmp/new.pdf".into(), is_dir: false }]);
+        assert_eq!(
+            t.effective_files(),
+            vec![TaskFile { path: "/tmp/new.pdf".into(), is_dir: false }],
+            "files 非空 → 优先 files"
+        );
+    }
+
+    /// resolve_task_files：去重保序、空路径丢弃、超 MAX_TASK_FILES 截断、
+    /// 目录经 fs::metadata 判 isDir、不存在路径按文件处理
+    #[test]
+    fn resolve_task_files_dedup_cap_and_isdir() {
+        let dir = std::env::temp_dir().join(format!("wm-resolve-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let dir_str = dir.to_string_lossy().to_string();
+
+        // 目录判定 + 去重保序 + 不存在路径按文件
+        let out = resolve_task_files(vec![
+            dir_str.clone(),
+            "/no/such/file.txt".into(),
+            dir_str.clone(), // 重复
+            "  ".into(),     // 空白丢弃
+        ]);
+        assert_eq!(out.len(), 2, "去重 + 空白丢弃");
+        assert!(out[0].is_dir, "真实目录 isDir=true");
+        assert_eq!(out[1].path, "/no/such/file.txt");
+        assert!(!out[1].is_dir, "不存在路径按文件处理");
+
+        // 上限截断：12 个 → 10 个，保序
+        let many: Vec<String> = (0..12).map(|i| format!("/f/{i}.txt")).collect();
+        let capped = resolve_task_files(many);
+        assert_eq!(capped.len(), MAX_TASK_FILES, "超 10 截断");
+        assert_eq!(capped[9].path, "/f/9.txt", "保序截断前 10 个");
         fs::remove_dir_all(&dir).ok();
     }
 

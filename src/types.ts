@@ -58,8 +58,11 @@ export interface Task {
   note?: string;
   /** 标签列表 */
   tags?: string[];
+  /** 绑定文件列表（2026-08-19 多文件绑定，上限 10；isDir=true 为文件夹，文件夹仍单选独占） */
+  files?: Array<{ path: string; isDir: boolean }>;
+  /** 旧单绑定字段：迁移过渡保留（启动时若 files 为空自动迁入 files） */
   filePath?: string;
-  /** 绑定的是否为文件夹 */
+  /** 绑定的是否为文件夹（旧字段，见 filePath） */
   fileIsDir?: boolean;
   /** 完成时间（epoch ms） */
   completedAt?: number;

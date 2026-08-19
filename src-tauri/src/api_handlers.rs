@@ -464,6 +464,17 @@ fn create_task(
             .filter(|d| !d.is_empty()),
         note: input.note.filter(|n| !n.trim().is_empty()),
         tags: input.tags,
+        // 多文件绑定（2026-08-19）：API 入参仍是旧单绑定字段，双写进 files 保持一致
+        files: input
+            .file_path
+            .as_ref()
+            .filter(|p| !p.trim().is_empty())
+            .map(|p| {
+                vec![db::TaskFile {
+                    path: p.clone(),
+                    is_dir: input.file_is_dir.unwrap_or(false),
+                }]
+            }),
         file_path: input.file_path.filter(|p| !p.trim().is_empty()),
         file_is_dir: input.file_is_dir,
         column: status.clone(),
@@ -579,15 +590,28 @@ fn update_task(
         if fp.trim().is_empty() {
             t.file_path = None;
             t.file_is_dir = None;
+            // 多文件绑定（2026-08-19）：旧字段清空时同步清 files
+            t.files = None;
         } else {
             t.file_path = Some(fp.to_string());
             if let Some(fid) = input.file_is_dir {
                 t.file_is_dir = Some(fid);
             }
+            // 双写 files（旧单绑定语义 = 唯一一条）
+            t.files = Some(vec![db::TaskFile {
+                path: fp.to_string(),
+                is_dir: t.file_is_dir.unwrap_or(false),
+            }]);
         }
     } else if let Some(fid) = input.file_is_dir {
         if t.file_path.is_some() {
             t.file_is_dir = Some(fid);
+            if let Some(fp) = t.file_path.clone() {
+                t.files = Some(vec![db::TaskFile {
+                    path: fp,
+                    is_dir: fid,
+                }]);
+            }
         }
     }
     if let Some(due) = input.due.as_deref() {
@@ -1056,6 +1080,7 @@ mod tests {
             due: None,
             note: None,
             tags: None,
+            files: None,
             file_path: None,
             file_is_dir: None,
             column: "todo".into(),

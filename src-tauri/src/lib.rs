@@ -47,6 +47,48 @@ fn copy_file_with_title(path: String, title: String) -> error::CommandResult<()>
     }
 }
 
+/// 多文件复制 + 任务标题（2026-08-19 多文件绑定配套）：
+/// - 文件类粘贴得到全部真实文件
+/// - 文本类粘贴逐行得到 `{title}-{basename}`；单文件调用方仍走 copy_file_with_title（行为不变）
+#[tauri::command]
+fn copy_files_with_title(paths: Vec<String>, title: String) -> error::CommandResult<()> {
+    if paths.is_empty() {
+        return Err(error::CommandError::Internal(
+            "复制文件列表为空".into(),
+        ));
+    }
+    // 单文件直接复用旧路径，行为与既往完全一致
+    if paths.len() == 1 {
+        return copy_file_with_title(paths.into_iter().next().unwrap(), title);
+    }
+    let text = paths
+        .iter()
+        .map(|p| {
+            let base = std::path::Path::new(p)
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| p.clone());
+            format!("{title}-{base}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    #[cfg(target_os = "macos")]
+    {
+        return copy_files_macos(&paths, &text).map_err(error::CommandError::from);
+    }
+    #[cfg(windows)]
+    {
+        return copy_files_windows(&paths, &text).map_err(error::CommandError::from);
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        let _ = (paths, text);
+        return Err(error::CommandError::Internal(
+            "复制文件暂不支持当前平台".into(),
+        ));
+    }
+}
+
 /// 唤起主窗口并强制置顶（单一真相）
 ///
 /// 老板 2026-08-17 11:31/11:43 规则：所有唤起主窗口的路径（widget 双击标题、聊天区 📌、
@@ -101,6 +143,106 @@ fn copy_file_macos(path: &str, title: &str) -> Result<(), String> {
     // 3) 标题文本：文本应用粘贴即标题
     let text = NSString::from_str(title);
     let _ok = pb.setString_forType(&text, unsafe { NSPasteboardTypeString });
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn copy_files_macos(paths: &[String], text: &str) -> Result<(), String> {
+    use objc2::runtime::ProtocolObject;
+    use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString, NSPasteboardWriting};
+    use objc2_foundation::{NSArray, NSString, NSURL};
+
+    let pb = NSPasteboard::generalPasteboard();
+    pb.clearContents();
+
+    // 1) 现代文件类型（public.file-url）：一次写入全部文件 URL
+    let urls: Vec<objc2::rc::Retained<ProtocolObject<dyn NSPasteboardWriting>>> = paths
+        .iter()
+        .map(|p| {
+            let url = NSURL::fileURLWithPath(&NSString::from_str(p));
+            ProtocolObject::from_retained(url)
+        })
+        .collect();
+    let objs = NSArray::from_retained_slice(&urls);
+    let _ok = pb.writeObjects(&objs);
+
+    // 2) 老式文件列表类型（NSFilenamesPboardType）：Electron 系应用（飞书等）读这个
+    let path_strs: Vec<objc2::rc::Retained<NSString>> =
+        paths.iter().map(|p| NSString::from_str(p)).collect();
+    let paths_arr = NSArray::from_retained_slice(&path_strs);
+    let _ok = unsafe {
+        pb.setPropertyList_forType(&paths_arr, &NSString::from_str("NSFilenamesPboardType"))
+    };
+
+    // 3) 文本：逐行 `{title}-{basename}`（调用方已拼好）
+    let text = NSString::from_str(text);
+    let _ok = pb.setString_forType(&text, unsafe { NSPasteboardTypeString });
+    Ok(())
+}
+
+#[cfg(windows)]
+fn copy_files_windows(paths: &[String], text: &str) -> Result<(), String> {
+    use std::ffi::OsStr;
+    use std::mem::size_of;
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr;
+    use windows::Win32::Foundation::{GlobalFree, HANDLE};
+    use windows::Win32::System::DataExchange::{
+        CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+    };
+    use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+    use windows::Win32::System::Ole::{CF_HDROP, CF_UNICODETEXT};
+    use windows::Win32::UI::Shell::DROPFILES;
+
+    unsafe {
+        if OpenClipboard(None).is_err() {
+            return Err("打开剪贴板失败".into());
+        }
+        let _ = EmptyClipboard();
+
+        // 1) 文件列表（CF_HDROP）：多路径逐个 null 分隔，整体双 null 结尾
+        let files_wide: Vec<u16> = paths
+            .iter()
+            .flat_map(|p| OsStr::new(p).encode_wide().chain(Some(0)))
+            .chain(Some(0))
+            .collect();
+        let total = size_of::<DROPFILES>() + files_wide.len() * 2;
+        let h = GlobalAlloc(GMEM_MOVEABLE, total).map_err(|e| e.to_string())?;
+        let base = GlobalLock(h) as *mut u8;
+        if base.is_null() {
+            let _ = GlobalFree(Some(h));
+            let _ = CloseClipboard();
+            return Err("锁定文件列表内存失败".into());
+        }
+        let drop: *mut DROPFILES = base as *mut DROPFILES;
+        (*drop).pFiles = size_of::<DROPFILES>() as u32;
+        (*drop).fWide = true.into();
+        let dst = base.add(size_of::<DROPFILES>()) as *mut u16;
+        ptr::copy_nonoverlapping(files_wide.as_ptr(), dst, files_wide.len());
+        let _ = GlobalUnlock(h);
+        if SetClipboardData(CF_HDROP.0 as u32, Some(HANDLE(h.0))).is_err() {
+            let _ = GlobalFree(Some(h));
+            let _ = CloseClipboard();
+            return Err("写入文件列表失败".into());
+        }
+
+        // 2) 标题文本（CF_UNICODETEXT）
+        let title_wide: Vec<u16> = OsStr::new(text).encode_wide().chain(Some(0)).collect();
+        let th = GlobalAlloc(GMEM_MOVEABLE, title_wide.len() * 2).map_err(|e| e.to_string())?;
+        let tbase = GlobalLock(th) as *mut u16;
+        if tbase.is_null() {
+            let _ = GlobalFree(Some(th));
+            let _ = CloseClipboard();
+            return Err("锁定标题内存失败".into());
+        }
+        ptr::copy_nonoverlapping(title_wide.as_ptr(), tbase, title_wide.len());
+        let _ = GlobalUnlock(th);
+        if SetClipboardData(CF_UNICODETEXT.0 as u32, Some(HANDLE(th.0))).is_err() {
+            let _ = GlobalFree(Some(th));
+        }
+
+        let _ = CloseClipboard();
+    }
     Ok(())
 }
 
@@ -390,10 +532,13 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             copy_file_with_title,
+            copy_files_with_title,
             focus_main_window,
             bot_skills::open_file_path,
             bot_skills::pick_files_dialog,
             bot_skills::delete_bound_file,
+            db::bind_files,
+            db::bind_file,
             db::db_load,
             db::db_upsert,
             db::db_delete,
