@@ -386,6 +386,36 @@ fn cleanup_after_fail(child: &mut std::process::Child, dir: &std::path::Path, li
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// spawn 失败收尾（P2-25）：进程没起来（无 child 可杀），但仍显式 terminate
+/// 资源限额（Windows Job Object 在 spawn 前已建，不止靠 Drop 兜底）+ 清临时目录
+/// —— 与 cleanup_after_fail 同族，防临时目录即时泄漏。
+fn cleanup_after_spawn_fail(dir: &std::path::Path, limits: &RunLimits) {
+    limits.terminate();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// 运行目录初始化（P2-25）：建目录 + 写 run.py / params.json；任一步失败
+/// 清理已建目录再返回 Err —— 原先 `?` 直返，写失败时临时目录即时泄漏。
+fn setup_run_dir(
+    base: &std::path::Path,
+    script: &str,
+    input_json: Option<&str>,
+) -> Result<std::path::PathBuf, String> {
+    let dir = base.join(uuid::Uuid::new_v4().simple().to_string());
+    let r = (|| -> Result<(), String> {
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        std::fs::write(dir.join("run.py"), script).map_err(|e| e.to_string())?;
+        if let Some(j) = input_json {
+            std::fs::write(dir.join("params.json"), j).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    })();
+    if r.is_err() {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    r.map(|_| dir)
+}
+
 // ───────────────────────── 退出清理（P2-24）─────────────────────────
 
 /// 在途 Python 子进程注册表（P2-24）：spawn 成功即登记 pid，运行结束（任意返回路径）
@@ -619,15 +649,21 @@ pub fn run_python(
     // 最多 2 次尝试：首次 spawn NotFound 说明缓存的 python 已失效（P2-10：
     // 路径被删 / PATH 变了），作废缓存重新探测后重试一次
     for attempt in 0..2 {
-        // 独立临时目录
-        let dir = crate::db::data_dir(app)
-            .join("py-runs")
-            .join(uuid::Uuid::new_v4().simple().to_string());
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        std::fs::write(dir.join("run.py"), script).map_err(|e| e.to_string())?;
-        if let Some(j) = input_json {
-            std::fs::write(dir.join("params.json"), j).map_err(|e| e.to_string())?;
-        }
+        // 独立临时目录（P2-25：初始化失败清理已建目录 + setup_fail 审计，不泄漏）
+        let dir = match setup_run_dir(
+            &crate::db::data_dir(app).join("py-runs"),
+            script,
+            input_json,
+        ) {
+            Ok(d) => d,
+            Err(e) => {
+                audit_sink(&format!(
+                    "run_python err | kind=setup_fail | {}",
+                    escape_for_log(&e, 200)
+                ));
+                return Err(format!("准备运行目录失败：{e}"));
+            }
+        };
         match run_python_at(&py, &dir, args, timeout_secs, &mut audit_sink, stop) {
             Ok(r) => return Ok(r),
             Err(f) => {
@@ -713,8 +749,8 @@ fn run_python_at(
                 "run_python err | kind=spawn_fail | {}",
                 escape_for_log(&e.to_string(), 200)
             ));
-            // P2-9：spawn 失败时临时目录已创建，必须清理，否则磁盘泄漏
-            let _ = std::fs::remove_dir_all(dir);
+            // P2-25：spawn 失败走 cleanup_after_fail 同族收尾（terminate 限额 + 清目录）
+            cleanup_after_spawn_fail(dir, &limits);
             return Err(RunFail {
                 msg: format!("启动 Python 失败：{e}"),
                 spawn_not_found: e.kind() == std::io::ErrorKind::NotFound,
@@ -2003,6 +2039,65 @@ mod tests {
         );
         // P2-9：spawn 失败必须清理已创建的临时目录，否则磁盘泄漏
         assert!(!dir.exists(), "spawn 失败后临时目录应被清理");
+    }
+
+    // ── P2-25：spawn 失败 / 目录初始化失败的即时泄漏收尾 ──
+
+    #[test]
+    fn spawn_fail_cleans_populated_dir_and_audits() {
+        // 非法 py 路径 → spawn 失败：含 run.py + params.json 的临时目录必须整体清理，
+        // 且有 spawn_fail 审计（cleanup_after_spawn_fail 同族路径）
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("run-spawn-fail-p25");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("run.py"), "print(1)\n").unwrap();
+        std::fs::write(dir.join("params.json"), "{}").unwrap();
+        let mut lines: Vec<String> = Vec::new();
+        let r = run_python_at("/nonexistent/python-zzz", &dir, &[], Some(1), &mut |l: &str| {
+            lines.push(l.to_string())
+        }, None);
+        match r {
+            Err(f) => assert!(f.msg.contains("启动 Python 失败"), "got: {}", f.msg),
+            Ok(_) => panic!("无效 python 路径不应成功"),
+        }
+        assert!(
+            lines.iter().any(|l| l.contains("kind=spawn_fail")),
+            "缺 spawn_fail 审计行: {lines:?}"
+        );
+        assert!(!dir.exists(), "spawn 失败后临时目录应被清理");
+        assert!(
+            std::fs::read_dir(tmp.path()).unwrap().next().is_none(),
+            "不得残留任何文件"
+        );
+    }
+
+    #[test]
+    fn setup_run_dir_success_writes_script_and_params() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = setup_run_dir(tmp.path(), "print(1)\n", Some("{\"a\":1}")).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("run.py")).unwrap(), "print(1)\n");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("params.json")).unwrap(),
+            "{\"a\":1}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn setup_run_dir_write_failure_cleans_up() {
+        // base 只读 → create_dir_all 失败：返回 Err 且不得残留半成品目录
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let ro = tmp.path().join("ro");
+        std::fs::create_dir(&ro).unwrap();
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let r = setup_run_dir(&ro, "print(1)\n", None);
+        assert!(r.is_err(), "只读 base 下初始化应失败");
+        assert!(
+            std::fs::read_dir(&ro).unwrap().next().is_none(),
+            "失败后不得残留临时目录"
+        );
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
     // ── cleanup_after_fail（NEW-C-3：失败路径杀进程组 + 清临时目录）──
