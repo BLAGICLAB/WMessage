@@ -1358,3 +1358,28 @@ DSL 调度器从「解析 + 单次顺序执行」演进到「全链路生产可�
 ### 测试
 - cargo test --lib 从 83（Phase 1 起点）→ 132（Phase 5 完工），0 regression
 - 端到端覆盖：13 个 mock Skill 跑 run_dsl_loop_sync + 通用 mock executor 验证 parse + 变量替换 + 状态机 + 嵌套路径
+
+## 2026-08-19（周三）Phase 7 Kimi 五批 + 任务卡多文件绑定改造
+
+### Phase 7 五批（Kimi code 串行 5 跑）
+- **7a 审计/日志安全**（P2-1/2/15/16/34/35）：token ct_eq、变更日志 title escape、append_line 不 panic、kv 转义、App.tsx 写路径 catch、errorHandler 空 msg 兜底
+- **7b DB 事务/迁移**（P2-4/5/6/7/8/19）：老库拷 -wal/-shm、workspace upsert/delete 事务包裹、claim_dst_name TOCTOU、migrate 触发条件 json_len > db_len、save_rules atomic_write、probe_log_dir 三合一
+- **7c API/Middleware**（P2-3/13/14/27/28/30）：SSE 通道载荷事件 id 去重、middleware panic catch_unwind、pre_execute 空注册审计、CommandError platform 字段、TaskInvalidState 变体、opener scope 收敛
+- **7d 前端 state bug**（P2-17/20/21/22/23/33）：entry_view 头像 5MB cap、diffTaskRows 统一、mutate 落盘后才写 tasksRef、TrashPage 排序、useInlineEdit hook、WidgetApp 5s 兜底轮询弹 alert
+- **7e 资源+跨平台**（P2-24/25/26/29/31/32）：ExitRequested cleanup_on_exit、spawn 失败清理、bring_main_to_front 后台化、Cargo.toml 单一版本源、托盘三平台、Linux secret-service 探测
+- 累计 30 commit + 5 docs commit；cargo test --lib 314 → 358 pass（+44），vitest 55 → 85 pass（+30）
+
+### 任务卡多文件绑定改造（上限 10）
+- 老板 18:37 反馈：单文件绑定不够用，再选覆盖；老板 18:40 拍板直接 Kimi 做、上限 10 个
+- **commit `f6fcc17`** 一改到底：
+  - **Schema**：`Task.files: Array<{path, isDir}>`，保留 `filePath`/`fileIsDir` 双写过渡；`open_db` 启动迁移：老单绑定自动回填 files（幂等，老列不清）
+  - **Rust**：`bind_files`/`bind_file` 命令（`fs::metadata` 判 `isDir`、去重保序、超 10 截断）；LLM `create_task`/`edit_task` 扩展 `files` 字段（Rust 侧硬上限截断+警告）；`tool.return` 审计补 `files_count`/`truncated` kv
+  - **文件操作**：`copy_files_with_title`（多文件复制，命名 `{title}-{basename}`，单文件行为不变）；`openFile` 多文件弹 UI 列表选
+  - **UI**：TodoCard/TaskCardContent/WidgetApp 多 chip 列表（📁/📎 + basename + 单独 ×）；超 5 折叠「还有 N 个」；`pickFile` 多选追加去重；文件夹仍单选独占（已绑文件夹弹提示不加不替换）
+- 老板拍板撤掉修法 B（模块级 chatBusyRef + collapse() busy 检查）—— 当时是 17:56 挂件折叠 bug fix 的深度防御，老板选保持单一修改面，最终 commit `8c6c9d7`
+
+### 测试
+- cargo test --lib: 314（Phase 7 起） → 358（Phase 7 末） → 360+（多文件改造后）；新增迁移 + 多文件 + 上限 + 双写过渡 4 类测试
+- vitest: 81 → 85（修复 7c/7d/7e + 挂件折叠修法 A）→ 90+（多文件 chip 列表 + × 移除 + 上限 UI）
+- tsc --noEmit 零错
+- Windows 绿色包 14:27 已发布（43.97 MB → 13.65 MB 第二次重打）供老板压测
