@@ -63,7 +63,7 @@
 
 约 2 工日。其中 NEW-D-5/6 顺手把 P2-15/P2-16 部分一起收拾。
 
-- [ ] **NEW-D-1** `bot.rs:282-307 vs 343` — `pre_execute` 拦截 + `skill_on_step` 报错两条早退路径发了 `tool.call` 永不发 `tool.return` → 统计面板「悬挂调用」；skill_on_step 错误路径连 Warn 都没有
+- [x] **NEW-D-1** `bot.rs:282-307 vs 343` — `pre_execute` 拦截 + `skill_on_step` 报错两条早退路径发了 `tool.call` 永不发 `tool.return` → 统计面板「悬挂调用」；skill_on_step 错误路径连 Warn 都没有
 - [ ] **NEW-D-2** `profile.rs:247-251` — `set_avatar` save 失败回滚 `remove_file(dest)` 在同扩展名覆盖场景误删在役头像（P2-18 未覆盖的反向回退）
 - [ ] **NEW-D-3** `profile.rs:274-277` — `remove_avatar` 先删文件后 save，save 失败 → 磁盘 json 悬挂引用已删文件
 - [ ] **NEW-D-4** `profile.rs:106-115` — `entry_view` 不校验 avatar 字段是否纯文件名，手改 `profile.json` 可路径穿越读任意文件并 base64 广播

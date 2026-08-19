@@ -286,6 +286,49 @@ pub fn check_len(value: &str, max: usize, what: &str) -> Result<(), String> {
 
 // ───────────────────────── 工具调度核心（execute_tool dispatch） ─────────────────────────
 
+/// NEW-D-1：早退路径（pre_execute 拦截 / skill_on_step 熔断）的审计事件序列。
+/// `tool.call` 已在入口发出，这里按写入顺序补齐后续事件并以 `tool.return` 配平，
+/// 否则统计面板出现「悬挂调用」（call > return）。
+/// 抽成纯函数：事件名 + kv + 顺序可单测（execute_tool 是 Wry 签名，无法 mock runtime 直调，
+/// 与 skill_e2e.rs 注释记录的「泛型化重构暂缓」一致）；调用点只负责逐条 emit。
+/// - 拦截路径（err=None）：pre_execute.deny + tool.return(reason=denied)
+/// - 熔断路径（err=Some）：skill_on_step_error（补 Warn 可见性）+ tool.return(reason=skill_step_failed)
+fn early_return_events(
+    name: &str,
+    reason: &str,
+    dur_ms: u64,
+    err: Option<&str>,
+) -> Vec<(
+    crate::audit::AuditLevel,
+    &'static str,
+    Vec<(&'static str, String)>,
+)> {
+    let mut events = Vec::with_capacity(2);
+    match err {
+        Some(e) => events.push((
+            crate::audit::AuditLevel::Warn,
+            "skill_on_step_error",
+            vec![("tool", name.to_string()), ("err", e.to_string())],
+        )),
+        None => events.push((
+            crate::audit::AuditLevel::Warn,
+            "pre_execute.deny",
+            vec![("tool", name.to_string())],
+        )),
+    }
+    events.push((
+        crate::audit::AuditLevel::Warn,
+        "tool.return",
+        vec![
+            ("tool", name.to_string()),
+            ("reason", reason.to_string()),
+            ("exit_code", "none".to_string()),
+            ("duration_ms", dur_ms.to_string()),
+        ],
+    ));
+    events
+}
+
 /// 进程内执行工具，返回 (给模型的文本结果, 涉及的任务引用)
 /// `pub` 让 `bot_skills::run_skill_scheduler`（Phase 1 DSL 调度器）可调用，
 /// 不暴露给前端 — 通过 `is_atomic_tool` 黑名单 + pre-execute 校验保护。
@@ -316,17 +359,20 @@ pub async fn execute_tool_with_stop(
     // F-2 抽象层：execute_tool 通过 middleware::run_pre_execute 调 pre-execute
     let active = crate::tool_guard::is_skill_active();
     if let Some(msg) = crate::middleware::run_pre_execute(app, name, active) {
-        crate::audit_event!(
-            app,
-            crate::audit::AuditLevel::Warn,
-            "pre_execute.deny",
-            "tool" => name,
-        );
+        // NEW-D-1：tool.call 已发出，早退前必须配平 tool.return（reason=denied），
+        // 否则统计面板出现「悬挂调用」（call > return）
+        for (level, event, kv) in early_return_events(name, "denied", start.elapsed().as_millis() as u64, None) {
+            crate::audit::write_event(app, level, event, &kv);
+        }
         return (msg, Vec::new());
     }
     // 2. Skill 调度器步骤钩子：活动技能时计数/熔断/动作记录（use_skill 自身跳过）
     if name != "use_skill" {
         if let Err(e) = crate::bot_skills::skill_on_step(app, name, args) {
+            // NEW-D-1：补 Warn 可见性（skill_on_step_error）+ tool.return 配平（reason=skill_step_failed）
+            for (level, event, kv) in early_return_events(name, "skill_step_failed", start.elapsed().as_millis() as u64, Some(&e)) {
+                crate::audit::write_event(app, level, event, &kv);
+            }
             return (e, Vec::new());
         }
     }
@@ -1450,5 +1496,57 @@ mod tool_extract_document_tests {
             a_count, 30000,
             "长文本截断后应剩 30000 个 'A'，实际 {a_count}"
         );
+    }
+}
+/// NEW-D-1 单测：早退路径审计事件序列（tool.call 配平 tool.return）。
+/// execute_tool 是 Wry AppHandle 签名，无法 mock runtime 直调（见 tests/skill_e2e.rs 注释），
+/// 故事件序列抽为纯函数 early_return_events，这里验证事件名/顺序/reason kv。
+#[cfg(test)]
+mod early_return_events_tests {
+    use super::*;
+
+    fn event_names(
+        evs: &[(
+            crate::audit::AuditLevel,
+            &'static str,
+            Vec<(&'static str, String)>,
+        )],
+    ) -> Vec<&'static str> {
+        evs.iter().map(|(_, e, _)| *e).collect()
+    }
+
+    fn kv_get<'a>(kv: &'a [(&'static str, String)], key: &str) -> Option<&'a str> {
+        kv.iter().find(|(k, _)| *k == key).map(|(_, v)| v.as_str())
+    }
+
+    #[test]
+    fn deny_path_emits_deny_then_balanced_tool_return() {
+        // 拦截路径：pre_execute.deny → tool.return（顺序敏感），含 reason=denied / exit_code=none / duration_ms
+        let evs = early_return_events("create_word_revisions", "denied", 3, None);
+        assert_eq!(event_names(&evs), ["pre_execute.deny", "tool.return"]);
+        assert!(evs
+            .iter()
+            .all(|(l, _, _)| *l == crate::audit::AuditLevel::Warn));
+        assert_eq!(kv_get(&evs[0].2, "tool"), Some("create_word_revisions"));
+        let ret = &evs[1].2;
+        assert_eq!(kv_get(ret, "tool"), Some("create_word_revisions"));
+        assert_eq!(kv_get(ret, "reason"), Some("denied"));
+        assert_eq!(kv_get(ret, "exit_code"), Some("none"));
+        assert_eq!(kv_get(ret, "duration_ms"), Some("3"));
+    }
+
+    #[test]
+    fn skill_step_error_path_warns_then_balanced_tool_return() {
+        // 熔断路径：skill_on_step_error（补 Warn 可见性）→ tool.return(reason=skill_step_failed)
+        let evs = early_return_events("run_python", "skill_step_failed", 5, Some("超过最大步数上限（8 步）"));
+        assert_eq!(event_names(&evs), ["skill_on_step_error", "tool.return"]);
+        assert!(evs
+            .iter()
+            .all(|(l, _, _)| *l == crate::audit::AuditLevel::Warn));
+        assert_eq!(kv_get(&evs[0].2, "err"), Some("超过最大步数上限（8 步）"));
+        let ret = &evs[1].2;
+        assert_eq!(kv_get(ret, "reason"), Some("skill_step_failed"));
+        assert_eq!(kv_get(ret, "exit_code"), Some("none"));
+        assert!(kv_get(ret, "duration_ms").is_some());
     }
 }
