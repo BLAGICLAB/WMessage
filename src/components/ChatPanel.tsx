@@ -378,6 +378,7 @@ function extractFilePaths(content: string): string[] {
         bypassLlmOnPreStepHit?: boolean;
         allowedDirs?: string[];
         tavilyKey?: string;
+        tavilyEnabled?: boolean | null;
         pythonTimeoutSecs?: number | null;
       }>("bot_get_config");
       await invoke("bot_set_config", {
@@ -387,6 +388,7 @@ function extractFilePaths(content: string): string[] {
           bypassLlmOnPreStepHit: c.bypassLlmOnPreStepHit ?? true,
           allowedDirs: c.allowedDirs ?? [],
           tavilyKey: c.tavilyKey ?? null,
+          tavilyEnabled: c.tavilyEnabled ?? null,
           pythonTimeoutSecs: c.pythonTimeoutSecs ?? null,
         },
         apiKey: null,

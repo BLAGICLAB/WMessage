@@ -212,6 +212,92 @@ describe("SettingsPage", () => {
     expect(toggle.textContent).toMatch(/已开启/);
   });
 
+  it("Tavily 开关：点击 → bot_set_config 持久化 tavilyEnabled 且保留 tavilyKey", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_get_enabled") return true;
+      if (cmd === "bot_set_enabled") return true;
+      if (cmd === "bot_get_config")
+        return {
+          baseUrl: "https://api.minimaxi.com/v1",
+          model: "MiniMax-M3",
+          hasApiKey: true,
+          bypassLlmOnPreStepHit: true,
+          allowedDirs: [],
+          tavilyKey: "tvly-test",
+          tavilyEnabled: false, // 显式关闭：配了 key 也应走双引擎
+          pythonTimeoutSecs: null,
+        };
+      if (cmd === "bot_set_config") return null;
+      if (cmd === "api_status") return { enabled: false, port: 4763, token: "" };
+      if (cmd === "profile_get")
+        return {
+          user: { name: "我", avatarDataUrl: null },
+          bot: { name: "机器人", avatarDataUrl: null },
+        };
+      if (cmd === "py_get_enabled") return false;
+      if (cmd === "skills_list") return [];
+      if (cmd === "migration_rules_load") return { version: 1, rules: [] };
+      if (cmd === "migration_status") return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_log_read") return "";
+      return null;
+    });
+    render(<SettingsPage {...defaultProps} />);
+    // 「Tavily 搜索」行出现（开关初始为关）
+    const title = await screen.findByText("Tavily 搜索");
+    const row = title.closest("div")?.parentElement;
+    const toggle = row?.querySelector("button");
+    expect(toggle).not.toBeNull();
+    if (!toggle) return;
+    expect(toggle.textContent).toMatch(/已关闭/);
+    await user.click(toggle);
+    // 点击即持久化：tavilyEnabled 翻转为 true，tavilyKey 原样保留
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith(
+        "bot_set_config",
+        expect.objectContaining({
+          config: expect.objectContaining({
+            tavilyEnabled: true,
+            tavilyKey: "tvly-test",
+          }),
+        })
+      );
+    });
+  });
+
+  it("Tavily 开关：开启但没填 key → 显示缺 key 提示（不静默走百度）", async () => {
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_get_enabled") return true;
+      if (cmd === "bot_get_config")
+        return {
+          baseUrl: "",
+          model: "",
+          hasApiKey: false,
+          bypassLlmOnPreStepHit: true,
+          allowedDirs: [],
+          tavilyKey: "",
+          tavilyEnabled: true, // 开了但没 key
+          pythonTimeoutSecs: null,
+        };
+      if (cmd === "api_status") return { enabled: false, port: 4763, token: "" };
+      if (cmd === "profile_get")
+        return {
+          user: { name: "我", avatarDataUrl: null },
+          bot: { name: "机器人", avatarDataUrl: null },
+        };
+      if (cmd === "py_get_enabled") return false;
+      if (cmd === "skills_list") return [];
+      if (cmd === "migration_rules_load") return { version: 1, rules: [] };
+      if (cmd === "migration_status") return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_log_read") return "";
+      return null;
+    });
+    render(<SettingsPage {...defaultProps} />);
+    expect(
+      await screen.findByText(/已开启但未填 key/)
+    ).toBeInTheDocument();
+  });
+
   it("导出按钮：点击 → 调用 onExportTasks prop", async () => {
     const onExportTasks = vi.fn(async () => {});
     const user = userEvent.setup();

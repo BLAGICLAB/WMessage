@@ -331,8 +331,10 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     bypassLlmOnPreStepHit: true, // F-1 [P0] pre-step 路由外层是否跳过主 LLM；老配置默认 true
     // 本地文件工具白名单目录（textarea 一行一个；空 = 后端内置默认 桌面/下载/文档+绑定文件夹）
     allowedDirs: "",
-    // Tavily 搜索 API Key（可选；配了 web_search 走 Tavily，失败回退 Bing+百度抓取）
+    // Tavily 搜索 API Key（可选；「Tavily 搜索」开关开启后 web_search 走 Tavily）
     tavilyKey: "",
+    // 「Tavily 搜索」开关（2026-08-20）：开 = web_search 走 Tavily；关 = Bing+百度双引擎
+    tavilyEnabled: false,
     // run_python 默认超时秒数（空 = 60s 默认；模型 timeoutSecs 参数优先；硬钳 300s）
     pythonTimeoutSecs: "",
   });
@@ -368,6 +370,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         bypassLlmOnPreStepHit?: boolean;
         allowedDirs?: string[];
         tavilyKey?: string;
+        tavilyEnabled?: boolean | null;
         pythonTimeoutSecs?: number | null;
       }>(
         "bot_get_config"
@@ -380,6 +383,8 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         bypassLlmOnPreStepHit: c.bypassLlmOnPreStepHit ?? true,
         allowedDirs: (c.allowedDirs ?? []).join("\n"),
         tavilyKey: c.tavilyKey ?? "",
+        // 老配置没显式开关字段（null/undefined）时按旧行为显示自动态：配了 key 视为开启
+        tavilyEnabled: c.tavilyEnabled ?? !!(c.tavilyKey && c.tavilyKey.trim()),
         pythonTimeoutSecs: c.pythonTimeoutSecs != null ? String(c.pythonTimeoutSecs) : "",
       });
     } catch (e) {
@@ -469,26 +474,29 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     }
   };
 
-  const saveConfig = async () => {
+  const saveConfig = async (override?: typeof config) => {
     if (configBusy) return;
+    const c = override ?? config;
     setConfigBusy(true);
     setBotError("");
     try {
       await invoke("bot_set_config", {
         config: {
-          baseUrl: config.baseUrl,
-          model: config.model,
-          bypassLlmOnPreStepHit: config.bypassLlmOnPreStepHit,
+          baseUrl: c.baseUrl,
+          model: c.model,
+          bypassLlmOnPreStepHit: c.bypassLlmOnPreStepHit,
           // textarea 一行一个路径；空行/空白剔除；全空 = 后端内置默认白名单
-          allowedDirs: config.allowedDirs
+          allowedDirs: c.allowedDirs
             .split("\n")
             .map((s) => s.trim())
             .filter((s) => s.length > 0),
           // 空串视为未配置（后端 Option 语义）
-          tavilyKey: config.tavilyKey.trim() ? config.tavilyKey.trim() : null,
+          tavilyKey: c.tavilyKey.trim() ? c.tavilyKey.trim() : null,
+          // 开关显式落盘：开 = Tavily，关 = Bing+百度双引擎
+          tavilyEnabled: c.tavilyEnabled,
           // 空 = 60s 默认；非法输入按未配置处理（后端 resolve_timeout 硬钳 300s）
           pythonTimeoutSecs: (() => {
-            const n = parseInt(config.pythonTimeoutSecs.trim(), 10);
+            const n = parseInt(c.pythonTimeoutSecs.trim(), 10);
             return Number.isFinite(n) && n > 0 ? n : null;
           })(),
         },
@@ -507,6 +515,13 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     } finally {
       setConfigBusy(false);
     }
+  };
+
+  /** 「Tavily 搜索」开关：与「开启机器人聊天」同款——点击即持久化（复用整份配置保存） */
+  const toggleTavily = async () => {
+    const next = { ...config, tavilyEnabled: !config.tavilyEnabled };
+    setConfig(next);
+    await saveConfig(next);
   };
 
   const clearApiKey = async () => {
@@ -866,19 +881,42 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
                 机器人读文件/搜文件/列目录只允许访问这些目录；白名单外一律拒绝并记审计。
               </p>
             </div>
-            {/* Tavily 搜索 API（可选，2026-08-19 Phase 2） */}
+            {/* Tavily 搜索（2026-08-19 Phase 2 key；2026-08-20 加开关分流） */}
             <div className="space-y-1">
+              <div className="flex items-center justify-between gap-4">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-[var(--t2)]">Tavily 搜索</p>
+                  <p className="mt-1 text-xs text-[var(--t5)]">
+                    开启后 web_search 走 Tavily API（需填 key）；关闭走 Bing+百度双引擎
+                  </p>
+                </div>
+                <button
+                  className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] ${
+                    config.tavilyEnabled ? "nm-inset" : "nm-outset"
+                  }`}
+                  onClick={toggleTavily}
+                  disabled={configBusy}
+                >
+                  {configBusy ? "…" : config.tavilyEnabled ? "已开启" : "已关闭"}
+                </button>
+              </div>
               <p className="text-[10px] text-[var(--t5)]">Tavily 搜索 API Key（可选）</p>
               <input
                 type="password"
                 value={config.tavilyKey}
                 onChange={(e) => setConfig((c) => ({ ...c, tavilyKey: e.target.value }))}
-                placeholder="tvly-…（留空 = Bing+百度抓取）"
+                placeholder="tvly-…（开关关闭时不使用）"
                 className="nm-inset w-full rounded-xl px-3 py-2 text-xs text-[var(--t3)] outline-none"
               />
-              <p className="text-[10px] text-[var(--t6)] leading-snug">
-                配置后 web_search 走 Tavily（结果质量更好），失败自动回退现有抓取。
-              </p>
+              {config.tavilyEnabled && !config.tavilyKey.trim() ? (
+                <p className="text-[10px] text-[var(--danger)] leading-snug">
+                  已开启但未填 key：web_search 会报错提示，请填写 key 后点「保存配置」，或关闭开关。
+                </p>
+              ) : (
+                <p className="text-[10px] text-[var(--t6)] leading-snug">
+                  填 key 后点「保存配置」生效；开关开启但缺 key / Tavily 请求失败时会明确报错，不会静默走百度。
+                </p>
+              )}
             </div>
             {/* F-1 [P0 release blocker] bypass_llm_on_pre_step_hit Toggle */}
             <div className="space-y-1">
@@ -909,7 +947,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
               className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] ${
                 configBusy ? "nm-inset" : "nm-outset"
               }`}
-              onClick={saveConfig}
+              onClick={() => saveConfig()}
               disabled={configBusy}
             >
               {configSaved ? "已保存 ✓" : configBusy ? "保存中…" : "保存配置"}

@@ -108,7 +108,7 @@ pub async fn web_search(query: &str) -> Result<String, String> {
     Ok(out)
 }
 
-/// Tavily 搜索 API（可选增强：bot-config.json 配 tavilyKey 后启用；失败回退双引擎抓取）
+/// Tavily 搜索 API（设置页「Tavily 搜索」开关开启后 web_search 走这里）
 async fn search_tavily(key: &str, query: &str) -> Result<String, String> {
     let resp = http_client()
         .post("https://api.tavily.com/search")
@@ -146,20 +146,47 @@ async fn search_tavily(key: &str, query: &str) -> Result<String, String> {
     Ok(out)
 }
 
-/// 搜索入口（bot 工具调用）：配了 Tavily key 走 API（失败回退抓取并记审计），否则双引擎抓取
-pub async fn web_search_with_config(app: &tauri::AppHandle, query: &str) -> Result<String, String> {
-    let key = crate::bot::load_config(app)
-        .tavily_key
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    if !key.is_empty() {
-        match search_tavily(&key, query).await {
-            Ok(out) => return Ok(out),
-            Err(e) => crate::bot::audit_log(app, &format!("web_search.tavily_fallback | {e}")),
-        }
+/// 分流决策（纯函数，可测）：开关 + key → 走哪条搜索路径
+#[derive(Debug, PartialEq)]
+enum SearchRoute {
+    /// Bing+百度双引擎抓取
+    Dual,
+    /// Tavily API（带 trim 后的 key）
+    Tavily(String),
+    /// 开关开了但没填 key
+    MissingKey,
+}
+
+/// 开关语义：None（老配置从未显式设置）保持旧行为——配了 key 就当开启；
+/// Some(false) 强制双引擎（即使配了 key）；Some(true) 强制 Tavily。
+fn resolve_search_route(tavily_enabled: Option<bool>, tavily_key: Option<&str>) -> SearchRoute {
+    let key = tavily_key.unwrap_or("").trim().to_string();
+    let enabled = tavily_enabled.unwrap_or(!key.is_empty());
+    match (enabled, key.is_empty()) {
+        (false, _) => SearchRoute::Dual,
+        (true, true) => SearchRoute::MissingKey,
+        (true, false) => SearchRoute::Tavily(key),
     }
-    web_search(query).await
+}
+
+/// 搜索入口（bot 工具调用）：按设置页「Tavily 搜索」开关分流——
+/// 关 → Bing+百度双引擎；开 → Tavily API。开了但没填 key / 请求失败都明确报错
+/// 回传给模型（不静默回退百度，避免「以为在用 Tavily 实际走的百度」）。
+pub async fn web_search_with_config(app: &tauri::AppHandle, query: &str) -> Result<String, String> {
+    let cfg = crate::bot::load_config(app);
+    match resolve_search_route(cfg.tavily_enabled, cfg.tavily_key.as_deref()) {
+        SearchRoute::Dual => web_search(query).await,
+        SearchRoute::MissingKey => Err(
+            "Tavily 搜索已开启，但设置页还没填 Tavily API Key。请到设置页「机器人设置」填写 key，或关闭「Tavily 搜索」开关改用 Bing+百度双引擎。"
+                .into(),
+        ),
+        SearchRoute::Tavily(key) => search_tavily(&key, query).await.map_err(|e| {
+            crate::bot::audit_log(app, &format!("web_search.tavily_failed | {e}"));
+            format!(
+                "Tavily 搜索失败：{e}。请检查 key 是否有效/网络是否可达，或在设置页关闭「Tavily 搜索」开关回退 Bing+百度双引擎。"
+            )
+        }),
+    }
 }
 
 /// Bing 搜索：解析 `<li class="b_algo">` 块，返回 (标题, 链接, 摘要) 列表
@@ -781,6 +808,43 @@ fn decode_html(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn route_none_switch_keeps_legacy_auto() {
+        // 老配置（无开关字段）：配了 key 自动走 Tavily，没配走双引擎
+        assert_eq!(
+            resolve_search_route(None, Some("tvly-x")),
+            SearchRoute::Tavily("tvly-x".into())
+        );
+        assert_eq!(resolve_search_route(None, None), SearchRoute::Dual);
+        assert_eq!(resolve_search_route(None, Some("   ")), SearchRoute::Dual);
+    }
+
+    #[test]
+    fn route_explicit_off_forces_dual_even_with_key() {
+        assert_eq!(
+            resolve_search_route(Some(false), Some("tvly-x")),
+            SearchRoute::Dual
+        );
+        assert_eq!(resolve_search_route(Some(false), None), SearchRoute::Dual);
+    }
+
+    #[test]
+    fn route_explicit_on_requires_key() {
+        assert_eq!(
+            resolve_search_route(Some(true), None),
+            SearchRoute::MissingKey
+        );
+        assert_eq!(
+            resolve_search_route(Some(true), Some("  ")),
+            SearchRoute::MissingKey
+        );
+        // key 首尾空白应裁掉
+        assert_eq!(
+            resolve_search_route(Some(true), Some(" tvly-x ")),
+            SearchRoute::Tavily("tvly-x".into())
+        );
+    }
 
     #[test]
     fn parse_bing_fixture() {
