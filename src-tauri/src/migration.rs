@@ -711,7 +711,7 @@ fn emit_upserts(app: &AppHandle, tasks: &[db::Task]) {
     if tasks.is_empty() {
         return;
     }
-    let payload = serde_json::json!({ "upserts": tasks, "deletes": [], "source": "migration" });
+    let payload = serde_json::json!({ "upserts": tasks, "deletes": [], "source": crate::mutation::MutationOrigin::Migration.as_str() });
     let _ = app.emit_to("main", "tasks-updated", &payload);
 }
 

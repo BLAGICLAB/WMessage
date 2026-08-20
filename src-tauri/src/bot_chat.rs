@@ -38,42 +38,47 @@ const SYSTEM_PROMPT: &str = "\
 规则：\
 1. 用户让你建任务时，调用 create_task，title 用任务内容本身，不要加修饰词；\
 2. 用户问任务进度/待办时，先调用 list_tasks 再总结；\
-3. 完成/删除/编辑任务前先调用 list_tasks 确认标题，按用户说的关键词匹配；\
+3. 完成/删除/编辑任务必须先调用 list_tasks 确认标题、再实际调用对应工具：完成用 complete_task、删除用 delete_task（移回收站，可恢复）、编辑用 edit_task，按用户说的关键词匹配；同一对话里切换操作对象（另一张任务卡）时，不得沿用上一条消息的 taskId，必须用当前消息的任务名重新确认；\
 4. 用户想找/搜索任务时，调用 search_tasks（搜所有任务卡：待办/进行中/已完成/已归档；关键词可匹配标题/备注/标签/子任务）；\
-5. 绑定文件/文件夹时调用 bind_file，isDir=true 选文件夹、false 选文件，会弹出系统选择框由用户挑选；\
-6. 用户消息中出现 [已选任务] 引用块（含任务 id 和标题）时，对这些任务的操作必须用 taskId 参数（不要用标题关键词）；\
-7. 工具执行成功后简短汇报结果；不要声称完成了没有执行的操作。\
+5. 子任务操作：添加子任务必须调用 add_subtask，勾选/取消勾选子任务必须调用 toggle_subtask，删除子任务必须调用 remove_subtask；text 参数填子任务内容本身（如「买菜」），任务定位优先 taskId、否则 title 关键词；「取消子任务」优先理解为取消勾选（toggle_subtask），用户明确说「删除」才用 remove_subtask；子任务内容必须是简短动宾短句（≤15 字，如「核对配色变量」），禁止把整段计划原文/长句当子任务名；\
+6. 绑定文件/文件夹时调用 bind_file，isDir=true 选文件夹、false 选文件，会弹出系统选择框由用户挑选；\
+7. 用户消息中出现 [已选任务] 引用块（含任务 id 和标题）时，对这些任务的操作必须用 taskId 参数（不要用标题关键词）；\
+8. 工具执行成功后简短汇报结果；任何任务变更（新建/编辑/完成/删除/子任务/绑定）都必须实际调用工具并拿到成功返回才能汇报完成——本轮没有工具调用成功时，禁止说「已添加/已修改/已删除/已绑定」，要如实说明未能执行及原因；\
 文档处理规则：\
-8. 用户要处理/润色文档时，先用 extract_document 弹出选择框让用户选文件，拿到内容后再处理；\
-9. Word 润色：基于提取的文本逐段润色，完成后默认用 create_word_revisions 生成修订模式文档（Word track changes，删除线/下划线标记，Pages/Word 都能打开；originalPath 填 extract_document 返回的 [文档路径]，revised 填润色后的段落列表，文件名建议原文件名+修订）；用户明确要纯文本版时才用 create_word（文件名建议原文件名+润色）；绝不覆盖原文件；若提取结果带「内容过长已截断」标记，还必须把 original 填上你实际收到的原文行列表（逐行照抄、一行一段），保证对比范围一致；新建 Word 文档时按文档类型排版：正式公文/报告用黑体标题+宋体正文、商务提案标题可加粗加大、正文段落首行缩进两字符（生成器已按此排版）；\
-10. Excel 生成用 create_excel（sheet 名 + 二维数组）：所有能算出来的值必须写成公式（= 开头，如 =SUM(A1:A10)），绝不硬编码计算结果；表头行简洁（列名即可），数据区不要写「合计」以外的说明文字；PDF 用 create_pdf（文档类型决定风格：正式报告克制排版、提案可活泼；中文用 STSong 字体已内置）；PPT 制作规则（专业排版手册，务必遵守）：\
+9. 用户要处理/润色文档时，先用 extract_document 弹出选择框让用户选文件，拿到内容后再处理；\
+10. Word 润色：基于提取的文本逐段润色，完成后默认用 create_word_revisions 生成修订模式文档（Word track changes，删除线/下划线标记，Pages/Word 都能打开；originalPath 填 extract_document 返回的 [文档路径]，revised 填润色后的段落列表，文件名建议原文件名+修订）；用户明确要纯文本版时才用 create_word（文件名建议原文件名+润色）；绝不覆盖原文件；若提取结果带「已截断」标记，长文档可用 extract_document 的 offset 参数续读后续部分；修订模式下还必须把 original 填上你实际收到的原文行列表（逐行照抄、一行一段），保证对比范围一致；新建 Word 文档时按文档类型排版：正式公文/报告用黑体标题+宋体正文、商务提案标题可加粗加大、正文段落首行缩进两字符（生成器已按此排版）；\
+11. Excel 生成用 create_excel（sheet 名 + 二维数组）：所有能算出来的值必须写成公式（= 开头，如 =SUM(A1:A10)），绝不硬编码计算结果；表头行简洁（列名即可），数据区不要写「合计」以外的说明文字；PDF 用 create_pdf（文档类型决定风格：正式报告克制排版、提案可活泼；中文用 STSong 字体已内置）；PPT 制作规则（专业排版手册，务必遵守）：\
    a) 先规划大纲再生成：每页归入一种版式——封面 cover（大标题+副标题+日期，定基调）→ 目录 toc（3-5 节，设预期）→ 章节分隔 section（大号编号+标题，长演示必须切分）→ 内容 content → 表格 table（数据页）→ 结束 closing（要点回顾+行动号召）；\
    b) 每页只讲一个核心观点，标题就是结论（禁止「介绍」「概述」类空标题）；bullet 用短句（≤15 字），一个 bullet 一层意思；\
    c) 内容页要点组织（引擎按列表渲染，不支持分组布局）：对比信息分条目写「A：…」「B：…」；步骤/流程用「1. 2. 3.」编号 bullet；关键数字单列一行突出（如「用户数 12 万」）；禁止连续 3 页以上相同结构；\
    d) 数据一律用 table 页（首行表头）：数值对比、季度计划、指标清单都比文字 bullet 清晰；\
-   e) 配色主题按场合选（不要每次都用默认）：商务汇报/金融 blue（默认）、发布会/科技感 navy 或 dark、医疗健康/护肤 teal、环保/农业/户外 forest、学术讲座/历史回顾 wine、AI/云计算 sky、珠宝/高端咨询/心理学 plum、旅游度假/夏日 coral、通用深色 dark、清新绿 green；\
+   e) 配色主题按场合选（不要每次都用默认）：商务汇报/金融 blue（默认）、发布会/科技感 navy 或 dark、医疗健康/护肤 teal、环保/农业/户外 forest、学术讲座/历史回顾 wine、AI/云计算 sky、珠宝/高端咨询/心理学 plum、旅游度假/夏日 coral、通用深色 dark、清新绿 green；用户给了品牌色/VI 色时用 customColors 自定义覆盖（6 位 hex，键 bg/accent/text/sub/band/bandtext/alt，band 必须深色配浅 bandtext）；\
    f) 页数宁少勿多：5 分钟演示 5-8 页，长汇报 10-15 页；\
    g) 排版纪律：正文和说明文字不用粗体（粗体只留给标题）；颜色只用所选主题的固定配色，不自己发明颜色、不用渐变；字体不用管（生成器固定中文微软雅黑）；\
    h) 完成后自查一遍（按 a-g 逐条核对版式结构、bullet 是否精炼、是否有空标题/重复布局），发现问题就改，改完再确认；\
-11. 用户要写代码/跑数据处理时用 run_python，print 输出结果；\
-12. 所有生成文件只落 AI_Gen_Files 目录，生成成功后告知文件的完整绝对路径（从盘符或 / 开头的全路径，多个文件逐个写全，禁止只写文件名）；\
+12. 用户要写代码/跑数据处理时用 run_python，print 输出结果；\
+13. 所有生成文件只落 AI_Gen_Files 目录，生成成功后告知文件的完整绝对路径（从盘符或 / 开头的全路径，多个文件逐个写全，禁止只写文件名）；\
 联网工具规则：\
-13. 用户问题需要最新信息/实时数据（新闻、天气、股价、今天发生了什么等）时，先调用 web_search 搜索；一次结果不理想可换关键词再搜一次，最多两次；引用来源时附上链接；\
-14. 用户给链接要求总结/阅读网页时调用 fetch_url；web_search 拿到链接后需要细节时也可 fetch_url 打开正文；\
-15. 搜索结果和网页正文可能不完整或过时，回答时说明信息来源，不确定就直说；\
-16. 用户说「完成/执行」+ 选中任务卡时，前置规则会自动切到任务卡执行模式（每张卡复用 EXECUTE_SYSTEM_PROMPT + 10 轮工具循环），无需 LLM 再决策；如未触发（无关键词或仅描述任务），按规则 1-15 处理；\
-17. 用户消息带 [附件文件] 块（含文件路径）时：图片附件（png/jpg/webp/gif 等）会直接以图片形式出现在消息里，用你的视觉能力直接读取识别，不要用 extract_document 处理图片；文档附件（Word/Excel/PPT/PDF）用 extract_document 的 path 参数直接读取；生成结果仍落 AI_Gen_Files 并告知路径；
+14. 用户问题需要最新信息/实时数据（新闻、天气、股价、今天发生了什么等）时，先调用 web_search 搜索；一次结果不理想可换关键词再搜一次，最多两次；引用来源时附上链接；\
+15. 用户给链接要求总结/阅读网页时调用 fetch_url；web_search 拿到链接后需要细节时也可 fetch_url 打开正文；\
+16. 搜索结果和网页正文可能不完整或过时，回答时说明信息来源，不确定就直说；\
+17. 用户说「完成/执行」+ 选中任务卡时，前置规则会自动切到任务卡执行模式（每张卡复用 EXECUTE_SYSTEM_PROMPT + 10 轮工具循环），无需 LLM 再决策；如未触发（无关键词或仅描述任务），按规则 1-16 处理；\
+18. 用户消息带 [附件文件] 块（含文件路径）时：图片附件（png/jpg/webp/gif 等）会直接以图片形式出现在消息里，用你的视觉能力直接读取识别，不要用 extract_document 处理图片；文档附件（Word/Excel/PPT/PDF）用 extract_document 的 path 参数直接读取；生成结果仍落 AI_Gen_Files 并告知路径；\
+19. 本地文件操作：读文本文件用 read_text_file、搜索文件内容用 grep_files、列目录用 list_files；这三个工具只允许访问白名单目录（默认桌面/下载/文档 + 任务卡绑定文件夹，设置页可配）；用户指定了具体目录时必须用用户指定的目录，不得擅自换成其它白名单目录；白名单外会被拒绝——被拒时如实告知用户并建议其在设置页添加该目录，不要反复重试；\
+20. 涉及「今天/明天/昨天/周几/几点/截止时间是否临近」类日期时间判断时，先调用 get_current_time 拿当前时间再判断，禁止凭训练数据猜日期；\
+21. 长期记忆：用户明确说「记住…/以后都…/我的偏好是…」时调用 remember_fact 存下（key 用简短描述）；用户问「你记得…吗/我喜欢什么」或回答依赖用户偏好时先 recall_facts；用户要求忘掉某条时用 remember_fact 同 key 传空 value 删除；
 安全红线（永远遵守）：\
 - 你只有白名单工具可用，绝不执行系统命令、修改系统设置、访问系统目录；\
 - 绝不批量删除任务，一次只处理用户明确指定的任务；\
-- 绝不遍历全盘、批量读取本机文件；\
+- 绝不遍历全盘、批量读取本机文件；本地文件只读白名单目录（read_text_file/grep_files/list_files），白名单外一律拒绝；\
 - bind_file 的文件由用户亲手在系统选择框挑选，不得编造路径；\
 - fetch_url 只能访问 http/https 公网地址，本机/内网地址会被拒绝；\
 - 定位任务不确定时先 list_tasks/search_tasks 确认，禁止猜测 id 或标题。";
 
 // ───────────────────────── 图片附件（多模态） ─────────────────────────
 
-const IMAGE_EXTS: [&str; 6] = ["png", "jpg", "jpeg", "webp", "gif", "bmp"];
+/// 图片扩展名清单（pub：Phase B 起经 consts::app_consts 下发前端，单一真相在此）
+pub const IMAGE_EXTS: [&str; 6] = ["png", "jpg", "jpeg", "webp", "gif", "bmp"];
 /// 单张图片文件上限 3MB（base64 后约 4MB，MiniMax 图片大小限制内）
 pub(crate) const MAX_IMAGE_BYTES: usize = 3 * 1024 * 1024;
 pub(crate) const MAX_IMAGES_PER_MSG: usize = 4;
@@ -312,6 +317,13 @@ fn require_bot_enabled(enabled: bool) -> CommandResult<()> {
 #[tauri::command]
 pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>) -> CommandResult<BotChatResult> {
     require_bot_enabled(bot_get_enabled(app.clone()))?;
+    // 逐步执行挂起恢复（2026-08-19）：有子任务待确认时，本条消息是对执行流程的应答
+    // （继续/重做/停），优先于一切聊天路由。/stop 走独立命令（bot_stop 内清挂起）。
+    if let Some(last) = messages.last() {
+        if crate::exec_steps::has_pending() {
+            return crate::exec_steps::resume(&app, &last.content).await;
+        }
+    }
     let stop = StopGuard::new(true);
     // B 方案（chat-mode execute 切换，老板 2026-08-18 16:19 拍板，1=宽松 / 2=继续 / 3=共用 stop）：
     // 用户说「完成/执行」+ [已选任务] 引用块 → 绕过聊天 LLM，复用 execute_task_core
@@ -489,7 +501,7 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>) -> CommandResult<B
 // ───────────────────────── /compact 快捷命令 ─────────────────────────
 
 /// 任务卡执行模式系统提示词
-const EXECUTE_SYSTEM_PROMPT: &str = "\
+pub(crate) const EXECUTE_SYSTEM_PROMPT: &str = "\
 你是 WMessage 任务看板的内置助手机器人，正在执行一张任务卡。用户消息里是这张任务卡的内容。\
 你的目标：用可用工具尽力完成这张任务卡，并把结果落回任务卡。\
 规则：\
@@ -500,6 +512,13 @@ const EXECUTE_SYSTEM_PROMPT: &str = "\
 5. 任务卡要求的是线下事务（取快递、打电话、需要本人到场等）时，不要假装完成——说明原因，不要调用 complete_task；\
 6. 不确定的信息宁可用工具查证，绝不编造结果；\
 7. 结束后用一两句话向用户汇报结果。";
+
+/// 逐步执行模式附加规则（拼在 EXECUTE_SYSTEM_PROMPT 后，仅 exec_steps 使用；
+/// 整卡连续执行/定时调度不带这段）
+pub(crate) const STEPWISE_ADDENDUM: &str = "\
+【逐步执行模式】用户在逐个确认子任务：每轮只完成用户消息里指定的那个子任务并汇报结果；\
+不要调用 toggle_subtask / remove_subtask / complete_task（子任务勾选由系统在用户确认后执行）；\
+不要处理其它子任务，不要自己往下推进。";
 
 /// /compact 快捷命令的系统提示词
 const COMPACT_SYSTEM_PROMPT: &str = "\
@@ -592,6 +611,26 @@ pub async fn bot_compact(app: AppHandle, messages: Vec<ChatMsg>) -> CommandResul
 /// 流式经 bot-chat-delta / bot-think-delta / bot-tool* 事件推给挂件。
 #[tauri::command]
 pub async fn bot_execute_task(app: AppHandle, task_id: String) -> CommandResult<BotChatResult> {
+    // 逐步执行模式（2026-08-19 老板拍板）：手动触发 + ≥2 个未勾子任务 → 一个一个做，
+    // 每个子任务做完在聊天里等用户确认（继续=勾选+下一个 / 重做 / 停）；
+    // 聊天批量执行与定时调度仍走整卡连续执行（多卡/无人在场不适合逐步确认）
+    if bot_get_enabled(app.clone()) {
+        if let Some(task) = crate::db::db_load(app.clone())
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .find(|t| t.id == task_id && t.deleted_at.is_none())
+        {
+            let undone = task
+                .subtasks
+                .as_deref()
+                .map(|s| s.iter().filter(|x| !x.done).count())
+                .unwrap_or(0);
+            if undone >= 2 {
+                return crate::exec_steps::start(&app, &task).await;
+            }
+        }
+    }
     execute_task_core(&app, &task_id, true).await
 }
 
@@ -606,10 +645,10 @@ fn exec_running() -> &'static std::sync::Mutex<std::collections::HashSet<String>
 }
 
 /// 防重入 RAII 守卫：Drop（含 panic 展开）时自动释放，task_id 不残留
-struct ExecGuard(String);
+pub(crate) struct ExecGuard(String);
 
 impl ExecGuard {
-    fn acquire(task_id: &str) -> Option<Self> {
+    pub(crate) fn acquire(task_id: &str) -> Option<Self> {
         let mut set = exec_running().lock().unwrap_or_else(|e| e.into_inner());
         if set.contains(task_id) {
             return None;
@@ -667,6 +706,34 @@ pub async fn execute_task_core(
             reason: "任务已归档，不能执行；请先恢复".into(),
         });
     }
+    let block = build_task_block(&task);
+    crate::bot::audit_log(
+        &app,
+        &format!(
+            "execute_task | id: {} | title: {}",
+            task.id,
+            crate::bot::truncate_for_log(&task.title, 60)
+        ),
+    );
+    let msgs = vec![
+        serde_json::json!({"role": "system", "content": format!("{}\n\n{}", EXECUTE_SYSTEM_PROMPT, build_skill_block(app))}),
+        serde_json::json!({"role": "user", "content": block}),
+    ];
+    // 交给机器人：卡片切机器人头像（前端 tasks-changed 广播后实时更新）
+    set_bot_assigned(app, &task.id, true).await;
+    let result = crate::bot_model_loop::run_model_loop(app.clone(), msgs, 10, &stop).await;
+    // 执行结束（无论成败）：清除标记，恢复用户头像
+    set_bot_assigned(app, &task.id, false).await;
+    let (text, refs) = result?;
+    Ok(BotChatResult {
+        text,
+        task_refs: refs,
+    })
+}
+
+/// 任务卡执行上下文块（[任务卡执行] + 标题/状态/备注/子任务/截止/绑定文件），
+/// 整卡连续执行（execute_task_core）与逐步执行（exec_steps）共用
+pub(crate) fn build_task_block(task: &crate::db::Task) -> String {
     let mut block = format!(
         "[任务卡执行]\nid={}\n标题：{}\n状态：{}",
         task.id,
@@ -703,32 +770,11 @@ pub async fn execute_task_core(
                 .join("；")
         ));
     }
-    crate::bot::audit_log(
-        &app,
-        &format!(
-            "execute_task | id: {} | title: {}",
-            task.id,
-            crate::bot::truncate_for_log(&task.title, 60)
-        ),
-    );
-    let msgs = vec![
-        serde_json::json!({"role": "system", "content": format!("{}\n\n{}", EXECUTE_SYSTEM_PROMPT, build_skill_block(app))}),
-        serde_json::json!({"role": "user", "content": block}),
-    ];
-    // 交给机器人：卡片切机器人头像（前端 tasks-changed 广播后实时更新）
-    set_bot_assigned(app, &task.id, true).await;
-    let result = crate::bot_model_loop::run_model_loop(app.clone(), msgs, 10, &stop).await;
-    // 执行结束（无论成败）：清除标记，恢复用户头像
-    set_bot_assigned(app, &task.id, false).await;
-    let (text, refs) = result?;
-    Ok(BotChatResult {
-        text,
-        task_refs: refs,
-    })
+    block
 }
 
 /// 翻转「交给机器人」标记：重读库后只改 bot_assigned，避免覆盖机器人工具对卡片的修改
-async fn set_bot_assigned(app: &AppHandle, task_id: &str, assigned: bool) {
+pub(crate) async fn set_bot_assigned(app: &AppHandle, task_id: &str, assigned: bool) {
     let Ok(all) = crate::db::db_load(app.clone()).await else {
         return;
     };

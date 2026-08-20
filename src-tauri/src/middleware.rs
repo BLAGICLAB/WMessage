@@ -350,11 +350,13 @@ mod tests {
     }
 
     #[test]
-    fn intent_router_middleware_matches_keywords() {
+    fn intent_router_middleware_empty_table_pass_through() {
+        // 2026-08-19 动态路由：路由表 = 已安装技能的 intents 声明，测试进程未 rebuild → 空表。
+        // 空表恒 PassThrough（未安装的技能不得有路由）；D1 契约不变：PassThrough 也返回 Some 短路 pre_step 链。
         let m = IntentRouterMiddleware;
         match m.pre_step("帮我做 PPT") {
-            Some(RouteAction::Skill(s)) => assert_eq!(s, "ppt-orchestra-skill"),
-            other => panic!("expected ppt, got {other:?}"),
+            Some(RouteAction::PassThrough) => {}
+            other => panic!("expected PassThrough, got {other:?}"),
         }
         match m.pre_step("hello world") {
             Some(RouteAction::PassThrough) => {}
@@ -412,15 +414,16 @@ mod tests {
 
     #[test]
     fn helper_with_managed_state_runs_registry() {
-        // state 已 manage → helper 走 registry：atomic guard 阻断、intent router 路由
+        // state 已 manage → helper 走 registry：atomic guard 阻断、intent router 放行
         let app = tauri::test::mock_app();
         app.manage(build_default_registry());
         let handle = app.handle().clone();
         assert!(run_pre_execute(&handle, "create_word_revisions", false).is_some());
         assert!(run_pre_execute(&handle, "list_tasks", false).is_none());
+        // 2026-08-19 动态路由：测试进程路由表为空（未安装技能经 rebuild 注入）→ 恒 PassThrough
         match run_pre_step(&handle, "帮我做 PPT") {
-            Some(RouteAction::Skill(s)) => assert_eq!(s, "ppt-orchestra-skill"),
-            other => panic!("expected ppt skill route, got {other:?}"),
+            Some(RouteAction::PassThrough) => {}
+            other => panic!("expected PassThrough（动态路由空表）, got {other:?}"),
         }
     }
 

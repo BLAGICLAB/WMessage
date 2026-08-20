@@ -166,11 +166,11 @@ export function TaskCardContent({
             </div>
           )}
 
-          {/* 子任务清单（checkbox 可勾选，与主窗口一致） */}
+          {/* 子任务清单（checkbox 可勾选，与主窗口一致；分隔线分行 + 长文本单行截断） */}
           {subtasks.length > 0 && (
-            <div className="mt-2 flex flex-col gap-1">
+            <div className="mt-2 flex flex-col divide-y divide-[var(--edge)]">
               {subtasks.map((s) => (
-                <div key={s.id} className="flex items-center gap-2">
+                <div key={s.id} className="flex items-center gap-2 py-1">
                   <input
                     type="checkbox"
                     checked={s.done}
@@ -183,9 +183,10 @@ export function TaskCardContent({
                     }`}
                   />
                   <span
-                    className={`flex-1 text-xs ${
+                    className={`flex-1 min-w-0 truncate text-xs ${
                       s.done ? "text-[var(--t5)] line-through" : "text-[var(--t3)]"
                     }`}
+                    title={s.text}
                   >
                     {s.text}
                   </span>

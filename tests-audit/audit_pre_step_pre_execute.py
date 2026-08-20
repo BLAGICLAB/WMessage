@@ -13,6 +13,7 @@ WMessage 主调度循环与 pre-step / pre-execute 双中间件联动专项检�
 执行：python3 -m pytest tests-audit/audit_pre_step_pre_execute.py -v
 """
 from pathlib import Path
+import os
 import re
 import subprocess
 import sys
@@ -21,7 +22,15 @@ import pytest
 
 SRC = Path("/Users/renshi/Projects/wmessage/src-tauri/src")
 BOT = (SRC / "bot.rs").read_text()
-BOT_SKILLS = (SRC / "bot_skills.rs").read_text()
+# F-6 step 5（2026-08-18）后：聊天编排在 bot_chat.rs、工具循环在 bot_model_loop.rs。
+# 编排/路由/事件类断言统一对合并文本 BOT_ALL 做（行为仍在，只是位置搬家）
+BOT_CHAT = (SRC / "bot_chat.rs").read_text()
+BOT_MODEL_LOOP = (SRC / "bot_model_loop.rs").read_text()
+BOT_ALL = BOT + BOT_CHAT + BOT_MODEL_LOOP
+# Phase C（2026-08-19）起 bot_skills.rs 拆为 bot_skills/ 目录，拼接所有子模块保持单文件语义
+BOT_SKILLS = "\n".join(
+    p.read_text() for p in sorted((SRC / "bot_skills").glob("*.rs"))
+)
 INTENT_ROUTER = (SRC / "intent_router.rs").read_text()
 TOOL_GUARD = (SRC / "tool_guard.rs").read_text()
 AUDIT = (SRC / "audit.rs").read_text()
@@ -42,7 +51,8 @@ def grep_count(text, pattern):
 
 def cargo_test_count():
     """跑一次 cargo test 拿测试数（轻量，只查结果）。重试一次避免 flake 误报。"""
-    env = {"PATH": "/Users/renshi/.cargo/bin:/usr/bin:/bin"}
+    # 保留完整 os.environ（HOME/CARGO_HOME 缺失会让 cargo 直接起不来），只覆盖 PATH
+    env = {**os.environ, "PATH": "/Users/renshi/.cargo/bin:/usr/bin:/bin"}
     for attempt in (1, 2):
         r = subprocess.run(
             ["cargo", "test", "--manifest-path", "/Users/renshi/Projects/wmessage/src-tauri/Cargo.toml", "--lib", "--no-fail-fast"],
@@ -71,30 +81,32 @@ class TestPreStepRouting:
         assert "RouteAction::Skill" in INTENT_ROUTER
         assert "RouteAction::PassThrough" in INTENT_ROUTER
 
-    def test_intent_rules_count(self):
-        """复合业务 → Skill 映射规则表（Q1 拍板 7 条）"""
-        rules = re.findall(r'skill_name:\s*"([^"]+)"', INTENT_ROUTER)
-        assert len(rules) >= 7, f"期望 ≥7 条规则，实际 {len(rules)}: {rules}"
-        expected = {
-            "ppt-orchestra-skill", "minimax-docx", "minimax-xlsx", "minimax-pdf",
-            "minimax-web-search", "minimax-task-summary", "minimax-archive",
-        }
-        assert expected.issubset(set(rules)), f"缺规则: {expected - set(rules)}"
+    def test_no_static_skill_routes(self):
+        """2026-08-19 老板拍板：未安装的技能不得有路由——静态 INTENT_RULES 表已删除，
+        路由由已安装技能 SKILL.md frontmatter 的 intents 声明动态生成
+        （启动 / skills_import / skills_delete 后 rebuild_routes 重建）。
+        原 7 条硬编码映射中：3 条幻影（web-search/task-summary/archive 实体从未存在）、
+        ppt-orchestra-skill 实体与本运行时不兼容且能力已内置 SYSTEM_PROMPT 规则 10。"""
+        assert "INTENT_RULES" not in INTENT_ROUTER, "静态路由表应已删除（动态路由重构）"
+        hardcoded = re.findall(r'skill_name:\s*"([^"]+)"', INTENT_ROUTER)
+        assert not hardcoded, f"路由表不得硬编码技能名（路由来自已安装技能 intents）: {hardcoded}"
+        assert "rebuild_routes" in INTENT_ROUTER, "动态路由重建入口缺失"
+        assert "route_with_rules" in INTENT_ROUTER, "规则注入式纯函数核缺失（测试/离线核验用）"
 
     def test_pre_step_called_in_bot_chat(self):
         """bot_chat 入口调用 middleware::run_pre_step（F-2 抽象层 2026-08-18）"""
-        assert "middleware::run_pre_step" in BOT, (
+        assert "middleware::run_pre_step" in BOT_ALL, (
             "bot_chat 应调 middleware::run_pre_step（F-2 抽象层）"
         )
 
     def test_pre_step_hit_triggers_start_skill(self):
         """pre-step 命中 → start_skill 调用（Skill 进入 Running 状态）"""
         # 在 bot_chat 的 pre-step 分支里能找到 start_skill 调用
-        assert "start_skill(&app" in BOT or "start_skill(\\&app" in BOT
+        assert "start_skill(&app" in BOT_ALL or "start_skill(\\&app" in BOT_ALL
         # 且调用路径在 Some(RouteAction::Skill(_)) 分支内（F-2 抽象层包装）
         # 用更宽松的检查：start_skill 调用存在且 RouteAction::Skill 存在
         skill_branch = re.search(
-            r"Some\(RouteAction::Skill\([^)]+\)\)\s*=>\s*\{[^}]*start_skill", BOT, re.DOTALL
+            r"Some\(RouteAction::Skill\([^)]+\)\)\s*=>\s*\{[^}]*start_skill", BOT_ALL, re.DOTALL
         )
         assert skill_branch is not None, (
             "pre-step 命中分支里没看到 start_skill 调用 → pre-step 形同虚设（F-2 抽象层：Some(RouteAction::Skill(...)) => {...}）"
@@ -128,13 +140,13 @@ class TestPreStepRouting:
 
     def test_event_log_pre_step_route_skill_format(self):
         """event_log 应出现 pre_step.route_skill 事件"""
-        assert "pre_step.route_skill" in BOT, (
-            "期望 bot.rs 用 audit_event! 发 pre_step.route_skill 事件，"
+        assert "pre_step.route_skill" in BOT_ALL, (
+            "期望 bot 编排层用 audit_event! 发 pre_step.route_skill 事件，"
             "当前格式不符规格"
         )
         # 同步验证其他两个中间件事件名
-        assert "pre_step.route_failed" in BOT, "缺 pre_step.route_failed 事件"
-        assert "pre_execute.deny" in BOT, "缺 pre_execute.deny 事件（规格：pre_execute.deny；2026-08-18 F-3 改名）"
+        assert "pre_step.route_failed" in BOT_ALL, "缺 pre_step.route_failed 事件"
+        assert "pre_execute.deny" in BOT_ALL, "缺 pre_execute.deny 事件（规格：pre_execute.deny；2026-08-18 F-3 改名）"
 
     def test_old_free_form_intent_route_removed(self):
         """旧的 intent_route free-form 事件应被替换（不再有新的）"""
@@ -161,10 +173,10 @@ class TestPreStepMissFlowsToLLM:
 
     def test_passthrough_branch_in_bot_chat(self):
         """bot_chat 处理 PassThrough 分支（F-2 抽象层：Some(RouteAction::PassThrough) | None => None）"""
-        assert "RouteAction::PassThrough" in BOT
+        assert "RouteAction::PassThrough" in BOT_ALL
         # F-2 抽象层：PassThrough 被 Some(_) 包裹，与「无中间件命中」(None) 一起 return None
         pass_branch = re.search(
-            r"Some\(RouteAction::PassThrough\)\s*\|\s*None\s*=>\s*None", BOT
+            r"Some\(RouteAction::PassThrough\)\s*\|\s*None\s*=>\s*None", BOT_ALL
         )
         assert pass_branch is not None, (
             "PassThrough 分支缺失（F-2 抽象层：Some(RouteAction::PassThrough) | None => None）"
@@ -172,7 +184,7 @@ class TestPreStepMissFlowsToLLM:
 
     def test_run_model_loop_called_unconditionally(self):
         """run_model_loop 在 pre-step 处理后调用（无论命中与否都进 LLM）"""
-        assert "run_model_loop(app, msgs, 8, &stop)" in BOT
+        assert "run_model_loop(app, msgs, 8, &stop)" in BOT_ALL
 
     def test_every_execute_tool_has_pre_execute_check(self):
         """execute_tool 入口必走 pre_execute（middleware::run_pre_execute，F-2 抽象层 2026-08-18）"""
@@ -269,17 +281,18 @@ class TestEventLogTiming:
         """audit_event! 宏可跨模块调用"""
         assert "#[macro_export]" in AUDIT
         assert "macro_rules! audit_event" in AUDIT
-        # bot.rs 顶部引入
-        assert "use crate::audit_event;" in BOT
+        # bot 编排层实际在用（bot_chat.rs 全限定调用 crate::audit_event!）
+        assert "crate::audit_event!" in BOT_ALL
 
     def test_post_execute_emits_structured_event(self):
         """execute_tool 末尾应发结构化 tool.return 事件（F-3 第三步 2026-08-18 改名）"""
+        # NEW-C-4 后 execute_tool 是薄 wrapper，真正实现（事件埋点）在 execute_tool_with_stop
         fn_match = re.search(
-            r"async fn execute_tool\([^)]*\)[^{]*\{", BOT
+            r"async fn execute_tool_with_stop\([^)]*\)[^{]*\{", BOT
         )
         assert fn_match is not None
-        fn_body = BOT[fn_match.end():fn_match.end() + 3000]
-        assert 'audit_event!' in fn_body
+        fn_body = BOT[fn_match.end():fn_match.end() + 6000]
+        assert 'audit_event!' in fn_body or "write_event" in fn_body
         assert '"tool.return"' in fn_body, "execute_tool 末尾应发 tool.return 事件（2026-08-18 F-3 改名）"
         # 同步验证入口应有 tool.call（拆分自原 tool_done）
         assert '"tool.call"' in fn_body, "execute_tool 入口应发 tool.call 事件"
@@ -333,8 +346,8 @@ class TestBypassLlmSwitch:
     def test_bypass_llm_toggle_off_zero_routing(self):
         """toggle=false 时 pre_routed_skill 强制 None（LEGACY 路径）+ bypass_off 审计"""
         assert "read_bypass_llm_switch" in BOT, "缺 helper 函数 read_bypass_llm_switch"
-        assert "pre_step.bypass_off" in BOT, "缺 pre_step.bypass_off 事件（toggle=off 审计）"
-        assert "let pre_routed_skill = if bypass_llm_on_pre_step_hit" in BOT, (
+        assert "pre_step.bypass_off" in BOT_ALL, "缺 pre_step.bypass_off 事件（toggle=off 审计）"
+        assert "let pre_routed_skill = if bypass_llm_on_pre_step_hit" in BOT_ALL, (
             "缺二次 shadow：bypass=false 时强制 None"
         )
 

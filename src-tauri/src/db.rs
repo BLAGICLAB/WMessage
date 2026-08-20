@@ -283,6 +283,13 @@ pub fn open_db(app: &tauri::AppHandle) -> Result<rusqlite::Connection, String> {
            completed_summary  TEXT,
            rollback_attempted INTEGER,
            last_at_ms         INTEGER NOT NULL
+         );
+         -- 机器人长期记忆（2026-08-20 Phase 4.2）：key-value 事实/偏好，跨会话保留；
+         -- 模型经 remember_fact 写入（同 key 覆盖，空 value=删除），recall_facts 全量读回
+         CREATE TABLE IF NOT EXISTS bot_facts (
+           key        TEXT PRIMARY KEY,
+           value      TEXT NOT NULL,
+           updated_at INTEGER NOT NULL
          );",
     )
     .map_err(|e| e.to_string())?;

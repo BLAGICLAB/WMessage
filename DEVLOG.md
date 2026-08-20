@@ -1383,3 +1383,75 @@ DSL 调度器从「解析 + 单次顺序执行」演进到「全链路生产可�
 - vitest: 81 → 85（修复 7c/7d/7e + 挂件折叠修法 A）→ 90+（多文件 chip 列表 + × 移除 + 上限 UI）
 - tsc --noEmit 零错
 - Windows 绿色包 14:27 已发布（43.97 MB → 13.65 MB 第二次重打）供老板压测
+
+### 晚间会话（Kimi code，20:45–23:10）：绑定互斥解除 + 机器人可靠性三连修 + 逐步执行模式
+- **绑定文件/文件夹解除互斥**（老板反馈）：`TodoCard` 删掉「已绑文件夹不能再加文件」拦截；`pickFolder` 改追加不替换；绑定区补「📁 绑定文件夹」入口；文件夹仍单选。前端 100 测试全绿
+- **「Command bind_files not found」**：不是代码问题——运行中的 app 是凌晨 00:54 起的旧二进制（`bind_files` 19:10 才编译进去），手动 nohup 起的进程不归 tauri dev 管不会自动重启；重启解决
+- **Phase A 架构改造**（docs/ARCH-REFACTOR-PLAN.md 勾选清单）：`MutationOrigin` 枚举消灭 source 字符串约定（bot/api/migration 三处 emit 编译期锁死）；前端 `mutationOrigin.ts` 类型守卫，非法 source WARN + 按未落盘处理。顺手修两个预存问题：middleware 加 AppHandle 首参后 11 处集成测试调用点失配、`error.rs` doctest 伪代码块（标 `rust,ignore`）
+- **机器人幻觉汇报三连修**（bot.log 实锤：模型零工具调用却回复「已添加子任务」「已移至回收站 🗑️」）：
+  1. prompt 点名工具（add_subtask/toggle_subtask/remove_subtask/delete_task 等，M3 对没点名的工具不可靠）+ 规则 8 禁止无工具调用时声称完成
+  2. **幻觉守卫**（`bot_model_loop.rs` 循环出口确定性拦截）：声称变更（「已」+8 字窗口内含变更动词，覆盖「已彻底删除」变体）但本轮 0 次变更工具调用 → 注入系统提醒补一轮（每次对话最多一次），记 `hallucination_guard` 审计
+  3. **新增 `remove_subtask` 工具**（此前无删除子任务工具，模型无从下手）；`resolve_task` 加 taskId/标题交叉校验防跨卡张冠李戴
+- **子任务显示**：主窗口+挂件子任务列表 `divide-y` 分隔线分行 + 长文本单行截断 hover 显示全文；prompt 约束子任务为 ≤15 字动宾短句
+- **子任务逐步执行模式**（老板拍板：一个一个做、确认后勾选、不满意重做、全部做完不勾卡完成、定时执行跳过确认）：新模块 `exec_steps.rs` 挂起-恢复链路，每步从 DB 重读重建上下文；「继续」由系统直接落库勾选（不经 LLM）；bot_chat 入口挂起优先路由；/stop 清挂起。状态内存态，重启丢
+- **熔断上限 10 → 30 全局**（老板拍板）：22:56「列计划+新增子任务」复合任务真触发熔断实锤 10 不够；软警告 7 → 20
+- 测试：cargo 374 pass（+14：mutation/guard/classify），vitest 100 pass，tsc 零错
+
+### 机器人工具升级 Phase 1/2（docs/BOT-TOOLS-UPGRADE-PLAN.md，全部验收通过）
+- **Phase 1 本地文件工具**（把「不开」改成「可控地开」）：
+  - 新模块 `bot_fs.rs`：`read_text_file`/`grep_files`/`list_files` 三工具 + `resolve_allowed` 白名单守卫（canonicalize 后 starts_with 判定，堵 `..` 逃逸/软链逃逸）；默认白名单 `~/Desktop`/`~/Downloads`/`~/Documents` + 任务卡绑定文件夹；每次访问记审计
+  - `BotConfig` 加 `allowed_dirs: Vec<String>`（空=默认），设置页白名单 textarea；`bot.rs::load_config` 改 pub(crate)
+  - 红线从「一律拒绝本地文件」改为「白名单外一律拒绝」，prompt 规则 19 约束模型不得擅自换目录
+  - 顺手修：`extract_document` 的 `extract_path_allowed` 也过 bot_fs 白名单（之前 docx 附件在绑定文件夹内仍被拒）
+  - 只读工具不进 MUTATING_TOOLS；tool_guard 非原子清单同步纳入
+- **Phase 2 搜索/网页工具升级**：
+  - `bot_web.rs::extract_main_content`：去 script/style/nav/footer 噪声块 → article/main → 语义 class/id 最大 div → 兜底全文；结果 <100 字自动回退整页转换；30KB 截断保留
+  - `web_search` 结果清理（空白压缩 + 结尾省略号去除）+ 同域名最多 2 条（百度跳转豁免）+ 来源标注 [Bing]/[百度]/[Tavily]
+  - `web_search_with_config(app, query)`：配了 `tavilyKey` 走 Tavily API，失败回退抓取记审计 `web_search.tavily_fallback`；设置页加 Tavily key 输入框（生效需老板申请 key）
+- 测试：cargo 377（Phase 1）→ 382（Phase 2）pass，vitest 100 pass，tsc 零错；两阶段手动冒烟均老板验收通过
+
+## 2026-08-20（周四）凌晨：Phase 3 模型可切换 + 聊天窗模型快速切换
+
+### Phase 3（docs/BOT-TOOLS-UPGRADE-PLAN.md，全部验收通过）
+- **3.2 兼容性代码核对**：payload（model/messages/tools/stream + Bearer）、SSE 解析（`delta.content` / `delta.tool_calls` 增量拼接）、tool 回填（assistant.tool_calls + role:tool + tool_call_id）全是标准 OpenAI 规范，Kimi/DeepSeek 官方兼容，零代码改动
+- **3.3 提供商预设**：`src/lib/providerPresets.ts` 共享常量（设置页按钮组 + 聊天窗菜单共用）；命中判定 baseUrl+model 双匹配（DeepSeek Flash/Pro 同 baseUrl，单靠地址无法区分）
+- **聊天窗模型快速切换**（老板提的新需求）：ChatPanel 头部 🧠 按钮（显示当前提供商 label / 自定义显示模型名）→ 菜单选预设即切换，整体回写配置保留白名单/Tavily 字段，apiKey 传 null 不动 keychain；设置页保存广播 `bot-config-changed` 同步刷新标签
+- **预设跟随官方更新**：Kimi K2 下线 → K3（`kimi-k3`）；DeepSeek 旧名 `deepseek-chat` 2026-07-24 已废弃 → V4 双档（`deepseek-v4-flash` / `deepseek-v4-pro`），Rust 默认值同步换 v4-flash；菜单加「✏️ 自定义…」内联表单自由填任何 OpenAI 兼容端点
+- **踩坑**：切 Kimi 报 401 Invalid Authentication —— 不是代码问题，keychain 里存的还是旧 MiniMax key（设置页 API Key 留空保存 = 保持原 key）；教训：跨提供商切换必须同步换 key，菜单底部已加提示文案
+- 测试：cargo 382 pass、vitest 103 pass（+3：设置页预设、聊天窗预设切换、自定义表单）、tsc 零错；Kimi K3 幻觉场景冒烟老板验收通过
+
+### Phase 4 低成本高价值工具（03:05，全部验收通过）
+- **`get_current_time`**：返回「现在：yyyy-MM-dd HH:mm:ss 星期X」；prompt 规则 20 强制模型做相对日期判断前先调，杜绝凭训练数据猜日期
+- **长期记忆**（`bot_facts` 表：key 主键 upsert / 空 value 删除 / 200 条上限）：
+  - 模型主动式设计——不每轮自动注入全量记忆（防白烧 token），靠 prompt 规则 21 引导该回忆时调 `recall_facts`；观察点：模型遵循度不够则下一步改系统提示注入「已有 N 条记忆」提示
+  - DB 操作抽成 `fact_upsert`/`fact_delete`/`fact_list`（接受 `&Connection`），内存库单测覆盖全逻辑（open_db 全链路依赖 AppHandle，同 bot_fs 先例不测）
+  - `remember_fact` 计入 MUTATING_TOOLS：幻觉守卫覆盖「已记住」话术；`validate_fact_kv` 纯函数管入参边界（key ≤50 字 / value ≤500 字）
+- 测试：cargo 382 → 387（+5），vitest 103，tsc 零错；老板冒烟：「记住我喜欢简洁的回复」→ 新会话问偏好，跨会话回忆成功
+
+### 工具对比 Kimi Code 后的四项改进（05:10）
+- **create_word 加 tables 参数**：可选表格列表 [{title?, rows}] 追加在段落之后，首行表头加粗（python-docx Table Grid）；schema + doc_make_word 透传（Option<Value> 向后兼容）
+- **create_excel 多 sheet 核实无需改**：schema（sheets: [{name, rows}]）+ 脚本循环 + tool 透传早已支持，此前对比误判
+- **run_python 超时可配**：三层优先级——工具参数 timeoutSecs（schema 新增，模型按需调）> 设置页「Python 默认超时」（BotConfig.python_timeout_secs）> 内置 60s；硬钳 300s 沿用 resolve_timeout；修复 ChatPanel 模型切换回写丢 pythonTimeoutSecs 的隐患（回写字段补齐）
+- **fetch_url Jina Reader 回退**：正文提取 <100 字（JS 渲染 SPA 空壳）时回退 https://r.jina.ai/<url>（服务端渲染返回 markdown，免费无 key）；过 check_public_url + 2MB 上限；失败静默不影响主路径
+- **textutil 方案否决**（老板问）：macOS 私有、只覆盖 Word、Windows 无等价物；现 Python 子进程方案跨平台四格式通吃，保留；远期可迁 Rust 原生解析（calamine/lopdf/解 zip）干掉 Python 依赖，单独立项
+- 踩坑：TOOLS schema 手写 JSON 嵌套括号错一位（tables items 多关一层），tools_schema_parses 测试当场抓住——这个测试就是干这个的
+- 测试：cargo 387 → 388（+1 jina_reader_url），vitest 103，tsc 零错
+- **create_ppt customColors**（05:20，老板拍板「骨架固定、皮肤开放」）：可选 {bg/accent/text/sub/band/bandtext/alt} 6 位 hex 覆盖主题配色，脚本侧正则校验非法值忽略保底；版式骨架仍固定（信息架构不开放）
+- **extract_document 分页读**（05:20）：30K 硬截断 → offset/limit 字符级分页（默认 30000、硬钳 60000），头部 [位置] offset–end/共 N 字符 + 尾部续读提示；offset 越界明确提示。prompt 规则 10 截断标记措辞同步更新
+- **extract_document 代码审查结论**（老板问「有没有问题」）：无功能性 bug；三个已知局限——docx 表格抽在段落后（顺序失真）、xlsx data_only 对未保存过的公式读出空、pptx 漏表格内容
+- 测试：cargo 388 → 390（+2 分页测试，jina +1 上一批），vitest 103，tsc 零错
+- **extract_document pptx 表格漏读修复**（05:26）：walk 递归组合形状（shape_type 6=GROUP，须先判组再碰 has_table——GroupShape 无该属性），GraphicFrame 表格按行输出「单元格 | 分隔」；本机实测：文本框+表格均提取成功
+
+### 架构改造 Phase A-C + 技能路由动态化（晚间，Kimi Code 执行）
+- **Phase A（source 标记类型化）**：`mutation.rs` `MutationOrigin` 枚举取代 `"bot"/"api"/"migration"` 裸字符串；前端 `lib/mutationOrigin.ts` 类型守卫，非法值 WARN 不静默吞
+- **Phase B（共享常量单一来源）**：新 `consts.rs` `app_consts` 命令下发 `max_task_files/max_title/max_note/image_exts`；前端 `lib/consts.ts` 启动拉取 + 失败回退硬编码；`MAX_TASK_FILES` 改活绑定 re-export（调用方零改动），ChatPanel 图片扩展名走 `imageExtSet()`
+- **Phase C（bot_skills.rs 3091 行拆分）**：纯移动零逻辑改动 → `bot_skills/{mod,files,manage,parse,state,vars,runtime,scheduler}.rs`，全部 ≤1200 行；mod.rs 只留 re-export；仅 7 处可见性放宽到 pub(crate)；cargo 421 测试前后一致
+- **技能路由动态化（老板拍板：未安装的技能不得有路由）**：
+  - 删除静态 `INTENT_RULES` 7 条硬编码映射——3 条幻影（web-search/task-summary/archive 实体从未存在，功能均有内置替代）、ppt-orchestra-skill 实体与本运行时不兼容（subagent/node compile.js）且能力已内置 SYSTEM_PROMPT 规则 10
+  - `intent_router` 重写：路由表 = 已安装技能 SKILL.md frontmatter `intents` 声明；启动 + `skills_import`/`skills_delete` 成功后 `rebuild_routes` 重建；空表恒 PassThrough（fail-open）
+  - `parse_meta` intents 支持多行 YAML 列表（单行逗号分隔会切碎 `{0,15}` 量词）；`manage.rs` 新增 `intent_rules_from_dirs`（enabled=false / 无 intents 不产生路由）
+  - minimax-docx 实体安装到 dev（target/debug/skills）+ release（App Support）两处，frontmatter 补 intents（含「润色/修订 + .doc/.docx 附件」上下文模式 `(?is)...[\s\S]*\.docx?`——附件以 [附件文件] 块嵌消息文本，无需改 middleware 签名）
+  - 冒烟测试语义修正：parse/scheduler 两个扫真 skills 目录的 smoke 跳过非 auto 技能（interactive 技能无 DSL Step 是合法状态，不是解析失败）
+  - tests-audit 审计脚本修复：BOT_SKILLS 改读拆分后目录；8 条编排层断言跟 F-6 拆分搬家到 BOT_ALL（bot.rs+bot_chat.rs+bot_model_loop.rs）；cargo_test_count 环境变量缺 HOME 导致恒 -1 的预存 bug 一并修
+  - 遗留：xlsx/pdf 技能实体在 ~/.openclaw/workspace/skills 但未安装（要用就装，不用路由自然没有）；「机器人对话里安装技能」入口当前不存在，规则实现后任何安装入口自动生效
+- 验证：cargo 421 全绿（lib 392 + 集成 29）、cargo check --release 通过、vitest 105、tsc 零错、pytest 审计 24 过 1 跳

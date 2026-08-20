@@ -21,6 +21,12 @@ use mock_llm_re_export::{MockBehavior, MockLlmServer, ToolCallResponse};
 use wmessage_lib::bot::{parse_sse_chunk, ToolCallDelta};
 use wmessage_lib::middleware;
 
+/// 中间件 API 的 AppHandle 首参占位（P2-13/14 签名扩展后测试适配，2026-08-19）。
+/// 这些用例只命中闸门判定，不触发 audit 落盘路径；App 泄漏给测试进程，退出即回收。
+fn mock_handle() -> tauri::AppHandle<tauri::test::MockRuntime> {
+    Box::leak(Box::new(tauri::test::mock_app())).handle().clone()
+}
+
 // ────────────────────────────────────────────────────────────────────
 // SSE 解析：F-6 step 4 refactor 后改用 wmessage_lib::bot::parse_sse_chunk
 // 累计多行 SSE chunk 为 ParsedStream（text + tool_calls + finish_reason）
@@ -230,7 +236,7 @@ async fn llm_blacklist_tool_call_create_word_revisions_blocked_when_no_skill() {
 
     // F-6 step 4 核心断言：SSE 解析后的 tool name → middleware 应阻断
     let registry = middleware::build_default_registry();
-    let block_msg = registry.run_pre_execute(&blocked_tool, false);
+    let block_msg = registry.run_pre_execute(&mock_handle(), &blocked_tool, false);
     let msg = block_msg.expect(
         "黑名单 tool_call (create_word_revisions) + 非 Skill 状态应被 middleware 阻断（defense-in-depth）",
     );
@@ -258,7 +264,7 @@ async fn llm_blacklist_tool_call_link_file_to_task_blocked_when_no_skill() {
 
     // 非 Skill 状态应阻断
     let registry = middleware::build_default_registry();
-    let block_msg = registry.run_pre_execute(&blocked_tool, false);
+    let block_msg = registry.run_pre_execute(&mock_handle(), &blocked_tool, false);
     assert!(
         block_msg.is_some(),
         "link_file_to_task + 非 Skill 状态应被 middleware 阻断"
@@ -288,7 +294,7 @@ async fn llm_blacklist_tool_call_allowed_when_skill_running() {
 
     // Skill Running 状态 + 黑名单 tool_call → middleware 应放行（合法调用）
     let registry = middleware::build_default_registry();
-    let blocked = registry.run_pre_execute(&allowed_tool, true);
+    let blocked = registry.run_pre_execute(&mock_handle(), &allowed_tool, true);
     assert!(
         blocked.is_none(),
         "create_word_revisions + Skill Running 状态应放行（Word 修订 Skill 内合法调用）；got: {blocked:?}"
@@ -318,7 +324,7 @@ async fn llm_whitelist_tool_call_run_python_always_allowed() {
     // 白名单工具无论 Skill 是否活跃都应通过 middleware
     let registry = middleware::build_default_registry();
     for active in [false, true] {
-        let blocked = registry.run_pre_execute(&tool, active);
+        let blocked = registry.run_pre_execute(&mock_handle(), &tool, active);
         assert!(
             blocked.is_none(),
             "白名单 run_python + active={active} 应放行；got: {blocked:?}"
@@ -353,7 +359,7 @@ async fn llm_mixed_sequence_blacklist_then_whitelist_block_then_allow() {
     let tool1 = first_tool_name(&parsed1);
     let registry = middleware::build_default_registry();
     assert!(
-        registry.run_pre_execute(&tool1, false).is_some(),
+        registry.run_pre_execute(&mock_handle(), &tool1, false).is_some(),
         "轮次 1 create_word_revisions 应被阻断"
     );
 
@@ -368,7 +374,7 @@ async fn llm_mixed_sequence_blacklist_then_whitelist_block_then_allow() {
     let parsed2 = parse_sse_bytes(&bytes2);
     let tool2 = first_tool_name(&parsed2);
     assert!(
-        registry.run_pre_execute(&tool2, false).is_none(),
+        registry.run_pre_execute(&mock_handle(), &tool2, false).is_none(),
         "轮次 2 list_tasks 应放行"
     );
 }

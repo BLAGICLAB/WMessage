@@ -896,9 +896,9 @@ pub fn api_start(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandRe
     let emit: Option<Box<dyn Fn(&db::Task) + Send + Sync>> =
         Some(Box::new(move |task: &db::Task| {
             // 复用挂件→主窗口的既有通道：主窗口合并状态并广播给挂件。
-            // `source:"api"` 告诉主窗口：数据已由 API 线程落盘，只合并 UI 状态，不要回写
+            // `source: Api` 告诉主窗口：数据已由 API 线程落盘，只合并 UI 状态，不要回写
             // （回写会用旧事件快照覆盖 API 的新写入，导致归档/软删被回滚的竞态）
-            let payload = serde_json::json!({ "upserts": [task], "deletes": [], "source": "api" });
+            let payload = serde_json::json!({ "upserts": [task], "deletes": [], "source": crate::mutation::MutationOrigin::Api.as_str() });
             let _ = emit_app.emit_to("main", "tasks-updated", &payload);
         }));
     let log_path = Some(db::data_dir(&app).join("api.log"));

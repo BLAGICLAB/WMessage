@@ -120,12 +120,7 @@ export function TodoCardView({
   const pickFile = async () => {
     try {
       const cur = taskFiles(task);
-      // 文件夹绑定独占（老板 2026-08-19：绑定文件夹逻辑不变，单选）：
-      // 已绑文件夹时不得再添加文件，不替换也不叠加
-      if (cur.some((f) => f.isDir)) {
-        window.alert("该任务已绑定文件夹，不能再添加文件");
-        return;
-      }
+      // 文件与文件夹不互斥（老板 2026-08-19）：已绑文件夹也可继续添加文件
       const selected = await open({ multiple: true, directory: false });
       const paths = Array.isArray(selected)
         ? selected
@@ -145,15 +140,19 @@ export function TodoCardView({
 
   const pickFolder = async () => {
     try {
-      // 已绑文件夹时不替换也不叠加（老板 2026-08-19）
-      if (taskFiles(task).some((f) => f.isDir)) {
-        window.alert("该任务已绑定文件夹，不能再添加文件");
+      const cur = taskFiles(task);
+      // 文件夹仍单选（最多一个文件夹）；文件与文件夹不互斥（老板 2026-08-19）
+      if (cur.some((f) => f.isDir)) {
+        window.alert("该任务已绑定文件夹，请先移除再重新绑定");
         return;
       }
       const selected = await open({ directory: true });
-      // 文件夹仍单选独占：替换整个绑定列表
-      if (typeof selected === "string")
-        onUpdate(task.id, filesPatch([{ path: selected, isDir: true }]));
+      // 文件夹追加进绑定列表（不再替换掉已绑文件），去重保序
+      if (typeof selected === "string") {
+        const { files, truncated } = mergeFiles(cur, [{ path: selected, isDir: true }]);
+        if (truncated) window.alert(`每个任务最多绑定 ${MAX_TASK_FILES} 个文件，超出部分已忽略`);
+        if (files.length !== cur.length) onUpdate(task.id, filesPatch(files));
+      }
     } catch (e) {
       handleCommandError(e, "pick folder");
     }
@@ -409,11 +408,11 @@ export function TodoCardView({
         )}
       </div>
 
-      {/* 子任务清单 */}
+      {/* 子任务清单（分隔线分行；长文本单行截断 + hover 显示全文，2026-08-19） */}
       {subtasks.length > 0 && (
-        <div className="mt-2 flex flex-col gap-1">
+        <div className="mt-2 flex flex-col divide-y divide-[var(--edge)]">
           {subtasks.map((s) => (
-            <div key={s.id} className="flex items-center gap-2 group">
+            <div key={s.id} className="flex items-center gap-2 group py-1">
               <input
                 type="checkbox"
                 checked={s.done}
@@ -429,9 +428,10 @@ export function TodoCardView({
                 className="shrink-0 w-3.5 h-3.5 accent-[var(--brand)]"
               />
               <span
-                className={`flex-1 text-xs ${
+                className={`flex-1 min-w-0 truncate text-xs ${
                   s.done ? "text-[var(--t5)] line-through" : "text-[var(--t3)]"
                 }`}
+                title={s.text}
               >
                 {s.text}
               </span>
@@ -533,7 +533,7 @@ export function TodoCardView({
             >
               📋
             </button>
-            {!archived && !trashed && !boundFiles.some((f) => f.isDir) && boundFiles.length < MAX_TASK_FILES && (
+            {!archived && !trashed && boundFiles.length < MAX_TASK_FILES && (
               <button
                 className="nm-btn px-2 py-0.5 text-[11px] leading-none text-[var(--t4)]"
                 title="继续绑定文件"
@@ -541,6 +541,17 @@ export function TodoCardView({
                 onClick={pickFile}
               >
                 ＋
+              </button>
+            )}
+            {/* 文件与文件夹不互斥：已绑文件但未绑文件夹时仍可绑定文件夹 */}
+            {!archived && !trashed && !boundFiles.some((f) => f.isDir) && boundFiles.length < MAX_TASK_FILES && (
+              <button
+                className="nm-btn px-2 py-0.5 text-[11px] leading-none text-[var(--t4)]"
+                title="绑定文件夹"
+                onPointerDown={stop}
+                onClick={pickFolder}
+              >
+                📁
               </button>
             )}
             {!archived && !trashed && (

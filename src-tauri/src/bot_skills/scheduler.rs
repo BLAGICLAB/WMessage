@@ -1,0 +1,793 @@
+use super::parse::parse_skill_steps;
+use super::runtime::{advance_dsl, DslAdvanceAction};
+use super::state::{active_skill_run, clear_terminal_skill_runs, load_skill_meta, now_ms, skill_runs, SkillState};
+use super::vars::{extract_task_id, substitute_vars, CompletedStep};
+use tauri::AppHandle;
+
+/// Phase 5 D: persist DslOutcome to DB after run_skill_scheduler finishes (quiet failure)
+fn persist_outcome_quiet(
+    app: &AppHandle,
+    name: &str,
+    kind: &str,
+    reason: Option<&str>,
+    summary: Option<&str>,
+    rollback_attempted: Option<bool>,
+) {
+    let Ok(conn) = crate::db::open_db(app) else {
+        return;
+    };
+    let outcome = crate::db::PersistedSkillOutcome {
+        skill_name: name.to_string(),
+        kind: kind.to_string(),
+        reason: reason.map(|s| s.to_string()),
+        completed_summary: summary.map(|s| s.to_string()),
+        rollback_attempted,
+        last_at_ms: chrono::Utc::now().timestamp_millis(),
+    };
+    let _ = crate::db::upsert_skill_outcome(&conn, &outcome);
+}
+
+// ─────────────────────── DSL Outcome / Failure + LLM 兜底（Phase 4 第 5 项 2026-08-18 07:20）───────────────────────
+
+/// DSL 调度器成功 / 可恢复 / 暂停 输出（Phase 4 LLM 兜底路径，2026-08-18 07:20）。
+/// - Done：跑完所有 step，返回汇总文本给用户
+/// - AwaitUser：暂停中等用户确认（auto-mode 极少触发，留接口）
+/// - FailedButRecoverable：失败但已完成部分 step，让 LLM 基于 `completed_summary` 决策下一步
+#[derive(Debug, Clone)]
+pub enum DslOutcome {
+    /// 正常完成：summary 文本直接给用户
+    Done(String),
+    /// 暂停中等用户确认
+    AwaitUser,
+    /// 失败但 LLM 可接管：把 `completed_summary` + `reason` 注入 system prompt 决策下一步
+    FailedButRecoverable {
+        reason: String,
+        completed_summary: String,
+        rollback_attempted: bool,
+    },
+}
+
+/// DSL 调度器硬错误（用户主动终止 / 解析失败）—— LLM 不接管，直接报错给用户
+#[derive(Debug, Clone)]
+pub enum DslFailure {
+    Terminated { reason: String },
+}
+
+/// 已完成步骤摘要（Phase 4 LLM 兜底，2026-08-18 07:20）：
+/// 把 ctx 里的步骤产物拼成可读 summary（注入 system prompt 用）。
+/// 每步一行：`Step N (title): <result 前 200 字符 + ...>`
+/// 空 ctx 返回 `(无已完成步骤)`。
+pub fn format_completed_summary(ctx: &[CompletedStep]) -> String {
+    if ctx.is_empty() {
+        return "(无已完成步骤)".into();
+    }
+    let mut out = String::new();
+    for step in ctx {
+        let preview: String = step.result.chars().take(200).collect();
+        let suffix = if step.result.chars().count() > 200 {
+            "..."
+        } else {
+            ""
+        };
+        out.push_str(&format!(
+            "- Step {} ({}): {}{}\n",
+            step.index, step.title, preview, suffix
+        ));
+    }
+    out
+}
+
+/// 强制终止所有活动 Skill（/stop 联动；用户取消时调用）
+/// 泛型 Runtime（P2-24）：cleanup_on_exit 的 mock runtime 测试可直调。
+pub fn skill_terminate_all<R: tauri::Runtime>(app: &tauri::AppHandle<R>, reason: &str) {
+    let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
+    for (name, run) in runs.iter_mut() {
+        if run.state == SkillState::Running || run.state == SkillState::Paused {
+            run.state = SkillState::Terminated;
+            run.end_reason = reason.to_string();
+            crate::bot::audit_log_hook(app, &format!("skill_terminated | name: {name} | {reason}"));
+        }
+    }
+}
+
+/// DSL 调度器入口（Phase 1 2026-08-17 23:15）。仅供 `meta.mode == "auto"` 的 Skill 调用：
+/// 解析 body → 顺序调 `bot::execute_tool` → 失败时跑回滚段。
+///
+/// 行为：
+/// - 每个 step 调一次 `bot::execute_tool`（带 pre-execute 校验）
+/// - 任一 step 失败 → 顺序跑 `## Rollback` 段工具 → 返回 Err
+/// - 全部成功 → 返回汇总文本
+/// - SkillRun 状态机更新由 `execute_tool` 内的 `skill_on_step` / `skill_on_step_post` 自动维护
+pub async fn run_skill_scheduler(app: &AppHandle, name: &str) -> Result<DslOutcome, DslFailure> {
+    // 僵尸终态清理：上轮遗留的 Completed/Failed/Terminated run 会在第 0 步被 advance_dsl
+    // 误判为完成信号直接 break（与主循环同款假死根因）
+    clear_terminal_skill_runs();
+    let (meta, body) =
+        load_skill_meta(app, name).map_err(|e| DslFailure::Terminated { reason: e })?;
+    let (steps, rollback) =
+        parse_skill_steps(&body).map_err(|e| DslFailure::Terminated { reason: e })?;
+    if steps.is_empty() {
+        crate::bot::audit_log_hook(
+            app,
+            &format!("skill_dsl_empty | name: {name} | body_len: {}", body.len()),
+        );
+        persist_outcome_quiet(app, name, "terminated", Some("DSL 解析为空"), None, None);
+        return Err(DslFailure::Terminated {
+            reason: format!("技能「{name}」无可执行步骤（DSL 解析为空）"),
+        });
+    }
+    crate::bot::audit_log_hook(
+        app,
+        &format!("skill_dsl_start | name: {name} | steps: {}", steps.len()),
+    );
+
+    let mut ctx: Vec<CompletedStep> = Vec::new();
+    let mut results: Vec<(usize, String, String)> = Vec::new();
+    for step in &steps {
+        // Phase 4 第 1 项（2026-08-18 06:20）：每 step 前查 advance_dsl 状态机。
+        // 拦截漏停场景：step_check 步数熔断 / skill_on_step_post 工具失败 /
+        // skill_terminate_all 用户 /stop / start_skill 切技能 → SkillRun.state 已被改，
+        // 调度器必须感知。
+        if let Some(run) = active_skill_run() {
+            let ts = now_ms();
+            match advance_dsl(&run, ts) {
+                DslAdvanceAction::Run => {}
+                DslAdvanceAction::Finish => {
+                    crate::bot::audit_log_hook(
+                        app,
+                        &format!(
+                            "skill_dsl_finish_signal | name: {name} | step_before: {}",
+                            step.index
+                        ),
+                    );
+                    break;
+                }
+                DslAdvanceAction::AwaitUser => {
+                    crate::bot::audit_log_hook(
+                        app,
+                        &format!("skill_dsl_await_user | name: {name} | step: {}", step.index),
+                    );
+                    persist_outcome_quiet(
+                        app,
+                        name,
+                        "await_user",
+                        None,
+                        Some(&format_completed_summary(&ctx)),
+                        None,
+                    );
+                    return Ok(DslOutcome::AwaitUser);
+                }
+                DslAdvanceAction::FailWithRollback(reason) => {
+                    let rb_attempted = !rollback.is_empty();
+                    if rb_attempted {
+                        crate::bot::audit_log_hook(
+                            app,
+                            &format!(
+                                "skill_dsl_rollback_start | name: {name} | step: {} | reason: {}",
+                                step.index,
+                                reason.chars().take(120).collect::<String>()
+                            ),
+                        );
+                        // 回滚段也走变量替换（失败前的步骤都已入 ctx）
+                        for rb in &rollback {
+                            let rb_args = substitute_vars(&rb.args_json, &ctx);
+                            let _ = crate::bot::execute_tool(app, &rb.tool_name, &rb_args).await;
+                        }
+                        crate::bot::audit_log_hook(
+                            app,
+                            &format!("skill_dsl_rollback_done | name: {name}"),
+                        );
+                    }
+                    let final_reason = format!("技能「{name}」中止：{reason}");
+                    let summary = format_completed_summary(&ctx);
+                    persist_outcome_quiet(
+                        app,
+                        name,
+                        "failed_recoverable",
+                        Some(&final_reason),
+                        Some(&summary),
+                        Some(rb_attempted),
+                    );
+                    return Ok(DslOutcome::FailedButRecoverable {
+                        reason: final_reason,
+                        completed_summary: summary,
+                        rollback_attempted: rb_attempted,
+                    });
+                }
+                DslAdvanceAction::Terminate(reason) => {
+                    crate::bot::audit_log_hook(
+                        app,
+                        &format!(
+                            "skill_dsl_terminated | name: {name} | step: {} | reason: {}",
+                            step.index, reason
+                        ),
+                    );
+                    let final_reason = format!("技能「{name}」终止：{reason}");
+                    persist_outcome_quiet(app, name, "terminated", Some(&final_reason), None, None);
+                    return Err(DslFailure::Terminated {
+                        reason: final_reason,
+                    });
+                }
+            }
+        }
+        crate::bot::audit_log_hook(
+            app,
+            &format!(
+                "skill_dsl_step | name: {name} | step: {} | tool: {} | ctx_len: {}",
+                step.index,
+                step.tool_name,
+                ctx.len()
+            ),
+        );
+        // Phase 2 接入（2026-08-18）：变量替换 —— 把上一步结果/UUID 拼进 args_json
+        let resolved_args = substitute_vars(&step.args_json, &ctx);
+        if resolved_args != step.args_json {
+            crate::bot::audit_log_hook(
+                app,
+                &format!(
+                    "skill_dsl_var_resolved | name: {name} | step: {} | resolved_args_len: {}",
+                    step.index,
+                    resolved_args.len()
+                ),
+            );
+        }
+        let (text, _refs) = crate::bot::execute_tool(app, &step.tool_name, &resolved_args).await;
+        let failed = text.starts_with("未知工具")
+            || text.starts_with("失败")
+            || text.starts_with("错误")
+            || text.starts_with("error:")
+            || text.starts_with("Error:");
+        if failed {
+            if !rollback.is_empty() {
+                crate::bot::audit_log_hook(
+                    app,
+                    &format!(
+                        "skill_dsl_rollback_start | name: {name} | step: {} | reason: {}",
+                        step.index,
+                        text.chars().take(120).collect::<String>()
+                    ),
+                );
+                // 回滚段也走变量替换（失败前的步骤都已入 ctx）
+                for rb in &rollback {
+                    let rb_args = substitute_vars(&rb.args_json, &ctx);
+                    let _ = crate::bot::execute_tool(app, &rb.tool_name, &rb_args).await;
+                }
+                crate::bot::audit_log_hook(app, &format!("skill_dsl_rollback_done | name: {name}"));
+            }
+            let rb_attempted = !rollback.is_empty();
+            let final_reason = format!(
+                "技能「{name}」Step {} ({}) 失败：{}",
+                step.index, step.title, text
+            );
+            let summary = format_completed_summary(&ctx);
+            persist_outcome_quiet(
+                app,
+                name,
+                "failed_recoverable",
+                Some(&final_reason),
+                Some(&summary),
+                Some(rb_attempted),
+            );
+            return Ok(DslOutcome::FailedButRecoverable {
+                reason: final_reason,
+                completed_summary: summary,
+                rollback_attempted: rb_attempted,
+            });
+        }
+        // 把这一步压进 ctx（变量替换的依赖源）
+        // Phase 4 第 2 项（2026-08-18 06:25）：parsed 用于嵌套路径 `${step1.task.id}`
+        // 纯文本 / Markdown 摘要 parse 失败为 None，substitute_vars 嵌套路径 fallback 保留 `${...}`
+        ctx.push(CompletedStep {
+            index: step.index,
+            title: step.title.clone(),
+            result: text.clone(),
+            id: extract_task_id(&text),
+            parsed: serde_json::from_str(&text).ok(),
+        });
+        results.push((step.index, step.title.clone(), text));
+    }
+
+    let mut summary = format!(
+        "✅ 技能「{}」自动执行完成（{} 步）：\n",
+        meta.name,
+        steps.len()
+    );
+    for (idx, title, result) in &results {
+        summary.push_str(&format!("\n### Step {}: {}\n{}\n", idx, title, result));
+    }
+    crate::bot::audit_log_hook(
+        app,
+        &format!("skill_dsl_done | name: {name} | steps_ok: {}", steps.len()),
+    );
+    persist_outcome_quiet(app, name, "done", None, Some(&summary), None);
+    Ok(DslOutcome::Done(summary))
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bot_skills::{test_run, SkillRun, SkillStep};
+
+    // ── Phase 4 第 3 项：端到端 run_dsl_loop_sync（2026-08-18 06:36） ──
+    //
+    // 同步版核心循环（生产 run_skill_scheduler 是 async + 调 bot::execute_tool）。
+    // 这里剥离 AppHandle 依赖 + 注入 mock executor，让单测能验证：
+    //   1. 嵌套变量替换端到端走通（Phase 4 第 2 项）
+    //   2. advance_dsl 4 个非 Run 分支的端到端拦截（Phase 4 第 1 项）
+    //   3. rollback 在 step 失败时被调用、Terminate 时被跳过
+
+    fn run_dsl_loop_sync(
+        ctx: &mut Vec<CompletedStep>,
+        steps: &[SkillStep],
+        rollback: &[SkillStep],
+        skill_run: Option<&SkillRun>,
+        mut exec: impl FnMut(&str, &str) -> String,
+    ) -> Result<Vec<(usize, String, String)>, String> {
+        let mut results: Vec<(usize, String, String)> = Vec::new();
+        for step in steps {
+            // Phase 4 第 1 项：advance_dsl 状态机检查
+            if let Some(run) = skill_run {
+                match advance_dsl(run, now_ms()) {
+                    DslAdvanceAction::Run => {}
+                    DslAdvanceAction::Finish => break,
+                    DslAdvanceAction::AwaitUser => return Err("__await_user__".into()),
+                    DslAdvanceAction::FailWithRollback(reason) => {
+                        for rb in rollback {
+                            let rb_args = substitute_vars(&rb.args_json, ctx);
+                            exec(&rb.tool_name, &rb_args);
+                        }
+                        return Err(format!("技能中止：{reason}"));
+                    }
+                    DslAdvanceAction::Terminate(reason) => {
+                        return Err(format!("技能终止：{reason}"));
+                    }
+                }
+            }
+            // Phase 2 + Phase 4 第 2 项：嵌套变量替换
+            let resolved_args = substitute_vars(&step.args_json, ctx);
+            let text = exec(&step.tool_name, &resolved_args);
+            // 失败判定（跟生产 run_skill_scheduler 一致）
+            let failed = text.starts_with("未知工具")
+                || text.starts_with("失败")
+                || text.starts_with("错误")
+                || text.starts_with("error:")
+                || text.starts_with("Error:");
+            if failed {
+                for rb in rollback {
+                    let rb_args = substitute_vars(&rb.args_json, ctx);
+                    exec(&rb.tool_name, &rb_args);
+                }
+                return Err(format!(
+                    "Step {} ({}) 失败：{}",
+                    step.index, step.title, text
+                ));
+            }
+            ctx.push(CompletedStep {
+                index: step.index,
+                title: step.title.clone(),
+                result: text.clone(),
+                id: extract_task_id(&text),
+                parsed: serde_json::from_str(&text).ok(),
+            });
+            results.push((step.index, step.title.clone(), text));
+        }
+        Ok(results)
+    }
+
+    #[test]
+    fn e2e_runs_all_steps_with_nested_var_substitution() {
+        // 端到端：2-step DSL 演示 `${step1.task.id}` 嵌套路径替换真的 work
+        // Step 1 list_tasks → JSON 嵌套结构 → push ctx
+        // Step 2 query_single_task 用 `${step1.task.id}` → 期望 args 替换成真实 UUID
+        let body = "## Step 1: list\nlist_tasks({})\n\n## Step 2: query\nquery_single_task({\"id\": \"${step1.task.id}\"})";
+        let (steps, rollback) = parse_skill_steps(body).unwrap();
+        assert_eq!(steps.len(), 2);
+        assert!(rollback.is_empty());
+
+        let calls: std::cell::RefCell<Vec<(String, String)>> = std::cell::RefCell::new(Vec::new());
+        let mut exec = |tool: &str, args: &str| -> String {
+            calls
+                .borrow_mut()
+                .push((tool.to_string(), args.to_string()));
+            match tool {
+                "list_tasks" => {
+                    r#"{"task": {"id": "7c9e6679-7425-40de-944b-e07fc1f90ae7", "title": "买牛奶"}}"#
+                        .to_string()
+                }
+                "query_single_task" => "ok".to_string(),
+                _ => format!("未知工具: {tool}"),
+            }
+        };
+
+        let mut ctx: Vec<CompletedStep> = Vec::new();
+        let result = run_dsl_loop_sync(&mut ctx, &steps, &rollback, None, &mut exec);
+
+        assert!(result.is_ok(), "expected Ok, got: {:?}", result);
+        assert_eq!(ctx.len(), 2);
+
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 2, "expected 2 tool calls");
+        assert_eq!(calls[0].0, "list_tasks");
+        assert_eq!(calls[0].1, "{}");
+        assert_eq!(calls[1].0, "query_single_task");
+        // 关键断言：${step1.task.id} 嵌套路径真的被替换成标准 UUID
+        assert_eq!(
+            calls[1].1,
+            r#"{"id": "7c9e6679-7425-40de-944b-e07fc1f90ae7"}"#
+        );
+
+        // ctx 累积验证：Step 2 的 result 是 query 的返回值，parsed 是 None（不是 JSON）
+        assert_eq!(
+            ctx[0].result,
+            r#"{"task": {"id": "7c9e6679-7425-40de-944b-e07fc1f90ae7", "title": "买牛奶"}}"#
+        );
+        assert!(ctx[0].parsed.is_some(), "Step 1 合法 JSON 应 parse 成功");
+        assert_eq!(
+            ctx[0].id.as_deref(),
+            Some("7c9e6679-7425-40de-944b-e07fc1f90ae7")
+        );
+        assert_eq!(ctx[1].result, "ok");
+        assert!(
+            ctx[1].parsed.is_none(),
+            "Step 2 'ok' 不是 JSON，parsed 应为 None"
+        );
+    }
+
+    #[test]
+    fn e2e_fails_with_rollback_when_step_fails() {
+        // 端到端：Step 2 失败触发 rollback（含嵌套变量替换）
+        // rollback step 用 ${step1.task.id} → 期望拿到 Step 1 创建的 UUID
+        let body = "## Step 1: create\ncreate_task({})\n\n## Step 2: risky\nrisky_tool({\"x\": \"${step1.task.id}\"})\n\n## Rollback\nrollback_tool({\"ref\": \"${step1.task.id}\"})";
+        let (steps, rollback) = parse_skill_steps(body).unwrap();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(rollback.len(), 1);
+
+        let calls: std::cell::RefCell<Vec<(String, String)>> = std::cell::RefCell::new(Vec::new());
+        let mut exec = |tool: &str, args: &str| -> String {
+            calls
+                .borrow_mut()
+                .push((tool.to_string(), args.to_string()));
+            match tool {
+                "create_task" => r#"{"task": {"id": "uuid-step1"}}"#.to_string(),
+                "risky_tool" => "失败：工具异常".to_string(),
+                "rollback_tool" => "rolled back".to_string(),
+                _ => format!("未知工具: {tool}"),
+            }
+        };
+
+        let mut ctx: Vec<CompletedStep> = Vec::new();
+        let result = run_dsl_loop_sync(&mut ctx, &steps, &rollback, None, &mut exec);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("Step 2"), "expected 'Step 2' in error: {err}");
+        assert!(err.contains("失败"), "expected '失败' in error: {err}");
+
+        // 关键验证：Step 1 跑了 + Step 2 跑了 + rollback 跑了（3 次）
+        let calls = calls.borrow();
+        assert_eq!(
+            calls.len(),
+            3,
+            "expected 3 tool calls (step1+step2+rollback)"
+        );
+        assert_eq!(calls[0].0, "create_task");
+        assert_eq!(calls[1].0, "risky_tool");
+        // Step 2 的 args 也走嵌套路径替换（验证 rollback 段、step 段共享 substitute_vars 路径）
+        assert_eq!(calls[1].1, r#"{"x": "uuid-step1"}"#);
+        assert_eq!(calls[2].0, "rollback_tool");
+        // rollback args 也走嵌套路径替换（Phase 2 已实现，e2e 端到端覆盖）
+        assert_eq!(calls[2].1, r#"{"ref": "uuid-step1"}"#);
+    }
+
+    #[test]
+    fn e2e_terminates_skips_rollback() {
+        // 端到端：SkillRun state = Terminated → advance_dsl 返回 Terminate → 跳过 rollback
+        let body = "## Step 1: list\nlist_tasks({})\n\n## Step 2: query\nquery_single_task({})\n\n## Rollback\nrollback({})";
+        let (steps, rollback) = parse_skill_steps(body).unwrap();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(rollback.len(), 1);
+
+        // mock SkillRun：state = Terminated（用户 /stop 触发）
+        let mut run = test_run(8, 180);
+        run.state = SkillState::Terminated;
+        run.end_reason = "用户 /stop".into();
+
+        let calls: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new());
+        let mut exec = |tool: &str, _args: &str| -> String {
+            calls.borrow_mut().push(tool.to_string());
+            "ok".to_string()
+        };
+
+        let mut ctx: Vec<CompletedStep> = Vec::new();
+        let result = run_dsl_loop_sync(&mut ctx, &steps, &rollback, Some(&run), &mut exec);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("终止"), "expected '终止' in error: {err}");
+        assert!(
+            err.contains("用户 /stop"),
+            "expected reason in error: {err}"
+        );
+
+        // 关键验证：Terminate 在 step 1 之前就拦截 → 0 次工具调用 + rollback 跳过
+        let calls = calls.borrow();
+        assert_eq!(
+            calls.len(),
+            0,
+            "expected 0 tool calls (Terminated before any step), got: {:?}",
+            *calls
+        );
+    }
+
+    #[test]
+    fn e2e_pauses_with_await_user_when_paused() {
+        // 端到端：SkillRun state = Paused → advance_dsl 返回 AwaitUser → 返回 __await_user__
+        let body = "## Step 1: list\nlist_tasks({})";
+        let (steps, rollback) = parse_skill_steps(body).unwrap();
+
+        // mock SkillRun：state = Paused（用户确认等待中）
+        let mut run = test_run(8, 180);
+        run.state = SkillState::Paused;
+
+        let calls: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new());
+        let mut exec = |tool: &str, _args: &str| -> String {
+            calls.borrow_mut().push(tool.to_string());
+            "ok".to_string()
+        };
+
+        let mut ctx: Vec<CompletedStep> = Vec::new();
+        let result = run_dsl_loop_sync(&mut ctx, &steps, &rollback, Some(&run), &mut exec);
+
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "__await_user__");
+
+        // 关键验证：Paused 在 step 1 之前就拦截 → 0 次工具调用
+        let calls = calls.borrow();
+        assert_eq!(
+            calls.len(),
+            0,
+            "expected 0 tool calls (Paused before any step), got: {:?}",
+            *calls
+        );
+    }
+
+    // ── Phase 4 第 5 项：format_completed_summary + DslOutcome/DslFailure（2026-08-18 07:20） ──
+
+    #[test]
+    fn format_completed_summary_returns_placeholder_for_empty_ctx() {
+        // 空 ctx → "(无已完成步骤)" 占位
+        let ctx: Vec<CompletedStep> = Vec::new();
+        assert_eq!(format_completed_summary(&ctx), "(无已完成步骤)");
+    }
+
+    #[test]
+    fn format_completed_summary_renders_single_step() {
+        // 单 step → "Step N (title): <result>"
+        let ctx = vec![CompletedStep {
+            index: 1,
+            title: "list-tasks".into(),
+            result: "task list result".into(),
+            id: None,
+            parsed: None,
+        }];
+        let out = format_completed_summary(&ctx);
+        assert!(out.contains("- Step 1 (list-tasks): task list result"));
+    }
+
+    #[test]
+    fn format_completed_summary_renders_multiple_steps() {
+        // 多 step → 每步一行，按 ctx 顺序
+        let ctx = vec![
+            CompletedStep {
+                index: 1,
+                title: "step-a".into(),
+                result: "result-a".into(),
+                id: None,
+                parsed: None,
+            },
+            CompletedStep {
+                index: 2,
+                title: "step-b".into(),
+                result: "result-b".into(),
+                id: None,
+                parsed: None,
+            },
+            CompletedStep {
+                index: 3,
+                title: "step-c".into(),
+                result: "result-c".into(),
+                id: None,
+                parsed: None,
+            },
+        ];
+        let out = format_completed_summary(&ctx);
+        assert!(out.contains("Step 1 (step-a): result-a"));
+        assert!(out.contains("Step 2 (step-b): result-b"));
+        assert!(out.contains("Step 3 (step-c): result-c"));
+        // 顺序：a 在 b 前面，b 在 c 前面
+        let pos_a = out.find("Step 1").unwrap();
+        let pos_b = out.find("Step 2").unwrap();
+        let pos_c = out.find("Step 3").unwrap();
+        assert!(pos_a < pos_b && pos_b < pos_c);
+    }
+
+    #[test]
+    fn format_completed_summary_truncates_long_results() {
+        // 超长 result (>200 字符) → 截断 + "..." 后缀
+        let long_result: String = "x".repeat(500);
+        let ctx = vec![CompletedStep {
+            index: 1,
+            title: "long".into(),
+            result: long_result.clone(),
+            id: None,
+            parsed: None,
+        }];
+        let out = format_completed_summary(&ctx);
+        // 截断后 preview = 200 字符 + "..." = 203 字符（在 - Step 1 (long): 之后）
+        let marker = "- Step 1 (long): ";
+        let start = out.find(marker).unwrap() + marker.len();
+        let after = &out[start..];
+        // preview 部分应当是 200 个 x + "..."
+        let expected_preview: String = std::iter::repeat("x").take(200).collect::<String>() + "...";
+        assert!(
+            after.starts_with(&expected_preview),
+            "expected preview starts with 200x + '...', got first chars: {}",
+            &after[..after.len().min(50)]
+        );
+    }
+
+    #[test]
+    fn dsl_outcome_done_carries_summary_string() {
+        // DslOutcome::Done 携带 summary 字符串（构造 + 取出来一致）
+        let outcome = DslOutcome::Done("summary text".into());
+        match outcome {
+            DslOutcome::Done(s) => assert_eq!(s, "summary text"),
+            _ => panic!("expected Done variant"),
+        }
+    }
+
+    #[test]
+    fn dsl_failure_terminated_carries_reason() {
+        // DslFailure::Terminated 携带 reason（用户主动终止场景）
+        let failure = DslFailure::Terminated {
+            reason: "用户 /stop".into(),
+        };
+        match failure {
+            DslFailure::Terminated { reason } => assert_eq!(reason, "用户 /stop"),
+        }
+    }
+
+    // ── Phase 5 第 1 项：11 个真业务 Skill 端到端 smoke test（2026-08-18 07:30） ──
+
+    /// 通用 mock executor（Phase 5 smoke test）：每个工具返回成功 + 含标准 UUID 让变量替换 / 嵌套路径 work
+    /// - 返回 JSON 字符串时尽量含 UUID 7c9e6679-7425-40de-944b-e07fc1f90ae7（让 `${step1.task.id}` 等嵌套路径能取到值）
+    /// - 不存在的工具返回 "mock ok"（确保所有 Skill 都能跑完不 panic）
+    fn generic_mock_executor(tool: &str, _args: &str) -> String {
+        match tool {
+            "list_tasks" | "search_tasks" => {
+                r#"[{"id": "7c9e6679-7425-40de-944b-e07fc1f90ae7", "title": "mock"}]"#.to_string()
+            }
+            "query_single_task" => {
+                r#"{"id": "7c9e6679-7425-40de-944b-e07fc1f90ae7", "title": "mock", "task": {"id": "7c9e6679-7425-40de-944b-e07fc1f90ae7"}}"#.to_string()
+            }
+            "create_task" | "complete_task" | "edit_task" | "delete_task" | "add_subtask" => {
+                r#"{"id": "7c9e6679-7425-40de-944b-e07fc1f90ae7"}"#.to_string()
+            }
+            "create_word" | "create_excel" | "create_ppt" | "create_pdf" => {
+                r#"{"path": "/tmp/mock-output"}"#.to_string()
+            }
+            "extract_document" => r#"{"text": "mock extracted content"}"#.to_string(),
+            "run_python" => "mock python output".to_string(),
+            "web_search" => {
+                r#"[{"title": "mock result", "url": "https://example.com"}]"#.to_string()
+            }
+            "fetch_url" => r#"{"text": "mock fetched content"}"#.to_string(),
+            "bind_file" => r#"{"bound": true}"#.to_string(),
+            "use_skill" => "mock skill body".to_string(),
+            _ => "mock ok".to_string(),
+        }
+    }
+
+    #[test]
+    fn smoke_all_real_skills_run_dsl_loop_with_mock_executor() {
+        // 端到端 smoke：扫 target/debug/skills/ 下所有 13 个 mock Skill
+        // 每个 Skill 跑 run_dsl_loop_sync + 通用 mock executor
+        // 验证：parse 不 panic + 整链路跑通 + ctx 累积 + 嵌套变量替换
+        let skills_dir =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/debug/skills");
+        if !skills_dir.exists() {
+            // 没建 mock 跳过（防止 dev 模式第一次 cargo test 失败）
+            eprintln!(
+                "跳过：{} 不存在（dev 模式需先写出 mock Skill）",
+                skills_dir.display()
+            );
+            return;
+        }
+
+        let mut skill_count = 0;
+        let mut failed: Vec<String> = Vec::new();
+        let entries = std::fs::read_dir(&skills_dir).expect("read_dir skills");
+        for entry in entries {
+            let entry = entry.expect("entry");
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let skill_md = path.join("SKILL.md");
+            if !skill_md.exists() {
+                continue;
+            }
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+
+            // parse
+            let body = std::fs::read_to_string(&skill_md)
+                .unwrap_or_else(|e| panic!("Skill {name} SKILL.md 读失败: {e}"));
+            // 2026-08-19：interactive 技能（如 minimax-docx）无 DSL Step——LLM 驱动、不进调度器，跳过
+            if crate::bot_skills::parse_meta(&body, &name).mode != "auto" {
+                continue;
+            }
+            let (steps, rollback) = match parse_skill_steps(&body) {
+                Ok(sr) => sr,
+                Err(e) => {
+                    failed.push(format!("{name}: parse failed: {e}"));
+                    continue;
+                }
+            };
+            if steps.is_empty() {
+                failed.push(format!("{name}: steps empty"));
+                continue;
+            }
+
+            // 记录每个 step 的 args 在跑前是否含 ${...}（用于后续验证嵌套变量替换真的替换了）
+            let step_args_with_var: Vec<bool> =
+                steps.iter().map(|s| s.args_json.contains("${")).collect();
+
+            // 跑 run_dsl_loop_sync
+            let mut ctx: Vec<CompletedStep> = Vec::new();
+            let mut exec = generic_mock_executor;
+            let result = run_dsl_loop_sync(&mut ctx, &steps, &rollback, None, &mut exec);
+            if let Err(e) = result {
+                failed.push(format!("{name}: run failed: {e}"));
+                continue;
+            }
+
+            // 验证：ctx 累积（至少跟 step 数一样）
+            if ctx.len() != steps.len() {
+                failed.push(format!(
+                    "{name}: ctx len {} != steps len {}",
+                    ctx.len(),
+                    steps.len()
+                ));
+                continue;
+            }
+
+            // 验证：含 ${...} 的 step args 跑完后应该已经被替换（ctx 累积至少 1 步后续 step 才能拿到）
+            // 这里只 sanity check 跑通即可；嵌套变量替换正确性在 Phase 4 第 2 项单测里覆盖
+            let _ = step_args_with_var;
+
+            skill_count += 1;
+        }
+
+        if !failed.is_empty() {
+            panic!(
+                "{} 个 Skill 端到端跑失败：
+  - {}",
+                failed.len(),
+                failed.join("\n  - ")
+            );
+        }
+
+        // 期望至少 11 个真业务 Skill + 2 样板（task-summary / task-archive-demo / task-summary-v2）
+        // 但 skills_dir 为空时 graceful skip（cargo clean 误删 dev mock / dev 首次未 init）
+        if skill_count == 0 {
+            eprintln!(
+                "smoke 跳过：{} 下未扫到任何 Skill（dev mock 可能被 cargo clean 误删）",
+                skills_dir.display()
+            );
+            return;
+        }
+        eprintln!("端到端 smoke：{} 个 Skill 全部跑通", skill_count);
+    }
+
+}

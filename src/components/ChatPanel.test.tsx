@@ -186,4 +186,87 @@ describe("ChatPanel", () => {
     // 流式错误写入气泡：⚠️ + formatCommandError 提取的 message
     expect(await screen.findByText(/⚠️ API 配额超限/)).toBeInTheDocument();
   });
+
+  it("模型快速切换：🧠 按钮开菜单，点 Kimi K3 → bot_set_config 回写（保留白名单/Tavily）且标签更新", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_sessions_load") return [{ id: "s1", title: "默认会话" }];
+      if (cmd === "bot_history_load") return [];
+      if (cmd === "bot_get_config")
+        return {
+          baseUrl: "https://api.minimaxi.com/v1",
+          model: "MiniMax-M3",
+          hasApiKey: true,
+          bypassLlmOnPreStepHit: true,
+          allowedDirs: ["/tmp/x"],
+          tavilyKey: "tvly-test",
+        };
+      if (cmd === "bot_set_config") return null;
+      return null;
+    });
+    render(<ChatPanel {...defaultProps} />);
+    // 头部按钮显示当前提供商（baseUrl + model 双匹配命中预设 label）
+    const btn = await screen.findByText(/🧠 MiniMax/);
+    await user.click(btn);
+    // 菜单出现，点 Kimi K3
+    await user.click(screen.getByText("Kimi K3"));
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith(
+        "bot_set_config",
+        expect.objectContaining({
+          apiKey: null, // 不动 keychain
+          config: expect.objectContaining({
+            baseUrl: "https://api.moonshot.cn/v1",
+            model: "kimi-k3",
+            allowedDirs: ["/tmp/x"], // 保留既有字段
+            tavilyKey: "tvly-test",
+          }),
+        })
+      );
+    });
+    // 标签更新 + 本地提示
+    expect(await screen.findByText(/🧠 Kimi K3/)).toBeInTheDocument();
+    expect(await screen.findByText(/✅ 已切换到 Kimi K3/)).toBeInTheDocument();
+  });
+
+  it("模型菜单自定义：填 Base URL + 模型名 → 回写自定义配置，头部显示模型名", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_sessions_load") return [{ id: "s1", title: "默认会话" }];
+      if (cmd === "bot_history_load") return [];
+      if (cmd === "bot_get_config")
+        return {
+          baseUrl: "https://api.minimaxi.com/v1",
+          model: "MiniMax-M3",
+          hasApiKey: true,
+        };
+      if (cmd === "bot_set_config") return null;
+      return null;
+    });
+    render(<ChatPanel {...defaultProps} />);
+    await user.click(await screen.findByText(/🧠 MiniMax/));
+    // 展开自定义表单（预填当前配置）
+    await user.click(screen.getByText("✏️ 自定义…"));
+    const baseInput = await screen.findByPlaceholderText(/Base URL/);
+    const modelInput = screen.getByPlaceholderText(/模型名/);
+    await user.clear(baseInput);
+    await user.type(baseInput, "https://api.example.com/v1");
+    await user.clear(modelInput);
+    await user.type(modelInput, "my-model");
+    await user.click(screen.getByText("使用此模型"));
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith(
+        "bot_set_config",
+        expect.objectContaining({
+          apiKey: null,
+          config: expect.objectContaining({
+            baseUrl: "https://api.example.com/v1",
+            model: "my-model",
+          }),
+        })
+      );
+    });
+    // 自定义配置命中不了预设 → 头部显示模型名
+    expect(await screen.findByText(/🧠 my-model/)).toBeInTheDocument();
+  });
 });

@@ -1004,12 +1004,22 @@ elif ext == '.xlsx':
 elif ext == '.pptx':
     from pptx import Presentation
     prs = Presentation(p)
-    for i, slide in enumerate(prs.slides, 1):
-        print(f'=== 第{i}页 ===')
-        for shape in slide.shapes:
-            if shape.has_text_frame:
+    # 2026-08-20 修复：此前只读 text_frame，表格（GraphicFrame）和组合形状内的内容全漏；
+    # walk 递归组合形状（shape_type 6 = GROUP），表格按行输出 单元格 | 分隔
+    def walk(shapes):
+        for shape in shapes:
+            if shape.shape_type == 6:
+                walk(shape.shapes)
+            elif shape.has_table:
+                for row in shape.table.rows:
+                    cells = [c.text.strip() for c in row.cells]
+                    print(' | '.join(cells))
+            elif shape.has_text_frame:
                 t = shape.text_frame.text.strip()
                 if t: print(t)
+    for i, slide in enumerate(prs.slides, 1):
+        print(f'=== 第{i}页 ===')
+        walk(slide.shapes)
 elif ext == '.pdf':
     from pypdf import PdfReader
     r = PdfReader(p)
@@ -1020,13 +1030,15 @@ else:
     print('不支持的格式：' + ext); sys.exit(1)
 "#;
 
-/// 生成 Word：stdin 读 params.json {title, paragraphs: [..], out}
+/// 生成 Word：stdin 读 params.json {title, paragraphs: [..], tables?: [{title?, rows: [[..]]}], out}
+/// tables（2026-08-20）：可选表格列表，按顺序追加在正文段落之后；首行当表头加粗
 pub const MAKE_DOCX_SCRIPT: &str = r#"import json, os
 import docx
 from docx.shared import Pt, Cm
 p = json.load(open('params.json', encoding='utf-8'))
 title = p.get('title', '')
 paras = p.get('paragraphs', [])
+tables = p.get('tables', [])
 out = p['out']
 d = docx.Document()
 # 正文基础样式：宋体 12pt
@@ -1045,6 +1057,25 @@ for para in paras:
         pr = d.add_paragraph(para)
         # 正文首行缩进两字符（12pt × 2 = 24pt ≈ 0.85cm，公文排版规范）
         pr.paragraph_format.first_line_indent = Pt(24)
+for t in tables:
+    rows = t.get('rows', [])
+    if not rows:
+        continue
+    if t.get('title'):
+        tp = d.add_paragraph()
+        tr = tp.add_run(t['title'])
+        tr.font.bold = True
+    tb = d.add_table(rows=len(rows), cols=len(rows[0]))
+    tb.style = 'Table Grid'
+    for i, row in enumerate(rows):
+        for j, cell in enumerate(row):
+            tb.cell(i, j).text = str(cell)
+    # 首行表头加粗
+    for cell in tb.rows[0].cells:
+        for cpara in cell.paragraphs:
+            for run in cpara.runs:
+                run.font.bold = True
+    d.add_paragraph('')
 d.save(out)
 print('已生成：' + out)
 "#;
@@ -1267,7 +1298,18 @@ THEMES = {
     'dark':  dict(bg='1E1E1E', accent='4A90D9', text='F0F0F0', sub='B0B0B0', band='2D2D2D', bandtext='FFFFFF', alt='2D2D2D'),   # 深色通用
     'green': dict(bg='FFFFFF', accent='1E7145', text='2B2B2B', sub='6B6B6B', band='1E7145', bandtext='FFFFFF', alt='F2F6F2'),   # 清新绿
 }
-T = THEMES.get(theme, THEMES['blue'])
+T = THEMES.get(theme, THEMES['blue']).copy()
+# customColors（2026-08-20 老板拍板：骨架固定、皮肤开放）：可选覆盖主题配色，
+# 键 bg/accent/text/sub/band/bandtext/alt，值为 6 位 hex（可带 # 前缀）；非法值忽略保底
+import re as _re
+custom = p.get('customColors') or {}
+if isinstance(custom, dict):
+    for k in ('bg', 'accent', 'text', 'sub', 'band', 'bandtext', 'alt'):
+        v = custom.get(k)
+        if isinstance(v, str):
+            v = v.strip().lstrip('#')
+            if _re.fullmatch(r'[0-9a-fA-F]{6}', v):
+                T[k] = v.upper()
 C = lambda h: RGBColor.from_string(h)
 
 prs = Presentation()
@@ -1582,16 +1624,23 @@ fn file_path_to_string(p: tauri_plugin_dialog::FilePath) -> Option<String> {
 }
 
 /// 生成 Word 到 AI_Gen_Files（不覆盖：同名自动加序号）
+/// tables（2026-08-20）：可选表格列表 [{title?, rows: [[..]]}]，透传给脚本追加在段落之后
 #[tauri::command]
 pub async fn doc_make_word(
     app: AppHandle,
     title: String,
     paragraphs: Vec<String>,
     filename: Option<String>,
+    tables: Option<serde_json::Value>,
 ) -> CommandResult<String> {
     let out = gen_out_path(&app, filename.as_deref(), "docx")?;
-    let input =
-        serde_json::json!({ "title": title, "paragraphs": paragraphs, "out": out }).to_string();
+    let input = serde_json::json!({
+        "title": title,
+        "paragraphs": paragraphs,
+        "tables": tables.unwrap_or(serde_json::json!([])),
+        "out": out,
+    })
+    .to_string();
     let r = run_doc_script(&app, "doc_make_word", MAKE_DOCX_SCRIPT, input).await?;
     if r.exit_code != Some(0) {
         py_audit(
@@ -1690,6 +1739,8 @@ pub async fn doc_make_pdf(
 }
 
 /// 生成 PPT 到 AI_Gen_Files
+/// custom_colors（2026-08-20）：可选 {bg?, accent?, text?, sub?, band?, bandtext?, alt?}（6 位 hex），
+/// 覆盖所选 theme 的对应配色项，脚本侧校验非法值忽略
 #[tauri::command]
 pub async fn doc_make_ppt(
     app: AppHandle,
@@ -1697,6 +1748,7 @@ pub async fn doc_make_ppt(
     slides: Vec<serde_json::Value>,
     filename: Option<String>,
     theme: Option<String>,
+    custom_colors: Option<serde_json::Value>,
 ) -> CommandResult<String> {
     let out = gen_out_path(&app, filename.as_deref(), "pptx")?;
     let theme = theme
@@ -1717,8 +1769,14 @@ pub async fn doc_make_ppt(
             )
         })
         .unwrap_or_else(|| "blue".into());
-    let input = serde_json::json!({ "title": title, "slides": slides, "out": out, "theme": theme })
-        .to_string();
+    let input = serde_json::json!({
+        "title": title,
+        "slides": slides,
+        "out": out,
+        "theme": theme,
+        "customColors": custom_colors.unwrap_or(serde_json::json!({})),
+    })
+    .to_string();
     let r = run_doc_script(&app, "doc_make_ppt", MAKE_PPTX_SCRIPT, input).await?;
     if r.exit_code != Some(0) {
         py_audit(

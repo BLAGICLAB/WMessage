@@ -7,7 +7,7 @@
 //! - 不引入 thiserror 依赖（项目 Cargo.toml 无），用纯 enum + manual Display
 //!
 //! 使用：
-//! ```rust
+//! ```rust,ignore
 //! use crate::error::{CommandError, CommandResult};
 //!
 //! #[tauri::command]

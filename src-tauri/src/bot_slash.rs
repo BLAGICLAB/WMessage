@@ -82,6 +82,11 @@ impl Drop for StopGuard {
 pub fn bot_stop(app: AppHandle) {
     // Skill 调度器联动：强制终止所有活动技能
     crate::bot_skills::skill_terminate_all(&app, "用户停止");
+    // 逐步执行联动：清掉挂起的子任务确认（2026-08-19 exec_steps）
+    let app2 = app.clone();
+    tauri::async_runtime::spawn(async move {
+        crate::exec_steps::clear(&app2, "/stop").await;
+    });
     if let Ok(m) = stop_registry().lock() {
         for (_, (flag, interactive)) in m.iter() {
             if *interactive {

@@ -1,0 +1,701 @@
+use super::parse::SkillMeta;
+use super::state::{load_skill_meta, now_ms, skill_runs, SkillRun, SkillState};
+use crate::audit_event;
+use tauri::AppHandle;
+
+/// 前置预审（Harness 意图预审层）：禁用/黑名单拒绝；超长/非法字段已在 parse_meta 兜底。
+/// 返回 Ok 表示放行启动。
+fn preflight(meta: &SkillMeta) -> Result<(), String> {
+    if !meta.enabled {
+        return Err(format!("技能「{}」已被禁用", meta.name));
+    }
+    // 黑名单意图关键词（与系统提示词安全红线一致）：命中即拒绝启动
+    const BLACKLIST: [&str; 5] = [
+        "全盘遍历",
+        "批量删除",
+        "无确认删除",
+        "遍历文件系统",
+        "清空所有",
+    ];
+    let hay = format!(
+        "{} {}",
+        meta.description.to_lowercase(),
+        meta.intents.join(" ")
+    );
+    if let Some(hit) = BLACKLIST.iter().find(|b| hay.contains(&b.to_lowercase())) {
+        return Err(format!(
+            "技能「{}」意图命中安全黑名单（{hit}），已拒绝启动",
+            meta.name
+        ));
+    }
+    Ok(())
+}
+
+/// 启动 Skill：use_skill 工具调用即启动生命周期（预审 → Running），返回文档 + 运行约束提示。
+pub fn start_skill(app: &AppHandle, name: &str) -> Result<(SkillMeta, String), String> {
+    let (meta, body) = load_skill_meta(app, name)?;
+    preflight(&meta)?;
+    // 预审已通过 → 直接进入 Running（此前停在 Loaded，步骤钩子按 Running/Paused 查找，
+    // 计数/熔断/动作记录全部静默失效 —— 核验发现的 P1）
+    let mut run = SkillRun::new(&meta);
+    run.state = SkillState::Running;
+    let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
+    // 单活动技能策略：新技能启动时，把其他 Running/Paused 技能标 Completed。
+    // 步骤钩子/暂停/确认按「唯一活动技能」定位，多技能同时 Running 会导致
+    // 步骤计数与暂停确认全部记到第一个技能、后续技能被静默忽略（全面审计 P2）。
+    let mut switched: Vec<String> = Vec::new();
+    for (n, r) in runs.iter_mut() {
+        if *n != meta.name && (r.state == SkillState::Running || r.state == SkillState::Paused) {
+            r.state = SkillState::Completed;
+            r.end_reason = "切换到其他技能".into();
+            switched.push(n.clone());
+        }
+    }
+    for n in &switched {
+        crate::bot::audit_log_hook(
+            app,
+            &format!(
+                "skill_completed | name: {n} | 切换技能结束 | steps: {}",
+                runs.get(n).map(|r| r.step).unwrap_or(0)
+            ),
+        );
+    }
+    runs.insert(meta.name.clone(), run);
+    // 审计：skill.start 结构化（F-3 第二步 2026-08-18）
+    audit_event!(
+        app,
+        crate::audit::AuditLevel::Info,
+        "skill.start",
+        "name" => meta.name.clone(),
+        "risk" => meta.risk_level.clone(),
+        "mode" => meta.mode.clone(),
+        "max_steps" => meta.max_steps,
+        "timeout_secs" => meta.timeout_secs,
+        "rollback" => meta.rollback.clone(),
+    );
+    Ok((meta, body))
+}
+
+/// 工具 use_skill：读取技能文档全文返回给模型。
+pub fn tool_use_skill(app: &AppHandle, args: &str) -> (String, Vec<crate::bot::TaskRef>) {
+    let v: serde_json::Value = serde_json::from_str(args).unwrap_or(serde_json::Value::Null);
+    let Some(name) = v["name"].as_str().map(|s| s.trim().to_string()) else {
+        return ("use_skill 缺少 name".into(), Vec::new());
+    };
+    match start_skill(app, &name) {
+        Ok((meta, body)) => {
+            let hint = format!(
+                "【技能文档：{}】\n风险等级 {} · 运行模式 {} · 最多 {} 步 · 超时 {} 秒 · 回滚 {}",
+                meta.name,
+                meta.risk_level,
+                meta.mode,
+                meta.max_steps,
+                meta.timeout_secs,
+                meta.rollback
+            );
+            let mut out = hint + "\n\n" + &body;
+            if meta.mode == "interactive" {
+                out.push_str(
+                    "\n\n（运行约束：本技能为人机协同模式，中高危动作执行前会暂停等待用户确认）",
+                );
+            }
+            (out, Vec::new())
+        }
+        Err(e) => (e, Vec::new()),
+    }
+}
+
+/// 步骤钩子：每次非 use_skill 的工具调用前调用（Harness 七层之外、调度器层）。
+/// 职责：步骤计数、步数/超时熔断、动作记录（回滚清单）。
+/// 返回 Err 表示该 Skill 必须立即终止（模型收到错误后停止后续步骤）。
+/// 步骤检查纯函数（单测入口）：计数、熔断、暂停拒绝、动作记录。不改日志。
+fn step_check(run: &mut SkillRun, tool: &str, args: &str, now: i64) -> Result<(), String> {
+    if run.state == SkillState::Paused {
+        // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
+        return Err("技能已暂停，等待用户确认中；确认通过后才能继续下一步".into());
+    }
+    run.step += 1;
+    // 步数熔断（Skill 独立上限）
+    if run.step > run.max_steps {
+        run.state = SkillState::Failed;
+        run.end_reason = format!("超过最大步数上限（{} 步）", run.max_steps);
+        return Err(format!(
+            "技能「{}」{}，已强制终止",
+            run.name, run.end_reason
+        ));
+    }
+    // 超时熔断
+    let elapsed = (now - run.started_at_ms) / 1000;
+    if elapsed > run.timeout_secs as i64 {
+        run.state = SkillState::Failed;
+        run.end_reason = format!("超时（超过 {} 秒）", run.timeout_secs);
+        return Err(format!(
+            "技能「{}」{}，已强制终止",
+            run.name, run.end_reason
+        ));
+    }
+    // 动作记录（回滚清单来源）：只记有副作用的工具，跳过只读查询
+    const READONLY: [&str; 4] = ["list_tasks", "search_tasks", "use_skill", "web_search"];
+    if !READONLY.contains(&tool) {
+        let brief = truncate_skill_args(args, 120);
+        run.actions.push(format!("{tool} | {brief}"));
+    }
+    Ok(())
+}
+
+pub fn skill_on_step(app: &AppHandle, tool: &str, args: &str) -> Result<(), String> {
+    let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
+    let Some(run) = runs
+        .values_mut()
+        .find(|r| r.state == SkillState::Running || r.state == SkillState::Paused)
+    else {
+        return Ok(()); // 无活动 Skill（模型自由调用工具），不干预
+    };
+    let res = step_check(run, tool, args, now_ms());
+    if let Err(e) = &res {
+        let reason = run.end_reason.clone();
+        crate::bot::audit_log_hook(
+            app,
+            &format!("skill_failed | name: {} | {reason} | {e}", run.name),
+        );
+    }
+    res
+}
+
+/// Post-execute Skill 步骤钩子（洋葱管线「出」钩子，2026-08-17 22:17 第一块落地）
+/// 与 `skill_on_step` 对称：执行工具后调用，记录步骤结果 + 检测失败。
+/// 仅在 Skill 处于 Running 时干预；Paused/Completed 等状态不写动作记录。
+///
+/// 失败判定：级别 ≥ Warn 且文本含「失败/错误/error:/Error:」→ 把 Skill 标 Failed，
+/// 写入 end_reason 让 `skill_finish` 知道不再继续后续步骤。
+pub fn skill_on_step_post(
+    app: &AppHandle,
+    tool: &str,
+    result: &str,
+    dur_ms: u64,
+    level: crate::audit::AuditLevel,
+) {
+    let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
+    let Some(run) = runs.values_mut().find(|r| r.state == SkillState::Running) else {
+        return;
+    };
+    let name = run.name.clone();
+    let is_fail = matches!(
+        level,
+        crate::audit::AuditLevel::Error | crate::audit::AuditLevel::Warn
+    ) && (result.contains("失败")
+        || result.contains("错误")
+        || result.starts_with("error:")
+        || result.starts_with("Error:"));
+    if is_fail {
+        run.state = SkillState::Failed;
+        run.end_reason = format!("工具 {tool} 执行失败");
+        let preview: String = result.chars().take(120).collect();
+        crate::bot::audit_log_hook(
+            app,
+            &format!("skill_step_fail | name: {name} | tool: {tool} | {preview}"),
+        );
+    } else {
+        crate::bot::audit_log_hook(
+            app,
+            &format!("skill_step_ok | name: {name} | tool: {tool} | {dur_ms}ms"),
+        );
+    }
+}
+
+/// 参数摘要（动作记录用）
+fn truncate_skill_args(args: &str, max: usize) -> String {
+    let mut s: String = args.chars().take(max).collect();
+    if args.chars().count() > max {
+        s.push('…');
+    }
+    s.replace('\n', " ")
+}
+
+/// 暂停语义纯函数（单测入口）：把 Running 技能转入暂停等待。
+/// resumable=false → terminal_after_confirm=true（确认通过后技能终止，暂停即终止）。
+fn pause_state(run: &mut SkillRun) {
+    run.state = SkillState::Paused;
+    run.terminal_after_confirm = !run.resumable;
+}
+
+/// 确认结果纯函数（单测入口）：通过 → 恢复 Running 或暂停即终止；拒绝 → Terminated。
+fn confirm_state(run: &mut SkillRun, approved: bool) {
+    if approved {
+        if run.terminal_after_confirm {
+            run.state = SkillState::Terminated;
+            run.end_reason = "暂停即终止（技能不支持断点续跑，resumable=false）".into();
+        } else {
+            run.state = SkillState::Running;
+        }
+    } else {
+        run.state = SkillState::Terminated;
+        run.end_reason = "用户拒绝确认".into();
+    }
+}
+
+/// 高危动作确认开始：活动技能转入 Paused（ask_user_confirm 调用前触发）。
+pub fn skill_mark_paused(app: &AppHandle, tool: &str) {
+    let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(run) = runs.values_mut().find(|r| r.state == SkillState::Running) {
+        pause_state(run);
+        crate::bot::audit_log_hook(
+            app,
+            &format!(
+                "skill_paused | name: {} | at: {tool} | resumable: {}",
+                run.name, run.resumable
+            ),
+        );
+    }
+}
+
+/// 确认结果到达：恢复 Running / 暂停即终止 / 拒绝终止（bot_confirm_response 调用）。
+pub fn skill_confirm_result(app: &AppHandle, approved: bool) {
+    let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(run) = runs.values_mut().find(|r| r.state == SkillState::Paused) {
+        confirm_state(run, approved);
+        let name = run.name.clone();
+        let state = format!("{:?}", run.state);
+        let reason = run.end_reason.clone();
+        crate::bot::audit_log_hook(
+            app,
+            &format!("skill_confirm | name: {name} | approved: {approved} | -> {state} {reason}"),
+        );
+    }
+}
+
+/// 提取 SKILL.md 正文里的「## 回滚」章节（无则空串）
+fn rollback_section(body: &str) -> String {
+    let marker = "## 回滚";
+    let Some(start) = body.find(marker) else {
+        return String::new();
+    };
+    let tail = &body[start + marker.len()..];
+    // 到下一个 ## 标题为止
+    match tail.find("\n## ") {
+        Some(off) => tail[..off].trim().to_string(),
+        None => tail.trim().to_string(),
+    }
+}
+
+/// 收尾钩子：模型循环结束时调用（成功/失败/用户停止）。
+/// 返回回滚建议文本（失败且 rollback=auto 且有动作记录时非空），调用方拼进回复让模型执行逆操作。
+pub fn skill_finish(app: &AppHandle, ok: bool, reason: &str) -> String {
+    let mut rollback_hint = String::new();
+    let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
+    for (name, run) in runs.iter_mut() {
+        if run.state != SkillState::Running && run.state != SkillState::Paused {
+            continue;
+        }
+        if ok {
+            run.state = SkillState::Completed;
+            crate::bot::audit_log_hook(
+                app,
+                &format!("skill_completed | name: {name} | steps: {}", run.step),
+            );
+        } else {
+            run.state = SkillState::Failed;
+            run.end_reason = reason.to_string();
+            let mut log = format!(
+                "skill_failed | name: {name} | {reason} | actions: {}",
+                run.actions.len()
+            );
+            // 回滚建议（务实版）：失败 + 声明可回滚 + 有已执行动作 → 生成建议文本
+            if run.rollback == "auto" && !run.actions.is_empty() {
+                log.push_str(" | rollback_suggested");
+                let actions_text = run
+                    .actions
+                    .iter()
+                    .map(|a| format!("- {a}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let rb_section = rollback_section(
+                    &load_skill_meta(app, name)
+                        .map(|(_, b)| b)
+                        .unwrap_or_default(),
+                );
+                rollback_hint = format!(
+                    "\n\n【技能回滚建议】技能「{name}」执行中断（{reason}），已执行 {n} 个动作：\n{actions_text}\n{}",
+                    if rb_section.is_empty() {
+                        "该技能未提供回滚章节，请向用户说明已执行动作，由用户决定手动补救。".to_string()
+                    } else {
+                        format!("技能文档回滚章节：\n{rb_section}\n请先询问用户是否需要回滚；用户同意后，按回滚章节逐条执行逆操作（每一步同样经过安全校验）。")
+                    },
+                    n = run.actions.len()
+                );
+            }
+            crate::bot::audit_log_hook(app, &log);
+        }
+    }
+    rollback_hint
+}
+
+/// 状态机推进建议（主循环决策输入，2026-08-17 22:26 Block 2 骨架）
+///
+/// 由 `advance_skill()` 根据当前 SkillState 返回，告诉主循环下一步该做什么。
+///
+/// 设计动机：把散落在 step_check / skill_on_step_post / skill_finish 的
+/// 状态推进决策集中到这一处，未来加横切关注点（审批/沙箱/上下文压缩）
+/// 只动 advance_skill，主循环不重构。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AdvanceAction {
+    /// 无活动 Skill 或已终结（Loaded/Completed/Failed/Terminated）→ 主循环进入 LLM 自由调用
+    NoActive,
+    /// 等待用户确认（Paused）→ 主循环跳出当前迭代，等待 bot_confirm_response 唤起
+    AwaitConfirm,
+    /// 正常运行中 → 继续下一轮迭代
+    Continue,
+    /// Skill 成功完成 → 调 skill_finish 收尾
+    Finish,
+    /// Skill 失败 → 调 skill_finish 传错误信息（含 max_steps/超时/工具错误）
+    Fail(String),
+    /// Skill 被终止 → 调 skill_finish 传终止原因（含用户拒绝/强制停止）
+    Terminate(String),
+}
+
+/// 状态机推进决策（主循环每轮迭代开头调用，2026-08-17 22:26 Block 2 骨架）
+///
+/// 纯函数：不写日志、不改全局状态、不改传入的 run，便于单测。
+/// 实时超时检测：即使 step_check 没跑到（长工具执行期间），主循环也能感知超时。
+///
+/// 调用时机（明早接主循环）：
+///   bot_chat 主循环每次 LLM 响应/工具执行后调一次，根据 AdvanceAction 决定：
+///   - Continue → next iteration
+///   - AwaitConfirm → break，等待 bot_confirm_response
+///   - Finish / Fail / Terminate → 调 skill_finish 收尾，break
+///   - NoActive → 继续 LLM 自由调用，下次迭代再问
+pub fn advance_skill(run: &SkillRun, now_ms: i64) -> AdvanceAction {
+    match run.state {
+        SkillState::Loaded => AdvanceAction::NoActive,
+        SkillState::Running => {
+            // 实时超时检测（即使 step_check 没跑到，主循环也能感知）
+            let elapsed = (now_ms - run.started_at_ms) / 1000;
+            if elapsed > run.timeout_secs as i64 {
+                AdvanceAction::Fail(format!("超时（超过 {} 秒）", run.timeout_secs))
+            } else {
+                AdvanceAction::Continue
+            }
+        }
+        SkillState::Paused => AdvanceAction::AwaitConfirm,
+        SkillState::Completed => AdvanceAction::Finish,
+        SkillState::Failed => AdvanceAction::Fail(run.end_reason.clone()),
+        SkillState::Terminated => AdvanceAction::Terminate(run.end_reason.clone()),
+    }
+}
+
+/// DSL 调度器专用决策（Phase 4 第 1 项 2026-08-18 06:20）：
+/// 把 `advance_skill` 的 6 分支映射到 DSL 调度器可执行的 5 种动作。
+///
+/// 动机：原 `run_skill_scheduler` 一次性顺序跑所有 step，不读 SkillRun.state，
+/// 导致 step_check 步数熔断 / skill_on_step_post 工具失败 / skill_terminate_all 用户 /stop
+/// 改 state 后，调度器仍继续跑后续 step（漏停、超时后还跑、用户取消后还跑）。
+/// 现在每 step 前查一次，按状态机决策：
+/// - Run → 正常跑当前 step（Loaded → NoActive / Running 未超时 → Continue）
+/// - Finish → 收尾，跳出循环（Completed）
+/// - AwaitUser → 暂停中，返回 `__await_user__` 让主循环挂起（Paused，auto 模式基本不触发，留接口）
+/// - FailWithRollback(reason) → 跑 rollback 段 + 报错（Failed / Running 超时）
+/// - Terminate(reason) → 不跑 rollback 直接报错（Terminated / 用户主动取消 / 切技能）
+///
+/// 纯函数：不写日志、不改全局状态、不改 run，便于单测。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DslAdvanceAction {
+    /// 正常执行当前 step（Loaded / Running 未超时）
+    Run,
+    /// Skill 已成功完成（Completed）→ 跳出循环，跑汇总
+    Finish,
+    /// Skill 暂停中等用户确认（Paused）→ 返回 `__await_user__` 给主循环挂起
+    AwaitUser,
+    /// Skill 失败（Failed / 步数熔断 / 超时）→ 跑 rollback + 报错
+    FailWithRollback(String),
+    /// Skill 终止（Terminated / 用户 /stop / 切技能）→ 不跑 rollback + 报错
+    Terminate(String),
+}
+
+pub fn advance_dsl(run: &SkillRun, now_ms: i64) -> DslAdvanceAction {
+    match advance_skill(run, now_ms) {
+        AdvanceAction::NoActive | AdvanceAction::Continue => DslAdvanceAction::Run,
+        AdvanceAction::Finish => DslAdvanceAction::Finish,
+        AdvanceAction::AwaitConfirm => DslAdvanceAction::AwaitUser,
+        AdvanceAction::Fail(reason) => DslAdvanceAction::FailWithRollback(reason),
+        AdvanceAction::Terminate(reason) => DslAdvanceAction::Terminate(reason),
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bot_skills::test_run;
+
+    // ── 状态机推进（Block 2 骨架） ──
+
+    #[test]
+    fn advance_loaded_returns_no_active() {
+        let run = test_run(8, 180);
+        // test_run 初始状态就是 Loaded
+        assert_eq!(run.state, SkillState::Loaded);
+        assert_eq!(advance_skill(&run, 1000), AdvanceAction::NoActive);
+    }
+
+    #[test]
+    fn advance_running_no_timeout_continues() {
+        let mut run = test_run(8, 180);
+        run.state = SkillState::Running;
+        // started_at_ms=1000, now=10s 后 11000, timeout=180s → 仍可继续
+        assert_eq!(advance_skill(&run, 11000), AdvanceAction::Continue);
+    }
+
+    #[test]
+    fn advance_running_just_before_timeout_continues() {
+        let mut run = test_run(8, 60);
+        run.state = SkillState::Running;
+        // 恰好 60s 未超时（入 strict > 才 Fail）
+        assert_eq!(
+            advance_skill(&run, 1000 + 60 * 1000),
+            AdvanceAction::Continue
+        );
+    }
+
+    #[test]
+    fn advance_running_timeout_returns_fail() {
+        let mut run = test_run(8, 60);
+        run.state = SkillState::Running;
+        // 启动 61s 后超时 (60s 上限)
+        let action = advance_skill(&run, 1000 + 61 * 1000);
+        match action {
+            AdvanceAction::Fail(reason) => {
+                assert!(reason.contains("超时"), "reason 应含「超时」: {reason}");
+                assert!(reason.contains("60"), "reason 应含阈值 60s: {reason}");
+            }
+            other => panic!("expected Fail, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn advance_paused_returns_await_confirm() {
+        let mut run = test_run(8, 180);
+        run.state = SkillState::Paused;
+        assert_eq!(advance_skill(&run, 1000), AdvanceAction::AwaitConfirm);
+    }
+
+    #[test]
+    fn advance_completed_returns_finish() {
+        let mut run = test_run(8, 180);
+        run.state = SkillState::Completed;
+        assert_eq!(advance_skill(&run, 1000), AdvanceAction::Finish);
+    }
+
+    #[test]
+    fn advance_failed_returns_fail_with_end_reason() {
+        let mut run = test_run(8, 180);
+        run.state = SkillState::Failed;
+        run.end_reason = "超过最大步数上限（8 步）".into();
+        assert_eq!(
+            advance_skill(&run, 1000),
+            AdvanceAction::Fail("超过最大步数上限（8 步）".into())
+        );
+    }
+
+    #[test]
+    fn advance_terminated_returns_terminate_with_end_reason() {
+        let mut run = test_run(8, 180);
+        run.state = SkillState::Terminated;
+        run.end_reason = "用户拒绝确认".into();
+        assert_eq!(
+            advance_skill(&run, 1000),
+            AdvanceAction::Terminate("用户拒绝确认".into())
+        );
+    }
+
+    // ── DSL 调度器决策（Phase 4 第 1 项 2026-08-18 06:20） ──
+
+    #[test]
+    fn advance_dsl_continue_returns_run() {
+        let mut run = test_run(8, 180);
+        run.state = SkillState::Running;
+        // Running 11s（未超 180s 上限）→ 正常执行
+        assert!(matches!(advance_dsl(&run, 11000), DslAdvanceAction::Run));
+    }
+
+    #[test]
+    fn advance_dsl_no_active_loaded_returns_run() {
+        // Loaded 是 start_skill 之前的过渡态，advance_skill 返回 NoActive，
+        // DSL 调度器仍按 Run 处理（不阻断 step 执行）
+        let run = test_run(8, 180);
+        assert_eq!(run.state, SkillState::Loaded);
+        assert!(matches!(advance_dsl(&run, 1000), DslAdvanceAction::Run));
+    }
+
+    #[test]
+    fn advance_dsl_paused_returns_await_user() {
+        let mut run = test_run(8, 180);
+        run.state = SkillState::Paused;
+        assert!(matches!(
+            advance_dsl(&run, 1000),
+            DslAdvanceAction::AwaitUser
+        ));
+    }
+
+    #[test]
+    fn advance_dsl_completed_returns_finish() {
+        let mut run = test_run(8, 180);
+        run.state = SkillState::Completed;
+        assert!(matches!(advance_dsl(&run, 1000), DslAdvanceAction::Finish));
+    }
+
+    #[test]
+    fn advance_dsl_failed_returns_fail_with_rollback() {
+        let mut run = test_run(8, 180);
+        run.state = SkillState::Failed;
+        run.end_reason = "超过最大步数上限（8 步）".into();
+        match advance_dsl(&run, 1000) {
+            DslAdvanceAction::FailWithRollback(reason) => {
+                assert_eq!(reason, "超过最大步数上限（8 步）");
+            }
+            other => panic!("expected FailWithRollback, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn advance_dsl_terminated_returns_terminate_no_rollback() {
+        let mut run = test_run(8, 180);
+        run.state = SkillState::Terminated;
+        run.end_reason = "用户 /stop".into();
+        match advance_dsl(&run, 1000) {
+            DslAdvanceAction::Terminate(reason) => assert_eq!(reason, "用户 /stop"),
+            other => panic!("expected Terminate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn advance_dsl_timeout_returns_fail_with_rollback() {
+        // 端到端：Running + 启动后 61s（60s 上限）→ advance_skill 内部超时检测 → Fail
+        // → advance_dsl 映射成 FailWithRollback（含 reason）
+        let mut run = test_run(8, 60);
+        run.state = SkillState::Running;
+        let action = advance_dsl(&run, 1000 + 61 * 1000);
+        match action {
+            DslAdvanceAction::FailWithRollback(reason) => {
+                assert!(reason.contains("超时"), "reason 应含「超时」: {reason}");
+                assert!(reason.contains("60"), "reason 应含阈值 60s: {reason}");
+            }
+            other => panic!("expected FailWithRollback, got {other:?}"),
+        }
+    }
+
+    // ── 前置预审 ──
+
+    #[test]
+    fn preflight_rejects_disabled() {
+        let mut m = SkillMeta::default();
+        m.name = "x".into();
+        m.enabled = false;
+        assert!(preflight(&m).is_err());
+    }
+
+    #[test]
+    fn preflight_rejects_blacklist_intent() {
+        let mut m = SkillMeta::default();
+        m.name = "x".into();
+        m.description = "批量删除所有任务".into();
+        assert!(preflight(&m).unwrap_err().contains("黑名单"));
+
+        m.description = "全盘遍历文件".into();
+        assert!(preflight(&m).is_err());
+    }
+
+    #[test]
+    fn preflight_passes_normal() {
+        let mut m = SkillMeta::default();
+        m.name = "ok".into();
+        m.description = "汇总今日任务并归档".into();
+        assert!(preflight(&m).is_ok());
+    }
+
+    // ── 步骤循环 / 熔断 ──
+
+    #[test]
+    fn step_check_counts_and_records_actions() {
+        let mut r = test_run(8, 180);
+        r.state = SkillState::Running;
+        assert!(step_check(&mut r, "list_tasks", "{}", 2000).is_ok());
+        assert_eq!(r.step, 1);
+        assert!(r.actions.is_empty()); // 只读不记
+        assert!(step_check(&mut r, "create_task", "{\"title\":\"x\"}", 2000).is_ok());
+        assert_eq!(r.actions.len(), 1); // 有副作用记入
+        assert!(r.actions[0].starts_with("create_task"));
+    }
+
+    #[test]
+    fn step_check_fuses_on_max_steps() {
+        let mut r = test_run(2, 180);
+        r.state = SkillState::Running;
+        assert!(step_check(&mut r, "create_task", "{}", 2000).is_ok());
+        assert!(step_check(&mut r, "edit_task", "{}", 2000).is_ok());
+        let e = step_check(&mut r, "complete_task", "{}", 2000).unwrap_err();
+        assert!(e.contains("超过最大步数上限"));
+        assert_eq!(r.state, SkillState::Failed);
+    }
+
+    #[test]
+    fn step_check_fuses_on_timeout() {
+        let mut r = test_run(8, 60);
+        r.state = SkillState::Running;
+        // 已过 61 秒
+        let e = step_check(&mut r, "list_tasks", "{}", 1000 + 61 * 1000).unwrap_err();
+        assert!(e.contains("超时"));
+        assert_eq!(r.state, SkillState::Failed);
+    }
+
+    #[test]
+    fn step_check_rejects_when_paused() {
+        let mut r = test_run(8, 180);
+        r.state = SkillState::Paused;
+        assert!(step_check(&mut r, "list_tasks", "{}", 2000).is_err());
+        assert_eq!(r.step, 0); // 暂停态不计数
+    }
+
+    #[test]
+    fn pause_state_resumable_flows() {
+        // resumable=true：暂停后可恢复
+        let mut r = test_run(8, 180);
+        r.state = SkillState::Running;
+        r.resumable = true;
+        pause_state(&mut r);
+        assert_eq!(r.state, SkillState::Paused);
+        assert!(!r.terminal_after_confirm);
+        confirm_state(&mut r, true);
+        assert_eq!(r.state, SkillState::Running); // 确认通过恢复
+                                                  // 再次暂停后拒绝
+        pause_state(&mut r);
+        confirm_state(&mut r, false);
+        assert_eq!(r.state, SkillState::Terminated);
+        assert_eq!(r.end_reason, "用户拒绝确认");
+    }
+
+    #[test]
+    fn pause_state_non_resumable_terminates_after_confirm() {
+        // resumable=false：暂停即终止——确认通过后技能终止
+        let mut r = test_run(8, 180);
+        r.state = SkillState::Running;
+        r.resumable = false;
+        pause_state(&mut r);
+        assert_eq!(r.state, SkillState::Paused);
+        assert!(r.terminal_after_confirm);
+        confirm_state(&mut r, true);
+        assert_eq!(r.state, SkillState::Terminated);
+        assert!(r.end_reason.contains("resumable=false"));
+    }
+
+    #[test]
+    fn rollback_section_extracted() {
+        let body = "# 文档\n## 步骤\n1. 干活\n## 回滚\n1. 撤销 A\n2. 恢复 B\n## 其他\n尾巴";
+        let rb = rollback_section(body);
+        assert!(rb.contains("撤销 A"));
+        assert!(rb.contains("恢复 B"));
+        assert!(!rb.contains("尾巴")); // 到下一个 ## 为止
+
+        assert_eq!(rollback_section("没有回滚章节"), "");
+    }
+
+}

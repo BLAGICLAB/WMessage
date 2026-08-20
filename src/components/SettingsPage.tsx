@@ -4,6 +4,7 @@ import { emit } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { handleCommandError, formatCommandError } from "../lib/errorHandler";
+import { PROVIDER_PRESETS } from "../lib/providerPresets";
 import type { ThemeSetting } from "../theme";
 import { MigrationPanel } from "./MigrationPanel";
 import { setProfileName, setProfileAvatar, removeProfileAvatar } from "../profile";
@@ -328,6 +329,12 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     model: "",
     hasApiKey: false,
     bypassLlmOnPreStepHit: true, // F-1 [P0] pre-step 路由外层是否跳过主 LLM；老配置默认 true
+    // 本地文件工具白名单目录（textarea 一行一个；空 = 后端内置默认 桌面/下载/文档+绑定文件夹）
+    allowedDirs: "",
+    // Tavily 搜索 API Key（可选；配了 web_search 走 Tavily，失败回退 Bing+百度抓取）
+    tavilyKey: "",
+    // run_python 默认超时秒数（空 = 60s 默认；模型 timeoutSecs 参数优先；硬钳 300s）
+    pythonTimeoutSecs: "",
   });
   const [keyInput, setKeyInput] = useState("");
   const [configBusy, setConfigBusy] = useState(false);
@@ -359,6 +366,9 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         model: string;
         hasApiKey: boolean;
         bypassLlmOnPreStepHit?: boolean;
+        allowedDirs?: string[];
+        tavilyKey?: string;
+        pythonTimeoutSecs?: number | null;
       }>(
         "bot_get_config"
       );
@@ -368,6 +378,9 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         hasApiKey: !!c.hasApiKey,
         // 老后端版本（没返 bypass 字段）默认 true，避免意外走 LEGACY 路径
         bypassLlmOnPreStepHit: c.bypassLlmOnPreStepHit ?? true,
+        allowedDirs: (c.allowedDirs ?? []).join("\n"),
+        tavilyKey: c.tavilyKey ?? "",
+        pythonTimeoutSecs: c.pythonTimeoutSecs != null ? String(c.pythonTimeoutSecs) : "",
       });
     } catch (e) {
       handleCommandError(e, "bot_get_config", { silent: true });
@@ -466,12 +479,26 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
           baseUrl: config.baseUrl,
           model: config.model,
           bypassLlmOnPreStepHit: config.bypassLlmOnPreStepHit,
+          // textarea 一行一个路径；空行/空白剔除；全空 = 后端内置默认白名单
+          allowedDirs: config.allowedDirs
+            .split("\n")
+            .map((s) => s.trim())
+            .filter((s) => s.length > 0),
+          // 空串视为未配置（后端 Option 语义）
+          tavilyKey: config.tavilyKey.trim() ? config.tavilyKey.trim() : null,
+          // 空 = 60s 默认；非法输入按未配置处理（后端 resolve_timeout 硬钳 300s）
+          pythonTimeoutSecs: (() => {
+            const n = parseInt(config.pythonTimeoutSecs.trim(), 10);
+            return Number.isFinite(n) && n > 0 ? n : null;
+          })(),
         },
         // 输入框非空才写凭据存储；留空保持原 key 不变
         apiKey: keyInput.trim() ? keyInput.trim() : null,
       });
       setKeyInput("");
       await loadConfig();
+      // 广播给挂件聊天区：头部 🧠 模型标签同步刷新
+      emit("bot-config-changed", null).catch(() => {});
       setConfigSaved(true);
       setTimeout(() => setConfigSaved(false), 1500);
     } catch (e) {
@@ -727,6 +754,23 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
           </button>
         </div>
 
+        {/* Python 默认超时（2026-08-20：pandas 大计算 60s 偏紧；模型可用 timeoutSecs 参数临时调） */}
+        <div className="mt-3 flex items-center justify-between gap-4">
+          <div className="min-w-0">
+            <p className="text-xs font-medium text-[var(--t4)]">Python 默认超时（秒）</p>
+            <p className="mt-1 text-[11px] text-[var(--t5)]">
+              留空 = 60 秒；大计算可调大，上限 300 秒（超出自动钳制）
+            </p>
+          </div>
+          <input
+            value={config.pythonTimeoutSecs}
+            onChange={(e) => setConfig((c) => ({ ...c, pythonTimeoutSecs: e.target.value }))}
+            placeholder="60"
+            inputMode="numeric"
+            className="nm-inset shrink-0 w-24 rounded-xl px-3 py-1.5 text-xs text-[var(--t3)] outline-none text-right"
+          />
+        </div>
+
         {/* 机器人审计日志查看 */}
         <div className="mt-3 flex items-center justify-between gap-4">
           <div className="min-w-0">
@@ -748,6 +792,28 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         {botEnabled && (
           <div className="mt-4 border-t border-[var(--edge)] pt-4 space-y-3">
             <p className="text-xs font-medium text-[var(--t4)]">大模型 API 配置（OpenAI 兼容）</p>
+            {/* 提供商预设（Phase 3.3）：点击自动填 Base URL + 推荐模型，当前值命中的预设高亮 */}
+            <div className="space-y-1">
+              <p className="text-[10px] text-[var(--t5)]">提供商预设</p>
+              <div className="flex flex-wrap gap-2">
+                {PROVIDER_PRESETS.map((p) => {
+                  const active =
+                    config.baseUrl.trim() === p.baseUrl && config.model.trim() === p.model;
+                  return (
+                    <button
+                      key={p.label}
+                      onClick={() => setConfig((c) => ({ ...c, baseUrl: p.baseUrl, model: p.model }))}
+                      className={`px-3 py-1.5 text-xs rounded-xl ${active ? "nm-inset text-[var(--t1)]" : "nm-outset text-[var(--t3)]"}`}
+                    >
+                      {p.label}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="text-[10px] text-[var(--t6)] leading-snug">
+                点击自动填充 Base URL 和推荐模型，仍可手动修改；切换提供商记得换对应的 API Key。
+              </p>
+            </div>
             <div className="space-y-1">
               <p className="text-[10px] text-[var(--t5)]">Base URL</p>
               <input
@@ -782,9 +848,37 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
               <input
                 value={config.model}
                 onChange={(e) => setConfig((c) => ({ ...c, model: e.target.value }))}
-                placeholder="deepseek-chat"
+                placeholder="deepseek-v4-flash"
                 className="nm-inset w-full rounded-xl px-3 py-2 text-xs text-[var(--t3)] outline-none"
               />
+            </div>
+            {/* 本地文件工具白名单（read_text_file/grep_files/list_files，2026-08-19 Phase 1） */}
+            <div className="space-y-1">
+              <p className="text-[10px] text-[var(--t5)]">文件工具白名单目录（一行一个绝对路径）</p>
+              <textarea
+                value={config.allowedDirs}
+                onChange={(e) => setConfig((c) => ({ ...c, allowedDirs: e.target.value }))}
+                placeholder={"留空 = 默认：~/Desktop、~/Downloads、~/Documents + 任务卡绑定文件夹"}
+                rows={3}
+                className="nm-inset w-full rounded-xl px-3 py-2 text-xs text-[var(--t3)] outline-none resize-y"
+              />
+              <p className="text-[10px] text-[var(--t6)] leading-snug">
+                机器人读文件/搜文件/列目录只允许访问这些目录；白名单外一律拒绝并记审计。
+              </p>
+            </div>
+            {/* Tavily 搜索 API（可选，2026-08-19 Phase 2） */}
+            <div className="space-y-1">
+              <p className="text-[10px] text-[var(--t5)]">Tavily 搜索 API Key（可选）</p>
+              <input
+                type="password"
+                value={config.tavilyKey}
+                onChange={(e) => setConfig((c) => ({ ...c, tavilyKey: e.target.value }))}
+                placeholder="tvly-…（留空 = Bing+百度抓取）"
+                className="nm-inset w-full rounded-xl px-3 py-2 text-xs text-[var(--t3)] outline-none"
+              />
+              <p className="text-[10px] text-[var(--t6)] leading-snug">
+                配置后 web_search 走 Tavily（结果质量更好），失败自动回退现有抓取。
+              </p>
             </div>
             {/* F-1 [P0 release blocker] bypass_llm_on_pre_step_hit Toggle */}
             <div className="space-y-1">

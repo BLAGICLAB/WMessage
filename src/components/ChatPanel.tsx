@@ -5,19 +5,18 @@ import { listen, emit } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { focusMainWindow } from "../focus";
 import { handleCommandError, formatCommandError } from "../lib/errorHandler";
+import { PROVIDER_PRESETS, matchPreset, type ProviderPreset } from "../lib/providerPresets";
 import type { Task } from "../types";
 import { basename } from "../format";
+import { imageExtSet } from "../lib/consts";
 import { MarkdownText } from "./MarkdownText";
 
-/** 与后端 src-tauri/src/bot_chat.rs::IMAGE_EXTS 保持同步：
- *  后端 attach_images 按此列表判断是否把路径转 base64 image_url。
- *  改一处务必同步另一处（前端图标识别靠它）。 */
-const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "webp", "gif", "bmp"]);
-
-/** 路径后缀是否图片类型（大小写不敏感）。无后缀或未知后缀按文件处理。 */
+/** 路径后缀是否图片类型（大小写不敏感）。无后缀或未知后缀按文件处理。
+ *  扩展名清单由后端 consts::app_consts 下发（真相在 bot_chat.rs::IMAGE_EXTS，
+ *  后端 attach_images 按同一列表判断是否转 base64 image_url）。 */
 function isImagePath(p: string): boolean {
   const m = p.toLowerCase().match(/\.([a-z0-9]+)$/);
-  return m ? IMAGE_EXTS.has(m[1]) : false;
+  return m ? imageExtSet().has(m[1]) : false;
 }
 
 /** execute-task 事件去重（模块级，跨组件实例/HMR 泄漏监听器共享）：
@@ -215,6 +214,14 @@ export function ChatPanel({
   } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  /** 模型切换菜单（头部 🧠 按钮）：label 显示当前提供商/模型 */
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const [modelLabel, setModelLabel] = useState("…");
+  const modelMenuRef = useRef<HTMLDivElement>(null);
+  /** 菜单内「自定义…」内联表单：自由填 Base URL + 模型名 */
+  const [customOpen, setCustomOpen] = useState(false);
+  const [customBaseUrl, setCustomBaseUrl] = useState("");
+  const [customModel, setCustomModel] = useState("");
   /** 流式过程中的装饰（思考/工具行/Skill 失败），bot_chat 完成后并入最终消息 */
   const streamingMeta = useRef<{
     thinking?: string;
@@ -333,6 +340,77 @@ function extractFilePaths(content: string): string[] {
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
   }, [sessionMenuOpen]);
+
+  // 挂载：读当前模型配置，头部 🧠 按钮显示当前提供商（自定义地址显示模型名）；
+  // 设置页保存配置后广播 bot-config-changed，这里同步刷新
+  useEffect(() => {
+    const reload = () =>
+      invoke<{ baseUrl?: string; model?: string }>("bot_get_config")
+        .then((c) =>
+          setModelLabel(
+            matchPreset(c.baseUrl ?? "", c.model ?? "")?.label ?? (c.model || "未配置")
+          )
+        )
+        .catch(() => setModelLabel("未配置"));
+    reload();
+    const un = listen("bot-config-changed", reload);
+    return () => {
+      un.then((f) => f());
+    };
+  }, []);
+
+  // 点击模型菜单外关闭
+  useEffect(() => {
+    if (!modelMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (!modelMenuRef.current?.contains(e.target as Node)) setModelMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [modelMenuOpen]);
+
+  /** 回写模型配置：整体写回（保留白名单/Tavily 等字段），apiKey 传 null 保持 keychain 现有 key */
+  const applyModelConfig = async (baseUrl: string, model: string, label: string) => {
+    setModelMenuOpen(false);
+    setCustomOpen(false);
+    try {
+      const c = await invoke<{
+        bypassLlmOnPreStepHit?: boolean;
+        allowedDirs?: string[];
+        tavilyKey?: string;
+        pythonTimeoutSecs?: number | null;
+      }>("bot_get_config");
+      await invoke("bot_set_config", {
+        config: {
+          baseUrl,
+          model,
+          bypassLlmOnPreStepHit: c.bypassLlmOnPreStepHit ?? true,
+          allowedDirs: c.allowedDirs ?? [],
+          tavilyKey: c.tavilyKey ?? null,
+          pythonTimeoutSecs: c.pythonTimeoutSecs ?? null,
+        },
+        apiKey: null,
+      });
+      setModelLabel(label);
+      addHint(`✅ 已切换到 ${label}（${model}）`);
+    } catch (e) {
+      handleCommandError(e, "bot_set_config", { silent: true });
+      addHint(`⚠️ 切换模型失败：${formatCommandError(e)}`);
+    }
+  };
+
+  const switchModel = (p: ProviderPreset) => applyModelConfig(p.baseUrl, p.model, p.label);
+
+  /** 自定义模型：菜单内联表单提交（baseUrl/model 必填） */
+  const applyCustomModel = () => {
+    const b = customBaseUrl.trim();
+    const m = customModel.trim();
+    if (!b || !m) {
+      addHint("⚠️ 自定义模型需要填写 Base URL 和模型名");
+      return;
+    }
+    applyModelConfig(b, m, m);
+  };
 
   // 流式增量：追加到最后一条 streaming 中的助手消息
   useEffect(() => {
@@ -880,6 +958,81 @@ function extractFilePaths(content: string): string[] {
           )}
         </div>
         <div className="flex items-center gap-1 shrink-0">
+          {/* 模型快速切换（不用进设置页）；跨提供商切换后需在设置页更新对应 API Key */}
+          <div className="relative shrink-0" ref={modelMenuRef}>
+            <button
+              className="px-2 py-0.5 text-[10px] nm-outset text-[var(--t5)] hover:text-[var(--t3)] max-w-[110px] truncate"
+              title={`切换模型（当前：${modelLabel}）`}
+              onClick={() => setModelMenuOpen((v) => !v)}
+            >
+              🧠 {modelLabel}
+            </button>
+            {modelMenuOpen && (
+              <div className="absolute right-0 top-full mt-1 w-52 nm-card p-1 rounded-xl z-50">
+                {PROVIDER_PRESETS.map((p) => (
+                  <button
+                    key={p.label}
+                    className={`w-full text-left px-2 py-1 rounded-lg text-xs flex items-center justify-between gap-1 ${
+                      modelLabel === p.label
+                        ? "nm-inset text-[var(--t1)] font-medium"
+                        : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
+                    }`}
+                    onClick={() => switchModel(p)}
+                  >
+                    <span>{p.label}</span>
+                    <span className="text-[9px] text-[var(--t5)] truncate">{p.model}</span>
+                  </button>
+                ))}
+                {/* 自定义：自由填 Base URL + 模型名（任何 OpenAI 兼容端点） */}
+                <button
+                  className={`w-full text-left px-2 py-1 rounded-lg text-xs ${
+                    customOpen
+                      ? "nm-inset text-[var(--t1)] font-medium"
+                      : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
+                  }`}
+                  onClick={() => {
+                    if (!customOpen) {
+                      // 展开时预填当前配置，方便在原基础上改
+                      invoke<{ baseUrl?: string; model?: string }>("bot_get_config")
+                        .then((c) => {
+                          setCustomBaseUrl(c.baseUrl ?? "");
+                          setCustomModel(c.model ?? "");
+                        })
+                        .catch(() => {});
+                    }
+                    setCustomOpen((v) => !v);
+                  }}
+                >
+                  ✏️ 自定义…
+                </button>
+                {customOpen && (
+                  <div className="px-1.5 py-1 space-y-1">
+                    <input
+                      value={customBaseUrl}
+                      onChange={(e) => setCustomBaseUrl(e.target.value)}
+                      placeholder="Base URL，如 https://api.example.com/v1"
+                      className="nm-inset w-full rounded-lg px-2 py-1 text-[10px] text-[var(--t3)] outline-none"
+                    />
+                    <input
+                      value={customModel}
+                      onChange={(e) => setCustomModel(e.target.value)}
+                      placeholder="模型名，如 my-model"
+                      className="nm-inset w-full rounded-lg px-2 py-1 text-[10px] text-[var(--t3)] outline-none"
+                    />
+                    <button
+                      className="nm-btn w-full px-2 py-1 text-[10px] text-[var(--t2)]"
+                      onClick={applyCustomModel}
+                    >
+                      使用此模型
+                    </button>
+                  </div>
+                )}
+                <p className="px-2 py-1 text-[9px] leading-snug text-[var(--t6)]">
+                  跨提供商切换后，需到设置页更新对应的 API Key
+                </p>
+              </div>
+            )}
+          </div>
           <button
             className={`px-2 py-0.5 text-[10px] ${
               selecting

@@ -57,15 +57,31 @@ pub struct BotConfig {
     /// false = LEGACY 旧链路（强制 pre_routed_skill = None，让 LLM 自由选 Skill）。
     /// 默认 true，老 bot-config.json 自动兼容（struct 级 #[serde(default)] + Default::default()）。
     pub bypass_llm_on_pre_step_hit: bool,
+    /// 本地文件工具白名单目录（2026-08-19 Phase 1）：read_text_file/grep_files/list_files
+    /// 只允许访问这些目录内路径。空 = 用内置默认（~/Desktop ~/Downloads ~/Documents + 任务卡绑定文件夹）；
+    /// 非空 = 用户列表整体替换默认。
+    pub allowed_dirs: Vec<String>,
+    /// Tavily 搜索 API Key（2026-08-19 Phase 2，可选）：配置后 web_search 走 Tavily，
+    /// 失败回退 Bing+百度抓取。明文存本机配置文件（低风险搜索 key，区别于 LLM key 走 keyring）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tavily_key: Option<String>,
+    /// run_python 默认超时秒数（2026-08-20，可选）：None = 60s；工具参数 timeoutSecs 优先于此；
+    /// 硬钳上限 300s（bot_py::resolve_timeout）。大计算（pandas 等）可调大。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub python_timeout_secs: Option<u64>,
 }
 
 impl Default for BotConfig {
     fn default() -> Self {
         Self {
             base_url: "https://api.deepseek.com/v1".into(),
-            model: "deepseek-chat".into(),
+            // 2026-08-20：deepseek-chat 已被官方废弃（2026-07-24 移除），默认改 V4 Flash
+            model: "deepseek-v4-flash".into(),
             api_key: None,
             bypass_llm_on_pre_step_hit: true, // 默认开启新行为
+            allowed_dirs: Vec::new(),         // 空 = 内置默认白名单
+            tavily_key: None,                 // 未配置 = 双引擎抓取
+            python_timeout_secs: None,        // 未配置 = 60s 默认
         }
     }
 }
@@ -340,6 +356,12 @@ pub struct BotConfigView {
     /// F-1 [P0 release blocker] pre-step 命中 Skill 时是否跳过外层主 LLM。
     /// 前端设置页 Toggle 直接透传到 bot-config.json。
     pub bypass_llm_on_pre_step_hit: bool,
+    /// 本地文件工具白名单目录（原样透传；空 = 后端用内置默认）
+    pub allowed_dirs: Vec<String>,
+    /// Tavily key 原样透传给设置页（本机配置文件，低风险）
+    pub tavily_key: String,
+    /// run_python 默认超时秒数（None = 60s 默认；设置页可改，硬钳 300s）
+    pub python_timeout_secs: Option<u64>,
 }
 
 /// 旧版本迁移：bot-config.json 里有明文 key → 迁入系统凭据存储并清掉文件里的明文。
@@ -369,16 +391,23 @@ pub fn migrate_legacy_key(app: &AppHandle) -> Result<(), String> {
     std::fs::write(&p, raw).map_err(|e| e.to_string())
 }
 
+/// 读 bot-config.json（不存在/解析失败回默认）。内部共用（bot_fs 白名单等）
+pub(crate) fn load_config(app: &AppHandle) -> BotConfig {
+    let p = config_path(app);
+    if p.exists() {
+        if let Ok(raw) = std::fs::read_to_string(&p) {
+            if let Ok(cfg) = serde_json::from_str::<BotConfig>(&raw) {
+                return cfg;
+            }
+        }
+    }
+    BotConfig::default()
+}
+
 #[tauri::command]
 pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
     let _ = migrate_legacy_key(&app); // 兜底：设置页读配置时也确保无明文残留
-    let p = config_path(&app);
-    let cfg: BotConfig = if p.exists() {
-        let raw = std::fs::read_to_string(&p).map_err(|e| e.to_string())?;
-        serde_json::from_str(&raw).map_err(|e| e.to_string())?
-    } else {
-        BotConfig::default()
-    };
+    let cfg = load_config(&app);
 
     // F1：keyring 真实故障（钥匙串锁定/权限拒绝）不再吞成「未配置」，
     // 结构化 KeyringError 透传给前端，设置页可提示用户检查 keychain
@@ -388,6 +417,9 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
         model: cfg.model,
         has_api_key,
         bypass_llm_on_pre_step_hit: cfg.bypass_llm_on_pre_step_hit,
+        allowed_dirs: cfg.allowed_dirs,
+        tavily_key: cfg.tavily_key.unwrap_or_default(),
+        python_timeout_secs: cfg.python_timeout_secs,
     })
 }
 
@@ -622,6 +654,10 @@ pub async fn execute_tool_with_stop(
         "edit_task" => tool_edit_task(app, args).await,
         "add_subtask" => tool_add_subtask(app, args).await,
         "toggle_subtask" => tool_toggle_subtask(app, args).await,
+        "remove_subtask" => tool_remove_subtask(app, args).await,
+        "read_text_file" => crate::bot_fs::tool_read_text_file(app, args).await,
+        "grep_files" => crate::bot_fs::tool_grep_files(app, args).await,
+        "list_files" => crate::bot_fs::tool_list_files(app, args).await,
         "bind_file" => tool_bind_file(app, args).await,
         "link_file_to_task" => tool_link_file_to_task(app, args).await,
         "search_tasks" => tool_search_tasks(app, args).await,
@@ -634,6 +670,9 @@ pub async fn execute_tool_with_stop(
         "run_python" => tool_run_python(app, args, stop).await,
         "web_search" => tool_web_search(app, args).await,
         "fetch_url" => tool_fetch_url(app, args).await,
+        "get_current_time" => tool_get_current_time(),
+        "remember_fact" => tool_remember_fact(app, args),
+        "recall_facts" => tool_recall_facts(app),
         "use_skill" => tool_use_skill(app, args),
         other => (format!("未知工具：{other}"), Vec::new()),
     };
@@ -665,8 +704,133 @@ pub async fn execute_tool_with_stop(
     (text, refs)
 }
 
-fn parse_args(args: &str) -> serde_json::Value {
+pub(crate) fn parse_args(args: &str) -> serde_json::Value {
     serde_json::from_str(args).unwrap_or(serde_json::Value::Null)
+}
+
+// ───────────────────────── Phase 4：时间 + 长期记忆工具（2026-08-20） ─────────────────────────
+
+/// get_current_time：返回本地日期时间+星期（模型做「今天/明天/周几」判断的锚点，禁止猜日期）
+fn tool_get_current_time() -> (String, Vec<crate::bot_chat::TaskRef>) {
+    let now = chrono::Local::now();
+    let week = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+        [chrono::Datelike::weekday(&now).num_days_from_monday() as usize];
+    (
+        format!("现在：{} {week}", now.format("%Y-%m-%d %H:%M:%S")),
+        Vec::new(),
+    )
+}
+
+/// 长期记忆条数上限（超出拒绝新 key，防无限膨胀）
+const MAX_FACTS: usize = 200;
+
+/// remember_fact 入参校验（纯函数）：key 必填 ≤50 字，value ≤500 字（空串 = 删除语义，合法）
+fn validate_fact_kv(key: &str, value: &str) -> Result<(), String> {
+    if key.is_empty() {
+        return Err("失败：key 不能为空".into());
+    }
+    if key.chars().count() > 50 {
+        return Err("失败：key 太长（≤50 字）".into());
+    }
+    if value.chars().count() > 500 {
+        return Err("失败：value 太长（≤500 字）".into());
+    }
+    Ok(())
+}
+
+/// upsert 一条记忆（同 key 覆盖不占新名额；新 key 超 MAX_FACTS 拒绝）。抽离 Connection 便于内存库单测。
+fn fact_upsert(
+    conn: &rusqlite::Connection,
+    key: &str,
+    value: &str,
+    now: i64,
+) -> Result<String, String> {
+    let exists = conn
+        .query_row(
+            "SELECT 1 FROM bot_facts WHERE key = ?1",
+            rusqlite::params![key],
+            |_| Ok(()),
+        )
+        .is_ok();
+    if !exists {
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM bot_facts", [], |r| r.get(0))
+            .unwrap_or(0);
+        if count >= MAX_FACTS as i64 {
+            return Err(format!("失败：记忆已达 {MAX_FACTS} 条上限，请先删除不需要的"));
+        }
+    }
+    conn.execute(
+        "INSERT INTO bot_facts (key, value, updated_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        rusqlite::params![key, value, now],
+    )
+    .map_err(|e| format!("失败：{e}"))?;
+    Ok(format!("已记住「{key}」：{value}"))
+}
+
+/// 删除一条记忆；返回 Ok(false) = 该 key 本来就不存在
+fn fact_delete(conn: &rusqlite::Connection, key: &str) -> Result<bool, String> {
+    conn.execute("DELETE FROM bot_facts WHERE key = ?1", rusqlite::params![key])
+        .map(|n| n > 0)
+        .map_err(|e| format!("失败：{e}"))
+}
+
+/// 全量读回（按最近更新倒序）
+fn fact_list(conn: &rusqlite::Connection) -> Result<Vec<(String, String)>, String> {
+    conn.prepare("SELECT key, value FROM bot_facts ORDER BY updated_at DESC")
+        .and_then(|mut s| {
+            s.query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .map(|iter| iter.filter_map(|r| r.ok()).collect::<Vec<_>>())
+        })
+        .map_err(|e| format!("失败：{e}"))
+}
+
+/// remember_fact(key, value)：upsert 一条长期记忆（同 key 覆盖）；value 空串 = 删除该 key
+fn tool_remember_fact(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
+    let v = parse_args(args);
+    let key = v["key"].as_str().unwrap_or("").trim().to_string();
+    let value = v["value"].as_str().unwrap_or("").trim().to_string();
+    if let Err(e) = validate_fact_kv(&key, &value) {
+        return (e, Vec::new());
+    }
+    let conn = match crate::db::open_db(app) {
+        Ok(c) => c,
+        Err(e) => return (format!("失败：打开数据库出错：{e}"), Vec::new()),
+    };
+    if value.is_empty() {
+        // 空 value = 删除该条记忆
+        return match fact_delete(&conn, &key) {
+            Ok(true) => (format!("已删除记忆「{key}」"), Vec::new()),
+            Ok(false) => (format!("记忆「{key}」本来就不存在"), Vec::new()),
+            Err(e) => (e, Vec::new()),
+        };
+    }
+    match fact_upsert(&conn, &key, &value, chrono::Utc::now().timestamp_millis()) {
+        Ok(msg) => (msg, Vec::new()),
+        Err(e) => (e, Vec::new()),
+    }
+}
+
+/// recall_facts()：全量读回长期记忆（按最近更新倒序）
+fn tool_recall_facts(app: &AppHandle) -> (String, Vec<crate::bot_chat::TaskRef>) {
+    let conn = match crate::db::open_db(app) {
+        Ok(c) => c,
+        Err(e) => return (format!("失败：打开数据库出错：{e}"), Vec::new()),
+    };
+    match fact_list(&conn) {
+        Ok(pairs) if pairs.is_empty() => ("（还没有任何长期记忆）".into(), Vec::new()),
+        Ok(pairs) => {
+            let lines: Vec<String> = pairs.iter().map(|(k, v)| format!("- {k}：{v}")).collect();
+            (
+                format!("已记住 {} 条：\n{}", lines.len(), lines.join("\n")),
+                Vec::new(),
+            )
+        }
+        Err(e) => (e, Vec::new()),
+    }
 }
 
 /// 解析 create_task/edit_task 的 files 参数（[{path, isDir}]）：
@@ -708,13 +872,13 @@ fn files_audit_kv(args: &str) -> Option<(usize, bool)> {
     Some((arr.len(), arr.len() > crate::db::MAX_TASK_FILES))
 }
 
-/// 改库后广播：挂件重读（tasks-changed）+ 主窗口合并 UI 不回写（tasks-updated, source:"bot"）
+/// 改库后广播：挂件重读（tasks-changed）+ 主窗口合并 UI 不回写（tasks-updated, source: Bot）
 pub fn broadcast_after_mutation(app: &AppHandle, upserts: Vec<crate::db::Task>, deletes: Vec<String>) {
     if !upserts.is_empty() || !deletes.is_empty() {
         let _ = app.emit("tasks-changed", ());
         let _ = app.emit(
             "tasks-updated",
-            serde_json::json!({ "source": "bot", "upserts": upserts, "deletes": deletes }),
+            serde_json::json!({ "source": crate::mutation::MutationOrigin::Bot.as_str(), "upserts": upserts, "deletes": deletes }),
         );
     }
 }
@@ -1085,6 +1249,21 @@ async fn resolve_task(app: &AppHandle, v: &serde_json::Value) -> Result<crate::d
         let id = id.trim();
         if !id.is_empty() {
             if let Some(t) = active_tasks(app).await.into_iter().find(|t| t.id == id) {
+                // 交叉校验（2026-08-19）：同窗格连续操作不同任务卡时，模型会沿用上一张卡的
+                // taskId 张冠李戴。taskId 与 title 关键词同时给出且对不上 → 不信 id，
+                // 改用 title 重新定位（定位不到就报错，让模型/用户确认）
+                if let Some(kw) = v["title"].as_str().map(|s| s.trim().to_lowercase()) {
+                    if !kw.is_empty() && !t.title.to_lowercase().contains(&kw) {
+                        if let Some(t2) = find_task_by_keyword(app, &kw).await {
+                            return Ok(t2);
+                        }
+                        return Err(format!(
+                            "taskId 命中的任务「{}」与标题关键词「{}」不符，且按标题未找到未完成任务，请确认操作对象",
+                            t.title,
+                            v["title"].as_str().unwrap_or("")
+                        ));
+                    }
+                }
                 return Ok(t);
             }
             return Err(format!("未找到 id={id} 的未完成任务（可能已完成或已删除）"));
@@ -1316,6 +1495,57 @@ async fn tool_toggle_subtask(app: &AppHandle, args: &str) -> (String, Vec<crate:
     }
 }
 
+/// 删除单条子任务（2026-08-19：此前无此工具，模型收到「删除子任务」无从下手）
+async fn tool_remove_subtask(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
+    let v = parse_args(args);
+    let Some(skw) = v["text"].as_str().map(|s| s.trim().to_lowercase()) else {
+        return ("remove_subtask 缺少 text".into(), Vec::new());
+    };
+    if skw.is_empty() {
+        return ("子任务关键词不能为空".into(), Vec::new());
+    }
+    if let Err(e) = check_len(&skw, MAX_SUBTASK_TEXT, "子任务关键词") {
+        return (e, Vec::new());
+    }
+    let task = match resolve_task(app, &v).await {
+        Ok(t) => t,
+        Err(e) => return (e, Vec::new()),
+    };
+    let subs = task.subtasks.clone().unwrap_or_default();
+    let Some(idx) = subs
+        .iter()
+        .position(|s| s.text.to_lowercase().contains(&skw))
+    else {
+        return (
+            format!(
+                "任务「{}」没有匹配「{}」的子任务",
+                task.title,
+                v["text"].as_str().unwrap_or("")
+            ),
+            Vec::new(),
+        );
+    };
+    let removed_text = subs[idx].text.clone();
+    let mut next = task.clone();
+    let mut subs2 = subs;
+    subs2.remove(idx);
+    next.subtasks = Some(subs2);
+    next.updated_at = Some(chrono::Utc::now().timestamp_millis());
+    match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
+        Ok(()) => {
+            broadcast_after_mutation(app, vec![next.clone()], vec![]);
+            (
+                format!("已删除任务「{}」的子任务「{}」", next.title, removed_text),
+                vec![crate::bot_chat::TaskRef {
+                    id: next.id.clone(),
+                    title: next.title.clone(),
+                }],
+            )
+        }
+        Err(e) => (format!("删除子任务失败：{e}"), Vec::new()),
+    }
+}
+
 /// 绑定文件/文件夹：弹系统选择框由用户挑选，结果写回任务的 filePath/fileIsDir
 async fn tool_bind_file(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
     let v = parse_args(args);
@@ -1466,6 +1696,10 @@ async fn extract_path_allowed(app: &AppHandle, path: &str) -> bool {
             }
         }
     }
+    // 3) 本地文件工具白名单目录（2026-08-19 Phase 1：聊天附件/用户指定路径，与 bot_fs 同一口径）
+    if crate::bot_fs::resolve_allowed(app, path).await.is_ok() {
+        return true;
+    }
     false
 }
 
@@ -1475,29 +1709,49 @@ async fn tool_extract_document(app: &AppHandle, args: &str) -> (String, Vec<crat
         .as_str()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
+    // 分页参数（2026-08-20）：offset 字符偏移续读；limit 默认 30000、硬钳 60000
+    let offset = v["offset"].as_u64().unwrap_or(0) as usize;
+    let limit = v["limit"]
+        .as_u64()
+        .map(|n| (n as usize).min(EXTRACT_MAX_LIMIT))
+        .filter(|&n| n > 0)
+        .unwrap_or(EXTRACT_DEFAULT_LIMIT);
     // 模型直传 path 时白名单校验（无 path 走弹框，用户亲手选不受限）
     if let Some(p) = path_opt.as_deref() {
         if !extract_path_allowed(app, p).await {
             return (
-                "已拒绝读取该路径：extract_document 的 path 只允许任务卡绑定文件或 AI_Gen_Files 目录内的文件；\
+                "已拒绝读取该路径：extract_document 的 path 只允许任务卡绑定文件、AI_Gen_Files 目录或文件白名单目录内的文件；\
 需要读取其他文件请先绑定到任务卡，或让用户通过弹框选择".into(),
                 Vec::new(),
             );
         }
     }
     match crate::bot_py::doc_extract(app.clone(), path_opt).await {
-        Ok(res) => (format_extract_output(&res.path, &res.text), Vec::new()),
+        Ok(res) => (format_extract_output(&res.path, &res.text, offset, limit), Vec::new()),
         Err(e) => (format!("提取失败：{e}"), Vec::new()),
     }
 }
 
-/// extract_document 输出格式化（30000 字符截断 + 截断提示）。
-/// 抽出来便于单测，避免每次都要 mock Tauri AppHandle。
-fn format_extract_output(path: &str, text: &str) -> String {
-    let limited: String = text.chars().take(30000).collect();
-    let mut out = format!("[文档路径] {}\n[文档内容]\n{}", path, limited);
-    if limited.chars().count() < text.chars().count() {
-        out.push_str("\n\n（内容过长已截断，后面内容未提取；修订模式请把 original 参数填上你实际收到的原文行列表）");
+/// extract_document 输出格式化：字符级分页（2026-08-20 把 30000 硬截断改为可续读）。
+/// 头部 [位置] 行让模型知道总量与续读点；还有更多时尾部给 offset 续读提示。
+/// offset 按字符计（非字节）；limit 默认 30000、硬钳 60000（防爆上下文）。
+const EXTRACT_DEFAULT_LIMIT: usize = 30000;
+const EXTRACT_MAX_LIMIT: usize = 60000;
+
+fn format_extract_output(path: &str, text: &str, offset: usize, limit: usize) -> String {
+    let total = text.chars().count();
+    if offset >= total && total > 0 {
+        return format!("[文档路径] {path}\noffset {offset} 已超出文档总长 {total} 字符，没有更多内容");
+    }
+    let slice: String = text.chars().skip(offset).take(limit).collect();
+    let end = offset + slice.chars().count();
+    let mut out =
+        format!("[文档路径] {path}\n[位置] {offset}–{end} / 共 {total} 字符\n[文档内容]\n{slice}");
+    if end < total {
+        out.push_str(&format!(
+            "\n\n（已截断：还有 {} 字符未读，用 offset={end} 参数续读；修订模式请把 original 参数填上你实际收到的原文行列表）",
+            total - end
+        ));
     }
     out
 }
@@ -1524,7 +1778,8 @@ async fn tool_create_word(app: &AppHandle, args: &str) -> (String, Vec<crate::bo
         return ("paragraphs 不能为空".into(), Vec::new());
     }
     let title = v["title"].as_str().unwrap_or("").to_string();
-    match crate::bot_py::doc_make_word(app.clone(), title, paragraphs, opt_filename(&v)).await {
+    let tables = v.get("tables").cloned();
+    match crate::bot_py::doc_make_word(app.clone(), title, paragraphs, opt_filename(&v), tables).await {
         Ok(out) => (format!("已生成 Word 文档：{out}"), Vec::new()),
         Err(e) => (format!("生成失败：{e}"), Vec::new()),
     }
@@ -1615,7 +1870,9 @@ async fn tool_create_ppt(app: &AppHandle, args: &str) -> (String, Vec<crate::bot
     let title = v["title"].as_str().unwrap_or("").to_string();
     // theme：blue/navy/teal/forest/wine/sky/plum/coral/dark/green 十套；模型自选，非法回退 blue
     let theme = v["theme"].as_str().map(|s| s.to_string());
-    match crate::bot_py::doc_make_ppt(app.clone(), title, slides.clone(), opt_filename(&v), theme)
+    // customColors：可选配色覆盖（脚本侧校验 hex，非法忽略）
+    let custom_colors = v.get("customColors").cloned();
+    match crate::bot_py::doc_make_ppt(app.clone(), title, slides.clone(), opt_filename(&v), theme, custom_colors)
         .await
     {
         Ok(out) => (format!("已生成 PPT 演示文稿：{out}"), Vec::new()),
@@ -1660,7 +1917,7 @@ async fn tool_web_search(app: &AppHandle, args: &str) -> (String, Vec<crate::bot
         app,
         &format!("web_search | query: {}", escape_for_log(&query, 100)),
     );
-    match crate::bot_web::web_search(&query).await {
+    match crate::bot_web::web_search_with_config(app, &query).await {
         Ok(results) => (results, Vec::new()),
         Err(e) => (format!("搜索失败：{e}"), Vec::new()),
     }
@@ -1708,10 +1965,15 @@ async fn tool_run_python(
     let Some(code) = v["code"].as_str() else {
         return ("run_python 缺少 code".into(), Vec::new());
     };
+    // 超时优先级：工具参数 timeoutSecs > 设置页配置 python_timeout_secs > 内置 60s
+    //（2026-08-20：pandas 大计算 60s 偏紧；硬钳 300s 在 bot_py::resolve_timeout）
+    let timeout_secs = v["timeoutSecs"]
+        .as_u64()
+        .or_else(|| load_config(app).python_timeout_secs);
     match crate::bot_py::py_exec_sync_async(
         app.clone(),
         code.to_string(),
-        None,
+        timeout_secs,
         stop.map(|s| s.token()),
     )
     .await
@@ -1955,15 +2217,15 @@ mod f3_log_read_tests {
         let _ = std::fs::remove_file(&log);
     }
 }
-/// 不依赖 Tauri AppHandle，验证 30000 字符截断 + 截断提示逻辑。
+/// 不依赖 Tauri AppHandle，验证分页格式化（位置行 + 截断续读提示 + offset 切片）。
 #[cfg(test)]
 mod tool_extract_document_tests {
     use super::*;
 
     #[test]
     fn format_extract_output_short_text_returns_full_text_no_truncation_suffix() {
-        let text = "短文本".repeat(100); // 100 个汉字 = 300 chars，远低于 30000
-        let out = format_extract_output("/tmp/sample.md", &text);
+        let text = "短文本".repeat(100); // 100 个汉字 = 300 chars，远低于默认 limit
+        let out = format_extract_output("/tmp/sample.md", &text, 0, EXTRACT_DEFAULT_LIMIT);
         assert!(
             out.contains(&text),
             "短文本应原样保留：\n--out--\n{out}\n--text--\n{text}"
@@ -1972,14 +2234,17 @@ mod tool_extract_document_tests {
             !out.contains("已截断"),
             "短文本不应出现截断提示，实际输出：\n{out}"
         );
-        assert!(out.starts_with("[文档路径] /tmp/sample.md\n[文档内容]\n"));
+        assert!(
+            out.starts_with("[文档路径] /tmp/sample.md\n[位置] 0–300 / 共 300 字符\n[文档内容]\n"),
+            "头部应带位置行，实际：\n{out}"
+        );
     }
 
     #[test]
     fn format_extract_output_long_text_truncates_with_suffix() {
-        // 35000 个 'A'，远超 30000 阈值
+        // 35000 个 'A'，超默认 30000
         let text = "A".repeat(35000);
-        let out = format_extract_output("/tmp/big.md", &text);
+        let out = format_extract_output("/tmp/big.md", &text, 0, EXTRACT_DEFAULT_LIMIT);
         assert!(
             out.contains("已截断"),
             "长文本必须出现截断提示，实际输出末尾：\n{}",
@@ -1991,6 +2256,24 @@ mod tool_extract_document_tests {
             a_count, 30000,
             "长文本截断后应剩 30000 个 'A'，实际 {a_count}"
         );
+        // 续读提示给出下一页起点
+        assert!(out.contains("offset=30000"), "截断提示应给续读 offset：\n{out}");
+    }
+
+    #[test]
+    fn format_extract_output_offset_reads_next_page() {
+        let text = "A".repeat(35000);
+        let out = format_extract_output("/tmp/big.md", &text, 30000, EXTRACT_DEFAULT_LIMIT);
+        assert!(out.contains("[位置] 30000–35000 / 共 35000 字符"), "第二页位置行：\n{out}");
+        assert_eq!(out.matches('A').count(), 5000, "第二页应只有剩余 5000 字符");
+        assert!(!out.contains("已截断"), "读完最后一页不应再有截断提示");
+    }
+
+    #[test]
+    fn format_extract_output_offset_beyond_total() {
+        let text = "短";
+        let out = format_extract_output("/tmp/a.md", text, 100, EXTRACT_DEFAULT_LIMIT);
+        assert!(out.contains("超出文档总长"), "offset 越界应明确提示：\n{out}");
     }
 }
 /// NEW-D-1 单测：早退路径审计事件序列（tool.call 配平 tool.return）。
@@ -2136,5 +2419,74 @@ mod task_files_arg_tests {
         let args = format!("{{\"files\":[{}]}}", many.join(","));
         assert_eq!(files_audit_kv(&args), Some((11, true)), "超 10 → truncated");
         assert_eq!(files_audit_kv(r#"{"title":"x"}"#), None);
+    }
+}
+
+#[cfg(test)]
+mod phase4_facts_tests {
+    use super::*;
+
+    /// 内存库（与 db.rs 建表语句同构）：fact_* 辅助函数的全逻辑覆盖
+    fn mem_conn() -> rusqlite::Connection {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE bot_facts (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);",
+        )
+        .unwrap();
+        c
+    }
+
+    #[test]
+    fn get_current_time_format_has_date_and_weekday() {
+        let (text, refs) = tool_get_current_time();
+        assert!(refs.is_empty());
+        assert!(text.starts_with("现在："), "实际：{text}");
+        assert!(
+            ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+                .iter()
+                .any(|w| text.contains(w)),
+            "应含中文星期，实际：{text}"
+        );
+    }
+
+    #[test]
+    fn validate_fact_kv_boundaries() {
+        assert!(validate_fact_kv("", "v").is_err(), "空 key 拒绝");
+        assert!(validate_fact_kv(&"k".repeat(51), "v").is_err(), "key 超 50 字拒绝");
+        assert!(validate_fact_kv("k", &"v".repeat(501)).is_err(), "value 超 500 字拒绝");
+        assert!(validate_fact_kv("k", "").is_ok(), "空 value 合法（删除语义）");
+        assert!(validate_fact_kv("称呼", "老板").is_ok());
+    }
+
+    #[test]
+    fn fact_upsert_overwrite_and_delete() {
+        let c = mem_conn();
+        assert!(fact_upsert(&c, "称呼", "老板", 1).unwrap().contains("已记住"));
+        assert!(fact_upsert(&c, "称呼", "任总", 2).is_ok(), "同 key 覆盖");
+        let list = fact_list(&c).unwrap();
+        assert_eq!(list, vec![("称呼".to_string(), "任总".to_string())]);
+        assert!(fact_delete(&c, "称呼").unwrap(), "删除存在 key → true");
+        assert!(!fact_delete(&c, "称呼").unwrap(), "再删 → false（本来就不存在）");
+        assert!(fact_list(&c).unwrap().is_empty());
+    }
+
+    #[test]
+    fn fact_list_orders_by_updated_desc() {
+        let c = mem_conn();
+        fact_upsert(&c, "a", "1", 100).unwrap();
+        fact_upsert(&c, "b", "2", 200).unwrap();
+        let list = fact_list(&c).unwrap();
+        assert_eq!(list[0].0, "b", "最近更新的在前");
+        assert_eq!(list[1].0, "a");
+    }
+
+    #[test]
+    fn fact_upsert_rejects_beyond_cap_but_overwrite_ok() {
+        let c = mem_conn();
+        for i in 0..MAX_FACTS {
+            fact_upsert(&c, &format!("k{i}"), "v", i as i64).unwrap();
+        }
+        assert!(fact_upsert(&c, "one-more", "v", 9999).is_err(), "超上限拒绝新 key");
+        assert!(fact_upsert(&c, "k0", "v2", 10000).is_ok(), "同 key 覆盖不受上限影响");
     }
 }

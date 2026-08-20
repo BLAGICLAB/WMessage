@@ -6,17 +6,21 @@ mod api_server;
 mod audit;
 pub mod bot;
 mod bot_chat;
+mod bot_fs;
 mod bot_model_loop;
 mod bot_py;
 mod bot_scheduler;
 pub mod bot_skills;
 mod bot_slash;
 mod bot_web;
+mod consts;
 mod db;
 pub mod error;
+mod exec_steps;
 pub mod intent_router;
 pub mod middleware;
 mod migration;
+mod mutation;
 mod profile;
 pub mod task_out;
 pub mod tool_guard;
@@ -398,6 +402,10 @@ pub fn run() {
             // F-2 中间件注册表（Plugin/Extension 抽象层 P2）：注册 2 个内置中间件
             app.manage(middleware::build_default_registry());
 
+            // 动态技能路由（2026-08-19）：启动时按已安装技能的 frontmatter intents 建路由表；
+            // 之后 skills_import / skills_delete 成功会各自重建
+            bot_skills::rebuild_intent_routes(app.handle());
+
             // 定时任务卡调度器：每 30s 扫一次到点任务并自动执行
             bot_scheduler::start_scheduler(app.handle().clone());
 
@@ -586,7 +594,8 @@ pub fn run() {
             migration::migration_rules_template_save,
             migration::migration_log_read,
             migration::migration_run,
-            migration::migration_status
+            migration::migration_status,
+            consts::app_consts
         ])
         .build(tauri::generate_context!())
         // 启动期 panic 可接受（进程起不来就退）：Tauri builder 编译失败 = 环境/配置损坏，

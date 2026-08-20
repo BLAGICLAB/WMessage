@@ -18,6 +18,55 @@ use crate::error::CommandError;
 use futures_util::StreamExt;
 use tauri::{AppHandle, Emitter};
 
+// ───────────────────────── 防幻觉汇报守卫（2026-08-19） ─────────────────────────
+// 实锤事故：MiniMax-M3 多次不调任何工具就回复「已添加子任务」「已移至回收站」，
+// 数据实际没变，用户以为操作成功。提示词约束（SYSTEM_PROMPT 规则 8）不够，
+// 这里在循环出口做确定性拦截：最终文本声称完成变更、但本轮 0 次变更类工具调用 →
+// 注入系统提醒并补一轮（每次对话最多补一次），让模型实际调工具或如实说明。
+
+/// 会改动任务卡/文件系统的工具（判定「本轮是否真的动手了」）
+const MUTATING_TOOLS: [&str; 14] = [
+    "create_task",
+    "edit_task",
+    "complete_task",
+    "delete_task",
+    "add_subtask",
+    "toggle_subtask",
+    "remove_subtask",
+    "bind_file",
+    "create_word",
+    "create_word_revisions",
+    "create_excel",
+    "create_ppt",
+    "create_pdf",
+    "remember_fact",
+];
+
+/// 最终文本是否含「变更已完成」表述（任务卡/文件类；纯查询汇报不命中）。
+/// 枚举完整话术是打地鼠（实锤漏网：「已彻底删除」不含「已删除」字面），
+/// 改成模式匹配：完成态标记「已」+ 其后 8 字窗口内含变更动词（覆盖 已彻底删除/已经把…移除 等变体），
+/// 另加若干无「已」的高频话术兜底。
+fn claims_mutation(text: &str) -> bool {
+    const VERBS: [&str; 13] = [
+        "添加", "删除", "移除", "修改", "更新", "绑定", "完成", "清空", "恢复", "勾选", "创建",
+        "生成", "移至",
+    ];
+    const PLAIN: [&str; 3] = ["移至回收站", "标记为完成", "添加子任务"];
+    if PLAIN.iter().any(|p| text.contains(p)) {
+        return true;
+    }
+    let chars: Vec<char> = text.chars().collect();
+    for (i, &c) in chars.iter().enumerate() {
+        if c == '已' {
+            let window: String = chars[i + 1..].iter().take(8).collect();
+            if VERBS.iter().any(|v| window.contains(v)) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 // ───────────────────────── TOOLS schema（编译期字符串，运行期 JSON 解析） ─────────────────────────
 
 const TOOLS: &str = r#"[
@@ -58,6 +107,26 @@ const TOOLS: &str = r#"[
     "title":{"type":"string","description":"任务标题关键词，无 taskId 时使用"},
     "text":{"type":"string","description":"子任务内容关键词"}
   },"required":["text"]}}},
+  {"type":"function","function":{"name":"remove_subtask","description":"删除单条子任务（彻底移除，区别于 toggle_subtask 的取消勾选；任务用 taskId 优先；子任务按内容关键词匹配）","parameters":{"type":"object","properties":{
+    "taskId":{"type":"string","description":"任务 id，可选，优先于 title"},
+    "title":{"type":"string","description":"任务标题关键词，无 taskId 时使用"},
+    "text":{"type":"string","description":"要删除的子任务内容关键词"}
+  },"required":["text"]}}},
+  {"type":"function","function":{"name":"read_text_file","description":"读取白名单目录内的文本文件内容（大文件用 offset/limit 分页读；Office/PDF 用 extract_document，图片用户会直接发图）","parameters":{"type":"object","properties":{
+    "path":{"type":"string","description":"文件绝对路径（支持 ~ 开头）"},
+    "offset":{"type":"integer","description":"起始行号，从 1 开始，可选"},
+    "limit":{"type":"integer","description":"读取行数，默认 500，最多 2000，可选"}
+  },"required":["path"]}}},
+  {"type":"function","function":{"name":"grep_files","description":"在白名单目录内按正则搜索文件内容，返回 path:行号:内容（最多 50 条）","parameters":{"type":"object","properties":{
+    "pattern":{"type":"string","description":"正则表达式（非法正则自动按字面量搜）"},
+    "dir":{"type":"string","description":"搜索目录，可选，缺省搜第一个白名单目录"},
+    "glob":{"type":"string","description":"文件名过滤，如 *.rs，可选"},
+    "max":{"type":"integer","description":"最多返回条数，默认 50，可选"}
+  },"required":["pattern"]}}},
+  {"type":"function","function":{"name":"list_files","description":"列出白名单目录内的文件/子目录（递归 ≤5 层，最多 200 条；可用 pattern 按文件名过滤）","parameters":{"type":"object","properties":{
+    "dir":{"type":"string","description":"目录绝对路径（支持 ~ 开头）"},
+    "pattern":{"type":"string","description":"文件名过滤，如 *.pdf 或 报告*，可选"}
+  },"required":["dir"]}}},
   {"type":"function","function":{"name":"bind_file","description":"给任务绑定文件或文件夹（弹系统选择框由用户挑选；任务用 taskId 优先定位）","parameters":{"type":"object","properties":{
     "taskId":{"type":"string","description":"任务 id，可选，优先于 title"},
     "title":{"type":"string","description":"任务标题关键词，无 taskId 时使用"},
@@ -71,12 +140,18 @@ const TOOLS: &str = r#"[
   {"type":"function","function":{"name":"search_tasks","description":"按关键词搜索所有任务卡（待办/进行中/已完成/已归档；匹配标题/备注/标签/子任务）","parameters":{"type":"object","properties":{
     "query":{"type":"string","description":"搜索关键词"}
   },"required":["query"]}}},
-  {"type":"function","function":{"name":"extract_document","description":"提取文档内容（不传 path 时弹系统选择框由用户选 Word/Excel/PPT/PDF；传 path 时直接读取该文件，如任务卡的绑定文件）","parameters":{"type":"object","properties":{
-    "path":{"type":"string","description":"文件绝对路径，可选"}
+  {"type":"function","function":{"name":"extract_document","description":"提取文档内容（不传 path 时弹系统选择框由用户选 Word/Excel/PPT/PDF；传 path 时直接读取该文件，如任务卡的绑定文件；长文档用 offset 参数续读后续部分）","parameters":{"type":"object","properties":{
+    "path":{"type":"string","description":"文件绝对路径，可选"},
+    "offset":{"type":"integer","description":"字符偏移（可选，默认 0；返回里带『已截断』提示时用提示的 offset 值续读）"},
+    "limit":{"type":"integer","description":"本页字符数（可选，默认 30000，上限 60000）"}
   }}}},
   {"type":"function","function":{"name":"create_word","description":"生成 Word 文档到 AI_Gen_Files（润色后的文本用这个落地；不覆盖任何已有文件）","parameters":{"type":"object","properties":{
     "title":{"type":"string","description":"文档标题，可选"},
     "paragraphs":{"type":"array","items":{"type":"string"},"description":"正文段落列表，每段一个字符串"},
+    "tables":{"type":"array","description":"可选：表格列表，按顺序追加在段落之后；每个表 rows 二维数组、第一行当表头加粗","items":{"type":"object","properties":{
+      "title":{"type":"string","description":"表格标题，可选"},
+      "rows":{"type":"array","items":{"type":"array","items":{"type":"string"}}}
+    },"required":["rows"]}},
     "filename":{"type":"string","description":"文件名（不含扩展名），可选"}
   },"required":["paragraphs"]}}},
   {"type":"function","function":{"name":"create_word_revisions","description":"生成带修订标记（修订模式）的 Word 到 AI_Gen_Files：自动对比原文与润色后的段落，删除内容标删除线、新增内容标红色下划线，可在 Word 审阅中逐条接受/拒绝","parameters":{"type":"object","properties":{
@@ -96,6 +171,9 @@ const TOOLS: &str = r#"[
   {"type":"function","function":{"name":"create_ppt","description":"生成专业排版 PPT 到 AI_Gen_Files（多版式：封面/目录/章节页/内容页/表格页/结束页 + 三套配色主题）","parameters":{"type":"object","properties":{
     "title":{"type":"string","description":"演示文稿主标题"},
     "theme":{"type":"string","enum":["blue","navy","teal","forest","wine","sky","plum","coral","dark","green"],"description":"配色主题（按场合选）：blue 商务与权威（默认，汇报/金融）/ navy 科技与夜景（深色发布会）/ teal 现代与健康（医疗/护肤）/ forest 自然与户外（环保/农业）/ wine 复古与学院（学术/历史）/ sky 纯净科技蓝（AI/云计算）/ plum 轻奢与神秘（珠宝/高端咨询）/ coral 海岸珊瑚（旅游/夏日）/ dark 深色通用 / green 清新绿"},
+    "customColors":{"type":"object","description":"可选：自定义配色覆盖主题（6 位 hex 如 1E40AF，可带 #）。键：bg 背景 / accent 强调色 / text 正文 / sub 次要文字 / band 大面积色块（必深色）/ bandtext 色块上文字 / alt 表格斑马纹。用户给了 VI 色/品牌色时用","properties":{
+      "bg":{"type":"string"},"accent":{"type":"string"},"text":{"type":"string"},"sub":{"type":"string"},"band":{"type":"string"},"bandtext":{"type":"string"},"alt":{"type":"string"}
+    }},
     "slides":{"type":"array","description":"幻灯片列表，按展示顺序；每页一个 type","items":{"type":"object","properties":{
       "type":{"type":"string","enum":["cover","toc","section","content","table","closing"],"description":"页面类型：cover 封面（title+subtitle）/ toc 目录（items 列表）/ section 章节分隔页 / content 内容要点页 / table 表格页（rows 二维数组首行表头）/ closing 结束页"},
       "title":{"type":"string","description":"页面标题"},
@@ -111,13 +189,20 @@ const TOOLS: &str = r#"[
     "paragraphs":{"type":"array","items":{"type":"string"},"description":"正文段落列表"},
     "filename":{"type":"string","description":"文件名（不含扩展名），可选"}
   },"required":["paragraphs"]}}},
-  {"type":"function","function":{"name":"run_python","description":"执行 Python 代码（本机沙箱：独立临时目录 + 超时 60s；需用户在设置页开启 Python 编程）","parameters":{"type":"object","properties":{
-    "code":{"type":"string","description":"要执行的 Python 代码，print 输出返回给用户"}
+  {"type":"function","function":{"name":"run_python","description":"执行 Python 代码（本机沙箱：独立临时目录 + 默认超时 60s；需用户在设置页开启 Python 编程）","parameters":{"type":"object","properties":{
+    "code":{"type":"string","description":"要执行的 Python 代码，print 输出返回给用户"},
+    "timeoutSecs":{"type":"integer","description":"超时秒数（可选，默认 60；大计算可调大，上限 300）"}
   },"required":["code"]}}},
   {"type":"function","function":{"name":"web_search","description":"搜索互联网获取最新信息（Bing+百度双引擎，返回标题/链接/摘要）","parameters":{"type":"object","properties":{"query":{"type":"string","description":"搜索关键词"}},"required":["query"]}}},
   {"type":"function","function":{"name":"fetch_url","description":"抓取网页正文（仅 http/https 公网地址；返回纯文本，用于读链接/总结网页内容）","parameters":{"type":"object","properties":{
     "url":{"type":"string","description":"要抓取的网页地址"}
   },"required":["url"]}}},
+  {"type":"function","function":{"name":"get_current_time","description":"获取当前日期时间和星期（涉及「今天/明天/昨天/周几/几点」类判断前必须先调，不要凭训练数据猜日期）","parameters":{"type":"object","properties":{}}}},
+  {"type":"function","function":{"name":"remember_fact","description":"记住一条用户偏好/事实（跨会话长期记忆，重启不丢；key 简短描述 ≤50 字，value 内容 ≤500 字；同 key 覆盖更新；value 传空串删除该条）","parameters":{"type":"object","properties":{
+    "key":{"type":"string","description":"简短描述，如「称呼」「偏好语言」「常用目录」"},
+    "value":{"type":"string","description":"要记住的内容；空串 = 删除该条"}
+  },"required":["key","value"]}}},
+  {"type":"function","function":{"name":"recall_facts","description":"回忆所有已记住的用户偏好/事实（用户问「你记得我吗/我的偏好」或回答可能依赖用户偏好时先调）","parameters":{"type":"object","properties":{}}}},
   {"type":"function","function":{"name":"use_skill","description":"读取已安装技能（skill）的完整文档并按文档步骤执行。任务涉及的每个相关技能都要读（可多次调用）：例如做 PPT 时，若清单里同时有编排、生成、配色、风格类技能，应逐个读取、取长补短综合运用，不要只读一个","parameters":{"type":"object","properties":{
     "name":{"type":"string","description":"技能名（系统提示词「已安装技能」清单里的名称，一次一个，可多次调用）"}
   },"required":["name"]}}}
@@ -304,16 +389,21 @@ pub async fn run_model_loop(
     // Harness 第 5 层：单轮对话 Function 总调用上限（每轮可并行多个 tool_calls，
     // max_rounds 管轮数管不住并行调用数，必须有独立计数熔断）
     //
-    // 阈值设定理由（2026-08-18 老板拍板从 5 提到 10）：
-    // - 5 太激进：实际 Skill 复合流程（例：minimax-archive = list + query + edit + bind_file + verify）就要 5+，
-    //   复杂 Skill（PPT 编排 + 配色 + 归档）需 8-10
-    // - 10 中间偏严：覆盖 90% 真实复合任务，留 1.5x 余量给多技能联动
-    // - 15+ 太宽：掩护 LLM 死循环 / 幻觉调工具
-    // - 软警告（7）收尾提醒：避免刚警告完就熔断
-    const MAX_FUNCTION_CALLS_PER_TURN: usize = 10;
-    const SOFT_WARN_AT: usize = 7;
+    // 阈值演变：
+    // - 2026-08-18 老板拍板 5 → 10：5 太激进（PPT 编排 + 配色 + 归档就要 8-10）；
+    //   10 覆盖 90% 真实复合任务；15+ 掩护 LLM 死循环 / 幻觉调工具
+    // - 2026-08-19 老板拍板 10 → 30（全局：聊天/任务卡执行/Skill 统一）：
+    //   实锤 10 不够用——「列计划 + 按计划新增子任务」复合任务在 22:56 真触发熔断
+    //   （bot.log `fuse | 单轮 Function 调用超过 10 次`）。失控防护改靠：
+    //   幻觉守卫（claims_mutation）+ 软警告 + /stop，不再靠压低上限
+    // - 软警告（20）收尾提醒：留 10 次余量收尾，避免刚警告完就熔断
+    const MAX_FUNCTION_CALLS_PER_TURN: usize = 30;
+    const SOFT_WARN_AT: usize = 20;
     let mut function_calls_total: usize = 0;
     let mut soft_warn_sent: bool = false;
+    // 防幻觉汇报守卫：本轮是否实际执行过变更类工具；补一轮机会每次对话只用一次
+    let mut mutation_done: bool = false;
+    let mut claim_retry_used: bool = false;
     // soft_warn 待注入标志：本轮 tool 响应全部回填后才真正 push（见循环内注释）
     let mut soft_warn_queued: bool = false;
     // 上轮 streamed 文本快照（Block 2 接入，2026-08-17 22:26）：
@@ -499,6 +589,24 @@ pub async fn run_model_loop(
         }
 
         if tool_calls.is_empty() {
+            // 防幻觉汇报守卫（2026-08-19）：声称完成变更但本轮没动过手 →
+            // 注入系统提醒补一轮，逼模型实际调工具或如实说明（最多补一次）
+            if !mutation_done && !claim_retry_used && claims_mutation(&final_text) {
+                claim_retry_used = true;
+                crate::bot::audit_log(
+                    &app,
+                    &format!(
+                        "hallucination_guard | 声称变更但未调工具，补一轮: {}",
+                        crate::bot::truncate_for_log(&final_text, 100)
+                    ),
+                );
+                msgs.push(serde_json::json!({"role": "assistant", "content": final_text}));
+                msgs.push(serde_json::json!({
+                    "role": "user",
+                    "content": "【系统提示】你刚才声称完成了变更，但本轮没有调用任何工具，数据实际没有变化。请立即调用对应工具实际执行（删除用 delete_task、完成用 complete_task、编辑用 edit_task、添加子任务用 add_subtask、勾选子任务用 toggle_subtask、绑定文件用 bind_file）；若确实无法执行（任务不存在/已完成/无权限等），如实向用户说明原因，禁止再次声称已完成。"
+                }));
+                continue;
+            }
             let _ = crate::bot_skills::skill_finish(&app, true, "");
             collected_refs = merge_task_refs_dedup(collected_refs);
             return Ok((final_text.clone(), collected_refs));
@@ -519,6 +627,9 @@ pub async fn run_model_loop(
         }
         for (id, name, args) in &tool_calls {
             function_calls_total += 1;
+            if MUTATING_TOOLS.contains(&name.as_str()) {
+                mutation_done = true;
+            }
             if function_calls_total > MAX_FUNCTION_CALLS_PER_TURN {
                 let hint = crate::bot_skills::skill_finish(&app, false, "单轮 Function 调用超上限");
                 crate::bot::audit_log(
@@ -640,6 +751,44 @@ mod think_tests {
         let (n, t) = run(&["<think>A</think>正文1<think>B</think>正文2"]);
         assert_eq!(n, "正文1正文2");
         assert_eq!(t, "AB");
+    }
+}
+
+#[cfg(test)]
+mod hallucination_guard_tests {
+    use super::*;
+
+    #[test]
+    fn claims_mutation_hits_common_claims() {
+        // 实锤事故话术（2026-08-19 bot.log）：声称删除/添加子任务
+        assert!(claims_mutation("已将「你们好」移至回收站 🗑️"));
+        assert!(claims_mutation("已给「你们好」任务添加子任务「买菜」✅"));
+        assert!(claims_mutation("已将任务标记为完成"));
+        assert!(claims_mutation("已清空绑定文件"));
+        // 变体话术（第二轮实锤漏网）：副词插在「已」和动词之间
+        assert!(claims_mutation("「你们好」下的子任务「买菜」已彻底删除。"));
+        assert!(claims_mutation("已经把附件全部移除"));
+        assert!(claims_mutation("「买菜」之前已经彻底删除了，这次没有可删除的内容。"));
+    }
+
+    #[test]
+    fn claims_mutation_passes_pure_query_answers() {
+        assert!(!claims_mutation("你有 3 个待办任务：A、B、C"));
+        assert!(!claims_mutation("「你们好」当前没有绑定任何附件，无需删除。"));
+        assert!(!claims_mutation("未找到匹配的任务，请确认标题"));
+        assert!(!claims_mutation(""));
+    }
+
+    #[test]
+    fn mutating_tools_cover_task_and_file_writes() {
+        // 守卫白名单与工具分发保持一致的关键几个
+        for t in ["delete_task", "add_subtask", "toggle_subtask", "complete_task", "edit_task", "create_task", "bind_file"] {
+            assert!(MUTATING_TOOLS.contains(&t), "{t} 应算变更类工具");
+        }
+        // 纯查询工具不算变更
+        for t in ["list_tasks", "search_tasks", "query_single_task", "web_search", "fetch_url"] {
+            assert!(!MUTATING_TOOLS.contains(&t), "{t} 不应算变更类工具");
+        }
     }
 }
 

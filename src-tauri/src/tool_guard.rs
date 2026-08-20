@@ -64,6 +64,10 @@ mod tests {
             "edit_task",
             "add_subtask",
             "toggle_subtask",
+            "remove_subtask",
+            "read_text_file",
+            "grep_files",
+            "list_files",
             "bind_file",
             "search_tasks",
             "extract_document",
@@ -74,6 +78,9 @@ mod tests {
             "run_python",
             "web_search",
             "fetch_url",
+            "get_current_time",
+            "remember_fact",
+            "recall_facts",
             "use_skill",
         ] {
             assert!(

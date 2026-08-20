@@ -221,4 +221,43 @@ describe("SettingsPage", () => {
       expect(onExportTasks).toHaveBeenCalledTimes(1);
     });
   });
+
+  it("提供商预设：点击 Kimi K3 → Base URL / 模型自动填充且按钮高亮", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_get_enabled") return true;
+      if (cmd === "bot_get_config")
+        return {
+          baseUrl: "https://api.minimaxi.com/v1",
+          model: "MiniMax-M3",
+          hasApiKey: true,
+          bypassLlmOnPreStepHit: true,
+        };
+      if (cmd === "api_status") return { enabled: false, port: 4763, token: "" };
+      if (cmd === "profile_get")
+        return {
+          user: { name: "我", avatarDataUrl: null },
+          bot: { name: "机器人", avatarDataUrl: null },
+        };
+      if (cmd === "py_get_enabled") return false;
+      if (cmd === "skills_list") return [];
+      if (cmd === "migration_rules_load") return { version: 1, rules: [] };
+      if (cmd === "migration_status") return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_log_read") return "";
+      return null;
+    });
+    render(<SettingsPage {...defaultProps} />);
+    // 等待配置加载：Base URL 输入框回填 MiniMax 地址
+    const baseUrlInput = await screen.findByDisplayValue("https://api.minimaxi.com/v1");
+    // MiniMax 预设高亮（baseUrl + model 双匹配命中）
+    expect(screen.getByText("MiniMax").className).toContain("nm-inset");
+    // 点击 Kimi K3 → 自动填充
+    await user.click(screen.getByText("Kimi K3"));
+    await waitFor(() => {
+      expect(baseUrlInput).toHaveValue("https://api.moonshot.cn/v1");
+    });
+    expect(screen.getByPlaceholderText("deepseek-v4-flash")).toHaveValue("kimi-k3");
+    expect(screen.getByText("Kimi K3").className).toContain("nm-inset");
+    expect(screen.getByText("MiniMax").className).toContain("nm-outset");
+  });
 });

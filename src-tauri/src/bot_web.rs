@@ -31,21 +31,61 @@ fn http_client() -> reqwest::Client {
 // ───────────────────────── 搜索（Bing + 百度双引擎） ─────────────────────────
 
 /// 双引擎搜索：Bing + 百度并行，结果按标题去重合并，最多 8 条
+/// 同一域名最多保留条数（百度跳转链接除外——host 都是 baidu.com，去重会误杀）
+const SEARCH_MAX_PER_DOMAIN: usize = 2;
+
+/// 取链接的域名（解析失败返回空串）
+fn domain_of(link: &str) -> String {
+    url::Url::parse(link)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_lowercase()))
+        .unwrap_or_default()
+}
+
+/// 摘要清理：压缩空白、去结尾省略号残留（抓取的摘要常被截断带「……」尾巴）
+fn clean_snippet(s: &str) -> String {
+    let mut t = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    for suf in ["……", "...", "…"] {
+        if let Some(x) = t.strip_suffix(suf) {
+            t = x.trim_end().to_string();
+        }
+    }
+    t
+}
+
 pub async fn web_search(query: &str) -> Result<String, String> {
     let (bing, baidu) = futures_util::future::join(search_bing(query), search_baidu(query)).await;
-    let mut merged: Vec<(String, String, String)> = Vec::new();
+    // (引擎, 标题, 链接, 摘要)
+    let mut merged: Vec<(&str, String, String, String)> = Vec::new();
     let mut seen: Vec<String> = Vec::new();
+    let mut domain_count: Vec<(String, usize)> = Vec::new();
     let mut errs: Vec<String> = Vec::new();
-    for engine in [bing, baidu] {
-        match engine {
+    for (engine, result) in [("Bing", bing), ("百度", baidu)] {
+        match result {
             Ok(list) => {
                 for (title, link, snip) in list {
                     let key = title.trim().to_string();
                     if seen.contains(&key) || merged.len() >= SEARCH_MAX_RESULTS {
                         continue;
                     }
+                    // 域名去重：同一站点最多 2 条（百度跳转链接除外，host 全是 baidu.com）
+                    let d = domain_of(&link);
+                    if !d.is_empty() && d != "baidu.com" && !d.ends_with(".baidu.com") {
+                        let cnt = domain_count
+                            .iter()
+                            .find(|(dom, _)| *dom == d)
+                            .map(|(_, c)| *c)
+                            .unwrap_or(0);
+                        if cnt >= SEARCH_MAX_PER_DOMAIN {
+                            continue;
+                        }
+                        match domain_count.iter_mut().find(|(dom, _)| *dom == d) {
+                            Some((_, c)) => *c += 1,
+                            None => domain_count.push((d, 1)),
+                        }
+                    }
                     seen.push(key);
-                    merged.push((title, link, snip));
+                    merged.push((engine, title, link, clean_snippet(&snip)));
                 }
             }
             Err(e) => errs.push(e),
@@ -59,13 +99,67 @@ pub async fn web_search(query: &str) -> Result<String, String> {
         });
     }
     let mut out = String::new();
-    for (i, (title, link, snip)) in merged.iter().enumerate() {
-        out.push_str(&format!("{}. {}\n{}\n{}\n\n", i + 1, title, link, snip));
+    for (i, (engine, title, link, snip)) in merged.iter().enumerate() {
+        out.push_str(&format!("{}. [{}] {}\n{}\n{}\n\n", i + 1, engine, title, link, snip));
     }
     if out.chars().count() > SEARCH_OUTPUT_CAP {
         out = out.chars().take(SEARCH_OUTPUT_CAP).collect();
     }
     Ok(out)
+}
+
+/// Tavily 搜索 API（可选增强：bot-config.json 配 tavilyKey 后启用；失败回退双引擎抓取）
+async fn search_tavily(key: &str, query: &str) -> Result<String, String> {
+    let resp = http_client()
+        .post("https://api.tavily.com/search")
+        .json(&serde_json::json!({
+            "api_key": key,
+            "query": query,
+            "max_results": SEARCH_MAX_RESULTS,
+            "search_depth": "basic",
+            "include_answer": false
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("Tavily 请求失败：{e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("Tavily 返回 HTTP {}", resp.status()));
+    }
+    let v: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Tavily 响应解析失败：{e}"))?;
+    let arr = v["results"].as_array().cloned().unwrap_or_default();
+    if arr.is_empty() {
+        return Err("Tavily 没有返回结果".into());
+    }
+    let mut out = String::new();
+    for (i, r) in arr.iter().enumerate() {
+        let title = r["title"].as_str().unwrap_or("");
+        let url = r["url"].as_str().unwrap_or("");
+        let content = clean_snippet(r["content"].as_str().unwrap_or(""));
+        out.push_str(&format!("{}. [Tavily] {}\n{}\n{}\n\n", i + 1, title, url, content));
+    }
+    if out.chars().count() > SEARCH_OUTPUT_CAP {
+        out = out.chars().take(SEARCH_OUTPUT_CAP).collect();
+    }
+    Ok(out)
+}
+
+/// 搜索入口（bot 工具调用）：配了 Tavily key 走 API（失败回退抓取并记审计），否则双引擎抓取
+pub async fn web_search_with_config(app: &tauri::AppHandle, query: &str) -> Result<String, String> {
+    let key = crate::bot::load_config(app)
+        .tavily_key
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if !key.is_empty() {
+        match search_tavily(&key, query).await {
+            Ok(out) => return Ok(out),
+            Err(e) => crate::bot::audit_log(app, &format!("web_search.tavily_fallback | {e}")),
+        }
+    }
+    web_search(query).await
 }
 
 /// Bing 搜索：解析 `<li class="b_algo">` 块，返回 (标题, 链接, 摘要) 列表
@@ -214,6 +308,117 @@ fn decode_entities(s: &str) -> String {
     }
     out.push_str(rest);
     out
+}
+
+// ───────────────────────── 正文提取（2026-08-19 Phase 2） ─────────────────────────
+// fetch_url 从「整页 HTML→纯文本」升级为「先抽正文主块再转换」：
+// 去 script/style/nav/footer 等噪声块 → article/main 语义标签 → 语义 class/id 的最大 div → 兜底全文。
+
+/// 大小写不敏感的子串查找（needle 为 ASCII 标签；返回原串字节索引，不做全串 lowercase 避免变长错位）
+fn find_ci(haystack: &str, needle: &str, from: usize) -> Option<usize> {
+    if needle.is_empty() || from >= haystack.len() {
+        return None;
+    }
+    haystack.as_bytes()[from..]
+        .windows(needle.len())
+        .position(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
+        .map(|i| from + i)
+}
+
+/// 从 start（`<tag` 的位置）起按嵌套深度找匹配闭合标签，返回块字节区间 [start, end)
+fn tag_block_span(html: &str, start: usize, tag: &str) -> Option<(usize, usize)> {
+    let open = format!("<{tag}");
+    let close = format!("</{tag}>");
+    let mut depth = 0usize;
+    let mut cur = start;
+    while cur < html.len() {
+        let next_open = find_ci(html, &open, cur);
+        let next_close = find_ci(html, &close, cur);
+        match (next_open, next_close) {
+            (Some(o), Some(c)) if o < c => {
+                depth += 1;
+                cur = o + open.len();
+            }
+            (_, Some(c)) => {
+                depth = depth.saturating_sub(1);
+                cur = c + close.len();
+                if depth == 0 {
+                    return Some((start, cur));
+                }
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// 删除指定标签的完整块（含嵌套同名标签）：去 script/style/nav/footer 等噪声。
+/// 未闭合的块只丢开标签本身（自闭合写法如 <iframe/> 不至于吞掉整页残余）
+fn remove_tag_blocks(html: &str, tag: &str) -> String {
+    let open = format!("<{tag}");
+    let mut out = String::with_capacity(html.len());
+    let mut rest = 0usize;
+    while let Some(pos) = find_ci(html, &open, rest) {
+        out.push_str(&html[rest..pos]);
+        rest = match tag_block_span(html, pos, tag) {
+            Some((_, end)) => end,
+            None => pos + open.len(),
+        };
+    }
+    out.push_str(&html[rest.min(html.len())..]);
+    out
+}
+
+/// 提取正文主块：去噪声块 → article/main 标签 → 语义 class/id 的最大 div → 兜底整页
+fn extract_main_content(html: &str) -> String {
+    let mut cleaned = html.to_string();
+    for tag in [
+        "script", "style", "noscript", "iframe", "form", "nav", "footer", "header", "aside",
+    ] {
+        cleaned = remove_tag_blocks(&cleaned, tag);
+    }
+    // HTML 注释
+    while let Some(s) = cleaned.find("<!--") {
+        match cleaned[s..].find("-->") {
+            Some(e) => cleaned.replace_range(s..s + e + 3, ""),
+            None => break,
+        }
+    }
+    for tag in ["article", "main"] {
+        if let Some(pos) = find_ci(&cleaned, &format!("<{tag}"), 0) {
+            if let Some((s, e)) = tag_block_span(&cleaned, pos, tag) {
+                if strip_tags(&cleaned[s..e]).chars().count() >= 200 {
+                    return cleaned[s..e].to_string();
+                }
+            }
+        }
+    }
+    // 语义 div：class/id 含 article|content|post|entry|main（排除 comment），取可见文本最多者
+    let mut best: Option<(usize, usize, usize)> = None;
+    let mut cur = 0;
+    while let Some(pos) = find_ci(&cleaned, "<div", cur) {
+        let Some(gt) = cleaned[pos..].find('>') else { break };
+        let attrs = cleaned[pos..pos + gt].to_lowercase();
+        cur = pos + 4;
+        let hit = ["article", "content", "post", "entry", "main"]
+            .iter()
+            .any(|k| attrs.contains(k));
+        if !hit || attrs.contains("comment") {
+            continue;
+        }
+        if let Some((s, e)) = tag_block_span(&cleaned, pos, "div") {
+            let text_len = strip_tags(&cleaned[s..e]).chars().count();
+            if text_len > best.map(|b| b.0).unwrap_or(0) {
+                best = Some((text_len, s, e));
+            }
+        }
+    }
+    if let Some((len, s, e)) = best {
+        if len >= 200 {
+            return cleaned[s..e].to_string();
+        }
+    }
+    cleaned
 }
 
 /// 解析 Bing 结果页：`<li class="b_algo">` 块 → (标题, 链接, 摘要)
@@ -437,15 +642,60 @@ pub async fn fetch_text(raw_url: &str) -> Result<String, String> {
         return Err("页面过大（超过 2MB）已拒绝".into());
     }
     let text = decode_html(&bytes);
-    let plain = html2text::from_read(&mut text.as_bytes(), 120)
+    // 先抽正文主块再转纯文本（去导航/广告/页脚）；提取结果过短说明误伤，退回整页转换
+    let main = extract_main_content(&text);
+    let mut plain = html2text::from_read(&mut main.as_bytes(), 120)
         .map_err(|e| format!("解析 HTML 失败：{e}"))?
         .trim()
         .to_string();
+    if plain.chars().count() < 100 && main.len() != text.len() {
+        if let Ok(full) = html2text::from_read(&mut text.as_bytes(), 120) {
+            if full.trim().chars().count() > plain.chars().count() {
+                plain = full.trim().to_string();
+            }
+        }
+    }
+    // 2026-08-20：正文仍过短（多半是 JS 渲染的 SPA 页面，静态抓取只能拿到空壳）→
+    // 回退 Jina Reader 公共代理（服务端渲染后返回 markdown，免费无需 key）。
+    // 隐私边界：目标 URL 会发给 r.jina.ai（公网地址本身，低风险）。
+    if plain.chars().count() < 100 {
+        if let Ok(jina) = fetch_jina_reader(raw_url).await {
+            if jina.chars().count() > plain.chars().count() {
+                plain = jina;
+            }
+        }
+    }
     if plain.is_empty() {
         // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
         return Err("页面没有可提取的文本内容".into());
     }
     Ok(plain)
+}
+
+/// Jina Reader 代理 URL（纯函数便于单测）：https://r.jina.ai/<原 URL>
+fn jina_reader_url(raw_url: &str) -> String {
+    format!("https://r.jina.ai/{}", raw_url.trim())
+}
+
+/// Jina Reader 回退抓取：公共代理服务端渲染页面返回 markdown 文本。
+/// 失败（超时/限流/目标不可达）由调用方忽略，不影响主路径。
+async fn fetch_jina_reader(raw_url: &str) -> Result<String, String> {
+    let url = url::Url::parse(&jina_reader_url(raw_url)).map_err(|_| "Jina URL 无效".to_string())?;
+    check_public_url(&url).await?;
+    let resp = http_client()
+        .get(url)
+        .header(reqwest::header::USER_AGENT, UA)
+        .send()
+        .await
+        .map_err(|e| format!("Jina 请求失败：{e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("Jina 返回 HTTP {}", resp.status()));
+    }
+    let bytes = resp.bytes().await.map_err(|e| format!("Jina 读取失败：{e}"))?;
+    if bytes.len() > FETCH_MAX_BYTES {
+        return Err("Jina 返回过大（超过 2MB）".into());
+    }
+    Ok(String::from_utf8_lossy(&bytes).trim().to_string())
 }
 
 /// IPv4 是否为内网/本机段
@@ -602,6 +852,65 @@ mod tests {
             "你好 & 世界 ！"
         );
         assert_eq!(strip_tags("<a href=\"x\">标题</a>"), "标题");
+    }
+
+    #[test]
+    fn extract_main_prefers_article_over_nav() {
+        let html = r#"<html><body>
+            <nav><a href="/">首页</a><a href="/about">关于我们</a></nav>
+            <article><h1>正文标题</h1><p>这是正文内容，应该被提取出来，而导航链接不应该出现在结果里。正文需要足够长才能超过 200 字阈值，所以这里多写一些内容来凑够长度。继续补充正文内容，确保测试稳定通过，再多写一点点内容。</p></article>
+            <footer>版权所有 2026</footer>
+        </body></html>"#;
+        let main = extract_main_content(html);
+        assert!(main.contains("正文标题"), "应提取 article 正文");
+        assert!(!main.contains("关于我们"), "nav 噪声应被剔除");
+        assert!(!main.contains("版权所有"), "footer 噪声应被剔除");
+    }
+
+    #[test]
+    fn extract_main_semantic_div_fallback() {
+        // 没有 article/main 标签时，用语义 class 的最大 div
+        let html = format!(
+            r#"<html><body><div class="sidebar">侧边栏短</div><div id="content"><p>{}</p></div></body></html>"#,
+            "正文内容".repeat(60)
+        );
+        let main = extract_main_content(&html);
+        assert!(main.contains("正文内容"), "应命中 id=content 的 div");
+        assert!(!main.contains("侧边栏短"), "sidebar 不应被选中");
+    }
+
+    #[test]
+    fn remove_tag_blocks_nested_same_tag() {
+        let html = "<div>a</div><script>var x = '<script>nested</script>';</script><p>keep</p>";
+        let out = remove_tag_blocks(html, "script");
+        assert!(out.contains("keep"));
+        assert!(!out.contains("nested"));
+    }
+
+    #[test]
+    fn clean_snippet_trims_ellipsis_and_whitespace() {
+        assert_eq!(clean_snippet("  多  空白\n合并 ……"), "多 空白 合并");
+        assert_eq!(clean_snippet("结尾省略…"), "结尾省略");
+        assert_eq!(clean_snippet("正常文本。"), "正常文本。");
+    }
+
+    #[test]
+    fn domain_of_extracts_host() {
+        assert_eq!(domain_of("https://www.example.com/a/b"), "www.example.com");
+        assert_eq!(domain_of("不是链接"), "");
+    }
+
+    #[test]
+    fn jina_reader_url_wraps_original() {
+        assert_eq!(
+            jina_reader_url("https://example.com/a"),
+            "https://r.jina.ai/https://example.com/a"
+        );
+        assert_eq!(
+            jina_reader_url("  http://foo.bar  "),
+            "https://r.jina.ai/http://foo.bar",
+            "首尾空白应裁掉"
+        );
     }
 
     #[test]
