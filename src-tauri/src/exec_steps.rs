@@ -173,7 +173,13 @@ async fn run_step(
         json!({"role": "system", "content": sys}),
         json!({"role": "user", "content": block}),
     ];
-    let (text, refs) = crate::bot_model_loop::run_model_loop(app.clone(), msgs, 10, stop).await?;
+    let (text, refs) = crate::bot_model_loop::run_model_loop(
+        app.clone(),
+        msgs,
+        crate::bot_model_loop::DEFAULT_MAX_ROUNDS,
+        stop,
+    )
+    .await?;
     park(PendingExec {
         task_id: task_id.to_string(),
         subtask_id: sub.id.clone(),

@@ -15,8 +15,8 @@
 //!
 //! 安全性（对齐《Harness 安全网关》需求）：
 //! - 工具白名单：固定 TOOLS schema（在 bot_model_loop.rs）+ execute_tool match，模型编造的工具一律拒绝
-//! - 调用熔断：单轮 Function 调用 ≤10 次 + 7 次软警告（收尾提醒）；聊天 8 轮/任务执行 10 轮工具循环；
-//!   HTTP connect 15s / 总超时 300s
+//! - 调用熔断：单轮 Function 调用 ≤10 次 + 7 次软警告；默认对话轮数 20（聊天/任务执行/逐步执行统一）；
+//!   多步 Skill 可在 frontmatter 自报 max_rounds 覆盖默认值；HTTP connect 15s / 总超时 300s
 //! - 参数校验：标题/备注/关键词/子任务/截止时间长度上限、标签数量上限
 //! - 审计日志：数据目录 bot.log 记录用户指令、工具名、参数、结果
 //! - API Key 存系统凭据存储（keyring），文件不落明文；

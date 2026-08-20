@@ -14,6 +14,10 @@ pub struct SkillMeta {
     /// 是否支持暂停后断点续跑（false 时暂停即终止：确认完成当前动作后技能结束）
     pub resumable: bool,
     pub intents: Vec<String>,
+    /// 多步 Skill 自报的对话轮数上限（2026-08-20）；
+    /// None → 运行时 fallback bot_model_loop::DEFAULT_MAX_ROUNDS（20）。
+    /// 解析时 clamp 到 1..=60（现有 Skill 未声明该字段 → None，不受影响）。
+    pub max_rounds: Option<usize>,
 }
 
 impl Default for SkillMeta {
@@ -29,6 +33,7 @@ impl Default for SkillMeta {
             enabled: true,
             resumable: false,
             intents: Vec::new(),
+            max_rounds: None,
         }
     }
 }
@@ -83,6 +88,11 @@ pub fn parse_meta(text: &str, dir_name: &str) -> SkillMeta {
             "timeout_secs" => {
                 if let Ok(n) = v.parse::<u64>() {
                     m.timeout_secs = n.clamp(10, 600);
+                }
+            }
+            "max_rounds" => {
+                if let Ok(n) = v.parse::<usize>() {
+                    m.max_rounds = Some(n.clamp(1, 60));
                 }
             }
             "rollback" => {

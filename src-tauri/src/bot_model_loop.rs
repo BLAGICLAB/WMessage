@@ -360,8 +360,46 @@ pub fn parse_sse_chunk(line: &str) -> Option<ParsedChunk> {
     Some(chunk)
 }
 
+/// 默认对话轮数（聊天 / 任务执行 / 逐步执行统一，2026-08-20 老板拍板 8/10 → 20）；
+/// 多步 Skill 可在 SKILL.md frontmatter 自报 max_rounds 覆盖（见 resolve_max_rounds）。
+pub(crate) const DEFAULT_MAX_ROUNDS: usize = 20;
+
+/// 本轮工具循环的轮数上限：Skill 自报 max_rounds 优先，未声明 → DEFAULT_MAX_ROUNDS。
+pub(crate) fn resolve_max_rounds(skill_max_rounds: Option<usize>) -> usize {
+    skill_max_rounds.unwrap_or(DEFAULT_MAX_ROUNDS)
+}
+
+// Harness 第 5 层：单轮对话 Function 总调用上限（每轮可并行多个 tool_calls，
+// max_rounds 管轮数管不住并行调用数，必须有独立计数熔断）
+//
+// 阈值演变：
+// - 2026-08-18 老板拍板 5 → 10：5 太激进（PPT 编排 + 配色 + 归档就要 8-10）；
+//   10 覆盖 90% 真实复合任务；15+ 掩护 LLM 死循环 / 幻觉调工具
+// - 2026-08-19 老板拍板 10 → 30（全局：聊天/任务卡执行/Skill 统一）：
+//   实锤 10 不够用——「列计划 + 按计划新增子任务」复合任务在 22:56 真触发熔断
+//   （bot.log `fuse | 单轮 Function 调用超过 10 次`）。失控防护改靠：
+//   幻觉守卫（claims_mutation）+ 软警告 + /stop，不再靠压低上限
+// - 2026-08-20 老板拍板 30 → 10：30 太宽松，会掩护 LLM 幻觉/死循环；
+//   软警告 20 → 7（按 ~30% buffer：10-3=7，与原 20/30 的 ~33% 保持比例）
+const MAX_FUNCTION_CALLS_PER_TURN: usize = 10;
+const SOFT_WARN_AT: usize = 7;
+
+/// 熔断判定：第 n 次（1-based 累计）Function 调用是否超上限
+fn should_fuse(calls_so_far: usize) -> bool {
+    calls_so_far > MAX_FUNCTION_CALLS_PER_TURN
+}
+
+/// 熔断返回消息（与主循环文案同源，单测直接断言）
+fn fuse_message(final_text: &str, hint: &str) -> String {
+    format!(
+        "{final_text}\n\n⏹ 已熔断：本轮 Function 调用超过 {} 次上限（安全保护），已停止后续执行{hint}",
+        MAX_FUNCTION_CALLS_PER_TURN
+    )
+}
+
 /// 模型工具循环核心：配置/Key 检查、流式请求（思考拆分 + 工具折叠事件）、进程内执行工具。
-/// msgs 需已含 system 消息；返回 (最终正文, 任务引用)。聊天 8 轮、任务执行 10 轮。
+/// msgs 需已含 system 消息；返回 (最终正文, 任务引用)。
+/// 轮数上限由调用方传入：默认 DEFAULT_MAX_ROUNDS（20），多步 Skill 可自报 max_rounds 覆盖。
 pub async fn run_model_loop(
     app: AppHandle,
     msgs: Vec<serde_json::Value>,
@@ -386,19 +424,6 @@ pub async fn run_model_loop(
     crate::bot_skills::clear_terminal_skill_runs();
     // 最多 max_rounds 轮（工具循环），每轮流式输出；收到 tool_calls 则执行后把结果续进对话
     let mut collected_refs: Vec<TaskRef> = Vec::new();
-    // Harness 第 5 层：单轮对话 Function 总调用上限（每轮可并行多个 tool_calls，
-    // max_rounds 管轮数管不住并行调用数，必须有独立计数熔断）
-    //
-    // 阈值演变：
-    // - 2026-08-18 老板拍板 5 → 10：5 太激进（PPT 编排 + 配色 + 归档就要 8-10）；
-    //   10 覆盖 90% 真实复合任务；15+ 掩护 LLM 死循环 / 幻觉调工具
-    // - 2026-08-19 老板拍板 10 → 30（全局：聊天/任务卡执行/Skill 统一）：
-    //   实锤 10 不够用——「列计划 + 按计划新增子任务」复合任务在 22:56 真触发熔断
-    //   （bot.log `fuse | 单轮 Function 调用超过 10 次`）。失控防护改靠：
-    //   幻觉守卫（claims_mutation）+ 软警告 + /stop，不再靠压低上限
-    // - 软警告（20）收尾提醒：留 10 次余量收尾，避免刚警告完就熔断
-    const MAX_FUNCTION_CALLS_PER_TURN: usize = 30;
-    const SOFT_WARN_AT: usize = 20;
     let mut function_calls_total: usize = 0;
     let mut soft_warn_sent: bool = false;
     // 防幻觉汇报守卫：本轮是否实际执行过变更类工具；补一轮机会每次对话只用一次
@@ -630,7 +655,7 @@ pub async fn run_model_loop(
             if MUTATING_TOOLS.contains(&name.as_str()) {
                 mutation_done = true;
             }
-            if function_calls_total > MAX_FUNCTION_CALLS_PER_TURN {
+            if should_fuse(function_calls_total) {
                 let hint = crate::bot_skills::skill_finish(&app, false, "单轮 Function 调用超上限");
                 crate::bot::audit_log(
                     &app,
@@ -639,13 +664,7 @@ pub async fn run_model_loop(
                         MAX_FUNCTION_CALLS_PER_TURN
                     ),
                 );
-                return Ok((
-                    format!(
-                        "{final_text}\n\n⏹ 已熔断：本轮 Function 调用超过 {} 次上限（安全保护），已停止后续执行{hint}",
-                        MAX_FUNCTION_CALLS_PER_TURN
-                    ),
-                    collected_refs,
-                ));
+                return Ok((fuse_message(&final_text, &hint), collected_refs));
             }
             // 软警告（SOFT_WARN_AT）：置标志，推迟到本轮 tool 响应全部回填后再注入——
             // 若在此直接 push user 消息，会插进 assistant(tool_calls) 与 tool 响应之间，
@@ -979,5 +998,57 @@ mod tools_schema_tests {
         ] {
             assert!(names.contains(&required), "缺少工具 {required}");
         }
+    }
+}
+// ────────────────────────────────────────────────────────────────────
+// 测试：max_rounds 解析 / fallback + 单轮 Function 调用熔断（2026-08-20）
+// ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod rounds_fuse_tests {
+    use super::*;
+
+    #[test]
+    fn skill_frontmatter_max_rounds_overrides_default() {
+        // Skill frontmatter 声明 max_rounds: 25 → 生效，run_model_loop 收到 25
+        let meta = crate::bot_skills::parse_meta(
+            "---\nname: minimax-docx\nmax_rounds: 25\n---\n# body\n",
+            "minimax-docx",
+        );
+        assert_eq!(meta.max_rounds, Some(25));
+        assert_eq!(resolve_max_rounds(meta.max_rounds), 25);
+    }
+
+    #[test]
+    fn skill_without_max_rounds_falls_back_to_default_20() {
+        // 现有 Skill 未声明 max_rounds → None → fallback 默认 20（兼容不崩）
+        let meta =
+            crate::bot_skills::parse_meta("---\nname: x\ndescription: d\n---\nbody\n", "x");
+        assert_eq!(meta.max_rounds, None);
+        assert_eq!(resolve_max_rounds(meta.max_rounds), DEFAULT_MAX_ROUNDS);
+        assert_eq!(DEFAULT_MAX_ROUNDS, 20);
+    }
+
+    #[test]
+    fn fuse_trips_on_11th_function_call() {
+        // MAX_FUNCTION_CALLS_PER_TURN = 10 实际生效：模拟主循环计数，
+        // 构造 11 个 tool_calls → 第 11 次触发熔断并返回「⏹ 已熔断」消息
+        assert_eq!(MAX_FUNCTION_CALLS_PER_TURN, 10);
+        assert_eq!(SOFT_WARN_AT, 7);
+        let mut calls = 0usize;
+        let mut fused_msg: Option<String> = None;
+        for _ in 0..11 {
+            calls += 1;
+            if should_fuse(calls) {
+                fused_msg = Some(fuse_message("前文", ""));
+                break;
+            }
+        }
+        let msg = fused_msg.expect("11 次 Function 调用内必须触发熔断");
+        assert!(msg.contains("⏹ 已熔断"), "熔断消息应含「⏹ 已熔断」：{msg}");
+        assert!(msg.contains("10 次上限"), "熔断消息应带上限值：{msg}");
+        // 边界：第 10 次放行，第 11 次熔断
+        assert!(!should_fuse(10));
+        assert!(should_fuse(11));
     }
 }
