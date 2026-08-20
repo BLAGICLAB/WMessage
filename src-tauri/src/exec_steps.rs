@@ -6,8 +6,8 @@
 //! - 「停」→ 结束执行，已勾选的保持现状
 //! 全部做完只汇报、不勾任务卡完成状态（由用户最终确认）。
 //!
-//! 边界：聊天批量执行（is_chat_execute_trigger）与定时调度（interactive=false）
-//! 不走本模式，整卡连续做完（多卡/无人在场场景不适合逐步确认）。
+//! 边界：聊天批量执行（pre-step 路由 RouteAction::ExecuteTasks，经 ChatExecuteMiddleware 命中）
+//! 与定时调度（interactive=false）不走本模式，整卡连续做完（多卡/无人在场场景不适合逐步确认）。
 //!
 //! 状态只存内存（task_id + 当前待确认子任务 id），进程退出即丢；
 //! 每步上下文从 DB 重读重建，不保留 LLM 历史（省 token、子任务勾选状态永远新鲜）。

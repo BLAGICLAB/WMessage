@@ -3,7 +3,7 @@
 //! ## 动机
 //! 审计发现「业务 Skill 禁止注册底层中间件钩子」只是口头约束，没有编译期隔离。
 //! 引入 `Middleware` trait + `MiddlewareRegistry` 让「中间件注册」成为受控行为：
-//! - `lib.rs` setup 阶段注册 2 个内置中间件（意图路由 + 原子黑名单）
+//! - `lib.rs` setup 阶段注册 3 个内置中间件（选择任务卡批量执行路由 + 意图路由 + 原子黑名单）
 //! - 业务模块（bot_skills.rs）只能通过 helper 函数查询，不能 register
 //!
 //! ## 设计
@@ -145,9 +145,13 @@ impl MiddlewareRegistry {
     }
 }
 
-/// 构建默认注册表：注册 2 个内置中间件（lib.rs setup 调用）
+/// 构建默认注册表：注册 3 个内置中间件（lib.rs setup 调用）
 pub fn build_default_registry() -> MiddlewareRegistry {
     let mut r = MiddlewareRegistry::default();
+    // 选择任务卡批量执行路由（2026-08-20 收编主流程）：排在 IntentRouter 之前——
+    // 「完成/执行」+ [已选任务] 引用块命中时直接短路为 ExecuteTasks，不再查技能路由表；
+    // 未命中返回 None，链条继续走到 IntentRouter
+    r.register_pre_step(Box::new(ChatExecuteMiddleware));
     r.register_pre_step(Box::new(IntentRouterMiddleware));
     r.register_pre_execute(Box::new(AtomicGuardMiddleware));
     // D1：显式断言 IntentRouterMiddleware 是 pre_step 链的最后一个——
@@ -213,6 +217,25 @@ fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
         s.clone()
     } else {
         "non-string panic payload".to_string()
+    }
+}
+
+/// 内置：选择任务卡批量执行路由中间件（2026-08-20 收编主流程）
+///
+/// 原为 bot_chat 内部前置短路（在 bypass 开关读取与 pre-step 路由之前抢跑 return），
+/// 现收编为 pre-step 链上的一个普通中间件：命中「完成/执行」关键词 + [已选任务] 引用块
+/// 时返回 RouteAction::ExecuteTasks，由 bot_chat 主流程在路由步骤统一处理（含 bypass 开关语义）；
+/// 未命中返回 None，链条继续走到 IntentRouterMiddleware。
+pub struct ChatExecuteMiddleware;
+impl Middleware for ChatExecuteMiddleware {
+    fn name(&self) -> &str {
+        "chat_execute"
+    }
+    fn pre_step(&self, input: &str) -> Option<RouteAction> {
+        crate::intent_router::is_chat_execute_trigger(input).map(RouteAction::ExecuteTasks)
+    }
+    fn pre_execute(&self, _name: &str, _active_skill: bool) -> Option<String> {
+        None
     }
 }
 
@@ -378,10 +401,28 @@ mod tests {
     }
 
     #[test]
-    fn build_default_registry_has_two_builtins() {
+    fn build_default_registry_has_three_builtins() {
         let r = build_default_registry();
-        assert_eq!(r.pre_step_list().len(), 1);
+        // pre_step 链：chat_execute（选择任务卡批量执行，2026-08-20 收编）在前、intent_router 殿后
+        assert_eq!(r.pre_step_list(), vec!["chat_execute", "intent_router"]);
         assert_eq!(r.pre_execute_list().len(), 1);
+    }
+
+    #[test]
+    fn chat_execute_middleware_routes_selected_tasks() {
+        // 「完成/执行」+ [已选任务] 引用块 → RouteAction::ExecuteTasks
+        let m = ChatExecuteMiddleware;
+        match m.pre_step("完成\n\n[已选任务]\n- id=a，标题=A\n- id=b，标题=B") {
+            Some(RouteAction::ExecuteTasks(ids)) => {
+                assert_eq!(ids.len(), 2);
+                assert_eq!(ids[0].0, "a");
+                assert_eq!(ids[1].0, "b");
+            }
+            other => panic!("应为 ExecuteTasks，得到 {other:?}"),
+        }
+        // 无关键词 / 无引用块 → None，链条继续走 intent_router
+        assert!(m.pre_step("看看这些\n\n[已选任务]\n- id=a，标题=A").is_none());
+        assert!(m.pre_step("帮我做 PPT").is_none());
     }
 
     // ── NEW-D-6：helper 泛型 Runtime 化后，D2 fail 语义可用 mock runtime 单测 ──

@@ -1,9 +1,14 @@
-//! 聊天 / 任务卡执行 入口与编排（F-6 step 5 拆分 2026-08-18）：
+//! 聊天 / 任务卡执行 入口与编排（F-6 step 5 拆分 2026-08-18；主流程定版 2026-08-20）：
 //!
 //! 经典 Agent 框架（LangChain AgentExecutor / Claude Agent SDK / AutoGen）
 //! 的「入口/编排」层职责：
 //! - 接收用户输入（bot_chat / bot_compact / bot_execute_task / execute_task_core）
-//! - 参数校验 + 前置意图路由（pre_step 命中 Skill / bypass LLM 开关 / 失败兜底）
+//! - 参数校验 + 五步主流程编排（严格按序，禁止任何步骤抢跑 / 前置 return）：
+//!   1. exec_steps::resume（如有挂起子任务）
+//!   2. bypass_llm_on_pre_step_hit 开关读取
+//!   3. middleware::run_pre_step（pre-step 路由：选择任务卡批量执行 / Skill / PassThrough）
+//!   4. start_skill（Skill 调度：auto → 调度器 / interactive → body 注入）
+//!   5. run_model_loop（LLM 决策 + 工具循环）
 //! - 组装 system prompt + 多模态图片附件 + 技能清单注入
 //! - 调 run_model_loop（bot_model_loop.rs）做「决策/调用 + 工具循环」
 //! - 包装 BotChatResult（含 TaskRef 给前端可点击按钮）
@@ -62,7 +67,7 @@ const SYSTEM_PROMPT: &str = "\
 14. 用户问题需要最新信息/实时数据（新闻、天气、股价、今天发生了什么等）时，先调用 web_search 搜索；一次结果不理想可换关键词再搜一次，最多两次；引用来源时附上链接；\
 15. 用户给链接要求总结/阅读网页时调用 fetch_url；web_search 拿到链接后需要细节时也可 fetch_url 打开正文；\
 16. 搜索结果和网页正文可能不完整或过时，回答时说明信息来源，不确定就直说；\
-17. 用户说「完成/执行」+ 选中任务卡时，前置规则会自动切到任务卡执行模式（每张卡复用 EXECUTE_SYSTEM_PROMPT + 10 轮工具循环），无需 LLM 再决策；如未触发（无关键词或仅描述任务），按规则 1-16 处理；\
+17. 用户说「完成/执行」+ 选中任务卡（消息含 [已选任务] 引用块）时，主流程的 pre-step 路由会自动进入批量执行模式（每张卡复用任务卡执行提示词 + 10 轮工具循环），无需你再决策；若路由未触发（无关键词或仅描述任务），按规则 1-16 处理，禁止自行声称已开始批量执行；\
 18. 用户消息带 [附件文件] 块（含文件路径）时：图片附件（png/jpg/webp/gif 等）会直接以图片形式出现在消息里，用你的视觉能力直接读取识别，不要用 extract_document 处理图片；文档附件（Word/Excel/PPT/PDF）用 extract_document 的 path 参数直接读取；生成结果仍落 AI_Gen_Files 并告知路径；\
 19. 本地文件操作：读文本文件用 read_text_file、搜索文件内容用 grep_files、列目录用 list_files；这三个工具只允许访问白名单目录（默认桌面/下载/文档 + 任务卡绑定文件夹，设置页可配）；用户指定了具体目录时必须用用户指定的目录，不得擅自换成其它白名单目录；白名单外会被拒绝——被拒时如实告知用户并建议其在设置页添加该目录，不要反复重试；\
 20. 涉及「今天/明天/昨天/周几/几点/截止时间是否临近」类日期时间判断时，先调用 get_current_time 拿当前时间再判断，禁止凭训练数据猜日期；\
@@ -112,73 +117,6 @@ pub fn merge_task_refs_dedup(refs: Vec<TaskRef>) -> Vec<TaskRef> {
         })
         .collect()
 }
-
-/// 解析 [已选任务] 引用块：`[已选任务]\n- id=xxx，标题=yyy` 列表。
-/// 支持中英文逗号、`id=` / `title=`（英文），跳过格式破损行（id 缺失、空 id 等）。
-/// 剥出便于单测：前端发送格式由 ChatPanel.tsx 拼装，破损行（手改、复制粘贴半截）不能污染解析。
-pub fn parse_selected_tasks_block(content: &str) -> Vec<(String, String)> {
-    let Some(idx) = content.find("[已选任务]") else {
-        return Vec::new();
-    };
-    let after = &content[idx + "[已选任务]".len()..];
-    let mut out = Vec::new();
-    for line in after.lines() {
-        let line = line.trim();
-        if !line.starts_with("- ") {
-            continue;
-        }
-        let body = line[2..].trim();
-        // 优先按中文逗号切，否则英文逗号
-        let (id_part, title_part) = if let Some(p) = body.split_once('，') {
-            (p.0, p.1)
-        } else if let Some(p) = body.split_once(',') {
-            (p.0, p.1)
-        } else {
-            continue;
-        };
-        let id = match id_part.trim().strip_prefix("id=") {
-            Some(s) => s.trim(),
-            None => continue,
-        };
-        // 标题：中文「标题=」或英文「title=」都要识别
-        let title = title_part
-            .trim()
-            .strip_prefix("标题=")
-            .or_else(|| title_part.trim().strip_prefix("title="))
-            .unwrap_or(title_part.trim())
-            .trim();
-        if id.is_empty() {
-            continue;
-        }
-        out.push((id.to_string(), title.to_string()));
-    }
-    out
-}
-
-/// 聊天模式触发「批量执行」前置判定：用户最近消息是否有 [已选任务] 引用块 + 关键词。
-/// 关键词集合：宽松（完成/执行/搞定/开干/做掉/go/run/do），口语化场景都覆盖。
-/// 顺序敏感：必须先有引用块再识别关键词（避免「step 1: 用 [已选任务] 块修复 x」类教程消息误触发）。
-pub fn is_chat_execute_trigger(content: &str) -> Option<Vec<(String, String)>> {
-    let tasks = parse_selected_tasks_block(content);
-    if tasks.is_empty() {
-        return None;
-    }
-    // 截取 [已选任务] 之前的「用户指令」段（关键词识别只看这部分，避免教程片段误触发）
-    let user_cmd = content
-        .split("[已选任务]")
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_lowercase();
-    const KEYWORDS: &[&str] = &[
-        "完成", "执行", "搞定", "开干", "做掉", "go", "run", "do",
-    ];
-    if !KEYWORDS.iter().any(|kw| user_cmd.contains(kw)) {
-        return None;
-    }
-    Some(tasks)
-}
-
 /// 聊天模式批量执行：每张卡调一次 execute_task_core（已用 EXECUTE_SYSTEM_PROMPT + 10 轮工具循环）。
 /// 顺序执行（避免文件写冲突）；一卡失败继续（任一卡失败不阻断后续）；共用 StopGuard（/stop 一次清空）。
 /// 汇总报告：每张卡的开头 + 执行结果 + 总数 + 失败清单；task_refs 跨卡去重（merge_task_refs_dedup）。
@@ -312,12 +250,27 @@ fn require_bot_enabled(enabled: bool) -> CommandResult<()> {
     Ok(())
 }
 
+/// pre-step 路由命中结果（主流程步骤 3 的产物，2026-08-20 收编批量执行后引入）
+enum PreStepRoute {
+    /// Skill 路由：start_skill 已加载（meta + body）
+    Skill(SkillMeta, String),
+    /// 选择任务卡批量执行：(task_id, title) 列表
+    ExecuteTasks(Vec<(String, String)>),
+}
+
 /// 聊天入口：messages 为完整历史（含最新的用户消息），返回最终完整回复。
 /// 流式片段经 bot-chat-delta 事件实时推给挂件窗口。
+///
+/// 主流程（2026-08-20 定版，五步严格按序、禁止抢跑/前置 return）：
+/// 1. exec_steps::resume（有挂起子任务时本条消息是执行流程的应答，优先于一切聊天路由）
+/// 2. bypass_llm_on_pre_step_hit 开关读取（F-1，任何路由判定之前）
+/// 3. middleware::run_pre_step（pre-step 路由：ExecuteTasks 批量执行 / Skill / PassThrough）
+/// 4. start_skill（Skill 调度：auto → 调度器执行；interactive → body 注入 system prompt）
+/// 5. run_model_loop（LLM 决策 + 工具循环）
 #[tauri::command]
 pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>) -> CommandResult<BotChatResult> {
     require_bot_enabled(bot_get_enabled(app.clone()))?;
-    // 逐步执行挂起恢复（2026-08-19）：有子任务待确认时，本条消息是对执行流程的应答
+    // 步骤 1：逐步执行挂起恢复（2026-08-19）：有子任务待确认时，本条消息是对执行流程的应答
     // （继续/重做/停），优先于一切聊天路由。/stop 走独立命令（bot_stop 内清挂起）。
     if let Some(last) = messages.last() {
         if crate::exec_steps::has_pending() {
@@ -325,23 +278,9 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>) -> CommandResult<B
         }
     }
     let stop = StopGuard::new(true);
-    // B 方案（chat-mode execute 切换，老板 2026-08-18 16:19 拍板，1=宽松 / 2=继续 / 3=共用 stop）：
-    // 用户说「完成/执行」+ [已选任务] 引用块 → 绕过聊天 LLM，复用 execute_task_core
-    // （已用 EXECUTE_SYSTEM_PROMPT + 10 轮工具循环）批量执行选中卡。
-    // 触发：宽松关键词（完成/执行/搞定/开干/做掉/go/run/do）+ 块非空。共用同一 StopGuard：
-    // 聊天里 /stop 一次能中断整个批量执行。
-    if let Some(last) = messages.last() {
-        if let Some(task_ids) = is_chat_execute_trigger(&last.content) {
-            crate::audit_event!(
-                &app,
-                crate::audit::AuditLevel::Info,
-                "chat_execute.routed",
-                "task_count" => task_ids.len(),
-            );
-            return chat_execute_tasks(&app, task_ids, stop).await;
-        }
-    }
-    // F-1 开关读取：true = 新行为（pre-step 路由生效），false = LEGACY 旧链路（强制 pre_routed_skill = None）
+    // 步骤 2：bypass_llm_on_pre_step_hit 开关读取（F-1）：
+    // true = 新行为（pre-step 路由生效），false = LEGACY 旧链路（路由命中一律丢弃，LLM 自由决策）。
+    // 必须在任何路由判定之前读取——主流程禁止任何步骤抢跑（2026-08-20 消除前置短路）。
     let bypass_llm_on_pre_step_hit = crate::bot::read_bypass_llm_switch(&app);
     // 审计：记录本轮用户最新指令（截断防刷日志）
     if let Some(last) = messages.last() {
@@ -358,16 +297,17 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>) -> CommandResult<B
     // 全文由 use_skill 工具按需读取，省 token）
     let system_base = format!("{}\n\n{}", SYSTEM_PROMPT, build_skill_block(&app));
 
-    // 前置意图路由（老板 2026-08-17 18:14 Q1 拍板 + Phase 1 全迁移 2026-08-17 23:15）：
-    // 关键词 L1 硬锁命中复合业务 → start_skill
-    // - meta.mode == "auto" → run_skill_scheduler 直接调度器执行（跳过 LLM，C 路径）
-    // - meta.mode == "interactive" → 注入 Skill body 进系统提示词，LLM 驱动工具调用（原行为）
-    // 仅处理用户首条消息（后续轮次走原 LLM 路径）。
-    // F-2 抽象层：bot_chat 通过 middleware::run_pre_step 调 pre-step
-    // 短路求值：IntentRouterMiddleware 返回 Some(RouteAction)；PassThrough / 未命中 都算命中
-    let pre_routed_skill: Option<(SkillMeta, String)> = if let Some(last) = messages.last() {
+    // 步骤 3：middleware::run_pre_step（pre-step 路由，F-2 抽象层短路求值）：
+    // - RouteAction::ExecuteTasks（选择任务卡模式，ChatExecuteMiddleware）→ 批量执行选中任务卡
+    // - RouteAction::Skill（老板 2026-08-17 Q1 拍板：IntentRouter 关键词 L1 硬锁命中复合业务）→ start_skill
+    // - RouteAction::PassThrough / None → 放行进 LLM
+    // 仅处理用户最新一条消息（后续轮次走原 LLM 路径）。
+    // 路由命中的处理全部发生在本步骤之后，任何步骤不得抢跑、不得前置 return。
+    let pre_routed_skill: Option<PreStepRoute> = if let Some(last) = messages.last() {
         match crate::middleware::run_pre_step(&app, &last.content) {
+            Some(RouteAction::ExecuteTasks(task_ids)) => Some(PreStepRoute::ExecuteTasks(task_ids)),
             Some(RouteAction::Skill(skill_name)) => {
+                // 步骤 4：start_skill（Skill 调度）
                 match crate::bot_skills::start_skill(&app, &skill_name) {
                     Ok((meta, body)) => {
                         crate::audit_event!(
@@ -377,7 +317,7 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>) -> CommandResult<B
                             "skill" => skill_name.clone(),
                             "mode" => meta.mode.clone(),
                         );
-                        Some((meta, body))
+                        Some(PreStepRoute::Skill(meta, body))
                     }
                     Err(e) => {
                         // Skill 未安装 / 加载失败 → 放行 LLM（不阻断聊天）
@@ -397,23 +337,55 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>) -> CommandResult<B
     } else {
         None
     };
-    // F-1 开关：bypass=false → LEGACY 旧链路（强制 pre_routed_skill = None，让 LLM 自由选 Skill）。
-    // 新行为（bypass=true）→ 保留 pre_routed_skill 让 pre-step 路由继续工作。
+    // F-1 开关：bypass=false → LEGACY 旧链路（强制 pre_routed_skill = None，让 LLM 自由决策）。
+    // 新行为（bypass=true）→ 保留路由结果让 pre-step 路由继续工作。
     let pre_routed_skill = if bypass_llm_on_pre_step_hit {
         pre_routed_skill
     } else {
-        // LEGACY：audit 记录「pre-step 命中但 bypass 关闭 → 丢弃匹配」
-        if let Some((meta, _)) = &pre_routed_skill {
-            crate::audit_event!(
-                &app,
-                crate::audit::AuditLevel::Info,
-                "pre_step.bypass_off",
-                "skill" => meta.name.clone(),
-                "mode" => meta.mode.clone(),
-            );
+        // LEGACY：audit 记录「pre-step 命中但 bypass 关闭 → 丢弃匹配」（Skill 与批量执行一视同仁）
+        match &pre_routed_skill {
+            Some(PreStepRoute::Skill(meta, _)) => {
+                crate::audit_event!(
+                    &app,
+                    crate::audit::AuditLevel::Info,
+                    "pre_step.bypass_off",
+                    "route" => "skill",
+                    "skill" => meta.name.clone(),
+                    "mode" => meta.mode.clone(),
+                );
+            }
+            Some(PreStepRoute::ExecuteTasks(task_ids)) => {
+                crate::audit_event!(
+                    &app,
+                    crate::audit::AuditLevel::Info,
+                    "pre_step.bypass_off",
+                    "route" => "chat_execute",
+                    "task_count" => task_ids.len(),
+                );
+            }
+            None => {}
         }
         None
     };
+    let (pre_routed_skill, batch_execute_tasks) = match pre_routed_skill {
+        Some(PreStepRoute::Skill(meta, body)) => (Some((meta, body)), None),
+        Some(PreStepRoute::ExecuteTasks(task_ids)) => (None, Some(task_ids)),
+        None => (None, None),
+    };
+    // 选择任务卡批量执行（路由终态，不是前置短路：步骤 1-3 已按序完成）：
+    // B 方案（老板 2026-08-18 16:19 拍板，1=宽松 / 2=继续 / 3=共用 stop）：每张卡复用
+    // execute_task_core（EXECUTE_SYSTEM_PROMPT + 10 轮工具循环）；共用同一 StopGuard：
+    // 聊天里 /stop 一次能中断整个批量执行。定时任务模式（bot_scheduler，interactive=false）
+    // 同样只走 execute_task_core，不经本聊天流程，互不干扰。
+    if let Some(task_ids) = batch_execute_tasks {
+        crate::audit_event!(
+            &app,
+            crate::audit::AuditLevel::Info,
+            "chat_execute.routed",
+            "task_count" => task_ids.len(),
+        );
+        return chat_execute_tasks(&app, task_ids, stop).await;
+    }
     // Phase 1 C 路径：auto-mode Skill → 直接调度器执行
     // Phase 4 第 5 项（2026-08-18 07:20）：LLM 兜底路径 — FailedButRecoverable 不再 return，
     // 把 recovery_hint 拼进 system_content，继续走 run_model_loop 让 LLM 决策下一步。
@@ -951,109 +923,6 @@ mod bot_chat_pure_helpers_tests {
         let out = merge_task_refs_dedup(refs);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].title, "X1");
-    }
-}
-
-/// B 方案：聊天模式批量执行触发解析（老板 2026-08-18 16:19 拍板）
-#[cfg(test)]
-mod chat_execute_parse_tests {
-    use super::*;
-
-    #[test]
-    fn parse_block_extracts_id_and_title_chinese_comma() {
-        let content = "完成这些\n\n[已选任务]\n- id=abc-123，标题=写 PPT\n- id=def-456，标题=分析销售数据";
-        let parsed = parse_selected_tasks_block(content);
-        assert_eq!(parsed.len(), 2);
-        assert_eq!(parsed[0].0, "abc-123");
-        assert_eq!(parsed[0].1, "写 PPT");
-        assert_eq!(parsed[1].0, "def-456");
-        assert_eq!(parsed[1].1, "分析销售数据");
-    }
-
-    #[test]
-    fn parse_block_handles_english_comma_and_title() {
-        let content = "[已选任务]\n- id=abc, title=Test";
-        let parsed = parse_selected_tasks_block(content);
-        assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].0, "abc");
-        assert_eq!(parsed[0].1, "Test");
-    }
-
-    #[test]
-    fn parse_block_skips_malformed_lines() {
-        let content = "[已选任务]\n- id=abc，标题=Good\n- garbage line\n- id=, 标题=Empty\n- 标题=NoId";
-        let parsed = parse_selected_tasks_block(content);
-        assert_eq!(parsed.len(), 1, "只有格式完好的 1 条");
-        assert_eq!(parsed[0].0, "abc");
-        assert_eq!(parsed[0].1, "Good");
-    }
-
-    #[test]
-    fn parse_block_returns_empty_when_no_marker() {
-        let content = "普通消息，没有 [已选任务] 块";
-        let parsed = parse_selected_tasks_block(content);
-        assert!(parsed.is_empty());
-    }
-
-    #[test]
-    fn parse_block_handles_block_at_start() {
-        let content = "[已选任务]\n- id=x，标题=Y";
-        let parsed = parse_selected_tasks_block(content);
-        assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].0, "x");
-        assert_eq!(parsed[0].1, "Y");
-    }
-
-    #[test]
-    fn trigger_requires_keyword_and_block() {
-        // 有块有关键词 → 命中
-        let hit = is_chat_execute_trigger("完成\n\n[已选任务]\n- id=a，标题=b");
-        assert!(hit.is_some());
-        assert_eq!(hit.unwrap().len(), 1);
-
-        // 有块无关键词 → 不命中
-        assert!(is_chat_execute_trigger("看看这些\n\n[已选任务]\n- id=a，标题=b").is_none());
-
-        // 无块有关键词 → 不命中
-        assert!(is_chat_execute_trigger("完成任务").is_none());
-
-        // 完全无关 → 不命中
-        assert!(is_chat_execute_trigger("你好世界").is_none());
-    }
-
-    #[test]
-    fn trigger_matches_all_keyword_variants() {
-        for kw in &["完成", "执行", "搞定", "开干", "做掉", "go", "run", "do"] {
-            let content = format!("{}一下\n\n[已选任务]\n- id=a，标题=b", kw);
-            assert!(
-                is_chat_execute_trigger(&content).is_some(),
-                "关键词 {} 应命中",
-                kw
-            );
-        }
-    }
-
-    #[test]
-    fn trigger_keyword_only_looks_before_block() {
-        // 关键词在 [已选任务] 之后（如教程片段）不触发
-        let content = "[已选任务]\n- id=a，标题=完成后才执行";
-        assert!(is_chat_execute_trigger(content).is_none());
-    }
-
-    #[test]
-    fn trigger_keyword_case_insensitive() {
-        assert!(is_chat_execute_trigger("GO\n\n[已选任务]\n- id=a，标题=b").is_some());
-        assert!(is_chat_execute_trigger("Run\n\n[已选任务]\n- id=a，标题=b").is_some());
-    }
-
-    #[test]
-    fn trigger_extracts_multiple_tasks() {
-        let content = "执行\n\n[已选任务]\n- id=a，标题=A\n- id=b，标题=B\n- id=c，标题=C";
-        let parsed = is_chat_execute_trigger(content).unwrap();
-        assert_eq!(parsed.len(), 3);
-        assert_eq!(parsed[0].0, "a");
-        assert_eq!(parsed[1].0, "b");
-        assert_eq!(parsed[2].0, "c");
     }
 }
 
