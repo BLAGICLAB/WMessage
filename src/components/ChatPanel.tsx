@@ -836,12 +836,11 @@ function extractFilePaths(content: string): string[] {
     await runChat(history, text);
   };
 
-  // ➕ 添加附件：选文件，与消息一起发送（如：加 Word 后输入「润色」）。
+  // ➕ 添加附件：选文件（文档或图片均可），与消息一起发送（如：加 Word 后输入「润色」）。
   // Rust 侧弹框：此前前端 dialog.open 在挂件窗口不弹框（点击无反应）
-  // 注意：pick_files_dialog 当前 Rust 实现未暴露 filter 参数，
-  //   imageIntent 仅用于 UI 提示（图片按钮提示用户预期选图片），不做硬过滤。
-  //   真正识别靠 isImagePath(path)（后端 IMAGE_EXTS 同步）。
-  const pickFiles = async (_imageIntent = false) => {
+  // 注意：pick_files_dialog 当前 Rust 实现未暴露 filter 参数，不做硬过滤；
+  //   图片识别靠 isImagePath(path)（后端 IMAGE_EXTS 同步），图片走多模态，文档走 extract_document。
+  const pickFiles = async () => {
     try {
       const picked = await invoke<string[]>("pick_files_dialog");
       if (picked.length) {
@@ -1328,19 +1327,11 @@ function extractFilePaths(content: string): string[] {
       <div className="flex gap-1.5 shrink-0">
         <button
           className="nm-btn shrink-0 px-2.5 py-1.5 text-xs text-[var(--t3)]"
-          title="添加文件，和消息一起发送（如：添加 Word 后输入「润色」）"
-          onClick={() => pickFiles(false)}
+          title="添加文件或图片，和消息一起发送（如：添加 Word 后输入「润色」；图片发给机器人识别：png / jpg / jpeg / webp / gif / bmp，最大 3MB/张、最多 4 张/消息）"
+          onClick={pickFiles}
           disabled={busy}
         >
           ➕
-        </button>
-        <button
-          className="nm-btn shrink-0 px-2.5 py-1.5 text-xs text-[var(--t3)]"
-          title="添加图片，发送给机器人识别（png / jpg / jpeg / webp / gif / bmp，最大 3MB/张、最多 4 张/消息）"
-          onClick={() => pickFiles(true)}
-          disabled={busy}
-        >
-          🖼️
         </button>
         <input
           value={input}

@@ -27,7 +27,9 @@ pub async fn pick_files_dialog(app: AppHandle) -> CommandResult<Vec<String>> {
         .into_iter()
         .filter_map(|p| match p {
             tauri_plugin_dialog::FilePath::Path(pb) => pb.to_str().map(|s| s.to_string()),
-            _ => None,
+            // Windows WebView2 弹框可能回 Url 变体：一并收下，否则附件被静默吞掉
+            //（对齐 bot.rs / bot_py.rs 的 file_path_to_string 双变体实现）
+            tauri_plugin_dialog::FilePath::Url(u) => Some(u.to_string()),
         })
         .collect())
 }

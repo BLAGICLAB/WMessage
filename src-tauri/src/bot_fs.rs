@@ -25,14 +25,65 @@ const WALK_MAX_DEPTH: usize = 5;
 /// 遍历时跳过的大而杂目录（另跳过所有 . 开头隐藏目录）
 const SKIP_DIRS: [&str; 4] = ["node_modules", "target", "dist", "build"];
 
-/// 展开路径开头的 ~ / ~/（LLM 给的路径常带波浪号）
+/// 跨平台用户主目录：优先 HOME；Windows GUI 程序（资源管理器双击启动）常无
+/// HOME 环境变量，回退 USERPROFILE，再退 HOMEDRIVE+HOMEPATH。
+///（2026-08-20 修复：Windows 绿色版 HOME 缺失 → 默认白名单为空 →
+///  聊天附件 docx 被 extract_document 拒绝要求"再绑一遍"、且不再创建任务卡）
+pub(crate) fn home_dir() -> Option<PathBuf> {
+    home_dir_from(
+        std::env::var_os("HOME"),
+        std::env::var_os("USERPROFILE"),
+        std::env::var_os("HOMEDRIVE"),
+        std::env::var_os("HOMEPATH"),
+    )
+}
+
+/// 可测内核：按 HOME → USERPROFILE → HOMEDRIVE+HOMEPATH 优先级取第一个非空值
+fn home_dir_from(
+    home: Option<std::ffi::OsString>,
+    userprofile: Option<std::ffi::OsString>,
+    drive: Option<std::ffi::OsString>,
+    homepath: Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    for v in [home, userprofile].into_iter().flatten() {
+        if !v.is_empty() {
+            return Some(PathBuf::from(v));
+        }
+    }
+    match (drive, homepath) {
+        (Some(d), Some(p)) if !d.is_empty() && !p.is_empty() => {
+            let mut s = d;
+            s.push(p);
+            Some(PathBuf::from(s))
+        }
+        _ => None,
+    }
+}
+
+/// 展开路径开头的 ~ / ~/ / ~\（LLM 给的路径常带波浪号；Windows 上可能是反斜杠）
 fn expand_tilde(p: &str) -> PathBuf {
-    if p == "~" || p.starts_with("~/") {
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home).join(p.trim_start_matches("~/").trim_start_matches('~'));
+    if p == "~" || p.starts_with("~/") || p.starts_with("~\\") {
+        if let Some(home) = home_dir() {
+            return PathBuf::from(home).join(p.trim_start_matches(['~', '/', '\\']));
         }
     }
     PathBuf::from(p)
+}
+
+/// Windows `canonicalize` 返回 `\\?\` 扩展长度前缀路径；剥掉再返回，
+/// 避免该前缀泄漏给模型/前端（复读回 path 参数虽仍能解析，但易读性差且易困惑模型）。
+/// 仅剥盘符形式（\\?\C:\...）；UNC 形式（\\?\UNC\...）保守起见原样保留。
+/// 非 Windows 平台路径不会有此前缀，天然 no-op。
+fn strip_verbatim(p: PathBuf) -> PathBuf {
+    let stripped = p
+        .to_string_lossy()
+        .strip_prefix(r"\\?\")
+        .filter(|rest| !rest.starts_with(r"UNC\"))
+        .map(str::to_string);
+    match stripped {
+        Some(s) => PathBuf::from(s),
+        None => p,
+    }
 }
 
 /// 白名单目录集合（canonical 化，只保留真实存在的目录）
@@ -40,8 +91,8 @@ async fn allowed_dirs(app: &AppHandle) -> Vec<PathBuf> {
     let cfg = crate::bot::load_config(app);
     let mut raw: Vec<String> = cfg.allowed_dirs.clone();
     if raw.is_empty() {
-        // 内置默认：桌面/下载/文档
-        if let Some(home) = std::env::var_os("HOME") {
+        // 内置默认：桌面/下载/文档（home_dir 跨平台：Windows 无 HOME 时回退 USERPROFILE）
+        if let Some(home) = home_dir() {
             let home = PathBuf::from(home);
             for d in ["Desktop", "Downloads", "Documents"] {
                 raw.push(home.join(d).to_string_lossy().to_string());
@@ -82,7 +133,8 @@ pub async fn resolve_allowed(app: &AppHandle, path: &str) -> Result<PathBuf, Str
         .map_err(|_| format!("路径不存在或不可访问：{p}"))?;
     let dirs = allowed_dirs(app).await;
     if dirs.iter().any(|d| canonical.starts_with(d)) {
-        Ok(canonical)
+        // 剥掉 Windows canonicalize 的 \\?\ 前缀再返回（详见 strip_verbatim）
+        Ok(strip_verbatim(canonical))
     } else {
         crate::bot::audit_log(
             app,
@@ -327,10 +379,57 @@ mod tests {
 
     #[test]
     fn expand_tilde_home() {
-        let home = std::env::var_os("HOME").unwrap();
+        // 走 home_dir() 跨平台解析（Windows 上 HOME 常缺失，不能直接 unwrap HOME）
+        let home = home_dir().expect("dev/CI 机器应有可解析的用户主目录");
         assert_eq!(expand_tilde("~/x"), PathBuf::from(&home).join("x"));
         assert_eq!(expand_tilde("~"), PathBuf::from(&home));
         assert_eq!(expand_tilde("/abs/path"), PathBuf::from("/abs/path"));
+        // Windows 风格波浪号也展开（LLM 可能给 ~\Desktop）
+        assert_eq!(expand_tilde("~\\x"), PathBuf::from(&home).join("x"));
+    }
+
+    /// Windows 绿色版 bug 根因（2026-08-20）：HOME 缺失时须回退 USERPROFILE
+    #[test]
+    fn home_dir_fallbacks() {
+        let os = |s: &str| Some(std::ffi::OsString::from(s));
+        // HOME 优先
+        assert_eq!(
+            home_dir_from(os("/h"), os(r"C:\Users\u"), None, None),
+            Some(PathBuf::from("/h"))
+        );
+        // HOME 缺失（或为空）→ USERPROFILE
+        assert_eq!(
+            home_dir_from(None, os(r"C:\Users\u"), None, None),
+            Some(PathBuf::from(r"C:\Users\u"))
+        );
+        assert_eq!(
+            home_dir_from(os(""), os(r"C:\Users\u"), None, None),
+            Some(PathBuf::from(r"C:\Users\u"))
+        );
+        // 再退 HOMEDRIVE+HOMEPATH
+        assert_eq!(
+            home_dir_from(None, None, os("C:"), os(r"\Users\u")),
+            Some(PathBuf::from(r"C:\Users\u"))
+        );
+        // 全空 → None
+        assert_eq!(home_dir_from(None, None, None, None), None);
+    }
+
+    /// Windows canonicalize 的 \\?\ 前缀剥离：盘符形式剥掉，UNC 保留，普通路径不动
+    #[test]
+    fn strip_verbatim_prefix() {
+        assert_eq!(
+            strip_verbatim(PathBuf::from(r"\\?\C:\Users\u\Desktop\x.docx")),
+            PathBuf::from(r"C:\Users\u\Desktop\x.docx")
+        );
+        assert_eq!(
+            strip_verbatim(PathBuf::from(r"\\?\UNC\server\share\x.docx")),
+            PathBuf::from(r"\\?\UNC\server\share\x.docx")
+        );
+        assert_eq!(
+            strip_verbatim(PathBuf::from("/Users/u/Desktop/x.docx")),
+            PathBuf::from("/Users/u/Desktop/x.docx")
+        );
     }
 
     /// 白名单判定核心：starts_with 是按路径分量比较，
