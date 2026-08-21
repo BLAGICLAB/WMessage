@@ -25,11 +25,16 @@ use crate::error::{CommandError, CommandResult};
 /// 默认会为子进程开一个控制台窗口（即使立即退出）—— 视觉上就是"黑框闪一下"。
 /// CREATE_NO_WINDOW (0x08000000) 抑制父进程继承的控制台窗口创建，是 Tauri / Electron
 /// 等 GUI 框架调子进程时的标准做法。Unix 平台无此概念（不走控制台），保持直通。
+///
+/// 此外 Windows 上 Python 3 stdout/stderr 默认是 cp936，Rust 端按 UTF-8 解码会乱码；
+/// 强制 Python 走 UTF-8，对非 Python 子进程（taskkill/sleep 等）无害（这些 env var 被忽略）。
 #[cfg(windows)]
 fn silent_cmd(program: &str) -> Command {
     use std::os::windows::process::CommandExt;
     let mut cmd = Command::new(program);
-    cmd.creation_flags(0x08000000);
+    cmd.creation_flags(0x08000000)
+        .env("PYTHONIOENCODING", "utf-8")
+        .env("PYTHONUTF8", "1");
     cmd
 }
 
@@ -2553,5 +2558,26 @@ mod tests {
         let err = gen_out_path_in(&file_as_dir, Some("x"), "pdf").unwrap_err();
         assert_eq!(err.code(), "IO_ERROR");
         assert!(!err.is_recoverable());
+    }
+
+    /// Windows 子进程直拉 Python 时强制 UTF-8 IO encoding，
+    /// 否则 stdout 默认 cp936，Rust 端按 UTF-8 解码看到乱码。
+    /// （Fix 2026-08-21：老板 09:53 拍板走方案 A，加两个 env var）
+    #[cfg(windows)]
+    #[test]
+    fn silent_cmd_on_windows_sets_python_utf8_env() {
+        let cmd = silent_cmd("python");
+        let mut found_io = false;
+        let mut found_utf8 = false;
+        for (k, v) in cmd.get_envs().flatten() {
+            if k.to_str() == Some("PYTHONIOENCODING") && v.to_str() == Some("utf-8") {
+                found_io = true;
+            }
+            if k.to_str() == Some("PYTHONUTF8") && v.to_str() == Some("1") {
+                found_utf8 = true;
+            }
+        }
+        assert!(found_io, "PYTHONIOENCODING=utf-8 未设置");
+        assert!(found_utf8, "PYTHONUTF8=1 未设置");
     }
 }
