@@ -1398,6 +1398,87 @@ pub async fn tasks_import(app: tauri::AppHandle, path: String) -> CommandResult<
     .map_err(|e| CommandError::from(format!("任务导入线程 join 失败：{e}")))?
 }
 
+/// 导出工作区链接数据：全量 WorkspaceItem 序列化为 JSON 文件，返回条数。
+/// （与 tasks_export 风格一致；workspace 数据独立存于 workspace_items 表，与任务数据物理隔离）
+#[tauri::command]
+pub async fn workspace_export(app: tauri::AppHandle, path: String) -> CommandResult<usize> {
+    // B3: 同步读 DB + JSON 序列化 + 文件写 阻塞主线程；扔 spawn_blocking。
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = open_db(&app)?;
+        let items = load_workspace(&conn)?;
+        let json = serde_json::to_string_pretty(&items).map_err(|e| e.to_string())?;
+        // NEW-B-6: 原子写——崩溃不留半截 JSON（先写同目录 tmp 再 rename）
+        atomic_write(std::path::Path::new(&path), &json)
+            .map_err(|e| format!("写入文件失败：{e}"))?;
+        Ok(items.len())
+    })
+    .await
+    .map_err(|e| CommandError::from(format!("工作区导出线程 join 失败：{e}")))?
+}
+
+/// 从 JSON 文件导入工作区链接数据：按 id 并集合并，同 id 保留 updated_at 更晚者。返回写入条数。
+/// （与 tasks_import 语义一致；workspace 数据独立存于 workspace_items 表）
+#[tauri::command]
+pub async fn workspace_import(app: tauri::AppHandle, path: String) -> CommandResult<usize> {
+    // B3: 大文件读 + 解析 + 长事务；扔 spawn_blocking。
+    tauri::async_runtime::spawn_blocking(move || {
+        use rusqlite::OptionalExtension;
+
+        let raw = std::fs::read_to_string(&path).map_err(|e| format!("无法读取所选文件：{e}"))?;
+        let ext: Vec<WorkspaceItem> =
+            serde_json::from_str(&raw).map_err(|e| format!("不是有效的工作区链接 JSON：{e}"))?;
+        if ext.is_empty() {
+            return Ok(0);
+        }
+        let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut conn = open_db(&app)?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let mut merged = 0usize;
+        for it in &ext {
+            if it.id.trim().is_empty() {
+                continue; // 跳过无 id 的脏数据
+            }
+            // 同 db_merge / tasks_import：NULL updated_at 兼容（库内 NULL = 0，外部 None = 0）
+            let cur: Option<Option<i64>> = tx
+                .query_row(
+                    "SELECT updated_at FROM workspace_items WHERE id = ?1",
+                    rusqlite::params![it.id],
+                    |r| r.get::<_, Option<i64>>(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+            let cur_ua = cur.flatten().unwrap_or(0);
+            let take = it.updated_at.unwrap_or(0) > cur_ua;
+            if take {
+                // inline upsert（与 upsert_workspace 同 SQL），不复用 fn 避免事务嵌套；
+                // mid-loop 任何错整体回滚，事务不半截提交
+                tx.execute(
+                    "INSERT INTO workspace_items (id, title, collapsed, links, ord, updated_at)
+                     VALUES (?1,?2,?3,?4,?5,?6)
+                     ON CONFLICT(id) DO UPDATE SET
+                       title=excluded.title, collapsed=excluded.collapsed,
+                       links=excluded.links, ord=excluded.ord,
+                       updated_at=excluded.updated_at",
+                    rusqlite::params![
+                        it.id,
+                        it.title,
+                        it.collapsed.map(|v| v as i64),
+                        serde_json::to_string(&it.links).unwrap_or_else(|_| "[]".into()),
+                        it.order,
+                        it.updated_at,
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+                merged += 1;
+            }
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(merged)
+    })
+    .await
+    .map_err(|e| CommandError::from(format!("工作区导入线程 join 失败：{e}")))?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2202,6 +2283,72 @@ mod ws_tests {
         assert!(r.is_err(), "trigger 注入失败必须返回 Err");
         let got = load_workspace(&conn).unwrap();
         assert_eq!(got.len(), 3, "回滚后 w1/boom/w2 都必须还在：{got:?}");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// workspace_import 合并语义 + 跳空 id 脏数据（与 tasks_import / db_merge 一致）：
+    /// 同 id 保留 updated_at 更晚者；新 id 直接写入；空 id 跳过。
+    /// 命令体依赖 tauri AppHandle + DB_WRITE_LOCK 不能直测，这里 inline 同款
+    /// 合并循环 SQL（SELECT updated_at → 比较 → INSERT OR REPLACE）覆盖核心决策。
+    #[test]
+    fn workspace_import_merges_by_updated_at_and_skips_empty_id() {
+        let dir = std::env::temp_dir().join(format!("wm-ws-imp-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let mut conn = rusqlite::Connection::open(dir.join("t.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE workspace_items (
+               id TEXT PRIMARY KEY, title TEXT NOT NULL, collapsed INTEGER,
+               links TEXT NOT NULL, ord REAL, updated_at INTEGER);
+             INSERT INTO workspace_items VALUES ('a','cur-50',NULL,'[]',NULL,50);
+             INSERT INTO workspace_items VALUES ('b','cur-200',NULL,'[]',NULL,200);",
+        )
+        .unwrap();
+        let incoming = vec![
+            ("a", "in-100", 100i64),  // 同 id · incoming > cur → UPDATE
+            ("b", "in-180", 180i64),  // 同 id · incoming < cur → 跳过
+            ("c", "in-5",   5i64),    // 新 id → INSERT
+            ("",  "blank",  999i64),  // 空 id → 跳过
+        ];
+        let tx = conn.transaction().unwrap();
+        let mut merged = 0usize;
+        for (id, title, ua) in &incoming {
+            if id.trim().is_empty() {
+                continue;
+            }
+            let cur_ua: i64 = tx
+                .query_row(
+                    "SELECT COALESCE(updated_at, 0) FROM workspace_items WHERE id = ?1",
+                    rusqlite::params![id],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            if *ua > cur_ua {
+                tx.execute(
+                    "INSERT INTO workspace_items (id, title, collapsed, links, ord, updated_at)
+                     VALUES (?1,?2,NULL,'[]',NULL,?3)
+                     ON CONFLICT(id) DO UPDATE SET title=excluded.title, updated_at=excluded.updated_at",
+                    rusqlite::params![id, title, ua],
+                )
+                .unwrap();
+                merged += 1;
+            }
+        }
+        tx.commit().unwrap();
+
+        assert_eq!(merged, 2, "应写 a（UPDATE）+ c（INSERT）；跳过 b + 空 id");
+        let a: String = conn.query_row("SELECT title FROM workspace_items WHERE id='a'", [], |r| r.get(0)).unwrap();
+        assert_eq!(a, "in-100", "a 被新覆盖");
+        let b: String = conn.query_row("SELECT title FROM workspace_items WHERE id='b'", [], |r| r.get(0)).unwrap();
+        assert_eq!(b, "cur-200", "b 未被覆盖（180<200）");
+        let c: String = conn.query_row("SELECT title FROM workspace_items WHERE id='c'", [], |r| r.get(0)).unwrap();
+        assert_eq!(c, "in-5", "c 已写入");
+        // 空 id 跳过：不应有 id='' 的行（setup 也没创建，double-check）
+        let blank_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM workspace_items WHERE id=''",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(blank_count, 0, "空 id 应被跳过");
         fs::remove_dir_all(&dir).ok();
     }
 }

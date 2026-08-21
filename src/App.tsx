@@ -7,7 +7,7 @@ import { ArchivePage } from "./components/ArchivePage";
 import { TrashPage } from "./components/TrashPage";
 import { WorkspacePage } from "./components/WorkspacePage";
 import { SettingsPage } from "./components/SettingsPage";
-import { deleteTaskRows, diffTaskRows, loadTasksFromDb, taskEq, upsertTasks, exportTasksToFile, importTasksFromFile, STORAGE_KEY, sortByOrder, assignInsertOrder, upsertWorkspaceItems } from "./storage";
+import { deleteTaskRows, diffTaskRows, loadTasksFromDb, taskEq, upsertTasks, exportTasksToFile, importTasksFromFile, exportWorkspaceToFile, importWorkspaceFromFile, STORAGE_KEY, sortByOrder, assignInsertOrder, upsertWorkspaceItems } from "./storage";
 import { handleCommandError } from "./lib/errorHandler";
 import { isMutationOrigin, isPersistedOrigin } from "./lib/mutationOrigin";
 import { applySetting, getSetting, subscribeSystem, subscribeTheme, toggleTheme } from "./theme";
@@ -331,6 +331,43 @@ export default function App() {
     }
   };
 
+  // 导出工作区链接：全量 WorkspaceItem 写 JSON 文件（与任务数据管理风格一致；workspace 数据独立存于 workspace_items 表）
+  const exportWorkspace = async () => {
+    try {
+      const path = await save({
+        defaultPath: `wmessage-workspace-${localDateStr()}.json`,
+        filters: [{ name: "JSON", extensions: ["json"] }],
+      });
+      if (!path) return; // 用户取消
+      const count = await exportWorkspaceToFile(path);
+      alert(`导出完成：共 ${count} 个工作区条目`);
+    } catch (e) {
+      handleCommandError(e, "workspace_export", {
+        onRetry: () => void exportWorkspace(),
+      });
+    }
+  };
+
+  // 导入工作区链接：JSON 文件按 id 合并，同 id 保留更晚修改；导入后重读全量并广播挂件
+  const importWorkspace = async () => {
+    try {
+      const selected = await open({
+        multiple: false,
+        directory: false,
+        filters: [{ name: "JSON", extensions: ["json"] }],
+      });
+      if (typeof selected !== "string") return; // 用户取消
+      const merged = await importWorkspaceFromFile(selected);
+      // App.tsx 不持 workspace 顶层 state（子组件 WorkspaceView 自管），广播事件让挂件+子视图刷新
+      emit("workspace-changed").catch(() => {});
+      alert(`导入完成：本次写入 ${merged} 个工作区条目`);
+    } catch (e) {
+      handleCommandError(e, "workspace_import", {
+        onRetry: () => void importWorkspace(),
+      });
+    }
+  };
+
   // 看板拖拽排序提交：数组顺序已由 KanbanBoard 排好（含跨列变更），
   // 这里补列变更完成语义（进完成列记时间、出完成列清除），再给被拖任务分配 order
   const commitBoardOrder = (activeId: string, next: Task[]) => {
@@ -484,6 +521,8 @@ export default function App() {
           onThemeChange={setTheme}
           onExportTasks={exportTasks}
           onImportTasks={importTasks}
+          onExportWorkspace={exportWorkspace}
+          onImportWorkspace={importWorkspace}
         />
       )}
     </div>

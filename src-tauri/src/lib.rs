@@ -556,6 +556,8 @@ pub fn run() {
             db::workspace_load,
             db::workspace_upsert,
             db::workspace_delete,
+            db::workspace_export,
+            db::workspace_import,
             db::bot_history_load,
             db::bot_history_save,
             db::bot_history_clear,

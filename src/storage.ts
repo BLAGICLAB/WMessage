@@ -138,6 +138,26 @@ export async function deleteWorkspaceRows(ids: string[]): Promise<void> {
   }
 }
 
+/** 导出工作区链接数据为 JSON 文件（全量 WorkspaceItem），返回条数 */
+export async function exportWorkspaceToFile(path: string): Promise<number> {
+  try {
+    return await invoke<number>("workspace_export", { path });
+  } catch (e) {
+    handleCommandError(e, "workspace_export");
+    return 0;
+  }
+}
+
+/** 从 JSON 文件导入工作区链接数据：按 id 合并，同 id 保留 updatedAt 更晚的。返回写入条数。 */
+export async function importWorkspaceFromFile(path: string): Promise<number> {
+  try {
+    return await invoke<number>("workspace_import", { path });
+  } catch (e) {
+    handleCommandError(e, "workspace_import");
+    return 0;
+  }
+}
+
 /**
  * 给指定条目分配插入位 order：取新位置左右邻居的中点；
  * 边界取邻居 ±1；间隙耗尽（浮点精度）时全量整数重排。

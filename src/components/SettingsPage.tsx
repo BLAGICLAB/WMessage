@@ -166,6 +166,9 @@ type Props = {
   onThemeChange: (t: ThemeSetting) => void;
   onExportTasks: () => Promise<void>;
   onImportTasks: () => Promise<void>;
+  /** 可选：未传时按钮置 disabled（App.tsx 已传；测试可选） */
+  onExportWorkspace?: () => Promise<void>;
+  onImportWorkspace?: () => Promise<void>;
 };
 
 /** 个人资料编辑行：头像预览 + 选图/移除 + 姓名输入 + 保存（用户/机器人共用） */
@@ -310,7 +313,7 @@ function ProfileRow({
 }
 
 /** 设置页：个人资料 + 深浅色模式 + 任务数据管理 + 外部机器人 API 开关（默认关闭）+ token 展示与复制 */
-export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTasks }: Props) {
+export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTasks, onExportWorkspace, onImportWorkspace }: Props) {
   const [status, setStatus] = useState<ApiStatus>({
     enabled: false,
     port: 4763,
@@ -321,6 +324,8 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
   const [copied, setCopied] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [exportingWs, setExportingWs] = useState(false);
+  const [importingWs, setImportingWs] = useState(false);
   const [botEnabled, setBotEnabled] = useState(false);
   const [botBusy, setBotBusy] = useState(false);
   const [botError, setBotError] = useState("");
@@ -593,6 +598,28 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     }
   };
 
+  const runExportWs = async () => {
+    if (exportingWs) return;
+    if (!onExportWorkspace) return;
+    setExportingWs(true);
+    try {
+      await onExportWorkspace();
+    } finally {
+      setExportingWs(false);
+    }
+  };
+
+  const runImportWs = async () => {
+    if (importingWs) return;
+    if (!onImportWorkspace) return;
+    setImportingWs(true);
+    try {
+      await onImportWorkspace();
+    } finally {
+      setImportingWs(false);
+    }
+  };
+
   const copyToken = async () => {
     try {
       await navigator.clipboard.writeText(status.token);
@@ -694,6 +721,50 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
               disabled={importing}
             >
               {importing ? "导入中…" : "📥 导入"}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* 工作区管理：与任务数据管理风格一致；workspace_items 数据独立于任务数据 */}
+      <div className="nm-card p-5">
+        <h2 className="text-lg font-semibold text-[var(--t1)]">工作区管理</h2>
+        <p className="mt-1 text-xs text-[var(--t5)]">
+          工作区是按用途分组的链接集合（文件路径 / 文件夹 / 网页），与任务数据分开独立存储
+        </p>
+        <div className="mt-4 space-y-3">
+          <div className="flex items-center justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-[var(--t2)]">导出工作区链接</p>
+              <p className="mt-1 text-xs text-[var(--t5)]">
+                全部工作区条目（含分组、折叠状态、链接列表）导出为 JSON 文件
+              </p>
+            </div>
+            <button
+              className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] ${
+                exportingWs ? "nm-inset" : "nm-outset"
+              }`}
+              onClick={runExportWs}
+              disabled={exportingWs}
+            >
+              {exportingWs ? "导出中…" : "📤 导出"}
+            </button>
+          </div>
+          <div className="flex items-center justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-[var(--t2)]">导入工作区链接</p>
+              <p className="mt-1 text-xs text-[var(--t5)]">
+                从 JSON 文件导入工作区条目；按 id 合并，同 id 保留最后修改的记录
+              </p>
+            </div>
+            <button
+              className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] ${
+                importingWs ? "nm-inset" : "nm-outset"
+              }`}
+              onClick={runImportWs}
+              disabled={importingWs}
+            >
+              {importingWs ? "导入中…" : "📥 导入"}
             </button>
           </div>
         </div>
