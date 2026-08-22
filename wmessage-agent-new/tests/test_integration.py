@@ -95,8 +95,8 @@ def test_spawn_and_ready_event():
         assert line is not None, "启动超时"
         msg = json.loads(line)
         assert msg["event"] == "ready"
-        assert msg["version"] == "0.2.0"
-        assert msg["phase"] == 2
+        assert msg["version"] == "0.4.0"
+        assert msg["phase"] == 4
     finally:
         _cleanup(proc)
 
@@ -281,8 +281,8 @@ def test_chat_ready_event_reports_phase_2():
         line = _read_line(proc, timeout_s=5)
         msg = json.loads(line)
         assert msg["event"] == "ready"
-        assert msg["phase"] == 2
-        assert msg["version"] == "0.2.0"
+        assert msg["phase"] == 4
+        assert msg["version"] == "0.4.0"
     finally:
         _cleanup(proc)
 
