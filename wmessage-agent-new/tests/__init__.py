@@ -1,0 +1,1 @@
+"""tests package — pytest discovery."""

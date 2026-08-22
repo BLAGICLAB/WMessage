@@ -1,0 +1,38 @@
+[project]
+name = "wmessage-agent-new"
+version = "0.1.0"
+description = "WMessage Agent Python kernel — Plan-Replan-Execute-Verify main loop over JSON-RPC IPC"
+requires-python = ">=3.9"
+authors = [{name = "WMessage team"}]
+dependencies = [
+    # Phase 1 仅 stdlib：JSON-RPC over stdin/stdout + dataclass
+    # 后续 Phase 加：httpx（LLM）/ pydantic（schema 校验）/ langchain（可选）
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-timeout>=2.1.0",
+]
+# httpx 给 Phase 2 LLM 客户端用，先装避免 Phase 2 再装
+llm = [
+    "httpx>=0.27.0",
+]
+
+[project.scripts]
+wmessage-agent = "main:main"
+
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["agent_core", "ipc"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-ra --strict-markers"
+markers = [
+    "slow: 集成测试，需要 spawn 子进程",
+]
