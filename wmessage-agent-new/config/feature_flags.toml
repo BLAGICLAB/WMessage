@@ -1,0 +1,59 @@
+# WMessage Agent Python 内核 — 生产配置（Phase 4 step 3）
+#
+# 部署步骤：
+#   1. 复制本文件到部署目录（默认 ./config/feature_flags.toml，或 WMSG_AGENT_FLAGS 环境变量指定）
+#   2. 设置环境变量（敏感信息不放 TOML）：
+#        MINIMAX_API_KEY=<your-key>     # 主模型（必填）
+#        KIMI_API_KEY=<your-key>        # fallback 1（可选但推荐）
+#        DEEPSEEK_API_KEY=<your-key>    # fallback 2（可选）
+#        WMSG_AGENT_DB=/path/to/agent.db   # SQLite 持久化
+#        WMSG_AGENT_LOG=/path/to/bot-debug.log  # debug 日志（轮转 10MB × 5）
+#        WMSG_AGENT_OUTPUT_DIR=/path/to/output  # doc_make_* 输出目录
+#        WMSG_LOG_LEVEL=INFO             # DEBUG / INFO / WARNING / ERROR
+#        WMSG_LOG_STDOUT=1               # 0 = 仅文件；1 = 文件 + stderr
+#   3. 启动：`python main.py`
+#        # 或用 LLM 查询 CLI：`python -m main --query-skill-outcomes`
+#
+# 灰度策略：
+#   - python_agent_percent = 100（默认全量 Python agent）
+#   - 紧急回滚：runtime = "nodejs"（切回老 Rust agent，秒级生效）
+#   - 渐进发布：先 python_agent_percent = 1 → 10 → 50 → 100，观察 audit_event 状态
+
+[agent_runtime]
+# python | nodejs（兜底老 Rust agent）
+runtime = "python"
+
+# 灰度白名单（空 = 全部走 Python agent）
+python_agent_users = []
+python_agent_sessions = []
+
+
+[features]
+# Reflexion 反思循环（任务结束自我复盘注入 system prompt）
+reflexion_enabled = false
+# LLM L2 Intent Classifier（L1 miss → LLM 兜底语义判断）
+llm_l2_router = true
+# Orchestrator-Worker 多子 Agent 并行（Phase 5 预留）
+orchestrator_worker = false
+# Audit 双写 SQLite（除文件外）
+audit_sqlite_enabled = true
+# Tool Guard 白名单模式（默认黑名单，更严）
+tool_guard_whitelist_only = false
+
+
+[llm]
+# 主模型（必填 — 失败 → FallbackChain 切 fallback）
+primary = "minimax-m3"
+
+# Fallback 顺序（主失败 → 切换）
+# 注：3 个 provider 都需要对应环境变量（MINIMAX_API_KEY / KIMI_API_KEY / DEEPSEEK_API_KEY）
+# 缺 key 的 provider 自动跳过；全缺则 ScriptedLLM mock 接管（dev 模式）
+fallback = ["kimi", "deepseek"]
+
+
+[gray]
+# 灰度白名单 / 百分比（与 [agent_runtime] 同义，保留向后兼容）
+python_agent_users = []
+python_agent_sessions = []
+# 0-100 整数；按 user_id hash 决定是否在灰度内（确定性）
+python_agent_percent = 100

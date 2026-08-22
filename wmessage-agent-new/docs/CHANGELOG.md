@@ -7,6 +7,60 @@ WMessage Agent Python 内核 — 所有重要变更记录于此。
 
 ---
 
+## [0.4.3] - 2026-08-22 — 写真实 feature_flags.toml + 接 LLM 到生产 main.py (Phase 4 step 3)
+
+### Added（新增）
+
+- **`config/feature_flags.toml`** — 生产配置（完整 deployment guide）
+  - `[agent_runtime]` runtime / python_agent_users / python_agent_sessions
+  - `[features]` 6 个开关（reflexion / llm_l2_router / orchestrator_worker / audit_sqlite_enabled / tool_guard_whitelist_only）
+  - `[llm]` primary / fallback 链（3 个 provider）
+  - `[gray]` python_agent_percent（灰度百分比）
+  - 顶部部署指南（env var 覆盖 + 灰度策略）
+- **`config/feature_flags.dev.toml`** — 开发环境覆盖（fallback=[]，节省 token）
+- **`agent_core/feature_flags.py::get_flag_checker(path)`** — 从 feature_flags 移到此处（之前在 main.py），main.py 改 import
+- **`tests/test_phase4_step3.py`**（18 tests）：
+  - config 文件存在性 + section 完备性
+  - FlagChecker 加载 + dev 覆盖 prod + 热加载 mtime + nonexistent fallback
+  - env var WMSG_AGENT_FLAGS 覆盖默认路径
+  - 完整链路：FlagChecker + env var + build_llm_chain → 0/1/3 provider + mode=real/mock
+  - gray percent / 白名单 / session 白名单
+  - secrets 检查：uncommented 行不含 sk- 或 MINIMAX_API_KEY= 赋值
+
+### Changed（变更）
+
+- **`agent_core/feature_flags.py`** — 移入 `get_flag_checker()` 函数（避免测试必须 import main.py）
+- **`main.py`** — 改 `from agent_core.feature_flags import get_flag_checker`（不依赖 main.py 内部）
+- **`config/feature_flags.toml`** — 注释中 API key 示例用 `<your-key>` 占位符（避免 secrets 检测误判）
+
+### 测试覆盖
+
+- **`test_phase4_step3.py`**（18 新增）：config / flag 加载 / env var / 完整链路 / gray 策略 / secrets
+- **全量**：504/505 通过 / 62.92s
+- **唯一 fail**：`test_ping_under_load`（Phase 4 step 1.5 已记录的 pytest subprocess timing flake，与本次无关）
+
+### 部署说明
+
+```bash
+# 1. 复制 config/feature_flags.toml 到部署目录
+# 2. 设置环境变量（敏感信息不放 TOML）：
+export MINIMAX_API_KEY=<your-key>          # 必填（主模型）
+export KIMI_API_KEY=<your-key>             # 可选（fallback 1）
+export DEEPSEEK_API_KEY=<your-key>         # 可选（fallback 2）
+export WMSG_AGENT_DB=/path/to/agent.db      # SQLite 持久化
+export WMSG_AGENT_LOG=/path/to/bot-debug.log # debug 日志（轮转 10MB × 5）
+export WMSG_AGENT_OUTPUT_DIR=/path/to/output # doc_make_* 输出目录
+
+# 3. 启动
+python main.py
+
+# 4. 紧急回滚（切回老 Rust agent）
+# config/feature_flags.toml: [agent_runtime] runtime = "nodejs"
+# 或 env override: 暂不支持 runtime override（需改 TOML 后 mtime reload）
+```
+
+---
+
 ## [0.4.2] - 2026-08-22 — Skill 监控查询（Phase 4 step 2 Python 侧）
 
 ### Added（新增）

@@ -1,0 +1,24 @@
+# 开发环境覆盖配置 — 比 feature_flags.toml 更激进
+#
+# 用法：
+#   WMSG_AGENT_FLAGS=./config/feature_flags.dev.toml python main.py
+# 或在测试 / CI 中临时覆盖
+
+[agent_runtime]
+runtime = "python"
+
+[features]
+# 开发环境开全部 debug 能力
+reflexion_enabled = false  # 仍关（Phase 5 实现）
+llm_l2_router = true
+orchestrator_worker = false
+audit_sqlite_enabled = true
+tool_guard_whitelist_only = false
+
+[llm]
+# 开发用更便宜的 model（节省 token 成本）
+primary = "minimax-m3"
+fallback = []  # 开发时不 fallback，直接看到失败
+
+[gray]
+python_agent_percent = 100

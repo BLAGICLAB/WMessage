@@ -189,3 +189,17 @@ class FlagChecker:
 
     def fallback_llms(self) -> List[str]:
         return list(self.flags().llm_fallback)
+
+
+def get_flag_checker(path: Optional[str] = None) -> FlagChecker:
+    """获取 FlagChecker — 默认 config/feature_flags.toml。
+
+    Args:
+        path: TOML 路径（None = 从 env WMSG_AGENT_FLAGS 取，默认 ./config/feature_flags.toml）
+
+    Returns:
+        FlagChecker 实例
+    """
+    if path is None:
+        path = os.environ.get("WMSG_AGENT_FLAGS", "config/feature_flags.toml")
+    return FlagChecker(path=path)
