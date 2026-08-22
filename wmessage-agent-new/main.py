@@ -419,6 +419,10 @@ HANDLERS = {
 
 
 def main() -> int:
+    # CLI mode： --query-skill-outcomes 查 audit_event 返回 skill outcomes（Phase 4 step 2）
+    if "--query-skill-outcomes" in sys.argv:
+        return _cli_query_skill_outcomes()
+
     # Phase 4: stdlib logging 初始化（先于 init_runtime，捕启动异常）
     setup_logging()
 
@@ -455,6 +459,70 @@ def main() -> int:
     except Exception:
         logger.exception("server.run() crashed")
         raise
+
+    return 0
+
+
+def _cli_query_skill_outcomes() -> int:
+    """CLI 子命令：查询最近 skill outcomes（Phase 4 step 2 给 Tauri SkillsPanel 用）。"""
+    import argparse
+
+    from agent_core.skill_monitoring import (
+        format_outcomes_table,
+        query_recent_skill_outcomes,
+        summarize_status,
+    )
+
+    parser = argparse.ArgumentParser(
+        prog="wmessage-agent",
+        description="查询 agent.db audit_event 表中最近的 skill outcomes。",
+    )
+    parser.add_argument(
+        "--query-skill-outcomes",
+        action="store_true",
+        required=True,
+        help="启用 skill outcomes 查询模式",
+    )
+    parser.add_argument("--skill", help="只查指定 skill 名")
+    parser.add_argument("--limit", type=int, default=10)
+    parser.add_argument(
+        "--db",
+        default=os.environ.get("WMSG_AGENT_DB", "data/agent.db"),
+        help="agent.db 路径",
+    )
+    parser.add_argument(
+        "--format", choices=["json", "table"], default="table"
+    )
+
+    opts = parser.parse_args()
+
+    if not os.path.exists(opts.db):
+        print(f"DB not found: {opts.db}", file=sys.stderr)
+        return 1
+
+    outcomes = query_recent_skill_outcomes(
+        opts.db, skill_name=opts.skill, limit=opts.limit
+    )
+
+    if opts.format == "json":
+        # JSON 输出：outcomes + summary 两块
+        import json as _json
+
+        out = {
+            "outcomes": outcomes,
+            "summary": summarize_status(outcomes),
+            "count": len(outcomes),
+        }
+        print(_json.dumps(out, indent=2, ensure_ascii=False))
+    else:
+        # Table 输出
+        print(format_outcomes_table(outcomes))
+        summary = summarize_status(outcomes)
+        if summary:
+            print()
+            print("Summary: " + ", ".join(
+                f"{k}={v}" for k, v in sorted(summary.items())
+            ))
 
     return 0
 

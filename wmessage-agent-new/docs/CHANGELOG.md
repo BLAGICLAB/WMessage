@@ -7,6 +7,35 @@ WMessage Agent Python 内核 — 所有重要变更记录于此。
 
 ---
 
+## [0.4.2] - 2026-08-22 — Skill 监控查询（Phase 4 step 2 Python 侧）
+
+### Added（新增）
+
+- **`agent_core/skill_monitoring.py`** — query audit_event 表获取最近 skill outcomes
+  - `query_recent_skill_outcomes(db_path, skill_name, limit)` — 返回 list[dict] 含 skill_run_id / skill_name / mode / status / started_at / finished_at / duration_ms
+  - `format_outcomes_table(outcomes)` — CLI 可读表格输出
+  - `summarize_status(outcomes)` — 返回 `{status: count}` 给状态徽章用
+- **`main.py`** CLI 模式 `--query-skill-outcomes [skill] [--limit N] [--db PATH] [--format json|table]`
+  - 给 Tauri 设置页 SkillsPanel 提供数据源（Rust 侧 IPC 调用）
+- **`tests/test_skill_monitoring.py`**（19 tests）：
+  - query: empty / start_only / start_finish / 多个 skill_run / skill_name 过滤 / limit / corrupt_payload / duration 0 / ISO 格式
+  - format: 空 / 基本 / 截断 skill_run_id / in_progress 无 duration
+  - summarize: mixed / empty
+  - CLI: json 格式 / table 格式 / DB 不存在 exit code 1
+
+### Fixed（修复）
+
+- `_insert_event` test helper FK 约束错误：之前直接 INSERT audit_event 但没建 session/skill_run 父行 — 改为先建父行
+- `test_started_at_iso_format` timezone 依赖：改为只验证 ISO 8601 格式不依赖具体值
+
+### 测试覆盖
+
+- **`test_skill_monitoring.py`**（19 新增）：skill outcomes 查询 + CLI 集成 + 边界情况
+- **全量**：486/487 通过 / 62.70s（含 16 slow 集成）
+- **唯一 fail**：`test_ping_under_load`（Phase 4 step 1.5 已记录的已知 pytest subprocess timing flake，与本次工作无关）
+
+---
+
 ## [0.4.1] - 2026-08-22 — stdlib logging + 集成测试稳定性
 
 ### Added（新增）
