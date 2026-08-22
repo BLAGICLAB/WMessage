@@ -48,6 +48,7 @@ from agent_core.audit_log import AuditLogger
 from agent_core.audit_sqlite import SqliteAuditLogger
 from agent_core.feature_flags import FlagChecker
 from agent_core.intent_router import route_intent
+from agent_core.logging_config import get_logger, new_cid, setup_logging
 from agent_core.planner import (
     plan,
     PlanError,
@@ -69,6 +70,9 @@ from llm_provider.base import (
 from llm_provider.minimax import MiniMaxProvider
 from llm_provider.kimi import KimiProvider
 from llm_provider.deepseek import DeepSeekProvider
+
+
+logger = get_logger("wmsg.main")
 
 
 # ───────────────────────── LLM / Executor / Audit Factory ─────────────────────────
@@ -415,8 +419,15 @@ HANDLERS = {
 
 
 def main() -> int:
+    # Phase 4: stdlib logging 初始化（先于 init_runtime，捕启动异常）
+    setup_logging()
+
     # Phase 4: 启动时构建 LLM chain + executor + audit
-    init_info = init_runtime()
+    try:
+        init_info = init_runtime()
+    except Exception:
+        logger.exception("init_runtime failed at startup")
+        raise
 
     server = IPCServer(
         handlers=HANDLERS,
@@ -431,18 +442,20 @@ def main() -> int:
     )
     _server_ref["server"] = server
 
-    # 启动信息打到 stderr（不影响 IPC）
-    print(
-        f"[wmessage-agent] ready phase=4 "
-        f"llm_mode={init_info['llm']['mode']} "
-        f"providers={init_info['llm'].get('providers_loaded', [])}",
-        file=sys.stderr,
+    logger.info(
+        "wmessage-agent ready phase=4 llm_mode=%s providers=%s",
+        init_info["llm"]["mode"],
+        init_info["llm"].get("providers_loaded", []),
     )
 
     try:
         server.run()
     except KeyboardInterrupt:
-        pass
+        logger.info("KeyboardInterrupt received, shutting down")
+    except Exception:
+        logger.exception("server.run() crashed")
+        raise
+
     return 0
 
 

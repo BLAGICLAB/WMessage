@@ -7,6 +7,40 @@ WMessage Agent Python 内核 — 所有重要变更记录于此。
 
 ---
 
+## [0.4.1] - 2026-08-22 — stdlib logging + 集成测试稳定性
+
+### Added（新增）
+
+- **`agent_core/logging_config.py`** — stdlib logging 配置（参照 LangChain / OpenAI / Anthropic 行业惯例，零依赖）
+  - `setup_logging(log_path, level, enable_stdout, max_bytes, backup_count)` — 双 handler：stdout（dev）+ `RotatingFileHandler`（生产，10MB × 5 轮转）
+  - 环境变量覆盖：`WMSG_LOG_LEVEL` / `WMSG_LOG_PATH` / `WMSG_LOG_STDOUT`
+  - `get_logger(name)` 便利 helper + `new_cid()` 8 字符 correlation id
+  - `shutdown_logging()` 测试 cleanup / 进程退出
+  - `sys.excepthook` 全局兜底（KeyboardInterrupt 透传）
+- **`tests/test_logging_config.py`** — 12 tests（idempotent / env / rotation / excepthook / cid format / 4xx 异常路径）
+
+### Changed（变更）
+
+- **`main.py`** — `setup_logging()` 启动时调用，`handle_chat` 加 correlation id（`new_cid()` 8 字符 hex 贯穿 logger + audit + response），错误路径走 `logger.exception` 自动捕获栈
+- **`agent_core/audit_log.py`** — AuditLogger 改 lazy 文件句柄（`__init__` 初始化 `self._fh = None`，`_append` 时 lazy open，写完 flush，句柄复用）— 修复之前 `test_ping_under_load` 高频 log 累积 open/close 开销
+- **`tests/test_integration.py`** — `_spawn_agent` 清 `MINIMAX_API_KEY` / `KIMI_API_KEY` / `DEEPSEEK_API_KEY` 环境变量（防 shell 泄露让 subprocess 加载真 LLM → httpx 请求超时）
+
+### Fixed（修复）
+
+- 集成测试 `test_ping_under_load` ping #7/#9 超时（之前 60s+）→ 修后 16/16 集成测试 1.28s 通过
+- shell env `MINIMAX_API_KEY` 泄露导致 subprocess 加载真 MiniMax LLM → httpx 真请求超时
+- AuditLogger 每次 `log()` 都 `open/write/close` 文件，10 ping 累积 I/O 开销
+- `__init__` 漏 `self._fh = None` 导致 AttributeError（8 个测试失败）
+- main.py 漏 `logger = get_logger(...)` 模块级声明导致 NameError
+- main.py planner imports 被截断（SyntaxError）
+
+### 测试覆盖
+
+- **`test_logging_config.py`**（12 新增）：init/setup/teardown 双调用幂等、env 变量覆盖、`RotatingFileHandler` 轮转、`sys.excepthook` 兜底 + KeyboardInterrupt 透传
+- **全量**：468 tests / 1.88s（13 个 test 文件）
+
+---
+
 ## [0.3.0] - 2026-08-22 — Phase 1-3 完整收尾
 
 ### Added（新增）

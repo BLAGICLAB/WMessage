@@ -70,6 +70,7 @@ class AuditLogger:
             path: 日志文件路径。None = 仅内存（不落盘）
         """
         self.path = Path(path) if path else None
+        self._fh: Optional[Any] = None  # lazy 文件句柄（避免每次 log 都 open/close）
 
     # ───────────────────────── 核心 ─────────────────────────
 
@@ -112,13 +113,35 @@ class AuditLogger:
         return line
 
     def _append(self, line: str) -> None:
-        """追加一行到日志文件。"""
+        """追加一行到日志文件（保持句柄打开以避免累积 open/close 开销）。"""
+        if self.path is None:
+            return
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.path, "a", encoding="utf-8") as f:
-                f.write(line + "\n")
+            if self._fh is None:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                self._fh = open(self.path, "a", encoding="utf-8")
+            self._fh.write(line + "\n")
+            self._fh.flush()
         except OSError:
-            pass  # 落盘失败不阻塞主流程
+            try:
+                if self._fh:
+                    self._fh.close()
+            except Exception:
+                pass
+            self._fh = None
+
+    def close(self) -> None:
+        """关闭文件句柄（shutdown 时调用）。"""
+        if self._fh is not None:
+            try:
+                self._fh.flush()
+                self._fh.close()
+            except Exception:
+                pass
+            self._fh = None
+
+    def __del__(self) -> None:
+        self.close()
 
     # ───────────────────────── 便利方法 ─────────────────────────
 

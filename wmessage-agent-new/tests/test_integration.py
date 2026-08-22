@@ -14,9 +14,15 @@ MAIN_PY = os.path.join(PROJECT_ROOT, "main.py")
 
 
 def _spawn_agent():
-    """spawn main.py 子进程。"""
+    """spawn main.py 子进程。
+
+    清掉 LLM env vars（避免 shell 中泄露的 MINIMAX_API_KEY 等造成 subprocess 加载真 LLM
+    → 真 httpx 请求超时）。集成测试只验证 IPC + PREV 协议，不验真 LLM 调用。
+    """
     env = os.environ.copy()
     env["PYTHONPATH"] = PROJECT_ROOT + os.pathsep + env.get("PYTHONPATH", "")
+    for k in ("MINIMAX_API_KEY", "KIMI_API_KEY", "DEEPSEEK_API_KEY"):
+        env.pop(k, None)
     return subprocess.Popen(
         [sys.executable, MAIN_PY],
         stdin=subprocess.PIPE,
