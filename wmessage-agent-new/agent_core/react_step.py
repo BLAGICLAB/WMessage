@@ -159,9 +159,16 @@ def _build_react_prompt(state: ReactState, history_window: int) -> str:
             parts.append(f"verify: kind={vh.kind}")
     parts.append("")
 
+    # Phase 5: Reflexion 反思（历史任务经验）优先显示
+    if state.env_state and "reflections" in state.env_state:
+        parts.append(state.env_state["reflections"])
+        parts.append("")
+
     if state.env_state:
         parts.append("## 环境状态")
         for k, v in state.env_state.items():
+            if k == "reflections":
+                continue  # 已在上方显示
             parts.append(f"- {k}: {_truncate(str(v), 200)}")
         parts.append("")
 

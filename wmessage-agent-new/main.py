@@ -201,6 +201,26 @@ def build_audit(flag_checker: FlagChecker) -> Tuple[AuditLogger, Dict[str, Any]]
     }
 
 
+def build_reflexion(flag_checker: FlagChecker) -> Tuple[Optional["ReflexionEngine"], Dict[str, Any]]:
+    """构建 ReflexionEngine — Phase 5 反思循环。
+
+    flag.reflexion_enabled=True 且 db_path 存在 → 创建引擎
+    否则 → None（不反思，不影响主流程）
+    """
+    if not flag_checker.is_feature_enabled("reflexion_enabled"):
+        return None, {"enabled": False}
+
+    db_path = os.environ.get("WMSG_AGENT_DB", "data/agent.db")
+    if not os.path.exists(db_path):
+        return None, {"enabled": False, "reason": "db_not_found", "db_path": db_path}
+
+    from agent_core.reflexion import ReflexionEngine
+    return ReflexionEngine(db_path=db_path), {
+        "enabled": True,
+        "db_path": db_path,
+    }
+
+
 def get_flag_checker(path: Optional[str] = None) -> FlagChecker:
     """获取 FlagChecker — 默认 config/feature_flags.toml。
 
@@ -246,10 +266,15 @@ def init_runtime(flag_path: Optional[str] = None) -> Dict[str, Any]:
     _runtime["audit"] = audit
     _runtime["audit_info"] = audit_info
 
+    reflexion, reflexion_info = build_reflexion(flag_checker)
+    _runtime["reflexion"] = reflexion
+    _runtime["reflexion_info"] = reflexion_info
+
     return {
         "llm": llm_info,
         "executor": exec_info,
         "audit": audit_info,
+        "reflexion": reflexion_info,
     }
 
 
@@ -319,10 +344,28 @@ def handle_chat(params: Dict[str, Any]) -> Dict[str, Any]:
     except (PlanValidationError, PlanLLMError, PlanError, ValueError) as e:
         return {"error": str(e), "kind": type(e).__name__}
 
+    # Phase 5: 检索相关历史反思 → 注入 env_state（agent_loop → react_step 使用）
+    reflections_context = None
+    if _runtime["reflexion"] is not None:
+        try:
+            relevant = _runtime["reflexion"].recall_relevant(
+                current_task_title=message[:60] or "user_query",
+                top_k=3,
+            )
+            if relevant:
+                reflections_context = _runtime["reflexion"].format_for_prompt(relevant)
+        except Exception:
+            pass  # 反思检索失败不阻塞主流程
+
+    env_state_with_reflexion = dict(context or {})
+    if reflections_context:
+        env_state_with_reflexion["reflections"] = reflections_context
+
     # Wire AgentLoop — 默认从 _runtime，测试可 params.get("_X") 注入
     llm = params.get("_llm") or _runtime["llm_client"]
     executor = params.get("_executor") or _runtime["executor"]
     audit = params.get("_audit") or _runtime["audit"]
+    reflexion_engine = params.get("_reflexion_engine") or _runtime["reflexion"]
 
     config = AgentLoopConfig(
         react_max_steps=10,
@@ -331,11 +374,13 @@ def handle_chat(params: Dict[str, Any]) -> Dict[str, Any]:
         enable_replan=True,
     )
 
-    loop = AgentLoop(llm=llm, executor=executor, audit=audit, config=config)
+    loop = AgentLoop(
+        llm=llm, executor=executor, audit=audit, config=config, reflexion_engine=reflexion_engine
+    )
 
     loop_result = loop.run(
         plan_result.graph,
-        env_state=context,
+        env_state=env_state_with_reflexion,
         tools_whitelist=tools_whitelist,
         skill_name=skill_name,
     )

@@ -231,8 +231,9 @@ def test_prod_config_sensible_defaults():
     f = checker.flags()
     # 全量 = 100（稳态）
     assert f.python_agent_percent == 100
-    # 风险特性默认关（reflexion / orchestrator 未实现）
-    assert f.reflexion_enabled is False
+    # Phase 5 L1：Reflexion 反思默认开（失败任务自动存记忆 + 注入 prompt）
+    assert f.reflexion_enabled is True
+    # Phase 5 预留特性仍关（未实现）
     assert f.orchestrator_worker is False
     # 安全特性默认开
     assert f.audit_sqlite_enabled is True

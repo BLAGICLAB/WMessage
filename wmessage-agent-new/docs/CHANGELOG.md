@@ -7,6 +7,58 @@ WMessage Agent Python 内核 — 所有重要变更记录于此。
 
 ---
 
+## [0.5.0] - 2026-08-22 — Reflexion 反思循环 (Phase 5 L1)
+
+### Added（新增）
+
+- **`agent_core/reflexion.py`** — ReflexionEngine 反思引擎（Phase 5 第 1 项）
+  - `reflect(task, task_result_status, task_result_error, task_run_id)` — 任务完成后调
+    - status="ok" → 存简短记录（监盘用）
+    - status="failed" → 规则引擎 fallback 分类（timeout / verify_failed / missing_dependency / permission_denied / command_failed / unknown）+ 改进建议
+    - 可选 LLM 客户端生成更精准的反思（Phase 5 后续优化）
+  - `recall_relevant(current_task_title, top_k=3)` — 按关键词匹配 + 时间倒序查相关历史反思
+  - `format_for_prompt(reflections)` — 格式化为 LLM prompt 注入文本
+- **`db/migrations/0002_reflexion_memory.sql`** — 新表
+  - `reflexion_memory` (id / task_run_id / task_title / task_status / what_went_wrong / why / improvement / ts_ms / extra)
+  - 索引：ts_ms DESC + task_run_id
+- **`agent_core/db.py::ReflexionDAO`** — 增删改查（insert / list_recent / get）
+  - `list_recent` 排序：`ORDER BY ts_ms DESC, id DESC`（同 ms 插入时 id 稳定排序）
+
+### Changed（变更）
+
+- **`agent_core/agent_loop.py`**：
+  - `AgentLoop.__init__` 加 `reflexion_engine: Optional["ReflexionEngine"]` 参数
+  - 成功 task 后调 `reflexion_engine.reflect(task, "ok", skill_run_id=None)` 存简短记录
+  - 失败 task 后调 `reflexion_engine.reflect(task, "failed", task_error, skill_run_id=None)` 生成完整反思
+  - 反思失败用 `except Exception: pass` 静默吞（不阻塞主流程）
+- **`main.py`**：
+  - `build_reflexion(flag_checker)` — 根据 `reflexion_enabled` 标志创建 ReflexionEngine（默认 None）
+  - `init_runtime` 集成 ReflexionEngine 到 `_runtime["reflexion"]`
+  - `handle_chat` 调 `recall_relevant(message)` 检索相关历史反思 → 注入 env_state["reflections"]
+- **`agent_core/react_step.py::_build_react_prompt`**：
+  - `env_state["reflections"]` 优先显示在环境状态上方（避免被淹没）
+- **`config/feature_flags.toml`** & **`config/feature_flags.dev.toml`**：
+  - `reflexion_enabled = true`（Phase 5 L1 默认启用）
+- **`tests/test_phase4_step3.py`**：
+  - `test_prod_config_sensible_defaults` 更新：reflexion_enabled 默认 True（不是 False）
+
+### Fixed（修复）
+
+- `agent_core/db.py::ReflexionDAO.list_recent` 同毫秒插入时排序不稳定 → 加 `id DESC` 次序
+- `agent_core/agent_loop.py` 成功/失败 task 的 reflect 调用原本用 `skill_run_id=skill_run_id`（`run()` 方法只有 `skill_name` 无 `skill_run_id` 局部变量）→ 改 `skill_run_id=None`（PREV 层级）
+- 测试 helper `_stub_llm(n=3)` 默认队列 3 个响应（覆盖 replan 触发后的多次 LLM 调用）
+- `test_failed_task_calls_reflect` 加 `enable_replan=False`（测试只验 reflect 存储，不验 replan）
+
+### 测试覆盖
+
+- **`test_reflexion.py`**（19 新增）：规则引擎 6 类错误分类 + 成功/失败 task 存储 + 检索排序 + limit + format_for_prompt + DAO CRUD + AgentLoop 集成
+- **`test_agent_loop.py`** 仍 18/18 通过（成功/失败 task 的 reflect 调用集成不破坏现有测试）
+- **`test_react_step.py`** 30/30 通过（`env_state["reflections"]` 注入不影响 prompt 构建）
+- **全量**：522/524 通过 / 62.99s
+- **唯一 fail**：`test_ping_under_load`（v0.4.1 已记录的 pytest subprocess timing flake，与本次无关）
+
+---
+
 ## [0.4.3] - 2026-08-22 — 写真实 feature_flags.toml + 接 LLM 到生产 main.py (Phase 4 step 3)
 
 ### Added（新增）

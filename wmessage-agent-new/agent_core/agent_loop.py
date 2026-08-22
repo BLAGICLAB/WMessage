@@ -99,6 +99,7 @@ class AgentLoop:
         executor: VerifyExecutor,
         audit: Optional[AuditLogger] = None,
         config: Optional[AgentLoopConfig] = None,
+        reflexion_engine: Optional["ReflexionEngine"] = None,
     ):
         """初始化。
 
@@ -107,11 +108,13 @@ class AgentLoop:
             executor: VerifyExecutor（verify + tool.execute 都用）
             audit: AuditLogger（None = 不写审计）
             config: AgentLoopConfig
+            reflexion_engine: Phase 5 Reflexion 反思引擎（None = 不反思）
         """
         self.llm = llm
         self.executor = executor
         self.audit = audit or AuditLogger()  # 默认内存模式（不落盘）
         self.config = config or AgentLoopConfig()
+        self.reflexion_engine = reflexion_engine
 
     def run(
         self,
@@ -258,6 +261,17 @@ class AgentLoop:
                         audit_lines.append(
                             self.audit.task_done(task.id, attempts=attempts)
                         )
+                        # Phase 5: Reflexion 反思（成功任务存简短记录）
+                        if self.reflexion_engine is not None:
+                            try:
+                                # PREV 层级无 skill_run_id（那是 skill 层级），传 None
+                                self.reflexion_engine.reflect(
+                                    task=task,
+                                    task_result_status="ok",
+                                    task_run_id=None,
+                                )
+                            except Exception:
+                                pass  # 反思失败不阻塞主流程
                         # UUID 提取：优先最后 tool_call 结果（task_done 会覆盖 last_tool_result，
                         # 但 tool 返回的 UUID 更具语义价值）
                         uuid_source = (
@@ -324,6 +338,17 @@ class AgentLoop:
                         attempts=attempts,
                     ))
                     # 失败但不立即中断（后续 task 可能独立完成）
+                    # Phase 5: Reflexion 反思（失败任务生成完整反思 + 存记忆）
+                    if self.reflexion_engine is not None:
+                        try:
+                            self.reflexion_engine.reflect(
+                                task=task,
+                                task_result_status="failed",
+                                task_result_error=task_error,
+                                task_run_id=None,
+                            )
+                        except Exception:
+                            pass  # 反思失败不阻塞主流程
                     continue
 
             if not rerun_needed:

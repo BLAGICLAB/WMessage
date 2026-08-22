@@ -412,3 +412,95 @@ def _row_to_audit(row: sqlite3.Row) -> Dict[str, Any]:
         "payload": _from_json(row["payload"]),
         "message": row["message"],
     }
+
+
+# ───────────────────────── Reflexion DAO ─────────────────────────
+
+
+class ReflexionDAO:
+    """反思记忆表 CRUD（Phase 5 Reflexion 反思循环）。
+
+    表结构：
+    - id          INTEGER PRIMARY KEY
+    - task_run_id TEXT
+    - task_title  TEXT NOT NULL
+    - task_status TEXT NOT NULL              -- ok | failed | in_progress
+    - what_went_wrong TEXT
+    - why         TEXT
+    - improvement TEXT
+    - ts_ms       INTEGER NOT NULL
+    - extra       TEXT                        -- JSON
+    """
+
+    def __init__(self, conn: sqlite3.Connection):
+        self.conn = conn
+
+    def insert(
+        self,
+        task_title: str,
+        task_status: str,
+        task_run_id: Optional[str] = None,
+        what_went_wrong: str = "",
+        why: str = "",
+        improvement: str = "",
+        ts_ms: Optional[int] = None,
+        extra: Optional[dict] = None,
+    ) -> int:
+        """追加一条反思。"""
+        ts = ts_ms or int(time.time() * 1000)
+        with transaction(self.conn) as c:
+            cur = c.execute(
+                "INSERT INTO reflexion_memory "
+                "(task_run_id, task_title, task_status, what_went_wrong, why, improvement, ts_ms, extra) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    task_run_id,
+                    task_title,
+                    task_status,
+                    what_went_wrong,
+                    why,
+                    improvement,
+                    ts,
+                    _to_json(extra or {}),
+                ),
+            )
+            return cur.lastrowid
+
+    def list_recent(
+        self,
+        task_status: Optional[str] = None,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """查最近反思（按 ts desc，同 ms 时按 id desc 保证稳定排序），可选按 status 过滤。"""
+        sql = "SELECT * FROM reflexion_memory WHERE 1=1"
+        params: List[Any] = []
+        if task_status:
+            sql += " AND task_status = ?"
+            params.append(task_status)
+        # 同 ms 插入时 id DESC 保证顺序稳定（auto-increment）
+        sql += " ORDER BY ts_ms DESC, id DESC LIMIT ?"
+        params.append(limit)
+        cur = self.conn.execute(sql, params)
+        return [_row_to_reflexion(r) for r in cur.fetchall()]
+
+    def get(self, id: int) -> Optional[Dict[str, Any]]:
+        """按 id 查单条反思。"""
+        cur = self.conn.execute(
+            "SELECT * FROM reflexion_memory WHERE id = ?", (id,)
+        )
+        row = cur.fetchone()
+        return _row_to_reflexion(row) if row else None
+
+
+def _row_to_reflexion(row: sqlite3.Row) -> Dict[str, Any]:
+    return {
+        "id": row["id"],
+        "task_run_id": row["task_run_id"],
+        "task_title": row["task_title"],
+        "task_status": row["task_status"],
+        "what_went_wrong": row["what_went_wrong"],
+        "why": row["why"],
+        "improvement": row["improvement"],
+        "ts_ms": row["ts_ms"],
+        "extra": _from_json(row["extra"]),
+    }

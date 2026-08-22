@@ -30,7 +30,7 @@ python_agent_sessions = []
 
 [features]
 # Reflexion 反思循环（任务结束自我复盘注入 system prompt）
-reflexion_enabled = false
+reflexion_enabled = true  # Phase 5 L1 启用（默认开，L2 优化后续）
 # LLM L2 Intent Classifier（L1 miss → LLM 兜底语义判断）
 llm_l2_router = true
 # Orchestrator-Worker 多子 Agent 并行（Phase 5 预留）
