@@ -28,23 +28,38 @@ fn stop_registry() -> &'static StopMap {
 
 /// 执行实例的停止标志：run_model_loop 在流式/工具循环检查点检查；Drop 时注销
 /// （interactive=true 表示由用户聊天/点 🤖 触发，/stop 只停这类实例，不动后台定时）
+/// 2026-08-26 会话隔离改造：携带 session_id（触发会话；后台定时任务为 None），
+/// 供流式事件会话标记 / Skill 与确认按会话归属过滤；interactive 供流式广播开关
+/// （后台任务不向挂件发流式增量，防串进用户当前对话气泡）。
 pub struct StopGuard {
     pub(crate) id: u64,
     flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    interactive: bool,
+    session_id: Option<String>,
 }
 
 impl StopGuard {
-    pub fn new(interactive: bool) -> Self {
+    pub fn new(interactive: bool, session_id: Option<String>) -> Self {
         let id = NEXT_STOP_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
         let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         if let Ok(mut m) = stop_registry().lock() {
             m.insert(id, (flag.clone(), interactive));
         }
-        Self { id, flag }
+        Self { id, flag, interactive, session_id }
     }
 
     pub fn stopped(&self) -> bool {
         self.flag.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// 是否用户交互触发（聊天 / 🤖 / 逐步执行）；后台定时任务为 false
+    pub fn is_interactive(&self) -> bool {
+        self.interactive
+    }
+
+    /// 触发会话 id（后台定时任务为 None）：Skill/确认/逐步执行按此归属过滤
+    pub fn session_id(&self) -> Option<&str> {
+        self.session_id.as_deref()
     }
 
     /// 派生停止令牌（NEW-C-4）：与 guard 共享同一标志，但 owned + 'static，
@@ -107,7 +122,7 @@ pub enum ConfirmChoice {
     Once,
     /// 允许且把该目录写进 allowedDirs（仅 file_access 弹窗有此按钮）
     Always,
-    /// 拒绝 / 超时 / 挂件不可见（安全兜底）
+    /// 拒绝 / 超时 / 挂件不可见 / 后台执行（安全兜底）
     Deny,
 }
 
@@ -118,31 +133,51 @@ struct ConfirmReply {
     always: bool,
 }
 
-/// 待确认请求：id → oneshot 通道（挂件 bot_confirm_response 回填）
-type ConfirmMap =
-    std::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<ConfirmReply>>>;
+/// 待确认请求：id → (oneshot 通道, 归属会话 id)（挂件 bot_confirm_response 回填；
+/// 2026-08-26 会话隔离：会话 id 随 bot-confirm 事件下发，前端非当前会话不弹窗，
+/// 后台任务（session=None）确认直接拒绝不弹窗）
+type ConfirmMap = std::sync::Mutex<
+    std::collections::HashMap<String, (tokio::sync::oneshot::Sender<ConfirmReply>, Option<String>)>,
+>;
 static CONFIRMS: std::sync::OnceLock<ConfirmMap> = std::sync::OnceLock::new();
 
 fn confirms() -> &'static ConfirmMap {
     CONFIRMS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
-/// 弹窗确认公共内核：发 "bot-confirm" 事件（带 kind 供前端渲染两/三按钮），
-/// 60s 超时默认拒绝（安全兜底）；挂件不可见时直接拒绝，不白等 60s（审计 P2）。
-async fn ask_confirm_inner(app: &AppHandle, tool: &str, detail: &str, kind: &str) -> ConfirmReply {
-    // Skill 调度器联动：高危动作确认开始 → 活动技能转入 Paused
-    crate::bot_skills::skill_mark_paused(app, tool);
+/// 弹窗确认公共内核：发 "bot-confirm" 事件（带 kind 供前端渲染两/三按钮、
+/// 带 sessionId 供前端按会话过滤），60s 超时默认拒绝（安全兜底）；
+/// 非交互执行（后台定时任务，interactive=false）直接拒绝不弹窗——
+/// 无人在场时弹窗只会串进用户当前会话且必然超时（2026-08-26 会话隔离审计 P0）。
+/// 挂件不可见时同样直接拒绝，不白等 60s（审计 P2）。
+async fn ask_confirm_inner(
+    app: &AppHandle,
+    tool: &str,
+    detail: &str,
+    kind: &str,
+    interactive: bool,
+    session_id: Option<&str>,
+) -> ConfirmReply {
+    let deny = ConfirmReply { approved: false, always: false };
+    if !interactive {
+        crate::bot::audit_log(
+            app,
+            &format!("confirm_skipped | {tool} | {detail} | 后台执行不弹窗，默认拒绝"),
+        );
+        return deny;
+    }
+    // Skill 调度器联动：高危动作确认开始 → 本会话活动技能转入 Paused
+    crate::bot_skills::skill_mark_paused(app, tool, session_id);
     let widget_visible = app
         .get_webview_window("widget")
         .and_then(|w| w.is_visible().ok())
         .unwrap_or(false);
-    let deny = ConfirmReply { approved: false, always: false };
     if !widget_visible {
         crate::bot::audit_log(
             app,
             &format!("confirm_skipped | {tool} | {detail} | 挂件不可见，默认拒绝"),
         );
-        crate::bot_skills::skill_confirm_result(app, false);
+        crate::bot_skills::skill_confirm_result(app, false, session_id);
         return deny;
     }
     let (tx, rx) = tokio::sync::oneshot::channel();
@@ -150,11 +185,17 @@ async fn ask_confirm_inner(app: &AppHandle, tool: &str, detail: &str, kind: &str
     confirms()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .insert(id.clone(), tx);
+        .insert(id.clone(), (tx, session_id.map(|s| s.to_string())));
     let _ = app.emit_to(
         "widget",
         "bot-confirm",
-        serde_json::json!({ "id": id, "tool": tool, "detail": detail, "kind": kind }),
+        serde_json::json!({
+            "id": id,
+            "tool": tool,
+            "detail": detail,
+            "kind": kind,
+            "sessionId": session_id,
+        }),
     );
     crate::bot::audit_log(
         app,
@@ -167,21 +208,35 @@ async fn ask_confirm_inner(app: &AppHandle, tool: &str, detail: &str, kind: &str
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .remove(&id);
-            crate::bot_skills::skill_confirm_result(app, false); // 超时默认拒绝
+            crate::bot_skills::skill_confirm_result(app, false, session_id); // 超时默认拒绝
             deny
         }
     }
 }
 
 /// 请求用户在挂件确认危险操作（如删除任务）；60s 超时默认拒绝（安全兜底）
-pub async fn ask_user_confirm(app: &AppHandle, tool: &str, detail: &str) -> bool {
-    ask_confirm_inner(app, tool, detail, "danger").await.approved
+pub async fn ask_user_confirm(
+    app: &AppHandle,
+    tool: &str,
+    detail: &str,
+    interactive: bool,
+    session_id: Option<&str>,
+) -> bool {
+    ask_confirm_inner(app, tool, detail, "danger", interactive, session_id)
+        .await
+        .approved
 }
 
 /// 文件访问授权（2026-08-26，Kimi CLI 风格）：白名单外路径弹三选一窗
-/// （允许一次 / 始终允许该目录 / 拒绝）。挂件不可见/超时 → Deny。
-pub async fn ask_path_confirm(app: &AppHandle, tool: &str, detail: &str) -> ConfirmChoice {
-    match ask_confirm_inner(app, tool, detail, "file_access").await {
+/// （允许一次 / 始终允许该目录 / 拒绝）。挂件不可见/超时/后台执行 → Deny。
+pub async fn ask_path_confirm(
+    app: &AppHandle,
+    tool: &str,
+    detail: &str,
+    interactive: bool,
+    session_id: Option<&str>,
+) -> ConfirmChoice {
+    match ask_confirm_inner(app, tool, detail, "file_access", interactive, session_id).await {
         ConfirmReply { approved: true, always: true } => ConfirmChoice::Always,
         ConfirmReply { approved: true, always: false } => ConfirmChoice::Once,
         _ => ConfirmChoice::Deny,
@@ -190,15 +245,16 @@ pub async fn ask_path_confirm(app: &AppHandle, tool: &str, detail: &str) -> Conf
 
 /// 挂件确认响应：允许/拒绝（前端点击后回传）；always 仅 file_access 弹窗的
 /// 「始终允许该目录」按钮会为 true，老调用（删任务两按钮）不传 → None → false。
+/// 会话归属从 ConfirmMap 条目取回（2026-08-26）：skill_confirm_result 按会话过滤。
 #[tauri::command]
 pub fn bot_confirm_response(app: AppHandle, request_id: String, approved: bool, always: Option<bool>) {
-    // Skill 调度器联动：确认结果 → 恢复 Running / 拒绝终止 / 暂停即终止
-    crate::bot_skills::skill_confirm_result(&app, approved);
-    if let Some(tx) = confirms()
+    let entry = confirms()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .remove(&request_id)
-    {
+        .remove(&request_id);
+    if let Some((tx, session_id)) = entry {
+        // Skill 调度器联动：确认结果 → 本会话技能恢复 Running / 拒绝终止 / 暂停即终止
+        crate::bot_skills::skill_confirm_result(&app, approved, session_id.as_deref());
         let _ = tx.send(ConfirmReply { approved, always: always.unwrap_or(false) });
     }
 }

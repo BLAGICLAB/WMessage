@@ -22,9 +22,13 @@ use crate::bot_slash::StopGuard;
 use crate::error::{CommandError, CommandResult};
 
 /// 挂起的逐步执行：等用户确认当前子任务（全局最多一个，新执行覆盖旧的）
+/// 2026-08-26 会话隔离：记录归属会话 id——别的会话的消息不会被当成
+/// 逐步执行的应答截胡（has_pending 按会话匹配）
 struct PendingExec {
     task_id: String,
     subtask_id: String,
+    /// 触发会话 id（2026-08-26 会话隔离）
+    session_id: Option<String>,
 }
 
 static PENDING: OnceLock<Mutex<Option<PendingExec>>> = OnceLock::new();
@@ -33,11 +37,14 @@ fn pending_slot() -> &'static Mutex<Option<PendingExec>> {
     PENDING.get_or_init(|| Mutex::new(None))
 }
 
-pub fn has_pending() -> bool {
+/// 当前会话是否有挂起的逐步执行（2026-08-26 起按会话匹配：
+/// 会话 A 挂起时，会话 B 的消息走正常聊天路由，不被 resume 截胡）
+pub fn has_pending_for(session_id: Option<&str>) -> bool {
     pending_slot()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .is_some()
+        .as_ref()
+        .is_some_and(|p| p.session_id.as_deref() == session_id)
 }
 
 fn park(p: PendingExec) {
@@ -183,6 +190,7 @@ async fn run_step(
     park(PendingExec {
         task_id: task_id.to_string(),
         subtask_id: sub.id.clone(),
+        session_id: stop.session_id().map(|s| s.to_string()),
     });
     Ok(BotChatResult {
         text: format!(
@@ -215,7 +223,7 @@ async fn advance_or_finish(
 }
 
 /// 开始逐步执行（bot_execute_task 在 ≥2 个未勾子任务时分流到这里）
-pub async fn start(app: &AppHandle, task: &crate::db::Task) -> CommandResult<BotChatResult> {
+pub async fn start(app: &AppHandle, task: &crate::db::Task, session_id: Option<&str>) -> CommandResult<BotChatResult> {
     // 防重入：与 execute_task_core 同一守卫（同一卡不能同时两个执行实例）
     let Some(_guard) = ExecGuard::acquire(&task.id) else {
         crate::bot::audit_log(
@@ -226,7 +234,7 @@ pub async fn start(app: &AppHandle, task: &crate::db::Task) -> CommandResult<Bot
             reason: "该任务卡正在执行中，请等待完成后再触发".into(),
         });
     };
-    if has_pending() {
+    if has_pending_for(session_id) {
         clear(app, "新任务卡逐步执行覆盖旧挂起").await;
     }
     crate::bot::audit_log(
@@ -246,7 +254,7 @@ pub async fn start(app: &AppHandle, task: &crate::db::Task) -> CommandResult<Bot
         .ok_or_else(|| CommandError::TaskInvalidState {
             reason: "没有未完成的子任务".into(),
         })?;
-    let stop = StopGuard::new(true);
+    let stop = StopGuard::new(true, session_id.map(|s| s.to_string()));
     let r = run_step(app, &task.id, &first, None, &stop).await;
     if r.is_err() {
         clear(app, "逐步执行起步失败").await;
@@ -255,7 +263,7 @@ pub async fn start(app: &AppHandle, task: &crate::db::Task) -> CommandResult<Bot
 }
 
 /// 聊天入口发现挂起时调用：按用户应答继续/重做/停
-pub async fn resume(app: &AppHandle, reply: &str) -> CommandResult<BotChatResult> {
+pub async fn resume(app: &AppHandle, reply: &str, session_id: Option<&str>) -> CommandResult<BotChatResult> {
     let Some(p) = take_pending() else {
         return Ok(BotChatResult {
             text: "（当前没有待确认的子任务执行）".into(),
@@ -278,7 +286,7 @@ pub async fn resume(app: &AppHandle, reply: &str) -> CommandResult<BotChatResult
                 &format!("exec_steps.confirm | task: {} | 用户确认，勾选并继续", p.task_id),
             );
             mark_subtask_done(app, &p.task_id, &p.subtask_id).await;
-            let stop = StopGuard::new(true);
+            let stop = StopGuard::new(true, session_id.map(|s| s.to_string()));
             advance_or_finish(app, &p.task_id, &stop).await
         }
         StepReply::Redo(feedback) => {
@@ -290,7 +298,7 @@ pub async fn resume(app: &AppHandle, reply: &str) -> CommandResult<BotChatResult
                     crate::bot::truncate_for_log(&feedback, 100)
                 ),
             );
-            let stop = StopGuard::new(true);
+            let stop = StopGuard::new(true, session_id.map(|s| s.to_string()));
             run_step(app, &p.task_id, &p.subtask_id, Some(&feedback), &stop).await
         }
     }

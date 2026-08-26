@@ -422,6 +422,18 @@ pub async fn run_model_loop(
     let tools: serde_json::Value = serde_json::from_str(TOOLS).unwrap();
 
     let mut msgs = msgs;
+    // 2026-08-26 会话隔离：流式事件（bot-chat-delta 等）只由交互实例广播；
+    // 后台定时任务（interactive=false）不向挂件推流——否则后台执行的输出会
+    // 串进用户当前会话的 streaming 气泡（审计 P0）。Skill 归属同理按 session 过滤。
+    let stream_to_widget = stop.is_interactive();
+    let session_id: Option<&str> = stop.session_id();
+    // 流式事件出口统一收口（2026-08-26 会话隔离）：非交互实例（后台定时任务）
+    // 不向挂件发任何流式增量，防后台执行输出串进用户当前会话的 streaming 气泡
+    let emit_stream = |event: &str, payload: serde_json::Value| {
+        if stream_to_widget {
+            let _ = app.emit_to("widget", event, payload);
+        }
+    };
     // 僵尸终态清理：上轮 Skill 失败/完成的遗留 run 会在第 0 轮短路主循环（agent 假死根因）
     crate::bot_skills::clear_terminal_skill_runs();
     // 最多 max_rounds 轮（工具循环），每轮流式输出；收到 tool_calls 则执行后把结果续进对话
@@ -438,12 +450,12 @@ pub async fn run_model_loop(
     let mut last_streamed = String::new();
     for _round in 0..max_rounds {
         if stop.stopped() {
-            let hint = crate::bot_skills::skill_finish(&app, false, "用户停止");
+            let hint = crate::bot_skills::skill_finish(&app, false, "用户停止", session_id);
             return Ok((format!("⏹ 已停止{hint}"), collected_refs));
         }
         // 状态机推进决策（Block 2 2026-08-17 22:26）：集中 Skill 推进逻辑
         // 未来横切关注点（审批/沙箱/上下文压缩）只动 advance_skill，主循环不重构
-        if let Some(run) = crate::bot_skills::active_skill_run() {
+        if let Some(run) = crate::bot_skills::active_skill_run_for(session_id) {
             use crate::bot_skills::{advance_skill, AdvanceAction};
             match advance_skill(&run, chrono::Utc::now().timestamp_millis()) {
                 AdvanceAction::NoActive | AdvanceAction::Continue => {} // 继续本轮
@@ -452,15 +464,15 @@ pub async fn run_model_loop(
                     return Ok((last_streamed.clone(), collected_refs));
                 }
                 AdvanceAction::Finish => {
-                    let _hint = crate::bot_skills::skill_finish(&app, true, "");
+                    let _hint = crate::bot_skills::skill_finish(&app, true, "", session_id);
                     return Ok((last_streamed.clone(), collected_refs));
                 }
                 AdvanceAction::Fail(reason) => {
-                    let _hint = crate::bot_skills::skill_finish(&app, false, &reason);
+                    let _hint = crate::bot_skills::skill_finish(&app, false, &reason, session_id);
                     return Ok((last_streamed.clone(), collected_refs));
                 }
                 AdvanceAction::Terminate(reason) => {
-                    let _hint = crate::bot_skills::skill_finish(&app, false, &reason);
+                    let _hint = crate::bot_skills::skill_finish(&app, false, &reason, session_id);
                     return Ok((last_streamed.clone(), collected_refs));
                 }
             }
@@ -497,7 +509,7 @@ pub async fn run_model_loop(
                 "llm.response",
                 "status" => status.as_u16(),
             );
-            let hint = crate::bot_skills::skill_finish(&app, false, "大模型 API 错误");
+            let hint = crate::bot_skills::skill_finish(&app, false, "大模型 API 错误", session_id);
             return Err(CommandError::LlmApiError {
                 status: status.as_u16(),
                 body_preview: format!("{}{hint}", text.chars().take(300).collect::<String>()),
@@ -537,19 +549,11 @@ pub async fn run_model_loop(
                         if !t.is_empty() {
                             let (normal, think) = feed_think(&mut think_mode, &mut think_buf, &t);
                             if !think.is_empty() {
-                                let _ = app.emit_to(
-                                    "widget",
-                                    "bot-think-delta",
-                                    serde_json::json!({ "text": think }),
-                                );
+                                emit_stream("bot-think-delta", serde_json::json!({ "text": think }));
                             }
                             if !normal.is_empty() {
                                 final_text.push_str(&normal);
-                                let _ = app.emit_to(
-                                    "widget",
-                                    "bot-chat-delta",
-                                    serde_json::json!({ "text": normal }),
-                                );
+                                emit_stream("bot-chat-delta", serde_json::json!({ "text": normal }));
                             }
                         }
                     }
@@ -562,22 +566,14 @@ pub async fn run_model_loop(
                             if t.0.is_empty() {
                                 t.0 = id;
                                 // 新工具调用开始：推折叠行给挂件
-                                let _ = app.emit_to(
-                                    "widget",
-                                    "bot-tool",
-                                    serde_json::json!({ "id": t.0, "name": t.1 }),
-                                );
+                                emit_stream("bot-tool", serde_json::json!({ "id": t.0, "name": t.1 }));
                             }
                         }
                         if let Some(name) = tc_delta.name_chunk {
                             if !name.is_empty() {
                                 t.1.push_str(&name);
                                 if !t.0.is_empty() {
-                                    let _ = app.emit_to(
-                                        "widget",
-                                        "bot-tool-name",
-                                        serde_json::json!({ "id": t.0, "name": t.1 }),
-                                    );
+                                    emit_stream("bot-tool-name", serde_json::json!({ "id": t.0, "name": t.1 }));
                                 }
                             }
                         }
@@ -595,23 +591,15 @@ pub async fn run_model_loop(
             .replace("</think>", "");
         if !tail.is_empty() {
             if think_mode {
-                let _ = app.emit_to(
-                    "widget",
-                    "bot-think-delta",
-                    serde_json::json!({ "text": tail }),
-                );
+                emit_stream("bot-think-delta", serde_json::json!({ "text": tail }));
             } else {
                 final_text.push_str(&tail);
-                let _ = app.emit_to(
-                    "widget",
-                    "bot-chat-delta",
-                    serde_json::json!({ "text": tail }),
-                );
+                emit_stream("bot-chat-delta", serde_json::json!({ "text": tail }));
             }
         }
 
         if stopped {
-            let hint = crate::bot_skills::skill_finish(&app, false, "用户停止");
+            let hint = crate::bot_skills::skill_finish(&app, false, "用户停止", session_id);
             return Ok((format!("{final_text}\n\n⏹ 已停止{hint}"), collected_refs));
         }
 
@@ -634,7 +622,7 @@ pub async fn run_model_loop(
                 }));
                 continue;
             }
-            let _ = crate::bot_skills::skill_finish(&app, true, "");
+            let _ = crate::bot_skills::skill_finish(&app, true, "", session_id);
             collected_refs = merge_task_refs_dedup(collected_refs);
             return Ok((final_text.clone(), collected_refs));
         }
@@ -649,7 +637,7 @@ pub async fn run_model_loop(
             })).collect::<Vec<_>>()
         }));
         if stop.stopped() {
-            let hint = crate::bot_skills::skill_finish(&app, false, "用户停止");
+            let hint = crate::bot_skills::skill_finish(&app, false, "用户停止", session_id);
             return Ok((format!("{final_text}\n\n⏹ 已停止{hint}"), collected_refs));
         }
         for (id, name, args) in &tool_calls {
@@ -658,7 +646,7 @@ pub async fn run_model_loop(
                 mutation_done = true;
             }
             if should_fuse(function_calls_total) {
-                let hint = crate::bot_skills::skill_finish(&app, false, "单轮 Function 调用超上限");
+                let hint = crate::bot_skills::skill_finish(&app, false, "单轮 Function 调用超上限", session_id);
                 crate::bot::audit_log(
                     &app,
                     &format!(
@@ -686,11 +674,7 @@ pub async fn run_model_loop(
             // NEW-C-4：把 /stop 守卫透传给 execute_tool，run_python 在途可中断
             let (result, refs) =
                 crate::bot::execute_tool_with_stop(&app, name, args, Some(stop)).await;
-            let _ = app.emit_to(
-                "widget",
-                "bot-tool-done",
-                serde_json::json!({ "id": id, "name": name, "args": args }),
-            );
+            emit_stream("bot-tool-done", serde_json::json!({ "id": id, "name": name, "args": args }));
             crate::bot::audit_log(
                 &app,
                 &format!(
@@ -720,7 +704,7 @@ pub async fn run_model_loop(
         // 快照上轮 streamed 文本（供 AwaitConfirm/Finish/Fail/Terminate 跳出时返回）
         last_streamed = final_text.clone();
     }
-    let hint = crate::bot_skills::skill_finish(&app, false, "对话轮数超限");
+    let hint = crate::bot_skills::skill_finish(&app, false, "对话轮数超限", session_id);
     Err(CommandError::Internal(format!("对话轮数超限{hint}")))
 }
 

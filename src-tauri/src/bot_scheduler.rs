@@ -273,7 +273,7 @@ async fn run_scheduled(app: AppHandle, task: crate::db::Task) {
         return;
     }
 
-    let result = crate::bot_chat::execute_task_core(&app, &task.id, false).await;
+    let result = crate::bot_chat::execute_task_core(&app, &task.id, false, None).await;
     let time_str = now.format("%m-%d %H:%M").to_string();
 
     // 执行结果写备注（模型可能已写摘要，这里前置 ⏰ 标记兜底）。

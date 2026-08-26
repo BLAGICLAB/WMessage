@@ -2,6 +2,18 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-08-26（周三·深夜）会话隔离修复：流式/Skill/确认/逐步执行全链路按会话归属
+
+**动因**（老板要求审计「聊天会不会串」）：审计发现存储层（bot_messages 按 session_id）和前端切换（sessionIdRef 竞态守卫）是隔离的，但运行期有四个串线通道。
+
+**修复**：
+- **流式事件（P0）**：run_model_loop 的 bot-chat-delta/bot-think-delta/bot-tool* 全部收口到 `emit_stream` 闭包，只在交互实例（StopGuard.is_interactive）广播；后台定时任务（execute_task_core interactive=false）不再向挂件推流——此前定时任务到点触发时，其 LLM 输出会追加进用户当前会话的 streaming 气泡并被 persistHistory 当成本轮对话落库
+- **Skill 按会话归属（P1）**：SkillRun 新增 session_id；start_skill/active_skill_run_for/skill_finish/skill_mark_paused/skill_confirm_result/skill_on_step(_post)/is_skill_active_for 全部按会话过滤——会话 A 暂停中的 Skill 不再被会话 B 的主循环推进、确认或收尾；start_skill 的「单活动技能切换」也只结束同会话技能
+- **确认弹窗按会话归属（P1）**：ConfirmMap 条目记录归属会话，bot-confirm 事件带 sessionId，前端只弹当前会话的确认；后台执行（interactive=false）不弹窗直接拒绝（无人在场必超时，且会串进用户当前会话）；bot_confirm_response 从条目取回会话再恢复对应 Skill
+- **逐步执行挂起按会话归属**：PendingExec 带 session_id，has_pending_for 按会话匹配——会话 A 挂起等确认时，会话 B 的消息不再被 resume 截胡
+- 透传链：StopGuard::new(interactive, session_id) → bot_chat/bot_execute_task 命令收 sessionId 参数 → run_model_loop/execute_tool_impl/各工具；exec_steps 三个 StopGuard 同理
+- 测试：后端 407 全绿（StopGuard/SkillRun 构造同步补字段）；前端新增「确认弹窗按会话过滤」用例（捕获 bot-confirm 监听器，验证别会话/无归属不弹、本会话弹）；110 全绿 + tsc 通过
+
 ## 2026-08-26（周三·夜）熔断上限 50 + 发送/停止一体键
 
 - **熔断放宽**（老板拍板）：默认对话轮数 20 → **50**；单轮 Function 调用上限 10 → **50**，软警告 7 → 35（保持 ~30% buffer）。失控防护仍靠幻觉守卫 + 软警告 + 停止键

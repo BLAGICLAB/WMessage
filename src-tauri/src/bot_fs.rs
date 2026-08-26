@@ -138,8 +138,16 @@ async fn allowed_dirs(app: &AppHandle) -> Vec<PathBuf> {
 /// ~ 展开 → canonicalize（不存在即拒）→ 白名单命中直接放行；
 /// 白名单外按 perm_mode 分流：strict 硬拒（旧行为）/ ask 弹授权窗（允许一次 /
 /// 始终允许该目录自动写入 allowedDirs / 拒绝）/ yolo 直接放行。全程记审计。
+/// interactive/session_id（2026-08-26 会话隔离）：后台执行（interactive=false）
+/// 不弹授权窗直接拒；弹窗事件带 sessionId 供前端按会话过滤。
 /// 成功返回 canonical 路径（Windows 剥 \\?\ 前缀）。
-pub async fn resolve_with_perm(app: &AppHandle, tool: &str, path: &str) -> Result<PathBuf, String> {
+pub async fn resolve_with_perm(
+    app: &AppHandle,
+    tool: &str,
+    path: &str,
+    interactive: bool,
+    session_id: Option<&str>,
+) -> Result<PathBuf, String> {
     let p = path.trim();
     if p.is_empty() {
         return Err("路径不能为空".into());
@@ -160,7 +168,7 @@ pub async fn resolve_with_perm(app: &AppHandle, tool: &str, path: &str) -> Resul
             Ok(strip_verbatim(canonical))
         }
         crate::bot::PermMode::Ask => {
-            match crate::bot_slash::ask_path_confirm(app, tool, &format!("访问白名单外路径：{p}"))
+            match crate::bot_slash::ask_path_confirm(app, tool, &format!("访问白名单外路径：{p}"), interactive, session_id)
                 .await
             {
                 crate::bot_slash::ConfirmChoice::Once => {
@@ -263,12 +271,12 @@ fn is_binary_file(path: &Path) -> bool {
 // ───────────────────────── 工具实现（bot 分发签名：(String, Vec<TaskRef>)） ─────────────────────────
 
 /// read_text_file：读白名单内 UTF-8 文本，offset/limit 行切片（1 起），超 100KB 截断
-pub async fn tool_read_text_file(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>) {
+pub async fn tool_read_text_file(app: &AppHandle, args: &str, interactive: bool, session_id: Option<&str>) -> (String, Vec<TaskRef>) {
     let v = crate::bot::parse_args(args);
     let Some(path) = v["path"].as_str() else {
         return ("read_text_file 缺少 path".into(), Vec::new());
     };
-    let canonical = match resolve_with_perm(app, "read_text_file", path).await {
+    let canonical = match resolve_with_perm(app, "read_text_file", path, interactive, session_id).await {
         Ok(p) => p,
         Err(e) => return (e, Vec::new()),
     };
@@ -316,7 +324,7 @@ pub async fn tool_read_text_file(app: &AppHandle, args: &str) -> (String, Vec<Ta
 }
 
 /// grep_files：白名单目录内正则搜文件内容，输出 path:line:内容（ripgrep 风格）
-pub async fn tool_grep_files(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>) {
+pub async fn tool_grep_files(app: &AppHandle, args: &str, interactive: bool, session_id: Option<&str>) -> (String, Vec<TaskRef>) {
     let v = crate::bot::parse_args(args);
     let Some(pattern) = v["pattern"].as_str() else {
         return ("grep_files 缺少 pattern".into(), Vec::new());
@@ -331,7 +339,7 @@ pub async fn tool_grep_files(app: &AppHandle, args: &str) -> (String, Vec<TaskRe
     let max = (v["max"].as_u64().unwrap_or(GREP_MAX_HITS as u64) as usize).min(GREP_MAX_HITS);
     // dir 可选：缺省搜第一个白名单目录
     let dir = match v["dir"].as_str() {
-        Some(d) if !d.trim().is_empty() => match resolve_with_perm(app, "grep_files", d).await {
+        Some(d) if !d.trim().is_empty() => match resolve_with_perm(app, "grep_files", d, interactive, session_id).await {
             Ok(p) => p,
             Err(e) => return (e, Vec::new()),
         },
@@ -385,12 +393,12 @@ pub async fn tool_grep_files(app: &AppHandle, args: &str) -> (String, Vec<TaskRe
 }
 
 /// list_files：列白名单目录内文件（可选 glob 过滤文件名），深度 ≤5，上限 200 条
-pub async fn tool_list_files(app: &AppHandle, args: &str) -> (String, Vec<TaskRef>) {
+pub async fn tool_list_files(app: &AppHandle, args: &str, interactive: bool, session_id: Option<&str>) -> (String, Vec<TaskRef>) {
     let v = crate::bot::parse_args(args);
     let Some(dir) = v["dir"].as_str() else {
         return ("list_files 缺少 dir".into(), Vec::new());
     };
-    let canonical = match resolve_with_perm(app, "list_files", dir).await {
+    let canonical = match resolve_with_perm(app, "list_files", dir, interactive, session_id).await {
         Ok(p) => p,
         Err(e) => return (e, Vec::new()),
     };

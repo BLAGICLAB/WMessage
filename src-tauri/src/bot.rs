@@ -670,8 +670,10 @@ fn early_return_events(
 /// 进程内执行工具，返回 (给模型的文本结果, 涉及的任务引用)
 /// `pub` 让 `bot_skills::run_skill_scheduler`（Phase 1 DSL 调度器）可调用，
 /// 不暴露给前端 — 通过 `is_atomic_tool` 黑名单 + pre-execute 校验保护。
-pub async fn execute_tool(app: &AppHandle, name: &str, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
-    execute_tool_with_stop(app, name, args, None).await
+/// 2026-08-26 会话隔离：session_id 随调用链透传（DSL 调度器从 bot_chat 带下来），
+/// 无 StopGuard 时按交互执行处理（DSL 调度器只在聊天上下文里跑）。
+pub async fn execute_tool(app: &AppHandle, name: &str, args: &str, session_id: Option<&str>) -> (String, Vec<crate::bot_chat::TaskRef>) {
+    execute_tool_impl(app, name, args, None, true, session_id).await
 }
 
 /// execute_tool 的可停止版本（NEW-C-4）：携带 /stop 守卫，run_python 等长耗时工具
@@ -681,6 +683,22 @@ pub async fn execute_tool_with_stop(
     name: &str,
     args: &str,
     stop: Option<&crate::bot_slash::StopGuard>,
+) -> (String, Vec<crate::bot_chat::TaskRef>) {
+    // 2026-08-26 会话隔离：交互属性与会话归属从 StopGuard 取（无守卫 = 后台调度器路径
+    // 不会出现——调度器走 execute_task_core 也持 StopGuard；None 仅 DSL 调度器遗留路径）
+    let interactive = stop.map(|s| s.is_interactive()).unwrap_or(true);
+    let session_id = stop.and_then(|s| s.session_id());
+    execute_tool_impl(app, name, args, stop, interactive, session_id).await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_tool_impl(
+    app: &AppHandle,
+    name: &str,
+    args: &str,
+    stop: Option<&crate::bot_slash::StopGuard>,
+    interactive: bool,
+    session_id: Option<&str>,
 ) -> (String, Vec<crate::bot_chat::TaskRef>) {
     let start = std::time::Instant::now();
     // 0. tool.call 结构化（F-3 第三步 2026-08-18）
@@ -695,7 +713,7 @@ pub async fn execute_tool_with_stop(
     //    仅作为 Skill 内部子步骤、不允许裸调的底层原子 Function → 硬锁阻断
     //    只有 Skill 在 Running 状态时才放行；其他时候直接返回错误 + 提示走对应 Skill
     // F-2 抽象层：execute_tool 通过 middleware::run_pre_execute 调 pre-execute
-    let active = crate::tool_guard::is_skill_active();
+    let active = crate::tool_guard::is_skill_active(session_id);
     if let Some(msg) = crate::middleware::run_pre_execute(app, name, active) {
         // NEW-D-1：tool.call 已发出，早退前必须配平 tool.return（reason=denied），
         // 否则统计面板出现「悬挂调用」（call > return）
@@ -706,7 +724,7 @@ pub async fn execute_tool_with_stop(
     }
     // 2. Skill 调度器步骤钩子：活动技能时计数/熔断/动作记录（use_skill 自身跳过）
     if name != "use_skill" {
-        if let Err(e) = crate::bot_skills::skill_on_step(app, name, args) {
+        if let Err(e) = crate::bot_skills::skill_on_step(app, name, args, session_id) {
             // NEW-D-1：补 Warn 可见性（skill_on_step_error）+ tool.return 配平（reason=skill_step_failed）
             for (level, event, kv) in early_return_events(name, "skill_step_failed", start.elapsed().as_millis() as u64, Some(&e)) {
                 crate::audit::write_event(app, level, event, &kv);
@@ -719,20 +737,20 @@ pub async fn execute_tool_with_stop(
         "query_single_task" => tool_query_single_task(app, args).await,
         "create_task" => tool_create_task(app, args).await,
         "complete_task" => tool_complete_task(app, args).await,
-        "delete_task" => tool_delete_task(app, args).await,
+        "delete_task" => tool_delete_task(app, args, interactive, session_id).await,
         "edit_task" => tool_edit_task(app, args).await,
         "add_subtask" => tool_add_subtask(app, args).await,
         "toggle_subtask" => tool_toggle_subtask(app, args).await,
         "remove_subtask" => tool_remove_subtask(app, args).await,
-        "read_text_file" => crate::bot_fs::tool_read_text_file(app, args).await,
-        "grep_files" => crate::bot_fs::tool_grep_files(app, args).await,
-        "list_files" => crate::bot_fs::tool_list_files(app, args).await,
+        "read_text_file" => crate::bot_fs::tool_read_text_file(app, args, interactive, session_id).await,
+        "grep_files" => crate::bot_fs::tool_grep_files(app, args, interactive, session_id).await,
+        "list_files" => crate::bot_fs::tool_list_files(app, args, interactive, session_id).await,
         "bind_file" => tool_bind_file(app, args).await,
         "link_file_to_task" => tool_link_file_to_task(app, args).await,
         "search_tasks" => tool_search_tasks(app, args).await,
-        "extract_document" => tool_extract_document(app, args).await,
+        "extract_document" => tool_extract_document(app, args, interactive, session_id).await,
         "create_word" => tool_create_word(app, args).await,
-        "create_word_revisions" => tool_create_word_revisions(app, args).await,
+        "create_word_revisions" => tool_create_word_revisions(app, args, interactive, session_id).await,
         "create_excel" => tool_create_excel(app, args).await,
         "create_ppt" => tool_create_ppt(app, args).await,
         "create_pdf" => tool_create_pdf(app, args).await,
@@ -742,7 +760,7 @@ pub async fn execute_tool_with_stop(
         "get_current_time" => tool_get_current_time(),
         "remember_fact" => tool_remember_fact(app, args),
         "recall_facts" => tool_recall_facts(app),
-        "use_skill" => tool_use_skill(app, args),
+        "use_skill" => tool_use_skill(app, args, session_id),
         other => (format!("未知工具：{other}"), Vec::new()),
     };
 
@@ -767,7 +785,7 @@ pub async fn execute_tool_with_stop(
     }
     crate::audit::write_event(app, level, "tool.return", &kv);
     if name != "use_skill" {
-        crate::bot_skills::skill_on_step_post(app, name, &text, dur_ms, level);
+        crate::bot_skills::skill_on_step_post(app, name, &text, dur_ms, level, session_id);
     }
 
     (text, refs)
@@ -1276,13 +1294,13 @@ async fn tool_complete_task(app: &AppHandle, args: &str) -> (String, Vec<crate::
 }
 
 /// 删除任务到回收站：**弹窗确认后才执行**（危险操作护栏；60s 无响应默认拒绝）
-async fn tool_delete_task(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
+async fn tool_delete_task(app: &AppHandle, args: &str, interactive: bool, session_id: Option<&str>) -> (String, Vec<crate::bot_chat::TaskRef>) {
     let v = parse_args(args);
     let task = match resolve_task(app, &v).await {
         Ok(t) => t,
         Err(e) => return (e, Vec::new()),
     };
-    let approved = crate::bot_slash::ask_user_confirm(app, "delete_task", &task.title).await;
+    let approved = crate::bot_slash::ask_user_confirm(app, "delete_task", &task.title, interactive, session_id).await;
     if !approved {
         return ("用户拒绝了删除，任务未删除".into(), Vec::new());
     }
@@ -1744,7 +1762,8 @@ async fn tool_link_file_to_task(app: &AppHandle, args: &str) -> (String, Vec<cra
 /// 规范化路径比较，防 ../ 绕过。无 path 时走弹框（用户亲手选，不受此限）。
 /// 2026-08-26 授权模式改造：其余路径不再硬拒，走 bot_fs::resolve_with_perm 分流
 ///（strict 硬拒 / ask 弹授权窗 / yolo 放行），拒绝文案透传给模型。
-async fn extract_path_check(app: &AppHandle, path: &str) -> Result<(), String> {
+/// interactive/session_id 透传给授权弹窗：后台执行（interactive=false）不弹窗直接拒。
+async fn extract_path_check(app: &AppHandle, path: &str, interactive: bool, session_id: Option<&str>) -> Result<(), String> {
     let Ok(canon) = std::fs::canonicalize(path) else {
         return Err(format!("路径不存在或不可访问：{path}"));
     };
@@ -1769,12 +1788,12 @@ async fn extract_path_check(app: &AppHandle, path: &str) -> Result<(), String> {
     }
     // 3) 授权分流（2026-08-26，与 bot_fs 同一口径：白名单静默放行 / strict 拒 /
     //    ask 弹窗 / yolo 放）
-    crate::bot_fs::resolve_with_perm(app, "extract_document", path)
+    crate::bot_fs::resolve_with_perm(app, "extract_document", path, interactive, session_id)
         .await
         .map(|_| ())
 }
 
-async fn tool_extract_document(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
+async fn tool_extract_document(app: &AppHandle, args: &str, interactive: bool, session_id: Option<&str>) -> (String, Vec<crate::bot_chat::TaskRef>) {
     let v = parse_args(args);
     let path_opt = v["path"]
         .as_str()
@@ -1789,7 +1808,7 @@ async fn tool_extract_document(app: &AppHandle, args: &str) -> (String, Vec<crat
         .unwrap_or(EXTRACT_DEFAULT_LIMIT);
     // 模型直传 path 时授权校验（无 path 走弹框，用户亲手选不受限）
     if let Some(p) = path_opt.as_deref() {
-        if let Err(e) = extract_path_check(app, p).await {
+        if let Err(e) = extract_path_check(app, p, interactive, session_id).await {
             return (e, Vec::new());
         }
     }
@@ -1853,7 +1872,7 @@ async fn tool_create_word(app: &AppHandle, args: &str) -> (String, Vec<crate::bo
 }
 
 /// 修订模式 Word：回读原文 + 修订段落 diff，产出带 track changes 标记的文档
-async fn tool_create_word_revisions(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
+async fn tool_create_word_revisions(app: &AppHandle, args: &str, interactive: bool, session_id: Option<&str>) -> (String, Vec<crate::bot_chat::TaskRef>) {
     let v = parse_args(args);
     // originalPath 由模型转述，同样过授权校验（防回读任意文件；2026-08-26 走分流）
     if let Some(op) = v["originalPath"]
@@ -1861,7 +1880,7 @@ async fn tool_create_word_revisions(app: &AppHandle, args: &str) -> (String, Vec
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        if let Err(e) = extract_path_check(app, op).await {
+        if let Err(e) = extract_path_check(app, op, interactive, session_id).await {
             return (e, Vec::new());
         }
     }

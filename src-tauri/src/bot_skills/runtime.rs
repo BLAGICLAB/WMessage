@@ -32,20 +32,26 @@ fn preflight(meta: &SkillMeta) -> Result<(), String> {
 }
 
 /// 启动 Skill：use_skill 工具调用即启动生命周期（预审 → Running），返回文档 + 运行约束提示。
-pub fn start_skill(app: &AppHandle, name: &str) -> Result<(SkillMeta, String), String> {
+/// session_id（2026-08-26 会话隔离）：记录触发会话，活动判定/暂停/确认/推进按会话过滤。
+pub fn start_skill(app: &AppHandle, name: &str, session_id: Option<&str>) -> Result<(SkillMeta, String), String> {
     let (meta, body) = load_skill_meta(app, name)?;
     preflight(&meta)?;
     // 预审已通过 → 直接进入 Running（此前停在 Loaded，步骤钩子按 Running/Paused 查找，
     // 计数/熔断/动作记录全部静默失效 —— 核验发现的 P1）
     let mut run = SkillRun::new(&meta);
     run.state = SkillState::Running;
+    run.session_id = session_id.map(|s| s.to_string());
     let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
-    // 单活动技能策略：新技能启动时，把其他 Running/Paused 技能标 Completed。
+    // 单活动技能策略：新技能启动时，把本会话其他 Running/Paused 技能标 Completed。
     // 步骤钩子/暂停/确认按「唯一活动技能」定位，多技能同时 Running 会导致
     // 步骤计数与暂停确认全部记到第一个技能、后续技能被静默忽略（全面审计 P2）。
+    // 2026-08-26 会话隔离：只结束同会话的技能，别的会话的活动技能不受影响。
     let mut switched: Vec<String> = Vec::new();
     for (n, r) in runs.iter_mut() {
-        if *n != meta.name && (r.state == SkillState::Running || r.state == SkillState::Paused) {
+        if *n != meta.name
+            && (r.state == SkillState::Running || r.state == SkillState::Paused)
+            && r.session_id.as_deref() == session_id
+        {
             r.state = SkillState::Completed;
             r.end_reason = "切换到其他技能".into();
             switched.push(n.clone());
@@ -77,12 +83,13 @@ pub fn start_skill(app: &AppHandle, name: &str) -> Result<(SkillMeta, String), S
 }
 
 /// 工具 use_skill：读取技能文档全文返回给模型。
-pub fn tool_use_skill(app: &AppHandle, args: &str) -> (String, Vec<crate::bot::TaskRef>) {
+/// session_id（2026-08-26 会话隔离）：透传给 start_skill 记录技能归属会话。
+pub fn tool_use_skill(app: &AppHandle, args: &str, session_id: Option<&str>) -> (String, Vec<crate::bot::TaskRef>) {
     let v: serde_json::Value = serde_json::from_str(args).unwrap_or(serde_json::Value::Null);
     let Some(name) = v["name"].as_str().map(|s| s.trim().to_string()) else {
         return ("use_skill 缺少 name".into(), Vec::new());
     };
-    match start_skill(app, &name) {
+    match start_skill(app, &name, session_id) {
         Ok((meta, body)) => {
             let hint = format!(
                 "【技能文档：{}】\n风险等级 {} · 运行模式 {} · 最多 {} 步 · 超时 {} 秒 · 回滚 {}",
@@ -143,11 +150,13 @@ fn step_check(run: &mut SkillRun, tool: &str, args: &str, now: i64) -> Result<()
     Ok(())
 }
 
-pub fn skill_on_step(app: &AppHandle, tool: &str, args: &str) -> Result<(), String> {
+pub fn skill_on_step(app: &AppHandle, tool: &str, args: &str, session_id: Option<&str>) -> Result<(), String> {
     let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
+    // 2026-08-26 会话隔离：只管归属当前会话的活动 Skill，别的会话的不计数不熔断
     let Some(run) = runs
         .values_mut()
-        .find(|r| r.state == SkillState::Running || r.state == SkillState::Paused)
+        .find(|r| (r.state == SkillState::Running || r.state == SkillState::Paused)
+            && r.session_id.as_deref() == session_id)
     else {
         return Ok(()); // 无活动 Skill（模型自由调用工具），不干预
     };
@@ -174,9 +183,14 @@ pub fn skill_on_step_post(
     result: &str,
     dur_ms: u64,
     level: crate::audit::AuditLevel,
+    session_id: Option<&str>,
 ) {
     let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
-    let Some(run) = runs.values_mut().find(|r| r.state == SkillState::Running) else {
+    // 2026-08-26 会话隔离：只记录归属当前会话的 Running 技能
+    let Some(run) = runs
+        .values_mut()
+        .find(|r| r.state == SkillState::Running && r.session_id.as_deref() == session_id)
+    else {
         return;
     };
     let name = run.name.clone();
@@ -234,10 +248,14 @@ fn confirm_state(run: &mut SkillRun, approved: bool) {
     }
 }
 
-/// 高危动作确认开始：活动技能转入 Paused（ask_user_confirm 调用前触发）。
-pub fn skill_mark_paused(app: &AppHandle, tool: &str) {
+/// 高危动作确认开始：本会话活动技能转入 Paused（ask_user_confirm 调用前触发）。
+/// 2026-08-26 会话隔离：只暂停归属当前会话的 Running 技能，不动别的会话。
+pub fn skill_mark_paused(app: &AppHandle, tool: &str, session_id: Option<&str>) {
     let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(run) = runs.values_mut().find(|r| r.state == SkillState::Running) {
+    if let Some(run) = runs
+        .values_mut()
+        .find(|r| r.state == SkillState::Running && r.session_id.as_deref() == session_id)
+    {
         pause_state(run);
         crate::bot::audit_log_hook(
             app,
@@ -250,9 +268,13 @@ pub fn skill_mark_paused(app: &AppHandle, tool: &str) {
 }
 
 /// 确认结果到达：恢复 Running / 暂停即终止 / 拒绝终止（bot_confirm_response 调用）。
-pub fn skill_confirm_result(app: &AppHandle, approved: bool) {
+/// 2026-08 会话隔离：只作用于归属该会话的 Paused 技能（session 从 ConfirmMap 条目取回）。
+pub fn skill_confirm_result(app: &AppHandle, approved: bool, session_id: Option<&str>) {
     let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(run) = runs.values_mut().find(|r| r.state == SkillState::Paused) {
+    if let Some(run) = runs
+        .values_mut()
+        .find(|r| r.state == SkillState::Paused && r.session_id.as_deref() == session_id)
+    {
         confirm_state(run, approved);
         let name = run.name.clone();
         let state = format!("{:?}", run.state);
@@ -280,11 +302,16 @@ fn rollback_section(body: &str) -> String {
 
 /// 收尾钩子：模型循环结束时调用（成功/失败/用户停止）。
 /// 返回回滚建议文本（失败且 rollback=auto 且有动作记录时非空），调用方拼进回复让模型执行逆操作。
-pub fn skill_finish(app: &AppHandle, ok: bool, reason: &str) -> String {
+/// 2026-08-26 会话隔离：只收尾归属当前会话的 Running/Paused 技能，
+/// 别的会话的技能不受本会话结束影响。
+pub fn skill_finish(app: &AppHandle, ok: bool, reason: &str, session_id: Option<&str>) -> String {
     let mut rollback_hint = String::new();
     let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
     for (name, run) in runs.iter_mut() {
         if run.state != SkillState::Running && run.state != SkillState::Paused {
+            continue;
+        }
+        if run.session_id.as_deref() != session_id {
             continue;
         }
         if ok {

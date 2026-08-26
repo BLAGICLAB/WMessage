@@ -1,6 +1,6 @@
 use super::parse::parse_skill_steps;
 use super::runtime::{advance_dsl, DslAdvanceAction};
-use super::state::{active_skill_run, clear_terminal_skill_runs, load_skill_meta, now_ms, skill_runs, SkillState};
+use super::state::{active_skill_run_for, clear_terminal_skill_runs, load_skill_meta, now_ms, skill_runs, SkillState};
 use super::vars::{extract_task_id, substitute_vars, CompletedStep};
 use tauri::AppHandle;
 
@@ -98,7 +98,7 @@ pub fn skill_terminate_all<R: tauri::Runtime>(app: &tauri::AppHandle<R>, reason:
 /// - 任一 step 失败 → 顺序跑 `## Rollback` 段工具 → 返回 Err
 /// - 全部成功 → 返回汇总文本
 /// - SkillRun 状态机更新由 `execute_tool` 内的 `skill_on_step` / `skill_on_step_post` 自动维护
-pub async fn run_skill_scheduler(app: &AppHandle, name: &str) -> Result<DslOutcome, DslFailure> {
+pub async fn run_skill_scheduler(app: &AppHandle, name: &str, session_id: Option<&str>) -> Result<DslOutcome, DslFailure> {
     // 僵尸终态清理：上轮遗留的 Completed/Failed/Terminated run 会在第 0 步被 advance_dsl
     // 误判为完成信号直接 break（与主循环同款假死根因）
     clear_terminal_skill_runs();
@@ -128,7 +128,7 @@ pub async fn run_skill_scheduler(app: &AppHandle, name: &str) -> Result<DslOutco
         // 拦截漏停场景：step_check 步数熔断 / skill_on_step_post 工具失败 /
         // skill_terminate_all 用户 /stop / start_skill 切技能 → SkillRun.state 已被改，
         // 调度器必须感知。
-        if let Some(run) = active_skill_run() {
+        if let Some(run) = active_skill_run_for(session_id) {
             let ts = now_ms();
             match advance_dsl(&run, ts) {
                 DslAdvanceAction::Run => {}
@@ -171,7 +171,7 @@ pub async fn run_skill_scheduler(app: &AppHandle, name: &str) -> Result<DslOutco
                         // 回滚段也走变量替换（失败前的步骤都已入 ctx）
                         for rb in &rollback {
                             let rb_args = substitute_vars(&rb.args_json, &ctx);
-                            let _ = crate::bot::execute_tool(app, &rb.tool_name, &rb_args).await;
+                            let _ = crate::bot::execute_tool(app, &rb.tool_name, &rb_args, session_id).await;
                         }
                         crate::bot::audit_log_hook(
                             app,
@@ -231,7 +231,7 @@ pub async fn run_skill_scheduler(app: &AppHandle, name: &str) -> Result<DslOutco
                 ),
             );
         }
-        let (text, _refs) = crate::bot::execute_tool(app, &step.tool_name, &resolved_args).await;
+        let (text, _refs) = crate::bot::execute_tool(app, &step.tool_name, &resolved_args, session_id).await;
         let failed = text.starts_with("未知工具")
             || text.starts_with("失败")
             || text.starts_with("错误")
@@ -250,7 +250,7 @@ pub async fn run_skill_scheduler(app: &AppHandle, name: &str) -> Result<DslOutco
                 // 回滚段也走变量替换（失败前的步骤都已入 ctx）
                 for rb in &rollback {
                     let rb_args = substitute_vars(&rb.args_json, &ctx);
-                    let _ = crate::bot::execute_tool(app, &rb.tool_name, &rb_args).await;
+                    let _ = crate::bot::execute_tool(app, &rb.tool_name, &rb_args, session_id).await;
                 }
                 crate::bot::audit_log_hook(app, &format!("skill_dsl_rollback_done | name: {name}"));
             }

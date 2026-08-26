@@ -1930,7 +1930,7 @@ mod tests {
     #[test]
     fn stop_reader_returns_partial_when_stopped() {
         let data = vec![b'x'; 4096];
-        let guard = crate::bot_slash::StopGuard::new(false);
+        let guard = crate::bot_slash::StopGuard::new(false, None);
         let token = guard.token();
         // 未停止：完整读取，行为与裸 read_capped_drain 一致
         let (buf, tr) = read_capped_drain(
@@ -2319,7 +2319,7 @@ mod tests {
         let dir = tmp.path().join("run-stop");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("run.py"), "import time\ntime.sleep(30)\n").unwrap();
-        let guard = crate::bot_slash::StopGuard::new(false);
+        let guard = crate::bot_slash::StopGuard::new(false, None);
         let token = guard.token();
         let mut lines: Vec<String> = Vec::new();
         let start = Instant::now();

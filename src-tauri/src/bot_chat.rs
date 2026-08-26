@@ -143,7 +143,7 @@ pub async fn chat_execute_tasks(
         }
         let label = if title.is_empty() { task_id.as_str() } else { title.as_str() };
         all_text.push_str(&format!("\n── [{}/{}] {} ──\n", idx + 1, total, label));
-        match execute_task_core(app, task_id, true).await {
+        match execute_task_core(app, task_id, true, stop.session_id().map(|s| s.to_string())).await {
             Ok(r) => {
                 if !r.text.is_empty() {
                     all_text.push_str(&r.text);
@@ -268,16 +268,16 @@ enum PreStepRoute {
 /// 4. start_skill（Skill 调度：auto → 调度器执行；interactive → body 注入 system prompt）
 /// 5. run_model_loop（LLM 决策 + 工具循环）
 #[tauri::command]
-pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>) -> CommandResult<BotChatResult> {
+pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>, session_id: Option<String>) -> CommandResult<BotChatResult> {
     require_bot_enabled(bot_get_enabled(app.clone()))?;
     // 步骤 1：逐步执行挂起恢复（2026-08-19）：有子任务待确认时，本条消息是对执行流程的应答
     // （继续/重做/停），优先于一切聊天路由。/stop 走独立命令（bot_stop 内清挂起）。
     if let Some(last) = messages.last() {
-        if crate::exec_steps::has_pending() {
-            return crate::exec_steps::resume(&app, &last.content).await;
+        if crate::exec_steps::has_pending_for(session_id.as_deref()) {
+            return crate::exec_steps::resume(&app, &last.content, session_id.as_deref()).await;
         }
     }
-    let stop = StopGuard::new(true);
+    let stop = StopGuard::new(true, session_id.clone());
     // 步骤 2：bypass_llm_on_pre_step_hit 开关读取（F-1）：
     // true = 新行为（pre-step 路由生效），false = LEGACY 旧链路（路由命中一律丢弃，LLM 自由决策）。
     // 必须在任何路由判定之前读取——主流程禁止任何步骤抢跑（2026-08-20 消除前置短路）。
@@ -308,7 +308,7 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>) -> CommandResult<B
             Some(RouteAction::ExecuteTasks(task_ids)) => Some(PreStepRoute::ExecuteTasks(task_ids)),
             Some(RouteAction::Skill(skill_name)) => {
                 // 步骤 4：start_skill（Skill 调度）
-                match crate::bot_skills::start_skill(&app, &skill_name) {
+                match crate::bot_skills::start_skill(&app, &skill_name, stop.session_id()) {
                     Ok((meta, body)) => {
                         crate::audit_event!(
                             &app,
@@ -392,7 +392,7 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>) -> CommandResult<B
     let mut recovery_hint: Option<String> = None;
     if let Some((meta, _body)) = &pre_routed_skill {
         if meta.mode == "auto" {
-            match crate::bot_skills::run_skill_scheduler(&app, &meta.name).await {
+            match crate::bot_skills::run_skill_scheduler(&app, &meta.name, stop.session_id()).await {
                 Ok(crate::bot_skills::DslOutcome::Done(text)) => {
                     return Ok(BotChatResult {
                         text,
@@ -586,7 +586,7 @@ pub async fn bot_compact(app: AppHandle, messages: Vec<ChatMsg>) -> CommandResul
 /// 任务卡交给机器人执行（🤖 按钮 / 选卡说「完成它」）：把任务卡内容组装成指令，高轮数工具循环执行。
 /// 流式经 bot-chat-delta / bot-think-delta / bot-tool* 事件推给挂件。
 #[tauri::command]
-pub async fn bot_execute_task(app: AppHandle, task_id: String) -> CommandResult<BotChatResult> {
+pub async fn bot_execute_task(app: AppHandle, task_id: String, session_id: Option<String>) -> CommandResult<BotChatResult> {
     // 逐步执行模式（2026-08-19 老板拍板）：手动触发 + ≥2 个未勾子任务 → 一个一个做，
     // 每个子任务做完在聊天里等用户确认（继续=勾选+下一个 / 重做 / 停）；
     // 聊天批量执行与定时调度仍走整卡连续执行（多卡/无人在场不适合逐步确认）
@@ -603,11 +603,11 @@ pub async fn bot_execute_task(app: AppHandle, task_id: String) -> CommandResult<
                 .map(|s| s.iter().filter(|x| !x.done).count())
                 .unwrap_or(0);
             if undone >= 2 {
-                return crate::exec_steps::start(&app, &task).await;
+                return crate::exec_steps::start(&app, &task, session_id.as_deref()).await;
             }
         }
     }
-    execute_task_core(&app, &task_id, true).await
+    execute_task_core(&app, &task_id, true, session_id).await
 }
 
 /// 任务卡执行防重入：同一 task_id 同时只允许一个执行实例。
@@ -645,10 +645,13 @@ impl Drop for ExecGuard {
 
 /// 任务卡执行核心（命令与定时调度共用）。interactive=true 表示用户直接触发（可被 /stop 停），
 /// false 表示后台定时触发（/stop 不影响）
+/// session_id（2026-08-26 会话隔离）：触发会话 id；后台定时任务为 None——
+/// None 时 run_model_loop 不向挂件广播流式增量（防串进用户当前对话）。
 pub async fn execute_task_core(
     app: &AppHandle,
     task_id: &str,
     interactive: bool,
+    session_id: Option<String>,
 ) -> CommandResult<BotChatResult> {
     // 开关关闭时明确拒绝（二次审计 P2-3）
     if !bot_get_enabled(app.clone()) {
@@ -665,7 +668,7 @@ pub async fn execute_task_core(
             reason: "该任务卡正在执行中，请等待完成后再触发".into(),
         });
     };
-    let stop = StopGuard::new(interactive);
+    let stop = StopGuard::new(interactive, session_id);
     let task = crate::db::db_load(app.clone())
         .await
         .unwrap_or_default()

@@ -166,6 +166,31 @@ describe("ChatPanel", () => {
     expect(mocks.invokeMock).toHaveBeenCalledWith("bot_stop");
   });
 
+  it("确认弹窗按会话过滤：别的会话的 bot-confirm 不弹窗（2026-08-26 会话隔离）", async () => {
+    // 捕获 ChatPanel 注册的 bot-confirm 监听器
+    let confirmHandler: ((e: { payload: Record<string, unknown> }) => void) | null = null;
+    mocks.listenMock.mockImplementation(async (event: string, cb: unknown) => {
+      if (event === "bot-confirm") confirmHandler = cb as typeof confirmHandler;
+      return () => {};
+    });
+    render(<ChatPanel {...defaultProps} />);
+    // 等初始会话加载完成（标题渲染 = sessionId 已 set 且 sessionIdRef 已同步），
+    // 否则 fire 时 sessionIdRef.current 还是 null，「本会话」用例会被误过滤（全量跑时序敏感）
+    expect(await screen.findByText("🤖 默认会话")).toBeInTheDocument();
+    expect(confirmHandler).not.toBeNull();
+    const fire = (payload: Record<string, unknown>) =>
+      (confirmHandler as unknown as (e: { payload: Record<string, unknown> }) => void)({ payload });
+    // 别的会话（sessionId 不匹配）→ 不弹
+    fire({ id: "c1", tool: "delete_task", detail: "别会话任务", sessionId: "other-session" });
+    expect(screen.queryByText(/别会话任务/)).not.toBeInTheDocument();
+    // 无 sessionId（后台任务）→ 不弹
+    fire({ id: "c2", tool: "delete_task", detail: "后台任务", sessionId: null });
+    expect(screen.queryByText(/后台任务/)).not.toBeInTheDocument();
+    // 当前会话（s1，初始加载的默认会话）→ 弹
+    fire({ id: "c3", tool: "delete_task", detail: "本会话任务", sessionId: "s1" });
+    expect(await screen.findByText(/本会话任务/)).toBeInTheDocument();
+  });
+
   it("助手消息可折叠：thinking + tools Fold 子组件渲染", async () => {
     // 自定义 invoke 返回带 thinking + tools 的历史
     mocks.invokeMock.mockImplementation(async (cmd: string) => {

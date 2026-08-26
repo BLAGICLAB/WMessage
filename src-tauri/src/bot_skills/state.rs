@@ -23,7 +23,7 @@ pub enum SkillState {
     Terminated,
 }
 
-/// Skill 运行实例（会话级，内存态，不持久化）
+/// Skill 运行实例（执行实例级，内存态，不持久化）
 #[derive(Clone)]
 pub struct SkillRun {
     pub name: String,
@@ -48,6 +48,10 @@ pub struct SkillRun {
     pub resumable: bool,
     /// resumable=false 时的暂停即终止：确认通过后执行当前动作，随后技能终止
     pub terminal_after_confirm: bool,
+    /// 归属会话（2026-08-26 会话隔离）：触发该技能的聊天会话 id；
+    /// 后台定时任务为 None。active_skill_run / 暂停 / 确认按此过滤，
+    /// 防会话 A 暂停中的 Skill 被会话 B 的主循环推进或确认。
+    pub session_id: Option<String>,
 }
 
 impl SkillRun {
@@ -66,6 +70,7 @@ impl SkillRun {
             end_reason: String::new(),
             resumable: meta.resumable,
             terminal_after_confirm: false,
+            session_id: None,
         }
     }
 }
@@ -79,27 +84,29 @@ pub(crate) fn skill_runs() -> &'static std::sync::Mutex<std::collections::HashMa
     SKILL_RUNS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
-/// 当前是否有 Skill 处于 Running 状态（老板 2026-08-17 18:14 后置拦截拍板）
+/// 当前会话是否有 Skill 处于 Running 状态（老板 2026-08-17 18:14 后置拦截拍板；
+/// 2026-08-26 会话隔离：加会话过滤，别的会话的 Skill 不算本会话活动）
 ///
 /// - Running：LLM 正在 Skill 内部循环中，原子工具是 Skill 的子步骤 → 放行
 /// - Loaded / Finished / Terminated / Failed / Paused：原子工具应被阻断
 ///
 /// 供 `tool_guard::is_skill_active` 调用（穿透 private Mutex 访问）
-pub fn is_skill_active() -> bool {
+pub fn is_skill_active_for(session_id: Option<&str>) -> bool {
     let Ok(guard) = skill_runs().lock() else {
         return false;
     };
     guard
         .values()
-        .any(|r| matches!(r.state, SkillState::Running))
+        .any(|r| matches!(r.state, SkillState::Running) && r.session_id.as_deref() == session_id)
 }
 
 pub(crate) fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
-/// 主循环接入用（Block 2 2026-08-17 22:26）：克隆当前活动 Skill 快照（任意非 Loaded 状态）。
+/// 主循环接入用（Block 2 2026-08-17 22:26）：克隆当前会话活动 Skill 快照（任意非 Loaded 状态）。
 /// 供 `bot_chat` 主循环与 DSL 调度器调，拿快照去 `advance_skill` / `advance_dsl` 决策，不再持锁。
+/// 2026-08-26 会话隔离：按 session_id 过滤——别的会话暂停/运行中的 Skill 不可见、不推进。
 ///
 /// 状态过滤说明：Loaded 是 start_skill 中的过渡态——技能预审通过后立即转为 Running，
 /// Loaded 仅在断言/异常路径短暂存在，advance_skill 返回 NoActive 与主循环预期一致。
@@ -108,11 +115,11 @@ pub(crate) fn now_ms() -> i64 {
 /// 「用户 /stop / 工具失败」所必需的；调用方若是新一轮执行的入口（run_model_loop /
 /// run_skill_scheduler），必须先 `clear_terminal_skill_runs()` 清掉上轮遗留的僵尸终态，
 /// 否则会在第 0 步被 advance 短路（2026-08-18 agent 假死事故根因）。
-pub fn active_skill_run() -> Option<SkillRun> {
+pub fn active_skill_run_for(session_id: Option<&str>) -> Option<SkillRun> {
     let guard = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
     guard
         .values()
-        .find(|r| !matches!(r.state, SkillState::Loaded))
+        .find(|r| !matches!(r.state, SkillState::Loaded) && r.session_id.as_deref() == session_id)
         .cloned()
 }
 
@@ -171,6 +178,7 @@ pub(crate) fn test_insert_skill_run(name: &str, state: SkillState) {
         end_reason: String::new(),
         resumable: true,
         terminal_after_confirm: false,
+        session_id: None,
     };
     skill_runs()
         .lock()
@@ -215,6 +223,7 @@ pub(crate) fn test_run(max_steps: usize, timeout_secs: u64) -> SkillRun {
             end_reason: String::new(),
             resumable: true,
             terminal_after_confirm: false,
+            session_id: None,
         }
 }
 

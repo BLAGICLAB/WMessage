@@ -32,11 +32,12 @@ pub fn atomic_block_message(name: &str) -> String {
     }
 }
 
-/// 当前是否有 Skill 在 Running 状态（决定原子工具是否放行）
+/// 当前会话是否有 Skill 在 Running 状态（决定原子工具是否放行）
+/// 2026-08-26 会话隔离：按 session 过滤，别的会话的 Skill 不给本会话开门
 ///
-/// 委托 `bot_skills::is_skill_active` 实现（穿透 SkillRun 状态访问）
-pub fn is_skill_active() -> bool {
-    crate::bot_skills::is_skill_active()
+/// 委托 `bot_skills::is_skill_active_for` 实现（穿透 SkillRun 状态访问）
+pub fn is_skill_active(session_id: Option<&str>) -> bool {
+    crate::bot_skills::is_skill_active_for(session_id)
 }
 
 #[cfg(test)]
@@ -111,6 +112,7 @@ mod tests {
     #[test]
     fn is_skill_active_false_with_no_skills() {
         // SKILL_RUNS 是全局 OnceLock，初始为空 → 未运行任何 Skill
-        assert!(!is_skill_active());
+        assert!(!is_skill_active(None));
+        assert!(!is_skill_active(Some("s1")));
     }
 }

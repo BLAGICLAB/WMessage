@@ -558,13 +558,19 @@ function extractFilePaths(content: string): string[] {
   }, []);
 
   // 危险操作确认：机器人删任务前弹窗（60s 无响应后端自动拒绝）；
-  // kind="file_access"（2026-08-26）：文件访问授权，三按钮（允许一次/始终允许该目录/拒绝）
+  // kind="file_access"（2026-08-26）：文件访问授权，三按钮（允许一次/始终允许该目录/拒绝）；
+  // sessionId 归属过滤（2026-08-26 会话隔离）：只弹属于当前会话的确认，
+  // 别的会话/后台任务的确认不弹（后端 60s 超时自动拒绝兜底）
   useEffect(() => {
-    const unConfirm = listen<{ id?: string; tool?: string; detail?: string; kind?: string }>(
+    const unConfirm = listen<{ id?: string; tool?: string; detail?: string; kind?: string; sessionId?: string | null }>(
       "bot-confirm",
       (e) => {
-        const { id, tool, detail, kind } = e.payload ?? {};
-        if (id) setConfirmReq({ id, tool: tool ?? "", detail: detail ?? "", kind });
+        const { id, tool, detail, kind, sessionId: sid } = e.payload ?? {};
+        if (!id) return;
+        // 只弹明确属于当前会话的确认；别的会话 / 无归属（后台任务）不弹，
+        // 后端 60s 超时自动拒绝兜底
+        if (sid == null || sid !== sessionIdRef.current) return;
+        setConfirmReq({ id, tool: tool ?? "", detail: detail ?? "", kind });
       }
     );
     return () => {
@@ -678,8 +684,8 @@ function extractFilePaths(content: string): string[] {
       const full = await invoke<{ text: string; taskRefs?: TaskRef[] }>(
         execTaskId ? "bot_execute_task" : "bot_chat",
         execTaskId
-          ? { taskId: execTaskId }
-          : { messages: history.map((m) => ({ role: m.role, content: m.content })) }
+          ? { taskId: execTaskId, sessionId: sid }
+          : { messages: history.map((m) => ({ role: m.role, content: m.content })), sessionId: sid }
       );
       // 把流式过程中累积的思考/工具行并入最终消息
       const meta = streamingMeta.current;
