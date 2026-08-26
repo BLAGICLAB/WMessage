@@ -360,9 +360,9 @@ pub fn parse_sse_chunk(line: &str) -> Option<ParsedChunk> {
     Some(chunk)
 }
 
-/// 默认对话轮数（聊天 / 任务执行 / 逐步执行统一，2026-08-20 老板拍板 8/10 → 20）；
+/// 默认对话轮数（聊天 / 任务执行 / 逐步执行统一；2026-08-26 老板拍板 20 → 50）；
 /// 多步 Skill 可在 SKILL.md frontmatter 自报 max_rounds 覆盖（见 resolve_max_rounds）。
-pub(crate) const DEFAULT_MAX_ROUNDS: usize = 20;
+pub(crate) const DEFAULT_MAX_ROUNDS: usize = 50;
 
 /// 本轮工具循环的轮数上限：Skill 自报 max_rounds 优先，未声明 → DEFAULT_MAX_ROUNDS。
 pub(crate) fn resolve_max_rounds(skill_max_rounds: Option<usize>) -> usize {
@@ -381,8 +381,10 @@ pub(crate) fn resolve_max_rounds(skill_max_rounds: Option<usize>) -> usize {
 //   幻觉守卫（claims_mutation）+ 软警告 + /stop，不再靠压低上限
 // - 2026-08-20 老板拍板 30 → 10：30 太宽松，会掩护 LLM 幻觉/死循环；
 //   软警告 20 → 7（按 ~30% buffer：10-3=7，与原 20/30 的 ~33% 保持比例）
-const MAX_FUNCTION_CALLS_PER_TURN: usize = 10;
-const SOFT_WARN_AT: usize = 7;
+// - 2026-08-26 老板拍板 10 → 50（与对话轮数上限拉齐）：复杂多步任务 10 次不够用；
+//   软警告 7 → 35（保持 ~30% buffer：50-15=35）
+const MAX_FUNCTION_CALLS_PER_TURN: usize = 50;
+const SOFT_WARN_AT: usize = 35;
 
 /// 熔断判定：第 n 次（1-based 累计）Function 调用是否超上限
 fn should_fuse(calls_so_far: usize) -> bool {
@@ -1020,35 +1022,35 @@ mod rounds_fuse_tests {
     }
 
     #[test]
-    fn skill_without_max_rounds_falls_back_to_default_20() {
-        // 现有 Skill 未声明 max_rounds → None → fallback 默认 20（兼容不崩）
+    fn skill_without_max_rounds_falls_back_to_default_50() {
+        // 现有 Skill 未声明 max_rounds → None → fallback 默认 50（兼容不崩）
         let meta =
             crate::bot_skills::parse_meta("---\nname: x\ndescription: d\n---\nbody\n", "x");
         assert_eq!(meta.max_rounds, None);
         assert_eq!(resolve_max_rounds(meta.max_rounds), DEFAULT_MAX_ROUNDS);
-        assert_eq!(DEFAULT_MAX_ROUNDS, 20);
+        assert_eq!(DEFAULT_MAX_ROUNDS, 50);
     }
 
     #[test]
-    fn fuse_trips_on_11th_function_call() {
-        // MAX_FUNCTION_CALLS_PER_TURN = 10 实际生效：模拟主循环计数，
-        // 构造 11 个 tool_calls → 第 11 次触发熔断并返回「⏹ 已熔断」消息
-        assert_eq!(MAX_FUNCTION_CALLS_PER_TURN, 10);
-        assert_eq!(SOFT_WARN_AT, 7);
+    fn fuse_trips_on_51st_function_call() {
+        // MAX_FUNCTION_CALLS_PER_TURN = 50 实际生效：模拟主循环计数，
+        // 构造 51 个 tool_calls → 第 51 次触发熔断并返回「⏹ 已熔断」消息
+        assert_eq!(MAX_FUNCTION_CALLS_PER_TURN, 50);
+        assert_eq!(SOFT_WARN_AT, 35);
         let mut calls = 0usize;
         let mut fused_msg: Option<String> = None;
-        for _ in 0..11 {
+        for _ in 0..51 {
             calls += 1;
             if should_fuse(calls) {
                 fused_msg = Some(fuse_message("前文", ""));
                 break;
             }
         }
-        let msg = fused_msg.expect("11 次 Function 调用内必须触发熔断");
+        let msg = fused_msg.expect("51 次 Function 调用内必须触发熔断");
         assert!(msg.contains("⏹ 已熔断"), "熔断消息应含「⏹ 已熔断」：{msg}");
-        assert!(msg.contains("10 次上限"), "熔断消息应带上限值：{msg}");
-        // 边界：第 10 次放行，第 11 次熔断
-        assert!(!should_fuse(10));
-        assert!(should_fuse(11));
+        assert!(msg.contains("50 次上限"), "熔断消息应带上限值：{msg}");
+        // 边界：第 50 次放行，第 51 次熔断
+        assert!(!should_fuse(50));
+        assert!(should_fuse(51));
     }
 }

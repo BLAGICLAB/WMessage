@@ -1401,7 +1401,7 @@ function extractFilePaths(content: string): string[] {
           }}
           placeholder={
             busy
-              ? "回复中…（输入 /stop 可停止）"
+              ? "回复中…（点右侧 ■ 或输入 /stop 可停止）"
               : files.length
                 ? "输入指令，如：润色这个文件"
                 : selecting
@@ -1410,13 +1410,28 @@ function extractFilePaths(content: string): string[] {
           }
           className="nm-inset flex-1 min-w-0 rounded-xl px-3 py-1.5 text-xs text-[var(--t3)] outline-none placeholder:text-[var(--t5)]"
         />
-        <button
-          className="nm-btn shrink-0 px-3 py-1.5 text-xs text-[var(--t3)]"
-          onClick={send}
-          disabled={busy}
-        >
-          发送
-        </button>
+        {/* 发送/停止一体键（2026-08-26 老板拍板）：回复中变为红框正方形停止键，
+            点击即 bot_stop 中断本次运行；中断/回答结束自动变回发送键 */}
+        {busy ? (
+          <button
+            className="nm-btn shrink-0 px-3 py-1.5 text-xs text-[var(--danger)] flex items-center"
+            title="停止当前回复"
+            onClick={() =>
+              invoke("bot_stop").catch((e) =>
+                handleCommandError(e, "bot_stop", { silent: true })
+              )
+            }
+          >
+            ■
+          </button>
+        ) : (
+          <button
+            className="nm-btn shrink-0 px-3 py-1.5 text-xs text-[var(--t3)]"
+            onClick={send}
+          >
+            发送
+          </button>
+        )}
       </div>
     </div>
   );

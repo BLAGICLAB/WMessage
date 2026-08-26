@@ -142,6 +142,30 @@ describe("ChatPanel", () => {
     expect(mocks.invokeMock).not.toHaveBeenCalledWith("bot_stop");
   });
 
+  it("回复中发送键变为红框停止键：点击调 bot_stop（2026-08-26 发送/停止一体键）", async () => {
+    const user = userEvent.setup();
+    // bot_chat 挂起不返回 → busy 保持 true
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_sessions_load") return [{ id: "s1", title: "默认会话" }];
+      if (cmd === "bot_history_load") return [];
+      if (cmd === "bot_chat") return new Promise(() => {});
+      if (cmd === "bot_stop") return null;
+      return null;
+    });
+    render(<ChatPanel {...defaultProps} />);
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith("bot_sessions_load");
+    });
+    const input = screen.getByPlaceholderText(/和机器人说点什么/);
+    await user.type(input, "你好");
+    await user.keyboard("{Enter}");
+    // busy=true：发送键消失，红框正方形停止键出现
+    const stopBtn = await screen.findByTitle("停止当前回复");
+    expect(screen.queryByText("发送")).not.toBeInTheDocument();
+    await user.click(stopBtn);
+    expect(mocks.invokeMock).toHaveBeenCalledWith("bot_stop");
+  });
+
   it("助手消息可折叠：thinking + tools Fold 子组件渲染", async () => {
     // 自定义 invoke 返回带 thinking + tools 的历史
     mocks.invokeMock.mockImplementation(async (cmd: string) => {

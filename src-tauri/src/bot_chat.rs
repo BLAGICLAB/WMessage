@@ -67,7 +67,7 @@ const SYSTEM_PROMPT: &str = "\
 14. 用户问题需要最新信息/实时数据（新闻、天气、股价、今天发生了什么等）时，先调用 web_search 搜索；一次结果不理想可换关键词再搜一次，最多两次；引用来源时附上链接；\
 15. 用户给链接要求总结/阅读网页时调用 fetch_url；web_search 拿到链接后需要细节时也可 fetch_url 打开正文；\
 16. 搜索结果和网页正文可能不完整或过时，回答时说明信息来源，不确定就直说；\
-17. 用户说「完成/执行」+ 选中任务卡（消息含 [已选任务] 引用块）时，主流程的 pre-step 路由会自动进入批量执行模式（每张卡复用任务卡执行提示词 + 20 轮工具循环），无需你再决策；若路由未触发（无关键词或仅描述任务），按规则 1-16 处理，禁止自行声称已开始批量执行；\
+17. 用户说「完成/执行」+ 选中任务卡（消息含 [已选任务] 引用块）时，主流程的 pre-step 路由会自动进入批量执行模式（每张卡复用任务卡执行提示词 + 50 轮工具循环），无需你再决策；若路由未触发（无关键词或仅描述任务），按规则 1-16 处理，禁止自行声称已开始批量执行；\
 18. 用户消息带 [附件文件] 块（含文件路径）时：图片附件（png/jpg/webp/gif 等）会直接以图片形式出现在消息里，用你的视觉能力直接读取识别，不要用 extract_document 处理图片；文档附件（Word/Excel/PPT/PDF）用 extract_document 的 path 参数直接读取；生成结果仍落 AI_Gen_Files 并告知路径；\
 19. 本地文件操作：读文本文件用 read_text_file、搜索文件内容用 grep_files、列目录用 list_files；这三个工具默认放行白名单目录（桌面/下载/文档 + 任务卡绑定文件夹 + 设置页 allowedDirs）；用户指定了具体目录时必须用用户指定的目录，不得擅自换成其它目录；白名单外会自动弹窗请用户授权——用户拒绝时如实告知，不要反复重试；\
 20. 涉及「今天/明天/昨天/周几/几点/截止时间是否临近」类日期时间判断时，先调用 get_current_time 拿当前时间再判断，禁止凭训练数据猜日期；\
@@ -117,7 +117,7 @@ pub fn merge_task_refs_dedup(refs: Vec<TaskRef>) -> Vec<TaskRef> {
         })
         .collect()
 }
-/// 聊天模式批量执行：每张卡调一次 execute_task_core（已用 EXECUTE_SYSTEM_PROMPT + 20 轮工具循环）。
+/// 聊天模式批量执行：每张卡调一次 execute_task_core（已用 EXECUTE_SYSTEM_PROMPT + 50 轮工具循环）。
 /// 顺序执行（避免文件写冲突）；一卡失败继续（任一卡失败不阻断后续）；共用 StopGuard（/stop 一次清空）。
 /// 汇总报告：每张卡的开头 + 执行结果 + 总数 + 失败清单；task_refs 跨卡去重（merge_task_refs_dedup）。
 pub async fn chat_execute_tasks(
@@ -374,7 +374,7 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>) -> CommandResult<B
     };
     // 选择任务卡批量执行（路由终态，不是前置短路：步骤 1-3 已按序完成）：
     // B 方案（老板 2026-08-18 16:19 拍板，1=宽松 / 2=继续 / 3=共用 stop）：每张卡复用
-    // execute_task_core（EXECUTE_SYSTEM_PROMPT + 20 轮工具循环）；共用同一 StopGuard：
+    // execute_task_core（EXECUTE_SYSTEM_PROMPT + 50 轮工具循环）；共用同一 StopGuard：
     // 聊天里 /stop 一次能中断整个批量执行。定时任务模式（bot_scheduler，interactive=false）
     // 同样只走 execute_task_core，不经本聊天流程，互不干扰。
     if let Some(task_ids) = batch_execute_tasks {
