@@ -342,6 +342,8 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     tavilyEnabled: false,
     // run_python 默认超时秒数（空 = 60s 默认；模型 timeoutSecs 参数优先；硬钳 300s）
     pythonTimeoutSecs: "",
+    // 授权模式（2026-08-26）：strict=白名单外硬拒 / ask=白名单外弹授权（默认）/ yolo=全放行
+    permMode: "ask" as "strict" | "ask" | "yolo",
   });
   const [keyInput, setKeyInput] = useState("");
   const [configBusy, setConfigBusy] = useState(false);
@@ -377,6 +379,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         tavilyKey?: string;
         tavilyEnabled?: boolean | null;
         pythonTimeoutSecs?: number | null;
+        permMode?: string | null;
       }>(
         "bot_get_config"
       );
@@ -391,6 +394,9 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         // 老配置没显式开关字段（null/undefined）时按旧行为显示自动态：配了 key 视为开启
         tavilyEnabled: c.tavilyEnabled ?? !!(c.tavilyKey && c.tavilyKey.trim()),
         pythonTimeoutSecs: c.pythonTimeoutSecs != null ? String(c.pythonTimeoutSecs) : "",
+        // 老配置缺字段/非法值 → ask（与后端 PermMode::from_cfg 回退一致）
+        permMode:
+          c.permMode === "strict" || c.permMode === "yolo" ? c.permMode : "ask",
       });
     } catch (e) {
       handleCommandError(e, "bot_get_config", { silent: true });
@@ -504,6 +510,8 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
             const n = parseInt(c.pythonTimeoutSecs.trim(), 10);
             return Number.isFinite(n) && n > 0 ? n : null;
           })(),
+          // 授权模式（strict/ask/yolo）
+          permMode: c.permMode,
         },
         // 输入框非空才写凭据存储；留空保持原 key 不变
         apiKey: keyInput.trim() ? keyInput.trim() : null,
@@ -525,6 +533,14 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
   /** 「Tavily 搜索」开关：与「开启机器人聊天」同款——点击即持久化（复用整份配置保存） */
   const toggleTavily = async () => {
     const next = { ...config, tavilyEnabled: !config.tavilyEnabled };
+    setConfig(next);
+    await saveConfig(next);
+  };
+
+  /** 授权模式切换（2026-08-26）：点击即持久化（同 toggleTavily 模式） */
+  const setPermMode = async (mode: "strict" | "ask" | "yolo") => {
+    if (configBusy || config.permMode === mode) return;
+    const next = { ...config, permMode: mode };
     setConfig(next);
     await saveConfig(next);
   };
@@ -938,18 +954,51 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
                 className="nm-inset w-full rounded-xl px-3 py-2 text-xs text-[var(--t3)] outline-none"
               />
             </div>
-            {/* 本地文件工具白名单（read_text_file/grep_files/list_files，2026-08-19 Phase 1） */}
+            {/* 授权模式（2026-08-26，Kimi CLI 风格执行前授权） */}
+            <div className="space-y-1">
+              <p className="text-sm font-medium text-[var(--t2)]">授权模式</p>
+              <div className="flex gap-2">
+                {(
+                  [
+                    ["strict", "严格白名单"],
+                    ["ask", "询问后放行"],
+                    ["yolo", "yolo 全放行"],
+                  ] as const
+                ).map(([mode, label]) => (
+                  <button
+                    key={mode}
+                    className={`flex-1 px-2 py-1.5 text-xs ${
+                      config.permMode === mode ? "nm-inset" : "nm-outset"
+                    } ${mode === "yolo" ? "text-[var(--danger)]" : "text-[var(--t3)]"}`}
+                    onClick={() => setPermMode(mode)}
+                    disabled={configBusy}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[10px] text-[var(--t6)] leading-snug">
+                {config.permMode === "strict" &&
+                  "白名单外的文件访问一律拒绝（2026-08-26 前的旧行为）。"}
+                {config.permMode === "ask" &&
+                  "白名单内的文件直接读；白名单外弹窗请你授权（允许一次 / 始终允许该目录 / 拒绝）。"}
+                {config.permMode === "yolo" &&
+                  "⚠️ 不弹任何授权：机器人可读本机任意文件，且 Python 编程免开关直接执行（以本机用户权限，可联网）。仅在你完全信任所用模型时开启。"}
+              </p>
+            </div>
+            {/* 本地文件工具白名单（read_text_file/grep_files/list_files，2026-08-19 Phase 1；
+                2026-08-26 起为追加语义：在内置默认之上追加放行） */}
             <div className="space-y-1">
               <p className="text-[10px] text-[var(--t5)]">文件工具白名单目录（一行一个绝对路径）</p>
               <textarea
                 value={config.allowedDirs}
                 onChange={(e) => setConfig((c) => ({ ...c, allowedDirs: e.target.value }))}
-                placeholder={"留空 = 默认：~/Desktop、~/Downloads、~/Documents + 任务卡绑定文件夹"}
+                placeholder={"在内置默认之上追加：~/Desktop、~/Downloads、~/Documents + 任务卡绑定文件夹始终放行"}
                 rows={3}
                 className="nm-inset w-full rounded-xl px-3 py-2 text-xs text-[var(--t3)] outline-none resize-y"
               />
               <p className="text-[10px] text-[var(--t6)] leading-snug">
-                机器人读文件/搜文件/列目录只允许访问这些目录；白名单外一律拒绝并记审计。
+                白名单内静默放行；白名单外按授权模式处理（见上）。授权弹窗点「始终允许该目录」会自动追加到这里。
               </p>
             </div>
             {/* Tavily 搜索（2026-08-19 Phase 2 key；2026-08-20 加开关分流） */}

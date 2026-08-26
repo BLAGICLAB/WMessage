@@ -1514,10 +1514,17 @@ pub fn py_exec_sync(
     timeout_secs: Option<u64>,
     stop: Option<&StopToken>,
 ) -> Result<PyRunResult, String> {
-    if !py_get_enabled(app.clone()) {
+    // 2026-08-26 授权模式：yolo = 文件+Python 全放行不弹窗（老板拍板），跳过开关检查；
+    // ask/strict 维持原有「设置页开启 Python 编程」门控
+    let yolo = crate::bot::perm_mode(app) == crate::bot::PermMode::Yolo;
+    let flag_on = py_get_enabled(app.clone());
+    if !yolo && !flag_on {
         return Err(
-            "Python 编程未开启：请到设置页「机器人设置」打开「允许机器人执行 Python」".into(),
+            "Python 编程未开启：请到设置页「机器人设置」打开「允许机器人执行 Python」（或将授权模式切为 yolo）".into(),
         );
+    }
+    if yolo && !flag_on {
+        py_audit(app, "py_exec | yolo_bypass | 授权模式 yolo，跳过 py-enabled 开关检查");
     }
     // C2：用户/模型请求的超时硬上限 300s，超限直接拒绝并记审计
     //（run_python 内部另有钳制兜底，双保险）

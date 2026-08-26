@@ -1,10 +1,12 @@
 //! 本地文件只读工具（2026-08-19 Phase 1：read_text_file / grep_files / list_files）。
 //!
-//! 安全设计（对齐 Harness 网关 + 安全红线「不遍历全盘」的白名单化落地）：
-//! - 只允许访问白名单目录内路径：bot-config.json `allowedDirs` 非空则用用户列表，
-//!   空则用内置默认（~/Desktop ~/Downloads ~/Documents + 任务卡绑定文件夹）
-//! - resolve_allowed：展开 ~ → canonicalize（不存在即拒绝）→ 必须落在白名单内；
-//!   `..` 与软链逃逸在 canonicalize 后无处遁形；每次拒绝记审计
+//! 安全设计（2026-08-26 授权模式改造，Kimi CLI 风格「执行前授权」）：
+//! - 白名单（= 静默放行区）：内置默认（~/Desktop ~/Downloads ~/Documents + 任务卡绑定文件夹）
+//!   ∪ bot-config.json `allowedDirs`（追加语义，不再整体替换默认）
+//! - 白名单外按 perm_mode 分流：strict=硬拒（旧行为）/ ask=弹授权窗
+//!   （允许一次/始终允许该目录/拒绝，始终允许自动写进 allowedDirs）/ yolo=直接放行
+//! - resolve_with_perm：展开 ~ → canonicalize（不存在即拒绝）→ 白名单或授权放行；
+//!   `..` 与软链逃逸在 canonicalize 后无处遁形；命中/授权/拒绝都记审计
 //! - 只读：不提供写/删；二进制与图片拒绝（图片走既有视觉通道）
 //! - 输出截断在工具层做；递归走目录有深度/条目上限，跳过隐藏目录与 node_modules/target 等
 
@@ -86,29 +88,40 @@ fn strip_verbatim(p: PathBuf) -> PathBuf {
     }
 }
 
+/// 白名单原始路径合并（2026-08-26 追加语义）：内置默认（桌面/下载/文档）+ 任务卡绑定
+/// 文件夹 + 用户 allowedDirs 三者并集（不再「用户列表整体替换默认」——否则授权弹窗
+/// 「始终允许」写入一个目录后，内置默认反而失效）。抽纯函数便于单测。
+fn merge_raw_dirs(
+    cfg_dirs: &[String],
+    home: Option<&Path>,
+    task_dirs: Vec<String>,
+) -> Vec<String> {
+    let mut raw: Vec<String> = Vec::new();
+    if let Some(home) = home {
+        for d in ["Desktop", "Downloads", "Documents"] {
+            raw.push(home.join(d).to_string_lossy().to_string());
+        }
+    }
+    raw.extend(task_dirs);
+    raw.extend(cfg_dirs.iter().cloned());
+    raw
+}
+
 /// 白名单目录集合（canonical 化，只保留真实存在的目录）
 async fn allowed_dirs(app: &AppHandle) -> Vec<PathBuf> {
     let cfg = crate::bot::load_config(app);
-    let mut raw: Vec<String> = cfg.allowed_dirs.clone();
-    if raw.is_empty() {
-        // 内置默认：桌面/下载/文档（home_dir 跨平台：Windows 无 HOME 时回退 USERPROFILE）
-        if let Some(home) = home_dir() {
-            let home = PathBuf::from(home);
-            for d in ["Desktop", "Downloads", "Documents"] {
-                raw.push(home.join(d).to_string_lossy().to_string());
-            }
-        }
-        // + 任务卡绑定的文件夹（用户显式绑过 = 显式授权过）
-        if let Ok(tasks) = crate::db::db_load(app.clone()).await {
-            for t in tasks {
-                for f in t.effective_files() {
-                    if f.is_dir {
-                        raw.push(f.path);
-                    }
+    // 任务卡绑定的文件夹（用户显式绑过 = 显式授权过）
+    let mut task_dirs: Vec<String> = Vec::new();
+    if let Ok(tasks) = crate::db::db_load(app.clone()).await {
+        for t in tasks {
+            for f in t.effective_files() {
+                if f.is_dir {
+                    task_dirs.push(f.path);
                 }
             }
         }
     }
+    let raw = merge_raw_dirs(&cfg.allowed_dirs, home_dir().as_deref(), task_dirs);
     let mut out: Vec<PathBuf> = Vec::new();
     for r in raw {
         let p = expand_tilde(r.trim());
@@ -121,9 +134,12 @@ async fn allowed_dirs(app: &AppHandle) -> Vec<PathBuf> {
     out
 }
 
-/// 路径守卫：~ 展开 → canonicalize（不存在即拒）→ 必须落在某个白名单目录内。
-/// 成功返回 canonical 路径；拒绝记审计（白名单命中/拒绝都留痕）。
-pub async fn resolve_allowed(app: &AppHandle, path: &str) -> Result<PathBuf, String> {
+/// 路径守卫（2026-08-26 授权模式改造，Kimi CLI 风格「执行前授权」）：
+/// ~ 展开 → canonicalize（不存在即拒）→ 白名单命中直接放行；
+/// 白名单外按 perm_mode 分流：strict 硬拒（旧行为）/ ask 弹授权窗（允许一次 /
+/// 始终允许该目录自动写入 allowedDirs / 拒绝）/ yolo 直接放行。全程记审计。
+/// 成功返回 canonical 路径（Windows 剥 \\?\ 前缀）。
+pub async fn resolve_with_perm(app: &AppHandle, tool: &str, path: &str) -> Result<PathBuf, String> {
     let p = path.trim();
     if p.is_empty() {
         return Err("路径不能为空".into());
@@ -133,16 +149,64 @@ pub async fn resolve_allowed(app: &AppHandle, path: &str) -> Result<PathBuf, Str
         .map_err(|_| format!("路径不存在或不可访问：{p}"))?;
     let dirs = allowed_dirs(app).await;
     if dirs.iter().any(|d| canonical.starts_with(d)) {
-        // 剥掉 Windows canonicalize 的 \\?\ 前缀再返回（详见 strip_verbatim）
-        Ok(strip_verbatim(canonical))
-    } else {
-        crate::bot::audit_log(
-            app,
-            &format!("bot_fs.denied | path: {} | 不在白名单目录内", crate::bot::truncate_for_log(p, 200)),
-        );
-        Err(format!(
-            "路径不在白名单目录内：{p}（白名单：设置页 allowedDirs，默认 桌面/下载/文档 + 任务卡绑定文件夹）"
-        ))
+        return Ok(strip_verbatim(canonical));
+    }
+    match crate::bot::perm_mode(app) {
+        crate::bot::PermMode::Yolo => {
+            crate::bot::audit_log(
+                app,
+                &format!("bot_fs.yolo_allow | tool: {tool} | path: {}", crate::bot::truncate_for_log(p, 200)),
+            );
+            Ok(strip_verbatim(canonical))
+        }
+        crate::bot::PermMode::Ask => {
+            match crate::bot_slash::ask_path_confirm(app, tool, &format!("访问白名单外路径：{p}"))
+                .await
+            {
+                crate::bot_slash::ConfirmChoice::Once => {
+                    crate::bot::audit_log(
+                        app,
+                        &format!("bot_fs.ask_allow_once | tool: {tool} | path: {}", crate::bot::truncate_for_log(p, 200)),
+                    );
+                    Ok(strip_verbatim(canonical))
+                }
+                crate::bot_slash::ConfirmChoice::Always => {
+                    // 文件取父目录，目录取自身（授权粒度 = 目录，与判定逻辑一致）
+                    let dir = if canonical.is_dir() {
+                        canonical.clone()
+                    } else {
+                        canonical.parent().map(|d| d.to_path_buf()).unwrap_or_else(|| canonical.clone())
+                    };
+                    let dir_str = strip_verbatim(dir).to_string_lossy().to_string();
+                    if let Err(e) = crate::bot::add_allowed_dir(app, &dir_str) {
+                        crate::bot::audit_log(app, &format!("bot_fs.always_persist_fail | {e}"));
+                    }
+                    crate::bot::audit_log(
+                        app,
+                        &format!("bot_fs.ask_allow_always | tool: {tool} | dir: {}", crate::bot::truncate_for_log(&dir_str, 200)),
+                    );
+                    Ok(strip_verbatim(canonical))
+                }
+                crate::bot_slash::ConfirmChoice::Deny => {
+                    crate::bot::audit_log(
+                        app,
+                        &format!("bot_fs.ask_denied | tool: {tool} | path: {}", crate::bot::truncate_for_log(p, 200)),
+                    );
+                    Err(format!(
+                        "用户未授权访问该路径：{p}（可在授权弹窗点「始终允许该目录」，或在设置页把目录加入白名单）"
+                    ))
+                }
+            }
+        }
+        crate::bot::PermMode::Strict => {
+            crate::bot::audit_log(
+                app,
+                &format!("bot_fs.denied | path: {} | 不在白名单目录内", crate::bot::truncate_for_log(p, 200)),
+            );
+            Err(format!(
+                "路径不在白名单目录内：{p}（白名单：设置页 allowedDirs，默认 桌面/下载/文档 + 任务卡绑定文件夹）"
+            ))
+        }
     }
 }
 
@@ -204,7 +268,7 @@ pub async fn tool_read_text_file(app: &AppHandle, args: &str) -> (String, Vec<Ta
     let Some(path) = v["path"].as_str() else {
         return ("read_text_file 缺少 path".into(), Vec::new());
     };
-    let canonical = match resolve_allowed(app, path).await {
+    let canonical = match resolve_with_perm(app, "read_text_file", path).await {
         Ok(p) => p,
         Err(e) => return (e, Vec::new()),
     };
@@ -267,7 +331,7 @@ pub async fn tool_grep_files(app: &AppHandle, args: &str) -> (String, Vec<TaskRe
     let max = (v["max"].as_u64().unwrap_or(GREP_MAX_HITS as u64) as usize).min(GREP_MAX_HITS);
     // dir 可选：缺省搜第一个白名单目录
     let dir = match v["dir"].as_str() {
-        Some(d) if !d.trim().is_empty() => match resolve_allowed(app, d).await {
+        Some(d) if !d.trim().is_empty() => match resolve_with_perm(app, "grep_files", d).await {
             Ok(p) => p,
             Err(e) => return (e, Vec::new()),
         },
@@ -326,7 +390,7 @@ pub async fn tool_list_files(app: &AppHandle, args: &str) -> (String, Vec<TaskRe
     let Some(dir) = v["dir"].as_str() else {
         return ("list_files 缺少 dir".into(), Vec::new());
     };
-    let canonical = match resolve_allowed(app, dir).await {
+    let canonical = match resolve_with_perm(app, "list_files", dir).await {
         Ok(p) => p,
         Err(e) => return (e, Vec::new()),
     };
@@ -441,5 +505,34 @@ mod tests {
         assert!(Path::new("/tmp/ab").starts_with(allowed));
         assert!(!Path::new("/tmp/abc").starts_with(allowed));
         assert!(!Path::new("/tmp/ab2/x").starts_with(allowed));
+    }
+
+    /// 2026-08-26 追加语义：allowedDirs 非空时内置默认（桌面/下载/文档）仍生效，
+    /// 任务卡绑定文件夹也在并集里（旧行为是用户列表整体替换默认，会导致授权弹窗
+    /// 「始终允许」写入一个目录后内置默认失效）
+    #[test]
+    fn merge_raw_dirs_appends_to_defaults() {
+        let home = PathBuf::from("/home/u");
+        let cfg = vec!["/data/work".to_string()];
+        let task = vec!["/mnt/bound".to_string()];
+        let raw = merge_raw_dirs(&cfg, Some(&home), task);
+        assert_eq!(
+            raw,
+            vec![
+                "/home/u/Desktop",
+                "/home/u/Downloads",
+                "/home/u/Documents",
+                "/mnt/bound",
+                "/data/work"
+            ]
+        );
+    }
+
+    /// home 缺失（Windows 绿色版 HOME/USERPROFILE 全空兜底场景）时不产默认目录，
+    /// 但任务卡绑定与用户配置仍在
+    #[test]
+    fn merge_raw_dirs_without_home() {
+        let raw = merge_raw_dirs(&["/data/x".to_string()], None, vec!["/mnt/b".to_string()]);
+        assert_eq!(raw, vec!["/mnt/b", "/data/x"]);
     }
 }

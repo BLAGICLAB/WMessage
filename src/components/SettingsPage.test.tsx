@@ -302,7 +302,8 @@ describe("SettingsPage", () => {
     const onExportTasks = vi.fn(async () => {});
     const user = userEvent.setup();
     render(<SettingsPage {...defaultProps} onExportTasks={onExportTasks} />);
-    await user.click(screen.getByText("📤 导出"));
+    // eefa78f 起页面有两个「📤 导出」（任务导出 + 工作区导出），取第一个（任务导出）
+    await user.click(screen.getAllByText("📤 导出")[0]);
     await waitFor(() => {
       expect(onExportTasks).toHaveBeenCalledTimes(1);
     });

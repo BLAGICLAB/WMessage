@@ -74,6 +74,13 @@ pub struct BotConfig {
     /// 硬钳上限 300s（bot_py::resolve_timeout）。大计算（pandas 等）可调大。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub python_timeout_secs: Option<u64>,
+    /// 文件/代码执行授权模式（2026-08-26，Kimi CLI 风格）：
+    /// "strict" = 白名单外硬拒（2026-08-26 前旧行为）；
+    /// "ask"    = 白名单外弹授权窗（允许一次/始终允许该目录/拒绝）——新默认；
+    /// "yolo"   = 全放行不弹窗（文件工具 + run_python 免开关），仍记审计。
+    /// None（老配置文件缺字段）= "ask"。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub perm_mode: Option<String>,
 }
 
 impl Default for BotConfig {
@@ -88,8 +95,39 @@ impl Default for BotConfig {
             tavily_key: None,                 // 未配置 = 双引擎抓取
             tavily_enabled: None,             // 未显式设置 = 配了 key 就自动启用（旧行为）
             python_timeout_secs: None,        // 未配置 = 60s 默认
+            perm_mode: None,                  // 未配置 = ask（弹授权）
         }
     }
+}
+
+/// 授权模式枚举（2026-08-26）：配置字符串归一化，非法值回退 Ask（安全默认偏严一侧的可用形态）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermMode {
+    Strict,
+    Ask,
+    Yolo,
+}
+
+impl PermMode {
+    pub fn from_cfg(s: Option<&str>) -> Self {
+        match s.map(|v| v.trim()) {
+            Some("strict") => PermMode::Strict,
+            Some("yolo") => PermMode::Yolo,
+            _ => PermMode::Ask,
+        }
+    }
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PermMode::Strict => "strict",
+            PermMode::Ask => "ask",
+            PermMode::Yolo => "yolo",
+        }
+    }
+}
+
+/// 当前授权模式（读 bot-config.json；缺文件/缺字段/非法值都回 Ask）
+pub fn perm_mode(app: &AppHandle) -> PermMode {
+    PermMode::from_cfg(load_config(app).perm_mode.as_deref())
 }
 
 pub fn config_path(app: &AppHandle) -> std::path::PathBuf {
@@ -370,6 +408,8 @@ pub struct BotConfigView {
     pub tavily_enabled: Option<bool>,
     /// run_python 默认超时秒数（None = 60s 默认；设置页可改，硬钳 300s）
     pub python_timeout_secs: Option<u64>,
+    /// 授权模式原样透传给设置页（None = ask 新默认；非法值前端按 ask 显示）
+    pub perm_mode: Option<String>,
 }
 
 /// 旧版本迁移：bot-config.json 里有明文 key → 迁入系统凭据存储并清掉文件里的明文。
@@ -412,6 +452,25 @@ pub(crate) fn load_config(app: &AppHandle) -> BotConfig {
     BotConfig::default()
 }
 
+/// 授权弹窗「始终允许该目录」落盘（2026-08-26）：把目录追加进 allowedDirs 并写回
+/// bot-config.json。allowedDirs 语义 = 内置默认（桌面/下载/文档+绑定文件夹）之上的
+/// 追加放行，直接 push 去重即可；已存在/空白为幂等 no-op。
+pub(crate) fn add_allowed_dir(app: &AppHandle, dir: &str) -> Result<(), String> {
+    let d = dir.trim().to_string();
+    if d.is_empty() {
+        return Ok(());
+    }
+    let mut cfg = load_config(app);
+    if cfg.allowed_dirs.iter().any(|x| x.trim() == d) {
+        return Ok(());
+    }
+    cfg.allowed_dirs.push(d);
+    let data_dir = crate::db::data_dir(app);
+    std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
+    let raw = serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?;
+    std::fs::write(config_path(app), raw).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
     let _ = migrate_legacy_key(&app); // 兜底：设置页读配置时也确保无明文残留
@@ -429,6 +488,7 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
         tavily_key: cfg.tavily_key.unwrap_or_default(),
         tavily_enabled: cfg.tavily_enabled,
         python_timeout_secs: cfg.python_timeout_secs,
+        perm_mode: cfg.perm_mode,
     })
 }
 
@@ -1680,17 +1740,19 @@ async fn tool_link_file_to_task(app: &AppHandle, args: &str) -> (String, Vec<cra
 // ───────────────────────── 文档 / Python 工具（bot_py 桥接） ─────────────────────────
 
 /// 提取文档文本：path 给定则直读（任务卡绑定文件），否则弹框选文件；返回路径 + 文本供模型阅读/润色
-/// extract_document path 白名单（二次审计 P1-2）：只允许任务卡绑定文件或 AI_Gen_Files 目录内文件。
+/// extract_document path 白名单（二次审计 P1-2）：任务卡绑定文件 / AI_Gen_Files 目录内文件静默放行。
 /// 规范化路径比较，防 ../ 绕过。无 path 时走弹框（用户亲手选，不受此限）。
-async fn extract_path_allowed(app: &AppHandle, path: &str) -> bool {
+/// 2026-08-26 授权模式改造：其余路径不再硬拒，走 bot_fs::resolve_with_perm 分流
+///（strict 硬拒 / ask 弹授权窗 / yolo 放行），拒绝文案透传给模型。
+async fn extract_path_check(app: &AppHandle, path: &str) -> Result<(), String> {
     let Ok(canon) = std::fs::canonicalize(path) else {
-        return false;
+        return Err(format!("路径不存在或不可访问：{path}"));
     };
     // 1) AI_Gen_Files 目录内
     let gen_dir = crate::db::data_dir(app).join("AI_Gen_Files");
     if let Ok(gen) = std::fs::canonicalize(&gen_dir) {
         if canon.starts_with(&gen) {
-            return true;
+            return Ok(());
         }
     }
     // 2) 任务卡绑定文件（多文件绑定：files 列表 + 旧字段兜底走 effective_files）
@@ -1699,17 +1761,17 @@ async fn extract_path_allowed(app: &AppHandle, path: &str) -> bool {
             for f in t.effective_files() {
                 if let Ok(fc) = std::fs::canonicalize(&f.path) {
                     if fc == canon {
-                        return true;
+                        return Ok(());
                     }
                 }
             }
         }
     }
-    // 3) 本地文件工具白名单目录（2026-08-19 Phase 1：聊天附件/用户指定路径，与 bot_fs 同一口径）
-    if crate::bot_fs::resolve_allowed(app, path).await.is_ok() {
-        return true;
-    }
-    false
+    // 3) 授权分流（2026-08-26，与 bot_fs 同一口径：白名单静默放行 / strict 拒 /
+    //    ask 弹窗 / yolo 放）
+    crate::bot_fs::resolve_with_perm(app, "extract_document", path)
+        .await
+        .map(|_| ())
 }
 
 async fn tool_extract_document(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
@@ -1725,14 +1787,10 @@ async fn tool_extract_document(app: &AppHandle, args: &str) -> (String, Vec<crat
         .map(|n| (n as usize).min(EXTRACT_MAX_LIMIT))
         .filter(|&n| n > 0)
         .unwrap_or(EXTRACT_DEFAULT_LIMIT);
-    // 模型直传 path 时白名单校验（无 path 走弹框，用户亲手选不受限）
+    // 模型直传 path 时授权校验（无 path 走弹框，用户亲手选不受限）
     if let Some(p) = path_opt.as_deref() {
-        if !extract_path_allowed(app, p).await {
-            return (
-                "已拒绝读取该路径：extract_document 的 path 只允许任务卡绑定文件、AI_Gen_Files 目录或文件白名单目录内的文件；\
-需要读取其他文件请先绑定到任务卡，或让用户通过弹框选择".into(),
-                Vec::new(),
-            );
+        if let Err(e) = extract_path_check(app, p).await {
+            return (e, Vec::new());
         }
     }
     match crate::bot_py::doc_extract(app.clone(), path_opt).await {
@@ -1797,18 +1855,14 @@ async fn tool_create_word(app: &AppHandle, args: &str) -> (String, Vec<crate::bo
 /// 修订模式 Word：回读原文 + 修订段落 diff，产出带 track changes 标记的文档
 async fn tool_create_word_revisions(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
     let v = parse_args(args);
-    // originalPath 由模型转述，同样过白名单（防回读任意文件）
+    // originalPath 由模型转述，同样过授权校验（防回读任意文件；2026-08-26 走分流）
     if let Some(op) = v["originalPath"]
         .as_str()
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        if !extract_path_allowed(app, op).await {
-            return (
-                "已拒绝读取原文路径：originalPath 只允许任务卡绑定文件或 AI_Gen_Files 目录内的文件"
-                    .into(),
-                Vec::new(),
-            );
+        if let Err(e) = extract_path_check(app, op).await {
+            return (e, Vec::new());
         }
     }
     let Some(arr) = v["revised"].as_array() else {
@@ -2035,6 +2089,30 @@ mod bot_config_tests {
             cfg.bypass_llm_on_pre_step_hit,
             "老配置缺字段应默认 true（开启新行为，保证 release 不破现有用户）"
         );
+    }
+
+    #[test]
+    fn perm_mode_defaults_to_ask() {
+        // 老配置缺 permMode 字段 → None → Ask（2026-08-26 新默认：弹授权而非硬拒）
+        let raw = r#"{"baseUrl":"https://api.deepseek.com/v1","model":"deepseek-chat"}"#;
+        let cfg: BotConfig = serde_json::from_str(raw).unwrap();
+        assert_eq!(PermMode::from_cfg(cfg.perm_mode.as_deref()), PermMode::Ask);
+        assert_eq!(PermMode::from_cfg(None), PermMode::Ask);
+    }
+
+    #[test]
+    fn perm_mode_parses_known_values_and_falls_back() {
+        assert_eq!(PermMode::from_cfg(Some("strict")), PermMode::Strict);
+        assert_eq!(PermMode::from_cfg(Some("ask")), PermMode::Ask);
+        assert_eq!(PermMode::from_cfg(Some("yolo")), PermMode::Yolo);
+        // 非法值/空白回退 Ask（安全默认偏严一侧的可用形态）
+        assert_eq!(PermMode::from_cfg(Some("YOLO ")), PermMode::Ask, "大小写不识别，回退 Ask");
+        assert_eq!(PermMode::from_cfg(Some("garbage")), PermMode::Ask);
+        assert_eq!(PermMode::from_cfg(Some("")), PermMode::Ask);
+        // as_str 往返
+        assert_eq!(PermMode::Strict.as_str(), "strict");
+        assert_eq!(PermMode::Ask.as_str(), "ask");
+        assert_eq!(PermMode::Yolo.as_str(), "yolo");
     }
 }
 

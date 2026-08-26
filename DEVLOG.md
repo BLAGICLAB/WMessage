@@ -2,6 +2,22 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-08-26（周三）文件访问改造：白名单硬拦 → 执行前授权（Kimi CLI 风格）+ yolo 模式
+
+**动因**（老板原话：「该读的不让读，还要绑定文件，流程繁琐」）：read_text_file/grep_files/list_files/extract_document 白名单外硬拒绝，要读其它文件得先绑定任务卡或改设置页，流程打断。
+
+**改造**：
+- `bot-config.json` 新增 `permMode`：`strict`（白名单外硬拒，旧行为）/ `ask`（**新默认**，白名单外弹授权窗）/ `yolo`（全放行不弹窗，文件工具 + run_python 免开关）；`PermMode::from_cfg` 非法值回退 ask
+- `bot_fs::resolve_with_perm` 三分流：白名单命中静默放行；ask → 复用 ConfirmMap 弹三选一窗（允许一次 / 始终允许该目录 / 拒绝，60s 超时与挂件不可见默认拒绝）；yolo → 直接放行；全程记审计（`bot_fs.yolo_allow / ask_allow_once / ask_allow_always / ask_denied`）
+- 「始终允许该目录」：文件取父目录、目录取自身，自动追加进 `allowedDirs` 落盘（`bot::add_allowed_dir`）
+- **allowedDirs 语义修正**：旧「非空整体替换内置默认」→ 新「在内置默认（桌面/下载/文档 + 任务卡绑定文件夹）之上**追加**」——否则始终允许写入一个目录后默认目录反而失效
+- extract_document / create_word_revisions 的 path 校验改走同一分流（任务卡绑定文件 / AI_Gen_Files 仍静默放行）
+- run_python：yolo 模式跳过 py-enabled 开关（记 `py_exec | yolo_bypass`）；ask/strict 维持设置页开关门控
+- 前端：ChatPanel 确认弹窗按 `kind="file_access"` 渲染三按钮（`bot_confirm_response` 加 `always` 参，老调用兼容）；SettingsPage 加授权模式三态选择器（yolo 带风险提示）+ 白名单文案改追加语义
+- prompt 规则 19 / 安全红线 / TOOLS 描述同步「弹窗授权」措辞
+- 测试：PermMode 解析/老配置兼容、`merge_raw_dirs` 追加语义；顺带修 eefa78f 遗留的两个前端测试（设置页出现两组「📤 导出/📥 导入」按钮导致 getByText 二义性，改取第一个 = 任务导入/导出）
+- 验证：`cargo test --lib` 407 全绿；`npm test` 107 全绿
+
 ## 2026-08-13（周四）M1 脚手架 + M2 看板 + M3 起步
 
 ### M1 脚手架

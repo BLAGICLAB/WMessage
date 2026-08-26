@@ -317,9 +317,9 @@ describe("App", () => {
     await waitFor(() => {
       expect(screen.getByText("梳理 WMessage 需求清单")).toBeInTheDocument();
     });
-    // 进设置页点「📥 导入」
+    // 进设置页点「📥 导入」（eefa78f 起有任务导入 + 工作区导入两个，取第一个 = 任务导入）
     await user.click(screen.getByTitle("设置"));
-    const importBtn = await screen.findByRole("button", { name: "📥 导入" });
+    const importBtn = (await screen.findAllByRole("button", { name: "📥 导入" }))[0];
     await user.click(importBtn);
     // 导入完成 alert（证明 importTasks 全流程走完）
     await waitFor(() => {

@@ -80,7 +80,7 @@ WMessage：Tauri + React + TailwindCSS 的 Todo 看板，带系统侧边磁吸�
    - Word 润色默认修订模式（track changes，w:ins/w:del，author=WMessage AI）；产物只落 AI_Gen_Files 同名 (n) 序号永不覆盖
    - 流式回复；思考过程（<think>）与工具调用折叠行可展开；Markdown 渲染回复
    - 斜杠命令：/stop /compact（≤300 字摘要）/retry
-   - 安全：删除任务弹确认（60s 超时自动拒绝）；审计日志 bot.log；参数上限；API Key 存系统凭据存储（keyring）；extract_document path 白名单（任务卡绑定文件 / AI_Gen_Files）
+   - 安全：删除任务弹确认（60s 超时自动拒绝）；审计日志 bot.log；参数上限；API Key 存系统凭据存储（keyring）；文件访问授权模式（2026-08-26）：strict 白名单硬拒 / ask 白名单外弹授权（默认，允许一次/始终允许该目录/拒绝）/ yolo 全放行（文件+Python）；extract_document path 校验（任务卡绑定文件 / AI_Gen_Files 静默放行，其余走授权分流）
    - 挂件选任务模式（🎯 整卡单击选中，📌 引用块随消息发送）；任务卡 🤖 按钮一键执行（卡片显示机器人归属头像）
 
 ## 功能需求（追加 2026-08-16：定时任务卡 + 归属头像）

@@ -3,7 +3,8 @@
 //! 主入口 `bot_chat`（在 bot_chat.rs）走 run_model_loop + 工具循环；
 //! 这里集中「停止执行实例」「危险操作确认」「机器人总开关」三类旁路能力：
 //! - `/stop` 快捷命令（bot_stop）：遍历 StopRegistry 把 interactive=true 的实例标志置位
-//! - 弹窗确认（ConfirmMap）：挂件删除任务等危险操作走 ask_user_confirm / bot_confirm_response
+//! - 弹窗确认（ConfirmMap）：挂件删除任务等危险操作走 ask_user_confirm（两按钮）；
+//!   文件访问授权走 ask_path_confirm（三按钮：允许一次/始终允许该目录/拒绝，2026-08-26）
 //! - 机器人总开关（bot_get_enabled / bot_set_enabled）：flag 文件持久化
 //!
 //! 设计目标：bot_chat / bot_execute_task / bot_scheduler 共享 StopGuard，
@@ -98,31 +99,51 @@ pub fn bot_stop(app: AppHandle) {
 
 // ───────────────────────── 危险操作确认（删除任务弹窗） ─────────────────────────
 
+/// 授权弹窗的用户选择（2026-08-26 文件访问授权改造）：
+/// 旧场景（删任务等二选一）只用 Once/Deny；file_access 场景多一个 Always（始终允许该目录）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfirmChoice {
+    /// 允许本次
+    Once,
+    /// 允许且把该目录写进 allowedDirs（仅 file_access 弹窗有此按钮）
+    Always,
+    /// 拒绝 / 超时 / 挂件不可见（安全兜底）
+    Deny,
+}
+
+/// 前端回传：approved 放行与否 + always 是否「始终允许」（仅 file_access 弹窗会为 true）
+#[derive(Debug, Clone, Copy)]
+struct ConfirmReply {
+    approved: bool,
+    always: bool,
+}
+
 /// 待确认请求：id → oneshot 通道（挂件 bot_confirm_response 回填）
 type ConfirmMap =
-    std::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<bool>>>;
+    std::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<ConfirmReply>>>;
 static CONFIRMS: std::sync::OnceLock<ConfirmMap> = std::sync::OnceLock::new();
 
 fn confirms() -> &'static ConfirmMap {
     CONFIRMS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
-/// 请求用户在挂件确认危险操作（如删除任务）；60s 超时默认拒绝（安全兜底）
-pub async fn ask_user_confirm(app: &AppHandle, tool: &str, detail: &str) -> bool {
+/// 弹窗确认公共内核：发 "bot-confirm" 事件（带 kind 供前端渲染两/三按钮），
+/// 60s 超时默认拒绝（安全兜底）；挂件不可见时直接拒绝，不白等 60s（审计 P2）。
+async fn ask_confirm_inner(app: &AppHandle, tool: &str, detail: &str, kind: &str) -> ConfirmReply {
     // Skill 调度器联动：高危动作确认开始 → 活动技能转入 Paused
     crate::bot_skills::skill_mark_paused(app, tool);
-    // 挂件窗口不存在/不可见时无人应答：直接拒绝，不白等 60s（审计 P2）
     let widget_visible = app
         .get_webview_window("widget")
         .and_then(|w| w.is_visible().ok())
         .unwrap_or(false);
+    let deny = ConfirmReply { approved: false, always: false };
     if !widget_visible {
         crate::bot::audit_log(
             app,
             &format!("confirm_skipped | {tool} | {detail} | 挂件不可见，默认拒绝"),
         );
         crate::bot_skills::skill_confirm_result(app, false);
-        return false;
+        return deny;
     }
     let (tx, rx) = tokio::sync::oneshot::channel();
     let id = uuid::Uuid::new_v4().simple().to_string();
@@ -133,28 +154,44 @@ pub async fn ask_user_confirm(app: &AppHandle, tool: &str, detail: &str) -> bool
     let _ = app.emit_to(
         "widget",
         "bot-confirm",
-        serde_json::json!({ "id": id, "tool": tool, "detail": detail }),
+        serde_json::json!({ "id": id, "tool": tool, "detail": detail, "kind": kind }),
     );
     crate::bot::audit_log(
         app,
-        &format!("confirm | id: {} | {tool} | {detail}", &id[..8]),
+        &format!("confirm | id: {} | kind: {kind} | {tool} | {detail}", &id[..8]),
     );
     match tokio::time::timeout(std::time::Duration::from_secs(60), rx).await {
-        Ok(Ok(approved)) => approved,
+        Ok(Ok(reply)) => reply,
         _ => {
             confirms()
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .remove(&id);
             crate::bot_skills::skill_confirm_result(app, false); // 超时默认拒绝
-            false
+            deny
         }
     }
 }
 
-/// 挂件确认响应：允许/拒绝（前端点击后回传）
+/// 请求用户在挂件确认危险操作（如删除任务）；60s 超时默认拒绝（安全兜底）
+pub async fn ask_user_confirm(app: &AppHandle, tool: &str, detail: &str) -> bool {
+    ask_confirm_inner(app, tool, detail, "danger").await.approved
+}
+
+/// 文件访问授权（2026-08-26，Kimi CLI 风格）：白名单外路径弹三选一窗
+/// （允许一次 / 始终允许该目录 / 拒绝）。挂件不可见/超时 → Deny。
+pub async fn ask_path_confirm(app: &AppHandle, tool: &str, detail: &str) -> ConfirmChoice {
+    match ask_confirm_inner(app, tool, detail, "file_access").await {
+        ConfirmReply { approved: true, always: true } => ConfirmChoice::Always,
+        ConfirmReply { approved: true, always: false } => ConfirmChoice::Once,
+        _ => ConfirmChoice::Deny,
+    }
+}
+
+/// 挂件确认响应：允许/拒绝（前端点击后回传）；always 仅 file_access 弹窗的
+/// 「始终允许该目录」按钮会为 true，老调用（删任务两按钮）不传 → None → false。
 #[tauri::command]
-pub fn bot_confirm_response(app: AppHandle, request_id: String, approved: bool) {
+pub fn bot_confirm_response(app: AppHandle, request_id: String, approved: bool, always: Option<bool>) {
     // Skill 调度器联动：确认结果 → 恢复 Running / 拒绝终止 / 暂停即终止
     crate::bot_skills::skill_confirm_result(&app, approved);
     if let Some(tx) = confirms()
@@ -162,7 +199,7 @@ pub fn bot_confirm_response(app: AppHandle, request_id: String, approved: bool) 
         .unwrap_or_else(|e| e.into_inner())
         .remove(&request_id)
     {
-        let _ = tx.send(approved);
+        let _ = tx.send(ConfirmReply { approved, always: always.unwrap_or(false) });
     }
 }
 

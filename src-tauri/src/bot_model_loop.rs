@@ -112,18 +112,18 @@ const TOOLS: &str = r#"[
     "title":{"type":"string","description":"任务标题关键词，无 taskId 时使用"},
     "text":{"type":"string","description":"要删除的子任务内容关键词"}
   },"required":["text"]}}},
-  {"type":"function","function":{"name":"read_text_file","description":"读取白名单目录内的文本文件内容（大文件用 offset/limit 分页读；Office/PDF 用 extract_document，图片用户会直接发图）","parameters":{"type":"object","properties":{
+  {"type":"function","function":{"name":"read_text_file","description":"读取本地文本文件内容（白名单目录内直接读，白名单外自动弹窗请用户授权；大文件用 offset/limit 分页读；Office/PDF 用 extract_document，图片用户会直接发图）","parameters":{"type":"object","properties":{
     "path":{"type":"string","description":"文件绝对路径（支持 ~ 开头）"},
     "offset":{"type":"integer","description":"起始行号，从 1 开始，可选"},
     "limit":{"type":"integer","description":"读取行数，默认 500，最多 2000，可选"}
   },"required":["path"]}}},
-  {"type":"function","function":{"name":"grep_files","description":"在白名单目录内按正则搜索文件内容，返回 path:行号:内容（最多 50 条）","parameters":{"type":"object","properties":{
+  {"type":"function","function":{"name":"grep_files","description":"按正则搜索本地文件内容，返回 path:行号:内容（最多 50 条；白名单目录内直接搜，白名单外自动弹窗请用户授权）","parameters":{"type":"object","properties":{
     "pattern":{"type":"string","description":"正则表达式（非法正则自动按字面量搜）"},
     "dir":{"type":"string","description":"搜索目录，可选，缺省搜第一个白名单目录"},
     "glob":{"type":"string","description":"文件名过滤，如 *.rs，可选"},
     "max":{"type":"integer","description":"最多返回条数，默认 50，可选"}
   },"required":["pattern"]}}},
-  {"type":"function","function":{"name":"list_files","description":"列出白名单目录内的文件/子目录（递归 ≤5 层，最多 200 条；可用 pattern 按文件名过滤）","parameters":{"type":"object","properties":{
+  {"type":"function","function":{"name":"list_files","description":"列出本地目录内的文件/子目录（递归 ≤5 层，最多 200 条；可用 pattern 按文件名过滤；白名单目录内直接列，白名单外自动弹窗请用户授权）","parameters":{"type":"object","properties":{
     "dir":{"type":"string","description":"目录绝对路径（支持 ~ 开头）"},
     "pattern":{"type":"string","description":"文件名过滤，如 *.pdf 或 报告*，可选"}
   },"required":["dir"]}}},
