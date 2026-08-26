@@ -181,43 +181,19 @@ export function TodoCardView({
   const boundFiles = taskFiles(task);
   // 绑定文件折叠：超过 5 个收起到「还有 N 个」（2026-08-19 多文件绑定）
   const [filesExpanded, setFilesExpanded] = useState(false);
-  // 多文件打开选择列表（📂 点击：单文件直开，多文件弹列表让用户选）
-  const [openChooser, setOpenChooser] = useState(false);
 
-  const openFile = () => {
-    if (boundFiles.length === 0) return;
-    if (boundFiles.length > 1) {
-      setOpenChooser((v) => !v);
-      return;
-    }
-    openPath(boundFiles[0].path).catch((e) =>
-      handleCommandError(e, "open file", { silent: true })
-    );
-  };
-
+  // 2026-08-26 交互改版：点绑定文件名/文件夹名直接打开（不再有 📂 按钮和多选列表）
   const openOneFile = (path: string) => {
-    setOpenChooser(false);
     openPath(path).catch((e) =>
       handleCommandError(e, "open file", { silent: true })
     );
   };
 
-  const copyFile = () => {
-    if (boundFiles.length === 0) return;
-    if (boundFiles.length === 1) {
-      // 单文件行为不变
-      invoke("copy_file_with_title", { path: boundFiles[0].path, title: task.title }).catch((e) =>
-        // 复制失败：用户点了按钮，但失败通常不是关键操作（如源文件被删），不打扰
-        handleCommandError(e, "copy_file_with_title", { silent: true })
-      );
-      return;
-    }
-    // 多文件：复制全部文件，文本命名为 {title}-{basename}（Rust 侧拼接）
-    invoke("copy_files_with_title", {
-      paths: boundFiles.map((f) => f.path),
-      title: task.title,
-    }).catch((e) =>
-      handleCommandError(e, "copy_files_with_title", { silent: true })
+  // 单个文件复制（chip 内「复制」字样）：复制文件+标题，与原 📋 单文件行为一致
+  const copyOneFile = (path: string) => {
+    invoke("copy_file_with_title", { path, title: task.title }).catch((e) =>
+      // 复制失败：用户点了按钮，但失败通常不是关键操作（如源文件被删），不打扰
+      handleCommandError(e, "copy_file_with_title", { silent: true })
     );
   };
 
@@ -487,13 +463,31 @@ export function TodoCardView({
 
       {boundFiles.length > 0 ? (
         <div className="mt-3 flex flex-col gap-2">
-          {/* 绑定文件 chip 列表：📁/📎 + basename + 单独移除（×）；超过 5 个折叠为「还有 N 个」 */}
+          {/* 绑定文件 chip 列表（2026-08-26 交互改版）：点文件名/文件夹名直接打开；
+              每 chip「复制」字样（复制文件+标题）在解绑 × 前；chip 小字号 + 凹陷底色区分；
+              超过 5 个折叠为「还有 N 个」 */}
           <div className="flex flex-col gap-1">
             {(filesExpanded ? boundFiles : boundFiles.slice(0, 5)).map((f) => (
-              <div key={f.path} className="flex items-center gap-1.5">
-                <p className="flex-1 min-w-0 text-xs text-[var(--t4)] truncate" title={f.path}>
+              <div
+                key={f.path}
+                className="nm-inset rounded-lg px-1.5 py-0.5 flex items-center gap-1.5"
+              >
+                <button
+                  className="flex-1 min-w-0 text-left text-[11px] text-[var(--t4)] hover:text-[var(--t2)] truncate"
+                  title={`${f.path}（点击打开）`}
+                  onPointerDown={stop}
+                  onClick={() => openOneFile(f.path)}
+                >
                   {f.isDir ? "📁" : "📎"} {basename(f.path)}
-                </p>
+                </button>
+                <button
+                  className="shrink-0 text-[10px] text-[var(--t5)] hover:text-[var(--t3)]"
+                  title="复制文件+标题"
+                  onPointerDown={stop}
+                  onClick={() => copyOneFile(f.path)}
+                >
+                  复制
+                </button>
                 {!archived && !trashed && (
                   <button
                     className="shrink-0 text-[var(--t5)] hover:text-[var(--danger)] text-sm"
@@ -516,45 +510,30 @@ export function TodoCardView({
               </button>
             )}
           </div>
-          <div className="flex items-center gap-2">
-            <button
-              className="nm-btn px-2 py-0.5 text-[11px] leading-none text-[var(--t3)]"
-              title={boundFiles.length > 1 ? "打开文件（多选列表）" : boundFiles[0].isDir ? "打开文件夹" : "打开文件"}
-              onPointerDown={stop}
-              onClick={openFile}
-            >
-              📂
-            </button>
-            <button
-              className="nm-btn px-2 py-0.5 text-[11px] leading-none text-[var(--t3)]"
-              title="复制文件+标题"
-              onPointerDown={stop}
-              onClick={copyFile}
-            >
-              📋
-            </button>
-            {!archived && !trashed && boundFiles.length < MAX_TASK_FILES && (
-              <button
-                className="nm-btn px-2 py-0.5 text-[11px] leading-none text-[var(--t4)]"
-                title="继续绑定文件"
-                onPointerDown={stop}
-                onClick={pickFile}
-              >
-                ＋
-              </button>
-            )}
-            {/* 文件与文件夹不互斥：已绑文件但未绑文件夹时仍可绑定文件夹 */}
-            {!archived && !trashed && !boundFiles.some((f) => f.isDir) && boundFiles.length < MAX_TASK_FILES && (
-              <button
-                className="nm-btn px-2 py-0.5 text-[11px] leading-none text-[var(--t4)]"
-                title="绑定文件夹"
-                onPointerDown={stop}
-                onClick={pickFolder}
-              >
-                📁
-              </button>
-            )}
-            {!archived && !trashed && (
+          {/* 绑定操作行（2026-08-26 起只留绑定类按钮；打开=点文件名、复制=chip 内「复制」字样） */}
+          {!archived && !trashed && (
+            <div className="flex items-center gap-2">
+              {boundFiles.length < MAX_TASK_FILES && (
+                <button
+                  className="nm-btn px-2 py-0.5 text-[11px] leading-none text-[var(--t4)]"
+                  title="继续绑定文件"
+                  onPointerDown={stop}
+                  onClick={pickFile}
+                >
+                  ＋
+                </button>
+              )}
+              {/* 文件与文件夹不互斥：已绑文件但未绑文件夹时仍可绑定文件夹 */}
+              {!boundFiles.some((f) => f.isDir) && boundFiles.length < MAX_TASK_FILES && (
+                <button
+                  className="nm-btn px-2 py-0.5 text-[11px] leading-none text-[var(--t4)]"
+                  title="绑定文件夹"
+                  onPointerDown={stop}
+                  onClick={pickFolder}
+                >
+                  📁
+                </button>
+              )}
               <button
                 className="text-[var(--t5)] hover:text-[var(--danger)] text-sm"
                 title="解绑全部文件"
@@ -563,22 +542,6 @@ export function TodoCardView({
               >
                 ×
               </button>
-            )}
-          </div>
-          {/* 多文件打开选择列表（原生 dialog 无多选列表，退到 UI 列表） */}
-          {openChooser && boundFiles.length > 1 && (
-            <div className="nm-inset rounded-lg p-1.5 flex flex-col gap-0.5">
-              {boundFiles.map((f) => (
-                <button
-                  key={f.path}
-                  className="text-left text-xs text-[var(--t3)] px-2 py-1 rounded hover:bg-[var(--hover-bg)] truncate"
-                  title={f.path}
-                  onPointerDown={stop}
-                  onClick={() => openOneFile(f.path)}
-                >
-                  {f.isDir ? "📁" : "📎"} {basename(f.path)}
-                </button>
-              ))}
             </div>
           )}
         </div>

@@ -24,9 +24,8 @@ export function TaskCardContent({
   onToggleDone,
   onToggleCollapsed,
   onToggleSubtask,
-  onOpenFile,
   onOpenFilePath,
-  onCopyFile,
+  onCopyFilePath,
   onRemoveFile,
   onBotExecute,
   onSetSchedule,
@@ -48,12 +47,10 @@ export function TaskCardContent({
   onToggleCollapsed?: () => void;
   /** 提供时子任务 checkbox 可勾选（与主窗口一致） */
   onToggleSubtask?: (subtaskId: string) => void;
-  /** 提供时显示 📂 打开文件按钮 */
-  onOpenFile?: () => void;
-  /** 多文件打开选择：提供时 📂 在多文件下弹出列表，点击条目回调该路径 */
+  /** 点绑定文件名/文件夹名直接打开（2026-08-26 起替代 📂 按钮 + 多选列表） */
   onOpenFilePath?: (path: string) => void;
-  /** 提供时显示 📋 复制文件按钮 */
-  onCopyFile?: () => void;
+  /** chip 内「复制」字样：复制该文件+标题（替代原 📋 按钮） */
+  onCopyFilePath?: (path: string) => void;
   /** 提供时每个绑定文件 chip 显示单独移除按钮（×） */
   onRemoveFile?: (path: string) => void;
   /** 提供时显示 🤖 交给机器人按钮 */
@@ -69,10 +66,10 @@ export function TaskCardContent({
   // 定时执行面板
   const [schedOpen, setSchedOpen] = useState(false);
   const [schedOnce, setSchedOnce] = useState("");
-  // 绑定文件（2026-08-19 多文件绑定）：超过 5 个折叠「还有 N 个」；📂 多文件时弹选择列表
+  // 绑定文件（2026-08-19 多文件绑定；2026-08-26 改版：点名直开，不再有 📂 多选列表）：
+  // 超过 5 个折叠「还有 N 个」
   const boundFiles = taskFiles(task);
   const [filesExpanded, setFilesExpanded] = useState(false);
-  const [openChooser, setOpenChooser] = useState(false);
 
   // 标题内联编辑：草稿 + Enter/Escape/Blur 行为统一走 useInlineEdit（P2-23，与 TodoCard 共用）
   const titleEdit = useInlineEdit({
@@ -198,98 +195,72 @@ export function TaskCardContent({
             </div>
           )}
 
-          {/* 绑定文件 chip 列表（展示 + 打开/复制/单独移除，与主窗口一致；点击按钮不触发卡片聚焦）；
-              超过 5 个折叠为「还有 N 个」 */}
+          {/* 绑定文件 chip 列表（2026-08-26 交互改版，与主窗口一致）：点文件名/文件夹名
+              直接打开；每 chip「复制」字样在解绑 × 前；chip 小字号 + 凹陷底色区分；
+              超过 5 个折叠为「还有 N 个」（点击按钮不触发卡片聚焦） */}
           {boundFiles.length > 0 && (
-            <div className="mt-3 flex flex-col gap-2">
-              <div className="flex flex-col gap-1">
-                {(filesExpanded ? boundFiles : boundFiles.slice(0, 5)).map((f) => (
-                  <div key={f.path} className="flex items-center gap-1.5">
-                    <p className="flex-1 min-w-0 text-xs text-[var(--t4)] truncate" title={f.path}>
-                      {f.isDir ? "📁" : "📎"} {basename(f.path)}
-                    </p>
-                    {onRemoveFile && (
-                      <button
-                        className="shrink-0 text-[var(--t5)] hover:text-[var(--danger)] text-sm"
-                        title="移除该文件"
-                        onPointerDown={stop}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onRemoveFile(f.path);
-                        }}
-                      >
-                        ×
-                      </button>
-                    )}
-                  </div>
-                ))}
-                {boundFiles.length > 5 && (
-                  <button
-                    className="self-start text-[11px] text-[var(--t5)] hover:text-[var(--t3)]"
-                    onPointerDown={stop}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setFilesExpanded((v) => !v);
-                    }}
-                  >
-                    {filesExpanded ? "收起" : `还有 ${boundFiles.length - 5} 个`}
-                  </button>
-                )}
-              </div>
-              {(onOpenFile || onCopyFile) && (
-                <div className="flex items-center gap-2">
-                  {onOpenFile && (
+            <div className="mt-3 flex flex-col gap-1">
+              {(filesExpanded ? boundFiles : boundFiles.slice(0, 5)).map((f) => (
+                <div
+                  key={f.path}
+                  className="nm-inset rounded-lg px-1.5 py-0.5 flex items-center gap-1.5"
+                >
+                  {onOpenFilePath ? (
                     <button
-                      className="nm-btn px-2 py-0.5 text-[11px] leading-none text-[var(--t3)]"
-                      title={boundFiles.length > 1 ? "打开文件（多选列表）" : boundFiles[0].isDir ? "打开文件夹" : "打开文件"}
+                      className="flex-1 min-w-0 text-left text-[11px] text-[var(--t4)] hover:text-[var(--t2)] truncate"
+                      title={`${f.path}（点击打开）`}
                       onPointerDown={stop}
                       onClick={(e) => {
                         e.stopPropagation();
-                        // 单文件直开；多文件弹 UI 列表让用户选
-                        if (boundFiles.length > 1 && onOpenFilePath) {
-                          setOpenChooser((v) => !v);
-                        } else {
-                          onOpenFile();
-                        }
-                      }}
-                    >
-                      📂
-                    </button>
-                  )}
-                  {onCopyFile && (
-                    <button
-                      className="nm-btn px-2 py-0.5 text-[11px] leading-none text-[var(--t3)]"
-                      title="复制文件+标题"
-                      onPointerDown={stop}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onCopyFile();
-                      }}
-                    >
-                      📋
-                    </button>
-                  )}
-                </div>
-              )}
-              {/* 多文件打开选择列表 */}
-              {openChooser && boundFiles.length > 1 && onOpenFilePath && (
-                <div className="nm-inset rounded-lg p-1.5 flex flex-col gap-0.5">
-                  {boundFiles.map((f) => (
-                    <button
-                      key={f.path}
-                      className="text-left text-xs text-[var(--t3)] px-2 py-1 rounded hover:bg-[var(--hover-bg)] truncate"
-                      title={f.path}
-                      onPointerDown={stop}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setOpenChooser(false);
                         onOpenFilePath(f.path);
                       }}
                     >
                       {f.isDir ? "📁" : "📎"} {basename(f.path)}
                     </button>
-                  ))}
+                  ) : (
+                    <p className="flex-1 min-w-0 text-[11px] text-[var(--t4)] truncate" title={f.path}>
+                      {f.isDir ? "📁" : "📎"} {basename(f.path)}
+                    </p>
+                  )}
+                  {onCopyFilePath && (
+                    <button
+                      className="shrink-0 text-[10px] text-[var(--t5)] hover:text-[var(--t3)]"
+                      title="复制文件+标题"
+                      onPointerDown={stop}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onCopyFilePath(f.path);
+                      }}
+                    >
+                      复制
+                    </button>
+                  )}
+                  {onRemoveFile && (
+                    <button
+                      className="shrink-0 text-[var(--t5)] hover:text-[var(--danger)] text-sm"
+                      title="移除该文件"
+                      onPointerDown={stop}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onRemoveFile(f.path);
+                      }}
+                    >
+                      ×
+                    </button>
+                  )}
                 </div>
+              ))}
+              {boundFiles.length > 5 && (
+                <button
+                  className="self-start text-[11px] text-[var(--t5)] hover:text-[var(--t3)]"
+                  onPointerDown={stop}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setFilesExpanded((v) => !v);
+                  }}
+                >
+                  {filesExpanded ? "收起" : `还有 ${boundFiles.length - 5} 个`}
+                </button>
               )}
             </div>
           )}

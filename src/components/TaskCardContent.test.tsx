@@ -129,22 +129,33 @@ describe("TaskCardContent 多文件绑定", () => {
     expect(screen.getByText("📎 6.txt")).toBeInTheDocument();
   });
 
-  it("多文件打开：📂 弹选择列表，点条目回调 onOpenFilePath", async () => {
+  it("点绑定文件名直接打开（2026-08-26 起不再有 📂 多选列表）", async () => {
     const user = userEvent.setup();
-    const onOpenFile = vi.fn();
     const onOpenFilePath = vi.fn();
     render(
       <TaskCardContent
         task={multiTask}
-        onOpenFile={onOpenFile}
         onOpenFilePath={onOpenFilePath}
       />
     );
-    await user.click(screen.getByTitle("打开文件（多选列表）"));
-    expect(onOpenFile).not.toHaveBeenCalled();
-    // chip 行与选择列表条目文本相同，取按钮（选择列表条目是 button）
-    const items = screen.getAllByText("📎 b.docx");
-    await user.click(items[items.length - 1]);
+    await user.click(screen.getByText("📎 b.docx"));
     expect(onOpenFilePath).toHaveBeenCalledWith("/docs/b.docx");
+  });
+
+  it("chip 内「复制」字样回调 onCopyFilePath（在解绑 × 前）", async () => {
+    const user = userEvent.setup();
+    const onCopyFilePath = vi.fn();
+    const onRemoveFile = vi.fn();
+    render(
+      <TaskCardContent
+        task={multiTask}
+        onCopyFilePath={onCopyFilePath}
+        onRemoveFile={onRemoveFile}
+      />
+    );
+    const copies = screen.getAllByText("复制");
+    expect(copies).toHaveLength(2);
+    await user.click(copies[1]);
+    expect(onCopyFilePath).toHaveBeenCalledWith("/docs/b.docx");
   });
 });

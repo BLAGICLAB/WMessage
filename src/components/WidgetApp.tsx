@@ -482,36 +482,18 @@ export default function WidgetApp() {
       )
     );
 
-  // 打开绑定文件/文件夹（与主窗口一致；多文件时由 TaskCardContent 弹列表回调 onOpenFilePath）
-  const openFile = (t: Task) => {
-    const files = taskFiles(t);
-    if (files.length > 0)
-      invoke("open_file_path", { path: files[0].path }).catch((e) =>
-        handleCommandError(e, "open_file_path", { silent: true })
-      );
-  };
-
+  // 打开绑定文件/文件夹（2026-08-26 起点文件名直开，不再有 📂 按钮）
   const openFilePath = (path: string) => {
     invoke("open_file_path", { path }).catch((e) =>
       handleCommandError(e, "open_file_path", { silent: true })
     );
   };
 
-  // 复制文件+标题（与主窗口一致；多文件复制全部，文本命名 {title}-{basename}）
-  const copyFile = (t: Task) => {
-    const files = taskFiles(t);
-    if (files.length === 1) {
-      invoke("copy_file_with_title", { path: files[0].path, title: t.title }).catch((e) =>
-        handleCommandError(e, "copy_file_with_title", { silent: true })
-      );
-    } else if (files.length > 1) {
-      invoke("copy_files_with_title", {
-        paths: files.map((f) => f.path),
-        title: t.title,
-      }).catch((e) =>
-        handleCommandError(e, "copy_files_with_title", { silent: true })
-      );
-    }
+  // 复制单个绑定文件+标题（chip 内「复制」字样；与原 📋 单文件行为一致）
+  const copyFilePath = (t: Task, path: string) => {
+    invoke("copy_file_with_title", { path, title: t.title }).catch((e) =>
+      handleCommandError(e, "copy_file_with_title", { silent: true })
+    );
   };
 
   // 移除单个绑定文件（chip ×；同步主窗口落盘）
@@ -767,9 +749,8 @@ export default function WidgetApp() {
                       onToggleDone={() => toggleDone(t)}
                       onToggleCollapsed={() => toggleCollapsed(t)}
                       onToggleSubtask={(sid) => toggleSubtask(t, sid)}
-                      onOpenFile={() => openFile(t)}
                       onOpenFilePath={openFilePath}
-                      onCopyFile={() => copyFile(t)}
+                      onCopyFilePath={(p) => copyFilePath(t, p)}
                       onRemoveFile={(p) => removeFile(t, p)}
                       onBotExecute={
                         botOn
@@ -824,9 +805,8 @@ function SortableTaskCard({
   onToggleDone,
   onToggleCollapsed,
   onToggleSubtask,
-  onOpenFile,
   onOpenFilePath,
-  onCopyFile,
+  onCopyFilePath,
   onRemoveFile,
   onBotExecute,
   onSetSchedule,
@@ -843,9 +823,8 @@ function SortableTaskCard({
   onToggleDone: () => void;
   onToggleCollapsed: () => void;
   onToggleSubtask: (subtaskId: string) => void;
-  onOpenFile: () => void;
   onOpenFilePath: (path: string) => void;
-  onCopyFile: () => void;
+  onCopyFilePath: (path: string) => void;
   onRemoveFile: (path: string) => void;
   onBotExecute?: () => void;
   onSetSchedule?: (schedule: string | undefined) => void;
@@ -875,9 +854,8 @@ function SortableTaskCard({
         onToggleDone={onToggleDone}
         onToggleCollapsed={onToggleCollapsed}
         onToggleSubtask={onToggleSubtask}
-        onOpenFile={onOpenFile}
         onOpenFilePath={onOpenFilePath}
-        onCopyFile={onCopyFile}
+        onCopyFilePath={onCopyFilePath}
         onRemoveFile={onRemoveFile}
         onBotExecute={onBotExecute}
         onSetSchedule={onSetSchedule}

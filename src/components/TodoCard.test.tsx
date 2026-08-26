@@ -335,26 +335,24 @@ describe("TodoCardView 多文件绑定", () => {
     alertSpy.mockRestore();
   });
 
-  it("多文件复制：调 copy_files_with_title（全部路径 + 标题）；单文件仍走 copy_file_with_title", async () => {
+  it("chip 内「复制」字样：逐文件调 copy_file_with_title（2026-08-26 起替代 📋 按钮）", async () => {
     const { invoke } = await import("@tauri-apps/api/core");
     const user = userEvent.setup();
     render(<TodoCardView task={multiTask} onUpdate={vi.fn()} onDelete={vi.fn()} />);
-    await user.click(screen.getByTitle("复制文件+标题"));
-    expect(vi.mocked(invoke)).toHaveBeenCalledWith("copy_files_with_title", {
-      paths: ["/docs/a.pdf", "/docs/b.docx", "/docs/c.txt"],
+    const copies = screen.getAllByTitle("复制文件+标题");
+    expect(copies).toHaveLength(3);
+    await user.click(copies[1]);
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("copy_file_with_title", {
+      path: "/docs/b.docx",
       title: "默认任务",
     });
   });
 
-  it("多文件打开：📂 弹出选择列表，点条目打开对应文件", async () => {
+  it("点绑定文件名直接打开对应文件（2026-08-26 起不再有 📂 多选列表）", async () => {
     const { openPath } = await import("@tauri-apps/plugin-opener");
     const user = userEvent.setup();
     render(<TodoCardView task={multiTask} onUpdate={vi.fn()} onDelete={vi.fn()} />);
-    await user.click(screen.getByTitle("打开文件（多选列表）"));
-    // chip 行与选择列表条目文本相同，选择列表条目是 button（chip 是 <p>）
-    const items = screen.getAllByText("📎 b.docx");
-    const btn = items.find((el) => el.tagName === "BUTTON")!;
-    await user.click(btn);
+    await user.click(screen.getByText("📎 b.docx"));
     expect(vi.mocked(openPath)).toHaveBeenCalledWith("/docs/b.docx");
   });
 });

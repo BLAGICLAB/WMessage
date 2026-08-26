@@ -2,6 +2,19 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-08-26（周三·晚）任务卡绑定文件交互改版：点名直开 + chip 内「复制」字样
+
+**动因**（老板指令）：📂 打开 / 📋 复制两个 emoji 按钮与具体文件不对应（多文件时 📂 还要弹选择列表），交互绕。
+
+**改造**（主窗口 TodoCard + 挂件 TaskCardContent 同步）：
+- 打开：删 📂 按钮与多文件选择列表 → **点绑定文件名/文件夹名直接打开**该文件（chip 名变 button）
+- 复制：删 📋 按钮 → 每个 chip 在解绑 × 前加「**复制**」字样（逐文件 `copy_file_with_title`，复制文件+标题）
+- 样式：chip 小一号字号（名称 11px / 复制 10px）+ `nm-inset` 凹陷底色与卡片底色区分
+- 绑定操作行只留绑定类按钮（＋绑定文件 / 📁绑定文件夹 / ×解绑全部）
+- WidgetApp 回调改 per-path：onOpenFilePath / onCopyFilePath（删除 onOpenFile/onCopyFile 整卡回调）
+- `copy_files_with_title`（多文件复制）随改版整体下线：命令、macOS/Windows 平台 helper、invoke 注册全删
+- 测试：TodoCard/TaskCardContent 的 📂 多选列表与 📋 用例改写为新交互；`npm test` 108 全绿 + tsc 通过
+
 ## 2026-08-26（周三）文件访问改造：白名单硬拦 → 执行前授权（Kimi CLI 风格）+ yolo 模式
 
 **动因**（老板原话：「该读的不让读，还要绑定文件，流程繁琐」）：read_text_file/grep_files/list_files/extract_document 白名单外硬拒绝，要读其它文件得先绑定任务卡或改设置页，流程打断。
