@@ -148,12 +148,96 @@ pub fn write_event<R: tauri::Runtime>(
 /// 本模块 generic_log_dir 三处拷贝，drift 风险；现统一走这里）。
 /// 优先 exe 同目录（便携模式，U盘/绿色目录随走随带）；目录不可写
 /// （如 Program Files）退 app_data_dir；再退系统临时目录。
+///
+/// 2026-08-26 修复（Windows 绿色版目录漂移）：探测结果进程内 OnceLock 定版——
+/// 原实现每次调用都现写探针文件，杀软临时锁定/UAC 状态变化/压缩包内直接运行
+/// 等瞬时失败会把当次数据目录翻转到 app_data，AI_Gen_Files、数据库、日志
+/// 分裂到两个位置。现在首次探测定版，整个运行期不再翻转；
+/// 兜底分支发生时记一条 WARN 审计（写清翻到哪、为什么），可诊断。
 pub(crate) fn probe_log_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> std::path::PathBuf {
     use tauri::Manager;
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|e| e.parent().map(|p| p.to_path_buf()));
-    probe_dir(exe_dir.as_deref(), app.path().app_data_dir().ok())
+    let app_data = app.path().app_data_dir().ok();
+    // 首次探测判定（WARN 只在定版那次记）：生产读缓存是否已初始化；
+    // 测试构建无缓存，每次现探且不为翻转记 WARN（测试不验证日志副作用）
+    #[cfg(not(test))]
+    let first_probe = PROBE_CACHE.get().is_none();
+    #[cfg(test)]
+    let first_probe = false;
+    let resolved = probe_dir_cached(exe_dir.as_deref(), app_data);
+    // 兜底判定：exe 目录存在但结果不是它 → 发生了翻转，记 WARN（只在首次探测记一次）。
+    // 写日志挪到独立线程：调用方可能正持有 BOT_LOG_LOCK（audit_log → data_dir → 这里），
+    // std Mutex 不可重入，直接写会死锁（2026-08-26 实锤挂死 cargo test）。
+    if first_probe && exe_dir.as_deref().is_some_and(|d| d != resolved.as_path()) {
+        let exe_dir_s = exe_dir
+            .as_deref()
+            .map(|d| d.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let resolved_s = resolved.to_string_lossy().to_string();
+        let dir = resolved.clone();
+        std::thread::spawn(move || {
+            write_warn_audit_to(
+                &dir,
+                "data_dir_fallback",
+                &[
+                    ("exe_dir", exe_dir_s.as_str()),
+                    ("resolved", resolved_s.as_str()),
+                    ("reason", "exe 目录写探针失败（杀软锁定/权限不足/压缩包内运行），数据目录按便携策略兜底"),
+                ],
+            );
+        });
+    }
+    resolved
+}
+
+/// 探测结果缓存（进程级 OnceLock）：首次 probe_log_dir 调用定版。
+/// 测试构建不缓存——同进程多测试各自探测不同临时目录/模拟 exe 目录，
+/// 全局缓存会让先跑的测试劫持后续所有结果（2026-08-26 实锤 3 个测试因此失败）；
+/// 定版语义由可注入内核 probe_dir_cached_in 的单测覆盖。
+#[cfg(not(test))]
+static PROBE_CACHE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+#[cfg(not(test))]
+fn probe_dir_cached(
+    exe_dir: Option<&std::path::Path>,
+    app_data: Option<std::path::PathBuf>,
+) -> std::path::PathBuf {
+    probe_dir_cached_in(&PROBE_CACHE, exe_dir, app_data)
+}
+
+/// 测试构建：不缓存，每次现探（测试隔离优先）
+#[cfg(test)]
+fn probe_dir_cached(
+    exe_dir: Option<&std::path::Path>,
+    app_data: Option<std::path::PathBuf>,
+) -> std::path::PathBuf {
+    probe_dir(exe_dir, app_data)
+}
+
+/// 可测内核：OnceLock 定版语义——首次探测结果钉死，后续调用条件变化也不再翻转
+#[cfg_attr(not(test), allow(dead_code))] // 生产只经 probe_dir_cached 间接调用
+fn probe_dir_cached_in(
+    cache: &std::sync::OnceLock<std::path::PathBuf>,
+    exe_dir: Option<&std::path::Path>,
+    app_data: Option<std::path::PathBuf>,
+) -> std::path::PathBuf {
+    cache.get_or_init(|| probe_dir(exe_dir, app_data)).clone()
+}
+
+/// 已定版的数据目录（P2-32 降级 key 路径等无 AppHandle 调用方复用，
+/// 保证与 probe_log_dir 同一份结果；未初始化 = 主流程还没探测过，返回 None）
+/// 测试构建无缓存（见 PROBE_CACHE 注释），恒 None → 调用方走原现探逻辑。
+#[cfg(not(test))]
+pub(crate) fn cached_probe_dir() -> Option<std::path::PathBuf> {
+    PROBE_CACHE.get().cloned()
+}
+
+/// 测试构建桩：无进程级缓存，恒 None
+#[cfg(test)]
+pub(crate) fn cached_probe_dir() -> Option<std::path::PathBuf> {
+    None
 }
 
 /// P2-19 可测内核：probe 三分支——exe 目录可写用它；不可写退 app_data；皆不可用退 temp。
@@ -350,6 +434,17 @@ mod tests {
     }
 
     // ── P2-19：probe_log_dir 三分支 + 调用方一致性 ──
+
+    #[test]
+    fn probe_dir_cached_is_stable_across_calls() {
+        // 2026-08-26 目录漂移修复：OnceLock 定版后，第二次调用即使探测条件
+        // 变化（传入不同 exe_dir）也返回首次结果——运行期数据目录不再翻转。
+        // 用独立 OnceLock 实例，不碰进程级全局缓存（防劫持其他测试）
+        let cache = std::sync::OnceLock::new();
+        let first = probe_dir_cached_in(&cache, None, Some(std::path::PathBuf::from("/tmp/wm-probe-cache-test")));
+        let second = probe_dir_cached_in(&cache, Some(std::path::Path::new("/nonexistent-exe-dir")), None);
+        assert_eq!(first, second, "定版后探测条件变化不得改变数据目录");
+    }
 
     #[test]
     fn probe_dir_writable_exe_dir_wins() {

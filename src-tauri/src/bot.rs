@@ -228,9 +228,13 @@ fn linux_app_data_dir() -> Option<std::path::PathBuf> {
     None
 }
 
-/// 降级 key 文件路径（P2-32）：与数据目录同一便携策略（audit::probe_dir）——
-/// exe 同目录可写则随包走（便携模式），否则 Linux 应用数据目录。
+/// 降级 key 文件路径（P2-32）：与数据目录同一便携策略——优先复用 probe_log_dir
+/// 已定版的缓存结果（2026-08-26：防每次探测瞬时失败导致 key 文件与数据库分裂两地）；
+/// 未初始化（如启动早期 keyring 迁移先于首次 data_dir 调用）回退原现探逻辑。
 fn plaintext_key_path() -> std::path::PathBuf {
+    if let Some(cached) = crate::audit::cached_probe_dir() {
+        return cached.join("bot-api-key.txt");
+    }
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|e| e.parent().map(|p| p.to_path_buf()));

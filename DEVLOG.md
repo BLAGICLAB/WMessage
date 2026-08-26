@@ -2,6 +2,19 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-08-26（周三·深夜 3）修复 Windows 绿色版数据目录漂移
+
+**现象**（老板反馈）：绿色版运行时生成文件大多在 WMessage 文件夹内，但有几次 AI_Gen_Files 建到了文件夹外。
+
+**根因**：便携探针 `probe_dir`（exe 目录可写用它，不可写退系统应用数据目录）**每次调用都现写探针文件**，无缓存——杀软临时锁定 / UAC 状态变化 / 压缩包内直接双击运行等瞬时失败，会把当次数据目录翻转到 app_data，AI_Gen_Files、数据库、bot.log 分裂两地（翻转那次机器人看到的还是另一份任务库）。
+
+**修复**（audit.rs）：
+- 探测结果进程内 `OnceLock` 定版（`probe_dir_cached`）：首次 `probe_log_dir` 调用定版，整个运行期不再翻转
+- 兜底翻转记 WARN 审计 `data_dir_fallback`（写清 exe_dir / resolved / 原因），写进翻转后的目录的 bot.log，可诊断；**写日志走独立线程**——调用方可能正持有 BOT_LOG_LOCK（audit_log → data_dir → 这里），write_warn_audit_to 再拿同一把锁会死锁（std Mutex 不可重入，实锤挂死 cargo test 一轮）
+- `bot.rs` 降级 key 路径（plaintext_key_path）优先复用定版缓存，防 key 文件与数据库分裂两地
+- **测试构建不缓存**（cfg(test) 每次现探）：同进程多测试各自探测不同临时目录，全局缓存会互相劫持（实锤 3 个测试失败）；定版语义由可注入内核 `probe_dir_cached_in` 的单测覆盖
+- 测试：新增「定版后探测条件变化不改变结果」用例；cargo 415 全绿
+
 ## 2026-08-26（周三·深夜 2）PREVR 第 1+2 层：失败换策略提示 + 复杂任务动态计划
 
 **动因**：架构对比后老板拍板落地 PREVR（Plan-Execute-Verify-Replan）的前两层——rust bot 此前工具失败只会把错误抛给用户，不会自己换办法。
