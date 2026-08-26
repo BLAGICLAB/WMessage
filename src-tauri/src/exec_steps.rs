@@ -185,6 +185,7 @@ async fn run_step(
         msgs,
         crate::bot_model_loop::DEFAULT_MAX_ROUNDS,
         stop,
+        None,
     )
     .await?;
     park(PendingExec {

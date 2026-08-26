@@ -401,12 +401,15 @@ fn fuse_message(final_text: &str, hint: &str) -> String {
 
 /// 模型工具循环核心：配置/Key 检查、流式请求（思考拆分 + 工具折叠事件）、进程内执行工具。
 /// msgs 需已含 system 消息；返回 (最终正文, 任务引用)。
-/// 轮数上限由调用方传入：默认 DEFAULT_MAX_ROUNDS（20），多步 Skill 可自报 max_rounds 覆盖。
+/// 轮数上限由调用方传入：默认 DEFAULT_MAX_ROUNDS（50），多步 Skill 可自报 max_rounds 覆盖。
+/// plan_state（2026-08-26 PREVR 第 2 层）：复杂任务的动态计划；工具连续失败时触发
+/// Replan（重规划剩余步骤，≤MAX_REPLANS 次）。None = 无计划自由循环。
 pub async fn run_model_loop(
     app: AppHandle,
     msgs: Vec<serde_json::Value>,
     max_rounds: usize,
     stop: &StopGuard,
+    plan_state: Option<&mut crate::bot_plan::PlanState>,
 ) -> Result<(String, Vec<TaskRef>), CommandError> {
     let cfg = crate::bot::bot_get_config(app.clone())?;
     let api_key = crate::bot::read_api_key()?;
@@ -445,6 +448,12 @@ pub async fn run_model_loop(
     let mut claim_retry_used: bool = false;
     // soft_warn 待注入标志：本轮 tool 响应全部回填后才真正 push（见循环内注释）
     let mut soft_warn_queued: bool = false;
+    // PREVR 第 1 层（2026-08-26）：工具失败检测——同工具连续失败计数，
+    // 第 1 次失败注入「换策略」提示；连续 2 次失败：有计划则 Replan，无计划则要求如实告知
+    let mut last_failed_tool: Option<String> = None;
+    let mut consec_failures: usize = 0;
+    let mut fail_hint_queued: Option<String> = None;
+    let mut plan_state = plan_state;
     // 上轮 streamed 文本快照（Block 2 接入，2026-08-17 22:26）：
     // AwaitConfirm/Finish/Fail/Terminate 跳出主循环时，返回 user 已看到的文本
     let mut last_streamed = String::new();
@@ -684,13 +693,69 @@ pub async fn run_model_loop(
                 ),
             );
             collected_refs.extend(refs);
+            // PREVR 第 1 层（2026-08-26）：工具失败检测。复用审计同款分级
+            // （Warn/Error = 失败），同工具连续失败才升级——单次失败先提示换策略。
+            // 与 soft_warn 同理：提示推迟到本轮 tool 响应全部回填后注入（协议安全）
+            let failed = matches!(
+                crate::audit::classify_text(name, &result),
+                crate::audit::AuditLevel::Warn | crate::audit::AuditLevel::Error
+            );
+            if failed {
+                if last_failed_tool.as_deref() == Some(name.as_str()) {
+                    consec_failures += 1;
+                } else {
+                    consec_failures = 1;
+                    last_failed_tool = Some(name.clone());
+                }
+                let reason = crate::bot::truncate_for_log(&result, 200);
+                fail_hint_queued = Some(if consec_failures >= 2 {
+                    format!(
+                        "【系统提示】工具 {name} 已连续失败 {consec_failures} 次（最近原因：{reason}）。禁止再次以相同方式调用该工具；如果换参数/换路径仍无法完成，如实向用户说明失败原因与当前进度，由用户决定下一步。"
+                    )
+                } else {
+                    format!(
+                        "【系统提示】上一步调用的工具 {name} 失败了（原因：{reason}）。不要重复同样的调用；分析原因后换策略：换参数、换工具、或把任务拆成更小的步骤再试一次。"
+                    )
+                });
+            } else if !result.is_empty() {
+                // 成功调用重置连续失败链（空结果不算成功也不算失败，不重置）
+                last_failed_tool = None;
+                consec_failures = 0;
+            }
             msgs.push(serde_json::json!({
                 "role": "tool",
                 "tool_call_id": id,
                 "content": result
             }));
         }
-        // 本轮 tool 响应已全部回填（tool_calls → tool×N 序列完整），此时注入软警告才合法
+        // PREVR 第 2 层（2026-08-26）：同工具连续失败 ≥2 且有计划 → Replan 一次
+        // （重规划剩余步骤，替换计划文本；≤MAX_REPLANS 次硬上限，防重规划死循环）。
+        // Replan 是同步阻塞本轮的 LLM 调用：放在 tool 响应全部回填后、注入提示前，
+        // 这样提示里带的就是新计划。
+        if consec_failures >= 2 {
+            if let Some(plan) = plan_state.as_deref_mut() {
+                if plan.replans_used < crate::bot_plan::MAX_REPLANS {
+                    let reason = last_failed_tool.clone().unwrap_or_default();
+                    if let Some(new_steps) =
+                        crate::bot_plan::replan(&app, plan, &reason).await
+                    {
+                        plan.replans_used += 1;
+                        plan.steps = new_steps;
+                        fail_hint_queued = Some(format!(
+                            "【系统提示】原计划执行受阻，已重新规划剩余步骤：\n{}\n请按新计划继续；若仍无法推进，如实向用户说明。",
+                            plan.steps.join("\n")
+                        ));
+                    }
+                }
+            }
+        }
+        // 本轮 tool 响应已全部回填（tool_calls → tool×N 序列完整），此时注入提示才合法
+        if let Some(hint) = fail_hint_queued.take() {
+            msgs.push(serde_json::json!({
+                "role": "user",
+                "content": hint,
+            }));
+        }
         if soft_warn_queued {
             soft_warn_queued = false;
             msgs.push(serde_json::json!({

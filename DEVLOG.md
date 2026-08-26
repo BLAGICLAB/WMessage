@@ -2,6 +2,24 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-08-26（周三·深夜 2）PREVR 第 1+2 层：失败换策略提示 + 复杂任务动态计划
+
+**动因**：架构对比后老板拍板落地 PREVR（Plan-Execute-Verify-Replan）的前两层——rust bot 此前工具失败只会把错误抛给用户，不会自己换办法。
+
+**第 1 层：执行器内验证（run_model_loop）**
+- 工具结果复用审计分级（classify_text Warn/Error = 失败）做失败检测
+- 单次失败 → 注入「换策略」提示（换参数/换工具/拆小步骤）；同工具连续 ≥2 次失败 → 禁止相同调用、要求如实告知用户
+- 与 soft_warn 同一协议安全位：提示在本轮 tool 响应全部回填后才注入（不破坏 tool_calls→tool 序列）
+
+**第 2 层：动态计划（新模块 bot_plan.rs）**
+- `needs_plan` 保守启发式（多步关键词/「先…再…」/多附件）命中才触发 Planner，简单问答零额外成本
+- Planner = 单次非流式 LLM 调用，输出 JSON 步骤列表；`parse_plan` 容忍包裹文字、上限 8 步；失败/解析不出 → 降级原自由循环不阻断聊天
+- 计划注入 system prompt（【执行计划】块，含「走不通就调整并说明」指令）；仅聊天主路径启用，execute_task_core / exec_steps 目标单一不规划
+- **Replan**：run_model_loop 内同工具连续失败 ≥2 且有计划 → 带失败原因重规划剩余步骤（≤2 次硬上限防死循环），新计划注入对话
+- 计划纯提示词文本，执行仍走 execute_tool 全量安全网关（白名单/授权/确认/熔断），无绕过通道
+- 审计：plan.generate / plan.skip / plan.replan / plan.replan_failed
+- 测试：bot_plan 7 个新用例（needs_plan 命中/放过、parse 容错/截断/拒绝、plan 块渲染）；cargo 414 全绿；npm 110 全绿；tsc 通过
+
 ## 2026-08-26（周三·深夜）会话隔离修复：流式/Skill/确认/逐步执行全链路按会话归属
 
 **动因**（老板要求审计「聊天会不会串」）：审计发现存储层（bot_messages 按 session_id）和前端切换（sessionIdRef 竞态守卫）是隔离的，但运行期有四个串线通道。

@@ -8,6 +8,7 @@ pub mod bot;
 mod bot_chat;
 mod bot_fs;
 mod bot_model_loop;
+mod bot_plan;
 mod bot_py;
 mod bot_scheduler;
 pub mod bot_skills;

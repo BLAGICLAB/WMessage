@@ -449,6 +449,32 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>, session_id: Option
     } else {
         system_content
     };
+    // PREVR 第 2 层（2026-08-26）：复杂多步任务先生成动态计划再执行。
+    // 触发保守：needs_plan 启发式命中才多花一次 Planner 调用；
+    // Planner 失败/输出非法 → None → 原自由循环，不阻断聊天。
+    // 仅聊天主路径启用：任务卡执行（execute_task_core）/ 逐步执行（exec_steps）
+    // 目标单一明确，不需要规划。
+    let last_user_text = messages
+        .last()
+        .map(|m| m.content.clone())
+        .unwrap_or_default();
+    let mut plan_state: Option<crate::bot_plan::PlanState> =
+        if crate::bot_plan::needs_plan(&last_user_text) {
+            crate::bot_plan::generate_plan(&app, &last_user_text)
+                .await
+                .map(|steps| crate::bot_plan::PlanState {
+                    task: last_user_text.clone(),
+                    steps,
+                    replans_used: 0,
+                })
+        } else {
+            None
+        };
+    let system_content = if let Some(plan) = &plan_state {
+        format!("{}{}", system_content, crate::bot_plan::format_plan_block(&plan.steps))
+    } else {
+        system_content
+    };
     msgs.push(serde_json::json!({"role": "system", "content": system_content}));
     // 最近两条 user 消息的图片附件转多模态消息（追问时上一张图还能看到；更早的历史保持纯文本）
     let mut img_indices: Vec<usize> = Vec::new();
@@ -467,7 +493,7 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>, session_id: Option
             msgs.push(serde_json::json!({"role": m.role, "content": m.content}));
         }
     }
-    let (text, refs) = crate::bot_model_loop::run_model_loop(app, msgs, max_rounds, &stop).await?;
+    let (text, refs) = crate::bot_model_loop::run_model_loop(app, msgs, max_rounds, &stop, plan_state.as_mut()).await?;
     Ok(BotChatResult {
         text,
         task_refs: refs,
@@ -705,6 +731,7 @@ pub async fn execute_task_core(
         msgs,
         crate::bot_model_loop::DEFAULT_MAX_ROUNDS,
         &stop,
+        None,
     )
     .await;
     // 执行结束（无论成败）：清除标记，恢复用户头像
