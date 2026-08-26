@@ -165,6 +165,75 @@ fn invalidate_python_cache() {
     *PY_CACHE.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
+// ───────────────────────── .NET 修订工具（2026-08-27）─────────────────────────
+
+/// 检测本机 dotnet 运行时（修订版 Word 的 .NET 生成路径前置条件）：
+/// `dotnet --version` 探测（复用 3s 超时探针，卡死的 shim 直接跳过）
+fn detect_dotnet() -> Option<String> {
+    if probe_version_ok("dotnet", &["--version"]) {
+        Some("dotnet".to_string())
+    } else {
+        None
+    }
+}
+
+/// 探测结果缓存（与 PY_CACHE 同模式：None=未探测；Some(None)=本机无 dotnet）
+static DOTNET_CACHE: std::sync::Mutex<Option<Option<String>>> = std::sync::Mutex::new(None);
+
+fn cached_dotnet() -> Option<String> {
+    let mut g = DOTNET_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(cached) = &*g {
+        return cached.clone();
+    }
+    let detected = detect_dotnet();
+    *g = Some(detected.clone());
+    detected
+}
+
+/// 定位修订工具 dll：绿色版看 exe 同目录 dotnet/；开发模式看 CARGO_MANIFEST_DIR/dotnet/
+/// （编译期展开，指向 src-tauri/dotnet/WmDocxRevisions/bin/Release/net8.0/）。
+/// 返回 None = 工具未随包发布（调用方回退 Python 脚本路径）。
+fn dotnet_revisions_dll() -> Option<std::path::PathBuf> {
+    const REL: &str = "wm-docx-revisions.dll";
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(exe_dir) = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|p| p.to_path_buf()))
+    {
+        candidates.push(exe_dir.join("dotnet").join(REL));
+    }
+    candidates.push(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("dotnet/WmDocxRevisions/bin/Release/net8.0")
+            .join(REL),
+    );
+    candidates.into_iter().find(|p| p.exists())
+}
+
+/// 跑 .NET 修订工具：与 Python 同一执行内核（run_python_at：超时/限额/进程组强杀/审计），
+/// 只是入口从 run.py 换成 dll（dotnet <dll> params.json）。
+/// 返回 None = dotnet 或工具不可用（调用方回退 Python 脚本路径）。
+fn run_dotnet_revisions(app: &AppHandle, input_json: &str) -> Option<Result<PyRunResult, String>> {
+    let dotnet = cached_dotnet()?;
+    let dll = dotnet_revisions_dll()?;
+    let dir = crate::db::data_dir(app)
+        .join("py-runs")
+        .join(uuid::Uuid::new_v4().simple().to_string());
+    if let Err(e) = std::fs::create_dir_all(&dir)
+        .and_then(|_| std::fs::write(dir.join("params.json"), input_json))
+    {
+        py_audit(app, &format!("doc_revisions_dotnet err | kind=setup_fail | {e}"));
+        return None; // 目录都建不了 → 回退 Python 路径更稳妥
+    }
+    let mut audit_sink = |line: &str| py_audit(app, line);
+    let dll_s = dll.to_string_lossy().to_string();
+    let args = vec!["params.json".to_string()];
+    // 首次跑要 JIT，给 120s（与 doc_* 脚本同款）
+    Some(run_python_at(
+        &dotnet, &dll_s, &dir, &args, Some(120), &mut audit_sink, None,
+    ).map_err(|f| f.msg))
+}
+
 /// 同步检测核心（后台线程运行）
 fn py_env_check_blocking() -> PyEnv {
     let Some(py) = detect_python() else {
@@ -669,7 +738,7 @@ pub fn run_python(
                 return Err(format!("准备运行目录失败：{e}"));
             }
         };
-        match run_python_at(&py, &dir, args, timeout_secs, &mut audit_sink, stop) {
+        match run_python_at(&py, "run.py", &dir, args, timeout_secs, &mut audit_sink, stop) {
             Ok(r) => return Ok(r),
             Err(f) => {
                 if attempt == 0 && f.spawn_not_found {
@@ -688,10 +757,12 @@ pub fn run_python(
 
 /// 执行核心（C3：不依赖 AppHandle，审计经闭包注入 —— 单测可用临时目录 + 内存收集
 /// 跑全路径）。前置：dir 已创建且 run.py / params.json 已写入。
+/// `entry`：入口文件名（Python 传 "run.py"；dotnet 工具传 dll 路径，见 run_dotnet_tool）。
 /// 所有失败路径（spawn_fail / wait_fail / timeout / drain_timeout）必记审计，
 /// 危险路径不留零痕迹。
 fn run_python_at(
     py: &str,
+    entry: &str,
     dir: &std::path::Path,
     args: &[String],
     timeout_secs: Option<u64>,
@@ -741,7 +812,7 @@ fn run_python_at(
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x08000000 | 0x00000200);
     }
-    cmd.arg("run.py")
+    cmd.arg(entry)
         .args(args)
         .current_dir(dir)
         .stdin(Stdio::null())
@@ -1685,6 +1756,29 @@ pub async fn doc_make_word_revisions(
         "out": out
     })
     .to_string();
+    // 2026-08-27：.NET OpenXML 官方修订路径优先（w:ins/w:del + delText 铁律由 SDK 类型
+    // 系统保证）；dotnet 或工具不可用 → 回退 Python 脚本（行为不变）
+    if let Some(r) = run_dotnet_revisions(&app, &input) {
+        let r = r?;
+        if r.exit_code == Some(0) {
+            py_audit(
+                &app,
+                &format!(
+                    "doc_make_word_revisions | engine: dotnet | src: {} | out: {out}",
+                    original_path.clone().unwrap_or_default()
+                ),
+            );
+            return Ok(out);
+        }
+        // dotnet 跑了但失败：记审计后回退 Python 再试一次（不直接把失败抛给用户）
+        py_audit(
+            &app,
+            &format!(
+                "doc_make_word_revisions dotnet failed, fallback python | {}",
+                escape_for_log(&r.stderr, 200)
+            ),
+        );
+    }
     let r = run_doc_script(&app, "doc_make_word_revisions", MAKE_DOCX_REVISIONS_SCRIPT, input).await?;
     if r.exit_code != Some(0) {
         py_audit(
@@ -2001,6 +2095,7 @@ mod tests {
         let start = Instant::now();
         let r = run_python_at(
             &py,
+            "run.py",
             &dir,
             &[],
             Some(30),
@@ -2050,6 +2145,58 @@ mod tests {
         assert_eq!(resolve_timeout(Some(u64::MAX)), (MAX_TIMEOUT_SECS, true));
     }
 
+    /// 2026-08-27：.NET 修订工具端到端——dotnet + dll 都在才跑（缺则跳过，CI 无 dotnet 不红）。
+    /// 用真实工具生成 docx，验证 OpenXML 修订标记（w:ins 用 w:t / w:del 用 w:delText）。
+    #[test]
+    fn dotnet_revisions_tool_generates_valid_track_changes() {
+        let Some(dotnet) = cached_dotnet() else {
+            eprintln!("skip: 本机无 dotnet");
+            return;
+        };
+        let Some(dll) = dotnet_revisions_dll() else {
+            eprintln!("skip: 未找到 wm-docx-revisions.dll（先 dotnet build -c Release）");
+            return;
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("run");
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = tmp.path().join("out.docx");
+        let params = serde_json::json!({
+            "title": "", "original_path": "",
+            "original": ["保持不动。", "这句要删掉。"],
+            "revised": ["保持不动。", "这句改写法。"],
+            "out": out,
+        });
+        std::fs::write(dir.join("params.json"), params.to_string()).unwrap();
+        let dll_s = dll.to_string_lossy().to_string();
+        let mut lines: Vec<String> = Vec::new();
+        let r = run_python_at(
+            &dotnet,
+            &dll_s,
+            &dir,
+            &["params.json".to_string()],
+            Some(120),
+            &mut |l: &str| lines.push(l.to_string()),
+            None,
+        )
+        .map_err(|f| f.msg)
+        .expect("dotnet 工具应正常运行");
+        assert_eq!(r.exit_code, Some(0), "stderr: {}", r.stderr);
+        // 验证修订标记（zip 里 word/document.xml）
+        let f = std::fs::File::open(&out).unwrap();
+        let mut zip = zip::ZipArchive::new(f).unwrap();
+        let mut xml = String::new();
+        use std::io::Read as _;
+        zip.by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut xml)
+            .unwrap();
+        assert!(xml.contains("<w:ins "), "应有插入修订：{xml}");
+        assert!(xml.contains("<w:del "), "应有删除修订：{xml}");
+        assert!(xml.contains("<w:delText"), "w:del 内必须是 w:delText：{xml}");
+        assert!(xml.contains("WMessage AI"), "修订应有作者：{xml}");
+    }
+
     #[test]
     fn resource_limits_scale_with_timeout() {
         // 内存：8MB/s 比例，下限 256MB，上限 2GB
@@ -2073,7 +2220,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("run.py"), "import time\ntime.sleep(30)\n").unwrap();
         let mut lines: Vec<String> = Vec::new();
-        let r = run_python_at(&py, &dir, &[], Some(1), &mut |l: &str| {
+        let r = run_python_at(&py, "run.py", &dir, &[], Some(1), &mut |l: &str| {
             lines.push(l.to_string())
         }, None);
         let e = match r {
@@ -2095,7 +2242,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("run.py"), "print(1)\n").unwrap();
         let mut lines: Vec<String> = Vec::new();
-        let r = run_python_at("/nonexistent/python-zzz", &dir, &[], Some(1), &mut |l: &str| {
+        let r = run_python_at("/nonexistent/python-zzz", "run.py", &dir, &[], Some(1), &mut |l: &str| {
             lines.push(l.to_string())
         }, None);
         let e = match r {
@@ -2123,7 +2270,7 @@ mod tests {
         std::fs::write(dir.join("run.py"), "print(1)\n").unwrap();
         std::fs::write(dir.join("params.json"), "{}").unwrap();
         let mut lines: Vec<String> = Vec::new();
-        let r = run_python_at("/nonexistent/python-zzz", &dir, &[], Some(1), &mut |l: &str| {
+        let r = run_python_at("/nonexistent/python-zzz", "run.py", &dir, &[], Some(1), &mut |l: &str| {
             lines.push(l.to_string())
         }, None);
         match r {
@@ -2301,7 +2448,7 @@ mod tests {
         let dir = tmp.path().join("run-notfound");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("run.py"), "print(1)\n").unwrap();
-        let r = run_python_at("/nonexistent/python-zzz", &dir, &[], Some(1), &mut |_| {}, None);
+        let r = run_python_at("/nonexistent/python-zzz", "run.py", &dir, &[], Some(1), &mut |_| {}, None);
         match r {
             Err(f) => assert!(f.spawn_not_found),
             Ok(_) => panic!("无效 python 路径不应成功"),
@@ -2330,7 +2477,7 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(50));
                 guard.force_stop();
             });
-            let r = run_python_at(&py, &dir, &[], Some(60), &mut |l: &str| {
+            let r = run_python_at(&py, "run.py", &dir, &[], Some(60), &mut |l: &str| {
                 lines.push(l.to_string())
             }, Some(&token));
             let e = match r {

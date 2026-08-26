@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>wm-docx-revisions</AssemblyName>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- 目标 net8.0（与 minimax-docx 技能一致），但允许在更高版本运行时上跑
+        （本机/用户机可能只装了 .NET 10 运行时） -->
+    <RollForward>LatestMajor</RollForward>
+  </PropertyGroup>
+
+  <!-- 与 minimax-docx 技能同一 OpenXML 版本（本地 NuGet 缓存可命中，离线可还原） -->
+  <ItemGroup>
+    <PackageReference Include="DocumentFormat.OpenXml" Version="3.5.1" />
+  </ItemGroup>
+
+</Project>

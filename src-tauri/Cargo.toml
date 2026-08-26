@@ -65,6 +65,9 @@ tempfile = "3"
 futures = { version = "0.3", features = ["executor"] }
 # F-6 step 3：mock LLM + reqwest 端到端需要 #[tokio::test] async 测试运行时
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# 修订工具测试：解开 docx（zip）验证 word/document.xml 修订标记
+# （deflate：docx 默认压缩算法；default-features=false 会把它关掉导致解压失败）
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [target.'cfg(unix)'.dependencies]
 # Python 子进程资源限额（C2）：setrlimit RLIMIT_AS / RLIMIT_CPU

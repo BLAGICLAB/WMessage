@@ -2,6 +2,19 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-08-27（周四）修订模式切 .NET OpenXML 官方修订（Python 回退保留）
+
+**动因**（老板指令）：修订模式原用 python-docx 手拼 OOXML（`OxmlElement` 逐个拼 w:ins/w:del），改用 .NET OpenXML SDK 的官方修订 API（`InsertedRun`/`DeletedRun`），类型系统层面保证「w:del 内必须 w:delText」这类铁律不可能写错；minimax-docx 技能的 `references/track_changes_guide.md` + `Samples/TrackChangesSamples.cs` 为依据。
+
+**实现**：
+- 新工具 `src-tauri/dotnet/WmDocxRevisions/`（net8.0 + DocumentFormat.OpenXml 3.5.1，与技能同版本可命中本地 NuGet 缓存；`RollForward=LatestMajor` 兼容只装 .NET 10 运行时的机器）
+- 段落级 + 行内字符级 diff 用 LCS opcodes（替代 difflib.SequenceMatcher，输出形态对齐：equal/delete/insert/replace 合并相邻段）；超长段落（n×m > 4M 单元格）退化整段替换防内存爆
+- 修订标记：唯一递增 w:id（1001 起）+ author「WMessage AI」+ ISO8601 UTC date；删除/新增的删除线与颜色交给 Word 审阅视图渲染（不写死字符级格式，更贴近官方行为）
+- Rust 侧：`run_python_at` 入口参数化（`run.py` → `entry: &str`）→ dotnet 走同一执行内核（超时/限额/进程组强杀/审计全继承）；`cached_dotnet` 探测 + `dotnet_revisions_dll` 定位（exe 同目录 dotnet/ → 开发模式 CARGO_MANIFEST_DIR/dotnet/）；**dotnet 或 dll 不可用、或 dotnet 执行失败 → 自动回退原 Python 脚本**（行为不变，审计记 `engine: dotnet` / fallback 留痕）
+- 发布注意：Windows 绿色包需把 `wm-docx-revisions.dll`（及其 deps）放进 exe 同目录 `dotnet/`；未放则静默走 Python 路径
+- 测试：新增 `dotnet_revisions_tool_generates_valid_track_changes` 端到端（本机有 dotnet 才跑，解开 docx 验证 w:ins/w:del/delText/author）；dev-dependency 加 zip（deflate）；cargo 416 全绿
+- 踩坑：顶级语句里 record 声明必须在最后（CS8803）；`zip` crate default-features=false 会关掉 deflate 解不开 docx
+
 ## 2026-08-26（周三·深夜 3）修复 Windows 绿色版数据目录漂移
 
 **现象**（老板反馈）：绿色版运行时生成文件大多在 WMessage 文件夹内，但有几次 AI_Gen_Files 建到了文件夹外。

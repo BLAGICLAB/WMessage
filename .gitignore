@@ -38,3 +38,7 @@ archive-test-material.json
 # Vitest coverage output
 coverage/
 *.lcov
+
+# .NET 构建产物（修订工具 src-tauri/dotnet/）
+src-tauri/dotnet/**/bin
+src-tauri/dotnet/**/obj
