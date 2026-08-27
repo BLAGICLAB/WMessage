@@ -1923,8 +1923,11 @@ async fn tool_create_word_revisions(app: &AppHandle, args: &str, interactive: bo
     let title = v["title"].as_str().unwrap_or("").to_string();
     match crate::bot_py::doc_make_word_revisions(app.clone(), title, path, original, revised, opt_filename(&v)).await
     {
-        Ok(out) => (
-            format!("已生成修订版 Word（修订模式：删除线=删、红色下划线=增，可在 Word「审阅」里逐条接受/拒绝）：{out}"),
+        Ok((out, engine)) => (
+            format!(
+                "已生成修订版 Word（修订模式：删除线=删、红色下划线=增，可在 Word「审阅」里逐条接受/拒绝；引擎：{}）：{out}",
+                if engine == "dotnet" { ".NET OpenXML" } else { "Python 兜底（.NET 不可用或执行失败）" }
+            ),
             Vec::new(),
         ),
         Err(e) => (format!("生成失败：{e}"), Vec::new()),

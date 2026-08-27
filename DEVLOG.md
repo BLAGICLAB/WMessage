@@ -2,6 +2,16 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-08-27（周四·午）修订文档收口统一入口：强制 .NET，Python 兜底
+
+**动因**（老板指令）：修订文档生成走 Rust 内部统一入口，强制 .NET 优先、Python 仅兜底；顺带修掉一个真问题——dotnet 分支此前在 async fn 里**同步直跑** `run_dotnet_revisions`，最长 120s 阻塞压在 async runtime worker 上（NEW-C-1 修过 doc_* 同款问题，dotnet 分支是漏网之鱼）。
+
+**实现**：
+- `bot_py.rs` 新增 `run_doc_revisions` 统一入口：整体 spawn_blocking 隔离，强制 .NET 优先——不可用（无运行时/无 dll）、执行失败（非零退出）、**运行错误（spawn/超时等，此前 `?` 直抛不兜底）** 三种情况一律记审计后回退 Python 脚本；返回 `(PyRunResult, 引擎标记)`
+- `doc_make_word_revisions` 变薄：只拼参数 + 调统一入口 + 按退出码判成败；签名改为返回 `(路径, 引擎)`，成功/失败审计统一带 `engine: dotnet|python`
+- `bot.rs` `tool_create_word_revisions`：适配新签名，成功消息标注实际引擎（.NET OpenXML / Python 兜底）
+- 行为不变：参数契约（title/originalPath/original/revised/filename）、输出落 AI_Gen_Files 不覆盖、回退后产物与旧 Python 路径完全一致
+
 ## 2026-08-27（周四）修订模式切 .NET OpenXML 官方修订（Python 回退保留）
 
 **动因**（老板指令）：修订模式原用 python-docx 手拼 OOXML（`OxmlElement` 逐个拼 w:ins/w:del），改用 .NET OpenXML SDK 的官方修订 API（`InsertedRun`/`DeletedRun`），类型系统层面保证「w:del 内必须 w:delText」这类铁律不可能写错；minimax-docx 技能的 `references/track_changes_guide.md` + `Samples/TrackChangesSamples.cs` 为依据。

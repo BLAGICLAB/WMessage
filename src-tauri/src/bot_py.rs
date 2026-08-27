@@ -1026,6 +1026,54 @@ async fn run_doc_script(
     }
 }
 
+/// 修订版 Word 统一执行入口（2026-08-27）：**强制 .NET OpenXML 引擎优先**
+///（w:ins/w:del + delText 铁律由 SDK 类型系统保证），dotnet 运行时/工具不可用
+/// 或执行失败时自动回退 Python 脚本（行为不变）。整体走 spawn_blocking 隔离——
+/// 此前 dotnet 分支在 async fn 里同步直跑，最长 120s 阻塞会压 async runtime worker
+///（NEW-C-1 同款问题，与 run_doc_script 的修复模式对齐）；Err 分支统一补审计。
+/// 返回 (执行结果, 引擎标记 "dotnet"/"python")，供调用方审计与结果标注。
+async fn run_doc_revisions(
+    app: &AppHandle,
+    name: &str,
+    script: &'static str,
+    input: String,
+) -> Result<(PyRunResult, &'static str), String> {
+    let handle = app.clone();
+    let name_in = name.to_string();
+    match spawn_blocking_map(move || {
+        // 强制 .NET 优先：不可用（无运行时/无 dll）或跑了失败都回退 Python，均记审计
+        if let Some(r) = run_dotnet_revisions(&handle, &input) {
+            match r {
+                Ok(res) if res.exit_code == Some(0) => return Ok((res, "dotnet")),
+                Ok(res) => py_audit(
+                    &handle,
+                    &format!(
+                        "{name_in} dotnet failed, fallback python | {}",
+                        escape_for_log(&res.stderr, 200)
+                    ),
+                ),
+                Err(e) => py_audit(
+                    &handle,
+                    &format!(
+                        "{name_in} dotnet err, fallback python | {}",
+                        escape_for_log(&e, 200)
+                    ),
+                ),
+            }
+        }
+        run_python(&handle, script, Some(&input), &[], Some(120), None)
+            .map(|res| (res, "python"))
+    })
+    .await
+    {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            py_audit(app, &format!("{name} err | {}", escape_for_log(&e, 300)));
+            Err(e)
+        }
+    }
+}
+
 /// 审计日志钩子（bot.rs 的 audit_log 已存在，这里复用数据目录 bot.log）
 pub fn py_audit(app: &AppHandle, line: &str) {
     let p = crate::db::data_dir(app).join("bot.log");
@@ -1736,6 +1784,8 @@ pub async fn doc_make_word(
 
 /// 生成修订模式 Word（track changes）：回读原文与修订段落 diff，删除标删除线、新增标红色下划线，
 /// 可在 Word 审阅中逐条接受/拒绝。original_path 优先回读文件保真；无路径时用 original 行列表。
+/// 引擎走 run_doc_revisions 统一入口：强制 .NET OpenXML 优先，Python 脚本兜底。
+/// 返回 (输出路径, 引擎标记 "dotnet"/"python")，调用方在结果/审计里标注实际引擎。
 pub async fn doc_make_word_revisions(
     app: AppHandle,
     title: String,
@@ -1743,45 +1793,25 @@ pub async fn doc_make_word_revisions(
     original: Vec<String>,
     revised: Vec<String>,
     filename: Option<String>,
-) -> CommandResult<String> {
+) -> CommandResult<(String, &'static str)> {
     let out = gen_out_path(&app, filename.as_deref(), "docx")?;
+    let src = original_path.clone().unwrap_or_default();
     let input = serde_json::json!({
         "title": title,
-        "original_path": original_path.clone().unwrap_or_default(),
+        "original_path": original_path.unwrap_or_default(),
         "original": original,
         "revised": revised,
         "out": out
     })
     .to_string();
-    // 2026-08-27：.NET OpenXML 官方修订路径优先（w:ins/w:del + delText 铁律由 SDK 类型
-    // 系统保证）；dotnet 或工具不可用 → 回退 Python 脚本（行为不变）
-    if let Some(r) = run_dotnet_revisions(&app, &input) {
-        let r = r?;
-        if r.exit_code == Some(0) {
-            py_audit(
-                &app,
-                &format!(
-                    "doc_make_word_revisions | engine: dotnet | src: {} | out: {out}",
-                    original_path.clone().unwrap_or_default()
-                ),
-            );
-            return Ok(out);
-        }
-        // dotnet 跑了但失败：记审计后回退 Python 再试一次（不直接把失败抛给用户）
-        py_audit(
-            &app,
-            &format!(
-                "doc_make_word_revisions dotnet failed, fallback python | {}",
-                escape_for_log(&r.stderr, 200)
-            ),
-        );
-    }
-    let r = run_doc_script(&app, "doc_make_word_revisions", MAKE_DOCX_REVISIONS_SCRIPT, input).await?;
+    let (r, engine) =
+        run_doc_revisions(&app, "doc_make_word_revisions", MAKE_DOCX_REVISIONS_SCRIPT, input)
+            .await?;
     if r.exit_code != Some(0) {
         py_audit(
             &app,
             &format!(
-                "doc_make_word_revisions failed | {}",
+                "doc_make_word_revisions failed | engine: {engine} | {}",
                 escape_for_log(&r.stderr, 200)
             ),
         );
@@ -1789,12 +1819,9 @@ pub async fn doc_make_word_revisions(
     }
     py_audit(
         &app,
-        &format!(
-            "doc_make_word_revisions | src: {} | out: {out}",
-            original_path.unwrap_or_default()
-        ),
+        &format!("doc_make_word_revisions | engine: {engine} | src: {src} | out: {out}"),
     );
-    Ok(out)
+    Ok((out, engine))
 }
 
 /// 生成 Excel 到 AI_Gen_Files（支持 =公式 单元格）
