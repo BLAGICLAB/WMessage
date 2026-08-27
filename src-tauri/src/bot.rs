@@ -717,7 +717,11 @@ async fn execute_tool_impl(
     //    仅作为 Skill 内部子步骤、不允许裸调的底层原子 Function → 硬锁阻断
     //    只有 Skill 在 Running 状态时才放行；其他时候直接返回错误 + 提示走对应 Skill
     // F-2 抽象层：execute_tool 通过 middleware::run_pre_execute 调 pre-execute
-    let active = crate::tool_guard::is_skill_active(session_id);
+    // 2026-08-27 审计 P0-2：任务卡执行流程（StopGuard.allow_atomic）视同 Skill 上下文放行——
+    // EXECUTE_SYSTEM_PROMPT 把 create_word_revisions / link_file_to_task 列为收尾动作，
+    // 该流程没有 SkillRun，不放行则 prompt 要求的核心动作必被自家网关否决。
+    let active = crate::tool_guard::is_skill_active(session_id)
+        || stop.is_some_and(|s| s.allow_atomic());
     if let Some(msg) = crate::middleware::run_pre_execute(app, name, active) {
         // NEW-D-1：tool.call 已发出，早退前必须配平 tool.return（reason=denied），
         // 否则统计面板出现「悬挂调用」（call > return）
@@ -1263,20 +1267,12 @@ async fn tool_create_task(app: &AppHandle, args: &str) -> (String, Vec<crate::bo
 
 async fn tool_complete_task(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
     let v = parse_args(args);
-    let Some(kw) = v["title"].as_str().map(|s| s.trim().to_lowercase()) else {
-        return ("complete_task 缺少 title".into(), Vec::new());
-    };
-    let Some(task) = active_tasks(app).await
-        .into_iter()
-        .find(|t| t.title.to_lowercase().contains(&kw))
-    else {
-        return (
-            format!(
-                "未找到匹配「{}」的未完成任务",
-                v["title"].as_str().unwrap_or("")
-            ),
-            Vec::new(),
-        );
+    // 2026-08-27 审计 P0-3：走 resolve_task（taskId 精确匹配优先、title 关键词兜底 +
+    // taskId/title 交叉校验），与其它任务操作工具对齐——原先只读 title，
+    // schema 声明的「taskId 优先」被完全忽略，任务卡执行路径只传 taskId 时确定性失败。
+    let task = match resolve_task(app, &v).await {
+        Ok(t) => t,
+        Err(e) => return (e, Vec::new()),
     };
     let mut next = task.clone();
     next.column = "done".into();

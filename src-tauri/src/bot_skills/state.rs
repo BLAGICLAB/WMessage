@@ -104,6 +104,33 @@ pub(crate) fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
+/// 回滚窗口临时重开（2026-08-27 审计 P0-5）：回滚段执行时 run 已是 Failed，
+/// 而 AtomicGuard 只认 Running —— 回滚段里的原子工具（link_file_to_task 等）会被自家门禁拦截。
+/// 把本会话该技能的 Failed run 临时置回 Running（回滚期间门禁放行），返回是否实际切换。
+/// 调用方在回滚段结束后必须调 `restore_failed_run_after_rollback` 复原。
+pub(crate) fn reopen_failed_run_for_rollback(name: &str, session_id: Option<&str>) -> bool {
+    let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
+    let Some(run) = runs.get_mut(name) else {
+        return false;
+    };
+    if run.state == SkillState::Failed && run.session_id.as_deref() == session_id {
+        run.state = SkillState::Running;
+        return true;
+    }
+    false
+}
+
+/// 回滚窗口复原：回滚段结束后把临时重开的 run 置回 Failed（终态）。
+/// run 已被其它路径改动（如回滚步骤再失败被标 Failed）时是安全 no-op。
+pub(crate) fn restore_failed_run_after_rollback(name: &str, session_id: Option<&str>) {
+    let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(run) = runs.get_mut(name) {
+        if run.state == SkillState::Running && run.session_id.as_deref() == session_id {
+            run.state = SkillState::Failed;
+        }
+    }
+}
+
 /// 主循环接入用（Block 2 2026-08-17 22:26）：克隆当前会话活动 Skill 快照（任意非 Loaded 状态）。
 /// 供 `bot_chat` 主循环与 DSL 调度器调，拿快照去 `advance_skill` / `advance_dsl` 决策，不再持锁。
 /// 2026-08-26 会话隔离：按 session_id 过滤——别的会话暂停/运行中的 Skill 不可见、不推进。
@@ -260,6 +287,41 @@ mod tests {
         // 收尾：不给其他测试留状态
         let mut g = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
         g.remove("test-zombie-clear-live");
+    }
+
+    /// P0-5（2026-08-27 审计）：回滚窗口重开/复原——Failed 可重开为 Running（按会话匹配），
+    /// 复原回 Failed；非 Failed 状态 / 别的会话的 run 不动
+    #[test]
+    fn reopen_failed_run_for_rollback_scoped_by_state_and_session() {
+        let name = "test-rollback-reopen";
+        let mut run = test_run(8, 180);
+        run.name = name.into();
+        run.state = SkillState::Failed;
+        run.end_reason = "step 失败".into();
+        run.session_id = Some("s-rb".into());
+        skill_runs()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(name.into(), run);
+
+        // 会话不匹配 → 不重开
+        assert!(!reopen_failed_run_for_rollback(name, Some("other")));
+        // 会话匹配 → 重开为 Running（原子工具门禁放行）
+        assert!(reopen_failed_run_for_rollback(name, Some("s-rb")));
+        assert_eq!(test_skill_run_state(name), Some(SkillState::Running));
+        // 重复重开（已非 Failed）→ false
+        assert!(!reopen_failed_run_for_rollback(name, Some("s-rb")));
+        // 复原回 Failed 终态
+        restore_failed_run_after_rollback(name, Some("s-rb"));
+        assert_eq!(test_skill_run_state(name), Some(SkillState::Failed));
+        // 会话不匹配 → 不复原
+        let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
+        runs.get_mut(name).unwrap().state = SkillState::Running;
+        drop(runs);
+        restore_failed_run_after_rollback(name, Some("other"));
+        assert_eq!(test_skill_run_state(name), Some(SkillState::Running));
+
+        test_remove_skill_run(name);
     }
 
 }

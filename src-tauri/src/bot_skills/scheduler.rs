@@ -88,7 +88,13 @@ pub(crate) fn is_tool_failure_text(text: &str) -> bool {
 }
 
 /// 跑 `## Rollback` 段（step 失败 / 状态机 FailWithRollback 两处共用）：
-/// 回滚步骤同样走变量替换（失败前的步骤都已入 ctx）；返回是否实际跑了回滚。
+/// 回滚步骤同样走变量替换（失败前的步骤都已入 ctx）。
+/// 返回值契约（SKILL_DSL.md §4.3.2）：true = 段存在且全部回滚步骤无失败——
+/// 前端据此决定是否提示「已完成步骤未回滚，请人工核对」。
+/// 2026-08-27 审计 P0-5 修复：
+/// - 回滚段执行时 run 已是 Failed，原子工具会被 AtomicGuard 拦截 → 临时重开为 Running，
+///   结束后复原（reopen/restore，见 state.rs）
+/// - 逐步判定成败并记审计（原先 `let _ =` 吞掉结果，回滚全挂也返回 true，护栏被架空）
 async fn run_rollback_segment(
     app: &AppHandle,
     name: &str,
@@ -108,12 +114,36 @@ async fn run_rollback_segment(
             reason.chars().take(120).collect::<String>()
         ),
     );
+    // 回滚窗口：Failed → Running（原子工具放行）。窗口内 skill_on_step 仍计数/可熔断，
+    // 熔断会再把 run 标 Failed —— 后续回滚步骤的原子工具随之被拦，按失败计入。
+    let reopened = super::state::reopen_failed_run_for_rollback(name, session_id);
+    let mut failed_steps = 0usize;
     for rb in rollback {
         let rb_args = substitute_vars(&rb.args_json, ctx);
-        let _ = crate::bot::execute_tool(app, &rb.tool_name, &rb_args, session_id).await;
+        let (text, _refs) = crate::bot::execute_tool(app, &rb.tool_name, &rb_args, session_id).await;
+        if is_tool_failure_text(&text) || text.starts_with("⚠️") {
+            failed_steps += 1;
+            crate::bot::audit_log_hook(
+                app,
+                &format!(
+                    "skill_dsl_rollback_step_failed | name: {name} | tool: {} | {}",
+                    rb.tool_name,
+                    text.chars().take(120).collect::<String>()
+                ),
+            );
+        }
     }
-    crate::bot::audit_log_hook(app, &format!("skill_dsl_rollback_done | name: {name}"));
-    true
+    if reopened {
+        super::state::restore_failed_run_after_rollback(name, session_id);
+    }
+    crate::bot::audit_log_hook(
+        app,
+        &format!(
+            "skill_dsl_rollback_done | name: {name} | steps: {} | failed: {failed_steps}",
+            rollback.len()
+        ),
+    );
+    failed_steps == 0
 }
 
 /// 强制终止所有活动 Skill（/stop 联动；用户取消时调用）
@@ -301,6 +331,10 @@ pub async fn run_skill_scheduler(app: &AppHandle, name: &str, session_id: Option
     for (idx, title, result) in &results {
         summary.push_str(&format!("\n### Step {}: {}\n{}\n", idx, title, result));
     }
+    // 2026-08-27 审计 P0-1 修复：Done 路径收尾状态机（Running → Completed）。
+    // 原先整条成功路径不调 skill_finish，run 泄漏为「僵尸 Running」——原子工具闸门
+    // 在技能结束后仍对本会话放行，且后续消息的工具调用被计入僵尸 run 直至步数熔断卡死会话。
+    let _ = super::runtime::skill_finish(app, true, "done", session_id);
     crate::bot::audit_log_hook(
         app,
         &format!("skill_dsl_done | name: {name} | steps_ok: {}", steps.len()),

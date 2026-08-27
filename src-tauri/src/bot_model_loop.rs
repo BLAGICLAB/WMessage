@@ -25,7 +25,7 @@ use tauri::{AppHandle, Emitter};
 // 注入系统提醒并补一轮（每次对话最多补一次），让模型实际调工具或如实说明。
 
 /// 会改动任务卡/文件系统的工具（判定「本轮是否真的动手了」）
-const MUTATING_TOOLS: [&str; 14] = [
+const MUTATING_TOOLS: [&str; 15] = [
     "create_task",
     "edit_task",
     "complete_task",
@@ -34,6 +34,9 @@ const MUTATING_TOOLS: [&str; 14] = [
     "toggle_subtask",
     "remove_subtask",
     "bind_file",
+    // 2026-08-27 审计 P1-10：与 bind_file 同写路径（技能/任务卡流程内绑产物），漏了它
+    // 会让「产物已绑定」的如实汇报被幻觉守卫误拦
+    "link_file_to_task",
     "create_word",
     "create_word_revisions",
     "create_excel",
@@ -41,6 +44,20 @@ const MUTATING_TOOLS: [&str; 14] = [
     "create_pdf",
     "remember_fact",
 ];
+
+/// 变更工具是否真的成功落库/落盘（幻觉守卫 mutation_done 的判定依据）。
+/// 2026-08-27 审计 P0-4：原先在工具执行前按名字置位——被门禁拦截（⚠️ 开头）、
+/// 用户拒绝（「用户拒绝」开头）、执行失败（Warn/Error 分级）的调用都算「动过手」，
+/// 之后的幻觉汇报就不再被拦，守卫被架空。改为按执行结果判定。
+fn mutation_succeeded(name: &str, result: &str) -> bool {
+    MUTATING_TOOLS.contains(&name)
+        && !matches!(
+            crate::audit::classify_text(name, result),
+            crate::audit::AuditLevel::Warn | crate::audit::AuditLevel::Error
+        )
+        && !result.starts_with("⚠️")
+        && !result.starts_with("用户拒绝")
+}
 
 /// 最终文本是否含「变更已完成」表述（任务卡/文件类；纯查询汇报不命中）。
 /// 枚举完整话术是打地鼠（实锤漏网：「已彻底删除」不含「已删除」字面），
@@ -132,7 +149,7 @@ const TOOLS: &str = r#"[
     "title":{"type":"string","description":"任务标题关键词，无 taskId 时使用"},
     "isDir":{"type":"boolean","description":"true=选文件夹，false 选文件"}
   },"required":[]}}},
-  {"type":"function","function":{"name":"link_file_to_task","description":"把 AI_Gen_Files 目录内的生成文件绑定到任务卡（不弹选择框；只允许该目录内的文件，其他文件请在任务卡上手动绑定）","parameters":{"type":"object","properties":{
+  {"type":"function","function":{"name":"link_file_to_task","description":"把 AI_Gen_Files 目录内的生成文件绑定到任务卡（不弹选择框；只允许该目录内的文件，其他文件请在任务卡上手动绑定）。内部原子：仅技能运行中或任务卡执行流程里可调用，聊天里裸调会被拦截","parameters":{"type":"object","properties":{
     "taskId":{"type":"string","description":"任务 id，可选，优先于 title"},
     "title":{"type":"string","description":"任务标题关键词，无 taskId 时使用"},
     "path":{"type":"string","description":"要绑定的文件绝对路径（必须位于 AI_Gen_Files 目录内）"}
@@ -154,7 +171,7 @@ const TOOLS: &str = r#"[
     },"required":["rows"]}},
     "filename":{"type":"string","description":"文件名（不含扩展名），可选"}
   },"required":["paragraphs"]}}},
-  {"type":"function","function":{"name":"create_word_revisions","description":"生成带修订标记（修订模式）的 Word 到 AI_Gen_Files：自动对比原文与润色后的段落，删除内容标删除线、新增内容标红色下划线，可在 Word 审阅中逐条接受/拒绝","parameters":{"type":"object","properties":{
+  {"type":"function","function":{"name":"create_word_revisions","description":"生成带修订标记（修订模式）的 Word 到 AI_Gen_Files：自动对比原文与润色后的段落，删除内容标删除线、新增内容标红色下划线，可在 Word 审阅中逐条接受/拒绝。内部原子：仅技能运行中或任务卡执行流程里可调用，聊天里裸调会被拦截（被拦时改用 create_word 生成润色版）","parameters":{"type":"object","properties":{
     "originalPath":{"type":"string","description":"原文 Word 路径（extract_document 返回的 [文档路径]）"},
     "original":{"type":"array","items":{"type":"string"},"description":"原文行列表（提取被截断时必须传，保证对比范围一致），可选"},
     "revised":{"type":"array","items":{"type":"string"},"description":"润色后的段落列表"},
@@ -651,9 +668,6 @@ pub async fn run_model_loop(
         }
         for (id, name, args) in &tool_calls {
             function_calls_total += 1;
-            if MUTATING_TOOLS.contains(&name.as_str()) {
-                mutation_done = true;
-            }
             if should_fuse(function_calls_total) {
                 let hint = crate::bot_skills::skill_finish(&app, false, "单轮 Function 调用超上限", session_id);
                 crate::bot::audit_log(
@@ -683,6 +697,11 @@ pub async fn run_model_loop(
             // NEW-C-4：把 /stop 守卫透传给 execute_tool，run_python 在途可中断
             let (result, refs) =
                 crate::bot::execute_tool_with_stop(&app, name, args, Some(stop)).await;
+            // P0-4（2026-08-27 审计）：按执行结果置位——被门禁拦截/用户拒绝/执行失败的
+            // 变更工具不算「动过手」，幻觉守卫对后续虚假汇报保持拦截能力
+            if mutation_succeeded(name, &result) {
+                mutation_done = true;
+            }
             emit_stream("bot-tool-done", serde_json::json!({ "id": id, "name": name, "args": args }));
             crate::bot::audit_log(
                 &app,
@@ -852,13 +871,44 @@ mod hallucination_guard_tests {
     #[test]
     fn mutating_tools_cover_task_and_file_writes() {
         // 守卫白名单与工具分发保持一致的关键几个
-        for t in ["delete_task", "add_subtask", "toggle_subtask", "complete_task", "edit_task", "create_task", "bind_file"] {
+        for t in ["delete_task", "add_subtask", "toggle_subtask", "complete_task", "edit_task", "create_task", "bind_file", "link_file_to_task"] {
             assert!(MUTATING_TOOLS.contains(&t), "{t} 应算变更类工具");
         }
         // 纯查询工具不算变更
         for t in ["list_tasks", "search_tasks", "query_single_task", "web_search", "fetch_url"] {
             assert!(!MUTATING_TOOLS.contains(&t), "{t} 不应算变更类工具");
         }
+    }
+
+    // ── P0-4（2026-08-27 审计）：mutation_done 按执行结果置位 ──
+
+    #[test]
+    fn mutation_succeeded_true_on_real_success() {
+        assert!(mutation_succeeded("complete_task", "已完成任务「买菜」"));
+        assert!(mutation_succeeded("link_file_to_task", "已绑定文件到任务卡"));
+        assert!(mutation_succeeded("create_word", "已生成 Word 文档：/tmp/x.docx"));
+    }
+
+    #[test]
+    fn mutation_succeeded_false_on_gate_block() {
+        // 原子工具被 AtomicGuard 拦截：⚠️ 开头 → 不算动过手，幻觉守卫保持拦截能力
+        assert!(!mutation_succeeded(
+            "create_word_revisions",
+            "⚠️ create_word_revisions 是 Word 修订 Skill 的内部原子，不允许裸调。"
+        ));
+    }
+
+    #[test]
+    fn mutation_succeeded_false_on_user_reject_and_failure() {
+        assert!(!mutation_succeeded("delete_task", "用户拒绝了删除，任务未删除"));
+        assert!(!mutation_succeeded("create_task", "新建任务失败：磁盘只读"));
+        assert!(!mutation_succeeded("complete_task", "未知工具：complete_task"));
+    }
+
+    #[test]
+    fn mutation_succeeded_false_for_readonly_tools() {
+        // 只读工具即使返回成功文本也不算变更
+        assert!(!mutation_succeeded("list_tasks", "已完成任务「买菜」"));
     }
 }
 

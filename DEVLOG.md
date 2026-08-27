@@ -2,6 +2,19 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-08-27（周四·午 2）Bot 工具/Skill 链路全面审计 + P0 五连修
+
+**审计**（4 路并行子代理 + 人工复核）：报告落盘 `docs/AUDIT-BOT-PIPELINE-2026-08-27.md`，覆盖 DSL 调度器 / 系统提示词 / 工具注册表面 / 中间件管线的逻辑性、完整性、一致性。结论：schema↔dispatch 28↔28 对齐、门禁顺序正确、session 透传主链无断点；但发现 5 个 P0 + 7 个 P1 + 一批 P2（失败判定三口径分叉、/stop 一停全停、`__await_user__` 直出前端等，待排期）。
+
+**P0 修复**：
+- **P0-1 DSL Done 不收尾**：`run_skill_scheduler` 成功路径补 `skill_finish`（Running→Completed）——原先僵尸 Running 让原子闸门洞开 + 后续工具调用被计入僵尸 run 直至步数熔断卡死会话
+- **P0-2 任务卡执行路径的原子工具合法化**：`StopGuard` 加 `allow_atomic`（`new_task_exec` 构造），`execute_task_core` / `exec_steps` 三处切换；`execute_tool_impl` 门禁放行 `is_skill_active || allow_atomic`——此前 EXECUTE prompt 要求的 `link_file_to_task`/`create_word_revisions` 在无 Skill 的任务卡路径必被自家网关硬拦；SYSTEM_PROMPT 规则 10 补「被拦改用 create_word」回退措辞；两个原子工具的 schema description 标注「内部原子」属性
+- **P0-3 `complete_task` 走 `resolve_task`**：taskId 精确匹配优先 + 交叉校验，与 schema「taskId 优先于 title」和 EXECUTE 规则 4 对齐——原先只读 title，只传 taskId 时确定性失败
+- **P0-4 `mutation_done` 按执行结果置位**：新增 `mutation_succeeded`（门禁拦截 ⚠️ / 用户拒绝 / Warn/Error 分级失败都不算「动过手」），幻觉守卫不再被「调过但失败」的调用架空；顺手把 `link_file_to_task` 补进 `MUTATING_TOOLS`（审计 P1-10 之首，与本次改动直接相关）
+- **P0-5 回滚段不再自咬**：`state.rs` 新增 `reopen_failed_run_for_rollback` / `restore_failed_run_after_rollback`（回滚窗口内 Failed→Running 临时重开让原子工具过门禁，结束后复原终态）；`run_rollback_segment` 逐步判定成败 + 逐条审计（不再 `let _ =` 吞掉），返回值改为契约语义「段存在且全部回滚步骤无失败」（对齐 SKILL_DSL.md §4.3.2）
+
+**测试**：新增 mutation_succeeded 4 例 + reopen/restore 1 例；cargo test --lib 416 → **421 全绿**，skill_e2e 8 全绿。踩坑：`⚠️` 是双码点字符（U+26A0+FE0F），char 字面量编译报错，用字符串字面量。
+
 ## 2026-08-27（周四·午）修订文档收口统一入口：强制 .NET，Python 兜底
 
 **动因**（老板指令）：修订文档生成走 Rust 内部统一入口，强制 .NET 优先、Python 仅兜底；顺带修掉一个真问题——dotnet 分支此前在 async fn 里**同步直跑** `run_dotnet_revisions`，最长 120s 阻塞压在 async runtime worker 上（NEW-C-1 修过 doc_* 同款问题，dotnet 分支是漏网之鱼）。

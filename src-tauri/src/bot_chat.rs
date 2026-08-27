@@ -51,7 +51,7 @@ const SYSTEM_PROMPT: &str = "\
 8. 工具执行成功后简短汇报结果；任何任务变更（新建/编辑/完成/删除/子任务/绑定）都必须实际调用工具并拿到成功返回才能汇报完成——本轮没有工具调用成功时，禁止说「已添加/已修改/已删除/已绑定」，要如实说明未能执行及原因；\
 文档处理规则：\
 9. 用户要处理/润色文档时，先用 extract_document 弹出选择框让用户选文件，拿到内容后再处理；\
-10. Word 润色：基于提取的文本逐段润色，完成后默认用 create_word_revisions 生成修订模式文档（Word track changes，删除线/下划线标记，Pages/Word 都能打开；originalPath 填 extract_document 返回的 [文档路径]，revised 填润色后的段落列表，文件名建议原文件名+修订）；用户明确要纯文本版时才用 create_word（文件名建议原文件名+润色）；绝不覆盖原文件；若提取结果带「已截断」标记，长文档可用 extract_document 的 offset 参数续读后续部分；修订模式下还必须把 original 填上你实际收到的原文行列表（逐行照抄、一行一段），保证对比范围一致；新建 Word 文档时按文档类型排版：正式公文/报告用黑体标题+宋体正文、商务提案标题可加粗加大、正文段落首行缩进两字符（生成器已按此排版）；\
+10. Word 润色：基于提取的文本逐段润色，完成后默认用 create_word_revisions 生成修订模式文档（Word track changes，删除线/下划线标记，Pages/Word 都能打开；originalPath 填 extract_document 返回的 [文档路径]，revised 填润色后的段落列表，文件名建议原文件名+修订）；用户明确要纯文本版时才用 create_word（文件名建议原文件名+润色）；绝不覆盖原文件；若提取结果带「已截断」标记，长文档可用 extract_document 的 offset 参数续读后续部分；修订模式下还必须把 original 填上你实际收到的原文行列表（逐行照抄、一行一段），保证对比范围一致；create_word_revisions 是内部原子工具，仅在修订技能运行中或任务卡执行流程里可用——若返回「不允许裸调」说明技能未加载，改用 create_word 生成润色版并向用户说明；新建 Word 文档时按文档类型排版：正式公文/报告用黑体标题+宋体正文、商务提案标题可加粗加大、正文段落首行缩进两字符（生成器已按此排版）；\
 11. Excel 生成用 create_excel（sheet 名 + 二维数组）：所有能算出来的值必须写成公式（= 开头，如 =SUM(A1:A10)），绝不硬编码计算结果；表头行简洁（列名即可），数据区不要写「合计」以外的说明文字；PDF 用 create_pdf（文档类型决定风格：正式报告克制排版、提案可活泼；中文用 STSong 字体已内置）；PPT 制作规则（专业排版手册，务必遵守）：\
    a) 先规划大纲再生成：每页归入一种版式——封面 cover（大标题+副标题+日期，定基调）→ 目录 toc（3-5 节，设预期）→ 章节分隔 section（大号编号+标题，长演示必须切分）→ 内容 content → 表格 table（数据页）→ 结束 closing（要点回顾+行动号召）；\
    b) 每页只讲一个核心观点，标题就是结论（禁止「介绍」「概述」类空标题）；bullet 用短句（≤15 字），一个 bullet 一层意思；\
@@ -694,7 +694,7 @@ pub async fn execute_task_core(
             reason: "该任务卡正在执行中，请等待完成后再触发".into(),
         });
     };
-    let stop = StopGuard::new(interactive, session_id);
+    let stop = StopGuard::new_task_exec(interactive, session_id);
     let task = crate::db::db_load(app.clone())
         .await
         .unwrap_or_default()

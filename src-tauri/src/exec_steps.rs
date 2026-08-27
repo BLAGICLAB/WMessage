@@ -255,7 +255,7 @@ pub async fn start(app: &AppHandle, task: &crate::db::Task, session_id: Option<&
         .ok_or_else(|| CommandError::TaskInvalidState {
             reason: "没有未完成的子任务".into(),
         })?;
-    let stop = StopGuard::new(true, session_id.map(|s| s.to_string()));
+    let stop = StopGuard::new_task_exec(true, session_id.map(|s| s.to_string()));
     let r = run_step(app, &task.id, &first, None, &stop).await;
     if r.is_err() {
         clear(app, "逐步执行起步失败").await;
@@ -287,7 +287,7 @@ pub async fn resume(app: &AppHandle, reply: &str, session_id: Option<&str>) -> C
                 &format!("exec_steps.confirm | task: {} | 用户确认，勾选并继续", p.task_id),
             );
             mark_subtask_done(app, &p.task_id, &p.subtask_id).await;
-            let stop = StopGuard::new(true, session_id.map(|s| s.to_string()));
+            let stop = StopGuard::new_task_exec(true, session_id.map(|s| s.to_string()));
             advance_or_finish(app, &p.task_id, &stop).await
         }
         StepReply::Redo(feedback) => {
@@ -299,7 +299,7 @@ pub async fn resume(app: &AppHandle, reply: &str, session_id: Option<&str>) -> C
                     crate::bot::truncate_for_log(&feedback, 100)
                 ),
             );
-            let stop = StopGuard::new(true, session_id.map(|s| s.to_string()));
+            let stop = StopGuard::new_task_exec(true, session_id.map(|s| s.to_string()));
             run_step(app, &p.task_id, &p.subtask_id, Some(&feedback), &stop).await
         }
     }

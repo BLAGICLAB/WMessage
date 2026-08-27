@@ -36,16 +36,35 @@ pub struct StopGuard {
     flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
     interactive: bool,
     session_id: Option<String>,
+    /// 任务卡执行流程（execute_task_core / exec_steps）标记（2026-08-27 审计 P0-2）：
+    /// 该流程是「内置编排流」，与 Skill 同级——EXECUTE_SYSTEM_PROMPT 要求调
+    /// create_word_revisions / link_file_to_task 两个原子工具收尾，没有活动 SkillRun
+    /// 开门会被 AtomicGuard 硬拦（prompt 要求的核心动作被自家网关否决）。
+    allow_atomic: bool,
 }
 
 impl StopGuard {
     pub fn new(interactive: bool, session_id: Option<String>) -> Self {
+        Self::with_atomic(interactive, session_id, false)
+    }
+
+    /// 任务卡执行流程专用：放行原子工具（视为内置编排流，等价于 Skill Running 上下文）
+    pub fn new_task_exec(interactive: bool, session_id: Option<String>) -> Self {
+        Self::with_atomic(interactive, session_id, true)
+    }
+
+    fn with_atomic(interactive: bool, session_id: Option<String>, allow_atomic: bool) -> Self {
         let id = NEXT_STOP_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
         let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         if let Ok(mut m) = stop_registry().lock() {
             m.insert(id, (flag.clone(), interactive));
         }
-        Self { id, flag, interactive, session_id }
+        Self { id, flag, interactive, session_id, allow_atomic }
+    }
+
+    /// 是否放行原子工具（仅任务卡执行流程为 true）
+    pub(crate) fn allow_atomic(&self) -> bool {
+        self.allow_atomic
     }
 
     pub fn stopped(&self) -> bool {
