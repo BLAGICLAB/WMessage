@@ -117,6 +117,55 @@ pub fn merge_task_refs_dedup(refs: Vec<TaskRef>) -> Vec<TaskRef> {
         })
         .collect()
 }
+
+/// 会话历史字符预算（2026-08-28 批次3审计 P1）：主聊天路径原先全量透传，长会话直接 400。
+/// 按字符估算（中文 ~1 token/字符）；system prompt 与工具循环内增长不在此列。
+pub(crate) const HISTORY_BUDGET_CHARS: usize = 100_000;
+
+/// 截断聊天历史到字符预算内：最旧的先丢，永远保留最后一条（本轮用户消息）。
+/// 返回 (保留的消息, 丢弃条数)。
+pub(crate) fn truncate_chat_history(messages: Vec<ChatMsg>, budget: usize) -> (Vec<ChatMsg>, usize) {
+    let mut total = 0usize;
+    let mut keep_from = messages.len();
+    for (i, m) in messages.iter().enumerate().rev() {
+        let n = m.content.chars().count();
+        if total + n > budget && i != messages.len() - 1 {
+            break;
+        }
+        total += n;
+        keep_from = i;
+    }
+    (messages.into_iter().skip(keep_from).collect(), keep_from)
+}
+
+/// 需要内联图片的消息下标（2026-08-28 批次3审计 P1-6）：原先「最近两条 user 消息」
+/// 永不失效，一张图每轮对话都重复 base64 重发。改为最后 3 条消息内的 user 消息——
+/// 覆盖「发图 → 追问一轮」场景，更早的历史保持纯文本。
+fn image_attach_indices(messages: &[ChatMsg]) -> Vec<usize> {
+    let from = messages.len().saturating_sub(3);
+    (from..messages.len())
+        .filter(|&i| messages[i].role == "user")
+        .collect()
+}
+
+/// 剥掉 <think>...</think> 段（2026-08-28 批次3审计 P2-6）：非流式路径（bot_compact /
+/// Planner）直接取 message.content，模型带 think 段时摘要会被写回历史、Planner 的
+/// JSON 提取会被干扰。未闭合的 <think> 尾巴一并丢弃。
+pub(crate) fn strip_think_blocks(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("<think>") {
+        out.push_str(&rest[..start]);
+        rest = &rest[start + "<think>".len()..];
+        match rest.find("</think>") {
+            Some(end) => rest = &rest[end + "</think>".len()..],
+            None => return out, // 未闭合：尾巴整个丢弃
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 /// 聊天模式批量执行：每张卡调一次 execute_task_core（已用 EXECUTE_SYSTEM_PROMPT + 50 轮工具循环）。
 /// 顺序执行（避免文件写冲突）；一卡失败继续（任一卡失败不阻断后续）；共用 StopGuard（/stop 一次清空）。
 /// 汇总报告：每张卡的开头 + 执行结果 + 总数 + 失败清单；task_refs 跨卡去重（merge_task_refs_dedup）。
@@ -509,6 +558,7 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>, session_id: Option
                     rollback_attempted,
                 }) => {
                     // SSE 推 Skill 失败给挂件（Phase 7 P2 优化：让用户看到半成品 + rollback 状态）
+                    // 2026-08-28 批次3审计 P0-2：payload 带 sessionId，前端按会话过滤，防串会话弹失败卡
                     let _ = app.emit_to(
                         "widget",
                         "bot-skill-failed",
@@ -517,6 +567,7 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>, session_id: Option
                             "reason": reason,
                             "completedSummary": completed_summary,
                             "rollbackAttempted": rollback_attempted,
+                            "sessionId": stop.session_id(),
                         }),
                     );
                     // LLM 兜底：把「失败原因 + 已完成产物 + 回滚状态」拼进 system prompt 决策
@@ -574,21 +625,23 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>, session_id: Option
         system_content
     };
     msgs.push(serde_json::json!({"role": "system", "content": system_content}));
-    // 最近两条 user 消息的图片附件转多模态消息（追问时上一张图还能看到；更早的历史保持纯文本）
-    let mut img_indices: Vec<usize> = Vec::new();
-    for (i, m) in messages.iter().enumerate().rev() {
-        if m.role == "user" {
-            img_indices.push(i);
-            if img_indices.len() == 2 {
-                break;
-            }
-        }
+    // 2026-08-28 批次3审计 P1-5：历史字符预算——长会话最旧的先丢，
+    // 最后一条（本轮用户消息）永远保留；丢弃时留审计
+    let (messages, dropped) = truncate_chat_history(messages, HISTORY_BUDGET_CHARS);
+    if dropped > 0 {
+        crate::audit_event!(&app, crate::audit::AuditLevel::Info, "chat.history_truncated",
+            "dropped" => dropped, "budget" => HISTORY_BUDGET_CHARS);
     }
+    // P1-6：最后 3 条消息内 user 消息的图片附件转多模态消息（更早的历史降级为路径文本）
+    let img_indices = image_attach_indices(&messages);
     for (i, m) in messages.iter().enumerate() {
+        // P2-8（2026-08-28 批次3审计）：role 白名单——历史里的非法 role 一律按 user，
+        // 防污染历史注入 system/tool 角色
+        let role = if m.role == "assistant" { "assistant" } else { "user" };
         if img_indices.contains(&i) {
-            msgs.push(serde_json::json!({"role": m.role, "content": attach_images(&app, &m.content)}));
+            msgs.push(serde_json::json!({"role": role, "content": attach_images(&app, &m.content)}));
         } else {
-            msgs.push(serde_json::json!({"role": m.role, "content": m.content}));
+            msgs.push(serde_json::json!({"role": role, "content": m.content}));
         }
     }
     let (text, refs) = crate::bot_model_loop::run_model_loop(app, msgs, max_rounds, &stop, plan_state.as_mut()).await?;
@@ -695,9 +748,9 @@ pub async fn bot_compact(app: AppHandle, messages: Vec<ChatMsg>) -> CommandResul
         .and_then(|c| c.as_array())
         .and_then(|a| a.first())
         .and_then(|c| c["message"]["content"].as_str())
-        .unwrap_or("")
-        .trim()
-        .to_string();
+        .unwrap_or("");
+    // 2026-08-28 批次3审计 P2-6：模型带 <think> 段时先剥掉，防摘要带思考段写回历史
+    let text = strip_think_blocks(text).trim().to_string();
     if text.is_empty() {
         // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
         return Err("模型返回了空摘要".into());
@@ -1078,6 +1131,80 @@ mod bot_chat_pure_helpers_tests {
         let out = merge_task_refs_dedup(refs);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].title, "X1");
+    }
+
+    // ── 2026-08-28 批次3审计：历史预算 / 图片窗口 / think 剥除 ──
+
+    fn msg(role: &str, content: &str) -> ChatMsg {
+        ChatMsg { role: role.into(), content: content.into() }
+    }
+
+    #[test]
+    fn truncate_chat_history_within_budget_unchanged() {
+        let msgs = vec![msg("user", "你好"), msg("assistant", "在的"), msg("user", "列任务")];
+        let (kept, dropped) = truncate_chat_history(msgs, 100);
+        assert_eq!(dropped, 0);
+        assert_eq!(kept.len(), 3);
+    }
+
+    #[test]
+    fn truncate_chat_history_drops_oldest_first() {
+        let long = "x".repeat(60);
+        let msgs = vec![msg("user", &long), msg("assistant", &long), msg("user", &long)];
+        let (kept, dropped) = truncate_chat_history(msgs, 100);
+        assert_eq!(dropped, 2, "超预算时最旧的先丢，dropped 数应正确");
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].role, "user");
+    }
+
+    #[test]
+    fn truncate_chat_history_keeps_last_even_over_budget() {
+        let msgs = vec![msg("user", &"x".repeat(200))];
+        let (kept, dropped) = truncate_chat_history(msgs, 10);
+        assert_eq!(dropped, 0, "最后一条（本轮用户消息）永远保留");
+        assert_eq!(kept.len(), 1);
+    }
+
+    #[test]
+    fn image_attach_indices_hits_user_in_last_three() {
+        let msgs = vec![msg("user", "a"), msg("assistant", "b"), msg("user", "c"), msg("user", "d")];
+        assert_eq!(image_attach_indices(&msgs), vec![2, 3]);
+    }
+
+    #[test]
+    fn image_attach_indices_skips_older_user() {
+        let msgs = vec![msg("user", "a"), msg("assistant", "b"), msg("assistant", "c"), msg("user", "d")];
+        assert_eq!(image_attach_indices(&msgs), vec![3], "更早的 user 不命中");
+    }
+
+    #[test]
+    fn image_attach_indices_no_user_is_empty() {
+        let msgs = vec![msg("assistant", "a"), msg("assistant", "b")];
+        assert!(image_attach_indices(&msgs).is_empty());
+    }
+
+    #[test]
+    fn strip_think_blocks_complete_section_removed() {
+        assert_eq!(strip_think_blocks("前<think>想很多</think>后"), "前后");
+    }
+
+    #[test]
+    fn strip_think_blocks_multiple_sections() {
+        assert_eq!(
+            strip_think_blocks("a<think>x</think>b<think>y</think>c"),
+            "abc"
+        );
+    }
+
+    #[test]
+    fn strip_think_blocks_unclosed_tail_dropped() {
+        assert_eq!(strip_think_blocks("保留<think>没闭合的尾巴"), "保留");
+    }
+
+    #[test]
+    fn strip_think_blocks_no_tag_unchanged() {
+        assert_eq!(strip_think_blocks("普通文本"), "普通文本");
+        assert_eq!(strip_think_blocks(""), "");
     }
 }
 

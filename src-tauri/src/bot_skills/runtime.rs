@@ -31,6 +31,13 @@ fn preflight(meta: &SkillMeta) -> Result<(), String> {
     Ok(())
 }
 
+/// 同名技能冲突判定（2026-08-28 批次3审计 P0-1）：SKILL_RUNS 以技能名为键，
+/// 别的会话的 Running/Paused 同名 run 会被 insert 顶掉导致安全闸全失——启动前拒绝。
+fn skill_conflict_with_existing(existing: Option<&SkillRun>, session_id: Option<&str>) -> bool {
+    matches!(existing, Some(r) if (r.state == SkillState::Running || r.state == SkillState::Paused)
+        && r.session_id.as_deref() != session_id)
+}
+
 /// 启动 Skill：use_skill 工具调用即启动生命周期（预审 → Running），返回文档 + 运行约束提示。
 /// session_id（2026-08-26 会话隔离）：记录触发会话，活动判定/暂停/确认/推进按会话过滤。
 pub fn start_skill(app: &AppHandle, name: &str, session_id: Option<&str>) -> Result<(SkillMeta, String), String> {
@@ -42,6 +49,15 @@ pub fn start_skill(app: &AppHandle, name: &str, session_id: Option<&str>) -> Res
     run.state = SkillState::Running;
     run.session_id = session_id.map(|s| s.to_string());
     let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
+    // 2026-08-28 批次3审计 P0-1：同名 run 属于别的会话且仍在活动 → 拒绝启动，
+    // 否则 insert 会把对方的步数/超时熔断、动作记录、收尾整个顶掉。
+    // 同会话同名重启（原有覆盖语义）与终态 run 不拦截。
+    if skill_conflict_with_existing(runs.get(&meta.name), session_id) {
+        return Err(format!(
+            "技能「{}」正在另一个会话/任务中运行，请等它结束后再启动",
+            meta.name
+        ));
+    }
     // 单活动技能策略：新技能启动时，把本会话其他 Running/Paused 技能标 Completed。
     // 步骤钩子/暂停/确认按「唯一活动技能」定位，多技能同时 Running 会导致
     // 步骤计数与暂停确认全部记到第一个技能、后续技能被静默忽略（全面审计 P2）。
@@ -202,7 +218,8 @@ pub fn skill_on_step_post(
         let preview: String = result.chars().take(120).collect();
         crate::bot::audit_log_hook(
             app,
-            &format!("skill_step_fail | name: {name} | tool: {tool} | {preview}"),
+            // 2026-08-28 批次3审计：preview 是工具结果原文，换行/管道符会撕裂日志行，必须转义
+            &format!("skill_step_fail | name: {name} | tool: {tool} | {}", crate::bot::truncate_for_log(&preview, 120)),
         );
     } else {
         crate::bot::audit_log_hook(
@@ -328,8 +345,10 @@ pub fn skill_finish(app: &AppHandle, ok: bool, reason: &str, session_id: Option<
         } else {
             run.state = SkillState::Failed;
             run.end_reason = reason.to_string();
+            // 2026-08-28 批次3审计：reason 可含模型给的工具名/错误文本，转义后再落日志
             let mut log = format!(
-                "skill_failed | name: {name} | {reason} | actions: {}",
+                "skill_failed | name: {name} | {} | actions: {}",
+                crate::bot::truncate_for_log(reason, 200),
                 run.actions.len()
             );
             // 回滚建议（务实版）：失败 + 声明可回滚 + 有已执行动作 → 生成建议文本
@@ -728,6 +747,55 @@ mod tests {
         assert!(!rb.contains("尾巴")); // 到下一个 ## 为止
 
         assert_eq!(rollback_section("没有回滚章节"), "");
+    }
+
+    // ── 同名技能跨会话顶号拦截（2026-08-28 批次3审计 P0-1） ──
+
+    #[test]
+    fn skill_conflict_other_session_running_is_blocked() {
+        let mut r = test_run(8, 180);
+        r.state = SkillState::Running;
+        r.session_id = Some("s-a".into());
+        assert!(skill_conflict_with_existing(Some(&r), Some("s-b")));
+    }
+
+    #[test]
+    fn skill_conflict_other_session_paused_is_blocked() {
+        let mut r = test_run(8, 180);
+        r.state = SkillState::Paused;
+        r.session_id = Some("s-a".into());
+        assert!(skill_conflict_with_existing(Some(&r), Some("s-b")));
+        // 一方无会话（后台任务）也算不同会话
+        assert!(skill_conflict_with_existing(Some(&r), None));
+    }
+
+    #[test]
+    fn skill_conflict_same_session_restart_allowed() {
+        // 同会话同名重启：保留原有覆盖语义，不拦截
+        let mut r = test_run(8, 180);
+        r.state = SkillState::Running;
+        r.session_id = Some("s-a".into());
+        assert!(!skill_conflict_with_existing(Some(&r), Some("s-a")));
+    }
+
+    #[test]
+    fn skill_conflict_terminal_state_allowed() {
+        // 终态（Completed/Failed/Terminated）不拦截，可重启
+        for state in [SkillState::Completed, SkillState::Failed, SkillState::Terminated] {
+            let mut r = test_run(8, 180);
+            r.state = state.clone();
+            r.session_id = Some("s-a".into());
+            assert!(
+                !skill_conflict_with_existing(Some(&r), Some("s-b")),
+                "终态 {state:?} 不应拦截"
+            );
+        }
+    }
+
+    #[test]
+    fn skill_conflict_no_existing_allowed() {
+        assert!(!skill_conflict_with_existing(None, Some("s-b")));
+        assert!(!skill_conflict_with_existing(None, None));
     }
 
 }

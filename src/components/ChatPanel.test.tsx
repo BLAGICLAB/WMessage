@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ChatPanel } from "./ChatPanel";
 import type { Task } from "../types";
@@ -190,6 +190,41 @@ describe("ChatPanel", () => {
     // 当前会话（s1，初始加载的默认会话）→ 弹
     fire({ id: "c3", tool: "delete_task", detail: "本会话任务", sessionId: "s1" });
     expect(await screen.findByText(/本会话任务/)).toBeInTheDocument();
+  });
+
+  it("流式事件按会话过滤：别会话的 bot-chat-delta 被忽略，本会话的才追加（2026-08-28 批次3审计 P0-2）", async () => {
+    const user = userEvent.setup();
+    // 捕获 ChatPanel 注册的 bot-chat-delta 监听器
+    let deltaHandler: ((e: { payload: Record<string, unknown> }) => void) | null = null;
+    mocks.listenMock.mockImplementation(async (event: string, cb: unknown) => {
+      if (event === "bot-chat-delta") deltaHandler = cb as typeof deltaHandler;
+      return () => {};
+    });
+    // bot_chat 挂起不返回 → streaming 气泡保持，便于观察增量
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_sessions_load") return [{ id: "s1", title: "默认会话" }];
+      if (cmd === "bot_history_load") return [];
+      if (cmd === "bot_chat") return new Promise(() => {});
+      return null;
+    });
+    render(<ChatPanel {...defaultProps} />);
+    // 等初始会话加载完成（sessionIdRef 同步后再 fire，否则「本会话」用例会被误过滤）
+    expect(await screen.findByText("🤖 默认会话")).toBeInTheDocument();
+    expect(deltaHandler).not.toBeNull();
+    const input = screen.getByPlaceholderText(/和机器人说点什么/);
+    await user.type(input, "你好");
+    await user.keyboard("{Enter}");
+    const fire = (payload: Record<string, unknown>) =>
+      (deltaHandler as unknown as (e: { payload: Record<string, unknown> }) => void)({ payload });
+    // 别的会话的增量 → 忽略（streaming 气泡内容不变）
+    await act(async () => fire({ text: "别会话输出", sessionId: "other-session" }));
+    expect(screen.queryByText("别会话输出")).not.toBeInTheDocument();
+    // 无归属（后台任务不推流，双保险）→ 忽略
+    await act(async () => fire({ text: "无归属输出", sessionId: null }));
+    expect(screen.queryByText("无归属输出")).not.toBeInTheDocument();
+    // 本会话（s1）的增量 → 追加进 streaming 气泡
+    await act(async () => fire({ text: "本会话输出", sessionId: "s1" }));
+    expect(await screen.findByText("本会话输出")).toBeInTheDocument();
   });
 
   it("助手消息可折叠：thinking + tools Fold 子组件渲染", async () => {

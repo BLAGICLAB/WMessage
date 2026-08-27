@@ -416,67 +416,76 @@ function extractFilePaths(content: string): string[] {
   };
 
   // 流式增量：追加到最后一条 streaming 中的助手消息
+  // 会话过滤（2026-08-28 批次3审计 P0-2）：六个流式事件 payload 均带 sessionId
+  // （交互实例专属；后台任务不推流），只消费属于当前会话的增量，
+  // 否则两个会话并行跑时输出会互相串台
   useEffect(() => {
-    const unlisten = listen<{ text?: string }>("bot-chat-delta", (e) => {
-      const t = e.payload?.text;
-      if (!t) return;
-      setMessages((prev) => {
-        const last = prev[prev.length - 1];
-        if (!last || !last.streaming) return prev;
-        const copy = [...prev];
-        copy[copy.length - 1] = { ...last, content: last.content + t };
-        return copy;
-      });
-    });
-    const unThink = listen<{ text?: string }>("bot-think-delta", (e) => {
-      const t = e.payload?.text;
-      if (!t) return;
-      const thinking = (streamingMeta.current.thinking ?? "") + t;
-      streamingMeta.current.thinking = thinking;
-      setMessages((prev) => {
-        const last = prev[prev.length - 1];
-        if (!last || !last.streaming) return prev;
-        const copy = [...prev];
-        copy[copy.length - 1] = { ...last, thinking };
-        return copy;
-      });
-    });
-    const unTool = listen<{ id?: string; name?: string }>("bot-tool", (e) => {
-      const { id, name } = e.payload ?? {};
-      if (!id) return;
-      const tools = [...(streamingMeta.current.tools ?? [])];
-      if (!tools.some((x) => x.id === id)) tools.push({ id, name: name ?? "" });
-      streamingMeta.current.tools = tools;
-      setMessages((prev) => {
-        const last = prev[prev.length - 1];
-        if (!last || !last.streaming) return prev;
-        const copy = [...prev];
-        copy[copy.length - 1] = { ...last, tools };
-        return copy;
-      });
-    });
-    const unToolName = listen<{ id?: string; name?: string }>("bot-tool-name", (e) => {
-      const { id, name } = e.payload ?? {};
-      if (!id || !name) return;
-      const tools = (streamingMeta.current.tools ?? []).map((x) =>
-        x.id === id ? { ...x, name } : x
-      );
-      streamingMeta.current.tools = tools;
-      setMessages((prev) => {
-        const last = prev[prev.length - 1];
-        if (!last || !last.streaming) return prev;
-        const copy = [...prev];
-        copy[copy.length - 1] = { ...last, tools };
-        return copy;
-      });
-    });
-    const unToolDone = listen<{ id?: string; name?: string; args?: string }>(
-      "bot-tool-done",
+    const unlisten = listen<{ text?: string; sessionId?: string | null }>(
+      "bot-chat-delta",
       (e) => {
-        const { id, name, args } = e.payload ?? {};
+        // 2026-08-28 批次3审计 P0-2：按会话过滤
+        const sid = e.payload?.sessionId ?? null;
+        if (sid !== sessionIdRef.current) return;
+        const t = e.payload?.text;
+        if (!t) return;
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (!last || !last.streaming) return prev;
+          const copy = [...prev];
+          copy[copy.length - 1] = { ...last, content: last.content + t };
+          return copy;
+        });
+      }
+    );
+    const unThink = listen<{ text?: string; sessionId?: string | null }>(
+      "bot-think-delta",
+      (e) => {
+        // 2026-08-28 批次3审计 P0-2：按会话过滤
+        const sid = e.payload?.sessionId ?? null;
+        if (sid !== sessionIdRef.current) return;
+        const t = e.payload?.text;
+        if (!t) return;
+        const thinking = (streamingMeta.current.thinking ?? "") + t;
+        streamingMeta.current.thinking = thinking;
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (!last || !last.streaming) return prev;
+          const copy = [...prev];
+          copy[copy.length - 1] = { ...last, thinking };
+          return copy;
+        });
+      }
+    );
+    const unTool = listen<{ id?: string; name?: string; sessionId?: string | null }>(
+      "bot-tool",
+      (e) => {
+        // 2026-08-28 批次3审计 P0-2：按会话过滤
+        const sid = e.payload?.sessionId ?? null;
+        if (sid !== sessionIdRef.current) return;
+        const { id, name } = e.payload ?? {};
         if (!id) return;
+        const tools = [...(streamingMeta.current.tools ?? [])];
+        if (!tools.some((x) => x.id === id)) tools.push({ id, name: name ?? "" });
+        streamingMeta.current.tools = tools;
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (!last || !last.streaming) return prev;
+          const copy = [...prev];
+          copy[copy.length - 1] = { ...last, tools };
+          return copy;
+        });
+      }
+    );
+    const unToolName = listen<{ id?: string; name?: string; sessionId?: string | null }>(
+      "bot-tool-name",
+      (e) => {
+        // 2026-08-28 批次3审计 P0-2：按会话过滤
+        const sid = e.payload?.sessionId ?? null;
+        if (sid !== sessionIdRef.current) return;
+        const { id, name } = e.payload ?? {};
+        if (!id || !name) return;
         const tools = (streamingMeta.current.tools ?? []).map((x) =>
-          x.id === id ? { ...x, name: name ?? x.name, args, done: true } : x
+          x.id === id ? { ...x, name } : x
         );
         streamingMeta.current.tools = tools;
         setMessages((prev) => {
@@ -488,6 +497,29 @@ function extractFilePaths(content: string): string[] {
         });
       }
     );
+    const unToolDone = listen<{
+      id?: string;
+      name?: string;
+      args?: string;
+      sessionId?: string | null;
+    }>("bot-tool-done", (e) => {
+      // 2026-08-28 批次3审计 P0-2：按会话过滤
+      const sid = e.payload?.sessionId ?? null;
+      if (sid !== sessionIdRef.current) return;
+      const { id, name, args } = e.payload ?? {};
+      if (!id) return;
+      const tools = (streamingMeta.current.tools ?? []).map((x) =>
+        x.id === id ? { ...x, name: name ?? x.name, args, done: true } : x
+      );
+      streamingMeta.current.tools = tools;
+      setMessages((prev) => {
+        const last = prev[prev.length - 1];
+        if (!last || !last.streaming) return prev;
+        const copy = [...prev];
+        copy[copy.length - 1] = { ...last, tools };
+        return copy;
+      });
+    });
     // Skill 失败半成品（Phase 4 第 5 项 + 审计 P2）：后端 run_skill_scheduler 返回
     // FailedButRecoverable 时 emit `bot-skill-failed` event；前端把它挂到当前流式消息上
     // 渲染 ⚠️ 折叠行，让用户看到哪步成功哪步失败 + 是否回滚。
@@ -497,7 +529,11 @@ function extractFilePaths(content: string): string[] {
       reason?: string;
       completedSummary?: string;
       rollbackAttempted?: boolean;
+      sessionId?: string | null;
     }>("bot-skill-failed", (e) => {
+      // 2026-08-28 批次3审计 P0-2：按会话过滤
+      const sid = e.payload?.sessionId ?? null;
+      if (sid !== sessionIdRef.current) return;
       const p = e.payload ?? {};
       if (!p.skillName) return;
       const failure: SkillFailure = {

@@ -31,7 +31,9 @@ use crate::error::{CommandError, CommandResult};
 // `crate::bot::ToolCallDelta` / `crate::bot::BotChatResult`）中断。
 // 新代码应优先直接引用 bot_chat / bot_model_loop 模块。
 pub use crate::bot_chat::{BotChatResult, TaskRef};
-pub use crate::bot_model_loop::{parse_sse_chunk, ToolCallDelta};
+pub use crate::bot_model_loop::{
+    accumulate_tool_call_delta, drain_sse_lines, parse_sse_chunk, ToolCallDelta,
+};
 
 use serde::{Deserialize, Serialize};
 use std::io::Write;

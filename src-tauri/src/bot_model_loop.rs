@@ -288,15 +288,21 @@ fn tail_prefix_len(s: &str, tag: &str) -> usize {
 //        OpenAI SSE 格式演化只改这一处。
 // ────────────────────────────────────────────────────────────────────
 
-/// 一次 SSE chunk 解析结果（content / tool_calls / finish_reason / [DONE]）
+/// 一次 SSE chunk 解析结果（content / reasoning / tool_calls / finish_reason / 流内错误 / [DONE]）
 #[derive(Debug, Default, Clone)]
 pub struct ParsedChunk {
     /// delta.content（仅在非空字符串时 Some，与原代码 `!t.is_empty()` 语义一致）
     pub content: Option<String>,
+    /// delta.reasoning_content（2026-08-28 批次3审计 P2-5：DeepSeek-reasoner 等模型的
+    /// 独立推理字段，原先静默丢弃；与 <think> 标签同走 bot-think-delta 出口）
+    pub reasoning: Option<String>,
     /// delta.tool_calls 增量（多 chunk 拼成一个完整 tool_call）
     pub tool_calls: Vec<ToolCallDelta>,
     /// choices[0].finish_reason（最后一 chunk 通常为 "stop" / "tool_calls"）
     pub finish_reason: Option<String>,
+    /// 200 流内错误载荷（2026-08-28 批次3审计 P1-3）：部分 OpenAI 兼容网关在 200 流内
+    /// 发 `{"error":{...}}`，原先静默丢弃导致用户拿到空白回复——现显式冒出
+    pub error: Option<String>,
     /// `data: [DONE]` 标记
     pub is_done: bool,
 }
@@ -328,17 +334,34 @@ pub fn parse_sse_chunk(line: &str) -> Option<ParsedChunk> {
         });
     }
     let v: serde_json::Value = serde_json::from_str(data).ok()?;
-    let delta = v
+    let choice0 = v
         .get("choices")
         .and_then(|c| c.as_array())
-        .and_then(|a| a.first())
-        .map(|c| &c["delta"])?;
+        .and_then(|a| a.first());
+    let Some(choice0) = choice0 else {
+        // P1-3（2026-08-28 批次3审计）：200 流内错误载荷（部分兼容网关发
+        // `{"error":{...}}`）原先走 None 静默丢弃，用户拿到无错误提示的空白回复
+        if let Some(msg) = extract_stream_error(&v) {
+            return Some(ParsedChunk {
+                error: Some(msg),
+                ..Default::default()
+            });
+        }
+        return None;
+    };
+    let delta = &choice0["delta"];
 
     let mut chunk = ParsedChunk::default();
 
     if let Some(t) = delta["content"].as_str() {
         if !t.is_empty() {
             chunk.content = Some(t.to_string());
+        }
+    }
+
+    if let Some(t) = delta["reasoning_content"].as_str() {
+        if !t.is_empty() {
+            chunk.reasoning = Some(t.to_string());
         }
     }
 
@@ -362,16 +385,71 @@ pub fn parse_sse_chunk(line: &str) -> Option<ParsedChunk> {
         }
     }
 
-    if let Some(reason) = v
-        .get("choices")
-        .and_then(|c| c.as_array())
-        .and_then(|a| a.first())
-        .and_then(|c| c["finish_reason"].as_str())
-    {
+    if let Some(reason) = choice0["finish_reason"].as_str() {
         chunk.finish_reason = Some(reason.to_string());
     }
 
     Some(chunk)
+}
+
+/// 从流内 JSON 载荷提取错误消息（`{"error":{"message":...}}` 或 `{"error":"..."}`，截 200 字）
+fn extract_stream_error(v: &serde_json::Value) -> Option<String> {
+    let e = v.get("error")?;
+    if let Some(m) = e.get("message").and_then(|m| m.as_str()) {
+        return Some(m.chars().take(200).collect());
+    }
+    e.as_str().map(|s| s.chars().take(200).collect())
+}
+
+/// 从字节缓冲切出完整的 SSE 行（按 `b'\n'` 切，残余不完整行留在 buf）。
+/// 按字节切行的原因（2026-08-28 批次3审计 P1-2）：TCP chunk 边界可能落在多字节
+/// UTF-8 字符中间，逐 chunk `from_utf8_lossy` 会产生 U+FFFD 替换字符——正文里只是乱码，
+/// 工具 arguments 里则是「合法 JSON 但内容损坏」会被真实执行。
+/// `b'\n'`（0x0A）不会出现在多字节 UTF-8 序列内，整行 decode 安全。
+/// pub：tests/llm_integration.rs 的分片用例复用（与生产同一切行逻辑，防双份实现漂移）。
+pub fn drain_sse_lines(buf: &mut Vec<u8>) -> Vec<String> {
+    let mut lines = Vec::new();
+    while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+        let line: Vec<u8> = buf.drain(..=pos).collect();
+        lines.push(String::from_utf8_lossy(&line).into_owned());
+    }
+    lines
+}
+
+/// 单条响应内 tool_calls 的 index 上限（2026-08-28 批次3审计 P2-2）：
+/// index 来自服务端，畸形/恶意 index（如 10000000）会让累积循环无脑 push 撑爆内存
+pub const MAX_TOOL_CALL_INDEX: usize = 64;
+
+/// 把一个 tool_call delta 按 index 归位累积进 (id, name, arguments) 列表：
+/// id 只置首次（迟到的 id 能补上）、name/arguments 跨 delta 追加。
+/// 返回 false = index 超上限，该 delta 被丢弃（调用方记审计）。
+/// pub：tests/llm_integration.rs 复用同一累积逻辑（2026-08-28 批次3 T-1：
+/// 测试原先自写平铺式累积，与生产 index 归并语义存在漂移面）。
+pub fn accumulate_tool_call_delta(
+    calls: &mut Vec<(String, String, String)>,
+    delta: &ToolCallDelta,
+) -> bool {
+    if delta.index > MAX_TOOL_CALL_INDEX {
+        return false;
+    }
+    while calls.len() <= delta.index {
+        calls.push((String::new(), String::new(), String::new()));
+    }
+    let t = &mut calls[delta.index];
+    if let Some(id) = &delta.id {
+        if t.0.is_empty() {
+            t.0 = id.clone();
+        }
+    }
+    if let Some(name) = &delta.name_chunk {
+        if !name.is_empty() {
+            t.1.push_str(name);
+        }
+    }
+    if let Some(args) = &delta.arguments_chunk {
+        t.2.push_str(args);
+    }
+    true
 }
 
 /// 默认对话轮数（聊天 / 任务执行 / 逐步执行统一；2026-08-26 老板拍板 20 → 50）；
@@ -399,6 +477,17 @@ pub(crate) fn resolve_max_rounds(skill_max_rounds: Option<usize>) -> usize {
 //   软警告 7 → 35（保持 ~30% buffer：50-15=35）
 const MAX_FUNCTION_CALLS_PER_TURN: usize = 50;
 const SOFT_WARN_AT: usize = 35;
+
+/// LLM 请求重试（2026-08-28 批次3审计 P1-4）：429/5xx/网络错误重试一次（1.5s 退避）。
+/// 只在流式产出开始前重试——响应已开始流式产出后不重试（无重放风险：
+/// 重试发的是同一轮请求，已执行的工具在 msgs 里，不会因重发而重放）。
+const MAX_LLM_ATTEMPTS: usize = 2;
+const LLM_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// 可重试的 HTTP 状态：429 限流 + 5xx 服务端瞬时错误；401/400 等重试无意义
+fn is_retryable_llm_status(status: u16) -> bool {
+    status == 429 || (500..=599).contains(&status)
+}
 
 /// 熔断判定：第 n 次（1-based 累计）Function 调用是否超上限
 fn should_fuse(calls_so_far: usize) -> bool {
@@ -445,9 +534,14 @@ pub async fn run_model_loop(
     let stream_to_widget = stop.is_interactive();
     let session_id: Option<&str> = stop.session_id();
     // 流式事件出口统一收口（2026-08-26 会话隔离）：非交互实例（后台定时任务）
-    // 不向挂件发任何流式增量，防后台执行输出串进用户当前会话的 streaming 气泡
-    let emit_stream = |event: &str, payload: serde_json::Value| {
+    // 不向挂件发任何流式增量，防后台执行输出串进用户当前会话的 streaming 气泡。
+    // 2026-08-28 批次3审计 P0-2：payload 统一注入 sessionId，前端按当前会话过滤——
+    // 原先事件不带会话标记，两个会话并行跑时 A 的流式增量会串进 B 正在显示的气泡。
+    let emit_stream = |event: &str, mut payload: serde_json::Value| {
         if stream_to_widget {
+            if let Some(obj) = payload.as_object_mut() {
+                obj.insert("sessionId".into(), serde_json::json!(session_id));
+            }
             let _ = app.emit_to("widget", event, payload);
         }
     };
@@ -527,24 +621,57 @@ pub async fn run_model_loop(
             "msgs_count" => msgs.len(),
         );
 
-        let resp = match client
-            .post(&url)
-            .bearer_auth(api_key.trim())
-            .json(&body)
-            .send()
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                // 2026-08-27 审计 P2：LLM 网络失败原先零审计，与 API 错误分支不对称
-                crate::audit_event!(
-                    &app,
-                    crate::audit::AuditLevel::Error,
-                    "llm.request_failed",
-                    "err" => e.to_string(),
-                );
-                let hint = crate::bot_skills::skill_finish(&app, false, "大模型请求失败", session_id);
-                return Err(format!("请求大模型失败：{e}{hint}").into());
+        // P1-4（2026-08-28 批次3审计）：429/5xx/发送失败重试一次——原先任何瞬时抖动
+        // 直接作废整轮工具循环。只在流式产出开始前重试，无部分内容重复/重放问题。
+        let mut attempt = 0usize;
+        let resp = loop {
+            attempt += 1;
+            match client
+                .post(&url)
+                .bearer_auth(api_key.trim())
+                .json(&body)
+                .send()
+                .await
+            {
+                Ok(r) => {
+                    if !r.status().is_success()
+                        && is_retryable_llm_status(r.status().as_u16())
+                        && attempt < MAX_LLM_ATTEMPTS
+                    {
+                        crate::audit_event!(
+                            &app,
+                            crate::audit::AuditLevel::Warn,
+                            "llm.retry",
+                            "status" => r.status().as_u16(),
+                            "attempt" => attempt,
+                        );
+                        drop(r);
+                        tokio::time::sleep(LLM_RETRY_DELAY).await;
+                        continue;
+                    }
+                    break r;
+                }
+                Err(e) => {
+                    if attempt < MAX_LLM_ATTEMPTS {
+                        crate::audit_event!(
+                            &app,
+                            crate::audit::AuditLevel::Warn,
+                            "llm.retry",
+                            "err" => e.to_string(),
+                            "attempt" => attempt,
+                        );
+                        tokio::time::sleep(LLM_RETRY_DELAY).await;
+                        continue;
+                    }
+                    crate::audit_event!(
+                        &app,
+                        crate::audit::AuditLevel::Error,
+                        "llm.request_failed",
+                        "err" => e.to_string(),
+                    );
+                    let hint = crate::bot_skills::skill_finish(&app, false, "大模型请求失败", session_id);
+                    return Err(format!("请求大模型失败：{e}{hint}").into());
+                }
             }
         };
         let status = resp.status();
@@ -570,78 +697,134 @@ pub async fn run_model_loop(
         );
 
         let mut stream = resp.bytes_stream();
-        let mut line_buf = String::new();
+        // P1-2（2026-08-28 批次3审计）：字节缓冲按行切——原先逐 chunk from_utf8_lossy，
+        // chunk 边界落在多字节字符中间时产生 U+FFFD（正文乱码尚可，
+        // 嵌在工具 arguments 里则是「合法 JSON 但内容损坏」会被真实执行）
+        let mut byte_buf: Vec<u8> = Vec::new();
         let mut final_text = String::new();
         let mut tool_calls: Vec<(String, String, String)> = Vec::new(); // (id, name, arguments)
                                                                         // <think> 思考块拆分：思考走 bot-think-delta，正文走 bot-chat-delta
         let mut think_mode = false;
         let mut think_buf = String::new();
+        // 流完整性（P1-1）：对端干净 EOF（无报错、无 [DONE]、无 finish_reason）时
+        // 残缺 tool_calls 不得当完整回复执行——跟踪是否见到正常收尾标记
+        let mut saw_done_or_finish = false;
+        let mut last_finish_reason: Option<String> = None;
+        let mut stream_error: Option<String> = None;
+        let mut tc_index_overflow_logged = false;
 
         let mut stopped = false;
-        while let Some(chunk) = stream.next().await {
-            if stop.stopped() {
-                stopped = true;
-                break;
-            }
-            let chunk = match chunk {
-                Ok(c) => c,
-                Err(e) => {
-                    // 2026-08-27 审计 P2：流式中断原先静默 Err，无审计留痕
-                    crate::audit_event!(
-                        &app,
-                        crate::audit::AuditLevel::Error,
-                        "llm.stream_failed",
-                        "err" => e.to_string(),
-                    );
-                    return Err(format!("流式读取失败：{e}").into());
+        {
+            let emit = &emit_stream;
+            // 单行 SSE 处理（主循环与流尾残余行冲刷共用）；
+            // 返回 Some = 流内错误载荷（P1-3），调用方收尾报错
+            let mut handle_line = |line: &str| -> Option<String> {
+                let parsed = parse_sse_chunk(line)?;
+                if parsed.is_done {
+                    saw_done_or_finish = true;
+                    return None;
                 }
-            };
-            line_buf.push_str(&String::from_utf8_lossy(&chunk));
-            while let Some(nl) = line_buf.find('\n') {
-                let line: String = line_buf.drain(..=nl).collect();
-                let line = line.trim();
-                if let Some(parsed) = parse_sse_chunk(&line) {
-                    if parsed.is_done {
+                if let Some(reason) = parsed.finish_reason {
+                    saw_done_or_finish = true;
+                    last_finish_reason = Some(reason);
+                }
+                // P2-5：reasoning_content 与 <think> 同出口（不进 final_text、不进历史）
+                if let Some(r) = parsed.reasoning {
+                    emit("bot-think-delta", serde_json::json!({ "text": r }));
+                }
+                if let Some(t) = parsed.content {
+                    let (normal, think) = feed_think(&mut think_mode, &mut think_buf, &t);
+                    if !think.is_empty() {
+                        emit("bot-think-delta", serde_json::json!({ "text": think }));
+                    }
+                    if !normal.is_empty() {
+                        final_text.push_str(&normal);
+                        emit("bot-chat-delta", serde_json::json!({ "text": normal }));
+                    }
+                }
+                for tc_delta in parsed.tool_calls {
+                    let first_id = tc_delta.id.is_some()
+                        && tool_calls
+                            .get(tc_delta.index)
+                            .map(|t| t.0.is_empty())
+                            .unwrap_or(true);
+                    // 累积走 accumulate_tool_call_delta（与 tests/llm_integration 同一实现）
+                    if !accumulate_tool_call_delta(&mut tool_calls, &tc_delta) {
+                        if !tc_index_overflow_logged {
+                            tc_index_overflow_logged = true;
+                            crate::audit_event!(
+                                &app,
+                                crate::audit::AuditLevel::Warn,
+                                "llm.tool_call_index_overflow",
+                                "index" => tc_delta.index,
+                                "max" => MAX_TOOL_CALL_INDEX,
+                            );
+                        }
                         continue;
                     }
-                    if let Some(t) = parsed.content {
-                        if !t.is_empty() {
-                            let (normal, think) = feed_think(&mut think_mode, &mut think_buf, &t);
-                            if !think.is_empty() {
-                                emit_stream("bot-think-delta", serde_json::json!({ "text": think }));
-                            }
-                            if !normal.is_empty() {
-                                final_text.push_str(&normal);
-                                emit_stream("bot-chat-delta", serde_json::json!({ "text": normal }));
-                            }
-                        }
+                    let t = &tool_calls[tc_delta.index];
+                    if first_id && !t.0.is_empty() {
+                        // 新工具调用开始：推折叠行给挂件
+                        emit("bot-tool", serde_json::json!({ "id": t.0, "name": t.1 }));
                     }
-                    for tc_delta in parsed.tool_calls {
-                        while tool_calls.len() <= tc_delta.index {
-                            tool_calls.push((String::new(), String::new(), String::new()));
-                        }
-                        let t = &mut tool_calls[tc_delta.index];
-                        if let Some(id) = tc_delta.id {
-                            if t.0.is_empty() {
-                                t.0 = id;
-                                // 新工具调用开始：推折叠行给挂件
-                                emit_stream("bot-tool", serde_json::json!({ "id": t.0, "name": t.1 }));
-                            }
-                        }
-                        if let Some(name) = tc_delta.name_chunk {
-                            if !name.is_empty() {
-                                t.1.push_str(&name);
-                                if !t.0.is_empty() {
-                                    emit_stream("bot-tool-name", serde_json::json!({ "id": t.0, "name": t.1 }));
-                                }
-                            }
-                        }
-                        if let Some(args) = tc_delta.arguments_chunk {
-                            t.2.push_str(&args);
-                        }
+                    if tc_delta.name_chunk.as_deref().is_some_and(|n| !n.is_empty())
+                        && !t.0.is_empty()
+                    {
+                        emit("bot-tool-name", serde_json::json!({ "id": t.0, "name": t.1 }));
+                    }
+                }
+                parsed.error
+            };
+            while let Some(chunk) = stream.next().await {
+                if stop.stopped() {
+                    stopped = true;
+                    break;
+                }
+                let chunk = match chunk {
+                    Ok(c) => c,
+                    Err(e) => {
+                        crate::audit_event!(
+                            &app,
+                            crate::audit::AuditLevel::Error,
+                            "llm.stream_failed",
+                            "err" => e.to_string(),
+                        );
+                        return Err(format!("流式读取失败：{e}").into());
+                    }
+                };
+                byte_buf.extend_from_slice(&chunk);
+                for line in drain_sse_lines(&mut byte_buf) {
+                    if let Some(e) = handle_line(line.trim()) {
+                        stream_error = Some(e);
+                        break;
+                    }
+                }
+                if stream_error.is_some() {
+                    break;
+                }
+            }
+            // 流尾残余行冲刷（P2-1）：非标准服务端最后一个 data 事件可能不带尾换行
+            if !stopped && stream_error.is_none() && !byte_buf.is_empty() {
+                byte_buf.push(b'\n');
+                for line in drain_sse_lines(&mut byte_buf) {
+                    if let Some(e) = handle_line(line.trim()) {
+                        stream_error = Some(e);
+                        break;
                     }
                 }
             }
+        }
+
+        // P1-3：200 流内错误载荷——显式报错 + 审计，不再返回空白回复
+        if let Some(err) = stream_error {
+            crate::audit_event!(
+                &app,
+                crate::audit::AuditLevel::Error,
+                "llm.stream_error",
+                "err" => err.clone(),
+            );
+            let hint = crate::bot_skills::skill_finish(&app, false, "大模型流内错误", session_id);
+            return Err(format!("大模型返回错误：{err}{hint}").into());
         }
 
         // 回合结束：冲刷思考缓冲（丢弃未闭合标签碎片）
@@ -662,6 +845,36 @@ pub async fn run_model_loop(
             return Ok((format!("{final_text}\n\n⏹ 已停止{hint}"), collected_refs));
         }
 
+        // 流完整性检查（P1-1，2026-08-28 批次3审计）：未见 [DONE]/finish_reason 的
+        // 干净 EOF = 流被截断（中间代理 idle cut 等）。残缺 tool_calls 不得执行
+        // （原先靠 parse_args 失败落 Null 侥幸兜底，没有显式防线）。
+        if !saw_done_or_finish {
+            crate::audit_event!(
+                &app,
+                crate::audit::AuditLevel::Warn,
+                "llm.stream_truncated",
+                "tool_calls" => tool_calls.len(),
+                "text_len" => final_text.chars().count(),
+            );
+            if !tool_calls.is_empty() {
+                let hint = crate::bot_skills::skill_finish(&app, false, "流式响应中断", session_id);
+                return Err(format!("大模型响应中断（流被截断），工具调用未执行{hint}").into());
+            }
+            if final_text.is_empty() {
+                let hint = crate::bot_skills::skill_finish(&app, false, "流式响应中断", session_id);
+                return Err(format!("大模型响应中断：未收到完整回复{hint}").into());
+            }
+            final_text.push_str("\n\n⚠️ 响应可能被截断（连接提前结束），以上内容可能不完整。");
+        }
+
+        // P2-3（2026-08-28 批次3审计）：兼容省略 tool_call id 的供应商——空 id 进历史
+        // 下一轮会被严格 API 拒为 400 invalid params；本地合成占位 id
+        for (i, t) in tool_calls.iter_mut().enumerate() {
+            if t.0.is_empty() {
+                t.0 = format!("call_synth_{i}");
+            }
+        }
+
         if tool_calls.is_empty() {
             // 防幻觉汇报守卫（2026-08-19）：声称完成变更但本轮没动过手 →
             // 注入系统提醒补一轮，逼模型实际调工具或如实说明（最多补一次）
@@ -680,6 +893,17 @@ pub async fn run_model_loop(
                     "content": "【系统提示】你刚才声称完成了变更，但本轮没有任何变更类工具调用成功，数据实际没有变化。请立即调用对应工具实际执行（删除用 delete_task、完成用 complete_task、编辑用 edit_task、子任务用 add_subtask/remove_subtask、绑定文件用 bind_file、生成文档用 create_word/create_excel/create_ppt/create_pdf；逐步执行模式下子任务勾选由系统完成，不要代调 toggle_subtask）；若确实无法执行（任务不存在/被安全闸门拦截/无权限等），如实向用户说明原因，禁止再次声称已完成。"
                 }));
                 continue;
+            }
+            // P2-4（2026-08-28 批次3审计）：finish_reason=length（token 截断）/
+            // content_filter 原先完全不感知——半截回复当正常答案、空回复无解释
+            match last_finish_reason.as_deref() {
+                Some("length") => {
+                    final_text.push_str("\n\n（回复因长度限制被截断，可以让我「继续」补完）")
+                }
+                Some("content_filter") if final_text.is_empty() => {
+                    final_text = "（回复被服务商的内容过滤拦截，请换个方式提问）".into();
+                }
+                _ => {}
             }
             let _ = crate::bot_skills::skill_finish(&app, true, "", session_id);
             collected_refs = merge_task_refs_dedup(collected_refs);
@@ -750,7 +974,9 @@ pub async fn run_model_loop(
             crate::bot::audit_log(
                 &app,
                 &format!(
-                    "tool: {name} | args: {} | result: {}",
+                    "tool: {} | args: {} | result: {}",
+                    // 2026-08-28 批次3审计 P2-7：工具名是模型给的字符串，直插可伪造日志行
+                    crate::bot::truncate_for_log(name, 60),
                     crate::bot::truncate_for_log(args, 500),
                     crate::bot::truncate_for_log(&result, 300)
                 ),
@@ -1092,12 +1318,33 @@ mod parse_sse_chunk_tests {
     }
 
     #[test]
-    fn returns_none_for_missing_choices() {
-        let line = r#"data: {"id":"x","error":"auth_failed"}"#;
-        assert!(
-            parse_sse_chunk(line).is_none(),
-            "异常响应（error 字段）应被忽略"
-        );
+    fn stream_error_payload_surfaced() {
+        // P1-3（2026-08-28 批次3审计）：200 流内错误载荷原先静默忽略 → 空白回复；
+        // 现必须显式冒出（主循环据此报错 + 审计）
+        let line = r#"data: {"id":"x","error":{"message":"auth_failed","type":"auth_error"}}"#;
+        let parsed = parse_sse_chunk(line).expect("error 载荷必须冒出，不得静默丢弃");
+        assert_eq!(parsed.error.as_deref(), Some("auth_failed"));
+
+        // error 为裸字符串的兼容形态
+        let line2 = r#"data: {"error":"rate limited"}"#;
+        let parsed2 = parse_sse_chunk(line2).unwrap();
+        assert_eq!(parsed2.error.as_deref(), Some("rate limited"));
+    }
+
+    #[test]
+    fn returns_none_for_empty_choices_without_error() {
+        // 空 choices 且无 error 字段 → 仍静默跳过（与原语义一致）
+        let line = r#"data: {"id":"x","choices":[]}"#;
+        assert!(parse_sse_chunk(line).is_none());
+    }
+
+    #[test]
+    fn parses_reasoning_content() {
+        // P2-5：DeepSeek-reasoner 类模型的独立推理字段
+        let line = r#"data: {"choices":[{"delta":{"reasoning_content":"先想一下","content":null}}]}"#;
+        let parsed = parse_sse_chunk(line).unwrap();
+        assert_eq!(parsed.reasoning.as_deref(), Some("先想一下"));
+        assert!(parsed.content.is_none());
     }
 
     #[test]
@@ -1134,6 +1381,140 @@ mod parse_sse_chunk_tests {
         let line = r#"data: {"choices":[{"delta":{"tool_calls":[{"function":{"name":"a"}}]}}]}"#;
         let parsed = parse_sse_chunk(line).unwrap();
         assert_eq!(parsed.tool_calls[0].index, 0, "缺 index 时默认 0");
+    }
+}
+
+#[cfg(test)]
+mod stream_accumulate_tests {
+    use super::*;
+
+    /// P1-2：多字节 UTF-8 字符跨 chunk 切断时不得产生 U+FFFD 替换字符
+    #[test]
+    fn drain_sse_lines_no_replacement_char_across_chunks() {
+        let text = "data: {\"choices\":[{\"delta\":{\"content\":\"你好\"}}]}\n";
+        let bytes = text.as_bytes();
+        // 「你」是 3 字节字符，切在它的第 2 个字节后
+        let pos = bytes
+            .windows(3)
+            .position(|w| w == "你".as_bytes())
+            .expect("应含「你」");
+        let mut buf: Vec<u8> = Vec::new();
+        buf.extend_from_slice(&bytes[..pos + 1]);
+        assert!(
+            drain_sse_lines(&mut buf).is_empty(),
+            "行未完成时不应产出任何行"
+        );
+        buf.extend_from_slice(&bytes[pos + 1..]);
+        let lines = drain_sse_lines(&mut buf);
+        assert_eq!(lines.len(), 1);
+        assert!(
+            !lines[0].contains('\u{FFFD}'),
+            "多字节字符跨 chunk 不得产生替换字符：{:?}",
+            lines[0]
+        );
+        assert!(lines[0].contains("你好"));
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn drain_sse_lines_keeps_incomplete_tail() {
+        let mut buf = b"data: a\ndata: partial".to_vec();
+        let lines = drain_sse_lines(&mut buf);
+        assert_eq!(lines, vec!["data: a\n".to_string()]);
+        assert_eq!(buf, b"data: partial".to_vec(), "残余不完整行留在 buf");
+    }
+
+    #[test]
+    fn accumulate_merges_shards_by_index() {
+        let mut calls: Vec<(String, String, String)> = Vec::new();
+        // 两个并行 tool_call 交错到达；id 只在首帧；arguments 分片
+        let deltas = [
+            ToolCallDelta {
+                index: 0,
+                id: Some("call_a".into()),
+                name_chunk: Some("list".into()),
+                arguments_chunk: Some("{\"ti".into()),
+            },
+            ToolCallDelta {
+                index: 1,
+                id: Some("call_b".into()),
+                name_chunk: Some("web".into()),
+                arguments_chunk: Some("{\"q".into()),
+            },
+            ToolCallDelta {
+                index: 0,
+                id: None,
+                name_chunk: Some("_tasks".into()),
+                arguments_chunk: Some("tle\":\"x\"}".into()),
+            },
+            ToolCallDelta {
+                index: 1,
+                id: None,
+                name_chunk: Some("_search".into()),
+                arguments_chunk: Some("\":\"y\"}".into()),
+            },
+        ];
+        for d in &deltas {
+            assert!(accumulate_tool_call_delta(&mut calls, d));
+        }
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0], ("call_a".into(), "list_tasks".into(), "{\"title\":\"x\"}".into()));
+        assert_eq!(calls[1], ("call_b".into(), "web_search".into(), "{\"q\":\"y\"}".into()));
+    }
+
+    #[test]
+    fn accumulate_late_id_fills_empty_slot() {
+        let mut calls: Vec<(String, String, String)> = Vec::new();
+        let d1 = ToolCallDelta {
+            index: 0,
+            id: None,
+            name_chunk: Some("list_tasks".into()),
+            arguments_chunk: None,
+        };
+        assert!(accumulate_tool_call_delta(&mut calls, &d1));
+        let d2 = ToolCallDelta {
+            index: 0,
+            id: Some("call_late".into()),
+            name_chunk: None,
+            arguments_chunk: None,
+        };
+        assert!(accumulate_tool_call_delta(&mut calls, &d2));
+        assert_eq!(calls[0].0, "call_late", "迟到的 id 应补上");
+    }
+
+    /// P2-2：畸形/恶意 index 不得撑爆内存
+    #[test]
+    fn accumulate_rejects_insane_index() {
+        let mut calls: Vec<(String, String, String)> = Vec::new();
+        let d = ToolCallDelta {
+            index: MAX_TOOL_CALL_INDEX + 1,
+            id: Some("evil".into()),
+            name_chunk: Some("x".into()),
+            arguments_chunk: None,
+        };
+        assert!(!accumulate_tool_call_delta(&mut calls, &d));
+        assert!(calls.is_empty(), "超限 index 不得伸长列表");
+        // 边界：恰好上限放行
+        let ok = ToolCallDelta {
+            index: MAX_TOOL_CALL_INDEX,
+            id: None,
+            name_chunk: Some("x".into()),
+            arguments_chunk: None,
+        };
+        assert!(accumulate_tool_call_delta(&mut calls, &ok));
+        assert_eq!(calls.len(), MAX_TOOL_CALL_INDEX + 1);
+    }
+
+    /// P1-4：重试状态白名单
+    #[test]
+    fn retryable_status_429_and_5xx_only() {
+        assert!(is_retryable_llm_status(429));
+        assert!(is_retryable_llm_status(500));
+        assert!(is_retryable_llm_status(503));
+        assert!(!is_retryable_llm_status(400));
+        assert!(!is_retryable_llm_status(401));
+        assert!(!is_retryable_llm_status(404));
+        assert!(!is_retryable_llm_status(200));
     }
 }
 

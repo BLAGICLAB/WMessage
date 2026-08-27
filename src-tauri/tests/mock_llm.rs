@@ -5,7 +5,8 @@
 /// 设计要点：
 /// - std::net::TcpListener 后台线程，零额外 deps（避免给测试加 ureq/hyper）
 /// - 每个请求独立计数 + 可配置 tool_call 响应队列
-/// - URL: `http://127.0.0.1:{port}/v1/chat/completions`（与 bot.rs line 1051 一致）
+/// - URL: `http://127.0.0.1:{port}/v1/chat/completions`（与 bot_model_loop.rs 的
+///   run_model_loop 请求路径一致）
 ///
 /// 测试覆盖：
 /// 1. server 返回合法 OpenAI 兼容 SSE（`data: {...}\n\n` + `data: [DONE]\n\n`）
@@ -44,6 +45,11 @@ pub enum MockBehavior {
     ToolCall(ToolCallResponse),
     /// 模拟 HTTP 错误（如 API key 失效 / 限流）
     HttpError(u16, String),
+    /// 200 SSE 流内错误载荷（OneAPI 类网关行为，批次3审计 P1-3）
+    StreamError(String),
+    /// 正文按 N 字节切片逐片 write+flush（可在多字节 UTF-8 字符中间切断，
+    /// 模拟真实 TCP 分片，批次3审计 T-2 / P1-2）；片间 sleep 5ms
+    FragmentedTextReply(String, usize),
 }
 
 pub struct MockLlmServer {
@@ -126,9 +132,34 @@ impl MockLlmServer {
                     }
                 };
 
-                let http_response = build_http_response(&behavior);
-                let _ = stream.write_all(http_response.as_bytes());
-                let _ = stream.flush();
+                match &behavior {
+                    // 分片写出：先写 HTTP 头，body 按 N 字节切片逐片 write+flush
+                    //（可在多字节 UTF-8 字符中间切断，模拟真实 TCP 分片）
+                    MockBehavior::FragmentedTextReply(content, chunk_bytes) => {
+                        let body = sse_text_reply(content);
+                        let head = format!(
+                            "HTTP/1.1 200 OK\r\n\
+                             Content-Type: text/event-stream\r\n\
+                             Content-Length: {}\r\n\
+                             Connection: close\r\n\
+                             \r\n",
+                            body.len()
+                        );
+                        let _ = stream.write_all(head.as_bytes());
+                        let _ = stream.flush();
+                        for slice in body.as_bytes().chunks((*chunk_bytes).max(1)) {
+                            let _ = stream.write_all(slice);
+                            let _ = stream.flush();
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                    }
+                    // 普通 behavior：整响应一次 write（原逻辑不变）
+                    _ => {
+                        let http_response = build_http_response(&behavior);
+                        let _ = stream.write_all(http_response.as_bytes());
+                        let _ = stream.flush();
+                    }
+                }
             }
         });
 
@@ -180,7 +211,8 @@ fn build_http_response(behavior: &MockBehavior) -> String {
             let body = match behavior {
                 MockBehavior::TextReply(content) => sse_text_reply(content),
                 MockBehavior::ToolCall(tc) => sse_tool_call_reply(&tc.name, &tc.arguments),
-                _ => unreachable!(),
+                MockBehavior::StreamError(msg) => sse_stream_error_reply(msg),
+                _ => unreachable!(), // FragmentedTextReply 在连接处理分支里单独分片写出
             };
             format!(
                 "HTTP/1.1 200 OK\r\n\
@@ -221,7 +253,7 @@ fn status_to_reason(status: u16) -> &'static str {
     }
 }
 
-/// 流式文本回复（与 bot.rs line 1118-1122 解析路径对齐）
+/// 流式文本回复（与 bot_model_loop.rs 的 parse_sse_chunk 解析路径对齐）
 /// 格式：`data: {json}\n\n` + `data: {json}\n\n` + `data: [DONE]\n\n`
 fn sse_text_reply(content: &str) -> String {
     let escaped = content.replace('\\', "\\\\").replace('"', "\\\"");
@@ -232,7 +264,7 @@ fn sse_text_reply(content: &str) -> String {
     format!("{chunk1}\n\n{chunk2}\n\ndata: [DONE]\n\n")
 }
 
-/// 流式 tool_call 回复（与 bot.rs line 1138-1142 解析路径对齐）
+/// 流式 tool_call 回复（与 bot_model_loop.rs 的 parse_sse_chunk 解析路径对齐）
 fn sse_tool_call_reply(name: &str, arguments: &str) -> String {
     let args_escaped = arguments.replace('\\', "\\\\").replace('"', "\\\"");
     let chunk = format!(
@@ -240,6 +272,14 @@ fn sse_tool_call_reply(name: &str, arguments: &str) -> String {
     );
     let final_chunk = r#"data: {"id":"chatcmpl-mock","object":"chat.completion.chunk","created":1234567890,"model":"deepseek-chat","choices":[{"delta":{},"index":0,"finish_reason":"tool_calls"}]}"#;
     format!("{chunk}\n\n{final_chunk}\n\ndata: [DONE]\n\n")
+}
+
+/// 200 SSE 流内错误载荷（OneAPI 类网关行为，批次3审计 P1-3）：
+/// `data: {"error":{"message":"<msg>","type":"stream_error"}}` + `data: [DONE]`
+fn sse_stream_error_reply(message: &str) -> String {
+    // 与 sse_text_reply 同一 JSON 转义法
+    let escaped = message.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("data: {{\"error\":{{\"message\":\"{escaped}\",\"type\":\"stream_error\"}}}}\n\ndata: [DONE]\n\n")
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -388,7 +428,7 @@ fn mock_llm_server_serves_tool_call_response_for_interactive_skill() {
 
     let (_head, body) = split_response(&raw);
 
-    // 验证 tool_call 响应格式（与 bot.rs line 1138-1142 解析对齐）
+    // 验证 tool_call 响应格式（与 bot_model_loop.rs 的 parse_sse_chunk 解析对齐）
     assert!(body.contains(r#""tool_calls""#), "应包含 tool_calls 字段");
     assert!(
         body.contains(r#""function""#),
@@ -489,6 +529,62 @@ fn mock_llm_server_returns_http_error_for_401() {
     assert!(
         body.contains("Invalid API key"),
         "error body 应包含错误详情；got: {body}"
+    );
+
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(server.request_count(), 1);
+}
+
+#[test]
+fn mock_llm_server_returns_in_stream_error_payload() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::StreamError("auth_failed".to_string()));
+
+    let raw = http_post_raw(
+        &format!("{}/chat/completions", server.base_url),
+        r#"{"model":"deepseek-chat","messages":[],"stream":true}"#,
+    )
+    .expect("POST 成功");
+
+    let (head, body) = split_response(&raw);
+    // 流内错误载荷仍是 HTTP 200（OneAPI 类网关行为）
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "got: {head}");
+    assert!(body.contains(r#""error""#), "body 应含 error 载荷；got: {body}");
+    assert!(body.contains("auth_failed"), "body 应含错误消息；got: {body}");
+    assert!(
+        body.trim_end().ends_with("data: [DONE]"),
+        "流内错误后仍应以 [DONE] 收尾"
+    );
+
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(server.request_count(), 1);
+}
+
+#[test]
+fn mock_llm_server_fragmented_multibyte_reply_intact() {
+    let server = MockLlmServer::start();
+    // 「你好世界」每字符 3 字节，按 2 字节切片必然在多字节字符中间切断
+    server.push_behavior(MockBehavior::FragmentedTextReply(
+        "你好世界".to_string(),
+        2,
+    ));
+
+    let raw = http_post_raw(
+        &format!("{}/chat/completions", server.base_url),
+        r#"{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}],"stream":true}"#,
+    )
+    .expect("POST 成功");
+
+    let (head, body) = split_response(&raw);
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "got: {head}");
+    // http_post_raw 用 read_to_string 整收：分片重组后内容应完整无损
+    assert!(
+        body.contains("你好世界"),
+        "分片重组后正文应完整；got: {body}"
+    );
+    assert!(
+        !body.contains('\u{FFFD}'),
+        "多字节字符跨片不应产生 U+FFFD 替换符；got: {body}"
     );
 
     std::thread::sleep(Duration::from_millis(50));

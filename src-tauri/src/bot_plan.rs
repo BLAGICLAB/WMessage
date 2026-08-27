@@ -152,7 +152,9 @@ async fn call_planner(
         .and_then(|a| a.first())
         .and_then(|c| c["message"]["content"].as_str())
         .unwrap_or("");
-    parse_plan(text).ok_or_else(|| format!("Planner 输出无法解析为计划：{}", crate::bot::truncate_for_log(text, 200)).into())
+    // 2026-08-28 批次3审计 P2-6：非流式 Planner 响应可能带 <think> 段，先剥再提取 JSON
+    let text = crate::bot_chat::strip_think_blocks(text);
+    parse_plan(&text).ok_or_else(|| format!("Planner 输出无法解析为计划：{}", crate::bot::truncate_for_log(&text, 200)).into())
 }
 
 /// 生成初始计划。失败/解析不出 → None（调用方降级为自由循环，不阻断聊天）。

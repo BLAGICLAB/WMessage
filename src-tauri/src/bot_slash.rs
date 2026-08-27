@@ -122,7 +122,8 @@ pub fn bot_stop(app: AppHandle, session_id: Option<String>) {
     // P1-8：/stop 本身留痕——原先零审计，无法区分「用户停过」与「自己跑完」
     crate::bot::audit_log(
         &app,
-        &format!("bot_stop | session: {}", session_id.as_deref().unwrap_or("<none>")),
+        // 2026-08-28 批次3审计：session_id 前端传入，转义防日志伪造/多行撕裂
+        &format!("bot_stop | session: {}", crate::bot::truncate_for_log(session_id.as_deref().unwrap_or("<none>"), 60)),
     );
     // Skill 调度器联动：强制终止本会话的活动技能（None = 全部会话，兼容旧调用）
     crate::bot_skills::skill_terminate_all(&app, "用户停止", session_id.as_deref());

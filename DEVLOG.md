@@ -2,6 +2,22 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-08-28（周五）全面审计批次 3：LLM 协议与流式（2 个 P0 已修）
+
+按 `docs/AUDIT-PLAN-BOT-2026-08-27.md` 推进，3 路并行审计（SSE/tool_calls、think/上下文、mock 保真度）+ P0/P1 人工复核，报告落盘 `docs/AUDIT-LLM-2026-08-28.md`。
+
+**P0 两个（均已修 + 回归测试）**：
+- **同名 Skill 跨会话顶号**：SKILL_RUNS 以技能名为键，会话 B 启动同名技能会把会话 A 的 run 整个顶掉——A 的步数/超时熔断、回滚动作记录、收尾全部静默失效。修复：start_skill 插入前检查，别会话的 Running/Paused 同名技能拒绝启动
+- **并行会话流式串台**：bot-chat-delta / bot-think-delta / bot-tool* / bot-skill-failed 六个流式事件 payload 原先不带 sessionId，emit_to("widget") 单窗广播 + 前端无过滤 = 两个会话并行跑时输出互相串进气泡。修复：后端 emit_stream 统一注入 sessionId，前端六监听器按 sessionIdRef 过滤（对齐 bot-confirm 既有模式）
+
+**P1 六个（均已修）**：干净 EOF（无 [DONE]/finish_reason）时残缺 tool_calls 不再被当完整回复执行（流截断显式报错/追加提示）；UTF-8 多字节字符跨 TCP chunk 不再产生 U+FFFD（改字节缓冲按行切——arguments 里的 `` 是合法 JSON 会被真实执行，比正文乱码更危险）；200 流内 error 载荷（OneAPI 类网关）不再静默吞成空白回复；429/5xx/发送失败重试一次（1.5s 退避，仅流式产出前，无重放风险）；聊天主路径加 10 万字符历史预算（原先全量透传，长会话直接 400）；历史图片改「最后 3 条消息内」窗口（原先「最近两条 user」永不失效，一张图每轮对话重复 base64 重发，单请求最多 ~32MB）
+
+**P2 八个（均已修）**：流尾残余行冲刷；tool_calls index 上限 64（恶意 index 撑内存）；空 tool_call id 合成占位（严格 API 400）；finish_reason=length/content_filter 用户可见提示；reasoning_content 字段解析（DeepSeek-reasoner 推理同走 bot-think-delta）；非流式路径（bot_compact/Planner）剥 `<think>` 段；审计转义漏网 6 处补 truncate_for_log（模型给的工具名、工具结果 preview、DSL tool_name、前端 session_id）；ChatMsg.role 白名单（非 assistant 一律按 user，防污染历史注入 system/tool 角色）
+
+**测试体系**：生产 tool_calls 累积抽纯函数 `accumulate_tool_call_delta`，llm_integration 复用同一实现（消除测试自写平铺式累积的漂移面）；mock_llm 新增 StreamError / FragmentedTextReply（N 字节切片可在多字节字符中间切断）两个 behavior + 对应用例；mock 注释里过时的生产行号引用修正。**立项项**：run_model_loop 主体（~440 行 HTTP 错误包装/流中断/工具编排）因依赖 Tauri AppHandle 零测试触达，后续抽可注入 base_url/client 的纯 async 函数后补端到端。
+
+**测试**：cargo test --lib 433 → **456 全绿**（流内 error/reasoning_content/分片无 U+FFFD/index 上限/重试白名单/历史预算/图片窗口/think 剥除/同名技能冲突等 23 个新用例），集成 29 → **36 全绿**；vitest 110 → **111 全绿**（新增会话过滤用例）；tsc 零错。
+
 ## 2026-08-28（周五）全面审计批次 2：数据层与一致性
 
 按 `docs/AUDIT-PLAN-BOT-2026-08-27.md` 推进，3 路并行审计（db 并发事务 / 迁移可靠性 / 广播一致性）+ 人工复核，报告落盘 `docs/AUDIT-DATA-2026-08-28.md`。

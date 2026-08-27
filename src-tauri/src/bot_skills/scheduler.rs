@@ -131,7 +131,8 @@ async fn run_rollback_segment(
                 app,
                 &format!(
                     "skill_dsl_rollback_step_failed | name: {name} | tool: {} | {}",
-                    rb.tool_name,
+                    // 2026-08-28 批次3审计：tool_name 来自 SKILL.md DSL，转义防日志撕裂
+                    crate::bot::truncate_for_log(&rb.tool_name, 60),
                     crate::bot::truncate_for_log(&text, 120)
                 ),
             );
@@ -281,7 +282,8 @@ pub async fn run_skill_scheduler(app: &AppHandle, name: &str, session_id: Option
             &format!(
                 "skill_dsl_step | name: {name} | step: {} | tool: {} | ctx_len: {}",
                 step.index,
-                step.tool_name,
+                // 2026-08-28 批次3审计：tool_name 来自 SKILL.md DSL，转义防日志撕裂
+                crate::bot::truncate_for_log(&step.tool_name, 60),
                 ctx.len()
             ),
         );
