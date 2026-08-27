@@ -44,7 +44,10 @@ pub struct RunningApi {
 pub struct EventHub {
     // P2-3：通道载荷带事件 id——断线重放与在线推送可能交叠（重放快照期间广播的新事件
     // 既进 history 又进在线队列），writer 端靠 id 去重（id <= 已发最大 id 则跳过）
-    pub clients: Mutex<Vec<SyncSender<(u64, Vec<u8>)>>>, // bounded SyncSender 端；client 端持 Rx
+    // 2026-08-28 批次4审计 P1-3：条目携带 writer 存活令牌（Weak，writer 线程持 Arc）——
+    // 原先死连接的 sender 只在下次广播 try_send 失败时才移除，安静期内尸体占满
+    // MAX_SSE_CLIENTS 名额导致新连接被 503；sse_connect 注册前先按令牌收割尸体。
+    pub clients: Mutex<Vec<(SyncSender<(u64, Vec<u8>)>, std::sync::Weak<()>)>>,
     pub next_id: AtomicU64,
     pub history: Mutex<VecDeque<(u64, String)>>,
     /// 事件 id 持久化路径（跨重启保持单调；None=仅内存，测试用）
@@ -102,7 +105,7 @@ impl EventHub {
             let mut i = 0;
             while i < clients.len() {
                 // try_send: bounded 队列满时 Err 表示 client 积压过深，跳过并移除
-                if clients[i].try_send((id, msg.as_bytes().to_vec())).is_err() {
+                if clients[i].0.try_send((id, msg.as_bytes().to_vec())).is_err() {
                     clients.remove(i);
                 } else {
                     i += 1;
@@ -169,7 +172,10 @@ pub fn start_api(
                 active.fetch_add(1, Ordering::SeqCst);
                 let active_w = active.clone();
                 // A1 + A4 组合：每个请求独立 worker 线程 + catch_unwind +
-                //              主线程  15s 超时 (防止 slowloris 永久卡死服务)
+                //              主线程 15s 超时（只作用于 handler 执行阶段——
+                //              2026-08-28 批次4审计 P1-1：tiny_http 在 recv 内部顺序读完
+                //              header 才产出 Request，header 阶段的 slowloris 滴注
+                //              到不了这里；accept 级防护需换 HTTP 栈，列为已知残留）
                 let req_url = req.url().to_string();
                 let (done_tx, done_rx) = std::sync::mpsc::channel();
                 let emit_fn_w = emit_fn.clone();

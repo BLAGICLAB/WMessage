@@ -46,6 +46,13 @@ const RATE_LIMIT_PER_MIN: u32 = 120;
 /// SSE 并发连接上限（A6：每连接一个 writer 线程，不设上限可被连接洪泛耗尽线程）
 const MAX_SSE_CLIENTS: usize = 32;
 
+/// API 写操作 read-modify-write 串行化锁（2026-08-28 批次4审计 P1-2/P2-3）：
+/// create/update/delete 的 load→改→upsert 两段式原先无锁，并发 API 请求
+/// （MAX_WORKERS=64）在窗口内互相用旧快照整行覆盖；create 的 max_order 同病。
+/// 注意：本锁只串行化 API 自身的并发写——跨路径（API vs UI/bot）的整行覆盖
+/// lost-update 属已立项的「字段级合并写入」架构项，不在此锁覆盖范围。
+static API_RMW_LOCK: Mutex<()> = Mutex::new(());
+
 // ───────────────────────── 公共返回类型 ─────────────────────────
 
 #[derive(Serialize, Clone)]
@@ -97,13 +104,13 @@ pub fn handle_request(
     log_line(log, &format!("{} {}", method, path));
 
     match (&method, path.as_str()) {
-        (Method::Get, "/api/tasks") => list_tasks(req, store, &query),
+        (Method::Get, "/api/tasks") => list_tasks(req, store, &query, log),
         (Method::Get, "/api/events") => sse_connect(req, store, &query),
         (Method::Post, "/api/tasks") => create_task(req, store, emit_fn, log),
         _ => {
             if let Some(id) = path.strip_prefix("/api/tasks/") {
                 match method {
-                    Method::Get => get_task(req, store, id),
+                    Method::Get => get_task(req, store, id, log),
                     Method::Put => update_task(req, store, id, emit_fn, log),
                     Method::Delete => delete_task(req, store, id, emit_fn, log),
                     _ => {
@@ -281,6 +288,16 @@ fn change_log_line(op: &str, task: &db::Task) -> String {
     )
 }
 
+/// 500 对外统一文案（2026-08-28 批次4审计 P2-5）：DB 错误原文可能含 SQL 片段/路径，
+/// 不回吐给客户端；原文转义后进 api.log 供排查。
+fn internal_err(req: Request, log: &Option<PathBuf>, e: &str) {
+    log_line(
+        log,
+        &format!("internal_error | {}", crate::audit::escape_for_log(e, 300)),
+    );
+    let _ = req.respond(json_err(StatusCode(500), "internal error"));
+}
+
 /// 任务变更后：store 内部 SSE 广播 + 前端看板刷新回调 + 变更日志
 ///
 /// A5: hub 不再传入；SSE 广播走 `store.notify_change()`，由 store 层封装 hub。
@@ -301,7 +318,7 @@ fn after_change(
 
 // ───────────────────────── 处理器 ─────────────────────────
 
-fn list_tasks(req: Request, store: &Arc<dyn TaskStore>, query: &str) {
+fn list_tasks(req: Request, store: &Arc<dyn TaskStore>, query: &str, log: &Option<PathBuf>) {
     // 过滤参数：默认活跃任务（非回收站、非归档）；trash/archived/all 改变范围，status 按列筛
     let all = query_param(query, "all") == Some("1".into());
     let trash_only = query_param(query, "trash") == Some("1".into());
@@ -333,12 +350,12 @@ fn list_tasks(req: Request, store: &Arc<dyn TaskStore>, query: &str) {
             let _ = req.respond(json_ok(StatusCode(200), &out));
         }
         Err(e) => {
-            let _ = req.respond(json_err(StatusCode(500), &e));
+            internal_err(req, log, &e);
         }
     }
 }
 
-fn get_task(req: Request, store: &Arc<dyn TaskStore>, id: &str) {
+fn get_task(req: Request, store: &Arc<dyn TaskStore>, id: &str, log: &Option<PathBuf>) {
     match store.load() {
         Ok(tasks) => match tasks.iter().find(|t| t.id == id) {
             Some(t) => {
@@ -349,7 +366,7 @@ fn get_task(req: Request, store: &Arc<dyn TaskStore>, id: &str) {
             }
         },
         Err(e) => {
-            let _ = req.respond(json_err(StatusCode(500), &e));
+            internal_err(req, log, &e);
         }
     }
 }
@@ -445,10 +462,13 @@ fn create_task(
         }
     };
 
+    // P1-2/P2-3（2026-08-28 批次4审计）：load→max_order→upsert 全程持 API_RMW_LOCK——
+    // 原先两段式无锁，并发 create 算出相同 order、并发写互相用旧快照整行覆盖
+    let _rmw = API_RMW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let all = match store.load() {
         Ok(v) => v,
         Err(e) => {
-            let _ = req.respond(json_err(StatusCode(500), &e));
+            internal_err(req, log, &e);
             return;
         }
     };
@@ -457,25 +477,33 @@ fn create_task(
     let task = db::Task {
         id: uuid::Uuid::new_v4().to_string(),
         title,
-        // due 与 note 同规则：trim 后存储（此前存原始值，首尾空格会进库）
+        // due 与 note 同规则：trim 后存储（2026-08-28 批次4审计 P2-4：note/files 原先存原文，
+        // 与注释矛盾，首尾空白进库）
         due: input
             .due
             .map(|d| d.trim().to_string())
             .filter(|d| !d.is_empty()),
-        note: input.note.filter(|n| !n.trim().is_empty()),
+        note: input
+            .note
+            .map(|n| n.trim().to_string())
+            .filter(|n| !n.is_empty()),
         tags: input.tags,
         // 多文件绑定（2026-08-19）：API 入参仍是旧单绑定字段，双写进 files 保持一致
         files: input
             .file_path
             .as_ref()
-            .filter(|p| !p.trim().is_empty())
+            .map(|p| p.trim().to_string())
+            .filter(|p| !p.is_empty())
             .map(|p| {
                 vec![db::TaskFile {
-                    path: p.clone(),
+                    path: p,
                     is_dir: input.file_is_dir.unwrap_or(false),
                 }]
             }),
-        file_path: input.file_path.filter(|p| !p.trim().is_empty()),
+        file_path: input
+            .file_path
+            .map(|p| p.trim().to_string())
+            .filter(|p| !p.is_empty()),
         file_is_dir: input.file_is_dir,
         column: status.clone(),
         subtasks: None,
@@ -490,7 +518,7 @@ fn create_task(
         bot_assigned: None,
     };
     if let Err(e) = store.upsert(vec![task.clone()]) {
-        let _ = req.respond(json_err(StatusCode(500), &e));
+        internal_err(req, log, &e);
         return;
     }
     after_change(store, &task, "created", emit_fn, log);
@@ -530,10 +558,12 @@ fn update_task(
         }
     };
 
+    // P1-2（2026-08-28 批次4审计）：load→改→upsert 全程持 API_RMW_LOCK（API 写串行化）
+    let _rmw = API_RMW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tasks = match store.load() {
         Ok(v) => v,
         Err(e) => {
-            let _ = req.respond(json_err(StatusCode(500), &e));
+            internal_err(req, log, &e);
             return;
         }
     };
@@ -545,13 +575,17 @@ fn update_task(
 
     if let Some(title) = input.title.as_deref() {
         let tt = title.trim();
-        if !tt.is_empty() {
-            if let Some(e) = over_limit(tt, API_MAX_TITLE, "任务标题") {
-                let _ = req.respond(json_err(StatusCode(400), &e));
-                return;
-            }
-            t.title = tt.to_string();
+        // P2-9（2026-08-28 批次4审计）：显式传了 trim 后为空的 title 按 400 拒绝，
+        // 与 create 对齐（原先静默忽略，调用方无法区分「没传」和「传了空白」）
+        if tt.is_empty() {
+            let _ = req.respond(json_err(StatusCode(400), "title 不能为空"));
+            return;
         }
+        if let Some(e) = over_limit(tt, API_MAX_TITLE, "任务标题") {
+            let _ = req.respond(json_err(StatusCode(400), &e));
+            return;
+        }
+        t.title = tt.to_string();
     }
     if let Some(n) = input.note.as_deref() {
         let nn = n.trim();
@@ -587,7 +621,9 @@ fn update_task(
         }
     }
     if let Some(fp) = input.file_path.as_deref() {
-        if fp.trim().is_empty() {
+        // P2-4（2026-08-28 批次4审计）：trim 后存储（原先存原文，首尾空白进库）
+        let fp = fp.trim();
+        if fp.is_empty() {
             t.file_path = None;
             t.file_is_dir = None;
             // 多文件绑定（2026-08-19）：旧字段清空时同步清 files
@@ -657,7 +693,7 @@ fn update_task(
     t.updated_at = Some(now_ms());
 
     if let Err(e) = store.upsert(vec![t.clone()]) {
-        let _ = req.respond(json_err(StatusCode(500), &e));
+        internal_err(req, log, &e);
         return;
     }
     after_change(store, &t, "updated", emit_fn, log);
@@ -672,10 +708,12 @@ fn delete_task(
     emit_fn: &Option<Arc<dyn Fn(&db::Task) + Send + Sync>>,
     log: &Option<PathBuf>,
 ) {
+    // P1-2（2026-08-28 批次4审计）：load→改→upsert 全程持 API_RMW_LOCK（API 写串行化）
+    let _rmw = API_RMW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tasks = match store.load() {
         Ok(v) => v,
         Err(e) => {
-            let _ = req.respond(json_err(StatusCode(500), &e));
+            internal_err(req, log, &e);
             return;
         }
     };
@@ -692,7 +730,7 @@ fn delete_task(
     t.deleted_at = Some(now_ms());
     t.updated_at = Some(now_ms());
     if let Err(e) = store.upsert(vec![t.clone()]) {
-        let _ = req.respond(json_err(StatusCode(500), &e));
+        internal_err(req, log, &e);
         return;
     }
     after_change(store, &t, "deleted", emit_fn, log);
@@ -776,15 +814,19 @@ fn sse_connect(req: Request, store: &Arc<dyn TaskStore>, query: &str) {
     // 锁中毒时用 into_inner 恢复（与 broadcast 端策略一致，审计 P3：原先静默跳过，
     // 客户端注册失败则该 SSE 连接永远收不到事件）
     let hub = store.event_hub();
+    // 2026-08-28 批次4审计 P1-3：writer 存活令牌——注册前收割死连接尸体
+    // （原先只在 broadcast 失败时移除，安静期内尸体占满名额 → 新连接 503）
+    let alive = Arc::new(());
     {
         let mut clients = hub.clients.lock().unwrap_or_else(|e| e.into_inner());
+        clients.retain(|(_, token)| token.upgrade().is_some());
         // A6: SSE 连接数上限 —— 超限 503，防连接洪泛耗尽线程
         if clients.len() >= MAX_SSE_CLIENTS {
             drop(clients);
             let _ = req.respond(json_err(StatusCode(503), "too many SSE connections"));
             return;
         }
-        clients.push(tx);
+        clients.push((tx, Arc::downgrade(&alive)));
     }
     let hub = hub.clone();
     // G1：writer 线程纳入追踪 —— stop 标志供 api_stop 通知退出，JoinHandle 入注册表
@@ -792,6 +834,8 @@ fn sse_connect(req: Request, store: &Arc<dyn TaskStore>, query: &str) {
     let stop = Arc::new(AtomicBool::new(false));
     let stop_w = stop.clone();
     let handle = std::thread::spawn(move || {
+        // P1-3：存活令牌随 writer 线程存活，线程退出（客户端断开/服务停止）即失效
+        let _alive = alive;
         let headers = vec![
             Header::from_bytes(
                 &b"Content-Type"[..],
@@ -877,14 +921,14 @@ fn sse_connect(req: Request, store: &Arc<dyn TaskStore>, query: &str) {
 
 #[tauri::command]
 pub fn api_start(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandResult<ApiInfo> {
-    {
-        let g = state.0.lock().map_err(|e| e.to_string())?;
-        if g.is_some() {
-            return Ok(ApiInfo {
-                port: API_PORT,
-                token: load_or_create_token(&app)?,
-            });
-        }
+    // 2026-08-28 批次4审计 P2-8：检查与写入在同一把锁内完成——原先锁释放后才 start，
+    // 并发 invoke 双发都过检查，第二个收到误导的「端口占用」（服务其实已被第一个起好）
+    let mut g = state.0.lock().map_err(|e| e.to_string())?;
+    if g.is_some() {
+        return Ok(ApiInfo {
+            port: API_PORT,
+            token: load_or_create_token(&app)?,
+        });
     }
     let token = load_or_create_token(&app)?;
     let store: Arc<dyn TaskStore> = Arc::new(TauriStore {
@@ -910,9 +954,16 @@ pub fn api_start(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandRe
     // G1：提前取 hub 分组键（store 随后被 move 进 start_api），
     // api_stop 据此通知并 join 该 hub 的 SSE writer
     let hub_key = Arc::as_ptr(store.event_hub()) as usize;
-    let running = start_api(API_PORT, token.clone(), store, emit, log_path, on_error)?;
+    // P2-2（2026-08-28 批次4审计）：显式映射 HttpStartFailed——原先 String 错误经
+    // From<String> 落成无结构的 Internal，前端按 code 分支永远等不到 HTTP_START_FAILED
+    let running = start_api(API_PORT, token.clone(), store, emit, log_path, on_error)
+        .map_err(|e| CommandError::HttpStartFailed {
+            port: API_PORT,
+            reason: e,
+        })?;
     API_HUB_KEY.store(hub_key, Ordering::SeqCst);
-    *state.0.lock().map_err(|e| e.to_string())? = Some(running);
+    *g = Some(running);
+    drop(g);
     write_enabled_flag(&app);
     Ok(ApiInfo {
         port: API_PORT,
@@ -1013,8 +1064,15 @@ pub fn api_rotate_token(
     // 避免"服务已停 + flag 已清 + token 已换"三态不一致
     crate::api_auth::write_token_file(&path, &token)?;
     // api_stop 内会停掉旧 hub 的全部 SSE writer（G1），旧 token 的连接随之断开，
-    // token 失效语义彻底；api_start 重建新 hub 接受新 writer
-    api_stop(app.clone(), state.clone())?;
+    // token 失效语义彻底；api_start 重建新 hub 接受新 writer。
+    // 2026-08-28 批次4审计 P2-6：stop 失败时回滚旧 token 文件——原先 `?` 直接返回，
+    // 留下「文件已是新 token、在跑服务仍认旧 token」的三态不一致
+    if let Err(e) = api_stop(app.clone(), state.clone()) {
+        if let Some(old) = &old {
+            let _ = crate::api_auth::write_token_file(&path, old);
+        }
+        return Err(e);
+    }
     match api_start(app.clone(), state.clone()) {
         Ok(info) => Ok(info),
         Err(e) => {
@@ -1395,5 +1453,135 @@ mod tests {
             audits.iter().any(|l| l.contains("sse_writer_leaked")),
             "缺 sse_writer_leaked 审计: {audits:?}"
         );
+    }
+
+    // ── 2026-08-28 批次4审计：空 title 400 / trim 存储 / SSE 尸体收割 ──
+
+    fn shutdown_server(running: &mut crate::api_server::RunningApi) {
+        running.shutdown.store(true, Ordering::SeqCst);
+        if let Some(h) = running.handle.take() {
+            let _ = h.join();
+        }
+    }
+
+    /// P2-9：显式传 trim 后为空的 title 按 400 拒绝（原先静默忽略，与 create 语义不一致）
+    #[test]
+    fn update_blank_title_returns_400() {
+        let store: Arc<dyn TaskStore> = Arc::new(MemStore {
+            tasks: Mutex::new(vec![]),
+            hub: EventHub::new(),
+        });
+        let token = "test-token-123".to_string();
+        let mut running = start_api(48823, token.clone(), store.clone(), None, None, None).unwrap();
+
+        let (st, body) = http(
+            48823,
+            "POST",
+            "/api/tasks",
+            Some(&token),
+            Some(r#"{"title":"正常任务"}"#),
+        );
+        assert_eq!(st, 201);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let id = v["id"].as_str().unwrap().to_string();
+
+        // 空白 title → 400（不是静默忽略）；不传 title → 200 不动标题
+        let (st, _) = http(
+            48823,
+            "PUT",
+            &format!("/api/tasks/{id}"),
+            Some(&token),
+            Some(r#"{"title":"   "}"#),
+        );
+        assert_eq!(st, 400, "空白 title 应 400");
+        let (st, body) = http(
+            48823,
+            "PUT",
+            &format!("/api/tasks/{id}"),
+            Some(&token),
+            Some(r#"{"note":"只改备注"}"#),
+        );
+        assert_eq!(st, 200);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["title"], "正常任务", "不传 title 不应动标题");
+
+        shutdown_server(&mut running);
+    }
+
+    /// P2-4：create 的 note / filePath 首尾空白不得进库（原先存原文，与自身注释矛盾）
+    #[test]
+    fn create_trims_note_and_file_path() {
+        let store: Arc<dyn TaskStore> = Arc::new(MemStore {
+            tasks: Mutex::new(vec![]),
+            hub: EventHub::new(),
+        });
+        let token = "test-token-123".to_string();
+        let mut running = start_api(48824, token.clone(), store.clone(), None, None, None).unwrap();
+
+        let (st, body) = http(
+            48824,
+            "POST",
+            "/api/tasks",
+            Some(&token),
+            Some(r#"{"title":"t","note":"  备注内容  ","filePath":" /tmp/x.pdf "}"#),
+        );
+        assert_eq!(st, 201);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["note"], "备注内容", "note 应 trim 后存储: {body}");
+        assert_eq!(v["filePath"], "/tmp/x.pdf", "filePath 应 trim 后存储: {body}");
+
+        shutdown_server(&mut running);
+    }
+
+    /// P1-3：clients 里塞满死连接尸体（writer 已退出 = Weak 失效）时，
+    /// 新 SSE 连接应先收割尸体再判容量——原先直接 503 直到下次广播自愈
+    #[test]
+    fn sse_dead_clients_pruned_before_capacity_check() {
+        let store: Arc<dyn TaskStore> = Arc::new(MemStore {
+            tasks: Mutex::new(vec![]),
+            hub: EventHub::new(),
+        });
+        let token = "test-token-123".to_string();
+        // 塞满 MAX_SSE_CLIENTS 个尸体（Weak::new() 永不 upgrade = writer 已死）
+        {
+            let hub = store.event_hub();
+            let mut clients = hub.clients.lock().unwrap();
+            for _ in 0..MAX_SSE_CLIENTS {
+                let (tx, _rx) = sync_channel::<(u64, Vec<u8>)>(1);
+                clients.push((tx, std::sync::Weak::new()));
+            }
+            assert_eq!(clients.len(), MAX_SSE_CLIENTS);
+        }
+        let mut running = start_api(48825, token.clone(), store.clone(), None, None, None).unwrap();
+
+        // 新连接：尸体被收割后应正常接入（200 + connected 首事件），而非 503
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", 48825)).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        write!(
+            s,
+            "GET /api/events HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {token}\r\n\r\n"
+        )
+        .unwrap();
+        let mut buf = [0u8; 4096];
+        let n = s.read(&mut buf).unwrap_or(0);
+        let head = String::from_utf8_lossy(&buf[..n]);
+        assert!(
+            head.starts_with("HTTP/1.1 200"),
+            "尸体占满名额时新连接仍应接入（200），实际：{head}"
+        );
+
+        // 尸体被清、新连接占位：clients 应只剩 1 个活连接
+        let hub = store.event_hub();
+        let alive_count = hub
+            .clients
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, w)| w.upgrade().is_some())
+            .count();
+        assert_eq!(alive_count, 1, "尸体应被收割，仅剩新连接: {alive_count}");
+
+        drop(s);
+        shutdown_server(&mut running);
     }
 }

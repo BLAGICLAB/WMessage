@@ -2,6 +2,25 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-08-28（周五）全面审计批次 4：本地 HTTP API Server（无 P0）
+
+按 `docs/AUDIT-PLAN-BOT-2026-08-27.md` 推进，单代理探索 + P1/P2 人工复核，报告落盘 `docs/AUDIT-API-2026-08-28.md`（含端点×认证×校验矩阵）。
+
+**结论**：主干安全设计到位——只绑 127.0.0.1、除 health 外全端点 Bearer+ct_eq、token 0600 不进日志、body 1MB 硬上限、worker 64+panic 拦截、无 CORS（DNS rebinding 无利用面）。**无 P0**。
+
+**修复**：
+- **P1-2 API 写路径 RMW 无锁**：update/delete/create 的 load→改→upsert 两段式原先在 64 个并发 worker 下互相用旧快照整行覆盖；加进程级 `API_RMW_LOCK` 全程持锁（P2-3 create 的 max_order 并发撞号一并消除）。跨路径（API vs UI/bot）lost-update 仍属已立项的字段级合并写入架构项
+- **P1-3 死 SSE 连接占位**：clients 条目带 writer 存活令牌（Weak），注册前收割尸体——原先尸体只在下次广播失败时移除，安静期内占满 32 名额新连接全 503
+- **P2-2**：api_start 显式映射 `HttpStartFailed{port,reason}`（原先落成无结构 Internal，前端 code 分支永远等不到）；P2-8 双发竞态：检查+写入收进同一把锁
+- **P2-4**：create 的 note/filePath、update 的 filePath 统一 trim 后存储（原先存原文，与注释矛盾）
+- **P2-5**：8 处 500 响应不再回吐 DB 错误原文（含 SQL 片段/路径），对外统一 "internal error"，原文转义后进 api.log
+- **P2-6**：rotate_token 的 api_stop 失败时回滚旧 token 文件（消「文件新 token、服务认旧 token」三态窗口）
+- **P2-9**：update 显式传空白 title 按 400 拒绝（与 create 对齐，原先静默忽略）
+
+**记录残留（不修）**：P1-1 tiny_http accept 级 slowloris（header 滴注可饿死全部连接，彻底修需换 HTTP 栈，注释过度声称已修正）；P2-1 body 阶段慢读只占 worker 名额；P2-7 API 写操作只进 api.log 文本、不进结构化 bot.log（handler 无 AppHandle，留待穿层）。
+
+**测试**：cargo test --lib 456 → **459 全绿**（新增空 title 400 / trim 存储 / SSE 尸体收割 3 用例），集成 36 全绿；vitest 111 全绿；tsc 零错。
+
 ## 2026-08-28（周五）全面审计批次 3：LLM 协议与流式（2 个 P0 已修）
 
 按 `docs/AUDIT-PLAN-BOT-2026-08-27.md` 推进，3 路并行审计（SSE/tool_calls、think/上下文、mock 保真度）+ P0/P1 人工复核，报告落盘 `docs/AUDIT-LLM-2026-08-28.md`。
