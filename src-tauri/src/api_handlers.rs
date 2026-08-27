@@ -1002,7 +1002,7 @@ pub fn api_rotate_token(
     let token = uuid::Uuid::new_v4().simple().to_string();
     let was_running = state.0.lock().map_err(|e| e.to_string())?.is_some();
     if !was_running {
-        std::fs::write(&path, &token).map_err(|e| e.to_string())?;
+        crate::api_auth::write_token_file(&path, &token)?;
         return Ok(ApiInfo {
             port: API_PORT,
             token,
@@ -1011,7 +1011,7 @@ pub fn api_rotate_token(
     // 运行中：先落新 token（api_start 从文件读取），再重启生效。
     // A6: 重启失败则回滚旧 token 并尽力恢复服务，
     // 避免"服务已停 + flag 已清 + token 已换"三态不一致
-    std::fs::write(&path, &token).map_err(|e| e.to_string())?;
+    crate::api_auth::write_token_file(&path, &token)?;
     // api_stop 内会停掉旧 hub 的全部 SSE writer（G1），旧 token 的连接随之断开，
     // token 失效语义彻底；api_start 重建新 hub 接受新 writer
     api_stop(app.clone(), state.clone())?;
@@ -1019,7 +1019,7 @@ pub fn api_rotate_token(
         Ok(info) => Ok(info),
         Err(e) => {
             if let Some(old) = old {
-                let _ = std::fs::write(&path, old);
+                let _ = crate::api_auth::write_token_file(&path, &old);
             }
             let _ = api_start(app, state); // 尽力用旧 token 恢复服务
             Err(e)

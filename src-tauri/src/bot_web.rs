@@ -6,6 +6,7 @@
 //! - 输出截断在工具层做（搜索结果 6000 字、网页正文 30000 字）；审计由 bot.rs 留痕
 
 use std::time::Duration;
+use futures_util::StreamExt;
 
 const UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
@@ -14,6 +15,9 @@ const SEARCH_MAX_RESULTS: usize = 8;
 const SEARCH_OUTPUT_CAP: usize = 6000;
 
 /// 全局复用的 HTTP client（连接池复用，二次审计 P3：原先每请求新建 client）
+/// 2026-08-27 安全审计 SEC-P0-1：禁用自动重定向——原先默认 policy 自动跟随 10 跳，
+/// fetch_text 里的「3xx 逐跳校验 Location」是死代码，公网 URL 302 到内网地址可绕过
+/// check_public_url（SSRF）。禁自动重定向后由 fetch_text 手工逐跳校验接管。
 fn http_client() -> reqwest::Client {
     static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
     CLIENT
@@ -21,6 +25,7 @@ fn http_client() -> reqwest::Client {
             reqwest::Client::builder()
                 .connect_timeout(Duration::from_secs(15))
                 .timeout(Duration::from_secs(30))
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
                 // 理论不可达：builder 失败意味着超时配置无效
                 .unwrap_or_else(|_| reqwest::Client::new())
@@ -590,11 +595,7 @@ async fn check_public_url(url: &url::Url) -> Result<(), String> {
                 }
             }
             std::net::IpAddr::V6(v6) => {
-                if v6.is_loopback()
-                    || v6.is_unspecified()
-                    || v6.is_unique_local()
-                    || (v6.segments()[0] & 0xffc0) == 0xfe80
-                {
+                if ipv6_is_private(v6) {
                     // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
                     return Err("已拒绝：域名解析到本机/内网地址".into());
                 }
@@ -663,11 +664,7 @@ pub async fn fetch_text(raw_url: &str) -> Result<String, String> {
             return Err("页面过大（超过 2MB）已拒绝".into());
         }
     }
-    let bytes = resp.bytes().await.map_err(|e| format!("读取失败：{e}"))?;
-    if bytes.len() > FETCH_MAX_BYTES {
-        // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
-        return Err("页面过大（超过 2MB）已拒绝".into());
-    }
+    let bytes = read_body_capped(resp, FETCH_MAX_BYTES).await?;
     let text = decode_html(&bytes);
     // 先抽正文主块再转纯文本（去导航/广告/页脚）；提取结果过短说明误伤，退回整页转换
     let main = extract_main_content(&text);
@@ -718,16 +715,47 @@ async fn fetch_jina_reader(raw_url: &str) -> Result<String, String> {
     if !resp.status().is_success() {
         return Err(format!("Jina 返回 HTTP {}", resp.status()));
     }
-    let bytes = resp.bytes().await.map_err(|e| format!("Jina 读取失败：{e}"))?;
-    if bytes.len() > FETCH_MAX_BYTES {
-        return Err("Jina 返回过大（超过 2MB）".into());
-    }
+    let bytes = read_body_capped(resp, FETCH_MAX_BYTES).await?;
     Ok(String::from_utf8_lossy(&bytes).trim().to_string())
+}
+
+/// 有界流式读取响应体（2026-08-27 安全审计 SEC-P1-5）：累计超限即中断——
+/// 原先 `bytes()` 全量读进内存后做事后检查，Content-Length 撒谎（声明小/缺省 chunked）
+/// 时 30s 超时内可收进数百 MB；现在超限立即中断，不进内存。
+async fn read_body_capped(resp: reqwest::Response, max: usize) -> Result<Vec<u8>, String> {
+    let mut buf = Vec::new();
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("读取失败：{e}"))?;
+        if buf.len() + chunk.len() > max {
+            return Err("页面过大（超过 2MB）已拒绝".into());
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(buf)
 }
 
 /// IPv4 是否为内网/本机段
 fn ipv4_is_private(v4: std::net::Ipv4Addr) -> bool {
-    v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified()
+    v4.is_loopback()
+        || v4.is_private()
+        || v4.is_link_local()
+        || v4.is_unspecified()
+        // CGNAT 段 100.64.0.0/10（RFC 6598，Tailscale/运营商大内网）：
+        // std is_private 不含此段（2026-08-27 安全审计 SEC-P1-2 补）
+        || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64)
+}
+
+/// IPv6 是否为内网/本机段（2026-08-27 SEC-P1-2：补 IPv4-mapped——
+/// AAAA 应答 `::ffff:127.0.0.1` 原先四项判定全不中，hyper 连接时映射回 IPv4 打内网）
+fn ipv6_is_private(v6: std::net::Ipv6Addr) -> bool {
+    if let Some(v4) = v6.to_ipv4_mapped() {
+        return ipv4_is_private(v4);
+    }
+    v6.is_loopback()
+        || v6.is_unspecified()
+        || v6.is_unique_local()
+        || (v6.segments()[0] & 0xffc0) == 0xfe80
 }
 
 /// 整数/十六进制/八进制形式的 IPv4 字面量识别（"2130706433"、"0x7f000001"、"017700000001"）
@@ -752,12 +780,7 @@ fn is_private_host(host: &str) -> bool {
     if let Ok(ip) = host.parse::<std::net::IpAddr>() {
         return match ip {
             std::net::IpAddr::V4(v4) => ipv4_is_private(v4),
-            std::net::IpAddr::V6(v6) => {
-                v6.is_loopback()
-                    || v6.is_unspecified()
-                    || v6.is_unique_local()
-                    || (v6.segments()[0] & 0xffc0) == 0xfe80
-            }
+            std::net::IpAddr::V6(v6) => ipv6_is_private(v6),
         };
     }
     // 整数/十六进制/八进制 IPv4 字面量（SSRF 常见绕过形式）
@@ -1001,5 +1024,47 @@ mod tests {
         assert!(blocked.is_err(), "本机地址必须被拒绝");
         let bad_scheme = tauri::async_runtime::block_on(fetch_text("file:///etc/hosts"));
         assert!(bad_scheme.is_err(), "非 http(s) 协议必须被拒绝");
+    }
+
+    /// SEC-P0-1（2026-08-27 安全审计）回归：http_client 禁止自动重定向——
+    /// 302 必须原样返回给 fetch_text 的手工逐跳校验，不得自动跟随到 Location 目标
+    /// （原先默认 policy 自动跟随 10 跳，逐跳校验是死代码，公网 URL 可 302 进内网）。
+    #[tokio::test]
+    async fn http_client_does_not_follow_redirects() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut s, _)) = listener.accept() {
+                use std::io::{Read, Write};
+                // 先读完请求头再回响应（hyper 对未消费请求即收响应会报 UnexpectedMessage）
+                let mut buf = [0u8; 4096];
+                let _ = s.read(&mut buf);
+                let _ = s.write_all(
+                    b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/secret\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
+            }
+        });
+        let resp = http_client()
+            .get(format!("http://127.0.0.1:{port}/"))
+            .send()
+            .await
+            .expect("本地 302 端点应可连");
+        assert_eq!(
+            resp.status().as_u16(),
+            302,
+            "必须原样返回 302（手工逐跳校验接管），不得自动跟随"
+        );
+    }
+
+    /// SEC-P1-2 回归：IPv4-mapped IPv6（::ffff:127.0.0.1）与 CGNAT（100.64.0.0/10）判内网
+    #[test]
+    fn private_detection_covers_mapped_v6_and_cgnat() {
+        assert!(ipv6_is_private("::ffff:127.0.0.1".parse().unwrap()));
+        assert!(ipv6_is_private("::ffff:a9fe:a9fe".parse().unwrap()), "169.254.169.254 mapped");
+        assert!(!ipv6_is_private("2606:4700:4700::1111".parse().unwrap()), "公网 v6 放行");
+        assert!(ipv4_is_private("100.64.0.1".parse().unwrap()), "CGNAT 起始");
+        assert!(ipv4_is_private("100.127.255.254".parse().unwrap()), "CGNAT 末尾");
+        assert!(!ipv4_is_private("100.128.0.1".parse().unwrap()), "CGNAT 段外");
+        assert!(!ipv4_is_private("99.255.0.1".parse().unwrap()), "CGNAT 段外");
     }
 }

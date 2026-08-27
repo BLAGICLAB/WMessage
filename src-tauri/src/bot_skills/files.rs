@@ -1,10 +1,63 @@
 use crate::error::{CommandError, CommandResult};
 use tauri::AppHandle;
 
+/// 收集「允许直接打开/删除」的路径集合（2026-08-27 安全审计 SEC-P1-3）：
+/// 任务卡绑定文件/文件夹（含回收站卡——彻底删除场景需要）+ 工作区链接目标 +
+/// AI_Gen_Files 目录内文件。open_file_path / delete_bound_file 共用——这两个命令
+/// 前端直达，原先零校验，LLM 输出里的代码块路径 / 前端 XSS 都可驱动其打开或删除任意文件。
+async fn collect_openable_paths(app: &AppHandle) -> std::collections::HashSet<String> {
+    let mut set = std::collections::HashSet::new();
+    if let Ok(tasks) = crate::db::db_load(app.clone()).await {
+        for t in tasks {
+            for f in t.effective_files() {
+                set.insert(f.path);
+            }
+        }
+    }
+    if let Ok(conn) = crate::db::open_db(app) {
+        if let Ok(items) = crate::db::load_workspace(&conn) {
+            for it in items {
+                for l in it.links {
+                    if l.kind != "url" {
+                        set.insert(l.target_uri);
+                    }
+                }
+            }
+        }
+    }
+    set
+}
+
+/// path 是否可打开：绑定集合精确命中，或 AI_Gen_Files 目录内（canonical 双向比较）
+fn path_openable(app: &AppHandle, path: &str, set: &std::collections::HashSet<String>) -> bool {
+    if set.contains(path) {
+        return true;
+    }
+    let gen = crate::db::data_dir(app).join("AI_Gen_Files");
+    if let (Ok(c), Ok(g)) = (std::fs::canonicalize(path), std::fs::canonicalize(&gen)) {
+        return c.starts_with(&g);
+    }
+    false
+}
+
 /// 打开文件/文件夹（Rust 侧调用 opener 插件）：绕过前端窗口的 opener scope，
-/// 挂件窗口内聊天文件按钮点击直接走这里，失败返回错误给前端兜底 revealItemInDir
+/// 挂件窗口内聊天文件按钮点击直接走这里，失败返回错误给前端兜底 revealItemInDir。
+/// 2026-08-27 SEC-P1-3：限定任务卡绑定集合 / 工作区链接 / AI_Gen_Files——
+/// 原先任意路径可打开（.app/.command 即代码执行），是前端 XSS → RCE 的一跳。
 #[tauri::command]
-pub fn open_file_path(app: AppHandle, path: String) -> CommandResult<()> {
+pub async fn open_file_path(app: AppHandle, path: String) -> CommandResult<()> {
+    let set = collect_openable_paths(&app).await;
+    if !path_openable(&app, &path, &set) {
+        crate::bot::audit_log(
+            &app,
+            &format!("open_file_path denied | {}", crate::audit::escape_for_log(&path, 200)),
+        );
+        return Err(CommandError::InvalidArgument {
+            field: "path".into(),
+            value: path,
+            reason: "仅允许打开任务卡绑定文件/工作区链接/AI_Gen_Files 内的文件".into(),
+        });
+    }
     use tauri_plugin_opener::OpenerExt;
     app.opener()
         .open_path(path, None::<&str>)
@@ -46,11 +99,25 @@ pub async fn pick_files_dialog(app: AppHandle) -> CommandResult<Vec<String>> {
 ///    delete_all 会逐个 component 调 trash，第一个 component `/`（根）的 parent() 是 None → TargetedRoot。
 ///    正确写法是单数 `trash::delete(p)`（内部 `delete_all(&[path])`，把整条路径当作一项处理）。
 #[tauri::command]
-pub fn delete_bound_file(path: String, is_dir: bool) -> CommandResult<()> {
+pub async fn delete_bound_file(app: AppHandle, path: String, is_dir: bool) -> CommandResult<()> {
     use std::path::Path;
     let p = Path::new(&path);
     if !p.exists() {
         return Ok(());
+    }
+    // 2026-08-27 SEC-P1-3：只能删「任务卡绑定文件/文件夹」集合内的路径——
+    // 原先任意路径可进废纸篓，前端 XSS 可批量删除用户文件
+    let set = collect_openable_paths(&app).await;
+    if !set.contains(&path) {
+        crate::bot::audit_log(
+            &app,
+            &format!("delete_bound_file denied | {}", crate::audit::escape_for_log(&path, 200)),
+        );
+        return Err(CommandError::InvalidArgument {
+            field: "path".into(),
+            value: path,
+            reason: "仅允许删除任务卡绑定的文件/文件夹".into(),
+        });
     }
     let _ = is_dir; // trash::delete 内部递归处理两种类型，不再需要分流
     trash::delete(p).map_err(|e| {

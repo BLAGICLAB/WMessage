@@ -114,6 +114,10 @@ async fn allowed_dirs(app: &AppHandle) -> Vec<PathBuf> {
     let mut task_dirs: Vec<String> = Vec::new();
     if let Ok(tasks) = crate::db::db_load(app.clone()).await {
         for t in tasks {
+            // 2026-08-27 SEC-P0-2：回收站任务的绑定目录不再进白名单（防「删卡不解权」残留授权）
+            if t.deleted_at.is_some() {
+                continue;
+            }
             for f in t.effective_files() {
                 if f.is_dir {
                     task_dirs.push(f.path);
@@ -245,7 +249,14 @@ fn walk(dir: &Path, mut visit: impl FnMut(&Path, bool) -> bool) {
         for entry in rd.flatten() {
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().to_string();
-            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            let ft = entry.file_type().ok();
+            // 2026-08-27 SEC-P1-1：跳过符号链接（file_type 是 lstat 语义）——白名单目录内的
+            // 软链指向外部时，grep 的 File::open/read_to_string 跟随软链会把外部文件内容带进
+            // 模型上下文（一行 ln -s 即可逃逸）；类型读不到也按软链处理（fail-closed）
+            if ft.as_ref().map(|t| t.is_symlink()).unwrap_or(true) {
+                continue;
+            }
+            let is_dir = ft.map(|t| t.is_dir()).unwrap_or(false);
             if is_dir && (name.starts_with('.') || SKIP_DIRS.contains(&name.as_str())) {
                 continue;
             }
@@ -266,6 +277,21 @@ fn is_binary_file(path: &Path) -> bool {
     let mut buf = [0u8; 8192];
     let n = f.read(&mut buf).unwrap_or(0);
     buf[..n].contains(&0)
+}
+
+/// 有界读文件（2026-08-27 审计 P2）：只读前 max+1 字节判定截断——原先 std::fs::read
+/// 整读入内存后才截断，白名单内超大文件（GB 级日志）会把进程内存打爆。
+/// 返回 (内容, 是否截断)。
+fn read_capped_file(path: &Path, max: usize) -> std::io::Result<(Vec<u8>, bool)> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path)?;
+    let mut buf = Vec::new();
+    f.take(max as u64 + 1).read_to_end(&mut buf)?;
+    let truncated = buf.len() > max;
+    if truncated {
+        buf.truncate(max);
+    }
+    Ok((buf, truncated))
 }
 
 // ───────────────────────── 工具实现（bot 分发签名：(String, Vec<TaskRef>)） ─────────────────────────
@@ -292,12 +318,11 @@ pub async fn tool_read_text_file(app: &AppHandle, args: &str, interactive: bool,
     let offset = v["offset"].as_u64().unwrap_or(1).max(1) as usize;
     let limit = (v["limit"].as_u64().unwrap_or(READ_DEFAULT_LINES as u64) as usize)
         .min(READ_MAX_LINES);
-    let raw = match std::fs::read(&canonical) {
-        Ok(b) => b,
+    let (raw, byte_truncated) = match read_capped_file(&canonical, READ_MAX_BYTES) {
+        Ok(r) => r,
         Err(e) => return (format!("读取失败：{e}"), Vec::new()),
     };
-    let byte_truncated = raw.len() > READ_MAX_BYTES;
-    let text = String::from_utf8_lossy(&raw[..raw.len().min(READ_MAX_BYTES)]).to_string();
+    let text = String::from_utf8_lossy(&raw).to_string();
     let lines: Vec<&str> = text.lines().collect();
     let total = lines.len();
     if offset > total {
@@ -319,7 +344,7 @@ pub async fn tool_read_text_file(app: &AppHandle, args: &str, interactive: bool,
         }
         out.push(')');
     }
-    crate::bot::audit_log(app, &format!("bot_fs.read | {} | lines {offset}-{end}/{total}", canonical.display()));
+    crate::bot::audit_log(app, &format!("bot_fs.read | {} | lines {offset}-{end}/{total}", crate::bot::truncate_for_log(&canonical.display().to_string(), 200)));
     (out, Vec::new())
 }
 
@@ -381,7 +406,7 @@ pub async fn tool_grep_files(app: &AppHandle, args: &str, interactive: bool, ses
         }
         true
     });
-    crate::bot::audit_log(app, &format!("bot_fs.grep | dir: {} | pattern: {} | hits: {}", dir.display(), crate::bot::truncate_for_log(pattern, 100), hits.len()));
+    crate::bot::audit_log(app, &format!("bot_fs.grep | dir: {} | pattern: {} | hits: {}", crate::bot::truncate_for_log(&dir.display().to_string(), 200), crate::bot::truncate_for_log(pattern, 100), hits.len()));
     if hits.is_empty() {
         return (format!("{} 内没有匹配「{pattern}」的内容", dir.display()), Vec::new());
     }
@@ -419,7 +444,7 @@ pub async fn tool_list_files(app: &AppHandle, args: &str, interactive: bool, ses
         entries.push(format!("{}{}", rel.display(), if is_dir { "/" } else { "" }));
         true
     });
-    crate::bot::audit_log(app, &format!("bot_fs.list | dir: {} | entries: {}", canonical.display(), entries.len()));
+    crate::bot::audit_log(app, &format!("bot_fs.list | dir: {} | entries: {}", crate::bot::truncate_for_log(&canonical.display().to_string(), 200), entries.len()));
     if entries.is_empty() {
         return (format!("{} 内没有匹配的文件", canonical.display()), Vec::new());
     }
@@ -458,6 +483,33 @@ mod tests {
         assert_eq!(expand_tilde("/abs/path"), PathBuf::from("/abs/path"));
         // Windows 风格波浪号也展开（LLM 可能给 ~\Desktop）
         assert_eq!(expand_tilde("~\\x"), PathBuf::from(&home).join("x"));
+    }
+
+    /// SEC-P1-1（2026-08-27 安全审计）：walk 跳过符号链接——白名单目录内的软链
+    /// 指向外部时，grep 的内容读取跟随软链会把外部文件带进模型上下文
+    #[cfg(unix)]
+    #[test]
+    fn walk_skips_symlinks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // 真实文件 + 指向外部文件的软链 + 指向外部目录的软链
+        std::fs::write(root.join("real.txt"), b"ok").unwrap();
+        let outside = std::env::temp_dir().join(format!("wm_outside_{}.txt", uuid::Uuid::new_v4().simple()));
+        std::fs::write(&outside, b"secret").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("link.txt")).unwrap();
+        std::os::unix::fs::symlink(std::env::temp_dir(), root.join("link_dir")).unwrap();
+
+        let mut visited: Vec<String> = Vec::new();
+        walk(root, &mut |p: &Path, _is_dir: bool| {
+            visited.push(p.file_name().unwrap().to_string_lossy().to_string());
+            true
+        });
+        assert!(visited.contains(&"real.txt".to_string()));
+        assert!(!visited.contains(&"link.txt".to_string()), "软链文件必须跳过");
+        assert!(!visited.contains(&"link_dir".to_string()), "软链目录必须跳过");
+        // 软链目标的内容不应出现在遍历里
+        assert!(!visited.iter().any(|n| n.starts_with("wm_outside_")));
+        let _ = std::fs::remove_file(&outside);
     }
 
     /// Windows 绿色版 bug 根因（2026-08-20）：HOME 缺失时须回退 USERPROFILE

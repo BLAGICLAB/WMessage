@@ -585,7 +585,7 @@ pub fn load_all_skill_outcomes(
     Ok(map)
 }
 
-fn load_workspace(conn: &rusqlite::Connection) -> Result<Vec<WorkspaceItem>, String> {
+pub(crate) fn load_workspace(conn: &rusqlite::Connection) -> Result<Vec<WorkspaceItem>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT id, title, collapsed, links, ord, updated_at
@@ -1337,9 +1337,27 @@ pub async fn db_merge(app: tauri::AppHandle, path: String) -> CommandResult<usiz
     .map_err(|e| CommandError::from(format!("数据库合并线程 join 失败：{e}")))?
 }
 
+/// 导出路径校验（2026-08-27 SEC-P1-3）：导出命令前端直达，路径限 .json——
+/// 防任意路径写覆盖用户文件（正常路径经系统保存对话框取得，本就用户授权）
+fn check_export_path(path: &str) -> CommandResult<()> {
+    let ok = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("json"));
+    if !ok {
+        return Err(CommandError::InvalidArgument {
+            field: "path".into(),
+            value: path.to_string(),
+            reason: "导出路径必须是 .json 文件".into(),
+        });
+    }
+    Ok(())
+}
+
 /// 导出任务卡数据：全量任务（含归档、回收站）序列化为 JSON 文件，返回条数
 #[tauri::command]
 pub async fn tasks_export(app: tauri::AppHandle, path: String) -> CommandResult<usize> {
+    check_export_path(&path)?;
     // B3: 大数据集导出（load_all + JSON 序列化 + 文件写）阻塞主线程；扔到 spawn_blocking。
     tauri::async_runtime::spawn_blocking(move || {
         let conn = open_db(&app)?;
@@ -1402,6 +1420,7 @@ pub async fn tasks_import(app: tauri::AppHandle, path: String) -> CommandResult<
 /// （与 tasks_export 风格一致；workspace 数据独立存于 workspace_items 表，与任务数据物理隔离）
 #[tauri::command]
 pub async fn workspace_export(app: tauri::AppHandle, path: String) -> CommandResult<usize> {
+    check_export_path(&path)?;
     // B3: 同步读 DB + JSON 序列化 + 文件写 阻塞主线程；扔 spawn_blocking。
     tauri::async_runtime::spawn_blocking(move || {
         let conn = open_db(&app)?;

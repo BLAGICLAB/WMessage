@@ -178,10 +178,37 @@ pub async fn chat_execute_tasks(
 
 /// 解析 [附件文件] 块里的图片路径，读文件转 base64 data URL，附加为多模态消息内容。
 /// 无图片附件时返回纯文本字符串（保持原格式）；非图片附件保持路径文本（模型用 extract_document 直读）。
-fn attach_images(content: &str) -> serde_json::Value {
+///
+/// SEC-P1-7（2026-08-27 安全审计）：图片路径过白名单（桌面/下载/文档/图片 + AI_Gen_Files）——
+/// 原先任意路径的图片都被读取并外发给 LLM API，[附件文件] 块若被污染（历史注入）即成外泄通道。
+/// 校验失败的附件跳过并记审计（不打断聊天）。
+fn attach_images(app: &AppHandle, content: &str) -> serde_json::Value {
+    let mut roots: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(home) = crate::bot_fs::home_dir() {
+        for d in ["Desktop", "Downloads", "Documents", "Pictures"] {
+            roots.push(home.join(d));
+        }
+    }
+    roots.push(crate::db::data_dir(app).join("AI_Gen_Files"));
+    let (v, skipped) = attach_images_in(&roots, content);
+    if skipped > 0 {
+        crate::bot::audit_log(
+            app,
+            &format!("attach_images.denied | {skipped} 张图片附件不在白名单目录，已跳过"),
+        );
+    }
+    v
+}
+
+/// 白名单根目录集合内的判定内核（纯函数便于单测）：返回 (消息内容, 跳过数)
+fn attach_images_in(
+    roots: &[std::path::PathBuf],
+    content: &str,
+) -> (serde_json::Value, usize) {
     let mut parts: Vec<serde_json::Value> = Vec::new();
     parts.push(serde_json::json!({"type": "text", "text": content}));
     let mut added = 0usize;
+    let mut skipped = 0usize;
     for line in content.lines() {
         let Some(path) = line.strip_prefix("- ").map(str::trim) else {
             continue;
@@ -196,6 +223,18 @@ fn attach_images(content: &str) -> serde_json::Value {
             .map(|e| e.to_lowercase())
             .unwrap_or_default();
         if !IMAGE_EXTS.contains(&ext.as_str()) {
+            continue;
+        }
+        // 白名单判定：canonical 双向比较（软链解析后落点必须在白名单根内）
+        let allowed = std::fs::canonicalize(p).ok().is_some_and(|c| {
+            roots.iter().any(|r| {
+                std::fs::canonicalize(r)
+                    .map(|rc| c.starts_with(&rc))
+                    .unwrap_or(false)
+            })
+        });
+        if !allowed {
+            skipped += 1;
             continue;
         }
         let Ok(bytes) = std::fs::read(p) else {
@@ -218,11 +257,12 @@ fn attach_images(content: &str) -> serde_json::Value {
         }));
         added += 1;
     }
-    if parts.len() == 1 {
+    let v = if parts.len() == 1 {
         serde_json::json!(content)
     } else {
         serde_json::Value::Array(parts)
-    }
+    };
+    (v, skipped)
 }
 
 /// 工具执行后带出的任务引用（前端渲染成可点击按钮，跳主窗口打开该任务）
@@ -313,7 +353,7 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>, session_id: Option
                 &app,
                 &format!(
                     "bot_chat_rejected | session: {} | 已有执行实例在跑（防重入拦截）",
-                    session_id.as_deref().unwrap_or("<none>")
+                    crate::bot::truncate_for_log(session_id.as_deref().unwrap_or("<none>"), 60)
                 ),
             );
             return Ok(BotChatResult {
@@ -456,7 +496,7 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>, session_id: Option
                     // 直出给前端（前端无该哨兵的处理逻辑），用户看到原始字符串
                     crate::bot::audit_log(
                         &app,
-                        &format!("skill_await_user | name: {} | 已暂停等待用户确认", meta.name),
+                        &format!("skill_await_user | name: {} | 已暂停等待用户确认", crate::bot::truncate_for_log(&meta.name, 60)),
                     );
                     return Ok(BotChatResult {
                         text: format!("⏸ 技能「{}」已暂停，正在等待你的确认——请在确认弹窗里选择后继续。", meta.name),
@@ -546,7 +586,7 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>, session_id: Option
     }
     for (i, m) in messages.iter().enumerate() {
         if img_indices.contains(&i) {
-            msgs.push(serde_json::json!({"role": m.role, "content": attach_images(&m.content)}));
+            msgs.push(serde_json::json!({"role": m.role, "content": attach_images(&app, &m.content)}));
         } else {
             msgs.push(serde_json::json!({"role": m.role, "content": m.content}));
         }
@@ -746,7 +786,7 @@ pub async fn execute_task_core(
         // 拒绝也留痕：否则无法区分「用户在前次执行未结束时重复触发」与「守卫泄漏」
         crate::bot::audit_log(
             app,
-            &format!("execute_task_rejected | id: {task_id} | 已有执行实例在跑（防重入拦截）"),
+            &format!("execute_task_rejected | id: {} | 已有执行实例在跑（防重入拦截）", crate::bot::truncate_for_log(task_id, 60)),
         );
         return Err(CommandError::TaskInvalidState {
             reason: "该任务卡正在执行中，请等待完成后再触发".into(),
@@ -879,7 +919,9 @@ mod image_attach_tests {
         let png = dir.join("a.png");
         std::fs::write(&png, [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A]).unwrap(); // PNG 魔数
         let content = format!("[附件文件]\n- {}\n\n提取图片里的文字", png.display());
-        let v = attach_images(&content);
+        // SEC-P1-7：白名单根目录传入（测试用临时目录充当白名单根）
+        let (v, skipped) = attach_images_in(&[dir.clone()], &content);
+        assert_eq!(skipped, 0);
         let arr = v.as_array().expect("应返回多模态数组");
         assert_eq!(arr.len(), 2);
         assert_eq!(arr[1]["type"], "image_url");
@@ -889,14 +931,29 @@ mod image_attach_tests {
     }
 
     #[test]
+    fn attach_image_outside_whitelist_skipped() {
+        // SEC-P1-7：白名单外的图片路径被跳过（防 [附件文件] 块污染外泄）
+        let dir = std::env::temp_dir().join(format!("wm_img_{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = dir.join("a.png");
+        std::fs::write(&png, [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A]).unwrap();
+        let content = format!("[附件文件]\n- {}\n\n看看", png.display());
+        let other_root = std::env::temp_dir().join("wm_img_other_root");
+        let (v, skipped) = attach_images_in(&[other_root], &content);
+        assert_eq!(skipped, 1, "白名单外图片应被跳过");
+        assert!(v.is_string(), "全部跳过时退回纯文本");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn non_image_returns_plain_text() {
-        let v = attach_images("普通消息 [附件文件]\n- /tmp/x.docx\n\n润色一下");
+        let (v, _) = attach_images_in(&[], "普通消息 [附件文件]\n- /tmp/x.docx\n\n润色一下");
         assert!(v.is_string(), "无图片时应返回纯文本字符串");
     }
 
     #[test]
     fn missing_image_file_skipped() {
-        let v = attach_images("[附件文件]\n- /tmp/not_exists_xyz.png\n\n看看");
+        let (v, _) = attach_images_in(&[std::path::PathBuf::from("/tmp")], "[附件文件]\n- /tmp/not_exists_xyz.png\n\n看看");
         assert!(v.is_string(), "图片不存在时退回纯文本");
     }
 }

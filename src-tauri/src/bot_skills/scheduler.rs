@@ -110,7 +110,7 @@ async fn run_rollback_segment(
         app,
         &format!(
             "skill_dsl_rollback_start | name: {name} | step: {step_index} | reason: {}",
-            reason.chars().take(120).collect::<String>()
+            crate::bot::truncate_for_log(reason, 120)
         ),
     );
     // 回滚窗口：Failed → Running（原子工具放行）。窗口内 skill_on_step 仍计数/可熔断，
@@ -130,7 +130,7 @@ async fn run_rollback_segment(
                 &format!(
                     "skill_dsl_rollback_step_failed | name: {name} | tool: {} | {}",
                     rb.tool_name,
-                    text.chars().take(120).collect::<String>()
+                    crate::bot::truncate_for_log(&text, 120)
                 ),
             );
         }

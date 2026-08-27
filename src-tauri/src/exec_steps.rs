@@ -286,7 +286,7 @@ pub async fn resume(app: &AppHandle, reply: &str, session_id: Option<&str>) -> C
         if let Err(e) = r {
             crate::bot::audit_log(
                 app,
-                &format!("exec_steps.resume_failed | task: {task_id} | {e}"),
+                &format!("exec_steps.resume_failed | task: {task_id} | {}", crate::bot::truncate_for_log(&e.to_string(), 200)),
             );
         }
         r.is_err()

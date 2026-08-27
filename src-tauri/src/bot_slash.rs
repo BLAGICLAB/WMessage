@@ -205,7 +205,7 @@ async fn ask_confirm_inner(
     if !interactive {
         crate::bot::audit_log(
             app,
-            &format!("confirm_skipped | {tool} | {detail} | 后台执行不弹窗，默认拒绝"),
+            &format!("confirm_skipped | {tool} | {} | 后台执行不弹窗，默认拒绝", crate::bot::truncate_for_log(detail, 120)),
         );
         return deny;
     }
@@ -218,7 +218,7 @@ async fn ask_confirm_inner(
     if !widget_visible {
         crate::bot::audit_log(
             app,
-            &format!("confirm_skipped | {tool} | {detail} | 挂件不可见，默认拒绝"),
+            &format!("confirm_skipped | {tool} | {} | 挂件不可见，默认拒绝", crate::bot::truncate_for_log(detail, 120)),
         );
         crate::bot_skills::skill_confirm_result(app, false, session_id);
         return deny;
@@ -242,7 +242,7 @@ async fn ask_confirm_inner(
     );
     crate::bot::audit_log(
         app,
-        &format!("confirm | id: {} | kind: {kind} | {tool} | {detail}", &id[..8]),
+        &format!("confirm | id: {} | kind: {kind} | {tool} | {}", &id[..8], crate::bot::truncate_for_log(detail, 120)),
     );
     match tokio::time::timeout(std::time::Duration::from_secs(60), rx).await {
         Ok(Ok(reply)) => reply,
@@ -254,7 +254,7 @@ async fn ask_confirm_inner(
             // 2026-08-27 审计 P2：确认超时默认拒绝留痕（原先只有发起日志，无结果记录）
             crate::bot::audit_log(
                 app,
-                &format!("confirm_timeout | {tool} | {detail} | 60s 无响应，默认拒绝"),
+                &format!("confirm_timeout | {tool} | {} | 60s 无响应，默认拒绝", crate::bot::truncate_for_log(detail, 120)),
             );
             crate::bot_skills::skill_confirm_result(app, false, session_id); // 超时默认拒绝
             deny

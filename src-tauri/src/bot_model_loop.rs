@@ -91,7 +91,7 @@ const TOOLS: &str = r#"[
     "note":{"type":"string","description":"备注，可选"},
     "due":{"type":"string","description":"截止时间，YYYY-MM-DD 或 YYYY-MM-DD HH:mm，可选"},
     "column":{"type":"string","enum":["todo","doing"],"description":"状态列，默认 todo"},
-    "files":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"isDir":{"type":"boolean"}}},"description":"绑定文件列表（可选，最多 10 个；isDir=true 为文件夹）"}
+    "files":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"isDir":{"type":"boolean"}}},"description":"绑定文件列表（可选，最多 10 个；安全约束：仅允许 AI_Gen_Files 目录内的已存在文件，其余会被丢弃；要绑其它文件请引导用户用 bind_file 手选）"}
   },"required":["title"]}}},
   {"type":"function","function":{"name":"complete_task","description":"完成任务（taskId 精确匹配优先；无 taskId 时按标题关键词匹配）","parameters":{"type":"object","properties":{
     "taskId":{"type":"string","description":"任务 id（来自用户消息的 [已选任务] 引用块或 list_tasks 输出），可选，优先于 title"},
@@ -109,7 +109,7 @@ const TOOLS: &str = r#"[
     "due":{"type":"string","description":"新截止时间，可选；空串清除"},
     "column":{"type":"string","enum":["todo","doing","done"],"description":"新状态列，可选"},
     "tags":{"type":"array","items":{"type":"string"},"description":"新标签列表，可选；空数组清除"},
-    "files":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"isDir":{"type":"boolean"}}},"description":"新绑定文件列表（可选，整体替换，最多 10 个；空数组清除）"}
+    "files":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"isDir":{"type":"boolean"}}},"description":"新绑定文件列表（可选，整体替换，最多 10 个；空数组清除；安全约束：仅允许 AI_Gen_Files 目录内的已存在文件）"}
   },"required":[]}}},
   {"type":"function","function":{"name":"add_subtask","description":"给任务添加子任务（taskId 精确匹配优先；无 taskId 时按标题关键词匹配）","parameters":{"type":"object","properties":{
     "taskId":{"type":"string","description":"任务 id，可选，优先于 title"},

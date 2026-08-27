@@ -216,6 +216,8 @@ fn dotnet_revisions_dll() -> Option<std::path::PathBuf> {
 fn run_dotnet_revisions(app: &AppHandle, input_json: &str) -> Option<Result<PyRunResult, String>> {
     let dotnet = cached_dotnet()?;
     let dll = dotnet_revisions_dll()?;
+    // 并发闸门由调用方持有（run_doc_revisions 入口统一上锁，覆盖 dotnet + 回退 Python
+    // 全程；std Mutex 不可重入，这里不能再锁）
     let dir = crate::db::data_dir(app)
         .join("py-runs")
         .join(uuid::Uuid::new_v4().simple().to_string());
@@ -710,6 +712,20 @@ pub fn run_python(
 ) -> Result<PyRunResult, String> {
     // P2-12：并发闸门 —— 同一时刻只跑一个 Python 任务，多余请求排队等待
     let _gate = py_run_gate().lock().unwrap_or_else(|e| e.into_inner());
+    run_python_ungated(app, script, input_json, args, timeout_secs, stop)
+}
+
+/// run_python 的无闸门内核（2026-08-27 SEC-P2）：供 run_doc_revisions 这类
+/// 「入口已持锁、内部要多步执行（dotnet 试跑 + 失败回退 Python）」的调用方使用——
+/// std Mutex 不可重入，持锁后再进 run_python 会死锁。
+fn run_python_ungated(
+    app: &AppHandle,
+    script: &str,
+    input_json: Option<&str>,
+    args: &[String],
+    timeout_secs: Option<u64>,
+    stop: Option<&StopToken>,
+) -> Result<PyRunResult, String> {
     let mut py = match cached_python() {
         Some(p) => p,
         // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
@@ -1041,6 +1057,10 @@ async fn run_doc_revisions(
     let handle = app.clone();
     let name_in = name.to_string();
     match spawn_blocking_map(move || {
+        // 并发闸门提到入口层（2026-08-27 SEC-P2）：dotnet 试跑 + 失败回退 Python 全程持锁，
+        // 与 run_python 的「同一时刻只跑一个」语义对齐（std Mutex 不可重入，
+        // 故回退走 run_python_ungated）
+        let _gate = py_run_gate().lock().unwrap_or_else(|e| e.into_inner());
         // 强制 .NET 优先：不可用（无运行时/无 dll）或跑了失败都回退 Python，均记审计
         if let Some(r) = run_dotnet_revisions(&handle, &input) {
             match r {
@@ -1061,7 +1081,7 @@ async fn run_doc_revisions(
                 ),
             }
         }
-        run_python(&handle, script, Some(&input), &[], Some(120), None)
+        run_python_ungated(&handle, script, Some(&input), &[], Some(120), None)
             .map(|res| (res, "python"))
     })
     .await
@@ -1089,11 +1109,7 @@ fn py_audit_to(path: &std::path::Path, line: &str) {
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     crate::db::rotate_log_if_large(path, 5 * 1024 * 1024);
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
+    if let Ok(mut f) = crate::audit::open_log_append(path) {
         let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
         let _ = writeln!(f, "[{ts}] {line}");
     }

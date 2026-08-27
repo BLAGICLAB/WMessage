@@ -117,14 +117,32 @@ pub fn format_event_line(level: AuditLevel, event: &str, kv: &[(&str, &str)]) ->
 /// rotate + open + write 必须在同一把锁内，否则检查大小与写入之间存在竞态。
 pub static BOT_LOG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// 日志文件打开（2026-08-27 安全审计 P2）：创建即 0600 + 已有文件补 chmod——
+/// bot.log 含用户指令/文件路径/工具输出，原先 umask 默认 0644，同机其他用户可读。
+/// 三处写入点（audit::append_line / bot::audit_log / bot_py::py_audit_to）共用。
+pub(crate) fn open_log_append(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let f = opts.open(path)?;
+    #[cfg(unix)]
+    {
+        // 已存在文件 mode() 不生效，补 chmod（幂等）
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(f)
+}
+
 /// 追加一行到指定日志文件（P2-15：open/write 失败不再 `let _ =` 全静默——
 /// eprintln 到 stderr 提示路径，审计丢了至少有迹可循；返回成功与否供测试断言，
 /// 不 panic、不阻塞业务）。
 fn append_line(path: &std::path::Path, line: &str) -> bool {
-    let f = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path);
+    let f = open_log_append(path);
     let mut f = match f {
         Ok(f) => f,
         Err(e) => {

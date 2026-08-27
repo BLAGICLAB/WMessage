@@ -37,7 +37,7 @@ pub fn load_or_create_token(app: &AppHandle) -> Result<String, String> {
 
 /// 写 token 文件并把权限收紧到 0600（P2-1：token 等价于密码，默认 0644 可被同机其他用户读）。
 /// 抽出独立函数便于单测（load_or_create_token 依赖 AppHandle 无法直测）。
-fn write_token_file(path: &std::path::Path, token: &str) -> Result<(), String> {
+pub(crate) fn write_token_file(path: &std::path::Path, token: &str) -> Result<(), String> {
     std::fs::write(path, token).map_err(|e| e.to_string())?;
     #[cfg(unix)]
     {

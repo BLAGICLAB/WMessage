@@ -282,21 +282,42 @@ fn read_key_file_from(p: &std::path::Path) -> CommandResult<String> {
     }
 }
 
-/// 降级文件写入（P2-32）：父目录不存在则创建；Unix chmod 0600（与 P2-1
-/// api-token.txt 同策略，防同机其他用户读 key）。
+/// 降级文件写入（P2-32）：父目录不存在则创建；Unix 创建即 0600（OpenOptionsExt::mode，
+/// 与 P2-1 api-token.txt 同策略）——2026-08-27 审计 P2：原先「先写后 chmod」存在
+/// umask 默认权限窗口，且 chmod 失败静默吞（key 以 0644 留存无告警）。
 fn write_key_file_to(p: &std::path::Path, key: &str) -> CommandResult<()> {
     if let Some(dir) = p.parent() {
         std::fs::create_dir_all(dir).map_err(|e| {
             CommandError::KeyringError(format!("保存 API Key 失败（降级文件存储）：{e}"))
         })?;
     }
-    std::fs::write(p, key).map_err(|e| {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600); // 创建时即 0600，无「先 0644 后 chmod」窗口
+    }
+    let mut f = opts.open(p).map_err(|e| {
+        CommandError::KeyringError(format!("保存 API Key 失败（降级文件存储）：{e}"))
+    })?;
+    use std::io::Write as _;
+    f.write_all(key.as_bytes()).map_err(|e| {
         CommandError::KeyringError(format!("保存 API Key 失败（降级文件存储）：{e}"))
     })?;
     #[cfg(unix)]
     {
+        // 已存在文件 mode() 不生效，补 chmod；失败记 WARN（原先静默吞）
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o600));
+        if std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o600)).is_err() {
+            if let Some(dir) = p.parent().map(|d| d.to_path_buf()) {
+                crate::audit::write_warn_audit_to(
+                    &dir,
+                    "keyring_fallback_chmod_failed",
+                    &[("file", "bot-api-key.txt")],
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -374,6 +395,8 @@ pub fn read_api_key() -> CommandResult<String> {
     let backend = key_backend();
     if backend == KeyBackend::PlaintextFile {
         warn_fallback_once();
+    } else {
+        migrate_plaintext_key_if_system();
     }
     read_api_key_at(backend, &plaintext_key_path())
 }
@@ -382,8 +405,36 @@ pub fn has_api_key() -> CommandResult<bool> {
     let backend = key_backend();
     if backend == KeyBackend::PlaintextFile {
         warn_fallback_once();
+    } else {
+        migrate_plaintext_key_if_system();
     }
     has_api_key_at(backend, &plaintext_key_path())
+}
+
+/// SEC-P1-4（2026-08-27 安全审计）：System 后端恢复可用时，把降级明文 key 迁回 keychain
+/// 并删除文件——原先降级文件永久残留（clear 走当前后端，PlaintextFile 分支轮不到），
+/// 用户以为「早就只用 keychain 了」，明文副本却留在数据目录。幂等：无文件直接返回。
+fn migrate_plaintext_key_if_system() {
+    let p = plaintext_key_path();
+    if !p.exists() {
+        return;
+    }
+    // 读不出内容不删文件（数据保留优先），迁回 keychain 成功才删
+    let migrated = read_key_file_from(&p)
+        .ok()
+        .and_then(|key| key_entry().ok().map(|e| e.set_password(&key)))
+        .and_then(|r| r.ok())
+        .is_some();
+    if migrated {
+        let _ = std::fs::remove_file(&p);
+        if let Some(dir) = p.parent().map(|d| d.to_path_buf()) {
+            crate::audit::write_warn_audit_to(
+                &dir,
+                "keyring_migrated_from_plaintext",
+                &[("file", "bot-api-key.txt")],
+            );
+        }
+    }
 }
 
 fn write_api_key(key: &str) -> CommandResult<()> {
@@ -540,11 +591,7 @@ pub fn audit_log<R: tauri::Runtime>(app: &tauri::AppHandle<R>, line: &str) {
         .unwrap_or_else(|e| e.into_inner());
     crate::db::rotate_log_if_large(&crate::db::data_dir(app).join("bot.log"), 5 * 1024 * 1024);
     let p = crate::db::data_dir(app).join("bot.log");
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(p)
-    {
+    if let Ok(mut f) = crate::audit::open_log_append(&p) {
         let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
         let _ = writeln!(f, "[{ts}] {line}");
     }
@@ -953,6 +1000,53 @@ fn parse_task_files_arg(v: &serde_json::Value) -> Option<(Vec<crate::db::TaskFil
     Some((out, truncated))
 }
 
+/// 模型来源 files 的安全校验（2026-08-27 安全审计 SEC-P0-2）：create_task/edit_task 的
+/// files 参数直接来自模型，原先零校验——模型可把任意目录标 isDir=true 绑进任务卡，
+/// `allowed_dirs` 会把它并入文件白名单（且先于 permMode 分流），strict 模式也被架空。
+/// 收窄（对齐 link_file_to_task）：仅放行 AI_Gen_Files 目录内的已存在文件，强制 isDir=false；
+/// 被拒条目记审计。用户亲手绑定走 bind_file 系统弹框，不在此限。
+fn sanitize_task_files_arg(
+    app: &AppHandle,
+    v: &serde_json::Value,
+) -> Option<(Vec<crate::db::TaskFile>, bool)> {
+    let (files, truncated) = parse_task_files_arg(v)?;
+    let gen_canon =
+        std::fs::canonicalize(crate::db::data_dir(app).join("AI_Gen_Files")).ok();
+    let (out, dropped) = sanitize_task_files_in(gen_canon.as_deref(), files);
+    if dropped > 0 {
+        audit_log(
+            app,
+            &format!("task_files_sanitized | dropped: {dropped} | 模型来源 files 仅放行 AI_Gen_Files 内已存在文件"),
+        );
+    }
+    Some((out, truncated))
+}
+
+/// sanitize 的纯内核（单测可注入 gen 目录）：仅放行 gen_canon 目录内的已存在文件，
+/// 强制 isDir=false（目录绑定一律丢——目录绑定的授权只能来自用户手选）。
+/// 返回 (保留列表, 丢弃数)。
+fn sanitize_task_files_in(
+    gen_canon: Option<&std::path::Path>,
+    files: Vec<crate::db::TaskFile>,
+) -> (Vec<crate::db::TaskFile>, usize) {
+    let mut out: Vec<crate::db::TaskFile> = Vec::new();
+    let mut dropped = 0usize;
+    for f in files {
+        let ok = !f.is_dir
+            && gen_canon.is_some_and(|g| {
+                std::fs::canonicalize(&f.path)
+                    .map(|c| c.starts_with(g))
+                    .unwrap_or(false)
+            });
+        if ok {
+            out.push(f);
+        } else {
+            dropped += 1;
+        }
+    }
+    (out, dropped)
+}
+
 /// files 写回任务时的双写：新 files 列 + 旧 file_path/file_is_dir 首条（过渡期旧版本可读）
 fn apply_files_to_task(t: &mut crate::db::Task, files: Vec<crate::db::TaskFile>) {
     t.file_path = files.first().map(|f| f.path.clone());
@@ -1235,8 +1329,9 @@ async fn tool_create_task(app: &AppHandle, args: &str) -> (String, Vec<crate::bo
         bot_assigned: None,
     };
     // 多文件绑定（2026-08-19）：files 参数 [{path,isDir}]，超 10 截断 + 警告
+    // SEC-P0-2（2026-08-27）：模型来源 files 经安全校验（仅 AI_Gen_Files 内文件）
     let mut files_warn = "";
-    if let Some((files, truncated)) = parse_task_files_arg(&v) {
+    if let Some((files, truncated)) = sanitize_task_files_arg(app, &v) {
         if truncated {
             files_warn = "（绑定文件超上限，已截断为前 10 个）";
         }
@@ -1436,8 +1531,9 @@ async fn tool_edit_task(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_
         changed.push("标签");
     }
     // 多文件绑定（2026-08-19）：files 参数 [{path,isDir}] 整体替换列表；空数组清除；超 10 截断 + 警告
+    // SEC-P0-2（2026-08-27）：模型来源 files 经安全校验（仅 AI_Gen_Files 内文件）
     let mut files_warn = "";
-    if let Some((files, truncated)) = parse_task_files_arg(&v) {
+    if let Some((files, truncated)) = sanitize_task_files_arg(app, &v) {
         if truncated {
             files_warn = "（绑定文件超上限，已截断为前 10 个）";
         }
@@ -2478,6 +2574,40 @@ mod task_files_arg_tests {
         assert!(parse_task_files_arg(&serde_json::json!({"title": "x"})).is_none());
         let (files, truncated) = parse_task_files_arg(&serde_json::json!({"files": []})).unwrap();
         assert!(files.is_empty() && !truncated);
+    }
+
+    /// SEC-P0-2（2026-08-27 安全审计）：模型来源 files 仅放行 AI_Gen_Files 内已存在文件，
+    /// 目录绑定一律丢（目录授权只能来自用户手选 bind_file）
+    #[test]
+    fn sanitize_task_files_drops_dirs_and_outside_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let gen = tmp.path().join("AI_Gen_Files");
+        std::fs::create_dir_all(&gen).unwrap();
+        let inside = gen.join("report.docx");
+        std::fs::write(&inside, b"x").unwrap();
+        let outside = tmp.path().join("secret.txt");
+        std::fs::write(&outside, b"s").unwrap();
+        let gen_canon = std::fs::canonicalize(&gen).unwrap();
+
+        let files = vec![
+            crate::db::TaskFile { path: inside.to_string_lossy().to_string(), is_dir: false },
+            crate::db::TaskFile { path: outside.to_string_lossy().to_string(), is_dir: false },
+            // 目录绑定（哪怕是 gen 目录本身）一律丢
+            crate::db::TaskFile { path: gen.to_string_lossy().to_string(), is_dir: true },
+            // 不存在的路径也丢
+            crate::db::TaskFile { path: gen.join("nope.txt").to_string_lossy().to_string(), is_dir: false },
+        ];
+        let (kept, dropped) = sanitize_task_files_in(Some(&gen_canon), files);
+        assert_eq!(kept.len(), 1, "只有 AI_Gen_Files 内已存在文件保留");
+        assert!(kept[0].path.ends_with("report.docx"));
+        assert_eq!(dropped, 3);
+
+        // gen 目录不可用（None）→ 全丢（fail-closed）
+        let (kept, dropped) = sanitize_task_files_in(
+            None,
+            vec![crate::db::TaskFile { path: inside.to_string_lossy().to_string(), is_dir: false }],
+        );
+        assert!(kept.is_empty() && dropped == 1);
     }
 
     /// 双写：files 首条同步进旧 file_path/file_is_dir；空列表清三字段

@@ -2,6 +2,24 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-08-27（周四·午 5）全面审计批次 0+1：基线 + 安全纵深（2 个 P0 实锤已修）
+
+按 `docs/AUDIT-PLAN-BOT-2026-08-27.md` 开跑。批次 0 基线：cargo 428+29 / vitest 110 / tsc 全绿。
+批次 1 安全纵深（4 路并行审计 + P0/P1 人工复核），报告落盘 `docs/AUDIT-SECURITY-2026-08-27.md`。
+
+**P0 两个（均已修 + 回归测试）**：
+- **SEC-P0-1 SSRF**：`http_client()` 未禁 reqwest 自动重定向，`fetch_text` 的「3xx 逐跳校验」是死代码——公网 URL 302 到 `127.0.0.1`/云 metadata 完整可打。修复一行 `.redirect(Policy::none())` 激活手工逐跳校验；回归测试用本地 302 端点钉死「不得自动跟随」
+- **SEC-P0-2 白名单单点破口**：`create_task/edit_task` 的 `files` 参数零校验——模型把任意目录标 `isDir:true` 绑进任务卡，`allowed_dirs` 并入白名单且先于 permMode 分流，strict 模式也被架空。修复：模型来源 files 仅放行 AI_Gen_Files 内已存在文件（强制 isDir=false，对齐 link_file_to_task），被拒记审计；`allowed_dirs` 过滤回收站任务（删卡即解权）
+
+**P1 七个（均已修）**：grep_files walk 内软链跟随（跳过符号链接，fail-closed）；IPv4-mapped IPv6（`::ffff:127.0.0.1`）与 CGNAT 100.64/10 补判；`open_file_path`/`delete_bound_file` 限定任务卡绑定集合 + 工作区链接 + AI_Gen_Files（堵前端 XSS→RCE 一跳），导出命令限 .json；Linux 降级明文 key 在 keychain 恢复时自动迁回并删除；fetch/Jina 响应体改流式有界读取（Content-Length 撒谎不再吃内存）；日志注入漏网点全部补 escape（session_id/任务标题/确认详情/路径/技能名）；图片附件过白名单（桌面/下载/文档/图片 + AI_Gen_Files，[附件文件] 块污染不再外发任意图片）
+
+**P2 小项**：key 文件 OpenOptions mode(0o600) 原子创建（消「先 0644 后 chmod」窗口 + chmod 失败告警）；bot.log 三处写入点统一 `open_log_append`（创建即 0600 + 已有文件补 chmod）；dotnet 修订工具纳入并发闸门（run_python 拆 gate/ungated，run_doc_revisions 入口统一持锁——std Mutex 不可重入，闸门只能提在入口层）；api_rotate_token 复用 write_token_file 保 0600；create_task/edit_task 的 files schema 描述同步安全约束
+
+**记录项（不修，已知残留）**：DNS TOCTOU（校验与连接两次解析，缓解需 resolve 钉 IP）；LLM base_url 用户自配零校验（key 随配置外发，建议后续加 https 警告）；.NET dll 无哈希校验（威胁不高于 exe 替换，发版流水线补）。
+
+**测试**：cargo test --lib 428 → **433 全绿**（重定向策略/mapped-v6+CGNAT/软链跳过/files 校验/附件白名单 5 个新用例），集成 29 全绿；vitest 110 全绿；tsc 零错。
+**踩坑**：本地 302 测试端点必须先读请求再回响应（hyper 对未消费请求即收响应报 UnexpectedMessage）。
+
 ## 2026-08-27（周四·午 4）审计 P2 全修：解析加固 + 变量转义 + 防重入 + 审计补洞
 
 承接「午 3」P1 修复，把审计报告剩余 P2 全部清掉（至此 P0/P1/P2 三轮清零）：
