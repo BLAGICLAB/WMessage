@@ -46,6 +46,9 @@ pub(crate) fn parse_frontmatter(text: &str, dir_name: &str) -> (String, String) 
 /// 解析完整元数据（调度器用）：缺失字段走默认值；非法值回退默认
 pub fn parse_meta(text: &str, dir_name: &str) -> SkillMeta {
     let mut m = SkillMeta::default();
+    // 2026-08-27 审计 P2：剥离 UTF-8 BOM——带 BOM 的文件此前 frontmatter 整体静默丢失
+    // （name 退目录名、mode 退默认、intents 丢失 → 路由失效），无任何告警
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let body = text.strip_prefix("---").unwrap_or(text);
     let Some(end) = body.find("\n---") else {
         m.name = dir_name.to_string();
@@ -54,6 +57,8 @@ pub fn parse_meta(text: &str, dir_name: &str) -> SkillMeta {
     let fm = &body[..end];
     let fm_lines: Vec<&str> = fm.lines().collect();
     let mut li = 0;
+    // mode 是否显式声明（2026-08-27 审计 P2：风险推导需要区分「没写」与「显式写默认值」）
+    let mut mode_explicit = false;
     while li < fm_lines.len() {
         let line = fm_lines[li].trim();
         li += 1;
@@ -73,6 +78,7 @@ pub fn parse_meta(text: &str, dir_name: &str) -> SkillMeta {
                 }
             }
             "mode" => {
+                mode_explicit = true;
                 let v2 = v.to_ascii_lowercase();
                 m.mode = if matches!(v2.as_str(), "auto" | "interactive") {
                     v2
@@ -145,11 +151,12 @@ pub fn parse_meta(text: &str, dir_name: &str) -> SkillMeta {
     if m.name.is_empty() {
         m.name = dir_name.to_string();
     }
-    // 风险推导模式（显式 mode 优先）：high/medium → interactive；low → auto
-    // 元数据里 mode 未显式标记时按风险推导：这里无法区分"显式"与否（默认已是 interactive），
-    // 保持解析值即可；high 风险强制 interactive（安全兜底）
+    // 风险推导模式（显式 mode 优先）：high → 强制 interactive（安全兜底）；
+    // low + 未显式声明 mode → auto（SKILL_DSL.md 约定「low 强制 auto」，2026-08-27 审计 P2 补齐实现）
     if m.risk_level == "high" {
         m.mode = "interactive".into();
+    } else if m.risk_level == "low" && !mode_explicit {
+        m.mode = "auto".into();
     }
     m
 }
@@ -176,6 +183,8 @@ pub struct SkillStep {
 
 /// 剥离 YAML frontmatter（`---` ... `---`），返回正文部分。
 fn strip_frontmatter(text: &str) -> &str {
+    // 2026-08-27 审计 P2：先剥 UTF-8 BOM，否则 frontmatter 探测整体失效
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     if !text.starts_with("---") {
         return text;
     }
@@ -184,6 +193,21 @@ fn strip_frontmatter(text: &str) -> &str {
         Some(end) => body[end + 4..].trim_start_matches('\n'),
         None => text,
     }
+}
+
+/// 回滚段标题判定（2026-08-27 审计 P2：统一三套说法）：
+/// `## Rollback` / `## Rollback ...` / `## 回滚` / `## 回滚（Rollback）` 都认。
+/// parse_skill_steps 与 runtime::rollback_section 共用同一判定，不再各认一半。
+pub(crate) fn is_rollback_heading(line: &str) -> bool {
+    let Some(rest) = line.trim().strip_prefix("## ") else {
+        return false;
+    };
+    rest == "Rollback"
+        || rest.starts_with("Rollback ")
+        || rest == "回滚"
+        || rest.starts_with("回滚 ")
+        || rest.starts_with("回滚（")
+        || rest.starts_with("回滚(")
 }
 
 /// 解析 `## Step N: 标题` 或 `## Step N 标题` → `(序号, 标题)`
@@ -219,12 +243,16 @@ fn parse_tool_call(line: &str) -> Option<(String, String)> {
 /// 解析 Skill body 为 (主步骤, 回滚步骤)。
 /// - 空 body / 无 step → `(Vec::new(), Vec::new())`
 /// - 解析失败 → Err
+/// 2026-08-27 审计 P2 加固：
+/// - 回滚段标题走 is_rollback_heading 统一判定（`## Rollback` / `## 回滚` 都认）
+/// - 回滚段每行工具调用是一个独立回滚步骤（原先后续行静默覆盖，只留最后一行）
+/// - Step 内含多行工具调用 → Err（原先第二行静默覆盖第一行）
+/// - 步骤序号重复 → Err（`${stepN.*}` 替换取首个匹配，重号会静默错位）
 pub fn parse_skill_steps(body: &str) -> Result<(Vec<SkillStep>, Vec<SkillStep>), String> {
     let body = strip_frontmatter(body);
     let mut steps: Vec<SkillStep> = Vec::new();
     let mut rollback: Vec<SkillStep> = Vec::new();
     let mut current: Option<SkillStep> = None;
-    let mut current_rollback: Option<SkillStep> = None;
     let mut mode: &str = "step"; // "step" | "rollback"
 
     for line in body.lines() {
@@ -236,9 +264,6 @@ pub fn parse_skill_steps(body: &str) -> Result<(Vec<SkillStep>, Vec<SkillStep>),
             if let Some(s) = current.take() {
                 steps.push(s);
             }
-            if let Some(r) = current_rollback.take() {
-                rollback.push(r);
-            }
             current = Some(SkillStep {
                 index: idx,
                 title,
@@ -246,36 +271,50 @@ pub fn parse_skill_steps(body: &str) -> Result<(Vec<SkillStep>, Vec<SkillStep>),
                 args_json: String::new(),
             });
             mode = "step";
-        } else if line == "## Rollback" || line.starts_with("## Rollback ") {
+        } else if is_rollback_heading(line) {
             if let Some(s) = current.take() {
                 steps.push(s);
             }
-            current_rollback = Some(SkillStep {
-                index: 0,
-                title: "rollback".into(),
-                tool_name: String::new(),
-                args_json: String::new(),
-            });
             mode = "rollback";
         } else if line.starts_with('#') {
             continue;
         } else if let Some((name, args)) = parse_tool_call(line) {
-            let target = if mode == "step" {
-                &mut current
+            if mode == "step" {
+                match current.as_mut() {
+                    Some(s) if s.tool_name.is_empty() => {
+                        s.tool_name = name;
+                        s.args_json = args;
+                    }
+                    Some(s) => {
+                        return Err(format!(
+                            "Step {}（{}）含多行工具调用，每步只支持一行——请拆成多个 Step",
+                            s.index, s.title
+                        ));
+                    }
+                    None => {} // 步骤外的孤立工具行忽略（保持现状）
+                }
             } else {
-                &mut current_rollback
-            };
-            if let Some(s) = target.as_mut() {
-                s.tool_name = name;
-                s.args_json = args;
+                // 回滚段：每行工具调用是一个独立回滚步骤
+                rollback.push(SkillStep {
+                    index: rollback.len() + 1,
+                    title: "rollback".into(),
+                    tool_name: name,
+                    args_json: args,
+                });
             }
         }
     }
     if let Some(s) = current {
         steps.push(s);
     }
-    if let Some(r) = current_rollback {
-        rollback.push(r);
+    let mut seen = std::collections::HashSet::new();
+    for s in &steps {
+        if !seen.insert(s.index) {
+            return Err(format!(
+                "步骤序号 {} 重复——${{stepN.result}} 替换会静默错位，请修正编号为连续不重复",
+                s.index
+            ));
+        }
     }
     Ok((steps, rollback))
 }

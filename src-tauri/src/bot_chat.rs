@@ -267,9 +267,61 @@ enum PreStepRoute {
 /// 3. middleware::run_pre_step（pre-step 路由：ExecuteTasks 批量执行 / Skill / PassThrough）
 /// 4. start_skill（Skill 调度：auto → 调度器执行；interactive → body 注入 system prompt）
 /// 5. run_model_loop（LLM 决策 + 工具循环）
+/// 聊天防重入守卫（2026-08-27 审计 P2-h）：同一会话同时只允许一个 bot_chat 在执行——
+/// 原先聊天路径没有任何锁，两条并发消息命中同一技能路由会 start_skill 互相覆盖、
+/// 副作用工具（create_task 等）重复执行（任务卡路径有 ExecGuard，这里补会话级对称防护）。
+static CHAT_RUNNING: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::OnceLock::new();
+
+struct ChatGuard(Option<String>);
+
+impl ChatGuard {
+    /// Ok = 允许进入（无会话 id 不加锁）；Err = 本会话已有执行实例在跑
+    fn acquire(session_id: Option<&str>) -> Result<Self, ()> {
+        let Some(sid) = session_id else {
+            return Ok(Self(None));
+        };
+        let mut set = CHAT_RUNNING
+            .get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if !set.insert(sid.to_string()) {
+            return Err(());
+        }
+        Ok(Self(Some(sid.to_string())))
+    }
+}
+
+impl Drop for ChatGuard {
+    fn drop(&mut self) {
+        if let Some(sid) = &self.0 {
+            if let Some(set) = CHAT_RUNNING.get() {
+                set.lock().unwrap_or_else(|e| e.into_inner()).remove(sid);
+            }
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>, session_id: Option<String>) -> CommandResult<BotChatResult> {
     require_bot_enabled(bot_get_enabled(app.clone()))?;
+    // 会话级防重入（P2-h）：同会话并发消息直接拒绝，防技能路由/start_skill 竞争
+    let _chat_guard = match ChatGuard::acquire(session_id.as_deref()) {
+        Ok(g) => g,
+        Err(()) => {
+            crate::bot::audit_log(
+                &app,
+                &format!(
+                    "bot_chat_rejected | session: {} | 已有执行实例在跑（防重入拦截）",
+                    session_id.as_deref().unwrap_or("<none>")
+                ),
+            );
+            return Ok(BotChatResult {
+                text: "这条会话正在处理上一条消息，请稍候再发。".into(),
+                task_refs: vec![],
+            });
+        }
+    };
     // 步骤 1：逐步执行挂起恢复（2026-08-19）：有子任务待确认时，本条消息是对执行流程的应答
     // （继续/重做/停），优先于一切聊天路由。/stop 走独立命令（bot_stop 内清挂起）。
     if let Some(last) = messages.last() {

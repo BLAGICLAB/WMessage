@@ -56,7 +56,7 @@ EXECUTE 规则 4「完成后用 complete_task 标记完成」与 STEPWISE_ADDEND
 - `PENDING` 全局单槽（`exec_steps.rs:34`）：会话 A 挂起中，会话 B 触发逐步执行直接覆盖 A，无审计；
 - `resume` 错误路径（`exec_steps.rs:267-305`）：pending 已 take、LLM 失败后不复位 `bot_assigned`、无 clear 审计——与 `start()` 的错误清理不对称。
 
-## P2 —— 健壮性 / 文案漂移（未修，待排期）
+## P2 —— 健壮性 / 文案漂移（✅ 2026-08-27 已全部修复，见 DEVLOG 同日复盘）
 
 - **parse.rs**：step 编号不校验（重号时变量替换静默取首个）；同步步骤写两行工具调用第二行静默覆盖；回滚段标题三套说法互不识别（parse 只认 `## Rollback`，runtime 只认 `## 回滚`，文档写 `## 回滚（Rollback）`）；BOM 导致 frontmatter 整体静默丢失；max_steps 文档与实现三方数字打架（5/8/20）。
 - **vars.rs**：`${step1.result}` 无 JSON 转义直插 args_json → 含换行/引号即产出非法 JSON，被 `parse_args` 静默降级为 Null 参数——`SKILL_DSL.md` §8.3 的 create_excel 示例按此实现不可能工作。

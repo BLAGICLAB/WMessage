@@ -8,6 +8,8 @@ use tauri::AppHandle;
 pub struct SkillInfo {
     pub name: String,
     pub description: String,
+    /// frontmatter enabled（2026-08-27 审计 P2：清单注入需要按它过滤）
+    pub enabled: bool,
     /// Phase 5 D (2026-08-18 08:00): last run outcome (SettingsPage badge)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_outcome: Option<crate::db::PersistedSkillOutcome>,
@@ -102,10 +104,11 @@ pub fn scan_skill_dirs(dirs: &[std::path::PathBuf]) -> Vec<SkillInfo> {
             let Ok(text) = std::fs::read_to_string(&skill_md) else {
                 continue;
             };
-            let (name, desc) = parse_frontmatter(&text, &dir_name);
+            let meta = parse_meta(&text, &dir_name);
             out.push(SkillInfo {
-                name,
-                description: desc,
+                name: meta.name,
+                description: meta.description,
+                enabled: meta.enabled,
                 last_outcome: None,
             });
         }
@@ -156,8 +159,11 @@ pub fn rebuild_intent_routes(app: &AppHandle) {
 }
 
 /// 技能清单块：注入系统提示词尾部（progressive disclosure 第一层）。
+/// 2026-08-27 审计 P2：过滤 enabled=false——禁用技能不再被广告给 LLM
+/// （原先清单照样列出，模型调 use_skill 才被 preflight 拒绝，与路由表口径不一致）。
 pub fn build_skill_block(app: &AppHandle) -> String {
-    let skills = scan_skills(app);
+    let all = scan_skills(app);
+    let skills: Vec<&SkillInfo> = all.iter().filter(|s| s.enabled).collect();
     if skills.is_empty() {
         return "已安装技能：无".into();
     }
@@ -214,6 +220,16 @@ pub fn skills_import(app: AppHandle, path: String) -> CommandResult<String> {
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
     let (name, _) = parse_frontmatter(&text, &dir_name);
+    // 2026-08-27 审计 P2：校验最终技能名（frontmatter 名非法时 parse 回退目录名，
+    // 目录名本身也可能非法）——非法名装上后 load/delete 都拒绝，装得上用不了删不掉
+    if name.is_empty() || !name.chars().all(SKILL_NAME_CHARS_OK) {
+        return Err(CommandError::InvalidArgument {
+            field: "name".into(),
+            value: name,
+            reason: "技能名无效（frontmatter name 或目录名仅允许字母/数字/-/_）".into(),
+        }
+        .into());
+    }
     let dir = skills_dir(&app);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let dest = dir.join(&name);

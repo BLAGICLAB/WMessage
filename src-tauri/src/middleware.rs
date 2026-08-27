@@ -106,6 +106,13 @@ impl MiddlewareRegistry {
                 "pre_execute_not_registered",
                 &[("tool", name)],
             );
+            // 2026-08-27 审计 P2：闸门缺席对原子工具 fail-closed——与「registry 缺失」
+            // 口径一致（run_pre_execute helper 同款语义），不再「有声放行」
+            if is_atomic_tool(name) && !active_skill {
+                return Some(format!(
+                    "⚠️ 安全闸门未注册（pre_execute 为空），拒绝原子工具 {name} 的直接调用。请通过对应 Skill 执行。"
+                ));
+            }
             return None;
         }
         for m in &self.pre_execute {

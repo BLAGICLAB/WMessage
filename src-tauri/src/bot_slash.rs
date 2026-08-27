@@ -140,6 +140,19 @@ pub fn bot_stop(app: AppHandle, session_id: Option<String>) {
             }
         }
     }
+    // P1（2026-08-27 审计）：本会话在途确认弹窗立即按拒绝收尾——sender 随条目 drop，
+    // 等待侧 rx 立即收到 Err 走超时拒绝分支；/stop 后迟到的确认点击不再放行危险动作
+    {
+        let mut map = confirms().lock().unwrap_or_else(|e| e.into_inner());
+        let keys: Vec<String> = map
+            .iter()
+            .filter(|(_, (_, sid))| sid.as_deref() == session_id.as_deref())
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in keys {
+            map.remove(&k);
+        }
+    }
 }
 
 // ───────────────────────── 危险操作确认（删除任务弹窗） ─────────────────────────
@@ -238,6 +251,11 @@ async fn ask_confirm_inner(
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .remove(&id);
+            // 2026-08-27 审计 P2：确认超时默认拒绝留痕（原先只有发起日志，无结果记录）
+            crate::bot::audit_log(
+                app,
+                &format!("confirm_timeout | {tool} | {detail} | 60s 无响应，默认拒绝"),
+            );
             crate::bot_skills::skill_confirm_result(app, false, session_id); // 超时默认拒绝
             deny
         }
@@ -285,6 +303,13 @@ pub fn bot_confirm_response(app: AppHandle, request_id: String, approved: bool, 
     if let Some((tx, session_id)) = entry {
         // Skill 调度器联动：确认结果 → 本会话技能恢复 Running / 拒绝终止 / 暂停即终止
         crate::bot_skills::skill_confirm_result(&app, approved, session_id.as_deref());
+        // 2026-08-27 审计 P2：用户点「拒绝」留痕（原先只有 tool.return 预览里能看到）
+        if !approved {
+            crate::bot::audit_log(
+                &app,
+                &format!("confirm_denied | id: {} | 用户拒绝", &request_id[..8.min(request_id.len())]),
+            );
+        }
         let _ = tx.send(ConfirmReply { approved, always: always.unwrap_or(false) });
     }
 }

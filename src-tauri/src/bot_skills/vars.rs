@@ -47,71 +47,97 @@ pub fn extract_task_id(text: &str) -> Option<String> {
     TASK_ID_RE.find(text).map(|m| m.as_str().to_string())
 }
 
+/// JSON 字符串内容转义（2026-08-27 审计 P2-b）：placeholder 位于 JSON 字符串内
+/// （前后都是 `"`）时，替换值按 JSON 字符串内容转义——原先裸插原始文本，结果里的
+/// 换行/引号会破坏 args_json，被下游 parse_args 静默降级成 Null 参数
+/// （SKILL_DSL.md §8.3 的 create_excel 示例按旧实现不可能工作）。
+fn escape_json_str_inner(v: &str) -> String {
+    let s = serde_json::to_string(v).unwrap_or_default();
+    // 去掉首尾包围引号，只留转义后的内容
+    s.strip_prefix('"')
+        .and_then(|x| x.strip_suffix('"'))
+        .unwrap_or(&s)
+        .to_string()
+}
+
+/// 带上下文感知的正则替换：f 返回 Some(值) 执行替换（在 JSON 字符串内自动转义），
+/// None 保留原文（未匹配/解析失败/缺字段——占位符原样保留，可诊断）。
+fn replace_ctx(
+    re: &Regex,
+    text: &str,
+    mut f: impl FnMut(&regex::Captures) -> Option<String>,
+) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0usize;
+    for m in re.find_iter(text) {
+        let caps = re.captures(m.as_str()).expect("已匹配的文本必然能再捕获");
+        let Some(val) = f(&caps) else { continue };
+        out.push_str(&text[last..m.start()]);
+        let bytes = text.as_bytes();
+        let in_quotes = m.start() > 0
+            && bytes[m.start() - 1] == b'"'
+            && bytes.get(m.end()) == Some(&b'"');
+        if in_quotes {
+            out.push_str(&escape_json_str_inner(&val));
+        } else {
+            out.push_str(&val);
+        }
+        last = m.end();
+    }
+    out.push_str(&text[last..]);
+    out
+}
+
 /// 变量替换（Phase 2 核心）：
 /// - `${stepN.result}` → 第 N 步的工具返回文本
 /// - `${stepN.id}` → 第 N 步从结果提取的 UUID（任务卡专用）
 /// - `${prev.result}` → 上一步工具返回文本
 /// - `${prev.id}` → 上一步提取的 UUID
 /// - 未匹配的 `${...}` 保留原样（避免误吃合法 JSON 里的 `$` 字符）
+/// - 2026-08-27 审计 P2-b：替换值落在 JSON 字符串内时自动转义；
+///   `${stepN.id}` 无 UUID 时保留占位符（原先替换为空串，下游拿到 `{"id": ""}` 无法诊断）
 pub fn substitute_vars(text: &str, ctx: &[CompletedStep]) -> String {
     // Phase 4 第 2 项（2026-08-18 06:25）：嵌套路径优先匹配
     // （`${stepN.task.id}` / `${prev.list.0.title}` / `${stepN.a.b.c.d}`）
     // 路径 ≥2 段才走嵌套 regex，单段 result/id 留给下方 VAR_BY_INDEX / VAR_PREV 处理
-    let r0 = VAR_NESTED_BY_INDEX.replace_all(text, |caps: &regex::Captures| {
-        let idx: usize = match caps[1].parse() {
-            Ok(n) => n,
-            Err(_) => return caps[0].to_string(),
-        };
+    let r0 = replace_ctx(&VAR_NESTED_BY_INDEX, text, |caps| {
+        let idx: usize = caps[1].parse().ok()?;
         let path = &caps[2];
         // 单段 result/id 让 VAR_BY_INDEX 后续处理（向后兼容）
         if !path.contains('.') && (path == "result" || path == "id") {
-            return caps[0].to_string();
+            return None;
         }
-        match ctx.iter().find(|s| s.index == idx) {
-            Some(step) => resolve_nested_path(step.parsed.as_ref(), path)
-                .unwrap_or_else(|| caps[0].to_string()),
-            None => caps[0].to_string(),
-        }
+        let step = ctx.iter().find(|s| s.index == idx)?;
+        resolve_nested_path(step.parsed.as_ref(), path)
     });
-    let r1 = VAR_NESTED_PREV.replace_all(&r0, |caps: &regex::Captures| {
+    let r1 = replace_ctx(&VAR_NESTED_PREV, &r0, |caps| {
         let path = &caps[1];
         // 单段 result/id 让 VAR_PREV 后续处理（向后兼容）
         if !path.contains('.') && (path == "result" || path == "id") {
-            return caps[0].to_string();
+            return None;
         }
-        match ctx.last() {
-            Some(last) => resolve_nested_path(last.parsed.as_ref(), path)
-                .unwrap_or_else(|| caps[0].to_string()),
-            None => caps[0].to_string(),
-        }
+        resolve_nested_path(ctx.last()?.parsed.as_ref(), path)
     });
-    let r2 = VAR_BY_INDEX.replace_all(&r1, |caps: &regex::Captures| {
-        let idx: usize = match caps[1].parse() {
-            Ok(n) => n,
-            Err(_) => return caps[0].to_string(),
-        };
+    let r2 = replace_ctx(&VAR_BY_INDEX, &r1, |caps| {
+        let idx: usize = caps[1].parse().ok()?;
         let field = &caps[2];
-        match ctx.iter().find(|s| s.index == idx) {
-            Some(step) => match field {
-                "result" => step.result.clone(),
-                "id" => step.id.clone().unwrap_or_default(),
-                _ => caps[0].to_string(),
-            },
-            None => caps[0].to_string(),
+        let step = ctx.iter().find(|s| s.index == idx)?;
+        match field {
+            "result" => Some(step.result.clone()),
+            "id" => step.id.clone(),
+            _ => None,
         }
     });
-    let r3 = VAR_PREV.replace_all(&r2, |caps: &regex::Captures| {
+    let r3 = replace_ctx(&VAR_PREV, &r2, |caps| {
         let field = &caps[1];
-        match ctx.last() {
-            Some(last) => match field {
-                "result" => last.result.clone(),
-                "id" => last.id.clone().unwrap_or_default(),
-                _ => caps[0].to_string(),
-            },
-            None => caps[0].to_string(),
+        let last = ctx.last()?;
+        match field {
+            "result" => Some(last.result.clone()),
+            "id" => last.id.clone(),
+            _ => None,
         }
     });
-    r3.into_owned()
+    r3
 }
 
 /// JSON 路径解析（Phase 4 第 2 项 2026-08-18 06:25）：沿 serde_json::Value 走路径取值
@@ -166,14 +192,48 @@ mod tests {
 
     #[test]
     fn substitute_vars_resolves_step_index_result() {
-        // 步骤原始结果跨步骤传递：${step1.result} → 上一步工具返回原文
-        // ctx.result 是 Rust String，\n 是真实换行符 0x0A（不是字面两字符 \n）
+        // 步骤原始结果跨步骤传递：${step1.result} → 上一步工具返回文本。
+        // P2-b（2026-08-27 审计）：placeholder 在 JSON 字符串内时替换值转义——
+        // 裸换行会破坏 args_json 被下游静默降级成 Null；转义后是合法 JSON。
         let ctx = ctx_one_step("uuid-1", "第一行\n第二行");
         let args = "{\"note\": \"${step1.result}\"}";
-        // 期望值同样含真实换行符
+        let out = substitute_vars(args, &ctx);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&out).expect("替换后必须是合法 JSON");
+        assert_eq!(parsed["note"], "第一行\n第二行");
+    }
+
+    #[test]
+    fn substitute_vars_escapes_quotes_inside_json_string() {
+        // P2-b：含引号的结果在 JSON 字符串内被转义，不再破坏结构
+        let ctx = ctx_one_step("uuid-1", "他说\"你好\"");
+        let out = substitute_vars("{\"note\": \"${step1.result}\"}", &ctx);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&out).expect("含引号替换后必须是合法 JSON");
+        assert_eq!(parsed["note"], "他说\"你好\"");
+    }
+
+    #[test]
+    fn substitute_vars_outside_quotes_stays_raw() {
+        // 不在 JSON 字符串内的 placeholder 不转义（裸值场景，如整段模板文本）
+        let ctx = ctx_one_step("uuid-1", "第一行\n第二行");
+        assert_eq!(substitute_vars("${step1.result}", &ctx), "第一行\n第二行");
+    }
+
+    #[test]
+    fn substitute_vars_missing_id_keeps_placeholder() {
+        // P2（审计 V2）：${stepN.id} 无 UUID 时保留占位符（原先替换为空串，
+        // 下游拿到 {"id": ""} 无法诊断）
+        let ctx = vec![CompletedStep {
+            index: 1,
+            title: "a".into(),
+            result: "no uuid".into(),
+            id: None,
+            parsed: None,
+        }];
         assert_eq!(
-            substitute_vars(args, &ctx),
-            "{\"note\": \"第一行\n第二行\"}"
+            substitute_vars(r#"{"id": "${step1.id}"}"#, &ctx),
+            r#"{"id": "${step1.id}"}"#
         );
     }
 

@@ -281,18 +281,28 @@ pub fn skill_confirm_result(app: &AppHandle, approved: bool, session_id: Option<
     }
 }
 
-/// 提取 SKILL.md 正文里的「## 回滚」章节（无则空串）
+/// 提取 SKILL.md 正文里的回滚章节（无则空串）。
+/// 2026-08-27 审计 P2：与 parse_skill_steps 共用 `is_rollback_heading` 统一判定——
+/// 原先这里只认「## 回滚」、parser 只认「## Rollback」，按运行模型文档写中文标题的
+/// 技能回滚段被静默忽略。
 fn rollback_section(body: &str) -> String {
-    let marker = "## 回滚";
-    let Some(start) = body.find(marker) else {
+    let lines: Vec<&str> = body.lines().collect();
+    let Some(start) = lines
+        .iter()
+        .position(|l| super::parse::is_rollback_heading(l))
+    else {
         return String::new();
     };
-    let tail = &body[start + marker.len()..];
-    // 到下一个 ## 标题为止
-    match tail.find("\n## ") {
-        Some(off) => tail[..off].trim().to_string(),
-        None => tail.trim().to_string(),
+    let mut out = String::new();
+    for l in &lines[start + 1..] {
+        let t = l.trim();
+        if t.starts_with("## ") {
+            break; // 到下一个二级标题为止
+        }
+        out.push_str(l);
+        out.push('\n');
     }
+    out.trim().to_string()
 }
 
 /// 收尾钩子：模型循环结束时调用（成功/失败/用户停止）。

@@ -182,7 +182,7 @@ const TOOLS: &str = r#"[
     "description":"工作表列表：name 表名、rows 二维数组"},
     "filename":{"type":"string","description":"文件名（不含扩展名），可选"}
   },"required":["sheets"]}}},
-  {"type":"function","function":{"name":"create_ppt","description":"生成专业排版 PPT 到 AI_Gen_Files（多版式：封面/目录/章节页/内容页/表格页/结束页 + 三套配色主题）","parameters":{"type":"object","properties":{
+  {"type":"function","function":{"name":"create_ppt","description":"生成专业排版 PPT 到 AI_Gen_Files（多版式：封面/目录/章节页/内容页/表格页/结束页 + 10 套配色主题，可用 customColors 自定义覆盖）","parameters":{"type":"object","properties":{
     "title":{"type":"string","description":"演示文稿主标题"},
     "theme":{"type":"string","enum":["blue","navy","teal","forest","wine","sky","plum","coral","dark","green"],"description":"配色主题（按场合选）：blue 商务与权威（默认，汇报/金融）/ navy 科技与夜景（深色发布会）/ teal 现代与健康（医疗/护肤）/ forest 自然与户外（环保/农业）/ wine 复古与学院（学术/历史）/ sky 纯净科技蓝（AI/云计算）/ plum 轻奢与神秘（珠宝/高端咨询）/ coral 海岸珊瑚（旅游/夏日）/ dark 深色通用 / green 清新绿"},
     "customColors":{"type":"object","description":"可选：自定义配色覆盖主题（6 位 hex 如 1E40AF，可带 #）。键：bg 背景 / accent 强调色 / text 正文 / sub 次要文字 / band 大面积色块（必深色）/ bandtext 色块上文字 / alt 表格斑马纹。用户给了 VI 色/品牌色时用","properties":{
@@ -203,11 +203,11 @@ const TOOLS: &str = r#"[
     "paragraphs":{"type":"array","items":{"type":"string"},"description":"正文段落列表"},
     "filename":{"type":"string","description":"文件名（不含扩展名），可选"}
   },"required":["paragraphs"]}}},
-  {"type":"function","function":{"name":"run_python","description":"执行 Python 代码（本机沙箱：独立临时目录 + 默认超时 60s；需用户在设置页开启 Python 编程）","parameters":{"type":"object","properties":{
+  {"type":"function","function":{"name":"run_python","description":"执行 Python 代码（本机沙箱：独立临时目录 + 默认超时 60s；默认需用户在设置页开启 Python 编程，授权模式为 yolo 时免开关）","parameters":{"type":"object","properties":{
     "code":{"type":"string","description":"要执行的 Python 代码，print 输出返回给用户"},
     "timeoutSecs":{"type":"integer","description":"超时秒数（可选，默认 60；大计算可调大，上限 300）"}
   },"required":["code"]}}},
-  {"type":"function","function":{"name":"web_search","description":"搜索互联网获取最新信息（Bing+百度双引擎，返回标题/链接/摘要）","parameters":{"type":"object","properties":{"query":{"type":"string","description":"搜索关键词"}},"required":["query"]}}},
+  {"type":"function","function":{"name":"web_search","description":"搜索互联网获取最新信息（配置 Tavily key 时走 Tavily，否则 Bing+百度网页抓取；返回标题/链接/摘要）","parameters":{"type":"object","properties":{"query":{"type":"string","description":"搜索关键词"}},"required":["query"]}}},
   {"type":"function","function":{"name":"fetch_url","description":"抓取网页正文（仅 http/https 公网地址；返回纯文本，用于读链接/总结网页内容）","parameters":{"type":"object","properties":{
     "url":{"type":"string","description":"要抓取的网页地址"}
   },"required":["url"]}}},
@@ -467,6 +467,8 @@ pub async fn run_model_loop(
     let mut last_failed_tool: Option<String> = None;
     let mut last_fail_reason: Option<String> = None;
     let mut consec_failures: usize = 0;
+    // Replan 预算耗尽审计只记一次（2026-08-27 P2：耗尽后每轮连续失败仍会发生，不刷屏）
+    let mut replan_exhausted_logged: bool = false;
     let mut fail_hint_queued: Option<String> = None;
     let mut plan_state = plan_state;
     // 上轮 streamed 文本快照（Block 2 接入，2026-08-17 22:26）：
@@ -484,7 +486,15 @@ pub async fn run_model_loop(
             match advance_skill(&run, chrono::Utc::now().timestamp_millis()) {
                 AdvanceAction::NoActive | AdvanceAction::Continue => {} // 继续本轮
                 AdvanceAction::AwaitConfirm => {
-                    // Skill 暂停等用户确认，跳出主循环等待 bot_confirm_response 唤起
+                    // Skill 暂停等用户确认，跳出主循环等待 bot_confirm_response 唤起。
+                    // P2（2026-08-27 审计）：并发新消息在第 0 轮命中此分支时 last_streamed
+                    // 是空串，用户得到空白回复——空串时给一句可读提示
+                    if last_streamed.is_empty() {
+                        return Ok((
+                            "⏸ 上一个操作正在等待你的确认——请先处理确认弹窗，再继续对话。".into(),
+                            collected_refs,
+                        ));
+                    }
                     return Ok((last_streamed.clone(), collected_refs));
                 }
                 AdvanceAction::Finish => {
@@ -517,13 +527,26 @@ pub async fn run_model_loop(
             "msgs_count" => msgs.len(),
         );
 
-        let resp = client
+        let resp = match client
             .post(&url)
             .bearer_auth(api_key.trim())
             .json(&body)
             .send()
             .await
-            .map_err(|e| format!("请求大模型失败：{e}"))?;
+        {
+            Ok(r) => r,
+            Err(e) => {
+                // 2026-08-27 审计 P2：LLM 网络失败原先零审计，与 API 错误分支不对称
+                crate::audit_event!(
+                    &app,
+                    crate::audit::AuditLevel::Error,
+                    "llm.request_failed",
+                    "err" => e.to_string(),
+                );
+                let hint = crate::bot_skills::skill_finish(&app, false, "大模型请求失败", session_id);
+                return Err(format!("请求大模型失败：{e}{hint}").into());
+            }
+        };
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
@@ -560,7 +583,19 @@ pub async fn run_model_loop(
                 stopped = true;
                 break;
             }
-            let chunk = chunk.map_err(|e| format!("流式读取失败：{e}"))?;
+            let chunk = match chunk {
+                Ok(c) => c,
+                Err(e) => {
+                    // 2026-08-27 审计 P2：流式中断原先静默 Err，无审计留痕
+                    crate::audit_event!(
+                        &app,
+                        crate::audit::AuditLevel::Error,
+                        "llm.stream_failed",
+                        "err" => e.to_string(),
+                    );
+                    return Err(format!("流式读取失败：{e}").into());
+                }
+            };
             line_buf.push_str(&String::from_utf8_lossy(&chunk));
             while let Some(nl) = line_buf.find('\n') {
                 let line: String = line_buf.drain(..=nl).collect();
@@ -782,6 +817,16 @@ pub async fn run_model_loop(
                             plan.steps.join("\n")
                         ));
                     }
+                } else if !replan_exhausted_logged {
+                    // P2（2026-08-27 审计）：预算耗尽留痕（只记一次）——
+                    // 「连续失败持续发生但不再重规划」这件事原先零痕迹
+                    replan_exhausted_logged = true;
+                    crate::audit_event!(
+                        &app,
+                        crate::audit::AuditLevel::Warn,
+                        "plan.replan_budget_exhausted",
+                        "max" => crate::bot_plan::MAX_REPLANS,
+                    );
                 }
             }
         }
@@ -805,6 +850,13 @@ pub async fn run_model_loop(
         // 快照上轮 streamed 文本（供 AwaitConfirm/Finish/Fail/Terminate 跳出时返回）
         last_streamed = final_text.clone();
     }
+    // 2026-08-27 审计 P2：轮数熔断补审计（原先只有单轮工具熔断有 fuse 日志，不对称）
+    crate::audit_event!(
+        &app,
+        crate::audit::AuditLevel::Warn,
+        "fuse_rounds",
+        "max_rounds" => max_rounds,
+    );
     let hint = crate::bot_skills::skill_finish(&app, false, "对话轮数超限", session_id);
     Err(CommandError::Internal(format!("对话轮数超限{hint}")))
 }

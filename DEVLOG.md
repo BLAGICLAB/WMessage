@@ -2,6 +2,22 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-08-27（周四·午 4）审计 P2 全修：解析加固 + 变量转义 + 防重入 + 审计补洞
+
+承接「午 3」P1 修复，把审计报告剩余 P2 全部清掉（至此 P0/P1/P2 三轮清零）：
+
+- **parse.rs**：BOM 剥离（原先带 BOM 的 SKILL.md frontmatter 整体静默丢失）；`risk_level: low` 未显式声明 mode 时按文档约定推导 auto（补 mode_explicit 标记区分「没写」与「显式默认值」）；回滚段标题统一识别 `## Rollback` / `## 回滚` / `## 回滚（Rollback）`（`is_rollback_heading` 共享给 runtime::rollback_section，原先两个解析器各认一半）；回滚段每行工具调用是一个独立回滚步骤（原先后续行静默覆盖只留最后一行）；Step 内多行工具调用 / 步骤序号重复 → 解析期 fail-fast（原先静默覆盖/错位）
+- **vars.rs**：`${...}` 替换值落在 JSON 字符串内时自动转义（`replace_ctx` 上下文感知）——原先裸插含换行/引号的结果产出非法 JSON，被 parse_args 静默降级成 Null 参数，SKILL_DSL.md §8.3 示例不可能工作；`${stepN.id}` 无 UUID 时保留占位符（原先替换为空串无法诊断）
+- **manage.rs**：`skills_import` 校验最终技能名合法性（原先非法名「装得上、用不了、删不掉」）；SkillInfo 补 enabled 字段，`build_skill_block` 过滤禁用技能（原先禁用技能仍被广告给 LLM，与路由表口径不一致）
+- **middleware.rs**：registry 存在但 pre_execute 为空时，原子工具从「有声放行」改 fail-closed（与 registry 缺失口径一致）
+- **审计补洞**：LLM 网络失败（llm.request_failed）、流式中断（llm.stream_failed）、轮数熔断（fuse_rounds）、Replan 预算耗尽（plan.replan_budget_exhausted，只记一次）、确认弹窗超时（confirm_timeout）、用户点拒绝（confirm_denied）全部留痕
+- **bot_slash.rs**：/stop 时本会话在途确认弹窗立即按拒绝收尾（sender drop → 等待侧走超时拒绝分支）——原先 /stop 后迟到的确认点击仍会放行危险动作
+- **bot_chat.rs**：会话级防重入 ChatGuard（原先聊天路径无锁，两条并发消息命中同一技能路由会 start_skill 互踩 + 副作用工具重复执行）；主循环 AwaitConfirm 跳出时 last_streamed 为空给可读提示（原先空白回复）
+- **schema 文案漂移**：create_ppt「三套主题」→「10 套 + customColors」；web_search 补 Tavily 路由；run_python 补 yolo 免开关说明
+- **SKILL_DSL.md**：max_steps 数字对齐实现（默认 8，clamp 1-20）；Rollback 段标题别名与「按声明顺序执行」语义写清
+
+**测试**：cargo test --lib 425 → **428 全绿**（vars 转义 ×3），集成 29 全绿。前端本轮无改动。
+
 ## 2026-08-27（周四·午 3）审计 P1 七项全修（失败判定统一 + /stop 会话化 + 逐步执行隔离）
 
 承接「午 2」的 P0 五连修，把审计报告（`docs/AUDIT-BOT-PIPELINE-2026-08-27.md`）的 7 个 P1 全部修掉：
