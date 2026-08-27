@@ -1653,7 +1653,6 @@ pub struct DocExtract {
 }
 
 /// 提取文档文本（弹框选文件或给定路径，按扩展名走固定脚本）
-#[tauri::command]
 pub async fn doc_extract(app: AppHandle, path: Option<String>) -> CommandResult<DocExtract> {
     let path = match path {
         Some(p) if !p.trim().is_empty() => p,
@@ -1708,7 +1707,6 @@ fn file_path_to_string(p: tauri_plugin_dialog::FilePath) -> Option<String> {
 
 /// 生成 Word 到 AI_Gen_Files（不覆盖：同名自动加序号）
 /// tables（2026-08-20）：可选表格列表 [{title?, rows: [[..]]}]，透传给脚本追加在段落之后
-#[tauri::command]
 pub async fn doc_make_word(
     app: AppHandle,
     title: String,
@@ -1738,7 +1736,6 @@ pub async fn doc_make_word(
 
 /// 生成修订模式 Word（track changes）：回读原文与修订段落 diff，删除标删除线、新增标红色下划线，
 /// 可在 Word 审阅中逐条接受/拒绝。original_path 优先回读文件保真；无路径时用 original 行列表。
-#[tauri::command]
 pub async fn doc_make_word_revisions(
     app: AppHandle,
     title: String,
@@ -1801,7 +1798,6 @@ pub async fn doc_make_word_revisions(
 }
 
 /// 生成 Excel 到 AI_Gen_Files（支持 =公式 单元格）
-#[tauri::command]
 pub async fn doc_make_excel(
     app: AppHandle,
     sheets: Vec<serde_json::Value>,
@@ -1822,7 +1818,6 @@ pub async fn doc_make_excel(
 }
 
 /// 生成 PDF 到 AI_Gen_Files
-#[tauri::command]
 pub async fn doc_make_pdf(
     app: AppHandle,
     title: String,
@@ -1847,7 +1842,6 @@ pub async fn doc_make_pdf(
 /// 生成 PPT 到 AI_Gen_Files
 /// custom_colors（2026-08-20）：可选 {bg?, accent?, text?, sub?, band?, bandtext?, alt?}（6 位 hex），
 /// 覆盖所选 theme 的对应配色项，脚本侧校验非法值忽略
-#[tauri::command]
 pub async fn doc_make_ppt(
     app: AppHandle,
     title: String,

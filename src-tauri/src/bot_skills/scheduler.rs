@@ -77,6 +77,45 @@ pub fn format_completed_summary(ctx: &[CompletedStep]) -> String {
     out
 }
 
+/// 工具执行结果文本的失败判定（调度器生产路径与测试同步循环共用，
+/// 防两份 starts_with 前缀清单漂移）。
+pub(crate) fn is_tool_failure_text(text: &str) -> bool {
+    text.starts_with("未知工具")
+        || text.starts_with("失败")
+        || text.starts_with("错误")
+        || text.starts_with("error:")
+        || text.starts_with("Error:")
+}
+
+/// 跑 `## Rollback` 段（step 失败 / 状态机 FailWithRollback 两处共用）：
+/// 回滚步骤同样走变量替换（失败前的步骤都已入 ctx）；返回是否实际跑了回滚。
+async fn run_rollback_segment(
+    app: &AppHandle,
+    name: &str,
+    rollback: &[super::parse::SkillStep],
+    ctx: &[CompletedStep],
+    step_index: usize,
+    reason: &str,
+    session_id: Option<&str>,
+) -> bool {
+    if rollback.is_empty() {
+        return false;
+    }
+    crate::bot::audit_log_hook(
+        app,
+        &format!(
+            "skill_dsl_rollback_start | name: {name} | step: {step_index} | reason: {}",
+            reason.chars().take(120).collect::<String>()
+        ),
+    );
+    for rb in rollback {
+        let rb_args = substitute_vars(&rb.args_json, ctx);
+        let _ = crate::bot::execute_tool(app, &rb.tool_name, &rb_args, session_id).await;
+    }
+    crate::bot::audit_log_hook(app, &format!("skill_dsl_rollback_done | name: {name}"));
+    true
+}
+
 /// 强制终止所有活动 Skill（/stop 联动；用户取消时调用）
 /// 泛型 Runtime（P2-24）：cleanup_on_exit 的 mock runtime 测试可直调。
 pub fn skill_terminate_all<R: tauri::Runtime>(app: &tauri::AppHandle<R>, reason: &str) {
@@ -158,26 +197,10 @@ pub async fn run_skill_scheduler(app: &AppHandle, name: &str, session_id: Option
                     return Ok(DslOutcome::AwaitUser);
                 }
                 DslAdvanceAction::FailWithRollback(reason) => {
-                    let rb_attempted = !rollback.is_empty();
-                    if rb_attempted {
-                        crate::bot::audit_log_hook(
-                            app,
-                            &format!(
-                                "skill_dsl_rollback_start | name: {name} | step: {} | reason: {}",
-                                step.index,
-                                reason.chars().take(120).collect::<String>()
-                            ),
-                        );
-                        // 回滚段也走变量替换（失败前的步骤都已入 ctx）
-                        for rb in &rollback {
-                            let rb_args = substitute_vars(&rb.args_json, &ctx);
-                            let _ = crate::bot::execute_tool(app, &rb.tool_name, &rb_args, session_id).await;
-                        }
-                        crate::bot::audit_log_hook(
-                            app,
-                            &format!("skill_dsl_rollback_done | name: {name}"),
-                        );
-                    }
+                    let rb_attempted = run_rollback_segment(
+                        app, name, &rollback, &ctx, step.index, &reason, session_id,
+                    )
+                    .await;
                     let final_reason = format!("技能「{name}」中止：{reason}");
                     let summary = format_completed_summary(&ctx);
                     persist_outcome_quiet(
@@ -232,29 +255,12 @@ pub async fn run_skill_scheduler(app: &AppHandle, name: &str, session_id: Option
             );
         }
         let (text, _refs) = crate::bot::execute_tool(app, &step.tool_name, &resolved_args, session_id).await;
-        let failed = text.starts_with("未知工具")
-            || text.starts_with("失败")
-            || text.starts_with("错误")
-            || text.starts_with("error:")
-            || text.starts_with("Error:");
+        let failed = is_tool_failure_text(&text);
         if failed {
-            if !rollback.is_empty() {
-                crate::bot::audit_log_hook(
-                    app,
-                    &format!(
-                        "skill_dsl_rollback_start | name: {name} | step: {} | reason: {}",
-                        step.index,
-                        text.chars().take(120).collect::<String>()
-                    ),
-                );
-                // 回滚段也走变量替换（失败前的步骤都已入 ctx）
-                for rb in &rollback {
-                    let rb_args = substitute_vars(&rb.args_json, &ctx);
-                    let _ = crate::bot::execute_tool(app, &rb.tool_name, &rb_args, session_id).await;
-                }
-                crate::bot::audit_log_hook(app, &format!("skill_dsl_rollback_done | name: {name}"));
-            }
-            let rb_attempted = !rollback.is_empty();
+            let rb_attempted = run_rollback_segment(
+                app, name, &rollback, &ctx, step.index, &text, session_id,
+            )
+            .await;
             let final_reason = format!(
                 "技能「{name}」Step {} ({}) 失败：{}",
                 step.index, step.title, text
@@ -347,12 +353,8 @@ mod tests {
             // Phase 2 + Phase 4 第 2 项：嵌套变量替换
             let resolved_args = substitute_vars(&step.args_json, ctx);
             let text = exec(&step.tool_name, &resolved_args);
-            // 失败判定（跟生产 run_skill_scheduler 一致）
-            let failed = text.starts_with("未知工具")
-                || text.starts_with("失败")
-                || text.starts_with("错误")
-                || text.starts_with("error:")
-                || text.starts_with("Error:");
+            // 失败判定：与生产 run_skill_scheduler 共用同一判定函数（不再手写镜像）
+            let failed = is_tool_failure_text(&text);
             if failed {
                 for rb in rollback {
                     let rb_args = substitute_vars(&rb.args_json, ctx);
