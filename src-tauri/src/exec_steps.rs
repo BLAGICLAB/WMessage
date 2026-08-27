@@ -21,9 +21,9 @@ use crate::bot_chat::{BotChatResult, ExecGuard};
 use crate::bot_slash::StopGuard;
 use crate::error::{CommandError, CommandResult};
 
-/// 挂起的逐步执行：等用户确认当前子任务（全局最多一个，新执行覆盖旧的）
-/// 2026-08-26 会话隔离：记录归属会话 id——别的会话的消息不会被当成
-/// 逐步执行的应答截胡（has_pending 按会话匹配）
+/// 挂起的逐步执行：等用户确认当前子任务。
+/// 2026-08-27 审计 P1-12：全局单槽 → **按会话分槽**（HashMap<会话 key, 挂起>）——
+/// 原先会话 B 触发逐步执行会静默覆盖会话 A 的挂起（A 之后回「继续」落入普通聊天被当新指令）。
 struct PendingExec {
     task_id: String,
     subtask_id: String,
@@ -31,36 +31,44 @@ struct PendingExec {
     session_id: Option<String>,
 }
 
-static PENDING: OnceLock<Mutex<Option<PendingExec>>> = OnceLock::new();
+static PENDING: OnceLock<Mutex<std::collections::HashMap<String, PendingExec>>> = OnceLock::new();
 
-fn pending_slot() -> &'static Mutex<Option<PendingExec>> {
-    PENDING.get_or_init(|| Mutex::new(None))
+fn pending_map() -> &'static Mutex<std::collections::HashMap<String, PendingExec>> {
+    PENDING.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
+/// 会话 key：None（后台）归到空串槽位
+fn session_key(session_id: Option<&str>) -> String {
+    session_id.unwrap_or("").to_string()
 }
 
 /// 当前会话是否有挂起的逐步执行（2026-08-26 起按会话匹配：
 /// 会话 A 挂起时，会话 B 的消息走正常聊天路由，不被 resume 截胡）
 pub fn has_pending_for(session_id: Option<&str>) -> bool {
-    pending_slot()
+    pending_map()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .as_ref()
-        .is_some_and(|p| p.session_id.as_deref() == session_id)
+        .contains_key(&session_key(session_id))
 }
 
 fn park(p: PendingExec) {
-    *pending_slot().lock().unwrap_or_else(|e| e.into_inner()) = Some(p);
-}
-
-fn take_pending() -> Option<PendingExec> {
-    pending_slot()
+    let key = session_key(p.session_id.as_deref());
+    pending_map()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .take()
+        .insert(key, p);
 }
 
-/// 结束/清空挂起（正常结束、用户喊停、被新执行覆盖）；恢复任务卡用户头像
-pub async fn clear(app: &AppHandle, reason: &str) {
-    if let Some(p) = take_pending() {
+fn take_pending_for(session_id: Option<&str>) -> Option<PendingExec> {
+    pending_map()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&session_key(session_id))
+}
+
+/// 结束/清空**本会话**的挂起（正常结束、用户喊停、被同会话新执行覆盖）；恢复任务卡用户头像
+pub async fn clear_for(app: &AppHandle, session_id: Option<&str>, reason: &str) {
+    if let Some(p) = take_pending_for(session_id) {
         crate::bot::audit_log(app, &format!("exec_steps.clear | task: {} | {reason}", p.task_id));
         crate::bot_chat::set_bot_assigned(app, &p.task_id, false).await;
     }
@@ -216,7 +224,7 @@ async fn advance_or_finish(
         // Box::pin：run_step ↔ advance_or_finish 互调是异步递归，Rust 要求显式装箱
         return Box::pin(run_step(app, task_id, &next.id.clone(), None, stop)).await;
     }
-    clear(app, "全部子任务完成").await;
+    clear_for(app, stop.session_id(), "全部子任务完成").await;
     Ok(BotChatResult {
         text: "🎉 所有子任务都已完成并勾选。任务卡本身我没有标记完成——你确认没问题后自己勾完成，或跟我说「完成它」。".into(),
         task_refs: vec![],
@@ -236,7 +244,7 @@ pub async fn start(app: &AppHandle, task: &crate::db::Task, session_id: Option<&
         });
     };
     if has_pending_for(session_id) {
-        clear(app, "新任务卡逐步执行覆盖旧挂起").await;
+        clear_for(app, session_id, "新任务卡逐步执行覆盖旧挂起").await;
     }
     crate::bot::audit_log(
         app,
@@ -258,24 +266,40 @@ pub async fn start(app: &AppHandle, task: &crate::db::Task, session_id: Option<&
     let stop = StopGuard::new_task_exec(true, session_id.map(|s| s.to_string()));
     let r = run_step(app, &task.id, &first, None, &stop).await;
     if r.is_err() {
-        clear(app, "逐步执行起步失败").await;
+        clear_for(app, session_id, "逐步执行起步失败").await;
     }
     r
 }
 
 /// 聊天入口发现挂起时调用：按用户应答继续/重做/停
 pub async fn resume(app: &AppHandle, reply: &str, session_id: Option<&str>) -> CommandResult<BotChatResult> {
-    let Some(p) = take_pending() else {
+    let Some(p) = take_pending_for(session_id) else {
         return Ok(BotChatResult {
             text: "（当前没有待确认的子任务执行）".into(),
             task_refs: vec![],
         });
     };
-    // 任何分支都必须重新 park 或 clear，不能丢状态
+    // P1-12（2026-08-27 审计）：续跑失败必须显式收尾——原先 pending 已 take、
+    // LLM 失败后任务卡永远顶着机器人头像且零审计（与 start() 的错误清理不对称）。
+    // 失败语义按「结束本次逐步执行」处理（已勾选的保持现状），不静默挂起。
+    let cleanup_on_err = |app: &AppHandle, task_id: &str, r: &CommandResult<BotChatResult>| {
+        if let Err(e) = r {
+            crate::bot::audit_log(
+                app,
+                &format!("exec_steps.resume_failed | task: {task_id} | {e}"),
+            );
+        }
+        r.is_err()
+    };
+    // 任何分支都必须重新 park 或清理，不能丢状态
     match classify_reply(reply) {
         StepReply::Stop => {
-            park(p); // clear 内部 take，先放回去保证头像复位
-            clear(app, "用户停止逐步执行").await;
+            // 直接清理（pending 已 take）：审计 + 恢复任务卡用户头像
+            crate::bot::audit_log(
+                app,
+                &format!("exec_steps.clear | task: {} | 用户停止逐步执行", p.task_id),
+            );
+            crate::bot_chat::set_bot_assigned(app, &p.task_id, false).await;
             Ok(BotChatResult {
                 text: "⏹ 已结束逐步执行。已确认勾选的子任务保持现状，其余未动。".into(),
                 task_refs: vec![],
@@ -288,7 +312,11 @@ pub async fn resume(app: &AppHandle, reply: &str, session_id: Option<&str>) -> C
             );
             mark_subtask_done(app, &p.task_id, &p.subtask_id).await;
             let stop = StopGuard::new_task_exec(true, session_id.map(|s| s.to_string()));
-            advance_or_finish(app, &p.task_id, &stop).await
+            let r = advance_or_finish(app, &p.task_id, &stop).await;
+            if cleanup_on_err(app, &p.task_id, &r) {
+                crate::bot_chat::set_bot_assigned(app, &p.task_id, false).await;
+            }
+            r
         }
         StepReply::Redo(feedback) => {
             crate::bot::audit_log(
@@ -300,7 +328,11 @@ pub async fn resume(app: &AppHandle, reply: &str, session_id: Option<&str>) -> C
                 ),
             );
             let stop = StopGuard::new_task_exec(true, session_id.map(|s| s.to_string()));
-            run_step(app, &p.task_id, &p.subtask_id, Some(&feedback), &stop).await
+            let r = run_step(app, &p.task_id, &p.subtask_id, Some(&feedback), &stop).await;
+            if cleanup_on_err(app, &p.task_id, &r) {
+                crate::bot_chat::set_bot_assigned(app, &p.task_id, false).await;
+            }
+            r
         }
     }
 }
@@ -334,5 +366,24 @@ mod classify_tests {
     fn free_text_is_redo_feedback() {
         // 确认语境下的自由文本 = 对本步结果的修改意见
         assert_eq!(classify_reply("配色太深了，换浅色"), StepReply::Redo("配色太深了，换浅色".into()));
+    }
+
+    // ── P1-12（2026-08-27 审计）：挂起按会话分槽 ──
+
+    #[test]
+    fn pending_slots_are_per_session() {
+        // 会话 A 挂起不影响会话 B；覆盖只发生在同会话内
+        park(PendingExec { task_id: "tA".into(), subtask_id: "s1".into(), session_id: Some("sess-a-p12".into()) });
+        park(PendingExec { task_id: "tB".into(), subtask_id: "s2".into(), session_id: Some("sess-b-p12".into()) });
+        assert!(has_pending_for(Some("sess-a-p12")));
+        assert!(has_pending_for(Some("sess-b-p12")));
+        assert!(!has_pending_for(Some("sess-c-p12")));
+        // 取 B 不动 A
+        let b = take_pending_for(Some("sess-b-p12")).expect("B 应有挂起");
+        assert_eq!(b.task_id, "tB");
+        assert!(has_pending_for(Some("sess-a-p12")));
+        assert!(!has_pending_for(Some("sess-b-p12")));
+        // 收尾：不给其它测试留状态
+        let _ = take_pending_for(Some("sess-a-p12"));
     }
 }

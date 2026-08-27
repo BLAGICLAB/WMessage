@@ -62,22 +62,37 @@ impl AuditLevel {
     }
 }
 
+/// 工具调用是否失败/被拒（2026-08-27 审计 P1-6：统一判定口径，全链路唯一真相源）。
+/// 此前三套口径分叉——classify_text 用 contains、DSL 调度器 is_tool_failure_text 用
+/// starts_with 前缀、幻觉守卫各算各的；熔断「已强制终止」、暂停「技能已暂停」、
+/// 门禁拦截「⚠️」、用户拒绝「用户拒绝」四类文案两边都不认——导致末步熔断误报
+/// 「✅ 完成」、门禁拦截对 PREVR 隐身、被拒删除当成功。统一收口到这里，
+/// DSL 调度器 / PREVR / 幻觉守卫 / skill_on_step_post / 审计分级全部共用。
+/// 注：「失败/错误」保留 contains 语义——工具错误文案多为「{动作}失败：…」，前缀不命中。
+pub fn tool_call_failed(name: &str, text: &str) -> bool {
+    let _ = name;
+    text.starts_with("未知工具")
+        || text.starts_with("⚠️") // 门禁拦截（原子工具裸调等）
+        || text.starts_with("用户拒绝") // 确认弹窗被拒绝/超时
+        || text.starts_with("技能已暂停") // step_check 暂停态拒绝
+        || text.contains("已强制终止") // step_check 步数/超时熔断
+        || text.contains("失败")
+        || text.contains("错误")
+        || text.starts_with("error:")
+        || text.starts_with("Error")
+}
+
 /// 工具返回文本 → 审计级别（post-execute 钩子分类用）
 /// - 未知工具 → Error
-/// - 含「失败/错误/error:」→ Warn
+/// - tool_call_failed 判失败/被拒 → Warn
 /// - 其他 → Info
 pub fn classify_text(name: &str, text: &str) -> AuditLevel {
     if text.starts_with("未知工具") {
         return AuditLevel::Error;
     }
-    if text.contains("失败")
-        || text.contains("错误")
-        || text.starts_with("error:")
-        || text.starts_with("Error")
-    {
+    if tool_call_failed(name, text) {
         return AuditLevel::Warn;
     }
-    let _ = name;
     AuditLevel::Info
 }
 
@@ -344,6 +359,28 @@ mod tests {
             classify_text("foo", "成功完成任务，含失败回滚说明"),
             AuditLevel::Warn
         );
+    }
+
+    // ── P1-6（2026-08-27 审计）：tool_call_failed 统一判定口径 ──
+
+    #[test]
+    fn tool_call_failed_catches_gate_fuse_pause_reject() {
+        // 四类原先两套口径都不认的失败文案（P1-6 修复目标）
+        assert!(tool_call_failed("create_word_revisions", "⚠️ create_word_revisions 是内部原子，不允许裸调。"));
+        assert!(tool_call_failed("delete_task", "用户拒绝了删除，任务未删除"));
+        assert!(tool_call_failed("x", "技能「s」超过最大步数上限（8 步），已强制终止"));
+        assert!(tool_call_failed("x", "技能已暂停，等待用户确认中；确认通过后才能继续下一步"));
+        // 原有判定不回退
+        assert!(tool_call_failed("x", "未知工具：foo"));
+        assert!(tool_call_failed("x", "生成失败：磁盘只读"));
+        assert!(tool_call_failed("x", "error: timeout"));
+    }
+
+    #[test]
+    fn tool_call_failed_passes_success_text() {
+        assert!(!tool_call_failed("list_tasks", "当前没有未完成的任务"));
+        assert!(!tool_call_failed("create_word", "已生成 Word 文档：/tmp/x.docx"));
+        assert!(!tool_call_failed("delete_task", "已删除任务「买菜」（进回收站）"));
     }
 
     #[test]

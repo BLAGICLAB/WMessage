@@ -15,9 +15,11 @@ use tauri::{AppHandle, Emitter, Manager};
 
 // ───────────────────────── /stop 停止标志（按执行实例隔离） ─────────────────────────
 
-/// 活跃执行实例注册表：stop_id → (停止标志, 是否用户交互触发)
+/// 活跃执行实例注册表：stop_id → (停止标志, 是否用户交互触发, 归属会话 id)
+/// 2026-08-27 审计 P1-8：注册表带会话——/stop 只停当前会话的实例，
+/// 不再一停全停（别的会话的 Skill/任务卡执行不受影响）
 type StopMap = std::sync::Mutex<
-    std::collections::HashMap<u64, (std::sync::Arc<std::sync::atomic::AtomicBool>, bool)>,
+    std::collections::HashMap<u64, (std::sync::Arc<std::sync::atomic::AtomicBool>, bool, Option<String>)>,
 >;
 static STOP_REGISTRY: std::sync::OnceLock<StopMap> = std::sync::OnceLock::new();
 static NEXT_STOP_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -57,7 +59,7 @@ impl StopGuard {
         let id = NEXT_STOP_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
         let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         if let Ok(mut m) = stop_registry().lock() {
-            m.insert(id, (flag.clone(), interactive));
+            m.insert(id, (flag.clone(), interactive, session_id.clone()));
         }
         Self { id, flag, interactive, session_id, allow_atomic }
     }
@@ -112,19 +114,28 @@ impl Drop for StopGuard {
     }
 }
 
-/// /stop 快捷命令：停止所有用户交互触发的执行（bot_chat / 🤖 任务卡执行），后台定时不受影响
+/// /stop 快捷命令：停止**当前会话**用户交互触发的执行（bot_chat / 🤖 任务卡执行），
+/// 后台定时（interactive=false）与别的会话不受影响（2026-08-27 审计 P1-8：
+/// 原先一停全停，会话 B 的 /stop 会误杀会话 A 的活动 Skill）
 #[tauri::command]
-pub fn bot_stop(app: AppHandle) {
-    // Skill 调度器联动：强制终止所有活动技能
-    crate::bot_skills::skill_terminate_all(&app, "用户停止");
-    // 逐步执行联动：清掉挂起的子任务确认（2026-08-19 exec_steps）
+pub fn bot_stop(app: AppHandle, session_id: Option<String>) {
+    // P1-8：/stop 本身留痕——原先零审计，无法区分「用户停过」与「自己跑完」
+    crate::bot::audit_log(
+        &app,
+        &format!("bot_stop | session: {}", session_id.as_deref().unwrap_or("<none>")),
+    );
+    // Skill 调度器联动：强制终止本会话的活动技能（None = 全部会话，兼容旧调用）
+    crate::bot_skills::skill_terminate_all(&app, "用户停止", session_id.as_deref());
+    // 逐步执行联动：清掉本会话挂起的子任务确认（2026-08-19 exec_steps）
     let app2 = app.clone();
+    let sid = session_id.clone();
     tauri::async_runtime::spawn(async move {
-        crate::exec_steps::clear(&app2, "/stop").await;
+        crate::exec_steps::clear_for(&app2, sid.as_deref(), "/stop").await;
     });
     if let Ok(m) = stop_registry().lock() {
-        for (_, (flag, interactive)) in m.iter() {
-            if *interactive {
+        for (_, (flag, interactive, sid2)) in m.iter() {
+            // 会话隔离：只停本会话的交互实例；session 不匹配的不动
+            if *interactive && sid2.as_deref() == session_id.as_deref() {
                 flag.store(true, std::sync::atomic::Ordering::SeqCst);
             }
         }

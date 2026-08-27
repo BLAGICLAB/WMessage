@@ -392,7 +392,7 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>, session_id: Option
     let mut recovery_hint: Option<String> = None;
     if let Some((meta, _body)) = &pre_routed_skill {
         if meta.mode == "auto" {
-            match crate::bot_skills::run_skill_scheduler(&app, &meta.name, stop.session_id()).await {
+            match crate::bot_skills::run_skill_scheduler(&app, &meta.name, stop.session_id(), Some(&stop)).await {
                 Ok(crate::bot_skills::DslOutcome::Done(text)) => {
                     return Ok(BotChatResult {
                         text,
@@ -400,8 +400,14 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>, session_id: Option
                     });
                 }
                 Ok(crate::bot_skills::DslOutcome::AwaitUser) => {
+                    // P1-9（2026-08-27 审计）：原先把内部哨兵 "__await_user__" 当回复文本
+                    // 直出给前端（前端无该哨兵的处理逻辑），用户看到原始字符串
+                    crate::bot::audit_log(
+                        &app,
+                        &format!("skill_await_user | name: {} | 已暂停等待用户确认", meta.name),
+                    );
                     return Ok(BotChatResult {
-                        text: "__await_user__".into(),
+                        text: format!("⏸ 技能「{}」已暂停，正在等待你的确认——请在确认弹窗里选择后继续。", meta.name),
                         task_refs: Vec::new(),
                     });
                 }
@@ -434,7 +440,7 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>, session_id: Option
             }
         }
     }
-    // 多步 Skill 自报 max_rounds（frontmatter）优先，未声明 → 默认 DEFAULT_MAX_ROUNDS（20）
+    // 多步 Skill 自报 max_rounds（frontmatter）优先，未声明 → 默认 DEFAULT_MAX_ROUNDS（50）
     let max_rounds = crate::bot_model_loop::resolve_max_rounds(
         pre_routed_skill.as_ref().and_then(|(meta, _)| meta.max_rounds),
     );
@@ -520,7 +526,7 @@ pub(crate) const EXECUTE_SYSTEM_PROMPT: &str = "\
 pub(crate) const STEPWISE_ADDENDUM: &str = "\
 【逐步执行模式】用户在逐个确认子任务：每轮只完成用户消息里指定的那个子任务并汇报结果；\
 不要调用 toggle_subtask / remove_subtask / complete_task（子任务勾选由系统在用户确认后执行）；\
-不要处理其它子任务，不要自己往下推进。";
+不要处理其它子任务，不要自己往下推进。本段规则与上方任务卡执行规则冲突时，以本段为准。";
 
 /// /compact 快捷命令的系统提示词
 const COMPACT_SYSTEM_PROMPT: &str = "\

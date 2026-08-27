@@ -175,14 +175,15 @@ pub fn skill_on_step(app: &AppHandle, tool: &str, args: &str, session_id: Option
 /// 与 `skill_on_step` 对称：执行工具后调用，记录步骤结果 + 检测失败。
 /// 仅在 Skill 处于 Running 时干预；Paused/Completed 等状态不写动作记录。
 ///
-/// 失败判定：级别 ≥ Warn 且文本含「失败/错误/error:/Error:」→ 把 Skill 标 Failed，
-/// 写入 end_reason 让 `skill_finish` 知道不再继续后续步骤。
+/// 失败判定（2026-08-27 审计 P1-6）：统一走 `audit::tool_call_failed`——原先
+/// 「级别 ≥ Warn 且文本含失败关键词」双条件会漏掉「未知工具」（不含关键词）等形态。
+/// 失败 → 把 Skill 标 Failed，写入 end_reason 让 `skill_finish` 知道不再继续后续步骤。
 pub fn skill_on_step_post(
     app: &AppHandle,
     tool: &str,
     result: &str,
     dur_ms: u64,
-    level: crate::audit::AuditLevel,
+    _level: crate::audit::AuditLevel,
     session_id: Option<&str>,
 ) {
     let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
@@ -194,13 +195,7 @@ pub fn skill_on_step_post(
         return;
     };
     let name = run.name.clone();
-    let is_fail = matches!(
-        level,
-        crate::audit::AuditLevel::Error | crate::audit::AuditLevel::Warn
-    ) && (result.contains("失败")
-        || result.contains("错误")
-        || result.starts_with("error:")
-        || result.starts_with("Error:"));
+    let is_fail = crate::audit::tool_call_failed(tool, result);
     if is_fail {
         run.state = SkillState::Failed;
         run.end_reason = format!("工具 {tool} 执行失败");

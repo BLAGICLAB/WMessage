@@ -163,7 +163,8 @@ describe("ChatPanel", () => {
     const stopBtn = await screen.findByTitle("停止当前回复");
     expect(screen.queryByText("发送")).not.toBeInTheDocument();
     await user.click(stopBtn);
-    expect(mocks.invokeMock).toHaveBeenCalledWith("bot_stop");
+    // P1-8（2026-08-27 审计）：/stop 按会话停止——携带当前会话 id
+    expect(mocks.invokeMock).toHaveBeenCalledWith("bot_stop", { sessionId: "s1" });
   });
 
   it("确认弹窗按会话过滤：别的会话的 bot-confirm 不弹窗（2026-08-26 会话隔离）", async () => {

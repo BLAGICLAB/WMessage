@@ -196,7 +196,7 @@ fn cleanup_on_exit_with<R: tauri::Runtime>(
         Some(state) => api_handlers::api_stop_for_exit(app, &state).is_ok(),
         None => false,
     };
-    bot_skills::skill_terminate_all(app, "应用退出");
+    bot_skills::skill_terminate_all(app, "应用退出", None);
     let py_killed = kill_py();
     audit::write_event(
         app,

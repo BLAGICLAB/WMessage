@@ -747,7 +747,8 @@ function extractFilePaths(content: string): string[] {
     if (cmd === "/stop") {
       setInput("");
       if (busyRef.current) {
-        invoke("bot_stop").catch((e) =>
+        // P1-8（2026-08-27 审计）：/stop 按会话停止——只停当前会话的执行实例
+        invoke("bot_stop", { sessionId: sessionIdRef.current }).catch((e) =>
           handleCommandError(e, "bot_stop", { silent: true })
         );
       } else {
@@ -1423,7 +1424,7 @@ function extractFilePaths(content: string): string[] {
             className="nm-btn shrink-0 px-3 py-1.5 text-xs text-[var(--danger)] flex items-center"
             title="停止当前回复"
             onClick={() =>
-              invoke("bot_stop").catch((e) =>
+              invoke("bot_stop", { sessionId: sessionIdRef.current }).catch((e) =>
                 handleCommandError(e, "bot_stop", { silent: true })
               )
             }

@@ -77,14 +77,12 @@ pub fn format_completed_summary(ctx: &[CompletedStep]) -> String {
     out
 }
 
-/// 工具执行结果文本的失败判定（调度器生产路径与测试同步循环共用，
-/// 防两份 starts_with 前缀清单漂移）。
+/// 工具执行结果文本的失败判定（调度器生产路径与测试同步循环共用）。
+/// 2026-08-27 审计 P1-6：委托 `audit::tool_call_failed`（全链路统一口径），
+/// 熔断「已强制终止」/ 门禁拦截「⚠️」/ 用户拒绝 等文案现在都能判失败——
+/// 原先这些以「技能」/「用户」开头不被前缀清单认，末步熔断会误报「✅ 完成」。
 pub(crate) fn is_tool_failure_text(text: &str) -> bool {
-    text.starts_with("未知工具")
-        || text.starts_with("失败")
-        || text.starts_with("错误")
-        || text.starts_with("error:")
-        || text.starts_with("Error:")
+    crate::audit::tool_call_failed("", text)
 }
 
 /// 跑 `## Rollback` 段（step 失败 / 状态机 FailWithRollback 两处共用）：
@@ -103,6 +101,7 @@ async fn run_rollback_segment(
     step_index: usize,
     reason: &str,
     session_id: Option<&str>,
+    stop: Option<&crate::bot_slash::StopGuard>,
 ) -> bool {
     if rollback.is_empty() {
         return false;
@@ -120,8 +119,11 @@ async fn run_rollback_segment(
     let mut failed_steps = 0usize;
     for rb in rollback {
         let rb_args = substitute_vars(&rb.args_json, ctx);
-        let (text, _refs) = crate::bot::execute_tool(app, &rb.tool_name, &rb_args, session_id).await;
-        if is_tool_failure_text(&text) || text.starts_with("⚠️") {
+        let (text, _refs) = match stop {
+            Some(s) => crate::bot::execute_tool_with_stop(app, &rb.tool_name, &rb_args, Some(s)).await,
+            None => crate::bot::execute_tool(app, &rb.tool_name, &rb_args, session_id).await,
+        };
+        if is_tool_failure_text(&text) {
             failed_steps += 1;
             crate::bot::audit_log_hook(
                 app,
@@ -146,12 +148,19 @@ async fn run_rollback_segment(
     failed_steps == 0
 }
 
-/// 强制终止所有活动 Skill（/stop 联动；用户取消时调用）
+/// 强制终止活动 Skill（/stop 联动；用户取消时调用）。
+/// 2026-08-27 审计 P1-8：按会话过滤——会话 B 的 /stop 不再误杀会话 A 的活动技能；
+/// session_id=None 终止所有会话（lib.rs 应用退出清理路径用）。
 /// 泛型 Runtime（P2-24）：cleanup_on_exit 的 mock runtime 测试可直调。
-pub fn skill_terminate_all<R: tauri::Runtime>(app: &tauri::AppHandle<R>, reason: &str) {
+pub fn skill_terminate_all<R: tauri::Runtime>(app: &tauri::AppHandle<R>, reason: &str, session_id: Option<&str>) {
     let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
     for (name, run) in runs.iter_mut() {
         if run.state == SkillState::Running || run.state == SkillState::Paused {
+            if let Some(sid) = session_id {
+                if run.session_id.as_deref() != Some(sid) {
+                    continue; // 别的会话的技能不动
+                }
+            }
             run.state = SkillState::Terminated;
             run.end_reason = reason.to_string();
             crate::bot::audit_log_hook(app, &format!("skill_terminated | name: {name} | {reason}"));
@@ -161,13 +170,15 @@ pub fn skill_terminate_all<R: tauri::Runtime>(app: &tauri::AppHandle<R>, reason:
 
 /// DSL 调度器入口（Phase 1 2026-08-17 23:15）。仅供 `meta.mode == "auto"` 的 Skill 调用：
 /// 解析 body → 顺序调 `bot::execute_tool` → 失败时跑回滚段。
+/// stop（2026-08-27 审计 P1-8）：携带 /stop 守卫，在途 run_python 等长耗时步骤可被中断——
+/// 原先走 execute_tool（stop=None），在途 Python 脚本必须跑完才能停。
 ///
 /// 行为：
 /// - 每个 step 调一次 `bot::execute_tool`（带 pre-execute 校验）
 /// - 任一 step 失败 → 顺序跑 `## Rollback` 段工具 → 返回 Err
 /// - 全部成功 → 返回汇总文本
 /// - SkillRun 状态机更新由 `execute_tool` 内的 `skill_on_step` / `skill_on_step_post` 自动维护
-pub async fn run_skill_scheduler(app: &AppHandle, name: &str, session_id: Option<&str>) -> Result<DslOutcome, DslFailure> {
+pub async fn run_skill_scheduler(app: &AppHandle, name: &str, session_id: Option<&str>, stop: Option<&crate::bot_slash::StopGuard>) -> Result<DslOutcome, DslFailure> {
     // 僵尸终态清理：上轮遗留的 Completed/Failed/Terminated run 会在第 0 步被 advance_dsl
     // 误判为完成信号直接 break（与主循环同款假死根因）
     clear_terminal_skill_runs();
@@ -228,7 +239,7 @@ pub async fn run_skill_scheduler(app: &AppHandle, name: &str, session_id: Option
                 }
                 DslAdvanceAction::FailWithRollback(reason) => {
                     let rb_attempted = run_rollback_segment(
-                        app, name, &rollback, &ctx, step.index, &reason, session_id,
+                        app, name, &rollback, &ctx, step.index, &reason, session_id, stop,
                     )
                     .await;
                     let final_reason = format!("技能「{name}」中止：{reason}");
@@ -284,11 +295,14 @@ pub async fn run_skill_scheduler(app: &AppHandle, name: &str, session_id: Option
                 ),
             );
         }
-        let (text, _refs) = crate::bot::execute_tool(app, &step.tool_name, &resolved_args, session_id).await;
+        let (text, _refs) = match stop {
+            Some(s) => crate::bot::execute_tool_with_stop(app, &step.tool_name, &resolved_args, Some(s)).await,
+            None => crate::bot::execute_tool(app, &step.tool_name, &resolved_args, session_id).await,
+        };
         let failed = is_tool_failure_text(&text);
         if failed {
             let rb_attempted = run_rollback_segment(
-                app, name, &rollback, &ctx, step.index, &text, session_id,
+                app, name, &rollback, &ctx, step.index, &text, session_id, stop,
             )
             .await;
             let final_reason = format!(

@@ -46,29 +46,26 @@ const MUTATING_TOOLS: [&str; 15] = [
 ];
 
 /// 变更工具是否真的成功落库/落盘（幻觉守卫 mutation_done 的判定依据）。
-/// 2026-08-27 审计 P0-4：原先在工具执行前按名字置位——被门禁拦截（⚠️ 开头）、
-/// 用户拒绝（「用户拒绝」开头）、执行失败（Warn/Error 分级）的调用都算「动过手」，
-/// 之后的幻觉汇报就不再被拦，守卫被架空。改为按执行结果判定。
+/// 2026-08-27 审计 P0-4：原先在工具执行前按名字置位——被门禁拦截（⚠️）、
+/// 用户拒绝、执行失败的调用都算「动过手」，之后的幻觉汇报就不再被拦，守卫被架空。
+/// 改为按执行结果判定，失败口径走全链路统一的 `audit::tool_call_failed`（P1-6）。
 fn mutation_succeeded(name: &str, result: &str) -> bool {
-    MUTATING_TOOLS.contains(&name)
-        && !matches!(
-            crate::audit::classify_text(name, result),
-            crate::audit::AuditLevel::Warn | crate::audit::AuditLevel::Error
-        )
-        && !result.starts_with("⚠️")
-        && !result.starts_with("用户拒绝")
+    MUTATING_TOOLS.contains(&name) && !crate::audit::tool_call_failed(name, result)
 }
 
 /// 最终文本是否含「变更已完成」表述（任务卡/文件类；纯查询汇报不命中）。
 /// 枚举完整话术是打地鼠（实锤漏网：「已彻底删除」不含「已删除」字面），
 /// 改成模式匹配：完成态标记「已」+ 其后 8 字窗口内含变更动词（覆盖 已彻底删除/已经把…移除 等变体），
 /// 另加若干无「已」的高频话术兜底。
+/// 2026-08-27 审计 P1-10：动词表去掉「完成」（「已完成搜索/分析」这类只读汇报误拦），
+/// 补「保存/记住」（「已保存到 AI_Gen_Files」「已记住偏好」原先漏拦）；
+/// 「已完成任务」走 PLAIN 整段匹配保住任务完成话术。
 fn claims_mutation(text: &str) -> bool {
-    const VERBS: [&str; 13] = [
-        "添加", "删除", "移除", "修改", "更新", "绑定", "完成", "清空", "恢复", "勾选", "创建",
-        "生成", "移至",
+    const VERBS: [&str; 14] = [
+        "添加", "删除", "移除", "修改", "更新", "绑定", "清空", "恢复", "勾选", "创建",
+        "生成", "移至", "保存", "记住",
     ];
-    const PLAIN: [&str; 3] = ["移至回收站", "标记为完成", "添加子任务"];
+    const PLAIN: [&str; 4] = ["移至回收站", "标记为完成", "添加子任务", "已完成任务"];
     if PLAIN.iter().any(|p| text.contains(p)) {
         return true;
     }
@@ -468,6 +465,7 @@ pub async fn run_model_loop(
     // PREVR 第 1 层（2026-08-26）：工具失败检测——同工具连续失败计数，
     // 第 1 次失败注入「换策略」提示；连续 2 次失败：有计划则 Replan，无计划则要求如实告知
     let mut last_failed_tool: Option<String> = None;
+    let mut last_fail_reason: Option<String> = None;
     let mut consec_failures: usize = 0;
     let mut fail_hint_queued: Option<String> = None;
     let mut plan_state = plan_state;
@@ -644,7 +642,7 @@ pub async fn run_model_loop(
                 msgs.push(serde_json::json!({"role": "assistant", "content": final_text}));
                 msgs.push(serde_json::json!({
                     "role": "user",
-                    "content": "【系统提示】你刚才声称完成了变更，但本轮没有调用任何工具，数据实际没有变化。请立即调用对应工具实际执行（删除用 delete_task、完成用 complete_task、编辑用 edit_task、添加子任务用 add_subtask、勾选子任务用 toggle_subtask、绑定文件用 bind_file）；若确实无法执行（任务不存在/已完成/无权限等），如实向用户说明原因，禁止再次声称已完成。"
+                    "content": "【系统提示】你刚才声称完成了变更，但本轮没有任何变更类工具调用成功，数据实际没有变化。请立即调用对应工具实际执行（删除用 delete_task、完成用 complete_task、编辑用 edit_task、子任务用 add_subtask/remove_subtask、绑定文件用 bind_file、生成文档用 create_word/create_excel/create_ppt/create_pdf；逐步执行模式下子任务勾选由系统完成，不要代调 toggle_subtask）；若确实无法执行（任务不存在/被安全闸门拦截/无权限等），如实向用户说明原因，禁止再次声称已完成。"
                 }));
                 continue;
             }
@@ -667,6 +665,17 @@ pub async fn run_model_loop(
             return Ok((format!("{final_text}\n\n⏹ 已停止{hint}"), collected_refs));
         }
         for (id, name, args) in &tool_calls {
+            // P1-8（2026-08-27 审计）：工具批中途可停——/stop 后剩余调用不执行，
+            // 但必须回填占位 tool 响应（tool_calls → tool 消息协议完整性，
+            // 缺响应会让下一轮请求被 API 拒为 400 invalid params）
+            if stop.stopped() {
+                msgs.push(serde_json::json!({
+                    "role": "tool",
+                    "tool_call_id": id,
+                    "content": "⏹ 已停止，该工具未执行"
+                }));
+                continue;
+            }
             function_calls_total += 1;
             if should_fuse(function_calls_total) {
                 let hint = crate::bot_skills::skill_finish(&app, false, "单轮 Function 调用超上限", session_id);
@@ -712,13 +721,11 @@ pub async fn run_model_loop(
                 ),
             );
             collected_refs.extend(refs);
-            // PREVR 第 1 层（2026-08-26）：工具失败检测。复用审计同款分级
-            // （Warn/Error = 失败），同工具连续失败才升级——单次失败先提示换策略。
+            // PREVR 第 1 层（2026-08-26）：工具失败检测。判定走全链路统一口径
+            // （P1-6：audit::tool_call_failed）——门禁拦截/熔断/暂停/拒绝都能识别；
+            // 同工具连续失败才升级——单次失败先提示换策略。
             // 与 soft_warn 同理：提示推迟到本轮 tool 响应全部回填后注入（协议安全）
-            let failed = matches!(
-                crate::audit::classify_text(name, &result),
-                crate::audit::AuditLevel::Warn | crate::audit::AuditLevel::Error
-            );
+            let failed = crate::audit::tool_call_failed(name, &result);
             if failed {
                 if last_failed_tool.as_deref() == Some(name.as_str()) {
                     consec_failures += 1;
@@ -727,6 +734,7 @@ pub async fn run_model_loop(
                     last_failed_tool = Some(name.clone());
                 }
                 let reason = crate::bot::truncate_for_log(&result, 200);
+                last_fail_reason = Some(reason.clone());
                 fail_hint_queued = Some(if consec_failures >= 2 {
                     format!(
                         "【系统提示】工具 {name} 已连续失败 {consec_failures} 次（最近原因：{reason}）。禁止再次以相同方式调用该工具；如果换参数/换路径仍无法完成，如实向用户说明失败原因与当前进度，由用户决定下一步。"
@@ -739,6 +747,7 @@ pub async fn run_model_loop(
             } else if !result.is_empty() {
                 // 成功调用重置连续失败链（空结果不算成功也不算失败，不重置）
                 last_failed_tool = None;
+                last_fail_reason = None;
                 consec_failures = 0;
             }
             msgs.push(serde_json::json!({
@@ -749,16 +758,24 @@ pub async fn run_model_loop(
         }
         // PREVR 第 2 层（2026-08-26）：同工具连续失败 ≥2 且有计划 → Replan 一次
         // （重规划剩余步骤，替换计划文本；≤MAX_REPLANS 次硬上限，防重规划死循环）。
+        // P1-7（2026-08-27 审计）：预算不管成败都消耗——原先失败 replan 不计数，
+        // Planner 持续故障时每轮白烧一次调用，硬上限名不副实；fail_reason 补真实错误
+        // 文本（原先只传工具名，Planner 拿不到任何失败细节）。
         // Replan 是同步阻塞本轮的 LLM 调用：放在 tool 响应全部回填后、注入提示前，
         // 这样提示里带的就是新计划。
         if consec_failures >= 2 {
             if let Some(plan) = plan_state.as_deref_mut() {
                 if plan.replans_used < crate::bot_plan::MAX_REPLANS {
-                    let reason = last_failed_tool.clone().unwrap_or_default();
+                    plan.replans_used += 1;
+                    let reason = format!(
+                        "工具 {} 连续失败 {} 次，最近错误：{}",
+                        last_failed_tool.as_deref().unwrap_or("?"),
+                        consec_failures,
+                        last_fail_reason.as_deref().unwrap_or("（无错误详情）")
+                    );
                     if let Some(new_steps) =
                         crate::bot_plan::replan(&app, plan, &reason).await
                     {
-                        plan.replans_used += 1;
                         plan.steps = new_steps;
                         fail_hint_queued = Some(format!(
                             "【系统提示】原计划执行受阻，已重新规划剩余步骤：\n{}\n请按新计划继续；若仍无法推进，如实向用户说明。",
@@ -780,7 +797,7 @@ pub async fn run_model_loop(
             msgs.push(serde_json::json!({
                 "role": "user",
                 "content": format!(
-                    "【系统提示】你已连续调用 {SOFT_WARN_AT} 个工具，最多还能调 {} 个。请尽快收尾：合并调用、必要时汇总报告给用户、避免在剩余额度内继续展开新步骤。",
+                    "【系统提示】你已累计调用 {SOFT_WARN_AT} 个工具（全程累计），最多还能调 {} 个。请尽快收尾：合并调用、必要时汇总报告给用户、避免在剩余额度内继续展开新步骤。",
                     MAX_FUNCTION_CALLS_PER_TURN - SOFT_WARN_AT
                 ),
             }));
@@ -866,6 +883,18 @@ mod hallucination_guard_tests {
         assert!(!claims_mutation("「你们好」当前没有绑定任何附件，无需删除。"));
         assert!(!claims_mutation("未找到匹配的任务，请确认标题"));
         assert!(!claims_mutation(""));
+        // P1-10（2026-08-27 审计）：只读任务的收尾话术不再误拦（动词表去掉「完成」）
+        assert!(!claims_mutation("已完成搜索，找到 3 条结果"));
+        assert!(!claims_mutation("分析已完成，结论如下"));
+    }
+
+    #[test]
+    fn claims_mutation_p1_10_wording_adjustments() {
+        // 「已完成任务」走 PLAIN 整段匹配保住任务完成话术
+        assert!(claims_mutation("已完成任务「买菜」"));
+        // 补「保存/记住」动词（原先漏拦）
+        assert!(claims_mutation("已保存到 AI_Gen_Files"));
+        assert!(claims_mutation("已记住你的偏好"));
     }
 
     #[test]

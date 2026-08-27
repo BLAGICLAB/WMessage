@@ -26,7 +26,7 @@
 ### P0-5 回滚段调原子工具必被自家门禁拦截，且结果静默吞掉
 `run_rollback_segment`（`scheduler.rs:108-115`）执行时 run 已被标 `Failed`，而 `is_skill_active_for` 只认 Running → 回滚段里的 `create_word_revisions`/`link_file_to_task` 被 AtomicGuard 硬拒；返回值又被 `let _ =` 丢弃，`rollback_attempted` 恒等于「段非空」。与 `SKILL_DSL.md` §4.3.2「前端据此提示人工核对」契约直接冲突——回滚全挂时前端显示「已回滚」，安全护栏被架空。
 
-## P1 —— 逻辑分叉 / 一致性缺陷（未修，待排期）
+## P1 —— 逻辑分叉 / 一致性缺陷（✅ 2026-08-27 已全部修复，见 DEVLOG 同日复盘）
 
 ### P1-6 失败判定三套口径各说各话
 - `is_tool_failure_text`（`scheduler.rs:82-88`）：纯 `starts_with` 前缀；

@@ -2,6 +2,21 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-08-27（周四·午 3）审计 P1 七项全修（失败判定统一 + /stop 会话化 + 逐步执行隔离）
+
+承接「午 2」的 P0 五连修，把审计报告（`docs/AUDIT-BOT-PIPELINE-2026-08-27.md`）的 7 个 P1 全部修掉：
+
+- **P1-6 失败判定统一**：`audit.rs` 新增 `tool_call_failed`（全链路唯一真相源）——熔断「已强制终止」/暂停「技能已暂停」/门禁拦截「⚠️」/用户拒绝四类文案原先两套口径都不认（末步熔断误报「✅ 完成」、门禁拦截对 PREVR 隐身），现在统一判失败；`classify_text` / `is_tool_failure_text` / `skill_on_step_post` / PREVR / 幻觉守卫全部重接线到同一判定
+- **P1-7 Replan 修复**：fail_reason 从「只传工具名」改为带真实错误文本（`last_fail_reason` 跟踪）；replans_used 不管成败都消耗预算（原先失败 replan 不计数，Planner 故障时每轮白烧）
+- **P1-8 /stop 会话化**：StopMap 注册表带 session_id，`bot_stop(sessionId)` 只停当前会话（技能终止/挂起清理/停止标志全部按会话过滤；lib.rs 退出清理传 None = 全部）；工具批循环体内补 `stop.stopped()` 检查——/stop 后剩余调用回填占位 tool 响应（保 tool_calls→tool 协议完整）不再执行；DSL 调度器透传 StopGuard（在途 run_python 可中断，原先必须跑完）；/stop 本身补审计
+- **P1-9 AwaitUser 断头路**：`__await_user__` 哨兵不再直出前端，换成用户可读的暂停提示 + 审计
+- **P1-10 幻觉守卫修正**：动词表去「完成」（「已完成搜索」类只读汇报误拦）补「保存/记住」漏拦，「已完成任务」走 PLAIN 整段匹配；守卫补轮话术区分逐步执行模式（不误导模型代调 toggle_subtask）；`link_file_to_task` 已随 P0-4 补进 MUTATING_TOOLS
+- **P1-11 逐步执行规则互斥**：STEPWISE_ADDENDUM 补「与上方任务卡执行规则冲突时以本段为准」
+- **P1-12 exec_steps 隔离**：PENDING 全局单槽 → 按会话分槽（HashMap），跨会话不再静默覆盖；resume 的 Continue/Redo 错误路径补审计 + 复位 bot_assigned 头像（原先 LLM 失败后任务卡永远顶机器人头像）
+- 顺手修：软警告话术「连续调用」→「累计调用」；两处「默认 20 轮」过时注释 → 50；前端 ChatPanel 两处 bot_stop 调用传 sessionId + 测试断言同步
+
+**测试**：cargo test --lib 421 → **425 全绿**（tool_call_failed ×2、claims_mutation +1、exec_steps 会话分槽 +1），集成 29 全绿；vitest 110 全绿；tsc 零错。
+
 ## 2026-08-27（周四·午 2）Bot 工具/Skill 链路全面审计 + P0 五连修
 
 **审计**（4 路并行子代理 + 人工复核）：报告落盘 `docs/AUDIT-BOT-PIPELINE-2026-08-27.md`，覆盖 DSL 调度器 / 系统提示词 / 工具注册表面 / 中间件管线的逻辑性、完整性、一致性。结论：schema↔dispatch 28↔28 对齐、门禁顺序正确、session 透传主链无断点；但发现 5 个 P0 + 7 个 P1 + 一批 P2（失败判定三口径分叉、/stop 一停全停、`__await_user__` 直出前端等，待排期）。

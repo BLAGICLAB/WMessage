@@ -15,7 +15,7 @@ pub struct SkillMeta {
     pub resumable: bool,
     pub intents: Vec<String>,
     /// 多步 Skill 自报的对话轮数上限（2026-08-20）；
-    /// None → 运行时 fallback bot_model_loop::DEFAULT_MAX_ROUNDS（20）。
+    /// None → 运行时 fallback bot_model_loop::DEFAULT_MAX_ROUNDS（50）。
     /// 解析时 clamp 到 1..=60（现有 Skill 未声明该字段 → None，不受影响）。
     pub max_rounds: Option<usize>,
 }
