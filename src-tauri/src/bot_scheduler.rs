@@ -219,7 +219,11 @@ async fn find_due_tasks(app: &AppHandle) -> Vec<crate::db::Task> {
                 })
                 .collect();
             if !fresh.is_empty() {
-                let _ = crate::db::db_upsert(app.clone(), fresh).await;
+                // 2026-08-28 批次2审计：调度器写库也要广播（原先零广播，
+                // 主窗口无轮询会长期显示旧的 ⏰ 徽标/备注）
+                if crate::db::db_upsert(app.clone(), fresh.clone()).await.is_ok() {
+                    crate::bot::broadcast_after_mutation(app, fresh, vec![]);
+                }
             }
         }
     }
@@ -259,7 +263,10 @@ async fn run_scheduled(app: AppHandle, task: crate::db::Task) {
         if let Some(mut fresh) = cur.into_iter().find(|t| t.id == task.id) {
             fresh.sched_last = Some(now.timestamp_millis());
             fresh.updated_at = Some(now.timestamp_millis());
-            marked = crate::db::db_upsert(app.clone(), vec![fresh]).await.is_ok();
+            marked = crate::db::db_upsert(app.clone(), vec![fresh.clone()]).await.is_ok();
+            if marked {
+                crate::bot::broadcast_after_mutation(&app, vec![fresh], vec![]);
+            }
         }
     }
     if !marked {
@@ -303,7 +310,9 @@ async fn run_scheduled(app: AppHandle, task: crate::db::Task) {
                 fresh.schedule = None;
             }
             fresh.updated_at = Some(chrono::Local::now().timestamp_millis());
-            let _ = crate::db::db_upsert(app.clone(), vec![fresh]).await;
+            if crate::db::db_upsert(app.clone(), vec![fresh.clone()]).await.is_ok() {
+                crate::bot::broadcast_after_mutation(&app, vec![fresh], vec![]);
+            }
         }
     }
     crate::bot::audit_log(&app, &format!("sched_done | id: {}", task.id));

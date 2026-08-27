@@ -188,16 +188,18 @@ export default function App() {
 
   // 挂件上报行级变更（tasks-updated：{upserts, deletes}），主窗口统一落盘后广播
   useEffect(() => {
-    const unlisten = listen<{ upserts?: Task[]; deletes?: string[]; source?: string }>(
-      "tasks-updated",
-      async (e) => {
-        const upserts = e.payload?.upserts ?? [];
-        const deletes = e.payload?.deletes ?? [];
+    // 批次2审计（2026-08-28）：事件处理串行化——原先 async 监听器内有多个 await 让出点，
+    // 连续两个事件（bot 一轮多工具调用）都从同一个旧 tasksRef 出发合并、后完成者
+    // 整体覆盖，先处理的事件在主窗口 state 里丢失（DB 不受影响）。Promise 链排队，逐个处理。
+    // 单个事件失败 catch 住不阻断后续队列。
+    const handle = async (payload: { upserts?: Task[]; deletes?: string[]; source?: string }) => {
+        const upserts = payload?.upserts ?? [];
+        const deletes = payload?.deletes ?? [];
         if (!upserts.length && !deletes.length) return;
         // source = Bot/Api/Migration：已由后端线程落盘，这里只合并 UI 状态，不回写，
         // 否则主窗口的异步回写会用旧事件快照覆盖后端的新写入（归档/软删被回滚）。
         // 非法 source（协议外字符串）：WARN 观测 + 按未落盘处理（宁可多写不丢数据）
-        const source = e.payload?.source;
+        const source = payload?.source;
         if (source !== undefined && !isMutationOrigin(source)) {
           console.warn(`[tasks-updated] unknown source: ${String(source)}，按未落盘处理`);
         }
@@ -232,6 +234,15 @@ export default function App() {
         } catch (err) {
           console.error("emit tasks-changed failed", err);
         }
+    };
+    let queue: Promise<void> = Promise.resolve();
+    const unlisten = listen<{ upserts?: Task[]; deletes?: string[]; source?: string }>(
+      "tasks-updated",
+      (e) => {
+        queue = queue.then(() => handle(e.payload ?? {})).catch((err) => {
+          // 落盘失败等异常：不阻断后续事件队列（原先未处理 rejection 直接终止监听器）
+          console.error("[tasks-updated] handler failed", err);
+        });
       }
     );
     return () => {

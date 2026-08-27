@@ -2,6 +2,22 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-08-28（周五）全面审计批次 2：数据层与一致性
+
+按 `docs/AUDIT-PLAN-BOT-2026-08-27.md` 推进，3 路并行审计（db 并发事务 / 迁移可靠性 / 广播一致性）+ 人工复核，报告落盘 `docs/AUDIT-DATA-2026-08-28.md`。
+
+**修复**：
+- **B2-P0 data.json 迁移**：触发判定从计数比较改集合差（漏迁场景堵上）；评估成功后一律改名退役为 `data.json.migrated`——原先「不触发就保留」+ 硬删任务 = 陈年 json 复活已删任务（测试固化了旧语义，已改写为「退役后硬删不得复活」回归）
+- **B2-P1 copy_legacy_db 半拷贝防护**：先拷 `*.db.copying` 再 rename——原先中断留半截文件且 `!db_path.exists()` 守卫让下轮永久跳过，打开截断库报 malformed
+- **B2-P1 bot_scheduler 三处写库补广播**：清理过期 schedule / 记 sched_last / 执行结果写备注原先零广播，主窗口（无轮询）长期显示旧 ⏰ 徽标/旧备注
+- **B2-P1 锁外写者纳入 DB_WRITE_LOCK**：remember_fact / persist_outcome_quiet 原先锁外直写，长事务期间 SQLITE_BUSY 静默丢失
+- **前端三处**：WidgetApp 空列表守卫改「当前本就为空才跳过」（原先删光任务后挂件永久显示旧数据、还能复活已删任务）；挂件 emit 失败不再静默吞（上报失败 = 改动永不落盘，改弹错）；App.tsx tasks-updated 监听 Promise 链串行化（连续事件从同一旧 tasksRef 出发互相覆盖）
+- **B2-P2**：bot_history 单会话上限 2000 条（写放大有界化）；行内 JSON 字段损坏 eprintln 留痕（彻底防护需字段级合并写入，列入排期）
+
+**排期项**：整行覆盖 lost-update（upsert 19 列全量替换 + 时间戳守卫被刷新绕过，修复需字段级合并，架构改造单独立项）；open_db 补丁序列按路径 Once 缓存（性能）；migration replay 60s 延迟；回退 JSON 时代版本 = 空数据需发版说明。
+
+**测试**：cargo test --lib 433 全绿（语义回归用例改写），集成 29 全绿；vitest 110 全绿；tsc 零错。
+
 ## 2026-08-27（周四·午 5）全面审计批次 0+1：基线 + 安全纵深（2 个 P0 实锤已修）
 
 按 `docs/AUDIT-PLAN-BOT-2026-08-27.md` 开跑。批次 0 基线：cargo 428+29 / vitest 110 / tsc 全绿。

@@ -162,7 +162,9 @@ export default function WidgetApp() {
           return; // 读失败：保持现状，等下次 tasks-changed / 轮询重试
         }
         const list = sortByOrder(res.tasks);
-        if (!list.length) return;
+        // 批次2审计（2026-08-28）：空列表只在「当前本就为空」时跳过（首载防空闪）——
+        // 原先无条件跳过：主窗口删光任务后挂件永久显示旧数据，点勾选还会把已删任务复活回库
+        if (!list.length && tasksRef.current.length === 0) return;
         setTasks((prev) => {
           const same = JSON.stringify(list) === JSON.stringify(prev);
           if (!same) tasksRef.current = list;
@@ -375,7 +377,11 @@ export default function WidgetApp() {
     const { upserts, deletes } = diffTaskRows(prev, next, Date.now());
     setTasks(next);
     if (upserts.length || deletes.length) {
-      emit("tasks-updated", { upserts, deletes }).catch(() => {});
+      // 批次2审计（2026-08-28）：emit 失败不再静默吞——挂件不落盘，上报失败意味着
+      // 本地改动永不持久化（≤5s 后轮询回滚，用户视角「编辑神秘消失」），必须让用户知情
+      emit("tasks-updated", { upserts, deletes }).catch((e) =>
+        handleCommandError(e, "tasks-updated")
+      );
     }
   };
 

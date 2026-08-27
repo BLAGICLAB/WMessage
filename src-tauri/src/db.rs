@@ -171,7 +171,17 @@ fn copy_legacy_db(legacy_db: &std::path::Path, db_path: &std::path::Path) -> Vec
         }
         Err(e) => warns.push(format!("老库打开失败（跳过 checkpoint 直接拷贝）：{e}")),
     }
-    if let Err(e) = std::fs::copy(legacy_db, db_path) {
+    // 2026-08-28 批次2审计：先拷到临时文件再 rename——原先直拷目标路径，
+    // 拷贝中断（磁盘满/断电）留下半拷贝文件，open_db 的 `!db_path.exists()` 守卫
+    // 会让下轮永久跳过拷贝，rusqlite 打开截断文件报「database disk image is malformed」
+    let tmp = db_path.with_extension("db.copying");
+    let copied = std::fs::copy(legacy_db, &tmp)
+        .map_err(|e| e.to_string())
+        .and_then(|_| {
+            std::fs::rename(&tmp, db_path).map_err(|e| e.to_string())
+        });
+    if let Err(e) = copied {
+        let _ = std::fs::remove_file(&tmp);
         warns.push(format!("老库拷贝失败：{e}"));
         return warns;
     }
@@ -608,11 +618,19 @@ pub(crate) fn load_workspace(conn: &rusqlite::Connection) -> Result<Vec<Workspac
     let mut items = Vec::new();
     for row in rows {
         let (id, title, collapsed, links, order, updated_at) = row.map_err(|e| e.to_string())?;
+        // 2026-08-28 批次2审计：links JSON 损坏留痕（读成空数组后 upsert 回写 = 静默丢链接）
+        let links = match serde_json::from_str(&links) {
+            Ok(l) => l,
+            Err(_) => {
+                eprintln!("[db] 工作区条目 {id} 的 links JSON 损坏，按空读取（原值未动）");
+                Vec::new()
+            }
+        };
         items.push(WorkspaceItem {
             id,
             title,
             collapsed: collapsed.map(|v| v != 0),
-            links: serde_json::from_str(&links).unwrap_or_default(),
+            links,
             order,
             updated_at,
         });
@@ -836,6 +854,14 @@ fn bot_history_save_inner(
     session_id: &str,
     messages: &[BotMsgRow],
 ) -> Result<(), String> {
+    // 2026-08-28 批次2审计：单会话历史上限 2000 条——原先全量覆盖写无上限，
+    // 长会话每轮对话 O(n) 重写全表（写放大 + WAL 膨胀 + 长事务挤压其它写者）
+    const MAX_HISTORY_MSGS: usize = 2000;
+    let messages = if messages.len() > MAX_HISTORY_MSGS {
+        &messages[messages.len() - MAX_HISTORY_MSGS..]
+    } else {
+        messages
+    };
     conn.execute(
         "DELETE FROM bot_messages WHERE session_id = ?1",
         [session_id],
@@ -1047,11 +1073,29 @@ fn load_all(conn: &rusqlite::Connection) -> Result<Vec<Task>, String> {
             Some(s) => serde_json::from_str(&s).ok(),
             None => None,
         };
-        let subtasks = match subtasks {
-            Some(s) => serde_json::from_str(&s).ok(),
+        // 行内 JSON 字段损坏检测（2026-08-28 批次2审计）：原值非空但解析失败 → 留痕。
+        // 读成 None 后任何整行 upsert 会把 NULL 写回 = 静默丢数据；彻底防护需字段级
+        // 合并写入（架构改造，见 AUDIT-DATA 报告）——这里至少让损坏可见、可诊断。
+        let subtasks = match &subtasks {
+            Some(s) => match serde_json::from_str(s) {
+                Ok(v) => Some(v),
+                Err(_) => {
+                    eprintln!("[db] 任务 {id} 的 subtasks JSON 损坏，按空读取（原值未动）");
+                    None
+                }
+            },
             None => None,
         };
-        let files = files.and_then(|s| serde_json::from_str(&s).ok());
+        let files = match &files {
+            Some(s) => match serde_json::from_str(s) {
+                Ok(v) => Some(v),
+                Err(_) => {
+                    eprintln!("[db] 任务 {id} 的 files JSON 损坏，按空读取（原值未动）");
+                    None
+                }
+            },
+            None => None,
+        };
         tasks.push(Task {
             id,
             title,
@@ -1077,10 +1121,15 @@ fn load_all(conn: &rusqlite::Connection) -> Result<Vec<Task>, String> {
     Ok(tasks)
 }
 
-/// 迁移方案2 的 data.json：json 里有库里缺的任务就补回，导入成功后删除旧文件。
+/// 迁移方案2 的 data.json：json 里有库里缺的任务就补回。
 /// P2-7：原触发条件「库 count==0」——用户删任务后重启、老 data.json 还在时不再迁移，
-/// 数据静默丢失。改为「json 任务数 > 库内任务数」即尝试，且只补库中缺失的 id
-/// （已存在的 id 不用 json 旧值覆盖，防回滚用户的新编辑）。
+/// 数据静默丢失。只补库中缺失的 id（已存在的 id 不用 json 旧值覆盖，防回滚用户的新编辑）。
+/// 2026-08-28 批次2审计 B2-P0 修正：
+/// 1) 触发判定从「计数比较」（json 条数 > 库条数）改为「集合差」——计数比较在
+///    「json ≤ 库但 json 含库缺失 id」时漏迁；
+/// 2) 评估成功后无论是否补了内容，都把 data.json 改名退役（data.json.migrated，可人工找回）——
+///    原先「不触发就保留文件」，而删除任务是硬删：库计数将来跌穿 json 计数时
+///    陈年 json 会把已删除任务全部复活。
 fn migrate_data_json(app: &tauri::AppHandle, conn: &mut rusqlite::Connection) {
     let Ok(dir) = app.path().app_data_dir() else {
         return;
@@ -1088,7 +1137,7 @@ fn migrate_data_json(app: &tauri::AppHandle, conn: &mut rusqlite::Connection) {
     let _ = migrate_data_json_file(&dir.join("data.json"), conn);
 }
 
-/// P2-7 可测内核：返回是否执行了迁移（成功补回并删除旧文件）。
+/// P2-7 可测内核：返回是否执行了迁移（成功补回缺失任务并退役旧文件）。
 fn migrate_data_json_file(file: &std::path::Path, conn: &mut rusqlite::Connection) -> bool {
     if !file.exists() {
         return false;
@@ -1099,13 +1148,7 @@ fn migrate_data_json_file(file: &std::path::Path, conn: &mut rusqlite::Connectio
     let Ok(tasks) = serde_json::from_str::<Vec<Task>>(&json) else {
         return false;
     };
-    let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
-        .unwrap_or(0);
-    if tasks.len() as i64 <= count {
-        return false; // json 没有比库更多的任务，无可补
-    }
-    // 只补库中缺失的 id——INSERT OR REPLACE 会用 json 旧值覆盖已有行的新编辑
+    // 集合差判定：只补库中缺失的 id——INSERT OR REPLACE 会用 json 旧值覆盖已有行的新编辑
     let existing: std::collections::HashSet<String> = {
         let mut stmt = match conn.prepare("SELECT id FROM tasks") {
             Ok(s) => s,
@@ -1121,12 +1164,18 @@ fn migrate_data_json_file(file: &std::path::Path, conn: &mut rusqlite::Connectio
         .into_iter()
         .filter(|t| !existing.contains(&t.id))
         .collect();
+    // 退役 = 改名而非删除（数据可人工找回）；改名失败保留原文件，下次重试
+    let retire = |file: &std::path::Path| {
+        let _ = std::fs::rename(file, file.with_extension("json.migrated"));
+    };
     if missing.is_empty() {
+        // json 内容已全部在库里 → 冗余残留，直接退役（防未来硬删后复活）
+        retire(file);
         return false;
     }
     let Ok(tx) = conn.transaction() else { return false };
     if upsert_tasks(&tx, &missing).is_ok() && tx.commit().is_ok() {
-        let _ = std::fs::remove_file(file);
+        retire(file);
         return true;
     }
     false
@@ -1621,8 +1670,9 @@ mod tests {
         }
     }
 
-    /// 删任务后重启场景：库里只剩 t1，老 data.json 还有 t1/t2/t3 → 补回 t2/t3，
+    /// 删任务后重启场景：库里只剩 t1，老 data.json 还有 t1/t2/t3 → 首次评估补回 t2/t3，
     /// 且已存在的 t1 不得被 json 旧值覆盖（B2 守卫之外再加 id 过滤）。
+    /// 2026-08-28 批次2：迁移/评估成功后 data.json 改名退役——再次评估不再复活已删任务。
     #[test]
     fn migrate_data_json_backfills_missing_after_user_delete() {
         let (dir, mut conn) = setup_tasks_db();
@@ -1638,17 +1688,29 @@ mod tests {
 
         assert!(
             migrate_data_json_file(&file, &mut conn),
-            "json 任务数(3) > 库内(1) 必须触发迁移补回"
+            "json 含库缺失的 t2/t3 必须触发迁移补回"
         );
         let tasks = load_all(&conn).unwrap();
         assert_eq!(tasks.len(), 3, "t2/t3 应补回");
         let t1 = tasks.iter().find(|t| t.id == "t1").unwrap();
         assert_eq!(t1.title, "新标题", "已有 id 不得被 json 旧值覆盖");
-        assert!(!file.exists(), "迁移成功后 data.json 应删除");
+        assert!(!file.exists(), "迁移成功后 data.json 应退役（改名）");
+        assert!(
+            dir.join("data.json.migrated").exists(),
+            "退役文件保留为 data.json.migrated（可人工找回）"
+        );
+        // B2-P0 关键回归：退役后用户硬删 t2，再次评估不得复活
+        delete_tasks(&conn, &["t2".to_string()]).unwrap();
+        assert!(
+            !migrate_data_json_file(&file, &mut conn),
+            "文件已退役：不存在即不评估"
+        );
+        let tasks = load_all(&conn).unwrap();
+        assert_eq!(tasks.len(), 2, "已删任务不得被残留 json 复活");
         fs::remove_dir_all(&dir).ok();
     }
 
-    /// 库不比 json 少 → 不触发（防重复迁移）；文件保留原状
+    /// json 内容已全部在库里 → 不迁移，但文件同样退役（防未来硬删后计数复活）
     #[test]
     fn migrate_data_json_skips_when_db_not_behind() {
         let (dir, mut conn) = setup_tasks_db();
@@ -1658,9 +1720,10 @@ mod tests {
 
         assert!(
             !migrate_data_json_file(&file, &mut conn),
-            "json 任务数(1) <= 库内(2) 不得触发"
+            "json 无库缺失 id 不得迁移"
         );
-        assert!(file.exists(), "未迁移时文件保留");
+        assert!(!file.exists(), "评估成功后文件退役（2026-08-28 语义变化）");
+        assert!(dir.join("data.json.migrated").exists());
         let tasks = load_all(&conn).unwrap();
         assert_eq!(tasks.len(), 2, "库内容不得变化");
         fs::remove_dir_all(&dir).ok();

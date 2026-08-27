@@ -942,6 +942,9 @@ fn tool_remember_fact(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_ch
         Ok(c) => c,
         Err(e) => return (format!("失败：打开数据库出错：{e}"), Vec::new()),
     };
+    // 2026-08-28 批次2审计：纳入 DB_WRITE_LOCK——原先锁外直写，主窗口长事务
+    //（如 bot_history_save 全量重写）期间会撞 SQLITE_BUSY 静默丢失记忆
+    let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     if value.is_empty() {
         // 空 value = 删除该条记忆
         return match fact_delete(&conn, &key) {
