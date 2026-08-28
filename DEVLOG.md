@@ -2,6 +2,16 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-08-28（周五）滚动条深浅色适配（Windows 主窗口 + 挂件）
+
+原先全局没有任何滚动条样式：深色模式下 WebView2 原生滚动条仍是浅色，突兀。修复（src/ui/main.css，主窗口/挂件共用）双机制：
+
+- `color-scheme: light/dark` 随 `.dark` class 切换——原生滚动条与表单控件自动随主题
+- 自定义 webkit 细滚动条（8px、透明轨道、拇指 `--t6`、hover `--t5`）——走主题变量，深浅两套自动生效，贴合新拟态低饱和风格
+
+测试：新增 `src/ui/main-css.test.ts` 两个源码锁用例（vitest `css:false` 会吞掉 `.css`/`?raw` 导入，直接读文件断言）；vitest 111 → **113 全绿**；tsc 零错。
+踩坑：项目未装 @types/node，测试读文件补了 `src/test/node-shims.d.ts` 最小声明。
+
 ## 2026-08-28（周五）全面审计批次 6：跨平台与资源（无 P0，4 个 P1 已修）
 
 按 `docs/AUDIT-PLAN-BOT-2026-08-27.md` 推进，单代理探索（其 Read 工具故障只覆盖 bot_py.rs 前 1000 行，未覆盖区由主线程补读）+ P1/P2 逐条人工复核，报告落盘 `docs/AUDIT-PLATFORM-2026-08-28.md`。

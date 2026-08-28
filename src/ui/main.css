@@ -77,6 +77,40 @@
 }
 
 /* ═══════════════════════════════════════════════════════════════
+   滚动条主题适配（2026-08-28，主窗口/挂件共用本文件）：
+   - color-scheme 告诉 WebView2/Chromium 当前主题，原生滚动条与表单控件自动换深色
+   - 自定义 webkit 细滚动条走主题变量（浅色 --t6 灰 / 深色 --t6 亮灰蓝），
+     hover 加深一档；轨道透明，贴合新拟态低饱和风格
+   ═══════════════════════════════════════════════════════════════ */
+:root {
+  color-scheme: light;
+}
+.dark {
+  color-scheme: dark;
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--t6) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--t6);
+  border-radius: 4px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--t5);
+}
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ═══════════════════════════════════════════════════════════════
    新拟态组件类（全部走变量，深浅两套自动生效）
    ═══════════════════════════════════════════════════════════════ */
 @layer components {
