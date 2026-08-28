@@ -280,13 +280,28 @@ pub(crate) fn probe_dir(
     app_data: Option<std::path::PathBuf>,
 ) -> std::path::PathBuf {
     if let Some(dir) = exe_dir {
-        let probe = dir.join(".wm-write-probe");
-        if std::fs::File::create(&probe).is_ok() {
-            let _ = std::fs::remove_file(&probe);
-            return dir.to_path_buf();
+        // 2026-08-28 批次6审计 P1：macOS .app 包内目录（*.app/Contents/MacOS）不算
+        // 「便携 exe 同目录」——dmg 拖到 ~/Applications 后该目录可写，数据库/日志/
+        // AI_Gen_Files 会全写进 app 包内（破坏签名、删 app 即删全部用户数据）。
+        if !is_macos_app_bundle_dir(dir) {
+            let probe = dir.join(".wm-write-probe");
+            if std::fs::File::create(&probe).is_ok() {
+                let _ = std::fs::remove_file(&probe);
+                return dir.to_path_buf();
+            }
         }
     }
     app_data.unwrap_or_else(std::env::temp_dir)
+}
+
+/// macOS .app 包内 MacOS 目录判定（批次6审计 P1）：…/Xxx.app/Contents/MacOS
+fn is_macos_app_bundle_dir(dir: &std::path::Path) -> bool {
+    let mut comps = dir.components().rev();
+    matches!(comps.next(), Some(c) if c.as_os_str() == "MacOS")
+        && matches!(comps.next(), Some(c) if c.as_os_str() == "Contents")
+        && comps
+            .next()
+            .is_some_and(|c| c.as_os_str().to_string_lossy().ends_with(".app"))
 }
 
 /// 泛型 Runtime 版日志目录（D2）：write_event 写死 Wry AppHandle，middleware/profile
@@ -525,6 +540,37 @@ mod tests {
         let got = probe_dir(Some(&ro), Some(app_data.path().to_path_buf()));
         assert_eq!(got, app_data.path());
         std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// 批次6审计 P1：macOS .app 包内目录（即使可写）不得当便携数据目录——
+    /// 否则数据库/日志/AI_Gen_Files 全写进 app 包内（删 app = 删全部数据）
+    #[test]
+    fn probe_dir_skips_macos_app_bundle_dir() {
+        let tmp = std::env::temp_dir().join(format!("wm-test-{}", uuid::Uuid::new_v4().simple()));
+        let macos_dir = tmp.join("wmessage.app").join("Contents").join("MacOS");
+        std::fs::create_dir_all(&macos_dir).unwrap();
+        let app_data = tmp.join("appdata");
+        let got = super::probe_dir(Some(&macos_dir), Some(app_data.clone()));
+        assert_eq!(got, app_data, ".app 包内目录必须跳过便携分支直落 app_data");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn is_macos_app_bundle_dir_detection() {
+        use std::path::Path;
+        assert!(super::is_macos_app_bundle_dir(Path::new(
+            "/Applications/wmessage.app/Contents/MacOS"
+        )));
+        assert!(super::is_macos_app_bundle_dir(Path::new(
+            "/Users/x/Applications/wmessage.app/Contents/MacOS/"
+        )));
+        assert!(!super::is_macos_app_bundle_dir(Path::new(
+            "/Applications/wmessage.app/Contents"
+        )));
+        assert!(!super::is_macos_app_bundle_dir(Path::new("/opt/wmessage")));
+        assert!(!super::is_macos_app_bundle_dir(Path::new(
+            "/Users/x/wmessage.app/Contents/MacOSub"
+        )));
     }
 
     #[test]

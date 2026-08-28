@@ -2,6 +2,25 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-08-28（周五）全面审计批次 6：跨平台与资源（无 P0，4 个 P1 已修）
+
+按 `docs/AUDIT-PLAN-BOT-2026-08-27.md` 推进，单代理探索（其 Read 工具故障只覆盖 bot_py.rs 前 1000 行，未覆盖区由主线程补读）+ P1/P2 逐条人工复核，报告落盘 `docs/AUDIT-PLATFORM-2026-08-28.md`。
+
+**P1 四个（均已修 + 回归测试）**：
+- **probe_dir 把 .app 包内目录当便携数据目录**：dmg 拖到 ~/Applications 后 `wmessage.app/Contents/MacOS` 可写，数据库/日志/AI_Gen_Files 会全写进 app 包内（破坏签名、删 app 即删全部数据）。修复：`is_macos_app_bundle_dir` 判定，该形态跳过便携分支直落 app_data
+- **构建机绝对路径烧进发布二进制**：`dotnet_revisions_dll` 的 dev 候选用 `env!("CARGO_MANIFEST_DIR")`（信息泄露 + 发布版纯死路径）。修复：cfg(debug_assertions) 门控
+- **绿色包「免装 .NET」未达成**：framework-dependent 构建不含运行时，且运行侧只认 PATH 里的 dotnet CLI。代码侧修复：`dotnet_revisions_entry()` 优先直跑随包 apphost exe（self-contained 即免装运行时，失败自动回退 Python——回退链复核完整）；**打包侧需老板改** `dotnet publish -r win-x64 --self-contained`
+- **macOS 崩溃路径 Python 孤儿永久驻留**：mac 无 Job Object/KILL_ON_JOB_CLOSE 等价物，RLIMIT_CPU 限 CPU 时间管不住睡眠型失控脚本。修复：Unix 脚本注入父进程看门狗前导（ppid 变 1 = 父死即自退，2s 轮询）
+
+**P2 两个（均已修）**：pid 复用误杀防护（`is_live_group_leader` 组首校验——只进退出清理路径；kill_tree 的 drain_timeout 路径必须保持无条件组杀，否则孙进程占管道 reader 永不 EOF，回归测试实锤）；macOS GUI 极简 PATH 补固定路径探测（/opt/homebrew/bin、/usr/local/share/dotnet 等）。
+
+**踩坑**：源码锁测试字节下标切片遇中文注释会 panic（`&text[a..b]` 切断多字节字符）——批次5/6 共 5 处统一改字符安全截取。
+
+**记录不修**：审计 append 失败只 eprintln（GUI 无人可见，需前端可见性改造）；安装包无 bundle.resources 不含 dotnet 工具（Python 兜底行为正确但静默，打包决策）；hardenedRuntime:false + ad-hoc 签名（发版决策）；孙进程 setsid 逃逸（非沙箱，已知 trade-off）；AI_Gen_Files 无上限（用户产物）。
+
+**测试**：cargo test --lib 466 → **472 全绿**（.app 探测跳过 / 组首校验 / debug 门控 / exe 优先 / 看门狗注入等 6 个新用例），集成 20+8+8 全绿；vitest 111 全绿；tsc 零错。
+**注意**：看门狗改动影响全部 Python 执行路径，建议手动冒烟一次 run_python 类工具（如让机器人跑一段打印 + 一个 create_word）确认正常。
+
 ## 2026-08-28（周五）全面审计批次 5：调度与后台任务（无 P0，3 个 P1 已修）
 
 按 `docs/AUDIT-PLAN-BOT-2026-08-27.md` 推进，单代理探索 + P1/P2 逐条人工复核（复核纠出子代理 1 条误报 + 1 条漏报），报告落盘 `docs/AUDIT-SCHED-2026-08-28.md`。

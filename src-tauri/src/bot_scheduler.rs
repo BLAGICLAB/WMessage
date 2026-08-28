@@ -492,7 +492,8 @@ mod sched_tests {
         ))
         .unwrap();
         let pos = text.find("let due = find_due_tasks").expect("调度循环必须存在");
-        let scope = &text[pos..pos + 1600.min(text.len() - pos)];
+        // 字符安全截取（中文注释多字节，字节下标切片会 panic）
+        let scope: String = text[pos..].chars().take(1600).collect();
         assert!(
             !scope.contains("handle.await"),
             "调度循环不得串行 await 每张卡: {scope:?}"

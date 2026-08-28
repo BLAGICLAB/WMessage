@@ -123,8 +123,17 @@ fn probe_version_ok_with(program: &str, args: &[&str], timeout: Duration) -> boo
 pub fn detect_python() -> Option<String> {
     #[cfg(windows)]
     let candidates: &[&str] = &["python", "python3"];
-    #[cfg(not(windows))]
+    #[cfg(all(not(windows), not(target_os = "macos")))]
     let candidates: &[&str] = &["python3", "python"];
+    // 批次6审计 P2：macOS GUI（Finder 双击）启动 PATH 极简（/usr/bin:/bin:…），
+    // brew 装的 python3 探测不到 → 补固定路径候选（不存在由 3s 探针超时跳过）
+    #[cfg(target_os = "macos")]
+    let candidates: &[&str] = &[
+        "python3",
+        "python",
+        "/opt/homebrew/bin/python3",
+        "/usr/local/bin/python3",
+    ];
     for c in candidates {
         if probe_version_ok(c, &["--version"]) {
             return Some(c.to_string());
@@ -170,11 +179,17 @@ fn invalidate_python_cache() {
 /// 检测本机 dotnet 运行时（修订版 Word 的 .NET 生成路径前置条件）：
 /// `dotnet --version` 探测（复用 3s 超时探针，卡死的 shim 直接跳过）
 fn detect_dotnet() -> Option<String> {
-    if probe_version_ok("dotnet", &["--version"]) {
-        Some("dotnet".to_string())
-    } else {
-        None
+    // 批次6审计 P2：macOS GUI 启动 PATH 极简，补官方/brew 固定安装路径
+    #[cfg(target_os = "macos")]
+    let candidates: &[&str] = &["dotnet", "/usr/local/share/dotnet/dotnet", "/opt/homebrew/bin/dotnet"];
+    #[cfg(not(target_os = "macos"))]
+    let candidates: &[&str] = &["dotnet"];
+    for c in candidates {
+        if probe_version_ok(c, &["--version"]) {
+            return Some(c.to_string());
+        }
     }
+    None
 }
 
 /// 探测结果缓存（与 PY_CACHE 同模式：None=未探测；Some(None)=本机无 dotnet）
@@ -190,32 +205,49 @@ fn cached_dotnet() -> Option<String> {
     detected
 }
 
-/// 定位修订工具 dll：绿色版看 exe 同目录 dotnet/；开发模式看 CARGO_MANIFEST_DIR/dotnet/
-/// （编译期展开，指向 src-tauri/dotnet/WmDocxRevisions/bin/Release/net8.0/）。
+/// 定位 .NET 修订工具入口：(程序, 入口 dll 参数)。
+/// 优先绿色包随包 apphost exe 直跑（2026-08-28 批次6审计 P1：self-contained 发布时
+/// 用户无需装 .NET；framework-dependent apphost 也会自动找到已装共享运行时）；
+/// 其次 dotnet <dll>（需系统 dotnet 运行时）。
 /// 返回 None = 工具未随包发布（调用方回退 Python 脚本路径）。
-fn dotnet_revisions_dll() -> Option<std::path::PathBuf> {
-    const REL: &str = "wm-docx-revisions.dll";
-    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+fn dotnet_revisions_entry() -> Option<(String, Option<String>)> {
+    const REL_DLL: &str = "wm-docx-revisions.dll";
     if let Some(exe_dir) = std::env::current_exe()
         .ok()
         .and_then(|e| e.parent().map(|p| p.to_path_buf()))
     {
-        candidates.push(exe_dir.join("dotnet").join(REL));
+        #[cfg(windows)]
+        let tool_exe = exe_dir.join("dotnet").join("wm-docx-revisions.exe");
+        #[cfg(not(windows))]
+        let tool_exe = exe_dir.join("dotnet").join("wm-docx-revisions");
+        if tool_exe.is_file() {
+            return Some((tool_exe.to_string_lossy().into_owned(), None));
+        }
+        let dll = exe_dir.join("dotnet").join(REL_DLL);
+        if dll.is_file() {
+            return cached_dotnet().map(|d| (d, Some(dll.to_string_lossy().into_owned())));
+        }
     }
-    candidates.push(
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    // 开发模式候选仅 debug 构建保留（批次6审计 P1）：env!("CARGO_MANIFEST_DIR")
+    // 会把构建机绝对路径烧进发布二进制（信息泄露 + 发布版纯死路径）
+    #[cfg(debug_assertions)]
+    {
+        let dll = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("dotnet/WmDocxRevisions/bin/Release/net8.0")
-            .join(REL),
-    );
-    candidates.into_iter().find(|p| p.exists())
+            .join(REL_DLL);
+        if dll.is_file() {
+            return cached_dotnet().map(|d| (d, Some(dll.to_string_lossy().into_owned())));
+        }
+    }
+    None
 }
 
 /// 跑 .NET 修订工具：与 Python 同一执行内核（run_python_at：超时/限额/进程组强杀/审计），
 /// 只是入口从 run.py 换成 dll（dotnet <dll> params.json）。
 /// 返回 None = dotnet 或工具不可用（调用方回退 Python 脚本路径）。
 fn run_dotnet_revisions(app: &AppHandle, input_json: &str) -> Option<Result<PyRunResult, String>> {
-    let dotnet = cached_dotnet()?;
-    let dll = dotnet_revisions_dll()?;
+    // 批次6审计 P1：随包 exe 直跑不依赖系统 dotnet（self-contained 免装运行时）
+    let (prog, entry) = dotnet_revisions_entry()?;
     // 并发闸门由调用方持有（run_doc_revisions 入口统一上锁，覆盖 dotnet + 回退 Python
     // 全程；std Mutex 不可重入，这里不能再锁）
     let dir = crate::db::data_dir(app)
@@ -228,11 +260,10 @@ fn run_dotnet_revisions(app: &AppHandle, input_json: &str) -> Option<Result<PyRu
         return None; // 目录都建不了 → 回退 Python 路径更稳妥
     }
     let mut audit_sink = |line: &str| py_audit(app, line);
-    let dll_s = dll.to_string_lossy().to_string();
     let args = vec!["params.json".to_string()];
     // 首次跑要 JIT，给 120s（与 doc_* 脚本同款）
     Some(run_python_at(
-        &dotnet, &dll_s, &dir, &args, Some(120), &mut audit_sink, None,
+        &prog, entry.as_deref(), &dir, &args, Some(120), &mut audit_sink, None,
     ).map_err(|f| f.msg))
 }
 
@@ -432,9 +463,20 @@ impl RunLimits {
     }
 }
 
+/// 批次6审计 P2：kill 整组前校验目标 pid 仍是组首——退出清理路径的注册表 pid
+/// 可能已被 OS 回收复用，`kill -9 -pid` 会命中无关进程组。getpgid 失败（进程已死）
+/// 或返回值不等于 pid（非组首）→ 不杀。注意：只用于 kill_py_children（退出清理，
+/// 距收割时间久、复用窗口真实）；kill_tree 的 drain_timeout 路径（收割后 2s 内）
+/// 必须无条件组杀，否则孙进程占管道写端，reader 永不 EOF。
+#[cfg(unix)]
+fn is_live_group_leader(pid: u32) -> bool {
+    unsafe { libc::getpgid(pid as i32) == pid as i32 }
+}
+
 /// 终止 Python 进程及其全部子进程：Unix 按进程组（spawn 时 process_group(0) 成为组首），
 /// Windows 先 TerminateJobObject 整树杀（Job 覆盖孙进程）再 taskkill /T 兜底。
-/// 先组杀再兜底 kill + wait。
+/// 先组杀再兜底 kill + wait。drain_timeout 收割后组首虽死，pgid 随存活孙进程仍有效，
+/// 组杀必须照常执行（见 is_live_group_leader 注释的取舍说明）。
 fn kill_tree(child: &mut std::process::Child, limits: &RunLimits) {
     limits.terminate();
     #[cfg(unix)]
@@ -533,11 +575,15 @@ fn kill_py_children(pids: &[u32]) -> usize {
     let mut killed = 0;
     for pid in pids {
         #[cfg(unix)]
-        let ok = silent_cmd("kill")
-            .args(["-9", &format!("-{pid}")])
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
+        let ok = if is_live_group_leader(*pid) {
+            silent_cmd("kill")
+                .args(["-9", &format!("-{pid}")])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        } else {
+            false // pid 已回收/非组首：不杀，防误伤复用该 pgid 的无关进程组（批次6审计 P2）
+        };
         #[cfg(windows)]
         let ok = silent_cmd("taskkill")
             .args(["/PID", &pid.to_string(), "/T", "/F"])
@@ -682,6 +728,22 @@ fn truncate_output(s: String) -> String {
     }
 }
 
+/// Unix 父进程看门狗前导（2026-08-28 批次6审计 P1）：macOS 无 Windows Job Object /
+/// KILL_ON_JOB_CLOSE 等价物，主进程崩溃（非 ExitRequested 正常清理路径）时 Python
+/// 子进程成孤儿，RLIMIT_CPU 限的是 CPU 时间——睡眠型失控脚本可永久驻留。
+/// 看门狗线程 2s 轮询 ppid，变 ≤1（被 launchd/init 收养 = 父死）即自退。
+/// 副作用：占用脚本前 7 行，traceback 行号整体偏移（仅影响审计可读性）。
+#[cfg(unix)]
+const PARENT_WATCHDOG: &str = concat!(
+    "import os as _wm_os, threading as _wm_th, time as _wm_tm\n",
+    "def _wm_watchdog():\n",
+    "    while True:\n",
+    "        if _wm_os.getppid() <= 1:\n",
+    "            _wm_os._exit(137)\n",
+    "        _wm_tm.sleep(2)\n",
+    "_wm_th.Thread(target=_wm_watchdog, daemon=True).start()",
+);
+
 /// run_python 并发闸门（P2-12）：同一时刻只允许一个 Python 任务在执行，
 /// 多余请求排队等待（不报错）—— 防多任务并行 spawn 互相挤兑资源。
 /// 用 std Mutex 而非 tokio Semaphore：run_python 是 sync（调用方经
@@ -741,6 +803,14 @@ fn run_python_ungated(
     timeout_secs: Option<u64>,
     stop: Option<&StopToken>,
 ) -> Result<PyRunResult, String> {
+    // 批次6审计 P1（Unix）：注入父进程看门狗（见 PARENT_WATCHDOG 注释）
+    #[cfg(unix)]
+    let script_owned;
+    #[cfg(unix)]
+    let script = {
+        script_owned = format!("{PARENT_WATCHDOG}\n{script}");
+        script_owned.as_str()
+    };
     let mut py = match cached_python() {
         Some(p) => p,
         // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
@@ -769,7 +839,7 @@ fn run_python_ungated(
                 return Err(format!("准备运行目录失败：{e}"));
             }
         };
-        match run_python_at(&py, "run.py", &dir, args, timeout_secs, &mut audit_sink, stop) {
+        match run_python_at(&py, Some("run.py"), &dir, args, timeout_secs, &mut audit_sink, stop) {
             Ok(r) => return Ok(r),
             Err(f) => {
                 if attempt == 0 && f.spawn_not_found {
@@ -788,12 +858,13 @@ fn run_python_ungated(
 
 /// 执行核心（C3：不依赖 AppHandle，审计经闭包注入 —— 单测可用临时目录 + 内存收集
 /// 跑全路径）。前置：dir 已创建且 run.py / params.json 已写入。
-/// `entry`：入口文件名（Python 传 "run.py"；dotnet 工具传 dll 路径，见 run_dotnet_tool）。
+/// `entry`：入口参数（Python 传 Some("run.py")；dotnet dll 形态传 Some(dll 路径)；
+/// 随包 apphost exe 直跑传 None，见 run_dotnet_revisions）。
 /// 所有失败路径（spawn_fail / wait_fail / timeout / drain_timeout）必记审计，
 /// 危险路径不留零痕迹。
 fn run_python_at(
     py: &str,
-    entry: &str,
+    entry: Option<&str>,
     dir: &std::path::Path,
     args: &[String],
     timeout_secs: Option<u64>,
@@ -843,8 +914,10 @@ fn run_python_at(
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x08000000 | 0x00000200);
     }
-    cmd.arg(entry)
-        .args(args)
+    if let Some(e) = entry {
+        cmd.arg(e);
+    }
+    cmd.args(args)
         .current_dir(dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -2147,7 +2220,7 @@ mod tests {
         let start = Instant::now();
         let r = run_python_at(
             &py,
-            "run.py",
+            Some("run.py"),
             &dir,
             &[],
             Some(30),
@@ -2201,12 +2274,13 @@ mod tests {
     /// 用真实工具生成 docx，验证 OpenXML 修订标记（w:ins 用 w:t / w:del 用 w:delText）。
     #[test]
     fn dotnet_revisions_tool_generates_valid_track_changes() {
-        let Some(dotnet) = cached_dotnet() else {
-            eprintln!("skip: 本机无 dotnet");
+        // 批次6改造后：入口定位收敛到 dotnet_revisions_entry（exe 优先/dll 兜底）
+        let Some((prog, entry)) = dotnet_revisions_entry() else {
+            eprintln!("skip: 未找到 wm-docx-revisions（先 dotnet build -c Release）");
             return;
         };
-        let Some(dll) = dotnet_revisions_dll() else {
-            eprintln!("skip: 未找到 wm-docx-revisions.dll（先 dotnet build -c Release）");
+        let Some(dll) = entry else {
+            eprintln!("skip: 命中随包 exe 形态（本用例只验 dotnet <dll> 直跑）");
             return;
         };
         let tmp = tempfile::tempdir().unwrap();
@@ -2220,11 +2294,11 @@ mod tests {
             "out": out,
         });
         std::fs::write(dir.join("params.json"), params.to_string()).unwrap();
-        let dll_s = dll.to_string_lossy().to_string();
+        let dll_s = dll;
         let mut lines: Vec<String> = Vec::new();
         let r = run_python_at(
-            &dotnet,
-            &dll_s,
+            &prog,
+            Some(&dll_s),
             &dir,
             &["params.json".to_string()],
             Some(120),
@@ -2272,7 +2346,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("run.py"), "import time\ntime.sleep(30)\n").unwrap();
         let mut lines: Vec<String> = Vec::new();
-        let r = run_python_at(&py, "run.py", &dir, &[], Some(1), &mut |l: &str| {
+        let r = run_python_at(&py, Some("run.py"), &dir, &[], Some(1), &mut |l: &str| {
             lines.push(l.to_string())
         }, None);
         let e = match r {
@@ -2294,7 +2368,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("run.py"), "print(1)\n").unwrap();
         let mut lines: Vec<String> = Vec::new();
-        let r = run_python_at("/nonexistent/python-zzz", "run.py", &dir, &[], Some(1), &mut |l: &str| {
+        let r = run_python_at("/nonexistent/python-zzz", Some("run.py"), &dir, &[], Some(1), &mut |l: &str| {
             lines.push(l.to_string())
         }, None);
         let e = match r {
@@ -2322,7 +2396,7 @@ mod tests {
         std::fs::write(dir.join("run.py"), "print(1)\n").unwrap();
         std::fs::write(dir.join("params.json"), "{}").unwrap();
         let mut lines: Vec<String> = Vec::new();
-        let r = run_python_at("/nonexistent/python-zzz", "run.py", &dir, &[], Some(1), &mut |l: &str| {
+        let r = run_python_at("/nonexistent/python-zzz", Some("run.py"), &dir, &[], Some(1), &mut |l: &str| {
             lines.push(l.to_string())
         }, None);
         match r {
@@ -2500,7 +2574,7 @@ mod tests {
         let dir = tmp.path().join("run-notfound");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("run.py"), "print(1)\n").unwrap();
-        let r = run_python_at("/nonexistent/python-zzz", "run.py", &dir, &[], Some(1), &mut |_| {}, None);
+        let r = run_python_at("/nonexistent/python-zzz", Some("run.py"), &dir, &[], Some(1), &mut |_| {}, None);
         match r {
             Err(f) => assert!(f.spawn_not_found),
             Ok(_) => panic!("无效 python 路径不应成功"),
@@ -2529,7 +2603,7 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(50));
                 guard.force_stop();
             });
-            let r = run_python_at(&py, "run.py", &dir, &[], Some(60), &mut |l: &str| {
+            let r = run_python_at(&py, Some("run.py"), &dir, &[], Some(60), &mut |l: &str| {
                 lines.push(l.to_string())
             }, Some(&token));
             let e = match r {
@@ -2802,5 +2876,60 @@ mod batch5_exiting_tests {
         let gate = body.find("py_run_gate().lock()").expect("必须过并发闸门");
         let check = body.find("EXITING.load").expect("必须有退出标志复查");
         assert!(check > gate, "EXITING 复查必须在闸门拿锁之后");
+    }
+}
+
+#[cfg(test)]
+mod batch6_platform_tests {
+    /// 批次6审计 P1 回归锁：开发模式 dll 候选（env!("CARGO_MANIFEST_DIR") 绝对路径）
+    /// 必须 cfg(debug_assertions) 门控——否则构建机路径烧进发布二进制
+    #[test]
+    fn dev_dll_candidate_is_debug_gated() {
+        let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bot_py.rs"))
+            .unwrap();
+        let pos = text.find("dotnet/WmDocxRevisions/bin/Release/net8.0")
+            .expect("开发模式 dll 候选必须存在");
+        // 字符安全截取（中文注释多字节，字节下标切片会 panic）
+        let tail: String = text[..pos].chars().rev().take(500).collect::<Vec<_>>().into_iter().rev().collect();
+        assert!(
+            tail.contains("#[cfg(debug_assertions)]"),
+            "CARGO_MANIFEST_DIR dll 候选必须 debug 门控: {tail:?}"
+        );
+    }
+
+    /// 批次6审计 P1 回归锁：绿色包随包 apphost exe 直跑候选必须存在且优先于 dll
+    ///（self-contained 发布免装 .NET；framework-dependent apphost 自动找共享运行时）
+    #[test]
+    fn bundled_exe_entry_preferred_over_dll() {
+        let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bot_py.rs"))
+            .unwrap();
+        let fn_pos = text.find("fn dotnet_revisions_entry()").expect("入口定位函数必须存在");
+        let body: String = text[fn_pos..].chars().take(1500).collect();
+        let exe_hit = body.find("tool_exe.is_file()").expect("必须有随包 exe 候选");
+        let dll_hit = body.find("dll.is_file()").expect("必须有 dll 候选");
+        assert!(exe_hit < dll_hit, "随包 exe 候选必须先于 dll 判定");
+    }
+
+    /// 批次6审计 P1 回归锁：Unix 脚本必须注入父进程看门狗（macOS 无 Job Object 等价物，
+    /// 主进程崩溃时睡眠型失控脚本靠 RLIMIT_CPU 管不住）
+    #[cfg(unix)]
+    #[test]
+    fn unix_scripts_get_parent_watchdog() {
+        let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bot_py.rs"))
+            .unwrap();
+        assert!(text.contains("PARENT_WATCHDOG"), "必须有看门狗前导常量");
+        let fn_pos = text.find("fn run_python_ungated(").expect("run_python_ungated 必须存在");
+        let body: String = text[fn_pos..].chars().take(1200).collect();
+        assert!(
+            body.contains("PARENT_WATCHDOG"),
+            "看门狗必须在 run_python_ungated 注入（覆盖全部 Python 执行入口）"
+        );
+    }
+
+    /// 批次6审计 P2：pid 复用防护——死 pid / 非组首不得杀（getpgid 失败返回 -1）
+    #[cfg(unix)]
+    #[test]
+    fn group_leader_check_rejects_dead_pid() {
+        assert!(!super::is_live_group_leader(u32::MAX - 1), "不存在的 pid 不得判为组首");
     }
 }

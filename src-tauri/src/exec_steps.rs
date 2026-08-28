@@ -440,7 +440,7 @@ mod batch5_guard_tests {
         ))
         .unwrap();
         let pos = text.find("struct PendingExec").expect("PendingExec 必须存在");
-        let scope = &text[pos..pos + 800.min(text.len() - pos)];
+        let scope: String = text[pos..].chars().take(800).collect();
         assert!(
             scope.contains("exec_guard: ExecGuard"),
             "PendingExec 必须持有 ExecGuard: {scope:?}"
