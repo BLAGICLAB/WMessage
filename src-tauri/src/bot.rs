@@ -802,7 +802,7 @@ async fn execute_tool_impl(
         "read_text_file" => crate::bot_fs::tool_read_text_file(app, args, interactive, session_id).await,
         "grep_files" => crate::bot_fs::tool_grep_files(app, args, interactive, session_id).await,
         "list_files" => crate::bot_fs::tool_list_files(app, args, interactive, session_id).await,
-        "bind_file" => tool_bind_file(app, args).await,
+        "bind_file" => tool_bind_file(app, args, interactive).await,
         "link_file_to_task" => tool_link_file_to_task(app, args).await,
         "search_tasks" => tool_search_tasks(app, args).await,
         "extract_document" => tool_extract_document(app, args, interactive, session_id).await,
@@ -1735,7 +1735,16 @@ async fn tool_remove_subtask(app: &AppHandle, args: &str) -> (String, Vec<crate:
 }
 
 /// 绑定文件/文件夹：弹系统选择框由用户挑选，结果写回任务的 filePath/fileIsDir
-async fn tool_bind_file(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
+async fn tool_bind_file(app: &AppHandle, args: &str, interactive: bool) -> (String, Vec<crate::bot_chat::TaskRef>) {
+    // 2026-08-28 批次5审计 P1：后台定时执行（interactive=false）不能弹系统选择框——
+    // 无人在场时模态框让 spawn_blocking 线程永久阻塞，该后台任务卡死。
+    // 引导模型改用 link_file_to_task 直传路径（分发处原先丢弃 interactive，弹框无条件触发）。
+    if !interactive {
+        return (
+            "失败：后台执行不能弹窗选文件；请改用 link_file_to_task 并直接提供文件路径".into(),
+            Vec::new(),
+        );
+    }
     let v = parse_args(args);
     let is_dir = v["isDir"].as_bool().unwrap_or(false);
     let task = match resolve_task(app, &v).await {
@@ -1900,6 +1909,14 @@ async fn tool_extract_document(app: &AppHandle, args: &str, interactive: bool, s
         .as_str()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
+    // 2026-08-28 批次5审计 P1：无 path 时 bot_py::doc_extract 会弹系统选择框，
+    // 后台定时执行弹框 = 永久阻塞卡死，必须直接拒绝并引导模型传 path
+    if path_opt.is_none() && !interactive {
+        return (
+            "失败：后台执行不能弹窗选文件，请提供 path 参数指定文档路径".into(),
+            Vec::new(),
+        );
+    }
     // 分页参数（2026-08-20）：offset 字符偏移续读；limit 默认 30000、硬钳 60000
     let offset = v["offset"].as_u64().unwrap_or(0) as usize;
     let limit = v["limit"]
@@ -2732,5 +2749,29 @@ mod phase4_facts_tests {
         }
         assert!(fact_upsert(&c, "one-more", "v", 9999).is_err(), "超上限拒绝新 key");
         assert!(fact_upsert(&c, "k0", "v2", 10000).is_ok(), "同 key 覆盖不受上限影响");
+    }
+}
+
+#[cfg(test)]
+mod batch5_background_dialog_tests {
+    /// 批次5审计 P1 回归锁：后台执行（interactive=false）不得弹系统文件选择框——
+    /// bind_file 分发必须透传 interactive，extract_document 无 path 时必须拒绝。
+    ///（弹框链路绑定 Wry AppHandle 无法单测，源码锁防回退）
+    #[test]
+    fn background_execution_never_pops_file_dialog() {
+        let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bot.rs"))
+            .unwrap();
+        assert!(
+            text.contains("\"bind_file\" => tool_bind_file(app, args, interactive).await"),
+            "bind_file 分发必须透传 interactive"
+        );
+        assert!(
+            text.contains("后台执行不能弹窗选文件；请改用 link_file_to_task"),
+            "tool_bind_file 必须有后台拒弹窗分支"
+        );
+        assert!(
+            text.contains("后台执行不能弹窗选文件，请提供 path 参数"),
+            "extract_document 无 path 后台必须拒绝"
+        );
     }
 }

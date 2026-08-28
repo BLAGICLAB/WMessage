@@ -178,12 +178,32 @@ fn copy_file_windows(path: &str, title: &str) -> Result<(), String> {
 
 /// P2-24：退出前统一清理（macOS Cmd+Q / Windows 托盘「退出」都走 RunEvent::ExitRequested）。
 /// 原先只销毁主窗口：API 服务线程、SSE writer、活动 Skill、在途 Python 子进程全部
-/// 随进程强退变孤儿。顺序：停 API（不再接新请求；G1 accept + SSE writer 全 join，
-/// 保留 api-enabled.flag 供下次启动自动恢复）→ 终止活动 Skill → 按注册表杀在途
-/// Python 整树 → 结构化审计。
+/// 随进程强退变孤儿。顺序：置位全部在途执行实例停止标志（批次5审计 P1：原先在途
+/// 模型循环零取消，生成文件写一半、sched_last 已消费但执行无声消失）→ 停 API
+///（不再接新请求；G1 accept + SSE writer 全 join，保留 api-enabled.flag 供下次
+/// 启动自动恢复）→ 终止活动 Skill → drain 等在途执行收尾（≤2s，不强等）→
+/// 置退出标志并按注册表杀在途 Python 整树 → 结构化审计。
 /// 泛型 Runtime（与 NEW-D-6 同先例）：mock runtime 可直测全链路。
 fn cleanup_on_exit<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     cleanup_on_exit_with(app, bot_py::kill_all_py_children);
+}
+
+/// 退出时等在途执行实例收尾的宽限（批次5审计 P1：StopGuard 轮询点收到标志后
+/// 自行收尾；LLM 流卡住时最坏等满即放弃，进程退出优先）
+const EXIT_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// 轮询执行注册表直到排空（StopGuard Drop 注销，归零 = 全部收尾完）或超时
+fn wait_executions_drained(grace: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + grace;
+    loop {
+        if bot_slash::active_execution_count() == 0 {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
 }
 
 /// 可测内核（P2-24）：kill_py 注入 —— 测试不传全局 kill_all（会把并行测试
@@ -192,11 +212,18 @@ fn cleanup_on_exit_with<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     kill_py: impl FnOnce() -> usize,
 ) {
+    // 批次5审计 P1：第一步置位全部在途执行实例（含后台定时）的停止标志，
+    // 后续 API/Skill 清理的时间本身就是模型循环响应标志的窗口
+    let exec_stopped = bot_slash::stop_all_executions();
     let api_stopped = match app.try_state::<api_server::ApiState>() {
         Some(state) => api_handlers::api_stop_for_exit(app, &state).is_ok(),
         None => false,
     };
     bot_skills::skill_terminate_all(app, "应用退出", None);
+    let exec_drained = wait_executions_drained(EXIT_DRAIN_GRACE);
+    // 批次5审计 P2：先置退出标志再杀 Python——PY_RUN_GATE 上的排队者过锁后
+    // 复查标志直接拒绝，不再 spawn 出无人收割的孤儿进程
+    bot_py::mark_exiting();
     let py_killed = kill_py();
     audit::write_event(
         app,
@@ -205,6 +232,8 @@ fn cleanup_on_exit_with<R: tauri::Runtime>(
         &[
             ("api_stopped", api_stopped.to_string()),
             ("py_killed", py_killed.to_string()),
+            ("exec_stopped", exec_stopped.to_string()),
+            ("exec_drained", exec_drained.to_string()),
         ],
     );
 }
@@ -675,6 +704,8 @@ mod p2_24_exit_cleanup_tests {
         let flag = dir.join("api-enabled.flag");
         std::fs::write(&flag, b"1").unwrap();
 
+        // 批次5审计 P1：退出清理必须置位在途执行实例（含后台 interactive=false）的停止标志
+        let exec_guard = crate::bot_slash::StopGuard::new(false, None);
         // kill fn 注入 spy：全局 kill_all 会误杀并行测试注册的在途子进程，
         // 真杀路径由 bot_py::kill_py_children 单测覆盖
         let kill_called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -687,6 +718,11 @@ mod p2_24_exit_cleanup_tests {
             kill_called.load(std::sync::atomic::Ordering::SeqCst),
             "退出清理必须调用 Python 子进程清理"
         );
+        assert!(
+            exec_guard.stopped(),
+            "退出清理必须置位在途执行实例的停止标志（批次5审计 P1）"
+        );
+        drop(exec_guard);
 
         // API 已停：state 清空 + 端口拒绝连接
         {

@@ -29,6 +29,11 @@ struct PendingExec {
     subtask_id: String,
     /// 触发会话 id（2026-08-26 会话隔离）
     session_id: Option<String>,
+    /// 批次5审计 P2：执行防重入守卫随挂起存活——原先 start() 返回即 Drop 释放，
+    /// 确认挂起期间调度器能对同一卡并发起执行（SchedGuard/ExecGuard 互不知晓）。
+    /// RAII：挂起被 take/clear 后随 PendingExec 一起 Drop，自动释放。
+    #[allow(dead_code)] // 纯存活性持有（靠 Drop 释放防重入），从不读取
+    exec_guard: ExecGuard,
 }
 
 static PENDING: OnceLock<Mutex<std::collections::HashMap<String, PendingExec>>> = OnceLock::new();
@@ -159,6 +164,7 @@ async fn run_step(
     subtask_id: &str,
     feedback: Option<&str>,
     stop: &StopGuard,
+    exec_guard: ExecGuard,
 ) -> CommandResult<BotChatResult> {
     let task = load_task(app, task_id).await?;
     let subs = task.subtasks.clone().unwrap_or_default();
@@ -166,7 +172,7 @@ async fn run_step(
     let done_count = subs.iter().filter(|s| s.done).count();
     // 目标子任务已被用户手动勾掉/删除 → 顺移到下一个未勾
     let Some(sub) = subs.iter().find(|s| s.id == subtask_id && !s.done) else {
-        return Box::pin(advance_or_finish(app, task_id, stop)).await;
+        return Box::pin(advance_or_finish(app, task_id, stop, exec_guard)).await;
     };
     let sys = format!(
         "{}\n{}\n\n{}",
@@ -200,6 +206,7 @@ async fn run_step(
         task_id: task_id.to_string(),
         subtask_id: sub.id.clone(),
         session_id: stop.session_id().map(|s| s.to_string()),
+        exec_guard,
     });
     Ok(BotChatResult {
         text: format!(
@@ -217,12 +224,13 @@ async fn advance_or_finish(
     app: &AppHandle,
     task_id: &str,
     stop: &StopGuard,
+    exec_guard: ExecGuard,
 ) -> CommandResult<BotChatResult> {
     let task = load_task(app, task_id).await?;
     let subs = task.subtasks.clone().unwrap_or_default();
     if let Some(next) = subs.iter().find(|s| !s.done) {
         // Box::pin：run_step ↔ advance_or_finish 互调是异步递归，Rust 要求显式装箱
-        return Box::pin(run_step(app, task_id, &next.id.clone(), None, stop)).await;
+        return Box::pin(run_step(app, task_id, &next.id.clone(), None, stop, exec_guard)).await;
     }
     clear_for(app, stop.session_id(), "全部子任务完成").await;
     Ok(BotChatResult {
@@ -234,7 +242,7 @@ async fn advance_or_finish(
 /// 开始逐步执行（bot_execute_task 在 ≥2 个未勾子任务时分流到这里）
 pub async fn start(app: &AppHandle, task: &crate::db::Task, session_id: Option<&str>) -> CommandResult<BotChatResult> {
     // 防重入：与 execute_task_core 同一守卫（同一卡不能同时两个执行实例）
-    let Some(_guard) = ExecGuard::acquire(&task.id) else {
+    let Some(exec_guard) = ExecGuard::acquire(&task.id) else {
         crate::bot::audit_log(
             app,
             &format!("execute_task_rejected | id: {} | 已有执行实例在跑（防重入拦截）", task.id),
@@ -255,18 +263,28 @@ pub async fn start(app: &AppHandle, task: &crate::db::Task, session_id: Option<&
         ),
     );
     crate::bot_chat::set_bot_assigned(app, &task.id, true).await;
-    let first = task
+    let first = match task
         .subtasks
         .as_deref()
         .and_then(|s| s.iter().find(|x| !x.done))
         .map(|x| x.id.clone())
-        .ok_or_else(|| CommandError::TaskInvalidState {
-            reason: "没有未完成的子任务".into(),
-        })?;
+    {
+        Some(id) => id,
+        None => {
+            // 批次5审计 F11：早退也要复位机器人头像（原先 ? 直接返回，卡片永远顶头像）
+            crate::bot_chat::set_bot_assigned(app, &task.id, false).await;
+            return Err(CommandError::TaskInvalidState {
+                reason: "没有未完成的子任务".into(),
+            });
+        }
+    };
     let stop = StopGuard::new_task_exec(true, session_id.map(|s| s.to_string()));
-    let r = run_step(app, &task.id, &first, None, &stop).await;
+    // 批次5审计 P2：ExecGuard 随 run_step 传入并 park 进挂起态，确认等待期仍持防重入
+    let r = run_step(app, &task.id, &first, None, &stop, exec_guard).await;
     if r.is_err() {
         clear_for(app, session_id, "逐步执行起步失败").await;
+        // 批次5审计 F11：起步失败从未 park，上面的 clear_for 是 no-op，必须显式复位头像
+        crate::bot_chat::set_bot_assigned(app, &task.id, false).await;
     }
     r
 }
@@ -291,15 +309,22 @@ pub async fn resume(app: &AppHandle, reply: &str, session_id: Option<&str>) -> C
         }
         r.is_err()
     };
+    // 批次5审计 P2：守卫随挂起取回——续跑分支再 park / 停止分支随解构 Drop 释放
+    let PendingExec {
+        task_id,
+        subtask_id,
+        exec_guard,
+        ..
+    } = p;
     // 任何分支都必须重新 park 或清理，不能丢状态
     match classify_reply(reply) {
         StepReply::Stop => {
             // 直接清理（pending 已 take）：审计 + 恢复任务卡用户头像
             crate::bot::audit_log(
                 app,
-                &format!("exec_steps.clear | task: {} | 用户停止逐步执行", p.task_id),
+                &format!("exec_steps.clear | task: {} | 用户停止逐步执行", task_id),
             );
-            crate::bot_chat::set_bot_assigned(app, &p.task_id, false).await;
+            crate::bot_chat::set_bot_assigned(app, &task_id, false).await;
             Ok(BotChatResult {
                 text: "⏹ 已结束逐步执行。已确认勾选的子任务保持现状，其余未动。".into(),
                 task_refs: vec![],
@@ -308,13 +333,13 @@ pub async fn resume(app: &AppHandle, reply: &str, session_id: Option<&str>) -> C
         StepReply::Continue => {
             crate::bot::audit_log(
                 app,
-                &format!("exec_steps.confirm | task: {} | 用户确认，勾选并继续", p.task_id),
+                &format!("exec_steps.confirm | task: {} | 用户确认，勾选并继续", task_id),
             );
-            mark_subtask_done(app, &p.task_id, &p.subtask_id).await;
+            mark_subtask_done(app, &task_id, &subtask_id).await;
             let stop = StopGuard::new_task_exec(true, session_id.map(|s| s.to_string()));
-            let r = advance_or_finish(app, &p.task_id, &stop).await;
-            if cleanup_on_err(app, &p.task_id, &r) {
-                crate::bot_chat::set_bot_assigned(app, &p.task_id, false).await;
+            let r = advance_or_finish(app, &task_id, &stop, exec_guard).await;
+            if cleanup_on_err(app, &task_id, &r) {
+                crate::bot_chat::set_bot_assigned(app, &task_id, false).await;
             }
             r
         }
@@ -323,14 +348,14 @@ pub async fn resume(app: &AppHandle, reply: &str, session_id: Option<&str>) -> C
                 app,
                 &format!(
                     "exec_steps.redo | task: {} | 意见: {}",
-                    p.task_id,
+                    task_id,
                     crate::bot::truncate_for_log(&feedback, 100)
                 ),
             );
             let stop = StopGuard::new_task_exec(true, session_id.map(|s| s.to_string()));
-            let r = run_step(app, &p.task_id, &p.subtask_id, Some(&feedback), &stop).await;
-            if cleanup_on_err(app, &p.task_id, &r) {
-                crate::bot_chat::set_bot_assigned(app, &p.task_id, false).await;
+            let r = run_step(app, &task_id, &subtask_id, Some(&feedback), &stop, exec_guard).await;
+            if cleanup_on_err(app, &task_id, &r) {
+                crate::bot_chat::set_bot_assigned(app, &task_id, false).await;
             }
             r
         }
@@ -373,8 +398,8 @@ mod classify_tests {
     #[test]
     fn pending_slots_are_per_session() {
         // 会话 A 挂起不影响会话 B；覆盖只发生在同会话内
-        park(PendingExec { task_id: "tA".into(), subtask_id: "s1".into(), session_id: Some("sess-a-p12".into()) });
-        park(PendingExec { task_id: "tB".into(), subtask_id: "s2".into(), session_id: Some("sess-b-p12".into()) });
+        park(PendingExec { task_id: "tA".into(), subtask_id: "s1".into(), session_id: Some("sess-a-p12".into()), exec_guard: crate::bot_chat::ExecGuard::acquire("tA").expect("tA 守卫") });
+        park(PendingExec { task_id: "tB".into(), subtask_id: "s2".into(), session_id: Some("sess-b-p12".into()), exec_guard: crate::bot_chat::ExecGuard::acquire("tB").expect("tB 守卫") });
         assert!(has_pending_for(Some("sess-a-p12")));
         assert!(has_pending_for(Some("sess-b-p12")));
         assert!(!has_pending_for(Some("sess-c-p12")));
@@ -385,5 +410,40 @@ mod classify_tests {
         assert!(!has_pending_for(Some("sess-b-p12")));
         // 收尾：不给其它测试留状态
         let _ = take_pending_for(Some("sess-a-p12"));
+    }
+}
+
+#[cfg(test)]
+mod batch5_guard_tests {
+    /// 批次5审计 P2：ExecGuard RAII 语义——持有期间同卡不得再获取，Drop 后释放
+    #[test]
+    fn exec_guard_blocks_second_acquire_until_drop() {
+        let g = crate::bot_chat::ExecGuard::acquire("batch5-test-task").expect("首次获取应成功");
+        assert!(
+            crate::bot_chat::ExecGuard::acquire("batch5-test-task").is_none(),
+            "持有期间不得重复获取"
+        );
+        drop(g);
+        assert!(
+            crate::bot_chat::ExecGuard::acquire("batch5-test-task").is_some(),
+            "Drop 后应可再获取"
+        );
+    }
+
+    /// 批次5审计 P2 回归锁：挂起态必须持有 ExecGuard
+    ///（否则确认等待期调度器可对同一卡并发起执行）
+    #[test]
+    fn pending_exec_holds_exec_guard() {
+        let text = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/exec_steps.rs"
+        ))
+        .unwrap();
+        let pos = text.find("struct PendingExec").expect("PendingExec 必须存在");
+        let scope = &text[pos..pos + 800.min(text.len() - pos)];
+        assert!(
+            scope.contains("exec_guard: ExecGuard"),
+            "PendingExec 必须持有 ExecGuard: {scope:?}"
+        );
     }
 }

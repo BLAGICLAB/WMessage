@@ -42,3 +42,6 @@ coverage/
 # .NET 构建产物（修订工具 src-tauri/dotnet/）
 src-tauri/dotnet/**/bin
 src-tauri/dotnet/**/obj
+
+# 绿色便携包产物（本地打包，勿入库）
+wmessage-portable-*/

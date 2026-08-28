@@ -114,6 +114,26 @@ impl Drop for StopGuard {
     }
 }
 
+/// 应用退出（2026-08-28 批次5审计 P1）：置位**全部**执行实例的停止标志——
+/// 与 /stop（只停本会话 interactive 实例）不同，进程都要退了，不存在会话误伤；
+/// 后台定时任务平时没有任何停止入口，退出是唯一叫停机会。返回置位数量。
+pub fn stop_all_executions() -> usize {
+    let Ok(m) = stop_registry().lock() else {
+        return 0;
+    };
+    let mut n = 0;
+    for (_, (flag, _, _)) in m.iter() {
+        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        n += 1;
+    }
+    n
+}
+
+/// 在途执行实例数（退出清理 drain 等待用；StopGuard Drop 时注销，归零 = 全部收尾完）
+pub fn active_execution_count() -> usize {
+    stop_registry().lock().map(|m| m.len()).unwrap_or(0)
+}
+
 /// /stop 快捷命令：停止**当前会话**用户交互触发的执行（bot_chat / 🤖 任务卡执行），
 /// 后台定时（interactive=false）与别的会话不受影响（2026-08-27 审计 P1-8：
 /// 原先一停全停，会话 B 的 /stop 会误杀会话 A 的活动 Skill）
@@ -338,4 +358,18 @@ pub fn bot_set_enabled(app: AppHandle, enabled: bool) -> CommandResult<bool> {
         let _ = std::fs::remove_file(bot_flag_path(&app));
     }
     Ok(enabled)
+}
+#[cfg(test)]
+mod batch5_stop_all_tests {
+    /// 批次5审计 P1：退出置位必须同时覆盖 interactive 与后台（interactive=false）
+    /// 两类实例——/stop 只停交互实例，退出清理不能再漏掉后台任务
+    #[test]
+    fn stop_all_covers_interactive_and_background() {
+        let g1 = super::StopGuard::new(true, Some("batch5-s1".into()));
+        let g2 = super::StopGuard::new(false, None);
+        assert!(super::active_execution_count() >= 2);
+        let n = super::stop_all_executions();
+        assert!(n >= 2);
+        assert!(g1.stopped() && g2.stopped(), "两类实例都必须被置位");
+    }
 }

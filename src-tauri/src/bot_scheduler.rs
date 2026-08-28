@@ -15,6 +15,11 @@ use tauri::AppHandle;
 
 // ───────────────────────── 定时任务卡（阶段二：⏰ 到点自动执行） ─────────────────────────
 
+/// 单次定时执行的整体超时（2026-08-28 批次5审计 P1）：最坏 50 轮 × LLM 300s 可跑
+/// 数小时，无上限会把调度循环堵死。30 分钟对正常任务足够宽松；超时 drop 执行流
+///（守卫 RAII 自动释放），记 sched_timeout 审计并兜底复位 bot_assigned 头像标记。
+const SCHED_TASK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
 /// 正在执行的定时任务 id（防同一任务并发重复跑）
 static SCHED_RUNNING: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
     std::sync::OnceLock::new();
@@ -59,6 +64,25 @@ fn parse_hm(s: &str) -> Option<(u32, u32)> {
     }
 }
 
+/// 本地时刻解析（2026-08-28 批次5审计 P2）：DST 切换日目标时刻可能不存在（春拨）
+/// 或歧义（秋拨）。原先五处一律 `.single()`，返回 None 时 occurrence_after 整体 None，
+/// 而基准 sched_last 不变 → daily/weekly 任务永久静默失效且零日志。
+/// 现在：歧义取较早者；不存在则顺延到下一个合法时刻（最多 +3h，仍无 → None 按无效处理）。
+fn resolve_local(dt: chrono::NaiveDateTime) -> Option<chrono::DateTime<chrono::Local>> {
+    use chrono::offset::LocalResult;
+    match dt.and_local_timezone(chrono::Local) {
+        LocalResult::Single(t) => Some(t),
+        LocalResult::Ambiguous(a, _) => Some(a),
+        LocalResult::None => (1..=3i64).find_map(|h| {
+            match (dt + chrono::Duration::hours(h)).and_local_timezone(chrono::Local) {
+                LocalResult::Single(t) => Some(t),
+                LocalResult::Ambiguous(a, _) => Some(a),
+                LocalResult::None => None,
+            }
+        }),
+    }
+}
+
 /// 定时格式：
 /// - "daily:HH:MM" 每天
 /// - "weekly:D:HH:MM" 每周（D=1..7，周一起）
@@ -70,11 +94,7 @@ fn occurrence_after(
 ) -> Option<chrono::DateTime<chrono::Local>> {
     if let Some(t) = schedule.strip_prefix("daily:") {
         let (h, m) = parse_hm(t)?;
-        let mut occ = after
-            .date_naive()
-            .and_hms_opt(h, m, 0)?
-            .and_local_timezone(chrono::Local)
-            .single()?;
+        let mut occ = resolve_local(after.date_naive().and_hms_opt(h, m, 0)?)?;
         if occ <= after {
             occ += chrono::Duration::days(1);
         }
@@ -89,10 +109,9 @@ fn occurrence_after(
         let (h, m) = parse_hm(rest)?;
         let weekday = after.weekday().num_days_from_monday() as u32 + 1; // 1=周一
         let diff = (dow + 7 - weekday) % 7;
-        let mut occ = (after.date_naive() + chrono::Duration::days(diff as i64))
-            .and_hms_opt(h, m, 0)?
-            .and_local_timezone(chrono::Local)
-            .single()?;
+        let mut occ = resolve_local(
+            (after.date_naive() + chrono::Duration::days(diff as i64)).and_hms_opt(h, m, 0)?,
+        )?;
         if occ <= after {
             occ += chrono::Duration::days(7);
         }
@@ -110,10 +129,7 @@ fn occurrence_after(
         let mut mo = after.month();
         for _ in 0..12 {
             if let Some(d) = chrono::NaiveDate::from_ymd_opt(y, mo, day) {
-                if let Some(occ) = d
-                    .and_hms_opt(h, m, 0)
-                    .and_then(|dt| dt.and_local_timezone(chrono::Local).single())
-                {
+                if let Some(occ) = d.and_hms_opt(h, m, 0).and_then(resolve_local) {
                     if occ > after {
                         return Some(occ);
                     }
@@ -128,10 +144,7 @@ fn occurrence_after(
         return None;
     }
     if let Some(t) = schedule.strip_prefix("at:") {
-        let occ = chrono::NaiveDateTime::parse_from_str(t, "%Y-%m-%dT%H:%M")
-            .ok()?
-            .and_local_timezone(chrono::Local)
-            .single()?;
+        let occ = resolve_local(chrono::NaiveDateTime::parse_from_str(t, "%Y-%m-%dT%H:%M").ok()?)?;
         return if occ > after { Some(occ) } else { None };
     }
     None
@@ -147,7 +160,7 @@ fn at_expired(sched: &str, sched_last: Option<i64>, now: chrono::DateTime<chrono
     }
     match chrono::NaiveDateTime::parse_from_str(at, "%Y-%m-%dT%H:%M")
         .ok()
-        .and_then(|dt| dt.and_local_timezone(chrono::Local).single())
+        .and_then(resolve_local)
     {
         Some(occ) => occ <= now,
         None => true, // 解析失败按过期处理（放弃）
@@ -327,10 +340,29 @@ pub fn start_scheduler(app: AppHandle) {
             ticker.tick().await;
             let due = find_due_tasks(&app).await;
             for t in due {
-                // 每张卡 spawn 到独立任务再 await：单张卡 panic 只废这一张，
-                // 不会杀死调度器主循环（否则后续所有定时任务静默失效，审计 P0）
-                let handle = tauri::async_runtime::spawn(run_scheduled(app.clone(), t));
-                let _ = handle.await;
+                // 每张卡独立 spawn 且【不 await】（2026-08-28 批次5审计 P1）：
+                // 原先 spawn 后立即 await，单张长任务（最坏可跑数小时）堵死调度循环，
+                // 后续所有到点任务排队。spawn 本身已隔离 panic（主循环不受影响）；
+                // 同卡重入由 SchedGuard/ExecGuard 防护；另加单任务整体超时兜底。
+                let app2 = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let id = t.id.clone();
+                    let timed_out =
+                        tokio::time::timeout(SCHED_TASK_TIMEOUT, run_scheduled(app2.clone(), t))
+                            .await
+                            .is_err();
+                    if timed_out {
+                        crate::bot::audit_log(
+                            &app2,
+                            &format!(
+                                "sched_timeout | id: {id} | 超过 {} 分钟未完成，强制收尾",
+                                SCHED_TASK_TIMEOUT.as_secs() / 60
+                            ),
+                        );
+                        // 超时被 drop 的执行没走到 set_bot_assigned(false)，这里兜底复位
+                        crate::bot_chat::set_bot_assigned(&app2, &id, false).await;
+                    }
+                });
             }
         }
     });
@@ -434,6 +466,41 @@ mod sched_tests {
         assert!(!at_expired("daily:09:00", None, now));
         // 坏数据 → 放弃
         assert!(at_expired("at:junk", None, now));
+    }
+
+    #[test]
+    fn resolve_local_equals_single_for_normal_times() {
+        // 非 DST 切换日的普通时刻：resolve_local 与 single 等价（DST 行为依赖系统
+        // 时区，单测环境（国内无 DST）只能锁正常路径不回归）
+        let naive = chrono::NaiveDate::from_ymd_opt(2026, 8, 16)
+            .unwrap()
+            .and_hms_opt(10, 0, 0)
+            .unwrap();
+        assert_eq!(
+            resolve_local(naive),
+            naive.and_local_timezone(chrono::Local).single()
+        );
+    }
+
+    /// 批次5审计 P1 回归锁：调度循环 spawn 后不得再立即 await
+    ///（串行执行回退 = 一张长任务卡堵死全部后续到点任务），且必须有单任务整体超时
+    #[test]
+    fn scheduler_loop_does_not_await_each_task() {
+        let text = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/bot_scheduler.rs"
+        ))
+        .unwrap();
+        let pos = text.find("let due = find_due_tasks").expect("调度循环必须存在");
+        let scope = &text[pos..pos + 1600.min(text.len() - pos)];
+        assert!(
+            !scope.contains("handle.await"),
+            "调度循环不得串行 await 每张卡: {scope:?}"
+        );
+        assert!(
+            scope.contains("SCHED_TASK_TIMEOUT"),
+            "单任务必须有整体超时: {scope:?}"
+        );
     }
 
     #[test]

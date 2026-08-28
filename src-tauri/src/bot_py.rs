@@ -692,6 +692,16 @@ fn py_run_gate() -> &'static std::sync::Mutex<()> {
     &PY_RUN_GATE
 }
 
+/// 应用退出标志（2026-08-28 批次5审计 P2）：cleanup_on_exit 在 kill_all_py_children
+/// 之前置位；过闸门的排队任务复查后直接拒绝——原先退出 kill 完在途进程，闸门上
+/// 排队者拿到锁仍 spawn 新 Python，变无人收割的孤儿进程。
+static EXITING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 退出清理入口置位（lib.rs cleanup_on_exit 调用，须在 kill_all_py_children 之前）
+pub fn mark_exiting() {
+    EXITING.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
 /// run_python_at 的失败（P2-10）：区分「spawn NotFound」—— 缓存的 python 路径
 /// 被删/换 PATH 时的重探测重试依据
 struct RunFail {
@@ -712,6 +722,11 @@ pub fn run_python(
 ) -> Result<PyRunResult, String> {
     // P2-12：并发闸门 —— 同一时刻只跑一个 Python 任务，多余请求排队等待
     let _gate = py_run_gate().lock().unwrap_or_else(|e| e.into_inner());
+    // 批次5审计 P2：退出标志必须在拿到闸门【之后】复查——退出清理杀完在途进程后，
+    // 本任务若才拿到锁，spawn 出去就是孤儿进程
+    if EXITING.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err("应用正在退出，不再启动新的 Python 任务".into());
+    }
     run_python_ungated(app, script, input_json, args, timeout_secs, stop)
 }
 
@@ -2770,5 +2785,22 @@ mod tests {
         }
         assert!(found_io, "PYTHONIOENCODING=utf-8 未设置");
         assert!(found_utf8, "PYTHONUTF8=1 未设置");
+    }
+}
+
+#[cfg(test)]
+mod batch5_exiting_tests {
+    /// 批次5审计 P2 回归锁：EXITING 复查必须在 PY_RUN_GATE 拿锁之后
+    ///（锁前检查挡不住「kill 完成后才拿到锁的排队者」）。
+    /// 全局标志不在测试里翻转（会污染并行测试的 run_python），源码锁防回退。
+    #[test]
+    fn exiting_check_is_after_gate_lock() {
+        let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bot_py.rs"))
+            .unwrap();
+        let fn_pos = text.find("pub fn run_python(").expect("run_python 必须存在");
+        let body = &text[fn_pos..];
+        let gate = body.find("py_run_gate().lock()").expect("必须过并发闸门");
+        let check = body.find("EXITING.load").expect("必须有退出标志复查");
+        assert!(check > gate, "EXITING 复查必须在闸门拿锁之后");
     }
 }

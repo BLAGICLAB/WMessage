@@ -2,6 +2,24 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-08-28（周五）全面审计批次 5：调度与后台任务（无 P0，3 个 P1 已修）
+
+按 `docs/AUDIT-PLAN-BOT-2026-08-27.md` 推进，单代理探索 + P1/P2 逐条人工复核（复核纠出子代理 1 条误报 + 1 条漏报），报告落盘 `docs/AUDIT-SCHED-2026-08-28.md`。
+
+**P1 三个（均已修 + 回归测试）**：
+- **调度循环串行 await 堵死全线**：原先对每张到点卡 spawn 后立即 await，单卡最坏 50 轮 ×（LLM 300s + Python 300s）可跑数小时，期间全部后续定时任务排队。修复：spawn 不 await（同卡重入仍由 SchedGuard/ExecGuard 防）+ 单任务 30min 整体超时（超时记 sched_timeout 审计并兜底复位 bot_assigned）
+- **后台定时任务仍弹原生文件框**：bind_file 分发处丢弃 interactive 无条件弹框；extract_document 无 path 时 doc_extract 无条件 blocking_pick_file——无人在场时模态框让 spawn_blocking 线程永久阻塞，任务卡死。修复：两处 interactive=false 直接返回引导文案（改用 link_file_to_task / 传 path），不弹框
+- **退出对在途模型循环零取消**：cleanup_on_exit 原先只清 API/Skill/Python，在途 run_model_loop 收不到任何停止信号，后台任务事实上无任何手段可叫停。修复：`stop_all_executions()` 置位全部实例（含后台，与 /stop 只停本会话交互实例互补）+ ≤2s drain 宽限，审计带 exec_stopped/exec_drained
+
+**P2 四个（均已修）**：DST 切换日本地时刻 `.single()=None` 导致 daily/weekly 任务永久静默失效（`resolve_local`：歧义取较早、不存在顺延 ≤3h，五处统一）；退出时 PY_RUN_GATE 排队者拿锁后仍 spawn 孤儿 Python（`mark_exiting` 闸门后复查）；逐步执行 ExecGuard 起步即释放、确认挂起期调度器可并发执行同一卡（守卫改随 PendingExec 存活到 clear/take）；逐步执行 start() 两条错误路径不复位 bot_assigned 卡片永顶头像（复核新发现，子代理漏报）。
+
+**误报纠正**：子代理报「bot_assigned 崩溃残留无启动期清扫」——db.rs open_db 启动期已有 `UPDATE tasks SET bot_assigned = 0`（每进程一次，有测试锁定），无需修。
+
+**待拍板**：recurring 补跑无时效窗口（关机一周启动会补跑一周前的到点；开关关闭期间的到点任务重开瞬间全补跑）——窗口长度是产品决策（建议 2h），未动。**记录项**：sched_last 跑前记导致执行中崩溃本次 occurrence 无声消失（取舍正确）；SchedGuard/ExecGuard 双套守卫语义分裂（合并属架构项）。
+
+**测试**：cargo test --lib 459 → **466 全绿**（resolve_local 等价 / 调度循环不串行 await 源码锁 / 后台拒弹窗源码锁 / stop_all 覆盖两类实例 / 退出标志闸门后复查源码锁 / ExecGuard RAII + PendingExec 持守卫源码锁 7 个新用例），集成 20+8+8 全绿；vitest 111 全绿；tsc 零错。
+**注意**：调度并发化与退出 drain 属运行行为改动，建议手动冒烟一次（挂一个 1 分钟后的 daily 任务观察到点执行 + 执行中 Cmd+Q 退出无残留进程）。
+
 ## 2026-08-28（周五）全面审计批次 4：本地 HTTP API Server（无 P0）
 
 按 `docs/AUDIT-PLAN-BOT-2026-08-27.md` 推进，单代理探索 + P1/P2 人工复核，报告落盘 `docs/AUDIT-API-2026-08-28.md`（含端点×认证×校验矩阵）。
