@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => {
     outerSize: vi.fn(async () => ({ width: 44, height: 220 })),
     scaleFactor: vi.fn(async () => 1),
     onMoved: vi.fn(async () => () => {}),
+    onDragDropEvent: vi.fn(async () => () => {}),
     startDragging: vi.fn(async () => {}),
   };
   return { invokeMock, listenMock, emitMock, winMock };

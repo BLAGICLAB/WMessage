@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen, emit } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { focusMainWindow } from "../focus";
@@ -204,8 +205,10 @@ export function ChatPanel({
   const [busy, setBusy] = useState(false);
   /** 逐条复制按钮的反馈：记录当前“已复制”的消息下标 */
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
-  /** 已添加的附件文件路径（➕ 添加，随消息一起发送） */
+  /** 已添加的附件文件路径（➕ 或拖入，随消息一起发送） */
   const [files, setFiles] = useState<string[]>([]);
+  /** 拖放悬停：文件拖到聊天区上时显示提示层 */
+  const [dragHover, setDragHover] = useState(false);
   /** 危险操作确认请求（机器人删任务前弹窗）；kind="file_access" 时为文件访问授权（三按钮） */
   const [confirmReq, setConfirmReq] = useState<{
     id: string;
@@ -214,6 +217,8 @@ export function ChatPanel({
     kind?: string;
   } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  /** 聊天区根节点：拖放落点判定用（只接收落在聊天区矩形内的文件） */
+  const rootRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   /** 模型切换菜单（头部 🧠 按钮）：label 显示当前提供商/模型 */
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
@@ -887,6 +892,14 @@ function extractFilePaths(content: string): string[] {
     await runChat(history, text);
   };
 
+  /** 附件去重追加（➕ 选文件 / 拖入文件共用） */
+  const addFiles = (paths: string[]) => {
+    const clean = paths.filter(Boolean);
+    if (clean.length) {
+      setFiles((prev) => [...prev, ...clean.filter((p) => !prev.includes(p))]);
+    }
+  };
+
   // ➕ 添加附件：选文件（文档或图片均可），与消息一起发送（如：加 Word 后输入「润色」）。
   // Rust 侧弹框：此前前端 dialog.open 在挂件窗口不弹框（点击无反应）
   // 注意：pick_files_dialog 当前 Rust 实现未暴露 filter 参数，不做硬过滤；
@@ -894,13 +907,55 @@ function extractFilePaths(content: string): string[] {
   const pickFiles = async () => {
     try {
       const picked = await invoke<string[]>("pick_files_dialog");
-      if (picked.length) {
-        setFiles((prev) => [...prev, ...picked.filter((p) => !prev.includes(p))]);
-      }
+      if (picked.length) addFiles(picked);
     } catch (e) {
       handleCommandError(e, "pick_files_dialog", { silent: true });
     }
   };
+
+  // 拖文件进聊天区 → 加入附件（等同 ➕ 选文件）。
+  // Tauri 窗口 dragDropEnabled 默认开启：OS 级拖放不触发 HTML5 drop，
+  // 走窗口级 tauri 事件（onDragDropEvent）；position 为物理像素，需除缩放系数
+  // 转成 CSS 像素后与聊天区矩形比对——拖到挂件任务列表区的文件不归聊天管。
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    const insideChat = async (pos: { x: number; y: number }) => {
+      const rect = rootRef.current?.getBoundingClientRect();
+      if (!rect) return false;
+      const scale = await getCurrentWindow()
+        .scaleFactor()
+        .catch(() => 1);
+      const x = pos.x / scale;
+      const y = pos.y / scale;
+      return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+    };
+    try {
+      getCurrentWindow()
+        .onDragDropEvent(async (e) => {
+          const p = e.payload;
+          if (p.type === "leave") {
+            setDragHover(false);
+            return;
+          }
+          if (p.type === "enter" || p.type === "over") {
+            setDragHover(await insideChat(p.position));
+            return;
+          }
+          if (p.type === "drop") {
+            setDragHover(false);
+            if (await insideChat(p.position)) addFiles(p.paths);
+          }
+        })
+        .then((f) => {
+          unlisten = f;
+        })
+        // 非 Tauri 环境（vitest/jsdom）没有窗口对象，静默忽略
+        .catch(() => {});
+    } catch {
+      // 同上：同步抛错（无 __TAURI_INTERNALS__）也静默忽略
+    }
+    return () => unlisten?.();
+  }, []);
 
   // 逐条复制回复内容（按钮反馈在消息下方）
   const copyMessage = async (idx: number, content: string) => {
@@ -932,7 +987,13 @@ function extractFilePaths(content: string): string[] {
     sessions.find((s) => s.id === sessionId)?.title ?? "新对话";
 
   return (
-    <div className="relative flex flex-col shrink-0 h-full min-h-0">
+    <div ref={rootRef} className="relative flex flex-col shrink-0 h-full min-h-0">
+      {/* 拖放提示层：文件悬停在聊天区上时显示，松开即加入附件 */}
+      {dragHover && (
+        <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center rounded-2xl border-2 border-dashed border-[var(--brand)] bg-black/20">
+          <span className="text-xs text-[var(--brand)]">松开以添加文件</span>
+        </div>
+      )}
       {/* 危险操作确认弹窗：机器人删任务前等老板拍板；file_access = 文件访问授权（三按钮） */}
       {confirmReq && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/30 rounded-2xl">

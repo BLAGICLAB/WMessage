@@ -2,6 +2,14 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-09-02（周三）挂件聊天区支持拖文件添加附件
+
+老板需求：把文件直接拖到挂件聊天窗口 = 在聊天窗口添加附件（等同 ➕ 选文件），随消息一起发送。
+
+实现（ChatPanel.tsx）：Tauri 窗口 `dragDropEnabled` 默认开启，OS 级拖放不触发 HTML5 drop，改走窗口级 `onDragDropEvent`（enter/over/leave/drop）。落点过滤：position 为物理像素，除 `scaleFactor` 转 CSS 像素后与聊天区根节点（rootRef）矩形比对——只有落在聊天区内的 drop 才加入附件，拖到挂件任务列表区的文件不归聊天管；enter/over 落在聊天区时显示「松开以添加文件」虚线提示层。去重逻辑抽成 `addFiles`（➕ 选文件 / 拖入共用）。
+
+测试：ChatPanel.test.tsx 新增拖放用例（enter 提示层 / 区内 drop 加附件 / 同路径去重 / 区外 drop 忽略），`@tauri-apps/api/window` mock 捕获 onDragDropEvent 回调手动触发；WidgetApp.test.tsx 的 winMock 补 `onDragDropEvent`（ChatPanel 挂件内挂载所需）；ChatPanel 订阅加 try/catch 兜底非 Tauri 环境。vitest 134 → **135 全绿**；tsc 零错。
+
 ## 2026-09-02（周三）定时补跑 2h 时效窗口（批次5审计 F3 定版）
 
 老板拍板：recurring 补跑时效窗口 2h，超窗跳过。原先无窗口——关机一周启动会补跑一周前的到点、机器人开关关闭期间的到点在重开瞬间全补跑。

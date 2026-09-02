@@ -9,7 +9,11 @@ const mocks = vi.hoisted(() => {
   const invokeMock = vi.fn();
   const listenMock = vi.fn();
   const emitMock = vi.fn();
-  return { invokeMock, listenMock, emitMock };
+  // 捕获 ChatPanel 注册的窗口拖放回调（拖文件进聊天区 → 附件），供用例手动触发
+  const dragDropHandlers: Array<
+    (e: { payload: Record<string, unknown> }) => unknown
+  > = [];
+  return { invokeMock, listenMock, emitMock, dragDropHandlers };
 });
 
 // 默认实现
@@ -53,6 +57,18 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: mocks.listenMock,
 }));
 
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => ({
+    onDragDropEvent: async (
+      cb: (e: { payload: Record<string, unknown> }) => unknown
+    ) => {
+      mocks.dragDropHandlers.push(cb);
+      return () => {};
+    },
+    scaleFactor: async () => 1,
+  }),
+}));
+
 vi.mock("@tauri-apps/plugin-opener", () => ({
   openUrl: vi.fn(async () => {}),
 }));
@@ -80,6 +96,7 @@ beforeEach(() => {
   mocks.invokeMock.mockClear();
   mocks.listenMock.mockClear();
   writeTextMock.mockClear();
+  mocks.dragDropHandlers.length = 0;
 });
 
 describe("ChatPanel", () => {
@@ -354,6 +371,43 @@ describe("ChatPanel", () => {
     // 标签更新 + 本地提示
     expect(await screen.findByText(/🧠 Kimi K3/)).toBeInTheDocument();
     expect(await screen.findByText(/✅ 已切换到 Kimi K3/)).toBeInTheDocument();
+  });
+
+  it("拖文件进聊天区：enter 显示提示层，drop 落在聊天区内加入附件（区外忽略、去重）", async () => {
+    render(<ChatPanel {...defaultProps} />);
+    expect(await screen.findByText("🤖 默认会话")).toBeInTheDocument();
+    const handler = mocks.dragDropHandlers[mocks.dragDropHandlers.length - 1];
+    expect(handler).toBeDefined();
+    // jsdom 的 getBoundingClientRect 全 0：position (0,0) 视为聊天区内，(10,10) 视为区外
+    // enter 悬停 → 提示层出现
+    await act(async () => {
+      await handler({
+        payload: { type: "enter", paths: ["/tmp/a.docx"], position: { x: 0, y: 0 } },
+      });
+    });
+    expect(await screen.findByText("松开以添加文件")).toBeInTheDocument();
+    // drop 在区内 → 加入附件芯片，提示层消失
+    await act(async () => {
+      await handler({
+        payload: { type: "drop", paths: ["/tmp/a.docx"], position: { x: 0, y: 0 } },
+      });
+    });
+    expect(await screen.findByText(/a\.docx/)).toBeInTheDocument();
+    expect(screen.queryByText("松开以添加文件")).not.toBeInTheDocument();
+    // 同一路径再拖一次 → 去重，仍只有一个芯片
+    await act(async () => {
+      await handler({
+        payload: { type: "drop", paths: ["/tmp/a.docx"], position: { x: 0, y: 0 } },
+      });
+    });
+    expect(screen.getAllByText(/a\.docx/)).toHaveLength(1);
+    // drop 在聊天区外（任务列表区）→ 不添加
+    await act(async () => {
+      await handler({
+        payload: { type: "drop", paths: ["/tmp/b.pdf"], position: { x: 10, y: 10 } },
+      });
+    });
+    expect(screen.queryByText(/b\.pdf/)).not.toBeInTheDocument();
   });
 
   it("模型菜单自定义：填 Base URL + 模型名 → 回写自定义配置，头部显示模型名", async () => {
