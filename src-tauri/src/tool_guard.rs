@@ -11,9 +11,10 @@
 
 /// 禁止 LLM 裸调的原子 Function 黑名单
 /// （老板 2026-08-17 18:14 拍板：仅作 Skill 内部子步骤、不能独立调用的底层原子）
+///
+/// 2026-09-02 老板拍板：create_word_revisions 移出黑名单——Word 修订模式去 Skill 化，
+/// 聊天里直接可用（引擎强制 .NET OpenXML 优先、Python 兜底，见 run_doc_revisions）。
 pub const ATOMIC_TOOLS: &[&str] = &[
-    // Word 修订模式（Word 修订 Skill 内专用；用户应直接说「润色 Word」让调度器加载 Skill）
-    "create_word_revisions",
     // Skill 末尾绑产物专用（任务卡执行 Skill / 文档生成 Skill 完成后绑定产物到任务卡）
     "link_file_to_task",
 ];
@@ -26,7 +27,6 @@ pub fn is_atomic_tool(name: &str) -> bool {
 /// 阻断时的错误消息（明确告诉 LLM/用户走对应 Skill）
 pub fn atomic_block_message(name: &str) -> String {
     match name {
-        "create_word_revisions" => "⚠️ create_word_revisions 是 Word 修订 Skill 的内部原子，不允许裸调。\n请直接说「润色 Word」「修订这个 Word」等指令，我会自动加载 Word 修订 Skill 来执行。".to_string(),
         "link_file_to_task" => "⚠️ link_file_to_task 是 Skill 末尾绑产物的内部原子，不允许裸调。\n产物绑回任务卡请通过：①执行任务卡（🤖 按钮）；②加载对应生成 Skill 完成自动流程。".to_string(),
         _ => format!("⚠️ {} 是内部原子 Function，不允许裸调。请走对应 Skill。", name),
     }
@@ -44,9 +44,11 @@ pub fn is_skill_active(session_id: Option<&str>) -> bool {
 mod tests {
     use super::*;
 
+    /// 2026-09-02 老板拍板：create_word_revisions 去 Skill 化（移出黑名单，聊天直调）——
+    /// 锁死回归：它绝不能再回到原子黑名单里（否则聊天润色又被「不允许裸调」拦截）
     #[test]
-    fn atomic_blacklist_recognizes_create_word_revisions() {
-        assert!(is_atomic_tool("create_word_revisions"));
+    fn create_word_revisions_is_not_atomic_anymore() {
+        assert!(!is_atomic_tool("create_word_revisions"));
     }
 
     #[test]

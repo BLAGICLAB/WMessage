@@ -2,6 +2,28 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-09-02（周三）修订模式改为就地修订：保留原文档格式/字体（.NET + Python 双引擎）
+
+老板拍板：修订模式要保留原文的格式和字体进行修订。原先两引擎都是从零新建宋体 12pt 文档做纯文本 diff——标题样式、加粗、字体、表格结构全丢。
+
+实现（两引擎同语义）：original_path 可读时复制原文档 → 段落级对齐（与 extract_document 同一口径：正文非空段落文档序在前、表格行在后）→ equal 段落原样不动（格式自然保留）；改动段落行内字符级 diff——equal 片段克隆原 run 的 rPr 拆段、del/ins 克隆锚点 run 的 rPr；整段删把含文本 run 转 w:del（w:t→w:delText）保 rPr；新增段落 pPr/rPr 克隆自锚点段落；表格行按 " | " 拆回单元格逐格 diff（格数对不上整行标删+表后插新段）。就地失败（文件损坏等）回退原新建模式保底有产物。
+
+**踩坑**：重写 Program.cs 时把 DiffList 回溯 equal 分支的 `y++` 抄丢了——对齐整体错位（段落配错行），单测全绿没抓到（原 e2e 只断言 ins/del 存在），手工带格式实测才暴露。教训：diff 对齐类逻辑必须测「配对正确性」不能只测「标记存在」。
+
+测试：bot_py.rs 新增 `dotnet_revisions_in_place_preserves_formatting`——最小 docx 夹具（zip+手写 document.xml：pStyle 标题段 + 加粗 run + 普通段），断言 equal 段落的 pStyle/`<w:b/>` 原样保留、改动段落行内 w:ins/w:del、无 w:date、stdout 走「保留原文格式」路径；另有手工实测（python-docx 造含标题/加粗/楷体/表格的原文，dotnet + Python 两条路径产物逐段核对一致）。TOOLS 描述 / SYSTEM_PROMPT 规则 10 / doc_make_word_revisions 注释同步「就地修订保留原文格式」。cargo test 全目标 479 → **480**（+20+8+9）全绿。
+
+## 2026-09-02（周三）Word 修订模式去 Skill 化 + 去掉修订日期 + 系统提示词对齐工具
+
+老板三条拍板：①修订日期不要了；②文档润色修订模式执行不对——不需要相关 Skill，要走 dotnet 修订模式；③系统提示词逐行对齐工具实际功能。
+
+**修订日期下线**：.NET 工具（WmDocxRevisions/Program.cs）与 Python 兜底脚本（MAKE_DOCX_REVISIONS_SCRIPT）的 w:ins/w:del 不再写 w:date（保留递增 w:id + author=WMessage AI）；dotnet e2e 单测加 `!xml.contains("w:date=")` 回归锁，已重建 Release dll 并实测产物无 w:date。
+
+**修订模式去 Skill 化**：create_word_revisions 移出 ATOMIC_TOOLS 原子黑名单（聊天直调放行，不再被「不允许裸调」拦回 create_word）；引擎本来就强制 .NET OpenXML 优先（run_doc_revisions：dotnet 试跑→失败回退 Python），去 Skill 后修订模式在聊天里开箱即用。link_file_to_task 仍是原子（任务卡执行流程经 StopGuard.allow_atomic 放行，不变）。波及面同步更新：tool_guard（黑名单 + 拦截消息 + 单测）、middleware 三个单测、audit.rs / bot_model_loop.rs 各一个用例、llm_integration.rs 三个用例（原「黑名单拦截 create_word_revisions」反转为「非 Skill 状态直调放行」回归锁）、skill_e2e.rs 三个用例、tests-audit 门禁断言改为「ATOMIC_TOOLS 数组内不得含 create_word_revisions」；TOOLS schema 的 create_word_revisions description 去掉「内部原子…裸调会被拦截」话术；bot.rs / bot_slash.rs 两处注释同步。
+
+**系统提示词逐行核对**（SYSTEM_PROMPT 21 条 + 安全红线 + EXECUTE_SYSTEM_PROMPT 7 条，对照 TOOLS schema 与生成脚本实现）：规则 10 重写——删掉「内部原子工具/技能未加载改用 create_word」整段与「商务提案标题可加粗加大」（生成器无此参数化能力），保留 track changes / originalPath / 截断传 original / 不覆盖原文件；规则 11 删 PDF「文档类型决定风格」（MAKE_PDF_SCRIPT 是固定排版，无风格参数）；其余逐条核验一致（Word 排版黑体标题+宋体正文+首行缩进 ✓ MAKE_DOCX_SCRIPT；PDF STSong ✓；PPT 微软雅黑+10 主题键 ✓ MAKE_PPTX_SCRIPT；图片扩展名/附件路径直读 ✓ IMAGE_EXTS+extract_document；[文档路径] 返回格式 ✓ bot.rs:1948）。
+
+测试：cargo test 全目标 479+20+8+9 全绿（含新建 dotnet 无日期断言、三处黑名单语义反转用例）；tests-audit pytest 23过/1FAIL/1skip——唯一 FAIL 是 test_bot_log_path_uses_portable_dir，环境问题（本机 target/debug/bot.log 只剩一条 app_exit_cleanup，与本次改动无关）。
+
 ## 2026-09-02（周三）挂件聊天区支持拖文件添加附件
 
 老板需求：把文件直接拖到挂件聊天窗口 = 在聊天窗口添加附件（等同 ➕ 选文件），随消息一起发送。

@@ -398,10 +398,11 @@ mod tests {
     fn atomic_guard_blocks_atomic_tool_when_no_skill() {
         let m = AtomicGuardMiddleware;
         // 黑名单 + 非 Skill 状态 → 阻断
-        assert!(m.pre_execute("create_word_revisions", false).is_some());
         assert!(m.pre_execute("link_file_to_task", false).is_some());
         // 黑名单 + Skill 状态 → 放行
-        assert!(m.pre_execute("create_word_revisions", true).is_none());
+        assert!(m.pre_execute("link_file_to_task", true).is_none());
+        // 2026-09-02 起 create_word_revisions 移出黑名单（去 Skill 化），聊天直调放行
+        assert!(m.pre_execute("create_word_revisions", false).is_none());
         // 白名单 → 放行
         assert!(m.pre_execute("run_python", false).is_none());
         assert!(m.pre_execute("list_tasks", false).is_none());
@@ -449,7 +450,7 @@ mod tests {
         // 不能静默放行；非原子工具无闸门诉求，仍放行（None）。
         let app = tauri::test::mock_app();
         let handle = app.handle().clone();
-        let blocked = run_pre_execute(&handle, "create_word_revisions", false);
+        let blocked = run_pre_execute(&handle, "link_file_to_task", false);
         let msg = blocked.expect("registry 缺失时原子工具必须被拒绝（fail-closed）");
         assert!(msg.contains("安全闸门未初始化"), "提示语应说明原因：{msg}");
         assert!(
@@ -457,7 +458,7 @@ mod tests {
             "非原子工具不受闸门影响，fail-open"
         );
         // Skill 活动态与 AtomicGuard 口径一致：活动 Skill 的原子调用不拦
-        assert!(run_pre_execute(&handle, "create_word_revisions", true).is_none());
+        assert!(run_pre_execute(&handle, "link_file_to_task", true).is_none());
     }
 
     #[test]
@@ -466,7 +467,7 @@ mod tests {
         let app = tauri::test::mock_app();
         app.manage(build_default_registry());
         let handle = app.handle().clone();
-        assert!(run_pre_execute(&handle, "create_word_revisions", false).is_some());
+        assert!(run_pre_execute(&handle, "link_file_to_task", false).is_some());
         assert!(run_pre_execute(&handle, "list_tasks", false).is_none());
         // 2026-08-19 动态路由：测试进程路由表为空（未安装技能经 rebuild 注入）→ 恒 PassThrough
         match run_pre_step(&handle, "帮我做 PPT") {

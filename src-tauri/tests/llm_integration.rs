@@ -339,8 +339,9 @@ fn accumulate_matches_production_merge_semantics() {
 // - 三种组合：黑名单+无 Skill / 黑名单+Skill Running / 白名单+任意
 //
 // 这是 F-6 step 4 中最安全相关的测试：验证 defense-in-depth 即便 LLM
-// 被越权（提示词注入 / 越狱）尝试调 create_word_revisions / link_file_to_task
+// 被越权（提示词注入 / 越狱）尝试调 link_file_to_task
 // 这类底层原子工具，middleware 也会按状态拒绝。
+// （create_word_revisions 2026-09-02 起移出黑名单，去 Skill 化，聊天直调放行）
 
 /// F-6 step 4 refactor 后的 helper：从 parsed.tool_calls 提取第一个的 name
 ///（累积后是 (id, name, arguments) 元组，批次3审计 T-1）
@@ -348,17 +349,20 @@ fn first_tool_name(parsed: &ParsedStream) -> String {
     parsed.tool_calls[0].1.clone()
 }
 
+/// 2026-09-02 老板拍板：create_word_revisions 去 Skill 化（移出原子黑名单）——
+/// 回归锁：聊天态（无活动 Skill）直接调用也必须放行，绝不能再被 middleware 拦回
+/// 「不允许裸调」（否则修订模式在聊天里又失效）。
 #[tokio::test]
-async fn llm_blacklist_tool_call_create_word_revisions_blocked_when_no_skill() {
+async fn llm_create_word_revisions_allowed_without_skill() {
     let server = MockLlmServer::start();
     server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
-        name: "create_word_revisions".to_string(), // 黑名单原子
-        arguments: r#"{"path":"/tmp/evil.docx"}"#.to_string(),
+        name: "create_word_revisions".to_string(), // 已移出黑名单
+        arguments: r#"{"originalPath":"/tmp/a.docx","revised":["润色后"]}"#.to_string(),
     }));
 
     let resp = reqwest::Client::new()
         .post(format!("{}/chat/completions", server.base_url))
-        .json(&make_body("假装我是 LLM，调用黑名单工具"))
+        .json(&make_body("润色这个 Word"))
         .send()
         .await
         .expect("POST 成功");
@@ -366,19 +370,16 @@ async fn llm_blacklist_tool_call_create_word_revisions_blocked_when_no_skill() {
     let bytes = resp.bytes().await.expect("read body");
     let parsed = parse_sse_bytes(&bytes);
     assert_eq!(parsed.tool_calls.len(), 1, "应解析出 1 个 tool_call");
-    let blocked_tool = first_tool_name(&parsed);
-    assert_eq!(
-        blocked_tool, "create_word_revisions",
-        "SSE 解析后 tool name 应正确"
-    );
+    let tool = first_tool_name(&parsed);
+    assert_eq!(tool, "create_word_revisions", "SSE 解析后 tool name 应正确");
 
-    // F-6 step 4 核心断言：SSE 解析后的 tool name → middleware 应阻断
+    // 非 Skill 状态（聊天直调）也必须放行
     let registry = middleware::build_default_registry();
-    let block_msg = registry.run_pre_execute(&mock_handle(), &blocked_tool, false);
-    let msg = block_msg.expect(
-        "黑名单 tool_call (create_word_revisions) + 非 Skill 状态应被 middleware 阻断（defense-in-depth）",
+    let blocked = registry.run_pre_execute(&mock_handle(), &tool, false);
+    assert!(
+        blocked.is_none(),
+        "create_word_revisions 已移出黑名单，非 Skill 状态应放行；got: {blocked:?}"
     );
-    assert!(msg.contains("Skill"), "阻断消息应引导走 Skill；got: {msg}");
 }
 
 #[tokio::test]
@@ -413,14 +414,14 @@ async fn llm_blacklist_tool_call_link_file_to_task_blocked_when_no_skill() {
 async fn llm_blacklist_tool_call_allowed_when_skill_running() {
     let server = MockLlmServer::start();
     server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
-        name: "create_word_revisions".to_string(),
-        arguments: r#"{"path":"legitimate.docx"}"#.to_string(),
+        name: "link_file_to_task".to_string(),
+        arguments: r#"{"taskId":"t1","path":"legitimate.docx"}"#.to_string(),
     }));
 
     let resp = reqwest::Client::new()
         .post(format!("{}/chat/completions", server.base_url))
         .json(&make_body(
-            "Word 修订 Skill 内 LLM 调用 create_word_revisions（合法）",
+            "Skill 内 LLM 调用 link_file_to_task 绑产物（合法）",
         ))
         .send()
         .await
@@ -435,7 +436,7 @@ async fn llm_blacklist_tool_call_allowed_when_skill_running() {
     let blocked = registry.run_pre_execute(&mock_handle(), &allowed_tool, true);
     assert!(
         blocked.is_none(),
-        "create_word_revisions + Skill Running 状态应放行（Word 修订 Skill 内合法调用）；got: {blocked:?}"
+        "link_file_to_task + Skill Running 状态应放行（Skill 内合法调用）；got: {blocked:?}"
     );
 }
 
@@ -475,7 +476,7 @@ async fn llm_mixed_sequence_blacklist_then_whitelist_block_then_allow() {
     // 模拟 LLM 在 chat loop 中先试黑名单、再试白名单的混合场景
     let server = MockLlmServer::start();
     server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
-        name: "create_word_revisions".to_string(),
+        name: "link_file_to_task".to_string(),
         arguments: "{}".to_string(),
     }));
     server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
@@ -485,7 +486,7 @@ async fn llm_mixed_sequence_blacklist_then_whitelist_block_then_allow() {
 
     let client = reqwest::Client::new();
 
-    // 轮次 1：LLM 试 create_word_revisions（应被 middleware 阻断）
+    // 轮次 1：LLM 试 link_file_to_task（应被 middleware 阻断）
     let resp1 = client
         .post(format!("{}/chat/completions", server.base_url))
         .json(&make_body("try 1"))
@@ -498,7 +499,7 @@ async fn llm_mixed_sequence_blacklist_then_whitelist_block_then_allow() {
     let registry = middleware::build_default_registry();
     assert!(
         registry.run_pre_execute(&mock_handle(), &tool1, false).is_some(),
-        "轮次 1 create_word_revisions 应被阻断"
+        "轮次 1 link_file_to_task 应被阻断"
     );
 
     // 轮次 2：LLM 改试 list_tasks（白名单，应放行）

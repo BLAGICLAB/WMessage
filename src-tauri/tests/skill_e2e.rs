@@ -84,18 +84,29 @@ fn pre_step_pass_through_for_normal_query() {
 #[test]
 fn pre_execute_blocks_atomic_tool_when_no_skill() {
     let registry = middleware::build_default_registry();
-    let blocked = registry.run_pre_execute(&mock_handle(), "create_word_revisions", false);
-    let msg = blocked.expect("create_word_revisions + 非 Skill 状态应被阻断");
+    let blocked = registry.run_pre_execute(&mock_handle(), "link_file_to_task", false);
+    let msg = blocked.expect("link_file_to_task + 非 Skill 状态应被阻断");
     assert!(msg.contains("Skill"), "阻断消息应引导走 Skill；实际：{msg}");
 }
 
 #[test]
 fn pre_execute_allows_atomic_tool_when_skill_active() {
     let registry = middleware::build_default_registry();
-    let blocked = registry.run_pre_execute(&mock_handle(), "create_word_revisions", true);
+    let blocked = registry.run_pre_execute(&mock_handle(), "link_file_to_task", true);
     assert!(
         blocked.is_none(),
-        "create_word_revisions + Skill Running 状态应放行；实际：{blocked:?}"
+        "link_file_to_task + Skill Running 状态应放行；实际：{blocked:?}"
+    );
+}
+
+/// 2026-09-02 老板拍板：create_word_revisions 去 Skill 化（移出黑名单，聊天直调放行）
+#[test]
+fn pre_execute_allows_create_word_revisions_without_skill() {
+    let registry = middleware::build_default_registry();
+    let blocked = registry.run_pre_execute(&mock_handle(), "create_word_revisions", false);
+    assert!(
+        blocked.is_none(),
+        "create_word_revisions 已移出黑名单，聊天直调应放行；实际：{blocked:?}"
     );
 }
 
@@ -115,8 +126,8 @@ fn pre_execute_allows_whitelist_tool() {
 
 #[test]
 fn atomic_guard_blacklist_classification() {
-    // 黑名单必须识别
-    assert!(tool_guard::is_atomic_tool("create_word_revisions"));
+    // 黑名单必须识别（2026-09-02：create_word_revisions 去 Skill 化移出，仅剩 link_file_to_task）
+    assert!(!tool_guard::is_atomic_tool("create_word_revisions"));
     assert!(tool_guard::is_atomic_tool("link_file_to_task"));
 
     // 已知白名单必须不被误判为黑名单

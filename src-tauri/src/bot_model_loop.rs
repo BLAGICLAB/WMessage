@@ -168,7 +168,7 @@ const TOOLS: &str = r#"[
     },"required":["rows"]}},
     "filename":{"type":"string","description":"文件名（不含扩展名），可选"}
   },"required":["paragraphs"]}}},
-  {"type":"function","function":{"name":"create_word_revisions","description":"生成带修订标记（修订模式）的 Word 到 AI_Gen_Files：自动对比原文与润色后的段落，删除内容标删除线、新增内容标红色下划线，可在 Word 审阅中逐条接受/拒绝。内部原子：仅技能运行中或任务卡执行流程里可调用，聊天里裸调会被拦截（被拦时改用 create_word 生成润色版）","parameters":{"type":"object","properties":{
+  {"type":"function","function":{"name":"create_word_revisions","description":"生成带修订标记（修订模式）的 Word 到 AI_Gen_Files：在原文档副本上就地对比原文与润色后的段落打 Word 原生 track changes（保留原文格式/字体），可在 Word 审阅中逐条接受/拒绝（引擎：.NET OpenXML 优先，Python 兜底）","parameters":{"type":"object","properties":{
     "originalPath":{"type":"string","description":"原文 Word 路径（extract_document 返回的 [文档路径]）"},
     "original":{"type":"array","items":{"type":"string"},"description":"原文行列表（提取被截断时必须传，保证对比范围一致），可选"},
     "revised":{"type":"array","items":{"type":"string"},"description":"润色后的段落列表"},
@@ -1200,8 +1200,8 @@ mod hallucination_guard_tests {
     fn mutation_succeeded_false_on_gate_block() {
         // 原子工具被 AtomicGuard 拦截：⚠️ 开头 → 不算动过手，幻觉守卫保持拦截能力
         assert!(!mutation_succeeded(
-            "create_word_revisions",
-            "⚠️ create_word_revisions 是 Word 修订 Skill 的内部原子，不允许裸调。"
+            "link_file_to_task",
+            "⚠️ link_file_to_task 是 Skill 末尾绑产物的内部原子，不允许裸调。"
         ));
     }
 

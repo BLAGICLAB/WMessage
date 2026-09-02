@@ -399,7 +399,7 @@ mod tests {
     #[test]
     fn tool_call_failed_catches_gate_fuse_pause_reject() {
         // 四类原先两套口径都不认的失败文案（P1-6 修复目标）
-        assert!(tool_call_failed("create_word_revisions", "⚠️ create_word_revisions 是内部原子，不允许裸调。"));
+        assert!(tool_call_failed("link_file_to_task", "⚠️ link_file_to_task 是内部原子，不允许裸调。"));
         assert!(tool_call_failed("delete_task", "用户拒绝了删除，任务未删除"));
         assert!(tool_call_failed("x", "技能「s」超过最大步数上限（8 步），已强制终止"));
         assert!(tool_call_failed("x", "技能已暂停，等待用户确认中；确认通过后才能继续下一步"));

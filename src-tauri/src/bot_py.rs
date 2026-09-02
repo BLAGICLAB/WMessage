@@ -1320,9 +1320,9 @@ print('已生成：' + out)
 "#;
 
 /// 生成修订模式 Word（track changes）：stdin 读 params.json {title, original_path, original, revised, out}
-/// 原文优先回读文件（保真）；提取被截断时回退模型传的原文行，保证对比范围一致
-pub const MAKE_DOCX_REVISIONS_SCRIPT: &str = r#"import json, os, sys, difflib
-from datetime import datetime, timezone
+/// 2026-09-02：original_path 可读时优先「原文档副本就地修订」——保留原文格式/字体/表格
+/// （与 .NET 工具同语义）；就地失败或无路径时回退新建模式（模型传的 original 行列表）
+pub const MAKE_DOCX_REVISIONS_SCRIPT: &str = r#"import json, os, sys, difflib, shutil, copy
 import docx
 from docx.shared import Pt
 from docx.oxml import OxmlElement
@@ -1337,6 +1337,218 @@ out = p['out']
 
 if not rev:
     print('revised 不能为空'); sys.exit(1)
+
+AUTHOR = 'WMessage AI'
+# 2026-09-02 老板拍板：修订不写 w:date（修订日期不要了）
+_id = [1000]
+def nid():
+    _id[0] += 1
+    return _id[0]
+
+# ──────────── 就地修订（保留原文格式）：w:ins 用 w:t、w:del 用 w:delText ────────────
+
+def run_text(r):
+    return ''.join(t.text or '' for t in r.findall(qn('w:t')))
+
+def clone_rpr(r):
+    rpr = r.find(qn('w:rPr'))
+    return copy.deepcopy(rpr) if rpr is not None else None
+
+def make_run(text, rpr, deleted=False):
+    r = OxmlElement('w:r')
+    if rpr is not None:
+        r.append(copy.deepcopy(rpr))
+    t = OxmlElement('w:delText' if deleted else 'w:t')
+    t.set(qn('xml:space'), 'preserve')
+    t.text = text
+    r.append(t)
+    return r
+
+def wrap(kind, r):
+    el = OxmlElement('w:ins' if kind == 'ins' else 'w:del')
+    el.set(qn('w:id'), str(nid()))
+    el.set(qn('w:author'), AUTHOR)
+    el.append(r)
+    return el
+
+def para_text(p_el):
+    return ''.join(t.text or '' for t in p_el.iter(qn('w:t')))
+
+def mark_para_deleted(p_el):
+    """整段标删：含文本的 run 转 w:del（保留各 run 原 rPr），无文本 run（图片等）不动"""
+    runs = p_el.findall(qn('w:r'))
+    dels = []
+    for r in runs:
+        t = run_text(r)
+        if t:
+            dels.append(wrap('del', make_run(t, clone_rpr(r), deleted=True)))
+    for r in runs:
+        if run_text(r):
+            p_el.remove(r)
+    for el in dels:
+        p_el.append(el)
+
+def revise_para(p_el, old, new):
+    """行内字符级 diff：equal 片段沿用原 run（克隆 rPr 拆段），del/ins 克隆锚点 rPr。
+    段落含超链接等非常规结构（run 文本拼接 != 段落文本）时保底整段删+整段增。"""
+    runs = p_el.findall(qn('w:r'))
+    pos = 0
+    mp = []
+    for r in runs:
+        t = run_text(r)
+        mp.append((pos, pos + len(t), r))
+        pos += len(t)
+    if pos != len(old) or ''.join(run_text(r) for _, _, r in mp) != old:
+        anchor_rpr = clone_rpr(mp[-1][2]) if mp else None
+        mark_para_deleted(p_el)
+        if new:
+            p_el.append(wrap('ins', make_run(new, anchor_rpr)))
+        return
+    def rpr_at(i):
+        for s, e, r in mp:
+            if s <= i < e:
+                return clone_rpr(r)
+        return clone_rpr(mp[-1][2]) if mp else None
+    def pieces(a, b):
+        for s, e, r in mp:
+            lo, hi = max(a, s), min(b, e)
+            if lo < hi:
+                yield run_text(r)[lo - s:hi - s], clone_rpr(r)
+    content = []
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, old, new).get_opcodes():
+        if tag == 'equal':
+            for piece, rpr in pieces(i1, i2):
+                content.append(make_run(piece, rpr))
+        elif tag == 'delete':
+            for piece, rpr in pieces(i1, i2):
+                content.append(wrap('del', make_run(piece, rpr, deleted=True)))
+        elif tag == 'insert':
+            content.append(wrap('ins', make_run(new[j1:j2], rpr_at(i1))))
+        else:
+            for piece, rpr in pieces(i1, i2):
+                content.append(wrap('del', make_run(piece, rpr, deleted=True)))
+            content.append(wrap('ins', make_run(new[j1:j2], rpr_at(i1))))
+    for r in runs:
+        p_el.remove(r)
+    for el in content:
+        p_el.append(el)
+
+def insert_para_after(body_el, anchor_el, text, style_src=None):
+    """锚点后插新段落（整段 w:ins）：pPr/rPr 克隆自 style_src 段落继承样式字体；
+    无锚点插到正文开头（sectPr 之前）。返回新段落元素作下一个锚点。"""
+    p = OxmlElement('w:p')
+    rpr = None
+    if style_src is not None:
+        ppr = style_src.find(qn('w:pPr'))
+        if ppr is not None:
+            p.append(copy.deepcopy(ppr))
+        for r in style_src.findall(qn('w:r')):
+            if run_text(r):
+                rpr = clone_rpr(r)
+                break
+    p.append(wrap('ins', make_run(text, rpr)))
+    if anchor_el is None:
+        sect = body_el.find(qn('w:sectPr'))
+        if sect is not None:
+            sect.addprevious(p)
+        else:
+            body_el.append(p)
+    else:
+        anchor_el.addnext(p)
+    return p
+
+def revise_in_place():
+    d = docx.Document(out)  # out 已是原文档副本
+    body_el = d.element.body
+    # 对齐单元（与提取脚本同一口径）：正文非空段落文档序在前，表格行在后
+    units = []
+    for para in d.paragraphs:
+        if para.text.strip():
+            units.append(('p', para._p, para.text, para._p))
+    for tbl in d.tables:
+        for row in tbl.rows:
+            units.append(('row', row._tr, ' | '.join(c.text.strip() for c in row.cells), tbl._tbl))
+    orig = [u[2] for u in units]
+
+    def anchor_of(i):
+        kind, el, _, aux = units[i]
+        return (el, aux if kind == 'p' else None)  # (锚点元素, 样式来源段落)
+
+    def replace_unit(i, new_text):
+        kind, el, old_text, aux = units[i]
+        if kind == 'p':
+            revise_para(el, old_text, new_text)
+            return el
+        # 表格行：按 " | " 拆回单元格逐格 diff；格数对不上整行标删 + 表后插新段落
+        cells = el.findall(qn('w:tc'))
+        parts = [x.strip() for x in new_text.split(' | ')]
+        if len(parts) == len(cells):
+            for tc, part in zip(cells, parts):
+                paras = tc.findall(qn('w:p'))
+                text_paras = [x for x in paras if para_text(x).strip()]
+                if text_paras:
+                    revise_para(text_paras[0], para_text(text_paras[0]), part)
+                    for extra in text_paras[1:]:
+                        mark_para_deleted(extra)
+                elif paras:
+                    paras[0].append(wrap('ins', make_run(part, None)))
+            return aux
+        for tc in cells:
+            for x in tc.findall(qn('w:p')):
+                mark_para_deleted(x)
+        return insert_para_after(body_el, aux, new_text)
+
+    sm = difflib.SequenceMatcher(None, orig, rev, autojunk=False)
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == 'equal':
+            continue  # 原样不动：格式自然保留
+        elif tag == 'delete':
+            for i in range(i1, i2):
+                kind, el, _, _2 = units[i]
+                if kind == 'p':
+                    mark_para_deleted(el)
+                else:
+                    for tc in el.findall(qn('w:tc')):
+                        for x in tc.findall(qn('w:p')):
+                            mark_para_deleted(x)
+        elif tag == 'insert':
+            anchor_el, style_src = anchor_of(i1 - 1) if i1 > 0 else (None, None)
+            for j in range(j1, j2):
+                if rev[j]:
+                    anchor_el = insert_para_after(body_el, anchor_el, rev[j], style_src)
+                    style_src = anchor_el
+        else:
+            n = min(i2 - i1, j2 - j1)
+            anchor_el, style_src = anchor_of(i1 - 1) if i1 > 0 else (None, None)
+            for k in range(n):
+                anchor_el = replace_unit(i1 + k, rev[j1 + k])
+                style_src = anchor_el if anchor_el.tag == qn('w:p') else None
+            for i in range(i1 + n, i2):
+                kind, el, _, _2 = units[i]
+                if kind == 'p':
+                    mark_para_deleted(el)
+                else:
+                    for tc in el.findall(qn('w:tc')):
+                        for x in tc.findall(qn('w:p')):
+                            mark_para_deleted(x)
+                anchor_el, style_src = anchor_of(i)
+            for j in range(j1 + n, j2):
+                if rev[j]:
+                    anchor_el = insert_para_after(body_el, anchor_el, rev[j], style_src)
+                    style_src = anchor_el
+    d.save(out)
+
+if path and os.path.exists(path) and path.lower().endswith('.docx'):
+    try:
+        shutil.copyfile(path, out)
+        revise_in_place()
+        print('已生成（修订模式·保留原文格式，原文取自文件）：' + out)
+        sys.exit(0)
+    except Exception as ex:
+        # 就地失败（文件损坏/结构异常）不硬挂：回退新建模式，保证有产物
+        print('就地修订失败（回退新建模式）：' + str(ex), file=sys.stderr)
+
+# ──────────── 回退：新建文档（无原文档可用时；硬编码可见修订格式） ────────────
 
 # 原文：优先从文件回读（与提取脚本同一套逻辑），读不到/长度超出模型所见时用模型传的原文行
 orig_file = []
@@ -1356,9 +1568,6 @@ elif orig_model:
 else:
     print('缺少原文：请提供 original_path（Word 路径）或 original（原文行列表）'); sys.exit(1)
 
-AUTHOR = 'WMessage AI'
-DATE = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-
 d = docx.Document()
 st = d.styles['Normal']
 st.font.name = '宋体'
@@ -1368,11 +1577,6 @@ if title:
     r = h.add_run(title)
     r.font.name = '黑体'
     r.font.size = Pt(16)
-
-_id = [1000]
-def nid():
-    _id[0] += 1
-    return _id[0]
 
 def run_el(text, kind):
     r = OxmlElement('w:r')
@@ -1402,7 +1606,6 @@ def append_change(para, kind, text):
     el = OxmlElement('w:ins' if kind == 'ins' else 'w:del')
     el.set(qn('w:id'), str(nid()))
     el.set(qn('w:author'), AUTHOR)
-    el.set(qn('w:date'), DATE)
     el.append(run_el(text, kind))
     para._p.append(el)
 
@@ -1897,8 +2100,9 @@ pub async fn doc_make_word(
     Ok(out)
 }
 
-/// 生成修订模式 Word（track changes）：回读原文与修订段落 diff，删除标删除线、新增标红色下划线，
-/// 可在 Word 审阅中逐条接受/拒绝。original_path 优先回读文件保真；无路径时用 original 行列表。
+/// 生成修订模式 Word（track changes）：original_path 可读时在原文档副本上就地打修订标记
+/// （2026-09-02：保留原文格式/字体/表格结构，equal 段落原样不动，改动段落行内字符级 diff）；
+/// 无路径时用 original 行列表新建文档。可在 Word 审阅中逐条接受/拒绝。
 /// 引擎走 run_doc_revisions 统一入口：强制 .NET OpenXML 优先，Python 脚本兜底。
 /// 返回 (输出路径, 引擎标记 "dotnet"/"python")，调用方在结果/审计里标注实际引擎。
 pub async fn doc_make_word_revisions(
@@ -2337,6 +2541,89 @@ mod tests {
         assert!(xml.contains("<w:del "), "应有删除修订：{xml}");
         assert!(xml.contains("<w:delText"), "w:del 内必须是 w:delText：{xml}");
         assert!(xml.contains("WMessage AI"), "修订应有作者：{xml}");
+        // 2026-09-02 老板拍板：修订不写日期
+        assert!(!xml.contains("w:date="), "修订不应带 w:date：{xml}");
+    }
+
+    /// 2026-09-02：就地修订保留原文格式——夹具 docx（标题样式 + 加粗 run + 普通段落），
+    /// 修订后：equal 段落原样不动（pStyle / <w:b/> 保留），改动段落行内 w:ins/w:del，
+    /// 无 w:date。dotnet + dll 都在才跑（CI 无 dotnet 跳过）。
+    #[test]
+    fn dotnet_revisions_in_place_preserves_formatting() {
+        let Some((prog, entry)) = dotnet_revisions_entry() else {
+            eprintln!("skip: 未找到 wm-docx-revisions（先 dotnet build -c Release）");
+            return;
+        };
+        let Some(dll) = entry else {
+            eprintln!("skip: 命中随包 exe 形态（本用例只验 dotnet <dll> 直跑）");
+            return;
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        // 最小 docx 夹具（zip + 手写 document.xml）：标题样式段 + 加粗段 + 待改段
+        let orig = tmp.path().join("orig.docx");
+        {
+            const CT: &str = r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>"#;
+            const RELS: &str = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>"#;
+            const DOC: &str = r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>报告标题</w:t></w:r></w:p><w:p><w:r><w:rPr><w:b/></w:rPr><w:t>加粗内容保留</w:t></w:r></w:p><w:p><w:r><w:t>这句要润色。</w:t></w:r></w:p></w:body></w:document>"#;
+            let f = std::fs::File::create(&orig).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opt = zip::write::SimpleFileOptions::default();
+            for (name, body) in [
+                ("[Content_Types].xml", CT),
+                ("_rels/.rels", RELS),
+                ("word/document.xml", DOC),
+            ] {
+                zw.start_file(name, opt).unwrap();
+                std::io::Write::write_all(&mut zw, body.as_bytes()).unwrap();
+            }
+            zw.finish().unwrap();
+        }
+        let dir = tmp.path().join("run");
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = tmp.path().join("out.docx");
+        let params = serde_json::json!({
+            "title": "", "original_path": orig,
+            "original": [],
+            "revised": ["报告标题", "加粗内容保留", "这句润色过了。"],
+            "out": out,
+        });
+        std::fs::write(dir.join("params.json"), params.to_string()).unwrap();
+        let dll_s = dll;
+        let mut lines: Vec<String> = Vec::new();
+        let r = run_python_at(
+            &prog,
+            Some(&dll_s),
+            &dir,
+            &["params.json".to_string()],
+            Some(120),
+            &mut |l: &str| lines.push(l.to_string()),
+            None,
+        )
+        .map_err(|f| f.msg)
+        .expect("dotnet 工具应正常运行");
+        assert_eq!(r.exit_code, Some(0), "stderr: {}", r.stderr);
+        assert!(
+            r.stdout.contains("保留原文格式"),
+            "应走在地修订路径；stdout: {}",
+            r.stdout
+        );
+        let f = std::fs::File::open(&out).unwrap();
+        let mut zip = zip::ZipArchive::new(f).unwrap();
+        let mut xml = String::new();
+        use std::io::Read as _;
+        zip.by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut xml)
+            .unwrap();
+        // 格式保留：标题样式 + 加粗 rPr 原样还在（equal 段落不动）
+        assert!(xml.contains("w:val=\"Heading1\""), "标题样式应保留：{xml}");
+        assert!(xml.contains("<w:b/>") || xml.contains("<w:b />"), "加粗 rPr 应保留：{xml}");
+        // 修订标记：改动段落行内 w:del + w:ins（文本拆 run，断言片段而非整串），无日期
+        assert!(xml.contains("<w:del "), "应有删除修订：{xml}");
+        assert!(xml.contains("<w:ins "), "应有插入修订：{xml}");
+        assert!(xml.contains("<w:delText xml:space=\"preserve\">要</w:delText>"), "删除片段应在：{xml}");
+        assert!(xml.contains("<w:t xml:space=\"preserve\">过了</w:t>"), "插入片段应在：{xml}");
+        assert!(!xml.contains("w:date="), "修订不应带 w:date：{xml}");
     }
 
     #[test]

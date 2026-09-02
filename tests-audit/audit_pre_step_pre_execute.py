@@ -129,8 +129,8 @@ class TestPreStepRouting:
 
         本测试不再是 bug 排查，而是设计意图文档：
         - run_model_loop 在 pre-step 命中 Skill 后被调用，是 interactive mode 的预期行为
-        - pre-execute 持续生效，黑名单原子工具（create_word_revisions / link_file_to_task）
-          在非 Skill Running 状态硬阻断
+        - pre-execute 持续生效，黑名单原子工具（link_file_to_task）
+          在非 Skill Running 状态硬阻断（create_word_revisions 2026-09-02 起移出黑名单，聊天直调）
         - 监控可按 `pre_step.route_skill` 事件的 `mode` 字段区分
 
         与 F-1 `bypass_llm_on_pre_step_hit` 开关：外层 pre-step 路由是否跳过主 LLM，
@@ -229,10 +229,15 @@ class TestPreExecuteAtomicGuard:
     """规则 3：原子黑名单硬锁 + 单点白名单放行"""
 
     def test_atomic_blacklist_exists(self):
-        """黑名单 ATOMIC_TOOLS 存在且包含已知项"""
+        """黑名单 ATOMIC_TOOLS 存在且只含已知项（2026-09-02：create_word_revisions 去 Skill 化移出，聊天直调）"""
         assert "ATOMIC_TOOLS" in TOOL_GUARD
-        assert "create_word_revisions" in TOOL_GUARD
         assert "link_file_to_task" in TOOL_GUARD
+        # create_word_revisions 不得再出现在黑名单数组里（注释/测试里的提及不算）
+        m = re.search(r"pub const ATOMIC_TOOLS.*?\];", TOOL_GUARD, re.S)
+        assert m is not None, "ATOMIC_TOOLS 数组定义必须存在"
+        assert "create_word_revisions" not in m.group(0), (
+            "create_word_revisions 已去 Skill 化，不应留在原子黑名单"
+        )
 
     def test_is_atomic_tool_function(self):
         """is_atomic_tool 函数存在并正确判断"""

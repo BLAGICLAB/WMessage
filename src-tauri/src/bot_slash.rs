@@ -40,7 +40,7 @@ pub struct StopGuard {
     session_id: Option<String>,
     /// 任务卡执行流程（execute_task_core / exec_steps）标记（2026-08-27 审计 P0-2）：
     /// 该流程是「内置编排流」，与 Skill 同级——EXECUTE_SYSTEM_PROMPT 要求调
-    /// create_word_revisions / link_file_to_task 两个原子工具收尾，没有活动 SkillRun
+    /// link_file_to_task 原子工具收尾，没有活动 SkillRun
     /// 开门会被 AtomicGuard 硬拦（prompt 要求的核心动作被自家网关否决）。
     allow_atomic: bool,
 }

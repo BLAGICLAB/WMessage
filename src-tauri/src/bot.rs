@@ -767,8 +767,9 @@ async fn execute_tool_impl(
     //    只有 Skill 在 Running 状态时才放行；其他时候直接返回错误 + 提示走对应 Skill
     // F-2 抽象层：execute_tool 通过 middleware::run_pre_execute 调 pre-execute
     // 2026-08-27 审计 P0-2：任务卡执行流程（StopGuard.allow_atomic）视同 Skill 上下文放行——
-    // EXECUTE_SYSTEM_PROMPT 把 create_word_revisions / link_file_to_task 列为收尾动作，
-    // 该流程没有 SkillRun，不放行则 prompt 要求的核心动作必被自家网关否决。
+    // EXECUTE_SYSTEM_PROMPT 把 link_file_to_task 列为收尾动作，该流程没有 SkillRun，
+    // 不放行则 prompt 要求的核心动作必被自家网关否决。
+    // （create_word_revisions 2026-09-02 起移出原子黑名单，聊天/执行均可直调）
     let active = crate::tool_guard::is_skill_active(session_id)
         || stop.is_some_and(|s| s.allow_atomic());
     if let Some(msg) = crate::middleware::run_pre_execute(app, name, active) {
