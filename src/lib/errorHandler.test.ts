@@ -88,8 +88,7 @@ describe("handleCommandError recoverable 驱动重试 UI（P0-6B）", () => {
   });
 });
 
-describe("空 message 兜底（P2-35）", () => {
-  let alertSpy: ReturnType<typeof vi.spyOn>;
+describe("空 message 兜底（P2-35）", () => {  let alertSpy: ReturnType<typeof vi.spyOn>;
   let confirmSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
@@ -124,5 +123,44 @@ describe("空 message 兜底（P2-35）", () => {
     handleCommandError(null, "test");
     expect(alertSpy).toHaveBeenCalledTimes(1);
     expect(alertSpy.mock.calls[0][0]).toBe("❌ 未知错误");
+  });
+});
+
+describe("hintForCode 全覆盖（批次7审计 P2-2）", () => {
+  let alertSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    alertSpy = vi.spyOn(window, "alert").mockImplementation(() => {});
+  });
+
+  // 与 src-tauri/src/error.rs 的 22 个 code 一一对应——后端加新 code 时
+  // 本测试迫使前端同步补 hint（防再次出现 TASK_INVALID_STATE 落默认分支）
+  const ALL_CODES = [
+    "BOT_DISABLED", "API_KEY_MISSING", "KEYRING_ERROR",
+    "HTTP_START_FAILED", "PORT_IN_USE",
+    "AUTH_MISSING", "AUTH_INVALID", "PAYLOAD_TOO_LARGE",
+    "TASK_NOT_FOUND", "TASK_INVALID_STATE", "INVALID_ARGUMENT",
+    "DB_ERROR", "IO_ERROR",
+    "UNKNOWN_TOOL", "ATOMIC_TOOL_BLOCKED",
+    "SKILL_LOAD_FAILED", "SKILL_NOT_INSTALLED",
+    "LLM_REQUEST_FAILED", "LLM_API_ERROR",
+    "CONFIRM_TIMEOUT", "CONFIRM_REJECTED",
+    "INTERNAL",
+  ];
+
+  it("全部 22 个 code 都有专属 hint（💡 行），无 code 落默认分支", () => {
+    for (const code of ALL_CODES) {
+      alertSpy.mockClear();
+      handleCommandError(ce(code, false));
+      expect(alertSpy).toHaveBeenCalledTimes(1);
+      const text = alertSpy.mock.calls[0][0] as string;
+      expect(text).toContain("💡");
+    }
+  });
+
+  it("TASK_INVALID_STATE hint 说明业务状态语义", () => {
+    handleCommandError(ce("TASK_INVALID_STATE", true, "任务状态不允许该操作：…"));
+    const text = alertSpy.mock.calls[0][0] as string;
+    expect(text).toContain("任务当前状态不允许该操作");
   });
 });

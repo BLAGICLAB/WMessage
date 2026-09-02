@@ -25,3 +25,47 @@ impl TaskOut {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_task() -> db::Task {
+        db::Task {
+            id: "t1".into(),
+            title: "测试任务".into(),
+            due: None,
+            note: None,
+            tags: None,
+            files: None,
+            file_path: None,
+            file_is_dir: None,
+            column: "doing".into(),
+            subtasks: None,
+            completed_at: None,
+            archived: None,
+            deleted_at: None,
+            collapsed: None,
+            order: Some(1.0),
+            updated_at: Some(1000),
+            schedule: None,
+            sched_last: None,
+            bot_assigned: None,
+        }
+    }
+
+    /// 批次8审计（2026-09-02）：TaskOut 线缆形状契约锁——HTTP API/SSE 前端依赖
+    /// ① flatten（task 字段平铺，不嵌套 inner）② camelCase ③ status 与 column 同值。
+    /// serde 属性被破坏时此前 472 个测试无一能抓到，只有前端运行时炸。
+    #[test]
+    fn task_out_wire_shape_locked() {
+        let v = serde_json::to_value(TaskOut::from_task(&sample_task())).unwrap();
+        let obj = v.as_object().expect("TaskOut 必须序列化为平铺对象");
+        assert!(obj.contains_key("id"), "flatten 失效：task 字段未平铺");
+        assert!(!obj.contains_key("inner"), "flatten 失效：出现嵌套 inner");
+        assert!(obj.contains_key("botAssigned") || !obj.contains_key("bot_assigned"),
+            "camelCase 失效");
+        assert_eq!(obj["status"], "doing");
+        assert_eq!(obj["status"], obj["column"], "status 必须与 column 同值");
+    }
+}

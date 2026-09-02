@@ -159,3 +159,22 @@ describe("TaskCardContent 多文件绑定", () => {
     expect(onCopyFilePath).toHaveBeenCalledWith("/docs/b.docx");
   });
 });
+
+// 2026-09-02 一致性修复：挂件卡片此前不显示完成时间，主窗口 TodoCard 显示
+describe("TaskCardContent 完成时间显示（与主窗口一致）", () => {
+  it("完成列任务显示「完成 MM-DD HH:mm」", () => {
+    render(
+      <TaskCardContent
+        task={{ id: "t1", title: "x", column: "done", completedAt: new Date(2026, 8, 1, 18, 30).getTime() }}
+      />
+    );
+    expect(screen.getByText("完成 09-01 18:30")).toBeInTheDocument();
+  });
+
+  it("未完成 / 无完成时间不显示", () => {
+    const { container } = render(
+      <TaskCardContent task={{ id: "t1", title: "x", column: "todo" }} />
+    );
+    expect(container.textContent).not.toContain("完成 ");
+  });
+});

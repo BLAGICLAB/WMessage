@@ -57,6 +57,8 @@ function hintForCode(code: string): string | null {
       return "请求体过大（>1MB），请减小后重试";
     case "TASK_NOT_FOUND":
       return "该任务可能已被删除，请刷新列表";
+    case "TASK_INVALID_STATE":
+      return "任务当前状态不允许该操作（执行中/已完成/已归档），请调整后重试";
     case "INVALID_ARGUMENT":
       return "请检查输入参数";
     case "SKILL_LOAD_FAILED":

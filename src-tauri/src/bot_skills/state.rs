@@ -232,6 +232,13 @@ pub(crate) fn test_skill_run_state(name: &str) -> Option<SkillState> {
         .map(|r| r.state.clone())
 }
 
+/// 批次8审计 P1（2026-09-02）：SKILL_RUNS 测试串行锁。
+/// clear_terminal_skill_runs / skill_terminate_all(None) 是无差别全局操作，
+/// 并行测试互相删/改对方的 run 会随机挂（state 清理测试 × lib.rs 退出清理测试
+/// 实锤交错路径）。凡写全局 SKILL_RUNS 且对内容有断言的测试必须全程持此锁。
+#[cfg(test)]
+pub(crate) static SKILL_RUNS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 
 /// 测试辅助：构造一个指定 max_steps / timeout 的 SkillRun（原 tests::test_run，跨子模块测试共用）
 #[cfg(test)]
@@ -262,6 +269,7 @@ mod tests {
     /// Running/Paused 不受影响（测试用 Paused：is_skill_active 只认 Running，避免与并行测试竞争）
     #[test]
     fn clear_terminal_removes_only_terminal_states() {
+        let _serial = SKILL_RUNS_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let zombie = "test-zombie-clear";
         // 用一个 Failed 残留 + 一个 Paused 活跃
         let mut failed = test_run(8, 180);
@@ -293,6 +301,7 @@ mod tests {
     /// 复原回 Failed；非 Failed 状态 / 别的会话的 run 不动
     #[test]
     fn reopen_failed_run_for_rollback_scoped_by_state_and_session() {
+        let _serial = SKILL_RUNS_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let name = "test-rollback-reopen";
         let mut run = test_run(8, 180);
         run.name = name.into();

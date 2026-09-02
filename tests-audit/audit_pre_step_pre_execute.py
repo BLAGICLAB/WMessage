@@ -183,8 +183,15 @@ class TestPreStepMissFlowsToLLM:
         )
 
     def test_run_model_loop_called_unconditionally(self):
-        """run_model_loop 在 pre-step 处理后调用（无论命中与否都进 LLM）"""
-        assert "run_model_loop(app, msgs, 8, &stop)" in BOT_ALL
+        """run_model_loop 在 pre-step 处理后调用（无论命中与否都进 LLM）。
+
+        批次8审计（2026-09-02）修复：原先写死旧签名字面量
+        `run_model_loop(app, msgs, 8, &stop)`，函数加 max_rounds/plan_state
+        参数后整条断言 FAIL（门禁红，pre-push 被卡）。改为正则只锁
+        「无条件调用 run_model_loop」这一行为不变量，参数演进不再误报。"""
+        assert re.search(r"run_model_loop\(\s*app\s*,\s*msgs\s*,", BOT_ALL), (
+            "bot_chat 必须在 pre-step 处理后无条件调用 run_model_loop"
+        )
 
     def test_every_execute_tool_has_pre_execute_check(self):
         """execute_tool 入口必走 pre_execute（middleware::run_pre_execute，F-2 抽象层 2026-08-18）"""
@@ -300,18 +307,21 @@ class TestEventLogTiming:
     def test_bot_log_path_uses_portable_dir(self):
         """bot.log 走 db_dir 便携模式路径（exe 可写时 src-tauri/target/debug/）"""
         log_path = Path("/Users/renshi/Projects/wmessage/src-tauri/target/debug/bot.log")
-        if log_path.exists():
-            content = log_path.read_text()
-            assert len(content) > 0
-            # 至少应该有一类事件
-            assert any(
-                keyword in content
-                for keyword in [
-                    "intent_route", "tool.return", "tool.call", "tool_done",
-                    "tool_blocked_atomic", "user:",
-                    "user.message", "skill.start", "llm.request", "llm.response",
-                ]
-            ), "bot.log 里没有预期事件类型"
+        # 批次8审计（2026-09-02）：原先 if exists 静默空转——文件不存在时整条
+        # 测试假绿无约束力。改为显式 skip，让「未覆盖」在报告里可见
+        if not log_path.exists():
+            pytest.skip("bot.log 不存在（本机未跑过 dev 实例），跳过事件抽查")
+        content = log_path.read_text()
+        assert len(content) > 0
+        # 至少应该有一类事件
+        assert any(
+            keyword in content
+            for keyword in [
+                "intent_route", "tool.return", "tool.call", "tool_done",
+                "tool_blocked_atomic", "user:",
+                "user.message", "skill.start", "llm.request", "llm.response",
+            ]
+        ), "bot.log 里没有预期事件类型"
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -322,9 +332,13 @@ class TestNoRegression:
     """保证联动改造没有打破既有单测"""
 
     def test_cargo_test_lib_baseline(self):
-        """cargo test --lib 应该全过（Block 1+Block 2 后基线 83）"""
+        """cargo test --lib 应该全过且测试数不大幅回归。
+
+        批次8审计（2026-09-02）：阈值 80 是 2026-08-18 基线（当时 83），
+        当前已 472——80 的下限只能挡灾难性回归。收紧到 400，
+        保留约 15% 缓冲防正常删测试误报。"""
         count = cargo_test_count()
-        assert count >= 80, f"cargo test --lib 失败或测试数回归（{count} < 80）"
+        assert count >= 400, f"cargo test --lib 失败或测试数大幅回归（{count} < 400，当前基线 472）"
 
 
 # ────────────────────────────────────────────────────────────────────

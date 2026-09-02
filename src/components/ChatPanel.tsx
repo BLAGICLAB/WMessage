@@ -4,7 +4,7 @@ import { listen, emit } from "@tauri-apps/api/event";
 
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { focusMainWindow } from "../focus";
-import { handleCommandError, formatCommandError } from "../lib/errorHandler";
+import { handleCommandError, formatCommandError, isCommandError } from "../lib/errorHandler";
 import { PROVIDER_PRESETS, matchPreset, type ProviderPreset } from "../lib/providerPresets";
 import type { Task } from "../types";
 import { basename } from "../format";
@@ -381,6 +381,9 @@ function extractFilePaths(content: string): string[] {
         tavilyKey?: string;
         tavilyEnabled?: boolean | null;
         pythonTimeoutSecs?: number | null;
+        // 批次7审计 P1-1：必须透传授权模式——bot_set_config 是全量覆写，
+        // 漏传会被 BotConfig 容器级 serde(default) 填 None，静默重置回 ask
+        permMode?: string | null;
       }>("bot_get_config");
       await invoke("bot_set_config", {
         config: {
@@ -391,6 +394,7 @@ function extractFilePaths(content: string): string[] {
           tavilyKey: c.tavilyKey ?? null,
           tavilyEnabled: c.tavilyEnabled ?? null,
           pythonTimeoutSecs: c.pythonTimeoutSecs ?? null,
+          permMode: c.permMode ?? null,
         },
         apiKey: null,
       });
@@ -756,12 +760,13 @@ function extractFilePaths(content: string): string[] {
       }
       onFinishSelection();
     } catch (e) {
-      // 防重入拒绝（这张卡真在跑）不是错误：不持久化 ⚠️ 气泡、不污染会话历史，
-      // 只恢复触发前消息 + 本地提示（2026-08-19：幻影重复触发留下的错误气泡
-      // 让用户以为执行失败，实际任务在正常跑）
-      if (execTaskId && formatCommandError(e).includes("正在执行中")) {
+      // 业务状态拒绝（TASK_INVALID_STATE：执行中重复触发 / 已完成 / 已归档）不是错误：
+      // 不持久化 ⚠️ 气泡、不污染会话历史，只恢复触发前消息 + 本地提示（后端 message）。
+      // 批次7审计 P2-2：按结构化 code 识别——原先靠 message 子串「正在执行中」匹配，
+      // 后端文案一改防重入 UX 就静默退化回 2026-08-19 的幻影错误气泡。
+      if (execTaskId && isCommandError(e) && e.code === "TASK_INVALID_STATE") {
         if (sessionIdRef.current === sid) setMessages(history.slice(0, -1));
-        addHint("⏳ 这张卡正在执行中，跑完会实时更新；完成后再触发");
+        addHint(`⏳ ${formatCommandError(e)}`);
       } else {
         const failed: Msg[] = [
           ...history,

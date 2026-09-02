@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { DraggableSyntheticListeners } from "@dnd-kit/core";
 import type { Task } from "../types";
 import { taskFiles } from "../lib/taskFiles";
-import { basename, formatDue, formatSchedule, scheduleToDatetime } from "../format";
+import { basename, formatCompletedAt, formatDue, formatSchedule, scheduleToDatetime } from "../format";
 import { DoneCircle } from "./DoneCircle";
 import { FoldToggle } from "./FoldToggle";
 import { ActorAvatar } from "./ActorAvatar";
@@ -12,7 +12,7 @@ import { useInlineEdit } from "./useInlineEdit";
  * 任务卡展示内容 —— 供挂件（WidgetApp）使用。
  *
  * ⚠️ 字段与顺序必须与 TodoCard 一致（老板要求挂件与主窗口显示一致）：
- * 标题行（标题 + 折叠开关 + 打勾圆圈；折叠时标题单行截断） → 备注 → 标签 → 子任务 → 文件 → 截止时间（截止永远最底）。
+ * 标题行（标题 + 折叠开关 + 打勾圆圈；折叠时标题单行截断） → 备注 → 标签 → 子任务 → 文件 → 🤖/⏰ → 截止时间 + 完成时间（截止永远最底）。
  * 标题以下内容可折叠。改动 TodoCard 展示时记得同步这里。
  */
 export function TaskCardContent({
@@ -269,7 +269,7 @@ export function TaskCardContent({
               （老板 2026-08-17 12:33 指令：不重新设计折叠窗口，折叠态只露标题，
                展开态显示标题完整 + 🤖 + ⏰ + 其他内容） */}
           {(onBotExecute || onSetSchedule) && (
-            <div className="mt-3 flex items-center gap-1.5">
+            <div className="mt-2 flex items-center gap-1.5">
               {onBotExecute && (
                 <button
                   className="nm-btn px-2 py-0.5 text-[11px] leading-none text-[var(--t3)] flex items-center gap-1"
@@ -371,12 +371,19 @@ export function TaskCardContent({
             </div>
           )}
 
-          {/* 截止时间 —— 永远在最下面 */}
-          {task.due && (
-            <div className="mt-2">
-              <span className="nm-inset px-2 py-1 text-xs text-[var(--t4)]">
-                {formatDue(task.due)}
-              </span>
+          {/* 截止时间 —— 永远在最下面；完成时间同行居中（与主窗口 TodoCard 一致） */}
+          {(task.due || (task.column === "done" && task.completedAt)) && (
+            <div className="mt-2 flex items-center gap-1">
+              {task.due && (
+                <span className="nm-inset px-2 py-1 text-xs text-[var(--t4)] shrink-0">
+                  {formatDue(task.due)}
+                </span>
+              )}
+              {task.column === "done" && task.completedAt && (
+                <span className="flex-1 min-w-0 text-center whitespace-nowrap text-[10px] text-[var(--t5)]">
+                  {formatCompletedAt(task.completedAt)}
+                </span>
+              )}
             </div>
           )}
         </>

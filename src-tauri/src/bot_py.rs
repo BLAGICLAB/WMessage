@@ -57,12 +57,15 @@ pub fn py_get_enabled(app: AppHandle) -> bool {
     py_flag_path(&app).exists()
 }
 
+/// 批次7审计 P2-1：错误类型对齐全量 58 个命令的 CommandError 四字段结构——
+/// 原先唯一返回裸 String，前端拿不到结构化 code
 #[tauri::command]
-pub fn py_set_enabled(app: AppHandle, enabled: bool) -> Result<bool, String> {
+pub fn py_set_enabled(app: AppHandle, enabled: bool) -> CommandResult<bool> {
     let dir = crate::db::data_dir(&app);
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| CommandError::IoError(e.to_string()))?;
     if enabled {
-        std::fs::write(py_flag_path(&app), b"1").map_err(|e| e.to_string())?;
+        std::fs::write(py_flag_path(&app), b"1")
+            .map_err(|e| CommandError::IoError(e.to_string()))?;
     } else {
         let _ = std::fs::remove_file(py_flag_path(&app));
     }
@@ -762,6 +765,14 @@ static EXITING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::n
 /// 退出清理入口置位（lib.rs cleanup_on_exit 调用，须在 kill_all_py_children 之前）
 pub fn mark_exiting() {
     EXITING.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// 批次8审计 P2（2026-09-02）：测试专用复位——lib.rs 退出清理测试经
+/// cleanup_on_exit_with 置位 EXITING 后原先进程内永不复位，后续任何走生产
+/// run_python() 入口的测试（当前没有，今后加了必挂）会被「应用正在退出」误拒。
+#[cfg(test)]
+pub(crate) fn reset_exiting_for_test() {
+    EXITING.store(false, std::sync::atomic::Ordering::SeqCst);
 }
 
 /// run_python_at 的失败（P2-10）：区分「spawn NotFound」—— 缓存的 python 路径
@@ -2148,6 +2159,11 @@ mod tests {
 
     #[test]
     fn stop_reader_returns_partial_when_stopped() {
+        // 批次8审计 P1：本用例断言「未停时完整读取」，stop_all_executions（lib.rs 退出
+        // 清理测试 / bot_slash stop_all 用例）并行广播会提前置位 → 首读即 EOF 随机挂
+        let _serial = crate::bot_slash::STOP_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let data = vec![b'x'; 4096];
         let guard = crate::bot_slash::StopGuard::new(false, None);
         let token = guard.token();

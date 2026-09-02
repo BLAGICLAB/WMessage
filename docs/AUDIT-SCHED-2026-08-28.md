@@ -28,7 +28,7 @@ run_scheduled：SchedGuard 防重入 → bot_get_enabled 检查 → 跑前记 sc
 |---|------|------|------|------|
 | F1 | P1 | bot_scheduler.rs:329-334 | 调度循环对每张到点卡 `spawn` 后立即 `await`：单卡最坏 50 轮 ×（LLM 300s + Python 300s）可跑数小时，期间全部后续到点任务排队 | **已修**：spawn 不 await + 单任务 30min 整体超时 |
 | F2 | P2 | bot_scheduler.rs:73/92/113/131/148 | 本地时刻解析一律 `.single()`：DST 切换日目标时刻不存在/歧义时返回 None，`occurrence_after` 整体 None，而基准 sched_last 不变 → daily/weekly 任务**永久静默失效**（国内时区无感） | **已修**：`resolve_local` 歧义取较早者、不存在顺延 ≤3h |
-| F3 | P2 | bot_scheduler.rs:202, 240-246 | recurring 补跑无时效上限（关机一周后启动会补跑一周前的到点）；机器人开关关闭期间的到点任务不消费，重开瞬间全部补跑 | **待拍板**（补跑窗口是产品决策，建议 2h，未动） |
+| F3 | P2 | bot_scheduler.rs:202, 240-246 | recurring 补跑无时效上限（关机一周后启动会补跑一周前的到点）；机器人开关关闭期间的到点任务不消费，重开瞬间全部补跑 | **已修**（2026-09-02 老板拍板 2h 窗口）：`classify_due` 超窗 occurrence 判 Missed 不补跑，sched_last 记为现在顺延到下一周期；新任务首跑与 at: 语义不变 |
 | F4 | P3 | bot_scheduler.rs:258-281 | sched_last 跑前记（防 30s 重触发，方向正确），执行中进程被杀则本次 occurrence 无声消失 | 记录，取舍可接受 |
 | F5 | P1 | bot.rs:805→1738-1756；bot.rs:1916→bot_py.rs:1727 | 后台定时执行仍会弹**原生文件对话框**：`bind_file` 分发处丢弃 interactive 无条件弹框；`extract_document` 无 path 时 `doc_extract` 无条件 `blocking_pick_file`。无人在场时弹模态框 + spawn_blocking 永久阻塞 → 该后台任务卡死（叠加 F1 拖死全调度） | **已修**：两处 interactive=false 直接返回「后台执行不能弹窗选文件」 |
 | F6 | P1 | lib.rs:185-210, 468-475 | 退出清理对在途模型循环**零取消**：不置位任何 StopGuard、不等待。后果：生成文件写一半残留、sched_last 已消费执行无声消失、后台任务事实上无任何手段可叫停 | **已修**：`stop_all_executions()` 置位全部实例 + 2s drain 宽限 |

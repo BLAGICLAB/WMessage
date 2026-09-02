@@ -2,6 +2,43 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-09-02（周三）定时补跑 2h 时效窗口（批次5审计 F3 定版）
+
+老板拍板：recurring 补跑时效窗口 2h，超窗跳过。原先无窗口——关机一周启动会补跑一周前的到点、机器人开关关闭期间的到点在重开瞬间全补跑。
+
+实现（bot_scheduler.rs）：新增纯函数 `classify_due`（Run / Missed / NotDue 三态）——recurring（daily/weekly/monthly）的下一 occurrence 距现在超 `CATCHUP_WINDOW=2h` 判 Missed：不补跑，`sched_last` 记为现在把该 occurrence 消费掉（顺延到下一周期），记 `sched_missed` 审计 + broadcast 同步三端。两条边界语义明确保留：新任务（sched_last=None）「下一次触发立即生效」的首跑不变；at: 一次性任务仍由 at_expired 放弃逻辑处理、不走补跑窗口。
+
+测试：`classify_due` 6 个单测（窗口内 Run / 三种周期超窗 Missed / 2h 整边界 Run、2h+1min Missed / 新任务首跑 / at: 不判 Missed / 未到点 NotDue）。cargo test 全目标 473 → **479 全绿**。
+
+## 2026-09-02（周三）全面审计批次 8：测试体系与防回归（无 P0，3 个 P1 已修）
+
+按 `docs/AUDIT-PLAN-BOT-2026-08-27.md` 收尾批，三个并行 explore 子代理 + 全部 P1 主代理逐条源码复核，报告落盘 `docs/AUDIT-TESTS-2026-08-28.md`（含盲区清单 + 补测试优先级建议）。
+
+**P1 三个（均已修 + 验证）**：
+- **tests-audit 门禁是红的**：`audit_pre_step_pre_execute.py:187` 写死旧签名 `run_model_loop(app, msgs, 8, &stop)`，函数加参后 pytest 1 条 FAIL——pre-push 钩子（test-all.sh, set -e）必被卡。改正则锁行为不变量；顺带 cargo 基线阈值 80（当时基线 83 的遗物）收紧到 400，bot.log 空转检查改显式 skip。pytest 22过/1FAIL → **23过/0FAIL/2skip**
+- **SKILL_RUNS 并行测试实锤交错**：state.rs:264 的无差别 clear × state.rs:295 的 Failed 重开 × lib.rs:671 的 terminate_all(None) 三条路径互相删/改对方的 run，随机挂。新增 `SKILL_RUNS_TEST_LOCK`（不引 serial_test 依赖）三处全程持有
+- **stop_all 全局广播打断并行测试**：lib.rs:671 / bot_slash stop_all 用例的 stop_all_executions 会提前置位 bot_py.rs:2153 的 guard，使其「未停时完整读取」断言随机挂。新增 `STOP_TEST_LOCK` 三处持有（lib.rs 双锁固定顺序 SKILL→STOP）。cargo test ×3 连跑验证稳定
+
+**P2 三个（已修）**：EXITING 退出标志测试后永不复位（补 `reset_exiting_for_test`，防未来 run_python 集成测试误挂）；`task_out.rs` 补 flatten/camelCase/status==column 线缆契约锁（此前 serde 属性被破坏 472 个测试无一能抓到）；`format.ts` 补 16 个用例（scheduleToDatetime 四分支 + isValidDateTimeLocal 进位拒绝——注释里两次 NaN 历史事故的高发纯逻辑长期零覆盖）。
+
+**补测试优先级建议（记录，已落报告）**：#1 生产 run_skill_scheduler 真 e2e（run_dsl_loop_sync 镜像照不到确认/审计/持久化/回滚窗口/Done 收尾，8-27/28 的 P0 修复密集区恰在镜像外；fixtures/minimax-ppt 现成素材）；#2 run_model_loop 本体集成覆盖（重试/stop/think 拆分只有纯函数碎片）；#3 KanbanBoard.spliceMove（需先导出）；#4 弱断言清理（6 处内联复刻/恒等断言）。
+
+**测试**：cargo test 全目标 472 → **473**（+task_out 契约锁）+20+8+8 三轮连跑全绿；vitest 116 → **132 全绿**；tsc 零错；tests-audit pytest 门禁转绿。
+
+## 2026-09-02（周三）全面审计批次 7：前后端契约（无 P0，1 个 P1 已修）
+
+按 `docs/AUDIT-PLAN-BOT-2026-08-27.md` 推进，三个并行 explore 子代理（Rust 命令面 / Rust 事件与错误面 / 前端调用与监听面）+ 全部发现主代理逐条源码复核，报告落盘 `docs/AUDIT-CONTRACT-2026-08-28.md`（含命令/事件/错误码三张契约对照表）。
+
+**结论**：主干契约健康——58 个命令定义=注册=前端调用三方一致（参数 camelCase 转换全部吻合，无孤儿/悬空）；Rust 12 个 emit 事件全闭环有监听、payload 字段逐一对上，前端 8 个互发事件走全局广播属设计；22 个 CommandError code 修复后 100% 有前端 hint。事件 payload 无 key/token 泄漏。
+
+**P1 一个（已修 + 回归测试）**：**挂件模型切换静默抹掉授权模式**——ChatPanel `applyModelConfig` 整体回写 `bot_set_config` 时漏传 `permMode`，后端全量覆写 + BotConfig 容器级 `serde(default)` 把缺失字段填 None，用户在设置页配的 strict/yolo 被静默重置回 ask。修复：读入类型与回写对象补 permMode 透传。
+
+**P2 两个（已修）**：`py_set_enabled` 错误载荷从裸 String 对齐 CommandError 四字段结构（58 个命令中唯一例外）；`TASK_INVALID_STATE` 补 hintForCode case，ChatPanel 防重入识别从 message 子串「正在执行中」改用结构化 code（文案漂移即静默退化的脆弱点消除，拒绝文案改为透传后端 message，已完成/已归档拒绝同路径受益）。
+
+**记录不修（排期/备查）**：死命令 `bind_file`/`db_merge`（已注册零调用，排期删）；`bot_stop`/`bot_confirm_response` 返回 `()` 失败不可见（60s 超时兜底，无现实受害路径）；`bot-confirm` 无会话归属时白等 60s（仅 DSL 遗留无守卫路径的理论边界）；AppConsts/MigrationStatus snake_case 风格漂移（契约一致非 bug）。
+
+**测试**：vitest 113 → **116 全绿**（permMode 透传回归 / TASK_INVALID_STATE code 识别 / 22 code hint 全覆盖 3 个新用例）；cargo test 全目标 **472+20+8+8 全绿**；tsc 零错。
+
 ## 2026-08-28（周五）滚动条深浅色适配（Windows 主窗口 + 挂件）
 
 原先全局没有任何滚动条样式：深色模式下 WebView2 原生滚动条仍是浅色，突兀。修复（src/ui/main.css，主窗口/挂件共用）双机制：

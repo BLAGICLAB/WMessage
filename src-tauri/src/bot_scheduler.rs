@@ -178,6 +178,45 @@ fn sched_last_dt(ms: Option<i64>) -> chrono::DateTime<chrono::Local> {
     }
 }
 
+/// recurring 补跑时效窗口（2026-09-02 老板拍板，批次5审计 F3）：2h。
+/// 关机/休眠/机器人开关关闭期间错过的到点，恢复时距到点超过 2h 一律不补跑。
+const CATCHUP_WINDOW: chrono::Duration = chrono::Duration::hours(2);
+
+/// 到点判定（纯函数，可测）：
+/// - Run：触发点已到且未超补跑窗口（或新任务首跑），正常执行；
+/// - Missed：recurring 触发点已超 2h 窗口——不补跑，调用方消费掉该 occurrence
+///   （sched_last 记为现在），防关机一周/开关关闭期间的到点在恢复瞬间全补跑；
+/// - NotDue：未到点 / 无下次触发。
+/// 边界：仅对跑过的任务（sched_last 有值）判 Missed——新任务（None）保持
+/// 「下一次触发立即生效」的既有首跑语义；at: 一次性任务由 at_expired 放弃逻辑
+/// 处理，不在此判 Missed。
+#[derive(Debug, PartialEq, Eq)]
+enum DueVerdict {
+    Run,
+    Missed,
+    NotDue,
+}
+
+fn classify_due(
+    sched: &str,
+    sched_last: Option<i64>,
+    now: chrono::DateTime<chrono::Local>,
+) -> DueVerdict {
+    match occurrence_after(sched, sched_last_dt(sched_last)) {
+        Some(occ) if occ <= now => {
+            if sched_last.is_some()
+                && !sched.starts_with("at:")
+                && now - occ > CATCHUP_WINDOW
+            {
+                DueVerdict::Missed
+            } else {
+                DueVerdict::Run
+            }
+        }
+        _ => DueVerdict::NotDue,
+    }
+}
+
 /// 找出到点的定时任务（未删、未归档、未完成，且 sched_last < 触发点 ≤ now）。
 /// 顺带清理「错过的一次性任务」：at: 从未执行且时间已过 → 放弃并清掉 schedule
 ///（审计 P1：否则重启后 30s 内会补执行过期任务）
@@ -198,6 +237,7 @@ async fn find_due_tasks(app: &AppHandle) -> Vec<crate::db::Task> {
         })
         .map(|t| t.id.clone())
         .collect();
+    let mut missed_ids: Vec<String> = Vec::new();
     let due: Vec<crate::db::Task> = all
         .into_iter()
         .filter_map(|t| {
@@ -212,9 +252,22 @@ async fn find_due_tasks(app: &AppHandle) -> Vec<crate::db::Task> {
             else {
                 return None;
             };
-            match occurrence_after(sched, sched_last_dt(t.sched_last)) {
-                Some(occ) if occ <= now => Some(t),
-                _ => None,
+            match classify_due(sched, t.sched_last, now) {
+                DueVerdict::Run => Some(t),
+                DueVerdict::Missed => {
+                    crate::bot::audit_log(
+                        app,
+                        &format!(
+                            "sched_missed | id: {} | schedule: {} | 到点已超 {}h 补跑窗口，跳过不补跑",
+                            t.id,
+                            crate::bot::truncate_for_log(sched, 40),
+                            CATCHUP_WINDOW.num_hours()
+                        ),
+                    );
+                    missed_ids.push(t.id.clone());
+                    None
+                }
+                DueVerdict::NotDue => None,
             }
         })
         .collect();
@@ -234,6 +287,27 @@ async fn find_due_tasks(app: &AppHandle) -> Vec<crate::db::Task> {
             if !fresh.is_empty() {
                 // 2026-08-28 批次2审计：调度器写库也要广播（原先零广播，
                 // 主窗口无轮询会长期显示旧的 ⏰ 徽标/备注）
+                if crate::db::db_upsert(app.clone(), fresh.clone()).await.is_ok() {
+                    crate::bot::broadcast_after_mutation(app, fresh, vec![]);
+                }
+            }
+        }
+    }
+    // 消费超窗的 recurring occurrence（批次5审计 F3，2026-09-02 拍板 2h 窗口）：
+    // 不补跑，sched_last 记为现在——下一个 occurrence 顺延到未来，下个 tick 不再误判到点。
+    // 与过期 at: 清理同模式：基于最新数据合并，只动 sched_last/updated_at。
+    if !missed_ids.is_empty() {
+        if let Ok(cur) = crate::db::db_load(app.clone()).await {
+            let fresh: Vec<crate::db::Task> = cur
+                .into_iter()
+                .filter(|t| missed_ids.contains(&t.id))
+                .map(|mut t| {
+                    t.sched_last = Some(now.timestamp_millis());
+                    t.updated_at = Some(now.timestamp_millis());
+                    t
+                })
+                .collect();
+            if !fresh.is_empty() {
                 if crate::db::db_upsert(app.clone(), fresh.clone()).await.is_ok() {
                     crate::bot::broadcast_after_mutation(app, fresh, vec![]);
                 }
@@ -515,5 +589,87 @@ mod sched_tests {
         assert_eq!(occurrence_after("monthly:0:09:00", after), None);
         assert_eq!(occurrence_after("monthly:32:09:00", after), None);
         assert_eq!(occurrence_after("monthly:5:25:00", after), None);
+    }
+
+    // ── 批次5审计 F3：recurring 补跑 2h 时效窗口（2026-09-02 拍板）──
+
+    fn ms(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> i64 {
+        dt(y, mo, d, h, mi).timestamp_millis()
+    }
+
+    #[test]
+    fn classify_due_fresh_within_window_runs() {
+        // daily 10:00，昨天 10:00 跑过，现在 10:30——窗口内，正常执行
+        let now = dt(2026, 8, 16, 10, 30);
+        assert_eq!(
+            classify_due("daily:10:00", Some(ms(2026, 8, 15, 10, 0)), now),
+            DueVerdict::Run
+        );
+    }
+
+    #[test]
+    fn classify_due_stale_beyond_window_missed() {
+        // daily 10:00，上次跑是 3 天前——下一 occurrence 在 3 天前，超窗 → 跳过
+        let now = dt(2026, 8, 16, 12, 0);
+        assert_eq!(
+            classify_due("daily:10:00", Some(ms(2026, 8, 13, 10, 0)), now),
+            DueVerdict::Missed
+        );
+        // weekly / monthly 同理
+        assert_eq!(
+            classify_due("weekly:1:09:00", Some(ms(2026, 8, 3, 9, 0)), now),
+            DueVerdict::Missed
+        );
+        assert_eq!(
+            classify_due("monthly:1:08:00", Some(ms(2026, 7, 1, 8, 0)), now),
+            DueVerdict::Missed
+        );
+    }
+
+    #[test]
+    fn classify_due_window_boundary() {
+        // 到点恰好 2h 前 → 仍执行；2h1s 前 → 跳过
+        let last = ms(2026, 8, 15, 10, 0);
+        assert_eq!(
+            classify_due("daily:10:00", Some(last), dt(2026, 8, 16, 12, 0)),
+            DueVerdict::Run
+        );
+        assert_eq!(
+            classify_due("daily:10:00", Some(last), dt(2026, 8, 16, 12, 1)),
+            DueVerdict::Missed
+        );
+    }
+
+    #[test]
+    fn classify_due_new_task_first_run_preserved() {
+        // sched_last=None（新任务）保持「下一次触发立即生效」首跑语义，
+        // 不因 occurrence 落在 1970 被误判 Missed
+        let now = dt(2026, 8, 16, 12, 0);
+        assert_eq!(classify_due("daily:10:00", None, now), DueVerdict::Run);
+    }
+
+    #[test]
+    fn classify_due_at_never_missed() {
+        // at: 一次性任务不走补跑窗口（由 at_expired 放弃逻辑处理）：
+        // 过去的一次性任务保持既有 Run 判定（find_due_tasks 的 stale 清理负责清场）
+        let now = dt(2026, 8, 16, 12, 0);
+        assert_eq!(classify_due("at:2026-08-10T10:00", None, now), DueVerdict::Run);
+    }
+
+    #[test]
+    fn classify_due_not_due() {
+        let now = dt(2026, 8, 16, 9, 0);
+        // 今天 10:00 未到
+        assert_eq!(
+            classify_due("daily:10:00", Some(ms(2026, 8, 15, 10, 0)), now),
+            DueVerdict::NotDue
+        );
+        // 已跑过的一次性任务不再触发
+        assert_eq!(
+            classify_due("at:2026-08-16T10:00", Some(ms(2026, 8, 16, 10, 0)), dt(2026, 8, 16, 11, 0)),
+            DueVerdict::NotDue
+        );
+        // 坏格式
+        assert_eq!(classify_due("junk", None, now), DueVerdict::NotDue);
     }
 }

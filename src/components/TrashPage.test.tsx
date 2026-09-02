@@ -52,7 +52,6 @@ describe("TrashPage 按 updatedAt 倒序（P2-22）", () => {
         tasks={tasks}
         onUpdate={vi.fn()}
         onDelete={vi.fn()}
-        onClearAll={vi.fn()}
       />
     );
     const titles = [...container.querySelectorAll("h3")].map((h) => h.textContent);
@@ -69,7 +68,6 @@ describe("TrashPage 按 updatedAt 倒序（P2-22）", () => {
         tasks={tasks}
         onUpdate={vi.fn()}
         onDelete={vi.fn()}
-        onClearAll={vi.fn()}
       />
     );
     const titles = [...container.querySelectorAll("h3")].map((h) => h.textContent);

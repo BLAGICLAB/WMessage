@@ -669,6 +669,16 @@ mod p2_24_exit_cleanup_tests {
     ///（退出 ≠ 用户关开关，下次启动应自动恢复）、app_exit_cleanup 审计落行。
     #[test]
     fn cleanup_on_exit_releases_api_and_skill() {
+        // 批次8审计 P1：本测试做两类全局广播——skill_terminate_all(None)（无差别
+        // 终止/配合并行的 state 清理测试会互相删对方的 run）与 stop_all_executions
+        //（置位全部 StopGuard，会打断 bot_py 的 StopReader 用例）。两把串行锁全程持有
+        //（固定顺序 SKILL_RUNS → STOP，防与其他持锁测试交叉死锁）。
+        let _skill_serial = crate::bot_skills::SKILL_RUNS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _stop_serial = crate::bot_slash::STOP_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let app = tauri::test::mock_app();
         let handle = app.handle().clone();
         app.manage(crate::api_server::ApiState::default());
@@ -754,5 +764,8 @@ mod p2_24_exit_cleanup_tests {
         // 收尾：清掉本测试在数据目录产生的文件与 Skill run，不污染其他测试
         let _ = std::fs::remove_file(&flag);
         crate::bot_skills::test_remove_skill_run("p2-24-skill");
+        // 批次8审计 P2：复位 EXITING——否则本进程后续任何走生产 run_python() 的
+        // 测试都会被「应用正在退出」误拒
+        crate::bot_py::reset_exiting_for_test();
     }
 }

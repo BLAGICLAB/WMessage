@@ -134,6 +134,13 @@ pub fn active_execution_count() -> usize {
     stop_registry().lock().map(|m| m.len()).unwrap_or(0)
 }
 
+/// 批次8审计 P1（2026-09-02）：STOP_REGISTRY 测试串行锁。
+/// stop_all_executions() 是无差别全局广播（置位全进程所有已注册 StopGuard），
+/// 与「持有 StopGuard 且断言停止前行为」的测试（如 bot_py 的 StopReader 用例）
+/// 并行时互相干扰随机挂。这两类测试都必须全程持此锁。
+#[cfg(test)]
+pub(crate) static STOP_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// /stop 快捷命令：停止**当前会话**用户交互触发的执行（bot_chat / 🤖 任务卡执行），
 /// 后台定时（interactive=false）与别的会话不受影响（2026-08-27 审计 P1-8：
 /// 原先一停全停，会话 B 的 /stop 会误杀会话 A 的活动 Skill）
@@ -365,6 +372,8 @@ mod batch5_stop_all_tests {
     /// 两类实例——/stop 只停交互实例，退出清理不能再漏掉后台任务
     #[test]
     fn stop_all_covers_interactive_and_background() {
+        // 批次8审计 P1：stop_all 是全局广播，与持 StopGuard 的并行测试互斥
+        let _serial = super::STOP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let g1 = super::StopGuard::new(true, Some("batch5-s1".into()));
         let g2 = super::StopGuard::new(false, None);
         assert!(super::active_execution_count() >= 2);

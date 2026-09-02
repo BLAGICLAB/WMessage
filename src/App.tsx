@@ -425,13 +425,9 @@ export default function App() {
     setEditingId((cur) => (cur === taskId ? null : cur));
   };
 
-  // 彻底删除（回收站）
+  // 彻底删除（回收站，逐卡删除）
   const hardDeleteTask = (taskId: string) => {
     mutateFire((prev) => prev.filter((t) => t.id !== taskId));
-  };
-
-  const clearTrash = () => {
-    mutateFire((prev) => prev.filter((t) => !t.deletedAt));
   };
 
   return (
@@ -524,7 +520,6 @@ export default function App() {
           editingId={editingId}
           onUpdate={updateTask}
           onDelete={hardDeleteTask}
-          onClearAll={clearTrash}
         />
       ) : (
         <SettingsPage

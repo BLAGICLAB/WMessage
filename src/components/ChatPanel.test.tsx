@@ -272,6 +272,45 @@ describe("ChatPanel", () => {
     expect(await screen.findByText(/⚠️ API 配额超限/)).toBeInTheDocument();
   });
 
+  it("任务卡执行被 TASK_INVALID_STATE 拒绝：按结构化 code 识别，⏳ 本地提示而非 ⚠️ 气泡（批次7 P2-2）", async () => {
+    // 捕获 listen 回调以手动触发 execute-task 事件
+    const listeners = new Map<string, (e: { payload: unknown }) => void>();
+    mocks.listenMock.mockImplementation(
+      async (event: string, cb: (e: { payload: unknown }) => void) => {
+        listeners.set(event, cb);
+        return () => {};
+      }
+    );
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_sessions_load") return [{ id: "s1", title: "默认会话" }];
+      if (cmd === "bot_history_load") return [];
+      if (cmd === "bot_execute_task")
+        throw {
+          code: "TASK_INVALID_STATE",
+          message: "任务状态不允许该操作：该任务卡正在执行中，请等待完成后再触发",
+          recoverable: true,
+        };
+      return null;
+    });
+    try {
+      render(<ChatPanel {...defaultProps} />);
+      await waitFor(() => {
+        expect(mocks.invokeMock).toHaveBeenCalledWith("bot_sessions_load");
+      });
+      await act(async () => {
+        listeners.get("execute-task")?.({ payload: { id: "t-reentry", title: "测试任务" } });
+      });
+      // 本地 ⏳ 提示（透传后端 message），不产生 ⚠️ 错误气泡
+      expect(
+        await screen.findByText(/⏳ 任务状态不允许该操作：该任务卡正在执行中/)
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/⚠️/)).not.toBeInTheDocument();
+    } finally {
+      // mockClear 不复位实现，手工恢复默认，防泄漏到后续用例
+      mocks.listenMock.mockImplementation(async () => () => {});
+    }
+  });
+
   it("模型快速切换：🧠 按钮开菜单，点 Kimi K3 → bot_set_config 回写（保留白名单/Tavily）且标签更新", async () => {
     const user = userEvent.setup();
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
@@ -285,6 +324,8 @@ describe("ChatPanel", () => {
           bypassLlmOnPreStepHit: true,
           allowedDirs: ["/tmp/x"],
           tavilyKey: "tvly-test",
+          // 批次7审计 P1-1：授权模式必须透传，漏传会被后端 serde(default) 重置回 ask
+          permMode: "yolo",
         };
       if (cmd === "bot_set_config") return null;
       return null;
@@ -305,6 +346,7 @@ describe("ChatPanel", () => {
             model: "kimi-k3",
             allowedDirs: ["/tmp/x"], // 保留既有字段
             tavilyKey: "tvly-test",
+            permMode: "yolo", // P1-1：授权模式透传不丢
           }),
         })
       );
