@@ -78,6 +78,12 @@ export interface Task {
   order?: number;
   /** 最后修改时间（epoch ms），合并导入时同 id 取更新者 */
   updatedAt?: number;
+  /**
+   * T1-1（2026-09-03）：RMW 写回基线 = 读快照时该行的 updatedAt。
+   * 仅随 db_upsert 上行（后端不落库、不在事件/导出中下发）；后端写前比对现行行，
+   * 不一致 → 冲突拒写（防整行覆盖 lost-update）。新建/未读快照的写不带此字段。
+   */
+  expectedUpdatedAt?: number;
   /** 已交给机器人执行（🤖 点击置真，执行结束无论成败清除） */
   botAssigned?: boolean;
   /** 定时执行规则：daily:HH:MM / weekly:D:HH:MM / at:YYYY-MM-DDTHH:MM */

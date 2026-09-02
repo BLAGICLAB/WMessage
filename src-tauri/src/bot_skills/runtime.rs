@@ -326,7 +326,8 @@ fn rollback_section(body: &str) -> String {
 /// 返回回滚建议文本（失败且 rollback=auto 且有动作记录时非空），调用方拼进回复让模型执行逆操作。
 /// 2026-08-26 会话隔离：只收尾归属当前会话的 Running/Paused 技能，
 /// 别的会话的技能不受本会话结束影响。
-pub fn skill_finish(app: &AppHandle, ok: bool, reason: &str, session_id: Option<&str>) -> String {
+/// 泛型 Runtime（2026-09-03 T1-2）：集成测试可用 MockRuntime 直调真收尾逻辑。
+pub fn skill_finish<R: tauri::Runtime>(app: &tauri::AppHandle<R>, ok: bool, reason: &str, session_id: Option<&str>) -> String {
     let mut rollback_hint = String::new();
     let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
     for (name, run) in runs.iter_mut() {

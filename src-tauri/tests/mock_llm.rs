@@ -14,8 +14,8 @@
 /// 3. tool_call 响应格式（interactive Skill 场景）
 /// 4. 普通文本响应（auto Skill 之外场景）
 ///
-/// 后续 F-6 step 2 后续：把 mock LLM server 接到 bot::run_model_loop 的真路径上
-/// （需 Tauri Builder + EventLoop，macOS 限制下走别的路径）。
+/// 2026-09-03 T1-2 已完成：mock LLM server 已接到抽离后的 run_model_loop_core 真路径
+/// （见 tests/llm_integration.rs 的 core_* 用例）。
 ///
 /// 注：上面用 `///` 不用 `//!`，是因为 `llm_integration.rs` 用 `include!` 把本文件作为子模块引入，
 /// `//!` 内文档注释会跟 `use` 冲突（E0753 expected outer doc comment）。
@@ -50,6 +50,10 @@ pub enum MockBehavior {
     /// 正文按 N 字节切片逐片 write+flush（可在多字节 UTF-8 字符中间切断，
     /// 模拟真实 TCP 分片，批次3审计 T-2 / P1-2）；片间 sleep 5ms
     FragmentedTextReply(String, usize),
+    /// 原样 SSE body（2026-09-03 T1-2）：测试自己拼 data 行——用于干净 EOF 截断流
+    /// （无 [DONE] / 无 finish_reason 直接 Connection: close，批次3审计 P1-1 防线）
+    /// 等预置变体表达不了的场景
+    RawSse(String),
 }
 
 pub struct MockLlmServer {
@@ -212,6 +216,7 @@ fn build_http_response(behavior: &MockBehavior) -> String {
                 MockBehavior::TextReply(content) => sse_text_reply(content),
                 MockBehavior::ToolCall(tc) => sse_tool_call_reply(&tc.name, &tc.arguments),
                 MockBehavior::StreamError(msg) => sse_stream_error_reply(msg),
+                MockBehavior::RawSse(raw) => raw.clone(),
                 _ => unreachable!(), // FragmentedTextReply 在连接处理分支里单独分片写出
             };
             format!(

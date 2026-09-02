@@ -517,3 +517,374 @@ async fn llm_mixed_sequence_blacklist_then_whitelist_block_then_allow() {
         "轮次 2 list_tasks 应放行"
     );
 }
+
+// ────────────────────────────────────────────────────────────────────
+// T1-2（2026-09-03，原审计 #3）：run_model_loop_core 真路径集成测试
+//
+// 背景：P0-1/P0-5 等修复密集区（HTTP 错误包装 / 流截断防线 / 重试退避）
+// 原先沉在 run_model_loop 函数体内、直连 AppHandle，无法集成测试。
+// 重构后核心 loop 可注入 LlmHttp + 副作用出口（ModelLoopDeps），
+// 以下用例全部对 mock LLM server 跑生产同一份代码。
+// ────────────────────────────────────────────────────────────────────
+
+use std::sync::{Arc, Mutex};
+use wmessage_lib::bot::{
+    noop_replan, run_model_loop_core, AuditLevel, LlmHttp, ModelLoopDeps, StopGuard,
+};
+use wmessage_lib::error::CommandError;
+
+/// 指向 mock server 的连接参数（与生产薄壳同一构造路径：trim_end_matches('/') 等
+/// 在 core 内处理，这里直接给 base_url）
+fn core_http(server: &MockLlmServer) -> LlmHttp {
+    LlmHttp {
+        client: reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .expect("build client"),
+        base_url: server.base_url.clone(),
+        api_key: "test-key".into(),
+        model: "mock-model".into(),
+    }
+}
+
+/// 收集结构化审计事件名
+type AuditEvents = Arc<Mutex<Vec<&'static str>>>;
+
+struct CoreHarness {
+    stop: StopGuard,
+    emit: Box<dyn Fn(&str, serde_json::Value) + Send + Sync>,
+    audit: Box<dyn Fn(AuditLevel, &'static str, Vec<(&'static str, String)>) + Send + Sync>,
+    audit_log: Box<dyn Fn(&str) + Send + Sync>,
+    skill_finish: Box<dyn Fn(bool, &str) -> String + Send + Sync>,
+    audit_events: AuditEvents,
+}
+
+impl CoreHarness {
+    fn new() -> Self {
+        let events: AuditEvents = Arc::new(Mutex::new(Vec::new()));
+        let events2 = events.clone();
+        Self {
+            // 非交互实例：不发流式事件，stop 标志未置位
+            stop: StopGuard::new(false, None),
+            emit: Box::new(|_, _| {}),
+            audit: Box::new(move |_, event, _| {
+                events2.lock().unwrap().push(event);
+            }),
+            audit_log: Box::new(|_| {}),
+            skill_finish: Box::new(|_, _| String::new()),
+            audit_events: events,
+        }
+    }
+
+    fn deps(&self) -> ModelLoopDeps<'_> {
+        ModelLoopDeps {
+            emit: &*self.emit,
+            audit: &*self.audit,
+            audit_log: &*self.audit_log,
+            skill_finish: &*self.skill_finish,
+        }
+    }
+
+    fn events(&self) -> Vec<&'static str> {
+        self.audit_events.lock().unwrap().clone()
+    }
+}
+
+fn user_msgs() -> Vec<serde_json::Value> {
+    vec![serde_json::json!({"role": "user", "content": "hi"})]
+}
+
+/// 工具执行 stub 永不调用版（纯文本/错误路径不应触发任何工具执行）
+async fn exec_never(name: String, args: String) -> (String, Vec<wmessage_lib::bot::TaskRef>) {
+    panic!("此路径不应执行工具：{name} {args}");
+}
+
+#[tokio::test]
+async fn core_text_reply_happy_path() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::TextReply("你好，世界".into()));
+    let h = CoreHarness::new();
+
+    let (text, refs) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        5,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec_never,
+        noop_replan,
+    )
+    .await
+    .expect("纯文本回复应 Ok");
+
+    assert_eq!(text, "你好，世界");
+    assert!(refs.is_empty());
+    assert_eq!(server.request_count(), 1);
+    let events = h.events();
+    assert!(
+        events.contains(&"llm.request") && events.contains(&"llm.response"),
+        "应记 llm.request/response 审计：{events:?}"
+    );
+}
+
+#[tokio::test]
+async fn core_tool_call_round_trip_executes_and_continues() {
+    // 轮次 1：模型请求 list_tasks → 注入 executor 执行 → 结果回填 →
+    // 轮次 2：模型给最终文本。覆盖工具编排 + tool 消息协议回填真路径。
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "list_tasks".into(),
+        arguments: "{}".into(),
+    }));
+    server.push_behavior(MockBehavior::TextReply("共 2 个任务".into()));
+    let h = CoreHarness::new();
+
+    let calls: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+    let calls2 = calls.clone();
+    let exec = move |name: String, args: String| {
+        let calls = calls2.clone();
+        async move {
+            calls.lock().unwrap().push((name, args));
+            ("共 2 个任务明细".into(), Vec::new())
+        }
+    };
+
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        5,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("工具回路应 Ok");
+
+    assert_eq!(text, "共 2 个任务");
+    assert_eq!(
+        calls.lock().unwrap().as_slice(),
+        &[("list_tasks".to_string(), "{}".to_string())],
+        "注入 executor 应被以解析出的 (name, arguments) 调用一次"
+    );
+    assert_eq!(server.request_count(), 2, "工具执行后应续聊第二轮");
+}
+
+#[tokio::test]
+async fn core_http_401_wrapped_no_retry() {
+    // 401 不在重试白名单（is_retryable_llm_status）：一次即败，包装成 LlmApiError
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::HttpError(
+        401,
+        r#"{"error":{"message":"Invalid API key","type":"auth_error"}}"#.into(),
+    ));
+    let h = CoreHarness::new();
+
+    let err = match run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        5,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec_never,
+        noop_replan,
+    )
+    .await
+    {
+        Err(e) => e,
+        Ok(_) => panic!("401 应报错"),
+    };
+
+    match err {
+        CommandError::LlmApiError {
+            status,
+            body_preview,
+        } => {
+            assert_eq!(status, 401);
+            assert!(
+                body_preview.contains("Invalid API key"),
+                "body_preview 应含服务端错误详情（截 300 字）：{body_preview}"
+            );
+        }
+        other => panic!("401 应包装为 LlmApiError，got {other:?}"),
+    }
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert_eq!(server.request_count(), 1, "401 不可重试，只发 1 次请求");
+}
+
+#[tokio::test]
+async fn core_http_429_retried_once_then_success() {
+    // 重试退避（MAX_LLM_ATTEMPTS=2，P1-4）：429 第一次 → 记 llm.retry → 第二次成功
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::HttpError(
+        429,
+        r#"{"error":{"message":"rate limited"}}"#.into(),
+    ));
+    server.push_behavior(MockBehavior::TextReply("重试后成功".into()));
+    let h = CoreHarness::new();
+
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        5,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec_never,
+        noop_replan,
+    )
+    .await
+    .expect("429 重试后成功应 Ok");
+
+    assert_eq!(text, "重试后成功");
+    assert_eq!(server.request_count(), 2, "429 应重试一次");
+    assert!(
+        h.events().contains(&"llm.retry"),
+        "重试应记 llm.retry 审计：{:?}",
+        h.events()
+    );
+}
+
+#[tokio::test]
+async fn core_http_500_exhausts_attempts_then_error() {
+    // 重试预算耗尽（MAX_LLM_ATTEMPTS=2）：连续 500 → 第二次不再重试，包装报错
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::HttpError(500, r#"{"error":"boom"}"#.into()));
+    server.push_behavior(MockBehavior::HttpError(500, r#"{"error":"boom again"}"#.into()));
+    server.push_behavior(MockBehavior::TextReply("不应到达".into()));
+    let h = CoreHarness::new();
+
+    let err = match run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        5,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec_never,
+        noop_replan,
+    )
+    .await
+    {
+        Err(e) => e,
+        Ok(_) => panic!("500 连续两次应报错"),
+    };
+
+    match err {
+        CommandError::LlmApiError { status, .. } => assert_eq!(status, 500),
+        other => panic!("500 应包装为 LlmApiError，got {other:?}"),
+    }
+    assert_eq!(
+        server.request_count(),
+        2,
+        "MAX_LLM_ATTEMPTS=2：恰好 2 次请求后放弃"
+    );
+}
+
+#[tokio::test]
+async fn core_in_stream_error_payload_surfaced() {
+    // P1-3：200 流内错误载荷（OneAPI 类网关）必须显式报错，不再返回空白回复
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::StreamError("auth_failed".into()));
+    let h = CoreHarness::new();
+
+    let err = match run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        5,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec_never,
+        noop_replan,
+    )
+    .await
+    {
+        Err(e) => e,
+        Ok(_) => panic!("流内错误载荷应报错"),
+    };
+
+    let msg = err.to_string();
+    assert!(
+        msg.contains("大模型返回错误") && msg.contains("auth_failed"),
+        "错误应带流内错误详情：{msg}"
+    );
+    assert!(
+        h.events().contains(&"llm.stream_error"),
+        "应记 llm.stream_error 审计：{:?}",
+        h.events()
+    );
+}
+
+#[tokio::test]
+async fn core_truncated_stream_partial_tool_calls_rejected() {
+    // P1-1 防线：干净 EOF（无 [DONE] / 无 finish_reason）+ 残缺 tool_calls →
+    // 拒绝执行工具，显式报「流被截断」（原先靠 parse_args 失败侥幸兜底）
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::RawSse(
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_x\",\"function\":{\"name\":\"delete_task\",\"arguments\":\"{}\"}}]}}]}\n\n"
+            .into(),
+    ));
+    let h = CoreHarness::new();
+
+    let err = match run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        5,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec_never, // 关键：残缺 tool_calls 绝不得执行（exec_never 被调即 panic）
+        noop_replan,
+    )
+    .await
+    {
+        Err(e) => e,
+        Ok(_) => panic!("截断流 + 残缺 tool_calls 应报错"),
+    };
+
+    let msg = err.to_string();
+    assert!(
+        msg.contains("大模型响应中断（流被截断），工具调用未执行"),
+        "got: {msg}"
+    );
+    assert!(
+        h.events().contains(&"llm.stream_truncated"),
+        "应记 llm.stream_truncated 审计：{:?}",
+        h.events()
+    );
+}
+
+#[tokio::test]
+async fn core_truncated_stream_text_only_warns_but_returns() {
+    // P1-1 防线另一支：干净 EOF 无 tool_calls 但有正文 → 不报错，
+    // 正文追加「可能被截断」提示返回（用户已看到的内容不丢弃）
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::RawSse(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"半截回复\"}}]}\n\n".into(),
+    ));
+    let h = CoreHarness::new();
+
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        5,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec_never,
+        noop_replan,
+    )
+    .await
+    .expect("纯文本截断应放行返回");
+
+    assert!(text.contains("半截回复"));
+    assert!(
+        text.contains("响应可能被截断"),
+        "应追加截断提示：{text}"
+    );
+}

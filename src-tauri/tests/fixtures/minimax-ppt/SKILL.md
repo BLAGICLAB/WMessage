@@ -16,3 +16,6 @@ list_tasks({})
 
 ## Step 2: 创建测试任务（演示变量替换）
 create_task({"title":"F-6 端到端测试任务 ${step1.result}"})
+
+## Rollback
+rollback_marker({"ref": "${step1.result}"})

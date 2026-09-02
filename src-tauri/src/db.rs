@@ -58,6 +58,12 @@ pub struct Task {
     /// 已交给机器人执行中（🤖 点击置真；执行结束无论成败清除；启动时残留清零）
     #[serde(default)]
     pub bot_assigned: Option<bool>,
+    /// T1-1（2026-09-03）：RMW 写回基线 = 调用方读快照时该行的 updated_at。
+    /// upsert 写前比对现行行：不一致 → 冲突拒写（Err），防「读旧快照→整行写回」lost-update。
+    /// 不映射 DB 列；skip_serializing = 后端事件/导出不下发（防前端 state 残留脏基线），
+    /// 仅调用方上行携带。None = 无基线（新建/导入/未读快照），行为同原时间戳守卫。
+    #[serde(default, skip_serializing)]
+    pub expected_updated_at: Option<i64>,
 }
 
 impl Task {
@@ -101,12 +107,6 @@ pub fn resolve_task_files(paths: Vec<String>) -> Vec<TaskFile> {
 #[tauri::command]
 pub fn bind_files(paths: Vec<String>) -> Vec<TaskFile> {
     resolve_task_files(paths)
-}
-
-/// Tauri 命令：旧单文件调用方兼容——直接转 bind_files(vec![path])
-#[tauri::command]
-pub fn bind_file(path: String) -> Vec<TaskFile> {
-    resolve_task_files(vec![path])
 }
 
 /// 便携模式：数据库优先放 exe 同目录（U盘/绿色目录随走随带）；
@@ -935,6 +935,11 @@ pub async fn bot_history_clear(app: tauri::AppHandle, session_id: String) -> Com
     .map_err(|e| CommandError::from(format!("历史清空线程 join 失败：{e}")))?
 }
 
+/// T1-1（2026-09-03）：写冲突错误前缀——RMW 基线比对失败（lost-update 防护拒写）。
+/// 错误以 String 穿透多层（CommandError::from(String) → Internal），调用方按前缀分流
+/// （如本地 API 映射 409；其余调用方按写失败处理，数据未被覆盖）。
+pub const CONFLICT_ERR_PREFIX: &str = "写冲突";
+
 fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), String> {
     if tasks.is_empty() {
         return Ok(());
@@ -963,6 +968,31 @@ fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), Strin
         )
         .map_err(|e| e.to_string())?;
     for t in tasks {
+        // T1-1 写前重读比对（2026-09-03）：调用方给了读快照基线（expected_updated_at）时，
+        // 现行行 updated_at 必须仍等于基线——否则「读旧快照→修改→整行写回」窗口内有
+        // 其他写者改过/删过该行，整行写回会覆盖对方修改 → 拒写报错，不覆盖。
+        // 比对与写入在同一事务（且写路径持 DB_WRITE_LOCK，进程内写者串行）→ 原子。
+        // cur=None 含「行不存在（快照后被删）」与「老行 NULL updated_at」两种，均判冲突拒写：
+        // 前者防复活已删行，后者因基线语义是「读到过的确定时间戳」，NULL 无从匹配。
+        if let Some(expected) = t.expected_updated_at {
+            use rusqlite::OptionalExtension;
+            let cur: Option<i64> = conn
+                .query_row(
+                    "SELECT updated_at FROM tasks WHERE id = ?1",
+                    [&t.id],
+                    |r| r.get::<_, Option<i64>>(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?
+                .flatten();
+            if cur != Some(expected) {
+                return Err(format!(
+                    "{CONFLICT_ERR_PREFIX}：任务 {} 读快照后已被其他写者{}，本次整行写回被拒（基线 updated_at={expected}，现行 {cur:?}）",
+                    t.id,
+                    if cur.is_some() { "修改" } else { "删除" },
+                ));
+            }
+        }
         let tags = match &t.tags {
             Some(v) => Some(serde_json::to_string(v).map_err(|e| e.to_string())?),
             None => None,
@@ -1116,6 +1146,7 @@ fn load_all(conn: &rusqlite::Connection) -> Result<Vec<Task>, String> {
             schedule,
             sched_last,
             bot_assigned: bot_assigned.map(|v| v != 0),
+            expected_updated_at: None, // 库读出的快照不自带基线；由 RMW 调用方写回前设置
         });
     }
     Ok(tasks)
@@ -1181,7 +1212,7 @@ fn migrate_data_json_file(file: &std::path::Path, conn: &mut rusqlite::Connectio
     false
 }
 
-/// 写操作全局锁：主窗口（db_upsert/db_delete/db_merge）与本地 API 线程共享同一把锁，
+/// 写操作全局锁：主窗口（db_upsert/db_delete）与本地 API 线程共享同一把锁，
 /// 避免 WAL 下并发写冲突（busy_timeout 只是兜底）。
 /// pub(crate)：migration 的 journal 写也纳入同一把锁（NEW-B-2）。
 pub(crate) static DB_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -1233,157 +1264,6 @@ pub async fn db_delete(app: tauri::AppHandle, ids: Vec<String>) -> CommandResult
     })
     .await
     .map_err(|e| CommandError::from(format!("数据库删除线程 join 失败：{e}")))?
-}
-
-/// 只读读取外部数据库（可能是更老版本，缺 ord / updated_at 列时按 NULL 处理）
-fn load_external(conn: &rusqlite::Connection) -> Result<Vec<Task>, String> {
-    let cols: Vec<String> = conn
-        .prepare("PRAGMA table_info(tasks)")
-        .and_then(|mut stmt| {
-            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
-            Ok(rows.filter_map(|n| n.ok()).collect())
-        })
-        .map_err(|e| e.to_string())?;
-    let has_ord = cols.iter().any(|c| c == "ord");
-    let has_ua = cols.iter().any(|c| c == "updated_at");
-    // 定时任务卡 + 机器人归属（2026-08-16 新列）：外部库有就读，没有按 NULL（此前硬编码 NULL 会丢数据）
-    let has_sched = cols.iter().any(|c| c == "schedule");
-    let has_sched_last = cols.iter().any(|c| c == "sched_last");
-    let has_ba = cols.iter().any(|c| c == "bot_assigned");
-    // 多文件绑定（2026-08-19 新列）：外部库有就读，没有按 NULL
-    let has_files = cols.iter().any(|c| c == "files");
-    let sql = format!(
-        "SELECT id, title, due, note, tags, file_path, file_is_dir, col, subtasks,
-                completed_at, archived, deleted_at, collapsed, {}, {}, {}, {}, {}, {}
-         FROM tasks",
-        if has_ord { "ord" } else { "NULL" },
-        if has_ua { "updated_at" } else { "NULL" },
-        if has_sched { "schedule" } else { "NULL" },
-        if has_sched_last { "sched_last" } else { "NULL" },
-        if has_ba { "bot_assigned" } else { "NULL" },
-        if has_files { "files" } else { "NULL" }
-    );
-    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, Option<String>>(3)?,
-                row.get::<_, Option<String>>(4)?,
-                row.get::<_, Option<String>>(5)?,
-                row.get::<_, Option<i64>>(6)?,
-                row.get::<_, String>(7)?,
-                row.get::<_, Option<String>>(8)?,
-                row.get::<_, Option<i64>>(9)?,
-                row.get::<_, Option<i64>>(10)?,
-                row.get::<_, Option<i64>>(11)?,
-                row.get::<_, Option<i64>>(12)?,
-                row.get::<_, Option<f64>>(13)?,
-                row.get::<_, Option<i64>>(14)?,
-                row.get::<_, Option<String>>(15)?,
-                row.get::<_, Option<i64>>(16)?,
-                row.get::<_, Option<i64>>(17)?,
-                row.get::<_, Option<String>>(18)?,
-            ))
-        })
-        .map_err(|e| e.to_string())?;
-    let mut tasks = Vec::new();
-    for r in rows {
-        let (
-            id,
-            title,
-            due,
-            note,
-            tags,
-            file_path,
-            file_is_dir,
-            col,
-            subtasks,
-            completed_at,
-            archived,
-            deleted_at,
-            collapsed,
-            order,
-            updated_at,
-            schedule,
-            sched_last,
-            bot_assigned,
-            files,
-        ) = r.map_err(|e| e.to_string())?;
-        let tags = tags.and_then(|s| serde_json::from_str(&s).ok());
-        let subtasks = subtasks.and_then(|s| serde_json::from_str(&s).ok());
-        let files = files.and_then(|s| serde_json::from_str(&s).ok());
-        tasks.push(Task {
-            id,
-            title,
-            due,
-            note,
-            tags,
-            files,
-            file_path,
-            file_is_dir: file_is_dir.map(|v| v != 0),
-            column: col,
-            subtasks,
-            completed_at,
-            archived: archived.map(|v| v != 0),
-            deleted_at,
-            collapsed: collapsed.map(|v| v != 0),
-            order,
-            updated_at,
-            schedule,
-            sched_last,
-            bot_assigned: bot_assigned.map(|v| v != 0),
-        });
-    }
-    Ok(tasks)
-}
-
-/// 合并导入：按 id 并集；同 id 内容分歧时保留 updated_at 更新（外部无 updated_at 视为最旧）。
-/// 返回实际写入的任务条数。
-#[tauri::command]
-pub async fn db_merge(app: tauri::AppHandle, path: String) -> CommandResult<usize> {
-    // B3: 长文件读 + 跨表事务；扔到 spawn_blocking。
-    tauri::async_runtime::spawn_blocking(move || {
-        use rusqlite::{OpenFlags, OptionalExtension};
-
-        let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let src = rusqlite::Connection::open_with_flags(
-            &path,
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )
-        .map_err(|e| format!("无法打开所选数据库：{e}"))?;
-        let ext = load_external(&src)?;
-        if ext.is_empty() {
-            return Ok(0);
-        }
-        let mut conn = open_db(&app)?;
-        let tx = conn.transaction().map_err(|e| e.to_string())?;
-        let mut merged = 0usize;
-        for t in &ext {
-            // B4: 读 Option<i64> 处理 NULL（2026-08-14 前老行 updated_at 为 NULL）
-            // 原代码 r.get::<_, i64> 遇 NULL 直接报 InvalidColumnType → 整次导入崩溃
-            let cur: Option<Option<i64>> = tx
-                .query_row(
-                    "SELECT updated_at FROM tasks WHERE id = ?1",
-                    rusqlite::params![t.id],
-                    |r| r.get::<_, Option<i64>>(0),
-                )
-                .optional()
-                .map_err(|e| e.to_string())?;
-            let cur_ua = cur.flatten().unwrap_or(0); // NULL / 无行 都视为 0
-            let take = t.updated_at.unwrap_or(0) > cur_ua;
-            if take {
-                upsert_tasks(&tx, std::slice::from_ref(t))?;
-                merged += 1;
-            }
-        }
-        tx.commit().map_err(|e| e.to_string())?;
-        Ok(merged)
-    })
-    .await
-    .map_err(|e| CommandError::from(format!("数据库合并线程 join 失败：{e}")))?
 }
 
 /// 导出路径校验（2026-08-27 SEC-P1-3）：导出命令前端直达，路径限 .json——
@@ -1442,7 +1322,7 @@ pub async fn tasks_import(app: tauri::AppHandle, path: String) -> CommandResult<
             if t.id.trim().is_empty() {
                 continue; // 跳过无 id 的脏数据
             }
-            // B4: 同 db_merge — NULL updated_at 兼容
+            // B4: NULL updated_at 兼容（2026-08-14 前老行 updated_at 为 NULL）
             let cur: Option<Option<i64>> = tx
                 .query_row(
                     "SELECT updated_at FROM tasks WHERE id = ?1",
@@ -1506,7 +1386,7 @@ pub async fn workspace_import(app: tauri::AppHandle, path: String) -> CommandRes
             if it.id.trim().is_empty() {
                 continue; // 跳过无 id 的脏数据
             }
-            // 同 db_merge / tasks_import：NULL updated_at 兼容（库内 NULL = 0，外部 None = 0）
+            // 同 tasks_import：NULL updated_at 兼容（库内 NULL = 0，外部 None = 0）
             let cur: Option<Option<i64>> = tx
                 .query_row(
                     "SELECT updated_at FROM workspace_items WHERE id = ?1",
@@ -1667,6 +1547,7 @@ mod tests {
             schedule: None,
             sched_last: None,
             bot_assigned: None,
+            expected_updated_at: None,
         }
     }
 
@@ -2063,7 +1944,7 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
-    /// B4: 模拟 2026-08-14 前的任务行（updated_at IS NULL），验证 db_merge / tasks_import
+    /// B4: 模拟 2026-08-14 前的任务行（updated_at IS NULL），验证 tasks_import
     /// 读取不再崩。原代码 r.get::<_, i64>(0) 遇 NULL 报 InvalidColumnType，整次导入失败。
     /// 新代码 r.get::<_, Option<i64>>(0) + flatten + unwrap_or(0)。
     #[test]
@@ -2125,70 +2006,128 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
-    /// B2: upsert WHERE 守卫防 lost update。
+    /// B2: upsert WHERE 守卫防 lost update——T1-1 起改为直接调生产 upsert_tasks
+    /// （原测试内联复刻生产 SQL，守卫改动后测试不同步即失效的弱断言已顺手修掉）。
     /// 五场景：incoming>current / incoming<current / 相等 / 老 NULL 行 / incoming NULL
     #[test]
     fn upsert_where_guard_prevents_lost_update() {
-        let dir = std::env::temp_dir().join(format!("wm-b2-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&dir).unwrap();
-        let conn = rusqlite::Connection::open(dir.join("t.db")).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE tasks (
-                id TEXT PRIMARY KEY,
-                title TEXT NOT NULL,
-                updated_at INTEGER
-            );
-            INSERT INTO tasks (id, title, updated_at) VALUES ('t1', 'old-50', 50);
-            INSERT INTO tasks (id, title) VALUES ('legacy', 'legacy-row');",
+        let (dir, conn) = setup_tasks_db();
+        let title_of = |conn: &rusqlite::Connection, id: &str| -> String {
+            conn.query_row(
+                "SELECT title FROM tasks WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        // 老 NULL 行（2026-08-14 前 schema 遗留）：生产 upsert 写全列，NULL 行只能 SQL 直插
+        conn.execute(
+            "INSERT INTO tasks (id, title, col) VALUES ('legacy', 'legacy-row', 'todo')",
+            [],
         )
         .unwrap();
 
-        let mut stmt = conn
-            .prepare(
-                "INSERT INTO tasks (id, title, updated_at)
-                 VALUES (?1, ?2, ?3)
-                 ON CONFLICT(id) DO UPDATE SET
-                   title=excluded.title,
-                   updated_at=excluded.updated_at
-                 WHERE tasks.updated_at IS NULL OR excluded.updated_at >= tasks.updated_at",
-            )
-            .unwrap();
-
         // 场景 1: incoming(100) > current(50) → 更新
-        stmt.execute(rusqlite::params!["t1", "new-100", 100]).unwrap();
-        let title: String = conn
-            .query_row("SELECT title FROM tasks WHERE id = 't1'", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(title, "new-100", "场景 1: 更新的应压过老的");
+        let mut t = mk_task("t1", "old-50");
+        t.updated_at = Some(50);
+        upsert_tasks(&conn, std::slice::from_ref(&t)).unwrap();
+        t.title = "new-100".into();
+        t.updated_at = Some(100);
+        upsert_tasks(&conn, std::slice::from_ref(&t)).unwrap();
+        assert_eq!(title_of(&conn, "t1"), "new-100", "场景 1: 更新的应压过老的");
 
         // 场景 2: incoming(60) < current(100) → 跳过（lost update 防护）
-        stmt.execute(rusqlite::params!["t1", "old-snapshot-60", 60]).unwrap();
-        let title: String = conn
-            .query_row("SELECT title FROM tasks WHERE id = 't1'", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(title, "new-100", "场景 2: 更老的不应压过更新的");
+        t.title = "old-snapshot-60".into();
+        t.updated_at = Some(60);
+        upsert_tasks(&conn, std::slice::from_ref(&t)).unwrap();
+        assert_eq!(title_of(&conn, "t1"), "new-100", "场景 2: 更老的不应压过更新的");
 
         // 场景 3: 相等 timestamp → 允许更新
-        stmt.execute(rusqlite::params!["t1", "equal-100", 100]).unwrap();
-        let title: String = conn
-            .query_row("SELECT title FROM tasks WHERE id = 't1'", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(title, "equal-100", "场景 3: 相等 timestamp 仍允许更新");
+        t.title = "equal-100".into();
+        t.updated_at = Some(100);
+        upsert_tasks(&conn, std::slice::from_ref(&t)).unwrap();
+        assert_eq!(title_of(&conn, "t1"), "equal-100", "场景 3: 相等 timestamp 仍允许更新");
 
         // 场景 4: 老 NULL 行被任何 incoming 覆盖
-        stmt.execute(rusqlite::params!["legacy", "new-over-legacy", 5]).unwrap();
-        let title: String = conn
-            .query_row("SELECT title FROM tasks WHERE id = 'legacy'", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(title, "new-over-legacy", "场景 4: 老 NULL 行被任何 incoming 覆盖");
+        let mut l = mk_task("legacy", "new-over-legacy");
+        l.updated_at = Some(5);
+        upsert_tasks(&conn, &[l]).unwrap();
+        assert_eq!(
+            title_of(&conn, "legacy"),
+            "new-over-legacy",
+            "场景 4: 老 NULL 行被任何 incoming 覆盖"
+        );
 
         // 场景 5: incoming NULL 不应覆盖 current 有值
-        conn.execute("UPDATE tasks SET title='keep-me', updated_at=200 WHERE id='t1'", []).unwrap();
-        stmt.execute(rusqlite::params!["t1", "incoming-null", Option::<i64>::None]).unwrap();
-        let title: String = conn
-            .query_row("SELECT title FROM tasks WHERE id = 't1'", [], |r| r.get(0))
+        conn.execute("UPDATE tasks SET title='keep-me', updated_at=200 WHERE id='t1'", [])
             .unwrap();
-        assert_eq!(title, "keep-me", "场景 5: incoming NULL 不应覆盖 current 有值");
+        t.title = "incoming-null".into();
+        t.updated_at = None;
+        upsert_tasks(&conn, std::slice::from_ref(&t)).unwrap();
+        assert_eq!(title_of(&conn, "t1"), "keep-me", "场景 5: incoming NULL 不应覆盖 current 有值");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// T1-1（2026-09-03）核心回归：两写者读同一快照后交错写回——
+    /// 后写者基线比对失败被拒（Err 含 CONFLICT_ERR_PREFIX），先写者的字段修改不丢；
+    /// 后写者重读刷新基线后重试可成功。另覆盖「快照后行被删 → 拒写防复活」。
+    #[test]
+    fn upsert_expected_baseline_rejects_stale_write() {
+        let (dir, conn) = setup_tasks_db();
+        let mut seed = mk_task("t1", "原始");
+        seed.updated_at = Some(100);
+        seed.note = Some("原始备注".into());
+        upsert_tasks(&conn, &[seed]).unwrap();
+
+        // 写者 A / B 读同一快照（updated_at=100）
+        let snap_a = load_all(&conn).unwrap().into_iter().next().unwrap();
+        let snap_b = snap_a.clone();
+        assert_eq!(snap_a.updated_at, Some(100));
+
+        // A 先写回：改标题，刷新时间戳，带基线 → 放行
+        let mut a = snap_a.clone();
+        a.expected_updated_at = a.updated_at; // RMW 调用方的标准接线：基线=快照 updated_at
+        a.title = "A改的标题".into();
+        a.updated_at = Some(200);
+        upsert_tasks(&conn, std::slice::from_ref(&a)).unwrap();
+
+        // B 后写回：基于同一旧快照改备注，时间戳更新（300>200，旧时间戳守卫会放行）→ 必须被基线拒
+        let mut b = snap_b;
+        b.expected_updated_at = b.updated_at;
+        b.note = Some("B改的备注".into());
+        b.updated_at = Some(300);
+        let err = upsert_tasks(&conn, std::slice::from_ref(&b)).unwrap_err();
+        assert!(
+            err.starts_with(CONFLICT_ERR_PREFIX),
+            "后写者基线过期必须拒写；got: {err}"
+        );
+        let cur = load_all(&conn).unwrap().into_iter().next().unwrap();
+        assert_eq!(cur.title, "A改的标题", "先写者的字段修改不得被覆盖");
+        assert_eq!(cur.note.as_deref(), Some("原始备注"), "被拒写者的修改不得落库");
+        assert_eq!(cur.updated_at, Some(200));
+
+        // B 重读刷新基线后重试 → 放行（冲突可见、可恢复，而非静默丢）
+        let mut b2 = load_all(&conn).unwrap().into_iter().next().unwrap();
+        b2.expected_updated_at = b2.updated_at;
+        b2.note = Some("B改的备注".into());
+        b2.updated_at = Some(300);
+        upsert_tasks(&conn, std::slice::from_ref(&b2)).unwrap();
+        let cur = load_all(&conn).unwrap().into_iter().next().unwrap();
+        assert_eq!(cur.title, "A改的标题");
+        assert_eq!(cur.note.as_deref(), Some("B改的备注"));
+
+        // 快照后行被删：带基线写回 → 拒写（防复活已删行）
+        delete_tasks(&conn, &["t1".to_string()]).unwrap();
+        let err = upsert_tasks(&conn, std::slice::from_ref(&b2)).unwrap_err();
+        assert!(err.starts_with(CONFLICT_ERR_PREFIX), "行已删必须拒写；got: {err}");
+        assert!(load_all(&conn).unwrap().is_empty(), "被拒写不得复活已删行");
+
+        // 无基线（expected_updated_at=None）保持原行为：新建直插、时间戳守卫兜底
+        let mut fresh = mk_task("t2", "新建无基线");
+        fresh.updated_at = Some(50);
+        upsert_tasks(&conn, &[fresh]).unwrap();
+        assert_eq!(load_all(&conn).unwrap().len(), 1);
 
         fs::remove_dir_all(&dir).ok();
     }

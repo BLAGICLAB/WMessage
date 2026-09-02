@@ -13,9 +13,9 @@
 //! 4. 黑名单/白名单原子分类（tool_guard 纯函数）
 //! 5. 意图路由动态规则（intent_router 纯函数 + fixture 扫描，2026-08-19 起路由来自已安装技能 intents）
 //!
-//! 后续 F-6 step 2 计划：补 mock LLM HTTP server + 完整 run_skill_scheduler 端到端 +
-//! interactive mode Skill LLM 调工具的端到端（需要 cascading generic refactor 把 execute_tool /
-//! tool_* / db_* 都泛型化以接受 MockRuntime AppHandle）。
+//! 2026-09-03 T1-2 已完成：run_skill_scheduler_core（调度器本体，重构后泛型 Runtime +
+//! 注入 executor/persist）真路径 e2e 见本文件 scheduler_e2e_* 用例；run_model_loop_core
+//! 对 mock LLM server 的真路径见 llm_integration.rs 的 core_* 用例。
 
 use std::path::PathBuf;
 use wmessage_lib::bot_skills::{self, scan_skill_dirs};
@@ -225,4 +225,385 @@ fn real_skill_fixture_loads_via_scan_skill_dirs() {
     assert_eq!(meta.risk_level, "low");
     assert_eq!(meta.max_steps, 5);
     assert_eq!(meta.timeout_secs, 60);
+}
+
+// ────────────────────────────────────────────────────────────────────
+// T1-2（2026-09-03，原审计 #2）：run_skill_scheduler_core 真路径 e2e
+//
+// 背景：P0-1（SKILL_RUNS 跨会话顶号 / Done 路径不收尾）/ P0-5（回滚窗口）
+// 修复密集区原先无法直测——run_skill_scheduler 直连 Wry AppHandle +
+// bot::execute_tool + db::open_db。重构后 core 泛型 Runtime + 注入
+// execute_tool / persist_outcome，这里用 MockRuntime + mock executor +
+// 真 fixture SKILL.md + 真 upsert_skill_outcome（临时库）直驱调度器本体。
+//
+// 并行隔离：本文件 4 个新用例都写全局 SKILL_RUNS，照批次8先例全程持
+// 本地串行锁（lib 内 SKILL_RUNS_TEST_LOCK 是 cfg(test) 的，集成测试是
+// 独立 crate 够不到，故在本二进制内自建一把）。
+// ────────────────────────────────────────────────────────────────────
+
+use std::sync::{Arc, Mutex};
+use wmessage_lib::bot::{
+    load_all_skill_outcomes, upsert_skill_outcome, PersistedSkillOutcome,
+};
+use wmessage_lib::bot_skills::{
+    parse_meta, run_skill_scheduler_core, test_hook_insert_skill_run,
+    test_hook_remove_skill_run, test_hook_skill_run_state, DslOutcome, SkillRun, SkillState,
+};
+
+static SKILL_SCHED_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+/// 构造一个归属后台会话（session None）的 SkillRun（字段全 pub，无需 AppHandle）
+fn make_run(name: &str, state: SkillState) -> SkillRun {
+    SkillRun {
+        name: name.into(),
+        state,
+        step: 0,
+        max_steps: 5,
+        started_at_ms: chrono::Utc::now().timestamp_millis(),
+        timeout_secs: 60,
+        mode: "auto".into(),
+        risk_level: "low".into(),
+        rollback: "none".into(),
+        actions: Vec::new(),
+        end_reason: String::new(),
+        resumable: true,
+        terminal_after_confirm: false,
+        session_id: None,
+    }
+}
+
+/// 读真 fixture（minimax-ppt）的 meta + body，与生产 load_skill_meta 同解析路径
+fn fixture_meta_body() -> (wmessage_lib::bot_skills::SkillMeta, String) {
+    let body = std::fs::read_to_string(ppt_fixture_path().join("SKILL.md"))
+        .expect("read fixture SKILL.md");
+    (parse_meta(&body, "minimax-ppt"), body)
+}
+
+/// bot.log 路径（probe_log_dir 在 cargo test 下 = current_exe 父目录，
+/// 见 audit.rs probe_log_dir_matches_exe_parent_in_cargo_test；middleware 测试同先例）
+fn bot_log_path() -> PathBuf {
+    std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("bot.log")
+}
+
+/// 记录运行前 bot.log 长度，运行后只断言新增尾巴（别的测试/历史运行也会写该文件）
+fn bot_log_tail_since(offset: u64) -> String {
+    let data = std::fs::read(&bot_log_path()).unwrap_or_default();
+    String::from_utf8_lossy(&data[(offset as usize).min(data.len())..]).into_owned()
+}
+
+fn bot_log_len() -> u64 {
+    std::fs::metadata(&bot_log_path()).map(|m| m.len()).unwrap_or(0)
+}
+
+/// 持久化校验用临时库：schema 镜像 db.rs 的 skill_outcomes DDL（集成测试够不到
+/// 私有 db 模块的 open_db；upsert/load 本身走生产函数，防漂移面只剩这段 DDL）
+fn open_temp_db(tag: &str) -> (rusqlite::Connection, PathBuf) {
+    let path = std::env::temp_dir().join(format!(
+        "wmessage-skill-e2e-{}-{tag}.db",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let conn = rusqlite::Connection::open(&path).expect("open temp db");
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS skill_outcomes (
+           skill_name         TEXT PRIMARY KEY,
+           kind               TEXT NOT NULL,
+           reason             TEXT,
+           completed_summary  TEXT,
+           rollback_attempted INTEGER,
+           last_at_ms         INTEGER NOT NULL
+         );",
+    )
+    .expect("create skill_outcomes");
+    (conn, path)
+}
+
+/// persist_outcome 注入闭包：记录调用参数 + 走生产 upsert_skill_outcome 真落库
+fn make_persist(
+    conn: &rusqlite::Connection,
+    calls: Arc<Mutex<Vec<(String, String, Option<String>, Option<bool>)>>>,
+) -> impl Fn(&str, &str, Option<&str>, Option<&str>, Option<bool>) + '_ {
+    move |name, kind, reason, summary, rb| {
+        calls.lock().unwrap().push((
+            name.to_string(),
+            kind.to_string(),
+            reason.map(|s| s.to_string()),
+            rb,
+        ));
+        upsert_skill_outcome(
+            conn,
+            &PersistedSkillOutcome {
+                skill_name: name.to_string(),
+                kind: kind.to_string(),
+                reason: reason.map(|s| s.to_string()),
+                completed_summary: summary.map(|s| s.to_string()),
+                rollback_attempted: rb,
+                last_at_ms: chrono::Utc::now().timestamp_millis(),
+            },
+        )
+        .expect("persist 落库应成功");
+    }
+}
+
+#[tokio::test]
+async fn scheduler_e2e_done_path_finishes_run_audits_and_persists() {
+    let _serial = SKILL_SCHED_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (meta, body) = fixture_meta_body();
+    let app = mock_handle();
+    test_hook_insert_skill_run(make_run("minimax-ppt", SkillState::Running));
+    let log_offset = bot_log_len();
+
+    // mock executor：step1 返回 JSON（供 ${step1.result} 变量替换），step2 记录替换后 args
+    let calls: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+    let calls2 = calls.clone();
+    let exec = move |tool: String, args: String| {
+        let calls = calls2.clone();
+        async move {
+            calls.lock().unwrap().push((tool.clone(), args));
+            let text = match tool.as_str() {
+                "list_tasks" => r#"[{"id":"7c9e6679-7425-40de-944b-e07fc1f90ae7","title":"买牛奶"}]"#.to_string(),
+                "create_task" => "已创建".to_string(),
+                other => panic!("意外工具调用：{other}"),
+            };
+            (text, Vec::new())
+        }
+    };
+    let (conn, db_path) = open_temp_db("done");
+    let persist_calls: Arc<Mutex<Vec<(String, String, Option<String>, Option<bool>)>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let persist = make_persist(&conn, persist_calls.clone());
+
+    let outcome = run_skill_scheduler_core(&app, "minimax-ppt", &meta, &body, None, exec, persist)
+        .await
+        .expect("fixture 两步全成功应 Done");
+
+    // Done 收尾（P0-1 回归锁）：成功路径必须调真 skill_finish 把 Running → Completed
+    assert_eq!(
+        test_hook_skill_run_state("minimax-ppt"),
+        Some(SkillState::Completed),
+        "Done 路径应把 run 收尾为 Completed（P0-1：原先泄漏为僵尸 Running）"
+    );
+    // 工具编排 + 变量替换：两步都执行，step2 的 ${step1.result} 被真替换
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls.len(), 2, "应执行 2 步：{calls:?}");
+    assert_eq!(calls[0].0, "list_tasks");
+    assert_eq!(calls[1].0, "create_task");
+    assert!(
+        !calls[1].1.contains("${") && calls[1].1.contains("7c9e6679"),
+        "step2 args 应完成变量替换：{}",
+        calls[1].1
+    );
+    drop(calls);
+    // Done 汇总文本
+    match &outcome {
+        DslOutcome::Done(summary) => {
+            assert!(summary.contains("✅") && summary.contains("Step 1") && summary.contains("Step 2"));
+        }
+        other => panic!("期望 Done，got {other:?}"),
+    }
+    // 审计写入真路径（audit_log_hook → bot.log）：start / step×2 / done
+    let tail = bot_log_tail_since(log_offset);
+    for needle in [
+        "skill_dsl_start | name: minimax-ppt | steps: 2",
+        "skill_dsl_step | name: minimax-ppt | step: 1",
+        "skill_dsl_step | name: minimax-ppt | step: 2",
+        "skill_completed | name: minimax-ppt",
+        "skill_dsl_done | name: minimax-ppt | steps_ok: 2",
+    ] {
+        assert!(tail.contains(needle), "bot.log 新增段缺「{needle}」：{tail}");
+    }
+    // 持久化真路径：persist 载荷 + 真 upsert 落库可回读
+    assert_eq!(
+        persist_calls.lock().unwrap().as_slice(),
+        &[("minimax-ppt".to_string(), "done".to_string(), None, None)]
+    );
+    let stored = load_all_skill_outcomes(&conn).expect("load outcomes");
+    let row = stored.get("minimax-ppt").expect("应有 minimax-ppt 行");
+    assert_eq!(row.kind, "done");
+    assert!(
+        row.completed_summary.as_deref().unwrap_or("").contains("Step 1"),
+        "落库 summary 应含步骤摘要：{row:?}"
+    );
+
+    test_hook_remove_skill_run("minimax-ppt");
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn scheduler_e2e_paused_run_returns_await_user() {
+    // 确认窗口：run 处于 Paused（等用户确认）→ advance_dsl 在 step 1 前拦截，
+    // 0 次工具调用，持久化 await_user，返回 DslOutcome::AwaitUser
+    let _serial = SKILL_SCHED_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (meta, body) = fixture_meta_body();
+    let app = mock_handle();
+    test_hook_insert_skill_run(make_run("minimax-ppt", SkillState::Paused));
+    let log_offset = bot_log_len();
+
+    let exec = |tool: String, args: String| async move {
+        panic!("确认窗口内不应执行任何工具：{tool} {args}");
+        #[allow(unreachable_code)]
+        (String::new(), Vec::new())
+    };
+    let (conn, db_path) = open_temp_db("await");
+    let persist_calls: Arc<Mutex<Vec<(String, String, Option<String>, Option<bool>)>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let persist = make_persist(&conn, persist_calls.clone());
+
+    let outcome = run_skill_scheduler_core(&app, "minimax-ppt", &meta, &body, None, exec, persist)
+        .await
+        .expect("Paused 应走 AwaitUser 而非硬错误");
+
+    assert!(
+        matches!(outcome, DslOutcome::AwaitUser),
+        "期望 AwaitUser，got {outcome:?}"
+    );
+    assert_eq!(
+        persist_calls.lock().unwrap().as_slice(),
+        &[("minimax-ppt".to_string(), "await_user".to_string(), None, None)]
+    );
+    let stored = load_all_skill_outcomes(&conn).expect("load outcomes");
+    assert_eq!(stored["minimax-ppt"].kind, "await_user");
+    let tail = bot_log_tail_since(log_offset);
+    assert!(
+        tail.contains("skill_dsl_await_user | name: minimax-ppt | step: 1"),
+        "应记 await_user 审计：{tail}"
+    );
+    // 暂停中的 run 不被调度器改动（等 bot_confirm_response 唤起）
+    assert_eq!(
+        test_hook_skill_run_state("minimax-ppt"),
+        Some(SkillState::Paused)
+    );
+
+    test_hook_remove_skill_run("minimax-ppt");
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn scheduler_e2e_failed_step_runs_rollback_window() {
+    // P0-5 回滚窗口：step 2 失败（生产里 skill_on_step_post 会把 run 标 Failed，
+    // 这里由 mock executor 同步模拟该标记）→ 回滚段执行时 Failed 临时重开为
+    // Running（原子工具门禁放行），结束后复原 Failed。
+    let _serial = SKILL_SCHED_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (meta, body) = fixture_meta_body();
+    let app = mock_handle();
+    test_hook_insert_skill_run(make_run("minimax-ppt", SkillState::Running));
+    let log_offset = bot_log_len();
+
+    let rollback_states: Arc<Mutex<Vec<Option<SkillState>>>> = Arc::new(Mutex::new(Vec::new()));
+    let rb_states2 = rollback_states.clone();
+    let exec = move |tool: String, _args: String| {
+        let rb_states = rb_states2.clone();
+        async move {
+            match tool.as_str() {
+                "list_tasks" => (r#"[]"#.to_string(), Vec::new()),
+                "create_task" => {
+                    // 模拟生产 skill_on_step_post：工具失败后 run 被标 Failed
+                    test_hook_insert_skill_run(make_run("minimax-ppt", SkillState::Failed));
+                    ("失败：模拟工具异常".to_string(), Vec::new())
+                }
+                "rollback_marker" => {
+                    // 关键断言：回滚步骤执行时 run 必须已被重开为 Running（P0-5 窗口）
+                    rb_states
+                        .lock()
+                        .unwrap()
+                        .push(test_hook_skill_run_state("minimax-ppt"));
+                    ("rolled back".to_string(), Vec::new())
+                }
+                other => panic!("意外工具调用：{other}"),
+            }
+        }
+    };
+    let (conn, db_path) = open_temp_db("rollback");
+    let persist_calls: Arc<Mutex<Vec<(String, String, Option<String>, Option<bool>)>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let persist = make_persist(&conn, persist_calls.clone());
+
+    let outcome = run_skill_scheduler_core(&app, "minimax-ppt", &meta, &body, None, exec, persist)
+        .await
+        .expect("step 失败应走 FailedButRecoverable 而非硬错误");
+
+    match &outcome {
+        DslOutcome::FailedButRecoverable {
+            reason,
+            rollback_attempted,
+            ..
+        } => {
+            assert!(reason.contains("Step 2"), "reason 应带失败步骤：{reason}");
+            assert!(*rollback_attempted, "有回滚段且全部成功 → rollback_attempted=true");
+        }
+        other => panic!("期望 FailedButRecoverable，got {other:?}"),
+    }
+    // 回滚窗口：执行回滚步骤的那一刻 run 必须是 Running（重开），结束后复原 Failed
+    assert_eq!(
+        rollback_states.lock().unwrap().as_slice(),
+        &[Some(SkillState::Running)],
+        "回滚窗口内 run 应被临时重开为 Running（P0-5）"
+    );
+    assert_eq!(
+        test_hook_skill_run_state("minimax-ppt"),
+        Some(SkillState::Failed),
+        "回滚结束后应复原 Failed 终态"
+    );
+    // 持久化 + 审计
+    let calls = persist_calls.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].1, "failed_recoverable");
+    assert_eq!(calls[0].3, Some(true));
+    drop(calls);
+    let tail = bot_log_tail_since(log_offset);
+    for needle in [
+        "skill_dsl_rollback_start | name: minimax-ppt | step: 2",
+        "skill_dsl_rollback_done | name: minimax-ppt | steps: 1 | failed: 0",
+    ] {
+        assert!(tail.contains(needle), "bot.log 新增段缺「{needle}」：{tail}");
+    }
+
+    test_hook_remove_skill_run("minimax-ppt");
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn scheduler_e2e_zombie_terminal_run_cleared_at_entry() {
+    // agent 假死回归（2026-08-18 事故根因）：上轮遗留的 Completed 终态 run
+    // 若不清理，会在第 0 步被 advance_dsl 误判 Finish 直接 break（0 次工具调用）。
+    // core 入口的 clear_terminal_skill_runs 必须清掉它，两步照常执行。
+    let _serial = SKILL_SCHED_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (meta, body) = fixture_meta_body();
+    let app = mock_handle();
+    test_hook_insert_skill_run(make_run("minimax-ppt", SkillState::Completed));
+
+    let calls: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let calls2 = calls.clone();
+    let exec = move |tool: String, _args: String| {
+        let calls = calls2.clone();
+        async move {
+            calls.lock().unwrap().push(tool);
+            ("ok".to_string(), Vec::new())
+        }
+    };
+    let (conn, db_path) = open_temp_db("zombie");
+    let persist_calls: Arc<Mutex<Vec<(String, String, Option<String>, Option<bool>)>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let persist = make_persist(&conn, persist_calls.clone());
+
+    let outcome = run_skill_scheduler_core(&app, "minimax-ppt", &meta, &body, None, exec, persist)
+        .await
+        .expect("僵尸终态清理后应正常跑完");
+
+    assert!(
+        matches!(outcome, DslOutcome::Done(_)),
+        "期望 Done（而非被僵尸 run 短路），got {outcome:?}"
+    );
+    assert_eq!(
+        calls.lock().unwrap().as_slice(),
+        &["list_tasks".to_string(), "create_task".to_string()],
+        "两步都应执行（未被第 0 步短路）"
+    );
+
+    test_hook_remove_skill_run("minimax-ppt");
+    let _ = std::fs::remove_file(&db_path);
 }

@@ -6,8 +6,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { handleCommandError } from "./lib/errorHandler";
 import type { Task } from "./types";
 
-/** 结构相等（用于 diff 行级变更） */
-export const taskEq = (a: Task, b: Task) => JSON.stringify(a) === JSON.stringify(b);
+/** 结构相等（用于 diff 行级变更）。T1-1：expectedUpdatedAt 是写前比对基线（传输元数据，
+ *  非内容），不参与比较——否则 state 残留的脏基线会击穿纯排序豁免 / 制造假变更 */
+export const taskEq = (a: Task, b: Task) =>
+  JSON.stringify({ ...a, expectedUpdatedAt: undefined }) ===
+  JSON.stringify({ ...b, expectedUpdatedAt: undefined });
 
 /** loadTasksFromDb 结果：区分「读失败」与「空库」，避免调用方把 error 当 empty 触发种子/迁移写入 */
 export type LoadTasksResult =
@@ -97,8 +100,17 @@ export function diffTaskRows(
   upserts.forEach((t) => {
     const p = prevMap.get(t.id);
     // 纯 order 变更：不刷新 updatedAt（新任务 p 为 undefined，照常打戳）
-    if (p && taskEq({ ...p, order: t.order }, t)) return;
+    if (p && taskEq({ ...p, order: t.order }, t)) {
+      // T1-1：纯排序也带基线（在 taskEq 之后设置，不参与内容比较）——
+      // 排序写若撞上他端内容修改同样拒写，不用旧行整行压过去
+      t.expectedUpdatedAt = p.updatedAt;
+      return;
+    }
     t.updatedAt = now;
+    // T1-1：RMW 写回基线 = 快照行 updatedAt；新任务（无 prev）不带基线。
+    // 注意必须在 taskEq 判定之后赋值：基线字段不参与「是否变化」比较，
+    // 否则纯排序豁免会被脏基线击穿。
+    t.expectedUpdatedAt = p?.updatedAt;
   });
   return { upserts, deletes };
 }

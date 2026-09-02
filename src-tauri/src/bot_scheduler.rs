@@ -279,6 +279,7 @@ async fn find_due_tasks(app: &AppHandle) -> Vec<crate::db::Task> {
                 .into_iter()
                 .filter(|t| stale_ids.contains(&t.id))
                 .map(|mut t| {
+                    t.expected_updated_at = t.updated_at; // T1-1：RMW 基线 = 快照 updated_at
                     t.schedule = None;
                     t.updated_at = Some(now.timestamp_millis());
                     t
@@ -302,6 +303,7 @@ async fn find_due_tasks(app: &AppHandle) -> Vec<crate::db::Task> {
                 .into_iter()
                 .filter(|t| missed_ids.contains(&t.id))
                 .map(|mut t| {
+                    t.expected_updated_at = t.updated_at; // T1-1：RMW 基线 = 快照 updated_at
                     t.sched_last = Some(now.timestamp_millis());
                     t.updated_at = Some(now.timestamp_millis());
                     t
@@ -348,6 +350,7 @@ async fn run_scheduled(app: AppHandle, task: crate::db::Task) {
     let mut marked = false;
     if let Ok(cur) = crate::db::db_load(app.clone()).await {
         if let Some(mut fresh) = cur.into_iter().find(|t| t.id == task.id) {
+            fresh.expected_updated_at = fresh.updated_at; // T1-1：RMW 基线 = 快照 updated_at
             fresh.sched_last = Some(now.timestamp_millis());
             fresh.updated_at = Some(now.timestamp_millis());
             marked = crate::db::db_upsert(app.clone(), vec![fresh.clone()]).await.is_ok();
@@ -396,6 +399,7 @@ async fn run_scheduled(app: AppHandle, task: crate::db::Task) {
             {
                 fresh.schedule = None;
             }
+            fresh.expected_updated_at = fresh.updated_at; // T1-1：RMW 基线 = 快照 updated_at
             fresh.updated_at = Some(chrono::Local::now().timestamp_millis());
             if crate::db::db_upsert(app.clone(), vec![fresh.clone()]).await.is_ok() {
                 crate::bot::broadcast_after_mutation(&app, vec![fresh], vec![]);

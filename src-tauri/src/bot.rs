@@ -32,8 +32,18 @@ use crate::error::{CommandError, CommandResult};
 // 新代码应优先直接引用 bot_chat / bot_model_loop 模块。
 pub use crate::bot_chat::{BotChatResult, TaskRef};
 pub use crate::bot_model_loop::{
-    accumulate_tool_call_delta, drain_sse_lines, parse_sse_chunk, ToolCallDelta,
+    accumulate_tool_call_delta, drain_sse_lines, noop_replan, parse_sse_chunk,
+    run_model_loop_core, LlmHttp, ModelLoopDeps, ToolCallDelta,
 };
+// 2026-09-03 T1-2：bot_slash 是私有模块，集成测试（tests/llm_integration.rs）驱动
+// run_model_loop_core 需要构造停止守卫，此处转出口径唯一公开。
+pub use crate::bot_slash::StopGuard;
+// 同上：audit 模块私有，ModelLoopDeps.audit 回调签名里的 AuditLevel 在 tests/
+// 不可命名，测试构造 deps 需要它公开。
+pub use crate::audit::AuditLevel;
+// 同上：db 模块私有，tests/skill_e2e.rs 的调度器 e2e 用真实 upsert/load 验证
+// persist_outcome 注入闭包的落库载荷（临时库文件）。
+pub use crate::db::{load_all_skill_outcomes, upsert_skill_outcome, PersistedSkillOutcome};
 
 use serde::{Deserialize, Serialize};
 use std::io::Write;
@@ -565,11 +575,32 @@ pub fn bot_set_config(
     // 文件里只留非敏感配置（api_key 字段忽略）
     let mut cfg = config;
     cfg.api_key = None;
+    // T1-6（2026-09-03）：base_url 非 https 且非回环 → 警告（api_key 明文传输风险）；
+    // 只警告不拒写——本地推理服务是合法场景，且不能破坏存量用户配置
+    if !base_url_is_safe(&cfg.base_url) {
+        eprintln!(
+            "[bot] 警告：base_url 非 https 且非回环地址，API Key 将明文传输：{}",
+            cfg.base_url
+        );
+    }
     let dir = crate::db::data_dir(&app);
     std::fs::create_dir_all(&dir).map_err(|e| CommandError::IoError(e.to_string()))?;
     let raw =
         serde_json::to_string_pretty(&cfg).map_err(|e| CommandError::IoError(e.to_string()))?;
     std::fs::write(config_path(&app), raw).map_err(|e| CommandError::IoError(e.to_string()))
+}
+
+/// base_url 安全判定（T1-6）：空 / https:// / 回环地址（localhost、127.x、::1）
+/// 视为安全；其余（http:// 公网/内网 IP 域名等）不安全——调用方打警告，不拒写。
+pub(crate) fn base_url_is_safe(url: &str) -> bool {
+    let u = url.trim();
+    if u.is_empty() || u.starts_with("https://") {
+        return true;
+    }
+    let lower = u.to_lowercase();
+    lower.starts_with("http://localhost")
+        || lower.starts_with("http://127.")
+        || lower.starts_with("http://[::1]")
 }
 
 /// 清除已保存的 API Key
@@ -591,12 +622,28 @@ pub fn audit_log<R: tauri::Runtime>(app: &tauri::AppHandle<R>, line: &str) {
     let _g = crate::audit::BOT_LOG_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    crate::db::rotate_log_if_large(&crate::db::data_dir(app).join("bot.log"), 5 * 1024 * 1024);
     let p = crate::db::data_dir(app).join("bot.log");
-    if let Ok(mut f) = crate::audit::open_log_append(&p) {
-        let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
-        let _ = writeln!(f, "[{ts}] {line}");
+    crate::db::rotate_log_if_large(&p, 5 * 1024 * 1024);
+    let _ = append_bot_log_line(&p, line);
+}
+
+/// bot.log 写一行内核（T1-4，2026-09-03）：open/write 失败 eprintln 带路径并返回 false，
+/// 不再 `if let Ok … { let _ = writeln! }` 全静默（对齐 audit::append_line 的 P2-15 做法）。
+/// 抽成路径参数版便于单测（与 bot_py.rs:1205 同先例）。
+fn append_bot_log_line(p: &std::path::Path, line: &str) -> bool {
+    let mut f = match crate::audit::open_log_append(p) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("[audit] write failed: {} path={}", e, p.display());
+            return false;
+        }
+    };
+    let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+    if let Err(e) = writeln!(f, "[{ts}] {line}") {
+        eprintln!("[audit] write failed: {} path={}", e, p.display());
+        return false;
     }
+    true
 }
 
 /// 审计日志安全转义 + 截断（P2-11）：剥换行/管道符，防伪造「INFO |」前缀与多行撕裂。
@@ -1333,6 +1380,7 @@ async fn tool_create_task(app: &AppHandle, args: &str) -> (String, Vec<crate::bo
         schedule: None,
         sched_last: None,
         bot_assigned: None,
+        expected_updated_at: None, // 新建任务：无读快照基线（T1-1）
     };
     // 多文件绑定（2026-08-19）：files 参数 [{path,isDir}]，超 10 截断 + 警告
     // SEC-P0-2（2026-08-27）：模型来源 files 经安全校验（仅 AI_Gen_Files 内文件）
@@ -1378,6 +1426,7 @@ async fn tool_complete_task(app: &AppHandle, args: &str) -> (String, Vec<crate::
     let mut next = task.clone();
     next.column = "done".into();
     next.completed_at = Some(chrono::Utc::now().timestamp_millis());
+    next.expected_updated_at = next.updated_at; // T1-1：RMW 写回基线 = 快照 updated_at
     next.updated_at = next.completed_at;
     match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
         Ok(()) => {
@@ -1407,6 +1456,7 @@ async fn tool_delete_task(app: &AppHandle, args: &str, interactive: bool, sessio
     }
     let mut next = task.clone();
     next.deleted_at = Some(chrono::Utc::now().timestamp_millis());
+    next.expected_updated_at = next.updated_at; // T1-1：RMW 写回基线 = 快照 updated_at
     next.updated_at = next.deleted_at;
     match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
         Ok(()) => {
@@ -1564,6 +1614,7 @@ async fn tool_edit_task(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_
     if changed.is_empty() {
         return ("没有可修改的字段".into(), Vec::new());
     }
+    next.expected_updated_at = next.updated_at; // T1-1：RMW 写回基线 = 快照 updated_at（写前比对，防整行覆盖 lost-update）
     next.updated_at = Some(chrono::Utc::now().timestamp_millis());
     match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
         Ok(()) => {
@@ -1603,6 +1654,7 @@ async fn tool_add_subtask(app: &AppHandle, args: &str) -> (String, Vec<crate::bo
         done: false,
     });
     next.subtasks = Some(subs);
+    next.expected_updated_at = next.updated_at; // T1-1：RMW 写回基线 = 快照 updated_at（写前比对，防整行覆盖 lost-update）
     next.updated_at = Some(chrono::Utc::now().timestamp_millis());
     match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
         Ok(()) => {
@@ -1649,6 +1701,7 @@ async fn tool_toggle_subtask(app: &AppHandle, args: &str) -> (String, Vec<crate:
     let mut subs2 = subs;
     subs2[idx].done = !subs2[idx].done;
     next.subtasks = Some(subs2);
+    next.expected_updated_at = next.updated_at; // T1-1：RMW 写回基线 = 快照 updated_at（写前比对，防整行覆盖 lost-update）
     next.updated_at = Some(chrono::Utc::now().timestamp_millis());
     match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
         Ok(()) => {
@@ -1719,6 +1772,7 @@ async fn tool_remove_subtask(app: &AppHandle, args: &str) -> (String, Vec<crate:
     let mut subs2 = subs;
     subs2.remove(idx);
     next.subtasks = Some(subs2);
+    next.expected_updated_at = next.updated_at; // T1-1：RMW 写回基线 = 快照 updated_at（写前比对，防整行覆盖 lost-update）
     next.updated_at = Some(chrono::Utc::now().timestamp_millis());
     match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
         Ok(()) => {
@@ -1778,6 +1832,7 @@ async fn tool_bind_file(app: &AppHandle, args: &str, interactive: bool) -> (Stri
             is_dir,
         }],
     );
+    next.expected_updated_at = next.updated_at; // T1-1：RMW 写回基线 = 快照 updated_at（写前比对，防整行覆盖 lost-update）
     next.updated_at = Some(chrono::Utc::now().timestamp_millis());
     match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
         Ok(()) => {
@@ -1850,6 +1905,7 @@ async fn tool_link_file_to_task(app: &AppHandle, args: &str) -> (String, Vec<cra
             is_dir: false,
         }],
     );
+    next.expected_updated_at = next.updated_at; // T1-1：RMW 写回基线 = 快照 updated_at（写前比对，防整行覆盖 lost-update）
     next.updated_at = Some(chrono::Utc::now().timestamp_millis());
     match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
         Ok(()) => {
@@ -2656,6 +2712,7 @@ mod task_files_arg_tests {
             schedule: None,
             sched_last: None,
             bot_assigned: None,
+            expected_updated_at: None,
         };
         apply_files_to_task(
             &mut t,
@@ -2774,5 +2831,57 @@ mod batch5_background_dialog_tests {
             text.contains("后台执行不能弹窗选文件，请提供 path 参数"),
             "extract_document 无 path 后台必须拒绝"
         );
+    }
+}
+
+#[cfg(test)]
+mod t1_4_audit_log_tests {
+    /// T1-4（2026-09-03）：audit_log 写盘内核——成功带 [ts] 前缀落行；
+    /// 失败 eprintln 带 path + 返回 false（对齐 audit::append_line 的 P2-15 做法），不静默不 panic
+    #[test]
+    fn append_bot_log_line_ok_writes_with_ts() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("bot.log");
+        assert!(super::append_bot_log_line(&p, "hello"));
+        let content = std::fs::read_to_string(&p).unwrap();
+        assert!(content.ends_with("] hello\n"), "应带 [ts] 前缀落行：{content}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn append_bot_log_line_readonly_dir_fails_visible() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let ro = dir.path().join("ro");
+        std::fs::create_dir(&ro).unwrap();
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let p = ro.join("bot.log");
+        // 写失败：返回 false + eprintln 带 path（原先 if let Ok 全静默，丢日志零痕迹）
+        assert!(!super::append_bot_log_line(&p, "x"));
+        assert!(!p.exists());
+        // 恢复权限让 tempdir 清理不掉链子
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod t1_6_base_url_tests {
+    /// T1-6（2026-09-03）：base_url 安全判定——https / 空 / 回环放行；
+    /// http 公网/内网地址判不安全（调用方打警告，不拒写）
+    #[test]
+    fn base_url_safety_classification() {
+        // 安全：https
+        assert!(super::base_url_is_safe("https://api.deepseek.com/v1"));
+        // 安全：空（未配置，无可 warn）
+        assert!(super::base_url_is_safe(""));
+        assert!(super::base_url_is_safe("   "));
+        // 安全：回环（本地推理服务合法场景）
+        assert!(super::base_url_is_safe("http://localhost:11434/v1"));
+        assert!(super::base_url_is_safe("http://127.0.0.1:8000/v1"));
+        assert!(super::base_url_is_safe("http://[::1]:8080"));
+        // 不安全：http 公网 / 内网
+        assert!(!super::base_url_is_safe("http://api.example.com/v1"));
+        assert!(!super::base_url_is_safe("http://192.168.1.10:8000/v1"));
+        assert!(!super::base_url_is_safe("ftp://example.com"));
     }
 }

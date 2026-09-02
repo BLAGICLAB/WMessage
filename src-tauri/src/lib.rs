@@ -433,11 +433,9 @@ pub fn run() {
             bot_skills::pick_files_dialog,
             bot_skills::delete_bound_file,
             db::bind_files,
-            db::bind_file,
             db::db_load,
             db::db_upsert,
             db::db_delete,
-            db::db_merge,
             db::tasks_export,
             db::tasks_import,
             db::workspace_load,
@@ -767,5 +765,40 @@ mod p2_24_exit_cleanup_tests {
         // 批次8审计 P2：复位 EXITING——否则本进程后续任何走生产 run_python() 的
         // 测试都会被「应用正在退出」误拒
         crate::bot_py::reset_exiting_for_test();
+    }
+}
+
+#[cfg(test)]
+mod t1_5_dead_command_tests {
+    /// T1-5（2026-09-03）：死命令 bind_file / db_merge 已下线——前端零调用
+    /// （TodoCard 用的是复数形 bind_files，保留）。源码锁防回退重新注册。
+    ///（匹配串用 concat! 拼接：本测试自身就在 lib.rs 里，裸写字面量会自匹配误判）
+    #[test]
+    fn dead_commands_not_registered() {
+        let text =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs")).unwrap();
+        assert!(
+            !text.contains(concat!("db::bind", "_file,")),
+            "db::bind_file 死命令不得再注册（bind_files 复数形保留）"
+        );
+        assert!(
+            !text.contains(concat!("db::db", "_merge,")),
+            "db::db_merge 死命令不得再注册"
+        );
+        assert!(
+            text.contains("db::bind_files,"),
+            "bind_files 复数形必须保留（TodoCard 前端在用）"
+        );
+        // 命令体本体也已删除（含仅它使用的 load_external）
+        let db = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/db.rs")).unwrap();
+        assert!(
+            !db.contains(concat!("fn bind", "_file(")),
+            "bind_file 命令体应已删除"
+        );
+        assert!(!db.contains(concat!("fn db", "_merge(")), "db_merge 命令体应已删除");
+        assert!(
+            !db.contains(concat!("fn load", "_external(")),
+            "load_external 应随 db_merge 一并删除"
+        );
     }
 }

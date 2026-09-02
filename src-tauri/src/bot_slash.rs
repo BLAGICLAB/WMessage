@@ -145,7 +145,7 @@ pub(crate) static STOP_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new((
 /// 后台定时（interactive=false）与别的会话不受影响（2026-08-27 审计 P1-8：
 /// 原先一停全停，会话 B 的 /stop 会误杀会话 A 的活动 Skill）
 #[tauri::command]
-pub fn bot_stop(app: AppHandle, session_id: Option<String>) {
+pub fn bot_stop(app: AppHandle, session_id: Option<String>) -> Result<(), String> {
     // P1-8：/stop 本身留痕——原先零审计，无法区分「用户停过」与「自己跑完」
     crate::bot::audit_log(
         &app,
@@ -160,14 +160,9 @@ pub fn bot_stop(app: AppHandle, session_id: Option<String>) {
     tauri::async_runtime::spawn(async move {
         crate::exec_steps::clear_for(&app2, sid.as_deref(), "/stop").await;
     });
-    if let Ok(m) = stop_registry().lock() {
-        for (_, (flag, interactive, sid2)) in m.iter() {
-            // 会话隔离：只停本会话的交互实例；session 不匹配的不动
-            if *interactive && sid2.as_deref() == session_id.as_deref() {
-                flag.store(true, std::sync::atomic::Ordering::SeqCst);
-            }
-        }
-    }
+    // T1-3（2026-09-03）：锁中毒返回 Err 给前端，不再 if let Ok 静默吞；
+    // 确认弹窗收尾与注册表无关，锁失败也要照常执行
+    let stopped = flag_session_stopped(session_id.as_deref());
     // P1（2026-08-27 审计）：本会话在途确认弹窗立即按拒绝收尾——sender 随条目 drop，
     // 等待侧 rx 立即收到 Err 走超时拒绝分支；/stop 后迟到的确认点击不再放行危险动作
     {
@@ -181,6 +176,26 @@ pub fn bot_stop(app: AppHandle, session_id: Option<String>) {
             map.remove(&k);
         }
     }
+    stopped.map(|_| ())
+}
+
+/// /stop 置位内核：本会话交互实例的停止标志置位，返回置位数量。
+/// T1-3（2026-09-03）：锁中毒返回 Err（原先 if let Ok 静默吞掉，前端无从感知）。
+/// 抽成纯函数便于单测（tauri command 绑定 Wry AppHandle，mock_app 无法直调——
+/// 与 bot_py.rs:1205 同先例）。
+fn flag_session_stopped(session_id: Option<&str>) -> Result<usize, String> {
+    let m = stop_registry()
+        .lock()
+        .map_err(|_| "停止注册表锁中毒：停止标志未能置位".to_string())?;
+    let mut n = 0;
+    for (_, (flag, interactive, sid2)) in m.iter() {
+        // 会话隔离：只停本会话的交互实例；session 不匹配的不动
+        if *interactive && sid2.as_deref() == session_id {
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            n += 1;
+        }
+    }
+    Ok(n)
 }
 
 // ───────────────────────── 危险操作确认（删除任务弹窗） ─────────────────────────
@@ -323,23 +338,40 @@ pub async fn ask_path_confirm(
 /// 「始终允许该目录」按钮会为 true，老调用（删任务两按钮）不传 → None → false。
 /// 会话归属从 ConfirmMap 条目取回（2026-08-26）：skill_confirm_result 按会话过滤。
 #[tauri::command]
-pub fn bot_confirm_response(app: AppHandle, request_id: String, approved: bool, always: Option<bool>) {
-    let entry = confirms()
+pub fn bot_confirm_response(app: AppHandle, request_id: String, approved: bool, always: Option<bool>) -> Result<(), String> {
+    let (tx, session_id) = take_confirm(&request_id)?;
+    // Skill 调度器联动：确认结果 → 本会话技能恢复 Running / 拒绝终止 / 暂停即终止
+    crate::bot_skills::skill_confirm_result(&app, approved, session_id.as_deref());
+    // 2026-08-27 审计 P2：用户点「拒绝」留痕（原先只有 tool.return 预览里能看到）
+    if !approved {
+        crate::bot::audit_log(
+            &app,
+            &format!("confirm_denied | id: {} | 用户拒绝", &request_id[..8.min(request_id.len())]),
+        );
+    }
+    deliver_confirm(tx, ConfirmReply { approved, always: always.unwrap_or(false) })
+}
+
+/// 取待确认条目（T1-3，2026-09-03：不存在/已超时 → Err，原先静默 no-op 前端无从感知）。
+fn take_confirm(
+    request_id: &str,
+) -> Result<(tokio::sync::oneshot::Sender<ConfirmReply>, Option<String>), String> {
+    confirms()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .remove(&request_id);
-    if let Some((tx, session_id)) = entry {
-        // Skill 调度器联动：确认结果 → 本会话技能恢复 Running / 拒绝终止 / 暂停即终止
-        crate::bot_skills::skill_confirm_result(&app, approved, session_id.as_deref());
-        // 2026-08-27 审计 P2：用户点「拒绝」留痕（原先只有 tool.return 预览里能看到）
-        if !approved {
-            crate::bot::audit_log(
-                &app,
-                &format!("confirm_denied | id: {} | 用户拒绝", &request_id[..8.min(request_id.len())]),
-            );
-        }
-        let _ = tx.send(ConfirmReply { approved, always: always.unwrap_or(false) });
-    }
+        .remove(request_id)
+        .ok_or_else(|| {
+            format!("确认请求不存在或已超时：{}", &request_id[..8.min(request_id.len())])
+        })
+}
+
+/// 回填确认结果（T1-3：等待方已退出时返回 Err，不再 let _ 静默）。
+fn deliver_confirm(
+    tx: tokio::sync::oneshot::Sender<ConfirmReply>,
+    reply: ConfirmReply,
+) -> Result<(), String> {
+    tx.send(reply)
+        .map_err(|_| "确认结果送达失败：等待方已退出（可能已超时）".to_string())
 }
 
 // ───────────────────────── 开关持久化 ─────────────────────────
@@ -380,5 +412,46 @@ mod batch5_stop_all_tests {
         let n = super::stop_all_executions();
         assert!(n >= 2);
         assert!(g1.stopped() && g2.stopped(), "两类实例都必须被置位");
+    }
+}
+
+#[cfg(test)]
+mod t1_3_command_result_tests {
+    /// T1-3（2026-09-03）：/stop 置位内核只停本会话交互实例并返回数量；
+    /// 锁中毒路径经 map_err 返回 Err（命令绑定 Wry AppHandle 无法单测，测内核）。
+    #[test]
+    fn flag_session_stopped_only_hits_own_session_interactive() {
+        // 与持 StopGuard 的并行测试互斥（同 batch5 用例）
+        let _serial = super::STOP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let g1 = super::StopGuard::new(true, Some("t1-3-sess".into()));
+        let g2 = super::StopGuard::new(true, Some("t1-3-other".into()));
+        let g3 = super::StopGuard::new(false, Some("t1-3-sess".into()));
+        let n = super::flag_session_stopped(Some("t1-3-sess")).expect("锁正常应 Ok");
+        assert_eq!(n, 1, "只应置位本会话的交互实例");
+        assert!(g1.stopped());
+        assert!(!g2.stopped(), "别的会话不受影响");
+        assert!(!g3.stopped(), "后台实例不受影响");
+    }
+
+    /// T1-3：不存在/已超时的确认请求 → Err（原先静默 no-op）
+    #[test]
+    fn take_confirm_unknown_id_errs() {
+        let e = super::take_confirm("t1-3-no-such-id").unwrap_err();
+        assert!(e.contains("不存在或已超时"), "Err 应说明原因：{e}");
+    }
+
+    /// T1-3：等待方已退出（rx dropped）时回填失败必须可见（原先 let _ 吞掉）
+    #[test]
+    fn deliver_confirm_dropped_receiver_errs() {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        drop(rx);
+        let r = super::deliver_confirm(tx, super::ConfirmReply { approved: true, always: false });
+        assert!(r.is_err(), "送达失败应返回 Err");
+        // 对照：rx 存活时正常送达
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        super::deliver_confirm(tx, super::ConfirmReply { approved: false, always: true })
+            .expect("rx 存活应送达");
+        let reply = rx.blocking_recv().unwrap();
+        assert!(!reply.approved && reply.always);
     }
 }

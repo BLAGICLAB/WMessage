@@ -95,16 +95,23 @@ pub(crate) fn is_tool_failure_text(text: &str) -> bool {
 /// - 回滚段执行时 run 已是 Failed，原子工具会被 AtomicGuard 拦截 → 临时重开为 Running，
 ///   结束后复原（reopen/restore，见 state.rs）
 /// - 逐步判定成败并记审计（原先 `let _ =` 吞掉结果，回滚全挂也返回 true，护栏被架空）
-async fn run_rollback_segment(
-    app: &AppHandle,
+/// 2026-09-03 T1-2 重构：泛型 Runtime + execute_tool 注入（stop 分支选择由调用方
+/// 闭包承接），调度器本体可被集成测试直驱。
+#[allow(clippy::too_many_arguments)]
+async fn run_rollback_segment_core<R: tauri::Runtime, X, XP>(
+    app: &tauri::AppHandle<R>,
     name: &str,
     rollback: &[super::parse::SkillStep],
     ctx: &[CompletedStep],
     step_index: usize,
     reason: &str,
     session_id: Option<&str>,
-    stop: Option<&crate::bot_slash::StopGuard>,
-) -> bool {
+    execute_tool: &X,
+) -> bool
+where
+    X: Fn(String, String) -> XP,
+    XP: std::future::Future<Output = (String, Vec<crate::bot_chat::TaskRef>)>,
+{
     if rollback.is_empty() {
         return false;
     }
@@ -121,10 +128,7 @@ async fn run_rollback_segment(
     let mut failed_steps = 0usize;
     for rb in rollback {
         let rb_args = substitute_vars(&rb.args_json, ctx);
-        let (text, _refs) = match stop {
-            Some(s) => crate::bot::execute_tool_with_stop(app, &rb.tool_name, &rb_args, Some(s)).await,
-            None => crate::bot::execute_tool(app, &rb.tool_name, &rb_args, session_id).await,
-        };
+        let (text, _refs) = execute_tool(rb.tool_name.clone(), rb_args).await;
         if is_tool_failure_text(&text) {
             failed_steps += 1;
             crate::bot::audit_log_hook(
@@ -176,25 +180,58 @@ pub fn skill_terminate_all<R: tauri::Runtime>(app: &tauri::AppHandle<R>, reason:
 /// stop（2026-08-27 审计 P1-8）：携带 /stop 守卫，在途 run_python 等长耗时步骤可被中断——
 /// 原先走 execute_tool（stop=None），在途 Python 脚本必须跑完才能停。
 ///
+/// 2026-09-03 T1-2 重构：本函数只做依赖装配（load_skill_meta + execute_tool 闭包
+/// 承接 stop 分支 + persist 闭包），实际调度逻辑在 run_skill_scheduler_core，
+/// 后者泛型 Runtime + 注入 executor，集成测试可直驱（tests/skill_e2e.rs）。
+pub async fn run_skill_scheduler(app: &AppHandle, name: &str, session_id: Option<&str>, stop: Option<&crate::bot_slash::StopGuard>) -> Result<DslOutcome, DslFailure> {
+    let (meta, body) =
+        load_skill_meta(app, name).map_err(|e| DslFailure::Terminated { reason: e })?;
+    let execute_tool = |tool: String, args: String| async move {
+        match stop {
+            Some(s) => crate::bot::execute_tool_with_stop(app, &tool, &args, Some(s)).await,
+            None => crate::bot::execute_tool(app, &tool, &args, session_id).await,
+        }
+    };
+    let persist_outcome = |name: &str, kind: &str, reason: Option<&str>, summary: Option<&str>, rollback_attempted: Option<bool>| {
+        persist_outcome_quiet(app, name, kind, reason, summary, rollback_attempted);
+    };
+    run_skill_scheduler_core(app, name, &meta, &body, session_id, execute_tool, persist_outcome).await
+}
+
+/// DSL 调度器核心（2026-09-03 T1-2 重构抽出，原 run_skill_scheduler 本体）：
+/// 泛型 Runtime + execute_tool / persist_outcome 注入，不直接依赖 Wry——
+/// 集成测试可用 MockRuntime + mock executor + 真 fixture SKILL.md 直驱真路径。
+///
 /// 行为：
-/// - 每个 step 调一次 `bot::execute_tool`（带 pre-execute 校验）
+/// - 每个 step 调一次注入的 execute_tool（生产闭包内带 pre-execute 校验）
 /// - 任一 step 失败 → 顺序跑 `## Rollback` 段工具 → 返回 Err
 /// - 全部成功 → 返回汇总文本
-/// - SkillRun 状态机更新由 `execute_tool` 内的 `skill_on_step` / `skill_on_step_post` 自动维护
-pub async fn run_skill_scheduler(app: &AppHandle, name: &str, session_id: Option<&str>, stop: Option<&crate::bot_slash::StopGuard>) -> Result<DslOutcome, DslFailure> {
+/// - SkillRun 状态机更新由 execute_tool 内的 `skill_on_step` / `skill_on_step_post` 自动维护
+pub async fn run_skill_scheduler_core<R: tauri::Runtime, X, XP, P>(
+    app: &tauri::AppHandle<R>,
+    name: &str,
+    meta: &super::parse::SkillMeta,
+    body: &str,
+    session_id: Option<&str>,
+    execute_tool: X,
+    persist_outcome: P,
+) -> Result<DslOutcome, DslFailure>
+where
+    X: Fn(String, String) -> XP,
+    XP: std::future::Future<Output = (String, Vec<crate::bot_chat::TaskRef>)>,
+    P: Fn(&str, &str, Option<&str>, Option<&str>, Option<bool>),
+{
     // 僵尸终态清理：上轮遗留的 Completed/Failed/Terminated run 会在第 0 步被 advance_dsl
     // 误判为完成信号直接 break（与主循环同款假死根因）
     clear_terminal_skill_runs();
-    let (meta, body) =
-        load_skill_meta(app, name).map_err(|e| DslFailure::Terminated { reason: e })?;
     let (steps, rollback) =
-        parse_skill_steps(&body).map_err(|e| DslFailure::Terminated { reason: e })?;
+        parse_skill_steps(body).map_err(|e| DslFailure::Terminated { reason: e })?;
     if steps.is_empty() {
         crate::bot::audit_log_hook(
             app,
             &format!("skill_dsl_empty | name: {name} | body_len: {}", body.len()),
         );
-        persist_outcome_quiet(app, name, "terminated", Some("DSL 解析为空"), None, None);
+        persist_outcome(name, "terminated", Some("DSL 解析为空"), None, None);
         return Err(DslFailure::Terminated {
             reason: format!("技能「{name}」无可执行步骤（DSL 解析为空）"),
         });
@@ -230,8 +267,7 @@ pub async fn run_skill_scheduler(app: &AppHandle, name: &str, session_id: Option
                         app,
                         &format!("skill_dsl_await_user | name: {name} | step: {}", step.index),
                     );
-                    persist_outcome_quiet(
-                        app,
+                    persist_outcome(
                         name,
                         "await_user",
                         None,
@@ -241,14 +277,14 @@ pub async fn run_skill_scheduler(app: &AppHandle, name: &str, session_id: Option
                     return Ok(DslOutcome::AwaitUser);
                 }
                 DslAdvanceAction::FailWithRollback(reason) => {
-                    let rb_attempted = run_rollback_segment(
-                        app, name, &rollback, &ctx, step.index, &reason, session_id, stop,
+                    let rb_attempted = run_rollback_segment_core(
+                        app, name, &rollback, &ctx, step.index, &reason, session_id,
+                        &execute_tool,
                     )
                     .await;
                     let final_reason = format!("技能「{name}」中止：{reason}");
                     let summary = format_completed_summary(&ctx);
-                    persist_outcome_quiet(
-                        app,
+                    persist_outcome(
                         name,
                         "failed_recoverable",
                         Some(&final_reason),
@@ -270,7 +306,7 @@ pub async fn run_skill_scheduler(app: &AppHandle, name: &str, session_id: Option
                         ),
                     );
                     let final_reason = format!("技能「{name}」终止：{reason}");
-                    persist_outcome_quiet(app, name, "terminated", Some(&final_reason), None, None);
+                    persist_outcome(name, "terminated", Some(&final_reason), None, None);
                     return Err(DslFailure::Terminated {
                         reason: final_reason,
                     });
@@ -299,14 +335,11 @@ pub async fn run_skill_scheduler(app: &AppHandle, name: &str, session_id: Option
                 ),
             );
         }
-        let (text, _refs) = match stop {
-            Some(s) => crate::bot::execute_tool_with_stop(app, &step.tool_name, &resolved_args, Some(s)).await,
-            None => crate::bot::execute_tool(app, &step.tool_name, &resolved_args, session_id).await,
-        };
+        let (text, _refs) = execute_tool(step.tool_name.clone(), resolved_args).await;
         let failed = is_tool_failure_text(&text);
         if failed {
-            let rb_attempted = run_rollback_segment(
-                app, name, &rollback, &ctx, step.index, &text, session_id, stop,
+            let rb_attempted = run_rollback_segment_core(
+                app, name, &rollback, &ctx, step.index, &text, session_id, &execute_tool,
             )
             .await;
             let final_reason = format!(
@@ -314,8 +347,7 @@ pub async fn run_skill_scheduler(app: &AppHandle, name: &str, session_id: Option
                 step.index, step.title, text
             );
             let summary = format_completed_summary(&ctx);
-            persist_outcome_quiet(
-                app,
+            persist_outcome(
                 name,
                 "failed_recoverable",
                 Some(&final_reason),
@@ -357,7 +389,7 @@ pub async fn run_skill_scheduler(app: &AppHandle, name: &str, session_id: Option
         app,
         &format!("skill_dsl_done | name: {name} | steps_ok: {}", steps.len()),
     );
-    persist_outcome_quiet(app, name, "done", None, Some(&summary), None);
+    persist_outcome(name, "done", None, Some(&summary), None);
     Ok(DslOutcome::Done(summary))
 }
 

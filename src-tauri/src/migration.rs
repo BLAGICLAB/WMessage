@@ -367,6 +367,7 @@ fn recover_move_db(
     if !file_path_untouched(t.file_path.as_deref(), expected_src) {
         return Ok(false);
     }
+    t.expected_updated_at = t.updated_at; // T1-1：RMW 基线 = 快照 updated_at
     t.file_path = Some(dst.to_string_lossy().to_string());
     t.updated_at = Some(now_ms());
     tauri::async_runtime::block_on(async { db::db_upsert(app.clone(), vec![t]).await })
@@ -383,6 +384,7 @@ fn recover_delete_db(app: &AppHandle, task_id: &str, expected_src: &str) -> Resu
     if !file_path_untouched(t.file_path.as_deref(), expected_src) {
         return Ok(false);
     }
+    t.expected_updated_at = t.updated_at; // T1-1：RMW 基线 = 快照 updated_at
     t.file_path = None;
     t.file_is_dir = None;
     t.updated_at = Some(now_ms());
@@ -749,6 +751,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
         if let Some(completed) = t.completed_at {
             if completed > 0 && now - completed >= ARCHIVE_AFTER_MS {
                 let mut nt = t.clone();
+                nt.expected_updated_at = t.updated_at; // T1-1：RMW 基线 = 快照 updated_at
                 nt.archived = Some(true);
                 nt.updated_at = Some(now);
                 due.push(nt);
@@ -758,6 +761,11 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
     if !due.is_empty() {
         tauri::async_runtime::block_on(async { db::db_upsert(app.clone(), due.clone()).await })
             .map_err(|e| e.to_string())?;
+        // T1-1：due 已落盘（updated_at=now），changed 末尾统一重写的基线须重武装为
+        // 刚写入的值，否则二次 upsert 会被自己的基线比对拒写
+        for t in &mut due {
+            t.expected_updated_at = t.updated_at;
+        }
         report.archived = due.len();
         let line = format!("归档到期任务 {n} 个", n = due.len());
         report.log.push(line.clone());
@@ -826,6 +834,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
                     match decide_src_missing(pending, dst_exists) {
                         SrcMissingAction::RepairMove { dst, journal_id } => {
                             let mut nt = t.clone();
+                            nt.expected_updated_at = t.updated_at; // T1-1：RMW 基线 = 快照 updated_at
                             nt.file_path = Some(dst.clone());
                             nt.updated_at = Some(now);
                             match tauri::async_runtime::block_on(async {
@@ -833,6 +842,8 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
                             }) {
                                 Ok(()) => {
                                     journal_committed(&jconn, journal_id).ok();
+                                    // T1-1：nt 已落盘，changed 末尾统一重写前基线重武装为刚写入值
+                                    nt.expected_updated_at = nt.updated_at;
                                     changed.push(nt);
                                     report.moved += 1;
                                     let line = format!(
@@ -856,6 +867,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
                             // 确认解绑：无 pending（用户外部删除/文件本就不存在），
                             // 或 pending 为 delete（解绑本就是其终态）/ move 但 dst 也丢失。
                             let mut nt = t.clone();
+                            nt.expected_updated_at = t.updated_at; // T1-1：RMW 基线 = 快照 updated_at
                             nt.file_path = None;
                             nt.file_is_dir = None;
                             nt.updated_at = Some(now);
@@ -922,6 +934,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
                     continue;
                 }
                 let mut nt = t.clone();
+                nt.expected_updated_at = t.updated_at; // T1-1：RMW 基线 = 快照 updated_at
                 nt.file_path = Some(dst.to_string_lossy().to_string());
                 nt.updated_at = Some(now);
                 if let Err(e) = tauri::async_runtime::block_on(async {
@@ -938,6 +951,8 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
                     continue;
                 }
                 journal_committed(&jconn, journal_id).ok();
+                // T1-1：nt 已落盘，changed 末尾统一重写前基线重武装为刚写入值
+                nt.expected_updated_at = nt.updated_at;
                 changed.push(nt);
                 report.moved += 1;
                 let line = format!("已移动「{name}」→ {}", dst.display());
@@ -957,6 +972,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
                     match decide_src_missing(pending, dst_exists) {
                         SrcMissingAction::RepairMove { dst, journal_id } => {
                             let mut nt = t.clone();
+                            nt.expected_updated_at = t.updated_at; // T1-1：RMW 基线 = 快照 updated_at
                             nt.file_path = Some(dst.clone());
                             nt.updated_at = Some(now);
                             match tauri::async_runtime::block_on(async {
@@ -964,6 +980,8 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
                             }) {
                                 Ok(()) => {
                                     journal_committed(&jconn, journal_id).ok();
+                                    // T1-1：nt 已落盘，changed 末尾统一重写前基线重武装为刚写入值
+                                    nt.expected_updated_at = nt.updated_at;
                                     changed.push(nt);
                                     report.moved += 1;
                                     let line = format!(
@@ -985,6 +1003,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
                         }
                         SrcMissingAction::Unbind { commit_journal } => {
                             let mut nt = t.clone();
+                            nt.expected_updated_at = t.updated_at; // T1-1：RMW 基线 = 快照 updated_at
                             nt.file_path = None;
                             nt.file_is_dir = None;
                             nt.updated_at = Some(now);
@@ -1026,6 +1045,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
                     continue;
                 }
                 let mut nt = t.clone();
+                nt.expected_updated_at = t.updated_at; // T1-1：RMW 基线 = 快照 updated_at
                 nt.file_path = None;
                 nt.file_is_dir = None;
                 nt.updated_at = Some(now);
@@ -1044,6 +1064,8 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
                     continue;
                 }
                 journal_committed(&jconn, journal_id).ok();
+                // T1-1：nt 已落盘，changed 末尾统一重写前基线重武装为刚写入值
+                nt.expected_updated_at = nt.updated_at;
                 changed.push(nt);
                 report.deleted += 1;
                 let line = format!("已删除「{name}」（规则显式启用 delete）");

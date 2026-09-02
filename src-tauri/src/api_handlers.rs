@@ -298,6 +298,23 @@ fn internal_err(req: Request, log: &Option<PathBuf>, e: &str) {
     let _ = req.respond(json_err(StatusCode(500), "internal error"));
 }
 
+/// T1-1：upsert 失败分流——RMW 基线冲突（其他写者已改/删该行）→ 409（客户端应重读后重试）；
+/// 其余错误走 500 统一文案。
+fn upsert_err(req: Request, log: &Option<PathBuf>, e: &str) {
+    if e.starts_with(db::CONFLICT_ERR_PREFIX) {
+        log_line(
+            log,
+            &format!("conflict | {}", crate::audit::escape_for_log(e, 300)),
+        );
+        let _ = req.respond(json_err(
+            StatusCode(409),
+            "任务已被其他端修改或删除，请重试",
+        ));
+    } else {
+        internal_err(req, log, e);
+    }
+}
+
 /// 任务变更后：store 内部 SSE 广播 + 前端看板刷新回调 + 变更日志
 ///
 /// A5: hub 不再传入；SSE 广播走 `store.notify_change()`，由 store 层封装 hub。
@@ -516,6 +533,7 @@ fn create_task(
         schedule: None,
         sched_last: None,
         bot_assigned: None,
+        expected_updated_at: None, // 新建任务：无读快照基线（T1-1）
     };
     if let Err(e) = store.upsert(vec![task.clone()]) {
         internal_err(req, log, &e);
@@ -572,6 +590,8 @@ fn update_task(
         return;
     };
     let mut t = tasks[idx].clone();
+    // T1-1：RMW 基线 = 本次 load 快照的 updated_at；upsert 写前比对，基线外有写者改行 → 409 拒写
+    t.expected_updated_at = t.updated_at;
 
     if let Some(title) = input.title.as_deref() {
         let tt = title.trim();
@@ -693,7 +713,7 @@ fn update_task(
     t.updated_at = Some(now_ms());
 
     if let Err(e) = store.upsert(vec![t.clone()]) {
-        internal_err(req, log, &e);
+        upsert_err(req, log, &e);
         return;
     }
     after_change(store, &t, "updated", emit_fn, log);
@@ -722,6 +742,8 @@ fn delete_task(
         return;
     };
     let mut t = tasks[idx].clone();
+    // T1-1：RMW 基线 = 本次 load 快照的 updated_at（同 update_task）
+    t.expected_updated_at = t.updated_at;
     if t.deleted_at.is_some() {
         // 已在回收站：幂等返回当前状态
         let _ = req.respond(json_ok(StatusCode(200), &TaskOut::from_task(&t)));
@@ -730,7 +752,7 @@ fn delete_task(
     t.deleted_at = Some(now_ms());
     t.updated_at = Some(now_ms());
     if let Err(e) = store.upsert(vec![t.clone()]) {
-        internal_err(req, log, &e);
+        upsert_err(req, log, &e);
         return;
     }
     after_change(store, &t, "deleted", emit_fn, log);
@@ -1152,6 +1174,7 @@ mod tests {
             schedule: None,
             sched_last: None,
             bot_assigned: None,
+            expected_updated_at: None,
         }
     }
 

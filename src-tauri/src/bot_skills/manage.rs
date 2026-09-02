@@ -15,7 +15,7 @@ pub struct SkillInfo {
     pub last_outcome: Option<crate::db::PersistedSkillOutcome>,
 }
 
-fn skills_dir(app: &AppHandle) -> std::path::PathBuf {
+fn skills_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> std::path::PathBuf {
     crate::db::data_dir(app).join("skills")
 }
 
@@ -49,7 +49,7 @@ fn dev_skills_dir_at(target_root: &std::path::Path) -> Option<std::path::PathBuf
 /// `#[cfg_attr(not(debug_assertions), allow(dead_code))]` —— release 模式 dev_skills_dir
 /// 不存在，整个函数仅返回一个目录（数据目录），避免 dead_code 警告。
 #[cfg_attr(not(debug_assertions), allow(dead_code))]
-pub(crate) fn skill_search_paths(app: &AppHandle) -> Vec<std::path::PathBuf> {
+pub(crate) fn skill_search_paths<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Vec<std::path::PathBuf> {
     #[allow(unused_mut)] // release 模式：dev_skills_dir 分支被排除，paths 不需要 mut
     let mut paths = vec![skills_dir(app)];
     #[cfg(debug_assertions)]

@@ -165,6 +165,49 @@ describe("diffTaskRows 纯排序保留 updatedAt（P2-20）", () => {
   });
 });
 
+// T1-1（2026-09-03）：RMW 写回带基线 expectedUpdatedAt = 快照行 updatedAt——
+// 后端 upsert 写前比对现行行，不一致拒写（防两写者读同一快照后交错整行覆盖）。
+describe("diffTaskRows 携带 RMW 写回基线（T1-1）", () => {
+  const base: Task[] = [
+    { id: "t1", title: "甲", column: "todo", order: 0, updatedAt: 1000 },
+    { id: "t2", title: "乙", column: "todo", order: 1, updatedAt: 1001 },
+  ];
+
+  it("内容变更行：expectedUpdatedAt = prev.updatedAt，updatedAt 刷 now", () => {
+    const next = base.map((t) =>
+      t.id === "t1" ? { ...t, title: "甲改" } : t
+    );
+    const { upserts } = diffTaskRows(base, next, 999999);
+    expect(upserts).toHaveLength(1);
+    expect(upserts[0].expectedUpdatedAt).toBe(1000);
+    expect(upserts[0].updatedAt).toBe(999999);
+    // prev 快照对象不被基线赋值污染
+    expect(base[0].expectedUpdatedAt).toBeUndefined();
+  });
+
+  it("纯排序行：updatedAt 保留且同样带基线（排序写撞内容修改也要拒写）", () => {
+    const next = assignInsertOrder([base[1], base[0]], "t1");
+    const { upserts } = diffTaskRows(base, next, 999999);
+    expect(upserts).toHaveLength(1);
+    expect(upserts[0].updatedAt).toBe(1000); // P2-20 豁免不破
+    expect(upserts[0].expectedUpdatedAt).toBe(1000);
+  });
+
+  it("新增行不带基线（无快照可比对，走原时间戳守卫）", () => {
+    const next = [...base, { id: "t9", title: "新", column: "todo" as const }];
+    const { upserts } = diffTaskRows(base, next, 999999);
+    expect(upserts[0].expectedUpdatedAt).toBeUndefined();
+  });
+
+  it("prev 残留脏基线不击穿 taskEq 比较（基线是传输元数据非内容）", () => {
+    // state 里的 prev 可能带着上次 diff 写入的 expectedUpdatedAt（对象复用）——
+    // 不得因此把无变化行误判为变更
+    const dirtyPrev: Task[] = base.map((t) => ({ ...t, expectedUpdatedAt: 12345 }));
+    const { upserts } = diffTaskRows(dirtyPrev, base.map((t) => ({ ...t })), 999999);
+    expect(upserts).toHaveLength(0);
+  });
+});
+
 // P2-34（2026-08-19）：导出/导入同属写数据类——invoke reject 必须弹 alert，不得静默吞。
 describe("导出/导入失败弹 alert（P2-34）", () => {
   const alertMock = vi.fn();

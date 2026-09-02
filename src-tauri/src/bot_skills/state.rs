@@ -1,6 +1,5 @@
 use super::manage::skill_search_paths;
 use super::parse::{parse_meta, SkillMeta, SKILL_NAME_CHARS_OK};
-use tauri::AppHandle;
 
 const MAX_SKILL_BODY: usize = 50 * 1024;
 
@@ -168,7 +167,7 @@ pub fn clear_terminal_skill_runs() {
 /// 读取技能正文 + 完整元数据（Phase 4 第 4 项 2026-08-18 07:09：多目录 fallback）
 /// 遍历 `skill_search_paths(app)`：数据目录找不到 → dev 模式 fallback target/debug/skills。
 /// 数据目录优先（用户已修改的 Skill 优先于 dev mock 版本）。
-pub(crate) fn load_skill_meta(app: &AppHandle, name: &str) -> Result<(SkillMeta, String), String> {
+pub(crate) fn load_skill_meta<R: tauri::Runtime>(app: &tauri::AppHandle<R>, name: &str) -> Result<(SkillMeta, String), String> {
     if name.is_empty() || !name.chars().all(SKILL_NAME_CHARS_OK) {
         // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
         return Err("技能名无效".into());
@@ -187,11 +186,40 @@ pub(crate) fn load_skill_meta(app: &AppHandle, name: &str) -> Result<(SkillMeta,
     Err(format!("技能「{name}」不存在（检查设置页技能列表）"))
 }
 
+// ───────────────────────── 集成测试钩子（2026-09-03 T1-2） ─────────────────────────
+// tests/ 集成测试是独立 crate，够不到下面 #[cfg(test)] 的 test_insert_skill_run；
+// 调度器 e2e（tests/skill_e2e.rs）需要插入 Running/Paused/Failed 的 run 来驱动
+// advance_dsl 分支与 P0-5 回滚窗口的真路径。仅测试使用，生产路径不调。
+
+#[doc(hidden)]
+pub fn test_hook_insert_skill_run(run: SkillRun) {
+    skill_runs()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(run.name.clone(), run);
+}
+
+#[doc(hidden)]
+pub fn test_hook_remove_skill_run(name: &str) {
+    skill_runs()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(name);
+}
+
+#[doc(hidden)]
+pub fn test_hook_skill_run_state(name: &str) -> Option<SkillState> {
+    skill_runs()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(name)
+        .map(|r| r.state.clone())
+}
+
 /// P2-24 测试辅助：直接插入一个指定状态的 skill run（绕过磁盘 SKILL.md 加载）。
 /// 与 tests::test_run 同一份字段构造，供跨模块测试（lib.rs 退出清理）使用。
 #[cfg(test)]
-pub(crate) fn test_insert_skill_run(name: &str, state: SkillState) {
-    let run = SkillRun {
+pub(crate) fn test_insert_skill_run(name: &str, state: SkillState) {    let run = SkillRun {
         name: name.into(),
         state,
         step: 0,

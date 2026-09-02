@@ -951,6 +951,7 @@ pub(crate) async fn set_bot_assigned(app: &AppHandle, task_id: &str, assigned: b
         return;
     }
     t.bot_assigned = Some(assigned);
+    t.expected_updated_at = t.updated_at; // T1-1：RMW 基线 = 快照 updated_at
     t.updated_at = Some(chrono::Utc::now().timestamp_millis());
     if crate::db::db_upsert(app.clone(), vec![t.clone()]).await.is_ok() {
         crate::bot::broadcast_after_mutation(app, vec![t], vec![]);

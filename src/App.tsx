@@ -221,6 +221,8 @@ export default function App() {
         if (ruleChanged.length) {
           const now = Date.now();
           ruleChanged.forEach((t) => {
+            // T1-1：RMW 基线 = 规则改动前的合并快照 updatedAt
+            t.expectedUpdatedAt = mergedMap.get(t.id)?.updatedAt;
             t.updatedAt = now;
           });
           await upsertTasks(ruleChanged);

@@ -502,11 +502,44 @@ fn fuse_message(final_text: &str, hint: &str) -> String {
     )
 }
 
-/// 模型工具循环核心：配置/Key 检查、流式请求（思考拆分 + 工具折叠事件）、进程内执行工具。
-/// msgs 需已含 system 消息；返回 (最终正文, 任务引用)。
-/// 轮数上限由调用方传入：默认 DEFAULT_MAX_ROUNDS（50），多步 Skill 可自报 max_rounds 覆盖。
-/// plan_state（2026-08-26 PREVR 第 2 层）：复杂任务的动态计划；工具连续失败时触发
-/// Replan（重规划剩余步骤，≤MAX_REPLANS 次）。None = 无计划自由循环。
+/// 空 replan 出口（2026-09-03 T1-2）：无计划/测试调用方直驱 run_model_loop_core 时传入，
+/// 永不重规划。pub：bot_plan 模块未对集成测试公开，PlanState 在 tests/ 不可命名，
+/// 以 fn item 形式传入绕开闭包参数类型标注问题。
+pub async fn noop_replan(
+    _plan: crate::bot_plan::PlanState,
+    _reason: String,
+) -> Option<Vec<String>> {
+    None
+}
+
+/// 可注入的 LLM HTTP 连接参数（2026-09-03 T1-2 重构，原审计 #3）：
+/// base_url/client/api_key/model 由调用方注入，run_model_loop_core 不再在函数体内
+/// 经 AppHandle 取配置——集成测试可指向 tests/mock_llm.rs 的 mock server 跑真路径。
+pub struct LlmHttp {
+    pub client: reqwest::Client,
+    pub base_url: String,
+    pub api_key: String,
+    pub model: String,
+}
+
+/// run_model_loop_core 的同步副作用出口（2026-09-03 T1-2 重构）：
+/// 原先函数体内直连 AppHandle 的 4 个出口（widget 流式事件 / 结构化审计 / bot.log /
+/// Skill 收尾）抽成注入回调；异步出口（execute_tool / replan）因 Rust 闭包生命周期
+/// 限制走泛型参数。生产薄壳 run_model_loop 传入 AppHandle 实现，测试传 stub。
+pub struct ModelLoopDeps<'a> {
+    /// 流式事件出口（bot-chat-delta / bot-think-delta / bot-tool / bot-tool-name / bot-tool-done）
+    pub emit: &'a (dyn Fn(&str, serde_json::Value) + Send + Sync),
+    /// 结构化审计事件（audit_event! 等价物：level + event + kv 列表）
+    pub audit: &'a (dyn Fn(crate::audit::AuditLevel, &'static str, Vec<(&'static str, String)>) + Send + Sync),
+    /// bot.log 文本行审计（bot::audit_log 等价物）
+    pub audit_log: &'a (dyn Fn(&str) + Send + Sync),
+    /// Skill 收尾（bot_skills::skill_finish 等价物；返回附加提示文本）
+    pub skill_finish: &'a (dyn Fn(bool, &str) -> String + Send + Sync),
+}
+
+/// 模型工具循环薄壳（2026-09-03 T1-2 重构）：只做 AppHandle 依赖装配——
+/// 读配置/Key、构 HTTP 客户端、把 widget emit / 审计 / skill_finish / execute_tool /
+/// replan 包成回调，实际循环逻辑全在 run_model_loop_core（可注入 mock server 集成测试）。
 pub async fn run_model_loop(
     app: AppHandle,
     msgs: Vec<serde_json::Value>,
@@ -524,10 +557,12 @@ pub async fn run_model_loop(
         .timeout(std::time::Duration::from_secs(300))
         .build()
         .map_err(|e| format!("初始化 HTTP 客户端失败：{e}"))?;
-    let url = format!("{}/chat/completions", cfg.base_url.trim_end_matches('/'));
-    let tools: serde_json::Value = serde_json::from_str(TOOLS).unwrap();
-
-    let mut msgs = msgs;
+    let http = LlmHttp {
+        client,
+        base_url: cfg.base_url,
+        api_key,
+        model: cfg.model,
+    };
     // 2026-08-26 会话隔离：流式事件（bot-chat-delta 等）只由交互实例广播；
     // 后台定时任务（interactive=false）不向挂件推流——否则后台执行的输出会
     // 串进用户当前会话的 streaming 气泡（审计 P0）。Skill 归属同理按 session 过滤。
@@ -537,7 +572,7 @@ pub async fn run_model_loop(
     // 不向挂件发任何流式增量，防后台执行输出串进用户当前会话的 streaming 气泡。
     // 2026-08-28 批次3审计 P0-2：payload 统一注入 sessionId，前端按当前会话过滤——
     // 原先事件不带会话标记，两个会话并行跑时 A 的流式增量会串进 B 正在显示的气泡。
-    let emit_stream = |event: &str, mut payload: serde_json::Value| {
+    let emit = |event: &str, mut payload: serde_json::Value| {
         if stream_to_widget {
             if let Some(obj) = payload.as_object_mut() {
                 obj.insert("sessionId".into(), serde_json::json!(session_id));
@@ -545,6 +580,55 @@ pub async fn run_model_loop(
             let _ = app.emit_to("widget", event, payload);
         }
     };
+    let deps = ModelLoopDeps {
+        emit: &emit,
+        audit: &|level, event, kv| crate::audit::write_event(&app, level, event, &kv),
+        audit_log: &|line| crate::bot::audit_log(&app, line),
+        skill_finish: &|ok, reason| crate::bot_skills::skill_finish(&app, ok, reason, session_id),
+    };
+    let execute_tool = |name: String, args: String| {
+        let app = app.clone();
+        async move { crate::bot::execute_tool_with_stop(&app, &name, &args, Some(stop)).await }
+    };
+    let replan = |plan: crate::bot_plan::PlanState, reason: String| {
+        let app = app.clone();
+        async move { crate::bot_plan::replan(&app, &plan, &reason).await }
+    };
+    run_model_loop_core(&http, msgs, max_rounds, stop, plan_state, &deps, execute_tool, replan)
+        .await
+}
+
+/// 模型工具循环核心：流式请求（思考拆分 + 工具折叠事件）、进程内执行工具。
+/// 配置/Key/HTTP 客户端/副作用出口全部注入，不依赖 AppHandle（T1-2 重构）。
+/// msgs 需已含 system 消息；返回 (最终正文, 任务引用)。
+/// 轮数上限由调用方传入：默认 DEFAULT_MAX_ROUNDS（50），多步 Skill 可自报 max_rounds 覆盖。
+/// plan_state（2026-08-26 PREVR 第 2 层）：复杂任务的动态计划；工具连续失败时触发
+/// Replan（重规划剩余步骤，≤MAX_REPLANS 次）。None = 无计划自由循环。
+pub async fn run_model_loop_core<X, XP, R, RP>(
+    http: &LlmHttp,
+    msgs: Vec<serde_json::Value>,
+    max_rounds: usize,
+    stop: &StopGuard,
+    plan_state: Option<&mut crate::bot_plan::PlanState>,
+    deps: &ModelLoopDeps<'_>,
+    execute_tool: X,
+    replan: R,
+) -> Result<(String, Vec<TaskRef>), CommandError>
+where
+    X: Fn(String, String) -> XP,
+    XP: std::future::Future<Output = (String, Vec<TaskRef>)>,
+    R: Fn(crate::bot_plan::PlanState, String) -> RP,
+    RP: std::future::Future<Output = Option<Vec<String>>>,
+{
+    let url = format!("{}/chat/completions", http.base_url.trim_end_matches('/'));
+    let tools: serde_json::Value = serde_json::from_str(TOOLS).unwrap();
+
+    let mut msgs = msgs;
+    let emit = deps.emit;
+    let audit = deps.audit;
+    let audit_log = deps.audit_log;
+    let skill_finish = deps.skill_finish;
+    let session_id: Option<&str> = stop.session_id();
     // 僵尸终态清理：上轮 Skill 失败/完成的遗留 run 会在第 0 轮短路主循环（agent 假死根因）
     crate::bot_skills::clear_terminal_skill_runs();
     // 最多 max_rounds 轮（工具循环），每轮流式输出；收到 tool_calls 则执行后把结果续进对话
@@ -570,7 +654,7 @@ pub async fn run_model_loop(
     let mut last_streamed = String::new();
     for _round in 0..max_rounds {
         if stop.stopped() {
-            let hint = crate::bot_skills::skill_finish(&app, false, "用户停止", session_id);
+            let hint = skill_finish(false, "用户停止");
             return Ok((format!("⏹ 已停止{hint}"), collected_refs));
         }
         // 状态机推进决策（Block 2 2026-08-17 22:26）：集中 Skill 推进逻辑
@@ -592,33 +676,34 @@ pub async fn run_model_loop(
                     return Ok((last_streamed.clone(), collected_refs));
                 }
                 AdvanceAction::Finish => {
-                    let _hint = crate::bot_skills::skill_finish(&app, true, "", session_id);
+                    let _hint = skill_finish(true, "");
                     return Ok((last_streamed.clone(), collected_refs));
                 }
                 AdvanceAction::Fail(reason) => {
-                    let _hint = crate::bot_skills::skill_finish(&app, false, &reason, session_id);
+                    let _hint = skill_finish(false, &reason);
                     return Ok((last_streamed.clone(), collected_refs));
                 }
                 AdvanceAction::Terminate(reason) => {
-                    let _hint = crate::bot_skills::skill_finish(&app, false, &reason, session_id);
+                    let _hint = skill_finish(false, &reason);
                     return Ok((last_streamed.clone(), collected_refs));
                 }
             }
         }
         let body = serde_json::json!({
-            "model": cfg.model,
+            "model": http.model,
             "messages": msgs,
             "tools": tools,
             "stream": true
         });
 
         // LLM 请求前记录（F-3 第四步 2026-08-18）
-        crate::audit_event!(
-            &app,
+        audit(
             crate::audit::AuditLevel::Info,
             "llm.request",
-            "model" => cfg.model.clone(),
-            "msgs_count" => msgs.len(),
+            vec![
+                ("model", http.model.clone()),
+                ("msgs_count", msgs.len().to_string()),
+            ],
         );
 
         // P1-4（2026-08-28 批次3审计）：429/5xx/发送失败重试一次——原先任何瞬时抖动
@@ -626,9 +711,10 @@ pub async fn run_model_loop(
         let mut attempt = 0usize;
         let resp = loop {
             attempt += 1;
-            match client
+            match http
+                .client
                 .post(&url)
-                .bearer_auth(api_key.trim())
+                .bearer_auth(http.api_key.trim())
                 .json(&body)
                 .send()
                 .await
@@ -638,12 +724,13 @@ pub async fn run_model_loop(
                         && is_retryable_llm_status(r.status().as_u16())
                         && attempt < MAX_LLM_ATTEMPTS
                     {
-                        crate::audit_event!(
-                            &app,
+                        audit(
                             crate::audit::AuditLevel::Warn,
                             "llm.retry",
-                            "status" => r.status().as_u16(),
-                            "attempt" => attempt,
+                            vec![
+                                ("status", r.status().as_u16().to_string()),
+                                ("attempt", attempt.to_string()),
+                            ],
                         );
                         drop(r);
                         tokio::time::sleep(LLM_RETRY_DELAY).await;
@@ -653,23 +740,23 @@ pub async fn run_model_loop(
                 }
                 Err(e) => {
                     if attempt < MAX_LLM_ATTEMPTS {
-                        crate::audit_event!(
-                            &app,
+                        audit(
                             crate::audit::AuditLevel::Warn,
                             "llm.retry",
-                            "err" => e.to_string(),
-                            "attempt" => attempt,
+                            vec![
+                                ("err", e.to_string()),
+                                ("attempt", attempt.to_string()),
+                            ],
                         );
                         tokio::time::sleep(LLM_RETRY_DELAY).await;
                         continue;
                     }
-                    crate::audit_event!(
-                        &app,
+                    audit(
                         crate::audit::AuditLevel::Error,
                         "llm.request_failed",
-                        "err" => e.to_string(),
+                        vec![("err", e.to_string())],
                     );
-                    let hint = crate::bot_skills::skill_finish(&app, false, "大模型请求失败", session_id);
+                    let hint = skill_finish(false, "大模型请求失败");
                     return Err(format!("请求大模型失败：{e}{hint}").into());
                 }
             }
@@ -677,23 +764,21 @@ pub async fn run_model_loop(
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
-            crate::audit_event!(
-                &app,
+            audit(
                 crate::audit::AuditLevel::Warn,
                 "llm.response",
-                "status" => status.as_u16(),
+                vec![("status", status.as_u16().to_string())],
             );
-            let hint = crate::bot_skills::skill_finish(&app, false, "大模型 API 错误", session_id);
+            let hint = skill_finish(false, "大模型 API 错误");
             return Err(CommandError::LlmApiError {
                 status: status.as_u16(),
                 body_preview: format!("{}{hint}", text.chars().take(300).collect::<String>()),
             });
         }
-        crate::audit_event!(
-            &app,
+        audit(
             crate::audit::AuditLevel::Info,
             "llm.response",
-            "status" => status.as_u16(),
+            vec![("status", status.as_u16().to_string())],
         );
 
         let mut stream = resp.bytes_stream();
@@ -715,7 +800,6 @@ pub async fn run_model_loop(
 
         let mut stopped = false;
         {
-            let emit = &emit_stream;
             // 单行 SSE 处理（主循环与流尾残余行冲刷共用）；
             // 返回 Some = 流内错误载荷（P1-3），调用方收尾报错
             let mut handle_line = |line: &str| -> Option<String> {
@@ -752,12 +836,13 @@ pub async fn run_model_loop(
                     if !accumulate_tool_call_delta(&mut tool_calls, &tc_delta) {
                         if !tc_index_overflow_logged {
                             tc_index_overflow_logged = true;
-                            crate::audit_event!(
-                                &app,
+                            audit(
                                 crate::audit::AuditLevel::Warn,
                                 "llm.tool_call_index_overflow",
-                                "index" => tc_delta.index,
-                                "max" => MAX_TOOL_CALL_INDEX,
+                                vec![
+                                    ("index", tc_delta.index.to_string()),
+                                    ("max", MAX_TOOL_CALL_INDEX.to_string()),
+                                ],
                             );
                         }
                         continue;
@@ -783,11 +868,10 @@ pub async fn run_model_loop(
                 let chunk = match chunk {
                     Ok(c) => c,
                     Err(e) => {
-                        crate::audit_event!(
-                            &app,
+                        audit(
                             crate::audit::AuditLevel::Error,
                             "llm.stream_failed",
-                            "err" => e.to_string(),
+                            vec![("err", e.to_string())],
                         );
                         return Err(format!("流式读取失败：{e}").into());
                     }
@@ -817,13 +901,12 @@ pub async fn run_model_loop(
 
         // P1-3：200 流内错误载荷——显式报错 + 审计，不再返回空白回复
         if let Some(err) = stream_error {
-            crate::audit_event!(
-                &app,
+            audit(
                 crate::audit::AuditLevel::Error,
                 "llm.stream_error",
-                "err" => err.clone(),
+                vec![("err", err.clone())],
             );
-            let hint = crate::bot_skills::skill_finish(&app, false, "大模型流内错误", session_id);
+            let hint = skill_finish(false, "大模型流内错误");
             return Err(format!("大模型返回错误：{err}{hint}").into());
         }
 
@@ -833,15 +916,15 @@ pub async fn run_model_loop(
             .replace("</think>", "");
         if !tail.is_empty() {
             if think_mode {
-                emit_stream("bot-think-delta", serde_json::json!({ "text": tail }));
+                emit("bot-think-delta", serde_json::json!({ "text": tail }));
             } else {
                 final_text.push_str(&tail);
-                emit_stream("bot-chat-delta", serde_json::json!({ "text": tail }));
+                emit("bot-chat-delta", serde_json::json!({ "text": tail }));
             }
         }
 
         if stopped {
-            let hint = crate::bot_skills::skill_finish(&app, false, "用户停止", session_id);
+            let hint = skill_finish(false, "用户停止");
             return Ok((format!("{final_text}\n\n⏹ 已停止{hint}"), collected_refs));
         }
 
@@ -849,19 +932,20 @@ pub async fn run_model_loop(
         // 干净 EOF = 流被截断（中间代理 idle cut 等）。残缺 tool_calls 不得执行
         // （原先靠 parse_args 失败落 Null 侥幸兜底，没有显式防线）。
         if !saw_done_or_finish {
-            crate::audit_event!(
-                &app,
+            audit(
                 crate::audit::AuditLevel::Warn,
                 "llm.stream_truncated",
-                "tool_calls" => tool_calls.len(),
-                "text_len" => final_text.chars().count(),
+                vec![
+                    ("tool_calls", tool_calls.len().to_string()),
+                    ("text_len", final_text.chars().count().to_string()),
+                ],
             );
             if !tool_calls.is_empty() {
-                let hint = crate::bot_skills::skill_finish(&app, false, "流式响应中断", session_id);
+                let hint = skill_finish(false, "流式响应中断");
                 return Err(format!("大模型响应中断（流被截断），工具调用未执行{hint}").into());
             }
             if final_text.is_empty() {
-                let hint = crate::bot_skills::skill_finish(&app, false, "流式响应中断", session_id);
+                let hint = skill_finish(false, "流式响应中断");
                 return Err(format!("大模型响应中断：未收到完整回复{hint}").into());
             }
             final_text.push_str("\n\n⚠️ 响应可能被截断（连接提前结束），以上内容可能不完整。");
@@ -880,13 +964,10 @@ pub async fn run_model_loop(
             // 注入系统提醒补一轮，逼模型实际调工具或如实说明（最多补一次）
             if !mutation_done && !claim_retry_used && claims_mutation(&final_text) {
                 claim_retry_used = true;
-                crate::bot::audit_log(
-                    &app,
-                    &format!(
-                        "hallucination_guard | 声称变更但未调工具，补一轮: {}",
-                        crate::bot::truncate_for_log(&final_text, 100)
-                    ),
-                );
+                audit_log(&format!(
+                    "hallucination_guard | 声称变更但未调工具，补一轮: {}",
+                    crate::bot::truncate_for_log(&final_text, 100)
+                ));
                 msgs.push(serde_json::json!({"role": "assistant", "content": final_text}));
                 msgs.push(serde_json::json!({
                     "role": "user",
@@ -905,7 +986,7 @@ pub async fn run_model_loop(
                 }
                 _ => {}
             }
-            let _ = crate::bot_skills::skill_finish(&app, true, "", session_id);
+            let _ = skill_finish(true, "");
             collected_refs = merge_task_refs_dedup(collected_refs);
             return Ok((final_text.clone(), collected_refs));
         }
@@ -920,7 +1001,7 @@ pub async fn run_model_loop(
             })).collect::<Vec<_>>()
         }));
         if stop.stopped() {
-            let hint = crate::bot_skills::skill_finish(&app, false, "用户停止", session_id);
+            let hint = skill_finish(false, "用户停止");
             return Ok((format!("{final_text}\n\n⏹ 已停止{hint}"), collected_refs));
         }
         for (id, name, args) in &tool_calls {
@@ -937,14 +1018,11 @@ pub async fn run_model_loop(
             }
             function_calls_total += 1;
             if should_fuse(function_calls_total) {
-                let hint = crate::bot_skills::skill_finish(&app, false, "单轮 Function 调用超上限", session_id);
-                crate::bot::audit_log(
-                    &app,
-                    &format!(
-                        "fuse | 单轮 Function 调用超过 {} 次，已熔断",
-                        MAX_FUNCTION_CALLS_PER_TURN
-                    ),
-                );
+                let hint = skill_finish(false, "单轮 Function 调用超上限");
+                audit_log(&format!(
+                    "fuse | 单轮 Function 调用超过 {} 次，已熔断",
+                    MAX_FUNCTION_CALLS_PER_TURN
+                ));
                 return Ok((fuse_message(&final_text, &hint), collected_refs));
             }
             // 软警告（SOFT_WARN_AT）：置标志，推迟到本轮 tool 响应全部回填后再注入——
@@ -954,33 +1032,26 @@ pub async fn run_model_loop(
             if !soft_warn_sent && function_calls_total >= SOFT_WARN_AT {
                 soft_warn_sent = true;
                 soft_warn_queued = true;
-                crate::bot::audit_log(
-                    &app,
-                    &format!(
-                        "soft_warn | Function 调用达 {} 次（上限 {}），追加收尾提醒",
-                        SOFT_WARN_AT, MAX_FUNCTION_CALLS_PER_TURN
-                    ),
-                );
+                audit_log(&format!(
+                    "soft_warn | Function 调用达 {} 次（上限 {}），追加收尾提醒",
+                    SOFT_WARN_AT, MAX_FUNCTION_CALLS_PER_TURN
+                ));
             }
             // NEW-C-4：把 /stop 守卫透传给 execute_tool，run_python 在途可中断
-            let (result, refs) =
-                crate::bot::execute_tool_with_stop(&app, name, args, Some(stop)).await;
+            let (result, refs) = execute_tool(name.clone(), args.clone()).await;
             // P0-4（2026-08-27 审计）：按执行结果置位——被门禁拦截/用户拒绝/执行失败的
             // 变更工具不算「动过手」，幻觉守卫对后续虚假汇报保持拦截能力
             if mutation_succeeded(name, &result) {
                 mutation_done = true;
             }
-            emit_stream("bot-tool-done", serde_json::json!({ "id": id, "name": name, "args": args }));
-            crate::bot::audit_log(
-                &app,
-                &format!(
-                    "tool: {} | args: {} | result: {}",
-                    // 2026-08-28 批次3审计 P2-7：工具名是模型给的字符串，直插可伪造日志行
-                    crate::bot::truncate_for_log(name, 60),
-                    crate::bot::truncate_for_log(args, 500),
-                    crate::bot::truncate_for_log(&result, 300)
-                ),
-            );
+            emit("bot-tool-done", serde_json::json!({ "id": id, "name": name, "args": args }));
+            audit_log(&format!(
+                "tool: {} | args: {} | result: {}",
+                // 2026-08-28 批次3审计 P2-7：工具名是模型给的字符串，直插可伪造日志行
+                crate::bot::truncate_for_log(name, 60),
+                crate::bot::truncate_for_log(args, 500),
+                crate::bot::truncate_for_log(&result, 300)
+            ));
             collected_refs.extend(refs);
             // PREVR 第 1 层（2026-08-26）：工具失败检测。判定走全链路统一口径
             // （P1-6：audit::tool_call_failed）——门禁拦截/熔断/暂停/拒绝都能识别；
@@ -1034,9 +1105,14 @@ pub async fn run_model_loop(
                         consec_failures,
                         last_fail_reason.as_deref().unwrap_or("（无错误详情）")
                     );
-                    if let Some(new_steps) =
-                        crate::bot_plan::replan(&app, plan, &reason).await
-                    {
+                    // T1-2 重构：replan 走注入回调；PlanState 按值快照传入（回调签名
+                    // 不能借用本轮局部 &mut，见 ModelLoopDeps 注释）
+                    let snapshot = crate::bot_plan::PlanState {
+                        task: plan.task.clone(),
+                        steps: plan.steps.clone(),
+                        replans_used: plan.replans_used,
+                    };
+                    if let Some(new_steps) = replan(snapshot, reason).await {
                         plan.steps = new_steps;
                         fail_hint_queued = Some(format!(
                             "【系统提示】原计划执行受阻，已重新规划剩余步骤：\n{}\n请按新计划继续；若仍无法推进，如实向用户说明。",
@@ -1047,11 +1123,10 @@ pub async fn run_model_loop(
                     // P2（2026-08-27 审计）：预算耗尽留痕（只记一次）——
                     // 「连续失败持续发生但不再重规划」这件事原先零痕迹
                     replan_exhausted_logged = true;
-                    crate::audit_event!(
-                        &app,
+                    audit(
                         crate::audit::AuditLevel::Warn,
                         "plan.replan_budget_exhausted",
-                        "max" => crate::bot_plan::MAX_REPLANS,
+                        vec![("max", crate::bot_plan::MAX_REPLANS.to_string())],
                     );
                 }
             }
@@ -1077,13 +1152,12 @@ pub async fn run_model_loop(
         last_streamed = final_text.clone();
     }
     // 2026-08-27 审计 P2：轮数熔断补审计（原先只有单轮工具熔断有 fuse 日志，不对称）
-    crate::audit_event!(
-        &app,
+    audit(
         crate::audit::AuditLevel::Warn,
         "fuse_rounds",
-        "max_rounds" => max_rounds,
+        vec![("max_rounds", max_rounds.to_string())],
     );
-    let hint = crate::bot_skills::skill_finish(&app, false, "对话轮数超限", session_id);
+    let hint = skill_finish(false, "对话轮数超限");
     Err(CommandError::Internal(format!("对话轮数超限{hint}")))
 }
 
