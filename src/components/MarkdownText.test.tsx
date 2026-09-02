@@ -113,12 +113,15 @@ describe("MarkdownText 行内代码/代码块识别", () => {
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
   });
 
-  it("已知边界：无语言标记的单行围栏代码块无法与行内代码区分（react-markdown 剥掉尾换行），会按行内代码处理", () => {
-    // 记录现状而非修复：isInline = !className && !text.includes("\n") 对该形态误判为行内
+  it("无语言标记的单行围栏代码块：按块级处理，块内 URL 不可点", () => {
+    // 修复点：react-markdown 剥掉围栏块内容的尾换行，文本启发式无法区分行内/块级，
+    // 现用 node.position 跨行判定块级
     const { container } = render(
       <MarkdownText text={"```\nhttps://example.com/block\n```"} />
     );
     const blockCode = container.querySelector("pre code");
-    expect(blockCode).toHaveAttribute("title", "在浏览器打开");
+    expect(blockCode).not.toBeNull();
+    expect(blockCode).not.toHaveAttribute("title");
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
   });
 });

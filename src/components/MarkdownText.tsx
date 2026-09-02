@@ -18,9 +18,15 @@ export function MarkdownText({ text }: { text: string }) {
         components={{
           // 行内代码：反引号包裹的路径/URL 也渲染成可点链接
           // （模型输出路径常带反引号，此前变成纯代码文本点不开）
-          code: ({ children, className }) => {
+          code: ({ children, className, node }) => {
             const text = String(children ?? "").trim();
-            const isInline = !className && !text.includes("\n");
+            // react-markdown 会剥掉围栏代码块内容的尾换行，无语言标记的单行围栏块
+            // 用文本启发式（!className && 无换行）会误判为行内；改用 node.position：
+            // 围栏块的 code 节点 position 覆盖围栏行（start/end 跨行），行内代码不跨行
+            const isBlock =
+              node?.position != null &&
+              node.position.start.line !== node.position.end.line;
+            const isInline = !isBlock && !className && !text.includes("\n");
             const isUrl = /^https?:\/\//i.test(text);
             const isPath =
               /^[A-Za-z]:[\\/]/.test(text) ||

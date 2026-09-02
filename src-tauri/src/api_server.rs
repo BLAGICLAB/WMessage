@@ -296,6 +296,75 @@ mod tests {
         assert_eq!(hub.last_id(), 1);
     }
 
+    /// 批次4审计 P1-1：accept 级 slowloris 回归（vendor tiny_http 读超时 patch）。
+    /// 滴注不完整 header 后静默的连接，服务端在读超时后必须断开它（408 或 EOF），
+    /// 且 accept 循环仍能服务后续新请求。
+    #[test]
+    fn slowloris_silent_connection_dropped_and_server_survives() {
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+
+        // 进程级读超时临时调小（默认 30s 跑测试太慢）；guard 保证 panic 也恢复
+        tiny_http::HTTP_READ_TIMEOUT_MS.store(400, Ordering::Relaxed);
+        struct RestoreReadTimeout;
+        impl Drop for RestoreReadTimeout {
+            fn drop(&mut self) {
+                tiny_http::HTTP_READ_TIMEOUT_MS.store(30_000, Ordering::Relaxed);
+            }
+        }
+        let _restore = RestoreReadTimeout;
+
+        // 动态端口：先占 :0 拿空闲端口再释放，避免与其他测试的固定端口（4882x）冲突
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let store: Arc<dyn TaskStore> = Arc::new(crate::api::MemStore {
+            tasks: Mutex::new(Vec::new()),
+            hub: EventHub::new(),
+        });
+        let mut running = start_api(port, "tok".into(), store, None, None, None).unwrap();
+
+        // 慢速滴注不完整 header（无结尾空行）：50ms/字节的间隔 < 读超时，
+        // 此阶段连接存活（单次 read 级超时不杀仍在出字节的连接）；
+        // 之后完全静默，超过读超时后服务端必须断开。
+        let mut slow = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        slow.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        for &b in b"GET /api/health HT" {
+            if slow.write_all(&[b]).is_err() {
+                break; // 服务端提前断开也算达成，后面统一判定
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        // 静默 1.2s > 400ms 读超时；此后读：tiny_http TimedOut 分支的 408，或 EOF
+        std::thread::sleep(Duration::from_millis(1200));
+        let mut buf = [0u8; 512];
+        match slow.read(&mut buf) {
+            Ok(0) => {} // EOF：连接已被服务端关闭
+            Ok(n) => assert!(
+                buf[..n].starts_with(b"HTTP/1.1 408"),
+                "读超时后服务端应回 408 或直接断开，实际: {}",
+                String::from_utf8_lossy(&buf[..n])
+            ),
+            Err(e) => panic!("静默超读超时后连接应被断开（408/EOF），实际读错误: {e}"),
+        }
+
+        // accept 循环未被堵死：新连接正常服务（/api/health 免鉴权）
+        let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        c.write_all(b"GET /api/health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        let mut resp = String::new();
+        c.read_to_string(&mut resp).unwrap();
+        assert!(
+            resp.starts_with("HTTP/1.1 200"),
+            "slowloris 连接被断开后 accept 循环应仍服务新请求: {resp}"
+        );
+
+        running.shutdown.store(true, Ordering::SeqCst);
+    }
+
     /// P2-3：since=5 断线重放——4 个 id<5 + id=5 本身都不重放，只推 id>5 的 6 条；
     /// 且每条带回事件 id，供 writer 端与在线推送去重（重放窗口内广播的事件既进
     /// history 又进在线队列，不带 id 就会重复推给客户端）
