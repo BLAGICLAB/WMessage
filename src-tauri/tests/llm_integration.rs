@@ -178,27 +178,9 @@ async fn reqwest_handles_5_round_chat_loop_with_mock_llm() {
     assert_eq!(server.request_count(), 5, "应处理 5 个请求");
 }
 
-#[tokio::test]
-async fn reqwest_handles_401_auth_error_response() {
-    let server = MockLlmServer::start();
-    server.push_behavior(MockBehavior::HttpError(
-        401,
-        r#"{"error":{"message":"Invalid API key","type":"auth_error"}}"#.to_string(),
-    ));
-
-    let resp = reqwest::Client::new()
-        .post(format!("{}/chat/completions", server.base_url))
-        .json(&make_body("x"))
-        .send()
-        .await
-        .expect("POST 应返回 HTTP 错误");
-
-    assert_eq!(resp.status().as_u16(), 401, "应返回 401 Unauthorized");
-
-    let err_body = resp.text().await.expect("read error body");
-    assert!(err_body.contains("Invalid API key"));
-    assert!(err_body.contains("auth_error"));
-}
+// reqwest_handles_401_auth_error_response 已删除：只测 reqwest 库行为（弱断言），
+// 其覆盖点（mock 401 → 状态/错误体可见）已被 core_http_401_wrapped_no_retry 经
+// run_model_loop_core 真路径覆盖（且多验证「401 不重试、包装为 LlmApiError」）。
 
 #[tokio::test]
 async fn reqwest_surfaces_in_stream_error_payload() {

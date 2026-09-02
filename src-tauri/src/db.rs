@@ -783,6 +783,20 @@ pub fn bot_session_create(
     })
 }
 
+/// bot_session_delete 的事务段（抽出供单测直调；锁与 open_db 留在命令层）。
+/// 消息与会话同一事务删除，任一失败整体回滚，不留半删状态。
+fn bot_session_delete_inner(conn: &mut rusqlite::Connection, id: &str) -> CommandResult<()> {
+    let tx = conn
+        .transaction()
+        .map_err(|e| CommandError::DbError(e.to_string()))?;
+    tx.execute("DELETE FROM bot_messages WHERE session_id = ?1", [id])
+        .map_err(|e| CommandError::DbError(e.to_string()))?;
+    tx.execute("DELETE FROM bot_sessions WHERE id = ?1", [id])
+        .map_err(|e| CommandError::DbError(e.to_string()))?;
+    tx.commit()
+        .map_err(|e| CommandError::DbError(e.to_string()))
+}
+
 /// 删除会话及其全部消息（原子：消息与会话同一事务，任一失败整体回滚）
 #[tauri::command]
 pub async fn bot_session_delete(app: tauri::AppHandle, id: String) -> CommandResult<()> {
@@ -790,15 +804,7 @@ pub async fn bot_session_delete(app: tauri::AppHandle, id: String) -> CommandRes
     tauri::async_runtime::spawn_blocking(move || {
         let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut conn = open_db(&app)?;
-        let tx = conn
-            .transaction()
-            .map_err(|e| CommandError::DbError(e.to_string()))?;
-        tx.execute("DELETE FROM bot_messages WHERE session_id = ?1", [&id])
-            .map_err(|e| CommandError::DbError(e.to_string()))?;
-        tx.execute("DELETE FROM bot_sessions WHERE id = ?1", [&id])
-            .map_err(|e| CommandError::DbError(e.to_string()))?;
-        tx.commit()
-            .map_err(|e| CommandError::DbError(e.to_string()))
+        bot_session_delete_inner(&mut conn, &id)
     })
     .await
     .map_err(|e| CommandError::from(format!("会话删除线程 join 失败：{e}")))?
@@ -1364,14 +1370,64 @@ pub async fn workspace_export(app: tauri::AppHandle, path: String) -> CommandRes
     .map_err(|e| CommandError::from(format!("工作区导出线程 join 失败：{e}")))?
 }
 
+/// workspace_import 的合并段（抽出供单测直调；读文件/解析/锁/open_db 留在命令层）。
+/// 按 id 并集合并，同 id 保留 updated_at 更晚者；空 id 跳过；单事务，中途失败整体回滚。
+/// 返回写入条数。
+fn workspace_import_merge(
+    conn: &mut rusqlite::Connection,
+    ext: &[WorkspaceItem],
+) -> Result<usize, String> {
+    use rusqlite::OptionalExtension;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let mut merged = 0usize;
+    for it in ext {
+        if it.id.trim().is_empty() {
+            continue; // 跳过无 id 的脏数据
+        }
+        // 同 tasks_import：NULL updated_at 兼容（库内 NULL = 0，外部 None = 0）
+        let cur: Option<Option<i64>> = tx
+            .query_row(
+                "SELECT updated_at FROM workspace_items WHERE id = ?1",
+                rusqlite::params![it.id],
+                |r| r.get::<_, Option<i64>>(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        let cur_ua = cur.flatten().unwrap_or(0);
+        let take = it.updated_at.unwrap_or(0) > cur_ua;
+        if take {
+            // inline upsert（与 upsert_workspace 同 SQL），不复用 fn 避免事务嵌套；
+            // mid-loop 任何错整体回滚，事务不半截提交
+            tx.execute(
+                "INSERT INTO workspace_items (id, title, collapsed, links, ord, updated_at)
+                 VALUES (?1,?2,?3,?4,?5,?6)
+                 ON CONFLICT(id) DO UPDATE SET
+                   title=excluded.title, collapsed=excluded.collapsed,
+                   links=excluded.links, ord=excluded.ord,
+                   updated_at=excluded.updated_at",
+                rusqlite::params![
+                    it.id,
+                    it.title,
+                    it.collapsed.map(|v| v as i64),
+                    serde_json::to_string(&it.links).unwrap_or_else(|_| "[]".into()),
+                    it.order,
+                    it.updated_at,
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+            merged += 1;
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(merged)
+}
+
 /// 从 JSON 文件导入工作区链接数据：按 id 并集合并，同 id 保留 updated_at 更晚者。返回写入条数。
 /// （与 tasks_import 语义一致；workspace 数据独立存于 workspace_items 表）
 #[tauri::command]
 pub async fn workspace_import(app: tauri::AppHandle, path: String) -> CommandResult<usize> {
     // B3: 大文件读 + 解析 + 长事务；扔 spawn_blocking。
     tauri::async_runtime::spawn_blocking(move || {
-        use rusqlite::OptionalExtension;
-
         let raw = std::fs::read_to_string(&path).map_err(|e| format!("无法读取所选文件：{e}"))?;
         let ext: Vec<WorkspaceItem> =
             serde_json::from_str(&raw).map_err(|e| format!("不是有效的工作区链接 JSON：{e}"))?;
@@ -1380,48 +1436,7 @@ pub async fn workspace_import(app: tauri::AppHandle, path: String) -> CommandRes
         }
         let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut conn = open_db(&app)?;
-        let tx = conn.transaction().map_err(|e| e.to_string())?;
-        let mut merged = 0usize;
-        for it in &ext {
-            if it.id.trim().is_empty() {
-                continue; // 跳过无 id 的脏数据
-            }
-            // 同 tasks_import：NULL updated_at 兼容（库内 NULL = 0，外部 None = 0）
-            let cur: Option<Option<i64>> = tx
-                .query_row(
-                    "SELECT updated_at FROM workspace_items WHERE id = ?1",
-                    rusqlite::params![it.id],
-                    |r| r.get::<_, Option<i64>>(0),
-                )
-                .optional()
-                .map_err(|e| e.to_string())?;
-            let cur_ua = cur.flatten().unwrap_or(0);
-            let take = it.updated_at.unwrap_or(0) > cur_ua;
-            if take {
-                // inline upsert（与 upsert_workspace 同 SQL），不复用 fn 避免事务嵌套；
-                // mid-loop 任何错整体回滚，事务不半截提交
-                tx.execute(
-                    "INSERT INTO workspace_items (id, title, collapsed, links, ord, updated_at)
-                     VALUES (?1,?2,?3,?4,?5,?6)
-                     ON CONFLICT(id) DO UPDATE SET
-                       title=excluded.title, collapsed=excluded.collapsed,
-                       links=excluded.links, ord=excluded.ord,
-                       updated_at=excluded.updated_at",
-                    rusqlite::params![
-                        it.id,
-                        it.title,
-                        it.collapsed.map(|v| v as i64),
-                        serde_json::to_string(&it.links).unwrap_or_else(|_| "[]".into()),
-                        it.order,
-                        it.updated_at,
-                    ],
-                )
-                .map_err(|e| e.to_string())?;
-                merged += 1;
-            }
-        }
-        tx.commit().map_err(|e| e.to_string())?;
-        Ok(merged)
+        workspace_import_merge(&mut conn, &ext).map_err(CommandError::from)
     })
     .await
     .map_err(|e| CommandError::from(format!("工作区导入线程 join 失败：{e}")))?
@@ -1913,6 +1928,7 @@ mod tests {
     }
 
     /// bot_session_delete 原子性：消息与会话同一事务，任一失败不留下半删状态。
+    /// 直调生产 bot_session_delete_inner（原来内联裸 SQL 复刻命令体，生产改动测试不红）。
     #[test]
     fn bot_session_delete_is_atomic() {
         let (dir, conn) = setup_bhs_db();
@@ -1925,12 +1941,7 @@ mod tests {
         .unwrap();
 
         let mut conn = conn;
-        let tx = conn.transaction().unwrap();
-        tx.execute("DELETE FROM bot_messages WHERE session_id = 's1'", [])
-            .unwrap();
-        tx.execute("DELETE FROM bot_sessions WHERE id = 's1'", [])
-            .unwrap();
-        tx.commit().unwrap();
+        bot_session_delete_inner(&mut conn, "s1").unwrap();
 
         let sess_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM bot_sessions WHERE id = 's1'", [], |r| r.get(0))
@@ -1940,6 +1951,32 @@ mod tests {
             .unwrap();
         assert_eq!(sess_count, 0, "提交后会话应被删除");
         assert_eq!(msg_count, 0, "提交后消息应被删除");
+
+        // 原子性反向验证：第二条 DELETE（会话）注入失败 → 第一条（消息）也必须回滚
+        conn.execute("INSERT INTO bot_sessions VALUES ('s2', 'T', 1000, 1000)", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO bot_messages (session_id, role, content, created_at) VALUES ('s2', 'user', 'm2', 1000)",
+            [],
+        )
+        .unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER fail_sess_del BEFORE DELETE ON bot_sessions
+             WHEN OLD.id = 's2' BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
+        )
+        .unwrap();
+        assert!(
+            bot_session_delete_inner(&mut conn, "s2").is_err(),
+            "trigger 注入失败必须返回 Err"
+        );
+        let sess_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM bot_sessions WHERE id = 's2'", [], |r| r.get(0))
+            .unwrap();
+        let msg_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM bot_messages WHERE session_id = 's2'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(sess_count, 1, "回滚后会话必须还在");
+        assert_eq!(msg_count, 1, "回滚后消息必须还在（不留半删状态）");
 
         fs::remove_dir_all(&dir).ok();
     }
@@ -2171,22 +2208,21 @@ mod ws_tests {
         fs::remove_dir_all(&dir).ok();
     }
 
-    /// NEW-B-3: workspace_* 改 async + spawn_blocking 后，阻塞段逻辑与返回类型不变
-    /// （CommandResult<Vec<WorkspaceItem>> / CommandResult<()>）。AppHandle 无法单测构造，
-    /// 用临时库复刻命令体的 spawn_blocking 桥接结构，走 block_on 验证。
+    /// NEW-B-3: workspace_* 命令改 async + spawn_blocking 后，命令体内的数据路径语义不变。
+    /// 桥接层（spawn_blocking + join 错误映射）是无逻辑薄壳且依赖 AppHandle 无法单测；
+    /// 这里直调生产 helper（upsert/load/delete）覆盖命令体真正干活的部分
+    /// （原测试内联复刻桥接结构，生产命令体改动不会让它变红，属弱断言，已去复刻）。
     #[test]
     fn workspace_commands_spawn_blocking_bridge() {
         let dir = std::env::temp_dir().join(format!("wm-ws-async-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
-        let db_path = dir.join("t.db");
-        rusqlite::Connection::open(&db_path)
-            .unwrap()
-            .execute_batch(
-                "CREATE TABLE workspace_items (
-                   id TEXT PRIMARY KEY, title TEXT NOT NULL, collapsed INTEGER,
-                   links TEXT NOT NULL, ord REAL, updated_at INTEGER);",
-            )
-            .unwrap();
+        let mut conn = rusqlite::Connection::open(dir.join("t.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE workspace_items (
+               id TEXT PRIMARY KEY, title TEXT NOT NULL, collapsed INTEGER,
+               links TEXT NOT NULL, ord REAL, updated_at INTEGER);",
+        )
+        .unwrap();
         let item = WorkspaceItem {
             id: "w1".into(),
             title: "T".into(),
@@ -2196,47 +2232,14 @@ mod ws_tests {
             updated_at: Some(1),
         };
 
-        // upsert（桥接结构同 workspace_upsert 命令体）
-        let (p, it) = (db_path.clone(), item.clone());
-        let r: CommandResult<()> = tauri::async_runtime::block_on(async move {
-            tauri::async_runtime::spawn_blocking(move || {
-                let mut conn = rusqlite::Connection::open(&p)
-                    .map_err(|e| CommandError::from(e.to_string()))?;
-                upsert_workspace(&mut conn, &[it]).map_err(CommandError::from)
-            })
-            .await
-            .map_err(|e| CommandError::from(format!("join 失败：{e}")))?
-        });
-        r.unwrap();
-
-        // load
-        let p = db_path.clone();
-        let r: CommandResult<Vec<WorkspaceItem>> = tauri::async_runtime::block_on(async move {
-            tauri::async_runtime::spawn_blocking(move || {
-                let conn = rusqlite::Connection::open(&p)
-                    .map_err(|e| CommandError::from(e.to_string()))?;
-                load_workspace(&conn).map_err(CommandError::from)
-            })
-            .await
-            .map_err(|e| CommandError::from(format!("join 失败：{e}")))?
-        });
-        let items = r.unwrap();
+        // upsert → load 回读（生产 helper，同 workspace_upsert / workspace_load 命令体所调）
+        upsert_workspace(&mut conn, &[item]).unwrap();
+        let items = load_workspace(&conn).unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].title, "T");
 
-        // delete
-        let p = db_path.clone();
-        let r: CommandResult<()> = tauri::async_runtime::block_on(async move {
-            tauri::async_runtime::spawn_blocking(move || {
-                let mut conn = rusqlite::Connection::open(&p)
-                    .map_err(|e| CommandError::from(e.to_string()))?;
-                delete_workspace(&mut conn, &["w1".to_string()]).map_err(CommandError::from)
-            })
-            .await
-            .map_err(|e| CommandError::from(format!("join 失败：{e}")))?
-        });
-        r.unwrap();
-        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        // delete（同 workspace_delete 命令体所调）
+        delete_workspace(&mut conn, &["w1".to_string()]).unwrap();
         assert!(load_workspace(&conn).unwrap().is_empty());
         fs::remove_dir_all(&dir).ok();
     }
@@ -2307,10 +2310,9 @@ mod ws_tests {
         fs::remove_dir_all(&dir).ok();
     }
 
-    /// workspace_import 合并语义 + 跳空 id 脏数据（与 tasks_import / db_merge 一致）：
+    /// workspace_import 合并语义 + 跳空 id 脏数据（与 tasks_import 语义一致）：
     /// 同 id 保留 updated_at 更晚者；新 id 直接写入；空 id 跳过。
-    /// 命令体依赖 tauri AppHandle + DB_WRITE_LOCK 不能直测，这里 inline 同款
-    /// 合并循环 SQL（SELECT updated_at → 比较 → INSERT OR REPLACE）覆盖核心决策。
+    /// 直调生产 workspace_import_merge（原来 inline 复刻合并循环 SQL，生产改动测试不红）。
     #[test]
     fn workspace_import_merges_by_updated_at_and_skips_empty_id() {
         let dir = std::env::temp_dir().join(format!("wm-ws-imp-{}", uuid::Uuid::new_v4()));
@@ -2324,37 +2326,21 @@ mod ws_tests {
              INSERT INTO workspace_items VALUES ('b','cur-200',NULL,'[]',NULL,200);",
         )
         .unwrap();
+        let mk = |id: &str, title: &str, ua: i64| WorkspaceItem {
+            id: id.into(),
+            title: title.into(),
+            collapsed: None,
+            links: vec![],
+            order: None,
+            updated_at: Some(ua),
+        };
         let incoming = vec![
-            ("a", "in-100", 100i64),  // 同 id · incoming > cur → UPDATE
-            ("b", "in-180", 180i64),  // 同 id · incoming < cur → 跳过
-            ("c", "in-5",   5i64),    // 新 id → INSERT
-            ("",  "blank",  999i64),  // 空 id → 跳过
+            mk("a", "in-100", 100), // 同 id · incoming > cur → UPDATE
+            mk("b", "in-180", 180), // 同 id · incoming < cur → 跳过
+            mk("c", "in-5", 5),     // 新 id → INSERT
+            mk("", "blank", 999),   // 空 id → 跳过
         ];
-        let tx = conn.transaction().unwrap();
-        let mut merged = 0usize;
-        for (id, title, ua) in &incoming {
-            if id.trim().is_empty() {
-                continue;
-            }
-            let cur_ua: i64 = tx
-                .query_row(
-                    "SELECT COALESCE(updated_at, 0) FROM workspace_items WHERE id = ?1",
-                    rusqlite::params![id],
-                    |r| r.get(0),
-                )
-                .unwrap_or(0);
-            if *ua > cur_ua {
-                tx.execute(
-                    "INSERT INTO workspace_items (id, title, collapsed, links, ord, updated_at)
-                     VALUES (?1,?2,NULL,'[]',NULL,?3)
-                     ON CONFLICT(id) DO UPDATE SET title=excluded.title, updated_at=excluded.updated_at",
-                    rusqlite::params![id, title, ua],
-                )
-                .unwrap();
-                merged += 1;
-            }
-        }
-        tx.commit().unwrap();
+        let merged = workspace_import_merge(&mut conn, &incoming).unwrap();
 
         assert_eq!(merged, 2, "应写 a（UPDATE）+ c（INSERT）；跳过 b + 空 id");
         let a: String = conn.query_row("SELECT title FROM workspace_items WHERE id='a'", [], |r| r.get(0)).unwrap();

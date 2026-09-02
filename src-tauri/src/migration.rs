@@ -564,10 +564,15 @@ pub fn filename_matches(file_name: &str, rule: &MigrationRule) -> bool {
         .any(|k| !k.trim().is_empty() && lower.contains(&k.trim().to_lowercase()))
 }
 
+/// {year} 占位符展开为当前年份（纯函数，抽出供单测直调——AppHandle 无法单测构造）。
+fn expand_year_placeholder(template: &str) -> String {
+    let year = chrono::Local::now().format("%Y").to_string();
+    template.replace("{year}", &year)
+}
+
 /// 归档目录解析：{year} → 当前年份；相对路径基于桌面；绝对路径原样
 pub fn resolve_archive_dir(app: &AppHandle, template: &str) -> Result<PathBuf, String> {
-    let year = chrono::Local::now().format("%Y").to_string();
-    let expanded = template.replace("{year}", &year);
+    let expanded = expand_year_placeholder(template);
     let p = PathBuf::from(&expanded);
     if p.is_absolute() {
         Ok(p)
@@ -1731,10 +1736,10 @@ mod tests {
 
     #[test]
     fn archive_dir_year_expansion() {
-        // 仅验证占位符替换逻辑（不依赖桌面路径）
+        // 直调生产展开函数（原来内联复刻 replace 逻辑，生产改动测试不红的弱断言）
+        let expanded = expand_year_placeholder("工资/{year}");
         let year = chrono::Local::now().format("%Y").to_string();
-        let expanded = "工资/{year}".replace("{year}", &year);
-        assert!(expanded.starts_with("工资/"));
+        assert_eq!(expanded, format!("工资/{year}"));
         assert!(!expanded.contains('{'));
     }
 
@@ -1936,9 +1941,8 @@ mod tests {
     /// {year} 在多个上下文路径中都能被替换
     #[test]
     fn archive_dir_year_placeholder_in_nested_path() {
-        let year = chrono::Local::now().format("%Y").to_string();
         for template in ["工资/{year}", "归档/{year}/Q4", "{year}/发票"] {
-            let expanded = template.replace("{year}", &year);
+            let expanded = expand_year_placeholder(template);
             assert!(!expanded.contains("{year}"), "模板 {template:?} 仍有未替换的占位符");
             // 展开后的路径应是合理的本地路径
             assert!(PathBuf::from(&expanded).is_absolute() || expanded.contains('/'));
@@ -1949,7 +1953,7 @@ mod tests {
     #[test]
     fn archive_dir_year_placeholder_replaced_multiple_times() {
         let year = chrono::Local::now().format("%Y").to_string();
-        let expanded = "{year}/sub/{year}".replace("{year}", &year);
+        let expanded = expand_year_placeholder("{year}/sub/{year}");
         assert_eq!(expanded, format!("{year}/sub/{year}"));
         assert!(!expanded.contains("{year}"));
     }

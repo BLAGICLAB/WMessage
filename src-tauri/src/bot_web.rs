@@ -22,15 +22,35 @@ fn http_client() -> reqwest::Client {
     static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
     CLIENT
         .get_or_init(|| {
-            reqwest::Client::builder()
-                .connect_timeout(Duration::from_secs(15))
-                .timeout(Duration::from_secs(30))
-                .redirect(reqwest::redirect::Policy::none())
+            http_client_builder()
                 .build()
                 // 理论不可达：builder 失败意味着超时配置无效
                 .unwrap_or_else(|_| reqwest::Client::new())
         })
         .clone()
+}
+
+/// client 公共配置（超时 + 禁自动重定向）；钉 IP 的 per-request client 复用同款
+fn http_client_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::none())
+}
+
+/// 钉住解析结果的 client（FIX-PLAN #7a DNS TOCTOU）：host 固定解析到
+/// check_public_url 校验过的地址，reqwest 不再二次 DNS——校验与请求之间
+/// 攻击者改 DNS 应答的窗口被关掉。TLS SNI/证书校验仍按原域名；
+/// 端口以 URL 为准（reqwest 用目标端口覆盖，addrs 里的端口仅占位）。
+fn http_client_pinned(
+    url: &url::Url,
+    addrs: &[std::net::SocketAddr],
+) -> Result<reqwest::Client, String> {
+    let host = url.host_str().unwrap_or_default();
+    http_client_builder()
+        .resolve_to_addrs(host, addrs)
+        .build()
+        .map_err(|e| format!("构建 HTTP 客户端失败：{e}"))
 }
 
 // ───────────────────────── 搜索（Bing + 百度双引擎） ─────────────────────────
@@ -560,8 +580,10 @@ fn extract_baidu_snippet(tail: &str) -> String {
 
 // ───────────────────────── 网页抓取 ─────────────────────────
 
-/// 校验 URL：协议 + 主机名字符串 + DNS 解析出的所有 IP 均须公网（防 DNS 重绑定/内网域名）
-async fn check_public_url(url: &url::Url) -> Result<(), String> {
+/// 校验 URL 并返回通过校验的解析地址：协议 + 主机名字符串 + DNS 解析出的所有 IP
+/// 均须公网（防 DNS 重绑定/内网域名）。返回的地址由调用方钉给 reqwest
+/// （resolve_to_addrs，FIX-PLAN #7a），校验与请求之间不再二次解析，堵 DNS TOCTOU。
+async fn check_public_url(url: &url::Url) -> Result<Vec<std::net::SocketAddr>, String> {
     match url.scheme() {
         "http" | "https" => {}
         s => return Err(format!("只支持 http/https 链接（收到 {s}://）")),
@@ -580,13 +602,12 @@ async fn check_public_url(url: &url::Url) -> Result<(), String> {
         return Err("已拒绝访问本机/内网地址".into());
     }
     // DNS 解析校验：域名解析出的每个 IP 都必须是公网（防解析到 127.0.0.1 的内网域名）
-    let mut any = false;
+    let mut out: Vec<std::net::SocketAddr> = Vec::new();
     // tokio::net::lookup_host 返回同步迭代器（解析已在 await 内完成）
     let addrs = tokio::net::lookup_host((host.as_str(), 80))
         .await
         .map_err(|e| format!("域名解析失败：{e}"))?;
     for addr in addrs {
-        any = true;
         match addr.ip() {
             std::net::IpAddr::V4(v4) => {
                 if ipv4_is_private(v4) {
@@ -601,12 +622,13 @@ async fn check_public_url(url: &url::Url) -> Result<(), String> {
                 }
             }
         }
+        out.push(addr);
     }
-    if !any {
+    if out.is_empty() {
         // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
         return Err("域名没有解析到任何地址".into());
     }
-    Ok(())
+    Ok(out)
 }
 
 /// 抓取网页正文：http/https、公网地址校验（含 DNS 解析与重定向逐跳）、HTML→纯文本、GBK 兜底解码
@@ -618,8 +640,10 @@ pub async fn fetch_text(raw_url: &str) -> Result<String, String> {
     let mut hops = 0usize;
     let mut resp;
     loop {
-        check_public_url(&url_cursor).await?;
-        resp = http_client()
+        // 每跳都走「解析 → 校验 → 钉 IP」：check_public_url 返回校验过的地址，
+        // per-hop client 用 resolve_to_addrs 钉住，reqwest 不再二次 DNS（FIX-PLAN #7a DNS TOCTOU）
+        let addrs = check_public_url(&url_cursor).await?;
+        resp = http_client_pinned(&url_cursor, &addrs)?
             .get(url_cursor.clone())
             .header(reqwest::header::USER_AGENT, UA)
             .send()
@@ -705,8 +729,8 @@ fn jina_reader_url(raw_url: &str) -> String {
 /// 失败（超时/限流/目标不可达）由调用方忽略，不影响主路径。
 async fn fetch_jina_reader(raw_url: &str) -> Result<String, String> {
     let url = url::Url::parse(&jina_reader_url(raw_url)).map_err(|_| "Jina URL 无效".to_string())?;
-    check_public_url(&url).await?;
-    let resp = http_client()
+    let addrs = check_public_url(&url).await?;
+    let resp = http_client_pinned(&url, &addrs)?
         .get(url)
         .header(reqwest::header::USER_AGENT, UA)
         .send()
@@ -1066,5 +1090,48 @@ mod tests {
         assert!(ipv4_is_private("100.127.255.254".parse().unwrap()), "CGNAT 末尾");
         assert!(!ipv4_is_private("100.128.0.1".parse().unwrap()), "CGNAT 段外");
         assert!(!ipv4_is_private("99.255.0.1".parse().unwrap()), "CGNAT 段外");
+    }
+
+    /// FIX-PLAN #7a（DNS TOCTOU）回归：钉住解析结果后请求必须走钉住的地址——
+    /// 用 .invalid 域名（RFC 2606，真实 DNS 必解析失败）钉到本地回环服务器，
+    /// 能连通即证明 reqwest 没有二次解析；Host 头必须仍是原域名。
+    /// 钉的 addr 端口故意给 80（与 URL 端口不同），顺带验证端口以 URL 为准。
+    #[tokio::test]
+    async fn pinned_client_uses_validated_addrs() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let got_host = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let got_host2 = got_host.clone();
+        std::thread::spawn(move || {
+            if let Ok((mut s, _)) = listener.accept() {
+                use std::io::{Read, Write};
+                let mut buf = [0u8; 4096];
+                let n = s.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]);
+                if let Some(line) = req
+                    .lines()
+                    .find(|l| l.to_ascii_lowercase().starts_with("host:"))
+                {
+                    *got_host2.lock().unwrap() = line[5..].trim().to_string();
+                }
+                let _ = s.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                );
+            }
+        });
+        let url = url::Url::parse(&format!("http://pinned.invalid:{port}/")).unwrap();
+        let pinned = [std::net::SocketAddr::from(([127, 0, 0, 1], 80))];
+        let resp = http_client_pinned(&url, &pinned)
+            .expect("钉住 client 构建失败")
+            .get(url)
+            .send()
+            .await
+            .expect("钉住 127.0.0.1 后请求应成功（.invalid 真实 DNS 必失败，无二次解析）");
+        assert_eq!(resp.status().as_u16(), 200);
+        assert_eq!(
+            got_host.lock().unwrap().as_str(),
+            format!("pinned.invalid:{port}"),
+            "钉 IP 不改 Host 头（TLS 场景 SNI/证书同理仍按原域名）"
+        );
     }
 }

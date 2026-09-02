@@ -122,6 +122,7 @@ npx tauri build --target x86_64-pc-windows-gnu --no-bundle
 
 - **必须走 `npx tauri build` 完整流程**：直接 `cargo build` 出的 exe 缺内置页面资源，报「无法访问此页面」
 - **绿色包四件套**：wmessage.exe + WebView2Loader.dll（必带，缺它报「找不到 webview2loader.dll」）+ MicrosoftEdgeWebview2Setup.exe（Win10 备用）+ README.txt
+- **.NET 侧车（Word 修订）**：`npm run publish:docx-dotnet`（= `scripts/publish-docx-dotnet.sh [输出目录]`）publish win-x64 self-contained 并归位到便携包 `dotnet/`（macOS 可 cross publish；Windows 用 Git Bash 跑）
 - **zip 用 Python zipfile 打**：macOS `zip -j` 的 Unix 扩展字段会让 Win 资源管理器解压报「位置不可用」
 - NSIS 安装包在 macOS 打不了（makensis 跨平台崩），发绿色版 zip；NSIS + 代码签名待做（M6）
 - 老链路备查（cargo-xwin + MSVC）：`tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --no-bundle`（llvm/lld + cargo-xwin 环境）

@@ -8,6 +8,7 @@
     "prebuild": "node scripts/sync-version.mjs",
     "build": "tsc && vite build",
     "sync-version": "node scripts/sync-version.mjs",
+    "publish:docx-dotnet": "bash scripts/publish-docx-dotnet.sh",
     "preview": "vite preview",
     "tauri": "tauri",
     "test": "vitest run",

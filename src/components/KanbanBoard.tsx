@@ -79,8 +79,8 @@ function Column({
   );
 }
 
-/** 在扁平数组中移除 active 并插入到 over 位置（跨列时同步改 column） */
-function spliceMove(
+/** 在扁平数组中移除 active 并插入到 over 位置（跨列时同步改 column）。导出仅供单测直测（2026-09-03 盲区补测 #8） */
+export function spliceMove(
   flat: Task[],
   activeId: string,
   targetCol: ColumnId,
