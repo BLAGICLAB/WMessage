@@ -126,8 +126,12 @@ pub use connection::{ConfigListenAddr, ListenAddr, Listener};
 ///   滴注间隔小于超时的攻击仍会占用线程——彻底防住需要 header 总时长 deadline，
 ///   属「整体换 axum」立项范围，本 patch 只堵「完全静默」的挂死。
 /// - 超时作用于同一 socket 的所有读：header、keep-alive 等待、body 读取。
-///   keep-alive 空闲超时被断开（回 408）是标准行为；body 读取与 wmessage 侧现有
-///   15s handler 超时 / 30s HTTP client 总超时语义协调，故取 30s。
+///   keep-alive 空闲超时被断开（回 408）是标准行为。
+///   2026-09-04 审计 P1-2 修正：此处原先声称「body 读取与 wmessage 侧 15s handler 超时
+///   语义协调」——不实。那个 15s 只是 accept 线程等 worker 结果的日志等待
+///   （2026-09-04 审计 P1-1 已移除），到期不杀 worker，对 body 阶段滴注毫无约束。
+///   body 滴注改由 wmessage 侧 `read_body_limited` 的总时长 deadline（35s）补齐，
+///   本 patch 仍只管「单次 read 静默」。
 /// - 超时触发走 tiny_http 原生 `ErrorKind::TimedOut` 路径（client.rs）：回 408 后
 ///   关闭连接，无 panic，accept 循环照常。
 /// - 只影响读，不影响写：SSE（Request::upgrade 后只写不读）不受任何影响；

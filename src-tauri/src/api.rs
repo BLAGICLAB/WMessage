@@ -50,6 +50,24 @@ impl TaskStore for MemStore {
     fn upsert(&self, tasks: Vec<db::Task>) -> Result<(), String> {
         let mut g = self.tasks.lock().unwrap();
         for t in tasks {
+            // 2026-09-04 审计 P2-4：与 db.rs upsert 的 T1-1 基线比对对齐——原先完全忽略
+            // expected_updated_at，API 层 409 冲突路径在 MemStore 下永远不可测（测试基建空洞）
+            if let Some(expected) = t.expected_updated_at {
+                let cur = g.iter().find(|x| x.id == t.id);
+                let conflict = if expected == db::BASELINE_NULL_ROW {
+                    // 行存在性基线：行仍在且 updated_at 仍为 NULL 才放行
+                    !matches!(cur, Some(x) if x.updated_at.is_none())
+                } else {
+                    cur.and_then(|x| x.updated_at) != Some(expected)
+                };
+                if conflict {
+                    return Err(format!(
+                        "{}：任务 {} 读快照后已被其他写者修改或删除，本次整行写回被拒",
+                        db::CONFLICT_ERR_PREFIX,
+                        t.id
+                    ));
+                }
+            }
             if let Some(i) = g.iter().position(|x| x.id == t.id) {
                 g[i] = t;
             } else {

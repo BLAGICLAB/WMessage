@@ -33,7 +33,7 @@ use crate::api::{TaskStore, TauriStore, API_PORT};
 use crate::api_auth::{
     clear_enabled_flag, load_or_create_token, verify_bearer, write_enabled_flag,
 };
-use crate::api_server::{ApiState, EventHub, start_api};
+use crate::api_server::{ApiState, EventHub, RunningApi, start_api};
 use crate::audit::AuditLevel;
 use crate::audit_event;
 use crate::db;
@@ -41,6 +41,11 @@ use crate::error::{CommandError, CommandResult};
 
 /// 请求体上限（防内存打爆）
 const MAX_BODY_BYTES: u64 = 1_000_000;
+/// body 读取总时长上限（2026-09-04 审计 P1-2）：vendor patch 的 30s 读超时是
+/// 「单次 read 系统调用」级——发完 header 后以 <30s 间隔滴注 body，每次 read 都按时
+/// 返回，worker 永久占住并发名额（MAX_WORKERS=64 占满即全员 503）。
+/// 分块读循环在每次 read 返回后检查总时长，滴注最迟 35s 被拒（408）。
+const BODY_READ_DEADLINE: Duration = Duration::from_secs(35);
 /// 每分钟请求上限（仅回环，防失控脚本）
 const RATE_LIMIT_PER_MIN: u32 = 120;
 /// SSE 并发连接上限（A6：每连接一个 writer 线程，不设上限可被连接洪泛耗尽线程）
@@ -234,18 +239,51 @@ fn log_line(path: &Option<PathBuf>, line: &str) {
     }
 }
 
-/// 读请求体，超过 `MAX_BODY_BYTES` 返回 `None`（调用方回 413）
-fn read_body_limited(req: &mut Request) -> Option<String> {
-    let mut buf = Vec::new();
-    match req
-        .as_reader()
-        .take(MAX_BODY_BYTES + 1)
-        .read_to_end(&mut buf)
+/// 请求体读取结果（2026-09-04 审计 P2-6）：原先一律 None 由调用方回 413，
+/// 把读 IO 错误（含 30s 单次读超时）也误报成「body 过大」。现在分流：
+/// `TooLarge` → 413；`IoFailed` → 408（读超时/连接中断语义）。
+enum BodyRead {
+    Ok(String),
+    TooLarge,
+    IoFailed,
+}
+
+/// 读请求体（上限 `MAX_BODY_BYTES`，总时长 `BODY_READ_DEADLINE`）。
+/// Content-Length 声明即超限的直接预拒（413），不再读完才判。
+fn read_body_limited(req: &mut Request) -> BodyRead {
+    // 2026-09-04 审计 P1-2：按 Content-Length 预拒绝——声明 >1MB 的 body 不必读
+    if let Some(declared) = req
+        .headers()
+        .iter()
+        .find(|h| h.field.equiv("Content-Length"))
+        .and_then(|h| h.value.as_str().parse::<u64>().ok())
     {
-        Ok(n) if n as u64 > MAX_BODY_BYTES => None,
-        Ok(_) => Some(String::from_utf8_lossy(&buf).into_owned()),
-        Err(_) => None,
+        if declared > MAX_BODY_BYTES {
+            return BodyRead::TooLarge;
+        }
     }
+    let deadline = Instant::now() + BODY_READ_DEADLINE;
+    let mut buf = Vec::new();
+    let mut reader = req.as_reader().take(MAX_BODY_BYTES + 1);
+    let mut chunk = [0u8; 8192];
+    loop {
+        match reader.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                buf.extend_from_slice(&chunk[..n]);
+                if buf.len() as u64 > MAX_BODY_BYTES {
+                    return BodyRead::TooLarge;
+                }
+                // 滴注检查：每次 read 返回后看总时长（单次 read 的 30s 超时管不到
+                // 「每次都按时返回」的 slowloris，见 BODY_READ_DEADLINE 注释）
+                if Instant::now() >= deadline {
+                    return BodyRead::IoFailed;
+                }
+            }
+            Err(_) => return BodyRead::IoFailed,
+        }
+    }
+    BodyRead::Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
 // ───────────────────────── 任务 JSON 形状 ─────────────────────────
@@ -267,6 +305,9 @@ const API_MAX_NOTE: usize = 5000;
 const API_MAX_DUE: usize = 30;
 const API_MAX_TAG_LEN: usize = 30;
 const API_MAX_TAGS: usize = 10;
+// 2026-09-04 审计 P2-8：filePath 原先只 trim 不限长，单字段近百 KB 可进库；
+// 取 1024（macOS PATH_MAX 量级），与 title/note 等字段一样走 over_limit
+const API_MAX_FILE_PATH: usize = 1024;
 
 fn valid_status(s: &str) -> bool {
     matches!(s, "todo" | "doing" | "done")
@@ -412,9 +453,17 @@ fn create_task(
     emit_fn: &Option<Arc<dyn Fn(&db::Task) + Send + Sync>>,
     log: &Option<PathBuf>,
 ) {
-    let Some(body) = read_body_limited(&mut req) else {
-        let _ = req.respond(json_err(StatusCode(413), "body too large"));
-        return;
+    let body = match read_body_limited(&mut req) {
+        BodyRead::Ok(b) => b,
+        BodyRead::TooLarge => {
+            let _ = req.respond(json_err(StatusCode(413), "body too large"));
+            return;
+        }
+        // P2-6（2026-09-04 审计）：读 IO 错误/超时不是「body 过大」，回 408
+        BodyRead::IoFailed => {
+            let _ = req.respond(json_err(StatusCode(408), "body read failed or timed out"));
+            return;
+        }
     };
     let input: CreateReq = match serde_json::from_str(&body) {
         Ok(v) => v,
@@ -451,6 +500,18 @@ fn create_task(
         .filter(|s| !s.is_empty())
     {
         if let Some(e) = over_limit(d, API_MAX_DUE, "截止时间") {
+            let _ = req.respond(json_err(StatusCode(400), &e));
+            return;
+        }
+    }
+    // 2026-09-04 审计 P2-8：filePath 与 title/note/due 对齐补 over_limit
+    if let Some(p) = input
+        .file_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        if let Some(e) = over_limit(p, API_MAX_FILE_PATH, "文件路径") {
             let _ = req.respond(json_err(StatusCode(400), &e));
             return;
         }
@@ -564,9 +625,17 @@ fn update_task(
     emit_fn: &Option<Arc<dyn Fn(&db::Task) + Send + Sync>>,
     log: &Option<PathBuf>,
 ) {
-    let Some(body) = read_body_limited(&mut req) else {
-        let _ = req.respond(json_err(StatusCode(413), "body too large"));
-        return;
+    let body = match read_body_limited(&mut req) {
+        BodyRead::Ok(b) => b,
+        BodyRead::TooLarge => {
+            let _ = req.respond(json_err(StatusCode(413), "body too large"));
+            return;
+        }
+        // P2-6（2026-09-04 审计）：读 IO 错误/超时不是「body 过大」，回 408
+        BodyRead::IoFailed => {
+            let _ = req.respond(json_err(StatusCode(408), "body read failed or timed out"));
+            return;
+        }
     };
     let input: UpdateReq = match serde_json::from_str(&body) {
         Ok(v) => v,
@@ -591,7 +660,9 @@ fn update_task(
     };
     let mut t = tasks[idx].clone();
     // T1-1：RMW 基线 = 本次 load 快照的 updated_at；upsert 写前比对，基线外有写者改行 → 409 拒写
-    t.expected_updated_at = t.updated_at;
+    // 2026-09-04 审计 P2-4：updated_at 为 NULL 的老行改用「行存在性」哨兵基线
+    // （BASELINE_NULL_ROW：行被删/被改都 409）——原先基线 None = 跳过比对，老行裸奔
+    t.expected_updated_at = Some(t.updated_at.unwrap_or(db::BASELINE_NULL_ROW));
 
     if let Some(title) = input.title.as_deref() {
         let tt = title.trim();
@@ -649,6 +720,11 @@ fn update_task(
             // 多文件绑定（2026-08-19）：旧字段清空时同步清 files
             t.files = None;
         } else {
+            // 2026-09-04 审计 P2-8：与 create_task 对齐补 over_limit（原先只 trim 不限长）
+            if let Some(e) = over_limit(fp, API_MAX_FILE_PATH, "文件路径") {
+                let _ = req.respond(json_err(StatusCode(400), &e));
+                return;
+            }
             t.file_path = Some(fp.to_string());
             if let Some(fid) = input.file_is_dir {
                 t.file_is_dir = Some(fid);
@@ -742,8 +818,9 @@ fn delete_task(
         return;
     };
     let mut t = tasks[idx].clone();
-    // T1-1：RMW 基线 = 本次 load 快照的 updated_at（同 update_task）
-    t.expected_updated_at = t.updated_at;
+    // T1-1：RMW 基线 = 本次 load 快照的 updated_at（同 update_task）；
+    // 2026-09-04 审计 P2-4：NULL 老行同样走行存在性哨兵基线
+    t.expected_updated_at = Some(t.updated_at.unwrap_or(db::BASELINE_NULL_ROW));
     if t.deleted_at.is_some() {
         // 已在回收站：幂等返回当前状态
         let _ = req.respond(json_ok(StatusCode(200), &TaskOut::from_task(&t)));
@@ -828,8 +905,23 @@ fn stop_sse_writers(hub_key: usize, timeout: Duration, audit: &mut dyn FnMut(&st
 }
 
 /// 注册 SSE 客户端：支持 `?since=<事件id>` 断线重放，然后用 tiny_http upgrade 直写。
+/// 重放窗口上限 = EVENT_HISTORY（1000 条环形缓冲，api_server.rs）：溢出缺段为已知取舍。
 fn sse_connect(req: Request, store: &Arc<dyn TaskStore>, query: &str) {
-    let since = query_param(query, "since").and_then(|s| s.parse::<u64>().ok());
+    // 2026-09-04 审计 P2-7：since 给了但 parse 失败（如 ?since=abc）回 400——
+    // 原先静默按全新连接处理，客户端不知道自己丢了重放窗口
+    let since = match query_param(query, "since") {
+        Some(s) => match s.parse::<u64>() {
+            Ok(v) => Some(v),
+            Err(_) => {
+                let _ = req.respond(json_err(
+                    StatusCode(400),
+                    "since 必须是非负整数（事件 id）",
+                ));
+                return;
+            }
+        },
+        None => None,
+    };
     // A2: sync_channel(256) — 单客户端最多积压 256 条，超出则丢事件（广播不阻塞）
     // P2-3：载荷带事件 id，writer 端据此与断线重放去重
     let (tx, rx) = sync_channel::<(u64, Vec<u8>)>(256);
@@ -946,17 +1038,40 @@ pub fn api_start(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandRe
     // 2026-08-28 批次4审计 P2-8：检查与写入在同一把锁内完成——原先锁释放后才 start，
     // 并发 invoke 双发都过检查，第二个收到误导的「端口占用」（服务其实已被第一个起好）
     let mut g = state.0.lock().map_err(|e| e.to_string())?;
-    if g.is_some() {
-        return Ok(ApiInfo {
-            port: API_PORT,
-            token: load_or_create_token(&app)?,
-        });
+    api_start_locked(&app, &mut g)
+}
+
+/// api_start 的持锁实现（2026-09-04 审计 P2-5 拆出）：供 api_start / api_rotate_token
+/// 复用，调用方必须已持 `state.0` 锁（rotate 全程持锁，检查与操作原子）。
+fn api_start_locked(app: &AppHandle, g: &mut Option<RunningApi>) -> CommandResult<ApiInfo> {
+    // 2026-09-04 审计 P1-1 后：尸体 join 最坏 ~400ms（accept recv_timeout tick），
+    // accept 线程不再等 worker，持锁清理安全
+    if let Some(running) = g.as_ref() {
+        // 2026-09-04 审计 P2-1：与 api_status 同款活性检查——accept 线程已死
+        // （recv_error 退出）时不得误报成功；清尸体后继续走下面的重启
+        let alive = running
+            .handle
+            .as_ref()
+            .map(|h| !h.is_finished())
+            .unwrap_or(false);
+        if alive {
+            return Ok(ApiInfo {
+                port: API_PORT,
+                token: load_or_create_token(app)?,
+            });
+        }
     }
-    let token = load_or_create_token(&app)?;
+    if let Some(mut r) = g.take() {
+        r.shutdown.store(true, Ordering::SeqCst);
+        if let Some(h) = r.handle.take() {
+            let _ = h.join();
+        }
+    }
+    let token = load_or_create_token(app)?;
     let store: Arc<dyn TaskStore> = Arc::new(TauriStore {
         app: app.clone(),
         // A6: id 持久化，跨重启保持单调（否则客户端 Last-Event-ID 去重会静默丢事件）
-        hub: EventHub::persisted(db::data_dir(&app).join("api-event-id.txt")),
+        hub: EventHub::persisted(db::data_dir(app).join("api-event-id.txt")),
     });
     let emit_app = app.clone();
     let emit: Option<Box<dyn Fn(&db::Task) + Send + Sync>> =
@@ -967,7 +1082,7 @@ pub fn api_start(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandRe
             let payload = serde_json::json!({ "upserts": [task], "deletes": [], "source": crate::mutation::MutationOrigin::Api.as_str() });
             let _ = emit_app.emit_to("main", "tasks-updated", &payload);
         }));
-    let log_path = Some(db::data_dir(&app).join("api.log"));
+    let log_path = Some(db::data_dir(app).join("api.log"));
     let audit_app = app.clone();
     let on_error: Option<Box<dyn Fn(AuditLevel, &str, &str) + Send + Sync>> =
         Some(Box::new(move |lvl, ev, msg| {
@@ -985,8 +1100,7 @@ pub fn api_start(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandRe
         })?;
     API_HUB_KEY.store(hub_key, Ordering::SeqCst);
     *g = Some(running);
-    drop(g);
-    write_enabled_flag(&app);
+    write_enabled_flag(app);
     Ok(ApiInfo {
         port: API_PORT,
         token,
@@ -1015,6 +1129,16 @@ fn api_stop_impl<R: tauri::Runtime>(
     clear_enabled: bool,
 ) -> CommandResult<()> {
     let mut g = state.0.lock().map_err(|e| e.to_string())?;
+    api_stop_locked(app, &mut g, clear_enabled)
+}
+
+/// api_stop_impl 的持锁实现（2026-09-04 审计 P2-5 拆出）：供 api_rotate_token
+/// 在全程持 `state.0` 锁的前提下复用，消除「检查→stop→start」之间的抢锁窗口。
+fn api_stop_locked<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    g: &mut Option<RunningApi>,
+    clear_enabled: bool,
+) -> CommandResult<()> {
     if let Some(mut r) = g.take() {
         r.shutdown.store(true, Ordering::SeqCst);
         if let Some(h) = r.handle.take() {
@@ -1054,7 +1178,14 @@ pub fn api_status(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandR
         clear_enabled_flag(&app);
     }
     drop(g);
-    let token = load_or_create_token(&app)?;
+    // 2026-09-04 审计 P2-9：未启用时不读/生成 token——原先每次查状态都
+    // load_or_create_token，从未开启过 API 的用户数据目录里也会落 api-token.txt。
+    // 前端只在 enabled 时展示 token（SettingsPage），disabled 态回空串即可。
+    let token = if enabled {
+        load_or_create_token(&app)?
+    } else {
+        String::new()
+    };
     Ok(ApiStatus {
         enabled,
         port: API_PORT,
@@ -1073,7 +1204,12 @@ pub fn api_rotate_token(
     let path = dir.join("api-token.txt");
     let old = std::fs::read_to_string(&path).ok();
     let token = uuid::Uuid::new_v4().simple().to_string();
-    let was_running = state.0.lock().map_err(|e| e.to_string())?.is_some();
+    // 2026-09-04 审计 P2-5：rotate 全程持 state.0 锁——原先「查 is_some → 放锁 →
+    // api_stop/api_start 各自再抢锁」，窗口内用户并发 stop 会被 rotate 把服务重新拉起
+    // （违背用户关闭意图）。锁内只做端口绑定/join 等毫秒级操作，无死锁风险
+    // （locked 变体不再抢同一把锁）。
+    let mut g = state.0.lock().map_err(|e| e.to_string())?;
+    let was_running = g.is_some();
     if !was_running {
         crate::api_auth::write_token_file(&path, &token)?;
         return Ok(ApiInfo {
@@ -1089,19 +1225,19 @@ pub fn api_rotate_token(
     // token 失效语义彻底；api_start 重建新 hub 接受新 writer。
     // 2026-08-28 批次4审计 P2-6：stop 失败时回滚旧 token 文件——原先 `?` 直接返回，
     // 留下「文件已是新 token、在跑服务仍认旧 token」的三态不一致
-    if let Err(e) = api_stop(app.clone(), state.clone()) {
+    if let Err(e) = api_stop_locked(&app, &mut g, true) {
         if let Some(old) = &old {
             let _ = crate::api_auth::write_token_file(&path, old);
         }
         return Err(e);
     }
-    match api_start(app.clone(), state.clone()) {
+    match api_start_locked(&app, &mut g) {
         Ok(info) => Ok(info),
         Err(e) => {
             if let Some(old) = old {
                 let _ = crate::api_auth::write_token_file(&path, &old);
             }
-            let _ = api_start(app, state); // 尽力用旧 token 恢复服务
+            let _ = api_start_locked(&app, &mut g); // 尽力用旧 token 恢复服务
             Err(e)
         }
     }
@@ -1605,6 +1741,204 @@ mod tests {
         assert_eq!(alive_count, 1, "尸体应被收割，仅剩新连接: {alive_count}");
 
         drop(s);
+        shutdown_server(&mut running);
+    }
+
+    // ── 2026-09-04 审计修复（P2-4/6/7/8）──
+
+    /// P2-4 测试基建：MemStore 已按 db.rs 语义比对 RMW 基线；本 store 在 upsert 内
+    /// 先模拟「读快照→写回」窗口里的并发写（把目标行 updated_at 推进），
+    /// 使 handler 锁内 load 的基线在 upsert 时必然过期 → 走通 409 路径
+    struct SabotageStore {
+        inner: MemStore,
+    }
+    impl TaskStore for SabotageStore {
+        fn load(&self) -> Result<Vec<db::Task>, String> {
+            self.inner.load()
+        }
+        fn upsert(&self, tasks: Vec<db::Task>) -> Result<(), String> {
+            for t in &tasks {
+                let mut g = self.inner.tasks.lock().unwrap();
+                if let Some(x) = g.iter_mut().find(|x| x.id == t.id) {
+                    x.updated_at = Some(x.updated_at.unwrap_or(0) + 1);
+                }
+            }
+            self.inner.upsert(tasks)
+        }
+        fn event_hub(&self) -> &Arc<EventHub> {
+            self.inner.event_hub()
+        }
+        fn notify_change(&self, op: &str, task: &db::Task) {
+            self.inner.notify_change(op, task);
+        }
+    }
+
+    /// 2026-09-04 审计 P2-4：基线外有写者插队 → PUT 回 409 且不覆盖对方修改。
+    /// 覆盖两种基线：正常行（updated_at 时间戳基线）与 NULL 老行（行存在性基线）。
+    /// 原先 MemStore::upsert 忽略基线，该路径无集成覆盖。
+    #[test]
+    fn update_conflict_returns_409() {
+        // 预塞一条 updated_at 为 NULL 的老行（迁移前遗留）
+        let inner = MemStore {
+            tasks: Mutex::new(vec![bare_task("老行任务")]),
+            hub: EventHub::new(),
+        };
+        let store: Arc<dyn TaskStore> = Arc::new(SabotageStore { inner });
+        let token = "test-token-123".to_string();
+        let mut running = start_api(48826, token.clone(), store.clone(), None, None, None).unwrap();
+
+        // NULL 老行：行存在性基线 + 插队写 → 409
+        let (st, body) = http(
+            48826,
+            "PUT",
+            "/api/tasks/t1",
+            Some(&token),
+            Some(r#"{"title":"覆盖"}"#),
+        );
+        assert_eq!(st, 409, "NULL 老行被插队改必须 409: {body}");
+        let tasks = store.load().unwrap();
+        assert_eq!(tasks[0].title, "老行任务", "被拒写不得覆盖现行行");
+
+        // 正常行（API 创建，updated_at 有值）：时间戳基线 + 插队写 → 409
+        let (st, body) = http(
+            48826,
+            "POST",
+            "/api/tasks",
+            Some(&token),
+            Some(r#"{"title":"正常任务"}"#),
+        );
+        assert_eq!(st, 201);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let id = v["id"].as_str().unwrap().to_string();
+        let (st, body) = http(
+            48826,
+            "PUT",
+            &format!("/api/tasks/{id}"),
+            Some(&token),
+            Some(r#"{"title":"覆盖"}"#),
+        );
+        assert_eq!(st, 409, "时间戳基线过期必须 409: {body}");
+        let tasks = store.load().unwrap();
+        let cur = tasks.iter().find(|t| t.id == id).unwrap();
+        assert_eq!(cur.title, "正常任务", "被拒写不得覆盖现行行");
+
+        shutdown_server(&mut running);
+    }
+
+    /// 2026-09-04 审计 P2-4：NULL 老行在无并发写时可正常更新——
+    /// 行存在性基线放行（不误伤正常路径）
+    #[test]
+    fn update_null_updated_at_row_ok() {
+        let store: Arc<dyn TaskStore> = Arc::new(MemStore {
+            tasks: Mutex::new(vec![bare_task("老行任务")]),
+            hub: EventHub::new(),
+        });
+        let token = "test-token-123".to_string();
+        let mut running = start_api(48827, token.clone(), store.clone(), None, None, None).unwrap();
+
+        let (st, body) = http(
+            48827,
+            "PUT",
+            "/api/tasks/t1",
+            Some(&token),
+            Some(r#"{"title":"改好了"}"#),
+        );
+        assert_eq!(st, 200, "无并发写时 NULL 老行更新应放行: {body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["title"], "改好了");
+
+        shutdown_server(&mut running);
+    }
+
+    /// 2026-09-04 审计 P2-7：`?since=abc` 解析失败必须回 400——原先静默按全新
+    /// 连接处理，客户端不知自己丢了重放窗口
+    #[test]
+    fn sse_invalid_since_returns_400() {
+        let store: Arc<dyn TaskStore> = Arc::new(MemStore {
+            tasks: Mutex::new(vec![]),
+            hub: EventHub::new(),
+        });
+        let token = "test-token-123".to_string();
+        let mut running = start_api(48828, token.clone(), store.clone(), None, None, None).unwrap();
+
+        let (st, _) = http(48828, "GET", "/api/events?since=abc", Some(&token), None);
+        assert_eq!(st, 400, "非法 since 应 400");
+        let (st, _) = http(48828, "GET", "/api/events?since=-1", Some(&token), None);
+        assert_eq!(st, 400, "负数 since 应 400（u64 解析失败）");
+
+        shutdown_server(&mut running);
+    }
+
+    /// 2026-09-04 审计 P2-8：filePath 超上限（1024 字）回 400，create / update 同规则
+    #[test]
+    fn file_path_over_limit_returns_400() {
+        let store: Arc<dyn TaskStore> = Arc::new(MemStore {
+            tasks: Mutex::new(vec![]),
+            hub: EventHub::new(),
+        });
+        let token = "test-token-123".to_string();
+        let mut running = start_api(48829, token.clone(), store.clone(), None, None, None).unwrap();
+
+        let long_path = "x".repeat(API_MAX_FILE_PATH + 1);
+        let (st, _) = http(
+            48829,
+            "POST",
+            "/api/tasks",
+            Some(&token),
+            Some(&format!(r#"{{"title":"t","filePath":"{long_path}"}}"#)),
+        );
+        assert_eq!(st, 400, "create 超限 filePath 应 400");
+
+        let (st, body) = http(
+            48829,
+            "POST",
+            "/api/tasks",
+            Some(&token),
+            Some(r#"{"title":"t"}"#),
+        );
+        assert_eq!(st, 201);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let id = v["id"].as_str().unwrap().to_string();
+        let (st, _) = http(
+            48829,
+            "PUT",
+            &format!("/api/tasks/{id}"),
+            Some(&token),
+            Some(&format!(r#"{{"filePath":"{long_path}"}}"#)),
+        );
+        assert_eq!(st, 400, "update 超限 filePath 应 400");
+
+        shutdown_server(&mut running);
+    }
+
+    /// 2026-09-04 审计 P1-2/P2-6：Content-Length 声明超 1MB → 立即 413，
+    /// 不必等 body 读完（请求故意一字节 body 都不发：若不预拒，服务端会等 body
+    /// 直到 5s 客户端读超时，测试会失败）
+    #[test]
+    fn oversize_content_length_rejected_early() {
+        let store: Arc<dyn TaskStore> = Arc::new(MemStore {
+            tasks: Mutex::new(vec![]),
+            hub: EventHub::new(),
+        });
+        let token = "test-token-123".to_string();
+        let mut running = start_api(48830, token.clone(), store.clone(), None, None, None).unwrap();
+
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", 48830)).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        write!(
+            s,
+            "POST /api/tasks HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: 2000000\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+        let _ = s.shutdown(std::net::Shutdown::Write);
+        let mut resp = String::new();
+        s.read_to_string(&mut resp).unwrap();
+        assert!(
+            resp.starts_with("HTTP/1.1 413"),
+            "声明超限的 body 应立即 413: {}",
+            resp.lines().next().unwrap_or("")
+        );
+
         shutdown_server(&mut running);
     }
 }

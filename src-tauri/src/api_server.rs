@@ -25,6 +25,9 @@ use crate::audit::AuditLevel;
 use crate::db;
 
 /// SSE 事件重放环形缓冲条数（断线重放窗口）
+/// 2026-09-04 审计 P2-7（备查）：缓冲满后最老事件被挤出——客户端以早于缓冲最老 id 的
+/// `?since=` 重连时会缺段（丢失的事件无任何补发通道）。事件频率为人级操作，
+/// 1000 条窗口对实际断线重连足够；要彻底覆盖需持久化事件日志，暂不做。
 const EVENT_HISTORY: usize = 1000;
 
 /// 并发 worker 上限（A6：thread-per-request 无上限时，慢连接会无限堆积 OS 线程）
@@ -90,8 +93,10 @@ impl EventHub {
     pub fn broadcast(&self, event: serde_json::Value) {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst) + 1;
         // A6: 每次广播落盘当前 id（事件频率为人级，开销可忽略），重启后接续递增
+        // 2026-09-04 审计 P2-3：改用 atomic_write（tmp+rename）——原先 fs::write 直写，
+        // 崩溃留半截文件 → 重启 id 归 0 → 客户端 Last-Event-ID 去重静默丢全部新事件
         if let Some(p) = &self.id_path {
-            let _ = std::fs::write(p, id.to_string());
+            let _ = db::atomic_write(p, &id.to_string());
         }
         let msg = format!("id: {id}\ndata: {event}\n\n");
         if let Ok(mut h) = self.history.lock() {
@@ -155,6 +160,13 @@ pub fn start_api(
         emit_fn.map(|b| -> Arc<dyn Fn(&db::Task) + Send + Sync> { b.into() });
     // A6: 在飞 worker 计数（配合 MAX_WORKERS 上限，防慢连接线程堆积）
     let active = Arc::new(AtomicUsize::new(0));
+    // 2026-09-04 审计 P1-1：on_error 包 Arc 传入每个 worker 自行记录 panic——
+    // 原先 worker 经 channel 回传、accept 线程 recv_timeout(15s) 同步等结果，
+    // 任一慢请求期间新请求全部排队（吞吐 1 req/15s），api_stop 的 join 最坏卡 15s
+    // 且全程持 state.0 锁。该等待的唯一收益就是把 panic 消息带回 accept 线程记日志，
+    // 且 15s「超时」语义本来就是假的（到期后 worker 照样续跑）。
+    let on_error: Option<Arc<dyn Fn(AuditLevel, &str, &str) + Send + Sync>> =
+        on_error.map(|b| -> Arc<dyn Fn(AuditLevel, &str, &str) + Send + Sync> { b.into() });
     let handle = std::thread::spawn(move || loop {
         if sd.load(Ordering::SeqCst) {
             break;
@@ -171,19 +183,20 @@ pub fn start_api(
                 }
                 active.fetch_add(1, Ordering::SeqCst);
                 let active_w = active.clone();
-                // A1 + A4 组合：每个请求独立 worker 线程 + catch_unwind +
-                //              主线程 15s 超时（只作用于 handler 执行阶段——
-                //              2026-08-28 批次4审计 P1-1：tiny_http 在 recv 内部顺序读完
-                //              header 才产出 Request，header 阶段的 slowloris 滴注
-                //              到不了这里；accept 级防护需换 HTTP 栈，列为已知残留）
+                // A1: 每个请求独立 worker 线程 + catch_unwind（panic 不带垮 accept 循环）。
+                // 2026-09-04 审计 P1-1：spawn 后 accept 线程立即回到 recv，不再等 worker——
+                // worker 的 panic 由 worker 自己经 on_error 记录。
+                // （2026-08-28 批次4审计 P1-1：tiny_http 在 recv 内部顺序读完
+                //  header 才产出 Request，header 阶段的 slowloris 滴注到不了这里；
+                //  accept 级防护需换 HTTP 栈，列为已知残留）
                 let req_url = req.url().to_string();
-                let (done_tx, done_rx) = std::sync::mpsc::channel();
                 let emit_fn_w = emit_fn.clone();
                 let log_path_w = log_path.clone();
                 let tk_w = tk.clone();
                 let store_w = store.clone();
+                let on_error_w = on_error.clone();
                 std::thread::spawn(move || {
-                    // 配额归还守卫：无论正常完成 / panic / 超时后续跑，退出即归还
+                    // 配额归还守卫：无论正常完成 / panic，退出即归还
                     let _guard = ActiveGuard(active_w);
                     let catch_result = std::panic::catch_unwind(
                         std::panic::AssertUnwindSafe(|| {
@@ -198,16 +211,7 @@ pub fn start_api(
                     );
                     if let Err(payload) = catch_result {
                         let msg = panic_message(payload);
-                        // worker 内调 audit_event! 不方便；通过通道传上去
-                        let _ = done_tx.send(Err(msg));
-                    } else {
-                        let _ = done_tx.send(Ok(()));
-                    }
-                });
-                match done_rx.recv_timeout(Duration::from_secs(15)) {
-                    Ok(Ok(())) => {}
-                    Ok(Err(msg)) => {
-                        if let Some(log) = &on_error {
+                        if let Some(log) = &on_error_w {
                             log(
                                 AuditLevel::Error,
                                 "api.handler_panic",
@@ -215,18 +219,7 @@ pub fn start_api(
                             );
                         }
                     }
-                    Err(_) => {
-                        // worker 仍在读 body/等客户端，bottleneck 不在本服务
-                        // 客户端断开 / body 超过 15s 都会让 worker 自行退出
-                        if let Some(log) = &on_error {
-                            log(
-                                AuditLevel::Error,
-                                "api.handler_timeout",
-                                &format!("{req_url}: 超时 15s，worker 续跑直到客户端断开"),
-                            );
-                        }
-                    }
-                }
+                });
             }
             Ok(None) => {}
             Err(e) => {
@@ -243,7 +236,7 @@ pub fn start_api(
     })
 }
 
-/// worker 退出时归还并发配额（正常完成 / panic / 超时后续跑结束都会触发）
+/// worker 退出时归还并发配额（正常完成 / panic 都会触发）
 struct ActiveGuard(Arc<AtomicUsize>);
 
 impl Drop for ActiveGuard {

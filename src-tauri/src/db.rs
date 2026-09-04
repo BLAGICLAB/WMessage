@@ -946,6 +946,13 @@ pub async fn bot_history_clear(app: tauri::AppHandle, session_id: String) -> Com
 /// （如本地 API 映射 409；其余调用方按写失败处理，数据未被覆盖）。
 pub const CONFLICT_ERR_PREFIX: &str = "写冲突";
 
+/// 2026-09-04 审计 P2-4：「行存在性」基线哨兵。老行 updated_at 为 NULL 时 RMW 调用方
+/// 无法做时间戳比对（原先 expected_updated_at=None = 跳过基线检查，最需要防
+/// lost-update 的老行反而裸奔）。以此哨兵为基线表示「行必须仍存在且 updated_at
+/// 仍为 NULL」——行被删（无行）或被改（任何写者落库必写非 NULL 时间戳）都判冲突。
+/// 取 i64::MIN 保证与任何合法毫秒时间戳不撞。
+pub const BASELINE_NULL_ROW: i64 = i64::MIN;
+
 fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), String> {
     if tasks.is_empty() {
         return Ok(());
@@ -980,22 +987,36 @@ fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), Strin
         // 比对与写入在同一事务（且写路径持 DB_WRITE_LOCK，进程内写者串行）→ 原子。
         // cur=None 含「行不存在（快照后被删）」与「老行 NULL updated_at」两种，均判冲突拒写：
         // 前者防复活已删行，后者因基线语义是「读到过的确定时间戳」，NULL 无从匹配。
+        // 2026-09-04 审计 P2-4：不再 flatten——区分「行被删」（None）与「老行 NULL」
+        // （Some(None)），后者配合 BASELINE_NULL_ROW 哨兵走「行存在性」基线。
         if let Some(expected) = t.expected_updated_at {
             use rusqlite::OptionalExtension;
-            let cur: Option<i64> = conn
+            let cur: Option<Option<i64>> = conn
                 .query_row(
                     "SELECT updated_at FROM tasks WHERE id = ?1",
                     [&t.id],
                     |r| r.get::<_, Option<i64>>(0),
                 )
                 .optional()
-                .map_err(|e| e.to_string())?
-                .flatten();
-            if cur != Some(expected) {
+                .map_err(|e| e.to_string())?;
+            let conflict = if expected == BASELINE_NULL_ROW {
+                // 行存在性基线：行仍在且 updated_at 仍为 NULL 才放行；
+                // 被删（None）或被改（Some(Some(_))）都判冲突
+                cur != Some(None)
+            } else {
+                cur.flatten() != Some(expected)
+            };
+            if conflict {
+                let cur_flat = cur.flatten();
+                let baseline_desc = if expected == BASELINE_NULL_ROW {
+                    "NULL（行存在性）".to_string()
+                } else {
+                    expected.to_string()
+                };
                 return Err(format!(
-                    "{CONFLICT_ERR_PREFIX}：任务 {} 读快照后已被其他写者{}，本次整行写回被拒（基线 updated_at={expected}，现行 {cur:?}）",
+                    "{CONFLICT_ERR_PREFIX}：任务 {} 读快照后已被其他写者{}，本次整行写回被拒（基线 updated_at={baseline_desc}，现行 {cur_flat:?}）",
                     t.id,
-                    if cur.is_some() { "修改" } else { "删除" },
+                    if cur_flat.is_some() { "修改" } else { "删除" },
                 ));
             }
         }
@@ -2165,6 +2186,53 @@ mod tests {
         fresh.updated_at = Some(50);
         upsert_tasks(&conn, &[fresh]).unwrap();
         assert_eq!(load_all(&conn).unwrap().len(), 1);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 2026-09-04 审计 P2-4：老行 updated_at 为 NULL 时用「行存在性」哨兵基线
+    /// （BASELINE_NULL_ROW）——行原样放行；行被改（updated_at 变非 NULL）或
+    /// 被删都拒写。原先 NULL 行基线是 None → 跳过比对，老行无 lost-update 防护。
+    #[test]
+    fn upsert_null_row_existence_baseline() {
+        let (dir, conn) = setup_tasks_db();
+        // 模拟迁移前的老行：updated_at 为 NULL
+        let mut seed = mk_task("t1", "老行");
+        seed.updated_at = None;
+        upsert_tasks(&conn, &[seed]).unwrap();
+
+        // 行原样（仍在且仍 NULL）→ 放行
+        let mut a = load_all(&conn).unwrap().into_iter().next().unwrap();
+        assert_eq!(a.updated_at, None);
+        a.expected_updated_at = Some(BASELINE_NULL_ROW);
+        a.title = "放行".into();
+        a.updated_at = Some(100);
+        upsert_tasks(&conn, std::slice::from_ref(&a)).unwrap();
+        assert_eq!(load_all(&conn).unwrap()[0].title, "放行");
+
+        // 快照时行是 NULL（基线=行存在性），但窗口内其他写者已改（updated_at=100 非 NULL）→ 拒
+        let mut b = mk_task("t1", "覆盖者");
+        b.expected_updated_at = Some(BASELINE_NULL_ROW);
+        b.updated_at = Some(200);
+        let err = upsert_tasks(&conn, std::slice::from_ref(&b)).unwrap_err();
+        assert!(
+            err.starts_with(CONFLICT_ERR_PREFIX),
+            "老行被改后行存在性基线必须拒写；got: {err}"
+        );
+        assert_eq!(
+            load_all(&conn).unwrap()[0].title,
+            "放行",
+            "被拒写不得覆盖现行行"
+        );
+
+        // 快照后行被删 → 拒写（防复活）
+        delete_tasks(&conn, &["t1".to_string()]).unwrap();
+        let err = upsert_tasks(&conn, std::slice::from_ref(&b)).unwrap_err();
+        assert!(
+            err.starts_with(CONFLICT_ERR_PREFIX),
+            "行已删必须拒写；got: {err}"
+        );
+        assert!(load_all(&conn).unwrap().is_empty(), "被拒写不得复活已删行");
 
         fs::remove_dir_all(&dir).ok();
     }

@@ -27,6 +27,9 @@ pub fn load_or_create_token(app: &AppHandle) -> Result<String, String> {
     if let Ok(s) = std::fs::read_to_string(&path) {
         let s = s.trim().to_string();
         if !s.is_empty() {
+            // 2026-09-04 审计 P2-2：存量文件权限过宽（历史版本 0644 写入窗口遗留）
+            // 永不补 chmod 的话会一直裸奔，读取时顺手收紧（best-effort，失败不挡读）
+            let _ = tighten_token_permissions(&path);
             return Ok(s);
         }
     }
@@ -35,16 +38,46 @@ pub fn load_or_create_token(app: &AppHandle) -> Result<String, String> {
     Ok(token)
 }
 
-/// 写 token 文件并把权限收紧到 0600（P2-1：token 等价于密码，默认 0644 可被同机其他用户读）。
-/// 抽出独立函数便于单测（load_or_create_token 依赖 AppHandle 无法直测）。
-pub(crate) fn write_token_file(path: &std::path::Path, token: &str) -> Result<(), String> {
-    std::fs::write(path, token).map_err(|e| e.to_string())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
+/// unix：把 token 文件权限收紧到 0600；其他平台无操作（返回 Ok）。
+#[cfg(unix)]
+fn tighten_token_permissions(path: &std::path::Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(path)
+        .map_err(|e| e.to_string())?
+        .permissions()
+        .mode()
+        & 0o777;
+    if mode != 0o600 {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
             .map_err(|e| e.to_string())?;
     }
+    Ok(())
+}
+
+/// 非 unix 平台无文件权限位语义，恒 Ok。
+#[cfg(not(unix))]
+fn tighten_token_permissions(_path: &std::path::Path) -> Result<(), String> {
+    Ok(())
+}
+
+/// 写 token 文件并把权限收紧到 0600（P2-1：token 等价于密码，默认 0644 可被同机其他用户读）。
+/// 抽出独立函数便于单测（load_or_create_token 依赖 AppHandle 无法直测）。
+///
+/// 2026-09-04 审计 P2-2：改用 `OpenOptions` + `.mode(0o600)` 创建即收紧——
+/// 原先先 `fs::write`（umask 默认 0644）后 chmod，中间存在同机其他用户可读的窗口。
+/// 注意 mode() 只对新建文件生效，存量文件（历史 0644）靠结尾补 chmod 覆盖。
+pub(crate) fn write_token_file(path: &std::path::Path, token: &str) -> Result<(), String> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut f = opts.open(path).map_err(|e| e.to_string())?;
+    use std::io::Write;
+    f.write_all(token.as_bytes()).map_err(|e| e.to_string())?;
+    tighten_token_permissions(path)?;
     Ok(())
 }
 
@@ -118,6 +151,22 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "tok123");
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "token 文件权限必须收紧到 0600，实际 {mode:o}");
+    }
+
+    /// 2026-09-04 审计 P2-2：存量 0644 文件（历史版本的写入窗口遗留）覆写后
+    /// 必须补收紧到 0600——OpenOptions 的 mode() 只对新建文件生效
+    #[cfg(unix)]
+    #[test]
+    fn write_token_file_tightens_existing_0644() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("api-token.txt");
+        std::fs::write(&path, "old-token").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        write_token_file(&path, "new-token").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new-token");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "存量 0644 文件必须被补收紧，实际 {mode:o}");
     }
 }
 
