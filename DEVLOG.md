@@ -1807,3 +1807,10 @@ DSL 调度器从「解析 + 单次顺序执行」演进到「全链路生产可�
 - 新增测试 7 条：token 收紧、NULL 行存在性基线三态、409 集成（SabotageStore 模拟插队写，覆盖两种基线）、since 非法 400、filePath 超限 400、Content-Length 预拒
 - 验证：cargo test --lib 490 → 497 全绿；cargo check 无新警告；既有 llm_integration 27 + skill_e2e 13 无回归
 - 遗留（随换 axum 立项）：header 阶段滴注仍只有单次 read 级 30s 超时；Content-Length 预拒后 keep-alive 连接可能残留未读 body（本地短连接 API，可接受）
+
+### 子任务交互改版（老板 2026-09-04）
+- 子任务可编辑：拆出 `SubtaskRow` 组件（每行独立 editing 状态），点击文本进内联编辑，复用 `useInlineEdit`（Enter 提交 / Esc 取消 / blur 提交），空提交保留原文；归档/回收站只读
+- 子任务全文显示：去掉 truncate 单行截断，改 `whitespace-pre-wrap break-words` 多行完整显示（checkbox 改 items-start 对齐首行）
+- 行间分割线淡化：`divide-[var(--edge)]` → `color-mix(in srgb, var(--edge), transparent 55%)` 半透明
+- 验证：TodoCard 测试 21 → 25（新增 4 条：不截断/编辑提交/Esc 取消+空提交/归档只读）、tsc 零错、vite build 过（确认 Tailwind arbitrary class 正确生成 color-mix 规则）
+- 未动：挂件 TaskCardContent 子任务仍是只读 + 单行截断（挂件窄卡片场景，未提需求）

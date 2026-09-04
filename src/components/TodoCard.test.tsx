@@ -358,3 +358,62 @@ describe("TodoCardView 多文件绑定", () => {
     });
   });
 });
+
+// —— 子任务（2026-09-04）：点击文本内联编辑 + 全文显示不截断 ——
+describe("TodoCardView 子任务", () => {
+  const subTask: Task = {
+    ...baseTask,
+    subtasks: [
+      { id: "s1", text: "第一步子任务", done: false },
+      { id: "s2", text: "第二步子任务", done: true },
+    ],
+  };
+
+  it("子任务文本完整显示：不带 truncate 单行截断", () => {
+    render(<TodoCardView task={subTask} onUpdate={vi.fn()} onDelete={vi.fn()} />);
+    const el = screen.getByText("第一步子任务");
+    expect(el.className).not.toContain("truncate");
+    expect(el.className).toContain("whitespace-pre-wrap");
+  });
+
+  it("点击子任务文本进入编辑，Enter 提交更新该条", async () => {
+    const user = userEvent.setup();
+    const onUpdate = vi.fn();
+    render(<TodoCardView task={subTask} onUpdate={onUpdate} onDelete={vi.fn()} />);
+    await user.click(screen.getByText("第一步子任务"));
+    const input = screen.getByDisplayValue("第一步子任务");
+    await user.clear(input);
+    await user.type(input, "改后的子任务{Enter}");
+    const call = onUpdate.mock.calls[0];
+    expect(call[0]).toBe("t1");
+    expect(call[1].subtasks).toEqual([
+      { id: "s1", text: "改后的子任务", done: false },
+      { id: "s2", text: "第二步子任务", done: true },
+    ]);
+  });
+
+  it("子任务编辑：Escape 取消不写库；空提交保留原文", async () => {
+    const user = userEvent.setup();
+    const onUpdate = vi.fn();
+    render(<TodoCardView task={subTask} onUpdate={onUpdate} onDelete={vi.fn()} />);
+    // Escape 取消
+    await user.click(screen.getByText("第一步子任务"));
+    await user.keyboard("改成别的{Escape}");
+    expect(onUpdate).not.toHaveBeenCalled();
+    // 空提交保留原文
+    await user.click(screen.getByText("第一步子任务"));
+    const input = screen.getByDisplayValue("第一步子任务");
+    await user.clear(input);
+    await user.keyboard("{Enter}");
+    expect(onUpdate).not.toHaveBeenCalled();
+  });
+
+  it("归档态子任务只读：点击不进入编辑", async () => {
+    const user = userEvent.setup();
+    render(
+      <TodoCard task={subTask} archived onUpdate={vi.fn()} onDelete={vi.fn()} />
+    );
+    await user.click(screen.getByText("第一步子任务"));
+    expect(screen.queryByDisplayValue("第一步子任务")).not.toBeInTheDocument();
+  });
+});
