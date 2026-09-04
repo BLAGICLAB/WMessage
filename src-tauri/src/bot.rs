@@ -864,7 +864,7 @@ async fn execute_tool_impl(
         "fetch_url" => tool_fetch_url(app, args).await,
         "get_current_time" => tool_get_current_time(),
         "remember_fact" => tool_remember_fact(app, args),
-        "recall_facts" => tool_recall_facts(app),
+        "recall_facts" => tool_recall_facts(app, args),
         "use_skill" => tool_use_skill(app, args, session_id),
         other => (format!("未知工具：{other}"), Vec::new()),
     };
@@ -930,11 +930,17 @@ fn validate_fact_kv(key: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// upsert 一条记忆（同 key 覆盖不占新名额；新 key 超 MAX_FACTS 拒绝）。抽离 Connection 便于内存库单测。
+/// upsert 一条 fact 记忆（同 key 覆盖不占新名额、不触发淘汰；新 key 超 MAX_FACTS 拒绝）。
+/// 记忆模块 Step 2（2026-09-05，设计 5.1）：名额统计只算 kind='fact'
+/// （summary/reflection 不占名额，全表 300 惰性淘汰在 db::memory_insert）；
+/// category/importance/source 随写入落库。抽离 Connection 便于内存库单测。
 fn fact_upsert(
     conn: &rusqlite::Connection,
     key: &str,
     value: &str,
+    category: &str,
+    importance: i64,
+    source: &str,
     now: i64,
 ) -> Result<String, String> {
     let exists = conn
@@ -946,19 +952,46 @@ fn fact_upsert(
         .is_ok();
     if !exists {
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM bot_facts", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM bot_facts WHERE kind = 'fact'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap_or(0);
         if count >= MAX_FACTS as i64 {
             return Err(format!("失败：记忆已达 {MAX_FACTS} 条上限，请先删除不需要的"));
         }
     }
     conn.execute(
-        "INSERT INTO bot_facts (key, value, updated_at) VALUES (?1, ?2, ?3)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-        rusqlite::params![key, value, now],
+        "INSERT INTO bot_facts (key, value, updated_at, kind, category, importance, source)
+         VALUES (?1, ?2, ?3, 'fact', ?4, ?5, ?6)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at,
+             category = excluded.category, importance = excluded.importance, source = excluded.source",
+        rusqlite::params![key, value, now, category, importance, source],
     )
     .map_err(|e| format!("失败：{e}"))?;
     Ok(format!("已记住「{key}」：{value}"))
+}
+
+/// 冲突提示（记忆模块 Step 2，设计 7.1 写入即检索）：写入前用与注入同一套打分
+/// 在现有 fact 中找 top-3 相似项（keyword_overlap>0，同 key 除外），拼成工具结果后缀，
+/// 模型自行决定覆盖/保留（零额外 LLM 调用）。检索失败静默为空，不阻塞写入。
+fn fact_conflict_hint(conn: &rusqlite::Connection, key: &str, value: &str, now: i64) -> String {
+    let similar: Vec<crate::db::MemoryItem> =
+        crate::db::memory_search(conn, &format!("{key} {value}"), 3, now, Some("fact"))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|m| m.key != key)
+            .collect();
+    if similar.is_empty() {
+        return String::new();
+    }
+    let list = similar
+        .iter()
+        .map(|m| format!("key={}, value={}", m.key, m.value))
+        .collect::<Vec<_>>()
+        .join("；");
+    format!("。相似已有记忆：[{list}]——如需更新请用同 key 覆盖")
 }
 
 /// 删除一条记忆；返回 Ok(false) = 该 key 本来就不存在
@@ -980,7 +1013,10 @@ fn fact_list(conn: &rusqlite::Connection) -> Result<Vec<(String, String)>, Strin
         .map_err(|e| format!("失败：{e}"))
 }
 
-/// remember_fact(key, value)：upsert 一条长期记忆（同 key 覆盖）；value 空串 = 删除该 key
+/// remember_fact(key, value[, category, importance, source])：upsert 一条长期记忆
+///（同 key 覆盖）；value 空串 = 删除该 key。
+/// Step 2（设计 5.1）：可选 category/importance/source 非法值回落默认；
+/// 写入前跑冲突提示（fact_conflict_hint），提示文本进工具结果。
 fn tool_remember_fact(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
     let v = parse_args(args);
     let key = v["key"].as_str().unwrap_or("").trim().to_string();
@@ -988,6 +1024,15 @@ fn tool_remember_fact(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_ch
     if let Err(e) = validate_fact_kv(&key, &value) {
         return (e, Vec::new());
     }
+    let category = match v["category"].as_str().map(|s| s.trim()) {
+        Some(c @ ("profile" | "preference" | "project" | "general")) => c,
+        _ => "general",
+    };
+    let importance = v["importance"].as_i64().unwrap_or(3).clamp(1, 5);
+    let source = match v["source"].as_str() {
+        Some("model_inferred") => "model_inferred",
+        _ => "user_stated",
+    };
     let conn = match crate::db::open_db(app) {
         Ok(c) => c,
         Err(e) => return (format!("失败：打开数据库出错：{e}"), Vec::new()),
@@ -995,26 +1040,68 @@ fn tool_remember_fact(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_ch
     // 2026-08-28 批次2审计：纳入 DB_WRITE_LOCK——原先锁外直写，主窗口长事务
     //（如 bot_history_save 全量重写）期间会撞 SQLITE_BUSY 静默丢失记忆
     let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let now = chrono::Utc::now().timestamp_millis();
+    (
+        remember_fact_core(&conn, &key, &value, category, importance, source, now),
+        Vec::new(),
+    )
+}
+
+/// remember_fact 工具内核（抽离 Connection，tests/memory_regression.rs 回归基准直用，
+/// 与 run_model_loop_core 同先例）：空 value=删除；否则冲突提示 + upsert。
+/// 返回工具结果文本。category/importance/source 由调用方先做白名单/clamp 归一化。
+pub fn remember_fact_core(
+    conn: &rusqlite::Connection,
+    key: &str,
+    value: &str,
+    category: &str,
+    importance: i64,
+    source: &str,
+    now: i64,
+) -> String {
+    if let Err(e) = validate_fact_kv(key, value) {
+        return e;
+    }
     if value.is_empty() {
         // 空 value = 删除该条记忆
-        return match fact_delete(&conn, &key) {
-            Ok(true) => (format!("已删除记忆「{key}」"), Vec::new()),
-            Ok(false) => (format!("记忆「{key}」本来就不存在"), Vec::new()),
-            Err(e) => (e, Vec::new()),
+        return match fact_delete(conn, key) {
+            Ok(true) => format!("已删除记忆「{key}」"),
+            Ok(false) => format!("记忆「{key}」本来就不存在"),
+            Err(e) => e,
         };
     }
-    match fact_upsert(&conn, &key, &value, chrono::Utc::now().timestamp_millis()) {
-        Ok(msg) => (msg, Vec::new()),
-        Err(e) => (e, Vec::new()),
+    // 冲突提示（设计 7.1）：写入前检索现有 fact 的 top-3 相似项，附在工具结果后
+    let hint = fact_conflict_hint(conn, key, value, now);
+    match fact_upsert(conn, key, value, category, importance, source, now) {
+        Ok(msg) => format!("{msg}{hint}"),
+        Err(e) => e,
     }
 }
 
-/// recall_facts()：全量读回长期记忆（按最近更新倒序）
-fn tool_recall_facts(app: &AppHandle) -> (String, Vec<crate::bot_chat::TaskRef>) {
+/// recall_facts([query])：无 query 全量读回（按最近更新倒序，兼容原行为）；
+/// 有 query 走 Step 2 检索打分 top-5（设计第 4 节，纯读不刷新访问计数）
+fn tool_recall_facts(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
+    let v = parse_args(args);
+    let query = v["query"].as_str().unwrap_or("").trim();
     let conn = match crate::db::open_db(app) {
         Ok(c) => c,
         Err(e) => return (format!("失败：打开数据库出错：{e}"), Vec::new()),
     };
+    if !query.is_empty() {
+        let now = chrono::Utc::now().timestamp_millis();
+        return match crate::db::memory_search(&conn, query, crate::db::MEMORY_TOP_N, now, None) {
+            Ok(hits) if hits.is_empty() => ("没有找到相关记忆".into(), Vec::new()),
+            Ok(hits) => {
+                let lines: Vec<String> =
+                    hits.iter().map(|m| format!("- {}：{}", m.key, m.value)).collect();
+                (
+                    format!("最相关 {} 条：\n{}", lines.len(), lines.join("\n")),
+                    Vec::new(),
+                )
+            }
+            Err(e) => (format!("失败：{e}"), Vec::new()),
+        };
+    }
     match fact_list(&conn) {
         Ok(pairs) if pairs.is_empty() => ("（还没有任何长期记忆）".into(), Vec::new()),
         Ok(pairs) => {
@@ -2745,13 +2832,16 @@ mod task_files_arg_tests {
 mod phase4_facts_tests {
     use super::*;
 
-    /// 内存库（与 db.rs 建表语句同构）：fact_* 辅助函数的全逻辑覆盖
+    /// 内存库（与 db.rs 建表语句同构）：fact_* 辅助函数的全逻辑覆盖。
+    /// Step 2 起 fact_upsert 写入 category/importance/source 列，走生产迁移函数补齐
+    ///（与 db.rs memory_tests / tests/llm_integration.rs 同模式）。
     fn mem_conn() -> rusqlite::Connection {
         let c = rusqlite::Connection::open_in_memory().unwrap();
         c.execute_batch(
             "CREATE TABLE bot_facts (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);",
         )
         .unwrap();
+        crate::db::ensure_bot_facts_memory_columns(&c).unwrap();
         c
     }
 
@@ -2780,8 +2870,15 @@ mod phase4_facts_tests {
     #[test]
     fn fact_upsert_overwrite_and_delete() {
         let c = mem_conn();
-        assert!(fact_upsert(&c, "称呼", "老板", 1).unwrap().contains("已记住"));
-        assert!(fact_upsert(&c, "称呼", "任总", 2).is_ok(), "同 key 覆盖");
+        assert!(fact_upsert(&c, "称呼", "老板", "profile", 5, "user_stated", 1).unwrap().contains("已记住"));
+        assert!(fact_upsert(&c, "称呼", "任总", "profile", 5, "user_stated", 2).is_ok(), "同 key 覆盖");
+        // 覆盖时 category/importance/source 随写更新
+        let (cat, imp, src): (String, i64, String) = c
+            .query_row("SELECT category, importance, source FROM bot_facts WHERE key = '称呼'", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .unwrap();
+        assert_eq!((cat.as_str(), imp, src.as_str()), ("profile", 5, "user_stated"));
         let list = fact_list(&c).unwrap();
         assert_eq!(list, vec![("称呼".to_string(), "任总".to_string())]);
         assert!(fact_delete(&c, "称呼").unwrap(), "删除存在 key → true");
@@ -2792,8 +2889,8 @@ mod phase4_facts_tests {
     #[test]
     fn fact_list_orders_by_updated_desc() {
         let c = mem_conn();
-        fact_upsert(&c, "a", "1", 100).unwrap();
-        fact_upsert(&c, "b", "2", 200).unwrap();
+        fact_upsert(&c, "a", "1", "general", 3, "user_stated", 100).unwrap();
+        fact_upsert(&c, "b", "2", "general", 3, "user_stated", 200).unwrap();
         let list = fact_list(&c).unwrap();
         assert_eq!(list[0].0, "b", "最近更新的在前");
         assert_eq!(list[1].0, "a");
@@ -2803,10 +2900,58 @@ mod phase4_facts_tests {
     fn fact_upsert_rejects_beyond_cap_but_overwrite_ok() {
         let c = mem_conn();
         for i in 0..MAX_FACTS {
-            fact_upsert(&c, &format!("k{i}"), "v", i as i64).unwrap();
+            fact_upsert(&c, &format!("k{i}"), "v", "general", 3, "user_stated", i as i64).unwrap();
         }
-        assert!(fact_upsert(&c, "one-more", "v", 9999).is_err(), "超上限拒绝新 key");
-        assert!(fact_upsert(&c, "k0", "v2", 10000).is_ok(), "同 key 覆盖不受上限影响");
+        assert!(fact_upsert(&c, "one-more", "v", "general", 3, "user_stated", 9999).is_err(), "超上限拒绝新 key");
+        assert!(fact_upsert(&c, "k0", "v2", "general", 3, "user_stated", 10000).is_ok(), "同 key 覆盖不受上限影响");
+    }
+
+    // ── 2026-09-05 记忆模块 Step 2 ──
+
+    #[test]
+    fn fact_cap_counts_only_kind_fact() {
+        // Step 1 已知问题修复：名额统计只算 kind='fact'，summary/reflection 不占 fact 名额
+        let c = mem_conn();
+        for i in 0..150 {
+            crate::db::memory_insert(&c, &format!("summary:s1:{i}"), "摘要", "summary", 2, i).unwrap();
+        }
+        for i in 0..MAX_FACTS {
+            fact_upsert(&c, &format!("k{i}"), "v", "general", 3, "user_stated", 1000 + i as i64)
+                .unwrap_or_else(|e| panic!("summary 不占 fact 名额，第 {i} 条不应被拒：{e}"));
+        }
+        assert!(
+            fact_upsert(&c, "one-more", "v", "general", 3, "user_stated", 99999).is_err(),
+            "fact 满 200 条后仍拒绝新 key"
+        );
+    }
+
+    #[test]
+    fn fact_conflict_hint_triggers_on_keyword_overlap() {
+        let c = mem_conn();
+        fact_upsert(&c, "城市", "上海", "profile", 4, "user_stated", 1).unwrap();
+        // 语义相近的新记忆（value 命中「上海」）→ 提示触发，格式带 [key=..., value=...]
+        let hint = fact_conflict_hint(&c, "居住地", "现居上海", 100);
+        assert!(hint.contains("相似已有记忆"), "应触发冲突提示：{hint}");
+        assert!(hint.contains("key=城市, value=上海"), "提示应带相似项明细：{hint}");
+        assert!(hint.contains("如需更新请用同 key 覆盖"), "提示应引导覆盖：{hint}");
+        // 同 key 覆盖不应把自己列为相似项
+        let hint = fact_conflict_hint(&c, "城市", "北京", 200);
+        assert!(hint.is_empty(), "同 key 覆盖应排除自身，实际：{hint}");
+    }
+
+    #[test]
+    fn fact_conflict_hint_silent_when_no_overlap() {
+        let c = mem_conn();
+        fact_upsert(&c, "城市", "上海", "profile", 4, "user_stated", 1).unwrap();
+        let hint = fact_conflict_hint(&c, "爱好", "摄影", 100);
+        assert!(hint.is_empty(), "零命中不应有提示，实际：{hint}");
+        // summary/reflection 不参与冲突提示（only_kind=fact）
+        crate::db::memory_insert(&c, "summary:s1:1", "用户在上海出差", "summary", 2, 50).unwrap();
+        let hint = fact_conflict_hint(&c, "出差地", "上海", 300);
+        assert!(
+            !hint.contains("summary:s1:1"),
+            "冲突提示只查 fact，不应带出 summary：{hint}"
+        );
     }
 }
 

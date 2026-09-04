@@ -71,7 +71,7 @@ const SYSTEM_PROMPT: &str = "\
 18. 用户消息带 [附件文件] 块（含文件路径）时：图片附件（png/jpg/webp/gif 等）会直接以图片形式出现在消息里，用你的视觉能力直接读取识别，不要用 extract_document 处理图片；文档附件（Word/Excel/PPT/PDF）用 extract_document 的 path 参数直接读取；生成结果仍落 AI_Gen_Files 并告知路径；\
 19. 本地文件操作：读文本文件用 read_text_file、搜索文件内容用 grep_files、列目录用 list_files；这三个工具默认放行白名单目录（桌面/下载/文档 + 任务卡绑定文件夹 + 设置页 allowedDirs）；用户指定了具体目录时必须用用户指定的目录，不得擅自换成其它目录；白名单外会自动弹窗请用户授权——用户拒绝时如实告知，不要反复重试；\
 20. 涉及「今天/明天/昨天/周几/几点/截止时间是否临近」类日期时间判断时，先调用 get_current_time 拿当前时间再判断，禁止凭训练数据猜日期；\
-21. 长期记忆：用户明确说「记住…/以后都…/我的偏好是…」时调用 remember_fact 存下（key 用简短描述）；用户问「你记得…吗/我喜欢什么」或回答依赖用户偏好时先 recall_facts；用户要求忘掉某条时用 remember_fact 同 key 传空 value 删除；
+21. 长期记忆：用户明确说「记住…/以后都…/我的偏好是…」或透露稳定的画像/偏好/项目上下文时调用 remember_fact 存下（key 用简短规范名词 ≤50 字，value ≤500 字），并按内容填可选参数 category（profile 画像/preference 偏好/project 项目上下文/general）、importance（1-5，默认 3，用户明确要求长期遵守的给 4-5）、source（用户明确说的 user_stated，你自行推断的 model_inferred）；写入结果若提示「相似已有记忆」，优先用同 key 覆盖更新，不要另开 key 堆积；相关记忆每轮已自动注入（带 [推断] 前缀的是推断内容、可信度低一档），无需 recall_facts 全量读回——只在要浏览全部记忆或按关键词检索时才调 recall_facts（query 可选）；用户要求忘掉某条时用 remember_fact 同 key 传空 value 删除；
 安全红线（永远遵守）：\
 - 你只有白名单工具可用，绝不执行系统命令、修改系统设置、访问系统目录；\
 - 绝不批量删除任务，一次只处理用户明确指定的任务；\
@@ -122,9 +122,9 @@ pub fn merge_task_refs_dedup(refs: Vec<TaskRef>) -> Vec<TaskRef> {
 /// 按字符估算（中文 ~1 token/字符）；system prompt 与工具循环内增长不在此列。
 pub(crate) const HISTORY_BUDGET_CHARS: usize = 100_000;
 
-/// 截断聊天历史到字符预算内：最旧的先丢，永远保留最后一条（本轮用户消息）。
-/// 返回 (保留的消息, 丢弃条数)。
-pub(crate) fn truncate_chat_history(messages: Vec<ChatMsg>, budget: usize) -> (Vec<ChatMsg>, usize) {
+/// 截断点计算（纯函数）：返回保留起点下标（=丢弃条数）。最旧的先丢，最后一条永远保留。
+/// 剥出供截断即摘要复用——摘要路径需要「将被丢弃的消息」而不只是丢弃条数。
+fn truncate_split_point(messages: &[ChatMsg], budget: usize) -> usize {
     let mut total = 0usize;
     let mut keep_from = messages.len();
     for (i, m) in messages.iter().enumerate().rev() {
@@ -135,7 +135,241 @@ pub(crate) fn truncate_chat_history(messages: Vec<ChatMsg>, budget: usize) -> (V
         total += n;
         keep_from = i;
     }
+    keep_from
+}
+
+/// 截断聊天历史到字符预算内：最旧的先丢，永远保留最后一条（本轮用户消息）。
+/// 返回 (保留的消息, 丢弃条数)。
+/// 2026-09-04 记忆模块 Step 1 起生产路径走 truncate_chat_history_with_summary
+/// （截断即摘要），本函数仅剩单测使用——保留作为截断语义的回归基准。
+#[cfg(test)]
+pub(crate) fn truncate_chat_history(messages: Vec<ChatMsg>, budget: usize) -> (Vec<ChatMsg>, usize) {
+    let keep_from = truncate_split_point(&messages, budget);
     (messages.into_iter().skip(keep_from).collect(), keep_from)
+}
+
+/// 截断即摘要的系统提示词（设计 5.2：≤200 字，比 /compact 的 300 字更紧——
+/// 截断摘要常驻历史开头，宁短勿长）
+const SUMMARY_SYSTEM_PROMPT: &str = "\
+你是对话压缩助手。把以下对话历史压缩成一份简明摘要，保留：任务相关决定、用户偏好、\
+未完成事项、重要上下文。用中文，不超过 200 字，只输出摘要本身。";
+
+/// Reflection 系统提示词（设计 7.3：多条摘要 → 一条阶段总结）
+const REFLECTION_SYSTEM_PROMPT: &str = "\
+你是对话压缩助手。把以下多条对话摘要进一步浓缩成一份阶段总结，保留：用户画像与偏好、\
+长期项目上下文、重要决定与未完成事项。用中文，不超过 200 字，只输出总结本身。";
+
+/// 截断即摘要编排内核（注入摘要器，mock LLM 测试可全链路驱动）：
+/// 超预算时对「将被丢弃的消息」调一次摘要；返回 (保留的消息, 摘要, 丢弃条数)。
+/// 摘要失败/为空 → summary=None，调用方静默退回直接丢弃的原行为。
+/// pub：tests/llm_integration.rs 直用（与 bot::run_model_loop_core 同先例）。
+pub async fn truncate_with_summary_core<S, Fut>(
+    messages: Vec<ChatMsg>,
+    budget: usize,
+    summarize: S,
+) -> (Vec<ChatMsg>, Option<String>, usize)
+where
+    S: FnOnce(Vec<ChatMsg>) -> Fut,
+    Fut: std::future::Future<Output = CommandResult<String>>,
+{
+    let keep_from = truncate_split_point(&messages, budget);
+    if keep_from == 0 {
+        return (messages, None, 0);
+    }
+    let dropped_msgs: Vec<ChatMsg> = messages[..keep_from].to_vec();
+    let summary = summarize(dropped_msgs)
+        .await
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+    (
+        messages.into_iter().skip(keep_from).collect(),
+        summary,
+        keep_from,
+    )
+}
+
+/// 截断即摘要（记忆模块 Step 1，2026-09-04，设计 5.2）生产薄壳：
+/// 超预算时先生成摘要并落库（含 Reflection 触发），返回 (保留的消息, 带
+/// 「[早前对话摘要]」前缀的摘要内容, 丢弃条数)；LLM/落库任何一步失败都退回
+/// 直接丢弃，绝不阻塞或弄挂主对话流程。
+pub(crate) async fn truncate_chat_history_with_summary(
+    app: &AppHandle,
+    session_id: Option<&str>,
+    messages: Vec<ChatMsg>,
+    budget: usize,
+) -> (Vec<ChatMsg>, Option<String>, usize) {
+    let (kept, summary, dropped) = truncate_with_summary_core(messages, budget, |dropped_msgs| async move {
+        summarize_messages(app, SUMMARY_SYSTEM_PROMPT, &dropped_msgs).await
+    })
+    .await;
+    if let Some(summary) = &summary {
+        persist_summary_and_reflect(app, session_id, summary).await;
+    }
+    (
+        kept,
+        summary.map(|s| format!("[早前对话摘要] {s}")),
+        dropped,
+    )
+}
+
+/// 摘要落库 + Reflection 触发（设计 5.2/7.3）：全失败兜底——任何一步出错只记
+/// 审计不重试不影响对话（摘要已在本轮历史里，落库丢了下轮截断还会再摘要）。
+async fn persist_summary_and_reflect(app: &AppHandle, session_id: Option<&str>, summary: &str) {
+    let batch = match crate::db::bot_memory_save_summary(
+        app.clone(),
+        session_id.map(|s| s.to_string()),
+        summary.to_string(),
+    )
+    .await
+    {
+        Ok(b) => b,
+        Err(e) => {
+            crate::audit_event!(app, crate::audit::AuditLevel::Warn, "memory.summary_save_failed",
+                "error" => e.message());
+            return;
+        }
+    };
+    // Reflection（设计 7.3）：summary 攒够 10 条 → 最旧 10 条合成一条 reflection
+    //（importance=3）后删原摘要；合成失败跳过，原摘要保留等下次
+    if batch.len() < crate::db::REFLECTION_BATCH as usize {
+        return;
+    }
+    let msgs: Vec<ChatMsg> = batch
+        .iter()
+        .map(|(_, v)| ChatMsg {
+            role: "user".into(),
+            content: v.clone(),
+        })
+        .collect();
+    let text = match summarize_messages(app, REFLECTION_SYSTEM_PROMPT, &msgs).await {
+        Ok(t) => t,
+        Err(e) => {
+            crate::audit_event!(app, crate::audit::AuditLevel::Warn, "memory.reflection_failed",
+                "error" => e.message());
+            return;
+        }
+    };
+    let keys: Vec<String> = batch.into_iter().map(|(k, _)| k).collect();
+    if let Err(e) = crate::db::bot_memory_apply_reflection(app.clone(), keys, text).await {
+        crate::audit_event!(app, crate::audit::AuditLevel::Warn, "memory.reflection_save_failed",
+            "error" => e.message());
+    }
+}
+
+// ───────────────────────── 记忆块注入（记忆模块 Step 2，2026-09-05，设计第 6 节） ─────────────────────────
+
+/// 记忆块字符预算（设计第 6 节）
+pub(crate) const MEMORY_BUDGET_CHARS: usize = 4_000;
+
+/// 记忆块拼装（纯函数，设计第 6 节）：
+/// 拼装顺序 = importance>=4 的 fact（无条件，「用户画像与偏好」段）→ 检索 top-5
+/// （「相关记忆」段）→ 最近 3 条 summary/reflection（「近期摘要」段，兼检索全 0 分的
+/// 回退兜底）；超预算从后往前砍（画像段不砍）。source=model_inferred 一律带 [推断]
+/// 前缀（设计 7.2，防记忆幻觉自我强化）。三段全空 → None（无记忆块）。
+/// pub：tests/llm_integration.rs 全链路测试直用（与 summarize_http 同先例）。
+pub fn format_memory_block(inj: &crate::db::MemoryInjection) -> Option<String> {
+    fn inferred(m: &crate::db::MemoryItem) -> &'static str {
+        if m.source == "model_inferred" {
+            "[推断]"
+        } else {
+            ""
+        }
+    }
+    // fact 行带 key（模型覆盖更新要用同 key）；summary/reflection 行带日期
+    fn fact_line(m: &crate::db::MemoryItem) -> String {
+        format!("- [{}]{}{}：{}", m.category, inferred(m), m.key, m.value)
+    }
+    fn dated_line(m: &crate::db::MemoryItem, fmt: &str) -> String {
+        let date = chrono::DateTime::from_timestamp_millis(m.updated_at)
+            .map(|dt| dt.with_timezone(&chrono::Local).format(fmt).to_string())
+            .unwrap_or_default();
+        format!("- [{date}]{}{}", inferred(m), m.value)
+    }
+    let mut sections: Vec<(&str, Vec<String>)> = Vec::new();
+    if !inj.pinned.is_empty() {
+        sections.push((
+            "### 用户画像与偏好",
+            inj.pinned.iter().map(fact_line).collect(),
+        ));
+    }
+    if !inj.hits.is_empty() {
+        sections.push((
+            "### 相关记忆",
+            inj.hits
+                .iter()
+                .map(|m| {
+                    if m.kind == "fact" {
+                        fact_line(m)
+                    } else {
+                        dated_line(m, "%Y-%m-%d")
+                    }
+                })
+                .collect(),
+        ));
+    }
+    if !inj.recent.is_empty() {
+        sections.push((
+            "### 近期摘要",
+            inj.recent.iter().map(|m| dated_line(m, "%m-%d")).collect(),
+        ));
+    }
+    if sections.is_empty() {
+        return None;
+    }
+    let block_chars = |sections: &[(&str, Vec<String>)]| -> usize {
+        "## 记忆".chars().count()
+            + sections
+                .iter()
+                .map(|(h, ls)| {
+                    h.chars().count() + 1
+                        + ls.iter().map(|l| l.chars().count() + 1).sum::<usize>()
+                })
+                .sum::<usize>()
+    };
+    // 超预算从后往前砍（画像段=index 0 不砍，其余段逐段从末行开始丢）
+    let trimmable_from = if inj.pinned.is_empty() { 0 } else { 1 };
+    let mut guard = 0;
+    while block_chars(&sections) > MEMORY_BUDGET_CHARS && guard < 10_000 {
+        guard += 1;
+        match sections
+            .iter_mut()
+            .enumerate()
+            .rev()
+            .find(|(i, (_, ls))| *i >= trimmable_from && !ls.is_empty())
+        {
+            Some((_, (_, ls))) => {
+                ls.pop();
+            }
+            None => break,
+        }
+    }
+    sections.retain(|(_, ls)| !ls.is_empty());
+    if sections.is_empty() {
+        return None;
+    }
+    let mut out = String::from("## 记忆");
+    for (h, ls) in &sections {
+        out.push('\n');
+        out.push_str(h);
+        for l in ls {
+            out.push('\n');
+            out.push_str(l);
+        }
+    }
+    Some(out)
+}
+
+/// 记忆块注入薄壳：取数（检索 + 访问强化落库）→ 拼装。任何失败一律 None 静默降级
+/// 为「无记忆块」，绝不弄挂主对话（设计约束）；失败记审计便于排查。
+async fn build_memory_block(app: &AppHandle, query: &str) -> Option<String> {
+    match crate::db::bot_memory_injection(app.clone(), query.to_string()).await {
+        Ok(inj) => format_memory_block(&inj),
+        Err(e) => {
+            crate::audit_event!(app, crate::audit::AuditLevel::Warn, "memory.injection_failed",
+                "error" => e.message());
+            None
+        }
+    }
 }
 
 /// 需要内联图片的消息下标（2026-08-28 批次3审计 P1-6）：原先「最近两条 user 消息」
@@ -627,7 +861,27 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>, session_id: Option
     msgs.push(serde_json::json!({"role": "system", "content": system_content}));
     // 2026-08-28 批次3审计 P1-5：历史字符预算——长会话最旧的先丢，
     // 最后一条（本轮用户消息）永远保留；丢弃时留审计
-    let (messages, dropped) = truncate_chat_history(messages, HISTORY_BUDGET_CHARS);
+    // 2026-09-04 记忆模块 Step 1（截断即摘要，设计 5.2）：超预算先对将丢弃的消息
+    // 生成摘要；摘要单独以 system 消息放在截断后历史开头（不进 messages——下方
+    // role 白名单（P2-8）会把非 assistant 降级为 user，防注入语义不动）；
+    // LLM 失败静默退回直接丢弃
+    let (messages, summary, dropped) =
+        truncate_chat_history_with_summary(&app, session_id.as_deref(), messages, HISTORY_BUDGET_CHARS)
+            .await;
+    if let Some(summary) = summary {
+        msgs.push(serde_json::json!({"role": "system", "content": summary}));
+    }
+    // 2026-09-05 记忆模块 Step 2（设计第 6 节）：记忆块独立 system 消息，紧跟主
+    // system prompt 与摘要消息之后。直接进 msgs 不经 ChatMsg——下方 role 白名单
+    //（P2-8）会把非 assistant 降级为 user；检索查询 = 本轮用户消息原文 ≤200 字；
+    // DB 任何失败静默降级为无记忆块（build_memory_block 内部兜底）。
+    let memory_query = messages
+        .last()
+        .map(|m| m.content.chars().take(200).collect::<String>())
+        .unwrap_or_default();
+    if let Some(block) = build_memory_block(&app, &memory_query).await {
+        msgs.push(serde_json::json!({"role": "system", "content": block}));
+    }
     if dropped > 0 {
         crate::audit_event!(&app, crate::audit::AuditLevel::Info, "chat.history_truncated",
             "dropped" => dropped, "budget" => HISTORY_BUDGET_CHARS);
@@ -687,29 +941,32 @@ fn require_api_key(api_key: &str) -> CommandResult<()> {
     Ok(())
 }
 
-/// /compact 快捷命令：把当前会话历史交给模型总结成摘要（单次非流式请求，不带工具）
-#[tauri::command]
-pub async fn bot_compact(app: AppHandle, messages: Vec<ChatMsg>) -> CommandResult<String> {
-    let cfg = crate::bot::bot_get_config(app.clone())?;
-    let api_key = crate::bot::read_api_key()?;
-    require_api_key(&api_key)?;
-    let client = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(15))
-        .timeout(std::time::Duration::from_secs(60))
-        .build()
-        .map_err(|e| format!("初始化 HTTP 客户端失败：{e}"))?;
-    let url = format!("{}/chat/completions", cfg.base_url.trim_end_matches('/'));
+/// 摘要请求的历史字符上限（审计 P3：超长会话只保留最近的消息（最旧的先丢），
+/// 防止压缩请求超 context）。截断路径的待摘要消息已被 HISTORY_BUDGET_CHARS 限住，
+/// 此上限对 /compact 的全量历史才实际生效。
+const SUMMARIZE_MAX_CHARS: usize = 200_000;
+
+/// 非流式摘要调用内核（2026-09-04 记忆模块 Step 1：从 bot_compact 提炼，连接参数注入——
+/// 测试直连 mock LLM，生产薄壳 summarize_messages 从 bot_get_config/read_api_key 取配置）。
+/// pub：tests/llm_integration.rs 直用（与 bot::run_model_loop_core 同先例）。
+pub async fn summarize_http(
+    client: &reqwest::Client,
+    base_url: &str,
+    api_key: &str,
+    model: &str,
+    system_prompt: &str,
+    messages: &[ChatMsg],
+) -> CommandResult<String> {
+    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let mut msgs: Vec<serde_json::Value> = vec![serde_json::json!({
         "role": "system",
-        "content": COMPACT_SYSTEM_PROMPT
+        "content": system_prompt
     })];
-    // 历史总字符上限：超长会话只保留最近的消息（最旧的先丢），防止压缩请求超 context（审计 P3）
-    const COMPACT_MAX_CHARS: usize = 200_000;
     let mut total = 0usize;
     let mut kept: Vec<&ChatMsg> = Vec::new();
     for m in messages.iter().rev() {
         let n = m.content.chars().count();
-        if total + n > COMPACT_MAX_CHARS && !kept.is_empty() {
+        if total + n > SUMMARIZE_MAX_CHARS && !kept.is_empty() {
             break;
         }
         total += n;
@@ -719,7 +976,7 @@ pub async fn bot_compact(app: AppHandle, messages: Vec<ChatMsg>) -> CommandResul
         msgs.push(serde_json::json!({"role": m.role, "content": m.content}));
     }
     let body = serde_json::json!({
-        "model": cfg.model,
+        "model": model,
         "messages": msgs,
         "stream": false
     });
@@ -756,6 +1013,31 @@ pub async fn bot_compact(app: AppHandle, messages: Vec<ChatMsg>) -> CommandResul
         return Err("模型返回了空摘要".into());
     }
     Ok(text)
+}
+
+/// 非流式摘要调用薄壳（截断即摘要 / Reflection / /compact 共用）：
+/// 配置获取路径与 bot_compact 原路径一致（bot_get_config 拿 base_url/model，
+/// read_api_key 拿 key，require_api_key 把空 key 映射为 ApiKeyMissing）。
+pub(crate) async fn summarize_messages(
+    app: &AppHandle,
+    system_prompt: &str,
+    messages: &[ChatMsg],
+) -> CommandResult<String> {
+    let cfg = crate::bot::bot_get_config(app.clone())?;
+    let api_key = crate::bot::read_api_key()?;
+    require_api_key(&api_key)?;
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| format!("初始化 HTTP 客户端失败：{e}"))?;
+    summarize_http(&client, &cfg.base_url, &api_key, &cfg.model, system_prompt, messages).await
+}
+
+/// /compact 快捷命令：把当前会话历史交给模型总结成摘要（单次非流式请求，不带工具）
+#[tauri::command]
+pub async fn bot_compact(app: AppHandle, messages: Vec<ChatMsg>) -> CommandResult<String> {
+    summarize_messages(&app, COMPACT_SYSTEM_PROMPT, &messages).await
 }
 
 // ───────────────────────── 任务卡执行 ─────────────────────────
@@ -1206,6 +1488,141 @@ mod bot_chat_pure_helpers_tests {
     fn strip_think_blocks_no_tag_unchanged() {
         assert_eq!(strip_think_blocks("普通文本"), "普通文本");
         assert_eq!(strip_think_blocks(""), "");
+    }
+
+    // ── 2026-09-04 记忆模块 Step 1：截断即摘要（编排内核，摘要器注入） ──
+
+    #[tokio::test]
+    async fn truncate_with_summary_core_success_returns_summary() {
+        // budget=63：本轮消息（4 字）+ 一条 60 字旧消息=64 超预算 → 最旧两条被丢
+        let long = "x".repeat(60);
+        let msgs = vec![msg("user", &long), msg("assistant", &long), msg("user", "本轮问题")];
+        let (kept, summary, dropped) = truncate_with_summary_core(msgs, 63, |dropped_msgs| async move {
+            assert_eq!(dropped_msgs.len(), 2, "摘要器应收到的恰是将被丢弃的消息");
+            Ok("用户在做记忆模块".to_string())
+        })
+        .await;
+        assert_eq!(dropped, 2);
+        assert_eq!(summary.as_deref(), Some("用户在做记忆模块"));
+        assert_eq!(kept.len(), 1, "最旧两条被丢，只留本轮消息");
+        assert_eq!(kept[0].content, "本轮问题");
+    }
+
+    #[tokio::test]
+    async fn truncate_with_summary_core_llm_failure_falls_back_to_plain_drop() {
+        let long = "x".repeat(60);
+        let msgs = vec![msg("user", &long), msg("assistant", &long), msg("user", "本轮问题")];
+        let (kept, summary, dropped) = truncate_with_summary_core(msgs, 63, |_| async {
+            Err(CommandError::Internal("boom".into()))
+        })
+        .await;
+        assert_eq!(dropped, 2, "失败也要按原行为丢弃最旧消息");
+        assert_eq!(summary, None, "失败 → 无摘要（调用方静默退回）");
+        assert_eq!(kept.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn truncate_with_summary_core_empty_summary_treated_as_failure() {
+        let long = "x".repeat(60);
+        let msgs = vec![msg("user", &long), msg("assistant", &long), msg("user", "本轮问题")];
+        let (_, summary, dropped) = truncate_with_summary_core(msgs, 63, |_| async {
+            Ok("   ".to_string())
+        })
+        .await;
+        assert_eq!(summary, None, "空白摘要按失败处理");
+        assert_eq!(dropped, 2);
+    }
+
+    #[tokio::test]
+    async fn truncate_with_summary_core_within_budget_never_calls_llm() {
+        let msgs = vec![msg("user", "你好"), msg("assistant", "在的")];
+        let (kept, summary, dropped) = truncate_with_summary_core(msgs, 100, |_| async {
+            panic!("预算内不应触发摘要调用")
+        })
+        .await;
+        assert_eq!((kept.len(), summary, dropped), (2, None, 0));
+    }
+
+    // ── 2026-09-05 记忆模块 Step 2：记忆块拼装（format_memory_block 纯函数） ──
+
+    fn mem_item(key: &str, value: &str, kind: &str, importance: i64, source: &str, updated_at: i64) -> crate::db::MemoryItem {
+        crate::db::MemoryItem {
+            key: key.into(),
+            value: value.into(),
+            kind: kind.into(),
+            category: "preference".into(),
+            importance,
+            source: source.into(),
+            access_count: 0,
+            accessed_at: 0,
+            updated_at,
+        }
+    }
+
+    #[test]
+    fn memory_block_sections_order_and_inferred_prefix() {
+        let inj = crate::db::MemoryInjection {
+            pinned: vec![mem_item("称呼", "老板", "fact", 5, "user_stated", 1_000)],
+            hits: vec![
+                mem_item("城市", "上海", "fact", 3, "user_stated", 1_000),
+                // summary 命中走日期行格式
+                mem_item("summary:s1:1", "讨论了记忆模块", "summary", 2, "model_inferred", 1_756_000_000_000),
+            ],
+            recent: vec![mem_item("summary:s1:2", "确定不用向量模型", "summary", 2, "model_inferred", 1_756_100_000_000)],
+        };
+        let block = format_memory_block(&inj).expect("有内容应有记忆块");
+        assert!(block.starts_with("## 记忆"));
+        let p_img = block.find("### 用户画像与偏好").unwrap();
+        let p_rel = block.find("### 相关记忆").unwrap();
+        let p_sum = block.find("### 近期摘要").unwrap();
+        assert!(p_img < p_rel && p_rel < p_sum, "拼装顺序：画像 → 相关记忆 → 近期摘要");
+        assert!(block.contains("- [preference]称呼：老板"), "fact 行带 category + key：{block}");
+        // 设计 7.2：model_inferred 一律带 [推断] 前缀
+        assert!(block.contains("[推断]讨论了记忆模块"), "推断记忆带前缀：{block}");
+        assert!(block.contains("[推断]确定不用向量模型"), "近期摘要同样带前缀：{block}");
+    }
+
+    #[test]
+    fn memory_block_empty_injection_is_none() {
+        let inj = crate::db::MemoryInjection { pinned: vec![], hits: vec![], recent: vec![] };
+        assert!(format_memory_block(&inj).is_none(), "三段全空 → 无记忆块");
+    }
+
+    #[test]
+    fn memory_block_fallback_recent_summaries_when_no_hits() {
+        // 回退兜底（设计第 4 节）：检索全 0 分（hits 空）时近期摘要段仍在
+        let inj = crate::db::MemoryInjection {
+            pinned: vec![mem_item("称呼", "老板", "fact", 5, "user_stated", 1_000)],
+            hits: vec![],
+            recent: vec![mem_item("summary:s1:9", "最近聊过发布计划", "summary", 2, "model_inferred", 1_756_100_000_000)],
+        };
+        let block = format_memory_block(&inj).unwrap();
+        assert!(block.contains("### 用户画像与偏好"), "高重要度 fact 无条件在");
+        assert!(!block.contains("### 相关记忆"), "无命中不出空段头");
+        assert!(block.contains("### 近期摘要"), "回退兜底段在");
+        assert!(block.contains("最近聊过发布计划"));
+    }
+
+    #[test]
+    fn memory_block_budget_trims_from_back() {
+        // 超预算从后往前砍：近期摘要先砍光，再砍相关记忆，画像段不砍
+        let long = "长".repeat(2_000);
+        let inj = crate::db::MemoryInjection {
+            pinned: vec![mem_item("称呼", "老板", "fact", 5, "user_stated", 1_000)],
+            hits: vec![
+                mem_item("k1", &long, "fact", 3, "user_stated", 1_000),
+                mem_item("k2", &long, "fact", 3, "user_stated", 1_000),
+            ],
+            recent: vec![
+                mem_item("summary:s1:1", &long, "summary", 2, "model_inferred", 1_000),
+                mem_item("summary:s1:2", &long, "summary", 2, "model_inferred", 2_000),
+            ],
+        };
+        let block = format_memory_block(&inj).expect("画像段超预算也保留");
+        assert!(block.chars().count() <= MEMORY_BUDGET_CHARS, "超预算应从后往前砍到预算内");
+        assert!(block.contains("称呼：老板"), "画像段不砍");
+        assert!(!block.contains("### 近期摘要"), "近期摘要段应先被砍光");
+        assert!(!block.contains("k2"), "相关记忆从末行开始砍");
     }
 }
 

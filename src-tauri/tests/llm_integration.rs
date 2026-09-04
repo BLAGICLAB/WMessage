@@ -870,3 +870,286 @@ async fn core_truncated_stream_text_only_warns_but_returns() {
         "应追加截断提示：{text}"
     );
 }
+
+// ────────────────────────────────────────────────────────────────────
+// 记忆模块 Step 1（2026-09-04，设计 docs/BOT-MEMORY-DESIGN.md 5.2/7.3）
+// 截断即摘要全链路：超预算历史 → mock LLM（非流式 JsonReply）→ 摘要返回 →
+// 摘要落 bot_facts（内存库走生产同一 memory_insert）；LLM 失败退回直接丢弃。
+//
+// 设计要点：
+// - summarize_http 连接参数注入，直连 mock server（生产薄壳 summarize_messages
+//   只多一层 bot_get_config/read_api_key 配置获取，keyring 测试环境不可用）
+// - truncate_with_summary_core 注入摘要器闭包——与生产 truncate_chat_history_with_summary
+//   同一份编排代码
+// - 落库用内存库 + 生产迁移函数 ensure_bot_facts_memory_columns（老 schema → 新列）
+// ────────────────────────────────────────────────────────────────────
+
+use wmessage_lib::bot_chat::{summarize_http, truncate_with_summary_core, ChatMsg};
+
+/// 内存库：老 schema（3 列）+ 生产迁移补 6 列（与 db.rs memory_tests 同模式）
+fn mem_facts_conn() -> rusqlite::Connection {
+    let c = rusqlite::Connection::open_in_memory().unwrap();
+    c.execute_batch(
+        "CREATE TABLE bot_facts (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);",
+    )
+    .unwrap();
+    wmessage_lib::db::ensure_bot_facts_memory_columns(&c).unwrap();
+    c
+}
+
+fn chat_msg(role: &str, content: &str) -> ChatMsg {
+    ChatMsg {
+        role: role.into(),
+        content: content.into(),
+    }
+}
+
+#[tokio::test]
+async fn memory_truncation_summary_called_and_persisted() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::JsonReply("用户在做记忆模块设计".into()));
+
+    // 超预算历史：两条 60 字符旧消息 + 本轮消息（4 字），budget=63 → 最旧两条被丢
+    //（4 + 60 = 64 > 63，第二条旧消息已留不下）
+    let long = "x".repeat(60);
+    let messages = vec![
+        chat_msg("user", &long),
+        chat_msg("assistant", &long),
+        chat_msg("user", "本轮问题"),
+    ];
+    let client = reqwest::Client::new();
+    let base_url = server.base_url.clone();
+    let (kept, summary, dropped) = truncate_with_summary_core(messages, 63, move |dropped_msgs| {
+        let client = client.clone();
+        let base_url = base_url.clone();
+        async move {
+            summarize_http(
+                &client,
+                &base_url,
+                "test-key",
+                "mock-model",
+                "总结",
+                &dropped_msgs,
+            )
+            .await
+        }
+    })
+    .await;
+
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert_eq!(server.request_count(), 1, "超预算应恰好调用一次摘要");
+    assert_eq!(dropped, 2, "最旧两条被丢");
+    assert_eq!(kept.len(), 1, "只留本轮消息");
+    assert_eq!(kept[0].content, "本轮问题");
+    let summary = summary.expect("摘要调用成功应有摘要");
+
+    // 摘要放历史开头：与 bot_chat 主流程同一拼装（system 角色 + [早前对话摘要] 前缀）
+    let summary_msg =
+        serde_json::json!({"role": "system", "content": format!("[早前对话摘要] {summary}")});
+    assert_eq!(summary_msg["role"].as_str(), Some("system"));
+    assert_eq!(
+        summary_msg["content"].as_str(),
+        Some("[早前对话摘要] 用户在做记忆模块设计")
+    );
+
+    // 摘要落库（kind=summary, importance=2，生产 bot_memory_save_summary 同一 memory_insert）
+    let conn = mem_facts_conn();
+    wmessage_lib::db::memory_insert(&conn, "summary:s1:1000", &summary, "summary", 2, 1000).unwrap();
+    let rows = wmessage_lib::db::memory_oldest_by_kind(&conn, "summary", wmessage_lib::db::REFLECTION_BATCH).unwrap();
+    assert_eq!(
+        rows,
+        vec![("summary:s1:1000".to_string(), "用户在做记忆模块设计".to_string())],
+        "摘要应以 kind=summary 落库"
+    );
+    let (imp, src): (i64, String) = conn
+        .query_row(
+            "SELECT importance, source FROM bot_facts WHERE key = 'summary:s1:1000'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(imp, 2, "摘要 importance=2");
+    assert_eq!(src, "model_inferred", "系统生成记忆 source=model_inferred");
+}
+
+#[tokio::test]
+async fn memory_truncation_llm_http_error_falls_back_to_plain_drop() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::HttpError(500, r#"{"error":"boom"}"#.into()));
+
+    let long = "x".repeat(60);
+    let messages = vec![
+        chat_msg("user", &long),
+        chat_msg("assistant", &long),
+        chat_msg("user", "本轮问题"),
+    ];
+    let client = reqwest::Client::new();
+    let base_url = server.base_url.clone();
+    let (kept, summary, dropped) = truncate_with_summary_core(messages, 63, move |dropped_msgs| {
+        let client = client.clone();
+        let base_url = base_url.clone();
+        async move {
+            summarize_http(
+                &client,
+                &base_url,
+                "test-key",
+                "mock-model",
+                "总结",
+                &dropped_msgs,
+            )
+            .await
+        }
+    })
+    .await;
+
+    assert_eq!(summary, None, "LLM 失败 → 无摘要，静默退回");
+    assert_eq!(dropped, 2, "退回原行为：最旧两条直接丢弃");
+    assert_eq!(kept.len(), 1, "本轮消息永远保留");
+    assert_eq!(kept[0].content, "本轮问题");
+}
+
+#[tokio::test]
+async fn memory_reflection_merges_oldest_ten_summaries() {
+    // Reflection 全链路（设计 7.3）：内存库备 10 条 summary → 取最旧 10 条 →
+    // mock LLM 合成 reflection → 插入 reflection + 删原 10 条
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::JsonReply("阶段总结：用户持续推进记忆模块".into()));
+
+    let conn = mem_facts_conn();
+    for i in 0..wmessage_lib::db::REFLECTION_BATCH {
+        wmessage_lib::db::memory_insert(
+            &conn,
+            &format!("summary:s1:{i}"),
+            &format!("第 {i} 段摘要"),
+            "summary",
+            2,
+            i,
+        )
+        .unwrap();
+    }
+    let batch =
+        wmessage_lib::db::memory_oldest_by_kind(&conn, "summary", wmessage_lib::db::REFLECTION_BATCH)
+            .unwrap();
+    assert_eq!(batch.len(), 10, "攒够 10 条触发 Reflection");
+    assert_eq!(batch[0].1, "第 0 段摘要", "最旧的在前");
+
+    let msgs: Vec<ChatMsg> = batch
+        .iter()
+        .map(|(_, v)| chat_msg("user", v))
+        .collect();
+    let client = reqwest::Client::new();
+    let text = summarize_http(
+        &client,
+        &server.base_url,
+        "test-key",
+        "mock-model",
+        "浓缩",
+        &msgs,
+    )
+    .await
+    .expect("Reflection 合成应成功");
+
+    // 生产 bot_memory_apply_reflection 的同事务两步：插入 reflection + 删原摘要
+    wmessage_lib::db::memory_insert(&conn, "reflection:2000", &text, "reflection", 3, 2000).unwrap();
+    let keys: Vec<String> = batch.into_iter().map(|(k, _)| k).collect();
+    wmessage_lib::db::memory_delete_keys(&conn, &keys).unwrap();
+
+    assert_eq!(
+        wmessage_lib::db::memory_count_by_kind(&conn, "summary").unwrap(),
+        0,
+        "原 10 条摘要应被清掉"
+    );
+    assert_eq!(
+        wmessage_lib::db::memory_count_by_kind(&conn, "reflection").unwrap(),
+        1
+    );
+    let v: String = conn
+        .query_row("SELECT value FROM bot_facts WHERE key = 'reflection:2000'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(v, "阶段总结：用户持续推进记忆模块");
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert_eq!(server.request_count(), 1, "Reflection 恰好一次 LLM 调用");
+}
+
+// ────────────────────────────────────────────────────────────────────
+// 记忆模块 Step 2（2026-09-05，设计 docs/BOT-MEMORY-DESIGN.md 第 4/6 节）
+// 检索 + 记忆块注入全链路：内存库备记忆 → memory_injection_snapshot（生产同一
+// 取数内核，含命中条目的访问强化落库）→ format_memory_block 拼装 → 以独立
+// system 消息插在主 system prompt 与摘要消息之后（与 bot_chat 主流程同一拼装
+// 顺序），再随消息序列过 run_model_loop_core 真路径打到 mock LLM。
+// ────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn memory_block_injected_as_system_message_after_summary() {
+    let conn = mem_facts_conn();
+    let now = 1_756_000_000_000i64;
+    // pinned：importance>=4 的 fact 无条件注入；普通 fact 供检索命中；一条近期摘要兜底
+    conn.execute(
+        "INSERT INTO bot_facts (key, value, updated_at, kind, category, importance, source)
+         VALUES ('称呼', '老板', ?1, 'fact', 'profile', 5, 'user_stated')",
+        [now],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO bot_facts (key, value, updated_at, kind, category, importance, source)
+         VALUES ('城市', '上海', ?1, 'fact', 'general', 3, 'user_stated')",
+        [now],
+    )
+    .unwrap();
+    wmessage_lib::db::memory_insert(&conn, "summary:s1:1", "讨论了记忆模块选型", "summary", 2, now - 1000)
+        .unwrap();
+
+    // 生产同一取数内核：pinned / hits / recent 三段 + 命中条目访问强化
+    let inj = wmessage_lib::db::memory_injection_snapshot(&conn, "我在上海的项目进展", now).unwrap();
+    assert_eq!(inj.pinned.len(), 1, "高重要度 fact 无条件进 pinned");
+    assert!(inj.hits.iter().any(|m| m.key == "城市"), "检索应命中「城市」");
+    assert_eq!(inj.recent.len(), 1, "近期摘要兜底段");
+    let (ac, at): (i64, i64) = conn
+        .query_row(
+            "SELECT access_count, accessed_at FROM bot_facts WHERE key = '城市'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((ac, at), (1, now), "命中注入应原子刷新 access_count+1 / accessed_at=now");
+
+    let block = wmessage_lib::bot_chat::format_memory_block(&inj).expect("有记忆应有记忆块");
+    assert!(block.contains("称呼：老板") && block.contains("城市：上海"));
+
+    // 与 bot_chat 主流程同一拼装顺序：主 system → 摘要 system → 记忆块 system → 用户消息
+    let msgs = vec![
+        serde_json::json!({"role": "system", "content": "主提示词"}),
+        serde_json::json!({"role": "system", "content": "[早前对话摘要] 早前聊了设计"}),
+        serde_json::json!({"role": "system", "content": block}),
+        serde_json::json!({"role": "user", "content": "我在上海的项目进展"}),
+    ];
+    assert_eq!(
+        msgs[2]["role"].as_str(),
+        Some("system"),
+        "记忆块必须是独立 system 消息（紧跟摘要消息，绕开 role 白名单降级）"
+    );
+    let mem_content = msgs[2]["content"].as_str().unwrap();
+    assert!(mem_content.starts_with("## 记忆"));
+    assert!(mem_content.contains("### 用户画像与偏好"));
+
+    // 记忆块随消息序列过 mock LLM 全链路（run_model_loop_core 真路径，mock 正常应答）
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::TextReply("好的".into()));
+    let h = CoreHarness::new();
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        msgs,
+        5,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec_never,
+        noop_replan,
+    )
+    .await
+    .expect("带记忆块的对话应正常完成");
+    assert_eq!(text, "好的");
+    assert_eq!(server.request_count(), 1);
+}

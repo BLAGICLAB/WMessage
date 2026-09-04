@@ -54,6 +54,9 @@ pub enum MockBehavior {
     /// （无 [DONE] / 无 finish_reason 直接 Connection: close，批次3审计 P1-1 防线）
     /// 等预置变体表达不了的场景
     RawSse(String),
+    /// 非流式 JSON 回复（2026-09-04 记忆模块 Step 1）：summarize_http 走 stream:false
+    /// + resp.json()（chat.completion 单体响应），SSE 变体表达不了这种形态
+    JsonReply(String),
 }
 
 pub struct MockLlmServer {
@@ -63,6 +66,10 @@ pub struct MockLlmServer {
     #[allow(dead_code)] // 仅内部线程闭包通过 Arc 访问；Rust 静态分析看不到闭包内读
     consumed: Arc<AtomicUsize>,
     behaviors: Arc<Mutex<Vec<MockBehavior>>>,
+    /// 每个请求的 body 原文（2026-09-05 记忆回归基准）：断言「发给 LLM 的请求里
+    /// 有什么」（记忆块 system 消息 / 工具结果回填）必须看真实出站请求，
+    /// 不能只断言测试侧自拼的消息数组
+    bodies: Arc<Mutex<Vec<String>>>,
     _handle: Option<thread::JoinHandle<()>>,
 }
 
@@ -76,10 +83,12 @@ impl MockLlmServer {
         let request_count = Arc::new(AtomicUsize::new(0));
         let consumed = Arc::new(AtomicUsize::new(0));
         let behaviors = Arc::new(Mutex::new(Vec::<MockBehavior>::new()));
+        let bodies = Arc::new(Mutex::new(Vec::<String>::new()));
 
         let req_count_clone = request_count.clone();
         let consumed_clone = consumed.clone();
         let behaviors_clone = behaviors.clone();
+        let bodies_clone = bodies.clone();
 
         let handle = thread::spawn(move || {
             // 每个连接独立处理（一线程一连接，简化测试并发）
@@ -125,6 +134,11 @@ impl MockLlmServer {
 
                 let _ = req_count.fetch_add(1, Ordering::SeqCst);
                 let idx = consumed.fetch_add(1, Ordering::SeqCst);
+                // 记录请求 body 原文（记忆回归基准断言出站请求内容用）
+                let body_text = find_body_start(&buf)
+                    .map(|s| String::from_utf8_lossy(&buf[s..]).to_string())
+                    .unwrap_or_default();
+                bodies_clone.lock().unwrap().push(body_text);
 
                 // 决定行为：按 consumed index 读取预存队列，超出默认 fallback
                 let behavior = {
@@ -173,6 +187,7 @@ impl MockLlmServer {
             request_count,
             consumed,
             behaviors,
+            bodies,
             _handle: Some(handle),
         }
     }
@@ -184,6 +199,12 @@ impl MockLlmServer {
 
     pub fn request_count(&self) -> usize {
         self.request_count.load(Ordering::SeqCst)
+    }
+
+    /// 已收到的全部请求 body 原文（按到达顺序；2026-09-05 记忆回归基准用）
+    #[allow(dead_code)] // mock_llm.rs 同时被 include! 进 llm_integration.rs，那边不一定用
+    pub fn request_bodies(&self) -> Vec<String> {
+        self.bodies.lock().unwrap().clone()
     }
 }
 
@@ -211,13 +232,30 @@ fn parse_content_length(buf: &[u8]) -> Option<usize> {
 fn build_http_response(behavior: &MockBehavior) -> String {
     match behavior {
         MockBehavior::HttpError(status, body) => build_error_response(*status, body),
+        MockBehavior::JsonReply(content) => {
+            // 非流式 chat.completion 单体响应（与 sse_text_reply 同一 JSON 转义法）
+            let escaped = content.replace('\\', "\\\\").replace('"', "\\\"");
+            let body = format!(
+                r#"{{"id":"chatcmpl-mock","object":"chat.completion","created":1234567890,"model":"deepseek-chat","choices":[{{"message":{{"role":"assistant","content":"{escaped}"}},"index":0,"finish_reason":"stop"}}]}}"#
+            );
+            format!(
+                "HTTP/1.1 200 OK\r\n\
+                 Content-Type: application/json\r\n\
+                 Content-Length: {}\r\n\
+                 Connection: close\r\n\
+                 \r\n\
+                 {}",
+                body.len(),
+                body
+            )
+        }
         _ => {
             let body = match behavior {
                 MockBehavior::TextReply(content) => sse_text_reply(content),
                 MockBehavior::ToolCall(tc) => sse_tool_call_reply(&tc.name, &tc.arguments),
                 MockBehavior::StreamError(msg) => sse_stream_error_reply(msg),
                 MockBehavior::RawSse(raw) => raw.clone(),
-                _ => unreachable!(), // FragmentedTextReply 在连接处理分支里单独分片写出
+                _ => unreachable!(), // FragmentedTextReply 在连接处理分支里单独分片写出；JsonReply 上面已处理
             };
             format!(
                 "HTTP/1.1 200 OK\r\n\

@@ -212,11 +212,16 @@ const TOOLS: &str = r#"[
     "url":{"type":"string","description":"要抓取的网页地址"}
   },"required":["url"]}}},
   {"type":"function","function":{"name":"get_current_time","description":"获取当前日期时间和星期（涉及「今天/明天/昨天/周几/几点」类判断前必须先调，不要凭训练数据猜日期）","parameters":{"type":"object","properties":{}}}},
-  {"type":"function","function":{"name":"remember_fact","description":"记住一条用户偏好/事实（跨会话长期记忆，重启不丢；key 简短描述 ≤50 字，value 内容 ≤500 字；同 key 覆盖更新；value 传空串删除该条）","parameters":{"type":"object","properties":{
-    "key":{"type":"string","description":"简短描述，如「称呼」「偏好语言」「常用目录」"},
-    "value":{"type":"string","description":"要记住的内容；空串 = 删除该条"}
+  {"type":"function","function":{"name":"remember_fact","description":"记住一条用户偏好/事实（跨会话长期记忆，重启不丢；key 简短规范名词 ≤50 字，value 内容 ≤500 字；同 key 覆盖更新；value 传空串删除该条；写入结果若提示相似已有记忆，优先用同 key 覆盖更新而非另开新 key 堆积）","parameters":{"type":"object","properties":{
+    "key":{"type":"string","description":"简短规范名词，如「称呼」「偏好语言」「常用目录」"},
+    "value":{"type":"string","description":"要记住的内容；空串 = 删除该条"},
+    "category":{"type":"string","description":"分类（可选，默认 general）：profile 画像 / preference 偏好 / project 项目上下文 / general"},
+    "importance":{"type":"integer","description":"重要度 1-5（可选，默认 3；用户明确要求长期遵守的给 4-5，琐碎信息 1-2）"},
+    "source":{"type":"string","description":"来源（可选，默认 user_stated）：user_stated 用户明确说的 / model_inferred 模型推断的"}
   },"required":["key","value"]}}},
-  {"type":"function","function":{"name":"recall_facts","description":"回忆所有已记住的用户偏好/事实（用户问「你记得我吗/我的偏好」或回答可能依赖用户偏好时先调）","parameters":{"type":"object","properties":{}}}},
+  {"type":"function","function":{"name":"recall_facts","description":"回忆长期记忆（相关记忆每轮已自动注入，一般无需调用；只在要浏览全部记忆或按关键词检索时才调）","parameters":{"type":"object","properties":{
+    "query":{"type":"string","description":"可选；给了按相关度检索返回 top-5，不给则全量读回"}
+  }}}},
   {"type":"function","function":{"name":"use_skill","description":"读取已安装技能（skill）的完整文档并按文档步骤执行。任务涉及的每个相关技能都要读（可多次调用）：例如做 PPT 时，若清单里同时有编排、生成、配色、风格类技能，应逐个读取、取长补短综合运用，不要只读一个","parameters":{"type":"object","properties":{
     "name":{"type":"string","description":"技能名（系统提示词「已安装技能」清单里的名称，一次一个，可多次调用）"}
   },"required":["name"]}}}
