@@ -1038,11 +1038,9 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
                 </p>
               )}
             </div>
-            {/* F-1 [P0 release blocker] bypass_llm_on_pre_step_hit Toggle */}
+            {/* F-1 bypass_llm_on_pre_step_hit 开关：技能路由新链路 / 旧链路回退闸 */}
             <div className="space-y-1">
-              <p className="text-[10px] text-[var(--t5)]">
-                F‑1 开关：pre‑step 命中 Skill 时跳过外层主 LLM
-              </p>
+              <p className="text-[10px] text-[var(--t5)]">智能技能路由</p>
               <button
                 className={`shrink-0 min-w-[160px] px-4 py-1.5 text-sm text-[var(--t3)] ${
                   config.bypassLlmOnPreStepHit ? "nm-inset" : "nm-outset"
@@ -1055,12 +1053,12 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
                 }
               >
                 {config.bypassLlmOnPreStepHit
-                  ? "ON · 新行为（推荐）"
-                  : "OFF · LEGACY 旧链路"}
+                  ? "已开启（推荐）"
+                  : "已关闭（回退旧链路）"}
               </button>
               <p className="text-[10px] text-[var(--t6)] leading-snug">
-                ON（推荐）：auto 模式走 DSL 调度器，interactive 模式 LLM 驱动 Skill 步骤。<br />
-                OFF（LEGACY 回退）：强制 pre_routed_skill = None，让 LLM 自由选 Skill（旧路径，紧急回退用）。
+                开启（推荐）：命中技能时 auto 模式走 DSL 调度器、interactive 模式由 LLM 驱动技能步骤。<br />
+                关闭：退回旧链路，由主 LLM 自由选择技能——仅当新路由行为异常时紧急回退用。
               </p>
             </div>
             <button
