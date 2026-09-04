@@ -1784,3 +1784,26 @@ DSL 调度器从「解析 + 单次顺序执行」演进到「全链路生产可�
   - tests-audit 审计脚本修复：BOT_SKILLS 改读拆分后目录；8 条编排层断言跟 F-6 拆分搬家到 BOT_ALL（bot.rs+bot_chat.rs+bot_model_loop.rs）；cargo_test_count 环境变量缺 HOME 导致恒 -1 的预存 bug 一并修
   - 遗留：xlsx/pdf 技能实体在 ~/.openclaw/workspace/skills 但未安装（要用就装，不用路由自然没有）；「机器人对话里安装技能」入口当前不存在，规则实现后任何安装入口自动生效
 - 验证：cargo 421 全绿（lib 392 + 集成 29）、cargo check --release 通过、vitest 105、tsc 零错、pytest 审计 24 过 1 跳
+
+## 2026-09-04（周五）Windows 两处修复：绑定文件打不开 + 多开实例
+
+- **任务卡/工作区点绑定文件（夹）打不开**（老板报 bug）：根因是前端 `openPath`（plugin-opener）受 opener scope 限（capabilities 仅放行 `$HOME/**`、`$APPDATA/**`），Windows 上绑定 D:\ 等非用户目录路径被静默拒绝（catch 是 silent），表现为点击无反应。修复：TodoCard `openOneFile`、WorkspacePage `openLink` 统一改走 Rust 侧 `open_file_path`（与挂件窗口既有方案一致，不受 webview scope 限）；SEC-P1-3 白名单本就含任务卡绑定文件 + 工作区链接，安全边界不变
+- **Windows 多次双击 exe 开出多个前端**：引入 `tauri-plugin-single-instance`（Builder 第一个注册，插件要求），二次启动回调 `bring_main_to_front` 唤起已有主窗口后自行退出；顺带消除多实例并发写 SQLite 的隐患
+- 验证：vitest 20 文件 182 全过、tsc 零错、cargo check 通过
+
+### 按 AUDIT-API-2026-09-03 修复（P1×2 + P2×9 全清，不换栈沿用 tiny_http）
+
+- **P1-1 accept 循环不再同步等 worker**（api_server.rs）：删 done_tx/done_rx + `recv_timeout(15s)`，`on_error` 包 Arc 传入 worker 自行记 panic 日志；accept spawn 后即回 recv，`api_stop` join 最坏只等 accept 的 400ms tick，不再卡 15s 持锁
+- **P1-2 body 滴注 slowloris**（api_handlers.rs `read_body_limited`）：新增 35s 总时长 deadline（8KB 分块读循环内查总时长，vendor 30s 只是单次 read 级管不住滴注）+ Content-Length 预拒超限 body；vendor/tiny_http patch 注释里「与 15s handler 超时语义协调」的不实说法改正（只改注释未动逻辑）
+- **P2-1** `api_start` 对已死服务误报成功：先做 `api_status` 同款 `is_finished()` 活性检查 + 尸体清理再重启
+- **P2-2** token 文件：`OpenOptions` + `.mode(0o600)` 创建即收紧（unix），消 write→chmod 窗口；覆写/读取存量 0644 文件时补收紧
+- **P2-3** 事件 id 落盘换 `db::atomic_write`（tmp+rename），防崩溃半截文件导致重启 id 归 0、客户端 Last-Event-ID 静默丢事件
+- **P2-4** T1-1 基线空洞：`db::BASELINE_NULL_ROW = i64::MIN` 哨兵，updated_at 为 NULL 的老行用「行存在性」作基线（被删/被改都 409）；`MemStore::upsert` 补齐基线比对（原先忽略，409 不可测）
+- **P2-5** `api_rotate_token` 全程持 `state.0` 锁（拆出 `api_start_locked`/`api_stop_locked`），消「检查→stop→start」间并发 stop 被重新拉起的窗口
+- **P2-6** body 读取错误分流：`BodyRead::{Ok,TooLarge,IoFailed}`，读 IO 错误（含超时）回 408，只有超 1MB 回 413
+- **P2-7** SSE `?since=` 非法回 400 不再静默当全新连接；环形缓冲 1000 条溢出缺段在 EVENT_HISTORY/sse_connect 注释注明
+- **P2-8** `filePath` 补 `API_MAX_FILE_PATH = 1024` 上限（与 title/note 同款 over_limit，超限 400）
+- **P2-9** `api_status` 未启用时不再 `load_or_create_token`，不生成 token 文件
+- 新增测试 7 条：token 收紧、NULL 行存在性基线三态、409 集成（SabotageStore 模拟插队写，覆盖两种基线）、since 非法 400、filePath 超限 400、Content-Length 预拒
+- 验证：cargo test --lib 490 → 497 全绿；cargo check 无新警告；既有 llm_integration 27 + skill_e2e 13 无回归
+- 遗留（随换 axum 立项）：header 阶段滴注仍只有单次 read 级 30s 超时；Content-Length 预拒后 keep-alive 连接可能残留未读 body（本地短连接 API，可接受）
