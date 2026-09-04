@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { emit, listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { openPath, openUrl } from "@tauri-apps/plugin-opener";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { handleCommandError } from "../lib/errorHandler";
 import {
   DndContext,
@@ -231,7 +232,10 @@ export function WorkspacePage() {
         handleCommandError(e, "open url", { silent: true })
       );
     } else {
-      openPath(link.targetUri).catch((e) =>
+      // 走 Rust 侧 open_file_path（与挂件工作区视图同方案）：前端 openPath 受
+      // opener scope 限（仅 $HOME/$APPDATA），Windows 上 D:\ 等非用户目录路径
+      // 会被静默拒绝；Rust 侧不受 scope 限，SEC-P1-3 白名单已含工作区链接
+      invoke("open_file_path", { path: link.targetUri }).catch((e) =>
         handleCommandError(e, "open path", { silent: true })
       );
     }

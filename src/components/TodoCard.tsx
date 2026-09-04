@@ -8,7 +8,6 @@ import { CSS } from "@dnd-kit/utilities";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { openPath } from "@tauri-apps/plugin-opener";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { handleCommandError, formatCommandError } from "../lib/errorHandler";
 import type { Task } from "../types";
@@ -183,8 +182,11 @@ export function TodoCardView({
   const [filesExpanded, setFilesExpanded] = useState(false);
 
   // 2026-08-26 交互改版：点绑定文件名/文件夹名直接打开（不再有 📂 按钮和多选列表）
+  // 走 Rust 侧 open_file_path（与挂件窗口同方案）：前端 openPath 受 opener scope 限
+  // （仅 $HOME/$APPDATA），Windows 上绑定 D:\ 等非用户目录的文件夹会被静默拒绝，
+  // 点击无反应；Rust 侧命令不受 scope 限，且 SEC-P1-3 白名单已含任务卡绑定文件
   const openOneFile = (path: string) => {
-    openPath(path).catch((e) =>
+    invoke("open_file_path", { path }).catch((e) =>
       handleCommandError(e, "open file", { silent: true })
     );
   };

@@ -348,11 +348,13 @@ describe("TodoCardView 多文件绑定", () => {
     });
   });
 
-  it("点绑定文件名直接打开对应文件（2026-08-26 起不再有 📂 多选列表）", async () => {
-    const { openPath } = await import("@tauri-apps/plugin-opener");
+  it("点绑定文件名直接打开对应文件（2026-08-26 起不再有 📂 多选列表；走 Rust open_file_path，绕 opener scope 限 $HOME 导致的 Windows 静默失败）", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
     const user = userEvent.setup();
     render(<TodoCardView task={multiTask} onUpdate={vi.fn()} onDelete={vi.fn()} />);
     await user.click(screen.getByText("📎 b.docx"));
-    expect(vi.mocked(openPath)).toHaveBeenCalledWith("/docs/b.docx");
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("open_file_path", {
+      path: "/docs/b.docx",
+    });
   });
 });
