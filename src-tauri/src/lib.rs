@@ -249,6 +249,13 @@ pub fn run() {
     };
 
     tauri::Builder::default()
+        // 单实例必须第一个注册（插件要求）：二次启动时唤起已有主窗口后自行退出，
+        // 修复 Windows 上多次双击 exe 开出多个前端的问题
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(w) = app.get_webview_window("main") {
+                bring_main_to_front(&w);
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(
