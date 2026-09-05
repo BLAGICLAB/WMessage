@@ -364,14 +364,18 @@ export function ChatPanel({
       const c = await invoke<{
         bypassLlmOnPreStepHit?: boolean;
         allowedDirs?: string[];
-        tavilyKey?: string;
         tavilyEnabled?: boolean | null;
-        braveKey?: string;
         braveEnabled?: boolean | null;
         pythonTimeoutSecs?: number | null;
         // 批次7审计 P1-1：必须透传授权模式——bot_set_config 是全量覆写，
         // 漏传会被 BotConfig 容器级 serde(default) 填 None，静默重置回 ask
         permMode?: string | null;
+        // 2026-09-05 Anthropic 兼容模式：同 P1-1——协议与 max_tokens 必须透传，
+        // 漏传会被全量覆写静默重置回 openai/默认
+        apiProvider?: string | null;
+        maxTokens?: number | null;
+        // 2026-09-05 起 view 不再含任何 key 本体（tavilyKey/braveKey 已进系统
+        // 凭据存储）；这里不传顶层 key 参数（undefined → 后端 None → keyring 不动）
       }>("bot_get_config");
       await invoke("bot_set_config", {
         config: {
@@ -379,12 +383,16 @@ export function ChatPanel({
           model,
           bypassLlmOnPreStepHit: c.bypassLlmOnPreStepHit ?? true,
           allowedDirs: c.allowedDirs ?? [],
-          tavilyKey: c.tavilyKey ?? null,
+          // key 字段固定 null：后端强制置 None 双保险；真实 key 在 keyring，
+          // 不传顶层 tavilyKey/braveKey 参数即不动
+          tavilyKey: null,
           tavilyEnabled: c.tavilyEnabled ?? null,
-          braveKey: c.braveKey ?? null,
+          braveKey: null,
           braveEnabled: c.braveEnabled ?? null,
           pythonTimeoutSecs: c.pythonTimeoutSecs ?? null,
           permMode: c.permMode ?? null,
+          apiProvider: c.apiProvider ?? null,
+          maxTokens: c.maxTokens ?? null,
         },
         apiKey: null,
       });

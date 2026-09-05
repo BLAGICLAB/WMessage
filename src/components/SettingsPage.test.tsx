@@ -212,7 +212,7 @@ describe("SettingsPage", () => {
     expect(toggle.textContent).toMatch(/已开启/);
   });
 
-  it("Tavily 开关：点击 → bot_set_config 持久化 tavilyEnabled 且保留 tavilyKey", async () => {
+  it("Tavily 开关：点击 → bot_set_config 持久化 tavilyEnabled；key 在 keyring 不动（2026-09-05）", async () => {
     const user = userEvent.setup();
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "bot_get_enabled") return true;
@@ -224,7 +224,8 @@ describe("SettingsPage", () => {
           hasApiKey: true,
           bypassLlmOnPreStepHit: true,
           allowedDirs: [],
-          tavilyKey: "tvly-test",
+          // 2026-09-05 起 view 只给 has 标志，key 本体在系统凭据存储
+          hasTavilyKey: true,
           tavilyEnabled: false, // 显式关闭：配了 key 也应走双引擎
           pythonTimeoutSecs: null,
         };
@@ -251,14 +252,18 @@ describe("SettingsPage", () => {
     if (!toggle) return;
     expect(toggle.textContent).toMatch(/已关闭/);
     await user.click(toggle);
-    // 点击即持久化：tavilyEnabled 翻转为 true，tavilyKey 原样保留
+    // 点击即持久化：tavilyEnabled 翻转为 true；config 里 key 字段固定 null（不落明文），
+    // 顶层 tavilyKey 参数 null（输入框为空 → 后端不动 keyring 里已存的 key）
     await waitFor(() => {
       expect(mocks.invokeMock).toHaveBeenCalledWith(
         "bot_set_config",
         expect.objectContaining({
+          tavilyKey: null,
+          braveKey: null,
           config: expect.objectContaining({
             tavilyEnabled: true,
-            tavilyKey: "tvly-test",
+            tavilyKey: null,
+            braveKey: null,
           }),
         })
       );
@@ -275,7 +280,8 @@ describe("SettingsPage", () => {
           hasApiKey: false,
           bypassLlmOnPreStepHit: true,
           allowedDirs: [],
-          tavilyKey: "",
+          // 2026-09-05 起缺 key 的判定看 has 标志（keyring 里没有）
+          hasTavilyKey: false,
           tavilyEnabled: true, // 开了但没 key
           pythonTimeoutSecs: null,
         };
@@ -298,6 +304,64 @@ describe("SettingsPage", () => {
     ).toBeInTheDocument();
   });
 
+  it("Tavily key 输入：不回填已存 key；输入新 key 保存 → 顶层参数透传 + config 字段 null + 输入框清空", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_get_enabled") return true;
+      if (cmd === "bot_get_config")
+        return {
+          baseUrl: "https://api.minimaxi.com/v1",
+          model: "MiniMax-M3",
+          hasApiKey: true,
+          bypassLlmOnPreStepHit: true,
+          allowedDirs: [],
+          hasTavilyKey: true, // 已存 key：输入框不应回填任何值
+          tavilyEnabled: true,
+          pythonTimeoutSecs: null,
+        };
+      if (cmd === "bot_set_config") return null;
+      if (cmd === "api_status") return { enabled: false, port: 4763, token: "" };
+      if (cmd === "profile_get")
+        return {
+          user: { name: "我", avatarDataUrl: null },
+          bot: { name: "机器人", avatarDataUrl: null },
+        };
+      if (cmd === "py_get_enabled") return false;
+      if (cmd === "skills_list") return [];
+      if (cmd === "migration_rules_load") return { version: 1, rules: [] };
+      if (cmd === "migration_status") return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_log_read") return "";
+      return null;
+    });
+    render(<SettingsPage {...defaultProps} />);
+    // 已存 key：placeholder 提示 + 输入框不回填
+    const input = await screen.findByPlaceholderText(/已存入系统凭据存储/);
+    expect(input).toHaveValue("");
+    // 输入新 key → 保存配置
+    await user.type(input, "tvly-new-key");
+    await user.click(screen.getByText("保存配置"));
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith(
+        "bot_set_config",
+        expect.objectContaining({
+          // 新 key 走顶层参数（后端写系统凭据存储）
+          tavilyKey: "tvly-new-key",
+          braveKey: null,
+          apiKey: null,
+          config: expect.objectContaining({
+            // config 对象里的 key 字段固定 null（不落明文，后端强制置 None 双保险）
+            tavilyKey: null,
+            braveKey: null,
+          }),
+        })
+      );
+    });
+    // 保存成功后输入框清空（与主 keyInput 同模式）
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText(/已存入系统凭据存储/)).toHaveValue("");
+    });
+  });
+
   it("导出按钮：点击 → 调用 onExportTasks prop", async () => {
     const onExportTasks = vi.fn(async () => {});
     const user = userEvent.setup();
@@ -309,7 +373,7 @@ describe("SettingsPage", () => {
     });
   });
 
-  it("提供商预设：点击 Kimi K3 → Base URL / 模型自动填充且按钮高亮", async () => {
+  it("提供商预设：点击 Kimi → Base URL / 模型自动填充且按钮高亮", async () => {
     const user = userEvent.setup();
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "bot_get_enabled") return true;
@@ -336,15 +400,135 @@ describe("SettingsPage", () => {
     render(<SettingsPage {...defaultProps} />);
     // 等待配置加载：Base URL 输入框回填 MiniMax 地址
     const baseUrlInput = await screen.findByDisplayValue("https://api.minimaxi.com/v1");
-    // MiniMax 预设高亮（baseUrl + model 双匹配命中）
+    // MiniMax 预设高亮（baseUrl 匹配）
     expect(screen.getByText("MiniMax").className).toContain("nm-inset");
-    // 点击 Kimi K3 → 自动填充
-    await user.click(screen.getByText("Kimi K3"));
+    // 点击 Kimi → 自动填充
+    await user.click(screen.getByText("Kimi"));
     await waitFor(() => {
       expect(baseUrlInput).toHaveValue("https://api.moonshot.cn/v1");
     });
     expect(screen.getByPlaceholderText("deepseek-v4-flash")).toHaveValue("kimi-k3");
-    expect(screen.getByText("Kimi K3").className).toContain("nm-inset");
+    expect(screen.getByText("Kimi").className).toContain("nm-inset");
     expect(screen.getByText("MiniMax").className).toContain("nm-outset");
+    // 命中供应商时「自定义」不高亮
+    expect(screen.getByText("✏️ 自定义").className).toContain("nm-outset");
+    // 点「自定义」→ 清空 Base URL/模型进入自定义填写态，按钮高亮
+    await user.click(screen.getByText("✏️ 自定义"));
+    expect(baseUrlInput).toHaveValue("");
+    expect(screen.getByPlaceholderText("deepseek-v4-flash")).toHaveValue("");
+    expect(screen.getByText("✏️ 自定义").className).toContain("nm-inset");
+    expect(screen.getByText("Kimi").className).toContain("nm-outset");
+  });
+
+  it("提供商预设：同供应商手改模型（deepseek-v4-pro）→ DeepSeek 按钮保持高亮", async () => {
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_get_enabled") return true;
+      if (cmd === "bot_get_config")
+        return {
+          baseUrl: "https://api.deepseek.com/v1",
+          model: "deepseek-v4-pro",
+          hasApiKey: true,
+          bypassLlmOnPreStepHit: true,
+        };
+      if (cmd === "api_status") return { enabled: false, port: 4763, token: "" };
+      if (cmd === "profile_get")
+        return {
+          user: { name: "我", avatarDataUrl: null },
+          bot: { name: "机器人", avatarDataUrl: null },
+        };
+      if (cmd === "py_get_enabled") return false;
+      if (cmd === "skills_list") return [];
+      if (cmd === "migration_rules_load") return { version: 1, rules: [] };
+      if (cmd === "migration_status") return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_log_read") return "";
+      return null;
+    });
+    render(<SettingsPage {...defaultProps} />);
+    await screen.findByDisplayValue("https://api.deepseek.com/v1");
+    // 预设只看供应商（baseUrl）：模型手改成 pro 档 DeepSeek 仍高亮，自定义不高亮
+    expect(screen.getByText("DeepSeek").className).toContain("nm-inset");
+    expect(screen.getByText("✏️ 自定义").className).toContain("nm-outset");
+  });
+
+  it("提供商预设：自定义地址/模型（不命中任何预设）→「自定义」按钮高亮", async () => {
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_get_enabled") return true;
+      if (cmd === "bot_get_config")
+        return {
+          baseUrl: "https://api.example.com/v1",
+          model: "my-model",
+          hasApiKey: true,
+          bypassLlmOnPreStepHit: true,
+        };
+      if (cmd === "api_status") return { enabled: false, port: 4763, token: "" };
+      if (cmd === "profile_get")
+        return {
+          user: { name: "我", avatarDataUrl: null },
+          bot: { name: "机器人", avatarDataUrl: null },
+        };
+      if (cmd === "py_get_enabled") return false;
+      if (cmd === "skills_list") return [];
+      if (cmd === "migration_rules_load") return { version: 1, rules: [] };
+      if (cmd === "migration_status") return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_log_read") return "";
+      return null;
+    });
+    render(<SettingsPage {...defaultProps} />);
+    await screen.findByDisplayValue("https://api.example.com/v1");
+    expect(screen.getByText("✏️ 自定义").className).toContain("nm-inset");
+    expect(screen.getByText("MiniMax").className).toContain("nm-outset");
+  });
+
+  it("API 协议：切到 Anthropic → placeholder 联动 + max_tokens 出现，保存时透传 apiProvider/maxTokens", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_get_enabled") return true;
+      if (cmd === "bot_get_config")
+        return {
+          baseUrl: "https://api.deepseek.com/v1",
+          model: "deepseek-v4-flash",
+          hasApiKey: true,
+          bypassLlmOnPreStepHit: true,
+          apiProvider: "openai",
+          maxTokens: null,
+        };
+      if (cmd === "bot_set_config") return null;
+      if (cmd === "api_status") return { enabled: false, port: 4763, token: "" };
+      if (cmd === "profile_get")
+        return {
+          user: { name: "我", avatarDataUrl: null },
+          bot: { name: "机器人", avatarDataUrl: null },
+        };
+      if (cmd === "py_get_enabled") return false;
+      if (cmd === "skills_list") return [];
+      if (cmd === "migration_rules_load") return { version: 1, rules: [] };
+      if (cmd === "migration_status") return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_log_read") return "";
+      return null;
+    });
+    render(<SettingsPage {...defaultProps} />);
+    // 配置加载后协议下拉出现（自绘下拉，2026-09-05：原生 select 弹系统菜单不跟随主题），默认 OpenAI 兼容；max_tokens 不显示
+    const trigger = await screen.findByRole("button", { name: /OpenAI 兼容/ });
+    expect(screen.queryByText("max_tokens")).toBeNull();
+    // 切到 Anthropic：点触发钮展开浮层 → 点选项；placeholder 联动 + max_tokens 输入框出现
+    await user.click(trigger);
+    await user.click(screen.getByRole("button", { name: /Anthropic 兼容/ }));
+    expect(screen.getByPlaceholderText("https://api.anthropic.com")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("claude-sonnet-4-5")).toBeInTheDocument();
+    const maxTokensInput = screen.getByPlaceholderText("8192");
+    await user.type(maxTokensInput, "4096");
+    // 保存 → bot_set_config 透传 apiProvider/maxTokens
+    await user.click(screen.getByText("保存配置"));
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith(
+        "bot_set_config",
+        expect.objectContaining({
+          config: expect.objectContaining({
+            apiProvider: "anthropic",
+            maxTokens: 4096,
+          }),
+        })
+      );
+    });
   });
 });

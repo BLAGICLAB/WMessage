@@ -328,7 +328,7 @@ describe("ChatPanel", () => {
     }
   });
 
-  it("模型快速切换：🧠 按钮开菜单，点 Kimi K3 → bot_set_config 回写（保留白名单/Tavily）且标签更新", async () => {
+  it("模型快速切换：🧠 按钮开菜单，点 Kimi → bot_set_config 回写（保留白名单/Tavily）且标签更新", async () => {
     const user = userEvent.setup();
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "bot_sessions_load") return [{ id: "s1", title: "默认会话" }];
@@ -340,9 +340,14 @@ describe("ChatPanel", () => {
           hasApiKey: true,
           bypassLlmOnPreStepHit: true,
           allowedDirs: ["/tmp/x"],
-          tavilyKey: "tvly-test",
+          // 2026-09-05 起 view 只给 has 标志（key 本体在系统凭据存储），不回传 tavilyKey
+          hasTavilyKey: true,
+          tavilyEnabled: true,
           // 批次7审计 P1-1：授权模式必须透传，漏传会被后端 serde(default) 重置回 ask
           permMode: "yolo",
+          // 2026-09-05 同 P1-1：协议与 max_tokens 必须透传，漏传会被全量覆写静默重置
+          apiProvider: "anthropic",
+          maxTokens: 4096,
         };
       if (cmd === "bot_set_config") return null;
       return null;
@@ -351,8 +356,8 @@ describe("ChatPanel", () => {
     // 头部按钮显示当前提供商（baseUrl + model 双匹配命中预设 label）
     const btn = await screen.findByText(/🧠 MiniMax/);
     await user.click(btn);
-    // 菜单出现，点 Kimi K3
-    await user.click(screen.getByText("Kimi K3"));
+    // 菜单出现，点 Kimi
+    await user.click(screen.getByText("Kimi"));
     await waitFor(() => {
       expect(mocks.invokeMock).toHaveBeenCalledWith(
         "bot_set_config",
@@ -362,15 +367,25 @@ describe("ChatPanel", () => {
             baseUrl: "https://api.moonshot.cn/v1",
             model: "kimi-k3",
             allowedDirs: ["/tmp/x"], // 保留既有字段
-            tavilyKey: "tvly-test",
+            // 2026-09-05：key 字段固定 null（真实 key 在 keyring，顶层不传 key 参数即不动）
+            tavilyKey: null,
+            braveKey: null,
+            tavilyEnabled: true,
             permMode: "yolo", // P1-1：授权模式透传不丢
+            apiProvider: "anthropic", // 同 P1-1：协议透传不丢
+            maxTokens: 4096, // 同 P1-1：max_tokens 透传不丢
           }),
         })
       );
     });
+    // 顶层不得带 tavilyKey/braveKey 参数（带了非空值会覆盖 keyring 里的 key）
+    const setCall = mocks.invokeMock.mock.calls.find((c) => c[0] === "bot_set_config");
+    expect(setCall).toBeDefined();
+    expect(setCall![1]).not.toHaveProperty("tavilyKey");
+    expect(setCall![1]).not.toHaveProperty("braveKey");
     // 标签更新 + 本地提示
-    expect(await screen.findByText(/🧠 Kimi K3/)).toBeInTheDocument();
-    expect(await screen.findByText(/✅ 已切换到 Kimi K3/)).toBeInTheDocument();
+    expect(await screen.findByText(/🧠 Kimi/)).toBeInTheDocument();
+    expect(await screen.findByText(/✅ 已切换到 Kimi/)).toBeInTheDocument();
   });
 
   it("拖文件进聊天区：enter 显示提示层，drop 落在聊天区内加入附件（区外忽略、去重）", async () => {

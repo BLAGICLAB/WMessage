@@ -1,10 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { handleCommandError, formatCommandError } from "../lib/errorHandler";
-import { PROVIDER_PRESETS } from "../lib/providerPresets";
+import { PROVIDER_PRESETS, matchProvider } from "../lib/providerPresets";
 import type { ThemeSetting } from "../theme";
 import { MigrationPanel } from "./MigrationPanel";
 import { setProfileName, setProfileAvatar, removeProfileAvatar } from "../profile";
@@ -154,6 +154,81 @@ function SkillsPanel() {
                 🗑
               </button>
             </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const API_PROVIDER_OPTIONS = [
+  { value: "openai", label: "OpenAI 兼容" },
+  { value: "anthropic", label: "Anthropic 兼容" },
+] as const;
+type ApiProvider = (typeof API_PROVIDER_OPTIONS)[number]["value"];
+
+/** API 协议下拉（2026-09-05）：原生 <select> 在 macOS 上弹系统级菜单——样式脱离
+ *  新拟态主题、深浅色都不跟随，看起来像单独弹了个窗口。自绘下拉：触发钮 + 浮层
+ *  全部走主题变量（nm-inset/nm-outset/var(--t*)），深浅色自动生效。
+ *  交互：点击触发钮开合；点外部 / Esc 收起；点选项即选即收 */
+function ApiProviderSelect({
+  value,
+  onChange,
+}: {
+  value: ApiProvider;
+  onChange: (v: ApiProvider) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+  const current =
+    API_PROVIDER_OPTIONS.find((o) => o.value === value) ?? API_PROVIDER_OPTIONS[0];
+  return (
+    <div ref={rootRef} className="relative">
+      <button
+        type="button"
+        className="nm-inset w-full rounded-xl px-3 py-2 text-xs text-[var(--t3)] outline-none flex items-center justify-between gap-2"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span className="truncate">{current.label}</span>
+        <span
+          className={`shrink-0 text-[var(--t5)] transition-transform ${open ? "rotate-180" : ""}`}
+        >
+          ▾
+        </span>
+      </button>
+      {open && (
+        <div className="nm-outset absolute z-50 mt-1 w-full p-1 space-y-0.5">
+          {API_PROVIDER_OPTIONS.map((o) => (
+            <button
+              key={o.value}
+              type="button"
+              className={`w-full text-left px-3 py-1.5 text-xs rounded-lg ${
+                o.value === value
+                  ? "nm-inset text-[var(--t1)]"
+                  : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
+              }`}
+              onClick={() => {
+                onChange(o.value);
+                setOpen(false);
+              }}
+            >
+              {o.label}
+            </button>
           ))}
         </div>
       )}
@@ -336,20 +411,29 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     bypassLlmOnPreStepHit: true, // F-1 [P0] pre-step 路由外层是否跳过主 LLM；老配置默认 true
     // 本地文件工具白名单目录（textarea 一行一个；空 = 后端内置默认 桌面/下载/文档+绑定文件夹）
     allowedDirs: "",
-    // Tavily 搜索 API Key（可选；「Tavily 搜索」开关开启后 web_search 走 Tavily）
-    tavilyKey: "",
+    // Tavily 搜索 key 是否已存系统凭据存储（2026-09-05 起 key 本体不再回填，
+    // 与主 API key 同模式：view 只给 has 标志，输入框独立 state 不回填）
+    hasTavilyKey: false,
     // 「Tavily 搜索」开关（2026-08-20）：开 = web_search 走 Tavily；关 = Bing+百度双引擎
     tavilyEnabled: false,
-    // Brave 搜索 API Key（2026-09-05，可选；「Brave 搜索」开关开启后 web_search 走 Brave）
-    braveKey: "",
+    // Brave 搜索 key 是否已存系统凭据存储（2026-09-05，同 hasTavilyKey）
+    hasBraveKey: false,
     // 「Brave 搜索」开关（2026-09-05）：开 = web_search 走 Brave；与 Tavily 互斥，双开报错
     braveEnabled: false,
     // run_python 默认超时秒数（空 = 60s 默认；模型 timeoutSecs 参数优先；硬钳 300s）
     pythonTimeoutSecs: "",
     // 授权模式（2026-08-26）：strict=白名单外硬拒 / ask=白名单外弹授权（默认）/ yolo=全放行
     permMode: "ask" as "strict" | "ask" | "yolo",
+    // API 协议（2026-09-05）：openai=OpenAI 兼容（默认）/ anthropic=Anthropic 兼容
+    apiProvider: "openai" as "openai" | "anthropic",
+    // max_tokens（仅 Anthropic 模式用；空 = 8192 默认，范围 256-200000）
+    maxTokens: "",
   });
   const [keyInput, setKeyInput] = useState("");
+  // Tavily/Brave key 输入框（2026-09-05 起与主 keyInput 同模式：不回填已存 key，
+  // 非空保存时覆盖写入系统凭据存储；空 = 不动已存 key）
+  const [tavilyKeyInput, setTavilyKeyInput] = useState("");
+  const [braveKeyInput, setBraveKeyInput] = useState("");
   const [configBusy, setConfigBusy] = useState(false);
   const [configSaved, setConfigSaved] = useState(false);
   const [pyEnabled, setPyEnabled] = useState(false);
@@ -361,6 +445,8 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
   const [logOpen, setLogOpen] = useState(false);
   const [logText, setLogText] = useState("");
   const [logBusy, setLogBusy] = useState(false);
+  // 预设行「自定义」按钮点击后聚焦 Base URL 输入框（对齐挂件模型菜单的自定义入口）
+  const baseUrlInputRef = useRef<HTMLInputElement>(null);
 
   const refreshBot = async () => {
     try {
@@ -380,12 +466,15 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         hasApiKey: boolean;
         bypassLlmOnPreStepHit?: boolean;
         allowedDirs?: string[];
-        tavilyKey?: string;
+        // 2026-09-05 起 view 不再含 key 本体，只有 has 标志
+        hasTavilyKey?: boolean;
         tavilyEnabled?: boolean | null;
-        braveKey?: string;
+        hasBraveKey?: boolean;
         braveEnabled?: boolean | null;
         pythonTimeoutSecs?: number | null;
         permMode?: string | null;
+        apiProvider?: string | null;
+        maxTokens?: number | null;
       }>(
         "bot_get_config"
       );
@@ -396,16 +485,20 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         // 老后端版本（没返 bypass 字段）默认 true，避免意外走 LEGACY 路径
         bypassLlmOnPreStepHit: c.bypassLlmOnPreStepHit ?? true,
         allowedDirs: (c.allowedDirs ?? []).join("\n"),
-        tavilyKey: c.tavilyKey ?? "",
-        // 老配置没显式开关字段（null/undefined）时按旧行为显示自动态：配了 key 视为开启
-        tavilyEnabled: c.tavilyEnabled ?? !!(c.tavilyKey && c.tavilyKey.trim()),
-        braveKey: c.braveKey ?? "",
-        // 老配置没显式开关字段（null/undefined）时按旧行为显示自动态：配了 key 视为开启
-        braveEnabled: c.braveEnabled ?? !!(c.braveKey && c.braveKey.trim()),
+        // 2026-09-05 起 view 只给 has 标志；key 本体不回填（与 hasApiKey/keyInput 同模式）。
+        // 开关自动态：老配置没显式开关字段（null/undefined）时按 has 标志显示
+        hasTavilyKey: c.hasTavilyKey ?? false,
+        tavilyEnabled: c.tavilyEnabled ?? (c.hasTavilyKey ?? false),
+        hasBraveKey: c.hasBraveKey ?? false,
+        braveEnabled: c.braveEnabled ?? (c.hasBraveKey ?? false),
         pythonTimeoutSecs: c.pythonTimeoutSecs != null ? String(c.pythonTimeoutSecs) : "",
         // 老配置缺字段/非法值 → ask（与后端 PermMode::from_cfg 回退一致）
         permMode:
           c.permMode === "strict" || c.permMode === "yolo" ? c.permMode : "ask",
+        // 老配置缺字段/非法值 → openai（与后端 ApiProvider::from_cfg 回退一致）
+        apiProvider: c.apiProvider === "anthropic" ? "anthropic" : "openai",
+        // 空 = 8192 默认（仅 Anthropic 模式用）
+        maxTokens: c.maxTokens != null ? String(c.maxTokens) : "",
       });
     } catch (e) {
       handleCommandError(e, "bot_get_config", { silent: true });
@@ -510,12 +603,13 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
             .split("\n")
             .map((s) => s.trim())
             .filter((s) => s.length > 0),
-          // 空串视为未配置（后端 Option 语义）
-          tavilyKey: c.tavilyKey.trim() ? c.tavilyKey.trim() : null,
+          // 空串视为未配置（后端 Option 语义）——2026-09-05 起 key 存系统凭据存储，
+          // config 对象里的 key 字段固定传 null（后端强制置 None 双保险，不落明文）；
+          // 新 key 走顶层 tavilyKey/braveKey 参数（见下方 invoke 调用）
+          tavilyKey: null,
           // 开关显式落盘：开 = Tavily，关 = Bing+百度双引擎
           tavilyEnabled: c.tavilyEnabled,
-          // 空串视为未配置（后端 Option 语义）
-          braveKey: c.braveKey.trim() ? c.braveKey.trim() : null,
+          braveKey: null,
           // 开关显式落盘：开 = Brave，关 = 不走 Brave（与 Tavily 互斥，双开后端报错）
           braveEnabled: c.braveEnabled,
           // 空 = 60s 默认；非法输入按未配置处理（后端 resolve_timeout 硬钳 300s）
@@ -525,11 +619,25 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
           })(),
           // 授权模式（strict/ask/yolo）
           permMode: c.permMode,
+          // API 协议（openai/anthropic，2026-09-05）
+          apiProvider: c.apiProvider,
+          // max_tokens：空 = 8192 默认；非法输入按未配置处理（后端钳 256..=200000）
+          maxTokens: (() => {
+            const n = parseInt(c.maxTokens.trim(), 10);
+            return Number.isFinite(n) && n > 0 ? n : null;
+          })(),
         },
         // 输入框非空才写凭据存储；留空保持原 key 不变
         apiKey: keyInput.trim() ? keyInput.trim() : null,
+        // 2026-09-05：Tavily/Brave key 同主 key 模式——非空才覆盖写入系统凭据存储，
+        // null = 不动已存 key（开关切换走 toggleTavily/toggleBrave → saveConfig，
+        // 此时输入框为空 → keyring 不受任何影响）
+        tavilyKey: tavilyKeyInput.trim() ? tavilyKeyInput.trim() : null,
+        braveKey: braveKeyInput.trim() ? braveKeyInput.trim() : null,
       });
       setKeyInput("");
+      setTavilyKeyInput("");
+      setBraveKeyInput("");
       await loadConfig();
       // 广播给挂件聊天区：头部 🧠 模型标签同步刷新
       emit("bot-config-changed", null).catch(() => {});
@@ -913,24 +1021,57 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         {/* 大模型 API 配置（开关开启后显示） */}
         {botEnabled && (
           <div className="mt-4 border-t border-[var(--edge)] pt-4 space-y-3">
-            <p className="text-xs font-medium text-[var(--t4)]">大模型 API 配置（OpenAI 兼容）</p>
+            <p className="text-xs font-medium text-[var(--t4)]">大模型 API 配置</p>
+            {/* API 协议（2026-09-05 Anthropic 兼容模式）：自绘下拉（原生 select 弹系统菜单不跟随主题）；placeholder 随协议联动 */}
+            <div className="space-y-1">
+              <p className="text-[10px] text-[var(--t5)]">API 协议</p>
+              <ApiProviderSelect
+                value={config.apiProvider}
+                onChange={(v) => setConfig((c) => ({ ...c, apiProvider: v }))}
+              />
+            </div>
             {/* 提供商预设（Phase 3.3）：点击自动填 Base URL + 推荐模型，当前值命中的预设高亮 */}
             <div className="space-y-1">
               <p className="text-[10px] text-[var(--t5)]">提供商预设</p>
               <div className="flex flex-wrap gap-2">
                 {PROVIDER_PRESETS.map((p) => {
-                  const active =
-                    config.baseUrl.trim() === p.baseUrl && config.model.trim() === p.model;
+                  // 2026-09-05：预设收敛为供应商维度，高亮只看 baseUrl——
+                  // 模型栏手改成同供应商其它型号时按钮保持高亮
+                  const active = config.baseUrl.trim() === p.baseUrl;
                   return (
                     <button
                       key={p.label}
-                      onClick={() => setConfig((c) => ({ ...c, baseUrl: p.baseUrl, model: p.model }))}
+                      onClick={() =>
+                        setConfig((c) => ({
+                          ...c,
+                          baseUrl: p.baseUrl,
+                          model: p.model,
+                          // 预设全是 OpenAI 兼容端点：点预设同时把协议拉回 openai，
+                          // 防「Anthropic 协议 + OpenAI 端点」的错配组合
+                          apiProvider: "openai",
+                        }))
+                      }
                       className={`px-3 py-1.5 text-xs rounded-xl ${active ? "nm-inset text-[var(--t1)]" : "nm-outset text-[var(--t3)]"}`}
                     >
                       {p.label}
                     </button>
                   );
                 })}
+                {/* 自定义（2026-09-05，对齐挂件模型菜单入口）：当前 baseUrl 不命中任何
+                    供应商时高亮；点击清空 Base URL/模型并聚焦输入框，进入自定义填写态 */}
+                <button
+                  onClick={() => {
+                    setConfig((c) => ({ ...c, baseUrl: "", model: "" }));
+                    baseUrlInputRef.current?.focus();
+                  }}
+                  className={`px-3 py-1.5 text-xs rounded-xl ${
+                    matchProvider(config.baseUrl) === undefined
+                      ? "nm-inset text-[var(--t1)]"
+                      : "nm-outset text-[var(--t3)]"
+                  }`}
+                >
+                  ✏️ 自定义
+                </button>
               </div>
               <p className="text-[10px] text-[var(--t6)] leading-snug">
                 点击自动填充 Base URL 和推荐模型，仍可手动修改；切换提供商记得换对应的 API Key。
@@ -939,9 +1080,14 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
             <div className="space-y-1">
               <p className="text-[10px] text-[var(--t5)]">Base URL</p>
               <input
+                ref={baseUrlInputRef}
                 value={config.baseUrl}
                 onChange={(e) => setConfig((c) => ({ ...c, baseUrl: e.target.value }))}
-                placeholder="https://api.deepseek.com/v1"
+                placeholder={
+                  config.apiProvider === "anthropic"
+                    ? "https://api.anthropic.com"
+                    : "https://api.deepseek.com/v1"
+                }
                 className="nm-inset w-full rounded-xl px-3 py-2 text-xs text-[var(--t3)] outline-none"
               />
             </div>
@@ -970,10 +1116,29 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
               <input
                 value={config.model}
                 onChange={(e) => setConfig((c) => ({ ...c, model: e.target.value }))}
-                placeholder="deepseek-v4-flash"
+                placeholder={
+                  config.apiProvider === "anthropic" ? "claude-sonnet-4-5" : "deepseek-v4-flash"
+                }
                 className="nm-inset w-full rounded-xl px-3 py-2 text-xs text-[var(--t3)] outline-none"
               />
             </div>
+            {/* max_tokens（2026-09-05）：仅 Anthropic 模式显示（Anthropic 必填该字段；
+                OpenAI 兼容模式不发送——多数兼容网关不认识） */}
+            {config.apiProvider === "anthropic" && (
+              <div className="space-y-1">
+                <p className="text-[10px] text-[var(--t5)]">max_tokens</p>
+                <input
+                  value={config.maxTokens}
+                  onChange={(e) => setConfig((c) => ({ ...c, maxTokens: e.target.value }))}
+                  placeholder="8192"
+                  inputMode="numeric"
+                  className="nm-inset w-full rounded-xl px-3 py-2 text-xs text-[var(--t3)] outline-none"
+                />
+                <p className="text-[10px] text-[var(--t6)] leading-snug">
+                  单次回复的最大 token 数（Anthropic 必填）。留空 = 8192；范围 256-200000，超出自动钳制。
+                </p>
+              </div>
+            )}
             {/* 授权模式（2026-08-26，Kimi CLI 风格执行前授权） */}
             <div className="space-y-1">
               <p className="text-sm font-medium text-[var(--t2)]">授权模式</p>
@@ -1043,18 +1208,23 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
               <p className="text-[10px] text-[var(--t5)]">Tavily 搜索 API Key（可选）</p>
               <input
                 type="password"
-                value={config.tavilyKey}
-                onChange={(e) => setConfig((c) => ({ ...c, tavilyKey: e.target.value }))}
-                placeholder="tvly-…（开关关闭时不使用）"
+                value={tavilyKeyInput}
+                onChange={(e) => setTavilyKeyInput(e.target.value)}
+                placeholder={
+                  config.hasTavilyKey
+                    ? "已存入系统凭据存储 ✓（输入新 key 覆盖）"
+                    : "tvly-…（开关关闭时不使用）"
+                }
                 className="nm-inset w-full rounded-xl px-3 py-2 text-xs text-[var(--t3)] outline-none"
               />
-              {config.tavilyEnabled && !config.tavilyKey.trim() ? (
+              {config.tavilyEnabled && !config.hasTavilyKey && !tavilyKeyInput.trim() ? (
                 <p className="text-[10px] text-[var(--danger)] leading-snug">
                   已开启但未填 key：web_search 会报错提示，请填写 key 后点「保存配置」，或关闭开关。
                 </p>
               ) : (
                 <p className="text-[10px] text-[var(--t6)] leading-snug">
-                  填 key 后点「保存配置」生效；开关开启但缺 key / Tavily 请求失败时会明确报错，不会静默走百度。
+                  key 存系统凭据存储（与主 API key 同），不再明文写进配置文件；填 key 后点「保存配置」生效；
+                  要停用请关闭开关（已存的 key 不提供清除入口）。开关开启但缺 key / Tavily 请求失败时会明确报错，不会静默走百度。
                 </p>
               )}
             </div>
@@ -1080,18 +1250,23 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
               <p className="text-[10px] text-[var(--t5)]">Brave 搜索 API Key（可选）</p>
               <input
                 type="password"
-                value={config.braveKey}
-                onChange={(e) => setConfig((c) => ({ ...c, braveKey: e.target.value }))}
-                placeholder="BSA…（https://brave.com/search/api/ 免费获取；开关关闭时不使用）"
+                value={braveKeyInput}
+                onChange={(e) => setBraveKeyInput(e.target.value)}
+                placeholder={
+                  config.hasBraveKey
+                    ? "已存入系统凭据存储 ✓（输入新 key 覆盖）"
+                    : "BSA…（https://brave.com/search/api/ 免费获取；开关关闭时不使用）"
+                }
                 className="nm-inset w-full rounded-xl px-3 py-2 text-xs text-[var(--t3)] outline-none"
               />
-              {config.braveEnabled && !config.braveKey.trim() ? (
+              {config.braveEnabled && !config.hasBraveKey && !braveKeyInput.trim() ? (
                 <p className="text-[10px] text-[var(--danger)] leading-snug">
                   已开启但未填 key：web_search 会报错提示，请填写 key 后点「保存配置」，或关闭开关。
                 </p>
               ) : (
                 <p className="text-[10px] text-[var(--t6)] leading-snug">
-                  填 key 后点「保存配置」生效；与 Tavily 互斥，两个开关同时开启会报错。开关开启但缺 key / Brave 请求失败时会明确报错，不会静默走百度。
+                  key 存系统凭据存储（与主 API key 同），不再明文写进配置文件；填 key 后点「保存配置」生效；
+                  要停用请关闭开关（已存的 key 不提供清除入口）。与 Tavily 互斥，两个开关同时开启会报错。开关开启但缺 key / Brave 请求失败时会明确报错，不会静默走百度。
                 </p>
               )}
             </div>
