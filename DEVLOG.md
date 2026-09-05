@@ -1860,3 +1860,58 @@ DSL 调度器从「解析 + 单次顺序执行」演进到「全链路生产可�
 - **设置页**：Tavily 区块下加同款「Brave 搜索」区块（开关点击即持久化 + password 输入 + 缺 key 红字），双开时显示「Tavily 与 Brave 只能开启一个」红色提示
 - 验证：cargo test --lib 530 → 537 全绿（新增路由 4 条 + parse_brave 3 条，既有路由 3 条签名更新后语义不变）；cargo test 全量（含集成 31+15+8+13）全绿；vitest 199 全过；tsc 零错、vite build 过
 - 未做：未发真实 Brave API 请求（无真实 key），联网路径靠人工验证
+
+## 2026-09-05（周六）内置机器人支持 Anthropic 兼容模式
+
+- **边界适配器设计**：内部消息流全程保持 OpenAI 形状不动（run_model_loop_core 主循环零改动），只在「发请求前」和「解析响应时」两个边界转换。新模块 `src-tauri/src/bot_anthropic.rs` 全部纯函数 + 模块内单测 20 条：
+  - `openai_msgs_to_anthropic`：多条 system 抽出合并为顶层 system 块数组；assistant tool_calls → tool_use 块（arguments 字符串 parse 成对象，坏 JSON 兜底 input:{}）；连续 tool 消息合并进一条 user 消息的 tool_result 块（严格交替约束；失败结果按 audit::tool_call_failed 口径打 is_error）；image_url 的 data URL 拆成 base64 image 块（非 data URL 跳过并计数不崩）；空文本块不产出、空消息塞占位、连续同角色合并、assistant 开头补占位 user
+  - `parse_anthropic_event`：SSE 按 type 分发成复用的 ParsedChunk（text_delta→content / input_json_delta→arguments_chunk / thinking_delta→reasoning / stop_reason 四态映射 end_turn→stop、tool_use→tool_calls、max_tokens→length、refusal→content_filter / error 事件冒出 / ping、event 行忽略）；message_start/message_delta 顺带捞 usage，回合结束写 llm.usage 审计
+  - `build_anthropic_body`（tools 转 name/description/input_schema 平铺，空 tools/空 system 不产出字段）、`anthropic_messages_url`（/v1 结尾与否两种填法归一）、`apply_anthropic_auth`（x-api-key + anthropic-version: 2023-06-01 替代 Bearer）、`parse_anthropic_response`（非流式 text 块拼接）
+- **prompt caching**（与主体一起做，断点 ≤4 限制内用 2 个）：system 数组最后一块 + tools 最后一个工具打 `"cache_control":{"type":"ephemeral"}`——system（主提示词+技能清单+记忆块）与工具 schema 是最大静态前缀
+- **配置**：BotConfig/BotConfigView 加 `api_provider`（None/非法值=openai，老配置零影响，ApiProvider::from_cfg 与 PermMode 同风格防御回退）+ `max_tokens`（None=8192 默认，resolve_max_tokens 钳 256..=200000；仅 Anthropic 模式发送，OpenAI 兼容模式不发——多数网关不认识该字段）
+- **接线 3 个 LLM 出口**：LlmHttp 加 provider/max_tokens 字段，run_model_loop_core 按协议分支 URL/请求体/鉴权头/行解析（handle_line 消费逻辑、流完整性、finish_reason 处理、429/5xx 重试两协议共享；llm.request 审计补 provider kv）；call_planner 与 summarize_http 同口径分支（summarize_http 加 provider/max_tokens 注入参数，失败同样降级不阻断聊天）；幻觉守卫/熔断/Replan/soft_warn 一律不动
+- **前端**：设置页模型配置区加「API 协议」下拉（placeholder 随协议联动；预设全是 OpenAI 端点，点预设自动拉回 openai 防错配）+ max_tokens 数字输入（仅 Anthropic 模式显示，空=8192）；ChatPanel applyModelConfig 透传 apiProvider/maxTokens（P1-1 防全量覆写静默重置）
+- **测试**：mock_llm.rs 加 Anthropic 四种应答变体（流式文本/tool_use/流内 error/非流式 JSON）+ 请求行记录（request_paths，断言协议打对 /v1/messages）；llm_integration.rs 加 4 条真路径用例（流式文本+usage 审计+请求体形态、工具全回路含 tool_use/tool_result 回填转换断言、流内 error 冒出、非流式摘要）
+- 验证：cargo test 全量全绿（lib 562 + llm_integration 37 + memory_regression 17 + mock_llm 10 + skill_e2e 13）；npm run build（tsc + vite）零错误；vitest 21 文件 200 全过（新增 SettingsPage 协议下拉用例 + ChatPanel 透传断言扩展）
+- 未做（需真实 key 人工验证）：真实 Anthropic API 的严格度 mock 覆盖不到——cache_control 断点位置是否被接受、prompt caching 命中率（cache_read_input_tokens）、长会话下合并消息形态的服务端接受度、真实 thinking 块流（本实现未启用 thinking，仅兼容解析 thinking_delta）
+
+### Anthropic 兼容模式真实环境 400 修复（2026-09-05，MiniMax Anthropic 端点实测发现）
+
+- **根因（实锤）**：Anthropic 流里 `content_block_start`/`content_block_delta` 的 index 是**所有内容块**的序号（text/thinking 块也占位），不是工具调用序号。模型先输出一段文本（block 0）再调工具（block 1）时，`parse_anthropic_event` 产出的 `ToolCallDelta.index=1` 直接进 `accumulate_tool_call_delta`，vec 补长到 index 1、index 0 留下 `("","","")` 幽灵条目——主循环给它合成 `call_synth_0`、当真实 tool_call 执行（「未知工具」）并回填历史；下一轮请求里 tool_result 引用 `call_synth_0`，但 assistant 消息的 tool_use 块里转换层跳过了无名幽灵，配对缺失 → 服务端 400 `"tool result's tool id(call_synth_0) not found"`。OpenAI 的 `tool_calls[*].index` 是工具序号空间（0 起连续），不触发此问题
+- **修复（语义正确的重映射方案 + 兜底防线）**：
+  - `bot_anthropic.rs` 新增 `ToolSlotMapper`：content block index → 首次出现顺序的稠密工具槽位（0 起），主循环 Anthropic 分支在 `handle_line` 里对每个 ToolCallDelta 先 remap 再进共享累积层
+  - `bot_model_loop.rs` 回合末加幽灵条目兜底：name 为空的条目（从未收到 function.name，不可能是真实调用）丢弃并记 `llm.ghost_tool_call_dropped` WARN 审计，不给它合成 `call_synth_*`——双保险覆盖 OpenAI 兼容网关的畸形流
+- **回归测试**：`bot_anthropic.rs` 加 3 条 mapper 用例（text 块 index 0 + tool_use index 1 → 仅 1 条且 id 为真实 toolu_xxx；纯工具无文本；两个并行 tool_use index 1/2 → 稠密槽位 0/1）；`mock_llm.rs` 加 `AnthropicTextThenToolCall` 变体（text 块占 index 0、tool_use 占 index 1，与真实 Anthropic 一致）；`llm_integration.rs` 加真路径用例 `core_anthropic_text_block_first_tool_use_remapped_no_ghost`——断言恰好执行 1 次真实工具、第二轮请求体 tool_use/tool_result 以真实 id `toolu_real_1` 配对、全请求体无 `call_synth`
+- 验证：cargo test 全量全绿（lib 562→565、llm_integration 37→38、memory_regression 17、mock_llm 10、skill_e2e 13）；未动前端
+
+### 设置页 API 协议下拉改自绘组件（2026-09-05，老板反馈：原生下拉像弹了个窗口且深浅色不跟随）
+
+- **问题**：原生 `<select>` 在 macOS 上弹系统级菜单——渲染不归 WebView 管，新拟态样式（nm-inset 内凹）和深/浅色主题都套不上，视觉上像单独弹了个窗口
+- **修复**：换自绘下拉 `ApiProviderSelect`（SettingsPage.tsx）——nm-inset 触发钮（当前值 + ▾ 箭头开合旋转）+ nm-outset 绝对定位浮层，全部走主题变量（`--surface`/`--t1`/`--t3`/`--hover-bg`），深浅色自动跟随；点外部 / Esc 收起，点选项即选即收；选中项 nm-inset 高亮
+- 测试：SettingsPage 协议用例改为点触发钮 + 点选项（原 selectOptions 操作原生 select）；vitest 200 全过、tsc+vite build 零错
+
+### 设置页提供商预设行补「自定义」入口（2026-09-05，老板反馈：挂件模型菜单有自定义、设置页没有）
+
+- 预设行末尾（DeepSeek V4 Pro 之后）加「✏️ 自定义」按钮：当前 baseUrl+model 不命中任何预设时高亮（nm-inset），点击聚焦 Base URL 输入框手动填——设置页的自定义表单即现有的 Base URL/模型输入框，与挂件菜单的「✏️ 自定义…」内联表单语义对齐
+- 复用 `matchPreset`（providerPresets.ts，双匹配 baseUrl+model）判定高亮，与预设按钮同一口径
+- 测试：预设用例补「命中预设时自定义不高亮」断言；新增「自定义地址/模型 → 自定义高亮」用例；vitest 200→201 全过、tsc+vite build 零错
+
+### 提供商预设收敛为供应商维度 + 自定义按钮可切换（2026-09-05，老板反馈：自定义按不下去、预设按模型分档太碎）
+
+- **预设改版**（providerPresets.ts）：MiniMax / Kimi / DeepSeek 三个供应商 + 自定义；DeepSeek V4 Flash/Pro 双档合并为 DeepSeek（默认模型 deepseek-v4-flash），模型型号在下方「模型」栏手填；挂件模型菜单共用同一份预设自动跟随
+- **预设高亮改供应商口径**：新增 `matchProvider`（只看 baseUrl）——模型栏手改成同供应商其它型号（如 deepseek-v4-pro）时供应商按钮保持高亮；原 `matchPreset`（baseUrl+model 双匹配）保留给挂件菜单标签显示
+- **「自定义」可按**：点击清空 Base URL/模型并聚焦 Base URL 输入框，进入自定义填写态并高亮（原先只聚焦输入框，命中预设时点击无任何可见反馈，体感「按不下去」）
+- 测试：预设用例改 Kimi 标签 + 补「自定义点击清空高亮」断言；新增「同供应商手改模型 DeepSeek 保持高亮」用例；ChatPanel 切换用例同步改名；vitest 201→202 全过、tsc+vite build 零错
+
+## 2026-09-05（周六）搜索 key 统一进系统凭据存储（Tavily/Brave 不再明文落 bot-config.json）
+
+- **动机**：Tavily/Brave key 原先以「低风险搜索 key」例外明文落 bot-config.json；取消该例外，三个 key（主 LLM/Tavily/Brave）统一走系统凭据存储（macOS 钥匙串 / Windows 凭据管理器）
+- **keyring 设施泛化**：`bot.rs` 新增 `KeySlot::{Llm, Tavily, Brave}`（keyring 条目名 api-key/tavily_api_key/brave_api_key + Linux 降级文件名 bot-api-key.txt/bot-tavily-key.txt/bot-brave-key.txt；LLM 既有条目不变，存量用户零迁移感）；`key_entry`/`read|has|write|delete_api_key_at`/`plaintext_key_path_for`/`warn_fallback_once`（审计文案带具体文件名）/`migrate_plaintext_key_if_system` 全部按 slot 参数化；`read_api_key`/`has_api_key`/`write_api_key`/`bot_clear_api_key` 薄壳签名不变（内部传 KeySlot::Llm）。新增公开函数 `read_search_key`（未配置返回空串，可选配置区别于主 key 硬错误；keyring 真实故障透传 Err 不吞）/`has_search_key`/`write_search_key`
+- **迁移 `migrate_search_keys`**（仿 migrate_legacy_key，启动 + bot_get_config 双调用点）：bot-config.json 残留明文 tavily_key/brave_key → keyring 没有对应 key 时写入（已有值不覆盖）→ 字段置 None 写回 → `config.search_key_migrated` 审计；写失败保留明文下次再试（数据保留优先）。单 slot 内核 `migrate_search_key_slot` 注入 has/write 可单测
+- **命令面**：`BotConfigView` 的 `tavily_key`/`brave_key`（String 透传）改为 `has_tavily_key`/`has_brave_key`（keyring 存在性检查，真实故障透传 Err，与 has_api_key 同策略）——breaking change，前端同步改；`bot_set_config` 加顶层参数 `tavily_key`/`brave_key`（Some(非空) 覆盖写 keyring；None/空串不动——ChatPanel 不传参数时 keyring 零影响）；落盘内核抽成 `write_bot_config_file`，三个 key 字段强制置 None 双保险（前端误传 key 进 config 对象也不落明文）
+- **消费方**：`web_search_with_config` 的 tavily/brave key 改从 keyring 读（keyring 故障按无 key 处理走 MissingKey 引导文案，不弄挂工具）；`resolve_search_route` 签名与语义不动（None 开关 + key 存在自动启用的旧行为保持，key 存在性现在来自 keyring）
+- **前端 SettingsPage**：config state 去掉 tavilyKey/braveKey 值语义，改 hasTavilyKey/hasBraveKey + 独立输入 state `tavilyKeyInput`/`braveKeyInput`（不回填，与主 keyInput 同模式）；placeholder 随 has 状态（「已存入系统凭据存储 ✓（输入新 key 覆盖）」）；文案说明 key 进系统凭据、停用走关开关；saveConfig 里 config.key 字段固定 null、新 key 走顶层参数、保存后清输入框；开关自动态（enabled=None 时）按 has 标志显示
+- **前端 ChatPanel**：`applyModelConfig` 不再传 tavilyKey/braveKey（view 无 key 本体），顶层不带 key 参数（undefined → 后端 None → keyring 不动）
+- **测试**：Rust 新增 6 条（slot 条目名/文件名唯一性、Tavily/Brave PlaintextFile 后端读写覆盖写 roundtrip + 0600、迁移成功清明文、已有值不覆盖、写失败保留明文、无明文幂等、write_bot_config_file 三字段强制置 None 回归）；前端 SettingsPage 更新 2 条 + 新增 1 条（输入框不回填/顶层参数透传/保存后清空），ChatPanel P1-1 用例更新（config.key 字段 null + 顶层无 key 参数断言）
+- 验证：cargo test 全量全绿（lib 565→572、llm_integration 38、memory_regression 17、mock_llm 10、skill_e2e 13）；vitest 21 文件 203 全过；npm run build（tsc + vite）零错误；grep 自查无遗漏旧明文路径
+- 遗留：已存的搜索 key 无 UI 清除入口（设计决定：停用 = 关开关；要彻底清除可走系统 keychain 工具删 wmessage-bot 条目）；Linux 无 secret-service 环境降级明文文件（0600 + WARN 审计，与主 key 同策略，属平台限制）
