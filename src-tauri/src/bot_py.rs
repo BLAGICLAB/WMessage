@@ -1346,22 +1346,64 @@ def nid():
     return _id[0]
 
 # ──────────── 就地修订（保留原文格式）：w:ins 用 w:t、w:del 用 w:delText ────────────
+# 文本口径（2026-09-05 修复，与 extract_document 的 python-docx para.text 严格对齐）：
+# 只数直接子级 w:r 和 w:hyperlink 内的 run——w:t 原文、w:tab/w:ptab→\t、w:br/w:cr→\n、
+# w:noBreakHyphen→'-'；域代码、已有修订等不计。此前 run_text 只读 w:t 而单元文本用
+# para.text（含 \t/\n/超链接文本），口径不一致导致含 tab/换行/超链接的段落必中
+# 「整段删+整段增」保底，看不出究竟改了哪几个字。
 
 def run_text(r):
-    return ''.join(t.text or '' for t in r.findall(qn('w:t')))
+    parts = []
+    for node in r:
+        tag = node.tag
+        if tag == qn('w:t'):
+            parts.append(node.text or '')
+        elif tag in (qn('w:tab'), qn('w:ptab')):
+            parts.append('\t')
+        elif tag in (qn('w:br'), qn('w:cr')):
+            parts.append('\n')
+        elif tag == qn('w:noBreakHyphen'):
+            parts.append('-')
+    return ''.join(parts)
+
+def inner_runs(p_el):
+    """段落文本载体 run：直接子级 w:r + w:hyperlink 内的 w:r（文档序，同 para.text 口径）"""
+    rs = []
+    for child in p_el:
+        if child.tag == qn('w:r'):
+            rs.append(child)
+        elif child.tag == qn('w:hyperlink'):
+            rs.extend(child.findall(qn('w:r')))
+    return rs
+
+def para_text(p_el):
+    return ''.join(run_text(r) for r in inner_runs(p_el))
 
 def clone_rpr(r):
     rpr = r.find(qn('w:rPr'))
     return copy.deepcopy(rpr) if rpr is not None else None
 
+def fill_run_text(r, text, deleted=False):
+    """\t→w:tab、\n→w:br，其余进 w:t（del 用 w:delText）：与提取口径互逆，
+    equal 片段里的 tab/换行重建后不变形"""
+    tag = 'w:delText' if deleted else 'w:t'
+    i = 0
+    for j in range(len(text) + 1):
+        if j == len(text) or text[j] in '\t\n':
+            if j > i:
+                t = OxmlElement(tag)
+                t.set(qn('xml:space'), 'preserve')
+                t.text = text[i:j]
+                r.append(t)
+            if j < len(text):
+                r.append(OxmlElement('w:tab' if text[j] == '\t' else 'w:br'))
+            i = j + 1
+
 def make_run(text, rpr, deleted=False):
     r = OxmlElement('w:r')
     if rpr is not None:
         r.append(copy.deepcopy(rpr))
-    t = OxmlElement('w:delText' if deleted else 'w:t')
-    t.set(qn('xml:space'), 'preserve')
-    t.text = text
-    r.append(t)
+    fill_run_text(r, text, deleted)
     return r
 
 def wrap(kind, r):
@@ -1371,11 +1413,19 @@ def wrap(kind, r):
     el.append(r)
     return el
 
-def para_text(p_el):
-    return ''.join(t.text or '' for t in p_el.iter(qn('w:t')))
+def unwrap_hyperlinks(p_el):
+    """hyperlink 元素原位替换为其内部 run（rPr 保留 Hyperlink 样式外观）：
+    修订标记不维护 hyperlink 嵌套，整段标删前先解包，避免链接文本漏标删"""
+    for h in p_el.findall(qn('w:hyperlink')):
+        idx = list(p_el).index(h)
+        rs = h.findall(qn('w:r'))
+        p_el.remove(h)
+        for k, r in enumerate(rs):
+            p_el.insert(idx + k, r)
 
 def mark_para_deleted(p_el):
     """整段标删：含文本的 run 转 w:del（保留各 run 原 rPr），无文本 run（图片等）不动"""
+    unwrap_hyperlinks(p_el)
     runs = p_el.findall(qn('w:r'))
     dels = []
     for r in runs:
@@ -1390,8 +1440,9 @@ def mark_para_deleted(p_el):
 
 def revise_para(p_el, old, new):
     """行内字符级 diff：equal 片段沿用原 run（克隆 rPr 拆段），del/ins 克隆锚点 rPr。
-    段落含超链接等非常规结构（run 文本拼接 != 段落文本）时保底整段删+整段增。"""
-    runs = p_el.findall(qn('w:r'))
+    run 映射与段落文本同一口径（para_text），正常情况下恒一致；段落含域代码/
+    内容控件等口径外结构导致对不上时，才保底整段删+整段增。"""
+    runs = inner_runs(p_el)
     pos = 0
     mp = []
     for r in runs:
@@ -1428,8 +1479,10 @@ def revise_para(p_el, old, new):
             for piece, rpr in pieces(i1, i2):
                 content.append(wrap('del', make_run(piece, rpr, deleted=True)))
             content.append(wrap('ins', make_run(new[j1:j2], rpr_at(i1))))
-    for r in runs:
-        p_el.remove(r)
+    # 重建：移除原文本载体（直接子级 run + hyperlink，连带其内 run），追加 diff 后的新内容
+    for child in list(p_el):
+        if child.tag in (qn('w:r'), qn('w:hyperlink')):
+            p_el.remove(child)
     for el in content:
         p_el.append(el)
 
@@ -2548,6 +2601,8 @@ mod tests {
     /// 2026-09-02：就地修订保留原文格式——夹具 docx（标题样式 + 加粗 run + 普通段落），
     /// 修订后：equal 段落原样不动（pStyle / <w:b/> 保留），改动段落行内 w:ins/w:del，
     /// 无 w:date。dotnet + dll 都在才跑（CI 无 dotnet 跳过）。
+    /// 2026-09-05 回归：含 tab + 超链接的段落改几个字必须走字符级 diff
+    /// （此前口径不一致必中整段删+整段增保底）。
     #[test]
     fn dotnet_revisions_in_place_preserves_formatting() {
         let Some((prog, entry)) = dotnet_revisions_entry() else {
@@ -2560,11 +2615,12 @@ mod tests {
         };
         let tmp = tempfile::tempdir().unwrap();
         // 最小 docx 夹具（zip + 手写 document.xml）：标题样式段 + 加粗段 + 待改段
+        // + tab/超链接混合段（回归：字符级 diff 而非整段标删）
         let orig = tmp.path().join("orig.docx");
         {
             const CT: &str = r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>"#;
             const RELS: &str = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>"#;
-            const DOC: &str = r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>报告标题</w:t></w:r></w:p><w:p><w:r><w:rPr><w:b/></w:rPr><w:t>加粗内容保留</w:t></w:r></w:p><w:p><w:r><w:t>这句要润色。</w:t></w:r></w:p></w:body></w:document>"#;
+            const DOC: &str = r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>报告标题</w:t></w:r></w:p><w:p><w:r><w:rPr><w:b/></w:rPr><w:t>加粗内容保留</w:t></w:r></w:p><w:p><w:r><w:t>这句要润色。</w:t></w:r></w:p><w:p><w:r><w:t>含</w:t></w:r><w:r><w:tab/></w:r><w:hyperlink><w:r><w:t>链接文字</w:t></w:r></w:hyperlink><w:r><w:t>保留，改三字。</w:t></w:r></w:p></w:body></w:document>"#;
             let f = std::fs::File::create(&orig).unwrap();
             let mut zw = zip::ZipWriter::new(f);
             let opt = zip::write::SimpleFileOptions::default();
@@ -2584,7 +2640,7 @@ mod tests {
         let params = serde_json::json!({
             "title": "", "original_path": orig,
             "original": [],
-            "revised": ["报告标题", "加粗内容保留", "这句润色过了。"],
+            "revised": ["报告标题", "加粗内容保留", "这句润色过了。", "含\t链接文字保留，改四字。"],
             "out": out,
         });
         std::fs::write(dir.join("params.json"), params.to_string()).unwrap();
@@ -2623,6 +2679,14 @@ mod tests {
         assert!(xml.contains("<w:ins "), "应有插入修订：{xml}");
         assert!(xml.contains("<w:delText xml:space=\"preserve\">要</w:delText>"), "删除片段应在：{xml}");
         assert!(xml.contains("<w:t xml:space=\"preserve\">过了</w:t>"), "插入片段应在：{xml}");
+        // 2026-09-05 回归：tab/超链接段落改一个字走字符级 diff——只删「三」增「四」，
+        // tab 保留、超链接文本作为 equal 片段保留（hyperlink 解包后文字不丢），
+        // 不得整段标删（整段删会含完整旧句）
+        assert!(xml.contains("<w:delText xml:space=\"preserve\">三</w:delText>"), "应只删「三」：{xml}");
+        assert!(xml.contains("<w:t xml:space=\"preserve\">四</w:t>"), "应只增「四」：{xml}");
+        assert!(xml.contains("<w:tab/>") || xml.contains("<w:tab />"), "tab 应保留：{xml}");
+        assert!(xml.contains(">链接文字</w:t>"), "超链接文本应作为 equal 片段保留：{xml}");
+        assert!(!xml.contains("改三字。</w:delText>"), "不得整段标删：{xml}");
         assert!(!xml.contains("w:date="), "修订不应带 w:date：{xml}");
     }
 

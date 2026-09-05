@@ -8,6 +8,9 @@
 // 文档序在前、表格行在后）→ 相同段落原样不动（格式自然保留），改动段落做行内字符级 diff
 // （未变片段沿用原 run 的 rPr，删除/新增片段克隆锚点 run 的 rPr）。
 // original_path 缺失/不可读时回退旧行为：用模型传的 original 行列表新建宋体文档。
+// 2026-09-05 修复：段落文本口径统一为 extract_document 同款（直接子级 w:r + hyperlink
+// 内 run，tab/br/noBreakHyphen 映射 \t/\n/-）——此前单元文本（InnerText）与 run 映射
+// （仅直接子级 w:r 的 w:t）口径不一致，含超链接/域/tab/换行的段落必退化成整段删+整段增。
 //
 // 修订标记（对齐 minimax-docx/references/track_changes_guide.md 铁律）：
 // - w:ins 内用 w:t（InsertedRun + Run(Text)）
@@ -15,6 +18,7 @@
 // - 每个修订带唯一递增 w:id + author（2026-09-02 老板拍板：不写 w:date 修订日期）
 // 官方修订的视觉标记（删除线/下划线/颜色）由 Word 审阅视图渲染，不写死字符级格式。
 
+using System.Text;
 using System.Text.Json;
 using DocumentFormat.OpenXml;
 using DocumentFormat.OpenXml.Packaging;
@@ -236,7 +240,7 @@ void ReviseInPlace(string path, List<string> revisedLines, Func<int> nextId)
     var units = new List<Unit>();
     foreach (var para in body.Elements<Paragraph>())
     {
-        var text = para.InnerText;
+        var text = ParaText(para);
         if (!string.IsNullOrWhiteSpace(text)) units.Add(new ParaUnit(para, text));
     }
     foreach (var tbl in body.Elements<Table>())
@@ -303,7 +307,11 @@ void ReviseInPlace(string path, List<string> revisedLines, Func<int> nextId)
 
 // 表格行文本：单元格 " | " 连接（与 extract_document 同一口径）
 static string RowText(TableRow row) =>
-    string.Join(" | ", row.Elements<TableCell>().Select(c => c.InnerText.Trim()));
+    string.Join(" | ", row.Elements<TableCell>().Select(c => CellText(c).Trim()));
+
+// 单元格文本：段落 \n 连接（对齐 python-docx Cell.text）
+static string CellText(TableCell cell) =>
+    string.Join("\n", cell.Elements<Paragraph>().Select(ParaText));
 
 // 整单元标删：段落内全部文本 run 转 w:del（保留各 run 原 rPr），行则逐单元格处理
 static void DeleteUnit(Unit unit, Func<int> nextId)
@@ -340,11 +348,11 @@ static OpenXmlElement ReplaceUnit(Body body, Unit unit, string newText, Func<int
         for (int i = 0; i < cells.Count; i++)
         {
             var paras = cells[i].Elements<Paragraph>().ToList();
-            var firstTextPara = paras.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x.InnerText));
+            var firstTextPara = paras.FirstOrDefault(x => !string.IsNullOrWhiteSpace(ParaText(x)));
             if (firstTextPara != null)
             {
-                ReviseParagraph(firstTextPara, firstTextPara.InnerText, parts[i].Trim(), nextId);
-                foreach (var extra in paras.Where(x => x != firstTextPara && !string.IsNullOrWhiteSpace(x.InnerText)))
+                ReviseParagraph(firstTextPara, ParaText(firstTextPara), parts[i].Trim(), nextId);
+                foreach (var extra in paras.Where(x => x != firstTextPara && !string.IsNullOrWhiteSpace(ParaText(x))))
                     MarkParagraphDeleted(extra, nextId);
             }
             else if (paras.Count > 0)
@@ -360,34 +368,36 @@ static OpenXmlElement ReplaceUnit(Body body, Unit unit, string newText, Func<int
 }
 
 // 整段标删：每个含文本的 run 转 DeletedRun（克隆 rPr，w:t → w:delText），
-// 无文本的 run（图片/对象等）保持原样不动
+// 无文本的 run（图片/对象等）保持原样不动；hyperlink 先解包（run 保留 rPr 外观）
 static void MarkParagraphDeleted(Paragraph para, Func<int> nextId)
 {
+    UnwrapHyperlinks(para);
     var runs = para.Elements<Run>().ToList();
     var dels = new List<DeletedRun>();
     foreach (var r in runs)
     {
-        var text = string.Concat(r.Elements<Text>().Select(x => x.Text));
+        var text = RunText(r);
         if (text.Length == 0) continue;
         dels.Add(MakeDel(text, r.RunProperties, nextId));
     }
     foreach (var r in runs)
     {
-        if (r.Elements<Text>().Any()) r.Remove();
+        if (RunText(r).Length > 0) r.Remove();
     }
     foreach (var d in dels) para.Append(d);
 }
 
 // 行内字符级 diff：equal 片段沿用原 run（克隆 rPr 拆段），del/ins 克隆锚点 rPr。
-// 段落里若有超链接等非常规结构导致 run 文本拼接 ≠ 段落文本，保底整段删+整段增。
+// run 映射与段落文本同一口径（ParaText，见下方注释），正常情况下恒一致；
+// 段落含域代码/内容控件等口径外结构导致对不上时，才保底整段删+整段增。
 static void ReviseParagraph(Paragraph para, string oldText, string newText, Func<int> nextId)
 {
-    var runs = para.Elements<Run>().ToList();
+    var runs = InnerRuns(para).ToList();
     var map = new List<(int s, int e, Run r)>();
     int pos = 0;
     foreach (var r in runs)
     {
-        var t = string.Concat(r.Elements<Text>().Select(x => x.Text));
+        var t = RunText(r);
         map.Add((pos, pos + t.Length, r));
         pos += t.Length;
     }
@@ -441,6 +451,7 @@ static void ReviseParagraph(Paragraph para, string oldText, string newText, Func
         }
     }
     foreach (var r in runs) r.Remove();
+    foreach (var h in para.Elements<Hyperlink>().ToList()) h.Remove();
     foreach (var el in content) para.Append(el);
 }
 
@@ -470,25 +481,90 @@ static Paragraph InsertRevisedParagraph(Body body, OpenXmlElement? anchor, strin
 
 // ───────────────────────── 修订元素构造 ─────────────────────────
 
-static string RunText(Run r) => string.Concat(r.Elements<Text>().Select(x => x.Text));
+// 文本口径（2026-09-05 修复，与 extract_document 的 python-docx para.text 严格对齐）：
+// 只数直接子级 w:r 和 w:hyperlink 内的 run——w:t 原文、w:tab/w:ptab→\t、w:br/w:cr→\n、
+// w:noBreakHyphen→'-'；域代码(w:instrText)、已有修订、文本框等不计。
+// 此前单元文本用 InnerText（含域代码/文本框等全部后代文本）而 run 映射只数直接子级
+// w:r 的 w:t，两套口径不一致：含超链接/域/tab/换行的段落必中「整段删+整段增」保底，
+// 看不出究竟改了哪几个字。
 
-// rPr 必须是 run 的第一个子元素：统一 PrependChild 保证顺序，空 rPr 不加
-static Run RunWithRpr(RunProperties? rpr, OpenXmlElement textEl)
+// 段落文本载体 run：直接子级 w:r + w:hyperlink 内的 w:r（文档序）
+static IEnumerable<Run> InnerRuns(Paragraph para)
 {
-    var r = new Run(textEl);
-    if (rpr != null) r.PrependChild(rpr.CloneNode(true));
+    foreach (var child in para.ChildElements)
+    {
+        if (child is Run r) yield return r;
+        else if (child is Hyperlink h)
+            foreach (var hr in h.Elements<Run>()) yield return hr;
+    }
+}
+
+static string RunText(Run r)
+{
+    var sb = new StringBuilder();
+    foreach (var node in r.ChildElements)
+        switch (node)
+        {
+            case Text t: sb.Append(t.Text); break;
+            case TabChar: sb.Append('\t'); break;
+            case PositionalTab: sb.Append('\t'); break;
+            case Break: sb.Append('\n'); break;
+            case NoBreakHyphen: sb.Append('-'); break;
+        }
+    return sb.ToString();
+}
+
+static string ParaText(Paragraph para) =>
+    string.Concat(InnerRuns(para).Select(RunText));
+
+// 解包超链接：hyperlink 元素原位替换为其内部 run（rPr 保留 Hyperlink 样式外观）——
+// 修订标记不维护 hyperlink 嵌套，整段标删前先解包，避免链接文本漏标删
+static void UnwrapHyperlinks(Paragraph para)
+{
+    foreach (var h in para.Elements<Hyperlink>().ToList())
+    {
+        foreach (var r in h.Elements<Run>().ToList())
+        {
+            r.Remove();
+            h.InsertBeforeSelf(r);
+        }
+        h.Remove();
+    }
+}
+
+// 文本入 run：\t→w:tab、\n→w:br，其余进 w:t（del 用 w:delText）——与提取口径互逆，
+// equal 片段里的 tab/换行重建后不变形；rPr 先加，保证是 run 的第一个子元素
+static Run RunWithText(RunProperties? rpr, string text, bool deleted)
+{
+    var r = new Run();
+    if (rpr != null) r.Append(rpr.CloneNode(true));
+    int i = 0;
+    for (int j = 0; j <= text.Length; j++)
+    {
+        if (j == text.Length || text[j] == '\t' || text[j] == '\n')
+        {
+            if (j > i)
+            {
+                var seg = text.Substring(i, j - i);
+                r.Append(deleted
+                    ? (OpenXmlElement)new DeletedText(seg) { Space = SpaceProcessingModeValues.Preserve }
+                    : new Text(seg) { Space = SpaceProcessingModeValues.Preserve });
+            }
+            if (j < text.Length) r.Append(text[j] == '\t' ? new TabChar() : new Break());
+            i = j + 1;
+        }
+    }
     return r;
 }
 
-static Run MakePlain(string text, RunProperties? rpr) =>
-    RunWithRpr(rpr, new Text(text) { Space = SpaceProcessingModeValues.Preserve });
+static Run MakePlain(string text, RunProperties? rpr) => RunWithText(rpr, text, false);
 
 static InsertedRun MakeIns(string text, RunProperties? rpr, Func<int> nextId) => new(
-    RunWithRpr(rpr, new Text(text) { Space = SpaceProcessingModeValues.Preserve }))
+    RunWithText(rpr, text, false))
     { Id = nextId().ToString(), Author = Author };
 
 static DeletedRun MakeDel(string text, RunProperties? rpr, Func<int> nextId) => new(
-    RunWithRpr(rpr, new DeletedText(text) { Space = SpaceProcessingModeValues.Preserve }))
+    RunWithText(rpr, text, true))
     { Id = nextId().ToString(), Author = Author };
 
 // ───────────────────────── 工具函数 ─────────────────────────
@@ -514,7 +590,7 @@ static List<string> ReadDocxLines(string path)
     {
         if (el is Paragraph para)
         {
-            var text = para.InnerText;
+            var text = ParaText(para);
             if (!string.IsNullOrWhiteSpace(text)) lines.Add(text);
         }
         else if (el is Table tbl)
@@ -556,7 +632,11 @@ static List<Opcode> DiffList<T>(IReadOnlyList<T> a, IReadOnlyList<T> b) where T 
     while (x < n) { raw.Add(new Opcode("delete", x, x + 1, y, y)); x++; }
     while (y < m) { raw.Add(new Opcode("insert", x, x, y, y + 1)); y++; }
 
-    // 合并相邻同 tag；delete+insert 相邻合并为 replace（对齐 difflib 输出形态）
+    // 合并相邻同 tag；delete/insert 相邻块（含 replace 后紧随的 ins/del）全部并入一个
+    // replace 段（对齐 difflib.get_opcodes 形态）。
+    // 2026-09-05 修复：此前只在「last 是单纯 del/ins」时合并一次，del 块后跟多个 ins 块
+    // （如两段都改写）时只有首块配对成 replace，余下单元走整段删+整段增，
+    // 看不出究竟改了哪几个字。
     var merged = new List<Opcode>();
     foreach (var op in raw)
     {
@@ -568,9 +648,7 @@ static List<Opcode> DiffList<T>(IReadOnlyList<T> a, IReadOnlyList<T> b) where T 
                 merged[^1] = last with { A1 = op.A1, B1 = op.B1 };
                 continue;
             }
-            // delete 紧跟 insert（或反向）→ 合并成 replace
-            if ((last.Tag == "delete" && op.Tag == "insert") ||
-                (last.Tag == "insert" && op.Tag == "delete"))
+            if (last.Tag != "equal" && op.Tag != "equal")
             {
                 merged[^1] = new Opcode("replace",
                     Math.Min(last.A0, op.A0), Math.Max(last.A1, op.A1),
