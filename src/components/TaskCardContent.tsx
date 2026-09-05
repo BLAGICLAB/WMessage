@@ -139,8 +139,10 @@ export function TaskCardContent({
         {onToggleDone && (
           <DoneCircle done={task.column === "done"} onToggle={onToggleDone} />
         )}
-        {/* 归属头像：交给机器人 → 机器人头像；否则用户头像。悬停显示姓名（与主窗口一致） */}
-        <ActorAvatar bot={!!task.botAssigned} />
+        {/* 归属头像（2026-09-05 规则）：设了定时 → 一直机器人头像；
+            🤖 执行中 → 机器人头像；执行完（botAssigned 清除且无定时）→ 用户头像。
+            悬停显示姓名（与主窗口一致） */}
+        <ActorAvatar bot={!!task.botAssigned || !!task.schedule} />
       </div>
 
       {/* 标题以下内容（可折叠） */}

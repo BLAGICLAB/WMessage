@@ -84,9 +84,10 @@ export interface Task {
    * 不一致 → 冲突拒写（防整行覆盖 lost-update）。新建/未读快照的写不带此字段。
    */
   expectedUpdatedAt?: number;
-  /** 已交给机器人执行（🤖 点击置真，执行结束无论成败清除） */
+  /** 已交给机器人执行（🤖 点击置真，执行结束无论成败清除）。
+   *  头像规则（2026-09-05）：botAssigned 或 schedule 任一存在 → 机器人头像；否则用户头像 */
   botAssigned?: boolean;
-  /** 定时执行规则：daily:HH:MM / weekly:D:HH:MM / at:YYYY-MM-DDTHH:MM */
+  /** 定时执行规则：daily:HH:MM / weekly:D:HH:MM / at:YYYY-MM-DDTHH:MM（设置期间一直显示机器人头像） */
   schedule?: string | null;
   /** 上次定时执行时间（epoch ms） */
   schedLast?: number | null;

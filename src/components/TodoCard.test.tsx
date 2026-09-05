@@ -359,6 +359,51 @@ describe("TodoCardView 多文件绑定", () => {
   });
 });
 
+// —— 归属头像规则（2026-09-05）：定时设置后一直机器人头像；执行中机器人头像；执行完恢复用户头像 ——
+describe("TodoCardView 归属头像", () => {
+  it("无定时未交机器人 → 用户头像（profile mock 无图时显示姓名首字）", () => {
+    render(<TodoCardView task={baseTask} onUpdate={vi.fn()} onDelete={vi.fn()} />);
+    expect(screen.queryByAltText("Bot")).not.toBeInTheDocument();
+    expect(screen.getByTitle("Test")).toBeInTheDocument();
+  });
+
+  it("botAssigned=true（机器人干活中）→ 机器人头像", () => {
+    render(
+      <TodoCardView
+        task={{ ...baseTask, botAssigned: true }}
+        onUpdate={vi.fn()}
+        onDelete={vi.fn()}
+      />
+    );
+    expect(screen.getByAltText("Bot")).toBeInTheDocument();
+    expect(screen.queryByTitle("Test")).not.toBeInTheDocument();
+  });
+
+  it("设了定时（schedule）→ 一直显示机器人头像，即使 botAssigned 未置真", () => {
+    render(
+      <TodoCardView
+        task={{ ...baseTask, schedule: "daily:09:00" }}
+        onUpdate={vi.fn()}
+        onDelete={vi.fn()}
+      />
+    );
+    expect(screen.getByAltText("Bot")).toBeInTheDocument();
+  });
+
+  it("机器人干完活（botAssigned 清除且无定时）→ 恢复用户头像", () => {
+    // botAssigned: undefined 模拟执行结束后的落库状态（后端 set_bot_assigned(false)）
+    render(
+      <TodoCardView
+        task={{ ...baseTask, botAssigned: undefined }}
+        onUpdate={vi.fn()}
+        onDelete={vi.fn()}
+      />
+    );
+    expect(screen.queryByAltText("Bot")).not.toBeInTheDocument();
+    expect(screen.getByTitle("Test")).toBeInTheDocument();
+  });
+});
+
 // —— 子任务（2026-09-04）：点击文本内联编辑 + 全文显示不截断 ——
 describe("TodoCardView 子任务", () => {
   const subTask: Task = {
