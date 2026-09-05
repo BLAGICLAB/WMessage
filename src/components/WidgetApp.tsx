@@ -24,7 +24,7 @@ import {
 } from "@tauri-apps/api/window";
 import { listen, emit } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openTarget } from "../lib/openTarget";
 import { linkDisplayName } from "./WorkspacePage";
 import { focusMainWindow } from "../focus";
 import { handleCommandError } from "../lib/errorHandler";
@@ -214,16 +214,10 @@ export default function WidgetApp() {
     };
   }, []);
 
+  // 2026-09-05：统一走 openTarget——按内容判定 URL/路径（不信任存储的 kind，
+  // 历史数据可能把「C:\...」误存成 url 被 openUrl scope 拒），失败弹错不静默
   const openLink = (link: WorkspaceItem["links"][number]) => {
-    if (link.kind === "url") {
-      openUrl(link.targetUri).catch((e) =>
-        handleCommandError(e, "open url", { silent: true })
-      );
-    } else {
-      invoke("open_file_path", { path: link.targetUri }).catch((e) =>
-        handleCommandError(e, "open_file_path", { silent: true })
-      );
-    }
+    openTarget(link.targetUri);
   };
 
   /** 挂件工作区折叠切换：与任务卡一致走「上报主窗口落盘」（单写者架构），
@@ -488,11 +482,10 @@ export default function WidgetApp() {
       )
     );
 
-  // 打开绑定文件/文件夹（2026-08-26 起点文件名直开，不再有 📂 按钮）
+  // 打开绑定文件/文件夹（2026-08-26 起点文件名直开，不再有 📂 按钮；
+  // 2026-09-05 失败弹错不静默——点了没反应无从排查）
   const openFilePath = (path: string) => {
-    invoke("open_file_path", { path }).catch((e) =>
-      handleCommandError(e, "open_file_path", { silent: true })
-    );
+    openTarget(path);
   };
 
   // 复制单个绑定文件+标题（chip 内「复制」字样；与原 📋 单文件行为一致）

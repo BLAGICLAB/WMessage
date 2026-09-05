@@ -2,6 +2,34 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-09-05（周五）链接打开彻底修复：聊天下方文档/网址链接「有时打不开、有时显示 Program」
+
+老板报 bug：聊天后窗口下方的文档链接、网址链接，点击有时打不开，有时显示 program。
+
+**根因（三个叠加）**：
+①路径正则按空白截断——ChatPanel `RichText`/`extractFilePaths` 的路径字符集排除 `\s`，「C:\Program Files\...」「周报 修订版.docx」这类带空格路径被切成空格前一段：链接显示成「Program」（basename("C:\Program")）、点击打开一个不存在的路径。
+②所有点击失败都是 silent catch——白名单拒、路径不存在、scope 拒全部静默，用户分不清没点上还是打不开。
+③`looksLikeUrl` 把「C:」误判为 URL scheme（单字符即匹配）——工作区手动录入 Windows 路径被存成 url kind，点击走 openUrl 被 opener scope（仅 https?/mailto/tel）拒绝。另发现 URL 字符集把 ASCII `?` 当边界，带查询串的网址被截断打开错页面。
+
+**修复**：
+- 新增 `src/lib/openTarget.ts` 统一入口：`LINK_OR_PATH_RE` 路径分两支——带空格路径惰性锚定已知扩展名（docx/pdf/png 等），无空格路径保持旧行为；URL 分支放行 ASCII `?!`（查询串不截断），全角标点仍作边界；`openTarget` 按内容判定 URL/路径（不信任存储的 kind，兼容历史错配数据），裸域名自动补 https://；失败一律弹错可见（handleCommandError 非静默）
+- ChatPanel（RichText + 📄 文件按钮 + extractFilePaths）、MarkdownText（a/code）、WidgetApp（工作区链接 + 绑定文件）、WorkspacePage（openLink）全部改走统一入口；`looksLikeUrl` scheme 要求至少两字符（排除「C:」）
+- Rust `open_file_path` 加存在性前置检查：路径不存在回「路径不存在（可能已被移动或删除）：…」中文可读错误并记审计（原先透传 OS 英文报错且被前端静默吞掉）
+
+**测试**：新增 `openTarget.test.ts` 9 例（Program Files 带空格完整匹配、文件名含空格、URL+文件夹旧行为不变、无扩展名不误判、extractFilePaths 去重/跳 URL/反引号穿透、normalizeUrl、openTarget 分发、失败弹 alert 回归锁）。vitest 21 文件 195 全过（186→195）、tsc 零错、cargo bot_skills 90 全绿。
+
+## 2026-09-05（周五）修订模式修复：段落改几个字不再整段标删重写（.NET + Python 双引擎）
+
+用户反馈：修订时段落里只有几个字要改，产物却把整段标删、整段重写，看不出究竟改了哪几个字。
+
+**根因一（.NET 引擎主因）**：Program.cs 自实现 LCS 的 DiffList 合并缺陷——raw opcodes 先按同 tag 合并、del+ins 相邻并 replace 的逻辑只做一次，「del 块后跟多个 ins 块」（如连续两段都改写）时只有首个 ins 并入 replace，余下旧单元走整段标删、新文本整段插新段落。
+
+**根因二（双引擎口径不一致）**：行内字符级 diff 前的自洽校验要求「run 文本拼接 == 段落文本」，两套口径却对不上——.NET 单元文本用 `para.InnerText`（含域代码 instrText/文本框等全部后代文本）而 run 映射只数直接子级 w:r 的 w:t；Python 单元文本用 python-docx `para.text`（含 \t/\n/超链接文本）而 `run_text()` 只读 w:t。含超链接/域/tab/手动换行的段落校验必败，落「整段删+整段增」保底。
+
+**修复（两引擎同语义）**：①DiffList 合并改为「change 块（del/ins/replace）相邻即并入 replace 段」，对齐 difflib.get_opcodes 形态；②段落文本口径统一为 extract_document 同款（python-docx 1.2.0 para.text）：只数直接子级 w:r + w:hyperlink 内的 run，w:tab/w:ptab→\t、w:br/w:cr→\n、w:noBreakHyphen→'-'，域代码/已有修订不计——单元文本、run 映射、模型所见提取文本三方一致，正常段落恒走字符级 diff，保底只留域代码/内容控件等口径外结构；③文本入 run 与提取口径互逆（\t→w:tab、\n→w:br），equal 片段里的 tab/换行重建后不变形；④整段标删/行内重建前 hyperlink 解包（run 保留 rPr 外观），链接文本不再漏标删；⑤表格行/单元格文本、ReadDocxLines 同步换 ParaText 口径。
+
+**测试**：`dotnet_revisions_in_place_preserves_formatting` 夹具加 tab+超链接混合段回归锁（断言只删「三」增「四」、tab 保留、链接文本作 equal 片段保留、不得整段标删）；Python 兜底脚本手工实测同夹具同断言通过。cargo test 全目标全绿。
+
 ## 2026-09-02（周三）修订模式改为就地修订：保留原文档格式/字体（.NET + Python 双引擎）
 
 老板拍板：修订模式要保留原文的格式和字体进行修订。原先两引擎都是从零新建宋体 12pt 文档做纯文本 diff——标题样式、加粗、字体、表格结构全丢。

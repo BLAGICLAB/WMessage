@@ -41,7 +41,7 @@ fn path_openable(app: &AppHandle, path: &str, set: &std::collections::HashSet<St
 }
 
 /// 打开文件/文件夹（Rust 侧调用 opener 插件）：绕过前端窗口的 opener scope，
-/// 挂件窗口内聊天文件按钮点击直接走这里，失败返回错误给前端兜底 revealItemInDir。
+/// 挂件窗口内聊天文件按钮点击直接走这里，失败返回可读错误、前端弹错提示（不静默）。
 /// 2026-08-27 SEC-P1-3：限定任务卡绑定集合 / 工作区链接 / AI_Gen_Files——
 /// 原先任意路径可打开（.app/.command 即代码执行），是前端 XSS → RCE 的一跳。
 #[tauri::command]
@@ -57,6 +57,17 @@ pub async fn open_file_path(app: AppHandle, path: String) -> CommandResult<()> {
             value: path,
             reason: "仅允许打开任务卡绑定文件/工作区链接/AI_Gen_Files 内的文件".into(),
         });
+    }
+    // 2026-09-05：存在性前置检查——原先直接进 opener，文件不存在时回的是 OS 英文
+    // 报错（且前端 silent 吞掉，点了没反应）；现在给可读原因，前端弹错不静默
+    if (!std::path::Path::new(&path).exists()) {
+        crate::bot::audit_log(
+            &app,
+            &format!("open_file_path missing | {}", crate::audit::escape_for_log(&path, 200)),
+        );
+        return Err(CommandError::IoError(format!(
+            "路径不存在（可能已被移动或删除）：{path}"
+        )));
     }
     use tauri_plugin_opener::OpenerExt;
     app.opener()

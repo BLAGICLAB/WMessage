@@ -3,9 +3,14 @@ import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen, emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { focusMainWindow } from "../focus";
 import { handleCommandError, formatCommandError, isCommandError } from "../lib/errorHandler";
+import {
+  LINK_OR_PATH_RE,
+  extractFilePaths,
+  isHttpUrl,
+  openTarget,
+} from "../lib/openTarget";
 import { PROVIDER_PRESETS, matchPreset, type ProviderPreset } from "../lib/providerPresets";
 import type { Task } from "../types";
 import { basename } from "../format";
@@ -89,19 +94,17 @@ function Fold({
   );
 }
 
-/** 文本渲染：http(s) 链接和绝对文件路径可点击 */
+/** 文本渲染：http(s) 链接和绝对文件路径可点击（识别规则见 lib/openTarget，
+ *  2026-09-05 起带空格路径不再被截断成「C:\Program」） */
 function RichText({ text }: { text: string }) {
   const parts: ReactNode[] = [];
-  // URL | Windows 绝对路径 | 常见 unix 绝对路径（/Users /home /Library 等）
-  const re =
-    /(https?:\/\/[^\s<>"'，。；、（）【】！!？?`*]+)|([A-Za-z]:[\\/][^\s<>"'，。；、（）【】！!？?`*]+)|(\/(?:Users|home|var|tmp|Library|Applications|opt)\b[^\s<>"'，。；、（）【】！!？?`*]*)/g;
   let last = 0;
   let key = 0;
-  for (const m of text.matchAll(re)) {
+  for (const m of text.matchAll(LINK_OR_PATH_RE)) {
     const idx = m.index ?? 0;
     const token = m[0];
     if (idx > last) parts.push(<span key={key++}>{text.slice(last, idx)}</span>);
-    const isUrl = token.startsWith("http");
+    const isUrl = isHttpUrl(token);
     const clean = isUrl ? token.replace(/[.,;:!?]+$/, "") : token;
     parts.push(
       <a
@@ -110,14 +113,7 @@ function RichText({ text }: { text: string }) {
         title={isUrl ? "在浏览器打开" : "打开文件/文件夹"}
         onClick={(e) => {
           e.preventDefault();
-          if (isUrl) {
-            openUrl(clean).catch(() => {});
-          } else {
-            // 打开失败（如路径不存在）时退到在 Finder 中显示，不静默
-            invoke("open_file_path", { path: clean }).catch((e) =>
-              handleCommandError(e, "open_file_path", { silent: true })
-            );
-          }
+          openTarget(clean);
         }}
       >
         {clean}
@@ -257,21 +253,6 @@ export function ChatPanel({
   useEffect(() => {
     sessionIdRef.current = sessionId;
   }, [sessionId]);
-
-/** 从消息文本提取文件路径（绝对路径：/Users/...、盘符路径），去重保序。
- *  机器人产物的路径可能被反引号包裹（Markdown code），正则穿过反引号提取后清理。 */
-function extractFilePaths(content: string): string[] {
-  const re =
-    /(?:[A-Za-z]:[\\/][^\s<>"'，。；、（）【】`*]+|\/(?:Users|home|var|tmp|Library|Applications|opt)\b[^\s<>"'，。；、（）【】`*]*)/g;
-  const out: string[] = [];
-  for (const m of content.matchAll(re)) {
-    let p = m[0].replace(/[`.,;:!?]+$/, "").trim();
-    if (!p || p.startsWith("http")) continue;
-    if (out.includes(p)) continue;
-    out.push(p);
-  }
-  return out;
-}
 
   const persistHistory = (sid: string, msgs: Msg[]) => {
     invoke("bot_history_save", {
@@ -1361,10 +1342,8 @@ function extractFilePaths(content: string): string[] {
                         className="nm-btn inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t3)] max-w-full"
                         title={`打开文件：${f}`}
                         onClick={() => {
-                          // Rust 侧打开（挂件窗口 openPath 前端权限可能被拒，点击无反应）
-                          invoke("open_file_path", { path: f }).catch((e) =>
-                            handleCommandError(e, "open_file_path", { silent: true })
-                          );
+                          // Rust 侧打开（挂件窗口 openPath 前端权限可能被拒）；失败弹错不静默
+                          openTarget(f);
                         }}
                       >
                         <span className="truncate max-w-[180px]">📄 {basename(f)}</span>

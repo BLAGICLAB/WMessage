@@ -1,9 +1,8 @@
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { emit, listen } from "@tauri-apps/api/event";
-import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openTarget } from "../lib/openTarget";
 import { handleCommandError } from "../lib/errorHandler";
 import {
   DndContext,
@@ -33,9 +32,10 @@ import { FoldToggle } from "./FoldToggle";
 
 const stop = (e: React.PointerEvent) => e.stopPropagation();
 
-/** 目标地址是否像网址 */
+/** 目标地址是否像网址（2026-09-05 修复：scheme 至少两字符——
+ *  旧正则单字符即匹配，「C:」被当成 URL scheme，Windows 路径被误存成网址链接） */
 const looksLikeUrl = (s: string) =>
-  /^https?:\/\//i.test(s) || /^[a-z][a-z0-9+.-]*:/i.test(s);
+  /^https?:\/\//i.test(s) || /^[a-z][a-z0-9+.-]+:/i.test(s);
 
 /** 链接展示名：displayName 为空时回退（文件/文件夹用文件名，网址用地址本身） */
 export function linkDisplayName(link: WorkspaceLink): string {
@@ -226,19 +226,11 @@ export function WorkspacePage() {
     setEditingLink(null);
   };
 
+  // 2026-09-05：统一走 openTarget——按内容判定 URL/路径（不信任存储的 kind，
+  // 历史数据可能 kind 错配），失败弹错不静默；文件仍走 Rust open_file_path
+  // （前端 openPath 受 opener scope 限仅 $HOME/$APPDATA，D:\ 等路径会被拒）
   const openLink = (link: WorkspaceLink) => {
-    if (link.kind === "url") {
-      openUrl(link.targetUri).catch((e) =>
-        handleCommandError(e, "open url", { silent: true })
-      );
-    } else {
-      // 走 Rust 侧 open_file_path（与挂件工作区视图同方案）：前端 openPath 受
-      // opener scope 限（仅 $HOME/$APPDATA），Windows 上 D:\ 等非用户目录路径
-      // 会被静默拒绝；Rust 侧不受 scope 限，SEC-P1-3 白名单已含工作区链接
-      invoke("open_file_path", { path: link.targetUri }).catch((e) =>
-        handleCommandError(e, "open path", { silent: true })
-      );
-    }
+    openTarget(link.targetUri);
   };
 
   const removeLink = (id: string, linkId: string) => {
