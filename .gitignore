@@ -55,3 +55,17 @@ vite.config.js
 
 # pytest 缓存
 .pytest_cache/
+
+# ───────── API key / 凭据 / 用户数据（防御性，勿入库） ─────────
+# dotenv（含多环境）
+.env
+.env.*
+# wmessage 主配置（key 已走 macOS Keychain，但文件本身含 schema，不入库）
+bot-config.json
+# SQLite 数据库（任务/记忆/凭据缓存）
+wmessage*.db
+wmessage*.db-journal
+# Linux 上 keyring 不可用的明文 fallback（0600 权限，本机不生成，仅 CI/无人值守场景兜底）
+bot-api-key.txt
+bot-tavily-key.txt
+bot-brave-key.txt
