@@ -68,7 +68,8 @@ fn parse_hm(s: &str) -> Option<(u32, u32)> {
 /// 或歧义（秋拨）。原先五处一律 `.single()`，返回 None 时 occurrence_after 整体 None，
 /// 而基准 sched_last 不变 → daily/weekly 任务永久静默失效且零日志。
 /// 现在：歧义取较早者；不存在则顺延到下一个合法时刻（最多 +3h，仍无 → None 按无效处理）。
-fn resolve_local(dt: chrono::NaiveDateTime) -> Option<chrono::DateTime<chrono::Local>> {
+/// pub(crate)：due_notify.rs 的截止时间解析复用同一 DST 处理规则。
+pub(crate) fn resolve_local(dt: chrono::NaiveDateTime) -> Option<chrono::DateTime<chrono::Local>> {
     use chrono::offset::LocalResult;
     match dt.and_local_timezone(chrono::Local) {
         LocalResult::Single(t) => Some(t),

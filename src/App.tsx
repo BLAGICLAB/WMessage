@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { emit, listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
+import { isPermissionGranted, requestPermission } from "@tauri-apps/plugin-notification";
 import { KanbanBoard } from "./components/KanbanBoard";
 import mainLogo from "./assets/main-logo.png";
 import { ArchivePage } from "./components/ArchivePage";
@@ -73,6 +74,24 @@ export default function App() {
   }, [theme]);
   useEffect(() => subscribeTheme(setTheme), []);
   useEffect(() => subscribeSystem(setTheme), []);
+
+  // 系统通知权限（任务卡截止提醒由 Rust 侧 due_notify 经 tauri-plugin-notification 发送）。
+  // 平台差异：macOS 必须显式授权（UNUserNotificationCenter），未授权时通知静默失败，
+  // 且未签名/开发构建可能不弹横幅（系统限制）；Windows 的 toast 无需此授权流程
+  // （requestPermission 直接 granted），但会被「专注助手/勿扰」抑制、数秒后自动收入
+  // 通知中心——两平台系统行为差异，代码层面统一走插件 API。
+  useEffect(() => {
+    (async () => {
+      try {
+        if (!(await isPermissionGranted())) {
+          await requestPermission();
+        }
+      } catch (e) {
+        // 授权失败只留 console 痕迹：通知是增强功能，不打扰主流程
+        console.error("[notify] requestPermission failed", e);
+      }
+    })();
+  }, []);
   // 全局快捷键 Cmd/Ctrl+Alt+T：Rust 侧发 toggle-theme 给主窗口
   useEffect(() => {
     const unlisten = listen("toggle-theme", () => setTheme(toggleTheme()));

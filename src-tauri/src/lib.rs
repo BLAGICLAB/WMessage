@@ -16,6 +16,7 @@ mod bot_slash;
 mod bot_web;
 mod consts;
 pub mod db;
+mod due_notify;
 pub mod error;
 mod exec_steps;
 pub mod intent_router;
@@ -258,6 +259,8 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        // 系统通知：任务卡截止提醒（due_notify）；macOS 需用户授权（前端启动时请求）
+        .plugin(tauri_plugin_notification::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, shortcut, event| {
@@ -303,6 +306,9 @@ pub fn run() {
 
             // 定时任务卡调度器：每 30s 扫一次到点任务并自动执行
             bot_scheduler::start_scheduler(app.handle().clone());
+
+            // 截止通知：每 30s 扫一次活跃任务卡，截止前 1 小时 / 截止时刻发系统通知
+            due_notify::start_due_notifier(app.handle().clone());
 
             // 开关持久化：上次退出前 API 开启过，则自动恢复（写 api-enabled.flag）
             {
