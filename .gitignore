@@ -43,5 +43,15 @@ coverage/
 src-tauri/dotnet/**/bin
 src-tauri/dotnet/**/obj
 
-# 绿色便携包产物（本地打包，勿入库）
-wmessage-portable-*/
+# 绿色便携包产物（本地打包，勿入库）— 同时匹配目录和 zip
+wmessage-portable-*
+
+# TypeScript 增量编译缓存（tsconfig.node.json composite: true 触发）
+tsconfig.*.tsbuildinfo
+
+# vite.config.ts 的 tsc 编译产物（vite.config.d.ts + 编译后的 vite.config.js）
+vite.config.d.ts
+vite.config.js
+
+# pytest 缓存
+.pytest_cache/
