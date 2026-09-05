@@ -20,7 +20,8 @@ mod mock_llm_shared {
 
 use mock_llm_shared::{MockBehavior, MockLlmServer, ToolCallResponse};
 use wmessage_lib::bot::{
-    noop_replan, remember_fact_core, run_model_loop_core, AuditLevel, LlmHttp, ModelLoopDeps,
+    noop_replan, remember_fact_core, run_model_loop_core, ApiProvider, AuditLevel, LlmHttp,
+    ModelLoopDeps, DEFAULT_MAX_TOKENS,
     StopGuard, TaskRef,
 };
 use wmessage_lib::bot_chat::{format_memory_block, summarize_http, truncate_with_summary_core, ChatMsg};
@@ -47,6 +48,8 @@ fn core_http(server: &MockLlmServer) -> LlmHttp {
         base_url: server.base_url.clone(),
         api_key: "test-key".into(),
         model: "mock-model".into(),
+        provider: ApiProvider::Openai,
+        max_tokens: DEFAULT_MAX_TOKENS,
     }
 }
 
@@ -454,7 +457,9 @@ async fn scenario_7_cross_session_summary_recall() {
     let (_kept, summary, dropped) = truncate_with_summary_core(session_a, 63, move |dropped_msgs| {
         let client = client.clone();
         let base_url = base_url.clone();
-        async move { summarize_http(&client, &base_url, "test-key", "mock-model", "总结", &dropped_msgs).await }
+        async move {
+            summarize_http(&client, &base_url, "test-key", "mock-model", "总结", &dropped_msgs, ApiProvider::Openai, DEFAULT_MAX_TOKENS).await
+        }
     })
     .await;
     assert_eq!(dropped, 2, "会话 A 最旧两条被截断");

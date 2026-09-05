@@ -281,13 +281,18 @@ fn resolve_search_route(
 /// 搜索入口（bot 工具调用）：按设置页「Tavily 搜索」/「Brave 搜索」开关分流——
 /// 都关 → Bing+百度双引擎；开一个 → 对应 API。开了但没填 key / 双开 / 请求失败都
 /// 明确报错回传给模型（不静默回退百度，避免「以为在用 API 实际走的百度」）。
+/// 2026-09-05：Tavily/Brave key 改从系统凭据存储读（不再明文落 bot-config.json）；
+/// keyring 真实故障按无 key 处理（走 MissingKey 报错文案引导用户去设置页），
+/// 不弄挂 web_search 工具本身。
 pub async fn web_search_with_config(app: &tauri::AppHandle, query: &str) -> Result<String, String> {
     let cfg = crate::bot::load_config(app);
+    let tavily_key = crate::bot::read_search_key(crate::bot::KeySlot::Tavily).unwrap_or_default();
+    let brave_key = crate::bot::read_search_key(crate::bot::KeySlot::Brave).unwrap_or_default();
     match resolve_search_route(
         cfg.tavily_enabled,
-        cfg.tavily_key.as_deref(),
+        Some(tavily_key.as_str()),
         cfg.brave_enabled,
-        cfg.brave_key.as_deref(),
+        Some(brave_key.as_str()),
     ) {
         SearchRoute::Dual => web_search(query).await,
         SearchRoute::MissingKey => Err(

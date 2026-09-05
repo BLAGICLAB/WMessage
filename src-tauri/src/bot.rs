@@ -55,6 +55,44 @@ use tauri::{AppHandle, Emitter};
 pub const KEYRING_SERVICE: &str = "wmessage-bot";
 pub const KEYRING_USER: &str = "api-key";
 
+/// Key 用途槽位（2026-09-05：Tavily/Brave 搜索 key 统一进系统凭据存储，
+/// 不再明文落 bot-config.json——取消原「低风险搜索 key」例外）。
+/// 每个用途 = 独立的 keyring 用户名 + Linux 降级文件名；
+/// 主 LLM key 保持既有条目（"api-key" / bot-api-key.txt）不变，存量用户零迁移感。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeySlot {
+    /// 主 LLM API Key（既有条目，不动）
+    Llm,
+    /// Tavily 搜索 key（原明文落 bot-config.json，迁移后进 keyring）
+    Tavily,
+    /// Brave 搜索 key（同上）
+    Brave,
+}
+
+impl KeySlot {
+    /// keyring 用户名（同一 service 下的条目名）
+    pub fn keyring_user(&self) -> &'static str {
+        match self {
+            KeySlot::Llm => KEYRING_USER,
+            KeySlot::Tavily => "tavily_api_key",
+            KeySlot::Brave => "brave_api_key",
+        }
+    }
+    /// Linux 降级明文文件名（数据目录下，0600）
+    pub fn plaintext_filename(&self) -> &'static str {
+        match self {
+            KeySlot::Llm => "bot-api-key.txt",
+            KeySlot::Tavily => "bot-tavily-key.txt",
+            KeySlot::Brave => "bot-brave-key.txt",
+        }
+    }
+}
+
+fn key_entry(slot: KeySlot) -> CommandResult<keyring::Entry> {
+    keyring::Entry::new(KEYRING_SERVICE, slot.keyring_user())
+        .map_err(|e| CommandError::KeyringError(format!("系统凭据存储不可用：{e}")))
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase", default)]
 pub struct BotConfig {
@@ -73,8 +111,9 @@ pub struct BotConfig {
     /// 只允许访问这些目录内路径。空 = 用内置默认（~/Desktop ~/Downloads ~/Documents + 任务卡绑定文件夹）；
     /// 非空 = 用户列表整体替换默认。
     pub allowed_dirs: Vec<String>,
-    /// Tavily 搜索 API Key（2026-08-19 Phase 2，可选）：配置后 web_search 走 Tavily，
-    /// 失败回退 Bing+百度抓取。明文存本机配置文件（低风险搜索 key，区别于 LLM key 走 keyring）。
+    /// 仅用于旧版本迁移（2026-09-05 起 Tavily key 存系统凭据存储，不再明文落盘）：
+    /// 老 bot-config.json 里的明文 Tavily key，由 migrate_search_keys 读出迁入
+    /// keyring 后置 None 写回。新代码读写 Tavily key 一律走 read/write_search_key。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tavily_key: Option<String>,
     /// 「Tavily 搜索」开关（2026-08-20，可选）：None = 未显式设置，按旧行为自动
@@ -82,9 +121,9 @@ pub struct BotConfig {
     /// Bing+百度双引擎（即使配了 key）。分流逻辑见 bot_web::resolve_search_route。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tavily_enabled: Option<bool>,
-    /// Brave 搜索 API Key（2026-09-05，可选）：「Brave 搜索」开关开启后 web_search 走
-    /// Brave Web Search API，失败明确报错（不静默回退双引擎）。与 Tavily 互斥，
-    /// 同时开启报错。明文存本机配置文件（低风险搜索 key，区别于 LLM key 走 keyring）。
+    /// 仅用于旧版本迁移（2026-09-05 起 Brave key 存系统凭据存储，不再明文落盘）：
+    /// 老 bot-config.json 里的明文 Brave key，由 migrate_search_keys 读出迁入
+    /// keyring 后置 None 写回。新代码读写 Brave key 一律走 read/write_search_key。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub brave_key: Option<String>,
     /// 「Brave 搜索」开关（2026-09-05，可选）：语义与 tavily_enabled 对齐——
@@ -102,6 +141,17 @@ pub struct BotConfig {
     /// None（老配置文件缺字段）= "ask"。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub perm_mode: Option<String>,
+    /// API 协议（2026-09-05 Anthropic 兼容模式）："openai" = OpenAI 兼容
+    ///（/chat/completions + Bearer，旧行为）；"anthropic" = Anthropic 兼容
+    ///（/v1/messages + x-api-key + anthropic-version）。None = openai，老配置零影响；
+    /// 非法值按 openai 处理（ApiProvider::from_cfg 防御回退，与 perm_mode 同风格）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_provider: Option<String>,
+    /// max_tokens（2026-09-05，可选）：仅 Anthropic 模式使用（Anthropic 必填 max_tokens）；
+    /// None = 默认 8192，钳制 256..=200000（resolve_max_tokens）。
+    /// OpenAI 兼容模式不发送该字段（多数兼容网关不认识）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
 }
 
 impl Default for BotConfig {
@@ -119,8 +169,44 @@ impl Default for BotConfig {
             brave_enabled: None,              // 未显式设置 = 配了 key 就自动启用（同 Tavily）
             python_timeout_secs: None,        // 未配置 = 60s 默认
             perm_mode: None,                  // 未配置 = ask（弹授权）
+            api_provider: None,               // 未配置 = openai（旧行为）
+            max_tokens: None,                 // 未配置 = 8192 默认（仅 Anthropic 模式用）
         }
     }
+}
+
+/// API 协议枚举（2026-09-05 Anthropic 兼容模式）：配置字符串归一化，
+/// 非法值回退 Openai（防御回退，与 PermMode::from_cfg 同风格）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApiProvider {
+    Openai,
+    Anthropic,
+}
+
+impl ApiProvider {
+    pub fn from_cfg(s: Option<&str>) -> Self {
+        match s.map(|v| v.trim()) {
+            Some("anthropic") => ApiProvider::Anthropic,
+            _ => ApiProvider::Openai,
+        }
+    }
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ApiProvider::Openai => "openai",
+            ApiProvider::Anthropic => "anthropic",
+        }
+    }
+}
+
+/// max_tokens 默认值与合法范围（2026-09-05 老板拍板默认 8192；仅 Anthropic 模式发送）
+pub const DEFAULT_MAX_TOKENS: u32 = 8192;
+pub const MIN_MAX_TOKENS: u32 = 256;
+pub const MAX_MAX_TOKENS: u32 = 200_000;
+
+/// max_tokens 配置解析：None = 默认 8192；Some 钳制到 256..=200000
+pub fn resolve_max_tokens(v: Option<u32>) -> u32 {
+    v.unwrap_or(DEFAULT_MAX_TOKENS)
+        .clamp(MIN_MAX_TOKENS, MAX_MAX_TOKENS)
 }
 
 /// 授权模式枚举（2026-08-26）：配置字符串归一化，非法值回退 Ask（安全默认偏严一侧的可用形态）。
@@ -170,11 +256,6 @@ pub fn read_bypass_llm_switch(app: &AppHandle) -> bool {
     serde_json::from_str::<BotConfig>(&raw)
         .map(|c| c.bypass_llm_on_pre_step_hit)
         .unwrap_or(true)
-}
-
-fn key_entry() -> CommandResult<keyring::Entry> {
-    keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)
-        .map_err(|e| CommandError::KeyringError(format!("系统凭据存储不可用：{e}")))
 }
 
 // ───────────────────────── P2-32：Linux secret-service 探测 + 降级 ─────────────────────────
@@ -254,32 +335,32 @@ fn linux_app_data_dir() -> Option<std::path::PathBuf> {
 /// 降级 key 文件路径（P2-32）：与数据目录同一便携策略——优先复用 probe_log_dir
 /// 已定版的缓存结果（2026-08-26：防每次探测瞬时失败导致 key 文件与数据库分裂两地）；
 /// 未初始化（如启动早期 keyring 迁移先于首次 data_dir 调用）回退原现探逻辑。
-fn plaintext_key_path() -> std::path::PathBuf {
+/// 2026-09-05 起按 KeySlot 参数化（LLM/Tavily/Brave 各一个降级文件）。
+fn plaintext_key_path_for(slot: KeySlot) -> std::path::PathBuf {
     if let Some(cached) = crate::audit::cached_probe_dir() {
-        return cached.join("bot-api-key.txt");
+        return cached.join(slot.plaintext_filename());
     }
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|e| e.parent().map(|p| p.to_path_buf()));
-    crate::audit::probe_dir(exe_dir.as_deref(), linux_app_data_dir()).join("bot-api-key.txt")
+    crate::audit::probe_dir(exe_dir.as_deref(), linux_app_data_dir())
+        .join(slot.plaintext_filename())
 }
 
-/// 降级告警（P2-32）：每进程首用降级后端时记一条 WARN 审计（避免每次读 key 刷屏）。
+/// 降级告警（P2-32）：每进程首用降级后端时记一条 WARN 审计（避免每次读 key 刷屏；
+/// 三个 slot 共用同一次告警，审计文案带触发 slot 的文件名——2026-09-05 slot 泛化）。
 /// 写在与 key 文件同目录的 bot.log（无 AppHandle，走 write_warn_audit_to）。
-fn warn_fallback_once() {
+fn warn_fallback_once(slot: KeySlot) {
     static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if WARNED.swap(true, std::sync::atomic::Ordering::SeqCst) {
         return;
     }
-    if let Some(dir) = plaintext_key_path().parent().map(|p| p.to_path_buf()) {
-        crate::audit::write_warn_audit_to(
-            &dir,
-            "keyring_fallback_plaintext",
-            &[(
-                "reason",
-                "secret-service 不可用（无 dbus 会话），API Key 降级明文文件存储（0600）",
-            )],
+    if let Some(dir) = plaintext_key_path_for(slot).parent().map(|p| p.to_path_buf()) {
+        let reason = format!(
+            "secret-service 不可用（无 dbus 会话），API Key 降级明文文件存储（0600）：{}",
+            slot.plaintext_filename()
         );
+        crate::audit::write_warn_audit_to(&dir, "keyring_fallback_plaintext", &[("reason", &reason)]);
     }
 }
 
@@ -346,18 +427,27 @@ fn write_key_file_to(p: &std::path::Path, key: &str) -> CommandResult<()> {
 }
 
 /// 按后端分发读取（可测：PlaintextFile + 注入路径即「mock secret-service 不可用」）
-fn read_api_key_at(backend: KeyBackend, file: &std::path::Path) -> CommandResult<String> {
+/// 2026-09-05 起带 slot（System 后端按 slot 选 keyring 条目）
+fn read_api_key_at(
+    backend: KeyBackend,
+    file: &std::path::Path,
+    slot: KeySlot,
+) -> CommandResult<String> {
     match backend {
-        KeyBackend::System => classify_get_password(key_entry()?.get_password()),
+        KeyBackend::System => classify_get_password(key_entry(slot)?.get_password()),
         KeyBackend::PlaintextFile => read_key_file_from(file),
     }
 }
 
 /// 按后端分发存在性检查：缺失 → Ok(false)（对齐 classify_has_key 的 NoEntry 语义）；
 /// 真实读取故障 → Err，不吞成 false
-fn has_api_key_at(backend: KeyBackend, file: &std::path::Path) -> CommandResult<bool> {
+fn has_api_key_at(
+    backend: KeyBackend,
+    file: &std::path::Path,
+    slot: KeySlot,
+) -> CommandResult<bool> {
     match backend {
-        KeyBackend::System => match key_entry() {
+        KeyBackend::System => match key_entry(slot) {
             Ok(e) => classify_has_key(e.get_password()),
             Err(e) => Err(e),
         },
@@ -372,9 +462,14 @@ fn has_api_key_at(backend: KeyBackend, file: &std::path::Path) -> CommandResult<
 }
 
 /// 按后端分发写入
-fn write_api_key_at(backend: KeyBackend, file: &std::path::Path, key: &str) -> CommandResult<()> {
+fn write_api_key_at(
+    backend: KeyBackend,
+    file: &std::path::Path,
+    key: &str,
+    slot: KeySlot,
+) -> CommandResult<()> {
     match backend {
-        KeyBackend::System => key_entry()?
+        KeyBackend::System => key_entry(slot)?
             .set_password(key)
             .map_err(|e| CommandError::KeyringError(format!("保存 API Key 失败：{e}"))),
         KeyBackend::PlaintextFile => write_key_file_to(file, key),
@@ -382,9 +477,13 @@ fn write_api_key_at(backend: KeyBackend, file: &std::path::Path, key: &str) -> C
 }
 
 /// 按后端分发删除（幂等：文件不存在 = Ok）
-fn delete_api_key_at(backend: KeyBackend, file: &std::path::Path) -> CommandResult<()> {
+fn delete_api_key_at(
+    backend: KeyBackend,
+    file: &std::path::Path,
+    slot: KeySlot,
+) -> CommandResult<()> {
     match backend {
-        KeyBackend::System => key_entry()?
+        KeyBackend::System => key_entry(slot)?
             .delete_credential()
             .map_err(|e| CommandError::KeyringError(format!("清除 API Key 失败：{e}"))),
         KeyBackend::PlaintextFile => match std::fs::remove_file(file) {
@@ -415,37 +514,48 @@ fn classify_has_key(r: Result<String, keyring::Error>) -> CommandResult<bool> {
 }
 
 pub fn read_api_key() -> CommandResult<String> {
-    let backend = key_backend();
-    if backend == KeyBackend::PlaintextFile {
-        warn_fallback_once();
-    } else {
-        migrate_plaintext_key_if_system();
-    }
-    read_api_key_at(backend, &plaintext_key_path())
+    read_key_of_slot(KeySlot::Llm)
 }
 
 pub fn has_api_key() -> CommandResult<bool> {
+    has_key_of_slot(KeySlot::Llm)
+}
+
+/// 按 slot 读取（2026-09-05 泛化）：降级后端记 WARN；System 后端顺带做降级文件回迁
+fn read_key_of_slot(slot: KeySlot) -> CommandResult<String> {
     let backend = key_backend();
     if backend == KeyBackend::PlaintextFile {
-        warn_fallback_once();
+        warn_fallback_once(slot);
     } else {
-        migrate_plaintext_key_if_system();
+        migrate_plaintext_key_if_system(slot);
     }
-    has_api_key_at(backend, &plaintext_key_path())
+    read_api_key_at(backend, &plaintext_key_path_for(slot), slot)
+}
+
+/// 按 slot 存在性检查（2026-09-05 泛化）
+fn has_key_of_slot(slot: KeySlot) -> CommandResult<bool> {
+    let backend = key_backend();
+    if backend == KeyBackend::PlaintextFile {
+        warn_fallback_once(slot);
+    } else {
+        migrate_plaintext_key_if_system(slot);
+    }
+    has_api_key_at(backend, &plaintext_key_path_for(slot), slot)
 }
 
 /// SEC-P1-4（2026-08-27 安全审计）：System 后端恢复可用时，把降级明文 key 迁回 keychain
 /// 并删除文件——原先降级文件永久残留（clear 走当前后端，PlaintextFile 分支轮不到），
 /// 用户以为「早就只用 keychain 了」，明文副本却留在数据目录。幂等：无文件直接返回。
-fn migrate_plaintext_key_if_system() {
-    let p = plaintext_key_path();
+/// 2026-09-05 起按 slot 泛化（LLM/Tavily/Brave 各自的降级文件都回迁）。
+fn migrate_plaintext_key_if_system(slot: KeySlot) {
+    let p = plaintext_key_path_for(slot);
     if !p.exists() {
         return;
     }
     // 读不出内容不删文件（数据保留优先），迁回 keychain 成功才删
     let migrated = read_key_file_from(&p)
         .ok()
-        .and_then(|key| key_entry().ok().map(|e| e.set_password(&key)))
+        .and_then(|key| key_entry(slot).ok().map(|e| e.set_password(&key)))
         .and_then(|r| r.ok())
         .is_some();
     if migrated {
@@ -454,21 +564,51 @@ fn migrate_plaintext_key_if_system() {
             crate::audit::write_warn_audit_to(
                 &dir,
                 "keyring_migrated_from_plaintext",
-                &[("file", "bot-api-key.txt")],
+                &[("file", slot.plaintext_filename())],
             );
         }
     }
 }
 
 fn write_api_key(key: &str) -> CommandResult<()> {
-    let backend = key_backend();
-    if backend == KeyBackend::PlaintextFile {
-        warn_fallback_once();
-    }
-    write_api_key_at(backend, &plaintext_key_path(), key)
+    write_key_of_slot(KeySlot::Llm, key)
 }
 
-/// 返回给前端的配置视图：不含 key 本体，只有 hasApiKey 标志
+/// 按 slot 写入（2026-09-05 泛化）
+fn write_key_of_slot(slot: KeySlot, key: &str) -> CommandResult<()> {
+    let backend = key_backend();
+    if backend == KeyBackend::PlaintextFile {
+        warn_fallback_once(slot);
+    }
+    write_api_key_at(backend, &plaintext_key_path_for(slot), key, slot)
+}
+
+// ─────────────────── 搜索 key（Tavily/Brave，2026-09-05 起进 keyring） ───────────────────
+
+/// 读搜索 key：未配置返回空串（搜索 key 是可选配置，区别于主 LLM key 的硬错误）；
+/// keyring 真实故障（锁定/权限拒绝）透传 Err，不静默吞成空串（与 has_api_key 同策略）。
+pub fn read_search_key(slot: KeySlot) -> CommandResult<String> {
+    // 先 has 后 read：has 的 NoEntry → Ok(false) 语义即「未配置」；
+    // 真实故障在 has 处已透传 Err
+    if !has_key_of_slot(slot)? {
+        return Ok(String::new());
+    }
+    read_key_of_slot(slot)
+}
+
+/// 搜索 key 存在性检查（bot_get_config 组 view 用）
+pub fn has_search_key(slot: KeySlot) -> CommandResult<bool> {
+    has_key_of_slot(slot)
+}
+
+/// 写搜索 key（bot_set_config 顶层参数用；Some(非空) 覆盖语义在调用方）
+pub fn write_search_key(slot: KeySlot, key: &str) -> CommandResult<()> {
+    write_key_of_slot(slot, key)
+}
+
+/// 返回给前端的配置视图：不含任何 key 本体，只有 has 标志
+///（2026-09-05：Tavily/Brave key 也进系统凭据存储，view 不再透传 key 明文——
+/// 原「低风险搜索 key 明文落配置文件」例外取消）
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BotConfigView {
@@ -480,18 +620,22 @@ pub struct BotConfigView {
     pub bypass_llm_on_pre_step_hit: bool,
     /// 本地文件工具白名单目录（原样透传；空 = 后端用内置默认）
     pub allowed_dirs: Vec<String>,
-    /// Tavily key 原样透传给设置页（本机配置文件，低风险）
-    pub tavily_key: String,
+    /// Tavily key 是否已存系统凭据存储（2026-09-05 起 key 本体不进 view）
+    pub has_tavily_key: bool,
     /// 「Tavily 搜索」开关原样透传（None = 未显式设置，前端按 key 有无显示自动态）
     pub tavily_enabled: Option<bool>,
-    /// Brave key 原样透传给设置页（2026-09-05，同 tavily_key 策略）
-    pub brave_key: String,
+    /// Brave key 是否已存系统凭据存储（2026-09-05 起 key 本体不进 view）
+    pub has_brave_key: bool,
     /// 「Brave 搜索」开关原样透传（None = 未显式设置，前端按 key 有无显示自动态）
     pub brave_enabled: Option<bool>,
     /// run_python 默认超时秒数（None = 60s 默认；设置页可改，硬钳 300s）
     pub python_timeout_secs: Option<u64>,
     /// 授权模式原样透传给设置页（None = ask 新默认；非法值前端按 ask 显示）
     pub perm_mode: Option<String>,
+    /// API 协议原样透传给设置页（2026-09-05；None = openai 旧行为，非法值前端按 openai 显示）
+    pub api_provider: Option<String>,
+    /// max_tokens 原样透传（None = 8192 默认；仅 Anthropic 模式用，后端钳 256..=200000）
+    pub max_tokens: Option<u32>,
 }
 
 /// 旧版本迁移：bot-config.json 里有明文 key → 迁入系统凭据存储并清掉文件里的明文。
@@ -519,6 +663,78 @@ pub fn migrate_legacy_key(app: &AppHandle) -> Result<(), String> {
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let raw = serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?;
     std::fs::write(&p, raw).map_err(|e| e.to_string())
+}
+
+/// 搜索 key 迁移（2026-09-05：Tavily/Brave 不再明文落 bot-config.json）：
+/// bot-config.json 里仍含明文 tavily_key/brave_key → keyring 里还没有对应 key 时
+/// 写入（不覆盖更新值）→ 配置文件里这两个字段置 None 写回 → 审计留痕；
+/// keyring 写失败保留文件明文下次再试（数据保留优先，与 migrate_legacy_key 同策略）。
+/// App 启动时调用一次（设置页读配置时也会兜底触发，双调用点与 migrate_legacy_key 一致）。
+pub fn migrate_search_keys(app: &AppHandle) -> Result<(), String> {
+    let p = config_path(app);
+    if !p.exists() {
+        return Ok(());
+    }
+    let raw = std::fs::read_to_string(&p).map_err(|e| e.to_string())?;
+    let mut cfg: BotConfig = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+    if cfg.tavily_key.is_none() && cfg.brave_key.is_none() {
+        return Ok(()); // 无明文残留，幂等
+    }
+    let mut changed = false;
+    for (slot, field) in [
+        (KeySlot::Tavily, cfg.tavily_key.clone()),
+        (KeySlot::Brave, cfg.brave_key.clone()),
+    ] {
+        let has_in_store = has_search_key(slot).unwrap_or(false);
+        let mut write = |key: &str| write_search_key(slot, key).map_err(|e| e.message());
+        let (remaining, migrated) = migrate_search_key_slot(field.as_deref(), has_in_store, &mut write);
+        if migrated {
+            crate::audit_event!(
+                app,
+                crate::audit::AuditLevel::Info,
+                "config.search_key_migrated",
+                "slot" => slot.keyring_user(),
+            );
+        }
+        let field_ref = match slot {
+            KeySlot::Tavily => &mut cfg.tavily_key,
+            KeySlot::Brave => &mut cfg.brave_key,
+            KeySlot::Llm => unreachable!("Llm 槽位由 migrate_legacy_key 负责"),
+        };
+        if *field_ref != remaining {
+            *field_ref = remaining;
+            changed = true;
+        }
+    }
+    if !changed {
+        return Ok(());
+    }
+    let dir = crate::db::data_dir(app);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let raw = serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?;
+    std::fs::write(&p, raw).map_err(|e| e.to_string())
+}
+
+/// 单 slot 迁移内核（注入 has/write 便于单测，不碰真实 keyring）：
+/// - 无明文（None/空串）→ (None, false)：字段归 None，幂等
+/// - keyring 已有值 → (None, false)：不覆盖更新值，直接清明文
+/// - 写入成功 → (None, true)：清明文 + 记迁移
+/// - 写入失败 → (保留明文, false)：下次再试（数据保留优先）
+fn migrate_search_key_slot(
+    plaintext: Option<&str>,
+    has_in_store: bool,
+    write: &mut dyn FnMut(&str) -> Result<(), String>,
+) -> (Option<String>, bool) {
+    let Some(k) = plaintext.map(str::trim).filter(|k| !k.is_empty()) else {
+        return (None, false);
+    };
+    if has_in_store {
+        return (None, false);
+    }
+    match write(k) {
+        Ok(()) => (None, true),
+        Err(_) => (Some(k.to_string()), false),
+    }
 }
 
 /// 读 bot-config.json（不存在/解析失败回默认）。内部共用（bot_fs 白名单等）
@@ -556,32 +772,42 @@ pub(crate) fn add_allowed_dir(app: &AppHandle, dir: &str) -> Result<(), String> 
 #[tauri::command]
 pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
     let _ = migrate_legacy_key(&app); // 兜底：设置页读配置时也确保无明文残留
+    let _ = migrate_search_keys(&app); // 兜底：Tavily/Brave 明文 key 同样迁进 keyring
     let cfg = load_config(&app);
 
     // F1：keyring 真实故障（钥匙串锁定/权限拒绝）不再吞成「未配置」，
     // 结构化 KeyringError 透传给前端，设置页可提示用户检查 keychain
     let has_api_key = has_api_key()?;
+    // 搜索 key 同策略（2026-09-05）：真实故障透传 Err，不吞成 false
+    let has_tavily_key = has_search_key(KeySlot::Tavily)?;
+    let has_brave_key = has_search_key(KeySlot::Brave)?;
     Ok(BotConfigView {
         base_url: cfg.base_url,
         model: cfg.model,
         has_api_key,
         bypass_llm_on_pre_step_hit: cfg.bypass_llm_on_pre_step_hit,
         allowed_dirs: cfg.allowed_dirs,
-        tavily_key: cfg.tavily_key.unwrap_or_default(),
+        has_tavily_key,
         tavily_enabled: cfg.tavily_enabled,
-        brave_key: cfg.brave_key.unwrap_or_default(),
+        has_brave_key,
         brave_enabled: cfg.brave_enabled,
         python_timeout_secs: cfg.python_timeout_secs,
         perm_mode: cfg.perm_mode,
+        api_provider: cfg.api_provider,
+        max_tokens: cfg.max_tokens,
     })
 }
 
-/// 保存配置。api_key：Some(非空) 写入凭据存储并覆盖；None/空串不动已存的 key。
+/// 保存配置。api_key / tavily_key / brave_key 三个顶层参数同语义：
+/// Some(非空) 写入系统凭据存储并覆盖；None/空串不动已存的 key。
+///（2026-09-05：Tavily/Brave key 从 BotConfig 字段改成顶层参数，与主 key 同模式）
 #[tauri::command]
 pub fn bot_set_config(
     app: AppHandle,
     config: BotConfig,
     api_key: Option<String>,
+    tavily_key: Option<String>,
+    brave_key: Option<String>,
 ) -> CommandResult<()> {
     if let Some(k) = api_key {
         let k = k.trim();
@@ -589,22 +815,41 @@ pub fn bot_set_config(
             write_api_key(k)?;
         }
     }
-    // 文件里只留非敏感配置（api_key 字段忽略）
+    for (slot, key) in [
+        (KeySlot::Tavily, tavily_key),
+        (KeySlot::Brave, brave_key),
+    ] {
+        if let Some(k) = key {
+            let k = k.trim();
+            if !k.is_empty() {
+                write_search_key(slot, k)?;
+            }
+        }
+    }
+    // 文件里只留非敏感配置，三个 key 字段强制置 None（双保险：前端误把 key
+    // 塞进 config 对象也不落明文）
+    write_bot_config_file(&crate::db::data_dir(&app), config)
+}
+
+/// bot_set_config 落盘内核（抽出便于单测，2026-09-05）：强制剥离三个 key 字段
+/// （api_key/tavily_key/brave_key 一律 None）后写 bot-config.json。
+/// base_url 非 https 且非回环 → 警告（T1-6，api_key 明文传输风险）；
+/// 只警告不拒写——本地推理服务是合法场景，且不能破坏存量用户配置。
+fn write_bot_config_file(dir: &std::path::Path, config: BotConfig) -> CommandResult<()> {
     let mut cfg = config;
     cfg.api_key = None;
-    // T1-6（2026-09-03）：base_url 非 https 且非回环 → 警告（api_key 明文传输风险）；
-    // 只警告不拒写——本地推理服务是合法场景，且不能破坏存量用户配置
+    cfg.tavily_key = None;
+    cfg.brave_key = None;
     if !base_url_is_safe(&cfg.base_url) {
         eprintln!(
             "[bot] 警告：base_url 非 https 且非回环地址，API Key 将明文传输：{}",
             cfg.base_url
         );
     }
-    let dir = crate::db::data_dir(&app);
-    std::fs::create_dir_all(&dir).map_err(|e| CommandError::IoError(e.to_string()))?;
+    std::fs::create_dir_all(dir).map_err(|e| CommandError::IoError(e.to_string()))?;
     let raw =
         serde_json::to_string_pretty(&cfg).map_err(|e| CommandError::IoError(e.to_string()))?;
-    std::fs::write(config_path(&app), raw).map_err(|e| CommandError::IoError(e.to_string()))
+    std::fs::write(dir.join("bot-config.json"), raw).map_err(|e| CommandError::IoError(e.to_string()))
 }
 
 /// base_url 安全判定（T1-6）：空 / https:// / 回环地址（localhost、127.x、::1）
@@ -623,7 +868,11 @@ pub(crate) fn base_url_is_safe(url: &str) -> bool {
 /// 清除已保存的 API Key
 #[tauri::command]
 pub fn bot_clear_api_key() -> CommandResult<()> {
-    delete_api_key_at(key_backend(), &plaintext_key_path())
+    delete_api_key_at(
+        key_backend(),
+        &plaintext_key_path_for(KeySlot::Llm),
+        KeySlot::Llm,
+    )
 }
 
 // ───────────────────────── 审计日志 ─────────────────────────
@@ -2415,6 +2664,30 @@ mod bot_config_tests {
         assert_eq!(PermMode::Ask.as_str(), "ask");
         assert_eq!(PermMode::Yolo.as_str(), "yolo");
     }
+
+    #[test]
+    fn api_provider_defaults_to_openai_and_falls_back() {
+        // 老配置缺 apiProvider 字段 → None → Openai（2026-09-05 Anthropic 兼容模式：
+        // 老配置零影响）；非法值/空白防御回退 Openai（与 PermMode::from_cfg 同风格）
+        let raw = r#"{"baseUrl":"https://api.deepseek.com/v1","model":"deepseek-chat"}"#;
+        let cfg: BotConfig = serde_json::from_str(raw).unwrap();
+        assert_eq!(ApiProvider::from_cfg(cfg.api_provider.as_deref()), ApiProvider::Openai);
+        assert_eq!(ApiProvider::from_cfg(None), ApiProvider::Openai);
+        assert_eq!(ApiProvider::from_cfg(Some("openai")), ApiProvider::Openai);
+        assert_eq!(ApiProvider::from_cfg(Some("anthropic")), ApiProvider::Anthropic);
+        assert_eq!(ApiProvider::from_cfg(Some("Anthropic")), ApiProvider::Openai, "大小写不识别，回退 Openai");
+        assert_eq!(ApiProvider::from_cfg(Some("garbage")), ApiProvider::Openai);
+        assert_eq!(ApiProvider::Openai.as_str(), "openai");
+        assert_eq!(ApiProvider::Anthropic.as_str(), "anthropic");
+    }
+
+    #[test]
+    fn max_tokens_default_and_clamped() {
+        assert_eq!(resolve_max_tokens(None), DEFAULT_MAX_TOKENS, "None = 默认 8192");
+        assert_eq!(resolve_max_tokens(Some(4096)), 4096);
+        assert_eq!(resolve_max_tokens(Some(1)), MIN_MAX_TOKENS, "低于下限钳 256");
+        assert_eq!(resolve_max_tokens(Some(999_999)), MAX_MAX_TOKENS, "高于上限钳 200000");
+    }
 }
 
 /// F1（Phase 6b）单测：keyring 错误分类纯函数。
@@ -2502,12 +2775,12 @@ mod p2_32_keyring_fallback_tests {
         let tmp = tempfile::tempdir().unwrap();
         let f = tmp.path().join("bot-api-key.txt");
         // has：文件缺失 → Ok(false)（对齐 NoEntry 语义，不吞错）
-        assert!(!has_api_key_at(KeyBackend::PlaintextFile, &f).unwrap());
+        assert!(!has_api_key_at(KeyBackend::PlaintextFile, &f, KeySlot::Llm).unwrap());
         // read：缺失 → KeyringError（与 System 路径 NoEntry 同 code，前端 hint 一致）
-        let e = read_api_key_at(KeyBackend::PlaintextFile, &f).unwrap_err();
+        let e = read_api_key_at(KeyBackend::PlaintextFile, &f, KeySlot::Llm).unwrap_err();
         assert_eq!(e.code(), "KEYRING_ERROR");
         // write → 文件落盘 + Unix 0600（与 api-token.txt 同策略）
-        write_api_key_at(KeyBackend::PlaintextFile, &f, "sk-test-123").unwrap();
+        write_api_key_at(KeyBackend::PlaintextFile, &f, "sk-test-123", KeySlot::Llm).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -2518,23 +2791,23 @@ mod p2_32_keyring_fallback_tests {
             );
         }
         assert_eq!(
-            read_api_key_at(KeyBackend::PlaintextFile, &f).unwrap(),
+            read_api_key_at(KeyBackend::PlaintextFile, &f, KeySlot::Llm).unwrap(),
             "sk-test-123"
         );
-        assert!(has_api_key_at(KeyBackend::PlaintextFile, &f).unwrap());
+        assert!(has_api_key_at(KeyBackend::PlaintextFile, &f, KeySlot::Llm).unwrap());
         // delete：删后不存在；再删幂等 Ok
-        delete_api_key_at(KeyBackend::PlaintextFile, &f).unwrap();
+        delete_api_key_at(KeyBackend::PlaintextFile, &f, KeySlot::Llm).unwrap();
         assert!(!f.exists());
-        delete_api_key_at(KeyBackend::PlaintextFile, &f).unwrap();
+        delete_api_key_at(KeyBackend::PlaintextFile, &f, KeySlot::Llm).unwrap();
     }
 
     #[test]
     fn plaintext_write_creates_parent_dirs() {
         let tmp = tempfile::tempdir().unwrap();
         let f = tmp.path().join("nested").join("bot-api-key.txt");
-        write_api_key_at(KeyBackend::PlaintextFile, &f, "sk-x").unwrap();
+        write_api_key_at(KeyBackend::PlaintextFile, &f, "sk-x", KeySlot::Llm).unwrap();
         assert_eq!(
-            read_api_key_at(KeyBackend::PlaintextFile, &f).unwrap(),
+            read_api_key_at(KeyBackend::PlaintextFile, &f, KeySlot::Llm).unwrap(),
             "sk-x"
         );
     }
@@ -2554,6 +2827,120 @@ mod p2_32_keyring_fallback_tests {
             "缺 WARN 审计行: {log:?}"
         );
         assert!(log.contains("reason=secret-service 不可用"), "got: {log:?}");
+    }
+}
+
+/// 2026-09-05 搜索 key 进 keyring：KeySlot 泛化 + 迁移内核单测。
+/// 真实 keychain 测试环境不可用，走 PlaintextFile 后端 + 注入路径（P2-32 同模式）。
+#[cfg(test)]
+mod search_key_slot_tests {
+    use super::*;
+
+    #[test]
+    fn key_slot_keyring_user_and_filename_distinct() {
+        // 三个用途的 keyring 条目名 / 降级文件名必须互不相同，且 LLM 保持既有值不变
+        assert_eq!(KeySlot::Llm.keyring_user(), "api-key");
+        assert_eq!(KeySlot::Llm.plaintext_filename(), "bot-api-key.txt");
+        assert_eq!(KeySlot::Tavily.keyring_user(), "tavily_api_key");
+        assert_eq!(KeySlot::Tavily.plaintext_filename(), "bot-tavily-key.txt");
+        assert_eq!(KeySlot::Brave.keyring_user(), "brave_api_key");
+        assert_eq!(KeySlot::Brave.plaintext_filename(), "bot-brave-key.txt");
+    }
+
+    #[test]
+    fn search_slot_plaintext_backend_roundtrip() {
+        // Tavily/Brave 槽位走同一套后端分发（PlaintextFile 注入路径可测）
+        let tmp = tempfile::tempdir().unwrap();
+        for slot in [KeySlot::Tavily, KeySlot::Brave] {
+            let f = tmp.path().join(slot.plaintext_filename());
+            assert!(!has_api_key_at(KeyBackend::PlaintextFile, &f, slot).unwrap());
+            write_api_key_at(KeyBackend::PlaintextFile, &f, "tvly-x", slot).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(
+                    std::fs::metadata(&f).unwrap().permissions().mode() & 0o777,
+                    0o600,
+                    "搜索 key 降级文件同样必须 0600"
+                );
+            }
+            assert_eq!(
+                read_api_key_at(KeyBackend::PlaintextFile, &f, slot).unwrap(),
+                "tvly-x"
+            );
+            assert!(has_api_key_at(KeyBackend::PlaintextFile, &f, slot).unwrap());
+            // 覆盖写
+            write_api_key_at(KeyBackend::PlaintextFile, &f, "tvly-y", slot).unwrap();
+            assert_eq!(
+                read_api_key_at(KeyBackend::PlaintextFile, &f, slot).unwrap(),
+                "tvly-y"
+            );
+        }
+    }
+
+    #[test]
+    fn migrate_slot_migrates_plaintext_to_store() {
+        let mut written: Vec<String> = Vec::new();
+        let (remaining, migrated) =
+            migrate_search_key_slot(Some("tvly-plain"), false, &mut |k| {
+                written.push(k.to_string());
+                Ok(())
+            });
+        assert_eq!(written, vec!["tvly-plain"], "应写入 keyring");
+        assert_eq!(remaining, None, "写成功 → 配置字段清掉明文");
+        assert!(migrated, "应记迁移");
+    }
+
+    #[test]
+    fn migrate_slot_does_not_overwrite_existing_store_value() {
+        // keyring 已有值（用户可能在别处更新过）→ 不覆盖，直接清明文
+        let mut written: Vec<String> = Vec::new();
+        let (remaining, migrated) =
+            migrate_search_key_slot(Some("tvly-old-plain"), true, &mut |k| {
+                written.push(k.to_string());
+                Ok(())
+            });
+        assert!(written.is_empty(), "keyring 已有值时不得覆盖写入");
+        assert_eq!(remaining, None, "明文仍应清掉（目标 = 文件不留明文）");
+        assert!(!migrated, "未发生写入不算迁移（不记迁移审计）");
+    }
+
+    #[test]
+    fn migrate_slot_write_failure_keeps_plaintext() {
+        // keyring 写失败 → 保留文件明文，下次再试（数据保留优先）
+        let (remaining, migrated) =
+            migrate_search_key_slot(Some("tvly-plain"), false, &mut |_| {
+                Err("keychain locked".to_string())
+            });
+        assert_eq!(remaining.as_deref(), Some("tvly-plain"), "写失败保留明文");
+        assert!(!migrated);
+    }
+
+    #[test]
+    fn migrate_slot_no_plaintext_is_idempotent() {
+        let (r1, m1) = migrate_search_key_slot(None, false, &mut |_| Ok(()));
+        assert_eq!((r1, m1), (None, false));
+        // 空串/空白视同无明文
+        let (r2, m2) = migrate_search_key_slot(Some("  "), false, &mut |_| Ok(()));
+        assert_eq!((r2, m2), (None, false));
+    }
+
+    #[test]
+    fn write_bot_config_file_strips_all_key_fields() {
+        // bot_set_config 双保险回归：前端误把 key 塞进 config 对象也不落明文
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg = BotConfig::default();
+        cfg.api_key = Some("sk-llm-plain".into());
+        cfg.tavily_key = Some("tvly-plain".into());
+        cfg.brave_key = Some("bsa-plain".into());
+        write_bot_config_file(tmp.path(), cfg).unwrap();
+        let raw = std::fs::read_to_string(tmp.path().join("bot-config.json")).unwrap();
+        assert!(!raw.contains("sk-llm-plain"), "LLM key 不得落盘：{raw}");
+        assert!(!raw.contains("tvly-plain"), "Tavily key 不得落盘：{raw}");
+        assert!(!raw.contains("bsa-plain"), "Brave key 不得落盘：{raw}");
+        // 字段本身也应消失（skip_serializing_if + 强制 None）
+        let saved: BotConfig = serde_json::from_str(&raw).unwrap();
+        assert!(saved.api_key.is_none() && saved.tavily_key.is_none() && saved.brave_key.is_none());
     }
 }
 

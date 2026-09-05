@@ -111,6 +111,8 @@ const REPLANNER_PROMPT: &str = "\
 要求：不要重复失败的调用方式；换参数/换工具/拆小步骤；最多 8 步；不要输出 JSON 以外的内容。";
 
 /// 调 Planner（单次非流式，60s 超时）。失败 → Err，调用方降级。
+/// 2026-09-05 Anthropic 兼容模式：按 provider 分支 URL/鉴权头/请求体/响应解析
+///（Anthropic 侧转换走 bot_anthropic 纯函数；失败同样 Err → 调用方降级为 None）。
 async fn call_planner(
     app: &tauri::AppHandle,
     system: &str,
@@ -123,19 +125,43 @@ async fn call_planner(
         .timeout(std::time::Duration::from_secs(60))
         .build()
         .map_err(|e| format!("初始化 HTTP 客户端失败：{e}"))?;
-    let url = format!("{}/chat/completions", cfg.base_url.trim_end_matches('/'));
-    let body = serde_json::json!({
-        "model": cfg.model,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        "stream": false
-    });
-    let resp = client
-        .post(&url)
-        .bearer_auth(api_key.trim())
-        .json(&body)
+    let provider = crate::bot::ApiProvider::from_cfg(cfg.api_provider.as_deref());
+    let (url, body) = match provider {
+        crate::bot::ApiProvider::Openai => (
+            format!("{}/chat/completions", cfg.base_url.trim_end_matches('/')),
+            serde_json::json!({
+                "model": cfg.model,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                "stream": false
+            }),
+        ),
+        crate::bot::ApiProvider::Anthropic => {
+            let msgs = [
+                serde_json::json!({"role": "system", "content": system}),
+                serde_json::json!({"role": "user", "content": user}),
+            ];
+            let body = crate::bot_anthropic::build_anthropic_body(
+                &cfg.model,
+                &msgs,
+                &serde_json::json!([]),
+                crate::bot::resolve_max_tokens(cfg.max_tokens),
+                false,
+            )
+            .map_err(|e| format!("Planner 消息转换失败：{e}"))?;
+            (crate::bot_anthropic::anthropic_messages_url(&cfg.base_url), body)
+        }
+    };
+    let req = client.post(&url).json(&body);
+    let req = match provider {
+        crate::bot::ApiProvider::Openai => req.bearer_auth(api_key.trim()),
+        crate::bot::ApiProvider::Anthropic => {
+            crate::bot_anthropic::apply_anthropic_auth(req, api_key.trim())
+        }
+    };
+    let resp = req
         .send()
         .await
         .map_err(|e| format!("Planner 请求失败：{e}"))?;
@@ -146,12 +172,17 @@ async fn call_planner(
         .json()
         .await
         .map_err(|e| format!("Planner 响应解析失败：{e}"))?;
-    let text = v
-        .get("choices")
-        .and_then(|c| c.as_array())
-        .and_then(|a| a.first())
-        .and_then(|c| c["message"]["content"].as_str())
-        .unwrap_or("");
+    let text = match provider {
+        crate::bot::ApiProvider::Openai => v
+            .get("choices")
+            .and_then(|c| c.as_array())
+            .and_then(|a| a.first())
+            .and_then(|c| c["message"]["content"].as_str())
+            .unwrap_or("")
+            .to_string(),
+        crate::bot::ApiProvider::Anthropic => crate::bot_anthropic::parse_anthropic_response(&v),
+    };
+    let text = text.as_str();
     // 2026-08-28 批次3审计 P2-6：非流式 Planner 响应可能带 <think> 段，先剥再提取 JSON
     let text = crate::bot_chat::strip_think_blocks(text);
     parse_plan(&text).ok_or_else(|| format!("Planner 输出无法解析为计划：{}", crate::bot::truncate_for_log(&text, 200)).into())

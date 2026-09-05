@@ -5,6 +5,7 @@ mod api_handlers;
 mod api_server;
 mod audit;
 pub mod bot;
+mod bot_anthropic;
 pub mod bot_chat;
 mod bot_fs;
 mod bot_model_loop;
@@ -326,6 +327,10 @@ pub fn run() {
                 let handle = app.handle().clone();
                 if let Err(e) = bot::migrate_legacy_key(&handle) {
                     eprintln!("[bot] legacy key migration failed: {e}");
+                }
+                // 2026-09-05：Tavily/Brave 搜索 key 同样从配置文件明文迁进 keyring
+                if let Err(e) = bot::migrate_search_keys(&handle) {
+                    eprintln!("[bot] search key migration failed: {e}");
                 }
             }
 

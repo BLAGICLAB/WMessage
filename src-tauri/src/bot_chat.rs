@@ -949,6 +949,8 @@ const SUMMARIZE_MAX_CHARS: usize = 200_000;
 /// 非流式摘要调用内核（2026-09-04 记忆模块 Step 1：从 bot_compact 提炼，连接参数注入——
 /// 测试直连 mock LLM，生产薄壳 summarize_messages 从 bot_get_config/read_api_key 取配置）。
 /// pub：tests/llm_integration.rs 直用（与 bot::run_model_loop_core 同先例）。
+/// 2026-09-05 Anthropic 兼容模式：provider/max_tokens 注入，按协议分支
+/// URL/鉴权头/请求体/响应解析（Anthropic 侧转换走 bot_anthropic 纯函数）。
 pub async fn summarize_http(
     client: &reqwest::Client,
     base_url: &str,
@@ -956,8 +958,9 @@ pub async fn summarize_http(
     model: &str,
     system_prompt: &str,
     messages: &[ChatMsg],
+    provider: crate::bot::ApiProvider,
+    max_tokens: u32,
 ) -> CommandResult<String> {
-    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let mut msgs: Vec<serde_json::Value> = vec![serde_json::json!({
         "role": "system",
         "content": system_prompt
@@ -975,15 +978,35 @@ pub async fn summarize_http(
     for m in kept.iter().rev() {
         msgs.push(serde_json::json!({"role": m.role, "content": m.content}));
     }
-    let body = serde_json::json!({
-        "model": model,
-        "messages": msgs,
-        "stream": false
-    });
-    let resp = client
-        .post(&url)
-        .bearer_auth(api_key.trim())
-        .json(&body)
+    let (url, body) = match provider {
+        crate::bot::ApiProvider::Openai => (
+            format!("{}/chat/completions", base_url.trim_end_matches('/')),
+            serde_json::json!({
+                "model": model,
+                "messages": msgs,
+                "stream": false
+            }),
+        ),
+        crate::bot::ApiProvider::Anthropic => {
+            let body = crate::bot_anthropic::build_anthropic_body(
+                model,
+                &msgs,
+                &serde_json::json!([]),
+                max_tokens,
+                false,
+            )
+            .map_err(|e| format!("摘要消息转换失败：{e}"))?;
+            (crate::bot_anthropic::anthropic_messages_url(base_url), body)
+        }
+    };
+    let req = client.post(&url).json(&body);
+    let req = match provider {
+        crate::bot::ApiProvider::Openai => req.bearer_auth(api_key.trim()),
+        crate::bot::ApiProvider::Anthropic => {
+            crate::bot_anthropic::apply_anthropic_auth(req, api_key.trim())
+        }
+    };
+    let resp = req
         .send()
         .await
         .map_err(|e| format!("请求大模型失败：{e}"))?;
@@ -999,15 +1022,19 @@ pub async fn summarize_http(
         .json()
         .await
         .map_err(|e| format!("解析响应失败：{e}"))?;
-    // 安全访问：choices 可能为空数组/缺失（网关错误对象），索引会 panic（审计 P0 已修复）
-    let text = v
-        .get("choices")
-        .and_then(|c| c.as_array())
-        .and_then(|a| a.first())
-        .and_then(|c| c["message"]["content"].as_str())
-        .unwrap_or("");
+    let text = match provider {
+        // 安全访问：choices 可能为空数组/缺失（网关错误对象），索引会 panic（审计 P0 已修复）
+        crate::bot::ApiProvider::Openai => v
+            .get("choices")
+            .and_then(|c| c.as_array())
+            .and_then(|a| a.first())
+            .and_then(|c| c["message"]["content"].as_str())
+            .unwrap_or("")
+            .to_string(),
+        crate::bot::ApiProvider::Anthropic => crate::bot_anthropic::parse_anthropic_response(&v),
+    };
     // 2026-08-28 批次3审计 P2-6：模型带 <think> 段时先剥掉，防摘要带思考段写回历史
-    let text = strip_think_blocks(text).trim().to_string();
+    let text = strip_think_blocks(&text).trim().to_string();
     if text.is_empty() {
         // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
         return Err("模型返回了空摘要".into());
@@ -1031,7 +1058,19 @@ pub(crate) async fn summarize_messages(
         .timeout(std::time::Duration::from_secs(60))
         .build()
         .map_err(|e| format!("初始化 HTTP 客户端失败：{e}"))?;
-    summarize_http(&client, &cfg.base_url, &api_key, &cfg.model, system_prompt, messages).await
+    summarize_http(
+        &client,
+        &cfg.base_url,
+        &api_key,
+        &cfg.model,
+        system_prompt,
+        messages,
+        // 2026-09-05 Anthropic 兼容模式：协议与 max_tokens 从配置解析
+        //（None/非法值 → Openai，老配置零影响）
+        crate::bot::ApiProvider::from_cfg(cfg.api_provider.as_deref()),
+        crate::bot::resolve_max_tokens(cfg.max_tokens),
+    )
+    .await
 }
 
 /// /compact 快捷命令：把当前会话历史交给模型总结成摘要（单次非流式请求，不带工具）

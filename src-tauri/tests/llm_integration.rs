@@ -511,7 +511,8 @@ async fn llm_mixed_sequence_blacklist_then_whitelist_block_then_allow() {
 
 use std::sync::{Arc, Mutex};
 use wmessage_lib::bot::{
-    noop_replan, run_model_loop_core, AuditLevel, LlmHttp, ModelLoopDeps, StopGuard,
+    noop_replan, run_model_loop_core, ApiProvider, AuditLevel, LlmHttp, ModelLoopDeps, StopGuard,
+    DEFAULT_MAX_TOKENS,
 };
 use wmessage_lib::error::CommandError;
 
@@ -527,6 +528,17 @@ fn core_http(server: &MockLlmServer) -> LlmHttp {
         base_url: server.base_url.clone(),
         api_key: "test-key".into(),
         model: "mock-model".into(),
+        provider: ApiProvider::Openai,
+        max_tokens: DEFAULT_MAX_TOKENS,
+    }
+}
+
+/// Anthropic 协议变体（2026-09-05 Anthropic 兼容模式）：同一 mock server，
+/// 主循环应打 /v1/messages 并用 x-api-key 鉴权
+fn core_http_anthropic(server: &MockLlmServer) -> LlmHttp {
+    LlmHttp {
+        provider: ApiProvider::Anthropic,
+        ..core_http(server)
     }
 }
 
@@ -872,6 +884,280 @@ async fn core_truncated_stream_text_only_warns_but_returns() {
 }
 
 // ────────────────────────────────────────────────────────────────────
+// 2026-09-05 Anthropic 兼容模式：run_model_loop_core 的 Anthropic 分支
+// 跑真路径（同一 mock server，Anthropic 协议应答变体）。
+// 覆盖：流式文本 + usage 审计 + 协议路径/请求体形态断言、
+//       一次工具调用全回路（tool_use 解析 → 执行 → tool_result 回填 → 续聊）、
+//       流内 error 事件冒出。
+// ────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn core_anthropic_text_reply_happy_path() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::AnthropicTextReply("你好，Claude".into()));
+    let h = CoreHarness::new();
+
+    let (text, refs) = run_model_loop_core(
+        &core_http_anthropic(&server),
+        user_msgs(),
+        5,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec_never,
+        noop_replan,
+    )
+    .await
+    .expect("Anthropic 纯文本回复应 Ok");
+
+    assert_eq!(text, "你好，Claude");
+    assert!(refs.is_empty());
+    assert_eq!(server.request_count(), 1);
+    // 协议路径断言：打 /v1/messages 而不是 /chat/completions
+    let paths = server.request_paths();
+    assert_eq!(paths.len(), 1);
+    assert!(
+        paths[0].contains("POST /v1/messages"),
+        "Anthropic 模式应打 /v1/messages：{paths:?}"
+    );
+    // 请求体形态：Anthropic 形状（max_tokens 必填 + stream:true），无 OpenAI 的扁平 messages+tools 同层
+    let body = &server.request_bodies()[0];
+    let v: serde_json::Value = serde_json::from_str(body).expect("请求体应为合法 JSON");
+    assert_eq!(v["max_tokens"], serde_json::json!(8192), "Anthropic 必填 max_tokens");
+    assert_eq!(v["stream"], serde_json::json!(true));
+    assert_eq!(v["messages"][0]["role"], serde_json::json!("user"));
+    assert!(
+        v["messages"][0]["content"].is_array(),
+        "Anthropic 消息 content 应为块数组：{body}"
+    );
+    // tools 转 Anthropic 形态（name/input_schema 平铺，无 type:"function" 包装）
+    assert!(v["tools"][0].get("name").is_some());
+    assert!(v["tools"][0].get("input_schema").is_some());
+    assert!(v["tools"][0].get("function").is_none());
+    // usage 审计：message_start 的 input=12 + message_delta 的 output=7
+    let events = h.events();
+    assert!(
+        events.contains(&"llm.request") && events.contains(&"llm.response") && events.contains(&"llm.usage"),
+        "应记 llm.request/response/usage 审计：{events:?}"
+    );
+}
+
+#[tokio::test]
+async fn core_anthropic_tool_call_round_trip_executes_and_continues() {
+    // 轮次 1：Anthropic tool_use（stop_reason=tool_use）→ 执行 → tool_result 回填 →
+    // 轮次 2：纯文本。覆盖 tool_use 解析 + OpenAI 形状历史 → Anthropic 回填转换真路径。
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::AnthropicToolCall(ToolCallResponse {
+        name: "list_tasks".into(),
+        arguments: "{}".into(),
+    }));
+    server.push_behavior(MockBehavior::AnthropicTextReply("共 2 个任务".into()));
+    let h = CoreHarness::new();
+
+    let calls: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+    let calls2 = calls.clone();
+    let exec = move |name: String, args: String| {
+        let calls = calls2.clone();
+        async move {
+            calls.lock().unwrap().push((name, args));
+            ("共 2 个任务明细".into(), Vec::new())
+        }
+    };
+
+    let (text, _) = run_model_loop_core(
+        &core_http_anthropic(&server),
+        user_msgs(),
+        5,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("Anthropic 工具回路应 Ok");
+
+    assert_eq!(text, "共 2 个任务");
+    assert_eq!(
+        calls.lock().unwrap().as_slice(),
+        &[("list_tasks".to_string(), "{}".to_string())],
+        "注入 executor 应被以解析出的 (name, arguments) 调用一次"
+    );
+    assert_eq!(server.request_count(), 2, "工具执行后应续聊第二轮");
+    // 第二轮请求体：assistant 的 tool_calls 已转 tool_use 块，tool 结果已转 user 消息里的
+    // tool_result 块（严格交替 + tool_use_id 配对）
+    let bodies = server.request_bodies();
+    let v2: serde_json::Value =
+        serde_json::from_str(&bodies[1]).expect("第二轮请求体应为合法 JSON");
+    let msgs = v2["messages"].as_array().expect("messages 应为数组");
+    let roles: Vec<&str> = msgs.iter().filter_map(|m| m["role"].as_str()).collect();
+    assert_eq!(roles, ["user", "assistant", "user"], "消息应严格交替：{roles:?}");
+    let asst_blocks = msgs[1]["content"].as_array().expect("assistant content 应为块数组");
+    assert_eq!(asst_blocks[0]["type"], serde_json::json!("tool_use"));
+    assert_eq!(asst_blocks[0]["id"], serde_json::json!("toolu_mock"));
+    assert_eq!(asst_blocks[0]["name"], serde_json::json!("list_tasks"));
+    let user_blocks = msgs[2]["content"].as_array().expect("user content 应为块数组");
+    assert_eq!(user_blocks[0]["type"], serde_json::json!("tool_result"));
+    assert_eq!(user_blocks[0]["tool_use_id"], serde_json::json!("toolu_mock"));
+    assert_eq!(
+        user_blocks[0]["content"],
+        serde_json::json!("共 2 个任务明细")
+    );
+}
+
+#[tokio::test]
+async fn core_anthropic_stream_error_event_surfaced() {
+    // Anthropic 协议流内 error 事件（200 流内错误）必须显式报错，对齐 OpenAI 侧 P1-3 防线
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::AnthropicStreamError("overloaded".into()));
+    let h = CoreHarness::new();
+
+    let err = match run_model_loop_core(
+        &core_http_anthropic(&server),
+        user_msgs(),
+        5,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec_never,
+        noop_replan,
+    )
+    .await
+    {
+        Err(e) => e,
+        Ok(_) => panic!("Anthropic 流内 error 事件应报错"),
+    };
+
+    let msg = err.to_string();
+    assert!(
+        msg.contains("大模型返回错误") && msg.contains("overloaded"),
+        "错误应带流内错误详情：{msg}"
+    );
+    assert!(
+        h.events().contains(&"llm.stream_error"),
+        "应记 llm.stream_error 审计：{:?}",
+        h.events()
+    );
+}
+
+#[tokio::test]
+async fn core_anthropic_text_block_first_tool_use_remapped_no_ghost() {
+    // 2026-09-05 真实环境 400 回归（MiniMax Anthropic 端点
+    // "tool result's tool id(call_synth_0) not found"）：text 块占 index 0、
+    // tool_use 块占 index 1——ToolSlotMapper 必须把块序号重映射为稠密工具槽位，
+    // 否则累积层在 index 0 留幽灵空条目，空 id 被合成 call_synth_0 并以
+    // 「未知工具」执行回填，下一轮 tool_result 引用服务端从未签发的 id → 400。
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::AnthropicTextThenToolCall(
+        "我先读一下文件".into(),
+        ToolCallResponse {
+            name: "extract_document".into(),
+            arguments: r#"{"path":"/tmp/a.docx"}"#.into(),
+        },
+    ));
+    server.push_behavior(MockBehavior::AnthropicTextReply("读完了".into()));
+    let h = CoreHarness::new();
+
+    let calls: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+    let calls2 = calls.clone();
+    let exec = move |name: String, args: String| {
+        let calls = calls2.clone();
+        async move {
+            calls.lock().unwrap().push((name, args));
+            ("文件内容".into(), Vec::new())
+        }
+    };
+
+    let (text, _) = run_model_loop_core(
+        &core_http_anthropic(&server),
+        user_msgs(),
+        5,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("文本在前工具在后应 Ok");
+
+    assert_eq!(text, "读完了");
+    // 恰好执行 1 次真实工具（幽灵条目不得被当 tool_call 执行）
+    assert_eq!(
+        calls.lock().unwrap().as_slice(),
+        &[("extract_document".to_string(), r#"{"path":"/tmp/a.docx"}"#.to_string())],
+        "应只执行真实工具一次"
+    );
+    assert_eq!(server.request_count(), 2);
+    // 第二轮请求体：assistant 的 tool_use 用服务端真实 id，tool_result 配对同一 id，
+    // 且全请求体不得出现本地合成的 call_synth 占位 id
+    let bodies = server.request_bodies();
+    let v2: serde_json::Value =
+        serde_json::from_str(&bodies[1]).expect("第二轮请求体应为合法 JSON");
+    let msgs = v2["messages"].as_array().expect("messages 应为数组");
+    let asst = msgs.iter().find(|m| m["role"] == "assistant").expect("应有 assistant 消息");
+    let asst_blocks = asst["content"].as_array().expect("assistant content 应为块数组");
+    let tool_uses: Vec<&serde_json::Value> = asst_blocks
+        .iter()
+        .filter(|b| b["type"] == "tool_use")
+        .collect();
+    assert_eq!(tool_uses.len(), 1, "幽灵条目不得回填进历史：{asst_blocks:?}");
+    assert_eq!(tool_uses[0]["id"], serde_json::json!("toolu_real_1"));
+    assert_eq!(tool_uses[0]["name"], serde_json::json!("extract_document"));
+    let last = msgs.last().expect("应有末条消息");
+    let tool_results: Vec<&serde_json::Value> = last["content"]
+        .as_array()
+        .expect("user content 应为块数组")
+        .iter()
+        .filter(|b| b["type"] == "tool_result")
+        .collect();
+    assert_eq!(tool_results.len(), 1, "tool_result 应与 tool_use 一一配对");
+    assert_eq!(
+        tool_results[0]["tool_use_id"],
+        serde_json::json!("toolu_real_1")
+    );
+    assert!(
+        !bodies[1].contains("call_synth"),
+        "请求体不得出现合成占位 id：{}",
+        bodies[1]
+    );
+}
+
+#[tokio::test]
+async fn core_anthropic_summarize_http_non_stream() {
+    // summarize_http 的 Anthropic 分支：/v1/messages + 非流式 JSON 响应解析
+    //（content 数组 text 块拼接）
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::AnthropicJsonReply("用户在做 Anthropic 适配".into()));
+
+    let client = reqwest::Client::new();
+    let text = summarize_http(
+        &client,
+        &server.base_url,
+        "test-key",
+        "mock-model",
+        "总结",
+        &[chat_msg("user", "聊聊适配方案")],
+        ApiProvider::Anthropic,
+        DEFAULT_MAX_TOKENS,
+    )
+    .await
+    .expect("Anthropic 摘要应成功");
+
+    assert_eq!(text, "用户在做 Anthropic 适配");
+    let paths = server.request_paths();
+    assert!(
+        paths[0].contains("POST /v1/messages"),
+        "摘要应打 /v1/messages：{paths:?}"
+    );
+    let body = &server.request_bodies()[0];
+    let v: serde_json::Value = serde_json::from_str(body).expect("请求体应为合法 JSON");
+    assert_eq!(v["stream"], serde_json::json!(false), "摘要为非流式");
+    assert!(v.get("tools").is_none(), "摘要请求不带 tools");
+    assert!(v.get("system").is_some(), "system prompt 应转顶层 system 字段");
+}
+
+// ────────────────────────────────────────────────────────────────────
 // 记忆模块 Step 1（2026-09-04，设计 docs/BOT-MEMORY-DESIGN.md 5.2/7.3）
 // 截断即摘要全链路：超预算历史 → mock LLM（非流式 JsonReply）→ 摘要返回 →
 // 摘要落 bot_facts（内存库走生产同一 memory_insert）；LLM 失败退回直接丢弃。
@@ -930,6 +1216,8 @@ async fn memory_truncation_summary_called_and_persisted() {
                 "mock-model",
                 "总结",
                 &dropped_msgs,
+                ApiProvider::Openai,
+                DEFAULT_MAX_TOKENS,
             )
             .await
         }
@@ -996,6 +1284,8 @@ async fn memory_truncation_llm_http_error_falls_back_to_plain_drop() {
                 "mock-model",
                 "总结",
                 &dropped_msgs,
+                ApiProvider::Openai,
+                DEFAULT_MAX_TOKENS,
             )
             .await
         }
@@ -1045,6 +1335,8 @@ async fn memory_reflection_merges_oldest_ten_summaries() {
         "mock-model",
         "浓缩",
         &msgs,
+        ApiProvider::Openai,
+        DEFAULT_MAX_TOKENS,
     )
     .await
     .expect("Reflection 合成应成功");

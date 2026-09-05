@@ -57,6 +57,19 @@ pub enum MockBehavior {
     /// 非流式 JSON 回复（2026-09-04 记忆模块 Step 1）：summarize_http 走 stream:false
     /// + resp.json()（chat.completion 单体响应），SSE 变体表达不了这种形态
     JsonReply(String),
+    /// ── Anthropic 协议应答（2026-09-05 Anthropic 兼容模式）──
+    /// 流式文本回复（message_start/content_block_*/message_delta/message_stop 全套事件）
+    AnthropicTextReply(String),
+    /// 流式 tool_use 回复（content_block_start tool_use + input_json_delta + stop_reason=tool_use）
+    AnthropicToolCall(ToolCallResponse),
+    /// 200 流内 error 事件（Anthropic 协议 {"type":"error",...}，对齐 OpenAI 侧 StreamError）
+    AnthropicStreamError(String),
+    /// 非流式 Anthropic message JSON 回复（Planner/摘要走 stream:false + resp.json()）
+    AnthropicJsonReply(String),
+    /// 文本块在前 + tool_use 块在后（2026-09-05 真实环境 400 回归基准）：
+    /// text 块占 index 0、tool_use 块 index 1——Anthropic 块序号连文本一起数，
+    /// 重映射防线（bot_anthropic::ToolSlotMapper）必须把它归位到工具槽位 0
+    AnthropicTextThenToolCall(String, ToolCallResponse),
 }
 
 pub struct MockLlmServer {
@@ -70,6 +83,9 @@ pub struct MockLlmServer {
     /// 有什么」（记忆块 system 消息 / 工具结果回填）必须看真实出站请求，
     /// 不能只断言测试侧自拼的消息数组
     bodies: Arc<Mutex<Vec<String>>>,
+    /// 每个请求的请求行（2026-09-05 Anthropic 兼容模式）："POST /v1/messages HTTP/1.1"
+    /// ——断言协议分支打对了路径（/chat/completions vs /v1/messages）
+    paths: Arc<Mutex<Vec<String>>>,
     _handle: Option<thread::JoinHandle<()>>,
 }
 
@@ -84,11 +100,13 @@ impl MockLlmServer {
         let consumed = Arc::new(AtomicUsize::new(0));
         let behaviors = Arc::new(Mutex::new(Vec::<MockBehavior>::new()));
         let bodies = Arc::new(Mutex::new(Vec::<String>::new()));
+        let paths = Arc::new(Mutex::new(Vec::<String>::new()));
 
         let req_count_clone = request_count.clone();
         let consumed_clone = consumed.clone();
         let behaviors_clone = behaviors.clone();
         let bodies_clone = bodies.clone();
+        let paths_clone = paths.clone();
 
         let handle = thread::spawn(move || {
             // 每个连接独立处理（一线程一连接，简化测试并发）
@@ -139,6 +157,13 @@ impl MockLlmServer {
                     .map(|s| String::from_utf8_lossy(&buf[s..]).to_string())
                     .unwrap_or_default();
                 bodies_clone.lock().unwrap().push(body_text);
+                // 记录请求行（协议路径断言：/chat/completions vs /v1/messages）
+                let req_line = buf
+                    .iter()
+                    .position(|&b| b == b'\n')
+                    .map(|p| String::from_utf8_lossy(&buf[..p]).trim().to_string())
+                    .unwrap_or_default();
+                paths_clone.lock().unwrap().push(req_line);
 
                 // 决定行为：按 consumed index 读取预存队列，超出默认 fallback
                 let behavior = {
@@ -188,6 +213,7 @@ impl MockLlmServer {
             consumed,
             behaviors,
             bodies,
+            paths,
             _handle: Some(handle),
         }
     }
@@ -205,6 +231,12 @@ impl MockLlmServer {
     #[allow(dead_code)] // mock_llm.rs 同时被 include! 进 llm_integration.rs，那边不一定用
     pub fn request_bodies(&self) -> Vec<String> {
         self.bodies.lock().unwrap().clone()
+    }
+
+    /// 已收到的全部请求行（按到达顺序；2026-09-05 Anthropic 协议路径断言用）
+    #[allow(dead_code)] // 同上：include! 进 llm_integration.rs，那边不一定用
+    pub fn request_paths(&self) -> Vec<String> {
+        self.paths.lock().unwrap().clone()
     }
 }
 
@@ -249,13 +281,39 @@ fn build_http_response(behavior: &MockBehavior) -> String {
                 body
             )
         }
+        MockBehavior::AnthropicJsonReply(content) => {
+            // 非流式 Anthropic message 单体响应（2026-09-05 Anthropic 兼容模式：
+            // Planner/摘要走 stream:false + resp.json()）
+            let escaped = content.replace('\\', "\\\\").replace('"', "\\\"");
+            let body = format!(
+                r#"{{"id":"msg_mock","type":"message","role":"assistant","model":"mock-model","content":[{{"type":"text","text":"{escaped}"}}],"stop_reason":"end_turn","usage":{{"input_tokens":10,"output_tokens":5}}}}"#
+            );
+            format!(
+                "HTTP/1.1 200 OK\r\n\
+                 Content-Type: application/json\r\n\
+                 Content-Length: {}\r\n\
+                 Connection: close\r\n\
+                 \r\n\
+                 {}",
+                body.len(),
+                body
+            )
+        }
         _ => {
             let body = match behavior {
                 MockBehavior::TextReply(content) => sse_text_reply(content),
                 MockBehavior::ToolCall(tc) => sse_tool_call_reply(&tc.name, &tc.arguments),
                 MockBehavior::StreamError(msg) => sse_stream_error_reply(msg),
                 MockBehavior::RawSse(raw) => raw.clone(),
-                _ => unreachable!(), // FragmentedTextReply 在连接处理分支里单独分片写出；JsonReply 上面已处理
+                MockBehavior::AnthropicTextReply(content) => anthropic_sse_text_reply(content),
+                MockBehavior::AnthropicToolCall(tc) => {
+                    anthropic_sse_tool_call_reply(&tc.name, &tc.arguments)
+                }
+                MockBehavior::AnthropicTextThenToolCall(text, tc) => {
+                    anthropic_sse_text_then_tool_call_reply(text, &tc.name, &tc.arguments)
+                }
+                MockBehavior::AnthropicStreamError(msg) => anthropic_sse_error_reply(msg),
+                _ => unreachable!(), // FragmentedTextReply 在连接处理分支里单独分片写出；JsonReply/AnthropicJsonReply 上面已处理
             };
             format!(
                 "HTTP/1.1 200 OK\r\n\
@@ -323,6 +381,110 @@ fn sse_stream_error_reply(message: &str) -> String {
     // 与 sse_text_reply 同一 JSON 转义法
     let escaped = message.replace('\\', "\\\\").replace('"', "\\\"");
     format!("data: {{\"error\":{{\"message\":\"{escaped}\",\"type\":\"stream_error\"}}}}\n\ndata: [DONE]\n\n")
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Anthropic 协议 SSE 构造（2026-09-05 Anthropic 兼容模式）
+// 与 bot_anthropic.rs 的 parse_anthropic_event 解析路径对齐：
+// 完整事件序列 message_start → content_block_start → content_block_delta →
+// content_block_stop → message_delta(stop_reason+usage) → message_stop，
+// 事件行用真实 `event: xxx` + `data: {...}` 双行形态（event 行应被解析器忽略）。
+// ────────────────────────────────────────────────────────────────────
+
+/// Anthropic 流式文本回复
+fn anthropic_sse_text_reply(content: &str) -> String {
+    let escaped = content.replace('\\', "\\\\").replace('"', "\\\"");
+    format!(
+        "event: message_start\n\
+         data: {{\"type\":\"message_start\",\"message\":{{\"id\":\"msg_mock\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"mock-model\",\"stop_reason\":null,\"usage\":{{\"input_tokens\":12,\"output_tokens\":1}}}}}}\n\
+         \n\
+         event: content_block_start\n\
+         data: {{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{{\"type\":\"text\",\"text\":\"\"}}}}\n\
+         \n\
+         event: content_block_delta\n\
+         data: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":\"{escaped}\"}}}}\n\
+         \n\
+         event: content_block_stop\n\
+         data: {{\"type\":\"content_block_stop\",\"index\":0}}\n\
+         \n\
+         event: message_delta\n\
+         data: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"end_turn\"}},\"usage\":{{\"output_tokens\":7}}}}\n\
+         \n\
+         event: message_stop\n\
+         data: {{\"type\":\"message_stop\"}}\n\
+         \n"
+    )
+}
+
+/// Anthropic 流式 tool_use 回复（arguments 作为单个 input_json_delta 整段发出）
+fn anthropic_sse_tool_call_reply(name: &str, arguments: &str) -> String {
+    let args_escaped = arguments.replace('\\', "\\\\").replace('"', "\\\"");
+    format!(
+        "event: message_start\n\
+         data: {{\"type\":\"message_start\",\"message\":{{\"id\":\"msg_mock\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"mock-model\",\"stop_reason\":null,\"usage\":{{\"input_tokens\":12,\"output_tokens\":1}}}}}}\n\
+         \n\
+         event: content_block_start\n\
+         data: {{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{{\"type\":\"tool_use\",\"id\":\"toolu_mock\",\"name\":\"{name}\"}}}}\n\
+         \n\
+         event: content_block_delta\n\
+         data: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"input_json_delta\",\"partial_json\":\"{args_escaped}\"}}}}\n\
+         \n\
+         event: content_block_stop\n\
+         data: {{\"type\":\"content_block_stop\",\"index\":0}}\n\
+         \n\
+         event: message_delta\n\
+         data: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"tool_use\"}},\"usage\":{{\"output_tokens\":9}}}}\n\
+         \n\
+         event: message_stop\n\
+         data: {{\"type\":\"message_stop\"}}\n\
+         \n"
+    )
+}
+
+/// Anthropic 200 流内 error 事件（真实 API 在流中途失败时的形态；之后直接断流无 message_stop）
+fn anthropic_sse_error_reply(message: &str) -> String {
+    let escaped = message.replace('\\', "\\\\").replace('"', "\\\"");
+    format!(
+        "event: error\n\
+         data: {{\"type\":\"error\",\"error\":{{\"type\":\"api_error\",\"message\":\"{escaped}\"}}}}\n\
+         \n"
+    )
+}
+
+/// 文本块在前 + tool_use 块在后（2026-09-05 真实环境 400 回归基准）：
+/// text 块占 index 0，tool_use 块占 index 1（块序号连文本一起数，与真实 Anthropic 一致）
+fn anthropic_sse_text_then_tool_call_reply(text: &str, name: &str, arguments: &str) -> String {
+    let text_escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
+    let args_escaped = arguments.replace('\\', "\\\\").replace('"', "\\\"");
+    format!(
+        "event: message_start\n\
+         data: {{\"type\":\"message_start\",\"message\":{{\"id\":\"msg_mock\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"mock-model\",\"stop_reason\":null,\"usage\":{{\"input_tokens\":12,\"output_tokens\":1}}}}}}\n\
+         \n\
+         event: content_block_start\n\
+         data: {{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{{\"type\":\"text\",\"text\":\"\"}}}}\n\
+         \n\
+         event: content_block_delta\n\
+         data: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":\"{text_escaped}\"}}}}\n\
+         \n\
+         event: content_block_stop\n\
+         data: {{\"type\":\"content_block_stop\",\"index\":0}}\n\
+         \n\
+         event: content_block_start\n\
+         data: {{\"type\":\"content_block_start\",\"index\":1,\"content_block\":{{\"type\":\"tool_use\",\"id\":\"toolu_real_1\",\"name\":\"{name}\"}}}}\n\
+         \n\
+         event: content_block_delta\n\
+         data: {{\"type\":\"content_block_delta\",\"index\":1,\"delta\":{{\"type\":\"input_json_delta\",\"partial_json\":\"{args_escaped}\"}}}}\n\
+         \n\
+         event: content_block_stop\n\
+         data: {{\"type\":\"content_block_stop\",\"index\":1}}\n\
+         \n\
+         event: message_delta\n\
+         data: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"tool_use\"}},\"usage\":{{\"output_tokens\":15}}}}\n\
+         \n\
+         event: message_stop\n\
+         data: {{\"type\":\"message_stop\"}}\n\
+         \n"
+    )
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -601,6 +763,66 @@ fn mock_llm_server_returns_in_stream_error_payload() {
 
     std::thread::sleep(Duration::from_millis(50));
     assert_eq!(server.request_count(), 1);
+}
+
+#[test]
+fn mock_llm_server_anthropic_text_reply_format() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::AnthropicTextReply("你好".to_string()));
+
+    let raw = http_post_raw(
+        &format!("{}/messages", server.base_url),
+        r#"{"model":"claude-x","messages":[{"role":"user","content":"hi"}],"max_tokens":8192,"stream":true}"#,
+    )
+    .expect("POST 成功");
+
+    let (head, body) = split_response(&raw);
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "got: {head}");
+    assert!(head.contains("text/event-stream"), "应为 SSE");
+    assert!(body.contains(r#""type":"message_start""#), "应有 message_start");
+    assert!(body.contains(r#""type":"text_delta""#), "应有 text_delta");
+    assert!(body.contains(r#""stop_reason":"end_turn""#), "应有 stop_reason");
+    assert!(body.contains(r#""type":"message_stop""#), "应有 message_stop");
+    assert!(body.contains("event: message_start"), "应有 event 行");
+
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(server.request_count(), 1);
+    // 请求行记录（协议路径断言用）
+    assert!(
+        server.request_paths()[0].contains("POST /v1/messages"),
+        "应记录请求行：{:?}",
+        server.request_paths()
+    );
+}
+
+#[test]
+fn mock_llm_server_anthropic_tool_call_and_json_reply() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::AnthropicToolCall(ToolCallResponse {
+        name: "list_tasks".to_string(),
+        arguments: "{}".to_string(),
+    }));
+    server.push_behavior(MockBehavior::AnthropicJsonReply("摘要文本".to_string()));
+
+    let url = format!("{}/messages", server.base_url);
+    let raw = http_post_raw(&url, r#"{"model":"m","messages":[],"max_tokens":8192,"stream":true}"#)
+        .expect("POST 1");
+    let (_, body) = split_response(&raw);
+    assert!(body.contains(r#""type":"tool_use""#), "应有 tool_use 块");
+    assert!(body.contains(r#""id":"toolu_mock""#), "应有 tool_use id");
+    assert!(body.contains(r#""name":"list_tasks""#));
+    assert!(body.contains(r#""type":"input_json_delta""#));
+    assert!(body.contains(r#""stop_reason":"tool_use""#));
+
+    let raw = http_post_raw(&url, r#"{"model":"m","messages":[],"max_tokens":8192,"stream":false}"#)
+        .expect("POST 2");
+    let (head, body) = split_response(&raw);
+    assert!(head.contains("application/json"), "非流式应为 JSON");
+    assert!(body.contains(r#""type":"message""#));
+    assert!(body.contains("摘要文本"));
+
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(server.request_count(), 2);
 }
 
 #[test]

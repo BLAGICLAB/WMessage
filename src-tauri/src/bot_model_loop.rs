@@ -525,6 +525,12 @@ pub struct LlmHttp {
     pub base_url: String,
     pub api_key: String,
     pub model: String,
+    /// API 协议（2026-09-05 Anthropic 兼容模式）：Openai = /chat/completions + Bearer；
+    /// Anthropic = /v1/messages + x-api-key + anthropic-version（转换在 bot_anthropic）
+    pub provider: crate::bot::ApiProvider,
+    /// max_tokens（仅 Anthropic 模式发送——Anthropic 必填；OpenAI 兼容模式不发，
+    /// 多数兼容网关不认识该字段）。装配时已 resolve_max_tokens 钳制过。
+    pub max_tokens: u32,
 }
 
 /// run_model_loop_core 的同步副作用出口（2026-09-03 T1-2 重构）：
@@ -567,6 +573,9 @@ pub async fn run_model_loop(
         base_url: cfg.base_url,
         api_key,
         model: cfg.model,
+        // 2026-09-05 Anthropic 兼容模式：None/非法值 → Openai（旧行为零影响）
+        provider: crate::bot::ApiProvider::from_cfg(cfg.api_provider.as_deref()),
+        max_tokens: crate::bot::resolve_max_tokens(cfg.max_tokens),
     };
     // 2026-08-26 会话隔离：流式事件（bot-chat-delta 等）只由交互实例广播；
     // 后台定时任务（interactive=false）不向挂件推流——否则后台执行的输出会
@@ -625,7 +634,16 @@ where
     R: Fn(crate::bot_plan::PlanState, String) -> RP,
     RP: std::future::Future<Output = Option<Vec<String>>>,
 {
-    let url = format!("{}/chat/completions", http.base_url.trim_end_matches('/'));
+    // 2026-09-05 Anthropic 兼容模式：URL 按协议分支（OpenAI 走 /chat/completions，
+    // Anthropic 走 /v1/messages，base_url 两种填法都归一化）
+    let url = match http.provider {
+        crate::bot::ApiProvider::Openai => {
+            format!("{}/chat/completions", http.base_url.trim_end_matches('/'))
+        }
+        crate::bot::ApiProvider::Anthropic => {
+            crate::bot_anthropic::anthropic_messages_url(&http.base_url)
+        }
+    };
     let tools: serde_json::Value = serde_json::from_str(TOOLS).unwrap();
 
     let mut msgs = msgs;
@@ -694,12 +712,37 @@ where
                 }
             }
         }
-        let body = serde_json::json!({
-            "model": http.model,
-            "messages": msgs,
-            "tools": tools,
-            "stream": true
-        });
+        // 2026-09-05 Anthropic 兼容模式：body 按协议分支——内部消息流保持 OpenAI
+        // 形状不动，只在发请求前这一边界转换（bot_anthropic::build_anthropic_body）。
+        // 转换失败（理论不可达，msgs 必含 user 消息）记审计并报错，不静默发出畸形请求。
+        let body = match http.provider {
+            crate::bot::ApiProvider::Openai => serde_json::json!({
+                "model": http.model,
+                "messages": msgs,
+                "tools": tools,
+                "stream": true
+            }),
+            crate::bot::ApiProvider::Anthropic => {
+                match crate::bot_anthropic::build_anthropic_body(
+                    &http.model,
+                    &msgs,
+                    &tools,
+                    http.max_tokens,
+                    true,
+                ) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        audit(
+                            crate::audit::AuditLevel::Error,
+                            "llm.request_failed",
+                            vec![("err", format!("Anthropic 消息转换失败：{e}"))],
+                        );
+                        let hint = skill_finish(false, "消息转换失败");
+                        return Err(format!("Anthropic 消息转换失败：{e}{hint}").into());
+                    }
+                }
+            }
+        };
 
         // LLM 请求前记录（F-3 第四步 2026-08-18）
         audit(
@@ -708,6 +751,7 @@ where
             vec![
                 ("model", http.model.clone()),
                 ("msgs_count", msgs.len().to_string()),
+                ("provider", http.provider.as_str().to_string()),
             ],
         );
 
@@ -716,13 +760,16 @@ where
         let mut attempt = 0usize;
         let resp = loop {
             attempt += 1;
-            match http
-                .client
-                .post(&url)
-                .bearer_auth(http.api_key.trim())
-                .json(&body)
-                .send()
-                .await
+            // 2026-09-05 Anthropic 兼容模式：鉴权头按协议分支
+            //（Anthropic 用 x-api-key + anthropic-version，OpenAI 用 Bearer）
+            let req = http.client.post(&url).json(&body);
+            let req = match http.provider {
+                crate::bot::ApiProvider::Openai => req.bearer_auth(http.api_key.trim()),
+                crate::bot::ApiProvider::Anthropic => {
+                    crate::bot_anthropic::apply_anthropic_auth(req, http.api_key.trim())
+                }
+            };
+            match req.send().await
             {
                 Ok(r) => {
                     if !r.status().is_success()
@@ -802,13 +849,42 @@ where
         let mut last_finish_reason: Option<String> = None;
         let mut stream_error: Option<String> = None;
         let mut tc_index_overflow_logged = false;
+        // Anthropic 模式 token 用量累积（message_start 的 input / message_delta 的
+        // output，parse_anthropic_event 顺带捞出），回合结束写 llm.usage 审计
+        let mut usage_input: u64 = 0;
+        let mut usage_output: u64 = 0;
+        // Anthropic 模式 content block index → 工具槽位重映射（2026-09-05 真实环境
+        // 400 修复）：Anthropic 的块序号连文本块一起数，直接当工具序号累积会留下
+        // 幽灵空条目（详见 bot_anthropic::ToolSlotMapper 注释）
+        let mut tool_slot_mapper = crate::bot_anthropic::ToolSlotMapper::new();
 
         let mut stopped = false;
         {
             // 单行 SSE 处理（主循环与流尾残余行冲刷共用）；
             // 返回 Some = 流内错误载荷（P1-3），调用方收尾报错
             let mut handle_line = |line: &str| -> Option<String> {
-                let parsed = parse_sse_chunk(line)?;
+                // 2026-09-05 Anthropic 兼容模式：行解析按协议分支，解析出的
+                // ParsedChunk 走同一消费逻辑（think 拆分 / 工具累积 / 流完整性 /
+                // finish_reason 处理全部两协议共享）
+                let parsed = match http.provider {
+                    crate::bot::ApiProvider::Openai => parse_sse_chunk(line)?,
+                    crate::bot::ApiProvider::Anthropic => {
+                        match crate::bot_anthropic::parse_anthropic_event(line) {
+                            Some(mut ev) => {
+                                if let Some(u) = ev.usage {
+                                    usage_input += u.input_tokens;
+                                    usage_output += u.output_tokens;
+                                }
+                                // content block index → 稠密工具槽位（防幽灵条目）
+                                for d in &mut ev.chunk.tool_calls {
+                                    tool_slot_mapper.remap(d);
+                                }
+                                ev.chunk
+                            }
+                            None => return None,
+                        }
+                    }
+                };
                 if parsed.is_done {
                     saw_done_or_finish = true;
                     return None;
@@ -904,6 +980,19 @@ where
             }
         }
 
+        // Anthropic 模式：回合结束把流内捞到的 token 用量写审计（2026-09-05）
+        if http.provider == crate::bot::ApiProvider::Anthropic && (usage_input > 0 || usage_output > 0)
+        {
+            audit(
+                crate::audit::AuditLevel::Info,
+                "llm.usage",
+                vec![
+                    ("input_tokens", usage_input.to_string()),
+                    ("output_tokens", usage_output.to_string()),
+                ],
+            );
+        }
+
         // P1-3：200 流内错误载荷——显式报错 + 审计，不再返回空白回复
         if let Some(err) = stream_error {
             audit(
@@ -954,6 +1043,21 @@ where
                 return Err(format!("大模型响应中断：未收到完整回复{hint}").into());
             }
             final_text.push_str("\n\n⚠️ 响应可能被截断（连接提前结束），以上内容可能不完整。");
+        }
+
+        // 幽灵条目兜底防线（2026-09-05 真实环境 400 修复）：name 为空的条目从未收到
+        // function.name，不可能是真实工具调用（Anthropic 侧已被 ToolSlotMapper 重映射
+        // 防住，这里双保险覆盖 OpenAI 兼容网关的畸形流）。不丢弃的话：空 id 会被合成
+        // call_synth_* 并以「未知工具」执行回填，下一轮请求里 tool_result 引用一个
+        // 服务端从未签发的 id，严格 API 400（"tool result's tool id not found"）。
+        let ghost_count = tool_calls.iter().filter(|t| t.1.is_empty()).count();
+        if ghost_count > 0 {
+            tool_calls.retain(|t| !t.1.is_empty());
+            audit(
+                crate::audit::AuditLevel::Warn,
+                "llm.ghost_tool_call_dropped",
+                vec![("count", ghost_count.to_string())],
+            );
         }
 
         // P2-3（2026-08-28 批次3审计）：兼容省略 tool_call id 的供应商——空 id 进历史
