@@ -82,6 +82,15 @@ pub struct BotConfig {
     /// Bing+百度双引擎（即使配了 key）。分流逻辑见 bot_web::resolve_search_route。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tavily_enabled: Option<bool>,
+    /// Brave 搜索 API Key（2026-09-05，可选）：「Brave 搜索」开关开启后 web_search 走
+    /// Brave Web Search API，失败明确报错（不静默回退双引擎）。与 Tavily 互斥，
+    /// 同时开启报错。明文存本机配置文件（低风险搜索 key，区别于 LLM key 走 keyring）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub brave_key: Option<String>,
+    /// 「Brave 搜索」开关（2026-09-05，可选）：语义与 tavily_enabled 对齐——
+    /// None = 未显式设置，配了 braveKey 就当开启；Some(false) 强制不走 Brave。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub brave_enabled: Option<bool>,
     /// run_python 默认超时秒数（2026-08-20，可选）：None = 60s；工具参数 timeoutSecs 优先于此；
     /// 硬钳上限 300s（bot_py::resolve_timeout）。大计算（pandas 等）可调大。
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -106,6 +115,8 @@ impl Default for BotConfig {
             allowed_dirs: Vec::new(),         // 空 = 内置默认白名单
             tavily_key: None,                 // 未配置 = 双引擎抓取
             tavily_enabled: None,             // 未显式设置 = 配了 key 就自动启用（旧行为）
+            brave_key: None,                  // 未配置 = 不走 Brave
+            brave_enabled: None,              // 未显式设置 = 配了 key 就自动启用（同 Tavily）
             python_timeout_secs: None,        // 未配置 = 60s 默认
             perm_mode: None,                  // 未配置 = ask（弹授权）
         }
@@ -473,6 +484,10 @@ pub struct BotConfigView {
     pub tavily_key: String,
     /// 「Tavily 搜索」开关原样透传（None = 未显式设置，前端按 key 有无显示自动态）
     pub tavily_enabled: Option<bool>,
+    /// Brave key 原样透传给设置页（2026-09-05，同 tavily_key 策略）
+    pub brave_key: String,
+    /// 「Brave 搜索」开关原样透传（None = 未显式设置，前端按 key 有无显示自动态）
+    pub brave_enabled: Option<bool>,
     /// run_python 默认超时秒数（None = 60s 默认；设置页可改，硬钳 300s）
     pub python_timeout_secs: Option<u64>,
     /// 授权模式原样透传给设置页（None = ask 新默认；非法值前端按 ask 显示）
@@ -554,6 +569,8 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
         allowed_dirs: cfg.allowed_dirs,
         tavily_key: cfg.tavily_key.unwrap_or_default(),
         tavily_enabled: cfg.tavily_enabled,
+        brave_key: cfg.brave_key.unwrap_or_default(),
+        brave_enabled: cfg.brave_enabled,
         python_timeout_secs: cfg.python_timeout_secs,
         perm_mode: cfg.perm_mode,
     })

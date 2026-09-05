@@ -340,6 +340,10 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     tavilyKey: "",
     // 「Tavily 搜索」开关（2026-08-20）：开 = web_search 走 Tavily；关 = Bing+百度双引擎
     tavilyEnabled: false,
+    // Brave 搜索 API Key（2026-09-05，可选；「Brave 搜索」开关开启后 web_search 走 Brave）
+    braveKey: "",
+    // 「Brave 搜索」开关（2026-09-05）：开 = web_search 走 Brave；与 Tavily 互斥，双开报错
+    braveEnabled: false,
     // run_python 默认超时秒数（空 = 60s 默认；模型 timeoutSecs 参数优先；硬钳 300s）
     pythonTimeoutSecs: "",
     // 授权模式（2026-08-26）：strict=白名单外硬拒 / ask=白名单外弹授权（默认）/ yolo=全放行
@@ -378,6 +382,8 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         allowedDirs?: string[];
         tavilyKey?: string;
         tavilyEnabled?: boolean | null;
+        braveKey?: string;
+        braveEnabled?: boolean | null;
         pythonTimeoutSecs?: number | null;
         permMode?: string | null;
       }>(
@@ -393,6 +399,9 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         tavilyKey: c.tavilyKey ?? "",
         // 老配置没显式开关字段（null/undefined）时按旧行为显示自动态：配了 key 视为开启
         tavilyEnabled: c.tavilyEnabled ?? !!(c.tavilyKey && c.tavilyKey.trim()),
+        braveKey: c.braveKey ?? "",
+        // 老配置没显式开关字段（null/undefined）时按旧行为显示自动态：配了 key 视为开启
+        braveEnabled: c.braveEnabled ?? !!(c.braveKey && c.braveKey.trim()),
         pythonTimeoutSecs: c.pythonTimeoutSecs != null ? String(c.pythonTimeoutSecs) : "",
         // 老配置缺字段/非法值 → ask（与后端 PermMode::from_cfg 回退一致）
         permMode:
@@ -505,6 +514,10 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
           tavilyKey: c.tavilyKey.trim() ? c.tavilyKey.trim() : null,
           // 开关显式落盘：开 = Tavily，关 = Bing+百度双引擎
           tavilyEnabled: c.tavilyEnabled,
+          // 空串视为未配置（后端 Option 语义）
+          braveKey: c.braveKey.trim() ? c.braveKey.trim() : null,
+          // 开关显式落盘：开 = Brave，关 = 不走 Brave（与 Tavily 互斥，双开后端报错）
+          braveEnabled: c.braveEnabled,
           // 空 = 60s 默认；非法输入按未配置处理（后端 resolve_timeout 硬钳 300s）
           pythonTimeoutSecs: (() => {
             const n = parseInt(c.pythonTimeoutSecs.trim(), 10);
@@ -533,6 +546,13 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
   /** 「Tavily 搜索」开关：与「开启机器人聊天」同款——点击即持久化（复用整份配置保存） */
   const toggleTavily = async () => {
     const next = { ...config, tavilyEnabled: !config.tavilyEnabled };
+    setConfig(next);
+    await saveConfig(next);
+  };
+
+  /** 「Brave 搜索」开关（2026-09-05）：同 toggleTavily——点击即持久化（复用整份配置保存） */
+  const toggleBrave = async () => {
+    const next = { ...config, braveEnabled: !config.braveEnabled };
     setConfig(next);
     await saveConfig(next);
   };
@@ -669,7 +689,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
       <div className="nm-card p-5">
         <h2 className="text-lg font-semibold text-[var(--t1)]">个人资料</h2>
         <p className="mt-1 text-xs text-[var(--t5)]">
-          任务卡上的归属头像：人完成 → 用户头像；交给机器人 → 机器人头像。悬停头像显示姓名。
+          任务卡上的归属头像：设了定时 → 一直机器人头像；🤖 交给机器人执行中 → 机器人头像；执行完且无定时 → 用户头像。悬停头像显示姓名。
         </p>
         <div className="mt-4 space-y-4">
           <ProfileRow kind="user" label="用户" defaultName="我" />
@@ -1038,6 +1058,49 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
                 </p>
               )}
             </div>
+            {/* Brave 搜索（2026-09-05，照搬 Tavily 模式；与 Tavily 互斥） */}
+            <div className="space-y-1">
+              <div className="flex items-center justify-between gap-4">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-[var(--t2)]">Brave 搜索</p>
+                  <p className="mt-1 text-xs text-[var(--t5)]">
+                    开启后 web_search 走 Brave Search API（需填 key）；关闭走 Bing+百度双引擎
+                  </p>
+                </div>
+                <button
+                  className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] ${
+                    config.braveEnabled ? "nm-inset" : "nm-outset"
+                  }`}
+                  onClick={toggleBrave}
+                  disabled={configBusy}
+                >
+                  {configBusy ? "…" : config.braveEnabled ? "已开启" : "已关闭"}
+                </button>
+              </div>
+              <p className="text-[10px] text-[var(--t5)]">Brave 搜索 API Key（可选）</p>
+              <input
+                type="password"
+                value={config.braveKey}
+                onChange={(e) => setConfig((c) => ({ ...c, braveKey: e.target.value }))}
+                placeholder="BSA…（https://brave.com/search/api/ 免费获取；开关关闭时不使用）"
+                className="nm-inset w-full rounded-xl px-3 py-2 text-xs text-[var(--t3)] outline-none"
+              />
+              {config.braveEnabled && !config.braveKey.trim() ? (
+                <p className="text-[10px] text-[var(--danger)] leading-snug">
+                  已开启但未填 key：web_search 会报错提示，请填写 key 后点「保存配置」，或关闭开关。
+                </p>
+              ) : (
+                <p className="text-[10px] text-[var(--t6)] leading-snug">
+                  填 key 后点「保存配置」生效；与 Tavily 互斥，两个开关同时开启会报错。开关开启但缺 key / Brave 请求失败时会明确报错，不会静默走百度。
+                </p>
+              )}
+            </div>
+            {/* Tavily/Brave 双开冲突提示（2026-09-05）：后端同样明确报错，这里提前可见 */}
+            {config.tavilyEnabled && config.braveEnabled && (
+              <p className="text-[10px] text-[var(--danger)] leading-snug">
+                ⚠️ Tavily 与 Brave 只能开启一个，请关闭其中一个。
+              </p>
+            )}
             {/* F-1 bypass_llm_on_pre_step_hit 开关：技能路由新链路 / 旧链路回退闸 */}
             <div className="space-y-1">
               <p className="text-[10px] text-[var(--t5)]">智能技能路由</p>

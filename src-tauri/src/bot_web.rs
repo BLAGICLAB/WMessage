@@ -171,44 +171,146 @@ async fn search_tavily(key: &str, query: &str) -> Result<String, String> {
     Ok(out)
 }
 
-/// 分流决策（纯函数，可测）：开关 + key → 走哪条搜索路径
+/// Brave Web Search API（2026-09-05，设置页「Brave 搜索」开关开启后 web_search 走这里）：
+/// GET https://api.search.brave.com/res/v1/web/search，key 走 X-Subscription-Token 头。
+/// 与 Tavily 互斥（同时开启明确报错，见 resolve_search_route）。
+async fn search_brave(key: &str, query: &str) -> Result<String, String> {
+    // 查询串手工编码（同 search_bing 的 form_urlencoded 风格；reqwest 0.13 无 .query()）
+    let encoded: String = url::form_urlencoded::byte_serialize(query.as_bytes()).collect();
+    let target =
+        format!("https://api.search.brave.com/res/v1/web/search?q={encoded}&count=8");
+    let resp = http_client()
+        .get(&target)
+        .header(reqwest::header::ACCEPT, "application/json")
+        .header("X-Subscription-Token", key)
+        .send()
+        .await
+        .map_err(|e| format!("Brave 请求失败：{e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("Brave 返回 HTTP {}", resp.status()));
+    }
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("Brave 响应读取失败：{e}"))?;
+    let results = parse_brave_results(&body)?;
+    if results.is_empty() {
+        return Err("Brave 没有返回结果".into());
+    }
+    let mut out = String::new();
+    for (i, (title, url, desc)) in results.iter().enumerate() {
+        out.push_str(&format!(
+            "{}. [Brave] {}\n{}\n{}\n\n",
+            i + 1,
+            title,
+            url,
+            clean_snippet(desc)
+        ));
+    }
+    if out.chars().count() > SEARCH_OUTPUT_CAP {
+        out = out.chars().take(SEARCH_OUTPUT_CAP).collect();
+    }
+    Ok(out)
+}
+
+/// Brave 响应解析（纯函数，无网络可测）：`{"web":{"results":[{title,url,description}]}}`
+/// → (标题, 链接, 摘要) 列表。web 字段缺失按空结果处理（防御）；JSON 非法明确报错。
+fn parse_brave_results(body: &str) -> Result<Vec<(String, String, String)>, String> {
+    let v: serde_json::Value =
+        serde_json::from_str(body).map_err(|e| format!("Brave 响应解析失败：{e}"))?;
+    let arr = v["web"]["results"].as_array().cloned().unwrap_or_default();
+    Ok(arr
+        .iter()
+        .map(|r| {
+            (
+                r["title"].as_str().unwrap_or("").to_string(),
+                r["url"].as_str().unwrap_or("").to_string(),
+                r["description"].as_str().unwrap_or("").to_string(),
+            )
+        })
+        .collect())
+}
+
+/// 分流决策（纯函数，可测）：Tavily/Brave 两组开关 + key → 走哪条搜索路径
 #[derive(Debug, PartialEq)]
 enum SearchRoute {
     /// Bing+百度双引擎抓取
     Dual,
     /// Tavily API（带 trim 后的 key）
     Tavily(String),
-    /// 开关开了但没填 key
+    /// Brave Web Search API（带 trim 后的 key，2026-09-05）
+    Brave(String),
+    /// Tavily 开关开了但没填 key
     MissingKey,
+    /// Brave 开关开了但没填 key（2026-09-05）
+    MissingBraveKey,
+    /// Tavily 与 Brave 同时开启（2026-09-05）：互斥，明确报错不静默猜
+    Conflict,
 }
 
 /// 开关语义：None（老配置从未显式设置）保持旧行为——配了 key 就当开启；
-/// Some(false) 强制双引擎（即使配了 key）；Some(true) 强制 Tavily。
-fn resolve_search_route(tavily_enabled: Option<bool>, tavily_key: Option<&str>) -> SearchRoute {
-    let key = tavily_key.unwrap_or("").trim().to_string();
-    let enabled = tavily_enabled.unwrap_or(!key.is_empty());
-    match (enabled, key.is_empty()) {
+/// Some(false) 强制不走对应引擎（即使配了 key）；Some(true) 强制走对应引擎。
+/// Brave 优先判定（与 Tavily 同时开启 → Conflict 明确报错）；Tavily 逻辑保持原样。
+fn resolve_search_route(
+    tavily_enabled: Option<bool>,
+    tavily_key: Option<&str>,
+    brave_enabled: Option<bool>,
+    brave_key: Option<&str>,
+) -> SearchRoute {
+    let tkey = tavily_key.unwrap_or("").trim().to_string();
+    let bkey = brave_key.unwrap_or("").trim().to_string();
+    let t_on = tavily_enabled.unwrap_or(!tkey.is_empty());
+    let b_on = brave_enabled.unwrap_or(!bkey.is_empty());
+    if t_on && b_on {
+        return SearchRoute::Conflict;
+    }
+    if b_on {
+        return if bkey.is_empty() {
+            SearchRoute::MissingBraveKey
+        } else {
+            SearchRoute::Brave(bkey)
+        };
+    }
+    match (t_on, tkey.is_empty()) {
         (false, _) => SearchRoute::Dual,
         (true, true) => SearchRoute::MissingKey,
-        (true, false) => SearchRoute::Tavily(key),
+        (true, false) => SearchRoute::Tavily(tkey),
     }
 }
 
-/// 搜索入口（bot 工具调用）：按设置页「Tavily 搜索」开关分流——
-/// 关 → Bing+百度双引擎；开 → Tavily API。开了但没填 key / 请求失败都明确报错
-/// 回传给模型（不静默回退百度，避免「以为在用 Tavily 实际走的百度」）。
+/// 搜索入口（bot 工具调用）：按设置页「Tavily 搜索」/「Brave 搜索」开关分流——
+/// 都关 → Bing+百度双引擎；开一个 → 对应 API。开了但没填 key / 双开 / 请求失败都
+/// 明确报错回传给模型（不静默回退百度，避免「以为在用 API 实际走的百度」）。
 pub async fn web_search_with_config(app: &tauri::AppHandle, query: &str) -> Result<String, String> {
     let cfg = crate::bot::load_config(app);
-    match resolve_search_route(cfg.tavily_enabled, cfg.tavily_key.as_deref()) {
+    match resolve_search_route(
+        cfg.tavily_enabled,
+        cfg.tavily_key.as_deref(),
+        cfg.brave_enabled,
+        cfg.brave_key.as_deref(),
+    ) {
         SearchRoute::Dual => web_search(query).await,
         SearchRoute::MissingKey => Err(
             "Tavily 搜索已开启，但设置页还没填 Tavily API Key。请到设置页「机器人设置」填写 key，或关闭「Tavily 搜索」开关改用 Bing+百度双引擎。"
                 .into(),
         ),
+        SearchRoute::MissingBraveKey => Err(
+            "Brave 搜索已开启，但设置页还没填 Brave API Key。请到设置页「机器人设置」填写 key，或关闭「Brave 搜索」开关改用 Bing+百度双引擎。"
+                .into(),
+        ),
+        SearchRoute::Conflict => Err(
+            "Tavily 与 Brave 搜索不能同时开启，请到设置页关闭其中一个".into(),
+        ),
         SearchRoute::Tavily(key) => search_tavily(&key, query).await.map_err(|e| {
             crate::bot::audit_log(app, &format!("web_search.tavily_failed | {e}"));
             format!(
                 "Tavily 搜索失败：{e}。请检查 key 是否有效/网络是否可达，或在设置页关闭「Tavily 搜索」开关回退 Bing+百度双引擎。"
+            )
+        }),
+        SearchRoute::Brave(key) => search_brave(&key, query).await.map_err(|e| {
+            crate::bot::audit_log(app, &format!("web_search.brave_failed | {e}"));
+            format!(
+                "Brave 搜索失败：{e}。请检查 key 是否有效/网络是否可达，或在设置页关闭「Brave 搜索」开关回退 Bing+百度双引擎。"
             )
         }),
     }
@@ -858,39 +960,131 @@ mod tests {
 
     #[test]
     fn route_none_switch_keeps_legacy_auto() {
-        // 老配置（无开关字段）：配了 key 自动走 Tavily，没配走双引擎
+        // 老配置（无开关字段、无 brave 字段）：配了 key 自动走 Tavily，没配走双引擎
         assert_eq!(
-            resolve_search_route(None, Some("tvly-x")),
+            resolve_search_route(None, Some("tvly-x"), None, None),
             SearchRoute::Tavily("tvly-x".into())
         );
-        assert_eq!(resolve_search_route(None, None), SearchRoute::Dual);
-        assert_eq!(resolve_search_route(None, Some("   ")), SearchRoute::Dual);
+        assert_eq!(resolve_search_route(None, None, None, None), SearchRoute::Dual);
+        assert_eq!(
+            resolve_search_route(None, Some("   "), None, None),
+            SearchRoute::Dual
+        );
     }
 
     #[test]
     fn route_explicit_off_forces_dual_even_with_key() {
         assert_eq!(
-            resolve_search_route(Some(false), Some("tvly-x")),
+            resolve_search_route(Some(false), Some("tvly-x"), None, None),
             SearchRoute::Dual
         );
-        assert_eq!(resolve_search_route(Some(false), None), SearchRoute::Dual);
+        assert_eq!(resolve_search_route(Some(false), None, None, None), SearchRoute::Dual);
+        // Brave 也显式关：两边都有 key 也应走双引擎
+        assert_eq!(
+            resolve_search_route(Some(false), Some("tvly-x"), Some(false), Some("bsa-x")),
+            SearchRoute::Dual
+        );
     }
 
     #[test]
     fn route_explicit_on_requires_key() {
         assert_eq!(
-            resolve_search_route(Some(true), None),
+            resolve_search_route(Some(true), None, None, None),
             SearchRoute::MissingKey
         );
         assert_eq!(
-            resolve_search_route(Some(true), Some("  ")),
+            resolve_search_route(Some(true), Some("  "), None, None),
             SearchRoute::MissingKey
         );
         // key 首尾空白应裁掉
         assert_eq!(
-            resolve_search_route(Some(true), Some(" tvly-x ")),
+            resolve_search_route(Some(true), Some(" tvly-x "), None, None),
             SearchRoute::Tavily("tvly-x".into())
         );
+    }
+
+    #[test]
+    fn route_brave_on_with_key() {
+        assert_eq!(
+            resolve_search_route(None, None, Some(true), Some(" bsa-x ")),
+            SearchRoute::Brave("bsa-x".into())
+        );
+    }
+
+    #[test]
+    fn route_brave_on_without_key_errors() {
+        assert_eq!(
+            resolve_search_route(None, None, Some(true), None),
+            SearchRoute::MissingBraveKey
+        );
+        assert_eq!(
+            resolve_search_route(None, None, Some(true), Some("  ")),
+            SearchRoute::MissingBraveKey
+        );
+    }
+
+    #[test]
+    fn route_both_on_conflict() {
+        // 双开（显式或自动态）都明确报错，不静默猜
+        assert_eq!(
+            resolve_search_route(Some(true), Some("tvly-x"), Some(true), Some("bsa-x")),
+            SearchRoute::Conflict
+        );
+        assert_eq!(
+            resolve_search_route(None, Some("tvly-x"), None, Some("bsa-x")),
+            SearchRoute::Conflict
+        );
+    }
+
+    #[test]
+    fn route_brave_none_switch_auto_by_key() {
+        // 与 Tavily 的 None+key 旧行为对齐：无显式开关但有 brave key 自动启用 Brave
+        assert_eq!(
+            resolve_search_route(None, None, None, Some("bsa-x")),
+            SearchRoute::Brave("bsa-x".into())
+        );
+        // Brave 自动态优先于「都没配」的双引擎，但不影响显式关 Tavily
+        assert_eq!(
+            resolve_search_route(Some(false), Some("tvly-x"), None, Some("bsa-x")),
+            SearchRoute::Brave("bsa-x".into())
+        );
+        // Brave 显式关：即使配了 brave key 也不走；Tavily 逻辑不受影响
+        assert_eq!(
+            resolve_search_route(None, Some("tvly-x"), Some(false), Some("bsa-x")),
+            SearchRoute::Tavily("tvly-x".into())
+        );
+    }
+
+    #[test]
+    fn parse_brave_results_ok() {
+        let body = r#"{"web":{"results":[
+            {"title":"标题一","url":"https://a.com/x","description":"摘要一"},
+            {"title":"标题二","url":"https://b.com/y","description":"摘要二","extra":1}
+        ]},"query":{"original":"q"}}"#;
+        let r = parse_brave_results(body).unwrap_or_default();
+        assert_eq!(r.len(), 2);
+        assert_eq!(r[0], ("标题一".into(), "https://a.com/x".into(), "摘要一".into()));
+        assert_eq!(r[1].1, "https://b.com/y");
+    }
+
+    #[test]
+    fn parse_brave_results_web_missing_and_empty() {
+        // web 字段缺失 → 空列表（防御，不报错）
+        let r = parse_brave_results(r#"{"query":{"original":"q"}}"#).unwrap_or_default();
+        assert!(r.is_empty());
+        // results 为空数组 → 空列表
+        let r = parse_brave_results(r#"{"web":{"results":[]}}"#).unwrap_or_default();
+        assert!(r.is_empty());
+        // 字段缺失的条目按空串填充
+        let r = parse_brave_results(r#"{"web":{"results":[{"title":"只有标题"}]}}"#)
+            .unwrap_or_default();
+        assert_eq!(r, vec![("只有标题".to_string(), String::new(), String::new())]);
+    }
+
+    #[test]
+    fn parse_brave_results_bad_json() {
+        let err = parse_brave_results("not json").unwrap_err();
+        assert!(err.contains("Brave 响应解析失败"), "应明确报错：{err}");
     }
 
     #[test]

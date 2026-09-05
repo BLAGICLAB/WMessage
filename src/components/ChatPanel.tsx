@@ -366,6 +366,8 @@ export function ChatPanel({
         allowedDirs?: string[];
         tavilyKey?: string;
         tavilyEnabled?: boolean | null;
+        braveKey?: string;
+        braveEnabled?: boolean | null;
         pythonTimeoutSecs?: number | null;
         // 批次7审计 P1-1：必须透传授权模式——bot_set_config 是全量覆写，
         // 漏传会被 BotConfig 容器级 serde(default) 填 None，静默重置回 ask
@@ -379,6 +381,8 @@ export function ChatPanel({
           allowedDirs: c.allowedDirs ?? [],
           tavilyKey: c.tavilyKey ?? null,
           tavilyEnabled: c.tavilyEnabled ?? null,
+          braveKey: c.braveKey ?? null,
+          braveEnabled: c.braveEnabled ?? null,
           pythonTimeoutSecs: c.pythonTimeoutSecs ?? null,
           permMode: c.permMode ?? null,
         },

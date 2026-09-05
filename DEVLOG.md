@@ -1842,3 +1842,21 @@ DSL 调度器从「解析 + 单次顺序执行」演进到「全链路生产可�
 - 行间分割线淡化：`divide-[var(--edge)]` → `color-mix(in srgb, var(--edge), transparent 55%)` 半透明
 - 验证：TodoCard 测试 21 → 25（新增 4 条：不截断/编辑提交/Esc 取消+空提交/归档只读）、tsc 零错、vite build 过（确认 Tailwind arbitrary class 正确生成 color-mix 规则）
 - 未动：挂件 TaskCardContent 子任务仍是只读 + 单行截断（挂件窄卡片场景，未提需求）
+
+
+## 2026-09-05（周六）任务卡截止日期系统通知
+
+- **新模块 `src-tauri/src/due_notify.rs`**：30s 后台扫描（仿 bot_scheduler），活跃任务卡（未删/未归档/未完成且有 due）按截止发系统通知——截止前 1h 一条「任务即将截止」（创建时距截止已不足 1h 的首扫即补发）、截止时刻一条「任务已到截止时间」（截止后 24h 内补发有效，超 24h 历史截止直接标记已发，防升级/重启轰炸）；仅日期 due 按当天 23:59 处理；同一轮两条件同时满足只发截止通知
+- **去重持久化**：数据目录 `due-notify-state.json`（task_id → {due, h1, t0}），进程内 Mutex + 原子写；due 变化重置标志重新武装，任务完成/删除/归档清理条目；发送失败记审计并标记已发（防每 30s 重试刷屏）；读库失败跳过本轮不清状态
+- **平台差异**：macOS 需显式授权（前端 App.tsx 启动时 isPermissionGranted→requestPermission），未签名/开发构建可能不弹横幅属系统限制；Windows toast 无需授权但会被专注助手/勿扰抑制、数秒后收入通知中心——代码统一走 tauri-plugin-notification（新增 Rust 插件 2.4.0 + npm 包 @tauri-apps/plugin-notification，capabilities 加 notification:default）；差异约定写在 due_notify.rs 模块头注释
+- 复用：`bot_scheduler::resolve_local` 放宽 pub(crate)（DST 歧义/不存在统一处理）；审计走 bot::audit_log，标题截断用 truncate_for_log
+- 验证：cargo test --lib 530 全绿（新增 due_notify_tests 12 条：两种 due 格式/非法格式/仅日期→23:59/h1 恰 1h/t0 恰截止/超 24h 不补发/24h 边界/重启只发 t0/due 变更重置/清理/不重复发/文案渲染）、cargo test 全量（含集成 31+15+8+13）全绿、vitest 199 全过、tsc 零错、vite build 过
+
+## 2026-09-05（周六）web_search 接入 Brave 搜索引擎
+
+- **bot_web.rs 新增 Brave 路径**：`search_brave`（GET `https://api.search.brave.com/res/v1/web/search?q=…&count=8`，`X-Subscription-Token` 头携带 key，输出与 Tavily 同款 `[Brave]` 标记纯文本列表）；响应解析抽成纯函数 `parse_brave_results`（web 字段缺失按空结果、坏 JSON 明确报错），无网络可测
+- **路由分流扩展**：`SearchRoute` 加 `Brave/MissingBraveKey/Conflict`，`resolve_search_route` 接收 tavily+brave 两组 (enabled, key)；Brave 开+无 key / 双开（含 None+key 自动态）都明确报错不静默回退；Tavily 旧语义不动，老配置无 brave 字段行为不变
+- **配置**：BotConfig/BotConfigView 加 `brave_key`/`brave_enabled`（Option，skip_serializing_if，语义与 tavily 对齐）；ChatPanel 模型快速切换回写补 brave 透传（同 P1-1 防 serde(default) 静默重置）
+- **设置页**：Tavily 区块下加同款「Brave 搜索」区块（开关点击即持久化 + password 输入 + 缺 key 红字），双开时显示「Tavily 与 Brave 只能开启一个」红色提示
+- 验证：cargo test --lib 530 → 537 全绿（新增路由 4 条 + parse_brave 3 条，既有路由 3 条签名更新后语义不变）；cargo test 全量（含集成 31+15+8+13）全绿；vitest 199 全过；tsc 零错、vite build 过
+- 未做：未发真实 Brave API 请求（无真实 key），联网路径靠人工验证
