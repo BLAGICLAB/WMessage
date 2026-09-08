@@ -28,6 +28,7 @@ mod profile;
 pub mod task_out;
 pub mod tool_guard;
 use tauri::{Emitter, Manager};
+use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 /// 复制文件 + 任务标题到剪贴板：
@@ -260,6 +261,12 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        // 开机自启动：登录系统时自动拉起 wmessage。macOS 走 LaunchAgent，
+        // 不传额外 args（保持纯净启动，不带任何隐藏 flag）
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::LaunchAgent,
+            None,
+        ))
         // 系统通知：任务卡截止提醒（due_notify）；macOS 需用户授权（前端启动时请求）
         .plugin(tauri_plugin_notification::init())
         .plugin(

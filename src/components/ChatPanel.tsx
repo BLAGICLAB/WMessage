@@ -246,10 +246,6 @@ export function ChatPanel({
       window.removeEventListener("resize", update);
     };
   }, []);
-  /** 菜单内「自定义…」内联表单：自由填 Base URL + 模型名 */
-  const [customOpen, setCustomOpen] = useState(false);
-  const [customBaseUrl, setCustomBaseUrl] = useState("");
-  const [customModel, setCustomModel] = useState("");
   /** 流式过程中的装饰（思考/工具行/Skill 失败），bot_chat 完成后并入最终消息 */
   const streamingMeta = useRef<{
     thinking?: string;
@@ -395,7 +391,6 @@ export function ChatPanel({
   /** 回写模型配置：整体写回（保留白名单/Tavily 等字段），apiKey 传 null 保持 keychain 现有 key */
   const applyModelConfig = async (baseUrl: string, model: string, label: string) => {
     setModelMenuOpen(false);
-    setCustomOpen(false);
     try {
       const c = await invoke<{
         bypassLlmOnPreStepHit?: boolean;
@@ -441,17 +436,6 @@ export function ChatPanel({
   };
 
   const switchModel = (p: ProviderPreset) => applyModelConfig(p.baseUrl, p.model, p.label);
-
-  /** 自定义模型：菜单内联表单提交（baseUrl/model 必填） */
-  const applyCustomModel = () => {
-    const b = customBaseUrl.trim();
-    const m = customModel.trim();
-    if (!b || !m) {
-      addHint("⚠️ 自定义模型需要填写 Base URL 和模型名");
-      return;
-    }
-    applyModelConfig(b, m, m);
-  };
 
   // 流式增量：追加到最后一条 streaming 中的助手消息
   // 会话过滤（2026-08-28 批次3审计 P0-2）：六个流式事件 payload 均带 sessionId
@@ -1170,7 +1154,7 @@ export function ChatPanel({
           </button>
         </div>
       )}
-      {/* 模型下拉：同上，absolute 横跨整个 panel 宽度 */}
+      {/* 模型下拉：同上 */}
       {modelMenuOpen && (
         <div
           ref={modelDropdownRef}
@@ -1191,50 +1175,6 @@ export function ChatPanel({
               <span className="text-[9px] text-[var(--t5)] truncate">{p.model}</span>
             </button>
           ))}
-          {/* 自定义：自由填 Base URL + 模型名（任何 OpenAI 兼容端点） */}
-          <button
-            className={`w-full text-left px-2 py-1 rounded-lg text-xs ${
-              customOpen
-                ? "nm-inset text-[var(--t1)] font-medium"
-                : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
-            }`}
-            onClick={() => {
-              if (!customOpen) {
-                // 展开时预填当前配置，方便在原基础上改
-                invoke<{ baseUrl?: string; model?: string }>("bot_get_config")
-                  .then((c) => {
-                    setCustomBaseUrl(c.baseUrl ?? "");
-                    setCustomModel(c.model ?? "");
-                  })
-                  .catch(() => {});
-              }
-              setCustomOpen((v) => !v);
-            }}
-          >
-            ✏️ 自定义…
-          </button>
-          {customOpen && (
-            <div className="px-1.5 py-1 space-y-1">
-              <input
-                value={customBaseUrl}
-                onChange={(e) => setCustomBaseUrl(e.target.value)}
-                placeholder="Base URL，如 https://api.example.com/v1"
-                className="nm-inset w-full rounded-lg px-2 py-1 text-[10px] text-[var(--t3)] outline-none"
-              />
-              <input
-                value={customModel}
-                onChange={(e) => setCustomModel(e.target.value)}
-                placeholder="模型名，如 my-model"
-                className="nm-inset w-full rounded-lg px-2 py-1 text-[10px] text-[var(--t3)] outline-none"
-              />
-              <button
-                className="nm-btn w-full px-2 py-1 text-[10px] text-[var(--t2)]"
-                onClick={applyCustomModel}
-              >
-                使用此模型
-              </button>
-            </div>
-          )}
           <p className="px-2 py-1 text-[9px] leading-snug text-[var(--t6)]">
             跨提供商切换后，需到设置页更新对应的 API Key
           </p>

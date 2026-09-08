@@ -2,24 +2,24 @@
  *  点击自动填 Base URL + 默认模型，模型可在下方「模型」栏手动改（如 deepseek-v4-pro）。
  *  2026-09-05 改版（老板拍板）：预设收敛为纯供应商维度（MiniMax/Kimi/DeepSeek），
  *  不再按模型分档（原 DeepSeek V4 Flash/Pro 双按钮合并），模型型号在模型栏填写。 */
-export const PROVIDER_PRESETS = [
-  { label: "MiniMax", baseUrl: "https://api.minimaxi.com/v1", model: "MiniMax-M3" },
-  { label: "Kimi", baseUrl: "https://api.moonshot.cn/v1", model: "kimi-k3" },
-  { label: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-v4-flash" },
-] as const;
+/** 大模型提供商预设（2026-09-08 老板拍板清空）：
+ *  设置页已改成"双协议下独立大模型列表"，用户自己点「添加大模型」维护；
+ *  硬编码的供应商预设（MiniMax/Kimi/DeepSeek）已不再需要——任何"加默认厂商"
+ *  都会和"不设置默认厂商"的产品决策冲突。
+ *
+ *  本文件保留仅为向后兼容：ChatPanel 头部标签 + 切换菜单还在 import，
+ *  列表为空时菜单自然不渲染，标签走 fallback "未配置"。
+ *  新代码不要再往 PROVIDER_PRESETS 里塞供应商。 */
+export type ProviderPreset = {
+  label: string;
+  baseUrl: string;
+  model: string;
+};
 
-export type ProviderPreset = (typeof PROVIDER_PRESETS)[number];
+export const PROVIDER_PRESETS: ProviderPreset[] = [];
 
-/** 当前配置命中的预设（baseUrl + model 双匹配——挂件菜单标签显示用；
- *  自定义地址/模型返回 undefined） */
-export function matchPreset(baseUrl: string, model: string): ProviderPreset | undefined {
-  return PROVIDER_PRESETS.find(
-    (p) => p.baseUrl === baseUrl.trim() && p.model === model.trim()
-  );
-}
-
-/** 按供应商匹配（只看 baseUrl，不看 model——2026-09-05 设置页预设高亮用：
- *  模型栏手改成同供应商其它型号时，供应商按钮保持高亮） */
-export function matchProvider(baseUrl: string): ProviderPreset | undefined {
-  return PROVIDER_PRESETS.find((p) => p.baseUrl === baseUrl.trim());
+/** 当前配置命中的预设（baseUrl + model 双匹配——ChatPanel 头部标签显示用）；
+ *  列表为空时永远返回 undefined，ChatPanel 拿到后走 fallback "未配置"。 */
+export function matchPreset(_baseUrl: string, _model: string): ProviderPreset | undefined {
+  return undefined;
 }

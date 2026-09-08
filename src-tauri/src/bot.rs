@@ -152,6 +152,61 @@ pub struct BotConfig {
     /// OpenAI 兼容模式不发送该字段（多数兼容网关不认识）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
+    /// 每协议下的大模型列表（2026-09-08 老板拍板改版）：双协议各自独立维护一个
+    /// ModelEntry 列表。设置页协议切换时整体切换显示；新增的 ModelEntry 落在当前
+    /// 协议下。None = 老配置未迁移过来（load_config 时会从 base_url/model 兜底迁移）；
+    /// 迁移完后写回落盘。
+    /// 派生关系：当前协议 + active_model_id 决定 base_url/model/max_tokens 的真实值
+    /// （bot_model_loop 不感知新结构，由 bot_set_config 落盘前回填派生字段）。
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub models_by_provider: Option<ModelsByProvider>,
+    /// 每协议当前选中的模型 id（2026-09-08）；None = 该协议还没选 active。
+    /// 切换协议时设置页据此取对应协议的 active 模型来填 baseUrl/model 输入框。
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub active_model_id: Option<ActiveModelId>,
+    /// 开机自启动（2026-09-08 新增）：登录系统时自动拉起 wmessage。
+    /// Some(true) = 启用 / Some(false) = 禁用 / None = 未设置（前端显示自动态）。
+    /// 走 tauri-plugin-autostart：macOS 写 LaunchAgent plist / Windows 写注册表 Run /
+    /// Linux 写 .desktop file。
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub autostart_enabled: Option<bool>,
+    /// 界面字体大小（2026-09-08 新增）：small / standard / large / xlarge
+    /// 老板拍板"目前字号为小"=默认 small。设置页「通用设置 → 外观」调。
+    /// 全局 css 通过 documentElement[data-font-size] 走缩放。
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub ui_font_size: Option<String>,
+}
+
+/// 单个模型条目（2026-09-08）：一个 (label, baseUrl, model) 三元组 + 稳定 id。
+/// id 是前端 crypto.randomUUID() 生成的字符串，仅用于 React key + 标识 active；
+/// 不参与 API 调用。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelEntry {
+    pub id: String,
+    pub label: String,
+    pub base_url: String,
+    pub model: String,
+}
+
+/// 双协议下各自的模型列表（2026-09-08）；Vec 为空序列化时跳过，保持配置文件干净。
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ModelsByProvider {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub openai: Vec<ModelEntry>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub anthropic: Vec<ModelEntry>,
+}
+
+/// 双协议下各自的 active 模型 id（2026-09-08）；None = 该协议还没选 active。
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ActiveModelId {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub openai: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anthropic: Option<String>,
 }
 
 impl Default for BotConfig {
@@ -171,6 +226,10 @@ impl Default for BotConfig {
             perm_mode: None,                  // 未配置 = ask（弹授权）
             api_provider: None,               // 未配置 = openai（旧行为）
             max_tokens: None,                 // 未配置 = 8192 默认（仅 Anthropic 模式用）
+            models_by_provider: None,         // 未配置 = 设置页空列表（无默认厂商）
+            active_model_id: None,            // 未配置 = 两协议都没选 active
+            autostart_enabled: None,          // 未配置 = 默认不启用开机自启动（老板拍板：保持旧行为，不主动加）
+            ui_font_size: None,               // 未配置 = small（老板拍板默认；前端读取时回退）
         }
     }
 }
@@ -196,6 +255,101 @@ impl ApiProvider {
             ApiProvider::Anthropic => "anthropic",
         }
     }
+}
+
+// ─────────────── 2026-09-08 双协议下大模型列表迁移/派生 ───────────────
+
+/// 老配置 → 新结构一次性迁移（2026-09-08）：无 models_by_provider、但 base_url 或
+/// model 非空时，在内存里补一份单条 ModelEntry + active_model_id，挂在
+/// api_provider 协议下。**不写文件**——只在下一次用户保存时由 bot_set_config 一并
+/// 落盘，避免无谓写盘 + 误清空老用户已配好的 key/base_url。
+///
+/// 老配置也是空（base_url+model 都空）→ 按老板「不设置默认厂商」要求保持空列表，
+/// 让用户点「添加大模型」自己加。
+fn migrate_legacy_models(cfg: &mut BotConfig) {
+    if cfg.models_by_provider.is_some() {
+        return; // 已是新结构 / 已迁移过
+    }
+    let has_legacy = !cfg.base_url.trim().is_empty() || !cfg.model.trim().is_empty();
+    if !has_legacy {
+        return; // 老配置也空 = 新用户，列表留空
+    }
+    let entry = ModelEntry {
+        id: "migrated".into(),
+        label: derive_default_label(&cfg.base_url),
+        base_url: cfg.base_url.clone(),
+        model: cfg.model.clone(),
+    };
+    let provider = ApiProvider::from_cfg(cfg.api_provider.as_deref());
+    let mut mbp = ModelsByProvider::default();
+    let mut active = ActiveModelId::default();
+    match provider {
+        ApiProvider::Openai => {
+            mbp.openai.push(entry);
+            active.openai = Some("migrated".into());
+        }
+        ApiProvider::Anthropic => {
+            mbp.anthropic.push(entry);
+            active.anthropic = Some("migrated".into());
+        }
+    }
+    cfg.models_by_provider = Some(mbp);
+    cfg.active_model_id = Some(active);
+}
+
+/// 老配置迁移用的默认 label：尽量从 URL 提个像样的名字（覆盖 MiniMax/Kimi/
+/// DeepSeek/OpenAI/Anthropic 几个常用供应商），其它情况回退 "默认"。用户后续
+/// 可以在设置页改 label。
+fn derive_default_label(base_url: &str) -> String {
+    let u = base_url.trim().to_lowercase();
+    if u.is_empty() {
+        return "默认".into();
+    }
+    if u.contains("deepseek") {
+        return "DeepSeek".into();
+    }
+    if u.contains("moonshot") || u.contains("kimi") {
+        return "Kimi".into();
+    }
+    if u.contains("minimaxi") {
+        return "MiniMax".into();
+    }
+    if u.contains("openai") {
+        return "OpenAI".into();
+    }
+    if u.contains("anthropic") {
+        return "Anthropic".into();
+    }
+    "默认".into()
+}
+
+/// 设置页保存前回填派生字段（2026-09-08）：bot_model_loop 只看 base_url/model/
+/// max_tokens/api_provider 四个老字段，新结构 models_by_provider + active_model_id
+/// 落到这里：当前 api_provider 协议下找 active 模型 → 找不到用第一个 → 把它的
+/// base_url/model 写回 cfg。**列表为空时不动 base_url/model**——避免用户删完
+/// 列表后误清空已配好的派生字段。
+fn derive_legacy_fields_from_active(cfg: &mut BotConfig) {
+    let mbp = match cfg.models_by_provider.as_ref() {
+        Some(m) => m,
+        None => return,
+    };
+    let active = match cfg.active_model_id.as_ref() {
+        Some(a) => a,
+        None => return,
+    };
+    let provider = ApiProvider::from_cfg(cfg.api_provider.as_deref());
+    let (list, active_id) = match provider {
+        ApiProvider::Openai => (&mbp.openai, active.openai.as_ref()),
+        ApiProvider::Anthropic => (&mbp.anthropic, active.anthropic.as_ref()),
+    };
+    let entry = active_id
+        .and_then(|id| list.iter().find(|e| &e.id == id))
+        .or_else(|| list.first());
+    if let Some(entry) = entry {
+        cfg.base_url = entry.base_url.clone();
+        cfg.model = entry.model.clone();
+    }
+    // 列表为空或没有新结构：保持 base_url/model 不动（防御性）
 }
 
 /// max_tokens 默认值与合法范围（2026-09-05 老板拍板默认 8192；仅 Anthropic 模式发送）
@@ -636,6 +790,17 @@ pub struct BotConfigView {
     pub api_provider: Option<String>,
     /// max_tokens 原样透传（None = 8192 默认；仅 Anthropic 模式用，后端钳 256..=200000）
     pub max_tokens: Option<u32>,
+    /// 每协议下的模型列表（2026-09-08）：None = 老配置未迁移（前端显示空列表让用户点「添加大模型」）；
+    /// 已有数据则透传。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub models_by_provider: Option<ModelsByProvider>,
+    /// 每协议 active 模型 id（2026-09-08）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_model_id: Option<ActiveModelId>,
+    /// 界面字体大小（2026-09-08）：small/standard/large/xlarge
+    /// None = small；前端根据实际值走 documentElement[data-font-size] 套用
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ui_font_size: Option<String>,
 }
 
 /// 旧版本迁移：bot-config.json 里有明文 key → 迁入系统凭据存储并清掉文件里的明文。
@@ -781,6 +946,16 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
     // 搜索 key 同策略（2026-09-05）：真实故障透传 Err，不吞成 false
     let has_tavily_key = has_search_key(KeySlot::Tavily)?;
     let has_brave_key = has_search_key(KeySlot::Brave)?;
+    // 2026-09-08：老配置（无 models_by_provider、有 base_url/model）在内存里补一份
+    // ModelEntry + active_model_id，让设置页能展示出来；不写盘，等用户主动保存
+    // 才一并落盘。
+    let mut cfg = cfg;
+    migrate_legacy_models(&mut cfg);
+    // 2026-09-08 bugfix：保证前端拿到永远完整的两协议子字段。
+    // get_or_insert_with 保证 cfg.models_by_provider 是 Some；字段 #[serde(default)]
+    // 保证反序列化时缺字段补空 Vec。两者联手让前端任何路径都不会拿到 undefined。
+    // 前端那 5 处 `?? []` 兑底是最后一道防线。
+    let _ = cfg.models_by_provider.get_or_insert_with(ModelsByProvider::default);
     Ok(BotConfigView {
         base_url: cfg.base_url,
         model: cfg.model,
@@ -795,6 +970,9 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
         perm_mode: cfg.perm_mode,
         api_provider: cfg.api_provider,
         max_tokens: cfg.max_tokens,
+        models_by_provider: cfg.models_by_provider,
+        active_model_id: cfg.active_model_id,
+        ui_font_size: cfg.ui_font_size,
     })
 }
 
@@ -828,6 +1006,10 @@ pub fn bot_set_config(
     }
     // 文件里只留非敏感配置，三个 key 字段强制置 None（双保险：前端误把 key
     // 塞进 config 对象也不落明文）
+    // 2026-09-08：新结构（models_by_provider + active_model_id）落盘前回填
+    // base_url/model/api_provider 三个派生字段——bot_model_loop 只看老字段。
+    let mut config = config;
+    derive_legacy_fields_from_active(&mut config);
     write_bot_config_file(&crate::db::data_dir(&app), config)
 }
 
