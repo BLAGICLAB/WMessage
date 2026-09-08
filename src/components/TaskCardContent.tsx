@@ -12,7 +12,7 @@ import { useInlineEdit } from "./useInlineEdit";
  * 任务卡展示内容 —— 供挂件（WidgetApp）使用。
  *
  * ⚠️ 字段与顺序必须与 TodoCard 一致（老板要求挂件与主窗口显示一致）：
- * 标题行（标题 + 折叠开关 + 打勾圆圈；折叠时标题单行截断） → 备注 → 标签 → 子任务 → 文件 → 🤖/⏰ → 截止时间 + 完成时间（截止永远最底）。
+ * 标题行（标题 + 折叠开关 + 打勾圆圈；折叠时标题单行截断） → 备注 → 标签 → 子任务 → 文件 → 🤖/⏰ → 截止时间 → 完成时间（截止永远最底，完成时间在截止时间下一行，2026-09-08 老板拍板）。
  * 标题以下内容可折叠。改动 TodoCard 展示时记得同步这里。
  */
 export function TaskCardContent({
@@ -373,19 +373,20 @@ export function TaskCardContent({
             </div>
           )}
 
-          {/* 截止时间 —— 永远在最下面；完成时间同行居中（与主窗口 TodoCard 一致） */}
-          {(task.due || (task.column === "done" && task.completedAt)) && (
-            <div className="mt-2 flex items-center gap-1">
+          {/* 截止时间 + 状态行（两行布局，2026-09-08 老板拍板与主窗口 TodoCard 一致）；
+              状态行统一显示「未完成」/「完成 YYYY-MM-DD HH:mm」，未完成时不带时间戳 */}
+          {(task.due || task.column === "done") && (
+            <div className="mt-2">
               {task.due && (
                 <span className="nm-inset px-2 py-1 text-xs text-[var(--t4)] shrink-0">
                   {formatDue(task.due)}
                 </span>
               )}
-              {task.column === "done" && task.completedAt && (
-                <span className="flex-1 min-w-0 text-center whitespace-nowrap text-[10px] text-[var(--t5)]">
-                  {formatCompletedAt(task.completedAt)}
-                </span>
-              )}
+              <p className="mt-1 ml-2.5 text-[10px] text-[var(--t5)]">
+                {task.column === "done" && task.completedAt
+                  ? formatCompletedAt(task.completedAt)
+                  : "未完成"}
+              </p>
             </div>
           )}
         </>

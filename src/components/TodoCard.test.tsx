@@ -126,9 +126,9 @@ describe("TodoCardView", () => {
     expect(call[1].botAssigned).toBeUndefined();
   });
 
-  it("截止日期显示：formatDue 输出「截止 MM-DD HH:mm」", () => {
+  it("截止日期显示：formatDue 输出「截止 YYYY-MM-DD HH:mm」（2026-09-08 老板拍板加年份）", () => {
     render(<TodoCardView task={dueTask} onUpdate={vi.fn()} onDelete={vi.fn()} />);
-    expect(screen.getByText(/截止 08-18 15:30/)).toBeInTheDocument();
+    expect(screen.getByText(/截止 2026-08-18 15:30/)).toBeInTheDocument();
   });
 });
 
@@ -155,11 +155,11 @@ describe("TodoCard (归档/回收站版)", () => {
     expect(screen.getByText(/彻底删除/)).toBeInTheDocument();
   });
 
-  it("完成态：归档态显示完成时间（formatCompletedAt 在 due 区域右侧）", () => {
+  it("完成态：归档态显示完成时间（formatCompletedAt 在 due 区域下方，2026-09-08 老板拍板）", () => {
     render(
       <TodoCard task={completedTask} archived onUpdate={vi.fn()} onDelete={vi.fn()} />
     );
-    expect(screen.getByText(/完成 \d{2}-\d{2} \d{2}:\d{2}/)).toBeInTheDocument();
+    expect(screen.getByText(/完成 \d{4}-\d{2}-\d{2} \d{2}:\d{2}/)).toBeInTheDocument();
   });
 });
 

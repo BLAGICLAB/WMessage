@@ -89,9 +89,9 @@ describe("formatSchedule", () => {
 });
 
 describe("formatDue / basename", () => {
-  it("due 两种格式", () => {
-    expect(formatDue("2026-09-02")).toBe("截止 09-02");
-    expect(formatDue("2026-09-02T18:30")).toBe("截止 09-02 18:30");
+  it("due 两种格式（含年份，2026-09-08 老板拍板）", () => {
+    expect(formatDue("2026-09-02")).toBe("截止 2026-09-02");
+    expect(formatDue("2026-09-02T18:30")).toBe("截止 2026-09-02 18:30");
   });
 
   it("basename 处理 unix/windows 分隔符", () => {

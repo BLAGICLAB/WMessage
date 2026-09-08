@@ -693,88 +693,95 @@ export function TodoCardView({
       </>
       )}
 
-      {/* 截止时间 —— 永远在最下面，删除按钮在其右侧 */}
-      <div className="flex items-center gap-1 mt-2">
-        {dueEditing && !archived && !trashed ? (
-          <input
-            type="datetime-local"
-            autoFocus
-            value={
-              task.due
-                ? task.due.includes("T")
-                  ? task.due.slice(0, 16)
-                  : `${task.due}T09:00`
-                : ""
-            }
-            onChange={(e) => {
-              const v = e.target.value;
-              if (v === "") {
-                onUpdate(task.id, { due: undefined });
-              } else if (isValidDateTimeLocal(v)) {
-                onUpdate(task.id, { due: v.slice(0, 16) });
+      {/* 截止时间 + 状态行（两行布局统一，2026-09-08 老板拍板）：
+          第一行：截止时间（带 × 移除）。
+          第二行：状态标签（未完成 / 完成 YYYY-MM-DD HH:mm）+ 删除按钮，两态布局一致；
+            ml-2.5 空一个字符宽对齐截止时间文字，删除按钮 ml-auto 推到行尾 + text-[14px] 稳定 emoji。 */}
+      <div className="mt-2">
+        <div className="flex items-center gap-1">
+          {dueEditing && !archived && !trashed ? (
+            <input
+              type="datetime-local"
+              autoFocus
+              value={
+                task.due
+                  ? task.due.includes("T")
+                    ? task.due.slice(0, 16)
+                    : `${task.due}T09:00`
+                  : ""
               }
-              // 不完整/非法值：不写库，blur 时回退已提交值
-            }}
-            onBlur={() => setDueEditing(false)}
-            onPointerDown={stop}
-            className="nm-inset px-2 py-1 text-xs text-[var(--t3)] flex-1 min-w-0"
-          />
-        ) : (
-          <>
-            {task.due ? (
-              <span className="flex items-center shrink-0">
-                {archived || trashed ? (
-                  <span className="nm-inset px-2 py-1 text-xs text-[var(--t4)]">
-                    {formatDue(task.due)}
-                  </span>
-                ) : (
-                  <>
-                    <button
-                      className="nm-inset px-2 py-1 text-xs text-[var(--t4)]"
-                      onPointerDown={stop}
-                      onClick={() => setDueEditing(true)}
-                    >
+              onChange={(e) => {
+                const v = e.target.value;
+                if (v === "") {
+                  onUpdate(task.id, { due: undefined });
+                } else if (isValidDateTimeLocal(v)) {
+                  onUpdate(task.id, { due: v.slice(0, 16) });
+                }
+                // 不完整/非法值：不写库，blur 时回退已提交值
+              }}
+              onBlur={() => setDueEditing(false)}
+              onPointerDown={stop}
+              className="nm-inset px-2 py-1 text-xs text-[var(--t3)] flex-1 min-w-0"
+            />
+          ) : (
+            <>
+              {task.due ? (
+                <span className="flex items-center shrink-0">
+                  {archived || trashed ? (
+                    <span className="nm-inset px-2 py-1 text-xs text-[var(--t4)]">
                       {formatDue(task.due)}
-                    </button>
-                    <button
-                      className="w-4 h-6 text-xs text-[var(--t5)] hover:text-[var(--danger)]"
-                      title="移除截止时间"
-                      onPointerDown={stop}
-                      onClick={() => onUpdate(task.id, { due: undefined })}
-                    >
-                      ×
-                    </button>
-                  </>
-                )}
-              </span>
-            ) : archived || trashed ? null : (
+                    </span>
+                  ) : (
+                    <>
+                      <button
+                        className="nm-inset px-2 py-1 text-xs text-[var(--t4)]"
+                        onPointerDown={stop}
+                        onClick={() => setDueEditing(true)}
+                      >
+                        {formatDue(task.due)}
+                      </button>
+                      <button
+                        className="w-4 h-6 text-xs text-[var(--t5)] hover:text-[var(--danger)]"
+                        title="移除截止时间"
+                        onPointerDown={stop}
+                        onClick={() => onUpdate(task.id, { due: undefined })}
+                      >
+                        ×
+                      </button>
+                    </>
+                  )}
+                </span>
+              ) : archived || trashed ? null : (
+                <button
+                  className="nm-inset px-2 py-1 text-xs text-[var(--t4)]"
+                  onPointerDown={stop}
+                  onClick={() => setDueEditing(true)}
+                >
+                  + 截止时间
+                </button>
+              )}
+            </>
+          )}
+        </div>
+        {/* 状态行：未完成 / 完成 YYYY-MM-DD HH:mm + 删除按钮（两态布局一致） */}
+        {!dueEditing && !trashed && (
+          <div className="mt-1 flex items-center gap-1">
+            <p className="ml-2.5 text-[10px] text-[var(--t5)]">
+              {task.column === "done" && task.completedAt
+                ? formatCompletedAt(task.completedAt)
+                : "未完成"}
+            </p>
+            {!archived && (
               <button
-                className="nm-inset px-2 py-1 text-xs text-[var(--t4)]"
+                className="ml-auto shrink-0 w-5 h-5 flex items-center justify-center text-[14px] leading-none text-[var(--t5)] hover:text-[var(--danger)]"
+                title="删除任务"
                 onPointerDown={stop}
-                onClick={() => setDueEditing(true)}
+                onClick={() => onDelete(task.id)}
               >
-                + 截止时间
+                🗑️
               </button>
             )}
-            {/* 完成时间：完成/归档的任务显示在 × 与 🗑️ 之间居中；取消完成即删除 */}
-            {task.column === "done" && task.completedAt && (
-              <span className="flex-1 min-w-0 text-center whitespace-nowrap text-[10px] text-[var(--t5)]">
-                {formatCompletedAt(task.completedAt)}
-              </span>
-            )}
-          </>
-        )}
-
-        {/* 删除任务：emoji 小图标，截止日期右侧（回收站视图已有「彻底删除」，不重复显示；归档卡只读不显示） */}
-        {!trashed && !archived && (
-          <button
-            className="ml-auto shrink-0 w-5 h-5 flex items-center justify-center text-xs leading-none text-[var(--t5)] hover:text-[var(--danger)]"
-            title="删除任务"
-            onPointerDown={stop}
-            onClick={() => onDelete(task.id)}
-          >
-            🗑️
-          </button>
+          </div>
         )}
       </div>
         </>

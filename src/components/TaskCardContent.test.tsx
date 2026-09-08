@@ -168,7 +168,7 @@ describe("TaskCardContent 完成时间显示（与主窗口一致）", () => {
         task={{ id: "t1", title: "x", column: "done", completedAt: new Date(2026, 8, 1, 18, 30).getTime() }}
       />
     );
-    expect(screen.getByText("完成 09-01 18:30")).toBeInTheDocument();
+    expect(screen.getByText("完成 2026-09-01 18:30")).toBeInTheDocument();
   });
 
   it("未完成 / 无完成时间不显示", () => {

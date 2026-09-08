@@ -8,12 +8,13 @@ export function basename(p: string): string {
 }
 
 // due 格式兼容两种："YYYY-MM-DD"（旧数据）与 "YYYY-MM-DDTHH:mm"
+// 输出含年份：与完成时间 2026-09-08 老板拍板对齐（避免跨年任务识别不清）
 export function formatDue(due: string): string {
   if (due.includes("T")) {
     const [d, t] = due.slice(0, 16).split("T");
-    return `截止 ${d.slice(5)} ${t}`;
+    return `截止 ${d} ${t}`;
   }
-  return `截止 ${due.slice(5)}`;
+  return `截止 ${due}`;
 }
 
 // 截止日期（"YYYY-MM-DD" 或 "YYYY-MM-DDTHH:mm"）的日期部分是否为今天（本地时区）
@@ -26,12 +27,13 @@ export function isDueToday(due?: string): boolean {
   );
 }
 
-// completedAt(ms) → 「完成 MM-DD HH:mm」；无效回空串
-// （完成列/归档页显示在截止日期右侧；取消完成即清除）
+// completedAt(ms) → 「完成 YYYY-MM-DD HH:mm」；无效回空串
+// （2026-09-08 老板拍板：加年份，避免跨年任务识别不出是哪一年的完成时间；
+// 显示在截止日期下方；取消完成即清除）
 export function formatCompletedAt(ms: number): string {
   const d = new Date(ms);
   if (isNaN(d.getTime())) return "";
-  return `完成 ${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(
+  return `完成 ${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(
     d.getMinutes()
   )}`;
 }
