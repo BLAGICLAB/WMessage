@@ -4,12 +4,43 @@ import { emit } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { handleCommandError, formatCommandError } from "../lib/errorHandler";
-import { PROVIDER_PRESETS, matchProvider } from "../lib/providerPresets";
 import type { ThemeSetting } from "../theme";
 import { MigrationPanel } from "./MigrationPanel";
 import { setProfileName, setProfileAvatar, removeProfileAvatar } from "../profile";
 import { useProfile } from "./ActorAvatar";
 import botLogo from "../assets/main-logo.png";
+
+/** 单个大模型条目（2026-09-08 老板拍板改版）：label / baseUrl / model 三元组 + 稳定 id。
+ *  id 是前端 crypto.randomUUID() 生成的字符串，仅用于 React key + 标识 active，
+ *  不参与 API 调用。 */
+type ModelEntry = {
+  id: string;
+  label: string;
+  baseUrl: string;
+  model: string;
+};
+
+/** 双协议下各自的模型列表（2026-09-08）：设置页协议切换时整体切换显示；
+ *  新增的 ModelEntry 落在当前 apiProvider 协议下。 */
+type ModelsByProvider = {
+  openai: ModelEntry[];
+  anthropic: ModelEntry[];
+};
+
+/** 双协议下各自的 active 模型 id（2026-09-08）：null = 该协议还没选 active。 */
+type ActiveModelId = {
+  openai: string | null;
+  anthropic: string | null;
+};
+
+/** crypto.randomUUID 的安全包装——老浏览器/Tauri webview 偶发缺 crypto 时回退
+ *  到时间戳拼随机数（id 唯一性足够即可，碰撞概率 < 1e-10） */
+function genModelId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `m-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
 
 type ApiStatus = {
   enabled: boolean;
@@ -166,6 +197,16 @@ const API_PROVIDER_OPTIONS = [
   { value: "anthropic", label: "Anthropic 兼容" },
 ] as const;
 type ApiProvider = (typeof API_PROVIDER_OPTIONS)[number]["value"];
+
+/** 界面字体大小四档（2026-09-08 老板拍板）：顺序 = 从小到大，
+ *  索引位置 = SettingsPage 滑块/按钮的档位 */
+const UI_FONT_SIZE_OPTIONS = [
+  { value: "small", label: "小" },
+  { value: "standard", label: "标准" },
+  { value: "large", label: "大" },
+  { value: "xlarge", label: "特大" },
+] as const;
+type UiFontSize = (typeof UI_FONT_SIZE_OPTIONS)[number]["value"];
 
 /** API 协议下拉（2026-09-05）：原生 <select> 在 macOS 上弹系统级菜单——样式脱离
  *  新拟态主题、深浅色都不跟随，看起来像单独弹了个窗口。自绘下拉：触发钮 + 浮层
@@ -387,6 +428,81 @@ function ProfileRow({
   );
 }
 
+/** 单个大模型条目（2026-09-08 老板拍板改版）：radio + label + baseUrl + model + 删除按钮。
+ *  active 状态：左边 ● 实心圆点 + nm-inset 背景（高亮区分）；点击圆点切换 active。 */
+function ModelRow({
+  model,
+  isActive,
+  apiProvider,
+  onChange,
+  onSelect,
+  onDelete,
+}: {
+  model: ModelEntry;
+  isActive: boolean;
+  apiProvider: ApiProvider;
+  onChange: (patch: Partial<ModelEntry>) => void;
+  onSelect: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <div
+      className={`p-2.5 rounded-xl ${
+        isActive ? "nm-inset" : "nm-outset"
+      }`}
+    >
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={onSelect}
+          className={`shrink-0 w-5 h-5 rounded-full flex items-center justify-center text-[10px] transition-colors ${
+            isActive
+              ? "bg-[var(--accent)] text-white"
+              : "border border-[var(--edge)] text-transparent hover:border-[var(--t4)]"
+          }`}
+          title={isActive ? "当前选中（点其它条目可切换）" : "点此切换为当前模型"}
+        >
+          ●
+        </button>
+        <input
+          value={model.label}
+          onChange={(e) => onChange({ label: e.target.value })}
+          placeholder="名称（DeepSeek / Kimi / Claude Sonnet…）"
+          className="nm-inset flex-1 min-w-0 rounded-lg px-2.5 py-1 text-xs text-[var(--t3)] outline-none"
+        />
+        <button
+          type="button"
+          onClick={onDelete}
+          className="shrink-0 text-xs text-[var(--t5)] hover:text-[var(--danger)] px-1"
+          title="删除此模型"
+        >
+          🗑
+        </button>
+      </div>
+      <div className="mt-1.5 ml-7 space-y-1">
+        <input
+          value={model.baseUrl}
+          onChange={(e) => onChange({ baseUrl: e.target.value })}
+          placeholder={
+            apiProvider === "anthropic"
+              ? "https://api.anthropic.com"
+              : "https://api.deepseek.com/v1"
+          }
+          className="nm-inset w-full rounded-lg px-2.5 py-1 text-xs text-[var(--t3)] outline-none"
+        />
+        <input
+          value={model.model}
+          onChange={(e) => onChange({ model: e.target.value })}
+          placeholder={
+            apiProvider === "anthropic" ? "claude-sonnet-4-5" : "deepseek-v4-flash"
+          }
+          className="nm-inset w-full rounded-lg px-2.5 py-1 text-xs text-[var(--t3)] outline-none"
+        />
+      </div>
+    </div>
+  );
+}
+
 /** 设置页：个人资料 + 深浅色模式 + 任务数据管理 + 外部机器人 API 开关（默认关闭）+ token 展示与复制 */
 export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTasks, onExportWorkspace, onImportWorkspace }: Props) {
   const [status, setStatus] = useState<ApiStatus>({
@@ -404,9 +520,23 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
   const [botEnabled, setBotEnabled] = useState(false);
   const [botBusy, setBotBusy] = useState(false);
   const [botError, setBotError] = useState("");
+  // 开机自启动（2026-09-08 新增）：登录系统时自动拉起 wmessage
+  // 走 tauri-plugin-autostart：is_enabled / enable / disable 三个命令
+  const [autostartEnabled, setAutostartEnabled] = useState(false);
+  const [autostartBusy, setAutostartBusy] = useState(false);
+  const [autostartError, setAutostartError] = useState("");
   const [config, setConfig] = useState({
-    baseUrl: "",
-    model: "",
+    // API 协议（2026-09-05）：openai=OpenAI 兼容（默认）/ anthropic=Anthropic 兼容
+    apiProvider: "openai" as ApiProvider,
+    // 每协议下的大模型列表（2026-09-08 老板拍板改版）：
+    // 双协议各自独立一份 ModelEntry 列表，切换协议时整体切换显示；
+    // 初始空 = 老板要求「不设置默认厂商」，用户点「添加大模型」自己加
+    modelsByProvider: { openai: [], anthropic: [] } as ModelsByProvider,
+    // 每协议当前选中的模型 id（2026-09-08）：null = 该协议还没选 active
+    activeModelId: { openai: null, anthropic: null } as ActiveModelId,
+    // 界面字体大小（2026-09-08）：small/standard/large/xlarge 四档
+    // 默认 small（老板拍板「目前字号为小」）；后端 None 也回退到 small
+    uiFontSize: "small" as UiFontSize,
     hasApiKey: false,
     bypassLlmOnPreStepHit: true, // F-1 [P0] pre-step 路由外层是否跳过主 LLM；老配置默认 true
     // 本地文件工具白名单目录（textarea 一行一个；空 = 后端内置默认 桌面/下载/文档+绑定文件夹）
@@ -424,9 +554,8 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     pythonTimeoutSecs: "",
     // 授权模式（2026-08-26）：strict=白名单外硬拒 / ask=白名单外弹授权（默认）/ yolo=全放行
     permMode: "ask" as "strict" | "ask" | "yolo",
-    // API 协议（2026-09-05）：openai=OpenAI 兼容（默认）/ anthropic=Anthropic 兼容
-    apiProvider: "openai" as "openai" | "anthropic",
-    // max_tokens（仅 Anthropic 模式用；空 = 8192 默认，范围 256-200000）
+    // max_tokens（2026-09-08 改造：仅 Anthropic 模式用；空 = 8192 默认，范围 256-200000）
+    // 仍是顶层配置——同一协议下多个模型共用一个 max_tokens
     maxTokens: "",
   });
   const [keyInput, setKeyInput] = useState("");
@@ -445,8 +574,6 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
   const [logOpen, setLogOpen] = useState(false);
   const [logText, setLogText] = useState("");
   const [logBusy, setLogBusy] = useState(false);
-  // 预设行「自定义」按钮点击后聚焦 Base URL 输入框（对齐挂件模型菜单的自定义入口）
-  const baseUrlInputRef = useRef<HTMLInputElement>(null);
 
   const refreshBot = async () => {
     try {
@@ -461,8 +588,6 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
   const loadConfig = async () => {
     try {
       const c = await invoke<{
-        baseUrl: string;
-        model: string;
         hasApiKey: boolean;
         bypassLlmOnPreStepHit?: boolean;
         allowedDirs?: string[];
@@ -475,12 +600,29 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         permMode?: string | null;
         apiProvider?: string | null;
         maxTokens?: number | null;
+        // 2026-09-08：每协议下的大模型列表 + active 模型 id
+        // 老后端版本（无这俩字段）→ undefined → 前端按空列表处理（"不设置默认厂商"）
+        modelsByProvider?: ModelsByProvider | null;
+        activeModelId?: ActiveModelId | null;
+        // 2026-09-08：界面字体大小（small/standard/large/xlarge）
+        // 老后端版本没返 → 前端按 small 回退（老板拍板默认）
+        uiFontSize?: string | null;
       }>(
         "bot_get_config"
       );
       setConfig({
-        baseUrl: c.baseUrl ?? "",
-        model: c.model ?? "",
+        // 老配置缺字段/非法值 → openai（与后端 ApiProvider::from_cfg 回退一致）
+        apiProvider: c.apiProvider === "anthropic" ? "anthropic" : "openai",
+        // 老后端版本没返 modelsByProvider → 空列表（无默认厂商）
+        modelsByProvider: c.modelsByProvider ?? { openai: [], anthropic: [] },
+        activeModelId: c.activeModelId ?? { openai: null, anthropic: null },
+        // 字体大小：老后端 / None / 非法值都回退 small（"目前字号为小"）
+        uiFontSize:
+          c.uiFontSize === "standard" ||
+          c.uiFontSize === "large" ||
+          c.uiFontSize === "xlarge"
+            ? c.uiFontSize
+            : "small",
         hasApiKey: !!c.hasApiKey,
         // 老后端版本（没返 bypass 字段）默认 true，避免意外走 LEGACY 路径
         bypassLlmOnPreStepHit: c.bypassLlmOnPreStepHit ?? true,
@@ -495,8 +637,6 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         // 老配置缺字段/非法值 → ask（与后端 PermMode::from_cfg 回退一致）
         permMode:
           c.permMode === "strict" || c.permMode === "yolo" ? c.permMode : "ask",
-        // 老配置缺字段/非法值 → openai（与后端 ApiProvider::from_cfg 回退一致）
-        apiProvider: c.apiProvider === "anthropic" ? "anthropic" : "openai",
         // 空 = 8192 默认（仅 Anthropic 模式用）
         maxTokens: c.maxTokens != null ? String(c.maxTokens) : "",
       });
@@ -548,6 +688,13 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     refreshBot();
     loadConfig();
     refreshPy();
+    // 拉取开机自启动状态（2026-09-08 新增）
+    invoke<boolean>("plugin:autostart|is_enabled")
+      .then(setAutostartEnabled)
+      .catch((e) => {
+        handleCommandError(e, "plugin:autostart|is_enabled", { silent: true });
+        setAutostartError(formatCommandError(e));
+      });
   }, []);
 
   const togglePy = async () => {
@@ -587,16 +734,25 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     }
   };
 
-  const saveConfig = async (override?: typeof config) => {
+  const saveConfig = async (
+    override?: typeof config | ((c: typeof config) => typeof config),
+    opts?: { skipReload?: boolean },
+  ) => {
     if (configBusy) return;
-    const c = override ?? config;
+    const c =
+      typeof override === "function" ? override(config) : (override ?? config);
     setConfigBusy(true);
     setBotError("");
     try {
       await invoke("bot_set_config", {
         config: {
-          baseUrl: c.baseUrl,
-          model: c.model,
+          // 2026-09-08：新结构——每协议下的大模型列表 + active 模型 id
+          // 后端落盘前会从 active 模型派生 base_url/model 回填老字段
+          // （bot_model_loop 不感知新结构，沿用 base_url/model/api_provider 三个老字段）
+          modelsByProvider: c.modelsByProvider,
+          activeModelId: c.activeModelId,
+          // 2026-09-08：字体大小直接透传，后端原样存（None = small 默认）
+          uiFontSize: c.uiFontSize,
           bypassLlmOnPreStepHit: c.bypassLlmOnPreStepHit,
           // textarea 一行一个路径；空行/空白剔除；全空 = 后端内置默认白名单
           allowedDirs: c.allowedDirs
@@ -638,7 +794,10 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
       setKeyInput("");
       setTavilyKeyInput("");
       setBraveKeyInput("");
-      await loadConfig();
+      // skipReload=true 用于点档即时落盘场景：末尾 loadConfig 会拿 mock/磁盘上的旧值覆盖刚点的字段
+      if (!opts?.skipReload) {
+        await loadConfig();
+      }
       // 广播给挂件聊天区：头部 🧠 模型标签同步刷新
       emit("bot-config-changed", null).catch(() => {});
       setConfigSaved(true);
@@ -649,6 +808,82 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     } finally {
       setConfigBusy(false);
     }
+  };
+
+  // ───────── 2026-09-08 双协议下大模型列表 handlers ─────────
+  // 当前协议下的模型列表 + active id（每次渲染取一次，避免重复计算）
+  const currentModels = config.modelsByProvider[config.apiProvider];
+  const currentActiveId = config.activeModelId[config.apiProvider];
+
+  /** 添加大模型：append 到当前协议列表的第一个空行；若是空列表则同时设为 active */
+  const addModel = () => {
+    const entry: ModelEntry = {
+      id: genModelId(),
+      label: "",
+      baseUrl: "",
+      model: "",
+    };
+    setConfig((c) => {
+      const list = c.modelsByProvider[c.apiProvider];
+      return {
+        ...c,
+        modelsByProvider: {
+          ...c.modelsByProvider,
+          [c.apiProvider]: [...list, entry],
+        },
+        // 空列表首次添加 → 自动 active；非空 → 保持现有 active
+        activeModelId:
+          list.length === 0
+            ? { ...c.activeModelId, [c.apiProvider]: entry.id }
+            : c.activeModelId,
+      };
+    });
+  };
+
+  /** 更新大模型条目（label / baseUrl / model 任一字段变化） */
+  const updateModel = (id: string, patch: Partial<ModelEntry>) => {
+    setConfig((c) => {
+      const list = c.modelsByProvider[c.apiProvider].map((m) =>
+        m.id === id ? { ...m, ...patch } : m,
+      );
+      return {
+        ...c,
+        modelsByProvider: {
+          ...c.modelsByProvider,
+          [c.apiProvider]: list,
+        },
+      };
+    });
+  };
+
+  /** 删除大模型条目：若删的是 active → 取列表第一个作为新 active（无则 null） */
+  const deleteModel = (id: string) => {
+    setConfig((c) => {
+      const list = c.modelsByProvider[c.apiProvider].filter((m) => m.id !== id);
+      let nextActive = c.activeModelId[c.apiProvider];
+      if (nextActive === id) {
+        nextActive = list.length > 0 ? list[0].id : null;
+      }
+      return {
+        ...c,
+        modelsByProvider: {
+          ...c.modelsByProvider,
+          [c.apiProvider]: list,
+        },
+        activeModelId: {
+          ...c.activeModelId,
+          [c.apiProvider]: nextActive,
+        },
+      };
+    });
+  };
+
+  /** 选中大模型（设为当前协议 active）；仅切 activeModelId 字段，UI 由 currentActiveId 联动刷新 */
+  const selectModel = (id: string) => {
+    setConfig((c) => ({
+      ...c,
+      activeModelId: { ...c.activeModelId, [c.apiProvider]: id },
+    }));
   };
 
   /** 「Tavily 搜索」开关：与「开启机器人聊天」同款——点击即持久化（复用整份配置保存） */
@@ -686,6 +921,36 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
       setBotError(formatCommandError(e));
     } finally {
       setConfigBusy(false);
+    }
+  };
+
+  /** 开机自启动切换（2026-09-08 新增）：点击即落盘——macOS 写 LaunchAgent plist,
+   *  Windows 写注册表 Run 项，Linux 写 ~/.config/autostart/*.desktop。
+   *  失败时回滚到后端真实状态（部分成功的情况）。 */
+  const toggleAutostart = async () => {
+    if (autostartBusy) return;
+    setAutostartBusy(true);
+    setAutostartError("");
+    const next = !autostartEnabled;
+    try {
+      await invoke(next ? "plugin:autostart|enable" : "plugin:autostart|disable");
+      setAutostartEnabled(next);
+    } catch (e) {
+      handleCommandError(
+        e,
+        next ? "plugin:autostart|enable" : "plugin:autostart|disable",
+        { silent: true },
+      );
+      setAutostartError(formatCommandError(e));
+      // 重新拉一次真实状态，UI 不漂
+      try {
+        const real = await invoke<boolean>("plugin:autostart|is_enabled");
+        setAutostartEnabled(real);
+      } catch {
+        // 拉失败也无所谓，保持 next 翻转前的状态
+      }
+    } finally {
+      setAutostartBusy(false);
     }
   };
 
@@ -805,27 +1070,82 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         </div>
       </div>
 
-      {/* 深浅色模式 */}
+      {/* 通用设置（2026-09-08 老板拍板合并）：外观（深浅色模式改名）+ 开机自启动 wmessage */}
       <div className="nm-card p-5">
-        <h2 className="text-lg font-semibold text-[var(--t1)]">深浅色模式</h2>
-        <div className="mt-4 flex gap-1">
-          {(
-            [
-              ["light", "☀️ 浅色"],
-              ["dark", "🌙 深色"],
-              ["system", "🖥️ 跟随系统"],
-            ] as [ThemeSetting, string][]
-          ).map(([value, label]) => (
+        <h2 className="text-lg font-semibold text-[var(--t1)]">通用设置</h2>
+        <div className="mt-4 space-y-3">
+          {/* 外观（原「深浅色模式」改名：主题是外观的一部分，名字更准确） */}
+          <div>
+            <p className="text-sm font-medium text-[var(--t2)]">外观</p>
+            <div className="mt-3 flex gap-1">
+              {(
+                [
+                  ["light", "☀️ 浅色"],
+                  ["dark", "🌙 深色"],
+                  ["system", "🖥️ 跟随系统"],
+                ] as [ThemeSetting, string][]
+              ).map(([value, label]) => (
+                <button
+                  key={value}
+                  className={`px-4 py-1.5 text-sm text-[var(--t3)] ${
+                    theme === value ? "nm-inset" : "nm-outset"
+                  }`}
+                  onClick={() => onThemeChange(value)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            {/* 字体大小（2026-09-08 老板拍板）：四档 small/standard/large/xlarge
+                默认 small（“目前字号为小”）。走 data-attr 全局套用，
+                视觉缩放在 main.css 里。点选即生效 + 即时落盘（与外观一致，
+                不用再点「保存配置」——2026-09-08 老板拍板）。 */}
+            <p className="mt-3 text-sm font-medium text-[var(--t2)]">字体大小</p>
+            <div className="mt-2 flex gap-1">
+              {UI_FONT_SIZE_OPTIONS.map((o) => (
+                <button
+                  key={o.value}
+                  className={`flex-1 px-2 py-1.5 text-xs ${
+                    config.uiFontSize === o.value ? "nm-inset" : "nm-outset"
+                  } text-[var(--t3)]`}
+                  onClick={() => {
+                    const v = o.value;
+                    setConfig((c) => ({ ...c, uiFontSize: v }));
+                    // 点选即生效：data-attr 预览 + saveConfig 落盘（functional override
+                    // 拿最新 config，skipReload 避免末尾重拉用磁盘上可能的旧 uiFontSize
+                    // 覆盖刚点的字段，2026-09-08 老板拍板）
+                    document.documentElement.dataset.fontSize = v;
+                    saveConfig((c) => ({ ...c, uiFontSize: v }), { skipReload: true });
+                  }}
+                >
+                  {o.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          {/* 开机自动启动 wmessage（2026-09-08 新增）：走 tauri-plugin-autostart，
+              走现成的 plugin:autostart|enable / disable / is_enabled 命令。
+              点击即落盘：macOS 写 LaunchAgent plist / Windows 写注册表 Run / Linux 写 .desktop。 */}
+          <div className="pt-3 border-t border-[var(--edge)] flex items-center justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-[var(--t2)]">开机自动启动 wmessage</p>
+              <p className="mt-1 text-xs text-[var(--t5)]">
+                登录系统时自动拉起 wmessage，开关改完即生效
+              </p>
+              {autostartError && (
+                <p className="mt-1 text-xs text-[var(--danger)]">{autostartError}</p>
+              )}
+            </div>
             <button
-              key={value}
-              className={`px-4 py-1.5 text-sm text-[var(--t3)] ${
-                theme === value ? "nm-inset" : "nm-outset"
+              className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] ${
+                autostartEnabled ? "nm-inset" : "nm-outset"
               }`}
-              onClick={() => onThemeChange(value)}
+              onClick={toggleAutostart}
+              disabled={autostartBusy}
             >
-              {label}
+              {autostartBusy ? "…" : autostartEnabled ? "已开启" : "已关闭"}
             </button>
-          ))}
+          </div>
         </div>
       </div>
 
@@ -1022,7 +1342,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         {botEnabled && (
           <div className="mt-4 border-t border-[var(--edge)] pt-4 space-y-3">
             <p className="text-xs font-medium text-[var(--t4)]">大模型 API 配置</p>
-            {/* API 协议（2026-09-05 Anthropic 兼容模式）：自绘下拉（原生 select 弹系统菜单不跟随主题）；placeholder 随协议联动 */}
+            {/* API 协议（2026-09-05 Anthropic 兼容模式）：自绘下拉（原生 select 弹系统菜单不跟随主题） */}
             <div className="space-y-1">
               <p className="text-[10px] text-[var(--t5)]">API 协议</p>
               <ApiProviderSelect
@@ -1030,67 +1350,64 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
                 onChange={(v) => setConfig((c) => ({ ...c, apiProvider: v }))}
               />
             </div>
-            {/* 提供商预设（Phase 3.3）：点击自动填 Base URL + 推荐模型，当前值命中的预设高亮 */}
+            {/* 该协议下的大模型（2026-09-08 老板拍板改版）：
+                双协议各自独立维护一份列表，协议切换时整体切换显示；列表可加多个；
+                radio 表示当前 active（机器人实际调用的那个）。老板要求「不设置默认厂商」，
+                所以列表初始为空，用户点「添加大模型」自己加。 */}
             <div className="space-y-1">
-              <p className="text-[10px] text-[var(--t5)]">提供商预设</p>
-              <div className="flex flex-wrap gap-2">
-                {PROVIDER_PRESETS.map((p) => {
-                  // 2026-09-05：预设收敛为供应商维度，高亮只看 baseUrl——
-                  // 模型栏手改成同供应商其它型号时按钮保持高亮
-                  const active = config.baseUrl.trim() === p.baseUrl;
-                  return (
-                    <button
-                      key={p.label}
-                      onClick={() =>
-                        setConfig((c) => ({
-                          ...c,
-                          baseUrl: p.baseUrl,
-                          model: p.model,
-                          // 预设全是 OpenAI 兼容端点：点预设同时把协议拉回 openai，
-                          // 防「Anthropic 协议 + OpenAI 端点」的错配组合
-                          apiProvider: "openai",
-                        }))
-                      }
-                      className={`px-3 py-1.5 text-xs rounded-xl ${active ? "nm-inset text-[var(--t1)]" : "nm-outset text-[var(--t3)]"}`}
-                    >
-                      {p.label}
-                    </button>
-                  );
-                })}
-                {/* 自定义（2026-09-05，对齐挂件模型菜单入口）：当前 baseUrl 不命中任何
-                    供应商时高亮；点击清空 Base URL/模型并聚焦输入框，进入自定义填写态 */}
-                <button
-                  onClick={() => {
-                    setConfig((c) => ({ ...c, baseUrl: "", model: "" }));
-                    baseUrlInputRef.current?.focus();
-                  }}
-                  className={`px-3 py-1.5 text-xs rounded-xl ${
-                    matchProvider(config.baseUrl) === undefined
-                      ? "nm-inset text-[var(--t1)]"
-                      : "nm-outset text-[var(--t3)]"
-                  }`}
-                >
-                  ✏️ 自定义
-                </button>
-              </div>
+              <p className="text-[10px] text-[var(--t5)]">
+                {config.apiProvider === "anthropic" ? "Anthropic" : "OpenAI"} 兼容协议下的大模型
+              </p>
+              {currentModels.length === 0 ? (
+                <p className="text-[11px] text-[var(--t5)] py-1">
+                  暂无大模型，点下面「添加大模型」开始添加
+                </p>
+              ) : (
+                <div className="space-y-1.5">
+                  {currentModels.map((m) => (
+                    <ModelRow
+                      key={m.id}
+                      model={m}
+                      isActive={m.id === currentActiveId}
+                      apiProvider={config.apiProvider}
+                      onChange={(patch) => updateModel(m.id, patch)}
+                      onSelect={() => selectModel(m.id)}
+                      onDelete={() => deleteModel(m.id)}
+                    />
+                  ))}
+                </div>
+              )}
+              <button
+                type="button"
+                className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)]"
+                onClick={addModel}
+              >
+                ➕ 添加大模型
+              </button>
               <p className="text-[10px] text-[var(--t6)] leading-snug">
-                点击自动填充 Base URL 和推荐模型，仍可手动修改；切换提供商记得换对应的 API Key。
+                ● 表示当前选中的模型（机器人实际调用的）；切换协议时列表整体切换。
               </p>
             </div>
-            <div className="space-y-1">
-              <p className="text-[10px] text-[var(--t5)]">Base URL</p>
-              <input
-                ref={baseUrlInputRef}
-                value={config.baseUrl}
-                onChange={(e) => setConfig((c) => ({ ...c, baseUrl: e.target.value }))}
-                placeholder={
-                  config.apiProvider === "anthropic"
-                    ? "https://api.anthropic.com"
-                    : "https://api.deepseek.com/v1"
-                }
-                className="nm-inset w-full rounded-xl px-3 py-2 text-xs text-[var(--t3)] outline-none"
-              />
-            </div>
+            {/* max_tokens（2026-09-08 改造）：仅 Anthropic 模式显示；仍是顶层配置——
+                同协议下多个模型共用一个 max_tokens。留空 = 8192 默认。 */}
+            {config.apiProvider === "anthropic" && (
+              <div className="space-y-1">
+                <p className="text-[10px] text-[var(--t5)]">max_tokens</p>
+                <input
+                  value={config.maxTokens}
+                  onChange={(e) => setConfig((c) => ({ ...c, maxTokens: e.target.value }))}
+                  placeholder="8192"
+                  inputMode="numeric"
+                  className="nm-inset w-full rounded-xl px-3 py-2 text-xs text-[var(--t3)] outline-none"
+                />
+                <p className="text-[10px] text-[var(--t6)] leading-snug">
+                  单次回复的最大 token 数（Anthropic 必填）。留空 = 8192；范围 256-200000，超出自动钳制。
+                </p>
+              </div>
+            )}
+            {/* API Key（2026-09-08 改造）：仍是全局一份，所有协议所有模型共用一个 key。
+                老后端会把 key 存到系统凭据存储（不回填到输入框），前端只在 hasApiKey=true
+                时显示「已保存」标识。 */}
             <div className="space-y-1">
               <p className="text-[10px] text-[var(--t5)]">
                 API Key{config.hasApiKey && <span className="text-[var(--success)]"> · 已存入系统凭据存储 ✓</span>}
@@ -1111,34 +1428,6 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
                 </button>
               )}
             </div>
-            <div className="space-y-1">
-              <p className="text-[10px] text-[var(--t5)]">模型</p>
-              <input
-                value={config.model}
-                onChange={(e) => setConfig((c) => ({ ...c, model: e.target.value }))}
-                placeholder={
-                  config.apiProvider === "anthropic" ? "claude-sonnet-4-5" : "deepseek-v4-flash"
-                }
-                className="nm-inset w-full rounded-xl px-3 py-2 text-xs text-[var(--t3)] outline-none"
-              />
-            </div>
-            {/* max_tokens（2026-09-05）：仅 Anthropic 模式显示（Anthropic 必填该字段；
-                OpenAI 兼容模式不发送——多数兼容网关不认识） */}
-            {config.apiProvider === "anthropic" && (
-              <div className="space-y-1">
-                <p className="text-[10px] text-[var(--t5)]">max_tokens</p>
-                <input
-                  value={config.maxTokens}
-                  onChange={(e) => setConfig((c) => ({ ...c, maxTokens: e.target.value }))}
-                  placeholder="8192"
-                  inputMode="numeric"
-                  className="nm-inset w-full rounded-xl px-3 py-2 text-xs text-[var(--t3)] outline-none"
-                />
-                <p className="text-[10px] text-[var(--t6)] leading-snug">
-                  单次回复的最大 token 数（Anthropic 必填）。留空 = 8192；范围 256-200000，超出自动钳制。
-                </p>
-              </div>
-            )}
             {/* 授权模式（2026-08-26，Kimi CLI 风格执行前授权） */}
             <div className="space-y-1">
               <p className="text-sm font-medium text-[var(--t2)]">授权模式</p>

@@ -27,6 +27,8 @@ mocks.invokeMock.mockImplementation(async (cmd: string) => {
         model: "",
         hasApiKey: false,
         bypassLlmOnPreStepHit: true,
+        // 2026-09-08 字体大小：默认 small（老板拍板「目前字号为小」）
+        uiFontSize: "small",
       };
     case "py_get_enabled":
       return false;
@@ -42,6 +44,12 @@ mocks.invokeMock.mockImplementation(async (cmd: string) => {
       return { rules_count: 0, poll_interval_secs: 600 };
     case "migration_log_read":
       return "";
+    // 2026-09-08 开机自启动：默认关闭；enable/disable 幂等返 null
+    case "plugin:autostart|is_enabled":
+      return false;
+    case "plugin:autostart|enable":
+    case "plugin:autostart|disable":
+      return null;
     default:
       return null;
   }
@@ -114,7 +122,7 @@ describe("SettingsPage", () => {
     render(<SettingsPage {...defaultProps} />);
     // 各 section 标题
     expect(screen.getByText("个人资料")).toBeInTheDocument();
-    expect(screen.getByText("深浅色模式")).toBeInTheDocument();
+    expect(screen.getByText("通用设置")).toBeInTheDocument();
     expect(screen.getByText("任务数据管理")).toBeInTheDocument();
     expect(screen.getByText("机器人设置")).toBeInTheDocument();
     expect(screen.getByText("机器人技能")).toBeInTheDocument();
@@ -373,14 +381,104 @@ describe("SettingsPage", () => {
     });
   });
 
-  it("提供商预设：点击 Kimi → Base URL / 模型自动填充且按钮高亮", async () => {
+  // ───────── 2026-09-08 老板拍板改版：双协议下的大模型列表 ─────────
+  // 老「提供商预设」3 个测试 + 1 个「API 协议」测试全部重写：新行为是每协议独立
+  // 一份 ModelEntry 列表，点「添加大模型」自己加，切换协议时列表整体切换。
+
+  it("大模型 API 配置：初始无模型（老板要求「不设置默认厂商」）→ 列表为空 + 显示「暂无大模型」", async () => {
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_get_enabled") return true;
+      if (cmd === "bot_get_config")
+        return {
+          // 2026-09-08：新结构两协议都是空数组
+          modelsByProvider: { openai: [], anthropic: [] },
+          activeModelId: { openai: null, anthropic: null },
+          hasApiKey: false,
+          bypassLlmOnPreStepHit: true,
+        };
+      if (cmd === "api_status") return { enabled: false, port: 4763, token: "" };
+      if (cmd === "profile_get")
+        return {
+          user: { name: "我", avatarDataUrl: null },
+          bot: { name: "机器人", avatarDataUrl: null },
+        };
+      if (cmd === "py_get_enabled") return false;
+      if (cmd === "skills_list") return [];
+      if (cmd === "migration_rules_load") return { version: 1, rules: [] };
+      if (cmd === "migration_status") return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_log_read") return "";
+      return null;
+    });
+    render(<SettingsPage {...defaultProps} />);
+    // 空态：列表为空提示 + 添加按钮（用 role=button 避免和空态描述里“添加大模型”同款文字冲突）
+    expect(await screen.findByText(/暂无大模型/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /添加大模型/ })).toBeInTheDocument();
+    // 老「提供商预设」UI 已经全部拿掉
+    expect(screen.queryByText("MiniMax")).toBeNull();
+    expect(screen.queryByText("DeepSeek")).toBeNull();
+    expect(screen.queryByText(/自定义/)).toBeNull();
+  });
+
+  it("大模型 API 配置：点「添加大模型」→ 列表加一行 + 自动 active（空列表首次添加）", async () => {
     const user = userEvent.setup();
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "bot_get_enabled") return true;
       if (cmd === "bot_get_config")
         return {
-          baseUrl: "https://api.minimaxi.com/v1",
-          model: "MiniMax-M3",
+          modelsByProvider: { openai: [], anthropic: [] },
+          activeModelId: { openai: null, anthropic: null },
+          hasApiKey: false,
+          bypassLlmOnPreStepHit: true,
+        };
+      if (cmd === "api_status") return { enabled: false, port: 4763, token: "" };
+      if (cmd === "profile_get")
+        return {
+          user: { name: "我", avatarDataUrl: null },
+          bot: { name: "机器人", avatarDataUrl: null },
+        };
+      if (cmd === "py_get_enabled") return false;
+      if (cmd === "skills_list") return [];
+      if (cmd === "migration_rules_load") return { version: 1, rules: [] };
+      if (cmd === "migration_status") return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_log_read") return "";
+      return null;
+    });
+    render(<SettingsPage {...defaultProps} />);
+    // 切到 Anthropic 后再点添加，验证新行落到 anthropic 协议下
+    const trigger = await screen.findByRole("button", { name: /OpenAI 兼容/ });
+    await user.click(trigger);
+    await user.click(screen.getByRole("button", { name: /Anthropic 兼容/ }));
+    expect(await screen.findByText(/暂无大模型/)).toBeInTheDocument();
+    // 点「添加大模型」（用 role=button 避免和空态描述里同款文字冲突）
+    await user.click(screen.getByRole("button", { name: /添加大模型/ }));
+    // 列表里出现一行（用 ModelRow 的 label placeholder 定位）
+    const labelInput = await screen.findByPlaceholderText(/DeepSeek \/ Kimi/);
+    expect(labelInput).toBeInTheDocument();
+    // 这一行自动 active——radio 按钮 title 走到「当前选中」分支
+    expect(screen.getByTitle("当前选中（点其它条目可切换）")).toBeInTheDocument();
+    // OpenAI 协议下仍然是空（列表不串协议）
+    const trigger2 = screen.getByRole("button", { name: /Anthropic 兼容/ });
+    await user.click(trigger2);
+    await user.click(screen.getByRole("button", { name: /OpenAI 兼容/ }));
+    expect(screen.getByText(/暂无大模型/)).toBeInTheDocument();
+  });
+
+  it("大模型 API 配置：切协议 → 列表整体切换（OpenAI 模型不在 Anthropic 协议下显示）", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_get_enabled") return true;
+      if (cmd === "bot_get_config")
+        return {
+          modelsByProvider: {
+            openai: [
+              { id: "m1", label: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-v4-flash" },
+              { id: "m2", label: "Kimi", baseUrl: "https://api.moonshot.cn/v1", model: "kimi-k3" },
+            ],
+            anthropic: [
+              { id: "m3", label: "Claude Sonnet", baseUrl: "https://api.anthropic.com", model: "claude-sonnet-4-5" },
+            ],
+          },
+          activeModelId: { openai: "m1", anthropic: "m3" },
           hasApiKey: true,
           bypassLlmOnPreStepHit: true,
         };
@@ -398,95 +496,89 @@ describe("SettingsPage", () => {
       return null;
     });
     render(<SettingsPage {...defaultProps} />);
-    // 等待配置加载：Base URL 输入框回填 MiniMax 地址
-    const baseUrlInput = await screen.findByDisplayValue("https://api.minimaxi.com/v1");
-    // MiniMax 预设高亮（baseUrl 匹配）
-    expect(screen.getByText("MiniMax").className).toContain("nm-inset");
-    // 点击 Kimi → 自动填充
-    await user.click(screen.getByText("Kimi"));
+    // 默认 OpenAI 协议：DeepSeek + Kimi 都在，Claude 不在
+    await screen.findByDisplayValue("DeepSeek");
+    expect(screen.getByDisplayValue("Kimi")).toBeInTheDocument();
+    expect(screen.queryByDisplayValue("Claude Sonnet")).toBeNull();
+    // 切到 Anthropic
+    const trigger = screen.getByRole("button", { name: /OpenAI 兼容/ });
+    await user.click(trigger);
+    await user.click(screen.getByRole("button", { name: /Anthropic 兼容/ }));
+    // 现在 Anthropic 协议：只有 Claude
+    await screen.findByDisplayValue("Claude Sonnet");
+    expect(screen.queryByDisplayValue("DeepSeek")).toBeNull();
+    expect(screen.queryByDisplayValue("Kimi")).toBeNull();
+    // 切回 OpenAI
+    const trigger2 = screen.getByRole("button", { name: /Anthropic 兼容/ });
+    await user.click(trigger2);
+    await user.click(screen.getByRole("button", { name: /OpenAI 兼容/ }));
+    // DeepSeek/Kimi 又回来了
+    await screen.findByDisplayValue("DeepSeek");
+    expect(screen.getByDisplayValue("Kimi")).toBeInTheDocument();
+    // 且 DeepSeek（m1）仍是 active——回到原协议时 active 模型是协议级记忆
+    expect(screen.getByTitle("当前选中（点其它条目可切换）")).toBeInTheDocument();
+  });
+
+  it("大模型 API 配置：删除 active → 列表第一个顶替 active（删完 active=null，列表空）", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_get_enabled") return true;
+      if (cmd === "bot_get_config")
+        return {
+          modelsByProvider: {
+            openai: [
+              { id: "m1", label: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-v4-flash" },
+              { id: "m2", label: "Kimi", baseUrl: "https://api.moonshot.cn/v1", model: "kimi-k3" },
+            ],
+            anthropic: [],
+          },
+          activeModelId: { openai: "m1", anthropic: null },
+          hasApiKey: true,
+          bypassLlmOnPreStepHit: true,
+        };
+      if (cmd === "api_status") return { enabled: false, port: 4763, token: "" };
+      if (cmd === "profile_get")
+        return {
+          user: { name: "我", avatarDataUrl: null },
+          bot: { name: "机器人", avatarDataUrl: null },
+        };
+      if (cmd === "py_get_enabled") return false;
+      if (cmd === "skills_list") return [];
+      if (cmd === "migration_rules_load") return { version: 1, rules: [] };
+      if (cmd === "migration_status") return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_log_read") return "";
+      return null;
+    });
+    render(<SettingsPage {...defaultProps} />);
+    await screen.findByDisplayValue("DeepSeek");
+    // 初始：m1(DeepSeek) active，m2(Kimi) 不是
+    expect(screen.getByTitle("当前选中（点其它条目可切换）")).toBeInTheDocument();
+    expect(screen.getByTitle("点此切换为当前模型")).toBeInTheDocument();
+    // 删 m1 → 列表里只剩 m2(Kimi)，应该顶替成 active
+    const delButtons1 = screen.getAllByTitle("删除此模型");
+    await user.click(delButtons1[0]);
     await waitFor(() => {
-      expect(baseUrlInput).toHaveValue("https://api.moonshot.cn/v1");
+      // Kimi 现在 active
+      const radios = screen.getAllByTitle("当前选中（点其它条目可切换）");
+      expect(radios).toHaveLength(1);
     });
-    expect(screen.getByPlaceholderText("deepseek-v4-flash")).toHaveValue("kimi-k3");
-    expect(screen.getByText("Kimi").className).toContain("nm-inset");
-    expect(screen.getByText("MiniMax").className).toContain("nm-outset");
-    // 命中供应商时「自定义」不高亮
-    expect(screen.getByText("✏️ 自定义").className).toContain("nm-outset");
-    // 点「自定义」→ 清空 Base URL/模型进入自定义填写态，按钮高亮
-    await user.click(screen.getByText("✏️ 自定义"));
-    expect(baseUrlInput).toHaveValue("");
-    expect(screen.getByPlaceholderText("deepseek-v4-flash")).toHaveValue("");
-    expect(screen.getByText("✏️ 自定义").className).toContain("nm-inset");
-    expect(screen.getByText("Kimi").className).toContain("nm-outset");
+    // DeepSeek 没了，Kimi 还在
+    expect(screen.queryByDisplayValue("DeepSeek")).toBeNull();
+    expect(screen.getByDisplayValue("Kimi")).toBeInTheDocument();
+    // 删 m2 → 列表空，回到「暂无大模型」提示
+    const delButtons2 = screen.getAllByTitle("删除此模型");
+    await user.click(delButtons2[0]);
+    expect(await screen.findByText(/暂无大模型/)).toBeInTheDocument();
   });
 
-  it("提供商预设：同供应商手改模型（deepseek-v4-pro）→ DeepSeek 按钮保持高亮", async () => {
-    mocks.invokeMock.mockImplementation(async (cmd: string) => {
-      if (cmd === "bot_get_enabled") return true;
-      if (cmd === "bot_get_config")
-        return {
-          baseUrl: "https://api.deepseek.com/v1",
-          model: "deepseek-v4-pro",
-          hasApiKey: true,
-          bypassLlmOnPreStepHit: true,
-        };
-      if (cmd === "api_status") return { enabled: false, port: 4763, token: "" };
-      if (cmd === "profile_get")
-        return {
-          user: { name: "我", avatarDataUrl: null },
-          bot: { name: "机器人", avatarDataUrl: null },
-        };
-      if (cmd === "py_get_enabled") return false;
-      if (cmd === "skills_list") return [];
-      if (cmd === "migration_rules_load") return { version: 1, rules: [] };
-      if (cmd === "migration_status") return { rules_count: 0, poll_interval_secs: 600 };
-      if (cmd === "migration_log_read") return "";
-      return null;
-    });
-    render(<SettingsPage {...defaultProps} />);
-    await screen.findByDisplayValue("https://api.deepseek.com/v1");
-    // 预设只看供应商（baseUrl）：模型手改成 pro 档 DeepSeek 仍高亮，自定义不高亮
-    expect(screen.getByText("DeepSeek").className).toContain("nm-inset");
-    expect(screen.getByText("✏️ 自定义").className).toContain("nm-outset");
-  });
-
-  it("提供商预设：自定义地址/模型（不命中任何预设）→「自定义」按钮高亮", async () => {
-    mocks.invokeMock.mockImplementation(async (cmd: string) => {
-      if (cmd === "bot_get_enabled") return true;
-      if (cmd === "bot_get_config")
-        return {
-          baseUrl: "https://api.example.com/v1",
-          model: "my-model",
-          hasApiKey: true,
-          bypassLlmOnPreStepHit: true,
-        };
-      if (cmd === "api_status") return { enabled: false, port: 4763, token: "" };
-      if (cmd === "profile_get")
-        return {
-          user: { name: "我", avatarDataUrl: null },
-          bot: { name: "机器人", avatarDataUrl: null },
-        };
-      if (cmd === "py_get_enabled") return false;
-      if (cmd === "skills_list") return [];
-      if (cmd === "migration_rules_load") return { version: 1, rules: [] };
-      if (cmd === "migration_status") return { rules_count: 0, poll_interval_secs: 600 };
-      if (cmd === "migration_log_read") return "";
-      return null;
-    });
-    render(<SettingsPage {...defaultProps} />);
-    await screen.findByDisplayValue("https://api.example.com/v1");
-    expect(screen.getByText("✏️ 自定义").className).toContain("nm-inset");
-    expect(screen.getByText("MiniMax").className).toContain("nm-outset");
-  });
-
-  it("API 协议：切到 Anthropic → placeholder 联动 + max_tokens 出现，保存时透传 apiProvider/maxTokens", async () => {
+  it("大模型 API 配置：保存 → bot_set_config 透传新结构（modelsByProvider + activeModelId + apiProvider + maxTokens），老 baseUrl/model 字段不再传", async () => {
     const user = userEvent.setup();
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "bot_get_enabled") return true;
       if (cmd === "bot_get_config")
         return {
-          baseUrl: "https://api.deepseek.com/v1",
-          model: "deepseek-v4-flash",
+          modelsByProvider: { openai: [], anthropic: [] },
+          activeModelId: { openai: null, anthropic: null },
           hasApiKey: true,
           bypassLlmOnPreStepHit: true,
           apiProvider: "openai",
@@ -507,25 +599,225 @@ describe("SettingsPage", () => {
       return null;
     });
     render(<SettingsPage {...defaultProps} />);
-    // 配置加载后协议下拉出现（自绘下拉，2026-09-05：原生 select 弹系统菜单不跟随主题），默认 OpenAI 兼容；max_tokens 不显示
+    // 切到 Anthropic
     const trigger = await screen.findByRole("button", { name: /OpenAI 兼容/ });
-    expect(screen.queryByText("max_tokens")).toBeNull();
-    // 切到 Anthropic：点触发钮展开浮层 → 点选项；placeholder 联动 + max_tokens 输入框出现
     await user.click(trigger);
     await user.click(screen.getByRole("button", { name: /Anthropic 兼容/ }));
-    expect(screen.getByPlaceholderText("https://api.anthropic.com")).toBeInTheDocument();
-    expect(screen.getByPlaceholderText("claude-sonnet-4-5")).toBeInTheDocument();
+    // 添加大模型（用 role=button 避免和空态描述里同款文字冲突）
+    await user.click(screen.getByRole("button", { name: /添加大模型/ }));
+    // 填 label
+    const labelInput = await screen.findByPlaceholderText(/DeepSeek \/ Kimi/);
+    await user.type(labelInput, "Claude Sonnet");
+    // 填 max_tokens（Anthropic 模式出现）
     const maxTokensInput = screen.getByPlaceholderText("8192");
     await user.type(maxTokensInput, "4096");
-    // 保存 → bot_set_config 透传 apiProvider/maxTokens
+    // 保存 → bot_set_config 透传新结构
     await user.click(screen.getByText("保存配置"));
+    await waitFor(() => {
+      const setCall = mocks.invokeMock.mock.calls.find(
+        (c) => c[0] === "bot_set_config",
+      );
+      expect(setCall).toBeDefined();
+      const arg = setCall![1] as {
+        config: {
+          modelsByProvider: { anthropic: Array<{ label: string; id: string }> };
+          activeModelId: { anthropic: string | null };
+          apiProvider: string;
+          maxTokens: number | null;
+        };
+        apiKey: string | null;
+        tavilyKey: string | null;
+        braveKey: string | null;
+      };
+      // 新结构：modelsByProvider.anthropic 有刚加的那一条
+      expect(arg.config.modelsByProvider.anthropic).toHaveLength(1);
+      expect(arg.config.modelsByProvider.anthropic[0].label).toBe("Claude Sonnet");
+      // activeModelId.anthropic 是该条目的 id
+      expect(arg.config.activeModelId.anthropic).toBe(
+        arg.config.modelsByProvider.anthropic[0].id,
+      );
+      // apiProvider 透传
+      expect(arg.config.apiProvider).toBe("anthropic");
+      // maxTokens 透传
+      expect(arg.config.maxTokens).toBe(4096);
+      // 顶层 key 字段仍按以前模式传 null
+      expect(arg.apiKey).toBeNull();
+      expect(arg.tavilyKey).toBeNull();
+      expect(arg.braveKey).toBeNull();
+    });
+  });
+
+  it("通用设置：开机自动启动开关 → 点调 plugin:autostart|enable / disable，状态联动", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_get_enabled") return true;
+      // 初始关闭；enable/disable 幂等返 null
+      if (cmd === "plugin:autostart|is_enabled") return false;
+      if (cmd === "plugin:autostart|enable") return null;
+      if (cmd === "plugin:autostart|disable") return null;
+      if (cmd === "api_status") return { enabled: false, port: 4763, token: "" };
+      if (cmd === "profile_get")
+        return {
+          user: { name: "我", avatarDataUrl: null },
+          bot: { name: "机器人", avatarDataUrl: null },
+        };
+      if (cmd === "py_get_enabled") return false;
+      if (cmd === "skills_list") return [];
+      if (cmd === "migration_rules_load") return { version: 1, rules: [] };
+      if (cmd === "migration_status") return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_log_read") return "";
+      if (cmd === "bot_get_config")
+        return {
+          hasApiKey: false,
+          bypassLlmOnPreStepHit: true,
+          modelsByProvider: { openai: [], anthropic: [] },
+          activeModelId: { openai: null, anthropic: null },
+        };
+      return null;
+    });
+    render(<SettingsPage {...defaultProps} />);
+    // 「开机自动启动 wmessage」是独有文案，不会和 Tavily/Brave/机器人/Python 的「已关闭」撞
+    const title = await screen.findByText("开机自动启动 wmessage");
+    // 向上走到外层 flex 行（title 所在 div 的 parentElement）
+    const row = title.closest("div")?.parentElement;
+    const toggle = row?.querySelector("button");
+    expect(toggle).not.toBeNull();
+    if (!toggle) return;
+    // 初始文字「已关闭」（autostart 关闭）
+    expect(toggle.textContent).toMatch(/已关闭/);
+    // 点 → enable
+    await user.click(toggle);
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith("plugin:autostart|enable");
+    });
+    // 文字翻转「已开启」
+    await waitFor(() => {
+      expect(toggle.textContent).toMatch(/已开启/);
+    });
+    // 再点 → disable
+    await user.click(toggle);
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith("plugin:autostart|disable");
+    });
+    await waitFor(() => {
+      expect(toggle.textContent).toMatch(/已关闭/);
+    });
+  });
+
+  it("通用设置：开机自启动 enable 失败 → 显示错误，不漂状态", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_get_enabled") return true;
+      if (cmd === "plugin:autostart|is_enabled") return false;
+      if (cmd === "plugin:autostart|enable")
+        throw { code: "AUTOSTART_FAILED", message: "系统拒绝写入", recoverable: false };
+      if (cmd === "api_status") return { enabled: false, port: 4763, token: "" };
+      if (cmd === "profile_get")
+        return {
+          user: { name: "我", avatarDataUrl: null },
+          bot: { name: "机器人", avatarDataUrl: null },
+        };
+      if (cmd === "py_get_enabled") return false;
+      if (cmd === "skills_list") return [];
+      if (cmd === "migration_rules_load") return { version: 1, rules: [] };
+      if (cmd === "migration_status") return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_log_read") return "";
+      if (cmd === "bot_get_config")
+        return {
+          hasApiKey: false,
+          bypassLlmOnPreStepHit: true,
+          modelsByProvider: { openai: [], anthropic: [] },
+          activeModelId: { openai: null, anthropic: null },
+        };
+      return null;
+    });
+    render(<SettingsPage {...defaultProps} />);
+    const title = await screen.findByText("开机自动启动 wmessage");
+    const row = title.closest("div")?.parentElement;
+    const toggle = row?.querySelector("button");
+    expect(toggle).not.toBeNull();
+    if (!toggle) return;
+    await user.click(toggle);
+    // 错误可见（与 toggle 同 row 渲染）
+    expect(await screen.findByText(/系统拒绝写入/)).toBeInTheDocument();
+    // 状态保持为已关闭（拉取回真值仍是 false）
+    expect(toggle.textContent).toMatch(/已关闭/);
+  });
+
+  it("通用设置：字体大小四档 → 点选即套 data-attr + 立即落盘（与外观点选一致，2026-09-08 老板拍板）", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_get_enabled") return true;
+      if (cmd === "plugin:autostart|is_enabled") return false;
+      if (cmd === "api_status") return { enabled: false, port: 4763, token: "" };
+      if (cmd === "profile_get")
+        return {
+          user: { name: "我", avatarDataUrl: null },
+          bot: { name: "机器人", avatarDataUrl: null },
+        };
+      if (cmd === "py_get_enabled") return false;
+      if (cmd === "skills_list") return [];
+      if (cmd === "migration_rules_load") return { version: 1, rules: [] };
+      if (cmd === "migration_status") return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_log_read") return "";
+      if (cmd === "bot_get_config")
+        return {
+          hasApiKey: false,
+          bypassLlmOnPreStepHit: true,
+          modelsByProvider: { openai: [], anthropic: [] },
+          activeModelId: { openai: null, anthropic: null },
+          // 初始 small（老板拍板默认）
+          uiFontSize: "small",
+        };
+      if (cmd === "bot_set_config") return null;
+      return null;
+    });
+    render(<SettingsPage {...defaultProps} />);
+    // 初始：small 高亮（nm-inset），4 档按钮
+    // 「字体大小」p 的下一个 sibling 就是字体按钮所在 div（避免 closest 抓到整张卡的 3+4 个按钮）
+    const title = await screen.findByText("字体大小");
+    const row = title.nextElementSibling as HTMLElement;
+    expect(row).not.toBeNull();
+    if (!row) return;
+    const btns = row.querySelectorAll("button");
+    // 4 档：小 / 标准 / 大 / 特大
+    expect(btns).toHaveLength(4);
+    expect(btns[0].textContent).toBe("小");
+    expect(btns[1].textContent).toBe("标准");
+    expect(btns[2].textContent).toBe("大");
+    expect(btns[3].textContent).toBe("特大");
+    // 初始 small 高亮
+    expect(btns[0].className).toContain("nm-inset");
+    // 点「标准」→ data-attr 变 + active 跳到第二档 + 立即落盘（与外观一致）
+    await user.click(btns[1]);
+    expect(document.documentElement.dataset.fontSize).toBe("standard");
+    // saveConfig 是 async fire-and-forget，触发重渲染 → waitFor 等 active class 跳位
+    await waitFor(() => {
+      expect(btns[1].className).toContain("nm-inset");
+      expect(btns[0].className).not.toContain("nm-inset");
+    });
     await waitFor(() => {
       expect(mocks.invokeMock).toHaveBeenCalledWith(
         "bot_set_config",
         expect.objectContaining({
           config: expect.objectContaining({
-            apiProvider: "anthropic",
-            maxTokens: 4096,
+            uiFontSize: "standard",
+          }),
+        })
+      );
+    });
+    // 再点「特大」→ 同样立即落盘
+    await user.click(btns[3]);
+    expect(document.documentElement.dataset.fontSize).toBe("xlarge");
+    await waitFor(() => {
+      expect(btns[3].className).toContain("nm-inset");
+    });
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith(
+        "bot_set_config",
+        expect.objectContaining({
+          config: expect.objectContaining({
+            uiFontSize: "xlarge",
           }),
         })
       );
