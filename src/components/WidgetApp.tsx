@@ -629,31 +629,34 @@ export default function WidgetApp() {
               onPointerDown={(e) => e.stopPropagation()}
             >
               <button
-                className={`px-2 py-0.5 text-xs ${
+                className={`w-8 h-8 flex items-center justify-center text-[16px] ${
                   view === "all" ? "nm-inset text-[var(--t1)] font-medium" : "nm-outset text-[var(--t4)]"
                 }`}
+                title="待办"
                 onClick={() => setView("all")}
               >
-                全部
+                📋
               </button>
               <button
-                className={`px-2 py-0.5 text-xs ${
+                className={`w-8 h-8 flex items-center justify-center text-[16px] ${
                   view === "today" ? "nm-inset text-[var(--t1)] font-medium" : "nm-outset text-[var(--t4)]"
                 }`}
+                title="今日"
                 onClick={() => setView("today")}
               >
-                今日
+                🗓
               </button>
               <button
-                className={`px-2 py-0.5 text-xs ${
+                className={`w-8 h-8 flex items-center justify-center text-[16px] ${
                   view === "workspace" ? "nm-inset text-[var(--t1)] font-medium" : "nm-outset text-[var(--t4)]"
                 }`}
+                title="工作区"
                 onClick={() => setView("workspace")}
               >
-                工作区
+                🗂
               </button>
               <button
-                className={`px-2 py-0.5 text-xs ${
+                className={`w-8 h-8 flex items-center justify-center text-[16px] ${
                   locked ? "nm-inset text-[var(--t1)]" : "nm-outset text-[var(--t4)]"
                 }`}
                 title={locked ? "取消常驻" : "常驻锁定"}
