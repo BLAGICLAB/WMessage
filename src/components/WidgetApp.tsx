@@ -128,6 +128,33 @@ export default function WidgetApp() {
     };
   }, []);
 
+  // 字体大小同步（2026-09-08 老板拍板）：挂件 webview 独立 document
+  // 需要拉 config 设 data-font-size；设置页保存后广播 bot-config-changed，
+  // Tauri emit 全局广播挂件也能收到。失败也套默认 small，避免渲染前空抳。
+  useEffect(() => {
+    let unlistenCfg: (() => void) | undefined;
+    (async () => {
+      const applyFromConfig = async () => {
+        try {
+          const c = await invoke<{ uiFontSize?: string | null }>("bot_get_config");
+          const v =
+            c.uiFontSize === "standard" ||
+            c.uiFontSize === "large" ||
+            c.uiFontSize === "xlarge"
+              ? c.uiFontSize
+              : "small";
+          document.documentElement.dataset.fontSize = v;
+        } catch {
+          document.documentElement.dataset.fontSize = "small";
+        }
+      };
+      await applyFromConfig();
+      const u = await listen("bot-config-changed", applyFromConfig);
+      unlistenCfg = u;
+    })();
+    return () => unlistenCfg?.();
+  }, []);
+
   // 机器人开关变化时：展开状态下同步调整窗口高度
   useEffect(() => {
     if (!expanded) return;
