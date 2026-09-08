@@ -812,8 +812,10 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
 
   // ───────── 2026-09-08 双协议下大模型列表 handlers ─────────
   // 当前协议下的模型列表 + active id（每次渲染取一次，避免重复计算）
-  const currentModels = config.modelsByProvider[config.apiProvider];
-  const currentActiveId = config.activeModelId[config.apiProvider];
+  // 老后端返回的 modelsByProvider 可能缺 anthropic/openai 字段（迁移期遗留）；
+// fallback 空数组避免 undefined.length 报栈（2026-09-08 bugfix）
+const currentModels = config.modelsByProvider[config.apiProvider] ?? [];
+const currentActiveId = config.activeModelId[config.apiProvider] ?? null;
 
   /** 添加大模型：append 到当前协议列表的第一个空行；若是空列表则同时设为 active */
   const addModel = () => {
@@ -824,7 +826,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
       model: "",
     };
     setConfig((c) => {
-      const list = c.modelsByProvider[c.apiProvider];
+      const list = c.modelsByProvider[c.apiProvider] ?? [];
       return {
         ...c,
         modelsByProvider: {
@@ -843,7 +845,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
   /** 更新大模型条目（label / baseUrl / model 任一字段变化） */
   const updateModel = (id: string, patch: Partial<ModelEntry>) => {
     setConfig((c) => {
-      const list = c.modelsByProvider[c.apiProvider].map((m) =>
+      const list = (c.modelsByProvider[c.apiProvider] ?? []).map((m) =>
         m.id === id ? { ...m, ...patch } : m,
       );
       return {
@@ -859,8 +861,8 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
   /** 删除大模型条目：若删的是 active → 取列表第一个作为新 active（无则 null） */
   const deleteModel = (id: string) => {
     setConfig((c) => {
-      const list = c.modelsByProvider[c.apiProvider].filter((m) => m.id !== id);
-      let nextActive = c.activeModelId[c.apiProvider];
+      const list = (c.modelsByProvider[c.apiProvider] ?? []).filter((m) => m.id !== id);
+      let nextActive = c.activeModelId[c.apiProvider] ?? null;
       if (nextActive === id) {
         nextActive = list.length > 0 ? list[0].id : null;
       }

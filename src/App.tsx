@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { Component, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from "react";
 import { emit, listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { isPermissionGranted, requestPermission } from "@tauri-apps/plugin-notification";
@@ -38,6 +38,49 @@ function localDateStr(): string {
   ).padStart(2, "0")}`;
 }
 
+/** ErrorBoundary（2026-09-09 bugfix）：主窗口任何子组件抛错时不再 unmount 变白，
+ *  捕到错误显示堆栈 + 「重试」按钮重置 state。class component 必需（hooks
+ *  写法目前 React 还没稳定 API）。 */
+class ErrorBoundary extends Component<
+  { children: ReactNode },
+  { error: Error | null }
+> {
+  state = { error: null as Error | null };
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error("[App ErrorBoundary]", error, info.componentStack);
+  }
+  reset = () => this.setState({ error: null });
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="min-h-screen bg-[var(--bg)] p-6 flex items-center justify-center">
+          <div className="nm-card p-6 max-w-2xl">
+            <p className="text-base font-semibold text-[var(--danger)] mb-2">
+              ⚠️ 主窗口发生错误
+            </p>
+            <p className="text-sm text-[var(--t2)] mb-2">
+              {this.state.error.message}
+            </p>
+            <pre className="text-[10px] text-[var(--t4)] whitespace-pre-wrap overflow-auto max-h-64 bg-[var(--inset)] p-3 rounded-xl mb-3">
+              {this.state.error.stack}
+            </pre>
+            <button
+              className="nm-btn px-4 py-1.5 text-sm text-[var(--t2)]"
+              onClick={this.reset}
+            >
+              🔄 重试
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 // 今日规则：截止日期为当天的任务自动进「今日」列（「完成」列不受影响）
 function applyTodayRule(tasks: Task[]): Task[] {
   return tasks.map((t) =>
@@ -61,7 +104,7 @@ function applyArchiveRule(tasks: Task[]): Task[] {
   });
 }
 
-export default function App() {
+function App() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const tasksRef = useRef<Task[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -74,6 +117,34 @@ export default function App() {
   }, [theme]);
   useEffect(() => subscribeTheme(setTheme), []);
   useEffect(() => subscribeSystem(setTheme), []);
+
+  // 字体大小（2026-09-08 老板拍板）：启动从 bot config 拉值，套到
+  // documentElement[data-font-size]；设置页保存后会发 bot-config-changed，
+  // 这里重新拉一次同步点选未保存也会被广播（预防设置页直接改 state 预览）。
+  useEffect(() => {
+    let unlistenCfg: (() => void) | undefined;
+    (async () => {
+      const applyFromConfig = async () => {
+        try {
+          const c = await invoke<{ uiFontSize?: string | null }>("bot_get_config");
+          const v =
+            c.uiFontSize === "standard" ||
+            c.uiFontSize === "large" ||
+            c.uiFontSize === "xlarge"
+              ? c.uiFontSize
+              : "small";
+          document.documentElement.dataset.fontSize = v;
+        } catch {
+          // 拉取失败也套上默认值，避免界面还没应用就被卡
+          document.documentElement.dataset.fontSize = "small";
+        }
+      };
+      await applyFromConfig();
+      const u = await listen("bot-config-changed", applyFromConfig);
+      unlistenCfg = u;
+    })();
+    return () => unlistenCfg?.();
+  }, []);
 
   // 系统通知权限（任务卡截止提醒由 Rust 侧 due_notify 经 tauri-plugin-notification 发送）。
   // 平台差异：macOS 必须显式授权（UNUserNotificationCenter），未授权时通知静默失败，
@@ -452,6 +523,7 @@ export default function App() {
   };
 
   return (
+    <ErrorBoundary>
     <div className="min-h-screen bg-[var(--bg)] p-6">
       <header className="mb-4 flex items-center justify-between">
         <div className="flex items-center gap-3">
@@ -553,5 +625,8 @@ export default function App() {
         />
       )}
     </div>
+    </ErrorBoundary>
   );
 }
+
+export default App;
