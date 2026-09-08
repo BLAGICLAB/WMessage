@@ -178,6 +178,7 @@ type Props = {
 const SLASH_COMMANDS = [
   { cmd: "/stop", description: "停止当前回复" },
   { cmd: "/compact", description: "压缩对话上下文" },
+  { cmd: "/clean", description: "清空当前对话（替代顶部 🧹 按键，2026-09-08 老板拍板）" },
   { cmd: "/retry", description: "重新生成上一条回复" },
 ];
 
@@ -215,11 +216,36 @@ export function ChatPanel({
   const scrollRef = useRef<HTMLDivElement>(null);
   /** 聊天区根节点：拖放落点判定用（只接收落在聊天区矩形内的文件） */
   const rootRef = useRef<HTMLDivElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLButtonElement>(null);
+  const sessionDropdownRef = useRef<HTMLDivElement>(null);
   /** 模型切换菜单（头部 🧠 按钮）：label 显示当前提供商/模型 */
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [modelLabel, setModelLabel] = useState("…");
-  const modelMenuRef = useRef<HTMLDivElement>(null);
+  const modelMenuRef = useRef<HTMLButtonElement>(null);
+  const modelDropdownRef = useRef<HTMLDivElement>(null);
+  // 顶部行引用 + 下拉 top 定位（紧贴 🤖/🧠 按钮底部，0 间距；2026-09-08 老板拍板）
+  const topBarRef = useRef<HTMLDivElement>(null);
+  const [dropdownTop, setDropdownTop] = useState(0);
+  useEffect(() => {
+    const update = () => {
+      const root = rootRef.current;
+      const btn = menuRef.current;
+      if (!root || !btn) return;
+      const br = btn.getBoundingClientRect();
+      const rr = root.getBoundingClientRect();
+      setDropdownTop(br.bottom - rr.top);
+    };
+    update();
+    if (typeof ResizeObserver !== "undefined" && rootRef.current) {
+      const ro = new ResizeObserver(update);
+      ro.observe(rootRef.current);
+      return () => ro.disconnect();
+    }
+    window.addEventListener("resize", update);
+    return () => {
+      window.removeEventListener("resize", update);
+    };
+  }, []);
   /** 菜单内「自定义…」内联表单：自由填 Base URL + 模型名 */
   const [customOpen, setCustomOpen] = useState(false);
   const [customBaseUrl, setCustomBaseUrl] = useState("");
@@ -318,11 +344,16 @@ export function ChatPanel({
     })();
   }, []);
 
-  // 点击会话菜单外关闭
+  // 点击会话菜单外关闭（下拉与按钮不在同一个 ref 容器里，需同时检测两者）
   useEffect(() => {
     if (!sessionMenuOpen) return;
     const onDown = (e: MouseEvent) => {
-      if (!menuRef.current?.contains(e.target as Node)) setSessionMenuOpen(false);
+      const t = e.target as Node;
+      if (
+        !menuRef.current?.contains(t) &&
+        !sessionDropdownRef.current?.contains(t)
+      )
+        setSessionMenuOpen(false);
     };
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
@@ -346,11 +377,16 @@ export function ChatPanel({
     };
   }, []);
 
-  // 点击模型菜单外关闭
+  // 点击模型菜单外关闭（下拉与按钮不在同一个 ref 容器里，需同时检测两者）
   useEffect(() => {
     if (!modelMenuOpen) return;
     const onDown = (e: MouseEvent) => {
-      if (!modelMenuRef.current?.contains(e.target as Node)) setModelMenuOpen(false);
+      const t = e.target as Node;
+      if (
+        !modelMenuRef.current?.contains(t) &&
+        !modelDropdownRef.current?.contains(t)
+      )
+        setModelMenuOpen(false);
     };
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
@@ -795,6 +831,19 @@ export function ChatPanel({
       }
       return true;
     }
+    if (cmd === "/clean") {
+      setInput("");
+      if (!sessionId) {
+        addHint("当前没有活动对话");
+        return true;
+      }
+      // 替代原顶部 🧹 按键（2026-09-08 老板拍板）：清空当前 session 消息 + 持久化
+      setMessages([]);
+      invoke("bot_history_clear", { sessionId }).catch((e) =>
+        handleCommandError(e, "bot_history_clear", { silent: true })
+      );
+      return true;
+    }
     if (cmd === "/compact") {
       setInput("");
       if (busyRef.current || !sessionId) return true;
@@ -1042,11 +1091,13 @@ export function ChatPanel({
           </div>
         </div>
       )}
-      <div className="flex items-center justify-between mb-2 shrink-0 gap-1">
-        {/* 会话切换器 */}
-        <div className="relative min-w-0 flex-1" ref={menuRef}>
+      <div ref={topBarRef} className="flex items-center mb-2 shrink-0 gap-1">
+        {/* 左侧：🤖 会话 + 🧠 模型 两块平分空间（2026-09-08 老板拍板） */}
+        <div className="flex items-center gap-1 flex-1 min-w-0">
+          {/* 🤖 会话切换器（平分第一块） */}
           <button
-            className="nm-outset w-full flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-[var(--t2)] min-w-0"
+            ref={menuRef}
+            className="nm-outset flex-1 min-w-0 flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-[var(--t2)]"
             title="切换会话"
             onClick={() => setSessionMenuOpen((v) => !v)}
           >
@@ -1055,141 +1106,140 @@ export function ChatPanel({
               {sessionMenuOpen ? "▴" : "▾"}
             </span>
           </button>
-          {sessionMenuOpen && (
-            <div className="absolute left-0 top-full mt-1 w-full nm-card p-1 rounded-xl z-50 max-h-40 overflow-y-auto">
-              {sessions.map((s) => (
-                <div key={s.id} className="flex items-center gap-1">
-                  <button
-                    className={`flex-1 min-w-0 text-left px-2 py-1 rounded-lg text-xs truncate ${
-                      s.id === sessionId
-                        ? "nm-inset text-[var(--t1)] font-medium"
-                        : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
-                    }`}
-                    onClick={() => switchSession(s.id)}
-                    title={s.title}
-                  >
-                    {s.title}
-                  </button>
-                  <button
-                    className="shrink-0 w-5 h-5 flex items-center justify-center rounded text-[10px] text-[var(--t5)] hover:text-[var(--danger)] hover:bg-[var(--hover-bg)]"
-                    title="删除此对话"
-                    onClick={() => deleteSession(s.id)}
-                  >
-                    🗑
-                  </button>
-                </div>
-              ))}
+          {/* 🧠 模型切换器（平分第二块；与 🤖 同 className 保证外框一致） */}
+          <button
+            ref={modelMenuRef}
+            className="nm-outset flex-1 min-w-0 flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-[var(--t2)]"
+            title={`切换模型（当前：${modelLabel}）`}
+            onClick={() => setModelMenuOpen((v) => !v)}
+          >
+            <span className="truncate flex-1 text-left">🧠 {modelLabel}</span>
+            <span className="shrink-0 text-[10px] text-[var(--t5)]">
+              {modelMenuOpen ? "▴" : "▾"}
+            </span>
+          </button>
+        </div>
+        {/* 右侧：🎯 移到原 🧹 位置（最右；外框 px-2 py-1 跟 🤖/🧠 等高，emoji 内部 16px 免受字体档位影响） */}
+        <button
+          className={`shrink-0 px-2 py-1 flex items-center justify-center ${
+            selecting
+              ? "nm-inset text-[var(--t1)] font-medium"
+              : "nm-outset text-[var(--t4)]"
+          }`}
+          onClick={onToggleSelecting}
+          title="选任务模式：点击下方任务卡选中，再输入操作指令"
+        >
+          <span className="text-[16px] leading-none">🎯</span>
+        </button>
+      </div>
+      {/* 会话下拉：作为 rootRef 直接子元素，absolute 横跨整个 panel 宽度
+          （左对齐 🤖、右对齐 🎯，2026-09-08 老板拍板） */}
+      {sessionMenuOpen && (
+        <div
+          ref={sessionDropdownRef}
+          className="absolute left-0 right-0 nm-card p-1 rounded-xl z-50 max-h-40 overflow-y-auto"
+          style={{ top: dropdownTop > 0 ? `${dropdownTop}px` : undefined }}
+        >
+          {sessions.map((s) => (
+            <div key={s.id} className="flex items-center gap-1">
               <button
-                className="w-full text-left px-2 py-1 rounded-lg text-xs text-[var(--brand)] hover:bg-[var(--hover-bg)]"
-                onClick={newSession}
+                className={`flex-1 min-w-0 text-left px-2 py-1 rounded-lg text-xs truncate ${
+                  s.id === sessionId
+                    ? "nm-inset text-[var(--t1)] font-medium"
+                    : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
+                }`}
+                onClick={() => switchSession(s.id)}
+                title={s.title}
               >
-                ＋ 新建对话
+                {s.title}
+              </button>
+              <button
+                className="shrink-0 w-5 h-5 flex items-center justify-center rounded text-[10px] text-[var(--t5)] hover:text-[var(--danger)] hover:bg-[var(--hover-bg)]"
+                title="删除此对话"
+                onClick={() => deleteSession(s.id)}
+              >
+                🗑
+              </button>
+            </div>
+          ))}
+          <button
+            className="w-full text-left px-2 py-1 rounded-lg text-xs text-[var(--brand)] hover:bg-[var(--hover-bg)]"
+            onClick={newSession}
+          >
+            ＋ 新建对话
+          </button>
+        </div>
+      )}
+      {/* 模型下拉：同上，absolute 横跨整个 panel 宽度 */}
+      {modelMenuOpen && (
+        <div
+          ref={modelDropdownRef}
+          className="absolute left-0 right-0 nm-card p-1 rounded-xl z-50"
+          style={{ top: dropdownTop > 0 ? `${dropdownTop}px` : undefined }}
+        >
+          {PROVIDER_PRESETS.map((p) => (
+            <button
+              key={p.label}
+              className={`w-full text-left px-2 py-1 rounded-lg text-xs flex items-center justify-between gap-1 ${
+                modelLabel === p.label
+                  ? "nm-inset text-[var(--t1)] font-medium"
+                  : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
+              }`}
+              onClick={() => switchModel(p)}
+            >
+              <span>{p.label}</span>
+              <span className="text-[9px] text-[var(--t5)] truncate">{p.model}</span>
+            </button>
+          ))}
+          {/* 自定义：自由填 Base URL + 模型名（任何 OpenAI 兼容端点） */}
+          <button
+            className={`w-full text-left px-2 py-1 rounded-lg text-xs ${
+              customOpen
+                ? "nm-inset text-[var(--t1)] font-medium"
+                : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
+            }`}
+            onClick={() => {
+              if (!customOpen) {
+                // 展开时预填当前配置，方便在原基础上改
+                invoke<{ baseUrl?: string; model?: string }>("bot_get_config")
+                  .then((c) => {
+                    setCustomBaseUrl(c.baseUrl ?? "");
+                    setCustomModel(c.model ?? "");
+                  })
+                  .catch(() => {});
+              }
+              setCustomOpen((v) => !v);
+            }}
+          >
+            ✏️ 自定义…
+          </button>
+          {customOpen && (
+            <div className="px-1.5 py-1 space-y-1">
+              <input
+                value={customBaseUrl}
+                onChange={(e) => setCustomBaseUrl(e.target.value)}
+                placeholder="Base URL，如 https://api.example.com/v1"
+                className="nm-inset w-full rounded-lg px-2 py-1 text-[10px] text-[var(--t3)] outline-none"
+              />
+              <input
+                value={customModel}
+                onChange={(e) => setCustomModel(e.target.value)}
+                placeholder="模型名，如 my-model"
+                className="nm-inset w-full rounded-lg px-2 py-1 text-[10px] text-[var(--t3)] outline-none"
+              />
+              <button
+                className="nm-btn w-full px-2 py-1 text-[10px] text-[var(--t2)]"
+                onClick={applyCustomModel}
+              >
+                使用此模型
               </button>
             </div>
           )}
+          <p className="px-2 py-1 text-[9px] leading-snug text-[var(--t6)]">
+            跨提供商切换后，需到设置页更新对应的 API Key
+          </p>
         </div>
-        <div className="flex items-center gap-1 shrink-0">
-          {/* 模型快速切换（不用进设置页）；跨提供商切换后需在设置页更新对应 API Key */}
-          <div className="relative shrink-0" ref={modelMenuRef}>
-            <button
-              className="px-2 py-0.5 text-[10px] nm-outset text-[var(--t5)] hover:text-[var(--t3)] max-w-[110px] truncate"
-              title={`切换模型（当前：${modelLabel}）`}
-              onClick={() => setModelMenuOpen((v) => !v)}
-            >
-              🧠 {modelLabel}
-            </button>
-            {modelMenuOpen && (
-              <div className="absolute right-0 top-full mt-1 w-52 nm-card p-1 rounded-xl z-50">
-                {PROVIDER_PRESETS.map((p) => (
-                  <button
-                    key={p.label}
-                    className={`w-full text-left px-2 py-1 rounded-lg text-xs flex items-center justify-between gap-1 ${
-                      modelLabel === p.label
-                        ? "nm-inset text-[var(--t1)] font-medium"
-                        : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
-                    }`}
-                    onClick={() => switchModel(p)}
-                  >
-                    <span>{p.label}</span>
-                    <span className="text-[9px] text-[var(--t5)] truncate">{p.model}</span>
-                  </button>
-                ))}
-                {/* 自定义：自由填 Base URL + 模型名（任何 OpenAI 兼容端点） */}
-                <button
-                  className={`w-full text-left px-2 py-1 rounded-lg text-xs ${
-                    customOpen
-                      ? "nm-inset text-[var(--t1)] font-medium"
-                      : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
-                  }`}
-                  onClick={() => {
-                    if (!customOpen) {
-                      // 展开时预填当前配置，方便在原基础上改
-                      invoke<{ baseUrl?: string; model?: string }>("bot_get_config")
-                        .then((c) => {
-                          setCustomBaseUrl(c.baseUrl ?? "");
-                          setCustomModel(c.model ?? "");
-                        })
-                        .catch(() => {});
-                    }
-                    setCustomOpen((v) => !v);
-                  }}
-                >
-                  ✏️ 自定义…
-                </button>
-                {customOpen && (
-                  <div className="px-1.5 py-1 space-y-1">
-                    <input
-                      value={customBaseUrl}
-                      onChange={(e) => setCustomBaseUrl(e.target.value)}
-                      placeholder="Base URL，如 https://api.example.com/v1"
-                      className="nm-inset w-full rounded-lg px-2 py-1 text-[10px] text-[var(--t3)] outline-none"
-                    />
-                    <input
-                      value={customModel}
-                      onChange={(e) => setCustomModel(e.target.value)}
-                      placeholder="模型名，如 my-model"
-                      className="nm-inset w-full rounded-lg px-2 py-1 text-[10px] text-[var(--t3)] outline-none"
-                    />
-                    <button
-                      className="nm-btn w-full px-2 py-1 text-[10px] text-[var(--t2)]"
-                      onClick={applyCustomModel}
-                    >
-                      使用此模型
-                    </button>
-                  </div>
-                )}
-                <p className="px-2 py-1 text-[9px] leading-snug text-[var(--t6)]">
-                  跨提供商切换后，需到设置页更新对应的 API Key
-                </p>
-              </div>
-            )}
-          </div>
-          <button
-            className={`px-2 py-0.5 text-[10px] ${
-              selecting
-                ? "nm-inset text-[var(--t1)] font-medium"
-                : "nm-outset text-[var(--t5)] hover:text-[var(--t3)]"
-            }`}
-            onClick={onToggleSelecting}
-            title="选任务模式：点击下方任务卡选中，再输入操作指令"
-          >
-            🎯
-          </button>
-          <button
-            className="px-2 py-0.5 text-[10px] nm-outset text-[var(--t5)] hover:text-[var(--t3)]"
-            title="清空当前对话"
-            onClick={() => {
-              if (!sessionId) return;
-              setMessages([]);
-              invoke("bot_history_clear", { sessionId }).catch((e) =>
-                handleCommandError(e, "bot_history_clear", { silent: true })
-              );
-            }}
-          >
-            🧹
-          </button>
-        </div>
-      </div>
+      )}
 
       {selecting && (
         <p className="mb-1.5 text-[10px] text-[var(--brand)] shrink-0">
