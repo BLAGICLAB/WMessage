@@ -531,4 +531,34 @@ describe("SettingsPage", () => {
       );
     });
   });
+
+  // 2026-09-08 Bugfix：原 main.css 只覆盖 text-[10/11/12px] 三个任意值类，
+  // 设置页按钮 / chat 输入框用的 text-xs 不在覆盖范围 → 切档无视觉差异。
+  // 补全覆盖后必须能命中。vitest config css:false 不加载 CSS，读文件做静态断言。
+  it("字体大小覆盖：main.css 含 text-xs / text-sm / text-base + input 各档规则", async () => {
+    const fs = await import("node:fs/promises");
+    const path = await import("node:path");
+    const url = await import("node:url");
+    const cssPath = path.resolve(
+      path.dirname(url.fileURLToPath(import.meta.url)),
+      "../ui/main.css",
+    );
+    const css = await fs.readFile(cssPath, "utf-8");
+    // xlarge → text-xs: 16px；large → text-sm: 16px；standard → text-base: 17px
+    expect(css).toMatch(
+      /\[data-font-size="xlarge"\]\s+\.text-xs\s*\{\s*font-size:\s*16px/,
+    );
+    expect(css).toMatch(
+      /\[data-font-size="large"\]\s+\.text-sm\s*\{\s*font-size:\s*16px/,
+    );
+    expect(css).toMatch(
+      /\[data-font-size="standard"\]\s+\.text-base\s*\{\s*font-size:\s*17px/,
+    );
+    // input/textarea 防 macOS Safari 自动 zoom（xlarge 档 19px）
+    expect(css).toMatch(
+      /\[data-font-size="xlarge"\]\s+input[\s\S]*?font-size:\s*19px/,
+    );
+    // small 档保持不动（老板拍板「目前字号为小」）
+    expect(css).not.toMatch(/\[data-font-size="small"\]\s+\.text-xs/);
+  });
 });
