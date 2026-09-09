@@ -2,6 +2,44 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-09-09（周三）记忆 v2 增强：lesson 教训记忆 + 定时记忆整理（consolidation）
+
+在 memory v2（同日早些时候落地）基础上加两个特性，设计见 `docs/BOT-MEMORY-V2-DESIGN.md` 第 9/10 节。
+
+**lesson（教训记忆）**：
+- 新 kind='lesson'（importance 默认 4，tags = lesson + 场景标签）；`mem_items` 是 TEXT 无约束无需迁移
+- 双写入来源：新工具 `record_lesson`（模型被纠正/工具连续失败/发现更优做法时主动记，已注册 TOOLS schema + bot.rs 分发 + MUTATING_TOOLS 同 remember_fact 待遇；tool_guard 原子黑名单天然不含它）；`execute_task_core` 失败自动沉淀（直接拼「任务标题+失败原因」不调 LLM，source=system，写失败只记审计不影响原错误返回）
+- 走正常语义去重：同类失败教训合并更新不堆积
+- 注入第四段「### 经验教训」追加在记忆块最末（`## 记忆` 标题与前三段不变）：混合检索 lesson top-3；lesson 不进「相关记忆」段避免重复；超预算从后往前砍时 lesson 段最先被砍
+
+**定时记忆整理**：
+- `memory/consolidate.rs`：候选（上次整理以来更新 / access≥3 活跃，上限 100 条）→ 复用 `summarize_messages` 非流式 LLM → JSON 指令（merge / contradiction / distill）→ 单事务应用（merge 目标=importance 最高者、向量重算、来源删除；contradiction 按裁决更新 keep 删 drop；distill 新建 reflection importance=4；幻觉 id 跳过）
+- 解析健壮性：围栏剥离 / 首尾花括号截取 / 未知 action 与缺字段逐条跳过；整体失败本轮静默放弃记审计
+- 调度：bot_scheduler 同模式 10 分钟检查一次；频率 off/12h/daily/weekly（默认每天）；首次先记基线防启动即白跑；失败仍推进 last_run_at 防刷屏重试
+- 配置：`bot-config.json` 新增 `memoryConsolidation`（enabled/interval/lastRunAt），读写跟随 bot_get_config/bot_set_config 整份配置模式；新命令 `memory_consolidate_now` 返回 {merged, distilled, contradictions}
+- 前端：设置页机器人区「记忆整理」块（开关 + 频率按钮组 + 上次整理时间 + 立即整理按钮，结果文案短暂展示），样式跟随现有控件
+
+**测试**：新增 lib 单测 20 例（lesson 6：写入默认值/语义合并/校验/失败文案/第四段注入/无 lesson 不出段；consolidate 14：解析健壮性 4 + 指令应用 6 + 候选收集 2 + 到点判定 + 配置序列化回环）。cargo test 全目标全绿；vitest 21 文件 206 全过；tsc -b 无新增错误（4 个存量错误与本次无关）。
+
+## 2026-09-09（周三）记忆系统 v2：轻量语义记忆体（bge-small-zh 本地嵌入 + 混合打分）
+
+设计见 `docs/BOT-MEMORY-V2-DESIGN.md`。替代 2026-09-04 的纯关键词记忆体——系统未上线即切换，旧表 bot_facts 废弃**不做数据迁移**（表与 db.rs 旧函数原样保留，仅 memory_regression.rs 回归基准仍走旧路径）。
+
+**架构**：新增 `src-tauri/src/memory/` 模块——`embed.rs`（bge-small-zh-v1.5 ONNX 量化模型本地推理，attention-mask mean pooling + L2 归一化 → 512 维）、`store.rs`（新表 mem_items）、`rank.rs`（混合打分）、`mod.rs`（门面：注入快照 / 工具 / 摘要流水线）。
+
+**关键设计**：
+- 混合打分 `0.55·余弦 + 0.20·关键词bigram + 0.15·重要度/5 + 0.10·exp(-age/30)`；无向量时语义项记 0 权重归一（÷0.45）且关键词零重合直接 0 分（保住「零命中→近期摘要兜底」语义）
+- 统一容量 500 条（修掉旧系统 fact 200 / 全表 300 双层上限分裂）；淘汰分 = importance×2 + 新近度 + ln(access)/5，importance=5 且 user_stated 不可淘汰，无可淘汰拒写并告知模型
+- 语义去重：cos≥0.92 合并更新不新增；0.75~0.92 不拦截但拼冲突提示进工具结果（替代旧关键词 fact_conflict_hint）
+- remember_fact/recall_facts 工具名与 schema 不变（tool_guard/MUTATING_TOOLS/prompt 全未动），key→tags[0]、value→content，同 key 覆盖语义保留
+- 任务卡执行（execute_task_core）也注入记忆块（查询=标题+备注前 200 字）——助手执行任务时知道用户偏好
+- 旧数据零迁移：系统未上线，bot_facts 废弃不导入（当日砍掉首版实现里的后台迁移线程）
+- 降级硬约束：模型目录缺失/加载失败 → 全局纯关键词模式，任何路径不 panic（OnceLock 缓存失败原因，embed 恒返回 None）
+
+**依赖**：`ort 2.0.0-rc.13`（download-binaries——onnxruntime 由 build script 下载并静态链接，无 dylib 随附）+ `tokenizers 0.23`（default-features 关 + fancy-regex，不拉 http/onig）。tokio 特性未加（嵌入全在 tauri spawn_blocking 闭包内跑）。`tauri.conf.json` bundle resources 加 `../bge-small-zh-v1.5`。
+
+**测试**：新增 lib 单测 17 例（mean pooling/L2 归一、路径解析、去重三分支、淘汰顺序与保护、全保护拒写、降级归一、注入三段、同 key 覆盖/删除）+ `tests/memory_v2_degraded.rs` 降级全链路（env 指向不存在目录）+ `#[ignore]` 真实模型冒烟（近义句余弦显著高于无关句，实测通过）。cargo test 全目标全绿（含旧 memory_regression 17 用例原样通过）。
+
 ## 2026-09-05（周五）链接打开彻底修复：聊天下方文档/网址链接「有时打不开、有时显示 Program」
 
 老板报 bug：聊天后窗口下方的文档链接、网址链接，点击有时打不开，有时显示 program。

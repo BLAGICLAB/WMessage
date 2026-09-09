@@ -84,6 +84,7 @@ mod tests {
             "get_current_time",
             "remember_fact",
             "recall_facts",
+            "record_lesson",
             "use_skill",
         ] {
             assert!(

@@ -175,6 +175,10 @@ pub struct BotConfig {
     /// 全局 css 通过 documentElement[data-font-size] 走缩放。
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub ui_font_size: Option<String>,
+    /// 定时记忆整理（2026-09-09 memory v2 consolidation）：开关 + 频率 + 上次整理时间。
+    /// None = 默认（启用 + daily；见 ConsolidationConfig::default）。
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub memory_consolidation: Option<crate::memory::consolidate::ConsolidationConfig>,
 }
 
 /// 单个模型条目（2026-09-08）：一个 (label, baseUrl, model) 三元组 + 稳定 id。
@@ -230,6 +234,7 @@ impl Default for BotConfig {
             active_model_id: None,            // 未配置 = 两协议都没选 active
             autostart_enabled: None,          // 未配置 = 默认不启用开机自启动（老板拍板：保持旧行为，不主动加）
             ui_font_size: None,               // 未配置 = small（老板拍板默认；前端读取时回退）
+            memory_consolidation: None,       // 未配置 = 启用 + daily（ConsolidationConfig::default）
         }
     }
 }
@@ -801,6 +806,8 @@ pub struct BotConfigView {
     /// None = small；前端根据实际值走 documentElement[data-font-size] 套用
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ui_font_size: Option<String>,
+    /// 定时记忆整理配置（2026-09-09）：None 时解析为默认（启用 + daily）透传前端
+    pub memory_consolidation: crate::memory::consolidate::ConsolidationConfig,
 }
 
 /// 旧版本迁移：bot-config.json 里有明文 key → 迁入系统凭据存储并清掉文件里的明文。
@@ -973,6 +980,7 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
         models_by_provider: cfg.models_by_provider,
         active_model_id: cfg.active_model_id,
         ui_font_size: cfg.ui_font_size,
+        memory_consolidation: cfg.memory_consolidation.unwrap_or_default(),
     })
 }
 
@@ -1011,6 +1019,17 @@ pub fn bot_set_config(
     let mut config = config;
     derive_legacy_fields_from_active(&mut config);
     write_bot_config_file(&crate::db::data_dir(&app), config)
+}
+
+/// 读-改-写 bot-config.json（2026-09-09：记忆整理的 last_run_at 回写等内部配置更新用）：
+/// 与 bot_set_config 同落盘路径（key 字段剥离由 write_bot_config_file 保证）。
+pub(crate) fn update_config_file(
+    app: &AppHandle,
+    f: impl FnOnce(&mut BotConfig),
+) -> CommandResult<()> {
+    let mut cfg = load_config(app);
+    f(&mut cfg);
+    write_bot_config_file(&crate::db::data_dir(app), cfg)
 }
 
 /// bot_set_config 落盘内核（抽出便于单测，2026-09-05）：强制剥离三个 key 字段
@@ -1311,8 +1330,9 @@ async fn execute_tool_impl(
         "web_search" => tool_web_search(app, args).await,
         "fetch_url" => tool_fetch_url(app, args).await,
         "get_current_time" => tool_get_current_time(),
-        "remember_fact" => tool_remember_fact(app, args),
-        "recall_facts" => tool_recall_facts(app, args),
+        "remember_fact" => crate::memory::tool_remember_fact(app, args).await,
+        "recall_facts" => crate::memory::tool_recall_facts(app, args).await,
+        "record_lesson" => crate::memory::tool_record_lesson(app, args).await,
         "use_skill" => tool_use_skill(app, args, session_id),
         other => (format!("未知工具：{other}"), Vec::new()),
     };
@@ -1449,7 +1469,9 @@ fn fact_delete(conn: &rusqlite::Connection, key: &str) -> Result<bool, String> {
         .map_err(|e| format!("失败：{e}"))
 }
 
-/// 全量读回（按最近更新倒序）
+/// 全量读回（按最近更新倒序）。
+/// v2（2026-09-09）起仅旧工具薄壳使用（已不调用），保留随旧系统留档。
+#[allow(dead_code)]
 fn fact_list(conn: &rusqlite::Connection) -> Result<Vec<(String, String)>, String> {
     conn.prepare("SELECT key, value FROM bot_facts ORDER BY updated_at DESC")
         .and_then(|mut s| {
@@ -1465,6 +1487,9 @@ fn fact_list(conn: &rusqlite::Connection) -> Result<Vec<(String, String)>, Strin
 ///（同 key 覆盖）；value 空串 = 删除该 key。
 /// Step 2（设计 5.1）：可选 category/importance/source 非法值回落默认；
 /// 写入前跑冲突提示（fact_conflict_hint），提示文本进工具结果。
+/// v2（2026-09-09）起工具分发已切到 crate::memory::tool_remember_fact（mem_items 新表），
+/// 本函数保留不调用（旧表 bot_facts 薄壳，随旧系统一并留档）。
+#[allow(dead_code)]
 fn tool_remember_fact(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
     let v = parse_args(args);
     let key = v["key"].as_str().unwrap_or("").trim().to_string();
@@ -1527,7 +1552,10 @@ pub fn remember_fact_core(
 }
 
 /// recall_facts([query])：无 query 全量读回（按最近更新倒序，兼容原行为）；
-/// 有 query 走 Step 2 检索打分 top-5（设计第 4 节，纯读不刷新访问计数）
+/// 有 query 走 Step 2 检索打分 top-5（设计第 4 节，纯读不刷新访问计数）。
+/// v2（2026-09-09）起工具分发已切到 crate::memory::tool_recall_facts（mem_items 新表），
+/// 本函数保留不调用。
+#[allow(dead_code)]
 fn tool_recall_facts(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
     let v = parse_args(args);
     let query = v["query"].as_str().unwrap_or("").trim();

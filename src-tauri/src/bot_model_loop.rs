@@ -25,7 +25,7 @@ use tauri::{AppHandle, Emitter};
 // 注入系统提醒并补一轮（每次对话最多补一次），让模型实际调工具或如实说明。
 
 /// 会改动任务卡/文件系统的工具（判定「本轮是否真的动手了」）
-const MUTATING_TOOLS: [&str; 15] = [
+const MUTATING_TOOLS: [&str; 16] = [
     "create_task",
     "edit_task",
     "complete_task",
@@ -43,6 +43,8 @@ const MUTATING_TOOLS: [&str; 15] = [
     "create_ppt",
     "create_pdf",
     "remember_fact",
+    // 2026-09-09 lesson 特性：写记忆同 remember_fact 待遇（幻觉守卫「已记录」口径）
+    "record_lesson",
 ];
 
 /// 变更工具是否真的成功落库/落盘（幻觉守卫 mutation_done 的判定依据）。
@@ -222,6 +224,10 @@ const TOOLS: &str = r#"[
   {"type":"function","function":{"name":"recall_facts","description":"回忆长期记忆（相关记忆每轮已自动注入，一般无需调用；只在要浏览全部记忆或按关键词检索时才调）","parameters":{"type":"object","properties":{
     "query":{"type":"string","description":"可选；给了按相关度检索返回 top-5，不给则全量读回"}
   }}}},
+  {"type":"function","function":{"name":"record_lesson","description":"记录一条经验教训（跨会话长期记忆；被用户纠正、工具调用连续失败、发现更优做法时调用；同类场景的教训会自动合并，不会堆积）","parameters":{"type":"object","properties":{
+    "lesson":{"type":"string","description":"教训内容（≤800 字）：什么场景下应该/不应该怎么做，以及原因"},
+    "scenario":{"type":"string","description":"场景标签（可选 ≤50 字），如工具名或任务类型：create_ppt、批量执行、文档修订"}
+  },"required":["lesson"]}}},
   {"type":"function","function":{"name":"use_skill","description":"读取已安装技能（skill）的完整文档并按文档步骤执行。任务涉及的每个相关技能都要读（可多次调用）：例如做 PPT 时，若清单里同时有编排、生成、配色、风格类技能，应逐个读取、取长补短综合运用，不要只读一个","parameters":{"type":"object","properties":{
     "name":{"type":"string","description":"技能名（系统提示词「已安装技能」清单里的名称，一次一个，可多次调用）"}
   },"required":["name"]}}}

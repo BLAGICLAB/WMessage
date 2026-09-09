@@ -557,7 +557,17 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     // max_tokens（2026-09-08 改造：仅 Anthropic 模式用；空 = 8192 默认，范围 256-200000）
     // 仍是顶层配置——同一协议下多个模型共用一个 max_tokens
     maxTokens: "",
+    // 定时记忆整理（2026-09-09 memory v2）：开关 + 频率（off/12h/daily/weekly）+ 上次整理时间
+    // 后端 None/缺字段 → 默认 { enabled: true, interval: "daily", lastRunAt: null }
+    memoryConsolidation: {
+      enabled: true,
+      interval: "daily",
+      lastRunAt: null as number | null,
+    },
   });
+  // 「立即整理」按钮状态与结果提示（转圈 → 短暂 toast 式文案，同 configSaved 模式）
+  const [consolidateBusy, setConsolidateBusy] = useState(false);
+  const [consolidateMsg, setConsolidateMsg] = useState("");
   const [keyInput, setKeyInput] = useState("");
   // Tavily/Brave key 输入框（2026-09-05 起与主 keyInput 同模式：不回填已存 key，
   // 非空保存时覆盖写入系统凭据存储；空 = 不动已存 key）
@@ -607,6 +617,12 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         // 2026-09-08：界面字体大小（small/standard/large/xlarge）
         // 老后端版本没返 → 前端按 small 回退（老板拍板默认）
         uiFontSize?: string | null;
+        // 2026-09-09：定时记忆整理配置（老后端没返 → 默认启用 + 每天）
+        memoryConsolidation?: {
+          enabled?: boolean;
+          interval?: string;
+          lastRunAt?: number | null;
+        } | null;
       }>(
         "bot_get_config"
       );
@@ -639,6 +655,16 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
           c.permMode === "strict" || c.permMode === "yolo" ? c.permMode : "ask",
         // 空 = 8192 默认（仅 Anthropic 模式用）
         maxTokens: c.maxTokens != null ? String(c.maxTokens) : "",
+        // 记忆整理：缺字段/老后端 → 默认（启用 + daily）；非法 interval 回退 daily
+        memoryConsolidation: {
+          enabled: c.memoryConsolidation?.enabled ?? true,
+          interval: ["off", "12h", "daily", "weekly"].includes(
+            c.memoryConsolidation?.interval ?? "",
+          )
+            ? (c.memoryConsolidation?.interval as string)
+            : "daily",
+          lastRunAt: c.memoryConsolidation?.lastRunAt ?? null,
+        },
       });
     } catch (e) {
       handleCommandError(e, "bot_get_config", { silent: true });
@@ -782,6 +808,8 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
             const n = parseInt(c.maxTokens.trim(), 10);
             return Number.isFinite(n) && n > 0 ? n : null;
           })(),
+          // 定时记忆整理（2026-09-09）：原样透传（后端 serde default 兜底缺字段）
+          memoryConsolidation: c.memoryConsolidation,
         },
         // 输入框非空才写凭据存储；留空保持原 key 不变
         apiKey: keyInput.trim() ? keyInput.trim() : null,
@@ -908,6 +936,39 @@ const currentActiveId = config.activeModelId[config.apiProvider] ?? null;
     const next = { ...config, permMode: mode };
     setConfig(next);
     await saveConfig(next);
+  };
+
+  /** 记忆整理开关/频率（2026-09-09 memory v2）：点击即持久化（同 toggleTavily / setPermMode 模式） */
+  const setConsolidation = async (patch: Partial<{ enabled: boolean; interval: string }>) => {
+    if (configBusy) return;
+    const next = {
+      ...config,
+      memoryConsolidation: { ...config.memoryConsolidation, ...patch },
+    };
+    setConfig(next);
+    await saveConfig(next);
+  };
+
+  /** 立即整理：转圈 → 结果文案短暂展示（同 configSaved 的 setTimeout 清除模式），并刷新「上次整理时间」 */
+  const consolidateNow = async () => {
+    if (consolidateBusy) return;
+    setConsolidateBusy(true);
+    setConsolidateMsg("");
+    try {
+      const r = await invoke<{ merged: number; distilled: number; contradictions: number }>(
+        "memory_consolidate_now",
+      );
+      setConsolidateMsg(
+        `整理完成：合并 ${r.merged} 条、提炼 ${r.distilled} 条规律、解决 ${r.contradictions} 处矛盾`,
+      );
+      await loadConfig();
+    } catch (e) {
+      handleCommandError(e, "memory_consolidate_now", { silent: true });
+      setConsolidateMsg(`整理失败：${formatCommandError(e)}`);
+    } finally {
+      setConsolidateBusy(false);
+      setTimeout(() => setConsolidateMsg(""), 4000);
+    }
   };
 
   const clearApiKey = async () => {
@@ -1338,6 +1399,79 @@ const currentActiveId = config.activeModelId[config.apiProvider] ?? null;
           >
             {logBusy ? "读取中…" : "查看日志"}
           </button>
+        </div>
+
+        {/* 定时记忆整理（2026-09-09 memory v2 consolidation） */}
+        <div className="mt-3 border-t border-[var(--edge)] pt-3 space-y-2">
+          <div className="flex items-center justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-xs font-medium text-[var(--t4)]">记忆整理</p>
+              <p className="mt-1 text-[11px] text-[var(--t5)]">
+                定期用大模型对近期记忆做一轮反思：合并相关条目、裁决矛盾、提炼规律（需要已配置大模型 API）
+              </p>
+            </div>
+            <button
+              className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] ${
+                config.memoryConsolidation.enabled ? "nm-inset" : "nm-outset"
+              }`}
+              onClick={() =>
+                setConsolidation({ enabled: !config.memoryConsolidation.enabled })
+              }
+              disabled={configBusy}
+            >
+              {config.memoryConsolidation.enabled ? "已开启" : "已关闭"}
+            </button>
+          </div>
+          {config.memoryConsolidation.enabled && (
+            <>
+              <div className="flex gap-2">
+                {(
+                  [
+                    ["off", "关闭"],
+                    ["12h", "每 12 小时"],
+                    ["daily", "每天"],
+                    ["weekly", "每周"],
+                  ] as const
+                ).map(([iv, label]) => (
+                  <button
+                    key={iv}
+                    className={`flex-1 px-2 py-1.5 text-xs text-[var(--t3)] ${
+                      config.memoryConsolidation.interval === iv ? "nm-inset" : "nm-outset"
+                    }`}
+                    onClick={() => setConsolidation({ interval: iv })}
+                    disabled={configBusy}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <div className="flex items-center justify-between gap-4">
+                <p className="text-[11px] text-[var(--t5)]">
+                  上次整理：
+                  {config.memoryConsolidation.lastRunAt
+                    ? new Date(config.memoryConsolidation.lastRunAt).toLocaleString("zh-CN", {
+                        month: "2-digit",
+                        day: "2-digit",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })
+                    : "从未"}
+                </p>
+                <button
+                  className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] ${
+                    consolidateBusy ? "nm-inset" : "nm-outset"
+                  }`}
+                  onClick={consolidateNow}
+                  disabled={consolidateBusy}
+                >
+                  {consolidateBusy ? "整理中…" : "立即整理"}
+                </button>
+              </div>
+              {consolidateMsg && (
+                <p className="text-[11px] text-[var(--t4)]">{consolidateMsg}</p>
+              )}
+            </>
+          )}
         </div>
 
         {/* 大模型 API 配置（开关开启后显示） */}

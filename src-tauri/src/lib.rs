@@ -24,6 +24,7 @@ pub mod intent_router;
 pub mod middleware;
 mod migration;
 mod mutation;
+pub mod memory;
 mod profile;
 pub mod task_out;
 pub mod tool_guard;
@@ -341,6 +342,12 @@ pub fn run() {
                 }
             }
 
+            // 记忆 v2（2026-09-09）：嵌入引擎后台预热；定时记忆整理调度器
+            //（bot_scheduler 同模式，10 分钟检查一次配置到点；系统未上线，旧表
+            // bot_facts 废弃不导入，无迁移动作）
+            memory::embed::warmup_async();
+            memory::consolidate::start_consolidation_scheduler(app.handle().clone());
+
             // 桌面清理：后台轮询线程（每 10 分钟检测到期归档任务并执行规则迁移）
             {
                 let handle = app.handle().clone();
@@ -484,6 +491,7 @@ pub fn run() {
             bot::bot_get_config,
             bot::bot_set_config,
             bot::bot_clear_api_key,
+            memory::consolidate::memory_consolidate_now,
             bot_chat::bot_chat,
             bot_chat::bot_execute_task,
             bot_slash::bot_stop,

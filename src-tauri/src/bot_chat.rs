@@ -71,7 +71,7 @@ const SYSTEM_PROMPT: &str = "\
 18. 用户消息带 [附件文件] 块（含文件路径）时：图片附件（png/jpg/webp/gif 等）会直接以图片形式出现在消息里，用你的视觉能力直接读取识别，不要用 extract_document 处理图片；文档附件（Word/Excel/PPT/PDF）用 extract_document 的 path 参数直接读取；生成结果仍落 AI_Gen_Files 并告知路径；\
 19. 本地文件操作：读文本文件用 read_text_file、搜索文件内容用 grep_files、列目录用 list_files；这三个工具默认放行白名单目录（桌面/下载/文档 + 任务卡绑定文件夹 + 设置页 allowedDirs）；用户指定了具体目录时必须用用户指定的目录，不得擅自换成其它目录；白名单外会自动弹窗请用户授权——用户拒绝时如实告知，不要反复重试；\
 20. 涉及「今天/明天/昨天/周几/几点/截止时间是否临近」类日期时间判断时，先调用 get_current_time 拿当前时间再判断，禁止凭训练数据猜日期；\
-21. 长期记忆：用户明确说「记住…/以后都…/我的偏好是…」或透露稳定的画像/偏好/项目上下文时调用 remember_fact 存下（key 用简短规范名词 ≤50 字，value ≤500 字），并按内容填可选参数 category（profile 画像/preference 偏好/project 项目上下文/general）、importance（1-5，默认 3，用户明确要求长期遵守的给 4-5）、source（用户明确说的 user_stated，你自行推断的 model_inferred）；写入结果若提示「相似已有记忆」，优先用同 key 覆盖更新，不要另开 key 堆积；相关记忆每轮已自动注入（带 [推断] 前缀的是推断内容、可信度低一档），无需 recall_facts 全量读回——只在要浏览全部记忆或按关键词检索时才调 recall_facts（query 可选）；用户要求忘掉某条时用 remember_fact 同 key 传空 value 删除；
+21. 长期记忆：用户明确说「记住…/以后都…/我的偏好是…」或透露稳定的画像/偏好/项目上下文时调用 remember_fact 存下（key 用简短规范名词 ≤50 字，value ≤500 字），并按内容填可选参数 category（profile 画像/preference 偏好/project 项目上下文/general）、importance（1-5，默认 3，用户明确要求长期遵守的给 4-5）、source（用户明确说的 user_stated，你自行推断的 model_inferred）；写入结果若提示「相似已有记忆」，优先用同 key 覆盖更新，不要另开 key 堆积；相关记忆每轮已自动注入（带 [推断] 前缀的是推断内容、可信度低一档），无需 recall_facts 全量读回——只在要浏览全部记忆或按关键词检索时才调 recall_facts（query 可选）；用户要求忘掉某条时用 remember_fact 同 key 传空 value 删除。经验教训：当你被用户纠正了做法、同一工具连续失败、或发现比之前更优的做法时，调用 record_lesson 记一条教训（lesson 写清什么场景下该/不该怎么做及原因，scenario 填工具名或任务类型）；同类场景的教训会在「经验教训」段自动注入提醒，记之前若已有相似教训会自动合并，不用担心重复；
 安全红线（永远遵守）：\
 - 你只有白名单工具可用，绝不执行系统命令、修改系统设置、访问系统目录；\
 - 绝不批量删除任务，一次只处理用户明确指定的任务；\
@@ -214,14 +214,9 @@ pub(crate) async fn truncate_chat_history_with_summary(
 
 /// 摘要落库 + Reflection 触发（设计 5.2/7.3）：全失败兜底——任何一步出错只记
 /// 审计不重试不影响对话（摘要已在本轮历史里，落库丢了下轮截断还会再摘要）。
+/// v2（2026-09-09）：summary/reflection 写入新表 mem_items 并嵌入向量。
 async fn persist_summary_and_reflect(app: &AppHandle, session_id: Option<&str>, summary: &str) {
-    let batch = match crate::db::bot_memory_save_summary(
-        app.clone(),
-        session_id.map(|s| s.to_string()),
-        summary.to_string(),
-    )
-    .await
-    {
+    let batch = match crate::memory::save_summary(app, session_id, summary).await {
         Ok(b) => b,
         Err(e) => {
             crate::audit_event!(app, crate::audit::AuditLevel::Warn, "memory.summary_save_failed",
@@ -249,8 +244,8 @@ async fn persist_summary_and_reflect(app: &AppHandle, session_id: Option<&str>, 
             return;
         }
     };
-    let keys: Vec<String> = batch.into_iter().map(|(k, _)| k).collect();
-    if let Err(e) = crate::db::bot_memory_apply_reflection(app.clone(), keys, text).await {
+    let ids: Vec<String> = batch.into_iter().map(|(id, _)| id).collect();
+    if let Err(e) = crate::memory::apply_reflection(app, ids, text).await {
         crate::audit_event!(app, crate::audit::AuditLevel::Warn, "memory.reflection_save_failed",
             "error" => e.message());
     }
@@ -359,17 +354,11 @@ pub fn format_memory_block(inj: &crate::db::MemoryInjection) -> Option<String> {
     Some(out)
 }
 
-/// 记忆块注入薄壳：取数（检索 + 访问强化落库）→ 拼装。任何失败一律 None 静默降级
-/// 为「无记忆块」，绝不弄挂主对话（设计约束）；失败记审计便于排查。
+/// 记忆块注入薄壳：v2（2026-09-09）切到新语义记忆体（crate::memory：mem_items +
+/// 语义嵌入混合检索）；任何失败一律 None 静默降级为「无记忆块」，绝不弄挂主对话
+///（设计约束）；失败记 WARN 审计便于排查。
 async fn build_memory_block(app: &AppHandle, query: &str) -> Option<String> {
-    match crate::db::bot_memory_injection(app.clone(), query.to_string()).await {
-        Ok(inj) => format_memory_block(&inj),
-        Err(e) => {
-            crate::audit_event!(app, crate::audit::AuditLevel::Warn, "memory.injection_failed",
-                "error" => e.message());
-            None
-        }
-    }
+    crate::memory::injection_block(app, query).await
 }
 
 /// 需要内联图片的消息下标（2026-08-28 批次3审计 P1-6）：原先「最近两条 user 消息」
@@ -1192,10 +1181,23 @@ pub async fn execute_task_core(
             crate::bot::truncate_for_log(&task.title, 60)
         ),
     );
-    let msgs = vec![
+    let mut msgs = vec![
         serde_json::json!({"role": "system", "content": format!("{}\n\n{}", EXECUTE_SYSTEM_PROMPT, build_skill_block(app))}),
         serde_json::json!({"role": "user", "content": block}),
     ];
+    // 记忆 v2（2026-09-09）：任务卡执行/定时调度也注入记忆块——助手执行任务时知道用户
+    // 偏好；查询 = 任务标题+备注前 200 字；失败静默降级为无记忆块（injection_block 内部兜底）。
+    let mem_query: String = format!(
+        "{} {}",
+        task.title,
+        task.note.as_deref().unwrap_or("")
+    )
+    .chars()
+    .take(200)
+    .collect();
+    if let Some(mem_block) = crate::memory::injection_block(app, &mem_query).await {
+        msgs.insert(1, serde_json::json!({"role": "system", "content": mem_block}));
+    }
     // 交给机器人：卡片切机器人头像（前端 tasks-changed 广播后实时更新）
     set_bot_assigned(app, &task.id, true).await;
     let result = crate::bot_model_loop::run_model_loop(
@@ -1208,7 +1210,15 @@ pub async fn execute_task_core(
     .await;
     // 执行结束（无论成败）：清除标记，恢复用户头像
     set_bot_assigned(app, &task.id, false).await;
-    let (text, refs) = result?;
+    let (text, refs) = match result {
+        Ok(v) => v,
+        Err(e) => {
+            // 2026-09-09 lesson 特性：任务执行失败自动沉淀一条 lesson（source=system，
+            // 语义去重合并同类失败）；写失败只记审计，不影响原错误返回
+            crate::memory::auto_lesson_on_task_failure(app, &task.title, &e.message()).await;
+            return Err(e);
+        }
+    };
     Ok(BotChatResult {
         text,
         task_refs: refs,

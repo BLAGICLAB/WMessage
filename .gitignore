@@ -69,3 +69,6 @@ wmessage*.db-journal
 bot-api-key.txt
 bot-tavily-key.txt
 bot-brave-key.txt
+
+# Windows 绿色便携包解包目录（本地验收产物）
+wmessage-portable/

@@ -64,6 +64,14 @@ once_cell = "1"
 # 跨平台垃圾箱：macOS 废纸篓 / Windows 回收站 / Linux gio trash（老板 2026-08-17 21:17）
 trash = "5"
 
+# 记忆 v2（2026-09-09，docs/BOT-MEMORY-V2-DESIGN.md）：本地语义嵌入
+# ort = ONNX Runtime 绑定（download-binaries：build script 自动下载 onnxruntime 动态库，
+# 网络失败时构建期报错的应对见设计文档「模型打包说明」节）
+ort = { version = "2.0.0-rc.13", features = ["download-binaries"] }
+# tokenizers：仅离线加载 tokenizer.json（default-features 全关：不拉 http；
+# fancy-regex 是 tokenizers 0.23 必需的 regex 后端之一，纯 Rust 无 C 依赖）
+tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"] }
+
 [dev-dependencies]
 # F-6 端到端测试：mock Tauri runtime + 集成测试 runner（2026-08-18）
 tauri = { version = "2", features = ["test"] }
