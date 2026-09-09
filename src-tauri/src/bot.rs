@@ -1252,7 +1252,7 @@ pub async fn execute_tool_with_stop(
     stop: Option<&crate::bot_slash::StopGuard>,
 ) -> (String, Vec<crate::bot_chat::TaskRef>) {
     // 2026-08-26 会话隔离：交互属性与会话归属从 StopGuard 取（无守卫 = 后台调度器路径
-    // 不会出现——调度器走 execute_task_core 也持 StopGuard；None 仅 DSL 调度器遗留路径）
+    // 不会出现——调度器走 run_task_in_chat 也持 StopGuard；None 仅 DSL 调度器遗留路径）
     let interactive = stop.map(|s| s.is_interactive()).unwrap_or(true);
     let session_id = stop.and_then(|s| s.session_id());
     execute_tool_impl(app, name, args, stop, interactive, session_id).await
@@ -1678,7 +1678,7 @@ fn files_audit_kv(args: &str) -> Option<(usize, bool)> {
 }
 
 /// 改库后广播：挂件重读（tasks-changed）+ 主窗口合并 UI 不回写（tasks-updated, source: Bot）
-pub fn broadcast_after_mutation(app: &AppHandle, upserts: Vec<crate::db::Task>, deletes: Vec<String>) {
+pub fn broadcast_after_mutation<R: tauri::Runtime>(app: &tauri::AppHandle<R>, upserts: Vec<crate::db::Task>, deletes: Vec<String>) {
     if !upserts.is_empty() || !deletes.is_empty() {
         let _ = app.emit("tasks-changed", ());
         let _ = app.emit(

@@ -2,6 +2,26 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-09-10（周四）任务执行聊天化第一期：一次执行 = 一个新会话（🤖/⏰/📦 三路径统一）
+
+设计 `docs/TASK-CHAT-EXECUTION-DESIGN.md`（已实施，偏差见文档第 9 节）。任务卡交给机器人和定时任务不再是黑箱：每次执行在聊天窗口新建会话，流式可见、可按会话 /stop、永久落库可回看。
+
+**后端**：
+- `bot_chat.rs` 新增统一入口 `run_task_in_chat(app, task_id, origin)`（origin: 📋 任务/⏰ 定时/📦 批量 前缀建会话标题）：创建新会话 → 任务块 user 消息落库 → 广播 `chat-open-session` → ChatGuard 持新会话锁（补 bot_execute_task 后端无会话锁的漏洞）→ 记忆注入 → run_model_loop → assistant 回复落库（失败落 ⚠️ 行）→ 失败沉淀 lesson。`execute_task_core` 删除被取代
+- 测试接缝：`run_task_in_chat_with`（泛型 Runtime + 注入模型循环）；连带 `open_db`/`db_load_for`/`db_upsert_for`/`bot_enabled`/`scan_skills`/`build_skill_block`/`broadcast_after_mutation`/memory 两个门面函数泛化（命令签名与行为不变）
+- `db.rs`：`bot_session_create_inner` / `bot_history_save_inner` 抽 Connection 内核供后端直调（原先持久化只在前端命令路径）
+- `bot_scheduler.rs`：定时触发改调 run_task_in_chat（绕开 exec_steps，无人在场直接整体执行）；完成/失败发系统通知（复用 tauri-plugin-notification）；⏰ 摘要前置 note 兜底保留
+- 批量执行 `chat_execute_tasks`：每卡独立新会话，单卡失败不污染其他卡记录
+- 无新 Tauri 命令（复用 bot_execute_task；chat-open-session 是事件）
+
+**前端（ChatPanel.tsx）**：
+- execute-task 监听器改为直接 `invoke("bot_execute_task")`（不再在当前会话渲染执行）；TASK_INVALID_STATE 拒绝仍按 ⏳ 业务提示（批次7 P2-2 口径保留）
+- 新增 `chat-open-session` 监听：非 busy 直接切到执行会话（加载已落库历史 + streaming 占位气泡承接流式增量）；busy 不打断，跳转排队（只留最新），exitBusy 时 hint +「💬 查看执行对话」按钮（Msg 新增 actionSessionId 字段）
+- busy 锁本身不动；invoke 收尾时若正围观该执行会话则重载历史替换占位气泡
+- 执行中卡片 🤖 头像状态复用 set_bot_assigned（前端零改动）
+
+**测试**：后端新增 `tests/task_chat_exec.rs` 4 例（全链路 mock LLM：会话创建/消息落库/任务卡回写/ChatGuard 执行期持有、ExecGuard 并发拒绝、失败落 ⚠️ 行、定时路径源码锁）；cargo test 全目标全绿（lib 614 + llm_integration 38 + memory_regression 17 + task_chat_exec 14 等）。前端 ChatPanel 新增 chat-open-session 两例（非 busy 直切 / busy 排队提示+点击切换），vitest 21 文件 208 全过（206→208）；tsc -b 无新增错误（4 个存量与本次无关）。
+
 ## 2026-09-09（周三）记忆 v2 增强：lesson 教训记忆 + 定时记忆整理（consolidation）
 
 在 memory v2（同日早些时候落地）基础上加两个特性，设计见 `docs/BOT-MEMORY-V2-DESIGN.md` 第 9/10 节。

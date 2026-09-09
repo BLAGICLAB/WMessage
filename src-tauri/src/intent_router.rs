@@ -24,7 +24,7 @@ pub enum RouteAction {
     /// 命中复合业务 → 加载指定 Skill 并直接进入 Skill 执行循环
     Skill(String),
     /// 选择任务卡模式：「完成/执行」类关键词 + [已选任务] 引用块 → 批量执行这些任务卡
-    /// （chat_execute_tasks 复用 execute_task_core 整卡连续执行，路由终态由 bot_chat 主流程处理）
+    /// （chat_execute_tasks 复用 run_task_in_chat 整卡连续执行，路由终态由 bot_chat 主流程处理）
     ExecuteTasks(Vec<(String, String)>),
     /// 未命中 → 放行进 LLM
     PassThrough,

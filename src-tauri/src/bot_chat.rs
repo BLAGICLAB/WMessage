@@ -2,7 +2,7 @@
 //!
 //! 经典 Agent 框架（LangChain AgentExecutor / Claude Agent SDK / AutoGen）
 //! 的「入口/编排」层职责：
-//! - 接收用户输入（bot_chat / bot_compact / bot_execute_task / execute_task_core）
+//! - 接收用户输入（bot_chat / bot_compact / bot_execute_task / run_task_in_chat）
 //! - 参数校验 + 五步主流程编排（严格按序，禁止任何步骤抢跑 / 前置 return）：
 //!   1. exec_steps::resume（如有挂起子任务）
 //!   2. bypass_llm_on_pre_step_hit 开关读取
@@ -389,7 +389,8 @@ pub(crate) fn strip_think_blocks(text: &str) -> String {
     out
 }
 
-/// 聊天模式批量执行：每张卡调一次 execute_task_core（已用 EXECUTE_SYSTEM_PROMPT + 50 轮工具循环）。
+/// 聊天模式批量执行：每张卡调一次 run_task_in_chat（2026-09-10 聊天化：每卡独立新会话，
+/// EXECUTE_SYSTEM_PROMPT + 50 轮工具循环），单卡失败不污染其他卡的执行记录。
 /// 顺序执行（避免文件写冲突）；一卡失败继续（任一卡失败不阻断后续）；共用 StopGuard（/stop 一次清空）。
 /// 汇总报告：每张卡的开头 + 执行结果 + 总数 + 失败清单；task_refs 跨卡去重（merge_task_refs_dedup）。
 pub async fn chat_execute_tasks(
@@ -415,14 +416,14 @@ pub async fn chat_execute_tasks(
         }
         let label = if title.is_empty() { task_id.as_str() } else { title.as_str() };
         all_text.push_str(&format!("\n── [{}/{}] {} ──\n", idx + 1, total, label));
-        match execute_task_core(app, task_id, true, stop.session_id().map(|s| s.to_string())).await {
+        match run_task_in_chat(app, task_id, TaskExecOrigin::Batch).await {
             Ok(r) => {
-                if !r.text.is_empty() {
-                    all_text.push_str(&r.text);
+                if !r.result.text.is_empty() {
+                    all_text.push_str(&r.result.text);
                     all_text.push('\n');
                 }
                 ok += 1;
-                all_refs.extend(r.task_refs);
+                all_refs.extend(r.result.task_refs);
             }
             Err(e) => {
                 let err_str = e.to_string();
@@ -614,6 +615,16 @@ impl Drop for ChatGuard {
     }
 }
 
+/// 会话锁是否被持有（2026-09-10 任务执行聊天化：tests/task_chat_exec.rs 断言
+/// run_task_in_chat 执行期持有 ChatGuard——bot_execute_task 纳入会话锁的回归证据）。
+/// 生产代码不调用。
+pub fn chat_guard_is_held(session_id: &str) -> bool {
+    CHAT_RUNNING
+        .get()
+        .map(|s| s.lock().unwrap_or_else(|e| e.into_inner()).contains(session_id))
+        .unwrap_or(false)
+}
+
 #[tauri::command]
 pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>, session_id: Option<String>) -> CommandResult<BotChatResult> {
     require_bot_enabled(bot_get_enabled(app.clone()))?;
@@ -738,9 +749,9 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>, session_id: Option
     };
     // 选择任务卡批量执行（路由终态，不是前置短路：步骤 1-3 已按序完成）：
     // B 方案（老板 2026-08-18 16:19 拍板，1=宽松 / 2=继续 / 3=共用 stop）：每张卡复用
-    // execute_task_core（EXECUTE_SYSTEM_PROMPT + 50 轮工具循环）；共用同一 StopGuard：
+    // run_task_in_chat（EXECUTE_SYSTEM_PROMPT + 50 轮工具循环）；共用同一 StopGuard：
     // 聊天里 /stop 一次能中断整个批量执行。定时任务模式（bot_scheduler，interactive=false）
-    // 同样只走 execute_task_core，不经本聊天流程，互不干扰。
+    // 同样只走 run_task_in_chat，不经本聊天流程，互不干扰。
     if let Some(task_ids) = batch_execute_tasks {
         crate::audit_event!(
             &app,
@@ -824,7 +835,7 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>, session_id: Option
     // PREVR 第 2 层（2026-08-26）：复杂多步任务先生成动态计划再执行。
     // 触发保守：needs_plan 启发式命中才多花一次 Planner 调用；
     // Planner 失败/输出非法 → None → 原自由循环，不阻断聊天。
-    // 仅聊天主路径启用：任务卡执行（execute_task_core）/ 逐步执行（exec_steps）
+    // 仅聊天主路径启用：任务卡执行（run_task_in_chat）/ 逐步执行（exec_steps）
     // 目标单一明确，不需要规划。
     let last_user_text = messages
         .last()
@@ -1072,13 +1083,18 @@ pub async fn bot_compact(app: AppHandle, messages: Vec<ChatMsg>) -> CommandResul
 
 // ───────────────────────── 任务卡执行 ─────────────────────────
 
-/// 任务卡交给机器人执行（🤖 按钮 / 选卡说「完成它」）：把任务卡内容组装成指令，高轮数工具循环执行。
-/// 流式经 bot-chat-delta / bot-think-delta / bot-tool* 事件推给挂件。
+/// 任务卡交给机器人执行（🤖 按钮 / 选卡说「完成它」）。
+/// 任务执行聊天化（2026-09-10）：执行永远在**新会话**里（run_task_in_chat 统一入口），
+/// 前端经 chat-open-session 事件切过去围观；session_id 参数废弃（旧前端兼容保留，
+/// 不再使用）。会话级 ChatGuard 由 run_task_in_chat 对新会话持有（补上原先后端无锁的漏洞）。
+/// 流式经 bot-chat-delta / bot-think-delta / bot-tool* 事件（带新会话 sessionId）推给挂件。
 #[tauri::command]
 pub async fn bot_execute_task(app: AppHandle, task_id: String, session_id: Option<String>) -> CommandResult<BotChatResult> {
+    let _ = session_id; // 废弃：执行会话由后端新建
     // 逐步执行模式（2026-08-19 老板拍板）：手动触发 + ≥2 个未勾子任务 → 一个一个做，
     // 每个子任务做完在聊天里等用户确认（继续=勾选+下一个 / 重做 / 停）；
-    // 聊天批量执行与定时调度仍走整卡连续执行（多卡/无人在场不适合逐步确认）
+    // 聊天批量执行与定时调度仍走整卡连续执行（多卡/无人在场不适合逐步确认）。
+    // 2026-09-10：逐步执行也在新会话内（exec_steps 挂起态按新会话 id 停放）。
     if bot_get_enabled(app.clone()) {
         if let Some(task) = crate::db::db_load(app.clone())
             .await
@@ -1092,11 +1108,16 @@ pub async fn bot_execute_task(app: AppHandle, task_id: String, session_id: Optio
                 .map(|s| s.iter().filter(|x| !x.done).count())
                 .unwrap_or(0);
             if undone >= 2 {
-                return crate::exec_steps::start(&app, &task, session_id.as_deref()).await;
+                let sid = create_exec_session(&app, &task, TaskExecOrigin::Manual).await?;
+                let r = crate::exec_steps::start(&app, &task, Some(&sid)).await;
+                persist_exec_reply(&app, &task, &sid, &r).await;
+                return r;
             }
         }
     }
-    execute_task_core(&app, &task_id, true, session_id).await
+    run_task_in_chat(&app, &task_id, TaskExecOrigin::Manual)
+        .await
+        .map(|r| r.result)
 }
 
 /// 任务卡执行防重入：同一 task_id 同时只允许一个执行实例。
@@ -1132,18 +1153,180 @@ impl Drop for ExecGuard {
     }
 }
 
-/// 任务卡执行核心（命令与定时调度共用）。interactive=true 表示用户直接触发（可被 /stop 停），
-/// false 表示后台定时触发（/stop 不影响）
-/// session_id（2026-08-26 会话隔离）：触发会话 id；后台定时任务为 None——
-/// None 时 run_model_loop 不向挂件广播流式增量（防串进用户当前对话）。
-pub async fn execute_task_core(
+/// 任务执行聊天化（2026-09-10，docs/TASK-CHAT-EXECUTION-DESIGN.md）：
+/// 一次执行 = 一个新会话。统一入口 run_task_in_chat 供 🤖 按钮 / ⏰ 定时 / 📦 批量三路径
+/// 共用（取代原 run_task_in_chat 的 headless 模式——定时任务不再是黑箱，全程流式可见、
+/// 可按会话 /stop、永久落库可回看）。
+///
+/// 执行来源（会话标题前缀 + chat-open-session 事件 origin 字段）
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TaskExecOrigin {
+    /// 🤖 按钮 / 选卡说「完成它」
+    Manual,
+    /// ⏰ 定时调度触发
+    Scheduled,
+    /// 📦 聊天批量执行（每卡一个独立会话）
+    Batch,
+}
+
+impl TaskExecOrigin {
+    fn title_prefix(self) -> &'static str {
+        match self {
+            TaskExecOrigin::Manual => "📋 任务：",
+            TaskExecOrigin::Scheduled => "⏰ 定时：",
+            TaskExecOrigin::Batch => "📦 批量：",
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TaskExecOrigin::Manual => "manual",
+            TaskExecOrigin::Scheduled => "scheduled",
+            TaskExecOrigin::Batch => "batch",
+        }
+    }
+}
+
+/// run_task_in_chat 的返回：新会话 id + 执行结果（前端靠 chat-open-session 事件，
+/// 不依赖返回值；调度器用 result.text 写 ⏰ 兜底摘要）
+pub struct TaskChatRun {
+    pub session_id: String,
+    pub result: BotChatResult,
+}
+
+/// 创建执行会话（标题 = 来源前缀 + 任务标题）并把任务块作为 user 消息落库，
+/// 广播 chat-open-session 给挂件（busy 时前端排队提示，见设计第 5 节）。
+async fn create_exec_session<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    task: &crate::db::Task,
+    origin: TaskExecOrigin,
+) -> CommandResult<String> {
+    let title = format!(
+        "{}{}",
+        origin.title_prefix(),
+        crate::bot::truncate_for_log(task.title.trim(), 30)
+    );
+    let block = build_task_block(task);
+    let app2 = app.clone();
+    let session = tauri::async_runtime::spawn_blocking(move || -> Result<crate::db::BotSession, String> {
+        let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = crate::db::open_db(&app2)?;
+        let s = crate::db::bot_session_create_inner(&conn, Some(title))?;
+        crate::db::bot_history_save_inner(
+            &conn,
+            &s.id,
+            &[crate::db::BotMsgRow {
+                role: "user".into(),
+                content: block,
+                refs_json: None,
+                thinking: None,
+                tools_json: None,
+            }],
+        )?;
+        Ok(s)
+    })
+    .await
+    .map_err(|e| CommandError::from(format!("执行会话创建线程 join 失败：{e}")))?
+    .map_err(CommandError::DbError)?;
+    let _ = app.emit_to(
+        "widget",
+        "chat-open-session",
+        serde_json::json!({
+            "sessionId": session.id,
+            "taskId": task.id,
+            "title": session.title,
+            "origin": origin.as_str(),
+        }),
+    );
+    Ok(session.id)
+}
+
+/// 执行会话的 assistant 回复落库（user 任务块 + 回复整体覆盖写，bot_history_save_inner
+/// 语义即全量覆盖）。持久化失败只记审计——执行结果已经产生，记录缺失不阻断返回。
+async fn persist_exec_reply<R: tauri::Runtime>(app: &tauri::AppHandle<R>, task: &crate::db::Task, sid: &str, reply: &CommandResult<BotChatResult>) {
+    let (content, refs) = match reply {
+        Ok(r) => (r.text.clone(), serde_json::to_string(&r.task_refs).ok()),
+        Err(e) => (format!("⚠️ 执行失败：{}", e.message()), None),
+    };
+    let block = build_task_block(task);
+    let app2 = app.clone();
+    let sid = sid.to_string();
+    let r = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut conn = crate::db::open_db(&app2)?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        crate::db::bot_history_save_inner(
+            &tx,
+            &sid,
+            &[
+                crate::db::BotMsgRow {
+                    role: "user".into(),
+                    content: block,
+                    refs_json: None,
+                    thinking: None,
+                    tools_json: None,
+                },
+                crate::db::BotMsgRow {
+                    role: "assistant".into(),
+                    content,
+                    refs_json: refs,
+                    thinking: None,
+                    tools_json: None,
+                },
+            ],
+        )?;
+        tx.commit().map_err(|e| e.to_string())
+    })
+    .await;
+    match r {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            crate::audit_event!(app, crate::audit::AuditLevel::Warn, "task_exec.persist_failed",
+                "error" => e);
+        }
+        Err(e) => {
+            crate::audit_event!(app, crate::audit::AuditLevel::Warn, "task_exec.persist_failed",
+                "error" => format!("持久化线程 join 失败：{e}"));
+        }
+    }
+}
+
+/// 任务执行统一入口（生产薄壳：run_model_loop 真实循环；Wry 命令/调度路径用。
+/// 测试请用 run_task_in_chat_with（泛型 Runtime + 注入模型循环））
+pub async fn run_task_in_chat(
     app: &AppHandle,
     task_id: &str,
-    interactive: bool,
-    session_id: Option<String>,
-) -> CommandResult<BotChatResult> {
+    origin: TaskExecOrigin,
+) -> CommandResult<TaskChatRun> {
+    run_task_in_chat_with(app, task_id, origin, |app2, msgs, stop| async move {
+        crate::bot_model_loop::run_model_loop(
+            app2,
+            msgs,
+            crate::bot_model_loop::DEFAULT_MAX_ROUNDS,
+            &stop,
+            None,
+        )
+        .await
+    })
+    .await
+}
+
+/// run_task_in_chat 内核（模型循环注入——测试接 mock LLM server 全链路驱动，
+/// 与 run_model_loop_core / truncate_with_summary_core 同先例）。
+/// 流程：开关/防重入/任务校验 → 建新会话 + 任务块落库 + chat-open-session
+/// → ChatGuard（执行期同会话 bot_chat 插话被拒）→ 记忆注入 → 模型循环
+/// → assistant 回复落库（失败也落 ⚠️ 行）→ 失败沉淀 lesson。
+pub async fn run_task_in_chat_with<R: tauri::Runtime, Run, Fut>(
+    app: &tauri::AppHandle<R>,
+    task_id: &str,
+    origin: TaskExecOrigin,
+    run: Run,
+) -> CommandResult<TaskChatRun>
+where
+    Run: FnOnce(tauri::AppHandle<R>, Vec<serde_json::Value>, StopGuard) -> Fut,
+    Fut: std::future::Future<Output = CommandResult<(String, Vec<TaskRef>)>>,
+{
     // 开关关闭时明确拒绝（二次审计 P2-3）
-    if !bot_get_enabled(app.clone()) {
+    if !crate::bot_slash::bot_enabled(app) {
         return Err(CommandError::BotDisabled);
     }
     // 防重入：同一任务卡已有执行实例在跑 → 直接拒绝（RAII 守卫随函数返回/panic 自动释放）
@@ -1157,8 +1340,7 @@ pub async fn execute_task_core(
             reason: "该任务卡正在执行中，请等待完成后再触发".into(),
         });
     };
-    let stop = StopGuard::new_task_exec(interactive, session_id);
-    let task = crate::db::db_load(app.clone())
+    let task = crate::db::db_load_for(app)
         .await
         .unwrap_or_default()
         .into_iter()
@@ -1174,15 +1356,30 @@ pub async fn execute_task_core(
             reason: "任务已归档，不能执行；请先恢复".into(),
         });
     }
-    let block = build_task_block(&task);
     crate::bot::audit_log(
-        &app,
+        app,
         &format!(
-            "execute_task | id: {} | title: {}",
+            "execute_task | id: {} | title: {} | origin: {}",
             task.id,
-            crate::bot::truncate_for_log(&task.title, 60)
+            crate::bot::truncate_for_log(&task.title, 60),
+            origin.as_str()
         ),
     );
+    // 1. 新会话 + 任务块 user 消息落库 + chat-open-session 广播
+    let sid = create_exec_session(app, &task, origin).await?;
+    // 2. ChatGuard（设计 3.4：bot_execute_task 纳入会话锁——执行期间同会话的
+    // bot_chat 插话会被拒「稍候再发」，防流式/历史交错）。新会话正常不会冲突，
+    // 冲突说明守卫串号，按内部错误处理。
+    let _chat_guard = match ChatGuard::acquire(Some(&sid)) {
+        Ok(g) => g,
+        Err(()) => {
+            return Err(CommandError::Internal(format!(
+                "执行会话 {sid} 已被占用（会话锁串号）"
+            )));
+        }
+    };
+    let stop = StopGuard::new_task_exec(true, Some(sid.clone()));
+    let block = build_task_block(&task);
     let mut msgs = vec![
         serde_json::json!({"role": "system", "content": format!("{}\n\n{}", EXECUTE_SYSTEM_PROMPT, build_skill_block(app))}),
         serde_json::json!({"role": "user", "content": block}),
@@ -1202,33 +1399,25 @@ pub async fn execute_task_core(
     }
     // 交给机器人：卡片切机器人头像（前端 tasks-changed 广播后实时更新）
     set_bot_assigned(app, &task.id, true).await;
-    let result = crate::bot_model_loop::run_model_loop(
-        app.clone(),
-        msgs,
-        crate::bot_model_loop::DEFAULT_MAX_ROUNDS,
-        &stop,
-        None,
-    )
-    .await;
+    let outcome = run(app.clone(), msgs, stop).await;
     // 执行结束（无论成败）：清除标记，恢复用户头像
     set_bot_assigned(app, &task.id, false).await;
-    let (text, refs) = match result {
-        Ok(v) => v,
+    let outcome = outcome.map(|(text, refs)| BotChatResult { text, task_refs: refs });
+    // assistant 回复落库（失败也落 ⚠️ 行——会话即执行记录，留证可回看）
+    persist_exec_reply(app, &task, &sid, &outcome).await;
+    match outcome {
+        Ok(result) => Ok(TaskChatRun { session_id: sid, result }),
         Err(e) => {
             // 2026-09-09 lesson 特性：任务执行失败自动沉淀一条 lesson（source=system，
             // 语义去重合并同类失败）；写失败只记审计，不影响原错误返回
             crate::memory::auto_lesson_on_task_failure(app, &task.title, &e.message()).await;
-            return Err(e);
+            Err(e)
         }
-    };
-    Ok(BotChatResult {
-        text,
-        task_refs: refs,
-    })
+    }
 }
 
 /// 任务卡执行上下文块（[任务卡执行] + 标题/状态/备注/子任务/截止/绑定文件），
-/// 整卡连续执行（execute_task_core）与逐步执行（exec_steps）共用
+/// 整卡连续执行（run_task_in_chat）与逐步执行（exec_steps）共用
 pub(crate) fn build_task_block(task: &crate::db::Task) -> String {
     let mut block = format!(
         "[任务卡执行]\nid={}\n标题：{}\n状态：{}",
@@ -1270,8 +1459,9 @@ pub(crate) fn build_task_block(task: &crate::db::Task) -> String {
 }
 
 /// 翻转「交给机器人」标记：重读库后只改 bot_assigned，避免覆盖机器人工具对卡片的修改
-pub(crate) async fn set_bot_assigned(app: &AppHandle, task_id: &str, assigned: bool) {
-    let Ok(all) = crate::db::db_load(app.clone()).await else {
+/// （泛型 Runtime，2026-09-10：run_task_in_chat 泛化后 mock runtime 测试可直调）
+pub(crate) async fn set_bot_assigned<R: tauri::Runtime>(app: &tauri::AppHandle<R>, task_id: &str, assigned: bool) {
+    let Ok(all) = crate::db::db_load_for(app).await else {
         return;
     };
     let Some(mut t) = all
@@ -1286,7 +1476,7 @@ pub(crate) async fn set_bot_assigned(app: &AppHandle, task_id: &str, assigned: b
     t.bot_assigned = Some(assigned);
     t.expected_updated_at = t.updated_at; // T1-1：RMW 基线 = 快照 updated_at
     t.updated_at = Some(chrono::Utc::now().timestamp_millis());
-    if crate::db::db_upsert(app.clone(), vec![t.clone()]).await.is_ok() {
+    if crate::db::db_upsert_for(app, vec![t.clone()]).await.is_ok() {
         crate::bot::broadcast_after_mutation(app, vec![t], vec![]);
     }
 }

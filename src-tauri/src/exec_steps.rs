@@ -242,7 +242,7 @@ async fn advance_or_finish(
 
 /// 开始逐步执行（bot_execute_task 在 ≥2 个未勾子任务时分流到这里）
 pub async fn start(app: &AppHandle, task: &crate::db::Task, session_id: Option<&str>) -> CommandResult<BotChatResult> {
-    // 防重入：与 execute_task_core 同一守卫（同一卡不能同时两个执行实例）
+    // 防重入：与 run_task_in_chat 同一守卫（同一卡不能同时两个执行实例）
     let Some(exec_guard) = ExecGuard::acquire(&task.id) else {
         crate::bot::audit_log(
             app,

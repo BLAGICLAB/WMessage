@@ -13,7 +13,9 @@ const mocks = vi.hoisted(() => {
   const dragDropHandlers: Array<
     (e: { payload: Record<string, unknown> }) => unknown
   > = [];
-  return { invokeMock, listenMock, emitMock, dragDropHandlers };
+  // 2026-09-10 任务执行聊天化：按事件名捕获 listen 回调（chat-open-session 手动触发用）
+  const listeners: Record<string, Array<(e: { payload: Record<string, unknown> }) => void>> = {};
+  return { invokeMock, listenMock, emitMock, dragDropHandlers, listeners };
 });
 
 // 默认实现
@@ -97,6 +99,7 @@ beforeEach(() => {
   mocks.listenMock.mockClear();
   writeTextMock.mockClear();
   mocks.dragDropHandlers.length = 0;
+  for (const k of Object.keys(mocks.listeners)) delete mocks.listeners[k];
 });
 
 describe("ChatPanel", () => {
@@ -363,5 +366,82 @@ describe("ChatPanel", () => {
       });
     });
     expect(screen.queryByText(/b\.pdf/)).not.toBeInTheDocument();
+  });
+
+  // ───────── 2026-09-10 任务执行聊天化：chat-open-session 跳转/排队 ─────────
+
+  it("chat-open-session 非 busy：直接切换到执行会话并加载其历史", async () => {
+    // 前面的用例会把 listenMock 恢复成不记录的默认实现，这里显式重设
+    mocks.listenMock.mockImplementation(
+      async (event: string, cb: (e: { payload: Record<string, unknown> }) => void) => {
+        (mocks.listeners[event] ??= []).push(cb);
+        return () => {};
+      }
+    );
+    mocks.invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === "bot_sessions_load") return [{ id: "s1", title: "默认会话" }];
+      if (cmd === "bot_history_load")
+        return args?.sessionId === "s-exec"
+          ? [{ role: "user", content: "[任务卡执行]\nid=t1\n标题：写报告", refsJson: null, thinking: null, toolsJson: null }]
+          : [];
+      return null;
+    });
+    render(<ChatPanel {...defaultProps} />);
+    expect(await screen.findByText("🤖 默认会话")).toBeInTheDocument();
+    await act(async () => {
+      for (const cb of mocks.listeners["chat-open-session"] ?? []) {
+        cb({ payload: { sessionId: "s-exec", taskId: "t1", title: "📋 任务：写报告", origin: "manual" } });
+      }
+    });
+    // 切到执行会话：加载其历史，任务块渲染出来
+    await waitFor(() =>
+      expect(mocks.invokeMock).toHaveBeenCalledWith("bot_history_load", { sessionId: "s-exec" })
+    );
+    expect(await screen.findByText(/\[任务卡执行\]/)).toBeInTheDocument();
+    // 会话列表已含新会话
+    expect(screen.getByText(/📋 任务：写报告/)).toBeInTheDocument();
+  });
+
+  it("chat-open-session busy：跳转排队，当前轮结束后出现「查看执行对话」按钮，点击切换", async () => {
+    mocks.listenMock.mockImplementation(
+      async (event: string, cb: (e: { payload: Record<string, unknown> }) => void) => {
+        (mocks.listeners[event] ??= []).push(cb);
+        return () => {};
+      }
+    );
+    const user = userEvent.setup();
+    let releaseChat: (v: { text: string; taskRefs: never[] }) => void = () => {};
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_sessions_load") return [{ id: "s1", title: "默认会话" }];
+      if (cmd === "bot_history_load") return [];
+      if (cmd === "bot_chat")
+        return new Promise((r) => {
+          releaseChat = r as typeof releaseChat;
+        });
+      return null;
+    });
+    render(<ChatPanel {...defaultProps} />);
+    expect(await screen.findByText("🤖 默认会话")).toBeInTheDocument();
+    const input = screen.getByPlaceholderText(/和机器人说点什么/);
+    await user.type(input, "你好");
+    await user.keyboard("{Enter}");
+    // busy 中收到 chat-open-session → 不切换、不读执行会话历史
+    await act(async () => {
+      for (const cb of mocks.listeners["chat-open-session"] ?? []) {
+        cb({ payload: { sessionId: "s-exec", taskId: "t1", title: "📋 任务：写报告", origin: "scheduled" } });
+      }
+    });
+    expect(screen.getByText("🤖 默认会话")).toBeInTheDocument();
+    expect(mocks.invokeMock).not.toHaveBeenCalledWith("bot_history_load", { sessionId: "s-exec" });
+    // 当前轮结束 → 排队跳转兑现为提示 + 按钮
+    await act(async () => {
+      releaseChat({ text: "回复", taskRefs: [] });
+    });
+    expect(await screen.findByText(/已在新会话执行/)).toBeInTheDocument();
+    const btn = await screen.findByText("💬 查看执行对话");
+    await user.click(btn);
+    await waitFor(() =>
+      expect(mocks.invokeMock).toHaveBeenCalledWith("bot_history_load", { sessionId: "s-exec" })
+    );
   });
 });

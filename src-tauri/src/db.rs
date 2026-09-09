@@ -203,7 +203,9 @@ fn wal_sidecar(db: &std::path::Path, ext: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(s)
 }
 
-pub fn open_db(app: &tauri::AppHandle) -> Result<rusqlite::Connection, String> {
+/// 打开数据库（泛型 Runtime，2026-09-10：run_task_in_chat 链路泛化后 mock runtime
+/// 测试可直调；与原签名行为一致——内部 db_dir/write_event 本就泛型）
+pub fn open_db<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<rusqlite::Connection, String> {
     let dir = db_dir(app);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let db_path = dir.join("wmessage.db");
@@ -789,14 +791,12 @@ pub fn bot_sessions_load(app: tauri::AppHandle) -> CommandResult<Vec<BotSession>
         .map_err(|e| CommandError::DbError(e.to_string()))
 }
 
-/// 新建会话，返回新会话（title 缺省「新对话」）
-#[tauri::command]
-pub fn bot_session_create(
-    app: tauri::AppHandle,
+/// 新建会话的持久化内核（抽 Connection，2026-09-10 任务执行聊天化：后端
+/// run_task_in_chat 直调建执行会话；与 bot_session_create 命令同逻辑）
+pub(crate) fn bot_session_create_inner(
+    conn: &rusqlite::Connection,
     title: Option<String>,
-) -> CommandResult<BotSession> {
-    let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let conn = open_db(&app)?;
+) -> Result<BotSession, String> {
     let id = uuid::Uuid::new_v4().simple().to_string();
     let now = chrono::Utc::now().timestamp_millis();
     let title = title
@@ -814,6 +814,17 @@ pub fn bot_session_create(
         created_at: now,
         updated_at: now,
     })
+}
+
+/// 新建会话，返回新会话（title 缺省「新对话」）
+#[tauri::command]
+pub fn bot_session_create(
+    app: tauri::AppHandle,
+    title: Option<String>,
+) -> CommandResult<BotSession> {
+    let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = open_db(&app)?;
+    bot_session_create_inner(&conn, title).map_err(CommandError::DbError)
 }
 
 /// bot_session_delete 的事务段（抽出供单测直调；锁与 open_db 留在命令层）。
@@ -888,7 +899,9 @@ pub async fn bot_history_load(
 }
 
 /// 保存指定会话的聊天记录：全量覆盖 + 更新会话活跃时间（原子：DELETE+INSERT+UPDATE 同一事务）
-fn bot_history_save_inner(
+/// pub(crate)（2026-09-10 任务执行聊天化）：后端 run_task_in_chat 的执行会话持久化直调——
+/// 原先持久化只发生在前端 bot_history_save 命令路径。
+pub(crate) fn bot_history_save_inner(
     conn: &rusqlite::Connection,
     session_id: &str,
     messages: &[BotMsgRow],
@@ -1608,7 +1621,7 @@ fn load_all(conn: &rusqlite::Connection) -> Result<Vec<Task>, String> {
 /// 2) 评估成功后无论是否补了内容，都把 data.json 改名退役（data.json.migrated，可人工找回）——
 ///    原先「不触发就保留文件」，而删除任务是硬删：库计数将来跌穿 json 计数时
 ///    陈年 json 会把已删除任务全部复活。
-fn migrate_data_json(app: &tauri::AppHandle, conn: &mut rusqlite::Connection) {
+fn migrate_data_json<R: tauri::Runtime>(app: &tauri::AppHandle<R>, conn: &mut rusqlite::Connection) {
     let Ok(dir) = app.path().app_data_dir() else {
         return;
     };
@@ -1666,7 +1679,14 @@ pub(crate) static DB_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(()
 
 #[tauri::command]
 pub async fn db_load(app: tauri::AppHandle) -> CommandResult<Vec<Task>> {
+    db_load_for(&app).await
+}
+
+/// db_load 的泛型 Runtime 变体（2026-09-10 任务执行聊天化：run_task_in_chat 泛化
+/// 后供 mock runtime 测试直调；命令版保持 Wry 签名不变，行为完全一致）
+pub async fn db_load_for<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> CommandResult<Vec<Task>> {
     // B3: 启动加载全部任务（可能有几千条 + migrate_data_json 读 JSON 文件）；扔到 spawn_blocking。
+    let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let mut conn = open_db(&app)?;
         // P2-7：触发判定移入 migrate_data_json（json 任务数 > 库内任务数才补回），
@@ -1680,7 +1700,13 @@ pub async fn db_load(app: tauri::AppHandle) -> CommandResult<Vec<Task>> {
 
 #[tauri::command]
 pub async fn db_upsert(app: tauri::AppHandle, tasks: Vec<Task>) -> CommandResult<()> {
+    db_upsert_for(&app, tasks).await
+}
+
+/// db_upsert 的泛型 Runtime 变体（同 db_load_for 注释）
+pub async fn db_upsert_for<R: tauri::Runtime>(app: &tauri::AppHandle<R>, tasks: Vec<Task>) -> CommandResult<()> {
     // B3: 高频写（挂件拖拽/编辑都走这里），批量事务含 fsync；扔到 spawn_blocking。
+    let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         if tasks.is_empty() {
             return Ok(());

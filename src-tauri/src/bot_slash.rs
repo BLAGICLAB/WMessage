@@ -38,7 +38,7 @@ pub struct StopGuard {
     flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
     interactive: bool,
     session_id: Option<String>,
-    /// 任务卡执行流程（execute_task_core / exec_steps）标记（2026-08-27 审计 P0-2）：
+    /// 任务卡执行流程（run_task_in_chat / exec_steps）标记（2026-08-27 审计 P0-2）：
     /// 该流程是「内置编排流」，与 Skill 同级——EXECUTE_SYSTEM_PROMPT 要求调
     /// link_file_to_task 原子工具收尾，没有活动 SkillRun
     /// 开门会被 AtomicGuard 硬拦（prompt 要求的核心动作被自家网关否决）。
@@ -376,14 +376,19 @@ fn deliver_confirm(
 
 // ───────────────────────── 开关持久化 ─────────────────────────
 
-fn bot_flag_path(app: &AppHandle) -> std::path::PathBuf {
+fn bot_flag_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> std::path::PathBuf {
     crate::db::data_dir(app).join("bot-enabled.flag")
+}
+
+/// 机器人聊天开关读取（泛型 Runtime，2026-09-10：run_task_in_chat 泛化后 mock runtime 可调）
+pub(crate) fn bot_enabled<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
+    bot_flag_path(app).exists()
 }
 
 /// 机器人聊天当前是否开启
 #[tauri::command]
 pub fn bot_get_enabled(app: AppHandle) -> bool {
-    bot_flag_path(&app).exists()
+    bot_enabled(&app)
 }
 
 /// 设置机器人聊天开关（写/删 flag，返回生效后的状态）

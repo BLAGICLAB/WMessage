@@ -63,6 +63,9 @@ type Msg = {
   tools?: ToolCall[];
   /** Skill 失败半成品上下文（折叠显示 ⚠️ 行；见 SkillFailure 说明） */
   skillFailure?: SkillFailure;
+  /** 「查看执行对话」跳转按钮（2026-09-10 任务执行聊天化：busy 时执行跳转排队，
+   *  忙完提示 + 点击切到该执行会话） */
+  actionSessionId?: string;
 };
 
 type Session = { id: string; title: string };
@@ -258,6 +261,11 @@ export function ChatPanel({
   useEffect(() => {
     busyRef.current = busy;
   }, [busy]);
+  /** 任务执行聊天化（2026-09-10）：busy 时到达的执行会话跳转排队（只留最新一个）；
+   *  执行本身不排队——后端已在新会话开跑，这里只排「自动跳转查看」 */
+  const pendingExecRef = useRef<{ sid: string; title: string } | null>(null);
+  /** 任务 id → 执行会话 id（chat-open-session 事件建立；invoke 收尾时按它刷新历史） */
+  const execSessionByTaskRef = useRef<Map<string, string>>(new Map());
   const enterBusy = () => {
     busyRef.current = true;
     setBusy(true);
@@ -265,10 +273,19 @@ export function ChatPanel({
   const exitBusy = () => {
     busyRef.current = false;
     setBusy(false);
+    // 忙碌期排队的执行会话跳转：忙完提示「已执行，点击查看」（不打断刚结束的对话）
+    const pending = pendingExecRef.current;
+    if (pending) {
+      pendingExecRef.current = null;
+      addHint(
+        `${pending.title || "任务"}已在新会话执行，点击查看执行对话`,
+        pending.sid
+      );
+    }
   };
   /** 本地提示消息：只显示不持久化（不污染上下文） */
-  const addHint = (content: string) => {
-    setMessages((prev) => [...prev, { role: "assistant", content }]);
+  const addHint = (content: string, actionSessionId?: string) => {
+    setMessages((prev) => [...prev, { role: "assistant", content, actionSessionId }]);
   };
   /** sessionId 镜像：异步收尾时判断会话是否已切换（二次审计 P3 竞态防护） */
   const sessionIdRef = useRef<string | null>(null);
@@ -583,35 +600,96 @@ export function ChatPanel({
     };
   }, []);
 
-  // 任务卡交给机器人执行（execute-task 事件：主窗口/挂件卡片 🤖 按钮触发）
-  const executeTask = async (id: string, title: string) => {
-    if (busyRef.current || !sessionId) return;
-    const userMsg: Msg = {
-      role: "user",
-      content: `🤖 执行任务卡：${title || "未命名任务"}`,
-    };
-    const history: Msg[] = [...messages.filter((m) => !m.streaming), userMsg];
-    // 复用 runChat 核心逻辑（二次审计 P3 去重）；首轮会话改名用任务名
-    await runChat(history, title || "任务执行", id);
+  /** 切到执行会话围观：加载已落库历史 + 末尾 streaming 占位气泡承接后续流式增量 */
+  const openExecSession = async (sid: string) => {
+    setSessionMenuOpen(false);
+    setSessionId(sid);
+    streamingMeta.current = {};
+    try {
+      const rows = await invoke<Parameters<typeof rowsToMsgs>[0]>(
+        "bot_history_load",
+        { sessionId: sid }
+      );
+      setMessages([
+        ...rowsToMsgs(rows),
+        { role: "assistant", content: "", streaming: true },
+      ]);
+    } catch (e) {
+      handleCommandError(e, "bot_history_load", { silent: true });
+    }
+  };
+  // openExecSession 经 ref 暴露给事件监听（避免闭包旧状态；与原 executeTaskRef 同先例）
+  const openExecSessionRef = useRef<(sid: string) => void>(() => {});
+  openExecSessionRef.current = (sid) => {
+    openExecSession(sid);
   };
 
-  // executeTask 经 ref 暴露给事件监听（避免闭包旧状态）
-  const executeTaskRef = useRef<(id: string, title: string) => void>(() => {});
-  executeTaskRef.current = (id, title) => {
-    executeTask(id, title);
-  };
+  // 任务卡交给机器人执行（execute-task 事件：主窗口/挂件卡片 🤖 按钮触发）
+  // 2026-09-10 任务执行聊天化：不再在当前会话执行——后端建新会话跑（run_task_in_chat），
+  // 前端收 chat-open-session 切过去围观。执行本身不吃 busy 锁（会话隔离天然并发），
+  // 只有「自动跳转查看」在 busy 时排队（exitBusy 时 hint 提示）。
   useEffect(() => {
     // 去重表在模块级 execTaskDedup（泄漏的监听器实例间共享才有效，见文件头注释）
     const unExec = listen<{ id?: string; title?: string }>("execute-task", (e) => {
-      const { id, title } = e.payload ?? {};
+      const { id } = e.payload ?? {};
       if (!id) return;
       const now = Date.now();
       if (now - (execTaskDedup.get(id) ?? 0) < EXEC_TASK_DEDUP_MS) return;
       execTaskDedup.set(id, now);
-      executeTaskRef.current(id, title ?? "");
+      invoke("bot_execute_task", { taskId: id, sessionId: null })
+        .then(() => {
+          // 执行收尾：刷新会话列表（新会话入列）；若正围观该执行会话，
+          // 重载历史替换流式占位气泡为最终落库内容
+          const sid = execSessionByTaskRef.current.get(id);
+          execSessionByTaskRef.current.delete(id);
+          invoke<Session[]>("bot_sessions_load")
+            .then(setSessions)
+            .catch(() => {});
+          if (sid && sessionIdRef.current === sid) {
+            invoke<Parameters<typeof rowsToMsgs>[0]>("bot_history_load", { sessionId: sid })
+              .then((rows) => setMessages(rowsToMsgs(rows)))
+              .catch(() => {});
+          }
+        })
+        .catch((err) =>
+          // TASK_INVALID_STATE（执行中重复触发/已完成/已归档）按业务状态提示而非错误（批次7 P2-2 口径保留）
+          addHint(
+            `${isCommandError(err) && err.code === "TASK_INVALID_STATE" ? "⏳" : "⚠️"} ${formatCommandError(err)}`
+          )
+        );
     });
     return () => {
       unExec.then((f) => f());
+    };
+  }, []);
+
+  // chat-open-session（2026-09-10）：后端新建执行会话后广播——
+  // 非 busy 直接切过去围观（流式增量按 sessionId 过滤自动落到新会话的占位气泡）；
+  // busy 不打断当前对话，跳转排队，当前轮结束后 exitBusy 弹「点击查看」提示。
+  useEffect(() => {
+    const un = listen<{
+      sessionId?: string;
+      taskId?: string;
+      title?: string;
+      origin?: string;
+    }>("chat-open-session", (e) => {
+      const { sessionId: sid, taskId, title } = e.payload ?? {};
+      if (!sid) return;
+      if (taskId) execSessionByTaskRef.current.set(taskId, sid);
+      // 新会话入列（后端已建库，前端列表补一行即可，不必整表重载）
+      setSessions((prev) =>
+        prev.some((s) => s.id === sid)
+          ? prev
+          : [{ id: sid, title: title ?? "执行" }, ...prev]
+      );
+      if (busyRef.current) {
+        pendingExecRef.current = { sid, title: title ?? "" };
+        return;
+      }
+      openExecSessionRef.current(sid);
+    });
+    return () => {
+      un.then((f) => f());
     };
   }, []);
 
@@ -725,14 +803,11 @@ export function ChatPanel({
     }
   };
 
-  /** 核心执行：发送历史并流式收尾（send / /retry / executeTask 共用）。
-   *  execTaskId 存在时走 bot_execute_task（🤖 任务卡执行），否则 bot_chat。
+  /** 核心执行：发送历史并流式收尾（send / /retry 共用）。
+   *  2026-09-10 任务执行聊天化：bot_execute_task 不再走这里（任务卡执行由后端
+   *  建新会话跑，前端收 chat-open-session 切换围观）。
    *  收尾时校验会话未切换才更新 UI；持久化始终按 sid 写（写的是正确会话） */
-  const runChat = async (
-    history: Msg[],
-    renameText?: string,
-    execTaskId?: string
-  ) => {
+  const runChat = async (history: Msg[], renameText?: string) => {
     const sid = sessionId;
     if (!sid) return;
     enterBusy();
@@ -740,10 +815,8 @@ export function ChatPanel({
     streamingMeta.current = {};
     try {
       const full = await invoke<{ text: string; taskRefs?: TaskRef[] }>(
-        execTaskId ? "bot_execute_task" : "bot_chat",
-        execTaskId
-          ? { taskId: execTaskId, sessionId: sid }
-          : { messages: history.map((m) => ({ role: m.role, content: m.content })), sessionId: sid }
+        "bot_chat",
+        { messages: history.map((m) => ({ role: m.role, content: m.content })), sessionId: sid }
       );
       // 把流式过程中累积的思考/工具行并入最终消息
       const meta = streamingMeta.current;
@@ -778,23 +851,14 @@ export function ChatPanel({
       }
       onFinishSelection();
     } catch (e) {
-      // 业务状态拒绝（TASK_INVALID_STATE：执行中重复触发 / 已完成 / 已归档）不是错误：
-      // 不持久化 ⚠️ 气泡、不污染会话历史，只恢复触发前消息 + 本地提示（后端 message）。
-      // 批次7审计 P2-2：按结构化 code 识别——原先靠 message 子串「正在执行中」匹配，
-      // 后端文案一改防重入 UX 就静默退化回 2026-08-19 的幻影错误气泡。
-      if (execTaskId && isCommandError(e) && e.code === "TASK_INVALID_STATE") {
-        if (sessionIdRef.current === sid) setMessages(history.slice(0, -1));
-        addHint(`⏳ ${formatCommandError(e)}`);
-      } else {
-        const failed: Msg[] = [
-          ...history,
-          { role: "assistant", content: `⚠️ ${formatCommandError(e)}` },
-        ];
-        persistHistory(sid, failed);
-        if (sessionIdRef.current === sid) setMessages(failed);
-      }
+      const failed: Msg[] = [
+        ...history,
+        { role: "assistant", content: `⚠️ ${formatCommandError(e)}` },
+      ];
+      persistHistory(sid, failed);
+      if (sessionIdRef.current === sid) setMessages(failed);
       // 流式错误已经写进消息气泡了，不重复弹 alert
-      handleCommandError(e, execTaskId ? "bot_execute_task" : "bot_chat", { silent: true });
+      handleCommandError(e, "bot_chat", { silent: true });
     } finally {
       exitBusy();
     }
@@ -1314,6 +1378,16 @@ export function ChatPanel({
                   "…"
                 ) : (
                   ""
+                )}
+                {/* 「查看执行对话」跳转（2026-09-10 任务执行聊天化：busy 时跳转排队，
+                    忙完 hint + 按钮切换到执行会话） */}
+                {m.actionSessionId && (
+                  <button
+                    className="nm-btn mt-1 inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t2)]"
+                    onClick={() => switchSession(m.actionSessionId!)}
+                  >
+                    💬 查看执行对话
+                  </button>
                 )}
               </div>
               {/* 回复完成后的操作行：复制按钮 + 任务引用按钮（点击去主窗口打开该任务） */}

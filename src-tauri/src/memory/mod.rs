@@ -161,7 +161,7 @@ pub fn format_memory_block(inj: &MemInjection) -> Option<String> {
 
 /// 注入取数薄壳：embed →（持锁）快照 + 命中刷新访问计数 → 拼装。
 /// 任何失败一律 None 静默降级为无记忆块 + WARN 审计（同旧系统行为）。
-pub async fn injection_block(app: &AppHandle, query: &str) -> Option<String> {
+pub async fn injection_block<R: tauri::Runtime>(app: &tauri::AppHandle<R>, query: &str) -> Option<String> {
     let app2 = app.clone();
     let query = query.to_string();
     let r = tauri::async_runtime::spawn_blocking(move || -> Result<MemInjection, String> {
@@ -376,7 +376,7 @@ pub async fn tool_recall_facts(
 //
 // kind='lesson'，importance 默认 4，tags[0]='lesson' + 场景标签。写入走正常语义去重
 //（同类失败的教训合并更新而不是堆积）。两个来源：record_lesson 工具（模型主动，
-// source=model_inferred）与 execute_task_core 失败自动沉淀（source=system）。
+// source=model_inferred）与 run_task_in_chat 失败自动沉淀（source=system）。
 
 /// lesson 入参校验（纯函数）：lesson 必填 ≤800 字；scenario 可选 ≤50 字
 fn validate_lesson(lesson: &str, scenario: &str) -> Result<(), String> {
@@ -481,9 +481,9 @@ pub(crate) fn task_failure_lesson(title: &str, error: &str) -> (String, Vec<Stri
     )
 }
 
-/// execute_task_core 失败自动沉淀 lesson（source=system）。任何失败只记审计，绝不影响
+/// run_task_in_chat 失败自动沉淀 lesson（source=system）。任何失败只记审计，绝不影响
 /// 原本的失败返回路径。
-pub async fn auto_lesson_on_task_failure(app: &AppHandle, title: &str, error: &str) {
+pub async fn auto_lesson_on_task_failure<R: tauri::Runtime>(app: &tauri::AppHandle<R>, title: &str, error: &str) {
     let (content, _tags) = task_failure_lesson(title, error);
     let app2 = app.clone();
     let r = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {

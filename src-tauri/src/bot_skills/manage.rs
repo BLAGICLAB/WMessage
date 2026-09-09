@@ -66,7 +66,7 @@ pub(crate) fn skill_search_paths<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -
 /// 扫描数据目录 + dev 模式 target/debug/skills 下所有 SKILL.md，返回 (目录名, 名称, 描述) 列表。
 /// 数据目录优先（用户已导入 / 修改的 Skill 不被 dev mock 覆盖）。
 /// 内部委托给纯函数 `scan_skill_dirs`，后者不依赖 AppHandle，单测可独立覆盖。
-pub fn scan_skills(app: &AppHandle) -> Vec<SkillInfo> {
+pub fn scan_skills<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Vec<SkillInfo> {
     let mut out = scan_skill_dirs(&skill_search_paths(app));
     if let Ok(conn) = crate::db::open_db(app) {
         if let Ok(outcomes) = crate::db::load_all_skill_outcomes(&conn) {
@@ -161,7 +161,7 @@ pub fn rebuild_intent_routes(app: &AppHandle) {
 /// 技能清单块：注入系统提示词尾部（progressive disclosure 第一层）。
 /// 2026-08-27 审计 P2：过滤 enabled=false——禁用技能不再被广告给 LLM
 /// （原先清单照样列出，模型调 use_skill 才被 preflight 拒绝，与路由表口径不一致）。
-pub fn build_skill_block(app: &AppHandle) -> String {
+pub fn build_skill_block<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> String {
     let all = scan_skills(app);
     let skills: Vec<&SkillInfo> = all.iter().filter(|s| s.enabled).collect();
     if skills.is_empty() {

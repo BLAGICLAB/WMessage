@@ -1,17 +1,40 @@
-//! 定时任务卡调度器（F-6 step 5 拆分 2026-08-18）：
+//! 定时任务卡调度器（F-6 step 5 拆分 2026-08-18；2026-09-10 任务执行聊天化改版）：
 //!
 //! 负责 ⏰ 到点自动执行任务卡（每日/每周/每月/一次性 at:），与 bot_chat.rs 的
 //! 用户交互流解耦：
 //! - 解析 schedule 字符串（parse_hm / occurrence_after / at_expired / sched_last_dt）
 //! - 防重入守卫（SchedGuard，Drop 自动清理，防止 panic 后任务卡死锁）
-//! - 30s 扫描循环（start_scheduler），到点调 execute_task_core 复用 bot_chat.rs 的
-//!   模型循环，interactive=false 让 /stop 不影响后台任务
-//!
-//! 设计目标：bot_chat 的交互入口 / bot_execute_task 按钮入口 / 调度器自动入口
-//! 三者共用 execute_task_core（保留在 bot_chat.rs），差异仅在 interactive flag。
+//! - 30s 扫描循环（start_scheduler），到点调 run_task_in_chat（任务执行聊天化：
+//!   每次执行新建会话、流式可见、可按会话 /stop、完成/失败发系统通知）；
+//!   绕开 exec_steps 逐步确认（无人在场，直接整体执行）
 
 use chrono::Datelike;
 use tauri::AppHandle;
+use tauri_plugin_notification::NotificationExt;
+
+/// 定时任务执行完成/失败的系统通知（2026-09-10 任务执行聊天化）：
+/// 通知只是提醒（点击拉起应用后按 ⏰ 前缀会话回看完整执行记录）；
+/// 通知发送失败（未授权等）只记日志，不影响执行收尾。
+fn notify_scheduled_done(
+    app: &AppHandle,
+    task_title: &str,
+    result: &crate::error::CommandResult<crate::bot_chat::TaskChatRun>,
+) {
+    let title_short = crate::bot::truncate_for_log(task_title.trim(), 30);
+    let (title, body) = match result {
+        Ok(r) => (
+            format!("⏰ 定时任务完成：{title_short}"),
+            crate::bot::truncate_for_log(r.result.text.trim(), 120),
+        ),
+        Err(e) => (
+            format!("⏰ 定时任务失败：{title_short}"),
+            crate::bot::truncate_for_log(&e.message(), 120),
+        ),
+    };
+    if let Err(e) = app.notification().builder().title(&title).body(&body).show() {
+        eprintln!("[sched] 系统通知发送失败（未授权？）：{e}");
+    }
+}
 
 // ───────────────────────── 定时任务卡（阶段二：⏰ 到点自动执行） ─────────────────────────
 
@@ -371,16 +394,24 @@ async fn run_scheduled(app: AppHandle, task: crate::db::Task) {
         return;
     }
 
-    let result = crate::bot_chat::execute_task_core(&app, &task.id, false, None).await;
+    let result = crate::bot_chat::run_task_in_chat(
+        &app,
+        &task.id,
+        crate::bot_chat::TaskExecOrigin::Scheduled,
+    )
+    .await;
     let time_str = now.format("%m-%d %H:%M").to_string();
+    // 2026-09-10 任务执行聊天化：定时执行完成/失败发系统通知（执行过程在新会话里
+    // 流式可见、永久落库；通知只是提醒，点击拉起应用后按 ⏰ 前缀找到会话回看）。
+    notify_scheduled_done(&app, &task.title, &result);
 
     // 执行结果写备注（模型可能已写摘要，这里前置 ⏰ 标记兜底）。
     // ⚠️ 必须基于执行后的最新数据合并：旧快照会把机器人执行期间的修改
     // （完成状态/摘要/子任务）整体回滚（审计 P0 已修复）
-    let summary = match result {
+    let summary = match &result {
         Ok(r) => format!(
             "⏰ 自动执行 {time_str}：{}",
-            r.text.chars().take(300).collect::<String>()
+            r.result.text.chars().take(300).collect::<String>()
         ),
         Err(e) => format!("⏰ 自动执行 {time_str} 失败：{e}"),
     };
