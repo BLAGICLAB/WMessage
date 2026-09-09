@@ -108,6 +108,11 @@ pub enum CommandError {
     /// 用户拒绝确认
     ConfirmRejected,
 
+    // ─────  域规则  ─────
+    /// 域规则违反(业务校验 / 状态机 / 前置条件)
+    /// 跟 Internal 的区别:recoverable + domain 分类,前端能按 domain switch
+    DomainRule { domain: String, reason: String },
+
     // ─────  兜底  ─────
     /// 内部错误（未分类）
     Internal(String),
@@ -138,6 +143,7 @@ impl CommandError {
             Self::LlmApiError { .. } => "LLM_API_ERROR",
             Self::ConfirmTimeout => "CONFIRM_TIMEOUT",
             Self::ConfirmRejected => "CONFIRM_REJECTED",
+            Self::DomainRule { .. } => "DOMAIN_RULE",
             Self::Internal(_) => "INTERNAL",
         }
     }
@@ -168,6 +174,7 @@ impl CommandError {
             Self::LlmApiError { .. } => true,
             Self::ConfirmTimeout => true,
             Self::ConfirmRejected => true,
+            Self::DomainRule { .. } => true,
             Self::Internal(_) => false,
         }
     }
@@ -215,6 +222,7 @@ impl CommandError {
             }
             Self::ConfirmTimeout => "确认请求超时（默认 60s）".into(),
             Self::ConfirmRejected => "用户拒绝确认".into(),
+            Self::DomainRule { domain, reason } => format!("[{domain}] {reason}"),
             Self::Internal(s) => format!("内部错误：{s}"),
         }
     }
@@ -290,6 +298,14 @@ impl From<String> for CommandError {
 impl From<&str> for CommandError {
     fn from(s: &str) -> Self {
         Self::Internal(s.to_string())
+    }
+}
+
+/// CommandError → String (有损,仅 tool→model 边界用,丢失变体代码,仅保 message 文本)
+/// 让 `?` 在 Result<_, CommandError> → Result<_, String> 处自动转换
+impl From<CommandError> for String {
+    fn from(e: CommandError) -> Self {
+        e.to_string()
     }
 }
 
@@ -447,5 +463,88 @@ mod tests {
         let cmd_err = result.unwrap_err();
         assert_eq!(cmd_err.code(), "KEYRING_ERROR");
         assert!(!cmd_err.message().is_empty(), "message 应非空");
+    }
+
+    // ── 2026-09-08：DomainRule 变体专项（P0-6A × 19 迁移）
+    // 覆盖 audit doc §6 列的 4 项直接断言 + 1 条同 code 不同 reason 序列化稳定 ──
+
+    #[test]
+    fn domain_rule_code_is_stable() {
+        let err = CommandError::DomainRule {
+            domain: "skill".to_string(),
+            reason: "技能已暂停".to_string(),
+        };
+        assert_eq!(err.code(), "DOMAIN_RULE");
+    }
+
+    #[test]
+    fn domain_rule_is_recoverable_always_true() {
+        // 关键 bug 修复：原 Internal 标 false 让前端拿不到「重试」按钮
+        // 这 19 个错全是用户可重试的(技能暂停→等确认/URL 内网→换 URL/迁移中→等/...)
+        // 全部走 DomainRule,必须 recoverable=true
+        for domain in [
+            "argument", "task", "skill", "platform", "clipboard",
+            "python", "migration", "search", "web", "csv",
+        ] {
+            let err = CommandError::DomainRule {
+                domain: domain.to_string(),
+                reason: format!("{domain} 失败"),
+            };
+            assert!(
+                err.is_recoverable(),
+                "DomainRule domain={domain} 必须 recoverable=true,否则前端不显示重试按钮"
+            );
+        }
+    }
+
+    #[test]
+    fn domain_rule_message_format_includes_bracket_domain() {
+        // message 格式: "[{domain}] {reason}" —— 前端能直接定位是哪一类失败
+        let err = CommandError::DomainRule {
+            domain: "skill".to_string(),
+            reason: "技能已暂停，等待用户确认".to_string(),
+        };
+        let msg = err.message();
+        assert!(msg.starts_with("[skill] "), "message 应以 [domain] 起头,实际:{msg}");
+        assert!(msg.contains("技能已暂停"), "message 应含 reason");
+        // Display 与 message 一致
+        assert_eq!(format!("{err}"), msg);
+    }
+
+    #[test]
+    fn domain_rule_serialization_contains_code_message_recoverable() {
+        // 序列化走标准 4 字段:code / message / recoverable / platform
+        // recoverable 必须 true(前端据此显示「重试」按钮)
+        let err = CommandError::DomainRule {
+            domain: "search".to_string(),
+            reason: "Bing 没有返回结果".to_string(),
+        };
+        let json = serde_json::to_string(&err).unwrap();
+        assert!(json.contains("\"code\":\"DOMAIN_RULE\""), "json 缺 code: {json}");
+        assert!(json.contains("\"message\":\"[search] Bing 没有返回结果\""), "json 缺 message: {json}");
+        assert!(json.contains("\"recoverable\":true"), "recoverable 必须是 true: {json}");
+        assert!(json.contains("\"platform\":"), "缺 platform 字段: {json}");
+    }
+
+    #[test]
+    fn domain_rule_same_code_different_reason_serialization_stable() {
+        // 同 code 不同 reason 序列化必须稳定(message 字段区分,code 不变)
+        // —— 监控/日志/未来 metrics 按 domain 聚合不会因 reason 不同打散
+        let err1 = CommandError::DomainRule {
+            domain: "web".to_string(),
+            reason: "网址缺少主机名".to_string(),
+        };
+        let err2 = CommandError::DomainRule {
+            domain: "web".to_string(),
+            reason: "已拒绝访问本机/内网地址".to_string(),
+        };
+        assert_eq!(err1.code(), err2.code());
+        assert_ne!(err1.message(), err2.message());
+        // code 字段在 JSON 中一致
+        let j1 = serde_json::to_string(&err1).unwrap();
+        let j2 = serde_json::to_string(&err2).unwrap();
+        assert!(j1.contains("\"code\":\"DOMAIN_RULE\""));
+        assert!(j2.contains("\"code\":\"DOMAIN_RULE\""));
+        assert_ne!(j1, j2, "不同 reason 序列化应不同(message 字段不同)");
     }
 }

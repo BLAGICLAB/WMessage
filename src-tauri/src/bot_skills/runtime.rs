@@ -1,6 +1,7 @@
 use super::parse::SkillMeta;
 use super::state::{load_skill_meta, now_ms, skill_runs, SkillRun, SkillState};
 use crate::audit_event;
+use crate::error::CommandError;
 use tauri::AppHandle;
 
 /// 前置预审（Harness 意图预审层）：禁用/黑名单拒绝；超长/非法字段已在 parse_meta 兜底。
@@ -132,30 +133,32 @@ pub fn tool_use_skill(app: &AppHandle, args: &str, session_id: Option<&str>) -> 
 /// 职责：步骤计数、步数/超时熔断、动作记录（回滚清单）。
 /// 返回 Err 表示该 Skill 必须立即终止（模型收到错误后停止后续步骤）。
 /// 步骤检查纯函数（单测入口）：计数、熔断、暂停拒绝、动作记录。不改日志。
-fn step_check(run: &mut SkillRun, tool: &str, args: &str, now: i64) -> Result<(), String> {
+fn step_check(run: &mut SkillRun, tool: &str, args: &str, now: i64) -> Result<(), CommandError> {
     if run.state == SkillState::Paused {
-        // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
-        return Err("技能已暂停，等待用户确认中；确认通过后才能继续下一步".into());
+        return Err(CommandError::DomainRule {
+            domain: "skill".to_string(),
+            reason: "技能已暂停，等待用户确认中；确认通过后才能继续下一步".to_string(),
+        });
     }
     run.step += 1;
     // 步数熔断（Skill 独立上限）
     if run.step > run.max_steps {
         run.state = SkillState::Failed;
         run.end_reason = format!("超过最大步数上限（{} 步）", run.max_steps);
-        return Err(format!(
-            "技能「{}」{}，已强制终止",
-            run.name, run.end_reason
-        ));
+        return Err(CommandError::DomainRule {
+            domain: "skill".to_string(),
+            reason: format!("技能「{}」{}，已强制终止", run.name, run.end_reason),
+        });
     }
     // 超时熔断
     let elapsed = (now - run.started_at_ms) / 1000;
     if elapsed > run.timeout_secs as i64 {
         run.state = SkillState::Failed;
         run.end_reason = format!("超时（超过 {} 秒）", run.timeout_secs);
-        return Err(format!(
-            "技能「{}」{}，已强制终止",
-            run.name, run.end_reason
-        ));
+        return Err(CommandError::DomainRule {
+            domain: "skill".to_string(),
+            reason: format!("技能「{}」{}，已强制终止", run.name, run.end_reason),
+        });
     }
     // 动作记录（回滚清单来源）：只记有副作用的工具，跳过只读查询
     const READONLY: [&str; 4] = ["list_tasks", "search_tasks", "use_skill", "web_search"];
@@ -166,7 +169,7 @@ fn step_check(run: &mut SkillRun, tool: &str, args: &str, now: i64) -> Result<()
     Ok(())
 }
 
-pub fn skill_on_step(app: &AppHandle, tool: &str, args: &str, session_id: Option<&str>) -> Result<(), String> {
+pub fn skill_on_step(app: &AppHandle, tool: &str, args: &str, session_id: Option<&str>) -> Result<(), CommandError> {
     let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
     // 2026-08-26 会话隔离：只管归属当前会话的活动 Skill，别的会话的不计数不熔断
     let Some(run) = runs
@@ -685,7 +688,7 @@ mod tests {
         assert!(step_check(&mut r, "create_task", "{}", 2000).is_ok());
         assert!(step_check(&mut r, "edit_task", "{}", 2000).is_ok());
         let e = step_check(&mut r, "complete_task", "{}", 2000).unwrap_err();
-        assert!(e.contains("超过最大步数上限"));
+        assert!(e.to_string().contains("超过最大步数上限"));
         assert_eq!(r.state, SkillState::Failed);
     }
 
@@ -695,7 +698,7 @@ mod tests {
         r.state = SkillState::Running;
         // 已过 61 秒
         let e = step_check(&mut r, "list_tasks", "{}", 1000 + 61 * 1000).unwrap_err();
-        assert!(e.contains("超时"));
+        assert!(e.to_string().contains("超时"));
         assert_eq!(r.state, SkillState::Failed);
     }
 

@@ -1953,3 +1953,18 @@ DSL 调度器从「解析 + 单次顺序执行」演进到「全链路生产可�
 - **测试**：Rust 新增 6 条（slot 条目名/文件名唯一性、Tavily/Brave PlaintextFile 后端读写覆盖写 roundtrip + 0600、迁移成功清明文、已有值不覆盖、写失败保留明文、无明文幂等、write_bot_config_file 三字段强制置 None 回归）；前端 SettingsPage 更新 2 条 + 新增 1 条（输入框不回填/顶层参数透传/保存后清空），ChatPanel P1-1 用例更新（config.key 字段 null + 顶层无 key 参数断言）
 - 验证：cargo test 全量全绿（lib 565→572、llm_integration 38、memory_regression 17、mock_llm 10、skill_e2e 13）；vitest 21 文件 203 全过；npm run build（tsc + vite）零错误；grep 自查无遗漏旧明文路径
 - 遗留：已存的搜索 key 无 UI 清除入口（设计决定：停用 = 关开关；要彻底清除可走系统 keychain 工具删 wmessage-bot 条目）；Linux 无 secret-service 环境降级明文文件（0600 + WARN 审计，与主 key 同策略，属平台限制）
+
+## 2026-09-08（周二）CommandError 增加 DomainRule 变体,清掉 19 个 TODO(P0-6A) 占位
+
+**详见 `docs/AUDIT-ERROR-2026-09-08.md`,这里只记关键决策和结果。**
+
+- **动机(双 bug)**：(1) 19 个 `Err(CommandError::Internal("xxx"))` 占位,复制粘贴 TODO 注释,代码噪声;(2) **更严重**:这 19 个错全是用户可恢复/可重试(技能暂停→等确认 / URL 内网→换 URL / 迁移进行中→等 / CSV 缺列→补 / Python 未装→装完重试),却被 `Internal` 标 `is_recoverable=false`,前端拿不到「重试」按钮——**用户该能重试的反而 UI 不让重试**
+- **新变体**:`DomainRule { domain: String, reason: String }`,`code="DOMAIN_RULE"`,`is_recoverable=true`,`message="[{domain}] {reason}"`
+- **务实路线决策**(关键):tauri command 路径(直传前端)完整保留变体,tool→model 边界用 `From<CommandError> for String` 走 Display 降级;model 只读 string,变体给 model 是浪费,务实 = 1/3 strict 工作量,效果在前端路径上等价;strict 全 cascade 留 worktree 兜底,以后真有需求再起
+- **9 个 domain 标签**:argument(3) / task(2) / skill(4) / platform(1) / clipboard(4) / python(4) / migration(5) / search(2+1) / web(5+8) / csv(1) — 细目见 audit doc 映射表
+- **cascade 改动** ~13 个函数签名 `Result<_, String>` → `Result<_, CommandError>`(step_check / load_skill_meta / MigrationGuard::acquire / copy_dir_recursive / parse_rules_csv / search_bing / search_baidu / check_public_url / fetch_text / run_python_ungated / run_python / skill_on_step / web_search)
+- **From impl 增 1 个** `From<CommandError> for String` + **tool 边界显式 `.into()` 降级 8 处** (bot.rs `tool_*_task` 函数)— 都是务实路线的妥协
+- **前端影响**(零代码改动,但行为变):`error.code` INTERNAL → DOMAIN_RULE,`recoverable` false → true(**真 bug 修复**),`message` `"内部错误:xxx"` → `"[domain] xxx"`
+- **验证** 已补 5 条 DomainRule 专项单测（code 稳定 / recoverable 恒 true / message 格式 / 序列化 4 字段 / 同 code 不同 reason 稳定）；commit 前审查+验证：修掉 `tool_link_file_to_task` 重复 `resolve_task` 调用（插入白名单校验前的那份，绑定从未使用且多查一次 DB）+ 清掉 `resolve_task` 残留的过时 TODO(P0-6A) 注释；`cargo build` 0 错（4 个 warning 全存量：files.rs 多余括号 / migration.rs unused import + dead_code / bot_fs.rs unused mut）；`cargo test` 全量全绿（lib 577 含新 5 条 / llm_integration 38 / memory_regression 17 / mock_llm 10 / skill_e2e 13）
+- **worktree 状态**:`/Users/renshi/projects/wmessage-todo-p0-6a` 分支 `todo-p0-6a`,main 未触碰;回滚 = `git worktree remove --force ../wmessage-todo-p0-6a`;等用户「commit 吧」再合 main + push
+- **未做**(TODO):跑 `cargo clippy` / 前端手动验证 9 种场景的 UI 行为(尤其「重试」按钮是否真出现)/ 检前端有没有 `case "INTERNAL"` 死代码要清(已确认 `src/lib/errorHandler.ts:81` 有,留待前端改动时一并处理)

@@ -792,13 +792,16 @@ pub fn run_python(
     args: &[String],
     timeout_secs: Option<u64>,
     stop: Option<&StopToken>,
-) -> Result<PyRunResult, String> {
+) -> Result<PyRunResult, CommandError> {
     // P2-12：并发闸门 —— 同一时刻只跑一个 Python 任务，多余请求排队等待
     let _gate = py_run_gate().lock().unwrap_or_else(|e| e.into_inner());
     // 批次5审计 P2：退出标志必须在拿到闸门【之后】复查——退出清理杀完在途进程后，
     // 本任务若才拿到锁，spawn 出去就是孤儿进程
     if EXITING.load(std::sync::atomic::Ordering::SeqCst) {
-        return Err("应用正在退出，不再启动新的 Python 任务".into());
+        return Err(CommandError::DomainRule {
+            domain: "python".to_string(),
+            reason: "应用正在退出，不再启动新的 Python 任务".to_string(),
+        });
     }
     run_python_ungated(app, script, input_json, args, timeout_secs, stop)
 }
@@ -813,7 +816,7 @@ fn run_python_ungated(
     args: &[String],
     timeout_secs: Option<u64>,
     stop: Option<&StopToken>,
-) -> Result<PyRunResult, String> {
+) -> Result<PyRunResult, CommandError> {
     // 批次6审计 P1（Unix）：注入父进程看门狗（见 PARENT_WATCHDOG 注释）
     #[cfg(unix)]
     let script_owned;
@@ -824,10 +827,12 @@ fn run_python_ungated(
     };
     let mut py = match cached_python() {
         Some(p) => p,
-        // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
         None => {
             py_audit(app, "run_python err | kind=no_python");
-            return Err("本机未检测到 Python。macOS 请安装 Command Line Tools；Windows 请到 python.org 安装并勾选 Add to PATH".into());
+            return Err(CommandError::DomainRule {
+                domain: "python".to_string(),
+                reason: "本机未检测到 Python。macOS 请安装 Command Line Tools；Windows 请到 python.org 安装并勾选 Add to PATH".to_string(),
+            });
         }
     };
 
@@ -847,7 +852,10 @@ fn run_python_ungated(
                     "run_python err | kind=setup_fail | {}",
                     escape_for_log(&e, 200)
                 ));
-                return Err(format!("准备运行目录失败：{e}"));
+                return Err(CommandError::DomainRule {
+                    domain: "python".to_string(),
+                    reason: format!("准备运行目录失败：{e}"),
+                });
             }
         };
         match run_python_at(&py, Some("run.py"), &dir, args, timeout_secs, &mut audit_sink, stop) {
@@ -860,7 +868,10 @@ fn run_python_ungated(
                         continue;
                     }
                 }
-                return Err(f.msg);
+                return Err(CommandError::DomainRule {
+                    domain: "python".to_string(),
+                    reason: f.msg,
+                });
             }
         }
     }
@@ -1130,13 +1141,14 @@ async fn run_doc_script(
 ) -> Result<PyRunResult, String> {
     let handle = app.clone();
     // doc_* 由 UI/工具触发，暂无 /stop 令牌（None）；自由编程 run_python 链路才有
-    match spawn_blocking_map(move || run_python(&handle, script, Some(&input), &[], Some(120), None))
+    match spawn_blocking_map(move || run_python(&handle, script, Some(&input), &[], Some(120), None)
+        .map_err(|e| e.to_string()))
         .await
     {
-        Ok(r) => Ok(r),
+        Ok(inner) => Ok(inner),
         Err(e) => {
-            py_audit(app, &format!("{name} err | {}", escape_for_log(&e, 300)));
-            Err(e)
+            py_audit(app, &format!("{name} err | {}", escape_for_log(&e.to_string(), 300)));
+            Err(e.to_string())
         }
     }
 }
@@ -1182,13 +1194,14 @@ async fn run_doc_revisions(
         }
         run_python_ungated(&handle, script, Some(&input), &[], Some(120), None)
             .map(|res| (res, "python"))
+            .map_err(|e| e.to_string())
     })
     .await
     {
-        Ok(v) => Ok(v),
+        Ok(inner) => Ok(inner),
         Err(e) => {
-            py_audit(app, &format!("{name} err | {}", escape_for_log(&e, 300)));
-            Err(e)
+            py_audit(app, &format!("{name} err | {}", escape_for_log(&e.to_string(), 300)));
+            Err(e.to_string())
         }
     }
 }
@@ -2034,8 +2047,8 @@ pub fn py_exec_sync(
     let r = match run_python(app, &code, None, &[], timeout_secs, stop) {
         Ok(r) => r,
         Err(e) => {
-            py_audit(app, &format!("py_exec err | {}", escape_for_log(&e, 300)));
-            return Err(e);
+            py_audit(app, &format!("py_exec err | {}", escape_for_log(&e.to_string(), 300)));
+            return Err(e.to_string());
         }
     };
     py_audit(
@@ -2106,7 +2119,6 @@ pub async fn doc_extract(app: AppHandle, path: Option<String>) -> CommandResult<
 
 /// F2（Phase 6b）：对话框未选中文件的错误构造，抽纯函数便于单测
 /// （tauri command 绑定 Wry AppHandle，mock_app 无法直接调用）。
-/// TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
 fn resolve_doc_path(picked: Option<String>) -> CommandResult<String> {
     picked.ok_or_else(|| CommandError::Internal("用户取消了选择".into()))
 }

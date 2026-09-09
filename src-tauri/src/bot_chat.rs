@@ -1025,8 +1025,10 @@ pub async fn summarize_http(
     // 2026-08-28 批次3审计 P2-6：模型带 <think> 段时先剥掉，防摘要带思考段写回历史
     let text = strip_think_blocks(&text).trim().to_string();
     if text.is_empty() {
-        // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
-        return Err("模型返回了空摘要".into());
+        return Err(CommandError::DomainRule {
+            domain: "llm".to_string(),
+            reason: "模型返回了空摘要".to_string(),
+        });
     }
     Ok(text)
 }

@@ -209,8 +209,10 @@ pub fn skills_open_dir(app: AppHandle) -> CommandResult<String> {
 pub fn skills_import(app: AppHandle, path: String) -> CommandResult<String> {
     let src = std::path::PathBuf::from(&path);
     if !src.is_dir() {
-        // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
-        return Err("请选择技能文件夹".into());
+        return Err(CommandError::DomainRule {
+            domain: "skill".to_string(),
+            reason: "请选择技能文件夹".to_string(),
+        });
     }
     let skill_md = src.join("SKILL.md");
     let text = std::fs::read_to_string(&skill_md)
