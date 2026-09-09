@@ -72,6 +72,12 @@ ort = { version = "2.0.0-rc.13", features = ["download-binaries"] }
 # fancy-regex 是 tokenizers 0.23 必需的 regex 后端之一，纯 Rust 无 C 依赖）
 tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"] }
 
+# Windows 交叉编译（x86_64-pc-windows-gnu）：ort 官方预编译库无 gnu target，
+# 叠加 load-dynamic（特性取并集）→ ort-sys disable-linking，构建期不下载不链接，
+# 运行时按名加载 onnxruntime.dll（随绿色包放 exe 同目录）；macOS 路径不受影响。
+[target.'cfg(target_os = "windows")'.dependencies]
+ort = { version = "2.0.0-rc.13", features = ["load-dynamic"] }
+
 [dev-dependencies]
 # F-6 端到端测试：mock Tauri runtime + 集成测试 runner（2026-08-18）
 tauri = { version = "2", features = ["test"] }

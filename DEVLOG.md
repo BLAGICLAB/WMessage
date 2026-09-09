@@ -2,6 +2,13 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-09-10（周四）Windows 绿色版出包 + ort 跨编译方案定案
+
+- **打包**：`npx tauri build --target x86_64-pc-windows-gnu --no-bundle`（mingw 链路）→ wmessage.exe 54MB；绿色包 `wmessage-portable-2026-09-10.zip` 76MB（Python zipfile 打）。内容：wmessage.exe + WebView2Loader.dll + MicrosoftEdgeWebview2Setup.exe + README.txt + dotnet/（self-contained .NET 8）+ **onnxruntime.dll + onnxruntime_providers_shared.dll + bge-small-zh-v1.5/**（记忆 v2 语义检索三件套，exe 同目录）
+- **ort 无 windows-gnu 预编译库的定案**：`ort 2.0.0-rc.13` 的 `download-binaries` 只发 msvc target，mingw 交叉直接报 `no prebuilt binaries available for target x86_64-pc-windows-gnu`。方案：Cargo.toml 加 `[target.'cfg(target_os = "windows")'.dependencies] ort features = ["load-dynamic"]`（特性并集 → ort-sys `disable-linking`，构建期不下载不链接），运行时按名 `LoadLibrary("onnxruntime.dll")`（搜索路径含 exe 目录），DLL 取微软 NuGet `Microsoft.ML.OnnxRuntime 1.28.0`（与 ort dist 清单 `ms@1.28.0` 同版本）随包分发；macOS 构建路径不受影响（`cargo tree -e features` 双 target 核对 + macOS cargo check 回归过）
+- **注意**：load-dynamic 下 onnxruntime.dll 缺失会 panic（非 Err 降级），故 DLL 必须随包；模型目录/推理失败仍走关键词降级不变
+- pyke CDN 的 msvc tar.lzma2 是静态库（onnxruntime.lib 341MB）非 DLL；raw LZMA2 流（dict 64MB）可用 Python `lzma.FORMAT_RAW` 解，但出包用 NuGet zip 更直接
+
 ## 2026-09-10（周四）任务执行聊天化第一期：一次执行 = 一个新会话（🤖/⏰/📦 三路径统一）
 
 设计 `docs/TASK-CHAT-EXECUTION-DESIGN.md`（已实施，偏差见文档第 9 节）。任务卡交给机器人和定时任务不再是黑箱：每次执行在聊天窗口新建会话，流式可见、可按会话 /stop、永久落库可回看。
