@@ -401,13 +401,15 @@ static RUNNING: AtomicBool = AtomicBool::new(false);
 struct MigrationGuard;
 
 impl MigrationGuard {
-    fn acquire() -> Result<Self, String> {
+    fn acquire() -> Result<Self, CommandError> {
         if RUNNING
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
         {
-            // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
-            return Err("迁移正在进行中，请稍后再试".into());
+            return Err(CommandError::DomainRule {
+                domain: "migration".to_string(),
+                reason: "迁移正在进行中，请稍后再试".to_string(),
+            });
         }
         Ok(Self)
     }
@@ -624,14 +626,16 @@ fn claim_dst_name(dir: &Path, file_name: &str) -> Option<PathBuf> {
 }
 
 /// 递归拷贝目录（跨盘移动兜底用）：遇符号链接中止，失败时不破坏源
-fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), CommandError> {
     fs::create_dir_all(dst).map_err(|e| format!("创建目录失败：{e}"))?;
     for entry in fs::read_dir(src).map_err(|e| format!("读取目录失败：{e}"))? {
         let entry = entry.map_err(|e| e.to_string())?;
         let ty = entry.file_type().map_err(|e| e.to_string())?;
         if ty.is_symlink() {
-            // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
-            return Err("目录包含符号链接，跨盘移动已中止（源目录未动）".into());
+            return Err(CommandError::DomainRule {
+                domain: "migration".to_string(),
+                reason: "目录包含符号链接，跨盘移动已中止（源目录未动）".to_string(),
+            });
         }
         let s = entry.path();
         let d = dst.join(entry.file_name());
@@ -1137,7 +1141,7 @@ pub fn migration_rules_load(app: AppHandle) -> RulesFile {
 /// 文件对话框导入规则表（JSON），返回导入的规则数。
 /// ⚠️ blocking 对话框不能在主线程调用（会死锁卡死 App），必须走 spawn_blocking（与 bot_py.rs 一致）
 /// 解析 CSV 规则表文本（自动识别表头列；编码层已由调用方处理）
-fn parse_rules_csv(text: &str) -> Result<RulesFile, String> {
+fn parse_rules_csv(text: &str) -> Result<RulesFile, CommandError> {
     use std::io::Cursor;
     let mut rdr = csv::ReaderBuilder::new()
         .has_headers(true)
@@ -1157,8 +1161,10 @@ fn parse_rules_csv(text: &str) -> Result<RulesFile, String> {
         find_col("动作"),
         find_col("目录"),
     ) else {
-        // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
-        return Err("CSV 需包含四列表头：启用 / 文件名关键字 / 动作 / 归档目录".into());
+        return Err(CommandError::DomainRule {
+            domain: "migration".to_string(),
+            reason: "CSV 需包含四列表头：启用 / 文件名关键字 / 动作 / 归档目录".to_string(),
+        });
     };
     let mut rules: Vec<MigrationRule> = Vec::new();
     for (ri, rec) in rdr.records().enumerate() {
@@ -1174,11 +1180,14 @@ fn parse_rules_csv(text: &str) -> Result<RulesFile, String> {
             "删除文件" | "删除" | "delete" | "Delete" => "delete".to_string(),
             other if other.is_empty() => "move".to_string(),
             other => {
-                return Err(format!(
-                    "第 {} 行动作「{}」无效（应填 移动归档 或 删除文件）",
-                    ri + 2,
-                    other
-                ))
+                return Err(CommandError::DomainRule {
+                    domain: "csv".to_string(),
+                    reason: format!(
+                        "第 {} 行动作「{}」无效（应填 移动归档 或 删除文件）",
+                        ri + 2,
+                        other
+                    ),
+                })
             }
         };
         let enabled = match get(ci_enable).as_str() {
@@ -1206,8 +1215,10 @@ fn parse_rules_csv(text: &str) -> Result<RulesFile, String> {
         });
     }
     if rules.is_empty() {
-        // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
-        return Err("CSV 中没有解析出任何规则".into());
+        return Err(CommandError::DomainRule {
+            domain: "migration".to_string(),
+            reason: "CSV 中没有解析出任何规则".to_string(),
+        });
     }
     Ok(RulesFile { version: 1, rules })
 }
@@ -2020,7 +2031,7 @@ mod tests {
         let text = "启用,文件名关键字,动作,归档目录\n";
         let err = parse_rules_csv(text);
         assert!(err.is_err());
-        assert!(err.unwrap_err().contains("没有解析出任何规则"));
+        assert!(err.unwrap_err().to_string().contains("没有解析出任何规则"));
     }
 
     #[test]
@@ -2028,8 +2039,8 @@ mod tests {
         // 动作不在白名单 → 报错（指明行号）
         let text = "启用,文件名关键字,动作,归档目录\n是,工资,飞行,X\n";
         let err = parse_rules_csv(text).expect_err("未知动作应报错");
-        assert!(err.contains("飞行"), "错误信息应提到无效动作名：{err}");
-        assert!(err.contains("第 2 行"), "错误信息应指明行号");
+        assert!(err.to_string().contains("飞行"), "错误信息应提到无效动作名：{err}");
+        assert!(err.to_string().contains("第 2 行"), "错误信息应指明行号");
     }
 
     #[test]
@@ -2037,7 +2048,7 @@ mod tests {
         // 表头列不全 → 报错
         let text = "启用,文件名关键字,动作\n是,a,移动,X\n";
         let err = parse_rules_csv(text).expect_err("缺列应报错");
-        assert!(err.contains("四列"));
+        assert!(err.to_string().contains("四列"));
     }
 
     #[test]

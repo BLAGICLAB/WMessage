@@ -42,15 +42,15 @@ fn copy_file_with_title(path: String, title: String) -> error::CommandResult<()>
     }
     #[cfg(windows)]
     {
-        return copy_file_windows(&path, &title).map_err(error::CommandError::from);
+        return copy_file_windows(&path, &title);
     }
     #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = (path, title);
-        // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
-        return Err(error::CommandError::Internal(
-            "复制文件暂不支持当前平台".into(),
-        ));
+        return Err(error::CommandError::DomainRule {
+            domain: "platform".to_string(),
+            reason: "复制文件暂不支持当前平台".to_string(),
+        });
     }
 }
 
@@ -112,7 +112,7 @@ fn copy_file_macos(path: &str, title: &str) -> Result<(), String> {
 }
 
 #[cfg(windows)]
-fn copy_file_windows(path: &str, title: &str) -> Result<(), String> {
+fn copy_file_windows(path: &str, title: &str) -> Result<(), error::CommandError> {
     use std::ffi::OsStr;
     use std::mem::size_of;
     use std::os::windows::ffi::OsStrExt;
@@ -127,8 +127,10 @@ fn copy_file_windows(path: &str, title: &str) -> Result<(), String> {
 
     unsafe {
         if OpenClipboard(None).is_err() {
-            // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
-            return Err("打开剪贴板失败".into());
+            return Err(error::CommandError::DomainRule {
+                domain: "clipboard".to_string(),
+                reason: "打开剪贴板失败".to_string(),
+            });
         }
         let _ = EmptyClipboard();
 
@@ -140,8 +142,10 @@ fn copy_file_windows(path: &str, title: &str) -> Result<(), String> {
         if base.is_null() {
             let _ = GlobalFree(Some(h));
             let _ = CloseClipboard();
-            // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
-            return Err("锁定文件列表内存失败".into());
+            return Err(error::CommandError::DomainRule {
+                domain: "clipboard".to_string(),
+                reason: "锁定文件列表内存失败".to_string(),
+            });
         }
         let drop: *mut DROPFILES = base as *mut DROPFILES;
         (*drop).pFiles = size_of::<DROPFILES>() as u32;
@@ -153,8 +157,10 @@ fn copy_file_windows(path: &str, title: &str) -> Result<(), String> {
         if SetClipboardData(CF_HDROP.0 as u32, Some(HANDLE(h.0))).is_err() {
             let _ = GlobalFree(Some(h));
             let _ = CloseClipboard();
-            // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
-            return Err("写入文件列表失败".into());
+            return Err(error::CommandError::DomainRule {
+                domain: "clipboard".to_string(),
+                reason: "写入文件列表失败".to_string(),
+            });
         }
 
         // 2) 标题文本（CF_UNICODETEXT）
@@ -164,8 +170,10 @@ fn copy_file_windows(path: &str, title: &str) -> Result<(), String> {
         if tbase.is_null() {
             let _ = GlobalFree(Some(th));
             let _ = CloseClipboard();
-            // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
-            return Err("锁定标题内存失败".into());
+            return Err(error::CommandError::DomainRule {
+                domain: "clipboard".to_string(),
+                reason: "锁定标题内存失败".to_string(),
+            });
         }
         ptr::copy_nonoverlapping(title_wide.as_ptr(), tbase, title_wide.len());
         let _ = GlobalUnlock(th);

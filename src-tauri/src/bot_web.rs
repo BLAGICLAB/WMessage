@@ -6,6 +6,7 @@
 //! - 输出截断在工具层做（搜索结果 6000 字、网页正文 30000 字）；审计由 bot.rs 留痕
 
 use std::time::Duration;
+use crate::error::CommandError;
 use futures_util::StreamExt;
 
 const UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
@@ -78,13 +79,13 @@ fn clean_snippet(s: &str) -> String {
     t
 }
 
-pub async fn web_search(query: &str) -> Result<String, String> {
+pub async fn web_search(query: &str) -> Result<String, CommandError> {
     let (bing, baidu) = futures_util::future::join(search_bing(query), search_baidu(query)).await;
     // (引擎, 标题, 链接, 摘要)
     let mut merged: Vec<(&str, String, String, String)> = Vec::new();
     let mut seen: Vec<String> = Vec::new();
     let mut domain_count: Vec<(String, usize)> = Vec::new();
-    let mut errs: Vec<String> = Vec::new();
+    let mut errs: Vec<CommandError> = Vec::new();
     for (engine, result) in [("Bing", bing), ("百度", baidu)] {
         match result {
             Ok(list) => {
@@ -118,9 +119,15 @@ pub async fn web_search(query: &str) -> Result<String, String> {
     }
     if merged.is_empty() {
         return Err(if errs.is_empty() {
-            "搜索没有返回结果".into()
+            CommandError::DomainRule {
+                domain: "search".to_string(),
+                reason: "搜索没有返回结果".to_string(),
+            }
         } else {
-            format!("所有搜索引擎均失败：{}", errs.join("；"))
+            CommandError::DomainRule {
+                domain: "search".to_string(),
+                reason: format!("所有搜索引擎均失败：{}", errs.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("；")),
+            }
         });
     }
     let mut out = String::new();
@@ -294,7 +301,7 @@ pub async fn web_search_with_config(app: &tauri::AppHandle, query: &str) -> Resu
         cfg.brave_enabled,
         Some(brave_key.as_str()),
     ) {
-        SearchRoute::Dual => web_search(query).await,
+        SearchRoute::Dual => web_search(query).await.map_err(|e| e.to_string()),
         SearchRoute::MissingKey => Err(
             "Tavily 搜索已开启，但设置页还没填 Tavily API Key。请到设置页「机器人设置」填写 key，或关闭「Tavily 搜索」开关改用 Bing+百度双引擎。"
                 .into(),
@@ -322,7 +329,7 @@ pub async fn web_search_with_config(app: &tauri::AppHandle, query: &str) -> Resu
 }
 
 /// Bing 搜索：解析 `<li class="b_algo">` 块，返回 (标题, 链接, 摘要) 列表
-async fn search_bing(query: &str) -> Result<Vec<(String, String, String)>, String> {
+async fn search_bing(query: &str) -> Result<Vec<(String, String, String)>, CommandError> {
     let encoded: String = url::form_urlencoded::byte_serialize(query.as_bytes()).collect();
     let target = format!("https://cn.bing.com/search?q={encoded}&mkt=zh-CN");
     let resp = http_client()
@@ -332,7 +339,10 @@ async fn search_bing(query: &str) -> Result<Vec<(String, String, String)>, Strin
         .await
         .map_err(|e| format!("Bing 请求失败：{e}"))?;
     if !resp.status().is_success() {
-        return Err(format!("Bing 返回 HTTP {}", resp.status()));
+        return Err(CommandError::DomainRule {
+            domain: "web".to_string(),
+            reason: format!("Bing 返回 HTTP {}", resp.status()),
+        });
     }
     let body = resp
         .text()
@@ -340,15 +350,17 @@ async fn search_bing(query: &str) -> Result<Vec<(String, String, String)>, Strin
         .map_err(|e| format!("读取 Bing 结果失败：{e}"))?;
     let results = parse_bing(&body);
     if results.is_empty() {
-        // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
-        return Err("Bing 没有返回结果".into());
+        return Err(CommandError::DomainRule {
+            domain: "search".to_string(),
+            reason: "Bing 没有返回结果".to_string(),
+        });
     }
     Ok(results)
 }
 
 /// 百度搜索：解析 `class="result"` 容器，返回 (标题, 跳转链接, 摘要) 列表
 /// 链接为百度 /link?url 跳转链接（浏览器可打开；机器人 fetch 需换真实链接）
-async fn search_baidu(query: &str) -> Result<Vec<(String, String, String)>, String> {
+async fn search_baidu(query: &str) -> Result<Vec<(String, String, String)>, CommandError> {
     let encoded: String = url::form_urlencoded::byte_serialize(query.as_bytes()).collect();
     let target = format!("https://www.baidu.com/s?wd={encoded}");
     let resp = http_client()
@@ -360,7 +372,10 @@ async fn search_baidu(query: &str) -> Result<Vec<(String, String, String)>, Stri
         .await
         .map_err(|e| format!("百度请求失败：{e}"))?;
     if !resp.status().is_success() {
-        return Err(format!("百度返回 HTTP {}", resp.status()));
+        return Err(CommandError::DomainRule {
+            domain: "web".to_string(),
+            reason: format!("百度返回 HTTP {}", resp.status()),
+        });
     }
     let body = resp
         .text()
@@ -368,8 +383,10 @@ async fn search_baidu(query: &str) -> Result<Vec<(String, String, String)>, Stri
         .map_err(|e| format!("读取百度结果失败：{e}"))?;
     let results = parse_baidu(&body);
     if results.is_empty() {
-        // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
-        return Err("百度没有返回结果（可能触发验证页）".into());
+        return Err(CommandError::DomainRule {
+            domain: "search".to_string(),
+            reason: "百度没有返回结果（可能触发验证页）".to_string(),
+        });
     }
     Ok(results)
 }
@@ -690,10 +707,13 @@ fn extract_baidu_snippet(tail: &str) -> String {
 /// 校验 URL 并返回通过校验的解析地址：协议 + 主机名字符串 + DNS 解析出的所有 IP
 /// 均须公网（防 DNS 重绑定/内网域名）。返回的地址由调用方钉给 reqwest
 /// （resolve_to_addrs，FIX-PLAN #7a），校验与请求之间不再二次解析，堵 DNS TOCTOU。
-async fn check_public_url(url: &url::Url) -> Result<Vec<std::net::SocketAddr>, String> {
+async fn check_public_url(url: &url::Url) -> Result<Vec<std::net::SocketAddr>, CommandError> {
     match url.scheme() {
         "http" | "https" => {}
-        s => return Err(format!("只支持 http/https 链接（收到 {s}://）")),
+        s => return Err(CommandError::DomainRule {
+            domain: "web".to_string(),
+            reason: format!("只支持 http/https 链接（收到 {s}://）"),
+        }),
     }
     let host = url
         .host_str()
@@ -701,45 +721,58 @@ async fn check_public_url(url: &url::Url) -> Result<Vec<std::net::SocketAddr>, S
         .trim_end_matches('.')
         .to_lowercase();
     if host.is_empty() {
-        // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
-        return Err("网址缺少主机名".into());
+        return Err(CommandError::DomainRule {
+            domain: "web".to_string(),
+            reason: "网址缺少主机名".to_string(),
+        });
     }
     if is_private_host(&host) {
-        // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
-        return Err("已拒绝访问本机/内网地址".into());
+        return Err(CommandError::DomainRule {
+            domain: "web".to_string(),
+            reason: "已拒绝访问本机/内网地址".to_string(),
+        });
     }
     // DNS 解析校验：域名解析出的每个 IP 都必须是公网（防解析到 127.0.0.1 的内网域名）
     let mut out: Vec<std::net::SocketAddr> = Vec::new();
     // tokio::net::lookup_host 返回同步迭代器（解析已在 await 内完成）
     let addrs = tokio::net::lookup_host((host.as_str(), 80))
         .await
-        .map_err(|e| format!("域名解析失败：{e}"))?;
+        .map_err(|e| CommandError::DomainRule {
+            domain: "web".to_string(),
+            reason: format!("域名解析失败：{e}"),
+        })?;
     for addr in addrs {
         match addr.ip() {
             std::net::IpAddr::V4(v4) => {
                 if ipv4_is_private(v4) {
-                    // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
-                    return Err("已拒绝：域名解析到本机/内网地址".into());
+                    return Err(CommandError::DomainRule {
+                        domain: "web".to_string(),
+                        reason: "已拒绝：域名解析到本机/内网地址".to_string(),
+                    });
                 }
             }
             std::net::IpAddr::V6(v6) => {
                 if ipv6_is_private(v6) {
-                    // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
-                    return Err("已拒绝：域名解析到本机/内网地址".into());
+                    return Err(CommandError::DomainRule {
+                        domain: "web".to_string(),
+                        reason: "已拒绝：域名解析到本机/内网地址".to_string(),
+                    });
                 }
             }
         }
         out.push(addr);
     }
     if out.is_empty() {
-        // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
-        return Err("域名没有解析到任何地址".into());
+        return Err(CommandError::DomainRule {
+            domain: "web".to_string(),
+            reason: "域名没有解析到任何地址".to_string(),
+        });
     }
     Ok(out)
 }
 
 /// 抓取网页正文：http/https、公网地址校验（含 DNS 解析与重定向逐跳）、HTML→纯文本、GBK 兜底解码
-pub async fn fetch_text(raw_url: &str) -> Result<String, String> {
+pub async fn fetch_text(raw_url: &str) -> Result<String, CommandError> {
     // 重定向逐跳校验：不跟随 reqwest 自动重定向，3xx 时手动校验 Location 目标
     //（公网 URL 302 到内网地址是 SSRF 常见绕过，审计 P1）
     const MAX_REDIRECTS: usize = 5;
@@ -759,10 +792,16 @@ pub async fn fetch_text(raw_url: &str) -> Result<String, String> {
         let status = resp.status();
         if status.is_redirection() {
             if hops >= MAX_REDIRECTS {
-                return Err(format!("重定向超过 {MAX_REDIRECTS} 次，已停止"));
+                return Err(CommandError::DomainRule {
+                    domain: "web".to_string(),
+                    reason: format!("重定向超过 {MAX_REDIRECTS} 次，已停止"),
+                });
             }
             let Some(loc) = resp.headers().get(reqwest::header::LOCATION) else {
-                return Err(format!("网页返回重定向 {status} 但缺少 Location"));
+                return Err(CommandError::DomainRule {
+                    domain: "web".to_string(),
+                    reason: format!("网页返回重定向 {status} 但缺少 Location"),
+                });
             };
             let loc = loc.to_str().map_err(|_| "Location 头编码无效")?.to_string();
             url_cursor = url_cursor
@@ -774,7 +813,10 @@ pub async fn fetch_text(raw_url: &str) -> Result<String, String> {
         break;
     }
     if !resp.status().is_success() {
-        return Err(format!("网页返回 HTTP {}", resp.status()));
+        return Err(CommandError::DomainRule {
+            domain: "web".to_string(),
+            reason: format!("网页返回 HTTP {}", resp.status()),
+        });
     }
     let ctype = resp
         .headers()
@@ -787,12 +829,17 @@ pub async fn fetch_text(raw_url: &str) -> Result<String, String> {
         && !ctype.contains("xml")
         && !ctype.contains("text")
     {
-        return Err(format!("不是网页文本（Content-Type: {ctype}）"));
+        return Err(CommandError::DomainRule {
+            domain: "web".to_string(),
+            reason: format!("不是网页文本（Content-Type: {ctype}）"),
+        });
     }
     if let Some(len) = resp.content_length() {
         if len > FETCH_MAX_BYTES as u64 {
-            // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
-            return Err("页面过大（超过 2MB）已拒绝".into());
+            return Err(CommandError::DomainRule {
+                domain: "web".to_string(),
+                reason: "页面过大（超过 2MB）已拒绝".to_string(),
+            });
         }
     }
     let bytes = read_body_capped(resp, FETCH_MAX_BYTES).await?;
@@ -821,8 +868,10 @@ pub async fn fetch_text(raw_url: &str) -> Result<String, String> {
         }
     }
     if plain.is_empty() {
-        // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
-        return Err("页面没有可提取的文本内容".into());
+        return Err(CommandError::DomainRule {
+            domain: "web".to_string(),
+            reason: "页面没有可提取的文本内容".to_string(),
+        });
     }
     Ok(plain)
 }

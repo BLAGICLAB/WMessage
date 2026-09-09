@@ -185,7 +185,7 @@ pub fn skill_terminate_all<R: tauri::Runtime>(app: &tauri::AppHandle<R>, reason:
 /// 后者泛型 Runtime + 注入 executor，集成测试可直驱（tests/skill_e2e.rs）。
 pub async fn run_skill_scheduler(app: &AppHandle, name: &str, session_id: Option<&str>, stop: Option<&crate::bot_slash::StopGuard>) -> Result<DslOutcome, DslFailure> {
     let (meta, body) =
-        load_skill_meta(app, name).map_err(|e| DslFailure::Terminated { reason: e })?;
+        load_skill_meta(app, name).map_err(|e| DslFailure::Terminated { reason: e.to_string() })?;
     let execute_tool = |tool: String, args: String| async move {
         match stop {
             Some(s) => crate::bot::execute_tool_with_stop(app, &tool, &args, Some(s)).await,

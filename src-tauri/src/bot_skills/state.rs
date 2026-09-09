@@ -1,5 +1,6 @@
 use super::manage::skill_search_paths;
 use super::parse::{parse_meta, SkillMeta, SKILL_NAME_CHARS_OK};
+use crate::error::CommandError;
 
 const MAX_SKILL_BODY: usize = 50 * 1024;
 
@@ -167,10 +168,12 @@ pub fn clear_terminal_skill_runs() {
 /// 读取技能正文 + 完整元数据（Phase 4 第 4 项 2026-08-18 07:09：多目录 fallback）
 /// 遍历 `skill_search_paths(app)`：数据目录找不到 → dev 模式 fallback target/debug/skills。
 /// 数据目录优先（用户已修改的 Skill 优先于 dev mock 版本）。
-pub(crate) fn load_skill_meta<R: tauri::Runtime>(app: &tauri::AppHandle<R>, name: &str) -> Result<(SkillMeta, String), String> {
+pub(crate) fn load_skill_meta<R: tauri::Runtime>(app: &tauri::AppHandle<R>, name: &str) -> Result<(SkillMeta, String), CommandError> {
     if name.is_empty() || !name.chars().all(SKILL_NAME_CHARS_OK) {
-        // TODO(P0-6A): 无 1:1 CommandError 变体，暂走 Internal；待新增专用变体后迁移
-        return Err("技能名无效".into());
+        return Err(CommandError::DomainRule {
+            domain: "skill".to_string(),
+            reason: "技能名无效".to_string(),
+        });
     }
     for dir in &skill_search_paths(app) {
         let path = dir.join(name).join("SKILL.md");
@@ -183,7 +186,10 @@ pub(crate) fn load_skill_meta<R: tauri::Runtime>(app: &tauri::AppHandle<R>, name
         let body: String = text.chars().take(MAX_SKILL_BODY).collect();
         return Ok((meta, body));
     }
-    Err(format!("技能「{name}」不存在（检查设置页技能列表）"))
+    Err(CommandError::DomainRule {
+        domain: "skill".to_string(),
+        reason: format!("技能「{name}」不存在（检查设置页技能列表）"),
+    })
 }
 
 // ───────────────────────── 集成测试钩子（2026-09-03 T1-2） ─────────────────────────
