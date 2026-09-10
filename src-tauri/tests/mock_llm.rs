@@ -54,9 +54,6 @@ pub enum MockBehavior {
     /// （无 [DONE] / 无 finish_reason 直接 Connection: close，批次3审计 P1-1 防线）
     /// 等预置变体表达不了的场景
     RawSse(String),
-    /// 非流式 JSON 回复（2026-09-04 记忆模块 Step 1）：summarize_http 走 stream:false
-    /// + resp.json()（chat.completion 单体响应），SSE 变体表达不了这种形态
-    JsonReply(String),
     /// ── Anthropic 协议应答（2026-09-05 Anthropic 兼容模式）──
     /// 流式文本回复（message_start/content_block_*/message_delta/message_stop 全套事件）
     AnthropicTextReply(String),
@@ -264,23 +261,6 @@ fn parse_content_length(buf: &[u8]) -> Option<usize> {
 fn build_http_response(behavior: &MockBehavior) -> String {
     match behavior {
         MockBehavior::HttpError(status, body) => build_error_response(*status, body),
-        MockBehavior::JsonReply(content) => {
-            // 非流式 chat.completion 单体响应（与 sse_text_reply 同一 JSON 转义法）
-            let escaped = content.replace('\\', "\\\\").replace('"', "\\\"");
-            let body = format!(
-                r#"{{"id":"chatcmpl-mock","object":"chat.completion","created":1234567890,"model":"deepseek-chat","choices":[{{"message":{{"role":"assistant","content":"{escaped}"}},"index":0,"finish_reason":"stop"}}]}}"#
-            );
-            format!(
-                "HTTP/1.1 200 OK\r\n\
-                 Content-Type: application/json\r\n\
-                 Content-Length: {}\r\n\
-                 Connection: close\r\n\
-                 \r\n\
-                 {}",
-                body.len(),
-                body
-            )
-        }
         MockBehavior::AnthropicJsonReply(content) => {
             // 非流式 Anthropic message 单体响应（2026-09-05 Anthropic 兼容模式：
             // Planner/摘要走 stream:false + resp.json()）
@@ -313,7 +293,7 @@ fn build_http_response(behavior: &MockBehavior) -> String {
                     anthropic_sse_text_then_tool_call_reply(text, &tc.name, &tc.arguments)
                 }
                 MockBehavior::AnthropicStreamError(msg) => anthropic_sse_error_reply(msg),
-                _ => unreachable!(), // FragmentedTextReply 在连接处理分支里单独分片写出；JsonReply/AnthropicJsonReply 上面已处理
+                _ => unreachable!(), // FragmentedTextReply 在连接处理分支里单独分片写出；AnthropicJsonReply 上面已处理
             };
             format!(
                 "HTTP/1.1 200 OK\r\n\
