@@ -572,8 +572,9 @@ mod tests {
 
     #[test]
     fn advance_dsl_no_active_loaded_returns_run() {
-        // Loaded 是 start_skill 之前的过渡态，advance_skill 返回 NoActive，
-        // DSL 调度器仍按 Run 处理（不阻断 step 执行）
+        // 防御性分支：生产上 Loaded 只是 SkillRun::new 的瞬时初态（start_skill 直接置
+        // Running，见 runtime.rs start_skill 注释），advance_dsl 永远收不到 Loaded。
+        // 本测试锁定兜底语义——万一收到 Loaded 也不阻断 step 执行（按 Run 处理）。
         let run = test_run(8, 180);
         assert_eq!(run.state, SkillState::Loaded);
         assert!(matches!(advance_dsl(&run, 1000), DslAdvanceAction::Run));

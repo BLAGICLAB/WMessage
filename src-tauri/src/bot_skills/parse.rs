@@ -148,9 +148,6 @@ pub fn parse_meta(text: &str, dir_name: &str) -> SkillMeta {
     if m.name.is_empty() || !m.name.chars().all(SKILL_NAME_CHARS_OK) {
         m.name = dir_name.to_string();
     }
-    if m.name.is_empty() {
-        m.name = dir_name.to_string();
-    }
     // 风险推导模式（显式 mode 优先）：high → 强制 interactive（安全兜底）；
     // low + 未显式声明 mode → auto（SKILL_DSL.md 约定「low 强制 auto」）
     if m.risk_level == "high" {

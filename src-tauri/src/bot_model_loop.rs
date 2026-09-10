@@ -1351,7 +1351,7 @@ mod hallucination_guard_tests {
     }
 
     #[test]
-    fn claims_mutation_p1_10_wording_adjustments() {
+    fn claims_mutation_wording_adjustments() {
         // 「已完成任务」走 PLAIN 整段匹配保住任务完成话术
         assert!(claims_mutation("已完成任务「买菜」"));
         // 「保存/记住」动词覆盖落盘/记偏好话术

@@ -3236,7 +3236,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod batch5_exiting_tests {
+mod exiting_tests {
     /// 回归锁：EXITING 复查必须在 PY_RUN_GATE 拿锁之后
     ///（锁前检查挡不住「kill 完成后才拿到锁的排队者」）。
     /// 全局标志不在测试里翻转（会污染并行测试的 run_python），源码锁防回退。
@@ -3253,7 +3253,7 @@ mod batch5_exiting_tests {
 }
 
 #[cfg(test)]
-mod batch6_platform_tests {
+mod platform_tests {
     /// 回归锁：开发模式 dll 候选（env!("CARGO_MANIFEST_DIR") 绝对路径）
     /// 必须 cfg(debug_assertions) 门控——否则构建机路径烧进发布二进制
     #[test]

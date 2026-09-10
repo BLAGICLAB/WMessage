@@ -3263,7 +3263,7 @@ mod phase4_facts_tests {
 }
 
 #[cfg(test)]
-mod batch5_background_dialog_tests {
+mod background_dialog_tests {
     /// 回归锁：后台执行（interactive=false）不得弹系统文件选择框——
     /// bind_file 分发必须透传 interactive，extract_document 无 path 时必须拒绝。
     ///（弹框链路绑定 Wry AppHandle 无法单测，源码锁防回退）

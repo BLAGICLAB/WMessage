@@ -415,7 +415,7 @@ mod classify_tests {
 }
 
 #[cfg(test)]
-mod batch5_guard_tests {
+mod guard_tests {
     /// ExecGuard RAII 语义——持有期间同卡不得再获取，Drop 后释放
     #[test]
     fn exec_guard_blocks_second_acquire_until_drop() {

@@ -180,7 +180,7 @@ type Props = {
 const SLASH_COMMANDS = [
   { cmd: "/stop", description: "停止当前回复" },
   { cmd: "/compact", description: "压缩对话上下文" },
-  { cmd: "/clean", description: "清空当前对话（替代顶部 🧹 按键，2026-09-08 老板拍板）" },
+  { cmd: "/clean", description: "清空当前对话（替代顶部 🧹 按键）" },
   { cmd: "/retry", description: "重新生成上一条回复" },
 ];
 

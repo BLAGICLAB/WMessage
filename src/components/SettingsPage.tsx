@@ -1589,7 +1589,7 @@ const currentActiveId = config.activeModelId[config.apiProvider] ?? null;
               </div>
               <p className="text-[10px] text-[var(--t6)] leading-snug">
                 {config.permMode === "strict" &&
-                  "白名单外的文件访问一律拒绝（2026-08-26 前的旧行为）。"}
+                  "白名单外的文件访问一律拒绝。"}
                 {config.permMode === "ask" &&
                   "白名单内的文件直接读；白名单外弹窗请你授权（允许一次 / 始终允许该目录 / 拒绝）。"}
                 {config.permMode === "yolo" &&

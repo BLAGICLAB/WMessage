@@ -162,7 +162,7 @@ describe("TaskCardContent 多文件绑定", () => {
 
 // 一致性回归：挂件卡片此前不显示完成时间，主窗口 TodoCard 显示
 describe("TaskCardContent 完成时间显示（与主窗口一致）", () => {
-  it("完成列任务显示「完成 MM-DD HH:mm」", () => {
+  it("完成列任务显示「完成 YYYY-MM-DD HH:mm」", () => {
     render(
       <TaskCardContent
         task={{ id: "t1", title: "x", column: "done", completedAt: new Date(2026, 8, 1, 18, 30).getTime() }}

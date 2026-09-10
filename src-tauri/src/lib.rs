@@ -560,7 +560,7 @@ mod f2_copy_file_tests {
 }
 
 #[cfg(test)]
-mod p2_30_capability_tests {
+mod capability_tests {
     /// opener:allow-open-path 不得裸 "**" 通配（bot prompt 注入可诱导
     /// 打开任意路径）。收敛为 $APPDATA/** + $HOME/**：数据目录（exports/skills）
     /// 与用户主目录内文件放行，/etc/passwd 等系统路径默认拒绝。
@@ -613,7 +613,7 @@ mod p2_30_capability_tests {
 }
 
 #[cfg(test)]
-mod p2_31_tray_tests {
+mod tray_tests {
     /// 托盘初始化不得限定 cfg(windows) —— tauri 2 tray-icon 三平台支持，
     /// Linux/macOS 走同一初始化（Linux 缺 libappindicator 时降级 eprintln，不启动失败）。
     /// 本测试锁死 lib.rs 防回退；编译通过即证明 macOS 平台托盘代码路径有效。
@@ -642,7 +642,7 @@ mod p2_31_tray_tests {
 }
 
 #[cfg(test)]
-mod p2_29_version_tests {
+mod version_tests {
     /// 版本号单一真相源 = src-tauri/Cargo.toml（多处手动维护会漂移：
     /// conf 1.0.0 / Cargo 0.1.0 / package.json 0.1.0 / 便携包 1.0.1 就曾不一致）。
     /// tauri.conf.json 不得再写 version（tauri 2 构建期回退 CARGO_PKG_VERSION，
@@ -673,7 +673,7 @@ mod p2_29_version_tests {
 }
 
 #[cfg(test)]
-mod p2_26_bring_front_tests {
+mod bring_front_tests {
     /// bring_main_to_front 不得阻塞调用线程 —— 80ms 置顶闪烁的等待
     /// 在后台线程，调用方（全局快捷键/托盘事件处理，全跑主线程）立即返回。
     #[test]
@@ -699,7 +699,7 @@ mod p2_26_bring_front_tests {
 }
 
 #[cfg(test)]
-mod p2_24_exit_cleanup_tests {
+mod exit_cleanup_tests {
     use tauri::Manager;
 
     /// ExitRequested 清理 —— mock 一个 Running 态 Skill + 真实启动 API server，
@@ -768,7 +768,7 @@ mod p2_24_exit_cleanup_tests {
         );
         assert!(
             exec_guard.stopped(),
-            "退出清理必须置位在途执行实例的停止标志（批次5审计 P1）"
+            "退出清理必须置位在途执行实例的停止标志"
         );
         drop(exec_guard);
 
@@ -809,7 +809,7 @@ mod p2_24_exit_cleanup_tests {
 }
 
 #[cfg(test)]
-mod t1_5_dead_command_tests {
+mod dead_command_tests {
     /// 死命令 bind_file / db_merge 已下线——前端零调用
     /// （TodoCard 用的是复数形 bind_files，保留）。源码锁防回退重新注册。
     ///（匹配串用 concat! 拼接：本测试自身就在 lib.rs 里，裸写字面量会自匹配误判）

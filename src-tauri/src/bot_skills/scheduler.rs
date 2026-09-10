@@ -741,7 +741,7 @@ mod tests {
         }
     }
 
-    // ── 11 个真业务 Skill 端到端 smoke test ──
+    // ── dev mock Skill 端到端 smoke test ──
 
     /// 通用 mock executor（smoke test 用）：每个工具返回成功 + 含标准 UUID 让变量替换 / 嵌套路径 work
     /// - 返回 JSON 字符串时尽量含 UUID 7c9e6679-7425-40de-944b-e07fc1f90ae7（让 `${step1.task.id}` 等嵌套路径能取到值）
@@ -774,7 +774,8 @@ mod tests {
 
     #[test]
     fn smoke_all_real_skills_run_dsl_loop_with_mock_executor() {
-        // 端到端 smoke：扫 target/debug/skills/ 下所有 13 个 mock Skill
+        // 端到端 smoke：扫 target/debug/skills/ 下全部 dev mock Skill（数量不固定，
+        // 该目录是本地 dev 手放的 mock，不入库、可能被 cargo clean 清掉）
         // 每个 Skill 跑 run_dsl_loop_sync + 通用 mock executor
         // 验证：parse 不 panic + 整链路跑通 + ctx 累积 + 嵌套变量替换
         let skills_dir =
@@ -861,8 +862,8 @@ mod tests {
             );
         }
 
-        // 期望至少 11 个真业务 Skill + 2 样板（task-summary / task-archive-demo / task-summary-v2）
-        // 但 skills_dir 为空时 graceful skip（cargo clean 误删 dev mock / dev 首次未 init）
+        // 断言只要求扫到 ≥1 个（具体数量随本地 dev mock 增减，不硬编码）；
+        // skills_dir 为空时 graceful skip（cargo clean 误删 dev mock / dev 首次未 init）
         if skill_count == 0 {
             eprintln!(
                 "smoke 跳过：{} 下未扫到任何 Skill（dev mock 可能被 cargo clean 误删）",

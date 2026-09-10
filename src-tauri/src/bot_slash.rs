@@ -403,7 +403,7 @@ pub fn bot_set_enabled(app: AppHandle, enabled: bool) -> CommandResult<bool> {
     Ok(enabled)
 }
 #[cfg(test)]
-mod batch5_stop_all_tests {
+mod stop_all_tests {
     /// 退出置位必须同时覆盖 interactive 与后台（interactive=false）
     /// 两类实例——/stop 只停交互实例，退出清理不能漏掉后台任务
     #[test]
@@ -420,7 +420,7 @@ mod batch5_stop_all_tests {
 }
 
 #[cfg(test)]
-mod t1_3_command_result_tests {
+mod command_result_tests {
     /// /stop 置位内核只停本会话交互实例并返回数量；
     /// 锁中毒路径经 map_err 返回 Err（命令绑定 Wry AppHandle 无法单测，测内核）。
     #[test]
