@@ -195,6 +195,50 @@ fn hybrid_score_degraded_renormalizes_weights() {
 }
 
 #[test]
+fn hybrid_score_mixed_mode_guards_vectorless_items() {
+    // 混合库（查询有向量、部分条目无向量）：无向量条目关键词零重合 → 0 分，
+    // 不得靠重要度/新近度常正项混进 top-N
+    let now = 1_000_000_000;
+    let mk = |content: &str, emb: Option<Vec<f32>>| MemItem {
+        id: "x".into(),
+        kind: "fact".into(),
+        content: content.into(),
+        tags: vec![],
+        importance: 5, // 拉满重要度/新近度，放大常正项
+        source: "user_stated".into(),
+        created_at_ms: now,
+        updated_at_ms: now,
+        access_count: 0,
+        last_accessed_at_ms: None,
+        embedding: emb,
+    };
+    let q = onehot(0);
+    let kws = rank::extract_keywords("关键词"); // CJK bigram：["关键", "键词"]
+    // 无向量 + 零重合 → 0 分（修复前 = 0.15+0.10 > 0 会漏进 top-5）
+    let no_vec_no_kw = mk("完全无关的内容", None);
+    assert_eq!(
+        rank::hybrid_score(&kws, Some(&q), &no_vec_no_kw, now),
+        0.0,
+        "混合模式下无向量零重合条目必须 0 分"
+    );
+    // 无向量 + 有重合 → 保留关键词得分（降级检索正路）
+    let no_vec_kw = mk("关键词命中", None);
+    assert!(
+        rank::hybrid_score(&kws, Some(&q), &no_vec_kw, now) > 0.0,
+        "无向量但关键词有重合应正常得分"
+    );
+    // 有向量 + 零重合 → 语义可算，不适用守卫（既有行为不变）
+    let with_vec = mk("完全无关的内容", Some(onehot(1)));
+    assert!(
+        rank::hybrid_score(&kws, Some(&q), &with_vec, now) > 0.0,
+        "有向量条目由语义项负责，守卫不适用"
+    );
+    // 检索层验证：混合库中无向量零重合条目不进结果
+    let hits = rank::hybrid_search(&[no_vec_no_kw], "关键词", Some(&q), now, 5);
+    assert!(hits.is_empty(), "无向量零重合条目不得进 top-N");
+}
+
+#[test]
 fn injection_snapshot_three_sections() {
     let now = 1_000_000_000;
     let mk = |id: &str, kind: &str, content: &str, importance: i64| MemItem {

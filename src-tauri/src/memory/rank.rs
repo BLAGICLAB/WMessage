@@ -83,9 +83,10 @@ pub fn hybrid_score(
         let hits = query_kws.iter().filter(|k| item_kws.contains(*k)).count();
         hits as f64 / query_kws.len() as f64
     };
-    // 降级模式（无查询向量）：关键词零重合直接 0 分——纯关键词模式与旧系统口径一致，
-    // 否则重要度/新近度常正项会让全表都进 top-5，「零命中 → 近期摘要兜底」永不触发
-    if query_emb.is_none() && kw == 0.0 {
+    // 零关键词重合且本条无法算语义相似度（纯降级=无查询向量，或混合库中条目无向量）
+    // 直接 0 分——否则重要度/新近度常正项会让无关条目进 top-5，
+    // 「零命中 → 近期摘要兜底」永不触发。条目有向量时语义项全权负责，不适用本守卫。
+    if kw == 0.0 && (query_emb.is_none() || item.embedding.is_none()) {
         return 0.0;
     }
     let base = item

@@ -2,8 +2,8 @@
 
 > 日期：2026-09-09
 > 状态：已实施（取代 `BOT-MEMORY-DESIGN.md` 的纯关键词方案）。系统未上线即切换：
-> 旧表 `bot_facts` 废弃不导入（不做任何数据迁移；表与旧函数原样保留，
-> 仅供 tests/memory_regression.rs 旧行为基准回归使用）。
+> 旧表 `bot_facts` 废弃不导入（不做任何数据迁移；v1 代码已于 2026-09-10 整体
+> 删除（commit e1234a2），老用户库残留的 bot_facts 废表无害、不清理）。
 > 代码：`src-tauri/src/memory/`（`mod.rs` 门面 / `embed.rs` 嵌入引擎 / `store.rs` 存储 / `rank.rs` 混合打分）
 
 ---
@@ -85,12 +85,13 @@ score = 0.55·cosine(query, item) + 0.20·keyword_overlap + 0.15·(importance/5)
 
 1. `bot_chat.rs::build_memory_block` → `memory::injection_block`（静默降级 + WARN 审计不变）。
 2. `remember_fact`/`recall_facts` 工具分发切到 `memory::tool_*`（schema、MUTATING_TOOLS、
-   prompt 规则均未动；key→tags[0]，value→content；旧 `tool_*` 薄壳保留不调用）。
+   prompt 规则均未动；key→tags[0]，value→content；旧 `tool_*` 薄壳已随 v1 删除）。
 3. 摘要/反思流水线（`persist_summary_and_reflect`）写 mem_items 并嵌入向量；
    Reflection 仍是 summary 攒 10 条合成一条 + 同事务删原摘要。
 4. `execute_task_core`（任务卡执行/定时调度）注入记忆块（查询 = 标题+备注前 200 字）。
 5. 旧数据：**不做迁移**。系统未上线即切换，旧表 `bot_facts` 废弃不导入；
-   表结构与 db.rs 旧函数原样保留（tests/memory_regression.rs 回归基准仍走旧路径）。
+   v1 表结构（建表语句）与 db.rs 旧函数已随 v1 整体删除（commit e1234a2），
+   老库残表无害不清理。
 6. `tauri.conf.json` bundle resources 增加 `../bge-small-zh-v1.5`（打包随产物分发；
    便携包脚本需把模型目录放在 exe 同目录）。
 
@@ -113,14 +114,16 @@ score = 0.55·cosine(query, item) + 0.20·keyword_overlap + 0.15·(importance/5)
 
 ## 8. 测试
 
-- 新增 lib 单测 17 例（memory::embed 6 + memory::tests 11）：mean pooling / L2 归一化、
-  模型路径解析、语义去重三分支（合并/提示/新增）、降级跳过去重、容量淘汰顺序与
-  importance=5 保护、全保护拒写、混合打分权重（语义主导 / 降级归一）、注入三段结构、
-  同 key 覆盖/删除。
-- `tests/memory_v2_degraded.rs`：降级模式全链路集成测试。
+- lib 单测 41 例（memory::embed 6 + memory::tests 21 + memory::consolidate 14）：
+  mean pooling / L2 归一化、模型路径解析、语义去重三分支（合并/提示/新增，合并带
+  orig_key 指认原条目）、降级跳过去重、容量淘汰顺序与 importance=5 保护、全保护拒写、
+  混合打分权重（语义主导 / 降级归一 / 混合模式无向量零重合守卫）、注入四段结构、
+  同 key 覆盖/删除、降级覆盖写清陈旧向量、key/scenario 逗号校验、整理指令解析与
+  事务应用（嵌入持锁前预计算）、候选收集、到点判定。
+- `tests/memory_v2_degraded.rs`：降级模式全链路集成测试（1 例）。
 - `#[ignore]` 真实模型冒烟 `memory::embed::tests::real_model_embed_smoke`
   （512 维、归一化、近义句余弦显著高于无关句），手动 `cargo test --lib memory::embed -- --ignored`。
-- 既有回归不动：`tests/memory_regression.rs` 17 用例（旧系统行为基准）全绿。
+- 旧系统行为基准 `tests/memory_regression.rs` 已随 v1 一并删除（commit e1234a2）。
 
 ## 9. lesson（教训记忆，2026-09-09 追加）
 
