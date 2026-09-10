@@ -44,8 +44,6 @@ pub struct JournalEntry {
     pub src: String,
     pub dst: Option<String>,
     pub task_id: String,
-    pub state: String,     // 'pending' | 'committed' | 'cleared'
-    pub created_at: i64,
 }
 
 /// B1 inner: 记录一个 pending 操作，返回 row id。
@@ -139,7 +137,7 @@ fn journal_find_pending_inner(
 ) -> Result<Option<JournalEntry>, String> {
     use rusqlite::OptionalExtension;
     conn.query_row(
-        "SELECT id, op, src, dst, task_id, state, created_at
+        "SELECT id, op, src, dst, task_id
          FROM migration_journal
          WHERE task_id = ?1 AND src = ?2 AND state = 'pending'
          ORDER BY id DESC LIMIT 1",
@@ -151,8 +149,6 @@ fn journal_find_pending_inner(
                 src: r.get(2)?,
                 dst: r.get(3)?,
                 task_id: r.get(4)?,
-                state: r.get(5)?,
-                created_at: r.get(6)?,
             })
         },
     )
@@ -219,7 +215,7 @@ pub fn journal_replay_pending(app: &AppHandle) -> Result<(usize, usize), String>
     let conn = db::open_db(app).map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(
-            "SELECT id, op, src, dst, task_id, state, created_at
+            "SELECT id, op, src, dst, task_id
              FROM migration_journal WHERE state = 'pending'
              ORDER BY id ASC",
         )
@@ -232,8 +228,6 @@ pub fn journal_replay_pending(app: &AppHandle) -> Result<(usize, usize), String>
                 src: r.get(2)?,
                 dst: r.get(3)?,
                 task_id: r.get(4)?,
-                state: r.get(5)?,
-                created_at: r.get(6)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -1597,7 +1591,6 @@ mod tests {
         assert_eq!(e.id, id);
         assert_eq!(e.op, "move");
         assert_eq!(e.dst.as_deref(), Some("/dst/a"));
-        assert_eq!(e.state, "pending");
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -1643,8 +1636,6 @@ mod tests {
             src: "/src/a".into(),
             dst: dst.map(|s| s.into()),
             task_id: "t".into(),
-            state: "pending".into(),
-            created_at: 1,
         };
 
         // move pending + dst 存在 → 就地修复绑定
