@@ -67,6 +67,7 @@ PREV=wmessage-portable-2026-09-05   # 上一版绿色包，作为固定文件来
 cp src-tauri/target/x86_64-pc-windows-gnu/release/wmessage.exe "$OUT/"
 cp /tmp/ort-dll/onnxruntime.dll /tmp/ort-dll/onnxruntime_providers_shared.dll "$OUT/"
 cp -R bge-small-zh-v1.5 "$OUT/"          # 仓库根的模型目录
+cp -R pp-ocr-v6 "$OUT/"                  # OCR 模型（ocr_image 工具，PP-OCRv6 small，仓库根随仓库提交）
 cp "$PREV"/{WebView2Loader.dll,MicrosoftEdgeWebview2Setup.exe,README.txt} "$OUT/"
 ```
 
@@ -78,6 +79,7 @@ WebView2Loader.dll                  必需（缺它报「找不到 webview2loade
 onnxruntime.dll                     语义引擎，必需随包
 onnxruntime_providers_shared.dll    ONNX Runtime 配套
 bge-small-zh-v1.5/                  语义模型（含 tokenizer.json、onnx/model_quantized.onnx）
+pp-ocr-v6/                          OCR 模型（det.onnx / rec.onnx / keys.txt / cls.onnx，PP-OCRv6 small）
 dotnet/                             Word 修订工具（self-contained）
 MicrosoftEdgeWebview2Setup.exe      Win10 首次备用（Win11 自带 WebView2）
 README.txt                          使用说明（更新「文件说明」和「更新记录」两节）
@@ -116,7 +118,7 @@ print("done", out)
 EOF
 ```
 
-预期 zip 约 76 MB（2026-09-10 基准）。
+预期 zip 约 100 MB（2026-09-10 基准 76 MB + pp-ocr-v6 约 24 MB 压缩后）。
 
 ## 7. 校验清单（全部通过才算完成）
 
@@ -128,11 +130,13 @@ assert z.testzip() is None, "zip 损坏"
 names = z.namelist(); top = {n.split("/")[0] for n in names}
 need = {"wmessage.exe","WebView2Loader.dll","onnxruntime.dll",
         "onnxruntime_providers_shared.dll","MicrosoftEdgeWebview2Setup.exe",
-        "README.txt","dotnet","bge-small-zh-v1.5"}
+        "README.txt","dotnet","bge-small-zh-v1.5","pp-ocr-v6"}
 assert need <= top, need - top
 assert "dotnet/wm-docx-revisions.exe" in names
 assert "bge-small-zh-v1.5/onnx/model_quantized.onnx" in names
 assert "bge-small-zh-v1.5/tokenizer.json" in names
+for f in ("det.onnx","rec.onnx","keys.txt","cls.onnx"):
+    assert f"pp-ocr-v6/{f}" in names, f"pp-ocr-v6/{f} 缺失"
 print("ZIP_OK", len(names), "files")
 EOF
 ```
@@ -142,7 +146,8 @@ EOF
 - [ ] macOS 侧回归：`cd src-tauri && cargo check` 通过（Cargo.toml 有 target 特异配置时必跑）
 - [ ] DEVLOG.md 记一条出包记录
 - [ ] Windows 实机验收（人工）：解压双击 wmessage.exe；重点验证机器人记忆语义检索
-  （模型/引擎异常会自动降级关键词模式，不报错但功能缩水，需肉眼确认）
+  （模型/引擎异常会自动降级关键词模式，不报错但功能缩水，需肉眼确认），并用一张带文字的
+  本地图片让机器人跑 `ocr_image`（缺 pp-ocr-v6/ 时工具会报「请运行 scripts/fetch_ocr_models.sh…」）
 
 ## 坑位速查
 
