@@ -40,17 +40,21 @@ fn tilted(w: f32) -> Vec<f32> {
 fn dedup_merge_branch_high_cosine() {
     let conn = mem_db();
     let now = 1_000_000;
-    let (r1, _) = store::insert_item(&conn, &item("fact", "用户不吃辣"), Some(&onehot(0)), now).unwrap();
+    let mut first_item = item("fact", "用户不吃辣");
+    first_item.tags = vec!["口味".into()];
+    let (r1, _) = store::insert_item(&conn, &first_item, Some(&onehot(0)), now).unwrap();
     let InsertOutcome::Inserted(first) = r1 else { panic!("首条应插入") };
     // 同向量（cos=1 ≥ 0.92）→ 合并更新，不新增
-    let (r2, hints) =
-        store::insert_item(&conn, &item("fact", "用户不吃辣，微辣也不行"), Some(&onehot(0)), now + 1)
-            .unwrap();
+    let mut second = item("fact", "用户不吃辣，微辣也不行");
+    second.tags = vec!["忌口".into()];
+    let (r2, hints) = store::insert_item(&conn, &second, Some(&onehot(0)), now + 1).unwrap();
     assert!(hints.is_empty());
-    let InsertOutcome::Merged(m) = r2 else { panic!("应合并") };
+    let InsertOutcome::Merged { item: m, orig_key } = r2 else { panic!("应合并") };
     assert_eq!(m.id, first.id, "合并更新的是同一条");
     assert_eq!(m.content, "用户不吃辣，微辣也不行");
     assert_eq!(m.access_count, 1, "合并刷新访问计数");
+    assert_eq!(orig_key.as_deref(), Some("口味"), "orig_key 带出被合并原条目的 key（非新 key）");
+    assert_eq!(m.tags, vec!["忌口"], "条目本身 tags 已覆盖为新值");
     let n: i64 = conn.query_row("SELECT COUNT(*) FROM mem_items", [], |r| r.get(0)).unwrap();
     assert_eq!(n, 1, "合并不新增行");
 }
@@ -256,6 +260,43 @@ fn recall_key_tag_update_and_delete() {
     assert!(!store::delete_by_key_tag(&conn, "城市").unwrap(), "重复删除返回 false");
 }
 
+#[test]
+fn degraded_update_clears_stale_embedding() {
+    let conn = mem_db();
+    let now = 1_000_000;
+    let mut it = item("fact", "旧内容");
+    it.tags = vec!["k".into()];
+    store::insert_item(&conn, &it, Some(&onehot(0)), now).unwrap();
+    let id = store::find_by_key_tag(&conn, "k").unwrap().unwrap().id;
+    // 降级模式（无新向量）覆盖更新 content → 旧向量随内容作废（置 NULL）
+    store::update_by_id(&conn, &id, "新内容", 3, "user_stated", "fact", None, now + 1).unwrap();
+    let m = store::find_by_key_tag(&conn, "k").unwrap().unwrap();
+    assert_eq!(m.content, "新内容");
+    assert!(m.embedding.is_none(), "内容变了且无新向量 → 旧向量必须清空");
+}
+
+#[test]
+fn same_content_update_preserves_embedding() {
+    let conn = mem_db();
+    let now = 1_000_000;
+    let mut it = item("fact", "内容不变");
+    it.tags = vec!["k".into()];
+    store::insert_item(&conn, &it, Some(&onehot(0)), now).unwrap();
+    let id = store::find_by_key_tag(&conn, "k").unwrap().unwrap().id;
+    // content 没变、只动 importance（无新向量）→ 旧向量保留
+    store::update_by_id(&conn, &id, "内容不变", 5, "user_stated", "fact", None, now + 1).unwrap();
+    let m = store::find_by_key_tag(&conn, "k").unwrap().unwrap();
+    assert_eq!(m.importance, 5);
+    assert!(m.embedding.is_some(), "内容没变 → 保留旧向量");
+}
+
+#[test]
+fn validate_fact_kv_rejects_ascii_comma() {
+    assert!(super::validate_fact_kv("a,b", "v").unwrap_err().contains("逗号"));
+    assert!(super::validate_fact_kv("a，b", "v").is_ok(), "中文逗号不受影响");
+    assert!(super::validate_fact_kv("k", "含,逗号").is_ok(), "value 不进 tags，逗号合法");
+}
+
 // ───────────────────────── lesson（教训记忆，2026-09-09） ─────────────────────────
 
 #[test]
@@ -301,6 +342,9 @@ fn record_lesson_validation() {
     assert!(super::record_lesson_core(&conn, &long, "s", "system", None, 0).contains("太长"));
     let long_s = "s".repeat(51);
     assert!(super::record_lesson_core(&conn, "ok", &long_s, "system", None, 0).contains("scenario"));
+    // scenario 含英文逗号被拒（tags 逗号分隔存储）；中文逗号不受影响
+    assert!(super::record_lesson_core(&conn, "ok", "a,b", "system", None, 0).contains("逗号"));
+    assert!(super::record_lesson_core(&conn, "ok", "文档，修订", "system", None, 0).starts_with("已记录教训"));
 }
 
 #[test]

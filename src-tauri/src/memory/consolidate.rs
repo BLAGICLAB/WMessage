@@ -116,8 +116,18 @@ pub enum ConsolidateOp {
     Distill { ids: Vec<String>, content: String },
 }
 
-/// 解析 LLM 输出为指令列表（纯函数，健壮优先）：
-/// 剥 ```json 代码围栏 / 截取首个 { 到末个 }；整体解析失败 → 空列表（本轮放弃）；
+impl ConsolidateOp {
+    /// 指令的新内容文本（嵌入预计算遍历用）
+    fn content(&self) -> &str {
+        match self {
+            ConsolidateOp::Merge { content, .. }
+            | ConsolidateOp::Contradiction { content, .. }
+            | ConsolidateOp::Distill { content, .. } => content,
+        }
+    }
+}
+
+/// 解析 LLM 输出为指令列表（纯函数，健壮优先）：/// 剥 ```json 代码围栏 / 截取首个 { 到末个 }；整体解析失败 → 空列表（本轮放弃）；
 /// 单条指令缺字段 / 未知 action → 跳过该条，不影响其它指令。
 pub fn parse_ops(text: &str) -> Vec<ConsolidateOp> {
     let t = text.trim();
@@ -220,21 +230,24 @@ fn format_candidates(items: &[MemItem]) -> String {
         .join("\n")
 }
 
-/// 指令应用（一个事务；向量重算用注入的 embed，可单测）：
+/// 指令应用（一个事务；向量由调用方在持锁/开事务前预计算好随 embs 传入——
+/// ONNX 推理不占 DB 写锁临界区，与 mod.rs 门面纪律一致）：
 /// - merge：目标 = ids 中 importance 最高（平手取最新更新）的现存条目，content/向量/时间
 ///   更新到目标，其余来源删除；
 /// - contradiction：keep 内容/向量/时间更新，drop 删除；
 /// - distill：新建 kind=reflection、importance=4、source=system 条目。
 /// 指令引用的 id 不存在/不足以执行 → 跳过该条（计数不增）。
+/// embs 与 ops 平行（embs[i] = ops[i].content 的嵌入；None = 嵌入失败按降级处理）。
 pub fn apply_ops(
     conn: &mut rusqlite::Connection,
     ops: &[ConsolidateOp],
-    embed: &dyn Fn(&str) -> Option<Vec<f32>>,
+    embs: &[Option<Vec<f32>>],
     now_ms: i64,
 ) -> Result<ConsolidateReport, String> {
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let mut report = ConsolidateReport::default();
-    for op in ops {
+    for (i, op) in ops.iter().enumerate() {
+        let emb = embs.get(i).and_then(|e| e.as_deref());
         match op {
             ConsolidateOp::Merge { ids, content } => {
                 let items: Vec<MemItem> = store::load_all(&tx)?
@@ -253,7 +266,6 @@ pub fn apply_ops(
                     })
                     .expect("len>=2 已判定")
                     .clone();
-                let emb = embed(content);
                 store::update_by_id(
                     &tx,
                     &target.id,
@@ -261,7 +273,7 @@ pub fn apply_ops(
                     target.importance,
                     &target.source,
                     &target.kind,
-                    emb.as_deref(),
+                    emb,
                     now_ms,
                 )?;
                 let drop_ids: Vec<String> = items
@@ -279,7 +291,6 @@ pub fn apply_ops(
                 if !all.iter().any(|m| &m.id == drop_id) {
                     continue;
                 }
-                let emb = embed(content);
                 store::update_by_id(
                     &tx,
                     &keep_item.id,
@@ -287,7 +298,7 @@ pub fn apply_ops(
                     keep_item.importance,
                     &keep_item.source,
                     &keep_item.kind,
-                    emb.as_deref(),
+                    emb,
                     now_ms,
                 )?;
                 report.contradictions += store::delete_by_ids(&tx, &[drop_id.clone()])?;
@@ -297,7 +308,6 @@ pub fn apply_ops(
                 if !ids.iter().any(|id| all.iter().any(|m| &m.id == id)) {
                     continue; // 引用的条目全不存在 → 跳过（防 LLM 幻觉 id 凭空造规律）
                 }
-                let emb = embed(content);
                 let item = NewItem {
                     kind: "reflection".to_string(),
                     content: truncate_chars(content, MAX_CONTENT_CHARS),
@@ -305,7 +315,7 @@ pub fn apply_ops(
                     importance: 4,
                     source: "system".to_string(),
                 };
-                store::insert_item(&tx, &item, emb.as_deref(), now_ms)?;
+                store::insert_item(&tx, &item, emb, now_ms)?;
                 report.distilled += 1;
             }
         }
@@ -346,12 +356,22 @@ pub async fn run_consolidation(app: &AppHandle) -> CommandResult<ConsolidateRepo
     if ops.is_empty() {
         return Ok(ConsolidateReport::default());
     }
+    // 嵌入在持锁前批量算好（独立阻塞闭包、不持 DB 写锁，与 mod.rs「嵌入计算一律在
+    // 持锁前算好」纪律一致）；单项嵌入失败 = None，事务内按降级（无向量）处理。
+    let embs = {
+        let contents: Vec<String> = ops.iter().map(|op| op.content().to_string()).collect();
+        tauri::async_runtime::spawn_blocking(move || {
+            contents.iter().map(|c| embed::embed_text(c)).collect::<Vec<_>>()
+        })
+        .await
+        .map_err(|e| CommandError::from(format!("记忆整理嵌入线程 join 失败：{e}")))?
+    };
     let app3 = app.clone();
     let report = tauri::async_runtime::spawn_blocking(move || -> Result<ConsolidateReport, String> {
         let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut conn = crate::db::open_db(&app3)?;
         store::ensure_table(&conn)?;
-        apply_ops(&mut conn, &ops, &embed::embed_text, now_ms())
+        apply_ops(&mut conn, &ops, &embs, now_ms())
     })
     .await
     .map_err(|e| CommandError::from(format!("记忆整理写入线程 join 失败：{e}")))?

@@ -31,6 +31,11 @@ fn fake_embed(text: &str) -> Option<Vec<f32>> {
     Some(v)
 }
 
+/// 与 apply_ops 签名配套的预计算向量（模拟生产「持锁前批量算好嵌入」流程）
+fn fake_embs(ops: &[ConsolidateOp]) -> Vec<Option<Vec<f32>>> {
+    ops.iter().map(|op| fake_embed(op.content())).collect()
+}
+
 // ── 解析健壮性 ──
 
 #[test]
@@ -90,7 +95,7 @@ fn apply_merge_updates_target_and_deletes_sources() {
         ids: vec![a.clone(), b.clone(), c.clone()],
         content: "用户不吃辣且对花椒过敏".into(),
     }];
-    let report = apply_ops(&mut conn, &ops, &fake_embed, now + 9).unwrap();
+    let report = apply_ops(&mut conn, &ops, &fake_embs(&ops), now + 9).unwrap();
     assert_eq!(report.merged, 2, "3 合 1 = 删 2 条来源");
     let all = store::load_all(&conn).unwrap();
     assert_eq!(all.len(), 1);
@@ -111,7 +116,7 @@ fn apply_merge_with_missing_ids_skipped() {
         ids: vec![a, "不存在的id".into()],
         content: "合并".into(),
     }];
-    let report = apply_ops(&mut conn, &ops, &fake_embed, now).unwrap();
+    let report = apply_ops(&mut conn, &ops, &fake_embs(&ops), now).unwrap();
     assert_eq!(report.merged, 0, "现存条目 <2 → 跳过");
     assert_eq!(store::load_all(&conn).unwrap().len(), 1);
 }
@@ -127,7 +132,7 @@ fn apply_contradiction_keeps_and_drops() {
         drop_id: a.clone(),
         content: "用户现居北京（2026 年起）".into(),
     }];
-    let report = apply_ops(&mut conn, &ops, &fake_embed, now + 9).unwrap();
+    let report = apply_ops(&mut conn, &ops, &fake_embs(&ops), now + 9).unwrap();
     assert_eq!(report.contradictions, 1);
     let all = store::load_all(&conn).unwrap();
     assert_eq!(all.len(), 1);
@@ -146,7 +151,7 @@ fn apply_distill_creates_reflection() {
         ids: vec![a, b],
         content: "用户沟通偏好：简洁优先".into(),
     }];
-    let report = apply_ops(&mut conn, &ops, &fake_embed, now).unwrap();
+    let report = apply_ops(&mut conn, &ops, &fake_embs(&ops), now).unwrap();
     assert_eq!(report.distilled, 1);
     let all = store::load_all(&conn).unwrap();
     assert_eq!(all.len(), 3, "distill 新建不删来源");
@@ -164,7 +169,7 @@ fn apply_distill_with_all_phantom_ids_skipped() {
         ids: vec!["幻觉id1".into(), "幻觉id2".into()],
         content: "凭空规律".into(),
     }];
-    let report = apply_ops(&mut conn, &ops, &fake_embed, now).unwrap();
+    let report = apply_ops(&mut conn, &ops, &fake_embs(&ops), now).unwrap();
     assert_eq!(report.distilled, 0, "幻觉 id 不得凭空造规律");
     assert_eq!(store::load_all(&conn).unwrap().len(), 1);
 }
@@ -174,7 +179,7 @@ fn apply_ops_empty_is_noop() {
     let mut conn = mem_db();
     let now = 1_000_000;
     insert(&conn, "fact", "条目", 3, now);
-    let report = apply_ops(&mut conn, &[], &fake_embed, now).unwrap();
+    let report = apply_ops(&mut conn, &[], &[], now).unwrap();
     assert_eq!(report, ConsolidateReport::default());
 }
 

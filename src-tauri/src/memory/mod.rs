@@ -201,6 +201,10 @@ fn validate_fact_kv(key: &str, value: &str) -> Result<(), String> {
     if key.chars().count() > 50 {
         return Err("失败：key 太长（≤50 字）".into());
     }
+    // key 落 mem_items.tags[0]（逗号分隔存储），含英文逗号会让同 key 覆盖失效
+    if key.contains(',') {
+        return Err("失败：key 不能包含英文逗号「,」（记忆标签以逗号分隔存储，可用中文逗号「，」）".into());
+    }
     if value.chars().count() > 500 {
         return Err("失败：value 太长（≤500 字）".into());
     }
@@ -300,10 +304,16 @@ pub async fn tool_remember_fact(
                             )
                         }
                     }
-                    Ok((InsertOutcome::Merged(m), _)) => format!(
-                        "已记住「{key}」：{value}（与已有记忆语义重复，已合并更新原有条目「{}」）",
-                        m.tags.first().cloned().unwrap_or_default()
-                    ),
+                    Ok((InsertOutcome::Merged { orig_key, .. }, _)) => {
+                        match orig_key.filter(|k| !k.is_empty() && *k != key) {
+                            Some(k) => format!(
+                                "已记住「{key}」：{value}（与已有记忆语义重复，已合并更新原有条目「{k}」）"
+                            ),
+                            None => format!(
+                                "已记住「{key}」：{value}（与已有记忆语义重复，已合并更新原有条目）"
+                            ),
+                        }
+                    }
                     Ok((InsertOutcome::RejectedFull(e), _)) => format!("失败：{e}"),
                     Err(e) => format!("失败：{e}"),
                 }
@@ -389,6 +399,10 @@ fn validate_lesson(lesson: &str, scenario: &str) -> Result<(), String> {
     if scenario.chars().count() > 50 {
         return Err("失败：scenario 太长（≤50 字）".into());
     }
+    // scenario 落 tags[1]（逗号分隔存储），含英文逗号会切出多余标签
+    if scenario.contains(',') {
+        return Err("失败：scenario 不能包含英文逗号「,」（记忆标签以逗号分隔存储，可用中文逗号「，」）".into());
+    }
     Ok(())
 }
 
@@ -428,7 +442,7 @@ pub fn record_lesson_core(
                 format!("{msg}。相似已有记忆：[{}]——如需更新请用同场景覆盖", hints.join("；"))
             }
         }
-        Ok((InsertOutcome::Merged(_), _)) => {
+        Ok((InsertOutcome::Merged { .. }, _)) => {
             format!("已记录教训（与已有教训语义重复，已合并更新）：{}", truncate_chars(lesson, 60))
         }
         Ok((InsertOutcome::RejectedFull(e), _)) => format!("失败：{e}"),

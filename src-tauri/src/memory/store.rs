@@ -188,8 +188,9 @@ fn evict_if_needed(conn: &rusqlite::Connection, now_ms: i64) -> Result<(), Strin
 pub enum InsertOutcome {
     /// 新增成功
     Inserted(MemItem),
-    /// 语义去重合并（余弦 ≥0.92）：刷新已有条目的 content/updated_at/access，未新增
-    Merged(MemItem),
+    /// 语义去重合并（余弦 ≥0.92）：刷新已有条目的 content/updated_at/access，未新增。
+    /// orig_key = 被合并原条目的 tags[0]（item.tags 已被新值覆盖，提示文案要靠它指认原条目）
+    Merged { item: MemItem, orig_key: Option<String> },
     /// 容量满且无可淘汰条目 → 拒写
     RejectedFull(String),
 }
@@ -232,6 +233,7 @@ pub fn insert_item(
             }
         }
         if let Some((_, target)) = best {
+            let orig_key = target.tags.first().cloned();
             conn.execute(
                 "UPDATE mem_items SET content = ?1, tags = ?2, importance = ?3, source = ?4,
                         updated_at = ?5, access_count = access_count + 1, last_accessed_at = ?5,
@@ -259,7 +261,7 @@ pub fn insert_item(
                 embedding: Some(emb.to_vec()),
                 ..target.clone()
             };
-            return Ok((InsertOutcome::Merged(merged), Vec::new()));
+            return Ok((InsertOutcome::Merged { item: merged, orig_key }, Vec::new()));
         }
         hints.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
         let hint_texts: Vec<String> = hints
@@ -327,7 +329,9 @@ pub fn find_by_key_tag(conn: &rusqlite::Connection, key: &str) -> Result<Option<
         .find(|m| m.tags.first().map(|t| t.as_str()) == Some(key)))
 }
 
-/// 同 key 覆盖更新（不触发去重/淘汰；重算向量由调用方传入）
+/// 同 key 覆盖更新（不触发去重/淘汰；重算向量由调用方传入）。
+/// 向量语义：content 变了 → 以新向量为准（None = 降级模式写，旧向量随内容一并作废弃 NULL，
+/// 防语义检索按旧内容命中）；content 没变（仅动 importance/kind 等）→ 无新向量时保留旧向量。
 pub fn update_by_id(
     conn: &rusqlite::Connection,
     id: &str,
@@ -340,7 +344,8 @@ pub fn update_by_id(
 ) -> Result<(), String> {
     conn.execute(
         "UPDATE mem_items SET content = ?1, importance = ?2, source = ?3, kind = ?4,
-                updated_at = ?5, embedding = COALESCE(?6, embedding)
+                updated_at = ?5,
+                embedding = CASE WHEN content <> ?1 THEN ?6 ELSE COALESCE(?6, embedding) END
          WHERE id = ?7",
         rusqlite::params![
             content,
