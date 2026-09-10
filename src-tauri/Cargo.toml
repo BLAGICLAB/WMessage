@@ -72,6 +72,10 @@ ort = { version = "2.0.0-rc.13", features = ["download-binaries"] }
 # fancy-regex 是 tokenizers 0.23 必需的 regex 后端之一，纯 Rust 无 C 依赖）
 tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"] }
 
+# OCR 原子工具（ocr_image，2026-09-10）：图片解码（PNG/JPEG，纯 Rust，不进网络）；
+# macOS 走系统 Vision（objc2-vision），Windows 走本地 PP-OCRv6 ONNX（复用上面的 ort）
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+
 # Windows 交叉编译（x86_64-pc-windows-gnu）：ort 官方预编译库无 gnu target，
 # 叠加 load-dynamic（特性取并集）→ ort-sys disable-linking，构建期不下载不链接，
 # 运行时按名加载 onnxruntime.dll（随绿色包放 exe 同目录）；macOS 路径不受影响。
@@ -97,6 +101,7 @@ libc = "0.2"
 objc2 = "0.6"
 objc2-app-kit = "0.3"
 objc2-foundation = "0.3"
+objc2-vision = "0.3"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [

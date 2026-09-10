@@ -25,6 +25,7 @@ pub mod middleware;
 mod migration;
 mod mutation;
 pub mod memory;
+mod ocr;
 mod profile;
 pub mod task_out;
 pub mod tool_guard;

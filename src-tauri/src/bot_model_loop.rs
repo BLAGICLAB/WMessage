@@ -133,6 +133,9 @@ const TOOLS: &str = r#"[
     "offset":{"type":"integer","description":"起始行号，从 1 开始，可选"},
     "limit":{"type":"integer","description":"读取行数，默认 500，最多 2000，可选"}
   },"required":["path"]}}},
+  {"type":"function","function":{"name":"ocr_image","description":"本地 OCR 识别图片文字，逐行返回（白名单目录内直接识别，白名单外自动弹窗请用户授权；隐私红线：图片仅在内存处理、绝不上传外网——macOS 用系统 Vision，Windows 用本地 PP-OCRv6 模型）","parameters":{"type":"object","properties":{
+    "path":{"type":"string","description":"图片绝对路径（支持 ~ 开头；仅本地文件，不接受网络地址）"}
+  },"required":["path"]}}},
   {"type":"function","function":{"name":"grep_files","description":"按正则搜索本地文件内容，返回 path:行号:内容（最多 50 条；白名单目录内直接搜，白名单外自动弹窗请用户授权）","parameters":{"type":"object","properties":{
     "pattern":{"type":"string","description":"正则表达式（非法正则自动按字面量搜）"},
     "dir":{"type":"string","description":"搜索目录，可选，缺省搜第一个白名单目录"},

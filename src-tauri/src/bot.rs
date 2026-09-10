@@ -1315,6 +1315,7 @@ async fn execute_tool_impl(
         "toggle_subtask" => tool_toggle_subtask(app, args).await,
         "remove_subtask" => tool_remove_subtask(app, args).await,
         "read_text_file" => crate::bot_fs::tool_read_text_file(app, args, interactive, session_id).await,
+        "ocr_image" => crate::ocr::tool_ocr_image(app, args, interactive, session_id).await,
         "grep_files" => crate::bot_fs::tool_grep_files(app, args, interactive, session_id).await,
         "list_files" => crate::bot_fs::tool_list_files(app, args, interactive, session_id).await,
         "bind_file" => tool_bind_file(app, args, interactive).await,

@@ -69,6 +69,7 @@ mod tests {
             "toggle_subtask",
             "remove_subtask",
             "read_text_file",
+            "ocr_image",
             "grep_files",
             "list_files",
             "bind_file",
