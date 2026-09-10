@@ -352,8 +352,8 @@ pub fn run() {
             }
 
             // 记忆 v2（2026-09-09）：嵌入引擎后台预热；定时记忆整理调度器
-            //（bot_scheduler 同模式，10 分钟检查一次配置到点；系统未上线，旧表
-            // bot_facts 废弃不导入，无迁移动作）
+            //（bot_scheduler 同模式，10 分钟检查一次配置到点；旧 v1 记忆系统
+            //（bot_facts 表）已弃用删除，老库残表无害不清理）
             memory::embed::warmup_async();
             memory::consolidate::start_consolidation_scheduler(app.handle().clone());
 

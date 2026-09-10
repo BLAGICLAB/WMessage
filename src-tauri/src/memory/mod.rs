@@ -22,7 +22,7 @@ use rank::MemInjection;
 use store::{InsertOutcome, MemItem, NewItem};
 use tauri::AppHandle;
 
-/// 注入快照三段输出复用旧预算（与 bot_chat::MEMORY_BUDGET_CHARS 同值，保持记忆块体积不变）
+/// 注入快照三段输出沿用旧 v1 预算值（保持记忆块体积不变）
 const MEMORY_BUDGET_CHARS: usize = 4_000;
 
 /// content 上限（表契约 ≤800 字；remember_fact 工具侧 value ≤500 更严，在入参校验处拦）
@@ -36,7 +36,7 @@ pub(crate) fn truncate_chars(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
 }
 
-// ───────────────────────── 记忆块拼装（四段式，前三段与旧 format_memory_block 输出格式一致） ─────────────────────────
+// ───────────────────────── 记忆块拼装（四段式，前三段沿用旧 v1 format_memory_block 输出格式） ─────────────────────────
 
 /// 「## 记忆」拼装（纯函数）：
 /// pinned（importance≥4 的 profile/preference）→「用户画像与偏好」；

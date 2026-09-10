@@ -4,7 +4,7 @@
 //!         + 0.10·exp(-age_days/30)
 //! 无向量（降级模式 / 条目缺 embedding）时语义项记 0 并把剩余权重归一（÷0.45）；
 //! 此时关键词零重合直接 0 分（纯关键词模式与旧系统口径一致，保住「零命中→近期摘要兜底」）。
-//! 关键词提取复刻 db.rs extract_keywords 的 CJK bigram 逻辑（旧函数保留给旧表）。
+//! 关键词提取复刻旧 db.rs extract_keywords 的 CJK bigram 逻辑（旧表 bot_facts 已弃用删除）。
 
 use super::store::{cosine, MemItem};
 
@@ -19,7 +19,7 @@ pub const MEMORY_LESSON_N: usize = 3;
 
 /// 关键词提取（无依赖）：英文/数字连续段转小写成一个词；
 /// 连续 CJK 字符段取字符 bigram；单字 CJK 段保留单字。去重保序。
-/// （与 db.rs::extract_keywords 同一算法；旧函数保留给旧表 bot_facts 的回归基准）
+/// （与旧 db.rs::extract_keywords 同一算法；旧函数随旧表 bot_facts 一并删除）
 pub(crate) fn extract_keywords(text: &str) -> Vec<String> {
     fn is_cjk(c: char) -> bool {
         matches!(c,
