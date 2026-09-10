@@ -1,10 +1,10 @@
 //! WMessage 任务数据存储：SQLite（app_data_dir/wmessage.db）
-//! 方案B（2026-08-14）：行级增量读写，取代方案2 的 data.json 全量覆盖。
+//! 方案B：行级增量读写，取代方案2 的 data.json 全量覆盖。
 //! 单写者架构：只有主窗口通过 db_upsert/db_delete 写库，挂件只读（db_load）。
 
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use tauri::Manager; // F-6：Runtime 给 data_dir 泛型化
+use tauri::Manager; // path() 来自 Manager trait；泛型 Runtime 供 mock runtime 测试直调
 
 use crate::error::{CommandError, CommandResult};
 
@@ -16,7 +16,7 @@ pub struct Subtask {
     pub done: bool,
 }
 
-/// 任务卡绑定文件条目（2026-08-19 多文件绑定，上限 MAX_TASK_FILES）
+/// 任务卡绑定文件条目（多文件绑定，上限 MAX_TASK_FILES）
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskFile {
@@ -24,7 +24,7 @@ pub struct TaskFile {
     pub is_dir: bool,
 }
 
-/// 任务卡绑定文件数量上限（多文件绑定 2026-08-19 老板指令）
+/// 任务卡绑定文件数量上限（多文件绑定）
 pub const MAX_TASK_FILES: usize = 10;
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -58,7 +58,7 @@ pub struct Task {
     /// 已交给机器人执行中（🤖 点击置真；执行结束无论成败清除；启动时残留清零）
     #[serde(default)]
     pub bot_assigned: Option<bool>,
-    /// T1-1（2026-09-03）：RMW 写回基线 = 调用方读快照时该行的 updated_at。
+    /// RMW 写回基线 = 调用方读快照时该行的 updated_at。
     /// upsert 写前比对现行行：不一致 → 冲突拒写（Err），防「读旧快照→整行写回」lost-update。
     /// 不映射 DB 列；skip_serializing = 后端事件/导出不下发（防前端 state 残留脏基线），
     /// 仅调用方上行携带。None = 无基线（新建/导入/未读快照），行为同原时间戳守卫。
@@ -111,8 +111,7 @@ pub fn bind_files(paths: Vec<String>) -> Vec<TaskFile> {
 
 /// 便携模式：数据库优先放 exe 同目录（U盘/绿色目录随走随带）；
 /// 目录不可写（如 Program Files）时兜底到系统应用数据目录。
-/// P2-19：目录解析委托 audit::probe_log_dir（原与 profile::data_dir /
-/// audit::generic_log_dir 三处拷贝，已合一）。
+/// 目录解析统一委托 audit::probe_log_dir（与 profile/audit 共用一套解析，避免多处拷贝漂移）。
 fn db_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> std::path::PathBuf {
     crate::audit::probe_log_dir(app)
 }
@@ -132,10 +131,10 @@ pub fn rotate_log_if_large(path: &std::path::Path, size_limit: u64) {
     }
 }
 
-/// NEW-B-6: 原子写文件——先写同目录 tmp 再 rename 覆盖目标。
+/// 原子写文件——先写同目录 tmp 再 rename 覆盖目标。
 /// 崩溃在写中途只留 tmp 残件，目标文件要么是旧完整版、要么是新完整版，
 /// 不会留半截 JSON。tmp 与目标同目录保证 rename 同卷原子。
-/// pub(crate)：后续 P2-8 save_rules 原子化可复用。
+/// pub(crate)：其他保存路径的原子化写入可复用。
 pub(crate) fn atomic_write(path: &std::path::Path, contents: &str) -> Result<(), String> {
     let file_name = path
         .file_name()
@@ -146,7 +145,7 @@ pub(crate) fn atomic_write(path: &std::path::Path, contents: &str) -> Result<(),
     Ok(())
 }
 
-/// P2-4: 便携模式首启拷贝老库——checkpoint 失败记 warn 继续（不吞错）；
+/// 便携模式首启拷贝老库——checkpoint 失败记 warn 继续（不吞错）；
 /// 同时拷 `-wal` / `-shm` 边车文件（如存在）——只拷 `.db` 时若 checkpoint 失败，
 /// WAL 里最近写入会静默丢失。返回告警列表（调用方写审计日志）；
 /// 拷贝整体失败不致命，open_db 会继续开新库。
@@ -171,9 +170,9 @@ fn copy_legacy_db(legacy_db: &std::path::Path, db_path: &std::path::Path) -> Vec
         }
         Err(e) => warns.push(format!("老库打开失败（跳过 checkpoint 直接拷贝）：{e}")),
     }
-    // 2026-08-28 批次2审计：先拷到临时文件再 rename——原先直拷目标路径，
-    // 拷贝中断（磁盘满/断电）留下半拷贝文件，open_db 的 `!db_path.exists()` 守卫
-    // 会让下轮永久跳过拷贝，rusqlite 打开截断文件报「database disk image is malformed」
+    // 先拷到临时文件再 rename——直拷目标路径时拷贝中断（磁盘满/断电）会留下
+    // 半拷贝文件，open_db 的 `!db_path.exists()` 守卫会让下轮永久跳过拷贝，
+    // rusqlite 打开截断文件报「database disk image is malformed」
     let tmp = db_path.with_extension("db.copying");
     let copied = std::fs::copy(legacy_db, &tmp)
         .map_err(|e| e.to_string())
@@ -203,8 +202,8 @@ fn wal_sidecar(db: &std::path::Path, ext: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(s)
 }
 
-/// 打开数据库（泛型 Runtime，2026-09-10：run_task_in_chat 链路泛化后 mock runtime
-/// 测试可直调；与原签名行为一致——内部 db_dir/write_event 本就泛型）
+/// 打开数据库（泛型 Runtime：run_task_in_chat 链路泛化后 mock runtime
+/// 测试可直调；内部 db_dir/write_event 本就泛型）
 pub fn open_db<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<rusqlite::Connection, String> {
     let dir = db_dir(app);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -215,7 +214,7 @@ pub fn open_db<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<rusqlite:
         if let Ok(legacy_dir) = app.path().app_data_dir() {
             let legacy_db = legacy_dir.join("wmessage.db");
             if legacy_db.exists() && legacy_db != db_path {
-                // P2-4：拷贝失败/ checkpoint 失败不再 `let _` 全静默——记 WARN 审计继续
+                // 拷贝失败/ checkpoint 失败不静默——记 WARN 审计继续
                 for w in copy_legacy_db(&legacy_db, &db_path) {
                     crate::audit::write_event(
                         app,
@@ -260,7 +259,7 @@ pub fn open_db<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<rusqlite:
            ord        REAL,
            updated_at INTEGER
          );
-         -- B1: 迁移操作对账日志。pending = 操作已开始但未提交，committed/cleared = 终态
+         -- 迁移操作对账日志。pending = 操作已开始但未提交，committed/cleared = 终态
          -- 启动时 replay pending：检测 move/delete 是否实际完成，必要时修复 DB
          -- 表为幂等设计，多次启动不会重复修复
          CREATE TABLE IF NOT EXISTS migration_journal (
@@ -298,7 +297,7 @@ pub fn open_db<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<rusqlite:
          );",
     )
     .map_err(|e| e.to_string())?;
-    // 迁移：定时任务卡（2026-08-16）——tasks 补 schedule / sched_last 列
+    // 迁移：定时任务卡——tasks 补 schedule / sched_last 列
     for (col, ty) in [("schedule", "TEXT"), ("sched_last", "INTEGER")] {
         let has: bool = conn
             .prepare("PRAGMA table_info(tasks)")
@@ -312,7 +311,7 @@ pub fn open_db<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<rusqlite:
                 .map_err(|e| e.to_string())?;
         }
     }
-    // 迁移：机器人归属头像（2026-08-16）——tasks 补 bot_assigned 列
+    // 迁移：机器人归属头像——tasks 补 bot_assigned 列
     let has_ba: bool = conn
         .prepare("PRAGMA table_info(tasks)")
         .and_then(|mut stmt| {
@@ -324,7 +323,7 @@ pub fn open_db<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<rusqlite:
         conn.execute("ALTER TABLE tasks ADD COLUMN bot_assigned INTEGER", [])
             .map_err(|e| e.to_string())?;
     }
-    // 迁移：老库补 ord 列（任务拖拽排序字段，2026-08-14 新增）
+    // 迁移：老库补 ord 列（任务拖拽排序字段）
     let has_ord: bool = conn
         .prepare("PRAGMA table_info(tasks)")
         .and_then(|mut stmt| {
@@ -336,7 +335,7 @@ pub fn open_db<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<rusqlite:
         conn.execute("ALTER TABLE tasks ADD COLUMN ord REAL", [])
             .map_err(|e| e.to_string())?;
     }
-    // 迁移：老库补 updated_at 列（合并导入比较用，2026-08-14 新增）
+    // 迁移：老库补 updated_at 列（合并导入比较用）
     let has_ua: bool = conn
         .prepare("PRAGMA table_info(tasks)")
         .and_then(|mut stmt| {
@@ -348,7 +347,7 @@ pub fn open_db<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<rusqlite:
         conn.execute("ALTER TABLE tasks ADD COLUMN updated_at INTEGER", [])
             .map_err(|e| e.to_string())?;
     }
-    // 迁移：任务卡多文件绑定（2026-08-19）——tasks 补 files 列（JSON [{path,isDir}]），
+    // 迁移：任务卡多文件绑定——tasks 补 files 列（JSON [{path,isDir}]），
     // 老 file_path/file_is_dir 单绑定回填进 files（仅 files 为空时；老列保留不清，过渡期旧版本可读）
     ensure_files_column(&conn)?;
     let migrated = migrate_legacy_file_bindings(&conn)?;
@@ -360,7 +359,7 @@ pub fn open_db<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<rusqlite:
             &[("migrated", migrated.to_string())],
         );
     }
-    // 迁移：多会话（2026-08-16）——bot_messages 补 session_id 列；老单会话消息归入「默认对话」
+    // 迁移：多会话——bot_messages 补 session_id 列；老单会话消息归入「默认对话」
     let has_sid: bool = conn
         .prepare("PRAGMA table_info(bot_messages)")
         .and_then(|mut stmt| {
@@ -372,7 +371,7 @@ pub fn open_db<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<rusqlite:
         conn.execute("ALTER TABLE bot_messages ADD COLUMN session_id TEXT", [])
             .map_err(|e| e.to_string())?;
     }
-    // 迁移：聊天折叠行持久化（2026-08-16）——bot_messages 补 thinking/tools 列（思考过程 + 工具调用行，JSON）
+    // 迁移：聊天折叠行持久化——bot_messages 补 thinking/tools 列（思考过程 + 工具调用行，JSON）
     for col in ["thinking", "tools"] {
         let has: bool = conn
             .prepare("PRAGMA table_info(bot_messages)")
@@ -412,8 +411,8 @@ pub fn open_db<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<rusqlite:
         }
     }
     // 启动时清残留 bot_assigned（机器人执行不可能跨重启存活；每进程仅一次）
-    // NEW-B-4: 不用 Once——首开遇库忙（busy_timeout 2s 兜底超时）时 Once 会把失败
-    // 当「已做过」永久吞错，残留 🤖 标志要等下次重启才清。改为 AtomicBool 标志：
+    // 不用 Once——首开遇库忙（busy_timeout 2s 兜底超时）时 Once 会把失败
+    // 当「已做过」永久吞错，残留 🤖 标志要等下次重启才清。AtomicBool 标志：
     // 仅 UPDATE 成功才置位，失败不消耗，下次 open_db 自动重试（UPDATE 幂等无副作用）。
     static BOT_ASSIGNED_RESET_DONE: std::sync::atomic::AtomicBool =
         std::sync::atomic::AtomicBool::new(false);
@@ -425,7 +424,7 @@ pub fn open_db<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<rusqlite:
     Ok(conn)
 }
 
-/// 多文件绑定（2026-08-19）：tasks 补 files 列（老库 ALTER 幂等）
+/// 多文件绑定：tasks 补 files 列（老库 ALTER 幂等）
 fn ensure_files_column(conn: &rusqlite::Connection) -> Result<(), String> {
     let has: bool = conn
         .prepare("PRAGMA table_info(tasks)")
@@ -441,7 +440,7 @@ fn ensure_files_column(conn: &rusqlite::Connection) -> Result<(), String> {
     Ok(())
 }
 
-/// 多文件绑定（2026-08-19）：老单绑定 file_path/file_is_dir → files JSON。
+/// 多文件绑定：老单绑定 file_path/file_is_dir → files JSON。
 /// 仅当 files 为空（NULL/''/'[]'）时回填，已迁移/新数据不动（幂等，可每启动重跑）。
 /// 返回迁移条数。
 fn migrate_legacy_file_bindings(conn: &rusqlite::Connection) -> Result<usize, String> {
@@ -475,7 +474,7 @@ fn migrate_legacy_file_bindings(conn: &rusqlite::Connection) -> Result<usize, St
     Ok(n)
 }
 
-/// NEW-B-4: 可重试的一次性执行——done 未置位时跑 exec，仅成功才置位；
+/// 可重试的一次性执行——done 未置位时跑 exec，仅成功才置位；
 /// 失败返回 false 留待下次调用重试（不消耗 token）。已置位直接返回 true。
 fn reset_bot_assigned_with<F: FnOnce() -> Result<(), String>>(
     done: &std::sync::atomic::AtomicBool,
@@ -522,7 +521,7 @@ pub struct BotMsgRow {
     pub tools_json: Option<String>,
 }
 
-/// 机器人会话（多会话，2026-08-16）
+/// 机器人会话（多会话）
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct BotSession {
@@ -543,7 +542,6 @@ pub struct WorkspaceItem {
     pub updated_at: Option<i64>,
 }
 
-// Skill outcome persistence (Phase 5 D 2026-08-18 08:00)
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct PersistedSkillOutcome {
@@ -613,7 +611,7 @@ pub(crate) fn load_workspace(conn: &rusqlite::Connection) -> Result<Vec<Workspac
     let mut items = Vec::new();
     for row in rows {
         let (id, title, collapsed, links, order, updated_at) = row.map_err(|e| e.to_string())?;
-        // 2026-08-28 批次2审计：links JSON 损坏留痕（读成空数组后 upsert 回写 = 静默丢链接）
+        // links JSON 损坏留痕（读成空数组后 upsert 回写 = 静默丢链接）
         let links = match serde_json::from_str(&links) {
             Ok(l) => l,
             Err(_) => {
@@ -633,7 +631,7 @@ pub(crate) fn load_workspace(conn: &rusqlite::Connection) -> Result<Vec<Workspac
     Ok(items)
 }
 
-/// P2-5: 循环 execute 包事务（同 P0-1 / B1 模式）——中途失败整体回滚，不留半截写入。
+/// 循环 execute 包事务——中途失败整体回滚，不留半截写入。
 fn upsert_workspace(
     conn: &mut rusqlite::Connection,
     items: &[WorkspaceItem],
@@ -668,7 +666,7 @@ fn upsert_workspace(
     tx.commit().map_err(|e| e.to_string())
 }
 
-/// P2-5: 同 upsert_workspace——批量 DELETE 包事务，中途失败回滚。
+/// 同 upsert_workspace——批量 DELETE 包事务，中途失败回滚。
 fn delete_workspace(conn: &mut rusqlite::Connection, ids: &[String]) -> Result<(), String> {
     if ids.is_empty() {
         return Ok(());
@@ -687,7 +685,7 @@ fn delete_workspace(conn: &mut rusqlite::Connection, ids: &[String]) -> Result<(
 
 #[tauri::command]
 pub async fn workspace_load(app: tauri::AppHandle) -> CommandResult<Vec<WorkspaceItem>> {
-    // NEW-B-3: B3 残留 sync 命令——与 db_load 同模式扔到 spawn_blocking，不阻塞 UI。
+    // 与 db_load 同模式扔到 spawn_blocking，不阻塞 UI。
     tauri::async_runtime::spawn_blocking(move || {
         let conn = open_db(&app)?;
         load_workspace(&conn).map_err(CommandError::from)
@@ -698,7 +696,7 @@ pub async fn workspace_load(app: tauri::AppHandle) -> CommandResult<Vec<Workspac
 
 #[tauri::command]
 pub async fn workspace_upsert(app: tauri::AppHandle, items: Vec<WorkspaceItem>) -> CommandResult<()> {
-    // NEW-B-3: 数据量小但仍是磁盘 IO；包 async + spawn_blocking（内部循环 execute 逻辑不动）。
+    // 数据量小但仍是磁盘 IO；包 async + spawn_blocking（内部循环 execute 逻辑不动）。
     tauri::async_runtime::spawn_blocking(move || {
         if items.is_empty() {
             return Ok(());
@@ -713,7 +711,7 @@ pub async fn workspace_upsert(app: tauri::AppHandle, items: Vec<WorkspaceItem>) 
 
 #[tauri::command]
 pub async fn workspace_delete(app: tauri::AppHandle, ids: Vec<String>) -> CommandResult<()> {
-    // NEW-B-3: 同 workspace_upsert——包 async + spawn_blocking（内部循环逻辑不动）。
+    // 同 workspace_upsert——包 async + spawn_blocking（内部循环逻辑不动）。
     tauri::async_runtime::spawn_blocking(move || {
         if ids.is_empty() {
             return Ok(());
@@ -751,8 +749,8 @@ pub fn bot_sessions_load(app: tauri::AppHandle) -> CommandResult<Vec<BotSession>
         .map_err(|e| CommandError::DbError(e.to_string()))
 }
 
-/// 新建会话的持久化内核（抽 Connection，2026-09-10 任务执行聊天化：后端
-/// run_task_in_chat 直调建执行会话；与 bot_session_create 命令同逻辑）
+/// 新建会话的持久化内核（抽 Connection：后端 run_task_in_chat 直调建执行会话；
+/// 与 bot_session_create 命令同逻辑）
 pub(crate) fn bot_session_create_inner(
     conn: &rusqlite::Connection,
     title: Option<String>,
@@ -804,7 +802,7 @@ fn bot_session_delete_inner(conn: &mut rusqlite::Connection, id: &str) -> Comman
 /// 删除会话及其全部消息（原子：消息与会话同一事务，任一失败整体回滚）
 #[tauri::command]
 pub async fn bot_session_delete(app: tauri::AppHandle, id: String) -> CommandResult<()> {
-    // B3: 高频写 + 跨表事务 → 主线程会阻塞；扔到 spawn_blocking。
+    // 高频写 + 跨表事务 → 主线程会阻塞；扔到 spawn_blocking。
     tauri::async_runtime::spawn_blocking(move || {
         let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut conn = open_db(&app)?;
@@ -834,7 +832,7 @@ pub async fn bot_history_load(
     app: tauri::AppHandle,
     session_id: String,
 ) -> CommandResult<Vec<BotMsgRow>> {
-    // B3: 长会话（几千条消息）查询会被主线程阻塞；扔到 spawn_blocking。
+    // 长会话（几千条消息）查询会被主线程阻塞；扔到 spawn_blocking。
     tauri::async_runtime::spawn_blocking(move || {
         let conn = open_db(&app)?;
         let mut stmt = conn
@@ -859,14 +857,13 @@ pub async fn bot_history_load(
 }
 
 /// 保存指定会话的聊天记录：全量覆盖 + 更新会话活跃时间（原子：DELETE+INSERT+UPDATE 同一事务）
-/// pub(crate)（2026-09-10 任务执行聊天化）：后端 run_task_in_chat 的执行会话持久化直调——
-/// 原先持久化只发生在前端 bot_history_save 命令路径。
+/// pub(crate)：后端 run_task_in_chat 的执行会话持久化直调，不经过前端 bot_history_save 命令路径。
 pub(crate) fn bot_history_save_inner(
     conn: &rusqlite::Connection,
     session_id: &str,
     messages: &[BotMsgRow],
 ) -> Result<(), String> {
-    // 2026-08-28 批次2审计：单会话历史上限 2000 条——原先全量覆盖写无上限，
+    // 单会话历史上限 2000 条——全量覆盖写不设上限的话，
     // 长会话每轮对话 O(n) 重写全表（写放大 + WAL 膨胀 + 长事务挤压其它写者）
     const MAX_HISTORY_MSGS: usize = 2000;
     let messages = if messages.len() > MAX_HISTORY_MSGS {
@@ -913,7 +910,7 @@ pub async fn bot_history_save(
     session_id: String,
     messages: Vec<BotMsgRow>,
 ) -> CommandResult<()> {
-    // B3: 长会话全量覆盖写入 + fsync 重；主线程阻塞；扔到 spawn_blocking。
+    // 长会话全量覆盖写入 + fsync 重；主线程阻塞；扔到 spawn_blocking。
     tauri::async_runtime::spawn_blocking(move || {
         let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut conn = open_db(&app)?;
@@ -932,7 +929,7 @@ pub async fn bot_history_save(
 /// 清空指定会话的聊天记录（会话保留）
 #[tauri::command]
 pub async fn bot_history_clear(app: tauri::AppHandle, session_id: String) -> CommandResult<()> {
-    // B3: DELETE 大量消息时仍可能阻塞；扔到 spawn_blocking。
+    // DELETE 大量消息时仍可能阻塞；扔到 spawn_blocking。
     tauri::async_runtime::spawn_blocking(move || {
         let _g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let conn = open_db(&app)?;
@@ -950,13 +947,13 @@ pub async fn bot_history_clear(app: tauri::AppHandle, session_id: String) -> Com
 /// Reflection 触发阈值/批量（设计 7.3）：summary 攒够 10 条合成一条 reflection
 pub const REFLECTION_BATCH: i64 = 10;
 
-/// T1-1（2026-09-03）：写冲突错误前缀——RMW 基线比对失败（lost-update 防护拒写）。
+/// 写冲突错误前缀——RMW 基线比对失败（lost-update 防护拒写）。
 /// 错误以 String 穿透多层（CommandError::from(String) → Internal），调用方按前缀分流
 /// （如本地 API 映射 409；其余调用方按写失败处理，数据未被覆盖）。
 pub const CONFLICT_ERR_PREFIX: &str = "写冲突";
 
-/// 2026-09-04 审计 P2-4：「行存在性」基线哨兵。老行 updated_at 为 NULL 时 RMW 调用方
-/// 无法做时间戳比对（原先 expected_updated_at=None = 跳过基线检查，最需要防
+/// 「行存在性」基线哨兵。老行 updated_at 为 NULL 时 RMW 调用方
+/// 无法做时间戳比对（expected_updated_at=None = 跳过基线检查，最需要防
 /// lost-update 的老行反而裸奔）。以此哨兵为基线表示「行必须仍存在且 updated_at
 /// 仍为 NULL」——行被删（无行）或被改（任何写者落库必写非 NULL 时间戳）都判冲突。
 /// 取 i64::MIN 保证与任何合法毫秒时间戳不撞。
@@ -982,7 +979,7 @@ fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), Strin
                updated_at=excluded.updated_at,
                schedule=excluded.schedule, sched_last=excluded.sched_last,
                bot_assigned=excluded.bot_assigned, files=excluded.files
-             -- B2: lost update 守卫 — 只允许新数据压过老数据
+             -- lost update 守卫 — 只允许新数据压过老数据
              -- current 为 NULL (老行) → 任何新数据胜出
              -- current 有值 且 incoming >= current → 更新
              -- current 有值 且 incoming < current → 跳过 (避免迁移中的旧快照回写覆盖用户新改)
@@ -990,14 +987,14 @@ fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), Strin
         )
         .map_err(|e| e.to_string())?;
     for t in tasks {
-        // T1-1 写前重读比对（2026-09-03）：调用方给了读快照基线（expected_updated_at）时，
+        // 写前重读比对：调用方给了读快照基线（expected_updated_at）时，
         // 现行行 updated_at 必须仍等于基线——否则「读旧快照→修改→整行写回」窗口内有
         // 其他写者改过/删过该行，整行写回会覆盖对方修改 → 拒写报错，不覆盖。
         // 比对与写入在同一事务（且写路径持 DB_WRITE_LOCK，进程内写者串行）→ 原子。
         // cur=None 含「行不存在（快照后被删）」与「老行 NULL updated_at」两种，均判冲突拒写：
         // 前者防复活已删行，后者因基线语义是「读到过的确定时间戳」，NULL 无从匹配。
-        // 2026-09-04 审计 P2-4：不再 flatten——区分「行被删」（None）与「老行 NULL」
-        // （Some(None)），后者配合 BASELINE_NULL_ROW 哨兵走「行存在性」基线。
+        // 区分「行被删」（None）与「老行 NULL」（Some(None)），
+        // 后者配合 BASELINE_NULL_ROW 哨兵走「行存在性」基线。
         if let Some(expected) = t.expected_updated_at {
             use rusqlite::OptionalExtension;
             let cur: Option<Option<i64>> = conn
@@ -1139,7 +1136,7 @@ fn load_all(conn: &rusqlite::Connection) -> Result<Vec<Task>, String> {
             Some(s) => serde_json::from_str(&s).ok(),
             None => None,
         };
-        // 行内 JSON 字段损坏检测（2026-08-28 批次2审计）：原值非空但解析失败 → 留痕。
+        // 行内 JSON 字段损坏检测：原值非空但解析失败 → 留痕。
         // 读成 None 后任何整行 upsert 会把 NULL 写回 = 静默丢数据；彻底防护需字段级
         // 合并写入（架构改造，见 AUDIT-DATA 报告）——这里至少让损坏可见、可诊断。
         let subtasks = match &subtasks {
@@ -1188,15 +1185,10 @@ fn load_all(conn: &rusqlite::Connection) -> Result<Vec<Task>, String> {
     Ok(tasks)
 }
 
-/// 迁移方案2 的 data.json：json 里有库里缺的任务就补回。
-/// P2-7：原触发条件「库 count==0」——用户删任务后重启、老 data.json 还在时不再迁移，
-/// 数据静默丢失。只补库中缺失的 id（已存在的 id 不用 json 旧值覆盖，防回滚用户的新编辑）。
-/// 2026-08-28 批次2审计 B2-P0 修正：
-/// 1) 触发判定从「计数比较」（json 条数 > 库条数）改为「集合差」——计数比较在
-///    「json ≤ 库但 json 含库缺失 id」时漏迁；
-/// 2) 评估成功后无论是否补了内容，都把 data.json 改名退役（data.json.migrated，可人工找回）——
-///    原先「不触发就保留文件」，而删除任务是硬删：库计数将来跌穿 json 计数时
-///    陈年 json 会把已删除任务全部复活。
+/// 迁移方案2 的 data.json：json 里有库里缺的任务就按 id 集合差补回
+/// （已存在的 id 不用 json 旧值覆盖，防回滚用户的新编辑）。
+/// 评估成功后无论是否补了内容，都把 data.json 改名退役（data.json.migrated，可人工找回）——
+/// 删除任务是硬删，留着陈年 json 会把已删除任务全部复活。
 fn migrate_data_json<R: tauri::Runtime>(app: &tauri::AppHandle<R>, conn: &mut rusqlite::Connection) {
     let Ok(dir) = app.path().app_data_dir() else {
         return;
@@ -1204,7 +1196,7 @@ fn migrate_data_json<R: tauri::Runtime>(app: &tauri::AppHandle<R>, conn: &mut ru
     let _ = migrate_data_json_file(&dir.join("data.json"), conn);
 }
 
-/// P2-7 可测内核：返回是否执行了迁移（成功补回缺失任务并退役旧文件）。
+/// 可测内核：返回是否执行了迁移（成功补回缺失任务并退役旧文件）。
 fn migrate_data_json_file(file: &std::path::Path, conn: &mut rusqlite::Connection) -> bool {
     if !file.exists() {
         return false;
@@ -1250,7 +1242,7 @@ fn migrate_data_json_file(file: &std::path::Path, conn: &mut rusqlite::Connectio
 
 /// 写操作全局锁：主窗口（db_upsert/db_delete）与本地 API 线程共享同一把锁，
 /// 避免 WAL 下并发写冲突（busy_timeout 只是兜底）。
-/// pub(crate)：migration 的 journal 写也纳入同一把锁（NEW-B-2）。
+/// pub(crate)：migration 的 journal 写也纳入同一把锁。
 pub(crate) static DB_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[tauri::command]
@@ -1258,14 +1250,14 @@ pub async fn db_load(app: tauri::AppHandle) -> CommandResult<Vec<Task>> {
     db_load_for(&app).await
 }
 
-/// db_load 的泛型 Runtime 变体（2026-09-10 任务执行聊天化：run_task_in_chat 泛化
-/// 后供 mock runtime 测试直调；命令版保持 Wry 签名不变，行为完全一致）
+/// db_load 的泛型 Runtime 变体（run_task_in_chat 泛化后供 mock runtime
+/// 测试直调；命令版保持 Wry 签名不变）
 pub async fn db_load_for<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> CommandResult<Vec<Task>> {
-    // B3: 启动加载全部任务（可能有几千条 + migrate_data_json 读 JSON 文件）；扔到 spawn_blocking。
+    // 启动加载全部任务（可能有几千条 + migrate_data_json 读 JSON 文件）；扔到 spawn_blocking。
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let mut conn = open_db(&app)?;
-        // P2-7：触发判定移入 migrate_data_json（json 任务数 > 库内任务数才补回），
+        // 触发判定在 migrate_data_json：json 含库缺失的 id 才补回，
         // 不再「库空才迁移」——用户删任务后重启、老 data.json 还在时也能补回
         migrate_data_json(&app, &mut conn);
         load_all(&conn).map_err(CommandError::from)
@@ -1281,7 +1273,7 @@ pub async fn db_upsert(app: tauri::AppHandle, tasks: Vec<Task>) -> CommandResult
 
 /// db_upsert 的泛型 Runtime 变体（同 db_load_for 注释）
 pub async fn db_upsert_for<R: tauri::Runtime>(app: &tauri::AppHandle<R>, tasks: Vec<Task>) -> CommandResult<()> {
-    // B3: 高频写（挂件拖拽/编辑都走这里），批量事务含 fsync；扔到 spawn_blocking。
+    // 高频写（挂件拖拽/编辑都走这里），批量事务含 fsync；扔到 spawn_blocking。
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         if tasks.is_empty() {
@@ -1302,7 +1294,7 @@ pub async fn db_upsert_for<R: tauri::Runtime>(app: &tauri::AppHandle<R>, tasks: 
 
 #[tauri::command]
 pub async fn db_delete(app: tauri::AppHandle, ids: Vec<String>) -> CommandResult<()> {
-    // B3: 批量删（回收站多选 / 清空）；扔到 spawn_blocking。
+    // 批量删（回收站多选 / 清空）；扔到 spawn_blocking。
     tauri::async_runtime::spawn_blocking(move || {
         if ids.is_empty() {
             return Ok(());
@@ -1315,7 +1307,7 @@ pub async fn db_delete(app: tauri::AppHandle, ids: Vec<String>) -> CommandResult
     .map_err(|e| CommandError::from(format!("数据库删除线程 join 失败：{e}")))?
 }
 
-/// 导出路径校验（2026-08-27 SEC-P1-3）：导出命令前端直达，路径限 .json——
+/// 导出路径校验：导出命令前端直达，路径限 .json——
 /// 防任意路径写覆盖用户文件（正常路径经系统保存对话框取得，本就用户授权）
 fn check_export_path(path: &str) -> CommandResult<()> {
     let ok = std::path::Path::new(path)
@@ -1336,12 +1328,12 @@ fn check_export_path(path: &str) -> CommandResult<()> {
 #[tauri::command]
 pub async fn tasks_export(app: tauri::AppHandle, path: String) -> CommandResult<usize> {
     check_export_path(&path)?;
-    // B3: 大数据集导出（load_all + JSON 序列化 + 文件写）阻塞主线程；扔到 spawn_blocking。
+    // 大数据集导出（load_all + JSON 序列化 + 文件写）阻塞主线程；扔到 spawn_blocking。
     tauri::async_runtime::spawn_blocking(move || {
         let conn = open_db(&app)?;
         let tasks = load_all(&conn)?;
         let json = serde_json::to_string_pretty(&tasks).map_err(|e| e.to_string())?;
-        // NEW-B-6: 原子写——崩溃不留半截 JSON（先写同目录 tmp 再 rename）
+        // 原子写——崩溃不留半截 JSON（先写同目录 tmp 再 rename）
         atomic_write(std::path::Path::new(&path), &json)
             .map_err(|e| format!("写入文件失败：{e}"))?;
         Ok(tasks.len())
@@ -1353,7 +1345,7 @@ pub async fn tasks_export(app: tauri::AppHandle, path: String) -> CommandResult<
 /// 从 JSON 文件导入任务卡数据：按 id 并集合并，同 id 保留 updated_at 更晚者。返回写入条数。
 #[tauri::command]
 pub async fn tasks_import(app: tauri::AppHandle, path: String) -> CommandResult<usize> {
-    // B3: 大文件读 + 解析 + 长事务；扔到 spawn_blocking。
+    // 大文件读 + 解析 + 长事务；扔到 spawn_blocking。
     tauri::async_runtime::spawn_blocking(move || {
         use rusqlite::OptionalExtension;
 
@@ -1371,7 +1363,7 @@ pub async fn tasks_import(app: tauri::AppHandle, path: String) -> CommandResult<
             if t.id.trim().is_empty() {
                 continue; // 跳过无 id 的脏数据
             }
-            // B4: NULL updated_at 兼容（2026-08-14 前老行 updated_at 为 NULL）
+            // NULL updated_at 兼容（2026-08-14 前老行 updated_at 为 NULL）
             let cur: Option<Option<i64>> = tx
                 .query_row(
                     "SELECT updated_at FROM tasks WHERE id = ?1",
@@ -1399,12 +1391,12 @@ pub async fn tasks_import(app: tauri::AppHandle, path: String) -> CommandResult<
 #[tauri::command]
 pub async fn workspace_export(app: tauri::AppHandle, path: String) -> CommandResult<usize> {
     check_export_path(&path)?;
-    // B3: 同步读 DB + JSON 序列化 + 文件写 阻塞主线程；扔 spawn_blocking。
+    // 同步读 DB + JSON 序列化 + 文件写 阻塞主线程；扔 spawn_blocking。
     tauri::async_runtime::spawn_blocking(move || {
         let conn = open_db(&app)?;
         let items = load_workspace(&conn)?;
         let json = serde_json::to_string_pretty(&items).map_err(|e| e.to_string())?;
-        // NEW-B-6: 原子写——崩溃不留半截 JSON（先写同目录 tmp 再 rename）
+        // 原子写——崩溃不留半截 JSON（先写同目录 tmp 再 rename）
         atomic_write(std::path::Path::new(&path), &json)
             .map_err(|e| format!("写入文件失败：{e}"))?;
         Ok(items.len())
@@ -1469,7 +1461,7 @@ fn workspace_import_merge(
 /// （与 tasks_import 语义一致；workspace 数据独立存于 workspace_items 表）
 #[tauri::command]
 pub async fn workspace_import(app: tauri::AppHandle, path: String) -> CommandResult<usize> {
-    // B3: 大文件读 + 解析 + 长事务；扔 spawn_blocking。
+    // 大文件读 + 解析 + 长事务；扔 spawn_blocking。
     tauri::async_runtime::spawn_blocking(move || {
         let raw = std::fs::read_to_string(&path).map_err(|e| format!("无法读取所选文件：{e}"))?;
         let ext: Vec<WorkspaceItem> =
@@ -1490,7 +1482,7 @@ mod tests {
     use super::*;
     use std::fs;
 
-    // ── P2-4：legacy WAL copy 不吞错 + 边车文件一并拷贝 ──
+    // ── legacy WAL copy 不吞错 + 边车文件一并拷贝 ──
 
     /// 老库 WAL 被占（另一连接持读锁）→ checkpoint TRUNCATE 必失败（SQLITE_BUSY）、
     /// WAL 完好——拷后三份都到位；checkpoint 出错路径产生 warn（不静默）
@@ -1565,7 +1557,7 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
-    // ── P2-7：migrate_data_json 触发条件放宽（json 任务数 > 库内任务数即补回） ──
+    // ── migrate_data_json 触发条件：json 含库缺失 id 即补回 ──
 
     fn setup_tasks_db() -> (std::path::PathBuf, rusqlite::Connection) {
         let dir = std::env::temp_dir().join(format!("wm-mig-{}", uuid::Uuid::new_v4()));
@@ -1610,8 +1602,8 @@ mod tests {
     }
 
     /// 删任务后重启场景：库里只剩 t1，老 data.json 还有 t1/t2/t3 → 首次评估补回 t2/t3，
-    /// 且已存在的 t1 不得被 json 旧值覆盖（B2 守卫之外再加 id 过滤）。
-    /// 2026-08-28 批次2：迁移/评估成功后 data.json 改名退役——再次评估不再复活已删任务。
+    /// 且已存在的 t1 不得被 json 旧值覆盖（时间戳守卫之外再加 id 过滤）。
+    /// 迁移/评估成功后 data.json 改名退役——再次评估不再复活已删任务。
     #[test]
     fn migrate_data_json_backfills_missing_after_user_delete() {
         let (dir, mut conn) = setup_tasks_db();
@@ -1638,7 +1630,7 @@ mod tests {
             dir.join("data.json.migrated").exists(),
             "退役文件保留为 data.json.migrated（可人工找回）"
         );
-        // B2-P0 关键回归：退役后用户硬删 t2，再次评估不得复活
+        // 关键回归：退役后用户硬删 t2，再次评估不得复活
         delete_tasks(&conn, &["t2".to_string()]).unwrap();
         assert!(
             !migrate_data_json_file(&file, &mut conn),
@@ -1661,14 +1653,14 @@ mod tests {
             !migrate_data_json_file(&file, &mut conn),
             "json 无库缺失 id 不得迁移"
         );
-        assert!(!file.exists(), "评估成功后文件退役（2026-08-28 语义变化）");
+        assert!(!file.exists(), "评估成功后文件应退役");
         assert!(dir.join("data.json.migrated").exists());
         let tasks = load_all(&conn).unwrap();
         assert_eq!(tasks.len(), 2, "库内容不得变化");
         fs::remove_dir_all(&dir).ok();
     }
 
-    // ── 多文件绑定（2026-08-19）：files 列迁移 + 老数据回填 + 上限 ──
+    // ── 多文件绑定：files 列迁移 + 老数据回填 + 上限 ──
 
     /// 老 schema（无 files 列）建库：模拟 2026-08-19 前的真实老库
     fn setup_legacy_tasks_db() -> (std::path::PathBuf, rusqlite::Connection) {
@@ -1867,7 +1859,7 @@ mod tests {
         (dir, conn)
     }
 
-    /// P0-1 核心回归：bot_history_save 内层报错时，DELETE 必须被事务回滚，
+    /// 核心回归：bot_history_save 内层报错时，DELETE 必须被事务回滚，
     /// 原会话聊天记录不得丢失（崩溃/强杀落在 INSERT 中间的场景）。
     #[test]
     fn bot_history_save_rolls_back_on_insert_failure() {
@@ -1971,7 +1963,7 @@ mod tests {
     }
 
     /// bot_session_delete 原子性：消息与会话同一事务，任一失败不留下半删状态。
-    /// 直调生产 bot_session_delete_inner（原来内联裸 SQL 复刻命令体，生产改动测试不红）。
+    /// 直调生产 bot_session_delete_inner（内联复刻命令体裸 SQL 会让生产改动测试不红）。
     #[test]
     fn bot_session_delete_is_atomic() {
         let (dir, conn) = setup_bhs_db();
@@ -2024,9 +2016,9 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
-    /// B4: 模拟 2026-08-14 前的任务行（updated_at IS NULL），验证 tasks_import
-    /// 读取不再崩。原代码 r.get::<_, i64>(0) 遇 NULL 报 InvalidColumnType，整次导入失败。
-    /// 新代码 r.get::<_, Option<i64>>(0) + flatten + unwrap_or(0)。
+    /// 模拟 2026-08-14 前的任务行（updated_at IS NULL），验证 tasks_import
+    /// 读取不崩：r.get::<_, Option<i64>>(0) + flatten + unwrap_or(0)。
+    /// 直接 r.get::<_, i64>(0) 遇 NULL 报 InvalidColumnType，整次导入失败。
     #[test]
     fn null_updated_at_handled_gracefully_in_import() {
         use rusqlite::OptionalExtension;
@@ -2041,7 +2033,7 @@ mod tests {
         )
         .unwrap();
 
-        // NULL 行：原本 r.get::<_, i64>(0) 报 Err，现在 r.get::<_, Option<i64>>(0) → Some(None)
+        // NULL 行：r.get::<_, Option<i64>>(0) → Some(None)（直接读 i64 会报 Err）
         let cur_legacy: Option<Option<i64>> = conn
             .query_row(
                 "SELECT updated_at FROM tasks WHERE id = 'legacy-1'",
@@ -2086,8 +2078,8 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
-    /// B2: upsert WHERE 守卫防 lost update——T1-1 起改为直接调生产 upsert_tasks
-    /// （原测试内联复刻生产 SQL，守卫改动后测试不同步即失效的弱断言已顺手修掉）。
+    /// upsert WHERE 守卫防 lost update——直接调生产 upsert_tasks
+    /// （内联复刻生产 SQL 会在守卫改动后测试不同步，属弱断言）。
     /// 五场景：incoming>current / incoming<current / 相等 / 老 NULL 行 / incoming NULL
     #[test]
     fn upsert_where_guard_prevents_lost_update() {
@@ -2149,7 +2141,7 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
-    /// T1-1（2026-09-03）核心回归：两写者读同一快照后交错写回——
+    /// 核心回归：两写者读同一快照后交错写回——
     /// 后写者基线比对失败被拒（Err 含 CONFLICT_ERR_PREFIX），先写者的字段修改不丢；
     /// 后写者重读刷新基线后重试可成功。另覆盖「快照后行被删 → 拒写防复活」。
     #[test]
@@ -2212,9 +2204,9 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
-    /// 2026-09-04 审计 P2-4：老行 updated_at 为 NULL 时用「行存在性」哨兵基线
+    /// 老行 updated_at 为 NULL 时用「行存在性」哨兵基线
     /// （BASELINE_NULL_ROW）——行原样放行；行被改（updated_at 变非 NULL）或
-    /// 被删都拒写。原先 NULL 行基线是 None → 跳过比对，老行无 lost-update 防护。
+    /// 被删都拒写。NULL 行基线无法做时间戳比对，哨兵补齐老行的 lost-update 防护。
     #[test]
     fn upsert_null_row_existence_baseline() {
         let (dir, conn) = setup_tasks_db();
@@ -2298,10 +2290,9 @@ mod ws_tests {
         fs::remove_dir_all(&dir).ok();
     }
 
-    /// NEW-B-3: workspace_* 命令改 async + spawn_blocking 后，命令体内的数据路径语义不变。
-    /// 桥接层（spawn_blocking + join 错误映射）是无逻辑薄壳且依赖 AppHandle 无法单测；
-    /// 这里直调生产 helper（upsert/load/delete）覆盖命令体真正干活的部分
-    /// （原测试内联复刻桥接结构，生产命令体改动不会让它变红，属弱断言，已去复刻）。
+    /// workspace_* 命令的桥接层（spawn_blocking + join 错误映射）是无逻辑薄壳且依赖
+    /// AppHandle 无法单测；这里直调生产 helper（upsert/load/delete）覆盖命令体真正
+    /// 干活的部分（内联复刻桥接结构会让生产命令体改动测试不红，属弱断言）。
     #[test]
     fn workspace_commands_spawn_blocking_bridge() {
         let dir = std::env::temp_dir().join(format!("wm-ws-async-{}", uuid::Uuid::new_v4()));
@@ -2334,7 +2325,7 @@ mod ws_tests {
         fs::remove_dir_all(&dir).ok();
     }
 
-    /// P2-5：upsert_workspace 中途失败必须整体回滚——已写入的前序行不得落库。
+    /// upsert_workspace 中途失败必须整体回滚——已写入的前序行不得落库。
     /// 用 BEFORE INSERT trigger 在第 2 条注入失败（RAISE ABORT），模拟「中途 panic/磁盘错」。
     #[test]
     fn upsert_workspace_rolls_back_on_mid_loop_failure() {
@@ -2372,7 +2363,7 @@ mod ws_tests {
         fs::remove_dir_all(&dir).ok();
     }
 
-    /// P2-5：delete_workspace 中途失败同样整体回滚——前序已删行恢复。
+    /// delete_workspace 中途失败同样整体回滚——前序已删行恢复。
     #[test]
     fn delete_workspace_rolls_back_on_mid_loop_failure() {
         let dir = std::env::temp_dir().join(format!("wm-ws-tx-{}", uuid::Uuid::new_v4()));
@@ -2402,7 +2393,7 @@ mod ws_tests {
 
     /// workspace_import 合并语义 + 跳空 id 脏数据（与 tasks_import 语义一致）：
     /// 同 id 保留 updated_at 更晚者；新 id 直接写入；空 id 跳过。
-    /// 直调生产 workspace_import_merge（原来 inline 复刻合并循环 SQL，生产改动测试不红）。
+    /// 直调生产 workspace_import_merge（inline 复刻合并循环 SQL 会让生产改动测试不红）。
     #[test]
     fn workspace_import_merges_by_updated_at_and_skips_empty_id() {
         let dir = std::env::temp_dir().join(format!("wm-ws-imp-{}", uuid::Uuid::new_v4()));
@@ -2456,7 +2447,7 @@ mod reset_tests {
     use std::fs;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    /// NEW-B-4: 首次 UPDATE 失败不消耗 token——下次重试成功后才置位，此后不再执行。
+    /// 首次 UPDATE 失败不消耗 token——下次重试成功后才置位，此后不再执行。
     #[test]
     fn reset_bot_assigned_retries_on_failure() {
         let done = AtomicBool::new(false);
@@ -2487,7 +2478,7 @@ mod reset_tests {
         assert_eq!(calls.load(Ordering::SeqCst), 2, "置位后不应再执行 UPDATE");
     }
 
-    /// NEW-B-4: 真实库——重试成功时确实清掉残留 bot_assigned 标志。
+    /// 真实库——重试成功时确实清掉残留 bot_assigned 标志。
     #[test]
     fn reset_bot_assigned_real_db_clears_flag() {
         let dir = std::env::temp_dir().join(format!("wm-reset-{}", uuid::Uuid::new_v4()));
@@ -2522,7 +2513,7 @@ mod atomic_write_tests {
     use super::*;
     use std::fs;
 
-    /// NEW-B-6: 原子写 happy path——内容完整落盘，tmp 不残留；覆盖已有文件也正常。
+    /// 原子写 happy path——内容完整落盘，tmp 不残留；覆盖已有文件也正常。
     #[test]
     fn atomic_write_success_and_overwrite() {
         let dir = std::env::temp_dir().join(format!("wm-aw-{}", uuid::Uuid::new_v4()));
@@ -2539,7 +2530,7 @@ mod atomic_write_tests {
         fs::remove_dir_all(&dir).ok();
     }
 
-    /// NEW-B-6: tmp 写入失败（目标目录只读）→ 目标文件保持原状，不被半截覆盖。
+    /// tmp 写入失败（目标目录只读）→ 目标文件保持原状，不被半截覆盖。
     #[test]
     fn atomic_write_failure_preserves_target() {
         let dir = std::env::temp_dir().join(format!("wm-aw-ro-{}", uuid::Uuid::new_v4()));

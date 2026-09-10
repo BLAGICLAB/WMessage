@@ -12,7 +12,7 @@ import { useInlineEdit } from "./useInlineEdit";
  * 任务卡展示内容 —— 供挂件（WidgetApp）使用。
  *
  * ⚠️ 字段与顺序必须与 TodoCard 一致（老板要求挂件与主窗口显示一致）：
- * 标题行（标题 + 折叠开关 + 打勾圆圈；折叠时标题单行截断） → 备注 → 标签 → 子任务 → 文件 → 🤖/⏰ → 截止时间 → 完成时间（截止永远最底，完成时间在截止时间下一行，2026-09-08 老板拍板）。
+ * 标题行（标题 + 折叠开关 + 打勾圆圈；折叠时标题单行截断） → 备注 → 标签 → 子任务 → 文件 → 🤖/⏰ → 截止时间 → 完成时间（截止永远最底，完成时间在截止时间下一行，老板拍板）。
  * 标题以下内容可折叠。改动 TodoCard 展示时记得同步这里。
  */
 export function TaskCardContent({
@@ -47,7 +47,7 @@ export function TaskCardContent({
   onToggleCollapsed?: () => void;
   /** 提供时子任务 checkbox 可勾选（与主窗口一致） */
   onToggleSubtask?: (subtaskId: string) => void;
-  /** 点绑定文件名/文件夹名直接打开（2026-08-26 起替代 📂 按钮 + 多选列表） */
+  /** 点绑定文件名/文件夹名直接打开（替代原 📂 按钮 + 多选列表） */
   onOpenFilePath?: (path: string) => void;
   /** chip 内「复制」字样：复制该文件+标题（替代原 📋 按钮） */
   onCopyFilePath?: (path: string) => void;
@@ -66,19 +66,18 @@ export function TaskCardContent({
   // 定时执行面板
   const [schedOpen, setSchedOpen] = useState(false);
   const [schedOnce, setSchedOnce] = useState("");
-  // 绑定文件（2026-08-19 多文件绑定；2026-08-26 改版：点名直开，不再有 📂 多选列表）：
-  // 超过 5 个折叠「还有 N 个」
+  // 绑定文件：点名直开，不再有 📂 多选列表；超过 5 个折叠「还有 N 个」
   const boundFiles = taskFiles(task);
   const [filesExpanded, setFilesExpanded] = useState(false);
 
-  // 标题内联编辑：草稿 + Enter/Escape/Blur 行为统一走 useInlineEdit（P2-23，与 TodoCard 共用）
+  // 标题内联编辑：草稿 + Enter/Escape/Blur 行为统一走 useInlineEdit（与 TodoCard 共用）
   const titleEdit = useInlineEdit({
     value: task.title,
     editing: editingTitle,
     onCommit: (d) => onCommitTitle?.(d),
     onCancel: () => onCancelTitle?.(),
   });
-  // 挂件任务卡永远显示折叠键（老板 2026-08-17 12:33 指令：复用现有 FoldToggle，
+  // 挂件任务卡永远显示折叠键（老板指令：复用现有 FoldToggle，
   // 不重新设计折叠窗口）：折叠态只露标题（单行截断），展开态显示标题完整 + 🤖 + ⏰ + 其他内容
 
   return (
@@ -132,14 +131,14 @@ export function TaskCardContent({
           </h3>
         )}
         {/* 折叠/展开开关：挂件永远显示（包括新建空任务），复用现有 FoldToggle 不重新设计
-            （老板 2026-08-17 12:33 指令） */}
+            （老板指令） */}
         {onToggleCollapsed && (
           <FoldToggle collapsed={!!task.collapsed} onToggle={onToggleCollapsed} />
         )}
         {onToggleDone && (
           <DoneCircle done={task.column === "done"} onToggle={onToggleDone} />
         )}
-        {/* 归属头像（2026-09-05 规则）：设了定时 → 一直机器人头像；
+        {/* 归属头像规则：设了定时 → 一直机器人头像；
             🤖 执行中 → 机器人头像；执行完（botAssigned 清除且无定时）→ 用户头像。
             悬停显示姓名（与主窗口一致） */}
         <ActorAvatar bot={!!task.botAssigned || !!task.schedule} />
@@ -197,7 +196,7 @@ export function TaskCardContent({
             </div>
           )}
 
-          {/* 绑定文件 chip 列表（2026-08-26 交互改版，与主窗口一致）：点文件名/文件夹名
+          {/* 绑定文件 chip 列表（与主窗口一致）：点文件名/文件夹名
               直接打开；每 chip「复制」字样在解绑 × 前；chip 小字号 + 凹陷底色区分；
               超过 5 个折叠为「还有 N 个」（点击按钮不触发卡片聚焦） */}
           {boundFiles.length > 0 && (
@@ -268,7 +267,7 @@ export function TaskCardContent({
           )}
 
           {/* 🤖 交给机器人 + ⏰ 定时：在折叠段内，复用现有 FoldToggle
-              （老板 2026-08-17 12:33 指令：不重新设计折叠窗口，折叠态只露标题，
+              （老板指令：不重新设计折叠窗口，折叠态只露标题，
                展开态显示标题完整 + 🤖 + ⏰ + 其他内容） */}
           {(onBotExecute || onSetSchedule) && (
             <div className="mt-2 flex items-center gap-1.5">
@@ -373,7 +372,7 @@ export function TaskCardContent({
             </div>
           )}
 
-          {/* 截止时间 + 状态行（两行布局，2026-09-08 老板拍板与主窗口 TodoCard 一致）；
+          {/* 截止时间 + 状态行（两行布局，老板拍板与主窗口 TodoCard 一致）；
               状态行统一显示「未完成」/「完成 YYYY-MM-DD HH:mm」，未完成时不带时间戳 */}
           {(task.due || task.column === "done") && (
             <div className="mt-2">

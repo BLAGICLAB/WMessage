@@ -33,7 +33,7 @@ beforeEach(() => {
   document.documentElement.classList.remove("dark");
 });
 
-// 第二梯队 #8（2026-09-03）：主题三态切换/解析纯函数此前零覆盖。
+// 主题三态切换/解析纯函数的行为覆盖。
 describe("theme 设置读写与解析", () => {
   it("getSetting：无存储默认 light；dark/system 读回；非法值归一 light", () => {
     expect(getSetting()).toBe("light");

@@ -38,7 +38,7 @@ vi.mock("../profile", () => ({
   subscribeProfile: vi.fn(() => () => {}),
 }));
 
-// P2-22（2026-08-19）：回收站列表按 updatedAt 倒序（新删的在前）——
+// 回收站列表按 updatedAt 倒序（新删的在前）——
 // 修复前不排序，展示顺序依赖任务数组原始 order，删除时间与位置对不上
 describe("TrashPage 按 updatedAt 倒序（P2-22）", () => {
   it("3 个回收站任务按 updatedAt 倒序渲染", () => {

@@ -167,7 +167,7 @@ describe("App", () => {
     expect(screen.queryByText("梳理 WMessage 需求清单")).not.toBeInTheDocument();
   });
 
-  // P2-21（2026-08-19）：mutate 落盘失败必须抛错、tasksRef/state 不得先行更新——
+  // mutate 落盘失败必须抛错、tasksRef/state 不得先行更新——
   // 修复前 tasksRef.current = next 在 await 落盘之前，失败时 UI 已更新但磁盘没动
   it("mutate 落盘失败：抛错 + UI 不更新（tasksRef 未先行赋值）", async () => {
     const user = userEvent.setup();
@@ -205,7 +205,7 @@ describe("App", () => {
     }
   });
 
-  // P2-22（2026-08-19）：软删除必须清调度字段——否则任务躺在回收站里 schedule
+  // 软删除必须清调度字段——否则任务躺在回收站里 schedule
   // 仍到点触发（deletedAt 不挡调度读取）
   it("软删除进回收站：落盘行 schedule/schedLast 清空", async () => {
     const user = userEvent.setup();
@@ -244,7 +244,7 @@ describe("App", () => {
     });
   });
 
-  // E2（2026-08-19）：tasks-updated 事件合并后，规则改动（今日归位/超时归档）
+  // tasks-updated 事件合并后，规则改动（今日归位/超时归档）
   // 必须落盘，否则只改内存 → 重启/挂件读 db 回到原始数据，三端长期不一致
   it("tasks-updated 合并：超时归档的规则改动落盘 db_upsert + console 观测行", async () => {
     const handlers: Record<string, (e: unknown) => Promise<void>> = {};
@@ -277,7 +277,7 @@ describe("App", () => {
     const upsertCalls = mocks.invokeMock.mock.calls.filter(
       (c) => c[0] === "db_upsert"
     );
-    // 第 1 次：事件原始行落盘；第 2 次：归档规则改动落盘（E2 修复点）
+    // 第 1 次：事件原始行落盘；第 2 次：归档规则改动落盘（修复点）
     expect(upsertCalls.length).toBe(2);
     const ruleWrite = upsertCalls[1][1] as { tasks: Task[] };
     expect(ruleWrite.tasks).toHaveLength(1);
@@ -288,7 +288,7 @@ describe("App", () => {
     infoSpy.mockRestore();
   });
 
-  // E3（2026-08-19）：导入后必须以 DB 为单一真源——importTasksFromFile 成功后
+  // 导入后必须以 DB 为单一真源——importTasksFromFile 成功后
   // 重新 db_load 全量 → setTasks(fresh) → 再广播，而不是清空 UI 直接广播
   // （避免其他窗口读到中间态，制造"数据全丢"假象）。实现已符合，本例为回归测试。
   it("导入任务：tasks_import 成功后重新 db_load，UI 显示 fresh 数据", async () => {

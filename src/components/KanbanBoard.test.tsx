@@ -44,8 +44,8 @@ const t = (id: string, column: Task["column"]): Task => ({
   column,
 });
 
-// 第二梯队 #8（2026-09-03）：spliceMove 是拖放提交的唯一排序逻辑（handleDragEnd / 跨列 DragOver 共用），
-// 此前零覆盖；以下覆盖同列/跨列/列空白区/边界 index。
+// spliceMove 是拖放提交的唯一排序逻辑（handleDragEnd / 跨列 DragOver 共用），
+// 覆盖同列/跨列/列空白区/边界 index。
 describe("KanbanBoard.spliceMove", () => {
   it("同列移动 below=true：插到 over 之后，column 不变", () => {
     const flat = [t("a", "todo"), t("b", "todo"), t("c", "todo")];

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 
 /**
- * 2026-08-28：Windows（WebView2）滚动条颜色适配浅色/深色模式。
+ * Windows（WebView2）滚动条颜色适配浅色/深色模式。
  * 原先全局没有任何滚动条样式，深色模式下滚动条仍是浅色原生样式。
  * 修复 = main.css 双机制：color-scheme（原生控件/滚动条随主题）+
  * webkit 细滚动条走主题变量。本测试锁死防回退。

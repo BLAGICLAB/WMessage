@@ -1,7 +1,7 @@
 use once_cell::sync::Lazy;
 use regex::Regex;
 
-// ─────────────────────── 变量替换（Phase 2 2026-08-17 23:23）───────────────────────
+// ─────────────────────── 变量替换 ───────────────────────
 
 /// 任务卡 UUID 提取正则（标准 UUID v4 格式）
 static TASK_ID_RE: Lazy<Regex> = Lazy::new(|| {
@@ -15,7 +15,7 @@ static VAR_BY_INDEX: Lazy<Regex> =
 /// `${prev.field}` 上一步简写
 static VAR_PREV: Lazy<Regex> = Lazy::new(|| Regex::new(r"\$\{prev\.(result|id)\}").unwrap());
 
-/// `${stepN.path.to.field}` 嵌套路径（Phase 4 第 2 项 2026-08-18 06:25）
+/// `${stepN.path.to.field}` 嵌套路径
 /// 路径 ≥2 段（首段标识符 + 后续 `.xxx`），与单段 result/id 不冲突
 /// 例：`${step1.task.id}` / `${step1.list.0.title}` / `${step1.a.b.c.d}`
 static VAR_NESTED_BY_INDEX: Lazy<Regex> =
@@ -38,7 +38,7 @@ pub struct CompletedStep {
     /// 从 result 提取的 task id（UUID）；没找到为 None
     pub id: Option<String>,
     /// JSON 解析结果（execute_tool 返回字符串尝试 parse_json，失败 None）—— 嵌套路径用
-    /// Phase 4 第 2 项 2026-08-18 06:25：substitute_vars 走 serde_json::Value 路径取值
+    /// （substitute_vars 走 serde_json::Value 路径取值）
     pub parsed: Option<serde_json::Value>,
 }
 
@@ -47,10 +47,9 @@ pub fn extract_task_id(text: &str) -> Option<String> {
     TASK_ID_RE.find(text).map(|m| m.as_str().to_string())
 }
 
-/// JSON 字符串内容转义（2026-08-27 审计 P2-b）：placeholder 位于 JSON 字符串内
-/// （前后都是 `"`）时，替换值按 JSON 字符串内容转义——原先裸插原始文本，结果里的
-/// 换行/引号会破坏 args_json，被下游 parse_args 静默降级成 Null 参数
-/// （SKILL_DSL.md §8.3 的 create_excel 示例按旧实现不可能工作）。
+/// JSON 字符串内容转义：placeholder 位于 JSON 字符串内
+/// （前后都是 `"`）时，替换值按 JSON 字符串内容转义——裸插原始文本会让结果里的
+/// 换行/引号破坏 args_json，被下游 parse_args 静默降级成 Null 参数。
 fn escape_json_str_inner(v: &str) -> String {
     let s = serde_json::to_string(v).unwrap_or_default();
     // 去掉首尾包围引号，只留转义后的内容
@@ -88,16 +87,16 @@ fn replace_ctx(
     out
 }
 
-/// 变量替换（Phase 2 核心）：
+/// 变量替换：
 /// - `${stepN.result}` → 第 N 步的工具返回文本
 /// - `${stepN.id}` → 第 N 步从结果提取的 UUID（任务卡专用）
 /// - `${prev.result}` → 上一步工具返回文本
 /// - `${prev.id}` → 上一步提取的 UUID
 /// - 未匹配的 `${...}` 保留原样（避免误吃合法 JSON 里的 `$` 字符）
-/// - 2026-08-27 审计 P2-b：替换值落在 JSON 字符串内时自动转义；
+/// - 替换值落在 JSON 字符串内时自动转义；
 ///   `${stepN.id}` 无 UUID 时保留占位符（原先替换为空串，下游拿到 `{"id": ""}` 无法诊断）
 pub fn substitute_vars(text: &str, ctx: &[CompletedStep]) -> String {
-    // Phase 4 第 2 项（2026-08-18 06:25）：嵌套路径优先匹配
+    // 嵌套路径优先匹配
     // （`${stepN.task.id}` / `${prev.list.0.title}` / `${stepN.a.b.c.d}`）
     // 路径 ≥2 段才走嵌套 regex，单段 result/id 留给下方 VAR_BY_INDEX / VAR_PREV 处理
     let r0 = replace_ctx(&VAR_NESTED_BY_INDEX, text, |caps| {
@@ -140,7 +139,7 @@ pub fn substitute_vars(text: &str, ctx: &[CompletedStep]) -> String {
     r3
 }
 
-/// JSON 路径解析（Phase 4 第 2 项 2026-08-18 06:25）：沿 serde_json::Value 走路径取值
+/// JSON 路径解析：沿 serde_json::Value 走路径取值
 /// - 数字段 → 数组索引（`usize` 解析）
 /// - 非数字段 → 对象字段
 /// - 字段不存在 / parsed 为 None / 数组越界 → 返回 None（调用方决定 fallback：保留 `${...}`）
@@ -166,7 +165,7 @@ fn resolve_nested_path(parsed: Option<&serde_json::Value>, path: &str) -> Option
 mod tests {
     use super::*;
 
-    // ── Phase 2 变量替换（2026-08-18 05:18 接入 run_skill_scheduler） ──
+    // ── 变量替换 ──
 
     fn ctx_one_step(uuid: &str, result: &str) -> Vec<CompletedStep> {
         vec![CompletedStep {
@@ -174,7 +173,7 @@ mod tests {
             title: "step-1".into(),
             result: result.into(),
             id: Some(uuid.into()),
-            // Phase 4 第 2 项：result 尝试 parse_json，失败 None（嵌套路径 fallback 保留原样）
+            // result 尝试 parse_json，失败 None（嵌套路径 fallback 保留原样）
             parsed: serde_json::from_str(result).ok(),
         }]
     }
@@ -193,7 +192,7 @@ mod tests {
     #[test]
     fn substitute_vars_resolves_step_index_result() {
         // 步骤原始结果跨步骤传递：${step1.result} → 上一步工具返回文本。
-        // P2-b（2026-08-27 审计）：placeholder 在 JSON 字符串内时替换值转义——
+        // placeholder 在 JSON 字符串内时替换值转义——
         // 裸换行会破坏 args_json 被下游静默降级成 Null；转义后是合法 JSON。
         let ctx = ctx_one_step("uuid-1", "第一行\n第二行");
         let args = "{\"note\": \"${step1.result}\"}";
@@ -205,7 +204,7 @@ mod tests {
 
     #[test]
     fn substitute_vars_escapes_quotes_inside_json_string() {
-        // P2-b：含引号的结果在 JSON 字符串内被转义，不再破坏结构
+        // 含引号的结果在 JSON 字符串内被转义，不再破坏结构
         let ctx = ctx_one_step("uuid-1", "他说\"你好\"");
         let out = substitute_vars("{\"note\": \"${step1.result}\"}", &ctx);
         let parsed: serde_json::Value =
@@ -222,7 +221,7 @@ mod tests {
 
     #[test]
     fn substitute_vars_missing_id_keeps_placeholder() {
-        // P2（审计 V2）：${stepN.id} 无 UUID 时保留占位符（原先替换为空串，
+        // ${stepN.id} 无 UUID 时保留占位符（原先替换为空串，
         // 下游拿到 {"id": ""} 无法诊断）
         let ctx = vec![CompletedStep {
             index: 1,
@@ -335,7 +334,7 @@ mod tests {
         );
     }
 
-    // ── Phase 4 第 2 项：嵌套路径（2026-08-18 06:25） ──
+    // ── 嵌套路径 ──
 
     fn ctx_one_step_parsed(uuid: &str, parsed_json: &str) -> Vec<CompletedStep> {
         vec![CompletedStep {

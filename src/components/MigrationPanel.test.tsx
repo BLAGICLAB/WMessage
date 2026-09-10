@@ -53,7 +53,7 @@ beforeEach(() => {
   window.confirm = mocks.confirmMock;
 });
 
-// 第二梯队 #8（2026-09-03）：桌面清理面板此前零覆盖。以下覆盖渲染与关键交互：
+// 桌面清理面板覆盖渲染与关键交互：
 // 规则表/状态行、删除规则警告、手动迁移 confirm 门、日志弹窗。
 describe("MigrationPanel", () => {
   it("初始渲染：加载规则与状态，规则行展示关键字/动作/归档目录", async () => {

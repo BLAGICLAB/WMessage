@@ -1,10 +1,10 @@
-//! 记忆 v2 存储（2026-09-09，设计 docs/BOT-MEMORY-V2-DESIGN.md）：
-//! 新表 mem_items（不动旧表 bot_facts 的数据），统一容量上限 500 条，
+//! 记忆 v2 存储（设计 docs/BOT-MEMORY-V2-DESIGN.md）：
+//! 新表 mem_items，统一容量上限 500 条，
 //! 语义去重（余弦阈值合并/提示）+ 受保护条目免淘汰。
 //!
 //! 纯函数取 &Connection（内存库可单测）；锁/open_db/AppHandle 包装在 memory/mod.rs 门面层。
 
-/// 统一容量上限（修掉旧系统 fact 200 / 全表 300 的双层上限分裂）
+/// 统一容量上限（500 条单层上限，不按类型分层）
 pub const MAX_MEM_ITEMS: i64 = 500;
 
 /// 语义去重阈值：余弦 ≥ MERGE 视为同一条 → 合并更新，不新增
@@ -32,7 +32,7 @@ pub struct MemItem {
     pub embedding: Option<Vec<f32>>,
 }
 
-/// 建表（幂等；open_db 后每次调用都跑一次 IF NOT EXISTS，与旧系统 ensure_* 同模式）
+/// 建表（幂等；open_db 后每次调用都跑一次 IF NOT EXISTS，与 db.rs ensure_* 同模式）
 pub fn ensure_table(conn: &rusqlite::Connection) -> Result<(), String> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS mem_items(

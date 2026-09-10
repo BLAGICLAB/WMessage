@@ -10,7 +10,7 @@ import { setProfileName, setProfileAvatar, removeProfileAvatar } from "../profil
 import { useProfile } from "./ActorAvatar";
 import botLogo from "../assets/main-logo.png";
 
-/** 单个大模型条目（2026-09-08 老板拍板改版）：label / baseUrl / model 三元组 + 稳定 id。
+/** 单个大模型条目：label / baseUrl / model 三元组 + 稳定 id。
  *  id 是前端 crypto.randomUUID() 生成的字符串，仅用于 React key + 标识 active，
  *  不参与 API 调用。 */
 type ModelEntry = {
@@ -20,14 +20,14 @@ type ModelEntry = {
   model: string;
 };
 
-/** 双协议下各自的模型列表（2026-09-08）：设置页协议切换时整体切换显示；
+/** 双协议下各自的模型列表：设置页协议切换时整体切换显示；
  *  新增的 ModelEntry 落在当前 apiProvider 协议下。 */
 type ModelsByProvider = {
   openai: ModelEntry[];
   anthropic: ModelEntry[];
 };
 
-/** 双协议下各自的 active 模型 id（2026-09-08）：null = 该协议还没选 active。 */
+/** 双协议下各自的 active 模型 id：null = 该协议还没选 active。 */
 type ActiveModelId = {
   openai: string | null;
   anthropic: string | null;
@@ -59,7 +59,7 @@ type SkillOutcome = {
 };
 type SkillInfo = { name: string; description: string; lastOutcome?: SkillOutcome | null };
 
-/** Skill 状态徽章颜色 + 图标 (Phase 5 D 2026-08-18) */
+/** Skill 状态徽章颜色 + 图标 */
 function SkillOutcomeBadge({ outcome }: { outcome: SkillOutcome }) {
   const map: Record<SkillOutcomeKind, { color: string; label: string; icon: string }> = {
     done: { color: "text-emerald-600 bg-emerald-50", label: "完成", icon: "OK" },
@@ -198,7 +198,7 @@ const API_PROVIDER_OPTIONS = [
 ] as const;
 type ApiProvider = (typeof API_PROVIDER_OPTIONS)[number]["value"];
 
-/** 界面字体大小四档（2026-09-08 老板拍板）：顺序 = 从小到大，
+/** 界面字体大小四档：顺序 = 从小到大，
  *  索引位置 = SettingsPage 滑块/按钮的档位 */
 const UI_FONT_SIZE_OPTIONS = [
   { value: "small", label: "小" },
@@ -208,7 +208,7 @@ const UI_FONT_SIZE_OPTIONS = [
 ] as const;
 type UiFontSize = (typeof UI_FONT_SIZE_OPTIONS)[number]["value"];
 
-/** API 协议下拉（2026-09-05）：原生 <select> 在 macOS 上弹系统级菜单——样式脱离
+/** API 协议下拉：原生 <select> 在 macOS 上弹系统级菜单——样式脱离
  *  新拟态主题、深浅色都不跟随，看起来像单独弹了个窗口。自绘下拉：触发钮 + 浮层
  *  全部走主题变量（nm-inset/nm-outset/var(--t*)），深浅色自动生效。
  *  交互：点击触发钮开合；点外部 / Esc 收起；点选项即选即收 */
@@ -428,7 +428,7 @@ function ProfileRow({
   );
 }
 
-/** 单个大模型条目（2026-09-08 老板拍板改版）：radio + label + baseUrl + model + 删除按钮。
+/** 单个大模型条目：radio + label + baseUrl + model + 删除按钮。
  *  active 状态：左边 ● 实心圆点 + nm-inset 背景（高亮区分）；点击圆点切换 active。 */
 function ModelRow({
   model,
@@ -520,44 +520,44 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
   const [botEnabled, setBotEnabled] = useState(false);
   const [botBusy, setBotBusy] = useState(false);
   const [botError, setBotError] = useState("");
-  // 开机自启动（2026-09-08 新增）：登录系统时自动拉起 wmessage
+  // 开机自启动：登录系统时自动拉起 wmessage
   // 走 tauri-plugin-autostart：is_enabled / enable / disable 三个命令
   const [autostartEnabled, setAutostartEnabled] = useState(false);
   const [autostartBusy, setAutostartBusy] = useState(false);
   const [autostartError, setAutostartError] = useState("");
   const [config, setConfig] = useState({
-    // API 协议（2026-09-05）：openai=OpenAI 兼容（默认）/ anthropic=Anthropic 兼容
+    // API 协议：openai=OpenAI 兼容（默认）/ anthropic=Anthropic 兼容
     apiProvider: "openai" as ApiProvider,
-    // 每协议下的大模型列表（2026-09-08 老板拍板改版）：
+    // 每协议下的大模型列表：
     // 双协议各自独立一份 ModelEntry 列表，切换协议时整体切换显示；
     // 初始空 = 老板要求「不设置默认厂商」，用户点「添加大模型」自己加
     modelsByProvider: { openai: [], anthropic: [] } as ModelsByProvider,
-    // 每协议当前选中的模型 id（2026-09-08）：null = 该协议还没选 active
+    // 每协议当前选中的模型 id：null = 该协议还没选 active
     activeModelId: { openai: null, anthropic: null } as ActiveModelId,
-    // 界面字体大小（2026-09-08）：small/standard/large/xlarge 四档
+    // 界面字体大小：small/standard/large/xlarge 四档
     // 默认 small（老板拍板「目前字号为小」）；后端 None 也回退到 small
     uiFontSize: "small" as UiFontSize,
     hasApiKey: false,
     bypassLlmOnPreStepHit: true, // F-1 [P0] pre-step 路由外层是否跳过主 LLM；老配置默认 true
     // 本地文件工具白名单目录（textarea 一行一个；空 = 后端内置默认 桌面/下载/文档+绑定文件夹）
     allowedDirs: "",
-    // Tavily 搜索 key 是否已存系统凭据存储（2026-09-05 起 key 本体不再回填，
+    // Tavily 搜索 key 是否已存系统凭据存储（key 本体不回填，
     // 与主 API key 同模式：view 只给 has 标志，输入框独立 state 不回填）
     hasTavilyKey: false,
-    // 「Tavily 搜索」开关（2026-08-20）：开 = web_search 走 Tavily；关 = Bing+百度双引擎
+    // 「Tavily 搜索」开关：开 = web_search 走 Tavily；关 = Bing+百度双引擎
     tavilyEnabled: false,
-    // Brave 搜索 key 是否已存系统凭据存储（2026-09-05，同 hasTavilyKey）
+    // Brave 搜索 key 是否已存系统凭据存储（同 hasTavilyKey）
     hasBraveKey: false,
-    // 「Brave 搜索」开关（2026-09-05）：开 = web_search 走 Brave；与 Tavily 互斥，双开报错
+    // 「Brave 搜索」开关：开 = web_search 走 Brave；与 Tavily 互斥，双开报错
     braveEnabled: false,
     // run_python 默认超时秒数（空 = 60s 默认；模型 timeoutSecs 参数优先；硬钳 300s）
     pythonTimeoutSecs: "",
-    // 授权模式（2026-08-26）：strict=白名单外硬拒 / ask=白名单外弹授权（默认）/ yolo=全放行
+    // 授权模式：strict=白名单外硬拒 / ask=白名单外弹授权（默认）/ yolo=全放行
     permMode: "ask" as "strict" | "ask" | "yolo",
-    // max_tokens（2026-09-08 改造：仅 Anthropic 模式用；空 = 8192 默认，范围 256-200000）
+    // max_tokens（仅 Anthropic 模式用；空 = 8192 默认，范围 256-200000）
     // 仍是顶层配置——同一协议下多个模型共用一个 max_tokens
     maxTokens: "",
-    // 定时记忆整理（2026-09-09 memory v2）：开关 + 频率（off/12h/daily/weekly）+ 上次整理时间
+    // 定时记忆整理：开关 + 频率（off/12h/daily/weekly）+ 上次整理时间
     // 后端 None/缺字段 → 默认 { enabled: true, interval: "daily", lastRunAt: null }
     memoryConsolidation: {
       enabled: true,
@@ -569,7 +569,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
   const [consolidateBusy, setConsolidateBusy] = useState(false);
   const [consolidateMsg, setConsolidateMsg] = useState("");
   const [keyInput, setKeyInput] = useState("");
-  // Tavily/Brave key 输入框（2026-09-05 起与主 keyInput 同模式：不回填已存 key，
+  // Tavily/Brave key 输入框（与主 keyInput 同模式：不回填已存 key，
   // 非空保存时覆盖写入系统凭据存储；空 = 不动已存 key）
   const [tavilyKeyInput, setTavilyKeyInput] = useState("");
   const [braveKeyInput, setBraveKeyInput] = useState("");
@@ -601,7 +601,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         hasApiKey: boolean;
         bypassLlmOnPreStepHit?: boolean;
         allowedDirs?: string[];
-        // 2026-09-05 起 view 不再含 key 本体，只有 has 标志
+        // view 不含 key 本体，只有 has 标志
         hasTavilyKey?: boolean;
         tavilyEnabled?: boolean | null;
         hasBraveKey?: boolean;
@@ -610,14 +610,14 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         permMode?: string | null;
         apiProvider?: string | null;
         maxTokens?: number | null;
-        // 2026-09-08：每协议下的大模型列表 + active 模型 id
+        // 每协议下的大模型列表 + active 模型 id
         // 老后端版本（无这俩字段）→ undefined → 前端按空列表处理（"不设置默认厂商"）
         modelsByProvider?: ModelsByProvider | null;
         activeModelId?: ActiveModelId | null;
-        // 2026-09-08：界面字体大小（small/standard/large/xlarge）
+        // 界面字体大小（small/standard/large/xlarge）
         // 老后端版本没返 → 前端按 small 回退（老板拍板默认）
         uiFontSize?: string | null;
-        // 2026-09-09：定时记忆整理配置（老后端没返 → 默认启用 + 每天）
+        // 定时记忆整理配置（老后端没返 → 默认启用 + 每天）
         memoryConsolidation?: {
           enabled?: boolean;
           interval?: string;
@@ -643,7 +643,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         // 老后端版本（没返 bypass 字段）默认 true，避免意外走 LEGACY 路径
         bypassLlmOnPreStepHit: c.bypassLlmOnPreStepHit ?? true,
         allowedDirs: (c.allowedDirs ?? []).join("\n"),
-        // 2026-09-05 起 view 只给 has 标志；key 本体不回填（与 hasApiKey/keyInput 同模式）。
+        // view 只给 has 标志；key 本体不回填（与 hasApiKey/keyInput 同模式）。
         // 开关自动态：老配置没显式开关字段（null/undefined）时按 has 标志显示
         hasTavilyKey: c.hasTavilyKey ?? false,
         tavilyEnabled: c.tavilyEnabled ?? (c.hasTavilyKey ?? false),
@@ -714,7 +714,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     refreshBot();
     loadConfig();
     refreshPy();
-    // 拉取开机自启动状态（2026-09-08 新增）
+    // 拉取开机自启动状态
     invoke<boolean>("plugin:autostart|is_enabled")
       .then(setAutostartEnabled)
       .catch((e) => {
@@ -772,12 +772,12 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     try {
       await invoke("bot_set_config", {
         config: {
-          // 2026-09-08：新结构——每协议下的大模型列表 + active 模型 id
+          // 新结构——每协议下的大模型列表 + active 模型 id
           // 后端落盘前会从 active 模型派生 base_url/model 回填老字段
           // （bot_model_loop 不感知新结构，沿用 base_url/model/api_provider 三个老字段）
           modelsByProvider: c.modelsByProvider,
           activeModelId: c.activeModelId,
-          // 2026-09-08：字体大小直接透传，后端原样存（None = small 默认）
+          // 字体大小直接透传，后端原样存（None = small 默认）
           uiFontSize: c.uiFontSize,
           bypassLlmOnPreStepHit: c.bypassLlmOnPreStepHit,
           // textarea 一行一个路径；空行/空白剔除；全空 = 后端内置默认白名单
@@ -785,7 +785,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
             .split("\n")
             .map((s) => s.trim())
             .filter((s) => s.length > 0),
-          // 空串视为未配置（后端 Option 语义）——2026-09-05 起 key 存系统凭据存储，
+          // 空串视为未配置（后端 Option 语义）——key 存系统凭据存储，
           // config 对象里的 key 字段固定传 null（后端强制置 None 双保险，不落明文）；
           // 新 key 走顶层 tavilyKey/braveKey 参数（见下方 invoke 调用）
           tavilyKey: null,
@@ -801,19 +801,19 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
           })(),
           // 授权模式（strict/ask/yolo）
           permMode: c.permMode,
-          // API 协议（openai/anthropic，2026-09-05）
+          // API 协议（openai/anthropic）
           apiProvider: c.apiProvider,
           // max_tokens：空 = 8192 默认；非法输入按未配置处理（后端钳 256..=200000）
           maxTokens: (() => {
             const n = parseInt(c.maxTokens.trim(), 10);
             return Number.isFinite(n) && n > 0 ? n : null;
           })(),
-          // 定时记忆整理（2026-09-09）：原样透传（后端 serde default 兜底缺字段）
+          // 定时记忆整理：原样透传（后端 serde default 兜底缺字段）
           memoryConsolidation: c.memoryConsolidation,
         },
         // 输入框非空才写凭据存储；留空保持原 key 不变
         apiKey: keyInput.trim() ? keyInput.trim() : null,
-        // 2026-09-05：Tavily/Brave key 同主 key 模式——非空才覆盖写入系统凭据存储，
+        // Tavily/Brave key 同主 key 模式——非空才覆盖写入系统凭据存储，
         // null = 不动已存 key（开关切换走 toggleTavily/toggleBrave → saveConfig，
         // 此时输入框为空 → keyring 不受任何影响）
         tavilyKey: tavilyKeyInput.trim() ? tavilyKeyInput.trim() : null,
@@ -838,10 +838,10 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     }
   };
 
-  // ───────── 2026-09-08 双协议下大模型列表 handlers ─────────
+  // ───────── 双协议下大模型列表 handlers ─────────
   // 当前协议下的模型列表 + active id（每次渲染取一次，避免重复计算）
-  // 老后端返回的 modelsByProvider 可能缺 anthropic/openai 字段（迁移期遗留）；
-// fallback 空数组避免 undefined.length 报栈（2026-09-08 bugfix）
+  // 老后端返回的 modelsByProvider 可能缺 anthropic/openai 字段；
+// fallback 空数组避免 undefined.length 报栈
 const currentModels = config.modelsByProvider[config.apiProvider] ?? [];
 const currentActiveId = config.activeModelId[config.apiProvider] ?? null;
 
@@ -923,14 +923,14 @@ const currentActiveId = config.activeModelId[config.apiProvider] ?? null;
     await saveConfig(next);
   };
 
-  /** 「Brave 搜索」开关（2026-09-05）：同 toggleTavily——点击即持久化（复用整份配置保存） */
+  /** 「Brave 搜索」开关：同 toggleTavily——点击即持久化（复用整份配置保存） */
   const toggleBrave = async () => {
     const next = { ...config, braveEnabled: !config.braveEnabled };
     setConfig(next);
     await saveConfig(next);
   };
 
-  /** 授权模式切换（2026-08-26）：点击即持久化（同 toggleTavily 模式） */
+  /** 授权模式切换：点击即持久化（同 toggleTavily 模式） */
   const setPermMode = async (mode: "strict" | "ask" | "yolo") => {
     if (configBusy || config.permMode === mode) return;
     const next = { ...config, permMode: mode };
@@ -938,7 +938,7 @@ const currentActiveId = config.activeModelId[config.apiProvider] ?? null;
     await saveConfig(next);
   };
 
-  /** 记忆整理开关/频率（2026-09-09 memory v2）：点击即持久化（同 toggleTavily / setPermMode 模式） */
+  /** 记忆整理开关/频率：点击即持久化（同 toggleTavily / setPermMode 模式） */
   const setConsolidation = async (patch: Partial<{ enabled: boolean; interval: string }>) => {
     if (configBusy) return;
     const next = {
@@ -987,7 +987,7 @@ const currentActiveId = config.activeModelId[config.apiProvider] ?? null;
     }
   };
 
-  /** 开机自启动切换（2026-09-08 新增）：点击即落盘——macOS 写 LaunchAgent plist,
+  /** 开机自启动切换：点击即落盘——macOS 写 LaunchAgent plist,
    *  Windows 写注册表 Run 项，Linux 写 ~/.config/autostart/*.desktop。
    *  失败时回滚到后端真实状态（部分成功的情况）。 */
   const toggleAutostart = async () => {
@@ -1133,7 +1133,7 @@ const currentActiveId = config.activeModelId[config.apiProvider] ?? null;
         </div>
       </div>
 
-      {/* 通用设置（2026-09-08 老板拍板合并）：外观（深浅色模式改名）+ 开机自启动 wmessage */}
+      {/* 通用设置：外观 + 开机自启动 wmessage */}
       <div className="nm-card p-5">
         <h2 className="text-lg font-semibold text-[var(--t1)]">通用设置</h2>
         <div className="mt-4 space-y-3">
@@ -1159,10 +1159,10 @@ const currentActiveId = config.activeModelId[config.apiProvider] ?? null;
                 </button>
               ))}
             </div>
-            {/* 字体大小（2026-09-08 老板拍板）：四档 small/standard/large/xlarge
+            {/* 字体大小：四档 small/standard/large/xlarge
                 默认 small（“目前字号为小”）。走 data-attr 全局套用，
                 视觉缩放在 main.css 里。点选即生效 + 即时落盘（与外观一致，
-                不用再点「保存配置」——2026-09-08 老板拍板）。 */}
+                不用再点「保存配置」）。 */}
             <p className="mt-3 text-sm font-medium text-[var(--t2)]">字体大小</p>
             <div className="mt-2 flex gap-1">
               {UI_FONT_SIZE_OPTIONS.map((o) => (
@@ -1176,7 +1176,7 @@ const currentActiveId = config.activeModelId[config.apiProvider] ?? null;
                     setConfig((c) => ({ ...c, uiFontSize: v }));
                     // 点选即生效：data-attr 预览 + saveConfig 落盘（functional override
                     // 拿最新 config，skipReload 避免末尾重拉用磁盘上可能的旧 uiFontSize
-                    // 覆盖刚点的字段，2026-09-08 老板拍板）
+                    // 覆盖刚点的字段）
                     document.documentElement.dataset.fontSize = v;
                     saveConfig((c) => ({ ...c, uiFontSize: v }), { skipReload: true });
                   }}
@@ -1186,7 +1186,7 @@ const currentActiveId = config.activeModelId[config.apiProvider] ?? null;
               ))}
             </div>
           </div>
-          {/* 开机自动启动 wmessage（2026-09-08 新增）：走 tauri-plugin-autostart，
+          {/* 开机自动启动 wmessage：走 tauri-plugin-autostart，
               走现成的 plugin:autostart|enable / disable / is_enabled 命令。
               点击即落盘：macOS 写 LaunchAgent plist / Windows 写注册表 Run / Linux 写 .desktop。 */}
           <div className="pt-3 border-t border-[var(--edge)] flex items-center justify-between gap-4">
@@ -1367,7 +1367,7 @@ const currentActiveId = config.activeModelId[config.apiProvider] ?? null;
           </button>
         </div>
 
-        {/* Python 默认超时（2026-08-20：pandas 大计算 60s 偏紧；模型可用 timeoutSecs 参数临时调） */}
+        {/* Python 默认超时：pandas 大计算 60s 偏紧；模型可用 timeoutSecs 参数临时调 */}
         <div className="mt-3 flex items-center justify-between gap-4">
           <div className="min-w-0">
             <p className="text-xs font-medium text-[var(--t4)]">Python 默认超时（秒）</p>
@@ -1401,7 +1401,7 @@ const currentActiveId = config.activeModelId[config.apiProvider] ?? null;
           </button>
         </div>
 
-        {/* 定时记忆整理（2026-09-09 memory v2 consolidation） */}
+        {/* 定时记忆整理 */}
         <div className="mt-3 border-t border-[var(--edge)] pt-3 space-y-2">
           <div className="flex items-center justify-between gap-4">
             <div className="min-w-0">
@@ -1478,7 +1478,7 @@ const currentActiveId = config.activeModelId[config.apiProvider] ?? null;
         {botEnabled && (
           <div className="mt-4 border-t border-[var(--edge)] pt-4 space-y-3">
             <p className="text-xs font-medium text-[var(--t4)]">大模型 API 配置</p>
-            {/* API 协议（2026-09-05 Anthropic 兼容模式）：自绘下拉（原生 select 弹系统菜单不跟随主题） */}
+            {/* API 协议：自绘下拉（原生 select 弹系统菜单不跟随主题） */}
             <div className="space-y-1">
               <p className="text-[10px] text-[var(--t5)]">API 协议</p>
               <ApiProviderSelect
@@ -1486,7 +1486,7 @@ const currentActiveId = config.activeModelId[config.apiProvider] ?? null;
                 onChange={(v) => setConfig((c) => ({ ...c, apiProvider: v }))}
               />
             </div>
-            {/* 该协议下的大模型（2026-09-08 老板拍板改版）：
+            {/* 该协议下的大模型：
                 双协议各自独立维护一份列表，协议切换时整体切换显示；列表可加多个；
                 radio 表示当前 active（机器人实际调用的那个）。老板要求「不设置默认厂商」，
                 所以列表初始为空，用户点「添加大模型」自己加。 */}
@@ -1524,7 +1524,7 @@ const currentActiveId = config.activeModelId[config.apiProvider] ?? null;
                 ● 表示当前选中的模型（机器人实际调用的）；切换协议时列表整体切换。
               </p>
             </div>
-            {/* max_tokens（2026-09-08 改造）：仅 Anthropic 模式显示；仍是顶层配置——
+            {/* max_tokens：仅 Anthropic 模式显示；仍是顶层配置——
                 同协议下多个模型共用一个 max_tokens。留空 = 8192 默认。 */}
             {config.apiProvider === "anthropic" && (
               <div className="space-y-1">
@@ -1541,8 +1541,8 @@ const currentActiveId = config.activeModelId[config.apiProvider] ?? null;
                 </p>
               </div>
             )}
-            {/* API Key（2026-09-08 改造）：仍是全局一份，所有协议所有模型共用一个 key。
-                老后端会把 key 存到系统凭据存储（不回填到输入框），前端只在 hasApiKey=true
+            {/* API Key：全局一份，所有协议所有模型共用一个 key。
+                后端把 key 存到系统凭据存储（不回填到输入框），前端只在 hasApiKey=true
                 时显示「已保存」标识。 */}
             <div className="space-y-1">
               <p className="text-[10px] text-[var(--t5)]">
@@ -1564,7 +1564,7 @@ const currentActiveId = config.activeModelId[config.apiProvider] ?? null;
                 </button>
               )}
             </div>
-            {/* 授权模式（2026-08-26，Kimi CLI 风格执行前授权） */}
+            {/* 授权模式（Kimi CLI 风格执行前授权） */}
             <div className="space-y-1">
               <p className="text-sm font-medium text-[var(--t2)]">授权模式</p>
               <div className="flex gap-2">
@@ -1596,8 +1596,8 @@ const currentActiveId = config.activeModelId[config.apiProvider] ?? null;
                   "⚠️ 不弹任何授权：机器人可读本机任意文件，且 Python 编程免开关直接执行（以本机用户权限，可联网）。仅在你完全信任所用模型时开启。"}
               </p>
             </div>
-            {/* 本地文件工具白名单（read_text_file/grep_files/list_files，2026-08-19 Phase 1；
-                2026-08-26 起为追加语义：在内置默认之上追加放行） */}
+            {/* 本地文件工具白名单（read_text_file/grep_files/list_files；
+                追加语义：在内置默认之上追加放行） */}
             <div className="space-y-1">
               <p className="text-[10px] text-[var(--t5)]">文件工具白名单目录（一行一个绝对路径）</p>
               <textarea
@@ -1611,7 +1611,7 @@ const currentActiveId = config.activeModelId[config.apiProvider] ?? null;
                 白名单内静默放行；白名单外按授权模式处理（见上）。授权弹窗点「始终允许该目录」会自动追加到这里。
               </p>
             </div>
-            {/* Tavily 搜索（2026-08-19 Phase 2 key；2026-08-20 加开关分流） */}
+            {/* Tavily 搜索 */}
             <div className="space-y-1">
               <div className="flex items-center justify-between gap-4">
                 <div className="min-w-0">
@@ -1653,7 +1653,7 @@ const currentActiveId = config.activeModelId[config.apiProvider] ?? null;
                 </p>
               )}
             </div>
-            {/* Brave 搜索（2026-09-05，照搬 Tavily 模式；与 Tavily 互斥） */}
+            {/* Brave 搜索（照搬 Tavily 模式；与 Tavily 互斥） */}
             <div className="space-y-1">
               <div className="flex items-center justify-between gap-4">
                 <div className="min-w-0">
@@ -1695,7 +1695,7 @@ const currentActiveId = config.activeModelId[config.apiProvider] ?? null;
                 </p>
               )}
             </div>
-            {/* Tavily/Brave 双开冲突提示（2026-09-05）：后端同样明确报错，这里提前可见 */}
+            {/* Tavily/Brave 双开冲突提示：后端同样明确报错，这里提前可见 */}
             {config.tavilyEnabled && config.braveEnabled && (
               <p className="text-[10px] text-[var(--danger)] leading-snug">
                 ⚠️ Tavily 与 Brave 只能开启一个，请关闭其中一个。

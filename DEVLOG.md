@@ -2,6 +2,11 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-09-11（周五）注释考古层清理 + 补录 09-08 设置页改版决定
+
+- **阶段 2 注释清理**（audit 分支合入）：全仓剥掉注释里的日期戳/审计批次号（批次N审计、P0-x/P1-x/P2-x、T1-x、NEW-x、F-x、Phase N），保留每条注释的"为什么"；纯变更史叙述删除。规则：注释只解释"现在为什么这样"，历史归 DEVLOG
+- **补录 2026-09-08 设置页改版（老板拍板，原注释考古时发现 DEVLOG 漏收）**：双协议各自独立模型列表（modelsByProvider/activeModelId，不设默认厂商）；字号四档默认 small；「通用设置」合并区块；开机自启动接入 tauri-plugin-autostart
+
 ## 2026-09-10（周四）Windows 绿色版出包 + ort 跨编译方案定案
 
 - **打包**：`npx tauri build --target x86_64-pc-windows-gnu --no-bundle`（mingw 链路）→ wmessage.exe 54MB；绿色包 `wmessage-portable-2026-09-10.zip` 76MB（Python zipfile 打）。内容：wmessage.exe + WebView2Loader.dll + MicrosoftEdgeWebview2Setup.exe + README.txt + dotnet/（self-contained .NET 8）+ **onnxruntime.dll + onnxruntime_providers_shared.dll + bge-small-zh-v1.5/**（记忆 v2 语义检索三件套，exe 同目录）

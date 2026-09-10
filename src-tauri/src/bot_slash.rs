@@ -1,10 +1,10 @@
-//! Slash 命令与旁路基础设施（F-6 step 5 拆分 2026-08-18）：
+//! Slash 命令与旁路基础设施：
 //!
 //! 主入口 `bot_chat`（在 bot_chat.rs）走 run_model_loop + 工具循环；
 //! 这里集中「停止执行实例」「危险操作确认」「机器人总开关」三类旁路能力：
 //! - `/stop` 快捷命令（bot_stop）：遍历 StopRegistry 把 interactive=true 的实例标志置位
 //! - 弹窗确认（ConfirmMap）：挂件删除任务等危险操作走 ask_user_confirm（两按钮）；
-//!   文件访问授权走 ask_path_confirm（三按钮：允许一次/始终允许该目录/拒绝，2026-08-26）
+//!   文件访问授权走 ask_path_confirm（三按钮：允许一次/始终允许该目录/拒绝）
 //! - 机器人总开关（bot_get_enabled / bot_set_enabled）：flag 文件持久化
 //!
 //! 设计目标：bot_chat / bot_execute_task / bot_scheduler 共享 StopGuard，
@@ -16,8 +16,7 @@ use tauri::{AppHandle, Emitter, Manager};
 // ───────────────────────── /stop 停止标志（按执行实例隔离） ─────────────────────────
 
 /// 活跃执行实例注册表：stop_id → (停止标志, 是否用户交互触发, 归属会话 id)
-/// 2026-08-27 审计 P1-8：注册表带会话——/stop 只停当前会话的实例，
-/// 不再一停全停（别的会话的 Skill/任务卡执行不受影响）
+/// 注册表带会话：/stop 只停当前会话的实例，别的会话的 Skill/任务卡执行不受影响
 type StopMap = std::sync::Mutex<
     std::collections::HashMap<u64, (std::sync::Arc<std::sync::atomic::AtomicBool>, bool, Option<String>)>,
 >;
@@ -30,7 +29,7 @@ fn stop_registry() -> &'static StopMap {
 
 /// 执行实例的停止标志：run_model_loop 在流式/工具循环检查点检查；Drop 时注销
 /// （interactive=true 表示由用户聊天/点 🤖 触发，/stop 只停这类实例，不动后台定时）
-/// 2026-08-26 会话隔离改造：携带 session_id（触发会话；后台定时任务为 None），
+/// 携带 session_id（触发会话；后台定时任务为 None），
 /// 供流式事件会话标记 / Skill 与确认按会话归属过滤；interactive 供流式广播开关
 /// （后台任务不向挂件发流式增量，防串进用户当前对话气泡）。
 pub struct StopGuard {
@@ -38,7 +37,7 @@ pub struct StopGuard {
     flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
     interactive: bool,
     session_id: Option<String>,
-    /// 任务卡执行流程（run_task_in_chat / exec_steps）标记（2026-08-27 审计 P0-2）：
+    /// 任务卡执行流程（run_task_in_chat / exec_steps）标记：
     /// 该流程是「内置编排流」，与 Skill 同级——EXECUTE_SYSTEM_PROMPT 要求调
     /// link_file_to_task 原子工具收尾，没有活动 SkillRun
     /// 开门会被 AtomicGuard 硬拦（prompt 要求的核心动作被自家网关否决）。
@@ -83,7 +82,7 @@ impl StopGuard {
         self.session_id.as_deref()
     }
 
-    /// 派生停止令牌（NEW-C-4）：与 guard 共享同一标志，但 owned + 'static，
+    /// 派生停止令牌：与 guard 共享同一标志，但 owned + 'static，
     /// 可跨 spawn_blocking 边界传给 run_python（&StopGuard 借用无法进 'static 闭包）
     pub fn token(&self) -> StopToken {
         StopToken(self.flag.clone())
@@ -96,7 +95,7 @@ impl StopGuard {
     }
 }
 
-/// StopGuard 的 'static 停止令牌（NEW-C-4）：只读共享标志，供阻塞执行层轮询
+/// StopGuard 的 'static 停止令牌：只读共享标志，供阻塞执行层轮询
 #[derive(Clone)]
 pub struct StopToken(std::sync::Arc<std::sync::atomic::AtomicBool>);
 
@@ -114,7 +113,7 @@ impl Drop for StopGuard {
     }
 }
 
-/// 应用退出（2026-08-28 批次5审计 P1）：置位**全部**执行实例的停止标志——
+/// 应用退出：置位**全部**执行实例的停止标志——
 /// 与 /stop（只停本会话 interactive 实例）不同，进程都要退了，不存在会话误伤；
 /// 后台定时任务平时没有任何停止入口，退出是唯一叫停机会。返回置位数量。
 pub fn stop_all_executions() -> usize {
@@ -134,7 +133,7 @@ pub fn active_execution_count() -> usize {
     stop_registry().lock().map(|m| m.len()).unwrap_or(0)
 }
 
-/// 批次8审计 P1（2026-09-02）：STOP_REGISTRY 测试串行锁。
+/// STOP_REGISTRY 测试串行锁。
 /// stop_all_executions() 是无差别全局广播（置位全进程所有已注册 StopGuard），
 /// 与「持有 StopGuard 且断言停止前行为」的测试（如 bot_py 的 StopReader 用例）
 /// 并行时互相干扰随机挂。这两类测试都必须全程持此锁。
@@ -142,28 +141,28 @@ pub fn active_execution_count() -> usize {
 pub(crate) static STOP_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// /stop 快捷命令：停止**当前会话**用户交互触发的执行（bot_chat / 🤖 任务卡执行），
-/// 后台定时（interactive=false）与别的会话不受影响（2026-08-27 审计 P1-8：
-/// 原先一停全停，会话 B 的 /stop 会误杀会话 A 的活动 Skill）
+/// 后台定时（interactive=false）与别的会话不受影响
+/// （避免会话 B 的 /stop 误杀会话 A 的活动 Skill）
 #[tauri::command]
 pub fn bot_stop(app: AppHandle, session_id: Option<String>) -> Result<(), String> {
-    // P1-8：/stop 本身留痕——原先零审计，无法区分「用户停过」与「自己跑完」
+    // /stop 本身留痕——区分「用户停过」与「自己跑完」
     crate::bot::audit_log(
         &app,
-        // 2026-08-28 批次3审计：session_id 前端传入，转义防日志伪造/多行撕裂
+        // session_id 前端传入，转义防日志伪造/多行撕裂
         &format!("bot_stop | session: {}", crate::bot::truncate_for_log(session_id.as_deref().unwrap_or("<none>"), 60)),
     );
-    // Skill 调度器联动：强制终止本会话的活动技能（None = 全部会话，兼容旧调用）
+    // Skill 调度器联动：强制终止本会话的活动技能（None = 全部会话）
     crate::bot_skills::skill_terminate_all(&app, "用户停止", session_id.as_deref());
-    // 逐步执行联动：清掉本会话挂起的子任务确认（2026-08-19 exec_steps）
+    // 逐步执行联动：清掉本会话挂起的子任务确认
     let app2 = app.clone();
     let sid = session_id.clone();
     tauri::async_runtime::spawn(async move {
         crate::exec_steps::clear_for(&app2, sid.as_deref(), "/stop").await;
     });
-    // T1-3（2026-09-03）：锁中毒返回 Err 给前端，不再 if let Ok 静默吞；
+    // 锁中毒返回 Err 给前端，不静默吞；
     // 确认弹窗收尾与注册表无关，锁失败也要照常执行
     let stopped = flag_session_stopped(session_id.as_deref());
-    // P1（2026-08-27 审计）：本会话在途确认弹窗立即按拒绝收尾——sender 随条目 drop，
+    // 本会话在途确认弹窗立即按拒绝收尾——sender 随条目 drop，
     // 等待侧 rx 立即收到 Err 走超时拒绝分支；/stop 后迟到的确认点击不再放行危险动作
     {
         let mut map = confirms().lock().unwrap_or_else(|e| e.into_inner());
@@ -180,9 +179,9 @@ pub fn bot_stop(app: AppHandle, session_id: Option<String>) -> Result<(), String
 }
 
 /// /stop 置位内核：本会话交互实例的停止标志置位，返回置位数量。
-/// T1-3（2026-09-03）：锁中毒返回 Err（原先 if let Ok 静默吞掉，前端无从感知）。
+/// 锁中毒返回 Err，前端可感知失败。
 /// 抽成纯函数便于单测（tauri command 绑定 Wry AppHandle，mock_app 无法直调——
-/// 与 bot_py.rs:1205 同先例）。
+/// 与 bot_py.rs 的 resolve_doc_path 同先例）。
 fn flag_session_stopped(session_id: Option<&str>) -> Result<usize, String> {
     let m = stop_registry()
         .lock()
@@ -200,8 +199,8 @@ fn flag_session_stopped(session_id: Option<&str>) -> Result<usize, String> {
 
 // ───────────────────────── 危险操作确认（删除任务弹窗） ─────────────────────────
 
-/// 授权弹窗的用户选择（2026-08-26 文件访问授权改造）：
-/// 旧场景（删任务等二选一）只用 Once/Deny；file_access 场景多一个 Always（始终允许该目录）。
+/// 授权弹窗的用户选择：
+/// 删任务等二选一场景只用 Once/Deny；file_access 场景多一个 Always（始终允许该目录）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfirmChoice {
     /// 允许本次
@@ -220,7 +219,7 @@ struct ConfirmReply {
 }
 
 /// 待确认请求：id → (oneshot 通道, 归属会话 id)（挂件 bot_confirm_response 回填；
-/// 2026-08-26 会话隔离：会话 id 随 bot-confirm 事件下发，前端非当前会话不弹窗，
+/// 会话 id 随 bot-confirm 事件下发，前端非当前会话不弹窗，
 /// 后台任务（session=None）确认直接拒绝不弹窗）
 type ConfirmMap = std::sync::Mutex<
     std::collections::HashMap<String, (tokio::sync::oneshot::Sender<ConfirmReply>, Option<String>)>,
@@ -234,8 +233,8 @@ fn confirms() -> &'static ConfirmMap {
 /// 弹窗确认公共内核：发 "bot-confirm" 事件（带 kind 供前端渲染两/三按钮、
 /// 带 sessionId 供前端按会话过滤），60s 超时默认拒绝（安全兜底）；
 /// 非交互执行（后台定时任务，interactive=false）直接拒绝不弹窗——
-/// 无人在场时弹窗只会串进用户当前会话且必然超时（2026-08-26 会话隔离审计 P0）。
-/// 挂件不可见时同样直接拒绝，不白等 60s（审计 P2）。
+/// 无人在场时弹窗只会串进用户当前会话且必然超时。
+/// 挂件不可见时同样直接拒绝，不白等 60s。
 async fn ask_confirm_inner(
     app: &AppHandle,
     tool: &str,
@@ -294,7 +293,7 @@ async fn ask_confirm_inner(
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .remove(&id);
-            // 2026-08-27 审计 P2：确认超时默认拒绝留痕（原先只有发起日志，无结果记录）
+            // 确认超时默认拒绝留痕
             crate::bot::audit_log(
                 app,
                 &format!("confirm_timeout | {tool} | {} | 60s 无响应，默认拒绝", crate::bot::truncate_for_log(detail, 120)),
@@ -318,7 +317,7 @@ pub async fn ask_user_confirm(
         .approved
 }
 
-/// 文件访问授权（2026-08-26，Kimi CLI 风格）：白名单外路径弹三选一窗
+/// 文件访问授权（Kimi CLI 风格）：白名单外路径弹三选一窗
 /// （允许一次 / 始终允许该目录 / 拒绝）。挂件不可见/超时/后台执行 → Deny。
 pub async fn ask_path_confirm(
     app: &AppHandle,
@@ -336,13 +335,13 @@ pub async fn ask_path_confirm(
 
 /// 挂件确认响应：允许/拒绝（前端点击后回传）；always 仅 file_access 弹窗的
 /// 「始终允许该目录」按钮会为 true，老调用（删任务两按钮）不传 → None → false。
-/// 会话归属从 ConfirmMap 条目取回（2026-08-26）：skill_confirm_result 按会话过滤。
+/// 会话归属从 ConfirmMap 条目取回：skill_confirm_result 按会话过滤。
 #[tauri::command]
 pub fn bot_confirm_response(app: AppHandle, request_id: String, approved: bool, always: Option<bool>) -> Result<(), String> {
     let (tx, session_id) = take_confirm(&request_id)?;
     // Skill 调度器联动：确认结果 → 本会话技能恢复 Running / 拒绝终止 / 暂停即终止
     crate::bot_skills::skill_confirm_result(&app, approved, session_id.as_deref());
-    // 2026-08-27 审计 P2：用户点「拒绝」留痕（原先只有 tool.return 预览里能看到）
+    // 用户点「拒绝」留痕
     if !approved {
         crate::bot::audit_log(
             &app,
@@ -352,7 +351,7 @@ pub fn bot_confirm_response(app: AppHandle, request_id: String, approved: bool, 
     deliver_confirm(tx, ConfirmReply { approved, always: always.unwrap_or(false) })
 }
 
-/// 取待确认条目（T1-3，2026-09-03：不存在/已超时 → Err，原先静默 no-op 前端无从感知）。
+/// 取待确认条目（不存在/已超时 → Err）。
 fn take_confirm(
     request_id: &str,
 ) -> Result<(tokio::sync::oneshot::Sender<ConfirmReply>, Option<String>), String> {
@@ -365,7 +364,7 @@ fn take_confirm(
         })
 }
 
-/// 回填确认结果（T1-3：等待方已退出时返回 Err，不再 let _ 静默）。
+/// 回填确认结果（等待方已退出时返回 Err）。
 fn deliver_confirm(
     tx: tokio::sync::oneshot::Sender<ConfirmReply>,
     reply: ConfirmReply,
@@ -380,7 +379,7 @@ fn bot_flag_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> std::path::Pat
     crate::db::data_dir(app).join("bot-enabled.flag")
 }
 
-/// 机器人聊天开关读取（泛型 Runtime，2026-09-10：run_task_in_chat 泛化后 mock runtime 可调）
+/// 机器人聊天开关读取（泛型 Runtime，mock runtime 可调）
 pub(crate) fn bot_enabled<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
     bot_flag_path(app).exists()
 }
@@ -405,11 +404,11 @@ pub fn bot_set_enabled(app: AppHandle, enabled: bool) -> CommandResult<bool> {
 }
 #[cfg(test)]
 mod batch5_stop_all_tests {
-    /// 批次5审计 P1：退出置位必须同时覆盖 interactive 与后台（interactive=false）
-    /// 两类实例——/stop 只停交互实例，退出清理不能再漏掉后台任务
+    /// 退出置位必须同时覆盖 interactive 与后台（interactive=false）
+    /// 两类实例——/stop 只停交互实例，退出清理不能漏掉后台任务
     #[test]
     fn stop_all_covers_interactive_and_background() {
-        // 批次8审计 P1：stop_all 是全局广播，与持 StopGuard 的并行测试互斥
+        // stop_all 是全局广播，与持 StopGuard 的并行测试互斥
         let _serial = super::STOP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let g1 = super::StopGuard::new(true, Some("batch5-s1".into()));
         let g2 = super::StopGuard::new(false, None);
@@ -422,11 +421,11 @@ mod batch5_stop_all_tests {
 
 #[cfg(test)]
 mod t1_3_command_result_tests {
-    /// T1-3（2026-09-03）：/stop 置位内核只停本会话交互实例并返回数量；
+    /// /stop 置位内核只停本会话交互实例并返回数量；
     /// 锁中毒路径经 map_err 返回 Err（命令绑定 Wry AppHandle 无法单测，测内核）。
     #[test]
     fn flag_session_stopped_only_hits_own_session_interactive() {
-        // 与持 StopGuard 的并行测试互斥（同 batch5 用例）
+        // 与持 StopGuard 的并行测试互斥（同上面的 stop_all 用例）
         let _serial = super::STOP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let g1 = super::StopGuard::new(true, Some("t1-3-sess".into()));
         let g2 = super::StopGuard::new(true, Some("t1-3-other".into()));
@@ -438,14 +437,14 @@ mod t1_3_command_result_tests {
         assert!(!g3.stopped(), "后台实例不受影响");
     }
 
-    /// T1-3：不存在/已超时的确认请求 → Err（原先静默 no-op）
+    /// 不存在/已超时的确认请求 → Err
     #[test]
     fn take_confirm_unknown_id_errs() {
         let e = super::take_confirm("t1-3-no-such-id").unwrap_err();
         assert!(e.contains("不存在或已超时"), "Err 应说明原因：{e}");
     }
 
-    /// T1-3：等待方已退出（rx dropped）时回填失败必须可见（原先 let _ 吞掉）
+    /// 等待方已退出（rx dropped）时回填失败必须可见
     #[test]
     fn deliver_confirm_dropped_receiver_errs() {
         let (tx, rx) = tokio::sync::oneshot::channel();

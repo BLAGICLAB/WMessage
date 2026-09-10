@@ -41,19 +41,19 @@ use crate::error::{CommandError, CommandResult};
 
 /// 请求体上限（防内存打爆）
 const MAX_BODY_BYTES: u64 = 1_000_000;
-/// body 读取总时长上限（2026-09-04 审计 P1-2）：vendor patch 的 30s 读超时是
+/// body 读取总时长上限：vendor patch 的 30s 读超时是
 /// 「单次 read 系统调用」级——发完 header 后以 <30s 间隔滴注 body，每次 read 都按时
 /// 返回，worker 永久占住并发名额（MAX_WORKERS=64 占满即全员 503）。
 /// 分块读循环在每次 read 返回后检查总时长，滴注最迟 35s 被拒（408）。
 const BODY_READ_DEADLINE: Duration = Duration::from_secs(35);
 /// 每分钟请求上限（仅回环，防失控脚本）
 const RATE_LIMIT_PER_MIN: u32 = 120;
-/// SSE 并发连接上限（A6：每连接一个 writer 线程，不设上限可被连接洪泛耗尽线程）
+/// SSE 并发连接上限（每连接一个 writer 线程，不设上限可被连接洪泛耗尽线程）
 const MAX_SSE_CLIENTS: usize = 32;
 
-/// API 写操作 read-modify-write 串行化锁（2026-08-28 批次4审计 P1-2/P2-3）：
-/// create/update/delete 的 load→改→upsert 两段式原先无锁，并发 API 请求
-/// （MAX_WORKERS=64）在窗口内互相用旧快照整行覆盖；create 的 max_order 同病。
+/// API 写操作 read-modify-write 串行化锁：
+/// create/update/delete 的 load→改→upsert 两段式若无锁，并发 API 请求
+/// （MAX_WORKERS=64）会在窗口内互相用旧快照整行覆盖；create 的 max_order 同病。
 /// 注意：本锁只串行化 API 自身的并发写——跨路径（API vs UI/bot）的整行覆盖
 /// lost-update 属已立项的「字段级合并写入」架构项，不在此锁覆盖范围。
 static API_RMW_LOCK: Mutex<()> = Mutex::new(());
@@ -145,7 +145,7 @@ fn query_param<'a>(query: &'a str, key: &str) -> Option<String> {
     })
 }
 
-/// 最小 percent-decode（`%XX`；urlencoded 约定里 `+` 解码为空格，审计 P3）
+/// 最小 percent-decode（`%XX`；urlencoded 约定里 `+` 解码为空格）
 fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -239,9 +239,8 @@ fn log_line(path: &Option<PathBuf>, line: &str) {
     }
 }
 
-/// 请求体读取结果（2026-09-04 审计 P2-6）：原先一律 None 由调用方回 413，
-/// 把读 IO 错误（含 30s 单次读超时）也误报成「body 过大」。现在分流：
-/// `TooLarge` → 413；`IoFailed` → 408（读超时/连接中断语义）。
+/// 请求体读取结果分流：`TooLarge` → 413；`IoFailed` → 408（读超时/连接中断
+/// 语义，不得误报成「body 过大」）。
 enum BodyRead {
     Ok(String),
     TooLarge,
@@ -251,7 +250,7 @@ enum BodyRead {
 /// 读请求体（上限 `MAX_BODY_BYTES`，总时长 `BODY_READ_DEADLINE`）。
 /// Content-Length 声明即超限的直接预拒（413），不再读完才判。
 fn read_body_limited(req: &mut Request) -> BodyRead {
-    // 2026-09-04 审计 P1-2：按 Content-Length 预拒绝——声明 >1MB 的 body 不必读
+    // 按 Content-Length 预拒绝——声明 >1MB 的 body 不必读
     if let Some(declared) = req
         .headers()
         .iter()
@@ -289,7 +288,7 @@ fn read_body_limited(req: &mut Request) -> BodyRead {
 // ───────────────────────── 任务 JSON 形状 ─────────────────────────
 
 /// 对外任务对象：`db::Task` 字段 + `status`（todo/doing/done，即看板列）
-// A5: TaskOut 抽到 crate::task_out 模块（数据层 api.rs 也需用，不能反向依赖 api_handlers）
+// TaskOut 抽到 crate::task_out 模块（数据层 api.rs 也需用，不能反向依赖 api_handlers）
 use crate::task_out::TaskOut;
 
 fn now_ms() -> i64 {
@@ -299,13 +298,12 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-// 字段长度上限：与 bot.rs 工具侧 MAX_* 对齐（审计 P3：原 API 侧无校验，只靠 1MB body 兜底）
+// 字段长度上限：与 bot.rs 工具侧 MAX_* 对齐
 const API_MAX_TITLE: usize = 200;
 const API_MAX_NOTE: usize = 5000;
 const API_MAX_DUE: usize = 30;
 const API_MAX_TAG_LEN: usize = 30;
 const API_MAX_TAGS: usize = 10;
-// 2026-09-04 审计 P2-8：filePath 原先只 trim 不限长，单字段近百 KB 可进库；
 // 取 1024（macOS PATH_MAX 量级），与 title/note 等字段一样走 over_limit
 const API_MAX_FILE_PATH: usize = 1024;
 
@@ -317,7 +315,7 @@ fn over_limit(v: &str, max: usize, what: &str) -> Option<String> {
     (v.chars().count() > max).then(|| format!("{what}过长（上限 {max} 字）"))
 }
 
-/// 拼一行任务变更日志（P2-2：title 过 escape_for_log——标题里的 `\n` / `| ` 会伪造
+/// 拼一行任务变更日志（title 过 escape_for_log——标题里的 `\n` / `| ` 会伪造
 /// 日志行或撕裂多行；抽出纯函数便于单测，after_change 只做 IO）。
 fn change_log_line(op: &str, task: &db::Task) -> String {
     format!(
@@ -329,7 +327,7 @@ fn change_log_line(op: &str, task: &db::Task) -> String {
     )
 }
 
-/// 500 对外统一文案（2026-08-28 批次4审计 P2-5）：DB 错误原文可能含 SQL 片段/路径，
+/// 500 对外统一文案：DB 错误原文可能含 SQL 片段/路径，
 /// 不回吐给客户端；原文转义后进 api.log 供排查。
 fn internal_err(req: Request, log: &Option<PathBuf>, e: &str) {
     log_line(
@@ -339,7 +337,7 @@ fn internal_err(req: Request, log: &Option<PathBuf>, e: &str) {
     let _ = req.respond(json_err(StatusCode(500), "internal error"));
 }
 
-/// T1-1：upsert 失败分流——RMW 基线冲突（其他写者已改/删该行）→ 409（客户端应重读后重试）；
+/// upsert 失败分流——RMW 基线冲突（其他写者已改/删该行）→ 409（客户端应重读后重试）；
 /// 其余错误走 500 统一文案。
 fn upsert_err(req: Request, log: &Option<PathBuf>, e: &str) {
     if e.starts_with(db::CONFLICT_ERR_PREFIX) {
@@ -358,7 +356,7 @@ fn upsert_err(req: Request, log: &Option<PathBuf>, e: &str) {
 
 /// 任务变更后：store 内部 SSE 广播 + 前端看板刷新回调 + 变更日志
 ///
-/// A5: hub 不再传入；SSE 广播走 `store.notify_change()`，由 store 层封装 hub。
+/// hub 不传入 handler；SSE 广播走 `store.notify_change()`，由 store 层封装 hub。
 /// 这样 handler 与 EventHub 解耦，未来加 EventBus / 持久化监听都在 store 层加。
 fn after_change(
     store: &Arc<dyn TaskStore>,
@@ -459,7 +457,7 @@ fn create_task(
             let _ = req.respond(json_err(StatusCode(413), "body too large"));
             return;
         }
-        // P2-6（2026-09-04 审计）：读 IO 错误/超时不是「body 过大」，回 408
+        // 读 IO 错误/超时不是「body 过大」，回 408
         BodyRead::IoFailed => {
             let _ = req.respond(json_err(StatusCode(408), "body read failed or timed out"));
             return;
@@ -477,7 +475,7 @@ fn create_task(
         let _ = req.respond(json_err(StatusCode(400), "title 不能为空"));
         return;
     }
-    // 长度校验与 update_task / bot 工具侧对齐（二次审计 P2-4）
+    // 长度校验与 update_task / bot 工具侧对齐
     if let Some(e) = over_limit(&title, API_MAX_TITLE, "任务标题") {
         let _ = req.respond(json_err(StatusCode(400), &e));
         return;
@@ -504,7 +502,7 @@ fn create_task(
             return;
         }
     }
-    // 2026-09-04 审计 P2-8：filePath 与 title/note/due 对齐补 over_limit
+    // filePath 与 title/note/due 同规则限长
     if let Some(p) = input
         .file_path
         .as_deref()
@@ -540,8 +538,8 @@ fn create_task(
         }
     };
 
-    // P1-2/P2-3（2026-08-28 批次4审计）：load→max_order→upsert 全程持 API_RMW_LOCK——
-    // 原先两段式无锁，并发 create 算出相同 order、并发写互相用旧快照整行覆盖
+    // load→max_order→upsert 全程持 API_RMW_LOCK——
+    // 两段式无锁会让并发 create 算出相同 order、并发写互相用旧快照整行覆盖
     let _rmw = API_RMW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let all = match store.load() {
         Ok(v) => v,
@@ -555,8 +553,7 @@ fn create_task(
     let task = db::Task {
         id: uuid::Uuid::new_v4().to_string(),
         title,
-        // due 与 note 同规则：trim 后存储（2026-08-28 批次4审计 P2-4：note/files 原先存原文，
-        // 与注释矛盾，首尾空白进库）
+        // due 与 note 同规则：trim 后存储，首尾空白不进库
         due: input
             .due
             .map(|d| d.trim().to_string())
@@ -566,7 +563,7 @@ fn create_task(
             .map(|n| n.trim().to_string())
             .filter(|n| !n.is_empty()),
         tags: input.tags,
-        // 多文件绑定（2026-08-19）：API 入参仍是旧单绑定字段，双写进 files 保持一致
+        // API 入参仍是单绑定字段，双写进 files 与多文件绑定保持一致
         files: input
             .file_path
             .as_ref()
@@ -594,7 +591,7 @@ fn create_task(
         schedule: None,
         sched_last: None,
         bot_assigned: None,
-        expected_updated_at: None, // 新建任务：无读快照基线（T1-1）
+        expected_updated_at: None, // 新建任务：无读快照基线
     };
     if let Err(e) = store.upsert(vec![task.clone()]) {
         internal_err(req, log, &e);
@@ -631,7 +628,7 @@ fn update_task(
             let _ = req.respond(json_err(StatusCode(413), "body too large"));
             return;
         }
-        // P2-6（2026-09-04 审计）：读 IO 错误/超时不是「body 过大」，回 408
+        // 读 IO 错误/超时不是「body 过大」，回 408
         BodyRead::IoFailed => {
             let _ = req.respond(json_err(StatusCode(408), "body read failed or timed out"));
             return;
@@ -645,7 +642,7 @@ fn update_task(
         }
     };
 
-    // P1-2（2026-08-28 批次4审计）：load→改→upsert 全程持 API_RMW_LOCK（API 写串行化）
+    // load→改→upsert 全程持 API_RMW_LOCK（API 写串行化）
     let _rmw = API_RMW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tasks = match store.load() {
         Ok(v) => v,
@@ -659,15 +656,15 @@ fn update_task(
         return;
     };
     let mut t = tasks[idx].clone();
-    // T1-1：RMW 基线 = 本次 load 快照的 updated_at；upsert 写前比对，基线外有写者改行 → 409 拒写
-    // 2026-09-04 审计 P2-4：updated_at 为 NULL 的老行改用「行存在性」哨兵基线
-    // （BASELINE_NULL_ROW：行被删/被改都 409）——原先基线 None = 跳过比对，老行裸奔
+    // RMW 基线 = 本次 load 快照的 updated_at；upsert 写前比对，基线外有写者改行 → 409 拒写。
+    // updated_at 为 NULL 的老行用「行存在性」哨兵基线
+    // （BASELINE_NULL_ROW：行被删/被改都 409）
     t.expected_updated_at = Some(t.updated_at.unwrap_or(db::BASELINE_NULL_ROW));
 
     if let Some(title) = input.title.as_deref() {
         let tt = title.trim();
-        // P2-9（2026-08-28 批次4审计）：显式传了 trim 后为空的 title 按 400 拒绝，
-        // 与 create 对齐（原先静默忽略，调用方无法区分「没传」和「传了空白」）
+        // 显式传了 trim 后为空的 title 按 400 拒绝，与 create 对齐
+        // （静默忽略会让调用方无法区分「没传」和「传了空白」）
         if tt.is_empty() {
             let _ = req.respond(json_err(StatusCode(400), "title 不能为空"));
             return;
@@ -712,15 +709,15 @@ fn update_task(
         }
     }
     if let Some(fp) = input.file_path.as_deref() {
-        // P2-4（2026-08-28 批次4审计）：trim 后存储（原先存原文，首尾空白进库）
+        // trim 后存储，首尾空白不进库
         let fp = fp.trim();
         if fp.is_empty() {
             t.file_path = None;
             t.file_is_dir = None;
-            // 多文件绑定（2026-08-19）：旧字段清空时同步清 files
+            // 旧单绑定字段清空时同步清 files
             t.files = None;
         } else {
-            // 2026-09-04 审计 P2-8：与 create_task 对齐补 over_limit（原先只 trim 不限长）
+            // 与 create_task 对齐：filePath 同样限长
             if let Some(e) = over_limit(fp, API_MAX_FILE_PATH, "文件路径") {
                 let _ = req.respond(json_err(StatusCode(400), &e));
                 return;
@@ -804,7 +801,7 @@ fn delete_task(
     emit_fn: &Option<Arc<dyn Fn(&db::Task) + Send + Sync>>,
     log: &Option<PathBuf>,
 ) {
-    // P1-2（2026-08-28 批次4审计）：load→改→upsert 全程持 API_RMW_LOCK（API 写串行化）
+    // load→改→upsert 全程持 API_RMW_LOCK（API 写串行化）
     let _rmw = API_RMW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tasks = match store.load() {
         Ok(v) => v,
@@ -818,8 +815,8 @@ fn delete_task(
         return;
     };
     let mut t = tasks[idx].clone();
-    // T1-1：RMW 基线 = 本次 load 快照的 updated_at（同 update_task）；
-    // 2026-09-04 审计 P2-4：NULL 老行同样走行存在性哨兵基线
+    // RMW 基线 = 本次 load 快照的 updated_at（同 update_task）；
+    // NULL 老行同样走行存在性哨兵基线
     t.expected_updated_at = Some(t.updated_at.unwrap_or(db::BASELINE_NULL_ROW));
     if t.deleted_at.is_some() {
         // 已在回收站：幂等返回当前状态
@@ -836,12 +833,12 @@ fn delete_task(
     let _ = req.respond(json_ok(StatusCode(200), &TaskOut::from_task(&t)));
 }
 
-// ───────────────────────── SSE writer 生命周期（G1）─────────────────────────
+// ───────────────────────── SSE writer 生命周期 ─────────────────────────
 
-/// SSE writer 线程注册项（G1）：按 hub 分组，stop 标志 + JoinHandle。
-/// 原先 writer 线程 spawn 后无人追踪：api_stop / api_rotate_token 只 join accept
-/// 线程，旧 hub 的 tx 不被 drop，writer 循环发 keepalive —— 旧客户端以为活着却
-/// 永远收不到新事件，且每次 rotate 累积一批泄漏线程。
+/// SSE writer 线程注册项：按 hub 分组，stop 标志 + JoinHandle。
+/// writer 线程必须纳入追踪：只 join accept 线程的话，旧 hub 的 tx 不被 drop，
+/// writer 循环发 keepalive——旧客户端以为活着却永远收不到新事件，
+/// 且每次 rotate 累积一批泄漏线程。
 struct SseWriterReg {
     /// Arc<EventHub> 身份指针（仅作分组键，永不解引用）
     hub_key: usize,
@@ -854,7 +851,7 @@ static SSE_WRITERS: Mutex<Vec<SseWriterReg>> = Mutex::new(Vec::new());
 /// 当前服务实例的 hub 分组键（api_start 时记录，api_stop 据此停对应 writer）
 static API_HUB_KEY: AtomicUsize = AtomicUsize::new(0);
 
-/// writer 退出通知的兜底 join 超时（G1）：超时仍不退出的 detach + ERROR 审计
+/// writer 退出通知的兜底 join 超时：超时仍不退出的 detach + ERROR 审计
 const SSE_STOP_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn register_sse_writer(hub_key: usize, stop: Arc<AtomicBool>, handle: std::thread::JoinHandle<()>) {
@@ -868,7 +865,7 @@ fn register_sse_writer(hub_key: usize, stop: Arc<AtomicBool>, handle: std::threa
     });
 }
 
-/// 停掉指定 hub 的全部 SSE writer（G1）：置 stop 标志 → 带超时 join；
+/// 停掉指定 hub 的全部 SSE writer：置 stop 标志 → 带超时 join；
 /// 超时仍不退出的 drop handle（detach）并记 ERROR 审计「sse_writer_leaked」。
 fn stop_sse_writers(hub_key: usize, timeout: Duration, audit: &mut dyn FnMut(&str)) {
     let writers = {
@@ -907,8 +904,8 @@ fn stop_sse_writers(hub_key: usize, timeout: Duration, audit: &mut dyn FnMut(&st
 /// 注册 SSE 客户端：支持 `?since=<事件id>` 断线重放，然后用 tiny_http upgrade 直写。
 /// 重放窗口上限 = EVENT_HISTORY（1000 条环形缓冲，api_server.rs）：溢出缺段为已知取舍。
 fn sse_connect(req: Request, store: &Arc<dyn TaskStore>, query: &str) {
-    // 2026-09-04 审计 P2-7：since 给了但 parse 失败（如 ?since=abc）回 400——
-    // 原先静默按全新连接处理，客户端不知道自己丢了重放窗口
+    // since 给了但 parse 失败（如 ?since=abc）回 400——
+    // 不静默按全新连接处理，让客户端知道自己丢了重放窗口
     let since = match query_param(query, "since") {
         Some(s) => match s.parse::<u64>() {
             Ok(v) => Some(v),
@@ -922,19 +919,19 @@ fn sse_connect(req: Request, store: &Arc<dyn TaskStore>, query: &str) {
         },
         None => None,
     };
-    // A2: sync_channel(256) — 单客户端最多积压 256 条，超出则丢事件（广播不阻塞）
-    // P2-3：载荷带事件 id，writer 端据此与断线重放去重
+    // sync_channel(256)——单客户端最多积压 256 条，超出则丢事件（广播不阻塞）；
+    // 载荷带事件 id，writer 端据此与断线重放去重
     let (tx, rx) = sync_channel::<(u64, Vec<u8>)>(256);
-    // 锁中毒时用 into_inner 恢复（与 broadcast 端策略一致，审计 P3：原先静默跳过，
-    // 客户端注册失败则该 SSE 连接永远收不到事件）
+    // 锁中毒时用 into_inner 恢复（与 broadcast 端策略一致——静默跳过会让
+    // 注册失败的 SSE 连接永远收不到事件）
     let hub = store.event_hub();
-    // 2026-08-28 批次4审计 P1-3：writer 存活令牌——注册前收割死连接尸体
-    // （原先只在 broadcast 失败时移除，安静期内尸体占满名额 → 新连接 503）
+    // writer 存活令牌——注册前收割死连接尸体
+    // （否则安静期内尸体占满名额 → 新连接 503）
     let alive = Arc::new(());
     {
         let mut clients = hub.clients.lock().unwrap_or_else(|e| e.into_inner());
         clients.retain(|(_, token)| token.upgrade().is_some());
-        // A6: SSE 连接数上限 —— 超限 503，防连接洪泛耗尽线程
+        // SSE 连接数上限——超限 503，防连接洪泛耗尽线程
         if clients.len() >= MAX_SSE_CLIENTS {
             drop(clients);
             let _ = req.respond(json_err(StatusCode(503), "too many SSE connections"));
@@ -943,12 +940,12 @@ fn sse_connect(req: Request, store: &Arc<dyn TaskStore>, query: &str) {
         clients.push((tx, Arc::downgrade(&alive)));
     }
     let hub = hub.clone();
-    // G1：writer 线程纳入追踪 —— stop 标志供 api_stop 通知退出，JoinHandle 入注册表
+    // writer 线程纳入追踪——stop 标志供 api_stop 通知退出，JoinHandle 入注册表
     let hub_key = Arc::as_ptr(&hub) as usize;
     let stop = Arc::new(AtomicBool::new(false));
     let stop_w = stop.clone();
     let handle = std::thread::spawn(move || {
-        // P1-3：存活令牌随 writer 线程存活，线程退出（客户端断开/服务停止）即失效
+        // 存活令牌随 writer 线程存活，线程退出（客户端断开/服务停止）即失效
         let _alive = alive;
         let headers = vec![
             Header::from_bytes(
@@ -961,10 +958,10 @@ fn sse_connect(req: Request, store: &Arc<dyn TaskStore>, query: &str) {
         ];
         let resp = Response::new(StatusCode(200), headers, std::io::empty(), Some(0), None);
         let mut stream = req.upgrade("text/event-stream", resp);
-        // A2: 写超时通过 recv_timeout 心跳 + 客户端断开检测协同处理
-        // tiny_http ResponseBox 不提供 set_write_timeout，故通过 recv 端超时兜底
-        // G1: recv tick 从 15s 改 1s（每 15 tick 发一次心跳，对外节奏不变），
-        //     使 stop 标志最迟 1s 内被轮询到，writer 能及时退出被 join
+        // 写超时通过 recv_timeout 心跳 + 客户端断开检测协同处理
+        // （tiny_http ResponseBox 不提供 set_write_timeout，故通过 recv 端超时兜底）。
+        // recv tick 1s、每 15 tick 发一次心跳（对外节奏不变），
+        // 使 stop 标志最迟 1s 内被轮询到，writer 能及时退出被 join
 
         // 连接成功事件（携带当前事件 id，供客户端决定下次 since 起点）
         let connected = format!(
@@ -979,7 +976,7 @@ fn sse_connect(req: Request, store: &Arc<dyn TaskStore>, query: &str) {
             return;
         }
         // 断线重放：补发 since 之后的历史事件
-        // P2-3：重放与在线推送存在竞态——客户端注册进 clients 之后、重放快照之前
+        // 重放与在线推送存在竞态——客户端注册进 clients 之后、重放快照之前
         // 广播的事件会同时出现在 history 与在线队列里。记录已发最大 id，
         // 在线循环里 id <= last_sent 的一律跳过（服务器侧去重）。
         let mut last_sent: u64 = since.unwrap_or(0);
@@ -996,14 +993,14 @@ fn sse_connect(req: Request, store: &Arc<dyn TaskStore>, query: &str) {
         }
         let mut idle_ticks = 0u32;
         loop {
-            // G1：服务停止/重启时 api_stop 置位 —— 不停则旧客户端看着 keepalive
+            // 服务停止/重启时 api_stop 置位——不停则旧客户端看着 keepalive
             // 以为活着，却永远收不到新 hub 的事件
             if stop_w.load(Ordering::SeqCst) {
                 break;
             }
             match rx.recv_timeout(Duration::from_secs(1)) {
                 Ok((id, data)) => {
-                    // P2-3：重放已覆盖的事件（id <= last_sent）跳过，不重复推
+                    // 重放已覆盖的事件（id <= last_sent）跳过，不重复推
                     if id <= last_sent {
                         continue;
                     }
@@ -1035,19 +1032,19 @@ fn sse_connect(req: Request, store: &Arc<dyn TaskStore>, query: &str) {
 
 #[tauri::command]
 pub fn api_start(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandResult<ApiInfo> {
-    // 2026-08-28 批次4审计 P2-8：检查与写入在同一把锁内完成——原先锁释放后才 start，
-    // 并发 invoke 双发都过检查，第二个收到误导的「端口占用」（服务其实已被第一个起好）
+    // 检查与写入在同一把锁内完成——锁释放后才 start 会让并发 invoke 双发都过检查，
+    // 第二个收到误导的「端口占用」（服务其实已被第一个起好）
     let mut g = state.0.lock().map_err(|e| e.to_string())?;
     api_start_locked(&app, &mut g)
 }
 
-/// api_start 的持锁实现（2026-09-04 审计 P2-5 拆出）：供 api_start / api_rotate_token
+/// api_start 的持锁实现：供 api_start / api_rotate_token
 /// 复用，调用方必须已持 `state.0` 锁（rotate 全程持锁，检查与操作原子）。
 fn api_start_locked(app: &AppHandle, g: &mut Option<RunningApi>) -> CommandResult<ApiInfo> {
-    // 2026-09-04 审计 P1-1 后：尸体 join 最坏 ~400ms（accept recv_timeout tick），
-    // accept 线程不再等 worker，持锁清理安全
+    // 尸体 join 最坏 ~400ms（accept recv_timeout tick），
+    // accept 线程不等 worker，持锁清理安全
     if let Some(running) = g.as_ref() {
-        // 2026-09-04 审计 P2-1：与 api_status 同款活性检查——accept 线程已死
+        // 与 api_status 同款活性检查——accept 线程已死
         // （recv_error 退出）时不得误报成功；清尸体后继续走下面的重启
         let alive = running
             .handle
@@ -1070,7 +1067,7 @@ fn api_start_locked(app: &AppHandle, g: &mut Option<RunningApi>) -> CommandResul
     let token = load_or_create_token(app)?;
     let store: Arc<dyn TaskStore> = Arc::new(TauriStore {
         app: app.clone(),
-        // A6: id 持久化，跨重启保持单调（否则客户端 Last-Event-ID 去重会静默丢事件）
+        // id 持久化，跨重启保持单调（否则客户端 Last-Event-ID 去重会静默丢事件）
         hub: EventHub::persisted(db::data_dir(app).join("api-event-id.txt")),
     });
     let emit_app = app.clone();
@@ -1088,10 +1085,10 @@ fn api_start_locked(app: &AppHandle, g: &mut Option<RunningApi>) -> CommandResul
         Some(Box::new(move |lvl, ev, msg| {
             audit_event!(&audit_app, lvl, ev, "error" => msg);
         }));
-    // G1：提前取 hub 分组键（store 随后被 move 进 start_api），
+    // 提前取 hub 分组键（store 随后被 move 进 start_api），
     // api_stop 据此通知并 join 该 hub 的 SSE writer
     let hub_key = Arc::as_ptr(store.event_hub()) as usize;
-    // P2-2（2026-08-28 批次4审计）：显式映射 HttpStartFailed——原先 String 错误经
+    // 显式映射 HttpStartFailed——String 错误经
     // From<String> 落成无结构的 Internal，前端按 code 分支永远等不到 HTTP_START_FAILED
     let running = start_api(API_PORT, token.clone(), store, emit, log_path, on_error)
         .map_err(|e| CommandError::HttpStartFailed {
@@ -1112,8 +1109,8 @@ pub fn api_stop(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandRes
     api_stop_impl(&app, &state, true)
 }
 
-/// P2-24：应用退出路径（ExitRequested）的 API 停止 —— 与 api_stop 同一清理
-///（G1：accept 线程 + SSE writer 全部通知并 join），但保留 api-enabled.flag：
+/// 应用退出路径（ExitRequested）的 API 停止——与 api_stop 同一清理
+///（accept 线程 + SSE writer 全部通知并 join），但保留 api-enabled.flag：
 /// 退出不是用户关开关，下次启动应按 flag 自动恢复服务。
 /// 泛型 Runtime：cleanup_on_exit 的 mock runtime 测试可直调。
 pub fn api_stop_for_exit<R: tauri::Runtime>(
@@ -1132,7 +1129,7 @@ fn api_stop_impl<R: tauri::Runtime>(
     api_stop_locked(app, &mut g, clear_enabled)
 }
 
-/// api_stop_impl 的持锁实现（2026-09-04 审计 P2-5 拆出）：供 api_rotate_token
+/// api_stop_impl 的持锁实现：供 api_rotate_token
 /// 在全程持 `state.0` 锁的前提下复用，消除「检查→stop→start」之间的抢锁窗口。
 fn api_stop_locked<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
@@ -1144,8 +1141,8 @@ fn api_stop_locked<R: tauri::Runtime>(
         if let Some(h) = r.handle.take() {
             let _ = h.join();
         }
-        // G1：除 join accept 线程外，通知并 join 当前 hub 的全部 SSE writer ——
-        // 原先 writer 不被追踪，旧 hub 的 tx 永不 drop，writer 循环发 keepalive，
+        // 除 join accept 线程外，通知并 join 当前 hub 的全部 SSE writer——
+        // writer 不追踪的话旧 hub 的 tx 永不 drop，writer 循环发 keepalive，
         // 旧客户端僵尸挂连且线程随 rotate 无界泄漏；5s 仍不退出的 detach + ERROR 审计
         let key = API_HUB_KEY.load(Ordering::SeqCst);
         let audit_app = app.clone();
@@ -1165,7 +1162,7 @@ pub fn api_status(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandR
         .0
         .lock()
         .map_err(|e| CommandError::Internal(format!("API 状态锁失败：{e}")))?;
-    // A6: 活性检查 —— 服务线程可能已因 recv_error 退出（panic 已被 catch_unwind 覆盖），
+    // 活性检查——服务线程可能已因 recv_error 退出（panic 已被 catch_unwind 覆盖），
     // 仅看 Option::is_some 会把死服务报成"已开启"
     let enabled = g
         .as_ref()
@@ -1178,7 +1175,7 @@ pub fn api_status(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandR
         clear_enabled_flag(&app);
     }
     drop(g);
-    // 2026-09-04 审计 P2-9：未启用时不读/生成 token——原先每次查状态都
+    // 未启用时不读/生成 token——否则每次查状态都
     // load_or_create_token，从未开启过 API 的用户数据目录里也会落 api-token.txt。
     // 前端只在 enabled 时展示 token（SettingsPage），disabled 态回空串即可。
     let token = if enabled {
@@ -1204,7 +1201,7 @@ pub fn api_rotate_token(
     let path = dir.join("api-token.txt");
     let old = std::fs::read_to_string(&path).ok();
     let token = uuid::Uuid::new_v4().simple().to_string();
-    // 2026-09-04 审计 P2-5：rotate 全程持 state.0 锁——原先「查 is_some → 放锁 →
+    // rotate 全程持 state.0 锁——若「查 is_some → 放锁 →
     // api_stop/api_start 各自再抢锁」，窗口内用户并发 stop 会被 rotate 把服务重新拉起
     // （违背用户关闭意图）。锁内只做端口绑定/join 等毫秒级操作，无死锁风险
     // （locked 变体不再抢同一把锁）。
@@ -1218,13 +1215,13 @@ pub fn api_rotate_token(
         });
     }
     // 运行中：先落新 token（api_start 从文件读取），再重启生效。
-    // A6: 重启失败则回滚旧 token 并尽力恢复服务，
+    // 重启失败则回滚旧 token 并尽力恢复服务，
     // 避免"服务已停 + flag 已清 + token 已换"三态不一致
     crate::api_auth::write_token_file(&path, &token)?;
-    // api_stop 内会停掉旧 hub 的全部 SSE writer（G1），旧 token 的连接随之断开，
+    // api_stop 内会停掉旧 hub 的全部 SSE writer，旧 token 的连接随之断开，
     // token 失效语义彻底；api_start 重建新 hub 接受新 writer。
-    // 2026-08-28 批次4审计 P2-6：stop 失败时回滚旧 token 文件——原先 `?` 直接返回，
-    // 留下「文件已是新 token、在跑服务仍认旧 token」的三态不一致
+    // stop 失败时回滚旧 token 文件——否则留下「文件已是新 token、
+    // 在跑服务仍认旧 token」的三态不一致
     if let Err(e) = api_stop_locked(&app, &mut g, true) {
         if let Some(old) = &old {
             let _ = crate::api_auth::write_token_file(&path, old);
@@ -1316,7 +1313,7 @@ mod tests {
 
     #[test]
     fn change_log_line_escapes_title_newline() {
-        // P2-2：标题含 \n 时日志行不得出现裸换行（防伪造日志行/多行撕裂）
+        // 标题含 \n 时日志行不得出现裸换行（防伪造日志行/多行撕裂）
         let line = change_log_line("created", &bare_task("标题\n[2026-01-01] forged | x"));
         assert!(!line.contains('\n'), "日志行不得含裸换行: {line:?}");
         assert!(line.contains("标题\\n"), "换行必须转义为 \\n: {line:?}");
@@ -1401,7 +1398,7 @@ mod tests {
         );
         assert_eq!(st, 400);
 
-        // 更新：due + tags（P0：之前不支持）
+        // 更新：due + tags
         let (st, body) = http(
             48821,
             "PUT",
@@ -1553,7 +1550,7 @@ mod tests {
         }
     }
 
-    // ── SSE writer 生命周期（G1：stop 通知 + 带超时 join + 泄漏审计）──
+    // ── SSE writer 生命周期（stop 通知 + 带超时 join + 泄漏审计）──
 
     /// 测试专用 hub 分组键：用本地 Arc 地址保证与并行测试的真实 hub 不撞
     fn test_hub_key() -> usize {
@@ -1614,7 +1611,7 @@ mod tests {
         );
     }
 
-    // ── 2026-08-28 批次4审计：空 title 400 / trim 存储 / SSE 尸体收割 ──
+    // ── 空 title 400 / trim 存储 / SSE 尸体收割 ──
 
     fn shutdown_server(running: &mut crate::api_server::RunningApi) {
         running.shutdown.store(true, Ordering::SeqCst);
@@ -1623,7 +1620,7 @@ mod tests {
         }
     }
 
-    /// P2-9：显式传 trim 后为空的 title 按 400 拒绝（原先静默忽略，与 create 语义不一致）
+    /// 显式传 trim 后为空的 title 按 400 拒绝（与 create 语义一致）
     #[test]
     fn update_blank_title_returns_400() {
         let store: Arc<dyn TaskStore> = Arc::new(MemStore {
@@ -1667,7 +1664,7 @@ mod tests {
         shutdown_server(&mut running);
     }
 
-    /// P2-4：create 的 note / filePath 首尾空白不得进库（原先存原文，与自身注释矛盾）
+    /// create 的 note / filePath 首尾空白不得进库（trim 后存储）
     #[test]
     fn create_trims_note_and_file_path() {
         let store: Arc<dyn TaskStore> = Arc::new(MemStore {
@@ -1692,8 +1689,8 @@ mod tests {
         shutdown_server(&mut running);
     }
 
-    /// P1-3：clients 里塞满死连接尸体（writer 已退出 = Weak 失效）时，
-    /// 新 SSE 连接应先收割尸体再判容量——原先直接 503 直到下次广播自愈
+    /// clients 里塞满死连接尸体（writer 已退出 = Weak 失效）时，
+    /// 新 SSE 连接应先收割尸体再判容量——否则直接 503 直到下次广播自愈
     #[test]
     fn sse_dead_clients_pruned_before_capacity_check() {
         let store: Arc<dyn TaskStore> = Arc::new(MemStore {
@@ -1744,9 +1741,7 @@ mod tests {
         shutdown_server(&mut running);
     }
 
-    // ── 2026-09-04 审计修复（P2-4/6/7/8）──
-
-    /// P2-4 测试基建：MemStore 已按 db.rs 语义比对 RMW 基线；本 store 在 upsert 内
+    /// 测试基建：MemStore 已按 db.rs 语义比对 RMW 基线；本 store 在 upsert 内
     /// 先模拟「读快照→写回」窗口里的并发写（把目标行 updated_at 推进），
     /// 使 handler 锁内 load 的基线在 upsert 时必然过期 → 走通 409 路径
     struct SabotageStore {
@@ -1773,9 +1768,8 @@ mod tests {
         }
     }
 
-    /// 2026-09-04 审计 P2-4：基线外有写者插队 → PUT 回 409 且不覆盖对方修改。
+    /// 基线外有写者插队 → PUT 回 409 且不覆盖对方修改。
     /// 覆盖两种基线：正常行（updated_at 时间戳基线）与 NULL 老行（行存在性基线）。
-    /// 原先 MemStore::upsert 忽略基线，该路径无集成覆盖。
     #[test]
     fn update_conflict_returns_409() {
         // 预塞一条 updated_at 为 NULL 的老行（迁移前遗留）
@@ -1825,7 +1819,7 @@ mod tests {
         shutdown_server(&mut running);
     }
 
-    /// 2026-09-04 审计 P2-4：NULL 老行在无并发写时可正常更新——
+    /// NULL 老行在无并发写时可正常更新——
     /// 行存在性基线放行（不误伤正常路径）
     #[test]
     fn update_null_updated_at_row_ok() {
@@ -1850,8 +1844,8 @@ mod tests {
         shutdown_server(&mut running);
     }
 
-    /// 2026-09-04 审计 P2-7：`?since=abc` 解析失败必须回 400——原先静默按全新
-    /// 连接处理，客户端不知自己丢了重放窗口
+    /// `?since=abc` 解析失败必须回 400——不静默按全新连接处理
+    ///（客户端会不知自己丢了重放窗口）
     #[test]
     fn sse_invalid_since_returns_400() {
         let store: Arc<dyn TaskStore> = Arc::new(MemStore {
@@ -1869,7 +1863,7 @@ mod tests {
         shutdown_server(&mut running);
     }
 
-    /// 2026-09-04 审计 P2-8：filePath 超上限（1024 字）回 400，create / update 同规则
+    /// filePath 超上限（1024 字）回 400，create / update 同规则
     #[test]
     fn file_path_over_limit_returns_400() {
         let store: Arc<dyn TaskStore> = Arc::new(MemStore {
@@ -1911,7 +1905,7 @@ mod tests {
         shutdown_server(&mut running);
     }
 
-    /// 2026-09-04 审计 P1-2/P2-6：Content-Length 声明超 1MB → 立即 413，
+    /// Content-Length 声明超 1MB → 立即 413，
     /// 不必等 body 读完（请求故意一字节 body 都不发：若不预拒，服务端会等 body
     /// 直到 5s 客户端读超时，测试会失败）
     #[test]

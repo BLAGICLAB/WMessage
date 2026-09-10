@@ -67,7 +67,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-// P2-33（2026-08-19）：5s 兜底轮询读失败不再永久静默（catch(()=>{})）——
+// 5s 兜底轮询读失败不再永久静默（catch(()=>{})）——
 // 轮询失败弹 alert（widget_poll）；首次加载保持安静，等 tasks-changed / 轮询重试
 describe("WidgetApp 轮询报错（P2-33）", () => {
   it("首次加载失败不弹 alert；5s 轮询失败弹 alert", async () => {
@@ -115,8 +115,8 @@ describe("WidgetApp 轮询报错（P2-33）", () => {
   });
 });
 
-// 2026-08-19 修复：挂件折叠导致机器人流式回复丢失。
-// 修法 A：ChatPanel 始终挂载（折叠时 display:none 不卸载），messages/busy/流式事件监听跨折叠保留。
+// 回归：挂件折叠不得丢失机器人流式回复。
+// ChatPanel 始终挂载（折叠时 display:none 不卸载），messages/busy/流式事件监听跨折叠保留。
 describe("挂件折叠不丢聊天（2026-08-19 修复）", () => {
   const setupBotMocks = () => {
     mocks.invokeMock.mockImplementation(async (cmd: string) => {

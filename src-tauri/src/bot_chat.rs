@@ -1,4 +1,4 @@
-//! 聊天 / 任务卡执行 入口与编排（F-6 step 5 拆分 2026-08-18；主流程定版 2026-08-20）：
+//! 聊天 / 任务卡执行 入口与编排：
 //!
 //! 经典 Agent 框架（LangChain AgentExecutor / Claude Agent SDK / AutoGen）
 //! 的「入口/编排」层职责：
@@ -82,7 +82,7 @@ const SYSTEM_PROMPT: &str = "\
 
 // ───────────────────────── 图片附件（多模态） ─────────────────────────
 
-/// 图片扩展名清单（pub：Phase B 起经 consts::app_consts 下发前端，单一真相在此）
+/// 图片扩展名清单（pub：经 consts::app_consts 下发前端，单一真相在此）
 pub const IMAGE_EXTS: [&str; 6] = ["png", "jpg", "jpeg", "webp", "gif", "bmp"];
 /// 单张图片文件上限 3MB（base64 后约 4MB，MiniMax 图片大小限制内）
 pub(crate) const MAX_IMAGE_BYTES: usize = 3 * 1024 * 1024;
@@ -118,7 +118,7 @@ pub fn merge_task_refs_dedup(refs: Vec<TaskRef>) -> Vec<TaskRef> {
         .collect()
 }
 
-/// 会话历史字符预算（2026-08-28 批次3审计 P1）：主聊天路径原先全量透传，长会话直接 400。
+/// 会话历史字符预算：主聊天路径原先全量透传，长会话直接 400。
 /// 按字符估算（中文 ~1 token/字符）；system prompt 与工具循环内增长不在此列。
 pub(crate) const HISTORY_BUDGET_CHARS: usize = 100_000;
 
@@ -140,7 +140,7 @@ fn truncate_split_point(messages: &[ChatMsg], budget: usize) -> usize {
 
 /// 截断聊天历史到字符预算内：最旧的先丢，永远保留最后一条（本轮用户消息）。
 /// 返回 (保留的消息, 丢弃条数)。
-/// 2026-09-04 记忆模块 Step 1 起生产路径走 truncate_chat_history_with_summary
+/// 生产路径走 truncate_chat_history_with_summary
 /// （截断即摘要），本函数仅剩单测使用——保留作为截断语义的回归基准。
 #[cfg(test)]
 pub(crate) fn truncate_chat_history(messages: Vec<ChatMsg>, budget: usize) -> (Vec<ChatMsg>, usize) {
@@ -188,7 +188,7 @@ where
     )
 }
 
-/// 截断即摘要（记忆模块 Step 1，2026-09-04，设计 5.2）生产薄壳：
+/// 截断即摘要（设计 5.2）生产薄壳：
 /// 超预算时先生成摘要并落库（含 Reflection 触发），返回 (保留的消息, 带
 /// 「[早前对话摘要]」前缀的摘要内容, 丢弃条数)；LLM/落库任何一步失败都退回
 /// 直接丢弃，绝不阻塞或弄挂主对话流程。
@@ -214,7 +214,7 @@ pub(crate) async fn truncate_chat_history_with_summary(
 
 /// 摘要落库 + Reflection 触发（设计 5.2/7.3）：全失败兜底——任何一步出错只记
 /// 审计不重试不影响对话（摘要已在本轮历史里，落库丢了下轮截断还会再摘要）。
-/// v2（2026-09-09）：summary/reflection 写入新表 mem_items 并嵌入向量。
+/// summary/reflection 写入 mem_items 并嵌入向量。
 async fn persist_summary_and_reflect(app: &AppHandle, session_id: Option<&str>, summary: &str) {
     let batch = match crate::memory::save_summary(app, session_id, summary).await {
         Ok(b) => b,
@@ -251,14 +251,14 @@ async fn persist_summary_and_reflect(app: &AppHandle, session_id: Option<&str>, 
     }
 }
 
-/// 记忆块注入薄壳：v2（2026-09-09）切到新语义记忆体（crate::memory：mem_items +
+/// 记忆块注入薄壳：语义记忆体（crate::memory：mem_items +
 /// 语义嵌入混合检索）；任何失败一律 None 静默降级为「无记忆块」，绝不弄挂主对话
 ///（设计约束）；失败记 WARN 审计便于排查。
 async fn build_memory_block(app: &AppHandle, query: &str) -> Option<String> {
     crate::memory::injection_block(app, query).await
 }
 
-/// 需要内联图片的消息下标（2026-08-28 批次3审计 P1-6）：原先「最近两条 user 消息」
+/// 需要内联图片的消息下标：原先「最近两条 user 消息」
 /// 永不失效，一张图每轮对话都重复 base64 重发。改为最后 3 条消息内的 user 消息——
 /// 覆盖「发图 → 追问一轮」场景，更早的历史保持纯文本。
 fn image_attach_indices(messages: &[ChatMsg]) -> Vec<usize> {
@@ -268,7 +268,7 @@ fn image_attach_indices(messages: &[ChatMsg]) -> Vec<usize> {
         .collect()
 }
 
-/// 剥掉 <think>...</think> 段（2026-08-28 批次3审计 P2-6）：非流式路径（bot_compact /
+/// 剥掉 <think>...</think> 段：非流式路径（bot_compact /
 /// Planner）直接取 message.content，模型带 think 段时摘要会被写回历史、Planner 的
 /// JSON 提取会被干扰。未闭合的 <think> 尾巴一并丢弃。
 pub(crate) fn strip_think_blocks(text: &str) -> String {
@@ -286,7 +286,7 @@ pub(crate) fn strip_think_blocks(text: &str) -> String {
     out
 }
 
-/// 聊天模式批量执行：每张卡调一次 run_task_in_chat（2026-09-10 聊天化：每卡独立新会话，
+/// 聊天模式批量执行：每张卡调一次 run_task_in_chat（每卡独立新会话，
 /// EXECUTE_SYSTEM_PROMPT + 50 轮工具循环），单卡失败不污染其他卡的执行记录。
 /// 顺序执行（避免文件写冲突）；一卡失败继续（任一卡失败不阻断后续）；共用 StopGuard（/stop 一次清空）。
 /// 汇总报告：每张卡的开头 + 执行结果 + 总数 + 失败清单；task_refs 跨卡去重（merge_task_refs_dedup）。
@@ -349,7 +349,7 @@ pub async fn chat_execute_tasks(
 /// 解析 [附件文件] 块里的图片路径，读文件转 base64 data URL，附加为多模态消息内容。
 /// 无图片附件时返回纯文本字符串（保持原格式）；非图片附件保持路径文本（模型用 extract_document 直读）。
 ///
-/// SEC-P1-7（2026-08-27 安全审计）：图片路径过白名单（桌面/下载/文档/图片 + AI_Gen_Files）——
+/// 图片路径过白名单（桌面/下载/文档/图片 + AI_Gen_Files）——
 /// 原先任意路径的图片都被读取并外发给 LLM API，[附件文件] 块若被污染（历史注入）即成外泄通道。
 /// 校验失败的附件跳过并记审计（不打断聊天）。
 fn attach_images(app: &AppHandle, content: &str) -> serde_json::Value {
@@ -460,7 +460,7 @@ fn require_bot_enabled(enabled: bool) -> CommandResult<()> {
     Ok(())
 }
 
-/// pre-step 路由命中结果（主流程步骤 3 的产物，2026-08-20 收编批量执行后引入）
+/// pre-step 路由命中结果（主流程步骤 3 的产物）
 enum PreStepRoute {
     /// Skill 路由：start_skill 已加载（meta + body）
     Skill(SkillMeta, String),
@@ -471,13 +471,13 @@ enum PreStepRoute {
 /// 聊天入口：messages 为完整历史（含最新的用户消息），返回最终完整回复。
 /// 流式片段经 bot-chat-delta 事件实时推给挂件窗口。
 ///
-/// 主流程（2026-08-20 定版，五步严格按序、禁止抢跑/前置 return）：
+/// 主流程（五步严格按序、禁止抢跑/前置 return）：
 /// 1. exec_steps::resume（有挂起子任务时本条消息是执行流程的应答，优先于一切聊天路由）
 /// 2. bypass_llm_on_pre_step_hit 开关读取（F-1，任何路由判定之前）
 /// 3. middleware::run_pre_step（pre-step 路由：ExecuteTasks 批量执行 / Skill / PassThrough）
 /// 4. start_skill（Skill 调度：auto → 调度器执行；interactive → body 注入 system prompt）
 /// 5. run_model_loop（LLM 决策 + 工具循环）
-/// 聊天防重入守卫（2026-08-27 审计 P2-h）：同一会话同时只允许一个 bot_chat 在执行——
+/// 聊天防重入守卫：同一会话同时只允许一个 bot_chat 在执行——
 /// 原先聊天路径没有任何锁，两条并发消息命中同一技能路由会 start_skill 互相覆盖、
 /// 副作用工具（create_task 等）重复执行（任务卡路径有 ExecGuard，这里补会话级对称防护）。
 static CHAT_RUNNING: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
@@ -512,8 +512,8 @@ impl Drop for ChatGuard {
     }
 }
 
-/// 会话锁是否被持有（2026-09-10 任务执行聊天化：tests/task_chat_exec.rs 断言
-/// run_task_in_chat 执行期持有 ChatGuard——bot_execute_task 纳入会话锁的回归证据）。
+/// 会话锁是否被持有：tests/task_chat_exec.rs 断言
+/// run_task_in_chat 执行期持有 ChatGuard——bot_execute_task 纳入会话锁的回归证据。
 /// 生产代码不调用。
 pub fn chat_guard_is_held(session_id: &str) -> bool {
     CHAT_RUNNING
@@ -525,7 +525,7 @@ pub fn chat_guard_is_held(session_id: &str) -> bool {
 #[tauri::command]
 pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>, session_id: Option<String>) -> CommandResult<BotChatResult> {
     require_bot_enabled(bot_get_enabled(app.clone()))?;
-    // 会话级防重入（P2-h）：同会话并发消息直接拒绝，防技能路由/start_skill 竞争
+    // 会话级防重入：同会话并发消息直接拒绝，防技能路由/start_skill 竞争
     let _chat_guard = match ChatGuard::acquire(session_id.as_deref()) {
         Ok(g) => g,
         Err(()) => {
@@ -542,7 +542,7 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>, session_id: Option
             });
         }
     };
-    // 步骤 1：逐步执行挂起恢复（2026-08-19）：有子任务待确认时，本条消息是对执行流程的应答
+    // 步骤 1：逐步执行挂起恢复：有子任务待确认时，本条消息是对执行流程的应答
     // （继续/重做/停），优先于一切聊天路由。/stop 走独立命令（bot_stop 内清挂起）。
     if let Some(last) = messages.last() {
         if crate::exec_steps::has_pending_for(session_id.as_deref()) {
@@ -552,7 +552,7 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>, session_id: Option
     let stop = StopGuard::new(true, session_id.clone());
     // 步骤 2：bypass_llm_on_pre_step_hit 开关读取（F-1）：
     // true = 新行为（pre-step 路由生效），false = LEGACY 旧链路（路由命中一律丢弃，LLM 自由决策）。
-    // 必须在任何路由判定之前读取——主流程禁止任何步骤抢跑（2026-08-20 消除前置短路）。
+    // 必须在任何路由判定之前读取——主流程禁止任何步骤抢跑。
     let bypass_llm_on_pre_step_hit = crate::bot::read_bypass_llm_switch(&app);
     // 审计：记录本轮用户最新指令（截断防刷日志）
     if let Some(last) = messages.last() {
@@ -560,7 +560,7 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>, session_id: Option
             &app,
             crate::audit::AuditLevel::Info,
             "user.message",
-            // NEW-C-6：write_event 已统一转义 kv 值，这里只做长度截断，避免二次转义
+            // write_event 已统一转义 kv 值，这里只做长度截断，避免二次转义
             "content" => last.content.chars().take(300).collect::<String>(),
         );
     }
@@ -571,7 +571,7 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>, session_id: Option
 
     // 步骤 3：middleware::run_pre_step（pre-step 路由，F-2 抽象层短路求值）：
     // - RouteAction::ExecuteTasks（选择任务卡模式，ChatExecuteMiddleware）→ 批量执行选中任务卡
-    // - RouteAction::Skill（老板 2026-08-17 Q1 拍板：IntentRouter 关键词 L1 硬锁命中复合业务）→ start_skill
+    // - RouteAction::Skill（IntentRouter 关键词 L1 硬锁命中复合业务）→ start_skill
     // - RouteAction::PassThrough / None → 放行进 LLM
     // 仅处理用户最新一条消息（后续轮次走原 LLM 路径）。
     // 路由命中的处理全部发生在本步骤之后，任何步骤不得抢跑、不得前置 return。
@@ -645,7 +645,7 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>, session_id: Option
         None => (None, None),
     };
     // 选择任务卡批量执行（路由终态，不是前置短路：步骤 1-3 已按序完成）：
-    // B 方案（老板 2026-08-18 16:19 拍板，1=宽松 / 2=继续 / 3=共用 stop）：每张卡复用
+    // B 方案（1=宽松 / 2=继续 / 3=共用 stop）：每张卡复用
     // run_task_in_chat（EXECUTE_SYSTEM_PROMPT + 50 轮工具循环）；共用同一 StopGuard：
     // 聊天里 /stop 一次能中断整个批量执行。定时任务模式（bot_scheduler，interactive=false）
     // 同样只走 run_task_in_chat，不经本聊天流程，互不干扰。
@@ -658,8 +658,8 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>, session_id: Option
         );
         return chat_execute_tasks(&app, task_ids, stop).await;
     }
-    // Phase 1 C 路径：auto-mode Skill → 直接调度器执行
-    // Phase 4 第 5 项（2026-08-18 07:20）：LLM 兜底路径 — FailedButRecoverable 不再 return，
+    // auto-mode Skill → 直接调度器执行
+    // LLM 兜底路径：FailedButRecoverable 不再 return，
     // 把 recovery_hint 拼进 system_content，继续走 run_model_loop 让 LLM 决策下一步。
     let mut recovery_hint: Option<String> = None;
     if let Some((meta, _body)) = &pre_routed_skill {
@@ -672,8 +672,8 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>, session_id: Option
                     });
                 }
                 Ok(crate::bot_skills::DslOutcome::AwaitUser) => {
-                    // P1-9（2026-08-27 审计）：原先把内部哨兵 "__await_user__" 当回复文本
-                    // 直出给前端（前端无该哨兵的处理逻辑），用户看到原始字符串
+                    // 不把内部哨兵 "__await_user__" 当回复文本直出给前端（前端无该哨兵的
+                    // 处理逻辑，用户会看到原始字符串），改出可读提示
                     crate::bot::audit_log(
                         &app,
                         &format!("skill_await_user | name: {} | 已暂停等待用户确认", crate::bot::truncate_for_log(&meta.name, 60)),
@@ -688,8 +688,8 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>, session_id: Option
                     completed_summary,
                     rollback_attempted,
                 }) => {
-                    // SSE 推 Skill 失败给挂件（Phase 7 P2 优化：让用户看到半成品 + rollback 状态）
-                    // 2026-08-28 批次3审计 P0-2：payload 带 sessionId，前端按会话过滤，防串会话弹失败卡
+                    // SSE 推 Skill 失败给挂件（让用户看到半成品 + rollback 状态）
+                    // payload 带 sessionId，前端按会话过滤，防串会话弹失败卡
                     let _ = app.emit_to(
                         "widget",
                         "bot-skill-failed",
@@ -729,7 +729,7 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>, session_id: Option
     } else {
         system_content
     };
-    // PREVR 第 2 层（2026-08-26）：复杂多步任务先生成动态计划再执行。
+    // PREVR 第 2 层：复杂多步任务先生成动态计划再执行。
     // 触发保守：needs_plan 启发式命中才多花一次 Planner 调用；
     // Planner 失败/输出非法 → None → 原自由循环，不阻断聊天。
     // 仅聊天主路径启用：任务卡执行（run_task_in_chat）/ 逐步执行（exec_steps）
@@ -756,11 +756,11 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>, session_id: Option
         system_content
     };
     msgs.push(serde_json::json!({"role": "system", "content": system_content}));
-    // 2026-08-28 批次3审计 P1-5：历史字符预算——长会话最旧的先丢，
+    // 历史字符预算——长会话最旧的先丢，
     // 最后一条（本轮用户消息）永远保留；丢弃时留审计
-    // 2026-09-04 记忆模块 Step 1（截断即摘要，设计 5.2）：超预算先对将丢弃的消息
+    // 截断即摘要（设计 5.2）：超预算先对将丢弃的消息
     // 生成摘要；摘要单独以 system 消息放在截断后历史开头（不进 messages——下方
-    // role 白名单（P2-8）会把非 assistant 降级为 user，防注入语义不动）；
+    // role 白名单会把非 assistant 降级为 user，防注入语义不动）；
     // LLM 失败静默退回直接丢弃
     let (messages, summary, dropped) =
         truncate_chat_history_with_summary(&app, session_id.as_deref(), messages, HISTORY_BUDGET_CHARS)
@@ -768,9 +768,9 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>, session_id: Option
     if let Some(summary) = summary {
         msgs.push(serde_json::json!({"role": "system", "content": summary}));
     }
-    // 2026-09-05 记忆模块 Step 2（设计第 6 节）：记忆块独立 system 消息，紧跟主
+    // 记忆块独立 system 消息（设计第 6 节），紧跟主
     // system prompt 与摘要消息之后。直接进 msgs 不经 ChatMsg——下方 role 白名单
-    //（P2-8）会把非 assistant 降级为 user；检索查询 = 本轮用户消息原文 ≤200 字；
+    // 会把非 assistant 降级为 user；检索查询 = 本轮用户消息原文 ≤200 字；
     // DB 任何失败静默降级为无记忆块（build_memory_block 内部兜底）。
     let memory_query = messages
         .last()
@@ -783,10 +783,10 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>, session_id: Option
         crate::audit_event!(&app, crate::audit::AuditLevel::Info, "chat.history_truncated",
             "dropped" => dropped, "budget" => HISTORY_BUDGET_CHARS);
     }
-    // P1-6：最后 3 条消息内 user 消息的图片附件转多模态消息（更早的历史降级为路径文本）
+    // 最后 3 条消息内 user 消息的图片附件转多模态消息（更早的历史降级为路径文本）
     let img_indices = image_attach_indices(&messages);
     for (i, m) in messages.iter().enumerate() {
-        // P2-8（2026-08-28 批次3审计）：role 白名单——历史里的非法 role 一律按 user，
+        // role 白名单：历史里的非法 role 一律按 user，
         // 防污染历史注入 system/tool 角色
         let role = if m.role == "assistant" { "assistant" } else { "user" };
         if img_indices.contains(&i) {
@@ -838,15 +838,15 @@ fn require_api_key(api_key: &str) -> CommandResult<()> {
     Ok(())
 }
 
-/// 摘要请求的历史字符上限（审计 P3：超长会话只保留最近的消息（最旧的先丢），
-/// 防止压缩请求超 context）。截断路径的待摘要消息已被 HISTORY_BUDGET_CHARS 限住，
+/// 摘要请求的历史字符上限：超长会话只保留最近的消息（最旧的先丢），
+/// 防止压缩请求超 context。截断路径的待摘要消息已被 HISTORY_BUDGET_CHARS 限住，
 /// 此上限对 /compact 的全量历史才实际生效。
 const SUMMARIZE_MAX_CHARS: usize = 200_000;
 
-/// 非流式摘要调用内核（2026-09-04 记忆模块 Step 1：从 bot_compact 提炼，连接参数注入——
+/// 非流式摘要调用内核（从 bot_compact 提炼，连接参数注入——
 /// 测试直连 mock LLM，生产薄壳 summarize_messages 从 bot_get_config/read_api_key 取配置）。
 /// pub：tests/llm_integration.rs 直用（与 bot::run_model_loop_core 同先例）。
-/// 2026-09-05 Anthropic 兼容模式：provider/max_tokens 注入，按协议分支
+/// Anthropic 兼容模式：provider/max_tokens 注入，按协议分支
 /// URL/鉴权头/请求体/响应解析（Anthropic 侧转换走 bot_anthropic 纯函数）。
 pub async fn summarize_http(
     client: &reqwest::Client,
@@ -920,7 +920,7 @@ pub async fn summarize_http(
         .await
         .map_err(|e| format!("解析响应失败：{e}"))?;
     let text = match provider {
-        // 安全访问：choices 可能为空数组/缺失（网关错误对象），索引会 panic（审计 P0 已修复）
+        // 安全访问：choices 可能为空数组/缺失（网关错误对象），索引会 panic
         crate::bot::ApiProvider::Openai => v
             .get("choices")
             .and_then(|c| c.as_array())
@@ -930,7 +930,7 @@ pub async fn summarize_http(
             .to_string(),
         crate::bot::ApiProvider::Anthropic => crate::bot_anthropic::parse_anthropic_response(&v),
     };
-    // 2026-08-28 批次3审计 P2-6：模型带 <think> 段时先剥掉，防摘要带思考段写回历史
+    // 模型带 <think> 段时先剥掉，防摘要带思考段写回历史
     let text = strip_think_blocks(&text).trim().to_string();
     if text.is_empty() {
         return Err(CommandError::DomainRule {
@@ -964,7 +964,7 @@ pub(crate) async fn summarize_messages(
         &cfg.model,
         system_prompt,
         messages,
-        // 2026-09-05 Anthropic 兼容模式：协议与 max_tokens 从配置解析
+        // Anthropic 兼容模式：协议与 max_tokens 从配置解析
         //（None/非法值 → Openai，老配置零影响）
         crate::bot::ApiProvider::from_cfg(cfg.api_provider.as_deref()),
         crate::bot::resolve_max_tokens(cfg.max_tokens),
@@ -981,17 +981,17 @@ pub async fn bot_compact(app: AppHandle, messages: Vec<ChatMsg>) -> CommandResul
 // ───────────────────────── 任务卡执行 ─────────────────────────
 
 /// 任务卡交给机器人执行（🤖 按钮 / 选卡说「完成它」）。
-/// 任务执行聊天化（2026-09-10）：执行永远在**新会话**里（run_task_in_chat 统一入口），
+/// 任务执行聊天化：执行永远在**新会话**里（run_task_in_chat 统一入口），
 /// 前端经 chat-open-session 事件切过去围观；session_id 参数废弃（旧前端兼容保留，
 /// 不再使用）。会话级 ChatGuard 由 run_task_in_chat 对新会话持有（补上原先后端无锁的漏洞）。
 /// 流式经 bot-chat-delta / bot-think-delta / bot-tool* 事件（带新会话 sessionId）推给挂件。
 #[tauri::command]
 pub async fn bot_execute_task(app: AppHandle, task_id: String, session_id: Option<String>) -> CommandResult<BotChatResult> {
     let _ = session_id; // 废弃：执行会话由后端新建
-    // 逐步执行模式（2026-08-19 老板拍板）：手动触发 + ≥2 个未勾子任务 → 一个一个做，
+    // 逐步执行模式：手动触发 + ≥2 个未勾子任务 → 一个一个做，
     // 每个子任务做完在聊天里等用户确认（继续=勾选+下一个 / 重做 / 停）；
     // 聊天批量执行与定时调度仍走整卡连续执行（多卡/无人在场不适合逐步确认）。
-    // 2026-09-10：逐步执行也在新会话内（exec_steps 挂起态按新会话 id 停放）。
+    // 逐步执行也在新会话内（exec_steps 挂起态按新会话 id 停放）。
     if bot_get_enabled(app.clone()) {
         if let Some(task) = crate::db::db_load(app.clone())
             .await
@@ -1019,7 +1019,7 @@ pub async fn bot_execute_task(app: AppHandle, task_id: String, session_id: Optio
 
 /// 任务卡执行防重入：同一 task_id 同时只允许一个执行实例。
 /// 覆盖三条入口（🤖 连点 / chat 批量执行 / 定时调度），防同一卡并发跑多个 LLM 循环
-/// （2026-08-18 事故：同一任务 id 被并发执行 ~10 次，日志交叠、结果互相覆盖）。
+/// （并发执行会日志交叠、结果互相覆盖）。
 static EXEC_RUNNING: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
     std::sync::OnceLock::new();
 
@@ -1050,7 +1050,7 @@ impl Drop for ExecGuard {
     }
 }
 
-/// 任务执行聊天化（2026-09-10，docs/TASK-CHAT-EXECUTION-DESIGN.md）：
+/// 任务执行聊天化（docs/TASK-CHAT-EXECUTION-DESIGN.md）：
 /// 一次执行 = 一个新会话。统一入口 run_task_in_chat 供 🤖 按钮 / ⏰ 定时 / 📦 批量三路径
 /// 共用（取代原 run_task_in_chat 的 headless 模式——定时任务不再是黑箱，全程流式可见、
 /// 可按会话 /stop、永久落库可回看）。
@@ -1222,7 +1222,7 @@ where
     Run: FnOnce(tauri::AppHandle<R>, Vec<serde_json::Value>, StopGuard) -> Fut,
     Fut: std::future::Future<Output = CommandResult<(String, Vec<TaskRef>)>>,
 {
-    // 开关关闭时明确拒绝（二次审计 P2-3）
+    // 开关关闭时明确拒绝
     if !crate::bot_slash::bot_enabled(app) {
         return Err(CommandError::BotDisabled);
     }
@@ -1281,7 +1281,7 @@ where
         serde_json::json!({"role": "system", "content": format!("{}\n\n{}", EXECUTE_SYSTEM_PROMPT, build_skill_block(app))}),
         serde_json::json!({"role": "user", "content": block}),
     ];
-    // 记忆 v2（2026-09-09）：任务卡执行/定时调度也注入记忆块——助手执行任务时知道用户
+    // 任务卡执行/定时调度也注入记忆块——助手执行任务时知道用户
     // 偏好；查询 = 任务标题+备注前 200 字；失败静默降级为无记忆块（injection_block 内部兜底）。
     let mem_query: String = format!(
         "{} {}",
@@ -1305,7 +1305,7 @@ where
     match outcome {
         Ok(result) => Ok(TaskChatRun { session_id: sid, result }),
         Err(e) => {
-            // 2026-09-09 lesson 特性：任务执行失败自动沉淀一条 lesson（source=system，
+            // 任务执行失败自动沉淀一条 lesson（source=system，
             // 语义去重合并同类失败）；写失败只记审计，不影响原错误返回
             crate::memory::auto_lesson_on_task_failure(app, &task.title, &e.message()).await;
             Err(e)
@@ -1356,7 +1356,7 @@ pub(crate) fn build_task_block(task: &crate::db::Task) -> String {
 }
 
 /// 翻转「交给机器人」标记：重读库后只改 bot_assigned，避免覆盖机器人工具对卡片的修改
-/// （泛型 Runtime，2026-09-10：run_task_in_chat 泛化后 mock runtime 测试可直调）
+/// （泛型 Runtime：mock runtime 测试可直调）
 pub(crate) async fn set_bot_assigned<R: tauri::Runtime>(app: &tauri::AppHandle<R>, task_id: &str, assigned: bool) {
     let Ok(all) = crate::db::db_load_for(app).await else {
         return;
@@ -1371,7 +1371,7 @@ pub(crate) async fn set_bot_assigned<R: tauri::Runtime>(app: &tauri::AppHandle<R
         return;
     }
     t.bot_assigned = Some(assigned);
-    t.expected_updated_at = t.updated_at; // T1-1：RMW 基线 = 快照 updated_at
+    t.expected_updated_at = t.updated_at; // RMW 基线 = 快照 updated_at
     t.updated_at = Some(chrono::Utc::now().timestamp_millis());
     if crate::db::db_upsert_for(app, vec![t.clone()]).await.is_ok() {
         crate::bot::broadcast_after_mutation(app, vec![t], vec![]);
@@ -1379,7 +1379,7 @@ pub(crate) async fn set_bot_assigned<R: tauri::Runtime>(app: &tauri::AppHandle<R
 }
 
 // ────────────────────────────────────────────────────────────────────
-// 测试：图片附件纯函数 + 主编编排纯函数（Phase 7 Q3 2026-08-18 12:50）
+// 测试：图片附件纯函数 + 主编编排纯函数
 // ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1393,7 +1393,7 @@ mod image_attach_tests {
         let png = dir.join("a.png");
         std::fs::write(&png, [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A]).unwrap(); // PNG 魔数
         let content = format!("[附件文件]\n- {}\n\n提取图片里的文字", png.display());
-        // SEC-P1-7：白名单根目录传入（测试用临时目录充当白名单根）
+        // 白名单根目录传入（测试用临时目录充当白名单根）
         let (v, skipped) = attach_images_in(&[dir.clone()], &content);
         assert_eq!(skipped, 0);
         let arr = v.as_array().expect("应返回多模态数组");
@@ -1406,7 +1406,7 @@ mod image_attach_tests {
 
     #[test]
     fn attach_image_outside_whitelist_skipped() {
-        // SEC-P1-7：白名单外的图片路径被跳过（防 [附件文件] 块污染外泄）
+        // 白名单外的图片路径被跳过（防 [附件文件] 块污染外泄）
         let dir = std::env::temp_dir().join(format!("wm_img_{}", uuid::Uuid::new_v4().simple()));
         std::fs::create_dir_all(&dir).unwrap();
         let png = dir.join("a.png");
@@ -1554,7 +1554,7 @@ mod bot_chat_pure_helpers_tests {
         assert_eq!(out[0].title, "X1");
     }
 
-    // ── 2026-08-28 批次3审计：历史预算 / 图片窗口 / think 剥除 ──
+    // ── 历史预算 / 图片窗口 / think 剥除 ──
 
     fn msg(role: &str, content: &str) -> ChatMsg {
         ChatMsg { role: role.into(), content: content.into() }
@@ -1628,7 +1628,7 @@ mod bot_chat_pure_helpers_tests {
         assert_eq!(strip_think_blocks(""), "");
     }
 
-    // ── 2026-09-04 记忆模块 Step 1：截断即摘要（编排内核，摘要器注入） ──
+    // ── 截断即摘要（编排内核，摘要器注入） ──
 
     #[tokio::test]
     async fn truncate_with_summary_core_success_returns_summary() {
@@ -1684,7 +1684,7 @@ mod bot_chat_pure_helpers_tests {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// 测试：P0-6A — Err("...".into()) 逃生舱改走专用 CommandError 变体
+// 测试：Err("...".into()) 逃生舱改走专用 CommandError 变体
 // ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

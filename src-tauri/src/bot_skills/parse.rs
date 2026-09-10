@@ -14,7 +14,7 @@ pub struct SkillMeta {
     /// 是否支持暂停后断点续跑（false 时暂停即终止：确认完成当前动作后技能结束）
     pub resumable: bool,
     pub intents: Vec<String>,
-    /// 多步 Skill 自报的对话轮数上限（2026-08-20）；
+    /// 多步 Skill 自报的对话轮数上限；
     /// None → 运行时 fallback bot_model_loop::DEFAULT_MAX_ROUNDS（50）。
     /// 解析时 clamp 到 1..=60（现有 Skill 未声明该字段 → None，不受影响）。
     pub max_rounds: Option<usize>,
@@ -46,7 +46,7 @@ pub(crate) fn parse_frontmatter(text: &str, dir_name: &str) -> (String, String) 
 /// 解析完整元数据（调度器用）：缺失字段走默认值；非法值回退默认
 pub fn parse_meta(text: &str, dir_name: &str) -> SkillMeta {
     let mut m = SkillMeta::default();
-    // 2026-08-27 审计 P2：剥离 UTF-8 BOM——带 BOM 的文件此前 frontmatter 整体静默丢失
+    // 剥离 UTF-8 BOM——带 BOM 的文件 frontmatter 会整体静默丢失
     // （name 退目录名、mode 退默认、intents 丢失 → 路由失效），无任何告警
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let body = text.strip_prefix("---").unwrap_or(text);
@@ -57,7 +57,7 @@ pub fn parse_meta(text: &str, dir_name: &str) -> SkillMeta {
     let fm = &body[..end];
     let fm_lines: Vec<&str> = fm.lines().collect();
     let mut li = 0;
-    // mode 是否显式声明（2026-08-27 审计 P2：风险推导需要区分「没写」与「显式写默认值」）
+    // mode 是否显式声明（风险推导需要区分「没写」与「显式写默认值」）
     let mut mode_explicit = false;
     while li < fm_lines.len() {
         let line = fm_lines[li].trim();
@@ -119,7 +119,7 @@ pub fn parse_meta(text: &str, dir_name: &str) -> SkillMeta {
             "intents" => {
                 let inner = v.trim();
                 if inner.is_empty() {
-                    // 多行 YAML 列表（2026-08-19 动态路由）：intents: 后随 `- ` 行逐条收取。
+                    // 多行 YAML 列表：intents: 后随 `- ` 行逐条收取。
                     // 模式含逗号（如量词 {0,15}）必须用此形式——单行逗号分隔会切碎量词。
                     while li < fm_lines.len() {
                         let t = fm_lines[li].trim();
@@ -152,7 +152,7 @@ pub fn parse_meta(text: &str, dir_name: &str) -> SkillMeta {
         m.name = dir_name.to_string();
     }
     // 风险推导模式（显式 mode 优先）：high → 强制 interactive（安全兜底）；
-    // low + 未显式声明 mode → auto（SKILL_DSL.md 约定「low 强制 auto」，2026-08-27 审计 P2 补齐实现）
+    // low + 未显式声明 mode → auto（SKILL_DSL.md 约定「low 强制 auto」）
     if m.risk_level == "high" {
         m.mode = "interactive".into();
     } else if m.risk_level == "low" && !mode_explicit {
@@ -161,9 +161,9 @@ pub fn parse_meta(text: &str, dir_name: &str) -> SkillMeta {
     m
 }
 
-// ─────────────────────── DSL 解析 + 调度器（Phase 1 2026-08-17 23:15）───────────────────────
+// ─────────────────────── DSL 解析 + 调度器 ───────────────────────
 
-/// Skill 步骤（DSL 解析后的结构，Phase 1）
+/// Skill 步骤（DSL 解析后的结构）
 ///
 /// Markdown DSL 格式（仅 `mode: "auto"` 的 Skill 走调度器）：
 ///   ## Step N: 标题
@@ -183,7 +183,7 @@ pub struct SkillStep {
 
 /// 剥离 YAML frontmatter（`---` ... `---`），返回正文部分。
 fn strip_frontmatter(text: &str) -> &str {
-    // 2026-08-27 审计 P2：先剥 UTF-8 BOM，否则 frontmatter 探测整体失效
+    // 先剥 UTF-8 BOM，否则 frontmatter 探测整体失效
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     if !text.starts_with("---") {
         return text;
@@ -195,7 +195,7 @@ fn strip_frontmatter(text: &str) -> &str {
     }
 }
 
-/// 回滚段标题判定（2026-08-27 审计 P2：统一三套说法）：
+/// 回滚段标题判定（统一三套说法）：
 /// `## Rollback` / `## Rollback ...` / `## 回滚` / `## 回滚（Rollback）` 都认。
 /// parse_skill_steps 与 runtime::rollback_section 共用同一判定，不再各认一半。
 pub(crate) fn is_rollback_heading(line: &str) -> bool {
@@ -243,10 +243,10 @@ fn parse_tool_call(line: &str) -> Option<(String, String)> {
 /// 解析 Skill body 为 (主步骤, 回滚步骤)。
 /// - 空 body / 无 step → `(Vec::new(), Vec::new())`
 /// - 解析失败 → Err
-/// 2026-08-27 审计 P2 加固：
+/// 解析规则：
 /// - 回滚段标题走 is_rollback_heading 统一判定（`## Rollback` / `## 回滚` 都认）
-/// - 回滚段每行工具调用是一个独立回滚步骤（原先后续行静默覆盖，只留最后一行）
-/// - Step 内含多行工具调用 → Err（原先第二行静默覆盖第一行）
+/// - 回滚段每行工具调用是一个独立回滚步骤
+/// - Step 内含多行工具调用 → Err
 /// - 步骤序号重复 → Err（`${stepN.*}` 替换取首个匹配，重号会静默错位）
 pub fn parse_skill_steps(body: &str) -> Result<(Vec<SkillStep>, Vec<SkillStep>), String> {
     let body = strip_frontmatter(body);
@@ -343,7 +343,7 @@ mod tests {
 
     #[test]
     fn meta_intents_multiline_list_preserves_quantifier_commas() {
-        // 2026-08-19 动态路由：intents 多行 YAML 列表形式。
+        // intents 多行 YAML 列表形式。
         // 关键：模式内的量词逗号（{0,15}）不得被切碎——单行逗号分隔形式做不到，所以路由模式用多行列表
         let text = "---\nname: minimax-docx\ndescription: d\ntriggers:\n  - Word\n  - 文档\nintents:\n  - '(?i)(润色|修订).{0,15}(word|文档)'\n  - '(?is)(润色|修订)[\\s\\S]*\\.docx?'\n---\n# body\n";
         let m = parse_meta(text, "fallback");
@@ -440,7 +440,7 @@ mod tests {
         assert!(!ok(""));
     }
 
-    // ── DSL 解析（Phase 1 2026-08-17 23:15） ──
+    // ── DSL 解析 ──
 
     #[test]
     fn dsl_parse_empty_body() {
@@ -512,7 +512,7 @@ mod tests {
         assert!(parse_tool_call("foo123({})").is_some());
     }
 
-    // ── Phase 3 样板 Skill 端到端 DSL 验证（2026-08-18 05:30） ──
+    // ── 样板 Skill 端到端 DSL 验证 ──
 
     /// 样板 SKILL.md 的 body（与 target/debug/skills/minimax-task-archive-demo/SKILL.md 同源）
     const DEMO_BODY: &str = "---\n\
@@ -558,7 +558,7 @@ query_single_task({\"id\": \"${step1.id}\"})\n";
             title: "列出当前所有任务".into(),
             result: step1_text.into(),
             id: Some(step1_uuid.clone()),
-            // Phase 4 第 2 项：parsed 字段（嵌套路径用，纯文本 result parse 失败为 None）
+            // parsed 字段（嵌套路径用，纯文本 result parse 失败为 None）
             parsed: None,
         }];
         // Step 2 的 args_json 模板（与 SKILL.md 一致）
@@ -567,7 +567,7 @@ query_single_task({\"id\": \"${step1.id}\"})\n";
         assert_eq!(resolved, format!(r#"{{"id": "{}"}}"#, step1_uuid));
     }
 
-    // ── Phase 3 第二步（2026-08-18 05:33）：v2 升级样板 ──
+    // ── v2 升级样板 ──
 
     /// v2 SKILL.md 的 body（与 target/debug/skills/minimax-task-summary-v2/SKILL.md 同源）
     const V2_BODY: &str = "---\n\
@@ -604,14 +604,14 @@ query_single_task({\"id\": \"${step1.id}\"})\n";
 
     #[test]
     fn v2_rollback_step_args_also_go_through_substitute_vars() {
-        // rollback 段 args 也走变量替换（Phase 2 已接入 run_skill_scheduler）
+        // rollback 段 args 也走变量替换
         // 模拟 Step 1 跑完后，回滚段用 ctx 里的 id 替换 ${step1.id}
         let ctx = vec![CompletedStep {
             index: 1,
             title: "list".into(),
             result: "r".into(),
             id: Some("uuid-99".into()),
-            // Phase 4 第 2 项：parsed 字段（嵌套路径用，纯文本 result parse 失败为 None）
+            // parsed 字段（嵌套路径用，纯文本 result parse 失败为 None）
             parsed: None,
         }];
         let rb_args = r#"{"id": "${step1.id}"}"#;
@@ -619,7 +619,7 @@ query_single_task({\"id\": \"${step1.id}\"})\n";
         assert_eq!(resolved, r#"{"id": "uuid-99"}"#);
     }
 
-    // ── Phase 3 第三步（2026-08-18 06:10）：扫所有 Skill 目录通用验证 ──
+    // ── 扫所有 Skill 目录通用验证 ──
 
     /// 扫 target/debug/skills/ 下所有 SKILL.md，验证 parse_skill_steps 通过
     /// 且至少 1 step，rollback 段（若有）也合法。
@@ -646,7 +646,7 @@ query_single_task({\"id\": \"${step1.id}\"})\n";
             }
             let body = std::fs::read_to_string(&skill_md)
                 .unwrap_or_else(|e| panic!("read {} failed: {}", skill_md.display(), e));
-            // 2026-08-19：interactive 技能（如 minimax-docx）没有 DSL Step 段——
+            // interactive 技能（如 minimax-docx）没有 DSL Step 段——
             // 它由 LLM 驱动、不进调度器，DSL 校验只针对 mode: auto 的技能
             if parse_meta(&body, "smoke").mode != "auto" {
                 continue;

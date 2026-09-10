@@ -1,7 +1,7 @@
 use crate::error::{CommandError, CommandResult};
 use tauri::AppHandle;
 
-/// 收集「允许直接打开/删除」的路径集合（2026-08-27 安全审计 SEC-P1-3）：
+/// 收集「允许直接打开/删除」的路径集合：
 /// 任务卡绑定文件/文件夹（含回收站卡——彻底删除场景需要）+ 工作区链接目标 +
 /// AI_Gen_Files 目录内文件。open_file_path / delete_bound_file 共用——这两个命令
 /// 前端直达，原先零校验，LLM 输出里的代码块路径 / 前端 XSS 都可驱动其打开或删除任意文件。
@@ -42,7 +42,7 @@ fn path_openable(app: &AppHandle, path: &str, set: &std::collections::HashSet<St
 
 /// 打开文件/文件夹（Rust 侧调用 opener 插件）：绕过前端窗口的 opener scope，
 /// 挂件窗口内聊天文件按钮点击直接走这里，失败返回可读错误、前端弹错提示（不静默）。
-/// 2026-08-27 SEC-P1-3：限定任务卡绑定集合 / 工作区链接 / AI_Gen_Files——
+/// 限定任务卡绑定集合 / 工作区链接 / AI_Gen_Files——
 /// 原先任意路径可打开（.app/.command 即代码执行），是前端 XSS → RCE 的一跳。
 #[tauri::command]
 pub async fn open_file_path(app: AppHandle, path: String) -> CommandResult<()> {
@@ -58,7 +58,7 @@ pub async fn open_file_path(app: AppHandle, path: String) -> CommandResult<()> {
             reason: "仅允许打开任务卡绑定文件/工作区链接/AI_Gen_Files 内的文件".into(),
         });
     }
-    // 2026-09-05：存在性前置检查——原先直接进 opener，文件不存在时回的是 OS 英文
+    // 存在性前置检查——原先直接进 opener，文件不存在时回的是 OS 英文
     // 报错（且前端 silent 吞掉，点了没反应）；现在给可读原因，前端弹错不静默
     if !std::path::Path::new(&path).exists() {
         crate::bot::audit_log(
@@ -103,9 +103,9 @@ pub async fn pick_files_dialog(app: AppHandle) -> CommandResult<Vec<String>> {
 /// trash::delete 内部递归处理文件/目录两种类型，不需要按 is_dir 分流。
 /// 路径不存在视为已删（幂等）。
 /// 错误透传给前端（权限不足/路径异常/网络盘不支持）→ 任务行保留，用户可重试
-/// （老板 2026-08-17 21:17：安全优先于不可恢复，误删可从废纸篓/回收站找回）
+/// （安全优先于不可恢复，误删可从废纸篓/回收站找回）
 ///
-/// ⚠️ 踩坑（2026-08-17 21:21 老板报「TargetedRoot」）：不能写 `trash::delete_all(p)`——
+/// ⚠️ 踩坑：不能写 `trash::delete_all(p)`——
 ///    `&Path` 实现了 `IntoIterator<Item = &OsStr>`（Path::components 迭代器），
 ///    delete_all 会逐个 component 调 trash，第一个 component `/`（根）的 parent() 是 None → TargetedRoot。
 ///    正确写法是单数 `trash::delete(p)`（内部 `delete_all(&[path])`，把整条路径当作一项处理）。
@@ -116,7 +116,7 @@ pub async fn delete_bound_file(app: AppHandle, path: String, is_dir: bool) -> Co
     if !p.exists() {
         return Ok(());
     }
-    // 2026-08-27 SEC-P1-3：只能删「任务卡绑定文件/文件夹」集合内的路径——
+    // 只能删「任务卡绑定文件/文件夹」集合内的路径——
     // 原先任意路径可进废纸篓，前端 XSS 可批量删除用户文件
     let set = collect_openable_paths(&app).await;
     if !set.contains(&path) {

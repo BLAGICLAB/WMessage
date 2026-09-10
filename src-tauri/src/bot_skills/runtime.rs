@@ -32,7 +32,7 @@ fn preflight(meta: &SkillMeta) -> Result<(), String> {
     Ok(())
 }
 
-/// 同名技能冲突判定（2026-08-28 批次3审计 P0-1）：SKILL_RUNS 以技能名为键，
+/// 同名技能冲突判定：SKILL_RUNS 以技能名为键，
 /// 别的会话的 Running/Paused 同名 run 会被 insert 顶掉导致安全闸全失——启动前拒绝。
 fn skill_conflict_with_existing(existing: Option<&SkillRun>, session_id: Option<&str>) -> bool {
     matches!(existing, Some(r) if (r.state == SkillState::Running || r.state == SkillState::Paused)
@@ -40,19 +40,19 @@ fn skill_conflict_with_existing(existing: Option<&SkillRun>, session_id: Option<
 }
 
 /// 启动 Skill：use_skill 工具调用即启动生命周期（预审 → Running），返回文档 + 运行约束提示。
-/// session_id（2026-08-26 会话隔离）：记录触发会话，活动判定/暂停/确认/推进按会话过滤。
+/// session_id：记录触发会话，活动判定/暂停/确认/推进按会话过滤（会话隔离）。
 pub fn start_skill(app: &AppHandle, name: &str, session_id: Option<&str>) -> Result<(SkillMeta, String), String> {
     let (meta, body) = load_skill_meta(app, name)?;
     preflight(&meta)?;
-    // 预审已通过 → 直接进入 Running（此前停在 Loaded，步骤钩子按 Running/Paused 查找，
-    // 计数/熔断/动作记录全部静默失效 —— 核验发现的 P1）
+    // 预审已通过 → 直接进入 Running：步骤钩子按 Running/Paused 查找，
+    // 停在 Loaded 会让计数/熔断/动作记录全部静默失效
     let mut run = SkillRun::new(&meta);
     run.state = SkillState::Running;
     run.session_id = session_id.map(|s| s.to_string());
     let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
-    // 2026-08-28 批次3审计 P0-1：同名 run 属于别的会话且仍在活动 → 拒绝启动，
+    // 同名 run 属于别的会话且仍在活动 → 拒绝启动，
     // 否则 insert 会把对方的步数/超时熔断、动作记录、收尾整个顶掉。
-    // 同会话同名重启（原有覆盖语义）与终态 run 不拦截。
+    // 同会话同名重启（覆盖语义）与终态 run 不拦截。
     if skill_conflict_with_existing(runs.get(&meta.name), session_id) {
         return Err(format!(
             "技能「{}」正在另一个会话/任务中运行，请等它结束后再启动",
@@ -61,8 +61,8 @@ pub fn start_skill(app: &AppHandle, name: &str, session_id: Option<&str>) -> Res
     }
     // 单活动技能策略：新技能启动时，把本会话其他 Running/Paused 技能标 Completed。
     // 步骤钩子/暂停/确认按「唯一活动技能」定位，多技能同时 Running 会导致
-    // 步骤计数与暂停确认全部记到第一个技能、后续技能被静默忽略（全面审计 P2）。
-    // 2026-08-26 会话隔离：只结束同会话的技能，别的会话的活动技能不受影响。
+    // 步骤计数与暂停确认全部记到第一个技能、后续技能被静默忽略。
+    // 会话隔离：只结束同会话的技能，别的会话的活动技能不受影响。
     let mut switched: Vec<String> = Vec::new();
     for (n, r) in runs.iter_mut() {
         if *n != meta.name
@@ -84,7 +84,7 @@ pub fn start_skill(app: &AppHandle, name: &str, session_id: Option<&str>) -> Res
         );
     }
     runs.insert(meta.name.clone(), run);
-    // 审计：skill.start 结构化（F-3 第二步 2026-08-18）
+    // 审计：skill.start 结构化
     audit_event!(
         app,
         crate::audit::AuditLevel::Info,
@@ -100,7 +100,7 @@ pub fn start_skill(app: &AppHandle, name: &str, session_id: Option<&str>) -> Res
 }
 
 /// 工具 use_skill：读取技能文档全文返回给模型。
-/// session_id（2026-08-26 会话隔离）：透传给 start_skill 记录技能归属会话。
+/// session_id：透传给 start_skill 记录技能归属会话（会话隔离）。
 pub fn tool_use_skill(app: &AppHandle, args: &str, session_id: Option<&str>) -> (String, Vec<crate::bot::TaskRef>) {
     let v: serde_json::Value = serde_json::from_str(args).unwrap_or(serde_json::Value::Null);
     let Some(name) = v["name"].as_str().map(|s| s.trim().to_string()) else {
@@ -171,7 +171,7 @@ fn step_check(run: &mut SkillRun, tool: &str, args: &str, now: i64) -> Result<()
 
 pub fn skill_on_step(app: &AppHandle, tool: &str, args: &str, session_id: Option<&str>) -> Result<(), CommandError> {
     let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
-    // 2026-08-26 会话隔离：只管归属当前会话的活动 Skill，别的会话的不计数不熔断
+    // 会话隔离：只管归属当前会话的活动 Skill，别的会话的不计数不熔断
     let Some(run) = runs
         .values_mut()
         .find(|r| (r.state == SkillState::Running || r.state == SkillState::Paused)
@@ -190,12 +190,12 @@ pub fn skill_on_step(app: &AppHandle, tool: &str, args: &str, session_id: Option
     res
 }
 
-/// Post-execute Skill 步骤钩子（洋葱管线「出」钩子，2026-08-17 22:17 第一块落地）
+/// Post-execute Skill 步骤钩子（洋葱管线「出」钩子）
 /// 与 `skill_on_step` 对称：执行工具后调用，记录步骤结果 + 检测失败。
 /// 仅在 Skill 处于 Running 时干预；Paused/Completed 等状态不写动作记录。
 ///
-/// 失败判定（2026-08-27 审计 P1-6）：统一走 `audit::tool_call_failed`——原先
-/// 「级别 ≥ Warn 且文本含失败关键词」双条件会漏掉「未知工具」（不含关键词）等形态。
+/// 失败判定统一走 `audit::tool_call_failed`：「级别 ≥ Warn 且文本含失败关键词」
+/// 这类双条件会漏掉「未知工具」（不含关键词）等形态。
 /// 失败 → 把 Skill 标 Failed，写入 end_reason 让 `skill_finish` 知道不再继续后续步骤。
 pub fn skill_on_step_post(
     app: &AppHandle,
@@ -206,7 +206,7 @@ pub fn skill_on_step_post(
     session_id: Option<&str>,
 ) {
     let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
-    // 2026-08-26 会话隔离：只记录归属当前会话的 Running 技能
+    // 会话隔离：只记录归属当前会话的 Running 技能
     let Some(run) = runs
         .values_mut()
         .find(|r| r.state == SkillState::Running && r.session_id.as_deref() == session_id)
@@ -221,7 +221,7 @@ pub fn skill_on_step_post(
         let preview: String = result.chars().take(120).collect();
         crate::bot::audit_log_hook(
             app,
-            // 2026-08-28 批次3审计：preview 是工具结果原文，换行/管道符会撕裂日志行，必须转义
+            // preview 是工具结果原文，换行/管道符会撕裂日志行，必须转义
             &format!("skill_step_fail | name: {name} | tool: {tool} | {}", crate::bot::truncate_for_log(&preview, 120)),
         );
     } else {
@@ -264,7 +264,7 @@ fn confirm_state(run: &mut SkillRun, approved: bool) {
 }
 
 /// 高危动作确认开始：本会话活动技能转入 Paused（ask_user_confirm 调用前触发）。
-/// 2026-08-26 会话隔离：只暂停归属当前会话的 Running 技能，不动别的会话。
+/// 会话隔离：只暂停归属当前会话的 Running 技能，不动别的会话。
 pub fn skill_mark_paused(app: &AppHandle, tool: &str, session_id: Option<&str>) {
     let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(run) = runs
@@ -283,7 +283,7 @@ pub fn skill_mark_paused(app: &AppHandle, tool: &str, session_id: Option<&str>) 
 }
 
 /// 确认结果到达：恢复 Running / 暂停即终止 / 拒绝终止（bot_confirm_response 调用）。
-/// 2026-08 会话隔离：只作用于归属该会话的 Paused 技能（session 从 ConfirmMap 条目取回）。
+/// 会话隔离：只作用于归属该会话的 Paused 技能（session 从 ConfirmMap 条目取回）。
 pub fn skill_confirm_result(app: &AppHandle, approved: bool, session_id: Option<&str>) {
     let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(run) = runs
@@ -302,9 +302,8 @@ pub fn skill_confirm_result(app: &AppHandle, approved: bool, session_id: Option<
 }
 
 /// 提取 SKILL.md 正文里的回滚章节（无则空串）。
-/// 2026-08-27 审计 P2：与 parse_skill_steps 共用 `is_rollback_heading` 统一判定——
-/// 原先这里只认「## 回滚」、parser 只认「## Rollback」，按运行模型文档写中文标题的
-/// 技能回滚段被静默忽略。
+/// 与 parse_skill_steps 共用 `is_rollback_heading` 统一判定，中英文标题都认——
+/// 判定不一致会让按中文标题写的技能回滚段被静默忽略。
 fn rollback_section(body: &str) -> String {
     let lines: Vec<&str> = body.lines().collect();
     let Some(start) = lines
@@ -327,9 +326,9 @@ fn rollback_section(body: &str) -> String {
 
 /// 收尾钩子：模型循环结束时调用（成功/失败/用户停止）。
 /// 返回回滚建议文本（失败且 rollback=auto 且有动作记录时非空），调用方拼进回复让模型执行逆操作。
-/// 2026-08-26 会话隔离：只收尾归属当前会话的 Running/Paused 技能，
+/// 会话隔离：只收尾归属当前会话的 Running/Paused 技能，
 /// 别的会话的技能不受本会话结束影响。
-/// 泛型 Runtime（2026-09-03 T1-2）：集成测试可用 MockRuntime 直调真收尾逻辑。
+/// 泛型 Runtime：集成测试可用 MockRuntime 直调真收尾逻辑。
 pub fn skill_finish<R: tauri::Runtime>(app: &tauri::AppHandle<R>, ok: bool, reason: &str, session_id: Option<&str>) -> String {
     let mut rollback_hint = String::new();
     let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
@@ -349,7 +348,7 @@ pub fn skill_finish<R: tauri::Runtime>(app: &tauri::AppHandle<R>, ok: bool, reas
         } else {
             run.state = SkillState::Failed;
             run.end_reason = reason.to_string();
-            // 2026-08-28 批次3审计：reason 可含模型给的工具名/错误文本，转义后再落日志
+            // reason 可含模型给的工具名/错误文本，转义后再落日志
             let mut log = format!(
                 "skill_failed | name: {name} | {} | actions: {}",
                 crate::bot::truncate_for_log(reason, 200),
@@ -385,7 +384,7 @@ pub fn skill_finish<R: tauri::Runtime>(app: &tauri::AppHandle<R>, ok: bool, reas
     rollback_hint
 }
 
-/// 状态机推进建议（主循环决策输入，2026-08-17 22:26 Block 2 骨架）
+/// 状态机推进建议（主循环决策输入）
 ///
 /// 由 `advance_skill()` 根据当前 SkillState 返回，告诉主循环下一步该做什么。
 ///
@@ -408,12 +407,12 @@ pub enum AdvanceAction {
     Terminate(String),
 }
 
-/// 状态机推进决策（主循环每轮迭代开头调用，2026-08-17 22:26 Block 2 骨架）
+/// 状态机推进决策（主循环每轮迭代开头调用）
 ///
 /// 纯函数：不写日志、不改全局状态、不改传入的 run，便于单测。
 /// 实时超时检测：即使 step_check 没跑到（长工具执行期间），主循环也能感知超时。
 ///
-/// 调用时机（明早接主循环）：
+/// 调用时机：
 ///   bot_chat 主循环每次 LLM 响应/工具执行后调一次，根据 AdvanceAction 决定：
 ///   - Continue → next iteration
 ///   - AwaitConfirm → break，等待 bot_confirm_response
@@ -438,13 +437,12 @@ pub fn advance_skill(run: &SkillRun, now_ms: i64) -> AdvanceAction {
     }
 }
 
-/// DSL 调度器专用决策（Phase 4 第 1 项 2026-08-18 06:20）：
-/// 把 `advance_skill` 的 6 分支映射到 DSL 调度器可执行的 5 种动作。
+/// DSL 调度器专用决策：把 `advance_skill` 的 6 分支映射到 DSL 调度器可执行的 5 种动作。
 ///
-/// 动机：原 `run_skill_scheduler` 一次性顺序跑所有 step，不读 SkillRun.state，
-/// 导致 step_check 步数熔断 / skill_on_step_post 工具失败 / skill_terminate_all 用户 /stop
-/// 改 state 后，调度器仍继续跑后续 step（漏停、超时后还跑、用户取消后还跑）。
-/// 现在每 step 前查一次，按状态机决策：
+/// 动机：调度器不能一次性顺序跑所有 step 而不读 SkillRun.state，否则
+/// step_check 步数熔断 / skill_on_step_post 工具失败 / skill_terminate_all 用户 /stop
+/// 改 state 后，调度器仍会继续跑后续 step（漏停、超时后还跑、用户取消后还跑）。
+/// 因此每 step 前查一次，按状态机决策：
 /// - Run → 正常跑当前 step（Loaded → NoActive / Running 未超时 → Continue）
 /// - Finish → 收尾，跳出循环（Completed）
 /// - AwaitUser → 暂停中，返回 `__await_user__` 让主循环挂起（Paused，auto 模式基本不触发，留接口）
@@ -482,7 +480,7 @@ mod tests {
     use super::*;
     use crate::bot_skills::test_run;
 
-    // ── 状态机推进（Block 2 骨架） ──
+    // ── 状态机推进 ──
 
     #[test]
     fn advance_loaded_returns_no_active() {
@@ -562,7 +560,7 @@ mod tests {
         );
     }
 
-    // ── DSL 调度器决策（Phase 4 第 1 项 2026-08-18 06:20） ──
+    // ── DSL 调度器决策 ──
 
     #[test]
     fn advance_dsl_continue_returns_run() {
@@ -753,7 +751,7 @@ mod tests {
         assert_eq!(rollback_section("没有回滚章节"), "");
     }
 
-    // ── 同名技能跨会话顶号拦截（2026-08-28 批次3审计 P0-1） ──
+    // ── 同名技能跨会话顶号拦截 ──
 
     #[test]
     fn skill_conflict_other_session_running_is_blocked() {

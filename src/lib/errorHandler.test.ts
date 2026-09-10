@@ -1,4 +1,4 @@
-// P0-6B（2026-08-18）：hint 与后端 is_recoverable() 对齐 + recoverable 驱动重试 UI
+// hint 与后端 is_recoverable() 对齐 + recoverable 驱动重试 UI
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { handleCommandError } from "./errorHandler";
 

@@ -1,5 +1,5 @@
 /**
- * 前后端共享常量（2026-08-19 Phase B：Rust 为唯一真相，前端启动拉取缓存）。
+ * 前后端共享常量（Rust 为唯一真相，前端启动拉取缓存）。
  * 与 Rust 侧 src-tauri/src/consts.rs 的 AppConsts 对应，改字段需两侧同步。
  *
  * 拉取失败 / 纯前端测试环境（无 Tauri 运行时）回退到 FALLBACK_CONSTS 硬编码值。

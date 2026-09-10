@@ -128,7 +128,7 @@ export default function WidgetApp() {
     };
   }, []);
 
-  // 字体大小同步（2026-09-08 老板拍板）：挂件 webview 独立 document
+  // 字体大小同步（老板拍板）：挂件 webview 独立 document
   // 需要拉 config 设 data-font-size；设置页保存后广播 bot-config-changed，
   // Tauri emit 全局广播挂件也能收到。失败也套默认 small，避免渲染前空抳。
   useEffect(() => {
@@ -178,7 +178,7 @@ export default function WidgetApp() {
 
   // 任务数据同步：主窗口统一落盘 SQLite，挂件只读。三层：初始读取 + tasks-changed + 5s 兜底轮询
   useEffect(() => {
-    // P2-33（2026-08-19）：5s 兜底轮询读失败不再永久静默——轮询连续失败说明
+    // 5s 兜底轮询读失败不再永久静默——轮询连续失败说明
     // 主窗口/DB 异常，弹 alert 让用户知情；首次加载与 tasks-changed 触发保持安静
     // （任务为空/瞬态失败等下次重试即可，不打扰）
     const load = async (fromPoll = false) => {
@@ -189,7 +189,7 @@ export default function WidgetApp() {
           return; // 读失败：保持现状，等下次 tasks-changed / 轮询重试
         }
         const list = sortByOrder(res.tasks);
-        // 批次2审计（2026-08-28）：空列表只在「当前本就为空」时跳过（首载防空闪）——
+        // 空列表只在「当前本就为空」时跳过（首载防空闪）——
         // 原先无条件跳过：主窗口删光任务后挂件永久显示旧数据，点勾选还会把已删任务复活回库
         if (!list.length && tasksRef.current.length === 0) return;
         setTasks((prev) => {
@@ -241,7 +241,7 @@ export default function WidgetApp() {
     };
   }, []);
 
-  // 2026-09-05：统一走 openTarget——按内容判定 URL/路径（不信任存储的 kind，
+  // 统一走 openTarget——按内容判定 URL/路径（不信任存储的 kind，
   // 历史数据可能把「C:\...」误存成 url 被 openUrl scope 拒），失败弹错不静默
   const openLink = (link: WorkspaceItem["links"][number]) => {
     openTarget(link.targetUri);
@@ -394,11 +394,11 @@ export default function WidgetApp() {
     const next = fn(prev);
     tasksRef.current = next;
     // 打最后修改时间戳（合并导入按此比较同 id 取舍）；
-    // P2-20：纯排序变更保留原 updatedAt（diffTaskRows 内部判定）
+    // 纯排序变更保留原 updatedAt（diffTaskRows 内部判定）
     const { upserts, deletes } = diffTaskRows(prev, next, Date.now());
     setTasks(next);
     if (upserts.length || deletes.length) {
-      // 批次2审计（2026-08-28）：emit 失败不再静默吞——挂件不落盘，上报失败意味着
+      // emit 失败不再静默吞——挂件不落盘，上报失败意味着
       // 本地改动永不持久化（≤5s 后轮询回滚，用户视角「编辑神秘消失」），必须让用户知情
       emit("tasks-updated", { upserts, deletes }).catch((e) =>
         handleCommandError(e, "tasks-updated")
@@ -466,7 +466,7 @@ export default function WidgetApp() {
   const cancelTitle = () => setEditingId(null);
 
   // 双击标题 → 通知主窗口打开该任务编辑态 + 唤起主窗口并强制置顶
-  // （老板 2026-08-17 11:31 规则：双击唤起后主窗口必须出现在桌面屏幕最顶层）
+  // （老板规则：双击唤起后主窗口必须出现在桌面屏幕最顶层）
   const openInMain = (t: Task) => {
     emit("edit-task", { id: t.id }).catch(() => {});
     focusMainWindow();
@@ -509,8 +509,8 @@ export default function WidgetApp() {
       )
     );
 
-  // 打开绑定文件/文件夹（2026-08-26 起点文件名直开，不再有 📂 按钮；
-  // 2026-09-05 失败弹错不静默——点了没反应无从排查）
+  // 打开绑定文件/文件夹（点文件名直开，不再有 📂 按钮；
+  // 失败弹错不静默——点了没反应无从排查）
   const openFilePath = (path: string) => {
     openTarget(path);
   };
@@ -564,7 +564,7 @@ export default function WidgetApp() {
   const list = view === "today" ? visible.filter((t) => t.column === "doing") : visible;
 
   // 圆角：贴屏幕那侧直角，对侧 rounded-2xl；悬浮（不贴边）四边全圆角
-  // （老板 2026-08-17 11:07 改下半句：从原「贴边全直角」改为「贴屏侧直角 + 对侧圆角」）
+  // （老板定的规则：贴屏侧直角 + 对侧圆角）
   const edgeClass =
     edge === "right"
       ? "rounded-l-2xl"
@@ -600,8 +600,7 @@ export default function WidgetApp() {
           </span>
         </div>
       )}
-      {/* 展开面板：始终挂载，折叠时 display:none 隐藏而不卸载（修法 A，2026-08-19
-          修复「挂件折叠导致机器人流式回复丢失」）——保住 ChatPanel 的 messages /
+      {/* 展开面板：始终挂载，折叠时 display:none 隐藏而不卸载——保住 ChatPanel 的 messages /
           busy / streamingMeta / bot-chat-delta 事件监听，折叠-展开循环不丢流式消息 */}
       {
         <div

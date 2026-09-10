@@ -4,7 +4,7 @@ use super::state::{active_skill_run_for, clear_terminal_skill_runs, load_skill_m
 use super::vars::{extract_task_id, substitute_vars, CompletedStep};
 use tauri::AppHandle;
 
-/// Phase 5 D: persist DslOutcome to DB after run_skill_scheduler finishes (quiet failure)
+/// persist DslOutcome to DB after run_skill_scheduler finishes (quiet failure)
 fn persist_outcome_quiet(
     app: &AppHandle,
     name: &str,
@@ -16,7 +16,7 @@ fn persist_outcome_quiet(
     let Ok(conn) = crate::db::open_db(app) else {
         return;
     };
-    // 2026-08-28 批次2审计：纳入 DB_WRITE_LOCK（原先锁外直写，主窗长事务期间 SQLITE_BUSY 静默丢记录）
+    // 纳入 DB_WRITE_LOCK：主窗长事务期间锁外直写会 SQLITE_BUSY 静默丢记录
     let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let outcome = crate::db::PersistedSkillOutcome {
         skill_name: name.to_string(),
@@ -29,9 +29,9 @@ fn persist_outcome_quiet(
     let _ = crate::db::upsert_skill_outcome(&conn, &outcome);
 }
 
-// ─────────────────────── DSL Outcome / Failure + LLM 兜底（Phase 4 第 5 项 2026-08-18 07:20）───────────────────────
+// ─────────────────────── DSL Outcome / Failure + LLM 兜底 ───────────────────────
 
-/// DSL 调度器成功 / 可恢复 / 暂停 输出（Phase 4 LLM 兜底路径，2026-08-18 07:20）。
+/// DSL 调度器成功 / 可恢复 / 暂停 输出（LLM 兜底路径）。
 /// - Done：跑完所有 step，返回汇总文本给用户
 /// - AwaitUser：暂停中等用户确认（auto-mode 极少触发，留接口）
 /// - FailedButRecoverable：失败但已完成部分 step，让 LLM 基于 `completed_summary` 决策下一步
@@ -55,7 +55,7 @@ pub enum DslFailure {
     Terminated { reason: String },
 }
 
-/// 已完成步骤摘要（Phase 4 LLM 兜底，2026-08-18 07:20）：
+/// 已完成步骤摘要（LLM 兜底）：
 /// 把 ctx 里的步骤产物拼成可读 summary（注入 system prompt 用）。
 /// 每步一行：`Step N (title): <result 前 200 字符 + ...>`
 /// 空 ctx 返回 `(无已完成步骤)`。
@@ -80,9 +80,9 @@ pub fn format_completed_summary(ctx: &[CompletedStep]) -> String {
 }
 
 /// 工具执行结果文本的失败判定（调度器生产路径与测试同步循环共用）。
-/// 2026-08-27 审计 P1-6：委托 `audit::tool_call_failed`（全链路统一口径），
-/// 熔断「已强制终止」/ 门禁拦截「⚠️」/ 用户拒绝 等文案现在都能判失败——
-/// 原先这些以「技能」/「用户」开头不被前缀清单认，末步熔断会误报「✅ 完成」。
+/// 委托 `audit::tool_call_failed`（全链路统一口径）：熔断「已强制终止」/ 门禁拦截「⚠️」/
+/// 用户拒绝 等文案以「技能」/「用户」开头、不被前缀清单认，但都必须判失败，
+/// 否则末步熔断会误报「✅ 完成」。
 pub(crate) fn is_tool_failure_text(text: &str) -> bool {
     crate::audit::tool_call_failed("", text)
 }
@@ -91,12 +91,10 @@ pub(crate) fn is_tool_failure_text(text: &str) -> bool {
 /// 回滚步骤同样走变量替换（失败前的步骤都已入 ctx）。
 /// 返回值契约（SKILL_DSL.md §4.3.2）：true = 段存在且全部回滚步骤无失败——
 /// 前端据此决定是否提示「已完成步骤未回滚，请人工核对」。
-/// 2026-08-27 审计 P0-5 修复：
-/// - 回滚段执行时 run 已是 Failed，原子工具会被 AtomicGuard 拦截 → 临时重开为 Running，
-///   结束后复原（reopen/restore，见 state.rs）
-/// - 逐步判定成败并记审计（原先 `let _ =` 吞掉结果，回滚全挂也返回 true，护栏被架空）
-/// 2026-09-03 T1-2 重构：泛型 Runtime + execute_tool 注入（stop 分支选择由调用方
-/// 闭包承接），调度器本体可被集成测试直驱。
+/// 回滚段执行时 run 已是 Failed，原子工具会被 AtomicGuard 拦截 → 临时重开为 Running，
+/// 结束后复原（reopen/restore，见 state.rs）；逐步判定成败并记审计，
+/// 吞掉结果会让回滚全挂也返回 true，护栏被架空。
+/// 泛型 Runtime + execute_tool 注入（stop 分支选择由调用方闭包承接），调度器本体可被集成测试直驱。
 #[allow(clippy::too_many_arguments)]
 async fn run_rollback_segment_core<R: tauri::Runtime, X, XP>(
     app: &tauri::AppHandle<R>,
@@ -135,7 +133,7 @@ where
                 app,
                 &format!(
                     "skill_dsl_rollback_step_failed | name: {name} | tool: {} | {}",
-                    // 2026-08-28 批次3审计：tool_name 来自 SKILL.md DSL，转义防日志撕裂
+                    // tool_name 来自 SKILL.md DSL，转义防日志撕裂
                     crate::bot::truncate_for_log(&rb.tool_name, 60),
                     crate::bot::truncate_for_log(&text, 120)
                 ),
@@ -156,9 +154,9 @@ where
 }
 
 /// 强制终止活动 Skill（/stop 联动；用户取消时调用）。
-/// 2026-08-27 审计 P1-8：按会话过滤——会话 B 的 /stop 不再误杀会话 A 的活动技能；
+/// 按会话过滤：会话 B 的 /stop 不误杀会话 A 的活动技能；
 /// session_id=None 终止所有会话（lib.rs 应用退出清理路径用）。
-/// 泛型 Runtime（P2-24）：cleanup_on_exit 的 mock runtime 测试可直调。
+/// 泛型 Runtime：cleanup_on_exit 的 mock runtime 测试可直调。
 pub fn skill_terminate_all<R: tauri::Runtime>(app: &tauri::AppHandle<R>, reason: &str, session_id: Option<&str>) {
     let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
     for (name, run) in runs.iter_mut() {
@@ -175,13 +173,13 @@ pub fn skill_terminate_all<R: tauri::Runtime>(app: &tauri::AppHandle<R>, reason:
     }
 }
 
-/// DSL 调度器入口（Phase 1 2026-08-17 23:15）。仅供 `meta.mode == "auto"` 的 Skill 调用：
+/// DSL 调度器入口。仅供 `meta.mode == "auto"` 的 Skill 调用：
 /// 解析 body → 顺序调 `bot::execute_tool` → 失败时跑回滚段。
-/// stop（2026-08-27 审计 P1-8）：携带 /stop 守卫，在途 run_python 等长耗时步骤可被中断——
-/// 原先走 execute_tool（stop=None），在途 Python 脚本必须跑完才能停。
+/// stop：携带 /stop 守卫，在途 run_python 等长耗时步骤可被中断——
+/// stop=None 时在途 Python 脚本必须跑完才能停。
 ///
-/// 2026-09-03 T1-2 重构：本函数只做依赖装配（load_skill_meta + execute_tool 闭包
-/// 承接 stop 分支 + persist 闭包），实际调度逻辑在 run_skill_scheduler_core，
+/// 本函数只做依赖装配（load_skill_meta + execute_tool 闭包承接 stop 分支
+/// + persist 闭包），实际调度逻辑在 run_skill_scheduler_core，
 /// 后者泛型 Runtime + 注入 executor，集成测试可直驱（tests/skill_e2e.rs）。
 pub async fn run_skill_scheduler(app: &AppHandle, name: &str, session_id: Option<&str>, stop: Option<&crate::bot_slash::StopGuard>) -> Result<DslOutcome, DslFailure> {
     let (meta, body) =
@@ -198,7 +196,7 @@ pub async fn run_skill_scheduler(app: &AppHandle, name: &str, session_id: Option
     run_skill_scheduler_core(app, name, &meta, &body, session_id, execute_tool, persist_outcome).await
 }
 
-/// DSL 调度器核心（2026-09-03 T1-2 重构抽出，原 run_skill_scheduler 本体）：
+/// DSL 调度器核心（run_skill_scheduler 的实际调度逻辑）：
 /// 泛型 Runtime + execute_tool / persist_outcome 注入，不直接依赖 Wry——
 /// 集成测试可用 MockRuntime + mock executor + 真 fixture SKILL.md 直驱真路径。
 ///
@@ -244,8 +242,8 @@ where
     let mut ctx: Vec<CompletedStep> = Vec::new();
     let mut results: Vec<(usize, String, String)> = Vec::new();
     for step in &steps {
-        // Phase 4 第 1 项（2026-08-18 06:20）：每 step 前查 advance_dsl 状态机。
-        // 拦截漏停场景：step_check 步数熔断 / skill_on_step_post 工具失败 /
+        // 每 step 前查 advance_dsl 状态机，拦截漏停场景：
+        // step_check 步数熔断 / skill_on_step_post 工具失败 /
         // skill_terminate_all 用户 /stop / start_skill 切技能 → SkillRun.state 已被改，
         // 调度器必须感知。
         if let Some(run) = active_skill_run_for(session_id) {
@@ -318,12 +316,12 @@ where
             &format!(
                 "skill_dsl_step | name: {name} | step: {} | tool: {} | ctx_len: {}",
                 step.index,
-                // 2026-08-28 批次3审计：tool_name 来自 SKILL.md DSL，转义防日志撕裂
+                // tool_name 来自 SKILL.md DSL，转义防日志撕裂
                 crate::bot::truncate_for_log(&step.tool_name, 60),
                 ctx.len()
             ),
         );
-        // Phase 2 接入（2026-08-18）：变量替换 —— 把上一步结果/UUID 拼进 args_json
+        // 变量替换：把上一步结果/UUID 拼进 args_json
         let resolved_args = substitute_vars(&step.args_json, &ctx);
         if resolved_args != step.args_json {
             crate::bot::audit_log_hook(
@@ -360,8 +358,7 @@ where
                 rollback_attempted: rb_attempted,
             });
         }
-        // 把这一步压进 ctx（变量替换的依赖源）
-        // Phase 4 第 2 项（2026-08-18 06:25）：parsed 用于嵌套路径 `${step1.task.id}`
+        // 把这一步压进 ctx（变量替换的依赖源）：parsed 用于嵌套路径 `${step1.task.id}`
         // 纯文本 / Markdown 摘要 parse 失败为 None，substitute_vars 嵌套路径 fallback 保留 `${...}`
         ctx.push(CompletedStep {
             index: step.index,
@@ -381,9 +378,9 @@ where
     for (idx, title, result) in &results {
         summary.push_str(&format!("\n### Step {}: {}\n{}\n", idx, title, result));
     }
-    // 2026-08-27 审计 P0-1 修复：Done 路径收尾状态机（Running → Completed）。
-    // 原先整条成功路径不调 skill_finish，run 泄漏为「僵尸 Running」——原子工具闸门
-    // 在技能结束后仍对本会话放行，且后续消息的工具调用被计入僵尸 run 直至步数熔断卡死会话。
+    // Done 路径收尾状态机（Running → Completed）：成功路径必须调 skill_finish，
+    // 否则 run 泄漏为「僵尸 Running」——原子工具闸门在技能结束后仍对本会话放行，
+    // 且后续消息的工具调用被计入僵尸 run 直至步数熔断卡死会话。
     let _ = super::runtime::skill_finish(app, true, "done", session_id);
     crate::bot::audit_log_hook(
         app,
@@ -399,12 +396,12 @@ mod tests {
     use super::*;
     use crate::bot_skills::{test_run, SkillRun, SkillStep};
 
-    // ── Phase 4 第 3 项：端到端 run_dsl_loop_sync（2026-08-18 06:36） ──
+    // ── 端到端 run_dsl_loop_sync ──
     //
     // 同步版核心循环（生产 run_skill_scheduler 是 async + 调 bot::execute_tool）。
     // 这里剥离 AppHandle 依赖 + 注入 mock executor，让单测能验证：
-    //   1. 嵌套变量替换端到端走通（Phase 4 第 2 项）
-    //   2. advance_dsl 4 个非 Run 分支的端到端拦截（Phase 4 第 1 项）
+    //   1. 嵌套变量替换端到端走通
+    //   2. advance_dsl 4 个非 Run 分支的端到端拦截
     //   3. rollback 在 step 失败时被调用、Terminate 时被跳过
 
     fn run_dsl_loop_sync(
@@ -416,7 +413,7 @@ mod tests {
     ) -> Result<Vec<(usize, String, String)>, String> {
         let mut results: Vec<(usize, String, String)> = Vec::new();
         for step in steps {
-            // Phase 4 第 1 项：advance_dsl 状态机检查
+            // advance_dsl 状态机检查
             if let Some(run) = skill_run {
                 match advance_dsl(run, now_ms()) {
                     DslAdvanceAction::Run => {}
@@ -434,7 +431,7 @@ mod tests {
                     }
                 }
             }
-            // Phase 2 + Phase 4 第 2 项：嵌套变量替换
+            // 嵌套变量替换
             let resolved_args = substitute_vars(&step.args_json, ctx);
             let text = exec(&step.tool_name, &resolved_args);
             // 失败判定：与生产 run_skill_scheduler 共用同一判定函数（不再手写镜像）
@@ -562,7 +559,7 @@ mod tests {
         // Step 2 的 args 也走嵌套路径替换（验证 rollback 段、step 段共享 substitute_vars 路径）
         assert_eq!(calls[1].1, r#"{"x": "uuid-step1"}"#);
         assert_eq!(calls[2].0, "rollback_tool");
-        // rollback args 也走嵌套路径替换（Phase 2 已实现，e2e 端到端覆盖）
+        // rollback args 也走嵌套路径替换（e2e 端到端覆盖）
         assert_eq!(calls[2].1, r#"{"ref": "uuid-step1"}"#);
     }
 
@@ -638,7 +635,7 @@ mod tests {
         );
     }
 
-    // ── Phase 4 第 5 项：format_completed_summary + DslOutcome/DslFailure（2026-08-18 07:20） ──
+    // ── format_completed_summary + DslOutcome/DslFailure ──
 
     #[test]
     fn format_completed_summary_returns_placeholder_for_empty_ctx() {
@@ -744,9 +741,9 @@ mod tests {
         }
     }
 
-    // ── Phase 5 第 1 项：11 个真业务 Skill 端到端 smoke test（2026-08-18 07:30） ──
+    // ── 11 个真业务 Skill 端到端 smoke test ──
 
-    /// 通用 mock executor（Phase 5 smoke test）：每个工具返回成功 + 含标准 UUID 让变量替换 / 嵌套路径 work
+    /// 通用 mock executor（smoke test 用）：每个工具返回成功 + 含标准 UUID 让变量替换 / 嵌套路径 work
     /// - 返回 JSON 字符串时尽量含 UUID 7c9e6679-7425-40de-944b-e07fc1f90ae7（让 `${step1.task.id}` 等嵌套路径能取到值）
     /// - 不存在的工具返回 "mock ok"（确保所有 Skill 都能跑完不 panic）
     fn generic_mock_executor(tool: &str, _args: &str) -> String {
@@ -809,7 +806,7 @@ mod tests {
             // parse
             let body = std::fs::read_to_string(&skill_md)
                 .unwrap_or_else(|e| panic!("Skill {name} SKILL.md 读失败: {e}"));
-            // 2026-08-19：interactive 技能（如 minimax-docx）无 DSL Step——LLM 驱动、不进调度器，跳过
+            // interactive 技能（如 minimax-docx）无 DSL Step——LLM 驱动、不进调度器，跳过
             if crate::bot_skills::parse_meta(&body, &name).mode != "auto" {
                 continue;
             }
@@ -849,7 +846,7 @@ mod tests {
             }
 
             // 验证：含 ${...} 的 step args 跑完后应该已经被替换（ctx 累积至少 1 步后续 step 才能拿到）
-            // 这里只 sanity check 跑通即可；嵌套变量替换正确性在 Phase 4 第 2 项单测里覆盖
+            // 这里只 sanity check 跑通即可；嵌套变量替换正确性在 e2e_runs_all_steps_with_nested_var_substitution 等单测里覆盖
             let _ = step_args_with_var;
 
             skill_count += 1;

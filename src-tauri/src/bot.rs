@@ -1,6 +1,6 @@
 //! 内置机器人：大模型聊天 + WMessage 任务管理工具调用。
 //!
-//! F-6 step 5 拆分后（2026-08-18），本模块聚焦「工具调度核心 + 配置/审计底座」，
+//! 模块拆分后，本文件聚焦「工具调度核心 + 配置/审计底座」，
 //! 编排/决策/工具循环拆到 4 个兄弟模块：
 //! - `bot_chat`        — 入口编排（bot_chat / bot_compact / bot_execute_task）
 //! - `bot_model_loop`  — 流式 SSE + 工具循环（run_model_loop / parse_sse_chunk / feed_think / TOOLS）
@@ -20,7 +20,7 @@
 //! - 参数校验：标题/备注/关键词/子任务/截止时间长度上限、标签数量上限
 //! - 审计日志：数据目录 bot.log 记录用户指令、工具名、参数、结果
 //! - API Key 存系统凭据存储（keyring），文件不落明文；
-//!   例外（P2-32）：Linux 无 secret-service（无 dbus 会话）时降级 bot-api-key.txt
+//!   例外：Linux 无 secret-service（无 dbus 会话）时降级 bot-api-key.txt
 //!   明文文件（chmod 0600）+ WARN 审计，否则 key 根本存不住
 
 use crate::bot_skills::tool_use_skill;
@@ -35,7 +35,7 @@ pub use crate::bot_model_loop::{
     accumulate_tool_call_delta, drain_sse_lines, noop_replan, parse_sse_chunk,
     run_model_loop_core, LlmHttp, ModelLoopDeps, ToolCallDelta,
 };
-// 2026-09-03 T1-2：bot_slash 是私有模块，集成测试（tests/llm_integration.rs）驱动
+// bot_slash 是私有模块，集成测试（tests/llm_integration.rs）驱动
 // run_model_loop_core 需要构造停止守卫，此处转出口径唯一公开。
 pub use crate::bot_slash::StopGuard;
 // 同上：audit 模块私有，ModelLoopDeps.audit 回调签名里的 AuditLevel 在 tests/
@@ -55,8 +55,8 @@ use tauri::{AppHandle, Emitter};
 pub const KEYRING_SERVICE: &str = "wmessage-bot";
 pub const KEYRING_USER: &str = "api-key";
 
-/// Key 用途槽位（2026-09-05：Tavily/Brave 搜索 key 统一进系统凭据存储，
-/// 不再明文落 bot-config.json——取消原「低风险搜索 key」例外）。
+/// Key 用途槽位：Tavily/Brave 搜索 key 统一进系统凭据存储，
+/// 不再明文落 bot-config.json（无「低风险搜索 key」例外）。
 /// 每个用途 = 独立的 keyring 用户名 + Linux 降级文件名；
 /// 主 LLM key 保持既有条目（"api-key" / bot-api-key.txt）不变，存量用户零迁移感。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,57 +102,57 @@ pub struct BotConfig {
     /// 仅用于旧版本迁移：老 bot-config.json 里的明文 key，读出迁入凭据存储后置 None 写回
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
-    /// F-1 [P0 release blocker] pre-step 命中 Skill 时是否跳过外层主 LLM。
-    /// true = 新行为（auto 模式 bypass LLM，interactive 模式仍走 LLM 但 Skill body 注入 system prompt）；
+    /// pre-step 命中 Skill 时是否跳过外层主 LLM。
+    /// true = auto 模式 bypass LLM，interactive 模式仍走 LLM 但 Skill body 注入 system prompt；
     /// false = LEGACY 旧链路（强制 pre_routed_skill = None，让 LLM 自由选 Skill）。
     /// 默认 true，老 bot-config.json 自动兼容（struct 级 #[serde(default)] + Default::default()）。
     pub bypass_llm_on_pre_step_hit: bool,
-    /// 本地文件工具白名单目录（2026-08-19 Phase 1）：read_text_file/grep_files/list_files
+    /// 本地文件工具白名单目录：read_text_file/grep_files/list_files
     /// 只允许访问这些目录内路径。空 = 用内置默认（~/Desktop ~/Downloads ~/Documents + 任务卡绑定文件夹）；
     /// 非空 = 用户列表整体替换默认。
     pub allowed_dirs: Vec<String>,
-    /// 仅用于旧版本迁移（2026-09-05 起 Tavily key 存系统凭据存储，不再明文落盘）：
+    /// 仅用于旧版本迁移（Tavily key 存系统凭据存储，不再明文落盘）：
     /// 老 bot-config.json 里的明文 Tavily key，由 migrate_search_keys 读出迁入
     /// keyring 后置 None 写回。新代码读写 Tavily key 一律走 read/write_search_key。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tavily_key: Option<String>,
-    /// 「Tavily 搜索」开关（2026-08-20，可选）：None = 未显式设置，按旧行为自动
+    /// 「Tavily 搜索」开关（可选）：None = 未显式设置，按旧行为自动
     /// （配了 tavilyKey 就当开启）；Some(true) = 强制走 Tavily；Some(false) = 强制
     /// Bing+百度双引擎（即使配了 key）。分流逻辑见 bot_web::resolve_search_route。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tavily_enabled: Option<bool>,
-    /// 仅用于旧版本迁移（2026-09-05 起 Brave key 存系统凭据存储，不再明文落盘）：
+    /// 仅用于旧版本迁移（Brave key 存系统凭据存储，不再明文落盘）：
     /// 老 bot-config.json 里的明文 Brave key，由 migrate_search_keys 读出迁入
     /// keyring 后置 None 写回。新代码读写 Brave key 一律走 read/write_search_key。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub brave_key: Option<String>,
-    /// 「Brave 搜索」开关（2026-09-05，可选）：语义与 tavily_enabled 对齐——
+    /// 「Brave 搜索」开关（可选）：语义与 tavily_enabled 对齐——
     /// None = 未显式设置，配了 braveKey 就当开启；Some(false) 强制不走 Brave。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub brave_enabled: Option<bool>,
-    /// run_python 默认超时秒数（2026-08-20，可选）：None = 60s；工具参数 timeoutSecs 优先于此；
+    /// run_python 默认超时秒数（可选）：None = 60s；工具参数 timeoutSecs 优先于此；
     /// 硬钳上限 300s（bot_py::resolve_timeout）。大计算（pandas 等）可调大。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub python_timeout_secs: Option<u64>,
-    /// 文件/代码执行授权模式（2026-08-26，Kimi CLI 风格）：
-    /// "strict" = 白名单外硬拒（2026-08-26 前旧行为）；
-    /// "ask"    = 白名单外弹授权窗（允许一次/始终允许该目录/拒绝）——新默认；
+    /// 文件/代码执行授权模式（Kimi CLI 风格）：
+    /// "strict" = 白名单外硬拒（旧行为）；
+    /// "ask"    = 白名单外弹授权窗（允许一次/始终允许该目录/拒绝）——默认；
     /// "yolo"   = 全放行不弹窗（文件工具 + run_python 免开关），仍记审计。
     /// None（老配置文件缺字段）= "ask"。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub perm_mode: Option<String>,
-    /// API 协议（2026-09-05 Anthropic 兼容模式）："openai" = OpenAI 兼容
+    /// API 协议："openai" = OpenAI 兼容
     ///（/chat/completions + Bearer，旧行为）；"anthropic" = Anthropic 兼容
     ///（/v1/messages + x-api-key + anthropic-version）。None = openai，老配置零影响；
     /// 非法值按 openai 处理（ApiProvider::from_cfg 防御回退，与 perm_mode 同风格）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_provider: Option<String>,
-    /// max_tokens（2026-09-05，可选）：仅 Anthropic 模式使用（Anthropic 必填 max_tokens）；
+    /// max_tokens（可选）：仅 Anthropic 模式使用（Anthropic 必填 max_tokens）；
     /// None = 默认 8192，钳制 256..=200000（resolve_max_tokens）。
     /// OpenAI 兼容模式不发送该字段（多数兼容网关不认识）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
-    /// 每协议下的大模型列表（2026-09-08 老板拍板改版）：双协议各自独立维护一个
+    /// 每协议下的大模型列表：双协议各自独立维护一个
     /// ModelEntry 列表。设置页协议切换时整体切换显示；新增的 ModelEntry 落在当前
     /// 协议下。None = 老配置未迁移过来（load_config 时会从 base_url/model 兜底迁移）；
     /// 迁移完后写回落盘。
@@ -160,28 +160,28 @@ pub struct BotConfig {
     /// （bot_model_loop 不感知新结构，由 bot_set_config 落盘前回填派生字段）。
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub models_by_provider: Option<ModelsByProvider>,
-    /// 每协议当前选中的模型 id（2026-09-08）；None = 该协议还没选 active。
+    /// 每协议当前选中的模型 id；None = 该协议还没选 active。
     /// 切换协议时设置页据此取对应协议的 active 模型来填 baseUrl/model 输入框。
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub active_model_id: Option<ActiveModelId>,
-    /// 开机自启动（2026-09-08 新增）：登录系统时自动拉起 wmessage。
+    /// 开机自启动：登录系统时自动拉起 wmessage。
     /// Some(true) = 启用 / Some(false) = 禁用 / None = 未设置（前端显示自动态）。
     /// 走 tauri-plugin-autostart：macOS 写 LaunchAgent plist / Windows 写注册表 Run /
     /// Linux 写 .desktop file。
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub autostart_enabled: Option<bool>,
-    /// 界面字体大小（2026-09-08 新增）：small / standard / large / xlarge
+    /// 界面字体大小：small / standard / large / xlarge
     /// 老板拍板"目前字号为小"=默认 small。设置页「通用设置 → 外观」调。
     /// 全局 css 通过 documentElement[data-font-size] 走缩放。
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub ui_font_size: Option<String>,
-    /// 定时记忆整理（2026-09-09 memory v2 consolidation）：开关 + 频率 + 上次整理时间。
+    /// 定时记忆整理：开关 + 频率 + 上次整理时间。
     /// None = 默认（启用 + daily；见 ConsolidationConfig::default）。
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub memory_consolidation: Option<crate::memory::consolidate::ConsolidationConfig>,
 }
 
-/// 单个模型条目（2026-09-08）：一个 (label, baseUrl, model) 三元组 + 稳定 id。
+/// 单个模型条目：一个 (label, baseUrl, model) 三元组 + 稳定 id。
 /// id 是前端 crypto.randomUUID() 生成的字符串，仅用于 React key + 标识 active；
 /// 不参与 API 调用。
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -193,7 +193,7 @@ pub struct ModelEntry {
     pub model: String,
 }
 
-/// 双协议下各自的模型列表（2026-09-08）；Vec 为空序列化时跳过，保持配置文件干净。
+/// 双协议下各自的模型列表；Vec 为空序列化时跳过，保持配置文件干净。
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ModelsByProvider {
@@ -203,7 +203,7 @@ pub struct ModelsByProvider {
     pub anthropic: Vec<ModelEntry>,
 }
 
-/// 双协议下各自的 active 模型 id（2026-09-08）；None = 该协议还没选 active。
+/// 双协议下各自的 active 模型 id；None = 该协议还没选 active。
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ActiveModelId {
@@ -217,10 +217,10 @@ impl Default for BotConfig {
     fn default() -> Self {
         Self {
             base_url: "https://api.deepseek.com/v1".into(),
-            // 2026-08-20：deepseek-chat 已被官方废弃（2026-07-24 移除），默认改 V4 Flash
+            // deepseek-chat 已被官方废弃，默认改 V4 Flash
             model: "deepseek-v4-flash".into(),
             api_key: None,
-            bypass_llm_on_pre_step_hit: true, // 默认开启新行为
+            bypass_llm_on_pre_step_hit: true, // 默认开启（bypass 外层主 LLM）
             allowed_dirs: Vec::new(),         // 空 = 内置默认白名单
             tavily_key: None,                 // 未配置 = 双引擎抓取
             tavily_enabled: None,             // 未显式设置 = 配了 key 就自动启用（旧行为）
@@ -239,7 +239,7 @@ impl Default for BotConfig {
     }
 }
 
-/// API 协议枚举（2026-09-05 Anthropic 兼容模式）：配置字符串归一化，
+/// API 协议枚举：配置字符串归一化，
 /// 非法值回退 Openai（防御回退，与 PermMode::from_cfg 同风格）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApiProvider {
@@ -262,9 +262,9 @@ impl ApiProvider {
     }
 }
 
-// ─────────────── 2026-09-08 双协议下大模型列表迁移/派生 ───────────────
+// ─────────────── 双协议下大模型列表迁移/派生 ───────────────
 
-/// 老配置 → 新结构一次性迁移（2026-09-08）：无 models_by_provider、但 base_url 或
+/// 老配置 → 新结构一次性迁移：无 models_by_provider、但 base_url 或
 /// model 非空时，在内存里补一份单条 ModelEntry + active_model_id，挂在
 /// api_provider 协议下。**不写文件**——只在下一次用户保存时由 bot_set_config 一并
 /// 落盘，避免无谓写盘 + 误清空老用户已配好的 key/base_url。
@@ -328,7 +328,7 @@ fn derive_default_label(base_url: &str) -> String {
     "默认".into()
 }
 
-/// 设置页保存前回填派生字段（2026-09-08）：bot_model_loop 只看 base_url/model/
+/// 设置页保存前回填派生字段：bot_model_loop 只看 base_url/model/
 /// max_tokens/api_provider 四个老字段，新结构 models_by_provider + active_model_id
 /// 落到这里：当前 api_provider 协议下找 active 模型 → 找不到用第一个 → 把它的
 /// base_url/model 写回 cfg。**列表为空时不动 base_url/model**——避免用户删完
@@ -357,7 +357,7 @@ fn derive_legacy_fields_from_active(cfg: &mut BotConfig) {
     // 列表为空或没有新结构：保持 base_url/model 不动（防御性）
 }
 
-/// max_tokens 默认值与合法范围（2026-09-05 老板拍板默认 8192；仅 Anthropic 模式发送）
+/// max_tokens 默认值与合法范围（默认 8192；仅 Anthropic 模式发送）
 pub const DEFAULT_MAX_TOKENS: u32 = 8192;
 pub const MIN_MAX_TOKENS: u32 = 256;
 pub const MAX_MAX_TOKENS: u32 = 200_000;
@@ -368,7 +368,7 @@ pub fn resolve_max_tokens(v: Option<u32>) -> u32 {
         .clamp(MIN_MAX_TOKENS, MAX_MAX_TOKENS)
 }
 
-/// 授权模式枚举（2026-08-26）：配置字符串归一化，非法值回退 Ask（安全默认偏严一侧的可用形态）。
+/// 授权模式枚举：配置字符串归一化，非法值回退 Ask（安全默认偏严一侧的可用形态）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PermMode {
     Strict,
@@ -402,7 +402,7 @@ pub fn config_path(app: &AppHandle) -> std::path::PathBuf {
     crate::db::data_dir(app).join("bot-config.json")
 }
 
-/// F-1 开关读取 helper：bot-config.json 缺字段 / 文件不存在 / 解析失败都默认 true（新行为）。
+/// bypass_llm 开关读取 helper：bot-config.json 缺字段 / 文件不存在 / 解析失败都默认 true（bypass 行为）。
 /// 比 bot_get_config 轻量：跳过 BotConfigView 构造 + key 校验，bot_chat 入口用。
 pub fn read_bypass_llm_switch(app: &AppHandle) -> bool {
     let p = config_path(app);
@@ -417,9 +417,9 @@ pub fn read_bypass_llm_switch(app: &AppHandle) -> bool {
         .unwrap_or(true)
 }
 
-// ───────────────────────── P2-32：Linux secret-service 探测 + 降级 ─────────────────────────
+// ───────────────────────── Linux secret-service 探测 + 降级 ─────────────────────────
 
-/// 凭据后端（P2-32）。Linux 的 keyring 走 secret-service（zbus/dbus）—— headless
+/// 凭据后端。Linux 的 keyring 走 secret-service（zbus/dbus）—— headless
 /// 服务器/容器/最小桌面无 dbus 会话时，keyring 调用直接 PlatformFailure，用户 key
 /// 存不住且只会看到「系统凭据存储访问失败」。运行时探测，不可用降级明文文件
 /// （chmod 0600，与 api-token.txt 同策略）+ WARN 审计。
@@ -472,7 +472,7 @@ fn key_backend() -> KeyBackend {
     backend_for(secret_service_available())
 }
 
-/// Linux 应用数据目录（无 AppHandle 场景，P2-32 降级 key 路径用）：对齐 tauri
+/// Linux 应用数据目录（无 AppHandle 场景，降级 key 路径用）：对齐 tauri
 /// app_data_dir 规则 —— $XDG_DATA_HOME/com.renshi.wmessage，缺省
 /// ~/.local/share/com.renshi.wmessage。非 Linux 返回 None（降级后端不会启用）。
 #[cfg(target_os = "linux")]
@@ -491,10 +491,10 @@ fn linux_app_data_dir() -> Option<std::path::PathBuf> {
     None
 }
 
-/// 降级 key 文件路径（P2-32）：与数据目录同一便携策略——优先复用 probe_log_dir
-/// 已定版的缓存结果（2026-08-26：防每次探测瞬时失败导致 key 文件与数据库分裂两地）；
+/// 降级 key 文件路径：与数据目录同一便携策略——优先复用 probe_log_dir
+/// 已定版的缓存结果（防每次探测瞬时失败导致 key 文件与数据库分裂两地）；
 /// 未初始化（如启动早期 keyring 迁移先于首次 data_dir 调用）回退原现探逻辑。
-/// 2026-09-05 起按 KeySlot 参数化（LLM/Tavily/Brave 各一个降级文件）。
+/// 按 KeySlot 参数化（LLM/Tavily/Brave 各一个降级文件）。
 fn plaintext_key_path_for(slot: KeySlot) -> std::path::PathBuf {
     if let Some(cached) = crate::audit::cached_probe_dir() {
         return cached.join(slot.plaintext_filename());
@@ -506,8 +506,8 @@ fn plaintext_key_path_for(slot: KeySlot) -> std::path::PathBuf {
         .join(slot.plaintext_filename())
 }
 
-/// 降级告警（P2-32）：每进程首用降级后端时记一条 WARN 审计（避免每次读 key 刷屏；
-/// 三个 slot 共用同一次告警，审计文案带触发 slot 的文件名——2026-09-05 slot 泛化）。
+/// 降级告警：每进程首用降级后端时记一条 WARN 审计（避免每次读 key 刷屏；
+/// 三个 slot 共用同一次告警，审计文案带触发 slot 的文件名）。
 /// 写在与 key 文件同目录的 bot.log（无 AppHandle，走 write_warn_audit_to）。
 fn warn_fallback_once(slot: KeySlot) {
     static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -523,7 +523,7 @@ fn warn_fallback_once(slot: KeySlot) {
     }
 }
 
-/// 降级文件读取（P2-32）：文件缺失 = 未配置（对齐 System 路径 NoEntry → KeyringError
+/// 降级文件读取：文件缺失 = 未配置（对齐 System 路径 NoEntry → KeyringError
 /// 同 code，前端 hint 一致）；真实 IO 故障 → KeyringError，不静默吞。
 fn read_key_file_from(p: &std::path::Path) -> CommandResult<String> {
     match std::fs::read_to_string(p) {
@@ -545,9 +545,9 @@ fn read_key_file_from(p: &std::path::Path) -> CommandResult<String> {
     }
 }
 
-/// 降级文件写入（P2-32）：父目录不存在则创建；Unix 创建即 0600（OpenOptionsExt::mode，
-/// 与 P2-1 api-token.txt 同策略）——2026-08-27 审计 P2：原先「先写后 chmod」存在
-/// umask 默认权限窗口，且 chmod 失败静默吞（key 以 0644 留存无告警）。
+/// 降级文件写入：父目录不存在则创建；Unix 创建即 0600（OpenOptionsExt::mode，
+/// 与 api-token.txt 同策略）——「先写后 chmod」存在
+/// umask 默认权限窗口，且 chmod 失败会被静默吞（key 以 0644 留存无告警）。
 fn write_key_file_to(p: &std::path::Path, key: &str) -> CommandResult<()> {
     if let Some(dir) = p.parent() {
         std::fs::create_dir_all(dir).map_err(|e| {
@@ -570,7 +570,7 @@ fn write_key_file_to(p: &std::path::Path, key: &str) -> CommandResult<()> {
     })?;
     #[cfg(unix)]
     {
-        // 已存在文件 mode() 不生效，补 chmod；失败记 WARN（原先静默吞）
+        // 已存在文件 mode() 不生效，补 chmod；失败记 WARN（不静默吞）
         use std::os::unix::fs::PermissionsExt;
         if std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o600)).is_err() {
             if let Some(dir) = p.parent().map(|d| d.to_path_buf()) {
@@ -585,8 +585,8 @@ fn write_key_file_to(p: &std::path::Path, key: &str) -> CommandResult<()> {
     Ok(())
 }
 
-/// 按后端分发读取（可测：PlaintextFile + 注入路径即「mock secret-service 不可用」）
-/// 2026-09-05 起带 slot（System 后端按 slot 选 keyring 条目）
+/// 按后端分发读取（可测：PlaintextFile + 注入路径即「mock secret-service 不可用」）；
+/// 带 slot（System 后端按 slot 选 keyring 条目）
 fn read_api_key_at(
     backend: KeyBackend,
     file: &std::path::Path,
@@ -655,14 +655,14 @@ fn delete_api_key_at(
     }
 }
 
-/// F1（Phase 6b）：get_password 结果分类——任何失败都映射为 KeyringError 结构化变体，
-/// 不再走 String 逃生舱（同类故障产出两种 code，前端 hintForCode 失配）。
+/// get_password 结果分类——任何失败都映射为 KeyringError 结构化变体，
+/// 不走 String 逃生舱（同类故障产出两种 code，前端 hintForCode 失配）。
 /// 抽成纯函数便于单测（keyring 真实存储在测试环境不可用）。
 fn classify_get_password(r: Result<String, keyring::Error>) -> CommandResult<String> {
     r.map_err(|e| CommandError::KeyringError(format!("读取 API Key 失败：{e}")))
 }
 
-/// F1（Phase 6b）：「key 不存在」（NoEntry）→ Ok(false)；
+/// 「key 不存在」（NoEntry）→ Ok(false)；
 /// keyring 真实故障（钥匙串锁定 / 权限拒绝）→ Err(KeyringError)，不静默吞成 false。
 fn classify_has_key(r: Result<String, keyring::Error>) -> CommandResult<bool> {
     match r {
@@ -680,7 +680,7 @@ pub fn has_api_key() -> CommandResult<bool> {
     has_key_of_slot(KeySlot::Llm)
 }
 
-/// 按 slot 读取（2026-09-05 泛化）：降级后端记 WARN；System 后端顺带做降级文件回迁
+/// 按 slot 读取：降级后端记 WARN；System 后端顺带做降级文件回迁
 fn read_key_of_slot(slot: KeySlot) -> CommandResult<String> {
     let backend = key_backend();
     if backend == KeyBackend::PlaintextFile {
@@ -691,7 +691,7 @@ fn read_key_of_slot(slot: KeySlot) -> CommandResult<String> {
     read_api_key_at(backend, &plaintext_key_path_for(slot), slot)
 }
 
-/// 按 slot 存在性检查（2026-09-05 泛化）
+/// 按 slot 存在性检查
 fn has_key_of_slot(slot: KeySlot) -> CommandResult<bool> {
     let backend = key_backend();
     if backend == KeyBackend::PlaintextFile {
@@ -702,10 +702,10 @@ fn has_key_of_slot(slot: KeySlot) -> CommandResult<bool> {
     has_api_key_at(backend, &plaintext_key_path_for(slot), slot)
 }
 
-/// SEC-P1-4（2026-08-27 安全审计）：System 后端恢复可用时，把降级明文 key 迁回 keychain
-/// 并删除文件——原先降级文件永久残留（clear 走当前后端，PlaintextFile 分支轮不到），
+/// System 后端恢复可用时，把降级明文 key 迁回 keychain
+/// 并删除文件——否则降级文件永久残留（clear 走当前后端，PlaintextFile 分支轮不到），
 /// 用户以为「早就只用 keychain 了」，明文副本却留在数据目录。幂等：无文件直接返回。
-/// 2026-09-05 起按 slot 泛化（LLM/Tavily/Brave 各自的降级文件都回迁）。
+/// 按 slot 处理（LLM/Tavily/Brave 各自的降级文件都回迁）。
 fn migrate_plaintext_key_if_system(slot: KeySlot) {
     let p = plaintext_key_path_for(slot);
     if !p.exists() {
@@ -733,7 +733,7 @@ fn write_api_key(key: &str) -> CommandResult<()> {
     write_key_of_slot(KeySlot::Llm, key)
 }
 
-/// 按 slot 写入（2026-09-05 泛化）
+/// 按 slot 写入
 fn write_key_of_slot(slot: KeySlot, key: &str) -> CommandResult<()> {
     let backend = key_backend();
     if backend == KeyBackend::PlaintextFile {
@@ -742,7 +742,7 @@ fn write_key_of_slot(slot: KeySlot, key: &str) -> CommandResult<()> {
     write_api_key_at(backend, &plaintext_key_path_for(slot), key, slot)
 }
 
-// ─────────────────── 搜索 key（Tavily/Brave，2026-09-05 起进 keyring） ───────────────────
+// ─────────────────── 搜索 key（Tavily/Brave，存系统凭据存储） ───────────────────
 
 /// 读搜索 key：未配置返回空串（搜索 key 是可选配置，区别于主 LLM key 的硬错误）；
 /// keyring 真实故障（锁定/权限拒绝）透传 Err，不静默吞成空串（与 has_api_key 同策略）。
@@ -766,47 +766,46 @@ pub fn write_search_key(slot: KeySlot, key: &str) -> CommandResult<()> {
 }
 
 /// 返回给前端的配置视图：不含任何 key 本体，只有 has 标志
-///（2026-09-05：Tavily/Brave key 也进系统凭据存储，view 不再透传 key 明文——
-/// 原「低风险搜索 key 明文落配置文件」例外取消）
+///（Tavily/Brave key 也进系统凭据存储，view 不透传 key 明文）
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BotConfigView {
     pub base_url: String,
     pub model: String,
     pub has_api_key: bool,
-    /// F-1 [P0 release blocker] pre-step 命中 Skill 时是否跳过外层主 LLM。
+    /// pre-step 命中 Skill 时是否跳过外层主 LLM。
     /// 前端设置页 Toggle 直接透传到 bot-config.json。
     pub bypass_llm_on_pre_step_hit: bool,
     /// 本地文件工具白名单目录（原样透传；空 = 后端用内置默认）
     pub allowed_dirs: Vec<String>,
-    /// Tavily key 是否已存系统凭据存储（2026-09-05 起 key 本体不进 view）
+    /// Tavily key 是否已存系统凭据存储（key 本体不进 view）
     pub has_tavily_key: bool,
     /// 「Tavily 搜索」开关原样透传（None = 未显式设置，前端按 key 有无显示自动态）
     pub tavily_enabled: Option<bool>,
-    /// Brave key 是否已存系统凭据存储（2026-09-05 起 key 本体不进 view）
+    /// Brave key 是否已存系统凭据存储（key 本体不进 view）
     pub has_brave_key: bool,
     /// 「Brave 搜索」开关原样透传（None = 未显式设置，前端按 key 有无显示自动态）
     pub brave_enabled: Option<bool>,
     /// run_python 默认超时秒数（None = 60s 默认；设置页可改，硬钳 300s）
     pub python_timeout_secs: Option<u64>,
-    /// 授权模式原样透传给设置页（None = ask 新默认；非法值前端按 ask 显示）
+    /// 授权模式原样透传给设置页（None = ask 默认；非法值前端按 ask 显示）
     pub perm_mode: Option<String>,
-    /// API 协议原样透传给设置页（2026-09-05；None = openai 旧行为，非法值前端按 openai 显示）
+    /// API 协议原样透传给设置页（None = openai 旧行为，非法值前端按 openai 显示）
     pub api_provider: Option<String>,
     /// max_tokens 原样透传（None = 8192 默认；仅 Anthropic 模式用，后端钳 256..=200000）
     pub max_tokens: Option<u32>,
-    /// 每协议下的模型列表（2026-09-08）：None = 老配置未迁移（前端显示空列表让用户点「添加大模型」）；
+    /// 每协议下的模型列表：None = 老配置未迁移（前端显示空列表让用户点「添加大模型」）；
     /// 已有数据则透传。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub models_by_provider: Option<ModelsByProvider>,
-    /// 每协议 active 模型 id（2026-09-08）
+    /// 每协议 active 模型 id
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_model_id: Option<ActiveModelId>,
-    /// 界面字体大小（2026-09-08）：small/standard/large/xlarge
+    /// 界面字体大小：small/standard/large/xlarge
     /// None = small；前端根据实际值走 documentElement[data-font-size] 套用
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ui_font_size: Option<String>,
-    /// 定时记忆整理配置（2026-09-09）：None 时解析为默认（启用 + daily）透传前端
+    /// 定时记忆整理配置：None 时解析为默认（启用 + daily）透传前端
     pub memory_consolidation: crate::memory::consolidate::ConsolidationConfig,
 }
 
@@ -837,7 +836,7 @@ pub fn migrate_legacy_key(app: &AppHandle) -> Result<(), String> {
     std::fs::write(&p, raw).map_err(|e| e.to_string())
 }
 
-/// 搜索 key 迁移（2026-09-05：Tavily/Brave 不再明文落 bot-config.json）：
+/// 搜索 key 迁移（Tavily/Brave 不再明文落 bot-config.json）：
 /// bot-config.json 里仍含明文 tavily_key/brave_key → keyring 里还没有对应 key 时
 /// 写入（不覆盖更新值）→ 配置文件里这两个字段置 None 写回 → 审计留痕；
 /// keyring 写失败保留文件明文下次再试（数据保留优先，与 migrate_legacy_key 同策略）。
@@ -922,7 +921,7 @@ pub(crate) fn load_config(app: &AppHandle) -> BotConfig {
     BotConfig::default()
 }
 
-/// 授权弹窗「始终允许该目录」落盘（2026-08-26）：把目录追加进 allowedDirs 并写回
+/// 授权弹窗「始终允许该目录」落盘：把目录追加进 allowedDirs 并写回
 /// bot-config.json。allowedDirs 语义 = 内置默认（桌面/下载/文档+绑定文件夹）之上的
 /// 追加放行，直接 push 去重即可；已存在/空白为幂等 no-op。
 pub(crate) fn add_allowed_dir(app: &AppHandle, dir: &str) -> Result<(), String> {
@@ -947,18 +946,18 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
     let _ = migrate_search_keys(&app); // 兜底：Tavily/Brave 明文 key 同样迁进 keyring
     let cfg = load_config(&app);
 
-    // F1：keyring 真实故障（钥匙串锁定/权限拒绝）不再吞成「未配置」，
+    // keyring 真实故障（钥匙串锁定/权限拒绝）不吞成「未配置」，
     // 结构化 KeyringError 透传给前端，设置页可提示用户检查 keychain
     let has_api_key = has_api_key()?;
-    // 搜索 key 同策略（2026-09-05）：真实故障透传 Err，不吞成 false
+    // 搜索 key 同策略：真实故障透传 Err，不吞成 false
     let has_tavily_key = has_search_key(KeySlot::Tavily)?;
     let has_brave_key = has_search_key(KeySlot::Brave)?;
-    // 2026-09-08：老配置（无 models_by_provider、有 base_url/model）在内存里补一份
+    // 老配置（无 models_by_provider、有 base_url/model）在内存里补一份
     // ModelEntry + active_model_id，让设置页能展示出来；不写盘，等用户主动保存
     // 才一并落盘。
     let mut cfg = cfg;
     migrate_legacy_models(&mut cfg);
-    // 2026-09-08 bugfix：保证前端拿到永远完整的两协议子字段。
+    // 保证前端拿到永远完整的两协议子字段。
     // get_or_insert_with 保证 cfg.models_by_provider 是 Some；字段 #[serde(default)]
     // 保证反序列化时缺字段补空 Vec。两者联手让前端任何路径都不会拿到 undefined。
     // 前端那 5 处 `?? []` 兑底是最后一道防线。
@@ -986,7 +985,7 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
 
 /// 保存配置。api_key / tavily_key / brave_key 三个顶层参数同语义：
 /// Some(非空) 写入系统凭据存储并覆盖；None/空串不动已存的 key。
-///（2026-09-05：Tavily/Brave key 从 BotConfig 字段改成顶层参数，与主 key 同模式）
+///（Tavily/Brave key 与主 key 同模式，不落配置文件）
 #[tauri::command]
 pub fn bot_set_config(
     app: AppHandle,
@@ -1014,14 +1013,14 @@ pub fn bot_set_config(
     }
     // 文件里只留非敏感配置，三个 key 字段强制置 None（双保险：前端误把 key
     // 塞进 config 对象也不落明文）
-    // 2026-09-08：新结构（models_by_provider + active_model_id）落盘前回填
+    // 新结构（models_by_provider + active_model_id）落盘前回填
     // base_url/model/api_provider 三个派生字段——bot_model_loop 只看老字段。
     let mut config = config;
     derive_legacy_fields_from_active(&mut config);
     write_bot_config_file(&crate::db::data_dir(&app), config)
 }
 
-/// 读-改-写 bot-config.json（2026-09-09：记忆整理的 last_run_at 回写等内部配置更新用）：
+/// 读-改-写 bot-config.json（记忆整理的 last_run_at 回写等内部配置更新用）：
 /// 与 bot_set_config 同落盘路径（key 字段剥离由 write_bot_config_file 保证）。
 pub(crate) fn update_config_file(
     app: &AppHandle,
@@ -1032,9 +1031,9 @@ pub(crate) fn update_config_file(
     write_bot_config_file(&crate::db::data_dir(app), cfg)
 }
 
-/// bot_set_config 落盘内核（抽出便于单测，2026-09-05）：强制剥离三个 key 字段
+/// bot_set_config 落盘内核（抽出便于单测）：强制剥离三个 key 字段
 /// （api_key/tavily_key/brave_key 一律 None）后写 bot-config.json。
-/// base_url 非 https 且非回环 → 警告（T1-6，api_key 明文传输风险）；
+/// base_url 非 https 且非回环 → 警告（api_key 明文传输风险）；
 /// 只警告不拒写——本地推理服务是合法场景，且不能破坏存量用户配置。
 fn write_bot_config_file(dir: &std::path::Path, config: BotConfig) -> CommandResult<()> {
     let mut cfg = config;
@@ -1053,7 +1052,7 @@ fn write_bot_config_file(dir: &std::path::Path, config: BotConfig) -> CommandRes
     std::fs::write(dir.join("bot-config.json"), raw).map_err(|e| CommandError::IoError(e.to_string()))
 }
 
-/// base_url 安全判定（T1-6）：空 / https:// / 回环地址（localhost、127.x、::1）
+/// base_url 安全判定：空 / https:// / 回环地址（localhost、127.x、::1）
 /// 视为安全；其余（http:// 公网/内网 IP 域名等）不安全——调用方打警告，不拒写。
 pub(crate) fn base_url_is_safe(url: &str) -> bool {
     let u = url.trim();
@@ -1094,9 +1093,9 @@ pub fn audit_log<R: tauri::Runtime>(app: &tauri::AppHandle<R>, line: &str) {
     let _ = append_bot_log_line(&p, line);
 }
 
-/// bot.log 写一行内核（T1-4，2026-09-03）：open/write 失败 eprintln 带路径并返回 false，
-/// 不再 `if let Ok … { let _ = writeln! }` 全静默（对齐 audit::append_line 的 P2-15 做法）。
-/// 抽成路径参数版便于单测（与 bot_py.rs:1205 同先例）。
+/// bot.log 写一行内核：open/write 失败 eprintln 带路径并返回 false，
+/// 不 `if let Ok … { let _ = writeln! }` 全静默（对齐 audit::append_line 的做法）。
+/// 抽成路径参数版便于单测（与 bot_py.rs 同先例）。
 fn append_bot_log_line(p: &std::path::Path, line: &str) -> bool {
     let mut f = match crate::audit::open_log_append(p) {
         Ok(f) => f,
@@ -1113,7 +1112,7 @@ fn append_bot_log_line(p: &std::path::Path, line: &str) -> bool {
     true
 }
 
-/// 审计日志安全转义 + 截断（P2-11）：剥换行/管道符，防伪造「INFO |」前缀与多行撕裂。
+/// 审计日志安全转义 + 截断：剥换行/管道符，防伪造「INFO |」前缀与多行撕裂。
 /// 规则：`| ` → `|  `（双空格），剩余裸 `|` → `||`，`\n` → `\\n`，`\r` → `\\r`；
 /// 转义后按字符数截到 max 加省略号。与 bot_py::escape_for_log 同一规则。
 pub(crate) fn escape_for_log(s: &str, max: usize) -> String {
@@ -1132,15 +1131,15 @@ pub(crate) fn escape_for_log(s: &str, max: usize) -> String {
     }
 }
 
-/// 向后兼容别名（P2-11）：bot_chat / bot_model_loop / bot_scheduler 仍用旧名，
+/// 向后兼容别名：bot_chat / bot_model_loop / bot_scheduler 仍用旧名，
 /// 行为即 escape_for_log（同族日志伪造问题一并修复）；新代码请直接用 escape_for_log。
 pub(crate) fn truncate_for_log(s: &str, max: usize) -> String {
     escape_for_log(s, max)
 }
 
 /// 读取机器人审计日志（倒序，最新在前；默认 200 行，上限 2000）
-/// F3（Phase 6b）：读失败（权限/磁盘/损坏）返回 Err(IoError) + ERROR 审计，
-/// 不再静默吞成「暂无日志」；仅「文件不存在」返回占位文案。
+/// 读失败（权限/磁盘/损坏）返回 Err(IoError) + ERROR 审计，
+/// 不静默吞成「暂无日志」；仅「文件不存在」返回占位文案。
 #[tauri::command]
 pub fn bot_log_read(app: AppHandle, limit: Option<usize>) -> CommandResult<String> {
     let p = crate::db::data_dir(&app).join("bot.log");
@@ -1154,7 +1153,7 @@ pub fn bot_log_read(app: AppHandle, limit: Option<usize>) -> CommandResult<Strin
     }
 }
 
-/// F3（Phase 6b）：纯路径参数版便于单测（tauri command 绑定 Wry AppHandle）。
+/// 纯路径参数版便于单测（tauri command 绑定 Wry AppHandle）。
 /// NotFound → Ok("（暂无日志）")（日志确实没东西）；其他 IO 错误 → Err(IoError)。
 fn read_log_tail(path: &std::path::Path, limit: Option<usize>) -> CommandResult<String> {
     let raw = match std::fs::read_to_string(path) {
@@ -1191,7 +1190,7 @@ pub fn check_len(value: &str, max: usize, what: &str) -> Result<(), String> {
 
 // ───────────────────────── 工具调度核心（execute_tool dispatch） ─────────────────────────
 
-/// NEW-D-1：早退路径（pre_execute 拦截 / skill_on_step 熔断）的审计事件序列。
+/// 早退路径（pre_execute 拦截 / skill_on_step 熔断）的审计事件序列。
 /// `tool.call` 已在入口发出，这里按写入顺序补齐后续事件并以 `tool.return` 配平，
 /// 否则统计面板出现「悬挂调用」（call > return）。
 /// 抽成纯函数：事件名 + kv + 顺序可单测（execute_tool 是 Wry 签名，无法 mock runtime 直调，
@@ -1235,15 +1234,15 @@ fn early_return_events(
 }
 
 /// 进程内执行工具，返回 (给模型的文本结果, 涉及的任务引用)
-/// `pub` 让 `bot_skills::run_skill_scheduler`（Phase 1 DSL 调度器）可调用，
+/// `pub` 让 `bot_skills::run_skill_scheduler`（DSL 调度器）可调用，
 /// 不暴露给前端 — 通过 `is_atomic_tool` 黑名单 + pre-execute 校验保护。
-/// 2026-08-26 会话隔离：session_id 随调用链透传（DSL 调度器从 bot_chat 带下来），
+/// 会话隔离：session_id 随调用链透传（DSL 调度器从 bot_chat 带下来），
 /// 无 StopGuard 时按交互执行处理（DSL 调度器只在聊天上下文里跑）。
 pub async fn execute_tool(app: &AppHandle, name: &str, args: &str, session_id: Option<&str>) -> (String, Vec<crate::bot_chat::TaskRef>) {
     execute_tool_impl(app, name, args, None, true, session_id).await
 }
 
-/// execute_tool 的可停止版本（NEW-C-4）：携带 /stop 守卫，run_python 等长耗时工具
+/// execute_tool 的可停止版本：携带 /stop 守卫，run_python 等长耗时工具
 /// 在执行中即可被中断；Skill 调度器等无守卫调用方走 execute_tool（stop=None）。
 pub async fn execute_tool_with_stop(
     app: &AppHandle,
@@ -1251,7 +1250,7 @@ pub async fn execute_tool_with_stop(
     args: &str,
     stop: Option<&crate::bot_slash::StopGuard>,
 ) -> (String, Vec<crate::bot_chat::TaskRef>) {
-    // 2026-08-26 会话隔离：交互属性与会话归属从 StopGuard 取（无守卫 = 后台调度器路径
+    // 会话隔离：交互属性与会话归属从 StopGuard 取（无守卫 = 后台调度器路径
     // 不会出现——调度器走 run_task_in_chat 也持 StopGuard；None 仅 DSL 调度器遗留路径）
     let interactive = stop.map(|s| s.is_interactive()).unwrap_or(true);
     let session_id = stop.and_then(|s| s.session_id());
@@ -1268,7 +1267,7 @@ async fn execute_tool_impl(
     session_id: Option<&str>,
 ) -> (String, Vec<crate::bot_chat::TaskRef>) {
     let start = std::time::Instant::now();
-    // 0. tool.call 结构化（F-3 第三步 2026-08-18）
+    // 0. tool.call 结构化
     crate::audit_event!(
         app,
         crate::audit::AuditLevel::Info,
@@ -1276,18 +1275,18 @@ async fn execute_tool_impl(
         "tool" => name,
         "args_preview" => args.chars().take(80).collect::<String>(),
     );
-    // 1. 后置拦截：原子黑名单（老板 2026-08-17 18:14 拍板）
+    // 1. 后置拦截：原子黑名单（老板拍板）
     //    仅作为 Skill 内部子步骤、不允许裸调的底层原子 Function → 硬锁阻断
     //    只有 Skill 在 Running 状态时才放行；其他时候直接返回错误 + 提示走对应 Skill
-    // F-2 抽象层：execute_tool 通过 middleware::run_pre_execute 调 pre-execute
-    // 2026-08-27 审计 P0-2：任务卡执行流程（StopGuard.allow_atomic）视同 Skill 上下文放行——
+    // 抽象层：execute_tool 通过 middleware::run_pre_execute 调 pre-execute
+    // 任务卡执行流程（StopGuard.allow_atomic）视同 Skill 上下文放行——
     // EXECUTE_SYSTEM_PROMPT 把 link_file_to_task 列为收尾动作，该流程没有 SkillRun，
     // 不放行则 prompt 要求的核心动作必被自家网关否决。
-    // （create_word_revisions 2026-09-02 起移出原子黑名单，聊天/执行均可直调）
+    // （create_word_revisions 不在原子黑名单，聊天/执行均可直调）
     let active = crate::tool_guard::is_skill_active(session_id)
         || stop.is_some_and(|s| s.allow_atomic());
     if let Some(msg) = crate::middleware::run_pre_execute(app, name, active) {
-        // NEW-D-1：tool.call 已发出，早退前必须配平 tool.return（reason=denied），
+        // tool.call 已发出，早退前必须配平 tool.return（reason=denied），
         // 否则统计面板出现「悬挂调用」（call > return）
         for (level, event, kv) in early_return_events(name, "denied", start.elapsed().as_millis() as u64, None) {
             crate::audit::write_event(app, level, event, &kv);
@@ -1297,7 +1296,7 @@ async fn execute_tool_impl(
     // 2. Skill 调度器步骤钩子：活动技能时计数/熔断/动作记录（use_skill 自身跳过）
     if name != "use_skill" {
         if let Err(e) = crate::bot_skills::skill_on_step(app, name, args, session_id) {
-            // NEW-D-1：补 Warn 可见性（skill_on_step_error）+ tool.return 配平（reason=skill_step_failed）
+            // 补 Warn 可见性（skill_on_step_error）+ tool.return 配平（reason=skill_step_failed）
             for (level, event, kv) in early_return_events(name, "skill_step_failed", start.elapsed().as_millis() as u64, Some(&e.to_string())) {
                 crate::audit::write_event(app, level, event, &kv);
             }
@@ -1338,13 +1337,13 @@ async fn execute_tool_impl(
         other => (format!("未知工具：{other}"), Vec::new()),
     };
 
-    // 3. post-execute 洋葱管线「出」钩子（2026-08-17 22:17 第一块落地）
+    // 3. post-execute 洋葱管线「出」钩子
     //    - 结构化审计事件（工具名/耗时/返回引用数/结果预览）写到 bot.log
     //    - 失败分类：未知工具→Error；含「失败/错误/error:」→Warn；其他→Info
     //    - 镜像调用 skill_on_step_post：技能步骤结果/失败检测
     let dur_ms = start.elapsed().as_millis() as u64;
     let level = crate::audit::classify_text(name, &text);
-    // create_task/edit_task 带 files 参数时补 files_count/truncated kv（2026-08-19 多文件绑定）
+    // create_task/edit_task 带 files 参数时补 files_count/truncated kv（多文件绑定）
     let mut kv: Vec<(&str, String)> = vec![
         ("tool", name.to_string()),
         ("ms", dur_ms.to_string()),
@@ -1369,7 +1368,7 @@ pub(crate) fn parse_args(args: &str) -> serde_json::Value {
     serde_json::from_str(args).unwrap_or(serde_json::Value::Null)
 }
 
-// ───────────────────────── Phase 4：时间 + 长期记忆工具（2026-08-20） ─────────────────────────
+// ───────────────────────── 时间 + 长期记忆工具 ─────────────────────────
 
 /// get_current_time：返回本地日期时间+星期（模型做「今天/明天/周几」判断的锚点，禁止猜日期）
 fn tool_get_current_time() -> (String, Vec<crate::bot_chat::TaskRef>) {
@@ -1383,7 +1382,7 @@ fn tool_get_current_time() -> (String, Vec<crate::bot_chat::TaskRef>) {
 }
 
 /// 解析 create_task/edit_task 的 files 参数（[{path, isDir}]）：
-/// 去重保序、空路径丢弃、超 MAX_TASK_FILES 截断（Rust 侧硬上限，2026-08-19）。
+/// 去重保序、空路径丢弃、超 MAX_TASK_FILES 截断（Rust 侧硬上限）。
 /// 返回 Some((files, truncated))；无 files 字段返回 None（不改绑定）。
 fn parse_task_files_arg(v: &serde_json::Value) -> Option<(Vec<crate::db::TaskFile>, bool)> {
     let arr = v["files"].as_array()?;
@@ -1407,8 +1406,8 @@ fn parse_task_files_arg(v: &serde_json::Value) -> Option<(Vec<crate::db::TaskFil
     Some((out, truncated))
 }
 
-/// 模型来源 files 的安全校验（2026-08-27 安全审计 SEC-P0-2）：create_task/edit_task 的
-/// files 参数直接来自模型，原先零校验——模型可把任意目录标 isDir=true 绑进任务卡，
+/// 模型来源 files 的安全校验：create_task/edit_task 的
+/// files 参数直接来自模型，不加校验模型可把任意目录标 isDir=true 绑进任务卡，
 /// `allowed_dirs` 会把它并入文件白名单（且先于 permMode 分流），strict 模式也被架空。
 /// 收窄（对齐 link_file_to_task）：仅放行 AI_Gen_Files 目录内的已存在文件，强制 isDir=false；
 /// 被拒条目记审计。用户亲手绑定走 bind_file 系统弹框，不在此限。
@@ -1519,7 +1518,7 @@ async fn tool_list_tasks(app: &AppHandle) -> (String, Vec<crate::bot_chat::TaskR
     (lines.join("\n"), refs)
 }
 
-/// 单卡查询（白名单单点工具，2026-08-17 22:57 老板拍板补充）：
+/// 单卡查询（白名单单点工具）：
 /// 按 id 取单张任务卡的完整详情（区别于 list_tasks 的批量清单 + search_tasks 的关键词检索）。
 /// - 必填参数：id（任务卡 UUID）
 /// - 输出：标题/列/截止/备注/子任务/标签/绑定文件 + 归档/删除/机器人执行状态指示
@@ -1734,10 +1733,10 @@ async fn tool_create_task(app: &AppHandle, args: &str) -> (String, Vec<crate::bo
         schedule: None,
         sched_last: None,
         bot_assigned: None,
-        expected_updated_at: None, // 新建任务：无读快照基线（T1-1）
+        expected_updated_at: None, // 新建任务：无读快照基线
     };
-    // 多文件绑定（2026-08-19）：files 参数 [{path,isDir}]，超 10 截断 + 警告
-    // SEC-P0-2（2026-08-27）：模型来源 files 经安全校验（仅 AI_Gen_Files 内文件）
+    // 多文件绑定：files 参数 [{path,isDir}]，超 10 截断 + 警告
+    // 模型来源 files 经安全校验（仅 AI_Gen_Files 内文件）
     let mut files_warn = "";
     if let Some((files, truncated)) = sanitize_task_files_arg(app, &v) {
         if truncated {
@@ -1770,8 +1769,8 @@ async fn tool_create_task(app: &AppHandle, args: &str) -> (String, Vec<crate::bo
 
 async fn tool_complete_task(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
     let v = parse_args(args);
-    // 2026-08-27 审计 P0-3：走 resolve_task（taskId 精确匹配优先、title 关键词兜底 +
-    // taskId/title 交叉校验），与其它任务操作工具对齐——原先只读 title，
+    // 走 resolve_task（taskId 精确匹配优先、title 关键词兜底 +
+    // taskId/title 交叉校验），与其它任务操作工具对齐——只读 title 会让
     // schema 声明的「taskId 优先」被完全忽略，任务卡执行路径只传 taskId 时确定性失败。
     let task = match resolve_task(app, &v).await {
         Ok(t) => t,
@@ -1780,7 +1779,7 @@ async fn tool_complete_task(app: &AppHandle, args: &str) -> (String, Vec<crate::
     let mut next = task.clone();
     next.column = "done".into();
     next.completed_at = Some(chrono::Utc::now().timestamp_millis());
-    next.expected_updated_at = next.updated_at; // T1-1：RMW 写回基线 = 快照 updated_at
+    next.expected_updated_at = next.updated_at; // RMW 写回基线 = 快照 updated_at
     next.updated_at = next.completed_at;
     match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
         Ok(()) => {
@@ -1810,7 +1809,7 @@ async fn tool_delete_task(app: &AppHandle, args: &str, interactive: bool, sessio
     }
     let mut next = task.clone();
     next.deleted_at = Some(chrono::Utc::now().timestamp_millis());
-    next.expected_updated_at = next.updated_at; // T1-1：RMW 写回基线 = 快照 updated_at
+    next.expected_updated_at = next.updated_at; // RMW 写回基线 = 快照 updated_at
     next.updated_at = next.deleted_at;
     match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
         Ok(()) => {
@@ -1841,7 +1840,7 @@ async fn resolve_task(app: &AppHandle, v: &serde_json::Value) -> Result<crate::d
         let id = id.trim();
         if !id.is_empty() {
             if let Some(t) = active_tasks(app).await.into_iter().find(|t| t.id == id) {
-                // 交叉校验（2026-08-19）：同窗格连续操作不同任务卡时，模型会沿用上一张卡的
+                // 交叉校验：同窗格连续操作不同任务卡时，模型会沿用上一张卡的
                 // taskId 张冠李戴。taskId 与 title 关键词同时给出且对不上 → 不信 id，
                 // 改用 title 重新定位（定位不到就报错，让模型/用户确认）
                 if let Some(kw) = v["title"].as_str().map(|s| s.trim().to_lowercase()) {
@@ -1951,8 +1950,8 @@ async fn tool_edit_task(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_
         next.tags = if list.is_empty() { None } else { Some(list) };
         changed.push("标签");
     }
-    // 多文件绑定（2026-08-19）：files 参数 [{path,isDir}] 整体替换列表；空数组清除；超 10 截断 + 警告
-    // SEC-P0-2（2026-08-27）：模型来源 files 经安全校验（仅 AI_Gen_Files 内文件）
+    // 多文件绑定：files 参数 [{path,isDir}] 整体替换列表；空数组清除；超 10 截断 + 警告
+    // 模型来源 files 经安全校验（仅 AI_Gen_Files 内文件）
     let mut files_warn = "";
     if let Some((files, truncated)) = sanitize_task_files_arg(app, &v) {
         if truncated {
@@ -1979,7 +1978,7 @@ async fn tool_edit_task(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_
     if changed.is_empty() {
         return ("没有可修改的字段".into(), Vec::new());
     }
-    next.expected_updated_at = next.updated_at; // T1-1：RMW 写回基线 = 快照 updated_at（写前比对，防整行覆盖 lost-update）
+    next.expected_updated_at = next.updated_at; // RMW 写回基线 = 快照 updated_at（写前比对，防整行覆盖 lost-update）
     next.updated_at = Some(chrono::Utc::now().timestamp_millis());
     match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
         Ok(()) => {
@@ -2019,7 +2018,7 @@ async fn tool_add_subtask(app: &AppHandle, args: &str) -> (String, Vec<crate::bo
         done: false,
     });
     next.subtasks = Some(subs);
-    next.expected_updated_at = next.updated_at; // T1-1：RMW 写回基线 = 快照 updated_at（写前比对，防整行覆盖 lost-update）
+    next.expected_updated_at = next.updated_at; // RMW 写回基线 = 快照 updated_at（写前比对，防整行覆盖 lost-update）
     next.updated_at = Some(chrono::Utc::now().timestamp_millis());
     match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
         Ok(()) => {
@@ -2066,7 +2065,7 @@ async fn tool_toggle_subtask(app: &AppHandle, args: &str) -> (String, Vec<crate:
     let mut subs2 = subs;
     subs2[idx].done = !subs2[idx].done;
     next.subtasks = Some(subs2);
-    next.expected_updated_at = next.updated_at; // T1-1：RMW 写回基线 = 快照 updated_at（写前比对，防整行覆盖 lost-update）
+    next.expected_updated_at = next.updated_at; // RMW 写回基线 = 快照 updated_at（写前比对，防整行覆盖 lost-update）
     next.updated_at = Some(chrono::Utc::now().timestamp_millis());
     match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
         Ok(()) => {
@@ -2102,7 +2101,7 @@ async fn tool_toggle_subtask(app: &AppHandle, args: &str) -> (String, Vec<crate:
     }
 }
 
-/// 删除单条子任务（2026-08-19：此前无此工具，模型收到「删除子任务」无从下手）
+/// 删除单条子任务
 async fn tool_remove_subtask(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
     let v = parse_args(args);
     let Some(skw) = v["text"].as_str().map(|s| s.trim().to_lowercase()) else {
@@ -2137,7 +2136,7 @@ async fn tool_remove_subtask(app: &AppHandle, args: &str) -> (String, Vec<crate:
     let mut subs2 = subs;
     subs2.remove(idx);
     next.subtasks = Some(subs2);
-    next.expected_updated_at = next.updated_at; // T1-1：RMW 写回基线 = 快照 updated_at（写前比对，防整行覆盖 lost-update）
+    next.expected_updated_at = next.updated_at; // RMW 写回基线 = 快照 updated_at（写前比对，防整行覆盖 lost-update）
     next.updated_at = Some(chrono::Utc::now().timestamp_millis());
     match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
         Ok(()) => {
@@ -2156,9 +2155,9 @@ async fn tool_remove_subtask(app: &AppHandle, args: &str) -> (String, Vec<crate:
 
 /// 绑定文件/文件夹：弹系统选择框由用户挑选，结果写回任务的 filePath/fileIsDir
 async fn tool_bind_file(app: &AppHandle, args: &str, interactive: bool) -> (String, Vec<crate::bot_chat::TaskRef>) {
-    // 2026-08-28 批次5审计 P1：后台定时执行（interactive=false）不能弹系统选择框——
+    // 后台定时执行（interactive=false）不能弹系统选择框——
     // 无人在场时模态框让 spawn_blocking 线程永久阻塞，该后台任务卡死。
-    // 引导模型改用 link_file_to_task 直传路径（分发处原先丢弃 interactive，弹框无条件触发）。
+    // 引导模型改用 link_file_to_task 直传路径。
     if !interactive {
         return (
             "失败：后台执行不能弹窗选文件；请改用 link_file_to_task 并直接提供文件路径".into(),
@@ -2189,7 +2188,7 @@ async fn tool_bind_file(app: &AppHandle, args: &str, interactive: bool) -> (Stri
         return ("用户取消了选择，未绑定".into(), Vec::new());
     };
     let mut next = task;
-    // 多文件绑定（2026-08-19）：等价 bind_files(vec![path])——弹框单选结果替换整个绑定列表
+    // 多文件绑定：等价 bind_files(vec![path])——弹框单选结果替换整个绑定列表
     apply_files_to_task(
         &mut next,
         vec![crate::db::TaskFile {
@@ -2197,7 +2196,7 @@ async fn tool_bind_file(app: &AppHandle, args: &str, interactive: bool) -> (Stri
             is_dir,
         }],
     );
-    next.expected_updated_at = next.updated_at; // T1-1：RMW 写回基线 = 快照 updated_at（写前比对，防整行覆盖 lost-update）
+    next.expected_updated_at = next.updated_at; // RMW 写回基线 = 快照 updated_at（写前比对，防整行覆盖 lost-update）
     next.updated_at = Some(chrono::Utc::now().timestamp_millis());
     match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
         Ok(()) => {
@@ -2239,7 +2238,7 @@ async fn tool_link_file_to_task(app: &AppHandle, args: &str) -> (String, Vec<cra
     if !std::path::Path::new(&path).exists() {
         return (format!("路径不存在，拒绝绑定：{path}"), Vec::new());
     }
-    // 上线安全审计 P1：此前只校验"路径存在"，模型可绑定任意文件（如 ~/.ssh/id_rsa）到任务卡，
+    // 只校验"路径存在"不够：模型可绑定任意文件（如 ~/.ssh/id_rsa）到任务卡，
     // 再经 extract_document 的「任务卡绑定文件」白名单读走内容 —— 白名单被架空。
     // 收窄：只能绑定 AI_Gen_Files 目录内的文件（工具用途 = 把机器人产物绑回任务卡，产物必在此目录）。
     // 用户亲手绑定的其他文件走 bind_file 弹框，不在此限。
@@ -2270,7 +2269,7 @@ async fn tool_link_file_to_task(app: &AppHandle, args: &str) -> (String, Vec<cra
             is_dir: false,
         }],
     );
-    next.expected_updated_at = next.updated_at; // T1-1：RMW 写回基线 = 快照 updated_at（写前比对，防整行覆盖 lost-update）
+    next.expected_updated_at = next.updated_at; // RMW 写回基线 = 快照 updated_at（写前比对，防整行覆盖 lost-update）
     next.updated_at = Some(chrono::Utc::now().timestamp_millis());
     match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
         Ok(()) => {
@@ -2290,9 +2289,9 @@ async fn tool_link_file_to_task(app: &AppHandle, args: &str) -> (String, Vec<cra
 // ───────────────────────── 文档 / Python 工具（bot_py 桥接） ─────────────────────────
 
 /// 提取文档文本：path 给定则直读（任务卡绑定文件），否则弹框选文件；返回路径 + 文本供模型阅读/润色
-/// extract_document path 白名单（二次审计 P1-2）：任务卡绑定文件 / AI_Gen_Files 目录内文件静默放行。
+/// extract_document path 白名单：任务卡绑定文件 / AI_Gen_Files 目录内文件静默放行。
 /// 规范化路径比较，防 ../ 绕过。无 path 时走弹框（用户亲手选，不受此限）。
-/// 2026-08-26 授权模式改造：其余路径不再硬拒，走 bot_fs::resolve_with_perm 分流
+/// 授权分流：其余路径不硬拒，走 bot_fs::resolve_with_perm 分流
 ///（strict 硬拒 / ask 弹授权窗 / yolo 放行），拒绝文案透传给模型。
 /// interactive/session_id 透传给授权弹窗：后台执行（interactive=false）不弹窗直接拒。
 async fn extract_path_check(app: &AppHandle, path: &str, interactive: bool, session_id: Option<&str>) -> Result<(), String> {
@@ -2318,7 +2317,7 @@ async fn extract_path_check(app: &AppHandle, path: &str, interactive: bool, sess
             }
         }
     }
-    // 3) 授权分流（2026-08-26，与 bot_fs 同一口径：白名单静默放行 / strict 拒 /
+    // 3) 授权分流（与 bot_fs 同一口径：白名单静默放行 / strict 拒 /
     //    ask 弹窗 / yolo 放）
     crate::bot_fs::resolve_with_perm(app, "extract_document", path, interactive, session_id)
         .await
@@ -2331,7 +2330,7 @@ async fn tool_extract_document(app: &AppHandle, args: &str, interactive: bool, s
         .as_str()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
-    // 2026-08-28 批次5审计 P1：无 path 时 bot_py::doc_extract 会弹系统选择框，
+    // 无 path 时 bot_py::doc_extract 会弹系统选择框，
     // 后台定时执行弹框 = 永久阻塞卡死，必须直接拒绝并引导模型传 path
     if path_opt.is_none() && !interactive {
         return (
@@ -2339,7 +2338,7 @@ async fn tool_extract_document(app: &AppHandle, args: &str, interactive: bool, s
             Vec::new(),
         );
     }
-    // 分页参数（2026-08-20）：offset 字符偏移续读；limit 默认 30000、硬钳 60000
+    // 分页参数：offset 字符偏移续读；limit 默认 30000、硬钳 60000
     let offset = v["offset"].as_u64().unwrap_or(0) as usize;
     let limit = v["limit"]
         .as_u64()
@@ -2358,7 +2357,7 @@ async fn tool_extract_document(app: &AppHandle, args: &str, interactive: bool, s
     }
 }
 
-/// extract_document 输出格式化：字符级分页（2026-08-20 把 30000 硬截断改为可续读）。
+/// extract_document 输出格式化：字符级分页（可续读，不硬截断）。
 /// 头部 [位置] 行让模型知道总量与续读点；还有更多时尾部给 offset 续读提示。
 /// offset 按字符计（非字节）；limit 默认 30000、硬钳 60000（防爆上下文）。
 const EXTRACT_DEFAULT_LIMIT: usize = 30000;
@@ -2414,7 +2413,7 @@ async fn tool_create_word(app: &AppHandle, args: &str) -> (String, Vec<crate::bo
 /// 修订模式 Word：回读原文 + 修订段落 diff，产出带 track changes 标记的文档
 async fn tool_create_word_revisions(app: &AppHandle, args: &str, interactive: bool, session_id: Option<&str>) -> (String, Vec<crate::bot_chat::TaskRef>) {
     let v = parse_args(args);
-    // originalPath 由模型转述，同样过授权校验（防回读任意文件；2026-08-26 走分流）
+    // originalPath 由模型转述，同样过授权校验（防回读任意文件，走分流）
     if let Some(op) = v["originalPath"]
         .as_str()
         .map(str::trim)
@@ -2525,7 +2524,8 @@ async fn tool_create_pdf(app: &AppHandle, args: &str) -> (String, Vec<crate::bot
     }
 }
 
-/// 联网搜索：本机执行 Bing 抓取，结果回传给模型（MiniMax web_search 由客户端执行）
+/// 联网搜索：本机执行（引擎路由 Tavily/Brave/双引擎抓取，见 bot_web::resolve_search_route），
+/// 结果回传给模型
 async fn tool_web_search(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
     let v = parse_args(args);
     let Some(query) = v["query"]
@@ -2578,9 +2578,9 @@ async fn tool_fetch_url(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_
 }
 
 /// 自由 Python 编程：开关开启才放行（超时 60s、独立临时目录、输出截断）
-/// C4：py_exec_sync 是 sync 阻塞（最长 300s），必须经 async 包装挪到 blocking
-/// 线程池，不得占住 async runtime worker（与 NEW-C-1 doc_* 同模式）。
-/// NEW-C-4：透传 /stop 令牌，在途 Python 可被中断（StopGuard → owned StopToken）。
+/// py_exec_sync 是 sync 阻塞（最长 300s），必须经 async 包装挪到 blocking
+/// 线程池，不得占住 async runtime worker（与 doc_* 同模式）。
+/// 透传 /stop 令牌，在途 Python 可被中断（StopGuard → owned StopToken）。
 async fn tool_run_python(
     app: &AppHandle,
     args: &str,
@@ -2591,7 +2591,7 @@ async fn tool_run_python(
         return ("run_python 缺少 code".into(), Vec::new());
     };
     // 超时优先级：工具参数 timeoutSecs > 设置页配置 python_timeout_secs > 内置 60s
-    //（2026-08-20：pandas 大计算 60s 偏紧；硬钳 300s 在 bot_py::resolve_timeout）
+    //（pandas 大计算 60s 偏紧；硬钳 300s 在 bot_py::resolve_timeout）
     let timeout_secs = v["timeoutSecs"]
         .as_u64()
         .or_else(|| load_config(app).python_timeout_secs);
@@ -2627,7 +2627,7 @@ async fn tool_run_python(
 // 测试：BotConfig 序列化 + extract_document 输出格式化
 // ────────────────────────────────────────────────────────────────────
 
-/// F-1 BotConfig 序列化与默认值单测（2026-08-18 老板拍板 P0 release blocker）
+/// BotConfig 序列化与默认值单测
 #[cfg(test)]
 mod bot_config_tests {
     use super::*;
@@ -2655,7 +2655,7 @@ mod bot_config_tests {
 
     #[test]
     fn perm_mode_defaults_to_ask() {
-        // 老配置缺 permMode 字段 → None → Ask（2026-08-26 新默认：弹授权而非硬拒）
+        // 老配置缺 permMode 字段 → None → Ask（默认：弹授权而非硬拒）
         let raw = r#"{"baseUrl":"https://api.deepseek.com/v1","model":"deepseek-chat"}"#;
         let cfg: BotConfig = serde_json::from_str(raw).unwrap();
         assert_eq!(PermMode::from_cfg(cfg.perm_mode.as_deref()), PermMode::Ask);
@@ -2679,7 +2679,7 @@ mod bot_config_tests {
 
     #[test]
     fn api_provider_defaults_to_openai_and_falls_back() {
-        // 老配置缺 apiProvider 字段 → None → Openai（2026-09-05 Anthropic 兼容模式：
+        // 老配置缺 apiProvider 字段 → None → Openai（Anthropic 兼容模式对
         // 老配置零影响）；非法值/空白防御回退 Openai（与 PermMode::from_cfg 同风格）
         let raw = r#"{"baseUrl":"https://api.deepseek.com/v1","model":"deepseek-chat"}"#;
         let cfg: BotConfig = serde_json::from_str(raw).unwrap();
@@ -2702,7 +2702,7 @@ mod bot_config_tests {
     }
 }
 
-/// F1（Phase 6b）单测：keyring 错误分类纯函数。
+/// keyring 错误分类纯函数单测。
 /// 真实 keychain 在测试环境不可用，用构造的 keyring::Error 注入故障。
 #[cfg(test)]
 mod f1_keyring_tests {
@@ -2752,7 +2752,7 @@ mod f1_keyring_tests {
     }
 }
 
-/// P2-32 单测：Linux secret-service 探测 + 降级明文文件后端。
+/// Linux secret-service 探测 + 降级明文文件后端单测。
 /// 注入 backend=PlaintextFile + 临时路径即「mock secret-service 不可用」，
 /// fallback 路径全链路走通（写 → 读 → has → 删）+ WARN 审计落行。
 #[cfg(test)]
@@ -2842,8 +2842,8 @@ mod p2_32_keyring_fallback_tests {
     }
 }
 
-/// 2026-09-05 搜索 key 进 keyring：KeySlot 泛化 + 迁移内核单测。
-/// 真实 keychain 测试环境不可用，走 PlaintextFile 后端 + 注入路径（P2-32 同模式）。
+/// 搜索 key 进 keyring：KeySlot 槽位 + 迁移内核单测。
+/// 真实 keychain 测试环境不可用，走 PlaintextFile 后端 + 注入路径（与上面 fallback 测试同模式）。
 #[cfg(test)]
 mod search_key_slot_tests {
     use super::*;
@@ -2956,7 +2956,7 @@ mod search_key_slot_tests {
     }
 }
 
-/// F3（Phase 6b）单测：bot_log_read 不再把读文件错吞成「暂无日志」。
+/// bot_log_read 单测：读文件错不吞成「暂无日志」。
 #[cfg(test)]
 mod f3_log_read_tests {
     use super::*;
@@ -3063,7 +3063,7 @@ mod tool_extract_document_tests {
         assert!(out.contains("超出文档总长"), "offset 越界应明确提示：\n{out}");
     }
 }
-/// NEW-D-1 单测：早退路径审计事件序列（tool.call 配平 tool.return）。
+/// 早退路径审计事件序列单测（tool.call 配平 tool.return）。
 /// execute_tool 是 Wry AppHandle 签名，无法 mock runtime 直调（见 tests/skill_e2e.rs 注释），
 /// 故事件序列抽为纯函数 early_return_events，这里验证事件名/顺序/reason kv。
 #[cfg(test)]
@@ -3158,7 +3158,7 @@ mod task_files_arg_tests {
         assert!(files.is_empty() && !truncated);
     }
 
-    /// SEC-P0-2（2026-08-27 安全审计）：模型来源 files 仅放行 AI_Gen_Files 内已存在文件，
+    /// 模型来源 files 仅放行 AI_Gen_Files 内已存在文件，
     /// 目录绑定一律丢（目录授权只能来自用户手选 bind_file）
     #[test]
     fn sanitize_task_files_drops_dirs_and_outside_paths() {
@@ -3264,7 +3264,7 @@ mod phase4_facts_tests {
 
 #[cfg(test)]
 mod batch5_background_dialog_tests {
-    /// 批次5审计 P1 回归锁：后台执行（interactive=false）不得弹系统文件选择框——
+    /// 回归锁：后台执行（interactive=false）不得弹系统文件选择框——
     /// bind_file 分发必须透传 interactive，extract_document 无 path 时必须拒绝。
     ///（弹框链路绑定 Wry AppHandle 无法单测，源码锁防回退）
     #[test]
@@ -3288,8 +3288,8 @@ mod batch5_background_dialog_tests {
 
 #[cfg(test)]
 mod t1_4_audit_log_tests {
-    /// T1-4（2026-09-03）：audit_log 写盘内核——成功带 [ts] 前缀落行；
-    /// 失败 eprintln 带 path + 返回 false（对齐 audit::append_line 的 P2-15 做法），不静默不 panic
+    /// audit_log 写盘内核——成功带 [ts] 前缀落行；
+    /// 失败 eprintln 带 path + 返回 false（对齐 audit::append_line 的做法），不静默不 panic
     #[test]
     fn append_bot_log_line_ok_writes_with_ts() {
         let dir = tempfile::tempdir().unwrap();
@@ -3308,7 +3308,7 @@ mod t1_4_audit_log_tests {
         std::fs::create_dir(&ro).unwrap();
         std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o555)).unwrap();
         let p = ro.join("bot.log");
-        // 写失败：返回 false + eprintln 带 path（原先 if let Ok 全静默，丢日志零痕迹）
+        // 写失败：返回 false + eprintln 带 path（不能 if let Ok 全静默，丢日志零痕迹）
         assert!(!super::append_bot_log_line(&p, "x"));
         assert!(!p.exists());
         // 恢复权限让 tempdir 清理不掉链子
@@ -3318,7 +3318,7 @@ mod t1_4_audit_log_tests {
 
 #[cfg(test)]
 mod t1_6_base_url_tests {
-    /// T1-6（2026-09-03）：base_url 安全判定——https / 空 / 回环放行；
+    /// base_url 安全判定——https / 空 / 回环放行；
     /// http 公网/内网地址判不安全（调用方打警告，不拒写）
     #[test]
     fn base_url_safety_classification() {

@@ -8,9 +8,9 @@ use tauri::AppHandle;
 pub struct SkillInfo {
     pub name: String,
     pub description: String,
-    /// frontmatter enabled（2026-08-27 审计 P2：清单注入需要按它过滤）
+    /// frontmatter enabled（清单注入需要按它过滤）
     pub enabled: bool,
-    /// Phase 5 D (2026-08-18 08:00): last run outcome (SettingsPage badge)
+    /// last run outcome (SettingsPage badge)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_outcome: Option<crate::db::PersistedSkillOutcome>,
 }
@@ -78,7 +78,7 @@ pub fn scan_skills<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Vec<SkillInf
     out
 }
 
-/// 多目录扫描核心（Phase 4 第 4 项 2026-08-18 07:09）：
+/// 多目录扫描核心：
 /// 顺序扫 `dirs` 列表中的每个目录，每个目录的子目录视为一个 Skill（含 SKILL.md 即有效）。
 /// **前面目录优先**（用 HashSet seen 去重）：同名 Skill 只保留先扫到的版本。
 /// 排序按 name 字典序，输出稳定。
@@ -117,7 +117,7 @@ pub fn scan_skill_dirs(dirs: &[std::path::PathBuf]) -> Vec<SkillInfo> {
     out
 }
 
-/// 全量技能路由规则扫描（2026-08-19 动态路由，老板拍板：未安装的技能不得有路由）：
+/// 全量技能路由规则扫描（未安装的技能不得有路由）：
 /// 遍历搜索路径读每个 SKILL.md 的 frontmatter `intents`；
 /// `enabled: false` / intents 为空 → 该技能不产生路由。同名去重、前面目录优先（与 scan_skill_dirs 一致）。
 /// 单测可传临时目录数组，不依赖 AppHandle。
@@ -159,8 +159,8 @@ pub fn rebuild_intent_routes(app: &AppHandle) {
 }
 
 /// 技能清单块：注入系统提示词尾部（progressive disclosure 第一层）。
-/// 2026-08-27 审计 P2：过滤 enabled=false——禁用技能不再被广告给 LLM
-/// （原先清单照样列出，模型调 use_skill 才被 preflight 拒绝，与路由表口径不一致）。
+/// 过滤 enabled=false——禁用技能不再被广告给 LLM
+/// （否则模型调 use_skill 才被 preflight 拒绝，与路由表口径不一致）。
 pub fn build_skill_block<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> String {
     let all = scan_skills(app);
     let skills: Vec<&SkillInfo> = all.iter().filter(|s| s.enabled).collect();
@@ -222,7 +222,7 @@ pub fn skills_import(app: AppHandle, path: String) -> CommandResult<String> {
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
     let (name, _) = parse_frontmatter(&text, &dir_name);
-    // 2026-08-27 审计 P2：校验最终技能名（frontmatter 名非法时 parse 回退目录名，
+    // 校验最终技能名（frontmatter 名非法时 parse 回退目录名，
     // 目录名本身也可能非法）——非法名装上后 load/delete 都拒绝，装得上用不了删不掉
     if name.is_empty() || !name.chars().all(SKILL_NAME_CHARS_OK) {
         return Err(CommandError::InvalidArgument {
@@ -244,7 +244,7 @@ pub fn skills_import(app: AppHandle, path: String) -> CommandResult<String> {
     }
     // 递归拷贝（技能可能带 scripts/ 等资源）
     copy_dir_all(&src, &dest)?;
-    // 动态路由（2026-08-19）：安装成功即按 frontmatter intents 生成该技能的路由条目
+    // 安装成功即按 frontmatter intents 生成该技能的路由条目
     rebuild_intent_routes(&app);
     Ok(name)
 }
@@ -264,7 +264,7 @@ pub fn skills_delete(app: AppHandle, name: String) -> CommandResult<()> {
         return Ok(());
     }
     std::fs::remove_dir_all(&dir).map_err(|e| CommandError::IoError(e.to_string()))?;
-    // 动态路由（2026-08-19）：卸载即移除该技能的路由条目
+    // 卸载即移除该技能的路由条目
     rebuild_intent_routes(&app);
     Ok(())
 }
@@ -293,7 +293,7 @@ fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> Result<(), Stri
 mod tests {
     use super::*;
 
-    // ── Phase 4 第 4 项：scan_skill_dirs 多目录去重（2026-08-18 07:09） ──
+    // ── scan_skill_dirs 多目录去重 ──
 
     /// 临时目录 RAII 守卫（测试结束自动清理，panic 也清理）
     struct TempDir(std::path::PathBuf);
@@ -416,7 +416,7 @@ mod tests {
         assert!(dev_skills_dir_at(&target_root).is_none());
     }
 
-    // ── 2026-08-19 动态路由：intent_rules_from_dirs（未安装不得有路由） ──
+    // ── intent_rules_from_dirs（未安装不得有路由） ──
 
     #[test]
     fn intent_rules_collects_only_enabled_skills_with_intents() {

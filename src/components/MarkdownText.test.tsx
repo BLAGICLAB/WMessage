@@ -21,7 +21,7 @@ beforeEach(() => {
   mocks.invokeMock.mockClear();
 });
 
-// 第二梯队 #8（2026-09-03）：MarkdownText 的链接/路径识别正则此前零覆盖。
+// MarkdownText 的链接/路径识别正则覆盖。
 // 关键行为：http(s) → openUrl（尾随标点剥离）；白名单绝对路径/Windows 盘符 → open_file_path；
 // 其余 href（mailto/锚点/白名单外路径）降级为纯文本 span，不可点。
 describe("MarkdownText 链接识别", () => {

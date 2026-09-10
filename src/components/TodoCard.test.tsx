@@ -184,7 +184,7 @@ describe("TodoCard 测试环境", () => {
   });
 });
 
-// —— 多文件绑定（2026-08-19）：chip 列表 / 单独移除 / 超 5 折叠 / 上限 / 文件与文件夹不互斥 ——
+// —— 多文件绑定：chip 列表 / 单独移除 / 超 5 折叠 / 上限 / 文件与文件夹不互斥 ——
 describe("TodoCardView 多文件绑定", () => {
   const multiTask: Task = {
     ...baseTask,
@@ -359,7 +359,7 @@ describe("TodoCardView 多文件绑定", () => {
   });
 });
 
-// —— 归属头像规则（2026-09-05）：定时设置后一直机器人头像；执行中机器人头像；执行完恢复用户头像 ——
+// —— 归属头像规则：定时设置后一直机器人头像；执行中机器人头像；执行完恢复用户头像 ——
 describe("TodoCardView 归属头像", () => {
   it("无定时未交机器人 → 用户头像（profile mock 无图时显示姓名首字）", () => {
     render(<TodoCardView task={baseTask} onUpdate={vi.fn()} onDelete={vi.fn()} />);
@@ -404,7 +404,7 @@ describe("TodoCardView 归属头像", () => {
   });
 });
 
-// —— 子任务（2026-09-04）：点击文本内联编辑 + 全文显示不截断 ——
+// —— 子任务：点击文本内联编辑 + 全文显示不截断 ——
 describe("TodoCardView 子任务", () => {
   const subTask: Task = {
     ...baseTask,

@@ -1,16 +1,16 @@
-//! 前置意图路由（2026-08-19 重构：静态表 → 安装声明驱动）
+//! 前置意图路由（路由表由已安装技能的 intents 声明驱动）
 //!
-//! ## 规则（老板拍板 2026-08-19）
+//! ## 规则
 //! - **未安装的技能不得有路由**：路由条目 = 已安装技能 SKILL.md frontmatter 的 `intents` 声明
 //! - 安装技能（设置页导入等任何入口）→ `rebuild_intent_routes` 重建路由表，该技能路由即生效
 //! - 卸载技能 → 重建路由表，相关条目随之移除
 //! - 路由表重建时机：app 启动一次 + `skills_import` / `skills_delete` 成功后
 //!
-//! ## 运行语义（沿用 2026-08-17 Q1 拍板）
+//! ## 运行语义
 //! - **L1 正则硬锁**：用户首条消息命中某技能的 intent 模式 → 直接加载该 Skill，LLM **不参与选择 Skill**
 //! - **选择任务卡批量执行**：`is_chat_execute_trigger`（「完成/执行」关键词 + [已选任务] 引用块）
 //!   由 middleware 的 ChatExecuteMiddleware 包装为 `RouteAction::ExecuteTasks`，是 bot_chat 主流程
-//!   pre-step 路由的一个分支（2026-08-20 收编，不再是 bot_chat 内部前置短路）
+//!   pre-step 路由的一个分支
 //! - 未命中 / 路由表为空（未初始化、无已安装技能声明 intents）→ 放行进 LLM（现有路径）
 //! - 模式按正则匹配用户消息全文（含 [附件文件] 块内嵌的附件路径——附件上下文规则直接写进模式，
 //!   如 `(?is)(润色|修订)[\s\S]*\.docx?`），大小写敏由模式内联 `(?i)` 控制
@@ -171,7 +171,7 @@ mod tests {
         }
     }
 
-    /// minimax-docx 已安装 SKILL.md 的 intents 声明（2026-08-19）：与其 frontmatter 同源，
+    /// minimax-docx 已安装 SKILL.md 的 intents 声明：与其 frontmatter 同源，
     /// 改一边必须同步另一边（frontmatter 才是真相，这里只是测试副本）
     fn docx_rules() -> Vec<IntentRule> {
         vec![rule(
@@ -232,7 +232,7 @@ mod tests {
 
     #[test]
     fn uninstalled_skill_has_no_route() {
-        // 新规则核心断言（2026-08-19 老板拍板）：未安装 = 不在规则集 = 无路由。
+        // 核心断言：未安装 = 不在规则集 = 无路由。
         // PPT/Excel/PDF/联网搜索/任务汇总/归档 均未安装 → 全部 PassThrough 进 LLM 单点路径
         let rules = docx_rules(); // 只装了 docx
         for input in [
@@ -299,8 +299,7 @@ mod tests {
     }
 }
 
-/// B 方案：聊天模式批量执行触发解析（老板 2026-08-18 16:19 拍板；
-/// 2026-08-20 收编主流程：从 bot_chat 前置短路迁移为 pre-step 路由的 ExecuteTasks 分支）
+/// 聊天模式批量执行触发解析（pre-step 路由的 ExecuteTasks 分支）
 #[cfg(test)]
 mod chat_execute_parse_tests {
     use super::*;

@@ -1,7 +1,6 @@
-//! 记忆 v2 门面（2026-09-09，设计 docs/BOT-MEMORY-V2-DESIGN.md）：
-//! 替代旧关键词记忆体（db.rs bot_facts 系列）的运行时路径。
-//! 系统未上线即切换：旧表 bot_facts 废弃不导入（无数据迁移；v1 代码已于
-//! 2026-09-10 整体删除（commit e1234a2），老库残表无害不清理）。
+//! 记忆 v2 门面（设计 docs/BOT-MEMORY-V2-DESIGN.md）。
+//! 旧 v1 关键词记忆体（db.rs bot_facts 系列）已整体删除；
+//! 老库残表 bot_facts 无害不清理，也不做数据迁移。
 //!
 //! - 存储：store.rs（新表 mem_items，统一 500 上限 + 语义去重 + 容量淘汰）
 //! - 嵌入：embed.rs（bge-small-zh-v1.5 本地 ONNX 推理，缺失时全局降级关键词模式）
@@ -10,7 +9,7 @@
 //! 纪律：所有 DB 访问 = DB_WRITE_LOCK + spawn_blocking 单写者（同 db.rs 记忆模块先例）；
 //! 嵌入计算一律在阻塞闭包内（持锁前算好），不占 async worker。
 //! 任何一步失败：注入路径静默降级为「无记忆块」+ WARN 审计；工具路径返回错误文本
-//! 给模型（与旧工具行为一致），绝不 panic。
+//! 给模型，绝不 panic。
 
 pub mod consolidate;
 pub mod embed;
@@ -22,7 +21,7 @@ use rank::MemInjection;
 use store::{InsertOutcome, MemItem, NewItem};
 use tauri::AppHandle;
 
-/// 注入快照三段输出沿用旧 v1 预算值（保持记忆块体积不变）
+/// 记忆块注入预算（字符数上限）
 const MEMORY_BUDGET_CHARS: usize = 4_000;
 
 /// content 上限（表契约 ≤800 字；remember_fact 工具侧 value ≤500 更严，在入参校验处拦）
@@ -36,13 +35,13 @@ pub(crate) fn truncate_chars(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
 }
 
-// ───────────────────────── 记忆块拼装（四段式，前三段沿用旧 v1 format_memory_block 输出格式） ─────────────────────────
+// ───────────────────────── 记忆块拼装（四段式） ─────────────────────────
 
 /// 「## 记忆」拼装（纯函数）：
 /// pinned（importance≥4 的 profile/preference）→「用户画像与偏好」；
 /// 检索 top-5 →「相关记忆」；最近 3 条 summary/reflection →「近期摘要」（零命中兜底）；
-/// lesson top-3 →「经验教训」（2026-09-09 追加在最末，超预算最先被砍）。
-/// 行格式与旧系统完全一致：fact 类 `- [kind]{[推断]}key：content`（无 key 省略「key：」），
+/// lesson top-3 →「经验教训」（追加在最末，超预算最先被砍）。
+/// 行格式：fact 类 `- [kind]{[推断]}key：content`（无 key 省略「key：」），
 /// summary/reflection 类 `- [日期]{[推断]}content`；超预算从后往前砍（画像段不砍）。
 pub fn format_memory_block(inj: &MemInjection) -> Option<String> {
     fn inferred(m: &MemItem) -> &'static str {
@@ -100,7 +99,7 @@ pub fn format_memory_block(inj: &MemInjection) -> Option<String> {
             inj.recent.iter().map(|m| dated_line(m, "%m-%d")).collect(),
         ));
     }
-    // lesson 段（2026-09-09 lesson 特性）：追加在最后——超预算从后往前砍时它最先被砍，
+    // lesson 段：追加在最后——超预算从后往前砍时它最先被砍，
     // 画像段不砍的规则不变。lesson 内容自含场景，纯文本 bullet。
     if !inj.lessons.is_empty() {
         sections.push((
@@ -160,7 +159,7 @@ pub fn format_memory_block(inj: &MemInjection) -> Option<String> {
 // ───────────────────────── 注入（聊天主路径 / 任务卡执行共用） ─────────────────────────
 
 /// 注入取数薄壳：embed →（持锁）快照 + 命中刷新访问计数 → 拼装。
-/// 任何失败一律 None 静默降级为无记忆块 + WARN 审计（同旧系统行为）。
+/// 任何失败一律 None 静默降级为无记忆块 + WARN 审计。
 pub async fn injection_block<R: tauri::Runtime>(app: &tauri::AppHandle<R>, query: &str) -> Option<String> {
     let app2 = app.clone();
     let query = query.to_string();
@@ -382,7 +381,7 @@ pub async fn tool_recall_facts(
     }
 }
 
-// ───────────────────────── lesson（教训记忆，2026-09-09） ─────────────────────────
+// ───────────────────────── lesson（教训记忆） ─────────────────────────
 //
 // kind='lesson'，importance 默认 4，tags[0]='lesson' + 场景标签。写入走正常语义去重
 //（同类失败的教训合并更新而不是堆积）。两个来源：record_lesson 工具（模型主动，

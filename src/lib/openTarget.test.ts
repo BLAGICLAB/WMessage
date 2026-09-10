@@ -16,7 +16,7 @@ import {
   openTarget,
 } from "./openTarget";
 
-// 2026-09-05 回归：聊天下方文档/网址链接「有时打不开、有时显示 Program」
+// 回归：聊天下方文档/网址链接「有时打不开、有时显示 Program」
 describe("LINK_OR_PATH_RE 带空格路径", () => {
   it("Windows 路径含空格（Program Files）完整匹配，不再截断成 C:\\Program", () => {
     const m = "已生成：C:\\Program Files\\WMessage\\报告.docx 请查收".matchAll(

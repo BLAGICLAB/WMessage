@@ -55,9 +55,9 @@ mod tests {
         }
     }
 
-    /// 批次8审计（2026-09-02）：TaskOut 线缆形状契约锁——HTTP API/SSE 前端依赖
+    /// TaskOut 线缆形状契约锁——HTTP API/SSE 前端依赖
     /// ① flatten（task 字段平铺，不嵌套 inner）② camelCase ③ status 与 column 同值。
-    /// serde 属性被破坏时此前 472 个测试无一能抓到，只有前端运行时炸。
+    /// serde 属性被破坏时普通测试抓不到，只有前端运行时炸。
     #[test]
     fn task_out_wire_shape_locked() {
         let v = serde_json::to_value(TaskOut::from_task(&sample_task())).unwrap();

@@ -32,7 +32,7 @@ import { FoldToggle } from "./FoldToggle";
 
 const stop = (e: React.PointerEvent) => e.stopPropagation();
 
-/** 目标地址是否像网址（2026-09-05 修复：scheme 至少两字符——
+/** 目标地址是否像网址（scheme 至少两字符——
  *  旧正则单字符即匹配，「C:」被当成 URL scheme，Windows 路径被误存成网址链接） */
 const looksLikeUrl = (s: string) =>
   /^https?:\/\//i.test(s) || /^[a-z][a-z0-9+.-]+:/i.test(s);
@@ -226,7 +226,7 @@ export function WorkspacePage() {
     setEditingLink(null);
   };
 
-  // 2026-09-05：统一走 openTarget——按内容判定 URL/路径（不信任存储的 kind，
+  // 统一走 openTarget——按内容判定 URL/路径（不信任存储的 kind，
   // 历史数据可能 kind 错配），失败弹错不静默；文件仍走 Rust open_file_path
   // （前端 openPath 受 opener scope 限仅 $HOME/$APPDATA，D:\ 等路径会被拒）
   const openLink = (link: WorkspaceLink) => {

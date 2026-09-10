@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 /**
- * 内联文本编辑统一行为（P2-23 2026-08-19）：草稿 state + Enter 提交 / Escape 取消 /
+ * 内联文本编辑统一行为：草稿 state + Enter 提交 / Escape 取消 /
  * Blur 提交。TaskCardContent（挂件）与 TodoCard（主窗口）的标题内联编辑原先各写
  * 一份，行为漂移过 E4 类 bug（Escape 取消后 blur 又把草稿提交）；现统一走本 hook。
  *
@@ -10,7 +10,7 @@ import { useEffect, useRef, useState } from "react";
  *   编辑中外部值变化不覆盖用户输入；
  * - Enter（非 IME 组词中）提交草稿；
  * - Escape 恢复草稿为已提交值并调 onCancel；若随后 blur 仍触发（编辑态由父组件
- *   控制、input 尚未卸载），本次 blur 必须跳过提交（E4）；
+ *   控制、input 尚未卸载），本次 blur 必须跳过提交；
  * - Blur（未被 Escape 取消）提交草稿。
  */
 export function useInlineEdit({

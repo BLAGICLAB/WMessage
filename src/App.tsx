@@ -39,7 +39,7 @@ function localDateStr(): string {
   ).padStart(2, "0")}`;
 }
 
-/** ErrorBoundary（2026-09-09 bugfix）：主窗口任何子组件抛错时不再 unmount 变白，
+/** ErrorBoundary：主窗口任何子组件抛错时不再 unmount 变白，
  *  捕到错误显示堆栈 + 「重试」按钮重置 state。class component 必需（hooks
  *  写法目前 React 还没稳定 API）。 */
 class ErrorBoundary extends Component<
@@ -119,7 +119,7 @@ function App() {
   useEffect(() => subscribeTheme(setTheme), []);
   useEffect(() => subscribeSystem(setTheme), []);
 
-  // 字体大小（2026-09-08 老板拍板）：启动从 bot config 拉值，套到
+  // 字体大小：启动从 bot config 拉值，套到
   // documentElement[data-font-size]；设置页保存后会发 bot-config-changed，
   // 这里重新拉一次同步点选未保存也会被广播（预防设置页直接改 state 预览）。
   useEffect(() => {
@@ -228,13 +228,13 @@ function App() {
   }, []);
 
   // 统一变更出口：计算新数组 → diff → 行级增量落盘（await 落盘完成）→ 更新 state → 广播挂件
-  // P2-21：tasksRef/setState 必须等落盘成功后才更新——落盘失败（upsertTasks 抛错）
+  // tasksRef/setState 必须等落盘成功后才更新——落盘失败（upsertTasks 抛错）
   // 时内存不得先行，否则 UI 已更新而磁盘没动，重启后 UI/DB 永久分叉
   const mutate = async (fn: (prev: Task[]) => Task[]) => {
     const prev = tasksRef.current;
     const next = fn(prev);
     // 打最后修改时间戳（合并导入按此比较同 id 取舍）；
-    // P2-20：纯排序变更保留原 updatedAt（diffTaskRows 内部判定）
+    // 纯排序变更保留原 updatedAt（diffTaskRows 内部判定）
     const { upserts, deletes } = diffTaskRows(prev, next, Date.now());
     // 先落盘再广播：挂件收到 tasks-changed 后立刻 db_load，必须读到已提交的快照
     await upsertTasks(upserts);
@@ -250,7 +250,7 @@ function App() {
     }
   };
 
-  // mutate 的 fire-and-forget 入口：失败时 mutate 抛错（P2-21），这里终止 promise 链——
+  // mutate 的 fire-and-forget 入口：失败时 mutate 抛错（见上），这里终止 promise 链——
   // 错误已经由 storage 层 alert 提示用户，call site 只留 console 痕迹，
   // 避免 unhandled rejection 噪音
   const mutateFire = (fn: (prev: Task[]) => Task[]) => {
@@ -266,7 +266,7 @@ function App() {
         if (!upserts.length) return;
         upsertWorkspaceItems(upserts)
           .then(() => emit("workspace-changed").catch(() => {}))
-          // P2-34：写失败不再空 catch 吞掉——storage 层已 alert，这里 console 留痕不重复打扰
+          // 写失败不再空 catch 吞掉——storage 层已 alert，这里 console 留痕不重复打扰
           .catch((e) =>
             handleCommandError(e, "workspace-updated upsert", { silent: true })
           );
@@ -279,7 +279,7 @@ function App() {
 
   // 挂件上报行级变更（tasks-updated：{upserts, deletes}），主窗口统一落盘后广播
   useEffect(() => {
-    // 批次2审计（2026-08-28）：事件处理串行化——原先 async 监听器内有多个 await 让出点，
+    // 事件处理串行化——原先 async 监听器内有多个 await 让出点，
     // 连续两个事件（bot 一轮多工具调用）都从同一个旧 tasksRef 出发合并、后完成者
     // 整体覆盖，先处理的事件在主窗口 state 里丢失（DB 不受影响）。Promise 链排队，逐个处理。
     // 单个事件失败 catch 住不阻断后续队列。
@@ -305,14 +305,14 @@ function App() {
         deletes.forEach((id) => map.delete(id));
         const merged = sortByOrder([...map.values()]);
         const next = applyArchiveRule(applyTodayRule(merged));
-        // E2（2026-08-19）：规则改动（今日归位/超时归档）也要落盘——
+        // 规则改动（今日归位/超时归档）也要落盘——
         // 否则只改内存，重启/挂件读 db 又回到原始数据，三端长期不一致
         const mergedMap = new Map(merged.map((t) => [t.id, t]));
         const ruleChanged = next.filter((t) => !taskEq(mergedMap.get(t.id)!, t));
         if (ruleChanged.length) {
           const now = Date.now();
           ruleChanged.forEach((t) => {
-            // T1-1：RMW 基线 = 规则改动前的合并快照 updatedAt
+            // RMW 基线 = 规则改动前的合并快照 updatedAt
             t.expectedUpdatedAt = mergedMap.get(t.id)?.updatedAt;
             t.updatedAt = now;
           });
@@ -506,7 +506,7 @@ function App() {
   };
 
   // 软删除：进回收站
-  // P2-22（2026-08-19）：软删必须清调度字段——否则任务躺在回收站里 schedule 仍到点触发
+  // 软删必须清调度字段——否则任务躺在回收站里 schedule 仍到点触发
   const deleteTask = (taskId: string) => {
     mutateFire((prev) =>
       prev.map((t) =>

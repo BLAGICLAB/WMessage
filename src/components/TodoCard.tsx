@@ -58,7 +58,7 @@ export function TodoCardView({
   const [tagDraft, setTagDraft] = useState("");
   const [addingSubtask, setAddingSubtask] = useState(false);
   const [subtaskDraft, setSubtaskDraft] = useState("");
-  // 回收站彻底删除：绑了本地文件/文件夹时的三选项弹窗（老板 2026-08-17）
+  // 回收站彻底删除：绑了本地文件/文件夹时的三选项弹窗（老板定的规则）
   const [purgeOpen, setPurgeOpen] = useState(false);
   const [purgeBusy, setPurgeBusy] = useState(false);
 
@@ -73,7 +73,7 @@ export function TodoCardView({
     }
   }, [autoEdit, archived, trashed]);
 
-  // 标题内联编辑：草稿 + Enter/Escape/Blur 行为统一走 useInlineEdit（P2-23，与 TaskCardContent 共用）
+  // 标题内联编辑：草稿 + Enter/Escape/Blur 行为统一走 useInlineEdit（与 TaskCardContent 共用）
   const titleEdit = useInlineEdit({
     value: task.title,
     editing,
@@ -119,7 +119,7 @@ export function TodoCardView({
   const pickFile = async () => {
     try {
       const cur = taskFiles(task);
-      // 文件与文件夹不互斥（老板 2026-08-19）：已绑文件夹也可继续添加文件
+      // 文件与文件夹不互斥（老板定的规则）：已绑文件夹也可继续添加文件
       const selected = await open({ multiple: true, directory: false });
       const paths = Array.isArray(selected)
         ? selected
@@ -140,7 +140,7 @@ export function TodoCardView({
   const pickFolder = async () => {
     try {
       const cur = taskFiles(task);
-      // 文件夹仍单选（最多一个文件夹）；文件与文件夹不互斥（老板 2026-08-19）
+      // 文件夹仍单选（最多一个文件夹）；文件与文件夹不互斥（老板定的规则）
       if (cur.some((f) => f.isDir)) {
         window.alert("该任务已绑定文件夹，请先移除再重新绑定");
         return;
@@ -178,13 +178,13 @@ export function TodoCardView({
   };
 
   const boundFiles = taskFiles(task);
-  // 绑定文件折叠：超过 5 个收起到「还有 N 个」（2026-08-19 多文件绑定）
+  // 绑定文件折叠：超过 5 个收起到「还有 N 个」
   const [filesExpanded, setFilesExpanded] = useState(false);
 
-  // 2026-08-26 交互改版：点绑定文件名/文件夹名直接打开（不再有 📂 按钮和多选列表）
+  // 点绑定文件名/文件夹名直接打开（不再有 📂 按钮和多选列表）
   // 走 Rust 侧 open_file_path（与挂件窗口同方案）：前端 openPath 受 opener scope 限
   // （仅 $HOME/$APPDATA），Windows 上绑定 D:\ 等非用户目录的文件夹会被静默拒绝，
-  // 点击无反应；Rust 侧命令不受 scope 限，且 SEC-P1-3 白名单已含任务卡绑定文件
+  // 点击无反应；Rust 侧命令不受 scope 限，且白名单已含任务卡绑定文件
   const openOneFile = (path: string) => {
     invoke("open_file_path", { path }).catch((e) =>
       handleCommandError(e, "open file", { silent: true })
@@ -277,7 +277,7 @@ export function TodoCardView({
         {!archived && !trashed && (
           <DoneCircle done={task.column === "done"} onToggle={toggleDone} />
         )}
-        {/* 归属头像（2026-09-05 规则）：设了定时 → 一直机器人头像；
+        {/* 归属头像规则：设了定时 → 一直机器人头像；
             🤖 交给机器人执行中 → 机器人头像；执行完（botAssigned 清除且无定时）→ 用户头像。
             悬停显示姓名。 */}
         <ActorAvatar bot={!!task.botAssigned || !!task.schedule} />
@@ -388,8 +388,8 @@ export function TodoCardView({
         )}
       </div>
 
-      {/* 子任务清单（2026-09-04 改版：文本完整显示不截断、点击文本内联编辑、
-          行间分割线淡化为半透明 --edge，避免抢眼） */}
+      {/* 子任务清单：文本完整显示不截断、点击文本内联编辑、
+          行间分割线淡化为半透明 --edge，避免抢眼 */}
       {subtasks.length > 0 && (
         <div className="mt-2 flex flex-col divide-y divide-[color-mix(in_srgb,var(--edge),transparent_55%)]">
           {subtasks.map((s) => (
@@ -454,7 +454,7 @@ export function TodoCardView({
 
       {boundFiles.length > 0 ? (
         <div className="mt-3 flex flex-col gap-2">
-          {/* 绑定文件 chip 列表（2026-08-26 交互改版）：点文件名/文件夹名直接打开；
+          {/* 绑定文件 chip 列表：点文件名/文件夹名直接打开；
               每 chip「复制」字样（复制文件+标题）在解绑 × 前；chip 小字号 + 凹陷底色区分；
               超过 5 个折叠为「还有 N 个」 */}
           <div className="flex flex-col gap-1">
@@ -501,7 +501,7 @@ export function TodoCardView({
               </button>
             )}
           </div>
-          {/* 绑定操作行（2026-08-26 起只留绑定类按钮；打开=点文件名、复制=chip 内「复制」字样） */}
+          {/* 绑定操作行（只留绑定类按钮；打开=点文件名、复制=chip 内「复制」字样） */}
           {!archived && !trashed && (
             <div className="flex items-center gap-2">
               {boundFiles.length < MAX_TASK_FILES && (
@@ -580,7 +580,7 @@ export function TodoCardView({
             className="nm-btn px-3 py-1 text-xs text-red-400"
             onPointerDown={stop}
             onClick={() => {
-              // 绑本地文件/文件夹时弹三选项（老板 2026-08-17）：
+              // 绑本地文件/文件夹时弹三选项（老板定的规则）：
               //   全部删除 / 保留文件删除 / 取消
               // 未绑文件时保持原两选项 confirm（无需三选）
               if (boundFiles.length > 0) {
@@ -693,7 +693,7 @@ export function TodoCardView({
       </>
       )}
 
-      {/* 截止时间 + 状态行（两行布局统一，2026-09-08 老板拍板）：
+      {/* 截止时间 + 状态行（两行布局统一，老板拍板）：
           第一行：截止时间（带 × 移除）。
           第二行：状态标签（未完成 / 完成 YYYY-MM-DD HH:mm）+ 删除按钮，两态布局一致；
             ml-2.5 空一个字符宽对齐截止时间文字，删除按钮 ml-auto 推到行尾 + text-[14px] 稳定 emoji。 */}
@@ -787,10 +787,10 @@ export function TodoCardView({
         </>
       )}
 
-      {/* 回收站彻底删除·绑文件三选项弹窗（老板 2026-08-17）：全部删除 / 保留文件删除 / 取消
+      {/* 回收站彻底删除·绑文件三选项弹窗（老板定的规则）：全部删除 / 保留文件删除 / 取消
           ⚠️ 必须用 createPortal 渲染到 document.body —— TodoCard 容器 hover 触发 transform: translateY(-3px) scale(1.01)
           (main.css .nm-card-hover:hover) + dnd-kit useSortable 的 transform style，二者都会创建 CSS 包含块，
-          使 position:fixed 子元素不再相对视口定位而被裁缩到卡片边界内（老板 21:10 报 bug）。 */}
+          使 position:fixed 子元素不再相对视口定位而被裁缩到卡片边界内。 */}
       {purgeOpen && boundFiles.length > 0 && createPortal(
         <div
           className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-6"
@@ -896,7 +896,7 @@ export function SortableTodoCard(props: TodoCardViewProps) {
 }
 
 /**
- * 子任务行（2026-09-04）：checkbox + 全文显示（不截断）+ 点击文本内联编辑。
+ * 子任务行：checkbox + 全文显示（不截断）+ 点击文本内联编辑。
  * 每行独立 editing 状态，所以拆成组件（useInlineEdit 一份状态管一行）。
  * 空提交保留原文（与标题编辑一致，避免误触清空子任务）。
  */

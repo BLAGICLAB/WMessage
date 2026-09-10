@@ -1,4 +1,4 @@
-//! 嵌入引擎（memory v2，2026-09-09，设计 docs/BOT-MEMORY-V2-DESIGN.md）：
+//! 嵌入引擎（memory v2，设计 docs/BOT-MEMORY-V2-DESIGN.md）：
 //! bge-small-zh-v1.5（ONNX 量化版，hidden=512）本地推理。
 //!
 //! 设计要点：

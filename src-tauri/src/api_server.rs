@@ -25,7 +25,7 @@ use crate::audit::AuditLevel;
 use crate::db;
 
 /// SSE 事件重放环形缓冲条数（断线重放窗口）
-/// 2026-09-04 审计 P2-7（备查）：缓冲满后最老事件被挤出——客户端以早于缓冲最老 id 的
+/// 缓冲满后最老事件被挤出——客户端以早于缓冲最老 id 的
 /// `?since=` 重连时会缺段（丢失的事件无任何补发通道）。事件频率为人级操作，
 /// 1000 条窗口对实际断线重连足够；要彻底覆盖需持久化事件日志，暂不做。
 const EVENT_HISTORY: usize = 1000;
@@ -45,10 +45,10 @@ pub struct RunningApi {
 
 /// SSE 事件中枢：客户端列表（bounded 256） + 自增事件 id + 历史环形缓冲（断线重放）
 pub struct EventHub {
-    // P2-3：通道载荷带事件 id——断线重放与在线推送可能交叠（重放快照期间广播的新事件
+    // 通道载荷带事件 id——断线重放与在线推送可能交叠（重放快照期间广播的新事件
     // 既进 history 又进在线队列），writer 端靠 id 去重（id <= 已发最大 id 则跳过）
-    // 2026-08-28 批次4审计 P1-3：条目携带 writer 存活令牌（Weak，writer 线程持 Arc）——
-    // 原先死连接的 sender 只在下次广播 try_send 失败时才移除，安静期内尸体占满
+    // 条目携带 writer 存活令牌（Weak，writer 线程持 Arc）——
+    // 死连接的 sender 若只在下次广播 try_send 失败时才移除，安静期内尸体占满
     // MAX_SSE_CLIENTS 名额导致新连接被 503；sse_connect 注册前先按令牌收割尸体。
     pub clients: Mutex<Vec<(SyncSender<(u64, Vec<u8>)>, std::sync::Weak<()>)>>,
     pub next_id: AtomicU64,
@@ -93,8 +93,8 @@ impl EventHub {
     pub fn broadcast(&self, event: serde_json::Value) {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst) + 1;
         // A6: 每次广播落盘当前 id（事件频率为人级，开销可忽略），重启后接续递增
-        // 2026-09-04 审计 P2-3：改用 atomic_write（tmp+rename）——原先 fs::write 直写，
-        // 崩溃留半截文件 → 重启 id 归 0 → 客户端 Last-Event-ID 去重静默丢全部新事件
+        // 用 atomic_write（tmp+rename）落盘——fs::write 直写崩溃会留半截文件，
+        // 重启 id 归 0 → 客户端 Last-Event-ID 去重静默丢全部新事件
         if let Some(p) = &self.id_path {
             let _ = db::atomic_write(p, &id.to_string());
         }
@@ -120,7 +120,7 @@ impl EventHub {
     }
 
     /// 重放 id > since 的历史事件（断线补齐）
-    /// P2-3：返回 (id, msg)，writer 端据此与在线推送去重
+    /// 返回 (id, msg)，writer 端据此与在线推送去重
     pub fn replay(&self, since: u64) -> Vec<(u64, String)> {
         match self.history.lock() {
             Ok(h) => h
@@ -153,18 +153,17 @@ pub fn start_api(
         .map_err(|e| format!("HTTP 服务启动失败（端口 {port}）：{e}"))?;
     let shutdown = Arc::new(AtomicBool::new(false));
     let sd = shutdown.clone();
-    // A5: hub 不再此处构造；EventHub 现属于 store（store.event_hub() 访问）
+    // A5: hub 由 store 持有（store.event_hub() 访问），不在此处构造
     let tk = token.clone();
     // emit_fn: Box → Arc 包装，使每个 per-request worker 能拿到独立 clone
     let emit_fn: Option<Arc<dyn Fn(&db::Task) + Send + Sync>> =
         emit_fn.map(|b| -> Arc<dyn Fn(&db::Task) + Send + Sync> { b.into() });
     // A6: 在飞 worker 计数（配合 MAX_WORKERS 上限，防慢连接线程堆积）
     let active = Arc::new(AtomicUsize::new(0));
-    // 2026-09-04 审计 P1-1：on_error 包 Arc 传入每个 worker 自行记录 panic——
-    // 原先 worker 经 channel 回传、accept 线程 recv_timeout(15s) 同步等结果，
-    // 任一慢请求期间新请求全部排队（吞吐 1 req/15s），api_stop 的 join 最坏卡 15s
-    // 且全程持 state.0 锁。该等待的唯一收益就是把 panic 消息带回 accept 线程记日志，
-    // 且 15s「超时」语义本来就是假的（到期后 worker 照样续跑）。
+    // on_error 包 Arc 传入每个 worker 自行记录 panic——
+    // 若 worker 经 channel 回传、accept 线程同步等结果，任一慢请求期间新请求
+    // 会全部排队，api_stop 的 join 也会被拖长；等结果的唯一收益只是把
+    // panic 消息带回 accept 线程记日志。
     let on_error: Option<Arc<dyn Fn(AuditLevel, &str, &str) + Send + Sync>> =
         on_error.map(|b| -> Arc<dyn Fn(AuditLevel, &str, &str) + Send + Sync> { b.into() });
     let handle = std::thread::spawn(move || loop {
@@ -184,9 +183,9 @@ pub fn start_api(
                 active.fetch_add(1, Ordering::SeqCst);
                 let active_w = active.clone();
                 // A1: 每个请求独立 worker 线程 + catch_unwind（panic 不带垮 accept 循环）。
-                // 2026-09-04 审计 P1-1：spawn 后 accept 线程立即回到 recv，不再等 worker——
+                // spawn 后 accept 线程立即回到 recv，不等 worker——
                 // worker 的 panic 由 worker 自己经 on_error 记录。
-                // （2026-08-28 批次4审计 P1-1：tiny_http 在 recv 内部顺序读完
+                // （tiny_http 在 recv 内部顺序读完
                 //  header 才产出 Request，header 阶段的 slowloris 滴注到不了这里；
                 //  accept 级防护需换 HTTP 栈，列为已知残留）
                 let req_url = req.url().to_string();
@@ -289,7 +288,7 @@ mod tests {
         assert_eq!(hub.last_id(), 1);
     }
 
-    /// 批次4审计 P1-1：accept 级 slowloris 回归（vendor tiny_http 读超时 patch）。
+    /// accept 级 slowloris 回归（vendor tiny_http 读超时 patch）。
     /// 滴注不完整 header 后静默的连接，服务端在读超时后必须断开它（408 或 EOF），
     /// 且 accept 循环仍能服务后续新请求。
     #[test]
@@ -358,7 +357,7 @@ mod tests {
         running.shutdown.store(true, Ordering::SeqCst);
     }
 
-    /// P2-3：since=5 断线重放——4 个 id<5 + id=5 本身都不重放，只推 id>5 的 6 条；
+    /// since=5 断线重放——4 个 id<5 + id=5 本身都不重放，只推 id>5 的 6 条；
     /// 且每条带回事件 id，供 writer 端与在线推送去重（重放窗口内广播的事件既进
     /// history 又进在线队列，不带 id 就会重复推给客户端）
     #[test]

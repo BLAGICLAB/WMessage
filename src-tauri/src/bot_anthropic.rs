@@ -1,4 +1,4 @@
-//! Anthropic 兼容模式适配层（2026-09-05，老板拍板：协议下拉切换 / max_tokens 默认 8192 /
+//! Anthropic 兼容模式适配层（协议下拉切换 / max_tokens 默认 8192 /
 //! prompt caching 与主体一起做）。
 //!
 //! 设计：边界适配器——内部消息流全程保持 OpenAI 形状不动（run_model_loop_core 主循环
@@ -102,13 +102,13 @@ fn convert_all(
                     "tool_use_id": m.get("tool_call_id").and_then(|i| i.as_str()).unwrap_or(""),
                     "content": if text.trim().is_empty() { " " } else { text.as_str() },
                 });
-                // 失败口径复用全链路统一的 audit::tool_call_failed（P1-6 同一判定）
+                // 失败口径复用全链路统一的 audit::tool_call_failed（同一判定）
                 if crate::audit::tool_call_failed("", &text) {
                     block["is_error"] = serde_json::json!(true);
                 }
                 pending_tools.push(block);
             }
-            // user 及任何未知角色（防御按 user，与 bot_chat P2-8 role 白名单同精神）
+            // user 及任何未知角色（防御按 user，与 bot_chat 的 role 白名单同精神）
             _ => {
                 flush_tool_results(&mut out, &mut pending_tools);
                 let (blocks, skipped) = convert_content_blocks(m.get("content"));
@@ -367,7 +367,7 @@ pub fn map_stop_reason(sr: &str) -> &'static str {
 }
 
 /// Anthropic content block index → 工具调用槽位（0 起稠密序号）重映射器
-///（2026-09-05 真实环境 400 修复：MiniMax Anthropic 端点报
+///（不做映射时 MiniMax Anthropic 端点会报 400：
 /// "tool result's tool id(call_synth_0) not found"）。
 ///
 /// 根因：Anthropic 流里 content_block_start/delta 的 index 是**所有内容块**的序号
@@ -507,7 +507,7 @@ pub fn parse_anthropic_event(line: &str) -> Option<AnthropicEvent> {
             ev.chunk.is_done = true;
             Some(ev)
         }
-        // 流内 error 事件（200 流内错误，对齐 OpenAI 侧 P1-3 防线）
+        // 流内 error 事件（200 流内错误，对齐 OpenAI 侧防线）
         "error" => {
             let msg = v["error"]["message"]
                 .as_str()
@@ -744,7 +744,7 @@ mod tests {
         assert_eq!(messages[1]["role"], "assistant");
     }
 
-    // ── ToolSlotMapper（2026-09-05 真实环境 400 回归）──
+    // ── ToolSlotMapper（真实环境 400 回归）──
 
     /// 模拟一轮 Anthropic 事件流经 parse + remap + 生产同一累积函数后的工具列表
     fn run_anthropic_stream(lines: &[&str]) -> Vec<(String, String, String)> {

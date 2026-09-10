@@ -1,4 +1,4 @@
-//! consolidate 单测（2026-09-09）：指令解析健壮性 / merge / distill / contradiction
+//! consolidate 单测：指令解析健壮性 / merge / distill / contradiction
 //! 事务应用（假向量注入）/ 候选收集 / 到点判定。不依赖 LLM 与 ONNX 模型。
 
 use super::*;

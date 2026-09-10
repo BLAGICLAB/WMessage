@@ -59,7 +59,7 @@ const renderPage = (ts: Task[] = tasks) =>
     <ArchivePage tasks={ts} onUpdate={vi.fn()} onDelete={vi.fn()} />
   );
 
-// 第二梯队 #8（2026-09-03）：归档页过滤（搜索 + 标签 AND 叠加 + archived/deletedAt 前置过滤）此前零覆盖。
+// 归档页过滤：搜索 + 标签 AND 叠加 + archived/deletedAt 前置过滤。
 describe("ArchivePage 过滤", () => {
   it("只显示已归档且未删除的任务，按 order 排序", () => {
     renderPage();

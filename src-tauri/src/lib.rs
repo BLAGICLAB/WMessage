@@ -59,12 +59,12 @@ fn copy_file_with_title(path: String, title: String) -> error::CommandResult<()>
 
 /// 唤起主窗口并强制置顶（单一真相）
 ///
-/// 老板 2026-08-17 11:31/11:43 规则：所有唤起主窗口的路径（widget 双击标题、聊天区 📌、
+/// 规则：所有唤起主窗口的路径（widget 双击标题、聊天区 📌、
 /// 全局快捷键、托盘点击/菜单）都必须把主窗口推到桌面屏幕最顶层才能看见。
 /// 仅 setFocus 在 Windows 上不一定推到 z-order 最顶层（其他窗口抢焦点时被遮住），
 /// 需 alwaysOnTop 短暂闪烁 80ms 强制重排后再恢复（不长驻，避免干扰用户正常使用电脑）。
-/// P2-26：80ms 等待挪到后台线程 —— 原先主线程 sleep(80ms)，全局快捷键/托盘点击
-/// 处理全在主线程，UI 被冻结 80ms。
+/// 80ms 等待挪到后台线程 —— 主线程 sleep(80ms) 会冻结 UI（全局快捷键/托盘点击
+/// 处理全在主线程）。
 /// 泛型 Runtime（NEW-D-6 先例）：mock runtime 可直测不阻塞语义。
 pub fn bring_main_to_front<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
     let _ = window.show();
@@ -189,10 +189,10 @@ fn copy_file_windows(path: &str, title: &str) -> Result<(), error::CommandError>
     Ok(())
 }
 
-/// P2-24：退出前统一清理（macOS Cmd+Q / Windows 托盘「退出」都走 RunEvent::ExitRequested）。
-/// 原先只销毁主窗口：API 服务线程、SSE writer、活动 Skill、在途 Python 子进程全部
-/// 随进程强退变孤儿。顺序：置位全部在途执行实例停止标志（批次5审计 P1：原先在途
-/// 模型循环零取消，生成文件写一半、sched_last 已消费但执行无声消失）→ 停 API
+/// 退出前统一清理（macOS Cmd+Q / Windows 托盘「退出」都走 RunEvent::ExitRequested）。
+/// 只销毁主窗口不够：API 服务线程、SSE writer、活动 Skill、在途 Python 子进程会
+/// 随进程强退变孤儿。顺序：置位全部在途执行实例停止标志（在途模型循环需要取消点，
+/// 否则生成文件写一半、sched_last 已消费但执行无声消失）→ 停 API
 ///（不再接新请求；G1 accept + SSE writer 全 join，保留 api-enabled.flag 供下次
 /// 启动自动恢复）→ 终止活动 Skill → drain 等在途执行收尾（≤2s，不强等）→
 /// 置退出标志并按注册表杀在途 Python 整树 → 结构化审计。
@@ -201,7 +201,7 @@ fn cleanup_on_exit<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     cleanup_on_exit_with(app, bot_py::kill_all_py_children);
 }
 
-/// 退出时等在途执行实例收尾的宽限（批次5审计 P1：StopGuard 轮询点收到标志后
+/// 退出时等在途执行实例收尾的宽限（StopGuard 轮询点收到标志后
 /// 自行收尾；LLM 流卡住时最坏等满即放弃，进程退出优先）
 const EXIT_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 
@@ -219,13 +219,13 @@ fn wait_executions_drained(grace: std::time::Duration) -> bool {
     }
 }
 
-/// 可测内核（P2-24）：kill_py 注入 —— 测试不传全局 kill_all（会把并行测试
+/// 可测内核：kill_py 注入 —— 测试不传全局 kill_all（会把并行测试
 /// 注册的在途子进程一起杀掉），生产固定接 bot_py::kill_all_py_children。
 fn cleanup_on_exit_with<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     kill_py: impl FnOnce() -> usize,
 ) {
-    // 批次5审计 P1：第一步置位全部在途执行实例（含后台定时）的停止标志，
+    // 第一步置位全部在途执行实例（含后台定时）的停止标志，
     // 后续 API/Skill 清理的时间本身就是模型循环响应标志的窗口
     let exec_stopped = bot_slash::stop_all_executions();
     let api_stopped = match app.try_state::<api_server::ApiState>() {
@@ -234,8 +234,8 @@ fn cleanup_on_exit_with<R: tauri::Runtime>(
     };
     bot_skills::skill_terminate_all(app, "应用退出", None);
     let exec_drained = wait_executions_drained(EXIT_DRAIN_GRACE);
-    // 批次5审计 P2：先置退出标志再杀 Python——PY_RUN_GATE 上的排队者过锁后
-    // 复查标志直接拒绝，不再 spawn 出无人收割的孤儿进程
+    // 先置退出标志再杀 Python——PY_RUN_GATE 上的排队者过锁后
+    // 复查标志直接拒绝，不会 spawn 出无人收割的孤儿进程
     bot_py::mark_exiting();
     let py_killed = kill_py();
     audit::write_event(
@@ -318,7 +318,7 @@ pub fn run() {
             // F-2 中间件注册表（Plugin/Extension 抽象层 P2）：注册 2 个内置中间件
             app.manage(middleware::build_default_registry());
 
-            // 动态技能路由（2026-08-19）：启动时按已安装技能的 frontmatter intents 建路由表；
+            // 动态技能路由：启动时按已安装技能的 frontmatter intents 建路由表；
             // 之后 skills_import / skills_delete 成功会各自重建
             bot_skills::rebuild_intent_routes(app.handle());
 
@@ -345,15 +345,15 @@ pub fn run() {
                 if let Err(e) = bot::migrate_legacy_key(&handle) {
                     eprintln!("[bot] legacy key migration failed: {e}");
                 }
-                // 2026-09-05：Tavily/Brave 搜索 key 同样从配置文件明文迁进 keyring
+                // Tavily/Brave 搜索 key 同样从配置文件明文迁进 keyring
                 if let Err(e) = bot::migrate_search_keys(&handle) {
                     eprintln!("[bot] search key migration failed: {e}");
                 }
             }
 
-            // 记忆 v2（2026-09-09）：嵌入引擎后台预热；定时记忆整理调度器
+            // 记忆 v2：嵌入引擎后台预热；定时记忆整理调度器
             //（bot_scheduler 同模式，10 分钟检查一次配置到点；旧 v1 记忆系统
-            //（bot_facts 表）已弃用删除，老库残表无害不清理）
+            //（bot_facts 表）已删除，老库残表无害不清理）
             memory::embed::warmup_async();
             memory::consolidate::start_consolidation_scheduler(app.handle().clone());
 
@@ -363,7 +363,7 @@ pub fn run() {
                 migration::spawn_polling(handle);
             }
 
-            // P2-9：清扫残留的 py-runs 临时目录（spawn 失败/崩溃遗留，超 1 小时即删）
+            // 清扫残留的 py-runs 临时目录（spawn 失败/崩溃遗留，超 1 小时即删）
             bot_py::sweep_stale_py_runs(app.handle());
 
             // M4：系统侧边磁吸挂件窗口（贴边收起为触发条，悬停滑出）
@@ -386,7 +386,7 @@ pub fn run() {
             .build()?;
 
             // M5 全局快捷键：唤起/隐藏主窗口 + 快速新建任务（键位见 run() 顶部注释）。
-            // 容错：快捷键被其他应用占用时只记日志，绝不让 App 启动失败（审计 P2）
+            // 容错：快捷键被其他应用占用时只记日志，绝不让 App 启动失败
             let shortcut = app.global_shortcut();
             for (i, key) in [Code::KeyW, Code::KeyN, Code::KeyT].iter().enumerate() {
                 if let Err(e) = shortcut.register(Shortcut::new(Some(hotkey_mods), *key)) {
@@ -410,10 +410,10 @@ pub fn run() {
                 });
             }
 
-            // 系统托盘（P2-31 三平台：原仅 cfg(windows)，Linux/macOS 无托盘；tauri 2
+            // 系统托盘（三平台；tauri 2
             // tray-icon feature 已三平台支持）：#3 图标，右键菜单「打开主窗口 / 退出」，
             // 左键单击/双击恢复主窗口。Linux 需 libappindicator，缺失时初始化失败 ——
-            // 降级为无托盘仅记日志，绝不让 App 启动失败（与快捷键注册容错同策略，审计 P2）。
+            // 降级为无托盘仅记日志，绝不让 App 启动失败（与快捷键注册容错同策略）。
             {
                 use tauri::image::Image;
                 use tauri::menu::{MenuBuilder, MenuItemBuilder};
@@ -535,8 +535,8 @@ pub fn run() {
             // 主窗口 CloseRequested 被上面 prevent（改成隐藏），这里直接销毁主窗口，
             // 让退出流程正常走完。
             if let tauri::RunEvent::ExitRequested { .. } = event {
-                // P2-24：先清理资源（API server / 活动 Skill / 在途 Python 子进程），
-                // 再销毁主窗口 —— 原先只 destroy，子进程与服务线程全部变孤儿
+                // 先清理资源（API server / 活动 Skill / 在途 Python 子进程），
+                // 再销毁主窗口 —— 只 destroy 的话，子进程与服务线程全部变孤儿
                 cleanup_on_exit(app);
                 if let Some(main) = app.get_webview_window("main") {
                     let _ = main.destroy();
@@ -561,7 +561,7 @@ mod f2_copy_file_tests {
 
 #[cfg(test)]
 mod p2_30_capability_tests {
-    /// P2-30：opener:allow-open-path 不得裸 "**" 通配（bot prompt 注入可诱导
+    /// opener:allow-open-path 不得裸 "**" 通配（bot prompt 注入可诱导
     /// 打开任意路径）。收敛为 $APPDATA/** + $HOME/**：数据目录（exports/skills）
     /// 与用户主目录内文件放行，/etc/passwd 等系统路径默认拒绝。
     /// 本测试锁死 capabilities/default.json 防回退。
@@ -614,7 +614,7 @@ mod p2_30_capability_tests {
 
 #[cfg(test)]
 mod p2_31_tray_tests {
-    /// P2-31：托盘初始化不得限定 cfg(windows) —— tauri 2 tray-icon 三平台支持，
+    /// 托盘初始化不得限定 cfg(windows) —— tauri 2 tray-icon 三平台支持，
     /// Linux/macOS 走同一初始化（Linux 缺 libappindicator 时降级 eprintln，不启动失败）。
     /// 本测试锁死 lib.rs 防回退；编译通过即证明 macOS 平台托盘代码路径有效。
     #[test]
@@ -643,8 +643,8 @@ mod p2_31_tray_tests {
 
 #[cfg(test)]
 mod p2_29_version_tests {
-    /// P2-29：版本号单一真相源 = src-tauri/Cargo.toml（原先 4 处手动维护漂移：
-    /// conf 1.0.0 / Cargo 0.1.0 / package.json 0.1.0 / 便携包 1.0.1）。
+    /// 版本号单一真相源 = src-tauri/Cargo.toml（多处手动维护会漂移：
+    /// conf 1.0.0 / Cargo 0.1.0 / package.json 0.1.0 / 便携包 1.0.1 就曾不一致）。
     /// tauri.conf.json 不得再写 version（tauri 2 构建期回退 CARGO_PKG_VERSION，
     /// 见 tauri-codegen context.rs）；package.json 由 pnpm prebuild 的
     /// scripts/sync-version.mjs 同步，必须与 Cargo.toml 一致。
@@ -674,7 +674,7 @@ mod p2_29_version_tests {
 
 #[cfg(test)]
 mod p2_26_bring_front_tests {
-    /// P2-26：bring_main_to_front 不得阻塞调用线程 —— 80ms 置顶闪烁的等待
+    /// bring_main_to_front 不得阻塞调用线程 —— 80ms 置顶闪烁的等待
     /// 在后台线程，调用方（全局快捷键/托盘事件处理，全跑主线程）立即返回。
     #[test]
     fn bring_main_to_front_does_not_block_caller() {
@@ -702,12 +702,12 @@ mod p2_26_bring_front_tests {
 mod p2_24_exit_cleanup_tests {
     use tauri::Manager;
 
-    /// P2-24：ExitRequested 清理 —— mock 一个 Running 态 Skill + 真实启动 API server，
+    /// ExitRequested 清理 —— mock 一个 Running 态 Skill + 真实启动 API server，
     /// cleanup_on_exit 后：API 状态释放且端口关闭、Skill 终止、api-enabled.flag 保留
     ///（退出 ≠ 用户关开关，下次启动应自动恢复）、app_exit_cleanup 审计落行。
     #[test]
     fn cleanup_on_exit_releases_api_and_skill() {
-        // 批次8审计 P1：本测试做两类全局广播——skill_terminate_all(None)（无差别
+        // 本测试做两类全局广播——skill_terminate_all(None)（无差别
         // 终止/配合并行的 state 清理测试会互相删对方的 run）与 stop_all_executions
         //（置位全部 StopGuard，会打断 bot_py 的 StopReader 用例）。两把串行锁全程持有
         //（固定顺序 SKILL_RUNS → STOP，防与其他持锁测试交叉死锁）。
@@ -752,7 +752,7 @@ mod p2_24_exit_cleanup_tests {
         let flag = dir.join("api-enabled.flag");
         std::fs::write(&flag, b"1").unwrap();
 
-        // 批次5审计 P1：退出清理必须置位在途执行实例（含后台 interactive=false）的停止标志
+        // 退出清理必须置位在途执行实例（含后台 interactive=false）的停止标志
         let exec_guard = crate::bot_slash::StopGuard::new(false, None);
         // kill fn 注入 spy：全局 kill_all 会误杀并行测试注册的在途子进程，
         // 真杀路径由 bot_py::kill_py_children 单测覆盖
@@ -802,7 +802,7 @@ mod p2_24_exit_cleanup_tests {
         // 收尾：清掉本测试在数据目录产生的文件与 Skill run，不污染其他测试
         let _ = std::fs::remove_file(&flag);
         crate::bot_skills::test_remove_skill_run("p2-24-skill");
-        // 批次8审计 P2：复位 EXITING——否则本进程后续任何走生产 run_python() 的
+        // 复位 EXITING——否则本进程后续任何走生产 run_python() 的
         // 测试都会被「应用正在退出」误拒
         crate::bot_py::reset_exiting_for_test();
     }
@@ -810,7 +810,7 @@ mod p2_24_exit_cleanup_tests {
 
 #[cfg(test)]
 mod t1_5_dead_command_tests {
-    /// T1-5（2026-09-03）：死命令 bind_file / db_merge 已下线——前端零调用
+    /// 死命令 bind_file / db_merge 已下线——前端零调用
     /// （TodoCard 用的是复数形 bind_files，保留）。源码锁防回退重新注册。
     ///（匹配串用 concat! 拼接：本测试自身就在 lib.rs 里，裸写字面量会自匹配误判）
     #[test]

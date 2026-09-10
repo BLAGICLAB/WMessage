@@ -1,4 +1,4 @@
-//! memory v2 单元测试（2026-09-09）：
+//! memory v2 单元测试：
 //! 假 embedding 注入测语义去重三分支 / 容量淘汰 / 降级模式 / 混合打分。
 //! 全部用内存库 + 手工向量，不依赖 ONNX 模型（真实模型冒烟见 embed 模块 ignored 测试）。
 
@@ -341,7 +341,7 @@ fn validate_fact_kv_rejects_ascii_comma() {
     assert!(super::validate_fact_kv("k", "含,逗号").is_ok(), "value 不进 tags，逗号合法");
 }
 
-// ───────────────────────── lesson（教训记忆，2026-09-09） ─────────────────────────
+// ───────────────────────── lesson（教训记忆） ─────────────────────────
 
 #[test]
 fn record_lesson_writes_with_defaults() {

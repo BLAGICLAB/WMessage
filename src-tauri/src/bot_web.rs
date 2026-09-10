@@ -15,10 +15,9 @@ const FETCH_MAX_BYTES: usize = 2 * 1024 * 1024;
 const SEARCH_MAX_RESULTS: usize = 8;
 const SEARCH_OUTPUT_CAP: usize = 6000;
 
-/// 全局复用的 HTTP client（连接池复用，二次审计 P3：原先每请求新建 client）
-/// 2026-08-27 安全审计 SEC-P0-1：禁用自动重定向——原先默认 policy 自动跟随 10 跳，
-/// fetch_text 里的「3xx 逐跳校验 Location」是死代码，公网 URL 302 到内网地址可绕过
-/// check_public_url（SSRF）。禁自动重定向后由 fetch_text 手工逐跳校验接管。
+/// 全局复用的 HTTP client（连接池复用，避免每请求新建）。
+/// 禁用自动重定向：默认 policy 自动跟随多跳会让公网 URL 302 到内网地址绕过
+/// check_public_url（SSRF）；由 fetch_text 手工逐跳校验接管。
 fn http_client() -> reqwest::Client {
     static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
     CLIENT
@@ -178,7 +177,7 @@ async fn search_tavily(key: &str, query: &str) -> Result<String, String> {
     Ok(out)
 }
 
-/// Brave Web Search API（2026-09-05，设置页「Brave 搜索」开关开启后 web_search 走这里）：
+/// Brave Web Search API（设置页「Brave 搜索」开关开启后 web_search 走这里）：
 /// GET https://api.search.brave.com/res/v1/web/search，key 走 X-Subscription-Token 头。
 /// 与 Tavily 互斥（同时开启明确报错，见 resolve_search_route）。
 async fn search_brave(key: &str, query: &str) -> Result<String, String> {
@@ -245,13 +244,13 @@ enum SearchRoute {
     Dual,
     /// Tavily API（带 trim 后的 key）
     Tavily(String),
-    /// Brave Web Search API（带 trim 后的 key，2026-09-05）
+    /// Brave Web Search API（带 trim 后的 key）
     Brave(String),
     /// Tavily 开关开了但没填 key
     MissingKey,
-    /// Brave 开关开了但没填 key（2026-09-05）
+    /// Brave 开关开了但没填 key
     MissingBraveKey,
-    /// Tavily 与 Brave 同时开启（2026-09-05）：互斥，明确报错不静默猜
+    /// Tavily 与 Brave 同时开启：互斥，明确报错不静默猜
     Conflict,
 }
 
@@ -288,7 +287,7 @@ fn resolve_search_route(
 /// 搜索入口（bot 工具调用）：按设置页「Tavily 搜索」/「Brave 搜索」开关分流——
 /// 都关 → Bing+百度双引擎；开一个 → 对应 API。开了但没填 key / 双开 / 请求失败都
 /// 明确报错回传给模型（不静默回退百度，避免「以为在用 API 实际走的百度」）。
-/// 2026-09-05：Tavily/Brave key 改从系统凭据存储读（不再明文落 bot-config.json）；
+/// Tavily/Brave key 从系统凭据存储读（不落 bot-config.json）；
 /// keyring 真实故障按无 key 处理（走 MissingKey 报错文案引导用户去设置页），
 /// 不弄挂 web_search 工具本身。
 pub async fn web_search_with_config(app: &tauri::AppHandle, query: &str) -> Result<String, String> {
@@ -486,8 +485,8 @@ fn decode_entities(s: &str) -> String {
     out
 }
 
-// ───────────────────────── 正文提取（2026-08-19 Phase 2） ─────────────────────────
-// fetch_url 从「整页 HTML→纯文本」升级为「先抽正文主块再转换」：
+// ───────────────────────── 正文提取 ─────────────────────────
+// 先抽正文主块再转换：
 // 去 script/style/nav/footer 等噪声块 → article/main 语义标签 → 语义 class/id 的最大 div → 兜底全文。
 
 /// 大小写不敏感的子串查找（needle 为 ASCII 标签；返回原串字节索引，不做全串 lowercase 避免变长错位）
@@ -774,7 +773,7 @@ async fn check_public_url(url: &url::Url) -> Result<Vec<std::net::SocketAddr>, C
 /// 抓取网页正文：http/https、公网地址校验（含 DNS 解析与重定向逐跳）、HTML→纯文本、GBK 兜底解码
 pub async fn fetch_text(raw_url: &str) -> Result<String, CommandError> {
     // 重定向逐跳校验：不跟随 reqwest 自动重定向，3xx 时手动校验 Location 目标
-    //（公网 URL 302 到内网地址是 SSRF 常见绕过，审计 P1）
+    //（公网 URL 302 到内网地址是 SSRF 常见绕过）
     const MAX_REDIRECTS: usize = 5;
     let mut url_cursor = url::Url::parse(raw_url.trim()).map_err(|_| "网址格式无效".to_string())?;
     let mut hops = 0usize;
@@ -857,7 +856,7 @@ pub async fn fetch_text(raw_url: &str) -> Result<String, CommandError> {
             }
         }
     }
-    // 2026-08-20：正文仍过短（多半是 JS 渲染的 SPA 页面，静态抓取只能拿到空壳）→
+    // 正文仍过短（多半是 JS 渲染的 SPA 页面，静态抓取只能拿到空壳）→
     // 回退 Jina Reader 公共代理（服务端渲染后返回 markdown，免费无需 key）。
     // 隐私边界：目标 URL 会发给 r.jina.ai（公网地址本身，低风险）。
     if plain.chars().count() < 100 {
@@ -899,9 +898,9 @@ async fn fetch_jina_reader(raw_url: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&bytes).trim().to_string())
 }
 
-/// 有界流式读取响应体（2026-08-27 安全审计 SEC-P1-5）：累计超限即中断——
-/// 原先 `bytes()` 全量读进内存后做事后检查，Content-Length 撒谎（声明小/缺省 chunked）
-/// 时 30s 超时内可收进数百 MB；现在超限立即中断，不进内存。
+/// 有界流式读取响应体：累计超限即中断——
+/// Content-Length 撒谎（声明小/缺省 chunked）时全量读进内存会在超时窗口内收进数百 MB；
+/// 超限立即中断，不进内存。
 async fn read_body_capped(resp: reqwest::Response, max: usize) -> Result<Vec<u8>, String> {
     let mut buf = Vec::new();
     let mut stream = resp.bytes_stream();
@@ -922,12 +921,12 @@ fn ipv4_is_private(v4: std::net::Ipv4Addr) -> bool {
         || v4.is_link_local()
         || v4.is_unspecified()
         // CGNAT 段 100.64.0.0/10（RFC 6598，Tailscale/运营商大内网）：
-        // std is_private 不含此段（2026-08-27 安全审计 SEC-P1-2 补）
+        // std is_private 不含此段，须显式判定
         || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64)
 }
 
-/// IPv6 是否为内网/本机段（2026-08-27 SEC-P1-2：补 IPv4-mapped——
-/// AAAA 应答 `::ffff:127.0.0.1` 原先四项判定全不中，hyper 连接时映射回 IPv4 打内网）
+/// IPv6 是否为内网/本机段（含 IPv4-mapped——
+/// AAAA 应答 `::ffff:127.0.0.1` 时 hyper 连接会映射回 IPv4 打内网，须一并判定）
 fn ipv6_is_private(v6: std::net::Ipv6Addr) -> bool {
     if let Some(v4) = v6.to_ipv4_mapped() {
         return ipv4_is_private(v4);
@@ -1298,9 +1297,9 @@ mod tests {
         assert!(bad_scheme.is_err(), "非 http(s) 协议必须被拒绝");
     }
 
-    /// SEC-P0-1（2026-08-27 安全审计）回归：http_client 禁止自动重定向——
+    /// 回归：http_client 禁止自动重定向——
     /// 302 必须原样返回给 fetch_text 的手工逐跳校验，不得自动跟随到 Location 目标
-    /// （原先默认 policy 自动跟随 10 跳，逐跳校验是死代码，公网 URL 可 302 进内网）。
+    ///（自动跟随会让公网 URL 302 进内网）。
     #[tokio::test]
     async fn http_client_does_not_follow_redirects() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1328,7 +1327,7 @@ mod tests {
         );
     }
 
-    /// SEC-P1-2 回归：IPv4-mapped IPv6（::ffff:127.0.0.1）与 CGNAT（100.64.0.0/10）判内网
+    /// 回归：IPv4-mapped IPv6（::ffff:127.0.0.1）与 CGNAT（100.64.0.0/10）判内网
     #[test]
     fn private_detection_covers_mapped_v6_and_cgnat() {
         assert!(ipv6_is_private("::ffff:127.0.0.1".parse().unwrap()));

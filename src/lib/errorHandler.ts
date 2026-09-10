@@ -1,4 +1,4 @@
-// CommandError 统一处理入口（Phase 7 Q4 2026-08-18）
+// CommandError 统一处理入口
 //
 // Rust 侧 src-tauri/src/error.rs 把 Result<T, String> 升级为 CommandResult<T> =
 // Result<T, CommandError>；序列化形如 `{ code, message, recoverable }`。
@@ -9,12 +9,12 @@
 // - 不引入新依赖：项目无 toast 库，沿用项目现状（src/App.tsx 等）使用原生 alert()
 // - silent 选项：调用方已有 inline 错误 UI（如 SettingsPage setError）时只 console
 //   不弹 alert，避免双重提示
-// - recoverable 驱动 UI（P0-6B 2026-08-18）：CommandError.recoverable === true 且调用方
+// - recoverable 驱动 UI：CommandError.recoverable === true 且调用方
 //   传了 onRetry 时改用原生 confirm() 提供「重试」选择；recoverable === false 时只 alert
 //   并引导反馈日志（hint 文案与后端 error.rs is_recoverable() 保持一致，不再误导"可重试"）
 // - formatCommandError()：供调用方取出 user-friendly 文本（替代 `String(e)`，
 //   后者对结构化对象只得到 "[object Object]"）
-// - 空 message 兜底（P2-35 2026-08-19）：CommandError.message 为空时回退 code，
+// - 空 message 兜底：CommandError.message 为空时回退 code，
 //   再空回退「未知错误」；非结构化空 msg 同样兜底——不弹空 alert、不静默跳过
 
 /** Tauri 拒绝时拿到的反序列化 CommandError JSON 形状 */
@@ -141,7 +141,7 @@ export function handleCommandError(
       e
     );
     if (options.silent) return;
-    // P2-35：空 message 不弹空 alert——fallback 到 code，code 也空再兜底「未知错误」
+    // 空 message 不弹空 alert——fallback 到 code，code 也空再兜底「未知错误」
     const msg = e.message.trim() ? e.message : e.code || "未知错误";
     const hint = hintForCode(e.code);
     const body = hint ? `${msg}\n\n💡 ${hint}` : msg;
@@ -158,6 +158,6 @@ export function handleCommandError(
   const msg = formatCommandError(e);
   console.error(`${prefix} ${msg || "(empty)"}`, e);
   if (options.silent) return;
-  // P2-35：msg 为空也兜底「未知错误」，不弹空 alert、也不静默跳过
+  // msg 为空也兜底「未知错误」，不弹空 alert、也不静默跳过
   alert(`❌ ${msg || "未知错误"}`);
 }

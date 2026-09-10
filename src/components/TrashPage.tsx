@@ -13,7 +13,7 @@ export function TrashPage({
   onUpdate: (id: string, patch: Partial<Task>) => void;
   onDelete: (id: string) => void;
 }) {
-  // P2-22（2026-08-19）：回收站按最后修改时间倒序（新删的在前面），原 filter 不打排序
+  // 回收站按最后修改时间倒序（新删的在前面），原 filter 不打排序
   // 导致顺序依赖任务数组原始 order，删除时间与展示位置对不上
   const trashed = tasks
     .filter((t) => t.deletedAt)

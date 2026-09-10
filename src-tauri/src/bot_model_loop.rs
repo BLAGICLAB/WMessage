@@ -1,4 +1,4 @@
-//! 模型流式调用 + 工具循环 核心（F-6 step 5 拆分 2026-08-18）：
+//! 模型流式调用 + 工具循环 核心：
 //!
 //! 经典 Agent 框架（LangChain AgentExecutor / Claude Agent SDK / AutoGen）
 //! 的「决策/调用」与「执行/工具循环」层职责：
@@ -18,7 +18,7 @@ use crate::error::CommandError;
 use futures_util::StreamExt;
 use tauri::{AppHandle, Emitter};
 
-// ───────────────────────── 防幻觉汇报守卫（2026-08-19） ─────────────────────────
+// ───────────────────────── 防幻觉汇报守卫 ─────────────────────────
 // 实锤事故：MiniMax-M3 多次不调任何工具就回复「已添加子任务」「已移至回收站」，
 // 数据实际没变，用户以为操作成功。提示词约束（SYSTEM_PROMPT 规则 8）不够，
 // 这里在循环出口做确定性拦截：最终文本声称完成变更、但本轮 0 次变更类工具调用 →
@@ -34,7 +34,7 @@ const MUTATING_TOOLS: [&str; 16] = [
     "toggle_subtask",
     "remove_subtask",
     "bind_file",
-    // 2026-08-27 审计 P1-10：与 bind_file 同写路径（技能/任务卡流程内绑产物），漏了它
+    // 与 bind_file 同写路径（技能/任务卡流程内绑产物），漏了它
     // 会让「产物已绑定」的如实汇报被幻觉守卫误拦
     "link_file_to_task",
     "create_word",
@@ -43,14 +43,14 @@ const MUTATING_TOOLS: [&str; 16] = [
     "create_ppt",
     "create_pdf",
     "remember_fact",
-    // 2026-09-09 lesson 特性：写记忆同 remember_fact 待遇（幻觉守卫「已记录」口径）
+    // 写记忆同 remember_fact 待遇（幻觉守卫「已记录」口径）
     "record_lesson",
 ];
 
 /// 变更工具是否真的成功落库/落盘（幻觉守卫 mutation_done 的判定依据）。
-/// 2026-08-27 审计 P0-4：原先在工具执行前按名字置位——被门禁拦截（⚠️）、
-/// 用户拒绝、执行失败的调用都算「动过手」，之后的幻觉汇报就不再被拦，守卫被架空。
-/// 改为按执行结果判定，失败口径走全链路统一的 `audit::tool_call_failed`（P1-6）。
+/// 按执行结果判定而非调用前按名字置位：被门禁拦截（⚠️）、用户拒绝、执行失败的
+/// 调用都不算「动过手」，否则之后的幻觉汇报就不再被拦，守卫被架空。
+/// 失败口径走全链路统一的 `audit::tool_call_failed`。
 fn mutation_succeeded(name: &str, result: &str) -> bool {
     MUTATING_TOOLS.contains(&name) && !crate::audit::tool_call_failed(name, result)
 }
@@ -59,8 +59,8 @@ fn mutation_succeeded(name: &str, result: &str) -> bool {
 /// 枚举完整话术是打地鼠（实锤漏网：「已彻底删除」不含「已删除」字面），
 /// 改成模式匹配：完成态标记「已」+ 其后 8 字窗口内含变更动词（覆盖 已彻底删除/已经把…移除 等变体），
 /// 另加若干无「已」的高频话术兜底。
-/// 2026-08-27 审计 P1-10：动词表去掉「完成」（「已完成搜索/分析」这类只读汇报误拦），
-/// 补「保存/记住」（「已保存到 AI_Gen_Files」「已记住偏好」原先漏拦）；
+/// 动词表刻意不含「完成」（「已完成搜索/分析」这类只读汇报会被误拦）；
+/// 「保存/记住」覆盖「已保存到 AI_Gen_Files」「已记住偏好」话术；
 /// 「已完成任务」走 PLAIN 整段匹配保住任务完成话术。
 fn claims_mutation(text: &str) -> bool {
     const VERBS: [&str; 14] = [
@@ -295,7 +295,7 @@ fn tail_prefix_len(s: &str, tag: &str) -> usize {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// SSE chunk 解析（F-6 step 4 refactor 2026-08-18 10:31）
+// SSE chunk 解析
 //
 // 动机：消除 tests/llm_integration.rs 与 run_model_loop 的解析逻辑重复。
 // 提取后：测试调 wmessage_lib::bot::parse_sse_chunk，生产代码同样调之，
@@ -305,17 +305,17 @@ fn tail_prefix_len(s: &str, tag: &str) -> usize {
 /// 一次 SSE chunk 解析结果（content / reasoning / tool_calls / finish_reason / 流内错误 / [DONE]）
 #[derive(Debug, Default, Clone)]
 pub struct ParsedChunk {
-    /// delta.content（仅在非空字符串时 Some，与原代码 `!t.is_empty()` 语义一致）
+    /// delta.content（仅在非空字符串时 Some）
     pub content: Option<String>,
-    /// delta.reasoning_content（2026-08-28 批次3审计 P2-5：DeepSeek-reasoner 等模型的
-    /// 独立推理字段，原先静默丢弃；与 <think> 标签同走 bot-think-delta 出口）
+    /// delta.reasoning_content（DeepSeek-reasoner 等模型的独立推理字段；
+    /// 与 <think> 标签同走 bot-think-delta 出口）
     pub reasoning: Option<String>,
     /// delta.tool_calls 增量（多 chunk 拼成一个完整 tool_call）
     pub tool_calls: Vec<ToolCallDelta>,
     /// choices[0].finish_reason（最后一 chunk 通常为 "stop" / "tool_calls"）
     pub finish_reason: Option<String>,
-    /// 200 流内错误载荷（2026-08-28 批次3审计 P1-3）：部分 OpenAI 兼容网关在 200 流内
-    /// 发 `{"error":{...}}`，原先静默丢弃导致用户拿到空白回复——现显式冒出
+    /// 200 流内错误载荷：部分 OpenAI 兼容网关在 200 流内发 `{"error":{...}}`，
+    /// 静默丢弃会导致用户拿到空白回复——显式冒出
     pub error: Option<String>,
     /// `data: [DONE]` 标记
     pub is_done: bool,
@@ -335,7 +335,7 @@ pub struct ToolCallDelta {
 }
 
 /// 解析一行 OpenAI 兼容 SSE（`data: <json>` 或 `data: [DONE]`）。
-/// 返回 None = 非 data 行 / JSON 解析失败 / choices 为空（与原代码 `else continue` 语义一致）。
+/// 返回 None = 非 data 行 / JSON 解析失败 / choices 为空。
 ///
 /// 注意：纯函数，不产生任何 side effect（无 widget emit、无 think-block 处理、无 final_text push）。
 /// 调用方（run_model_loop）负责 feed_think + emit + 累积。
@@ -353,8 +353,8 @@ pub fn parse_sse_chunk(line: &str) -> Option<ParsedChunk> {
         .and_then(|c| c.as_array())
         .and_then(|a| a.first());
     let Some(choice0) = choice0 else {
-        // P1-3（2026-08-28 批次3审计）：200 流内错误载荷（部分兼容网关发
-        // `{"error":{...}}`）原先走 None 静默丢弃，用户拿到无错误提示的空白回复
+        // 200 流内错误载荷（部分兼容网关发 `{"error":{...}}`）不得走 None
+        // 静默丢弃，否则用户拿到无错误提示的空白回复
         if let Some(msg) = extract_stream_error(&v) {
             return Some(ParsedChunk {
                 error: Some(msg),
@@ -416,7 +416,7 @@ fn extract_stream_error(v: &serde_json::Value) -> Option<String> {
 }
 
 /// 从字节缓冲切出完整的 SSE 行（按 `b'\n'` 切，残余不完整行留在 buf）。
-/// 按字节切行的原因（2026-08-28 批次3审计 P1-2）：TCP chunk 边界可能落在多字节
+/// 按字节切行的原因：TCP chunk 边界可能落在多字节
 /// UTF-8 字符中间，逐 chunk `from_utf8_lossy` 会产生 U+FFFD 替换字符——正文里只是乱码，
 /// 工具 arguments 里则是「合法 JSON 但内容损坏」会被真实执行。
 /// `b'\n'`（0x0A）不会出现在多字节 UTF-8 序列内，整行 decode 安全。
@@ -430,15 +430,15 @@ pub fn drain_sse_lines(buf: &mut Vec<u8>) -> Vec<String> {
     lines
 }
 
-/// 单条响应内 tool_calls 的 index 上限（2026-08-28 批次3审计 P2-2）：
+/// 单条响应内 tool_calls 的 index 上限：
 /// index 来自服务端，畸形/恶意 index（如 10000000）会让累积循环无脑 push 撑爆内存
 pub const MAX_TOOL_CALL_INDEX: usize = 64;
 
 /// 把一个 tool_call delta 按 index 归位累积进 (id, name, arguments) 列表：
 /// id 只置首次（迟到的 id 能补上）、name/arguments 跨 delta 追加。
 /// 返回 false = index 超上限，该 delta 被丢弃（调用方记审计）。
-/// pub：tests/llm_integration.rs 复用同一累积逻辑（2026-08-28 批次3 T-1：
-/// 测试原先自写平铺式累积，与生产 index 归并语义存在漂移面）。
+/// pub：tests/llm_integration.rs 复用同一累积逻辑（防测试自写平铺式累积
+/// 与生产 index 归并语义漂移）。
 pub fn accumulate_tool_call_delta(
     calls: &mut Vec<(String, String, String)>,
     delta: &ToolCallDelta,
@@ -466,7 +466,7 @@ pub fn accumulate_tool_call_delta(
     true
 }
 
-/// 默认对话轮数（聊天 / 任务执行 / 逐步执行统一；2026-08-26 老板拍板 20 → 50）；
+/// 默认对话轮数（聊天 / 任务执行 / 逐步执行统一为 50）；
 /// 多步 Skill 可在 SKILL.md frontmatter 自报 max_rounds 覆盖（见 resolve_max_rounds）。
 pub(crate) const DEFAULT_MAX_ROUNDS: usize = 50;
 
@@ -478,21 +478,13 @@ pub(crate) fn resolve_max_rounds(skill_max_rounds: Option<usize>) -> usize {
 // Harness 第 5 层：单轮对话 Function 总调用上限（每轮可并行多个 tool_calls，
 // max_rounds 管轮数管不住并行调用数，必须有独立计数熔断）
 //
-// 阈值演变：
-// - 2026-08-18 老板拍板 5 → 10：5 太激进（PPT 编排 + 配色 + 归档就要 8-10）；
-//   10 覆盖 90% 真实复合任务；15+ 掩护 LLM 死循环 / 幻觉调工具
-// - 2026-08-19 老板拍板 10 → 30（全局：聊天/任务卡执行/Skill 统一）：
-//   实锤 10 不够用——「列计划 + 按计划新增子任务」复合任务在 22:56 真触发熔断
-//   （bot.log `fuse | 单轮 Function 调用超过 10 次`）。失控防护改靠：
-//   幻觉守卫（claims_mutation）+ 软警告 + /stop，不再靠压低上限
-// - 2026-08-20 老板拍板 30 → 10：30 太宽松，会掩护 LLM 幻觉/死循环；
-//   软警告 20 → 7（按 ~30% buffer：10-3=7，与原 20/30 的 ~33% 保持比例）
-// - 2026-08-26 老板拍板 10 → 50（与对话轮数上限拉齐）：复杂多步任务 10 次不够用；
-//   软警告 7 → 35（保持 ~30% buffer：50-15=35）
+// 上限 50 与对话轮数上限拉齐：复杂多步任务 10 次不够用，而更高会掩护
+// LLM 死循环 / 幻觉调工具。失控防护靠幻觉守卫（claims_mutation）+ 软警告 + /stop，
+// 不靠压低上限。软警告阈值 35 保持 ~30% buffer（50-15=35）。
 const MAX_FUNCTION_CALLS_PER_TURN: usize = 50;
 const SOFT_WARN_AT: usize = 35;
 
-/// LLM 请求重试（2026-08-28 批次3审计 P1-4）：429/5xx/网络错误重试一次（1.5s 退避）。
+/// LLM 请求重试：429/5xx/网络错误重试一次（1.5s 退避）。
 /// 只在流式产出开始前重试——响应已开始流式产出后不重试（无重放风险：
 /// 重试发的是同一轮请求，已执行的工具在 msgs 里，不会因重发而重放）。
 const MAX_LLM_ATTEMPTS: usize = 2;
@@ -516,7 +508,7 @@ fn fuse_message(final_text: &str, hint: &str) -> String {
     )
 }
 
-/// 空 replan 出口（2026-09-03 T1-2）：无计划/测试调用方直驱 run_model_loop_core 时传入，
+/// 空 replan 出口：无计划/测试调用方直驱 run_model_loop_core 时传入，
 /// 永不重规划。pub：bot_plan 模块未对集成测试公开，PlanState 在 tests/ 不可命名，
 /// 以 fn item 形式传入绕开闭包参数类型标注问题。
 pub async fn noop_replan(
@@ -526,15 +518,15 @@ pub async fn noop_replan(
     None
 }
 
-/// 可注入的 LLM HTTP 连接参数（2026-09-03 T1-2 重构，原审计 #3）：
-/// base_url/client/api_key/model 由调用方注入，run_model_loop_core 不再在函数体内
+/// 可注入的 LLM HTTP 连接参数：
+/// base_url/client/api_key/model 由调用方注入，run_model_loop_core 不在函数体内
 /// 经 AppHandle 取配置——集成测试可指向 tests/mock_llm.rs 的 mock server 跑真路径。
 pub struct LlmHttp {
     pub client: reqwest::Client,
     pub base_url: String,
     pub api_key: String,
     pub model: String,
-    /// API 协议（2026-09-05 Anthropic 兼容模式）：Openai = /chat/completions + Bearer；
+    /// API 协议：Openai = /chat/completions + Bearer；
     /// Anthropic = /v1/messages + x-api-key + anthropic-version（转换在 bot_anthropic）
     pub provider: crate::bot::ApiProvider,
     /// max_tokens（仅 Anthropic 模式发送——Anthropic 必填；OpenAI 兼容模式不发，
@@ -542,9 +534,9 @@ pub struct LlmHttp {
     pub max_tokens: u32,
 }
 
-/// run_model_loop_core 的同步副作用出口（2026-09-03 T1-2 重构）：
-/// 原先函数体内直连 AppHandle 的 4 个出口（widget 流式事件 / 结构化审计 / bot.log /
-/// Skill 收尾）抽成注入回调；异步出口（execute_tool / replan）因 Rust 闭包生命周期
+/// run_model_loop_core 的同步副作用出口：
+/// widget 流式事件 / 结构化审计 / bot.log / Skill 收尾 4 个出口抽成注入回调，
+/// 使核心循环不依赖 AppHandle；异步出口（execute_tool / replan）因 Rust 闭包生命周期
 /// 限制走泛型参数。生产薄壳 run_model_loop 传入 AppHandle 实现，测试传 stub。
 pub struct ModelLoopDeps<'a> {
     /// 流式事件出口（bot-chat-delta / bot-think-delta / bot-tool / bot-tool-name / bot-tool-done）
@@ -557,7 +549,7 @@ pub struct ModelLoopDeps<'a> {
     pub skill_finish: &'a (dyn Fn(bool, &str) -> String + Send + Sync),
 }
 
-/// 模型工具循环薄壳（2026-09-03 T1-2 重构）：只做 AppHandle 依赖装配——
+/// 模型工具循环薄壳：只做 AppHandle 依赖装配——
 /// 读配置/Key、构 HTTP 客户端、把 widget emit / 审计 / skill_finish / execute_tool /
 /// replan 包成回调，实际循环逻辑全在 run_model_loop_core（可注入 mock server 集成测试）。
 pub async fn run_model_loop(
@@ -582,19 +574,19 @@ pub async fn run_model_loop(
         base_url: cfg.base_url,
         api_key,
         model: cfg.model,
-        // 2026-09-05 Anthropic 兼容模式：None/非法值 → Openai（旧行为零影响）
+        // None/非法值 → Openai（旧行为零影响）
         provider: crate::bot::ApiProvider::from_cfg(cfg.api_provider.as_deref()),
         max_tokens: crate::bot::resolve_max_tokens(cfg.max_tokens),
     };
-    // 2026-08-26 会话隔离：流式事件（bot-chat-delta 等）只由交互实例广播；
+    // 会话隔离：流式事件（bot-chat-delta 等）只由交互实例广播；
     // 后台定时任务（interactive=false）不向挂件推流——否则后台执行的输出会
-    // 串进用户当前会话的 streaming 气泡（审计 P0）。Skill 归属同理按 session 过滤。
+    // 串进用户当前会话的 streaming 气泡。Skill 归属同理按 session 过滤。
     let stream_to_widget = stop.is_interactive();
     let session_id: Option<&str> = stop.session_id();
-    // 流式事件出口统一收口（2026-08-26 会话隔离）：非交互实例（后台定时任务）
+    // 流式事件出口统一收口（会话隔离）：非交互实例（后台定时任务）
     // 不向挂件发任何流式增量，防后台执行输出串进用户当前会话的 streaming 气泡。
-    // 2026-08-28 批次3审计 P0-2：payload 统一注入 sessionId，前端按当前会话过滤——
-    // 原先事件不带会话标记，两个会话并行跑时 A 的流式增量会串进 B 正在显示的气泡。
+    // payload 统一注入 sessionId，前端按当前会话过滤——
+    // 事件不带会话标记时，两个会话并行跑 A 的流式增量会串进 B 正在显示的气泡。
     let emit = |event: &str, mut payload: serde_json::Value| {
         if stream_to_widget {
             if let Some(obj) = payload.as_object_mut() {
@@ -622,10 +614,10 @@ pub async fn run_model_loop(
 }
 
 /// 模型工具循环核心：流式请求（思考拆分 + 工具折叠事件）、进程内执行工具。
-/// 配置/Key/HTTP 客户端/副作用出口全部注入，不依赖 AppHandle（T1-2 重构）。
+/// 配置/Key/HTTP 客户端/副作用出口全部注入，不依赖 AppHandle。
 /// msgs 需已含 system 消息；返回 (最终正文, 任务引用)。
 /// 轮数上限由调用方传入：默认 DEFAULT_MAX_ROUNDS（50），多步 Skill 可自报 max_rounds 覆盖。
-/// plan_state（2026-08-26 PREVR 第 2 层）：复杂任务的动态计划；工具连续失败时触发
+/// plan_state（PREVR 第 2 层）：复杂任务的动态计划；工具连续失败时触发
 /// Replan（重规划剩余步骤，≤MAX_REPLANS 次）。None = 无计划自由循环。
 pub async fn run_model_loop_core<X, XP, R, RP>(
     http: &LlmHttp,
@@ -643,7 +635,7 @@ where
     R: Fn(crate::bot_plan::PlanState, String) -> RP,
     RP: std::future::Future<Output = Option<Vec<String>>>,
 {
-    // 2026-09-05 Anthropic 兼容模式：URL 按协议分支（OpenAI 走 /chat/completions，
+    // URL 按协议分支（OpenAI 走 /chat/completions，
     // Anthropic 走 /v1/messages，base_url 两种填法都归一化）
     let url = match http.provider {
         crate::bot::ApiProvider::Openai => {
@@ -672,16 +664,16 @@ where
     let mut claim_retry_used: bool = false;
     // soft_warn 待注入标志：本轮 tool 响应全部回填后才真正 push（见循环内注释）
     let mut soft_warn_queued: bool = false;
-    // PREVR 第 1 层（2026-08-26）：工具失败检测——同工具连续失败计数，
+    // PREVR 第 1 层：工具失败检测——同工具连续失败计数，
     // 第 1 次失败注入「换策略」提示；连续 2 次失败：有计划则 Replan，无计划则要求如实告知
     let mut last_failed_tool: Option<String> = None;
     let mut last_fail_reason: Option<String> = None;
     let mut consec_failures: usize = 0;
-    // Replan 预算耗尽审计只记一次（2026-08-27 P2：耗尽后每轮连续失败仍会发生，不刷屏）
+    // Replan 预算耗尽审计只记一次（耗尽后每轮连续失败仍会发生，不刷屏）
     let mut replan_exhausted_logged: bool = false;
     let mut fail_hint_queued: Option<String> = None;
     let mut plan_state = plan_state;
-    // 上轮 streamed 文本快照（Block 2 接入，2026-08-17 22:26）：
+    // 上轮 streamed 文本快照：
     // AwaitConfirm/Finish/Fail/Terminate 跳出主循环时，返回 user 已看到的文本
     let mut last_streamed = String::new();
     for _round in 0..max_rounds {
@@ -689,7 +681,7 @@ where
             let hint = skill_finish(false, "用户停止");
             return Ok((format!("⏹ 已停止{hint}"), collected_refs));
         }
-        // 状态机推进决策（Block 2 2026-08-17 22:26）：集中 Skill 推进逻辑
+        // 状态机推进决策：集中 Skill 推进逻辑
         // 未来横切关注点（审批/沙箱/上下文压缩）只动 advance_skill，主循环不重构
         if let Some(run) = crate::bot_skills::active_skill_run_for(session_id) {
             use crate::bot_skills::{advance_skill, AdvanceAction};
@@ -697,8 +689,8 @@ where
                 AdvanceAction::NoActive | AdvanceAction::Continue => {} // 继续本轮
                 AdvanceAction::AwaitConfirm => {
                     // Skill 暂停等用户确认，跳出主循环等待 bot_confirm_response 唤起。
-                    // P2（2026-08-27 审计）：并发新消息在第 0 轮命中此分支时 last_streamed
-                    // 是空串，用户得到空白回复——空串时给一句可读提示
+                    // 并发新消息在第 0 轮命中此分支时 last_streamed
+                    // 是空串，用户会得到空白回复——空串时给一句可读提示
                     if last_streamed.is_empty() {
                         return Ok((
                             "⏸ 上一个操作正在等待你的确认——请先处理确认弹窗，再继续对话。".into(),
@@ -721,7 +713,7 @@ where
                 }
             }
         }
-        // 2026-09-05 Anthropic 兼容模式：body 按协议分支——内部消息流保持 OpenAI
+        // body 按协议分支——内部消息流保持 OpenAI
         // 形状不动，只在发请求前这一边界转换（bot_anthropic::build_anthropic_body）。
         // 转换失败（理论不可达，msgs 必含 user 消息）记审计并报错，不静默发出畸形请求。
         let body = match http.provider {
@@ -753,7 +745,7 @@ where
             }
         };
 
-        // LLM 请求前记录（F-3 第四步 2026-08-18）
+        // LLM 请求前记录
         audit(
             crate::audit::AuditLevel::Info,
             "llm.request",
@@ -764,12 +756,12 @@ where
             ],
         );
 
-        // P1-4（2026-08-28 批次3审计）：429/5xx/发送失败重试一次——原先任何瞬时抖动
-        // 直接作废整轮工具循环。只在流式产出开始前重试，无部分内容重复/重放问题。
+        // 429/5xx/发送失败重试一次——瞬时抖动不应直接作废整轮工具循环。
+        // 只在流式产出开始前重试，无部分内容重复/重放问题。
         let mut attempt = 0usize;
         let resp = loop {
             attempt += 1;
-            // 2026-09-05 Anthropic 兼容模式：鉴权头按协议分支
+            // 鉴权头按协议分支
             //（Anthropic 用 x-api-key + anthropic-version，OpenAI 用 Bearer）
             let req = http.client.post(&url).json(&body);
             let req = match http.provider {
@@ -843,8 +835,8 @@ where
         );
 
         let mut stream = resp.bytes_stream();
-        // P1-2（2026-08-28 批次3审计）：字节缓冲按行切——原先逐 chunk from_utf8_lossy，
-        // chunk 边界落在多字节字符中间时产生 U+FFFD（正文乱码尚可，
+        // 字节缓冲按行切——逐 chunk from_utf8_lossy 时
+        // chunk 边界落在多字节字符中间会产生 U+FFFD（正文乱码尚可，
         // 嵌在工具 arguments 里则是「合法 JSON 但内容损坏」会被真实执行）
         let mut byte_buf: Vec<u8> = Vec::new();
         let mut final_text = String::new();
@@ -852,7 +844,7 @@ where
                                                                         // <think> 思考块拆分：思考走 bot-think-delta，正文走 bot-chat-delta
         let mut think_mode = false;
         let mut think_buf = String::new();
-        // 流完整性（P1-1）：对端干净 EOF（无报错、无 [DONE]、无 finish_reason）时
+        // 流完整性：对端干净 EOF（无报错、无 [DONE]、无 finish_reason）时
         // 残缺 tool_calls 不得当完整回复执行——跟踪是否见到正常收尾标记
         let mut saw_done_or_finish = false;
         let mut last_finish_reason: Option<String> = None;
@@ -862,17 +854,17 @@ where
         // output，parse_anthropic_event 顺带捞出），回合结束写 llm.usage 审计
         let mut usage_input: u64 = 0;
         let mut usage_output: u64 = 0;
-        // Anthropic 模式 content block index → 工具槽位重映射（2026-09-05 真实环境
-        // 400 修复）：Anthropic 的块序号连文本块一起数，直接当工具序号累积会留下
-        // 幽灵空条目（详见 bot_anthropic::ToolSlotMapper 注释）
+        // Anthropic 模式 content block index → 工具槽位重映射：
+        // Anthropic 的块序号连文本块一起数，直接当工具序号累积会留下
+        // 幽灵空条目，严格 API 会 400（详见 bot_anthropic::ToolSlotMapper 注释）
         let mut tool_slot_mapper = crate::bot_anthropic::ToolSlotMapper::new();
 
         let mut stopped = false;
         {
             // 单行 SSE 处理（主循环与流尾残余行冲刷共用）；
-            // 返回 Some = 流内错误载荷（P1-3），调用方收尾报错
+            // 返回 Some = 流内错误载荷，调用方收尾报错
             let mut handle_line = |line: &str| -> Option<String> {
-                // 2026-09-05 Anthropic 兼容模式：行解析按协议分支，解析出的
+                // 行解析按协议分支，解析出的
                 // ParsedChunk 走同一消费逻辑（think 拆分 / 工具累积 / 流完整性 /
                 // finish_reason 处理全部两协议共享）
                 let parsed = match http.provider {
@@ -902,7 +894,7 @@ where
                     saw_done_or_finish = true;
                     last_finish_reason = Some(reason);
                 }
-                // P2-5：reasoning_content 与 <think> 同出口（不进 final_text、不进历史）
+                // reasoning_content 与 <think> 同出口（不进 final_text、不进历史）
                 if let Some(r) = parsed.reasoning {
                     emit("bot-think-delta", serde_json::json!({ "text": r }));
                 }
@@ -977,7 +969,7 @@ where
                     break;
                 }
             }
-            // 流尾残余行冲刷（P2-1）：非标准服务端最后一个 data 事件可能不带尾换行
+            // 流尾残余行冲刷：非标准服务端最后一个 data 事件可能不带尾换行
             if !stopped && stream_error.is_none() && !byte_buf.is_empty() {
                 byte_buf.push(b'\n');
                 for line in drain_sse_lines(&mut byte_buf) {
@@ -989,7 +981,7 @@ where
             }
         }
 
-        // Anthropic 模式：回合结束把流内捞到的 token 用量写审计（2026-09-05）
+        // Anthropic 模式：回合结束把流内捞到的 token 用量写审计
         if http.provider == crate::bot::ApiProvider::Anthropic && (usage_input > 0 || usage_output > 0)
         {
             audit(
@@ -1002,7 +994,7 @@ where
             );
         }
 
-        // P1-3：200 流内错误载荷——显式报错 + 审计，不再返回空白回复
+        // 200 流内错误载荷——显式报错 + 审计，不返回空白回复
         if let Some(err) = stream_error {
             audit(
                 crate::audit::AuditLevel::Error,
@@ -1031,9 +1023,9 @@ where
             return Ok((format!("{final_text}\n\n⏹ 已停止{hint}"), collected_refs));
         }
 
-        // 流完整性检查（P1-1，2026-08-28 批次3审计）：未见 [DONE]/finish_reason 的
+        // 流完整性检查：未见 [DONE]/finish_reason 的
         // 干净 EOF = 流被截断（中间代理 idle cut 等）。残缺 tool_calls 不得执行
-        // （原先靠 parse_args 失败落 Null 侥幸兜底，没有显式防线）。
+        // （不能靠 parse_args 失败落 Null 侥幸兜底，要有显式防线）。
         if !saw_done_or_finish {
             audit(
                 crate::audit::AuditLevel::Warn,
@@ -1054,7 +1046,7 @@ where
             final_text.push_str("\n\n⚠️ 响应可能被截断（连接提前结束），以上内容可能不完整。");
         }
 
-        // 幽灵条目兜底防线（2026-09-05 真实环境 400 修复）：name 为空的条目从未收到
+        // 幽灵条目兜底防线：name 为空的条目从未收到
         // function.name，不可能是真实工具调用（Anthropic 侧已被 ToolSlotMapper 重映射
         // 防住，这里双保险覆盖 OpenAI 兼容网关的畸形流）。不丢弃的话：空 id 会被合成
         // call_synth_* 并以「未知工具」执行回填，下一轮请求里 tool_result 引用一个
@@ -1069,7 +1061,7 @@ where
             );
         }
 
-        // P2-3（2026-08-28 批次3审计）：兼容省略 tool_call id 的供应商——空 id 进历史
+        // 兼容省略 tool_call id 的供应商——空 id 进历史
         // 下一轮会被严格 API 拒为 400 invalid params；本地合成占位 id
         for (i, t) in tool_calls.iter_mut().enumerate() {
             if t.0.is_empty() {
@@ -1078,7 +1070,7 @@ where
         }
 
         if tool_calls.is_empty() {
-            // 防幻觉汇报守卫（2026-08-19）：声称完成变更但本轮没动过手 →
+            // 防幻觉汇报守卫：声称完成变更但本轮没动过手 →
             // 注入系统提醒补一轮，逼模型实际调工具或如实说明（最多补一次）
             if !mutation_done && !claim_retry_used && claims_mutation(&final_text) {
                 claim_retry_used = true;
@@ -1093,8 +1085,8 @@ where
                 }));
                 continue;
             }
-            // P2-4（2026-08-28 批次3审计）：finish_reason=length（token 截断）/
-            // content_filter 原先完全不感知——半截回复当正常答案、空回复无解释
+            // finish_reason=length（token 截断）/content_filter 需要显式感知——
+            // 否则半截回复会被当正常答案、空回复无解释
             match last_finish_reason.as_deref() {
                 Some("length") => {
                     final_text.push_str("\n\n（回复因长度限制被截断，可以让我「继续」补完）")
@@ -1123,7 +1115,7 @@ where
             return Ok((format!("{final_text}\n\n⏹ 已停止{hint}"), collected_refs));
         }
         for (id, name, args) in &tool_calls {
-            // P1-8（2026-08-27 审计）：工具批中途可停——/stop 后剩余调用不执行，
+            // 工具批中途可停——/stop 后剩余调用不执行，
             // 但必须回填占位 tool 响应（tool_calls → tool 消息协议完整性，
             // 缺响应会让下一轮请求被 API 拒为 400 invalid params）
             if stop.stopped() {
@@ -1146,7 +1138,7 @@ where
             // 软警告（SOFT_WARN_AT）：置标志，推迟到本轮 tool 响应全部回填后再注入——
             // 若在此直接 push user 消息，会插进 assistant(tool_calls) 与 tool 响应之间，
             // 破坏「tool_calls 后必须紧跟 tool 消息」的协议，下一轮请求被 API 拒为
-            // 400 invalid params（2026-08-18 两次 400 均紧跟 soft_warn 注入，已实锤）
+            // 400 invalid params（实锤：两次 400 均紧跟 soft_warn 注入）
             if !soft_warn_sent && function_calls_total >= SOFT_WARN_AT {
                 soft_warn_sent = true;
                 soft_warn_queued = true;
@@ -1155,9 +1147,9 @@ where
                     SOFT_WARN_AT, MAX_FUNCTION_CALLS_PER_TURN
                 ));
             }
-            // NEW-C-4：把 /stop 守卫透传给 execute_tool，run_python 在途可中断
+            // 把 /stop 守卫透传给 execute_tool，run_python 在途可中断
             let (result, refs) = execute_tool(name.clone(), args.clone()).await;
-            // P0-4（2026-08-27 审计）：按执行结果置位——被门禁拦截/用户拒绝/执行失败的
+            // 按执行结果置位——被门禁拦截/用户拒绝/执行失败的
             // 变更工具不算「动过手」，幻觉守卫对后续虚假汇报保持拦截能力
             if mutation_succeeded(name, &result) {
                 mutation_done = true;
@@ -1165,14 +1157,14 @@ where
             emit("bot-tool-done", serde_json::json!({ "id": id, "name": name, "args": args }));
             audit_log(&format!(
                 "tool: {} | args: {} | result: {}",
-                // 2026-08-28 批次3审计 P2-7：工具名是模型给的字符串，直插可伪造日志行
+                // 工具名是模型给的字符串，直插可伪造日志行
                 crate::bot::truncate_for_log(name, 60),
                 crate::bot::truncate_for_log(args, 500),
                 crate::bot::truncate_for_log(&result, 300)
             ));
             collected_refs.extend(refs);
-            // PREVR 第 1 层（2026-08-26）：工具失败检测。判定走全链路统一口径
-            // （P1-6：audit::tool_call_failed）——门禁拦截/熔断/暂停/拒绝都能识别；
+            // PREVR 第 1 层：工具失败检测。判定走全链路统一口径
+            // （audit::tool_call_failed）——门禁拦截/熔断/暂停/拒绝都能识别；
             // 同工具连续失败才升级——单次失败先提示换策略。
             // 与 soft_warn 同理：提示推迟到本轮 tool 响应全部回填后注入（协议安全）
             let failed = crate::audit::tool_call_failed(name, &result);
@@ -1206,11 +1198,11 @@ where
                 "content": result
             }));
         }
-        // PREVR 第 2 层（2026-08-26）：同工具连续失败 ≥2 且有计划 → Replan 一次
+        // PREVR 第 2 层：同工具连续失败 ≥2 且有计划 → Replan 一次
         // （重规划剩余步骤，替换计划文本；≤MAX_REPLANS 次硬上限，防重规划死循环）。
-        // P1-7（2026-08-27 审计）：预算不管成败都消耗——原先失败 replan 不计数，
-        // Planner 持续故障时每轮白烧一次调用，硬上限名不副实；fail_reason 补真实错误
-        // 文本（原先只传工具名，Planner 拿不到任何失败细节）。
+        // 预算不管成败都消耗——失败 replan 若不计数，
+        // Planner 持续故障时每轮会白烧一次调用，硬上限名不副实；fail_reason 带真实错误
+        // 文本（只传工具名的话 Planner 拿不到任何失败细节）。
         // Replan 是同步阻塞本轮的 LLM 调用：放在 tool 响应全部回填后、注入提示前，
         // 这样提示里带的就是新计划。
         if consec_failures >= 2 {
@@ -1223,7 +1215,7 @@ where
                         consec_failures,
                         last_fail_reason.as_deref().unwrap_or("（无错误详情）")
                     );
-                    // T1-2 重构：replan 走注入回调；PlanState 按值快照传入（回调签名
+                    // replan 走注入回调；PlanState 按值快照传入（回调签名
                     // 不能借用本轮局部 &mut，见 ModelLoopDeps 注释）
                     let snapshot = crate::bot_plan::PlanState {
                         task: plan.task.clone(),
@@ -1238,8 +1230,8 @@ where
                         ));
                     }
                 } else if !replan_exhausted_logged {
-                    // P2（2026-08-27 审计）：预算耗尽留痕（只记一次）——
-                    // 「连续失败持续发生但不再重规划」这件事原先零痕迹
+                    // 预算耗尽留痕（只记一次）——
+                    // 「连续失败持续发生但不再重规划」这件事不能零痕迹
                     replan_exhausted_logged = true;
                     audit(
                         crate::audit::AuditLevel::Warn,
@@ -1269,7 +1261,7 @@ where
         // 快照上轮 streamed 文本（供 AwaitConfirm/Finish/Fail/Terminate 跳出时返回）
         last_streamed = final_text.clone();
     }
-    // 2026-08-27 审计 P2：轮数熔断补审计（原先只有单轮工具熔断有 fuse 日志，不对称）
+    // 轮数熔断补审计（单轮工具熔断已有 fuse 日志，对称留痕）
     audit(
         crate::audit::AuditLevel::Warn,
         "fuse_rounds",
@@ -1336,7 +1328,7 @@ mod hallucination_guard_tests {
 
     #[test]
     fn claims_mutation_hits_common_claims() {
-        // 实锤事故话术（2026-08-19 bot.log）：声称删除/添加子任务
+        // 实锤事故话术：声称删除/添加子任务
         assert!(claims_mutation("已将「你们好」移至回收站 🗑️"));
         assert!(claims_mutation("已给「你们好」任务添加子任务「买菜」✅"));
         assert!(claims_mutation("已将任务标记为完成"));
@@ -1353,7 +1345,7 @@ mod hallucination_guard_tests {
         assert!(!claims_mutation("「你们好」当前没有绑定任何附件，无需删除。"));
         assert!(!claims_mutation("未找到匹配的任务，请确认标题"));
         assert!(!claims_mutation(""));
-        // P1-10（2026-08-27 审计）：只读任务的收尾话术不再误拦（动词表去掉「完成」）
+        // 只读任务的收尾话术不应误拦（动词表刻意不含「完成」）
         assert!(!claims_mutation("已完成搜索，找到 3 条结果"));
         assert!(!claims_mutation("分析已完成，结论如下"));
     }
@@ -1362,7 +1354,7 @@ mod hallucination_guard_tests {
     fn claims_mutation_p1_10_wording_adjustments() {
         // 「已完成任务」走 PLAIN 整段匹配保住任务完成话术
         assert!(claims_mutation("已完成任务「买菜」"));
-        // 补「保存/记住」动词（原先漏拦）
+        // 「保存/记住」动词覆盖落盘/记偏好话术
         assert!(claims_mutation("已保存到 AI_Gen_Files"));
         assert!(claims_mutation("已记住你的偏好"));
     }
@@ -1379,7 +1371,7 @@ mod hallucination_guard_tests {
         }
     }
 
-    // ── P0-4（2026-08-27 审计）：mutation_done 按执行结果置位 ──
+    // ── mutation_done 按执行结果置位 ──
 
     #[test]
     fn mutation_succeeded_true_on_real_success() {
@@ -1482,7 +1474,7 @@ mod parse_sse_chunk_tests {
 
     #[test]
     fn empty_name_treated_as_append_noop() {
-        // name="" 时原代码 `!name.is_empty()` 跳过 push；这里 chunk 仍 Some("") 但 caller 决定是否 append
+        // name="" 时 chunk 仍为 Some("")；是否跳过 append 由 caller 决定（生产代码只追加非空 name）
         let line =
             r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":""}}]}}]}"#;
         let parsed = parse_sse_chunk(line).unwrap();
@@ -1504,15 +1496,15 @@ mod parse_sse_chunk_tests {
 
     #[test]
     fn returns_none_for_empty_choices() {
-        // 网关异常：200 OK + choices:[] → 跳过（与原代码 else continue 语义一致）
+        // 网关异常：200 OK + choices:[] → 跳过
         let line = r#"data: {"choices":[]}"#;
         assert!(parse_sse_chunk(line).is_none());
     }
 
     #[test]
     fn stream_error_payload_surfaced() {
-        // P1-3（2026-08-28 批次3审计）：200 流内错误载荷原先静默忽略 → 空白回复；
-        // 现必须显式冒出（主循环据此报错 + 审计）
+        // 200 流内错误载荷不得静默忽略（否则用户拿到空白回复）；
+        // 必须显式冒出（主循环据此报错 + 审计）
         let line = r#"data: {"id":"x","error":{"message":"auth_failed","type":"auth_error"}}"#;
         let parsed = parse_sse_chunk(line).expect("error 载荷必须冒出，不得静默丢弃");
         assert_eq!(parsed.error.as_deref(), Some("auth_failed"));
@@ -1532,7 +1524,7 @@ mod parse_sse_chunk_tests {
 
     #[test]
     fn parses_reasoning_content() {
-        // P2-5：DeepSeek-reasoner 类模型的独立推理字段
+        // DeepSeek-reasoner 类模型的独立推理字段
         let line = r#"data: {"choices":[{"delta":{"reasoning_content":"先想一下","content":null}}]}"#;
         let parsed = parse_sse_chunk(line).unwrap();
         assert_eq!(parsed.reasoning.as_deref(), Some("先想一下"));
@@ -1580,7 +1572,7 @@ mod parse_sse_chunk_tests {
 mod stream_accumulate_tests {
     use super::*;
 
-    /// P1-2：多字节 UTF-8 字符跨 chunk 切断时不得产生 U+FFFD 替换字符
+    /// 多字节 UTF-8 字符跨 chunk 切断时不得产生 U+FFFD 替换字符
     #[test]
     fn drain_sse_lines_no_replacement_char_across_chunks() {
         let text = "data: {\"choices\":[{\"delta\":{\"content\":\"你好\"}}]}\n";
@@ -1674,7 +1666,7 @@ mod stream_accumulate_tests {
         assert_eq!(calls[0].0, "call_late", "迟到的 id 应补上");
     }
 
-    /// P2-2：畸形/恶意 index 不得撑爆内存
+    /// 畸形/恶意 index 不得撑爆内存
     #[test]
     fn accumulate_rejects_insane_index() {
         let mut calls: Vec<(String, String, String)> = Vec::new();
@@ -1697,7 +1689,7 @@ mod stream_accumulate_tests {
         assert_eq!(calls.len(), MAX_TOOL_CALL_INDEX + 1);
     }
 
-    /// P1-4：重试状态白名单
+    /// 重试状态白名单
     #[test]
     fn retryable_status_429_and_5xx_only() {
         assert!(is_retryable_llm_status(429));
@@ -1756,7 +1748,7 @@ mod tools_schema_tests {
     }
 }
 // ────────────────────────────────────────────────────────────────────
-// 测试：max_rounds 解析 / fallback + 单轮 Function 调用熔断（2026-08-20）
+// 测试：max_rounds 解析 / fallback + 单轮 Function 调用熔断
 // ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

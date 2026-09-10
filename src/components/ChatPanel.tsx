@@ -26,8 +26,8 @@ function isImagePath(p: string): boolean {
 }
 
 /** execute-task 事件去重（模块级，跨组件实例/HMR 泄漏监听器共享）：
- *  2026-08-19 事故：dev 期间挂件 webview 多次重挂载累积了 6 个 execute-task 监听器，
- *  一次点击被投递 6 次 → 同一秒 6 个 bot_execute_task 并发 → 后端防重入拦截 5 个，
+ *  dev 期间挂件 webview 多次重挂载会累积多个 execute-task 监听器，
+ *  一次点击被投递多次 → 同一秒多个 bot_execute_task 并发 → 后端防重入拦截，
  *  每个拒绝都弹「⚠️ 内部错误：该任务卡正在执行中」气泡，用户误以为执行失败。
  *  去重表必须放模块级：放 useEffect 闭包里则每个泄漏监听器各持一份，去重失效。 */
 const execTaskDedup = new Map<string, number>();
@@ -38,12 +38,12 @@ type TaskRef = { id: string; title: string };
 /** 工具调用行：折叠显示，展开可看入参 */
 type ToolCall = { id: string; name: string; args?: string; done?: boolean };
 
-/** Skill 失败半成品上下文（仅本会话内存；Phase 4 第 5 项：FailedButRecoverable 兜底）。
+/** Skill 失败半成品上下文（仅本会话内存；FailedButRecoverable 兜底）。
  *  后端 run_skill_scheduler 返回 DslOutcome::FailedButRecoverable { reason, completed_summary, rollback_attempted }
  *  时通过 `bot-skill-failed` SSE event 推过来；前端把它存到这条消息上渲染 ⚠️ 折叠行。
  *  - completedSummary: 失败前已成功 step 的摘要（"Step N (tool): output\nStep N (tool): ..."）
  *  - rollbackAttempted: true 表示 rollback 段跑过且无错；false 表示没写或跑挂
- *  - 仅本会话内存，刷新/重启后丢失（DB 持久化要改 src-tauri/，留给后续 subagent） */
+ *  - 仅本会话内存，刷新/重启后丢失（DB 持久化要改 src-tauri/） */
 type SkillFailure = {
   skillName: string;
   reason: string;
@@ -63,7 +63,7 @@ type Msg = {
   tools?: ToolCall[];
   /** Skill 失败半成品上下文（折叠显示 ⚠️ 行；见 SkillFailure 说明） */
   skillFailure?: SkillFailure;
-  /** 「查看执行对话」跳转按钮（2026-09-10 任务执行聊天化：busy 时执行跳转排队，
+  /** 「查看执行对话」跳转按钮（任务执行聊天化：busy 时执行跳转排队，
    *  忙完提示 + 点击切到该执行会话） */
   actionSessionId?: string;
 };
@@ -98,7 +98,7 @@ function Fold({
 }
 
 /** 文本渲染：http(s) 链接和绝对文件路径可点击（识别规则见 lib/openTarget，
- *  2026-09-05 起带空格路径不再被截断成「C:\Program」） */
+ *  带空格路径不会被截断成「C:\Program」） */
 function RichText({ text }: { text: string }) {
   const parts: ReactNode[] = [];
   let last = 0;
@@ -175,9 +175,8 @@ type Props = {
   onFinishSelection: () => void;
 };
 
-/** 斜杠命令清单（单一真相：autocomplete picker + runSlashCommand 共享）
- *  老板 2026-08-17 15:51 指令：输入「/」浮出补全列表
- *  老板 2026-08-17 21:52 指令：移除 /help（上浮全面板后 /help 还在 LLM 上下文里白白占 token） */
+/** 斜杠命令清单（单一真相：autocomplete picker + runSlashCommand 共享）。
+ *  没有 /help：上浮全面板后 /help 还在 LLM 上下文里白白占 token */
 const SLASH_COMMANDS = [
   { cmd: "/stop", description: "停止当前回复" },
   { cmd: "/compact", description: "压缩对话上下文" },
@@ -226,7 +225,7 @@ export function ChatPanel({
   const [modelLabel, setModelLabel] = useState("…");
   const modelMenuRef = useRef<HTMLButtonElement>(null);
   const modelDropdownRef = useRef<HTMLDivElement>(null);
-  // 顶部行引用 + 下拉 top 定位（紧贴 🤖/🧠 按钮底部，0 间距；2026-09-08 老板拍板）
+  // 顶部行引用 + 下拉 top 定位（紧贴 🤖/🧠 按钮底部，0 间距）
   const topBarRef = useRef<HTMLDivElement>(null);
   const [dropdownTop, setDropdownTop] = useState(0);
   useEffect(() => {
@@ -256,12 +255,12 @@ export function ChatPanel({
     skillFailure?: SkillFailure;
   }>({});
   /** busy 镜像：供事件监听里同步判断。
-   *  ⚠️ 必须与 setBusy 同步更新（useEffect 在重渲染后才跑，同一帧内连按会有并发窗口，审计 P2） */
+   *  ⚠️ 必须与 setBusy 同步更新（useEffect 在重渲染后才跑，同一帧内连按会有并发窗口） */
   const busyRef = useRef(false);
   useEffect(() => {
     busyRef.current = busy;
   }, [busy]);
-  /** 任务执行聊天化（2026-09-10）：busy 时到达的执行会话跳转排队（只留最新一个）；
+  /** 任务执行聊天化：busy 时到达的执行会话跳转排队（只留最新一个）；
    *  执行本身不排队——后端已在新会话开跑，这里只排「自动跳转查看」 */
   const pendingExecRef = useRef<{ sid: string; title: string } | null>(null);
   /** 任务 id → 执行会话 id（chat-open-session 事件建立；invoke 收尾时按它刷新历史） */
@@ -287,7 +286,7 @@ export function ChatPanel({
   const addHint = (content: string, actionSessionId?: string) => {
     setMessages((prev) => [...prev, { role: "assistant", content, actionSessionId }]);
   };
-  /** sessionId 镜像：异步收尾时判断会话是否已切换（二次审计 P3 竞态防护） */
+  /** sessionId 镜像：异步收尾时判断会话是否已切换（竞态防护） */
   const sessionIdRef = useRef<string | null>(null);
   useEffect(() => {
     sessionIdRef.current = sessionId;
@@ -415,15 +414,15 @@ export function ChatPanel({
         tavilyEnabled?: boolean | null;
         braveEnabled?: boolean | null;
         pythonTimeoutSecs?: number | null;
-        // 批次7审计 P1-1：必须透传授权模式——bot_set_config 是全量覆写，
+        // 必须透传授权模式——bot_set_config 是全量覆写，
         // 漏传会被 BotConfig 容器级 serde(default) 填 None，静默重置回 ask
         permMode?: string | null;
-        // 2026-09-05 Anthropic 兼容模式：同 P1-1——协议与 max_tokens 必须透传，
+        // 同上：协议与 max_tokens 必须透传，
         // 漏传会被全量覆写静默重置回 openai/默认
         apiProvider?: string | null;
         maxTokens?: number | null;
-        // 2026-09-05 起 view 不再含任何 key 本体（tavilyKey/braveKey 已进系统
-        // 凭据存储）；这里不传顶层 key 参数（undefined → 后端 None → keyring 不动）
+        // view 不含任何 key 本体（tavilyKey/braveKey 在系统凭据存储）；
+        // 这里不传顶层 key 参数（undefined → 后端 None → keyring 不动）
       }>("bot_get_config");
       await invoke("bot_set_config", {
         config: {
@@ -455,14 +454,13 @@ export function ChatPanel({
   const switchModel = (p: ProviderPreset) => applyModelConfig(p.baseUrl, p.model, p.label);
 
   // 流式增量：追加到最后一条 streaming 中的助手消息
-  // 会话过滤（2026-08-28 批次3审计 P0-2）：六个流式事件 payload 均带 sessionId
+  // 会话过滤：六个流式事件 payload 均带 sessionId
   // （交互实例专属；后台任务不推流），只消费属于当前会话的增量，
   // 否则两个会话并行跑时输出会互相串台
   useEffect(() => {
     const unlisten = listen<{ text?: string; sessionId?: string | null }>(
       "bot-chat-delta",
       (e) => {
-        // 2026-08-28 批次3审计 P0-2：按会话过滤
         const sid = e.payload?.sessionId ?? null;
         if (sid !== sessionIdRef.current) return;
         const t = e.payload?.text;
@@ -479,7 +477,6 @@ export function ChatPanel({
     const unThink = listen<{ text?: string; sessionId?: string | null }>(
       "bot-think-delta",
       (e) => {
-        // 2026-08-28 批次3审计 P0-2：按会话过滤
         const sid = e.payload?.sessionId ?? null;
         if (sid !== sessionIdRef.current) return;
         const t = e.payload?.text;
@@ -498,7 +495,6 @@ export function ChatPanel({
     const unTool = listen<{ id?: string; name?: string; sessionId?: string | null }>(
       "bot-tool",
       (e) => {
-        // 2026-08-28 批次3审计 P0-2：按会话过滤
         const sid = e.payload?.sessionId ?? null;
         if (sid !== sessionIdRef.current) return;
         const { id, name } = e.payload ?? {};
@@ -518,7 +514,6 @@ export function ChatPanel({
     const unToolName = listen<{ id?: string; name?: string; sessionId?: string | null }>(
       "bot-tool-name",
       (e) => {
-        // 2026-08-28 批次3审计 P0-2：按会话过滤
         const sid = e.payload?.sessionId ?? null;
         if (sid !== sessionIdRef.current) return;
         const { id, name } = e.payload ?? {};
@@ -542,7 +537,6 @@ export function ChatPanel({
       args?: string;
       sessionId?: string | null;
     }>("bot-tool-done", (e) => {
-      // 2026-08-28 批次3审计 P0-2：按会话过滤
       const sid = e.payload?.sessionId ?? null;
       if (sid !== sessionIdRef.current) return;
       const { id, name, args } = e.payload ?? {};
@@ -559,7 +553,7 @@ export function ChatPanel({
         return copy;
       });
     });
-    // Skill 失败半成品（Phase 4 第 5 项 + 审计 P2）：后端 run_skill_scheduler 返回
+    // Skill 失败半成品：后端 run_skill_scheduler 返回
     // FailedButRecoverable 时 emit `bot-skill-failed` event；前端把它挂到当前流式消息上
     // 渲染 ⚠️ 折叠行，让用户看到哪步成功哪步失败 + 是否回滚。
     // 注意：失败时同一条流式消息后续还会有 LLM 兜底回复，所以不要清空 streamingMeta。
@@ -570,7 +564,6 @@ export function ChatPanel({
       rollbackAttempted?: boolean;
       sessionId?: string | null;
     }>("bot-skill-failed", (e) => {
-      // 2026-08-28 批次3审计 P0-2：按会话过滤
       const sid = e.payload?.sessionId ?? null;
       if (sid !== sessionIdRef.current) return;
       const p = e.payload ?? {};
@@ -618,14 +611,14 @@ export function ChatPanel({
       handleCommandError(e, "bot_history_load", { silent: true });
     }
   };
-  // openExecSession 经 ref 暴露给事件监听（避免闭包旧状态；与原 executeTaskRef 同先例）
+  // openExecSession 经 ref 暴露给事件监听（避免闭包旧状态）
   const openExecSessionRef = useRef<(sid: string) => void>(() => {});
   openExecSessionRef.current = (sid) => {
     openExecSession(sid);
   };
 
   // 任务卡交给机器人执行（execute-task 事件：主窗口/挂件卡片 🤖 按钮触发）
-  // 2026-09-10 任务执行聊天化：不再在当前会话执行——后端建新会话跑（run_task_in_chat），
+  // 任务执行聊天化：不再在当前会话执行——后端建新会话跑（run_task_in_chat），
   // 前端收 chat-open-session 切过去围观。执行本身不吃 busy 锁（会话隔离天然并发），
   // 只有「自动跳转查看」在 busy 时排队（exitBusy 时 hint 提示）。
   useEffect(() => {
@@ -652,7 +645,7 @@ export function ChatPanel({
           }
         })
         .catch((err) =>
-          // TASK_INVALID_STATE（执行中重复触发/已完成/已归档）按业务状态提示而非错误（批次7 P2-2 口径保留）
+          // TASK_INVALID_STATE（执行中重复触发/已完成/已归档）按业务状态提示而非错误
           addHint(
             `${isCommandError(err) && err.code === "TASK_INVALID_STATE" ? "⏳" : "⚠️"} ${formatCommandError(err)}`
           )
@@ -663,7 +656,7 @@ export function ChatPanel({
     };
   }, []);
 
-  // chat-open-session（2026-09-10）：后端新建执行会话后广播——
+  // chat-open-session：后端新建执行会话后广播——
   // 非 busy 直接切过去围观（流式增量按 sessionId 过滤自动落到新会话的占位气泡）；
   // busy 不打断当前对话，跳转排队，当前轮结束后 exitBusy 弹「点击查看」提示。
   useEffect(() => {
@@ -694,8 +687,8 @@ export function ChatPanel({
   }, []);
 
   // 危险操作确认：机器人删任务前弹窗（60s 无响应后端自动拒绝）；
-  // kind="file_access"（2026-08-26）：文件访问授权，三按钮（允许一次/始终允许该目录/拒绝）；
-  // sessionId 归属过滤（2026-08-26 会话隔离）：只弹属于当前会话的确认，
+  // kind="file_access"：文件访问授权，三按钮（允许一次/始终允许该目录/拒绝）；
+  // sessionId 归属过滤（会话隔离）：只弹属于当前会话的确认，
   // 别的会话/后台任务的确认不弹（后端 60s 超时自动拒绝兜底）
   useEffect(() => {
     const unConfirm = listen<{ id?: string; tool?: string; detail?: string; kind?: string; sessionId?: string | null }>(
@@ -804,7 +797,7 @@ export function ChatPanel({
   };
 
   /** 核心执行：发送历史并流式收尾（send / /retry 共用）。
-   *  2026-09-10 任务执行聊天化：bot_execute_task 不再走这里（任务卡执行由后端
+   *  任务执行聊天化：bot_execute_task 不再走这里（任务卡执行由后端
    *  建新会话跑，前端收 chat-open-session 切换围观）。
    *  收尾时校验会话未切换才更新 UI；持久化始终按 sid 写（写的是正确会话） */
   const runChat = async (history: Msg[], renameText?: string) => {
@@ -870,7 +863,7 @@ export function ChatPanel({
     if (cmd === "/stop") {
       setInput("");
       if (busyRef.current) {
-        // P1-8（2026-08-27 审计）：/stop 按会话停止——只停当前会话的执行实例
+        // /stop 按会话停止——只停当前会话的执行实例
         invoke("bot_stop", { sessionId: sessionIdRef.current }).catch((e) =>
           handleCommandError(e, "bot_stop", { silent: true })
         );
@@ -885,7 +878,7 @@ export function ChatPanel({
         addHint("当前没有活动对话");
         return true;
       }
-      // 替代原顶部 🧹 按键（2026-09-08 老板拍板）：清空当前 session 消息 + 持久化
+      // 清空当前 session 消息 + 持久化
       setMessages([]);
       invoke("bot_history_clear", { sessionId }).catch((e) =>
         handleCommandError(e, "bot_history_clear", { silent: true })
@@ -902,7 +895,7 @@ export function ChatPanel({
         return true;
       }
       enterBusy();
-      // 进度占位：压缩请求期间有可见反馈（二次审计 P3：原界面像卡死）
+      // 进度占位：压缩请求期间有可见反馈（否则界面像卡死）
       if (sessionIdRef.current === sid) {
         setMessages((prev) => [
           ...prev,
@@ -960,7 +953,7 @@ export function ChatPanel({
     if (text.startsWith("/")) {
       if (await runSlashCommand(text)) return;
     }
-    // busyRef 同步检查：state 重渲染前连续两次 Enter 也能拦下重复发送（审计 P2）
+    // busyRef 同步检查：state 重渲染前连续两次 Enter 也能拦下重复发送
     if ((!text && !files.length) || busyRef.current || !sessionId) return;
     setInput("");
     // 已选任务以 [已选任务] 引用块附在消息后，模型按 taskId 精确操作
@@ -1067,7 +1060,7 @@ export function ChatPanel({
   };
 
   // 点任务引用按钮：通知主窗口打开该任务编辑态 + 唤起主窗口并强制置顶
-  // （与挂件双击标题同一规则：老板 2026-08-17 11:31「主窗口要出现在桌面屏幕最顶层」）
+  // （与挂件双击标题同一规则：主窗口要出现在桌面屏幕最顶层）
   const openTaskInMain = async (ref: TaskRef) => {
     emit("edit-task", { id: ref.id }).catch(() => {});
     focusMainWindow();
@@ -1140,7 +1133,7 @@ export function ChatPanel({
         </div>
       )}
       <div ref={topBarRef} className="flex items-center mb-2 shrink-0 gap-1">
-        {/* 左侧：🤖 会话 + 🧠 模型 两块平分空间（2026-09-08 老板拍板） */}
+        {/* 左侧：🤖 会话 + 🧠 模型 两块平分空间 */}
         <div className="flex items-center gap-1 flex-1 min-w-0">
           {/* 🤖 会话切换器（平分第一块） */}
           <button
@@ -1181,7 +1174,7 @@ export function ChatPanel({
         </button>
       </div>
       {/* 会话下拉：作为 rootRef 直接子元素，absolute 横跨整个 panel 宽度
-          （左对齐 🤖、右对齐 🎯，2026-09-08 老板拍板） */}
+          （左对齐 🤖、右对齐 🎯） */}
       {sessionMenuOpen && (
         <div
           ref={sessionDropdownRef}
@@ -1304,7 +1297,7 @@ export function ChatPanel({
                     {m.thinking}
                   </Fold>
                 )}
-                {/* Skill 失败半成品（Phase 4 第 5 项 + 审计 P2 优化项）。
+                {/* Skill 失败半成品。
                  *  区别于 🔧 工具折叠行：用 ⚠️ 标记，视觉上提示「这不是普通工具调用」；
                  *  默认折叠，点开才看哪个 step 成功 + 是否回滚。 */}
                 {m.role === "assistant" && m.skillFailure && (
@@ -1379,7 +1372,7 @@ export function ChatPanel({
                 ) : (
                   ""
                 )}
-                {/* 「查看执行对话」跳转（2026-09-10 任务执行聊天化：busy 时跳转排队，
+                {/* 「查看执行对话」跳转（任务执行聊天化：busy 时跳转排队，
                     忙完 hint + 按钮切换到执行会话） */}
                 {m.actionSessionId && (
                   <button
@@ -1485,8 +1478,8 @@ export function ChatPanel({
         </div>
       )}
 
-      {/* 斜杠命令 autocomplete：第一个字是 / 且无空格时浮出 picker
-     （老板 2026-08-17 15:51 指令）。点选 / Tab / ↑↓ 选 / Esc 关 */}
+      {/* 斜杠命令 autocomplete：第一个字是 / 且无空格时浮出 picker。
+          点选 / Tab / ↑↓ 选 / Esc 关 */}
       {!slashDismissed && input.startsWith("/") && !input.includes(" ") && (
         <div className="mb-1.5 nm-card rounded-xl p-1 max-h-40 overflow-y-auto shrink-0">
           {SLASH_COMMANDS.filter((c) => c.cmd.startsWith(input)).map(
@@ -1574,7 +1567,7 @@ export function ChatPanel({
           }
           className="nm-inset flex-1 min-w-0 rounded-xl px-3 py-1.5 text-xs text-[var(--t3)] outline-none placeholder:text-[var(--t5)]"
         />
-        {/* 发送/停止一体键（2026-08-26 老板拍板）：回复中变为红框正方形停止键，
+        {/* 发送/停止一体键：回复中变为红框正方形停止键，
             点击即 bot_stop 中断本次运行；中断/回答结束自动变回发送键 */}
         {busy ? (
           <button

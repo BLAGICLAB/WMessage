@@ -1,18 +1,17 @@
-//! 工具调用守卫（老板 2026-08-17 18:14 拍板）
+//! 工具调用守卫
 //!
 //! ## 后置拦截（原子黑名单）
 //! - 凡是「仅作为某个 Skill 内部子步骤、不允许用户直接独立调用」的底层原子 Function
 //!   → 命中即阻断、返回提示走对应 Skill，**不交给模型**（硬锁）
 //! - 黑名单内 Function 仅在 Skill 运行时（state == Running）放行
 //!
-//! ## 待办：前置预路由（Q1 关键词硬锁）
-//! - 第二步再实现：从用户输入预判复合业务 → 直接 `start_skill` + 状态机 + Harness，
-//!   LLM 仅作可选 L2 兜底，不作主力
+//! ## 前置预路由
+//! 已实现于 intent_router.rs（L1 正则硬锁：命中技能 intents 直接加载，LLM 不参与选择 Skill）
 
 /// 禁止 LLM 裸调的原子 Function 黑名单
-/// （老板 2026-08-17 18:14 拍板：仅作 Skill 内部子步骤、不能独立调用的底层原子）
+///（仅作 Skill 内部子步骤、不能独立调用的底层原子）
 ///
-/// 2026-09-02 老板拍板：create_word_revisions 移出黑名单——Word 修订模式去 Skill 化，
+/// create_word_revisions 不在黑名单——Word 修订模式去 Skill 化，
 /// 聊天里直接可用（引擎强制 .NET OpenXML 优先、Python 兜底，见 run_doc_revisions）。
 pub const ATOMIC_TOOLS: &[&str] = &[
     // Skill 末尾绑产物专用（任务卡执行 Skill / 文档生成 Skill 完成后绑定产物到任务卡）
@@ -33,7 +32,7 @@ pub fn atomic_block_message(name: &str) -> String {
 }
 
 /// 当前会话是否有 Skill 在 Running 状态（决定原子工具是否放行）
-/// 2026-08-26 会话隔离：按 session 过滤，别的会话的 Skill 不给本会话开门
+/// 会话隔离：按 session 过滤，别的会话的 Skill 不给本会话开门
 ///
 /// 委托 `bot_skills::is_skill_active_for` 实现（穿透 SkillRun 状态访问）
 pub fn is_skill_active(session_id: Option<&str>) -> bool {
@@ -44,8 +43,8 @@ pub fn is_skill_active(session_id: Option<&str>) -> bool {
 mod tests {
     use super::*;
 
-    /// 2026-09-02 老板拍板：create_word_revisions 去 Skill 化（移出黑名单，聊天直调）——
-    /// 锁死回归：它绝不能再回到原子黑名单里（否则聊天润色又被「不允许裸调」拦截）
+    /// 回归锁：create_word_revisions 去 Skill 化（不在黑名单，聊天直调）——
+    /// 它绝不能再回到原子黑名单里（否则聊天润色又被「不允许裸调」拦截）
     #[test]
     fn create_word_revisions_is_not_atomic_anymore() {
         assert!(!is_atomic_tool("create_word_revisions"));

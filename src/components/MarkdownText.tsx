@@ -5,7 +5,7 @@ import { isAbsPath, isHttpUrl, openTarget } from "../lib/openTarget";
 
 /**
  * 助手回复的 Markdown 渲染：GFM（表格/任务列表）+ 单换行断行。
- * 链接/绝对路径保持与 RichText 一致的点击行为（2026-09-05 起统一走 openTarget：
+ * 链接/绝对路径保持与 RichText 一致的点击行为（统一走 openTarget：
  * URL → 浏览器；路径 → Rust open_file_path；失败弹错不静默）。
  * react-markdown 默认转义原始 HTML，安全。
  */

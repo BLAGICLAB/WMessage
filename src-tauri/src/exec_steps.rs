@@ -1,4 +1,4 @@
-//! 任务卡逐步执行模式（2026-08-19 老板拍板）：
+//! 任务卡逐步执行模式：
 //! 多子任务卡手动「交给机器人」（🤖 / bot_execute_task）→ 子任务一个一个做；
 //! 每个做完把结果发回聊天，等用户确认：
 //! - 「继续」→ 勾选该子任务（系统直接落库，不经 LLM），做下一个
@@ -22,14 +22,14 @@ use crate::bot_slash::StopGuard;
 use crate::error::{CommandError, CommandResult};
 
 /// 挂起的逐步执行：等用户确认当前子任务。
-/// 2026-08-27 审计 P1-12：全局单槽 → **按会话分槽**（HashMap<会话 key, 挂起>）——
-/// 原先会话 B 触发逐步执行会静默覆盖会话 A 的挂起（A 之后回「继续」落入普通聊天被当新指令）。
+/// **按会话分槽**（HashMap<会话 key, 挂起>）——全局单槽会让会话 B 触发逐步执行
+/// 静默覆盖会话 A 的挂起（A 之后回「继续」落入普通聊天被当新指令）。
 struct PendingExec {
     task_id: String,
     subtask_id: String,
-    /// 触发会话 id（2026-08-26 会话隔离）
+    /// 触发会话 id（会话隔离）
     session_id: Option<String>,
-    /// 批次5审计 P2：执行防重入守卫随挂起存活——原先 start() 返回即 Drop 释放，
+    /// 执行防重入守卫随挂起存活——若 start() 返回即 Drop 释放，
     /// 确认挂起期间调度器能对同一卡并发起执行（SchedGuard/ExecGuard 互不知晓）。
     /// RAII：挂起被 take/clear 后随 PendingExec 一起 Drop，自动释放。
     #[allow(dead_code)] // 纯存活性持有（靠 Drop 释放防重入），从不读取
@@ -47,7 +47,7 @@ fn session_key(session_id: Option<&str>) -> String {
     session_id.unwrap_or("").to_string()
 }
 
-/// 当前会话是否有挂起的逐步执行（2026-08-26 起按会话匹配：
+/// 当前会话是否有挂起的逐步执行（按会话匹配：
 /// 会话 A 挂起时，会话 B 的消息走正常聊天路由，不被 resume 截胡）
 pub fn has_pending_for(session_id: Option<&str>) -> bool {
     pending_map()
@@ -147,7 +147,7 @@ async fn mark_subtask_done(app: &AppHandle, task_id: &str, subtask_id: &str) {
             s.text.clone()
         });
     let Some(text) = done_now else { return };
-    t.expected_updated_at = t.updated_at; // T1-1：RMW 基线 = 快照 updated_at
+    t.expected_updated_at = t.updated_at; // RMW 基线 = 快照 updated_at
     t.updated_at = Some(chrono::Utc::now().timestamp_millis());
     if crate::db::db_upsert(app.clone(), vec![t.clone()]).await.is_ok() {
         crate::bot::audit_log(
@@ -272,7 +272,7 @@ pub async fn start(app: &AppHandle, task: &crate::db::Task, session_id: Option<&
     {
         Some(id) => id,
         None => {
-            // 批次5审计 F11：早退也要复位机器人头像（原先 ? 直接返回，卡片永远顶头像）
+            // 早退也要复位机器人头像（否则 ? 直接返回，卡片永远顶头像）
             crate::bot_chat::set_bot_assigned(app, &task.id, false).await;
             return Err(CommandError::TaskInvalidState {
                 reason: "没有未完成的子任务".into(),
@@ -280,11 +280,11 @@ pub async fn start(app: &AppHandle, task: &crate::db::Task, session_id: Option<&
         }
     };
     let stop = StopGuard::new_task_exec(true, session_id.map(|s| s.to_string()));
-    // 批次5审计 P2：ExecGuard 随 run_step 传入并 park 进挂起态，确认等待期仍持防重入
+    // ExecGuard 随 run_step 传入并 park 进挂起态，确认等待期仍持防重入
     let r = run_step(app, &task.id, &first, None, &stop, exec_guard).await;
     if r.is_err() {
         clear_for(app, session_id, "逐步执行起步失败").await;
-        // 批次5审计 F11：起步失败从未 park，上面的 clear_for 是 no-op，必须显式复位头像
+        // 起步失败从未 park，上面的 clear_for 是 no-op，必须显式复位头像
         crate::bot_chat::set_bot_assigned(app, &task.id, false).await;
     }
     r
@@ -298,8 +298,8 @@ pub async fn resume(app: &AppHandle, reply: &str, session_id: Option<&str>) -> C
             task_refs: vec![],
         });
     };
-    // P1-12（2026-08-27 审计）：续跑失败必须显式收尾——原先 pending 已 take、
-    // LLM 失败后任务卡永远顶着机器人头像且零审计（与 start() 的错误清理不对称）。
+    // 续跑失败必须显式收尾——pending 已 take，若 LLM 失败后不收尾，
+    // 任务卡会永远顶着机器人头像且零审计（与 start() 的错误清理不对称）。
     // 失败语义按「结束本次逐步执行」处理（已勾选的保持现状），不静默挂起。
     let cleanup_on_err = |app: &AppHandle, task_id: &str, r: &CommandResult<BotChatResult>| {
         if let Err(e) = r {
@@ -310,7 +310,7 @@ pub async fn resume(app: &AppHandle, reply: &str, session_id: Option<&str>) -> C
         }
         r.is_err()
     };
-    // 批次5审计 P2：守卫随挂起取回——续跑分支再 park / 停止分支随解构 Drop 释放
+    // 守卫随挂起取回——续跑分支再 park / 停止分支随解构 Drop 释放
     let PendingExec {
         task_id,
         subtask_id,
@@ -394,7 +394,7 @@ mod classify_tests {
         assert_eq!(classify_reply("配色太深了，换浅色"), StepReply::Redo("配色太深了，换浅色".into()));
     }
 
-    // ── P1-12（2026-08-27 审计）：挂起按会话分槽 ──
+    // ── 挂起按会话分槽 ──
 
     #[test]
     fn pending_slots_are_per_session() {
@@ -416,7 +416,7 @@ mod classify_tests {
 
 #[cfg(test)]
 mod batch5_guard_tests {
-    /// 批次5审计 P2：ExecGuard RAII 语义——持有期间同卡不得再获取，Drop 后释放
+    /// ExecGuard RAII 语义——持有期间同卡不得再获取，Drop 后释放
     #[test]
     fn exec_guard_blocks_second_acquire_until_drop() {
         let g = crate::bot_chat::ExecGuard::acquire("batch5-test-task").expect("首次获取应成功");
@@ -431,7 +431,7 @@ mod batch5_guard_tests {
         );
     }
 
-    /// 批次5审计 P2 回归锁：挂起态必须持有 ExecGuard
+    /// 回归锁：挂起态必须持有 ExecGuard
     ///（否则确认等待期调度器可对同一卡并发起执行）
     #[test]
     fn pending_exec_holds_exec_guard() {

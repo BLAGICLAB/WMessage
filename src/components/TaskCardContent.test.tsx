@@ -10,7 +10,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
 
 const task: Task = { id: "t1", title: "原始标题", column: "todo" };
 
-// E4（2026-08-19）：Escape 取消内联编辑后，随后的 blur 不得再把草稿提交
+// Escape 取消内联编辑后，随后的 blur 不得再把草稿提交
 // （组件本身不调 invoke，提交走父组件 onCommitTitle → 写库；验证 onCommitTitle
 // 不被调用即等价于 db_upsert 不触发）
 describe("TaskCardContent 标题编辑 Escape 取消（E4）", () => {
@@ -51,7 +51,7 @@ describe("TaskCardContent 标题编辑 Escape 取消（E4）", () => {
     fireEvent.blur(input);
     expect(onCommitTitle).not.toHaveBeenCalled();
     // 取消标记已重置，后续 blur 正常提交当前草稿；
-    // P2-23：行为与 TodoCard 统一——Escape 已把草稿回滚为已提交值，故提交「原始标题」
+    // 行为与 TodoCard 统一——Escape 已把草稿回滚为已提交值，故提交「原始标题」
     fireEvent.blur(input);
     expect(onCommitTitle).toHaveBeenCalledWith("原始标题");
   });
@@ -81,7 +81,7 @@ describe("TaskCardContent 标题编辑 Escape 取消（E4）", () => {
   });
 });
 
-// —— 多文件绑定（2026-08-19）：chip 列表 / 单独移除 / 超 5 折叠 / 多文件打开列表 ——
+// —— 多文件绑定：chip 列表 / 单独移除 / 超 5 折叠 / 多文件打开列表 ——
 describe("TaskCardContent 多文件绑定", () => {
   const multiTask: Task = {
     id: "t2",
@@ -160,7 +160,7 @@ describe("TaskCardContent 多文件绑定", () => {
   });
 });
 
-// 2026-09-02 一致性修复：挂件卡片此前不显示完成时间，主窗口 TodoCard 显示
+// 一致性回归：挂件卡片此前不显示完成时间，主窗口 TodoCard 显示
 describe("TaskCardContent 完成时间显示（与主窗口一致）", () => {
   it("完成列任务显示「完成 MM-DD HH:mm」", () => {
     render(

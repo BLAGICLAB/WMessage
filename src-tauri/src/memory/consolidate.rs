@@ -1,4 +1,4 @@
-//! 定时记忆整理（consolidation，2026-09-09，设计 docs/BOT-MEMORY-V2-DESIGN.md 第 9 节）：
+//! 定时记忆整理（consolidation，设计 docs/BOT-MEMORY-V2-DESIGN.md 第 9 节）：
 //! 后台定期把近期/活跃记忆发给 LLM 做一轮反思——合并相关条目、裁决矛盾、提炼规律，
 //! 而不是只等摘要攒够 10 条触发 Reflection。
 //!

@@ -1,12 +1,12 @@
 // 旧版 localStorage 键：方案B 起任务数据存 SQLite（wmessage.db），此键仅用于首次迁移
 export const STORAGE_KEY = "***";
 
-// —— 方案B（2026-08-14）：任务数据存 SQLite，行级增量读写 ——
+// —— 方案B：任务数据存 SQLite，行级增量读写 ——
 import { invoke } from "@tauri-apps/api/core";
 import { handleCommandError } from "./lib/errorHandler";
 import type { Task } from "./types";
 
-/** 结构相等（用于 diff 行级变更）。T1-1：expectedUpdatedAt 是写前比对基线（传输元数据，
+/** 结构相等（用于 diff 行级变更）。expectedUpdatedAt 是写前比对基线（传输元数据，
  *  非内容），不参与比较——否则 state 残留的脏基线会击穿纯排序豁免 / 制造假变更 */
 export const taskEq = (a: Task, b: Task) =>
   JSON.stringify({ ...a, expectedUpdatedAt: undefined }) ===
@@ -30,7 +30,7 @@ export async function loadTasksFromDb(): Promise<LoadTasksResult> {
 
 /**
  * 行级增量写入（INSERT OR REPLACE）。
- * 写失败不再静默吞错（E1 2026-08-19）：弹 alert 并把错误抛给调用方——
+ * 写失败不再静默吞错：弹 alert 并把错误抛给调用方——
  * 否则 UI 已更新而磁盘没落，重启后 UI/DB 永久分叉。
  */
 export async function upsertTasks(tasks: Task[]): Promise<void> {
@@ -81,7 +81,7 @@ export const sortByOrder = (tasks: Task[]) =>
 /**
  * 行级 diff + 打修改时间戳（主窗口 mutate 与挂件 applyAndSync 共用）。
  * upserts = 新增/变化行，deletes = 消失行 id；变化行打 updatedAt=now。
- * P2-20（2026-08-19）：纯排序变更（除 order 外无字段差异）保留原 updatedAt——
+ * 纯排序变更（除 order 外无字段差异）保留原 updatedAt——
  * 否则拖拽排序把被重排行的 updatedAt 全刷成 now，多客户端按 updatedAt 合并时
  * 排序写互相覆盖，顺序来回乱跳。
  */
@@ -101,13 +101,13 @@ export function diffTaskRows(
     const p = prevMap.get(t.id);
     // 纯 order 变更：不刷新 updatedAt（新任务 p 为 undefined，照常打戳）
     if (p && taskEq({ ...p, order: t.order }, t)) {
-      // T1-1：纯排序也带基线（在 taskEq 之后设置，不参与内容比较）——
+      // 纯排序也带基线（在 taskEq 之后设置，不参与内容比较）——
       // 排序写若撞上他端内容修改同样拒写，不用旧行整行压过去
       t.expectedUpdatedAt = p.updatedAt;
       return;
     }
     t.updatedAt = now;
-    // T1-1：RMW 写回基线 = 快照行 updatedAt；新任务（无 prev）不带基线。
+    // RMW 写回基线 = 快照行 updatedAt；新任务（无 prev）不带基线。
     // 注意必须在 taskEq 判定之后赋值：基线字段不参与「是否变化」比较，
     // 否则纯排序豁免会被脏基线击穿。
     t.expectedUpdatedAt = p?.updatedAt;

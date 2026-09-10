@@ -1,4 +1,4 @@
-//! 结构化 Command 错误类型（Phase 7 Q4 2026-08-18）
+//! 结构化 Command 错误类型
 //!
 //! 设计目标：
 //! - 全量替换 `Result<T, String>` 为 `Result<T, CommandError>`，便于前端按 code 分流
@@ -20,7 +20,7 @@
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize, Serializer};
 
-/// 运行平台分层（P2-27）：同一 `code` 在不同 OS 的底层错误语义不同
+/// 运行平台分层：同一 `code` 在不同 OS 的底层错误语义不同
 /// （Unix errno / Windows WinError / 信号与权限模型差异），序列化附带 `platform`
 /// 字段（诊断/调试用），前端与日志可据此区分同 code 错误的实际来源。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,7 +70,7 @@ pub enum CommandError {
     // ─────  任务 / 数据库  ─────
     /// 任务不存在
     TaskNotFound(String),
-    /// 业务状态拒绝（P2-28）：任务存在但当前状态不允许该操作
+    /// 业务状态拒绝：任务存在但当前状态不允许该操作
     /// （执行中重复触发 / 已完成 / 已归档），非内部错误，不得降级 INTERNAL
     TaskInvalidState {
         reason: String,
@@ -235,7 +235,7 @@ impl std::fmt::Display for CommandError {
 }
 
 /// 序列化到前端：JSON 形如 `{ "code": "AUTH_MISSING", "message": "...", "recoverable": true, "platform": "macos" }`
-/// P2-27：`platform` 字段区分同 code 错误的跨平台语义（诊断用）
+/// `platform` 字段区分同 code 错误的跨平台语义（诊断用）
 impl Serialize for CommandError {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -247,7 +247,7 @@ impl Serialize for CommandError {
 
 impl CommandError {
     /// 带显式平台的序列化内核：生产走 Platform::current()，
-    /// pub(crate) 供测试注入异平台验证「同 code 不同 platform 序列化不同」（P2-27）
+    /// pub(crate) 供测试注入异平台验证「同 code 不同 platform 序列化不同」
     pub(crate) fn serialize_with_platform<S>(
         &self,
         platform: Platform,
@@ -383,11 +383,11 @@ mod tests {
         assert!(json.contains("\"code\":\"BOT_DISABLED\""));
         assert!(json.contains("\"message\":"));
         assert!(json.contains("\"recoverable\":true"));
-        // P2-27：platform 字段随当前编译目标平台输出
+        // platform 字段随当前编译目标平台输出
         assert!(json.contains("\"platform\":"));
     }
 
-    // ── P2-27：平台分层——同 code 不同 platform 序列化字段不同 ──
+    // ── 平台分层——同 code 不同 platform 序列化字段不同 ──
 
     /// 测试注入显式平台的包装（生产 Serialize 走 Platform::current()）
     struct WithPlatform<'a>(&'a CommandError, Platform);
@@ -429,7 +429,7 @@ mod tests {
         assert!(json.contains("\"recoverable\":false"));
     }
 
-    // ── P2-28：业务状态拒绝专用变体，不降级 INTERNAL ──
+    // ── 业务状态拒绝专用变体，不降级 INTERNAL ──
 
     #[test]
     fn task_invalid_state_is_recoverable_business_rejection() {
@@ -465,8 +465,8 @@ mod tests {
         assert!(!cmd_err.message().is_empty(), "message 应非空");
     }
 
-    // ── 2026-09-08：DomainRule 变体专项（P0-6A × 19 迁移）
-    // 覆盖 audit doc §6 列的 4 项直接断言 + 1 条同 code 不同 reason 序列化稳定 ──
+    // ── DomainRule 变体专项：
+    // 覆盖 4 项直接断言 + 1 条同 code 不同 reason 序列化稳定 ──
 
     #[test]
     fn domain_rule_code_is_stable() {

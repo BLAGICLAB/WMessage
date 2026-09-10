@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { handleCommandError } from "./errorHandler";
 
 /**
- * 链接/路径识别与打开的统一入口（2026-09-05 彻底修复「聊天下方文档/网址链接
+ * 链接/路径识别与打开的统一入口（彻底修复「聊天下方文档/网址链接
  * 有时打不开、有时显示 Program」）：
  * 根因一：路径正则按空白截断——「C:\Program Files\...」「报告 终稿.docx」这类带空格
  *   路径被切成空格前一段，链接显示成「Program」、点击打开一个不存在的路径；

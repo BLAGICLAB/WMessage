@@ -58,7 +58,7 @@ export interface Task {
   note?: string;
   /** 标签列表 */
   tags?: string[];
-  /** 绑定文件列表（2026-08-19 多文件绑定，上限 10；isDir=true 为文件夹，文件夹仍单选独占） */
+  /** 绑定文件列表（上限 10；isDir=true 为文件夹，文件夹仍单选独占） */
   files?: Array<{ path: string; isDir: boolean }>;
   /** 旧单绑定字段：迁移过渡保留（启动时若 files 为空自动迁入 files） */
   filePath?: string;
@@ -79,13 +79,13 @@ export interface Task {
   /** 最后修改时间（epoch ms），合并导入时同 id 取更新者 */
   updatedAt?: number;
   /**
-   * T1-1（2026-09-03）：RMW 写回基线 = 读快照时该行的 updatedAt。
+   * RMW 写回基线 = 读快照时该行的 updatedAt。
    * 仅随 db_upsert 上行（后端不落库、不在事件/导出中下发）；后端写前比对现行行，
    * 不一致 → 冲突拒写（防整行覆盖 lost-update）。新建/未读快照的写不带此字段。
    */
   expectedUpdatedAt?: number;
   /** 已交给机器人执行（🤖 点击置真，执行结束无论成败清除）。
-   *  头像规则（2026-09-05）：botAssigned 或 schedule 任一存在 → 机器人头像；否则用户头像 */
+   *  头像规则：botAssigned 或 schedule 任一存在 → 机器人头像；否则用户头像 */
   botAssigned?: boolean;
   /** 定时执行规则：daily:HH:MM / weekly:D:HH:MM / at:YYYY-MM-DDTHH:MM（设置期间一直显示机器人头像） */
   schedule?: string | null;

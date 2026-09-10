@@ -13,7 +13,7 @@ const mocks = vi.hoisted(() => {
   const dragDropHandlers: Array<
     (e: { payload: Record<string, unknown> }) => unknown
   > = [];
-  // 2026-09-10 任务执行聊天化：按事件名捕获 listen 回调（chat-open-session 手动触发用）
+  // 按事件名捕获 listen 回调（chat-open-session 手动触发用）
   const listeners: Record<string, Array<(e: { payload: Record<string, unknown> }) => void>> = {};
   return { invokeMock, listenMock, emitMock, dragDropHandlers, listeners };
 });
@@ -183,7 +183,7 @@ describe("ChatPanel", () => {
     const stopBtn = await screen.findByTitle("停止当前回复");
     expect(screen.queryByText("发送")).not.toBeInTheDocument();
     await user.click(stopBtn);
-    // P1-8（2026-08-27 审计）：/stop 按会话停止——携带当前会话 id
+    // /stop 按会话停止——携带当前会话 id
     expect(mocks.invokeMock).toHaveBeenCalledWith("bot_stop", { sessionId: "s1" });
   });
 
@@ -368,7 +368,7 @@ describe("ChatPanel", () => {
     expect(screen.queryByText(/b\.pdf/)).not.toBeInTheDocument();
   });
 
-  // ───────── 2026-09-10 任务执行聊天化：chat-open-session 跳转/排队 ─────────
+  // ───────── 任务执行聊天化：chat-open-session 跳转/排队 ─────────
 
   it("chat-open-session 非 busy：直接切换到执行会话并加载其历史", async () => {
     // 前面的用例会把 listenMock 恢复成不记录的默认实现，这里显式重设

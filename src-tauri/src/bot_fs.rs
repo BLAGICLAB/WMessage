@@ -1,9 +1,9 @@
-//! 本地文件只读工具（2026-08-19 Phase 1：read_text_file / grep_files / list_files）。
+//! 本地文件只读工具：read_text_file / grep_files / list_files。
 //!
-//! 安全设计（2026-08-26 授权模式改造，Kimi CLI 风格「执行前授权」）：
+//! 安全设计（Kimi CLI 风格「执行前授权」）：
 //! - 白名单（= 静默放行区）：内置默认（~/Desktop ~/Downloads ~/Documents + 任务卡绑定文件夹）
-//!   ∪ bot-config.json `allowedDirs`（追加语义，不再整体替换默认）
-//! - 白名单外按 perm_mode 分流：strict=硬拒（旧行为）/ ask=弹授权窗
+//!   ∪ bot-config.json `allowedDirs`（追加语义，不整体替换默认）
+//! - 白名单外按 perm_mode 分流：strict=硬拒 / ask=弹授权窗
 //!   （允许一次/始终允许该目录/拒绝，始终允许自动写进 allowedDirs）/ yolo=直接放行
 //! - resolve_with_perm：展开 ~ → canonicalize（不存在即拒绝）→ 白名单或授权放行；
 //!   `..` 与软链逃逸在 canonicalize 后无处遁形；命中/授权/拒绝都记审计
@@ -29,7 +29,7 @@ const SKIP_DIRS: [&str; 4] = ["node_modules", "target", "dist", "build"];
 
 /// 跨平台用户主目录：优先 HOME；Windows GUI 程序（资源管理器双击启动）常无
 /// HOME 环境变量，回退 USERPROFILE，再退 HOMEDRIVE+HOMEPATH。
-///（2026-08-20 修复：Windows 绿色版 HOME 缺失 → 默认白名单为空 →
+///（Windows 绿色版 HOME 缺失会让默认白名单为空 →
 ///  聊天附件 docx 被 extract_document 拒绝要求"再绑一遍"、且不再创建任务卡）
 pub(crate) fn home_dir() -> Option<PathBuf> {
     home_dir_from(
@@ -88,8 +88,8 @@ fn strip_verbatim(p: PathBuf) -> PathBuf {
     }
 }
 
-/// 白名单原始路径合并（2026-08-26 追加语义）：内置默认（桌面/下载/文档）+ 任务卡绑定
-/// 文件夹 + 用户 allowedDirs 三者并集（不再「用户列表整体替换默认」——否则授权弹窗
+/// 白名单原始路径合并（追加语义）：内置默认（桌面/下载/文档）+ 任务卡绑定
+/// 文件夹 + 用户 allowedDirs 三者并集（不能是「用户列表整体替换默认」——否则授权弹窗
 /// 「始终允许」写入一个目录后，内置默认反而失效）。抽纯函数便于单测。
 fn merge_raw_dirs(
     cfg_dirs: &[String],
@@ -114,7 +114,7 @@ async fn allowed_dirs(app: &AppHandle) -> Vec<PathBuf> {
     let mut task_dirs: Vec<String> = Vec::new();
     if let Ok(tasks) = crate::db::db_load(app.clone()).await {
         for t in tasks {
-            // 2026-08-27 SEC-P0-2：回收站任务的绑定目录不再进白名单（防「删卡不解权」残留授权）
+            // 回收站任务的绑定目录不进白名单（防「删卡不解权」残留授权）
             if t.deleted_at.is_some() {
                 continue;
             }
@@ -138,11 +138,11 @@ async fn allowed_dirs(app: &AppHandle) -> Vec<PathBuf> {
     out
 }
 
-/// 路径守卫（2026-08-26 授权模式改造，Kimi CLI 风格「执行前授权」）：
+/// 路径守卫（Kimi CLI 风格「执行前授权」）：
 /// ~ 展开 → canonicalize（不存在即拒）→ 白名单命中直接放行；
-/// 白名单外按 perm_mode 分流：strict 硬拒（旧行为）/ ask 弹授权窗（允许一次 /
+/// 白名单外按 perm_mode 分流：strict 硬拒 / ask 弹授权窗（允许一次 /
 /// 始终允许该目录自动写入 allowedDirs / 拒绝）/ yolo 直接放行。全程记审计。
-/// interactive/session_id（2026-08-26 会话隔离）：后台执行（interactive=false）
+/// interactive/session_id（会话隔离）：后台执行（interactive=false）
 /// 不弹授权窗直接拒；弹窗事件带 sessionId 供前端按会话过滤。
 /// 成功返回 canonical 路径（Windows 剥 \\?\ 前缀）。
 pub async fn resolve_with_perm(
@@ -250,7 +250,7 @@ fn walk(dir: &Path, mut visit: impl FnMut(&Path, bool) -> bool) {
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().to_string();
             let ft = entry.file_type().ok();
-            // 2026-08-27 SEC-P1-1：跳过符号链接（file_type 是 lstat 语义）——白名单目录内的
+            // 跳过符号链接（file_type 是 lstat 语义）——白名单目录内的
             // 软链指向外部时，grep 的 File::open/read_to_string 跟随软链会把外部文件内容带进
             // 模型上下文（一行 ln -s 即可逃逸）；类型读不到也按软链处理（fail-closed）
             if ft.as_ref().map(|t| t.is_symlink()).unwrap_or(true) {
@@ -279,8 +279,8 @@ fn is_binary_file(path: &Path) -> bool {
     buf[..n].contains(&0)
 }
 
-/// 有界读文件（2026-08-27 审计 P2）：只读前 max+1 字节判定截断——原先 std::fs::read
-/// 整读入内存后才截断，白名单内超大文件（GB 级日志）会把进程内存打爆。
+/// 有界读文件：只读前 max+1 字节判定截断——整读入内存后才截断的话，
+/// 白名单内超大文件（GB 级日志）会把进程内存打爆。
 /// 返回 (内容, 是否截断)。
 fn read_capped_file(path: &Path, max: usize) -> std::io::Result<(Vec<u8>, bool)> {
     use std::io::Read;
@@ -485,7 +485,7 @@ mod tests {
         assert_eq!(expand_tilde("~\\x"), PathBuf::from(&home).join("x"));
     }
 
-    /// SEC-P1-1（2026-08-27 安全审计）：walk 跳过符号链接——白名单目录内的软链
+    /// walk 跳过符号链接——白名单目录内的软链
     /// 指向外部时，grep 的内容读取跟随软链会把外部文件带进模型上下文
     #[cfg(unix)]
     #[test]
@@ -512,7 +512,7 @@ mod tests {
         let _ = std::fs::remove_file(&outside);
     }
 
-    /// Windows 绿色版 bug 根因（2026-08-20）：HOME 缺失时须回退 USERPROFILE
+    /// HOME 缺失（Windows 绿色版常见）时须回退 USERPROFILE
     #[test]
     fn home_dir_fallbacks() {
         let os = |s: &str| Some(std::ffi::OsString::from(s));
@@ -567,8 +567,8 @@ mod tests {
         assert!(!Path::new("/tmp/ab2/x").starts_with(allowed));
     }
 
-    /// 2026-08-26 追加语义：allowedDirs 非空时内置默认（桌面/下载/文档）仍生效，
-    /// 任务卡绑定文件夹也在并集里（旧行为是用户列表整体替换默认，会导致授权弹窗
+    /// 追加语义：allowedDirs 非空时内置默认（桌面/下载/文档）仍生效，
+    /// 任务卡绑定文件夹也在并集里（用户列表整体替换默认会导致授权弹窗
     /// 「始终允许」写入一个目录后内置默认失效）
     #[test]
     fn merge_raw_dirs_appends_to_defaults() {

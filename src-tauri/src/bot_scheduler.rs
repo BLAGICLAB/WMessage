@@ -1,4 +1,4 @@
-//! 定时任务卡调度器（F-6 step 5 拆分 2026-08-18；2026-09-10 任务执行聊天化改版）：
+//! 定时任务卡调度器：
 //!
 //! 负责 ⏰ 到点自动执行任务卡（每日/每周/每月/一次性 at:），与 bot_chat.rs 的
 //! 用户交互流解耦：
@@ -12,7 +12,7 @@ use chrono::Datelike;
 use tauri::AppHandle;
 use tauri_plugin_notification::NotificationExt;
 
-/// 定时任务执行完成/失败的系统通知（2026-09-10 任务执行聊天化）：
+/// 定时任务执行完成/失败的系统通知：
 /// 通知只是提醒（点击拉起应用后按 ⏰ 前缀会话回看完整执行记录）；
 /// 通知发送失败（未授权等）只记日志，不影响执行收尾。
 fn notify_scheduled_done(
@@ -38,7 +38,7 @@ fn notify_scheduled_done(
 
 // ───────────────────────── 定时任务卡（阶段二：⏰ 到点自动执行） ─────────────────────────
 
-/// 单次定时执行的整体超时（2026-08-28 批次5审计 P1）：最坏 50 轮 × LLM 300s 可跑
+/// 单次定时执行的整体超时：最坏 50 轮 × LLM 300s 可跑
 /// 数小时，无上限会把调度循环堵死。30 分钟对正常任务足够宽松；超时 drop 执行流
 ///（守卫 RAII 自动释放），记 sched_timeout 审计并兜底复位 bot_assigned 头像标记。
 const SCHED_TASK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
@@ -52,7 +52,7 @@ fn sched_running() -> &'static std::sync::Mutex<std::collections::HashSet<String
 }
 
 /// 调度防重入 RAII 守卫：Drop（含 panic 展开）时自动清理，保证任务 id 不残留
-/// （二次审计 P1：原先清理在 run_scheduled 末尾，panic 时该卡永久失效）
+/// （清理不能只放在 run_scheduled 末尾：panic 时该卡会永久失效）
 struct SchedGuard(String);
 
 impl SchedGuard {
@@ -87,10 +87,10 @@ fn parse_hm(s: &str) -> Option<(u32, u32)> {
     }
 }
 
-/// 本地时刻解析（2026-08-28 批次5审计 P2）：DST 切换日目标时刻可能不存在（春拨）
-/// 或歧义（秋拨）。原先五处一律 `.single()`，返回 None 时 occurrence_after 整体 None，
+/// 本地时刻解析：DST 切换日目标时刻可能不存在（春拨）
+/// 或歧义（秋拨）。一律 `.single()` 的话，返回 None 时 occurrence_after 整体 None，
 /// 而基准 sched_last 不变 → daily/weekly 任务永久静默失效且零日志。
-/// 现在：歧义取较早者；不存在则顺延到下一个合法时刻（最多 +3h，仍无 → None 按无效处理）。
+/// 因此：歧义取较早者；不存在则顺延到下一个合法时刻（最多 +3h，仍无 → None 按无效处理）。
 /// pub(crate)：due_notify.rs 的截止时间解析复用同一 DST 处理规则。
 pub(crate) fn resolve_local(dt: chrono::NaiveDateTime) -> Option<chrono::DateTime<chrono::Local>> {
     use chrono::offset::LocalResult;
@@ -174,7 +174,7 @@ fn occurrence_after(
     None
 }
 
-/// at: 一次性任务是否已错过且从未执行（应放弃补执行，防重启后补跑过期任务，审计 P1）
+/// at: 一次性任务是否已错过且从未执行（应放弃补执行，防重启后补跑过期任务）
 fn at_expired(sched: &str, sched_last: Option<i64>, now: chrono::DateTime<chrono::Local>) -> bool {
     let Some(at) = sched.strip_prefix("at:") else {
         return false;
@@ -195,14 +195,14 @@ fn at_expired(sched: &str, sched_last: Option<i64>, now: chrono::DateTime<chrono
 fn sched_last_dt(ms: Option<i64>) -> chrono::DateTime<chrono::Local> {
     match ms.and_then(chrono::DateTime::from_timestamp_millis) {
         Some(u) => u.with_timezone(&chrono::Local),
-        // epoch 0 必然可解析，但防御风格下不用裸 unwrap（审计 P3）
+        // epoch 0 必然可解析，但防御风格下不用裸 unwrap
         None => chrono::DateTime::from_timestamp_millis(0)
             .unwrap_or(chrono::DateTime::UNIX_EPOCH)
             .with_timezone(&chrono::Local),
     }
 }
 
-/// recurring 补跑时效窗口（2026-09-02 老板拍板，批次5审计 F3）：2h。
+/// recurring 补跑时效窗口：2h。
 /// 关机/休眠/机器人开关关闭期间错过的到点，恢复时距到点超过 2h 一律不补跑。
 const CATCHUP_WINDOW: chrono::Duration = chrono::Duration::hours(2);
 
@@ -243,7 +243,7 @@ fn classify_due(
 
 /// 找出到点的定时任务（未删、未归档、未完成，且 sched_last < 触发点 ≤ now）。
 /// 顺带清理「错过的一次性任务」：at: 从未执行且时间已过 → 放弃并清掉 schedule
-///（审计 P1：否则重启后 30s 内会补执行过期任务）
+///（否则重启后 30s 内会补执行过期任务）
 async fn find_due_tasks(app: &AppHandle) -> Vec<crate::db::Task> {
     let now = chrono::Local::now();
     let all = crate::db::db_load(app.clone()).await.unwrap_or_default();
@@ -296,29 +296,28 @@ async fn find_due_tasks(app: &AppHandle) -> Vec<crate::db::Task> {
         })
         .collect();
     // 清理过期一次性任务的 schedule（基于最新数据合并，只清目标字段）。
-    // 单次加载处理全部 stale id（审计 P3：原先每个 id 各开一次库，O(n) 次 db_load）
+    // 单次加载处理全部 stale id（避免每个 id 各开一次库，O(n) 次 db_load）
     if !stale_ids.is_empty() {
         if let Ok(cur) = crate::db::db_load(app.clone()).await {
             let fresh: Vec<crate::db::Task> = cur
                 .into_iter()
                 .filter(|t| stale_ids.contains(&t.id))
                 .map(|mut t| {
-                    t.expected_updated_at = t.updated_at; // T1-1：RMW 基线 = 快照 updated_at
+                    t.expected_updated_at = t.updated_at; // RMW 基线 = 快照 updated_at
                     t.schedule = None;
                     t.updated_at = Some(now.timestamp_millis());
                     t
                 })
                 .collect();
             if !fresh.is_empty() {
-                // 2026-08-28 批次2审计：调度器写库也要广播（原先零广播，
-                // 主窗口无轮询会长期显示旧的 ⏰ 徽标/备注）
+                // 调度器写库也要广播（主窗口无轮询，不广播会长期显示旧的 ⏰ 徽标/备注）
                 if crate::db::db_upsert(app.clone(), fresh.clone()).await.is_ok() {
                     crate::bot::broadcast_after_mutation(app, fresh, vec![]);
                 }
             }
         }
     }
-    // 消费超窗的 recurring occurrence（批次5审计 F3，2026-09-02 拍板 2h 窗口）：
+    // 消费超窗的 recurring occurrence（2h 补跑窗口见 CATCHUP_WINDOW）：
     // 不补跑，sched_last 记为现在——下一个 occurrence 顺延到未来，下个 tick 不再误判到点。
     // 与过期 at: 清理同模式：基于最新数据合并，只动 sched_last/updated_at。
     if !missed_ids.is_empty() {
@@ -327,7 +326,7 @@ async fn find_due_tasks(app: &AppHandle) -> Vec<crate::db::Task> {
                 .into_iter()
                 .filter(|t| missed_ids.contains(&t.id))
                 .map(|mut t| {
-                    t.expected_updated_at = t.updated_at; // T1-1：RMW 基线 = 快照 updated_at
+                    t.expected_updated_at = t.updated_at; // RMW 基线 = 快照 updated_at
                     t.sched_last = Some(now.timestamp_millis());
                     t.updated_at = Some(now.timestamp_millis());
                     t
@@ -349,7 +348,7 @@ async fn run_scheduled(app: AppHandle, task: crate::db::Task) {
     let Some(_sched_guard) = SchedGuard::acquire(&task.id) else {
         return;
     };
-    // 机器人开关关闭时不执行定时任务（二次审计 P2-3：开关只管 UI 不管后端）
+    // 机器人开关关闭时不执行定时任务（开关不能只管 UI，后端也要拦）
     if !crate::bot_slash::bot_get_enabled(app.clone()) {
         crate::bot::audit_log(
             &app,
@@ -370,11 +369,11 @@ async fn run_scheduled(app: AppHandle, task: crate::db::Task) {
 
     // 先记 sched_last：30s 扫描周期内不会重复触发。
     // 基于库中最新数据合并（勿用扫描快照：会覆盖用户在扫描后的编辑）。
-    // 记录失败则放弃本次执行（审计 P3：否则下个 tick 会因 sched_last 未更新而重复触发）
+    // 记录失败则放弃本次执行（否则下个 tick 会因 sched_last 未更新而重复触发）
     let mut marked = false;
     if let Ok(cur) = crate::db::db_load(app.clone()).await {
         if let Some(mut fresh) = cur.into_iter().find(|t| t.id == task.id) {
-            fresh.expected_updated_at = fresh.updated_at; // T1-1：RMW 基线 = 快照 updated_at
+            fresh.expected_updated_at = fresh.updated_at; // RMW 基线 = 快照 updated_at
             fresh.sched_last = Some(now.timestamp_millis());
             fresh.updated_at = Some(now.timestamp_millis());
             marked = crate::db::db_upsert(app.clone(), vec![fresh.clone()]).await.is_ok();
@@ -401,13 +400,13 @@ async fn run_scheduled(app: AppHandle, task: crate::db::Task) {
     )
     .await;
     let time_str = now.format("%m-%d %H:%M").to_string();
-    // 2026-09-10 任务执行聊天化：定时执行完成/失败发系统通知（执行过程在新会话里
+    // 定时执行完成/失败发系统通知（执行过程在新会话里
     // 流式可见、永久落库；通知只是提醒，点击拉起应用后按 ⏰ 前缀找到会话回看）。
     notify_scheduled_done(&app, &task.title, &result);
 
     // 执行结果写备注（模型可能已写摘要，这里前置 ⏰ 标记兜底）。
     // ⚠️ 必须基于执行后的最新数据合并：旧快照会把机器人执行期间的修改
-    // （完成状态/摘要/子任务）整体回滚（审计 P0 已修复）
+    // （完成状态/摘要/子任务）整体回滚
     let summary = match &result {
         Ok(r) => format!(
             "⏰ 自动执行 {time_str}：{}",
@@ -423,7 +422,7 @@ async fn run_scheduled(app: AppHandle, task: crate::db::Task) {
             };
             fresh.note = Some(note);
             // 一次性定时执行完清掉 schedule（⏰ 徽标消失）。
-            // 用执行后的 fresh.schedule 判断（审计 P2：执行期间用户改过定时，扫描快照会误清新设置）
+            // 用执行后的 fresh.schedule 判断（执行期间用户改过定时，扫描快照会误清新设置）
             if fresh
                 .schedule
                 .as_deref()
@@ -431,7 +430,7 @@ async fn run_scheduled(app: AppHandle, task: crate::db::Task) {
             {
                 fresh.schedule = None;
             }
-            fresh.expected_updated_at = fresh.updated_at; // T1-1：RMW 基线 = 快照 updated_at
+            fresh.expected_updated_at = fresh.updated_at; // RMW 基线 = 快照 updated_at
             fresh.updated_at = Some(chrono::Local::now().timestamp_millis());
             if crate::db::db_upsert(app.clone(), vec![fresh.clone()]).await.is_ok() {
                 crate::bot::broadcast_after_mutation(&app, vec![fresh], vec![]);
@@ -450,8 +449,8 @@ pub fn start_scheduler(app: AppHandle) {
             ticker.tick().await;
             let due = find_due_tasks(&app).await;
             for t in due {
-                // 每张卡独立 spawn 且【不 await】（2026-08-28 批次5审计 P1）：
-                // 原先 spawn 后立即 await，单张长任务（最坏可跑数小时）堵死调度循环，
+                // 每张卡独立 spawn 且【不 await】：
+                // spawn 后立即 await 的话，单张长任务（最坏可跑数小时）会堵死调度循环，
                 // 后续所有到点任务排队。spawn 本身已隔离 panic（主循环不受影响）；
                 // 同卡重入由 SchedGuard/ExecGuard 防护；另加单任务整体超时兜底。
                 let app2 = app.clone();
@@ -479,7 +478,7 @@ pub fn start_scheduler(app: AppHandle) {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// 测试：定时解析纯函数（occurrence_after / at_expired），F-6 step 5 提取
+// 测试：定时解析纯函数（occurrence_after / at_expired）
 // ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -592,7 +591,7 @@ mod sched_tests {
         );
     }
 
-    /// 批次5审计 P1 回归锁：调度循环 spawn 后不得再立即 await
+    /// 回归锁：调度循环 spawn 后不得再立即 await
     ///（串行执行回退 = 一张长任务卡堵死全部后续到点任务），且必须有单任务整体超时
     #[test]
     fn scheduler_loop_does_not_await_each_task() {
@@ -627,7 +626,7 @@ mod sched_tests {
         assert_eq!(occurrence_after("monthly:5:25:00", after), None);
     }
 
-    // ── 批次5审计 F3：recurring 补跑 2h 时效窗口（2026-09-02 拍板）──
+    // ── recurring 补跑 2h 时效窗口 ──
 
     fn ms(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> i64 {
         dt(y, mo, d, h, mi).timestamp_millis()

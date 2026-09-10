@@ -1,5 +1,5 @@
 /**
- * 任务变更来源标记（2026-08-19 Phase A：字符串约定 → 类型守卫）。
+ * 任务变更来源标记（字符串约定 → 类型守卫）。
  * 与 Rust 侧 src-tauri/src/mutation.rs 的 MutationOrigin 同值对应，改动需两侧同步。
  *
  * 语义（tasks-updated 事件）：

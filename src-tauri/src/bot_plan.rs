@@ -1,4 +1,4 @@
-//! PREVR 动态规划层（2026-08-26，老板拍板先做第 1+2 层）：
+//! PREVR 动态规划层（先做第 1+2 层）：
 //! - 第 1 层（执行器内验证）在 bot_model_loop：工具失败 → 注入换策略提示；
 //!   同工具连续失败 → 要求如实告知用户
 //! - 第 2 层（本模块）：复杂任务进主循环前先生成动态计划（Planner），
@@ -111,7 +111,7 @@ const REPLANNER_PROMPT: &str = "\
 要求：不要重复失败的调用方式；换参数/换工具/拆小步骤；最多 8 步；不要输出 JSON 以外的内容。";
 
 /// 调 Planner（单次非流式，60s 超时）。失败 → Err，调用方降级。
-/// 2026-09-05 Anthropic 兼容模式：按 provider 分支 URL/鉴权头/请求体/响应解析
+/// Anthropic 兼容模式：按 provider 分支 URL/鉴权头/请求体/响应解析
 ///（Anthropic 侧转换走 bot_anthropic 纯函数；失败同样 Err → 调用方降级为 None）。
 async fn call_planner(
     app: &tauri::AppHandle,
@@ -183,7 +183,7 @@ async fn call_planner(
         crate::bot::ApiProvider::Anthropic => crate::bot_anthropic::parse_anthropic_response(&v),
     };
     let text = text.as_str();
-    // 2026-08-28 批次3审计 P2-6：非流式 Planner 响应可能带 <think> 段，先剥再提取 JSON
+    // 非流式 Planner 响应可能带 <think> 段，先剥再提取 JSON
     let text = crate::bot_chat::strip_think_blocks(text);
     parse_plan(&text).ok_or_else(|| format!("Planner 输出无法解析为计划：{}", crate::bot::truncate_for_log(&text, 200)).into())
 }

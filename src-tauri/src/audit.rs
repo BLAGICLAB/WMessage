@@ -1,4 +1,4 @@
-//! 结构化审计事件（Koa 洋葱管线 post-execute 钩子主用，2026-08-17 22:17 第一块落地）
+//! 结构化审计事件（Koa 洋葱管线 post-execute 钩子主用）
 //!
 //! 老 `bot::audit_log` 仍走 free-form 文本；新 `audit_event!` 走结构化键值对。
 //! 两类都写同一个 `bot.log`，解析端靠首段 `INFO/WARN/ERROR` 区分：
@@ -9,9 +9,9 @@
 //! 单靠 free-form 文本做不了统计面板。
 
 use std::io::Write;
-use tauri::AppHandle; // F-6：Runtime 给 write_event 泛型化
+use tauri::AppHandle;
 
-/// 审计日志安全转义 + 截断（P2-11 原生于 bot_py，NEW-C-6 上提本模块共享）：
+/// 审计日志安全转义 + 截断（bot 侧日志写入统一走这里）：
 /// 剥换行/管道符，防伪造「INFO |」前缀与多行撕裂。
 /// 规则：`| ` → `|  `（双空格），剩余裸 `|` → `||`，`\n` → `\\n`，`\r` → `\\r`；
 /// 转义后按字符数截到 max 加省略号。
@@ -32,11 +32,11 @@ pub(crate) fn escape_for_log(s: &str, max: usize) -> String {
     }
 }
 
-/// kv 值写入日志前的长度上限（NEW-C-6：write_event 统一转义 + 截断）
+/// kv 值写入日志前的长度上限
 const KV_VALUE_MAX: usize = 500;
 
 /// 拼装 kv 段（write_event 与 format_event_line 共用）：值统一过 escape_for_log，
-/// 防用户输入 / 工具输出里的 `\n` / `|` 伪造日志行（NEW-C-6）。
+/// 防用户输入 / 工具输出里的 `\n` / `|` 伪造日志行。
 /// 键保持原样（调用方均为硬编码字面量）。
 fn append_kv_escaped(line: &mut String, kv: &[(&str, &str)]) {
     for (k, v) in kv {
@@ -62,11 +62,10 @@ impl AuditLevel {
     }
 }
 
-/// 工具调用是否失败/被拒（2026-08-27 审计 P1-6：统一判定口径，全链路唯一真相源）。
-/// 此前三套口径分叉——classify_text 用 contains、DSL 调度器 is_tool_failure_text 用
-/// starts_with 前缀、幻觉守卫各算各的；熔断「已强制终止」、暂停「技能已暂停」、
-/// 门禁拦截「⚠️」、用户拒绝「用户拒绝」四类文案两边都不认——导致末步熔断误报
-/// 「✅ 完成」、门禁拦截对 PREVR 隐身、被拒删除当成功。统一收口到这里，
+/// 工具调用是否失败/被拒（统一判定口径，全链路唯一真相源）。
+/// 熔断「已强制终止」、暂停「技能已暂停」、门禁拦截「⚠️」、用户拒绝「用户拒绝」
+/// 四类文案与常规失败前缀都要判失败；否则会出现末步熔断误报「✅ 完成」、门禁拦截
+/// 对 PREVR 隐身、被拒删除当成功。统一收口到这里，
 /// DSL 调度器 / PREVR / 幻觉守卫 / skill_on_step_post / 审计分级全部共用。
 /// 注：「失败/错误」保留 contains 语义——工具错误文案多为「{动作}失败：…」，前缀不命中。
 pub fn tool_call_failed(name: &str, text: &str) -> bool {
@@ -96,7 +95,7 @@ pub fn classify_text(name: &str, text: &str) -> AuditLevel {
     AuditLevel::Info
 }
 
-/// 拼装一行审计日志（NEW-D-5：生产 write_event 与测试 format_event_line 共用，
+/// 拼装一行审计日志（生产 write_event 与测试 format_event_line 共用，
 /// 消除「测试专用拷贝与生产拼装 drift 时测试照样绿」的盲区）。
 /// ts 由调用方提供（生产填真实时间戳，测试填占位串）。
 fn build_event_line(ts: &str, level: AuditLevel, event: &str, kv: &[(&str, &str)]) -> String {
@@ -106,19 +105,19 @@ fn build_event_line(ts: &str, level: AuditLevel, event: &str, kv: &[(&str, &str)
 }
 
 /// 纯函数：把事件拼成一行（测试用，不碰磁盘）
-/// 委托 build_event_line——与 write_event 同一份拼装实现（NEW-D-5），测试所见即线上行为
+/// 委托 build_event_line——与 write_event 同一份拼装实现，测试所见即线上行为
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn format_event_line(level: AuditLevel, event: &str, kv: &[(&str, &str)]) -> String {
     build_event_line("TIMESTAMP", level, event, kv)
 }
 
 /// bot.log 全局写锁：`write_event` 与 `bot::audit_log` 共用，
-/// 防多线程并发 append 交错（2026-08-18 事故：并发 execute_task 写日志出现错行混排）。
+/// 防多线程并发 append 交错（并发 execute_task 写日志会出现错行混排）。
 /// rotate + open + write 必须在同一把锁内，否则检查大小与写入之间存在竞态。
 pub static BOT_LOG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// 日志文件打开（2026-08-27 安全审计 P2）：创建即 0600 + 已有文件补 chmod——
-/// bot.log 含用户指令/文件路径/工具输出，原先 umask 默认 0644，同机其他用户可读。
+/// 日志文件打开：创建即 0600 + 已有文件补 chmod——
+/// bot.log 含用户指令/文件路径/工具输出，umask 默认 0644 下同机其他用户可读。
 /// 三处写入点（audit::append_line / bot::audit_log / bot_py::py_audit_to）共用。
 pub(crate) fn open_log_append(path: &std::path::Path) -> std::io::Result<std::fs::File> {
     let mut opts = std::fs::OpenOptions::new();
@@ -138,7 +137,7 @@ pub(crate) fn open_log_append(path: &std::path::Path) -> std::io::Result<std::fs
     Ok(f)
 }
 
-/// 追加一行到指定日志文件（P2-15：open/write 失败不再 `let _ =` 全静默——
+/// 追加一行到指定日志文件（open/write 失败不再 `let _ =` 全静默——
 /// eprintln 到 stderr 提示路径，审计丢了至少有迹可循；返回成功与否供测试断言，
 /// 不 panic、不阻塞业务）。
 fn append_line(path: &std::path::Path, line: &str) -> bool {
@@ -159,7 +158,7 @@ fn append_line(path: &std::path::Path, line: &str) -> bool {
 
 /// 写一条结构化审计事件到 `bot.log`（post-execute 钩子主入口）
 /// 复用 `bot::audit_log` 的 rotate 阈值与文件路径，老日志兼容。
-/// 泛型 Runtime（P2-24）：mock runtime 测试可直调（与 write_error_audit 同先例）。
+/// 泛型 Runtime：mock runtime 测试可直调（与 write_error_audit 同先例）。
 pub fn write_event<R: tauri::Runtime>(
     app: &AppHandle<R>,
     level: AuditLevel,
@@ -170,22 +169,21 @@ pub fn write_event<R: tauri::Runtime>(
     crate::db::rotate_log_if_large(&crate::db::data_dir(app).join("bot.log"), 5 * 1024 * 1024);
     let p = crate::db::data_dir(app).join("bot.log");
     let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
-    // NEW-C-6：kv 值统一转义（剥 \n / |），防伪造日志行；调用方不得再自行预转义
-    // NEW-D-5：行拼装走 build_event_line，与 format_event_line 同一份实现（防 drift）
+    // kv 值统一转义（剥 \n / |），防伪造日志行；调用方不得再自行预转义
+    // 行拼装走 build_event_line，与 format_event_line 同一份实现（防 drift）
     let kv_refs: Vec<(&str, &str)> = kv.iter().map(|(k, v)| (*k, v.as_str())).collect();
     let line = build_event_line(&ts.to_string(), level, event, &kv_refs);
     append_line(&p, &line);
 }
 
-/// P2-19：数据目录便携探针单一实现（原 db::db_dir / profile::data_dir /
-/// 本模块 generic_log_dir 三处拷贝，drift 风险；现统一走这里）。
+/// 数据目录便携探针单一实现（db / profile / 本模块统一走这里，防多处拷贝 drift）。
 /// 优先 exe 同目录（便携模式，U盘/绿色目录随走随带）；目录不可写
 /// （如 Program Files）退 app_data_dir；再退系统临时目录。
 ///
-/// 2026-08-26 修复（Windows 绿色版目录漂移）：探测结果进程内 OnceLock 定版——
-/// 原实现每次调用都现写探针文件，杀软临时锁定/UAC 状态变化/压缩包内直接运行
-/// 等瞬时失败会把当次数据目录翻转到 app_data，AI_Gen_Files、数据库、日志
-/// 分裂到两个位置。现在首次探测定版，整个运行期不再翻转；
+/// 探测结果进程内 OnceLock 定版：每次调用都现写探针文件的话，
+/// 杀软临时锁定/UAC 状态变化/压缩包内直接运行等瞬时失败会把当次数据目录
+/// 翻转到 app_data，AI_Gen_Files、数据库、日志分裂到两个位置。
+/// 首次探测定版，整个运行期不再翻转；
 /// 兜底分支发生时记一条 WARN 审计（写清翻到哪、为什么），可诊断。
 pub(crate) fn probe_log_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> std::path::PathBuf {
     use tauri::Manager;
@@ -202,7 +200,7 @@ pub(crate) fn probe_log_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> std
     let resolved = probe_dir_cached(exe_dir.as_deref(), app_data);
     // 兜底判定：exe 目录存在但结果不是它 → 发生了翻转，记 WARN（只在首次探测记一次）。
     // 写日志挪到独立线程：调用方可能正持有 BOT_LOG_LOCK（audit_log → data_dir → 这里），
-    // std Mutex 不可重入，直接写会死锁（2026-08-26 实锤挂死 cargo test）。
+    // std Mutex 不可重入，直接写会死锁。
     if first_probe && exe_dir.as_deref().is_some_and(|d| d != resolved.as_path()) {
         let exe_dir_s = exe_dir
             .as_deref()
@@ -227,7 +225,7 @@ pub(crate) fn probe_log_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> std
 
 /// 探测结果缓存（进程级 OnceLock）：首次 probe_log_dir 调用定版。
 /// 测试构建不缓存——同进程多测试各自探测不同临时目录/模拟 exe 目录，
-/// 全局缓存会让先跑的测试劫持后续所有结果（2026-08-26 实锤 3 个测试因此失败）；
+/// 全局缓存会让先跑的测试劫持后续所有结果；
 /// 定版语义由可注入内核 probe_dir_cached_in 的单测覆盖。
 #[cfg(not(test))]
 static PROBE_CACHE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
@@ -259,7 +257,7 @@ fn probe_dir_cached_in(
     cache.get_or_init(|| probe_dir(exe_dir, app_data)).clone()
 }
 
-/// 已定版的数据目录（P2-32 降级 key 路径等无 AppHandle 调用方复用，
+/// 已定版的数据目录（降级 key 路径等无 AppHandle 调用方复用，
 /// 保证与 probe_log_dir 同一份结果；未初始化 = 主流程还没探测过，返回 None）
 /// 测试构建无缓存（见 PROBE_CACHE 注释），恒 None → 调用方走原现探逻辑。
 #[cfg(not(test))]
@@ -273,14 +271,14 @@ pub(crate) fn cached_probe_dir() -> Option<std::path::PathBuf> {
     None
 }
 
-/// P2-19 可测内核：probe 三分支——exe 目录可写用它；不可写退 app_data；皆不可用退 temp。
-/// pub(crate)（P2-32）：bot.rs 降级 key 路径（无 AppHandle）复用同一便携策略。
+/// 可测内核：probe 三分支——exe 目录可写用它；不可写退 app_data；皆不可用退 temp。
+/// pub(crate)：bot.rs 降级 key 路径（无 AppHandle）复用同一便携策略。
 pub(crate) fn probe_dir(
     exe_dir: Option<&std::path::Path>,
     app_data: Option<std::path::PathBuf>,
 ) -> std::path::PathBuf {
     if let Some(dir) = exe_dir {
-        // 2026-08-28 批次6审计 P1：macOS .app 包内目录（*.app/Contents/MacOS）不算
+        // macOS .app 包内目录（*.app/Contents/MacOS）不算
         // 「便携 exe 同目录」——dmg 拖到 ~/Applications 后该目录可写，数据库/日志/
         // AI_Gen_Files 会全写进 app 包内（破坏签名、删 app 即删全部用户数据）。
         if !is_macos_app_bundle_dir(dir) {
@@ -294,7 +292,7 @@ pub(crate) fn probe_dir(
     app_data.unwrap_or_else(std::env::temp_dir)
 }
 
-/// macOS .app 包内 MacOS 目录判定（批次6审计 P1）：…/Xxx.app/Contents/MacOS
+/// macOS .app 包内 MacOS 目录判定：…/Xxx.app/Contents/MacOS
 fn is_macos_app_bundle_dir(dir: &std::path::Path) -> bool {
     let mut comps = dir.components().rev();
     matches!(comps.next(), Some(c) if c.as_os_str() == "MacOS")
@@ -304,16 +302,16 @@ fn is_macos_app_bundle_dir(dir: &std::path::Path) -> bool {
             .is_some_and(|c| c.as_os_str().to_string_lossy().ends_with(".app"))
 }
 
-/// 泛型 Runtime 版日志目录（D2）：write_event 写死 Wry AppHandle，middleware/profile
+/// 泛型 Runtime 版日志目录：write_event 写死 Wry AppHandle，middleware/profile
 /// 等泛型模块调不了，病态路径（registry 缺失 / profile 损坏）的 ERROR 审计走这里，
-/// 尽力而为不 panic。P2-19 起目录解析委托 probe_log_dir（消除第三处拷贝）。
+/// 尽力而为不 panic。目录解析委托 probe_log_dir。
 fn generic_log_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> std::path::PathBuf {
     probe_log_dir(app)
 }
 
-/// 泛型 Runtime 的 ERROR 审计（D2/D3）：rotate + BOT_LOG_LOCK + 追加一行结构化事件。
+/// 泛型 Runtime 的 ERROR 审计：rotate + BOT_LOG_LOCK + 追加一行结构化事件。
 /// 行拼装复用 build_event_line，与 write_event 零漂移；IO 失败走 append_line 的
-/// eprintln（P2-15），不 panic、不阻塞业务。
+/// eprintln，不 panic、不阻塞业务。
 pub(crate) fn write_error_audit<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     event: &str,
@@ -327,7 +325,7 @@ pub(crate) fn write_error_audit<R: tauri::Runtime>(
     append_line(&p, &line);
 }
 
-/// P2-32：无 AppHandle 场景的 WARN 审计（keyring 降级明文存储路径用）。
+/// 无 AppHandle 场景的 WARN 审计（keyring 降级明文存储路径用）。
 /// 目录由调用方解析（与降级 key 文件同目录，保证同一便携位置），
 /// 行拼装复用 build_event_line，与 write_event 零漂移。
 pub(crate) fn write_warn_audit_to(dir: &std::path::Path, event: &str, kv: &[(&str, &str)]) {
@@ -339,7 +337,7 @@ pub(crate) fn write_warn_audit_to(dir: &std::path::Path, event: &str, kv: &[(&st
     append_line(&p, &line);
 }
 
-/// 结构化审计事件宏（post-execute 钩子用，2026-08-17 22:17）
+/// 结构化审计事件宏（post-execute 钩子用）
 /// 用法：
 ///   audit_event!(app, AuditLevel::Info, "tool_done",
 ///       "tool" => "list_tasks", "ms" => 4u64, "refs" => 3usize);
@@ -394,11 +392,11 @@ mod tests {
         );
     }
 
-    // ── P1-6（2026-08-27 审计）：tool_call_failed 统一判定口径 ──
+    // ── tool_call_failed 统一判定口径 ──
 
     #[test]
     fn tool_call_failed_catches_gate_fuse_pause_reject() {
-        // 四类原先两套口径都不认的失败文案（P1-6 修复目标）
+        // 四类易漏判的失败文案（门禁/拒绝/熔断/暂停）都必须命中
         assert!(tool_call_failed("link_file_to_task", "⚠️ link_file_to_task 是内部原子，不允许裸调。"));
         assert!(tool_call_failed("delete_task", "用户拒绝了删除，任务未删除"));
         assert!(tool_call_failed("x", "技能「s」超过最大步数上限（8 步），已强制终止"));
@@ -446,7 +444,7 @@ mod tests {
         assert!(line.contains("preview={\"k\":\"v\"}"));
     }
 
-    // ── P2-15：写失败不再静默（eprintln + 返回 false，不 panic）──
+    // ── 写失败不再静默（eprintln + 返回 false，不 panic）──
 
     #[test]
     fn append_line_ok_returns_true_and_writes() {
@@ -472,7 +470,7 @@ mod tests {
         std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    // ── NEW-C-6：kv 值统一转义（剥换行/管道符）──
+    // ── kv 值统一转义（剥换行/管道符）──
 
     #[test]
     fn write_event_escapes_kv_newlines() {
@@ -485,7 +483,7 @@ mod tests {
 
     #[test]
     fn escape_for_log_strips_newlines_and_pipes() {
-        // 迁移自 bot_py（P2-11），行为保持一致
+        // 迁移自 bot_py，行为保持一致
         assert_eq!(escape_for_log("a\nb| c", 300), "a\\nb||  c");
         assert_eq!(escape_for_log("x\ry", 300), "x\\ry");
         assert_eq!(escape_for_log("plain", 300), "plain");
@@ -503,11 +501,11 @@ mod tests {
         assert!(out.ends_with('…'));
     }
 
-    // ── P2-19：probe_log_dir 三分支 + 调用方一致性 ──
+    // ── probe_log_dir 三分支 + 调用方一致性 ──
 
     #[test]
     fn probe_dir_cached_is_stable_across_calls() {
-        // 2026-08-26 目录漂移修复：OnceLock 定版后，第二次调用即使探测条件
+        // OnceLock 定版后，第二次调用即使探测条件
         // 变化（传入不同 exe_dir）也返回首次结果——运行期数据目录不再翻转。
         // 用独立 OnceLock 实例，不碰进程级全局缓存（防劫持其他测试）
         let cache = std::sync::OnceLock::new();
@@ -542,7 +540,7 @@ mod tests {
         std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    /// 批次6审计 P1：macOS .app 包内目录（即使可写）不得当便携数据目录——
+    /// macOS .app 包内目录（即使可写）不得当便携数据目录——
     /// 否则数据库/日志/AI_Gen_Files 全写进 app 包内（删 app = 删全部数据）
     #[test]
     fn probe_dir_skips_macos_app_bundle_dir() {
@@ -594,8 +592,8 @@ mod tests {
         assert_eq!(got, exe_parent);
     }
 
-    // ── P2-16 回归：kv value 里的 `\n` / `| ` 不得逃逸成裸日志分隔符 ──
-    // （NEW-C-6 已在 append_kv_escaped 统一转义，此测试锁死行为防回退）
+    // ── 回归：kv value 里的 `\n` / `| ` 不得逃逸成裸日志分隔符 ──
+    // （append_kv_escaped 统一转义，此测试锁死行为防回退）
 
     #[test]
     fn kv_value_pipe_space_and_newline_stay_escaped() {
@@ -611,7 +609,7 @@ mod tests {
         assert!(line.contains("preview=a\\nb||  c"), "got: {line:?}");
     }
 
-    // ── NEW-D-5：format_event_line 与生产 write_event 共用 build_event_line ──
+    // ── format_event_line 与生产 write_event 共用 build_event_line ──
 
     #[test]
     fn build_event_line_is_single_source_for_format_and_write() {

@@ -16,9 +16,7 @@ use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 
 use crate::bot_slash::StopToken;
-// NEW-C-6：escape_for_log 上提到 audit 模块共享（write_event 同源规则）
 use crate::audit::escape_for_log;
-// F2（Phase 6b）：doc_* 6 个 command 迁移到结构化错误
 use crate::error::{CommandError, CommandResult};
 
 /// Windows 上 GUI 程序调 cmd.exe / python.exe / taskkill.exe 等控制台子进程时，
@@ -57,8 +55,7 @@ pub fn py_get_enabled(app: AppHandle) -> bool {
     py_flag_path(&app).exists()
 }
 
-/// 批次7审计 P2-1：错误类型对齐全量 58 个命令的 CommandError 四字段结构——
-/// 原先唯一返回裸 String，前端拿不到结构化 code
+/// 错误类型对齐全量命令的 CommandError 四字段结构，前端拿得到结构化 code
 #[tauri::command]
 pub fn py_set_enabled(app: AppHandle, enabled: bool) -> CommandResult<bool> {
     let dir = crate::db::data_dir(&app);
@@ -83,8 +80,8 @@ pub struct PyEnv {
     pub libs: Vec<String>,
 }
 
-/// 带超时的版本探测（P2-10）：PATH 里的 python 可能是损坏 shim，
-/// 原先 `.output()` 无超时会把探测本身卡死；超过 3s 不退出就杀掉按失败处理
+/// 带超时的版本探测：PATH 里的 python 可能是损坏 shim，
+/// 无超时的 `.output()` 会把探测本身卡死；超过 3s 不退出就杀掉按失败处理
 fn probe_version_ok(program: &str, args: &[&str]) -> bool {
     probe_version_ok_with(program, args, Duration::from_secs(3))
 }
@@ -122,13 +119,13 @@ fn probe_version_ok_with(program: &str, args: &[&str], timeout: Duration) -> boo
 }
 
 /// 检测本机 Python（macOS/Linux: python3/python；Windows: python/python3/py -3）
-/// 每个候选最多 3s（P2-10 探测超时），卡死的 shim 直接跳过
+/// 每个候选最多 3s（探测超时），卡死的 shim 直接跳过
 pub fn detect_python() -> Option<String> {
     #[cfg(windows)]
     let candidates: &[&str] = &["python", "python3"];
     #[cfg(all(not(windows), not(target_os = "macos")))]
     let candidates: &[&str] = &["python3", "python"];
-    // 批次6审计 P2：macOS GUI（Finder 双击）启动 PATH 极简（/usr/bin:/bin:…），
+    // macOS GUI（Finder 双击）启动 PATH 极简（/usr/bin:/bin:…），
     // brew 装的 python3 探测不到 → 补固定路径候选（不存在由 3s 探针超时跳过）
     #[cfg(target_os = "macos")]
     let candidates: &[&str] = &[
@@ -152,8 +149,8 @@ pub fn detect_python() -> Option<String> {
     None
 }
 
-/// 探测结果缓存（P2-10）：None=未探测；Some(inner)=已探测（inner 为 None 表示本机无 Python）。
-/// 原先每次 run_python 都 spawn 1-3 次 `python --version`，启动延迟 + 资源浪费。
+/// 探测结果缓存：None=未探测；Some(inner)=已探测（inner 为 None 表示本机无 Python）。
+/// 否则每次 run_python 都要 spawn 1-3 次 `python --version`，启动延迟 + 资源浪费。
 static PY_CACHE: std::sync::Mutex<Option<Option<String>>> = std::sync::Mutex::new(None);
 
 /// 实际探测次数计数（单测 spy：验证连续调用只探测一次）
@@ -171,18 +168,18 @@ fn cached_python() -> Option<String> {
     detected
 }
 
-/// 缓存失效（P2-10）：缓存的 python 路径 spawn 失败（NotFound，可能被删/换 PATH）
+/// 缓存失效：缓存的 python 路径 spawn 失败（NotFound，可能被删/换 PATH）
 /// 后调用，下次 cached_python 重新探测
 fn invalidate_python_cache() {
     *PY_CACHE.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
-// ───────────────────────── .NET 修订工具（2026-08-27）─────────────────────────
+// ───────────────────────── .NET 修订工具 ─────────────────────────
 
 /// 检测本机 dotnet 运行时（修订版 Word 的 .NET 生成路径前置条件）：
 /// `dotnet --version` 探测（复用 3s 超时探针，卡死的 shim 直接跳过）
 fn detect_dotnet() -> Option<String> {
-    // 批次6审计 P2：macOS GUI 启动 PATH 极简，补官方/brew 固定安装路径
+    // macOS GUI 启动 PATH 极简，补官方/brew 固定安装路径
     #[cfg(target_os = "macos")]
     let candidates: &[&str] = &["dotnet", "/usr/local/share/dotnet/dotnet", "/opt/homebrew/bin/dotnet"];
     #[cfg(not(target_os = "macos"))]
@@ -209,7 +206,7 @@ fn cached_dotnet() -> Option<String> {
 }
 
 /// 定位 .NET 修订工具入口：(程序, 入口 dll 参数)。
-/// 优先绿色包随包 apphost exe 直跑（2026-08-28 批次6审计 P1：self-contained 发布时
+/// 优先绿色包随包 apphost exe 直跑（self-contained 发布时
 /// 用户无需装 .NET；framework-dependent apphost 也会自动找到已装共享运行时）；
 /// 其次 dotnet <dll>（需系统 dotnet 运行时）。
 /// 返回 None = 工具未随包发布（调用方回退 Python 脚本路径）。
@@ -231,7 +228,7 @@ fn dotnet_revisions_entry() -> Option<(String, Option<String>)> {
             return cached_dotnet().map(|d| (d, Some(dll.to_string_lossy().into_owned())));
         }
     }
-    // 开发模式候选仅 debug 构建保留（批次6审计 P1）：env!("CARGO_MANIFEST_DIR")
+    // 开发模式候选仅 debug 构建保留：env!("CARGO_MANIFEST_DIR")
     // 会把构建机绝对路径烧进发布二进制（信息泄露 + 发布版纯死路径）
     #[cfg(debug_assertions)]
     {
@@ -249,7 +246,7 @@ fn dotnet_revisions_entry() -> Option<(String, Option<String>)> {
 /// 只是入口从 run.py 换成 dll（dotnet <dll> params.json）。
 /// 返回 None = dotnet 或工具不可用（调用方回退 Python 脚本路径）。
 fn run_dotnet_revisions(app: &AppHandle, input_json: &str) -> Option<Result<PyRunResult, String>> {
-    // 批次6审计 P1：随包 exe 直跑不依赖系统 dotnet（self-contained 免装运行时）
+    // 随包 exe 直跑不依赖系统 dotnet（self-contained 免装运行时）
     let (prog, entry) = dotnet_revisions_entry()?;
     // 并发闸门由调用方持有（run_doc_revisions 入口统一上锁，覆盖 dotnet + 回退 Python
     // 全程；std Mutex 不可重入，这里不能再锁）
@@ -312,7 +309,7 @@ for m in ["openpyxl", "docx", "pptx", "pypdf", "reportlab"]:
     }
 }
 
-/// 检查本机 Python 环境：后台线程执行，不阻塞主线程（审计：同步命令会冻结 UI）
+/// 检查本机 Python 环境：后台线程执行，不阻塞主线程（同步命令会冻结 UI）
 #[tauri::command]
 pub async fn py_env_check() -> PyEnv {
     tauri::async_runtime::spawn_blocking(py_env_check_blocking)
@@ -334,17 +331,17 @@ pub struct PyRunResult {
     pub stderr: String,
     pub exit_code: Option<i32>,
     pub duration_ms: u128,
-    /// 输出触顶被截断（NEW-C-5）：stdout/stderr 超 OUTPUT_CAP 时为 true
+    /// 输出触顶被截断：stdout/stderr 超 OUTPUT_CAP 时为 true
     #[serde(default)]
     pub truncated: bool,
 }
 
 const OUTPUT_CAP: usize = 64 * 1024;
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
-/// 超时硬钳上限（C2）：超过一律钳到 300s（py_exec_sync 层面对用户请求直接拒绝）
+/// 超时硬钳上限：超过一律钳到 300s（py_exec_sync 层面对用户请求直接拒绝）
 const MAX_TIMEOUT_SECS: u64 = 300;
 
-/// 解析超时：None → 60s 默认；> 300s → 钳到 300s 并返回 clamped=true（C2）
+/// 解析超时：None → 60s 默认；> 300s → 钳到 300s 并返回 clamped=true
 fn resolve_timeout(timeout_secs: Option<u64>) -> (u64, bool) {
     match timeout_secs {
         None => (DEFAULT_TIMEOUT_SECS, false),
@@ -353,7 +350,7 @@ fn resolve_timeout(timeout_secs: Option<u64>) -> (u64, bool) {
     }
 }
 
-/// 内存限额：按 timeout 比例（8MB/s），下限 256MB、上限 2GB（C2）
+/// 内存限额：按 timeout 比例（8MB/s），下限 256MB、上限 2GB
 fn mem_limit_bytes(timeout_secs: u64) -> u64 {
     timeout_secs
         .saturating_mul(8)
@@ -361,7 +358,7 @@ fn mem_limit_bytes(timeout_secs: u64) -> u64 {
         .clamp(256 * 1024 * 1024, 2 * 1024 * 1024 * 1024)
 }
 
-/// CPU 限额：timeout + 10s 宽限（C2）
+/// CPU 限额：timeout + 10s 宽限
 fn cpu_limit_secs(timeout_secs: u64) -> u64 {
     timeout_secs.saturating_add(10)
 }
@@ -428,7 +425,7 @@ mod win_job {
     }
 }
 
-/// 子进程资源限额守卫（C2）：Unix 在 spawn 时经 pre_exec 设 RLIMIT_AS / RLIMIT_CPU
+/// 子进程资源限额守卫：Unix 在 spawn 时经 pre_exec 设 RLIMIT_AS / RLIMIT_CPU
 ///（无运行时状态）；Windows 为 Job Object（终止时 TerminateJobObject 整树杀）。
 struct RunLimits {
     #[cfg(windows)]
@@ -466,7 +463,7 @@ impl RunLimits {
     }
 }
 
-/// 批次6审计 P2：kill 整组前校验目标 pid 仍是组首——退出清理路径的注册表 pid
+/// kill 整组前校验目标 pid 仍是组首——退出清理路径的注册表 pid
 /// 可能已被 OS 回收复用，`kill -9 -pid` 会命中无关进程组。getpgid 失败（进程已死）
 /// 或返回值不等于 pid（非组首）→ 不杀。注意：只用于 kill_py_children（退出清理，
 /// 距收割时间久、复用窗口真实）；kill_tree 的 drain_timeout 路径（收割后 2s 内）
@@ -500,14 +497,14 @@ fn kill_tree(child: &mut std::process::Child, limits: &RunLimits) {
     let _ = child.wait();
 }
 
-/// 失败路径统一收尾（NEW-C-3）：杀整树（含孙进程兜底）+ 清临时目录。
+/// 失败路径统一收尾：杀整树（含孙进程兜底）+ 清临时目录。
 /// try_wait Err / timeout / stopped 等危险路径共用，防孤儿进程与磁盘泄漏。
 fn cleanup_after_fail(child: &mut std::process::Child, dir: &std::path::Path, limits: &RunLimits) {
     kill_tree(child, limits);
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// spawn 失败收尾（P2-25）：进程没起来（无 child 可杀），但仍显式 terminate
+/// spawn 失败收尾：进程没起来（无 child 可杀），但仍显式 terminate
 /// 资源限额（Windows Job Object 在 spawn 前已建，不止靠 Drop 兜底）+ 清临时目录
 /// —— 与 cleanup_after_fail 同族，防临时目录即时泄漏。
 fn cleanup_after_spawn_fail(dir: &std::path::Path, limits: &RunLimits) {
@@ -515,8 +512,8 @@ fn cleanup_after_spawn_fail(dir: &std::path::Path, limits: &RunLimits) {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// 运行目录初始化（P2-25）：建目录 + 写 run.py / params.json；任一步失败
-/// 清理已建目录再返回 Err —— 原先 `?` 直返，写失败时临时目录即时泄漏。
+/// 运行目录初始化：建目录 + 写 run.py / params.json；任一步失败
+/// 清理已建目录再返回 Err —— 否则写失败时临时目录即时泄漏。
 fn setup_run_dir(
     base: &std::path::Path,
     script: &str,
@@ -537,9 +534,9 @@ fn setup_run_dir(
     r.map(|_| dir)
 }
 
-// ───────────────────────── 退出清理（P2-24）─────────────────────────
+// ───────────────────────── 退出清理 ─────────────────────────
 
-/// 在途 Python 子进程注册表（P2-24）：spawn 成功即登记 pid，运行结束（任意返回路径）
+/// 在途 Python 子进程注册表：spawn 成功即登记 pid，运行结束（任意返回路径）
 /// 经 ChildRegGuard Drop 注销。子进程不随父进程退出 —— 应用退出（ExitRequested）时
 /// 按注册表整树强杀，防父进程先退留下孤儿。
 static PY_CHILDREN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<u32>>> =
@@ -571,7 +568,7 @@ impl Drop for ChildRegGuard {
     }
 }
 
-/// 按 pid 整树强杀（可测内核，P2-24）：Unix 子进程 spawn 时 process_group(0) 自成组首，
+/// 按 pid 整树强杀（可测内核）：Unix 子进程 spawn 时 process_group(0) 自成组首，
 /// `kill -9 -pid` 杀整组（含孙进程，与 kill_tree 同策略）；Windows `taskkill /T /F` 杀整树。
 /// 已退出的 pid（组不存在）按未杀计，不报错。
 fn kill_py_children(pids: &[u32]) -> usize {
@@ -585,7 +582,7 @@ fn kill_py_children(pids: &[u32]) -> usize {
                 .map(|s| s.success())
                 .unwrap_or(false)
         } else {
-            false // pid 已回收/非组首：不杀，防误伤复用该 pgid 的无关进程组（批次6审计 P2）
+            false // pid 已回收/非组首：不杀，防误伤复用该 pgid 的无关进程组
         };
         #[cfg(windows)]
         let ok = silent_cmd("taskkill")
@@ -600,7 +597,7 @@ fn kill_py_children(pids: &[u32]) -> usize {
     killed
 }
 
-/// 应用退出清理（P2-24）：杀掉全部在途 Python 子进程，返回杀掉的数量。
+/// 应用退出清理：杀掉全部在途 Python 子进程，返回杀掉的数量。
 /// 由 lib.rs ExitRequested 清理路径调用；注册表为空的正常退出零开销。
 pub fn kill_all_py_children() -> usize {
     let pids: Vec<u32> = py_children()
@@ -612,8 +609,8 @@ pub fn kill_all_py_children() -> usize {
     kill_py_children(&pids)
 }
 
-/// 有界读取 + 排空（NEW-C-5）：先按 cap+1 探测是否超限；超限则截断到 cap，
-/// 并继续把剩余输出读到 EOF 丢弃 —— 原先 take() 到顶即 drop 管道读端，
+/// 有界读取 + 排空：先按 cap+1 探测是否超限；超限则截断到 cap，
+/// 并继续把剩余输出读到 EOF 丢弃 —— 否则 take() 到顶即 drop 管道读端，
 /// Unix 子进程下次 write 会吃 SIGPIPE 被静默杀死（exit_code=None），用户只见莫名失败。
 /// 返回 (截断后的内容, 是否发生截断)。
 fn read_capped_drain<R: Read>(src: R, cap: usize) -> (Vec<u8>, bool) {
@@ -629,7 +626,7 @@ fn read_capped_drain<R: Read>(src: R, cap: usize) -> (Vec<u8>, bool) {
     (buf, truncated)
 }
 
-/// StopToken 感知的 Read 适配器（G2）：每次底层 read 前查停止令牌，置位即返回
+/// StopToken 感知的 Read 适配器：每次底层 read 前查停止令牌，置位即返回
 /// EOF（Ok(0)），read_capped_drain 据此提前收尾、返回已读部分数据。
 /// /stop 时主循环杀进程组的同时 reader 主动退出，不再盲等管道 EOF。
 struct StopReader<R> {
@@ -652,11 +649,11 @@ impl<R: Read> Read for StopReader<R> {
     }
 }
 
-/// 主进程退出后收输出的兜底（C1）：孙进程继承 stdout/stderr 管道写端且不退出时，
+/// 主进程退出后收输出的兜底：孙进程继承 stdout/stderr 管道写端且不退出时，
 /// reader 子线程的 read_to_end 永不 EOF，`rx.iter()` 会永久阻塞 → run_python 挂死。
 /// 改为带总宽限（≤ grace）的 recv_timeout 收满 2 条（out/err）为止；
 /// 超时返回已收部分 + complete=false，调用方据此再杀一次进程组兜底。
-/// 返回 (stdout, stderr, complete, truncated)（NEW-C-5 增 truncated：任一方向触顶）。
+/// 返回 (stdout, stderr, complete, truncated)（truncated：任一方向触顶）。
 fn drain_output(
     rx: &mpsc::Receiver<(&'static str, Vec<u8>, bool)>,
     grace: Duration,
@@ -689,13 +686,12 @@ fn drain_output(
     (stdout, stderr, got == 2, truncated)
 }
 
-/// reader 线程收尾的 join 超时（G2）：整体 deadline = timeout + 2s drain 宽限
+/// reader 线程收尾的 join 超时：整体 deadline = timeout + 2s drain 宽限
 /// + 2s reader 收尾，超时的 reader 记 ERROR 审计后 detach
 const READER_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// 带超时 join 两个 reader 线程（G2）：原先 reader 裸 spawn detach，进程退出时
-/// 变孤儿线程无人知晓；现在所有返回路径（正常 / wait_fail / timeout / stopped）
-/// 都必须经过这里。超时仍不退出的 drop handle（detach）+ ERROR 审计
+/// 带超时 join 两个 reader 线程：所有返回路径（正常 / wait_fail / timeout / stopped）
+/// 都必须经过这里，不留孤儿线程。超时仍不退出的 drop handle（detach）+ ERROR 审计
 /// 「run_python_reader_timeout / reader_leaked」，泄漏留痕可诊断。
 fn join_reader_threads(
     out_handle: std::thread::JoinHandle<()>,
@@ -731,7 +727,7 @@ fn truncate_output(s: String) -> String {
     }
 }
 
-/// Unix 父进程看门狗前导（2026-08-28 批次6审计 P1）：macOS 无 Windows Job Object /
+/// Unix 父进程看门狗前导：macOS 无 Windows Job Object /
 /// KILL_ON_JOB_CLOSE 等价物，主进程崩溃（非 ExitRequested 正常清理路径）时 Python
 /// 子进程成孤儿，RLIMIT_CPU 限的是 CPU 时间——睡眠型失控脚本可永久驻留。
 /// 看门狗线程 2s 轮询 ppid，变 ≤1（被 launchd/init 收养 = 父死）即自退。
@@ -747,7 +743,7 @@ const PARENT_WATCHDOG: &str = concat!(
     "_wm_th.Thread(target=_wm_watchdog, daemon=True).start()",
 );
 
-/// run_python 并发闸门（P2-12）：同一时刻只允许一个 Python 任务在执行，
+/// run_python 并发闸门：同一时刻只允许一个 Python 任务在执行，
 /// 多余请求排队等待（不报错）—— 防多任务并行 spawn 互相挤兑资源。
 /// 用 std Mutex 而非 tokio Semaphore：run_python 是 sync（调用方经
 /// spawn_blocking 进入，锁不跨 .await），最朴素且正确。
@@ -757,9 +753,9 @@ fn py_run_gate() -> &'static std::sync::Mutex<()> {
     &PY_RUN_GATE
 }
 
-/// 应用退出标志（2026-08-28 批次5审计 P2）：cleanup_on_exit 在 kill_all_py_children
-/// 之前置位；过闸门的排队任务复查后直接拒绝——原先退出 kill 完在途进程，闸门上
-/// 排队者拿到锁仍 spawn 新 Python，变无人收割的孤儿进程。
+/// 应用退出标志：cleanup_on_exit 在 kill_all_py_children
+/// 之前置位；过闸门的排队任务复查后直接拒绝——否则退出清理 kill 完在途进程后，
+/// 闸门上排队者拿到锁仍会 spawn 新 Python，变无人收割的孤儿进程。
 static EXITING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// 退出清理入口置位（lib.rs cleanup_on_exit 调用，须在 kill_all_py_children 之前）
@@ -767,15 +763,15 @@ pub fn mark_exiting() {
     EXITING.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
-/// 批次8审计 P2（2026-09-02）：测试专用复位——lib.rs 退出清理测试经
-/// cleanup_on_exit_with 置位 EXITING 后原先进程内永不复位，后续任何走生产
+/// 测试专用复位——lib.rs 退出清理测试经
+/// cleanup_on_exit_with 置位 EXITING 后进程内不再自动复位，后续任何走生产
 /// run_python() 入口的测试（当前没有，今后加了必挂）会被「应用正在退出」误拒。
 #[cfg(test)]
 pub(crate) fn reset_exiting_for_test() {
     EXITING.store(false, std::sync::atomic::Ordering::SeqCst);
 }
 
-/// run_python_at 的失败（P2-10）：区分「spawn NotFound」—— 缓存的 python 路径
+/// run_python_at 的失败：区分「spawn NotFound」—— 缓存的 python 路径
 /// 被删/换 PATH 时的重探测重试依据
 struct RunFail {
     msg: String,
@@ -784,7 +780,7 @@ struct RunFail {
 
 /// 执行一段 Python 脚本（写入独立临时目录运行）。
 /// `input_json`：可选，写入 params.json 供脚本读取；`args`：附加命令行参数。
-/// `stop`：可选停止令牌（NEW-C-4），/stop 时在途执行轮询到标志即杀进程组退出。
+/// `stop`：可选停止令牌，/stop 时在途执行轮询到标志即杀进程组退出。
 pub fn run_python(
     app: &AppHandle,
     script: &str,
@@ -793,9 +789,9 @@ pub fn run_python(
     timeout_secs: Option<u64>,
     stop: Option<&StopToken>,
 ) -> Result<PyRunResult, CommandError> {
-    // P2-12：并发闸门 —— 同一时刻只跑一个 Python 任务，多余请求排队等待
+    // 并发闸门 —— 同一时刻只跑一个 Python 任务，多余请求排队等待
     let _gate = py_run_gate().lock().unwrap_or_else(|e| e.into_inner());
-    // 批次5审计 P2：退出标志必须在拿到闸门【之后】复查——退出清理杀完在途进程后，
+    // 退出标志必须在拿到闸门【之后】复查——退出清理杀完在途进程后，
     // 本任务若才拿到锁，spawn 出去就是孤儿进程
     if EXITING.load(std::sync::atomic::Ordering::SeqCst) {
         return Err(CommandError::DomainRule {
@@ -806,7 +802,7 @@ pub fn run_python(
     run_python_ungated(app, script, input_json, args, timeout_secs, stop)
 }
 
-/// run_python 的无闸门内核（2026-08-27 SEC-P2）：供 run_doc_revisions 这类
+/// run_python 的无闸门内核：供 run_doc_revisions 这类
 /// 「入口已持锁、内部要多步执行（dotnet 试跑 + 失败回退 Python）」的调用方使用——
 /// std Mutex 不可重入，持锁后再进 run_python 会死锁。
 fn run_python_ungated(
@@ -817,7 +813,7 @@ fn run_python_ungated(
     timeout_secs: Option<u64>,
     stop: Option<&StopToken>,
 ) -> Result<PyRunResult, CommandError> {
-    // 批次6审计 P1（Unix）：注入父进程看门狗（见 PARENT_WATCHDOG 注释）
+    // Unix：注入父进程看门狗（见 PARENT_WATCHDOG 注释）
     #[cfg(unix)]
     let script_owned;
     #[cfg(unix)]
@@ -837,10 +833,10 @@ fn run_python_ungated(
     };
 
     let mut audit_sink = |line: &str| py_audit(app, line);
-    // 最多 2 次尝试：首次 spawn NotFound 说明缓存的 python 已失效（P2-10：
-    // 路径被删 / PATH 变了），作废缓存重新探测后重试一次
+    // 最多 2 次尝试：首次 spawn NotFound 说明缓存的 python 已失效
+    //（路径被删 / PATH 变了），作废缓存重新探测后重试一次
     for attempt in 0..2 {
-        // 独立临时目录（P2-25：初始化失败清理已建目录 + setup_fail 审计，不泄漏）
+        // 独立临时目录（初始化失败清理已建目录 + setup_fail 审计，不泄漏）
         let dir = match setup_run_dir(
             &crate::db::data_dir(app).join("py-runs"),
             script,
@@ -878,7 +874,7 @@ fn run_python_ungated(
     unreachable!("最多 2 次尝试，循环内必然返回")
 }
 
-/// 执行核心（C3：不依赖 AppHandle，审计经闭包注入 —— 单测可用临时目录 + 内存收集
+/// 执行核心（不依赖 AppHandle，审计经闭包注入 —— 单测可用临时目录 + 内存收集
 /// 跑全路径）。前置：dir 已创建且 run.py / params.json 已写入。
 /// `entry`：入口参数（Python 传 Some("run.py")；dotnet dll 形态传 Some(dll 路径)；
 /// 随包 apphost exe 直跑传 None，见 run_dotnet_revisions）。
@@ -893,7 +889,7 @@ fn run_python_at(
     audit: &mut dyn FnMut(&str),
     stop: Option<&StopToken>,
 ) -> Result<PyRunResult, RunFail> {
-    // C2：超时硬钳上限 300s（钳制记审计，防 timeout_secs=None/超大值把系统跑死）
+    // 超时硬钳上限 300s（钳制记审计，防 timeout_secs=None/超大值把系统跑死）
     let (timeout_eff, clamped) = resolve_timeout(timeout_secs);
     if clamped {
         audit(&format!(
@@ -908,7 +904,7 @@ fn run_python_at(
 
     let mut cmd = silent_cmd(py);
     // Unix：子进程自成进程组（组首），超时可整组强杀，不残留孙进程；
-    // 同时经 pre_exec 设资源限额（C2）：RLIMIT_AS 内存 / RLIMIT_CPU CPU
+    // 同时经 pre_exec 设资源限额：RLIMIT_AS 内存 / RLIMIT_CPU CPU
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -951,7 +947,7 @@ fn run_python_at(
                 "run_python err | kind=spawn_fail | {}",
                 escape_for_log(&e.to_string(), 200)
             ));
-            // P2-25：spawn 失败走 cleanup_after_fail 同族收尾（terminate 限额 + 清目录）
+            // spawn 失败走 cleanup_after_fail 同族收尾（terminate 限额 + 清目录）
             cleanup_after_spawn_fail(dir, &limits);
             return Err(RunFail {
                 msg: format!("启动 Python 失败：{e}"),
@@ -960,7 +956,7 @@ fn run_python_at(
         }
     };
     limits.assign(&child);
-    // P2-24：登记在途子进程（守卫 Drop 注销，覆盖全部返回路径）；
+    // 登记在途子进程（守卫 Drop 注销，覆盖全部返回路径）；
     // 应用退出时 kill_all_py_children 按注册表整树强杀，防子进程变孤儿
     let _child_reg = ChildRegGuard::register(&child);
 
@@ -968,7 +964,7 @@ fn run_python_at(
     let child_stdout = child.stdout.take();
     let child_stderr = child.stderr.take();
     let (tx, rx) = mpsc::channel();
-    // G2：reader 线程持 JoinHandle（不再裸 spawn detach），所有返回路径统一
+    // reader 线程持 JoinHandle（不裸 spawn detach），所有返回路径统一
     // join_reader_threads 带超时 join 兜底；StopReader 让 /stop 置位时 read
     // 立即返回 EOF，reader 随主循环杀进程组同步退出，不变孤儿线程
     let tx_out = tx.clone();
@@ -977,8 +973,8 @@ fn run_python_at(
         let mut buf = Vec::new();
         let mut truncated = false;
         if let Some(s) = child_stdout {
-            // 读取时硬截断（审计 P1：原先 read_to_end 无上限，失控脚本 60s 可刷出数百 MB）；
-            // NEW-C-5：到顶后继续排空（丢弃），防子进程被 SIGPIPE 静默杀死
+            // 读取时硬截断（read_to_end 无上限时失控脚本 60s 可刷出数百 MB）；
+            // 到顶后继续排空（丢弃），防子进程被 SIGPIPE 静默杀死
             let (b, tr) = read_capped_drain(StopReader::new(s, stop_out), OUTPUT_CAP + 1024);
             buf = b;
             truncated = tr;
@@ -1005,7 +1001,7 @@ fn run_python_at(
             Ok(Some(status)) => break status.code(),
             Ok(None) => {}
             Err(e) => {
-                // NEW-C-3：原 `?` 直返会把仍在跑的子进程留成孤儿、临时目录泄漏、无审计。
+                // 直接返回会把仍在跑的子进程留成孤儿、临时目录泄漏、无审计。
                 // 先杀进程组（含孙进程兜底）+ 清临时目录，再记审计返回。
                 cleanup_after_fail(&mut child, dir, &limits);
                 audit(&format!("run_python err | kind=wait_fail | {e}"));
@@ -1028,8 +1024,8 @@ fn run_python_at(
                 spawn_not_found: false,
             });
         }
-        // NEW-C-4：/stop 注入检查 —— 原先只在 tool 轮次之间看 StopGuard，
-        // 在途 Python 跑满超时都停不下来；这里每 50ms 轮询一次停止令牌
+        // /stop 注入检查：在途 Python 每 50ms 轮询一次停止令牌，
+        // 不用跑满超时才能停下来
         if stop.is_some_and(|s| s.stopped()) {
             cleanup_after_fail(&mut child, dir, &limits);
             audit("run_python err | kind=stopped");
@@ -1043,25 +1039,25 @@ fn run_python_at(
     };
     let (stdout, mut stderr, drained, truncated) = drain_output(&rx, Duration::from_secs(2));
     if !drained {
-        // 孙进程继承管道写端不肯退出（C1）：主进程已退但 reader 线程等不到 EOF，
+        // 孙进程继承管道写端不肯退出：主进程已退但 reader 线程等不到 EOF，
         // 整组再杀一次兜底，绝不在 rx 上永久阻塞
         kill_tree(&mut child, &limits);
         audit("run_python warn | kind=drain_timeout | 孙进程占用管道已强杀进程组");
         stderr.push_str("\n（输出收集超时：孙进程占用管道，已强杀进程组）");
     }
-    // G2：reader 线程带超时 join 兜底 —— 进程组已杀，正常秒回；
+    // reader 线程带超时 join 兜底 —— 进程组已杀，正常秒回；
     // 2s 仍不 EOF 的极端场景 detach + ERROR 审计，不留无记录孤儿线程
     join_reader_threads(out_handle, err_handle, audit);
     if truncated {
-        // NEW-C-5：输出触顶已截断（剩余部分已排空，子进程未受 SIGPIPE 影响）
+        // 输出触顶已截断（剩余部分已排空，子进程未受 SIGPIPE 影响）
         audit(&format!(
             "run_python warn | kind=output_truncated | cap={OUTPUT_CAP}"
         ));
     }
     let duration_ms = start.elapsed().as_millis();
     let _ = std::fs::remove_dir_all(dir);
-    // NEW-C-5：exit_code=None 表示子进程被信号杀死（历史上多因 SIGPIPE），
-    // 原先静默当成功返回，用户只见莫名空结果 —— 记审计并按失败返回
+    // exit_code=None 表示子进程被信号杀死（历史上多因 SIGPIPE），
+    // 静默当成功返回会让用户只见莫名空结果 —— 记审计并按失败返回
     let Some(code) = exit_code else {
         audit("run_python err | kind=exit_none | 无退出码，子进程疑似被信号杀死");
         return Err(RunFail {
@@ -1078,7 +1074,7 @@ fn run_python_at(
     })
 }
 
-/// 启动清扫（P2-9）：删掉 py-runs 下超过 1 小时未动的残留临时目录
+/// 启动清扫：删掉 py-runs 下超过 1 小时未动的残留临时目录
 ///（spawn 失败/进程崩溃的兜底；正常路径用完即删，扫到的都是残留）。
 pub fn sweep_stale_py_runs(app: &AppHandle) {
     let root = crate::db::data_dir(app).join("py-runs");
@@ -1131,8 +1127,8 @@ where
         .map_err(|e| format!("执行线程异常：{e}"))?
 }
 
-/// doc_* 统一执行入口（C3）：保持 NEW-C-1 的 spawn_blocking 隔离，同时给
-/// Err 分支（超时 / spawn 失败 / panic / 线程异常）补审计 —— 此前这些危险路径零痕迹。
+/// doc_* 统一执行入口：spawn_blocking 隔离阻塞执行，同时给
+/// Err 分支（超时 / spawn 失败 / panic / 线程异常）补审计 —— 危险路径不留零痕迹。
 async fn run_doc_script(
     app: &AppHandle,
     name: &str,
@@ -1153,11 +1149,11 @@ async fn run_doc_script(
     }
 }
 
-/// 修订版 Word 统一执行入口（2026-08-27）：**强制 .NET OpenXML 引擎优先**
+/// 修订版 Word 统一执行入口：**强制 .NET OpenXML 引擎优先**
 ///（w:ins/w:del + delText 铁律由 SDK 类型系统保证），dotnet 运行时/工具不可用
 /// 或执行失败时自动回退 Python 脚本（行为不变）。整体走 spawn_blocking 隔离——
-/// 此前 dotnet 分支在 async fn 里同步直跑，最长 120s 阻塞会压 async runtime worker
-///（NEW-C-1 同款问题，与 run_doc_script 的修复模式对齐）；Err 分支统一补审计。
+/// 不能在 async fn 里同步直跑，最长 120s 阻塞会压 async runtime worker
+///（与 run_doc_script 同一模式）；Err 分支统一补审计。
 /// 返回 (执行结果, 引擎标记 "dotnet"/"python")，供调用方审计与结果标注。
 async fn run_doc_revisions(
     app: &AppHandle,
@@ -1168,7 +1164,7 @@ async fn run_doc_revisions(
     let handle = app.clone();
     let name_in = name.to_string();
     match spawn_blocking_map(move || {
-        // 并发闸门提到入口层（2026-08-27 SEC-P2）：dotnet 试跑 + 失败回退 Python 全程持锁，
+        // 并发闸门提到入口层：dotnet 试跑 + 失败回退 Python 全程持锁，
         // 与 run_python 的「同一时刻只跑一个」语义对齐（std Mutex 不可重入，
         // 故回退走 run_python_ungated）
         let _gate = py_run_gate().lock().unwrap_or_else(|e| e.into_inner());
@@ -1213,8 +1209,7 @@ pub fn py_audit(app: &AppHandle, line: &str) {
 }
 
 /// 锁内追加一行到指定日志文件：与 audit::write_event / bot::audit_log 共用同一把
-/// BOT_LOG_LOCK（rotate + open + write 必须在同一把锁内，否则并发 append 交错错行——
-/// 2026-08-18 事故后统一上锁，py_audit 此前漏网）。
+/// BOT_LOG_LOCK（rotate + open + write 必须在同一把锁内，否则并发 append 交错错行）。
 /// 抽成路径参数版便于单测（mock_app 的 AppHandle<MockRuntime> 与 Wry 签名不兼容）。
 fn py_audit_to(path: &std::path::Path, line: &str) {
     let _g = crate::audit::BOT_LOG_LOCK
@@ -1256,7 +1251,7 @@ elif ext == '.xlsx':
 elif ext == '.pptx':
     from pptx import Presentation
     prs = Presentation(p)
-    # 2026-08-20 修复：此前只读 text_frame，表格（GraphicFrame）和组合形状内的内容全漏；
+    # 只读 text_frame 会漏掉表格（GraphicFrame）和组合形状内的内容；
     # walk 递归组合形状（shape_type 6 = GROUP），表格按行输出 单元格 | 分隔
     def walk(shapes):
         for shape in shapes:
@@ -1283,7 +1278,7 @@ else:
 "#;
 
 /// 生成 Word：stdin 读 params.json {title, paragraphs: [..], tables?: [{title?, rows: [[..]]}], out}
-/// tables（2026-08-20）：可选表格列表，按顺序追加在正文段落之后；首行当表头加粗
+/// tables：可选表格列表，按顺序追加在正文段落之后；首行当表头加粗
 pub const MAKE_DOCX_SCRIPT: &str = r#"import json, os
 import docx
 from docx.shared import Pt, Cm
@@ -1333,7 +1328,7 @@ print('已生成：' + out)
 "#;
 
 /// 生成修订模式 Word（track changes）：stdin 读 params.json {title, original_path, original, revised, out}
-/// 2026-09-02：original_path 可读时优先「原文档副本就地修订」——保留原文格式/字体/表格
+/// original_path 可读时优先「原文档副本就地修订」——保留原文格式/字体/表格
 /// （与 .NET 工具同语义）；就地失败或无路径时回退新建模式（模型传的 original 行列表）
 pub const MAKE_DOCX_REVISIONS_SCRIPT: &str = r#"import json, os, sys, difflib, shutil, copy
 import docx
@@ -1352,17 +1347,17 @@ if not rev:
     print('revised 不能为空'); sys.exit(1)
 
 AUTHOR = 'WMessage AI'
-# 2026-09-02 老板拍板：修订不写 w:date（修订日期不要了）
+# 修订不写 w:date（修订日期不要了）
 _id = [1000]
 def nid():
     _id[0] += 1
     return _id[0]
 
 # ──────────── 就地修订（保留原文格式）：w:ins 用 w:t、w:del 用 w:delText ────────────
-# 文本口径（2026-09-05 修复，与 extract_document 的 python-docx para.text 严格对齐）：
+# 文本口径（与 extract_document 的 python-docx para.text 严格对齐）：
 # 只数直接子级 w:r 和 w:hyperlink 内的 run——w:t 原文、w:tab/w:ptab→\t、w:br/w:cr→\n、
-# w:noBreakHyphen→'-'；域代码、已有修订等不计。此前 run_text 只读 w:t 而单元文本用
-# para.text（含 \t/\n/超链接文本），口径不一致导致含 tab/换行/超链接的段落必中
+# w:noBreakHyphen→'-'；域代码、已有修订等不计。若 run_text 只读 w:t 而单元文本用
+# para.text（含 \t/\n/超链接文本），口径不一致会导致含 tab/换行/超链接的段落必中
 # 「整段删+整段增」保底，看不出究竟改了哪几个字。
 
 def run_text(r):
@@ -1807,7 +1802,7 @@ THEMES = {
     'green': dict(bg='FFFFFF', accent='1E7145', text='2B2B2B', sub='6B6B6B', band='1E7145', bandtext='FFFFFF', alt='F2F6F2'),   # 清新绿
 }
 T = THEMES.get(theme, THEMES['blue']).copy()
-# customColors（2026-08-20 老板拍板：骨架固定、皮肤开放）：可选覆盖主题配色，
+# customColors（骨架固定、皮肤开放）：可选覆盖主题配色，
 # 键 bg/accent/text/sub/band/bandtext/alt，值为 6 位 hex（可带 # 前缀）；非法值忽略保底
 import re as _re
 custom = p.get('customColors') or {}
@@ -2010,15 +2005,15 @@ print('已生成：' + out)
 // ───────────────────────── 对外命令 ─────────────────────────
 
 /// 执行同步核心（工具链在 async 上下文直接调用）
-/// `stop`：/stop 令牌（NEW-C-4），在途执行可被中断；UI 直调传 None
+/// `stop`：/stop 令牌，在途执行可被中断；UI 直调传 None
 pub fn py_exec_sync(
     app: &AppHandle,
     code: String,
     timeout_secs: Option<u64>,
     stop: Option<&StopToken>,
 ) -> Result<PyRunResult, String> {
-    // 2026-08-26 授权模式：yolo = 文件+Python 全放行不弹窗（老板拍板），跳过开关检查；
-    // ask/strict 维持原有「设置页开启 Python 编程」门控
+    // 授权模式：yolo = 文件+Python 全放行不弹窗（老板拍板），跳过开关检查；
+    // ask/strict 维持「设置页开启 Python 编程」门控
     let yolo = crate::bot::perm_mode(app) == crate::bot::PermMode::Yolo;
     let flag_on = py_get_enabled(app.clone());
     if !yolo && !flag_on {
@@ -2029,7 +2024,7 @@ pub fn py_exec_sync(
     if yolo && !flag_on {
         py_audit(app, "py_exec | yolo_bypass | 授权模式 yolo，跳过 py-enabled 开关检查");
     }
-    // C2：用户/模型请求的超时硬上限 300s，超限直接拒绝并记审计
+    // 用户/模型请求的超时硬上限 300s，超限直接拒绝并记审计
     //（run_python 内部另有钳制兜底，双保险）
     if let Some(t) = timeout_secs {
         if t > MAX_TIMEOUT_SECS {
@@ -2063,8 +2058,8 @@ pub fn py_exec_sync(
     Ok(r)
 }
 
-/// py_exec_sync 的 async 包装（C4）：阻塞执行挪到 blocking 线程池，
-/// 与 NEW-C-1 doc_* 同一模式 —— 调用方（tool_run_python）在 async runtime 内
+/// py_exec_sync 的 async 包装：阻塞执行挪到 blocking 线程池，
+/// 与 doc_* 同一模式 —— 调用方（tool_run_python）在 async runtime 内
 /// 不得直接调 sync 版占住 worker。
 /// `stop` 取 owned StopToken（而非 &StopGuard）：闭包要进 spawn_blocking，必须 'static。
 pub async fn py_exec_sync_async(
@@ -2100,7 +2095,7 @@ pub async fn doc_extract(app: AppHandle, path: Option<String>) -> CommandResult<
             resolve_doc_path(picked.and_then(file_path_to_string))?
         }
     };
-    // NEW-C-6：path 来自用户/系统对话框，可能含换行，审计前必须转义
+    // path 来自用户/系统对话框，可能含换行，审计前必须转义
     py_audit(&app, &format!("doc_extract | path: {}", escape_for_log(&path, 300)));
     let input = serde_json::json!({ "path": path }).to_string();
     let r = run_doc_script(&app, "doc_extract", EXTRACT_SCRIPT, input).await?;
@@ -2117,13 +2112,13 @@ pub async fn doc_extract(app: AppHandle, path: Option<String>) -> CommandResult<
     })
 }
 
-/// F2（Phase 6b）：对话框未选中文件的错误构造，抽纯函数便于单测
+/// 对话框未选中文件的错误构造，抽纯函数便于单测
 /// （tauri command 绑定 Wry AppHandle，mock_app 无法直接调用）。
 fn resolve_doc_path(picked: Option<String>) -> CommandResult<String> {
     picked.ok_or_else(|| CommandError::Internal("用户取消了选择".into()))
 }
 
-/// F2（Phase 6b）：doc_* 脚本非零退出的统一错误构造（纯函数，6 个 command 共用）。
+/// doc_* 脚本非零退出的统一错误构造（纯函数，6 个 command 共用）。
 /// Python 脚本失败无 1:1 CommandError 变体，走 Internal 兜底（结构化 code 一致）。
 fn script_fail_err(what: &str, stderr: &str) -> CommandError {
     CommandError::Internal(format!("{what}：{}", stderr.trim()))
@@ -2137,7 +2132,7 @@ fn file_path_to_string(p: tauri_plugin_dialog::FilePath) -> Option<String> {
 }
 
 /// 生成 Word 到 AI_Gen_Files（不覆盖：同名自动加序号）
-/// tables（2026-08-20）：可选表格列表 [{title?, rows: [[..]]}]，透传给脚本追加在段落之后
+/// tables：可选表格列表 [{title?, rows: [[..]]}]，透传给脚本追加在段落之后
 pub async fn doc_make_word(
     app: AppHandle,
     title: String,
@@ -2166,7 +2161,7 @@ pub async fn doc_make_word(
 }
 
 /// 生成修订模式 Word（track changes）：original_path 可读时在原文档副本上就地打修订标记
-/// （2026-09-02：保留原文格式/字体/表格结构，equal 段落原样不动，改动段落行内字符级 diff）；
+///（保留原文格式/字体/表格结构，equal 段落原样不动，改动段落行内字符级 diff）；
 /// 无路径时用 original 行列表新建文档。可在 Word 审阅中逐条接受/拒绝。
 /// 引擎走 run_doc_revisions 统一入口：强制 .NET OpenXML 优先，Python 脚本兜底。
 /// 返回 (输出路径, 引擎标记 "dotnet"/"python")，调用方在结果/审计里标注实际引擎。
@@ -2251,7 +2246,7 @@ pub async fn doc_make_pdf(
 }
 
 /// 生成 PPT 到 AI_Gen_Files
-/// custom_colors（2026-08-20）：可选 {bg?, accent?, text?, sub?, band?, bandtext?, alt?}（6 位 hex），
+/// custom_colors：可选 {bg?, accent?, text?, sub?, band?, bandtext?, alt?}（6 位 hex），
 /// 覆盖所选 theme 的对应配色项，脚本侧校验非法值忽略
 pub async fn doc_make_ppt(
     app: AppHandle,
@@ -2300,8 +2295,8 @@ pub async fn doc_make_ppt(
     Ok(out)
 }
 
-/// 剥掉已知扩展名（NEW-C-7，大小写不敏感）：「周报.DOCX」→「周报」；
-/// 不匹配（无扩展名或别的扩展名）则原样返回。原 trim_end_matches 大小写敏感，
+/// 剥掉已知扩展名（大小写不敏感）：「周报.DOCX」→「周报」；
+/// 不匹配（无扩展名或别的扩展名）则原样返回。trim_end_matches 大小写敏感，
 /// 「周报.DOCX」会生成「周报.DOCX.docx」双扩展名。
 fn strip_known_ext(name: &str, ext: &str) -> String {
     let suffix = format!(".{}", ext.to_lowercase());
@@ -2319,7 +2314,7 @@ fn gen_out_path(app: &AppHandle, filename: Option<&str>, ext: &str) -> CommandRe
     gen_out_path_in(&crate::db::data_dir(app).join("AI_Gen_Files"), filename, ext)
 }
 
-/// F2（Phase 6b）：纯目录参数版便于单测（mock_app 的 AppHandle 与 Wry 签名不兼容）。
+/// 纯目录参数版便于单测（mock_app 的 AppHandle 与 Wry 签名不兼容）。
 /// create_dir_all 失败经 From<io::Error> → CommandError::IoError（结构化，不走 String 逃生舱）。
 fn gen_out_path_in(
     dir: &std::path::Path,
@@ -2347,14 +2342,14 @@ fn gen_out_path_in(
     Ok(candidate.to_string_lossy().to_string())
 }
 
-// escape_for_log 已上提到 crate::audit（NEW-C-6）；本文件经顶部 use 引入，规则不变。
-// 历史说明：P2-11 原生于本模块（剥换行/管道符防伪造日志行），现与 write_event 共享同一实现。
+// escape_for_log 与 crate::audit::write_event 共享同一实现（剥换行/管道符防伪造日志行）；
+// 本文件经顶部 use 引入。
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // ── drain_output（C1：孙进程继承管道时 rx 收集不得永久阻塞）──
+    // ── drain_output（孙进程继承管道时 rx 收集不得永久阻塞）──
 
     #[test]
     fn drain_output_collects_both_channels() {
@@ -2389,7 +2384,7 @@ mod tests {
         );
     }
 
-    // ── read_capped_drain（NEW-C-5：触顶截断 + 排空防 SIGPIPE）──
+    // ── read_capped_drain（触顶截断 + 排空防 SIGPIPE）──
 
     #[test]
     fn read_capped_drain_under_cap_not_truncated() {
@@ -2424,11 +2419,11 @@ mod tests {
         assert_eq!(out.len(), OUTPUT_CAP + 1024);
     }
 
-    // ── reader 线程生命周期（G2：StopReader 取消 + 带超时 join 兜底）──
+    // ── reader 线程生命周期（StopReader 取消 + 带超时 join 兜底）──
 
     #[test]
     fn stop_reader_returns_partial_when_stopped() {
-        // 批次8审计 P1：本用例断言「未停时完整读取」，stop_all_executions（lib.rs 退出
+        // 本用例断言「未停时完整读取」，stop_all_executions（lib.rs 退出
         // 清理测试 / bot_slash stop_all 用例）并行广播会提前置位 → 首读即 EOF 随机挂
         let _serial = crate::bot_slash::STOP_TEST_LOCK
             .lock()
@@ -2539,7 +2534,7 @@ mod tests {
         );
     }
 
-    // ── resolve_timeout / 资源限额（C2：默认 60s、硬钳上限 300s、限额按 timeout 比例）──
+    // ── resolve_timeout / 资源限额（默认 60s、硬钳上限 300s、限额按 timeout 比例）──
 
     #[test]
     fn resolve_timeout_default_60s() {
@@ -2555,11 +2550,11 @@ mod tests {
         assert_eq!(resolve_timeout(Some(u64::MAX)), (MAX_TIMEOUT_SECS, true));
     }
 
-    /// 2026-08-27：.NET 修订工具端到端——dotnet + dll 都在才跑（缺则跳过，CI 无 dotnet 不红）。
+    /// .NET 修订工具端到端——dotnet + dll 都在才跑（缺则跳过，CI 无 dotnet 不红）。
     /// 用真实工具生成 docx，验证 OpenXML 修订标记（w:ins 用 w:t / w:del 用 w:delText）。
     #[test]
     fn dotnet_revisions_tool_generates_valid_track_changes() {
-        // 批次6改造后：入口定位收敛到 dotnet_revisions_entry（exe 优先/dll 兜底）
+        // 入口定位收敛到 dotnet_revisions_entry（exe 优先/dll 兜底）
         let Some((prog, entry)) = dotnet_revisions_entry() else {
             eprintln!("skip: 未找到 wm-docx-revisions（先 dotnet build -c Release）");
             return;
@@ -2606,15 +2601,15 @@ mod tests {
         assert!(xml.contains("<w:del "), "应有删除修订：{xml}");
         assert!(xml.contains("<w:delText"), "w:del 内必须是 w:delText：{xml}");
         assert!(xml.contains("WMessage AI"), "修订应有作者：{xml}");
-        // 2026-09-02 老板拍板：修订不写日期
+        // 修订不写日期
         assert!(!xml.contains("w:date="), "修订不应带 w:date：{xml}");
     }
 
-    /// 2026-09-02：就地修订保留原文格式——夹具 docx（标题样式 + 加粗 run + 普通段落），
+    /// 就地修订保留原文格式——夹具 docx（标题样式 + 加粗 run + 普通段落），
     /// 修订后：equal 段落原样不动（pStyle / <w:b/> 保留），改动段落行内 w:ins/w:del，
     /// 无 w:date。dotnet + dll 都在才跑（CI 无 dotnet 跳过）。
-    /// 2026-09-05 回归：含 tab + 超链接的段落改几个字必须走字符级 diff
-    /// （此前口径不一致必中整段删+整段增保底）。
+    /// 回归：含 tab + 超链接的段落改几个字必须走字符级 diff
+    /// （口径不一致会必中整段删+整段增保底）。
     #[test]
     fn dotnet_revisions_in_place_preserves_formatting() {
         let Some((prog, entry)) = dotnet_revisions_entry() else {
@@ -2691,7 +2686,7 @@ mod tests {
         assert!(xml.contains("<w:ins "), "应有插入修订：{xml}");
         assert!(xml.contains("<w:delText xml:space=\"preserve\">要</w:delText>"), "删除片段应在：{xml}");
         assert!(xml.contains("<w:t xml:space=\"preserve\">过了</w:t>"), "插入片段应在：{xml}");
-        // 2026-09-05 回归：tab/超链接段落改一个字走字符级 diff——只删「三」增「四」，
+        // 回归：tab/超链接段落改一个字走字符级 diff——只删「三」增「四」，
         // tab 保留、超链接文本作为 equal 片段保留（hyperlink 解包后文字不丢），
         // 不得整段标删（整段删会含完整旧句）
         assert!(xml.contains("<w:delText xml:space=\"preserve\">三</w:delText>"), "应只删「三」：{xml}");
@@ -2713,7 +2708,7 @@ mod tests {
         assert_eq!(cpu_limit_secs(u64::MAX), u64::MAX);
     }
 
-    // ── 失败路径审计（C3：超时 / spawn_fail 必留痕）──
+    // ── 失败路径审计（超时 / spawn_fail 必留痕）──
 
     #[test]
     fn run_python_at_timeout_writes_audit_line() {
@@ -2759,11 +2754,11 @@ mod tests {
             lines.iter().any(|l| l.contains("kind=spawn_fail")),
             "缺 spawn_fail 审计行: {lines:?}"
         );
-        // P2-9：spawn 失败必须清理已创建的临时目录，否则磁盘泄漏
+        // spawn 失败必须清理已创建的临时目录，否则磁盘泄漏
         assert!(!dir.exists(), "spawn 失败后临时目录应被清理");
     }
 
-    // ── P2-25：spawn 失败 / 目录初始化失败的即时泄漏收尾 ──
+    // ── spawn 失败 / 目录初始化失败的即时泄漏收尾 ──
 
     #[test]
     fn spawn_fail_cleans_populated_dir_and_audits() {
@@ -2822,7 +2817,7 @@ mod tests {
         std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    // ── cleanup_after_fail（NEW-C-3：失败路径杀进程组 + 清临时目录）──
+    // ── cleanup_after_fail（失败路径杀进程组 + 清临时目录）──
 
     #[test]
     fn cleanup_after_fail_kills_child_and_removes_dir() {
@@ -2848,7 +2843,7 @@ mod tests {
         );
     }
 
-    // ── 退出清理注册表（P2-24：kill_py_children 整树杀 + 守卫注销）──
+    // ── 退出清理注册表（kill_py_children 整树杀 + 守卫注销）──
 
     #[cfg(unix)]
     #[test]
@@ -2885,7 +2880,7 @@ mod tests {
         assert_eq!(kill_py_children(&[pid]), 0);
     }
 
-    // ── 残留目录清扫（P2-9：启动时清 py-runs 超龄目录）──
+    // ── 残留目录清扫（启动时清 py-runs 超龄目录）──
 
     #[test]
     fn sweep_stale_py_runs_removes_only_stale() {
@@ -2918,7 +2913,7 @@ mod tests {
         );
     }
 
-    // ── 探测缓存（P2-10：连续调用只探测一次；探测本身带超时）──
+    // ── 探测缓存（连续调用只探测一次；探测本身带超时）──
 
     #[test]
     fn cached_python_probes_only_once() {
@@ -2960,7 +2955,7 @@ mod tests {
         }
     }
 
-    // ── /stop 中断在途执行（NEW-C-4：停止令牌注入轮询循环）──
+    // ── /stop 中断在途执行（停止令牌注入轮询循环）──
 
     #[test]
     fn run_python_at_stop_token_interrupts_promptly() {
@@ -3003,7 +2998,7 @@ mod tests {
         assert!(!dir.exists(), "停止路径应清理临时目录");
     }
 
-    // ── strip_known_ext（NEW-C-7：扩展名剥离大小写不敏感）──
+    // ── strip_known_ext（扩展名剥离大小写不敏感）──
 
     #[test]
     fn strip_known_ext_case_insensitive() {
@@ -3018,7 +3013,7 @@ mod tests {
         assert_eq!(strip_known_ext("a.docx.docx", "docx"), "a.docx");
     }
 
-    // ── escape_for_log（P2-11：剥换行/管道符，防伪造日志行）──
+    // ── escape_for_log（剥换行/管道符，防伪造日志行）──
 
     #[test]
     fn escape_for_log_strips_newlines_and_pipes() {
@@ -3041,7 +3036,7 @@ mod tests {
         assert!(out.ends_with('…'));
     }
 
-    // ── 并发闸门（P2-12：同一时刻只允许一个 Python 任务在执行）──
+    // ── 并发闸门（同一时刻只允许一个 Python 任务在执行）──
 
     #[test]
     fn py_run_gate_serializes_concurrent_runs() {
@@ -3069,7 +3064,7 @@ mod tests {
         );
     }
 
-    // ── spawn_blocking_map（NEW-C-1：doc_* async 命令不得把阻塞压在 runtime worker 上）──
+    // ── spawn_blocking_map（doc_* async 命令不得把阻塞压在 runtime worker 上）──
 
     #[test]
     fn spawn_blocking_map_ok_passthrough() {
@@ -3093,7 +3088,7 @@ mod tests {
         assert!(e.starts_with("执行线程异常"), "got: {e}");
     }
 
-    // ── py_audit_to（NEW-C-2：py_audit 必须与 write_event/audit_log 共用 BOT_LOG_LOCK）──
+    // ── py_audit_to（py_audit 必须与 write_event/audit_log 共用 BOT_LOG_LOCK）──
 
     #[test]
     fn py_audit_to_writes_wellformed_line() {
@@ -3136,7 +3131,7 @@ mod tests {
         }
     }
 
-    // ── F2（Phase 6b）：doc_* command 结构化错误迁移 ──
+    // ── doc_* command 结构化错误迁移 ──
 
     /// doc_extract 错误路径：对话框未选中文件 → CommandError::Internal（code 稳定）
     #[test]
@@ -3221,7 +3216,6 @@ mod tests {
 
     /// Windows 子进程直拉 Python 时强制 UTF-8 IO encoding，
     /// 否则 stdout 默认 cp936，Rust 端按 UTF-8 解码看到乱码。
-    /// （Fix 2026-08-21：老板 09:53 拍板走方案 A，加两个 env var）
     #[cfg(windows)]
     #[test]
     fn silent_cmd_on_windows_sets_python_utf8_env() {
@@ -3243,7 +3237,7 @@ mod tests {
 
 #[cfg(test)]
 mod batch5_exiting_tests {
-    /// 批次5审计 P2 回归锁：EXITING 复查必须在 PY_RUN_GATE 拿锁之后
+    /// 回归锁：EXITING 复查必须在 PY_RUN_GATE 拿锁之后
     ///（锁前检查挡不住「kill 完成后才拿到锁的排队者」）。
     /// 全局标志不在测试里翻转（会污染并行测试的 run_python），源码锁防回退。
     #[test]
@@ -3260,7 +3254,7 @@ mod batch5_exiting_tests {
 
 #[cfg(test)]
 mod batch6_platform_tests {
-    /// 批次6审计 P1 回归锁：开发模式 dll 候选（env!("CARGO_MANIFEST_DIR") 绝对路径）
+    /// 回归锁：开发模式 dll 候选（env!("CARGO_MANIFEST_DIR") 绝对路径）
     /// 必须 cfg(debug_assertions) 门控——否则构建机路径烧进发布二进制
     #[test]
     fn dev_dll_candidate_is_debug_gated() {
@@ -3276,7 +3270,7 @@ mod batch6_platform_tests {
         );
     }
 
-    /// 批次6审计 P1 回归锁：绿色包随包 apphost exe 直跑候选必须存在且优先于 dll
+    /// 回归锁：绿色包随包 apphost exe 直跑候选必须存在且优先于 dll
     ///（self-contained 发布免装 .NET；framework-dependent apphost 自动找共享运行时）
     #[test]
     fn bundled_exe_entry_preferred_over_dll() {
@@ -3289,7 +3283,7 @@ mod batch6_platform_tests {
         assert!(exe_hit < dll_hit, "随包 exe 候选必须先于 dll 判定");
     }
 
-    /// 批次6审计 P1 回归锁：Unix 脚本必须注入父进程看门狗（macOS 无 Job Object 等价物，
+    /// 回归锁：Unix 脚本必须注入父进程看门狗（macOS 无 Job Object 等价物，
     /// 主进程崩溃时睡眠型失控脚本靠 RLIMIT_CPU 管不住）
     #[cfg(unix)]
     #[test]
@@ -3305,7 +3299,7 @@ mod batch6_platform_tests {
         );
     }
 
-    /// 批次6审计 P2：pid 复用防护——死 pid / 非组首不得杀（getpgid 失败返回 -1）
+    /// pid 复用防护——死 pid / 非组首不得杀（getpgid 失败返回 -1）
     #[cfg(unix)]
     #[test]
     fn group_leader_check_rejects_dead_pid() {

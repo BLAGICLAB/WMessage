@@ -27,7 +27,7 @@ pub fn load_or_create_token(app: &AppHandle) -> Result<String, String> {
     if let Ok(s) = std::fs::read_to_string(&path) {
         let s = s.trim().to_string();
         if !s.is_empty() {
-            // 2026-09-04 审计 P2-2：存量文件权限过宽（历史版本 0644 写入窗口遗留）
+            // 存量文件权限可能过宽（历史版本 0644 写入窗口遗留）
             // 永不补 chmod 的话会一直裸奔，读取时顺手收紧（best-effort，失败不挡读）
             let _ = tighten_token_permissions(&path);
             return Ok(s);
@@ -60,11 +60,11 @@ fn tighten_token_permissions(_path: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
-/// 写 token 文件并把权限收紧到 0600（P2-1：token 等价于密码，默认 0644 可被同机其他用户读）。
+/// 写 token 文件并把权限收紧到 0600（token 等价于密码，默认 0644 可被同机其他用户读）。
 /// 抽出独立函数便于单测（load_or_create_token 依赖 AppHandle 无法直测）。
 ///
-/// 2026-09-04 审计 P2-2：改用 `OpenOptions` + `.mode(0o600)` 创建即收紧——
-/// 原先先 `fs::write`（umask 默认 0644）后 chmod，中间存在同机其他用户可读的窗口。
+/// 用 `OpenOptions` + `.mode(0o600)` 创建即收紧——
+/// 先 `fs::write`（umask 默认 0644）后 chmod 会留同机其他用户可读的窗口。
 /// 注意 mode() 只对新建文件生效，存量文件（历史 0644）靠结尾补 chmod 覆盖。
 pub(crate) fn write_token_file(path: &std::path::Path, token: &str) -> Result<(), String> {
     let mut opts = std::fs::OpenOptions::new();
@@ -81,7 +81,7 @@ pub(crate) fn write_token_file(path: &std::path::Path, token: &str) -> Result<()
     Ok(())
 }
 
-/// 恒定时间字符串比较（P2-1：字符串 `==` 提前退出，响应时间泄露前缀匹配长度，
+/// 恒定时间字符串比较（字符串 `==` 提前退出，响应时间泄露前缀匹配长度，
 /// 本机 API token 虽只在 127.0.0.1 暴露，仍按密钥标准处理）。
 /// 不引 subtle 依赖（项目约束不加新依赖），XOR 折叠实现语义等价。
 /// 长度不同直接 false（长度泄露可接受——token 固定 32 字符 UUID）。
@@ -153,7 +153,7 @@ mod tests {
         assert_eq!(mode, 0o600, "token 文件权限必须收紧到 0600，实际 {mode:o}");
     }
 
-    /// 2026-09-04 审计 P2-2：存量 0644 文件（历史版本的写入窗口遗留）覆写后
+    /// 存量 0644 文件（历史版本的写入窗口遗留）覆写后
     /// 必须补收紧到 0600——OpenOptions 的 mode() 只对新建文件生效
     #[cfg(unix)]
     #[test]
@@ -171,7 +171,7 @@ mod tests {
 }
 
 /// 校验请求 Authorization 头是否为 `Bearer <token>`。
-/// P2-1：恒定时间比较，防响应时间侧信道枚举 token 前缀。
+/// 恒定时间比较，防响应时间侧信道枚举 token 前缀。
 pub fn verify_bearer(req: &Request, token: &str) -> bool {
     let expected = format!("Bearer {token}");
     req.headers()

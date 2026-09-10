@@ -1,25 +1,24 @@
-//! 记忆 v2 混合打分与注入取数（2026-09-09，设计 docs/BOT-MEMORY-V2-DESIGN.md 第 3 节）。
+//! 记忆 v2 混合打分与注入取数（设计 docs/BOT-MEMORY-V2-DESIGN.md 第 3 节）。
 //!
 //! score = 0.55·cosine(query,item) + 0.20·关键词 bigram 重合度 + 0.15·(importance/5)
 //!         + 0.10·exp(-age_days/30)
 //! 无向量（降级模式 / 条目缺 embedding）时语义项记 0 并把剩余权重归一（÷0.45）；
-//! 此时关键词零重合直接 0 分（纯关键词模式与旧系统口径一致，保住「零命中→近期摘要兜底」）。
-//! 关键词提取复刻旧 db.rs extract_keywords 的 CJK bigram 逻辑（旧表 bot_facts 已弃用删除）。
+//! 此时关键词零重合直接 0 分（保住「零命中→近期摘要兜底」）。
+//! 关键词提取的 CJK bigram 逻辑见下方 extract_keywords。
 
 use super::store::{cosine, MemItem};
 
-/// 检索注入条数（top-5，与旧系统口径一致）
+/// 检索注入条数（top-5）
 pub const MEMORY_TOP_N: usize = 5;
 
 /// 近期摘要条数（最近 3 条 summary/reflection，兼作零命中兜底）
 pub const MEMORY_RECENT_N: usize = 3;
 
-/// 经验教训条数（lesson 类型 top-3，2026-09-09 lesson 特性）
+/// 经验教训条数（lesson 类型 top-3）
 pub const MEMORY_LESSON_N: usize = 3;
 
 /// 关键词提取（无依赖）：英文/数字连续段转小写成一个词；
 /// 连续 CJK 字符段取字符 bigram；单字 CJK 段保留单字。去重保序。
-/// （与旧 db.rs::extract_keywords 同一算法；旧函数随旧表 bot_facts 一并删除）
 pub(crate) fn extract_keywords(text: &str) -> Vec<String> {
     fn is_cjk(c: char) -> bool {
         matches!(c,

@@ -28,7 +28,7 @@ mocks.invokeMock.mockImplementation(async (cmd: string) => {
         model: "",
         hasApiKey: false,
         bypassLlmOnPreStepHit: true,
-        // 2026-09-08 字体大小：默认 small（老板拍板「目前字号为小」）
+        // 字体大小：默认 small（老板拍板「目前字号为小」）
         uiFontSize: "small",
       };
     case "py_get_enabled":
@@ -45,7 +45,7 @@ mocks.invokeMock.mockImplementation(async (cmd: string) => {
       return { rules_count: 0, poll_interval_secs: 600 };
     case "migration_log_read":
       return "";
-    // 2026-09-08 开机自启动：默认关闭；enable/disable 幂等返 null
+    // 开机自启动：默认关闭；enable/disable 幂等返 null
     case "plugin:autostart|is_enabled":
       return false;
     case "plugin:autostart|enable":
@@ -233,7 +233,7 @@ describe("SettingsPage", () => {
           hasApiKey: true,
           bypassLlmOnPreStepHit: true,
           allowedDirs: [],
-          // 2026-09-05 起 view 只给 has 标志，key 本体在系统凭据存储
+          // view 只给 has 标志，key 本体在系统凭据存储
           hasTavilyKey: true,
           tavilyEnabled: false, // 显式关闭：配了 key 也应走双引擎
           pythonTimeoutSecs: null,
@@ -289,7 +289,7 @@ describe("SettingsPage", () => {
           hasApiKey: false,
           bypassLlmOnPreStepHit: true,
           allowedDirs: [],
-          // 2026-09-05 起缺 key 的判定看 has 标志（keyring 里没有）
+          // 缺 key 的判定看 has 标志（keyring 里没有）
           hasTavilyKey: false,
           tavilyEnabled: true, // 开了但没 key
           pythonTimeoutSecs: null,
@@ -382,7 +382,7 @@ describe("SettingsPage", () => {
     });
   });
 
-  // ───────── 2026-09-08 老板拍板改版：双协议下的大模型列表 ─────────
+  // ───────── 双协议下的大模型列表（老板拍板改版）─────────
   // 老「提供商预设」3 个测试 + 1 个「API 协议」测试全部重写：新行为是每协议独立
   // 一份 ModelEntry 列表，点「添加大模型」自己加，切换协议时列表整体切换。
 
@@ -391,7 +391,7 @@ describe("SettingsPage", () => {
       if (cmd === "bot_get_enabled") return true;
       if (cmd === "bot_get_config")
         return {
-          // 2026-09-08：新结构两协议都是空数组
+          // 新结构：两协议都是空数组
           modelsByProvider: { openai: [], anthropic: [] },
           activeModelId: { openai: null, anthropic: null },
           hasApiKey: false,
@@ -825,7 +825,7 @@ describe("SettingsPage", () => {
     });
   });
 
-  // 2026-09-08 Bugfix：原 main.css 只覆盖 text-[10/11/12px] 三个任意值类，
+  // Bugfix 回归：原 main.css 只覆盖 text-[10/11/12px] 三个任意值类，
   // 设置页按钮 / chat 输入框用的 text-xs 不在覆盖范围 → 切档无视觉差异。
   // 补全覆盖后必须能命中。vitest config css:false 不加载 CSS，读文件做静态断言。
   it("字体大小覆盖：main.css 含 text-xs / text-sm / text-base + input 各档规则", async () => {

@@ -1,7 +1,7 @@
-//! F-2 Plugin/Extension 抽象层（2026-08-18 P2）
+//! F-2 Plugin/Extension 抽象层
 //!
 //! ## 动机
-//! 审计发现「业务 Skill 禁止注册底层中间件钩子」只是口头约束，没有编译期隔离。
+//! 「业务 Skill 禁止注册底层中间件钩子」不能只是口头约束，要有编译期隔离。
 //! 引入 `Middleware` trait + `MiddlewareRegistry` 让「中间件注册」成为受控行为：
 //! - `lib.rs` setup 阶段注册 3 个内置中间件（选择任务卡批量执行路由 + 意图路由 + 原子黑名单）
 //! - 业务模块（bot_skills.rs）只能通过 helper 函数查询，不能 register
@@ -11,7 +11,7 @@
 //! - `MiddlewareRegistry` 用 Vec<Box<dyn Middleware>> 存储，短路求值
 //! - helper 函数 run_pre_step / run_pre_execute 通过 Tauri State 访问 registry
 //!
-//! ## fail 语义（D2，2026-08-19）
+//! ## fail 语义（D2）
 //! state 未 manage（测试、初始化竞态）时两类中间件区别对待：
 //! - 安全闸门类（pre_execute / AtomicGuard）→ **fail-closed**：原子工具一律拒绝 + ERROR 审计，
 //!   安全闸门缺席时绝不能静默放行原子工具
@@ -67,7 +67,7 @@ impl MiddlewareRegistry {
         self.pre_execute.push(m);
     }
     /// pre-step 短路求值：任一中间件返回 Some(_)
-    /// P2-13：catch_unwind 兜底——中间件 panic 不再炸掉调用方所在的
+    /// catch_unwind 兜底——中间件 panic 不得炸掉调用方所在的
     /// tauri::async_runtime worker 线程；记 ERROR 审计后按「未命中」处理，继续下一个
     pub fn run_pre_step<R: tauri::Runtime>(
         &self,
@@ -91,9 +91,9 @@ impl MiddlewareRegistry {
         None
     }
     /// pre-execute 短路求值：任一中间件返回 Some(msg)
-    /// P2-13：同 run_pre_step，panic 兜住记审计后按「不阻断」继续下一个
-    /// P2-14：pre_step / pre_execute 双 Vec 分离，漏注册一边会静默半生效——
-    /// 空注册表被调用时记 ERROR 审计（pre_execute_not_registered），不再无声放行
+    /// 同 run_pre_step，panic 兜住记审计后按「不阻断」继续下一个
+    /// pre_step / pre_execute 双 Vec 分离，漏注册一边会静默半生效——
+    /// 空注册表被调用时记 ERROR 审计（pre_execute_not_registered），不无声放行
     pub fn run_pre_execute<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
@@ -106,8 +106,8 @@ impl MiddlewareRegistry {
                 "pre_execute_not_registered",
                 &[("tool", name)],
             );
-            // 2026-08-27 审计 P2：闸门缺席对原子工具 fail-closed——与「registry 缺失」
-            // 口径一致（run_pre_execute helper 同款语义），不再「有声放行」
+            // 闸门缺席对原子工具 fail-closed——与「registry 缺失」
+            // 口径一致（run_pre_execute helper 同款语义），不「有声放行」
             if is_atomic_tool(name) && !active_skill {
                 return Some(format!(
                     "⚠️ 安全闸门未注册（pre_execute 为空），拒绝原子工具 {name} 的直接调用。请通过对应 Skill 执行。"
@@ -155,7 +155,7 @@ impl MiddlewareRegistry {
 /// 构建默认注册表：注册 3 个内置中间件（lib.rs setup 调用）
 pub fn build_default_registry() -> MiddlewareRegistry {
     let mut r = MiddlewareRegistry::default();
-    // 选择任务卡批量执行路由（2026-08-20 收编主流程）：排在 IntentRouter 之前——
+    // 选择任务卡批量执行路由：排在 IntentRouter 之前——
     // 「完成/执行」+ [已选任务] 引用块命中时直接短路为 ExecuteTasks，不再查技能路由表；
     // 未命中返回 None，链条继续走到 IntentRouter
     r.register_pre_step(Box::new(ChatExecuteMiddleware));
@@ -216,7 +216,7 @@ pub fn run_pre_execute<R: tauri::Runtime>(
 // 内置中间件：包装现有 intent_router / tool_guard
 // ────────────────────────────────────────────────────────────────────
 
-/// P2-13：从 catch_unwind payload 提取 panic 信息（&str / String / 其他三种情况）
+/// 从 catch_unwind payload 提取 panic 信息（&str / String / 其他三种情况）
 fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
     if let Some(s) = payload.downcast_ref::<&str>() {
         (*s).to_string()
@@ -227,10 +227,9 @@ fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
     }
 }
 
-/// 内置：选择任务卡批量执行路由中间件（2026-08-20 收编主流程）
+/// 内置：选择任务卡批量执行路由中间件
 ///
-/// 原为 bot_chat 内部前置短路（在 bypass 开关读取与 pre-step 路由之前抢跑 return），
-/// 现收编为 pre-step 链上的一个普通中间件：命中「完成/执行」关键词 + [已选任务] 引用块
+/// pre-step 链上的一个普通中间件：命中「完成/执行」关键词 + [已选任务] 引用块
 /// 时返回 RouteAction::ExecuteTasks，由 bot_chat 主流程在路由步骤统一处理（含 bypass 开关语义）；
 /// 未命中返回 None，链条继续走到 IntentRouterMiddleware。
 pub struct ChatExecuteMiddleware;
@@ -381,7 +380,7 @@ mod tests {
 
     #[test]
     fn intent_router_middleware_empty_table_pass_through() {
-        // 2026-08-19 动态路由：路由表 = 已安装技能的 intents 声明，测试进程未 rebuild → 空表。
+        // 动态路由：路由表 = 已安装技能的 intents 声明，测试进程未 rebuild → 空表。
         // 空表恒 PassThrough（未安装的技能不得有路由）；D1 契约不变：PassThrough 也返回 Some 短路 pre_step 链。
         let m = IntentRouterMiddleware;
         match m.pre_step("帮我做 PPT") {
@@ -401,7 +400,7 @@ mod tests {
         assert!(m.pre_execute("link_file_to_task", false).is_some());
         // 黑名单 + Skill 状态 → 放行
         assert!(m.pre_execute("link_file_to_task", true).is_none());
-        // 2026-09-02 起 create_word_revisions 移出黑名单（去 Skill 化），聊天直调放行
+        // create_word_revisions 已移出黑名单（去 Skill 化），聊天直调放行
         assert!(m.pre_execute("create_word_revisions", false).is_none());
         // 白名单 → 放行
         assert!(m.pre_execute("run_python", false).is_none());
@@ -411,7 +410,7 @@ mod tests {
     #[test]
     fn build_default_registry_has_three_builtins() {
         let r = build_default_registry();
-        // pre_step 链：chat_execute（选择任务卡批量执行，2026-08-20 收编）在前、intent_router 殿后
+        // pre_step 链：chat_execute（选择任务卡批量执行）在前、intent_router 殿后
         assert_eq!(r.pre_step_list(), vec!["chat_execute", "intent_router"]);
         assert_eq!(r.pre_execute_list().len(), 1);
     }
@@ -469,7 +468,7 @@ mod tests {
         let handle = app.handle().clone();
         assert!(run_pre_execute(&handle, "link_file_to_task", false).is_some());
         assert!(run_pre_execute(&handle, "list_tasks", false).is_none());
-        // 2026-08-19 动态路由：测试进程路由表为空（未安装技能经 rebuild 注入）→ 恒 PassThrough
+        // 动态路由：测试进程路由表为空（未安装技能经 rebuild 注入）→ 恒 PassThrough
         match run_pre_step(&handle, "帮我做 PPT") {
             Some(RouteAction::PassThrough) => {}
             other => panic!("expected PassThrough（动态路由空表）, got {other:?}"),
@@ -508,7 +507,7 @@ mod tests {
         assert_eq!(r.pre_step_list(), vec!["custom", "intent_router"]);
     }
 
-    // ── P2-14：只注册 pre_step 的 registry，pre_execute 调用记审计不静默 ──
+    // ── 只注册 pre_step 的 registry，pre_execute 调用记审计不静默 ──
 
     #[test]
     fn pre_execute_empty_side_audits_not_registered() {
@@ -539,7 +538,7 @@ mod tests {
         );
     }
 
-    // ── P2-13：中间件 panic 不得炸掉调用方线程（catch_unwind + ERROR 审计 + None）──
+    // ── 中间件 panic 不得炸掉调用方线程（catch_unwind + ERROR 审计 + None）──
 
     #[test]
     fn middleware_panic_caught_audited_and_returns_none() {

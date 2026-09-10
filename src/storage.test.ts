@@ -45,7 +45,7 @@ describe("loadTasksFromDb", () => {
   });
 });
 
-// E1（2026-08-19）：写路径不再 { silent: true } 静默吞错——
+// 写路径不再 { silent: true } 静默吞错——
 // 失败必须 alert 提示用户并把错误抛给调用方，否则 UI 已改而磁盘没落，UI/DB 永久分叉。
 describe("写路径错误传播（E1）", () => {
   const alertMock = vi.fn();
@@ -99,7 +99,7 @@ describe("写路径错误传播（E1）", () => {
   });
 });
 
-// P2-20（2026-08-19）：拖拽排序只改 order，不得刷新 updatedAt——
+// 拖拽排序只改 order，不得刷新 updatedAt——
 // 否则多客户端按 updatedAt 合并时排序写互相覆盖，顺序来回乱跳。
 describe("diffTaskRows 纯排序保留 updatedAt（P2-20）", () => {
   const base: Task[] = [0, 1, 2, 3].map((i) => ({
@@ -165,7 +165,7 @@ describe("diffTaskRows 纯排序保留 updatedAt（P2-20）", () => {
   });
 });
 
-// T1-1（2026-09-03）：RMW 写回带基线 expectedUpdatedAt = 快照行 updatedAt——
+// RMW 写回带基线 expectedUpdatedAt = 快照行 updatedAt——
 // 后端 upsert 写前比对现行行，不一致拒写（防两写者读同一快照后交错整行覆盖）。
 describe("diffTaskRows 携带 RMW 写回基线（T1-1）", () => {
   const base: Task[] = [
@@ -189,7 +189,7 @@ describe("diffTaskRows 携带 RMW 写回基线（T1-1）", () => {
     const next = assignInsertOrder([base[1], base[0]], "t1");
     const { upserts } = diffTaskRows(base, next, 999999);
     expect(upserts).toHaveLength(1);
-    expect(upserts[0].updatedAt).toBe(1000); // P2-20 豁免不破
+    expect(upserts[0].updatedAt).toBe(1000); // 纯排序豁免不破
     expect(upserts[0].expectedUpdatedAt).toBe(1000);
   });
 
@@ -208,7 +208,7 @@ describe("diffTaskRows 携带 RMW 写回基线（T1-1）", () => {
   });
 });
 
-// P2-34（2026-08-19）：导出/导入同属写数据类——invoke reject 必须弹 alert，不得静默吞。
+// 导出/导入同属写数据类——invoke reject 必须弹 alert，不得静默吞。
 describe("导出/导入失败弹 alert（P2-34）", () => {
   const alertMock = vi.fn();
   const ioErr = { code: "IO_ERROR", message: "permission denied", recoverable: false };

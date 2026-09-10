@@ -1,5 +1,5 @@
-// 批次8审计（2026-09-02）：format.ts 是事故高发纯逻辑（注释里两次 NaN 历史事故）
-// 却长期零覆盖。补行为断言：datetime-local 校验、schedule 四分支解析、月末顺延。
+// format.ts 是事故高发纯逻辑（注释里两次 NaN 历史事故）。
+// 行为断言：datetime-local 校验、schedule 四分支解析、月末顺延。
 import { describe, it, expect } from "vitest";
 import {
   isValidDateTimeLocal,
