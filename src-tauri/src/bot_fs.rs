@@ -284,7 +284,7 @@ fn is_binary_file(path: &Path) -> bool {
 /// 返回 (内容, 是否截断)。
 fn read_capped_file(path: &Path, max: usize) -> std::io::Result<(Vec<u8>, bool)> {
     use std::io::Read;
-    let mut f = std::fs::File::open(path)?;
+    let f = std::fs::File::open(path)?;
     let mut buf = Vec::new();
     f.take(max as u64 + 1).read_to_end(&mut buf)?;
     let truncated = buf.len() > max;

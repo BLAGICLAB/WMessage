@@ -43,7 +43,7 @@ export interface MigrationReport {
   log: string[];
 }
 
-export interface Subtask {
+interface Subtask {
   id: string;
   text: string;
   done: boolean;

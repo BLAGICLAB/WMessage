@@ -6,7 +6,7 @@
  * - bot / api / migration：后端线程已落盘，主窗口只合并 UI，不回写
  * - widget / undefined：挂件上报，主窗口统一落盘
  */
-export const MUTATION_ORIGINS = ["main", "widget", "bot", "api", "migration"] as const;
+const MUTATION_ORIGINS = ["main", "widget", "bot", "api", "migration"] as const;
 
 export type MutationOrigin = (typeof MUTATION_ORIGINS)[number];
 

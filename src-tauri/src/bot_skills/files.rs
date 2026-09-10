@@ -60,7 +60,7 @@ pub async fn open_file_path(app: AppHandle, path: String) -> CommandResult<()> {
     }
     // 2026-09-05：存在性前置检查——原先直接进 opener，文件不存在时回的是 OS 英文
     // 报错（且前端 silent 吞掉，点了没反应）；现在给可读原因，前端弹错不静默
-    if (!std::path::Path::new(&path).exists()) {
+    if !std::path::Path::new(&path).exists() {
         crate::bot::audit_log(
             &app,
             &format!("open_file_path missing | {}", crate::audit::escape_for_log(&path, 200)),

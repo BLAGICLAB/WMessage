@@ -674,8 +674,6 @@ mod p2_29_version_tests {
 
 #[cfg(test)]
 mod p2_26_bring_front_tests {
-    use tauri::Manager;
-
     /// P2-26：bring_main_to_front 不得阻塞调用线程 —— 80ms 置顶闪烁的等待
     /// 在后台线程，调用方（全局快捷键/托盘事件处理，全跑主线程）立即返回。
     #[test]

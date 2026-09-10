@@ -5,7 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { handleCommandError } from "./lib/errorHandler";
 
-export type ProfileEntryView = {
+type ProfileEntryView = {
   name: string;
   avatarDataUrl: string | null;
 };
@@ -87,7 +87,7 @@ export async function removeProfileAvatar(kind: "user" | "bot"): Promise<Profile
 
 // Rust 广播的资料变更（换头像/改名后）→ 刷新缓存
 let listening = false;
-export function ensureProfileListen() {
+function ensureProfileListen() {
   if (listening) return;
   listening = true;
   listen<ProfileView>("profile-changed", (e) => {

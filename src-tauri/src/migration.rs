@@ -216,7 +216,6 @@ fn decide_src_missing(pending: Option<JournalEntry>, dst_exists: bool) -> SrcMis
 ///
 /// 返回（恢复条数, 错误条数）供调用者记日志。
 pub fn journal_replay_pending(app: &AppHandle) -> Result<(usize, usize), String> {
-    use crate::db::Task;
     let conn = db::open_db(app).map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(

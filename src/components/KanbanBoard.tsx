@@ -18,7 +18,7 @@ import {
 import type { ColumnId, Task } from "../types";
 import { SortableTodoCard, TodoCardView } from "./TodoCard";
 
-export const COLUMNS: { id: ColumnId; label: string }[] = [
+const COLUMNS: { id: ColumnId; label: string }[] = [
   { id: "todo", label: "待办" },
   { id: "doing", label: "今日" },
   { id: "done", label: "完成" },

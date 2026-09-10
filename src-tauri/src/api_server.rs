@@ -317,7 +317,7 @@ mod tests {
             tasks: Mutex::new(Vec::new()),
             hub: EventHub::new(),
         });
-        let mut running = start_api(port, "tok".into(), store, None, None, None).unwrap();
+        let running = start_api(port, "tok".into(), store, None, None, None).unwrap();
 
         // 慢速滴注不完整 header（无结尾空行）：50ms/字节的间隔 < 读超时，
         // 此阶段连接存活（单次 read 级超时不杀仍在出字节的连接）；
