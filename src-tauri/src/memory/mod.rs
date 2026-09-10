@@ -1,7 +1,7 @@
 //! 记忆 v2 门面（2026-09-09，设计 docs/BOT-MEMORY-V2-DESIGN.md）：
 //! 替代旧关键词记忆体（db.rs bot_facts 系列）的运行时路径。
-//! 系统未上线即切换：旧表 bot_facts 废弃不导入（无任何数据迁移动作；表与旧函数
-//! 原样保留，仅供 tests/memory_regression.rs 旧行为基准回归使用）。
+//! 系统未上线即切换：旧表 bot_facts 废弃不导入（无数据迁移；v1 代码已于
+//! 2026-09-10 整体删除（commit e1234a2），老库残表无害不清理）。
 //!
 //! - 存储：store.rs（新表 mem_items，统一 500 上限 + 语义去重 + 容量淘汰）
 //! - 嵌入：embed.rs（bge-small-zh-v1.5 本地 ONNX 推理，缺失时全局降级关键词模式）
