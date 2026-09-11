@@ -91,11 +91,7 @@ fn strip_verbatim(p: PathBuf) -> PathBuf {
 /// 白名单原始路径合并（追加语义）：内置默认（桌面/下载/文档）+ 任务卡绑定
 /// 文件夹 + 用户 allowedDirs 三者并集（不能是「用户列表整体替换默认」——否则授权弹窗
 /// 「始终允许」写入一个目录后，内置默认反而失效）。抽纯函数便于单测。
-fn merge_raw_dirs(
-    cfg_dirs: &[String],
-    home: Option<&Path>,
-    task_dirs: Vec<String>,
-) -> Vec<String> {
+fn merge_raw_dirs(cfg_dirs: &[String], home: Option<&Path>, task_dirs: Vec<String>) -> Vec<String> {
     let mut raw: Vec<String> = Vec::new();
     if let Some(home) = home {
         for d in ["Desktop", "Downloads", "Documents"] {
@@ -157,8 +153,8 @@ pub async fn resolve_with_perm(
         return Err("路径不能为空".into());
     }
     let expanded = expand_tilde(p);
-    let canonical = std::fs::canonicalize(&expanded)
-        .map_err(|_| format!("路径不存在或不可访问：{p}"))?;
+    let canonical =
+        std::fs::canonicalize(&expanded).map_err(|_| format!("路径不存在或不可访问：{p}"))?;
     let dirs = allowed_dirs(app).await;
     if dirs.iter().any(|d| canonical.starts_with(d)) {
         return Ok(strip_verbatim(canonical));
@@ -167,18 +163,30 @@ pub async fn resolve_with_perm(
         crate::bot::PermMode::Yolo => {
             crate::bot::audit_log(
                 app,
-                &format!("bot_fs.yolo_allow | tool: {tool} | path: {}", crate::bot::truncate_for_log(p, 200)),
+                &format!(
+                    "bot_fs.yolo_allow | tool: {tool} | path: {}",
+                    crate::bot::truncate_for_log(p, 200)
+                ),
             );
             Ok(strip_verbatim(canonical))
         }
         crate::bot::PermMode::Ask => {
-            match crate::bot_slash::ask_path_confirm(app, tool, &format!("访问白名单外路径：{p}"), interactive, session_id)
-                .await
+            match crate::bot_slash::ask_path_confirm(
+                app,
+                tool,
+                &format!("访问白名单外路径：{p}"),
+                interactive,
+                session_id,
+            )
+            .await
             {
                 crate::bot_slash::ConfirmChoice::Once => {
                     crate::bot::audit_log(
                         app,
-                        &format!("bot_fs.ask_allow_once | tool: {tool} | path: {}", crate::bot::truncate_for_log(p, 200)),
+                        &format!(
+                            "bot_fs.ask_allow_once | tool: {tool} | path: {}",
+                            crate::bot::truncate_for_log(p, 200)
+                        ),
                     );
                     Ok(strip_verbatim(canonical))
                 }
@@ -187,7 +195,10 @@ pub async fn resolve_with_perm(
                     let dir = if canonical.is_dir() {
                         canonical.clone()
                     } else {
-                        canonical.parent().map(|d| d.to_path_buf()).unwrap_or_else(|| canonical.clone())
+                        canonical
+                            .parent()
+                            .map(|d| d.to_path_buf())
+                            .unwrap_or_else(|| canonical.clone())
                     };
                     let dir_str = strip_verbatim(dir).to_string_lossy().to_string();
                     if let Err(e) = crate::bot::add_allowed_dir(app, &dir_str) {
@@ -195,14 +206,20 @@ pub async fn resolve_with_perm(
                     }
                     crate::bot::audit_log(
                         app,
-                        &format!("bot_fs.ask_allow_always | tool: {tool} | dir: {}", crate::bot::truncate_for_log(&dir_str, 200)),
+                        &format!(
+                            "bot_fs.ask_allow_always | tool: {tool} | dir: {}",
+                            crate::bot::truncate_for_log(&dir_str, 200)
+                        ),
                     );
                     Ok(strip_verbatim(canonical))
                 }
                 crate::bot_slash::ConfirmChoice::Deny => {
                     crate::bot::audit_log(
                         app,
-                        &format!("bot_fs.ask_denied | tool: {tool} | path: {}", crate::bot::truncate_for_log(p, 200)),
+                        &format!(
+                            "bot_fs.ask_denied | tool: {tool} | path: {}",
+                            crate::bot::truncate_for_log(p, 200)
+                        ),
                     );
                     Err(format!(
                         "用户未授权访问该路径：{p}（可在授权弹窗点「始终允许该目录」，或在设置页把目录加入白名单）"
@@ -213,7 +230,10 @@ pub async fn resolve_with_perm(
         crate::bot::PermMode::Strict => {
             crate::bot::audit_log(
                 app,
-                &format!("bot_fs.denied | path: {} | 不在白名单目录内", crate::bot::truncate_for_log(p, 200)),
+                &format!(
+                    "bot_fs.denied | path: {} | 不在白名单目录内",
+                    crate::bot::truncate_for_log(p, 200)
+                ),
             );
             Err(format!(
                 "路径不在白名单目录内：{p}（白名单：设置页 allowedDirs，默认 桌面/下载/文档 + 任务卡绑定文件夹）"
@@ -245,7 +265,9 @@ fn walk(dir: &Path, mut visit: impl FnMut(&Path, bool) -> bool) {
         if depth > WALK_MAX_DEPTH {
             continue;
         }
-        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
         for entry in rd.flatten() {
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().to_string();
@@ -273,7 +295,9 @@ fn walk(dir: &Path, mut visit: impl FnMut(&Path, bool) -> bool) {
 /// 是否二进制/非 UTF-8 文本（读前 8KB 含 NUL 即判二进制）
 fn is_binary_file(path: &Path) -> bool {
     use std::io::Read;
-    let Ok(mut f) = std::fs::File::open(path) else { return true };
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return true;
+    };
     let mut buf = [0u8; 8192];
     let n = f.read(&mut buf).unwrap_or(0);
     buf[..n].contains(&0)
@@ -297,27 +321,39 @@ fn read_capped_file(path: &Path, max: usize) -> std::io::Result<(Vec<u8>, bool)>
 // ───────────────────────── 工具实现（bot 分发签名：(String, Vec<TaskRef>)） ─────────────────────────
 
 /// read_text_file：读白名单内 UTF-8 文本，offset/limit 行切片（1 起），超 100KB 截断
-pub async fn tool_read_text_file(app: &AppHandle, args: &str, interactive: bool, session_id: Option<&str>) -> (String, Vec<TaskRef>) {
+pub async fn tool_read_text_file(
+    app: &AppHandle,
+    args: &str,
+    interactive: bool,
+    session_id: Option<&str>,
+) -> (String, Vec<TaskRef>) {
     let v = crate::bot::parse_args(args);
     let Some(path) = v["path"].as_str() else {
         return ("read_text_file 缺少 path".into(), Vec::new());
     };
-    let canonical = match resolve_with_perm(app, "read_text_file", path, interactive, session_id).await {
-        Ok(p) => p,
-        Err(e) => return (e, Vec::new()),
-    };
+    let canonical =
+        match resolve_with_perm(app, "read_text_file", path, interactive, session_id).await {
+            Ok(p) => p,
+            Err(e) => return (e, Vec::new()),
+        };
     if canonical.is_dir() {
-        return (format!("{} 是目录，列文件请用 list_files", path.trim()), Vec::new());
+        return (
+            format!("{} 是目录，列文件请用 list_files", path.trim()),
+            Vec::new(),
+        );
     }
     if is_binary_file(&canonical) {
         return (
-            format!("{} 是二进制/非文本文件；Office/PDF 文档请用 extract_document", path.trim()),
+            format!(
+                "{} 是二进制/非文本文件；Office/PDF 文档请用 extract_document",
+                path.trim()
+            ),
             Vec::new(),
         );
     }
     let offset = v["offset"].as_u64().unwrap_or(1).max(1) as usize;
-    let limit = (v["limit"].as_u64().unwrap_or(READ_DEFAULT_LINES as u64) as usize)
-        .min(READ_MAX_LINES);
+    let limit =
+        (v["limit"].as_u64().unwrap_or(READ_DEFAULT_LINES as u64) as usize).min(READ_MAX_LINES);
     let (raw, byte_truncated) = match read_capped_file(&canonical, READ_MAX_BYTES) {
         Ok(r) => r,
         Err(e) => return (format!("读取失败：{e}"), Vec::new()),
@@ -326,7 +362,10 @@ pub async fn tool_read_text_file(app: &AppHandle, args: &str, interactive: bool,
     let lines: Vec<&str> = text.lines().collect();
     let total = lines.len();
     if offset > total {
-        return (format!("文件共 {total} 行，offset {offset} 超出范围"), Vec::new());
+        return (
+            format!("文件共 {total} 行，offset {offset} 超出范围"),
+            Vec::new(),
+        );
     }
     let slice: Vec<String> = lines
         .iter()
@@ -336,7 +375,11 @@ pub async fn tool_read_text_file(app: &AppHandle, args: &str, interactive: bool,
         .map(|(i, l)| format!("{}: {}", offset + i, l))
         .collect();
     let end = offset + slice.len() - 1;
-    let mut out = format!("{}（第 {offset}-{end} 行 / 共 {total} 行）\n{}", path.trim(), slice.join("\n"));
+    let mut out = format!(
+        "{}（第 {offset}-{end} 行 / 共 {total} 行）\n{}",
+        path.trim(),
+        slice.join("\n")
+    );
     if end < total || byte_truncated {
         out.push_str(&format!("\n…（截断，继续读请用 offset={}", end + 1));
         if byte_truncated {
@@ -344,19 +387,29 @@ pub async fn tool_read_text_file(app: &AppHandle, args: &str, interactive: bool,
         }
         out.push(')');
     }
-    crate::bot::audit_log(app, &format!("bot_fs.read | {} | lines {offset}-{end}/{total}", crate::bot::truncate_for_log(&canonical.display().to_string(), 200)));
+    crate::bot::audit_log(
+        app,
+        &format!(
+            "bot_fs.read | {} | lines {offset}-{end}/{total}",
+            crate::bot::truncate_for_log(&canonical.display().to_string(), 200)
+        ),
+    );
     (out, Vec::new())
 }
 
 /// grep_files：白名单目录内正则搜文件内容，输出 path:line:内容（ripgrep 风格）
-pub async fn tool_grep_files(app: &AppHandle, args: &str, interactive: bool, session_id: Option<&str>) -> (String, Vec<TaskRef>) {
+pub async fn tool_grep_files(
+    app: &AppHandle,
+    args: &str,
+    interactive: bool,
+    session_id: Option<&str>,
+) -> (String, Vec<TaskRef>) {
     let v = crate::bot::parse_args(args);
     let Some(pattern) = v["pattern"].as_str() else {
         return ("grep_files 缺少 pattern".into(), Vec::new());
     };
     // 非法正则降级为字面量搜索（regex::escape），不让一个坏 pattern 炸掉整轮
-    let re = regex::Regex::new(pattern)
-        .or_else(|_| regex::Regex::new(&regex::escape(pattern)));
+    let re = regex::Regex::new(pattern).or_else(|_| regex::Regex::new(&regex::escape(pattern)));
     let Ok(re) = re else {
         return (format!("无效的正则表达式：{pattern}"), Vec::new());
     };
@@ -364,10 +417,12 @@ pub async fn tool_grep_files(app: &AppHandle, args: &str, interactive: bool, ses
     let max = (v["max"].as_u64().unwrap_or(GREP_MAX_HITS as u64) as usize).min(GREP_MAX_HITS);
     // dir 可选：缺省搜第一个白名单目录
     let dir = match v["dir"].as_str() {
-        Some(d) if !d.trim().is_empty() => match resolve_with_perm(app, "grep_files", d, interactive, session_id).await {
-            Ok(p) => p,
-            Err(e) => return (e, Vec::new()),
-        },
+        Some(d) if !d.trim().is_empty() => {
+            match resolve_with_perm(app, "grep_files", d, interactive, session_id).await {
+                Ok(p) => p,
+                Err(e) => return (e, Vec::new()),
+            }
+        }
         _ => match allowed_dirs(app).await.first() {
             Some(d) => d.clone(),
             None => return ("没有可用的白名单目录".into(), Vec::new()),
@@ -384,11 +439,18 @@ pub async fn tool_grep_files(app: &AppHandle, args: &str, interactive: bool, ses
         if is_dir {
             return true;
         }
-        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
         if !glob.is_empty() && !glob_match(&glob, &name) {
             return true;
         }
-        if path.metadata().map(|m| m.len() > GREP_MAX_FILE_BYTES).unwrap_or(true) {
+        if path
+            .metadata()
+            .map(|m| m.len() > GREP_MAX_FILE_BYTES)
+            .unwrap_or(true)
+        {
             return true; // 超大文件跳过
         }
         if is_binary_file(path) {
@@ -397,7 +459,12 @@ pub async fn tool_grep_files(app: &AppHandle, args: &str, interactive: bool, ses
         if let Ok(text) = std::fs::read_to_string(path) {
             for (i, line) in text.lines().enumerate() {
                 if re.is_match(line) {
-                    hits.push(format!("{}:{}: {}", path.display(), i + 1, line.chars().take(200).collect::<String>()));
+                    hits.push(format!(
+                        "{}:{}: {}",
+                        path.display(),
+                        i + 1,
+                        line.chars().take(200).collect::<String>()
+                    ));
                     if hits.len() >= max {
                         return false;
                     }
@@ -406,9 +473,20 @@ pub async fn tool_grep_files(app: &AppHandle, args: &str, interactive: bool, ses
         }
         true
     });
-    crate::bot::audit_log(app, &format!("bot_fs.grep | dir: {} | pattern: {} | hits: {}", crate::bot::truncate_for_log(&dir.display().to_string(), 200), crate::bot::truncate_for_log(pattern, 100), hits.len()));
+    crate::bot::audit_log(
+        app,
+        &format!(
+            "bot_fs.grep | dir: {} | pattern: {} | hits: {}",
+            crate::bot::truncate_for_log(&dir.display().to_string(), 200),
+            crate::bot::truncate_for_log(pattern, 100),
+            hits.len()
+        ),
+    );
     if hits.is_empty() {
-        return (format!("{} 内没有匹配「{pattern}」的内容", dir.display()), Vec::new());
+        return (
+            format!("{} 内没有匹配「{pattern}」的内容", dir.display()),
+            Vec::new(),
+        );
     }
     let mut out = hits.join("\n");
     if hits.len() >= max {
@@ -418,7 +496,12 @@ pub async fn tool_grep_files(app: &AppHandle, args: &str, interactive: bool, ses
 }
 
 /// list_files：列白名单目录内文件（可选 glob 过滤文件名），深度 ≤5，上限 200 条
-pub async fn tool_list_files(app: &AppHandle, args: &str, interactive: bool, session_id: Option<&str>) -> (String, Vec<TaskRef>) {
+pub async fn tool_list_files(
+    app: &AppHandle,
+    args: &str,
+    interactive: bool,
+    session_id: Option<&str>,
+) -> (String, Vec<TaskRef>) {
     let v = crate::bot::parse_args(args);
     let Some(dir) = v["dir"].as_str() else {
         return ("list_files 缺少 dir".into(), Vec::new());
@@ -428,7 +511,10 @@ pub async fn tool_list_files(app: &AppHandle, args: &str, interactive: bool, ses
         Err(e) => return (e, Vec::new()),
     };
     if !canonical.is_dir() {
-        return (format!("{} 不是目录；读文件请用 read_text_file", dir.trim()), Vec::new());
+        return (
+            format!("{} 不是目录；读文件请用 read_text_file", dir.trim()),
+            Vec::new(),
+        );
     }
     let pattern = v["pattern"].as_str().unwrap_or("").trim().to_string();
     let mut entries: Vec<String> = Vec::new();
@@ -436,21 +522,45 @@ pub async fn tool_list_files(app: &AppHandle, args: &str, interactive: bool, ses
         if entries.len() >= LIST_MAX_ENTRIES {
             return false;
         }
-        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
         if !pattern.is_empty() && !glob_match(&pattern, &name) {
             return true;
         }
         let rel = path.strip_prefix(&canonical).unwrap_or(path);
-        entries.push(format!("{}{}", rel.display(), if is_dir { "/" } else { "" }));
+        entries.push(format!(
+            "{}{}",
+            rel.display(),
+            if is_dir { "/" } else { "" }
+        ));
         true
     });
-    crate::bot::audit_log(app, &format!("bot_fs.list | dir: {} | entries: {}", crate::bot::truncate_for_log(&canonical.display().to_string(), 200), entries.len()));
+    crate::bot::audit_log(
+        app,
+        &format!(
+            "bot_fs.list | dir: {} | entries: {}",
+            crate::bot::truncate_for_log(&canonical.display().to_string(), 200),
+            entries.len()
+        ),
+    );
     if entries.is_empty() {
-        return (format!("{} 内没有匹配的文件", canonical.display()), Vec::new());
+        return (
+            format!("{} 内没有匹配的文件", canonical.display()),
+            Vec::new(),
+        );
     }
-    let mut out = format!("{}（{} 条）：\n{}", canonical.display(), entries.len(), entries.join("\n"));
+    let mut out = format!(
+        "{}（{} 条）：\n{}",
+        canonical.display(),
+        entries.len(),
+        entries.join("\n")
+    );
     if entries.len() >= LIST_MAX_ENTRIES {
-        out.push_str(&format!("\n…（已达 {LIST_MAX_ENTRIES} 条上限，用 pattern 过滤缩小范围）"));
+        out.push_str(&format!(
+            "\n…（已达 {LIST_MAX_ENTRIES} 条上限，用 pattern 过滤缩小范围）"
+        ));
     }
     (out, Vec::new())
 }
@@ -494,7 +604,8 @@ mod tests {
         let root = tmp.path();
         // 真实文件 + 指向外部文件的软链 + 指向外部目录的软链
         std::fs::write(root.join("real.txt"), b"ok").unwrap();
-        let outside = std::env::temp_dir().join(format!("wm_outside_{}.txt", uuid::Uuid::new_v4().simple()));
+        let outside =
+            std::env::temp_dir().join(format!("wm_outside_{}.txt", uuid::Uuid::new_v4().simple()));
         std::fs::write(&outside, b"secret").unwrap();
         std::os::unix::fs::symlink(&outside, root.join("link.txt")).unwrap();
         std::os::unix::fs::symlink(std::env::temp_dir(), root.join("link_dir")).unwrap();
@@ -505,8 +616,14 @@ mod tests {
             true
         });
         assert!(visited.contains(&"real.txt".to_string()));
-        assert!(!visited.contains(&"link.txt".to_string()), "软链文件必须跳过");
-        assert!(!visited.contains(&"link_dir".to_string()), "软链目录必须跳过");
+        assert!(
+            !visited.contains(&"link.txt".to_string()),
+            "软链文件必须跳过"
+        );
+        assert!(
+            !visited.contains(&"link_dir".to_string()),
+            "软链目录必须跳过"
+        );
         // 软链目标的内容不应出现在遍历里
         assert!(!visited.iter().any(|n| n.starts_with("wm_outside_")));
         let _ = std::fs::remove_file(&outside);

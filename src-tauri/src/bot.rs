@@ -32,8 +32,8 @@ use crate::error::{CommandError, CommandResult};
 // 新代码应优先直接引用 bot_chat / bot_model_loop 模块。
 pub use crate::bot_chat::{BotChatResult, TaskRef};
 pub use crate::bot_model_loop::{
-    accumulate_tool_call_delta, drain_sse_lines, noop_replan, parse_sse_chunk,
-    run_model_loop_core, LlmHttp, ModelLoopDeps, ToolCallDelta,
+    accumulate_tool_call_delta, drain_sse_lines, noop_replan, parse_sse_chunk, run_model_loop_core,
+    LlmHttp, ModelLoopDeps, ToolCallDelta,
 };
 // bot_slash 是私有模块，集成测试（tests/llm_integration.rs）驱动
 // run_model_loop_core 需要构造停止守卫，此处转出口径唯一公开。
@@ -227,7 +227,7 @@ impl Default for BotConfig {
             models_by_provider: None,         // 未配置 = 设置页空列表（无默认厂商）
             active_model_id: None,            // 未配置 = 两协议都没选 active
             ui_font_size: None,               // 未配置 = small（老板拍板默认；前端读取时回退）
-            memory_consolidation: None,       // 未配置 = 启用 + daily（ConsolidationConfig::default）
+            memory_consolidation: None, // 未配置 = 启用 + daily（ConsolidationConfig::default）
         }
     }
 }
@@ -507,12 +507,19 @@ fn warn_fallback_once(slot: KeySlot) {
     if WARNED.swap(true, std::sync::atomic::Ordering::SeqCst) {
         return;
     }
-    if let Some(dir) = plaintext_key_path_for(slot).parent().map(|p| p.to_path_buf()) {
+    if let Some(dir) = plaintext_key_path_for(slot)
+        .parent()
+        .map(|p| p.to_path_buf())
+    {
         let reason = format!(
             "secret-service 不可用（无 dbus 会话），API Key 降级明文文件存储（0600）：{}",
             slot.plaintext_filename()
         );
-        crate::audit::write_warn_audit_to(&dir, "keyring_fallback_plaintext", &[("reason", &reason)]);
+        crate::audit::write_warn_audit_to(
+            &dir,
+            "keyring_fallback_plaintext",
+            &[("reason", &reason)],
+        );
     }
 }
 
@@ -661,7 +668,9 @@ fn classify_has_key(r: Result<String, keyring::Error>) -> CommandResult<bool> {
     match r {
         Ok(_) => Ok(true),
         Err(keyring::Error::NoEntry) => Ok(false),
-        Err(e) => Err(CommandError::KeyringError(format!("检查 API Key 失败：{e}"))),
+        Err(e) => Err(CommandError::KeyringError(format!(
+            "检查 API Key 失败：{e}"
+        ))),
     }
 }
 
@@ -851,7 +860,8 @@ pub fn migrate_search_keys(app: &AppHandle) -> Result<(), String> {
     ] {
         let has_in_store = has_search_key(slot).unwrap_or(false);
         let mut write = |key: &str| write_search_key(slot, key).map_err(|e| e.message());
-        let (remaining, migrated) = migrate_search_key_slot(field.as_deref(), has_in_store, &mut write);
+        let (remaining, migrated) =
+            migrate_search_key_slot(field.as_deref(), has_in_store, &mut write);
         if migrated {
             crate::audit_event!(
                 app,
@@ -954,7 +964,9 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
     // get_or_insert_with 保证 cfg.models_by_provider 是 Some；字段 #[serde(default)]
     // 保证反序列化时缺字段补空 Vec。两者联手让前端任何路径都不会拿到 undefined。
     // 前端那 5 处 `?? []` 兑底是最后一道防线。
-    let _ = cfg.models_by_provider.get_or_insert_with(ModelsByProvider::default);
+    let _ = cfg
+        .models_by_provider
+        .get_or_insert_with(ModelsByProvider::default);
     Ok(BotConfigView {
         base_url: cfg.base_url,
         model: cfg.model,
@@ -993,10 +1005,7 @@ pub fn bot_set_config(
             write_api_key(k)?;
         }
     }
-    for (slot, key) in [
-        (KeySlot::Tavily, tavily_key),
-        (KeySlot::Brave, brave_key),
-    ] {
+    for (slot, key) in [(KeySlot::Tavily, tavily_key), (KeySlot::Brave, brave_key)] {
         if let Some(k) = key {
             let k = k.trim();
             if !k.is_empty() {
@@ -1042,7 +1051,8 @@ fn write_bot_config_file(dir: &std::path::Path, config: BotConfig) -> CommandRes
     std::fs::create_dir_all(dir).map_err(|e| CommandError::IoError(e.to_string()))?;
     let raw =
         serde_json::to_string_pretty(&cfg).map_err(|e| CommandError::IoError(e.to_string()))?;
-    std::fs::write(dir.join("bot-config.json"), raw).map_err(|e| CommandError::IoError(e.to_string()))
+    std::fs::write(dir.join("bot-config.json"), raw)
+        .map_err(|e| CommandError::IoError(e.to_string()))
 }
 
 /// base_url 安全判定：空 / https:// / 回环地址（localhost、127.x、::1）
@@ -1231,7 +1241,12 @@ fn early_return_events(
 /// 不暴露给前端 — 通过 `is_atomic_tool` 黑名单 + pre-execute 校验保护。
 /// 会话隔离：session_id 随调用链透传（DSL 调度器从 bot_chat 带下来），
 /// 无 StopGuard 时按交互执行处理（DSL 调度器只在聊天上下文里跑）。
-pub async fn execute_tool(app: &AppHandle, name: &str, args: &str, session_id: Option<&str>) -> (String, Vec<crate::bot_chat::TaskRef>) {
+pub async fn execute_tool(
+    app: &AppHandle,
+    name: &str,
+    args: &str,
+    session_id: Option<&str>,
+) -> (String, Vec<crate::bot_chat::TaskRef>) {
     execute_tool_impl(app, name, args, None, true, session_id).await
 }
 
@@ -1276,12 +1291,14 @@ async fn execute_tool_impl(
     // EXECUTE_SYSTEM_PROMPT 把 link_file_to_task 列为收尾动作，该流程没有 SkillRun，
     // 不放行则 prompt 要求的核心动作必被自家网关否决。
     // （create_word_revisions 不在原子黑名单，聊天/执行均可直调）
-    let active = crate::tool_guard::is_skill_active(session_id)
-        || stop.is_some_and(|s| s.allow_atomic());
+    let active =
+        crate::tool_guard::is_skill_active(session_id) || stop.is_some_and(|s| s.allow_atomic());
     if let Some(msg) = crate::middleware::run_pre_execute(app, name, active) {
         // tool.call 已发出，早退前必须配平 tool.return（reason=denied），
         // 否则统计面板出现「悬挂调用」（call > return）
-        for (level, event, kv) in early_return_events(name, "denied", start.elapsed().as_millis() as u64, None) {
+        for (level, event, kv) in
+            early_return_events(name, "denied", start.elapsed().as_millis() as u64, None)
+        {
             crate::audit::write_event(app, level, event, &kv);
         }
         return (msg, Vec::new());
@@ -1290,7 +1307,12 @@ async fn execute_tool_impl(
     if name != "use_skill" {
         if let Err(e) = crate::bot_skills::skill_on_step(app, name, args, session_id) {
             // 补 Warn 可见性（skill_on_step_error）+ tool.return 配平（reason=skill_step_failed）
-            for (level, event, kv) in early_return_events(name, "skill_step_failed", start.elapsed().as_millis() as u64, Some(&e.to_string())) {
+            for (level, event, kv) in early_return_events(
+                name,
+                "skill_step_failed",
+                start.elapsed().as_millis() as u64,
+                Some(&e.to_string()),
+            ) {
                 crate::audit::write_event(app, level, event, &kv);
             }
             return (e.into(), Vec::new());
@@ -1306,7 +1328,9 @@ async fn execute_tool_impl(
         "add_subtask" => tool_add_subtask(app, args).await,
         "toggle_subtask" => tool_toggle_subtask(app, args).await,
         "remove_subtask" => tool_remove_subtask(app, args).await,
-        "read_text_file" => crate::bot_fs::tool_read_text_file(app, args, interactive, session_id).await,
+        "read_text_file" => {
+            crate::bot_fs::tool_read_text_file(app, args, interactive, session_id).await
+        }
         "ocr_image" => crate::ocr::tool_ocr_image(app, args, interactive, session_id).await,
         "grep_files" => crate::bot_fs::tool_grep_files(app, args, interactive, session_id).await,
         "list_files" => crate::bot_fs::tool_list_files(app, args, interactive, session_id).await,
@@ -1315,7 +1339,9 @@ async fn execute_tool_impl(
         "search_tasks" => tool_search_tasks(app, args).await,
         "extract_document" => tool_extract_document(app, args, interactive, session_id).await,
         "create_word" => tool_create_word(app, args).await,
-        "create_word_revisions" => tool_create_word_revisions(app, args, interactive, session_id).await,
+        "create_word_revisions" => {
+            tool_create_word_revisions(app, args, interactive, session_id).await
+        }
         "create_excel" => tool_create_excel(app, args).await,
         "create_ppt" => tool_create_ppt(app, args).await,
         "create_pdf" => tool_create_pdf(app, args).await,
@@ -1366,8 +1392,15 @@ pub(crate) fn parse_args(args: &str) -> serde_json::Value {
 /// get_current_time：返回本地日期时间+星期（模型做「今天/明天/周几」判断的锚点，禁止猜日期）
 fn tool_get_current_time() -> (String, Vec<crate::bot_chat::TaskRef>) {
     let now = chrono::Local::now();
-    let week = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
-        [chrono::Datelike::weekday(&now).num_days_from_monday() as usize];
+    let week = [
+        "星期一",
+        "星期二",
+        "星期三",
+        "星期四",
+        "星期五",
+        "星期六",
+        "星期日",
+    ][chrono::Datelike::weekday(&now).num_days_from_monday() as usize];
     (
         format!("现在：{} {week}", now.format("%Y-%m-%d %H:%M:%S")),
         Vec::new(),
@@ -1409,8 +1442,7 @@ fn sanitize_task_files_arg(
     v: &serde_json::Value,
 ) -> Option<(Vec<crate::db::TaskFile>, bool)> {
     let (files, truncated) = parse_task_files_arg(v)?;
-    let gen_canon =
-        std::fs::canonicalize(crate::db::data_dir(app).join("AI_Gen_Files")).ok();
+    let gen_canon = std::fs::canonicalize(crate::db::data_dir(app).join("AI_Gen_Files")).ok();
     let (out, dropped) = sanitize_task_files_in(gen_canon.as_deref(), files);
     if dropped > 0 {
         audit_log(
@@ -1461,7 +1493,11 @@ fn files_audit_kv(args: &str) -> Option<(usize, bool)> {
 }
 
 /// 改库后广播：挂件重读（tasks-changed）+ 主窗口合并 UI 不回写（tasks-updated, source: Bot）
-pub fn broadcast_after_mutation<R: tauri::Runtime>(app: &tauri::AppHandle<R>, upserts: Vec<crate::db::Task>, deletes: Vec<String>) {
+pub fn broadcast_after_mutation<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    upserts: Vec<crate::db::Task>,
+    deletes: Vec<String>,
+) {
     if !upserts.is_empty() || !deletes.is_empty() {
         let _ = app.emit("tasks-changed", ());
         let _ = app.emit(
@@ -1517,7 +1553,10 @@ async fn tool_list_tasks(app: &AppHandle) -> (String, Vec<crate::bot_chat::TaskR
 /// - 输出：标题/列/截止/备注/子任务/标签/绑定文件 + 归档/删除/机器人执行状态指示
 /// - 单点白名单工具（非原子黑名单），LLM 可裸调
 /// - 返回的 TaskRef 供后续 taskId 操作（complete_task / edit_task / bind_file 等）跟随引用
-async fn tool_query_single_task(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
+async fn tool_query_single_task(
+    app: &AppHandle,
+    args: &str,
+) -> (String, Vec<crate::bot_chat::TaskRef>) {
     let v = parse_args(args);
     let Some(id) = v["id"].as_str().map(|s| s.trim().to_string()) else {
         return ("query_single_task 缺少 id 参数".into(), Vec::new());
@@ -1760,7 +1799,10 @@ async fn tool_create_task(app: &AppHandle, args: &str) -> (String, Vec<crate::bo
     }
 }
 
-async fn tool_complete_task(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
+async fn tool_complete_task(
+    app: &AppHandle,
+    args: &str,
+) -> (String, Vec<crate::bot_chat::TaskRef>) {
     let v = parse_args(args);
     // 走 resolve_task（taskId 精确匹配优先、title 关键词兜底 +
     // taskId/title 交叉校验），与其它任务操作工具对齐——只读 title 会让
@@ -1790,13 +1832,25 @@ async fn tool_complete_task(app: &AppHandle, args: &str) -> (String, Vec<crate::
 }
 
 /// 删除任务到回收站：**弹窗确认后才执行**（危险操作护栏；60s 无响应默认拒绝）
-async fn tool_delete_task(app: &AppHandle, args: &str, interactive: bool, session_id: Option<&str>) -> (String, Vec<crate::bot_chat::TaskRef>) {
+async fn tool_delete_task(
+    app: &AppHandle,
+    args: &str,
+    interactive: bool,
+    session_id: Option<&str>,
+) -> (String, Vec<crate::bot_chat::TaskRef>) {
     let v = parse_args(args);
     let task = match resolve_task(app, &v).await {
         Ok(t) => t,
         Err(e) => return (e.into(), Vec::new()),
     };
-    let approved = crate::bot_slash::ask_user_confirm(app, "delete_task", &task.title, interactive, session_id).await;
+    let approved = crate::bot_slash::ask_user_confirm(
+        app,
+        "delete_task",
+        &task.title,
+        interactive,
+        session_id,
+    )
+    .await;
     if !approved {
         return ("用户拒绝了删除，任务未删除".into(), Vec::new());
     }
@@ -1821,14 +1875,18 @@ async fn tool_delete_task(app: &AppHandle, args: &str, interactive: bool, sessio
 
 /// 按标题关键词找第一条未完成任务（大小写不敏感）
 async fn find_task_by_keyword(app: &AppHandle, kw: &str) -> Option<crate::db::Task> {
-    active_tasks(app).await
+    active_tasks(app)
+        .await
         .into_iter()
         .find(|t| t.title.to_lowercase().contains(kw))
 }
 
 /// 定位任务：优先 taskId 精确匹配，其次标题关键词模糊匹配。
 /// 返回 (task, 定位说明)；找不到返回错误文案。
-async fn resolve_task(app: &AppHandle, v: &serde_json::Value) -> Result<crate::db::Task, CommandError> {
+async fn resolve_task(
+    app: &AppHandle,
+    v: &serde_json::Value,
+) -> Result<crate::db::Task, CommandError> {
     if let Some(id) = v["taskId"].as_str() {
         let id = id.trim();
         if !id.is_empty() {
@@ -1977,7 +2035,11 @@ async fn tool_edit_task(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_
         Ok(()) => {
             broadcast_after_mutation(app, vec![next.clone()], vec![]);
             (
-                format!("已更新任务「{}」（{}）{files_warn}", next.title, changed.join("、")),
+                format!(
+                    "已更新任务「{}」（{}）{files_warn}",
+                    next.title,
+                    changed.join("、")
+                ),
                 vec![crate::bot_chat::TaskRef {
                     id: next.id.clone(),
                     title: next.title.clone(),
@@ -2028,7 +2090,10 @@ async fn tool_add_subtask(app: &AppHandle, args: &str) -> (String, Vec<crate::bo
     }
 }
 
-async fn tool_toggle_subtask(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
+async fn tool_toggle_subtask(
+    app: &AppHandle,
+    args: &str,
+) -> (String, Vec<crate::bot_chat::TaskRef>) {
     let v = parse_args(args);
     let Some(skw) = v["text"].as_str().map(|s| s.trim().to_lowercase()) else {
         return ("toggle_subtask 缺少 text".into(), Vec::new());
@@ -2095,7 +2160,10 @@ async fn tool_toggle_subtask(app: &AppHandle, args: &str) -> (String, Vec<crate:
 }
 
 /// 删除单条子任务
-async fn tool_remove_subtask(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
+async fn tool_remove_subtask(
+    app: &AppHandle,
+    args: &str,
+) -> (String, Vec<crate::bot_chat::TaskRef>) {
     let v = parse_args(args);
     let Some(skw) = v["text"].as_str().map(|s| s.trim().to_lowercase()) else {
         return ("remove_subtask 缺少 text".into(), Vec::new());
@@ -2147,7 +2215,11 @@ async fn tool_remove_subtask(app: &AppHandle, args: &str) -> (String, Vec<crate:
 }
 
 /// 绑定文件/文件夹：弹系统选择框由用户挑选，结果写回任务的 filePath/fileIsDir
-async fn tool_bind_file(app: &AppHandle, args: &str, interactive: bool) -> (String, Vec<crate::bot_chat::TaskRef>) {
+async fn tool_bind_file(
+    app: &AppHandle,
+    args: &str,
+    interactive: bool,
+) -> (String, Vec<crate::bot_chat::TaskRef>) {
     // 后台定时执行（interactive=false）不能弹系统选择框——
     // 无人在场时模态框让 spawn_blocking 线程永久阻塞，该后台任务卡死。
     // 引导模型改用 link_file_to_task 直传路径。
@@ -2219,7 +2291,10 @@ fn file_path_to_string(p: tauri_plugin_dialog::FilePath) -> Option<String> {
 }
 
 /// 把文件路径绑定到任务卡（不弹框；路径必须真实存在，防模型编造）
-async fn tool_link_file_to_task(app: &AppHandle, args: &str) -> (String, Vec<crate::bot_chat::TaskRef>) {
+async fn tool_link_file_to_task(
+    app: &AppHandle,
+    args: &str,
+) -> (String, Vec<crate::bot_chat::TaskRef>) {
     let v = parse_args(args);
     let Some(path) = v["path"]
         .as_str()
@@ -2287,7 +2362,12 @@ async fn tool_link_file_to_task(app: &AppHandle, args: &str) -> (String, Vec<cra
 /// 授权分流：其余路径不硬拒，走 bot_fs::resolve_with_perm 分流
 ///（strict 硬拒 / ask 弹授权窗 / yolo 放行），拒绝文案透传给模型。
 /// interactive/session_id 透传给授权弹窗：后台执行（interactive=false）不弹窗直接拒。
-async fn extract_path_check(app: &AppHandle, path: &str, interactive: bool, session_id: Option<&str>) -> Result<(), String> {
+async fn extract_path_check(
+    app: &AppHandle,
+    path: &str,
+    interactive: bool,
+    session_id: Option<&str>,
+) -> Result<(), String> {
     let Ok(canon) = std::fs::canonicalize(path) else {
         return Err(format!("路径不存在或不可访问：{path}"));
     };
@@ -2317,7 +2397,12 @@ async fn extract_path_check(app: &AppHandle, path: &str, interactive: bool, sess
         .map(|_| ())
 }
 
-async fn tool_extract_document(app: &AppHandle, args: &str, interactive: bool, session_id: Option<&str>) -> (String, Vec<crate::bot_chat::TaskRef>) {
+async fn tool_extract_document(
+    app: &AppHandle,
+    args: &str,
+    interactive: bool,
+    session_id: Option<&str>,
+) -> (String, Vec<crate::bot_chat::TaskRef>) {
     let v = parse_args(args);
     let path_opt = v["path"]
         .as_str()
@@ -2345,7 +2430,10 @@ async fn tool_extract_document(app: &AppHandle, args: &str, interactive: bool, s
         }
     }
     match crate::bot_py::doc_extract(app.clone(), path_opt).await {
-        Ok(res) => (format_extract_output(&res.path, &res.text, offset, limit), Vec::new()),
+        Ok(res) => (
+            format_extract_output(&res.path, &res.text, offset, limit),
+            Vec::new(),
+        ),
         Err(e) => (format!("提取失败：{e}"), Vec::new()),
     }
 }
@@ -2359,7 +2447,9 @@ const EXTRACT_MAX_LIMIT: usize = 60000;
 fn format_extract_output(path: &str, text: &str, offset: usize, limit: usize) -> String {
     let total = text.chars().count();
     if offset >= total && total > 0 {
-        return format!("[文档路径] {path}\noffset {offset} 已超出文档总长 {total} 字符，没有更多内容");
+        return format!(
+            "[文档路径] {path}\noffset {offset} 已超出文档总长 {total} 字符，没有更多内容"
+        );
     }
     let slice: String = text.chars().skip(offset).take(limit).collect();
     let end = offset + slice.chars().count();
@@ -2397,14 +2487,21 @@ async fn tool_create_word(app: &AppHandle, args: &str) -> (String, Vec<crate::bo
     }
     let title = v["title"].as_str().unwrap_or("").to_string();
     let tables = v.get("tables").cloned();
-    match crate::bot_py::doc_make_word(app.clone(), title, paragraphs, opt_filename(&v), tables).await {
+    match crate::bot_py::doc_make_word(app.clone(), title, paragraphs, opt_filename(&v), tables)
+        .await
+    {
         Ok(out) => (format!("已生成 Word 文档：{out}"), Vec::new()),
         Err(e) => (format!("生成失败：{e}"), Vec::new()),
     }
 }
 
 /// 修订模式 Word：回读原文 + 修订段落 diff，产出带 track changes 标记的文档
-async fn tool_create_word_revisions(app: &AppHandle, args: &str, interactive: bool, session_id: Option<&str>) -> (String, Vec<crate::bot_chat::TaskRef>) {
+async fn tool_create_word_revisions(
+    app: &AppHandle,
+    args: &str,
+    interactive: bool,
+    session_id: Option<&str>,
+) -> (String, Vec<crate::bot_chat::TaskRef>) {
     let v = parse_args(args);
     // originalPath 由模型转述，同样过授权校验（防回读任意文件，走分流）
     if let Some(op) = v["originalPath"]
@@ -2489,8 +2586,15 @@ async fn tool_create_ppt(app: &AppHandle, args: &str) -> (String, Vec<crate::bot
     let theme = v["theme"].as_str().map(|s| s.to_string());
     // customColors：可选配色覆盖（脚本侧校验 hex，非法忽略）
     let custom_colors = v.get("customColors").cloned();
-    match crate::bot_py::doc_make_ppt(app.clone(), title, slides.clone(), opt_filename(&v), theme, custom_colors)
-        .await
+    match crate::bot_py::doc_make_ppt(
+        app.clone(),
+        title,
+        slides.clone(),
+        opt_filename(&v),
+        theme,
+        custom_colors,
+    )
+    .await
     {
         Ok(out) => (format!("已生成 PPT 演示文稿：{out}"), Vec::new()),
         Err(e) => (format!("生成失败：{e}"), Vec::new()),
@@ -2661,7 +2765,11 @@ mod bot_config_tests {
         assert_eq!(PermMode::from_cfg(Some("ask")), PermMode::Ask);
         assert_eq!(PermMode::from_cfg(Some("yolo")), PermMode::Yolo);
         // 非法值/空白回退 Ask（安全默认偏严一侧的可用形态）
-        assert_eq!(PermMode::from_cfg(Some("YOLO ")), PermMode::Ask, "大小写不识别，回退 Ask");
+        assert_eq!(
+            PermMode::from_cfg(Some("YOLO ")),
+            PermMode::Ask,
+            "大小写不识别，回退 Ask"
+        );
         assert_eq!(PermMode::from_cfg(Some("garbage")), PermMode::Ask);
         assert_eq!(PermMode::from_cfg(Some("")), PermMode::Ask);
         // as_str 往返
@@ -2676,11 +2784,21 @@ mod bot_config_tests {
         // 老配置零影响）；非法值/空白防御回退 Openai（与 PermMode::from_cfg 同风格）
         let raw = r#"{"baseUrl":"https://api.deepseek.com/v1","model":"deepseek-chat"}"#;
         let cfg: BotConfig = serde_json::from_str(raw).unwrap();
-        assert_eq!(ApiProvider::from_cfg(cfg.api_provider.as_deref()), ApiProvider::Openai);
+        assert_eq!(
+            ApiProvider::from_cfg(cfg.api_provider.as_deref()),
+            ApiProvider::Openai
+        );
         assert_eq!(ApiProvider::from_cfg(None), ApiProvider::Openai);
         assert_eq!(ApiProvider::from_cfg(Some("openai")), ApiProvider::Openai);
-        assert_eq!(ApiProvider::from_cfg(Some("anthropic")), ApiProvider::Anthropic);
-        assert_eq!(ApiProvider::from_cfg(Some("Anthropic")), ApiProvider::Openai, "大小写不识别，回退 Openai");
+        assert_eq!(
+            ApiProvider::from_cfg(Some("anthropic")),
+            ApiProvider::Anthropic
+        );
+        assert_eq!(
+            ApiProvider::from_cfg(Some("Anthropic")),
+            ApiProvider::Openai,
+            "大小写不识别，回退 Openai"
+        );
         assert_eq!(ApiProvider::from_cfg(Some("garbage")), ApiProvider::Openai);
         assert_eq!(ApiProvider::Openai.as_str(), "openai");
         assert_eq!(ApiProvider::Anthropic.as_str(), "anthropic");
@@ -2688,10 +2806,22 @@ mod bot_config_tests {
 
     #[test]
     fn max_tokens_default_and_clamped() {
-        assert_eq!(resolve_max_tokens(None), DEFAULT_MAX_TOKENS, "None = 默认 8192");
+        assert_eq!(
+            resolve_max_tokens(None),
+            DEFAULT_MAX_TOKENS,
+            "None = 默认 8192"
+        );
         assert_eq!(resolve_max_tokens(Some(4096)), 4096);
-        assert_eq!(resolve_max_tokens(Some(1)), MIN_MAX_TOKENS, "低于下限钳 256");
-        assert_eq!(resolve_max_tokens(Some(999_999)), MAX_MAX_TOKENS, "高于上限钳 200000");
+        assert_eq!(
+            resolve_max_tokens(Some(1)),
+            MIN_MAX_TOKENS,
+            "低于下限钳 256"
+        );
+        assert_eq!(
+            resolve_max_tokens(Some(999_999)),
+            MAX_MAX_TOKENS,
+            "高于上限钳 200000"
+        );
     }
 }
 
@@ -2760,8 +2890,14 @@ mod p2_32_keyring_fallback_tests {
 
     #[test]
     fn secret_service_probe_dbus_addr_or_bus_socket() {
-        assert!(secret_service_available_with(true, None), "有 dbus 地址即可用");
-        assert!(!secret_service_available_with(false, None), "无任何线索 = 不可用");
+        assert!(
+            secret_service_available_with(true, None),
+            "有 dbus 地址即可用"
+        );
+        assert!(
+            !secret_service_available_with(false, None),
+            "无任何线索 = 不可用"
+        );
         let tmp = tempfile::tempdir().unwrap();
         let d = tmp.path().to_str().unwrap();
         assert!(
@@ -2886,11 +3022,10 @@ mod search_key_slot_tests {
     #[test]
     fn migrate_slot_migrates_plaintext_to_store() {
         let mut written: Vec<String> = Vec::new();
-        let (remaining, migrated) =
-            migrate_search_key_slot(Some("tvly-plain"), false, &mut |k| {
-                written.push(k.to_string());
-                Ok(())
-            });
+        let (remaining, migrated) = migrate_search_key_slot(Some("tvly-plain"), false, &mut |k| {
+            written.push(k.to_string());
+            Ok(())
+        });
         assert_eq!(written, vec!["tvly-plain"], "应写入 keyring");
         assert_eq!(remaining, None, "写成功 → 配置字段清掉明文");
         assert!(migrated, "应记迁移");
@@ -2913,10 +3048,9 @@ mod search_key_slot_tests {
     #[test]
     fn migrate_slot_write_failure_keeps_plaintext() {
         // keyring 写失败 → 保留文件明文，下次再试（数据保留优先）
-        let (remaining, migrated) =
-            migrate_search_key_slot(Some("tvly-plain"), false, &mut |_| {
-                Err("keychain locked".to_string())
-            });
+        let (remaining, migrated) = migrate_search_key_slot(Some("tvly-plain"), false, &mut |_| {
+            Err("keychain locked".to_string())
+        });
         assert_eq!(remaining.as_deref(), Some("tvly-plain"), "写失败保留明文");
         assert!(!migrated);
     }
@@ -3037,14 +3171,20 @@ mod tool_extract_document_tests {
             "长文本截断后应剩 30000 个 'A'，实际 {a_count}"
         );
         // 续读提示给出下一页起点
-        assert!(out.contains("offset=30000"), "截断提示应给续读 offset：\n{out}");
+        assert!(
+            out.contains("offset=30000"),
+            "截断提示应给续读 offset：\n{out}"
+        );
     }
 
     #[test]
     fn format_extract_output_offset_reads_next_page() {
         let text = "A".repeat(35000);
         let out = format_extract_output("/tmp/big.md", &text, 30000, EXTRACT_DEFAULT_LIMIT);
-        assert!(out.contains("[位置] 30000–35000 / 共 35000 字符"), "第二页位置行：\n{out}");
+        assert!(
+            out.contains("[位置] 30000–35000 / 共 35000 字符"),
+            "第二页位置行：\n{out}"
+        );
         assert_eq!(out.matches('A').count(), 5000, "第二页应只有剩余 5000 字符");
         assert!(!out.contains("已截断"), "读完最后一页不应再有截断提示");
     }
@@ -3053,7 +3193,10 @@ mod tool_extract_document_tests {
     fn format_extract_output_offset_beyond_total() {
         let text = "短";
         let out = format_extract_output("/tmp/a.md", text, 100, EXTRACT_DEFAULT_LIMIT);
-        assert!(out.contains("超出文档总长"), "offset 越界应明确提示：\n{out}");
+        assert!(
+            out.contains("超出文档总长"),
+            "offset 越界应明确提示：\n{out}"
+        );
     }
 }
 /// 早退路径审计事件序列单测（tool.call 配平 tool.return）。
@@ -3096,7 +3239,12 @@ mod early_return_events_tests {
     #[test]
     fn skill_step_error_path_warns_then_balanced_tool_return() {
         // 熔断路径：skill_on_step_error（补 Warn 可见性）→ tool.return(reason=skill_step_failed)
-        let evs = early_return_events("run_python", "skill_step_failed", 5, Some("超过最大步数上限（8 步）"));
+        let evs = early_return_events(
+            "run_python",
+            "skill_step_failed",
+            5,
+            Some("超过最大步数上限（8 步）"),
+        );
         assert_eq!(event_names(&evs), ["skill_on_step_error", "tool.return"]);
         assert!(evs
             .iter()
@@ -3165,12 +3313,24 @@ mod task_files_arg_tests {
         let gen_canon = std::fs::canonicalize(&gen).unwrap();
 
         let files = vec![
-            crate::db::TaskFile { path: inside.to_string_lossy().to_string(), is_dir: false },
-            crate::db::TaskFile { path: outside.to_string_lossy().to_string(), is_dir: false },
+            crate::db::TaskFile {
+                path: inside.to_string_lossy().to_string(),
+                is_dir: false,
+            },
+            crate::db::TaskFile {
+                path: outside.to_string_lossy().to_string(),
+                is_dir: false,
+            },
             // 目录绑定（哪怕是 gen 目录本身）一律丢
-            crate::db::TaskFile { path: gen.to_string_lossy().to_string(), is_dir: true },
+            crate::db::TaskFile {
+                path: gen.to_string_lossy().to_string(),
+                is_dir: true,
+            },
             // 不存在的路径也丢
-            crate::db::TaskFile { path: gen.join("nope.txt").to_string_lossy().to_string(), is_dir: false },
+            crate::db::TaskFile {
+                path: gen.join("nope.txt").to_string_lossy().to_string(),
+                is_dir: false,
+            },
         ];
         let (kept, dropped) = sanitize_task_files_in(Some(&gen_canon), files);
         assert_eq!(kept.len(), 1, "只有 AI_Gen_Files 内已存在文件保留");
@@ -3180,7 +3340,10 @@ mod task_files_arg_tests {
         // gen 目录不可用（None）→ 全丢（fail-closed）
         let (kept, dropped) = sanitize_task_files_in(
             None,
-            vec![crate::db::TaskFile { path: inside.to_string_lossy().to_string(), is_dir: false }],
+            vec![crate::db::TaskFile {
+                path: inside.to_string_lossy().to_string(),
+                is_dir: false,
+            }],
         );
         assert!(kept.is_empty() && dropped == 1);
     }
@@ -3213,8 +3376,14 @@ mod task_files_arg_tests {
         apply_files_to_task(
             &mut t,
             vec![
-                crate::db::TaskFile { path: "/n/1.pdf".into(), is_dir: false },
-                crate::db::TaskFile { path: "/n/dir".into(), is_dir: true },
+                crate::db::TaskFile {
+                    path: "/n/1.pdf".into(),
+                    is_dir: false,
+                },
+                crate::db::TaskFile {
+                    path: "/n/dir".into(),
+                    is_dir: true,
+                },
             ],
         );
         assert_eq!(t.file_path.as_deref(), Some("/n/1.pdf"), "旧字段=首条");
@@ -3230,7 +3399,9 @@ mod task_files_arg_tests {
     fn files_audit_kv_counts_raw_and_flags_truncation() {
         let args = r#"{"files":[{"path":"/a"},{"path":"/b"}]}"#;
         assert_eq!(files_audit_kv(args), Some((2, false)));
-        let many: Vec<String> = (0..11).map(|i| format!("{{\"path\":\"/f/{i}\"}}")).collect();
+        let many: Vec<String> = (0..11)
+            .map(|i| format!("{{\"path\":\"/f/{i}\"}}"))
+            .collect();
         let args = format!("{{\"files\":[{}]}}", many.join(","));
         assert_eq!(files_audit_kv(&args), Some((11, true)), "超 10 → truncated");
         assert_eq!(files_audit_kv(r#"{"title":"x"}"#), None);
@@ -3247,9 +3418,17 @@ mod phase4_facts_tests {
         assert!(refs.is_empty());
         assert!(text.starts_with("现在："), "实际：{text}");
         assert!(
-            ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
-                .iter()
-                .any(|w| text.contains(w)),
+            [
+                "星期一",
+                "星期二",
+                "星期三",
+                "星期四",
+                "星期五",
+                "星期六",
+                "星期日"
+            ]
+            .iter()
+            .any(|w| text.contains(w)),
             "应含中文星期，实际：{text}"
         );
     }
@@ -3262,8 +3441,8 @@ mod background_dialog_tests {
     ///（弹框链路绑定 Wry AppHandle 无法单测，源码锁防回退）
     #[test]
     fn background_execution_never_pops_file_dialog() {
-        let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bot.rs"))
-            .unwrap();
+        let text =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bot.rs")).unwrap();
         assert!(
             text.contains("\"bind_file\" => tool_bind_file(app, args, interactive).await"),
             "bind_file 分发必须透传 interactive"
@@ -3289,7 +3468,10 @@ mod t1_4_audit_log_tests {
         let p = dir.path().join("bot.log");
         assert!(super::append_bot_log_line(&p, "hello"));
         let content = std::fs::read_to_string(&p).unwrap();
-        assert!(content.ends_with("] hello\n"), "应带 [ts] 前缀落行：{content}");
+        assert!(
+            content.ends_with("] hello\n"),
+            "应带 [ts] 前缀落行：{content}"
+        );
     }
 
     #[cfg(unix)]

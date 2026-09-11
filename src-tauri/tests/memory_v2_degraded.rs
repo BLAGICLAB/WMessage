@@ -40,7 +40,13 @@ fn degraded_mode_full_pipeline_no_panic() {
     .unwrap();
     assert!(matches!(r, InsertOutcome::Inserted(_)));
     assert!(hints.is_empty(), "降级模式无向量可算，不应产生冲突提示");
-    store::insert_item(&conn, &item("summary", "之前聊了饮食偏好", vec![], 2), None, now).unwrap();
+    store::insert_item(
+        &conn,
+        &item("summary", "之前聊了饮食偏好", vec![], 2),
+        None,
+        now,
+    )
+    .unwrap();
 
     // 检索（关键词模式）：注入快照 → 命中刷新 → 拼装记忆块
     let items = store::load_all(&conn).unwrap();

@@ -32,16 +32,23 @@ pub async fn tool_ocr_image(
     // canonicalize 失败而拒，这里前置给出明确原因）
     if path.starts_with("http://") || path.starts_with("https://") || path.starts_with("data:") {
         return (
-            "失败：ocr_image 只接受本地图片路径，网络地址不予抓取（隐私红线：识别绝不上传外网）".into(),
+            "失败：ocr_image 只接受本地图片路径，网络地址不予抓取（隐私红线：识别绝不上传外网）"
+                .into(),
             Vec::new(),
         );
     }
-    let canonical = match crate::bot_fs::resolve_with_perm(app, "ocr_image", path, interactive, session_id).await {
-        Ok(p) => p,
-        Err(e) => return (e, Vec::new()),
-    };
+    let canonical =
+        match crate::bot_fs::resolve_with_perm(app, "ocr_image", path, interactive, session_id)
+            .await
+        {
+            Ok(p) => p,
+            Err(e) => return (e, Vec::new()),
+        };
     if canonical.is_dir() {
-        return (format!("失败：{path} 是目录，ocr_image 只接受图片文件"), Vec::new());
+        return (
+            format!("失败：{path} 是目录，ocr_image 只接受图片文件"),
+            Vec::new(),
+        );
     }
     let log_path = crate::bot::truncate_for_log(&canonical.display().to_string(), 200);
     let r = tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
@@ -100,8 +107,11 @@ mod macos {
     pub(super) fn recognize(bytes: &[u8]) -> Result<String, String> {
         let data = NSData::from_vec(bytes.to_vec());
         let options: objc2::rc::Retained<NSDictionary<NSString, AnyObject>> = NSDictionary::new();
-        let handler =
-            VNImageRequestHandler::initWithData_options(VNImageRequestHandler::alloc(), &data, &options);
+        let handler = VNImageRequestHandler::initWithData_options(
+            VNImageRequestHandler::alloc(),
+            &data,
+            &options,
+        );
         let request = VNRecognizeTextRequest::new();
         request.setRecognitionLevel(VNRequestTextRecognitionLevel::Accurate);
         // 中英双语（zh-Hans 需 macOS 13+ 的 revision 2；不支持时 Vision 自动回退可用语言）
@@ -149,7 +159,8 @@ mod win {
     /// 环境变量覆盖（优先级最高）：指向模型目录（内含 det.onnx / rec.onnx / keys.txt，cls.onnx 可选）
     pub const MODEL_DIR_ENV: &str = "WMESSAGE_OCR_MODEL_DIR";
     /// 模型缺失时的下载指引
-    const FETCH_HINT: &str = "请运行 scripts/fetch_ocr_models.sh 下载 PP-OCRv6 模型到 pp-ocr-v6/ 目录（约 31MB）";
+    const FETCH_HINT: &str =
+        "请运行 scripts/fetch_ocr_models.sh 下载 PP-OCRv6 模型到 pp-ocr-v6/ 目录（约 31MB）";
 
     /// det 输入最长边（等比缩放，边长对齐 32 倍数）
     const DET_MAX_SIDE: u32 = 960;
@@ -182,7 +193,9 @@ mod win {
         dev_dir: PathBuf,
     ) -> Option<PathBuf> {
         fn usable(dir: &Path) -> bool {
-            dir.join("det.onnx").is_file() && dir.join("rec.onnx").is_file() && dir.join("keys.txt").is_file()
+            dir.join("det.onnx").is_file()
+                && dir.join("rec.onnx").is_file()
+                && dir.join("keys.txt").is_file()
         }
         if let Some(d) = env_dir.map(str::trim).filter(|d| !d.is_empty()) {
             let p = PathBuf::from(d);
@@ -313,7 +326,8 @@ mod win {
         let (w, h) = crop.dimensions();
         let ratio = REC_H as f32 / h.max(1) as f32;
         let nw = ((w as f32 * ratio).round() as u32).clamp(1, REC_MAX_W);
-        let resized = image::imageops::resize(crop, nw, REC_H, image::imageops::FilterType::Triangle);
+        let resized =
+            image::imageops::resize(crop, nw, REC_H, image::imageops::FilterType::Triangle);
         (resized, nw)
     }
 
@@ -322,7 +336,8 @@ mod win {
         let Some(cls) = &eng.cls else {
             return Ok(false);
         };
-        let resized = image::imageops::resize(crop, CLS_W, CLS_H, image::imageops::FilterType::Triangle);
+        let resized =
+            image::imageops::resize(crop, CLS_W, CLS_H, image::imageops::FilterType::Triangle);
         let data = to_nchw(&resized);
         let (shape, out) = run_first(cls, [1, 3, CLS_H as usize, CLS_W as usize], data)?;
         let n = shape.last().copied().unwrap_or(0) as usize;
@@ -362,18 +377,19 @@ mod win {
         // 2) det 后处理（简化版 DB）：概率图连通域 → 外接矩形 → unclip → 映射回原图
         let rx = orig_w as f32 / out_w as f32;
         let ry = orig_h as f32 / out_h as f32;
-        let mut boxes: Vec<super::BoxF> = super::prob_to_boxes(&prob[..out_w * out_h], out_w, out_h)
-            .into_iter()
-            .map(|b| {
-                let scaled = super::BoxF {
-                    x0: b.x0 * rx,
-                    y0: b.y0 * ry,
-                    x1: b.x1 * rx,
-                    y1: b.y1 * ry,
-                };
-                super::unclip_box(scaled, super::UNCLIP_RATIO, orig_w as f32, orig_h as f32)
-            })
-            .collect();
+        let mut boxes: Vec<super::BoxF> =
+            super::prob_to_boxes(&prob[..out_w * out_h], out_w, out_h)
+                .into_iter()
+                .map(|b| {
+                    let scaled = super::BoxF {
+                        x0: b.x0 * rx,
+                        y0: b.y0 * ry,
+                        x1: b.x1 * rx,
+                        y1: b.y1 * ry,
+                    };
+                    super::unclip_box(scaled, super::UNCLIP_RATIO, orig_w as f32, orig_h as f32)
+                })
+                .collect();
         super::reading_order(&mut boxes);
         if boxes.is_empty() {
             return Ok(String::new()); // 全图无文本块 → 空串
@@ -398,7 +414,8 @@ mod win {
             };
             let (rec_img, rec_w) = rec_resize(&crop);
             let rec_in = to_nchw(&rec_img);
-            let (shape, logits) = run_first(&eng.rec, [1, 3, REC_H as usize, rec_w as usize], rec_in)?;
+            let (shape, logits) =
+                run_first(&eng.rec, [1, 3, REC_H as usize, rec_w as usize], rec_in)?;
             if shape.len() != 3 {
                 continue;
             }
@@ -559,7 +576,11 @@ mod tests {
         // 隐私红线：网络路径入口即拒（不经过白名单弹窗）。
         // 直接测 recognize 层之上的判定逻辑太重（要 AppHandle），
         // 这里锁判定函数同款前缀条件，防回归改丢。
-        for p in ["http://a.com/x.png", "https://a.com/x.png", "data:image/png;base64,xx"] {
+        for p in [
+            "http://a.com/x.png",
+            "https://a.com/x.png",
+            "data:image/png;base64,xx",
+        ] {
             assert!(
                 p.starts_with("http://") || p.starts_with("https://") || p.starts_with("data:"),
                 "{p} 应被识别为网络路径"
@@ -585,14 +606,33 @@ mod tests {
         let mut boxes = prob_to_boxes(&prob, w, h);
         reading_order(&mut boxes);
         assert_eq!(boxes.len(), 2, "应找到 2 个连通域：{boxes:?}");
-        assert_eq!(boxes[0], BoxF { x0: 1.0, y0: 1.0, x1: 5.0, y1: 5.0 });
-        assert_eq!(boxes[1], BoxF { x0: 6.0, y0: 4.0, x1: 8.0, y1: 10.0 });
+        assert_eq!(
+            boxes[0],
+            BoxF {
+                x0: 1.0,
+                y0: 1.0,
+                x1: 5.0,
+                y1: 5.0
+            }
+        );
+        assert_eq!(
+            boxes[1],
+            BoxF {
+                x0: 6.0,
+                y0: 4.0,
+                x1: 8.0,
+                y1: 10.0
+            }
+        );
     }
 
     #[test]
     fn prob_to_boxes_filters_noise_and_blank() {
         let (w, h) = (8usize, 8usize);
-        assert!(prob_to_boxes(&vec![0f32; w * h], w, h).is_empty(), "全 0 概率图无文本块");
+        assert!(
+            prob_to_boxes(&vec![0f32; w * h], w, h).is_empty(),
+            "全 0 概率图无文本块"
+        );
         let mut prob = vec![0f32; w * h];
         prob[0] = 0.9; // 1 像素噪声 < MIN_AREA
         prob[1] = 0.9;
@@ -607,12 +647,30 @@ mod tests {
 
     #[test]
     fn unclip_box_expands_and_clamps() {
-        let b = BoxF { x0: 10.0, y0: 10.0, x1: 30.0, y1: 20.0 };
+        let b = BoxF {
+            x0: 10.0,
+            y0: 10.0,
+            x1: 30.0,
+            y1: 20.0,
+        };
         // min(20,10)=10，margin = 0.25*10 = 2.5
         let r = unclip_box(b, UNCLIP_RATIO, 100.0, 100.0);
-        assert_eq!(r, BoxF { x0: 7.5, y0: 7.5, x1: 32.5, y1: 22.5 });
+        assert_eq!(
+            r,
+            BoxF {
+                x0: 7.5,
+                y0: 7.5,
+                x1: 32.5,
+                y1: 22.5
+            }
+        );
         // 贴边的框外扩后被裁剪到图内
-        let edge = BoxF { x0: 0.0, y0: 0.0, x1: 10.0, y1: 10.0 };
+        let edge = BoxF {
+            x0: 0.0,
+            y0: 0.0,
+            x1: 10.0,
+            y1: 10.0,
+        };
         let r = unclip_box(edge, UNCLIP_RATIO, 100.0, 100.0);
         assert_eq!(r.x0, 0.0);
         assert_eq!(r.y0, 0.0);
@@ -622,9 +680,24 @@ mod tests {
     #[test]
     fn reading_order_top_to_bottom_left_to_right() {
         let mut boxes = vec![
-            BoxF { x0: 50.0, y0: 0.0, x1: 80.0, y1: 10.0 },  // 第一行右侧
-            BoxF { x0: 0.0, y0: 40.0, x1: 30.0, y1: 50.0 },  // 第二行
-            BoxF { x0: 0.0, y0: 2.0, x1: 40.0, y1: 12.0 },   // 第一行左侧（y 略有抖动，仍属同行）
+            BoxF {
+                x0: 50.0,
+                y0: 0.0,
+                x1: 80.0,
+                y1: 10.0,
+            }, // 第一行右侧
+            BoxF {
+                x0: 0.0,
+                y0: 40.0,
+                x1: 30.0,
+                y1: 50.0,
+            }, // 第二行
+            BoxF {
+                x0: 0.0,
+                y0: 2.0,
+                x1: 40.0,
+                y1: 12.0,
+            }, // 第一行左侧（y 略有抖动，仍属同行）
         ];
         reading_order(&mut boxes);
         assert_eq!(boxes[0].x0, 0.0);
@@ -635,7 +708,10 @@ mod tests {
 
     #[test]
     fn ctc_greedy_decode_merges_repeats_and_skips_blank() {
-        let keys: Vec<String> = ["你", "好", "a", "b"].iter().map(|s| s.to_string()).collect();
+        let keys: Vec<String> = ["你", "好", "a", "b"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         // 索引：0=blank, 1=你, 2=好, 3=a, 4=b, 5=空格(=keys.len()+1)
         let indices = [0, 1, 1, 1, 0, 2, 3, 3, 4, 5];
         assert_eq!(ctc_greedy_decode(&indices, &keys), "你好ab ");
@@ -689,7 +765,11 @@ mod tests {
                         let py = PAD + row * SCALE;
                         for dy in 0..SCALE {
                             for dx in 0..SCALE {
-                                img.put_pixel((px + dx) as u32, (py + dy) as u32, image::Rgb([0, 0, 0]));
+                                img.put_pixel(
+                                    (px + dx) as u32,
+                                    (py + dy) as u32,
+                                    image::Rgb([0, 0, 0]),
+                                );
                             }
                         }
                     }
@@ -697,7 +777,8 @@ mod tests {
             }
         }
         let mut buf = std::io::Cursor::new(Vec::new());
-        img.write_to(&mut buf, image::ImageFormat::Png).expect("PNG 编码");
+        img.write_to(&mut buf, image::ImageFormat::Png)
+            .expect("PNG 编码");
         buf.into_inner()
     }
 }

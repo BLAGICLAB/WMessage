@@ -113,7 +113,12 @@ fn engine() -> Result<&'static Engine, &'static str> {
 
 /// attention-mask 加权 mean pooling（纯函数，单测可绕开 ONNX 直测）：
 /// 对 last_hidden_state [seq, hidden] 按 mask（1=有效 token）加权平均。
-pub(crate) fn mean_pool(hidden_states: &[f32], seq_len: usize, hidden: usize, mask: &[f32]) -> Vec<f32> {
+pub(crate) fn mean_pool(
+    hidden_states: &[f32],
+    seq_len: usize,
+    hidden: usize,
+    mask: &[f32],
+) -> Vec<f32> {
     let mut out = vec![0f32; hidden];
     let mut denom = 0f32;
     for t in 0..seq_len {
@@ -166,9 +171,7 @@ pub fn embed_text(text: &str) -> Option<Vec<f32>> {
     let attn_t = ort::value::Tensor::from_array(([1usize, seq], attn.clone())).ok()?;
     let types_t = ort::value::Tensor::from_array(([1usize, seq], types)).ok()?;
     let mut session = eng.session.lock().ok()?;
-    let outputs = session
-        .run(ort::inputs![ids_t, attn_t, types_t])
-        .ok()?;
+    let outputs = session.run(ort::inputs![ids_t, attn_t, types_t]).ok()?;
     let mut iter = outputs.iter();
     let Some((_, value)) = iter.next() else {
         return None;
@@ -237,7 +240,8 @@ mod tests {
 
     #[test]
     fn pick_model_dir_prefers_explicit_env() {
-        let usable_env = std::env::temp_dir().join(format!("wm_bge_{}", uuid::Uuid::new_v4().simple()));
+        let usable_env =
+            std::env::temp_dir().join(format!("wm_bge_{}", uuid::Uuid::new_v4().simple()));
         std::fs::create_dir_all(usable_env.join("onnx")).unwrap();
         std::fs::write(usable_env.join("onnx/model_quantized.onnx"), b"x").unwrap();
         std::fs::write(usable_env.join("tokenizer.json"), b"{}").unwrap();

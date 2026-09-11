@@ -43,7 +43,9 @@ fn fixtures_parent_path() -> PathBuf {
 /// 中间件 API 的 AppHandle 首参占位（P2-13/14 签名扩展后测试适配，2026-08-19）。
 /// 这些用例只命中路由/闸门判定，不触发 audit 落盘路径；App 泄漏给测试进程，退出即回收。
 fn mock_handle() -> tauri::AppHandle<tauri::test::MockRuntime> {
-    Box::leak(Box::new(tauri::test::mock_app())).handle().clone()
+    Box::leak(Box::new(tauri::test::mock_app()))
+        .handle()
+        .clone()
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -54,7 +56,9 @@ fn mock_handle() -> tauri::AppHandle<tauri::test::MockRuntime> {
 fn pre_step_routes_installed_skill_intent_to_skill() {
     // 2026-08-19 动态路由：路由表 = 已安装技能的 intents 声明。
     // 先按 fixture（已安装技能的替身）重建全局表，再走 middleware 全链路验证命中。
-    intent_router::rebuild_routes(bot_skills::intent_rules_from_dirs(&[fixtures_parent_path()]));
+    intent_router::rebuild_routes(bot_skills::intent_rules_from_dirs(
+        &[fixtures_parent_path()],
+    ));
     let registry = middleware::build_default_registry();
     let route = registry.run_pre_step(&mock_handle(), "帮我做一份 XX 主题的 PPT");
     // 还原空表，避免污染同进程其他测试
@@ -242,12 +246,10 @@ fn real_skill_fixture_loads_via_scan_skill_dirs() {
 // ────────────────────────────────────────────────────────────────────
 
 use std::sync::{Arc, Mutex};
-use wmessage_lib::bot::{
-    load_all_skill_outcomes, upsert_skill_outcome, PersistedSkillOutcome,
-};
+use wmessage_lib::bot::{load_all_skill_outcomes, upsert_skill_outcome, PersistedSkillOutcome};
 use wmessage_lib::bot_skills::{
-    parse_meta, run_skill_scheduler_core, test_hook_insert_skill_run,
-    test_hook_remove_skill_run, test_hook_skill_run_state, DslOutcome, SkillRun, SkillState,
+    parse_meta, run_skill_scheduler_core, test_hook_insert_skill_run, test_hook_remove_skill_run,
+    test_hook_skill_run_state, DslOutcome, SkillRun, SkillState,
 };
 
 static SKILL_SCHED_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -294,7 +296,9 @@ fn bot_log_tail_since(offset: u64) -> String {
 }
 
 fn bot_log_len() -> u64 {
-    std::fs::metadata(&bot_log_path()).map(|m| m.len()).unwrap_or(0)
+    std::fs::metadata(&bot_log_path())
+        .map(|m| m.len())
+        .unwrap_or(0)
 }
 
 /// 持久化校验用临时库：schema 镜像 db.rs 的 skill_outcomes DDL（集成测试够不到
@@ -349,7 +353,9 @@ fn make_persist(
 
 #[tokio::test]
 async fn scheduler_e2e_done_path_finishes_run_audits_and_persists() {
-    let _serial = SKILL_SCHED_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _serial = SKILL_SCHED_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let (meta, body) = fixture_meta_body();
     let app = mock_handle();
     test_hook_insert_skill_run(make_run("minimax-ppt", SkillState::Running));
@@ -363,7 +369,10 @@ async fn scheduler_e2e_done_path_finishes_run_audits_and_persists() {
         async move {
             calls.lock().unwrap().push((tool.clone(), args));
             let text = match tool.as_str() {
-                "list_tasks" => r#"[{"id":"7c9e6679-7425-40de-944b-e07fc1f90ae7","title":"买牛奶"}]"#.to_string(),
+                "list_tasks" => {
+                    r#"[{"id":"7c9e6679-7425-40de-944b-e07fc1f90ae7","title":"买牛奶"}]"#
+                        .to_string()
+                }
                 "create_task" => "已创建".to_string(),
                 other => panic!("意外工具调用：{other}"),
             };
@@ -399,7 +408,9 @@ async fn scheduler_e2e_done_path_finishes_run_audits_and_persists() {
     // Done 汇总文本
     match &outcome {
         DslOutcome::Done(summary) => {
-            assert!(summary.contains("✅") && summary.contains("Step 1") && summary.contains("Step 2"));
+            assert!(
+                summary.contains("✅") && summary.contains("Step 1") && summary.contains("Step 2")
+            );
         }
         other => panic!("期望 Done，got {other:?}"),
     }
@@ -412,7 +423,10 @@ async fn scheduler_e2e_done_path_finishes_run_audits_and_persists() {
         "skill_completed | name: minimax-ppt",
         "skill_dsl_done | name: minimax-ppt | steps_ok: 2",
     ] {
-        assert!(tail.contains(needle), "bot.log 新增段缺「{needle}」：{tail}");
+        assert!(
+            tail.contains(needle),
+            "bot.log 新增段缺「{needle}」：{tail}"
+        );
     }
     // 持久化真路径：persist 载荷 + 真 upsert 落库可回读
     assert_eq!(
@@ -423,7 +437,10 @@ async fn scheduler_e2e_done_path_finishes_run_audits_and_persists() {
     let row = stored.get("minimax-ppt").expect("应有 minimax-ppt 行");
     assert_eq!(row.kind, "done");
     assert!(
-        row.completed_summary.as_deref().unwrap_or("").contains("Step 1"),
+        row.completed_summary
+            .as_deref()
+            .unwrap_or("")
+            .contains("Step 1"),
         "落库 summary 应含步骤摘要：{row:?}"
     );
 
@@ -435,7 +452,9 @@ async fn scheduler_e2e_done_path_finishes_run_audits_and_persists() {
 async fn scheduler_e2e_paused_run_returns_await_user() {
     // 确认窗口：run 处于 Paused（等用户确认）→ advance_dsl 在 step 1 前拦截，
     // 0 次工具调用，持久化 await_user，返回 DslOutcome::AwaitUser
-    let _serial = SKILL_SCHED_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _serial = SKILL_SCHED_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let (meta, body) = fixture_meta_body();
     let app = mock_handle();
     test_hook_insert_skill_run(make_run("minimax-ppt", SkillState::Paused));
@@ -461,7 +480,12 @@ async fn scheduler_e2e_paused_run_returns_await_user() {
     );
     assert_eq!(
         persist_calls.lock().unwrap().as_slice(),
-        &[("minimax-ppt".to_string(), "await_user".to_string(), None, None)]
+        &[(
+            "minimax-ppt".to_string(),
+            "await_user".to_string(),
+            None,
+            None
+        )]
     );
     let stored = load_all_skill_outcomes(&conn).expect("load outcomes");
     assert_eq!(stored["minimax-ppt"].kind, "await_user");
@@ -485,7 +509,9 @@ async fn scheduler_e2e_failed_step_runs_rollback_window() {
     // P0-5 回滚窗口：step 2 失败（生产里 skill_on_step_post 会把 run 标 Failed，
     // 这里由 mock executor 同步模拟该标记）→ 回滚段执行时 Failed 临时重开为
     // Running（原子工具门禁放行），结束后复原 Failed。
-    let _serial = SKILL_SCHED_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _serial = SKILL_SCHED_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let (meta, body) = fixture_meta_body();
     let app = mock_handle();
     test_hook_insert_skill_run(make_run("minimax-ppt", SkillState::Running));
@@ -531,7 +557,10 @@ async fn scheduler_e2e_failed_step_runs_rollback_window() {
             ..
         } => {
             assert!(reason.contains("Step 2"), "reason 应带失败步骤：{reason}");
-            assert!(*rollback_attempted, "有回滚段且全部成功 → rollback_attempted=true");
+            assert!(
+                *rollback_attempted,
+                "有回滚段且全部成功 → rollback_attempted=true"
+            );
         }
         other => panic!("期望 FailedButRecoverable，got {other:?}"),
     }
@@ -557,7 +586,10 @@ async fn scheduler_e2e_failed_step_runs_rollback_window() {
         "skill_dsl_rollback_start | name: minimax-ppt | step: 2",
         "skill_dsl_rollback_done | name: minimax-ppt | steps: 1 | failed: 0",
     ] {
-        assert!(tail.contains(needle), "bot.log 新增段缺「{needle}」：{tail}");
+        assert!(
+            tail.contains(needle),
+            "bot.log 新增段缺「{needle}」：{tail}"
+        );
     }
 
     test_hook_remove_skill_run("minimax-ppt");
@@ -569,7 +601,9 @@ async fn scheduler_e2e_zombie_terminal_run_cleared_at_entry() {
     // agent 假死回归（2026-08-18 事故根因）：上轮遗留的 Completed 终态 run
     // 若不清理，会在第 0 步被 advance_dsl 误判 Finish 直接 break（0 次工具调用）。
     // core 入口的 clear_terminal_skill_runs 必须清掉它，两步照常执行。
-    let _serial = SKILL_SCHED_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _serial = SKILL_SCHED_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let (meta, body) = fixture_meta_body();
     let app = mock_handle();
     test_hook_insert_skill_run(make_run("minimax-ppt", SkillState::Completed));

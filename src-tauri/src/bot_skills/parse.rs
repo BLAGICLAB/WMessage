@@ -1,4 +1,5 @@
-pub(crate) const SKILL_NAME_CHARS_OK: fn(char) -> bool = |c| c.is_ascii_alphanumeric() || c == '-' || c == '_';
+pub(crate) const SKILL_NAME_CHARS_OK: fn(char) -> bool =
+    |c| c.is_ascii_alphanumeric() || c == '-' || c == '_';
 
 /// SKILL.md 完整元数据（Skill 运行模型 v1.0 字段集，全部带默认值）
 #[derive(Debug, Clone)]
@@ -315,7 +316,6 @@ pub fn parse_skill_steps(body: &str) -> Result<(Vec<SkillStep>, Vec<SkillStep>),
     }
     Ok((steps, rollback))
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -682,5 +682,4 @@ query_single_task({\"id\": \"${step1.id}\"})\n";
         }
         eprintln!("扫瞄 {} 个 Skill，全部解析通过", found);
     }
-
 }

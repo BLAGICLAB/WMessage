@@ -397,10 +397,22 @@ mod tests {
     #[test]
     fn tool_call_failed_catches_gate_fuse_pause_reject() {
         // 四类易漏判的失败文案（门禁/拒绝/熔断/暂停）都必须命中
-        assert!(tool_call_failed("link_file_to_task", "⚠️ link_file_to_task 是内部原子，不允许裸调。"));
-        assert!(tool_call_failed("delete_task", "用户拒绝了删除，任务未删除"));
-        assert!(tool_call_failed("x", "技能「s」超过最大步数上限（8 步），已强制终止"));
-        assert!(tool_call_failed("x", "技能已暂停，等待用户确认中；确认通过后才能继续下一步"));
+        assert!(tool_call_failed(
+            "link_file_to_task",
+            "⚠️ link_file_to_task 是内部原子，不允许裸调。"
+        ));
+        assert!(tool_call_failed(
+            "delete_task",
+            "用户拒绝了删除，任务未删除"
+        ));
+        assert!(tool_call_failed(
+            "x",
+            "技能「s」超过最大步数上限（8 步），已强制终止"
+        ));
+        assert!(tool_call_failed(
+            "x",
+            "技能已暂停，等待用户确认中；确认通过后才能继续下一步"
+        ));
         // 原有判定不回退
         assert!(tool_call_failed("x", "未知工具：foo"));
         assert!(tool_call_failed("x", "生成失败：磁盘只读"));
@@ -410,8 +422,14 @@ mod tests {
     #[test]
     fn tool_call_failed_passes_success_text() {
         assert!(!tool_call_failed("list_tasks", "当前没有未完成的任务"));
-        assert!(!tool_call_failed("create_word", "已生成 Word 文档：/tmp/x.docx"));
-        assert!(!tool_call_failed("delete_task", "已删除任务「买菜」（进回收站）"));
+        assert!(!tool_call_failed(
+            "create_word",
+            "已生成 Word 文档：/tmp/x.docx"
+        ));
+        assert!(!tool_call_failed(
+            "delete_task",
+            "已删除任务「买菜」（进回收站）"
+        ));
     }
 
     #[test]
@@ -509,8 +527,16 @@ mod tests {
         // 变化（传入不同 exe_dir）也返回首次结果——运行期数据目录不再翻转。
         // 用独立 OnceLock 实例，不碰进程级全局缓存（防劫持其他测试）
         let cache = std::sync::OnceLock::new();
-        let first = probe_dir_cached_in(&cache, None, Some(std::path::PathBuf::from("/tmp/wm-probe-cache-test")));
-        let second = probe_dir_cached_in(&cache, Some(std::path::Path::new("/nonexistent-exe-dir")), None);
+        let first = probe_dir_cached_in(
+            &cache,
+            None,
+            Some(std::path::PathBuf::from("/tmp/wm-probe-cache-test")),
+        );
+        let second = probe_dir_cached_in(
+            &cache,
+            Some(std::path::Path::new("/nonexistent-exe-dir")),
+            None,
+        );
         assert_eq!(first, second, "定版后探测条件变化不得改变数据目录");
     }
 
@@ -626,7 +652,10 @@ mod tests {
             (
                 AuditLevel::Error,
                 "tool.return",
-                vec![("preview", "{\"k\":\"v\"}\nnext|line"), ("reason", "denied")],
+                vec![
+                    ("preview", "{\"k\":\"v\"}\nnext|line"),
+                    ("reason", "denied"),
+                ],
             ),
         ];
         for (level, event, kv) in cases {

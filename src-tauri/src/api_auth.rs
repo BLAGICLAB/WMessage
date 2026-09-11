@@ -90,7 +90,10 @@ pub(crate) fn ct_eq(a: &str, b: &str) -> bool {
     if a.len() != b.len() {
         return false;
     }
-    a.iter().zip(b.iter()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    a.iter()
+        .zip(b.iter())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
 }
 
 /// 开关标志文件路径：`{data_dir}/api-enabled.flag`

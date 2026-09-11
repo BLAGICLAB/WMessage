@@ -72,7 +72,8 @@ static SKILL_RUNS: std::sync::OnceLock<
     std::sync::Mutex<std::collections::HashMap<String, SkillRun>>,
 > = std::sync::OnceLock::new();
 
-pub(crate) fn skill_runs() -> &'static std::sync::Mutex<std::collections::HashMap<String, SkillRun>> {
+pub(crate) fn skill_runs() -> &'static std::sync::Mutex<std::collections::HashMap<String, SkillRun>>
+{
     SKILL_RUNS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
@@ -159,7 +160,10 @@ pub fn clear_terminal_skill_runs() {
 /// 读取技能正文 + 完整元数据（多目录 fallback）
 /// 遍历 `skill_search_paths(app)`：数据目录找不到 → dev 模式 fallback target/debug/skills。
 /// 数据目录优先（用户已修改的 Skill 优先于 dev mock 版本）。
-pub(crate) fn load_skill_meta<R: tauri::Runtime>(app: &tauri::AppHandle<R>, name: &str) -> Result<(SkillMeta, String), CommandError> {
+pub(crate) fn load_skill_meta<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    name: &str,
+) -> Result<(SkillMeta, String), CommandError> {
     if name.is_empty() || !name.chars().all(SKILL_NAME_CHARS_OK) {
         return Err(CommandError::DomainRule {
             domain: "skill".to_string(),
@@ -216,7 +220,8 @@ pub fn test_hook_skill_run_state(name: &str) -> Option<SkillState> {
 /// 测试辅助：直接插入一个指定状态的 skill run（绕过磁盘 SKILL.md 加载）。
 /// 与 tests::test_run 同一份字段构造，供跨模块测试（lib.rs 退出清理）使用。
 #[cfg(test)]
-pub(crate) fn test_insert_skill_run(name: &str, state: SkillState) {    let run = SkillRun {
+pub(crate) fn test_insert_skill_run(name: &str, state: SkillState) {
+    let run = SkillRun {
         name: name.into(),
         state,
         step: 0,
@@ -262,24 +267,23 @@ pub(crate) fn test_skill_run_state(name: &str) -> Option<SkillState> {
 #[cfg(test)]
 pub(crate) static SKILL_RUNS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-
 /// 测试辅助：构造一个指定 max_steps / timeout 的 SkillRun（跨子模块测试共用）
 #[cfg(test)]
 pub(crate) fn test_run(max_steps: usize, timeout_secs: u64) -> SkillRun {
-        SkillRun {
-            name: "test-skill".into(),
-            state: SkillState::Loaded,
-            step: 0,
-            max_steps,
-            started_at_ms: 1000,
-            timeout_secs,
-            rollback: "auto".into(),
-            actions: Vec::new(),
-            end_reason: String::new(),
-            resumable: true,
-            terminal_after_confirm: false,
-            session_id: None,
-        }
+    SkillRun {
+        name: "test-skill".into(),
+        state: SkillState::Loaded,
+        step: 0,
+        max_steps,
+        started_at_ms: 1000,
+        timeout_secs,
+        rollback: "auto".into(),
+        actions: Vec::new(),
+        end_reason: String::new(),
+        resumable: true,
+        terminal_after_confirm: false,
+        session_id: None,
+    }
 }
 
 #[cfg(test)]
@@ -290,7 +294,9 @@ mod tests {
     /// Running/Paused 不受影响（测试用 Paused：is_skill_active 只认 Running，避免与并行测试竞争）
     #[test]
     fn clear_terminal_removes_only_terminal_states() {
-        let _serial = SKILL_RUNS_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _serial = SKILL_RUNS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let zombie = "test-zombie-clear";
         // 用一个 Failed 残留 + 一个 Paused 活跃
         let mut failed = test_run(8, 180);
@@ -322,7 +328,9 @@ mod tests {
     /// 复原回 Failed；非 Failed 状态 / 别的会话的 run 不动
     #[test]
     fn reopen_failed_run_for_rollback_scoped_by_state_and_session() {
-        let _serial = SKILL_RUNS_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _serial = SKILL_RUNS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let name = "test-rollback-reopen";
         let mut run = test_run(8, 180);
         run.name = name.into();
@@ -353,5 +361,4 @@ mod tests {
 
         test_remove_skill_run(name);
     }
-
 }

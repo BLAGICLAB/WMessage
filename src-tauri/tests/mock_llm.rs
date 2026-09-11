@@ -734,8 +734,14 @@ fn mock_llm_server_returns_in_stream_error_payload() {
     let (head, body) = split_response(&raw);
     // 流内错误载荷仍是 HTTP 200（OneAPI 类网关行为）
     assert!(head.starts_with("HTTP/1.1 200 OK"), "got: {head}");
-    assert!(body.contains(r#""error""#), "body 应含 error 载荷；got: {body}");
-    assert!(body.contains("auth_failed"), "body 应含错误消息；got: {body}");
+    assert!(
+        body.contains(r#""error""#),
+        "body 应含 error 载荷；got: {body}"
+    );
+    assert!(
+        body.contains("auth_failed"),
+        "body 应含错误消息；got: {body}"
+    );
     assert!(
         body.trim_end().ends_with("data: [DONE]"),
         "流内错误后仍应以 [DONE] 收尾"
@@ -759,10 +765,19 @@ fn mock_llm_server_anthropic_text_reply_format() {
     let (head, body) = split_response(&raw);
     assert!(head.starts_with("HTTP/1.1 200 OK"), "got: {head}");
     assert!(head.contains("text/event-stream"), "应为 SSE");
-    assert!(body.contains(r#""type":"message_start""#), "应有 message_start");
+    assert!(
+        body.contains(r#""type":"message_start""#),
+        "应有 message_start"
+    );
     assert!(body.contains(r#""type":"text_delta""#), "应有 text_delta");
-    assert!(body.contains(r#""stop_reason":"end_turn""#), "应有 stop_reason");
-    assert!(body.contains(r#""type":"message_stop""#), "应有 message_stop");
+    assert!(
+        body.contains(r#""stop_reason":"end_turn""#),
+        "应有 stop_reason"
+    );
+    assert!(
+        body.contains(r#""type":"message_stop""#),
+        "应有 message_stop"
+    );
     assert!(body.contains("event: message_start"), "应有 event 行");
 
     std::thread::sleep(Duration::from_millis(50));
@@ -785,8 +800,11 @@ fn mock_llm_server_anthropic_tool_call_and_json_reply() {
     server.push_behavior(MockBehavior::AnthropicJsonReply("摘要文本".to_string()));
 
     let url = format!("{}/messages", server.base_url);
-    let raw = http_post_raw(&url, r#"{"model":"m","messages":[],"max_tokens":8192,"stream":true}"#)
-        .expect("POST 1");
+    let raw = http_post_raw(
+        &url,
+        r#"{"model":"m","messages":[],"max_tokens":8192,"stream":true}"#,
+    )
+    .expect("POST 1");
     let (_, body) = split_response(&raw);
     assert!(body.contains(r#""type":"tool_use""#), "应有 tool_use 块");
     assert!(body.contains(r#""id":"toolu_mock""#), "应有 tool_use id");
@@ -794,8 +812,11 @@ fn mock_llm_server_anthropic_tool_call_and_json_reply() {
     assert!(body.contains(r#""type":"input_json_delta""#));
     assert!(body.contains(r#""stop_reason":"tool_use""#));
 
-    let raw = http_post_raw(&url, r#"{"model":"m","messages":[],"max_tokens":8192,"stream":false}"#)
-        .expect("POST 2");
+    let raw = http_post_raw(
+        &url,
+        r#"{"model":"m","messages":[],"max_tokens":8192,"stream":false}"#,
+    )
+    .expect("POST 2");
     let (head, body) = split_response(&raw);
     assert!(head.contains("application/json"), "非流式应为 JSON");
     assert!(body.contains(r#""type":"message""#));
@@ -809,10 +830,7 @@ fn mock_llm_server_anthropic_tool_call_and_json_reply() {
 fn mock_llm_server_fragmented_multibyte_reply_intact() {
     let server = MockLlmServer::start();
     // 「你好世界」每字符 3 字节，按 2 字节切片必然在多字节字符中间切断
-    server.push_behavior(MockBehavior::FragmentedTextReply(
-        "你好世界".to_string(),
-        2,
-    ));
+    server.push_behavior(MockBehavior::FragmentedTextReply("你好世界".to_string(), 2));
 
     let raw = http_post_raw(
         &format!("{}/chat/completions", server.base_url),

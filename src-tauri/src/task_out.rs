@@ -64,8 +64,10 @@ mod tests {
         let obj = v.as_object().expect("TaskOut 必须序列化为平铺对象");
         assert!(obj.contains_key("id"), "flatten 失效：task 字段未平铺");
         assert!(!obj.contains_key("inner"), "flatten 失效：出现嵌套 inner");
-        assert!(obj.contains_key("botAssigned") || !obj.contains_key("bot_assigned"),
-            "camelCase 失效");
+        assert!(
+            obj.contains_key("botAssigned") || !obj.contains_key("bot_assigned"),
+            "camelCase 失效"
+        );
         assert_eq!(obj["status"], "doing");
         assert_eq!(obj["status"], obj["column"], "status 必须与 column 同值");
     }

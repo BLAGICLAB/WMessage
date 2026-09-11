@@ -117,7 +117,8 @@ pub fn load_all(conn: &rusqlite::Connection) -> Result<Vec<MemItem>, String> {
             })
         })
         .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
 /// 余弦相似度（向量均假定已 L2 归一化；维度不齐/缺失 → None）
@@ -146,7 +147,10 @@ pub fn is_protected(item: &MemItem) -> bool {
 
 /// 淘汰分（越低越先淘汰）：importance 权重最高 + 最近访问/更新新近度 + 访问次数
 pub(crate) fn evict_score(item: &MemItem, now_ms: i64) -> f64 {
-    let base = item.last_accessed_at_ms.unwrap_or(item.updated_at_ms).max(item.created_at_ms);
+    let base = item
+        .last_accessed_at_ms
+        .unwrap_or(item.updated_at_ms)
+        .max(item.created_at_ms);
     let age_days = ((now_ms - base) as f64 / 86_400_000.0).max(0.0);
     item.importance as f64 * 2.0
         + (-age_days / 30.0).exp()
@@ -190,7 +194,10 @@ pub enum InsertOutcome {
     Inserted(MemItem),
     /// 语义去重合并（余弦 ≥0.92）：刷新已有条目的 content/updated_at/access，未新增。
     /// orig_key = 被合并原条目的 tags[0]（item.tags 已被新值覆盖，提示文案要靠它指认原条目）
-    Merged { item: MemItem, orig_key: Option<String> },
+    Merged {
+        item: MemItem,
+        orig_key: Option<String>,
+    },
     /// 容量满且无可淘汰条目 → 拒写
     RejectedFull(String),
 }
@@ -261,7 +268,13 @@ pub fn insert_item(
                 embedding: Some(emb.to_vec()),
                 ..target.clone()
             };
-            return Ok((InsertOutcome::Merged { item: merged, orig_key }, Vec::new()));
+            return Ok((
+                InsertOutcome::Merged {
+                    item: merged,
+                    orig_key,
+                },
+                Vec::new(),
+            ));
         }
         hints.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
         let hint_texts: Vec<String> = hints
@@ -272,12 +285,15 @@ pub fn insert_item(
                 if key.is_empty() {
                     m.content.chars().take(80).collect()
                 } else {
-                    format!("key={}, value={}", key, m.content.chars().take(80).collect::<String>())
+                    format!(
+                        "key={}, value={}",
+                        key,
+                        m.content.chars().take(80).collect::<String>()
+                    )
                 }
             })
             .collect();
-        return insert_new(conn, item, embedding, now_ms)
-            .map(|outcome| (outcome, hint_texts));
+        return insert_new(conn, item, embedding, now_ms).map(|outcome| (outcome, hint_texts));
     }
     insert_new(conn, item, embedding, now_ms).map(|outcome| (outcome, Vec::new()))
 }
@@ -411,7 +427,11 @@ pub fn delete_by_ids(conn: &rusqlite::Connection, ids: &[String]) -> Result<usiz
 }
 
 /// 命中刷新访问计数（注入路径；同一连接内原子）
-pub fn touch_accessed(conn: &rusqlite::Connection, ids: &[String], now_ms: i64) -> Result<(), String> {
+pub fn touch_accessed(
+    conn: &rusqlite::Connection,
+    ids: &[String],
+    now_ms: i64,
+) -> Result<(), String> {
     let ts = ts_to_text(now_ms);
     for id in ids {
         conn.execute(

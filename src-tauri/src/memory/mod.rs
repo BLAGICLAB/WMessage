@@ -118,8 +118,7 @@ pub fn format_memory_block(inj: &MemInjection) -> Option<String> {
             + sections
                 .iter()
                 .map(|(h, ls)| {
-                    h.chars().count() + 1
-                        + ls.iter().map(|l| l.chars().count() + 1).sum::<usize>()
+                    h.chars().count() + 1 + ls.iter().map(|l| l.chars().count() + 1).sum::<usize>()
                 })
                 .sum::<usize>()
     };
@@ -160,13 +159,18 @@ pub fn format_memory_block(inj: &MemInjection) -> Option<String> {
 
 /// 注入取数薄壳：embed →（持锁）快照 + 命中刷新访问计数 → 拼装。
 /// 任何失败一律 None 静默降级为无记忆块 + WARN 审计。
-pub async fn injection_block<R: tauri::Runtime>(app: &tauri::AppHandle<R>, query: &str) -> Option<String> {
+pub async fn injection_block<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    query: &str,
+) -> Option<String> {
     let app2 = app.clone();
     let query = query.to_string();
     let r = tauri::async_runtime::spawn_blocking(move || -> Result<MemInjection, String> {
         // 嵌入在持锁前算（ONNX 推理 ~数十 ms，不占 DB 写锁临界区）
         let emb = embed::embed_text(&query);
-        let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::db::DB_WRITE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let conn = crate::db::open_db(&app2)?;
         store::ensure_table(&conn)?;
         let items = store::load_all(&conn)?;
@@ -202,7 +206,9 @@ fn validate_fact_kv(key: &str, value: &str) -> Result<(), String> {
     }
     // key 落 mem_items.tags[0]（逗号分隔存储），含英文逗号会让同 key 覆盖失效
     if key.contains(',') {
-        return Err("失败：key 不能包含英文逗号「,」（记忆标签以逗号分隔存储，可用中文逗号「，」）".into());
+        return Err(
+            "失败：key 不能包含英文逗号「,」（记忆标签以逗号分隔存储，可用中文逗号「，」）".into(),
+        );
     }
     if value.chars().count() > 500 {
         return Err("失败：value 太长（≤500 字）".into());
@@ -342,7 +348,9 @@ pub async fn tool_recall_facts(
         } else {
             embed::embed_text(&query)
         };
-        let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::db::DB_WRITE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let conn = match crate::db::open_db(&app) {
             Ok(c) => c,
             Err(e) => return format!("失败：打开数据库出错：{e}"),
@@ -359,7 +367,8 @@ pub async fn tool_recall_facts(
             format!("- {key}：{}", m.content)
         };
         if !query.is_empty() {
-            let hits = rank::hybrid_search(&items, &query, emb.as_deref(), now_ms(), rank::MEMORY_TOP_N);
+            let hits =
+                rank::hybrid_search(&items, &query, emb.as_deref(), now_ms(), rank::MEMORY_TOP_N);
             if hits.is_empty() {
                 return "没有找到相关记忆".into();
             }
@@ -400,7 +409,10 @@ fn validate_lesson(lesson: &str, scenario: &str) -> Result<(), String> {
     }
     // scenario 落 tags[1]（逗号分隔存储），含英文逗号会切出多余标签
     if scenario.contains(',') {
-        return Err("失败：scenario 不能包含英文逗号「,」（记忆标签以逗号分隔存储，可用中文逗号「，」）".into());
+        return Err(
+            "失败：scenario 不能包含英文逗号「,」（记忆标签以逗号分隔存储，可用中文逗号「，」）"
+                .into(),
+        );
     }
     Ok(())
 }
@@ -438,11 +450,17 @@ pub fn record_lesson_core(
             if hints.is_empty() {
                 msg
             } else {
-                format!("{msg}。相似已有记忆：[{}]——如需更新请用同场景覆盖", hints.join("；"))
+                format!(
+                    "{msg}。相似已有记忆：[{}]——如需更新请用同场景覆盖",
+                    hints.join("；")
+                )
             }
         }
         Ok((InsertOutcome::Merged { .. }, _)) => {
-            format!("已记录教训（与已有教训语义重复，已合并更新）：{}", truncate_chars(lesson, 60))
+            format!(
+                "已记录教训（与已有教训语义重复，已合并更新）：{}",
+                truncate_chars(lesson, 60)
+            )
         }
         Ok((InsertOutcome::RejectedFull(e), _)) => format!("失败：{e}"),
         Err(e) => format!("失败：{e}"),
@@ -463,7 +481,9 @@ pub async fn tool_record_lesson(
     let app2 = app.clone();
     let r = tauri::async_runtime::spawn_blocking(move || -> String {
         let emb = embed::embed_text(&lesson);
-        let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::db::DB_WRITE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let conn = match crate::db::open_db(&app2) {
             Ok(c) => c,
             Err(e) => return format!("失败：打开数据库出错：{e}"),
@@ -471,7 +491,14 @@ pub async fn tool_record_lesson(
         if let Err(e) = store::ensure_table(&conn) {
             return format!("失败：{e}");
         }
-        record_lesson_core(&conn, &lesson, &scenario, "model_inferred", emb.as_deref(), now_ms())
+        record_lesson_core(
+            &conn,
+            &lesson,
+            &scenario,
+            "model_inferred",
+            emb.as_deref(),
+            now_ms(),
+        )
     })
     .await;
     match r {
@@ -496,15 +523,28 @@ pub(crate) fn task_failure_lesson(title: &str, error: &str) -> (String, Vec<Stri
 
 /// run_task_in_chat 失败自动沉淀 lesson（source=system）。任何失败只记审计，绝不影响
 /// 原本的失败返回路径。
-pub async fn auto_lesson_on_task_failure<R: tauri::Runtime>(app: &tauri::AppHandle<R>, title: &str, error: &str) {
+pub async fn auto_lesson_on_task_failure<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    title: &str,
+    error: &str,
+) {
     let (content, _tags) = task_failure_lesson(title, error);
     let app2 = app.clone();
     let r = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
         let emb = embed::embed_text(&content);
-        let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::db::DB_WRITE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let conn = crate::db::open_db(&app2)?;
         store::ensure_table(&conn)?;
-        let msg = record_lesson_core(&conn, &content, "task_exec", "system", emb.as_deref(), now_ms());
+        let msg = record_lesson_core(
+            &conn,
+            &content,
+            "task_exec",
+            "system",
+            emb.as_deref(),
+            now_ms(),
+        );
         if msg.starts_with("失败") {
             return Err(msg);
         }
@@ -538,7 +578,9 @@ pub async fn save_summary(
     let summary = truncate_chars(summary.trim(), MAX_CONTENT_CHARS);
     tauri::async_runtime::spawn_blocking(move || -> Result<Vec<(String, String)>, String> {
         let emb = embed::embed_text(&summary);
-        let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::db::DB_WRITE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let conn = crate::db::open_db(&app)?;
         store::ensure_table(&conn)?;
         let item = NewItem {
@@ -561,11 +603,17 @@ pub async fn save_summary(
 
 /// Reflection 落库（v2）：插入 kind=reflection, importance=3，与被合并的原 summary
 /// 删除放在同一事务（半完成不留中间态）。
-pub async fn apply_reflection(app: &AppHandle, delete_ids: Vec<String>, text: String) -> CommandResult<()> {
+pub async fn apply_reflection(
+    app: &AppHandle,
+    delete_ids: Vec<String>,
+    text: String,
+) -> CommandResult<()> {
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
         let emb = embed::embed_text(&text);
-        let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::db::DB_WRITE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let mut conn = crate::db::open_db(&app)?;
         store::ensure_table(&conn)?;
         let tx = conn.transaction().map_err(|e| e.to_string())?;

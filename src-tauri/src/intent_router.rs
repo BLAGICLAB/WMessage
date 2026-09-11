@@ -15,8 +15,8 @@
 //! - 模式按正则匹配用户消息全文（含 [附件文件] 块内嵌的附件路径——附件上下文规则直接写进模式，
 //!   如 `(?is)(润色|修订)[\s\S]*\.docx?`），大小写敏由模式内联 `(?i)` 控制
 
-use std::sync::LazyLock;
 use regex::Regex;
+use std::sync::LazyLock;
 use std::sync::RwLock;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,9 +87,7 @@ pub fn is_chat_execute_trigger(content: &str) -> Option<Vec<(String, String)>> {
         .unwrap_or("")
         .trim()
         .to_lowercase();
-    const KEYWORDS: &[&str] = &[
-        "完成", "执行", "搞定", "开干", "做掉", "go", "run", "do",
-    ];
+    const KEYWORDS: &[&str] = &["完成", "执行", "搞定", "开干", "做掉", "go", "run", "do"];
     if !KEYWORDS.iter().any(|kw| user_cmd.contains(kw)) {
         return None;
     }
@@ -114,7 +112,11 @@ fn compile_rules(rules: &[IntentRule]) -> Vec<CompiledRule> {
         .iter()
         .map(|r| CompiledRule {
             // 非法正则跳过（技能作者写错不拖垮整张表）
-            regexes: r.patterns.iter().filter_map(|p| Regex::new(p).ok()).collect(),
+            regexes: r
+                .patterns
+                .iter()
+                .filter_map(|p| Regex::new(p).ok())
+                .collect(),
             skill_name: r.skill_name.clone(),
         })
         .filter(|r| !r.regexes.is_empty())
@@ -189,11 +191,8 @@ mod tests {
     #[test]
     fn routes_word_revisions_intent() {
         let rules = docx_rules();
-        for input in [
-            "用修订模式润色这个 Word 文档",
-            "润色一下 Word",
-            "修订文档",
-        ] {
+        for input in ["用修订模式润色这个 Word 文档", "润色一下 Word", "修订文档"]
+        {
             assert_eq!(
                 route_with_rules(input, &rules),
                 RouteAction::Skill("minimax-docx".to_string()),
@@ -258,10 +257,7 @@ mod tests {
 
     #[test]
     fn invalid_regex_pattern_is_skipped() {
-        let rules = vec![rule(
-            "bad-skill",
-            &[r"(?i)unclosed(", r"(?i)valid-pattern"],
-        )];
+        let rules = vec![rule("bad-skill", &[r"(?i)unclosed(", r"(?i)valid-pattern"])];
         // 非法模式被跳过，合法模式仍生效
         assert_eq!(
             route_with_rules("hit valid-pattern here", &rules),
@@ -306,7 +302,8 @@ mod chat_execute_parse_tests {
 
     #[test]
     fn parse_block_extracts_id_and_title_chinese_comma() {
-        let content = "完成这些\n\n[已选任务]\n- id=abc-123，标题=写 PPT\n- id=def-456，标题=分析销售数据";
+        let content =
+            "完成这些\n\n[已选任务]\n- id=abc-123，标题=写 PPT\n- id=def-456，标题=分析销售数据";
         let parsed = parse_selected_tasks_block(content);
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].0, "abc-123");
@@ -326,7 +323,8 @@ mod chat_execute_parse_tests {
 
     #[test]
     fn parse_block_skips_malformed_lines() {
-        let content = "[已选任务]\n- id=abc，标题=Good\n- garbage line\n- id=, 标题=Empty\n- 标题=NoId";
+        let content =
+            "[已选任务]\n- id=abc，标题=Good\n- garbage line\n- id=, 标题=Empty\n- 标题=NoId";
         let parsed = parse_selected_tasks_block(content);
         assert_eq!(parsed.len(), 1, "只有格式完好的 1 条");
         assert_eq!(parsed[0].0, "abc");

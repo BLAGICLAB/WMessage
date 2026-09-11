@@ -15,8 +15,8 @@ use serde::Serialize;
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 
-use crate::bot_slash::StopToken;
 use crate::audit::escape_for_log;
+use crate::bot_slash::StopToken;
 use crate::error::{CommandError, CommandResult};
 
 /// Windows 上 GUI 程序调 cmd.exe / python.exe / taskkill.exe 等控制台子进程时，
@@ -181,7 +181,11 @@ fn invalidate_python_cache() {
 fn detect_dotnet() -> Option<String> {
     // macOS GUI 启动 PATH 极简，补官方/brew 固定安装路径
     #[cfg(target_os = "macos")]
-    let candidates: &[&str] = &["dotnet", "/usr/local/share/dotnet/dotnet", "/opt/homebrew/bin/dotnet"];
+    let candidates: &[&str] = &[
+        "dotnet",
+        "/usr/local/share/dotnet/dotnet",
+        "/opt/homebrew/bin/dotnet",
+    ];
     #[cfg(not(target_os = "macos"))]
     let candidates: &[&str] = &["dotnet"];
     for c in candidates {
@@ -256,15 +260,27 @@ fn run_dotnet_revisions(app: &AppHandle, input_json: &str) -> Option<Result<PyRu
     if let Err(e) = std::fs::create_dir_all(&dir)
         .and_then(|_| std::fs::write(dir.join("params.json"), input_json))
     {
-        py_audit(app, &format!("doc_revisions_dotnet err | kind=setup_fail | {e}"));
+        py_audit(
+            app,
+            &format!("doc_revisions_dotnet err | kind=setup_fail | {e}"),
+        );
         return None; // 目录都建不了 → 回退 Python 路径更稳妥
     }
     let mut audit_sink = |line: &str| py_audit(app, line);
     let args = vec!["params.json".to_string()];
     // 首次跑要 JIT，给 120s（与 doc_* 脚本同款）
-    Some(run_python_at(
-        &prog, entry.as_deref(), &dir, &args, Some(120), &mut audit_sink, None,
-    ).map_err(|f| f.msg))
+    Some(
+        run_python_at(
+            &prog,
+            entry.as_deref(),
+            &dir,
+            &args,
+            Some(120),
+            &mut audit_sink,
+            None,
+        )
+        .map_err(|f| f.msg),
+    )
 }
 
 /// 同步检测核心（后台线程运行）
@@ -482,9 +498,7 @@ fn kill_tree(child: &mut std::process::Child, limits: &RunLimits) {
     #[cfg(unix)]
     {
         let pid = child.id() as i32;
-        let _ = silent_cmd("kill")
-            .args(["-9", &format!("-{pid}")])
-            .status();
+        let _ = silent_cmd("kill").args(["-9", &format!("-{pid}")]).status();
     }
     #[cfg(windows)]
     {
@@ -854,7 +868,15 @@ fn run_python_ungated(
                 });
             }
         };
-        match run_python_at(&py, Some("run.py"), &dir, args, timeout_secs, &mut audit_sink, stop) {
+        match run_python_at(
+            &py,
+            Some("run.py"),
+            &dir,
+            args,
+            timeout_secs,
+            &mut audit_sink,
+            stop,
+        ) {
             Ok(r) => return Ok(r),
             Err(f) => {
                 if attempt == 0 && f.spawn_not_found {
@@ -1078,8 +1100,11 @@ fn run_python_at(
 ///（spawn 失败/进程崩溃的兜底；正常路径用完即删，扫到的都是残留）。
 pub fn sweep_stale_py_runs(app: &AppHandle) {
     let root = crate::db::data_dir(app).join("py-runs");
-    let removed =
-        sweep_stale_py_runs_in(&root, Duration::from_secs(3600), std::time::SystemTime::now());
+    let removed = sweep_stale_py_runs_in(
+        &root,
+        Duration::from_secs(3600),
+        std::time::SystemTime::now(),
+    );
     if removed > 0 {
         py_audit(app, &format!("py_runs sweep | removed={removed}"));
     }
@@ -1137,13 +1162,17 @@ async fn run_doc_script(
 ) -> Result<PyRunResult, String> {
     let handle = app.clone();
     // doc_* 由 UI/工具触发，暂无 /stop 令牌（None）；自由编程 run_python 链路才有
-    match spawn_blocking_map(move || run_python(&handle, script, Some(&input), &[], Some(120), None)
-        .map_err(|e| e.to_string()))
-        .await
+    match spawn_blocking_map(move || {
+        run_python(&handle, script, Some(&input), &[], Some(120), None).map_err(|e| e.to_string())
+    })
+    .await
     {
         Ok(inner) => Ok(inner),
         Err(e) => {
-            py_audit(app, &format!("{name} err | {}", escape_for_log(&e.to_string(), 300)));
+            py_audit(
+                app,
+                &format!("{name} err | {}", escape_for_log(&e.to_string(), 300)),
+            );
             Err(e.to_string())
         }
     }
@@ -1196,7 +1225,10 @@ async fn run_doc_revisions(
     {
         Ok(inner) => Ok(inner),
         Err(e) => {
-            py_audit(app, &format!("{name} err | {}", escape_for_log(&e.to_string(), 300)));
+            py_audit(
+                app,
+                &format!("{name} err | {}", escape_for_log(&e.to_string(), 300)),
+            );
             Err(e.to_string())
         }
     }
@@ -2022,7 +2054,10 @@ pub fn py_exec_sync(
         );
     }
     if yolo && !flag_on {
-        py_audit(app, "py_exec | yolo_bypass | 授权模式 yolo，跳过 py-enabled 开关检查");
+        py_audit(
+            app,
+            "py_exec | yolo_bypass | 授权模式 yolo，跳过 py-enabled 开关检查",
+        );
     }
     // 用户/模型请求的超时硬上限 300s，超限直接拒绝并记审计
     //（run_python 内部另有钳制兜底，双保险）
@@ -2042,7 +2077,10 @@ pub fn py_exec_sync(
     let r = match run_python(app, &code, None, &[], timeout_secs, stop) {
         Ok(r) => r,
         Err(e) => {
-            py_audit(app, &format!("py_exec err | {}", escape_for_log(&e.to_string(), 300)));
+            py_audit(
+                app,
+                &format!("py_exec err | {}", escape_for_log(&e.to_string(), 300)),
+            );
             return Err(e.to_string());
         }
     };
@@ -2096,7 +2134,10 @@ pub async fn doc_extract(app: AppHandle, path: Option<String>) -> CommandResult<
         }
     };
     // path 来自用户/系统对话框，可能含换行，审计前必须转义
-    py_audit(&app, &format!("doc_extract | path: {}", escape_for_log(&path, 300)));
+    py_audit(
+        &app,
+        &format!("doc_extract | path: {}", escape_for_log(&path, 300)),
+    );
     let input = serde_json::json!({ "path": path }).to_string();
     let r = run_doc_script(&app, "doc_extract", EXTRACT_SCRIPT, input).await?;
     if r.exit_code != Some(0) {
@@ -2183,9 +2224,13 @@ pub async fn doc_make_word_revisions(
         "out": out
     })
     .to_string();
-    let (r, engine) =
-        run_doc_revisions(&app, "doc_make_word_revisions", MAKE_DOCX_REVISIONS_SCRIPT, input)
-            .await?;
+    let (r, engine) = run_doc_revisions(
+        &app,
+        "doc_make_word_revisions",
+        MAKE_DOCX_REVISIONS_SCRIPT,
+        input,
+    )
+    .await?;
     if r.exit_code != Some(0) {
         py_audit(
             &app,
@@ -2311,7 +2356,11 @@ fn strip_known_ext(name: &str, ext: &str) -> String {
 
 /// 输出路径：AI_Gen_Files/<文件名>；同名自动加 (n) 序号，永不覆盖（Harness 第 6 层）
 fn gen_out_path(app: &AppHandle, filename: Option<&str>, ext: &str) -> CommandResult<String> {
-    gen_out_path_in(&crate::db::data_dir(app).join("AI_Gen_Files"), filename, ext)
+    gen_out_path_in(
+        &crate::db::data_dir(app).join("AI_Gen_Files"),
+        filename,
+        ext,
+    )
 }
 
 /// 纯目录参数版便于单测（mock_app 的 AppHandle 与 Wry 签名不兼容）。
@@ -2410,7 +2459,8 @@ mod tests {
     fn drain_output_marks_truncated_from_reader() {
         // 模拟 reader 线程发 64KB+ 触顶数据（truncated=true），drain 必须透出标记
         let (tx, rx) = mpsc::channel::<(&'static str, Vec<u8>, bool)>();
-        tx.send(("out", vec![b'x'; OUTPUT_CAP + 1024], true)).unwrap();
+        tx.send(("out", vec![b'x'; OUTPUT_CAP + 1024], true))
+            .unwrap();
         tx.send(("err", Vec::new(), false)).unwrap();
         drop(tx);
         let (out, _err, complete, truncated) = drain_output(&rx, Duration::from_secs(1));
@@ -2587,7 +2637,10 @@ mod tests {
     fn assert_valid_track_changes(xml: &str) {
         assert!(xml.contains("<w:ins "), "应有插入修订：{xml}");
         assert!(xml.contains("<w:del "), "应有删除修订：{xml}");
-        assert!(xml.contains("<w:delText"), "w:del 内必须是 w:delText：{xml}");
+        assert!(
+            xml.contains("<w:delText"),
+            "w:del 内必须是 w:delText：{xml}"
+        );
         assert!(xml.contains("WMessage AI"), "修订应有作者：{xml}");
         // 修订不写日期
         assert!(!xml.contains("w:date="), "修订不应带 w:date：{xml}");
@@ -2597,19 +2650,40 @@ mod tests {
     fn assert_in_place_preserves_formatting(xml: &str) {
         // 格式保留：标题样式 + 加粗 rPr 原样还在（equal 段落不动）
         assert!(xml.contains("w:val=\"Heading1\""), "标题样式应保留：{xml}");
-        assert!(xml.contains("<w:b/>") || xml.contains("<w:b />"), "加粗 rPr 应保留：{xml}");
+        assert!(
+            xml.contains("<w:b/>") || xml.contains("<w:b />"),
+            "加粗 rPr 应保留：{xml}"
+        );
         // 修订标记：改动段落行内 w:del + w:ins（文本拆 run，断言片段而非整串），无日期
         assert!(xml.contains("<w:del "), "应有删除修订：{xml}");
         assert!(xml.contains("<w:ins "), "应有插入修订：{xml}");
-        assert!(xml.contains("<w:delText xml:space=\"preserve\">要</w:delText>"), "删除片段应在：{xml}");
-        assert!(xml.contains("<w:t xml:space=\"preserve\">过了</w:t>"), "插入片段应在：{xml}");
+        assert!(
+            xml.contains("<w:delText xml:space=\"preserve\">要</w:delText>"),
+            "删除片段应在：{xml}"
+        );
+        assert!(
+            xml.contains("<w:t xml:space=\"preserve\">过了</w:t>"),
+            "插入片段应在：{xml}"
+        );
         // 回归：tab/超链接段落改一个字走字符级 diff——只删「三」增「四」，
         // tab 保留、超链接文本作为 equal 片段保留（hyperlink 解包后文字不丢），
         // 不得整段标删（整段删会含完整旧句）
-        assert!(xml.contains("<w:delText xml:space=\"preserve\">三</w:delText>"), "应只删「三」：{xml}");
-        assert!(xml.contains("<w:t xml:space=\"preserve\">四</w:t>"), "应只增「四」：{xml}");
-        assert!(xml.contains("<w:tab/>") || xml.contains("<w:tab />"), "tab 应保留：{xml}");
-        assert!(xml.contains(">链接文字</w:t>"), "超链接文本应作为 equal 片段保留：{xml}");
+        assert!(
+            xml.contains("<w:delText xml:space=\"preserve\">三</w:delText>"),
+            "应只删「三」：{xml}"
+        );
+        assert!(
+            xml.contains("<w:t xml:space=\"preserve\">四</w:t>"),
+            "应只增「四」：{xml}"
+        );
+        assert!(
+            xml.contains("<w:tab/>") || xml.contains("<w:tab />"),
+            "tab 应保留：{xml}"
+        );
+        assert!(
+            xml.contains(">链接文字</w:t>"),
+            "超链接文本应作为 equal 片段保留：{xml}"
+        );
         assert!(!xml.contains("改三字。</w:delText>"), "不得整段标删：{xml}");
         assert!(!xml.contains("w:date="), "修订不应带 w:date：{xml}");
     }
@@ -2635,9 +2709,17 @@ mod tests {
         std::fs::write(dir.join("run.py"), MAKE_DOCX_REVISIONS_SCRIPT).unwrap();
         std::fs::write(dir.join("params.json"), params.to_string()).unwrap();
         let mut lines: Vec<String> = Vec::new();
-        run_python_at(&py, Some("run.py"), &dir.to_path_buf(), &[], Some(120), &mut |l: &str| lines.push(l.to_string()), None)
-            .map_err(|f| f.msg)
-            .expect("python 兜底应正常运行")
+        run_python_at(
+            &py,
+            Some("run.py"),
+            &dir.to_path_buf(),
+            &[],
+            Some(120),
+            &mut |l: &str| lines.push(l.to_string()),
+            None,
+        )
+        .map_err(|f| f.msg)
+        .expect("python 兜底应正常运行")
     }
 
     /// Python 兜底路径端到端（dotnet 不可用时的回退引擎）——与 dotnet 版同输入同断言。
@@ -2809,9 +2891,15 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("run.py"), "import time\ntime.sleep(30)\n").unwrap();
         let mut lines: Vec<String> = Vec::new();
-        let r = run_python_at(&py, Some("run.py"), &dir, &[], Some(1), &mut |l: &str| {
-            lines.push(l.to_string())
-        }, None);
+        let r = run_python_at(
+            &py,
+            Some("run.py"),
+            &dir,
+            &[],
+            Some(1),
+            &mut |l: &str| lines.push(l.to_string()),
+            None,
+        );
         let e = match r {
             Err(f) => f.msg,
             Ok(_) => panic!("1s 超时的 sleep 30 脚本不应成功"),
@@ -2831,9 +2919,15 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("run.py"), "print(1)\n").unwrap();
         let mut lines: Vec<String> = Vec::new();
-        let r = run_python_at("/nonexistent/python-zzz", Some("run.py"), &dir, &[], Some(1), &mut |l: &str| {
-            lines.push(l.to_string())
-        }, None);
+        let r = run_python_at(
+            "/nonexistent/python-zzz",
+            Some("run.py"),
+            &dir,
+            &[],
+            Some(1),
+            &mut |l: &str| lines.push(l.to_string()),
+            None,
+        );
         let e = match r {
             Err(f) => f.msg,
             Ok(_) => panic!("无效 python 路径不应成功"),
@@ -2859,9 +2953,15 @@ mod tests {
         std::fs::write(dir.join("run.py"), "print(1)\n").unwrap();
         std::fs::write(dir.join("params.json"), "{}").unwrap();
         let mut lines: Vec<String> = Vec::new();
-        let r = run_python_at("/nonexistent/python-zzz", Some("run.py"), &dir, &[], Some(1), &mut |l: &str| {
-            lines.push(l.to_string())
-        }, None);
+        let r = run_python_at(
+            "/nonexistent/python-zzz",
+            Some("run.py"),
+            &dir,
+            &[],
+            Some(1),
+            &mut |l: &str| lines.push(l.to_string()),
+            None,
+        );
         match r {
             Err(f) => assert!(f.msg.contains("启动 Python 失败"), "got: {}", f.msg),
             Ok(_) => panic!("无效 python 路径不应成功"),
@@ -2881,7 +2981,10 @@ mod tests {
     fn setup_run_dir_success_writes_script_and_params() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = setup_run_dir(tmp.path(), "print(1)\n", Some("{\"a\":1}")).unwrap();
-        assert_eq!(std::fs::read_to_string(dir.join("run.py")).unwrap(), "print(1)\n");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("run.py")).unwrap(),
+            "print(1)\n"
+        );
         assert_eq!(
             std::fs::read_to_string(dir.join("params.json")).unwrap(),
             "{\"a\":1}"
@@ -2993,11 +3096,7 @@ mod tests {
         assert!(fresh.exists());
         // root 不存在时静默返回 0
         assert_eq!(
-            sweep_stale_py_runs_in(
-                &tmp.path().join("no-such-dir"),
-                Duration::ZERO,
-                now
-            ),
+            sweep_stale_py_runs_in(&tmp.path().join("no-such-dir"), Duration::ZERO, now),
             0
         );
     }
@@ -3037,7 +3136,15 @@ mod tests {
         let dir = tmp.path().join("run-notfound");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("run.py"), "print(1)\n").unwrap();
-        let r = run_python_at("/nonexistent/python-zzz", Some("run.py"), &dir, &[], Some(1), &mut |_| {}, None);
+        let r = run_python_at(
+            "/nonexistent/python-zzz",
+            Some("run.py"),
+            &dir,
+            &[],
+            Some(1),
+            &mut |_| {},
+            None,
+        );
         match r {
             Err(f) => assert!(f.spawn_not_found),
             Ok(_) => panic!("无效 python 路径不应成功"),
@@ -3066,9 +3173,15 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(50));
                 guard.force_stop();
             });
-            let r = run_python_at(&py, Some("run.py"), &dir, &[], Some(60), &mut |l: &str| {
-                lines.push(l.to_string())
-            }, Some(&token));
+            let r = run_python_at(
+                &py,
+                Some("run.py"),
+                &dir,
+                &[],
+                Some(60),
+                &mut |l: &str| lines.push(l.to_string()),
+                Some(&token),
+            );
             let e = match r {
                 Err(f) => f.msg,
                 Ok(_) => panic!("被停止的脚本不应成功返回"),
@@ -3331,9 +3444,11 @@ mod exiting_tests {
     /// 全局标志不在测试里翻转（会污染并行测试的 run_python），源码锁防回退。
     #[test]
     fn exiting_check_is_after_gate_lock() {
-        let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bot_py.rs"))
-            .unwrap();
-        let fn_pos = text.find("pub fn run_python(").expect("run_python 必须存在");
+        let text =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bot_py.rs")).unwrap();
+        let fn_pos = text
+            .find("pub fn run_python(")
+            .expect("run_python 必须存在");
         let body = &text[fn_pos..];
         let gate = body.find("py_run_gate().lock()").expect("必须过并发闸门");
         let check = body.find("EXITING.load").expect("必须有退出标志复查");
@@ -3347,12 +3462,20 @@ mod platform_tests {
     /// 必须 cfg(debug_assertions) 门控——否则构建机路径烧进发布二进制
     #[test]
     fn dev_dll_candidate_is_debug_gated() {
-        let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bot_py.rs"))
-            .unwrap();
-        let pos = text.find("dotnet/WmDocxRevisions/bin/Release/net8.0")
+        let text =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bot_py.rs")).unwrap();
+        let pos = text
+            .find("dotnet/WmDocxRevisions/bin/Release/net8.0")
             .expect("开发模式 dll 候选必须存在");
         // 字符安全截取（中文注释多字节，字节下标切片会 panic）
-        let tail: String = text[..pos].chars().rev().take(500).collect::<Vec<_>>().into_iter().rev().collect();
+        let tail: String = text[..pos]
+            .chars()
+            .rev()
+            .take(500)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
         assert!(
             tail.contains("#[cfg(debug_assertions)]"),
             "CARGO_MANIFEST_DIR dll 候选必须 debug 门控: {tail:?}"
@@ -3363,11 +3486,15 @@ mod platform_tests {
     ///（self-contained 发布免装 .NET；framework-dependent apphost 自动找共享运行时）
     #[test]
     fn bundled_exe_entry_preferred_over_dll() {
-        let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bot_py.rs"))
-            .unwrap();
-        let fn_pos = text.find("fn dotnet_revisions_entry()").expect("入口定位函数必须存在");
+        let text =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bot_py.rs")).unwrap();
+        let fn_pos = text
+            .find("fn dotnet_revisions_entry()")
+            .expect("入口定位函数必须存在");
         let body: String = text[fn_pos..].chars().take(1500).collect();
-        let exe_hit = body.find("tool_exe.is_file()").expect("必须有随包 exe 候选");
+        let exe_hit = body
+            .find("tool_exe.is_file()")
+            .expect("必须有随包 exe 候选");
         let dll_hit = body.find("dll.is_file()").expect("必须有 dll 候选");
         assert!(exe_hit < dll_hit, "随包 exe 候选必须先于 dll 判定");
     }
@@ -3377,10 +3504,12 @@ mod platform_tests {
     #[cfg(unix)]
     #[test]
     fn unix_scripts_get_parent_watchdog() {
-        let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bot_py.rs"))
-            .unwrap();
+        let text =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bot_py.rs")).unwrap();
         assert!(text.contains("PARENT_WATCHDOG"), "必须有看门狗前导常量");
-        let fn_pos = text.find("fn run_python_ungated(").expect("run_python_ungated 必须存在");
+        let fn_pos = text
+            .find("fn run_python_ungated(")
+            .expect("run_python_ungated 必须存在");
         let body: String = text[fn_pos..].chars().take(1200).collect();
         assert!(
             body.contains("PARENT_WATCHDOG"),
@@ -3392,6 +3521,9 @@ mod platform_tests {
     #[cfg(unix)]
     #[test]
     fn group_leader_check_rejects_dead_pid() {
-        assert!(!super::is_live_group_leader(u32::MAX - 1), "不存在的 pid 不得判为组首");
+        assert!(
+            !super::is_live_group_leader(u32::MAX - 1),
+            "不存在的 pid 不得判为组首"
+        );
     }
 }

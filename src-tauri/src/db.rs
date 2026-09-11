@@ -94,7 +94,9 @@ pub fn resolve_task_files(paths: Vec<String>) -> Vec<TaskFile> {
         if path.is_empty() || out.iter().any(|f| f.path == path) {
             continue;
         }
-        let is_dir = std::fs::metadata(&path).map(|m| m.is_dir()).unwrap_or(false);
+        let is_dir = std::fs::metadata(&path)
+            .map(|m| m.is_dir())
+            .unwrap_or(false);
         out.push(TaskFile { path, is_dir });
         if out.len() >= MAX_TASK_FILES {
             break;
@@ -176,9 +178,7 @@ fn copy_legacy_db(legacy_db: &std::path::Path, db_path: &std::path::Path) -> Vec
     let tmp = db_path.with_extension("db.copying");
     let copied = std::fs::copy(legacy_db, &tmp)
         .map_err(|e| e.to_string())
-        .and_then(|_| {
-            std::fs::rename(&tmp, db_path).map_err(|e| e.to_string())
-        });
+        .and_then(|_| std::fs::rename(&tmp, db_path).map_err(|e| e.to_string()));
     if let Err(e) = copied {
         let _ = std::fs::remove_file(&tmp);
         warns.push(format!("老库拷贝失败：{e}"));
@@ -204,7 +204,9 @@ fn wal_sidecar(db: &std::path::Path, ext: &str) -> std::path::PathBuf {
 
 /// 打开数据库（泛型 Runtime：run_task_in_chat 链路泛化后 mock runtime
 /// 测试可直调；内部 db_dir/write_event 本就泛型）
-pub fn open_db<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<rusqlite::Connection, String> {
+pub fn open_db<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<rusqlite::Connection, String> {
     let dir = db_dir(app);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let db_path = dir.join("wmessage.db");
@@ -417,9 +419,12 @@ pub fn open_db<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<rusqlite:
     static BOT_ASSIGNED_RESET_DONE: std::sync::atomic::AtomicBool =
         std::sync::atomic::AtomicBool::new(false);
     reset_bot_assigned_with(&BOT_ASSIGNED_RESET_DONE, || {
-        conn.execute("UPDATE tasks SET bot_assigned = 0 WHERE bot_assigned = 1", [])
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        conn.execute(
+            "UPDATE tasks SET bot_assigned = 0 WHERE bot_assigned = 1",
+            [],
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
     });
     Ok(conn)
 }
@@ -455,7 +460,9 @@ fn migrate_legacy_file_bindings(conn: &rusqlite::Connection) -> Result<usize, St
         let mapped = stmt
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
             .map_err(|e| e.to_string())?;
-        mapped.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+        mapped
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?
     };
     let mut n = 0;
     for (id, path, is_dir) in rows {
@@ -695,7 +702,10 @@ pub async fn workspace_load(app: tauri::AppHandle) -> CommandResult<Vec<Workspac
 }
 
 #[tauri::command]
-pub async fn workspace_upsert(app: tauri::AppHandle, items: Vec<WorkspaceItem>) -> CommandResult<()> {
+pub async fn workspace_upsert(
+    app: tauri::AppHandle,
+    items: Vec<WorkspaceItem>,
+) -> CommandResult<()> {
     // 数据量小但仍是磁盘 IO；包 async + spawn_blocking（内部循环 execute 逻辑不动）。
     tauri::async_runtime::spawn_blocking(move || {
         if items.is_empty() {
@@ -917,8 +927,7 @@ pub async fn bot_history_save(
         let tx = conn
             .transaction()
             .map_err(|e| CommandError::DbError(e.to_string()))?;
-        bot_history_save_inner(&tx, &session_id, &messages)
-            .map_err(CommandError::DbError)?;
+        bot_history_save_inner(&tx, &session_id, &messages).map_err(CommandError::DbError)?;
         tx.commit()
             .map_err(|e| CommandError::DbError(e.to_string()))
     })
@@ -998,11 +1007,9 @@ fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), Strin
         if let Some(expected) = t.expected_updated_at {
             use rusqlite::OptionalExtension;
             let cur: Option<Option<i64>> = conn
-                .query_row(
-                    "SELECT updated_at FROM tasks WHERE id = ?1",
-                    [&t.id],
-                    |r| r.get::<_, Option<i64>>(0),
-                )
+                .query_row("SELECT updated_at FROM tasks WHERE id = ?1", [&t.id], |r| {
+                    r.get::<_, Option<i64>>(0)
+                })
                 .optional()
                 .map_err(|e| e.to_string())?;
             let conflict = if expected == BASELINE_NULL_ROW {
@@ -1189,7 +1196,10 @@ fn load_all(conn: &rusqlite::Connection) -> Result<Vec<Task>, String> {
 /// （已存在的 id 不用 json 旧值覆盖，防回滚用户的新编辑）。
 /// 评估成功后无论是否补了内容，都把 data.json 改名退役（data.json.migrated，可人工找回）——
 /// 删除任务是硬删，留着陈年 json 会把已删除任务全部复活。
-fn migrate_data_json<R: tauri::Runtime>(app: &tauri::AppHandle<R>, conn: &mut rusqlite::Connection) {
+fn migrate_data_json<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    conn: &mut rusqlite::Connection,
+) {
     let Ok(dir) = app.path().app_data_dir() else {
         return;
     };
@@ -1232,7 +1242,9 @@ fn migrate_data_json_file(file: &std::path::Path, conn: &mut rusqlite::Connectio
         retire(file);
         return false;
     }
-    let Ok(tx) = conn.transaction() else { return false };
+    let Ok(tx) = conn.transaction() else {
+        return false;
+    };
     if upsert_tasks(&tx, &missing).is_ok() && tx.commit().is_ok() {
         retire(file);
         return true;
@@ -1272,7 +1284,10 @@ pub async fn db_upsert(app: tauri::AppHandle, tasks: Vec<Task>) -> CommandResult
 }
 
 /// db_upsert 的泛型 Runtime 变体（同 db_load_for 注释）
-pub async fn db_upsert_for<R: tauri::Runtime>(app: &tauri::AppHandle<R>, tasks: Vec<Task>) -> CommandResult<()> {
+pub async fn db_upsert_for<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    tasks: Vec<Task>,
+) -> CommandResult<()> {
     // 高频写（挂件拖拽/编辑都走这里），批量事务含 fsync；扔到 spawn_blocking。
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -1512,9 +1527,7 @@ mod tests {
             let mut rows = stmt.query([]).unwrap();
             let _ = rows.next().unwrap(); // 游标保持打开 = 读标记存活
             let writer = rusqlite::Connection::open(&legacy).unwrap();
-            writer
-                .execute_batch("INSERT INTO t VALUES ('y');")
-                .unwrap();
+            writer.execute_batch("INSERT INTO t VALUES ('y');").unwrap();
             let warns = copy_legacy_db(&legacy, &dst);
             drop(writer);
             warns
@@ -1525,10 +1538,7 @@ mod tests {
             wal_sidecar(&dst, "wal").exists(),
             "-wal 边车必须拷过来（否则 checkpoint 失败时 WAL 写入静默丢失）"
         );
-        assert!(
-            wal_sidecar(&dst, "shm").exists(),
-            "-shm 边车必须拷过来"
-        );
+        assert!(wal_sidecar(&dst, "shm").exists(), "-shm 边车必须拷过来");
         assert!(
             warns.iter().any(|w| w.contains("checkpoint")),
             "checkpoint 失败必须产生 warn，不得 let _ 吞掉；got: {warns:?}"
@@ -1552,7 +1562,9 @@ mod tests {
         let warns = copy_legacy_db(&legacy, &dst);
         assert!(warns.is_empty(), "happy path 不应有 warn；got: {warns:?}");
         let c = rusqlite::Connection::open(&dst).unwrap();
-        let n: i64 = c.query_row("SELECT COUNT(*) FROM t", [], |r| r.get(0)).unwrap();
+        let n: i64 = c
+            .query_row("SELECT COUNT(*) FROM t", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(n, 1, "拷贝后的库应含老数据");
         fs::remove_dir_all(&dir).ok();
     }
@@ -1647,7 +1659,11 @@ mod tests {
         let (dir, mut conn) = setup_tasks_db();
         upsert_tasks(&conn, &[mk_task("t1", "a"), mk_task("t2", "b")]).unwrap();
         let file = dir.join("data.json");
-        fs::write(&file, serde_json::to_string(&vec![mk_task("t1", "old")]).unwrap()).unwrap();
+        fs::write(
+            &file,
+            serde_json::to_string(&vec![mk_task("t1", "old")]).unwrap(),
+        )
+        .unwrap();
 
         assert!(
             !migrate_data_json_file(&file, &mut conn),
@@ -1694,19 +1710,35 @@ mod tests {
         .unwrap();
 
         ensure_files_column(&conn).unwrap();
-        assert_eq!(migrate_legacy_file_bindings(&conn).unwrap(), 2, "两条老绑定应迁移");
+        assert_eq!(
+            migrate_legacy_file_bindings(&conn).unwrap(),
+            2,
+            "两条老绑定应迁移"
+        );
 
         let tasks = load_all(&conn).unwrap();
         let tf = tasks.iter().find(|t| t.id == "t-file").unwrap();
         assert_eq!(
             tf.files.as_deref(),
-            Some(vec![TaskFile { path: "/tmp/a.pdf".into(), is_dir: false }].as_slice()),
+            Some(
+                vec![TaskFile {
+                    path: "/tmp/a.pdf".into(),
+                    is_dir: false
+                }]
+                .as_slice()
+            ),
             "文件绑定应迁进 files（isDir=false）"
         );
         let td = tasks.iter().find(|t| t.id == "t-dir").unwrap();
         assert_eq!(
             td.files.as_deref(),
-            Some(vec![TaskFile { path: "/tmp/dir".into(), is_dir: true }].as_slice()),
+            Some(
+                vec![TaskFile {
+                    path: "/tmp/dir".into(),
+                    is_dir: true
+                }]
+                .as_slice()
+            ),
             "文件夹绑定应迁进 files（isDir=true）"
         );
         let tn = tasks.iter().find(|t| t.id == "t-none").unwrap();
@@ -1714,12 +1746,18 @@ mod tests {
 
         // 老列保留（迁移过渡期旧版本仍可读 file_path/file_is_dir）
         let fp: Option<String> = conn
-            .query_row("SELECT file_path FROM tasks WHERE id='t-file'", [], |r| r.get(0))
+            .query_row("SELECT file_path FROM tasks WHERE id='t-file'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(fp.as_deref(), Some("/tmp/a.pdf"), "老列 file_path 保留不清");
 
         // 幂等：再跑一次迁移条数为 0，files 不变
-        assert_eq!(migrate_legacy_file_bindings(&conn).unwrap(), 0, "重跑不得重复迁移");
+        assert_eq!(
+            migrate_legacy_file_bindings(&conn).unwrap(),
+            0,
+            "重跑不得重复迁移"
+        );
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -1742,7 +1780,8 @@ mod tests {
         assert_eq!(migrate_legacy_file_bindings(&conn).unwrap(), 0);
         let t = &load_all(&conn).unwrap()[0];
         assert_eq!(
-            t.files.as_deref().unwrap()[0].path, "/tmp/new.txt",
+            t.files.as_deref().unwrap()[0].path,
+            "/tmp/new.txt",
             "已有 files 不得被老 file_path 覆盖"
         );
         fs::remove_dir_all(&dir).ok();
@@ -1754,8 +1793,14 @@ mod tests {
         let (dir, conn) = setup_tasks_db();
         let mut t = mk_task("t1", "多文件");
         t.files = Some(vec![
-            TaskFile { path: "/a/1.pdf".into(), is_dir: false },
-            TaskFile { path: "/a/2.docx".into(), is_dir: false },
+            TaskFile {
+                path: "/a/1.pdf".into(),
+                is_dir: false,
+            },
+            TaskFile {
+                path: "/a/2.docx".into(),
+                is_dir: false,
+            },
         ]);
         upsert_tasks(&conn, &[t]).unwrap();
         let loaded = &load_all(&conn).unwrap()[0];
@@ -1773,13 +1818,22 @@ mod tests {
         t.file_is_dir = Some(true);
         assert_eq!(
             t.effective_files(),
-            vec![TaskFile { path: "/tmp/legacy.pdf".into(), is_dir: true }],
+            vec![TaskFile {
+                path: "/tmp/legacy.pdf".into(),
+                is_dir: true
+            }],
             "files 空 → 回退旧字段"
         );
-        t.files = Some(vec![TaskFile { path: "/tmp/new.pdf".into(), is_dir: false }]);
+        t.files = Some(vec![TaskFile {
+            path: "/tmp/new.pdf".into(),
+            is_dir: false,
+        }]);
         assert_eq!(
             t.effective_files(),
-            vec![TaskFile { path: "/tmp/new.pdf".into(), is_dir: false }],
+            vec![TaskFile {
+                path: "/tmp/new.pdf".into(),
+                is_dir: false
+            }],
             "files 非空 → 优先 files"
         );
     }
@@ -1864,8 +1918,11 @@ mod tests {
     #[test]
     fn bot_history_save_rolls_back_on_insert_failure() {
         let (dir, mut conn) = setup_bhs_db();
-        conn.execute("INSERT INTO bot_sessions VALUES ('s1', 'T', 1000, 1000)", [])
-            .unwrap();
+        conn.execute(
+            "INSERT INTO bot_sessions VALUES ('s1', 'T', 1000, 1000)",
+            [],
+        )
+        .unwrap();
         for i in 0..3 {
             conn.execute(
                 "INSERT INTO bot_messages (session_id, role, content, created_at) VALUES ('s1', 'user', ?1, 1000)",
@@ -1885,11 +1942,8 @@ mod tests {
         // 模拟 wrapper 包裹模式：tx + inner + commit。inner 期间遇 NOT NULL 违约。
         let tx_result: Result<(), String> = (|| {
             let tx = conn.transaction().map_err(|e| e.to_string())?;
-            tx.execute(
-                "DELETE FROM bot_messages WHERE session_id = 's1'",
-                [],
-            )
-            .map_err(|e| e.to_string())?;
+            tx.execute("DELETE FROM bot_messages WHERE session_id = 's1'", [])
+                .map_err(|e| e.to_string())?;
             // 强制失败：role 为 NULL → NOT NULL 约束违反
             tx.execute(
                 "INSERT INTO bot_messages (session_id, role, content, created_at) VALUES ('s1', NULL, 'x', 1000)",
@@ -1921,8 +1975,11 @@ mod tests {
     #[test]
     fn bot_history_save_inner_commits_in_tx() {
         let (dir, mut conn) = setup_bhs_db();
-        conn.execute("INSERT INTO bot_sessions VALUES ('s1', 'T', 1000, 5000)", [])
-            .unwrap();
+        conn.execute(
+            "INSERT INTO bot_sessions VALUES ('s1', 'T', 1000, 5000)",
+            [],
+        )
+        .unwrap();
 
         let new_msgs = vec![
             BotMsgRow {
@@ -1955,7 +2012,11 @@ mod tests {
         assert_eq!(count, 2, "提交后应有 2 条新消息");
 
         let updated_at: i64 = conn
-            .query_row("SELECT updated_at FROM bot_sessions WHERE id = 's1'", [], |r| r.get(0))
+            .query_row(
+                "SELECT updated_at FROM bot_sessions WHERE id = 's1'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert!(updated_at >= 5000, "updated_at 应被 update 为 now >= 5000");
 
@@ -1967,8 +2028,11 @@ mod tests {
     #[test]
     fn bot_session_delete_is_atomic() {
         let (dir, conn) = setup_bhs_db();
-        conn.execute("INSERT INTO bot_sessions VALUES ('s1', 'T', 1000, 1000)", [])
-            .unwrap();
+        conn.execute(
+            "INSERT INTO bot_sessions VALUES ('s1', 'T', 1000, 1000)",
+            [],
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO bot_messages (session_id, role, content, created_at) VALUES ('s1', 'user', 'm1', 1000)",
             [],
@@ -1979,17 +2043,28 @@ mod tests {
         bot_session_delete_inner(&mut conn, "s1").unwrap();
 
         let sess_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM bot_sessions WHERE id = 's1'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM bot_sessions WHERE id = 's1'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         let msg_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM bot_messages WHERE session_id = 's1'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM bot_messages WHERE session_id = 's1'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(sess_count, 0, "提交后会话应被删除");
         assert_eq!(msg_count, 0, "提交后消息应被删除");
 
         // 原子性反向验证：第二条 DELETE（会话）注入失败 → 第一条（消息）也必须回滚
-        conn.execute("INSERT INTO bot_sessions VALUES ('s2', 'T', 1000, 1000)", [])
-            .unwrap();
+        conn.execute(
+            "INSERT INTO bot_sessions VALUES ('s2', 'T', 1000, 1000)",
+            [],
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO bot_messages (session_id, role, content, created_at) VALUES ('s2', 'user', 'm2', 1000)",
             [],
@@ -2005,10 +2080,18 @@ mod tests {
             "trigger 注入失败必须返回 Err"
         );
         let sess_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM bot_sessions WHERE id = 's2'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM bot_sessions WHERE id = 's2'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         let msg_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM bot_messages WHERE session_id = 's2'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM bot_messages WHERE session_id = 's2'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(sess_count, 1, "回滚后会话必须还在");
         assert_eq!(msg_count, 1, "回滚后消息必须还在（不留半删状态）");
@@ -2047,11 +2130,9 @@ mod tests {
 
         // 有值行：仍正常读出
         let cur_new: Option<Option<i64>> = conn
-            .query_row(
-                "SELECT updated_at FROM tasks WHERE id = 'new-1'",
-                [],
-                |r| r.get::<_, Option<i64>>(0),
-            )
+            .query_row("SELECT updated_at FROM tasks WHERE id = 'new-1'", [], |r| {
+                r.get::<_, Option<i64>>(0)
+            })
             .optional()
             .unwrap();
         assert_eq!(cur_new, Some(Some(100)));
@@ -2085,12 +2166,8 @@ mod tests {
     fn upsert_where_guard_prevents_lost_update() {
         let (dir, conn) = setup_tasks_db();
         let title_of = |conn: &rusqlite::Connection, id: &str| -> String {
-            conn.query_row(
-                "SELECT title FROM tasks WHERE id = ?1",
-                [id],
-                |r| r.get(0),
-            )
-            .unwrap()
+            conn.query_row("SELECT title FROM tasks WHERE id = ?1", [id], |r| r.get(0))
+                .unwrap()
         };
         // 老 NULL 行（2026-08-14 前 schema 遗留）：生产 upsert 写全列，NULL 行只能 SQL 直插
         conn.execute(
@@ -2112,13 +2189,21 @@ mod tests {
         t.title = "old-snapshot-60".into();
         t.updated_at = Some(60);
         upsert_tasks(&conn, std::slice::from_ref(&t)).unwrap();
-        assert_eq!(title_of(&conn, "t1"), "new-100", "场景 2: 更老的不应压过更新的");
+        assert_eq!(
+            title_of(&conn, "t1"),
+            "new-100",
+            "场景 2: 更老的不应压过更新的"
+        );
 
         // 场景 3: 相等 timestamp → 允许更新
         t.title = "equal-100".into();
         t.updated_at = Some(100);
         upsert_tasks(&conn, std::slice::from_ref(&t)).unwrap();
-        assert_eq!(title_of(&conn, "t1"), "equal-100", "场景 3: 相等 timestamp 仍允许更新");
+        assert_eq!(
+            title_of(&conn, "t1"),
+            "equal-100",
+            "场景 3: 相等 timestamp 仍允许更新"
+        );
 
         // 场景 4: 老 NULL 行被任何 incoming 覆盖
         let mut l = mk_task("legacy", "new-over-legacy");
@@ -2131,12 +2216,19 @@ mod tests {
         );
 
         // 场景 5: incoming NULL 不应覆盖 current 有值
-        conn.execute("UPDATE tasks SET title='keep-me', updated_at=200 WHERE id='t1'", [])
-            .unwrap();
+        conn.execute(
+            "UPDATE tasks SET title='keep-me', updated_at=200 WHERE id='t1'",
+            [],
+        )
+        .unwrap();
         t.title = "incoming-null".into();
         t.updated_at = None;
         upsert_tasks(&conn, std::slice::from_ref(&t)).unwrap();
-        assert_eq!(title_of(&conn, "t1"), "keep-me", "场景 5: incoming NULL 不应覆盖 current 有值");
+        assert_eq!(
+            title_of(&conn, "t1"),
+            "keep-me",
+            "场景 5: incoming NULL 不应覆盖 current 有值"
+        );
 
         fs::remove_dir_all(&dir).ok();
     }
@@ -2176,7 +2268,11 @@ mod tests {
         );
         let cur = load_all(&conn).unwrap().into_iter().next().unwrap();
         assert_eq!(cur.title, "A改的标题", "先写者的字段修改不得被覆盖");
-        assert_eq!(cur.note.as_deref(), Some("原始备注"), "被拒写者的修改不得落库");
+        assert_eq!(
+            cur.note.as_deref(),
+            Some("原始备注"),
+            "被拒写者的修改不得落库"
+        );
         assert_eq!(cur.updated_at, Some(200));
 
         // B 重读刷新基线后重试 → 放行（冲突可见、可恢复，而非静默丢）
@@ -2192,7 +2288,10 @@ mod tests {
         // 快照后行被删：带基线写回 → 拒写（防复活已删行）
         delete_tasks(&conn, &["t1".to_string()]).unwrap();
         let err = upsert_tasks(&conn, std::slice::from_ref(&b2)).unwrap_err();
-        assert!(err.starts_with(CONFLICT_ERR_PREFIX), "行已删必须拒写；got: {err}");
+        assert!(
+            err.starts_with(CONFLICT_ERR_PREFIX),
+            "行已删必须拒写；got: {err}"
+        );
         assert!(load_all(&conn).unwrap().is_empty(), "被拒写不得复活已删行");
 
         // 无基线（expected_updated_at=None）保持原行为：新建直插、时间戳守卫兜底
@@ -2355,7 +2454,10 @@ mod ws_tests {
             updated_at: Some(2),
         };
         // w1 更新 + boom（触发失败）+ w2：无事务时 w1 会被半截更新
-        let r = upsert_workspace(&mut conn, &[mk("w1", "new"), mk("boom", "x"), mk("w2", "y")]);
+        let r = upsert_workspace(
+            &mut conn,
+            &[mk("w1", "new"), mk("boom", "x"), mk("w2", "y")],
+        );
         assert!(r.is_err(), "trigger 注入失败必须返回 Err");
         let got = load_workspace(&conn).unwrap();
         assert_eq!(got.len(), 1, "半截写入必须被回滚（w2 不得落库）");
@@ -2424,18 +2526,32 @@ mod ws_tests {
         let merged = workspace_import_merge(&mut conn, &incoming).unwrap();
 
         assert_eq!(merged, 2, "应写 a（UPDATE）+ c（INSERT）；跳过 b + 空 id");
-        let a: String = conn.query_row("SELECT title FROM workspace_items WHERE id='a'", [], |r| r.get(0)).unwrap();
+        let a: String = conn
+            .query_row("SELECT title FROM workspace_items WHERE id='a'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         assert_eq!(a, "in-100", "a 被新覆盖");
-        let b: String = conn.query_row("SELECT title FROM workspace_items WHERE id='b'", [], |r| r.get(0)).unwrap();
+        let b: String = conn
+            .query_row("SELECT title FROM workspace_items WHERE id='b'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         assert_eq!(b, "cur-200", "b 未被覆盖（180<200）");
-        let c: String = conn.query_row("SELECT title FROM workspace_items WHERE id='c'", [], |r| r.get(0)).unwrap();
+        let c: String = conn
+            .query_row("SELECT title FROM workspace_items WHERE id='c'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         assert_eq!(c, "in-5", "c 已写入");
         // 空 id 跳过：不应有 id='' 的行（setup 也没创建，double-check）
-        let blank_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM workspace_items WHERE id=''",
-            [],
-            |r| r.get(0),
-        ).unwrap();
+        let blank_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM workspace_items WHERE id=''",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(blank_count, 0, "空 id 应被跳过");
         fs::remove_dir_all(&dir).ok();
     }
@@ -2493,15 +2609,20 @@ mod reset_tests {
         .unwrap();
         let done = AtomicBool::new(false);
         let ok = reset_bot_assigned_with(&done, || {
-            conn.execute("UPDATE tasks SET bot_assigned = 0 WHERE bot_assigned = 1", [])
-                .map(|_| ())
-                .map_err(|e| e.to_string())
+            conn.execute(
+                "UPDATE tasks SET bot_assigned = 0 WHERE bot_assigned = 1",
+                [],
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
         });
         assert!(ok);
         let n: i64 = conn
-            .query_row("SELECT COUNT(*) FROM tasks WHERE bot_assigned = 1", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT COUNT(*) FROM tasks WHERE bot_assigned = 1",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(n, 0, "残留 bot_assigned 应被清掉");
         fs::remove_dir_all(&dir).ok();
@@ -2560,4 +2681,3 @@ mod atomic_write_tests {
         fs::remove_dir_all(&dir).ok();
     }
 }
-

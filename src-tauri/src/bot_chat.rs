@@ -143,7 +143,10 @@ fn truncate_split_point(messages: &[ChatMsg], budget: usize) -> usize {
 /// 生产路径走 truncate_chat_history_with_summary
 /// （截断即摘要），本函数仅剩单测使用——保留作为截断语义的回归基准。
 #[cfg(test)]
-pub(crate) fn truncate_chat_history(messages: Vec<ChatMsg>, budget: usize) -> (Vec<ChatMsg>, usize) {
+pub(crate) fn truncate_chat_history(
+    messages: Vec<ChatMsg>,
+    budget: usize,
+) -> (Vec<ChatMsg>, usize) {
     let keep_from = truncate_split_point(&messages, budget);
     (messages.into_iter().skip(keep_from).collect(), keep_from)
 }
@@ -198,10 +201,11 @@ pub(crate) async fn truncate_chat_history_with_summary(
     messages: Vec<ChatMsg>,
     budget: usize,
 ) -> (Vec<ChatMsg>, Option<String>, usize) {
-    let (kept, summary, dropped) = truncate_with_summary_core(messages, budget, |dropped_msgs| async move {
-        summarize_messages(app, SUMMARY_SYSTEM_PROMPT, &dropped_msgs).await
-    })
-    .await;
+    let (kept, summary, dropped) =
+        truncate_with_summary_core(messages, budget, |dropped_msgs| async move {
+            summarize_messages(app, SUMMARY_SYSTEM_PROMPT, &dropped_msgs).await
+        })
+        .await;
     if let Some(summary) = &summary {
         persist_summary_and_reflect(app, session_id, summary).await;
     }
@@ -305,13 +309,14 @@ pub async fn chat_execute_tasks(
 
     for (idx, (task_id, title)) in task_ids.iter().enumerate() {
         if stop.stopped() {
-            all_text.push_str(&format!(
-                "\n⏹ 已停止（剩余 {} 张未执行）",
-                total - idx
-            ));
+            all_text.push_str(&format!("\n⏹ 已停止（剩余 {} 张未执行）", total - idx));
             break;
         }
-        let label = if title.is_empty() { task_id.as_str() } else { title.as_str() };
+        let label = if title.is_empty() {
+            task_id.as_str()
+        } else {
+            title.as_str()
+        };
         all_text.push_str(&format!("\n── [{}/{}] {} ──\n", idx + 1, total, label));
         match run_task_in_chat(app, task_id, TaskExecOrigin::Batch).await {
             Ok(r) => {
@@ -371,10 +376,7 @@ fn attach_images(app: &AppHandle, content: &str) -> serde_json::Value {
 }
 
 /// 白名单根目录集合内的判定内核（纯函数便于单测）：返回 (消息内容, 跳过数)
-fn attach_images_in(
-    roots: &[std::path::PathBuf],
-    content: &str,
-) -> (serde_json::Value, usize) {
+fn attach_images_in(roots: &[std::path::PathBuf], content: &str) -> (serde_json::Value, usize) {
     let mut parts: Vec<serde_json::Value> = Vec::new();
     parts.push(serde_json::json!({"type": "text", "text": content}));
     let mut added = 0usize;
@@ -518,12 +520,20 @@ impl Drop for ChatGuard {
 pub fn chat_guard_is_held(session_id: &str) -> bool {
     CHAT_RUNNING
         .get()
-        .map(|s| s.lock().unwrap_or_else(|e| e.into_inner()).contains(session_id))
+        .map(|s| {
+            s.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains(session_id)
+        })
         .unwrap_or(false)
 }
 
 #[tauri::command]
-pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>, session_id: Option<String>) -> CommandResult<BotChatResult> {
+pub async fn bot_chat(
+    app: AppHandle,
+    messages: Vec<ChatMsg>,
+    session_id: Option<String>,
+) -> CommandResult<BotChatResult> {
     require_bot_enabled(bot_get_enabled(app.clone()))?;
     // 会话级防重入：同会话并发消息直接拒绝，防技能路由/start_skill 竞争
     let _chat_guard = match ChatGuard::acquire(session_id.as_deref()) {
@@ -664,7 +674,14 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>, session_id: Option
     let mut recovery_hint: Option<String> = None;
     if let Some((meta, _body)) = &pre_routed_skill {
         if meta.mode == "auto" {
-            match crate::bot_skills::run_skill_scheduler(&app, &meta.name, stop.session_id(), Some(&stop)).await {
+            match crate::bot_skills::run_skill_scheduler(
+                &app,
+                &meta.name,
+                stop.session_id(),
+                Some(&stop),
+            )
+            .await
+            {
                 Ok(crate::bot_skills::DslOutcome::Done(text)) => {
                     return Ok(BotChatResult {
                         text,
@@ -676,10 +693,16 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>, session_id: Option
                     // 处理逻辑，用户会看到原始字符串），改出可读提示
                     crate::bot::audit_log(
                         &app,
-                        &format!("skill_await_user | name: {} | 已暂停等待用户确认", crate::bot::truncate_for_log(&meta.name, 60)),
+                        &format!(
+                            "skill_await_user | name: {} | 已暂停等待用户确认",
+                            crate::bot::truncate_for_log(&meta.name, 60)
+                        ),
                     );
                     return Ok(BotChatResult {
-                        text: format!("⏸ 技能「{}」已暂停，正在等待你的确认——请在确认弹窗里选择后继续。", meta.name),
+                        text: format!(
+                            "⏸ 技能「{}」已暂停，正在等待你的确认——请在确认弹窗里选择后继续。",
+                            meta.name
+                        ),
                         task_refs: Vec::new(),
                     });
                 }
@@ -716,7 +739,9 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>, session_id: Option
     }
     // 多步 Skill 自报 max_rounds（frontmatter）优先，未声明 → 默认 DEFAULT_MAX_ROUNDS（50）
     let max_rounds = crate::bot_model_loop::resolve_max_rounds(
-        pre_routed_skill.as_ref().and_then(|(meta, _)| meta.max_rounds),
+        pre_routed_skill
+            .as_ref()
+            .and_then(|(meta, _)| meta.max_rounds),
     );
     let pre_routed_active_skill = pre_routed_skill.map(|(_, body)| body);
     let system_content = if let Some(active_skill) = pre_routed_active_skill {
@@ -751,7 +776,11 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>, session_id: Option
             None
         };
     let system_content = if let Some(plan) = &plan_state {
-        format!("{}{}", system_content, crate::bot_plan::format_plan_block(&plan.steps))
+        format!(
+            "{}{}",
+            system_content,
+            crate::bot_plan::format_plan_block(&plan.steps)
+        )
     } else {
         system_content
     };
@@ -762,9 +791,13 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>, session_id: Option
     // 生成摘要；摘要单独以 system 消息放在截断后历史开头（不进 messages——下方
     // role 白名单会把非 assistant 降级为 user，防注入语义不动）；
     // LLM 失败静默退回直接丢弃
-    let (messages, summary, dropped) =
-        truncate_chat_history_with_summary(&app, session_id.as_deref(), messages, HISTORY_BUDGET_CHARS)
-            .await;
+    let (messages, summary, dropped) = truncate_chat_history_with_summary(
+        &app,
+        session_id.as_deref(),
+        messages,
+        HISTORY_BUDGET_CHARS,
+    )
+    .await;
     if let Some(summary) = summary {
         msgs.push(serde_json::json!({"role": "system", "content": summary}));
     }
@@ -788,14 +821,22 @@ pub async fn bot_chat(app: AppHandle, messages: Vec<ChatMsg>, session_id: Option
     for (i, m) in messages.iter().enumerate() {
         // role 白名单：历史里的非法 role 一律按 user，
         // 防污染历史注入 system/tool 角色
-        let role = if m.role == "assistant" { "assistant" } else { "user" };
+        let role = if m.role == "assistant" {
+            "assistant"
+        } else {
+            "user"
+        };
         if img_indices.contains(&i) {
-            msgs.push(serde_json::json!({"role": role, "content": attach_images(&app, &m.content)}));
+            msgs.push(
+                serde_json::json!({"role": role, "content": attach_images(&app, &m.content)}),
+            );
         } else {
             msgs.push(serde_json::json!({"role": role, "content": m.content}));
         }
     }
-    let (text, refs) = crate::bot_model_loop::run_model_loop(app, msgs, max_rounds, &stop, plan_state.as_mut()).await?;
+    let (text, refs) =
+        crate::bot_model_loop::run_model_loop(app, msgs, max_rounds, &stop, plan_state.as_mut())
+            .await?;
     Ok(BotChatResult {
         text,
         task_refs: refs,
@@ -986,12 +1027,16 @@ pub async fn bot_compact(app: AppHandle, messages: Vec<ChatMsg>) -> CommandResul
 /// 不再使用）。会话级 ChatGuard 由 run_task_in_chat 对新会话持有（补上原先后端无锁的漏洞）。
 /// 流式经 bot-chat-delta / bot-think-delta / bot-tool* 事件（带新会话 sessionId）推给挂件。
 #[tauri::command]
-pub async fn bot_execute_task(app: AppHandle, task_id: String, session_id: Option<String>) -> CommandResult<BotChatResult> {
+pub async fn bot_execute_task(
+    app: AppHandle,
+    task_id: String,
+    session_id: Option<String>,
+) -> CommandResult<BotChatResult> {
     let _ = session_id; // 废弃：执行会话由后端新建
-    // 逐步执行模式：手动触发 + ≥2 个未勾子任务 → 一个一个做，
-    // 每个子任务做完在聊天里等用户确认（继续=勾选+下一个 / 重做 / 停）；
-    // 聊天批量执行与定时调度仍走整卡连续执行（多卡/无人在场不适合逐步确认）。
-    // 逐步执行也在新会话内（exec_steps 挂起态按新会话 id 停放）。
+                        // 逐步执行模式：手动触发 + ≥2 个未勾子任务 → 一个一个做，
+                        // 每个子任务做完在聊天里等用户确认（继续=勾选+下一个 / 重做 / 停）；
+                        // 聊天批量执行与定时调度仍走整卡连续执行（多卡/无人在场不适合逐步确认）。
+                        // 逐步执行也在新会话内（exec_steps 挂起态按新会话 id 停放）。
     if bot_get_enabled(app.clone()) {
         if let Some(task) = crate::db::db_load(app.clone())
             .await
@@ -1104,26 +1149,29 @@ async fn create_exec_session<R: tauri::Runtime>(
     );
     let block = build_task_block(task);
     let app2 = app.clone();
-    let session = tauri::async_runtime::spawn_blocking(move || -> Result<crate::db::BotSession, String> {
-        let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let conn = crate::db::open_db(&app2)?;
-        let s = crate::db::bot_session_create_inner(&conn, Some(title))?;
-        crate::db::bot_history_save_inner(
-            &conn,
-            &s.id,
-            &[crate::db::BotMsgRow {
-                role: "user".into(),
-                content: block,
-                refs_json: None,
-                thinking: None,
-                tools_json: None,
-            }],
-        )?;
-        Ok(s)
-    })
-    .await
-    .map_err(|e| CommandError::from(format!("执行会话创建线程 join 失败：{e}")))?
-    .map_err(CommandError::DbError)?;
+    let session =
+        tauri::async_runtime::spawn_blocking(move || -> Result<crate::db::BotSession, String> {
+            let _g = crate::db::DB_WRITE_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let conn = crate::db::open_db(&app2)?;
+            let s = crate::db::bot_session_create_inner(&conn, Some(title))?;
+            crate::db::bot_history_save_inner(
+                &conn,
+                &s.id,
+                &[crate::db::BotMsgRow {
+                    role: "user".into(),
+                    content: block,
+                    refs_json: None,
+                    thinking: None,
+                    tools_json: None,
+                }],
+            )?;
+            Ok(s)
+        })
+        .await
+        .map_err(|e| CommandError::from(format!("执行会话创建线程 join 失败：{e}")))?
+        .map_err(CommandError::DbError)?;
     let _ = app.emit_to(
         "widget",
         "chat-open-session",
@@ -1139,7 +1187,12 @@ async fn create_exec_session<R: tauri::Runtime>(
 
 /// 执行会话的 assistant 回复落库（user 任务块 + 回复整体覆盖写，bot_history_save_inner
 /// 语义即全量覆盖）。持久化失败只记审计——执行结果已经产生，记录缺失不阻断返回。
-async fn persist_exec_reply<R: tauri::Runtime>(app: &tauri::AppHandle<R>, task: &crate::db::Task, sid: &str, reply: &CommandResult<BotChatResult>) {
+async fn persist_exec_reply<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    task: &crate::db::Task,
+    sid: &str,
+    reply: &CommandResult<BotChatResult>,
+) {
     let (content, refs) = match reply {
         Ok(r) => (r.text.clone(), serde_json::to_string(&r.task_refs).ok()),
         Err(e) => (format!("⚠️ 执行失败：{}", e.message()), None),
@@ -1148,7 +1201,9 @@ async fn persist_exec_reply<R: tauri::Runtime>(app: &tauri::AppHandle<R>, task: 
     let app2 = app.clone();
     let sid = sid.to_string();
     let r = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
-        let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::db::DB_WRITE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let mut conn = crate::db::open_db(&app2)?;
         let tx = conn.transaction().map_err(|e| e.to_string())?;
         crate::db::bot_history_save_inner(
@@ -1231,7 +1286,10 @@ where
         // 拒绝也留痕：否则无法区分「用户在前次执行未结束时重复触发」与「守卫泄漏」
         crate::bot::audit_log(
             app,
-            &format!("execute_task_rejected | id: {} | 已有执行实例在跑（防重入拦截）", crate::bot::truncate_for_log(task_id, 60)),
+            &format!(
+                "execute_task_rejected | id: {} | 已有执行实例在跑（防重入拦截）",
+                crate::bot::truncate_for_log(task_id, 60)
+            ),
         );
         return Err(CommandError::TaskInvalidState {
             reason: "该任务卡正在执行中，请等待完成后再触发".into(),
@@ -1283,27 +1341,32 @@ where
     ];
     // 任务卡执行/定时调度也注入记忆块——助手执行任务时知道用户
     // 偏好；查询 = 任务标题+备注前 200 字；失败静默降级为无记忆块（injection_block 内部兜底）。
-    let mem_query: String = format!(
-        "{} {}",
-        task.title,
-        task.note.as_deref().unwrap_or("")
-    )
-    .chars()
-    .take(200)
-    .collect();
+    let mem_query: String = format!("{} {}", task.title, task.note.as_deref().unwrap_or(""))
+        .chars()
+        .take(200)
+        .collect();
     if let Some(mem_block) = crate::memory::injection_block(app, &mem_query).await {
-        msgs.insert(1, serde_json::json!({"role": "system", "content": mem_block}));
+        msgs.insert(
+            1,
+            serde_json::json!({"role": "system", "content": mem_block}),
+        );
     }
     // 交给机器人：卡片切机器人头像（前端 tasks-changed 广播后实时更新）
     set_bot_assigned(app, &task.id, true).await;
     let outcome = run(app.clone(), msgs, stop).await;
     // 执行结束（无论成败）：清除标记，恢复用户头像
     set_bot_assigned(app, &task.id, false).await;
-    let outcome = outcome.map(|(text, refs)| BotChatResult { text, task_refs: refs });
+    let outcome = outcome.map(|(text, refs)| BotChatResult {
+        text,
+        task_refs: refs,
+    });
     // assistant 回复落库（失败也落 ⚠️ 行——会话即执行记录，留证可回看）
     persist_exec_reply(app, &task, &sid, &outcome).await;
     match outcome {
-        Ok(result) => Ok(TaskChatRun { session_id: sid, result }),
+        Ok(result) => Ok(TaskChatRun {
+            session_id: sid,
+            result,
+        }),
         Err(e) => {
             // 任务执行失败自动沉淀一条 lesson（source=system，
             // 语义去重合并同类失败）；写失败只记审计，不影响原错误返回
@@ -1357,7 +1420,11 @@ pub(crate) fn build_task_block(task: &crate::db::Task) -> String {
 
 /// 翻转「交给机器人」标记：重读库后只改 bot_assigned，避免覆盖机器人工具对卡片的修改
 /// （泛型 Runtime：mock runtime 测试可直调）
-pub(crate) async fn set_bot_assigned<R: tauri::Runtime>(app: &tauri::AppHandle<R>, task_id: &str, assigned: bool) {
+pub(crate) async fn set_bot_assigned<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    task_id: &str,
+    assigned: bool,
+) {
     let Ok(all) = crate::db::db_load_for(app).await else {
         return;
     };
@@ -1427,7 +1494,10 @@ mod image_attach_tests {
 
     #[test]
     fn missing_image_file_skipped() {
-        let (v, _) = attach_images_in(&[std::path::PathBuf::from("/tmp")], "[附件文件]\n- /tmp/not_exists_xyz.png\n\n看看");
+        let (v, _) = attach_images_in(
+            &[std::path::PathBuf::from("/tmp")],
+            "[附件文件]\n- /tmp/not_exists_xyz.png\n\n看看",
+        );
         assert!(v.is_string(), "图片不存在时退回纯文本");
     }
 }
@@ -1557,12 +1627,19 @@ mod bot_chat_pure_helpers_tests {
     // ── 历史预算 / 图片窗口 / think 剥除 ──
 
     fn msg(role: &str, content: &str) -> ChatMsg {
-        ChatMsg { role: role.into(), content: content.into() }
+        ChatMsg {
+            role: role.into(),
+            content: content.into(),
+        }
     }
 
     #[test]
     fn truncate_chat_history_within_budget_unchanged() {
-        let msgs = vec![msg("user", "你好"), msg("assistant", "在的"), msg("user", "列任务")];
+        let msgs = vec![
+            msg("user", "你好"),
+            msg("assistant", "在的"),
+            msg("user", "列任务"),
+        ];
         let (kept, dropped) = truncate_chat_history(msgs, 100);
         assert_eq!(dropped, 0);
         assert_eq!(kept.len(), 3);
@@ -1571,7 +1648,11 @@ mod bot_chat_pure_helpers_tests {
     #[test]
     fn truncate_chat_history_drops_oldest_first() {
         let long = "x".repeat(60);
-        let msgs = vec![msg("user", &long), msg("assistant", &long), msg("user", &long)];
+        let msgs = vec![
+            msg("user", &long),
+            msg("assistant", &long),
+            msg("user", &long),
+        ];
         let (kept, dropped) = truncate_chat_history(msgs, 100);
         assert_eq!(dropped, 2, "超预算时最旧的先丢，dropped 数应正确");
         assert_eq!(kept.len(), 1);
@@ -1588,13 +1669,23 @@ mod bot_chat_pure_helpers_tests {
 
     #[test]
     fn image_attach_indices_hits_user_in_last_three() {
-        let msgs = vec![msg("user", "a"), msg("assistant", "b"), msg("user", "c"), msg("user", "d")];
+        let msgs = vec![
+            msg("user", "a"),
+            msg("assistant", "b"),
+            msg("user", "c"),
+            msg("user", "d"),
+        ];
         assert_eq!(image_attach_indices(&msgs), vec![2, 3]);
     }
 
     #[test]
     fn image_attach_indices_skips_older_user() {
-        let msgs = vec![msg("user", "a"), msg("assistant", "b"), msg("assistant", "c"), msg("user", "d")];
+        let msgs = vec![
+            msg("user", "a"),
+            msg("assistant", "b"),
+            msg("assistant", "c"),
+            msg("user", "d"),
+        ];
         assert_eq!(image_attach_indices(&msgs), vec![3], "更早的 user 不命中");
     }
 
@@ -1634,12 +1725,17 @@ mod bot_chat_pure_helpers_tests {
     async fn truncate_with_summary_core_success_returns_summary() {
         // budget=63：本轮消息（4 字）+ 一条 60 字旧消息=64 超预算 → 最旧两条被丢
         let long = "x".repeat(60);
-        let msgs = vec![msg("user", &long), msg("assistant", &long), msg("user", "本轮问题")];
-        let (kept, summary, dropped) = truncate_with_summary_core(msgs, 63, |dropped_msgs| async move {
-            assert_eq!(dropped_msgs.len(), 2, "摘要器应收到的恰是将被丢弃的消息");
-            Ok("用户在做记忆模块".to_string())
-        })
-        .await;
+        let msgs = vec![
+            msg("user", &long),
+            msg("assistant", &long),
+            msg("user", "本轮问题"),
+        ];
+        let (kept, summary, dropped) =
+            truncate_with_summary_core(msgs, 63, |dropped_msgs| async move {
+                assert_eq!(dropped_msgs.len(), 2, "摘要器应收到的恰是将被丢弃的消息");
+                Ok("用户在做记忆模块".to_string())
+            })
+            .await;
         assert_eq!(dropped, 2);
         assert_eq!(summary.as_deref(), Some("用户在做记忆模块"));
         assert_eq!(kept.len(), 1, "最旧两条被丢，只留本轮消息");
@@ -1649,7 +1745,11 @@ mod bot_chat_pure_helpers_tests {
     #[tokio::test]
     async fn truncate_with_summary_core_llm_failure_falls_back_to_plain_drop() {
         let long = "x".repeat(60);
-        let msgs = vec![msg("user", &long), msg("assistant", &long), msg("user", "本轮问题")];
+        let msgs = vec![
+            msg("user", &long),
+            msg("assistant", &long),
+            msg("user", "本轮问题"),
+        ];
         let (kept, summary, dropped) = truncate_with_summary_core(msgs, 63, |_| async {
             Err(CommandError::Internal("boom".into()))
         })
@@ -1662,11 +1762,13 @@ mod bot_chat_pure_helpers_tests {
     #[tokio::test]
     async fn truncate_with_summary_core_empty_summary_treated_as_failure() {
         let long = "x".repeat(60);
-        let msgs = vec![msg("user", &long), msg("assistant", &long), msg("user", "本轮问题")];
-        let (_, summary, dropped) = truncate_with_summary_core(msgs, 63, |_| async {
-            Ok("   ".to_string())
-        })
-        .await;
+        let msgs = vec![
+            msg("user", &long),
+            msg("assistant", &long),
+            msg("user", "本轮问题"),
+        ];
+        let (_, summary, dropped) =
+            truncate_with_summary_core(msgs, 63, |_| async { Ok("   ".to_string()) }).await;
         assert_eq!(summary, None, "空白摘要按失败处理");
         assert_eq!(dropped, 2);
     }
@@ -1680,7 +1782,6 @@ mod bot_chat_pure_helpers_tests {
         .await;
         assert_eq!((kept.len(), summary, dropped), (2, None, 0));
     }
-
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -1698,7 +1799,10 @@ mod command_error_mapping_tests {
         let err = require_bot_enabled(false).expect_err("关闭时应返回 Err");
         assert_eq!(err, CommandError::BotDisabled, "应为 BotDisabled 专用变体");
         assert_eq!(err.code(), "BOT_DISABLED");
-        assert!(err.is_recoverable(), "BotDisabled 应可恢复（引导去设置页开启）");
+        assert!(
+            err.is_recoverable(),
+            "BotDisabled 应可恢复（引导去设置页开启）"
+        );
         assert!(err.message().contains("机器人聊天已关闭"));
         assert!(require_bot_enabled(true).is_ok(), "开启时应通过");
     }
@@ -1710,7 +1814,10 @@ mod command_error_mapping_tests {
             let err = require_api_key(empty).expect_err("空 key 应返回 Err");
             assert_eq!(err, CommandError::ApiKeyMissing, "输入 {empty:?}");
             assert_eq!(err.code(), "API_KEY_MISSING");
-            assert!(err.is_recoverable(), "ApiKeyMissing 应可恢复（去设置页填 key）");
+            assert!(
+                err.is_recoverable(),
+                "ApiKeyMissing 应可恢复（去设置页填 key）"
+            );
         }
         assert!(require_api_key("sk-test-123").is_ok(), "非空 key 应通过");
     }

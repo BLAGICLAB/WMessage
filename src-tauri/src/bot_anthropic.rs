@@ -556,7 +556,12 @@ mod tests {
 
     #[test]
     fn multi_system_merged_with_cache_control_on_last() {
-        let msgs = vec![sys("主提示词"), sys("[早前对话摘要] x"), sys("记忆块"), user("u")];
+        let msgs = vec![
+            sys("主提示词"),
+            sys("[早前对话摘要] x"),
+            sys("记忆块"),
+            user("u"),
+        ];
         let (system, _) = openai_msgs_to_anthropic(&msgs).unwrap();
         let blocks = system.as_array().unwrap();
         assert_eq!(blocks.len(), 3, "多条 system 应全部保留为块");
@@ -572,7 +577,10 @@ mod tests {
     #[test]
     fn all_system_no_messages_errors() {
         let msgs = vec![sys("只有系统")];
-        assert!(openai_msgs_to_anthropic(&msgs).is_err(), "无 messages 应报错");
+        assert!(
+            openai_msgs_to_anthropic(&msgs).is_err(),
+            "无 messages 应报错"
+        );
     }
 
     #[test]
@@ -583,7 +591,10 @@ mod tests {
         assert_eq!(system[1]["cache_control"], json!({"type": "ephemeral"}));
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0]["role"], "user");
-        assert_eq!(messages[0]["content"][0], json!({"type": "text", "text": "你好"}));
+        assert_eq!(
+            messages[0]["content"][0],
+            json!({"type": "text", "text": "你好"})
+        );
     }
 
     #[test]
@@ -618,7 +629,11 @@ mod tests {
         ];
         let (_, messages) = openai_msgs_to_anthropic(&msgs).unwrap();
         let blocks = messages[1]["content"].as_array().unwrap();
-        assert_eq!(blocks[0], json!({"type": "text", "text": "我先查一下"}), "文本块在前");
+        assert_eq!(
+            blocks[0],
+            json!({"type": "text", "text": "我先查一下"}),
+            "文本块在前"
+        );
         assert_eq!(blocks[1]["type"], "tool_use");
         assert_eq!(blocks[1]["input"], json!({"query": "rust"}));
     }
@@ -684,9 +699,15 @@ mod tests {
         assert_eq!(messages.len(), 3);
         let blocks = messages[2]["content"].as_array().unwrap();
         assert_eq!(blocks[0]["type"], "tool_result");
-        assert_eq!(blocks[1], json!({"type": "text", "text": "【系统提示】请收尾"}));
+        assert_eq!(
+            blocks[1],
+            json!({"type": "text", "text": "【系统提示】请收尾"})
+        );
         // 交替校验
-        let roles: Vec<&str> = messages.iter().map(|m| m["role"].as_str().unwrap()).collect();
+        let roles: Vec<&str> = messages
+            .iter()
+            .map(|m| m["role"].as_str().unwrap())
+            .collect();
         assert_eq!(roles, ["user", "assistant", "user"]);
     }
 
@@ -731,8 +752,14 @@ mod tests {
         let (_, messages) = openai_msgs_to_anthropic(&msgs).unwrap();
         // 前两条空 user 合并成一条（同角色合并），内容为占位
         assert_eq!(messages.len(), 2);
-        assert_eq!(messages[0]["content"][0], json!({"type": "text", "text": " "}));
-        assert_eq!(messages[1]["content"][0], json!({"type": "text", "text": " "}));
+        assert_eq!(
+            messages[0]["content"][0],
+            json!({"type": "text", "text": " "})
+        );
+        assert_eq!(
+            messages[1]["content"][0],
+            json!({"type": "text", "text": " "})
+        );
     }
 
     #[test]
@@ -756,7 +783,9 @@ mod tests {
             };
             for mut d in ev.chunk.tool_calls {
                 mapper.remap(&mut d);
-                assert!(crate::bot_model_loop::accumulate_tool_call_delta(&mut calls, &d));
+                assert!(crate::bot_model_loop::accumulate_tool_call_delta(
+                    &mut calls, &d
+                ));
             }
         }
         calls
@@ -819,23 +848,32 @@ mod tests {
             {"type": "function", "function": {"name": "a", "description": "da", "parameters": {"type": "object", "properties": {}}}},
             {"type": "function", "function": {"name": "b", "description": "db", "parameters": {"type": "object"}}}
         ]);
-        let body = build_anthropic_body("claude-x", &[sys("s"), user("u")], &tools, 8192, true).unwrap();
+        let body =
+            build_anthropic_body("claude-x", &[sys("s"), user("u")], &tools, 8192, true).unwrap();
         assert_eq!(body["model"], "claude-x");
         assert_eq!(body["max_tokens"], 8192);
         assert_eq!(body["stream"], true);
         let ts = body["tools"].as_array().unwrap();
         assert_eq!(ts[0]["name"], "a");
-        assert_eq!(ts[0]["input_schema"], json!({"type": "object", "properties": {}}));
-        assert!(ts[0].get("function").is_none(), "不应残留 OpenAI function 形态");
-        assert!(ts[0].get("cache_control").is_none(), "cache_control 只打最后一个工具");
+        assert_eq!(
+            ts[0]["input_schema"],
+            json!({"type": "object", "properties": {}})
+        );
+        assert!(
+            ts[0].get("function").is_none(),
+            "不应残留 OpenAI function 形态"
+        );
+        assert!(
+            ts[0].get("cache_control").is_none(),
+            "cache_control 只打最后一个工具"
+        );
         assert_eq!(ts[1]["cache_control"], json!({"type": "ephemeral"}));
         assert!(body.get("system").is_some());
     }
 
     #[test]
     fn build_body_no_tools_no_system_omits_fields() {
-        let body =
-            build_anthropic_body("m", &[user("u")], &json!([]), 4096, false).unwrap();
+        let body = build_anthropic_body("m", &[user("u")], &json!([]), 4096, false).unwrap();
         assert!(body.get("tools").is_none(), "空 tools 不产出 tools 字段");
         assert!(body.get("system").is_none(), "空 system 不产出 system 字段");
         assert_eq!(body["stream"], false, "非流式变体 stream:false");
@@ -876,13 +914,25 @@ mod tests {
         // message_start 带 usage
         let ev = parse(r#"data: {"type":"message_start","message":{"id":"m1","usage":{"input_tokens":12,"output_tokens":1}}}"#)
             .expect("message_start 应解析（捞 usage）");
-        assert_eq!(ev.usage, Some(AnthropicUsage { input_tokens: 12, output_tokens: 1 }));
+        assert_eq!(
+            ev.usage,
+            Some(AnthropicUsage {
+                input_tokens: 12,
+                output_tokens: 1
+            })
+        );
         assert!(ev.chunk.content.is_none());
         // message_delta 带 stop_reason + usage
         let ev = parse(r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}"#)
             .expect("message_delta 应解析");
         assert_eq!(ev.chunk.finish_reason.as_deref(), Some("stop"));
-        assert_eq!(ev.usage, Some(AnthropicUsage { input_tokens: 0, output_tokens: 7 }));
+        assert_eq!(
+            ev.usage,
+            Some(AnthropicUsage {
+                input_tokens: 0,
+                output_tokens: 7
+            })
+        );
         // message_stop
         let ev = parse(r#"data: {"type":"message_stop"}"#).expect("message_stop 应解析");
         assert!(ev.chunk.is_done);
@@ -894,14 +944,23 @@ mod tests {
             .expect("tool_use 开始");
         assert_eq!(ev.chunk.tool_calls.len(), 1);
         assert_eq!(ev.chunk.tool_calls[0].id.as_deref(), Some("toolu_1"));
-        assert_eq!(ev.chunk.tool_calls[0].name_chunk.as_deref(), Some("create_task"));
+        assert_eq!(
+            ev.chunk.tool_calls[0].name_chunk.as_deref(),
+            Some("create_task")
+        );
 
         let d1 = parse(r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"title\":"}}"#)
             .expect("partial_json 1");
         let d2 = parse(r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"买牛奶\"}"}}"#)
             .expect("partial_json 2");
-        assert_eq!(d1.chunk.tool_calls[0].arguments_chunk.as_deref(), Some("{\"title\":"));
-        assert_eq!(d2.chunk.tool_calls[0].arguments_chunk.as_deref(), Some("\"买牛奶\"}"));
+        assert_eq!(
+            d1.chunk.tool_calls[0].arguments_chunk.as_deref(),
+            Some("{\"title\":")
+        );
+        assert_eq!(
+            d2.chunk.tool_calls[0].arguments_chunk.as_deref(),
+            Some("\"买牛奶\"}")
+        );
     }
 
     #[test]
@@ -911,7 +970,10 @@ mod tests {
         assert_eq!(a.chunk.tool_calls[0].index, 0);
         assert_eq!(b.chunk.tool_calls[0].index, 1);
         let d = parse(r#"data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{}"}}"#).unwrap();
-        assert_eq!(d.chunk.tool_calls[0].index, 1, "delta 应按 content_block index 归位");
+        assert_eq!(
+            d.chunk.tool_calls[0].index, 1,
+            "delta 应按 content_block index 归位"
+        );
     }
 
     #[test]
@@ -924,16 +986,23 @@ mod tests {
             ("stop_sequence", "stop"),
         ];
         for (sr, expect) in cases {
-            let line = format!(r#"data: {{"type":"message_delta","delta":{{"stop_reason":"{sr}"}}}}"#);
+            let line =
+                format!(r#"data: {{"type":"message_delta","delta":{{"stop_reason":"{sr}"}}}}"#);
             let ev = parse(&line).expect("message_delta 应解析");
-            assert_eq!(ev.chunk.finish_reason.as_deref(), Some(expect), "stop_reason={sr}");
+            assert_eq!(
+                ev.chunk.finish_reason.as_deref(),
+                Some(expect),
+                "stop_reason={sr}"
+            );
         }
     }
 
     #[test]
     fn sse_error_event_surfaced() {
-        let ev = parse(r#"data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#)
-            .expect("error 事件应解析");
+        let ev = parse(
+            r#"data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#,
+        )
+        .expect("error 事件应解析");
         assert_eq!(ev.chunk.error.as_deref(), Some("Overloaded"));
     }
 
@@ -974,6 +1043,10 @@ mod tests {
             "stop_reason": "end_turn"
         });
         assert_eq!(parse_anthropic_response(&body), "第一段第二段");
-        assert_eq!(parse_anthropic_response(&json!({})), "", "缺 content 兜底空串");
+        assert_eq!(
+            parse_anthropic_response(&json!({})),
+            "",
+            "缺 content 兜底空串"
+        );
     }
 }

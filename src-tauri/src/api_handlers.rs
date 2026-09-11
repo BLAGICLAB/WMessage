@@ -33,7 +33,7 @@ use crate::api::{TaskStore, TauriStore, API_PORT};
 use crate::api_auth::{
     clear_enabled_flag, load_or_create_token, verify_bearer, write_enabled_flag,
 };
-use crate::api_server::{ApiState, EventHub, RunningApi, start_api};
+use crate::api_server::{start_api, ApiState, EventHub, RunningApi};
 use crate::audit::AuditLevel;
 use crate::audit_event;
 use crate::db;
@@ -878,10 +878,7 @@ fn sse_connect(req: Request, store: &Arc<dyn TaskStore>, query: &str) {
         Some(s) => match s.parse::<u64>() {
             Ok(v) => Some(v),
             Err(_) => {
-                let _ = req.respond(json_err(
-                    StatusCode(400),
-                    "since 必须是非负整数（事件 id）",
-                ));
+                let _ = req.respond(json_err(StatusCode(400), "since 必须是非负整数（事件 id）"));
                 return;
             }
         },
@@ -1039,14 +1036,15 @@ fn api_start_locked(app: &AppHandle, g: &mut Option<RunningApi>) -> CommandResul
         hub: EventHub::persisted(db::data_dir(app).join("api-event-id.txt")),
     });
     let emit_app = app.clone();
-    let emit: Option<Box<dyn Fn(&db::Task) + Send + Sync>> =
-        Some(Box::new(move |task: &db::Task| {
+    let emit: Option<Box<dyn Fn(&db::Task) + Send + Sync>> = Some(Box::new(
+        move |task: &db::Task| {
             // 复用挂件→主窗口的既有通道：主窗口合并状态并广播给挂件。
             // `source: Api` 告诉主窗口：数据已由 API 线程落盘，只合并 UI 状态，不要回写
             // （回写会用旧事件快照覆盖 API 的新写入，导致归档/软删被回滚的竞态）
             let payload = serde_json::json!({ "upserts": [task], "deletes": [], "source": crate::mutation::MutationOrigin::Api.as_str() });
             let _ = emit_app.emit_to("main", "tasks-updated", &payload);
-        }));
+        },
+    ));
     let log_path = Some(db::data_dir(app).join("api.log"));
     let audit_app = app.clone();
     let on_error: Option<Box<dyn Fn(AuditLevel, &str, &str) + Send + Sync>> =
@@ -1058,10 +1056,12 @@ fn api_start_locked(app: &AppHandle, g: &mut Option<RunningApi>) -> CommandResul
     let hub_key = Arc::as_ptr(store.event_hub()) as usize;
     // 显式映射 HttpStartFailed——String 错误经
     // From<String> 落成无结构的 Internal，前端按 code 分支永远等不到 HTTP_START_FAILED
-    let running = start_api(API_PORT, token.clone(), store, emit, log_path, on_error)
-        .map_err(|e| CommandError::HttpStartFailed {
-            port: API_PORT,
-            reason: e,
+    let running =
+        start_api(API_PORT, token.clone(), store, emit, log_path, on_error).map_err(|e| {
+            CommandError::HttpStartFailed {
+                port: API_PORT,
+                reason: e,
+            }
         })?;
     API_HUB_KEY.store(hub_key, Ordering::SeqCst);
     *g = Some(running);
@@ -1560,11 +1560,9 @@ mod tests {
         register_sse_writer(key, stop, handle);
         let mut audits: Vec<String> = Vec::new();
         let start = Instant::now();
-        stop_sse_writers(
-            key,
-            SSE_STOP_JOIN_TIMEOUT,
-            &mut |l: &str| audits.push(l.to_string()),
-        );
+        stop_sse_writers(key, SSE_STOP_JOIN_TIMEOUT, &mut |l: &str| {
+            audits.push(l.to_string())
+        });
         assert!(
             start.elapsed() < Duration::from_secs(4),
             "writer 未在 stop 后及时退出：{:?}",
@@ -1582,11 +1580,9 @@ mod tests {
         register_sse_writer(key, stop, handle);
         let mut audits: Vec<String> = Vec::new();
         let start = Instant::now();
-        stop_sse_writers(
-            key,
-            Duration::from_millis(300),
-            &mut |l: &str| audits.push(l.to_string()),
-        );
+        stop_sse_writers(key, Duration::from_millis(300), &mut |l: &str| {
+            audits.push(l.to_string())
+        });
         assert!(
             start.elapsed() < Duration::from_secs(3),
             "卡死 writer 不得拖住 stop：{:?}",
@@ -1671,7 +1667,10 @@ mod tests {
         assert_eq!(st, 201);
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["note"], "备注内容", "note 应 trim 后存储: {body}");
-        assert_eq!(v["filePath"], "/tmp/x.pdf", "filePath 应 trim 后存储: {body}");
+        assert_eq!(
+            v["filePath"], "/tmp/x.pdf",
+            "filePath 应 trim 后存储: {body}"
+        );
 
         shutdown_server(&mut running);
     }

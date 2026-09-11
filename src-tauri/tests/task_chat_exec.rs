@@ -17,8 +17,8 @@ mod mock_llm_shared {
 
 use mock_llm_shared::{MockBehavior, MockLlmServer, ToolCallResponse};
 use wmessage_lib::bot::{
-    noop_replan, run_model_loop_core, ApiProvider, AuditLevel, LlmHttp, ModelLoopDeps,
-    StopGuard, TaskRef, DEFAULT_MAX_TOKENS,
+    noop_replan, run_model_loop_core, ApiProvider, AuditLevel, LlmHttp, ModelLoopDeps, StopGuard,
+    TaskRef, DEFAULT_MAX_TOKENS,
 };
 use wmessage_lib::bot_chat::{chat_guard_is_held, run_task_in_chat_with, TaskExecOrigin};
 
@@ -35,7 +35,13 @@ fn now_ms() -> i64 {
 
 /// 测试环境准备：mock app + 开机器人开关 + 插任务；返回 (handle, task_id, 数据目录)。
 /// 清理由调用方收尾（cleanup）——共享 target/debug/deps/wmessage.db，行级删。
-fn setup_task(title: &str) -> (tauri::AppHandle<tauri::test::MockRuntime>, String, std::path::PathBuf) {
+fn setup_task(
+    title: &str,
+) -> (
+    tauri::AppHandle<tauri::test::MockRuntime>,
+    String,
+    std::path::PathBuf,
+) {
     let app = Box::leak(Box::new(tauri::test::mock_app()));
     let handle = app.handle().clone();
     let dir = wmessage_lib::db::data_dir(&handle);
@@ -54,13 +60,17 @@ fn setup_task(title: &str) -> (tauri::AppHandle<tauri::test::MockRuntime>, Strin
 /// 行级清理（共享库不整删——其他并行测试可能也在用）
 fn cleanup(handle: &tauri::AppHandle<tauri::test::MockRuntime>, task_id: &str, session_id: &str) {
     if let Ok(conn) = wmessage_lib::db::open_db(handle) {
-        conn.execute("DELETE FROM tasks WHERE id = ?1", [task_id]).ok();
-        conn.execute("DELETE FROM bot_messages WHERE session_id = ?1", [session_id]).ok();
-        conn.execute("DELETE FROM bot_sessions WHERE id = ?1", [session_id]).ok();
+        conn.execute("DELETE FROM tasks WHERE id = ?1", [task_id])
+            .ok();
+        conn.execute(
+            "DELETE FROM bot_messages WHERE session_id = ?1",
+            [session_id],
+        )
+        .ok();
+        conn.execute("DELETE FROM bot_sessions WHERE id = ?1", [session_id])
+            .ok();
     }
-    let _ = std::fs::remove_file(
-        wmessage_lib::db::data_dir(handle).join("bot-enabled.flag"),
-    );
+    let _ = std::fs::remove_file(wmessage_lib::db::data_dir(handle).join("bot-enabled.flag"));
 }
 
 fn core_http(server: &MockLlmServer) -> LlmHttp {
@@ -107,13 +117,19 @@ async fn run_task_in_chat_full_chain_manual_origin() {
             // 消息组装断言：system = EXECUTE_SYSTEM_PROMPT（含任务卡执行规则），
             // user = 任务块（含标题）
             let sys = msgs[0]["content"].as_str().unwrap_or("");
-            assert!(sys.contains("执行一张任务卡"), "system 应为执行提示词：{sys}");
+            assert!(
+                sys.contains("执行一张任务卡"),
+                "system 应为执行提示词：{sys}"
+            );
             let user = msgs
                 .iter()
                 .find(|m| m["role"].as_str() == Some("user"))
                 .and_then(|m| m["content"].as_str())
                 .expect("应有 user 任务块");
-            assert!(user.contains("[任务卡执行]") && user.contains("写季度总结报告"), "{user}");
+            assert!(
+                user.contains("[任务卡执行]") && user.contains("写季度总结报告"),
+                "{user}"
+            );
             // ChatGuard：执行期会话锁必须持有（bot_execute_task 纳入 ChatGuard 的证据）
             let sid = stop.session_id().expect("执行会话 id").to_string();
             assert!(chat_guard_is_held(&sid), "执行期 ChatGuard 应持有");
@@ -157,7 +173,11 @@ async fn run_task_in_chat_full_chain_manual_origin() {
     // 会话创建：标题前缀 📋 任务：
     let conn = wmessage_lib::db::open_db(&handle).unwrap();
     let title: String = conn
-        .query_row("SELECT title FROM bot_sessions WHERE id = ?1", [&sid], |r| r.get(0))
+        .query_row(
+            "SELECT title FROM bot_sessions WHERE id = ?1",
+            [&sid],
+            |r| r.get(0),
+        )
         .expect("执行会话应存在");
     assert_eq!(title, "📋 任务：写季度总结报告");
     // 消息落库：user 任务块 + assistant 回复
@@ -175,13 +195,19 @@ async fn run_task_in_chat_full_chain_manual_origin() {
     assert_eq!(rows[1].1, "任务已完成，报告已生成");
     // 任务卡回写：complete_task 替身落库 col=done
     let col: String = conn
-        .query_row("SELECT col FROM tasks WHERE id = ?1", [&task_id], |r| r.get(0))
+        .query_row("SELECT col FROM tasks WHERE id = ?1", [&task_id], |r| {
+            r.get(0)
+        })
         .unwrap();
     assert_eq!(col, "done", "任务卡应被回写为完成");
     // 模型循环接线：第一轮请求带任务块，第二轮带工具结果
     let bodies = server.request_bodies();
     assert!(bodies[0].contains("[任务卡执行]"), "首轮请求应含任务块");
-    assert!(bodies[1].contains("已标记完成"), "工具结果应回填：{}", bodies[1]);
+    assert!(
+        bodies[1].contains("已标记完成"),
+        "工具结果应回填：{}",
+        bodies[1]
+    );
 
     cleanup(&handle, &task_id, &sid);
 }
@@ -196,19 +222,27 @@ async fn duplicate_trigger_rejected_by_exec_guard() {
     let h1 = handle.clone();
     let t1 = task_id.clone();
     let first = tokio::spawn(async move {
-        run_task_in_chat_with(&h1, &t1, TaskExecOrigin::Batch, move |_app, _msgs, _stop| async move {
-            let _ = entered_tx.send(());
-            let _ = release_rx.await;
-            Ok(("done".to_string(), Vec::new()))
-        })
+        run_task_in_chat_with(
+            &h1,
+            &t1,
+            TaskExecOrigin::Batch,
+            move |_app, _msgs, _stop| async move {
+                let _ = entered_tx.send(());
+                let _ = release_rx.await;
+                Ok(("done".to_string(), Vec::new()))
+            },
+        )
         .await
     });
     entered_rx.await.expect("第一个执行应已进入模型循环");
     // 同卡并发第二次触发 → ExecGuard 拒绝
     let sid_holder = std::sync::Mutex::new(String::new());
-    let second = run_task_in_chat_with(&handle, &task_id, TaskExecOrigin::Scheduled, move |_app, _msgs, _stop| async move {
-        Ok(("不应执行到这里".to_string(), Vec::new()))
-    })
+    let second = run_task_in_chat_with(
+        &handle,
+        &task_id,
+        TaskExecOrigin::Scheduled,
+        move |_app, _msgs, _stop| async move { Ok(("不应执行到这里".to_string(), Vec::new())) },
+    )
     .await;
     let err = match second {
         Err(e) => e,
@@ -233,12 +267,15 @@ async fn failure_persists_error_reply_in_session() {
     let runner = |_app: tauri::AppHandle<tauri::test::MockRuntime>,
                   _msgs: Vec<serde_json::Value>,
                   _stop: StopGuard| async move {
-        Err(wmessage_lib::error::CommandError::Internal("LLM 网关 500".into()))
+        Err(wmessage_lib::error::CommandError::Internal(
+            "LLM 网关 500".into(),
+        ))
     };
-    let err = match run_task_in_chat_with(&handle, &task_id, TaskExecOrigin::Scheduled, runner).await {
-        Err(e) => e,
-        Ok(_) => panic!("应失败"),
-    };
+    let err =
+        match run_task_in_chat_with(&handle, &task_id, TaskExecOrigin::Scheduled, runner).await {
+            Err(e) => e,
+            Ok(_) => panic!("应失败"),
+        };
     assert!(err.message().contains("LLM 网关 500"));
     // 失败也落库：assistant 行为 ⚠️ 失败行（会话即执行记录，留证可回看）
     let conn = wmessage_lib::db::open_db(&handle).unwrap();
@@ -255,7 +292,10 @@ async fn failure_persists_error_reply_in_session() {
         .filter_map(|r| r.ok())
         .next();
     let (_, content) = row.expect("失败回复应落库");
-    assert!(content.contains("⚠️ 执行失败") && content.contains("LLM 网关 500"), "{content}");
+    assert!(
+        content.contains("⚠️ 执行失败") && content.contains("LLM 网关 500"),
+        "{content}"
+    );
     // 定时来源标题前缀
     let title: String = conn
         .query_row(
@@ -267,11 +307,11 @@ async fn failure_persists_error_reply_in_session() {
     assert_eq!(title, "⏰ 定时：注定失败的任务");
     // 清理（找不到 sid 就按标题删）
     conn.execute("DELETE FROM bot_messages WHERE session_id IN (SELECT id FROM bot_sessions WHERE title = ?1)", [&title]).ok();
-    conn.execute("DELETE FROM bot_sessions WHERE title = ?1", [&title]).ok();
-    conn.execute("DELETE FROM tasks WHERE id = ?1", [&task_id]).ok();
-    let _ = std::fs::remove_file(
-        wmessage_lib::db::data_dir(&handle).join("bot-enabled.flag"),
-    );
+    conn.execute("DELETE FROM bot_sessions WHERE title = ?1", [&title])
+        .ok();
+    conn.execute("DELETE FROM tasks WHERE id = ?1", [&task_id])
+        .ok();
+    let _ = std::fs::remove_file(wmessage_lib::db::data_dir(&handle).join("bot-enabled.flag"));
 }
 
 /// 定时路径源码锁（设计 3.2）：bot_scheduler 调 run_task_in_chat、绕开 exec_steps、
@@ -280,7 +320,10 @@ async fn failure_persists_error_reply_in_session() {
 fn scheduler_uses_run_task_in_chat_not_exec_steps() {
     let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bot_scheduler.rs"))
         .expect("bot_scheduler.rs 可读");
-    assert!(src.contains("run_task_in_chat"), "定时路径应走 run_task_in_chat");
+    assert!(
+        src.contains("run_task_in_chat"),
+        "定时路径应走 run_task_in_chat"
+    );
     assert!(src.contains("TaskExecOrigin::Scheduled"), "定时来源标记");
     assert!(
         !src.contains("exec_steps::start") && !src.contains("exec_steps::resume"),

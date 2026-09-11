@@ -110,7 +110,11 @@ impl EventHub {
             let mut i = 0;
             while i < clients.len() {
                 // try_send: bounded 队列满时 Err 表示 client 积压过深，跳过并移除
-                if clients[i].0.try_send((id, msg.as_bytes().to_vec())).is_err() {
+                if clients[i]
+                    .0
+                    .try_send((id, msg.as_bytes().to_vec()))
+                    .is_err()
+                {
                     clients.remove(i);
                 } else {
                     i += 1;
@@ -197,8 +201,8 @@ pub fn start_api(
                 std::thread::spawn(move || {
                     // 配额归还守卫：无论正常完成 / panic，退出即归还
                     let _guard = ActiveGuard(active_w);
-                    let catch_result = std::panic::catch_unwind(
-                        std::panic::AssertUnwindSafe(|| {
+                    let catch_result =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             crate::api_handlers::handle_request(
                                 req,
                                 &tk_w,
@@ -206,8 +210,7 @@ pub fn start_api(
                                 &emit_fn_w,
                                 &log_path_w,
                             );
-                        }),
-                    );
+                        }));
                     if let Err(payload) = catch_result {
                         let msg = panic_message(payload);
                         if let Some(log) = &on_error_w {
@@ -322,7 +325,8 @@ mod tests {
         // 此阶段连接存活（单次 read 级超时不杀仍在出字节的连接）；
         // 之后完全静默，超过读超时后服务端必须断开。
         let mut slow = TcpStream::connect(("127.0.0.1", port)).unwrap();
-        slow.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        slow.set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
         for &b in b"GET /api/health HT" {
             if slow.write_all(&[b]).is_err() {
                 break; // 服务端提前断开也算达成，后面统一判定

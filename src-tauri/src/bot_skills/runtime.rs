@@ -41,7 +41,11 @@ fn skill_conflict_with_existing(existing: Option<&SkillRun>, session_id: Option<
 
 /// 启动 Skill：use_skill 工具调用即启动生命周期（预审 → Running），返回文档 + 运行约束提示。
 /// session_id：记录触发会话，活动判定/暂停/确认/推进按会话过滤（会话隔离）。
-pub fn start_skill(app: &AppHandle, name: &str, session_id: Option<&str>) -> Result<(SkillMeta, String), String> {
+pub fn start_skill(
+    app: &AppHandle,
+    name: &str,
+    session_id: Option<&str>,
+) -> Result<(SkillMeta, String), String> {
     let (meta, body) = load_skill_meta(app, name)?;
     preflight(&meta)?;
     // 预审已通过 → 直接进入 Running：步骤钩子按 Running/Paused 查找，
@@ -101,7 +105,11 @@ pub fn start_skill(app: &AppHandle, name: &str, session_id: Option<&str>) -> Res
 
 /// 工具 use_skill：读取技能文档全文返回给模型。
 /// session_id：透传给 start_skill 记录技能归属会话（会话隔离）。
-pub fn tool_use_skill(app: &AppHandle, args: &str, session_id: Option<&str>) -> (String, Vec<crate::bot::TaskRef>) {
+pub fn tool_use_skill(
+    app: &AppHandle,
+    args: &str,
+    session_id: Option<&str>,
+) -> (String, Vec<crate::bot::TaskRef>) {
     let v: serde_json::Value = serde_json::from_str(args).unwrap_or(serde_json::Value::Null);
     let Some(name) = v["name"].as_str().map(|s| s.trim().to_string()) else {
         return ("use_skill 缺少 name".into(), Vec::new());
@@ -169,14 +177,18 @@ fn step_check(run: &mut SkillRun, tool: &str, args: &str, now: i64) -> Result<()
     Ok(())
 }
 
-pub fn skill_on_step(app: &AppHandle, tool: &str, args: &str, session_id: Option<&str>) -> Result<(), CommandError> {
+pub fn skill_on_step(
+    app: &AppHandle,
+    tool: &str,
+    args: &str,
+    session_id: Option<&str>,
+) -> Result<(), CommandError> {
     let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
     // 会话隔离：只管归属当前会话的活动 Skill，别的会话的不计数不熔断
-    let Some(run) = runs
-        .values_mut()
-        .find(|r| (r.state == SkillState::Running || r.state == SkillState::Paused)
-            && r.session_id.as_deref() == session_id)
-    else {
+    let Some(run) = runs.values_mut().find(|r| {
+        (r.state == SkillState::Running || r.state == SkillState::Paused)
+            && r.session_id.as_deref() == session_id
+    }) else {
         return Ok(()); // 无活动 Skill（模型自由调用工具），不干预
     };
     let res = step_check(run, tool, args, now_ms());
@@ -222,7 +234,10 @@ pub fn skill_on_step_post(
         crate::bot::audit_log_hook(
             app,
             // preview 是工具结果原文，换行/管道符会撕裂日志行，必须转义
-            &format!("skill_step_fail | name: {name} | tool: {tool} | {}", crate::bot::truncate_for_log(&preview, 120)),
+            &format!(
+                "skill_step_fail | name: {name} | tool: {tool} | {}",
+                crate::bot::truncate_for_log(&preview, 120)
+            ),
         );
     } else {
         crate::bot::audit_log_hook(
@@ -329,7 +344,12 @@ fn rollback_section(body: &str) -> String {
 /// 会话隔离：只收尾归属当前会话的 Running/Paused 技能，
 /// 别的会话的技能不受本会话结束影响。
 /// 泛型 Runtime：集成测试可用 MockRuntime 直调真收尾逻辑。
-pub fn skill_finish<R: tauri::Runtime>(app: &tauri::AppHandle<R>, ok: bool, reason: &str, session_id: Option<&str>) -> String {
+pub fn skill_finish<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    ok: bool,
+    reason: &str,
+    session_id: Option<&str>,
+) -> String {
     let mut rollback_hint = String::new();
     let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
     for (name, run) in runs.iter_mut() {
@@ -473,7 +493,6 @@ pub fn advance_dsl(run: &SkillRun, now_ms: i64) -> DslAdvanceAction {
         AdvanceAction::Terminate(reason) => DslAdvanceAction::Terminate(reason),
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -784,7 +803,11 @@ mod tests {
     #[test]
     fn skill_conflict_terminal_state_allowed() {
         // 终态（Completed/Failed/Terminated）不拦截，可重启
-        for state in [SkillState::Completed, SkillState::Failed, SkillState::Terminated] {
+        for state in [
+            SkillState::Completed,
+            SkillState::Failed,
+            SkillState::Terminated,
+        ] {
             let mut r = test_run(8, 180);
             r.state = state.clone();
             r.session_id = Some("s-a".into());
@@ -800,5 +823,4 @@ mod tests {
         assert!(!skill_conflict_with_existing(None, Some("s-b")));
         assert!(!skill_conflict_with_existing(None, None));
     }
-
 }

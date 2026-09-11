@@ -83,7 +83,11 @@ impl MiddlewareRegistry {
                     crate::audit::write_error_audit(
                         app,
                         "middleware_panic",
-                        &[("hook", "pre_step"), ("middleware", m.name()), ("panic", &msg)],
+                        &[
+                            ("hook", "pre_step"),
+                            ("middleware", m.name()),
+                            ("panic", &msg),
+                        ],
                     );
                 }
             }
@@ -101,11 +105,7 @@ impl MiddlewareRegistry {
         active_skill: bool,
     ) -> Option<String> {
         if self.pre_execute.is_empty() {
-            crate::audit::write_error_audit(
-                app,
-                "pre_execute_not_registered",
-                &[("tool", name)],
-            );
+            crate::audit::write_error_audit(app, "pre_execute_not_registered", &[("tool", name)]);
             // 闸门缺席对原子工具 fail-closed——与「registry 缺失」
             // 口径一致（run_pre_execute helper 同款语义），不「有声放行」
             if is_atomic_tool(name) && !active_skill {
@@ -428,7 +428,9 @@ mod tests {
             other => panic!("应为 ExecuteTasks，得到 {other:?}"),
         }
         // 无关键词 / 无引用块 → None，链条继续走 intent_router
-        assert!(m.pre_step("看看这些\n\n[已选任务]\n- id=a，标题=A").is_none());
+        assert!(m
+            .pre_step("看看这些\n\n[已选任务]\n- id=a，标题=A")
+            .is_none());
         assert!(m.pre_step("帮我做 PPT").is_none());
     }
 
@@ -529,9 +531,8 @@ mod tests {
         r.register_pre_step(Box::new(OnlyStep));
         // pre_execute 侧为空：返回 None（不阻断）+ 记 pre_execute_not_registered 审计
         assert_eq!(r.run_pre_execute(&handle, "list_tasks", false), None);
-        let log =
-            std::fs::read_to_string(crate::audit::probe_log_dir(&handle).join("bot.log"))
-                .unwrap_or_default();
+        let log = std::fs::read_to_string(crate::audit::probe_log_dir(&handle).join("bot.log"))
+            .unwrap_or_default();
         assert!(
             log.contains("pre_execute_not_registered") && log.contains("tool=list_tasks"),
             "缺 pre_execute_not_registered 审计: {log}"
@@ -563,15 +564,16 @@ mod tests {
         assert_eq!(r.run_pre_step(&handle, "x"), None);
         assert_eq!(r.run_pre_execute(&handle, "list_tasks", false), None);
         // ERROR 审计落盘：事件名 + 中间件名 + panic 信息
-        let log = std::fs::read_to_string(
-            crate::audit::probe_log_dir(&handle).join("bot.log"),
-        )
-        .unwrap_or_default();
+        let log = std::fs::read_to_string(crate::audit::probe_log_dir(&handle).join("bot.log"))
+            .unwrap_or_default();
         assert!(
             log.contains("middleware_panic") && log.contains("middleware=bomber"),
             "缺 middleware_panic 审计: {log}"
         );
         assert!(log.contains("hook=pre_step") && log.contains("hook=pre_execute"));
-        assert!(log.contains("bomber pre_step boom"), "panic 信息应入审计: {log}");
+        assert!(
+            log.contains("bomber pre_step boom"),
+            "panic 信息应入审计: {log}"
+        );
     }
 }

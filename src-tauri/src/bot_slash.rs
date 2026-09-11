@@ -18,7 +18,14 @@ use tauri::{AppHandle, Emitter, Manager};
 /// 活跃执行实例注册表：stop_id → (停止标志, 是否用户交互触发, 归属会话 id)
 /// 注册表带会话：/stop 只停当前会话的实例，别的会话的 Skill/任务卡执行不受影响
 type StopMap = std::sync::Mutex<
-    std::collections::HashMap<u64, (std::sync::Arc<std::sync::atomic::AtomicBool>, bool, Option<String>)>,
+    std::collections::HashMap<
+        u64,
+        (
+            std::sync::Arc<std::sync::atomic::AtomicBool>,
+            bool,
+            Option<String>,
+        ),
+    >,
 >;
 static STOP_REGISTRY: std::sync::OnceLock<StopMap> = std::sync::OnceLock::new();
 static NEXT_STOP_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -60,7 +67,13 @@ impl StopGuard {
         if let Ok(mut m) = stop_registry().lock() {
             m.insert(id, (flag.clone(), interactive, session_id.clone()));
         }
-        Self { id, flag, interactive, session_id, allow_atomic }
+        Self {
+            id,
+            flag,
+            interactive,
+            session_id,
+            allow_atomic,
+        }
     }
 
     /// 是否放行原子工具（仅任务卡执行流程为 true）
@@ -90,8 +103,7 @@ impl StopGuard {
 
     /// 强制置位自身标志：单测模拟 /stop 用（不经注册表，只停本实例）
     pub fn force_stop(&self) {
-        self.flag
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.flag.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -149,7 +161,10 @@ pub fn bot_stop(app: AppHandle, session_id: Option<String>) -> Result<(), String
     crate::bot::audit_log(
         &app,
         // session_id 前端传入，转义防日志伪造/多行撕裂
-        &format!("bot_stop | session: {}", crate::bot::truncate_for_log(session_id.as_deref().unwrap_or("<none>"), 60)),
+        &format!(
+            "bot_stop | session: {}",
+            crate::bot::truncate_for_log(session_id.as_deref().unwrap_or("<none>"), 60)
+        ),
     );
     // Skill 调度器联动：强制终止本会话的活动技能（None = 全部会话）
     crate::bot_skills::skill_terminate_all(&app, "用户停止", session_id.as_deref());
@@ -243,11 +258,17 @@ async fn ask_confirm_inner(
     interactive: bool,
     session_id: Option<&str>,
 ) -> ConfirmReply {
-    let deny = ConfirmReply { approved: false, always: false };
+    let deny = ConfirmReply {
+        approved: false,
+        always: false,
+    };
     if !interactive {
         crate::bot::audit_log(
             app,
-            &format!("confirm_skipped | {tool} | {} | 后台执行不弹窗，默认拒绝", crate::bot::truncate_for_log(detail, 120)),
+            &format!(
+                "confirm_skipped | {tool} | {} | 后台执行不弹窗，默认拒绝",
+                crate::bot::truncate_for_log(detail, 120)
+            ),
         );
         return deny;
     }
@@ -260,7 +281,10 @@ async fn ask_confirm_inner(
     if !widget_visible {
         crate::bot::audit_log(
             app,
-            &format!("confirm_skipped | {tool} | {} | 挂件不可见，默认拒绝", crate::bot::truncate_for_log(detail, 120)),
+            &format!(
+                "confirm_skipped | {tool} | {} | 挂件不可见，默认拒绝",
+                crate::bot::truncate_for_log(detail, 120)
+            ),
         );
         crate::bot_skills::skill_confirm_result(app, false, session_id);
         return deny;
@@ -284,7 +308,11 @@ async fn ask_confirm_inner(
     );
     crate::bot::audit_log(
         app,
-        &format!("confirm | id: {} | kind: {kind} | {tool} | {}", &id[..8], crate::bot::truncate_for_log(detail, 120)),
+        &format!(
+            "confirm | id: {} | kind: {kind} | {tool} | {}",
+            &id[..8],
+            crate::bot::truncate_for_log(detail, 120)
+        ),
     );
     match tokio::time::timeout(std::time::Duration::from_secs(60), rx).await {
         Ok(Ok(reply)) => reply,
@@ -296,7 +324,10 @@ async fn ask_confirm_inner(
             // 确认超时默认拒绝留痕
             crate::bot::audit_log(
                 app,
-                &format!("confirm_timeout | {tool} | {} | 60s 无响应，默认拒绝", crate::bot::truncate_for_log(detail, 120)),
+                &format!(
+                    "confirm_timeout | {tool} | {} | 60s 无响应，默认拒绝",
+                    crate::bot::truncate_for_log(detail, 120)
+                ),
             );
             crate::bot_skills::skill_confirm_result(app, false, session_id); // 超时默认拒绝
             deny
@@ -327,8 +358,14 @@ pub async fn ask_path_confirm(
     session_id: Option<&str>,
 ) -> ConfirmChoice {
     match ask_confirm_inner(app, tool, detail, "file_access", interactive, session_id).await {
-        ConfirmReply { approved: true, always: true } => ConfirmChoice::Always,
-        ConfirmReply { approved: true, always: false } => ConfirmChoice::Once,
+        ConfirmReply {
+            approved: true,
+            always: true,
+        } => ConfirmChoice::Always,
+        ConfirmReply {
+            approved: true,
+            always: false,
+        } => ConfirmChoice::Once,
         _ => ConfirmChoice::Deny,
     }
 }
@@ -337,7 +374,12 @@ pub async fn ask_path_confirm(
 /// 「始终允许该目录」按钮会为 true，老调用（删任务两按钮）不传 → None → false。
 /// 会话归属从 ConfirmMap 条目取回：skill_confirm_result 按会话过滤。
 #[tauri::command]
-pub fn bot_confirm_response(app: AppHandle, request_id: String, approved: bool, always: Option<bool>) -> Result<(), String> {
+pub fn bot_confirm_response(
+    app: AppHandle,
+    request_id: String,
+    approved: bool,
+    always: Option<bool>,
+) -> Result<(), String> {
     let (tx, session_id) = take_confirm(&request_id)?;
     // Skill 调度器联动：确认结果 → 本会话技能恢复 Running / 拒绝终止 / 暂停即终止
     crate::bot_skills::skill_confirm_result(&app, approved, session_id.as_deref());
@@ -345,10 +387,19 @@ pub fn bot_confirm_response(app: AppHandle, request_id: String, approved: bool, 
     if !approved {
         crate::bot::audit_log(
             &app,
-            &format!("confirm_denied | id: {} | 用户拒绝", &request_id[..8.min(request_id.len())]),
+            &format!(
+                "confirm_denied | id: {} | 用户拒绝",
+                &request_id[..8.min(request_id.len())]
+            ),
         );
     }
-    deliver_confirm(tx, ConfirmReply { approved, always: always.unwrap_or(false) })
+    deliver_confirm(
+        tx,
+        ConfirmReply {
+            approved,
+            always: always.unwrap_or(false),
+        },
+    )
 }
 
 /// 取待确认条目（不存在/已超时 → Err）。
@@ -360,7 +411,10 @@ fn take_confirm(
         .unwrap_or_else(|e| e.into_inner())
         .remove(request_id)
         .ok_or_else(|| {
-            format!("确认请求不存在或已超时：{}", &request_id[..8.min(request_id.len())])
+            format!(
+                "确认请求不存在或已超时：{}",
+                &request_id[..8.min(request_id.len())]
+            )
         })
 }
 
@@ -409,7 +463,9 @@ mod stop_all_tests {
     #[test]
     fn stop_all_covers_interactive_and_background() {
         // stop_all 是全局广播，与持 StopGuard 的并行测试互斥
-        let _serial = super::STOP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _serial = super::STOP_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let g1 = super::StopGuard::new(true, Some("batch5-s1".into()));
         let g2 = super::StopGuard::new(false, None);
         assert!(super::active_execution_count() >= 2);
@@ -426,7 +482,9 @@ mod command_result_tests {
     #[test]
     fn flag_session_stopped_only_hits_own_session_interactive() {
         // 与持 StopGuard 的并行测试互斥（同上面的 stop_all 用例）
-        let _serial = super::STOP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _serial = super::STOP_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let g1 = super::StopGuard::new(true, Some("t1-3-sess".into()));
         let g2 = super::StopGuard::new(true, Some("t1-3-other".into()));
         let g3 = super::StopGuard::new(false, Some("t1-3-sess".into()));
@@ -449,12 +507,24 @@ mod command_result_tests {
     fn deliver_confirm_dropped_receiver_errs() {
         let (tx, rx) = tokio::sync::oneshot::channel();
         drop(rx);
-        let r = super::deliver_confirm(tx, super::ConfirmReply { approved: true, always: false });
+        let r = super::deliver_confirm(
+            tx,
+            super::ConfirmReply {
+                approved: true,
+                always: false,
+            },
+        );
         assert!(r.is_err(), "送达失败应返回 Err");
         // 对照：rx 存活时正常送达
         let (tx, rx) = tokio::sync::oneshot::channel();
-        super::deliver_confirm(tx, super::ConfirmReply { approved: false, always: true })
-            .expect("rx 存活应送达");
+        super::deliver_confirm(
+            tx,
+            super::ConfirmReply {
+                approved: false,
+                always: true,
+            },
+        )
+        .expect("rx 存活应送达");
         let reply = rx.blocking_recv().unwrap();
         assert!(!reply.approved && reply.always);
     }

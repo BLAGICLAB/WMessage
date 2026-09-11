@@ -48,9 +48,7 @@ pub enum CommandError {
     TaskNotFound(String),
     /// 业务状态拒绝：任务存在但当前状态不允许该操作
     /// （执行中重复触发 / 已完成 / 已归档），非内部错误，不得降级 INTERNAL
-    TaskInvalidState {
-        reason: String,
-    },
+    TaskInvalidState { reason: String },
     /// 参数校验失败
     InvalidArgument {
         field: String,
@@ -159,9 +157,7 @@ impl CommandError {
     pub fn message(&self) -> String {
         match self {
             Self::BotDisabled => "机器人聊天已关闭：请到设置页「机器人设置」开启".into(),
-            Self::ApiKeyMissing => {
-                "机器人 API 未配置：请到设置页「机器人设置」填写 API Key".into()
-            }
+            Self::ApiKeyMissing => "机器人 API 未配置：请到设置页「机器人设置」填写 API Key".into(),
             Self::KeyringError(s) => format!("系统凭据存储访问失败：{s}"),
             Self::HttpStartFailed { port, reason } => {
                 format!("HTTP 服务启动失败（端口 {port}）：{reason}")
@@ -182,9 +178,9 @@ impl CommandError {
             Self::DbError(s) => format!("数据库错误：{s}"),
             Self::IoError(s) => format!("文件 IO 错误：{s}"),
             Self::UnknownTool(name) => format!("未知工具：{name}"),
-            Self::AtomicToolBlocked(name) => format!(
-                "原子工具「{name}」禁止裸调：仅 Skill 内部可用，请通过对应 Skill 调用"
-            ),
+            Self::AtomicToolBlocked(name) => {
+                format!("原子工具「{name}」禁止裸调：仅 Skill 内部可用，请通过对应 Skill 调用")
+            }
             Self::SkillLoadFailed { name, reason } => {
                 format!("Skill 加载失败：{name}（{reason}）")
             }
@@ -342,7 +338,10 @@ mod tests {
         assert!(json.contains("\"code\":\"BOT_DISABLED\""));
         assert!(json.contains("\"message\":"));
         assert!(json.contains("\"recoverable\":true"));
-        assert!(!json.contains("\"platform\""), "platform 字段已移除：{json}");
+        assert!(
+            !json.contains("\"platform\""),
+            "platform 字段已移除：{json}"
+        );
     }
 
     #[test]
@@ -406,8 +405,16 @@ mod tests {
         // 这 19 个错全是用户可重试的(技能暂停→等确认/URL 内网→换 URL/迁移中→等/...)
         // 全部走 DomainRule,必须 recoverable=true
         for domain in [
-            "argument", "task", "skill", "platform", "clipboard",
-            "python", "migration", "search", "web", "csv",
+            "argument",
+            "task",
+            "skill",
+            "platform",
+            "clipboard",
+            "python",
+            "migration",
+            "search",
+            "web",
+            "csv",
         ] {
             let err = CommandError::DomainRule {
                 domain: domain.to_string(),
@@ -428,7 +435,10 @@ mod tests {
             reason: "技能已暂停，等待用户确认".to_string(),
         };
         let msg = err.message();
-        assert!(msg.starts_with("[skill] "), "message 应以 [domain] 起头,实际:{msg}");
+        assert!(
+            msg.starts_with("[skill] "),
+            "message 应以 [domain] 起头,实际:{msg}"
+        );
         assert!(msg.contains("技能已暂停"), "message 应含 reason");
         // Display 与 message 一致
         assert_eq!(format!("{err}"), msg);
@@ -443,9 +453,18 @@ mod tests {
             reason: "Bing 没有返回结果".to_string(),
         };
         let json = serde_json::to_string(&err).unwrap();
-        assert!(json.contains("\"code\":\"DOMAIN_RULE\""), "json 缺 code: {json}");
-        assert!(json.contains("\"message\":\"[search] Bing 没有返回结果\""), "json 缺 message: {json}");
-        assert!(json.contains("\"recoverable\":true"), "recoverable 必须是 true: {json}");
+        assert!(
+            json.contains("\"code\":\"DOMAIN_RULE\""),
+            "json 缺 code: {json}"
+        );
+        assert!(
+            json.contains("\"message\":\"[search] Bing 没有返回结果\""),
+            "json 缺 message: {json}"
+        );
+        assert!(
+            json.contains("\"recoverable\":true"),
+            "recoverable 必须是 true: {json}"
+        );
     }
 
     #[test]

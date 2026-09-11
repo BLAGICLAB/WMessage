@@ -5,9 +5,9 @@
 //! - 超时：connect 15s / 总 30s；响应体上限 2MB；只处理 HTML/文本类内容
 //! - 输出截断在工具层做（搜索结果 6000 字、网页正文 30000 字）；审计由 bot.rs 留痕
 
-use std::time::Duration;
 use crate::error::CommandError;
 use futures_util::StreamExt;
+use std::time::Duration;
 
 const UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
@@ -125,13 +125,26 @@ pub async fn web_search(query: &str) -> Result<String, CommandError> {
         } else {
             CommandError::DomainRule {
                 domain: "search".to_string(),
-                reason: format!("所有搜索引擎均失败：{}", errs.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("；")),
+                reason: format!(
+                    "所有搜索引擎均失败：{}",
+                    errs.iter()
+                        .map(|e| e.to_string())
+                        .collect::<Vec<_>>()
+                        .join("；")
+                ),
             }
         });
     }
     let mut out = String::new();
     for (i, (engine, title, link, snip)) in merged.iter().enumerate() {
-        out.push_str(&format!("{}. [{}] {}\n{}\n{}\n\n", i + 1, engine, title, link, snip));
+        out.push_str(&format!(
+            "{}. [{}] {}\n{}\n{}\n\n",
+            i + 1,
+            engine,
+            title,
+            link,
+            snip
+        ));
     }
     if out.chars().count() > SEARCH_OUTPUT_CAP {
         out = out.chars().take(SEARCH_OUTPUT_CAP).collect();
@@ -169,7 +182,13 @@ async fn search_tavily(key: &str, query: &str) -> Result<String, String> {
         let title = r["title"].as_str().unwrap_or("");
         let url = r["url"].as_str().unwrap_or("");
         let content = clean_snippet(r["content"].as_str().unwrap_or(""));
-        out.push_str(&format!("{}. [Tavily] {}\n{}\n{}\n\n", i + 1, title, url, content));
+        out.push_str(&format!(
+            "{}. [Tavily] {}\n{}\n{}\n\n",
+            i + 1,
+            title,
+            url,
+            content
+        ));
     }
     if out.chars().count() > SEARCH_OUTPUT_CAP {
         out = out.chars().take(SEARCH_OUTPUT_CAP).collect();
@@ -183,8 +202,7 @@ async fn search_tavily(key: &str, query: &str) -> Result<String, String> {
 async fn search_brave(key: &str, query: &str) -> Result<String, String> {
     // 查询串手工编码（同 search_bing 的 form_urlencoded 风格；reqwest 0.13 无 .query()）
     let encoded: String = url::form_urlencoded::byte_serialize(query.as_bytes()).collect();
-    let target =
-        format!("https://api.search.brave.com/res/v1/web/search?q={encoded}&count=8");
+    let target = format!("https://api.search.brave.com/res/v1/web/search?q={encoded}&count=8");
     let resp = http_client()
         .get(&target)
         .header(reqwest::header::ACCEPT, "application/json")
@@ -572,7 +590,9 @@ fn extract_main_content(html: &str) -> String {
     let mut best: Option<(usize, usize, usize)> = None;
     let mut cur = 0;
     while let Some(pos) = find_ci(&cleaned, "<div", cur) {
-        let Some(gt) = cleaned[pos..].find('>') else { break };
+        let Some(gt) = cleaned[pos..].find('>') else {
+            break;
+        };
         let attrs = cleaned[pos..pos + gt].to_lowercase();
         cur = pos + 4;
         let hit = ["article", "content", "post", "entry", "main"]
@@ -709,10 +729,12 @@ fn extract_baidu_snippet(tail: &str) -> String {
 async fn check_public_url(url: &url::Url) -> Result<Vec<std::net::SocketAddr>, CommandError> {
     match url.scheme() {
         "http" | "https" => {}
-        s => return Err(CommandError::DomainRule {
-            domain: "web".to_string(),
-            reason: format!("只支持 http/https 链接（收到 {s}://）"),
-        }),
+        s => {
+            return Err(CommandError::DomainRule {
+                domain: "web".to_string(),
+                reason: format!("只支持 http/https 链接（收到 {s}://）"),
+            })
+        }
     }
     let host = url
         .host_str()
@@ -883,7 +905,8 @@ fn jina_reader_url(raw_url: &str) -> String {
 /// Jina Reader 回退抓取：公共代理服务端渲染页面返回 markdown 文本。
 /// 失败（超时/限流/目标不可达）由调用方忽略，不影响主路径。
 async fn fetch_jina_reader(raw_url: &str) -> Result<String, String> {
-    let url = url::Url::parse(&jina_reader_url(raw_url)).map_err(|_| "Jina URL 无效".to_string())?;
+    let url =
+        url::Url::parse(&jina_reader_url(raw_url)).map_err(|_| "Jina URL 无效".to_string())?;
     let addrs = check_public_url(&url).await?;
     let resp = http_client_pinned(&url, &addrs)?
         .get(url)
@@ -1018,7 +1041,10 @@ mod tests {
             resolve_search_route(None, Some("tvly-x"), None, None),
             SearchRoute::Tavily("tvly-x".into())
         );
-        assert_eq!(resolve_search_route(None, None, None, None), SearchRoute::Dual);
+        assert_eq!(
+            resolve_search_route(None, None, None, None),
+            SearchRoute::Dual
+        );
         assert_eq!(
             resolve_search_route(None, Some("   "), None, None),
             SearchRoute::Dual
@@ -1031,7 +1057,10 @@ mod tests {
             resolve_search_route(Some(false), Some("tvly-x"), None, None),
             SearchRoute::Dual
         );
-        assert_eq!(resolve_search_route(Some(false), None, None, None), SearchRoute::Dual);
+        assert_eq!(
+            resolve_search_route(Some(false), None, None, None),
+            SearchRoute::Dual
+        );
         // Brave 也显式关：两边都有 key 也应走双引擎
         assert_eq!(
             resolve_search_route(Some(false), Some("tvly-x"), Some(false), Some("bsa-x")),
@@ -1116,7 +1145,10 @@ mod tests {
         ]},"query":{"original":"q"}}"#;
         let r = parse_brave_results(body).unwrap_or_default();
         assert_eq!(r.len(), 2);
-        assert_eq!(r[0], ("标题一".into(), "https://a.com/x".into(), "摘要一".into()));
+        assert_eq!(
+            r[0],
+            ("标题一".into(), "https://a.com/x".into(), "摘要一".into())
+        );
         assert_eq!(r[1].1, "https://b.com/y");
     }
 
@@ -1131,7 +1163,10 @@ mod tests {
         // 字段缺失的条目按空串填充
         let r = parse_brave_results(r#"{"web":{"results":[{"title":"只有标题"}]}}"#)
             .unwrap_or_default();
-        assert_eq!(r, vec![("只有标题".to_string(), String::new(), String::new())]);
+        assert_eq!(
+            r,
+            vec![("只有标题".to_string(), String::new(), String::new())]
+        );
     }
 
     #[test]
@@ -1331,12 +1366,27 @@ mod tests {
     #[test]
     fn private_detection_covers_mapped_v6_and_cgnat() {
         assert!(ipv6_is_private("::ffff:127.0.0.1".parse().unwrap()));
-        assert!(ipv6_is_private("::ffff:a9fe:a9fe".parse().unwrap()), "169.254.169.254 mapped");
-        assert!(!ipv6_is_private("2606:4700:4700::1111".parse().unwrap()), "公网 v6 放行");
+        assert!(
+            ipv6_is_private("::ffff:a9fe:a9fe".parse().unwrap()),
+            "169.254.169.254 mapped"
+        );
+        assert!(
+            !ipv6_is_private("2606:4700:4700::1111".parse().unwrap()),
+            "公网 v6 放行"
+        );
         assert!(ipv4_is_private("100.64.0.1".parse().unwrap()), "CGNAT 起始");
-        assert!(ipv4_is_private("100.127.255.254".parse().unwrap()), "CGNAT 末尾");
-        assert!(!ipv4_is_private("100.128.0.1".parse().unwrap()), "CGNAT 段外");
-        assert!(!ipv4_is_private("99.255.0.1".parse().unwrap()), "CGNAT 段外");
+        assert!(
+            ipv4_is_private("100.127.255.254".parse().unwrap()),
+            "CGNAT 末尾"
+        );
+        assert!(
+            !ipv4_is_private("100.128.0.1".parse().unwrap()),
+            "CGNAT 段外"
+        );
+        assert!(
+            !ipv4_is_private("99.255.0.1".parse().unwrap()),
+            "CGNAT 段外"
+        );
     }
 
     /// FIX-PLAN #7a（DNS TOCTOU）回归：钉住解析结果后请求必须走钉住的地址——

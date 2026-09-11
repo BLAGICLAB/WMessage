@@ -10,7 +10,13 @@ fn mem_db() -> rusqlite::Connection {
     conn
 }
 
-fn insert(conn: &rusqlite::Connection, kind: &str, content: &str, importance: i64, now: i64) -> String {
+fn insert(
+    conn: &rusqlite::Connection,
+    kind: &str,
+    content: &str,
+    importance: i64,
+    now: i64,
+) -> String {
     let item = NewItem {
         kind: kind.into(),
         content: content.into(),
@@ -48,7 +54,9 @@ fn parse_valid_ops() {
     let ops = parse_ops(text);
     assert_eq!(ops.len(), 3);
     assert!(matches!(&ops[0], ConsolidateOp::Merge { ids, .. } if ids == &["a", "b"]));
-    assert!(matches!(&ops[1], ConsolidateOp::Contradiction { keep, drop_id, .. } if keep == "a" && drop_id == "c"));
+    assert!(
+        matches!(&ops[1], ConsolidateOp::Contradiction { keep, drop_id, .. } if keep == "a" && drop_id == "c")
+    );
     assert!(matches!(&ops[2], ConsolidateOp::Distill { .. }));
 }
 
@@ -78,7 +86,11 @@ fn parse_skips_malformed_and_unknown_ops() {
       {"action":"distill","ids":["a"],"content":"合法"}
     ]}"#;
     let ops = parse_ops(text);
-    assert_eq!(ops.len(), 1, "未知动作/单 id merge/缺 content/keep==drop/空 ids 都应跳过");
+    assert_eq!(
+        ops.len(),
+        1,
+        "未知动作/单 id merge/缺 content/keep==drop/空 ids 都应跳过"
+    );
     assert!(matches!(&ops[0], ConsolidateOp::Distill { .. }));
 }
 
@@ -155,7 +167,10 @@ fn apply_distill_creates_reflection() {
     assert_eq!(report.distilled, 1);
     let all = store::load_all(&conn).unwrap();
     assert_eq!(all.len(), 3, "distill 新建不删来源");
-    let r = all.iter().find(|m| m.kind == "reflection").expect("应有 reflection");
+    let r = all
+        .iter()
+        .find(|m| m.kind == "reflection")
+        .expect("应有 reflection");
     assert_eq!(r.importance, 4);
     assert_eq!(r.source, "system");
 }
@@ -193,7 +208,8 @@ fn gather_candidates_window_and_active() {
     let a = insert(&conn, "fact", "新条目", 3, now - 1000);
     // 窗口外但活跃（access_count 高）
     let b = insert(&conn, "fact", "老但活跃", 3, now - 30 * 86_400_000);
-    conn.execute("UPDATE mem_items SET access_count = 5 WHERE id = ?1", [&b]).unwrap();
+    conn.execute("UPDATE mem_items SET access_count = 5 WHERE id = ?1", [&b])
+        .unwrap();
     // 窗口外且不活跃 → 不进候选
     let _c = insert(&conn, "fact", "老且冷清", 3, now - 30 * 86_400_000);
     let got = gather_candidates(&conn, None, now, 100).unwrap();
@@ -221,7 +237,11 @@ fn gather_candidates_caps_at_limit() {
 fn classify_due_verdicts() {
     let now = 10_000_000_000i64;
     let mut cfg = ConsolidationConfig::default();
-    assert_eq!(classify_due(&cfg, now), DueVerdict::InitBaseline, "从未整理过先记基线");
+    assert_eq!(
+        classify_due(&cfg, now),
+        DueVerdict::InitBaseline,
+        "从未整理过先记基线"
+    );
     cfg.last_run_at = Some(now);
     assert_eq!(classify_due(&cfg, now), DueVerdict::Off, "刚整理过不到点");
     assert_eq!(
@@ -230,7 +250,11 @@ fn classify_due_verdicts() {
         "daily 过 24h 到点"
     );
     cfg.enabled = false;
-    assert_eq!(classify_due(&cfg, now + 365 * 24 * 3600 * 1000), DueVerdict::Off, "开关关永不跑");
+    assert_eq!(
+        classify_due(&cfg, now + 365 * 24 * 3600 * 1000),
+        DueVerdict::Off,
+        "开关关永不跑"
+    );
     cfg.enabled = true;
     cfg.interval = "off".into();
     assert_eq!(classify_due(&cfg, now), DueVerdict::Off);
@@ -238,9 +262,16 @@ fn classify_due_verdicts() {
     assert_eq!(classify_due(&cfg, now + 12 * 3600 * 1000), DueVerdict::Run);
     cfg.interval = "weekly".into();
     assert_eq!(classify_due(&cfg, now + 24 * 3600 * 1000), DueVerdict::Off);
-    assert_eq!(classify_due(&cfg, now + 7 * 24 * 3600 * 1000), DueVerdict::Run);
+    assert_eq!(
+        classify_due(&cfg, now + 7 * 24 * 3600 * 1000),
+        DueVerdict::Run
+    );
     cfg.interval = "垃圾值".into();
-    assert_eq!(classify_due(&cfg, now + 365 * 24 * 3600 * 1000), DueVerdict::Off, "非法频率按关闭");
+    assert_eq!(
+        classify_due(&cfg, now + 365 * 24 * 3600 * 1000),
+        DueVerdict::Off,
+        "非法频率按关闭"
+    );
 }
 
 #[test]
@@ -259,7 +290,10 @@ fn consolidation_config_serde_roundtrip_and_defaults() {
         last_run_at: Some(12345),
     };
     let json = serde_json::to_string(&cc).unwrap();
-    assert!(json.contains("\"lastRunAt\":12345"), "camelCase 字段名：{json}");
+    assert!(
+        json.contains("\"lastRunAt\":12345"),
+        "camelCase 字段名：{json}"
+    );
     let back: ConsolidationConfig = serde_json::from_str(&json).unwrap();
     assert_eq!(back, cc);
 }

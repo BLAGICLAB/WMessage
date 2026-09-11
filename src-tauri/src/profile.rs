@@ -157,7 +157,11 @@ fn entry_view<R: Runtime>(app: &AppHandle<R>, kind: &str, e: &ProfileEntry) -> P
                 crate::audit::write_error_audit(
                     app,
                     "profile_avatar_too_large",
-                    &[("kind", kind), ("file", f), ("len", &meta.len().to_string())],
+                    &[
+                        ("kind", kind),
+                        ("file", f),
+                        ("len", &meta.len().to_string()),
+                    ],
                 );
                 return None;
             }
@@ -387,7 +391,10 @@ mod tests {
         // D3：损坏 load 会生成 profile.json.bak-<ts> 备份，残留要清掉
         if let Ok(rd) = std::fs::read_dir(&data_dir) {
             for e in rd.flatten() {
-                if e.file_name().to_string_lossy().starts_with("profile.json.bak-") {
+                if e.file_name()
+                    .to_string_lossy()
+                    .starts_with("profile.json.bak-")
+                {
                     let _ = std::fs::remove_file(e.path());
                 }
             }
@@ -552,9 +559,17 @@ mod tests {
 
         // 上传 PNG 头像
         let tmp = make_src_avatar("png");
-        profile_set_avatar(handle.clone(), "user".into(), tmp.path().join("src.png").to_string_lossy().into_owned()).unwrap();
+        profile_set_avatar(
+            handle.clone(),
+            "user".into(),
+            tmp.path().join("src.png").to_string_lossy().into_owned(),
+        )
+        .unwrap();
         let avatar_path = data_dir.join("profile").join("avatar-user.png");
-        assert!(avatar_path.exists(), "上传后头像文件应存在：{avatar_path:?}");
+        assert!(
+            avatar_path.exists(),
+            "上传后头像文件应存在：{avatar_path:?}"
+        );
 
         // 此时 view 应带 base64 data URL
         let view = profile_get(handle.clone());
@@ -569,7 +584,10 @@ mod tests {
         profile_remove_avatar(handle.clone(), "user".into()).unwrap();
         assert!(!avatar_path.exists(), "删除后头像文件应消失");
         let view = profile_get(handle);
-        assert!(view.user.avatar_data_url.is_none(), "删除后 data URL 应为空");
+        assert!(
+            view.user.avatar_data_url.is_none(),
+            "删除后 data URL 应为空"
+        );
     }
 
     #[test]
@@ -579,7 +597,8 @@ mod tests {
         let handle = app.handle().clone();
 
         // 没设过头像，remove 不应崩
-        let view = profile_remove_avatar(handle, "bot".into()).expect("remove on empty should succeed");
+        let view =
+            profile_remove_avatar(handle, "bot".into()).expect("remove on empty should succeed");
         assert!(view.bot.avatar_data_url.is_none());
     }
 
@@ -657,7 +676,11 @@ mod tests {
         profile_set_avatar(
             handle.clone(),
             "user".into(),
-            png_tmp.path().join("src.png").to_string_lossy().into_owned(),
+            png_tmp
+                .path()
+                .join("src.png")
+                .to_string_lossy()
+                .into_owned(),
         )
         .unwrap();
         assert!(profile_d.join("avatar-user.png").exists());
@@ -666,9 +689,16 @@ mod tests {
         let jpg_tmp = tempfile::TempDir::new().unwrap();
         let jpg_src = jpg_tmp.path().join("new.jpg");
         std::fs::write(&jpg_src, b"\xFF\xD8\xFF\xE0fake-jpg").unwrap();
-        profile_set_avatar(handle.clone(), "user".into(), jpg_src.to_string_lossy().into_owned())
-            .unwrap();
-        assert!(!profile_d.join("avatar-user.png").exists(), "旧 PNG 应被清掉");
+        profile_set_avatar(
+            handle.clone(),
+            "user".into(),
+            jpg_src.to_string_lossy().into_owned(),
+        )
+        .unwrap();
+        assert!(
+            !profile_d.join("avatar-user.png").exists(),
+            "旧 PNG 应被清掉"
+        );
         assert!(profile_d.join("avatar-user.jpg").exists(), "新 JPG 应就位");
 
         // view 应反映 JPG（mime 是 jpeg）
@@ -697,13 +727,21 @@ mod tests {
         profile_set_avatar(
             handle.clone(),
             "user".into(),
-            user_tmp.path().join("src.png").to_string_lossy().into_owned(),
+            user_tmp
+                .path()
+                .join("src.png")
+                .to_string_lossy()
+                .into_owned(),
         )
         .unwrap();
         profile_set_avatar(
             handle.clone(),
             "bot".into(),
-            bot_tmp.path().join("src.gif").to_string_lossy().into_owned(),
+            bot_tmp
+                .path()
+                .join("src.gif")
+                .to_string_lossy()
+                .into_owned(),
         )
         .unwrap();
 
@@ -711,8 +749,18 @@ mod tests {
         assert!(data_dir.join("profile").join("avatar-bot.gif").exists());
 
         let view = profile_get(handle);
-        assert!(view.user.avatar_data_url.as_ref().unwrap().starts_with("data:image/png"));
-        assert!(view.bot.avatar_data_url.as_ref().unwrap().starts_with("data:image/gif"));
+        assert!(view
+            .user
+            .avatar_data_url
+            .as_ref()
+            .unwrap()
+            .starts_with("data:image/png"));
+        assert!(view
+            .bot
+            .avatar_data_url
+            .as_ref()
+            .unwrap()
+            .starts_with("data:image/gif"));
     }
 
     // ────── NEW-D-2：set_avatar save 失败回滚不得误删在役头像 ──────
@@ -852,8 +900,14 @@ mod tests {
     #[test]
     fn avatar_filename_only_accepts_plain_filename() {
         assert_eq!(avatar_filename_only("avatar.png"), Some("avatar.png"));
-        assert_eq!(avatar_filename_only("avatar-user.webp"), Some("avatar-user.webp"));
-        assert_eq!(avatar_filename_only("带空格 头像.png"), Some("带空格 头像.png"));
+        assert_eq!(
+            avatar_filename_only("avatar-user.webp"),
+            Some("avatar-user.webp")
+        );
+        assert_eq!(
+            avatar_filename_only("带空格 头像.png"),
+            Some("带空格 头像.png")
+        );
     }
 
     #[test]
@@ -908,7 +962,11 @@ mod tests {
         // 绕过写入端 5MB 校验（模拟手改/旧版写入）：直接落 6MB 头像文件 + 手改 profile.json
         let profile_d = data_dir.join("profile");
         std::fs::create_dir_all(&profile_d).unwrap();
-        std::fs::write(profile_d.join("avatar-user.png"), vec![0u8; 6 * 1024 * 1024]).unwrap();
+        std::fs::write(
+            profile_d.join("avatar-user.png"),
+            vec![0u8; 6 * 1024 * 1024],
+        )
+        .unwrap();
         let forged = ProfileData {
             user: ProfileEntry {
                 name: "x".into(),

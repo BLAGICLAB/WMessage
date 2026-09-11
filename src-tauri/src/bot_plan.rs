@@ -30,7 +30,16 @@ const MAX_PLAN_STEPS: usize = 8;
 
 /// 多步意图关键词：命中任一即认为可能需要规划
 const MULTI_STEP_KEYWORDS: [&str; 10] = [
-    "然后", "之后", "接着", "批量", "分别", "依次", "按步骤", "分步", "逐步", "计划",
+    "然后",
+    "之后",
+    "接着",
+    "批量",
+    "分别",
+    "依次",
+    "按步骤",
+    "分步",
+    "逐步",
+    "计划",
 ];
 
 /// 是否复杂多步任务（保守启发式，纯函数可单测）：
@@ -151,7 +160,10 @@ async fn call_planner(
                 false,
             )
             .map_err(|e| format!("Planner 消息转换失败：{e}"))?;
-            (crate::bot_anthropic::anthropic_messages_url(&cfg.base_url), body)
+            (
+                crate::bot_anthropic::anthropic_messages_url(&cfg.base_url),
+                body,
+            )
         }
     };
     let req = client.post(&url).json(&body);
@@ -185,7 +197,13 @@ async fn call_planner(
     let text = text.as_str();
     // 非流式 Planner 响应可能带 <think> 段，先剥再提取 JSON
     let text = crate::bot_chat::strip_think_blocks(text);
-    parse_plan(&text).ok_or_else(|| format!("Planner 输出无法解析为计划：{}", crate::bot::truncate_for_log(&text, 200)).into())
+    parse_plan(&text).ok_or_else(|| {
+        format!(
+            "Planner 输出无法解析为计划：{}",
+            crate::bot::truncate_for_log(&text, 200)
+        )
+        .into()
+    })
 }
 
 /// 生成初始计划。失败/解析不出 → None（调用方降级为自由循环，不阻断聊天）。
@@ -214,7 +232,11 @@ pub async fn generate_plan(app: &tauri::AppHandle, task: &str) -> Option<Vec<Str
 }
 
 /// Replan：原计划 + 失败原因 → 修正的剩余计划。失败 → None（调用方按原提示词路径收尾）。
-pub async fn replan(app: &tauri::AppHandle, plan: &PlanState, fail_reason: &str) -> Option<Vec<String>> {
+pub async fn replan(
+    app: &tauri::AppHandle,
+    plan: &PlanState,
+    fail_reason: &str,
+) -> Option<Vec<String>> {
     let done_note = if plan.steps.is_empty() {
         String::new()
     } else {

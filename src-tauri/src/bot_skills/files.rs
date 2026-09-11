@@ -50,7 +50,10 @@ pub async fn open_file_path(app: AppHandle, path: String) -> CommandResult<()> {
     if !path_openable(&app, &path, &set) {
         crate::bot::audit_log(
             &app,
-            &format!("open_file_path denied | {}", crate::audit::escape_for_log(&path, 200)),
+            &format!(
+                "open_file_path denied | {}",
+                crate::audit::escape_for_log(&path, 200)
+            ),
         );
         return Err(CommandError::InvalidArgument {
             field: "path".into(),
@@ -63,7 +66,10 @@ pub async fn open_file_path(app: AppHandle, path: String) -> CommandResult<()> {
     if !std::path::Path::new(&path).exists() {
         crate::bot::audit_log(
             &app,
-            &format!("open_file_path missing | {}", crate::audit::escape_for_log(&path, 200)),
+            &format!(
+                "open_file_path missing | {}",
+                crate::audit::escape_for_log(&path, 200)
+            ),
         );
         return Err(CommandError::IoError(format!(
             "路径不存在（可能已被移动或删除）：{path}"
@@ -122,7 +128,10 @@ pub async fn delete_bound_file(app: AppHandle, path: String, is_dir: bool) -> Co
     if !set.contains(&path) {
         crate::bot::audit_log(
             &app,
-            &format!("delete_bound_file denied | {}", crate::audit::escape_for_log(&path, 200)),
+            &format!(
+                "delete_bound_file denied | {}",
+                crate::audit::escape_for_log(&path, 200)
+            ),
         );
         return Err(CommandError::InvalidArgument {
             field: "path".into(),
@@ -144,4 +153,3 @@ pub async fn delete_bound_file(app: AppHandle, path: String, is_dir: bool) -> Co
         ))
     })
 }
-

@@ -49,7 +49,9 @@ fn dev_skills_dir_at(target_root: &std::path::Path) -> Option<std::path::PathBuf
 /// `#[cfg_attr(not(debug_assertions), allow(dead_code))]` —— release 模式 dev_skills_dir
 /// 不存在，整个函数仅返回一个目录（数据目录），避免 dead_code 警告。
 #[cfg_attr(not(debug_assertions), allow(dead_code))]
-pub(crate) fn skill_search_paths<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Vec<std::path::PathBuf> {
+pub(crate) fn skill_search_paths<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Vec<std::path::PathBuf> {
     #[allow(unused_mut)] // release 模式：dev_skills_dir 分支被排除，paths 不需要 mut
     let mut paths = vec![skills_dir(app)];
     #[cfg(debug_assertions)]
@@ -121,7 +123,9 @@ pub fn scan_skill_dirs(dirs: &[std::path::PathBuf]) -> Vec<SkillInfo> {
 /// 遍历搜索路径读每个 SKILL.md 的 frontmatter `intents`；
 /// `enabled: false` / intents 为空 → 该技能不产生路由。同名去重、前面目录优先（与 scan_skill_dirs 一致）。
 /// 单测可传临时目录数组，不依赖 AppHandle。
-pub fn intent_rules_from_dirs(dirs: &[std::path::PathBuf]) -> Vec<crate::intent_router::IntentRule> {
+pub fn intent_rules_from_dirs(
+    dirs: &[std::path::PathBuf],
+) -> Vec<crate::intent_router::IntentRule> {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut out = Vec::new();
     for dir in dirs {
@@ -287,7 +291,6 @@ fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> Result<(), Stri
     }
     Ok(())
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -456,5 +459,4 @@ mod tests {
         // 什么都没装 → 空规则集（route 层恒 PassThrough）
         assert!(intent_rules_from_dirs(&[]).is_empty());
     }
-
 }

@@ -40,7 +40,7 @@ const POLL_INTERVAL_SECS: u64 = 600;
 #[derive(Debug, Clone)]
 pub struct JournalEntry {
     pub id: i64,
-    pub op: String,        // 'move' | 'delete'
+    pub op: String, // 'move' | 'delete'
     pub src: String,
     pub dst: Option<String>,
     pub task_id: String,
@@ -77,7 +77,9 @@ fn journal_pending_inner(
 /// 会在 spawn_blocking 线程里再抢同一把锁，std Mutex 不可重入 → 死锁。
 /// 因此只在每次 journal 写时短临界区持锁。
 fn db_write_lock() -> std::sync::MutexGuard<'static, ()> {
-    crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    crate::db::DB_WRITE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
 }
 
 /// B1: 记录一个 pending 操作，返回 row id（后续 committed/cleared 需用）。
@@ -249,11 +251,7 @@ pub fn journal_replay_pending(app: &AppHandle) -> Result<(usize, usize), String>
                             recovered += 1;
                             log_line(
                                 app,
-                                &format!(
-                                    "journal replay: 修复 {} → {}",
-                                    entry.src,
-                                    d.display()
-                                ),
+                                &format!("journal replay: 修复 {} → {}", entry.src, d.display()),
                             );
                         }
                         Ok(false) => {
@@ -272,10 +270,7 @@ pub fn journal_replay_pending(app: &AppHandle) -> Result<(usize, usize), String>
                             errors += 1;
                             log_line(
                                 app,
-                                &format!(
-                                    "journal replay: 修复 {} 失败：{}",
-                                    entry.src, e
-                                ),
+                                &format!("journal replay: 修复 {} 失败：{}", entry.src, e),
                             );
                         }
                     }
@@ -312,10 +307,7 @@ pub fn journal_replay_pending(app: &AppHandle) -> Result<(usize, usize), String>
                             errors += 1;
                             log_line(
                                 app,
-                                &format!(
-                                    "journal replay: 清除 {} 失败：{}",
-                                    entry.src, e
-                                ),
+                                &format!("journal replay: 清除 {} 失败：{}", entry.src, e),
                             );
                         }
                     }
@@ -878,8 +870,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
                                 journals_commit_after_batch.push(id);
                             }
                             report.skipped += 1;
-                            let line =
-                                format!("解除绑定「{name}」：源文件已不存在（{src_str}）");
+                            let line = format!("解除绑定「{name}」：源文件已不存在（{src_str}）");
                             report.log.push(line.clone());
                             log_line(app, &line);
                             continue;
@@ -1080,10 +1071,8 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
 
     // 统一落盘（阶段一的 due 已包含在 changed 中，重复 upsert 幂等无害）
     if !changed.is_empty() {
-        tauri::async_runtime::block_on(async {
-            db::db_upsert(app.clone(), changed.clone()).await
-        })
-        .map_err(|e| e.to_string())?;
+        tauri::async_runtime::block_on(async { db::db_upsert(app.clone(), changed.clone()).await })
+            .map_err(|e| e.to_string())?;
         emit_upserts(app, &changed);
         // NEW-B-1: 解绑已落盘 → 提交对应 pending journal，关闭对账环路
         // （若落盘失败则上面已 return，journal 保持 pending，留待下轮/启动 replay）
@@ -1103,7 +1092,10 @@ pub fn spawn_polling(app: AppHandle) {
         // db_upsert 失败造成的 DB 不一致。出错只记日志，不影响后续轮询。
         match journal_replay_pending(&app) {
             Ok((rec, err)) if rec > 0 || err > 0 => {
-                log_line(&app, &format!("journal replay 启动：恢复 {rec} 条，失败 {err} 条"));
+                log_line(
+                    &app,
+                    &format!("journal replay 启动：恢复 {rec} 条，失败 {err} 条"),
+                );
             }
             Ok(_) => {}
             Err(e) => log_line(&app, &format!("journal replay 启动失败：{e}")),
@@ -1321,9 +1313,10 @@ pub async fn migration_run(app: AppHandle) -> CommandResult<MigrationReport> {
 #[tauri::command]
 pub async fn migration_log_read(app: AppHandle, limit: Option<usize>) -> CommandResult<String> {
     let app2 = app.clone();
-    let r = tauri::async_runtime::spawn_blocking(move || read_migration_log(&log_path(&app2), limit))
-        .await
-        .map_err(|e| CommandError::Internal(format!("迁移日志读取线程 join 失败：{e}")))?;
+    let r =
+        tauri::async_runtime::spawn_blocking(move || read_migration_log(&log_path(&app2), limit))
+            .await
+            .map_err(|e| CommandError::Internal(format!("迁移日志读取线程 join 失败：{e}")))?;
     match r {
         Ok(s) => Ok(s),
         Err(e) => {
@@ -1446,8 +1439,7 @@ mod tests {
             rules: vec![rule(vec!["工资"], "move", "工资/{year}")],
         };
         save_rules_to(&path, &rules).unwrap();
-        let parsed: RulesFile =
-            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let parsed: RulesFile = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(parsed.rules.len(), 1);
         assert_eq!(parsed.rules[0].keywords, vec!["工资".to_string()]);
         assert!(
@@ -1482,25 +1474,45 @@ mod tests {
     #[test]
     fn journal_pending_to_committed_flow() {
         let (dir, conn) = setup_journal_db();
-        let id = journal_pending_inner(&conn, "move", Path::new("/src/a"), Some(Path::new("/dst/a")), "task-1", 1000).unwrap();
+        let id = journal_pending_inner(
+            &conn,
+            "move",
+            Path::new("/src/a"),
+            Some(Path::new("/dst/a")),
+            "task-1",
+            1000,
+        )
+        .unwrap();
         assert!(id > 0);
 
         // 验证插入后 state = pending
         let state: String = conn
-            .query_row("SELECT state FROM migration_journal WHERE id = ?1", [id], |r| r.get(0))
+            .query_row(
+                "SELECT state FROM migration_journal WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(state, "pending");
 
         journal_committed_inner(&conn, id).unwrap();
 
         let state: String = conn
-            .query_row("SELECT state FROM migration_journal WHERE id = ?1", [id], |r| r.get(0))
+            .query_row(
+                "SELECT state FROM migration_journal WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(state, "committed");
 
         // replay 查询会跳过该行（WHERE state = 'pending'）
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM migration_journal WHERE state = 'pending'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM migration_journal WHERE state = 'pending'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(count, 0);
 
@@ -1511,10 +1523,15 @@ mod tests {
     #[test]
     fn journal_pending_to_cleared_flow() {
         let (dir, conn) = setup_journal_db();
-        let id = journal_pending_inner(&conn, "delete", Path::new("/x/y"), None, "task-2", 2000).unwrap();
+        let id = journal_pending_inner(&conn, "delete", Path::new("/x/y"), None, "task-2", 2000)
+            .unwrap();
         journal_cleared_inner(&conn, id).unwrap();
         let state: String = conn
-            .query_row("SELECT state FROM migration_journal WHERE id = ?1", [id], |r| r.get(0))
+            .query_row(
+                "SELECT state FROM migration_journal WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(state, "cleared");
         fs::remove_dir_all(&dir).ok();
@@ -1533,7 +1550,14 @@ mod tests {
         std::thread::sleep(Duration::from_millis(50)); // 确保 holder 先拿到锁
         let start = std::time::Instant::now();
         // 锁被占用期间 journal 三次写都应等待而非 busy 报错
-        let id = journal_pending(&conn, "move", Path::new("/src/lock"), Some(Path::new("/dst/lock")), "task-lock").unwrap();
+        let id = journal_pending(
+            &conn,
+            "move",
+            Path::new("/src/lock"),
+            Some(Path::new("/dst/lock")),
+            "task-lock",
+        )
+        .unwrap();
         journal_committed(&conn, id).unwrap();
         journal_cleared(&conn, id).unwrap();
         let waited = start.elapsed();
@@ -1543,7 +1567,11 @@ mod tests {
             "journal 写应等待锁释放（实测 {waited:?}），而非立即失败"
         );
         let state: String = conn
-            .query_row("SELECT state FROM migration_journal WHERE id = ?1", [id], |r| r.get(0))
+            .query_row(
+                "SELECT state FROM migration_journal WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(state, "cleared", "三次写在持锁串行下全部成功落库");
         fs::remove_dir_all(&dir).ok();
@@ -1563,14 +1591,19 @@ mod tests {
         // 模拟 move 完成：写文件到 dst，删 src
         fs::rename(&src_path, &dst_path).unwrap();
 
-        let id = journal_pending_inner(&conn, "move", &src_path, Some(&dst_path), "task-3", 3000).unwrap();
+        let id = journal_pending_inner(&conn, "move", &src_path, Some(&dst_path), "task-3", 3000)
+            .unwrap();
 
         // 此刻模拟 replay 检测：dst 存在 + src 不存在
         assert!(!src_path.exists(), "模拟：src 应已被移走");
         assert!(dst_path.exists(), "模拟：dst 应已存在");
         // 验证 journal 仍 pending
         let state: String = conn
-            .query_row("SELECT state FROM migration_journal WHERE id = ?1", [id], |r| r.get(0))
+            .query_row(
+                "SELECT state FROM migration_journal WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(state, "pending", "db_upsert 崩后 journal 仍 pending");
 
@@ -1584,7 +1617,15 @@ mod tests {
     fn journal_find_pending_finds_matching_entry() {
         let (dir, conn) = setup_journal_db();
         let src = Path::new("/src/a");
-        let id = journal_pending_inner(&conn, "move", src, Some(Path::new("/dst/a")), "task-9", 1000).unwrap();
+        let id = journal_pending_inner(
+            &conn,
+            "move",
+            src,
+            Some(Path::new("/dst/a")),
+            "task-9",
+            1000,
+        )
+        .unwrap();
 
         let found = journal_find_pending_inner(&conn, "task-9", src).unwrap();
         let e = found.expect("应找到 pending 条目");
@@ -1601,27 +1642,81 @@ mod tests {
         let src = Path::new("/src/a");
 
         // committed 的不算 pending
-        let id1 = journal_pending_inner(&conn, "move", src, Some(Path::new("/dst/a")), "task-9", 1000).unwrap();
+        let id1 = journal_pending_inner(
+            &conn,
+            "move",
+            src,
+            Some(Path::new("/dst/a")),
+            "task-9",
+            1000,
+        )
+        .unwrap();
         journal_committed_inner(&conn, id1).unwrap();
-        assert!(journal_find_pending_inner(&conn, "task-9", src).unwrap().is_none(),
-            "committed 条目不应命中");
+        assert!(
+            journal_find_pending_inner(&conn, "task-9", src)
+                .unwrap()
+                .is_none(),
+            "committed 条目不应命中"
+        );
 
         // cleared 的不算 pending
         let id2 = journal_pending_inner(&conn, "delete", src, None, "task-9", 2000).unwrap();
         journal_cleared_inner(&conn, id2).unwrap();
-        assert!(journal_find_pending_inner(&conn, "task-9", src).unwrap().is_none(),
-            "cleared 条目不应命中");
+        assert!(
+            journal_find_pending_inner(&conn, "task-9", src)
+                .unwrap()
+                .is_none(),
+            "cleared 条目不应命中"
+        );
 
         // 别的 task / 别的 src 不命中
-        journal_pending_inner(&conn, "move", src, Some(Path::new("/dst/b")), "task-other", 3000).unwrap();
-        journal_pending_inner(&conn, "move", Path::new("/src/other"), Some(Path::new("/dst/c")), "task-9", 4000).unwrap();
-        assert!(journal_find_pending_inner(&conn, "task-9", src).unwrap().is_none(),
-            "其他 task/src 的 pending 不应串扰");
+        journal_pending_inner(
+            &conn,
+            "move",
+            src,
+            Some(Path::new("/dst/b")),
+            "task-other",
+            3000,
+        )
+        .unwrap();
+        journal_pending_inner(
+            &conn,
+            "move",
+            Path::new("/src/other"),
+            Some(Path::new("/dst/c")),
+            "task-9",
+            4000,
+        )
+        .unwrap();
+        assert!(
+            journal_find_pending_inner(&conn, "task-9", src)
+                .unwrap()
+                .is_none(),
+            "其他 task/src 的 pending 不应串扰"
+        );
 
         // 同 task+src 多条 pending 时取最新（id 最大）
-        let id3 = journal_pending_inner(&conn, "move", src, Some(Path::new("/dst/old")), "task-9", 5000).unwrap();
-        let id4 = journal_pending_inner(&conn, "move", src, Some(Path::new("/dst/new")), "task-9", 6000).unwrap();
-        let e = journal_find_pending_inner(&conn, "task-9", src).unwrap().unwrap();
+        let id3 = journal_pending_inner(
+            &conn,
+            "move",
+            src,
+            Some(Path::new("/dst/old")),
+            "task-9",
+            5000,
+        )
+        .unwrap();
+        let id4 = journal_pending_inner(
+            &conn,
+            "move",
+            src,
+            Some(Path::new("/dst/new")),
+            "task-9",
+            6000,
+        )
+        .unwrap();
+        let e = journal_find_pending_inner(&conn, "task-9", src)
+            .unwrap()
+            .unwrap();
         assert_eq!(e.id, id4, "应取最新一条 pending");
         assert!(id4 > id3);
         fs::remove_dir_all(&dir).ok();
@@ -1675,8 +1770,14 @@ mod tests {
     /// NEW-B-1: replay 防覆盖谓词——file_path 仍指向 src 才允许修复。
     #[test]
     fn file_path_untouched_guard() {
-        assert!(file_path_untouched(Some("/src/a"), "/src/a"), "仍指向 src → 允许修复");
-        assert!(!file_path_untouched(Some("/other/b"), "/src/a"), "用户重绑 → 禁止覆盖");
+        assert!(
+            file_path_untouched(Some("/src/a"), "/src/a"),
+            "仍指向 src → 允许修复"
+        );
+        assert!(
+            !file_path_untouched(Some("/other/b"), "/src/a"),
+            "用户重绑 → 禁止覆盖"
+        );
         assert!(!file_path_untouched(None, "/src/a"), "已解绑 → 禁止回写");
     }
 
@@ -1703,7 +1804,10 @@ mod tests {
 
         // 任务 A、B 同时选定 name (1).pdf（竞态窗口：选定相同）
         let chosen_a = conflict_free_name(&dir, "name.pdf").unwrap();
-        assert_eq!(chosen_a.file_name().unwrap().to_string_lossy(), "name (1).pdf");
+        assert_eq!(
+            chosen_a.file_name().unwrap().to_string_lossy(),
+            "name (1).pdf"
+        );
         // A 先落盘（move_entry 创建目标文件）
         fs::write(&chosen_a, b"a-wins").unwrap();
 
@@ -1944,7 +2048,10 @@ mod tests {
     fn archive_dir_year_placeholder_in_nested_path() {
         for template in ["工资/{year}", "归档/{year}/Q4", "{year}/发票"] {
             let expanded = expand_year_placeholder(template);
-            assert!(!expanded.contains("{year}"), "模板 {template:?} 仍有未替换的占位符");
+            assert!(
+                !expanded.contains("{year}"),
+                "模板 {template:?} 仍有未替换的占位符"
+            );
             // 展开后的路径应是合理的本地路径
             assert!(PathBuf::from(&expanded).is_absolute() || expanded.contains('/'));
         }
@@ -2012,7 +2119,10 @@ mod tests {
             vec!["a", "b", "c", "d"],
             "混合中英文分号 / 逗号分隔"
         );
-        assert_eq!(rules.rules[0].action, "move", "Move 大小写变体应被归一化为 move");
+        assert_eq!(
+            rules.rules[0].action, "move",
+            "Move 大小写变体应被归一化为 move"
+        );
     }
 
     #[test]
@@ -2029,7 +2139,10 @@ mod tests {
         // 动作不在白名单 → 报错（指明行号）
         let text = "启用,文件名关键字,动作,归档目录\n是,工资,飞行,X\n";
         let err = parse_rules_csv(text).expect_err("未知动作应报错");
-        assert!(err.to_string().contains("飞行"), "错误信息应提到无效动作名：{err}");
+        assert!(
+            err.to_string().contains("飞行"),
+            "错误信息应提到无效动作名：{err}"
+        );
         assert!(err.to_string().contains("第 2 行"), "错误信息应指明行号");
     }
 

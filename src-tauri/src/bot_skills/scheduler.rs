@@ -1,6 +1,9 @@
 use super::parse::parse_skill_steps;
 use super::runtime::{advance_dsl, DslAdvanceAction};
-use super::state::{active_skill_run_for, clear_terminal_skill_runs, load_skill_meta, now_ms, skill_runs, SkillState};
+use super::state::{
+    active_skill_run_for, clear_terminal_skill_runs, load_skill_meta, now_ms, skill_runs,
+    SkillState,
+};
 use super::vars::{extract_task_id, substitute_vars, CompletedStep};
 use tauri::AppHandle;
 
@@ -17,7 +20,9 @@ fn persist_outcome_quiet(
         return;
     };
     // 纳入 DB_WRITE_LOCK：主窗长事务期间锁外直写会 SQLITE_BUSY 静默丢记录
-    let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _g = crate::db::DB_WRITE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let outcome = crate::db::PersistedSkillOutcome {
         skill_name: name.to_string(),
         kind: kind.to_string(),
@@ -157,7 +162,11 @@ where
 /// 按会话过滤：会话 B 的 /stop 不误杀会话 A 的活动技能；
 /// session_id=None 终止所有会话（lib.rs 应用退出清理路径用）。
 /// 泛型 Runtime：cleanup_on_exit 的 mock runtime 测试可直调。
-pub fn skill_terminate_all<R: tauri::Runtime>(app: &tauri::AppHandle<R>, reason: &str, session_id: Option<&str>) {
+pub fn skill_terminate_all<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    reason: &str,
+    session_id: Option<&str>,
+) {
     let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
     for (name, run) in runs.iter_mut() {
         if run.state == SkillState::Running || run.state == SkillState::Paused {
@@ -181,19 +190,38 @@ pub fn skill_terminate_all<R: tauri::Runtime>(app: &tauri::AppHandle<R>, reason:
 /// 本函数只做依赖装配（load_skill_meta + execute_tool 闭包承接 stop 分支
 /// + persist 闭包），实际调度逻辑在 run_skill_scheduler_core，
 /// 后者泛型 Runtime + 注入 executor，集成测试可直驱（tests/skill_e2e.rs）。
-pub async fn run_skill_scheduler(app: &AppHandle, name: &str, session_id: Option<&str>, stop: Option<&crate::bot_slash::StopGuard>) -> Result<DslOutcome, DslFailure> {
-    let (meta, body) =
-        load_skill_meta(app, name).map_err(|e| DslFailure::Terminated { reason: e.to_string() })?;
+pub async fn run_skill_scheduler(
+    app: &AppHandle,
+    name: &str,
+    session_id: Option<&str>,
+    stop: Option<&crate::bot_slash::StopGuard>,
+) -> Result<DslOutcome, DslFailure> {
+    let (meta, body) = load_skill_meta(app, name).map_err(|e| DslFailure::Terminated {
+        reason: e.to_string(),
+    })?;
     let execute_tool = |tool: String, args: String| async move {
         match stop {
             Some(s) => crate::bot::execute_tool_with_stop(app, &tool, &args, Some(s)).await,
             None => crate::bot::execute_tool(app, &tool, &args, session_id).await,
         }
     };
-    let persist_outcome = |name: &str, kind: &str, reason: Option<&str>, summary: Option<&str>, rollback_attempted: Option<bool>| {
+    let persist_outcome = |name: &str,
+                           kind: &str,
+                           reason: Option<&str>,
+                           summary: Option<&str>,
+                           rollback_attempted: Option<bool>| {
         persist_outcome_quiet(app, name, kind, reason, summary, rollback_attempted);
     };
-    run_skill_scheduler_core(app, name, &meta, &body, session_id, execute_tool, persist_outcome).await
+    run_skill_scheduler_core(
+        app,
+        name,
+        &meta,
+        &body,
+        session_id,
+        execute_tool,
+        persist_outcome,
+    )
+    .await
 }
 
 /// DSL 调度器核心（run_skill_scheduler 的实际调度逻辑）：
@@ -276,7 +304,13 @@ where
                 }
                 DslAdvanceAction::FailWithRollback(reason) => {
                     let rb_attempted = run_rollback_segment_core(
-                        app, name, &rollback, &ctx, step.index, &reason, session_id,
+                        app,
+                        name,
+                        &rollback,
+                        &ctx,
+                        step.index,
+                        &reason,
+                        session_id,
                         &execute_tool,
                     )
                     .await;
@@ -337,7 +371,14 @@ where
         let failed = is_tool_failure_text(&text);
         if failed {
             let rb_attempted = run_rollback_segment_core(
-                app, name, &rollback, &ctx, step.index, &text, session_id, &execute_tool,
+                app,
+                name,
+                &rollback,
+                &ctx,
+                step.index,
+                &text,
+                session_id,
+                &execute_tool,
             )
             .await;
             let final_reason = format!(
@@ -389,7 +430,6 @@ where
     persist_outcome(name, "done", None, Some(&summary), None);
     Ok(DslOutcome::Done(summary))
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -873,5 +913,4 @@ mod tests {
         }
         eprintln!("端到端 smoke：{} 个 Skill 全部跑通", skill_count);
     }
-
 }

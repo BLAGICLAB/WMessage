@@ -21,10 +21,10 @@ mod due_notify;
 pub mod error;
 mod exec_steps;
 pub mod intent_router;
+pub mod memory;
 pub mod middleware;
 mod migration;
 mod mutation;
-pub mod memory;
 mod ocr;
 mod profile;
 pub mod task_out;
@@ -553,7 +553,9 @@ mod f2_copy_file_tests {
     #[test]
     fn string_error_converts_to_internal_with_message_preserved() {
         let helper: Result<(), String> = Err("打开剪贴板失败".into());
-        let err = helper.map_err(crate::error::CommandError::from).unwrap_err();
+        let err = helper
+            .map_err(crate::error::CommandError::from)
+            .unwrap_err();
         assert_eq!(err.code(), "INTERNAL");
         assert!(err.message().contains("打开剪贴板失败"));
     }
@@ -567,19 +569,16 @@ mod capability_tests {
     /// 本测试锁死 capabilities/default.json 防回退。
     #[test]
     fn opener_open_path_scope_is_not_bare_wildcard() {
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/capabilities/default.json"
-        );
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/capabilities/default.json");
         let text = std::fs::read_to_string(path).expect("capabilities/default.json 必须可读");
         let json: serde_json::Value = serde_json::from_str(&text).expect("必须是合法 JSON");
-        let perms = json["permissions"].as_array().expect("permissions 必须是数组");
+        let perms = json["permissions"]
+            .as_array()
+            .expect("permissions 必须是数组");
         // 找到 opener:allow-open-path 对象项
         let open_path = perms
             .iter()
-            .find_map(|p| {
-                (p["identifier"] == "opener:allow-open-path").then_some(p)
-            })
+            .find_map(|p| (p["identifier"] == "opener:allow-open-path").then_some(p))
             .expect("必须配置 opener:allow-open-path");
         let allow = open_path["allow"]
             .as_array()
@@ -665,7 +664,9 @@ mod version_tests {
         )
         .expect("必须是合法 JSON");
         assert_eq!(
-            pkg["version"].as_str().expect("package.json 必须有 version"),
+            pkg["version"]
+                .as_str()
+                .expect("package.json 必须有 version"),
             env!("CARGO_PKG_VERSION"),
             "package.json version 与 Cargo.toml 漂移：跑 pnpm run sync-version 同步"
         );
@@ -830,12 +831,16 @@ mod dead_command_tests {
             "bind_files 复数形必须保留（TodoCard 前端在用）"
         );
         // 命令体本体也已删除（含仅它使用的 load_external）
-        let db = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/db.rs")).unwrap();
+        let db =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/db.rs")).unwrap();
         assert!(
             !db.contains(concat!("fn bind", "_file(")),
             "bind_file 命令体应已删除"
         );
-        assert!(!db.contains(concat!("fn db", "_merge(")), "db_merge 命令体应已删除");
+        assert!(
+            !db.contains(concat!("fn db", "_merge(")),
+            "db_merge 命令体应已删除"
+        );
         assert!(
             !db.contains(concat!("fn load", "_external(")),
             "load_external 应随 db_merge 一并删除"

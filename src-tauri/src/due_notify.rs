@@ -135,9 +135,7 @@ fn plan_round(
     // 解析出有效任务（due 可解析）；解析失败视为无截止
     let valid: Vec<(&String, &String, &String, DateTime<Local>)> = active
         .iter()
-        .filter_map(|(id, title, due)| {
-            parse_due_dt(due).map(|dt| (id, title, due, dt))
-        })
+        .filter_map(|(id, title, due)| parse_due_dt(due).map(|dt| (id, title, due, dt)))
         .collect();
     // 清理：已删除/完成/归档/去掉 due 的任务不再跟踪
     state.retain(|id, _| valid.iter().any(|(vid, _, _, _)| *vid == id));
@@ -307,10 +305,7 @@ mod due_notify_tests {
 
     #[test]
     fn parse_due_date_only_means_end_of_day() {
-        assert_eq!(
-            parse_due_dt("2026-09-05"),
-            Some(dt(2026, 9, 5, 23, 59))
-        );
+        assert_eq!(parse_due_dt("2026-09-05"), Some(dt(2026, 9, 5, 23, 59)));
     }
 
     #[test]
@@ -428,7 +423,7 @@ mod due_notify_tests {
         plan_round(&mut state, &tasks, dt(2026, 9, 5, 17, 0));
         assert!(state.contains_key("a"));
         assert!(!state.contains_key("b")); // 解析失败不跟踪
-        // a 完成/删除（不在活跃列表）→ 条目清理
+                                           // a 完成/删除（不在活跃列表）→ 条目清理
         plan_round(&mut state, &[], dt(2026, 9, 5, 17, 30));
         assert!(state.is_empty());
     }
@@ -443,7 +438,10 @@ mod due_notify_tests {
         assert!(plan_round(&mut state, &tasks, dt(2026, 9, 5, 17, 0)).is_empty());
         assert!(plan_round(&mut state, &tasks, dt(2026, 9, 5, 17, 30)).is_empty());
         // 到点 → T0 只发一次
-        assert_eq!(plan_round(&mut state, &tasks, dt(2026, 9, 5, 18, 0)).len(), 1);
+        assert_eq!(
+            plan_round(&mut state, &tasks, dt(2026, 9, 5, 18, 0)).len(),
+            1
+        );
         assert!(plan_round(&mut state, &tasks, dt(2026, 9, 5, 18, 1)).is_empty());
     }
 
@@ -459,7 +457,11 @@ mod due_notify_tests {
         let (t, b) = render(&h1);
         assert_eq!(t, "任务即将截止");
         assert_eq!(b, "「写报告」还有 1 小时截止（09-05 18:00）");
-        let t0 = Pending { kind: NotifyKind::T0, has_time: false, ..h1 };
+        let t0 = Pending {
+            kind: NotifyKind::T0,
+            has_time: false,
+            ..h1
+        };
         let (t, b) = render(&t0);
         assert_eq!(t, "任务已到截止时间");
         assert_eq!(b, "「写报告」截止时间已到（09-05）");

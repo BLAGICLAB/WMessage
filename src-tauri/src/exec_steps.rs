@@ -74,7 +74,10 @@ fn take_pending_for(session_id: Option<&str>) -> Option<PendingExec> {
 /// 结束/清空**本会话**的挂起（正常结束、用户喊停、被同会话新执行覆盖）；恢复任务卡用户头像
 pub async fn clear_for(app: &AppHandle, session_id: Option<&str>, reason: &str) {
     if let Some(p) = take_pending_for(session_id) {
-        crate::bot::audit_log(app, &format!("exec_steps.clear | task: {} | {reason}", p.task_id));
+        crate::bot::audit_log(
+            app,
+            &format!("exec_steps.clear | task: {} | {reason}", p.task_id),
+        );
         crate::bot_chat::set_bot_assigned(app, &p.task_id, false).await;
     }
 }
@@ -149,10 +152,16 @@ async fn mark_subtask_done(app: &AppHandle, task_id: &str, subtask_id: &str) {
     let Some(text) = done_now else { return };
     t.expected_updated_at = t.updated_at; // RMW 基线 = 快照 updated_at
     t.updated_at = Some(chrono::Utc::now().timestamp_millis());
-    if crate::db::db_upsert(app.clone(), vec![t.clone()]).await.is_ok() {
+    if crate::db::db_upsert(app.clone(), vec![t.clone()])
+        .await
+        .is_ok()
+    {
         crate::bot::audit_log(
             app,
-            &format!("exec_steps.subtask_done | task: {task_id} | 已勾选「{}」", crate::bot::truncate_for_log(&text, 60)),
+            &format!(
+                "exec_steps.subtask_done | task: {task_id} | 已勾选「{}」",
+                crate::bot::truncate_for_log(&text, 60)
+            ),
         );
         crate::bot::broadcast_after_mutation(app, vec![t], vec![]);
     }
@@ -231,7 +240,15 @@ async fn advance_or_finish(
     let subs = task.subtasks.clone().unwrap_or_default();
     if let Some(next) = subs.iter().find(|s| !s.done) {
         // Box::pin：run_step ↔ advance_or_finish 互调是异步递归，Rust 要求显式装箱
-        return Box::pin(run_step(app, task_id, &next.id.clone(), None, stop, exec_guard)).await;
+        return Box::pin(run_step(
+            app,
+            task_id,
+            &next.id.clone(),
+            None,
+            stop,
+            exec_guard,
+        ))
+        .await;
     }
     clear_for(app, stop.session_id(), "全部子任务完成").await;
     Ok(BotChatResult {
@@ -241,12 +258,19 @@ async fn advance_or_finish(
 }
 
 /// 开始逐步执行（bot_execute_task 在 ≥2 个未勾子任务时分流到这里）
-pub async fn start(app: &AppHandle, task: &crate::db::Task, session_id: Option<&str>) -> CommandResult<BotChatResult> {
+pub async fn start(
+    app: &AppHandle,
+    task: &crate::db::Task,
+    session_id: Option<&str>,
+) -> CommandResult<BotChatResult> {
     // 防重入：与 run_task_in_chat 同一守卫（同一卡不能同时两个执行实例）
     let Some(exec_guard) = ExecGuard::acquire(&task.id) else {
         crate::bot::audit_log(
             app,
-            &format!("execute_task_rejected | id: {} | 已有执行实例在跑（防重入拦截）", task.id),
+            &format!(
+                "execute_task_rejected | id: {} | 已有执行实例在跑（防重入拦截）",
+                task.id
+            ),
         );
         return Err(CommandError::TaskInvalidState {
             reason: "该任务卡正在执行中，请等待完成后再触发".into(),
@@ -291,7 +315,11 @@ pub async fn start(app: &AppHandle, task: &crate::db::Task, session_id: Option<&
 }
 
 /// 聊天入口发现挂起时调用：按用户应答继续/重做/停
-pub async fn resume(app: &AppHandle, reply: &str, session_id: Option<&str>) -> CommandResult<BotChatResult> {
+pub async fn resume(
+    app: &AppHandle,
+    reply: &str,
+    session_id: Option<&str>,
+) -> CommandResult<BotChatResult> {
     let Some(p) = take_pending_for(session_id) else {
         return Ok(BotChatResult {
             text: "（当前没有待确认的子任务执行）".into(),
@@ -305,7 +333,10 @@ pub async fn resume(app: &AppHandle, reply: &str, session_id: Option<&str>) -> C
         if let Err(e) = r {
             crate::bot::audit_log(
                 app,
-                &format!("exec_steps.resume_failed | task: {task_id} | {}", crate::bot::truncate_for_log(&e.to_string(), 200)),
+                &format!(
+                    "exec_steps.resume_failed | task: {task_id} | {}",
+                    crate::bot::truncate_for_log(&e.to_string(), 200)
+                ),
             );
         }
         r.is_err()
@@ -334,7 +365,10 @@ pub async fn resume(app: &AppHandle, reply: &str, session_id: Option<&str>) -> C
         StepReply::Continue => {
             crate::bot::audit_log(
                 app,
-                &format!("exec_steps.confirm | task: {} | 用户确认，勾选并继续", task_id),
+                &format!(
+                    "exec_steps.confirm | task: {} | 用户确认，勾选并继续",
+                    task_id
+                ),
             );
             mark_subtask_done(app, &task_id, &subtask_id).await;
             let stop = StopGuard::new_task_exec(true, session_id.map(|s| s.to_string()));
@@ -354,7 +388,15 @@ pub async fn resume(app: &AppHandle, reply: &str, session_id: Option<&str>) -> C
                 ),
             );
             let stop = StopGuard::new_task_exec(true, session_id.map(|s| s.to_string()));
-            let r = run_step(app, &task_id, &subtask_id, Some(&feedback), &stop, exec_guard).await;
+            let r = run_step(
+                app,
+                &task_id,
+                &subtask_id,
+                Some(&feedback),
+                &stop,
+                exec_guard,
+            )
+            .await;
             if cleanup_on_err(app, &task_id, &r) {
                 crate::bot_chat::set_bot_assigned(app, &task_id, false).await;
             }
@@ -369,14 +411,36 @@ mod classify_tests {
 
     #[test]
     fn continue_keywords() {
-        for t in ["继续", "继续吧", "好了", "可以", "行", "下一个", "没问题", "嗯", "ok", "OK", " go ", "continue"] {
+        for t in [
+            "继续",
+            "继续吧",
+            "好了",
+            "可以",
+            "行",
+            "下一个",
+            "没问题",
+            "嗯",
+            "ok",
+            "OK",
+            " go ",
+            "continue",
+        ] {
             assert_eq!(classify_reply(t), StepReply::Continue, "{t} 应判为继续");
         }
     }
 
     #[test]
     fn stop_keywords() {
-        for t in ["停", "停止", "别做了", "不做了", "算了", "结束吧", "/stop", "STOP"] {
+        for t in [
+            "停",
+            "停止",
+            "别做了",
+            "不做了",
+            "算了",
+            "结束吧",
+            "/stop",
+            "STOP",
+        ] {
             assert_eq!(classify_reply(t), StepReply::Stop, "{t} 应判为停止");
         }
     }
@@ -384,14 +448,23 @@ mod classify_tests {
     #[test]
     fn redo_with_feedback() {
         assert_eq!(classify_reply("重做"), StepReply::Redo("".into()));
-        assert_eq!(classify_reply("重做，配色太深了"), StepReply::Redo("配色太深了".into()));
-        assert_eq!(classify_reply("重新做：换个角度"), StepReply::Redo("换个角度".into()));
+        assert_eq!(
+            classify_reply("重做，配色太深了"),
+            StepReply::Redo("配色太深了".into())
+        );
+        assert_eq!(
+            classify_reply("重新做：换个角度"),
+            StepReply::Redo("换个角度".into())
+        );
     }
 
     #[test]
     fn free_text_is_redo_feedback() {
         // 确认语境下的自由文本 = 对本步结果的修改意见
-        assert_eq!(classify_reply("配色太深了，换浅色"), StepReply::Redo("配色太深了，换浅色".into()));
+        assert_eq!(
+            classify_reply("配色太深了，换浅色"),
+            StepReply::Redo("配色太深了，换浅色".into())
+        );
     }
 
     // ── 挂起按会话分槽 ──
@@ -399,8 +472,18 @@ mod classify_tests {
     #[test]
     fn pending_slots_are_per_session() {
         // 会话 A 挂起不影响会话 B；覆盖只发生在同会话内
-        park(PendingExec { task_id: "tA".into(), subtask_id: "s1".into(), session_id: Some("sess-a-p12".into()), exec_guard: crate::bot_chat::ExecGuard::acquire("tA").expect("tA 守卫") });
-        park(PendingExec { task_id: "tB".into(), subtask_id: "s2".into(), session_id: Some("sess-b-p12".into()), exec_guard: crate::bot_chat::ExecGuard::acquire("tB").expect("tB 守卫") });
+        park(PendingExec {
+            task_id: "tA".into(),
+            subtask_id: "s1".into(),
+            session_id: Some("sess-a-p12".into()),
+            exec_guard: crate::bot_chat::ExecGuard::acquire("tA").expect("tA 守卫"),
+        });
+        park(PendingExec {
+            task_id: "tB".into(),
+            subtask_id: "s2".into(),
+            session_id: Some("sess-b-p12".into()),
+            exec_guard: crate::bot_chat::ExecGuard::acquire("tB").expect("tB 守卫"),
+        });
         assert!(has_pending_for(Some("sess-a-p12")));
         assert!(has_pending_for(Some("sess-b-p12")));
         assert!(!has_pending_for(Some("sess-c-p12")));
@@ -435,12 +518,12 @@ mod guard_tests {
     ///（否则确认等待期调度器可对同一卡并发起执行）
     #[test]
     fn pending_exec_holds_exec_guard() {
-        let text = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/exec_steps.rs"
-        ))
-        .unwrap();
-        let pos = text.find("struct PendingExec").expect("PendingExec 必须存在");
+        let text =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/exec_steps.rs"))
+                .unwrap();
+        let pos = text
+            .find("struct PendingExec")
+            .expect("PendingExec 必须存在");
         let scope: String = text[pos..].chars().take(800).collect();
         assert!(
             scope.contains("exec_guard: ExecGuard"),

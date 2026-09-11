@@ -31,7 +31,13 @@ fn notify_scheduled_done(
             crate::bot::truncate_for_log(&e.message(), 120),
         ),
     };
-    if let Err(e) = app.notification().builder().title(&title).body(&body).show() {
+    if let Err(e) = app
+        .notification()
+        .builder()
+        .title(&title)
+        .body(&body)
+        .show()
+    {
         eprintln!("[sched] 系统通知发送失败（未授权？）：{e}");
     }
 }
@@ -228,10 +234,7 @@ fn classify_due(
 ) -> DueVerdict {
     match occurrence_after(sched, sched_last_dt(sched_last)) {
         Some(occ) if occ <= now => {
-            if sched_last.is_some()
-                && !sched.starts_with("at:")
-                && now - occ > CATCHUP_WINDOW
-            {
+            if sched_last.is_some() && !sched.starts_with("at:") && now - occ > CATCHUP_WINDOW {
                 DueVerdict::Missed
             } else {
                 DueVerdict::Run
@@ -311,7 +314,10 @@ async fn find_due_tasks(app: &AppHandle) -> Vec<crate::db::Task> {
                 .collect();
             if !fresh.is_empty() {
                 // 调度器写库也要广播（主窗口无轮询，不广播会长期显示旧的 ⏰ 徽标/备注）
-                if crate::db::db_upsert(app.clone(), fresh.clone()).await.is_ok() {
+                if crate::db::db_upsert(app.clone(), fresh.clone())
+                    .await
+                    .is_ok()
+                {
                     crate::bot::broadcast_after_mutation(app, fresh, vec![]);
                 }
             }
@@ -333,7 +339,10 @@ async fn find_due_tasks(app: &AppHandle) -> Vec<crate::db::Task> {
                 })
                 .collect();
             if !fresh.is_empty() {
-                if crate::db::db_upsert(app.clone(), fresh.clone()).await.is_ok() {
+                if crate::db::db_upsert(app.clone(), fresh.clone())
+                    .await
+                    .is_ok()
+                {
                     crate::bot::broadcast_after_mutation(app, fresh, vec![]);
                 }
             }
@@ -376,7 +385,9 @@ async fn run_scheduled(app: AppHandle, task: crate::db::Task) {
             fresh.expected_updated_at = fresh.updated_at; // RMW 基线 = 快照 updated_at
             fresh.sched_last = Some(now.timestamp_millis());
             fresh.updated_at = Some(now.timestamp_millis());
-            marked = crate::db::db_upsert(app.clone(), vec![fresh.clone()]).await.is_ok();
+            marked = crate::db::db_upsert(app.clone(), vec![fresh.clone()])
+                .await
+                .is_ok();
             if marked {
                 crate::bot::broadcast_after_mutation(&app, vec![fresh], vec![]);
             }
@@ -432,7 +443,10 @@ async fn run_scheduled(app: AppHandle, task: crate::db::Task) {
             }
             fresh.expected_updated_at = fresh.updated_at; // RMW 基线 = 快照 updated_at
             fresh.updated_at = Some(chrono::Local::now().timestamp_millis());
-            if crate::db::db_upsert(app.clone(), vec![fresh.clone()]).await.is_ok() {
+            if crate::db::db_upsert(app.clone(), vec![fresh.clone()])
+                .await
+                .is_ok()
+            {
                 crate::bot::broadcast_after_mutation(&app, vec![fresh], vec![]);
             }
         }
@@ -595,12 +609,12 @@ mod sched_tests {
     ///（串行执行回退 = 一张长任务卡堵死全部后续到点任务），且必须有单任务整体超时
     #[test]
     fn scheduler_loop_does_not_await_each_task() {
-        let text = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/bot_scheduler.rs"
-        ))
-        .unwrap();
-        let pos = text.find("let due = find_due_tasks").expect("调度循环必须存在");
+        let text =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bot_scheduler.rs"))
+                .unwrap();
+        let pos = text
+            .find("let due = find_due_tasks")
+            .expect("调度循环必须存在");
         // 字符安全截取（中文注释多字节，字节下标切片会 panic）
         let scope: String = text[pos..].chars().take(1600).collect();
         assert!(
@@ -688,7 +702,10 @@ mod sched_tests {
         // at: 一次性任务不走补跑窗口（由 at_expired 放弃逻辑处理）：
         // 过去的一次性任务保持既有 Run 判定（find_due_tasks 的 stale 清理负责清场）
         let now = dt(2026, 8, 16, 12, 0);
-        assert_eq!(classify_due("at:2026-08-10T10:00", None, now), DueVerdict::Run);
+        assert_eq!(
+            classify_due("at:2026-08-10T10:00", None, now),
+            DueVerdict::Run
+        );
     }
 
     #[test]
@@ -701,7 +718,11 @@ mod sched_tests {
         );
         // 已跑过的一次性任务不再触发
         assert_eq!(
-            classify_due("at:2026-08-16T10:00", Some(ms(2026, 8, 16, 10, 0)), dt(2026, 8, 16, 11, 0)),
+            classify_due(
+                "at:2026-08-16T10:00",
+                Some(ms(2026, 8, 16, 10, 0)),
+                dt(2026, 8, 16, 11, 0)
+            ),
             DueVerdict::NotDue
         );
         // 坏格式

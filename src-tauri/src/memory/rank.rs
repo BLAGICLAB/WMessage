@@ -159,10 +159,7 @@ pub fn injection_snapshot(
         .collect();
     let mut recent: Vec<MemItem> = items
         .iter()
-        .filter(|m| {
-            (m.kind == "summary" || m.kind == "reflection")
-                && !hit_ids.contains(&m.id)
-        })
+        .filter(|m| (m.kind == "summary" || m.kind == "reflection") && !hit_ids.contains(&m.id))
         .cloned()
         .collect();
     recent.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));

@@ -43,19 +43,29 @@ fn dedup_merge_branch_high_cosine() {
     let mut first_item = item("fact", "用户不吃辣");
     first_item.tags = vec!["口味".into()];
     let (r1, _) = store::insert_item(&conn, &first_item, Some(&onehot(0)), now).unwrap();
-    let InsertOutcome::Inserted(first) = r1 else { panic!("首条应插入") };
+    let InsertOutcome::Inserted(first) = r1 else {
+        panic!("首条应插入")
+    };
     // 同向量（cos=1 ≥ 0.92）→ 合并更新，不新增
     let mut second = item("fact", "用户不吃辣，微辣也不行");
     second.tags = vec!["忌口".into()];
     let (r2, hints) = store::insert_item(&conn, &second, Some(&onehot(0)), now + 1).unwrap();
     assert!(hints.is_empty());
-    let InsertOutcome::Merged { item: m, orig_key } = r2 else { panic!("应合并") };
+    let InsertOutcome::Merged { item: m, orig_key } = r2 else {
+        panic!("应合并")
+    };
     assert_eq!(m.id, first.id, "合并更新的是同一条");
     assert_eq!(m.content, "用户不吃辣，微辣也不行");
     assert_eq!(m.access_count, 1, "合并刷新访问计数");
-    assert_eq!(orig_key.as_deref(), Some("口味"), "orig_key 带出被合并原条目的 key（非新 key）");
+    assert_eq!(
+        orig_key.as_deref(),
+        Some("口味"),
+        "orig_key 带出被合并原条目的 key（非新 key）"
+    );
     assert_eq!(m.tags, vec!["忌口"], "条目本身 tags 已覆盖为新值");
-    let n: i64 = conn.query_row("SELECT COUNT(*) FROM mem_items", [], |r| r.get(0)).unwrap();
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM mem_items", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(n, 1, "合并不新增行");
 }
 
@@ -67,13 +77,23 @@ fn dedup_hint_branch_mid_cosine() {
     tagged.tags = vec!["城市".into()];
     store::insert_item(&conn, &tagged, Some(&onehot(0)), now).unwrap();
     // cos=0.8 ∈ [0.75, 0.92) → 不拦截，带冲突提示
-    let (r, hints) =
-        store::insert_item(&conn, &item("fact", "住在上海浦东"), Some(&tilted(0.8)), now + 1)
-            .unwrap();
+    let (r, hints) = store::insert_item(
+        &conn,
+        &item("fact", "住在上海浦东"),
+        Some(&tilted(0.8)),
+        now + 1,
+    )
+    .unwrap();
     assert!(matches!(r, InsertOutcome::Inserted(_)), "中间区间仍插入");
     assert_eq!(hints.len(), 1);
-    assert!(hints[0].contains("key=城市"), "提示带已有 key：{}", hints[0]);
-    let n: i64 = conn.query_row("SELECT COUNT(*) FROM mem_items", [], |r| r.get(0)).unwrap();
+    assert!(
+        hints[0].contains("key=城市"),
+        "提示带已有 key：{}",
+        hints[0]
+    );
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM mem_items", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(n, 2);
 }
 
@@ -97,7 +117,9 @@ fn dedup_skipped_in_degraded_mode() {
     let (r, hints) = store::insert_item(&conn, &item("fact", "用户不吃辣"), None, now + 1).unwrap();
     assert!(matches!(r, InsertOutcome::Inserted(_)));
     assert!(hints.is_empty());
-    let n: i64 = conn.query_row("SELECT COUNT(*) FROM mem_items", [], |r| r.get(0)).unwrap();
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM mem_items", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(n, 2);
 }
 
@@ -121,10 +143,16 @@ fn capacity_eviction_order_and_protection() {
     // 再插一条 → 淘汰最低分的非保护条目，受保护条目存活
     let (r, _) = store::insert_item(&conn, &item("fact", "新记忆"), None, now).unwrap();
     assert!(matches!(r, InsertOutcome::Inserted(_)));
-    let n: i64 = conn.query_row("SELECT COUNT(*) FROM mem_items", [], |r| r.get(0)).unwrap();
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM mem_items", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(n, store::MAX_MEM_ITEMS, "容量封顶 500");
     let survived: i64 = conn
-        .query_row("SELECT COUNT(*) FROM mem_items WHERE id = ?1", [&protected_id], |r| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM mem_items WHERE id = ?1",
+            [&protected_id],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(survived, 1, "importance=5 且 user_stated 不可淘汰");
 }
@@ -140,9 +168,13 @@ fn capacity_full_of_protected_rejects_write() {
         store::insert_item(&conn, &it, None, now + i).unwrap();
     }
     let (r, _) = store::insert_item(&conn, &item("fact", "挤不进来"), None, now + 9999).unwrap();
-    let InsertOutcome::RejectedFull(msg) = r else { panic!("应拒写") };
+    let InsertOutcome::RejectedFull(msg) = r else {
+        panic!("应拒写")
+    };
     assert!(msg.contains("上限"), "{msg}");
-    let n: i64 = conn.query_row("SELECT COUNT(*) FROM mem_items", [], |r| r.get(0)).unwrap();
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM mem_items", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(n, store::MAX_MEM_ITEMS);
 }
 
@@ -214,7 +246,7 @@ fn hybrid_score_mixed_mode_guards_vectorless_items() {
     };
     let q = onehot(0);
     let kws = rank::extract_keywords("关键词"); // CJK bigram：["关键", "键词"]
-    // 无向量 + 零重合 → 0 分（修复前 = 0.15+0.10 > 0 会漏进 top-5）
+                                                // 无向量 + 零重合 → 0 分（修复前 = 0.15+0.10 > 0 会漏进 top-5）
     let no_vec_no_kw = mk("完全无关的内容", None);
     assert_eq!(
         rank::hybrid_score(&kws, Some(&q), &no_vec_no_kw, now),
@@ -263,7 +295,10 @@ fn injection_snapshot_three_sections() {
     assert_eq!(inj.pinned.len(), 1);
     assert!(inj.pinned[0].id == "p1");
     assert!(!hit_ids.is_empty(), "关键词命中应进 hits");
-    assert!(inj.pinned.iter().all(|p| !hit_ids.contains(&p.id)), "pinned 不进 hits");
+    assert!(
+        inj.pinned.iter().all(|p| !hit_ids.contains(&p.id)),
+        "pinned 不进 hits"
+    );
     assert_eq!(inj.recent.len(), 1);
     assert_eq!(inj.recent[0].id, "s1");
 }
@@ -295,13 +330,28 @@ fn recall_key_tag_update_and_delete() {
     let mut it = item("fact", "上海");
     it.tags = vec!["城市".into()];
     store::insert_item(&conn, &it, Some(&onehot(0)), now).unwrap();
-    let existing = store::find_by_key_tag(&conn, "城市").unwrap().expect("应找到");
-    store::update_by_id(&conn, &existing.id, "北京", 3, "user_stated", "fact", Some(&onehot(0)), now + 1).unwrap();
+    let existing = store::find_by_key_tag(&conn, "城市")
+        .unwrap()
+        .expect("应找到");
+    store::update_by_id(
+        &conn,
+        &existing.id,
+        "北京",
+        3,
+        "user_stated",
+        "fact",
+        Some(&onehot(0)),
+        now + 1,
+    )
+    .unwrap();
     let updated = store::find_by_key_tag(&conn, "城市").unwrap().unwrap();
     assert_eq!(updated.content, "北京", "同 key 覆盖更新");
     assert_eq!(store::load_all(&conn).unwrap().len(), 1, "覆盖不堆积");
     assert!(store::delete_by_key_tag(&conn, "城市").unwrap());
-    assert!(!store::delete_by_key_tag(&conn, "城市").unwrap(), "重复删除返回 false");
+    assert!(
+        !store::delete_by_key_tag(&conn, "城市").unwrap(),
+        "重复删除返回 false"
+    );
 }
 
 #[test]
@@ -313,7 +363,17 @@ fn degraded_update_clears_stale_embedding() {
     store::insert_item(&conn, &it, Some(&onehot(0)), now).unwrap();
     let id = store::find_by_key_tag(&conn, "k").unwrap().unwrap().id;
     // 降级模式（无新向量）覆盖更新 content → 旧向量随内容作废（置 NULL）
-    store::update_by_id(&conn, &id, "新内容", 3, "user_stated", "fact", None, now + 1).unwrap();
+    store::update_by_id(
+        &conn,
+        &id,
+        "新内容",
+        3,
+        "user_stated",
+        "fact",
+        None,
+        now + 1,
+    )
+    .unwrap();
     let m = store::find_by_key_tag(&conn, "k").unwrap().unwrap();
     assert_eq!(m.content, "新内容");
     assert!(m.embedding.is_none(), "内容变了且无新向量 → 旧向量必须清空");
@@ -328,7 +388,17 @@ fn same_content_update_preserves_embedding() {
     store::insert_item(&conn, &it, Some(&onehot(0)), now).unwrap();
     let id = store::find_by_key_tag(&conn, "k").unwrap().unwrap().id;
     // content 没变、只动 importance（无新向量）→ 旧向量保留
-    store::update_by_id(&conn, &id, "内容不变", 5, "user_stated", "fact", None, now + 1).unwrap();
+    store::update_by_id(
+        &conn,
+        &id,
+        "内容不变",
+        5,
+        "user_stated",
+        "fact",
+        None,
+        now + 1,
+    )
+    .unwrap();
     let m = store::find_by_key_tag(&conn, "k").unwrap().unwrap();
     assert_eq!(m.importance, 5);
     assert!(m.embedding.is_some(), "内容没变 → 保留旧向量");
@@ -336,9 +406,17 @@ fn same_content_update_preserves_embedding() {
 
 #[test]
 fn validate_fact_kv_rejects_ascii_comma() {
-    assert!(super::validate_fact_kv("a,b", "v").unwrap_err().contains("逗号"));
-    assert!(super::validate_fact_kv("a，b", "v").is_ok(), "中文逗号不受影响");
-    assert!(super::validate_fact_kv("k", "含,逗号").is_ok(), "value 不进 tags，逗号合法");
+    assert!(super::validate_fact_kv("a,b", "v")
+        .unwrap_err()
+        .contains("逗号"));
+    assert!(
+        super::validate_fact_kv("a，b", "v").is_ok(),
+        "中文逗号不受影响"
+    );
+    assert!(
+        super::validate_fact_kv("k", "含,逗号").is_ok(),
+        "value 不进 tags，逗号合法"
+    );
 }
 
 // ───────────────────────── lesson（教训记忆） ─────────────────────────
@@ -371,7 +449,14 @@ fn record_lesson_semantic_dedup_merges() {
     let now = 1_000_000;
     super::record_lesson_core(&conn, "教训A", "场景", "system", Some(&onehot(0)), now);
     // 同向量（cos=1）→ 合并更新不新增
-    let msg = super::record_lesson_core(&conn, "教训A补充版", "场景", "system", Some(&onehot(0)), now + 1);
+    let msg = super::record_lesson_core(
+        &conn,
+        "教训A补充版",
+        "场景",
+        "system",
+        Some(&onehot(0)),
+        now + 1,
+    );
     assert!(msg.contains("合并"), "{msg}");
     let items = store::load_all(&conn).unwrap();
     assert_eq!(items.len(), 1, "同类教训合并不堆积");
@@ -385,16 +470,24 @@ fn record_lesson_validation() {
     let long = "x".repeat(801);
     assert!(super::record_lesson_core(&conn, &long, "s", "system", None, 0).contains("太长"));
     let long_s = "s".repeat(51);
-    assert!(super::record_lesson_core(&conn, "ok", &long_s, "system", None, 0).contains("scenario"));
+    assert!(
+        super::record_lesson_core(&conn, "ok", &long_s, "system", None, 0).contains("scenario")
+    );
     // scenario 含英文逗号被拒（tags 逗号分隔存储）；中文逗号不受影响
     assert!(super::record_lesson_core(&conn, "ok", "a,b", "system", None, 0).contains("逗号"));
-    assert!(super::record_lesson_core(&conn, "ok", "文档，修订", "system", None, 0).starts_with("已记录教训"));
+    assert!(
+        super::record_lesson_core(&conn, "ok", "文档，修订", "system", None, 0)
+            .starts_with("已记录教训")
+    );
 }
 
 #[test]
 fn task_failure_lesson_content_shape() {
     let (content, tags) = super::task_failure_lesson("写周报", "LLM API 401 未授权");
-    assert!(content.contains("写周报") && content.contains("401"), "{content}");
+    assert!(
+        content.contains("写周报") && content.contains("401"),
+        "{content}"
+    );
     assert!(content.len() <= 800);
     assert_eq!(tags, vec!["lesson", "task_exec"]);
     // 超长错误截断
@@ -415,8 +508,14 @@ fn lesson_injected_in_fourth_section() {
     let items = store::load_all(&conn).unwrap();
     let (inj, hit_ids) = rank::injection_snapshot(&items, "文档修订 关键词", None, now);
     assert_eq!(inj.lessons.len(), 1, "lesson 应进第四段");
-    assert!(inj.hits.iter().all(|m| m.kind != "lesson"), "lesson 不进相关记忆段");
-    assert!(hit_ids.contains(&inj.lessons[0].id), "lesson 命中也算访问强化");
+    assert!(
+        inj.hits.iter().all(|m| m.kind != "lesson"),
+        "lesson 不进相关记忆段"
+    );
+    assert!(
+        hit_ids.contains(&inj.lessons[0].id),
+        "lesson 命中也算访问强化"
+    );
     let block = super::format_memory_block(&inj).unwrap();
     assert!(block.contains("### 经验教训"), "{block}");
     assert!(block.contains("修订文档前先备份"), "{block}");

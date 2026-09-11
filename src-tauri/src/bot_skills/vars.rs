@@ -1,5 +1,5 @@
-use std::sync::LazyLock;
 use regex::Regex;
+use std::sync::LazyLock;
 
 // ─────────────────────── 变量替换 ───────────────────────
 
@@ -13,7 +13,8 @@ static VAR_BY_INDEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\$\{step(\d+)\.(result|id)\}").unwrap());
 
 /// `${prev.field}` 上一步简写
-static VAR_PREV: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\$\{prev\.(result|id)\}").unwrap());
+static VAR_PREV: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\$\{prev\.(result|id)\}").unwrap());
 
 /// `${stepN.path.to.field}` 嵌套路径
 /// 路径 ≥2 段（首段标识符 + 后续 `.xxx`），与单段 result/id 不冲突
@@ -73,9 +74,8 @@ fn replace_ctx(
         let Some(val) = f(&caps) else { continue };
         out.push_str(&text[last..m.start()]);
         let bytes = text.as_bytes();
-        let in_quotes = m.start() > 0
-            && bytes[m.start() - 1] == b'"'
-            && bytes.get(m.end()) == Some(&b'"');
+        let in_quotes =
+            m.start() > 0 && bytes[m.start() - 1] == b'"' && bytes.get(m.end()) == Some(&b'"');
         if in_quotes {
             out.push_str(&escape_json_str_inner(&val));
         } else {
@@ -160,7 +160,6 @@ fn resolve_nested_path(parsed: Option<&serde_json::Value>, path: &str) -> Option
     })
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,8 +196,7 @@ mod tests {
         let ctx = ctx_one_step("uuid-1", "第一行\n第二行");
         let args = "{\"note\": \"${step1.result}\"}";
         let out = substitute_vars(args, &ctx);
-        let parsed: serde_json::Value =
-            serde_json::from_str(&out).expect("替换后必须是合法 JSON");
+        let parsed: serde_json::Value = serde_json::from_str(&out).expect("替换后必须是合法 JSON");
         assert_eq!(parsed["note"], "第一行\n第二行");
     }
 
@@ -436,5 +434,4 @@ mod tests {
             r#"{"i": "task-uuid"}"#
         );
     }
-
 }

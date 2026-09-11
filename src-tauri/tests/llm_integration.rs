@@ -27,7 +27,9 @@ use wmessage_lib::middleware;
 /// 中间件 API 的 AppHandle 首参占位（P2-13/14 签名扩展后测试适配，2026-08-19）。
 /// 这些用例只命中闸门判定，不触发 audit 落盘路径；App 泄漏给测试进程，退出即回收。
 fn mock_handle() -> tauri::AppHandle<tauri::test::MockRuntime> {
-    Box::leak(Box::new(tauri::test::mock_app())).handle().clone()
+    Box::leak(Box::new(tauri::test::mock_app()))
+        .handle()
+        .clone()
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -256,15 +258,13 @@ fn accumulate_matches_production_merge_semantics() {
     // 批次3审计 T-1：生产累积函数的归并语义——按 index 归位、字段追加、
     // index 交错乱序、arguments 分片、id 只出现一次
     let mut calls: Vec<(String, String, String)> = Vec::new();
-    let delta = |index: usize,
-                 id: Option<&str>,
-                 name: Option<&str>,
-                 args: Option<&str>| ToolCallDelta {
-        index,
-        id: id.map(|s| s.to_string()),
-        name_chunk: name.map(|s| s.to_string()),
-        arguments_chunk: args.map(|s| s.to_string()),
-    };
+    let delta =
+        |index: usize, id: Option<&str>, name: Option<&str>, args: Option<&str>| ToolCallDelta {
+            index,
+            id: id.map(|s| s.to_string()),
+            name_chunk: name.map(|s| s.to_string()),
+            arguments_chunk: args.map(|s| s.to_string()),
+        };
     // index 1 先到（乱序）
     assert!(accumulate_tool_call_delta(
         &mut calls,
@@ -480,7 +480,9 @@ async fn llm_mixed_sequence_blacklist_then_whitelist_block_then_allow() {
     let tool1 = first_tool_name(&parsed1);
     let registry = middleware::build_default_registry();
     assert!(
-        registry.run_pre_execute(&mock_handle(), &tool1, false).is_some(),
+        registry
+            .run_pre_execute(&mock_handle(), &tool1, false)
+            .is_some(),
         "轮次 1 link_file_to_task 应被阻断"
     );
 
@@ -495,7 +497,9 @@ async fn llm_mixed_sequence_blacklist_then_whitelist_block_then_allow() {
     let parsed2 = parse_sse_bytes(&bytes2);
     let tool2 = first_tool_name(&parsed2);
     assert!(
-        registry.run_pre_execute(&mock_handle(), &tool2, false).is_none(),
+        registry
+            .run_pre_execute(&mock_handle(), &tool2, false)
+            .is_none(),
         "轮次 2 list_tasks 应放行"
     );
 }
@@ -748,7 +752,10 @@ async fn core_http_500_exhausts_attempts_then_error() {
     // 重试预算耗尽（MAX_LLM_ATTEMPTS=2）：连续 500 → 第二次不再重试，包装报错
     let server = MockLlmServer::start();
     server.push_behavior(MockBehavior::HttpError(500, r#"{"error":"boom"}"#.into()));
-    server.push_behavior(MockBehavior::HttpError(500, r#"{"error":"boom again"}"#.into()));
+    server.push_behavior(MockBehavior::HttpError(
+        500,
+        r#"{"error":"boom again"}"#.into(),
+    ));
     server.push_behavior(MockBehavior::TextReply("不应到达".into()));
     let h = CoreHarness::new();
 
@@ -877,10 +884,7 @@ async fn core_truncated_stream_text_only_warns_but_returns() {
     .expect("纯文本截断应放行返回");
 
     assert!(text.contains("半截回复"));
-    assert!(
-        text.contains("响应可能被截断"),
-        "应追加截断提示：{text}"
-    );
+    assert!(text.contains("响应可能被截断"), "应追加截断提示：{text}");
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -923,7 +927,11 @@ async fn core_anthropic_text_reply_happy_path() {
     // 请求体形态：Anthropic 形状（max_tokens 必填 + stream:true），无 OpenAI 的扁平 messages+tools 同层
     let body = &server.request_bodies()[0];
     let v: serde_json::Value = serde_json::from_str(body).expect("请求体应为合法 JSON");
-    assert_eq!(v["max_tokens"], serde_json::json!(8192), "Anthropic 必填 max_tokens");
+    assert_eq!(
+        v["max_tokens"],
+        serde_json::json!(8192),
+        "Anthropic 必填 max_tokens"
+    );
     assert_eq!(v["stream"], serde_json::json!(true));
     assert_eq!(v["messages"][0]["role"], serde_json::json!("user"));
     assert!(
@@ -937,7 +945,9 @@ async fn core_anthropic_text_reply_happy_path() {
     // usage 审计：message_start 的 input=12 + message_delta 的 output=7
     let events = h.events();
     assert!(
-        events.contains(&"llm.request") && events.contains(&"llm.response") && events.contains(&"llm.usage"),
+        events.contains(&"llm.request")
+            && events.contains(&"llm.response")
+            && events.contains(&"llm.usage"),
         "应记 llm.request/response/usage 审计：{events:?}"
     );
 }
@@ -991,14 +1001,25 @@ async fn core_anthropic_tool_call_round_trip_executes_and_continues() {
         serde_json::from_str(&bodies[1]).expect("第二轮请求体应为合法 JSON");
     let msgs = v2["messages"].as_array().expect("messages 应为数组");
     let roles: Vec<&str> = msgs.iter().filter_map(|m| m["role"].as_str()).collect();
-    assert_eq!(roles, ["user", "assistant", "user"], "消息应严格交替：{roles:?}");
-    let asst_blocks = msgs[1]["content"].as_array().expect("assistant content 应为块数组");
+    assert_eq!(
+        roles,
+        ["user", "assistant", "user"],
+        "消息应严格交替：{roles:?}"
+    );
+    let asst_blocks = msgs[1]["content"]
+        .as_array()
+        .expect("assistant content 应为块数组");
     assert_eq!(asst_blocks[0]["type"], serde_json::json!("tool_use"));
     assert_eq!(asst_blocks[0]["id"], serde_json::json!("toolu_mock"));
     assert_eq!(asst_blocks[0]["name"], serde_json::json!("list_tasks"));
-    let user_blocks = msgs[2]["content"].as_array().expect("user content 应为块数组");
+    let user_blocks = msgs[2]["content"]
+        .as_array()
+        .expect("user content 应为块数组");
     assert_eq!(user_blocks[0]["type"], serde_json::json!("tool_result"));
-    assert_eq!(user_blocks[0]["tool_use_id"], serde_json::json!("toolu_mock"));
+    assert_eq!(
+        user_blocks[0]["tool_use_id"],
+        serde_json::json!("toolu_mock")
+    );
     assert_eq!(
         user_blocks[0]["content"],
         serde_json::json!("共 2 个任务明细")
@@ -1085,7 +1106,10 @@ async fn core_anthropic_text_block_first_tool_use_remapped_no_ghost() {
     // 恰好执行 1 次真实工具（幽灵条目不得被当 tool_call 执行）
     assert_eq!(
         calls.lock().unwrap().as_slice(),
-        &[("extract_document".to_string(), r#"{"path":"/tmp/a.docx"}"#.to_string())],
+        &[(
+            "extract_document".to_string(),
+            r#"{"path":"/tmp/a.docx"}"#.to_string()
+        )],
         "应只执行真实工具一次"
     );
     assert_eq!(server.request_count(), 2);
@@ -1095,13 +1119,22 @@ async fn core_anthropic_text_block_first_tool_use_remapped_no_ghost() {
     let v2: serde_json::Value =
         serde_json::from_str(&bodies[1]).expect("第二轮请求体应为合法 JSON");
     let msgs = v2["messages"].as_array().expect("messages 应为数组");
-    let asst = msgs.iter().find(|m| m["role"] == "assistant").expect("应有 assistant 消息");
-    let asst_blocks = asst["content"].as_array().expect("assistant content 应为块数组");
+    let asst = msgs
+        .iter()
+        .find(|m| m["role"] == "assistant")
+        .expect("应有 assistant 消息");
+    let asst_blocks = asst["content"]
+        .as_array()
+        .expect("assistant content 应为块数组");
     let tool_uses: Vec<&serde_json::Value> = asst_blocks
         .iter()
         .filter(|b| b["type"] == "tool_use")
         .collect();
-    assert_eq!(tool_uses.len(), 1, "幽灵条目不得回填进历史：{asst_blocks:?}");
+    assert_eq!(
+        tool_uses.len(),
+        1,
+        "幽灵条目不得回填进历史：{asst_blocks:?}"
+    );
     assert_eq!(tool_uses[0]["id"], serde_json::json!("toolu_real_1"));
     assert_eq!(tool_uses[0]["name"], serde_json::json!("extract_document"));
     let last = msgs.last().expect("应有末条消息");
@@ -1128,7 +1161,9 @@ async fn core_anthropic_summarize_http_non_stream() {
     // summarize_http 的 Anthropic 分支：/v1/messages + 非流式 JSON 响应解析
     //（content 数组 text 块拼接）
     let server = MockLlmServer::start();
-    server.push_behavior(MockBehavior::AnthropicJsonReply("用户在做 Anthropic 适配".into()));
+    server.push_behavior(MockBehavior::AnthropicJsonReply(
+        "用户在做 Anthropic 适配".into(),
+    ));
 
     let client = reqwest::Client::new();
     let text = summarize_http(
@@ -1154,7 +1189,10 @@ async fn core_anthropic_summarize_http_non_stream() {
     let v: serde_json::Value = serde_json::from_str(body).expect("请求体应为合法 JSON");
     assert_eq!(v["stream"], serde_json::json!(false), "摘要为非流式");
     assert!(v.get("tools").is_none(), "摘要请求不带 tools");
-    assert!(v.get("system").is_some(), "system prompt 应转顶层 system 字段");
+    assert!(
+        v.get("system").is_some(),
+        "system prompt 应转顶层 system 字段"
+    );
 }
 
 use wmessage_lib::bot_chat::{summarize_http, ChatMsg};
@@ -1165,4 +1203,3 @@ fn chat_msg(role: &str, content: &str) -> ChatMsg {
         content: content.into(),
     }
 }
-

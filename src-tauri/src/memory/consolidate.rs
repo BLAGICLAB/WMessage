@@ -111,7 +111,11 @@ pub enum ConsolidateOp {
     /// 把 ids 合并成一条：内容更新到目标条目（importance 最高者），来源条目删除
     Merge { ids: Vec<String>, content: String },
     /// keep 与 drop_id 矛盾：按裁决保留 keep（内容更新为 content），删除 drop_id
-    Contradiction { keep: String, drop_id: String, content: String },
+    Contradiction {
+        keep: String,
+        drop_id: String,
+        content: String,
+    },
     /// 从 ids 提炼一条规律/反思：新建 kind=reflection 条目（importance=4）
     Distill { ids: Vec<String>, content: String },
 }
@@ -171,8 +175,13 @@ pub fn parse_ops(text: &str) -> Vec<ConsolidateOp> {
             "contradiction" => {
                 let keep = op["keep"].as_str().unwrap_or("").trim().to_string();
                 let drop_id = op["drop"].as_str().unwrap_or("").trim().to_string();
-                if !keep.is_empty() && !drop_id.is_empty() && keep != drop_id && !content.is_empty() {
-                    out.push(ConsolidateOp::Contradiction { keep, drop_id, content });
+                if !keep.is_empty() && !drop_id.is_empty() && keep != drop_id && !content.is_empty()
+                {
+                    out.push(ConsolidateOp::Contradiction {
+                        keep,
+                        drop_id,
+                        content,
+                    });
                 }
             }
             "distill" => {
@@ -283,7 +292,11 @@ pub fn apply_ops(
                     .collect();
                 report.merged += store::delete_by_ids(&tx, &drop_ids)?;
             }
-            ConsolidateOp::Contradiction { keep, drop_id, content } => {
+            ConsolidateOp::Contradiction {
+                keep,
+                drop_id,
+                content,
+            } => {
                 let all = store::load_all(&tx)?;
                 let Some(keep_item) = all.iter().find(|m| &m.id == keep) else {
                     continue;
@@ -334,15 +347,18 @@ pub async fn run_consolidation(app: &AppHandle) -> CommandResult<ConsolidateRepo
         .memory_consolidation
         .unwrap_or_default();
     let app2 = app.clone();
-    let candidates = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<MemItem>, String> {
-        let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let conn = crate::db::open_db(&app2)?;
-        store::ensure_table(&conn)?;
-        gather_candidates(&conn, cfg.last_run_at, now_ms(), CONSOLIDATE_BATCH_LIMIT)
-    })
-    .await
-    .map_err(|e| CommandError::from(format!("记忆整理取数线程 join 失败：{e}")))?
-    .map_err(CommandError::DbError)?;
+    let candidates =
+        tauri::async_runtime::spawn_blocking(move || -> Result<Vec<MemItem>, String> {
+            let _g = crate::db::DB_WRITE_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let conn = crate::db::open_db(&app2)?;
+            store::ensure_table(&conn)?;
+            gather_candidates(&conn, cfg.last_run_at, now_ms(), CONSOLIDATE_BATCH_LIMIT)
+        })
+        .await
+        .map_err(|e| CommandError::from(format!("记忆整理取数线程 join 失败：{e}")))?
+        .map_err(CommandError::DbError)?;
     if candidates.len() < 2 {
         return Ok(ConsolidateReport::default()); // 少于 2 条无可整理
     }
@@ -361,21 +377,27 @@ pub async fn run_consolidation(app: &AppHandle) -> CommandResult<ConsolidateRepo
     let embs = {
         let contents: Vec<String> = ops.iter().map(|op| op.content().to_string()).collect();
         tauri::async_runtime::spawn_blocking(move || {
-            contents.iter().map(|c| embed::embed_text(c)).collect::<Vec<_>>()
+            contents
+                .iter()
+                .map(|c| embed::embed_text(c))
+                .collect::<Vec<_>>()
         })
         .await
         .map_err(|e| CommandError::from(format!("记忆整理嵌入线程 join 失败：{e}")))?
     };
     let app3 = app.clone();
-    let report = tauri::async_runtime::spawn_blocking(move || -> Result<ConsolidateReport, String> {
-        let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let mut conn = crate::db::open_db(&app3)?;
-        store::ensure_table(&conn)?;
-        apply_ops(&mut conn, &ops, &embs, now_ms())
-    })
-    .await
-    .map_err(|e| CommandError::from(format!("记忆整理写入线程 join 失败：{e}")))?
-    .map_err(CommandError::DbError)?;
+    let report =
+        tauri::async_runtime::spawn_blocking(move || -> Result<ConsolidateReport, String> {
+            let _g = crate::db::DB_WRITE_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let mut conn = crate::db::open_db(&app3)?;
+            store::ensure_table(&conn)?;
+            apply_ops(&mut conn, &ops, &embs, now_ms())
+        })
+        .await
+        .map_err(|e| CommandError::from(format!("记忆整理写入线程 join 失败：{e}")))?
+        .map_err(CommandError::DbError)?;
     Ok(report)
 }
 
@@ -406,8 +428,7 @@ fn persist_last_run(app: &AppHandle) {
 /// 每 10 分钟检查一次配置，到点就跑一轮。LLM/解析失败静默记审计，不影响正常功能。
 pub fn start_consolidation_scheduler(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
-        let mut ticker =
-            tokio::time::interval(std::time::Duration::from_secs(SCHED_TICK_SECS));
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(SCHED_TICK_SECS));
         ticker.tick().await; // 消耗首个立即触发的 tick
         loop {
             ticker.tick().await;

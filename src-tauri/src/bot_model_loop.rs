@@ -64,8 +64,8 @@ fn mutation_succeeded(name: &str, result: &str) -> bool {
 /// 「已完成任务」走 PLAIN 整段匹配保住任务完成话术。
 fn claims_mutation(text: &str) -> bool {
     const VERBS: [&str; 14] = [
-        "添加", "删除", "移除", "修改", "更新", "绑定", "清空", "恢复", "勾选", "创建",
-        "生成", "移至", "保存", "记住",
+        "添加", "删除", "移除", "修改", "更新", "绑定", "清空", "恢复", "勾选", "创建", "生成",
+        "移至", "保存", "记住",
     ];
     const PLAIN: [&str; 4] = ["移至回收站", "标记为完成", "添加子任务", "已完成任务"];
     if PLAIN.iter().any(|p| text.contains(p)) {
@@ -542,7 +542,9 @@ pub struct ModelLoopDeps<'a> {
     /// 流式事件出口（bot-chat-delta / bot-think-delta / bot-tool / bot-tool-name / bot-tool-done）
     pub emit: &'a (dyn Fn(&str, serde_json::Value) + Send + Sync),
     /// 结构化审计事件（audit_event! 等价物：level + event + kv 列表）
-    pub audit: &'a (dyn Fn(crate::audit::AuditLevel, &'static str, Vec<(&'static str, String)>) + Send + Sync),
+    pub audit: &'a (dyn Fn(crate::audit::AuditLevel, &'static str, Vec<(&'static str, String)>)
+             + Send
+             + Sync),
     /// bot.log 文本行审计（bot::audit_log 等价物）
     pub audit_log: &'a (dyn Fn(&str) + Send + Sync),
     /// Skill 收尾（bot_skills::skill_finish 等价物；返回附加提示文本）
@@ -609,8 +611,17 @@ pub async fn run_model_loop(
         let app = app.clone();
         async move { crate::bot_plan::replan(&app, &plan, &reason).await }
     };
-    run_model_loop_core(&http, msgs, max_rounds, stop, plan_state, &deps, execute_tool, replan)
-        .await
+    run_model_loop_core(
+        &http,
+        msgs,
+        max_rounds,
+        stop,
+        plan_state,
+        &deps,
+        execute_tool,
+        replan,
+    )
+    .await
 }
 
 /// 模型工具循环核心：流式请求（思考拆分 + 工具折叠事件）、进程内执行工具。
@@ -770,8 +781,7 @@ where
                     crate::bot_anthropic::apply_anthropic_auth(req, http.api_key.trim())
                 }
             };
-            match req.send().await
-            {
+            match req.send().await {
                 Ok(r) => {
                     if !r.status().is_success()
                         && is_retryable_llm_status(r.status().as_u16())
@@ -796,10 +806,7 @@ where
                         audit(
                             crate::audit::AuditLevel::Warn,
                             "llm.retry",
-                            vec![
-                                ("err", e.to_string()),
-                                ("attempt", attempt.to_string()),
-                            ],
+                            vec![("err", e.to_string()), ("attempt", attempt.to_string())],
                         );
                         tokio::time::sleep(LLM_RETRY_DELAY).await;
                         continue;
@@ -934,10 +941,16 @@ where
                         // 新工具调用开始：推折叠行给挂件
                         emit("bot-tool", serde_json::json!({ "id": t.0, "name": t.1 }));
                     }
-                    if tc_delta.name_chunk.as_deref().is_some_and(|n| !n.is_empty())
+                    if tc_delta
+                        .name_chunk
+                        .as_deref()
+                        .is_some_and(|n| !n.is_empty())
                         && !t.0.is_empty()
                     {
-                        emit("bot-tool-name", serde_json::json!({ "id": t.0, "name": t.1 }));
+                        emit(
+                            "bot-tool-name",
+                            serde_json::json!({ "id": t.0, "name": t.1 }),
+                        );
                     }
                 }
                 parsed.error
@@ -982,7 +995,8 @@ where
         }
 
         // Anthropic 模式：回合结束把流内捞到的 token 用量写审计
-        if http.provider == crate::bot::ApiProvider::Anthropic && (usage_input > 0 || usage_output > 0)
+        if http.provider == crate::bot::ApiProvider::Anthropic
+            && (usage_input > 0 || usage_output > 0)
         {
             audit(
                 crate::audit::AuditLevel::Info,
@@ -1154,7 +1168,10 @@ where
             if mutation_succeeded(name, &result) {
                 mutation_done = true;
             }
-            emit("bot-tool-done", serde_json::json!({ "id": id, "name": name, "args": args }));
+            emit(
+                "bot-tool-done",
+                serde_json::json!({ "id": id, "name": name, "args": args }),
+            );
             audit_log(&format!(
                 "tool: {} | args: {} | result: {}",
                 // 工具名是模型给的字符串，直插可伪造日志行
@@ -1336,13 +1353,17 @@ mod hallucination_guard_tests {
         // 变体话术（第二轮实锤漏网）：副词插在「已」和动词之间
         assert!(claims_mutation("「你们好」下的子任务「买菜」已彻底删除。"));
         assert!(claims_mutation("已经把附件全部移除"));
-        assert!(claims_mutation("「买菜」之前已经彻底删除了，这次没有可删除的内容。"));
+        assert!(claims_mutation(
+            "「买菜」之前已经彻底删除了，这次没有可删除的内容。"
+        ));
     }
 
     #[test]
     fn claims_mutation_passes_pure_query_answers() {
         assert!(!claims_mutation("你有 3 个待办任务：A、B、C"));
-        assert!(!claims_mutation("「你们好」当前没有绑定任何附件，无需删除。"));
+        assert!(!claims_mutation(
+            "「你们好」当前没有绑定任何附件，无需删除。"
+        ));
         assert!(!claims_mutation("未找到匹配的任务，请确认标题"));
         assert!(!claims_mutation(""));
         // 只读任务的收尾话术不应误拦（动词表刻意不含「完成」）
@@ -1362,11 +1383,26 @@ mod hallucination_guard_tests {
     #[test]
     fn mutating_tools_cover_task_and_file_writes() {
         // 守卫白名单与工具分发保持一致的关键几个
-        for t in ["delete_task", "add_subtask", "toggle_subtask", "complete_task", "edit_task", "create_task", "bind_file", "link_file_to_task"] {
+        for t in [
+            "delete_task",
+            "add_subtask",
+            "toggle_subtask",
+            "complete_task",
+            "edit_task",
+            "create_task",
+            "bind_file",
+            "link_file_to_task",
+        ] {
             assert!(MUTATING_TOOLS.contains(&t), "{t} 应算变更类工具");
         }
         // 纯查询工具不算变更
-        for t in ["list_tasks", "search_tasks", "query_single_task", "web_search", "fetch_url"] {
+        for t in [
+            "list_tasks",
+            "search_tasks",
+            "query_single_task",
+            "web_search",
+            "fetch_url",
+        ] {
             assert!(!MUTATING_TOOLS.contains(&t), "{t} 不应算变更类工具");
         }
     }
@@ -1376,8 +1412,14 @@ mod hallucination_guard_tests {
     #[test]
     fn mutation_succeeded_true_on_real_success() {
         assert!(mutation_succeeded("complete_task", "已完成任务「买菜」"));
-        assert!(mutation_succeeded("link_file_to_task", "已绑定文件到任务卡"));
-        assert!(mutation_succeeded("create_word", "已生成 Word 文档：/tmp/x.docx"));
+        assert!(mutation_succeeded(
+            "link_file_to_task",
+            "已绑定文件到任务卡"
+        ));
+        assert!(mutation_succeeded(
+            "create_word",
+            "已生成 Word 文档：/tmp/x.docx"
+        ));
     }
 
     #[test]
@@ -1391,9 +1433,15 @@ mod hallucination_guard_tests {
 
     #[test]
     fn mutation_succeeded_false_on_user_reject_and_failure() {
-        assert!(!mutation_succeeded("delete_task", "用户拒绝了删除，任务未删除"));
+        assert!(!mutation_succeeded(
+            "delete_task",
+            "用户拒绝了删除，任务未删除"
+        ));
         assert!(!mutation_succeeded("create_task", "新建任务失败：磁盘只读"));
-        assert!(!mutation_succeeded("complete_task", "未知工具：complete_task"));
+        assert!(!mutation_succeeded(
+            "complete_task",
+            "未知工具：complete_task"
+        ));
     }
 
     #[test]
@@ -1525,7 +1573,8 @@ mod parse_sse_chunk_tests {
     #[test]
     fn parses_reasoning_content() {
         // DeepSeek-reasoner 类模型的独立推理字段
-        let line = r#"data: {"choices":[{"delta":{"reasoning_content":"先想一下","content":null}}]}"#;
+        let line =
+            r#"data: {"choices":[{"delta":{"reasoning_content":"先想一下","content":null}}]}"#;
         let parsed = parse_sse_chunk(line).unwrap();
         assert_eq!(parsed.reasoning.as_deref(), Some("先想一下"));
         assert!(parsed.content.is_none());
@@ -1642,8 +1691,18 @@ mod stream_accumulate_tests {
             assert!(accumulate_tool_call_delta(&mut calls, d));
         }
         assert_eq!(calls.len(), 2);
-        assert_eq!(calls[0], ("call_a".into(), "list_tasks".into(), "{\"title\":\"x\"}".into()));
-        assert_eq!(calls[1], ("call_b".into(), "web_search".into(), "{\"q\":\"y\"}".into()));
+        assert_eq!(
+            calls[0],
+            (
+                "call_a".into(),
+                "list_tasks".into(),
+                "{\"title\":\"x\"}".into()
+            )
+        );
+        assert_eq!(
+            calls[1],
+            ("call_b".into(), "web_search".into(), "{\"q\":\"y\"}".into())
+        );
     }
 
     #[test]
@@ -1769,8 +1828,7 @@ mod rounds_fuse_tests {
     #[test]
     fn skill_without_max_rounds_falls_back_to_default_50() {
         // 现有 Skill 未声明 max_rounds → None → fallback 默认 50（兼容不崩）
-        let meta =
-            crate::bot_skills::parse_meta("---\nname: x\ndescription: d\n---\nbody\n", "x");
+        let meta = crate::bot_skills::parse_meta("---\nname: x\ndescription: d\n---\nbody\n", "x");
         assert_eq!(meta.max_rounds, None);
         assert_eq!(resolve_max_rounds(meta.max_rounds), DEFAULT_MAX_ROUNDS);
         assert_eq!(DEFAULT_MAX_ROUNDS, 50);
