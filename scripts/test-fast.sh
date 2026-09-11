@@ -128,7 +128,7 @@ fi
 if [[ "$NEED_CARGO" == true ]]; then
     if command -v cargo-machete >/dev/null 2>&1; then
         step "[2.5/N] cargo machete（未使用依赖）" \
-            cargo machete --manifest-path src-tauri/Cargo.toml
+            cargo machete src-tauri
     else
         echo "─── [2.5/N] cargo machete：未安装，skip（装：cargo install cargo-machete --locked）"
     fi
@@ -148,10 +148,10 @@ if [[ "$NEED_TS" == true ]]; then
 fi
 
 # ─── 步骤 4.5: knip（前端死代码/未使用依赖门禁） ──
-# npx 首次拉取后走缓存；输出为空 = 干净，任何 unused files/exports/deps 都 fail
+# knip 已收进 devDependencies，npx 走本地安装（无网络依赖）
 if [[ "$NEED_TS" == true ]]; then
     step "[4.5/N] knip（unused files/exports/deps）" \
-        npx -y knip --no-progress
+        npx --no-install knip --no-progress
 fi
 
 # ─── 步骤 5: vitest run（前端 unit） ──────────────────────
