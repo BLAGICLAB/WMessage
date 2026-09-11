@@ -36,6 +36,24 @@ if [[ -n "$UNTRACKED" ]]; then
 $UNTRACKED"
 fi
 
+# ─── 步骤 0: 审计批次号防线（防注释考古回潮） ─────────────────────────
+# staged（无 staged 时看 unstaged）的 .rs/.ts/.tsx 新增行不得带审计批次号
+#（批次N审计 / P0-12 / T1-3 / NEW-C-6 等——批次号是审计过程产物，入注释即化石）；
+# 确需引用历史口径时行内加 audit-ok 放行。
+DIFF_SRC=$(git diff --cached -U0 -- '*.rs' '*.ts' '*.tsx' 2>/dev/null || true)
+if [[ -z "$DIFF_SRC" ]]; then
+    DIFF_SRC=$(git diff -U0 -- '*.rs' '*.ts' '*.tsx' 2>/dev/null || true)
+fi
+BAD_LINES=$(echo "$DIFF_SRC" | grep '^+' | grep -v '^+++' \
+    | grep -v 'audit-ok' \
+    | grep -E '批次[0-9]+审计|\bP[012]-[0-9]+\b|\bT[0-9]-[0-9]+\b|\bNEW-[A-Z]-[0-9]+\b' || true)
+if [[ -n "$BAD_LINES" ]]; then
+    echo "✗ [0/N] 审计批次号防线：新增行含审计批次号（阶段5起禁止入注释；确需引用加 audit-ok）："
+    echo "$BAD_LINES" | head -10 | sed 's/^/    /'
+    exit 1
+fi
+echo "  ✓ [0/N] 审计批次号防线通过"
+
 # ── 是否需要跑 cargo 链路（fmt + check + test） ──
 NEED_CARGO=false
 if echo "$CHANGED" | grep -qE '^(src-tauri/|Cargo\.toml|Cargo\.lock)'; then
@@ -106,10 +124,34 @@ if [[ "$NEED_PYTEST" == true ]]; then
         python3 -m pytest tests-audit/audit_pre_step_pre_execute.py --collect-only -q
 fi
 
+# ─── 步骤 2.5: cargo machete（未使用 Rust 依赖门禁，未安装则 skip） ──
+if [[ "$NEED_CARGO" == true ]]; then
+    if command -v cargo-machete >/dev/null 2>&1; then
+        step "[2.5/N] cargo machete（未使用依赖）" \
+            cargo machete --manifest-path src-tauri/Cargo.toml
+    else
+        echo "─── [2.5/N] cargo machete：未安装，skip（装：cargo install cargo-machete --locked）"
+    fi
+fi
+
+# ─── 步骤 3.5: Tauri 桥一致性（命令注册 ↔ 前端 invoke / emit ↔ listen） ──
+# 纯文本扫描，<1s；src/ 或 src-tauri/ 有改动就跑（桥两头都在这两个目录）
+if [[ "$NEED_CARGO" == true || "$NEED_TS" == true ]]; then
+    step "[3.5/N] tauri bridge 一致性（invoke/emit ↔ listen）" \
+        python3 -m pytest tests-audit/audit_tauri_bridge.py -q
+fi
+
 # ─── 步骤 4: tsc --noEmit（类型检查） ─────────────────────
 if [[ "$NEED_TS" == true ]]; then
     step "[4/N] tsc --noEmit (类型检查，incremental 缓存)" \
         npx --no-install tsc --noEmit -p tsconfig.json
+fi
+
+# ─── 步骤 4.5: knip（前端死代码/未使用依赖门禁） ──
+# npx 首次拉取后走缓存；输出为空 = 干净，任何 unused files/exports/deps 都 fail
+if [[ "$NEED_TS" == true ]]; then
+    step "[4.5/N] knip（unused files/exports/deps）" \
+        npx -y knip --no-progress
 fi
 
 # ─── 步骤 5: vitest run（前端 unit） ──────────────────────

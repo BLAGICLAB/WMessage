@@ -2,6 +2,11 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-09-11（周五）审计阶段 4+5：过度工程清理 + 规则固化
+
+- **阶段 4 过度工程清理**（`edff991`，−353 行）：删 providerPresets 空预设 + ChatPanel 模型切换器死链（🧠 改只读标签）；删 error.rs Platform 字段体系（前端零消费，序列化回三字段）；手写 percent_decode → url::form_urlencoded；once_cell → std LazyLock；删一次性 codemod 脚本与 ad-hoc 测试 JSON；删 SkillRun 两个 write-only 字段；notify_change 提 trait 默认方法、read_enabled_flag 内联、API_MAX_* 单源化。#1 middleware.rs 按拍板保留（fail-closed 防御价值）
+- **阶段 5 规则固化**（防回潮门禁）：`tests-audit/audit_tauri_bridge.py` 新增 Tauri 桥双向一致性检查（invoke_handler 注册 ↔ 前端 invoke、后端 emit ↔ 前端 listen，听而无发/调而未注册 fail，反向仅 warn），接入 test-fast.sh（src/ 或 src-tauri/ 改动即跑，<1s）与 test-all.sh；test-fast.sh 新增 cargo machete（未装则 skip 提示）+ npx knip 两道依赖/死代码门禁；新增「审计批次号防线」（pre-commit 拦 staged 新增行里的批次N审计/P0-x/T1-x/NEW-x 模式，audit-ok 豁免）；`cargo fmt` 全仓格式化独立 commit（`1d28842`，+2799/−1014 纯机械重排）把长期红色的 fmt 门禁恢复为绿
+
 ## 2026-09-11（周五）注释考古层清理 + 补录 09-08 设置页改版决定
 
 - **阶段 2 注释清理**（audit 分支合入）：全仓剥掉注释里的日期戳/审计批次号（批次N审计、P0-x/P1-x/P2-x、T1-x、NEW-x、F-x、Phase N），保留每条注释的"为什么"；纯变更史叙述删除。规则：注释只解释"现在为什么这样"，历史归 DEVLOG
