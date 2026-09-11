@@ -1075,12 +1075,13 @@ export function ChatPanel({
               {sessionMenuOpen ? "▴" : "▾"}
             </span>
           </button>
-          {/* 🧠 当前模型标签（只读；模型在设置页维护） */}
+          {/* 🧠 当前模型标签（只读；模型在设置页维护）
+              宽度按内容收窄：flex-1 → shrink-0 max-w-fit，剩余空间全部让给 🤖 会话按钮 */}
           <span
-            className="nm-outset flex-1 min-w-0 flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-[var(--t2)]"
+            className="nm-outset shrink-0 max-w-fit flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-[var(--t2)]"
             title={`当前模型：${modelLabel}（设置页切换）`}
           >
-            <span className="truncate flex-1 text-left">🧠 {modelLabel}</span>
+            <span className="truncate text-left">🧠 {modelLabel}</span>
           </span>
         </div>
         {/* 右侧：🎯 移到原 🧹 位置（最右；外框 px-2 py-1 跟 🤖/🧠 等高，emoji 内部 16px 免受字体档位影响） */}
