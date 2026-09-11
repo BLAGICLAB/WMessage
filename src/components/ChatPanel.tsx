@@ -151,7 +151,7 @@ function UserBubbleContent({ content }: { content: string }) {
               className="nm-inset inline-flex items-center gap-1 rounded-lg px-1.5 py-0.5 text-[10px] text-[var(--t4)] max-w-full"
               title={f}
             >
-              <span className="truncate max-w-[150px]">
+              <span className="truncate max-w-[220px]">
                 {isImagePath(f) ? "🖼️" : "📎"} {basename(f)}
               </span>
             </span>
@@ -1149,7 +1149,7 @@ export function ChatPanel({
               key={t.id}
               className="nm-inset inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t3)] max-w-full"
             >
-              <span className="truncate max-w-[180px]">📌 {t.title}</span>
+              <span className="truncate max-w-[280px]">📌 {t.title}</span>
               <button
                 className="text-[var(--t5)] hover:text-[var(--danger)]"
                 onClick={() => onRemoveSelected(t.id)}
@@ -1312,7 +1312,7 @@ export function ChatPanel({
                           openTarget(f);
                         }}
                       >
-                        <span className="truncate max-w-[180px]">📄 {basename(f)}</span>
+                        <span className="truncate max-w-[280px]">📄 {basename(f)}</span>
                       </button>
                     ))}
                     {(m.refs ?? []).map((r) => (
@@ -1322,7 +1322,7 @@ export function ChatPanel({
                         title={`打开任务：${r.title}`}
                         onClick={() => openTaskInMain(r)}
                       >
-                        <span className="truncate max-w-[160px]">📌 {r.title}</span>
+                        <span className="truncate max-w-[260px]">📌 {r.title}</span>
                       </button>
                     ))}
                   </div>
@@ -1343,7 +1343,7 @@ export function ChatPanel({
                   className="nm-inset inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t3)] max-w-full"
                   title={f}
                 >
-                  <span className="truncate max-w-[180px]">
+                  <span className="truncate max-w-[280px]">
                     {isImg ? "🖼️" : "📎"} {basename(f)}
                   </span>
                   <button
@@ -1366,7 +1366,7 @@ export function ChatPanel({
                       // 资产协议未启用（403）时隐藏占位元素
                       (e.currentTarget as HTMLImageElement).style.display = "none";
                     }}
-                    className="pointer-events-none absolute bottom-full left-0 mb-1 hidden group-hover:block max-w-[160px] max-h-[120px] rounded-lg border border-[var(--border)] bg-[var(--bg)] shadow-lg object-contain z-10"
+                    className="pointer-events-none absolute bottom-full left-0 mb-1 hidden group-hover:block max-w-[220px] max-h-[120px] rounded-lg border border-[var(--border)] bg-[var(--bg)] shadow-lg object-contain z-10"
                   />
                 )}
               </div>

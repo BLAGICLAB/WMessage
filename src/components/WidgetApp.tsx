@@ -37,12 +37,13 @@ import { taskFiles, filesPatch } from "../lib/taskFiles";
 import { TaskCardContent } from "./TaskCardContent";
 import { FoldToggle } from "./FoldToggle";
 import { ChatPanel } from "./ChatPanel";
+import { ArtifactBatchDialog } from "./ArtifactBatchDialog";
 import widgetLogo from "../assets/widget-logo.png";
 
 // 收起为触发条 / 展开为侧边面板
 const STRIP_W = 44;
 const STRIP_H = 220;
-const PANEL_W = 320;
+const PANEL_W = 480;
 const PANEL_H = 560;
 const CHAT_H = 280; // 聊天区高度 = 面板高度的 1/2
 const TOP_Y = 140; // 默认贴右缘的初始 Y
@@ -107,7 +108,7 @@ export default function WidgetApp() {
   const [theme, setTheme] = useState<ThemeSetting>(getSetting);
   const [expanded, setExpanded] = useState(false);
   const [locked, setLocked] = useState(false);
-  const [view, setView] = useState<"all" | "today" | "workspace">("all");
+  const [view, setView] = useState<"all" | "today" | "done" | "workspace">("all");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [edge, setEdge] = useState<Edge>("right");
   const [botOn, setBotOn] = useState(false);
@@ -382,6 +383,20 @@ export default function WidgetApp() {
     setExpanded(false);
   };
 
+  // 产物绑定弹窗（ArtifactBatchDialog）挂在挂件窗口：面板始终挂载（收起只是
+  // display:none），事件监听不丢；收起成触发条时收到 artifact-batch-ready
+  // 自动展开让弹窗可见，锁定/展开时直接弹出等待确认
+  const expandedRef = useRef(expanded);
+  expandedRef.current = expanded;
+  useEffect(() => {
+    const un = listen("artifact-batch-ready", () => {
+      if (!expandedRef.current) expand().catch(() => {});
+    });
+    return () => {
+      un.then((f) => f());
+    };
+  }, [botOn]);
+
   // 面板头部为拖动手柄：按住拖动挂件到任意位置
   const startDrag = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
@@ -557,11 +572,20 @@ export default function WidgetApp() {
     });
   };
 
-  // 挂件只显示未完成：todo + doing（打勾后进完成列 → 从挂件消失）
+  // 挂件「待办 / 今日」显示未完成（todo + doing）；「完成」显示已完成列
   const visible = tasks.filter(
     (t) => !t.archived && !t.deletedAt && t.column !== "done"
   );
-  const list = view === "today" ? visible.filter((t) => t.column === "doing") : visible;
+  const doneList = tasks
+    .filter((t) => !t.archived && !t.deletedAt && t.column === "done")
+    .slice()
+    .sort((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0));
+  const list =
+    view === "today"
+      ? visible.filter((t) => t.column === "doing")
+      : view === "done"
+      ? doneList
+      : visible;
 
   // 圆角：贴屏幕那侧直角，对侧 rounded-2xl；悬浮（不贴边）四边全圆角
   // （老板定的规则：贴屏侧直角 + 对侧圆角）
@@ -628,31 +652,77 @@ export default function WidgetApp() {
               onPointerDown={(e) => e.stopPropagation()}
             >
               <button
-                className={`w-8 h-8 flex items-center justify-center text-[16px] ${
+                className={`w-8 h-8 flex items-center justify-center ${
                   view === "all" ? "nm-inset text-[var(--t1)] font-medium" : "nm-outset text-[var(--t4)]"
                 }`}
                 title="待办"
                 onClick={() => setView("all")}
               >
-                📋
+                <svg viewBox="0 0 64 64" width="20" height="20">
+                  <rect x="14" y="13" width="34" height="38" rx="2" fill="#ffffff" stroke="#2460b3" strokeWidth="2" />
+                  <rect x="46" y="17" width="6" height="30" rx="1" fill="#ffffff" stroke="#2460b3" strokeWidth="2" />
+                  <rect x="19" y="19" width="5" height="5" fill="#ffffff" stroke="#2460b3" strokeWidth="2" />
+                  <rect x="19" y="27" width="5" height="5" fill="#ffffff" stroke="#2460b3" strokeWidth="2" />
+                  <rect x="19" y="35" width="5" height="5" fill="#ffffff" stroke="#2460b3" strokeWidth="2" />
+                  <line x1="27" y1="21.5" x2="43" y2="21.5" stroke="#2460b3" strokeWidth="1.3" />
+                  <line x1="27" y1="29.5" x2="43" y2="29.5" stroke="#2460b3" strokeWidth="1.3" />
+                  <line x1="27" y1="37.5" x2="43" y2="37.5" stroke="#2460b3" strokeWidth="1.3" />
+                  <rect x="26" y="11" width="10" height="4" rx="1.5" fill="#f28522" stroke="#f28522" strokeWidth="1" />
+                </svg>
               </button>
               <button
-                className={`w-8 h-8 flex items-center justify-center text-[16px] ${
+                className={`w-8 h-8 flex items-center justify-center ${
                   view === "today" ? "nm-inset text-[var(--t1)] font-medium" : "nm-outset text-[var(--t4)]"
                 }`}
                 title="今日"
                 onClick={() => setView("today")}
               >
-                🗓
+                <svg viewBox="0 0 64 64" width="20" height="20">
+                  <rect x="13" y="20" width="38" height="28" rx="2" fill="#ffffff" stroke="#2460b3" strokeWidth="2" />
+                  <rect x="21" y="15" width="6" height="7" rx="1" fill="#ffffff" stroke="#2460b3" strokeWidth="2" />
+                  <rect x="37" y="15" width="6" height="7" rx="1" fill="#ffffff" stroke="#2460b3" strokeWidth="2" />
+                  <line x1="13" y1="26" x2="51" y2="26" stroke="#2460b3" strokeWidth="2" />
+                  <text x="22" y="41" fontFamily="Arial, sans-serif" fontSize="11" fontWeight="700" fill="#f28522">07</text>
+                  <circle cx="44" cy="38" r="6" fill="#ffffff" stroke="#f28522" strokeWidth="1.8" />
+                  <line x1="44" y1="29" x2="44" y2="31" stroke="#f28522" strokeWidth="1.6" />
+                  <line x1="44" y1="45" x2="44" y2="47" stroke="#f28522" strokeWidth="1.6" />
+                  <line x1="35" y1="38" x2="37" y2="38" stroke="#f28522" strokeWidth="1.6" />
+                  <line x1="51" y1="38" x2="53" y2="38" stroke="#f28522" strokeWidth="1.6" />
+                </svg>
               </button>
               <button
-                className={`w-8 h-8 flex items-center justify-center text-[16px] ${
+                className={`w-8 h-8 flex items-center justify-center ${
+                  view === "done" ? "nm-inset text-[var(--t1)] font-medium" : "nm-outset text-[var(--t4)]"
+                }`}
+                title="完成"
+                onClick={() => setView("done")}
+              >
+                <svg viewBox="0 0 64 64" width="20" height="20">
+                  <circle cx="32" cy="30" r="14" fill="#ffffff" stroke="#2460b3" strokeWidth="2.4" />
+                  <circle cx="32" cy="30" r="9" fill="#ffffff" stroke="#2460b3" strokeWidth="1.6" />
+                  <polyline points="27,30 30,33 37,26" fill="none" stroke="#f28522" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+                  <path d="M21 42 L18 52 L24 48 L30 52 Z" fill="#ffffff" stroke="#2460b3" strokeWidth="2" />
+                  <path d="M43 42 L40 52 L46 48 L52 52 Z" fill="#ffffff" stroke="#2460b3" strokeWidth="2" />
+                </svg>
+              </button>
+              <button
+                className={`w-8 h-8 flex items-center justify-center ${
                   view === "workspace" ? "nm-inset text-[var(--t1)] font-medium" : "nm-outset text-[var(--t4)]"
                 }`}
                 title="工作区"
                 onClick={() => setView("workspace")}
               >
-                🗂
+                <svg viewBox="0 0 64 64" width="20" height="20">
+                  <rect x="10" y="24" width="44" height="24" rx="2" fill="#ffffff" stroke="#2460b3" strokeWidth="2" />
+                  <rect x="14" y="28" width="36" height="16" fill="#ffffff" stroke="#2460b3" strokeWidth="1.4" />
+                  <line x1="18" y1="33" x2="46" y2="33" stroke="#2460b3" strokeWidth="1.2" />
+                  <line x1="18" y1="37" x2="42" y2="37" stroke="#2460b3" strokeWidth="1.2" />
+                  <line x1="18" y1="41" x2="38" y2="41" stroke="#2460b3" strokeWidth="1.2" />
+                  <rect x="42" y="14" width="14" height="12" rx="1" fill="#ffffff" stroke="#2460b3" strokeWidth="2" />
+                  <line x1="44" y1="18" x2="54" y2="18" stroke="#f28522" strokeWidth="1.3" />
+                  <line x1="44" y1="22" x2="52" y2="22" stroke="#f28522" strokeWidth="1.3" />
+                  <path d="M8 48 L56 48 L52 54 L12 54 Z" fill="#ffffff" stroke="#2460b3" strokeWidth="2" />
+                </svg>
               </button>
               <button
                 className={`w-8 h-8 flex items-center justify-center text-[16px] ${
@@ -666,8 +736,8 @@ export default function WidgetApp() {
             </div>
           </div>
 
-          {/* 新建任务大长条：位于「全部/今日」下方，新建的任务从顶部出现（工作区视图不显示） */}
-          {view !== "workspace" && (
+          {/* 新建任务大长条：仅「待办 / 今日」显示，完成 / 工作区视图隐藏 */}
+          {view !== "workspace" && view !== "done" && (
             <button
               className="nm-btn w-full mb-2 py-2 text-sm text-[var(--t3)] shrink-0"
               onClick={addTask}
@@ -751,7 +821,11 @@ export default function WidgetApp() {
               )
             ) : list.length === 0 ? (
               <p className="text-xs text-[var(--t5)] text-center mt-8">
-                {view === "today" ? "今日暂无任务" : "暂无任务"}
+                {view === "today"
+                  ? "今日暂无任务"
+                  : view === "done"
+                  ? "暂无已完成任务"
+                  : "暂无任务"}
               </p>
             ) : (
               <DndContext
@@ -814,6 +888,9 @@ export default function WidgetApp() {
               />
             </div>
           )}
+
+          {/* 产物绑定弹窗：挂在挂件窗口（面板始终挂载，收起时不卸载不丢事件） */}
+          <ArtifactBatchDialog />
         </div>
       }
     </div>
