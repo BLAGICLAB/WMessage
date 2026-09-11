@@ -33,12 +33,6 @@ pub struct SkillRun {
     pub max_steps: usize,
     pub started_at_ms: i64,
     pub timeout_secs: u64,
-    /// 运行模式（auto/interactive）：v1.0 暂停语义由底层 ask_user_confirm 承接，
-    /// 字段为审计与后续暂停态切换保留
-    #[allow(dead_code)]
-    pub mode: String,
-    #[allow(dead_code)]
-    pub risk_level: String,
     pub rollback: String,
     /// 已执行动作记录（工具名+参数摘要；回滚清单来源）
     pub actions: Vec<String>,
@@ -63,8 +57,6 @@ impl SkillRun {
             max_steps: meta.max_steps,
             started_at_ms: chrono::Utc::now().timestamp_millis(),
             timeout_secs: meta.timeout_secs,
-            mode: meta.mode.clone(),
-            risk_level: meta.risk_level.clone(),
             rollback: meta.rollback.clone(),
             actions: Vec::new(),
             end_reason: String::new(),
@@ -231,8 +223,6 @@ pub(crate) fn test_insert_skill_run(name: &str, state: SkillState) {    let run 
         max_steps: 8,
         started_at_ms: 0,
         timeout_secs: 180,
-        mode: "interactive".into(),
-        risk_level: "medium".into(),
         rollback: "auto".into(),
         actions: Vec::new(),
         end_reason: String::new(),
@@ -283,8 +273,6 @@ pub(crate) fn test_run(max_steps: usize, timeout_secs: u64) -> SkillRun {
             max_steps,
             started_at_ms: 1000,
             timeout_secs,
-            mode: "interactive".into(),
-            risk_level: "medium".into(),
             rollback: "auto".into(),
             actions: Vec::new(),
             end_reason: String::new(),

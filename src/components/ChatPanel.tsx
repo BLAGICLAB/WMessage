@@ -11,7 +11,6 @@ import {
   isHttpUrl,
   openTarget,
 } from "../lib/openTarget";
-import { PROVIDER_PRESETS, matchPreset, type ProviderPreset } from "../lib/providerPresets";
 import type { Task } from "../types";
 import { basename } from "../format";
 import { imageExtSet } from "../lib/consts";
@@ -220,11 +219,8 @@ export function ChatPanel({
   const rootRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLButtonElement>(null);
   const sessionDropdownRef = useRef<HTMLDivElement>(null);
-  /** 模型切换菜单（头部 🧠 按钮）：label 显示当前提供商/模型 */
-  const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  /** 头部 🧠 标签：显示当前模型（设置页维护，聊天面板只读展示） */
   const [modelLabel, setModelLabel] = useState("…");
-  const modelMenuRef = useRef<HTMLButtonElement>(null);
-  const modelDropdownRef = useRef<HTMLDivElement>(null);
   // 顶部行引用 + 下拉 top 定位（紧贴 🤖/🧠 按钮底部，0 间距）
   const topBarRef = useRef<HTMLDivElement>(null);
   const [dropdownTop, setDropdownTop] = useState(0);
@@ -376,11 +372,7 @@ export function ChatPanel({
   useEffect(() => {
     const reload = () =>
       invoke<{ baseUrl?: string; model?: string }>("bot_get_config")
-        .then((c) =>
-          setModelLabel(
-            matchPreset(c.baseUrl ?? "", c.model ?? "")?.label ?? (c.model || "未配置")
-          )
-        )
+        .then((c) => setModelLabel(c.model || "未配置"))
         .catch(() => setModelLabel("未配置"));
     reload();
     const un = listen("bot-config-changed", reload);
@@ -388,70 +380,6 @@ export function ChatPanel({
       un.then((f) => f());
     };
   }, []);
-
-  // 点击模型菜单外关闭（下拉与按钮不在同一个 ref 容器里，需同时检测两者）
-  useEffect(() => {
-    if (!modelMenuOpen) return;
-    const onDown = (e: MouseEvent) => {
-      const t = e.target as Node;
-      if (
-        !modelMenuRef.current?.contains(t) &&
-        !modelDropdownRef.current?.contains(t)
-      )
-        setModelMenuOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [modelMenuOpen]);
-
-  /** 回写模型配置：整体写回（保留白名单/Tavily 等字段），apiKey 传 null 保持 keychain 现有 key */
-  const applyModelConfig = async (baseUrl: string, model: string, label: string) => {
-    setModelMenuOpen(false);
-    try {
-      const c = await invoke<{
-        bypassLlmOnPreStepHit?: boolean;
-        allowedDirs?: string[];
-        tavilyEnabled?: boolean | null;
-        braveEnabled?: boolean | null;
-        pythonTimeoutSecs?: number | null;
-        // 必须透传授权模式——bot_set_config 是全量覆写，
-        // 漏传会被 BotConfig 容器级 serde(default) 填 None，静默重置回 ask
-        permMode?: string | null;
-        // 同上：协议与 max_tokens 必须透传，
-        // 漏传会被全量覆写静默重置回 openai/默认
-        apiProvider?: string | null;
-        maxTokens?: number | null;
-        // view 不含任何 key 本体（tavilyKey/braveKey 在系统凭据存储）；
-        // 这里不传顶层 key 参数（undefined → 后端 None → keyring 不动）
-      }>("bot_get_config");
-      await invoke("bot_set_config", {
-        config: {
-          baseUrl,
-          model,
-          bypassLlmOnPreStepHit: c.bypassLlmOnPreStepHit ?? true,
-          allowedDirs: c.allowedDirs ?? [],
-          // key 字段固定 null：后端强制置 None 双保险；真实 key 在 keyring，
-          // 不传顶层 tavilyKey/braveKey 参数即不动
-          tavilyKey: null,
-          tavilyEnabled: c.tavilyEnabled ?? null,
-          braveKey: null,
-          braveEnabled: c.braveEnabled ?? null,
-          pythonTimeoutSecs: c.pythonTimeoutSecs ?? null,
-          permMode: c.permMode ?? null,
-          apiProvider: c.apiProvider ?? null,
-          maxTokens: c.maxTokens ?? null,
-        },
-        apiKey: null,
-      });
-      setModelLabel(label);
-      addHint(`✅ 已切换到 ${label}（${model}）`);
-    } catch (e) {
-      handleCommandError(e, "bot_set_config", { silent: true });
-      addHint(`⚠️ 切换模型失败：${formatCommandError(e)}`);
-    }
-  };
-
-  const switchModel = (p: ProviderPreset) => applyModelConfig(p.baseUrl, p.model, p.label);
 
   // 流式增量：追加到最后一条 streaming 中的助手消息
   // 会话过滤：六个流式事件 payload 均带 sessionId
@@ -1147,18 +1075,13 @@ export function ChatPanel({
               {sessionMenuOpen ? "▴" : "▾"}
             </span>
           </button>
-          {/* 🧠 模型切换器（平分第二块；与 🤖 同 className 保证外框一致） */}
-          <button
-            ref={modelMenuRef}
+          {/* 🧠 当前模型标签（只读；模型在设置页维护） */}
+          <span
             className="nm-outset flex-1 min-w-0 flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-[var(--t2)]"
-            title={`切换模型（当前：${modelLabel}）`}
-            onClick={() => setModelMenuOpen((v) => !v)}
+            title={`当前模型：${modelLabel}（设置页切换）`}
           >
             <span className="truncate flex-1 text-left">🧠 {modelLabel}</span>
-            <span className="shrink-0 text-[10px] text-[var(--t5)]">
-              {modelMenuOpen ? "▴" : "▾"}
-            </span>
-          </button>
+          </span>
         </div>
         {/* 右侧：🎯 移到原 🧹 位置（最右；外框 px-2 py-1 跟 🤖/🧠 等高，emoji 内部 16px 免受字体档位影响） */}
         <button
@@ -1209,32 +1132,6 @@ export function ChatPanel({
           >
             ＋ 新建对话
           </button>
-        </div>
-      )}
-      {/* 模型下拉：同上 */}
-      {modelMenuOpen && (
-        <div
-          ref={modelDropdownRef}
-          className="absolute left-0 right-0 nm-card p-1 rounded-xl z-50"
-          style={{ top: dropdownTop > 0 ? `${dropdownTop}px` : undefined }}
-        >
-          {PROVIDER_PRESETS.map((p) => (
-            <button
-              key={p.label}
-              className={`w-full text-left px-2 py-1 rounded-lg text-xs flex items-center justify-between gap-1 ${
-                modelLabel === p.label
-                  ? "nm-inset text-[var(--t1)] font-medium"
-                  : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
-              }`}
-              onClick={() => switchModel(p)}
-            >
-              <span>{p.label}</span>
-              <span className="text-[9px] text-[var(--t5)] truncate">{p.model}</span>
-            </button>
-          ))}
-          <p className="px-2 py-1 text-[9px] leading-snug text-[var(--t6)]">
-            跨提供商切换后，需到设置页更新对应的 API Key
-          </p>
         </div>
       )}
 

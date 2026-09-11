@@ -15,7 +15,7 @@
 //! - 模式按正则匹配用户消息全文（含 [附件文件] 块内嵌的附件路径——附件上下文规则直接写进模式，
 //!   如 `(?is)(润色|修订)[\s\S]*\.docx?`），大小写敏由模式内联 `(?i)` 控制
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use regex::Regex;
 use std::sync::RwLock;
 
@@ -134,7 +134,7 @@ fn match_compiled(text: &str, rules: &[CompiledRule]) -> RouteAction {
 
 /// 进程级路由表：启动时为空（空表 = 全量 PassThrough，fail-open 与 middleware 业务路由语义一致），
 /// 由 `bot_skills::rebuild_intent_routes` 在启动 / 导入 / 删除技能后重建。
-static ROUTES: Lazy<RwLock<Vec<CompiledRule>>> = Lazy::new(|| RwLock::new(Vec::new()));
+static ROUTES: LazyLock<RwLock<Vec<CompiledRule>>> = LazyLock::new(|| RwLock::new(Vec::new()));
 
 /// 重建全局路由表（入参来自已安装技能扫描；RwLock 写中毒兜底取 inner，不让路由整体崩掉）
 pub fn rebuild_routes(rules: Vec<IntentRule>) {

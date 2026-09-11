@@ -1,29 +1,29 @@
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use regex::Regex;
 
 // ─────────────────────── 变量替换 ───────────────────────
 
 /// 任务卡 UUID 提取正则（标准 UUID v4 格式）
-static TASK_ID_RE: Lazy<Regex> = Lazy::new(|| {
+static TASK_ID_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}").unwrap()
 });
 
 /// `${stepN.field}` 索引匹配（field ∈ {result, id}）
-static VAR_BY_INDEX: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"\$\{step(\d+)\.(result|id)\}").unwrap());
+static VAR_BY_INDEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\$\{step(\d+)\.(result|id)\}").unwrap());
 
 /// `${prev.field}` 上一步简写
-static VAR_PREV: Lazy<Regex> = Lazy::new(|| Regex::new(r"\$\{prev\.(result|id)\}").unwrap());
+static VAR_PREV: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\$\{prev\.(result|id)\}").unwrap());
 
 /// `${stepN.path.to.field}` 嵌套路径
 /// 路径 ≥2 段（首段标识符 + 后续 `.xxx`），与单段 result/id 不冲突
 /// 例：`${step1.task.id}` / `${step1.list.0.title}` / `${step1.a.b.c.d}`
-static VAR_NESTED_BY_INDEX: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"\$\{step(\d+)\.([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)*)\}").unwrap());
+static VAR_NESTED_BY_INDEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\$\{step(\d+)\.([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)*)\}").unwrap());
 
 /// `${prev.path.to.field}` 嵌套路径简写（同样 ≥2 段）
-static VAR_NESTED_PREV: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"\$\{prev\.([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)*)\}").unwrap());
+static VAR_NESTED_PREV: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\$\{prev\.([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)*)\}").unwrap());
 
 /// 已完成步骤的快照（变量替换上下文，调度器维护）
 #[derive(Debug, Clone)]

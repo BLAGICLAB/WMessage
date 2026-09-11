@@ -31,9 +31,6 @@ src-tauri/gen/schemas
 MicrosoftEdgeWebview2Setup.exe
 wmessage-win-x64-*.zip
 README.txt
-# Manual-acceptance ad-hoc test fixtures (regenerated on demand)
-archive-file-test.json
-archive-test-material.json
 
 # Vitest coverage output
 coverage/

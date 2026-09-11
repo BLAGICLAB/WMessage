@@ -137,44 +137,12 @@ fn split_query(url: &str) -> (String, String) {
     }
 }
 
-/// 取 query 参数（`?a=1&b=2` 形式，重复键取第一个；简单 percent-decode）
-fn query_param<'a>(query: &'a str, key: &str) -> Option<String> {
-    query.split('&').find_map(|kv| {
-        let (k, v) = kv.split_once('=')?;
-        (percent_decode(k) == key).then(|| percent_decode(v))
-    })
-}
-
-/// 最小 percent-decode（`%XX`；urlencoded 约定里 `+` 解码为空格）
-fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let (Some(hi), Some(lo)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
-                out.push(hi * 16 + lo);
-                i += 3;
-                continue;
-            }
-        }
-        if bytes[i] == b'+' {
-            out.push(b' ');
-        } else {
-            out.push(bytes[i]);
-        }
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-fn hex_val(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
-    }
+/// 取 query 参数（`?a=1&b=2` 形式，重复键取第一个；url crate form_urlencoded 解码，
+/// 含 `%XX` 与 `+`→空格）
+fn query_param(query: &str, key: &str) -> Option<String> {
+    url::form_urlencoded::parse(query.as_bytes())
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.into_owned())
 }
 
 // ───────────────────────── 响应辅助 ─────────────────────────
@@ -298,9 +266,9 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-// 字段长度上限：与 bot.rs 工具侧 MAX_* 对齐
-const API_MAX_TITLE: usize = 200;
-const API_MAX_NOTE: usize = 5000;
+// 字段长度上限：单源引用 bot.rs 工具侧 MAX_*（值对齐由定义处保证）
+const API_MAX_TITLE: usize = crate::bot::MAX_TITLE;
+const API_MAX_NOTE: usize = crate::bot::MAX_NOTE;
 const API_MAX_DUE: usize = 30;
 const API_MAX_TAG_LEN: usize = 30;
 const API_MAX_TAGS: usize = 10;
@@ -1248,6 +1216,25 @@ mod tests {
     use std::io::{Read as IoRead, Write};
 
     use crate::api::MemStore;
+
+    #[test]
+    fn query_param_decodes_percent_and_plus() {
+        // %XX（含 UTF-8 多字节）与 + → 空格
+        assert_eq!(
+            query_param("status=%E4%BB%8A%E6%97%A5&x=a+b", "status").as_deref(),
+            Some("今日")
+        );
+        assert_eq!(query_param("x=a+b+c", "x").as_deref(), Some("a b c"));
+    }
+
+    #[test]
+    fn query_param_invalid_sequence_and_repeat_key() {
+        // 非法 %XX 原样保留（lossy 不吞字符）；重复键取第一个
+        assert_eq!(query_param("x=%zz%4", "x").as_deref(), Some("%zz%4"));
+        assert_eq!(query_param("x=1&x=2", "x").as_deref(), Some("1"));
+        assert_eq!(query_param("x=%", "x").as_deref(), Some("%"));
+        assert_eq!(query_param("a=1", "missing"), None);
+    }
 
     fn http(
         port: u16,

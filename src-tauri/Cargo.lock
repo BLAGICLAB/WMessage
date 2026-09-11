@@ -6926,7 +6926,6 @@ dependencies = [
  "objc2-app-kit",
  "objc2-foundation",
  "objc2-vision",
- "once_cell",
  "ort",
  "regex",
  "reqwest",

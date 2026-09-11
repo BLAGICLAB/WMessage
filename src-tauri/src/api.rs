@@ -31,7 +31,14 @@ pub trait TaskStore: Send + Sync {
     fn load(&self) -> Result<Vec<db::Task>, String>;
     fn upsert(&self, tasks: Vec<db::Task>) -> Result<(), String>;
     fn event_hub(&self) -> &Arc<EventHub>;
-    fn notify_change(&self, op: &str, task: &db::Task);
+    fn notify_change(&self, op: &str, task: &db::Task) {
+        let event = serde_json::json!({
+            "type": "tasks-changed",
+            "op": op,
+            "task": crate::task_out::TaskOut::from_task(task),
+        });
+        self.event_hub().broadcast(event);
+    }
 }
 
 /// 内存存储实现：测试 / 单测用，加锁模拟并发写。
@@ -79,14 +86,6 @@ impl TaskStore for MemStore {
     fn event_hub(&self) -> &Arc<EventHub> {
         &self.hub
     }
-    fn notify_change(&self, op: &str, task: &db::Task) {
-        let event = serde_json::json!({
-            "type": "tasks-changed",
-            "op": op,
-            "task": crate::task_out::TaskOut::from_task(task),
-        });
-        self.hub.broadcast(event);
-    }
 }
 
 /// 生产实现：走 SQLite（与看板同一份数据）
@@ -111,13 +110,5 @@ impl TaskStore for TauriStore {
     }
     fn event_hub(&self) -> &Arc<EventHub> {
         &self.hub
-    }
-    fn notify_change(&self, op: &str, task: &db::Task) {
-        let event = serde_json::json!({
-            "type": "tasks-changed",
-            "op": op,
-            "task": crate::task_out::TaskOut::from_task(task),
-        });
-        self.hub.broadcast(event);
     }
 }

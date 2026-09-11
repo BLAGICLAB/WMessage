@@ -98,15 +98,9 @@ pub fn enabled_flag_path<R: tauri::Runtime>(app: &AppHandle<R>) -> PathBuf {
     db::data_dir(app).join("api-enabled.flag")
 }
 
-/// 读取开关标志：上次退出时 API 是否处于开启状态（仅做 flag 文件存在判断）。
-/// 与 `should_autostart` 同义，保留两个名字给不同调用方。
-pub fn read_enabled_flag<R: tauri::Runtime>(app: &AppHandle<R>) -> bool {
-    enabled_flag_path(app).exists()
-}
-
-/// 上次退出时 API 是否处于开启状态（供启动自动恢复）。
+/// 上次退出时 API 是否处于开启状态（仅做 flag 文件存在判断；供启动自动恢复）。
 pub fn should_autostart<R: tauri::Runtime>(app: &AppHandle<R>) -> bool {
-    read_enabled_flag(app)
+    enabled_flag_path(app).exists()
 }
 
 /// 写开关标志（`api_start` 成功后调用）。

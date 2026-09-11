@@ -261,8 +261,6 @@ fn make_run(name: &str, state: SkillState) -> SkillRun {
         max_steps: 5,
         started_at_ms: chrono::Utc::now().timestamp_millis(),
         timeout_secs: 60,
-        mode: "auto".into(),
-        risk_level: "low".into(),
         rollback: "none".into(),
         actions: Vec::new(),
         end_reason: String::new(),
