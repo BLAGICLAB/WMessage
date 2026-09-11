@@ -18,6 +18,30 @@
 - **阶段 2 注释清理**（audit 分支合入）：全仓剥掉注释里的日期戳/审计批次号（批次N审计、P0-x/P1-x/P2-x、T1-x、NEW-x、F-x、Phase N），保留每条注释的"为什么"；纯变更史叙述删除。规则：注释只解释"现在为什么这样"，历史归 DEVLOG
 - **补录 2026-09-08 设置页改版（老板拍板，原注释考古时发现 DEVLOG 漏收）**：双协议各自独立模型列表（modelsByProvider/activeModelId，不设默认厂商）；字号四档默认 small；「通用设置」合并区块；开机自启动接入 tauri-plugin-autostart
 
+## 2026-09-11（周五）link_file_to_task 改为登记语义 + 删 bind_file（D1a+D2a+D3b+D4d）
+
+`52f7b20`，10 文件 +594/−208。新增 `bot_artifacts.rs`（211 行）+ `ArtifactBatchDialog.tsx`（141 行）；修改 `bot.rs`/`bot_chat.rs`/`bot_model_loop.rs`/`tool_guard.rs`/`middleware.rs`/`bot_skills/scheduler.rs`/`lib.rs`/`App.tsx`。Rust 单测从 607 例升至 613 例；前端 208 例全绿。
+
+**问题**：老板指出 `bind_file`（弹系统选择框）与 `link_file_to_task`（路径直绑）不重复但语义混乱——前者用户手动挑，后者 bot 流程用；现行实现是「调一次立即 db_upsert」，无安全审查、产物可重复绑、流程结束无统一收尾。
+
+**老板核心拍板**：登记 ≠ 绑。bot 流程内调 link_file_to_task 是「登记到内存表」，流程结束才弹汇总窗口让用户勾选绑定；用户在按钮手动执行 → 看 status=done 才弹；定时/批量执行 → 不论 status 都弹（定时点完成会停下次触发，这是 D4d 替代 D4a 的关键原因）。
+
+**架构**：
+- **D1a 内存 HashMap**：`bot_artifacts::REGISTRY` 全局登记表，进程重启清空（未弹窗产物"没帮上"可接受）
+- **D2a 收尾 hook**：`run_task_in_chat_with` 末尾 `unregister_exec_session` + `should_emit` + emit `artifact-batch-ready` Tauri 事件
+- **D3b 新前端组件**：`ArtifactBatchDialog.tsx` 默认全选多选，调 `confirm_artifact_batch` Tauri command 落 db_upsert
+- **D4d 按 TaskExecOrigin 分流**：Manual → 看 `task.column == "done"`；Scheduled/Batch → 不论 column 都弹
+
+**安全迁移**：原 `tool_guard::ATOMIC_TOOLS = &["link_file_to_task"]` 黑名单清空（`is_atomic_tool` 现在恒 false 保留骨架），拦截职责转移到 `is_task_execution_flow(session_id)` 在工具内部判定。`tool_link_file_to_task` 接收 session_id 参数 + dispatcher 透传；非任务卡执行流程调用直接拒（普通 chat 场景 LLM 反复登记会污染登记表）
+
+**SYSTEM_PROMPT 调整**（`bot_chat.rs:855`）：规则 4 拆 Manual/Scheduled-Batch 两段——定时/批量执行警告「不要调 complete_task（否则下次到点不触发）」，改用 edit_task 写摘要到备注里。规则 6 用户亲手绑定走 TodoCard UI 不走 bot 工具；安全红线说明「普通对话场景调用 link_file_to_task 无效果（不报错也不绑）」。schema description 同步更新（`bot_model_loop.rs:154`，含 kind 参数：final=最终产物/intermediate=中间产物）
+
+**删除**：旧 `tool_bind_file`（弹系统选择框）整函数 + dispatcher 分发臂 + MUTATING_TOOLS 引用 + bind_file JSON schema + bind_file 测试 mock + `file_path_to_string` 死代码 + tool_guard 黑名单测试。前端 TodoCard.tsx 走 `bind_files`（复数形）保留不动
+
+**新增测试**：`bot_artifacts.rs` 5 个（register 去重、should_emit final 过滤、Manual 必须 done、Scheduled 不论状态、空 final 不弹）；`tool_guard.rs` 3 个（session_origin 注册/查询/三态）
+
+**测试改造**：middleware.rs 3 个 atomic_guard 测试 fail-closed→fail-open 适配黑名单清空后的新语义；tool_guard.rs 删 link_file_to_task 黑名单断言、加 dead_command_bind_file_not_in_dispatcher 源码锁；bot_skills/scheduler.rs mock 删 bind_file 分支；bot.rs background_dialog_tests 改测 tool_bind_file 死锁（不锁 dispatcher 旧串而锁函数本身）
+
 ## 2026-09-10（周四）Windows 绿色版出包 + ort 跨编译方案定案
 
 - **打包**：`npx tauri build --target x86_64-pc-windows-gnu --no-bundle`（mingw 链路）→ wmessage.exe 54MB；绿色包 `wmessage-portable-2026-09-10.zip` 76MB（Python zipfile 打）。内容：wmessage.exe + WebView2Loader.dll + MicrosoftEdgeWebview2Setup.exe + README.txt + dotnet/（self-contained .NET 8）+ **onnxruntime.dll + onnxruntime_providers_shared.dll + bge-small-zh-v1.5/**（记忆 v2 语义检索三件套，exe 同目录）
