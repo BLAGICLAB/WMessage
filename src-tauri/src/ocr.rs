@@ -162,14 +162,16 @@ mod win {
     const FETCH_HINT: &str =
         "请运行 scripts/fetch_ocr_models.sh 下载 PP-OCRv6 模型到 pp-ocr-v6/ 目录（约 31MB）";
 
-    /// det 输入最长边（等比缩放，边长对齐 32 倍数）
-    const DET_MAX_SIDE: u32 = 960;
+    /// det 输入边长：等比缩放到最长边后 pad 成 DET_SIDE×DET_SIDE letterbox
+    ///（det.onnx 的 H/W 实为动态维度，letterbox 只是为了对齐 PaddleOCR 官方推理管线）
+    const DET_SIDE: u32 = 960;
     /// rec 输入高度 / 宽度上限（PP-OCRv6 与 v5/v4 的 rec 前后处理配置一致：高 48、宽动态）
     const REC_H: u32 = 48;
     const REC_MAX_W: u32 = 320;
-    /// cls 输入尺寸 / 旋转置信度阈值（v6 无独立 cls 模型，沿用 PP-OCRv5 文本行方向分类）
-    const CLS_H: u32 = 48;
-    const CLS_W: u32 = 192;
+    /// cls 输入尺寸 / 旋转置信度阈值（v6 无独立 cls 模型，沿用 PP-OCRv5 文本行方向分类；
+    /// 该 onnx 的输入是【固定 80x160】，非动态——喂其他尺寸会被 ort 拒绝，已实测）
+    const CLS_H: u32 = 80;
+    const CLS_W: u32 = 160;
     const CLS_ROTATE_MIN_CONF: f32 = 0.9;
 
     struct Engine {
@@ -310,15 +312,18 @@ mod win {
         Ok((shape.iter().copied().collect(), data.to_vec()))
     }
 
-    /// det 预处理：等比缩放到最长边 DET_MAX_SIDE，边长向上对齐 32 倍数
+    /// det 预处理：等比缩放（最长边 DET_SIDE），pad 到 DET_SIDE × DET_SIDE 居中 letterbox
     fn det_resize(img: &RgbImage) -> (RgbImage, u32, u32) {
         let (w, h) = img.dimensions();
-        let scale = (DET_MAX_SIDE as f32 / w.max(h) as f32).min(1.0);
-        let align = |v: u32| ((v + 31) / 32) * 32;
-        let nw = align(((w as f32 * scale).round() as u32).max(1));
-        let nh = align(((h as f32 * scale).round() as u32).max(1));
+        let scale = (DET_SIDE as f32 / w.max(h) as f32).min(1.0);
+        let nw = ((w as f32 * scale).round() as u32).max(1);
+        let nh = ((h as f32 * scale).round() as u32).max(1);
         let resized = image::imageops::resize(img, nw, nh, image::imageops::FilterType::Triangle);
-        (resized, nw, nh)
+        let mut canvas = RgbImage::from_pixel(DET_SIDE, DET_SIDE, image::Rgb([0, 0, 0]));
+        let ox = (DET_SIDE - nw) / 2;
+        let oy = (DET_SIDE - nh) / 2;
+        image::imageops::overlay(&mut canvas, &resized, ox as i64, oy as i64);
+        (canvas, DET_SIDE, DET_SIDE)
     }
 
     /// rec 预处理：裁块 resize 到高 REC_H，宽按比例（上限 REC_MAX_W）
@@ -375,19 +380,28 @@ mod win {
         }
 
         // 2) det 后处理（简化版 DB）：概率图连通域 → 外接矩形 → unclip → 映射回原图
-        let rx = orig_w as f32 / out_w as f32;
-        let ry = orig_h as f32 / out_h as f32;
+        // letterbox：原图等比缩放到 DET_SIDE，pad 居中——坐标映射要扣掉 pad 偏移
+        let det_side_f = det_w as f32;
+        let scale = (DET_SIDE as f32 / orig_w.max(orig_h) as f32).min(1.0);
+        let scaled_w = (orig_w as f32 * scale).round();
+        let scaled_h = (orig_h as f32 * scale).round();
+        let pad_x = (det_side_f - scaled_w) / 2.0;
+        let pad_y = (det_side_f - scaled_h) / 2.0;
+        let eff_w = (det_side_f - 2.0 * pad_x).max(1.0);
+        let eff_h = (det_side_f - 2.0 * pad_y).max(1.0);
+        let rx = orig_w as f32 / eff_w;
+        let ry = orig_h as f32 / eff_h;
         let mut boxes: Vec<super::BoxF> =
             super::prob_to_boxes(&prob[..out_w * out_h], out_w, out_h)
                 .into_iter()
                 .map(|b| {
-                    let scaled = super::BoxF {
-                        x0: b.x0 * rx,
-                        y0: b.y0 * ry,
-                        x1: b.x1 * rx,
-                        y1: b.y1 * ry,
+                    let letterbox = super::BoxF {
+                        x0: (b.x0 - pad_x) * rx,
+                        y0: (b.y0 - pad_y) * ry,
+                        x1: (b.x1 - pad_x) * rx,
+                        y1: (b.y1 - pad_y) * ry,
                     };
-                    super::unclip_box(scaled, super::UNCLIP_RATIO, orig_w as f32, orig_h as f32)
+                    super::unclip_box(letterbox, super::UNCLIP_RATIO, orig_w as f32, orig_h as f32)
                 })
                 .collect();
         super::reading_order(&mut boxes);
