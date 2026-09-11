@@ -2,11 +2,16 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
-## 2026-09-11（周五）审计阶段 4+5：过度工程清理 + 规则固化
+## 2026-09-11（周五）五阶段仓库审计收官：清理 −2540 行 + 四道防回潮门禁
 
-- **阶段 4 过度工程清理**（`edff991`，−353 行）：删 providerPresets 空预设 + ChatPanel 模型切换器死链（🧠 改只读标签）；删 error.rs Platform 字段体系（前端零消费，序列化回三字段）；手写 percent_decode → url::form_urlencoded；once_cell → std LazyLock；删一次性 codemod 脚本与 ad-hoc 测试 JSON；删 SkillRun 两个 write-only 字段；notify_change 提 trait 默认方法、read_enabled_flag 内联、API_MAX_* 单源化。#1 middleware.rs 按拍板保留（fail-closed 防御价值）
-- **阶段 5 规则固化**（防回潮门禁）：`tests-audit/audit_tauri_bridge.py` 新增 Tauri 桥双向一致性检查（invoke_handler 注册 ↔ 前端 invoke、后端 emit ↔ 前端 listen，听而无发/调而未注册 fail，反向仅 warn），接入 test-fast.sh（src/ 或 src-tauri/ 改动即跑，<1s）与 test-all.sh；test-fast.sh 新增 cargo machete（未装则 skip 提示）+ npx knip 两道依赖/死代码门禁；新增「审计批次号防线」（pre-commit 拦 staged 新增行里的批次N审计/P0-x/T1-x/NEW-x 模式，audit-ok 豁免）；`cargo fmt` 全仓格式化独立 commit（`1d28842`，+2799/−1014 纯机械重排）把长期红色的 fmt 门禁恢复为绿
-- **收尾**：knip 收进 devDependencies（门禁走本地安装不再 npx 拉网）；machete 门禁命令修正为位置参数 `cargo machete src-tauri`（不支持 --manifest-path），fail 路径已注入验证（临时加 anyhow → 报 unused + exit 1 + 门禁步骤 FAILED，还原后 exit 0）
+全仓五阶段审计（死代码/注释考古/一致性/过度工程/规则固化）全部完成并 push。基线与收尾：Rust lib 测试 607 例、前端 vitest 208 例、集成测试（llm_integration/skill_e2e/task_chat_exec）全绿。
+
+- **阶段 1 死代码**（`fedf296`/`e1234a2`/`4dd6d43`/`b9bd830`，−2187 行）：旧记忆系统 v1（bot_facts 表 + db.rs 约 390 行旧函数 + bot.rs/bot_chat.rs 旧工具薄壳 + memory_regression.rs 整文件回归基准）连根拔除，记忆体 v2（mem_items + bge 语义检索）全面接管；删 src/App.css 孤儿文件、unused import/多余 mut/多余 export；删未使用的 @tauri-apps/plugin-autostart npm 包（前端走字符串 invoke）；JournalEntry 删两个 never-read 字段
+- **阶段 2 注释考古**：777 处日期戳/批次号注释清零，规则定型——注释只解释"现在为什么这样"，变更史归 DEVLOG；补录 09-08 设置页改版决定
+- **阶段 3 一致性**：57 个 Tauri 命令注册 ↔ 前端 invoke、emit ↔ listen 人肉核对零失配（后以阶段 5 固化）；SPEC/README 文档漂移修复（19→30 工具、/clean、Brave 路由、JSON+CSV 规则表）；Word 修订 Python 兜底引擎补 e2e 测试（与 dotnet 同夹具同断言，双引擎输出等价软锁）；bot.rs 死代码三件套连带 20 个 v1 测试删除
+- **阶段 4 过度工程**（`edff991`，−353 行）：删 providerPresets 空预设 + ChatPanel 模型切换器死链（🧠 改只读标签）；删 error.rs Platform 字段体系（前端零消费，序列化回三字段）；手写 percent_decode → url::form_urlencoded；once_cell → std LazyLock；删一次性 codemod 脚本与 ad-hoc 测试 JSON；删 SkillRun 两个 write-only 字段；notify_change 提 trait 默认方法、read_enabled_flag 内联、API_MAX_* 单源化。**middleware.rs 按拍板保留**：577 行的 F-2 中间件抽象层为「registry 缺失 fail-closed」防御语义和扩展留口（pre_step_list/pre_execute_list 待设置页面板接入）而留
+- **阶段 5 规则固化**（`1b79e0e`）：四道新门禁全部进 `scripts/test-fast.sh`——`[0/N]` 审计批次号防线（staged 新增行匹配批次号模式拒提交，行内 `audit-ok` 豁免）；`[2.5/N]` cargo machete 未使用 Rust 依赖（未装则提示 skip）；`[3.5/N]` Tauri 桥一致性（tests-audit/audit_tauri_bridge.py，<1s）；`[4.5/N]` knip 前端死代码/依赖。全部 fail 路径注入验证过（假 invoke/假 listen/假 plugin/假批次注释/假 unused 依赖均拦下后还原）。`cargo fmt` 全仓格式化独立 commit（`1d28842`，45 文件 +2799/−1014 纯机械重排）把长期红色的 fmt 门禁恢复为绿
+- **收尾**（`273628d`）：knip 收进 devDependencies（门禁走本地安装不再 npx 拉网）；machete 门禁命令修正为位置参数 `cargo machete src-tauri`（不支持 --manifest-path——这个坑正是注入验证抓出来的）；日常测试验证手册落 docs/testing.md
 
 ## 2026-09-11（周五）注释考古层清理 + 补录 09-08 设置页改版决定
 

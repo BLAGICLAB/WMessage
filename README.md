@@ -106,6 +106,13 @@ npm run tauri build                   # macOS 打包
 - 网络：cargo 走 rsproxy 镜像（`~/.cargo/config.toml`）；npm 慢时可加 `--registry=https://registry.npmmirror.com`
 - macOS 透明窗口依赖 `tauri.conf.json` 的 `"macOSPrivateApi": true`（已配置）
 
+### 测试与门禁
+
+- **提交时自动跑** pre-commit（`scripts/install-hooks.sh` 装一次）→ `scripts/test-fast.sh`：按改动文件智能跳过，`cargo fmt --check` / `cargo check` / `tsc` / `vitest --changed`，外加四道防回潮门禁（详见 `docs/testing.md`）：审计批次号防线、cargo machete（未使用 Rust 依赖）、Tauri 桥一致性（命令注册↔前端 invoke、emit↔listen）、knip（前端死代码/依赖）
+- **手动快速验证**：`cargo test --lib`（Rust lib 607 例）、`npm test`（前端 208 例）、`bash scripts/test-fast.sh`
+- **全量验证**（push 前）：`bash scripts/test-all.sh`（cargo nextest 全量 + tests-audit 一致性检查 + vitest）；集成测试 `cargo test --test llm_integration` 等；bge 模型真实推理冒烟 `cargo test --lib memory::embed -- --ignored`
+- 维护手册：`docs/testing.md`（各门禁防什么、失败了怎么修、误伤豁免方式）
+
 ### Windows 交叉编译（macOS → exe，mingw-w64 链路）
 
 ```bash
@@ -148,6 +155,7 @@ npx tauri build --target x86_64-pc-windows-gnu --no-bundle
 
 - `SPEC.md` — 产品规格（唯一依据）
 - `DEVLOG.md` — 开发日志（里程碑 + 踩坑记录）
+- `docs/testing.md` — 测试与门禁手册（日常提交流程 / 各门禁防什么 / 全量验证 / 豁免方式）
 - `docs/logo/` — Logo 规范 V1.0（`WMessage-LOGO-GUIDELINES.md`，含老板裁定「以图片为准」）+ 5 版处理资产（去水印/透明底/多尺寸）
 
 ## 深色模式

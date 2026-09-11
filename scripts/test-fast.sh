@@ -3,13 +3,22 @@
 # 目标：< 30s（warm）/ < 10s（只跑相关测试）/ "nothing to test"（无相关改动）。
 # 设计意图：每次 commit 不该卡 1-3 分钟；fmt + 编译 + 收集能挡掉 90% 误操作。
 #
-# 优化（2026-08-18）：
-#   1. cargo test → cargo nextest run（并行 + 智能重试，比 cargo test 快 30-50%）
-#   2. git diff 智能跳过（只跑改动的代码相关测试）
-#   3. sccache 编译缓存（.cargo/config.toml 已配）
-#   4. tsc incremental（tsconfig.json 已开）
-#   5. vitest --changed 只跑 changed files
-#   6. 每步 time + 总耗时统计
+# 步骤总览（详见 docs/testing.md；编号即运行时输出里的 [N/N]）：
+#   [0/N]   审计批次号防线：staged .rs/.ts/.tsx 新增行含批次号模式拒提交
+#           （防注释考古回潮；audit-ok 行内豁免）——纯文本检查，<1s
+#   [1/N]   cargo fmt --check：格式漂移
+#   [2/N]   cargo check：编译错误（增量缓存）
+#   [2.5/N] cargo machete src-tauri：未使用 Rust 依赖（未安装则 skip 并提示）
+#   [3/N]   pytest collect-only：tests-audit/ 脚本语法自检
+#   [3.5/N] Tauri 桥一致性（tests-audit/audit_tauri_bridge.py）：前端 invoke ↔
+#           命令注册、listen ↔ emit 双向核对——运行时才炸的桥接坑提前到提交时
+#   [4/N]   tsc --noEmit：前端类型检查（incremental）
+#   [4.5/N] knip --no-progress：前端死文件/死 export/未使用 npm 依赖
+#           （knip 在 devDependencies，npx --no-install 走本地安装）
+#   [5/N]   vitest --changed：前端单测（只跑改动相关）
+#
+# 性能设计：git diff 智能跳过（只跑改动相关的链路）；tsc/vitest 各有增量机制；
+# 全量测试（cargo nextest + tests-audit + vitest）在 pre-push 的 test-all.sh。
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
