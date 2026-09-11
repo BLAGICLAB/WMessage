@@ -164,12 +164,6 @@ pub struct BotConfig {
     /// 切换协议时设置页据此取对应协议的 active 模型来填 baseUrl/model 输入框。
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub active_model_id: Option<ActiveModelId>,
-    /// 开机自启动：登录系统时自动拉起 wmessage。
-    /// Some(true) = 启用 / Some(false) = 禁用 / None = 未设置（前端显示自动态）。
-    /// 走 tauri-plugin-autostart：macOS 写 LaunchAgent plist / Windows 写注册表 Run /
-    /// Linux 写 .desktop file。
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub autostart_enabled: Option<bool>,
     /// 界面字体大小：small / standard / large / xlarge
     /// 老板拍板"目前字号为小"=默认 small。设置页「通用设置 → 外观」调。
     /// 全局 css 通过 documentElement[data-font-size] 走缩放。
@@ -232,7 +226,6 @@ impl Default for BotConfig {
             max_tokens: None,                 // 未配置 = 8192 默认（仅 Anthropic 模式用）
             models_by_provider: None,         // 未配置 = 设置页空列表（无默认厂商）
             active_model_id: None,            // 未配置 = 两协议都没选 active
-            autostart_enabled: None,          // 未配置 = 默认不启用开机自启动（老板拍板：保持旧行为，不主动加）
             ui_font_size: None,               // 未配置 = small（老板拍板默认；前端读取时回退）
             memory_consolidation: None,       // 未配置 = 启用 + daily（ConsolidationConfig::default）
         }

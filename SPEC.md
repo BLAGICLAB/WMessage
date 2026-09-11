@@ -55,7 +55,7 @@ WMessage：Tauri + React + TailwindCSS 的 Todo 看板，带系统侧边磁吸�
 ## 功能需求（追加 2026-08-15：桌面文件自动迁移清理）
 
 8. 桌面清理（任务绑定文件的自动迁移）：
-   - 规则表 `cleanup-rules.json`（数据目录）：每条含 启用开关 / 文件名关键字 / 动作 / 归档目录；用户可随时上传规则表（JSON），无需改代码；支持模版下载
+   - 规则表 `cleanup-rules.json`（数据目录）：每条含 启用开关 / 文件名关键字 / 动作 / 归档目录；用户可随时上传规则表（JSON / CSV 双格式），无需改代码；支持模版下载
    - 归档目录支持 `{year}` 占位符（展开为当年年份）；相对路径基于桌面，绝对路径原样使用
    - 主规则：任务完成满 7 天进入归档列表后，按规则迁移其绑定文件：移动到归档目录 → 自动更新任务 filePath → 写迁移日志 migration.log
    - 保护：未归档（看板中）任务的附件绝不移动/删除；回收站任务不处理
@@ -76,10 +76,10 @@ WMessage：Tauri + React + TailwindCSS 的 Todo 看板，带系统侧边磁吸�
 
 10. 内置机器人（设置页开关，默认关闭）：
    - 挂件下方聊天区（展开高度 840 = 560 + 280）；多会话（新建/切换/删除/自动改名）、历史持久化 SQLite
-   - 19 个工具：任务管理（list/create/complete/delete/edit/add_subtask/toggle_subtask/bind_file/link_file_to_task/search_tasks）+ 文档处理（extract_document/create_word/create_word_revisions/create_excel/create_ppt/create_pdf）+ 本机 Python（run_python，独立临时目录 + 60s 超时，开关默认关闭）+ 联网（web_search Bing+百度双引擎 / fetch_url 仅公网）
+   - 30 个工具：任务管理（list_tasks/query_single_task/search_tasks/create_task/edit_task/complete_task/delete_task/add_subtask/toggle_subtask/remove_subtask/bind_file/link_file_to_task）+ 文档处理（extract_document/create_word/create_word_revisions/create_excel/create_ppt/create_pdf）+ 文件读写（list_files/read_text_file/grep_files）+ 图片识字（ocr_image）+ 本机 Python（run_python，独立临时目录 + 60s 超时，开关默认关闭）+ 联网（web_search：配置 Tavily 或 Brave key 走对应 API、双开报错，未配置走 Bing+百度网页抓取 / fetch_url 仅公网）+ 长期记忆（remember_fact/recall_facts/record_lesson，语义记忆体 v2）+ 时间（get_current_time）+ Skill（use_skill）
    - Word 润色默认修订模式（track changes，w:ins/w:del，author=WMessage AI）；产物只落 AI_Gen_Files 同名 (n) 序号永不覆盖
    - 流式回复；思考过程（<think>）与工具调用折叠行可展开；Markdown 渲染回复
-   - 斜杠命令：/stop /compact（≤300 字摘要）/retry
+   - 斜杠命令：/stop /compact（≤300 字摘要）/retry /clean（清空当前对话）
    - 安全：删除任务弹确认（60s 超时自动拒绝）；审计日志 bot.log；参数上限；API Key 存系统凭据存储（keyring）；文件访问授权模式（2026-08-26）：strict 白名单硬拒 / ask 白名单外弹授权（默认，允许一次/始终允许该目录/拒绝）/ yolo 全放行（文件+Python）；extract_document path 校验（任务卡绑定文件 / AI_Gen_Files 静默放行，其余走授权分流）
    - 挂件选任务模式（🎯 整卡单击选中，📌 引用块随消息发送）；任务卡 🤖 按钮一键执行（卡片显示机器人归属头像）
 
@@ -93,7 +93,7 @@ WMessage：Tauri + React + TailwindCSS 的 Todo 看板，带系统侧边磁吸�
 13. 移除机器人聊天 `/help` 命令（老板 2026-08-17 21:52 指令）：
     - 缘由：机器人面板已上浮为补全面板（输入 `/` 弹出 4 条命令候选，无需 /help 再讲一遍），`/help` 文本还会被作为用户消息送进 LLM 上下文白白占 token
     - 行为：用户输入 `/help` 不再被本地拦截，由前端 `send()` 当普通文本发给模型；模型若仍能调用工具则按需执行，否则仅回一句普通回复
-    - 保留：`/stop` `/compact` `/retry` 三个有副作用的本地命令不动
+    - 保留：`/stop` `/compact` `/retry` 三个有副作用的本地命令不动（2026-09-08 起增补 `/clean` 清空当前对话，现共 4 条）
     - 影响面：仅 `src/components/ChatPanel.tsx`（SLASH_COMMANDS 列表 + runSlashCommand 分支 + 占位文案）
 
 
@@ -123,5 +123,5 @@ WMessage：Tauri + React + TailwindCSS 的 Todo 看板，带系统侧边磁吸�
 - **纯函数拆分**：`scan_skill_dirs(dirs)` 不依赖 AppHandle，单测可独立测
 
 ### 工具调用模型
-- **白名单**：list_tasks / query_single_task / search_tasks / create_task / edit_task / complete_task / delete_task / add_subtask / bind_file / extract_document / create_word / create_excel / create_ppt / create_pdf / run_python / web_search / fetch_url / use_skill
-- **黑名单**（Skill 内部专用）：create_word_revisions / link_file_to_task —— 非 Skill 状态禁止裸调
+- **白名单**（单点工具，非 Skill 状态可直接调用）：list_tasks / query_single_task / search_tasks / create_task / edit_task / complete_task / delete_task / add_subtask / toggle_subtask / remove_subtask / bind_file / read_text_file / grep_files / list_files / ocr_image / extract_document / create_word / create_word_revisions / create_excel / create_ppt / create_pdf / run_python / web_search / fetch_url / get_current_time / remember_fact / recall_facts / record_lesson / use_skill
+- **黑名单**（Skill 内部专用）：link_file_to_task —— 非 Skill 状态禁止裸调（create_word_revisions 已去 Skill 化，聊天里直接可用）

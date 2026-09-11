@@ -10,7 +10,7 @@ Tauri 2 + React 19 + TypeScript 的 Todo 看板，新拟态（Neumorphism）UI�
 - **今日规则**：截止日期 = 当天的待办任务自动进「今日」列
 - **自动归档**：完成满 7 天自动归档；归档页：搜索（标题+备注）+ 标签计数筛选（点击筛选/再点取消）+ 三列网格（按 order 从左到右依次填充）；卡片默认折叠、**不可拖拽**、**只读**（仅折叠开关 / 文件打开+复制 / ↩ 恢复可用）；↩ 恢复回看板
 - **回收站**：软删除 + 三列网格；任务卡只读（除折叠/📂 打开/📋 复制/↩ 恢复/🗑 彻底删除外不可编辑）；**绑文件/文件夹时彻底删除**弹三选项弹窗（Portal 到 body 跳出 TodoCard transform 包含块 + nm-card）：🗑 全部删除（任务卡删除 + 绑定的本地文件 **移到废纸篓/回收站**，走 Rust `trash` crate 不是物理删除，误删可恢复，失败 alert 任务卡保留可重试）／📄 保留文件删除（只删任务卡）／取消（点 backdrop = 取消）；**未绑文件时**保留原两选项 `window.confirm`；支持恢复 / 彻底删除 / 清空
-- **导入数据**（仅首页）：选另一个 wmessage.db 按 id 并集合并，同 id 保留最后修改者（便携多机合并）
+- **导入数据**（主窗口设置页「任务数据管理」）：选任务导出的 JSON 文件按 id 并集合并，同 id 保留 updated_at 更晚者（便携多机合并）
 - **打勾圆圈**：标题右侧一键完成 / 取消完成
 - **卡片折叠**：标题以下内容可折叠（状态持久化）
 - **侧边磁吸挂件**（独立透明窗口，屏幕任意边缘）：
@@ -23,7 +23,7 @@ Tauri 2 + React 19 + TypeScript 的 Todo 看板，新拟态（Neumorphism）UI�
 - **按钮体系**：状态切换用 `nm-outset ↔ nm-inset`（凸↔凹）；动作按钮用 `.nm-btn`（默认凸起、按下瞬间凹陷）
 - **任务卡归属头像**：人完成 → 用户头像；点「交给机器人」→ 机器人头像（执行结束无论成败改回）；任务卡只显头像、悬停显姓名；用户/机器人头像与姓名可在设置页上传/修改
 - **定时任务卡**：⏰ 到点自动交给机器人执行（一次 / 每天 / 每周 / 每月 四档），结果前置「⏰ 自动执行」写进备注；一次性执行完自动清除
-- **内置机器人聊天**（挂件下方，设置页开关）：用大模型管理任务（新建/完成/删除/搜索/编辑/子任务/绑定文件）；19 个工具含文档处理（Word 润色修订模式/Excel 公式/PPT/PDF，产物落 AI_Gen_Files 永不覆盖）、本机 Python 编程（默认关闭）、联网搜索（Bing+百度双引擎）、网页抓取（公网白名单）；多会话 + 历史持久化 + 折叠思考/工具行；斜杠命令 /stop /compact /retry（2026-08-17 21:52 老板拍板移除 /help：补全面板已上浮，/help 还会污染 LLM 上下文）；删除任务弹确认（60s 超时自动拒绝）；审计日志 bot.log
+- **内置机器人聊天**（挂件下方，设置页开关）：用大模型管理任务（新建/完成/删除/搜索/编辑/子任务/绑定文件）；30 个工具含文档处理（Word 润色修订模式/Excel 公式/PPT/PDF，产物落 AI_Gen_Files 永不覆盖）、本机 Python 编程（默认关闭）、联网搜索（配置 Tavily/Brave key 走对应 API，未配置走 Bing+百度网页抓取）、网页抓取（公网白名单）、语义长期记忆（记忆体 v2）；多会话 + 历史持久化 + 折叠思考/工具行；斜杠命令 /stop /compact /retry /clean（2026-08-17 21:52 老板拍板移除 /help：补全面板已上浮，/help 还会污染 LLM 上下文）；删除任务弹确认（60s 超时自动拒绝）；审计日志 bot.log
 - **工作区**（主窗口「归档」与「回收站」之间）：类似任务卡的静态链接收藏（网址/文件/文件夹），标题内联编辑 + 折叠 + 增删链接 + 拖拽排序；挂件只读展示可点击打开
 - **桌面清理**（设置页）：任务完成满 7 天归档后按规则自动迁移其绑定文件（移动到归档目录并更新 filePath / 删除文件）；规则表用 CSV 表格管理（下载模版 → Excel/WPS 编辑 → 导入）；`{year}` 占位符；后台 10 分钟轮询；看板/回收站附件绝不触碰；迁移日志 migration.log（弹窗查看）
 - **全局快捷键**：唤起/隐藏主窗口 macOS `Cmd+Ctrl+W` / Win `Ctrl+Alt+W`；快速新建任务 macOS `Cmd+Ctrl+N` / Win `Ctrl+Alt+N`（唤起并直接进入标题编辑态）；切换深浅色 `Cmd+Ctrl+T` / `Ctrl+Alt+T`（注册失败只记日志，绝不影响启动）
@@ -38,13 +38,13 @@ Tauri 2 + React 19 + TypeScript 的 Todo 看板，新拟态（Neumorphism）UI�
 - **tauri-plugin-global-shortcut**：全局快捷键（Rust 侧注册）
 - **rusqlite（bundled）**：数据存 `wmessage.db`（WAL + busy_timeout 2s），行级增量读写
 - 其他关键依赖：reqwest（流式 LLM 请求）+ keyring（API Key 系统凭据存储）+ csv（规则表导入）+ encoding_rs（CSV/网页编码兜底）+ html2text（网页转文本）+ tokio（oneshot 确认通道）+ chrono + base64 + uuid
-- Rust 模块：`db.rs`（SQLite 全部读写）、`bot.rs`（机器人聊天/工具循环/定时调度器）、`bot_py.rs`（本机 Python 沙箱 + 文档脚本模板）、`bot_web.rs`（搜索/抓取）、`migration.rs`（桌面清理）、`profile.rs`（头像资料）、`api.rs`（本地 HTTP API）
+- Rust 模块：`db.rs`（SQLite 全部读写）、`bot.rs` + `bot_chat.rs`/`bot_model_loop.rs`/`bot_scheduler.rs`/`bot_slash.rs`（机器人聊天编排/工具循环/定时调度/斜杠命令）、`bot_skills/`（Skill DSL 调度器）、`memory/`（语义记忆体 v2：embed/store/rank/consolidate）、`bot_py.rs`（本机 Python 沙箱 + 文档脚本模板）、`bot_web.rs`（搜索/抓取）、`migration.rs`（桌面清理）、`profile.rs`（头像资料）、`api.rs` + `api_server.rs`/`api_handlers.rs`/`api_auth.rs`（本地 HTTP API）、`ocr.rs`（图片识字）、`audit.rs`（审计日志）
 
 ## 架构
 
 ### 双窗口
 
-- **主窗口**：`index.html` → `App`（看板 / 归档 / 回收站三视图）
+- **主窗口**：`index.html` → `App`（看板 / 归档 / 工作区 / 回收站四视图 + 设置页）
 - **挂件窗口**：`index.html#/widget` → `WidgetApp`（Rust 侧 `WebviewWindowBuilder` 创建，透明无边框置顶）
 
 ### 目录结构
@@ -76,7 +76,7 @@ src-tauri/
   src/db.rs                   # SQLite 全部表读写 + 迁移链 + 日志轮转
   src/bot.rs                  # 机器人：bot_chat/bot_execute_task/工具循环/StopGuard/定时调度器
   src/bot_py.rs               # 本机 Python 执行 + 文档脚本模板（EXTRACT/MAKE_DOCX 等）
-  src/bot_web.rs              # Bing+百度搜索 / 网页抓取（公网白名单）
+  src/bot_web.rs              # 联网搜索（Tavily/Brave 可配置，未配置走 Bing+百度）/ 网页抓取（公网白名单）
   src/migration.rs            # 桌面清理引擎（规则匹配/文件迁移/轮询）
   src/profile.rs              # 头像资料
   src/api.rs                  # 本地 HTTP API（tiny_http + SSE）
