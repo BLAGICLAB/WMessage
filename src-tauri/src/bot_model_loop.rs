@@ -25,7 +25,7 @@ use tauri::{AppHandle, Emitter};
 // 注入系统提醒并补一轮（每次对话最多补一次），让模型实际调工具或如实说明。
 
 /// 会改动任务卡/文件系统的工具（判定「本轮是否真的动手了」）
-const MUTATING_TOOLS: [&str; 16] = [
+const MUTATING_TOOLS: [&str; 15] = [
     "create_task",
     "edit_task",
     "complete_task",
@@ -33,9 +33,7 @@ const MUTATING_TOOLS: [&str; 16] = [
     "add_subtask",
     "toggle_subtask",
     "remove_subtask",
-    "bind_file",
-    // 与 bind_file 同写路径（技能/任务卡流程内绑产物），漏了它
-    // 会让「产物已绑定」的如实汇报被幻觉守卫误拦
+    // 任务卡执行流程内产物登记（流程结束会弹汇总窗口让用户勾选绑定）
     "link_file_to_task",
     "create_word",
     "create_word_revisions",
@@ -146,15 +144,11 @@ const TOOLS: &str = r#"[
     "dir":{"type":"string","description":"目录绝对路径（支持 ~ 开头）"},
     "pattern":{"type":"string","description":"文件名过滤，如 *.pdf 或 报告*，可选"}
   },"required":["dir"]}}},
-  {"type":"function","function":{"name":"bind_file","description":"给任务绑定文件或文件夹（弹系统选择框由用户挑选；任务用 taskId 优先定位）","parameters":{"type":"object","properties":{
+{"type":"function","function":{"name":"link_file_to_task","description":"登记产物到本任务卡执行流程的产物清单。文件必须在 AI_Gen_Files 目录内。流程结束、任务完成、有产物时弹汇总窗口让你勾选绑定（默认全选，每个文件绑一次）；任务未完成、中断、只有中间产物都不弹。普通对话场景调用此工具不报错也不绑（不反复尝试）。仅任务卡执行流程（🤖 按钮 / ⏰ 定时 / 📦 批量）内登记有效。","parameters":{"type":"object","properties":{
     "taskId":{"type":"string","description":"任务 id，可选，优先于 title"},
     "title":{"type":"string","description":"任务标题关键词，无 taskId 时使用"},
-    "isDir":{"type":"boolean","description":"true=选文件夹，false 选文件"}
-  },"required":[]}}},
-  {"type":"function","function":{"name":"link_file_to_task","description":"把 AI_Gen_Files 目录内的生成文件绑定到任务卡（不弹选择框；只允许该目录内的文件，其他文件请在任务卡上手动绑定）。内部原子：仅技能运行中或任务卡执行流程里可调用，聊天里裸调会被拦截","parameters":{"type":"object","properties":{
-    "taskId":{"type":"string","description":"任务 id，可选，优先于 title"},
-    "title":{"type":"string","description":"任务标题关键词，无 taskId 时使用"},
-    "path":{"type":"string","description":"要绑定的文件绝对路径（必须位于 AI_Gen_Files 目录内）"}
+    "path":{"type":"string","description":"产物文件绝对路径，必须在 AI_Gen_Files 目录内且文件已存在"},
+    "kind":{"type":"string","enum":["final","intermediate"],"default":"final","description":"final=最终产物，参与流程结束汇总弹窗；intermediate=中间产物，不参与弹窗。本会话在 AI_Gen_Files 目录没新建过的路径不参与绑定。"}
   },"required":["path"]}}},
   {"type":"function","function":{"name":"search_tasks","description":"按关键词搜索所有任务卡（待办/进行中/已完成/已归档；匹配标题/备注/标签/子任务）","parameters":{"type":"object","properties":{
     "query":{"type":"string","description":"搜索关键词"}
@@ -1095,7 +1089,7 @@ where
                 msgs.push(serde_json::json!({"role": "assistant", "content": final_text}));
                 msgs.push(serde_json::json!({
                     "role": "user",
-                    "content": "【系统提示】你刚才声称完成了变更，但本轮没有任何变更类工具调用成功，数据实际没有变化。请立即调用对应工具实际执行（删除用 delete_task、完成用 complete_task、编辑用 edit_task、子任务用 add_subtask/remove_subtask、绑定文件用 bind_file、生成文档用 create_word/create_excel/create_ppt/create_pdf；逐步执行模式下子任务勾选由系统完成，不要代调 toggle_subtask）；若确实无法执行（任务不存在/被安全闸门拦截/无权限等），如实向用户说明原因，禁止再次声称已完成。"
+                    "content": "【系统提示】你刚才声称完成了变更，但本轮没有任何变更类工具调用成功，数据实际没有变化。请立即调用对应工具实际执行（删除用 delete_task、完成用 complete_task、编辑用 edit_task、子任务用 add_subtask/remove_subtask、绑定产物用 link_file_to_task（任务卡执行流程内有效）、生成文档用 create_word/create_excel/create_ppt/create_pdf；逐步执行模式下子任务勾选由系统完成，不要代调 toggle_subtask）；若确实无法执行（任务不存在/被安全闸门拦截/无权限等），如实向用户说明原因，禁止再次声称已完成。"
                 }));
                 continue;
             }
@@ -1390,7 +1384,6 @@ mod hallucination_guard_tests {
             "complete_task",
             "edit_task",
             "create_task",
-            "bind_file",
             "link_file_to_task",
         ] {
             assert!(MUTATING_TOOLS.contains(&t), "{t} 应算变更类工具");

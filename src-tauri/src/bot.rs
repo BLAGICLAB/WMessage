@@ -1334,8 +1334,7 @@ async fn execute_tool_impl(
         "ocr_image" => crate::ocr::tool_ocr_image(app, args, interactive, session_id).await,
         "grep_files" => crate::bot_fs::tool_grep_files(app, args, interactive, session_id).await,
         "list_files" => crate::bot_fs::tool_list_files(app, args, interactive, session_id).await,
-        "bind_file" => tool_bind_file(app, args, interactive).await,
-        "link_file_to_task" => tool_link_file_to_task(app, args).await,
+        "link_file_to_task" => tool_link_file_to_task(app, args, session_id).await,
         "search_tasks" => tool_search_tasks(app, args).await,
         "extract_document" => tool_extract_document(app, args, interactive, session_id).await,
         "create_word" => tool_create_word(app, args).await,
@@ -1479,7 +1478,7 @@ fn sanitize_task_files_in(
 }
 
 /// files 写回任务时的双写：新 files 列 + 旧 file_path/file_is_dir 首条（过渡期旧版本可读）
-fn apply_files_to_task(t: &mut crate::db::Task, files: Vec<crate::db::TaskFile>) {
+pub fn apply_files_to_task(t: &mut crate::db::Task, files: Vec<crate::db::TaskFile>) {
     t.file_path = files.first().map(|f| f.path.clone());
     t.file_is_dir = files.first().map(|f| f.is_dir);
     t.files = if files.is_empty() { None } else { Some(files) };
@@ -2214,87 +2213,25 @@ async fn tool_remove_subtask(
     }
 }
 
-/// 绑定文件/文件夹：弹系统选择框由用户挑选，结果写回任务的 filePath/fileIsDir
-async fn tool_bind_file(
-    app: &AppHandle,
-    args: &str,
-    interactive: bool,
-) -> (String, Vec<crate::bot_chat::TaskRef>) {
-    // 后台定时执行（interactive=false）不能弹系统选择框——
-    // 无人在场时模态框让 spawn_blocking 线程永久阻塞，该后台任务卡死。
-    // 引导模型改用 link_file_to_task 直传路径。
-    if !interactive {
-        return (
-            "失败：后台执行不能弹窗选文件；请改用 link_file_to_task 并直接提供文件路径".into(),
-            Vec::new(),
-        );
-    }
-    let v = parse_args(args);
-    let is_dir = v["isDir"].as_bool().unwrap_or(false);
-    let task = match resolve_task(app, &v).await {
-        Ok(t) => t,
-        Err(e) => return (e.into(), Vec::new()),
-    };
-    let handle = app.clone();
-    // 弹框在后台线程阻塞执行，避免卡住异步运行时
-    let picked = tauri::async_runtime::spawn_blocking(move || {
-        use tauri_plugin_dialog::DialogExt;
-        let dlg = handle.dialog().file();
-        if is_dir {
-            dlg.blocking_pick_folder()
-        } else {
-            dlg.blocking_pick_file()
-        }
-    })
-    .await
-    .unwrap_or(None);
-
-    let Some(path) = picked.and_then(file_path_to_string) else {
-        return ("用户取消了选择，未绑定".into(), Vec::new());
-    };
-    let mut next = task;
-    // 多文件绑定：等价 bind_files(vec![path])——弹框单选结果替换整个绑定列表
-    apply_files_to_task(
-        &mut next,
-        vec![crate::db::TaskFile {
-            path: path.clone(),
-            is_dir,
-        }],
-    );
-    next.expected_updated_at = next.updated_at; // RMW 写回基线 = 快照 updated_at（写前比对，防整行覆盖 lost-update）
-    next.updated_at = Some(chrono::Utc::now().timestamp_millis());
-    match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
-        Ok(()) => {
-            broadcast_after_mutation(app, vec![next.clone()], vec![]);
-            (
-                format!(
-                    "已给任务「{}」绑定{}：{}",
-                    next.title,
-                    if is_dir { "文件夹" } else { "文件" },
-                    path
-                ),
-                vec![crate::bot_chat::TaskRef {
-                    id: next.id.clone(),
-                    title: next.title.clone(),
-                }],
-            )
-        }
-        Err(e) => (format!("绑定失败：{e}"), Vec::new()),
-    }
-}
-
-fn file_path_to_string(p: tauri_plugin_dialog::FilePath) -> Option<String> {
-    match p {
-        tauri_plugin_dialog::FilePath::Path(pb) => pb.to_str().map(|s| s.to_string()),
-        tauri_plugin_dialog::FilePath::Url(u) => Some(u.to_string()),
-    }
-}
-
-/// 把文件路径绑定到任务卡（不弹框；路径必须真实存在，防模型编造）
+/// 登记产物到任务卡执行流程的产物清单（不立即绑）
+///
+/// 设计：bot 流程内调用是「登记」语义——记到内存登记表 `bot_artifacts::REGISTRY`，
+/// 流程结束按 `TaskExecOrigin` 分流（D4d）弹汇总窗口让用户勾选绑定。
+/// 普通 chat 场景（无 TaskExecOrigin 上下文）直接拒，避免登记表被反复污染。
+///
+/// 路径白名单：仅接受 AI_Gen_Files 目录内的文件（产物必经此目录生成），
+/// 防止 LLM 借 bind_files 间接读 ~/.ssh/id_rsa 等敏感文件。
 async fn tool_link_file_to_task(
     app: &AppHandle,
     args: &str,
+    session_id: Option<&str>,
 ) -> (String, Vec<crate::bot_chat::TaskRef>) {
+    if !crate::tool_guard::is_task_execution_flow(session_id) {
+        return (
+            "link_file_to_task 仅在任务卡执行流程（🤖 按钮 / ⏰ 定时 / 📦 批量）内有效；普通对话场景调用无效果（不报错也不绑），不要反复尝试".into(),
+            Vec::new(),
+        );
+    }
     let v = parse_args(args);
     let Some(path) = v["path"]
         .as_str()
@@ -2304,54 +2241,49 @@ async fn tool_link_file_to_task(
         return ("link_file_to_task 缺少 path".into(), Vec::new());
     };
     if !std::path::Path::new(&path).exists() {
-        return (format!("路径不存在，拒绝绑定：{path}"), Vec::new());
+        return (format!("路径不存在，拒绝登记：{path}"), Vec::new());
     }
-    // 只校验"路径存在"不够：模型可绑定任意文件（如 ~/.ssh/id_rsa）到任务卡，
-    // 再经 extract_document 的「任务卡绑定文件」白名单读走内容 —— 白名单被架空。
-    // 收窄：只能绑定 AI_Gen_Files 目录内的文件（工具用途 = 把机器人产物绑回任务卡，产物必在此目录）。
-    // 用户亲手绑定的其他文件走 bind_file 弹框，不在此限。
-    {
-        let canon =
-            std::fs::canonicalize(&path).unwrap_or_else(|_| std::path::PathBuf::from(&path));
-        let gen_dir = crate::db::data_dir(app).join("AI_Gen_Files");
-        let in_gen = match std::fs::canonicalize(&gen_dir) {
-            Ok(gen) => canon.starts_with(&gen),
-            Err(_) => false,
-        };
-        if !in_gen {
-            return (
-                "已拒绝绑定该路径：link_file_to_task 只能绑定 AI_Gen_Files 目录内的文件；其他文件请在任务卡上手动「绑定文件」".into(),
-                Vec::new(),
-            );
-        }
-    }
-    let task = match resolve_task(app, &v).await {
-        Ok(t) => t,
-        Err(e) => return (e.into(), Vec::new()),
+    let canon = std::fs::canonicalize(&path).unwrap_or_else(|_| std::path::PathBuf::from(&path));
+    let gen_dir = crate::db::data_dir(app).join("AI_Gen_Files");
+    let in_gen = match std::fs::canonicalize(&gen_dir) {
+        Ok(gen) => canon.starts_with(&gen),
+        Err(_) => false,
     };
-    let mut next = task.clone();
-    apply_files_to_task(
-        &mut next,
-        vec![crate::db::TaskFile {
-            path: path.clone(),
-            is_dir: false,
-        }],
-    );
-    next.expected_updated_at = next.updated_at; // RMW 写回基线 = 快照 updated_at（写前比对，防整行覆盖 lost-update）
-    next.updated_at = Some(chrono::Utc::now().timestamp_millis());
-    match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
-        Ok(()) => {
-            broadcast_after_mutation(app, vec![next.clone()], vec![]);
-            (
-                format!("已给任务「{}」绑定文件：{path}", next.title),
-                vec![crate::bot_chat::TaskRef {
-                    id: next.id.clone(),
-                    title: next.title.clone(),
-                }],
-            )
-        }
-        Err(e) => (format!("绑定失败：{e}"), Vec::new()),
+    if !in_gen {
+        return (
+            "已拒绝登记该路径：link_file_to_task 只能登记 AI_Gen_Files 目录内的产物；其他文件请在任务卡上手动「绑定文件」".into(),
+            Vec::new(),
+        );
     }
+    // taskId / title 任一必传（绑定目标）
+    let task_key = v["taskId"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .or_else(|| {
+            v["title"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .map(|s| format!("title:{s}"))
+        });
+    let Some(key) = task_key else {
+        return ("link_file_to_task 缺少 taskId / title".into(), Vec::new());
+    };
+    let kind = match v["kind"].as_str().unwrap_or("final") {
+        "intermediate" => crate::bot_artifacts::ArtifactKind::Intermediate,
+        _ => crate::bot_artifacts::ArtifactKind::Final,
+    };
+    crate::bot_artifacts::register(&key, path.clone(), kind).await;
+    let kind_label = match kind {
+        crate::bot_artifacts::ArtifactKind::Final => "最终产物",
+        crate::bot_artifacts::ArtifactKind::Intermediate => "中间产物",
+    };
+    (
+        format!(
+            "已登记{kind_label}「{path}」。流程结束、任务完成时会弹汇总窗口让你勾选绑定；不要在此刻绑定——任务未完成或中断不绑定。"
+        ),
+        Vec::new(),
+    )
 }
 
 // ───────────────────────── 文档 / Python 工具（bot_py 桥接） ─────────────────────────
@@ -3437,19 +3369,15 @@ mod phase4_facts_tests {
 #[cfg(test)]
 mod background_dialog_tests {
     /// 回归锁：后台执行（interactive=false）不得弹系统文件选择框——
-    /// bind_file 分发必须透传 interactive，extract_document 无 path 时必须拒绝。
-    ///（弹框链路绑定 Wry AppHandle 无法单测，源码锁防回退）
+    /// tool_bind_file 已下线（bind_files 复数形是前端走的），现仅 extract_document
+    /// 无 path 后台必须拒绝。源码锁防回退。
     #[test]
     fn background_execution_never_pops_file_dialog() {
         let text =
             std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bot.rs")).unwrap();
         assert!(
-            text.contains("\"bind_file\" => tool_bind_file(app, args, interactive).await"),
-            "bind_file 分发必须透传 interactive"
-        );
-        assert!(
-            text.contains("后台执行不能弹窗选文件；请改用 link_file_to_task"),
-            "tool_bind_file 必须有后台拒弹窗分支"
+            !text.contains(concat!("tool_bind", "_file(")),
+            "tool_bind_file 死函数不得回退（前端走 bind_files 复数形）"
         );
         assert!(
             text.contains("后台执行不能弹窗选文件，请提供 path 参数"),

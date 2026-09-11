@@ -806,7 +806,6 @@ mod tests {
                 r#"[{"title": "mock result", "url": "https://example.com"}]"#.to_string()
             }
             "fetch_url" => r#"{"text": "mock fetched content"}"#.to_string(),
-            "bind_file" => r#"{"bound": true}"#.to_string(),
             "use_skill" => "mock skill body".to_string(),
             _ => "mock ok".to_string(),
         }

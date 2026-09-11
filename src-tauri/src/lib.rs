@@ -6,6 +6,7 @@ mod api_server;
 mod audit;
 pub mod bot;
 mod bot_anthropic;
+pub mod bot_artifacts;
 pub mod bot_chat;
 mod bot_fs;
 mod bot_model_loop;
@@ -506,6 +507,7 @@ pub fn run() {
             bot_slash::bot_stop,
             bot_chat::bot_compact,
             bot_slash::bot_confirm_response,
+            bot_artifacts::confirm_artifact_batch,
             bot::bot_log_read,
             bot_py::py_get_enabled,
             bot_py::py_set_enabled,

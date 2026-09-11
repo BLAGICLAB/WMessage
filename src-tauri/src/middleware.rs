@@ -394,17 +394,23 @@ mod tests {
     }
 
     #[test]
-    fn atomic_guard_blocks_atomic_tool_when_no_skill() {
+    fn atomic_guard_no_op_after_blacklist_emptied() {
+        // D4d 后 ATOMIC_TOOLS 已清空，AtomicGuardMiddleware 现在恒放行。
+        // 保留骨架作为防御层（未来新增原子工具不需重写中间件）。
         let m = AtomicGuardMiddleware;
-        // 黑名单 + 非 Skill 状态 → 阻断
-        assert!(m.pre_execute("link_file_to_task", false).is_some());
-        // 黑名单 + Skill 状态 → 放行
-        assert!(m.pre_execute("link_file_to_task", true).is_none());
-        // create_word_revisions 已移出黑名单（去 Skill 化），聊天直调放行
-        assert!(m.pre_execute("create_word_revisions", false).is_none());
-        // 白名单 → 放行
-        assert!(m.pre_execute("run_python", false).is_none());
-        assert!(m.pre_execute("list_tasks", false).is_none());
+        // 所有工具一律放行（含 link_file_to_task 由工具内部 is_task_execution_flow 拦）
+        for (name, active_skill) in [
+            ("link_file_to_task", false),
+            ("link_file_to_task", true),
+            ("create_word_revisions", false),
+            ("run_python", false),
+            ("list_tasks", false),
+        ] {
+            assert!(
+                m.pre_execute(name, active_skill).is_none(),
+                "{name} (active_skill={active_skill}) 现在应被 AtomicGuard 放行（黑名单已空）"
+            );
+        }
     }
 
     #[test]
@@ -446,29 +452,25 @@ mod tests {
     }
 
     #[test]
-    fn helper_missing_state_pre_execute_fail_closed() {
-        // D2：安全闸门类 fail-closed——state 未 manage 时原子工具被拒绝（Some），
-        // 不能静默放行；非原子工具无闸门诉求，仍放行（None）。
+    fn helper_missing_state_pre_execute_fail_open() {
+        // D4d 后 ATOMIC_TOOLS 已清空 → registry 缺失时所有工具 fail-open 放行
+        //（原子工具黑名单拦截职责已转移到 tool_link_file_to_task 内部的
+        // is_task_execution_flow 判定，中间件层不再承担）。
         let app = tauri::test::mock_app();
         let handle = app.handle().clone();
-        let blocked = run_pre_execute(&handle, "link_file_to_task", false);
-        let msg = blocked.expect("registry 缺失时原子工具必须被拒绝（fail-closed）");
-        assert!(msg.contains("安全闸门未初始化"), "提示语应说明原因：{msg}");
-        assert!(
-            run_pre_execute(&handle, "list_tasks", false).is_none(),
-            "非原子工具不受闸门影响，fail-open"
-        );
-        // Skill 活动态与 AtomicGuard 口径一致：活动 Skill 的原子调用不拦
-        assert!(run_pre_execute(&handle, "link_file_to_task", true).is_none());
+        assert!(run_pre_execute(&handle, "link_file_to_task", false).is_none());
+        assert!(run_pre_execute(&handle, "list_tasks", false).is_none());
+        assert!(run_pre_execute(&handle, "run_python", false).is_none());
     }
 
     #[test]
     fn helper_with_managed_state_runs_registry() {
-        // state 已 manage → helper 走 registry：atomic guard 阻断、intent router 放行
+        // state 已 manage → helper 走 registry：所有工具都被 AtomicGuard 放行（黑名单已空），
+        // intent_router 路由表为空 → 恒 PassThrough
         let app = tauri::test::mock_app();
         app.manage(build_default_registry());
         let handle = app.handle().clone();
-        assert!(run_pre_execute(&handle, "link_file_to_task", false).is_some());
+        assert!(run_pre_execute(&handle, "link_file_to_task", false).is_none());
         assert!(run_pre_execute(&handle, "list_tasks", false).is_none());
         // 动态路由：测试进程路由表为空（未安装技能经 rebuild 注入）→ 恒 PassThrough
         match run_pre_step(&handle, "帮我做 PPT") {

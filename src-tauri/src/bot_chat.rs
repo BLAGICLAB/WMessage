@@ -46,7 +46,7 @@ const SYSTEM_PROMPT: &str = "\
 3. 完成/删除/编辑任务必须先调用 list_tasks 确认标题、再实际调用对应工具：完成用 complete_task、删除用 delete_task（移回收站，可恢复）、编辑用 edit_task，按用户说的关键词匹配；同一对话里切换操作对象（另一张任务卡）时，不得沿用上一条消息的 taskId，必须用当前消息的任务名重新确认；\
 4. 用户想找/搜索任务时，调用 search_tasks（搜所有任务卡：待办/进行中/已完成/已归档；关键词可匹配标题/备注/标签/子任务）；\
 5. 子任务操作：添加子任务必须调用 add_subtask，勾选/取消勾选子任务必须调用 toggle_subtask，删除子任务必须调用 remove_subtask；text 参数填子任务内容本身（如「买菜」），任务定位优先 taskId、否则 title 关键词；「取消子任务」优先理解为取消勾选（toggle_subtask），用户明确说「删除」才用 remove_subtask；子任务内容必须是简短动宾短句（≤15 字，如「核对配色变量」），禁止把整段计划原文/长句当子任务名；\
-6. 绑定文件/文件夹时调用 bind_file，isDir=true 选文件夹、false 选文件，会弹出系统选择框由用户挑选；\
+6. 任务卡绑定文件：用户亲手绑定走 TodoCard UI（不是 bot工具）；AI_Gen_Files 内的产物由任务卡执行流程结束时的汇总窗口让你勾选绑定——bot 流程内调用 link_file_to_task 是登记，不是立即绑；\
 7. 用户消息中出现 [已选任务] 引用块（含任务 id 和标题）时，对这些任务的操作必须用 taskId 参数（不要用标题关键词）；\
 8. 工具执行成功后简短汇报结果；任何任务变更（新建/编辑/完成/删除/子任务/绑定）都必须实际调用工具并拿到成功返回才能汇报完成——本轮没有工具调用成功时，禁止说「已添加/已修改/已删除/已绑定」，要如实说明未能执行及原因；\
 文档处理规则：\
@@ -76,7 +76,7 @@ const SYSTEM_PROMPT: &str = "\
 - 你只有白名单工具可用，绝不执行系统命令、修改系统设置、访问系统目录；\
 - 绝不批量删除任务，一次只处理用户明确指定的任务；\
 - 绝不遍历全盘、批量读取本机文件；\
-- bind_file 的文件由用户亲手在系统选择框挑选，不得编造路径；\
+- link_file_to_task 登记的产物路径必须真实存在，不得编造；普通对话场景调用此工具无效果（不报错也不绑），不要反复尝试；\
 - fetch_url 只能访问 http/https 公网地址，本机/内网地址会被拒绝；\
 - 定位任务不确定时先 list_tasks/search_tasks 确认，禁止猜测 id 或标题。";
 
@@ -852,8 +852,10 @@ pub(crate) const EXECUTE_SYSTEM_PROMPT: &str = "\
 规则：\
 1. 先读任务卡内容（标题/备注/子任务/截止时间/绑定文件）理解要做什么；绑定文件可以用 extract_document 的 path 参数直接读取；\
 2. 需要最新信息先 web_search；读网页用 fetch_url；Word 润色/修改用 create_word_revisions 修订模式（track changes）；Excel/PDF 生成用 create_excel/create_pdf；PPT 用 create_ppt（多版式：先规划大纲，封面/目录/章节页/内容页/表格页/结束页，每页一个观点，标题即结论）；数据处理用 run_python；\
-3. 生成的文件落 AI_Gen_Files 后，用 link_file_to_task 绑定到任务卡（taskId 用任务卡 id）；\
-4. 完成后：先用 edit_task 把执行摘要写进任务卡备注（做了什么、产物路径），再用 complete_task 标记完成（taskId 用任务卡 id）；\
+3. 生成的文件落 AI_Gen_Files 后，用 link_file_to_task 登记产物（taskId 用任务卡 id，kind 默认 final 表示最终产物）。bot 流程结束、任务完成、有产物时才弹汇总窗口让你勾选绑定；不要在此刻绑定——任务未完成或中断不绑定；\
+4. 完成后：用 edit_task 把执行摘要写进任务卡备注（做了什么、产物路径）。\
+   - 🤖 手动执行：用 complete_task 标记完成（taskId 用任务卡 id）；\
+   - ⏰ 定时执行 / 📦 批量执行：不要调 complete_task（否则下次到点不触发），保留原状态，摘要写在备注里即可；\
 5. 任务卡要求的是线下事务（取快递、打电话、需要本人到场等）时，不要假装完成——说明原因，不要调用 complete_task；\
 6. 不确定的信息宁可用工具查证，绝不编造结果；\
 7. 结束后用一两句话向用户汇报结果。";
@@ -1322,6 +1324,9 @@ where
     );
     // 1. 新会话 + 任务块 user 消息落库 + chat-open-session 广播
     let sid = create_exec_session(app, &task, origin).await?;
+    // D4d：登记 session_id → TaskExecOrigin 映射，tool_link_file_to_task 内部查询。
+    // 末尾无论成败都要 unregister_exec_session 清理。
+    crate::tool_guard::register_exec_session(&sid, origin);
     // 2. ChatGuard（设计 3.4：bot_execute_task 纳入会话锁——执行期间同会话的
     // bot_chat 插话会被拒「稍候再发」，防流式/历史交错）。新会话正常不会冲突，
     // 冲突说明守卫串号，按内部错误处理。
@@ -1362,6 +1367,32 @@ where
     });
     // assistant 回复落库（失败也落 ⚠️ 行——会话即执行记录，留证可回看）
     persist_exec_reply(app, &task, &sid, &outcome).await;
+    // D4d 收尾：解除 session 注册（无论成败），按 TaskExecOrigin 分流触发汇总弹窗。
+    crate::tool_guard::unregister_exec_session(&sid);
+    let task_column = crate::db::db_load_for(app).await.ok().and_then(|tasks| {
+        tasks
+            .into_iter()
+            .find(|t| t.id == task_id)
+            .map(|t| t.column)
+    });
+    if let Some(artifacts) =
+        crate::bot_artifacts::should_emit(task_id, origin, task_column.as_deref()).await
+    {
+        let _ = app.emit(
+            "artifact-batch-ready",
+            serde_json::json!({
+                "taskId": task_id,
+                "taskTitle": task.title,
+                "sessionId": sid,
+                "origin": match origin {
+                    TaskExecOrigin::Manual => "manual",
+                    TaskExecOrigin::Scheduled => "scheduled",
+                    TaskExecOrigin::Batch => "batch",
+                },
+                "paths": artifacts.iter().map(|a| a.path.clone()).collect::<Vec<_>>(),
+            }),
+        );
+    }
     match outcome {
         Ok(result) => Ok(TaskChatRun {
             session_id: sid,
