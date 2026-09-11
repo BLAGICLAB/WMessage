@@ -145,7 +145,7 @@ EOF
   `x86_64-w64-mingw32-objdump -p .../wmessage.exe | grep -i onnxruntime` 应无输出
 - [ ] macOS 侧回归：`cd src-tauri && cargo check` 通过（Cargo.toml 有 target 特异配置时必跑）
 - [ ] DEVLOG.md 记一条出包记录
-- [ ] Windows 实机验收（人工）：解压双击 wmessage.exe；重点验证机器人记忆语义检索
+- [ ] Windows 实机验收（人工）：解压双击 wmessage.exe；确认 exe 同目录生成 wmessage.db 与 AI_Gen_Files（便携锚定）；重点验证机器人记忆语义检索
   （模型/引擎异常会自动降级关键词模式，不报错但功能缩水，需肉眼确认），并用一张带文字的
   本地图片让机器人跑 `ocr_image`（缺 pp-ocr-v6/ 时工具会报「请运行 scripts/fetch_ocr_models.sh…」）
 
@@ -158,4 +158,5 @@ EOF
 | Windows 解压报「位置不可用」 | zip 是 macOS `zip` 打的，改用第 6 步 Python zipfile |
 | 用户机报「找不到 webview2loader.dll」 | 漏拷 WebView2Loader.dll，与 WebView2 Runtime 无关 |
 | Win10 白屏/起不来 | 让用户先跑包内 MicrosoftEdgeWebview2Setup.exe 装 WebView2 |
+| 用户不解压直接双击 zip 内 exe | 代码侧已兜底：exe 落 %TEMP% 时不在 temp 建数据，退化 app_data 并在 bot.log 记 `data_dir_fallback` WARN；仍应提醒用户解压后再运行（否则数据不随包走） |
 | dotnet/ 失效静默走 Python | dotnet/ 必须整目录随包；缺失时 Word 修订回退 Python（需用户机有 Python 3.10+） |

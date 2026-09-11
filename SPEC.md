@@ -76,8 +76,8 @@ WMessage：Tauri + React + TailwindCSS 的 Todo 看板，带系统侧边磁吸�
 
 10. 内置机器人（设置页开关，默认关闭）：
    - 挂件下方聊天区（展开高度 840 = 560 + 280）；多会话（新建/切换/删除/自动改名）、历史持久化 SQLite
-   - 30 个工具：任务管理（list_tasks/query_single_task/search_tasks/create_task/edit_task/complete_task/delete_task/add_subtask/toggle_subtask/remove_subtask/bind_file/link_file_to_task）+ 文档处理（extract_document/create_word/create_word_revisions/create_excel/create_ppt/create_pdf）+ 文件读写（list_files/read_text_file/grep_files）+ 图片识字（ocr_image）+ 本机 Python（run_python，独立临时目录 + 60s 超时，开关默认关闭）+ 联网（web_search：配置 Tavily 或 Brave key 走对应 API、双开报错，未配置走 Bing+百度网页抓取 / fetch_url 仅公网）+ 长期记忆（remember_fact/recall_facts/record_lesson，语义记忆体 v2）+ 时间（get_current_time）+ Skill（use_skill）
-   - Word 润色默认修订模式（track changes，w:ins/w:del，author=WMessage AI）；产物只落 AI_Gen_Files 同名 (n) 序号永不覆盖
+   - 30 个工具：任务管理（list_tasks/query_single_task/search_tasks/create_task/edit_task/complete_task/delete_task/add_subtask/toggle_subtask/remove_subtask/bind_file/link_file_to_task）+ 文档处理（extract_document/create_word/create_word_revisions/create_excel/create_ppt/create_pdf）+ 文件读写（list_files/read_text_file/grep_files）+ 图片识字（ocr_image）+ 本机 Python（run_python，独立临时目录在系统 temp 的 wmessage-py-runs/<uuid>/ + 60s 超时，开关默认关闭；子进程注入 WM_GEN_DIR/WM_TMP_DIR 环境变量，写相对路径的产物跑完自动回收进 AI_Gen_Files）+ 联网（web_search：配置 Tavily 或 Brave key 走对应 API、双开报错，未配置走 Bing+百度网页抓取 / fetch_url 仅公网）+ 长期记忆（remember_fact/recall_facts/record_lesson，语义记忆体 v2）+ 时间（get_current_time）+ Skill（use_skill）
+   - Word 润色默认修订模式（track changes，w:ins/w:del，author=WMessage AI）；产物统一落 AI_Gen_Files（`db::gen_dir` 中心函数解析、启动即预建、同名 (n) 序号永不覆盖；系统提示词硬性约束产物/临时文件落点）
    - 流式回复；思考过程（<think>）与工具调用折叠行可展开；Markdown 渲染回复
    - 斜杠命令：/stop /compact（≤300 字摘要）/retry /clean（清空当前对话）
    - 安全：删除任务弹确认（60s 超时自动拒绝）；审计日志 bot.log；参数上限；API Key 存系统凭据存储（keyring）；文件访问授权模式（2026-08-26）：strict 白名单硬拒 / ask 白名单外弹授权（默认，允许一次/始终允许该目录/拒绝）/ yolo 全放行（文件+Python）；extract_document path 校验（任务卡绑定文件 / AI_Gen_Files 静默放行，其余走授权分流）
@@ -114,7 +114,7 @@ WMessage：Tauri + React + TailwindCSS 的 Todo 看板，带系统侧边磁吸�
 ### 跨平台打包
 - **Windows 绿色包**：Mac 上 mingw 交叉编译 `x86_64-pc-windows-gnu` + Python zipfile 打绿色 zip（不用 macOS `zip` 避免 Unix 扩展字段）
 - **必备文件**：wmessage.exe + WebView2Loader.dll（160KB，缺它必报「找不到 webview2loader.dll」）
-- **便携模式**：数据库放 exe 同目录随 U 盘走，exe 目录不可写时兜底 `app_data_dir`
+- **便携模式**：数据库放 exe 同目录随 U 盘走，exe 目录不可写时兜底 `app_data_dir`；exe 旁已有 `wmessage.db` 或 `AI_Gen_Files` 时强制便携锚定（写探针失败也不翻转）；从 zip 内直接双击运行（exe 落系统 temp）时不在 temp 建数据，退化 `app_data_dir` 并在 bot.log 记 WARN——全机只允许一个 AI_Gen_Files
 - **完整流程**：`cargo clean --target x86_64-pc-windows-gnu` → `npx tauri build --target x86_64-pc-windows-gnu --no-bundle` 带 mingw env（不能直接 cargo build）
 
 ### Skill 路径解析

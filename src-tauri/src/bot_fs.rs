@@ -88,16 +88,23 @@ fn strip_verbatim(p: PathBuf) -> PathBuf {
     }
 }
 
-/// 白名单原始路径合并（追加语义）：内置默认（桌面/下载/文档）+ 任务卡绑定
-/// 文件夹 + 用户 allowedDirs 三者并集（不能是「用户列表整体替换默认」——否则授权弹窗
-/// 「始终允许」写入一个目录后，内置默认反而失效）。抽纯函数便于单测。
-fn merge_raw_dirs(cfg_dirs: &[String], home: Option<&Path>, task_dirs: Vec<String>) -> Vec<String> {
+/// 白名单原始路径合并（追加语义）：内置默认（桌面/下载/文档）+ AI 产物目录 +
+/// 任务卡绑定文件夹 + 用户 allowedDirs 四者并集（不能是「用户列表整体替换默认」——
+/// 否则授权弹窗「始终允许」写入一个目录后，内置默认反而失效）。
+/// AI_Gen_Files 必须在列：产物落盘后 read_text_file / list_files 得能读回。抽纯函数便于单测。
+fn merge_raw_dirs(
+    cfg_dirs: &[String],
+    home: Option<&Path>,
+    task_dirs: Vec<String>,
+    gen_dir: Option<String>,
+) -> Vec<String> {
     let mut raw: Vec<String> = Vec::new();
     if let Some(home) = home {
         for d in ["Desktop", "Downloads", "Documents"] {
             raw.push(home.join(d).to_string_lossy().to_string());
         }
     }
+    raw.extend(gen_dir);
     raw.extend(task_dirs);
     raw.extend(cfg_dirs.iter().cloned());
     raw
@@ -121,7 +128,10 @@ async fn allowed_dirs(app: &AppHandle) -> Vec<PathBuf> {
             }
         }
     }
-    let raw = merge_raw_dirs(&cfg.allowed_dirs, home_dir().as_deref(), task_dirs);
+    let gen = crate::db::gen_dir(app)
+        .ok()
+        .map(|p| p.to_string_lossy().to_string());
+    let raw = merge_raw_dirs(&cfg.allowed_dirs, home_dir().as_deref(), task_dirs, gen);
     let mut out: Vec<PathBuf> = Vec::new();
     for r in raw {
         let p = expand_tilde(r.trim());
@@ -692,13 +702,14 @@ mod tests {
         let home = PathBuf::from("/home/u");
         let cfg = vec!["/data/work".to_string()];
         let task = vec!["/mnt/bound".to_string()];
-        let raw = merge_raw_dirs(&cfg, Some(&home), task);
+        let raw = merge_raw_dirs(&cfg, Some(&home), task, Some("/data/gen".to_string()));
         assert_eq!(
             raw,
             vec![
                 "/home/u/Desktop",
                 "/home/u/Downloads",
                 "/home/u/Documents",
+                "/data/gen",
                 "/mnt/bound",
                 "/data/work"
             ]
@@ -706,10 +717,18 @@ mod tests {
     }
 
     /// home 缺失（Windows 绿色版 HOME/USERPROFILE 全空兜底场景）时不产默认目录，
-    /// 但任务卡绑定与用户配置仍在
+    /// 但 AI 产物目录、任务卡绑定与用户配置仍在
     #[test]
     fn merge_raw_dirs_without_home() {
-        let raw = merge_raw_dirs(&["/data/x".to_string()], None, vec!["/mnt/b".to_string()]);
-        assert_eq!(raw, vec!["/mnt/b", "/data/x"]);
+        let raw = merge_raw_dirs(
+            &["/data/x".to_string()],
+            None,
+            vec!["/mnt/b".to_string()],
+            Some("/data/gen".to_string()),
+        );
+        assert_eq!(raw, vec!["/data/gen", "/mnt/b", "/data/x"]);
+        // gen 目录缺失（创建失败）时其余集合不受影响
+        let raw = merge_raw_dirs(&["/data/x".to_string()], None, vec![], None);
+        assert_eq!(raw, vec!["/data/x"]);
     }
 }

@@ -4,7 +4,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { isPermissionGranted, requestPermission } from "@tauri-apps/plugin-notification";
 import { KanbanBoard } from "./components/KanbanBoard";
-import { ArtifactBatchDialog } from "./components/ArtifactBatchDialog";
 import mainLogo from "./assets/main-logo.png";
 import { ArchivePage } from "./components/ArchivePage";
 import { TrashPage } from "./components/TrashPage";
@@ -627,7 +626,6 @@ function App() {
         />
       )}
     </div>
-    <ArtifactBatchDialog />
     </ErrorBoundary>
   );
 }

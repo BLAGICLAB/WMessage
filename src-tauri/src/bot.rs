@@ -1442,7 +1442,10 @@ fn sanitize_task_files_arg(
     v: &serde_json::Value,
 ) -> Option<(Vec<crate::db::TaskFile>, bool)> {
     let (files, truncated) = parse_task_files_arg(v)?;
-    let gen_canon = std::fs::canonicalize(crate::db::data_dir(app).join("AI_Gen_Files")).ok();
+    // gen_dir 拿不到（创建失败）则按 None 处理——白名单校验「拿不到则拒」
+    let gen_canon = crate::db::gen_dir(app)
+        .ok()
+        .and_then(|d| std::fs::canonicalize(d).ok());
     let (out, dropped) = sanitize_task_files_in(gen_canon.as_deref(), files);
     if dropped > 0 {
         audit_log(
@@ -2245,11 +2248,10 @@ async fn tool_link_file_to_task(
         return (format!("路径不存在，拒绝登记：{path}"), Vec::new());
     }
     let canon = std::fs::canonicalize(&path).unwrap_or_else(|_| std::path::PathBuf::from(&path));
-    let gen_dir = crate::db::data_dir(app).join("AI_Gen_Files");
-    let in_gen = match std::fs::canonicalize(&gen_dir) {
-        Ok(gen) => canon.starts_with(&gen),
-        Err(_) => false,
-    };
+    let in_gen = crate::db::gen_dir(app)
+        .ok()
+        .and_then(|d| std::fs::canonicalize(d).ok())
+        .is_some_and(|gen| canon.starts_with(&gen));
     if !in_gen {
         return (
             "已拒绝登记该路径：link_file_to_task 只能登记 AI_Gen_Files 目录内的产物；其他文件请在任务卡上手动「绑定文件」".into(),
@@ -2305,8 +2307,7 @@ async fn extract_path_check(
         return Err(format!("路径不存在或不可访问：{path}"));
     };
     // 1) AI_Gen_Files 目录内
-    let gen_dir = crate::db::data_dir(app).join("AI_Gen_Files");
-    if let Ok(gen) = std::fs::canonicalize(&gen_dir) {
+    if let Ok(gen) = crate::db::gen_dir(app).and_then(|d| std::fs::canonicalize(d)) {
         if canon.starts_with(&gen) {
             return Ok(());
         }

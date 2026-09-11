@@ -2,6 +2,19 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-09-11（周五）AI 产物统一收口 AI_Gen_Files + 便携版锚定唯一化
+
+**问题**：bot 产物文件散落各处——AI_Gen_Files 拼接分散 6 处无中心函数；run_python 运行目录在数据目录 `py-runs/<uuid>` 下，模型写相对路径的产物随目录删除丢失、写绝对路径完全无围栏；Windows 绿色版从 zip 直接双击运行时 exe 落 %TEMP%，AI_Gen_Files 跟着建到 TEMP；探针瞬时失败还会把数据目录翻转走。
+
+**修复**：
+- **中心函数 `db::gen_dir`**（解析即建）：bot.rs 三处白名单校验、bot_chat 图片白名单、bot_skills/files.rs path_openable、bot_py.rs gen_out_path 全部改走它；lib.rs setup 启动即预建（失败只记 WARN 不阻塞）
+- **py-runs 收口系统 temp**：Python/.NET 运行目录根从数据目录改 `temp_dir()/wmessage-py-runs`（`py_runs_root()`），sweep_stale_py_runs 同步换根——临时残件不再进便携目录
+- **run_python 产物回收 + 围栏**：子进程注入 `WM_GEN_DIR`（AI_Gen_Files 绝对路径）/ `WM_TMP_DIR`（系统 temp）；跑完删除运行目录前 `harvest_run_outputs` 把新建文件搬进 AI_Gen_Files（同名 (n) 序号、跨卷 copy 回退）；系统提示词动态注入产物落盘规则（bot_chat.rs `gen_dir_rule`，chat / 任务卡执行 / 逐步执行三处拼接点）
+- **读白名单**：`bot_fs::merge_raw_dirs` 默认集并入 gen_dir，产物落盘后 read_text_file/list_files 可读回
+- **便携锚定唯一化**（audit.rs `probe_dir`）：exe 旁已有 wmessage.db 或 AI_Gen_Files → 强制便携跳过写探针（探针失败不翻转）；exe 在系统 temp 下（zip 直跑）→ 跳过便携分支退化 app_data 并记专属 WARN。全机只允许一个 AI_Gen_Files
+
+**测试**：Rust lib 新增 5 例（probe_dir temp 规避 / 痕迹强制便携×2、harvest 回收、dedup 序号），受影响用例 2 个改到非 temp 的 mock exe 目录；`cargo check` 零错，`cargo test --lib` 620 全绿。SPEC/README/PACKAGING-WINDOWS-PORTABLE/MANUAL-ACCEPTANCE 的便携与产物落点描述已同步。
+
 ## 2026-09-11（周五）五阶段仓库审计收官：清理 −2540 行 + 四道防回潮门禁
 
 全仓五阶段审计（死代码/注释考古/一致性/过度工程/规则固化）全部完成并 push。基线与收尾：Rust lib 测试 607 例、前端 vitest 208 例、集成测试（llm_integration/skill_e2e/task_chat_exec）全绿。

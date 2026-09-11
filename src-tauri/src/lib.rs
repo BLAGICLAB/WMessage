@@ -367,6 +367,17 @@ pub fn run() {
             // 清扫残留的 py-runs 临时目录（spawn 失败/崩溃遗留，超 1 小时即删）
             bot_py::sweep_stale_py_runs(app.handle());
 
+            // 启动即预建 AI 产物目录（解析即建，不等首次生成产物才懒建）；
+            // 失败只记 WARN 不阻塞启动——生成产物时 gen_dir 还会再试
+            if let Err(e) = db::gen_dir(app.handle()) {
+                audit::write_event(
+                    app.handle(),
+                    audit::AuditLevel::Warn,
+                    "gen_dir_init_fail",
+                    &[("err", e.to_string())],
+                );
+            }
+
             // M4：系统侧边磁吸挂件窗口（贴边收起为触发条，悬停滑出）
             tauri::WebviewWindowBuilder::new(
                 app,

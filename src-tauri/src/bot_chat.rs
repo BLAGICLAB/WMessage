@@ -82,6 +82,19 @@ const SYSTEM_PROMPT: &str = "\
 
 // ───────────────────────── 图片附件（多模态） ─────────────────────────
 
+/// 产物落盘规则（动态注入 AI_Gen_Files / 系统 temp 的绝对路径）。
+/// WM_GEN_DIR / WM_TMP_DIR 由 run_python 注入子进程环境（bot_py::run_python_at），
+/// 这里把同一约束写进系统提示词：产物必进 AI_Gen_Files，临时文件必进系统 temp。
+pub(crate) fn gen_dir_rule<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> String {
+    let gen = crate::db::gen_dir(app)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "WM_GEN_DIR 指向的目录".to_string());
+    let tmp = std::env::temp_dir().to_string_lossy().to_string();
+    format!(
+        "产物落盘规则（硬性约束）：所有要交付给用户的文件（文档/表格/图片/代码产物等）必须保存到 {gen}（即 AI_Gen_Files 目录；run_python 子进程内等同 WM_GEN_DIR 环境变量指向的目录）；临时中间文件必须放系统临时目录 {tmp}（子进程内等同 WM_TMP_DIR）；禁止写到桌面/下载/当前目录等其他任何位置。"
+    )
+}
+
 /// 图片扩展名清单（pub：经 consts::app_consts 下发前端，单一真相在此）
 pub const IMAGE_EXTS: [&str; 6] = ["png", "jpg", "jpeg", "webp", "gif", "bmp"];
 /// 单张图片文件上限 3MB（base64 后约 4MB，MiniMax 图片大小限制内）
@@ -364,7 +377,9 @@ fn attach_images(app: &AppHandle, content: &str) -> serde_json::Value {
             roots.push(home.join(d));
         }
     }
-    roots.push(crate::db::data_dir(app).join("AI_Gen_Files"));
+    if let Ok(gen) = crate::db::gen_dir(app) {
+        roots.push(gen);
+    }
     let (v, skipped) = attach_images_in(&roots, content);
     if skipped > 0 {
         crate::bot::audit_log(
@@ -577,7 +592,12 @@ pub async fn bot_chat(
     let mut msgs: Vec<serde_json::Value> = Vec::new();
     // 技能清单动态注入：系统提示词 + 已安装技能的「名称+描述」（progressive disclosure 第一层；
     // 全文由 use_skill 工具按需读取，省 token）
-    let system_base = format!("{}\n\n{}", SYSTEM_PROMPT, build_skill_block(&app));
+    let system_base = format!(
+        "{}\n\n{}\n\n{}",
+        SYSTEM_PROMPT,
+        gen_dir_rule(&app),
+        build_skill_block(&app)
+    );
 
     // 步骤 3：middleware::run_pre_step（pre-step 路由，F-2 抽象层短路求值）：
     // - RouteAction::ExecuteTasks（选择任务卡模式，ChatExecuteMiddleware）→ 批量执行选中任务卡
@@ -1341,7 +1361,7 @@ where
     let stop = StopGuard::new_task_exec(true, Some(sid.clone()));
     let block = build_task_block(&task);
     let mut msgs = vec![
-        serde_json::json!({"role": "system", "content": format!("{}\n\n{}", EXECUTE_SYSTEM_PROMPT, build_skill_block(app))}),
+        serde_json::json!({"role": "system", "content": format!("{}\n\n{}\n\n{}", EXECUTE_SYSTEM_PROMPT, gen_dir_rule(app), build_skill_block(app))}),
         serde_json::json!({"role": "user", "content": block}),
     ];
     // 任务卡执行/定时调度也注入记忆块——助手执行任务时知道用户

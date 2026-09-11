@@ -19,9 +19,11 @@ const ORIGIN_LABEL: Record<BatchReady["origin"], string> = {
 
 /** 任务卡执行流程结束后的产物汇总弹窗（D4d 触发）
  *
- * 监听后端 `artifact-batch-ready` 事件（由 run_task_in_chat_with 收尾
- * 按 TaskExecOrigin 分流 emit）。默认全选，用户可勾选/取消，确认后
- * 调 `confirm_artifact_batch` 落 db_upsert。
+ * 挂在挂件（聊天）窗口 WidgetApp 内——挂件进程常驻、面板始终挂载，
+ * 不管挂件收起还是锁定，事件都不丢；挂件收起时由 WidgetApp 自动展开
+ * 让弹窗可见。监听后端 `artifact-batch-ready` 事件（由
+ * run_task_in_chat_with 收尾按 TaskExecOrigin 分流 emit）。默认全选，
+ * 用户可勾选/取消，确认后调 `confirm_artifact_batch` 落 db_upsert。
  */
 export function ArtifactBatchDialog() {
   const [ready, setReady] = useState<BatchReady | null>(null);

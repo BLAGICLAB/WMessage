@@ -23,12 +23,12 @@ Tauri 2 + React 19 + TypeScript 的 Todo 看板，新拟态（Neumorphism）UI�
 - **按钮体系**：状态切换用 `nm-outset ↔ nm-inset`（凸↔凹）；动作按钮用 `.nm-btn`（默认凸起、按下瞬间凹陷）
 - **任务卡归属头像**：人完成 → 用户头像；点「交给机器人」→ 机器人头像（执行结束无论成败改回）；任务卡只显头像、悬停显姓名；用户/机器人头像与姓名可在设置页上传/修改
 - **定时任务卡**：⏰ 到点自动交给机器人执行（一次 / 每天 / 每周 / 每月 四档），结果前置「⏰ 自动执行」写进备注；一次性执行完自动清除
-- **内置机器人聊天**（挂件下方，设置页开关）：用大模型管理任务（新建/完成/删除/搜索/编辑/子任务/绑定文件）；29 个工具含文档处理（Word 润色修订模式/Excel 公式/PPT/PDF，产物落 AI_Gen_Files 永不覆盖）、本机 Python 编程（默认关闭）、联网搜索（配置 Tavily/Brave key 走对应 API，未配置走 Bing+百度网页抓取）、网页抓取（公网白名单）、语义长期记忆（记忆体 v2）；多会话 + 历史持久化 + 折叠思考/工具行；斜杠命令 /stop /compact /retry /clean（2026-08-17 21:52 老板拍板移除 /help：补全面板已上浮，/help 还会污染 LLM 上下文）；删除任务弹确认（60s 超时自动拒绝）；审计日志 bot.log
+- **内置机器人聊天**（挂件下方，设置页开关）：用大模型管理任务（新建/完成/删除/搜索/编辑/子任务/绑定文件）；29 个工具含文档处理（Word 润色修订模式/Excel 公式/PPT/PDF，产物统一落 AI_Gen_Files：启动预建、同名加序号永不覆盖，run_python 写相对路径的产物自动回收进该目录）、本机 Python 编程（默认关闭）、联网搜索（配置 Tavily/Brave key 走对应 API，未配置走 Bing+百度网页抓取）、网页抓取（公网白名单）、语义长期记忆（记忆体 v2）；多会话 + 历史持久化 + 折叠思考/工具行；斜杠命令 /stop /compact /retry /clean（2026-08-17 21:52 老板拍板移除 /help：补全面板已上浮，/help 还会污染 LLM 上下文）；删除任务弹确认（60s 超时自动拒绝）；审计日志 bot.log
 - **工作区**（主窗口「归档」与「回收站」之间）：类似任务卡的静态链接收藏（网址/文件/文件夹），标题内联编辑 + 折叠 + 增删链接 + 拖拽排序；挂件只读展示可点击打开
 - **桌面清理**（设置页）：任务完成满 7 天归档后按规则自动迁移其绑定文件（移动到归档目录并更新 filePath / 删除文件）；规则表用 CSV 表格管理（下载模版 → Excel/WPS 编辑 → 导入）；`{year}` 占位符；后台 10 分钟轮询；看板/回收站附件绝不触碰；迁移日志 migration.log（弹窗查看）
 - **全局快捷键**：唤起/隐藏主窗口 macOS `Cmd+Ctrl+W` / Win `Ctrl+Alt+W`；快速新建任务 macOS `Cmd+Ctrl+N` / Win `Ctrl+Alt+N`（唤起并直接进入标题编辑态）；切换深浅色 `Cmd+Ctrl+T` / `Ctrl+Alt+T`（注册失败只记日志，绝不影响启动）
 - **主窗口关闭 = 隐藏**：挂件可随时唤起；Cmd+Q 正常退出
-- **本地持久化**：SQLite 行级增量写入，主窗口与挂件实时同步；便携模式：数据库随 exe 走（exe 目录不可写时兜底 app_data_dir）
+- **本地持久化**：SQLite 行级增量写入，主窗口与挂件实时同步；便携模式：数据库随 exe 走（exe 目录不可写时兜底 app_data_dir；exe 旁已有 wmessage.db/AI_Gen_Files 时强制锚定 exe 目录；zip 内直接双击运行时不进系统 temp，退化 app_data_dir 并记 WARN）
 
 ## 技术栈
 
@@ -85,7 +85,7 @@ src-tauri/
 
 ### 数据存储与同步（SQLite，单写者）
 
-- **数据源**：`wmessage.db`（app_data_dir 下；Win：`%APPDATA%\com.renshi.wmessage\wmessage.db`，macOS：`~/Library/Application Support/com.renshi.wmessage/wmessage.db`）
+- **数据源**：`wmessage.db`（便携模式在 exe 同目录；否则 app_data_dir：Win `%APPDATA%\com.renshi.wmessage\wmessage.db`，macOS `~/Library/Application Support/com.renshi.wmessage/wmessage.db`；AI 产物目录 `AI_Gen_Files` 与数据库同目录，启动即预建）
 - 表 `tasks`（`tags`/`subtasks` JSON 文本列，含 schedule/sched_last 定时列、bot_assigned 归属列、ord 排序列、updated_at 合并导入列）；另有 `workspace_items`（工作区）、`bot_messages`/`bot_sessions`（聊天多会话）；**行级增量读写**（无全库覆盖写）
 - **单写者**：只有主窗口写库（`db_upsert` / `db_delete`），挂件只读（`db_load`）
 - 主窗口 `mutate()`：计算新数组 → diff 出 upserts/deletes → 行级落盘 → 广播 `tasks-changed`
@@ -140,7 +140,7 @@ npx tauri build --target x86_64-pc-windows-gnu --no-bundle
 
 - [ ] 首次启动：种子任务出现、看板三列正常、无报错弹窗
 - [ ] WebView2 依赖：Win10 未装 runtime 时便携包附带的安装器可补救；Win11 免装直接可跑
-- [ ] 便携模式：exe + WebView2Loader.dll 同目录启动；任务数据随目录走（U 盘换机器数据仍在）；exe 目录只读（如 Program Files）时兜底 app_data_dir
+- [ ] 便携模式：exe + WebView2Loader.dll 同目录启动；任务数据随目录走（U 盘换机器数据仍在）；exe 目录只读（如 Program Files）时兜底 app_data_dir；zip 内不解压直接双击运行时数据退化 app_data_dir（bot.log 有 WARN），AI_Gen_Files 不建到系统 temp
 - [ ] 挂件：贴右/左/顶三边吸附、悬停滑出、📌 锁定、拖动换边、圆角跟随边缘；重启后位置记忆
 - [ ] 全局快捷键：Ctrl+Alt+W 唤起/隐藏、Ctrl+Alt+N 快速新建、Ctrl+Alt+T 切主题（与浏览器/输入法等无冲突；被占用时 App 照常启动）
 - [ ] 托盘：左键恢复主窗口、右键「打开主窗口/退出」；退出后进程完全结束

@@ -2,7 +2,7 @@
 //!
 //! 安全设计（对齐 Harness 网关）：
 //! - 开关：py-enabled.flag（设置页「允许机器人执行 Python」，默认关闭）——主要防护
-//! - 受限执行：每次运行独立临时目录（数据目录 py-runs/<uuid>/），只经 stdin/文件传参，永不拼 shell；
+//! - 受限执行：每次运行独立临时目录（系统临时目录 wmessage-py-runs/<uuid>/），只经 stdin/文件传参，永不拼 shell；
 //!   ⚠️ 不是安全沙箱：脚本以当前用户完整权限运行（可读本机文件、可联网），仅隔离工作目录
 //! - 熔断：默认超时 60s 强杀（含子进程组），用户可配但硬钳上限 300s；stdout/stderr 读取时硬截断 64KB
 //! - 限额：Unix setrlimit RLIMIT_AS（内存按 timeout 比例，256MB~2GB）/ RLIMIT_CPU（timeout+10s）；
@@ -254,9 +254,7 @@ fn run_dotnet_revisions(app: &AppHandle, input_json: &str) -> Option<Result<PyRu
     let (prog, entry) = dotnet_revisions_entry()?;
     // 并发闸门由调用方持有（run_doc_revisions 入口统一上锁，覆盖 dotnet + 回退 Python
     // 全程；std Mutex 不可重入，这里不能再锁）
-    let dir = crate::db::data_dir(app)
-        .join("py-runs")
-        .join(uuid::Uuid::new_v4().simple().to_string());
+    let dir = py_runs_root().join(uuid::Uuid::new_v4().simple().to_string());
     if let Err(e) = std::fs::create_dir_all(&dir)
         .and_then(|_| std::fs::write(dir.join("params.json"), input_json))
     {
@@ -266,6 +264,7 @@ fn run_dotnet_revisions(app: &AppHandle, input_json: &str) -> Option<Result<PyRu
         );
         return None; // 目录都建不了 → 回退 Python 路径更稳妥
     }
+    let gen = crate::db::gen_dir(app).ok();
     let mut audit_sink = |line: &str| py_audit(app, line);
     let args = vec!["params.json".to_string()];
     // 首次跑要 JIT，给 120s（与 doc_* 脚本同款）
@@ -274,6 +273,7 @@ fn run_dotnet_revisions(app: &AppHandle, input_json: &str) -> Option<Result<PyRu
             &prog,
             entry.as_deref(),
             &dir,
+            gen.as_deref(),
             &args,
             Some(120),
             &mut audit_sink,
@@ -524,6 +524,12 @@ fn cleanup_after_fail(child: &mut std::process::Child, dir: &std::path::Path, li
 fn cleanup_after_spawn_fail(dir: &std::path::Path, limits: &RunLimits) {
     limits.terminate();
     let _ = std::fs::remove_dir_all(dir);
+}
+
+/// py-runs 根目录：系统临时目录下（运行残件属临时文件，不进数据目录；
+/// 数据目录只留 AI_Gen_Files 产物与数据库/日志，便携版拷走时不带垃圾）
+fn py_runs_root() -> std::path::PathBuf {
+    std::env::temp_dir().join("wmessage-py-runs")
 }
 
 /// 运行目录初始化：建目录 + 写 run.py / params.json；任一步失败
@@ -847,15 +853,13 @@ fn run_python_ungated(
     };
 
     let mut audit_sink = |line: &str| py_audit(app, line);
+    // 产物目录解析即建；注入子进程 WM_GEN_DIR + 跑完回收运行目录产物
+    let gen = crate::db::gen_dir(app).ok();
     // 最多 2 次尝试：首次 spawn NotFound 说明缓存的 python 已失效
     //（路径被删 / PATH 变了），作废缓存重新探测后重试一次
     for attempt in 0..2 {
         // 独立临时目录（初始化失败清理已建目录 + setup_fail 审计，不泄漏）
-        let dir = match setup_run_dir(
-            &crate::db::data_dir(app).join("py-runs"),
-            script,
-            input_json,
-        ) {
+        let dir = match setup_run_dir(&py_runs_root(), script, input_json) {
             Ok(d) => d,
             Err(e) => {
                 audit_sink(&format!(
@@ -872,6 +876,7 @@ fn run_python_ungated(
             &py,
             Some("run.py"),
             &dir,
+            gen.as_deref(),
             args,
             timeout_secs,
             &mut audit_sink,
@@ -900,12 +905,15 @@ fn run_python_ungated(
 /// 跑全路径）。前置：dir 已创建且 run.py / params.json 已写入。
 /// `entry`：入口参数（Python 传 Some("run.py")；dotnet dll 形态传 Some(dll 路径)；
 /// 随包 apphost exe 直跑传 None，见 run_dotnet_revisions）。
+/// `gen_dir`：AI 产物目录——注入子进程环境变量 WM_GEN_DIR（供脚本取产物落点），
+/// 跑完删除运行目录前把目录里新建的文件搬进去（模型写相对路径的产物兜底回收）。
 /// 所有失败路径（spawn_fail / wait_fail / timeout / drain_timeout）必记审计，
 /// 危险路径不留零痕迹。
 fn run_python_at(
     py: &str,
     entry: Option<&str>,
     dir: &std::path::Path,
+    gen_dir: Option<&std::path::Path>,
     args: &[String],
     timeout_secs: Option<u64>,
     audit: &mut dyn FnMut(&str),
@@ -957,6 +965,12 @@ fn run_python_at(
     if let Some(e) = entry {
         cmd.arg(e);
     }
+    // 产物/临时文件落点注入：模型脚本经 WM_GEN_DIR 拿 AI_Gen_Files 绝对路径、
+    // WM_TMP_DIR 拿系统临时目录；围栏由系统提示词约束 + 跑完产物回收兜底
+    if let Some(g) = gen_dir {
+        cmd.env("WM_GEN_DIR", g);
+    }
+    cmd.env("WM_TMP_DIR", std::env::temp_dir());
     cmd.args(args)
         .current_dir(dir)
         .stdin(Stdio::null())
@@ -1077,6 +1091,11 @@ fn run_python_at(
         ));
     }
     let duration_ms = start.elapsed().as_millis();
+    // 产物回收：模型写相对路径的交付文件随 cwd 落在运行目录，删除前搬进
+    // AI_Gen_Files（同名加 (n) 序号）；run.py/params.json 是 harness 自写件不算产物
+    if let Some(g) = gen_dir {
+        harvest_run_outputs(dir, g, audit);
+    }
     let _ = std::fs::remove_dir_all(dir);
     // exit_code=None 表示子进程被信号杀死（历史上多因 SIGPIPE），
     // 静默当成功返回会让用户只见莫名空结果 —— 记审计并按失败返回
@@ -1096,10 +1115,81 @@ fn run_python_at(
     })
 }
 
+/// 运行目录产物回收：模型把交付文件写进 cwd（相对路径）时，运行目录删除前
+/// 搬进 AI_Gen_Files（同名加 (n) 序号，与 gen_out_path_in 同规则，永不覆盖）。
+/// run.py / params.json 是 harness 自写件，不算产物。跨卷 rename 失败回退 copy+delete。
+fn harvest_run_outputs(
+    dir: &std::path::Path,
+    gen_dir: &std::path::Path,
+    audit: &mut dyn FnMut(&str),
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut moved = 0usize;
+    for e in entries.flatten() {
+        let name = e.file_name();
+        if name == "run.py" || name == "params.json" {
+            continue;
+        }
+        let src = e.path();
+        let dest = dedup_dest(gen_dir, &name);
+        let ok = std::fs::rename(&src, &dest).is_ok()
+            || (copy_rec(&src, &dest).is_ok() && remove_rec(&src));
+        if ok {
+            moved += 1;
+        }
+    }
+    if moved > 0 {
+        audit(&format!(
+            "run_python | harvested={moved} | 运行目录产物已移入 AI_Gen_Files"
+        ));
+    }
+}
+
+/// 目标路径去重：存在则按「base (n).ext」递增（目录/无扩展名则「name (n)」）
+fn dedup_dest(dir: &std::path::Path, name: &std::ffi::OsStr) -> std::path::PathBuf {
+    let mut candidate = dir.join(name);
+    let mut n = 1;
+    while candidate.exists() {
+        let p = std::path::Path::new(name);
+        let stem = p.file_stem().unwrap_or(name).to_string_lossy();
+        let new_name = match p.extension() {
+            Some(ext) => format!("{stem} ({n}).{}", ext.to_string_lossy()),
+            None => format!("{stem} ({n})"),
+        };
+        candidate = dir.join(new_name);
+        n += 1;
+    }
+    candidate
+}
+
+/// 递归拷贝（跨卷 rename 失败的回退路径）：文件直拷，目录递归
+fn copy_rec(src: &std::path::Path, dest: &std::path::Path) -> std::io::Result<()> {
+    if src.is_dir() {
+        std::fs::create_dir_all(dest)?;
+        for e in std::fs::read_dir(src)? {
+            let e = e?;
+            copy_rec(&e.path(), &dest.join(e.file_name()))?;
+        }
+        Ok(())
+    } else {
+        std::fs::copy(src, dest).map(|_| ())
+    }
+}
+
+fn remove_rec(p: &std::path::Path) -> bool {
+    if p.is_dir() {
+        std::fs::remove_dir_all(p).is_ok()
+    } else {
+        std::fs::remove_file(p).is_ok()
+    }
+}
+
 /// 启动清扫：删掉 py-runs 下超过 1 小时未动的残留临时目录
 ///（spawn 失败/进程崩溃的兜底；正常路径用完即删，扫到的都是残留）。
 pub fn sweep_stale_py_runs(app: &AppHandle) {
-    let root = crate::db::data_dir(app).join("py-runs");
+    let root = py_runs_root();
     let removed = sweep_stale_py_runs_in(
         &root,
         Duration::from_secs(3600),
@@ -2356,11 +2446,7 @@ fn strip_known_ext(name: &str, ext: &str) -> String {
 
 /// 输出路径：AI_Gen_Files/<文件名>；同名自动加 (n) 序号，永不覆盖（Harness 第 6 层）
 fn gen_out_path(app: &AppHandle, filename: Option<&str>, ext: &str) -> CommandResult<String> {
-    gen_out_path_in(
-        &crate::db::data_dir(app).join("AI_Gen_Files"),
-        filename,
-        ext,
-    )
+    gen_out_path_in(&crate::db::gen_dir(app)?, filename, ext)
 }
 
 /// 纯目录参数版便于单测（mock_app 的 AppHandle 与 Wry 签名不兼容）。
@@ -2552,6 +2638,7 @@ mod tests {
             &py,
             Some("run.py"),
             &dir,
+            None,
             &[],
             Some(30),
             &mut |l: &str| lines.push(l.to_string()),
@@ -2713,6 +2800,7 @@ mod tests {
             &py,
             Some("run.py"),
             &dir.to_path_buf(),
+            None,
             &[],
             Some(120),
             &mut |l: &str| lines.push(l.to_string()),
@@ -2804,6 +2892,7 @@ mod tests {
             &prog,
             Some(&dll_s),
             &dir,
+            None,
             &["params.json".to_string()],
             Some(120),
             &mut |l: &str| lines.push(l.to_string()),
@@ -2852,6 +2941,7 @@ mod tests {
             &prog,
             Some(&dll_s),
             &dir,
+            None,
             &["params.json".to_string()],
             Some(120),
             &mut |l: &str| lines.push(l.to_string()),
@@ -2895,6 +2985,7 @@ mod tests {
             &py,
             Some("run.py"),
             &dir,
+            None,
             &[],
             Some(1),
             &mut |l: &str| lines.push(l.to_string()),
@@ -2923,6 +3014,7 @@ mod tests {
             "/nonexistent/python-zzz",
             Some("run.py"),
             &dir,
+            None,
             &[],
             Some(1),
             &mut |l: &str| lines.push(l.to_string()),
@@ -2957,6 +3049,7 @@ mod tests {
             "/nonexistent/python-zzz",
             Some("run.py"),
             &dir,
+            None,
             &[],
             Some(1),
             &mut |l: &str| lines.push(l.to_string()),
@@ -3101,6 +3194,59 @@ mod tests {
         );
     }
 
+    // ── 运行目录产物回收（harvest_run_outputs）──
+
+    #[test]
+    fn harvest_moves_new_files_and_skips_harness_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("run");
+        let gen = tmp.path().join("gen");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&gen).unwrap();
+        std::fs::write(dir.join("run.py"), b"x").unwrap();
+        std::fs::write(dir.join("params.json"), b"{}").unwrap();
+        std::fs::write(dir.join("report.docx"), b"a").unwrap();
+        std::fs::create_dir_all(dir.join("out")).unwrap();
+        std::fs::write(dir.join("out").join("data.csv"), b"b").unwrap();
+        // gen 里已有同名文件 → 搬入必须加 (1) 序号，不覆盖
+        std::fs::write(gen.join("report.docx"), b"old").unwrap();
+        let mut lines: Vec<String> = Vec::new();
+        harvest_run_outputs(&dir, &gen, &mut |l: &str| lines.push(l.to_string()));
+        assert!(dir.join("run.py").exists() && dir.join("params.json").exists());
+        assert!(!dir.join("report.docx").exists() && !dir.join("out").exists());
+        assert_eq!(std::fs::read(gen.join("report.docx")).unwrap(), b"old");
+        assert_eq!(std::fs::read(gen.join("report (1).docx")).unwrap(), b"a");
+        assert_eq!(
+            std::fs::read(gen.join("out").join("data.csv")).unwrap(),
+            b"b"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("harvested=2")),
+            "缺回收审计行: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn dedup_dest_handles_dirs_and_extensions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("a.txt"), b"x").unwrap();
+        std::fs::write(dir.join("a (1).txt"), b"x").unwrap();
+        std::fs::create_dir_all(dir.join("d")).unwrap();
+        assert_eq!(
+            dedup_dest(dir, std::ffi::OsStr::new("a.txt")),
+            dir.join("a (2).txt")
+        );
+        assert_eq!(
+            dedup_dest(dir, std::ffi::OsStr::new("d")),
+            dir.join("d (1)")
+        );
+        assert_eq!(
+            dedup_dest(dir, std::ffi::OsStr::new("b.md")),
+            dir.join("b.md")
+        );
+    }
+
     // ── 探测缓存（连续调用只探测一次；探测本身带超时）──
 
     #[test]
@@ -3140,6 +3286,7 @@ mod tests {
             "/nonexistent/python-zzz",
             Some("run.py"),
             &dir,
+            None,
             &[],
             Some(1),
             &mut |_| {},
@@ -3177,6 +3324,7 @@ mod tests {
                 &py,
                 Some("run.py"),
                 &dir,
+                None,
                 &[],
                 Some(60),
                 &mut |l: &str| lines.push(l.to_string()),

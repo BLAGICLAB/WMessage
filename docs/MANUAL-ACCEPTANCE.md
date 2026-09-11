@@ -204,8 +204,9 @@
 
 - [ ] 启动：解压四件套 → 双击 wmessage.exe → 正常启动（无「找不到 webview2loader.dll」「无法访问此页面」）
 - [ ] WebView2 依赖：Win11 免装直接跑；Win10 未装 runtime 时用包内 MicrosoftEdgeWebview2Setup.exe 装一次后可跑
-- [ ] 便携模式：exe 同目录自动生成 wmessage.db；任务数据随目录走（U 盘/拷到另一台机器数据仍在）
+- [ ] 便携模式：exe 同目录自动生成 wmessage.db 与 AI_Gen_Files（启动即预建）；任务数据随目录走（U 盘/拷到另一台机器数据仍在）；拷到已有 wmessage.db 的旧目录运行时强制锚定该目录（探针失败也不翻转）
 - [ ] 只读兜底：把 exe 放进只读目录（如 Program Files）→ 不崩溃，数据兜底 app_data_dir（%APPDATA%\com.renshi.wmessage\）
+- [ ] zip 直跑兜底：不解压直接双击 zip 内 wmessage.exe → 不崩溃，数据退化 app_data_dir（bot.log 记 data_dir_fallback WARN），系统 temp 下不得留下 AI_Gen_Files/wmessage.db
 - [ ] 托盘：关闭主窗口 → 进托盘（进程仍在）；左键托盘图标 → 恢复主窗口；右键菜单「打开主窗口 / 退出」；「退出」后进程完全结束
 - [ ] 全局快捷键：Ctrl+Alt+W 唤起/隐藏；Ctrl+Alt+N 快速新建；Ctrl+Alt+T 切主题（与浏览器/输入法无冲突；被占用时 App 照常启动）
 - [ ] 剪贴板：任务卡 📋 复制文件+标题 → 粘贴到资源管理器得文件、粘贴到微信/飞书输入框得标题文本

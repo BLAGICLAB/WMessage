@@ -185,9 +185,10 @@ async fn run_step(
         return Box::pin(advance_or_finish(app, task_id, stop, exec_guard)).await;
     };
     let sys = format!(
-        "{}\n{}\n\n{}",
+        "{}\n{}\n\n{}\n\n{}",
         crate::bot_chat::EXECUTE_SYSTEM_PROMPT,
         crate::bot_chat::STEPWISE_ADDENDUM,
+        crate::bot_chat::gen_dir_rule(app),
         crate::bot_skills::build_skill_block(app)
     );
     let mut block = crate::bot_chat::build_task_block(&task);

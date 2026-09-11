@@ -33,8 +33,10 @@ fn path_openable(app: &AppHandle, path: &str, set: &std::collections::HashSet<St
     if set.contains(path) {
         return true;
     }
-    let gen = crate::db::data_dir(app).join("AI_Gen_Files");
-    if let (Ok(c), Ok(g)) = (std::fs::canonicalize(path), std::fs::canonicalize(&gen)) {
+    let gen = crate::db::gen_dir(app)
+        .ok()
+        .and_then(|d| std::fs::canonicalize(d).ok());
+    if let (Ok(c), Some(g)) = (std::fs::canonicalize(path), gen) {
         return c.starts_with(&g);
     }
     false

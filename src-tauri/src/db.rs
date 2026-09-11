@@ -123,6 +123,16 @@ pub fn data_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> std::path::Path
     db_dir(app)
 }
 
+/// AI 产物目录唯一入口：data_dir/AI_Gen_Files，解析即建（启动预建 + 生成前兜底）。
+/// 全仓库拼接产物路径必须走这里，不得各自 data_dir().join("AI_Gen_Files")。
+pub fn gen_dir<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> std::io::Result<std::path::PathBuf> {
+    let dir = data_dir(app).join("AI_Gen_Files");
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
 /// 日志轮转：超过 size_limit 字节就改名 .old（旧 .old 覆盖）。写日志前调用。
 pub fn rotate_log_if_large(path: &std::path::Path, size_limit: u64) {
     if let Ok(md) = std::fs::metadata(path) {
