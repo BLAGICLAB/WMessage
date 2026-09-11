@@ -2550,6 +2550,148 @@ mod tests {
         assert_eq!(resolve_timeout(Some(u64::MAX)), (MAX_TIMEOUT_SECS, true));
     }
 
+    /// 修订测试共用：最小 docx 夹具（标题样式段 + 加粗段 + 待改段 + tab/超链接混合段）。
+    /// dotnet 与 Python 兜底两引擎用同一夹具，形成输出等价软锁。
+    fn write_revisions_fixture(orig: &std::path::Path) {
+        const CT: &str = r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>"#;
+        const RELS: &str = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>"#;
+        const DOC: &str = r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>报告标题</w:t></w:r></w:p><w:p><w:r><w:rPr><w:b/></w:rPr><w:t>加粗内容保留</w:t></w:r></w:p><w:p><w:r><w:t>这句要润色。</w:t></w:r></w:p><w:p><w:r><w:t>含</w:t></w:r><w:r><w:tab/></w:r><w:hyperlink><w:r><w:t>链接文字</w:t></w:r></w:hyperlink><w:r><w:t>保留，改三字。</w:t></w:r></w:p></w:body></w:document>"#;
+        let f = std::fs::File::create(orig).unwrap();
+        let mut zw = zip::ZipWriter::new(f);
+        let opt = zip::write::SimpleFileOptions::default();
+        for (name, body) in [
+            ("[Content_Types].xml", CT),
+            ("_rels/.rels", RELS),
+            ("word/document.xml", DOC),
+        ] {
+            zw.start_file(name, opt).unwrap();
+            std::io::Write::write_all(&mut zw, body.as_bytes()).unwrap();
+        }
+        zw.finish().unwrap();
+    }
+
+    /// 修订测试共用：读 docx（zip）里的 word/document.xml 文本。
+    fn read_docx_document_xml(path: &std::path::Path) -> String {
+        let f = std::fs::File::open(path).unwrap();
+        let mut zip = zip::ZipArchive::new(f).unwrap();
+        let mut xml = String::new();
+        use std::io::Read as _;
+        zip.by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut xml)
+            .unwrap();
+        xml
+    }
+
+    /// 修订标记结构断言（双引擎共用）：w:ins/w:del/w:delText 齐全 + 作者 + 无日期。
+    fn assert_valid_track_changes(xml: &str) {
+        assert!(xml.contains("<w:ins "), "应有插入修订：{xml}");
+        assert!(xml.contains("<w:del "), "应有删除修订：{xml}");
+        assert!(xml.contains("<w:delText"), "w:del 内必须是 w:delText：{xml}");
+        assert!(xml.contains("WMessage AI"), "修订应有作者：{xml}");
+        // 修订不写日期
+        assert!(!xml.contains("w:date="), "修订不应带 w:date：{xml}");
+    }
+
+    /// 就地修订保格式断言（双引擎共用，与 dotnet 版断言逐条对齐）。
+    fn assert_in_place_preserves_formatting(xml: &str) {
+        // 格式保留：标题样式 + 加粗 rPr 原样还在（equal 段落不动）
+        assert!(xml.contains("w:val=\"Heading1\""), "标题样式应保留：{xml}");
+        assert!(xml.contains("<w:b/>") || xml.contains("<w:b />"), "加粗 rPr 应保留：{xml}");
+        // 修订标记：改动段落行内 w:del + w:ins（文本拆 run，断言片段而非整串），无日期
+        assert!(xml.contains("<w:del "), "应有删除修订：{xml}");
+        assert!(xml.contains("<w:ins "), "应有插入修订：{xml}");
+        assert!(xml.contains("<w:delText xml:space=\"preserve\">要</w:delText>"), "删除片段应在：{xml}");
+        assert!(xml.contains("<w:t xml:space=\"preserve\">过了</w:t>"), "插入片段应在：{xml}");
+        // 回归：tab/超链接段落改一个字走字符级 diff——只删「三」增「四」，
+        // tab 保留、超链接文本作为 equal 片段保留（hyperlink 解包后文字不丢），
+        // 不得整段标删（整段删会含完整旧句）
+        assert!(xml.contains("<w:delText xml:space=\"preserve\">三</w:delText>"), "应只删「三」：{xml}");
+        assert!(xml.contains("<w:t xml:space=\"preserve\">四</w:t>"), "应只增「四」：{xml}");
+        assert!(xml.contains("<w:tab/>") || xml.contains("<w:tab />"), "tab 应保留：{xml}");
+        assert!(xml.contains(">链接文字</w:t>"), "超链接文本应作为 equal 片段保留：{xml}");
+        assert!(!xml.contains("改三字。</w:delText>"), "不得整段标删：{xml}");
+        assert!(!xml.contains("w:date="), "修订不应带 w:date：{xml}");
+    }
+
+    /// python3 + python-docx 都在才返回 Some（缺则 None → 调用方 skip，CI 不红）。
+    fn python_with_docx() -> Option<String> {
+        let py = detect_python()?;
+        let ok = std::process::Command::new(&py)
+            .args(["-c", "import docx"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        ok.then_some(py)
+    }
+
+    /// Python 兜底引擎执行 MAKE_DOCX_REVISIONS_SCRIPT（与生产 run_python_ungated
+    /// 同形态：run.py + params.json 入运行目录，run_python_at 直跑）。
+    fn run_python_revisions(dir: &std::path::Path, params: &serde_json::Value) -> PyRunResult {
+        let Some(py) = python_with_docx() else {
+            panic!("python_with_docx 已判定可用");
+        };
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("run.py"), MAKE_DOCX_REVISIONS_SCRIPT).unwrap();
+        std::fs::write(dir.join("params.json"), params.to_string()).unwrap();
+        let mut lines: Vec<String> = Vec::new();
+        run_python_at(&py, Some("run.py"), &dir.to_path_buf(), &[], Some(120), &mut |l: &str| lines.push(l.to_string()), None)
+            .map_err(|f| f.msg)
+            .expect("python 兜底应正常运行")
+    }
+
+    /// Python 兜底路径端到端（dotnet 不可用时的回退引擎）——与 dotnet 版同输入同断言。
+    /// 本机无 python3 或缺 python-docx 时跳过。
+    #[test]
+    fn python_revisions_tool_generates_valid_track_changes() {
+        if python_with_docx().is_none() {
+            eprintln!("skip: 无 python3 或未安装 python-docx");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("out.docx");
+        let r = run_python_revisions(
+            &tmp.path().join("run"),
+            &serde_json::json!({
+                "title": "", "original_path": "",
+                "original": ["保持不动。", "这句要删掉。"],
+                "revised": ["保持不动。", "这句改写法。"],
+                "out": out,
+            }),
+        );
+        assert_eq!(r.exit_code, Some(0), "stderr: {}", r.stderr);
+        assert_valid_track_changes(&read_docx_document_xml(&out));
+    }
+
+    /// Python 兜底就地修订保格式——与 dotnet 版同夹具、断言逐条对齐（等价软锁）。
+    #[test]
+    fn python_revisions_in_place_preserves_formatting() {
+        if python_with_docx().is_none() {
+            eprintln!("skip: 无 python3 或未安装 python-docx");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let orig = tmp.path().join("orig.docx");
+        write_revisions_fixture(&orig);
+        let out = tmp.path().join("out.docx");
+        let r = run_python_revisions(
+            &tmp.path().join("run"),
+            &serde_json::json!({
+                "title": "", "original_path": orig,
+                "original": [],
+                "revised": ["报告标题", "加粗内容保留", "这句润色过了。", "含\t链接文字保留，改四字。"],
+                "out": out,
+            }),
+        );
+        assert_eq!(r.exit_code, Some(0), "stderr: {}", r.stderr);
+        assert!(
+            r.stdout.contains("保留原文格式"),
+            "应走在地修订路径；stdout: {}",
+            r.stdout
+        );
+        assert_in_place_preserves_formatting(&read_docx_document_xml(&out));
+    }
+
     /// .NET 修订工具端到端——dotnet + dll 都在才跑（缺则跳过，CI 无 dotnet 不红）。
     /// 用真实工具生成 docx，验证 OpenXML 修订标记（w:ins 用 w:t / w:del 用 w:delText）。
     #[test]
@@ -2589,20 +2731,7 @@ mod tests {
         .expect("dotnet 工具应正常运行");
         assert_eq!(r.exit_code, Some(0), "stderr: {}", r.stderr);
         // 验证修订标记（zip 里 word/document.xml）
-        let f = std::fs::File::open(&out).unwrap();
-        let mut zip = zip::ZipArchive::new(f).unwrap();
-        let mut xml = String::new();
-        use std::io::Read as _;
-        zip.by_name("word/document.xml")
-            .unwrap()
-            .read_to_string(&mut xml)
-            .unwrap();
-        assert!(xml.contains("<w:ins "), "应有插入修订：{xml}");
-        assert!(xml.contains("<w:del "), "应有删除修订：{xml}");
-        assert!(xml.contains("<w:delText"), "w:del 内必须是 w:delText：{xml}");
-        assert!(xml.contains("WMessage AI"), "修订应有作者：{xml}");
-        // 修订不写日期
-        assert!(!xml.contains("w:date="), "修订不应带 w:date：{xml}");
+        assert_valid_track_changes(&read_docx_document_xml(&out));
     }
 
     /// 就地修订保留原文格式——夹具 docx（标题样式 + 加粗 run + 普通段落），
@@ -2621,26 +2750,10 @@ mod tests {
             return;
         };
         let tmp = tempfile::tempdir().unwrap();
-        // 最小 docx 夹具（zip + 手写 document.xml）：标题样式段 + 加粗段 + 待改段
-        // + tab/超链接混合段（回归：字符级 diff 而非整段标删）
+        // 最小 docx 夹具（与 Python 兜底测试共用 write_revisions_fixture）：
+        // 标题样式段 + 加粗段 + 待改段 + tab/超链接混合段（回归：字符级 diff 而非整段标删）
         let orig = tmp.path().join("orig.docx");
-        {
-            const CT: &str = r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>"#;
-            const RELS: &str = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>"#;
-            const DOC: &str = r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>报告标题</w:t></w:r></w:p><w:p><w:r><w:rPr><w:b/></w:rPr><w:t>加粗内容保留</w:t></w:r></w:p><w:p><w:r><w:t>这句要润色。</w:t></w:r></w:p><w:p><w:r><w:t>含</w:t></w:r><w:r><w:tab/></w:r><w:hyperlink><w:r><w:t>链接文字</w:t></w:r></w:hyperlink><w:r><w:t>保留，改三字。</w:t></w:r></w:p></w:body></w:document>"#;
-            let f = std::fs::File::create(&orig).unwrap();
-            let mut zw = zip::ZipWriter::new(f);
-            let opt = zip::write::SimpleFileOptions::default();
-            for (name, body) in [
-                ("[Content_Types].xml", CT),
-                ("_rels/.rels", RELS),
-                ("word/document.xml", DOC),
-            ] {
-                zw.start_file(name, opt).unwrap();
-                std::io::Write::write_all(&mut zw, body.as_bytes()).unwrap();
-            }
-            zw.finish().unwrap();
-        }
+        write_revisions_fixture(&orig);
         let dir = tmp.path().join("run");
         std::fs::create_dir_all(&dir).unwrap();
         let out = tmp.path().join("out.docx");
@@ -2670,31 +2783,7 @@ mod tests {
             "应走在地修订路径；stdout: {}",
             r.stdout
         );
-        let f = std::fs::File::open(&out).unwrap();
-        let mut zip = zip::ZipArchive::new(f).unwrap();
-        let mut xml = String::new();
-        use std::io::Read as _;
-        zip.by_name("word/document.xml")
-            .unwrap()
-            .read_to_string(&mut xml)
-            .unwrap();
-        // 格式保留：标题样式 + 加粗 rPr 原样还在（equal 段落不动）
-        assert!(xml.contains("w:val=\"Heading1\""), "标题样式应保留：{xml}");
-        assert!(xml.contains("<w:b/>") || xml.contains("<w:b />"), "加粗 rPr 应保留：{xml}");
-        // 修订标记：改动段落行内 w:del + w:ins（文本拆 run，断言片段而非整串），无日期
-        assert!(xml.contains("<w:del "), "应有删除修订：{xml}");
-        assert!(xml.contains("<w:ins "), "应有插入修订：{xml}");
-        assert!(xml.contains("<w:delText xml:space=\"preserve\">要</w:delText>"), "删除片段应在：{xml}");
-        assert!(xml.contains("<w:t xml:space=\"preserve\">过了</w:t>"), "插入片段应在：{xml}");
-        // 回归：tab/超链接段落改一个字走字符级 diff——只删「三」增「四」，
-        // tab 保留、超链接文本作为 equal 片段保留（hyperlink 解包后文字不丢），
-        // 不得整段标删（整段删会含完整旧句）
-        assert!(xml.contains("<w:delText xml:space=\"preserve\">三</w:delText>"), "应只删「三」：{xml}");
-        assert!(xml.contains("<w:t xml:space=\"preserve\">四</w:t>"), "应只增「四」：{xml}");
-        assert!(xml.contains("<w:tab/>") || xml.contains("<w:tab />"), "tab 应保留：{xml}");
-        assert!(xml.contains(">链接文字</w:t>"), "超链接文本应作为 equal 片段保留：{xml}");
-        assert!(!xml.contains("改三字。</w:delText>"), "不得整段标删：{xml}");
-        assert!(!xml.contains("w:date="), "修订不应带 w:date：{xml}");
+        assert_in_place_preserves_formatting(&read_docx_document_xml(&out));
     }
 
     #[test]
