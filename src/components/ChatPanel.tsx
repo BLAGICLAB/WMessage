@@ -172,6 +172,10 @@ type Props = {
   onRemoveSelected: (id: string) => void;
   /** 发送完成：清空选择 + 退出选任务模式 */
   onFinishSelection: () => void;
+  /** 机器人是否开启（WidgetApp 透传 botOn）。
+   *  false 时跳过会话加载/历史恢复与所有对外 invoke，容器仍挂载以保住折叠展开循环里的 messages
+   *  与 listeners（详见 WidgetApp 折叠不丢聊天回归测试 + 16:30 bot 开关 resize 修法） */
+  enabled: boolean;
 };
 
 /** 斜杠命令清单（单一真相：autocomplete picker + runSlashCommand 共享）。
@@ -190,6 +194,7 @@ export function ChatPanel({
   selectedTasks,
   onRemoveSelected,
   onFinishSelection,
+  enabled,
 }: Props) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -323,7 +328,10 @@ export function ChatPanel({
     }));
 
   // 挂载：加载会话列表（空则新建一个），选中最近更新的会话并恢复其消息
+  // enabled=false 时直接跳过（机器人关闭，容器仍挂载但内部不工作；
+  // 重新开启后 useEffect 因为 enabled 变化重跑加载）
   useEffect(() => {
+    if (!enabled) return;
     (async () => {
       try {
         let list = await invoke<Session[]>("bot_sessions_load");
@@ -350,7 +358,7 @@ export function ChatPanel({
         handleCommandError(e, "chat init", { silent: true });
       }
     })();
-  }, []);
+  }, [enabled]);
 
   // 点击会话菜单外关闭（下拉与按钮不在同一个 ref 容器里，需同时检测两者）
   useEffect(() => {

@@ -5,7 +5,18 @@ import WidgetApp from "./WidgetApp";
 // —— Tauri mocks ——
 const mocks = vi.hoisted(() => {
   const invokeMock = vi.fn();
-  const listenMock = vi.fn(async () => () => {});
+  // 捕获 listen 回调（按事件名归档），供用例手动 emit 事件（bot-changed 等）
+  const listeners: Record<
+    string,
+    Array<(e: { payload: unknown }) => void>
+  > = {};
+  const listenMock = vi.fn(
+    async (event: string, cb: (e: { payload: unknown }) => void) => {
+      if (!listeners[event]) listeners[event] = [];
+      listeners[event].push(cb);
+      return () => {};
+    }
+  );
   const emitMock = vi.fn(async () => {});
   const winMock = {
     setAlwaysOnTop: vi.fn(async () => {}),
@@ -18,7 +29,7 @@ const mocks = vi.hoisted(() => {
     onDragDropEvent: vi.fn(async () => () => {}),
     startDragging: vi.fn(async () => {}),
   };
-  return { invokeMock, listenMock, emitMock, winMock };
+  return { invokeMock, listenMock, emitMock, winMock, listeners };
 });
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -57,6 +68,7 @@ const alertMock = vi.fn();
 beforeEach(() => {
   mocks.invokeMock.mockReset();
   mocks.listenMock.mockClear();
+  for (const k of Object.keys(mocks.listeners)) delete mocks.listeners[k];
   alertMock.mockClear();
   window.alert = alertMock;
   localStorage.clear();
@@ -191,5 +203,61 @@ describe("挂件折叠不丢聊天（2026-08-19 修复）", () => {
       mocks.invokeMock.mock.calls.filter((c) => c[0] === "bot_sessions_load").length
     ).toBe(1);
   });
+});
 
+// 回归：bot 开关不再触发 ChatPanel 重挂（16:30 resize 冲突修法）
+// ChatPanel 容器始终挂载，关闭时折叠为 0 高度；sessions/历史只加载一次
+describe("bot 开关不重挂 ChatPanel（2026-09-12）", () => {
+  const setupBotMocks = () => {
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "db_load")
+        return [{ id: "t1", title: "挂件任务", column: "todo", order: 0 }];
+      if (cmd === "workspace_load") return [];
+      if (cmd === "bot_get_enabled") return true;
+      if (cmd === "bot_sessions_load") return [{ id: "s1", title: "默认会话" }];
+      if (cmd === "bot_history_load") return [];
+      if (cmd === "bot_history_save") return null;
+      return null;
+    });
+  };
+
+  const flush = async () => {
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(0);
+  };
+
+  /** 手动 emit bot-changed 事件（设置页切换广播，WidgetApp L286 监听） */
+  const emitBotChanged = (enabled: boolean) => {
+    const cbs = mocks.listeners["bot-changed"];
+    expect(cbs).toBeDefined();
+    expect(cbs.length).toBeGreaterThan(0);
+    cbs[0]({ payload: enabled });
+  };
+
+  it("bot on → off → on 切换：ChatPanel 不卸载，bot_sessions_load 只调一次", async () => {
+    setupBotMocks();
+    render(<WidgetApp />);
+    await flush();
+    // 初始：bot on，bot_sessions_load 调用一次
+    expect(
+      mocks.invokeMock.mock.calls.filter((c) => c[0] === "bot_sessions_load").length
+    ).toBe(1);
+    expect(screen.getByPlaceholderText(/和机器人说点什么/)).toBeInTheDocument();
+    // bot 关闭
+    emitBotChanged(false);
+    await flush();
+    // ChatPanel 仍在 DOM（容器始终挂载，h-0 折叠），sessions 未重新加载
+    expect(screen.getByPlaceholderText(/和机器人说点什么/)).toBeInTheDocument();
+    expect(
+      mocks.invokeMock.mock.calls.filter((c) => c[0] === "bot_sessions_load").length
+    ).toBe(1);
+    // bot 重新开启
+    emitBotChanged(true);
+    await flush();
+    // ChatPanel 仍在 DOM，sessions 仍未重新加载（容器一直在，state 保留）
+    expect(screen.getByPlaceholderText(/和机器人说点什么/)).toBeInTheDocument();
+    expect(
+      mocks.invokeMock.mock.calls.filter((c) => c[0] === "bot_sessions_load").length
+    ).toBe(1);
   });
+});

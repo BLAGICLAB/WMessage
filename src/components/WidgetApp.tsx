@@ -1130,20 +1130,31 @@ export default function WidgetApp() {
           {/* Splitter：任务区/聊天区分隔条(bot 开时显示) */}
           {botOn && <SplitBar onSplit={moveSplit} onArrow={arrowSplit} />}
 
-          {/* 聊天区：bot 开时在 Splitter 下方,flex-1 自动填满剩余空间 */}
-          {botOn && (
-            <div ref={chatAreaRef} className="flex-1 min-h-[120px] overflow-hidden">
-              <ChatPanel
-                selecting={selecting}
-                onToggleSelecting={() => setSelecting((v) => !v)}
-                selectedTasks={selectedTasks}
-                onRemoveSelected={(id) =>
-                  setSelectedTasks((prev) => prev.filter((x) => x.id !== id))
-                }
-                onFinishSelection={finishSelection}
-              />
-            </div>
-          )}
+          {/* 聊天区：bot 关闭时折叠为 0 高度（容器始终在 DOM 里，resize 监听/state 不丢）。
+              与外层面板「始终挂载,折叠时 display:none」一致——开/关 bot 不再触发 ChatPanel 重挂,
+              moveSplit 用的 chatAreaRef 始终有效;内部 ChatPanel state(sessions / messages / streaming)
+              跨 bot 开关保留。bot on 时 flex-1 + min-h-120(老板拍板的聊天区下限);bot off 时 h-0 + min-h-0
+              强制吃光 flex 槽位(不依赖父层 display:none,保留给将来加过渡动画的空间)。 */}
+          <div
+            ref={chatAreaRef}
+            className={
+              botOn
+                ? "flex-1 min-h-[120px] overflow-hidden"
+                : "h-0 min-h-0 overflow-hidden"
+            }
+            aria-hidden={!botOn}
+          >
+            <ChatPanel
+              enabled={botOn}
+              selecting={selecting}
+              onToggleSelecting={() => setSelecting((v) => !v)}
+              selectedTasks={selectedTasks}
+              onRemoveSelected={(id) =>
+                setSelectedTasks((prev) => prev.filter((x) => x.id !== id))
+              }
+              onFinishSelection={finishSelection}
+            />
+          </div>
 
           {/* 产物绑定弹窗：挂在挂件窗口（面板始终挂载，收起时不卸载不丢事件） */}
           <ArtifactBatchDialog />

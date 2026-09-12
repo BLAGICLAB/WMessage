@@ -92,6 +92,7 @@ const defaultProps = {
   selectedTasks: [] as Task[],
   onRemoveSelected: vi.fn(),
   onFinishSelection: vi.fn(),
+  enabled: true,
 };
 
 beforeEach(() => {
