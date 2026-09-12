@@ -45,8 +45,46 @@ const STRIP_W = 44;
 const STRIP_H = 220;
 const PANEL_W = 480;
 const PANEL_H = 560;
-const CHAT_H = 280; // 聊天区高度 = 面板高度的 1/2
 const TOP_Y = 140; // 默认贴右缘的初始 Y
+
+// 老板拍板：边框调整边界 + Splitter 上下限
+const PANEL_W_MIN = 400, PANEL_W_MAX = 800;
+const PANEL_H_MIN = 800, PANEL_H_MAX = 900;
+const TASK_H_MIN = 0, CHAT_H_MIN = 120;
+const SPLITTER_H = 16;
+const DEFAULT_TASK_H = 280;
+
+const SIZE_KEY = "***";
+interface WidgetSize { w: number; h: number }
+function loadSize(): WidgetSize | null {
+  try {
+    const raw = localStorage.getItem(SIZE_KEY);
+    if (raw) {
+      const s = JSON.parse(raw) as WidgetSize;
+      if (s.w >= PANEL_W_MIN && s.w <= PANEL_W_MAX &&
+          s.h >= PANEL_H_MIN && s.h <= PANEL_H_MAX) return s;
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+function saveSize(s: WidgetSize) {
+  try { localStorage.setItem(SIZE_KEY, JSON.stringify(s)); } catch { /* ignore */ }
+}
+
+// 从 CSS 变量读/写任务区高度(Splitter 拖动用,不入 React state)
+// 注意:拖到顶部时值为 "0px",0 是合法状态,不能当无效值回退成默认高度
+function getTaskH(): number {
+  const raw = document.documentElement.style.getPropertyValue("--task-h");
+  if (!raw) return DEFAULT_TASK_H; // 从未设置过(首次)
+  const v = parseInt(raw, 10);
+  return Number.isFinite(v) ? Math.max(0, v) : DEFAULT_TASK_H;
+}
+function setTaskH(h: number) {
+  document.documentElement.style.setProperty("--task-h", h + "px");
+}
+
+// 拖拽进行中标记:拖动调整期间禁止 mouseleave 触发折叠(防止拖到一半「缩回去」)
+let widgetDragActive = false;
 
 // 挂件位置持久化（与任务数据分开的 key）
 const POS_KEY = "wmessage-widget-pos";
@@ -102,6 +140,121 @@ function anchorFromRect(
   return { anchor: { x, y }, edge: "float" };
 }
 
+// 四边拖拽热区：老板拍板 A+C（平时 1px 暗示线 + 拖动高亮）
+function ResizeEdge({
+  side,
+  onDelta,
+}: {
+  side: "n" | "s" | "e" | "w";
+  onDelta: (dx: number, dy: number, startPos: { x: number; y: number; w: number; h: number; sw: number; sh: number }) => void;
+}) {
+  const isH = side === "n" || side === "s";
+  const pos =
+    side === "n" ? "top-0 left-0 right-0 h-2 cursor-n-resize" :
+    side === "s" ? "bottom-0 left-0 right-0 h-2 cursor-s-resize" :
+    side === "e" ? "top-0 right-0 bottom-0 w-2 cursor-e-resize" :
+                   "top-0 left-0 bottom-0 w-2 cursor-w-resize";
+  const linePos = isH
+    ? "left-0 right-0 top-1/2 -translate-y-1/2 h-px"
+    : "top-0 bottom-0 left-1/2 -translate-x-1/2 w-px";
+
+  const onDown = (e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const sx = e.clientX, sy = e.clientY;
+    const el = e.currentTarget as HTMLElement;
+    try { el.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+    // 起始外框位置/尺寸/屏幕尺寸(异步读取;未就绪前的 move 一律忽略)
+    let startPos: { x: number; y: number; w: number; h: number; sw: number; sh: number } | null = null;
+    const win = getCurrentWindow();
+    void Promise.all([win.outerPosition(), win.outerSize(), win.scaleFactor(), screenSize()]).then(
+      ([p, s, sc, { w: sw, h: sh }]) => {
+        startPos = { x: p.x / sc, y: p.y / sc, w: s.width / sc, h: s.height / sc, sw, sh };
+      }
+    );
+    widgetDragActive = true;
+    // 监听器同步注册(不等异步读取):避免快速点按时漏掉 pointerup 造成监听残留
+    const move = (ev: PointerEvent) => {
+      const sp = startPos;
+      if (!sp) return;
+      onDelta(ev.clientX - sx, ev.clientY - sy, sp);
+    };
+    const cleanup = (ev: PointerEvent) => {
+      try { el.releasePointerCapture(ev.pointerId); } catch { /* ignore */ }
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", cleanup);
+      window.removeEventListener("pointercancel", cleanup);
+      widgetDragActive = false;
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", cleanup);
+    window.addEventListener("pointercancel", cleanup);
+  };
+
+  return (
+    <div className={`absolute z-30 ${pos} bg-transparent`} onPointerDown={onDown}>
+      <div className={`absolute ${linePos} bg-[var(--edge)] opacity-30 hover:opacity-80 active:opacity-100 transition-opacity`} />
+    </div>
+  );
+}
+
+// Splitter：任务区/聊天区分割条，双箭头 + 可拖拽
+// ▲ = 聊天区变大(任务区变小)、▼ = 任务区变大(聊天区变小)
+function SplitBar({ onSplit, onArrow }: {
+  onSplit: (delta: number) => void;
+  onArrow: (delta: number) => void;
+}) {
+  const onDown = (e: React.PointerEvent) => {
+    if ((e.target as HTMLElement).closest("button")) return;
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const sy = e.clientY;
+    let acc = 0;
+    const el = e.currentTarget as HTMLElement;
+    try { el.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+    widgetDragActive = true;
+    const move = (ev: PointerEvent) => {
+      const dy = ev.clientY - sy;
+      const inc = dy - acc;
+      acc = dy;
+      onSplit(inc);
+    };
+    const cleanup = (ev: PointerEvent) => {
+      try { el.releasePointerCapture(ev.pointerId); } catch { /* ignore */ }
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", cleanup);
+      window.removeEventListener("pointercancel", cleanup);
+      widgetDragActive = false;
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", cleanup);
+    window.addEventListener("pointercancel", cleanup);
+  };
+
+  return (
+    <div
+      className="relative h-4 shrink-0 flex items-center justify-center cursor-row-resize hover:bg-[var(--hover-bg)] group select-none"
+      onPointerDown={onDown}
+    >
+      <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-px bg-[var(--edge)] opacity-40 group-hover:opacity-80" />
+      <div className="relative flex items-center gap-3 px-2 py-0.5 rounded-full bg-[var(--bg)] border border-[var(--edge)]">
+        <button
+          onClick={() => onArrow(-40)}
+          title="聊天区变大"
+          className="text-[10px] text-[var(--t5)] hover:text-[var(--t2)] leading-none px-0.5"
+        >▲</button>
+        <button
+          onClick={() => onArrow(+40)}
+          title="任务区变大"
+          className="text-[10px] text-[var(--t5)] hover:text-[var(--t2)] leading-none px-0.5"
+        >▼</button>
+      </div>
+    </div>
+  );
+}
+
 export default function WidgetApp() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const tasksRef = useRef<Task[]>([]);
@@ -112,6 +265,13 @@ export default function WidgetApp() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [edge, setEdge] = useState<Edge>("right");
   const [botOn, setBotOn] = useState(false);
+
+  // 老板拍板：挂件边框尺寸(唯一尺寸源,只控制外框；内部任务/聊天区 flex 自适应)
+  const [size, setSize] = useState<WidgetSize>(() => loadSize() ?? {
+    w: PANEL_W, h: PANEL_H
+  });
+  // bot 关时面板 = 任务区 + splitter(不包含聊天区)；bot 开时 = 边框高度
+  const panelH = (bot: boolean) => bot ? size.h : getTaskH() + SPLITTER_H;
   const [selecting, setSelecting] = useState(false);
   const [selectedTasks, setSelectedTasks] = useState<Task[]>([]);
 
@@ -128,6 +288,14 @@ export default function WidgetApp() {
       unlisten.then((f) => f());
     };
   }, []);
+
+  // bot 开/关 → 同步外框高度(bot 关时面板只留任务区+splitter)
+  useEffect(() => {
+    if (!expanded) return;
+    getCurrentWindow()
+      .setSize(new LogicalSize(size.w, panelH(botOn)))
+      .catch(() => {});
+  }, [botOn, expanded]);
 
   // 字体大小同步（老板拍板）：挂件 webview 独立 document
   // 需要拉 config 设 data-font-size；设置页保存后广播 bot-config-changed，
@@ -159,9 +327,8 @@ export default function WidgetApp() {
   // 机器人开关变化时：展开状态下同步调整窗口高度
   useEffect(() => {
     if (!expanded) return;
-    const win = getCurrentWindow();
-    win
-      .setSize(new LogicalSize(PANEL_W, botOn ? PANEL_H + CHAT_H : PANEL_H))
+    getCurrentWindow()
+      .setSize(new LogicalSize(size.w, panelH(botOn)))
       .catch(() => {});
   }, [botOn, expanded]);
 
@@ -173,6 +340,7 @@ export default function WidgetApp() {
   useEffect(() => subscribeSystem(setTheme), []);
   const anchorRef = useRef<Anchor>({ x: 0, y: TOP_Y, edge: "right" });
   const listRef = useRef<HTMLDivElement>(null);
+  const chatAreaRef = useRef<HTMLDivElement>(null);
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
   );
@@ -348,15 +516,15 @@ export default function WidgetApp() {
     const win = getCurrentWindow();
     const { x, y, edge: e } = anchorRef.current;
     // 贴右缘：向左展开；其余情况从锚点向右/向下展开
-    const px = e === "right" ? x - (PANEL_W - STRIP_W) : x;
+    const px = e === "right" ? x - (size.w - STRIP_W) : x;
     if (e === "right") await win.setPosition(new LogicalPosition(px, y));
-    await win.setSize(new LogicalSize(PANEL_W, botOn ? PANEL_H + CHAT_H : PANEL_H));
+    await win.setSize(new LogicalSize(size.w, panelH(botOn)));
     await win.setPosition(new LogicalPosition(px, y));
     setExpanded(true);
   };
 
   const collapse = async () => {
-    if (locked) return;
+    if (locked || widgetDragActive) return; // 拖动调整中不折叠
     const win = getCurrentWindow();
     // 拖动后 settle 可能还没跑：按当前窗口位置实时推算锚点，避免贴回旧位置
     const pos = await win.outerPosition();
@@ -402,6 +570,65 @@ export default function WidgetApp() {
     if (e.button !== 0) return;
     getCurrentWindow().startDragging().catch(() => {});
   };
+
+  // 四边拖拽边框：尺寸/位置全部按「拖动起点 + 累计位移」绝对计算(不做增量叠加,避免暴涨)
+  const resizePanel = (
+    dx: number,
+    dy: number,
+    side: "n" | "s" | "e" | "w",
+    startPos: { x: number; y: number; w: number; h: number; sw: number; sh: number },
+  ) => {
+    // 尺寸 = 起点尺寸 ± 位移
+    let w = startPos.w;
+    let h = startPos.h;
+    if (side === "e") w = startPos.w + dx;
+    else if (side === "w") w = startPos.w - dx;
+    else if (side === "s") h = startPos.h + dy;
+    else if (side === "n") h = startPos.h - dy;
+    // 「拖到屏幕边就停」:不超出屏幕可用范围
+    if (side === "e") w = Math.min(w, startPos.sw - startPos.x);
+    else if (side === "w") w = Math.min(w, startPos.x + startPos.w);
+    if (side === "s") h = Math.min(h, startPos.sh - startPos.y);
+    else if (side === "n") h = Math.min(h, startPos.y + startPos.h);
+    w = Math.round(Math.min(PANEL_W_MAX, Math.max(PANEL_W_MIN, w)));
+    h = Math.round(Math.min(PANEL_H_MAX, Math.max(PANEL_H_MIN, h)));
+    const next: WidgetSize = { w, h };
+    saveSize(next);
+    setSize(next);
+
+    // 位置:固定"没被拖的那条边"(拖左→右固定;拖上→底固定;拖右/下→左/顶固定)
+    let nx = startPos.x;
+    let ny = startPos.y;
+    if (side === "w") nx = startPos.x + startPos.w - w;
+    else if (side === "n") ny = startPos.y + startPos.h - h;
+
+    // 窗口尺寸:bot 开=边框高度,直接用本次算出的 h(不读 state,避免旧值导致抖动)
+    const winH = botOn ? h : getTaskH() + SPLITTER_H;
+    void (async () => {
+      try {
+        await getCurrentWindow().setSize(new LogicalSize(w, winH));
+        await getCurrentWindow().setPosition(new LogicalPosition(nx, ny));
+      } catch { /* ignore */ }
+    })();
+  };
+
+  // Splitter 拖动：只改 CSS 变量 --task-h，聊天区 flex-1 自动反向伸缩(外框不变)
+  // 向下拖的停止线按实时布局测量：聊天区至少保留 CHAT_H_MIN(不再写死头部/按钮/内边距估算)
+  const moveSplit = (deltaY: number) => {
+    if (!botOn) return; // bot 关时面板只有任务区+Splitter,没聊天区可挤
+    const cur = getTaskH();
+    const chatEl = chatAreaRef.current;
+    // 还能向任务区让出的高度 = 聊天区当前高度 - 聊天区最小高度
+    const maxTask = chatEl
+      ? cur + Math.max(0, chatEl.offsetHeight - CHAT_H_MIN)
+      : Math.max(TASK_H_MIN, size.h - 136 - CHAT_H_MIN); // 兜底估算:内边距32+头部44+按钮44+分割条16
+    const next =
+      deltaY >= 0
+        ? Math.min(Math.max(cur, maxTask), cur + deltaY) // 已到极限时下拉不动(不回缩)
+        : Math.max(TASK_H_MIN, cur + deltaY);
+    setTaskH(Math.round(next));
+  };
+  const arrowSplit = (deltaY: number) => moveSplit(deltaY);
 
   // 挂件端改动的统一出口：更新本地 state + 行级 diff 上报主窗口（主窗口负责落盘 SQLite）
   const applyAndSync = (fn: (prev: Task[]) => Task[]) => {
@@ -628,10 +855,38 @@ export default function WidgetApp() {
           busy / streamingMeta / bot-chat-delta 事件监听，折叠-展开循环不丢流式消息 */}
       {
         <div
-          className={`nm-sidebar-panel ${edgeClass} w-full h-full flex flex-col`}
-          style={expanded ? undefined : { display: "none" }}
+          className={`nm-sidebar-panel ${edgeClass} flex flex-col relative overflow-hidden`}
+          style={{
+            width: size.w,
+            height: panelH(botOn),
+            ...(expanded ? undefined : { display: "none" }),
+          }}
           onMouseLeave={collapse}
         >
+          {/* 四边拖拽热区：贴边时不可拖贴边侧（老板拍板 3）；float 状态4边全可拖 */}
+          {expanded && (edge === "right" || edge === "left") && (
+            <>
+              <ResizeEdge side="n" onDelta={(dx, dy, sp) => resizePanel(dx, dy, "n", sp)} />
+              <ResizeEdge side="s" onDelta={(dx, dy, sp) => resizePanel(dx, dy, "s", sp)} />
+              {edge === "right" && (
+                <ResizeEdge side="w" onDelta={(dx, dy, sp) => resizePanel(dx, dy, "w", sp)} />
+              )}
+              {edge === "left" && (
+                <ResizeEdge side="e" onDelta={(dx, dy, sp) => resizePanel(dx, dy, "e", sp)} />
+              )}
+            </>
+          )}
+          {expanded && edge === "top" && (
+            <ResizeEdge side="s" onDelta={(dx, dy, sp) => resizePanel(dx, dy, "s", sp)} />
+          )}
+          {expanded && edge === "float" && (
+            <>
+              <ResizeEdge side="n" onDelta={(dx, dy, sp) => resizePanel(dx, dy, "n", sp)} />
+              <ResizeEdge side="s" onDelta={(dx, dy, sp) => resizePanel(dx, dy, "s", sp)} />
+              <ResizeEdge side="e" onDelta={(dx, dy, sp) => resizePanel(dx, dy, "e", sp)} />
+              <ResizeEdge side="w" onDelta={(dx, dy, sp) => resizePanel(dx, dy, "w", sp)} />
+            </>
+          )}
           {/* 头部：按住拖动挂件（按钮区不触发拖动） */}
           <div
             className="flex items-center justify-between mb-3 cursor-grab active:cursor-grabbing"
@@ -748,7 +1003,8 @@ export default function WidgetApp() {
 
           <div
             ref={listRef}
-            className="flex-1 overflow-y-auto flex flex-col gap-2 pr-0.5"
+            className="overflow-hidden overflow-y-auto flex flex-col gap-2 pr-0.5 shrink-0"
+            style={{ height: "var(--task-h)" }}
           >
             {view === "workspace" ? (
               workspace.length === 0 ? (
@@ -871,12 +1127,12 @@ export default function WidgetApp() {
             )}
           </div>
 
-          {/* 聊天区：机器人开关开启时显示在任务列表下方 */}
+          {/* Splitter：任务区/聊天区分隔条(bot 开时显示) */}
+          {botOn && <SplitBar onSplit={moveSplit} onArrow={arrowSplit} />}
+
+          {/* 聊天区：bot 开时在 Splitter 下方,flex-1 自动填满剩余空间 */}
           {botOn && (
-            <div
-              className="mt-3 pt-3 border-t border-[var(--edge)] min-h-0 shrink-0"
-              style={{ height: CHAT_H }}
-            >
+            <div ref={chatAreaRef} className="flex-1 min-h-[120px] overflow-hidden">
               <ChatPanel
                 selecting={selecting}
                 onToggleSelecting={() => setSelecting((v) => !v)}
