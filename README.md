@@ -38,7 +38,7 @@ Tauri 2 + React 19 + TypeScript 的 Todo 看板，新拟态（Neumorphism）UI�
 - **tauri-plugin-global-shortcut**：全局快捷键（Rust 侧注册）
 - **rusqlite（bundled）**：数据存 `wmessage.db`（WAL + busy_timeout 2s），行级增量读写
 - 其他关键依赖：reqwest（流式 LLM 请求）+ keyring（API Key 系统凭据存储）+ csv（规则表导入）+ encoding_rs（CSV/网页编码兜底）+ html2text（网页转文本）+ tokio（oneshot 确认通道）+ chrono + base64 + uuid
-- Rust 模块：`db.rs`（SQLite 全部读写）、`bot.rs` + `bot_artifacts.rs`（产物登记表：bot 流程结束汇总弹窗）+ `bot_chat.rs`/`bot_model_loop.rs`/`bot_scheduler.rs`/`bot_slash.rs`（机器人聊天编排/工具循环/定时调度/斜杠命令）、`bot_skills/`（Skill DSL 调度器）、`memory/`（语义记忆体 v2：embed/store/rank/consolidate）、`bot_py.rs`（本机 Python 沙箱 + 文档脚本模板）、`bot_web.rs`（搜索/抓取）、`migration.rs`（桌面清理）、`profile.rs`（头像资料）、`api.rs` + `api_server.rs`/`api_handlers.rs`/`api_auth.rs`（本地 HTTP API）、`ocr.rs`（图片识字）、`audit.rs`（审计日志）
+- Rust 模块：`db.rs`（SQLite 全部读写）、`app_state.rs`（运行期全局状态单一入口）、`bot/`（`bot.rs` 门面 + `registry.rs` 工具单源真相 / `dispatch.rs` 分发 / `tools.rs` 实现 / `config.rs` 配置）+ `bot_artifacts.rs`（产物登记表：bot 流程结束汇总弹窗）+ `bot_chat.rs`/`bot_model_loop.rs`/`bot_scheduler.rs`/`bot_slash.rs`（机器人聊天编排/工具循环/定时调度/斜杠命令）、`bot_skills/`（Skill DSL 调度器）、`memory/`（语义记忆体 v2：embed/store/rank/consolidate）、`bot_py.rs`（本机 Python 沙箱 + 文档脚本模板）、`bot_web.rs`（搜索/抓取）、`migration.rs`（桌面清理）、`profile.rs`（头像资料）、`api.rs` + `api_server.rs`/`api_handlers.rs`/`api_auth.rs`（本地 HTTP API）、`ocr.rs`（图片识字）、`audit.rs`（审计日志）
 
 ## 架构
 
@@ -73,8 +73,13 @@ src/
     DoneCircle / FoldToggle / ActorAvatar   # 共享小组件
 src-tauri/
   src/lib.rs                  # 窗口管理、快捷键（容错注册）、托盘、命令注册
+  src/app_state.rs            # 运行期全局状态单一入口 AppState（8 张执行期表，lib.rs 注入）
   src/db.rs                   # SQLite 全部表读写 + 迁移链 + 日志轮转
-  src/bot.rs                  # 机器人：bot_chat/bot_execute_task/工具循环/StopGuard/定时调度器
+  src/bot.rs                  # 机器人门面：跨模块 re-export + 子模块声明
+  src/bot/registry.rs         # 工具单源真相：29 个 schema + TOOLS_TABLE → TOOLS/MUTATING_TOOLS/dispatch
+  src/bot/dispatch.rs         # execute_tool 分发（查表）+ pre_execute/skill 钩子 + tool.return 审计
+  src/bot/tools.rs            # 28 个 tool_* 实现（任务卡 CRUD/子任务/文档生成/联网/时间/记忆转发）
+  src/bot/config.rs           # BotConfig/ApiProvider/PermMode/KeySlot（key 走系统 keyring）+ audit_log
   src/bot_py.rs               # 本机 Python 执行 + 文档脚本模板（EXTRACT/MAKE_DOCX 等）
   src/bot_web.rs              # 联网搜索（Tavily/Brave 可配置，未配置走 Bing+百度）/ 网页抓取（公网白名单）
   src/migration.rs            # 桌面清理引擎（规则匹配/文件迁移/轮询）
@@ -109,7 +114,7 @@ npm run tauri build                   # macOS 打包
 ### 测试与门禁
 
 - **提交时自动跑** pre-commit（`scripts/install-hooks.sh` 装一次）→ `scripts/test-fast.sh`：按改动文件智能跳过，`cargo fmt --check` / `cargo check` / `tsc` / `vitest --changed`，外加四道防回潮门禁（详见 `docs/testing.md`）：审计批次号防线、cargo machete（未使用 Rust 依赖）、Tauri 桥一致性（命令注册↔前端 invoke、emit↔listen）、knip（前端死代码/依赖）
-- **手动快速验证**：`cargo test --lib`（Rust lib 607 例）、`npm test`（前端 208 例）、`bash scripts/test-fast.sh`
+- **手动快速验证**：`cargo test --lib`（Rust lib 637 例）、`npm test`（前端 209 例）、`bash scripts/test-fast.sh`
 - **全量验证**（push 前）：`bash scripts/test-all.sh`（cargo nextest 全量 + tests-audit 一致性检查 + vitest）；集成测试 `cargo test --test llm_integration` 等；bge 模型真实推理冒烟 `cargo test --lib memory::embed -- --ignored`
 - 维护手册：`docs/testing.md`（各门禁防什么、失败了怎么修、误伤豁免方式）
 

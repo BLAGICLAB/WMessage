@@ -48,8 +48,8 @@ bash scripts/test-all.sh   # pre-push 自动跑：nextest 全量 + tests-audit +
 分项：
 
 ```bash
-cd src-tauri && cargo test --lib          # Rust lib 单测（当前 613 例）
-npm test                                  # 前端 vitest（当前 208 例，21 文件）
+cd src-tauri && cargo test --lib          # Rust lib 单测（当前 637 例）
+npm test                                  # 前端 vitest（当前 209 例，21 文件）
 cargo test --test llm_integration         # 集成：mock LLM 全链路
 cargo test --test task_chat_exec          # 集成：任务卡执行聊天化
 cargo test --test skill_e2e               # 集成：Skill DSL 端到端
@@ -64,9 +64,10 @@ cargo test --lib memory::embed -- --ignored   # bge 模型真实推理冒烟（�
 - `audit_pre_step_pre_execute.py`：主调度循环与 pre-step/pre-execute 中间件联动规格锁
 - `audit_tauri_bridge.py`：Tauri 桥双向一致性（命令注册 ↔ 前端 invoke、emit ↔ listen）
 
-Rust 侧另有编译期协议锁先例可参考：`bot_model_loop.rs` 的 `tools_schema_parses`
-（schema↔dispatch）、`lib.rs` 的 `dead_commands_not_registered`、`mutation.rs`/`consts.rs`
-的协议漂移锁。
+Rust 侧另有编译期协议锁先例可参考：`bot/registry.rs` 的 `registry_tests`
+（schema ↔ `TOOLS_TABLE` ↔ baseline 三源一致 + `ToolDef.name` 与 schema 内名一致）、
+`bot_model_loop.rs` 的 `tools_schema_parses`、`lib.rs` 的 `dead_commands_not_registered`、
+`mutation.rs`/`consts.rs` 的协议漂移锁。
 
 ## 门禁误伤时的豁免方式
 
