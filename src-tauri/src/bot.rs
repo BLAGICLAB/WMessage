@@ -56,7 +56,7 @@ pub use config::{
     __tauri_command_name_bot_get_config,
     __tauri_command_name_bot_log_read,
     __tauri_command_name_bot_set_config,
-    // ── 公开函数（14 个普通 pub）──
+    // ── 公开函数（15 个普通 pub）──
     audit_log,
     audit_log_hook,
     bot_clear_api_key,
@@ -68,6 +68,7 @@ pub use config::{
     config_path,
     has_api_key,
     has_search_key,
+    migrate_bot_config_schema,
     migrate_legacy_key,
     migrate_search_keys,
     perm_mode,

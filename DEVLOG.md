@@ -2,6 +2,17 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-09-14（周日）配置与凭据版本化 + 运行期文件收口 runtime/flags
+
+**动机**：keyring 存 key、bot-config.json 存配置的结构已稳定，但都缺「版本」这一层——配置结构变更只能靠逐字段 `#[serde(default)]` 兜底、keyring service 名（`wmessage-bot`）一旦要改 key 存储格式就得让用户重输 key；数据目录根还散着 4 个运行期文件。
+
+**改动**：
+- **bot-config.json 加 `schemaVersion`**：`BotConfig::schema_version`（camelCase，字段级 `#[serde(default = default_schema_version)]`）；`migrate_config_value`（纯 value 内核）+ `migrate_config_file`（文件级）在读取时缺失就补默认 + 写回，已是当前/更高版本不写盘（不降级未来版本配置）。双调用点：App 启动（lib.rs setup）+ 每次 `load_config` 兜底；进程级 `AtomicBool` 保证热路径只探测一次。写回**保留全部既有字段**（含尚未迁进 keyring 的明文 key）——因此必须排在 `migrate_legacy_key` / `migrate_search_keys` 之前，顺序反了会丢 key。风格对齐 `migration.rs` 的 `RulesFile::version`
+- **keyring service 版本化**：`wmessage-bot` → `wmessage.bot.v1`（`KEYRING_SERVICE`，旧名留 `LEGACY_KEYRING_SERVICE`）。System 后端读取前 `prepare_system_backend` 做 v0→v1 迁移：新条目为空且旧条目有值 → 复制后删旧条目（幂等 + `keyring_service_migrated` WARN 审计），以后 key 格式升级不用用户重输；`bot_clear_api_key` 顺带清旧 service 条目，防「清除后又被迁回」复活
+- **运行期文件收口 `runtime/flags/`**：`api-token.txt` / `api-enabled.flag` / `py-enabled.flag` / `bot-enabled.flag` 统一落到 `{data_dir}/runtime/flags/`（`paths::flags_dir`；`paths` 提为 `pub mod paths` 供集成测试复用）；启动时 `paths::migrate_legacy_runtime_files` 把老版本散在根目录的这几个文件 rename 迁入（幂等、目标已存在不覆盖、单文件失败保留原位下次再试）+ `runtime_files_migrated` 审计
+
+**测试**：Rust lib 新增 7 例（schema 迁移补写/保留明文 key/幂等/未来版本不降级/损坏与非对象容错/默认版本、keyring service 常量协议锁、flags 目录形状 + 迁移幂等）；`task_chat_exec` 与 `lib.rs` 退出清理用例改走 `paths::flags_dir` / `api_auth::enabled_flag_path`。
+
 ## 2026-09-11（周五）AI 产物统一收口 AI_Gen_Files + 便携版锚定唯一化
 
 **问题**：bot 产物文件散落各处——AI_Gen_Files 拼接分散 6 处无中心函数；run_python 运行目录在数据目录 `py-runs/<uuid>` 下，模型写相对路径的产物随目录删除丢失、写绝对路径完全无围栏；Windows 绿色版从 zip 直接双击运行时 exe 落 %TEMP%，AI_Gen_Files 跟着建到 TEMP；探针瞬时失败还会把数据目录翻转走。

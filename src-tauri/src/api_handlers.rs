@@ -1078,7 +1078,7 @@ pub fn api_stop(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandRes
 }
 
 /// 应用退出路径（ExitRequested）的 API 停止——与 api_stop 同一清理
-///（accept 线程 + SSE writer 全部通知并 join），但保留 api-enabled.flag：
+///（accept 线程 + SSE writer 全部通知并 join），但保留 runtime/flags/api-enabled.flag：
 /// 退出不是用户关开关，下次启动应按 flag 自动恢复服务。
 /// 泛型 Runtime：cleanup_on_exit 的 mock runtime 测试可直调。
 pub fn api_stop_for_exit<R: tauri::Runtime>(
@@ -1144,7 +1144,7 @@ pub fn api_status(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandR
     }
     drop(g);
     // 未启用时不读/生成 token——否则每次查状态都
-    // load_or_create_token，从未开启过 API 的用户数据目录里也会落 api-token.txt。
+    // load_or_create_token，从未开启过 API 的用户数据目录里也会落 runtime/flags/api-token.txt。
     // 前端只在 enabled 时展示 token（SettingsPage），disabled 态回空串即可。
     let token = if enabled {
         load_or_create_token(&app)?
@@ -1164,7 +1164,7 @@ pub fn api_rotate_token(
     app: AppHandle,
     state: tauri::State<'_, ApiState>,
 ) -> CommandResult<ApiInfo> {
-    let dir = db::data_dir(&app);
+    let dir = crate::paths::flags_dir(&app);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.join("api-token.txt");
     let old = std::fs::read_to_string(&path).ok();

@@ -16,9 +16,23 @@ use tauri::AppHandle;
 
 // ───────────────────────── API 配置 ─────────────────────────
 
-/// 凭据存储条目：macOS 钥匙串 / Windows 凭据管理器
-pub const KEYRING_SERVICE: &str = "wmessage-bot";
+/// 凭据存储条目：macOS 钥匙串 / Windows 凭据管理器。
+/// service 名带版本后缀——key 存储格式升级时新开 `wmessage.bot.vN`，
+/// 首次读取自动从上一版 service 迁移（见 migrate_legacy_keyring_entry），
+/// 用户不必重新输入 key。
+pub const KEYRING_SERVICE: &str = "wmessage.bot.v1";
+/// 无版本后缀的历史 service 名（v0，带后缀方案之前的版本写入）。
+/// 仅用于迁移：新条目为空时从它搬运，成功后删除旧条目。
+pub const LEGACY_KEYRING_SERVICE: &str = "wmessage-bot";
 pub const KEYRING_USER: &str = "api-key";
+
+/// bot-config.json 当前 schema 版本。结构变更 +1 并在此登记迁移步骤
+/// （风格对齐 migration.rs 的 `RulesFile::version`：文件自带版本字段 + serde 默认兜底）。
+pub const BOT_CONFIG_SCHEMA_VERSION: u32 = 1;
+
+fn default_schema_version() -> u32 {
+    BOT_CONFIG_SCHEMA_VERSION
+}
 
 /// Key 用途槽位：Tavily/Brave 搜索 key 统一进系统凭据存储，
 /// 不再明文落 bot-config.json（无「低风险搜索 key」例外）。
@@ -51,10 +65,23 @@ impl KeySlot {
             KeySlot::Brave => "bot-brave-key.txt",
         }
     }
+    /// 槽位下标（进程级「service 迁移已探测」标记数组用）
+    fn index(&self) -> usize {
+        match self {
+            KeySlot::Llm => 0,
+            KeySlot::Tavily => 1,
+            KeySlot::Brave => 2,
+        }
+    }
 }
 
 fn key_entry(slot: KeySlot) -> CommandResult<keyring::Entry> {
-    keyring::Entry::new(KEYRING_SERVICE, slot.keyring_user())
+    key_entry_for_service(KEYRING_SERVICE, slot)
+}
+
+/// 指定 service 名的条目（v0 → v1 迁移需要同时访问新旧两个 service）。
+fn key_entry_for_service(service: &str, slot: KeySlot) -> CommandResult<keyring::Entry> {
+    keyring::Entry::new(service, slot.keyring_user())
         .map_err(|e| CommandError::KeyringError(format!("系统凭据存储不可用：{e}")))
 }
 
@@ -138,6 +165,11 @@ pub struct BotConfig {
     /// None = 默认（启用 + daily；见 ConsolidationConfig::default）。
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub memory_consolidation: Option<crate::memory::consolidate::ConsolidationConfig>,
+    /// 配置 schema 版本（迁移钩子）：缺失就补默认 + 写回（migrate_bot_config_schema）。
+    /// 字段级 default 让老配置（无此字段）反序列化即拿到当前版本，「文件里没有这个
+    /// key」的判定走 raw JSON（见 migrate_config_value），不靠反序列化结果。
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
 }
 
 /// 单个模型条目：一个 (label, baseUrl, model) 三元组 + 稳定 id。
@@ -193,6 +225,7 @@ impl Default for BotConfig {
             active_model_id: None,            // 未配置 = 两协议都没选 active
             ui_font_size: None,               // 未配置 = small（老板拍板默认；前端读取时回退）
             memory_consolidation: None, // 未配置 = 启用 + daily（ConsolidationConfig::default）
+            schema_version: BOT_CONFIG_SCHEMA_VERSION, // 新建配置即当前版本
         }
     }
 }
@@ -607,9 +640,17 @@ fn delete_api_key_at(
     slot: KeySlot,
 ) -> CommandResult<()> {
     match backend {
-        KeyBackend::System => key_entry(slot)?
-            .delete_credential()
-            .map_err(|e| CommandError::KeyringError(format!("清除 API Key 失败：{e}"))),
+        KeyBackend::System => {
+            let r = key_entry(slot)?
+                .delete_credential()
+                .map_err(|e| CommandError::KeyringError(format!("清除 API Key 失败：{e}")));
+            // 顺带清 v0 遗留条目：否则下次读取会把它当作「可迁移的旧 key」搬回新条目，
+            // 用户「清除」后 key 复活
+            if let Ok(old) = key_entry_for_service(LEGACY_KEYRING_SERVICE, slot) {
+                let _ = old.delete_credential();
+            }
+            r
+        }
         KeyBackend::PlaintextFile => match std::fs::remove_file(file) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -647,13 +688,13 @@ pub fn has_api_key() -> CommandResult<bool> {
     has_key_of_slot(KeySlot::Llm)
 }
 
-/// 按 slot 读取：降级后端记 WARN；System 后端顺带做降级文件回迁
+/// 按 slot 读取：降级后端记 WARN；System 后端顺带做降级文件回迁 + v0 service 迁移
 fn read_key_of_slot(slot: KeySlot) -> CommandResult<String> {
     let backend = key_backend();
     if backend == KeyBackend::PlaintextFile {
         warn_fallback_once(slot);
     } else {
-        migrate_plaintext_key_if_system(slot);
+        prepare_system_backend(slot);
     }
     read_api_key_at(backend, &plaintext_key_path_for(slot), slot)
 }
@@ -664,7 +705,7 @@ fn has_key_of_slot(slot: KeySlot) -> CommandResult<bool> {
     if backend == KeyBackend::PlaintextFile {
         warn_fallback_once(slot);
     } else {
-        migrate_plaintext_key_if_system(slot);
+        prepare_system_backend(slot);
     }
     has_api_key_at(backend, &plaintext_key_path_for(slot), slot)
 }
@@ -694,6 +735,75 @@ fn migrate_plaintext_key_if_system(slot: KeySlot) {
             );
         }
     }
+}
+
+/// 每 slot「旧 service 已探测过」标记（进程级）：
+/// 稳态（v1 有条目 / 根本没配 key / v0 也没有）后不再多读一次旧 service，
+/// 与迁移前的 keyring 调用次数一致。
+static KEYRING_SERVICE_MIGRATED: [std::sync::atomic::AtomicBool; 3] = [
+    std::sync::atomic::AtomicBool::new(false),
+    std::sync::atomic::AtomicBool::new(false),
+    std::sync::atomic::AtomicBool::new(false),
+];
+
+/// v0 → v1 service 名迁移（幂等）：
+/// 新（带版本后缀）条目已有非空值 → no-op（不覆盖用户新 key）；
+/// v0 有条目而新条目为空 → 复制过来，成功后删除 v0 条目。
+/// keyring 故障静默返回且不置「已探测」标记（下次读取再试）——
+/// 迁移绝不能挡住用户已有的 key（数据保留优先，与 migrate_plaintext_key_if_system 同策略）。
+fn migrate_legacy_keyring_entry(slot: KeySlot) {
+    use std::sync::atomic::Ordering;
+    let idx = slot.index();
+    if KEYRING_SERVICE_MIGRATED[idx].load(Ordering::SeqCst) {
+        return;
+    }
+    let Ok(new_entry) = key_entry(slot) else {
+        return;
+    };
+    match new_entry.get_password() {
+        Ok(v) if !v.trim().is_empty() => {
+            KEYRING_SERVICE_MIGRATED[idx].store(true, Ordering::SeqCst);
+            return; // 已是新版条目，无需求
+        }
+        Ok(_) | Err(keyring::Error::NoEntry) => {} // 空/未配置：继续看 v0 条目
+        Err(_) => return,                          // keyring 故障：下次再试
+    }
+    let Ok(old_entry) = key_entry_for_service(LEGACY_KEYRING_SERVICE, slot) else {
+        return;
+    };
+    match old_entry.get_password() {
+        Ok(old) => {
+            let old = old.trim().to_string();
+            if !old.is_empty() && new_entry.set_password(&old).is_ok() {
+                let _ = old_entry.delete_credential(); // 删除失败不致命：v1 已有值，下次早退
+                if let Some(dir) = plaintext_key_path_for(slot)
+                    .parent()
+                    .map(|p| p.to_path_buf())
+                {
+                    crate::audit::write_warn_audit_to(
+                        &dir,
+                        "keyring_service_migrated",
+                        &[
+                            ("slot", slot.keyring_user()),
+                            ("from", LEGACY_KEYRING_SERVICE),
+                        ],
+                    );
+                }
+            } else {
+                return; // 空值不搬 / 写失败：保留 v0，下次再试
+            }
+        }
+        Err(keyring::Error::NoEntry) => {} // 无 v0 遗留条目：迁移态已确认
+        Err(_) => return,                  // keyring 故障：下次再试
+    }
+    KEYRING_SERVICE_MIGRATED[idx].store(true, Ordering::SeqCst);
+}
+
+/// System 后端读取前的准备工作（两步都幂等）：
+/// 降级明文文件回迁 keychain + v0 service 条目迁进带版本后缀的新条目。
+fn prepare_system_backend(slot: KeySlot) {
+    migrate_plaintext_key_if_system(slot);
+    migrate_legacy_keyring_entry(slot);
 }
 
 fn write_api_key(key: &str) -> CommandResult<()> {
@@ -774,6 +884,86 @@ pub struct BotConfigView {
     pub ui_font_size: Option<String>,
     /// 定时记忆整理配置：None 时解析为默认（启用 + daily）透传前端
     pub memory_consolidation: crate::memory::consolidate::ConsolidationConfig,
+}
+
+// ───────────────────────── bot-config.json schema 迁移 ─────────────────────────
+
+/// schemaVersion 在 JSON 里的键名（camelCase）。
+const SCHEMA_VERSION_KEY: &str = "schemaVersion";
+
+/// schema 迁移内核（纯 value，便于单测）：缺失/落后当前版本 → 就地补 `schemaVersion`，
+/// 返回 (from, to)；已是当前或更高版本 → None（不降级「装过更新版后回退」的配置）。
+/// v0 = 带版本号方案之前、没有该字段的老配置。
+///
+/// 逐版本迁移点：v0→v1 只补版本号字段本身；后续版本在此按 from 分支改字段
+/// （直接改 `value` 上的键即可——未识别的字段原样保留，不会丢用户数据）。
+fn migrate_config_value(value: &mut serde_json::Value) -> Option<(u32, u32)> {
+    if !value.is_object() {
+        return None; // 非对象 JSON：读取侧本来就回默认，不在这里纠错（也避免索引 panic）
+    }
+    let from = value
+        .get(SCHEMA_VERSION_KEY)
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+    if from >= BOT_CONFIG_SCHEMA_VERSION {
+        return None;
+    }
+    value[SCHEMA_VERSION_KEY] = serde_json::json!(BOT_CONFIG_SCHEMA_VERSION);
+    Some((from, BOT_CONFIG_SCHEMA_VERSION))
+}
+
+/// 文件级迁移内核（无 AppHandle，便于单测）：命中迁移才写回，返回 (from, to)。
+/// 文件不存在 / JSON 损坏 → Ok(None)（读取侧本来就会回默认，不在这里纠错）。
+/// **保留**文件里的全部字段——含尚未迁进 keyring 的明文 apiKey；
+/// 明文清除是 migrate_legacy_key / migrate_search_keys 的职责，调用顺序不能反。
+fn migrate_config_file(path: &std::path::Path) -> Result<Option<(u32, u32)>, String> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let mut value: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(_) => return Ok(None),
+    };
+    let Some(pair) = migrate_config_value(&mut value) else {
+        return Ok(None);
+    };
+    let out = serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(path, out).map_err(|e| e.to_string())?;
+    Ok(Some(pair))
+}
+
+/// 每进程只探测一次（load_config 是热路径，避免每次读盘解析）；
+/// 成功判定/写回后置位，失败不置位 → 下次读配置再试。
+static SCHEMA_MIGRATION_CHECKED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// bot-config.json schema 迁移钩子：读取时缺失就补默认 + 写回。
+/// 调用点与 migrate_legacy_key 同：App 启动（lib.rs setup）+ 每次 load_config 兜底。
+/// 幂等：已是当前版本不写盘；写回保留全部既有字段（明文 key 由后续迁移负责清）。
+pub fn migrate_bot_config_schema(app: &AppHandle) -> Result<(), String> {
+    if SCHEMA_MIGRATION_CHECKED.load(std::sync::atomic::Ordering::SeqCst) {
+        return Ok(());
+    }
+    match migrate_config_file(&config_path(app)) {
+        Ok(pair) => {
+            SCHEMA_MIGRATION_CHECKED.store(true, std::sync::atomic::Ordering::SeqCst);
+            if let Some((from, to)) = pair {
+                crate::audit_event!(
+                    app,
+                    crate::audit::AuditLevel::Info,
+                    "config.schema_migrated",
+                    "from" => from,
+                    "to" => to,
+                );
+            }
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// 旧版本迁移：bot-config.json 里有明文 key → 迁入系统凭据存储并清掉文件里的明文。
@@ -878,6 +1068,9 @@ fn migrate_search_key_slot(
 
 /// 读 bot-config.json（不存在/解析失败回默认）。内部共用（bot_fs 白名单等）
 pub(crate) fn load_config(app: &AppHandle) -> BotConfig {
+    // 迁移钩子：老配置缺 schemaVersion → 补默认 + 写回（幂等，已迁移不写盘；
+    // 失败不阻塞读取——本次仍按下面常规路径读，下次再试）
+    let _ = migrate_bot_config_schema(app);
     let p = config_path(app);
     if p.exists() {
         if let Ok(raw) = std::fs::read_to_string(&p) {
@@ -1252,6 +1445,82 @@ mod bot_config_tests {
             MAX_MAX_TOKENS,
             "高于上限钳 200000"
         );
+    }
+
+    // ── bot-config.json schema 迁移 ──
+
+    #[test]
+    fn config_schema_migration_fills_missing_version_and_preserves_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("bot-config.json");
+        std::fs::write(
+            &p,
+            r#"{"baseUrl":"https://api.example.com/v1","model":"m","apiKey":"sk-plain","allowedDirs":["/a"]}"#,
+        )
+        .unwrap();
+        let got = migrate_config_file(&p).unwrap();
+        assert_eq!(got, Some((0, BOT_CONFIG_SCHEMA_VERSION)), "缺字段必须补写");
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(
+            v[SCHEMA_VERSION_KEY],
+            serde_json::json!(BOT_CONFIG_SCHEMA_VERSION)
+        );
+        // 明文 key / 其他字段原样保留：迁移只管版本号，清明文是 migrate_legacy_key 的职责
+        assert_eq!(v["apiKey"], serde_json::json!("sk-plain"));
+        assert_eq!(v["allowedDirs"][0], serde_json::json!("/a"));
+    }
+
+    #[test]
+    fn config_schema_migration_is_idempotent_and_skips_future_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("bot-config.json");
+        // 已是当前版本 → 不再写回（load_config 热路径不产生无谓写盘）
+        std::fs::write(
+            &p,
+            format!(r#"{{"{SCHEMA_VERSION_KEY}":{BOT_CONFIG_SCHEMA_VERSION}}}"#),
+        )
+        .unwrap();
+        assert_eq!(migrate_config_file(&p).unwrap(), None);
+        // 未来版本（用户装过更新版后回退）→ 不降级、不动文件
+        std::fs::write(&p, format!(r#"{{"{SCHEMA_VERSION_KEY}":999}}"#)).unwrap();
+        assert_eq!(migrate_config_file(&p).unwrap(), None);
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v[SCHEMA_VERSION_KEY], serde_json::json!(999));
+    }
+
+    #[test]
+    fn config_schema_migration_tolerates_missing_or_broken_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("nope.json");
+        assert_eq!(migrate_config_file(&missing).unwrap(), None);
+        // JSON 损坏 / 非对象：不在这里纠错（读取侧回默认），更不能 panic
+        let broken = dir.path().join("broken.json");
+        std::fs::write(&broken, "{not json").unwrap();
+        assert_eq!(migrate_config_file(&broken).unwrap(), None);
+        let arr = dir.path().join("array.json");
+        std::fs::write(&arr, "[1,2,3]").unwrap();
+        assert_eq!(migrate_config_file(&arr).unwrap(), None);
+    }
+
+    #[test]
+    fn bot_config_default_and_legacy_deserialize_carry_current_version() {
+        assert_eq!(
+            BotConfig::default().schema_version,
+            BOT_CONFIG_SCHEMA_VERSION
+        );
+        // 老配置（无 schemaVersion 字段）：字段级 default 兜底为当前版本
+        let cfg: BotConfig =
+            serde_json::from_str(r#"{"baseUrl":"https://api.example.com/v1"}"#).unwrap();
+        assert_eq!(cfg.schema_version, BOT_CONFIG_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn keyring_service_names_are_versioned() {
+        // 协议锁：service 名变更必须同步「新 + 旧」两个常量，否则存量用户 key 读不到
+        assert_eq!(KEYRING_SERVICE, "wmessage.bot.v1");
+        assert_eq!(LEGACY_KEYRING_SERVICE, "wmessage-bot");
     }
 }
 

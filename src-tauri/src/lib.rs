@@ -28,7 +28,7 @@ pub mod middleware;
 mod migration;
 mod mutation;
 mod ocr;
-mod paths;
+pub mod paths;
 mod profile;
 pub mod task_out;
 pub mod tool_guard;
@@ -326,6 +326,20 @@ pub fn run() {
             // 阶段 3.2：全局可变状态容器（单一入口）；产物登记表已迁入，其余表逐张迁移
             app.manage(app_state::AppState::default());
 
+            // 运行期文件收口：老版本散在数据目录根的 flag/token 迁进 runtime/flags
+            //（幂等 rename；移动成功才记 Info 审计）
+            {
+                let moved = paths::migrate_legacy_runtime_files(app.handle());
+                if !moved.is_empty() {
+                    crate::audit_event!(
+                        app.handle(),
+                        crate::audit::AuditLevel::Info,
+                        "runtime_files_migrated",
+                        "files" => moved.join(",")
+                    );
+                }
+            }
+
             // 动态技能路由：启动时按已安装技能的 frontmatter intents 建路由表；
             // 之后 skills_import / skills_delete 成功会各自重建
             bot_skills::rebuild_intent_routes(app.handle());
@@ -350,6 +364,11 @@ pub fn run() {
             // 旧版本明文 key 迁移：bot-config.json 里的 apiKey → 系统凭据存储
             {
                 let handle = app.handle().clone();
+                // schema 版本先补：写回保留全部既有字段（含明文 key），
+                // 所以必须在下面两个「清明文」迁移之前跑，顺序反了会丢 key
+                if let Err(e) = bot::migrate_bot_config_schema(&handle) {
+                    eprintln!("[bot] config schema migration failed: {e}");
+                }
                 if let Err(e) = bot::migrate_legacy_key(&handle) {
                     eprintln!("[bot] legacy key migration failed: {e}");
                 }
@@ -766,7 +785,8 @@ mod exit_cleanup_tests {
         // 模拟「API 开启中退出」：enabled flag 存在（api_start 成功后会写）
         let dir = crate::db::data_dir(&handle);
         std::fs::create_dir_all(&dir).unwrap();
-        let flag = dir.join("api-enabled.flag");
+        let flag = crate::api_auth::enabled_flag_path(&handle);
+        std::fs::create_dir_all(flag.parent().unwrap()).unwrap();
         std::fs::write(&flag, b"1").unwrap();
 
         // 退出清理必须置位在途执行实例（含后台 interactive=false）的停止标志

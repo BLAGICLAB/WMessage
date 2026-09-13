@@ -173,7 +173,7 @@ npx tauri build --target x86_64-pc-windows-gnu --no-bundle
 ## 本地 HTTP API（外部机器人接口）
 
 - 设置页开关（默认**关闭**），开启后监听 `http://127.0.0.1:4763`（只绑本机，不监听公网）；关闭立即停止
-- 鉴权：所有端点要求 `Authorization: Bearer <token>`（token 在设置页展示/复制，存数据目录 api-token.txt）
+- 鉴权：所有端点要求 `Authorization: Bearer <token>`（token 在设置页展示/复制，存数据目录 `runtime/flags/api-token.txt`）
 - 端点：`GET /api/tasks`（?status=todo|doing|done、?trash=1、?archived=1、?all=1）、`GET /api/tasks/:id`、`POST /api/tasks`、`PUT /api/tasks/:id`（含 due/tags/archived/deleted）、`DELETE /api/tasks/:id`（软删幂等）、`GET /api/events`（SSE，?since=断线重放）
 - 外部修改任务后：看板自动刷新（tasks-updated 通道）+ SSE 客户端实时收到 tasks-changed 事件
 - 安全：无文件读取/遍历端点；请求体 1MB 上限；限流 120 次/分；字段长度校验；token 轮换；开关自动记忆（退出时开启则重启自启）；操作日志 api.log

@@ -25,7 +25,7 @@ src-tauri/src/
 │─ 本地 HTTP API（127.0.0.1 微服务，与 bot 解耦，只操作任务数据）
 ├── api.rs               trait TaskStore + MemStore(测试) + TauriStore(生产)
 ├── api_server.rs        HTTP server 生命周期、端口绑定、EventHub（SSE 中枢）
-├── api_auth.rs          Bearer token（api-token.txt）、开关持久化（api-enabled.flag）
+├── api_auth.rs          Bearer token（runtime/flags/api-token.txt）、开关持久化（runtime/flags/api-enabled.flag）
 ├── api_handlers.rs      REST /api/tasks CRUD + SSE + api_start/stop 等命令
 │
 │─ Bot 核心（编排 → 决策 → 工具分发）
@@ -59,7 +59,7 @@ src-tauri/src/
 ├── bot_fs.rs            只读文件工具 read_text_file/grep_files/list_files；
 │                        路径白名单 + perm_mode(strict/ask/yolo) 授权闸
 ├── bot_web.rs           web_search（Bing）+ fetch_url（HTML→文本、GBK、SSRF 防护、钉 IP）
-├── bot_py.rs (3682)     Python 子进程执行：py-enabled.flag 开关、独立临时目录、超时/内存/CPU 限额
+├── bot_py.rs (3682)     Python 子进程执行：runtime/flags/py-enabled.flag 开关、独立临时目录、超时/内存/CPU 限额
 │                        （rlimit / Job Object）、固定脚本模板（extract/make_docx/xlsx）、自由脚本 run_python
 ├── ocr.rs               ocr_image：macOS Vision / Windows PP-OCRv6 ONNX；纯本地不上网
 │
@@ -189,7 +189,7 @@ db / audit / paths / error   全员共享底座
 ## 5. 配置 / prompt / 资源文件
 
 - **运行时数据目录**（`paths::probe_log_dir` 判定，便携模式随 exe 走）：
-  `wmessage.db`（SQLite）、`bot-config.json`（bot 配置，API key 已迁系统 keyring）、`bot.log`（审计）、`api-token.txt`、`api-enabled.flag`、`py-enabled.flag`、`profile.json` + `profile/`、`cleanup-rules.json`、`skills/<name>/SKILL.md`（用户技能）、`AI_Gen_Files/`（AI 产物唯一入口 `db::gen_dir`）
+  `wmessage.db`（SQLite）、`bot-config.json`（bot 配置，API key 已迁系统 keyring，自带 `schemaVersion`）、`bot.log`（审计）、`runtime/flags/`（`api-token.txt` / `api-enabled.flag` / `py-enabled.flag` / `bot-enabled.flag` 等运行期文件，根目录不再散落）、`profile.json` + `profile/`、`cleanup-rules.json`、`skills/<name>/SKILL.md`（用户技能）、`AI_Gen_Files/`（AI 产物唯一入口 `db::gen_dir`）
 - **Prompt 不是独立文件**，是编译期常量：
   `SYSTEM_PROMPT`（bot_chat.rs:40）、`SUMMARY_SYSTEM_PROMPT`(:169)、`REFLECTION_SYSTEM_PROMPT`(:174)、`EXECUTE_SYSTEM_PROMPT`(:883)；工具 schema 单一来源 `TOOLS_TABLE`（bot/registry.rs:335）→ `tools_json()`（:514，编译期常量原文拼接）
 - **打包资源**（tauri.conf.json resources）：

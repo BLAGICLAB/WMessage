@@ -6,24 +6,28 @@
 //! - `api_handlers` : endpoint handlers + tauri commands
 //! - `api`          : 数据层 `TaskStore` + `MemStore` + `TauriStore`
 //!
-//! 持久化文件：
+//! 持久化文件（统一收口在数据目录 `runtime/flags/`，便携模式随 exe 走）：
 //! - `api-token.txt`     — Bearer token（`load_or_create_token` 读写）
 //! - `api-enabled.flag`  — 开关标志（`write_enabled_flag` / `clear_enabled_flag`）
 //! - 启动时 `should_autostart` 检 flag 决定是否自动恢复 API
+//!
+//! 旧版本文件散在数据目录根，启动时由 `paths::migrate_legacy_runtime_files` 迁入。
 
 use std::path::PathBuf;
 
 use tauri::AppHandle;
 use tiny_http::Request;
 
-use crate::db;
+/// 运行期文件名（都落在 `paths::flags_dir` 下）
+const TOKEN_FILE: &str = "api-token.txt";
+const ENABLED_FLAG_FILE: &str = "api-enabled.flag";
 
-/// 读取或生成 Bearer token（存在数据目录 `api-token.txt`，随便携库走）。
+/// 读取或生成 Bearer token（存在 `runtime/flags/api-token.txt`，随便携库走）。
 /// 已存在且非空就直接返回；否则生成 UUID 写回。
 pub fn load_or_create_token(app: &AppHandle) -> Result<String, String> {
-    let dir = db::data_dir(app);
+    let dir = crate::paths::flags_dir(app);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let path = dir.join("api-token.txt");
+    let path = dir.join(TOKEN_FILE);
     if let Ok(s) = std::fs::read_to_string(&path) {
         let s = s.trim().to_string();
         if !s.is_empty() {
@@ -96,9 +100,9 @@ pub(crate) fn ct_eq(a: &str, b: &str) -> bool {
         == 0
 }
 
-/// 开关标志文件路径：`{data_dir}/api-enabled.flag`
+/// 开关标志文件路径：`{data_dir}/runtime/flags/api-enabled.flag`
 pub fn enabled_flag_path<R: tauri::Runtime>(app: &AppHandle<R>) -> PathBuf {
-    db::data_dir(app).join("api-enabled.flag")
+    crate::paths::flags_dir(app).join(ENABLED_FLAG_FILE)
 }
 
 /// 上次退出时 API 是否处于开启状态（仅做 flag 文件存在判断；供启动自动恢复）。
@@ -108,9 +112,9 @@ pub fn should_autostart<R: tauri::Runtime>(app: &AppHandle<R>) -> bool {
 
 /// 写开关标志（`api_start` 成功后调用）。
 pub fn write_enabled_flag<R: tauri::Runtime>(app: &AppHandle<R>) {
-    let dir = db::data_dir(app);
+    let dir = crate::paths::flags_dir(app);
     if std::fs::create_dir_all(&dir).is_ok() {
-        let _ = std::fs::write(enabled_flag_path(app), b"1");
+        let _ = std::fs::write(dir.join(ENABLED_FLAG_FILE), b"1");
     }
 }
 

@@ -1,7 +1,7 @@
 //! Python 执行基础设施：调用本机 Python 处理文档 / 运行模型生成的脚本。
 //!
 //! 安全设计（对齐 Harness 网关）：
-//! - 开关：py-enabled.flag（设置页「允许机器人执行 Python」，默认关闭）——主要防护
+//! - 开关：`runtime/flags/py-enabled.flag`（设置页「允许机器人执行 Python」，默认关闭）——主要防护
 //! - 受限执行：每次运行独立临时目录（系统临时目录 wmessage-py-runs/<uuid>/），只经 stdin/文件传参，永不拼 shell；
 //!   ⚠️ 不是安全沙箱：脚本以当前用户完整权限运行（可读本机文件、可联网），仅隔离工作目录
 //! - 熔断：默认超时 60s 强杀（含子进程组），用户可配但硬钳上限 300s；stdout/stderr 读取时硬截断 64KB
@@ -47,7 +47,7 @@ use tauri::AppHandle;
 // ───────────────────────── 开关 ─────────────────────────
 
 fn py_flag_path(app: &AppHandle) -> std::path::PathBuf {
-    crate::db::data_dir(app).join("py-enabled.flag")
+    crate::paths::flags_dir(app).join("py-enabled.flag")
 }
 
 #[tauri::command]
@@ -58,7 +58,7 @@ pub fn py_get_enabled(app: AppHandle) -> bool {
 /// 错误类型对齐全量命令的 CommandError 四字段结构，前端拿得到结构化 code
 #[tauri::command]
 pub fn py_set_enabled(app: AppHandle, enabled: bool) -> CommandResult<bool> {
-    let dir = crate::db::data_dir(&app);
+    let dir = crate::paths::flags_dir(&app);
     std::fs::create_dir_all(&dir).map_err(|e| CommandError::IoError(e.to_string()))?;
     if enabled {
         std::fs::write(py_flag_path(&app), b"1")

@@ -46,7 +46,9 @@ fn setup_task(
     let handle = app.handle().clone();
     let dir = wmessage_lib::db::data_dir(&handle);
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("bot-enabled.flag"), b"1").unwrap();
+    let flags = wmessage_lib::paths::flags_dir(&handle);
+    std::fs::create_dir_all(&flags).unwrap();
+    std::fs::write(flags.join("bot-enabled.flag"), b"1").unwrap();
     let conn = wmessage_lib::db::open_db(&handle).expect("open db");
     let task_id = format!("tc-{}", uuid::Uuid::new_v4().simple());
     conn.execute(
@@ -70,7 +72,7 @@ fn cleanup(handle: &tauri::AppHandle<tauri::test::MockRuntime>, task_id: &str, s
         conn.execute("DELETE FROM bot_sessions WHERE id = ?1", [session_id])
             .ok();
     }
-    let _ = std::fs::remove_file(wmessage_lib::db::data_dir(handle).join("bot-enabled.flag"));
+    let _ = std::fs::remove_file(wmessage_lib::paths::flags_dir(handle).join("bot-enabled.flag"));
 }
 
 fn core_http(server: &MockLlmServer) -> LlmHttp {
@@ -320,7 +322,7 @@ async fn failure_persists_error_reply_in_session() {
         .ok();
     conn.execute("DELETE FROM tasks WHERE id = ?1", [&task_id])
         .ok();
-    let _ = std::fs::remove_file(wmessage_lib::db::data_dir(&handle).join("bot-enabled.flag"));
+    let _ = std::fs::remove_file(wmessage_lib::paths::flags_dir(&handle).join("bot-enabled.flag"));
 }
 
 /// 定时路径源码锁（设计 3.2）：bot_scheduler 调 run_task_in_chat、绕开 exec_steps、

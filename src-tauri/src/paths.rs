@@ -162,6 +162,66 @@ pub(crate) fn cached_probe_dir() -> Option<std::path::PathBuf> {
     None
 }
 
+// ───────────────────────── 运行期文件目录（runtime/flags） ─────────────────────────
+
+/// 运行期状态根目录名：`{data_dir}/runtime`。
+pub const RUNTIME_SUBDIR: &str = "runtime";
+/// 运行期开关/令牌子目录名：`{data_dir}/runtime/flags`。
+pub const FLAGS_SUBDIR: &str = "flags";
+
+/// 旧版本散落在数据目录根的运行期文件（迁移到 runtime/flags）。
+pub const LEGACY_ROOT_RUNTIME_FILES: &[&str] = &[
+    "api-token.txt",
+    "api-enabled.flag",
+    "py-enabled.flag",
+    "bot-enabled.flag",
+];
+
+/// 运行期状态目录：`{data_dir}/runtime`。
+/// flag / token 这类「机器生成、用户不看」的文件统一收口进来，
+/// 数据目录根只留用户可见的配置与数据（wmessage.db / bot-config.json / AI_Gen_Files…）。
+pub fn runtime_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> std::path::PathBuf {
+    crate::db::data_dir(app).join(RUNTIME_SUBDIR)
+}
+
+/// 运行期 flag 目录：`{data_dir}/runtime/flags`（api-token.txt / *-enabled.flag）。
+pub fn flags_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> std::path::PathBuf {
+    runtime_dir(app).join(FLAGS_SUBDIR)
+}
+
+/// 启动时一次性迁移：数据目录根的老运行期文件 → runtime/flags。
+/// 返回实际移动的文件名（调用方记审计）。幂等：
+/// - 源不存在 → 跳过；
+/// - 目标已存在（新版本已写过）→ 不覆盖，跳过（源文件留在原位不删）；
+/// - 单文件失败 → 保留原位下次启动再试，不影响其余文件。
+pub fn migrate_legacy_runtime_files<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Vec<&'static str> {
+    migrate_legacy_runtime_files_in(&crate::db::data_dir(app), &flags_dir(app))
+}
+
+/// 可测内核：显式传入根目录/flags 目录（不依赖 AppHandle + 便携探测）。
+fn migrate_legacy_runtime_files_in(
+    root: &std::path::Path,
+    flags: &std::path::Path,
+) -> Vec<&'static str> {
+    let mut moved = Vec::new();
+    for name in LEGACY_ROOT_RUNTIME_FILES {
+        let src = root.join(name);
+        let dst = flags.join(name);
+        if !src.exists() || dst.exists() {
+            continue;
+        }
+        if std::fs::create_dir_all(flags).is_err() {
+            break;
+        }
+        if std::fs::rename(&src, &dst).is_ok() {
+            moved.push(*name);
+        }
+    }
+    moved
+}
+
 // ───────────────────────── 内部：缓存 + 可测内核 ─────────────────────────
 
 /// 探测结果缓存（进程级 OnceLock）：首次 probe_log_dir 调用定版。
@@ -476,5 +536,56 @@ mod tests {
         assert_eq!(escape_for_log_inline("a\nb"), "a\\nb");
         assert_eq!(escape_for_log_inline("a| b"), "a|| b");
         assert_eq!(escape_for_log_inline("clean"), "clean");
+    }
+
+    // ── runtime/flags 收口 ──
+
+    #[test]
+    fn flags_dir_sits_under_data_dir_runtime_flags() {
+        let app = tauri::test::mock_app();
+        let flags = flags_dir(app.handle());
+        assert!(
+            flags.ends_with(std::path::Path::new("runtime").join("flags")),
+            "flags 目录必须落在 runtime/flags 下，got {}",
+            flags.display()
+        );
+        assert!(
+            flags.starts_with(crate::db::data_dir(app.handle())),
+            "flags 目录必须仍在数据目录内（便携模式随 exe 走），got {}",
+            flags.display()
+        );
+    }
+
+    #[test]
+    fn migrate_legacy_runtime_files_moves_and_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let flags = root.join("runtime").join("flags");
+        std::fs::write(root.join("api-token.txt"), b"tok").unwrap();
+        std::fs::write(root.join("bot-enabled.flag"), b"1").unwrap();
+        // 目标已存在（新版本已写过）：不得覆盖，源文件保持原位
+        std::fs::create_dir_all(&flags).unwrap();
+        std::fs::write(flags.join("py-enabled.flag"), b"new").unwrap();
+        std::fs::write(root.join("py-enabled.flag"), b"old").unwrap();
+
+        let mut moved = migrate_legacy_runtime_files_in(root, &flags);
+        moved.sort_unstable();
+        assert_eq!(moved, vec!["api-token.txt", "bot-enabled.flag"]);
+        assert_eq!(
+            std::fs::read_to_string(flags.join("api-token.txt")).unwrap(),
+            "tok"
+        );
+        assert!(!root.join("api-token.txt").exists(), "源文件应已移走");
+        assert_eq!(
+            std::fs::read_to_string(flags.join("py-enabled.flag")).unwrap(),
+            "new",
+            "目标已存在时不得被旧文件覆盖"
+        );
+        assert!(
+            root.join("py-enabled.flag").exists(),
+            "未迁移的源文件保持原位"
+        );
+        // 幂等：再跑一次无迁移
+        assert!(migrate_legacy_runtime_files_in(root, &flags).is_empty());
     }
 }

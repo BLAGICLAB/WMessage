@@ -433,7 +433,7 @@ fn deliver_confirm(
 // ───────────────────────── 开关持久化 ─────────────────────────
 
 fn bot_flag_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> std::path::PathBuf {
-    crate::db::data_dir(app).join("bot-enabled.flag")
+    crate::paths::flags_dir(app).join("bot-enabled.flag")
 }
 
 /// 机器人聊天开关读取（泛型 Runtime，mock runtime 可调）
@@ -450,7 +450,7 @@ pub fn bot_get_enabled(app: AppHandle) -> bool {
 /// 设置机器人聊天开关（写/删 flag，返回生效后的状态）
 #[tauri::command]
 pub fn bot_set_enabled(app: AppHandle, enabled: bool) -> CommandResult<bool> {
-    let dir = crate::db::data_dir(&app);
+    let dir = crate::paths::flags_dir(&app);
     std::fs::create_dir_all(&dir)?;
     if enabled {
         std::fs::write(bot_flag_path(&app), b"1")?;
