@@ -30,16 +30,31 @@ async fn collect_openable_paths(app: &AppHandle) -> std::collections::HashSet<St
 
 /// path 是否可打开：绑定集合精确命中，或 AI_Gen_Files 目录内（canonical 双向比较）
 fn path_openable(app: &AppHandle, path: &str, set: &std::collections::HashSet<String>) -> bool {
+    let gen = crate::db::gen_dir(app).ok();
+    path_openable_in(path, set, gen.as_deref())
+}
+
+/// 可测内核（注入产物目录，不碰 AppHandle）：
+/// - 绑定集合**精确命中**才放行（集合语义是精确路径，不做前缀/近似匹配）
+/// - 否则仅当路径 canonical 后落在 AI_Gen_Files 目录内；**两侧都 canonicalize**，
+///   所以 `..` 穿越与软链逃逸都会被解析掉再比较——这是「前端 XSS → 任意文件
+///   打开/删除」这一跳的关键防线，单测逐条钉住
+/// - 路径不存在 / 产物目录不可用 → 一律拒
+fn path_openable_in(
+    path: &str,
+    set: &std::collections::HashSet<String>,
+    gen_dir: Option<&std::path::Path>,
+) -> bool {
     if set.contains(path) {
         return true;
     }
-    let gen = crate::db::gen_dir(app)
-        .ok()
-        .and_then(|d| std::fs::canonicalize(d).ok());
-    if let (Ok(c), Some(g)) = (std::fs::canonicalize(path), gen) {
-        return c.starts_with(&g);
+    let Some(gen) = gen_dir.and_then(|d| std::fs::canonicalize(d).ok()) else {
+        return false;
+    };
+    match std::fs::canonicalize(path) {
+        Ok(c) => c.starts_with(&gen),
+        Err(_) => false,
     }
-    false
 }
 
 /// 打开文件/文件夹（Rust 侧调用 opener 插件）：绕过前端窗口的 opener scope，
@@ -154,4 +169,95 @@ pub async fn delete_bound_file(app: AppHandle, path: String, is_dir: bool) -> Co
             }
         ))
     })
+}
+
+/// 这两个命令（open_file_path / delete_bound_file）前端直达、原先零校验，
+/// LLM 输出里的代码块路径或前端 XSS 可驱动其打开/删除任意文件 ——
+/// 判定核必须逐条锁住「集合精确命中」与「产物目录内」两个放行口，
+/// 以及 `..` / 软链逃逸与不存在路径的拒绝行为。
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn set(items: &[&str]) -> std::collections::HashSet<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn openable_requires_exact_binding_hit() {
+        let s = set(&["/tmp/a.docx"]);
+        assert!(path_openable_in("/tmp/a.docx", &s, None), "精确命中放行");
+        // 近似路径不命中（集合是精确匹配，不是前缀匹配）
+        assert!(!path_openable_in("/tmp/a.docx.bak", &s, None));
+        assert!(!path_openable_in("/tmp/", &s, None));
+        // 产物目录不可用 + 未命中集合 → 一律拒
+        assert!(!path_openable_in("/anything", &set(&[]), None));
+    }
+
+    #[test]
+    fn openable_allows_only_files_inside_gen_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let gen = tmp.path().join("AI_Gen_Files");
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&gen).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(gen.join("out.docx"), b"x").unwrap();
+        std::fs::write(outside.join("evil.txt"), b"x").unwrap();
+
+        let inside = gen.join("out.docx");
+        assert!(path_openable_in(
+            inside.to_str().unwrap(),
+            &set(&[]),
+            Some(&gen)
+        ));
+
+        let outside_file = outside.join("evil.txt");
+        assert!(
+            !path_openable_in(outside_file.to_str().unwrap(), &set(&[]), Some(&gen)),
+            "产物目录外的文件不得放行"
+        );
+
+        // `..` 穿越：canonical 后落在产物目录外 → 拒
+        let traversal = gen.join("../outside/evil.txt");
+        assert!(
+            !path_openable_in(traversal.to_str().unwrap(), &set(&[]), Some(&gen)),
+            "`..` 穿越到产物目录外必须被拒"
+        );
+
+        // 不存在的路径 → 拒（canonicalize 失败）
+        let missing = gen.join("nope.docx");
+        assert!(!path_openable_in(
+            missing.to_str().unwrap(),
+            &set(&[]),
+            Some(&gen)
+        ));
+
+        // 前缀相似目录（AI_Gen_Files vs AI_Gen_Files-evil）：不得按字符串前缀误吞
+        let sibling = tmp.path().join("AI_Gen_Files-evil");
+        std::fs::create_dir_all(&sibling).unwrap();
+        std::fs::write(sibling.join("x.docx"), b"x").unwrap();
+        let sibling_file = sibling.join("x.docx");
+        assert!(
+            !path_openable_in(sibling_file.to_str().unwrap(), &set(&[]), Some(&gen)),
+            "前缀相似目录不得误判命中（分量比较，不是字符串前缀）"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn openable_rejects_symlink_escape() {
+        let tmp = tempfile::tempdir().unwrap();
+        let gen = tmp.path().join("AI_Gen_Files");
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&gen).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.txt"), b"x").unwrap();
+        std::os::unix::fs::symlink(outside.join("secret.txt"), gen.join("link.txt")).unwrap();
+
+        let link = gen.join("link.txt");
+        assert!(
+            !path_openable_in(link.to_str().unwrap(), &set(&[]), Some(&gen)),
+            "产物目录内软链指向外部 → 必须拒"
+        );
+    }
 }

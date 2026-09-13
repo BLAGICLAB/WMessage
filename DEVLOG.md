@@ -2,6 +2,21 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-09-14（周日）测试盘查 + 安全锁补强（7 例）
+
+**背景**：按「测试补强」清单逐项盘查六个提议。结论：**两项已覆盖**（工具 schema 快照 = `tests/fixtures/tools_baseline.json` + Value 级全量比对；memory 去重三分支 = `dedup_merge/hint/low_cosine/degraded` 四例固定假向量）、**一项基本覆盖**（bot_anthropic 26 例固定输入→精确输出）、**三项有真缺口**；清单里的 `insta` / `proptest` 与仓库「不加新依赖」冲突，且关键逃逸是 canonicalize + 分量比较两步，随机路径打不到，故改用表驱动 + 真实文件系统。
+
+**本轮改动**（纯提取 + 新测试，零新依赖）：
+- **白名单判定核可测化**：`bot_fs.rs` 抽出 `is_within_allowlist(canonical, dirs)`（`resolve_with_perm` 改调它，行为不变）+ 2 例：`..` 穿越拒绝、前缀相似目录不误吞、unix 软链逃逸拒绝
+- **前端直达命令放行口**：`bot_skills/files.rs` 把 `path_openable` 拆出内核 `path_openable_in(path, set, gen_dir)`（注入产物目录，不碰 AppHandle）+ 3 例：集合须精确命中、产物目录内放行 / 目录外 + `..` + 不存在 + 前缀相似目录（`AI_Gen_Files-evil`）拒绝、软链逃逸拒绝——`open_file_path` / `delete_bound_file` 此前**零测试**，而它们是「前端 XSS → 任意文件打开/删除」的一跳
+- **intent 规则松紧锁**：`intent_router.rs` 新增表驱动测试，docx fixture 5 条 pattern **每条一正一负**（逐条断言 pattern 命中正例/不命中负例 + 整条路由 正例→Skill、负例→PassThrough），`patterns.len()` 断言兜住 fixture 漏改——防「把 `.{0,15}` 放宽 / 裸『润色』单独成条」这类越写越松
+- **F-1 bypass 开关语义**：`bot/config.rs` 抽出 `read_bypass_llm_switch_at(path)`（纯路径参数，不碰 mock app 的共享数据目录）+ 表测（文件缺失 / JSON 损坏 / 缺字段 → 默认开；仅显式 `false` 关）
+- **fail-path 注入验证**（已还原）：三处判定改成字符串前缀比较 / 放宽 docx pattern → 对应测试全部 FAILED 并给出负例文案，证明锁能拦下回归
+
+**未做（留档）**：`insta` 快照（已有零依赖等价物，更严）、`proptest`（同上 + 有效性低）；**bot_chat 层三分支 E2E**（bypass 开/关、middleware 短路、exec_steps resume 有/无挂起）——卡在 `bot_chat(app: AppHandle)` / `run_model_loop(app: AppHandle)` 是 Wry 类型不可 mock，需先把 `bot_chat` 拆成 `bot_chat_impl<R: Runtime>(..., http: Option<LlmHttp>)` + command 薄壳（先例 `cleanup_on_exit_with` / `run_task_in_chat_with`），估 0.5–1 天，单独立项。
+
+**测试**：`cargo test --lib` 657 → **664 全绿**；`#[test]` 总数 712 → 719；fast gate 通过。`docs/testing.md` 新增「安全相关锁」速查表。
+
 ## 2026-09-14（周日）Prompt 常量集中到 src-tauri/src/prompts/
 
 **动机**：`SYSTEM_PROMPT` / `SUMMARY` / `REFLECTION` / `EXECUTE` 等 9 个提示词常量散在 `bot_chat.rs` / `bot_plan.rs` / `memory/consolidate.rs` 各行号里——提示词是 AI 应用的业务逻辑（直接决定模型行为），混在大文件 diff 里容易漏 review。

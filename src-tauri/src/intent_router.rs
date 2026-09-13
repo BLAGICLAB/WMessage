@@ -235,6 +235,56 @@ mod tests {
         }
     }
 
+    /// **每条 pattern 一正一负**：intent 规则越写越松（把 `.{0,15}` 放宽、
+    /// 把裸「润色」单独成条）会让无关输入误进 Skill 执行链路——多花一次 LLM 调用，
+    /// 甚至触发不必要的文件处理。逐条钉住：正例命中该条模式，负例既不该命中该条、
+    /// 也不该被同技能其它模式捞走（负例断言的是整条路由 PassThrough）。
+    ///
+    /// 新增/修改 frontmatter intent 时，本表必须同步（`patterns.len()` 断言会拦下漏改）。
+    #[test]
+    fn every_docx_pattern_has_positive_and_negative_case() {
+        let rules = docx_rules();
+        let patterns = &rules[0].patterns;
+        assert_eq!(
+            patterns.len(),
+            5,
+            "docx fixture 的 pattern 数变了——同步下面的 cases 表（每条一正一负）"
+        );
+
+        // (pattern 下标, 正例, 负例)
+        let cases: &[(usize, &str, &str)] = &[
+            (0, "帮我润色一下这个 Word 文档", "帮我润色一下这段话"),
+            (1, "用修订模式改一下", "用别的模式改一下"),
+            (2, "Word 文档润色", "Excel 表格润色"),
+            (3, "润色\n附件：/tmp/汇报.docx", "润色\n附件：/tmp/图.png"),
+            (4, "/tmp/合同.doc 帮我修订一下", "/tmp/图.png 帮我修订一下"),
+        ];
+
+        for (idx, positive, negative) in cases {
+            let raw = &patterns[*idx];
+            let re = regex::Regex::new(raw).expect("fixture 模式应为合法正则");
+            assert!(
+                re.is_match(positive),
+                "pattern[{idx}] {raw} 应命中正例「{positive}」"
+            );
+            assert!(
+                !re.is_match(negative),
+                "pattern[{idx}] {raw} 不该命中负例「{negative}」"
+            );
+            // 端到端：正例路由到该技能；负例必须是 PassThrough（不被其它模式捞走）
+            assert_eq!(
+                route_with_rules(positive, &rules),
+                RouteAction::Skill("minimax-docx".to_string()),
+                "正例「{positive}」应路由到 minimax-docx"
+            );
+            assert_eq!(
+                route_with_rules(negative, &rules),
+                RouteAction::PassThrough,
+                "负例「{negative}」不该被任何模式命中"
+            );
+        }
+    }
+
     #[test]
     fn routes_word_revisions_by_attachment_context() {
         // 附件以 [附件文件] 路径块嵌在消息文本里（ChatPanel 拼装），

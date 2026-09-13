@@ -166,7 +166,7 @@ pub async fn resolve_with_perm(
     let canonical =
         std::fs::canonicalize(&expanded).map_err(|_| format!("路径不存在或不可访问：{p}"))?;
     let dirs = allowed_dirs(app).await;
-    if dirs.iter().any(|d| canonical.starts_with(d)) {
+    if is_within_allowlist(&canonical, &dirs) {
         return Ok(strip_verbatim(canonical));
     }
     match crate::bot::perm_mode(app) {
@@ -250,6 +250,16 @@ pub async fn resolve_with_perm(
             ))
         }
     }
+}
+
+/// 白名单判定核（纯函数）：canonical 路径是否落在任一白名单目录内。
+///
+/// `Path::starts_with` 按**路径分量**比较，所以白名单 `/tmp/ab` 不会误吞 `/tmp/abc`；
+/// 而 `..` 穿越与软链逃逸要靠调用方的 `canonicalize` 先解析掉——两步一起才成立，
+/// 单测 `allowlist_rejects_traversal_and_symlink_escape` /
+/// `allowlist_rejects_symlink_escape` 用真实文件系统同时锁住这两步。
+fn is_within_allowlist(canonical: &Path, dirs: &[PathBuf]) -> bool {
+    dirs.iter().any(|d| canonical.starts_with(d))
 }
 
 /// 简化 glob 匹配（只支持 * 任意串、? 单字符；大小写敏感；匹配文件/目录名）
@@ -730,5 +740,65 @@ mod tests {
         // gen 目录缺失（创建失败）时其余集合不受影响
         let raw = merge_raw_dirs(&["/data/x".to_string()], None, vec![], None);
         assert_eq!(raw, vec!["/data/x"]);
+    }
+
+    // ── 白名单逃逸（bot_fs 是「模型编造路径 / 前端 XSS 驱动任意文件读」的关键防线）──
+
+    /// 判定 = canonicalize + 分量前缀比较，两步缺一不可：
+    /// `..` 穿越必须被解析后在白名单外，前缀相似目录不得误判命中
+    #[test]
+    fn allowlist_rejects_traversal_and_prefix_similar_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let allowed = tmp.path().join("allowed");
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&allowed).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.txt"), b"secret").unwrap();
+        std::fs::write(allowed.join("mine.txt"), b"mine").unwrap();
+
+        let allow_dirs = vec![
+            std::fs::canonicalize(&allowed).unwrap(),
+            std::fs::canonicalize(tmp.path()).unwrap(), // 目录本身也可命中（授权粒度=目录）
+        ];
+
+        let inside = std::fs::canonicalize(allowed.join("mine.txt")).unwrap();
+        assert!(is_within_allowlist(&inside, &allow_dirs), "白名单内应放行");
+
+        // `..` 穿越：canonicalize 已解析 `..` → 落在白名单外 → 拒不命中
+        let traversal = std::fs::canonicalize(allowed.join("../outside/secret.txt")).unwrap();
+        assert!(
+            !is_within_allowlist(&traversal, &[allow_dirs[0].clone()]),
+            "`..` 穿越到白名单外必须被拒"
+        );
+
+        // 前缀相似目录（/x/allowed vs /x/allowed-evil）：分量比较不得误吞
+        let sibling = tmp.path().join("allowed-evil");
+        std::fs::create_dir_all(&sibling).unwrap();
+        let sibling_c = std::fs::canonicalize(&sibling).unwrap();
+        assert!(
+            !is_within_allowlist(&sibling_c, &[allow_dirs[0].clone()]),
+            "前缀相似目录不得误判命中"
+        );
+    }
+
+    /// 软链逃逸（unix）：白名单目录内的软链指向外部 → canonicalize 跟随软链 →
+    /// 判定必须在白名单外（否则 grep_files 会把外部文件内容带进模型上下文）
+    #[cfg(unix)]
+    #[test]
+    fn allowlist_rejects_symlink_escape() {
+        let tmp = tempfile::tempdir().unwrap();
+        let allowed = tmp.path().join("allowed");
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&allowed).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.txt"), b"secret").unwrap();
+        std::os::unix::fs::symlink(outside.join("secret.txt"), allowed.join("link.txt")).unwrap();
+
+        let allow_dirs = vec![std::fs::canonicalize(&allowed).unwrap()];
+        let followed = std::fs::canonicalize(allowed.join("link.txt")).unwrap();
+        assert!(
+            !is_within_allowlist(&followed, &allow_dirs),
+            "白名单内软链指向外部文件时必须拒（canonicalize 跟随软链后不在白名单内）"
+        );
     }
 }

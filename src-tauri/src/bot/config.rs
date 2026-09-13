@@ -396,11 +396,14 @@ pub fn config_path(app: &AppHandle) -> std::path::PathBuf {
 /// bypass_llm 开关读取 helper：bot-config.json 缺字段 / 文件不存在 / 解析失败都默认 true（bypass 行为）。
 /// 比 bot_get_config 轻量：跳过 BotConfigView 构造 + key 校验，bot_chat 入口用。
 pub fn read_bypass_llm_switch(app: &AppHandle) -> bool {
-    let p = config_path(app);
-    if !p.exists() {
-        return true;
-    }
-    let Ok(raw) = std::fs::read_to_string(&p) else {
+    read_bypass_llm_switch_at(&config_path(app))
+}
+
+/// 可测内核（纯路径参数）：文件缺失 / 读失败 / JSON 损坏 / 缺字段 → true。
+/// 只有显式 `bypassLlmOnPreStepHit: false` 才关掉 bypass——老配置零迁移语义，
+/// 也是 F-1 拍板的默认行为（默认走 bypass，避免命中 Skill 后还要多烧一次外层 LLM）。
+fn read_bypass_llm_switch_at(path: &std::path::Path) -> bool {
+    let Ok(raw) = std::fs::read_to_string(path) else {
         return true;
     };
     serde_json::from_str::<BotConfig>(&raw)
@@ -1527,6 +1530,31 @@ mod bot_config_tests {
         // 协议锁：service 名变更必须同步「新 + 旧」两个常量，否则存量用户 key 读不到
         assert_eq!(KEYRING_SERVICE, "wmessage.bot.v1");
         assert_eq!(LEGACY_KEYRING_SERVICE, "wmessage-bot");
+    }
+
+    /// F-1 的 bypass 开关语义：只有显式 false 才关，其余（文件缺失 / 读失败 /
+    /// JSON 损坏 / 缺字段）一律 true——默认走 bypass（命中 Skill 后不再多烧一次
+    /// 外层 LLM）。走可测内核（纯路径参数），不碰 mock app 的共享数据目录。
+    #[test]
+    fn bypass_llm_switch_defaults_true_and_honors_explicit_false() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("bot-config.json");
+        // 文件不存在 → true
+        assert!(read_bypass_llm_switch_at(&p), "文件缺失应默认 bypass");
+        // 缺字段（老配置）→ true
+        std::fs::write(&p, r#"{"baseUrl":"https://api.example.com/v1"}"#).unwrap();
+        assert!(read_bypass_llm_switch_at(&p), "缺字段应默认 bypass");
+        // 显式 true / false → 跟随配置
+        std::fs::write(&p, r#"{"bypassLlmOnPreStepHit":true}"#).unwrap();
+        assert!(read_bypass_llm_switch_at(&p));
+        std::fs::write(&p, r#"{"bypassLlmOnPreStepHit":false}"#).unwrap();
+        assert!(!read_bypass_llm_switch_at(&p), "显式 false 必须关掉 bypass");
+        // JSON 损坏 → true（聊天入口不能被坏配置挡住）
+        std::fs::write(&p, "{not json").unwrap();
+        assert!(
+            read_bypass_llm_switch_at(&p),
+            "损坏配置应默认 bypass 而非 panic"
+        );
     }
 }
 

@@ -72,6 +72,15 @@ Rust 侧另有编译期协议锁先例可参考：`bot/registry.rs` 的 `registr
 `bot_model_loop.rs` 的 `tools_schema_parses`、`lib.rs` 的 `dead_commands_not_registered`、
 `mutation.rs`/`consts.rs` 的协议漂移锁。
 
+### 安全相关锁（改动判定逻辑时先看这里）
+
+| 锁 | 位置 | 拦什么 |
+|---|---|---|
+| 白名单逃逸 | `bot_fs.rs::allowlist_rejects_traversal_and_prefix_similar_dir` / `allowlist_rejects_symlink_escape` | `..` 穿越、软链逃逸、前缀相似目录（`/x/ab` vs `/x/abc`）误吞——判定核 `is_within_allowlist` 是 canonicalize 之后的分量比较 |
+| 打开/删除放行口 | `bot_skills/files.rs::openable_*`（3 例） | 绑定集合必须**精确命中**；产物目录内才放行，`..`/软链/前缀相似目录/不存在路径全拒（`open_file_path`、`delete_bound_file` 是前端直达命令，属 XSS→RCE 一跳） |
+| intent 规则松紧 | `intent_router.rs::every_docx_pattern_has_positive_and_negative_case` | **每条 pattern 一正一负**（正例命中该条、负例整条路由 PassThrough），防规则越写越松把无关输入捞进 Skill 链路 |
+| bypass 开关语义 | `bot/config.rs::bypass_llm_switch_defaults_true_and_honors_explicit_false` | 只有显式 `false` 才关 bypass；文件缺失/损坏/缺字段一律默认开 |
+
 ## 门禁误伤时的豁免方式
 
 | 门禁 | 豁免 |
