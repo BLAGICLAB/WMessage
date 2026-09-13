@@ -186,8 +186,8 @@ async fn run_step(
     };
     let sys = format!(
         "{}\n{}\n\n{}\n\n{}",
-        crate::bot_chat::EXECUTE_SYSTEM_PROMPT,
-        crate::bot_chat::STEPWISE_ADDENDUM,
+        crate::prompts::EXECUTE_SYSTEM_PROMPT,
+        crate::prompts::STEPWISE_ADDENDUM,
         crate::bot_chat::gen_dir_rule(app),
         crate::bot_skills::build_skill_block(app)
     );

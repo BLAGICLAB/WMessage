@@ -11,6 +11,7 @@
 //! - 计划只是提示词文本，执行仍走 execute_tool 全量安全网关，无绕过通道
 
 use crate::error::CommandResult;
+use crate::prompts::{PLANNER_PROMPT, REPLANNER_PROMPT};
 
 /// 计划状态（随 run_model_loop 走完一轮对话；不入库）
 pub struct PlanState {
@@ -106,18 +107,6 @@ pub fn format_plan_block(steps: &[String]) -> String {
         "\n\n【执行计划】\n{list}\n按计划逐步执行；每步完成后对照计划确认产出。某步走不通时不要原样重试，分析原因后调整剩余步骤（换参数/换工具/拆小步骤），并向用户说明调整原因。"
     )
 }
-
-/// Planner 系统提示词
-const PLANNER_PROMPT: &str = "\
-你是任务规划器。把用户任务拆成有序的执行步骤，只输出 JSON：{\"steps\": [\"步骤1\", \"步骤2\", ...]}。\
-要求：3-6 步为宜，最多 8 步；每步是一个可执行的具体动作（读文件/搜索/生成文档/操作任务卡等）；\
-不要输出 JSON 以外的任何内容；不要嵌套子步骤。";
-
-/// Replan 系统提示词（带失败上下文重规划）
-const REPLANNER_PROMPT: &str = "\
-你是任务规划器。原计划执行失败了，请基于失败原因修正剩余计划。\
-只输出 JSON：{\"steps\": [...]}（只列剩余要做的步骤，已完成的不要重复）。\
-要求：不要重复失败的调用方式；换参数/换工具/拆小步骤；最多 8 步；不要输出 JSON 以外的内容。";
 
 /// 调 Planner（单次非流式，60s 超时）。失败 → Err，调用方降级。
 /// Anthropic 兼容模式：按 provider 分支 URL/鉴权头/请求体/响应解析

@@ -30,6 +30,7 @@ mod mutation;
 mod ocr;
 pub mod paths;
 mod profile;
+mod prompts;
 pub mod task_out;
 pub mod tool_guard;
 use tauri::{Emitter, Manager};

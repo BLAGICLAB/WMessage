@@ -38,7 +38,7 @@ Tauri 2 + React 19 + TypeScript 的 Todo 看板，新拟态（Neumorphism）UI�
 - **tauri-plugin-global-shortcut**：全局快捷键（Rust 侧注册）
 - **rusqlite（bundled）**：数据存 `wmessage.db`（WAL + busy_timeout 2s），行级增量读写
 - 其他关键依赖：reqwest（流式 LLM 请求）+ keyring（API Key 系统凭据存储）+ csv（规则表导入）+ encoding_rs（CSV/网页编码兜底）+ html2text（网页转文本）+ tokio（oneshot 确认通道）+ chrono + base64 + uuid
-- Rust 模块：`db.rs`（SQLite 全部读写）、`app_state.rs`（运行期全局状态单一入口）、`bot/`（`bot.rs` 门面 + `registry.rs` 工具单源真相 / `dispatch.rs` 分发 / `tools.rs` 实现 / `config.rs` 配置）+ `bot_artifacts.rs`（产物登记表：bot 流程结束汇总弹窗）+ `bot_chat.rs`/`bot_model_loop.rs`/`bot_scheduler.rs`/`bot_slash.rs`（机器人聊天编排/工具循环/定时调度/斜杠命令）、`bot_skills/`（Skill DSL 调度器）、`memory/`（语义记忆体 v2：embed/store/rank/consolidate）、`bot_py.rs`（本机 Python 沙箱 + 文档脚本模板）、`bot_web.rs`（搜索/抓取）、`migration.rs`（桌面清理）、`profile.rs`（头像资料）、`api.rs` + `api_server.rs`/`api_handlers.rs`/`api_auth.rs`（本地 HTTP API）、`ocr.rs`（图片识字）、`audit.rs`（审计日志）
+- Rust 模块：`db.rs`（SQLite 全部读写）、`app_state.rs`（运行期全局状态单一入口）、`bot/`（`bot.rs` 门面 + `registry.rs` 工具单源真相 / `dispatch.rs` 分发 / `tools.rs` 实现 / `config.rs` 配置）+ `prompts/`（提示词集中地：system/summary/reflection/execute/planner/consolidate）+ `bot_artifacts.rs`（产物登记表：bot 流程结束汇总弹窗）+ `bot_chat.rs`/`bot_model_loop.rs`/`bot_scheduler.rs`/`bot_slash.rs`（机器人聊天编排/工具循环/定时调度/斜杠命令）、`bot_skills/`（Skill DSL 调度器）、`memory/`（语义记忆体 v2：embed/store/rank/consolidate）、`bot_py.rs`（本机 Python 沙箱 + 文档脚本模板）、`bot_web.rs`（搜索/抓取）、`migration.rs`（桌面清理）、`profile.rs`（头像资料）、`api.rs` + `api_server.rs`/`api_handlers.rs`/`api_auth.rs`（本地 HTTP API）、`ocr.rs`（图片识字）、`audit.rs`（审计日志）
 
 ## 架构
 

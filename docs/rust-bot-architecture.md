@@ -29,9 +29,17 @@ src-tauri/src/
 ├── api_handlers.rs      REST /api/tasks CRUD + SSE + api_start/stop 等命令
 │
 │─ Bot 核心（编排 → 决策 → 工具分发）
-├── bot_chat.rs (1958)   入口编排：bot_chat / bot_compact / bot_execute_task 命令；五步主流程；
-│                        SYSTEM_PROMPT/EXECUTE/SUMMARY/REFLECTION prompt 常量；
+├── bot_chat.rs          入口编排：bot_chat / bot_compact / bot_execute_task 命令；五步主流程；
 │                        ChatMsg/TaskRef/BotChatResult/TaskExecOrigin；多模态图片组装；ChatGuard 防重入
+│                        （prompt 常量已移出，见 prompts/）
+├── prompts/             **提示词集中地**（AI 应用的业务逻辑，与代码同等对待）：
+│   system.rs              SYSTEM_PROMPT（主聊天规则底座 + 安全红线）
+│   summary.rs             SUMMARY_SYSTEM_PROMPT（截断即摘要 ≤200 字）/ COMPACT_SYSTEM_PROMPT（/compact ≤300 字）
+│   reflection.rs          REFLECTION_SYSTEM_PROMPT（多摘要 → 阶段总结）
+│   execute.rs             EXECUTE_SYSTEM_PROMPT（任务卡执行）/ STEPWISE_ADDENDUM（逐步执行附加段）
+│   planner.rs             PLANNER_PROMPT / REPLANNER_PROMPT（bot_plan 动态计划，只输出 JSON）
+│   consolidate.rs         CONSOLIDATE_PROMPT（记忆整理，只输出 JSON ops）
+│   mod.rs                 模块声明 + `crate::prompts::NAME` 统一出口 + prompt 清单锁测试
 ├── bot_model_loop.rs (1711) LLM 流式调用+工具循环：run_model_loop(薄壳装配)/run_model_loop_core(可注入 mock)；
 │                        SSE 解析、思考块拆分；单轮 Function 熔断；LlmHttp / ModelLoopDeps 依赖注入
 │                        （TOOLS schema 已移出，见 bot/registry.rs）
@@ -192,8 +200,13 @@ db / audit / paths / error   全员共享底座
 
 - **运行时数据目录**（`paths::probe_log_dir` 判定，便携模式随 exe 走）：
   `wmessage.db`（SQLite）、`bot-config.json`（bot 配置，API key 已迁系统 keyring，自带 `schemaVersion`）、`bot.log`（审计）、`runtime/flags/`（`api-token.txt` / `api-enabled.flag` / `py-enabled.flag` / `bot-enabled.flag` 等运行期文件，根目录不再散落）、`profile.json` + `profile/`、`cleanup-rules.json`、`skills/<name>/SKILL.md`（用户技能）、`AI_Gen_Files/`（AI 产物唯一入口 `db::gen_dir`）
-- **Prompt 不是独立文件**，是编译期常量：
-  `SYSTEM_PROMPT`（bot_chat.rs:40）、`SUMMARY_SYSTEM_PROMPT`(:169)、`REFLECTION_SYSTEM_PROMPT`(:174)、`EXECUTE_SYSTEM_PROMPT`(:883)；工具 schema 单一来源 `TOOLS_TABLE`（bot/registry.rs:335）→ `tools_json()`（:514，编译期常量原文拼接）
+- **Prompt 集中在 `src-tauri/src/prompts/`**（`&'static str` 编译期常量，无 IO 无状态）：
+  `system.rs`（`SYSTEM_PROMPT`）、`summary.rs`（`SUMMARY_SYSTEM_PROMPT` / `COMPACT_SYSTEM_PROMPT`）、
+  `reflection.rs`、`execute.rs`（`EXECUTE_SYSTEM_PROMPT` / `STEPWISE_ADDENDUM`）、
+  `planner.rs`（`PLANNER_PROMPT` / `REPLANNER_PROMPT`）、`consolidate.rs`；统一从
+  `crate::prompts::NAME` 取。**不是** `.md` 资源文件（`.md` + `include_str!` 会引入真实换行 =
+  改提示词字节内容，属需单独评估的改动；若将来要换实现，调用方路径不变）。
+  工具 schema 单一来源 `TOOLS_TABLE`（bot/registry.rs:335）→ `tools_json()`（:514，编译期常量原文拼接）
 - **打包资源**（tauri.conf.json resources）：
   `bge-small-zh-v1.5/`（嵌入模型 tokenizer+ONNX，项目根）、`pp-ocr-v6/`（Windows OCR 模型，scripts/fetch_ocr_models.sh 下载）、`src-tauri/icons/`、权限文件 `src-tauri/capabilities/default.json`（opener scope 收窄，有回归测试锁死）
 - **设计文档**：`docs/`（BOT-MEMORY-V2-DESIGN.md、SKILL-RUNTIME.md、SKILL_DSL.md、TASK-CHAT-EXECUTION-DESIGN.md、ARCH-REFACTOR-PLAN.md 及多份审计报告）

@@ -2,6 +2,29 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-09-14（周日）Prompt 常量集中到 src-tauri/src/prompts/
+
+**动机**：`SYSTEM_PROMPT` / `SUMMARY` / `REFLECTION` / `EXECUTE` 等 9 个提示词常量散在 `bot_chat.rs` / `bot_plan.rs` / `memory/consolidate.rs` 各行号里——提示词是 AI 应用的业务逻辑（直接决定模型行为），混在大文件 diff 里容易漏 review。
+
+**做法**：新建 `src-tauri/src/prompts/`（用户给的布局，Rust 模块）：
+
+| 文件 | 常量 |
+|---|---|
+| `system.rs` | `SYSTEM_PROMPT` |
+| `summary.rs` | `SUMMARY_SYSTEM_PROMPT`（截断即摘要 ≤200 字）/ `COMPACT_SYSTEM_PROMPT`（/compact ≤300 字） |
+| `reflection.rs` | `REFLECTION_SYSTEM_PROMPT` |
+| `execute.rs` | `EXECUTE_SYSTEM_PROMPT` / `STEPWISE_ADDENDUM` |
+| `planner.rs` | `PLANNER_PROMPT` / `REPLANNER_PROMPT` |
+| `consolidate.rs` | `CONSOLIDATE_PROMPT`（记忆整理） |
+| `mod.rs` | 模块声明 + `crate::prompts::NAME` 统一出口 + 清单锁测试 |
+
+- **保持 `&'static str`（不选 `.md` + `include_str!`）**：现有字面量是 `\` 续行拼接，**行与行之间没有换行符**（整段是一条长文本）；换成 `.md` 会引入真实换行，等于顺手改了提示词字节内容——提示词是模型输入，属需单独评估 + 人工验收的改动，不该混进纯提取。同时保住「编译期内嵌」语义（无运行时路径解析，不必进 `tauri.conf.json` resources）。将来要换实现只动 `prompts/`，调用方 `crate::prompts::NAME` 不变
+- **逐字节搬迁**：用 `sed` 从原文件抽取字面量（非重打），搬迁后逐段 `diff` 与搬迁前比对，9 段全部 byte-identical（唯一改动是 `const` → `pub(crate) const`）
+- 调用方改引 `crate::prompts::*`：`bot_chat.rs`（5 个）、`bot_plan.rs`（2 个）、`memory/consolidate.rs`、`exec_steps.rs`（原先走 `crate::bot_chat::EXECUTE_SYSTEM_PROMPT` 借道，改为直取）
+- **清单锁测试**（`prompts::tests`，5 例）：9 个常量全部登记且非空（新增忘登记即挂）、`SYSTEM_PROMPT` 核心规则与安全红线锚点、`EXECUTE` 与 dispatch/bot_slash 的放行契约（`link_file_to_task` / `complete_task`）、逐步段「以本段为准」冲突优先级、摘要两档字数上限（200/300）不可改混、Planner 两段必须约束「只输出 JSON」
+
+**测试**：`cargo test --lib` 657 全绿（新增 5 例）；docs/README/架构文档同步（模块树新增 `prompts/`、删掉「Prompt 是 bot_chat.rs 行号常量」的旧描述）。
+
 ## 2026-09-14（周日）错误码枚举化 + 审计三补（error.code / 工具调用上下文 / 路由命中）
 
 **动机**：`CommandError.code` 是 `&str`，拼错编译期不报（前端 hint 分流静默失配）；审计侧三处盲区——失败行只有人读文案没法按 code 统计、工具调用审计看不出属于哪轮哪个 tool_call（没法整轮回放）、pre-step 路由命中只写 free-form 不记中间件与短路位置。
