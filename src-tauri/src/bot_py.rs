@@ -3492,7 +3492,7 @@ mod tests {
     #[test]
     fn f2_resolve_doc_path_cancel_returns_internal() {
         let err = resolve_doc_path(None).unwrap_err();
-        assert_eq!(err.code(), "INTERNAL");
+        assert_eq!(err.code(), crate::error::CommandErrorCode::Internal);
         assert!(err.message().contains("用户取消了选择"));
     }
 
@@ -3515,7 +3515,11 @@ mod tests {
             ("doc_make_ppt", "生成 PPT 失败"),
         ] {
             let err = script_fail_err(what, "  boom\n");
-            assert_eq!(err.code(), "INTERNAL", "{cmd} 错误 code 应为 INTERNAL");
+            assert_eq!(
+                err.code(),
+                crate::error::CommandErrorCode::Internal,
+                "{cmd} 错误 code 应为 INTERNAL"
+            );
             assert!(
                 err.message().contains(what) && err.message().contains("boom"),
                 "{cmd} message 应含操作名 + stderr：{}",
@@ -3565,7 +3569,7 @@ mod tests {
         let file_as_dir = tmp.path().join("AI_Gen_Files");
         std::fs::write(&file_as_dir, b"not a dir").unwrap();
         let err = gen_out_path_in(&file_as_dir, Some("x"), "pdf").unwrap_err();
-        assert_eq!(err.code(), "IO_ERROR");
+        assert_eq!(err.code(), crate::error::CommandErrorCode::IoError);
         assert!(!err.is_recoverable());
     }
 

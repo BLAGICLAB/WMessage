@@ -1320,11 +1320,12 @@ pub async fn migration_log_read(app: AppHandle, limit: Option<usize>) -> Command
     match r {
         Ok(s) => Ok(s),
         Err(e) => {
-            let msg = e.message();
-            crate::audit::write_error_audit(
+            // 带 code 写审计（err => 宏臂自动展开 code/recoverable/err）
+            crate::audit_event!(
                 &app,
+                crate::audit::AuditLevel::Error,
                 "migration_log_read_fail",
-                &[("err", msg.as_str())],
+                err => &e
             );
             Err(e)
         }
@@ -2203,7 +2204,7 @@ mod tests {
     fn f3_read_migration_log_io_error_not_swallowed() {
         let tmp = tempfile::tempdir().unwrap();
         let err = read_migration_log(tmp.path(), None).unwrap_err();
-        assert_eq!(err.code(), "IO_ERROR");
+        assert_eq!(err.code(), crate::error::CommandErrorCode::IoError);
         assert!(!err.is_recoverable());
     }
 

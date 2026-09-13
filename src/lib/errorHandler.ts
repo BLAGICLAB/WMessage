@@ -17,7 +17,70 @@
 // - 空 message 兜底：CommandError.message 为空时回退 code，
 //   再空回退「未知错误」；非结构化空 msg 同样兜底——不弹空 alert、不静默跳过
 
-/** Tauri 拒绝时拿到的反序列化 CommandError JSON 形状 */
+/**
+ * CommandError.code 的取值全集——与 Rust 侧 `src-tauri/src/error.rs::CommandErrorCode`
+ * 一一对应（那里是单一真相：`#[serde(rename = "…")]` 就是线协议字符串）。
+ *
+ * 漂移防线：
+ * - Rust：`as_str_matches_serde_rename_for_all_codes` / `all_codes_listed_and_unique`
+ * - 前端：`errorHandler.test.ts` 用 `ALL_COMMAND_ERROR_CODES` 断言每个 code 都有专属 hint
+ * - 跨语言：`tests-audit/audit_error_codes.py`（提交门禁）比对 Rust 枚举 ↔ 本联合类型
+ */
+export type CommandErrorCode =
+  | "BOT_DISABLED"
+  | "API_KEY_MISSING"
+  | "KEYRING_ERROR"
+  | "HTTP_START_FAILED"
+  | "PORT_IN_USE"
+  | "AUTH_MISSING"
+  | "AUTH_INVALID"
+  | "PAYLOAD_TOO_LARGE"
+  | "TASK_NOT_FOUND"
+  | "TASK_INVALID_STATE"
+  | "INVALID_ARGUMENT"
+  | "DB_ERROR"
+  | "IO_ERROR"
+  | "UNKNOWN_TOOL"
+  | "ATOMIC_TOOL_BLOCKED"
+  | "SKILL_LOAD_FAILED"
+  | "SKILL_NOT_INSTALLED"
+  | "LLM_REQUEST_FAILED"
+  | "LLM_API_ERROR"
+  | "CONFIRM_TIMEOUT"
+  | "CONFIRM_REJECTED"
+  | "DOMAIN_RULE"
+  | "INTERNAL";
+
+/** 全部 code（顺序与 Rust `CommandErrorCode::ALL` 一致） */
+export const ALL_COMMAND_ERROR_CODES: readonly CommandErrorCode[] = [
+  "BOT_DISABLED",
+  "API_KEY_MISSING",
+  "KEYRING_ERROR",
+  "HTTP_START_FAILED",
+  "PORT_IN_USE",
+  "AUTH_MISSING",
+  "AUTH_INVALID",
+  "PAYLOAD_TOO_LARGE",
+  "TASK_NOT_FOUND",
+  "TASK_INVALID_STATE",
+  "INVALID_ARGUMENT",
+  "DB_ERROR",
+  "IO_ERROR",
+  "UNKNOWN_TOOL",
+  "ATOMIC_TOOL_BLOCKED",
+  "SKILL_LOAD_FAILED",
+  "SKILL_NOT_INSTALLED",
+  "LLM_REQUEST_FAILED",
+  "LLM_API_ERROR",
+  "CONFIRM_TIMEOUT",
+  "CONFIRM_REJECTED",
+  "DOMAIN_RULE",
+  "INTERNAL",
+];
+
+/** Tauri 拒绝时拿到的反序列化 CommandError JSON 形状。
+ *  code 保持 string：Rust 侧可能比前端更早引入新 code，
+ *  `hintForCode` 的 default 分支负责这种「未知 code」的兜底。 */
 export interface CommandErrorPayload {
   code: string;
   message: string;
@@ -75,6 +138,9 @@ function hintForCode(code: string): string | null {
       return "请在 60 秒内确认操作";
     case "CONFIRM_REJECTED":
       return "已取消当前操作";
+    case "DOMAIN_RULE":
+      // 域规则：message 已带 [domain] 前缀，hint 只给通用下一步
+      return "请按提示调整后重试；若反复失败请反馈日志";
     case "DB_ERROR":
     case "IO_ERROR":
       return "不可自动重试；请反馈日志（含操作步骤）";

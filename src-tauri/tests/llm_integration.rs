@@ -524,7 +524,7 @@ async fn llm_mixed_sequence_task_tool_then_readonly_both_pass() {
 use std::sync::{Arc, Mutex};
 use wmessage_lib::bot::{
     noop_replan, run_model_loop_core, ApiProvider, AuditLevel, LlmHttp, ModelLoopDeps, StopGuard,
-    DEFAULT_MAX_TOKENS,
+    ToolCallTrace, DEFAULT_MAX_TOKENS,
 };
 use wmessage_lib::error::CommandError;
 
@@ -610,7 +610,11 @@ fn user_msgs() -> Vec<serde_json::Value> {
 }
 
 /// 工具执行 stub 永不调用版（纯文本/错误路径不应触发任何工具执行）
-async fn exec_never(name: String, args: String) -> (String, Vec<wmessage_lib::bot::TaskRef>) {
+async fn exec_never(
+    name: String,
+    args: String,
+    _trace: ToolCallTrace,
+) -> (String, Vec<wmessage_lib::bot::TaskRef>) {
     panic!("此路径不应执行工具：{name} {args}");
 }
 
@@ -657,7 +661,7 @@ async fn core_tool_call_round_trip_executes_and_continues() {
 
     let calls: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
     let calls2 = calls.clone();
-    let exec = move |name: String, args: String| {
+    let exec = move |name: String, args: String, _trace: ToolCallTrace| {
         let calls = calls2.clone();
         async move {
             calls.lock().unwrap().push((name, args));
@@ -982,7 +986,7 @@ async fn core_anthropic_tool_call_round_trip_executes_and_continues() {
 
     let calls: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
     let calls2 = calls.clone();
-    let exec = move |name: String, args: String| {
+    let exec = move |name: String, args: String, _trace: ToolCallTrace| {
         let calls = calls2.clone();
         async move {
             calls.lock().unwrap().push((name, args));
@@ -1097,7 +1101,7 @@ async fn core_anthropic_text_block_first_tool_use_remapped_no_ghost() {
 
     let calls: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
     let calls2 = calls.clone();
-    let exec = move |name: String, args: String| {
+    let exec = move |name: String, args: String, _trace: ToolCallTrace| {
         let calls = calls2.clone();
         async move {
             calls.lock().unwrap().push((name, args));

@@ -2,6 +2,20 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-09-14（周日）错误码枚举化 + 审计三补（error.code / 工具调用上下文 / 路由命中）
+
+**动机**：`CommandError.code` 是 `&str`，拼错编译期不报（前端 hint 分流静默失配）；审计侧三处盲区——失败行只有人读文案没法按 code 统计、工具调用审计看不出属于哪轮哪个 tool_call（没法整轮回放）、pre-step 路由命中只写 free-form 不记中间件与短路位置。
+
+**改动**：
+- **错误码枚举化**：新增 `error::CommandErrorCode`（23 个变体，`#[serde(rename = "…")]` 即线协议字符串），`CommandError::code()` 返回枚举而非 `&str`——调用点编译期可查；`as_str()`（日志/统计用）与 serde rename 由 `as_str_matches_serde_rename_for_all_codes` 锁死，`ALL` 由 `all_codes_listed_and_unique` 锁死（漏登记即挂）。全仓 `.code() == "X"` 断言改枚举比较
+- **前端 TS 对齐**：`errorHandler.ts` 新增 `CommandErrorCode` 联合类型 + `ALL_COMMAND_ERROR_CODES`（23 项），补上原先漏配的 `DOMAIN_RULE` hint；前端单测改为遍历该常量（长度锁 23 + 每个 code 必须有 💡）
+- **跨语言门禁**：新增 `tests-audit/audit_error_codes.py`（Rust 枚举 ↔ 前端联合类型集合 + 声明顺序），接入 `test-fast.sh [3.6/N]` 与 `test-all.sh`
+- **审计带 error.code**：`audit::error_kv(&CommandError)`（code / recoverable / err 三键）+ `write_event_with_error`；`audit_event!` 新增宏臂 `err => &expr`（自动展开三键，可再跟普通 kv）。模型循环里的失败出口（`llm.request_failed` / `llm.response` / `llm.stream_error` / `llm.stream_truncated` / `fuse_rounds`）与 `bot_log_read_fail` / `migration_log_read_fail` 全部带 code——`grep 'code=LLM_API_ERROR' bot.log` 即可统计失败分布
+- **工具调用审计补上下文**：新增 `bot::ToolCallTrace { turn, tool_call_id }`，模型循环按 (轮号, LLM 签发的 tool_call id) 下传；`tool.call` / `tool.return` / 早退事件（pre_execute.deny / skill_on_step_error）统一带 `session_id` / `turn` / `tool_call_id`（无上下文的值不写，不产生误导性的 turn=0）。新增入口 `execute_tool_traced`，`execute_tool` / `execute_tool_with_stop` 保持签名不变（scheduler 等零改动）
+- **路由命中入审计**：`RouteAction::audit_kv()`（action 短名 + detail），`middleware::run_pre_step` 命中即记 `middleware.route`（middleware / chain_pos / chain_len / action / detail）——可统计各中间件命中率、看清在哪一环短路（含 PassThrough，否则命中率分母失真）
+
+**测试**：Rust lib 新增 8 例（错误码 as_str↔serde 一致性、ALL 完整去重、error_kv 三键、审计行可按 code grep、trace_kv 有值才写 ×2、路由命中审计含短路位置、RouteAction::audit_kv 稳定口径）；`llm_integration` / `task_chat_exec` 的工具闭包补第三参；`errorHandler.test.ts` 改为常量驱动（23 code + DOMAIN_RULE）。门禁 `[3.6/N]` 已注入验证 fail 路径（集合差集报错文案）。
+
 ## 2026-09-14（周日）配置与凭据版本化 + 运行期文件收口 runtime/flags
 
 **动机**：keyring 存 key、bot-config.json 存配置的结构已稳定，但都缺「版本」这一层——配置结构变更只能靠逐字段 `#[serde(default)]` 兜底、keyring service 名（`wmessage-bot`）一旦要改 key 存储格式就得让用户重输 key；数据目录根还散着 4 个运行期文件。

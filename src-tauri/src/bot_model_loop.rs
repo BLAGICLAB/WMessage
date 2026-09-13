@@ -455,9 +455,9 @@ pub async fn run_model_loop(
     // 上轮遗留的 Completed/Failed/Terminated run 会在第 0 轮被 advance 短路（agent 假死根因）。
     // 位置与原核心内调用等价——都发生在进入轮循环之前。
     crate::bot_skills::clear_terminal_skill_runs(&app);
-    let execute_tool = |name: String, args: String| {
+    let execute_tool = |name: String, args: String, trace: crate::bot::ToolCallTrace| {
         let app = app.clone();
-        async move { crate::bot::execute_tool_with_stop(&app, &name, &args, Some(stop)).await }
+        async move { crate::bot::execute_tool_traced(&app, &name, &args, Some(stop), &trace).await }
     };
     let replan = |plan: crate::bot_plan::PlanState, reason: String| {
         let app = app.clone();
@@ -493,7 +493,7 @@ pub async fn run_model_loop_core<X, XP, R, RP>(
     replan: R,
 ) -> Result<(String, Vec<TaskRef>), CommandError>
 where
-    X: Fn(String, String) -> XP,
+    X: Fn(String, String, crate::bot::ToolCallTrace) -> XP,
     XP: std::future::Future<Output = (String, Vec<TaskRef>)>,
     R: Fn(crate::bot_plan::PlanState, String) -> RP,
     RP: std::future::Future<Output = Option<Vec<String>>>,
@@ -540,7 +540,7 @@ where
     // 上轮 streamed 文本快照：
     // AwaitConfirm/Finish/Fail/Terminate 跳出主循环时，返回 user 已看到的文本
     let mut last_streamed = String::new();
-    for _round in 0..max_rounds {
+    for round in 0..max_rounds {
         if stop.stopped() {
             let hint = skill_finish(false, "用户停止");
             return Ok((format!("⏹ 已停止{hint}"), collected_refs));
@@ -597,13 +597,14 @@ where
                 ) {
                     Ok(b) => b,
                     Err(e) => {
+                        let hint = skill_finish(false, "消息转换失败");
+                        let err: CommandError = format!("Anthropic 消息转换失败：{e}{hint}").into();
                         audit(
                             crate::audit::AuditLevel::Error,
                             "llm.request_failed",
-                            vec![("err", format!("Anthropic 消息转换失败：{e}"))],
+                            crate::audit::error_kv(&err),
                         );
-                        let hint = skill_finish(false, "消息转换失败");
-                        return Err(format!("Anthropic 消息转换失败：{e}{hint}").into());
+                        return Err(err);
                     }
                 }
             }
@@ -664,29 +665,28 @@ where
                         tokio::time::sleep(LLM_RETRY_DELAY).await;
                         continue;
                     }
-                    audit(
-                        crate::audit::AuditLevel::Error,
-                        "llm.request_failed",
-                        vec![("err", e.to_string())],
-                    );
                     let hint = skill_finish(false, "大模型请求失败");
-                    return Err(format!("请求大模型失败：{e}{hint}").into());
+                    let err: CommandError = format!("请求大模型失败：{e}{hint}").into();
+                    let mut kv = crate::audit::error_kv(&err);
+                    kv.push(("attempt", attempt.to_string()));
+                    audit(crate::audit::AuditLevel::Error, "llm.request_failed", kv);
+                    return Err(err);
                 }
             }
         };
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
-            audit(
-                crate::audit::AuditLevel::Warn,
-                "llm.response",
-                vec![("status", status.as_u16().to_string())],
-            );
             let hint = skill_finish(false, "大模型 API 错误");
-            return Err(CommandError::LlmApiError {
+            let err = CommandError::LlmApiError {
                 status: status.as_u16(),
                 body_preview: format!("{}{hint}", text.chars().take(300).collect::<String>()),
-            });
+            };
+            // 带 code 的失败审计：`grep 'code=LLM_API_ERROR'` 即可统计网关侧失败
+            let mut kv = crate::audit::error_kv(&err);
+            kv.push(("status", status.as_u16().to_string()));
+            audit(crate::audit::AuditLevel::Warn, "llm.response", kv);
+            return Err(err);
         }
         audit(
             crate::audit::AuditLevel::Info,
@@ -863,13 +863,14 @@ where
 
         // 200 流内错误载荷——显式报错 + 审计，不返回空白回复
         if let Some(err) = stream_error {
+            let hint = skill_finish(false, "大模型流内错误");
+            let e: CommandError = format!("大模型返回错误：{err}{hint}").into();
             audit(
                 crate::audit::AuditLevel::Error,
                 "llm.stream_error",
-                vec![("err", err.clone())],
+                crate::audit::error_kv(&e),
             );
-            let hint = skill_finish(false, "大模型流内错误");
-            return Err(format!("大模型返回错误：{err}{hint}").into());
+            return Err(e);
         }
 
         // 回合结束：冲刷思考缓冲（丢弃未闭合标签碎片）
@@ -894,22 +895,34 @@ where
         // 干净 EOF = 流被截断（中间代理 idle cut 等）。残缺 tool_calls 不得执行
         // （不能靠 parse_args 失败落 Null 侥幸兜底，要有显式防线）。
         if !saw_done_or_finish {
-            audit(
-                crate::audit::AuditLevel::Warn,
-                "llm.stream_truncated",
+            let trunc_kv = |tc: usize, text_len: usize| {
                 vec![
-                    ("tool_calls", tool_calls.len().to_string()),
-                    ("text_len", final_text.chars().count().to_string()),
-                ],
-            );
+                    ("tool_calls", tc.to_string()),
+                    ("text_len", text_len.to_string()),
+                ]
+            };
             if !tool_calls.is_empty() {
                 let hint = skill_finish(false, "流式响应中断");
-                return Err(format!("大模型响应中断（流被截断），工具调用未执行{hint}").into());
+                let err: CommandError =
+                    format!("大模型响应中断（流被截断），工具调用未执行{hint}").into();
+                let mut kv = crate::audit::error_kv(&err);
+                kv.extend(trunc_kv(tool_calls.len(), final_text.chars().count()));
+                audit(crate::audit::AuditLevel::Warn, "llm.stream_truncated", kv);
+                return Err(err);
             }
             if final_text.is_empty() {
                 let hint = skill_finish(false, "流式响应中断");
-                return Err(format!("大模型响应中断：未收到完整回复{hint}").into());
+                let err: CommandError = format!("大模型响应中断：未收到完整回复{hint}").into();
+                let mut kv = crate::audit::error_kv(&err);
+                kv.extend(trunc_kv(tool_calls.len(), final_text.chars().count()));
+                audit(crate::audit::AuditLevel::Warn, "llm.stream_truncated", kv);
+                return Err(err);
             }
+            audit(
+                crate::audit::AuditLevel::Warn,
+                "llm.stream_truncated",
+                trunc_kv(tool_calls.len(), final_text.chars().count()),
+            );
             final_text.push_str("\n\n⚠️ 响应可能被截断（连接提前结束），以上内容可能不完整。");
         }
 
@@ -1014,8 +1027,17 @@ where
                     SOFT_WARN_AT, MAX_FUNCTION_CALLS_PER_TURN
                 ));
             }
-            // 把 /stop 守卫透传给 execute_tool，run_python 在途可中断
-            let (result, refs) = execute_tool(name.clone(), args.clone()).await;
+            // 把 /stop 守卫透传给 execute_tool，run_python 在途可中断；
+            // turn + tool_call_id 一并下传，工具审计可按轮回放（见 bot::ToolCallTrace）
+            let (result, refs) = execute_tool(
+                name.clone(),
+                args.clone(),
+                crate::bot::ToolCallTrace {
+                    turn: Some(round),
+                    tool_call_id: Some(id.clone()),
+                },
+            )
+            .await;
             // 按执行结果置位——被门禁拦截/用户拒绝/执行失败的
             // 变更工具不算「动过手」，幻觉守卫对后续虚假汇报保持拦截能力
             if mutation_succeeded(name, &result) {
@@ -1132,13 +1154,12 @@ where
         last_streamed = final_text.clone();
     }
     // 轮数熔断补审计（单轮工具熔断已有 fuse 日志，对称留痕）
-    audit(
-        crate::audit::AuditLevel::Warn,
-        "fuse_rounds",
-        vec![("max_rounds", max_rounds.to_string())],
-    );
     let hint = skill_finish(false, "对话轮数超限");
-    Err(CommandError::Internal(format!("对话轮数超限{hint}")))
+    let err = CommandError::Internal(format!("对话轮数超限{hint}"));
+    let mut kv = crate::audit::error_kv(&err);
+    kv.push(("max_rounds", max_rounds.to_string()));
+    audit(crate::audit::AuditLevel::Warn, "fuse_rounds", kv);
+    Err(err)
 }
 
 // ────────────────────────────────────────────────────────────────────

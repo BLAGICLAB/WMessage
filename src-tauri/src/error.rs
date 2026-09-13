@@ -20,6 +20,132 @@
 use serde::ser::SerializeStruct;
 use serde::{Serialize, Serializer};
 
+/// 机器读错误码（CommandError::code() 的返回类型）。
+///
+/// 为什么是枚举而不是 `&str`：
+/// - **编译期可查**：拼错的 code 编译不过，字符串比较的沉默漂移消失；
+/// - **单一真相 + 协议一致性**：`#[serde(rename = "…")]` 就是线协议字符串，
+///   `as_str()` 与之由单测锁死（`as_str_matches_serde_rename_for_all_codes`）；
+/// - **前端 TS 可对齐**：`src/lib/errorHandler.ts` 的 `CommandErrorCode` 联合类型与
+///   `ALL_COMMAND_ERROR_CODES` 由 `tests-audit/audit_error_codes.py` 在提交门禁上核对。
+///
+/// 增删 code 的动作固定为三步：加变体 + 加 `ALL` 项 + 同步前端联合类型与 `hintForCode`；
+/// 漏任何一步都有测试/门禁拦下（Rust 侧 `all_codes_listed_and_unique`、
+/// 前端 `hintForCode 全覆盖`、跨语言 parity 脚本）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+pub enum CommandErrorCode {
+    #[serde(rename = "BOT_DISABLED")]
+    BotDisabled,
+    #[serde(rename = "API_KEY_MISSING")]
+    ApiKeyMissing,
+    #[serde(rename = "KEYRING_ERROR")]
+    KeyringError,
+    #[serde(rename = "HTTP_START_FAILED")]
+    HttpStartFailed,
+    #[serde(rename = "PORT_IN_USE")]
+    PortInUse,
+    #[serde(rename = "AUTH_MISSING")]
+    AuthMissing,
+    #[serde(rename = "AUTH_INVALID")]
+    AuthInvalid,
+    #[serde(rename = "PAYLOAD_TOO_LARGE")]
+    PayloadTooLarge,
+    #[serde(rename = "TASK_NOT_FOUND")]
+    TaskNotFound,
+    #[serde(rename = "TASK_INVALID_STATE")]
+    TaskInvalidState,
+    #[serde(rename = "INVALID_ARGUMENT")]
+    InvalidArgument,
+    #[serde(rename = "DB_ERROR")]
+    DbError,
+    #[serde(rename = "IO_ERROR")]
+    IoError,
+    #[serde(rename = "UNKNOWN_TOOL")]
+    UnknownTool,
+    #[serde(rename = "ATOMIC_TOOL_BLOCKED")]
+    AtomicToolBlocked,
+    #[serde(rename = "SKILL_LOAD_FAILED")]
+    SkillLoadFailed,
+    #[serde(rename = "SKILL_NOT_INSTALLED")]
+    SkillNotInstalled,
+    #[serde(rename = "LLM_REQUEST_FAILED")]
+    LlmRequestFailed,
+    #[serde(rename = "LLM_API_ERROR")]
+    LlmApiError,
+    #[serde(rename = "CONFIRM_TIMEOUT")]
+    ConfirmTimeout,
+    #[serde(rename = "CONFIRM_REJECTED")]
+    ConfirmRejected,
+    #[serde(rename = "DOMAIN_RULE")]
+    DomainRule,
+    #[serde(rename = "INTERNAL")]
+    Internal,
+}
+
+impl CommandErrorCode {
+    /// 全部 code（顺序与本枚举声明一致；审计统计 / 前端 parity 脚本的真相源）
+    pub const ALL: &'static [CommandErrorCode] = &[
+        Self::BotDisabled,
+        Self::ApiKeyMissing,
+        Self::KeyringError,
+        Self::HttpStartFailed,
+        Self::PortInUse,
+        Self::AuthMissing,
+        Self::AuthInvalid,
+        Self::PayloadTooLarge,
+        Self::TaskNotFound,
+        Self::TaskInvalidState,
+        Self::InvalidArgument,
+        Self::DbError,
+        Self::IoError,
+        Self::UnknownTool,
+        Self::AtomicToolBlocked,
+        Self::SkillLoadFailed,
+        Self::SkillNotInstalled,
+        Self::LlmRequestFailed,
+        Self::LlmApiError,
+        Self::ConfirmTimeout,
+        Self::ConfirmRejected,
+        Self::DomainRule,
+        Self::Internal,
+    ];
+
+    /// 线协议字符串（写日志 / 前端提示分流用；与 `#[serde(rename)]` 单测锁死）
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::BotDisabled => "BOT_DISABLED",
+            Self::ApiKeyMissing => "API_KEY_MISSING",
+            Self::KeyringError => "KEYRING_ERROR",
+            Self::HttpStartFailed => "HTTP_START_FAILED",
+            Self::PortInUse => "PORT_IN_USE",
+            Self::AuthMissing => "AUTH_MISSING",
+            Self::AuthInvalid => "AUTH_INVALID",
+            Self::PayloadTooLarge => "PAYLOAD_TOO_LARGE",
+            Self::TaskNotFound => "TASK_NOT_FOUND",
+            Self::TaskInvalidState => "TASK_INVALID_STATE",
+            Self::InvalidArgument => "INVALID_ARGUMENT",
+            Self::DbError => "DB_ERROR",
+            Self::IoError => "IO_ERROR",
+            Self::UnknownTool => "UNKNOWN_TOOL",
+            Self::AtomicToolBlocked => "ATOMIC_TOOL_BLOCKED",
+            Self::SkillLoadFailed => "SKILL_LOAD_FAILED",
+            Self::SkillNotInstalled => "SKILL_NOT_INSTALLED",
+            Self::LlmRequestFailed => "LLM_REQUEST_FAILED",
+            Self::LlmApiError => "LLM_API_ERROR",
+            Self::ConfirmTimeout => "CONFIRM_TIMEOUT",
+            Self::ConfirmRejected => "CONFIRM_REJECTED",
+            Self::DomainRule => "DOMAIN_RULE",
+            Self::Internal => "INTERNAL",
+        }
+    }
+}
+
+impl std::fmt::Display for CommandErrorCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// 命令错误统一枚举。每个变体对应一个稳定 code + 人类可读 message + recoverable 标志。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandError {
@@ -93,32 +219,33 @@ pub enum CommandError {
 }
 
 impl CommandError {
-    /// 机器读稳定 code（前端 switch / 监控统计用，不应改文案）
-    pub fn code(&self) -> &'static str {
+    /// 机器读稳定 code（前端 switch / 监控统计用，不应改文案）。
+    /// 返回枚举而非 `&str`：调用点编译期可查，拼写漂移不再可能。
+    pub fn code(&self) -> CommandErrorCode {
         match self {
-            Self::BotDisabled => "BOT_DISABLED",
-            Self::ApiKeyMissing => "API_KEY_MISSING",
-            Self::KeyringError(_) => "KEYRING_ERROR",
-            Self::HttpStartFailed { .. } => "HTTP_START_FAILED",
-            Self::PortInUse(_) => "PORT_IN_USE",
-            Self::AuthMissing => "AUTH_MISSING",
-            Self::AuthInvalid => "AUTH_INVALID",
-            Self::PayloadTooLarge => "PAYLOAD_TOO_LARGE",
-            Self::TaskNotFound(_) => "TASK_NOT_FOUND",
-            Self::TaskInvalidState { .. } => "TASK_INVALID_STATE",
-            Self::InvalidArgument { .. } => "INVALID_ARGUMENT",
-            Self::DbError(_) => "DB_ERROR",
-            Self::IoError(_) => "IO_ERROR",
-            Self::UnknownTool(_) => "UNKNOWN_TOOL",
-            Self::AtomicToolBlocked(_) => "ATOMIC_TOOL_BLOCKED",
-            Self::SkillLoadFailed { .. } => "SKILL_LOAD_FAILED",
-            Self::SkillNotInstalled(_) => "SKILL_NOT_INSTALLED",
-            Self::LlmRequestFailed(_) => "LLM_REQUEST_FAILED",
-            Self::LlmApiError { .. } => "LLM_API_ERROR",
-            Self::ConfirmTimeout => "CONFIRM_TIMEOUT",
-            Self::ConfirmRejected => "CONFIRM_REJECTED",
-            Self::DomainRule { .. } => "DOMAIN_RULE",
-            Self::Internal(_) => "INTERNAL",
+            Self::BotDisabled => CommandErrorCode::BotDisabled,
+            Self::ApiKeyMissing => CommandErrorCode::ApiKeyMissing,
+            Self::KeyringError(_) => CommandErrorCode::KeyringError,
+            Self::HttpStartFailed { .. } => CommandErrorCode::HttpStartFailed,
+            Self::PortInUse(_) => CommandErrorCode::PortInUse,
+            Self::AuthMissing => CommandErrorCode::AuthMissing,
+            Self::AuthInvalid => CommandErrorCode::AuthInvalid,
+            Self::PayloadTooLarge => CommandErrorCode::PayloadTooLarge,
+            Self::TaskNotFound(_) => CommandErrorCode::TaskNotFound,
+            Self::TaskInvalidState { .. } => CommandErrorCode::TaskInvalidState,
+            Self::InvalidArgument { .. } => CommandErrorCode::InvalidArgument,
+            Self::DbError(_) => CommandErrorCode::DbError,
+            Self::IoError(_) => CommandErrorCode::IoError,
+            Self::UnknownTool(_) => CommandErrorCode::UnknownTool,
+            Self::AtomicToolBlocked(_) => CommandErrorCode::AtomicToolBlocked,
+            Self::SkillLoadFailed { .. } => CommandErrorCode::SkillLoadFailed,
+            Self::SkillNotInstalled(_) => CommandErrorCode::SkillNotInstalled,
+            Self::LlmRequestFailed(_) => CommandErrorCode::LlmRequestFailed,
+            Self::LlmApiError { .. } => CommandErrorCode::LlmApiError,
+            Self::ConfirmTimeout => CommandErrorCode::ConfirmTimeout,
+            Self::ConfirmRejected => CommandErrorCode::ConfirmRejected,
+            Self::DomainRule { .. } => CommandErrorCode::DomainRule,
+            Self::Internal(_) => CommandErrorCode::Internal,
         }
     }
 
@@ -213,7 +340,7 @@ impl Serialize for CommandError {
         S: Serializer,
     {
         let mut state = serializer.serialize_struct("CommandError", 3)?;
-        state.serialize_field("code", self.code())?;
+        state.serialize_field("code", &self.code())?;
         state.serialize_field("message", &self.message())?;
         state.serialize_field("recoverable", &self.is_recoverable())?;
         state.end()
@@ -275,12 +402,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn code_is_stable_string() {
-        assert_eq!(CommandError::BotDisabled.code(), "BOT_DISABLED");
-        assert_eq!(CommandError::ApiKeyMissing.code(), "API_KEY_MISSING");
+    fn code_is_stable_enum() {
+        assert_eq!(
+            CommandError::BotDisabled.code(),
+            CommandErrorCode::BotDisabled
+        );
+        assert_eq!(
+            CommandError::ApiKeyMissing.code(),
+            CommandErrorCode::ApiKeyMissing
+        );
         assert_eq!(
             CommandError::TaskNotFound("x".into()).code(),
-            "TASK_NOT_FOUND"
+            CommandErrorCode::TaskNotFound
         );
         assert_eq!(
             CommandError::SkillLoadFailed {
@@ -288,8 +421,89 @@ mod tests {
                 reason: "missing".into()
             }
             .code(),
-            "SKILL_LOAD_FAILED"
+            CommandErrorCode::SkillLoadFailed
         );
+    }
+
+    /// 协议锁：as_str() 与 #[serde(rename = "…")] 必须逐字一致。
+    /// 两处字符串重复是刻意的（serde 不能从 as_str 反推），本测钉死不许漂移。
+    #[test]
+    fn as_str_matches_serde_rename_for_all_codes() {
+        for code in CommandErrorCode::ALL {
+            let wire = serde_json::to_value(code).unwrap();
+            assert_eq!(
+                wire,
+                serde_json::json!(code.as_str()),
+                "code {code:?} 的 serde rename 与 as_str 不一致"
+            );
+            // Display 与 as_str 同源
+            assert_eq!(code.to_string(), code.as_str());
+        }
+    }
+
+    /// ALL 必须无重复且覆盖枚举每一个变体（漏登记会让前端 parity 脚本静默放过）
+    #[test]
+    fn all_codes_listed_and_unique() {
+        let mut seen: Vec<&'static str> =
+            CommandErrorCode::ALL.iter().map(|c| c.as_str()).collect();
+        seen.sort_unstable();
+        let mut deduped = seen.clone();
+        deduped.dedup();
+        assert_eq!(seen, deduped, "CommandErrorCode::ALL 存在重复项");
+
+        // 逐变体取 code() 必须都能在 ALL 里找到
+        let every: Vec<CommandErrorCode> = vec![
+            CommandError::BotDisabled.code(),
+            CommandError::ApiKeyMissing.code(),
+            CommandError::KeyringError("x".into()).code(),
+            CommandError::HttpStartFailed {
+                port: 1,
+                reason: "x".into(),
+            }
+            .code(),
+            CommandError::PortInUse(1).code(),
+            CommandError::AuthMissing.code(),
+            CommandError::AuthInvalid.code(),
+            CommandError::PayloadTooLarge.code(),
+            CommandError::TaskNotFound("x".into()).code(),
+            CommandError::TaskInvalidState { reason: "x".into() }.code(),
+            CommandError::InvalidArgument {
+                field: "f".into(),
+                value: "v".into(),
+                reason: "r".into(),
+            }
+            .code(),
+            CommandError::DbError("x".into()).code(),
+            CommandError::IoError("x".into()).code(),
+            CommandError::UnknownTool("x".into()).code(),
+            CommandError::AtomicToolBlocked("x".into()).code(),
+            CommandError::SkillLoadFailed {
+                name: "n".into(),
+                reason: "r".into(),
+            }
+            .code(),
+            CommandError::SkillNotInstalled("x".into()).code(),
+            CommandError::LlmRequestFailed("x".into()).code(),
+            CommandError::LlmApiError {
+                status: 500,
+                body_preview: "x".into(),
+            }
+            .code(),
+            CommandError::ConfirmTimeout.code(),
+            CommandError::ConfirmRejected.code(),
+            CommandError::DomainRule {
+                domain: "d".into(),
+                reason: "r".into(),
+            }
+            .code(),
+            CommandError::Internal("x".into()).code(),
+        ];
+        for code in every {
+            assert!(
+                CommandErrorCode::ALL.contains(&code),
+                "code {code:?} 未登记进 CommandErrorCode::ALL"
+            );
+        }
     }
 
     #[test]
@@ -359,7 +573,7 @@ mod tests {
         let err = CommandError::TaskInvalidState {
             reason: "该任务卡正在执行中，请等待完成后再触发".into(),
         };
-        assert_eq!(err.code(), "TASK_INVALID_STATE");
+        assert_eq!(err.code(), CommandErrorCode::TaskInvalidState);
         assert!(err.is_recoverable(), "业务状态拒绝应可由用户修正后重试");
         assert!(err.message().contains("执行中"));
         let json = serde_json::to_string(&err).unwrap();
@@ -371,7 +585,7 @@ mod tests {
     fn from_io_error_maps_correctly() {
         let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file missing");
         let cmd_err: CommandError = io_err.into();
-        assert_eq!(cmd_err.code(), "IO_ERROR");
+        assert_eq!(cmd_err.code(), CommandErrorCode::IoError);
         assert!(cmd_err.message().contains("file missing"));
     }
 
@@ -383,7 +597,7 @@ mod tests {
         let result: Result<(), CommandError> =
             Err(kr_err).map_err(|e| CommandError::KeyringError(e.to_string()));
         let cmd_err = result.unwrap_err();
-        assert_eq!(cmd_err.code(), "KEYRING_ERROR");
+        assert_eq!(cmd_err.code(), CommandErrorCode::KeyringError);
         assert!(!cmd_err.message().is_empty(), "message 应非空");
     }
 
@@ -396,7 +610,7 @@ mod tests {
             domain: "skill".to_string(),
             reason: "技能已暂停".to_string(),
         };
-        assert_eq!(err.code(), "DOMAIN_RULE");
+        assert_eq!(err.code(), CommandErrorCode::DomainRule);
     }
 
     #[test]

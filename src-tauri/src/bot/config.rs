@@ -1307,8 +1307,14 @@ pub fn bot_log_read(app: AppHandle, limit: Option<usize>) -> CommandResult<Strin
     match read_log_tail(&p, limit) {
         Ok(s) => Ok(s),
         Err(e) => {
-            let msg = e.message();
-            crate::audit::write_error_audit(&app, "bot_log_read_fail", &[("err", msg.as_str())]);
+            // 带 code 写审计（err => 宏臂自动展开 code/recoverable/err）：
+            // `grep 'code=IO_ERROR' bot.log` 可直接统计读取失败
+            crate::audit_event!(
+                &app,
+                crate::audit::AuditLevel::Error,
+                "bot_log_read_fail",
+                err => &e
+            );
             Err(e)
         }
     }
@@ -1541,7 +1547,7 @@ mod f1_keyring_tests {
     fn read_api_key_keyring_failure_maps_to_keyring_error_variant() {
         // keyring 故障（钥匙串锁定/权限拒绝）→ KeyringError 结构化变体，不走 String 逃生舱
         let err = classify_get_password(Err(platform_failure())).unwrap_err();
-        assert_eq!(err.code(), "KEYRING_ERROR");
+        assert_eq!(err.code(), crate::error::CommandErrorCode::KeyringError);
         assert!(err.message().contains("读取 API Key 失败"));
         // error.rs 定义：KeyringError recoverable=false（用户需先解锁 keychain，重试无意义）
         assert!(!err.is_recoverable());
@@ -1564,7 +1570,7 @@ mod f1_keyring_tests {
     fn has_api_key_keyring_failure_not_swallowed_to_false() {
         // keyring 真实故障不得吞成 false（「反复填 key 仍失败无提示」假象）
         let err = classify_has_key(Err(platform_failure())).unwrap_err();
-        assert_eq!(err.code(), "KEYRING_ERROR");
+        assert_eq!(err.code(), crate::error::CommandErrorCode::KeyringError);
         assert!(err.message().contains("检查 API Key 失败"));
     }
 
@@ -1618,7 +1624,7 @@ mod p2_32_keyring_fallback_tests {
         assert!(!has_api_key_at(KeyBackend::PlaintextFile, &f, KeySlot::Llm).unwrap());
         // read：缺失 → KeyringError（与 System 路径 NoEntry 同 code，前端 hint 一致）
         let e = read_api_key_at(KeyBackend::PlaintextFile, &f, KeySlot::Llm).unwrap_err();
-        assert_eq!(e.code(), "KEYRING_ERROR");
+        assert_eq!(e.code(), crate::error::CommandErrorCode::KeyringError);
         // write → 文件落盘 + Unix 0600（与 api-token.txt 同策略）
         write_api_key_at(KeyBackend::PlaintextFile, &f, "sk-test-123", KeySlot::Llm).unwrap();
         #[cfg(unix)]
@@ -1802,7 +1808,7 @@ mod f3_log_read_tests {
         // 路径是目录 → read_to_string 失败（非 NotFound）→ Err(IoError)，不静默吞
         let tmp = tempfile::tempdir().unwrap();
         let err = read_log_tail(tmp.path(), None).unwrap_err();
-        assert_eq!(err.code(), "IO_ERROR");
+        assert_eq!(err.code(), crate::error::CommandErrorCode::IoError);
         assert!(!err.is_recoverable());
     }
 

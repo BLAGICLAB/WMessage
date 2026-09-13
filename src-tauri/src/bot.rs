@@ -112,7 +112,7 @@ pub(crate) use config::{
 
 // ──────────────────── dispatch re-export ────────────────────
 pub(crate) use dispatch::parse_args;
-pub use dispatch::{execute_tool, execute_tool_with_stop};
+pub use dispatch::{execute_tool, execute_tool_traced, execute_tool_with_stop, ToolCallTrace};
 
 // ──────────────────── tools re-export ────────────────────
 pub use tools::{apply_files_to_task, broadcast_after_mutation};

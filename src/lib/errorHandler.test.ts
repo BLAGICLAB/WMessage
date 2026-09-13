@@ -1,6 +1,6 @@
 // hint 与后端 is_recoverable() 对齐 + recoverable 驱动重试 UI
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { handleCommandError } from "./errorHandler";
+import { handleCommandError, ALL_COMMAND_ERROR_CODES } from "./errorHandler";
 
 /** 构造一个 CommandErrorPayload 形状的对象 */
 const ce = (code: string, recoverable: boolean, message = "出错了") => ({
@@ -126,30 +126,20 @@ describe("空 message 兜底（P2-35）", () => {  let alertSpy: ReturnType<type
   });
 });
 
-describe("hintForCode 全覆盖（批次7审计 P2-2）", () => {
+describe("hintForCode 全覆盖（每个 code 必须有专属 hint）", () => {
   let alertSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     alertSpy = vi.spyOn(window, "alert").mockImplementation(() => {});
   });
 
-  // 与 src-tauri/src/error.rs 的 22 个 code 一一对应——后端加新 code 时
-  // 本测试迫使前端同步补 hint（防再次出现 TASK_INVALID_STATE 落默认分支）
-  const ALL_CODES = [
-    "BOT_DISABLED", "API_KEY_MISSING", "KEYRING_ERROR",
-    "HTTP_START_FAILED", "PORT_IN_USE",
-    "AUTH_MISSING", "AUTH_INVALID", "PAYLOAD_TOO_LARGE",
-    "TASK_NOT_FOUND", "TASK_INVALID_STATE", "INVALID_ARGUMENT",
-    "DB_ERROR", "IO_ERROR",
-    "UNKNOWN_TOOL", "ATOMIC_TOOL_BLOCKED",
-    "SKILL_LOAD_FAILED", "SKILL_NOT_INSTALLED",
-    "LLM_REQUEST_FAILED", "LLM_API_ERROR",
-    "CONFIRM_TIMEOUT", "CONFIRM_REJECTED",
-    "INTERNAL",
-  ];
-
-  it("全部 22 个 code 都有专属 hint（💡 行），无 code 落默认分支", () => {
-    for (const code of ALL_CODES) {
+  // code 全集来自 errorHandler.ts 的 ALL_COMMAND_ERROR_CODES——它与 Rust
+  // CommandErrorCode 由 tests-audit/audit_error_codes.py 跨语言对齐。
+  // 后端加新 code 时这里自动跟上，本测试迫使前端同步补 hint
+  //（防再次出现 TASK_INVALID_STATE 落默认分支的漏配）。
+  it("ALL_COMMAND_ERROR_CODES 全部有专属 hint（💡 行），无 code 落默认分支", () => {
+    expect(ALL_COMMAND_ERROR_CODES.length).toBe(23);
+    for (const code of ALL_COMMAND_ERROR_CODES) {
       alertSpy.mockClear();
       handleCommandError(ce(code, false));
       expect(alertSpy).toHaveBeenCalledTimes(1);
@@ -162,5 +152,12 @@ describe("hintForCode 全覆盖（批次7审计 P2-2）", () => {
     handleCommandError(ce("TASK_INVALID_STATE", true, "任务状态不允许该操作：…"));
     const text = alertSpy.mock.calls[0][0] as string;
     expect(text).toContain("任务当前状态不允许该操作");
+  });
+
+  it("DOMAIN_RULE hint 给出「按提示调整后重试」指引", () => {
+    handleCommandError(ce("DOMAIN_RULE", true, "[web] 已拒绝访问本机/内网地址"));
+    const text = alertSpy.mock.calls[0][0] as string;
+    expect(text).toContain("💡");
+    expect(text).toContain("按提示调整后重试");
   });
 });

@@ -18,7 +18,7 @@ mod mock_llm_shared {
 use mock_llm_shared::{MockBehavior, MockLlmServer, ToolCallResponse};
 use wmessage_lib::bot::{
     noop_replan, run_model_loop_core, ApiProvider, AuditLevel, LlmHttp, ModelLoopDeps, StopGuard,
-    TaskRef, DEFAULT_MAX_TOKENS,
+    TaskRef, ToolCallTrace, DEFAULT_MAX_TOKENS,
 };
 use wmessage_lib::bot_chat::{chat_guard_is_held, run_task_in_chat_with, TaskExecOrigin};
 
@@ -143,7 +143,7 @@ async fn run_task_in_chat_full_chain_manual_origin() {
             };
             // 工具执行替身：execute_tool 的 AppHandle(Wry) 链路不在 mock runtime 下可调，
             // 这里按 complete_task 语义直写同一个库（列 → done），验证回写通路
-            let exec = move |name: String, _args: String| {
+            let exec = move |name: String, _args: String, _trace: ToolCallTrace| {
                 let handle4 = handle3.clone();
                 let task_id = task_id.clone();
                 async move {

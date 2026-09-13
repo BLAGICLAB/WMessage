@@ -11,9 +11,9 @@ src-tauri/src/
 ├── app_state.rs (255)   运行期全局状态单一入口 `AppState`（lib.rs setup `app.manage` 注入）：
 │                        8 张执行期表 + 「全局状态总表」文档；详见 §2.1
 ├── consts.rs            前后端共享常量（app_consts 命令）
-├── error.rs             CommandError 结构化错误（code/message/recoverable），全命令统一
+├── error.rs             CommandError 结构化错误（code=CommandErrorCode 枚举/message/recoverable），全命令统一
 ├── paths.rs             数据目录解析 + 便携模式判定
-├── audit.rs             审计事件写 bot.log（audit_event! 宏、write_event）
+├── audit.rs             审计事件写 bot.log（audit_event! 宏、write_event、error_kv 带 code）
 ├── mutation.rs          任务变更来源枚举 MutationOrigin（Bot/Api/Widget…），tasks-updated 事件分流
 │
 │─ 数据层
@@ -101,7 +101,7 @@ src-tauri/src/
 | `RouteAction` / `IntentRule` | intent_router.rs:23 / :100 |
 | `TaskStore` trait / `MemStore` / `TauriStore` | api.rs:30 / :48 / :95 |
 | `Task` / `Subtask` / `TaskFile` / `BotSession` | db.rs:32 / :13 / :22 / :544 |
-| `CommandError` / `CommandResult` | error.rs:25 |
+| `CommandError` / `CommandErrorCode` / `CommandResult` | error.rs:151 / :36 |
 | `ChatMsg` / `TaskRef` / `BotChatResult` / `TaskExecOrigin` | bot_chat.rs:35 / :458 / :466 / :1151 |
 | `BotConfig` / `ApiProvider` / `PermMode` / `KeySlot` | bot/config.rs:63 / :203 / :331 / :28 |
 | `LlmHttp` / `ModelLoopDeps` / `ParsedChunk` | bot_model_loop.rs:363 / :380 / :146 |
@@ -154,7 +154,9 @@ src-tauri/src/
      → run_model_loop_core 循环：
          SSE 流式请求（OpenAI，或经 bot_anthropic 转 Anthropic /v1/messages）
          流式片段 emit bot-chat-delta 事件给前端
-         模型返回 tool_calls → bot::execute_tool → execute_tool_impl   [bot/dispatch.rs]
+         模型返回 tool_calls → bot::execute_tool_traced → execute_tool_impl   [bot/dispatch.rs]
+             （turn + tool_call_id 随调用下传：tool.call / tool.return / 早退事件都带
+               session_id / turn / tool_call_id，可按轮或按 id 整轮回放）
              前置 middleware::run_pre_execute（原子黑名单已清空，拦截改由工具内部按
                  session 上下文判：is_task_execution_flow / is_skill_active）+ skill_on_step 钩子
              **TOOLS_TABLE 查表**分发 29 个工具（bot/registry.rs 单一来源）：

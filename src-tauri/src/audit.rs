@@ -35,6 +35,34 @@ pub(crate) fn escape_for_log(s: &str, max: usize) -> String {
 /// kv 值写入日志前的长度上限
 const KV_VALUE_MAX: usize = 500;
 
+/// CommandError → 审计标准三键：`code` / `recoverable` / `err`。
+///
+/// 用途：bot.log 里失败事件带机器可读 code（`grep 'code=LLM_API_ERROR'` 即可统计失败分布），
+/// 不必再解析人读文案。核心模型循环拿不到 AppHandle（审计走注入回调），
+/// 所以这里提供 kv 级 helper，与 `write_event_with_error` / `audit_event!(..., err => &e)`
+/// 共用同一份拼装，避免两条路径的键名 drift。
+pub fn error_kv(err: &crate::error::CommandError) -> Vec<(&'static str, String)> {
+    vec![
+        ("code", err.code().as_str().to_string()),
+        ("recoverable", err.is_recoverable().to_string()),
+        ("err", err.message()),
+    ]
+}
+
+/// 带 CommandError 的结构化审计事件：标准三键 + 调用方附加 kv。
+/// `audit_event!(app, level, "evt", err => &e, "k" => v)` 宏臂直接扩到这里。
+pub fn write_event_with_error<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    level: AuditLevel,
+    event: &str,
+    err: &crate::error::CommandError,
+    extra_kv: &[(&str, String)],
+) {
+    let mut kv = error_kv(err);
+    kv.extend(extra_kv.iter().map(|(k, v)| (*k, v.clone())));
+    write_event(app, level, event, &kv);
+}
+
 /// 拼装 kv 段（write_event 与 format_event_line 共用）：值统一过 escape_for_log，
 /// 防用户输入 / 工具输出里的 `\n` / `|` 伪造日志行。
 /// 键保持原样（调用方均为硬编码字面量）。
@@ -325,8 +353,18 @@ pub(crate) fn write_warn_audit_to(dir: &std::path::Path, event: &str, kv: &[(&st
 /// 用法：
 ///   audit_event!(app, AuditLevel::Info, "tool_done",
 ///       "tool" => "list_tasks", "ms" => 4u64, "refs" => 3usize);
+///
+/// 带 CommandError 的形态（自动展开 `code` / `recoverable` / `err` 三键）：
+///   audit_event!(app, AuditLevel::Error, "llm.request_failed", err => &e, "attempt" => 2u32);
+/// 注意 `err` 是关键字位上的标识符，普通 kv 键都是字符串字面量，两条宏臂不会混淆；
+/// 但请勿用裸标识符 `err` 当普通 kv 键（会命中本臂）。
 #[macro_export]
 macro_rules! audit_event {
+    ($app:expr, $level:expr, $event:expr, err => $err:expr $(, $k:expr => $v:expr)* $(,)?) => {
+        $crate::audit::write_event_with_error($app, $level, $event, $err, &[
+            $(($k, format!("{}", $v))),*
+        ])
+    };
     ($app:expr, $level:expr, $event:expr $(, $k:expr => $v:expr)* $(,)?) => {
         $crate::audit::write_event($app, $level, $event, &[
             $(($k, format!("{}", $v))),*
@@ -588,5 +626,38 @@ mod tests {
             let via_build = build_event_line("TIMESTAMP", level, event, &kv);
             assert_eq!(via_format, via_build, "kv={kv:?}");
         }
+    }
+
+    // ── CommandError → 审计三键（code / recoverable / err）：bot.log 可按 code grep 统计 ──
+
+    fn kv_get<'a>(kv: &'a [(&'static str, String)], key: &str) -> Option<&'a str> {
+        kv.iter().find(|(k, _)| *k == key).map(|(_, v)| v.as_str())
+    }
+
+    #[test]
+    fn error_kv_carries_code_recoverable_and_message() {
+        let err = crate::error::CommandError::LlmApiError {
+            status: 502,
+            body_preview: "bad gateway".into(),
+        };
+        let kv = error_kv(&err);
+        assert_eq!(kv_get(&kv, "code"), Some("LLM_API_ERROR"));
+        assert_eq!(kv_get(&kv, "recoverable"), Some("true"));
+        assert!(
+            kv_get(&kv, "err").unwrap().contains("502"),
+            "err 应带人读信息: {kv:?}"
+        );
+    }
+
+    #[test]
+    fn error_event_line_is_greppable_by_code() {
+        // 走生产同一份拼装（build_event_line）：行里必然出现 `code=INTERNAL`
+        let err = crate::error::CommandError::Internal("boom".into());
+        let kv = error_kv(&err);
+        let kv_refs: Vec<(&str, &str)> = kv.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        let line = build_event_line("TIMESTAMP", AuditLevel::Error, "tool.return", &kv_refs);
+        assert!(line.contains("ERROR | tool.return"), "{line}");
+        assert!(line.contains("code=INTERNAL"), "{line}");
+        assert!(line.contains("recoverable=false"), "{line}");
     }
 }

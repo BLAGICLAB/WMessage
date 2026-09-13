@@ -1873,7 +1873,7 @@ mod command_error_mapping_tests {
     fn bot_disabled_maps_to_dedicated_variant() {
         let err = require_bot_enabled(false).expect_err("关闭时应返回 Err");
         assert_eq!(err, CommandError::BotDisabled, "应为 BotDisabled 专用变体");
-        assert_eq!(err.code(), "BOT_DISABLED");
+        assert_eq!(err.code(), crate::error::CommandErrorCode::BotDisabled);
         assert!(
             err.is_recoverable(),
             "BotDisabled 应可恢复（引导去设置页开启）"
@@ -1888,7 +1888,7 @@ mod command_error_mapping_tests {
         for empty in ["", "   ", "\n\t "] {
             let err = require_api_key(empty).expect_err("空 key 应返回 Err");
             assert_eq!(err, CommandError::ApiKeyMissing, "输入 {empty:?}");
-            assert_eq!(err.code(), "API_KEY_MISSING");
+            assert_eq!(err.code(), crate::error::CommandErrorCode::ApiKeyMissing);
             assert!(
                 err.is_recoverable(),
                 "ApiKeyMissing 应可恢复（去设置页填 key）"

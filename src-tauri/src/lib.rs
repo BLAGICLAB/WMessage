@@ -595,7 +595,7 @@ mod f2_copy_file_tests {
         let err = helper
             .map_err(crate::error::CommandError::from)
             .unwrap_err();
-        assert_eq!(err.code(), "INTERNAL");
+        assert_eq!(err.code(), crate::error::CommandErrorCode::Internal);
         assert!(err.message().contains("打开剪贴板失败"));
     }
 }

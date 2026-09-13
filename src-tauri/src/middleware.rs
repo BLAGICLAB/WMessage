@@ -74,9 +74,28 @@ impl MiddlewareRegistry {
         app: &tauri::AppHandle<R>,
         input: &str,
     ) -> Option<RouteAction> {
-        for m in &self.pre_step {
+        for (pos, m) in self.pre_step.iter().enumerate() {
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| m.pre_step(input))) {
-                Ok(Some(action)) => return Some(action),
+                Ok(Some(action)) => {
+                    // 路由命中审计：中间件名 + 短路位置 + action 种类/细节。
+                    // 用途：统计各中间件命中率，并看出到底在哪一环短路
+                    // （pos 越大说明前面几个中间件都返回了 None）。
+                    let (kind, detail) = action.audit_kv();
+                    crate::audit::write_event(
+                        app,
+                        crate::audit::AuditLevel::Info,
+                        "middleware.route",
+                        &[
+                            ("hook", "pre_step".to_string()),
+                            ("middleware", m.name().to_string()),
+                            ("chain_pos", pos.to_string()),
+                            ("chain_len", self.pre_step.len().to_string()),
+                            ("action", kind.to_string()),
+                            ("detail", detail),
+                        ],
+                    );
+                    return Some(action);
+                }
                 Ok(None) => {}
                 Err(payload) => {
                     let msg = panic_message(payload);
@@ -577,5 +596,61 @@ mod tests {
             log.contains("bomber pre_step boom"),
             "panic 信息应入审计: {log}"
         );
+    }
+
+    // ── 路由命中审计：中间件名 + 短路位置 + action（命中率/短路位置可统计）──
+
+    #[test]
+    fn route_hit_is_audited_with_chain_position_and_action() {
+        struct Miss;
+        impl Middleware for Miss {
+            fn name(&self) -> &str {
+                "miss_first"
+            }
+            fn pre_step(&self, _input: &str) -> Option<RouteAction> {
+                None
+            }
+            fn pre_execute(&self, _n: &str, _a: bool) -> Option<String> {
+                None
+            }
+        }
+        let case_tag = uuid::Uuid::new_v4().simple().to_string();
+        struct Hit(String);
+        impl Middleware for Hit {
+            fn name(&self) -> &str {
+                "hit_second"
+            }
+            fn pre_step(&self, _input: &str) -> Option<RouteAction> {
+                Some(RouteAction::Skill(format!("probe_skill_{}", self.0)))
+            }
+            fn pre_execute(&self, _n: &str, _a: bool) -> Option<String> {
+                None
+            }
+        }
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let mut r = MiddlewareRegistry::default();
+        r.register_pre_step(Box::new(Miss));
+        r.register_pre_step(Box::new(Hit(case_tag.clone())));
+        assert!(matches!(
+            r.run_pre_step(&handle, "x"),
+            Some(RouteAction::Skill(_))
+        ));
+        let log = std::fs::read_to_string(crate::paths::probe_log_dir(&handle).join("bot.log"))
+            .unwrap_or_default();
+        // 只对本用例生成的唯一技能名断言，避免与并行用例的 bot.log 写入互相干扰
+        let line = log
+            .lines()
+            .find(|l| {
+                l.contains("middleware.route") && l.contains(&format!("probe_skill_{case_tag}"))
+            })
+            .unwrap_or_else(|| panic!("缺 middleware.route 审计行: {log}"));
+        assert!(line.contains("middleware=hit_second"), "{line}");
+        assert!(
+            line.contains("chain_pos=1"),
+            "短路位置应为 1（前面 miss_first 放过）: {line}"
+        );
+        assert!(line.contains("chain_len=2"), "{line}");
+        assert!(line.contains("action=skill"), "{line}");
     }
 }

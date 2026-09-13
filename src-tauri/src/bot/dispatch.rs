@@ -13,6 +13,40 @@ use crate::bot::tools::files_audit_kv;
 
 // ───────────────────────── 工具调度核心（execute_tool dispatch） ─────────────────────────
 
+/// 工具调用审计上下文（模型循环 → dispatch）：一次调用的「可整轮回放」标识。
+///
+/// - `turn`：第几轮模型循环（0 起）——同一轮的多个 tool_call 归到一组，出问题整轮复现
+/// - `tool_call_id`：LLM 签发的 tool_call id（回填 tool 消息用的那个）。服务端日志、
+///   前端 `bot-tool` / `bot-tool-done` 事件同 id，按 id 即可对齐一条调用全链路
+///
+/// `session_id` 不放进本结构：dispatch 本来就从 stop / 形参拿到（见 `execute_tool_impl`），
+/// 两处来源会漂移。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ToolCallTrace {
+    pub turn: Option<usize>,
+    pub tool_call_id: Option<String>,
+}
+
+/// 审计 kv：trace 里有值的字段才写。
+/// scheduler 等无模型循环上下文的调用方不传 trace——不产生误导性的 `turn=0`；
+/// `session_id` 恒写（没有就是 `-`），便于按会话 grep。
+fn trace_kv(trace: &ToolCallTrace, session_id: Option<&str>) -> Vec<(&'static str, String)> {
+    let mut kv: Vec<(&'static str, String)> = vec![(
+        "session_id",
+        session_id
+            .filter(|s| !s.is_empty())
+            .unwrap_or("-")
+            .to_string(),
+    )];
+    if let Some(turn) = trace.turn {
+        kv.push(("turn", turn.to_string()));
+    }
+    if let Some(id) = trace.tool_call_id.as_deref().filter(|s| !s.is_empty()) {
+        kv.push(("tool_call_id", id.to_string()));
+    }
+    kv
+}
+
 /// 早退路径（pre_execute 拦截 / skill_on_step 熔断）的审计事件序列。
 /// `tool.call` 已在入口发出，这里按写入顺序补齐后续事件并以 `tool.return` 配平，
 /// 否则统计面板出现「悬挂调用」（call > return）。
@@ -20,38 +54,46 @@ use crate::bot::tools::files_audit_kv;
 /// 与 skill_e2e.rs 注释记录的「泛型化重构暂缓」一致）；调用点只负责逐条 emit。
 /// - 拦截路径（err=None）：pre_execute.deny + tool.return(reason=denied)
 /// - 熔断路径（err=Some）：skill_on_step_error（补 Warn 可见性）+ tool.return(reason=skill_step_failed)
+/// 两条路径都带 trace（session_id / turn / tool_call_id），与正常路径同口径。
 fn early_return_events(
     name: &str,
     reason: &str,
     dur_ms: u64,
     err: Option<&str>,
+    session_id: Option<&str>,
+    trace: &ToolCallTrace,
 ) -> Vec<(
     crate::audit::AuditLevel,
     &'static str,
     Vec<(&'static str, String)>,
 )> {
+    let ctx = trace_kv(trace, session_id);
+    let with_ctx = |mut kv: Vec<(&'static str, String)>| {
+        kv.extend(ctx.iter().cloned());
+        kv
+    };
     let mut events = Vec::with_capacity(2);
     match err {
         Some(e) => events.push((
             crate::audit::AuditLevel::Warn,
             "skill_on_step_error",
-            vec![("tool", name.to_string()), ("err", e.to_string())],
+            with_ctx(vec![("tool", name.to_string()), ("err", e.to_string())]),
         )),
         None => events.push((
             crate::audit::AuditLevel::Warn,
             "pre_execute.deny",
-            vec![("tool", name.to_string())],
+            with_ctx(vec![("tool", name.to_string())]),
         )),
     }
     events.push((
         crate::audit::AuditLevel::Warn,
         "tool.return",
-        vec![
+        with_ctx(vec![
             ("tool", name.to_string()),
             ("reason", reason.to_string()),
             ("exit_code", "none".to_string()),
             ("duration_ms", dur_ms.to_string()),
-        ],
+        ]),
     ));
     events
 }
@@ -67,7 +109,16 @@ pub async fn execute_tool(
     args: &str,
     session_id: Option<&str>,
 ) -> (String, Vec<crate::bot_chat::TaskRef>) {
-    execute_tool_impl(app, name, args, None, true, session_id).await
+    execute_tool_impl(
+        app,
+        name,
+        args,
+        None,
+        true,
+        session_id,
+        &ToolCallTrace::default(),
+    )
+    .await
 }
 
 /// execute_tool 的可停止版本：携带 /stop 守卫，run_python 等长耗时工具
@@ -78,11 +129,34 @@ pub async fn execute_tool_with_stop(
     args: &str,
     stop: Option<&crate::bot_slash::StopGuard>,
 ) -> (String, Vec<crate::bot_chat::TaskRef>) {
-    // 会话隔离：交互属性与会话归属从 StopGuard 取（无守卫 = 后台调度器路径
-    // 不会出现——调度器走 run_task_in_chat 也持 StopGuard；None 仅 DSL 调度器遗留路径）
+    traced_impl(app, name, args, stop, &ToolCallTrace::default()).await
+}
+
+/// 带模型循环上下文的版本：turn / tool_call_id 进 `tool.call` / `tool.return` 审计，
+/// 出问题可按 (session_id, turn) 或 tool_call_id 整轮回放。
+pub async fn execute_tool_traced(
+    app: &AppHandle,
+    name: &str,
+    args: &str,
+    stop: Option<&crate::bot_slash::StopGuard>,
+    trace: &ToolCallTrace,
+) -> (String, Vec<crate::bot_chat::TaskRef>) {
+    traced_impl(app, name, args, stop, trace).await
+}
+
+/// execute_tool / execute_tool_with_stop / execute_tool_traced 的共同内核：
+/// 交互属性与会话归属从 StopGuard 取（无守卫 = 后台调度器路径不会出现——
+/// 调度器走 run_task_in_chat 也持 StopGuard；None 仅 DSL 调度器遗留路径）。
+async fn traced_impl(
+    app: &AppHandle,
+    name: &str,
+    args: &str,
+    stop: Option<&crate::bot_slash::StopGuard>,
+    trace: &ToolCallTrace,
+) -> (String, Vec<crate::bot_chat::TaskRef>) {
     let interactive = stop.map(|s| s.is_interactive()).unwrap_or(true);
     let session_id = stop.and_then(|s| s.session_id());
-    execute_tool_impl(app, name, args, stop, interactive, session_id).await
+    execute_tool_impl(app, name, args, stop, interactive, session_id, trace).await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -93,16 +167,16 @@ async fn execute_tool_impl(
     stop: Option<&crate::bot_slash::StopGuard>,
     interactive: bool,
     session_id: Option<&str>,
+    trace: &ToolCallTrace,
 ) -> (String, Vec<crate::bot_chat::TaskRef>) {
     let start = std::time::Instant::now();
-    // 0. tool.call 结构化
-    crate::audit_event!(
-        app,
-        crate::audit::AuditLevel::Info,
-        "tool.call",
-        "tool" => name,
-        "args_preview" => args.chars().take(80).collect::<String>(),
-    );
+    // 0. tool.call 结构化（含 session_id / turn / tool_call_id，供整轮回放）
+    let mut call_kv: Vec<(&str, String)> = vec![
+        ("tool", name.to_string()),
+        ("args_preview", args.chars().take(80).collect::<String>()),
+    ];
+    call_kv.extend(trace_kv(trace, session_id));
+    crate::audit::write_event(app, crate::audit::AuditLevel::Info, "tool.call", &call_kv);
     // 1. 后置拦截：原子黑名单（老板拍板）
     //    仅作为 Skill 内部子步骤、不允许裸调的底层原子 Function → 硬锁阻断
     //    只有 Skill 在 Running 状态时才放行；其他时候直接返回错误 + 提示走对应 Skill
@@ -116,9 +190,14 @@ async fn execute_tool_impl(
     if let Some(msg) = crate::middleware::run_pre_execute(app, name, active) {
         // tool.call 已发出，早退前必须配平 tool.return（reason=denied），
         // 否则统计面板出现「悬挂调用」（call > return）
-        for (level, event, kv) in
-            early_return_events(name, "denied", start.elapsed().as_millis() as u64, None)
-        {
+        for (level, event, kv) in early_return_events(
+            name,
+            "denied",
+            start.elapsed().as_millis() as u64,
+            None,
+            session_id,
+            trace,
+        ) {
             crate::audit::write_event(app, level, event, &kv);
         }
         return (msg, Vec::new());
@@ -132,6 +211,8 @@ async fn execute_tool_impl(
                 "skill_step_failed",
                 start.elapsed().as_millis() as u64,
                 Some(&e.to_string()),
+                session_id,
+                trace,
             ) {
                 crate::audit::write_event(app, level, event, &kv);
             }
@@ -169,6 +250,9 @@ async fn execute_tool_impl(
             kv.push(("truncated", truncated.to_string()));
         }
     }
+    // session_id / turn / tool_call_id：与 tool.call 同口径，按 (session_id, turn) 或
+    // tool_call_id 可整轮回放一次模型循环里的工具序列
+    kv.extend(trace_kv(trace, session_id));
     crate::audit::write_event(app, level, "tool.return", &kv);
     if name != "use_skill" {
         crate::bot_skills::skill_on_step_post(app, name, &text, dur_ms, level, session_id);
@@ -202,7 +286,18 @@ mod early_return_events_tests {
     #[test]
     fn deny_path_emits_deny_then_balanced_tool_return() {
         // 拦截路径：pre_execute.deny → tool.return（顺序敏感），含 reason=denied / exit_code=none / duration_ms
-        let evs = early_return_events("create_word_revisions", "denied", 3, None);
+        let trace = ToolCallTrace {
+            turn: Some(2),
+            tool_call_id: Some("call_abc".into()),
+        };
+        let evs = early_return_events(
+            "create_word_revisions",
+            "denied",
+            3,
+            None,
+            Some("sess-1"),
+            &trace,
+        );
         assert_eq!(event_names(&evs), ["pre_execute.deny", "tool.return"]);
         assert!(evs
             .iter()
@@ -213,6 +308,12 @@ mod early_return_events_tests {
         assert_eq!(kv_get(ret, "reason"), Some("denied"));
         assert_eq!(kv_get(ret, "exit_code"), Some("none"));
         assert_eq!(kv_get(ret, "duration_ms"), Some("3"));
+        // 两条事件都带 trace，可整轮回放
+        for ev in &evs {
+            assert_eq!(kv_get(&ev.2, "session_id"), Some("sess-1"));
+            assert_eq!(kv_get(&ev.2, "turn"), Some("2"));
+            assert_eq!(kv_get(&ev.2, "tool_call_id"), Some("call_abc"));
+        }
     }
 
     #[test]
@@ -223,6 +324,8 @@ mod early_return_events_tests {
             "skill_step_failed",
             5,
             Some("超过最大步数上限（8 步）"),
+            None,
+            &ToolCallTrace::default(),
         );
         assert_eq!(event_names(&evs), ["skill_on_step_error", "tool.return"]);
         assert!(evs
@@ -233,5 +336,32 @@ mod early_return_events_tests {
         assert_eq!(kv_get(ret, "reason"), Some("skill_step_failed"));
         assert_eq!(kv_get(ret, "exit_code"), Some("none"));
         assert!(kv_get(ret, "duration_ms").is_some());
+    }
+
+    // ── trace_kv：有值才写，无会话上下文不产生误导性 turn=0 ──
+
+    #[test]
+    fn trace_kv_omits_absent_turn_and_tool_call_id() {
+        let kv = trace_kv(&ToolCallTrace::default(), None);
+        assert_eq!(kv_get(&kv, "session_id"), Some("-"));
+        assert!(kv_get(&kv, "turn").is_none(), "无 turn 不应写 turn=0");
+        assert!(kv_get(&kv, "tool_call_id").is_none());
+    }
+
+    #[test]
+    fn trace_kv_writes_present_fields_and_blank_ids_fall_back_to_dash() {
+        let kv = trace_kv(
+            &ToolCallTrace {
+                turn: Some(0),
+                tool_call_id: Some(String::new()),
+            },
+            Some(""),
+        );
+        assert_eq!(kv_get(&kv, "session_id"), Some("-"), "空会话按 - 记");
+        assert_eq!(kv_get(&kv, "turn"), Some("0"), "第 0 轮是有效值");
+        assert!(
+            kv_get(&kv, "tool_call_id").is_none(),
+            "空 id 不写（合成 id 前的畸形流不该出现空值行）"
+        );
     }
 }

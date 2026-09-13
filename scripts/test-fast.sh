@@ -12,6 +12,8 @@
 #   [3/N]   pytest collect-only：tests-audit/ 脚本语法自检
 #   [3.5/N] Tauri 桥一致性（tests-audit/audit_tauri_bridge.py）：前端 invoke ↔
 #           命令注册、listen ↔ emit 双向核对——运行时才炸的桥接坑提前到提交时
+#   [3.6/N] 错误码一致性（tests-audit/audit_error_codes.py）：Rust CommandErrorCode
+#           枚举 ↔ 前端 CommandErrorCode 联合类型集合/顺序比对
 #   [4/N]   tsc --noEmit：前端类型检查（incremental）
 #   [4.5/N] knip --no-progress：前端死文件/死 export/未使用 npm 依赖
 #           （knip 在 devDependencies，npx --no-install 走本地安装）
@@ -148,6 +150,13 @@ fi
 if [[ "$NEED_CARGO" == true || "$NEED_TS" == true ]]; then
     step "[3.5/N] tauri bridge 一致性（invoke/emit ↔ listen）" \
         python3 -m pytest tests-audit/audit_tauri_bridge.py -q
+fi
+
+# ─── 步骤 3.6: 错误码跨语言一致性（Rust enum ↔ 前端联合类型） ───
+# 纯文本扫描，<1s；两侧任一改动都可能漂移，故 cargo / ts 有改动都跑
+if [[ "$NEED_CARGO" == true || "$NEED_TS" == true ]]; then
+    step "[3.6/N] 错误码一致性（CommandErrorCode ↔ 前端）" \
+        python3 -m pytest tests-audit/audit_error_codes.py -q
 fi
 
 # ─── 步骤 4: tsc --noEmit（类型检查） ─────────────────────
