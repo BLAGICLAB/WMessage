@@ -490,13 +490,13 @@ fn linux_app_data_dir() -> Option<std::path::PathBuf> {
 /// 未初始化（如启动早期 keyring 迁移先于首次 data_dir 调用）回退原现探逻辑。
 /// 按 KeySlot 参数化（LLM/Tavily/Brave 各一个降级文件）。
 fn plaintext_key_path_for(slot: KeySlot) -> std::path::PathBuf {
-    if let Some(cached) = crate::audit::cached_probe_dir() {
+    if let Some(cached) = crate::paths::cached_probe_dir() {
         return cached.join(slot.plaintext_filename());
     }
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|e| e.parent().map(|p| p.to_path_buf()));
-    crate::audit::probe_dir(exe_dir.as_deref(), linux_app_data_dir())
+    crate::paths::probe_dir(exe_dir.as_deref(), linux_app_data_dir())
         .join(slot.plaintext_filename())
 }
 

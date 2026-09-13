@@ -67,7 +67,15 @@ impl AuditLevel {
 /// 四类文案与常规失败前缀都要判失败；否则会出现末步熔断误报「✅ 完成」、门禁拦截
 /// 对 PREVR 隐身、被拒删除当成功。统一收口到这里，
 /// DSL 调度器 / PREVR / 幻觉守卫 / skill_on_step_post / 审计分级全部共用。
-/// 注：「失败/错误」保留 contains 语义——工具错误文案多为「{动作}失败：…」，前缀不命中。
+///
+/// 「失败/错误」改为 markdown 前缀 + 关键词后接分隔符才判失败：
+/// 1. markdown 前缀（#/-/*/数字列表）→ 过滤文档小标题「# 失败案例分析」
+/// 2. 关键词后必须紧跟分隔符（：：，、、；； 空格 ()） → 过滤正文里裸出现的
+///    「失败」「错误」（如「失败重试策略」），保留真错误消息「删除失败：权限不足」
+/// 3. 首行 ≤120 **字符**（非字节，中文一字 3 字节，按字计算才一致；之前用 len()
+///    实际只容 40 个汉字，过严误杀中文错误消息）
+/// 4. 英文 error/Error/ERROR 都要带冒号（Error: 404 / ERROR: timeout），
+///    避免「Error handling guide」这种标题被误判
 pub fn tool_call_failed(name: &str, text: &str) -> bool {
     let _ = name;
     text.starts_with("未知工具")
@@ -75,10 +83,98 @@ pub fn tool_call_failed(name: &str, text: &str) -> bool {
         || text.starts_with("用户拒绝") // 确认弹窗被拒绝/超时
         || text.starts_with("技能已暂停") // step_check 暂停态拒绝
         || text.contains("已强制终止") // step_check 步数/超时熔断
-        || text.contains("失败")
-        || text.contains("错误")
+        || failure_keyword_after_separator(text)
         || text.starts_with("error:")
-        || text.starts_with("Error")
+        || text.starts_with("Error:")
+        || text.starts_with("ERROR:")
+}
+
+/// 失败/错误关键词后置分隔符判定：仅在首行 ≤120 **字符**、markdown 前缀开头
+/// 或无前缀、关键词后紧跟分隔符（：：，、；； 空格 ()）时判失败。
+///
+/// 分隔符集合是中英文常见标点 + 空格，覆盖绝大多数真错误消息
+/// （「删除失败：权限不足」「运行失败, exit code 1」「生成失败 磁盘只读」
+/// 「失败重试（最多3次）」）；不包含「的」「了」等普通连词，避免「失败的请求」
+/// 这种语义中性文本被误判。
+fn failure_keyword_after_separator(text: &str) -> bool {
+    // 首行 + 字符数限制（120 字 = 120 chars，按字算中文友好）
+    let Some(first) = text.lines().next().map(str::trim) else {
+        return false;
+    };
+    if first.is_empty() || first.chars().count() > 120 {
+        return false;
+    }
+    // markdown 前缀判定：# 标题 / - 项目符号 / * 项目符号 / 数字. 列表
+    // 容许纯文本（无前缀）也通过——错误消息本身就不带 markdown 符号
+    let body = strip_markdown_prefix(first);
+    let body = body.trim_start();
+    if body.is_empty() {
+        return false;
+    }
+    // 关键词后置分隔符集合
+    const SEPARATORS: &[char] = &['：', ':', '，', ',', '、', '；', ';', ' ', '（', '('];
+    has_keyword_after(body, "失败", SEPARATORS) || has_keyword_after(body, "错误", SEPARATORS)
+}
+
+/// 剥掉 markdown 列表/标题前缀：
+/// - `# ` / `## ` / `### ` 标题
+/// - `- ` / `* ` / `+ ` 无序列表
+/// - `1. ` / `123. ` 有序列表
+fn strip_markdown_prefix(line: &str) -> &str {
+    let trimmed = line.trim_start();
+    // 标题前缀
+    let after_hashes = trimmed.trim_start_matches('#').trim_start();
+    if after_hashes.len() < trimmed.len() {
+        // 真的剥了 #，说明是标题（允许 1~6 个 #）
+        return after_hashes;
+    }
+    // 无序列表
+    if let Some(rest) = trimmed
+        .strip_prefix('-')
+        .or_else(|| trimmed.strip_prefix('*'))
+        .or_else(|| trimmed.strip_prefix('+'))
+    {
+        if rest.starts_with(' ') {
+            return rest;
+        }
+    }
+    // 有序列表 `1. ` / `12. `
+    let mut chars = trimmed.chars();
+    let mut digits = String::new();
+    while let Some(c) = chars.clone().next() {
+        if c.is_ascii_digit() {
+            digits.push(c);
+            chars.next();
+        } else {
+            break;
+        }
+    }
+    if !digits.is_empty() {
+        let rest = &trimmed[digits.len()..];
+        if rest.starts_with(". ") {
+            return rest;
+        }
+    }
+    // 无前缀，原样返回
+    line
+}
+
+/// 检查 body 中 keyword 后是否紧跟 SEPARATORS 之一。
+/// 「失败重试」不命中（后跟「重」）；「失败：」命中；「失败 」命中。
+fn has_keyword_after(body: &str, keyword: &str, separators: &[char]) -> bool {
+    let mut start = 0;
+    while let Some(pos) = body[start..].find(keyword) {
+        let abs = start + pos;
+        let after = &body[abs + keyword.len()..];
+        match after.chars().next() {
+            Some(c) if separators.contains(&c) => return true,
+            // 关键词位于行尾（body 末尾）也计命中——「失败」单独一行
+            None => return true,
+            _ => {}
+        }
+        start = abs + keyword.len();
+    }
+    false
 }
 
 /// 工具返回文本 → 审计级别（post-execute 钩子分类用）
@@ -155,8 +251,42 @@ fn append_line(path: &std::path::Path, line: &str) -> bool {
     }
     true
 }
+// 数据目录便携探针 + 探测结果缓存 + 辅助判定函数已全部搬到 paths.rs：
+//   - probe_log_dir / cached_probe_dir
+//   - probe_dir / probe_dir_cached / probe_dir_cached_in
+//   - is_under_system_temp / is_macos_app_bundle_dir
+//   - PROBE_CACHE
+// audit 模块只负责「目录定了之后日志怎么写」。
 
-/// 写一条结构化审计事件到 `bot.log`（post-execute 钩子主入口）
+// ─────────────────────── 写入公共内核（三个写入点共用） ───────────────────────
+
+/// bot.log rotate 阈值：超过 5 MB 改名为 .old（保留一份历史）。
+/// 三个写入点（write_event / write_error_audit / write_warn_audit_to）共用，
+/// 由 `write_at` 统一调用，不再各自传常量。
+const LOG_ROTATE_BYTES: u64 = 5 * 1024 * 1024;
+
+/// 写入公共内核：rotate + BOT_LOG_LOCK + 时间戳 + 行拼装 + 追加一行结构化事件。
+///
+/// 三个写入点（write_event / write_error_audit / write_warn_audit_to）都走这里，
+/// 行格式 `[ts] LEVEL | event | k=v | k=v` 字符级一致——加新写入点不需要再复制
+/// rotate/lock/format 那一坨，也不存在「忘了过 escape_for_log」漏路径。
+///
+/// 返回 bool：成功 true / IO 失败 false。调用方一般不关心（IO 失败已 eprintln
+/// 不阻塞业务）；返回给测试断言用。
+fn write_at(
+    log_path: &std::path::Path,
+    level: AuditLevel,
+    event: &str,
+    kv: &[(&str, &str)],
+) -> bool {
+    let _g = BOT_LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    crate::db::rotate_log_if_large(log_path, LOG_ROTATE_BYTES);
+    let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+    let line = build_event_line(&ts.to_string(), level, event, kv);
+    append_line(log_path, &line)
+}
+
+/// 写一条结构化审计事件到 `bot.log`（post-execute 钩子主入口）。
 /// 复用 `bot::audit_log` 的 rotate 阈值与文件路径，老日志兼容。
 /// 泛型 Runtime：mock runtime 测试可直调（与 write_error_audit 同先例）。
 pub fn write_event<R: tauri::Runtime>(
@@ -165,202 +295,30 @@ pub fn write_event<R: tauri::Runtime>(
     event: &str,
     kv: &[(&str, String)],
 ) {
-    let _g = BOT_LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    crate::db::rotate_log_if_large(&crate::db::data_dir(app).join("bot.log"), 5 * 1024 * 1024);
     let p = crate::db::data_dir(app).join("bot.log");
-    let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
-    // kv 值统一转义（剥 \n / |），防伪造日志行；调用方不得再自行预转义
-    // 行拼装走 build_event_line，与 format_event_line 同一份实现（防 drift）
+    // 重新分配成 (&str, &str) — build_event_line 拿的是 (&str, &str)，
+    // write_event 入口签名故意是 String（macro audit_event! 直接 format!("{}", v)），
+    // 一次 to_str 转换代价远小于把整个写入逻辑抄一份
     let kv_refs: Vec<(&str, &str)> = kv.iter().map(|(k, v)| (*k, v.as_str())).collect();
-    let line = build_event_line(&ts.to_string(), level, event, &kv_refs);
-    append_line(&p, &line);
+    write_at(&p, level, event, &kv_refs);
 }
 
-/// 数据目录便携探针单一实现（db / profile / 本模块统一走这里，防多处拷贝 drift）。
-/// 优先 exe 同目录（便携模式，U盘/绿色目录随走随带）；目录不可写
-/// （如 Program Files）退 app_data_dir；再退系统临时目录。
-///
-/// 探测结果进程内 OnceLock 定版：每次调用都现写探针文件的话，
-/// 杀软临时锁定/UAC 状态变化/压缩包内直接运行等瞬时失败会把当次数据目录
-/// 翻转到 app_data，AI_Gen_Files、数据库、日志分裂到两个位置。
-/// 首次探测定版，整个运行期不再翻转；
-/// 兜底分支发生时记一条 WARN 审计（写清翻到哪、为什么），可诊断。
-pub(crate) fn probe_log_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> std::path::PathBuf {
-    use tauri::Manager;
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|e| e.parent().map(|p| p.to_path_buf()));
-    let app_data = app.path().app_data_dir().ok();
-    // 首次探测判定（WARN 只在定版那次记）：生产读缓存是否已初始化；
-    // 测试构建无缓存，每次现探且不为翻转记 WARN（测试不验证日志副作用）
-    #[cfg(not(test))]
-    let first_probe = PROBE_CACHE.get().is_none();
-    #[cfg(test)]
-    let first_probe = false;
-    let resolved = probe_dir_cached(exe_dir.as_deref(), app_data);
-    // 兜底判定：exe 目录存在但结果不是它 → 发生了翻转，记 WARN（只在首次探测记一次）。
-    // 写日志挪到独立线程：调用方可能正持有 BOT_LOG_LOCK（audit_log → data_dir → 这里），
-    // std Mutex 不可重入，直接写会死锁。
-    if first_probe && exe_dir.as_deref().is_some_and(|d| d != resolved.as_path()) {
-        let exe_dir_s = exe_dir
-            .as_deref()
-            .map(|d| d.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let resolved_s = resolved.to_string_lossy().to_string();
-        // zip 直跑（exe 在系统 temp 下）与写探针失败给不同 WARN 原因，便于诊断
-        let reason = if exe_dir.as_deref().is_some_and(is_under_system_temp) {
-            "exe 位于系统临时目录（疑似压缩包内直接双击运行），不在 temp 建数据目录，已退化 app_data——请解压后再运行"
-        } else {
-            "exe 目录写探针失败（杀软锁定/权限不足/压缩包内运行），数据目录按便携策略兜底"
-        };
-        let dir = resolved.clone();
-        std::thread::spawn(move || {
-            write_warn_audit_to(
-                &dir,
-                "data_dir_fallback",
-                &[
-                    ("exe_dir", exe_dir_s.as_str()),
-                    ("resolved", resolved_s.as_str()),
-                    ("reason", reason),
-                ],
-            );
-        });
-    }
-    resolved
-}
-
-/// 探测结果缓存（进程级 OnceLock）：首次 probe_log_dir 调用定版。
-/// 测试构建不缓存——同进程多测试各自探测不同临时目录/模拟 exe 目录，
-/// 全局缓存会让先跑的测试劫持后续所有结果；
-/// 定版语义由可注入内核 probe_dir_cached_in 的单测覆盖。
-#[cfg(not(test))]
-static PROBE_CACHE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-
-#[cfg(not(test))]
-fn probe_dir_cached(
-    exe_dir: Option<&std::path::Path>,
-    app_data: Option<std::path::PathBuf>,
-) -> std::path::PathBuf {
-    probe_dir_cached_in(&PROBE_CACHE, exe_dir, app_data)
-}
-
-/// 测试构建：不缓存，每次现探（测试隔离优先）
-#[cfg(test)]
-fn probe_dir_cached(
-    exe_dir: Option<&std::path::Path>,
-    app_data: Option<std::path::PathBuf>,
-) -> std::path::PathBuf {
-    probe_dir(exe_dir, app_data)
-}
-
-/// 可测内核：OnceLock 定版语义——首次探测结果钉死，后续调用条件变化也不再翻转
-#[cfg_attr(not(test), allow(dead_code))] // 生产只经 probe_dir_cached 间接调用
-fn probe_dir_cached_in(
-    cache: &std::sync::OnceLock<std::path::PathBuf>,
-    exe_dir: Option<&std::path::Path>,
-    app_data: Option<std::path::PathBuf>,
-) -> std::path::PathBuf {
-    cache.get_or_init(|| probe_dir(exe_dir, app_data)).clone()
-}
-
-/// 已定版的数据目录（降级 key 路径等无 AppHandle 调用方复用，
-/// 保证与 probe_log_dir 同一份结果；未初始化 = 主流程还没探测过，返回 None）
-/// 测试构建无缓存（见 PROBE_CACHE 注释），恒 None → 调用方走原现探逻辑。
-#[cfg(not(test))]
-pub(crate) fn cached_probe_dir() -> Option<std::path::PathBuf> {
-    PROBE_CACHE.get().cloned()
-}
-
-/// 测试构建桩：无进程级缓存，恒 None
-#[cfg(test)]
-pub(crate) fn cached_probe_dir() -> Option<std::path::PathBuf> {
-    None
-}
-
-/// 可测内核：probe 三分支——exe 目录可写用它；不可写退 app_data；皆不可用退 temp。
-/// 前置规则：
-/// 1) exe 旁已有数据痕迹（wmessage.db / AI_Gen_Files）→ 强制便携锚定 exe 目录，
-///    跳过写探针——探针瞬时失败（杀软锁定/UAC 抖动）不得把已有数据目录翻转走，
-///    全机只允许一个 AI_Gen_Files；
-/// 2) exe 落在系统临时目录（压缩包内直接双击运行）→ 不在 temp 建数据，
-///    跳过便携分支退化 app_data（翻转 WARN 由 probe_log_dir 统一记）。
-/// pub(crate)：bot.rs 降级 key 路径（无 AppHandle）复用同一便携策略。
-pub(crate) fn probe_dir(
-    exe_dir: Option<&std::path::Path>,
-    app_data: Option<std::path::PathBuf>,
-) -> std::path::PathBuf {
-    if let Some(dir) = exe_dir {
-        // macOS .app 包内目录（*.app/Contents/MacOS）不算
-        // 「便携 exe 同目录」——dmg 拖到 ~/Applications 后该目录可写，数据库/日志/
-        // AI_Gen_Files 会全写进 app 包内（破坏签名、删 app 即删全部用户数据）。
-        if !is_macos_app_bundle_dir(dir) {
-            if dir.join("wmessage.db").exists() || dir.join("AI_Gen_Files").exists() {
-                return dir.to_path_buf();
-            }
-            if !is_under_system_temp(dir) {
-                let probe = dir.join(".wm-write-probe");
-                if std::fs::File::create(&probe).is_ok() {
-                    let _ = std::fs::remove_file(&probe);
-                    return dir.to_path_buf();
-                }
-            }
-        }
-    }
-    app_data.unwrap_or_else(std::env::temp_dir)
-}
-
-/// exe 目录是否在系统临时目录下（zip 直跑场景）：canonicalize 后比较，
-/// macOS /var ↔ /private/var 软链由 canonicalize 归一
-fn is_under_system_temp(dir: &std::path::Path) -> bool {
-    let tmp = std::env::temp_dir();
-    let tmp = std::fs::canonicalize(&tmp).unwrap_or(tmp);
-    let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
-    dir.starts_with(&tmp)
-}
-
-/// macOS .app 包内 MacOS 目录判定：…/Xxx.app/Contents/MacOS
-fn is_macos_app_bundle_dir(dir: &std::path::Path) -> bool {
-    let mut comps = dir.components().rev();
-    matches!(comps.next(), Some(c) if c.as_os_str() == "MacOS")
-        && matches!(comps.next(), Some(c) if c.as_os_str() == "Contents")
-        && comps
-            .next()
-            .is_some_and(|c| c.as_os_str().to_string_lossy().ends_with(".app"))
-}
-
-/// 泛型 Runtime 版日志目录：write_event 写死 Wry AppHandle，middleware/profile
-/// 等泛型模块调不了，病态路径（registry 缺失 / profile 损坏）的 ERROR 审计走这里，
-/// 尽力而为不 panic。目录解析委托 probe_log_dir。
-fn generic_log_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> std::path::PathBuf {
-    probe_log_dir(app)
-}
-
-/// 泛型 Runtime 的 ERROR 审计：rotate + BOT_LOG_LOCK + 追加一行结构化事件。
-/// 行拼装复用 build_event_line，与 write_event 零漂移；IO 失败走 append_line 的
-/// eprintln，不 panic、不阻塞业务。
+/// 泛型 Runtime 的 ERROR 审计（profile/middleware 病态路径用）：
+/// 目录解析走 paths::probe_log_dir，写入走 write_at——与 write_event 同格式。
 pub(crate) fn write_error_audit<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     event: &str,
     kv: &[(&str, &str)],
 ) {
-    let _g = BOT_LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let p = generic_log_dir(app).join("bot.log");
-    crate::db::rotate_log_if_large(&p, 5 * 1024 * 1024);
-    let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
-    let line = build_event_line(&ts.to_string(), AuditLevel::Error, event, kv);
-    append_line(&p, &line);
+    let p = crate::paths::probe_log_dir(app).join("bot.log");
+    write_at(&p, AuditLevel::Error, event, kv);
 }
 
 /// 无 AppHandle 场景的 WARN 审计（keyring 降级明文存储路径用）。
-/// 目录由调用方解析（与降级 key 文件同目录，保证同一便携位置），
-/// 行拼装复用 build_event_line，与 write_event 零漂移。
+/// 目录由调用方解析（与降级 key 文件同目录，保证同一便携位置）。
 pub(crate) fn write_warn_audit_to(dir: &std::path::Path, event: &str, kv: &[(&str, &str)]) {
-    let _g = BOT_LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let p = dir.join("bot.log");
-    crate::db::rotate_log_if_large(&p, 5 * 1024 * 1024);
-    let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
-    let line = build_event_line(&ts.to_string(), AuditLevel::Warn, event, kv);
-    append_line(&p, &line);
+    write_at(&p, AuditLevel::Warn, event, kv);
 }
 
 /// 结构化审计事件宏（post-execute 钩子用）
@@ -411,9 +369,16 @@ mod tests {
             classify_text("foo", "已新建任务 id=abc123"),
             AuditLevel::Info
         );
-        // "失败" 关键词的误报：接受这种 trade-off（合法场景罕见）
+        // 「失败」出现在正文而非错误消息（「成功完成任务，含失败回滚说明」），
+        // 新规则要求关键词后接分隔符才判失败——「失败」后跟「回」不在 SEPARATORS，
+        // 不应误判为 Warn。这正是修复目标
         assert_eq!(
             classify_text("foo", "成功完成任务，含失败回滚说明"),
+            AuditLevel::Info
+        );
+        // 真错误消息「操作失败：磁盘只读」仍判 Warn（首行带分隔符）
+        assert_eq!(
+            classify_text("foo", "操作失败：磁盘只读"),
             AuditLevel::Warn
         );
     }
@@ -456,6 +421,42 @@ mod tests {
             "delete_task",
             "已删除任务「买菜」（进回收站）"
         ));
+    }
+
+    #[test]
+    fn tool_call_failed_passes_long_read_with_embedded_keywords() {
+        // SPEC.md / DEVLOG.md 这类正文中提到「失败/错误」的文档读取结果——
+        // 第一行是路径 + 行号摘要（短，无关键词），后续行是正文（长，含关键词）。
+        // 旧 contains 全文匹配会把整个读取结果误判为失败，skill_step_post 立即
+        // 把 Skill 标 Failed，run_python / build_pptx 等工作步骤还没跑就先死。
+        // 新规则：只判短首行（≤120 字符）含「失败/错误」→ 跳过正文里的关键词。
+        let spec_md_read = "/Users/renshi/Projects/wmessage/SPEC.md（第 1-127 行 / 共 127 行）\
+\n1: # WMessage — SPEC v1\
+\n2: \
+\n3: > 唯一依据。来源：老板 2026-08-13 发…\
+\n…（正文里讨论异常处理、错误码、失败重试）";
+        assert!(
+            !tool_call_failed("read_text_file", spec_md_read),
+            "read_text_file 读到的正文里出现「失败/错误」不应被误判为失败"
+        );
+        // 第一行 >120 字符（比如长路径）也不误判
+        let long_first_line = format!(
+            "{}(第 1-500 行 / 共 500 行)\n失败回滚说明：…",
+            "/very/long/path/".repeat(20)
+        );
+        assert!(
+            !tool_call_failed("read_text_file", &long_first_line),
+            "第一行超 120 字符不应被误判"
+        );
+        // 真失败消息仍要命中：首行是错误文案、含「失败」/「错误」
+        assert!(
+            tool_call_failed("x", "执行失败：磁盘只读"),
+            "短首行含「失败」应判失败"
+        );
+        assert!(
+            tool_call_failed("x", "读取错误：路径不存在"),
+            "短首行含「错误」应判失败"
+        );
     }
 
     #[test]
@@ -543,151 +544,6 @@ mod tests {
         let out = escape_for_log(&long, KV_VALUE_MAX);
         assert_eq!(out.chars().count(), KV_VALUE_MAX + 1);
         assert!(out.ends_with('…'));
-    }
-
-    // ── probe_log_dir 三分支 + 调用方一致性 ──
-
-    #[test]
-    fn probe_dir_cached_is_stable_across_calls() {
-        // OnceLock 定版后，第二次调用即使探测条件
-        // 变化（传入不同 exe_dir）也返回首次结果——运行期数据目录不再翻转。
-        // 用独立 OnceLock 实例，不碰进程级全局缓存（防劫持其他测试）
-        let cache = std::sync::OnceLock::new();
-        let first = probe_dir_cached_in(
-            &cache,
-            None,
-            Some(std::path::PathBuf::from("/tmp/wm-probe-cache-test")),
-        );
-        let second = probe_dir_cached_in(
-            &cache,
-            Some(std::path::Path::new("/nonexistent-exe-dir")),
-            None,
-        );
-        assert_eq!(first, second, "定版后探测条件变化不得改变数据目录");
-    }
-
-    /// mock exe 目录：系统 temp 下的目录会被 probe_dir 当「压缩包直跑」跳过便携分支，
-    /// 测试用 exe 目录一律建在 current_exe 父目录（target/debug/deps，可写且非 temp）
-    fn mock_dir_outside_temp(name: &str) -> std::path::PathBuf {
-        let base = std::env::current_exe()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join(format!("wm-probe-test-{}-{}", name, uuid::Uuid::new_v4().simple()));
-        std::fs::create_dir_all(&base).unwrap();
-        base
-    }
-
-    #[test]
-    fn probe_dir_writable_exe_dir_wins() {
-        // 分支 1：exe 目录可写 → 用它（便携模式）
-        let exe_dir = mock_dir_outside_temp("writable");
-        let app_data = tempfile::tempdir().unwrap();
-        let got = probe_dir(Some(&exe_dir), Some(app_data.path().to_path_buf()));
-        assert_eq!(got, exe_dir);
-        // 探针文件不得残留
-        assert!(!exe_dir.join(".wm-write-probe").exists());
-        let _ = std::fs::remove_dir_all(&exe_dir);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn probe_dir_readonly_exe_dir_falls_back_to_app_data() {
-        // 分支 2：exe 目录不可写（如 Program Files）→ 退 app_data_dir
-        use std::os::unix::fs::PermissionsExt;
-        let ro = mock_dir_outside_temp("readonly");
-        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o555)).unwrap();
-        let app_data = tempfile::tempdir().unwrap();
-        let got = probe_dir(Some(&ro), Some(app_data.path().to_path_buf()));
-        assert_eq!(got, app_data.path());
-        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let _ = std::fs::remove_dir_all(&ro);
-    }
-
-    #[test]
-    fn probe_dir_exe_under_system_temp_falls_back_to_app_data() {
-        // zip 内直接双击运行：exe 落系统 temp → 不在 temp 建数据，退化 app_data
-        let exe_dir = tempfile::tempdir().unwrap();
-        let app_data = tempfile::tempdir().unwrap();
-        let got = probe_dir(Some(exe_dir.path()), Some(app_data.path().to_path_buf()));
-        assert_eq!(got, app_data.path());
-        assert!(!exe_dir.path().join(".wm-write-probe").exists());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn probe_dir_existing_data_traces_force_portable() {
-        // exe 旁已有 wmessage.db → 强制便携锚定，目录即使不可写也不翻转
-        use std::os::unix::fs::PermissionsExt;
-        let exe_dir = tempfile::tempdir().unwrap();
-        std::fs::write(exe_dir.path().join("wmessage.db"), b"").unwrap();
-        std::fs::set_permissions(exe_dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
-        let app_data = tempfile::tempdir().unwrap();
-        let got = probe_dir(Some(exe_dir.path()), Some(app_data.path().to_path_buf()));
-        assert_eq!(got, exe_dir.path());
-        std::fs::set_permissions(exe_dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-
-    #[test]
-    fn probe_dir_gen_dir_trace_forces_portable_under_temp() {
-        // exe 在 temp 但旁边已有 AI_Gen_Files → 数据痕迹优先于 temp 规避，锚定 exe 目录
-        let exe_dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(exe_dir.path().join("AI_Gen_Files")).unwrap();
-        let app_data = tempfile::tempdir().unwrap();
-        let got = probe_dir(Some(exe_dir.path()), Some(app_data.path().to_path_buf()));
-        assert_eq!(got, exe_dir.path());
-    }
-
-    /// macOS .app 包内目录（即使可写）不得当便携数据目录——
-    /// 否则数据库/日志/AI_Gen_Files 全写进 app 包内（删 app = 删全部数据）
-    #[test]
-    fn probe_dir_skips_macos_app_bundle_dir() {
-        let tmp = std::env::temp_dir().join(format!("wm-test-{}", uuid::Uuid::new_v4().simple()));
-        let macos_dir = tmp.join("wmessage.app").join("Contents").join("MacOS");
-        std::fs::create_dir_all(&macos_dir).unwrap();
-        let app_data = tmp.join("appdata");
-        let got = super::probe_dir(Some(&macos_dir), Some(app_data.clone()));
-        assert_eq!(got, app_data, ".app 包内目录必须跳过便携分支直落 app_data");
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn is_macos_app_bundle_dir_detection() {
-        use std::path::Path;
-        assert!(super::is_macos_app_bundle_dir(Path::new(
-            "/Applications/wmessage.app/Contents/MacOS"
-        )));
-        assert!(super::is_macos_app_bundle_dir(Path::new(
-            "/Users/x/Applications/wmessage.app/Contents/MacOS/"
-        )));
-        assert!(!super::is_macos_app_bundle_dir(Path::new(
-            "/Applications/wmessage.app/Contents"
-        )));
-        assert!(!super::is_macos_app_bundle_dir(Path::new("/opt/wmessage")));
-        assert!(!super::is_macos_app_bundle_dir(Path::new(
-            "/Users/x/wmessage.app/Contents/MacOSub"
-        )));
-    }
-
-    #[test]
-    fn probe_dir_no_exe_no_app_data_falls_back_to_temp() {
-        // 分支 3：exe 目录不可写 且 app_data_dir 不可用 → 退系统临时目录
-        let got = probe_dir(None, None);
-        assert_eq!(got, std::env::temp_dir());
-    }
-
-    #[test]
-    fn probe_log_dir_matches_exe_parent_in_cargo_test() {
-        // 调用方一致性：cargo test 下 current_exe 父目录（target/debug/deps）可写，
-        // probe_log_dir 必须命中 exe 分支——与抽取前 db_dir/profile data_dir 行为一致
-        let app = tauri::test::mock_app();
-        let got = probe_log_dir(app.handle());
-        let exe_parent = std::env::current_exe()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .to_path_buf();
-        assert_eq!(got, exe_parent);
     }
 
     // ── 回归：kv value 里的 `\n` / `| ` 不得逃逸成裸日志分隔符 ──

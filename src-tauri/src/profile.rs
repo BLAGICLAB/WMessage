@@ -55,12 +55,12 @@ fn default_name(kind: &str) -> String {
     if kind == "bot" { "机器人" } else { "我" }.to_string()
 }
 
-/// 数据目录：P2-19 起委托 audit::probe_log_dir（原与 db::db_dir 两处拷贝，已合一）。
+/// 数据目录：P2-19 起委托 paths::probe_log_dir（原与 db::db_dir 两处拷贝，已合一）。
 /// Runtime 泛型（避免在 profile.rs 里硬编码 Wry，
 /// 这样单元测试可以用 tauri::test::MockRuntime 跑同一条生产代码路径）。
 /// cargo test 下 current_exe().parent() = target/debug/deps/ 可写，直接命中该分支。
 fn data_dir<R: Runtime>(app: &AppHandle<R>) -> std::path::PathBuf {
-    crate::audit::probe_log_dir(app)
+    crate::paths::probe_log_dir(app)
 }
 
 fn profile_path<R: Runtime>(app: &AppHandle<R>) -> std::path::PathBuf {

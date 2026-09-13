@@ -533,7 +533,7 @@ mod tests {
         r.register_pre_step(Box::new(OnlyStep));
         // pre_execute 侧为空：返回 None（不阻断）+ 记 pre_execute_not_registered 审计
         assert_eq!(r.run_pre_execute(&handle, "list_tasks", false), None);
-        let log = std::fs::read_to_string(crate::audit::probe_log_dir(&handle).join("bot.log"))
+        let log = std::fs::read_to_string(crate::paths::probe_log_dir(&handle).join("bot.log"))
             .unwrap_or_default();
         assert!(
             log.contains("pre_execute_not_registered") && log.contains("tool=list_tasks"),
@@ -566,7 +566,7 @@ mod tests {
         assert_eq!(r.run_pre_step(&handle, "x"), None);
         assert_eq!(r.run_pre_execute(&handle, "list_tasks", false), None);
         // ERROR 审计落盘：事件名 + 中间件名 + panic 信息
-        let log = std::fs::read_to_string(crate::audit::probe_log_dir(&handle).join("bot.log"))
+        let log = std::fs::read_to_string(crate::paths::probe_log_dir(&handle).join("bot.log"))
             .unwrap_or_default();
         assert!(
             log.contains("middleware_panic") && log.contains("middleware=bomber"),

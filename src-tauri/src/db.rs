@@ -113,9 +113,9 @@ pub fn bind_files(paths: Vec<String>) -> Vec<TaskFile> {
 
 /// 便携模式：数据库优先放 exe 同目录（U盘/绿色目录随走随带）；
 /// 目录不可写（如 Program Files）时兜底到系统应用数据目录。
-/// 目录解析统一委托 audit::probe_log_dir（与 profile/audit 共用一套解析，避免多处拷贝漂移）。
+/// 目录解析统一委托 paths::probe_log_dir（与 profile/audit 共用一套解析，避免多处拷贝漂移）。
 fn db_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> std::path::PathBuf {
-    crate::audit::probe_log_dir(app)
+    crate::paths::probe_log_dir(app)
 }
 
 /// 数据目录（供本地 HTTP API 存 token 等附属文件，便携模式跟随 exe）

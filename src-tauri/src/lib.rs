@@ -4,6 +4,7 @@ mod api_auth;
 mod api_handlers;
 mod api_server;
 mod audit;
+mod paths;
 pub mod bot;
 mod bot_anthropic;
 pub mod bot_artifacts;
