@@ -2480,6 +2480,15 @@ fn gen_out_path_in(
 // escape_for_log 与 crate::audit::write_event 共享同一实现（剥换行/管道符防伪造日志行）；
 // 本文件经顶部 use 引入。
 
+/// 测试用 mock handle（阶段 3.3：StopGuard 需要 AppHandle 才能取到注入实例，
+/// 否则守卫会注册进兜底实例、与生产路径看的不是同一张表）
+#[cfg(test)]
+fn guard_test_handle() -> tauri::AppHandle<tauri::test::MockRuntime> {
+    let app = tauri::test::mock_app();
+    tauri::Manager::manage(&app, crate::app_state::AppState::default());
+    app.handle().clone()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2559,13 +2568,9 @@ mod tests {
 
     #[test]
     fn stop_reader_returns_partial_when_stopped() {
-        // 本用例断言「未停时完整读取」，stop_all_executions（lib.rs 退出
-        // 清理测试 / bot_slash stop_all 用例）并行广播会提前置位 → 首读即 EOF 随机挂
-        let _serial = crate::bot_slash::STOP_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        // 阶段 3.3：本用例自带注入实例的 StopGuard，别的用例的全局广播不再置位它
         let data = vec![b'x'; 4096];
-        let guard = crate::bot_slash::StopGuard::new(false, None);
+        let guard = crate::bot_slash::StopGuard::new(&guard_test_handle(), false, None);
         let token = guard.token();
         // 未停止：完整读取，行为与裸 read_capped_drain 一致
         let (buf, tr) = read_capped_drain(
@@ -3309,7 +3314,7 @@ mod tests {
         let dir = tmp.path().join("run-stop");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("run.py"), "import time\ntime.sleep(30)\n").unwrap();
-        let guard = crate::bot_slash::StopGuard::new(false, None);
+        let guard = crate::bot_slash::StopGuard::new(&guard_test_handle(), false, None);
         let token = guard.token();
         let mut lines: Vec<String> = Vec::new();
         let start = Instant::now();

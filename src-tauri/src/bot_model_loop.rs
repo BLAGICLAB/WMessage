@@ -18,6 +18,11 @@ use crate::error::CommandError;
 use futures_util::StreamExt;
 use tauri::{AppHandle, Emitter};
 
+// 阶段 2：从 crate::bot::registry 单源派生的 TOOLS / MUTATING_TOOLS。
+// 原 const 字符串 / 数组现为函数（OnceLock 缓存）——保持向后兼容路径。
+pub use crate::bot::registry::mutating_tools as MUTATING_TOOLS;
+pub use crate::bot::registry::tools_json as TOOLS;
+
 // ───────────────────────── 防幻觉汇报守卫 ─────────────────────────
 // 实锤事故：MiniMax-M3 多次不调任何工具就回复「已添加子任务」「已移至回收站」，
 // 数据实际没变，用户以为操作成功。提示词约束（SYSTEM_PROMPT 规则 8）不够，
@@ -25,32 +30,13 @@ use tauri::{AppHandle, Emitter};
 // 注入系统提醒并补一轮（每次对话最多补一次），让模型实际调工具或如实说明。
 
 /// 会改动任务卡/文件系统的工具（判定「本轮是否真的动手了」）
-const MUTATING_TOOLS: [&str; 15] = [
-    "create_task",
-    "edit_task",
-    "complete_task",
-    "delete_task",
-    "add_subtask",
-    "toggle_subtask",
-    "remove_subtask",
-    // 任务卡执行流程内产物登记（流程结束会弹汇总窗口让用户勾选绑定）
-    "link_file_to_task",
-    "create_word",
-    "create_word_revisions",
-    "create_excel",
-    "create_ppt",
-    "create_pdf",
-    "remember_fact",
-    // 写记忆同 remember_fact 待遇（幻觉守卫「已记录」口径）
-    "record_lesson",
-];
 
 /// 变更工具是否真的成功落库/落盘（幻觉守卫 mutation_done 的判定依据）。
 /// 按执行结果判定而非调用前按名字置位：被门禁拦截（⚠️）、用户拒绝、执行失败的
 /// 调用都不算「动过手」，否则之后的幻觉汇报就不再被拦，守卫被架空。
 /// 失败口径走全链路统一的 `audit::tool_call_failed`。
 fn mutation_succeeded(name: &str, result: &str) -> bool {
-    MUTATING_TOOLS.contains(&name) && !crate::audit::tool_call_failed(name, result)
+    MUTATING_TOOLS().iter().any(|t| t == &name) && !crate::audit::tool_call_failed(name, result)
 }
 
 /// 最终文本是否含「变更已完成」表述（任务卡/文件类；纯查询汇报不命中）。
@@ -83,152 +69,11 @@ fn claims_mutation(text: &str) -> bool {
 
 // ───────────────────────── TOOLS schema（编译期字符串，运行期 JSON 解析） ─────────────────────────
 
-const TOOLS: &str = r#"[
-  {"type":"function","function":{"name":"list_tasks","description":"列出未完成任务（含状态列）","parameters":{"type":"object","properties":{}}}},
-  {"type":"function","function":{"name":"query_single_task","description":"按 id 查询单张任务卡完整详情（标题/列/截止/备注/子任务/标签/绑定文件 + 归档/删除状态指示；白名单单点，区别于 list_tasks 批量清单与 search_tasks 关键词检索）","parameters":{"type":"object","properties":{"id":{"type":"string","description":"任务卡 UUID"}},"required":["id"]}}},
-  {"type":"function","function":{"name":"create_task","description":"新建任务","parameters":{"type":"object","properties":{
-    "title":{"type":"string","description":"任务标题"},
-    "note":{"type":"string","description":"备注，可选"},
-    "due":{"type":"string","description":"截止时间，YYYY-MM-DD 或 YYYY-MM-DD HH:mm，可选"},
-    "column":{"type":"string","enum":["todo","doing"],"description":"状态列，默认 todo"},
-    "files":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"isDir":{"type":"boolean"}}},"description":"绑定文件列表（可选，最多 10 个；安全约束：仅允许 AI_Gen_Files 目录内的已存在文件，其余会被丢弃；要绑其它文件请引导用户用 bind_file 手选）"}
-  },"required":["title"]}}},
-  {"type":"function","function":{"name":"complete_task","description":"完成任务（taskId 精确匹配优先；无 taskId 时按标题关键词匹配）","parameters":{"type":"object","properties":{
-    "taskId":{"type":"string","description":"任务 id（来自用户消息的 [已选任务] 引用块或 list_tasks 输出），可选，优先于 title"},
-    "title":{"type":"string","description":"标题关键词，无 taskId 时使用"}
-  },"required":[]}}},
-  {"type":"function","function":{"name":"delete_task","description":"删除任务到回收站（taskId 精确匹配优先；无 taskId 时按标题关键词匹配）","parameters":{"type":"object","properties":{
-    "taskId":{"type":"string","description":"任务 id，可选，优先于 title"},
-    "title":{"type":"string","description":"标题关键词，无 taskId 时使用"}
-  },"required":[]}}},
-  {"type":"function","function":{"name":"edit_task","description":"编辑任务（taskId 精确匹配优先；无 taskId 时按标题关键词匹配；改标题/备注/截止时间/标签/状态列，空串清字段）","parameters":{"type":"object","properties":{
-    "taskId":{"type":"string","description":"任务 id，可选，优先于 title"},
-    "title":{"type":"string","description":"标题关键词，无 taskId 时用于定位任务"},
-    "newTitle":{"type":"string","description":"新标题，可选"},
-    "note":{"type":"string","description":"新备注，可选；空串清除"},
-    "due":{"type":"string","description":"新截止时间，可选；空串清除"},
-    "column":{"type":"string","enum":["todo","doing","done"],"description":"新状态列，可选"},
-    "tags":{"type":"array","items":{"type":"string"},"description":"新标签列表，可选；空数组清除"},
-    "files":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"isDir":{"type":"boolean"}}},"description":"新绑定文件列表（可选，整体替换，最多 10 个；空数组清除；安全约束：仅允许 AI_Gen_Files 目录内的已存在文件）"}
-  },"required":[]}}},
-  {"type":"function","function":{"name":"add_subtask","description":"给任务添加子任务（taskId 精确匹配优先；无 taskId 时按标题关键词匹配）","parameters":{"type":"object","properties":{
-    "taskId":{"type":"string","description":"任务 id，可选，优先于 title"},
-    "title":{"type":"string","description":"标题关键词，无 taskId 时使用"},
-    "text":{"type":"string","description":"子任务内容"}
-  },"required":["text"]}}},
-  {"type":"function","function":{"name":"toggle_subtask","description":"勾选/取消勾选子任务（任务用 taskId 优先；子任务按内容关键词匹配）","parameters":{"type":"object","properties":{
-    "taskId":{"type":"string","description":"任务 id，可选，优先于 title"},
-    "title":{"type":"string","description":"任务标题关键词，无 taskId 时使用"},
-    "text":{"type":"string","description":"子任务内容关键词"}
-  },"required":["text"]}}},
-  {"type":"function","function":{"name":"remove_subtask","description":"删除单条子任务（彻底移除，区别于 toggle_subtask 的取消勾选；任务用 taskId 优先；子任务按内容关键词匹配）","parameters":{"type":"object","properties":{
-    "taskId":{"type":"string","description":"任务 id，可选，优先于 title"},
-    "title":{"type":"string","description":"任务标题关键词，无 taskId 时使用"},
-    "text":{"type":"string","description":"要删除的子任务内容关键词"}
-  },"required":["text"]}}},
-  {"type":"function","function":{"name":"read_text_file","description":"读取本地文本文件内容（白名单目录内直接读，白名单外自动弹窗请用户授权；大文件用 offset/limit 分页读；Office/PDF 用 extract_document，图片用户会直接发图）","parameters":{"type":"object","properties":{
-    "path":{"type":"string","description":"文件绝对路径（支持 ~ 开头）"},
-    "offset":{"type":"integer","description":"起始行号，从 1 开始，可选"},
-    "limit":{"type":"integer","description":"读取行数，默认 500，最多 2000，可选"}
-  },"required":["path"]}}},
-  {"type":"function","function":{"name":"ocr_image","description":"本地 OCR 识别图片文字，逐行返回（白名单目录内直接识别，白名单外自动弹窗请用户授权；隐私红线：图片仅在内存处理、绝不上传外网——macOS 用系统 Vision，Windows 用本地 PP-OCRv6 模型）","parameters":{"type":"object","properties":{
-    "path":{"type":"string","description":"图片绝对路径（支持 ~ 开头；仅本地文件，不接受网络地址）"}
-  },"required":["path"]}}},
-  {"type":"function","function":{"name":"grep_files","description":"按正则搜索本地文件内容，返回 path:行号:内容（最多 50 条；白名单目录内直接搜，白名单外自动弹窗请用户授权）","parameters":{"type":"object","properties":{
-    "pattern":{"type":"string","description":"正则表达式（非法正则自动按字面量搜）"},
-    "dir":{"type":"string","description":"搜索目录，可选，缺省搜第一个白名单目录"},
-    "glob":{"type":"string","description":"文件名过滤，如 *.rs，可选"},
-    "max":{"type":"integer","description":"最多返回条数，默认 50，可选"}
-  },"required":["pattern"]}}},
-  {"type":"function","function":{"name":"list_files","description":"列出本地目录内的文件/子目录（递归 ≤5 层，最多 200 条；可用 pattern 按文件名过滤；白名单目录内直接列，白名单外自动弹窗请用户授权）","parameters":{"type":"object","properties":{
-    "dir":{"type":"string","description":"目录绝对路径（支持 ~ 开头）"},
-    "pattern":{"type":"string","description":"文件名过滤，如 *.pdf 或 报告*，可选"}
-  },"required":["dir"]}}},
-{"type":"function","function":{"name":"link_file_to_task","description":"登记产物到本任务卡执行流程的产物清单。文件必须在 AI_Gen_Files 目录内。流程结束、任务完成、有产物时弹汇总窗口让你勾选绑定（默认全选，每个文件绑一次）；任务未完成、中断、只有中间产物都不弹。普通对话场景调用此工具不报错也不绑（不反复尝试）。仅任务卡执行流程（🤖 按钮 / ⏰ 定时 / 📦 批量）内登记有效。","parameters":{"type":"object","properties":{
-    "taskId":{"type":"string","description":"任务 id，可选，优先于 title"},
-    "title":{"type":"string","description":"任务标题关键词，无 taskId 时使用"},
-    "path":{"type":"string","description":"产物文件绝对路径，必须在 AI_Gen_Files 目录内且文件已存在"},
-    "kind":{"type":"string","enum":["final","intermediate"],"default":"final","description":"final=最终产物，参与流程结束汇总弹窗；intermediate=中间产物，不参与弹窗。本会话在 AI_Gen_Files 目录没新建过的路径不参与绑定。"}
-  },"required":["path"]}}},
-  {"type":"function","function":{"name":"search_tasks","description":"按关键词搜索所有任务卡（待办/进行中/已完成/已归档；匹配标题/备注/标签/子任务）","parameters":{"type":"object","properties":{
-    "query":{"type":"string","description":"搜索关键词"}
-  },"required":["query"]}}},
-  {"type":"function","function":{"name":"extract_document","description":"提取文档内容（不传 path 时弹系统选择框由用户选 Word/Excel/PPT/PDF；传 path 时直接读取该文件，如任务卡的绑定文件；长文档用 offset 参数续读后续部分）","parameters":{"type":"object","properties":{
-    "path":{"type":"string","description":"文件绝对路径，可选"},
-    "offset":{"type":"integer","description":"字符偏移（可选，默认 0；返回里带『已截断』提示时用提示的 offset 值续读）"},
-    "limit":{"type":"integer","description":"本页字符数（可选，默认 30000，上限 60000）"}
-  }}}},
-  {"type":"function","function":{"name":"create_word","description":"生成 Word 文档到 AI_Gen_Files（润色后的文本用这个落地；不覆盖任何已有文件）","parameters":{"type":"object","properties":{
-    "title":{"type":"string","description":"文档标题，可选"},
-    "paragraphs":{"type":"array","items":{"type":"string"},"description":"正文段落列表，每段一个字符串"},
-    "tables":{"type":"array","description":"可选：表格列表，按顺序追加在段落之后；每个表 rows 二维数组、第一行当表头加粗","items":{"type":"object","properties":{
-      "title":{"type":"string","description":"表格标题，可选"},
-      "rows":{"type":"array","items":{"type":"array","items":{"type":"string"}}}
-    },"required":["rows"]}},
-    "filename":{"type":"string","description":"文件名（不含扩展名），可选"}
-  },"required":["paragraphs"]}}},
-  {"type":"function","function":{"name":"create_word_revisions","description":"生成带修订标记（修订模式）的 Word 到 AI_Gen_Files：在原文档副本上就地对比原文与润色后的段落打 Word 原生 track changes（保留原文格式/字体），可在 Word 审阅中逐条接受/拒绝（引擎：.NET OpenXML 优先，Python 兜底）","parameters":{"type":"object","properties":{
-    "originalPath":{"type":"string","description":"原文 Word 路径（extract_document 返回的 [文档路径]）"},
-    "original":{"type":"array","items":{"type":"string"},"description":"原文行列表（提取被截断时必须传，保证对比范围一致），可选"},
-    "revised":{"type":"array","items":{"type":"string"},"description":"润色后的段落列表"},
-    "title":{"type":"string","description":"文档标题，可选"},
-    "filename":{"type":"string","description":"文件名（不含扩展名），可选"}
-  },"required":["revised"]}}},
-  {"type":"function","function":{"name":"create_excel","description":"生成 Excel 到 AI_Gen_Files（单元格以 = 开头会写入原生公式如 =SUM(A1:A10)）","parameters":{"type":"object","properties":{
-    "sheets":{"type":"array","items":{"type":"object","properties":{
-      "name":{"type":"string"},
-      "rows":{"type":"array","items":{"type":"array","items":{"type":"string"}}}}},
-    "description":"工作表列表：name 表名、rows 二维数组"},
-    "filename":{"type":"string","description":"文件名（不含扩展名），可选"}
-  },"required":["sheets"]}}},
-  {"type":"function","function":{"name":"create_ppt","description":"生成专业排版 PPT 到 AI_Gen_Files（多版式：封面/目录/章节页/内容页/表格页/结束页 + 10 套配色主题，可用 customColors 自定义覆盖）","parameters":{"type":"object","properties":{
-    "title":{"type":"string","description":"演示文稿主标题"},
-    "theme":{"type":"string","enum":["blue","navy","teal","forest","wine","sky","plum","coral","dark","green"],"description":"配色主题（按场合选）：blue 商务与权威（默认，汇报/金融）/ navy 科技与夜景（深色发布会）/ teal 现代与健康（医疗/护肤）/ forest 自然与户外（环保/农业）/ wine 复古与学院（学术/历史）/ sky 纯净科技蓝（AI/云计算）/ plum 轻奢与神秘（珠宝/高端咨询）/ coral 海岸珊瑚（旅游/夏日）/ dark 深色通用 / green 清新绿"},
-    "customColors":{"type":"object","description":"可选：自定义配色覆盖主题（6 位 hex 如 1E40AF，可带 #）。键：bg 背景 / accent 强调色 / text 正文 / sub 次要文字 / band 大面积色块（必深色）/ bandtext 色块上文字 / alt 表格斑马纹。用户给了 VI 色/品牌色时用","properties":{
-      "bg":{"type":"string"},"accent":{"type":"string"},"text":{"type":"string"},"sub":{"type":"string"},"band":{"type":"string"},"bandtext":{"type":"string"},"alt":{"type":"string"}
-    }},
-    "slides":{"type":"array","description":"幻灯片列表，按展示顺序；每页一个 type","items":{"type":"object","properties":{
-      "type":{"type":"string","enum":["cover","toc","section","content","table","closing"],"description":"页面类型：cover 封面（title+subtitle）/ toc 目录（items 列表）/ section 章节分隔页 / content 内容要点页 / table 表格页（rows 二维数组首行表头）/ closing 结束页"},
-      "title":{"type":"string","description":"页面标题"},
-      "subtitle":{"type":"string","description":"副标题（cover/section/closing 用）"},
-      "bullets":{"type":"array","items":{"type":"string"},"description":"要点列表（content 页；≤5 条大字号，6-8 条中号，8 条以上自动双栏）"},
-      "items":{"type":"array","items":{"type":"string"},"description":"目录条目（toc 页）"},
-      "rows":{"type":"array","items":{"type":"array","items":{"type":"string"}},"description":"表格数据（table 页；第一行是表头）"}
-    },"required":["type","title"]}},
-    "filename":{"type":"string","description":"文件名（不含扩展名），可选"}
-  },"required":["slides"]}}},
-  {"type":"function","function":{"name":"create_pdf","description":"生成 PDF 到 AI_Gen_Files（中文支持）","parameters":{"type":"object","properties":{
-    "title":{"type":"string","description":"文档标题，可选"},
-    "paragraphs":{"type":"array","items":{"type":"string"},"description":"正文段落列表"},
-    "filename":{"type":"string","description":"文件名（不含扩展名），可选"}
-  },"required":["paragraphs"]}}},
-  {"type":"function","function":{"name":"run_python","description":"执行 Python 代码（本机沙箱：独立临时目录 + 默认超时 60s；默认需用户在设置页开启 Python 编程，授权模式为 yolo 时免开关）","parameters":{"type":"object","properties":{
-    "code":{"type":"string","description":"要执行的 Python 代码，print 输出返回给用户"},
-    "timeoutSecs":{"type":"integer","description":"超时秒数（可选，默认 60；大计算可调大，上限 300）"}
-  },"required":["code"]}}},
-  {"type":"function","function":{"name":"web_search","description":"搜索互联网获取最新信息（配置 Tavily 或 Brave key 时走对应 API、双开报错，否则 Bing+百度网页抓取；返回标题/链接/摘要）","parameters":{"type":"object","properties":{"query":{"type":"string","description":"搜索关键词"}},"required":["query"]}}},
-  {"type":"function","function":{"name":"fetch_url","description":"抓取网页正文（仅 http/https 公网地址；返回纯文本，用于读链接/总结网页内容）","parameters":{"type":"object","properties":{
-    "url":{"type":"string","description":"要抓取的网页地址"}
-  },"required":["url"]}}},
-  {"type":"function","function":{"name":"get_current_time","description":"获取当前日期时间和星期（涉及「今天/明天/昨天/周几/几点」类判断前必须先调，不要凭训练数据猜日期）","parameters":{"type":"object","properties":{}}}},
-  {"type":"function","function":{"name":"remember_fact","description":"记住一条用户偏好/事实（跨会话长期记忆，重启不丢；key 简短规范名词 ≤50 字，value 内容 ≤500 字；同 key 覆盖更新；value 传空串删除该条；写入结果若提示相似已有记忆，优先用同 key 覆盖更新而非另开新 key 堆积）","parameters":{"type":"object","properties":{
-    "key":{"type":"string","description":"简短规范名词，如「称呼」「偏好语言」「常用目录」"},
-    "value":{"type":"string","description":"要记住的内容；空串 = 删除该条"},
-    "category":{"type":"string","description":"分类（可选，默认 general）：profile 画像 / preference 偏好 / project 项目上下文 / general"},
-    "importance":{"type":"integer","description":"重要度 1-5（可选，默认 3；用户明确要求长期遵守的给 4-5，琐碎信息 1-2）"},
-    "source":{"type":"string","description":"来源（可选，默认 user_stated）：user_stated 用户明确说的 / model_inferred 模型推断的"}
-  },"required":["key","value"]}}},
-  {"type":"function","function":{"name":"recall_facts","description":"回忆长期记忆（相关记忆每轮已自动注入，一般无需调用；只在要浏览全部记忆或按关键词检索时才调）","parameters":{"type":"object","properties":{
-    "query":{"type":"string","description":"可选；给了按相关度检索返回 top-5，不给则全量读回"}
-  }}}},
-  {"type":"function","function":{"name":"record_lesson","description":"记录一条经验教训（跨会话长期记忆；被用户纠正、工具调用连续失败、发现更优做法时调用；同类场景的教训会自动合并，不会堆积）","parameters":{"type":"object","properties":{
-    "lesson":{"type":"string","description":"教训内容（≤800 字）：什么场景下应该/不应该怎么做，以及原因"},
-    "scenario":{"type":"string","description":"场景标签（可选 ≤50 字），如工具名或任务类型：create_ppt、批量执行、文档修订"}
-  },"required":["lesson"]}}},
-  {"type":"function","function":{"name":"use_skill","description":"读取已安装技能（skill）的完整文档并按文档步骤执行。任务涉及的每个相关技能都要读（可多次调用）：例如做 PPT 时，若清单里同时有编排、生成、配色、风格类技能，应逐个读取、取长补短综合运用，不要只读一个","parameters":{"type":"object","properties":{
-    "name":{"type":"string","description":"技能名（系统提示词「已安装技能」清单里的名称，一次一个，可多次调用）"}
-  },"required":["name"]}}}
-]"#;
+// TOOLS / MUTATING_TOOLS 已在阶段 2 拆出到 crate::bot::registry：
+// - `crate::bot::registry::tools_json()` → 原 TOOLS JSON（OnceLock 缓存）
+// - `crate::bot::registry::mutating_tools()` → 原 MUTATING_TOOLS（15 个 mutating 工具名）
+// 公开路径仍走 `pub use crate::bot::registry::tools_json as TOOLS;` / `as MUTATING_TOOLS;`
+// 但因 const → fn 类型变化（保持向后兼容需按函数调用），下游消费者已同步更新。
 
 /// <think> 标签拆分：喂入流式文本，返回 (正文, 思考)。标签跨流式块时用 think_buf 缓冲。
 fn feed_think(in_think: &mut bool, buf: &mut String, text: &str) -> (String, String) {
@@ -543,6 +388,12 @@ pub struct ModelLoopDeps<'a> {
     pub audit_log: &'a (dyn Fn(&str) + Send + Sync),
     /// Skill 收尾（bot_skills::skill_finish 等价物；返回附加提示文本）
     pub skill_finish: &'a (dyn Fn(bool, &str) -> String + Send + Sync),
+    /// 读「本会话活动技能快照」（`bot_skills::active_skill_run_for` 等价物）。
+    ///
+    /// 阶段 3.3 定的口径：核心**只读**技能状态（判断是否短路），拿到的是 clone 快照，
+    /// 结构上无法改生命周期；写操作（收尾 / 暂停 / 入口清理）留在核心之外或已有回调里。
+    pub active_skill_run:
+        &'a (dyn Fn(Option<&str>) -> Option<crate::bot_skills::SkillRun> + Send + Sync),
 }
 
 /// 模型工具循环薄壳：只做 AppHandle 依赖装配——
@@ -596,7 +447,14 @@ pub async fn run_model_loop(
         audit: &|level, event, kv| crate::audit::write_event(&app, level, event, &kv),
         audit_log: &|line| crate::bot::audit_log(&app, line),
         skill_finish: &|ok, reason| crate::bot_skills::skill_finish(&app, ok, reason, session_id),
+        // 阶段 3.3（口径：只读走注入）：核心每轮要读「本会话活动技能快照」决定是否短路，
+        // 但**不给它表**——写生命周期（收尾/暂停/清理）一律留在核心之外或既有回调里。
+        active_skill_run: &|session_id| crate::bot_skills::active_skill_run_for(&app, session_id),
     };
+    // 僵尸终态清理上移到薄壳（口径：写操作不该在模型循环核心）：
+    // 上轮遗留的 Completed/Failed/Terminated run 会在第 0 轮被 advance 短路（agent 假死根因）。
+    // 位置与原核心内调用等价——都发生在进入轮循环之前。
+    crate::bot_skills::clear_terminal_skill_runs(&app);
     let execute_tool = |name: String, args: String| {
         let app = app.clone();
         async move { crate::bot::execute_tool_with_stop(&app, &name, &args, Some(stop)).await }
@@ -650,16 +508,17 @@ where
             crate::bot_anthropic::anthropic_messages_url(&http.base_url)
         }
     };
-    let tools: serde_json::Value = serde_json::from_str(TOOLS).unwrap();
+    let tools: serde_json::Value = serde_json::from_str(TOOLS()).unwrap();
 
     let mut msgs = msgs;
     let emit = deps.emit;
     let audit = deps.audit;
     let audit_log = deps.audit_log;
     let skill_finish = deps.skill_finish;
+    let active_skill_run = deps.active_skill_run;
     let session_id: Option<&str> = stop.session_id();
-    // 僵尸终态清理：上轮 Skill 失败/完成的遗留 run 会在第 0 轮短路主循环（agent 假死根因）
-    crate::bot_skills::clear_terminal_skill_runs();
+    // 僵尸终态清理已上移到薄壳 `run_model_loop`（阶段 3.3：核心只读技能状态，
+    // 写生命周期不在核心——原位置与现在等价，都在进入轮循环之前）
     // 最多 max_rounds 轮（工具循环），每轮流式输出；收到 tool_calls 则执行后把结果续进对话
     let mut collected_refs: Vec<TaskRef> = Vec::new();
     let mut function_calls_total: usize = 0;
@@ -688,7 +547,7 @@ where
         }
         // 状态机推进决策：集中 Skill 推进逻辑
         // 未来横切关注点（审批/沙箱/上下文压缩）只动 advance_skill，主循环不重构
-        if let Some(run) = crate::bot_skills::active_skill_run_for(session_id) {
+        if let Some(run) = active_skill_run(session_id) {
             use crate::bot_skills::{advance_skill, AdvanceAction};
             match advance_skill(&run, chrono::Utc::now().timestamp_millis()) {
                 AdvanceAction::NoActive | AdvanceAction::Continue => {} // 继续本轮
@@ -1386,7 +1245,7 @@ mod hallucination_guard_tests {
             "create_task",
             "link_file_to_task",
         ] {
-            assert!(MUTATING_TOOLS.contains(&t), "{t} 应算变更类工具");
+            assert!(MUTATING_TOOLS().contains(&t), "{t} 应算变更类工具");
         }
         // 纯查询工具不算变更
         for t in [
@@ -1396,7 +1255,7 @@ mod hallucination_guard_tests {
             "web_search",
             "fetch_url",
         ] {
-            assert!(!MUTATING_TOOLS.contains(&t), "{t} 不应算变更类工具");
+            assert!(!MUTATING_TOOLS().contains(&t), "{t} 不应算变更类工具");
         }
     }
 
@@ -1762,7 +1621,7 @@ mod tools_schema_tests {
     /// 此测试守住：加/改工具后必须合法且字段完整。
     #[test]
     fn tools_schema_parses() {
-        let v: serde_json::Value = serde_json::from_str(TOOLS).expect("TOOLS 必须是合法 JSON");
+        let v: serde_json::Value = serde_json::from_str(TOOLS()).expect("TOOLS 必须是合法 JSON");
         let arr = v.as_array().expect("TOOLS 顶层必须是数组");
         assert!(!arr.is_empty(), "TOOLS 不能为空");
         for t in arr {

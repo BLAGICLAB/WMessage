@@ -59,8 +59,31 @@ fn default_name(kind: &str) -> String {
 /// Runtime 泛型（避免在 profile.rs 里硬编码 Wry，
 /// 这样单元测试可以用 tauri::test::MockRuntime 跑同一条生产代码路径）。
 /// cargo test 下 current_exe().parent() = target/debug/deps/ 可写，直接命中该分支。
+///
+/// 单元测试再按**进程**分一层子目录，见 `test_isolated_dir`。
 fn data_dir<R: Runtime>(app: &AppHandle<R>) -> std::path::PathBuf {
-    crate::paths::probe_log_dir(app)
+    let base = crate::paths::probe_log_dir(app);
+    #[cfg(test)]
+    let base = test_isolated_dir(base);
+    base
+}
+
+/// 单元测试专用：每个测试**进程**一个独立 profile 目录。
+///
+/// 为什么：`probe_log_dir` 在 cargo test 下解析到 `target/debug/deps/`——那是发布路径里
+/// 与 bot.log 共用的目录，不能改；而 nextest 是**每测试一进程**，并行进程会共用同一份
+/// `profile.json` 互相踩（`cargo nextest run` 下
+/// `load_data_corrupt_json_backs_up_and_returns_default` / `profile_overwrite_replaces_old_avatar`
+/// 等用例随机挂，已复现 6 次且每次失败集合不同）。按 pid 分子目录后：
+/// - `cargo test --lib`：单进程内所有 profile 测试共用一个目录，仍由 `ENV_LOCK` 串行；
+/// - `cargo nextest run`：每进程独立目录，天然隔离，不再依赖跨进程假设。
+/// 残留：`target/debug/deps/profile-tests-<pid>/` 会随运行累积（各自几 KB），
+/// 不做自动清理——跨进程清理本身就是竞态，且 target/ 可随时删。
+#[cfg(test)]
+fn test_isolated_dir(base: std::path::PathBuf) -> std::path::PathBuf {
+    let dir = base.join(format!("profile-tests-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    dir
 }
 
 fn profile_path<R: Runtime>(app: &AppHandle<R>) -> std::path::PathBuf {
@@ -367,8 +390,10 @@ pub fn profile_remove_avatar<R: Runtime>(
 // ───────────────────────── 单元测试 ─────────────────────────
 //
 // 测试策略：profile_get / profile_set_name / profile_set_avatar / profile_remove_avatar
-// 都依赖 db::data_dir(app)，该函数在 cargo test 下解析到 target/debug/deps/（current_exe 父目录可写）。
-// 因此所有访问共享状态的测试必须串行执行——通过 ENV_LOCK 互斥实现。
+// 都依赖 profile.rs::data_dir(app)。
+// - 进程内：所有访问该目录的测试必须串行（ENV_LOCK 互斥），防并行写同一份 profile.json；
+// - 进程间：data_dir 在 cfg(test) 下按 pid 分子目录（见 test_isolated_dir），
+//   这样 `cargo nextest run`（每测试一进程）不会让并行进程共用同一份 profile.json。
 // 默认 default_name / valid_kind / mime_for 等纯函数不需要锁，可自由并发。
 
 #[cfg(test)]
@@ -958,7 +983,11 @@ mod tests {
         let app = fresh_app();
         let handle = app.handle().clone();
         let data_dir = data_dir(&handle);
-        let _ = std::fs::remove_file(data_dir.join("bot.log"));
+        // 审计日志写在 probe_log_dir（生产同目录）；profile 数据目录自 3.3 起按进程隔离，
+        // 两者已不是同一目录 —— 这里显式取日志目录，并只校验「本次新增」的尾部，
+        // 不删共享 bot.log（删它会误伤并行用例，也掩盖不了回归）。
+        let log_path = crate::paths::probe_log_dir(&handle).join("bot.log");
+        let log_len_before = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
         // 绕过写入端 5MB 校验（模拟手改/旧版写入）：直接落 6MB 头像文件 + 手改 profile.json
         let profile_d = data_dir.join("profile");
         std::fs::create_dir_all(&profile_d).unwrap();
@@ -982,12 +1011,18 @@ mod tests {
         let view = profile_get(handle);
         assert!(
             view.user.avatar_data_url.is_none(),
-            "超过 5MB 的头像读取端必须拦截为 None（P2-17）"
+            "超过 5MB 的头像读取端必须拦截为 None"
         );
-        let log = std::fs::read_to_string(data_dir.join("bot.log")).unwrap_or_default();
+        let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+        let appended = if log.len() as u64 >= log_len_before {
+            &log[log_len_before as usize..]
+        } else {
+            // 日志被别的用例轮转/截断过 → 退化为全量校验（不 panic）
+            log.as_str()
+        };
         assert!(
-            log.contains("profile_avatar_too_large"),
-            "超限读取必须记 ERROR 审计（P2-17），bot.log: {log}"
+            appended.contains("profile_avatar_too_large"),
+            "超限读取必须记 ERROR 审计（读取端拦截 oversized avatar），本次新增段: {appended}"
         );
     }
 

@@ -310,19 +310,20 @@ fn accumulate_matches_production_merge_semantics() {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// F-6 step 4：LLM 黑名单绕过测试（defense-in-depth）
+// F-6 step 4：工具闸门测试（defense-in-depth）
 // ────────────────────────────────────────────────────────────────────
-// 模拟恶意 / 越权 LLM 返回黑名单 tool_call，验证 middleware 会拦截。
+// 模拟 LLM 返回各类 tool_call，验证 middleware::run_pre_execute 的判定。
 //
 // 设计要点：
 // - 不依赖 Tauri runtime（macOS EventLoop 主线程限制）
-// - 直接调 MiddlewareRegistry（已含完整黑名单/白名单逻辑）
+// - 直接调 MiddlewareRegistry（含完整闸门判定链）
 // - 验证 SSE 解析后的 tool_call.name 流经 middleware 校验链
-// - 三种组合：黑名单+无 Skill / 黑名单+Skill Running / 白名单+任意
+// - 组合：普通工具无 Skill / 任务类工具无 Skill / 任务类工具 + Skill Running / 只读工具 + 任意
 //
-// 这是 F-6 step 4 中最安全相关的测试：验证 defense-in-depth 即便 LLM
-// 被越权（提示词注入 / 越狱）尝试调 link_file_to_task
-// 这类底层原子工具，middleware 也会按状态拒绝。
+// D4d（docs/BOT-ARTIFACT-BIND-DESIGN.md）：ATOMIC_TOOLS 已清空，
+// middleware 对任何工具都不再阻断；link_file_to_task 的合法性改由工具内部
+// `is_task_execution_flow(session_id)` 判定（普通对话 → 无效果、不报错）。
+// 本组用例据此锁「middleware 放行」这一行为不变量。
 // （create_word_revisions 2026-09-02 起移出黑名单，去 Skill 化，聊天直调放行）
 
 /// F-6 step 4 refactor 后的 helper：从 parsed.tool_calls 提取第一个的 name
@@ -364,11 +365,15 @@ async fn llm_create_word_revisions_allowed_without_skill() {
     );
 }
 
+/// D4d：原子黑名单已清空，middleware 不再拦截任何工具。
+/// link_file_to_task 的合法性由工具内部 `is_task_execution_flow(session_id)` 判定
+/// （普通对话 → 返回「无效果、不报错」，不污染产物登记表）。
+/// 回归锁：中间件不得把它拦回「不允许裸调」，否则普通对话场景模型会收到误导话术。
 #[tokio::test]
-async fn llm_blacklist_tool_call_link_file_to_task_blocked_when_no_skill() {
+async fn llm_tool_call_link_file_to_task_passes_middleware_when_no_skill() {
     let server = MockLlmServer::start();
     server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
-        name: "link_file_to_task".to_string(), // 黑名单原子
+        name: "link_file_to_task".to_string(),
         arguments: r#"{"taskId":"abc","filePath":"/x.pdf"}"#.to_string(),
     }));
 
@@ -381,14 +386,15 @@ async fn llm_blacklist_tool_call_link_file_to_task_blocked_when_no_skill() {
 
     let bytes = resp.bytes().await.expect("read body");
     let parsed = parse_sse_bytes(&bytes);
-    let blocked_tool = first_tool_name(&parsed);
+    let tool = first_tool_name(&parsed);
+    assert_eq!(tool, "link_file_to_task", "SSE 解析后 tool name 应正确");
 
-    // 非 Skill 状态应阻断
+    // 非 Skill 状态：middleware 放行（拦截职责在工具内部）
     let registry = middleware::build_default_registry();
-    let block_msg = registry.run_pre_execute(&mock_handle(), &blocked_tool, false);
+    let blocked = registry.run_pre_execute(&mock_handle(), &tool, false);
     assert!(
-        block_msg.is_some(),
-        "link_file_to_task + 非 Skill 状态应被 middleware 阻断"
+        blocked.is_none(),
+        "黑名单已清空：middleware 不应再阻断 link_file_to_task；got: {blocked:?}"
     );
 }
 
@@ -453,22 +459,24 @@ async fn llm_whitelist_tool_call_run_python_always_allowed() {
     }
 }
 
+/// 混合序列：LLM 先试任务类工具（link_file_to_task）、再试只读工具（list_tasks）。
+/// D4d 后两者在 middleware 层都放行——前者的合法性由工具内部 is_task_execution_flow 判定。
 #[tokio::test]
-async fn llm_mixed_sequence_blacklist_then_whitelist_block_then_allow() {
-    // 模拟 LLM 在 chat loop 中先试黑名单、再试白名单的混合场景
+async fn llm_mixed_sequence_task_tool_then_readonly_both_pass() {
+    // 模拟 LLM 在 chat loop 中先试 link_file_to_task、再试 list_tasks 的混合场景
     let server = MockLlmServer::start();
     server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
         name: "link_file_to_task".to_string(),
         arguments: "{}".to_string(),
     }));
     server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
-        name: "list_tasks".to_string(), // 白名单
+        name: "list_tasks".to_string(), // 只读
         arguments: "{}".to_string(),
     }));
 
     let client = reqwest::Client::new();
 
-    // 轮次 1：LLM 试 link_file_to_task（应被 middleware 阻断）
+    // 轮次 1：LLM 试 link_file_to_task（middleware 放行）
     let resp1 = client
         .post(format!("{}/chat/completions", server.base_url))
         .json(&make_body("try 1"))
@@ -482,11 +490,11 @@ async fn llm_mixed_sequence_blacklist_then_whitelist_block_then_allow() {
     assert!(
         registry
             .run_pre_execute(&mock_handle(), &tool1, false)
-            .is_some(),
-        "轮次 1 link_file_to_task 应被阻断"
+            .is_none(),
+        "轮次 1 {tool1} 应放行（黑名单已清空，拦截职责在工具内部）"
     );
 
-    // 轮次 2：LLM 改试 list_tasks（白名单，应放行）
+    // 轮次 2：LLM 改试 list_tasks（只读，放行）
     let resp2 = client
         .post(format!("{}/chat/completions", server.base_url))
         .json(&make_body("try 2"))
@@ -555,6 +563,9 @@ struct CoreHarness {
     audit: Box<dyn Fn(AuditLevel, &'static str, Vec<(&'static str, String)>) + Send + Sync>,
     audit_log: Box<dyn Fn(&str) + Send + Sync>,
     skill_finish: Box<dyn Fn(bool, &str) -> String + Send + Sync>,
+    /// 阶段 3.3：核心只读「活动技能快照」（等价 `bot_skills::active_skill_run_for`）
+    active_skill_run:
+        Box<dyn Fn(Option<&str>) -> Option<wmessage_lib::bot_skills::SkillRun> + Send + Sync>,
     audit_events: AuditEvents,
 }
 
@@ -564,13 +575,17 @@ impl CoreHarness {
         let events2 = events.clone();
         Self {
             // 非交互实例：不发流式事件，stop 标志未置位
-            stop: StopGuard::new(false, None),
+            stop: StopGuard::new(&mock_handle(), false, None),
             emit: Box::new(|_, _| {}),
             audit: Box::new(move |_, event, _| {
                 events2.lock().unwrap().push(event);
             }),
             audit_log: Box::new(|_| {}),
             skill_finish: Box::new(|_, _| String::new()),
+            // 用真 accessor（走兜底实例，与生产语义一致）；本组用例不插 run → 恒 None
+            active_skill_run: Box::new(|sid| {
+                wmessage_lib::bot_skills::active_skill_run_for(&mock_handle(), sid)
+            }),
             audit_events: events,
         }
     }
@@ -581,6 +596,7 @@ impl CoreHarness {
             audit: &*self.audit,
             audit_log: &*self.audit_log,
             skill_finish: &*self.skill_finish,
+            active_skill_run: &*self.active_skill_run,
         }
     }
 

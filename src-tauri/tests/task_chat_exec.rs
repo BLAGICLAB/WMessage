@@ -106,7 +106,7 @@ async fn run_task_in_chat_full_chain_manual_origin() {
     let sh = stop_holder.clone();
     let handle2 = handle.clone();
     let task_id_for_runner = task_id.clone();
-    let runner = move |_app: tauri::AppHandle<tauri::test::MockRuntime>,
+    let runner = move |app: tauri::AppHandle<tauri::test::MockRuntime>,
                        msgs: Vec<serde_json::Value>,
                        stop: StopGuard| {
         let http = http;
@@ -132,8 +132,13 @@ async fn run_task_in_chat_full_chain_manual_origin() {
             );
             // ChatGuard：执行期会话锁必须持有（bot_execute_task 纳入 ChatGuard 的证据）
             let sid = stop.session_id().expect("执行会话 id").to_string();
-            assert!(chat_guard_is_held(&sid), "执行期 ChatGuard 应持有");
+            assert!(chat_guard_is_held(&app, &sid), "执行期 ChatGuard 应持有");
             *sh.lock().unwrap() = Some(sid);
+            // 阶段 3.3：核心只读「活动技能快照」的注入（须在 exec 闭包 move 走 handle3 之前克隆）
+            let handle_for_skill = handle3.clone();
+            let active_skill_run = move |sid: Option<&str>| {
+                wmessage_lib::bot_skills::active_skill_run_for(&handle_for_skill, sid)
+            };
             // 工具执行替身：execute_tool 的 AppHandle(Wry) 链路不在 mock runtime 下可调，
             // 这里按 complete_task 语义直写同一个库（列 → done），验证回写通路
             let exec = move |name: String, _args: String| {
@@ -155,6 +160,7 @@ async fn run_task_in_chat_full_chain_manual_origin() {
                 audit: &|_: AuditLevel, _: &'static str, _| {},
                 audit_log: &|_| {},
                 skill_finish: &|_, _| String::new(),
+                active_skill_run: &active_skill_run,
             };
             run_model_loop_core(&http, msgs, 10, &stop, None, &deps, exec, noop_replan).await
         }
@@ -168,7 +174,10 @@ async fn run_task_in_chat_full_chain_manual_origin() {
     // runner 内记录的会话 id 与返回值一致
     assert_eq!(stop_holder.lock().unwrap().as_deref(), Some(sid.as_str()));
     // 执行结束后 ChatGuard 已释放
-    assert!(!chat_guard_is_held(&sid), "执行结束 ChatGuard 应释放");
+    assert!(
+        !chat_guard_is_held(&handle, &sid),
+        "执行结束 ChatGuard 应释放"
+    );
 
     // 会话创建：标题前缀 📋 任务：
     let conn = wmessage_lib::db::open_db(&handle).unwrap();

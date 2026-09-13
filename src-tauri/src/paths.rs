@@ -61,9 +61,50 @@ pub(crate) fn probe_dir(
 /// `~/Library/Application Support/...`，AI_Gen_Files、数据库、日志分裂。
 ///
 /// 兜底分支发生时记一条 WARN 审计（写清翻到哪、为什么），可诊断。
-pub(crate) fn probe_log_dir<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-) -> std::path::PathBuf {
+///
+/// # 测试期的跨进程共享（留档，2026-09-13 决策：暂不下沉）
+///
+/// `cargo nextest run` 是**每测试一进程**，而本函数在测试构建下解析到
+/// `current_exe().parent()` = `target/debug/deps/` —— 于是同一份 `bot.log`（审计追加）、
+/// `wmessage.db`、`api-enabled.flag` / `bot-enabled.flag`、降级 key 文件会被多个测试进程共享。
+///
+/// 现状与证据：
+/// - `profile.json` 已按 pid 隔离（`profile.rs::test_isolated_dir`），这是唯一**被实证打中**的
+///   共享文件（`cargo nextest run` 曾 6 次复现 profile 用例随机挂，修后 5×nextest 全绿）；
+/// - 上列其余文件**5 次 nextest 未出现失败**，故暂不处理（不扩大范围，等实锤）。
+///
+/// 2026-09-13 追加实证（**进程内**并行，与 nextest 不同层）：
+/// `cargo test --lib`（同进程多线程）下 `exit_cleanup_tests::cleanup_on_exit_releases_api_and_skill`
+/// 失败 **1 次**：`lib.rs:813`「退出路径不得清 api-enabled.flag」。
+/// - 该用例单跑 3/3 通过；其后连跑 16 轮全套 lib（6 + 10）**全绿**；
+/// - **机制未定位**，已排除：exit 路径自身（`api_stop_for_exit` → `clear_enabled=false`）、
+///   测试直调 `api_stop`/`api_status`（全仓无调用点）、`migration` 测试（各自 temp 目录）、
+///   `profile.rs::fresh_app`（只删 `profile*`）、`paths.rs` 测试（各自 uuid 子目录）；
+///   剩余嫌疑是「某并行用例对共享 data 目录的写/删」，但未找到具体调用点。
+/// - **关键结论**：这类失败发生在**同进程并行**，B1/B2/B3（按 **pid** 隔离）**覆盖不到它**
+///   ——同 pid 的测试本就共享一个目录。要治它需要**按测试**隔离（当前架构没有该能力，
+///   例如给这些文件加测试专用 override hook），或对相关用例加一把窄串行锁（打补丁）。
+///   nextest 是每测试一进程，因此天然避开这一类（这解释了 5×nextest 全绿）。
+///
+/// 若将来要彻底隔离，候选方案（本次评估的价格）：
+/// - **B1**：本函数在 `cfg(test)` 下返回 `.../deps/<pid>/`。代价：
+///   `probe_log_dir_matches_exe_parent_in_cargo_test` 的 `assert_eq!` 须改弱为
+///   「前缀 + pid 后缀」；`profile.rs::test_isolated_dir` 变冗余应删（消掉「profile 数据目录
+///   ≠ 审计目录」这处不一致）；`target/debug/deps` 下目录/文件累积从「十位数/次」升到
+///   「百位数/次」（nextest 每进程一套）。
+/// - **B2**：B1 + 保守清理（首次调用删 mtime > 1h 的同名前缀目录；只删"肯定已死"的，
+///   避免删到在跑进程的目录反而制造更凶的 flake）。
+/// - **B3**：连集成测试一起管（本函数读 `WMESSAGE_TEST_DATA_DIR` env 覆盖 + nextest 配置注入）。
+///   注意：集成测试（`tests/*.rs`）的 lib 按**发布语义**编译，看不到 `cfg(test)` 分支，
+///   所以 B1/B2 只修 lib 单测那一半；且 nextest 配置文件位置依赖 cwd（仓库根 vs `src-tauri/`），
+///   较脆弱。
+///
+/// 触发条件：出现**实证**失败（哪个用例、哪条断言、哪个共享文件）→ 再按上表选档。
+///
+/// 决策（2026-09-13，口径 C1）：**只留档、不盲改** —— 上面那条进程内实证尚未定位到具体
+/// 调用点，无靶点的修改等于猜；下次复现时先定位「哪个调用点删/写了哪个文件」，再按
+/// 进程间走 B1/B2/B3、进程内走「按测试隔离（治本）」或「窄串行锁（打补丁）」选档。
+pub(crate) fn probe_log_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> std::path::PathBuf {
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|e| e.parent().map(|p| p.to_path_buf()));
@@ -203,7 +244,10 @@ fn write_fallback_warn(dir: &std::path::Path, event: &str, kv: &[(&str, &str)]) 
         line.push_str(&format!(" | {}={}", k, esc));
     }
     // 创建即 0600（与 audit::open_log_append 一致）；写失败 eprintln 不阻塞
-    let open = std::fs::OpenOptions::new().create(true).append(true).open(&p);
+    let open = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&p);
     match open {
         Ok(mut f) => {
             if let Err(e) = writeln!(f, "{line}") {
@@ -242,11 +286,7 @@ mod tests {
             None,
             Some(std::path::PathBuf::from("/tmp/wm-probe-cache-test")),
         );
-        let second = probe_dir_cached_in(
-            &cache,
-            Some(Path::new("/nonexistent-exe-dir")),
-            None,
-        );
+        let second = probe_dir_cached_in(&cache, Some(Path::new("/nonexistent-exe-dir")), None);
         assert_eq!(first, second, "定版后探测条件变化不得改变数据目录");
     }
 
@@ -257,7 +297,11 @@ mod tests {
             .unwrap()
             .parent()
             .unwrap()
-            .join(format!("wm-probe-test-{}-{}", name, uuid::Uuid::new_v4().simple()));
+            .join(format!(
+                "wm-probe-test-{}-{}",
+                name,
+                uuid::Uuid::new_v4().simple()
+            ));
         std::fs::create_dir_all(&base).unwrap();
         base
     }
@@ -406,12 +450,24 @@ mod tests {
             "级别必须 WARN: {line:?}"
         );
         // (c) event + kv 三段以 " | " 分隔
-        assert!(line.contains(" | data_dir_fallback | "), "event 段缺失: {line:?}");
-        assert!(line.contains(" | exe_dir=/a/b/c"), "exe_dir 段缺失: {line:?}");
-        assert!(line.contains(" | resolved=/x/y/z"), "resolved 段缺失: {line:?}");
+        assert!(
+            line.contains(" | data_dir_fallback | "),
+            "event 段缺失: {line:?}"
+        );
+        assert!(
+            line.contains(" | exe_dir=/a/b/c"),
+            "exe_dir 段缺失: {line:?}"
+        );
+        assert!(
+            line.contains(" | resolved=/x/y/z"),
+            "resolved 段缺失: {line:?}"
+        );
         assert!(line.contains(" | reason="), "reason 段缺失: {line:?}");
         // (d) 末尾 \n
-        assert!(line.ends_with('\n') || content.ends_with('\n'), "行末换行缺失");
+        assert!(
+            line.ends_with('\n') || content.ends_with('\n'),
+            "行末换行缺失"
+        );
     }
 
     #[test]

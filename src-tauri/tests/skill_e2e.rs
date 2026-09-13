@@ -8,9 +8,9 @@
 //!
 //! 覆盖范围：
 //! 1. pre-step 路由（middleware::MiddlewareRegistry）
-//! 2. pre-execute 黑名单阻断 + 放行（同上）
+//! 2. pre-execute 放行（D4d 后原子黑名单已清空，拦截职责在工具内部，同上）
 //! 3. 真 Skill fixture 解析（scan_skill_dirs + parse_meta）
-//! 4. 黑名单/白名单原子分类（tool_guard 纯函数）
+//! 4. 原子黑名单已清空 + 白名单不误判（tool_guard 纯函数）
 //! 5. 意图路由动态规则（intent_router 纯函数 + fixture 扫描，2026-08-19 起路由来自已安装技能 intents）
 //!
 //! 2026-09-03 T1-2 已完成：run_skill_scheduler_core（调度器本体，重构后泛型 Runtime +
@@ -82,15 +82,27 @@ fn pre_step_pass_through_for_normal_query() {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// 2. pre-execute 黑名单阻断 + 放行
+// 2. pre-execute 放行（D4d：ATOMIC_TOOLS 清空，拦截职责移到工具内部）
 // ────────────────────────────────────────────────────────────────────
 
+/// D4d（docs/BOT-ARTIFACT-BIND-DESIGN.md）：原子黑名单已清空，
+/// link_file_to_task 的合法性改由工具内部 `is_task_execution_flow(session_id)` 判定，
+/// 中间件层对任何工具都不再阻断（含非 Skill 状态）。
+/// 回归锁：中间件不得把这个工具拦回「不允许裸调」——普通对话场景的既定口径是
+/// 「调用无效果（不报错也不绑）」，见 TOOLS 里 link_file_to_task 的 schema 描述。
 #[test]
-fn pre_execute_blocks_atomic_tool_when_no_skill() {
+fn pre_execute_passes_link_file_to_task_when_no_skill() {
     let registry = middleware::build_default_registry();
     let blocked = registry.run_pre_execute(&mock_handle(), "link_file_to_task", false);
-    let msg = blocked.expect("link_file_to_task + 非 Skill 状态应被阻断");
-    assert!(msg.contains("Skill"), "阻断消息应引导走 Skill；实际：{msg}");
+    assert!(
+        blocked.is_none(),
+        "黑名单已清空：middleware 不应再阻断 link_file_to_task；实际：{blocked:?}"
+    );
+    // 配套契约：无 session 上下文 → 工具内部判为非任务执行流程（据此返回「无效果、不报错」）
+    assert!(
+        !tool_guard::is_task_execution_flow(None),
+        "普通对话（无 session）应判为非任务执行流程"
+    );
 }
 
 #[test]
@@ -125,14 +137,16 @@ fn pre_execute_allows_whitelist_tool() {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// 3. 黑名单/白名单原子分类（纯函数）
+// 3. 原子黑名单已清空（tool_guard 纯函数）
 // ────────────────────────────────────────────────────────────────────
 
+/// D4d：ATOMIC_TOOLS 已清空（见 tool_guard.rs 顶部说明 + docs/BOT-ARTIFACT-BIND-DESIGN.md），
+/// is_atomic_tool 恒 false；拦截改由工具内部 is_task_execution_flow 按 session 上下文判定。
 #[test]
-fn atomic_guard_blacklist_classification() {
-    // 黑名单必须识别（2026-09-02：create_word_revisions 去 Skill 化移出，仅剩 link_file_to_task）
+fn atomic_guard_blacklist_is_empty() {
+    // 原黑名单成员（link_file_to_task）与已去 Skill 化的 create_word_revisions 都不得被判为原子
     assert!(!tool_guard::is_atomic_tool("create_word_revisions"));
-    assert!(tool_guard::is_atomic_tool("link_file_to_task"));
+    assert!(!tool_guard::is_atomic_tool("link_file_to_task"));
 
     // 已知白名单必须不被误判为黑名单
     for name in [
@@ -240,9 +254,10 @@ fn real_skill_fixture_loads_via_scan_skill_dirs() {
 // execute_tool / persist_outcome，这里用 MockRuntime + mock executor +
 // 真 fixture SKILL.md + 真 upsert_skill_outcome（临时库）直驱调度器本体。
 //
-// 并行隔离：本文件 4 个新用例都写全局 SKILL_RUNS，照批次8先例全程持
-// 本地串行锁（lib 内 SKILL_RUNS_TEST_LOCK 是 cfg(test) 的，集成测试是
-// 独立 crate 够不到，故在本二进制内自建一把）。
+// 并行隔离：本文件 4 个新用例都写 SKILL_RUNS，而集成测试是独立 crate——
+// 既够不到 lib 内 cfg(test) 的测试辅助，也注不进 `pub(crate)` 的 `AppState`
+// （阶段 3.3：表已随 AppState 走，集成测试统一落进程级兜底实例），
+// 故在本二进制内自建一把串行锁（lib 侧对应的 `SKILL_RUNS_TEST_LOCK` 已随迁移撤掉）。
 // ────────────────────────────────────────────────────────────────────
 
 use std::sync::{Arc, Mutex};
@@ -358,7 +373,7 @@ async fn scheduler_e2e_done_path_finishes_run_audits_and_persists() {
         .unwrap_or_else(|e| e.into_inner());
     let (meta, body) = fixture_meta_body();
     let app = mock_handle();
-    test_hook_insert_skill_run(make_run("minimax-ppt", SkillState::Running));
+    test_hook_insert_skill_run(&app, make_run("minimax-ppt", SkillState::Running));
     let log_offset = bot_log_len();
 
     // mock executor：step1 返回 JSON（供 ${step1.result} 变量替换），step2 记录替换后 args
@@ -390,7 +405,7 @@ async fn scheduler_e2e_done_path_finishes_run_audits_and_persists() {
 
     // Done 收尾（P0-1 回归锁）：成功路径必须调真 skill_finish 把 Running → Completed
     assert_eq!(
-        test_hook_skill_run_state("minimax-ppt"),
+        test_hook_skill_run_state(&app, "minimax-ppt"),
         Some(SkillState::Completed),
         "Done 路径应把 run 收尾为 Completed（P0-1：原先泄漏为僵尸 Running）"
     );
@@ -444,7 +459,7 @@ async fn scheduler_e2e_done_path_finishes_run_audits_and_persists() {
         "落库 summary 应含步骤摘要：{row:?}"
     );
 
-    test_hook_remove_skill_run("minimax-ppt");
+    test_hook_remove_skill_run(&app, "minimax-ppt");
     let _ = std::fs::remove_file(&db_path);
 }
 
@@ -457,7 +472,7 @@ async fn scheduler_e2e_paused_run_returns_await_user() {
         .unwrap_or_else(|e| e.into_inner());
     let (meta, body) = fixture_meta_body();
     let app = mock_handle();
-    test_hook_insert_skill_run(make_run("minimax-ppt", SkillState::Paused));
+    test_hook_insert_skill_run(&app, make_run("minimax-ppt", SkillState::Paused));
     let log_offset = bot_log_len();
 
     let exec = |tool: String, args: String| async move {
@@ -496,11 +511,11 @@ async fn scheduler_e2e_paused_run_returns_await_user() {
     );
     // 暂停中的 run 不被调度器改动（等 bot_confirm_response 唤起）
     assert_eq!(
-        test_hook_skill_run_state("minimax-ppt"),
+        test_hook_skill_run_state(&app, "minimax-ppt"),
         Some(SkillState::Paused)
     );
 
-    test_hook_remove_skill_run("minimax-ppt");
+    test_hook_remove_skill_run(&app, "minimax-ppt");
     let _ = std::fs::remove_file(&db_path);
 }
 
@@ -514,19 +529,21 @@ async fn scheduler_e2e_failed_step_runs_rollback_window() {
         .unwrap_or_else(|e| e.into_inner());
     let (meta, body) = fixture_meta_body();
     let app = mock_handle();
-    test_hook_insert_skill_run(make_run("minimax-ppt", SkillState::Running));
+    test_hook_insert_skill_run(&app, make_run("minimax-ppt", SkillState::Running));
     let log_offset = bot_log_len();
 
     let rollback_states: Arc<Mutex<Vec<Option<SkillState>>>> = Arc::new(Mutex::new(Vec::new()));
+    let app_for_exec = app.clone();
     let rb_states2 = rollback_states.clone();
     let exec = move |tool: String, _args: String| {
         let rb_states = rb_states2.clone();
+        let app = app_for_exec.clone();
         async move {
             match tool.as_str() {
                 "list_tasks" => (r#"[]"#.to_string(), Vec::new()),
                 "create_task" => {
                     // 模拟生产 skill_on_step_post：工具失败后 run 被标 Failed
-                    test_hook_insert_skill_run(make_run("minimax-ppt", SkillState::Failed));
+                    test_hook_insert_skill_run(&app, make_run("minimax-ppt", SkillState::Failed));
                     ("失败：模拟工具异常".to_string(), Vec::new())
                 }
                 "rollback_marker" => {
@@ -534,7 +551,7 @@ async fn scheduler_e2e_failed_step_runs_rollback_window() {
                     rb_states
                         .lock()
                         .unwrap()
-                        .push(test_hook_skill_run_state("minimax-ppt"));
+                        .push(test_hook_skill_run_state(&app, "minimax-ppt"));
                     ("rolled back".to_string(), Vec::new())
                 }
                 other => panic!("意外工具调用：{other}"),
@@ -571,7 +588,7 @@ async fn scheduler_e2e_failed_step_runs_rollback_window() {
         "回滚窗口内 run 应被临时重开为 Running（P0-5）"
     );
     assert_eq!(
-        test_hook_skill_run_state("minimax-ppt"),
+        test_hook_skill_run_state(&app, "minimax-ppt"),
         Some(SkillState::Failed),
         "回滚结束后应复原 Failed 终态"
     );
@@ -592,7 +609,7 @@ async fn scheduler_e2e_failed_step_runs_rollback_window() {
         );
     }
 
-    test_hook_remove_skill_run("minimax-ppt");
+    test_hook_remove_skill_run(&app, "minimax-ppt");
     let _ = std::fs::remove_file(&db_path);
 }
 
@@ -606,7 +623,7 @@ async fn scheduler_e2e_zombie_terminal_run_cleared_at_entry() {
         .unwrap_or_else(|e| e.into_inner());
     let (meta, body) = fixture_meta_body();
     let app = mock_handle();
-    test_hook_insert_skill_run(make_run("minimax-ppt", SkillState::Completed));
+    test_hook_insert_skill_run(&app, make_run("minimax-ppt", SkillState::Completed));
 
     let calls: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let calls2 = calls.clone();
@@ -636,6 +653,6 @@ async fn scheduler_e2e_zombie_terminal_run_cleared_at_entry() {
         "两步都应执行（未被第 0 步短路）"
     );
 
-    test_hook_remove_skill_run("minimax-ppt");
+    test_hook_remove_skill_run(&app, "minimax-ppt");
     let _ = std::fs::remove_file(&db_path);
 }

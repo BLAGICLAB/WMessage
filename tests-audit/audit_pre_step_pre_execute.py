@@ -21,7 +21,14 @@ import sys
 import pytest
 
 SRC = Path("/Users/renshi/Projects/wmessage/src-tauri/src")
-BOT = (SRC / "bot.rs").read_text()
+# 2026-09-13 阶段 1：bot.rs 拆为门面 + bot/{config,dispatch,registry,tools}.rs，
+# 与下面 bot_skills 目录化同款处理——拼接所有子模块保持「单文件语义」，
+# 断言不必跟着搬家（execute_tool 在 bot/dispatch.rs、BotConfig 在 bot/config.rs、
+# TOOLS_TABLE 在 bot/registry.rs，都仍在这份文本里）。
+BOT = "\n".join(
+    [(SRC / "bot.rs").read_text()]
+    + [p.read_text() for p in sorted((SRC / "bot").glob("*.rs"))]
+)
 # F-6 step 5（2026-08-18）后：聊天编排在 bot_chat.rs、工具循环在 bot_model_loop.rs。
 # 编排/路由/事件类断言统一对合并文本 BOT_ALL 做（行为仍在，只是位置搬家）
 BOT_CHAT = (SRC / "bot_chat.rs").read_text()
@@ -240,10 +247,13 @@ class TestPreExecuteAtomicGuard:
         )
 
     def test_is_atomic_tool_function(self):
-        """is_atomic_tool 函数存在并正确判断"""
+        """is_atomic_tool 函数存在并有单测覆盖。
+
+        D4d（docs/BOT-ARTIFACT-BIND-DESIGN.md）：ATOMIC_TOOLS 清空，拦截职责移到
+        tool_link_file_to_task 内部的 is_task_execution_flow，原单测
+        atomic_blacklist_recognizes 随之改为 atomic_blacklist_is_empty（断言恒 false）。"""
         assert "pub fn is_atomic_tool" in TOOL_GUARD
-        # 单测覆盖
-        assert "atomic_blacklist_recognizes" in TOOL_GUARD
+        assert "atomic_blacklist_is_empty" in TOOL_GUARD
 
     def test_atomic_block_message_mentions_skill(self):
         """阻断消息应引导走 Skill"""
@@ -266,9 +276,14 @@ class TestPreExecuteAtomicGuard:
         assert "fn tool_query_single_task(" in BOT, (
             "query_single_task 需有实现函数"
         )
-        # execute_tool match arm 也要有
-        assert '"query_single_task" => tool_query_single_task' in BOT, (
-            "execute_tool 里缺 query_single_task 路由"
+        # 2026-09-13 阶段 2：dispatch 从大 match 改为 TOOLS_TABLE 查表，
+        # 路由断言随之锁「表行两半」（name + call）；表与 schema 内 name 的一致性
+        # 由 Rust 侧 registry_tests::tool_def_name_matches_schema_name 锁死。
+        assert 'name: "query_single_task"' in BOT, (
+            "TOOLS_TABLE 缺 query_single_task 行"
+        )
+        assert "call: call_query_single_task" in BOT, (
+            "TOOLS_TABLE 里 query_single_task 行缺 call 指向（dispatch 查表会落空）"
         )
         # tool_guard 白名单单测也要包含
         assert '"query_single_task"' in TOOL_GUARD, (

@@ -10,10 +10,7 @@
 
 use crate::bot_chat::TaskExecOrigin;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::sync::OnceLock;
 use tauri::AppHandle;
-use tokio::sync::Mutex;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -29,15 +26,18 @@ pub struct RegisteredArtifact {
     pub registered_at: i64,
 }
 
-static REGISTRY: OnceLock<Mutex<HashMap<String, Vec<RegisteredArtifact>>>> = OnceLock::new();
-
-fn registry() -> &'static Mutex<HashMap<String, Vec<RegisteredArtifact>>> {
-    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
-}
+// 阶段 3.2：产物登记表已收进 `AppState`（`app.manage` 注入），访问器走 `try_state`；
+// 未注入的路径退回进程级兜底实例，语义与 3.1 前完全一致。
+use crate::app_state::artifact_registry;
 
 /// 登记一个产物。同 task_id + path 去重。
-pub async fn register(task_id: &str, path: String, kind: ArtifactKind) {
-    let mut map = registry().lock().await;
+pub async fn register<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    task_id: &str,
+    path: String,
+    kind: ArtifactKind,
+) {
+    let mut map = artifact_registry(app).lock().await;
     let entry = map.entry(task_id.to_string()).or_default();
     if !entry.iter().any(|a| a.path == path) {
         entry.push(RegisteredArtifact {
@@ -49,15 +49,18 @@ pub async fn register(task_id: &str, path: String, kind: ArtifactKind) {
 }
 
 /// 弹窗前取走：清空并返回当前 task_id 的全部登记
-pub async fn take_all(task_id: &str) -> Vec<RegisteredArtifact> {
-    let mut map = registry().lock().await;
+pub async fn take_all<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    task_id: &str,
+) -> Vec<RegisteredArtifact> {
+    let mut map = artifact_registry(app).lock().await;
     map.remove(task_id).unwrap_or_default()
 }
 
 /// 只看不取（调试 / 状态查询用）
 #[allow(dead_code)]
-pub async fn peek(task_id: &str) -> Vec<RegisteredArtifact> {
-    let map = registry().lock().await;
+pub async fn peek<R: tauri::Runtime>(app: &AppHandle<R>, task_id: &str) -> Vec<RegisteredArtifact> {
+    let map = artifact_registry(app).lock().await;
     map.get(task_id).cloned().unwrap_or_default()
 }
 
@@ -70,12 +73,13 @@ pub async fn peek(task_id: &str) -> Vec<RegisteredArtifact> {
 /// intermediate 不参与弹窗（schema 已说明：本会话在 AI_Gen_Files 目录
 /// 没新建过的路径不参与绑定——这是 LLM 自报 kind 时的兜底描述，
 /// 实际路径合法性仍由 `tool_link_file_to_task` 在登记前 canonicalize 校验）。
-pub async fn should_emit(
+pub async fn should_emit<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     task_id: &str,
     origin: TaskExecOrigin,
     task_column: Option<&str>,
 ) -> Option<Vec<RegisteredArtifact>> {
-    let all = peek(task_id).await;
+    let all = peek(app, task_id).await;
     let finals: Vec<_> = all
         .into_iter()
         .filter(|a| a.kind == ArtifactKind::Final)
@@ -128,13 +132,22 @@ pub async fn confirm_artifact_batch(
         .map_err(|e| format!("绑定失败：{e}"))?;
     crate::bot::broadcast_after_mutation(&app, vec![next.clone()], vec![]);
     // 弹窗已确认，清登记表
-    take_all(&task_id).await;
+    take_all(&app, &task_id).await;
     Ok(paths.len())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 阶段 3.2 样板：给 mock app 注入**独立** `AppState`（每测试一个实例）。
+    /// 不注入也能跑（会走兜底实例），但注入后测试之间互不可见。
+    fn test_handle() -> AppHandle<tauri::test::MockRuntime> {
+        use tauri::Manager;
+        let app = tauri::test::mock_app();
+        app.manage(crate::app_state::AppState::default());
+        app.handle().clone()
+    }
 
     fn kind_str(k: ArtifactKind) -> &'static str {
         match k {
@@ -145,67 +158,107 @@ mod tests {
 
     #[tokio::test]
     async fn register_dedup_same_path() {
-        register("t1", "/a/b.txt".into(), ArtifactKind::Final).await;
-        register("t1", "/a/b.txt".into(), ArtifactKind::Final).await;
-        let v = take_all("t1").await;
+        let app = test_handle();
+        register(&app, "t1", "/a/b.txt".into(), ArtifactKind::Final).await;
+        register(&app, "t1", "/a/b.txt".into(), ArtifactKind::Final).await;
+        let v = take_all(&app, "t1").await;
         assert_eq!(v.len(), 1);
         assert_eq!(kind_str(v[0].kind), "final");
     }
 
     #[tokio::test]
     async fn should_emit_filters_intermediate() {
-        register("t2", "/a/x.txt".into(), ArtifactKind::Intermediate).await;
-        register("t2", "/a/y.txt".into(), ArtifactKind::Final).await;
-        let v = should_emit("t2", TaskExecOrigin::Scheduled, None)
+        let app = test_handle();
+        register(&app, "t2", "/a/x.txt".into(), ArtifactKind::Intermediate).await;
+        register(&app, "t2", "/a/y.txt".into(), ArtifactKind::Final).await;
+        let v = should_emit(&app, "t2", TaskExecOrigin::Scheduled, None)
             .await
             .unwrap();
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].path, "/a/y.txt");
         // 清理
-        take_all("t2").await;
+        take_all(&app, "t2").await;
     }
 
     #[tokio::test]
     async fn should_emit_manual_requires_done() {
-        register("t3", "/a/z.txt".into(), ArtifactKind::Final).await;
+        let app = test_handle();
+        register(&app, "t3", "/a/z.txt".into(), ArtifactKind::Final).await;
         // todo 状态 → 不弹
-        assert!(should_emit("t3", TaskExecOrigin::Manual, Some("todo"))
-            .await
-            .is_none());
+        assert!(
+            should_emit(&app, "t3", TaskExecOrigin::Manual, Some("todo"))
+                .await
+                .is_none()
+        );
         // doing 状态 → 不弹
-        assert!(should_emit("t3", TaskExecOrigin::Manual, Some("doing"))
-            .await
-            .is_none());
+        assert!(
+            should_emit(&app, "t3", TaskExecOrigin::Manual, Some("doing"))
+                .await
+                .is_none()
+        );
         // done 状态 → 弹
-        let v = should_emit("t3", TaskExecOrigin::Manual, Some("done"))
+        let v = should_emit(&app, "t3", TaskExecOrigin::Manual, Some("done"))
             .await
             .unwrap();
         assert_eq!(v.len(), 1);
-        take_all("t3").await;
+        take_all(&app, "t3").await;
     }
 
     #[tokio::test]
     async fn should_emit_scheduled_ignores_status() {
-        register("t4", "/a/s.txt".into(), ArtifactKind::Final).await;
+        let app = test_handle();
+        register(&app, "t4", "/a/s.txt".into(), ArtifactKind::Final).await;
         // 不论 column 都弹
-        assert!(should_emit("t4", TaskExecOrigin::Scheduled, Some("todo"))
-            .await
-            .is_some());
-        assert!(should_emit("t4", TaskExecOrigin::Scheduled, Some("doing"))
-            .await
-            .is_some());
-        assert!(should_emit("t4", TaskExecOrigin::Scheduled, Some("done"))
-            .await
-            .is_some());
-        take_all("t4").await;
+        assert!(
+            should_emit(&app, "t4", TaskExecOrigin::Scheduled, Some("todo"))
+                .await
+                .is_some()
+        );
+        assert!(
+            should_emit(&app, "t4", TaskExecOrigin::Scheduled, Some("doing"))
+                .await
+                .is_some()
+        );
+        assert!(
+            should_emit(&app, "t4", TaskExecOrigin::Scheduled, Some("done"))
+                .await
+                .is_some()
+        );
+        take_all(&app, "t4").await;
     }
 
     #[tokio::test]
     async fn should_emit_empty_when_no_final() {
-        register("t5", "/a/i.txt".into(), ArtifactKind::Intermediate).await;
-        assert!(should_emit("t5", TaskExecOrigin::Scheduled, None)
+        let app = test_handle();
+        register(&app, "t5", "/a/i.txt".into(), ArtifactKind::Intermediate).await;
+        assert!(should_emit(&app, "t5", TaskExecOrigin::Scheduled, None)
             .await
             .is_none());
-        take_all("t5").await;
+        take_all(&app, "t5").await;
+    }
+
+    /// 阶段 3.2 验收：`manage` 注入的实例彼此隔离；未注入的路径走兜底实例，
+    /// 也不被注入实例污染——即「注入 = 隔离，不注入 = 老行为（进程级共享）」。
+    #[tokio::test]
+    async fn app_state_per_test_instances_are_isolated() {
+        let a = test_handle();
+        let b = test_handle();
+        register(&a, "iso", "/a/one.txt".into(), ArtifactKind::Final).await;
+        assert_eq!(
+            peek(&a, "iso").await.len(),
+            1,
+            "注入实例 a 应看到自己的登记"
+        );
+        assert_eq!(
+            peek(&b, "iso").await.len(),
+            0,
+            "注入实例 b 不得看到 a 的登记"
+        );
+        let bare = tauri::test::mock_app().handle().clone();
+        assert_eq!(
+            peek(&bare, "iso").await.len(),
+            0,
+            "兜底实例不得被注入实例污染"
+        );
     }
 }

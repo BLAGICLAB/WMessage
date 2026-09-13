@@ -27,8 +27,11 @@ pub fn atomic_block_message(name: &str) -> String {
 
 /// 当前会话是否有 Skill 在 Running 状态
 ///（保留供 bot_skills 内部使用；D4d 后 link_file_to_task 等不再依赖此判定）
-pub fn is_skill_active(session_id: Option<&str>) -> bool {
-    crate::bot_skills::is_skill_active_for(session_id)
+pub fn is_skill_active<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    session_id: Option<&str>,
+) -> bool {
+    crate::bot_skills::is_skill_active_for(app, session_id)
 }
 
 // ───────────────────────── 任务卡执行流程识别（D4d） ─────────────────────────
@@ -158,9 +161,12 @@ mod tests {
 
     #[test]
     fn is_skill_active_false_with_no_skills() {
-        // SKILL_RUNS 是全局 OnceLock，初始为空 → 未运行任何 Skill
-        assert!(!is_skill_active(None));
-        assert!(!is_skill_active(Some("s1")));
+        // 阶段 3.3：SKILL_RUNS 随 AppState；本用例注入独立实例（空表 → 未运行任何 Skill）
+        let app = tauri::test::mock_app();
+        tauri::Manager::manage(&app, crate::app_state::AppState::default());
+        let handle = app.handle().clone();
+        assert!(!is_skill_active(&handle, None));
+        assert!(!is_skill_active(&handle, Some("s1")));
     }
 
     // ── is_task_execution_flow 注册/反注册 ──

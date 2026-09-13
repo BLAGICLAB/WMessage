@@ -12,8 +12,6 @@
 //! 状态只存内存（task_id + 当前待确认子任务 id），进程退出即丢；
 //! 每步上下文从 DB 重读重建，不保留 LLM 历史（省 token、子任务勾选状态永远新鲜）。
 
-use std::sync::{Mutex, OnceLock};
-
 use serde_json::json;
 use tauri::AppHandle;
 
@@ -24,7 +22,7 @@ use crate::error::{CommandError, CommandResult};
 /// 挂起的逐步执行：等用户确认当前子任务。
 /// **按会话分槽**（HashMap<会话 key, 挂起>）——全局单槽会让会话 B 触发逐步执行
 /// 静默覆盖会话 A 的挂起（A 之后回「继续」落入普通聊天被当新指令）。
-struct PendingExec {
+pub(crate) struct PendingExec {
     task_id: String,
     subtask_id: String,
     /// 触发会话 id（会话隔离）
@@ -36,11 +34,9 @@ struct PendingExec {
     exec_guard: ExecGuard,
 }
 
-static PENDING: OnceLock<Mutex<std::collections::HashMap<String, PendingExec>>> = OnceLock::new();
-
-fn pending_map() -> &'static Mutex<std::collections::HashMap<String, PendingExec>> {
-    PENDING.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
-}
+// 阶段 3.3：PENDING 已迁入 `AppState.pending`，`pending_map(app)` 取注入实例
+// （缺失时兜底实例）；逐步执行的状态机与超时回收语义未动。
+use crate::app_state::pending_map;
 
 /// 会话 key：None（后台）归到空串槽位
 fn session_key(session_id: Option<&str>) -> String {
@@ -49,23 +45,27 @@ fn session_key(session_id: Option<&str>) -> String {
 
 /// 当前会话是否有挂起的逐步执行（按会话匹配：
 /// 会话 A 挂起时，会话 B 的消息走正常聊天路由，不被 resume 截胡）
-pub fn has_pending_for(session_id: Option<&str>) -> bool {
-    pending_map()
+/// 阶段 3.3：挂起表已迁入 `AppState`，故取注入实例（缺失时兜底实例）。
+pub fn has_pending_for<R: tauri::Runtime>(app: &AppHandle<R>, session_id: Option<&str>) -> bool {
+    pending_map(app)
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .contains_key(&session_key(session_id))
 }
 
-fn park(p: PendingExec) {
+fn park<R: tauri::Runtime>(app: &AppHandle<R>, p: PendingExec) {
     let key = session_key(p.session_id.as_deref());
-    pending_map()
+    pending_map(app)
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .insert(key, p);
 }
 
-fn take_pending_for(session_id: Option<&str>) -> Option<PendingExec> {
-    pending_map()
+fn take_pending_for<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: Option<&str>,
+) -> Option<PendingExec> {
+    pending_map(app)
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .remove(&session_key(session_id))
@@ -73,7 +73,7 @@ fn take_pending_for(session_id: Option<&str>) -> Option<PendingExec> {
 
 /// 结束/清空**本会话**的挂起（正常结束、用户喊停、被同会话新执行覆盖）；恢复任务卡用户头像
 pub async fn clear_for(app: &AppHandle, session_id: Option<&str>, reason: &str) {
-    if let Some(p) = take_pending_for(session_id) {
+    if let Some(p) = take_pending_for(app, session_id) {
         crate::bot::audit_log(
             app,
             &format!("exec_steps.clear | task: {} | {reason}", p.task_id),
@@ -213,12 +213,15 @@ async fn run_step(
         None,
     )
     .await?;
-    park(PendingExec {
-        task_id: task_id.to_string(),
-        subtask_id: sub.id.clone(),
-        session_id: stop.session_id().map(|s| s.to_string()),
-        exec_guard,
-    });
+    park(
+        app,
+        PendingExec {
+            task_id: task_id.to_string(),
+            subtask_id: sub.id.clone(),
+            session_id: stop.session_id().map(|s| s.to_string()),
+            exec_guard,
+        },
+    );
     Ok(BotChatResult {
         text: format!(
             "{text}\n\n———\n✅ 子任务「{}」做完了（{}/{}）。回复：\n• 「继续」→ 勾选它，做下一个\n• 「重做」+ 修改意见 → 重做这一步\n• 「停」→ 结束执行",
@@ -265,7 +268,7 @@ pub async fn start(
     session_id: Option<&str>,
 ) -> CommandResult<BotChatResult> {
     // 防重入：与 run_task_in_chat 同一守卫（同一卡不能同时两个执行实例）
-    let Some(exec_guard) = ExecGuard::acquire(&task.id) else {
+    let Some(exec_guard) = ExecGuard::acquire(app, &task.id) else {
         crate::bot::audit_log(
             app,
             &format!(
@@ -277,7 +280,7 @@ pub async fn start(
             reason: "该任务卡正在执行中，请等待完成后再触发".into(),
         });
     };
-    if has_pending_for(session_id) {
+    if has_pending_for(app, session_id) {
         clear_for(app, session_id, "新任务卡逐步执行覆盖旧挂起").await;
     }
     crate::bot::audit_log(
@@ -304,7 +307,7 @@ pub async fn start(
             });
         }
     };
-    let stop = StopGuard::new_task_exec(true, session_id.map(|s| s.to_string()));
+    let stop = StopGuard::new_task_exec(app, true, session_id.map(|s| s.to_string()));
     // ExecGuard 随 run_step 传入并 park 进挂起态，确认等待期仍持防重入
     let r = run_step(app, &task.id, &first, None, &stop, exec_guard).await;
     if r.is_err() {
@@ -321,7 +324,7 @@ pub async fn resume(
     reply: &str,
     session_id: Option<&str>,
 ) -> CommandResult<BotChatResult> {
-    let Some(p) = take_pending_for(session_id) else {
+    let Some(p) = take_pending_for(app, session_id) else {
         return Ok(BotChatResult {
             text: "（当前没有待确认的子任务执行）".into(),
             task_refs: vec![],
@@ -372,7 +375,7 @@ pub async fn resume(
                 ),
             );
             mark_subtask_done(app, &task_id, &subtask_id).await;
-            let stop = StopGuard::new_task_exec(true, session_id.map(|s| s.to_string()));
+            let stop = StopGuard::new_task_exec(app, true, session_id.map(|s| s.to_string()));
             let r = advance_or_finish(app, &task_id, &stop, exec_guard).await;
             if cleanup_on_err(app, &task_id, &r) {
                 crate::bot_chat::set_bot_assigned(app, &task_id, false).await;
@@ -388,7 +391,7 @@ pub async fn resume(
                     crate::bot::truncate_for_log(&feedback, 100)
                 ),
             );
-            let stop = StopGuard::new_task_exec(true, session_id.map(|s| s.to_string()));
+            let stop = StopGuard::new_task_exec(app, true, session_id.map(|s| s.to_string()));
             let r = run_step(
                 app,
                 &task_id,
@@ -404,6 +407,14 @@ pub async fn resume(
             r
         }
     }
+}
+
+/// 测试用 mock handle：注入独立 `AppState`（阶段 3.3：挂起表/执行守卫随 AppState 隔离）
+#[cfg(test)]
+fn test_handle() -> AppHandle<tauri::test::MockRuntime> {
+    let app = tauri::test::mock_app();
+    tauri::Manager::manage(&app, crate::app_state::AppState::default());
+    app.handle().clone()
 }
 
 #[cfg(test)]
@@ -472,47 +483,57 @@ mod classify_tests {
 
     #[test]
     fn pending_slots_are_per_session() {
+        let app = super::test_handle();
         // 会话 A 挂起不影响会话 B；覆盖只发生在同会话内
-        park(PendingExec {
-            task_id: "tA".into(),
-            subtask_id: "s1".into(),
-            session_id: Some("sess-a-p12".into()),
-            exec_guard: crate::bot_chat::ExecGuard::acquire("tA").expect("tA 守卫"),
-        });
-        park(PendingExec {
-            task_id: "tB".into(),
-            subtask_id: "s2".into(),
-            session_id: Some("sess-b-p12".into()),
-            exec_guard: crate::bot_chat::ExecGuard::acquire("tB").expect("tB 守卫"),
-        });
-        assert!(has_pending_for(Some("sess-a-p12")));
-        assert!(has_pending_for(Some("sess-b-p12")));
-        assert!(!has_pending_for(Some("sess-c-p12")));
+        park(
+            &app,
+            PendingExec {
+                task_id: "tA".into(),
+                subtask_id: "s1".into(),
+                session_id: Some("sess-a-p12".into()),
+                exec_guard: crate::bot_chat::ExecGuard::acquire(&app, "tA").expect("tA 守卫"),
+            },
+        );
+        park(
+            &app,
+            PendingExec {
+                task_id: "tB".into(),
+                subtask_id: "s2".into(),
+                session_id: Some("sess-b-p12".into()),
+                exec_guard: crate::bot_chat::ExecGuard::acquire(&app, "tB").expect("tB 守卫"),
+            },
+        );
+        assert!(has_pending_for(&app, Some("sess-a-p12")));
+        assert!(has_pending_for(&app, Some("sess-b-p12")));
+        assert!(!has_pending_for(&app, Some("sess-c-p12")));
         // 取 B 不动 A
-        let b = take_pending_for(Some("sess-b-p12")).expect("B 应有挂起");
+        let b = take_pending_for(&app, Some("sess-b-p12")).expect("B 应有挂起");
         assert_eq!(b.task_id, "tB");
-        assert!(has_pending_for(Some("sess-a-p12")));
-        assert!(!has_pending_for(Some("sess-b-p12")));
+        assert!(has_pending_for(&app, Some("sess-a-p12")));
+        assert!(!has_pending_for(&app, Some("sess-b-p12")));
         // 收尾：不给其它测试留状态
-        let _ = take_pending_for(Some("sess-a-p12"));
+        let _ = take_pending_for(&app, Some("sess-a-p12"));
     }
 }
 
 #[cfg(test)]
 mod guard_tests {
     /// ExecGuard RAII 语义——持有期间同卡不得再获取，Drop 后释放
+    /// 阶段 3.3：表随 `AppState` 走，守卫 Drop 清的是 acquire 时手里那份实例。
     #[test]
     fn exec_guard_blocks_second_acquire_until_drop() {
-        let g = crate::bot_chat::ExecGuard::acquire("batch5-test-task").expect("首次获取应成功");
+        let app = super::test_handle();
+        let g =
+            crate::bot_chat::ExecGuard::acquire(&app, "batch5-test-task").expect("首次获取应成功");
         assert!(
-            crate::bot_chat::ExecGuard::acquire("batch5-test-task").is_none(),
+            crate::bot_chat::ExecGuard::acquire(&app, "batch5-test-task").is_none(),
             "持有期间不得重复获取"
         );
         drop(g);
-        assert!(
-            crate::bot_chat::ExecGuard::acquire("batch5-test-task").is_some(),
-            "Drop 后应可再获取"
-        );
+        // 守卫必须绑定到变量：临时值在语句结束即 Drop（参见 sched_guard 同款坑）
+        let again = crate::bot_chat::ExecGuard::acquire(&app, "batch5-test-task")
+            .expect("Drop 后应可再获取");
+        drop(again);
     }
 
     /// 回归锁：挂起态必须持有 ExecGuard

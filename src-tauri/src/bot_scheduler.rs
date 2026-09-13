@@ -50,34 +50,44 @@ fn notify_scheduled_done(
 const SCHED_TASK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 
 /// 正在执行的定时任务 id（防同一任务并发重复跑）
-static SCHED_RUNNING: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
-    std::sync::OnceLock::new();
-
-fn sched_running() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
-    SCHED_RUNNING.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
-}
+// 阶段 3.1：SCHED_RUNNING 的定义与 sched_running() 访问器已集中到 `crate::app_state`
+// （SchedGuard 本体与 Drop 清理语义未动）。
+use crate::app_state::sched_running;
 
 /// 调度防重入 RAII 守卫：Drop（含 panic 展开）时自动清理，保证任务 id 不残留
 /// （清理不能只放在 run_scheduled 末尾：panic 时该卡会永久失效）
-struct SchedGuard(String);
+///
+/// 阶段 3.3：表已迁入 `AppState`。Drop 里拿不到 `app`，所以在 acquire 时把表句柄
+/// （`Arc<Mutex<HashSet<String>>>` 克隆）带进守卫，Drop 用手里这份清理——
+/// 同一个 `Mutex` 实例，清理时机与语义与迁移前一致。
+struct SchedGuard {
+    task_id: String,
+    running: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+}
 
 impl SchedGuard {
-    fn acquire(task_id: &str) -> Option<Self> {
-        let mut set = sched_running().lock().unwrap_or_else(|e| e.into_inner());
-        if set.contains(task_id) {
-            return None;
+    fn acquire<R: tauri::Runtime>(app: &tauri::AppHandle<R>, task_id: &str) -> Option<Self> {
+        let running = sched_running(app);
+        {
+            let mut set = running.lock().unwrap_or_else(|e| e.into_inner());
+            if set.contains(task_id) {
+                return None;
+            }
+            set.insert(task_id.to_string());
         }
-        set.insert(task_id.to_string());
-        Some(Self(task_id.to_string()))
+        Some(Self {
+            task_id: task_id.to_string(),
+            running,
+        })
     }
 }
 
 impl Drop for SchedGuard {
     fn drop(&mut self) {
-        sched_running()
+        self.running
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .remove(&self.0);
+            .remove(&self.task_id);
     }
 }
 
@@ -354,7 +364,7 @@ async fn find_due_tasks(app: &AppHandle) -> Vec<crate::db::Task> {
 /// 执行一张到点的定时任务卡：先记 sched_last（防重复触发），跑执行循环，结果落备注标记
 async fn run_scheduled(app: AppHandle, task: crate::db::Task) {
     // 防重入守卫：作用域结束（含 panic 展开）自动清理
-    let Some(_sched_guard) = SchedGuard::acquire(&task.id) else {
+    let Some(_sched_guard) = SchedGuard::acquire(&app, &task.id) else {
         return;
     };
     // 机器人开关关闭时不执行定时任务（开关不能只管 UI，后端也要拦）
@@ -727,5 +737,61 @@ mod sched_tests {
         );
         // 坏格式
         assert_eq!(classify_due("junk", None, now), DueVerdict::NotDue);
+    }
+}
+
+/// 阶段 3.3：`SchedGuard`（迁入 `AppState` 后）的守卫语义与实例隔离。
+/// 这张表此前没有测试；本模块锁住「acquire 取注入实例 + Drop 清同一实例」这条设计，
+/// 因为 Drop 里拿不到 `app`，全靠 acquire 时克隆的 Arc 句柄（写错就是守卫泄漏或误删）。
+#[cfg(test)]
+mod sched_guard_tests {
+    use super::*;
+
+    fn test_handle() -> tauri::AppHandle<tauri::test::MockRuntime> {
+        let app = tauri::test::mock_app();
+        tauri::Manager::manage(&app, crate::app_state::AppState::default());
+        app.handle().clone()
+    }
+
+    fn len_of(app: &tauri::AppHandle<tauri::test::MockRuntime>) -> usize {
+        crate::app_state::sched_running(app)
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len()
+    }
+
+    #[test]
+    fn sched_guard_blocks_reentry_until_drop_on_injected_state() {
+        let app = test_handle();
+        let guard = SchedGuard::acquire(&app, "t-sched-1").expect("首次获取应成功");
+        assert!(
+            SchedGuard::acquire(&app, "t-sched-1").is_none(),
+            "持有期间不得重复获取"
+        );
+        assert_eq!(len_of(&app), 1, "注入实例里应有 1 条在跑");
+        drop(guard);
+        // 注意：守卫必须绑定到变量——`assert!(SchedGuard::acquire(..).is_some())` 里它是临时值，
+        // 语句结束即 Drop，会把刚插入的 id 又清掉（本测试第一次就是这么写错的）。
+        let again = SchedGuard::acquire(&app, "t-sched-1").expect("Drop 后应可再获取");
+        assert_eq!(
+            len_of(&app),
+            1,
+            "Drop 清的必须是同一个实例（清错了这里就是 0）"
+        );
+        drop(again);
+    }
+
+    #[test]
+    fn sched_guard_isolated_between_injected_instances() {
+        let a = test_handle();
+        let b = test_handle();
+        let _ga = SchedGuard::acquire(&a, "same-id").expect("a 首次");
+        let gb = SchedGuard::acquire(&b, "same-id")
+            .expect("两个注入实例之间不得互相干扰（同一 id 应各自可持有）");
+        assert_eq!(len_of(&a), 1);
+        assert_eq!(len_of(&b), 1);
+        drop(gb);
+        assert_eq!(len_of(&b), 0, "Drop b 的守卫只应该清 b 的表");
+        assert_eq!(len_of(&a), 1, "a 的登记不得被 b 的守卫清掉");
     }
 }

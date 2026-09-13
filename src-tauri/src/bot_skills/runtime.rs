@@ -53,7 +53,8 @@ pub fn start_skill(
     let mut run = SkillRun::new(&meta);
     run.state = SkillState::Running;
     run.session_id = session_id.map(|s| s.to_string());
-    let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
+    let registry = skill_runs(app);
+    let mut runs = registry.lock().unwrap_or_else(|e| e.into_inner());
     // 同名 run 属于别的会话且仍在活动 → 拒绝启动，
     // 否则 insert 会把对方的步数/超时熔断、动作记录、收尾整个顶掉。
     // 同会话同名重启（覆盖语义）与终态 run 不拦截。
@@ -183,7 +184,8 @@ pub fn skill_on_step(
     args: &str,
     session_id: Option<&str>,
 ) -> Result<(), CommandError> {
-    let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
+    let registry = skill_runs(app);
+    let mut runs = registry.lock().unwrap_or_else(|e| e.into_inner());
     // 会话隔离：只管归属当前会话的活动 Skill，别的会话的不计数不熔断
     let Some(run) = runs.values_mut().find(|r| {
         (r.state == SkillState::Running || r.state == SkillState::Paused)
@@ -217,7 +219,8 @@ pub fn skill_on_step_post(
     _level: crate::audit::AuditLevel,
     session_id: Option<&str>,
 ) {
-    let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
+    let registry = skill_runs(app);
+    let mut runs = registry.lock().unwrap_or_else(|e| e.into_inner());
     // 会话隔离：只记录归属当前会话的 Running 技能
     let Some(run) = runs
         .values_mut()
@@ -281,7 +284,8 @@ fn confirm_state(run: &mut SkillRun, approved: bool) {
 /// 高危动作确认开始：本会话活动技能转入 Paused（ask_user_confirm 调用前触发）。
 /// 会话隔离：只暂停归属当前会话的 Running 技能，不动别的会话。
 pub fn skill_mark_paused(app: &AppHandle, tool: &str, session_id: Option<&str>) {
-    let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
+    let registry = skill_runs(app);
+    let mut runs = registry.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(run) = runs
         .values_mut()
         .find(|r| r.state == SkillState::Running && r.session_id.as_deref() == session_id)
@@ -300,7 +304,8 @@ pub fn skill_mark_paused(app: &AppHandle, tool: &str, session_id: Option<&str>) 
 /// 确认结果到达：恢复 Running / 暂停即终止 / 拒绝终止（bot_confirm_response 调用）。
 /// 会话隔离：只作用于归属该会话的 Paused 技能（session 从 ConfirmMap 条目取回）。
 pub fn skill_confirm_result(app: &AppHandle, approved: bool, session_id: Option<&str>) {
-    let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
+    let registry = skill_runs(app);
+    let mut runs = registry.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(run) = runs
         .values_mut()
         .find(|r| r.state == SkillState::Paused && r.session_id.as_deref() == session_id)
@@ -351,7 +356,8 @@ pub fn skill_finish<R: tauri::Runtime>(
     session_id: Option<&str>,
 ) -> String {
     let mut rollback_hint = String::new();
-    let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
+    let registry = skill_runs(app);
+    let mut runs = registry.lock().unwrap_or_else(|e| e.into_inner());
     for (name, run) in runs.iter_mut() {
         if run.state != SkillState::Running && run.state != SkillState::Paused {
             continue;

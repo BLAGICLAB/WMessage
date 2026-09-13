@@ -17,22 +17,9 @@ use tauri::{AppHandle, Emitter, Manager};
 
 /// 活跃执行实例注册表：stop_id → (停止标志, 是否用户交互触发, 归属会话 id)
 /// 注册表带会话：/stop 只停当前会话的实例，别的会话的 Skill/任务卡执行不受影响
-type StopMap = std::sync::Mutex<
-    std::collections::HashMap<
-        u64,
-        (
-            std::sync::Arc<std::sync::atomic::AtomicBool>,
-            bool,
-            Option<String>,
-        ),
-    >,
->;
-static STOP_REGISTRY: std::sync::OnceLock<StopMap> = std::sync::OnceLock::new();
-static NEXT_STOP_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-fn stop_registry() -> &'static StopMap {
-    STOP_REGISTRY.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
-}
+// 阶段 3.3：停止注册表已进 `AppState`（`NEXT_STOP_ID` 留在 app_state 作全局发号器）；
+// StopGuard 本体、/stop 的 interactive 会话筛选口径、Drop 注销语义全部未动。
+use crate::app_state::{stop_registry, NEXT_STOP_ID};
 
 /// 执行实例的停止标志：run_model_loop 在流式/工具循环检查点检查；Drop 时注销
 /// （interactive=true 表示由用户聊天/点 🤖 触发，/stop 只停这类实例，不动后台定时）
@@ -49,22 +36,39 @@ pub struct StopGuard {
     /// link_file_to_task 原子工具收尾，没有活动 SkillRun
     /// 开门会被 AtomicGuard 硬拦（prompt 要求的核心动作被自家网关否决）。
     allow_atomic: bool,
+    /// 注册表句柄（阶段 3.3）：与构造时取的注入实例是同一个 `Mutex`，
+    /// Drop 里拿不到 `app`，靠这份 Arc 注销
+    registry: std::sync::Arc<crate::app_state::StopMap>,
 }
 
 impl StopGuard {
-    pub fn new(interactive: bool, session_id: Option<String>) -> Self {
-        Self::with_atomic(interactive, session_id, false)
+    pub fn new<R: tauri::Runtime>(
+        app: &tauri::AppHandle<R>,
+        interactive: bool,
+        session_id: Option<String>,
+    ) -> Self {
+        Self::with_atomic(app, interactive, session_id, false)
     }
 
     /// 任务卡执行流程专用：放行原子工具（视为内置编排流，等价于 Skill Running 上下文）
-    pub fn new_task_exec(interactive: bool, session_id: Option<String>) -> Self {
-        Self::with_atomic(interactive, session_id, true)
+    pub fn new_task_exec<R: tauri::Runtime>(
+        app: &tauri::AppHandle<R>,
+        interactive: bool,
+        session_id: Option<String>,
+    ) -> Self {
+        Self::with_atomic(app, interactive, session_id, true)
     }
 
-    fn with_atomic(interactive: bool, session_id: Option<String>, allow_atomic: bool) -> Self {
+    fn with_atomic<R: tauri::Runtime>(
+        app: &tauri::AppHandle<R>,
+        interactive: bool,
+        session_id: Option<String>,
+        allow_atomic: bool,
+    ) -> Self {
         let id = NEXT_STOP_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
         let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        if let Ok(mut m) = stop_registry().lock() {
+        let registry = stop_registry(app);
+        if let Ok(mut m) = registry.lock() {
             m.insert(id, (flag.clone(), interactive, session_id.clone()));
         }
         Self {
@@ -73,6 +77,7 @@ impl StopGuard {
             interactive,
             session_id,
             allow_atomic,
+            registry,
         }
     }
 
@@ -119,7 +124,7 @@ impl StopToken {
 
 impl Drop for StopGuard {
     fn drop(&mut self) {
-        if let Ok(mut m) = stop_registry().lock() {
+        if let Ok(mut m) = self.registry.lock() {
             m.remove(&self.id);
         }
     }
@@ -128,8 +133,9 @@ impl Drop for StopGuard {
 /// 应用退出：置位**全部**执行实例的停止标志——
 /// 与 /stop（只停本会话 interactive 实例）不同，进程都要退了，不存在会话误伤；
 /// 后台定时任务平时没有任何停止入口，退出是唯一叫停机会。返回置位数量。
-pub fn stop_all_executions() -> usize {
-    let Ok(m) = stop_registry().lock() else {
+pub fn stop_all_executions<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> usize {
+    let registry = stop_registry(app);
+    let Ok(m) = registry.lock() else {
         return 0;
     };
     let mut n = 0;
@@ -141,16 +147,15 @@ pub fn stop_all_executions() -> usize {
 }
 
 /// 在途执行实例数（退出清理 drain 等待用；StopGuard Drop 时注销，归零 = 全部收尾完）
-pub fn active_execution_count() -> usize {
-    stop_registry().lock().map(|m| m.len()).unwrap_or(0)
+pub fn active_execution_count<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> usize {
+    stop_registry(app).lock().map(|m| m.len()).unwrap_or(0)
 }
 
-/// STOP_REGISTRY 测试串行锁。
-/// stop_all_executions() 是无差别全局广播（置位全进程所有已注册 StopGuard），
-/// 与「持有 StopGuard 且断言停止前行为」的测试（如 bot_py 的 StopReader 用例）
-/// 并行时互相干扰随机挂。这两类测试都必须全程持此锁。
-#[cfg(test)]
-pub(crate) static STOP_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+// 阶段 3.3 撤锁（2026-09-13）：原 `STOP_TEST_LOCK` 已删除。
+// 理由：表随 `AppState` 注入，`stop_all_executions` / `active_execution_count`
+// 都按传入的 app 取实例；相关用例（bot_slash 两个 + bot_py 一个 + lib.rs 退出清理）
+// 各自注入独立实例，且**没有任何调用方再对兜底实例做全局广播**
+// → 「并行置位别人 StopGuard」这条路已从结构上消失。
 
 /// /stop 快捷命令：停止**当前会话**用户交互触发的执行（bot_chat / 🤖 任务卡执行），
 /// 后台定时（interactive=false）与别的会话不受影响
@@ -176,11 +181,11 @@ pub fn bot_stop(app: AppHandle, session_id: Option<String>) -> Result<(), String
     });
     // 锁中毒返回 Err 给前端，不静默吞；
     // 确认弹窗收尾与注册表无关，锁失败也要照常执行
-    let stopped = flag_session_stopped(session_id.as_deref());
+    let stopped = flag_session_stopped(&app, session_id.as_deref());
     // 本会话在途确认弹窗立即按拒绝收尾——sender 随条目 drop，
     // 等待侧 rx 立即收到 Err 走超时拒绝分支；/stop 后迟到的确认点击不再放行危险动作
     {
-        let mut map = confirms().lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = confirms(&app).lock().unwrap_or_else(|e| e.into_inner());
         let keys: Vec<String> = map
             .iter()
             .filter(|(_, (_, sid))| sid.as_deref() == session_id.as_deref())
@@ -197,8 +202,12 @@ pub fn bot_stop(app: AppHandle, session_id: Option<String>) -> Result<(), String
 /// 锁中毒返回 Err，前端可感知失败。
 /// 抽成纯函数便于单测（tauri command 绑定 Wry AppHandle，mock_app 无法直调——
 /// 与 bot_py.rs 的 resolve_doc_path 同先例）。
-fn flag_session_stopped(session_id: Option<&str>) -> Result<usize, String> {
-    let m = stop_registry()
+fn flag_session_stopped<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    session_id: Option<&str>,
+) -> Result<usize, String> {
+    let registry = stop_registry(app);
+    let m = registry
         .lock()
         .map_err(|_| "停止注册表锁中毒：停止标志未能置位".to_string())?;
     let mut n = 0;
@@ -228,22 +237,15 @@ pub enum ConfirmChoice {
 
 /// 前端回传：approved 放行与否 + always 是否「始终允许」（仅 file_access 弹窗会为 true）
 #[derive(Debug, Clone, Copy)]
-struct ConfirmReply {
+pub(crate) struct ConfirmReply {
     approved: bool,
     always: bool,
 }
 
-/// 待确认请求：id → (oneshot 通道, 归属会话 id)（挂件 bot_confirm_response 回填；
-/// 会话 id 随 bot-confirm 事件下发，前端非当前会话不弹窗，
-/// 后台任务（session=None）确认直接拒绝不弹窗）
-type ConfirmMap = std::sync::Mutex<
-    std::collections::HashMap<String, (tokio::sync::oneshot::Sender<ConfirmReply>, Option<String>)>,
->;
-static CONFIRMS: std::sync::OnceLock<ConfirmMap> = std::sync::OnceLock::new();
-
-fn confirms() -> &'static ConfirmMap {
-    CONFIRMS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
-}
+// 阶段 3.1：待确认请求表（ConfirmMap / CONFIRMS / confirms）的定义已集中到
+// `crate::app_state`。ConfirmReply 只是被 map 值类型引用到，定义留在这里，
+// 可见性放宽到 pub(crate)（非公开 API），字段仍私有。
+use crate::app_state::confirms;
 
 /// 弹窗确认公共内核：发 "bot-confirm" 事件（带 kind 供前端渲染两/三按钮、
 /// 带 sessionId 供前端按会话过滤），60s 超时默认拒绝（安全兜底）；
@@ -291,7 +293,7 @@ async fn ask_confirm_inner(
     }
     let (tx, rx) = tokio::sync::oneshot::channel();
     let id = uuid::Uuid::new_v4().simple().to_string();
-    confirms()
+    confirms(app)
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .insert(id.clone(), (tx, session_id.map(|s| s.to_string())));
@@ -317,7 +319,7 @@ async fn ask_confirm_inner(
     match tokio::time::timeout(std::time::Duration::from_secs(60), rx).await {
         Ok(Ok(reply)) => reply,
         _ => {
-            confirms()
+            confirms(app)
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .remove(&id);
@@ -380,7 +382,7 @@ pub fn bot_confirm_response(
     approved: bool,
     always: Option<bool>,
 ) -> Result<(), String> {
-    let (tx, session_id) = take_confirm(&request_id)?;
+    let (tx, session_id) = take_confirm(&app, &request_id)?;
     // Skill 调度器联动：确认结果 → 本会话技能恢复 Running / 拒绝终止 / 暂停即终止
     crate::bot_skills::skill_confirm_result(&app, approved, session_id.as_deref());
     // 用户点「拒绝」留痕
@@ -403,10 +405,11 @@ pub fn bot_confirm_response(
 }
 
 /// 取待确认条目（不存在/已超时 → Err）。
-fn take_confirm(
+fn take_confirm<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     request_id: &str,
 ) -> Result<(tokio::sync::oneshot::Sender<ConfirmReply>, Option<String>), String> {
-    confirms()
+    confirms(app)
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .remove(request_id)
@@ -456,39 +459,48 @@ pub fn bot_set_enabled(app: AppHandle, enabled: bool) -> CommandResult<bool> {
     }
     Ok(enabled)
 }
+/// 测试用 mock handle：注入独立 `AppState`（阶段 3.3：停止注册表/确认表随 AppState 隔离）
+#[cfg(test)]
+fn test_handle() -> tauri::AppHandle<tauri::test::MockRuntime> {
+    let app = tauri::test::mock_app();
+    app.manage(crate::app_state::AppState::default());
+    app.handle().clone()
+}
+
 #[cfg(test)]
 mod stop_all_tests {
     /// 退出置位必须同时覆盖 interactive 与后台（interactive=false）
     /// 两类实例——/stop 只停交互实例，退出清理不能漏掉后台任务
     #[test]
     fn stop_all_covers_interactive_and_background() {
-        // stop_all 是全局广播，与持 StopGuard 的并行测试互斥
-        let _serial = super::STOP_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let g1 = super::StopGuard::new(true, Some("batch5-s1".into()));
-        let g2 = super::StopGuard::new(false, None);
-        assert!(super::active_execution_count() >= 2);
-        let n = super::stop_all_executions();
-        assert!(n >= 2);
+        // 阶段 3.3：表随 AppState，本用例用独立实例 → 不共享全局态，无需串行锁
+        let app = super::test_handle();
+        let g1 = super::StopGuard::new(&app, true, Some("batch5-s1".into()));
+        let g2 = super::StopGuard::new(&app, false, None);
+        // 精确计数：注入实例只装本用例两个守卫——若实例被共享，别的并行用例
+        // 注册的 StopGuard 会让这里 > 2（这就是「隔离」的可观测证据）
+        assert_eq!(super::active_execution_count(&app), 2);
+        let n = super::stop_all_executions(&app);
+        assert_eq!(n, 2, "只应置位本实例的两个守卫");
         assert!(g1.stopped() && g2.stopped(), "两类实例都必须被置位");
     }
 }
 
 #[cfg(test)]
 mod command_result_tests {
+    // 注入式 mock handle 统一在文件作用域定义（阶段 3.3）
+    use super::test_handle as mock_handle;
+
     /// /stop 置位内核只停本会话交互实例并返回数量；
     /// 锁中毒路径经 map_err 返回 Err（命令绑定 Wry AppHandle 无法单测，测内核）。
     #[test]
     fn flag_session_stopped_only_hits_own_session_interactive() {
-        // 与持 StopGuard 的并行测试互斥（同上面的 stop_all 用例）
-        let _serial = super::STOP_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let g1 = super::StopGuard::new(true, Some("t1-3-sess".into()));
-        let g2 = super::StopGuard::new(true, Some("t1-3-other".into()));
-        let g3 = super::StopGuard::new(false, Some("t1-3-sess".into()));
-        let n = super::flag_session_stopped(Some("t1-3-sess")).expect("锁正常应 Ok");
+        // 阶段 3.3：注入独立实例，不再与别的持 StopGuard 用例互斥
+        let app = mock_handle();
+        let g1 = super::StopGuard::new(&app, true, Some("t1-3-sess".into()));
+        let g2 = super::StopGuard::new(&app, true, Some("t1-3-other".into()));
+        let g3 = super::StopGuard::new(&app, false, Some("t1-3-sess".into()));
+        let n = super::flag_session_stopped(&app, Some("t1-3-sess")).expect("锁正常应 Ok");
         assert_eq!(n, 1, "只应置位本会话的交互实例");
         assert!(g1.stopped());
         assert!(!g2.stopped(), "别的会话不受影响");
@@ -498,8 +510,46 @@ mod command_result_tests {
     /// 不存在/已超时的确认请求 → Err
     #[test]
     fn take_confirm_unknown_id_errs() {
-        let e = super::take_confirm("t1-3-no-such-id").unwrap_err();
+        let e = super::take_confirm(&mock_handle(), "t1-3-no-such-id").unwrap_err();
         assert!(e.contains("不存在或已超时"), "Err 应说明原因：{e}");
+    }
+
+    /// 阶段 3.3：待确认表迁入 `AppState` 后，注入实例之间必须隔离
+    /// （迁移前是进程级全局表，`cargo test --lib` 同进程并行用例会互相看见对方条目）。
+    #[test]
+    fn confirm_requests_isolated_between_injected_instances() {
+        let a = mock_handle();
+        let b = mock_handle();
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        super::confirms(&a)
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert("req-iso".into(), (tx, Some("sess-1".into())));
+        assert_eq!(
+            super::confirms(&a)
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .len(),
+            1
+        );
+        assert_eq!(
+            super::confirms(&b)
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .len(),
+            0,
+            "另一个注入实例不得看到该条目"
+        );
+        // take_confirm 走注入实例：取走后本实例为空
+        let taken = super::take_confirm(&a, "req-iso");
+        assert!(taken.is_ok(), "注入实例内应能取到");
+        assert_eq!(
+            super::confirms(&a)
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .len(),
+            0
+        );
     }
 
     /// 等待方已退出（rx dropped）时回填失败必须可见

@@ -377,10 +377,7 @@ mod tests {
             AuditLevel::Info
         );
         // 真错误消息「操作失败：磁盘只读」仍判 Warn（首行带分隔符）
-        assert_eq!(
-            classify_text("foo", "操作失败：磁盘只读"),
-            AuditLevel::Warn
-        );
+        assert_eq!(classify_text("foo", "操作失败：磁盘只读"), AuditLevel::Warn);
     }
 
     // ── tool_call_failed 统一判定口径 ──

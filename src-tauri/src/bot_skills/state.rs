@@ -1,6 +1,10 @@
 use super::manage::skill_search_paths;
 use super::parse::{parse_meta, SkillMeta, SKILL_NAME_CHARS_OK};
 use crate::error::CommandError;
+// 阶段 3.3：SKILL_RUNS 已迁入 `AppState`；这里 `pub(crate) use` 让本模块与
+// 兄弟模块（runtime.rs / scheduler.rs 的 `use super::state::{skill_runs, …}`）路径不变。
+pub(crate) use crate::app_state::skill_runs;
+use tauri::AppHandle;
 
 const MAX_SKILL_BODY: usize = 50 * 1024;
 
@@ -67,15 +71,7 @@ impl SkillRun {
     }
 }
 
-/// 活动 Skill 运行表：name → SkillRun（同一技能同轮只允许一个实例）
-static SKILL_RUNS: std::sync::OnceLock<
-    std::sync::Mutex<std::collections::HashMap<String, SkillRun>>,
-> = std::sync::OnceLock::new();
-
-pub(crate) fn skill_runs() -> &'static std::sync::Mutex<std::collections::HashMap<String, SkillRun>>
-{
-    SKILL_RUNS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
-}
+// 阶段 3.3：SKILL_RUNS 已迁入 `AppState.skill_runs`（再导出见文件头 use）。
 
 /// 当前会话是否有 Skill 处于 Running 状态（按会话过滤，别的会话的 Skill 不算本会话活动）
 ///
@@ -83,8 +79,12 @@ pub(crate) fn skill_runs() -> &'static std::sync::Mutex<std::collections::HashMa
 /// - Loaded / Finished / Terminated / Failed / Paused：原子工具应被阻断
 ///
 /// 供 `tool_guard::is_skill_active` 调用（穿透 private Mutex 访问）
-pub fn is_skill_active_for(session_id: Option<&str>) -> bool {
-    let Ok(guard) = skill_runs().lock() else {
+pub fn is_skill_active_for<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: Option<&str>,
+) -> bool {
+    let registry = skill_runs(app);
+    let Ok(guard) = registry.lock() else {
         return false;
     };
     guard
@@ -100,8 +100,13 @@ pub(crate) fn now_ms() -> i64 {
 /// 而 AtomicGuard 只认 Running —— 回滚段里的原子工具（link_file_to_task 等）会被自家门禁拦截。
 /// 把本会话该技能的 Failed run 临时置回 Running（回滚期间门禁放行），返回是否实际切换。
 /// 调用方在回滚段结束后必须调 `restore_failed_run_after_rollback` 复原。
-pub(crate) fn reopen_failed_run_for_rollback(name: &str, session_id: Option<&str>) -> bool {
-    let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
+pub(crate) fn reopen_failed_run_for_rollback<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    name: &str,
+    session_id: Option<&str>,
+) -> bool {
+    let registry = skill_runs(app);
+    let mut runs = registry.lock().unwrap_or_else(|e| e.into_inner());
     let Some(run) = runs.get_mut(name) else {
         return false;
     };
@@ -114,8 +119,13 @@ pub(crate) fn reopen_failed_run_for_rollback(name: &str, session_id: Option<&str
 
 /// 回滚窗口复原：回滚段结束后把临时重开的 run 置回 Failed（终态）。
 /// run 已被其它路径改动（如回滚步骤再失败被标 Failed）时是安全 no-op。
-pub(crate) fn restore_failed_run_after_rollback(name: &str, session_id: Option<&str>) {
-    let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
+pub(crate) fn restore_failed_run_after_rollback<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    name: &str,
+    session_id: Option<&str>,
+) {
+    let registry = skill_runs(app);
+    let mut runs = registry.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(run) = runs.get_mut(name) {
         if run.state == SkillState::Running && run.session_id.as_deref() == session_id {
             run.state = SkillState::Failed;
@@ -134,8 +144,12 @@ pub(crate) fn restore_failed_run_after_rollback(name: &str, session_id: Option<&
 /// 「用户 /stop / 工具失败」所必需的；调用方若是新一轮执行的入口（run_model_loop /
 /// run_skill_scheduler），必须先 `clear_terminal_skill_runs()` 清掉上轮遗留的僵尸终态，
 /// 否则会在第 0 步被 advance 短路（agent 假死事故根因）。
-pub fn active_skill_run_for(session_id: Option<&str>) -> Option<SkillRun> {
-    let guard = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
+pub fn active_skill_run_for<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: Option<&str>,
+) -> Option<SkillRun> {
+    let registry = skill_runs(app);
+    let guard = registry.lock().unwrap_or_else(|e| e.into_inner());
     guard
         .values()
         .find(|r| !matches!(r.state, SkillState::Loaded) && r.session_id.as_deref() == session_id)
@@ -147,8 +161,9 @@ pub fn active_skill_run_for(session_id: Option<&str>) -> Option<SkillRun> {
 /// 在新一轮执行的第 0 步被 advance 短路——静默返回空文本、不发 LLM 请求（agent 假死）。
 /// 在每轮执行入口（run_model_loop / run_skill_scheduler）调用；
 /// 本轮执行中新进入终态的 run 不受影响（清理发生在入口，轮内状态机照常可见）。
-pub fn clear_terminal_skill_runs() {
-    let mut guard = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
+pub fn clear_terminal_skill_runs<R: tauri::Runtime>(app: &AppHandle<R>) {
+    let registry = skill_runs(app);
+    let mut guard = registry.lock().unwrap_or_else(|e| e.into_inner());
     guard.retain(|_, r| {
         !matches!(
             r.state,
@@ -193,34 +208,41 @@ pub(crate) fn load_skill_meta<R: tauri::Runtime>(
 // advance_dsl 分支与回滚窗口的真路径。仅测试使用，生产路径不调。
 
 #[doc(hidden)]
-pub fn test_hook_insert_skill_run(run: SkillRun) {
-    skill_runs()
+pub fn test_hook_insert_skill_run<R: tauri::Runtime>(app: &AppHandle<R>, run: SkillRun) {
+    let registry = skill_runs(app);
+    registry
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .insert(run.name.clone(), run);
 }
 
 #[doc(hidden)]
-pub fn test_hook_remove_skill_run(name: &str) {
-    skill_runs()
+pub fn test_hook_remove_skill_run<R: tauri::Runtime>(app: &AppHandle<R>, name: &str) {
+    let registry = skill_runs(app);
+    registry
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .remove(name);
 }
 
 #[doc(hidden)]
-pub fn test_hook_skill_run_state(name: &str) -> Option<SkillState> {
-    skill_runs()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(name)
-        .map(|r| r.state.clone())
+pub fn test_hook_skill_run_state<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    name: &str,
+) -> Option<SkillState> {
+    let registry = skill_runs(app);
+    let guard = registry.lock().unwrap_or_else(|e| e.into_inner());
+    guard.get(name).map(|r| r.state.clone())
 }
 
 /// 测试辅助：直接插入一个指定状态的 skill run（绕过磁盘 SKILL.md 加载）。
 /// 与 tests::test_run 同一份字段构造，供跨模块测试（lib.rs 退出清理）使用。
 #[cfg(test)]
-pub(crate) fn test_insert_skill_run(name: &str, state: SkillState) {
+pub(crate) fn test_insert_skill_run<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    name: &str,
+    state: SkillState,
+) {
     let run = SkillRun {
         name: name.into(),
         state,
@@ -235,7 +257,8 @@ pub(crate) fn test_insert_skill_run(name: &str, state: SkillState) {
         terminal_after_confirm: false,
         session_id: None,
     };
-    skill_runs()
+    let registry = skill_runs(app);
+    registry
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .insert(name.into(), run);
@@ -243,8 +266,9 @@ pub(crate) fn test_insert_skill_run(name: &str, state: SkillState) {
 
 /// 测试辅助收尾：移除插入的 run，不给其他测试留状态
 #[cfg(test)]
-pub(crate) fn test_remove_skill_run(name: &str) {
-    skill_runs()
+pub(crate) fn test_remove_skill_run<R: tauri::Runtime>(app: &AppHandle<R>, name: &str) {
+    let registry = skill_runs(app);
+    registry
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .remove(name);
@@ -252,20 +276,20 @@ pub(crate) fn test_remove_skill_run(name: &str) {
 
 /// 测试辅助：读 run 当前状态（断言终止语义用）
 #[cfg(test)]
-pub(crate) fn test_skill_run_state(name: &str) -> Option<SkillState> {
-    skill_runs()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(name)
-        .map(|r| r.state.clone())
+pub(crate) fn test_skill_run_state<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    name: &str,
+) -> Option<SkillState> {
+    let registry = skill_runs(app);
+    let guard = registry.lock().unwrap_or_else(|e| e.into_inner());
+    guard.get(name).map(|r| r.state.clone())
 }
 
-/// SKILL_RUNS 测试串行锁。
-/// clear_terminal_skill_runs / skill_terminate_all(None) 是无差别全局操作，
-/// 并行测试互相删/改对方的 run 会随机挂（state 清理测试 × lib.rs 退出清理测试
-/// 实锤交错路径）。凡写全局 SKILL_RUNS 且对内容有断言的测试必须全程持此锁。
-#[cfg(test)]
-pub(crate) static SKILL_RUNS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+// 阶段 3.3 撤锁（2026-09-13）：原 `SKILL_RUNS_TEST_LOCK` 已删除。
+// 理由：表随 `AppState` 注入，凡写 SKILL_RUNS 且对内容有断言的用例
+// （state.rs 两个用例 + lib.rs 退出清理用例）都各自 `manage` 独立实例，
+// 彼此不可见；而 runtime.rs / scheduler.rs 的测试是纯状态机（不碰表）。
+// 换言之，「并行互删对方 run」这条路已从结构上消失，不再需要人肉串行。
 
 /// 测试辅助：构造一个指定 max_steps / timeout 的 SkillRun（跨子模块测试共用）
 #[cfg(test)]
@@ -290,13 +314,18 @@ pub(crate) fn test_run(max_steps: usize, timeout_secs: u64) -> SkillRun {
 mod tests {
     use super::*;
 
+    /// 阶段 3.3：注入独立 `AppState` 的 mock handle（SKILL_RUNS 随 AppState 隔离）
+    fn test_handle() -> AppHandle<tauri::test::MockRuntime> {
+        let app = tauri::test::mock_app();
+        tauri::Manager::manage(&app, crate::app_state::AppState::default());
+        app.handle().clone()
+    }
+
     /// 僵尸终态清理：入口清理后终态 run 不再被当"活动"，
     /// Running/Paused 不受影响（测试用 Paused：is_skill_active 只认 Running，避免与并行测试竞争）
     #[test]
     fn clear_terminal_removes_only_terminal_states() {
-        let _serial = SKILL_RUNS_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let app = test_handle();
         let zombie = "test-zombie-clear";
         // 用一个 Failed 残留 + 一个 Paused 活跃
         let mut failed = test_run(8, 180);
@@ -306,13 +335,15 @@ mod tests {
         paused.name = "test-zombie-clear-live".into();
         paused.state = SkillState::Paused;
         {
-            let mut g = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
+            let registry = skill_runs(&app);
+            let mut g = registry.lock().unwrap_or_else(|e| e.into_inner());
             g.insert(zombie.into(), failed);
             g.insert("test-zombie-clear-live".into(), paused);
         }
-        clear_terminal_skill_runs();
+        clear_terminal_skill_runs(&app);
         {
-            let g = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
+            let registry = skill_runs(&app);
+            let g = registry.lock().unwrap_or_else(|e| e.into_inner());
             assert!(g.get(zombie).is_none(), "Failed 残留应被清除");
             assert!(
                 g.get("test-zombie-clear-live").is_some(),
@@ -320,7 +351,8 @@ mod tests {
             );
         }
         // 收尾：不给其他测试留状态
-        let mut g = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
+        let registry = skill_runs(&app);
+        let mut g = registry.lock().unwrap_or_else(|e| e.into_inner());
         g.remove("test-zombie-clear-live");
     }
 
@@ -328,37 +360,39 @@ mod tests {
     /// 复原回 Failed；非 Failed 状态 / 别的会话的 run 不动
     #[test]
     fn reopen_failed_run_for_rollback_scoped_by_state_and_session() {
-        let _serial = SKILL_RUNS_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let app = test_handle();
         let name = "test-rollback-reopen";
         let mut run = test_run(8, 180);
         run.name = name.into();
         run.state = SkillState::Failed;
         run.end_reason = "step 失败".into();
         run.session_id = Some("s-rb".into());
-        skill_runs()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(name.into(), run);
+        {
+            let registry = skill_runs(&app);
+            registry
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(name.into(), run);
+        }
 
         // 会话不匹配 → 不重开
-        assert!(!reopen_failed_run_for_rollback(name, Some("other")));
+        assert!(!reopen_failed_run_for_rollback(&app, name, Some("other")));
         // 会话匹配 → 重开为 Running（原子工具门禁放行）
-        assert!(reopen_failed_run_for_rollback(name, Some("s-rb")));
-        assert_eq!(test_skill_run_state(name), Some(SkillState::Running));
+        assert!(reopen_failed_run_for_rollback(&app, name, Some("s-rb")));
+        assert_eq!(test_skill_run_state(&app, name), Some(SkillState::Running));
         // 重复重开（已非 Failed）→ false
-        assert!(!reopen_failed_run_for_rollback(name, Some("s-rb")));
+        assert!(!reopen_failed_run_for_rollback(&app, name, Some("s-rb")));
         // 复原回 Failed 终态
-        restore_failed_run_after_rollback(name, Some("s-rb"));
-        assert_eq!(test_skill_run_state(name), Some(SkillState::Failed));
+        restore_failed_run_after_rollback(&app, name, Some("s-rb"));
+        assert_eq!(test_skill_run_state(&app, name), Some(SkillState::Failed));
         // 会话不匹配 → 不复原
-        let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
+        let registry = skill_runs(&app);
+        let mut runs = registry.lock().unwrap_or_else(|e| e.into_inner());
         runs.get_mut(name).unwrap().state = SkillState::Running;
         drop(runs);
-        restore_failed_run_after_rollback(name, Some("other"));
-        assert_eq!(test_skill_run_state(name), Some(SkillState::Running));
+        restore_failed_run_after_rollback(&app, name, Some("other"));
+        assert_eq!(test_skill_run_state(&app, name), Some(SkillState::Running));
 
-        test_remove_skill_run(name);
+        test_remove_skill_run(&app, name);
     }
 }

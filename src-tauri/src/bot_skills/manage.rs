@@ -104,9 +104,7 @@ pub fn scan_skills<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Vec<SkillInf
 /// 抽公共函数：skills_import / skills_delete / scan_skill_dirs 三处复用。
 fn validate_skill_name(name: &str) -> Result<(), String> {
     if name.is_empty() || !name.chars().all(SKILL_NAME_CHARS_OK) {
-        return Err(format!(
-            "技能名「{name}」无效（仅允许字母/数字/-/_）"
-        ));
+        return Err(format!("技能名「{name}」无效（仅允许字母/数字/-/_）"));
     }
     Ok(())
 }
@@ -592,7 +590,11 @@ mod tests {
         make_mock_skill(&dir, "valid-skill", "ok");
 
         let out = scan_skill_dirs(&[dir]);
-        assert_eq!(out.len(), 1, "非法目录名必须被静默跳过（即使 frontmatter name 合法）");
+        assert_eq!(
+            out.len(),
+            1,
+            "非法目录名必须被静默跳过（即使 frontmatter name 合法）"
+        );
         assert_eq!(out[0].name, "valid-skill");
     }
 }

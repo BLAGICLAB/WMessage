@@ -497,50 +497,64 @@ enum PreStepRoute {
 /// 聊天防重入守卫：同一会话同时只允许一个 bot_chat 在执行——
 /// 原先聊天路径没有任何锁，两条并发消息命中同一技能路由会 start_skill 互相覆盖、
 /// 副作用工具（create_task 等）重复执行（任务卡路径有 ExecGuard，这里补会话级对称防护）。
-static CHAT_RUNNING: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
-    std::sync::OnceLock::new();
+// 阶段 3.3：CHAT_RUNNING 已迁入 `AppState`，访问器返回 Arc 克隆——
+// `ChatGuard::drop` 里拿不到 `app`，靠 acquire 时克隆的这份句柄清理。
+use crate::app_state::chat_running;
 
-struct ChatGuard(Option<String>);
+/// 会话级防重入守卫：Drop（含 panic 展开）时释放本会话槽位。
+struct ChatGuard {
+    /// None = 调用没带会话 id（不加锁）；清理只在 Some 时发生
+    session_id: Option<String>,
+    /// 表句柄：与 acquire 时取的注入实例是同一个 `Mutex`
+    running: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+}
 
 impl ChatGuard {
     /// Ok = 允许进入（无会话 id 不加锁）；Err = 本会话已有执行实例在跑
-    fn acquire(session_id: Option<&str>) -> Result<Self, ()> {
+    fn acquire<R: tauri::Runtime>(
+        app: &tauri::AppHandle<R>,
+        session_id: Option<&str>,
+    ) -> Result<Self, ()> {
+        let running = chat_running(app);
         let Some(sid) = session_id else {
-            return Ok(Self(None));
+            return Ok(Self {
+                session_id: None,
+                running,
+            });
         };
-        let mut set = CHAT_RUNNING
-            .get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if !set.insert(sid.to_string()) {
-            return Err(());
+        {
+            let mut set = running.lock().unwrap_or_else(|e| e.into_inner());
+            if !set.insert(sid.to_string()) {
+                return Err(());
+            }
         }
-        Ok(Self(Some(sid.to_string())))
+        Ok(Self {
+            session_id: Some(sid.to_string()),
+            running,
+        })
     }
 }
 
 impl Drop for ChatGuard {
     fn drop(&mut self) {
-        if let Some(sid) = &self.0 {
-            if let Some(set) = CHAT_RUNNING.get() {
-                set.lock().unwrap_or_else(|e| e.into_inner()).remove(sid);
-            }
+        if let Some(sid) = &self.session_id {
+            self.running
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(sid);
         }
     }
 }
 
 /// 会话锁是否被持有：tests/task_chat_exec.rs 断言
 /// run_task_in_chat 执行期持有 ChatGuard——bot_execute_task 纳入会话锁的回归证据。
-/// 生产代码不调用。
-pub fn chat_guard_is_held(session_id: &str) -> bool {
-    CHAT_RUNNING
-        .get()
-        .map(|s| {
-            s.lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .contains(session_id)
-        })
-        .unwrap_or(false)
+/// 生产代码不调用。阶段 3.3：表随 `AppState` 走，故取注入实例（缺失时兜底实例，
+/// 与生产路径用的是同一个——集成测试的 mock handle 没注入时两边都落到兜底）。
+pub fn chat_guard_is_held<R: tauri::Runtime>(app: &AppHandle<R>, session_id: &str) -> bool {
+    chat_running(app)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(session_id)
 }
 
 #[tauri::command]
@@ -551,7 +565,7 @@ pub async fn bot_chat(
 ) -> CommandResult<BotChatResult> {
     require_bot_enabled(bot_get_enabled(app.clone()))?;
     // 会话级防重入：同会话并发消息直接拒绝，防技能路由/start_skill 竞争
-    let _chat_guard = match ChatGuard::acquire(session_id.as_deref()) {
+    let _chat_guard = match ChatGuard::acquire(&app, session_id.as_deref()) {
         Ok(g) => g,
         Err(()) => {
             crate::bot::audit_log(
@@ -570,11 +584,11 @@ pub async fn bot_chat(
     // 步骤 1：逐步执行挂起恢复：有子任务待确认时，本条消息是对执行流程的应答
     // （继续/重做/停），优先于一切聊天路由。/stop 走独立命令（bot_stop 内清挂起）。
     if let Some(last) = messages.last() {
-        if crate::exec_steps::has_pending_for(session_id.as_deref()) {
+        if crate::exec_steps::has_pending_for(&app, session_id.as_deref()) {
             return crate::exec_steps::resume(&app, &last.content, session_id.as_deref()).await;
         }
     }
-    let stop = StopGuard::new(true, session_id.clone());
+    let stop = StopGuard::new(&app, true, session_id.clone());
     // 步骤 2：bypass_llm_on_pre_step_hit 开关读取（F-1）：
     // true = 新行为（pre-step 路由生效），false = LEGACY 旧链路（路由命中一律丢弃，LLM 自由决策）。
     // 必须在任何路由判定之前读取——主流程禁止任何步骤抢跑。
@@ -1087,33 +1101,43 @@ pub async fn bot_execute_task(
 /// 任务卡执行防重入：同一 task_id 同时只允许一个执行实例。
 /// 覆盖三条入口（🤖 连点 / chat 批量执行 / 定时调度），防同一卡并发跑多个 LLM 循环
 /// （并发执行会日志交叠、结果互相覆盖）。
-static EXEC_RUNNING: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
-    std::sync::OnceLock::new();
-
-fn exec_running() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
-    EXEC_RUNNING.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
-}
+// 阶段 3.3：EXEC_RUNNING 已迁入 `AppState`，访问器返回 Arc 克隆——
+// `ExecGuard::drop` 里拿不到 `app`，靠 acquire 时克隆的这份句柄清理。
+use crate::app_state::exec_running;
 
 /// 防重入 RAII 守卫：Drop（含 panic 展开）时自动释放，task_id 不残留
-pub(crate) struct ExecGuard(String);
+pub(crate) struct ExecGuard {
+    task_id: String,
+    /// 表句柄：与 acquire 时取的注入实例是同一个 `Mutex`
+    running: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+}
 
 impl ExecGuard {
-    pub(crate) fn acquire(task_id: &str) -> Option<Self> {
-        let mut set = exec_running().lock().unwrap_or_else(|e| e.into_inner());
-        if set.contains(task_id) {
-            return None;
+    pub(crate) fn acquire<R: tauri::Runtime>(
+        app: &tauri::AppHandle<R>,
+        task_id: &str,
+    ) -> Option<Self> {
+        let running = exec_running(app);
+        {
+            let mut set = running.lock().unwrap_or_else(|e| e.into_inner());
+            if set.contains(task_id) {
+                return None;
+            }
+            set.insert(task_id.to_string());
         }
-        set.insert(task_id.to_string());
-        Some(Self(task_id.to_string()))
+        Some(Self {
+            task_id: task_id.to_string(),
+            running,
+        })
     }
 }
 
 impl Drop for ExecGuard {
     fn drop(&mut self) {
-        exec_running()
+        self.running
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .remove(&self.0);
+            .remove(&self.task_id);
     }
 }
 
@@ -1304,7 +1328,7 @@ where
         return Err(CommandError::BotDisabled);
     }
     // 防重入：同一任务卡已有执行实例在跑 → 直接拒绝（RAII 守卫随函数返回/panic 自动释放）
-    let Some(_exec_guard) = ExecGuard::acquire(task_id) else {
+    let Some(_exec_guard) = ExecGuard::acquire(app, task_id) else {
         // 拒绝也留痕：否则无法区分「用户在前次执行未结束时重复触发」与「守卫泄漏」
         crate::bot::audit_log(
             app,
@@ -1350,7 +1374,7 @@ where
     // 2. ChatGuard（设计 3.4：bot_execute_task 纳入会话锁——执行期间同会话的
     // bot_chat 插话会被拒「稍候再发」，防流式/历史交错）。新会话正常不会冲突，
     // 冲突说明守卫串号，按内部错误处理。
-    let _chat_guard = match ChatGuard::acquire(Some(&sid)) {
+    let _chat_guard = match ChatGuard::acquire(app, Some(&sid)) {
         Ok(g) => g,
         Err(()) => {
             return Err(CommandError::Internal(format!(
@@ -1358,7 +1382,7 @@ where
             )));
         }
     };
-    let stop = StopGuard::new_task_exec(true, Some(sid.clone()));
+    let stop = StopGuard::new_task_exec(app, true, Some(sid.clone()));
     let block = build_task_block(&task);
     let mut msgs = vec![
         serde_json::json!({"role": "system", "content": format!("{}\n\n{}\n\n{}", EXECUTE_SYSTEM_PROMPT, gen_dir_rule(app), build_skill_block(app))}),
@@ -1396,7 +1420,7 @@ where
             .map(|t| t.column)
     });
     if let Some(artifacts) =
-        crate::bot_artifacts::should_emit(task_id, origin, task_column.as_deref()).await
+        crate::bot_artifacts::should_emit(app, task_id, origin, task_column.as_deref()).await
     {
         let _ = app.emit(
             "artifact-batch-ready",
@@ -1871,5 +1895,64 @@ mod command_error_mapping_tests {
             );
         }
         assert!(require_api_key("sk-test-123").is_ok(), "非空 key 应通过");
+    }
+}
+
+/// 阶段 3.3：`ChatGuard` / `ExecGuard` 迁入 `AppState` 后的守卫语义与实例隔离。
+/// 这两个守卫此前没有单测（只由 `tests/task_chat_exec.rs` 间接覆盖），而它们正是
+/// 「同会话/同卡并发重复执行」的唯一闸门；Drop 清错实例 = 闸门泄漏。
+#[cfg(test)]
+mod chat_exec_guard_tests {
+    use super::*;
+
+    fn test_handle() -> AppHandle<tauri::test::MockRuntime> {
+        let app = tauri::test::mock_app();
+        tauri::Manager::manage(&app, crate::app_state::AppState::default());
+        app.handle().clone()
+    }
+
+    #[test]
+    fn chat_guard_blocks_same_session_and_releases_on_drop() {
+        let app = test_handle();
+        let guard = ChatGuard::acquire(&app, Some("sess-guard-1")).expect("首次应可进入");
+        assert!(
+            ChatGuard::acquire(&app, Some("sess-guard-1")).is_err(),
+            "同会话并发应被拒"
+        );
+        assert!(
+            ChatGuard::acquire(&app, Some("sess-other")).is_ok(),
+            "别的会话不受影响"
+        );
+        assert!(chat_guard_is_held(&app, "sess-guard-1"));
+        drop(guard);
+        assert!(
+            !chat_guard_is_held(&app, "sess-guard-1"),
+            "Drop 后应释放（清错实例这里就会是 true）"
+        );
+        // 无会话 id 不加锁：连续两次都应成功
+        assert!(ChatGuard::acquire(&app, None).is_ok());
+        assert!(ChatGuard::acquire(&app, None).is_ok());
+    }
+
+    #[test]
+    fn guards_isolated_between_injected_instances() {
+        let a = test_handle();
+        let b = test_handle();
+        let _ga = ChatGuard::acquire(&a, Some("same-sess")).expect("a 首次");
+        assert!(
+            ChatGuard::acquire(&b, Some("same-sess")).is_ok(),
+            "两个注入实例之间不得互相干扰（ChatGuard）"
+        );
+        let _ea = ExecGuard::acquire(&a, "same-task").expect("a 首次");
+        assert!(
+            ExecGuard::acquire(&b, "same-task").is_some(),
+            "两个注入实例之间不得互相干扰（ExecGuard）"
+        );
+        // 反向：注入实例与兜底实例也必须互不可见
+        let bare = tauri::test::mock_app().handle().clone();
+        assert!(
+            ChatGuard::acquire(&bare, Some("same-sess")).is_ok(),
+            "未注入的 handle 走兜底实例，不得看到注入实例里的会话"
+        );
     }
 }

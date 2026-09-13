@@ -127,7 +127,7 @@ where
     );
     // 回滚窗口：Failed → Running（原子工具放行）。窗口内 skill_on_step 仍计数/可熔断，
     // 熔断会再把 run 标 Failed —— 后续回滚步骤的原子工具随之被拦，按失败计入。
-    let reopened = super::state::reopen_failed_run_for_rollback(name, session_id);
+    let reopened = super::state::reopen_failed_run_for_rollback(app, name, session_id);
     let mut failed_steps = 0usize;
     for rb in rollback {
         let rb_args = substitute_vars(&rb.args_json, ctx);
@@ -146,7 +146,7 @@ where
         }
     }
     if reopened {
-        super::state::restore_failed_run_after_rollback(name, session_id);
+        super::state::restore_failed_run_after_rollback(app, name, session_id);
     }
     crate::bot::audit_log_hook(
         app,
@@ -167,7 +167,8 @@ pub fn skill_terminate_all<R: tauri::Runtime>(
     reason: &str,
     session_id: Option<&str>,
 ) {
-    let mut runs = skill_runs().lock().unwrap_or_else(|e| e.into_inner());
+    let registry = skill_runs(app);
+    let mut runs = registry.lock().unwrap_or_else(|e| e.into_inner());
     for (name, run) in runs.iter_mut() {
         if run.state == SkillState::Running || run.state == SkillState::Paused {
             if let Some(sid) = session_id {
@@ -249,7 +250,7 @@ where
 {
     // 僵尸终态清理：上轮遗留的 Completed/Failed/Terminated run 会在第 0 步被 advance_dsl
     // 误判为完成信号直接 break（与主循环同款假死根因）
-    clear_terminal_skill_runs();
+    clear_terminal_skill_runs(app);
     let (steps, rollback) =
         parse_skill_steps(body).map_err(|e| DslFailure::Terminated { reason: e })?;
     if steps.is_empty() {
@@ -274,7 +275,7 @@ where
         // step_check 步数熔断 / skill_on_step_post 工具失败 /
         // skill_terminate_all 用户 /stop / start_skill 切技能 → SkillRun.state 已被改，
         // 调度器必须感知。
-        if let Some(run) = active_skill_run_for(session_id) {
+        if let Some(run) = active_skill_run_for(app, session_id) {
             let ts = now_ms();
             match advance_dsl(&run, ts) {
                 DslAdvanceAction::Run => {}

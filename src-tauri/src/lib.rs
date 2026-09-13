@@ -3,8 +3,8 @@ mod api;
 mod api_auth;
 mod api_handlers;
 mod api_server;
+mod app_state;
 mod audit;
-mod paths;
 pub mod bot;
 mod bot_anthropic;
 pub mod bot_artifacts;
@@ -28,6 +28,7 @@ pub mod middleware;
 mod migration;
 mod mutation;
 mod ocr;
+mod paths;
 mod profile;
 pub mod task_out;
 pub mod tool_guard;
@@ -208,10 +209,13 @@ fn cleanup_on_exit<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
 const EXIT_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// 轮询执行注册表直到排空（StopGuard Drop 注销，归零 = 全部收尾完）或超时
-fn wait_executions_drained(grace: std::time::Duration) -> bool {
+fn wait_executions_drained<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    grace: std::time::Duration,
+) -> bool {
     let deadline = std::time::Instant::now() + grace;
     loop {
-        if bot_slash::active_execution_count() == 0 {
+        if bot_slash::active_execution_count(app) == 0 {
             return true;
         }
         if std::time::Instant::now() >= deadline {
@@ -229,13 +233,13 @@ fn cleanup_on_exit_with<R: tauri::Runtime>(
 ) {
     // 第一步置位全部在途执行实例（含后台定时）的停止标志，
     // 后续 API/Skill 清理的时间本身就是模型循环响应标志的窗口
-    let exec_stopped = bot_slash::stop_all_executions();
+    let exec_stopped = bot_slash::stop_all_executions(app);
     let api_stopped = match app.try_state::<api_server::ApiState>() {
         Some(state) => api_handlers::api_stop_for_exit(app, &state).is_ok(),
         None => false,
     };
     bot_skills::skill_terminate_all(app, "应用退出", None);
-    let exec_drained = wait_executions_drained(EXIT_DRAIN_GRACE);
+    let exec_drained = wait_executions_drained(app, EXIT_DRAIN_GRACE);
     // 先置退出标志再杀 Python——PY_RUN_GATE 上的排队者过锁后
     // 复查标志直接拒绝，不会 spawn 出无人收割的孤儿进程
     bot_py::mark_exiting();
@@ -319,6 +323,8 @@ pub fn run() {
             app.manage(api_server::ApiState::default());
             // F-2 中间件注册表（Plugin/Extension 抽象层 P2）：注册 2 个内置中间件
             app.manage(middleware::build_default_registry());
+            // 阶段 3.2：全局可变状态容器（单一入口）；产物登记表已迁入，其余表逐张迁移
+            app.manage(app_state::AppState::default());
 
             // 动态技能路由：启动时按已安装技能的 frontmatter intents 建路由表；
             // 之后 skills_import / skills_delete 成功会各自重建
@@ -722,19 +728,14 @@ mod exit_cleanup_tests {
     ///（退出 ≠ 用户关开关，下次启动应自动恢复）、app_exit_cleanup 审计落行。
     #[test]
     fn cleanup_on_exit_releases_api_and_skill() {
-        // 本测试做两类全局广播——skill_terminate_all(None)（无差别
-        // 终止/配合并行的 state 清理测试会互相删对方的 run）与 stop_all_executions
-        //（置位全部 StopGuard，会打断 bot_py 的 StopReader 用例）。两把串行锁全程持有
-        //（固定顺序 SKILL_RUNS → STOP，防与其他持锁测试交叉死锁）。
-        let _skill_serial = crate::bot_skills::SKILL_RUNS_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let _stop_serial = crate::bot_slash::STOP_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        // 阶段 3.3 撤锁：本测试做的两类「全局广播」——skill_terminate_all(None) 与
+        // stop_all_executions ——现在都按传入 app 取实例；下面 manage 了独立 AppState，
+        // 广播只落在本用例自己的表上，不再干扰并行的 state 清理 / StopReader 用例。
         let app = tauri::test::mock_app();
         let handle = app.handle().clone();
         app.manage(crate::api_server::ApiState::default());
+        // 阶段 3.3：注入独立状态容器（停止注册表随 AppState 隔离）
+        app.manage(crate::app_state::AppState::default());
         // 真实启动 API server（固定生产端口；MemStore 免 Wry 绑定的 TauriStore，
         // server/线程/端口与 api_start 同为 start_api 真路径）
         {
@@ -758,6 +759,7 @@ mod exit_cleanup_tests {
         // mock 一个活动 Skill（Paused：terminate_all 覆盖 Running+Paused；
         // 不用 Running 是避免污染并行测试的 is_skill_active 全局断言）
         crate::bot_skills::test_insert_skill_run(
+            &handle,
             "p2-24-skill",
             crate::bot_skills::SkillState::Paused,
         );
@@ -768,7 +770,9 @@ mod exit_cleanup_tests {
         std::fs::write(&flag, b"1").unwrap();
 
         // 退出清理必须置位在途执行实例（含后台 interactive=false）的停止标志
-        let exec_guard = crate::bot_slash::StopGuard::new(false, None);
+        // 阶段 3.3：停止表随 AppState，本用例注入独立实例（下面 cleanup_on_exit_with
+        // 用的是同一 handle → 同一实例，断言口径不变）
+        let exec_guard = crate::bot_slash::StopGuard::new(&handle, false, None);
         // kill fn 注入 spy：全局 kill_all 会误杀并行测试注册的在途子进程，
         // 真杀路径由 bot_py::kill_py_children 单测覆盖
         let kill_called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -801,7 +805,7 @@ mod exit_cleanup_tests {
         );
         // Skill 已终止
         assert_eq!(
-            crate::bot_skills::test_skill_run_state("p2-24-skill"),
+            crate::bot_skills::test_skill_run_state(&handle, "p2-24-skill"),
             Some(crate::bot_skills::SkillState::Terminated),
             "活动 Skill 应被终止"
         );
@@ -816,7 +820,7 @@ mod exit_cleanup_tests {
 
         // 收尾：清掉本测试在数据目录产生的文件与 Skill run，不污染其他测试
         let _ = std::fs::remove_file(&flag);
-        crate::bot_skills::test_remove_skill_run("p2-24-skill");
+        crate::bot_skills::test_remove_skill_run(&handle, "p2-24-skill");
         // 复位 EXITING——否则本进程后续任何走生产 run_python() 的
         // 测试都会被「应用正在退出」误拒
         crate::bot_py::reset_exiting_for_test();
