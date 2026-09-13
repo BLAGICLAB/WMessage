@@ -30,7 +30,7 @@
 | `intents` | string[] | — | `[]` | 触发意图标签（如 `["日报","总结","归档"]`），用于意图匹配层 |
 | `risk_level` | enum | — | `medium` | `low` / `medium` / `high`，Skill 整体风险定级 → 决定运行模式与预审强度 |
 | `mode` | enum | — | 按风险推导 | `auto`（自动编排）/ `interactive`（人机协同）；显式标记优先于风险推导 |
-| `max_steps` | int | — | `8` | 本 Skill 最大执行步数（硬上限，防长流程无限循环） |
+| `max_steps` | int | — | `20` | 本 Skill 最大执行步数（硬上限，防长流程无限循环；2026-09-13 默认值由 8 抬到 20） |
 | `timeout_secs` | int | — | `180` | 本 Skill 最长运行超时（到点强制进入异常分支） |
 | `resumable` | bool | — | `false` | 是否支持暂停后断点续跑（true 时暂停保存进度，false 时暂停即终止） |
 | `rollback` | enum | — | `none` | `none` 不可回滚 / `auto` 支持逆操作回滚；`auto` 时正文必须含「回滚」章节 |

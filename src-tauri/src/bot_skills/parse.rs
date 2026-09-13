@@ -28,7 +28,12 @@ impl Default for SkillMeta {
             description: String::new(),
             risk_level: "medium".into(),
             mode: "interactive".into(),
-            max_steps: 8,
+            // 单技能步数硬上限的**默认值**（frontmatter `max_steps` 可覆盖，clamp 1..=20）。
+            // 2026-09-13 从 8 抬到 20（= clamp 上限）：实测 gorden-ppt-skill 这类
+            // 「读模板索引 → 探模板 JSON → 生成 PPT → 登记产物」的正常流程需 ~9 步，
+            // 默认 8 会中途熔断（skill_failed），进而丢掉 link_file_to_task 的产物登记。
+            // 防长流程仍由 timeout_secs（默认 180s，clamp 10..=600）与单轮 Function 上限兜底。
+            max_steps: 20,
             timeout_secs: 180,
             rollback: "none".into(),
             enabled: true,
@@ -367,7 +372,7 @@ mod tests {
         let m = parse_meta("没有 frontmatter", "dir-x");
         assert_eq!(m.name, "dir-x");
         assert_eq!(m.risk_level, "medium");
-        assert_eq!(m.max_steps, 8);
+        assert_eq!(m.max_steps, 20); // 默认 = clamp 上限（2026-09-13 由 8 抬到 20）
         assert_eq!(m.timeout_secs, 180);
         assert!(!m.rollback.eq("auto"));
 
