@@ -1,7 +1,7 @@
-use super::parse::{parse_frontmatter, parse_meta, SKILL_NAME_CHARS_OK};
+use super::parse::{parse_frontmatter, parse_meta, SkillMeta, SKILL_NAME_CHARS_OK};
 use crate::error::{CommandError, CommandResult};
 use serde::Serialize;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -15,8 +15,27 @@ pub struct SkillInfo {
     pub last_outcome: Option<crate::db::PersistedSkillOutcome>,
 }
 
+/// 用户安装的 skill 落盘目录。
+///
+/// **不走 `data_dir()`**：debug build 下 `data_dir()` 走 probe_log_dir，会探到
+/// exe 同目录（target/debug/）——而 dev_skills_dir 又指向同一个 target/debug/skills，
+/// `skill_search_paths` dedup 后只剩一个目录，用户从设置页拖进去的 skill 被
+/// `cargo clean` 一起冲掉（因为它们实际写在 target/debug/skills 里）。
+///
+/// 改走 `app.path().app_data_dir()` 拿到稳定的系统应用数据目录（如 macOS 上的
+/// `~/Library/Application Support/com.renshi.wmessage`）。这个目录与日志 / db
+/// 所在的 `data_dir()` 解耦：skill 走稳定的应用数据目录，日志 / db 仍按便携策略
+/// 跟随 exe。release build 下 `app_data_dir()` 与 probe 后的 `data_dir()` 也可能不同，
+/// 但用户安装的 skill 不再被便携策略劫持到 exe 同目录。
+///
+/// 失败（罕见，仅限 sandbox 完全拒绝对系统应用数据目录的访问）回退 `data_dir()`，
+/// 保证 skills_import / skills_open_dir / load_skill_meta 永不报「路径不存在」。
 fn skills_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> std::path::PathBuf {
-    crate::db::data_dir(app).join("skills")
+    if let Ok(p) = app.path().app_data_dir() {
+        p.join("skills")
+    } else {
+        crate::db::data_dir(app).join("skills")
+    }
 }
 
 /// dev 模式 mock Skill 扫描源：`target/debug/skills/`（dev 模式下随编译产物可见，
@@ -80,15 +99,31 @@ pub fn scan_skills<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Vec<SkillInf
     out
 }
 
-/// 多目录扫描核心：
-/// 顺序扫 `dirs` 列表中的每个目录，每个目录的子目录视为一个 Skill（含 SKILL.md 即有效）。
-/// **前面目录优先**（用 HashSet seen 去重）：同名 Skill 只保留先扫到的版本。
-/// 排序按 name 字典序，输出稳定。
+/// 技能名校验：仅允许 ASCII 字母/数字 + `-` / `_`，非空。
+/// 与 parse.rs::SKILL_NAME_CHARS_OK 同语义（不外暴露该常量以避免跨模块耦合）。
+/// 抽公共函数：skills_import / skills_delete / scan_skill_dirs 三处复用。
+fn validate_skill_name(name: &str) -> Result<(), String> {
+    if name.is_empty() || !name.chars().all(SKILL_NAME_CHARS_OK) {
+        return Err(format!(
+            "技能名「{name}」无效（仅允许字母/数字/-/_）"
+        ));
+    }
+    Ok(())
+}
+
+/// 多目录扫描公共内核：顺序扫 `dirs` 列表中的每个目录，每个子目录视为一个 Skill
+/// 候选（含 SKILL.md 才解析成 meta）。前面目录优先（用 HashSet seen 去重同名 Skill）。
+/// `extract` 闭包决定如何从 meta 产出 `T`——返回 None 则跳过（用于 `scan_skill_dirs`
+/// 过滤非法名、`intent_rules_from_dirs` 过滤 disabled/无 intents 的 skill）。
 ///
+/// 错误处理：目录读不到 / SKILL.md 读不到 / 解析失败 → 静默跳过（不破坏同目录其他 skill）。
 /// 单测场景：传临时目录数组验证去重逻辑，不依赖 AppHandle / db::data_dir。
-pub fn scan_skill_dirs(dirs: &[std::path::PathBuf]) -> Vec<SkillInfo> {
+fn visit_skill_dirs<F, T>(dirs: &[std::path::PathBuf], extract: F) -> Vec<T>
+where
+    F: Fn(&SkillMeta, &str) -> Option<T>,
+{
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut out: Vec<SkillInfo> = Vec::new();
+    let mut out: Vec<T> = Vec::new();
     for dir in dirs {
         let Ok(rd) = std::fs::read_dir(dir) else {
             continue;
@@ -107,14 +142,41 @@ pub fn scan_skill_dirs(dirs: &[std::path::PathBuf]) -> Vec<SkillInfo> {
                 continue;
             };
             let meta = parse_meta(&text, &dir_name);
-            out.push(SkillInfo {
-                name: meta.name,
-                description: meta.description,
-                enabled: meta.enabled,
-                last_outcome: None,
-            });
+            if let Some(t) = extract(&meta, &dir_name) {
+                out.push(t);
+            }
         }
     }
+    out
+}
+
+/// 多目录扫描核心：
+/// 顺序扫 `dirs` 列表中的每个目录，每个目录的子目录视为一个 Skill（含 SKILL.md 即有效）。
+/// **前面目录优先**（用 HashSet seen 去重）：同名 Skill 只保留先扫到的版本。
+/// 非法名静默跳过——同时校验目录名 + frontmatter name，
+/// 两者都必须走 SKILL_NAME_CHARS_OK。允许其一不合法会导致：
+///   1. 路径含非法字符 → skills_delete 拒绝（装得上用不了删不掉）
+///   2. 路由跳号 / 列表里出现无法 load 的项
+/// 仅校验 frontmatter 不够——例如目录名 `中文 skill!`（非法）+ frontmatter `name: anything`
+/// （合法）时，扫描器原本只查 name、会错误保留该项。
+/// 排序按 name 字典序，输出稳定。
+pub fn scan_skill_dirs(dirs: &[std::path::PathBuf]) -> Vec<SkillInfo> {
+    let mut out: Vec<SkillInfo> = visit_skill_dirs(dirs, |meta, dir_name| {
+        // 双重校验：frontmatter name 与目录名都要通过 SKILL_NAME_CHARS_OK。
+        // 两者最终都会成为路径的一部分（删 / 加载都用），一个非法就 reject。
+        if validate_skill_name(&meta.name).is_err() {
+            return None;
+        }
+        if validate_skill_name(dir_name).is_err() {
+            return None;
+        }
+        Some(SkillInfo {
+            name: meta.name.clone(),
+            description: meta.description.clone(),
+            enabled: meta.enabled,
+            last_outcome: None,
+        })
+    });
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out
 }
@@ -122,39 +184,18 @@ pub fn scan_skill_dirs(dirs: &[std::path::PathBuf]) -> Vec<SkillInfo> {
 /// 全量技能路由规则扫描（未安装的技能不得有路由）：
 /// 遍历搜索路径读每个 SKILL.md 的 frontmatter `intents`；
 /// `enabled: false` / intents 为空 → 该技能不产生路由。同名去重、前面目录优先（与 scan_skill_dirs 一致）。
-/// 单测可传临时目录数组，不依赖 AppHandle。
 pub fn intent_rules_from_dirs(
     dirs: &[std::path::PathBuf],
 ) -> Vec<crate::intent_router::IntentRule> {
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut out = Vec::new();
-    for dir in dirs {
-        let Ok(rd) = std::fs::read_dir(dir) else {
-            continue;
-        };
-        for entry in rd.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-            let dir_name = entry.file_name().to_string_lossy().to_string();
-            if !seen.insert(dir_name.clone()) {
-                continue;
-            }
-            let Ok(text) = std::fs::read_to_string(path.join("SKILL.md")) else {
-                continue;
-            };
-            let meta = parse_meta(&text, &dir_name);
-            if !meta.enabled || meta.intents.is_empty() {
-                continue;
-            }
-            out.push(crate::intent_router::IntentRule {
-                patterns: meta.intents,
-                skill_name: meta.name,
-            });
+    visit_skill_dirs(dirs, |meta, _dir_name| {
+        if !meta.enabled || meta.intents.is_empty() {
+            return None;
         }
-    }
-    out
+        Some(crate::intent_router::IntentRule {
+            patterns: meta.intents.clone(),
+            skill_name: meta.name.clone(),
+        })
+    })
 }
 
 /// 重建进程级技能路由表：app 启动调一次；skills_import / skills_delete 成功后再调。
@@ -228,11 +269,11 @@ pub fn skills_import(app: AppHandle, path: String) -> CommandResult<String> {
     let (name, _) = parse_frontmatter(&text, &dir_name);
     // 校验最终技能名（frontmatter 名非法时 parse 回退目录名，
     // 目录名本身也可能非法）——非法名装上后 load/delete 都拒绝，装得上用不了删不掉
-    if name.is_empty() || !name.chars().all(SKILL_NAME_CHARS_OK) {
+    if let Err(reason) = validate_skill_name(&name) {
         return Err(CommandError::InvalidArgument {
             field: "name".into(),
             value: name,
-            reason: "技能名无效（frontmatter name 或目录名仅允许字母/数字/-/_）".into(),
+            reason,
         }
         .into());
     }
@@ -254,20 +295,44 @@ pub fn skills_import(app: AppHandle, path: String) -> CommandResult<String> {
 }
 
 /// 删除技能（整目录）
+///
+/// 删除范围：用户装的 skill 落在 `skills_dir()` (data dir)；debug build 下
+/// dev mock (`target/debug/skills/`) 也会贡献 skill 列表。两者都要清，
+/// 否则点删除 UI 里只跟了目录二一处的 skill 仍会显示。
+///
+/// 两者可能在 debug build 下指向同一路径（之前 dev-mode 设计 bug
+/// 修复前），以 `already_removed` set 去重避免双删。
+/// release build 下 `dev_skills_dir()` 整个函数不存在，第二分支自动不编译。
 #[tauri::command]
 pub fn skills_delete(app: AppHandle, name: String) -> CommandResult<()> {
-    if name.is_empty() || !name.chars().all(SKILL_NAME_CHARS_OK) {
+    if let Err(reason) = validate_skill_name(&name) {
         return Err(CommandError::InvalidArgument {
             field: "name".into(),
             value: name,
-            reason: "技能名无效（仅允许字母/数字/-/_）".into(),
+            reason,
         });
     }
-    let dir = skills_dir(&app).join(&name);
-    if !dir.exists() {
-        return Ok(());
+    let mut already_removed: std::collections::HashSet<std::path::PathBuf> =
+        std::collections::HashSet::new();
+    let mut try_remove = |path: std::path::PathBuf| -> Result<(), CommandError> {
+        if !path.exists() {
+            return Ok(());
+        }
+        if !already_removed.insert(path.clone()) {
+            return Ok(()); // 已删过，同一路径 skip
+        }
+        std::fs::remove_dir_all(&path).map_err(|e| CommandError::IoError(e.to_string()))?;
+        Ok(())
+    };
+    // 数据目录（用户装的 skill）
+    try_remove(skills_dir(&app).join(&name))?;
+    // dev mock 目录（debug build 下 dev_skills_dir 贡献列表）
+    #[cfg(debug_assertions)]
+    {
+        if let Some(dev_dir) = dev_skills_dir() {
+            try_remove(dev_dir.join(&name))?;
+        }
     }
-    std::fs::remove_dir_all(&dir).map_err(|e| CommandError::IoError(e.to_string()))?;
     // 卸载即移除该技能的路由条目
     rebuild_intent_routes(&app);
     Ok(())
@@ -458,5 +523,76 @@ mod tests {
     fn intent_rules_empty_dirs_give_empty_table() {
         // 什么都没装 → 空规则集（route 层恒 PassThrough）
         assert!(intent_rules_from_dirs(&[]).is_empty());
+    }
+
+    // ── validate_skill_name 抽公共校验 ──
+
+    #[test]
+    fn validate_skill_name_accepts_valid_names() {
+        assert!(validate_skill_name("gorden-ppt-skill").is_ok());
+        assert!(validate_skill_name("minimax_docx").is_ok());
+        assert!(validate_skill_name("a").is_ok());
+        assert!(validate_skill_name("Skill123").is_ok());
+    }
+
+    #[test]
+    fn validate_skill_name_rejects_invalid_names() {
+        // 空串
+        assert!(validate_skill_name("").is_err());
+        // 路径分隔符
+        assert!(validate_skill_name("a/b").is_err());
+        assert!(validate_skill_name("../evil").is_err());
+        // 非 ASCII 字母 / 数字 / `-` / `_`
+        assert!(validate_skill_name("中文 skill").is_err());
+        assert!(validate_skill_name("skill!").is_err());
+        assert!(validate_skill_name("skill with space").is_err());
+        assert!(validate_skill_name("skill.toml").is_err());
+    }
+
+    // ── scan_skill_dirs 非法名跳过 ──
+
+    #[test]
+    fn scan_skill_dirs_skips_invalid_name_skill() {
+        // 场景：用户拖入一个含非法名的 skill（中文 / 符号 / 路径字符），
+        // scan_skill_dirs 静默跳过不进入清单——否则 load_skill_meta 会找到它
+        // 但 load/delete 都拒绝，装得上用不了删不掉（留下垃圾目录）。
+        let temp = make_tempdir("scan-invalid-name");
+        let dir = temp.0.join("skills");
+        std::fs::create_dir_all(&dir).unwrap();
+        // 合法 skill：应保留
+        make_mock_skill(&dir, "valid-skill", "ok");
+        // 非法名（中文 + 感叹号）：应跳过
+        make_mock_skill(&dir, "中文！skill", "中文带符号，应跳");
+        // 非法名（含路径分隔符 / frontmatter 回退到目录名）：应跳过
+        make_mock_skill(&dir, "a/b", "路径分隔符");
+
+        let out = scan_skill_dirs(&[dir]);
+        assert_eq!(out.len(), 1, "非法名必须被静默跳过");
+        assert_eq!(out[0].name, "valid-skill");
+    }
+
+    #[test]
+    fn scan_skill_dirs_skips_when_only_dir_name_invalid() {
+        // 场景：目录名非法但 frontmatter name 合法——
+        // 之前只校验 meta.name 时这条会错误地进入清单。修复后双重校验，
+        // 目录名 `中文 skill!` + frontmatter `name: anything` 应被跳过。
+        // （目录名最终会用于 skills_delete 路径构造，不合法 → 装得上用不了删不掉。）
+        let temp = make_tempdir("scan-bad-dirname");
+        let dir = temp.0.join("skills");
+        std::fs::create_dir_all(&dir).unwrap();
+        // 目录名含中文 + 感叹号；frontmatter 用合法 name "anything"
+        let skill_dir = dir.join("中文 skill!");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: anything\ndescription: 目录名非法但 frontmatter 合法\n---\n# body\n",
+        )
+        .unwrap();
+        // 合法 skill：应保留
+        make_mock_skill(&dir, "valid-skill", "ok");
+
+        let out = scan_skill_dirs(&[dir]);
+        assert_eq!(out.len(), 1, "非法目录名必须被静默跳过（即使 frontmatter name 合法）");
+        assert_eq!(out[0].name, "valid-skill");
     }
 }
