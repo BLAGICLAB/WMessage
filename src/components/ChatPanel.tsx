@@ -31,6 +31,8 @@ function isImagePath(p: string): boolean {
  *  去重表必须放模块级：放 useEffect 闭包里则每个泄漏监听器各持一份，去重失效。 */
 const execTaskDedup = new Map<string, number>();
 const EXEC_TASK_DEDUP_MS = 2000;
+/** 流式增量合并窗口（约一帧）：同一窗口内到达的 SSE 片段攒起来一次写 state */
+const DELTA_BATCH_MS = 16;
 
 type TaskRef = { id: string; title: string };
 
@@ -393,7 +395,40 @@ export function ChatPanel({
   // 会话过滤：六个流式事件 payload 均带 sessionId
   // （交互实例专属；后台任务不推流），只消费属于当前会话的增量，
   // 否则两个会话并行跑时输出会互相串台
+  //
+  // 16ms 小批量合并（rAF；无 rAF 的环境退化为同长定时器）：SSE 每个 chunk 一个事件，
+  // 逐条 setMessages 会在一帧内做多次「整数组拷贝 + 重渲染」。合并后一帧最多写一次，
+  // 观感不变而 CPU 更稳。
+  // **只延迟不丢**：同一窗口内的片段按到达顺序拼接后一次性写入，不会少字/错序；
+  // 另有两层兜底——正文最终内容由 bot_chat 返回值 full.text 在收尾时整体覆盖，
+  // thinking 的权威副本是 streamingMeta.current（事件到达即累加，不受缓冲影响）。
   useEffect(() => {
+    const pending = { text: "", think: false };
+    let frame: number | null = null;
+    const rafOk = typeof requestAnimationFrame === "function";
+    const flush = () => {
+      frame = null;
+      const add = pending.text;
+      const thinkTouched = pending.think;
+      pending.text = "";
+      pending.think = false;
+      if (!add && !thinkTouched) return;
+      setMessages((prev) => {
+        const last = prev[prev.length - 1];
+        if (!last || !last.streaming) return prev;
+        const copy = [...prev];
+        copy[copy.length - 1] = {
+          ...last,
+          content: add ? last.content + add : last.content,
+          thinking: thinkTouched ? streamingMeta.current.thinking : last.thinking,
+        };
+        return copy;
+      });
+    };
+    const schedule = () => {
+      if (frame !== null) return;
+      frame = rafOk ? requestAnimationFrame(flush) : window.setTimeout(flush, DELTA_BATCH_MS);
+    };
     const unlisten = listen<{ text?: string; sessionId?: string | null }>(
       "bot-chat-delta",
       (e) => {
@@ -401,13 +436,8 @@ export function ChatPanel({
         if (sid !== sessionIdRef.current) return;
         const t = e.payload?.text;
         if (!t) return;
-        setMessages((prev) => {
-          const last = prev[prev.length - 1];
-          if (!last || !last.streaming) return prev;
-          const copy = [...prev];
-          copy[copy.length - 1] = { ...last, content: last.content + t };
-          return copy;
-        });
+        pending.text += t;
+        schedule();
       }
     );
     const unThink = listen<{ text?: string; sessionId?: string | null }>(
@@ -417,15 +447,10 @@ export function ChatPanel({
         if (sid !== sessionIdRef.current) return;
         const t = e.payload?.text;
         if (!t) return;
-        const thinking = (streamingMeta.current.thinking ?? "") + t;
-        streamingMeta.current.thinking = thinking;
-        setMessages((prev) => {
-          const last = prev[prev.length - 1];
-          if (!last || !last.streaming) return prev;
-          const copy = [...prev];
-          copy[copy.length - 1] = { ...last, thinking };
-          return copy;
-        });
+        // 权威副本立即累加（收尾并入最终消息时读它），仅展示走同帧合并
+        streamingMeta.current.thinking = (streamingMeta.current.thinking ?? "") + t;
+        pending.think = true;
+        schedule();
       }
     );
     const unTool = listen<{ id?: string; name?: string; sessionId?: string | null }>(
@@ -520,6 +545,11 @@ export function ChatPanel({
       });
     });
     return () => {
+      if (frame !== null) {
+        if (rafOk) cancelAnimationFrame(frame);
+        else window.clearTimeout(frame);
+        frame = null;
+      }
       unlisten.then((f) => f());
       unThink.then((f) => f());
       unTool.then((f) => f());

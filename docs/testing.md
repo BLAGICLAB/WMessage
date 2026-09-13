@@ -29,6 +29,7 @@ scripts/install-hooks.sh   # 首次 clone 后跑一次（幂等）：git 指向�
 | `[3/N]` pytest collect | tests-audit 脚本语法坏掉 | 修对应 py 脚本 |
 | `[3.5/N]` Tauri 桥一致性 | 前端 `invoke()` 调了未注册命令、`listen()` 听无人 emit 的事件（运行时才炸的坑提前到提交时炸） | 看 `tests-audit/audit_tauri_bridge.py` 报错指认的命令/事件名：补注册或修前端。反向（注册未调用/发而无听）只 warn 不 fail |
 | `[3.6/N]` 错误码一致性 | Rust `CommandErrorCode` 枚举与前端 `CommandErrorCode` 联合类型漂移（前端 hint 分流静默失配） | 看 `tests-audit/audit_error_codes.py` 报错指认的 code：补 `error.rs` 变体 / `errorHandler.ts` 联合类型与 hint |
+| `[3.7/N]` 模块地图对拍 | 架构文档模块树与实际模块脱节（模块删改/新增后文档没跟，新人第一入口就骗人） | 按 `tests-audit/audit_module_map.py` 报错改 `docs/rust-bot-architecture.md` 模块树（条目指向真实文件、每个源码文件都有条目） |
 | `[4/N]` tsc --noEmit | 前端类型错误 | 按报错修 |
 | `[4.5/N]` knip | 前端死文件/死 export/未使用 npm 依赖 | 删或改为内部使用；tauri 插件类包若只在 Rust 侧用（字符串 invoke），属低置信误报，按实际情况取舍 |
 | `[5/N]` vitest --changed | 前端单测回归（只跑改动相关） | 修测试或修代码 |
@@ -66,6 +67,8 @@ cargo test --lib memory::embed -- --ignored   # bge 模型真实推理冒烟（�
 - `audit_tauri_bridge.py`：Tauri 桥双向一致性（命令注册 ↔ 前端 invoke、emit ↔ listen）
 - `audit_error_codes.py`：错误码跨语言一致性（`error.rs::CommandErrorCode` ↔
   `errorHandler.ts::CommandErrorCode` 集合与声明顺序）
+- `audit_module_map.py`：模块地图对拍（`docs/rust-bot-architecture.md` 模块树 ↔ 实际
+  `src-tauri/src/**/*.rs`：树条目必须指向真实文件，每个源码文件必须有条目）
 
 Rust 侧另有编译期协议锁先例可参考：`bot/registry.rs` 的 `registry_tests`
 （schema ↔ `TOOLS_TABLE` ↔ baseline 三源一致 + `ToolDef.name` 与 schema 内名一致）、

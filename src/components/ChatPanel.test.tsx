@@ -248,6 +248,39 @@ describe("ChatPanel", () => {
     expect(await screen.findByText("本会话输出")).toBeInTheDocument();
   });
 
+  it("流式增量 16ms 合并：同帧多条 delta 攒成一次写入，内容不丢且保持到达顺序", async () => {
+    const user = userEvent.setup();
+    let deltaHandler: ((e: { payload: Record<string, unknown> }) => void) | null = null;
+    mocks.listenMock.mockImplementation(async (event: string, cb: unknown) => {
+      if (event === "bot-chat-delta") deltaHandler = cb as typeof deltaHandler;
+      return () => {};
+    });
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_sessions_load") return [{ id: "s1", title: "默认会话" }];
+      if (cmd === "bot_history_load") return [];
+      if (cmd === "bot_chat") return new Promise(() => {}); // 挂起不返回，气泡保持 streaming
+      return null;
+    });
+    render(<ChatPanel {...defaultProps} />);
+    expect(await screen.findByText("🤖 默认会话")).toBeInTheDocument();
+    const input = screen.getByPlaceholderText(/和机器人说点什么/);
+    await user.type(input, "你好");
+    await user.keyboard("{Enter}");
+    const fire = (payload: Record<string, unknown>) =>
+      (deltaHandler as unknown as (e: { payload: Record<string, unknown> }) => void)({ payload });
+
+    // 同一帧内连发三条：合并窗口内不立刻写 state（这是「合并」的直接证据）
+    await act(async () => {
+      fire({ text: "第一段", sessionId: "s1" });
+      fire({ text: "第二段", sessionId: "s1" });
+      fire({ text: "第三段", sessionId: "s1" });
+    });
+    expect(screen.queryByText(/第一段/)).not.toBeInTheDocument();
+
+    // flush 后一次到位：三条按到达顺序拼接，不丢字
+    expect(await screen.findByText("第一段第二段第三段")).toBeInTheDocument();
+  });
+
   it("助手消息可折叠：thinking + tools Fold 子组件渲染", async () => {
     // 自定义 invoke 返回带 thinking + tools 的历史
     mocks.invokeMock.mockImplementation(async (cmd: string) => {

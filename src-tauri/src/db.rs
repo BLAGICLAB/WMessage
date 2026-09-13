@@ -214,6 +214,25 @@ fn wal_sidecar(db: &std::path::Path, ext: &str) -> std::path::PathBuf {
 
 /// 打开数据库（泛型 Runtime：run_task_in_chat 链路泛化后 mock runtime
 /// 测试可直调；内部 db_dir/write_event 本就泛型）
+/// 连接级 PRAGMA（每次建连都要设——PRAGMA 是 **per-connection** 的，漏一处就静默跑默认档）：
+/// - `journal_mode=WAL`：读写不互相阻塞（本应用单写者 + 多读：主窗口写、挂件/API/SSE 读）
+/// - `synchronous=NORMAL`：WAL 下的推荐档——掉电最多丢最近若干已提交事务，库不会损坏；
+///   FULL 会让每次 commit 都 fsync，本应用写频繁且单次小，NORMAL 的收益明显
+/// - `foreign_keys=ON`：SQLite 默认 **OFF**，显式打开——当前 schema 还没有外键约束，
+///   但将来加 FK 时若忘了开，约束会「写了不生效」，是最难查的一类静默 bug
+///
+/// 回归锁：`db::tests::conn_pragmas_are_applied`（断言三档真的生效，而不只是写了 SQL）
+fn apply_conn_pragmas(conn: &rusqlite::Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "PRAGMA journal_mode=WAL;
+         PRAGMA synchronous=NORMAL;
+         PRAGMA foreign_keys=ON;
+
+",
+    )
+    .map_err(|e| e.to_string())
+}
+
 pub fn open_db<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<rusqlite::Connection, String> {
@@ -239,11 +258,16 @@ pub fn open_db<R: tauri::Runtime>(
         }
     }
     let conn = rusqlite::Connection::open(&db_path).map_err(|e| e.to_string())?;
+    // busy_timeout **有意保留 2s，不调 5000ms**：进程内写者已由 DB_WRITE_LOCK 串行化，
+    // 这里只兜「跨进程同库」（用户开两个实例）与文件轮转竞态；冲突时宁可 2s 后失败让调用方
+    // 重试（见下方 BOT_ASSIGNED_RESET_DONE 注释：失败不消耗、下次 open_db 自动重试），
+    // 也不要 5s 卡住 UI 线程等一把可能等不到的锁。
     conn.busy_timeout(Duration::from_secs(2))
         .map_err(|e| e.to_string())?;
+    // 连接级 PRAGMA（WAL / NORMAL / foreign_keys）见 apply_conn_pragmas 的 doc
+    apply_conn_pragmas(&conn)?;
     conn.execute_batch(
-        "PRAGMA journal_mode=WAL;
-         CREATE TABLE IF NOT EXISTS tasks (
+        "CREATE TABLE IF NOT EXISTS tasks (
            id           TEXT PRIMARY KEY,
            title        TEXT NOT NULL,
            due          TEXT,
@@ -1506,6 +1530,35 @@ pub async fn workspace_import(app: tauri::AppHandle, path: String) -> CommandRes
 mod tests {
     use super::*;
     use std::fs;
+
+    // ── 连接级 PRAGMA 回归锁 ──
+
+    /// PRAGMA 是 **per-connection** 的：漏设一处就静默跑 SQLite 默认档
+    /// （默认 rollback journal + synchronous=FULL + foreign_keys=OFF），
+    /// 而默认档在小写入场景下每次 commit 都 fsync、并发读写互相阻塞——症状只是「莫名变慢」。
+    /// 这里断言三档**真的生效**，而不只是「SQL 写对了」。
+    #[test]
+    fn conn_pragmas_are_applied() {
+        let dir = std::env::temp_dir().join(format!("wm-pragma-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let conn = rusqlite::Connection::open(dir.join("t.db")).unwrap();
+        apply_conn_pragmas(&conn).unwrap();
+
+        let mode: String = conn
+            .query_row("PRAGMA journal_mode;", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(mode.to_lowercase(), "wal", "journal_mode 必须是 WAL");
+        let sync: i64 = conn
+            .query_row("PRAGMA synchronous;", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(sync, 1, "synchronous 应为 NORMAL(1)，实际 {sync}");
+        let fk: i64 = conn
+            .query_row("PRAGMA foreign_keys;", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(fk, 1, "foreign_keys 应打开（默认 OFF）");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     // ── legacy WAL copy 不吞错 + 边车文件一并拷贝 ──
 

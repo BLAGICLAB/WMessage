@@ -1,4 +1,8 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+//
+// 超长函数只 **warn** 不 deny（clippy.toml 阈值 200；口径：禁止为过 lint 拆函数，
+// 拆不拆看内聚性，超长清单只作留档观察）。
+#![warn(clippy::too_many_lines)]
 mod api;
 mod api_auth;
 mod api_handlers;

@@ -14,6 +14,8 @@ src-tauri/src/
 ├── error.rs             CommandError 结构化错误（code=CommandErrorCode 枚举/message/recoverable），全命令统一
 ├── paths.rs             数据目录解析 + 便携模式判定
 ├── audit.rs             审计事件写 bot.log（audit_event! 宏、write_event、error_kv 带 code）
+├── profile.rs           个人资料：用户/机器人 头像 + 姓名（profile.json + 头像拷进 profile/；读回 base64 data URL，
+│                        原子写 + 损坏备份 + 5MB/扩展名校验）
 ├── mutation.rs          任务变更来源枚举 MutationOrigin（Bot/Api/Widget…），tasks-updated 事件分流
 │
 │─ 数据层
@@ -32,14 +34,14 @@ src-tauri/src/
 ├── bot_chat.rs          入口编排：bot_chat / bot_compact / bot_execute_task 命令；五步主流程；
 │                        ChatMsg/TaskRef/BotChatResult/TaskExecOrigin；多模态图片组装；ChatGuard 防重入
 │                        （prompt 常量已移出，见 prompts/）
-├── prompts/             **提示词集中地**（AI 应用的业务逻辑，与代码同等对待）：
-│   system.rs              SYSTEM_PROMPT（主聊天规则底座 + 安全红线）
-│   summary.rs             SUMMARY_SYSTEM_PROMPT（截断即摘要 ≤200 字）/ COMPACT_SYSTEM_PROMPT（/compact ≤300 字）
-│   reflection.rs          REFLECTION_SYSTEM_PROMPT（多摘要 → 阶段总结）
-│   execute.rs             EXECUTE_SYSTEM_PROMPT（任务卡执行）/ STEPWISE_ADDENDUM（逐步执行附加段）
-│   planner.rs             PLANNER_PROMPT / REPLANNER_PROMPT（bot_plan 动态计划，只输出 JSON）
-│   consolidate.rs         CONSOLIDATE_PROMPT（记忆整理，只输出 JSON ops）
-│   mod.rs                 模块声明 + `crate::prompts::NAME` 统一出口 + prompt 清单锁测试
+│─ 提示词 prompts/（AI 应用的业务逻辑，与代码同等对待；统一从 `crate::prompts::NAME` 取）
+├── prompts/mod.rs        模块声明 + `crate::prompts::NAME` 统一出口 + prompt 清单锁测试
+│   prompts/system.rs       SYSTEM_PROMPT（主聊天规则底座 + 安全红线）
+│   prompts/summary.rs      SUMMARY_SYSTEM_PROMPT（截断即摘要 ≤200 字）/ COMPACT_SYSTEM_PROMPT（/compact ≤300 字）
+│   prompts/reflection.rs   REFLECTION_SYSTEM_PROMPT（多摘要 → 阶段总结）
+│   prompts/execute.rs      EXECUTE_SYSTEM_PROMPT（任务卡执行）/ STEPWISE_ADDENDUM（逐步执行附加段）
+│   prompts/planner.rs      PLANNER_PROMPT / REPLANNER_PROMPT（bot_plan 动态计划，只输出 JSON）
+│   prompts/consolidate.rs  CONSOLIDATE_PROMPT（记忆整理，只输出 JSON ops）
 ├── bot_model_loop.rs (1711) LLM 流式调用+工具循环：run_model_loop(薄壳装配)/run_model_loop_core(可注入 mock)；
 │                        SSE 解析、思考块拆分；单轮 Function 熔断；LlmHttp / ModelLoopDeps 依赖注入
 │                        （TOOLS schema 已移出，见 bot/registry.rs）
@@ -57,6 +59,8 @@ src-tauri/src/
 ├── bot_plan.rs          PREVR 动态规划：复杂任务先生成计划注入 prompt，失败 Replan（≤2 次）
 ├── bot_scheduler.rs     定时任务卡调度：30s 扫描 schedule（每日/每周/at:），到点走 run_task_in_chat 自动执行；
 │                        SchedGuard 防重入；完成发系统通知
+├── due_notify.rs        任务卡截止系统通知：30s 扫描活跃任务（仿 bot_scheduler），截止前 1h 一条、
+│                        截止时刻一条（超 24h 老任务不补发，防升级/重启后轰炸）；通知失败只记日志
 ├── bot_slash.rs         StopGuard/StopRegistry（/stop 按执行实例隔离；注册表已迁 app_state::AppState，
 │                        见 §2.1）、危险操作确认弹窗、机器人总开关
 ├── exec_steps.rs        任务卡逐步执行模式：多子任务逐个做、用户确认「继续/重做/停」

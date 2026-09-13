@@ -366,7 +366,15 @@ fn resolve_timeout(timeout_secs: Option<u64>) -> (u64, bool) {
     }
 }
 
-/// 内存限额：按 timeout 比例（8MB/s），下限 256MB、上限 2GB
+/// 内存限额：按 timeout 比例（8MB/s），下限 256MB、上限 2GB。
+///
+/// 取值来源与边界含义（改数字前先读这段）：
+/// - **比例**：8MB/s 是按「大计算脚本主要吃内存与 CPU」的经验值粗估，无实测依据；
+/// - **下限 256MB**：保证常规 pandas/numpy 小数据集 + ort/PIL 载图不误杀（低过这个，
+///   正常文档处理脚本会 SIGKILL，表现为「Python 莫名失败」）；
+/// - **上限 2GB**：防单个脚本吃满整机内存；超限由 RLIMIT_AS（Unix）/ Job Object（Windows）
+///   直接终止，属**故意**的硬熔断；
+/// 调整这三个数都要走人工验收（跑一次大文档处理 + 一次故意占内存的失控脚本）。
 fn mem_limit_bytes(timeout_secs: u64) -> u64 {
     timeout_secs
         .saturating_mul(8)

@@ -14,6 +14,8 @@
 #           命令注册、listen ↔ emit 双向核对——运行时才炸的桥接坑提前到提交时
 #   [3.6/N] 错误码一致性（tests-audit/audit_error_codes.py）：Rust CommandErrorCode
 #           枚举 ↔ 前端 CommandErrorCode 联合类型集合/顺序比对
+#   [3.7/N] 模块地图对拍（tests-audit/audit_module_map.py）：模块树条目 ↔ 真实文件、
+#           源码模块 ↔ 架构文档条目（模块拆分/新增漏更文档即拒）
 #   [4/N]   tsc --noEmit：前端类型检查（incremental）
 #   [4.5/N] knip --no-progress：前端死文件/死 export/未使用 npm 依赖
 #           （knip 在 devDependencies，npx --no-install 走本地安装）
@@ -83,10 +85,16 @@ if echo "$CHANGED" | grep -qE '^tests-audit/'; then
     NEED_PYTEST=true
 fi
 
+# ── 是否需要跑模块地图对拍（模块声明变了 或 架构文档改了）──
+NEED_MODMAP=false
+if echo "$CHANGED" | grep -qE '^(src-tauri/src/|docs/rust-bot-architecture\.md)'; then
+    NEED_MODMAP=true
+fi
+
 # 全跳过：返回 0
-if [[ "$NEED_CARGO" == false && "$NEED_TS" == false && "$NEED_PYTEST" == false ]]; then
+if [[ "$NEED_CARGO" == false && "$NEED_TS" == false && "$NEED_PYTEST" == false && "$NEED_MODMAP" == false ]]; then
     TOTAL_END=$(date +%s)
-    echo "⏭ nothing to test（本次改动不在 src-tauri/ / src/ / tests-audit/）"
+    echo "⏭ nothing to test（本次改动不在 src-tauri/ / src/ / tests-audit/ / 架构文档）"
     echo "=== pre-commit 总耗时: $((TOTAL_END - TOTAL_START))s ==="
     exit 0
 fi
@@ -97,6 +105,7 @@ echo ""
 echo "  cargo:  $NEED_CARGO"
 echo "  ts:     $NEED_TS"
 echo "  pytest: $NEED_PYTEST"
+echo "  modmap: $NEED_MODMAP"
 echo ""
 
 # ── 步骤计时 helper ──
@@ -157,6 +166,12 @@ fi
 if [[ "$NEED_CARGO" == true || "$NEED_TS" == true ]]; then
     step "[3.6/N] 错误码一致性（CommandErrorCode ↔ 前端）" \
         python3 -m pytest tests-audit/audit_error_codes.py -q
+fi
+
+# ─── 步骤 3.7: 模块地图对拍（架构文档 ↔ 实际模块，防文档漂移） ───
+if [[ "$NEED_MODMAP" == true ]]; then
+    step "[3.7/N] 模块地图对拍（docs/rust-bot-architecture.md）" \
+        python3 -m pytest tests-audit/audit_module_map.py -q
 fi
 
 # ─── 步骤 4: tsc --noEmit（类型检查） ─────────────────────

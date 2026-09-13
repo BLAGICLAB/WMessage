@@ -2,6 +2,41 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-09-14（周日）性能/组织清单落地：SQLite PRAGMA 补齐 + 前端 delta 合并 + clippy 摸底
+
+**背景**：按「性能与资源 / 代码组织惯例」两张清单逐项盘查（结论与本轮取舍见下），只落地三处小改动，其余留档。
+
+**改动**：
+- **SQLite PRAGMA 补齐**（`db.rs` 抽出 `apply_conn_pragmas`）：原先只有 `journal_mode=WAL`，补
+  `synchronous=NORMAL`（WAL 推荐档：每次 commit 不再 fsync，掉电最多丢最近若干已提交事务、库不损坏）
+  + `foreign_keys=ON`（SQLite 默认 OFF；当前 schema 无 FK 约束，显式打开避免将来加 FK 时静默不校验）；
+  新增回归锁 `conn_pragmas_are_applied`（断言 wal / 1 / 1 真的生效，而不只是 SQL 写对）
+- **busy_timeout 保留 2s**（拍板）：只在调用处补「为什么不调 5000ms」的注释——进程内写者已由
+  `DB_WRITE_LOCK` 串行化，2s 只兜跨进程同库/文件轮转竞态；宁可失败让调用方重试，也不卡 UI 线程等锁
+- **前端流式增量 16ms 合并**（拍板：只做前端，Rust 侧方案作废）：`ChatPanel` 的 `bot-chat-delta` /
+  `bot-think-delta` 改为「缓冲 + rAF（无 rAF 环境退化为同长定时器）一帧写一次 state」。
+  **只延迟不丢**：同窗口片段按到达顺序拼接后一次写入；thinking 的权威副本仍立即累加进
+  `streamingMeta.current`，正文另有 `bot_chat` 返回值 `full.text` 在收尾时整体覆盖作为兜底
+- **clippy `too_many_lines`（阈值 200，只 warn 不 deny）**：新增根目录 `clippy.toml` + crate 级
+  `#![warn(clippy::too_many_lines)]`。**口径：禁止为过 lint 拆函数**，超长清单只作留档观察。
+  摸底结果——全仓恰好 5 个函数 >200 行：
+
+| 行数 | 位置 | 函数 |
+|---|---|---|
+| 554 | `bot_model_loop.rs:485` | `run_model_loop_core`（SSE 主循环 + 工具回填，内聚） |
+| 314 | `migration.rs:720` | `run_migration_inner`（规则迁移一轮） |
+| 260 | `bot_chat.rs:511` | `bot_chat`（五步主流程命令） |
+| 255 | `lib.rs:266` | `run`（Tauri setup：插件/托管/后台线程启动） |
+| 205 | `db.rs:236` | `open_db`（建连 + PRAGMA + 迁移 + 残留清理） |
+
+**未做（留档）**：`insta` / `proptest`（新依赖，且已有零依赖等价锁）；工具实现统一到 `bot_tools/`
+（域模块强耦合，且 `bot.rs` 已只做门面、dispatch 在 `bot/dispatch.rs`）；pedantic 全开（实测 1762 条噪声）；
+Rust 侧 delta 合并（要补 ~15 个 flush 点，收益仅省 IPC/serde）。
+
+**测试**：`cargo test --lib` 665 全绿（含新 PRAGMA 锁）；前端 ChatPanel 13 例全绿（含新合并用例）；
+fast gate 全绿（含新 `[3.7/N]` 模块地图对拍）。fail-path 注入验证（均已还原）：把 flush 改成同步
+→ 合并用例 FAILED；删两行 PRAGMA → `synchronous 应为 NORMAL(1)，实际 2` FAILED。
+
 ## 2026-09-14（周日）测试盘查 + 安全锁补强（7 例）
 
 **背景**：按「测试补强」清单逐项盘查六个提议。结论：**两项已覆盖**（工具 schema 快照 = `tests/fixtures/tools_baseline.json` + Value 级全量比对；memory 去重三分支 = `dedup_merge/hint/low_cosine/degraded` 四例固定假向量）、**一项基本覆盖**（bot_anthropic 26 例固定输入→精确输出）、**三项有真缺口**；清单里的 `insta` / `proptest` 与仓库「不加新依赖」冲突，且关键逃逸是 canonicalize + 分量比较两步，随机路径打不到，故改用表驱动 + 真实文件系统。
