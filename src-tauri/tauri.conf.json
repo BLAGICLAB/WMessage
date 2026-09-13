@@ -24,7 +24,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis", "dmg", "deb"],
+    "targets": ["app", "dmg"],
     "resources": [
       "../bge-small-zh-v1.5"
     ],
