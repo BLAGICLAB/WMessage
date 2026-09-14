@@ -23,9 +23,9 @@ pub(crate) fn now_ms() -> i64 {
 // 字段长度上限：单源引用 bot.rs 工具侧 MAX_*（值对齐由定义处保证）
 pub(crate) const API_MAX_TITLE: usize = crate::bot::MAX_TITLE;
 pub(crate) const API_MAX_NOTE: usize = crate::bot::MAX_NOTE;
-pub(crate) const API_MAX_DUE: usize = 30;
-pub(crate) const API_MAX_TAG_LEN: usize = 30;
-pub(crate) const API_MAX_TAGS: usize = 10;
+pub(crate) const API_MAX_DUE: usize = crate::bot::MAX_DUE;
+pub(crate) const API_MAX_TAG_LEN: usize = crate::bot::MAX_TAG_LEN;
+pub(crate) const API_MAX_TAGS: usize = crate::bot::MAX_TAGS;
 // 取 1024（macOS PATH_MAX 量级），与 title/note 等字段一样走 over_limit
 pub(crate) const API_MAX_FILE_PATH: usize = 1024;
 

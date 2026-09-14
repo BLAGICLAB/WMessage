@@ -56,7 +56,8 @@ pub(crate) fn gen_dir_rule<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Stri
     )
 }
 
-/// 图片扩展名清单（pub：经 consts::app_consts 下发前端，单一真相在此）
+/// 图片扩展名清单（pub：前端镜像硬编码在 src/components/ChatPanel/UserBubbleContent.tsx IMAGE_EXTS，
+/// 改动需两侧同步）
 pub const IMAGE_EXTS: [&str; 6] = ["png", "jpg", "jpeg", "webp", "gif", "bmp"];
 /// 单张图片文件上限 3MB（base64 后约 4MB，MiniMax 图片大小限制内）
 pub(crate) const MAX_IMAGE_BYTES: usize = 3 * 1024 * 1024;

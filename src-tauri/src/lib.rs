@@ -21,7 +21,6 @@ mod bot_scheduler;
 pub mod bot_skills;
 mod bot_slash;
 mod bot_web;
-mod consts;
 pub mod db;
 mod due_notify;
 pub mod error;
@@ -472,7 +471,6 @@ pub fn run() {
             migration::commands::migration_log_read,
             migration::commands::migration_run,
             migration::commands::migration_status,
-            consts::app_consts
         ])
         .build(tauri::generate_context!())
         // 启动期 panic 可接受（进程起不来就退）：Tauri builder 编译失败 = 环境/配置损坏，
