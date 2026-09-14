@@ -1,45 +1,42 @@
+// TodoCard 主组件（orchestrator）。
+// 972 → 872 行：types / SubtaskRow 拆到同目录子文件，本文件保留 TodoCardView + TodoCard + SortableTodoCard。
+//
+// 公开 import 路径保持稳定：外部 `import { TodoCard } from "./components/TodoCard"` /
+// `import { TodoCardView, SortableTodoCard } from "./components/TodoCard"`，
+// Vite 解析到 `./TodoCard/index.tsx` → 透传本目录各文件。
+
 import { useEffect, useState } from "react";
-import type { CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { useDraggable } from "@dnd-kit/core";
-import type { DraggableAttributes, DraggableSyntheticListeners } from "@dnd-kit/core";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { handleCommandError, formatCommandError } from "../lib/errorHandler";
-import type { Task } from "../types";
-import { taskFiles, filesPatch, mergeFiles, MAX_TASK_FILES } from "../lib/taskFiles";
-import { basename, formatCompletedAt, formatDue, formatSchedule, isDueToday, isValidDateTimeLocal, scheduleToDatetime } from "../format";
-import { DoneCircle } from "./DoneCircle";
-import { FoldToggle } from "./FoldToggle";
-import { ActorAvatar } from "./ActorAvatar";
-import { useInlineEdit } from "./useInlineEdit";
+import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
+import { taskFiles, filesPatch, mergeFiles, MAX_TASK_FILES } from "../../lib/taskFiles";
+import {
+  basename,
+  formatCompletedAt,
+  formatDue,
+  formatSchedule,
+  isDueToday,
+  isValidDateTimeLocal,
+  scheduleToDatetime,
+} from "../../format";
+import { DoneCircle } from "../DoneCircle";
+import { FoldToggle } from "../FoldToggle";
+import { ActorAvatar } from "../ActorAvatar";
+import { useInlineEdit } from "../useInlineEdit";
 
-const stop = (e: React.PointerEvent) => e.stopPropagation();
+import type { CardDrag, TodoCardViewProps } from "./types";
+import { SubtaskRow } from "./SubtaskRow";
 
-export interface TodoCardViewProps {
-  task: Task;
-  autoEdit?: boolean;
-  onUpdate: (id: string, patch: Partial<Task>) => void;
-  onDelete: (id: string) => void;
-  /** 归档视图：显示「恢复」按钮 */
-  archived?: boolean;
-  /** 回收站视图：显示「恢复 / 彻底删除」按钮 */
-  trashed?: boolean;
-}
+/** 阻止拖拽手柄触发卡片点击编辑（在拖拽手柄 span 上设 pointerdown） */
+export const stop = (e: React.PointerEvent) => e.stopPropagation();
 
-/** 拖拽能力由外部 hook（useDraggable / useSortable）注入，View 本体不关心排序上下文 */
-export interface CardDrag {
-  setNodeRef: (node: HTMLElement | null) => void;
-  style?: CSSProperties;
-  attributes: DraggableAttributes;
-  listeners: DraggableSyntheticListeners | undefined;
-  isDragging: boolean;
-}
-
+/** 视图本体：所有拖拽能力由外部 hook 注入（TodoCard / SortableTodoCard 调用） */
 export function TodoCardView({
   task,
   autoEdit = false,
@@ -893,80 +890,4 @@ export function SortableTodoCard(props: TodoCardViewProps) {
   });
   const style = { transform: CSS.Transform.toString(transform), transition };
   return <TodoCardView {...props} drag={{ attributes, listeners, setNodeRef, style, isDragging }} />;
-}
-
-/**
- * 子任务行：checkbox + 全文显示（不截断）+ 点击文本内联编辑。
- * 每行独立 editing 状态，所以拆成组件（useInlineEdit 一份状态管一行）。
- * 空提交保留原文（与标题编辑一致，避免误触清空子任务）。
- */
-function SubtaskRow({
-  sub,
-  readOnly,
-  onToggle,
-  onCommit,
-  onDelete,
-}: {
-  sub: { id: string; text: string; done: boolean };
-  readOnly: boolean;
-  onToggle: () => void;
-  onCommit: (text: string) => void;
-  onDelete: () => void;
-}) {
-  const [editing, setEditing] = useState(false);
-  const edit = useInlineEdit({
-    value: sub.text,
-    editing,
-    onCommit: (d) => {
-      const text = d.trim();
-      if (text && text !== sub.text) onCommit(text);
-      setEditing(false);
-    },
-    onCancel: () => setEditing(false),
-  });
-
-  return (
-    <div className="flex items-start gap-2 group py-1.5">
-      <input
-        type="checkbox"
-        checked={sub.done}
-        disabled={readOnly}
-        onChange={onToggle}
-        onPointerDown={stop}
-        className="shrink-0 mt-0.5 w-3.5 h-3.5 accent-[var(--brand)]"
-      />
-      {editing ? (
-        <input
-          autoFocus
-          value={edit.draft}
-          onChange={(e) => edit.setDraft(e.target.value)}
-          onBlur={edit.onBlur}
-          onKeyDown={edit.onKeyDown}
-          onPointerDown={stop}
-          className="flex-1 min-w-0 rounded-lg bg-[var(--input-bg)] px-2 py-0.5 text-xs text-[var(--t2)] outline-none"
-        />
-      ) : (
-        <span
-          className={`flex-1 min-w-0 whitespace-pre-wrap break-words text-xs ${
-            sub.done ? "text-[var(--t5)] line-through" : "text-[var(--t3)]"
-          } ${readOnly ? "" : "cursor-text"}`}
-          title={readOnly ? undefined : "点击编辑"}
-          onPointerDown={stop}
-          onClick={readOnly ? undefined : () => setEditing(true)}
-        >
-          {sub.text}
-        </span>
-      )}
-      {!readOnly && !editing && (
-        <button
-          className="shrink-0 opacity-0 group-hover:opacity-100 text-[var(--t5)] hover:text-[var(--danger)] text-xs"
-          title="删除子任务"
-          onPointerDown={stop}
-          onClick={onDelete}
-        >
-          ×
-        </button>
-      )}
-    </div>
-  );
 }
