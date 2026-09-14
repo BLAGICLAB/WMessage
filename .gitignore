@@ -70,3 +70,6 @@ bot-brave-key.txt
 # Windows 绿色便携包解包目录（本地验收产物）
 wmessage-portable/
 
+
+# Sprint 切片阶段产物（worktree 临时目录，每次 run 重生成；patch 已在 commit 历史里）
+.audit-*/
