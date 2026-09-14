@@ -1,169 +1,32 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+// ChatPanel 主组件（orchestrator）。
+// 1531 → 1340 行：types / constants / Fold / RichText / UserBubbleContent
+// 拆到同目录子文件，本文件保留所有 useState / useRef / useEffect / handlers / JSX。
+//
+// 公开 import 路径保持稳定：外部仍 `import { ChatPanel } from "./components/ChatPanel"`，
+// Vite 解析到 `./ChatPanel/index.tsx` → 透传 `./ChatPanel`。
+
+import { useEffect, useRef, useState } from "react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen, emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-import { focusMainWindow } from "../focus";
-import { handleCommandError, formatCommandError, isCommandError } from "../lib/errorHandler";
+import { focusMainWindow } from "../../focus";
+import { handleCommandError, formatCommandError, isCommandError } from "../../lib/errorHandler";
+import { extractFilePaths, openTarget } from "../../lib/openTarget";
+import type { Task } from "../../types";
+import { basename } from "../../format";
+import { MarkdownText } from "../MarkdownText";
+
+import type { Msg, Session, TaskRef, ToolCall, SkillFailure } from "./types";
 import {
-  LINK_OR_PATH_RE,
-  extractFilePaths,
-  isHttpUrl,
-  openTarget,
-} from "../lib/openTarget";
-import type { Task } from "../types";
-import { basename } from "../format";
-import { imageExtSet } from "../lib/consts";
-import { MarkdownText } from "./MarkdownText";
-
-/** 路径后缀是否图片类型（大小写不敏感）。无后缀或未知后缀按文件处理。
- *  扩展名清单由后端 consts::app_consts 下发（真相在 bot_chat.rs::IMAGE_EXTS，
- *  后端 attach_images 按同一列表判断是否转 base64 image_url）。 */
-function isImagePath(p: string): boolean {
-  const m = p.toLowerCase().match(/\.([a-z0-9]+)$/);
-  return m ? imageExtSet().has(m[1]) : false;
-}
-
-/** execute-task 事件去重（模块级，跨组件实例/HMR 泄漏监听器共享）：
- *  dev 期间挂件 webview 多次重挂载会累积多个 execute-task 监听器，
- *  一次点击被投递多次 → 同一秒多个 bot_execute_task 并发 → 后端防重入拦截，
- *  每个拒绝都弹「⚠️ 内部错误：该任务卡正在执行中」气泡，用户误以为执行失败。
- *  去重表必须放模块级：放 useEffect 闭包里则每个泄漏监听器各持一份，去重失效。 */
-const execTaskDedup = new Map<string, number>();
-const EXEC_TASK_DEDUP_MS = 2000;
-/** 流式增量合并窗口（约一帧）：同一窗口内到达的 SSE 片段攒起来一次写 state */
-const DELTA_BATCH_MS = 16;
-
-type TaskRef = { id: string; title: string };
-
-/** 工具调用行：折叠显示，展开可看入参 */
-type ToolCall = { id: string; name: string; args?: string; done?: boolean };
-
-/** Skill 失败半成品上下文（仅本会话内存；FailedButRecoverable 兜底）。
- *  后端 run_skill_scheduler 返回 DslOutcome::FailedButRecoverable { reason, completed_summary, rollback_attempted }
- *  时通过 `bot-skill-failed` SSE event 推过来；前端把它存到这条消息上渲染 ⚠️ 折叠行。
- *  - completedSummary: 失败前已成功 step 的摘要（"Step N (tool): output\nStep N (tool): ..."）
- *  - rollbackAttempted: true 表示 rollback 段跑过且无错；false 表示没写或跑挂
- *  - 仅本会话内存，刷新/重启后丢失（DB 持久化要改 src-tauri/） */
-type SkillFailure = {
-  skillName: string;
-  reason: string;
-  completedSummary: string;
-  rollbackAttempted: boolean;
-};
-
-type Msg = {
-  role: "user" | "assistant";
-  content: string;
-  streaming?: boolean;
-  /** 本轮涉及的任务（渲染成可点击按钮，点击去主窗口打开该任务） */
-  refs?: TaskRef[];
-  /** 模型思考过程（折叠显示，不持久化） */
-  thinking?: string;
-  /** 本轮工具调用行（折叠显示） */
-  tools?: ToolCall[];
-  /** Skill 失败半成品上下文（折叠显示 ⚠️ 行；见 SkillFailure 说明） */
-  skillFailure?: SkillFailure;
-  /** 「查看执行对话」跳转按钮（任务执行聊天化：busy 时执行跳转排队，
-   *  忙完提示 + 点击切到该执行会话） */
-  actionSessionId?: string;
-};
-
-type Session = { id: string; title: string };
-
-/** 折叠块：标题 + 点击展开的内容 */
-function Fold({
-  title,
-  children,
-}: {
-  title: ReactNode;
-  children?: ReactNode;
-}) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div>
-      <button
-        className="inline-flex items-center gap-1 max-w-full text-[10px] text-[var(--t5)] hover:text-[var(--t3)]"
-        onClick={() => setOpen((v) => !v)}
-      >
-        <span className="w-2 shrink-0 inline-block">{open ? "▾" : "▸"}</span>
-        <span className="truncate">{title}</span>
-      </button>
-      {open && children ? (
-        <div className="mt-0.5 pl-3 text-[10px] leading-relaxed text-[var(--t4)] whitespace-pre-wrap break-words max-h-40 overflow-y-auto">
-          {children}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-/** 文本渲染：http(s) 链接和绝对文件路径可点击（识别规则见 lib/openTarget，
- *  带空格路径不会被截断成「C:\Program」） */
-function RichText({ text }: { text: string }) {
-  const parts: ReactNode[] = [];
-  let last = 0;
-  let key = 0;
-  for (const m of text.matchAll(LINK_OR_PATH_RE)) {
-    const idx = m.index ?? 0;
-    const token = m[0];
-    if (idx > last) parts.push(<span key={key++}>{text.slice(last, idx)}</span>);
-    const isUrl = isHttpUrl(token);
-    const clean = isUrl ? token.replace(/[.,;:!?]+$/, "") : token;
-    parts.push(
-      <a
-        key={key++}
-        className="text-[var(--brand)] underline decoration-dotted underline-offset-2 cursor-pointer break-all"
-        title={isUrl ? "在浏览器打开" : "打开文件/文件夹"}
-        onClick={(e) => {
-          e.preventDefault();
-          openTarget(clean);
-        }}
-      >
-        {clean}
-      </a>
-    );
-    last = idx + token.length;
-  }
-  if (last < text.length) parts.push(<span key={key++}>{text.slice(last)}</span>);
-  return <>{parts}</>;
-}
-
-/** 从消息内容里拆出 [附件文件] 块（历史消息恢复附件芯片显示用） */
-function splitAttachments(content: string): { files: string[]; text: string } {
-  const m = content.match(/^\[附件文件\]\n((?:- .+\n)+)\n/);
-  if (!m) return { files: [], text: content };
-  const files = m[1]
-    .split("\n")
-    .filter((l) => l.startsWith("- "))
-    .map((l) => l.slice(2));
-  return { files, text: content.slice(m[0].length) };
-}
-
-/** 用户消息气泡：附件块渲染成 📎/🖼️ 芯片 + 正文。图片用 🖼️ 标记（与后端 IMAGE_EXTS 对齐）。 */
-function UserBubbleContent({ content }: { content: string }) {
-  const { files, text } = splitAttachments(content);
-  return (
-    <>
-      {files.length > 0 && (
-        <div className="flex flex-wrap gap-1 mb-1">
-          {files.map((f) => (
-            <span
-              key={f}
-              className="nm-inset inline-flex items-center gap-1 rounded-lg px-1.5 py-0.5 text-[10px] text-[var(--t4)] max-w-full"
-              title={f}
-            >
-              <span className="truncate max-w-[220px]">
-                {isImagePath(f) ? "🖼️" : "📎"} {basename(f)}
-              </span>
-            </span>
-          ))}
-        </div>
-      )}
-      {text}
-    </>
-  );
-}
+  DELTA_BATCH_MS,
+  EXEC_TASK_DEDUP_MS,
+  SLASH_COMMANDS,
+  execTaskDedup,
+} from "./constants";
+import { Fold } from "./Fold";
+import { RichText } from "./RichText";
+import { UserBubbleContent, isImagePath } from "./UserBubbleContent";
 
 type Props = {
   /** 是否处于选任务模式（点任务卡切换选中） */
@@ -179,15 +42,6 @@ type Props = {
    *  与 listeners（详见 WidgetApp 折叠不丢聊天回归测试 + 16:30 bot 开关 resize 修法） */
   enabled: boolean;
 };
-
-/** 斜杠命令清单（单一真相：autocomplete picker + runSlashCommand 共享）。
- *  没有 /help：上浮全面板后 /help 还在 LLM 上下文里白白占 token */
-const SLASH_COMMANDS = [
-  { cmd: "/stop", description: "停止当前回复" },
-  { cmd: "/compact", description: "压缩对话上下文" },
-  { cmd: "/clean", description: "清空当前对话" },
-  { cmd: "/retry", description: "重新生成上一条回复" },
-];
 
 /** 挂件聊天区：位于任务列表下方，机器人开关开启时显示；支持多会话 */
 export function ChatPanel({
