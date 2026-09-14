@@ -10,7 +10,7 @@ import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen, emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-import { focusMainWindow } from "../../focus";
+
 import { handleCommandError, formatCommandError, isCommandError } from "../../lib/errorHandler";
 import { extractFilePaths, openTarget } from "../../lib/openTarget";
 import type { Task } from "../../types";
@@ -883,7 +883,7 @@ export function ChatPanel({
   // （与挂件双击标题同一规则：主窗口要出现在桌面屏幕最顶层）
   const openTaskInMain = async (ref: TaskRef) => {
     emit("edit-task", { id: ref.id }).catch(() => {});
-    focusMainWindow();
+    invoke("focus_main_window").catch(() => {});
   };
 
   const currentTitle =

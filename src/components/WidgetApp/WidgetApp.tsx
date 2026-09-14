@@ -24,7 +24,7 @@ import { listen, emit } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { openTarget } from "../../lib/openTarget";
 import { linkDisplayName } from "../WorkspacePage";
-import { focusMainWindow } from "../../focus";
+
 import { handleCommandError } from "../../lib/errorHandler";
 import { isDueToday } from "../../format";
 import { loadTasksFromDb, loadWorkspaceFromDb, sortByOrder, assignInsertOrder, diffTaskRows } from "../../storage";
@@ -472,7 +472,7 @@ export default function WidgetApp() {
 
   const openInMain = (t: Task) => {
     emit("edit-task", { id: t.id }).catch(() => {});
-    focusMainWindow();
+    invoke("focus_main_window").catch(() => {});
   };
 
   const toggleSelectTask = (t: Task) => {

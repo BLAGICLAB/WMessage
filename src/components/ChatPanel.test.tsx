@@ -75,9 +75,7 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
   openUrl: vi.fn(async () => {}),
 }));
 
-vi.mock("../focus", () => ({
-  focusMainWindow: vi.fn(async () => {}),
-}));
+
 
 // navigator.clipboard.writeText
 const writeTextMock = vi.fn(async () => {});

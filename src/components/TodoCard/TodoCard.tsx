@@ -34,7 +34,7 @@ import type { CardDrag, TodoCardViewProps } from "./types";
 import { SubtaskRow } from "./SubtaskRow";
 
 /** 阻止拖拽手柄触发卡片点击编辑（在拖拽手柄 span 上设 pointerdown） */
-export const stop = (e: React.PointerEvent) => e.stopPropagation();
+const stop = (e: React.PointerEvent) => e.stopPropagation();
 
 /** 视图本体：所有拖拽能力由外部 hook 注入（TodoCard / SortableTodoCard 调用） */
 export function TodoCardView({

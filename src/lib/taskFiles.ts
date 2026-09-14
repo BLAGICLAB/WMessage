@@ -1,5 +1,4 @@
 import type { Task } from "../types";
-import { maxTaskFiles as MAX_TASK_FILES } from "./consts";
 
 /** 任务卡绑定文件条目（与 Rust db::TaskFile 对应） */
 export interface TaskFile {
@@ -7,9 +6,8 @@ export interface TaskFile {
   isDir: boolean;
 }
 
-/** 绑定文件数量上限：Phase B 起由 Rust consts::app_consts 下发（lib/consts.ts 活绑定，
- *  未拉取/拉取失败 = 回退值，与 Rust db::MAX_TASK_FILES 硬上限同值） */
-export { MAX_TASK_FILES };
+/** 绑定文件数量上限：与 Rust db::MAX_TASK_FILES 硬上限同值，改动需两侧同步。 */
+export const MAX_TASK_FILES = 10;
 
 /**
  * 有效绑定文件列表：files 非空优先；否则回退旧单绑定字段 filePath/fileIsDir

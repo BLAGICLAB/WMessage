@@ -11,7 +11,7 @@ export const TOP_Y = 140; // 默认贴右缘的初始 Y
 // 老板拍板：边框调整边界 + Splitter 上下限
 export const PANEL_W_MIN = 400, PANEL_W_MAX = 800;
 export const PANEL_H_MIN = 800, PANEL_H_MAX = 900;
-export const TASK_H_MIN = 0, CHAT_H_MIN = 120;
+export const CHAT_H_MIN = 120;
 export const SPLITTER_H = 16;
 export const DEFAULT_TASK_H = 280;
 

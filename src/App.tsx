@@ -11,7 +11,7 @@ import { WorkspacePage } from "./components/WorkspacePage";
 import { SettingsPage } from "./components/SettingsPage";
 import { deleteTaskRows, diffTaskRows, loadTasksFromDb, taskEq, upsertTasks, exportTasksToFile, importTasksFromFile, exportWorkspaceToFile, importWorkspaceFromFile, STORAGE_KEY, sortByOrder, assignInsertOrder, upsertWorkspaceItems } from "./storage";
 import { handleCommandError } from "./lib/errorHandler";
-import { isMutationOrigin, isPersistedOrigin } from "./lib/mutationOrigin";
+
 import { applySetting, getSetting, subscribeSystem, subscribeTheme, toggleTheme } from "./theme";
 import { isDueToday } from "./format";
 import type { ThemeSetting } from "./theme";
@@ -291,10 +291,10 @@ function App() {
         // 否则主窗口的异步回写会用旧事件快照覆盖后端的新写入（归档/软删被回滚）。
         // 非法 source（协议外字符串）：WARN 观测 + 按未落盘处理（宁可多写不丢数据）
         const source = payload?.source;
-        if (source !== undefined && !isMutationOrigin(source)) {
+        if (source !== undefined && source !== "mutation" && source !== "migration") {
           console.warn(`[tasks-updated] unknown source: ${String(source)}，按未落盘处理`);
         }
-        if (!isPersistedOrigin(source)) {
+        if (source !== "initial-load" && source !== "migration") {
           // await 落盘完成后再合并/广播，避免挂件 db_load 读到未提交快照
           await upsertTasks(upserts);
           await deleteTaskRows(deletes);

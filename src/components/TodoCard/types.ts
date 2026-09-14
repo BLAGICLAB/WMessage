@@ -28,9 +28,4 @@ export interface CardDrag {
   isDragging: boolean;
 }
 
-/** 子任务条目（TodoCardView 内部用） */
-export interface SubtaskEntry {
-  id: string;
-  text: string;
-  done: boolean;
-}
+

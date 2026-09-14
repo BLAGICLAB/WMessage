@@ -2,14 +2,16 @@
 // 图片用 🖼️ 标记（与后端 IMAGE_EXTS 对齐）；其他用 📎。
 
 import { basename } from "../../format";
-import { imageExtSet } from "../../lib/consts";
 
-/** 路径后缀是否图片类型（大小写不敏感）。无后缀或未知后缀按文件处理。
- *  扩展名清单由后端 consts::app_consts 下发（真相在 bot_chat.rs::IMAGE_EXTS，
- *  后端 attach_images 按同一列表判断是否转 base64 image_url）。 */
+/** 图片扩展名白名单（与 Rust bot_chat.rs::IMAGE_EXTS 对齐；后端 attach_images
+ *  按同一列表判断是否转 base64 image_url）。改动需两侧同步。 */
+const IMAGE_EXTS = ["png", "jpg", "jpeg", "webp", "gif", "bmp"] as const;
+const IMAGE_EXT_SET = new Set<string>(IMAGE_EXTS);
+
+/** 路径后缀是否图片类型（大小写不敏感）。无后缀或未知后缀按文件处理。 */
 export function isImagePath(p: string): boolean {
   const m = p.toLowerCase().match(/\.([a-z0-9]+)$/);
-  return m ? imageExtSet().has(m[1]) : false;
+  return m ? IMAGE_EXT_SET.has(m[1]) : false;
 }
 
 /** 从消息内容里拆出 [附件文件] 块（历史消息恢复附件芯片显示用） */
