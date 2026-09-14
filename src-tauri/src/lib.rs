@@ -33,8 +33,10 @@ mod migration;
 mod mutation;
 mod ocr;
 pub mod paths;
+mod platform;
 mod profile;
 mod prompts;
+pub mod py;
 pub mod task_out;
 pub mod tool_guard;
 use tauri::{Emitter, Manager};
@@ -49,11 +51,12 @@ fn copy_file_with_title(path: String, title: String) -> error::CommandResult<()>
     #[cfg(target_os = "macos")]
     {
         // F2（Phase 6b）：平台 helper 仍为 Result<(), String>，经 From<String> → Internal 转换
-        return copy_file_macos(&path, &title).map_err(error::CommandError::from);
+        return platform::copy_file::copy_file_macos(&path, &title)
+            .map_err(error::CommandError::from);
     }
     #[cfg(windows)]
     {
-        return copy_file_windows(&path, &title);
+        return platform::copy_file::copy_file_windows(&path, &title);
     }
     #[cfg(not(any(target_os = "macos", windows)))]
     {
@@ -94,108 +97,9 @@ fn focus_main_window(app: tauri::AppHandle) {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn copy_file_macos(path: &str, title: &str) -> Result<(), String> {
-    use objc2::runtime::ProtocolObject;
-    use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString, NSPasteboardWriting};
-    use objc2_foundation::{NSArray, NSString, NSURL};
-
-    let pb = NSPasteboard::generalPasteboard();
-    pb.clearContents();
-
-    // 1) 现代文件类型（public.file-url）：Finder / 原生应用读这个
-    let url = NSURL::fileURLWithPath(&NSString::from_str(path));
-    let url_obj: objc2::rc::Retained<ProtocolObject<dyn NSPasteboardWriting>> =
-        ProtocolObject::from_retained(url);
-    let objs = NSArray::from_retained_slice(&[url_obj]);
-    let _ok = pb.writeObjects(&objs);
-
-    // 2) 老式文件列表类型（NSFilenamesPboardType）：Electron 系应用（飞书等）读这个
-    let path_str = NSString::from_str(path);
-    let paths = NSArray::from_retained_slice(&[path_str]);
-    let _ok =
-        unsafe { pb.setPropertyList_forType(&paths, &NSString::from_str("NSFilenamesPboardType")) };
-
-    // 3) 标题文本：文本应用粘贴即标题
-    let text = NSString::from_str(title);
-    let _ok = pb.setString_forType(&text, unsafe { NSPasteboardTypeString });
-    Ok(())
-}
-
-#[cfg(windows)]
-fn copy_file_windows(path: &str, title: &str) -> Result<(), error::CommandError> {
-    use std::ffi::OsStr;
-    use std::mem::size_of;
-    use std::os::windows::ffi::OsStrExt;
-    use std::ptr;
-    use windows::Win32::Foundation::{GlobalFree, HANDLE};
-    use windows::Win32::System::DataExchange::{
-        CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
-    };
-    use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
-    use windows::Win32::System::Ole::{CF_HDROP, CF_UNICODETEXT};
-    use windows::Win32::UI::Shell::DROPFILES;
-
-    unsafe {
-        if OpenClipboard(None).is_err() {
-            return Err(error::CommandError::DomainRule {
-                domain: "clipboard".to_string(),
-                reason: "打开剪贴板失败".to_string(),
-            });
-        }
-        let _ = EmptyClipboard();
-
-        // 1) 文件列表（CF_HDROP）
-        let file_wide: Vec<u16> = OsStr::new(path).encode_wide().chain(Some(0)).collect();
-        let total = size_of::<DROPFILES>() + file_wide.len() * 2 + 2;
-        let h = GlobalAlloc(GMEM_MOVEABLE, total).map_err(|e| e.to_string())?;
-        let base = GlobalLock(h) as *mut u8;
-        if base.is_null() {
-            let _ = GlobalFree(Some(h));
-            let _ = CloseClipboard();
-            return Err(error::CommandError::DomainRule {
-                domain: "clipboard".to_string(),
-                reason: "锁定文件列表内存失败".to_string(),
-            });
-        }
-        let drop: *mut DROPFILES = base as *mut DROPFILES;
-        (*drop).pFiles = size_of::<DROPFILES>() as u32;
-        (*drop).fWide = true.into();
-        let dst = base.add(size_of::<DROPFILES>()) as *mut u16;
-        ptr::copy_nonoverlapping(file_wide.as_ptr(), dst, file_wide.len());
-        *dst.add(file_wide.len()) = 0; // 双 null 结尾
-        let _ = GlobalUnlock(h);
-        if SetClipboardData(CF_HDROP.0 as u32, Some(HANDLE(h.0))).is_err() {
-            let _ = GlobalFree(Some(h));
-            let _ = CloseClipboard();
-            return Err(error::CommandError::DomainRule {
-                domain: "clipboard".to_string(),
-                reason: "写入文件列表失败".to_string(),
-            });
-        }
-
-        // 2) 标题文本（CF_UNICODETEXT）
-        let title_wide: Vec<u16> = OsStr::new(title).encode_wide().chain(Some(0)).collect();
-        let th = GlobalAlloc(GMEM_MOVEABLE, title_wide.len() * 2).map_err(|e| e.to_string())?;
-        let tbase = GlobalLock(th) as *mut u16;
-        if tbase.is_null() {
-            let _ = GlobalFree(Some(th));
-            let _ = CloseClipboard();
-            return Err(error::CommandError::DomainRule {
-                domain: "clipboard".to_string(),
-                reason: "锁定标题内存失败".to_string(),
-            });
-        }
-        ptr::copy_nonoverlapping(title_wide.as_ptr(), tbase, title_wide.len());
-        let _ = GlobalUnlock(th);
-        if SetClipboardData(CF_UNICODETEXT.0 as u32, Some(HANDLE(th.0))).is_err() {
-            let _ = GlobalFree(Some(th));
-        }
-
-        let _ = CloseClipboard();
-    }
-    Ok(())
-}
+// 平台相关 copy_file_* helper 已迁到 `platform/copy_file.rs`（Sprint B2，2026-09-14）。
+// `copy_file_with_title`（本文件顶层 tauri command）按平台 cfg 调
+// `platform::copy_file::copy_file_macos` / `copy_file_windows`。
 
 /// 退出前统一清理（macOS Cmd+Q / Windows 托盘「退出」都走 RunEvent::ExitRequested）。
 /// 只销毁主窗口不够：API 服务线程、SSE writer、活动 Skill、在途 Python 子进程会
@@ -360,7 +264,7 @@ pub fn run() {
                 let handle = app.handle().clone();
                 if api_auth::should_autostart(&handle) {
                     let state = app.state::<api_server::ApiState>();
-                    if let Err(e) = api_handlers::api_start(handle, state) {
+                    if let Err(e) = api_handlers::commands::api_start(handle, state) {
                         eprintln!("[api] auto-start failed: {e}");
                     }
                 }
@@ -516,28 +420,28 @@ pub fn run() {
             bot_skills::open_file_path,
             bot_skills::pick_files_dialog,
             bot_skills::delete_bound_file,
-            db::bind_files,
-            db::db_load,
-            db::db_upsert,
-            db::db_delete,
-            db::tasks_export,
-            db::tasks_import,
-            db::workspace_load,
-            db::workspace_upsert,
-            db::workspace_delete,
-            db::workspace_export,
-            db::workspace_import,
-            db::bot_history_load,
-            db::bot_history_save,
-            db::bot_history_clear,
-            db::bot_sessions_load,
-            db::bot_session_create,
-            db::bot_session_delete,
-            db::bot_session_rename,
-            api_handlers::api_start,
-            api_handlers::api_stop,
-            api_handlers::api_status,
-            api_handlers::api_rotate_token,
+            crate::db::tasks::bind_files,
+            crate::db::tasks::db_load,
+            crate::db::tasks::db_upsert,
+            crate::db::tasks::db_delete,
+            crate::db::tasks::tasks_export,
+            crate::db::tasks::tasks_import,
+            crate::db::workspace::workspace_load,
+            crate::db::workspace::workspace_upsert,
+            crate::db::workspace::workspace_delete,
+            crate::db::workspace::workspace_export,
+            crate::db::workspace::workspace_import,
+            crate::db::bot_history::bot_history_load,
+            crate::db::bot_history::bot_history_save,
+            crate::db::bot_history::bot_history_clear,
+            crate::db::bot_sessions::bot_sessions_load,
+            crate::db::bot_sessions::bot_session_create,
+            crate::db::bot_sessions::bot_session_delete,
+            crate::db::bot_sessions::bot_session_rename,
+            api_handlers::commands::api_start,
+            api_handlers::commands::api_stop,
+            api_handlers::commands::api_status,
+            api_handlers::commands::api_rotate_token,
             bot_slash::bot_get_enabled,
             bot_slash::bot_set_enabled,
             bot::bot_get_config,
@@ -562,12 +466,12 @@ pub fn run() {
             profile::profile_set_name,
             profile::profile_set_avatar,
             profile::profile_remove_avatar,
-            migration::migration_rules_load,
-            migration::migration_rules_import,
-            migration::migration_rules_template_save,
-            migration::migration_log_read,
-            migration::migration_run,
-            migration::migration_status,
+            migration::commands::migration_rules_load,
+            migration::commands::migration_rules_import,
+            migration::commands::migration_rules_template_save,
+            migration::commands::migration_log_read,
+            migration::commands::migration_run,
+            migration::commands::migration_status,
             consts::app_consts
         ])
         .build(tauri::generate_context!())
@@ -870,12 +774,14 @@ mod dead_command_tests {
             "db::db_merge 死命令不得再注册"
         );
         assert!(
-            text.contains("db::bind_files,"),
+            text.contains("crate::db::tasks::bind_files,"),
             "bind_files 复数形必须保留（TodoCard 前端在用）"
         );
-        // 命令体本体也已删除（含仅它使用的 load_external）
+        // 命令体本体也已删除（含仅它使用的 load_external）——
+        // Sprint D 后 db 改为目录（src/db/mod.rs + 子模块），
+        // 检查入口文件就够：bind_files 已迁到 src/db/tasks.rs。
         let db =
-            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/db.rs")).unwrap();
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/db/mod.rs")).unwrap();
         assert!(
             !db.contains(concat!("fn bind", "_file(")),
             "bind_file 命令体应已删除"

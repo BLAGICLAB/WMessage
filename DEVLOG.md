@@ -2,6 +2,32 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-09-14（周日）出包：Windows 绿色版 `wmessage-portable-2026-09-14.zip`（103 MB）
+
+**背景**：老板要一份最新绿色包。按 `docs/PACKAGING-WINDOWS-PORTABLE.md` 全流程跑完，无 Windows
+机器参与，全程 macOS 交叉编译（mingw-w64 + x86_64-pc-windows-gnu）。
+
+**产物**：
+- 路径：`/Users/renshi/Projects/wmessage/wmessage-portable-2026-09-14.zip`
+- 大小：103,573,956 B（≈103 MB）；含 205 个条目
+- `wmessage.exe`：54,330,591 B（54.3 MB，构建 28 s，基于 main @ e1dd21e）
+- `onnxruntime.dll`：15.8 MB；`WebView2Loader.dll`：160 KB；`dotnet/`：79 MB（含 189 文件）
+- `bge-small-zh-v1.5/`（23 MB，语义模型）+ `pp-ocr-v6/`（31 MB，OCR 模型）
+
+**校验**：
+- `python3 zipfile.testzip()` 通过；顶层 9 类条目齐全（exe / WebView2Loader / ort ×2 / Edge setup / README / dotnet / bge / pp-ocr）
+- `dotnet/wm-docx-revisions.exe` / `bge-small-zh-v1.5/onnx/model_quantized.onnx` / `pp-ocr-v6/{det,rec,cls}.onnx` + `keys.txt` 全部在位
+- `objdump -p wmessage.exe | grep -i onnxruntime` 无输出 → ort 走 `load-dynamic`，无静态导入
+- macOS 侧 `cargo check`：10.38 s 通过（Cargo.toml 含 target 特异配置必跑项）
+
+**关键决策**：
+- zip 用 Python `zipfile`（不用 macOS `zip`；扩展字段会让 Windows 资源管理器解压报「位置不可用」）
+- README.txt 文件说明按手册第 4 节对齐（首次加入 ort / bge / pp-ocr / dotnet 四块说明）
+- 更新记录列了 09-10 之后的 18 个 commit 要点（PRAGMA / 安全锁 / prompts 集中 / 错误码枚举 / schema 迁移 / bot 拆分 / skills max_steps / kimi fix / 挂件 320→480 / OCR cls 80×160 / Mac DMG）
+
+**待人工验收**：Windows 实机双击 wmessage.exe，确认数据库与 AI_Gen_Files 落在 exe 同目录（便携锚定），
+跑机器人记忆语义检索 + 本地图片 ocr_image。
+
 ## 2026-09-14（周日）性能/组织清单落地：SQLite PRAGMA 补齐 + 前端 delta 合并 + clippy 摸底
 
 **背景**：按「性能与资源 / 代码组织惯例」两张清单逐项盘查（结论与本轮取舍见下），只落地三处小改动，其余留档。
@@ -99,6 +125,55 @@ fast gate 全绿（含新 `[3.7/N]` 模块地图对拍）。fail-path 注入验�
 - **运行期文件收口 `runtime/flags/`**：`api-token.txt` / `api-enabled.flag` / `py-enabled.flag` / `bot-enabled.flag` 统一落到 `{data_dir}/runtime/flags/`（`paths::flags_dir`；`paths` 提为 `pub mod paths` 供集成测试复用）；启动时 `paths::migrate_legacy_runtime_files` 把老版本散在根目录的这几个文件 rename 迁入（幂等、目标已存在不覆盖、单文件失败保留原位下次再试）+ `runtime_files_migrated` 审计
 
 **测试**：Rust lib 新增 7 例（schema 迁移补写/保留明文 key/幂等/未来版本不降级/损坏与非对象容错/默认版本、keyring service 常量协议锁、flags 目录形状 + 迁移幂等）；`task_chat_exec` 与 `lib.rs` 退出清理用例改走 `paths::flags_dir` / `api_auth::enabled_flag_path`。
+
+## 2026-09-14（周日）Sprint 切片阶段交付 14 项 + Tauri 注册一致性审查 100%
+
+**背景**：按 8-Sprint 协议（run1 单跑每 Sprint 单 run；worktree dirty 不动 .git；不 commit/push；不移动 vendor/tiny_http 逻辑）连续从 run1 跑到 run10 + run11 一次只读审查。
+
+**累计 11 runs / 15 项交付 / 8/8 Sprint 完成 / 18180 行切片 / 工时 ~4h08min**：
+
+| run | 时长 | 内容 | 切片行数 |
+|-----|------|------|----------|
+| run1 | 1h10min | Sprint A 文档（tiny_http PATCHES + ci-guard + AUDIT-COMMANDS-MATRIX）+ B（app_state ext helper + platform/ 拆分）+ C（bot_py 3694 → py/ 8 子模块）+ H 只读审计（Box<dyn> 12 处 / middleware + tool_guard / bot_anthropic + bot_chat 未用函数扫描）+ MAKE_PPTX_SCRIPT placeholder 修复 | 3694 (C) |
+| run2 | 17min | Sprint D — db.rs 2746 → db/ 8 子模块 | 2746 |
+| run3 | 25min | Sprint E — migration.rs 2284 → migration/ 7 子模块 | 2284 |
+| run4 | 35min | Sprint F 部分 — api_handlers.rs 1924 → api_handlers/ 7 子模块 | 1924 |
+| run5 | 50min | Sprint F 后续 — bot/config.rs 1923 → bot/config/ 7 子模块（facade 模式：bot.rs `pub use config::{...}` 块零改，mod.rs 加 24 项 + 8 个宏符号透传） | 1923 |
+| run6 | 15min | Sprint F 边界审查（只读，不切片）—— bot_chat ↔ bot_model_loop 依赖方向单向，1 处反向泄漏可接受（TaskRef / merge_task_refs_dedup 在 chat 编排层产物，model_loop 工具响应合并需用，编译期保证一致） | — |
+| run7 | 8min | Sprint G SettingsPage.tsx 1846 → SettingsPage/ 7 子模块 | 1846 |
+| run8 | 5min | Sprint G ChatPanel.tsx 1531 → ChatPanel/ 6 子模块 | 1531 |
+| run9 | 4min | Sprint G TodoCard.tsx 972 → TodoCard/ 3 子模块 | 972 |
+| run10 | 8min | Sprint G WidgetApp.tsx 1260 → WidgetApp/ 7 子模块（default export，index.tsx `export { default }` 透传） | 1260 |
+| run11 | 8min | Tauri command 注册一致性审查（只读）—— 56 个 `#[tauri::command]` 全部在 lib.rs invoke_handler! 注册，注册一致性 100% | — |
+
+**关键纪律 / 经验（写入下次同类工作的 AGENTS 候选）**：
+- **单 Sprint 单 run 是稳定模式**——run3-run10 工时 25-50 分钟；想塞 D+E+F+G 一起必爆上下文（先前主动收工于 4/8 Sprint 是对的）
+- **facade re-export 模式适合已有 `pub use` 块的模块**（run5 bot.rs 案例）：config 子模块分片后 mod.rs 加 `pub use` 透传，bot.rs 一行不动；run5 编译迭代最复杂（13 轮），visibility / pub(crate) / 模块命名冲突外部 crate 各种坑都在这次遇到
+- **tauri `#[tauri::command]` 宏符号按函数所在模块归属**（不在 commands.rs 集中）—— `bot_log_read` 住 audit.rs（因 AppHandle 上下文），`__cmd__bot_log_read` 也在 audit 里；跨模块 import 时 `pub use audit::__cmd__bot_log_read` 透传
+- **`__cmd__xxx` 宏符号与 `pub use` re-export 冲突**——跨模块复用 tauri command 时 invoke_handler 必须用全路径（`audit::commands::bot_log_read` 而非短名），或显式 `pub use commands::__cmd__xxx`
+- **写入工具 sanitize API-key-shaped 字符串**（"sk-plain" → `***`）→ 测试 fixture 用非 key 形状值（"plain-key"），断言同步；run5 在 fixture 上踩了
+- **write 工具的 token sanitization** 是稳定的——首次出现即可预期，不需每次踩坑后再发现
+- **前端切片模式（run7-run10）**：Vite 目录模块 + index.tsx 透传（named 或 default 视组件而定）→ App.tsx / main.tsx / 测试文件零改 import；`tsc --noEmit` + `vitest run` 是 TS 验证二件套（无 cargo test 等价物）
+- **边界审查（run6）比强行切片更值得做**：3613 行（chat + model_loop）单 Sprint 切片会拆 5-6 子模块，但跨子模块边界需要保留 TaskRef 共享，反而引入新的耦合点；纯只读分析 15 分钟出结论不切片
+- **Bot 模块命名陷阱**：`keyring` 既是子模块名又是外部 crate 名——子模块里 `use ::keyring::Error` 绝对路径绕开冲突
+
+**验证（累计）**：
+- 6 个 Rust run 全部 `cargo test --lib` 665 passed, 0 failed（与 baseline 持平）
+- 4 个 TS run 全部 `vitest run` 211/211 passed + `tsc --noEmit` clean
+- 1 个只读审查：Tauri command 注册一致性 100%（56 个定义 = 56 个注册）
+
+**worktree 状态**：dirty（11 个独立切片 + 边界审查 + 注册审查，全部未 commit）；按各 run HANDOFF 拆 5-9 commit 由用户决定。Rust 侧只动工作区文件，未触碰 `.git`。
+
+**产物路径**：
+- HANDOFF + 报告：`/Users/renshi/.openclaw/workspace/audit-reports/.audit-2026-09-14-run{1..11}/HANDOFF.md` 与 `reports/sprint-*.md` / `audit-*.md`
+- Patch：`/Users/renshi/Projects/wmessage/.audit-2026-09-14-run{2..11}/patches/`（run1 在 `.audit-2026-09-14/`）
+- 累计切片行数：Rust 12571 + TS 5609 = **18180 行**
+- 最关键报告：`run11/reports/audit-tauri-command-registration.md`（注册一致性 100% 确认切片未引入注册遗漏）
+
+**后续可选**：
+- Sprint G 后续（前端 4 组件）已完成 → 8/8 Sprint 全完成
+- 前端小审查（不切片）—— 例如 ChatPanel 与 WidgetApp 的拖拽 + 事件 listener 生命周期
+- 后端小审查 —— 例如 db.rs 索引覆盖度 / bot_artifacts.rs 状态机完整性
 
 ## 2026-09-11（周五）AI 产物统一收口 AI_Gen_Files + 便携版锚定唯一化
 

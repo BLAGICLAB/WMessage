@@ -166,6 +166,24 @@ fn fallback_state() -> &'static AppState {
     FALLBACK.get_or_init(AppState::default)
 }
 
+/// 统一 `AppState` 拿取：注入实例优先，否则兜底实例。
+///
+/// Sprint B1：原 8 个 accessor（`skill_runs` / `artifact_registry` / `confirms` /
+/// `sched_running` / `stop_registry` / `chat_running` / `exec_running` /
+/// `pending_map`）各自重复 `try_state → map → unwrap_or(fallback)` 三段，
+/// 抽出这一个 helper 收口，行为零变化。
+///
+/// 注意：不能用 `.map(|s| s.inner()).unwrap_or_else(fallback_state)` 形式——
+/// 闭包内 `s.inner()` 的寿命绑在闭包局部变量上，Rust 没法把它桥接到 `app`；
+/// `match` 让两条分支返回类型都受 `app` 寿命约束，`&'static` 走子类型
+/// （covariant）自然满足。
+pub(crate) fn ext<'a, R: tauri::Runtime>(app: &'a tauri::AppHandle<R>) -> &'a AppState {
+    match app.try_state::<AppState>() {
+        Some(s) => s.inner(),
+        None => fallback_state(),
+    }
+}
+
 /// 活动 Skill 运行表访问器：返回 **Arc 克隆**。
 ///
 /// 用 Arc 而非借用引用：这张表的访问点既有生产链（`app` 是参数），也有大量测试
@@ -174,9 +192,7 @@ fn fallback_state() -> &'static AppState {
 pub(crate) fn skill_runs<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Arc<Mutex<HashMap<String, crate::bot_skills::SkillRun>>> {
-    app.try_state::<AppState>()
-        .map(|state| state.inner().skill_runs.clone())
-        .unwrap_or_else(|| fallback_state().skill_runs.clone())
+    ext(app).skill_runs.clone()
 }
 
 /// 产物登记表访问器：优先取注入的 `AppState` 实例，缺失则退回兜底实例。
@@ -184,20 +200,14 @@ pub(crate) fn skill_runs<R: tauri::Runtime>(
 pub(crate) fn artifact_registry<'a, R: tauri::Runtime>(
     app: &'a tauri::AppHandle<R>,
 ) -> &'a tokio::sync::Mutex<HashMap<String, Vec<crate::bot_artifacts::RegisteredArtifact>>> {
-    match app.try_state::<AppState>() {
-        Some(state) => &state.inner().artifact_registry,
-        None => &fallback_state().artifact_registry,
-    }
+    &ext(app).artifact_registry
 }
 
 /// 待确认请求表访问器（`/stop` 收尾、`ask_confirm_inner` 登记/超时回收、`take_confirm` 取走）。
 ///
 /// 无 RAII 守卫（锁只在 insert/remove 期间持有）→ 借用引用，同 `artifact_registry`。
 pub(crate) fn confirms<'a, R: tauri::Runtime>(app: &'a tauri::AppHandle<R>) -> &'a ConfirmMap {
-    match app.try_state::<AppState>() {
-        Some(state) => &state.inner().confirm_requests,
-        None => &fallback_state().confirm_requests,
-    }
+    &ext(app).confirm_requests
 }
 
 /// 定时调度防重入表访问器：返回 **Arc 克隆**。
@@ -208,9 +218,7 @@ pub(crate) fn confirms<'a, R: tauri::Runtime>(app: &'a tauri::AppHandle<R>) -> &
 pub(crate) fn sched_running<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Arc<Mutex<HashSet<String>>> {
-    app.try_state::<AppState>()
-        .map(|state| state.inner().sched_running.clone())
-        .unwrap_or_else(|| fallback_state().sched_running.clone())
+    ext(app).sched_running.clone()
 }
 
 /// /stop 停止注册表访问器：Arc 克隆（`StopGuard::drop` 靠它注销自己的 id）。
@@ -219,27 +227,21 @@ pub(crate) fn sched_running<R: tauri::Runtime>(
 /// （公开构造函数签名变化，已获批准）——否则守卫会注册进兜底实例、而 `/stop`
 /// 查注入实例，停止功能就真的坏了。id 发号仍是全局 `NEXT_STOP_ID`。
 pub(crate) fn stop_registry<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Arc<StopMap> {
-    app.try_state::<AppState>()
-        .map(|state| state.inner().stop_registry.clone())
-        .unwrap_or_else(|| fallback_state().stop_registry.clone())
+    ext(app).stop_registry.clone()
 }
 
 /// 会话级聊天防重入表访问器：Arc 克隆（`ChatGuard::drop` 靠它清本会话槽位）。
 pub(crate) fn chat_running<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Arc<Mutex<HashSet<String>>> {
-    app.try_state::<AppState>()
-        .map(|state| state.inner().chat_running.clone())
-        .unwrap_or_else(|| fallback_state().chat_running.clone())
+    ext(app).chat_running.clone()
 }
 
 /// 任务卡执行防重入表访问器：Arc 克隆（`ExecGuard::drop` 靠它清 task_id）。
 pub(crate) fn exec_running<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Arc<Mutex<HashSet<String>>> {
-    app.try_state::<AppState>()
-        .map(|state| state.inner().exec_running.clone())
-        .unwrap_or_else(|| fallback_state().exec_running.clone())
+    ext(app).exec_running.clone()
 }
 
 /// 逐步执行挂起表访问器（`has_pending_for` / `park` / `take_pending_for` 用）。
@@ -248,8 +250,5 @@ pub(crate) fn exec_running<R: tauri::Runtime>(
 pub(crate) fn pending_map<'a, R: tauri::Runtime>(
     app: &'a tauri::AppHandle<R>,
 ) -> &'a Mutex<HashMap<String, crate::exec_steps::PendingExec>> {
-    match app.try_state::<AppState>() {
-        Some(state) => &state.inner().pending,
-        None => &fallback_state().pending,
-    }
+    &ext(app).pending
 }
