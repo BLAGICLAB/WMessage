@@ -1,4 +1,3 @@
-//! WMessage 任务数据存储 facade（2026-09-14 Sprint D）
 //!
 //! 原 2746 行 db.rs 按 SRP 拆为 8 个子模块（paths / migrations / tasks /
 //! workspace / bot_sessions / bot_history / skill_out）。本文件保留为 facade：

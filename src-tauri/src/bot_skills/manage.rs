@@ -247,7 +247,6 @@ pub fn skills_open_dir(app: AppHandle) -> CommandResult<String> {
 }
 
 /// 导入技能文件夹：校验含 SKILL.md，拷贝到数据目录 skills/<name>（重名拒绝，需先删）。
-/// 返回技能名。
 #[tauri::command]
 pub fn skills_import(app: AppHandle, path: String) -> CommandResult<String> {
     let src = std::path::PathBuf::from(&path);

@@ -1,7 +1,7 @@
 use super::manage::skill_search_paths;
 use super::parse::{parse_meta, SkillMeta, SKILL_NAME_CHARS_OK};
 use crate::error::CommandError;
-// 阶段 3.3：SKILL_RUNS 已迁入 `AppState`；这里 `pub(crate) use` 让本模块与
+// SKILL_RUNS 已迁入 `AppState`；这里 `pub(crate) use` 让本模块与
 // 兄弟模块（runtime.rs / scheduler.rs 的 `use super::state::{skill_runs, …}`）路径不变。
 pub(crate) use crate::app_state::skill_runs;
 use tauri::AppHandle;
@@ -71,7 +71,7 @@ impl SkillRun {
     }
 }
 
-// 阶段 3.3：SKILL_RUNS 已迁入 `AppState.skill_runs`（再导出见文件头 use）。
+// SKILL_RUNS 已迁入 `AppState.skill_runs`（再导出见文件头 use）。
 
 /// 当前会话是否有 Skill 处于 Running 状态（按会话过滤，别的会话的 Skill 不算本会话活动）
 ///
@@ -285,7 +285,7 @@ pub(crate) fn test_skill_run_state<R: tauri::Runtime>(
     guard.get(name).map(|r| r.state.clone())
 }
 
-// 阶段 3.3 撤锁（2026-09-13）：原 `SKILL_RUNS_TEST_LOCK` 已删除。
+// 原 `SKILL_RUNS_TEST_LOCK` 已删除。
 // 理由：表随 `AppState` 注入，凡写 SKILL_RUNS 且对内容有断言的用例
 // （state.rs 两个用例 + lib.rs 退出清理用例）都各自 `manage` 独立实例，
 // 彼此不可见；而 runtime.rs / scheduler.rs 的测试是纯状态机（不碰表）。
@@ -314,7 +314,7 @@ pub(crate) fn test_run(max_steps: usize, timeout_secs: u64) -> SkillRun {
 mod tests {
     use super::*;
 
-    /// 阶段 3.3：注入独立 `AppState` 的 mock handle（SKILL_RUNS 随 AppState 隔离）
+    /// 注入独立 `AppState` 的 mock handle（SKILL_RUNS 随 AppState 隔离）
     fn test_handle() -> AppHandle<tauri::test::MockRuntime> {
         let app = tauri::test::mock_app();
         tauri::Manager::manage(&app, crate::app_state::AppState::default());

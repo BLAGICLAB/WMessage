@@ -161,7 +161,7 @@ mod tests {
 
     #[test]
     fn is_skill_active_false_with_no_skills() {
-        // 阶段 3.3：SKILL_RUNS 随 AppState；本用例注入独立实例（空表 → 未运行任何 Skill）
+        // SKILL_RUNS 随 AppState；本用例注入独立实例（空表 → 未运行任何 Skill）
         let app = tauri::test::mock_app();
         tauri::Manager::manage(&app, crate::app_state::AppState::default());
         let handle = app.handle().clone();

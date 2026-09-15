@@ -34,7 +34,7 @@ pub(crate) struct PendingExec {
     exec_guard: ExecGuard,
 }
 
-// 阶段 3.3：PENDING 已迁入 `AppState.pending`，`pending_map(app)` 取注入实例
+// PENDING 已迁入 `AppState.pending`，`pending_map(app)` 取注入实例
 // （缺失时兜底实例）；逐步执行的状态机与超时回收语义未动。
 use crate::app_state::pending_map;
 
@@ -45,7 +45,7 @@ fn session_key(session_id: Option<&str>) -> String {
 
 /// 当前会话是否有挂起的逐步执行（按会话匹配：
 /// 会话 A 挂起时，会话 B 的消息走正常聊天路由，不被 resume 截胡）
-/// 阶段 3.3：挂起表已迁入 `AppState`，故取注入实例（缺失时兜底实例）。
+/// 挂起表已迁入 `AppState`，故取注入实例（缺失时兜底实例）。
 pub fn has_pending_for<R: tauri::Runtime>(app: &AppHandle<R>, session_id: Option<&str>) -> bool {
     pending_map(app)
         .lock()
@@ -409,7 +409,7 @@ pub async fn resume(
     }
 }
 
-/// 测试用 mock handle：注入独立 `AppState`（阶段 3.3：挂起表/执行守卫随 AppState 隔离）
+/// 测试用 mock handle：注入独立 `AppState`（挂起表/执行守卫随 AppState 隔离）
 #[cfg(test)]
 fn test_handle() -> AppHandle<tauri::test::MockRuntime> {
     let app = tauri::test::mock_app();
@@ -519,7 +519,7 @@ mod classify_tests {
 #[cfg(test)]
 mod guard_tests {
     /// ExecGuard RAII 语义——持有期间同卡不得再获取，Drop 后释放
-    /// 阶段 3.3：表随 `AppState` 走，守卫 Drop 清的是 acquire 时手里那份实例。
+    /// 表随 `AppState` 走，守卫 Drop 清的是 acquire 时手里那份实例。
     #[test]
     fn exec_guard_blocks_second_acquire_until_drop() {
         let app = super::test_handle();

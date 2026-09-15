@@ -1,7 +1,10 @@
-//! 记忆 v2 混合打分与注入取数（设计 docs/BOT-MEMORY-V2-DESIGN.md 第 3 节）。
+//! 记忆 v2 混合打分与注入取数（混合打分 + 注入取数）：
 //!
 //! score = 0.55·cosine(query,item) + 0.20·关键词 bigram 重合度 + 0.15·(importance/5)
 //!         + 0.10·exp(-age_days/30)
+//! 注入三段：pinned（importance≥4 且 kind=profile/preference，无条件）→
+//! 混合打分 top-5（已 pinned 不重复）→ 最近 3 条 summary/reflection（排除已命中，兼零命中兜底）。
+//! 命中条目同连接原子刷新 access_count/last_accessed_at。
 //! 无向量（降级模式 / 条目缺 embedding）时语义项记 0 并把剩余权重归一（÷0.45）；
 //! 此时关键词零重合直接 0 分（保住「零命中→近期摘要兜底」）。
 //! 关键词提取的 CJK bigram 逻辑见下方 extract_keywords。

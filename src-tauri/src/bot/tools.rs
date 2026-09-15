@@ -805,7 +805,6 @@ pub(crate) async fn tool_toggle_subtask(
     }
 }
 
-/// 删除单条子任务
 pub(crate) async fn tool_remove_subtask(
     app: &AppHandle,
     args: &str,

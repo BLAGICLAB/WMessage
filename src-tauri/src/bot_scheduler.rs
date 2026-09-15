@@ -50,14 +50,14 @@ fn notify_scheduled_done(
 const SCHED_TASK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 
 /// 正在执行的定时任务 id（防同一任务并发重复跑）
-// 阶段 3.1：SCHED_RUNNING 的定义与 sched_running() 访问器已集中到 `crate::app_state`
+// SCHED_RUNNING 的定义与 sched_running() 访问器已集中到 `crate::app_state`
 // （SchedGuard 本体与 Drop 清理语义未动）。
 use crate::app_state::sched_running;
 
 /// 调度防重入 RAII 守卫：Drop（含 panic 展开）时自动清理，保证任务 id 不残留
 /// （清理不能只放在 run_scheduled 末尾：panic 时该卡会永久失效）
 ///
-/// 阶段 3.3：表已迁入 `AppState`。Drop 里拿不到 `app`，所以在 acquire 时把表句柄
+/// 表已迁入 `AppState`。Drop 里拿不到 `app`，所以在 acquire 时把表句柄
 /// （`Arc<Mutex<HashSet<String>>>` 克隆）带进守卫，Drop 用手里这份清理——
 /// 同一个 `Mutex` 实例，清理时机与语义与迁移前一致。
 struct SchedGuard {
@@ -740,7 +740,7 @@ mod sched_tests {
     }
 }
 
-/// 阶段 3.3：`SchedGuard`（迁入 `AppState` 后）的守卫语义与实例隔离。
+/// `SchedGuard`（迁入 `AppState` 后）的守卫语义与实例隔离。
 /// 这张表此前没有测试；本模块锁住「acquire 取注入实例 + Drop 清同一实例」这条设计，
 /// 因为 Drop 里拿不到 `app`，全靠 acquire 时克隆的 Arc 句柄（写错就是守卫泄漏或误删）。
 #[cfg(test)]

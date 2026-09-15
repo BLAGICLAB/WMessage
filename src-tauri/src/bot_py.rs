@@ -1,6 +1,6 @@
 //! Python 执行基础设施（facade）
 //!
-//! 2026-09-14 Sprint C：原 3694 行 bot_py.rs 按 SRP 切片到 `py/` 子模块（env / runtime /
+//! 原 3694 行 bot_py.rs 按 SRP 切片到 `py/` 子模块（env / runtime /
 //! io / harvest / audit / document / commands）。本文件保留为 facade：
 //! `pub use py::*` 重导出所有 `pub` 项，`crate::bot_py::X` 路径全部兼容（lib.rs /
 //! tools.rs / 测试模块调用无修改）。
@@ -108,7 +108,7 @@ mod tests {
 
     #[test]
     fn stop_reader_returns_partial_when_stopped() {
-        // 阶段 3.3：本用例自带注入实例的 StopGuard，别的用例的全局广播不再置位它
+        // 本用例自带注入实例的 StopGuard，别的用例的全局广播不再置位它
         let data = vec![b'x'; 4096];
         let guard = crate::bot_slash::StopGuard::new(&guard_test_handle(), false, None);
         let token = guard.token();

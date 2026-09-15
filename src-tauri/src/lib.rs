@@ -96,7 +96,7 @@ fn focus_main_window(app: tauri::AppHandle) {
     }
 }
 
-// 平台相关 copy_file_* helper 已迁到 `platform/copy_file.rs`（Sprint B2，2026-09-14）。
+// 平台相关 copy_file_* helper 已迁到 `platform/copy_file.rs`。
 // `copy_file_with_title`（本文件顶层 tauri command）按平台 cfg 调
 // `platform::copy_file::copy_file_macos` / `copy_file_windows`。
 
@@ -231,7 +231,7 @@ pub fn run() {
             app.manage(api_server::ApiState::default());
             // F-2 中间件注册表（Plugin/Extension 抽象层 P2）：注册 2 个内置中间件
             app.manage(middleware::build_default_registry());
-            // 阶段 3.2：全局可变状态容器（单一入口）；产物登记表已迁入，其余表逐张迁移
+            // 全局可变状态容器（单一入口）；产物登记表已迁入，其余表逐张迁移
             app.manage(app_state::AppState::default());
 
             // 运行期文件收口：老版本散在数据目录根的 flag/token 迁进 runtime/flags
@@ -654,13 +654,13 @@ mod exit_cleanup_tests {
     ///（退出 ≠ 用户关开关，下次启动应自动恢复）、app_exit_cleanup 审计落行。
     #[test]
     fn cleanup_on_exit_releases_api_and_skill() {
-        // 阶段 3.3 撤锁：本测试做的两类「全局广播」——skill_terminate_all(None) 与
+        // 撤锁：本测试做的两类「全局广播」——skill_terminate_all(None) 与
         // stop_all_executions ——现在都按传入 app 取实例；下面 manage 了独立 AppState，
         // 广播只落在本用例自己的表上，不再干扰并行的 state 清理 / StopReader 用例。
         let app = tauri::test::mock_app();
         let handle = app.handle().clone();
         app.manage(crate::api_server::ApiState::default());
-        // 阶段 3.3：注入独立状态容器（停止注册表随 AppState 隔离）
+        // 注入独立状态容器（停止注册表随 AppState 隔离）
         app.manage(crate::app_state::AppState::default());
         // 真实启动 API server（固定生产端口；MemStore 免 Wry 绑定的 TauriStore，
         // server/线程/端口与 api_start 同为 start_api 真路径）
@@ -697,7 +697,7 @@ mod exit_cleanup_tests {
         std::fs::write(&flag, b"1").unwrap();
 
         // 退出清理必须置位在途执行实例（含后台 interactive=false）的停止标志
-        // 阶段 3.3：停止表随 AppState，本用例注入独立实例（下面 cleanup_on_exit_with
+        // 停止表随 AppState，本用例注入独立实例（下面 cleanup_on_exit_with
         // 用的是同一 handle → 同一实例，断言口径不变）
         let exec_guard = crate::bot_slash::StopGuard::new(&handle, false, None);
         // kill fn 注入 spy：全局 kill_all 会误杀并行测试注册的在途子进程，

@@ -62,7 +62,10 @@ pub(crate) fn probe_dir(
 ///
 /// 兜底分支发生时记一条 WARN 审计（写清翻到哪、为什么），可诊断。
 ///
-/// # 测试期的跨进程共享（留档，2026-09-13 决策：暂不下沉）
+/// # 测试期的跨进程共享
+///
+/// 留档观察，未下沉到依赖容器。pid 隔离在 profile.json 上有效，
+/// 其余文件暂无实证。详见下方 `probe_log_dir` 整段 doc（三档方案 + 实证 + 代价）。
 ///
 /// `cargo nextest run` 是**每测试一进程**，而本函数在测试构建下解析到
 /// `current_exe().parent()` = `target/debug/deps/` —— 于是同一份 `bot.log`（审计追加）、
@@ -73,7 +76,7 @@ pub(crate) fn probe_dir(
 ///   共享文件（`cargo nextest run` 曾 6 次复现 profile 用例随机挂，修后 5×nextest 全绿）；
 /// - 上列其余文件**5 次 nextest 未出现失败**，故暂不处理（不扩大范围，等实锤）。
 ///
-/// 2026-09-13 追加实证（**进程内**并行，与 nextest 不同层）：
+/// 追加实证（**进程内**并行，与 nextest 不同层）：
 /// `cargo test --lib`（同进程多线程）下 `exit_cleanup_tests::cleanup_on_exit_releases_api_and_skill`
 /// 失败 **1 次**：`lib.rs:813`「退出路径不得清 api-enabled.flag」。
 /// - 该用例单跑 3/3 通过；其后连跑 16 轮全套 lib（6 + 10）**全绿**；
@@ -101,7 +104,7 @@ pub(crate) fn probe_dir(
 ///
 /// 触发条件：出现**实证**失败（哪个用例、哪条断言、哪个共享文件）→ 再按上表选档。
 ///
-/// 决策（2026-09-13，口径 C1）：**只留档、不盲改** —— 上面那条进程内实证尚未定位到具体
+/// 决策：只留档、不盲改 —— 上面那条进程内实证尚未定位到具体
 /// 调用点，无靶点的修改等于猜；下次复现时先定位「哪个调用点删/写了哪个文件」，再按
 /// 进程间走 B1/B2/B3、进程内走「按测试隔离（治本）」或「窄串行锁（打补丁）」选档。
 pub(crate) fn probe_log_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> std::path::PathBuf {

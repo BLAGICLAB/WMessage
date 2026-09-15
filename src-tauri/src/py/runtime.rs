@@ -64,6 +64,10 @@ mod win_job {
     pub struct JobGuard(HANDLE);
 
     pub fn create(mem_bytes: u64, cpu_secs: u64) -> Option<JobGuard> {
+        // SAFETY: Win32 Job Object FFI 块。
+        // - CreateJobObjectW(NULL, NULL) = 默认安全描述符、不命名（防跨进程名冲突）；
+        // - &info 是有效 Rust 结构体，size_of_val 校验大小匹配 Win32 期望；
+        // - SetInformationJobObject 失败时已 CloseHandle 兜底，不泄漏 HANDLE。
         unsafe {
             let job = CreateJobObjectW(None, PCWSTR::null()).ok()?;
             let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
@@ -89,12 +93,17 @@ mod win_job {
 
     pub fn assign(job: &JobGuard, child: &Child) {
         use std::os::windows::io::AsRawHandle;
+        // SAFETY: child.as_raw_handle() 由 std 保证是 valid HANDLE（子进程已 spawn）；
+        // job.0 由本模块 CreateJobObjectW 创建并由 JobGuard 持有；
+        // 返回值忽略：AssignProcessToJobObject 失败时子进程仍可由 TerminateJobObject 强杀。
         unsafe {
             let _ = AssignProcessToJobObject(job.0, HANDLE(child.as_raw_handle() as _));
         }
     }
 
     pub fn terminate(job: &JobGuard) {
+        // SAFETY: job.0 是 valid HANDLE（CreateJobObjectW 已返回 Ok）；
+        // TerminateJobObject 对 valid HANDLE 调用安全，退出码 1 仅触发清理。
         unsafe {
             let _ = TerminateJobObject(job.0, 1);
         }
@@ -102,6 +111,8 @@ mod win_job {
 
     impl Drop for JobGuard {
         fn drop(&mut self) {
+            // SAFETY: self.0 由 CreateJobObjectW 创建并独占持有；Drop 必须 CloseHandle 释放内核对象，
+            // 否则 HANDLE 泄漏到进程退出。Drop 中 close 是所有权语义的标准用法。
             unsafe {
                 let _ = CloseHandle(self.0);
             }
@@ -145,6 +156,8 @@ impl RunLimits {
 
 #[cfg(unix)]
 pub fn is_live_group_leader(pid: u32) -> bool {
+    // SAFETY: pid 由调用方传入（subprocess 子进程 PID），本函数语义：若 getpgid(pid) == pid 则该 pid 是进程组 leader。
+    // POSIX getpgid(0) 返回调用方 PGID 是无害的（这里 pid 是入参，不会传 0）。返回值仅用于 == 比较，无 wrapper 误用风险。
     unsafe { libc::getpgid(pid as i32) == pid as i32 }
 }
 
@@ -428,6 +441,10 @@ pub fn run_python_at(
     {
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
+        // SAFETY: pre_exec 在 fork 后 exec 前运行，处于单线程上下文（POSIX 要求 async-signal-safe）。
+        // libc::setrlimit 对 RLIMIT_AS / RLIMIT_CPU 是 async-signal-safe 调用。
+        // mem_bytes / cpu_secs 来自 RunLimits，由调用方在子进程 spawn 前已 validate 非零。
+        // process_group(0) 已将子进程设为新进程组，避免 setpgid 边界。
         unsafe {
             cmd.pre_exec(move || {
                 let mem = libc::rlimit {

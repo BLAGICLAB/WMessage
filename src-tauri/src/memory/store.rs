@@ -1,6 +1,17 @@
-//! 记忆 v2 存储（设计 docs/BOT-MEMORY-V2-DESIGN.md）：
-//! 新表 mem_items，统一容量上限 500 条，
-//! 语义去重（余弦阈值合并/提示）+ 受保护条目免淘汰。
+//! 记忆 v2 存储（新表 mem_items，统一 500 条上限，语义去重 + 受保护条目免淘汰）：
+//!
+//! 容量：插入前检查，超限淘汰综合分最低者——
+//! 淘汰分 = importance×2 + exp(-age_days/30) + ln(1+access_count)/5
+//! （importance 权重最高；age 基准 = max(updated_at, last_accessed_at)）。
+//! importance=5 且 source=user_stated 的条目不可淘汰；无可淘汰条目时拒写，
+//! 原因进工具结果让模型自己清理。
+//!
+//! 语义去重（仅写入侧带向量时）：
+//! - cos ≥ 0.92 → 同一条：合并更新已有条目（刷 content/updated_at/access+1/向量），不新增
+//! - 0.75 ≤ cos < 0.92 → 不拦截，相似条目 top-3 拼进工具结果作冲突提示
+//! - 降级模式（无向量）跳过去重；`remember_fact` 的同 key 覆盖语义由 tags[0] 精确匹配保证
+//!
+//! 向量检索：全表读 embedding 暴力余弦（500 条 × 2KB，微秒级），不引 sqlite-vec。
 //!
 //! 纯函数取 &Connection（内存库可单测）；锁/open_db/AppHandle 包装在 memory/mod.rs 门面层。
 

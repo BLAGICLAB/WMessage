@@ -460,7 +460,7 @@ mod tests {
 
     #[test]
     fn tool_call_failed_passes_long_read_with_embedded_keywords() {
-        // SPEC.md / DEVLOG.md 这类正文中提到「失败/错误」的文档读取结果——
+        // 长文档（README/规范等）正文里出现「失败/错误」的文档读取结果——
         // 第一行是路径 + 行号摘要（短，无关键词），后续行是正文（长，含关键词）。
         // 旧 contains 全文匹配会把整个读取结果误判为失败，skill_step_post 立即
         // 把 Skill 标 Failed，run_python / build_pptx 等工作步骤还没跑就先死。

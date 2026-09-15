@@ -448,7 +448,7 @@ enum PreStepRoute {
 /// 聊天防重入守卫：同一会话同时只允许一个 bot_chat 在执行——
 /// 原先聊天路径没有任何锁，两条并发消息命中同一技能路由会 start_skill 互相覆盖、
 /// 副作用工具（create_task 等）重复执行（任务卡路径有 ExecGuard，这里补会话级对称防护）。
-// 阶段 3.3：CHAT_RUNNING 已迁入 `AppState`，访问器返回 Arc 克隆——
+// CHAT_RUNNING 已迁入 `AppState`，访问器返回 Arc 克隆——
 // `ChatGuard::drop` 里拿不到 `app`，靠 acquire 时克隆的这份句柄清理。
 use crate::app_state::chat_running;
 
@@ -499,7 +499,7 @@ impl Drop for ChatGuard {
 
 /// 会话锁是否被持有：tests/task_chat_exec.rs 断言
 /// run_task_in_chat 执行期持有 ChatGuard——bot_execute_task 纳入会话锁的回归证据。
-/// 生产代码不调用。阶段 3.3：表随 `AppState` 走，故取注入实例（缺失时兜底实例，
+/// 生产代码不调用。表随 `AppState` 走，故取注入实例（缺失时兜底实例，
 /// 与生产路径用的是同一个——集成测试的 mock handle 没注入时两边都落到兜底）。
 pub fn chat_guard_is_held<R: tauri::Runtime>(app: &AppHandle<R>, session_id: &str) -> bool {
     chat_running(app)
@@ -1025,7 +1025,7 @@ pub async fn bot_execute_task(
 /// 任务卡执行防重入：同一 task_id 同时只允许一个执行实例。
 /// 覆盖三条入口（🤖 连点 / chat 批量执行 / 定时调度），防同一卡并发跑多个 LLM 循环
 /// （并发执行会日志交叠、结果互相覆盖）。
-// 阶段 3.3：EXEC_RUNNING 已迁入 `AppState`，访问器返回 Arc 克隆——
+// EXEC_RUNNING 已迁入 `AppState`，访问器返回 Arc 克隆——
 // `ExecGuard::drop` 里拿不到 `app`，靠 acquire 时克隆的这份句柄清理。
 use crate::app_state::exec_running;
 
@@ -1065,8 +1065,16 @@ impl Drop for ExecGuard {
     }
 }
 
-/// 任务执行聊天化（docs/TASK-CHAT-EXECUTION-DESIGN.md）：
-/// 一次执行 = 一个新会话。统一入口 run_task_in_chat 供 🤖 按钮 / ⏰ 定时 / 📦 批量三路径
+/// 任务执行聊天化（一次性执行 = 一个新会话，不再 headless 黑箱）：
+///
+/// 评审已确认的决策（2026-09-09 落地）：
+/// 1. 一次执行 = 一个新会话（执行质量优先，不带杂历史）
+/// 2. busy 时执行不排队（新会话立即开跑），只有"自动跳转查看"排队
+/// 3. 会话膨胀靠手动删除（不做自动清理；删除不影响已沉淀记忆）
+/// 4. 不做"查看执行对话"入口和 last_session_id 关联——直接在聊天窗口按前缀找
+/// 5. 批量执行：每张卡一个独立新会话（单卡失败不污染）
+///
+/// 统一入口 run_task_in_chat 供 🤖 按钮 / ⏰ 定时 / 📦 批量三路径
 /// 共用（取代原 run_task_in_chat 的 headless 模式——定时任务不再是黑箱，全程流式可见、
 /// 可按会话 /stop、永久落库可回看）。
 ///
@@ -1822,7 +1830,7 @@ mod command_error_mapping_tests {
     }
 }
 
-/// 阶段 3.3：`ChatGuard` / `ExecGuard` 迁入 `AppState` 后的守卫语义与实例隔离。
+/// `ChatGuard` / `ExecGuard` 迁入 `AppState` 后的守卫语义与实例隔离。
 /// 这两个守卫此前没有单测（只由 `tests/task_chat_exec.rs` 间接覆盖），而它们正是
 /// 「同会话/同卡并发重复执行」的唯一闸门；Drop 清错实例 = 闸门泄漏。
 #[cfg(test)]

@@ -17,7 +17,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 /// 活跃执行实例注册表：stop_id → (停止标志, 是否用户交互触发, 归属会话 id)
 /// 注册表带会话：/stop 只停当前会话的实例，别的会话的 Skill/任务卡执行不受影响
-// 阶段 3.3：停止注册表已进 `AppState`（`NEXT_STOP_ID` 留在 app_state 作全局发号器）；
+// 停止注册表已进 `AppState`（`NEXT_STOP_ID` 留在 app_state 作全局发号器）；
 // StopGuard 本体、/stop 的 interactive 会话筛选口径、Drop 注销语义全部未动。
 use crate::app_state::{stop_registry, NEXT_STOP_ID};
 
@@ -459,7 +459,7 @@ pub fn bot_set_enabled(app: AppHandle, enabled: bool) -> CommandResult<bool> {
     }
     Ok(enabled)
 }
-/// 测试用 mock handle：注入独立 `AppState`（阶段 3.3：停止注册表/确认表随 AppState 隔离）
+/// 测试用 mock handle：注入独立 `AppState`（停止注册表/确认表随 AppState 隔离）
 #[cfg(test)]
 fn test_handle() -> tauri::AppHandle<tauri::test::MockRuntime> {
     let app = tauri::test::mock_app();
@@ -473,7 +473,7 @@ mod stop_all_tests {
     /// 两类实例——/stop 只停交互实例，退出清理不能漏掉后台任务
     #[test]
     fn stop_all_covers_interactive_and_background() {
-        // 阶段 3.3：表随 AppState，本用例用独立实例 → 不共享全局态，无需串行锁
+        // 表随 AppState，本用例用独立实例 → 不共享全局态，无需串行锁
         let app = super::test_handle();
         let g1 = super::StopGuard::new(&app, true, Some("batch5-s1".into()));
         let g2 = super::StopGuard::new(&app, false, None);
@@ -488,14 +488,14 @@ mod stop_all_tests {
 
 #[cfg(test)]
 mod command_result_tests {
-    // 注入式 mock handle 统一在文件作用域定义（阶段 3.3）
+    // 注入式 mock handle 统一在文件作用域定义
     use super::test_handle as mock_handle;
 
     /// /stop 置位内核只停本会话交互实例并返回数量；
     /// 锁中毒路径经 map_err 返回 Err（命令绑定 Wry AppHandle 无法单测，测内核）。
     #[test]
     fn flag_session_stopped_only_hits_own_session_interactive() {
-        // 阶段 3.3：注入独立实例，不再与别的持 StopGuard 用例互斥
+        // 注入独立实例，不再与别的持 StopGuard 用例互斥
         let app = mock_handle();
         let g1 = super::StopGuard::new(&app, true, Some("t1-3-sess".into()));
         let g2 = super::StopGuard::new(&app, true, Some("t1-3-other".into()));
@@ -514,7 +514,7 @@ mod command_result_tests {
         assert!(e.contains("不存在或已超时"), "Err 应说明原因：{e}");
     }
 
-    /// 阶段 3.3：待确认表迁入 `AppState` 后，注入实例之间必须隔离
+    /// 待确认表迁入 `AppState` 后，注入实例之间必须隔离
     /// （迁移前是进程级全局表，`cargo test --lib` 同进程并行用例会互相看见对方条目）。
     #[test]
     fn confirm_requests_isolated_between_injected_instances() {

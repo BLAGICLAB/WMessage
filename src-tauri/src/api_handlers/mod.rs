@@ -145,7 +145,6 @@ mod tests {
         assert_eq!(st, 200);
         assert_eq!(body.trim(), "[]");
 
-        // 创建
         let (st, body) = http(
             48821,
             "POST",

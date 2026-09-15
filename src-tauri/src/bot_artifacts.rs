@@ -26,7 +26,7 @@ pub struct RegisteredArtifact {
     pub registered_at: i64,
 }
 
-// 阶段 3.2：产物登记表已收进 `AppState`（`app.manage` 注入），访问器走 `try_state`；
+// 产物登记表已收进 `AppState`（`app.manage` 注入），访问器走 `try_state`；
 // 未注入的路径退回进程级兜底实例，语义与 3.1 前完全一致。
 use crate::app_state::artifact_registry;
 
@@ -140,7 +140,7 @@ pub async fn confirm_artifact_batch(
 mod tests {
     use super::*;
 
-    /// 阶段 3.2 样板：给 mock app 注入**独立** `AppState`（每测试一个实例）。
+    /// 样板：给 mock app 注入**独立** `AppState`（每测试一个实例）。
     /// 不注入也能跑（会走兜底实例），但注入后测试之间互不可见。
     fn test_handle() -> AppHandle<tauri::test::MockRuntime> {
         use tauri::Manager;
@@ -237,7 +237,7 @@ mod tests {
         take_all(&app, "t5").await;
     }
 
-    /// 阶段 3.2 验收：`manage` 注入的实例彼此隔离；未注入的路径走兜底实例，
+    /// 验收：`manage` 注入的实例彼此隔离；未注入的路径走兜底实例，
     /// 也不被注入实例污染——即「注入 = 隔离，不注入 = 老行为（进程级共享）」。
     #[tokio::test]
     async fn app_state_per_test_instances_are_isolated() {

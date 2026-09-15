@@ -1,6 +1,6 @@
 //! 内置机器人：大模型聊天 + WMessage 任务管理工具调用。
 //!
-//! 阶段 1 拆分（2026-09-13）：原 bot.rs 3444 行 → `bot/{mod.rs, config.rs, dispatch.rs, tools.rs}`。
+//! 原 bot.rs 3444 行 → `bot/{mod.rs, config.rs, dispatch.rs, tools.rs}`。
 //! 本文件作为 facade，仅持有：
 //! - 顶部 6 个跨模块 re-export（BotChatResult / TaskRef / model_loop / StopGuard / AuditLevel / db::*）
 //! - `pub mod config;` / `pub mod dispatch;` / `pub mod tools;` 子模块声明

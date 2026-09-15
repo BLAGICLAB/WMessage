@@ -1,4 +1,3 @@
-//! Tool registry（阶段 2，2026-09-13）。
 //!
 //! 单源真相 - 消除三源漂移（TOOLS / MUTATING_TOOLS / execute_tool_impl 大 match）。
 //! - TOOLS JSON 由 `tools_json()` 从 TOOLS_TABLE 顺序拼装
@@ -186,8 +185,8 @@ pub const SCHEMA_USE_SKILL: &str = r##"{"type":"function","function":{"name":"us
     "name":{"type":"string","description":"技能名（系统提示词「已安装技能」清单里的名称，一次一个，可多次调用）"}
   },"required":["name"]}}}"##;
 // ─────────────────── 29 个适配器（统一签名，按需拆 ctx 字段）───────────────────
-// list_tasks 在原 bot.rs:155 收 (app) 不收 args——阶段 1 拆出来后已修正。
-// link_file_to_task 是 async fn，必须 .await——阶段 1 拆出来后已修正。
+// list_tasks 在原 bot.rs:155 收 (app) 不收 args——拆出来后已修正。
+// link_file_to_task 是 async fn，必须 .await——拆出来后已修正。
 fn call_list_tasks<'a>(ctx: &'a ToolCtx<'a>, _args: &'a str) -> ToolFuture<'a> {
     Box::pin(async move { tool_list_tasks(ctx.app).await })
 }

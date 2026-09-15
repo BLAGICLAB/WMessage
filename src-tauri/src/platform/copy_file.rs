@@ -36,11 +36,13 @@ pub(crate) fn copy_file_macos(path: &str, title: &str) -> Result<(), String> {
     // 2) 老式文件列表类型（NSFilenamesPboardType）：Electron 系应用（飞书等）读这个
     let path_str = NSString::from_str(path);
     let paths = NSArray::from_retained_slice(&[path_str]);
+    // SAFETY: &NSString 由 NSString::from_str 创建存于本栈帧，调用期间不释放；&paths 是 CFArray 借用视图（paths 已 validate 非空），调用方保证生命周期。
     let _ok =
         unsafe { pb.setPropertyList_forType(&paths, &NSString::from_str("NSFilenamesPboardType")) };
 
     // 3) 标题文本：文本应用粘贴即标题
     let text = NSString::from_str(title);
+    // SAFETY: NSPasteboardTypeString 是 Foundation 公开常量，值稳定不释放、全局唯一无别名风险；unsafe 仅用于将 *const NSString 转为 &NSString。
     let _ok = pb.setString_forType(&text, unsafe { NSPasteboardTypeString });
     Ok(())
 }

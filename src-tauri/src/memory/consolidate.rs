@@ -1,4 +1,20 @@
-//! 定时记忆整理（consolidation，设计 docs/BOT-MEMORY-V2-DESIGN.md 第 9 节）：
+//! 定时记忆整理（consolidation）：
+//!
+//! 候选 = 上次整理以来更新的条目 + access_count≥3 的活跃条目，按淘汰分降序取前 100
+//! → 非流式 LLM 调用 → 解析 JSON 指令列表 → 一个事务内应用：
+//! - merge{ids, content}：合并到 importance 最高（平手取最新）的现存条目，删其余来源
+//! - contradiction{keep, drop, content}：keep 更新（content/向量重算），drop 删除
+//! - distill{ids, content}：新建 kind=reflection / importance=4 / source=system 条目
+//!   （引用 id 全不存在时跳过，防 LLM 幻觉 id 凭空造规律）
+//!
+//! 解析健壮性：剥代码围栏/截取首尾花括号；整体解析失败 → 本轮静默放弃记审计；
+//! 单条缺字段/未知 action 跳过不影响其它。
+//!
+//! 调度：bot_scheduler 同模式（tauri async_runtime + tokio interval，每 10 分钟检查一次）。
+//! 频率 off/12h/daily/weekly（默认 daily）。
+//! 配置：`bot-config.json` 的 `memoryConsolidation` 字段 ({enabled, interval, lastRunAt})。
+//! 命令：`memory_consolidate_now`（手动立即整理，返回 {merged, distilled, contradictions}）。
+//!
 //! 后台定期把近期/活跃记忆发给 LLM 做一轮反思——合并相关条目、裁决矛盾、提炼规律，
 //! 而不是只等摘要攒够 10 条触发 Reflection。
 //!

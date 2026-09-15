@@ -605,7 +605,6 @@ mod tests {
         let decoded = B64.decode(b64_part).unwrap();
         assert_eq!(decoded, TINY_PNG);
 
-        // 删除头像
         profile_remove_avatar(handle.clone(), "user".into()).unwrap();
         assert!(!avatar_path.exists(), "删除后头像文件应消失");
         let view = profile_get(handle);

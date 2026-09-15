@@ -18,7 +18,7 @@ use crate::error::CommandError;
 use futures_util::StreamExt;
 use tauri::{AppHandle, Emitter};
 
-// 阶段 2：从 crate::bot::registry 单源派生的 TOOLS / MUTATING_TOOLS。
+// 从 crate::bot::registry 单源派生的 TOOLS / MUTATING_TOOLS。
 // 原 const 字符串 / 数组现为函数（OnceLock 缓存）——保持向后兼容路径。
 pub use crate::bot::registry::mutating_tools as MUTATING_TOOLS;
 pub use crate::bot::registry::tools_json as TOOLS;
@@ -517,7 +517,7 @@ where
     let skill_finish = deps.skill_finish;
     let active_skill_run = deps.active_skill_run;
     let session_id: Option<&str> = stop.session_id();
-    // 僵尸终态清理已上移到薄壳 `run_model_loop`（阶段 3.3：核心只读技能状态，
+    // 僵尸终态清理已上移到薄壳 `run_model_loop`（核心只读技能状态，
     // 写生命周期不在核心——原位置与现在等价，都在进入轮循环之前）
     // 最多 max_rounds 轮（工具循环），每轮流式输出；收到 tool_calls 则执行后把结果续进对话
     let mut collected_refs: Vec<TaskRef> = Vec::new();

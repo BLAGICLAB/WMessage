@@ -58,7 +58,6 @@ pub struct MigrationReport {
     pub archived: usize,
     /// 移动归档成功数
     pub moved: usize,
-    /// 删除成功数
     pub deleted: usize,
     /// 跳过数（源缺失/冲突/权限/无匹配等）
     pub skipped: usize,

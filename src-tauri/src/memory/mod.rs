@@ -1,6 +1,10 @@
-//! 记忆 v2 门面（设计 docs/BOT-MEMORY-V2-DESIGN.md）。
-//! 旧 v1 关键词记忆体（db.rs bot_facts 系列）已整体删除；
-//! 老库残表 bot_facts 无害不清理，也不做数据迁移。
+//! 记忆 v2 门面（取代旧 v1 关键词记忆体，v1 代码整体删除于 commit e1234a2）：
+//! 旧 v1 纯关键词 bigram → v2 混合打分（0.55 语义 + 0.20 关键词 + 0.15 重要度 + 0.10 新近度）；
+//! 旧 v1 fact 200 / 全表 300 双层上限 → v2 统一 500 综合分淘汰；
+//! 旧 v1 同 key 覆盖 + 关键词冲突 → v2 语义去重（cos≥0.92 合并，0.75~0.92 冲突提示）；
+//! 旧 v1 不注入任务卡 → v2 execute_task_core 也注入；旧 v1 无降级 → v2 嵌入缺失全局关键词模式不 panic。
+//! 不变：工具 schema（remember_fact / recall_facts）、`## 记忆` 三段式、预算 4000 字、`[推断]` 前缀、DB_WRITE_LOCK。
+//! 旧 v1 表 bot_facts 废弃不导入（系统未上线即切换）；老库残表无害不清理，也不做数据迁移。
 //!
 //! - 存储：store.rs（新表 mem_items，统一 500 上限 + 语义去重 + 容量淘汰）
 //! - 嵌入：embed.rs（bge-small-zh-v1.5 本地 ONNX 推理，缺失时全局降级关键词模式）
@@ -419,7 +423,6 @@ fn validate_lesson(lesson: &str, scenario: &str) -> Result<(), String> {
 
 /// lesson 写入内核（抽离 Connection + 注入向量，内存库可单测）：
 /// 语义去重由 insert_item 承担（≥0.92 合并、0.75~0.92 冲突提示）。
-/// 返回工具结果文本。
 pub fn record_lesson_core(
     conn: &rusqlite::Connection,
     lesson: &str,
