@@ -1,0 +1,114 @@
+diff --git a/src-tauri/tests/skill_e2e.rs b/src-tauri/tests/skill_e2e.rs
+index 045aa92..1221473 100644
+--- a/src-tauri/tests/skill_e2e.rs
++++ b/src-tauri/tests/skill_e2e.rs
+@@ -260,14 +260,15 @@ fn real_skill_fixture_loads_via_scan_skill_dirs() {
+ // 故在本二进制内自建一把串行锁（lib 侧对应的 `SKILL_RUNS_TEST_LOCK` 已随迁移撤掉）。
+ // ────────────────────────────────────────────────────────────────────
+ 
+-use std::sync::{Arc, Mutex};
++use std::sync::{Arc, LazyLock, Mutex};
+ use wmessage_lib::bot::{load_all_skill_outcomes, upsert_skill_outcome, PersistedSkillOutcome};
+ use wmessage_lib::bot_skills::{
+     parse_meta, run_skill_scheduler_core, test_hook_insert_skill_run, test_hook_remove_skill_run,
+     test_hook_skill_run_state, DslOutcome, SkillRun, SkillState,
+ };
+ 
+-static SKILL_SCHED_TEST_LOCK: Mutex<()> = Mutex::new(());
++static SKILL_SCHED_TEST_LOCK: LazyLock<tokio::sync::Mutex<()>> =
++    LazyLock::new(|| tokio::sync::Mutex::new(()));
+ 
+ /// 构造一个归属后台会话（session None）的 SkillRun（字段全 pub，无需 AppHandle）
+ fn make_run(name: &str, state: SkillState) -> SkillRun {
+@@ -368,9 +369,7 @@ fn make_persist(
+ 
+ #[tokio::test]
+ async fn scheduler_e2e_done_path_finishes_run_audits_and_persists() {
+-    let _serial = SKILL_SCHED_TEST_LOCK
+-        .lock()
+-        .unwrap_or_else(|e| e.into_inner());
++    let _serial = SKILL_SCHED_TEST_LOCK.lock().await;
+     let (meta, body) = fixture_meta_body();
+     let app = mock_handle();
+     test_hook_insert_skill_run(&app, make_run("minimax-ppt", SkillState::Running));
+@@ -467,9 +466,7 @@ async fn scheduler_e2e_done_path_finishes_run_audits_and_persists() {
+ async fn scheduler_e2e_paused_run_returns_await_user() {
+     // 确认窗口：run 处于 Paused（等用户确认）→ advance_dsl 在 step 1 前拦截，
+     // 0 次工具调用，持久化 await_user，返回 DslOutcome::AwaitUser
+-    let _serial = SKILL_SCHED_TEST_LOCK
+-        .lock()
+-        .unwrap_or_else(|e| e.into_inner());
++    let _serial = SKILL_SCHED_TEST_LOCK.lock().await;
+     let (meta, body) = fixture_meta_body();
+     let app = mock_handle();
+     test_hook_insert_skill_run(&app, make_run("minimax-ppt", SkillState::Paused));
+@@ -524,9 +521,7 @@ async fn scheduler_e2e_failed_step_runs_rollback_window() {
+     // P0-5 回滚窗口：step 2 失败（生产里 skill_on_step_post 会把 run 标 Failed，
+     // 这里由 mock executor 同步模拟该标记）→ 回滚段执行时 Failed 临时重开为
+     // Running（原子工具门禁放行），结束后复原 Failed。
+-    let _serial = SKILL_SCHED_TEST_LOCK
+-        .lock()
+-        .unwrap_or_else(|e| e.into_inner());
++    let _serial = SKILL_SCHED_TEST_LOCK.lock().await;
+     let (meta, body) = fixture_meta_body();
+     let app = mock_handle();
+     test_hook_insert_skill_run(&app, make_run("minimax-ppt", SkillState::Running));
+@@ -618,9 +613,7 @@ async fn scheduler_e2e_zombie_terminal_run_cleared_at_entry() {
+     // agent 假死回归（2026-08-18 事故根因）：上轮遗留的 Completed 终态 run
+     // 若不清理，会在第 0 步被 advance_dsl 误判 Finish 直接 break（0 次工具调用）。
+     // core 入口的 clear_terminal_skill_runs 必须清掉它，两步照常执行。
+-    let _serial = SKILL_SCHED_TEST_LOCK
+-        .lock()
+-        .unwrap_or_else(|e| e.into_inner());
++    let _serial = SKILL_SCHED_TEST_LOCK.lock().await;
+     let (meta, body) = fixture_meta_body();
+     let app = mock_handle();
+     test_hook_insert_skill_run(&app, make_run("minimax-ppt", SkillState::Completed));
+diff --git a/src-tauri/tests/task_chat_exec.rs b/src-tauri/tests/task_chat_exec.rs
+index 908223b..2ae250c 100644
+--- a/src-tauri/tests/task_chat_exec.rs
++++ b/src-tauri/tests/task_chat_exec.rs
+@@ -16,6 +16,7 @@ mod mock_llm_shared {
+ }
+ 
+ use mock_llm_shared::{MockBehavior, MockLlmServer, ToolCallResponse};
++use std::sync::LazyLock;
+ use wmessage_lib::bot::{
+     noop_replan, run_model_loop_core, ApiProvider, AuditLevel, LlmHttp, ModelLoopDeps, StopGuard,
+     TaskRef, ToolCallTrace, DEFAULT_MAX_TOKENS,
+@@ -24,7 +25,7 @@ use wmessage_lib::bot_chat::{chat_guard_is_held, run_task_in_chat_with, TaskExec
+ 
+ /// 三个用例共享 target/debug/deps 下的 wmessage.db 与 bot-enabled.flag——
+ /// 串行执行防 flag 清理竞态（cargo 各测试二进制之间本就串行，本文件内并行用例需自锁）
+-static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
++static SERIAL: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(|| tokio::sync::Mutex::new(()));
+ 
+ fn now_ms() -> i64 {
+     std::time::SystemTime::now()
+@@ -92,7 +93,7 @@ fn core_http(server: &MockLlmServer) -> LlmHttp {
+ 
+ #[tokio::test]
+ async fn run_task_in_chat_full_chain_manual_origin() {
+-    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
++    let _serial = SERIAL.lock().await;
+     let (handle, task_id, _dir) = setup_task("写季度总结报告");
+     let server = MockLlmServer::start();
+     // mock LLM：第一轮要求 complete_task（任务卡回写路径），第二轮给最终文本
+@@ -225,7 +226,7 @@ async fn run_task_in_chat_full_chain_manual_origin() {
+ 
+ #[tokio::test]
+ async fn duplicate_trigger_rejected_by_exec_guard() {
+-    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
++    let _serial = SERIAL.lock().await;
+     let (handle, task_id, _dir) = setup_task("并发防护任务");
+     // 第一个执行的 runner 卡住直到放行
+     let (entered_tx, entered_rx) = tokio::sync::oneshot::channel::<()>();
+@@ -273,7 +274,7 @@ async fn duplicate_trigger_rejected_by_exec_guard() {
+ 
+ #[tokio::test]
+ async fn failure_persists_error_reply_in_session() {
+-    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
++    let _serial = SERIAL.lock().await;
+     let (handle, task_id, _dir) = setup_task("注定失败的任务");
+     let runner = |_app: tauri::AppHandle<tauri::test::MockRuntime>,
+                   _msgs: Vec<serde_json::Value>,

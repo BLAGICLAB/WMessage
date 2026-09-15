@@ -76,3 +76,6 @@ wmessage-portable/
 
 # 自进化系统 worktree 临时目录（每次 run 重生成；commit 41a68e6 + docs/evolution/phase-1.md 已留底）
 .evolution-*/
+
+# Bug Hunt session worktree（每次 run 重生成；commit 留底在 docs/bug-hunt-*/）
+.bug-hunt-*/

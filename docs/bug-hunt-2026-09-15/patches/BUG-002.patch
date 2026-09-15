@@ -1,0 +1,45 @@
+diff --git a/src-tauri/src/bot_skills/runtime.rs b/src-tauri/src/bot_skills/runtime.rs
+index f5d6bb5..b5ebf1d 100644
+--- a/src-tauri/src/bot_skills/runtime.rs
++++ b/src-tauri/src/bot_skills/runtime.rs
+@@ -666,16 +666,20 @@ mod tests {
+ 
+     #[test]
+     fn preflight_rejects_disabled() {
+-        let mut m = SkillMeta::default();
+-        m.name = "x".into();
+-        m.enabled = false;
++        let m = SkillMeta {
++            name: "x".into(),
++            enabled: false,
++            ..Default::default()
++        };
+         assert!(preflight(&m).is_err());
+     }
+ 
+     #[test]
+     fn preflight_rejects_blacklist_intent() {
+-        let mut m = SkillMeta::default();
+-        m.name = "x".into();
++        let mut m = SkillMeta {
++            name: "x".into(),
++            ..Default::default()
++        };
+         m.description = "批量删除所有任务".into();
+         assert!(preflight(&m).unwrap_err().contains("黑名单"));
+ 
+@@ -685,9 +689,11 @@ mod tests {
+ 
+     #[test]
+     fn preflight_passes_normal() {
+-        let mut m = SkillMeta::default();
+-        m.name = "ok".into();
+-        m.description = "汇总今日任务并归档".into();
++        let m = SkillMeta {
++            name: "ok".into(),
++            description: "汇总今日任务并归档".into(),
++            ..Default::default()
++        };
+         assert!(preflight(&m).is_ok());
+     }
+ 

@@ -1,0 +1,64 @@
+diff --git a/src-tauri/src/api_auth.rs b/src-tauri/src/api_auth.rs
+index da6f97a..f105325 100644
+--- a/src-tauri/src/api_auth.rs
++++ b/src-tauri/src/api_auth.rs
+@@ -123,6 +123,15 @@ pub fn clear_enabled_flag<R: tauri::Runtime>(app: &AppHandle<R>) {
+     let _ = std::fs::remove_file(enabled_flag_path(app));
+ }
+ 
++/// 校验请求 Authorization 头是否为 `Bearer <token>`。
++/// 恒定时间比较，防响应时间侧信道枚举 token 前缀。
++pub fn verify_bearer(req: &Request, token: &str) -> bool {
++    let expected = format!("Bearer {token}");
++    req.headers()
++        .iter()
++        .any(|h| h.field.equiv("Authorization") && ct_eq(h.value.as_str(), &expected))
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+@@ -170,12 +179,3 @@ mod tests {
+         assert_eq!(mode, 0o600, "存量 0644 文件必须被补收紧，实际 {mode:o}");
+     }
+ }
+-
+-/// 校验请求 Authorization 头是否为 `Bearer <token>`。
+-/// 恒定时间比较，防响应时间侧信道枚举 token 前缀。
+-pub fn verify_bearer(req: &Request, token: &str) -> bool {
+-    let expected = format!("Bearer {token}");
+-    req.headers()
+-        .iter()
+-        .any(|h| h.field.equiv("Authorization") && ct_eq(h.value.as_str(), &expected))
+-}
+diff --git a/src-tauri/src/bot/config/mod.rs b/src-tauri/src/bot/config/mod.rs
+index f4fd61c..27863cc 100644
+--- a/src-tauri/src/bot/config/mod.rs
++++ b/src-tauri/src/bot/config/mod.rs
+@@ -73,6 +73,14 @@ pub use audit::{__cmd__bot_log_read, __tauri_command_name_bot_log_read};
+ 
+ // ───────────────────────── 单元测试 ─────────────────────────
+ 
++// 抑制 unused 警告：escape_for_log / truncate_for_log 跨模块被外部 bot_chat / bot_model_loop
++// 仍通过 bot.rs 的 `pub use config::{...}` 路径使用，本模块测试不直接覆盖
++// （truncate_for_log 是 escape_for_log 的别名）。
++#[allow(dead_code)]
++fn _unused_marker(_s: &str) -> String {
++    audit::escape_for_log("", 0)
++}
++
+ #[cfg(test)]
+ mod tests {
+     // 跨 6 个子模块的集成测试，super::* 只拿 mod.rs 顶层项，所以这里显式列每个子模块的入口。
+@@ -640,11 +648,3 @@ mod tests {
+         assert!(!base_url_is_safe("ftp://example.com"));
+     }
+ }
+-
+-// 抑制 unused 警告：escape_for_log / truncate_for_log 跨模块被外部 bot_chat / bot_model_loop
+-// 仍通过 bot.rs 的 `pub use config::{...}` 路径使用，本模块测试不直接覆盖
+-// （truncate_for_log 是 escape_for_log 的别名）。
+-#[allow(dead_code)]
+-fn _unused_marker(_s: &str) -> String {
+-    audit::escape_for_log("", 0)
+-}
