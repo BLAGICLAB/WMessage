@@ -73,3 +73,6 @@ wmessage-portable/
 
 # Sprint 切片阶段产物（worktree 临时目录，每次 run 重生成；patch 已在 commit 历史里）
 .audit-*/
+
+# 自进化系统 worktree 临时目录（每次 run 重生成；commit 41a68e6 + docs/evolution/phase-1.md 已留底）
+.evolution-*/
