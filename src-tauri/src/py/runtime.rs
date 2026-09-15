@@ -52,6 +52,7 @@ pub fn cpu_limit_secs(timeout_secs: u64) -> u64 {
 
 #[cfg(windows)]
 mod win_job {
+    use std::process::Child;
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::{CloseHandle, HANDLE};
     use windows::Win32::System::JobObjects::{
