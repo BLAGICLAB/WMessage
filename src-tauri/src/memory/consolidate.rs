@@ -390,6 +390,9 @@ pub async fn run_consolidation(app: &AppHandle) -> CommandResult<ConsolidateRepo
         .await
         .map_err(|e| CommandError::from(format!("记忆整理嵌入线程 join 失败：{e}")))?
     };
+    // Phase 1 追加：closure 拿走 ops 之前 clone 一份，留作 `evolution::post_consolidation` 审计信号源。
+    // 不改反思逻辑：ops 被应用一次（apply_ops）+ 被审计一次（emit_proposals），结果一致。
+    let ops_for_audit = ops.clone();
     let app3 = app.clone();
     let report =
         tauri::async_runtime::spawn_blocking(move || -> Result<ConsolidateReport, String> {
@@ -403,6 +406,9 @@ pub async fn run_consolidation(app: &AppHandle) -> CommandResult<ConsolidateRepo
         .await
         .map_err(|e| CommandError::from(format!("记忆整理写入线程 join 失败：{e}")))?
         .map_err(CommandError::DbError)?;
+    // Phase 1 追加：基于本次反思产出演化提案（仅写 audit；不改反思逻辑、不调二次 LLM）。
+    // 见 `crate::evolution::post_consolidation` 的依赖方向约束。
+    crate::evolution::post_consolidation(&ops_for_audit, &report);
     Ok(report)
 }
 

@@ -21,7 +21,9 @@
 use crate::bot_skills::{build_skill_block, SkillMeta};
 use crate::bot_slash::{bot_get_enabled, StopGuard};
 use crate::error::{CommandError, CommandResult};
+use crate::evolution::trace::{TraceContext, TraceOutcome};
 use crate::intent_router::RouteAction;
+use crate::mutation::MutationOrigin;
 use crate::prompts::{
     COMPACT_SYSTEM_PROMPT, EXECUTE_SYSTEM_PROMPT, REFLECTION_SYSTEM_PROMPT, SUMMARY_SYSTEM_PROMPT,
     SYSTEM_PROMPT,
@@ -515,6 +517,8 @@ pub async fn bot_chat(
     session_id: Option<String>,
 ) -> CommandResult<BotChatResult> {
     require_bot_enabled(bot_get_enabled(app.clone()))?;
+    // Phase 1 追加：执行起点时间戳（trace 采集用；同步 < 1ms，不影响主流程）
+    let started_at_ms = chrono::Utc::now().timestamp_millis();
     // 会话级防重入：同会话并发消息直接拒绝，防技能路由/start_skill 竞争
     let _chat_guard = match ChatGuard::acquire(&app, session_id.as_deref()) {
         Ok(g) => g,
@@ -822,6 +826,25 @@ pub async fn bot_chat(
     let (text, refs) =
         crate::bot_model_loop::run_model_loop(app, msgs, max_rounds, &stop, plan_state.as_mut())
             .await?;
+    // Phase 1 追加：trace 采集——同步、< 1ms、不记录对话原文。
+    // 仅在最终 return 处 hook：早期 return（ChatGuard 拦截 / chat_execute_tasks
+    // / skill auto-mode 终态）均不走 run_model_loop，不构成完整 bot 执行轨迹，
+    // spec 主流程的「收尾处」仅指此点。审计不命中即静默丢弃（不影响主流程）。
+    let aborted = stop.stopped();
+    crate::evolution::trace::maybe_record_trace(
+        TraceContext::new(
+            session_id.as_deref().unwrap_or("none"),
+            MutationOrigin::Main,
+            started_at_ms,
+        )
+        .with_outcome(if aborted {
+            TraceOutcome::Aborted
+        } else {
+            TraceOutcome::Success
+        })
+        .with_aborted(aborted)
+        .with_task_refs(refs.iter().map(|t| t.id.clone()).collect()),
+    );
     Ok(BotChatResult {
         text,
         task_refs: refs,

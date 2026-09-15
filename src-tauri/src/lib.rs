@@ -24,6 +24,7 @@ mod bot_web;
 pub mod db;
 mod due_notify;
 pub mod error;
+pub mod evolution;
 mod exec_steps;
 pub mod intent_router;
 pub mod memory;
@@ -290,6 +291,10 @@ pub fn run() {
             //（bot_scheduler 同模式，10 分钟检查一次配置到点；旧 v1 记忆系统
             //（bot_facts 表）已删除，老库残表无害不清理）
             memory::embed::warmup_async();
+            // Phase 1 自进化：emit 需要的 AppHandle 全局注册一次。
+            // 必须在 start_consolidation_scheduler 之前调，否则 10 分钟内的
+            // 首轮 consolidate emit 会因 AppHandle 未就绪而丢弃。
+            crate::evolution::emit::register_app_handle(app.handle().clone());
             memory::consolidate::start_consolidation_scheduler(app.handle().clone());
 
             // 桌面清理：后台轮询线程（每 10 分钟检测到期归档任务并执行规则迁移）
