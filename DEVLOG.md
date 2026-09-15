@@ -2,6 +2,40 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-09-16（周二）出包：Windows 绿色版 `wmessage-portable-2026-09-16.zip`（104 MB）
+
+**背景**：老板要一份最新绿色包。按 `docs/PACKAGING-WINDOWS-PORTABLE.md` 全流程跑完，无 Windows
+机器参与，全程 macOS 交叉编译（mingw-w64 + x86_64-pc-windows-gnu）。
+
+**产物**：
+- 路径：`/Users/renshi/Projects/wmessage/wmessage-portable-2026-09-16.zip`
+- 大小：103,619,524 B（≈104 MB）；含 205 个条目
+- `wmessage.exe`：54,561,923 B（54.6 MB，构建 24.7 s 增量，基于 main @ 99a2193）
+- `onnxruntime.dll`：15.8 MB；`WebView2Loader.dll`：160 KB；`dotnet/`：79 MB（含 189 文件）
+- `bge-small-zh-v1.5/`（23 MB，语义模型）+ `pp-ocr-v6/`（31 MB，OCR 模型）
+
+**校验**：
+- `python3 zipfile.testzip()` 通过；顶层 9 类条目齐全（exe / WebView2Loader / ort ×2 / Edge setup / README / dotnet / bge / pp-ocr）
+- `dotnet/wm-docx-revisions.exe` / `bge-small-zh-v1.5/onnx/model_quantized.onnx` / `pp-ocr-v6/{det,rec,cls}.onnx` + `keys.txt` 全部在位
+- `objdump -p wmessage.exe | grep -i onnxruntime` 无输出 → ort 走 `load-dynamic`，无静态导入
+- macOS 侧 `cargo check`：见下「踩坑」节（构建期发现并修复 win_job 子模块缺导入，已记录）
+
+**关键决策**：
+- zip 用 Python `zipfile`（不用 macOS `zip`；扩展字段会让 Windows 资源管理器解压报「位置不可用」）
+- README.txt 更新记录顶部加 09-16 条（基于 main @ 99a2193）：列了 14 个 commit 要点 + 自进化 Phase 1 / Sprint 切片阶段交付 / 前端 4 个大文件切子模块 / comment hygiene A+BC1+BC2 / docs 归档 / gitignore 补全
+
+**踩坑**：
+- **首次 tauri build 失败**：`error[E0425]: cannot find type 'Child' in this scope` at `src-tauri/src/py/runtime.rs:94`（`win_job` 子模块里 `JobGuard::assign(child: &Child)` 用了 `Child` 但模块顶部没自己 `use std::process::Child;`，主模块 line 7 的 import 不会被子模块继承）
+- **根因**：commit `dcbf167 refactor(rust): Sprint 切片阶段交付 — 5 大文件切子模块 + Sprint A 文档 + B 平台拆分 + H 审计 + 修复` 的 B 平台拆分把 Windows-only 代码移进 `win_job` 子模块时漏了 import
+- **为何 macOS dev 没发现**：整个 `win_job` 模块是 `#[cfg(windows)]`，macOS 开发永远不编这段路径；cargo 警告里只有 `unused import: Arc` 等不影响编译的信息
+- **就地修复**：在 `win_job` 模块顶部加 `use std::process::Child;`（cargo 自己建议的方案），1 行最小变更
+- **修复后增量重建**：24.69 s（首次全编依赖耗时未计入），exe 大小 +230 KB（链接差异，符合预期）
+- **工作树状态**：当前 dirty（`M src-tauri/src/py/runtime.rs`），exe 含本次未提交修复；README「更新记录」里已注明
+- **后续建议**：老板看是否要把这一行修复单独 commit（建议 commit：`fix(rust): win_job 子模块缺 use std::process::Child — dcbf167 拆分时漏掉，macOS dev 不编 #[cfg(windows)] 所以未发现`）
+
+**待人工验收**：Windows 实机双击 wmessage.exe，确认数据库与 AI_Gen_Files 落在 exe 同目录（便携锚定），
+跑机器人记忆语义检索 + 本地图片 ocr_image。
+
 ## 2026-09-14（周日）出包：Windows 绿色版 `wmessage-portable-2026-09-14.zip`（103 MB）
 
 **背景**：老板要一份最新绿色包。按 `docs/PACKAGING-WINDOWS-PORTABLE.md` 全流程跑完，无 Windows
