@@ -79,3 +79,6 @@ wmessage-portable/
 
 # Bug Hunt session worktree（每次 run 重生成；commit 留底在 docs/bug-hunt-*/）
 .bug-hunt-*/
+
+# Comment Hygiene session worktree（每次 run 重生成；commit 留底在 docs/comment-hygiene-*/）
+.comment-hygiene-*/
