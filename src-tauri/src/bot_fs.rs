@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 
 use tauri::AppHandle;
 
+use crate::bot::registry::ToolResult;
 use crate::bot_chat::TaskRef;
 
 const READ_MAX_BYTES: usize = 100 * 1024;
@@ -346,24 +347,28 @@ pub async fn tool_read_text_file(
     args: &str,
     interactive: bool,
     session_id: Option<&str>,
-) -> (String, Vec<TaskRef>) {
+) -> crate::bot::registry::ToolResult {
     let v = crate::bot::parse_args(args);
     let Some(path) = v["path"].as_str() else {
-        return ("read_text_file 缺少 path".into(), Vec::new());
+        // 「read_text_file 缺少 path」首字「r」非 error/warn 前缀 → ok
+        return ToolResult::ok("read_text_file 缺少 path".to_string(), Vec::new());
     };
     let canonical =
         match resolve_with_perm(app, "read_text_file", path, interactive, session_id).await {
             Ok(p) => p,
-            Err(e) => return (e, Vec::new()),
+            // resolve_with_perm Err 返 String，首字不定 → ok
+            Err(e) => return ToolResult::ok(e, Vec::new()),
         };
     if canonical.is_dir() {
-        return (
+        // format! 文本首字为路径首字符（不定） → ok
+        return ToolResult::ok(
             format!("{} 是目录，列文件请用 list_files", path.trim()),
             Vec::new(),
         );
     }
     if is_binary_file(&canonical) {
-        return (
+        // 同上，首字不定 → ok
+        return ToolResult::ok(
             format!(
                 "{} 是二进制/非文本文件；Office/PDF 文档请用 extract_document",
                 path.trim()
@@ -376,13 +381,15 @@ pub async fn tool_read_text_file(
         (v["limit"].as_u64().unwrap_or(READ_DEFAULT_LINES as u64) as usize).min(READ_MAX_LINES);
     let (raw, byte_truncated) = match read_capped_file(&canonical, READ_MAX_BYTES) {
         Ok(r) => r,
-        Err(e) => return (format!("读取失败：{e}"), Vec::new()),
+        // 「读取失败」首字「读」非「失败」前缀 → ok
+        Err(e) => return ToolResult::ok(format!("读取失败：{e}"), Vec::new()),
     };
     let text = String::from_utf8_lossy(&raw).to_string();
     let lines: Vec<&str> = text.lines().collect();
     let total = lines.len();
     if offset > total {
-        return (
+        // 「文件共 N 行」首字「文」非 error/warn 前缀 → ok
+        return ToolResult::ok(
             format!("文件共 {total} 行，offset {offset} 超出范围"),
             Vec::new(),
         );
@@ -414,7 +421,8 @@ pub async fn tool_read_text_file(
             crate::bot::truncate_for_log(&canonical.display().to_string(), 200)
         ),
     );
-    (out, Vec::new())
+    // 文件内容文本，首字符不定 → ok
+    ToolResult::ok(out, Vec::new())
 }
 
 /// grep_files：白名单目录内正则搜文件内容，输出 path:line:内容（ripgrep 风格）
@@ -423,15 +431,17 @@ pub async fn tool_grep_files(
     args: &str,
     interactive: bool,
     session_id: Option<&str>,
-) -> (String, Vec<TaskRef>) {
+) -> crate::bot::registry::ToolResult {
     let v = crate::bot::parse_args(args);
     let Some(pattern) = v["pattern"].as_str() else {
-        return ("grep_files 缺少 pattern".into(), Vec::new());
+        // 「grep_files 缺少 pattern」首字「g」非 error/warn 前缀 → ok
+        return ToolResult::ok("grep_files 缺少 pattern".to_string(), Vec::new());
     };
     // 非法正则降级为字面量搜索（regex::escape），不让一个坏 pattern 炸掉整轮
     let re = regex::Regex::new(pattern).or_else(|_| regex::Regex::new(&regex::escape(pattern)));
     let Ok(re) = re else {
-        return (format!("无效的正则表达式：{pattern}"), Vec::new());
+        // 「无效的正则表达式」首字「无」非 error/warn 前缀 → ok
+        return ToolResult::ok(format!("无效的正则表达式：{pattern}"), Vec::new());
     };
     let glob = v["glob"].as_str().unwrap_or("").trim().to_string();
     let max = (v["max"].as_u64().unwrap_or(GREP_MAX_HITS as u64) as usize).min(GREP_MAX_HITS);
@@ -440,16 +450,19 @@ pub async fn tool_grep_files(
         Some(d) if !d.trim().is_empty() => {
             match resolve_with_perm(app, "grep_files", d, interactive, session_id).await {
                 Ok(p) => p,
-                Err(e) => return (e, Vec::new()),
+                // resolve_with_perm Err 返 String，首字不定 → ok
+                Err(e) => return ToolResult::ok(e, Vec::new()),
             }
         }
         _ => match allowed_dirs(app).await.first() {
             Some(d) => d.clone(),
-            None => return ("没有可用的白名单目录".into(), Vec::new()),
+            // 「没有可用的白名单目录」首字「没」非 error/warn 前缀 → ok
+            None => return ToolResult::ok("没有可用的白名单目录".to_string(), Vec::new()),
         },
     };
     if !dir.is_dir() {
-        return (format!("{} 不是目录", dir.display()), Vec::new());
+        // format! 文本首字为目录路径首字符（不定） → ok
+        return ToolResult::ok(format!("{} 不是目录", dir.display()), Vec::new());
     }
     let mut hits: Vec<String> = Vec::new();
     walk(&dir, &mut |path: &Path, is_dir: bool| {
@@ -503,7 +516,8 @@ pub async fn tool_grep_files(
         ),
     );
     if hits.is_empty() {
-        return (
+        // 「... 内没有匹配 ...」首字不定 → ok
+        return ToolResult::ok(
             format!("{} 内没有匹配「{pattern}」的内容", dir.display()),
             Vec::new(),
         );
@@ -512,7 +526,8 @@ pub async fn tool_grep_files(
     if hits.len() >= max {
         out.push_str(&format!("\n…（已达 {max} 条上限，缩小范围或加 glob 过滤）"));
     }
-    (out, Vec::new())
+    // 匹配结果文本，首字符任意 UTF-8 → ok
+    ToolResult::ok(out, Vec::new())
 }
 
 /// list_files：列白名单目录内文件（可选 glob 过滤文件名），深度 ≤5，上限 200 条
@@ -521,17 +536,20 @@ pub async fn tool_list_files(
     args: &str,
     interactive: bool,
     session_id: Option<&str>,
-) -> (String, Vec<TaskRef>) {
+) -> crate::bot::registry::ToolResult {
     let v = crate::bot::parse_args(args);
     let Some(dir) = v["dir"].as_str() else {
-        return ("list_files 缺少 dir".into(), Vec::new());
+        // 「list_files 缺少 dir」首字「l」非 error/warn 前缀 → ok
+        return ToolResult::ok("list_files 缺少 dir".to_string(), Vec::new());
     };
     let canonical = match resolve_with_perm(app, "list_files", dir, interactive, session_id).await {
         Ok(p) => p,
-        Err(e) => return (e, Vec::new()),
+        // resolve_with_perm Err 返 String，首字不定 → ok
+        Err(e) => return ToolResult::ok(e, Vec::new()),
     };
     if !canonical.is_dir() {
-        return (
+        // format! 文本首字为目录路径首字符（不定） → ok
+        return ToolResult::ok(
             format!("{} 不是目录；读文件请用 read_text_file", dir.trim()),
             Vec::new(),
         );
@@ -566,7 +584,8 @@ pub async fn tool_list_files(
         ),
     );
     if entries.is_empty() {
-        return (
+        // 「... 内没有匹配的文件」首字不定 → ok
+        return ToolResult::ok(
             format!("{} 内没有匹配的文件", canonical.display()),
             Vec::new(),
         );
@@ -582,7 +601,8 @@ pub async fn tool_list_files(
             "\n…（已达 {LIST_MAX_ENTRIES} 条上限，用 pattern 过滤缩小范围）"
         ));
     }
-    (out, Vec::new())
+    // 文件列表文本，首字符不定 → ok
+    ToolResult::ok(out, Vec::new())
 }
 
 #[cfg(test)]

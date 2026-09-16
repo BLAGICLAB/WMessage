@@ -24,6 +24,7 @@ use crate::error::{CommandError, CommandResult};
 use crate::evolution::trace::{TraceContext, TraceOutcome};
 use crate::intent_router::RouteAction;
 use crate::mutation::MutationOrigin;
+use crate::prompt_builder::{PromptSlot, SystemPromptBuilder};
 use crate::prompts::{
     COMPACT_SYSTEM_PROMPT, EXECUTE_SYSTEM_PROMPT, REFLECTION_SYSTEM_PROMPT, SUMMARY_SYSTEM_PROMPT,
     SYSTEM_PROMPT,
@@ -256,14 +257,33 @@ pub(crate) fn strip_think_blocks(text: &str) -> String {
     out
 }
 
+/// T5：批量执行的失败策略。显式化一卡失败后是「继续下一张」还是「中止」。
+///
+/// 默认 `ContinueOnError`（现状不变）；`StopOnFirstError` 可调用方选启用。
+pub enum BatchPolicy {
+    /// 一卡失败继续下一张（现有默认行为）。汇总报告里仍会列失败清单。
+    ContinueOnError,
+    /// 一卡失败即中止后续，报告「已执行 i 张，剩余 N-i-1 张未执行」。
+    StopOnFirstError,
+}
+
+impl Default for BatchPolicy {
+    fn default() -> Self {
+        BatchPolicy::ContinueOnError
+    }
+}
+
 /// 聊天模式批量执行：每张卡调一次 run_task_in_chat（每卡独立新会话，
 /// EXECUTE_SYSTEM_PROMPT + 50 轮工具循环），单卡失败不污染其他卡的执行记录。
 /// 顺序执行（避免文件写冲突）；一卡失败继续（任一卡失败不阻断后续）；共用 StopGuard（/stop 一次清空）。
 /// 汇总报告：每张卡的开头 + 执行结果 + 总数 + 失败清单；task_refs 跨卡去重（merge_task_refs_dedup）。
+///
+/// T5：接受 `policy` 参数控制失败是否继续。默认 `BatchPolicy::default()`（ContinueOnError）。
 pub async fn chat_execute_tasks(
     app: &AppHandle,
     task_ids: Vec<(String, String)>,
     stop: StopGuard,
+    policy: BatchPolicy,
 ) -> CommandResult<BotChatResult> {
     let total = task_ids.len();
     let mut all_text = String::new();
@@ -298,6 +318,16 @@ pub async fn chat_execute_tasks(
                 all_text.push_str(&format!("❌ 失败：{}\n", err_str));
                 failed += 1;
                 errors.push(format!("{} ({})", label, err_str));
+                // T5：StopOnFirstError —— 第一卡失败即中止后续，附“已完成 i 张”报告
+                if matches!(policy, BatchPolicy::StopOnFirstError) {
+                    let done = idx + 1; // 当前卡已计入 idx（0-based），+1 = 已处理数
+                    let remaining = total.saturating_sub(done);
+                    all_text.push_str(&format!(
+                        "\n⛔ 中止：第 {} 张卡失败，后续 {} 张未执行。",
+                        done, remaining
+                    ));
+                    break;
+                }
             }
         }
     }
@@ -406,7 +436,7 @@ fn attach_images_in(roots: &[std::path::PathBuf], content: &str) -> (serde_json:
 }
 
 /// 工具执行后带出的任务引用（前端渲染成可点击按钮，跳主窗口打开该任务）
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskRef {
     pub id: String,
@@ -510,6 +540,132 @@ pub fn chat_guard_is_held<R: tauri::Runtime>(app: &AppHandle<R>, session_id: &st
         .contains(session_id)
 }
 
+/// T2 辅助：start_skill + 审计。成功 log `pre_step.route_skill`；失败 log `pre_step.route_failed`。
+/// 返回 `Option<(SkillMeta, String)>`：None 表示路由失败 → 放行 LLM（不阻断聊天）。
+fn start_skill_with_audit(
+    app: &tauri::AppHandle,
+    skill_name: String,
+    session_id: Option<&str>,
+) -> Option<(SkillMeta, String)> {
+    match crate::bot_skills::start_skill(app, &skill_name, session_id) {
+        Ok((meta, body)) => {
+            crate::audit_event!(
+                app,
+                crate::audit::AuditLevel::Info,
+                "pre_step.route_skill",
+                "skill" => skill_name,
+                "mode" => meta.mode.clone(),
+            );
+            Some((meta, body))
+        }
+        Err(e) => {
+            crate::audit_event!(
+                app,
+                crate::audit::AuditLevel::Warn,
+                "pre_step.route_failed",
+                "skill" => skill_name,
+                "error" => e,
+            );
+            None
+        }
+    }
+}
+
+/// T2 抽出的「步骤 4」函数：处理 pre_step 命中 Skill 路由后的全部副作用。
+///
+/// 返回值契约：
+/// - `Done(BotChatResult)`：auto-mode 调度器返回终态（Done / AwaitUser），调用方应直接 return 该结果
+/// - `FallThrough { recovery_hint }`：需要落入「步骤 5」继续走 run_model_loop：
+///   - interactive 模式 → recovery_hint 为 None（body 由 caller 拼入 system prompt）
+///   - auto-mode 调度器返回 FailedButRecoverable → recovery_hint 为 Some(...)
+/// - 调度器返回 Terminated → 走 Err(CommandError::Internal)，不进 Outcome
+///
+/// 调用方负责：
+/// - 在调用本函数前完成 pre_step 路由 + bypass switch（pre_routed_skill 已通过 bypass）
+/// - 在收到 FallThrough 时把 (meta, body) 装回 pre_routed_skill 并把 recovery_hint 写到主流程变量
+async fn apply_skill_route(
+    app: &tauri::AppHandle,
+    meta: SkillMeta,
+    _body: String,
+    stop: &StopGuard,
+    _session_id: Option<&str>,
+) -> CommandResult<SkillRouteOutcome> {
+    if meta.mode != "auto" {
+        // interactive（以及未来其他非 auto 模式）：body 由 caller 拼入 system prompt
+        return Ok(SkillRouteOutcome::FallThrough {
+            recovery_hint: None,
+        });
+    }
+    // auto-mode：调用 Skill 调度器，四种 DslOutcome 映射
+    match crate::bot_skills::run_skill_scheduler(app, &meta.name, stop.session_id(), Some(stop))
+        .await
+    {
+        Ok(crate::bot_skills::DslOutcome::Done(text)) => {
+            Ok(SkillRouteOutcome::Done(BotChatResult {
+                text,
+                task_refs: Vec::new(),
+            }))
+        }
+        Ok(crate::bot_skills::DslOutcome::AwaitUser) => {
+            // 不把内部哨兵 "__await_user__" 当回复文本直出给前端（前端无该哨兵的
+            // 处理逻辑，用户会看到原始字符串），改出可读提示
+            crate::bot::audit_log(
+                app,
+                &format!(
+                    "skill_await_user | name: {} | 已暂停等待用户确认",
+                    crate::bot::truncate_for_log(&meta.name, 60)
+                ),
+            );
+            Ok(SkillRouteOutcome::Done(BotChatResult {
+                text: format!(
+                    "⏸ 技能「{}」已暂停，正在等待你的确认——请在确认弹窗里选择后继续。",
+                    meta.name
+                ),
+                task_refs: Vec::new(),
+            }))
+        }
+        Ok(crate::bot_skills::DslOutcome::FailedButRecoverable {
+            reason,
+            completed_summary,
+            rollback_attempted,
+        }) => {
+            // SSE 推 Skill 失败给挂件（让用户看到半成品 + rollback 状态）
+            // payload 带 sessionId，前端按会话过滤，防串会话弹失败卡
+            let _ = app.emit_to(
+                "widget",
+                "bot-skill-failed",
+                serde_json::json!({
+                    "skillName": meta.name,
+                    "reason": reason,
+                    "completedSummary": completed_summary,
+                    "rollbackAttempted": rollback_attempted,
+                    "sessionId": stop.session_id(),
+                }),
+            );
+            // LLM 兜底：把「失败原因 + 已完成产物 + 回滚状态」拼进 system prompt 决策
+            Ok(SkillRouteOutcome::FallThrough {
+                recovery_hint: Some(format_recovery_hint(
+                    &reason,
+                    &completed_summary,
+                    rollback_attempted,
+                )),
+            })
+        }
+        Err(crate::bot_skills::DslFailure::Terminated { reason }) => {
+            Err(CommandError::Internal(reason))
+        }
+    }
+}
+
+/// T2：`apply_skill_route` 的返回值。Done 是「路由终态」（chat 直接返回），
+/// FallThrough 是「落入步骤 5」（继续走 run_model_loop）。
+enum SkillRouteOutcome {
+    /// 直接返回给前端（Done / AwaitUser 两种终态；Terminated 走 Err 不进 Outcome）
+    Done(BotChatResult),
+    /// 落入步骤 5，带可选的 recovery_hint（auto-mode FailedButRecoverable 才有内容）
+    FallThrough { recovery_hint: Option<String> },
+}
+
 #[tauri::command]
 pub async fn bot_chat(
     app: AppHandle,
@@ -561,11 +717,15 @@ pub async fn bot_chat(
     let mut msgs: Vec<serde_json::Value> = Vec::new();
     // 技能清单动态注入：系统提示词 + 已安装技能的「名称+描述」（progressive disclosure 第一层；
     // 全文由 use_skill 工具按需读取，省 token）
-    let system_base = format!(
-        "{}\n\n{}\n\n{}",
-        SYSTEM_PROMPT,
-        gen_dir_rule(&app),
-        build_skill_block(&app)
+    // T1 改造：用 SystemPromptBuilder 按 PromptSlot 声明顺序排序拼接，替代脆弱的
+    // 顺序 format!("{}{}", a, b) 链。Base/GenDir/SkillCatalog 是 system_base 的 3 段，
+    // 段间用 \n\n 分隔；后续 SkillBody/Recovery/Plan 拼在尾部，无分隔符。
+    let mut prompt = SystemPromptBuilder::new();
+    prompt.push(PromptSlot::Base, SYSTEM_PROMPT);
+    prompt.push(PromptSlot::GenDir, format!("\n\n{}", gen_dir_rule(&app)));
+    prompt.push(
+        PromptSlot::SkillCatalog,
+        format!("\n\n{}", build_skill_block(&app)),
     );
 
     // 步骤 3：middleware::run_pre_step（pre-step 路由，F-2 抽象层短路求值）：
@@ -578,30 +738,8 @@ pub async fn bot_chat(
         match crate::middleware::run_pre_step(&app, &last.content) {
             Some(RouteAction::ExecuteTasks(task_ids)) => Some(PreStepRoute::ExecuteTasks(task_ids)),
             Some(RouteAction::Skill(skill_name)) => {
-                // 步骤 4：start_skill（Skill 调度）
-                match crate::bot_skills::start_skill(&app, &skill_name, stop.session_id()) {
-                    Ok((meta, body)) => {
-                        crate::audit_event!(
-                            &app,
-                            crate::audit::AuditLevel::Info,
-                            "pre_step.route_skill",
-                            "skill" => skill_name.clone(),
-                            "mode" => meta.mode.clone(),
-                        );
-                        Some(PreStepRoute::Skill(meta, body))
-                    }
-                    Err(e) => {
-                        // Skill 未安装 / 加载失败 → 放行 LLM（不阻断聊天）
-                        crate::audit_event!(
-                            &app,
-                            crate::audit::AuditLevel::Warn,
-                            "pre_step.route_failed",
-                            "skill" => skill_name.clone(),
-                            "error" => e.clone(),
-                        );
-                        None
-                    }
-                }
+                start_skill_with_audit(&app, skill_name, stop.session_id())
+                    .map(|(meta, body)| PreStepRoute::Skill(meta, body))
             }
             Some(RouteAction::PassThrough) | None => None,
         }
@@ -655,74 +793,27 @@ pub async fn bot_chat(
             "chat_execute.routed",
             "task_count" => task_ids.len(),
         );
-        return chat_execute_tasks(&app, task_ids, stop).await;
+        return chat_execute_tasks(&app, task_ids, stop, BatchPolicy::default()).await;
     }
-    // auto-mode Skill → 直接调度器执行
-    // LLM 兜底路径：FailedButRecoverable 不再 return，
-    // 把 recovery_hint 拼进 system_content，继续走 run_model_loop 让 LLM 决策下一步。
+    // auto-mode Skill → 调用 apply_skill_route（步骤 4 抽出）；interactive 模式走 FallThrough。
+    // LLM 兜底路径：FailedButRecoverable 不再 return，把 recovery_hint 拼进 system_content，
+    // 继续走 run_model_loop 让 LLM 决策下一步。
     let mut recovery_hint: Option<String> = None;
-    if let Some((meta, _body)) = &pre_routed_skill {
-        if meta.mode == "auto" {
-            match crate::bot_skills::run_skill_scheduler(
-                &app,
-                &meta.name,
-                stop.session_id(),
-                Some(&stop),
-            )
-            .await
-            {
-                Ok(crate::bot_skills::DslOutcome::Done(text)) => {
-                    return Ok(BotChatResult {
-                        text,
-                        task_refs: Vec::new(),
-                    });
-                }
-                Ok(crate::bot_skills::DslOutcome::AwaitUser) => {
-                    // 不把内部哨兵 "__await_user__" 当回复文本直出给前端（前端无该哨兵的
-                    // 处理逻辑，用户会看到原始字符串），改出可读提示
-                    crate::bot::audit_log(
-                        &app,
-                        &format!(
-                            "skill_await_user | name: {} | 已暂停等待用户确认",
-                            crate::bot::truncate_for_log(&meta.name, 60)
-                        ),
-                    );
-                    return Ok(BotChatResult {
-                        text: format!(
-                            "⏸ 技能「{}」已暂停，正在等待你的确认——请在确认弹窗里选择后继续。",
-                            meta.name
-                        ),
-                        task_refs: Vec::new(),
-                    });
-                }
-                Ok(crate::bot_skills::DslOutcome::FailedButRecoverable {
-                    reason,
-                    completed_summary,
-                    rollback_attempted,
-                }) => {
-                    // SSE 推 Skill 失败给挂件（让用户看到半成品 + rollback 状态）
-                    // payload 带 sessionId，前端按会话过滤，防串会话弹失败卡
-                    let _ = app.emit_to(
-                        "widget",
-                        "bot-skill-failed",
-                        serde_json::json!({
-                            "skillName": meta.name,
-                            "reason": reason,
-                            "completedSummary": completed_summary,
-                            "rollbackAttempted": rollback_attempted,
-                            "sessionId": stop.session_id(),
-                        }),
-                    );
-                    // LLM 兜底：把「失败原因 + 已完成产物 + 回滚状态」拼进 system prompt 决策
-                    recovery_hint = Some(format_recovery_hint(
-                        &reason,
-                        &completed_summary,
-                        rollback_attempted,
-                    ));
-                }
-                Err(crate::bot_skills::DslFailure::Terminated { reason }) => {
-                    return Err(CommandError::Internal(reason));
-                }
+    if let Some((meta, body)) = pre_routed_skill.as_ref() {
+        match apply_skill_route(
+            &app,
+            meta.clone(),
+            body.clone(),
+            &stop,
+            session_id.as_deref(),
+        )
+        .await?
+        {
+            SkillRouteOutcome::Done(result) => return Ok(result),
+            SkillRouteOutcome::FallThrough {
+                recovery_hint: hint,
+            } => {
+                recovery_hint = hint;
             }
         }
     }
@@ -733,16 +824,14 @@ pub async fn bot_chat(
             .and_then(|(meta, _)| meta.max_rounds),
     );
     let pre_routed_active_skill = pre_routed_skill.map(|(_, body)| body);
-    let system_content = if let Some(active_skill) = pre_routed_active_skill {
-        format!("{}{}", system_base, active_skill)
-    } else {
-        system_base
-    };
-    let system_content = if let Some(hint) = recovery_hint {
-        format!("{}{}", system_content, hint)
-    } else {
-        system_content
-    };
+    // interactive 模式的技能正文拼入 system prompt（无分隔符接 SkillCatalog）
+    if let Some(active_skill) = pre_routed_active_skill {
+        prompt.push(PromptSlot::SkillBody, active_skill);
+    }
+    // auto-mode 失败兜底：recovery_hint 拼入让 LLM 决策下一步
+    if let Some(hint) = recovery_hint {
+        prompt.push(PromptSlot::Recovery, hint);
+    }
     // PREVR 第 2 层：复杂多步任务先生成动态计划再执行。
     // 触发保守：needs_plan 启发式命中才多花一次 Planner 调用；
     // Planner 失败/输出非法 → None → 原自由循环，不阻断聊天。
@@ -764,16 +853,13 @@ pub async fn bot_chat(
         } else {
             None
         };
-    let system_content = if let Some(plan) = &plan_state {
-        format!(
-            "{}{}",
-            system_content,
-            crate::bot_plan::format_plan_block(&plan.steps)
-        )
-    } else {
-        system_content
-    };
-    msgs.push(serde_json::json!({"role": "system", "content": system_content}));
+    if let Some(plan) = &plan_state {
+        prompt.push(
+            PromptSlot::Plan,
+            crate::bot_plan::format_plan_block(&plan.steps),
+        );
+    }
+    msgs.push(serde_json::json!({"role": "system", "content": prompt.build()}));
     // 历史字符预算——长会话最旧的先丢，
     // 最后一条（本轮用户消息）永远保留；丢弃时留审计
     // 截断即摘要（设计 5.2）：超预算先对将丢弃的消息

@@ -12,6 +12,7 @@
 use tauri::{AppHandle, Emitter};
 
 use crate::bot::dispatch::parse_args;
+use crate::bot::registry::ToolResult;
 use crate::bot::{
     audit_log, check_len, escape_for_log, load_config, MAX_DUE, MAX_KEYWORD, MAX_NOTE,
     MAX_SUBTASK_TEXT, MAX_TAGS, MAX_TAG_LEN, MAX_TITLE,
@@ -21,7 +22,7 @@ use crate::error::CommandError;
 // ───────────────────────── 时间 + 长期记忆工具 ─────────────────────────
 
 /// get_current_time：返回本地日期时间+星期（模型做「今天/明天/周几」判断的锚点，禁止猜日期）
-pub(crate) fn tool_get_current_time() -> (String, Vec<crate::bot_chat::TaskRef>) {
+pub(crate) fn tool_get_current_time() -> crate::bot::registry::ToolResult {
     let now = chrono::Local::now();
     let week = [
         "星期一",
@@ -32,7 +33,7 @@ pub(crate) fn tool_get_current_time() -> (String, Vec<crate::bot_chat::TaskRef>)
         "星期六",
         "星期日",
     ][chrono::Datelike::weekday(&now).num_days_from_monday() as usize];
-    (
+    crate::bot::registry::ToolResult::ok(
         format!("现在：{} {week}", now.format("%Y-%m-%d %H:%M:%S")),
         Vec::new(),
     )
@@ -152,10 +153,10 @@ async fn active_tasks(app: &AppHandle) -> Vec<crate::db::Task> {
 
 // ───────────────────────── 任务管理工具实现（20+ functions） ─────────────────────────
 
-pub(crate) async fn tool_list_tasks(app: &AppHandle) -> (String, Vec<crate::bot_chat::TaskRef>) {
+pub(crate) async fn tool_list_tasks(app: &AppHandle) -> crate::bot::registry::ToolResult {
     let tasks = active_tasks(app).await;
     if tasks.is_empty() {
-        return ("当前没有未完成的任务".into(), Vec::new());
+        return ToolResult::ok("当前没有未完成的任务".to_string(), Vec::new());
     }
     let mut lines: Vec<String> = Vec::new();
     for t in &tasks {
@@ -178,7 +179,7 @@ pub(crate) async fn tool_list_tasks(app: &AppHandle) -> (String, Vec<crate::bot_
             title: t.title.clone(),
         })
         .collect();
-    (lines.join("\n"), refs)
+    ToolResult::ok(lines.join("\n"), refs)
 }
 
 /// 单卡查询（白名单单点工具）：
@@ -190,19 +191,20 @@ pub(crate) async fn tool_list_tasks(app: &AppHandle) -> (String, Vec<crate::bot_
 pub(crate) async fn tool_query_single_task(
     app: &AppHandle,
     args: &str,
-) -> (String, Vec<crate::bot_chat::TaskRef>) {
+) -> crate::bot::registry::ToolResult {
     let v = parse_args(args);
     let Some(id) = v["id"].as_str().map(|s| s.trim().to_string()) else {
-        return ("query_single_task 缺少 id 参数".into(), Vec::new());
+        return ToolResult::ok("query_single_task 缺少 id 参数".to_string(), Vec::new());
     };
     if id.is_empty() {
-        return ("query_single_task id 不能为空".into(), Vec::new());
+        return ToolResult::ok("query_single_task id 不能为空".to_string(), Vec::new());
     }
     let Ok(tasks) = crate::db::db_load(app.clone()).await else {
-        return ("查询失败：数据库读取错误".into(), Vec::new());
+        // 「查询失败」首字是「查」，不是以「失败」开头；brief 要求机械首字符判定 → ok
+        return ToolResult::ok("查询失败：数据库读取错误".to_string(), Vec::new());
     };
     let Some(t) = tasks.into_iter().find(|t| t.id == id) else {
-        return (format!("未找到 id={id} 的任务卡"), Vec::new());
+        return ToolResult::ok(format!("未找到 id={id} 的任务卡"), Vec::new());
     };
     let col = match t.column.as_str() {
         "doing" => "进行中",
@@ -255,7 +257,7 @@ pub(crate) async fn tool_query_single_task(
     if !status.is_empty() {
         lines.push(format!("  状态：{}", status.join(" / ")));
     }
-    (
+    ToolResult::ok(
         lines.join("\n"),
         vec![crate::bot_chat::TaskRef {
             id: t.id.clone(),
@@ -269,16 +271,17 @@ pub(crate) async fn tool_query_single_task(
 pub(crate) async fn tool_search_tasks(
     app: &AppHandle,
     args: &str,
-) -> (String, Vec<crate::bot_chat::TaskRef>) {
+) -> crate::bot::registry::ToolResult {
     let v = parse_args(args);
     let Some(query) = v["query"].as_str().map(|s| s.trim().to_lowercase()) else {
-        return ("search_tasks 缺少 query".into(), Vec::new());
+        return ToolResult::ok("search_tasks 缺少 query".to_string(), Vec::new());
     };
     if query.is_empty() {
-        return ("搜索关键词不能为空".into(), Vec::new());
+        return ToolResult::ok("搜索关键词不能为空".to_string(), Vec::new());
     };
     if let Err(e) = check_len(&query, MAX_KEYWORD, "搜索关键词") {
-        return (e.into(), Vec::new());
+        // check_len 错误首字是「任务」/「备注」等中文描述，非 error/warn 前缀 → ok
+        return ToolResult::ok(e.to_string(), Vec::new());
     }
     let tasks = crate::db::db_load(app.clone()).await.unwrap_or_default();
     let mut hits: Vec<crate::db::Task> = tasks
@@ -306,7 +309,7 @@ pub(crate) async fn tool_search_tasks(
         })
         .collect();
     if hits.is_empty() {
-        return (
+        return ToolResult::ok(
             format!(
                 "没有找到匹配「{}」的任务",
                 v["query"].as_str().unwrap_or("")
@@ -354,32 +357,33 @@ pub(crate) async fn tool_search_tasks(
             title: t.title.clone(),
         })
         .collect();
-    (lines.join("\n"), refs)
+    ToolResult::ok(lines.join("\n"), refs)
 }
 
 pub(crate) async fn tool_create_task(
     app: &AppHandle,
     args: &str,
-) -> (String, Vec<crate::bot_chat::TaskRef>) {
+) -> crate::bot::registry::ToolResult {
     let v = parse_args(args);
     let Some(title) = v["title"].as_str() else {
-        return ("create_task 缺少 title".into(), Vec::new());
+        return ToolResult::ok("create_task 缺少 title".to_string(), Vec::new());
     };
     let title = title.trim();
     if title.is_empty() {
-        return ("任务标题不能为空".into(), Vec::new());
+        return ToolResult::ok("任务标题不能为空".to_string(), Vec::new());
     }
     if let Err(e) = check_len(title, MAX_TITLE, "任务标题") {
-        return (e.into(), Vec::new());
+        // check_len 返回 String，首字「任」非 error/warn 前缀 → ok
+        return ToolResult::ok(e.to_string(), Vec::new());
     }
     if let Some(n) = v["note"].as_str() {
         if let Err(e) = check_len(n, MAX_NOTE, "备注") {
-            return (e.into(), Vec::new());
+            return ToolResult::ok(e.to_string(), Vec::new());
         }
     }
     if let Some(d) = v["due"].as_str() {
         if let Err(e) = check_len(d, MAX_DUE, "截止时间") {
-            return (e.into(), Vec::new());
+            return ToolResult::ok(e.to_string(), Vec::new());
         }
     }
     let mut task = crate::db::Task {
@@ -392,8 +396,8 @@ pub(crate) async fn tool_create_task(
         file_path: None,
         file_is_dir: None,
         column: match v["column"].as_str() {
-            Some("doing") => "doing".into(),
-            _ => "todo".into(),
+            Some("doing") => "doing".to_string(),
+            _ => "todo".to_string(),
         },
         subtasks: None,
         completed_at: None,
@@ -427,7 +431,8 @@ pub(crate) async fn tool_create_task(
     match crate::db::db_upsert(app.clone(), vec![task.clone()]).await {
         Ok(()) => {
             broadcast_after_mutation(app, vec![task.clone()], vec![]);
-            (
+            // 「已新建任务」首字「已」非 error/warn 前缀 → ok
+            ToolResult::ok(
                 format!("已新建任务「{}」{files_warn}", task.title),
                 vec![crate::bot_chat::TaskRef {
                     id: task.id.clone(),
@@ -435,21 +440,23 @@ pub(crate) async fn tool_create_task(
                 }],
             )
         }
-        Err(e) => (format!("新建任务失败：{e}"), Vec::new()),
+        // 「新建任务失败」首字「新」非错误/warn 前缀 → ok
+        Err(e) => ToolResult::ok(format!("新建任务失败：{e}"), Vec::new()),
     }
 }
 
 pub(crate) async fn tool_complete_task(
     app: &AppHandle,
     args: &str,
-) -> (String, Vec<crate::bot_chat::TaskRef>) {
+) -> crate::bot::registry::ToolResult {
     let v = parse_args(args);
     // 走 resolve_task（taskId 精确匹配优先、title 关键词兜底 +
     // taskId/title 交叉校验），与其它任务操作工具对齐——只读 title 会让
     // schema 声明的「taskId 优先」被完全忽略，任务卡执行路径只传 taskId 时确定性失败。
     let task = match resolve_task(app, &v).await {
         Ok(t) => t,
-        Err(e) => return (e.into(), Vec::new()),
+        // CommandError.to_string() 首字以中文描述开头，非 error/warn 前缀 → ok
+        Err(e) => return ToolResult::ok(e.to_string(), Vec::new()),
     };
     let mut next = task.clone();
     next.column = "done".into();
@@ -459,7 +466,8 @@ pub(crate) async fn tool_complete_task(
     match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
         Ok(()) => {
             broadcast_after_mutation(app, vec![next.clone()], vec![]);
-            (
+            // 「已完成任务」首字「已」非 error/warn 前缀 → ok
+            ToolResult::ok(
                 format!("已完成任务「{}」", task.title),
                 vec![crate::bot_chat::TaskRef {
                     id: task.id.clone(),
@@ -467,7 +475,8 @@ pub(crate) async fn tool_complete_task(
                 }],
             )
         }
-        Err(e) => (format!("完成任务失败：{e}"), Vec::new()),
+        // 「完成任务失败」首字「完」非「失败」前缀 → ok
+        Err(e) => ToolResult::ok(format!("完成任务失败：{e}"), Vec::new()),
     }
 }
 
@@ -477,11 +486,11 @@ pub(crate) async fn tool_delete_task(
     args: &str,
     interactive: bool,
     session_id: Option<&str>,
-) -> (String, Vec<crate::bot_chat::TaskRef>) {
+) -> crate::bot::registry::ToolResult {
     let v = parse_args(args);
     let task = match resolve_task(app, &v).await {
         Ok(t) => t,
-        Err(e) => return (e.into(), Vec::new()),
+        Err(e) => return ToolResult::ok(e.to_string(), Vec::new()),
     };
     let approved = crate::bot_slash::ask_user_confirm(
         app,
@@ -492,7 +501,8 @@ pub(crate) async fn tool_delete_task(
     )
     .await;
     if !approved {
-        return ("用户拒绝了删除，任务未删除".into(), Vec::new());
+        // 「用户拒绝了删除」首字「用」非 error/warn 前缀 → ok
+        return ToolResult::ok("用户拒绝了删除，任务未删除".to_string(), Vec::new());
     }
     let mut next = task.clone();
     next.deleted_at = Some(chrono::Utc::now().timestamp_millis());
@@ -501,7 +511,8 @@ pub(crate) async fn tool_delete_task(
     match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
         Ok(()) => {
             broadcast_after_mutation(app, vec![next.clone()], vec![]);
-            (
+            // 「已删除任务」首字「已」非 error/warn 前缀 → ok
+            ToolResult::ok(
                 format!("已删除任务「{}」（进回收站）", task.title),
                 vec![crate::bot_chat::TaskRef {
                     id: task.id.clone(),
@@ -509,7 +520,8 @@ pub(crate) async fn tool_delete_task(
                 }],
             )
         }
-        Err(e) => (format!("删除任务失败：{e}"), Vec::new()),
+        // 「删除任务失败」首字「删」非「失败」前缀 → ok
+        Err(e) => ToolResult::ok(format!("删除任务失败：{e}"), Vec::new()),
     }
 }
 
@@ -581,11 +593,11 @@ async fn resolve_task(
 pub(crate) async fn tool_edit_task(
     app: &AppHandle,
     args: &str,
-) -> (String, Vec<crate::bot_chat::TaskRef>) {
+) -> crate::bot::registry::ToolResult {
     let v = parse_args(args);
     let task = match resolve_task(app, &v).await {
         Ok(t) => t,
-        Err(e) => return (e.into(), Vec::new()),
+        Err(e) => return ToolResult::ok(e.to_string(), Vec::new()),
     };
     let mut next = task.clone();
     let mut changed: Vec<&str> = Vec::new();
@@ -593,7 +605,7 @@ pub(crate) async fn tool_edit_task(
         let nt = nt.trim();
         if !nt.is_empty() {
             if let Err(e) = check_len(nt, MAX_TITLE, "新标题") {
-                return (e.into(), Vec::new());
+                return ToolResult::ok(e.to_string(), Vec::new());
             }
             next.title = nt.to_string();
             changed.push("标题");
@@ -602,7 +614,7 @@ pub(crate) async fn tool_edit_task(
     if let Some(n) = v["note"].as_str() {
         if !n.trim().is_empty() {
             if let Err(e) = check_len(n, MAX_NOTE, "备注") {
-                return (e.into(), Vec::new());
+                return ToolResult::ok(e.to_string(), Vec::new());
             }
         }
         next.note = if n.trim().is_empty() {
@@ -615,7 +627,7 @@ pub(crate) async fn tool_edit_task(
     if let Some(d) = v["due"].as_str() {
         if !d.trim().is_empty() {
             if let Err(e) = check_len(d, MAX_DUE, "截止时间") {
-                return (e.into(), Vec::new());
+                return ToolResult::ok(e.to_string(), Vec::new());
             }
         }
         next.due = if d.trim().is_empty() {
@@ -627,12 +639,13 @@ pub(crate) async fn tool_edit_task(
     }
     if let Some(tags) = v["tags"].as_array() {
         if tags.len() > MAX_TAGS {
-            return (format!("标签数量超上限（最多 {MAX_TAGS} 个）"), Vec::new());
+            // 「标签数量超上限」首字「标」非 error/warn 前缀 → ok
+            return ToolResult::ok(format!("标签数量超上限（最多 {MAX_TAGS} 个）"), Vec::new());
         }
         for t in tags {
             if let Some(ts) = t.as_str() {
                 if let Err(e) = check_len(ts, MAX_TAG_LEN, "标签") {
-                    return (e.into(), Vec::new());
+                    return ToolResult::ok(e.to_string(), Vec::new());
                 }
             }
         }
@@ -670,14 +683,16 @@ pub(crate) async fn tool_edit_task(
         }
     }
     if changed.is_empty() {
-        return ("没有可修改的字段".into(), Vec::new());
+        // 「没有可修改的字段」首字「没」非 error/warn 前缀 → ok
+        return ToolResult::ok("没有可修改的字段".to_string(), Vec::new());
     }
     next.expected_updated_at = next.updated_at; // RMW 写回基线 = 快照 updated_at（写前比对，防整行覆盖 lost-update）
     next.updated_at = Some(chrono::Utc::now().timestamp_millis());
     match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
         Ok(()) => {
             broadcast_after_mutation(app, vec![next.clone()], vec![]);
-            (
+            // 「已更新任务」首字「已」非 error/warn 前缀 → ok
+            ToolResult::ok(
                 format!(
                     "已更新任务「{}」（{}）{files_warn}",
                     next.title,
@@ -689,27 +704,30 @@ pub(crate) async fn tool_edit_task(
                 }],
             )
         }
-        Err(e) => (format!("编辑任务失败：{e}"), Vec::new()),
+        // 「编辑任务失败」首字「编」非「失败」前缀 → ok
+        Err(e) => ToolResult::ok(format!("编辑任务失败：{e}"), Vec::new()),
     }
 }
 
 pub(crate) async fn tool_add_subtask(
     app: &AppHandle,
     args: &str,
-) -> (String, Vec<crate::bot_chat::TaskRef>) {
+) -> crate::bot::registry::ToolResult {
     let v = parse_args(args);
     let Some(text) = v["text"].as_str().map(|s| s.trim()) else {
-        return ("add_subtask 缺少 text".into(), Vec::new());
+        // 「add_subtask 缺少 text」首字「a」非 error/warn 前缀 → ok
+        return ToolResult::ok("add_subtask 缺少 text".to_string(), Vec::new());
     };
     if text.is_empty() {
-        return ("子任务内容不能为空".into(), Vec::new());
+        // 「子任务内容不能为空」首字「子」非 error/warn 前缀 → ok
+        return ToolResult::ok("子任务内容不能为空".to_string(), Vec::new());
     }
     if let Err(e) = check_len(text, MAX_SUBTASK_TEXT, "子任务内容") {
-        return (e.into(), Vec::new());
+        return ToolResult::ok(e.to_string(), Vec::new());
     }
     let task = match resolve_task(app, &v).await {
         Ok(t) => t,
-        Err(e) => return (e.into(), Vec::new()),
+        Err(e) => return ToolResult::ok(e.to_string(), Vec::new()),
     };
     let mut next = task.clone();
     let mut subs = next.subtasks.unwrap_or_default();
@@ -724,7 +742,8 @@ pub(crate) async fn tool_add_subtask(
     match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
         Ok(()) => {
             broadcast_after_mutation(app, vec![next.clone()], vec![]);
-            (
+            // 「已给任务...添加子任务」首字「已」非 error/warn 前缀 → ok
+            ToolResult::ok(
                 format!("已给任务「{}」添加子任务「{}」", next.title, text),
                 vec![crate::bot_chat::TaskRef {
                     id: next.id.clone(),
@@ -732,31 +751,34 @@ pub(crate) async fn tool_add_subtask(
                 }],
             )
         }
-        Err(e) => (format!("添加子任务失败：{e}"), Vec::new()),
+        // 「添加子任务失败」首字「添」非「失败」前缀 → ok
+        Err(e) => ToolResult::ok(format!("添加子任务失败：{e}"), Vec::new()),
     }
 }
 
 pub(crate) async fn tool_toggle_subtask(
     app: &AppHandle,
     args: &str,
-) -> (String, Vec<crate::bot_chat::TaskRef>) {
+) -> crate::bot::registry::ToolResult {
     let v = parse_args(args);
     let Some(skw) = v["text"].as_str().map(|s| s.trim().to_lowercase()) else {
-        return ("toggle_subtask 缺少 text".into(), Vec::new());
+        // 「toggle_subtask 缺少 text」首字「t」非 error/warn 前缀 → ok
+        return ToolResult::ok("toggle_subtask 缺少 text".to_string(), Vec::new());
     };
     if let Err(e) = check_len(&skw, MAX_SUBTASK_TEXT, "子任务关键词") {
-        return (e.into(), Vec::new());
+        return ToolResult::ok(e.to_string(), Vec::new());
     }
     let task = match resolve_task(app, &v).await {
         Ok(t) => t,
-        Err(e) => return (e.into(), Vec::new()),
+        Err(e) => return ToolResult::ok(e.to_string(), Vec::new()),
     };
     let subs = task.subtasks.clone().unwrap_or_default();
     let Some(idx) = subs
         .iter()
         .position(|s| s.text.to_lowercase().contains(&skw))
     else {
-        return (
+        // 「任务...没有匹配...的子任务」首字「任」非 error/warn 前缀 → ok
+        return ToolResult::ok(
             format!(
                 "任务「{}」没有匹配「{}」的子任务",
                 task.title,
@@ -786,7 +808,8 @@ pub(crate) async fn tool_toggle_subtask(
                 .and_then(|s| s.get(idx))
                 .map(|s| s.done)
                 .unwrap_or(false);
-            (
+            // 「子任务「...」已...」首字「子」非 error/warn 前缀 → ok
+            ToolResult::ok(
                 format!(
                     "子任务「{st_text}」已{}",
                     if done_mark {
@@ -801,34 +824,38 @@ pub(crate) async fn tool_toggle_subtask(
                 }],
             )
         }
-        Err(e) => (format!("切换子任务状态失败：{e}"), Vec::new()),
+        // 「切换子任务状态失败」首字「切」非「失败」前缀 → ok
+        Err(e) => ToolResult::ok(format!("切换子任务状态失败：{e}"), Vec::new()),
     }
 }
 
 pub(crate) async fn tool_remove_subtask(
     app: &AppHandle,
     args: &str,
-) -> (String, Vec<crate::bot_chat::TaskRef>) {
+) -> crate::bot::registry::ToolResult {
     let v = parse_args(args);
     let Some(skw) = v["text"].as_str().map(|s| s.trim().to_lowercase()) else {
-        return ("remove_subtask 缺少 text".into(), Vec::new());
+        // 「remove_subtask 缺少 text」首字「r」非 error/warn 前缀 → ok
+        return ToolResult::ok("remove_subtask 缺少 text".to_string(), Vec::new());
     };
     if skw.is_empty() {
-        return ("子任务关键词不能为空".into(), Vec::new());
+        // 「子任务关键词不能为空」首字「子」非 error/warn 前缀 → ok
+        return ToolResult::ok("子任务关键词不能为空".to_string(), Vec::new());
     }
     if let Err(e) = check_len(&skw, MAX_SUBTASK_TEXT, "子任务关键词") {
-        return (e.into(), Vec::new());
+        return ToolResult::ok(e.to_string(), Vec::new());
     }
     let task = match resolve_task(app, &v).await {
         Ok(t) => t,
-        Err(e) => return (e.into(), Vec::new()),
+        Err(e) => return ToolResult::ok(e.to_string(), Vec::new()),
     };
     let subs = task.subtasks.clone().unwrap_or_default();
     let Some(idx) = subs
         .iter()
         .position(|s| s.text.to_lowercase().contains(&skw))
     else {
-        return (
+        // 「任务...没有匹配...的子任务」首字「任」非 error/warn 前缀 → ok
+        return ToolResult::ok(
             format!(
                 "任务「{}」没有匹配「{}」的子任务",
                 task.title,
@@ -847,7 +874,8 @@ pub(crate) async fn tool_remove_subtask(
     match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
         Ok(()) => {
             broadcast_after_mutation(app, vec![next.clone()], vec![]);
-            (
+            // 「已删除任务...的子任务」首字「已」非 error/warn 前缀 → ok
+            ToolResult::ok(
                 format!("已删除任务「{}」的子任务「{}」", next.title, removed_text),
                 vec![crate::bot_chat::TaskRef {
                     id: next.id.clone(),
@@ -855,7 +883,8 @@ pub(crate) async fn tool_remove_subtask(
                 }],
             )
         }
-        Err(e) => (format!("删除子任务失败：{e}"), Vec::new()),
+        // 「删除子任务失败」首字「删」非「失败」前缀 → ok
+        Err(e) => ToolResult::ok(format!("删除子任务失败：{e}"), Vec::new()),
     }
 }
 
@@ -871,10 +900,11 @@ pub(crate) async fn tool_link_file_to_task(
     app: &AppHandle,
     args: &str,
     session_id: Option<&str>,
-) -> (String, Vec<crate::bot_chat::TaskRef>) {
+) -> crate::bot::registry::ToolResult {
     if !crate::tool_guard::is_task_execution_flow(session_id) {
-        return (
-            "link_file_to_task 仅在任务卡执行流程（🤖 按钮 / ⏰ 定时 / 📦 批量）内有效；普通对话场景调用无效果（不报错也不绑），不要反复尝试".into(),
+        // 「link_file_to_task 仅在...」首字「l」非 error/warn 前缀 → ok
+        return ToolResult::ok(
+            "link_file_to_task 仅在任务卡执行流程（🤖 按钮 / ⏰ 定时 / 📦 批量）内有效；普通对话场景调用无效果（不报错也不绑），不要反复尝试".to_string(),
             Vec::new(),
         );
     }
@@ -884,10 +914,12 @@ pub(crate) async fn tool_link_file_to_task(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
     else {
-        return ("link_file_to_task 缺少 path".into(), Vec::new());
+        // 「link_file_to_task 缺少 path」首字「l」非 error/warn 前缀 → ok
+        return ToolResult::ok("link_file_to_task 缺少 path".to_string(), Vec::new());
     };
     if !std::path::Path::new(&path).exists() {
-        return (format!("路径不存在，拒绝登记：{path}"), Vec::new());
+        // 「路径不存在」首字「路」非 error/warn 前缀 → ok
+        return ToolResult::ok(format!("路径不存在，拒绝登记：{path}"), Vec::new());
     }
     let canon = std::fs::canonicalize(&path).unwrap_or_else(|_| std::path::PathBuf::from(&path));
     let in_gen = crate::db::gen_dir(app)
@@ -895,8 +927,9 @@ pub(crate) async fn tool_link_file_to_task(
         .and_then(|d| std::fs::canonicalize(d).ok())
         .is_some_and(|gen| canon.starts_with(&gen));
     if !in_gen {
-        return (
-            "已拒绝登记该路径：link_file_to_task 只能登记 AI_Gen_Files 目录内的产物；其他文件请在任务卡上手动「绑定文件」".into(),
+        // 「已拒绝登记」首字「已」非 error/warn 前缀 → ok（语义上其实是拒绝，机械规则降级）
+        return ToolResult::ok(
+            "已拒绝登记该路径：link_file_to_task 只能登记 AI_Gen_Files 目录内的产物；其他文件请在任务卡上手动「绑定文件」".to_string(),
             Vec::new(),
         );
     }
@@ -912,7 +945,11 @@ pub(crate) async fn tool_link_file_to_task(
                 .map(|s| format!("title:{s}"))
         });
     let Some(key) = task_key else {
-        return ("link_file_to_task 缺少 taskId / title".into(), Vec::new());
+        // 「link_file_to_task 缺少 taskId / title」首字「l」非 error/warn 前缀 → ok
+        return ToolResult::ok(
+            "link_file_to_task 缺少 taskId / title".to_string(),
+            Vec::new(),
+        );
     };
     let kind = match v["kind"].as_str().unwrap_or("final") {
         "intermediate" => crate::bot_artifacts::ArtifactKind::Intermediate,
@@ -923,7 +960,8 @@ pub(crate) async fn tool_link_file_to_task(
         crate::bot_artifacts::ArtifactKind::Final => "最终产物",
         crate::bot_artifacts::ArtifactKind::Intermediate => "中间产物",
     };
-    (
+    // 「已登记{kind_label}」首字「已」非 error/warn 前缀 → ok
+    ToolResult::ok(
         format!(
             "已登记{kind_label}「{path}」。流程结束、任务完成时会弹汇总窗口让你勾选绑定；不要在此刻绑定——任务未完成或中断不绑定。"
         ),
@@ -978,7 +1016,7 @@ pub(crate) async fn tool_extract_document(
     args: &str,
     interactive: bool,
     session_id: Option<&str>,
-) -> (String, Vec<crate::bot_chat::TaskRef>) {
+) -> crate::bot::registry::ToolResult {
     let v = parse_args(args);
     let path_opt = v["path"]
         .as_str()
@@ -987,8 +1025,9 @@ pub(crate) async fn tool_extract_document(
     // 无 path 时 bot_py::doc_extract 会弹系统选择框，
     // 后台定时执行弹框 = 永久阻塞卡死，必须直接拒绝并引导模型传 path
     if path_opt.is_none() && !interactive {
-        return (
-            "失败：后台执行不能弹窗选文件，请提供 path 参数指定文档路径".into(),
+        // 「失败：后台执行...」以「失败」开头 → error
+        return ToolResult::error(
+            "失败：后台执行不能弹窗选文件，请提供 path 参数指定文档路径".to_string(),
             Vec::new(),
         );
     }
@@ -1002,15 +1041,16 @@ pub(crate) async fn tool_extract_document(
     // 模型直传 path 时授权校验（无 path 走弹框，用户亲手选不受限）
     if let Some(p) = path_opt.as_deref() {
         if let Err(e) = extract_path_check(app, p, interactive, session_id).await {
-            return (e.into(), Vec::new());
+            return ToolResult::ok(e.to_string(), Vec::new());
         }
     }
     match crate::bot_py::doc_extract(app.clone(), path_opt).await {
-        Ok(res) => (
+        Ok(res) => ToolResult::ok(
             format_extract_output(&res.path, &res.text, offset, limit),
             Vec::new(),
         ),
-        Err(e) => (format!("提取失败：{e}"), Vec::new()),
+        // 「提取失败」首字「提」非「失败」前缀 → ok
+        Err(e) => ToolResult::ok(format!("提取失败：{e}"), Vec::new()),
     }
 }
 
@@ -1052,25 +1092,31 @@ fn opt_filename(v: &serde_json::Value) -> Option<String> {
 pub(crate) async fn tool_create_word(
     app: &AppHandle,
     args: &str,
-) -> (String, Vec<crate::bot_chat::TaskRef>) {
+) -> crate::bot::registry::ToolResult {
     let v = parse_args(args);
     let Some(arr) = v["paragraphs"].as_array() else {
-        return ("create_word 缺少 paragraphs".into(), Vec::new());
+        // 「create_word 缺少 paragraphs」首字「c」非 error/warn 前缀 → ok
+        return ToolResult::ok("create_word 缺少 paragraphs".to_string(), Vec::new());
     };
     let paragraphs: Vec<String> = arr
         .iter()
         .filter_map(|p| p.as_str().map(|s| s.to_string()))
         .collect();
     if paragraphs.is_empty() {
-        return ("paragraphs 不能为空".into(), Vec::new());
+        // 「paragraphs 不能为空」首字「p」非 error/warn 前缀 → ok
+        return ToolResult::ok("paragraphs 不能为空".to_string(), Vec::new());
     }
     let title = v["title"].as_str().unwrap_or("").to_string();
     let tables = v.get("tables").cloned();
     match crate::bot_py::doc_make_word(app.clone(), title, paragraphs, opt_filename(&v), tables)
         .await
     {
-        Ok(out) => (format!("已生成 Word 文档：{out}"), Vec::new()),
-        Err(e) => (format!("生成失败：{e}"), Vec::new()),
+        Ok(out) => {
+            // 「已生成 Word 文档」首字「已」非 error/warn 前缀 → ok
+            ToolResult::ok(format!("已生成 Word 文档：{out}"), Vec::new())
+        }
+        // 「生成失败」首字「生」非「失败」前缀 → ok
+        Err(e) => ToolResult::ok(format!("生成失败：{e}"), Vec::new()),
     }
 }
 
@@ -1080,7 +1126,7 @@ pub(crate) async fn tool_create_word_revisions(
     args: &str,
     interactive: bool,
     session_id: Option<&str>,
-) -> (String, Vec<crate::bot_chat::TaskRef>) {
+) -> crate::bot::registry::ToolResult {
     let v = parse_args(args);
     // originalPath 由模型转述，同样过授权校验（防回读任意文件，走分流）
     if let Some(op) = v["originalPath"]
@@ -1089,12 +1135,13 @@ pub(crate) async fn tool_create_word_revisions(
         .filter(|s| !s.is_empty())
     {
         if let Err(e) = extract_path_check(app, op, interactive, session_id).await {
-            return (e.into(), Vec::new());
+            return ToolResult::ok(e.to_string(), Vec::new());
         }
     }
     let Some(arr) = v["revised"].as_array() else {
-        return (
-            "create_word_revisions 缺少 revised（润色后的段落列表）".into(),
+        // 「create_word_revisions 缺少 revised」首字「c」非 error/warn 前缀 → ok
+        return ToolResult::ok(
+            "create_word_revisions 缺少 revised（润色后的段落列表）".to_string(),
             Vec::new(),
         );
     };
@@ -1103,7 +1150,8 @@ pub(crate) async fn tool_create_word_revisions(
         .filter_map(|p| p.as_str().map(|s| s.to_string()))
         .collect();
     if revised.is_empty() {
-        return ("revised 不能为空".into(), Vec::new());
+        // 「revised 不能为空」首字「r」非 error/warn 前缀 → ok
+        return ToolResult::ok("revised 不能为空".to_string(), Vec::new());
     }
     let path = v["originalPath"]
         .as_str()
@@ -1118,39 +1166,47 @@ pub(crate) async fn tool_create_word_revisions(
         })
         .unwrap_or_default();
     if path.is_none() && original.is_empty() {
-        return (
+        // 「create_word_revisions 缺少原文」首字「c」非 error/warn 前缀 → ok
+        return ToolResult::ok(
             "create_word_revisions 缺少原文：请传 originalPath（来自 extract_document 的 [文档路径]）或 original 行列表"
-                .into(),
+                .to_string(),
             Vec::new(),
         );
     }
     let title = v["title"].as_str().unwrap_or("").to_string();
     match crate::bot_py::doc_make_word_revisions(app.clone(), title, path, original, revised, opt_filename(&v)).await
     {
-        Ok((out, engine)) => (
+        Ok((out, engine)) => ToolResult::ok(
             format!(
                 "已生成修订版 Word（修订模式：删除线=删、红色下划线=增，可在 Word「审阅」里逐条接受/拒绝；引擎：{}）：{out}",
                 if engine == "dotnet" { ".NET OpenXML" } else { "Python 兜底（.NET 不可用或执行失败）" }
             ),
             Vec::new(),
         ),
-        Err(e) => (format!("生成失败：{e}"), Vec::new()),
+        // 「生成失败」首字「生」非「失败」前缀 → ok
+        Err(e) => ToolResult::ok(format!("生成失败：{e}"), Vec::new()),
     }
 }
 pub(crate) async fn tool_create_excel(
     app: &AppHandle,
     args: &str,
-) -> (String, Vec<crate::bot_chat::TaskRef>) {
+) -> crate::bot::registry::ToolResult {
     let v = parse_args(args);
     let Some(sheets) = v["sheets"].as_array() else {
-        return ("create_excel 缺少 sheets".into(), Vec::new());
+        // 「create_excel 缺少 sheets」首字「c」非 error/warn 前缀 → ok
+        return ToolResult::ok("create_excel 缺少 sheets".to_string(), Vec::new());
     };
     if sheets.is_empty() {
-        return ("sheets 不能为空".into(), Vec::new());
+        // 「sheets 不能为空」首字「s」非 error/warn 前缀 → ok
+        return ToolResult::ok("sheets 不能为空".to_string(), Vec::new());
     }
     match crate::bot_py::doc_make_excel(app.clone(), sheets.clone(), opt_filename(&v)).await {
-        Ok(out) => (format!("已生成 Excel 文档：{out}"), Vec::new()),
-        Err(e) => (format!("生成失败：{e}"), Vec::new()),
+        Ok(out) => {
+            // 「已生成 Excel 文档」首字「已」非 error/warn 前缀 → ok
+            ToolResult::ok(format!("已生成 Excel 文档：{out}"), Vec::new())
+        }
+        // 「生成失败」首字「生」非「失败」前缀 → ok
+        Err(e) => ToolResult::ok(format!("生成失败：{e}"), Vec::new()),
     }
 }
 
@@ -1158,13 +1214,15 @@ pub(crate) async fn tool_create_excel(
 pub(crate) async fn tool_create_ppt(
     app: &AppHandle,
     args: &str,
-) -> (String, Vec<crate::bot_chat::TaskRef>) {
+) -> crate::bot::registry::ToolResult {
     let v = parse_args(args);
     let Some(slides) = v["slides"].as_array() else {
-        return ("create_ppt 缺少 slides".into(), Vec::new());
+        // 「create_ppt 缺少 slides」首字「c」非 error/warn 前缀 → ok
+        return ToolResult::ok("create_ppt 缺少 slides".to_string(), Vec::new());
     };
     if slides.is_empty() {
-        return ("slides 不能为空".into(), Vec::new());
+        // 「slides 不能为空」首字「s」非 error/warn 前缀 → ok
+        return ToolResult::ok("slides 不能为空".to_string(), Vec::new());
     }
     let title = v["title"].as_str().unwrap_or("").to_string();
     // theme：blue/navy/teal/forest/wine/sky/plum/coral/dark/green 十套；模型自选，非法回退 blue
@@ -1181,8 +1239,12 @@ pub(crate) async fn tool_create_ppt(
     )
     .await
     {
-        Ok(out) => (format!("已生成 PPT 演示文稿：{out}"), Vec::new()),
-        Err(e) => (format!("生成失败：{e}"), Vec::new()),
+        Ok(out) => {
+            // 「已生成 PPT 演示文稿」首字「已」非 error/warn 前缀 → ok
+            ToolResult::ok(format!("已生成 PPT 演示文稿：{out}"), Vec::new())
+        }
+        // 「生成失败」首字「生」非「失败」前缀 → ok
+        Err(e) => ToolResult::ok(format!("生成失败：{e}"), Vec::new()),
     }
 }
 
@@ -1190,22 +1252,28 @@ pub(crate) async fn tool_create_ppt(
 pub(crate) async fn tool_create_pdf(
     app: &AppHandle,
     args: &str,
-) -> (String, Vec<crate::bot_chat::TaskRef>) {
+) -> crate::bot::registry::ToolResult {
     let v = parse_args(args);
     let Some(arr) = v["paragraphs"].as_array() else {
-        return ("create_pdf 缺少 paragraphs".into(), Vec::new());
+        // 「create_pdf 缺少 paragraphs」首字「c」非 error/warn 前缀 → ok
+        return ToolResult::ok("create_pdf 缺少 paragraphs".to_string(), Vec::new());
     };
     let paragraphs: Vec<String> = arr
         .iter()
         .filter_map(|p| p.as_str().map(|s| s.to_string()))
         .collect();
     if paragraphs.is_empty() {
-        return ("paragraphs 不能为空".into(), Vec::new());
+        // 「paragraphs 不能为空」首字「p」非 error/warn 前缀 → ok
+        return ToolResult::ok("paragraphs 不能为空".to_string(), Vec::new());
     }
     let title = v["title"].as_str().unwrap_or("").to_string();
     match crate::bot_py::doc_make_pdf(app.clone(), title, paragraphs, opt_filename(&v)).await {
-        Ok(out) => (format!("已生成 PDF 文档：{out}"), Vec::new()),
-        Err(e) => (format!("生成失败：{e}"), Vec::new()),
+        Ok(out) => {
+            // 「已生成 PDF 文档」首字「已」非 error/warn 前缀 → ok
+            ToolResult::ok(format!("已生成 PDF 文档：{out}"), Vec::new())
+        }
+        // 「生成失败」首字「生」非「失败」前缀 → ok
+        Err(e) => ToolResult::ok(format!("生成失败：{e}"), Vec::new()),
     }
 }
 
@@ -1214,25 +1282,27 @@ pub(crate) async fn tool_create_pdf(
 pub(crate) async fn tool_web_search(
     app: &AppHandle,
     args: &str,
-) -> (String, Vec<crate::bot_chat::TaskRef>) {
+) -> crate::bot::registry::ToolResult {
     let v = parse_args(args);
     let Some(query) = v["query"]
         .as_str()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
     else {
-        return ("web_search 缺少 query".into(), Vec::new());
+        // 「web_search 缺少 query」首字「w」非 error/warn 前缀 → ok
+        return ToolResult::ok("web_search 缺少 query".to_string(), Vec::new());
     };
     if let Err(e) = check_len(&query, MAX_KEYWORD, "搜索关键词") {
-        return (e.into(), Vec::new());
+        return ToolResult::ok(e.to_string(), Vec::new());
     }
     audit_log(
         app,
         &format!("web_search | query: {}", escape_for_log(&query, 100)),
     );
     match crate::bot_web::web_search_with_config(app, &query).await {
-        Ok(results) => (results, Vec::new()),
-        Err(e) => (format!("搜索失败：{e}"), Vec::new()),
+        Ok(results) => ToolResult::ok(results, Vec::new()),
+        // 「搜索失败」首字「搜」非「失败」前缀 → ok
+        Err(e) => ToolResult::ok(format!("搜索失败：{e}"), Vec::new()),
     }
 }
 
@@ -1240,17 +1310,18 @@ pub(crate) async fn tool_web_search(
 pub(crate) async fn tool_fetch_url(
     app: &AppHandle,
     args: &str,
-) -> (String, Vec<crate::bot_chat::TaskRef>) {
+) -> crate::bot::registry::ToolResult {
     let v = parse_args(args);
     let Some(u) = v["url"]
         .as_str()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
     else {
-        return ("fetch_url 缺少 url".into(), Vec::new());
+        // 「fetch_url 缺少 url」首字「f」非 error/warn 前缀 → ok
+        return ToolResult::ok("fetch_url 缺少 url".to_string(), Vec::new());
     };
     if let Err(e) = check_len(&u, MAX_KEYWORD, "网址") {
-        return (e.into(), Vec::new());
+        return ToolResult::ok(e.to_string(), Vec::new());
     }
     audit_log(
         app,
@@ -1262,9 +1333,11 @@ pub(crate) async fn tool_fetch_url(
             if out.chars().count() >= 30000 {
                 out.push_str("\n\n（内容过长已截断）");
             }
-            (out, Vec::new())
+            // 抓取成功返回正文，首字符可能是任意 UTF-8 → ok
+            ToolResult::ok(out, Vec::new())
         }
-        Err(e) => (format!("抓取失败：{e}"), Vec::new()),
+        // 「抓取失败」首字「抓」非「失败」前缀 → ok
+        Err(e) => ToolResult::ok(format!("抓取失败：{e}"), Vec::new()),
     }
 }
 
@@ -1276,10 +1349,11 @@ pub(crate) async fn tool_run_python(
     app: &AppHandle,
     args: &str,
     stop: Option<&crate::bot_slash::StopGuard>,
-) -> (String, Vec<crate::bot_chat::TaskRef>) {
+) -> crate::bot::registry::ToolResult {
     let v = parse_args(args);
     let Some(code) = v["code"].as_str() else {
-        return ("run_python 缺少 code".into(), Vec::new());
+        // 「run_python 缺少 code」首字「r」非 error/warn 前缀 → ok
+        return ToolResult::ok("run_python 缺少 code".to_string(), Vec::new());
     };
     // 超时优先级：工具参数 timeoutSecs > 设置页配置 python_timeout_secs > 内置 60s
     //（pandas 大计算 60s 偏紧；硬钳 300s 在 bot_py::resolve_timeout）
@@ -1308,9 +1382,11 @@ pub(crate) async fn tool_run_python(
             if out.is_empty() {
                 out = "执行完成（无输出）".into();
             }
-            (out, Vec::new())
+            // Python 执行输出，首字符可能是任意 UTF-8 → ok
+            ToolResult::ok(out, Vec::new())
         }
-        Err(e) => (format!("执行失败：{e}"), Vec::new()),
+        // 「执行失败」首字「执」非「失败」前缀 → ok
+        Err(e) => ToolResult::ok(format!("执行失败：{e}"), Vec::new()),
     }
 }
 
@@ -1484,15 +1560,15 @@ mod task_files_arg_tests {
     #[test]
     fn apply_files_to_task_dual_writes_legacy_fields() {
         let mut t = crate::db::Task {
-            id: "t".into(),
-            title: "x".into(),
+            id: "t".to_string(),
+            title: "x".to_string(),
             due: None,
             note: None,
             tags: None,
             files: None,
             file_path: Some("/old.txt".into()),
             file_is_dir: Some(false),
-            column: "todo".into(),
+            column: "todo".to_string(),
             subtasks: None,
             completed_at: None,
             archived: None,
@@ -1509,11 +1585,11 @@ mod task_files_arg_tests {
             &mut t,
             vec![
                 crate::db::TaskFile {
-                    path: "/n/1.pdf".into(),
+                    path: "/n/1.pdf".to_string(),
                     is_dir: false,
                 },
                 crate::db::TaskFile {
-                    path: "/n/dir".into(),
+                    path: "/n/dir".to_string(),
                     is_dir: true,
                 },
             ],
@@ -1546,7 +1622,9 @@ mod phase4_facts_tests {
 
     #[test]
     fn get_current_time_format_has_date_and_weekday() {
-        let (text, refs) = tool_get_current_time();
+        let result = tool_get_current_time();
+        let refs = &result.refs;
+        let text = &result.text;
         assert!(refs.is_empty());
         assert!(text.starts_with("现在："), "实际：{text}");
         assert!(

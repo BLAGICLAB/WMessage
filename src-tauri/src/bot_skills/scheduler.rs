@@ -113,7 +113,7 @@ async fn run_rollback_segment_core<R: tauri::Runtime, X, XP>(
 ) -> bool
 where
     X: Fn(String, String) -> XP,
-    XP: std::future::Future<Output = (String, Vec<crate::bot_chat::TaskRef>)>,
+    XP: std::future::Future<Output = crate::bot::registry::ToolResult>,
 {
     if rollback.is_empty() {
         return false;
@@ -131,7 +131,8 @@ where
     let mut failed_steps = 0usize;
     for rb in rollback {
         let rb_args = substitute_vars(&rb.args_json, ctx);
-        let (text, _refs) = execute_tool(rb.tool_name.clone(), rb_args).await;
+        let tool_outcome = execute_tool(rb.tool_name.clone(), rb_args).await;
+        let text = tool_outcome.text;
         if is_tool_failure_text(&text) {
             failed_steps += 1;
             crate::bot::audit_log_hook(
@@ -245,7 +246,7 @@ pub async fn run_skill_scheduler_core<R: tauri::Runtime, X, XP, P>(
 ) -> Result<DslOutcome, DslFailure>
 where
     X: Fn(String, String) -> XP,
-    XP: std::future::Future<Output = (String, Vec<crate::bot_chat::TaskRef>)>,
+    XP: std::future::Future<Output = crate::bot::registry::ToolResult>,
     P: Fn(&str, &str, Option<&str>, Option<&str>, Option<bool>),
 {
     // 僵尸终态清理：上轮遗留的 Completed/Failed/Terminated run 会在第 0 步被 advance_dsl
@@ -368,7 +369,8 @@ where
                 ),
             );
         }
-        let (text, _refs) = execute_tool(step.tool_name.clone(), resolved_args).await;
+        let tool_outcome = execute_tool(step.tool_name.clone(), resolved_args).await;
+        let text = tool_outcome.text;
         let failed = is_tool_failure_text(&text);
         if failed {
             let rb_attempted = run_rollback_segment_core(

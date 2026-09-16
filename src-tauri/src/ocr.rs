@@ -13,27 +13,32 @@
 
 use tauri::AppHandle;
 
+use crate::bot::registry::ToolResult;
+
 /// ocr_image 工具：识别本地图片中的文字（路径白名单守卫复用 bot_fs::resolve_with_perm）。
 pub async fn tool_ocr_image(
     app: &AppHandle,
     args: &str,
     interactive: bool,
     session_id: Option<&str>,
-) -> (String, Vec<crate::bot_chat::TaskRef>) {
+) -> ToolResult {
     let v = crate::bot::parse_args(args);
     let Some(path) = v["path"].as_str() else {
-        return ("失败：ocr_image 缺少 path 参数".into(), Vec::new());
+        // 「失败：ocr_image 缺少 path 参数」以「失败」开头 → error
+        return ToolResult::error("失败：ocr_image 缺少 path 参数".to_string(), Vec::new());
     };
     let path = path.trim();
     if path.is_empty() {
-        return ("失败：ocr_image 的 path 不能为空".into(), Vec::new());
+        // 「失败：ocr_image 的 path 不能为空」以「失败」开头 → error
+        return ToolResult::error("失败：ocr_image 的 path 不能为空".to_string(), Vec::new());
     }
     // 隐私红线：只接受本地文件路径。网络图片一律不抓取（resolve_with_perm 也会因
     // canonicalize 失败而拒，这里前置给出明确原因）
     if path.starts_with("http://") || path.starts_with("https://") || path.starts_with("data:") {
-        return (
+        // 「失败：ocr_image 只接受本地图片路径」以「失败」开头 → error
+        return ToolResult::error(
             "失败：ocr_image 只接受本地图片路径，网络地址不予抓取（隐私红线：识别绝不上传外网）"
-                .into(),
+                .to_string(),
             Vec::new(),
         );
     }
@@ -42,10 +47,12 @@ pub async fn tool_ocr_image(
             .await
         {
             Ok(p) => p,
-            Err(e) => return (e, Vec::new()),
+            // resolve_with_perm Err 返 String，首字不定 → ok
+            Err(e) => return ToolResult::ok(e, Vec::new()),
         };
     if canonical.is_dir() {
-        return (
+        // 「失败：{path} 是目录」以「失败」开头 → error
+        return ToolResult::error(
             format!("失败：{path} 是目录，ocr_image 只接受图片文件"),
             Vec::new(),
         );
@@ -63,13 +70,16 @@ pub async fn tool_ocr_image(
                 app,
                 &format!("ocr.done | {} | {} chars", log_path, text.chars().count()),
             );
-            (text, Vec::new())
+            // OCR 识别文本，首字符任意 UTF-8 → ok
+            ToolResult::ok(text, Vec::new())
         }
         Ok(Err(e)) => {
             crate::bot::audit_log(app, &format!("ocr.fail | {log_path} | {e}"));
-            (format!("失败：{e}"), Vec::new())
+            // 「失败：{e}」以「失败」开头 → error
+            ToolResult::error(format!("失败：{e}"), Vec::new())
         }
-        Err(e) => (format!("失败：OCR 线程异常：{e}"), Vec::new()),
+        // 「失败：OCR 线程异常：{e}」以「失败」开头 → error
+        Err(e) => ToolResult::error(format!("失败：OCR 线程异常：{e}"), Vec::new()),
     }
 }
 

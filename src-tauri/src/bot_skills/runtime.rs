@@ -1,6 +1,7 @@
 use super::parse::SkillMeta;
 use super::state::{load_skill_meta, now_ms, skill_runs, SkillRun, SkillState};
 use crate::audit_event;
+use crate::bot::registry::ToolResult;
 use crate::error::CommandError;
 use tauri::AppHandle;
 
@@ -106,14 +107,11 @@ pub fn start_skill(
 
 /// 工具 use_skill：读取技能文档全文返回给模型。
 /// session_id：透传给 start_skill 记录技能归属会话（会话隔离）。
-pub fn tool_use_skill(
-    app: &AppHandle,
-    args: &str,
-    session_id: Option<&str>,
-) -> (String, Vec<crate::bot::TaskRef>) {
+pub fn tool_use_skill(app: &AppHandle, args: &str, session_id: Option<&str>) -> ToolResult {
     let v: serde_json::Value = serde_json::from_str(args).unwrap_or(serde_json::Value::Null);
     let Some(name) = v["name"].as_str().map(|s| s.trim().to_string()) else {
-        return ("use_skill 缺少 name".into(), Vec::new());
+        // 「use_skill 缺少 name」首字「u」非 error/warn 前缀 → ok
+        return ToolResult::ok("use_skill 缺少 name".to_string(), Vec::new());
     };
     match start_skill(app, &name, session_id) {
         Ok((meta, body)) => {
@@ -132,9 +130,12 @@ pub fn tool_use_skill(
                     "\n\n（运行约束：本技能为人机协同模式，中高危动作执行前会暂停等待用户确认）",
                 );
             }
-            (out, Vec::new())
+            // 技能文档全文，首字符任意 UTF-8 → ok
+            ToolResult::ok(out, Vec::new())
         }
-        Err(e) => (e, Vec::new()),
+        // start_skill Err 返回 String（错误描述），首字可能是错误说明的「失」/「请」等
+        // —— 首字符不定 → ok（除非 start_skill 内部显式标 ToolResult，否则这里一律 ok）
+        Err(e) => ToolResult::ok(e, Vec::new()),
     }
 }
 

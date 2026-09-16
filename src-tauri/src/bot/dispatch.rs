@@ -8,7 +8,7 @@
 
 use tauri::AppHandle;
 
-use crate::bot::registry::{ToolCtx, TOOLS_TABLE};
+use crate::bot::registry::{tools_index, ToolCtx, TOOLS_TABLE};
 use crate::bot::tools::files_audit_kv;
 
 // ───────────────────────── 工具调度核心（execute_tool dispatch） ─────────────────────────
@@ -108,7 +108,7 @@ pub async fn execute_tool(
     name: &str,
     args: &str,
     session_id: Option<&str>,
-) -> (String, Vec<crate::bot_chat::TaskRef>) {
+) -> crate::bot::registry::ToolResult {
     execute_tool_impl(
         app,
         name,
@@ -128,7 +128,7 @@ pub async fn execute_tool_with_stop(
     name: &str,
     args: &str,
     stop: Option<&crate::bot_slash::StopGuard>,
-) -> (String, Vec<crate::bot_chat::TaskRef>) {
+) -> crate::bot::registry::ToolResult {
     traced_impl(app, name, args, stop, &ToolCallTrace::default()).await
 }
 
@@ -140,7 +140,7 @@ pub async fn execute_tool_traced(
     args: &str,
     stop: Option<&crate::bot_slash::StopGuard>,
     trace: &ToolCallTrace,
-) -> (String, Vec<crate::bot_chat::TaskRef>) {
+) -> crate::bot::registry::ToolResult {
     traced_impl(app, name, args, stop, trace).await
 }
 
@@ -153,7 +153,7 @@ async fn traced_impl(
     args: &str,
     stop: Option<&crate::bot_slash::StopGuard>,
     trace: &ToolCallTrace,
-) -> (String, Vec<crate::bot_chat::TaskRef>) {
+) -> crate::bot::registry::ToolResult {
     let interactive = stop.map(|s| s.is_interactive()).unwrap_or(true);
     let session_id = stop.and_then(|s| s.session_id());
     execute_tool_impl(app, name, args, stop, interactive, session_id, trace).await
@@ -168,7 +168,7 @@ async fn execute_tool_impl(
     interactive: bool,
     session_id: Option<&str>,
     trace: &ToolCallTrace,
-) -> (String, Vec<crate::bot_chat::TaskRef>) {
+) -> crate::bot::registry::ToolResult {
     let start = std::time::Instant::now();
     // 0. tool.call 结构化（含 session_id / turn / tool_call_id，供整轮回放）
     let mut call_kv: Vec<(&str, String)> = vec![
@@ -200,7 +200,8 @@ async fn execute_tool_impl(
         ) {
             crate::audit::write_event(app, level, event, &kv);
         }
-        return (msg, Vec::new());
+        // B1：denied 路径返回 Warn，与原 classify_text + tool_call_failed（⚠️ 检测）结果一致。
+        return crate::bot::registry::ToolResult::warn(msg, Vec::new());
     }
     // 2. Skill 调度器步骤钩子：活动技能时计数/熔断/动作记录（use_skill 自身跳过）
     if name != "use_skill" {
@@ -216,7 +217,8 @@ async fn execute_tool_impl(
             ) {
                 crate::audit::write_event(app, level, event, &kv);
             }
-            return (e.into(), Vec::new());
+            // B1：skill_step_failed 路径返回 Warn，与原 classify_text + tool_call_failed 结果一致。
+            return crate::bot::registry::ToolResult::warn(e.to_string(), Vec::new());
         }
     }
     let ctx = ToolCtx {
@@ -225,24 +227,43 @@ async fn execute_tool_impl(
         interactive,
         session_id,
     };
-    let (text, refs): (String, Vec<crate::bot_chat::TaskRef>) =
-        match TOOLS_TABLE.iter().find(|t| t.name == name) {
-            Some(t) => (t.call)(&ctx, args).await,
-            None => (format!("未知工具：{name}"), Vec::new()),
-        };
+    // B1：工具仍返 (String, Vec<TaskRef>) 元组；From 过渡层默认 Ok。
+    // B2 cleanup 会删除 From impl，工具届时改为显式 ok/warn/error。
+    let result: crate::bot::registry::ToolResult = match tools_index().get(name).copied() {
+        // T7：O(n) 线性扫描 → O(1) HashMap 查找。
+        Some(t) => (t.call)(&ctx, args).await.into(),
+        None => crate::bot::registry::ToolResult::error(format!("未知工具：{name}"), Vec::new()),
+    };
 
     // 3. post-execute 洋葱管线「出」钩子
     //    - 结构化审计事件（工具名/耗时/返回引用数/结果预览）写到 bot.log
-    //    - 失败分类：未知工具→Error；含「失败/错误/error:」→Warn；其他→Info
+    //    - 级别从 result.status 派生（代替原 classify_text 字符串匹配）
     //    - 镜像调用 skill_on_step_post：技能步骤结果/失败检测
     let dur_ms = start.elapsed().as_millis() as u64;
-    let level = crate::audit::classify_text(name, &text);
+    let level = crate::audit::AuditLevel::from_tool_status(result.status);
+    // T6：保守 token 预算——仅 audit，不截断。超阈值的工具输出走 `tool.output.over_budget`
+    // 事件供事后分析，默认阈值 8192，read_text_file/fetch_url/list_files 等长输出工具 65536。
+    if let Some(t) = TOOLS_TABLE.iter().find(|t| t.name == name) {
+        let output_len = result.text.chars().count();
+        if output_len > t.max_output_chars {
+            crate::audit::write_event(
+                app,
+                crate::audit::AuditLevel::Info,
+                "tool.output.over_budget",
+                &[
+                    ("tool", name.to_string()),
+                    ("output_len", output_len.to_string()),
+                    ("max", t.max_output_chars.to_string()),
+                ],
+            );
+        }
+    }
     // create_task/edit_task 带 files 参数时补 files_count/truncated kv（多文件绑定）
     let mut kv: Vec<(&str, String)> = vec![
         ("tool", name.to_string()),
         ("ms", dur_ms.to_string()),
-        ("refs", refs.len().to_string()),
-        ("preview", text.chars().take(80).collect::<String>()),
+        ("refs", result.refs.len().to_string()),
+        ("preview", result.text.chars().take(80).collect::<String>()),
     ];
     if matches!(name, "create_task" | "edit_task") {
         if let Some((cnt, truncated)) = files_audit_kv(args) {
@@ -255,10 +276,10 @@ async fn execute_tool_impl(
     kv.extend(trace_kv(trace, session_id));
     crate::audit::write_event(app, level, "tool.return", &kv);
     if name != "use_skill" {
-        crate::bot_skills::skill_on_step_post(app, name, &text, dur_ms, level, session_id);
+        crate::bot_skills::skill_on_step_post(app, name, &result.text, dur_ms, level, session_id);
     }
 
-    (text, refs)
+    result
 }
 
 pub(crate) fn parse_args(args: &str) -> serde_json::Value {

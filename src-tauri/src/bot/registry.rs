@@ -29,13 +29,74 @@ pub struct ToolCtx<'a> {
     pub session_id: Option<&'a str>,
 }
 
-pub type ToolFuture<'a> =
-    Pin<Box<dyn Future<Output = (String, Vec<crate::bot_chat::TaskRef>)> + Send + 'a>>;
+pub type ToolFuture<'a> = Pin<Box<dyn Future<Output = ToolResult> + Send + 'a>>;
+
+/// T3 B1：工具返回的审计级别。代替 audit::classify_text 的字符串匹配。
+/// 工具在返回 ToolResult 时显式声明 status，dispatcher 据此写 audit 事件。
+///
+/// B1 阶段：所有工具仍返 (String, Vec<TaskRef>)，From 过渡层默认 Ok。
+/// B2 阶段：工具逐个改为显式 ok/warn/error；B1 的 From 过渡层在 cleanup 删除。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ToolStatus {
+    /// 工具成功完成主职责
+    Ok,
+    /// 工具成功但有部分告警
+    Warn,
+    /// 工具明确返回错误
+    Error,
+}
+
+/// T3 B1：工具返回值。代替原 `(String, Vec<TaskRef>)` 元组。
+#[derive(Debug, Clone)]
+pub struct ToolResult {
+    pub text: String,
+    pub refs: Vec<crate::bot_chat::TaskRef>,
+    pub status: ToolStatus,
+}
+
+impl ToolResult {
+    pub fn ok(text: impl Into<String>, refs: Vec<crate::bot_chat::TaskRef>) -> Self {
+        Self {
+            text: text.into(),
+            refs,
+            status: ToolStatus::Ok,
+        }
+    }
+    pub fn warn(text: impl Into<String>, refs: Vec<crate::bot_chat::TaskRef>) -> Self {
+        Self {
+            text: text.into(),
+            refs,
+            status: ToolStatus::Warn,
+        }
+    }
+    pub fn error(text: impl Into<String>, refs: Vec<crate::bot_chat::TaskRef>) -> Self {
+        Self {
+            text: text.into(),
+            refs,
+            status: ToolStatus::Error,
+        }
+    }
+}
+
+/// T3 B1 过渡层：B2 工具逐个迁移后删除。已删。
+///
+/// B1 期间用 From impl 将工具返 (String, Vec<TaskRef>) 隐式转 ToolResult::ok；
+/// B2 完成后所有 29 工具已显式返 ToolResult，From 过渡层失去作用，删除。
+/// （若 B1/B2 期间遗留未迁移工具仍存在，该工具会爆「expected ToolResult」编译错——
+/// 这是期望的强制迁移信号，不是回归。）
 
 pub struct ToolDef {
     pub name: &'static str,
     pub schema: &'static str,
     pub mutating: bool,
+    /// 模型声称「我做了这个工具的语义动作」的常见表达。
+    /// 只在 `mutating == true` 时有意义；非 mutating 填 `&[]`。
+    /// `claims_mutation()` 从所有 mutating 工具的 patterns 合并后检索。
+    pub claims_patterns: &'static [&'static str],
+    /// T6：工具返回文本的字符软上限（仅 audit，不截断）。
+    /// 超阈值仅 audit_event!("tool.output.over_budget")，不丢字符、不压缩。
+    /// 默认 8192（8KB）；长输出工具（read_text_file/fetch_url/list_files）自定 65536。
+    pub max_output_chars: usize,
     pub call: for<'a> fn(&'a ToolCtx<'a>, &'a str) -> ToolFuture<'a>,
 }
 
@@ -330,180 +391,358 @@ fn call_use_skill<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
     Box::pin(async move { tool_use_skill(ctx.app, args, session_id) })
 }
 
+/// T4：合并 TOOLS_TABLE 中所有 mutating 工具的 claims_patterns，
+/// 检查 text 是否含任一变更声称表述。
+///
+/// 原 bot_model_loop.rs::claims_mutation 的「14 个动词 + 4 个整段」硬编码
+/// 改为从 ToolDef 表派生——加新 mutating 工具时只需填自己的 claims_patterns，
+/// 这里的检测逻辑零修改。
+///
+/// 检测是 2 阶段：
+/// 1. 子串包含（catches 「移至回收站」、「已完成任务」等整段）
+/// 2. 「已」+ 8 字窗口包含任一 pattern（catches 「已...移除」类变体话术；
+///    原实现同款，避免漏掉「已把附件全部移除」之类的中间插入副词话术）
+///
+/// 两阶段并集 OR，原 hallucination_guard_tests 6 个负面用例仍会正确返回 false。
+pub fn claims_mutation(text: &str) -> bool {
+    let patterns: Vec<&str> = TOOLS_TABLE
+        .iter()
+        .filter(|t| t.mutating)
+        .flat_map(|t| t.claims_patterns.iter())
+        .copied()
+        .collect();
+    // 阶段 1：子串匹配
+    if patterns.iter().any(|p| text.contains(p)) {
+        return true;
+    }
+    // 阶段 2：「已」后 8 字窗口包含任一 pattern（strip 前缀「已」后）
+    // 原 bot_model_loop.rs VERBS 表不含「已」前缀（「删除」不是「已删除」），
+    // 故 window 检查也需剥去 pattern 的前缀「已」才能覆盖「已...移除」类变体。
+    let chars: Vec<char> = text.chars().collect();
+    for (i, &c) in chars.iter().enumerate() {
+        if c == '已' {
+            let window: String = chars[i + 1..].iter().take(8).collect();
+            if patterns.iter().any(|p| {
+                let stripped = p.strip_prefix('已').unwrap_or(p);
+                window.contains(stripped)
+            }) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+/// T7：TOOLS_TABLE 的 O(1) HashMap 索引。
+/// dispatch 的 O(n) `TOOLS_TABLE.iter().find(...)` 改为 O(1) `tools_index().get(name)`。
+/// OnceLock 保证只有一次初始化；索引里全部为 `&'static ToolDef` 引用，零额外分配（除 HashMap 表本身）。
+static TOOLS_INDEX: OnceLock<HashMap<&'static str, &'static ToolDef>> = OnceLock::new();
+
+pub fn tools_index() -> &'static HashMap<&'static str, &'static ToolDef> {
+    TOOLS_INDEX.get_or_init(|| TOOLS_TABLE.iter().map(|t| (t.name, t)).collect())
+}
+
 // ─────────────────── TOOLS_TABLE（29 工具单源真相）───────────────────
 pub static TOOLS_TABLE: &[ToolDef] = &[
     ToolDef {
         name: "list_tasks",
         schema: SCHEMA_LIST_TASKS,
         mutating: false,
+        claims_patterns: &[],
+        max_output_chars: 8192,
         call: call_list_tasks,
     },
     ToolDef {
         name: "query_single_task",
         schema: SCHEMA_QUERY_SINGLE_TASK,
         mutating: false,
+        claims_patterns: &[],
+        max_output_chars: 8192,
         call: call_query_single_task,
     },
     ToolDef {
         name: "create_task",
         schema: SCHEMA_CREATE_TASK,
         mutating: true,
+        claims_patterns: &["已创建", "已新建", "新建了", "创建了", "已新增"],
+        max_output_chars: 8192,
         call: call_create_task,
     },
     ToolDef {
         name: "complete_task",
         schema: SCHEMA_COMPLETE_TASK,
         mutating: true,
+        claims_patterns: &["已标记为完成", "标记为完成", "已完成任务", "已完成「"],
+        max_output_chars: 8192,
         call: call_complete_task,
     },
     ToolDef {
         name: "delete_task",
         schema: SCHEMA_DELETE_TASK,
         mutating: true,
+        claims_patterns: &[
+            "已删除",
+            "已经删除",
+            "已彻底删除",
+            "已经彻底删除",
+            "已搬移",
+            "已搬到回收站",
+            "移至回收站",
+            "已移除",
+            "已扔掉",
+        ],
+        max_output_chars: 8192,
         call: call_delete_task,
     },
     ToolDef {
         name: "edit_task",
         schema: SCHEMA_EDIT_TASK,
         mutating: true,
+        claims_patterns: &["已修改", "已更新", "已改成", "已改", "已调整", "已编辑"],
+        max_output_chars: 8192,
         call: call_edit_task,
     },
     ToolDef {
         name: "add_subtask",
         schema: SCHEMA_ADD_SUBTASK,
         mutating: true,
+        claims_patterns: &[
+            "已添加子任务",
+            "添加子任务",
+            "已加上子任务",
+            "已新增子任务",
+            "已加子任务",
+        ],
+        max_output_chars: 8192,
         call: call_add_subtask,
     },
     ToolDef {
         name: "toggle_subtask",
         schema: SCHEMA_TOGGLE_SUBTASK,
         mutating: true,
+        claims_patterns: &["已勾选", "勾选了", "已标记子任务完成", "子任务已勾选"],
+        max_output_chars: 8192,
         call: call_toggle_subtask,
     },
     ToolDef {
         name: "remove_subtask",
         schema: SCHEMA_REMOVE_SUBTASK,
         mutating: true,
+        claims_patterns: &[
+            "已删除子任务",
+            "已移除子任务",
+            "子任务已删除",
+            "子任务已移除",
+            "已清掉子任务",
+        ],
+        max_output_chars: 8192,
         call: call_remove_subtask,
     },
     ToolDef {
         name: "read_text_file",
         schema: SCHEMA_READ_TEXT_FILE,
         mutating: false,
+        claims_patterns: &[],
+        max_output_chars: 65536,
         call: call_read_text_file,
     },
     ToolDef {
         name: "ocr_image",
         schema: SCHEMA_OCR_IMAGE,
         mutating: false,
+        claims_patterns: &[],
+        max_output_chars: 8192,
         call: call_ocr_image,
     },
     ToolDef {
         name: "grep_files",
         schema: SCHEMA_GREP_FILES,
         mutating: false,
+        claims_patterns: &[],
+        max_output_chars: 8192,
         call: call_grep_files,
     },
     ToolDef {
         name: "list_files",
         schema: SCHEMA_LIST_FILES,
         mutating: false,
+        claims_patterns: &[],
+        max_output_chars: 65536,
         call: call_list_files,
     },
     ToolDef {
         name: "link_file_to_task",
         schema: SCHEMA_LINK_FILE_TO_TASK,
         mutating: true,
+        claims_patterns: &[
+            "已绑定",
+            "已关联",
+            "绑定到任务",
+            "已绑定文件",
+            "已清空",
+            "已清空文件",
+            "已解绑",
+        ],
+        max_output_chars: 8192,
         call: call_link_file_to_task,
     },
     ToolDef {
         name: "search_tasks",
         schema: SCHEMA_SEARCH_TASKS,
         mutating: false,
+        claims_patterns: &[],
+        max_output_chars: 8192,
         call: call_search_tasks,
     },
     ToolDef {
         name: "extract_document",
         schema: SCHEMA_EXTRACT_DOCUMENT,
         mutating: false,
+        claims_patterns: &[],
+        max_output_chars: 8192,
         call: call_extract_document,
     },
     ToolDef {
         name: "create_word",
         schema: SCHEMA_CREATE_WORD,
         mutating: true,
+        claims_patterns: &[
+            "已生成 Word",
+            "已生成 word",
+            "已创建 Word",
+            "Word 文件已生成",
+            "已写入 Word",
+        ],
+        max_output_chars: 8192,
         call: call_create_word,
     },
     ToolDef {
         name: "create_word_revisions",
         schema: SCHEMA_CREATE_WORD_REVISIONS,
         mutating: true,
+        claims_patterns: &["已修订 Word", "已应用修订", "已写入修订", "修订已应用"],
+        max_output_chars: 8192,
         call: call_create_word_revisions,
     },
     ToolDef {
         name: "create_excel",
         schema: SCHEMA_CREATE_EXCEL,
         mutating: true,
+        claims_patterns: &[
+            "已生成 Excel",
+            "已生成 excel",
+            "已创建 Excel",
+            "Excel 文件已生成",
+            "已写入 Excel",
+        ],
+        max_output_chars: 8192,
         call: call_create_excel,
     },
     ToolDef {
         name: "create_ppt",
         schema: SCHEMA_CREATE_PPT,
         mutating: true,
+        claims_patterns: &[
+            "已生成 PPT",
+            "已生成 ppt",
+            "已生成幻灯片",
+            "PPT 文件已生成",
+            "已写入 PPT",
+        ],
+        max_output_chars: 8192,
         call: call_create_ppt,
     },
     ToolDef {
         name: "create_pdf",
         schema: SCHEMA_CREATE_PDF,
         mutating: true,
+        claims_patterns: &[
+            "已生成 PDF",
+            "已生成 pdf",
+            "已创建 PDF",
+            "PDF 文件已生成",
+            "已写入 PDF",
+        ],
+        max_output_chars: 8192,
         call: call_create_pdf,
     },
     ToolDef {
         name: "run_python",
         schema: SCHEMA_RUN_PYTHON,
         mutating: false,
+        claims_patterns: &[],
+        max_output_chars: 8192,
         call: call_run_python,
     },
     ToolDef {
         name: "web_search",
         schema: SCHEMA_WEB_SEARCH,
         mutating: false,
+        claims_patterns: &[],
+        max_output_chars: 8192,
         call: call_web_search,
     },
     ToolDef {
         name: "fetch_url",
         schema: SCHEMA_FETCH_URL,
         mutating: false,
+        claims_patterns: &[],
+        max_output_chars: 65536,
         call: call_fetch_url,
     },
     ToolDef {
         name: "get_current_time",
         schema: SCHEMA_GET_CURRENT_TIME,
         mutating: false,
+        claims_patterns: &[],
+        max_output_chars: 8192,
         call: call_get_current_time,
     },
     ToolDef {
         name: "remember_fact",
         schema: SCHEMA_REMEMBER_FACT,
         mutating: true,
+        claims_patterns: &[
+            "已记住",
+            "已记下",
+            "已记录偏好",
+            "偏好已记",
+            "已记住你的偏好",
+        ],
+        max_output_chars: 8192,
         call: call_remember_fact,
     },
     ToolDef {
         name: "recall_facts",
         schema: SCHEMA_RECALL_FACTS,
         mutating: false,
+        claims_patterns: &[],
+        max_output_chars: 8192,
         call: call_recall_facts,
     },
     ToolDef {
         name: "record_lesson",
         schema: SCHEMA_RECORD_LESSON,
         mutating: true,
+        claims_patterns: &[
+            "已保存",
+            "已保存到 AI_Gen_Files",
+            "已记住你的偏好",
+            "已记下教训",
+            "已存档",
+        ],
+        max_output_chars: 8192,
         call: call_record_lesson,
     },
     ToolDef {
         name: "use_skill",
         schema: SCHEMA_USE_SKILL,
         mutating: false,
+        claims_patterns: &[],
+        max_output_chars: 8192,
         call: call_use_skill,
     },
 ];
@@ -708,6 +947,101 @@ mod registry_tests {
                     .and_then(|n| n.as_str()),
                 Some(t.name),
                 "ToolDef.name 与 schema 内的 function.name 漂移: {}",
+                t.name
+            );
+        }
+    }
+
+    /// T4 验收：每个 mutating 工具至少有一个 claims_pattern 能匹配到一段典型 LLM 回复。
+    /// 挑 「+ pattern」作为测试输入（含「已」前缀，触发两阶段检测的第一阶段）。
+    /// 非 mutating 工具不做此检查（它们的 claims_patterns 是 &[]）。
+    #[test]
+    fn every_mutating_tool_has_matching_claim_pattern() {
+        let samples: &[(&str, &str)] = &[
+            ("create_task", "已创建任务「买菜」"),
+            ("complete_task", "已将任务标记为完成"),
+            ("delete_task", "已将「你们好」移至回收站 🗑️"),
+            ("edit_task", "已修改任务标题为「买菜」"),
+            ("add_subtask", "已给任务添加子任务「买菜」✅"),
+            ("toggle_subtask", "已勾选子任务「买菜」"),
+            ("remove_subtask", "已删除子任务「买菜」"),
+            ("link_file_to_task", "已绑定文件到任务"),
+            ("create_word", "已生成 Word 文档"),
+            ("create_word_revisions", "已修订 Word 文档"),
+            ("create_excel", "已生成 Excel 表格"),
+            ("create_ppt", "已生成 PPT 幻灯片"),
+            ("create_pdf", "已生成 PDF 文件"),
+            ("remember_fact", "已记住你的偏好"),
+            ("record_lesson", "已保存到 AI_Gen_Files"),
+        ];
+        for (tool_name, sample) in samples {
+            let t = TOOLS_TABLE
+                .iter()
+                .find(|t| t.name == *tool_name)
+                .unwrap_or_else(|| panic!("TOOLS_TABLE 缺 {tool_name}"));
+            assert!(
+                t.mutating,
+                "{tool_name} 应为 mutating=true（样本：{sample}）"
+            );
+            assert!(
+                !t.claims_patterns.is_empty(),
+                "{tool_name} 缺 claims_patterns（mutating 工具必须有 pattern）"
+            );
+            assert!(
+                t.claims_patterns.iter().any(|p| sample.contains(p)),
+                "{tool_name} 的所有 claims_patterns {:#?} 都匹配不上典型样本 `{sample}`",
+                t.claims_patterns
+            );
+            // 同时验证 claims_mutation() 能从 TOOLS_TABLE 联动检测到该声称
+            assert!(
+                claims_mutation(sample),
+                "{tool_name} 的 pattern 集合 OK 但 claims_mutation() 未返 true（拼接逻辑问题）"
+            );
+        }
+    }
+
+    /// 非 mutating 工具的 claims_patterns 必须为 &[]（错填会带入伪变更检测）。
+    #[test]
+    fn non_mutating_tools_have_empty_patterns() {
+        for t in TOOLS_TABLE.iter().filter(|t| !t.mutating) {
+            assert!(
+                t.claims_patterns.is_empty(),
+                "{} 是非 mutating 但 claims_patterns 不空: {:?}",
+                t.name,
+                t.claims_patterns
+            );
+        }
+    }
+
+    /// T7：TOOLS_TABLE 索引长度等于 TOOLS_TABLE 长度——保证无重复 name。
+    #[test]
+    fn tools_index_len_matches_table_len() {
+        let idx = tools_index();
+        assert_eq!(
+            idx.len(),
+            TOOLS_TABLE.len(),
+            "tools_index().len() ({}) != TOOLS_TABLE.len() ({})，含重复 name",
+            idx.len(),
+            TOOLS_TABLE.len()
+        );
+    }
+
+    /// T7：TOOLS_TABLE 里每个 name 都能在 index 里查到——索引完整覆盖。
+    /// ToolDef 不 impl PartialEq/Debug，改用 std::ptr::eq 校验指针同一性。
+    #[test]
+    fn tools_index_covers_all_table_names() {
+        let idx = tools_index();
+        for t in TOOLS_TABLE {
+            assert!(idx.contains_key(t.name), "tools_index 缺 key `{}`", t.name);
+            // idx.get(t.name) 是 Option<&&'static ToolDef>；.copied() 拆一层外引用
+            let got = idx
+                .get(t.name)
+                .copied()
+                .expect("contains_key 已返 true，这里不可能 None");
+            // 指针同一性校验（不需 PartialEq）
+            assert!(
+                std::ptr::eq(got, t),
+                "tools_index[`{}`] 指针与 TOOLS_TABLE 不一致",
                 t.name
             );
         }

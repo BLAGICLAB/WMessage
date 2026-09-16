@@ -39,33 +39,10 @@ fn mutation_succeeded(name: &str, result: &str) -> bool {
     MUTATING_TOOLS().iter().any(|t| t == &name) && !crate::audit::tool_call_failed(name, result)
 }
 
-/// 最终文本是否含「变更已完成」表述（任务卡/文件类；纯查询汇报不命中）。
-/// 枚举完整话术是打地鼠（实锤漏网：「已彻底删除」不含「已删除」字面），
-/// 改成模式匹配：完成态标记「已」+ 其后 8 字窗口内含变更动词（覆盖 已彻底删除/已经把…移除 等变体），
-/// 另加若干无「已」的高频话术兜底。
-/// 动词表刻意不含「完成」（「已完成搜索/分析」这类只读汇报会被误拦）；
-/// 「保存/记住」覆盖「已保存到 AI_Gen_Files」「已记住偏好」话术；
-/// 「已完成任务」走 PLAIN 整段匹配保住任务完成话术。
-fn claims_mutation(text: &str) -> bool {
-    const VERBS: [&str; 14] = [
-        "添加", "删除", "移除", "修改", "更新", "绑定", "清空", "恢复", "勾选", "创建", "生成",
-        "移至", "保存", "记住",
-    ];
-    const PLAIN: [&str; 4] = ["移至回收站", "标记为完成", "添加子任务", "已完成任务"];
-    if PLAIN.iter().any(|p| text.contains(p)) {
-        return true;
-    }
-    let chars: Vec<char> = text.chars().collect();
-    for (i, &c) in chars.iter().enumerate() {
-        if c == '已' {
-            let window: String = chars[i + 1..].iter().take(8).collect();
-            if VERBS.iter().any(|v| window.contains(v)) {
-                return true;
-            }
-        }
-    }
-    false
-}
+/// T4：从 ToolDef 注册表派生的变更声称检测。
+/// 原「14 个动词 + 4 个整段」硬编码迁到 `bot::registry::ToolDef.claims_patterns`，
+/// 加新 mutating 工具只需填自己的 pattern，检测逻辑零修改。
+pub use crate::bot::registry::claims_mutation;
 
 // ───────────────────────── TOOLS schema（编译期字符串，运行期 JSON 解析） ─────────────────────────
 
@@ -309,6 +286,11 @@ pub fn accumulate_tool_call_delta(
 /// 多步 Skill 可在 SKILL.md frontmatter 自报 max_rounds 覆盖（见 resolve_max_rounds）。
 pub(crate) const DEFAULT_MAX_ROUNDS: usize = 50;
 
+/// T6：单轮 msgs 总字符软上限（仅 audit，不截断）。
+/// 默认 200K 字符（中文 ≈ 1 token/字符 ≈ 200K token 上下文）。
+/// 超出走 `loop.msgs.over_budget` 事件供事后分析；不主动压缩、不截断、不触发摘要。
+pub(crate) const MSGS_BUDGET_CHARS: usize = 200_000;
+
 /// 本轮工具循环的轮数上限：Skill 自报 max_rounds 优先，未声明 → DEFAULT_MAX_ROUNDS。
 pub(crate) fn resolve_max_rounds(skill_max_rounds: Option<usize>) -> usize {
     skill_max_rounds.unwrap_or(DEFAULT_MAX_ROUNDS)
@@ -494,7 +476,7 @@ pub async fn run_model_loop_core<X, XP, R, RP>(
 ) -> Result<(String, Vec<TaskRef>), CommandError>
 where
     X: Fn(String, String, crate::bot::ToolCallTrace) -> XP,
-    XP: std::future::Future<Output = (String, Vec<TaskRef>)>,
+    XP: std::future::Future<Output = crate::bot::registry::ToolResult>,
     R: Fn(crate::bot_plan::PlanState, String) -> RP,
     RP: std::future::Future<Output = Option<Vec<String>>>,
 {
@@ -541,6 +523,24 @@ where
     // AwaitConfirm/Finish/Fail/Terminate 跳出主循环时，返回 user 已看到的文本
     let mut last_streamed = String::new();
     for round in 0..max_rounds {
+        // T6：保守 token 预算——仅 audit，不压缩。超阈值走 `loop.msgs.over_budget` 事件。
+        // 默认阈 200K 字符（中文 ~1 token/字符；上限 ≈ 200K token 上下文）。
+        // 本轮 msgs 总字符超阈值时记个 audit，不截断——便于后续评估是否要加主动压缩。
+        let msgs_chars: usize = msgs
+            .iter()
+            .filter_map(|m| m["content"].as_str())
+            .map(|s| s.chars().count())
+            .sum();
+        if msgs_chars > MSGS_BUDGET_CHARS {
+            (deps.audit)(
+                crate::audit::AuditLevel::Info,
+                "loop.msgs.over_budget",
+                vec![
+                    ("chars", msgs_chars.to_string()),
+                    ("max", MSGS_BUDGET_CHARS.to_string()),
+                ],
+            );
+        }
         if stop.stopped() {
             let hint = skill_finish(false, "用户停止");
             return Ok((format!("⏹ 已停止{hint}"), collected_refs));
@@ -1029,7 +1029,7 @@ where
             }
             // 把 /stop 守卫透传给 execute_tool，run_python 在途可中断；
             // turn + tool_call_id 一并下传，工具审计可按轮回放（见 bot::ToolCallTrace）
-            let (result, refs) = execute_tool(
+            let tool_outcome = execute_tool(
                 name.clone(),
                 args.clone(),
                 crate::bot::ToolCallTrace {
@@ -1038,6 +1038,8 @@ where
                 },
             )
             .await;
+            let result = &tool_outcome.text;
+            let refs = &tool_outcome.refs;
             // 按执行结果置位——被门禁拦截/用户拒绝/执行失败的
             // 变更工具不算「动过手」，幻觉守卫对后续虚假汇报保持拦截能力
             if mutation_succeeded(name, &result) {
@@ -1054,7 +1056,7 @@ where
                 crate::bot::truncate_for_log(args, 500),
                 crate::bot::truncate_for_log(&result, 300)
             ));
-            collected_refs.extend(refs);
+            collected_refs.extend(refs.iter().cloned());
             // PREVR 第 1 层：工具失败检测。判定走全链路统一口径
             // （audit::tool_call_failed）——门禁拦截/熔断/暂停/拒绝都能识别；
             // 同工具连续失败才升级——单次失败先提示换策略。

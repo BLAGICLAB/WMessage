@@ -35,6 +35,7 @@ mod ocr;
 pub mod paths;
 mod platform;
 mod profile;
+pub mod prompt_builder;
 mod prompts;
 pub mod py;
 pub mod task_out;

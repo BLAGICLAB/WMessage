@@ -20,6 +20,7 @@ pub mod embed;
 pub mod rank;
 pub mod store;
 
+use crate::bot::registry::ToolResult;
 use crate::error::{CommandError, CommandResult};
 use rank::MemInjection;
 use store::{InsertOutcome, MemItem, NewItem};
@@ -211,7 +212,8 @@ fn validate_fact_kv(key: &str, value: &str) -> Result<(), String> {
     // key 落 mem_items.tags[0]（逗号分隔存储），含英文逗号会让同 key 覆盖失效
     if key.contains(',') {
         return Err(
-            "失败：key 不能包含英文逗号「,」（记忆标签以逗号分隔存储，可用中文逗号「，」）".into(),
+            "失败：key 不能包含英文逗号「,」（记忆标签以逗号分隔存储，可用中文逗号「，」）"
+                .to_string(),
         );
     }
     if value.chars().count() > 500 {
@@ -231,15 +233,13 @@ fn category_to_kind(category: &str) -> &'static str {
 
 /// remember_fact 工具（v2）：同 key（tags[0] 精确匹配）覆盖更新；新条目走语义去重 +
 /// 容量淘汰。工具名/参数 schema 不变，模型无感。返回工具结果文本（含冲突提示）。
-pub async fn tool_remember_fact(
-    app: &AppHandle,
-    args: &str,
-) -> (String, Vec<crate::bot_chat::TaskRef>) {
+pub async fn tool_remember_fact(app: &AppHandle, args: &str) -> ToolResult {
     let v = crate::bot::parse_args(args);
     let key = v["key"].as_str().unwrap_or("").trim().to_string();
     let value = v["value"].as_str().unwrap_or("").trim().to_string();
     if let Err(e) = validate_fact_kv(&key, &value) {
-        return (e, Vec::new());
+        // CommandError.to_string() 首字不定 → ok
+        return ToolResult::ok(e, Vec::new());
     }
     let category: &'static str = match v["category"].as_str().map(|s| s.trim()) {
         Some("profile") => "profile",
@@ -253,7 +253,7 @@ pub async fn tool_remember_fact(
         _ => "user_stated",
     };
     let app = app.clone();
-    let r = tauri::async_runtime::spawn_blocking(move || -> String {
+    let r = tauri::async_runtime::spawn_blocking(move || -> ToolResult {
         let emb = if value.is_empty() {
             None
         } else {
@@ -262,18 +262,21 @@ pub async fn tool_remember_fact(
         let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let conn = match crate::db::open_db(&app) {
             Ok(c) => c,
-            Err(e) => return format!("失败：打开数据库出错：{e}"),
+            // 「失败：打开数据库出错」以「失败」开头 → error
+            Err(e) => {
+                return ToolResult::error(format!("失败：打开数据库出错：{e}"), Vec::new());
+            }
         };
         if let Err(e) = store::ensure_table(&conn) {
-            return format!("失败：{e}");
+            return ToolResult::error(format!("失败：{e}"), Vec::new());
         }
         let now = now_ms();
         // 空 value = 删除该 key 的记忆
         if value.is_empty() {
             return match store::delete_by_key_tag(&conn, &key) {
-                Ok(true) => format!("已删除记忆「{key}」"),
-                Ok(false) => format!("记忆「{key}」本来就不存在"),
-                Err(e) => format!("失败：{e}"),
+                Ok(true) => ToolResult::ok(format!("已删除记忆「{key}」"), Vec::new()),
+                Ok(false) => ToolResult::ok(format!("记忆「{key}」本来就不存在"), Vec::new()),
+                Err(e) => ToolResult::error(format!("失败：{e}"), Vec::new()),
             };
         }
         // 同 key 覆盖（保持旧 remember_fact 语义：覆盖更新不堆积、不占新名额）
@@ -289,9 +292,10 @@ pub async fn tool_remember_fact(
                     emb.as_deref(),
                     now,
                 ) {
-                    return format!("失败：{e}");
+                    return ToolResult::error(format!("失败：{e}"), Vec::new());
                 }
-                format!("已记住「{key}」：{value}")
+                // 「已记住」首字「已」非 error/warn 前缀 → ok
+                ToolResult::ok(format!("已记住「{key}」：{value}"), Vec::new())
             }
             Ok(None) => {
                 let item = NewItem {
@@ -305,48 +309,56 @@ pub async fn tool_remember_fact(
                     Ok((InsertOutcome::Inserted(_), hints)) => {
                         let msg = format!("已记住「{key}」：{value}");
                         if hints.is_empty() {
-                            msg
+                            ToolResult::ok(msg, Vec::new())
                         } else {
-                            format!(
-                                "{msg}。相似已有记忆：[{}]——如需更新请用同 key 覆盖",
-                                hints.join("；")
+                            ToolResult::ok(
+                                format!(
+                                    "{msg}。相似已有记忆：[{}]——如需更新请用同 key 覆盖",
+                                    hints.join("；")
+                                ),
+                                Vec::new(),
                             )
                         }
                     }
                     Ok((InsertOutcome::Merged { orig_key, .. }, _)) => {
                         match orig_key.filter(|k| !k.is_empty() && *k != key) {
-                            Some(k) => format!(
-                                "已记住「{key}」：{value}（与已有记忆语义重复，已合并更新原有条目「{k}」）"
+                            Some(k) => ToolResult::ok(
+                                format!(
+                                    "已记住「{key}」：{value}（与已有记忆语义重复，已合并更新原有条目「{k}」）"
+                                ),
+                                Vec::new(),
                             ),
-                            None => format!(
-                                "已记住「{key}」：{value}（与已有记忆语义重复，已合并更新原有条目）"
+                            None => ToolResult::ok(
+                                format!(
+                                    "已记住「{key}」：{value}（与已有记忆语义重复，已合并更新原有条目）"
+                                ),
+                                Vec::new(),
                             ),
                         }
                     }
-                    Ok((InsertOutcome::RejectedFull(e), _)) => format!("失败：{e}"),
-                    Err(e) => format!("失败：{e}"),
+                    Ok((InsertOutcome::RejectedFull(e), _)) => {
+                        ToolResult::error(format!("失败：{e}"), Vec::new())
+                    }
+                    Err(e) => ToolResult::error(format!("失败：{e}"), Vec::new()),
                 }
             }
-            Err(e) => format!("失败：{e}"),
+            Err(e) => ToolResult::error(format!("失败：{e}"), Vec::new()),
         }
     })
     .await;
-    match r {
-        Ok(s) => (s, Vec::new()),
-        Err(e) => (format!("失败：记忆写入线程 join 失败：{e}"), Vec::new()),
-    }
+    r.unwrap_or_else(|e| {
+        // 「失败：记忆写入线程 join 失败」以「失败」开头 → error
+        ToolResult::error(format!("失败：记忆写入线程 join 失败：{e}"), Vec::new())
+    })
 }
 
 /// recall_facts 工具（v2）：有 query 走混合检索 top-5，无 query 全量按 updated_at 倒序。
 /// 纯读，不刷新访问计数。
-pub async fn tool_recall_facts(
-    app: &AppHandle,
-    args: &str,
-) -> (String, Vec<crate::bot_chat::TaskRef>) {
+pub async fn tool_recall_facts(app: &AppHandle, args: &str) -> ToolResult {
     let v = crate::bot::parse_args(args);
     let query = v["query"].as_str().unwrap_or("").trim().to_string();
     let app = app.clone();
-    let r = tauri::async_runtime::spawn_blocking(move || -> String {
+    let r = tauri::async_runtime::spawn_blocking(move || -> ToolResult {
         let emb = if query.is_empty() {
             None
         } else {
@@ -357,14 +369,17 @@ pub async fn tool_recall_facts(
             .unwrap_or_else(|e| e.into_inner());
         let conn = match crate::db::open_db(&app) {
             Ok(c) => c,
-            Err(e) => return format!("失败：打开数据库出错：{e}"),
+            // 「失败：打开数据库出错」以「失败」开头 → error
+            Err(e) => {
+                return ToolResult::error(format!("失败：打开数据库出错：{e}"), Vec::new());
+            }
         };
         if let Err(e) = store::ensure_table(&conn) {
-            return format!("失败：{e}");
+            return ToolResult::error(format!("失败：{e}"), Vec::new());
         }
         let items = match store::load_all(&conn) {
             Ok(v) => v,
-            Err(e) => return format!("失败：{e}"),
+            Err(e) => return ToolResult::error(format!("失败：{e}"), Vec::new()),
         };
         let line_of = |m: &MemItem| {
             let key = m.tags.first().map(|s| s.as_str()).unwrap_or(&m.kind);
@@ -374,24 +389,34 @@ pub async fn tool_recall_facts(
             let hits =
                 rank::hybrid_search(&items, &query, emb.as_deref(), now_ms(), rank::MEMORY_TOP_N);
             if hits.is_empty() {
-                return "没有找到相关记忆".into();
+                // 「没有找到相关记忆」首字「没」非 error/warn 前缀 → ok
+                return ToolResult::ok("没有找到相关记忆".to_string(), Vec::new());
             }
             let lines: Vec<String> = hits.iter().map(|m| line_of(m)).collect();
-            return format!("最相关 {} 条：\n{}", lines.len(), lines.join("\n"));
+            // 「最相关 N 条」首字「最」非 error/warn 前缀 → ok
+            return ToolResult::ok(
+                format!("最相关 {} 条：\n{}", lines.len(), lines.join("\n")),
+                Vec::new(),
+            );
         }
         if items.is_empty() {
-            return "（还没有任何长期记忆）".into();
+            // 「（还没有任何长期记忆）」首字「（」非 error/warn 前缀 → ok
+            return ToolResult::ok("（还没有任何长期记忆）".to_string(), Vec::new());
         }
         let mut all = items;
         all.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
         let lines: Vec<String> = all.iter().map(|m| line_of(m)).collect();
-        format!("已记住 {} 条：\n{}", lines.len(), lines.join("\n"))
+        // 「已记住 N 条」首字「已」非 error/warn 前缀 → ok
+        ToolResult::ok(
+            format!("已记住 {} 条：\n{}", lines.len(), lines.join("\n")),
+            Vec::new(),
+        )
     })
     .await;
-    match r {
-        Ok(s) => (s, Vec::new()),
-        Err(e) => (format!("失败：记忆检索线程 join 失败：{e}"), Vec::new()),
-    }
+    r.unwrap_or_else(|e| {
+        // 「失败：记忆检索线程 join 失败」以「失败」开头 → error
+        ToolResult::error(format!("失败：记忆检索线程 join 失败：{e}"), Vec::new())
+    })
 }
 
 // ───────────────────────── lesson（教训记忆） ─────────────────────────
@@ -415,7 +440,7 @@ fn validate_lesson(lesson: &str, scenario: &str) -> Result<(), String> {
     if scenario.contains(',') {
         return Err(
             "失败：scenario 不能包含英文逗号「,」（记忆标签以逗号分隔存储，可用中文逗号「，」）"
-                .into(),
+                .to_string(),
         );
     }
     Ok(())
@@ -471,17 +496,16 @@ pub fn record_lesson_core(
 }
 
 /// record_lesson 工具：模型被用户纠正 / 工具连续失败 / 发现更优做法时主动记教训。
-pub async fn tool_record_lesson(
-    app: &AppHandle,
-    args: &str,
-) -> (String, Vec<crate::bot_chat::TaskRef>) {
+pub async fn tool_record_lesson(app: &AppHandle, args: &str) -> ToolResult {
     let v = crate::bot::parse_args(args);
     let lesson = v["lesson"].as_str().unwrap_or("").trim().to_string();
     let scenario = v["scenario"].as_str().unwrap_or("").trim().to_string();
     if let Err(e) = validate_lesson(&lesson, &scenario) {
-        return (e, Vec::new());
+        // validate_lesson 返回 String，首字可能是「失」或其他描述 → ok
+        return ToolResult::ok(e, Vec::new());
     }
     let app2 = app.clone();
+    // 闭包返 String（不动 record_lesson_core 签名）；outer 首字符判定 → ToolResult
     let r = tauri::async_runtime::spawn_blocking(move || -> String {
         let emb = embed::embed_text(&lesson);
         let _g = crate::db::DB_WRITE_LOCK
@@ -489,6 +513,7 @@ pub async fn tool_record_lesson(
             .unwrap_or_else(|e| e.into_inner());
         let conn = match crate::db::open_db(&app2) {
             Ok(c) => c,
+            // 「失败：打开数据库出错」以「失败」开头
             Err(e) => return format!("失败：打开数据库出错：{e}"),
         };
         if let Err(e) = store::ensure_table(&conn) {
@@ -505,8 +530,16 @@ pub async fn tool_record_lesson(
     })
     .await;
     match r {
-        Ok(s) => (s, Vec::new()),
-        Err(e) => (format!("失败：教训写入线程 join 失败：{e}"), Vec::new()),
+        Ok(s) => {
+            // record_lesson_core 返 String：前缀「失败」/「错误 → error，其他 → ok
+            if s.starts_with("失败") || s.starts_with("错误") {
+                ToolResult::error(s, Vec::new())
+            } else {
+                ToolResult::ok(s, Vec::new())
+            }
+        }
+        // Join 失败以「失败」开头 → error
+        Err(e) => ToolResult::error(format!("失败：教训写入线程 join 失败：{e}"), Vec::new()),
     }
 }
 

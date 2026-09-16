@@ -88,6 +88,17 @@ impl AuditLevel {
             AuditLevel::Error => "ERROR",
         }
     }
+
+    /// T3 B1：从工具 status 派生 audit 级别，代替原 audit::classify_text 字符串匹配。
+    /// B2 起工具会显式声明 status，本映射是唯一从 status → audit 级别的入口。
+    pub fn from_tool_status(s: crate::bot::registry::ToolStatus) -> Self {
+        use crate::bot::registry::ToolStatus;
+        match s {
+            ToolStatus::Ok => AuditLevel::Info,
+            ToolStatus::Warn => AuditLevel::Warn,
+            ToolStatus::Error => AuditLevel::Error,
+        }
+    }
 }
 
 /// 工具调用是否失败/被拒（统一判定口径，全链路唯一真相源）。
@@ -203,20 +214,6 @@ fn has_keyword_after(body: &str, keyword: &str, separators: &[char]) -> bool {
         start = abs + keyword.len();
     }
     false
-}
-
-/// 工具返回文本 → 审计级别（post-execute 钩子分类用）
-/// - 未知工具 → Error
-/// - tool_call_failed 判失败/被拒 → Warn
-/// - 其他 → Info
-pub fn classify_text(name: &str, text: &str) -> AuditLevel {
-    if text.starts_with("未知工具") {
-        return AuditLevel::Error;
-    }
-    if tool_call_failed(name, text) {
-        return AuditLevel::Warn;
-    }
-    AuditLevel::Info
 }
 
 /// 拼装一行审计日志（生产 write_event 与测试 format_event_line 共用，
@@ -381,41 +378,6 @@ mod tests {
         assert_eq!(AuditLevel::Info.as_tag(), "INFO");
         assert_eq!(AuditLevel::Warn.as_tag(), "WARN");
         assert_eq!(AuditLevel::Error.as_tag(), "ERROR");
-    }
-
-    #[test]
-    fn classify_text_unknown_tool_returns_error() {
-        assert_eq!(classify_text("foo", "未知工具：bar"), AuditLevel::Error);
-        assert_eq!(classify_text("foo", "未知工具："), AuditLevel::Error);
-    }
-
-    #[test]
-    fn classify_text_fail_keyword_returns_warn() {
-        assert_eq!(classify_text("foo", "删除失败：权限不足"), AuditLevel::Warn);
-        assert_eq!(classify_text("foo", "操作错误：参数缺失"), AuditLevel::Warn);
-        assert_eq!(classify_text("foo", "error: timeout"), AuditLevel::Warn);
-        assert_eq!(classify_text("foo", "Error: 404"), AuditLevel::Warn);
-    }
-
-    #[test]
-    fn classify_text_normal_returns_info() {
-        assert_eq!(
-            classify_text("foo", "当前没有未完成的任务"),
-            AuditLevel::Info
-        );
-        assert_eq!(
-            classify_text("foo", "已新建任务 id=abc123"),
-            AuditLevel::Info
-        );
-        // 「失败」出现在正文而非错误消息（「成功完成任务，含失败回滚说明」），
-        // 新规则要求关键词后接分隔符才判失败——「失败」后跟「回」不在 SEPARATORS，
-        // 不应误判为 Warn。这正是修复目标
-        assert_eq!(
-            classify_text("foo", "成功完成任务，含失败回滚说明"),
-            AuditLevel::Info
-        );
-        // 真错误消息「操作失败：磁盘只读」仍判 Warn（首行带分隔符）
-        assert_eq!(classify_text("foo", "操作失败：磁盘只读"), AuditLevel::Warn);
     }
 
     // ── tool_call_failed 统一判定口径 ──
