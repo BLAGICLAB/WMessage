@@ -82,3 +82,11 @@ wmessage-portable/
 
 # Comment Hygiene session worktree（每次 run 重生成；commit 留底在 docs/comment-hygiene-*/）
 .comment-hygiene-*/
+
+# AI agent working dirs (local scratch, not for git history)
+.opt-botchat-*
+.t3-*
+.bug-hunt-*
+.comment-hygiene-*
+.evolution-*
+.audit-*
