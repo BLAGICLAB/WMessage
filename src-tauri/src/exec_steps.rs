@@ -134,6 +134,38 @@ fn has_step_keyword(text: &str) -> bool {
         || t.eq_ignore_ascii_case("go")
 }
 
+/// P2-6'.1 零原文审计辅助：分类用户回复的首字符到枚举字符串
+/// 返回值用于 `reply_starts_with` kv——不存任何原文片段，仅记分类
+/// - "CJK"：中日韩汉字 / 平假名 / 片假名 / 韩文音节
+/// - "ASCII"：ASCII 字母
+/// - "Digit"：ASCII 数字
+/// - "Punctuation"：ASCII 标点 / 全角与半角 Unicode 标点
+/// - "Other"：emoji / 符号 / 其他
+fn classify_first_char(c: char) -> &'static str {
+    // CJK 统一汉字 / 平假名 / 片假名 / 韩文音节
+    if matches!(c, '\u{4E00}'..='\u{9FFF}')
+        || matches!(c, '\u{3040}'..='\u{309F}')
+        || matches!(c, '\u{30A0}'..='\u{30FF}')
+        || matches!(c, '\u{AC00}'..='\u{D7AF}')
+    {
+        return "CJK";
+    }
+    if c.is_ascii_alphabetic() {
+        return "ASCII";
+    }
+    if c.is_ascii_digit() {
+        return "Digit";
+    }
+    if c.is_ascii_punctuation() {
+        return "Punctuation";
+    }
+    // 全角 / 半角 Unicode 标点（CJK Symbols and Punctuation、Halfwidth and Fullwidth Forms）
+    if matches!(c, '\u{FF00}'..='\u{FFEF}') || matches!(c, '\u{3000}'..='\u{303F}') {
+        return "Punctuation";
+    }
+    "Other"
+}
+
 /// 从 DB 重读任务卡（每步重读：用户可能在确认期间手动改过卡）
 async fn load_task(app: &AppHandle, task_id: &str) -> CommandResult<crate::db::Task> {
     crate::db::db_load(app.clone())
@@ -369,21 +401,23 @@ pub async fn resume(
         ..
     } = p;
     // 任何分支都必须重新 park 或清理，不能丢状态
-    // P2-6：补可观测性——回复不在关键词表内（classify_reply 会走兜底 Redo(原文)）时记录
-    // 不改分类行为，仅记 audit：kv 只记 session_id / reply_len / reply_preview(≤50字)，不记全文
+    // P2-6'.1：补可观测性——回复不在关键词表内（classify_reply 会走兑底 Redo(原文)）时记录
+    // 不改分类行为，仅记 audit：kv 只记 session_id / reply_len / reply_starts_with，
+    // 首字符分类到 "CJK"|"ASCII"|"Digit"|"Punctuation"|"Other" 5 个枚举值，**零原文痕迹**
     if !has_step_keyword(reply) {
-        let preview: String = reply.chars().take(50).collect();
+        let first_char_class = reply
+            .chars()
+            .next()
+            .map(classify_first_char)
+            .unwrap_or("Other");
         crate::audit::write_event(
             app,
             crate::audit::AuditLevel::Info,
             "exec_steps.ambiguous_reply",
             &[
-                (
-                    "session_id",
-                    session_id.unwrap_or("").to_string(),
-                ),
+                ("session_id", session_id.unwrap_or("").to_string()),
                 ("reply_len", reply.chars().count().to_string()),
-                ("reply_preview", preview),
+                ("reply_starts_with", first_char_class.to_string()),
             ],
         );
     }
@@ -531,6 +565,32 @@ mod classify_tests {
         assert!(!has_step_keyword("配色太深了，换浅色"));
         assert!(!has_step_keyword(""));
         assert!(!has_step_keyword("   "));
+    }
+
+    #[test]
+    fn classify_first_char_covers_five_categories() {
+        // CJK：中文 / 平假名 / 片假名 / 韩文
+        assert_eq!(classify_first_char('今'), "CJK");
+        assert_eq!(classify_first_char('あ'), "CJK");
+        assert_eq!(classify_first_char('ア'), "CJK");
+        assert_eq!(classify_first_char('한'), "CJK");
+        // ASCII：字母
+        assert_eq!(classify_first_char('h'), "ASCII");
+        assert_eq!(classify_first_char('Z'), "ASCII");
+        // Digit：数字
+        assert_eq!(classify_first_char('1'), "Digit");
+        assert_eq!(classify_first_char('9'), "Digit");
+        // Punctuation：ASCII 标点 / 全角标点 / CJK 标点
+        assert_eq!(classify_first_char('.'), "Punctuation");
+        assert_eq!(classify_first_char(','), "Punctuation");
+        assert_eq!(classify_first_char('!'), "Punctuation");
+        assert_eq!(classify_first_char('，'), "Punctuation"); // 全角逗号
+        assert_eq!(classify_first_char('。'), "Punctuation"); // CJK 句号
+        assert_eq!(classify_first_char('：'), "Punctuation"); // 全角冒号
+                                                              // Other：emoji / 箭头 / 空白
+        assert_eq!(classify_first_char('🎉'), "Other");
+        assert_eq!(classify_first_char('→'), "Other");
+        assert_eq!(classify_first_char(' '), "Other"); // 空白
     }
 
     // ── 挂起按会话分槽 ──
