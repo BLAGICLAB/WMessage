@@ -1592,7 +1592,10 @@ mod stream_accumulate_tests {
         // b"a\nb\nc\n" → ["a\n", "b\n", "c\n"]，buf 清空
         let mut buf = b"a\nb\nc\n".to_vec();
         let lines = drain_sse_lines(&mut buf);
-        assert_eq!(lines, vec!["a\n".to_string(), "b\n".to_string(), "c\n".to_string()]);
+        assert_eq!(
+            lines,
+            vec!["a\n".to_string(), "b\n".to_string(), "c\n".to_string()]
+        );
         assert!(buf.is_empty(), "多行完整后 buf 应清空");
     }
 
