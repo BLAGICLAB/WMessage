@@ -174,7 +174,7 @@ src-tauri/src/
              **TOOLS_TABLE 查表**分发 29 个工具（bot/registry.rs 单一来源）：
                  bot/tools.rs 内部 tool_* / bot_fs / bot_web / bot_py / ocr / memory / bot_skills::use_skill
              后置结构化审计 tool.return + skill_on_step_post
-         工具结果回灌 msgs 续聊，直到无 tool_calls 或熔断（MAX_FUNCTION_CALLS_PER_TURN）
+         工具结果回灌 msgs 续聊，直到无 tool_calls 或熔断（MAX_FUNCTION_CALLS_PER_REQUEST）
      bot_plan：复杂任务前置 Planner 注入计划；连续失败触发 Replan
      技能状态：核心只**读**「活动技能快照」（deps.active_skill_run 注入回调），
                收尾/入口清理等写操作留在核心之外（见 §2.1）

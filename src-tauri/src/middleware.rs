@@ -22,6 +22,15 @@ use crate::intent_router::{route_user_input, RouteAction};
 use crate::tool_guard::{atomic_block_message, is_atomic_tool};
 use tauri::Manager; // F-6：泛型 Runtime 以适配 mock_runtime 集成测试
 
+/// pre_execute 的判定结果（自解释语义；替代旧 Option<String>）
+/// - Allow：放行，继续走下一个中间件 / 调用栈
+/// - Deny：阻断，`reason` 即给用户/审计的可读原因
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExecutionDecision {
+    Allow,
+    Deny { reason: String },
+}
+
 /// 中间件 trait（F-2 抽象层核心）
 /// 任何「可插拔行为」都实现这个 trait，然后通过 `MiddlewareRegistry::register_*` 注册
 pub trait Middleware: Send + Sync {
@@ -30,8 +39,8 @@ pub trait Middleware: Send + Sync {
     /// 用户输入预处理：返回 Some(RouteAction) 触发短路求值，None 继续下一个中间件
     /// 返回 RouteAction::PassThrough 也算「命中」并触发短路
     fn pre_step(&self, input: &str) -> Option<RouteAction>;
-    /// 工具调用前检查：返回 Some(阻断消息) 阻断，None 继续下一个中间件
-    fn pre_execute(&self, name: &str, active_skill: bool) -> Option<String>;
+    /// 工具调用前检查：返回 ExecutionDecision::Allow 放行，Deny 阻断并附 reason
+    fn pre_execute(&self, name: &str, active_skill: bool) -> ExecutionDecision;
 }
 
 /// 中间件注册表（F-2 P2）
@@ -113,7 +122,7 @@ impl MiddlewareRegistry {
         }
         None
     }
-    /// pre-execute 短路求值：任一中间件返回 Some(msg)
+    /// pre-execute 短路求值：任一中间件返回 Deny 即短路放回 Deny；Allow 继续下一个
     /// 同 run_pre_step，panic 兜住记审计后按「不阻断」继续下一个
     /// pre_step / pre_execute 双 Vec 分离，漏注册一边会静默半生效——
     /// 空注册表被调用时记 ERROR 审计（pre_execute_not_registered），不无声放行
@@ -122,24 +131,29 @@ impl MiddlewareRegistry {
         app: &tauri::AppHandle<R>,
         name: &str,
         active_skill: bool,
-    ) -> Option<String> {
+    ) -> ExecutionDecision {
         if self.pre_execute.is_empty() {
             crate::audit::write_error_audit(app, "pre_execute_not_registered", &[("tool", name)]);
             // 闸门缺席对原子工具 fail-closed——与「registry 缺失」
             // 口径一致（run_pre_execute helper 同款语义），不「有声放行」
             if is_atomic_tool(name) && !active_skill {
-                return Some(format!(
-                    "⚠️ 安全闸门未注册（pre_execute 为空），拒绝原子工具 {name} 的直接调用。请通过对应 Skill 执行。"
-                ));
+                return ExecutionDecision::Deny {
+                    reason: format!(
+                        "⚠️ 安全闸门未注册（pre_execute 为空），拒绝原子工具 {name} 的直接调用。请通过对应 Skill 执行。"
+                    ),
+                };
             }
-            return None;
+            return ExecutionDecision::Allow;
         }
         for m in &self.pre_execute {
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 m.pre_execute(name, active_skill)
             })) {
-                Ok(Some(msg)) => return Some(msg),
-                Ok(None) => {}
+                Ok(decision) => {
+                    if let ExecutionDecision::Deny { .. } = decision {
+                        return decision;
+                    }
+                }
                 Err(payload) => {
                     let msg = panic_message(payload);
                     crate::audit::write_error_audit(
@@ -154,7 +168,7 @@ impl MiddlewareRegistry {
                 }
             }
         }
-        None
+        ExecutionDecision::Allow
     }
     /// introspect：列出已注册 pre-step 中间件名（设置页 UI 用，F-2 后续接入）
     #[allow(dead_code)] // SettingsPage 扩展面板接入后用
@@ -206,12 +220,12 @@ pub fn run_pre_step<R: tauri::Runtime>(
 /// helper：通过 Tauri State 调 run_pre_execute
 /// D2：安全闸门类 **fail-closed**——state 未 manage 时原子工具一律拒绝并记 ERROR 审计，
 /// 不能静默放行（registry 缺失 = AtomicGuard 缺席 = 原子工具失去唯一拦截点）。
-/// 非原子工具没有闸门诉求，仍 fail-open 回退 None；Skill 活动态与 AtomicGuard 判定口径一致。
+/// 非原子工具没有闸门诉求，仍 fail-open 回退 Allow；Skill 活动态与 AtomicGuard 判定口径一致。
 pub fn run_pre_execute<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     name: &str,
     active_skill: bool,
-) -> Option<String> {
+) -> ExecutionDecision {
     match app.try_state::<MiddlewareRegistry>() {
         Some(state) => state.run_pre_execute(app, name, active_skill),
         None => {
@@ -221,11 +235,13 @@ pub fn run_pre_execute<R: tauri::Runtime>(
                     "middleware_registry_missing",
                     &[("tool", name), ("gate", "atomic_guard")],
                 );
-                Some(format!(
-                    "⚠️ 安全闸门未初始化（MiddlewareRegistry 未注册），拒绝原子工具 {name} 的直接调用。请通过对应 Skill 执行。"
-                ))
+                ExecutionDecision::Deny {
+                    reason: format!(
+                        "⚠️ 安全闸门未初始化（MiddlewareRegistry 未注册），拒绝原子工具 {name} 的直接调用。请通过对应 Skill 执行。"
+                    ),
+                }
             } else {
-                None
+                ExecutionDecision::Allow
             }
         }
     }
@@ -259,8 +275,8 @@ impl Middleware for ChatExecuteMiddleware {
     fn pre_step(&self, input: &str) -> Option<RouteAction> {
         crate::intent_router::is_chat_execute_trigger(input).map(RouteAction::ExecuteTasks)
     }
-    fn pre_execute(&self, _name: &str, _active_skill: bool) -> Option<String> {
-        None
+    fn pre_execute(&self, _name: &str, _active_skill: bool) -> ExecutionDecision {
+        ExecutionDecision::Allow
     }
 }
 
@@ -279,8 +295,8 @@ impl Middleware for IntentRouterMiddleware {
         // PassThrough 也算 Some，让 run_pre_step 短路
         Some(route_user_input(input))
     }
-    fn pre_execute(&self, _name: &str, _active_skill: bool) -> Option<String> {
-        None
+    fn pre_execute(&self, _name: &str, _active_skill: bool) -> ExecutionDecision {
+        ExecutionDecision::Allow
     }
 }
 
@@ -293,11 +309,13 @@ impl Middleware for AtomicGuardMiddleware {
     fn pre_step(&self, _input: &str) -> Option<RouteAction> {
         None
     }
-    fn pre_execute(&self, name: &str, active_skill: bool) -> Option<String> {
+    fn pre_execute(&self, name: &str, active_skill: bool) -> ExecutionDecision {
         if is_atomic_tool(name) && !active_skill {
-            Some(atomic_block_message(name))
+            ExecutionDecision::Deny {
+                reason: atomic_block_message(name),
+            }
         } else {
-            None
+            ExecutionDecision::Allow
         }
     }
 }
@@ -312,7 +330,10 @@ mod tests {
         let handle = app.handle().clone();
         let r = MiddlewareRegistry::default();
         assert_eq!(r.run_pre_step(&handle, "hello"), None);
-        assert_eq!(r.run_pre_execute(&handle, "foo", false), None);
+        assert_eq!(
+            r.run_pre_execute(&handle, "foo", false),
+            ExecutionDecision::Allow
+        );
     }
 
     #[test]
@@ -325,8 +346,8 @@ mod tests {
             fn pre_step(&self, _input: &str) -> Option<RouteAction> {
                 Some(RouteAction::Skill("a_skill".into()))
             }
-            fn pre_execute(&self, _n: &str, _a: bool) -> Option<String> {
-                None
+            fn pre_execute(&self, _n: &str, _a: bool) -> ExecutionDecision {
+                ExecutionDecision::Allow
             }
         }
         struct B;
@@ -337,8 +358,8 @@ mod tests {
             fn pre_step(&self, _input: &str) -> Option<RouteAction> {
                 Some(RouteAction::Skill("b_skill".into()))
             }
-            fn pre_execute(&self, _n: &str, _a: bool) -> Option<String> {
-                None
+            fn pre_execute(&self, _n: &str, _a: bool) -> ExecutionDecision {
+                ExecutionDecision::Allow
             }
         }
         let mut r = MiddlewareRegistry::default();
@@ -362,8 +383,10 @@ mod tests {
             fn pre_step(&self, _input: &str) -> Option<RouteAction> {
                 None
             }
-            fn pre_execute(&self, _n: &str, _a: bool) -> Option<String> {
-                Some("BLOCKED".into())
+            fn pre_execute(&self, _n: &str, _a: bool) -> ExecutionDecision {
+                ExecutionDecision::Deny {
+                    reason: "BLOCKED".to_string(),
+                }
             }
         }
         struct PassMw;
@@ -374,8 +397,8 @@ mod tests {
             fn pre_step(&self, _input: &str) -> Option<RouteAction> {
                 None
             }
-            fn pre_execute(&self, _n: &str, _a: bool) -> Option<String> {
-                None
+            fn pre_execute(&self, _n: &str, _a: bool) -> ExecutionDecision {
+                ExecutionDecision::Allow
             }
         }
         let mut r = MiddlewareRegistry::default();
@@ -384,7 +407,9 @@ mod tests {
         let app = tauri::test::mock_app();
         assert_eq!(
             r.run_pre_execute(app.handle(), "any_tool", false),
-            Some("BLOCKED".into())
+            ExecutionDecision::Deny {
+                reason: "BLOCKED".to_string(),
+            }
         );
     }
 
@@ -426,7 +451,7 @@ mod tests {
             ("list_tasks", false),
         ] {
             assert!(
-                m.pre_execute(name, active_skill).is_none(),
+                matches!(m.pre_execute(name, active_skill), ExecutionDecision::Allow),
                 "{name} (active_skill={active_skill}) 现在应被 AtomicGuard 放行（黑名单已空）"
             );
         }
@@ -477,9 +502,18 @@ mod tests {
         // is_task_execution_flow 判定，中间件层不再承担）。
         let app = tauri::test::mock_app();
         let handle = app.handle().clone();
-        assert!(run_pre_execute(&handle, "link_file_to_task", false).is_none());
-        assert!(run_pre_execute(&handle, "list_tasks", false).is_none());
-        assert!(run_pre_execute(&handle, "run_python", false).is_none());
+        assert!(matches!(
+            run_pre_execute(&handle, "link_file_to_task", false),
+            ExecutionDecision::Allow
+        ));
+        assert!(matches!(
+            run_pre_execute(&handle, "list_tasks", false),
+            ExecutionDecision::Allow
+        ));
+        assert!(matches!(
+            run_pre_execute(&handle, "run_python", false),
+            ExecutionDecision::Allow
+        ));
     }
 
     #[test]
@@ -489,8 +523,14 @@ mod tests {
         let app = tauri::test::mock_app();
         app.manage(build_default_registry());
         let handle = app.handle().clone();
-        assert!(run_pre_execute(&handle, "link_file_to_task", false).is_none());
-        assert!(run_pre_execute(&handle, "list_tasks", false).is_none());
+        assert!(matches!(
+            run_pre_execute(&handle, "link_file_to_task", false),
+            ExecutionDecision::Allow
+        ));
+        assert!(matches!(
+            run_pre_execute(&handle, "list_tasks", false),
+            ExecutionDecision::Allow
+        ));
         // 动态路由：测试进程路由表为空（未安装技能经 rebuild 注入）→ 恒 PassThrough
         match run_pre_step(&handle, "帮我做 PPT") {
             Some(RouteAction::PassThrough) => {}
@@ -519,8 +559,8 @@ mod tests {
             fn pre_step(&self, _input: &str) -> Option<RouteAction> {
                 None
             }
-            fn pre_execute(&self, _n: &str, _a: bool) -> Option<String> {
-                None
+            fn pre_execute(&self, _n: &str, _a: bool) -> ExecutionDecision {
+                ExecutionDecision::Allow
             }
         }
         let mut r = MiddlewareRegistry::default();
@@ -542,7 +582,7 @@ mod tests {
             fn pre_step(&self, _input: &str) -> Option<RouteAction> {
                 None
             }
-            fn pre_execute(&self, _n: &str, _a: bool) -> Option<String> {
+            fn pre_execute(&self, _n: &str, _a: bool) -> ExecutionDecision {
                 unreachable!("未注册到 pre_execute 侧，不应被调用")
             }
         }
@@ -551,7 +591,10 @@ mod tests {
         let mut r = MiddlewareRegistry::default();
         r.register_pre_step(Box::new(OnlyStep));
         // pre_execute 侧为空：返回 None（不阻断）+ 记 pre_execute_not_registered 审计
-        assert_eq!(r.run_pre_execute(&handle, "list_tasks", false), None);
+        assert_eq!(
+            r.run_pre_execute(&handle, "list_tasks", false),
+            ExecutionDecision::Allow
+        );
         let log = std::fs::read_to_string(crate::paths::probe_log_dir(&handle).join("bot.log"))
             .unwrap_or_default();
         assert!(
@@ -572,7 +615,7 @@ mod tests {
             fn pre_step(&self, _input: &str) -> Option<RouteAction> {
                 panic!("bomber pre_step boom")
             }
-            fn pre_execute(&self, _n: &str, _a: bool) -> Option<String> {
+            fn pre_execute(&self, _n: &str, _a: bool) -> ExecutionDecision {
                 panic!("bomber pre_execute bang")
             }
         }
@@ -583,7 +626,10 @@ mod tests {
         r.register_pre_execute(Box::new(Bomber));
         // panic 被 catch_unwind 兜住：返回 None（按未命中/不阻断处理），主流程不挂
         assert_eq!(r.run_pre_step(&handle, "x"), None);
-        assert_eq!(r.run_pre_execute(&handle, "list_tasks", false), None);
+        assert_eq!(
+            r.run_pre_execute(&handle, "list_tasks", false),
+            ExecutionDecision::Allow
+        );
         // ERROR 审计落盘：事件名 + 中间件名 + panic 信息
         let log = std::fs::read_to_string(crate::paths::probe_log_dir(&handle).join("bot.log"))
             .unwrap_or_default();
@@ -610,8 +656,8 @@ mod tests {
             fn pre_step(&self, _input: &str) -> Option<RouteAction> {
                 None
             }
-            fn pre_execute(&self, _n: &str, _a: bool) -> Option<String> {
-                None
+            fn pre_execute(&self, _n: &str, _a: bool) -> ExecutionDecision {
+                ExecutionDecision::Allow
             }
         }
         let case_tag = uuid::Uuid::new_v4().simple().to_string();
@@ -623,8 +669,8 @@ mod tests {
             fn pre_step(&self, _input: &str) -> Option<RouteAction> {
                 Some(RouteAction::Skill(format!("probe_skill_{}", self.0)))
             }
-            fn pre_execute(&self, _n: &str, _a: bool) -> Option<String> {
-                None
+            fn pre_execute(&self, _n: &str, _a: bool) -> ExecutionDecision {
+                ExecutionDecision::Allow
             }
         }
         let app = tauri::test::mock_app();

@@ -238,10 +238,19 @@ fn extract_stream_error(v: &serde_json::Value) -> Option<String> {
 /// `b'\n'`（0x0A）不会出现在多字节 UTF-8 序列内，整行 decode 安全。
 /// pub：tests/llm_integration.rs 的分片用例复用（与生产同一切行逻辑，防双份实现漂移）。
 pub fn drain_sse_lines(buf: &mut Vec<u8>) -> Vec<String> {
+    // 一次性扫描切出所有完整行（O(N)，原 O(N×M) 每行独立 drain 重排 buf）
+    // 只在最后一个完整行之后做一次 buf.drain(..last_end)，避免反复 shift 元素
     let mut lines = Vec::new();
-    while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
-        let line: Vec<u8> = buf.drain(..=pos).collect();
-        lines.push(String::from_utf8_lossy(&line).into_owned());
+    let mut last_end = 0;
+    for i in 0..buf.len() {
+        if buf[i] == b'\n' {
+            let line = buf[last_end..=i].to_vec();
+            lines.push(String::from_utf8_lossy(&line).into_owned());
+            last_end = i + 1;
+        }
+    }
+    if last_end > 0 {
+        buf.drain(..last_end);
     }
     lines
 }
@@ -302,7 +311,7 @@ pub(crate) fn resolve_max_rounds(skill_max_rounds: Option<usize>) -> usize {
 // 上限 50 与对话轮数上限拉齐：复杂多步任务 10 次不够用，而更高会掩护
 // LLM 死循环 / 幻觉调工具。失控防护靠幻觉守卫（claims_mutation）+ 软警告 + /stop，
 // 不靠压低上限。软警告阈值 35 保持 ~30% buffer（50-15=35）。
-const MAX_FUNCTION_CALLS_PER_TURN: usize = 50;
+const MAX_FUNCTION_CALLS_PER_REQUEST: usize = 50;
 const SOFT_WARN_AT: usize = 35;
 
 /// LLM 请求重试：429/5xx/网络错误重试一次（1.5s 退避）。
@@ -318,14 +327,14 @@ fn is_retryable_llm_status(status: u16) -> bool {
 
 /// 熔断判定：第 n 次（1-based 累计）Function 调用是否超上限
 fn should_fuse(calls_so_far: usize) -> bool {
-    calls_so_far > MAX_FUNCTION_CALLS_PER_TURN
+    calls_so_far > MAX_FUNCTION_CALLS_PER_REQUEST
 }
 
 /// 熔断返回消息（与主循环文案同源，单测直接断言）
 fn fuse_message(final_text: &str, hint: &str) -> String {
     format!(
         "{final_text}\n\n⏹ 已熔断：本轮 Function 调用超过 {} 次上限（安全保护），已停止后续执行{hint}",
-        MAX_FUNCTION_CALLS_PER_TURN
+        MAX_FUNCTION_CALLS_PER_REQUEST
     )
 }
 
@@ -456,6 +465,24 @@ pub async fn run_model_loop(
         replan,
     )
     .await
+}
+
+/// 流完整性收尾状态：替代旧 `saw_done_or_finish: bool`，区分具体收尾来源。
+/// - Done：SSE 协议终结哨兵（`data: [DONE]`）
+/// - FinishReason：LLM 输出 finish_reason（stop / length / content_filter 等）
+/// - Error：流内 200 但 payload 为错误（如上游网关错误帧）；保留供未来按需 wire
+///   （当前 bot_model_loop 用独立的 `stream_error: Option<String>` 追踪，行为保持等价）
+/// - Incomplete：连接断开，无任何收尾标记（流被截断）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreamEnd {
+    #[allow(dead_code)]
+    Done,
+    #[allow(dead_code)]
+    FinishReason,
+    #[allow(dead_code)]
+    Error,
+    #[allow(dead_code)]
+    Incomplete,
 }
 
 /// 模型工具循环核心：流式请求（思考拆分 + 工具折叠事件）、进程内执行工具。
@@ -706,7 +733,7 @@ where
         let mut think_buf = String::new();
         // 流完整性：对端干净 EOF（无报错、无 [DONE]、无 finish_reason）时
         // 残缺 tool_calls 不得当完整回复执行——跟踪是否见到正常收尾标记
-        let mut saw_done_or_finish = false;
+        let mut stream_end: Option<StreamEnd> = None;
         let mut last_finish_reason: Option<String> = None;
         let mut stream_error: Option<String> = None;
         let mut tc_index_overflow_logged = false;
@@ -747,11 +774,11 @@ where
                     }
                 };
                 if parsed.is_done {
-                    saw_done_or_finish = true;
+                    stream_end = Some(StreamEnd::Done);
                     return None;
                 }
                 if let Some(reason) = parsed.finish_reason {
-                    saw_done_or_finish = true;
+                    stream_end = Some(StreamEnd::FinishReason);
                     last_finish_reason = Some(reason);
                 }
                 // reasoning_content 与 <think> 同出口（不进 final_text、不进历史）
@@ -894,7 +921,7 @@ where
         // 流完整性检查：未见 [DONE]/finish_reason 的
         // 干净 EOF = 流被截断（中间代理 idle cut 等）。残缺 tool_calls 不得执行
         // （不能靠 parse_args 失败落 Null 侥幸兜底，要有显式防线）。
-        if !saw_done_or_finish {
+        if stream_end.is_none() {
             let trunc_kv = |tc: usize, text_len: usize| {
                 vec![
                     ("tool_calls", tc.to_string()),
@@ -1011,7 +1038,7 @@ where
                 let hint = skill_finish(false, "单轮 Function 调用超上限");
                 audit_log(&format!(
                     "fuse | 单轮 Function 调用超过 {} 次，已熔断",
-                    MAX_FUNCTION_CALLS_PER_TURN
+                    MAX_FUNCTION_CALLS_PER_REQUEST
                 ));
                 return Ok((fuse_message(&final_text, &hint), collected_refs));
             }
@@ -1024,7 +1051,7 @@ where
                 soft_warn_queued = true;
                 audit_log(&format!(
                     "soft_warn | Function 调用达 {} 次（上限 {}），追加收尾提醒",
-                    SOFT_WARN_AT, MAX_FUNCTION_CALLS_PER_TURN
+                    SOFT_WARN_AT, MAX_FUNCTION_CALLS_PER_REQUEST
                 ));
             }
             // 把 /stop 守卫透传给 execute_tool，run_python 在途可中断；
@@ -1148,7 +1175,7 @@ where
                 "role": "user",
                 "content": format!(
                     "【系统提示】你已累计调用 {SOFT_WARN_AT} 个工具（全程累计），最多还能调 {} 个。请尽快收尾：合并调用、必要时汇总报告给用户、避免在剩余额度内继续展开新步骤。",
-                    MAX_FUNCTION_CALLS_PER_TURN - SOFT_WARN_AT
+                    MAX_FUNCTION_CALLS_PER_REQUEST - SOFT_WARN_AT
                 ),
             }));
         }
@@ -1533,6 +1560,56 @@ mod stream_accumulate_tests {
     }
 
     #[test]
+    fn drain_sse_lines_empty_buf() {
+        // 空 buf → 空 vec，buf 仍空
+        let mut buf: Vec<u8> = Vec::new();
+        let lines = drain_sse_lines(&mut buf);
+        assert!(lines.is_empty(), "空 buf 应产出空 vec");
+        assert!(buf.is_empty(), "buf 应保持空");
+    }
+
+    #[test]
+    fn drain_sse_lines_no_newline() {
+        // 无 \n → 空 vec，buf 不变（不完整行不走 drain）
+        let mut buf = b"data: incomplete".to_vec();
+        let original = buf.clone();
+        let lines = drain_sse_lines(&mut buf);
+        assert!(lines.is_empty(), "无 \\n 不应产出行");
+        assert_eq!(buf, original, "buf 应保持原样");
+    }
+
+    #[test]
+    fn drain_sse_lines_single_line() {
+        // b"a\n" → ["a\n"]，buf 清空
+        let mut buf = b"a\n".to_vec();
+        let lines = drain_sse_lines(&mut buf);
+        assert_eq!(lines, vec!["a\n".to_string()]);
+        assert!(buf.is_empty(), "完整行后 buf 应清空");
+    }
+
+    #[test]
+    fn drain_sse_lines_multiple_lines() {
+        // b"a\nb\nc\n" → ["a\n", "b\n", "c\n"]，buf 清空
+        let mut buf = b"a\nb\nc\n".to_vec();
+        let lines = drain_sse_lines(&mut buf);
+        assert_eq!(lines, vec!["a\n".to_string(), "b\n".to_string(), "c\n".to_string()]);
+        assert!(buf.is_empty(), "多行完整后 buf 应清空");
+    }
+
+    #[test]
+    fn drain_sse_lines_multibyte_utf8() {
+        // 完整多字节 UTF-8 字符串中含 \n → 正确切分且无 U+FFFD
+        let text = "你好\n世界\n";
+        let mut buf = text.as_bytes().to_vec();
+        let lines = drain_sse_lines(&mut buf);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("你好") && lines[0].ends_with('\n'));
+        assert!(lines[1].contains("世界") && lines[1].ends_with('\n'));
+        assert!(!lines.iter().any(|l| l.contains('\u{FFFD}')));
+        assert!(buf.is_empty());
+    }
+
+    #[test]
     fn accumulate_merges_shards_by_index() {
         let mut calls: Vec<(String, String, String)> = Vec::new();
         // 两个并行 tool_call 交错到达；id 只在首帧；arguments 分片
@@ -1711,9 +1788,9 @@ mod rounds_fuse_tests {
 
     #[test]
     fn fuse_trips_on_51st_function_call() {
-        // MAX_FUNCTION_CALLS_PER_TURN = 50 实际生效：模拟主循环计数，
+        // MAX_FUNCTION_CALLS_PER_REQUEST = 50 实际生效：模拟主循环计数，
         // 构造 51 个 tool_calls → 第 51 次触发熔断并返回「⏹ 已熔断」消息
-        assert_eq!(MAX_FUNCTION_CALLS_PER_TURN, 50);
+        assert_eq!(MAX_FUNCTION_CALLS_PER_REQUEST, 50);
         assert_eq!(SOFT_WARN_AT, 35);
         let mut calls = 0usize;
         let mut fused_msg: Option<String> = None;

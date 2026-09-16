@@ -92,23 +92,25 @@ pub enum StepReply {
     Stop,
 }
 
+/// 逐步执行语境下的回复关键词表（提取到模块级以便 `has_step_keyword` 与 `classify_reply` 共享）
+const STEP_STOPS: [&str; 6] = ["停", "别做", "不做了", "算了", "结束", "取消执行"];
+const STEP_REDOS: [&str; 5] = ["重做", "重来", "重新做", "重新来", "再做"];
+const STEP_CONTINUES: [&str; 7] = ["继续", "好了", "可以", "行", "下一", "没问题", "嗯"];
+
 pub fn classify_reply(text: &str) -> StepReply {
     let t = text.trim();
-    const STOPS: [&str; 6] = ["停", "别做", "不做了", "算了", "结束", "取消执行"];
-    if STOPS.iter().any(|k| t.starts_with(k))
+    if STEP_STOPS.iter().any(|k| t.starts_with(k))
         || t.trim_start_matches('/').eq_ignore_ascii_case("stop")
     {
         return StepReply::Stop;
     }
-    const REDOS: [&str; 5] = ["重做", "重来", "重新做", "重新来", "再做"];
-    for k in REDOS {
+    for k in STEP_REDOS {
         if let Some(rest) = t.strip_prefix(k) {
             let fb = rest.trim_matches(|c: char| matches!(c, '，' | ',' | '：' | ':' | ' '));
             return StepReply::Redo(fb.to_string());
         }
     }
-    const CONTINUES: [&str; 7] = ["继续", "好了", "可以", "行", "下一", "没问题", "嗯"];
-    if CONTINUES.iter().any(|k| t.starts_with(k))
+    if STEP_CONTINUES.iter().any(|k| t.starts_with(k))
         || t.eq_ignore_ascii_case("ok")
         || t.eq_ignore_ascii_case("continue")
         || t.eq_ignore_ascii_case("go")
@@ -116,6 +118,20 @@ pub fn classify_reply(text: &str) -> StepReply {
         return StepReply::Continue;
     }
     StepReply::Redo(t.to_string())
+}
+
+/// P2-6 审计辅助：检测用户回复是否命中 STEP_STOPS / STEP_REDOS / STEP_CONTINUES 任一关键词
+/// 与 `classify_reply` 兜底分支互补——返回 `false` 表示该回复会走 Redo(原文) 兜底，
+/// 可作为 `exec_steps.ambiguous_reply` 审计的触发信号（不改分类行为，仅补可观测性）。
+fn has_step_keyword(text: &str) -> bool {
+    let t = text.trim();
+    STEP_STOPS.iter().any(|k| t.starts_with(k))
+        || t.trim_start_matches('/').eq_ignore_ascii_case("stop")
+        || STEP_REDOS.iter().any(|k| t.strip_prefix(k).is_some())
+        || STEP_CONTINUES.iter().any(|k| t.starts_with(k))
+        || t.eq_ignore_ascii_case("ok")
+        || t.eq_ignore_ascii_case("continue")
+        || t.eq_ignore_ascii_case("go")
 }
 
 /// 从 DB 重读任务卡（每步重读：用户可能在确认期间手动改过卡）
@@ -353,6 +369,24 @@ pub async fn resume(
         ..
     } = p;
     // 任何分支都必须重新 park 或清理，不能丢状态
+    // P2-6：补可观测性——回复不在关键词表内（classify_reply 会走兜底 Redo(原文)）时记录
+    // 不改分类行为，仅记 audit：kv 只记 session_id / reply_len / reply_preview(≤50字)，不记全文
+    if !has_step_keyword(reply) {
+        let preview: String = reply.chars().take(50).collect();
+        crate::audit::write_event(
+            app,
+            crate::audit::AuditLevel::Info,
+            "exec_steps.ambiguous_reply",
+            &[
+                (
+                    "session_id",
+                    session_id.unwrap_or("").to_string(),
+                ),
+                ("reply_len", reply.chars().count().to_string()),
+                ("reply_preview", preview),
+            ],
+        );
+    }
     match classify_reply(reply) {
         StepReply::Stop => {
             // 直接清理（pending 已 take）：审计 + 恢复任务卡用户头像
@@ -477,6 +511,26 @@ mod classify_tests {
             classify_reply("配色太深了，换浅色"),
             StepReply::Redo("配色太深了，换浅色".into())
         );
+    }
+
+    #[test]
+    fn has_step_keyword_covers_all_three_paths() {
+        // 与 classify_reply 的三条主路径互补——true 时不触发 ambiguous_reply 审计，
+        // false 时走兜底（classify_reply → Redo(原文)）需要补可观测性
+        assert!(has_step_keyword("停"));
+        assert!(has_step_keyword("/stop"));
+        assert!(has_step_keyword("STOP"));
+        assert!(has_step_keyword("重做，配色太深了"));
+        assert!(has_step_keyword("重新做：换个角度"));
+        assert!(has_step_keyword("继续"));
+        assert!(has_step_keyword("ok"));
+        assert!(has_step_keyword("CONTINUE"));
+        assert!(has_step_keyword(" go "));
+        // 兑底路径：has_step_keyword 返回 false，会触发 exec_steps.ambiguous_reply 审计
+        assert!(!has_step_keyword("今天心情不好"));
+        assert!(!has_step_keyword("配色太深了，换浅色"));
+        assert!(!has_step_keyword(""));
+        assert!(!has_step_keyword("   "));
     }
 
     // ── 挂起按会话分槽 ──

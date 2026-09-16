@@ -187,7 +187,9 @@ async fn execute_tool_impl(
     // （create_word_revisions 不在原子黑名单，聊天/执行均可直调）
     let active = crate::tool_guard::is_skill_active(app, session_id)
         || stop.is_some_and(|s| s.allow_atomic());
-    if let Some(msg) = crate::middleware::run_pre_execute(app, name, active) {
+    if let crate::middleware::ExecutionDecision::Deny { reason } =
+        crate::middleware::run_pre_execute(app, name, active)
+    {
         // tool.call 已发出，早退前必须配平 tool.return（reason=denied），
         // 否则统计面板出现「悬挂调用」（call > return）
         for (level, event, kv) in early_return_events(
@@ -201,7 +203,7 @@ async fn execute_tool_impl(
             crate::audit::write_event(app, level, event, &kv);
         }
         // B1：denied 路径返回 Warn，与原 classify_text + tool_call_failed（⚠️ 检测）结果一致。
-        return crate::bot::registry::ToolResult::warn(msg, Vec::new());
+        return crate::bot::registry::ToolResult::warn(reason, Vec::new());
     }
     // 2. Skill 调度器步骤钩子：活动技能时计数/熔断/动作记录（use_skill 自身跳过）
     if name != "use_skill" {
