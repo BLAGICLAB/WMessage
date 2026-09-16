@@ -622,4 +622,83 @@ mod tests {
         assert!(line.contains("code=INTERNAL"), "{line}");
         assert!(line.contains("recoverable=false"), "{line}");
     }
+
+    // ── P2-6'.1 零原文设计验证：reply_preview 必须不存在，reply_starts_with 必须存在 ──
+
+    #[test]
+    fn p2_6_1_zero_text_audit_kv_format_event_line() {
+        // 零原文 5 个分类枚举值都有专道走产线 build_event_line
+        for class in &["CJK", "ASCII", "Digit", "Punctuation", "Other"] {
+            let kv: Vec<(&str, &str)> = vec![
+                ("session_id", "sess-p26-1-test"),
+                ("reply_len", "5"),
+                ("reply_starts_with", class),
+            ];
+            let line = format_event_line(AuditLevel::Info, "exec_steps.ambiguous_reply", &kv);
+            assert!(
+                line.contains("INFO | exec_steps.ambiguous_reply"),
+                "event header missing: {line}"
+            );
+            assert!(
+                line.contains("session_id=sess-p26-1-test"),
+                "session_id missing: {line}"
+            );
+            assert!(line.contains("reply_len=5"), "reply_len missing: {line}");
+            assert!(
+                line.contains(&format!("reply_starts_with={class}")),
+                "reply_starts_with={class} missing: {line}"
+            );
+            // 零原文：reply_preview 必须不存在
+            assert!(
+                !line.contains("reply_preview"),
+                "reply_preview 必须不存在（零原文设计）: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn p2_6_1_zero_text_audit_kv_writes_to_bot_log() {
+        // 不依赖 app 启动：mock app + write_event 真写盘 + 读回验格式
+        use crate::audit::write_event;
+        let app = tauri::test::mock_app();
+        let bot_log = crate::db::data_dir(app.handle()).join("bot.log");
+        // 清掉上一次运行残留，避免假阳
+        let _ = std::fs::remove_file(&bot_log);
+        write_event(
+            app.handle(),
+            AuditLevel::Info,
+            "exec_steps.ambiguous_reply",
+            &[
+                ("session_id", "sess-p26-1-mock".to_string()),
+                ("reply_len", "7".to_string()),
+                ("reply_starts_with", "Other".to_string()),
+            ],
+        );
+        let content = std::fs::read_to_string(&bot_log)
+            .expect("write_event 应在 mock app data_dir 写出 bot.log");
+        let last_line = content
+            .lines()
+            .last()
+            .expect("write_event 后 bot.log 至少有一行");
+        assert!(
+            last_line.contains("INFO | exec_steps.ambiguous_reply"),
+            "事件名缺失: {last_line}"
+        );
+        assert!(
+            last_line.contains("session_id=sess-p26-1-mock"),
+            "session_id kv 缺失: {last_line}"
+        );
+        assert!(
+            last_line.contains("reply_len=7"),
+            "reply_len kv 缺失: {last_line}"
+        );
+        assert!(
+            last_line.contains("reply_starts_with=Other"),
+            "reply_starts_with kv 缺失: {last_line}"
+        );
+        assert!(
+            !last_line.contains("reply_preview"),
+            "零原文：reply_preview 必须不存在: {last_line}"
+        );
+    }
 }
