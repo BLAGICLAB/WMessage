@@ -117,8 +117,8 @@ d.save(out)
 print('已生成：' + out)
 "#;
 
-// MAKE_DOCX_REVISIONS_SCRIPT 占位——篇幅过大，详细脚本迁移见 runtime.rs（callers reference）
-// 由于脚本太大，无法内联于此；保留空 const 引导调用方走 .NET 工具优先路径。
+// MAKE_DOCX_REVISIONS_SCRIPT：修订版 Word 的 Python 脚本——引擎优先 .NET，
+// .NET 不可用或失败时回退走本脚本（run_doc_revisions 内的 fallback）。
 pub const MAKE_DOCX_REVISIONS_SCRIPT: &str = r#"import json, os, sys, difflib, shutil, copy
 import docx
 from docx.shared import Pt

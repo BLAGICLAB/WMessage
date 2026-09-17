@@ -1,6 +1,6 @@
 //! 内置机器人：大模型聊天 + WMessage 任务管理工具调用。
 //!
-//! 原 bot.rs 3444 行 → `bot/{mod.rs, config.rs, dispatch.rs, tools.rs}`。
+//! 原 bot.rs 3444 行 → `bot/{config/, dispatch.rs, registry.rs, tools.rs}`。
 //! 本文件作为 facade，仅持有：
 //! - 顶部 6 个跨模块 re-export（BotChatResult / TaskRef / model_loop / StopGuard / AuditLevel / db::*）
 //! - `pub mod config;` / `pub mod dispatch;` / `pub mod tools;` 子模块声明
@@ -17,9 +17,9 @@
 //! - 工具白名单：固定 TOOLS schema（单一来源 bot/registry.rs 的 TOOLS_TABLE 派生）
 //!   + execute_tool 查表分发（bot/dispatch.rs），模型编造的工具一律拒绝
 //! - 调用熔断：单轮 Function 调用 ≤50 次 + 35 次软警告；默认对话轮数 50（聊天/任务执行/逐步执行统一）
-//! - 参数校验：标题/备注/关键词/子任务/截止时间长度上限、标签数量上限（bot/config.rs）
-//! - 审计日志：bot/config.rs 的 audit_log
-//! - API Key 存系统凭据存储（keyring，bot/config.rs）；Linux 无 secret-service 时降级明文 + WARN
+//! - 参数校验：标题/备注/关键词/子任务/截止时间长度上限、标签数量上限（bot/config/types.rs）
+//! - 审计日志：bot/config/audit.rs 的 audit_log
+//! - API Key 存系统凭据存储（keyring，bot/config/keyring.rs）；Linux 无 secret-service 时降级明文 + WARN
 
 // 保留对外接口 re-export，避免拆分后 bot_skills / tests/llm_integration 等
 // 已存在的调用方（`crate::bot::TaskRef` / `crate::bot::parse_sse_chunk` /
@@ -104,7 +104,7 @@ pub use config::{
 };
 
 // ── config pub(crate) 项：必须用 pub(crate) use 才能保留原可见性 ──
-// base_url_is_safe 不移出：它只在 config.rs 内部（SSRF 校验的 base_url 检查）用，
+// base_url_is_safe 不移出：它只在 config 模块内部（SSRF 校验的 base_url 检查）用，
 // 移出来 crate 内无人引用，编译器报 unused import。
 pub(crate) use config::{
     add_allowed_dir, escape_for_log, load_config, truncate_for_log, update_config_file,

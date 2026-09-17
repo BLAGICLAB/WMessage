@@ -3,7 +3,7 @@
 //! - KeySlot / BotConfig / ModelEntry / ModelsByProvider / ActiveModelId
 //! - ApiProvider / PermMode 协议字符串归一化
 //! - BotConfigView（不含 key 本体的对外视图）
-//! - 12 个字段上限常量（MAX_TITLE/NOTE/...）
+//! - 7 个字段上限常量（MAX_TITLE/NOTE/...）
 //! - keyring service 名 + schema 版本号
 //!
 //! 无 IO / 无锁 / 无依赖子模块——bot/config/ 的基础层。

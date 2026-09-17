@@ -24,7 +24,7 @@
 //! | `REGISTRY`（产物登记）→ `AppState.artifact_registry` | `tokio::sync::Mutex<HashMap<String, Vec<RegisteredArtifact>>>` | 单次任务卡执行流程 | 流程收尾 clear 系列 | per-test `manage` 注入（样板） |
 //! | `SESSION_ORIGINS`（有意留档·情况 1，定义留 `tool_guard.rs:45`） | `Mutex<HashMap<String, TaskExecOrigin>>` | 单次执行 | `unregister_exec_session`（`bot_chat.rs:1415`） | 不需要（详情见下「不收口」条目） |
 //!
-//! 刻意**不收口**的四类（登记在册，避免下次重复盘查）：
+//! 刻意**不收口**的四类（登记在册，避免下次重复盘查；下文文件/行号引用为盘点时快照，会漂）：
 //!
 //! - `SESSION_ORIGINS`（`tool_guard.rs:45`，`HashMap<String, TaskExecOrigin>`）：
 //!   情况 1「session 元数据」——有意留档，不进依赖容器。
@@ -133,9 +133,9 @@ type ConfirmMap = Mutex<
 ///   就有 `try_state`，命令与内部调用链一律拿得到——**不需要**全局单例 + 线程局部。
 /// - 缺失时（mock app / 未注入的单测 / 启动早期的旁路调用）：退回**进程级兜底实例**，
 ///   同型同语义——不降级功能、不改变行为。这是业务类状态的 **fail-open**，与
-///   `middleware.rs:187-190`「非原子工具 fail-open、安全闸门类才 fail-closed」同一口径。
+///   `middleware.rs` 的「非原子工具 fail-open、安全闸门类才 fail-closed」同一口径。
 /// - 要测试隔离（单元测试，同 crate）：`app.manage(AppState::default())` 注入自己的实例，
-///   先例 `middleware.rs:471`、`lib.rs:737`。集成测试（`tests/*.rs`）暂时只能看见 `pub` 项，
+///   先例见各测试中的 `manage(AppState::default())` 调用。集成测试（`tests/*.rs`）暂时只能看见 `pub` 项，
 ///   注不进 `pub(crate)` 的 `AppState`，故走兜底实例——要给它一个入口需另议（本阶段不扩公开面）。
 #[derive(Default)]
 pub(crate) struct AppState {

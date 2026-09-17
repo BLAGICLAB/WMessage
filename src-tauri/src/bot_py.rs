@@ -7,7 +7,7 @@
 //!
 //! **测试模块保持在本文件**（line 3694 之前的 `mod tests` / `mod exiting_tests` /
 //! `mod platform_tests`）：`super::X` 经 pub use 解析为 `py::X`，无需改动测试内容。
-//! **4 个回归锁除外**（读 /src/bot_py.rs 源字符串的），它们需改读 /src/py/runtime.rs。
+//! **4 个回归锁除外**（读源字符串的），已改读 /src/py/ 对应子模块（runtime.rs / env.rs）。
 
 // 显式 re-export 每个子模块的 pub 项（glob `pub use crate::py::*` 只展开
 // py 的顶层项即子模块声明本身，不递归 re-export 子模块内部 pub 项）
