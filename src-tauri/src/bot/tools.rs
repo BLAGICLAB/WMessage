@@ -1463,8 +1463,8 @@ mod tool_extract_document_tests {
     }
 }
 /// 早退路径审计事件序列单测（tool.call 配平 tool.return）。
-/// execute_tool 是 Wry AppHandle 签名，无法 mock runtime 直调（见 tests/skill_e2e.rs 注释），
-/// 故事件序列抽为纯函数 early_return_events，这里验证事件名/顺序/reason kv。
+// 此处覆盖 parse_task_files_arg 单测；
+// execute_tool 的 mock 路径见 skill_e2e.rs。
 #[cfg(test)]
 mod task_files_arg_tests {
     use super::*;

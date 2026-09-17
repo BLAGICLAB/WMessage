@@ -565,7 +565,8 @@ mod tests {
     #[test]
     fn build_event_line_is_single_source_for_format_and_write() {
         // write_event 的行拼装 = build_event_line(ts, ...)；format_event_line = build_event_line("TIMESTAMP", ...)。
-        // write_event 是 Wry 签名无法 mock runtime 直调，这里断言两条路径对同等 kv 产出同等行——
+        // write_event 可用 tauri::test::mock_app() + MockRuntime 直调（见 p2_6_1_zero_text_audit_kv_writes_to_bot_log），
+        // 这里断言两条路径对同等 kv 产出同等行
         // 由于二者都委托 build_event_line，该等式由同一实现保证，drift 在编译期即不可能。
         let cases: Vec<(AuditLevel, &str, Vec<(&str, &str)>)> = vec![
             (

@@ -50,8 +50,8 @@ fn trace_kv(trace: &ToolCallTrace, session_id: Option<&str>) -> Vec<(&'static st
 /// 早退路径（pre_execute 拦截 / skill_on_step 熔断）的审计事件序列。
 /// `tool.call` 已在入口发出，这里按写入顺序补齐后续事件并以 `tool.return` 配平，
 /// 否则统计面板出现「悬挂调用」（call > return）。
-/// 抽成纯函数：事件名 + kv + 顺序可单测（execute_tool 是 Wry 签名，无法 mock runtime 直调，
-/// 与 skill_e2e.rs 注释记录的「泛型化重构暂缓」一致）；调用点只负责逐条 emit。
+/// 抽成纯函数：事件名 + kv + 顺序可单测（execute_tool 走泛型 Runtime + 注入（见 skill_e2e.rs 的 mock executor），
+/// 已可 mock；但具体工具执行仍需真实 FS / subprocess / 网络）；调用点只负责逐条 emit。
 /// - 拦截路径（err=None）：pre_execute.deny + tool.return(reason=denied)
 /// - 熔断路径（err=Some）：skill_on_step_error（补 Warn 可见性）+ tool.return(reason=skill_step_failed)
 /// 两条路径都带 trace（session_id / turn / tool_call_id），与正常路径同口径。
