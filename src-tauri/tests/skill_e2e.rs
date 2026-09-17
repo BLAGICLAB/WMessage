@@ -18,6 +18,7 @@
 //! 对 mock LLM server 的真路径见 llm_integration.rs 的 core_* 用例。
 
 use std::path::PathBuf;
+use wmessage_lib::bot::registry::ToolResult;
 use wmessage_lib::bot_skills::{self, scan_skill_dirs};
 use wmessage_lib::intent_router::{self, RouteAction};
 use wmessage_lib::{middleware, tool_guard};
@@ -95,7 +96,7 @@ fn pre_execute_passes_link_file_to_task_when_no_skill() {
     let registry = middleware::build_default_registry();
     let blocked = registry.run_pre_execute(&mock_handle(), "link_file_to_task", false);
     assert!(
-        blocked.is_none(),
+        matches!(blocked, middleware::ExecutionDecision::Allow),
         "黑名单已清空：middleware 不应再阻断 link_file_to_task；实际：{blocked:?}"
     );
     // 配套契约：无 session 上下文 → 工具内部判为非任务执行流程（据此返回「无效果、不报错」）
@@ -110,7 +111,7 @@ fn pre_execute_allows_atomic_tool_when_skill_active() {
     let registry = middleware::build_default_registry();
     let blocked = registry.run_pre_execute(&mock_handle(), "link_file_to_task", true);
     assert!(
-        blocked.is_none(),
+        matches!(blocked, middleware::ExecutionDecision::Allow),
         "link_file_to_task + Skill Running 状态应放行；实际：{blocked:?}"
     );
 }
@@ -121,7 +122,7 @@ fn pre_execute_allows_create_word_revisions_without_skill() {
     let registry = middleware::build_default_registry();
     let blocked = registry.run_pre_execute(&mock_handle(), "create_word_revisions", false);
     assert!(
-        blocked.is_none(),
+        matches!(blocked, middleware::ExecutionDecision::Allow),
         "create_word_revisions 已移出黑名单，聊天直调应放行；实际：{blocked:?}"
     );
 }
@@ -131,7 +132,7 @@ fn pre_execute_allows_whitelist_tool() {
     let registry = middleware::build_default_registry();
     let blocked = registry.run_pre_execute(&mock_handle(), "run_python", false);
     assert!(
-        blocked.is_none(),
+        matches!(blocked, middleware::ExecutionDecision::Allow),
         "白名单 run_python 不应被阻断；实际：{blocked:?}"
     );
 }
@@ -391,7 +392,7 @@ async fn scheduler_e2e_done_path_finishes_run_audits_and_persists() {
                 "create_task" => "已创建".to_string(),
                 other => panic!("意外工具调用：{other}"),
             };
-            (text, Vec::new())
+            ToolResult::ok(text, Vec::new())
         }
     };
     let (conn, db_path) = open_temp_db("done");
@@ -478,7 +479,7 @@ async fn scheduler_e2e_paused_run_returns_await_user() {
     let exec = |tool: String, args: String| async move {
         panic!("确认窗口内不应执行任何工具：{tool} {args}");
         #[allow(unreachable_code)]
-        (String::new(), Vec::new())
+        ToolResult::ok(String::new(), Vec::new())
     };
     let (conn, db_path) = open_temp_db("await");
     let persist_calls: Arc<Mutex<Vec<(String, String, Option<String>, Option<bool>)>>> =
@@ -540,11 +541,11 @@ async fn scheduler_e2e_failed_step_runs_rollback_window() {
         let app = app_for_exec.clone();
         async move {
             match tool.as_str() {
-                "list_tasks" => (r#"[]"#.to_string(), Vec::new()),
+                "list_tasks" => ToolResult::ok(r#"[]"#, Vec::new()),
                 "create_task" => {
                     // 模拟生产 skill_on_step_post：工具失败后 run 被标 Failed
                     test_hook_insert_skill_run(&app, make_run("minimax-ppt", SkillState::Failed));
-                    ("失败：模拟工具异常".to_string(), Vec::new())
+                    ToolResult::ok("失败：模拟工具异常", Vec::new())
                 }
                 "rollback_marker" => {
                     // 关键断言：回滚步骤执行时 run 必须已被重开为 Running（P0-5 窗口）
@@ -552,7 +553,7 @@ async fn scheduler_e2e_failed_step_runs_rollback_window() {
                         .lock()
                         .unwrap()
                         .push(test_hook_skill_run_state(&app, "minimax-ppt"));
-                    ("rolled back".to_string(), Vec::new())
+                    ToolResult::ok("rolled back", Vec::new())
                 }
                 other => panic!("意外工具调用：{other}"),
             }
@@ -631,7 +632,7 @@ async fn scheduler_e2e_zombie_terminal_run_cleared_at_entry() {
         let calls = calls2.clone();
         async move {
             calls.lock().unwrap().push(tool);
-            ("ok".to_string(), Vec::new())
+            ToolResult::ok("ok", Vec::new())
         }
     };
     let (conn, db_path) = open_temp_db("zombie");

@@ -19,6 +19,7 @@ mod mock_llm_re_export {
 }
 
 use mock_llm_re_export::{MockBehavior, MockLlmServer, ToolCallResponse};
+use wmessage_lib::bot::registry::ToolResult;
 use wmessage_lib::bot::{
     accumulate_tool_call_delta, drain_sse_lines, parse_sse_chunk, ToolCallDelta,
 };
@@ -360,7 +361,7 @@ async fn llm_create_word_revisions_allowed_without_skill() {
     let registry = middleware::build_default_registry();
     let blocked = registry.run_pre_execute(&mock_handle(), &tool, false);
     assert!(
-        blocked.is_none(),
+        matches!(blocked, middleware::ExecutionDecision::Allow),
         "create_word_revisions 已移出黑名单，非 Skill 状态应放行；got: {blocked:?}"
     );
 }
@@ -393,7 +394,7 @@ async fn llm_tool_call_link_file_to_task_passes_middleware_when_no_skill() {
     let registry = middleware::build_default_registry();
     let blocked = registry.run_pre_execute(&mock_handle(), &tool, false);
     assert!(
-        blocked.is_none(),
+        matches!(blocked, middleware::ExecutionDecision::Allow),
         "黑名单已清空：middleware 不应再阻断 link_file_to_task；got: {blocked:?}"
     );
 }
@@ -423,7 +424,7 @@ async fn llm_blacklist_tool_call_allowed_when_skill_running() {
     let registry = middleware::build_default_registry();
     let blocked = registry.run_pre_execute(&mock_handle(), &allowed_tool, true);
     assert!(
-        blocked.is_none(),
+        matches!(blocked, middleware::ExecutionDecision::Allow),
         "link_file_to_task + Skill Running 状态应放行（Skill 内合法调用）；got: {blocked:?}"
     );
 }
@@ -453,7 +454,7 @@ async fn llm_whitelist_tool_call_run_python_always_allowed() {
     for active in [false, true] {
         let blocked = registry.run_pre_execute(&mock_handle(), &tool, active);
         assert!(
-            blocked.is_none(),
+            matches!(blocked, middleware::ExecutionDecision::Allow),
             "白名单 run_python + active={active} 应放行；got: {blocked:?}"
         );
     }
@@ -488,9 +489,10 @@ async fn llm_mixed_sequence_task_tool_then_readonly_both_pass() {
     let tool1 = first_tool_name(&parsed1);
     let registry = middleware::build_default_registry();
     assert!(
-        registry
-            .run_pre_execute(&mock_handle(), &tool1, false)
-            .is_none(),
+        matches!(
+            registry.run_pre_execute(&mock_handle(), &tool1, false),
+            middleware::ExecutionDecision::Allow
+        ),
         "轮次 1 {tool1} 应放行（黑名单已清空，拦截职责在工具内部）"
     );
 
@@ -505,9 +507,10 @@ async fn llm_mixed_sequence_task_tool_then_readonly_both_pass() {
     let parsed2 = parse_sse_bytes(&bytes2);
     let tool2 = first_tool_name(&parsed2);
     assert!(
-        registry
-            .run_pre_execute(&mock_handle(), &tool2, false)
-            .is_none(),
+        matches!(
+            registry.run_pre_execute(&mock_handle(), &tool2, false),
+            middleware::ExecutionDecision::Allow
+        ),
         "轮次 2 list_tasks 应放行"
     );
 }
@@ -610,11 +613,7 @@ fn user_msgs() -> Vec<serde_json::Value> {
 }
 
 /// 工具执行 stub 永不调用版（纯文本/错误路径不应触发任何工具执行）
-async fn exec_never(
-    name: String,
-    args: String,
-    _trace: ToolCallTrace,
-) -> (String, Vec<wmessage_lib::bot::TaskRef>) {
+async fn exec_never(name: String, args: String, _trace: ToolCallTrace) -> ToolResult {
     panic!("此路径不应执行工具：{name} {args}");
 }
 
@@ -665,7 +664,7 @@ async fn core_tool_call_round_trip_executes_and_continues() {
         let calls = calls2.clone();
         async move {
             calls.lock().unwrap().push((name, args));
-            ("共 2 个任务明细".into(), Vec::new())
+            ToolResult::ok("共 2 个任务明细", Vec::new())
         }
     };
 
@@ -990,7 +989,7 @@ async fn core_anthropic_tool_call_round_trip_executes_and_continues() {
         let calls = calls2.clone();
         async move {
             calls.lock().unwrap().push((name, args));
-            ("共 2 个任务明细".into(), Vec::new())
+            ToolResult::ok("共 2 个任务明细", Vec::new())
         }
     };
 
@@ -1105,7 +1104,7 @@ async fn core_anthropic_text_block_first_tool_use_remapped_no_ghost() {
         let calls = calls2.clone();
         async move {
             calls.lock().unwrap().push((name, args));
-            ("文件内容".into(), Vec::new())
+            ToolResult::ok("文件内容", Vec::new())
         }
     };
 

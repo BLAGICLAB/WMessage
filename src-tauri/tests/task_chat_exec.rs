@@ -16,6 +16,7 @@ mod mock_llm_shared {
 }
 
 use mock_llm_shared::{MockBehavior, MockLlmServer, ToolCallResponse};
+use wmessage_lib::bot::registry::ToolResult;
 use wmessage_lib::bot::{
     noop_replan, run_model_loop_core, ApiProvider, AuditLevel, LlmHttp, ModelLoopDeps, StopGuard,
     TaskRef, ToolCallTrace, DEFAULT_MAX_TOKENS,
@@ -154,7 +155,7 @@ async fn run_task_in_chat_full_chain_manual_origin() {
                         rusqlite::params![now_ms(), task_id],
                     )
                     .unwrap();
-                    ("已标记完成".to_string(), Vec::<TaskRef>::new())
+                    ToolResult::ok("已标记完成", Vec::new())
                 }
             };
             let deps = ModelLoopDeps {
