@@ -369,10 +369,15 @@ macro_rules! audit_event {
     };
 }
 
+/// 测试串行锁：凡「删除/读全量共享 bot.log」（target/debug/deps 下探针目录）
+/// 的用例必须持有——进程内并行下两个用例会互相删对方正在读的文件
+///（NotFound 竞态实测复现）。对齐 skill_e2e 的 SKILL_SCHED_TEST_LOCK 模式。
+#[cfg(test)]
+pub(crate) static BOT_LOG_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn level_as_tag_three_levels() {
         assert_eq!(AuditLevel::Info.as_tag(), "INFO");
@@ -660,6 +665,8 @@ mod tests {
     #[test]
     fn p2_6_1_zero_text_audit_kv_writes_to_bot_log() {
         // 不依赖 app 启动：mock app + write_event 真写盘 + 读回验格式
+        // 删除/读全量共享 bot.log，必须持测试串行锁（与 bot::config 同名用例互斥）
+        let _serial = BOT_LOG_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         use crate::audit::write_event;
         let app = tauri::test::mock_app();
         let bot_log = crate::db::data_dir(app.handle()).join("bot.log");

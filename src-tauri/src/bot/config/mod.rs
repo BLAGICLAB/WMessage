@@ -575,6 +575,10 @@ mod tests {
     fn bot_log_read_fail_audit_line_written() {
         // ERROR 审计走 write_error_audit（泛型 Runtime，mock_app 跑同一条生产代码路径）。
         // generic_log_dir 探针命中测试二进制旁目录（target/debug/deps），读完即删。
+        // 删除/读全量共享 bot.log，必须持测试串行锁（与 audit 模块同名用例互斥）
+        let _serial = crate::audit::BOT_LOG_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let app = tauri::test::mock_app();
         crate::audit::write_error_audit(app.handle(), "bot_log_read_fail", &[("err", "boom")]);
         let exe = std::env::current_exe().unwrap();
