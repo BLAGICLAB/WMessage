@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "WMessage - 任务看板 + AI 助手桌面应用"
 authors = ["张晓峰 <zxf_83117@163.com>"]
 edition = "2021"
+default-run = "wmessage"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
