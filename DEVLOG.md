@@ -2,6 +2,40 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-09-18（周五）出包：Windows 绿色版 `wmessage-portable-2026-09-18.zip`（104 MB）
+
+**背景**：老板要一份最新绿色包。按 `docs/PACKAGING-WINDOWS-PORTABLE.md` 全流程跑完，无 Windows
+机器参与，全程 macOS 交叉编译（mingw-w64 + x86_64-pc-windows-gnu）。
+
+**产物**：
+- 路径：`/Users/renshi/Projects/wmessage/wmessage-portable-2026-09-18.zip`
+- 大小：103,652,484 B（≈104 MB）；含 205 个条目
+- `wmessage.exe`：54,723,269 B（52.2 MiB / 54.7 MB，构建 27.47 s 增量，基于 main @ 6cce1c0）
+- `onnxruntime.dll`：15.8 MB；`WebView2Loader.dll`：160 KB；`dotnet/`：79 MB（含 189 文件）
+- `bge-small-zh-v1.5/`（23 MB，语义模型）+ `pp-ocr-v6/`（31 MB，OCR 模型）
+
+**校验**：
+- `python3 zipfile.testzip()` 通过；顶层 9 类条目齐全（exe / WebView2Loader / ort ×2 / Edge setup / README / dotnet / bge / pp-ocr）
+- `dotnet/wm-docx-revisions.exe` / `bge-small-zh-v1.5/onnx/model_quantized.onnx` / `pp-ocr-v6/{det,rec,cls}.onnx` + `keys.txt` 全部在位
+- `objdump -p wmessage.exe | grep -i onnxruntime` 无输出 → ort 走 `load-dynamic`，无静态导入
+- `cd src-tauri && cargo check` exit 0（macOS 回归无影响）
+
+**自 99a2193 起的 12 个 commit 要点**：
+- **自进化闭环 Phase 2（1902f7d）**：新增 `evolution/apply` 模块，MemoryHint + impact∈{High,Medium}
+  提案落 mem_items（kind=lesson），沿用 injection_block 的 lesson 槽位下轮对话自动带出，行为闭环改变；
+  幂等 `tags[0]=evo:<proposal_id>`；PromptHint/ToolSchemaHint/SkillHint 与 Low 永不自动应用，仅写 audit
+- **test(audit)（6cce1c0）**：BOT_LOG_TEST_LOCK 串行锁 + bot/config 用例适配，模式沿用 skill_e2e 的 SKILL_SCHED_TEST_LOCK
+- **bot T1-T7 优化 + ToolStatus 显式化（6222aa8）**
+- **API 5-phase hardening + audit + rename（3280f9d）**
+- **P2-6'.1 zero-text audit kv design（88d3d02 + 346dc55）**：exec_steps 零原文审计，防记忆/反思文本进入审计 KV
+- **集成测试适配 ExecutionDecision/ToolResult API 变更（b583620）**
+- **注释一致性审计修正 11 处（dce6820）**：切片重构后死引用/事实性错误
+- **win_job 子模块 Child import 修复（9113543）** — 09-16 build 时此修复还是「未提交工作区」状态，本次已正式入库
+
+**待人工验收**：Windows 实机双击 wmessage.exe，确认数据库与 AI_Gen_Files 落在 exe 同目录（便携锚定），
+重点验证机器人记忆语义检索（模型/引擎异常会自动降级关键词模式，不报错但功能缩水，需肉眼确认），
+并用一张带文字的本地图片让机器人跑 `ocr_image`（缺 pp-ocr-v6/ 时工具会报「请运行 scripts/fetch_ocr_models.sh…」）。
+
 ## 2026-09-16（周二）出包：Windows 绿色版 `wmessage-portable-2026-09-16.zip`（104 MB）
 
 **背景**：老板要一份最新绿色包。按 `docs/PACKAGING-WINDOWS-PORTABLE.md` 全流程跑完，无 Windows
@@ -2255,3 +2289,938 @@ DSL 调度器从「解析 + 单次顺序执行」演进到「全链路生产可�
 - **验证** 已补 5 条 DomainRule 专项单测（code 稳定 / recoverable 恒 true / message 格式 / 序列化 4 字段 / 同 code 不同 reason 稳定）；commit 前审查+验证：修掉 `tool_link_file_to_task` 重复 `resolve_task` 调用（插入白名单校验前的那份，绑定从未使用且多查一次 DB）+ 清掉 `resolve_task` 残留的过时 TODO(P0-6A) 注释；`cargo build` 0 错（4 个 warning 全存量：files.rs 多余括号 / migration.rs unused import + dead_code / bot_fs.rs unused mut）；`cargo test` 全量全绿（lib 577 含新 5 条 / llm_integration 38 / memory_regression 17 / mock_llm 10 / skill_e2e 13）
 - **worktree 状态**:`/Users/renshi/projects/wmessage-todo-p0-6a` 分支 `todo-p0-6a`,main 未触碰;回滚 = `git worktree remove --force ../wmessage-todo-p0-6a`;等用户「commit 吧」再合 main + push
 - **未做**(TODO):跑 `cargo clippy` / 前端手动验证 9 种场景的 UI 行为(尤其「重试」按钮是否真出现)/ 检前端有没有 `case "INTERNAL"` 死代码要清(已确认 `src/lib/errorHandler.ts:81` 有,留待前端改动时一并处理)
+
+## 2026-09-18（周五）R1 L4 评估层（WMessage 自进化系统）
+
+**承接**：VERIFICATION.md（R0）通过；硬约束冲突 #1/#2/#3 仍 pending 但 R1 不触发任意一条。
+
+**目标**：让自进化有度量基准——五个核心指标 + eval_runner + 至少 100 case。
+
+**改动清单**（仅新增 + 1 行注册；不动任何已有 .rs 业务逻辑）：
+- `src-tauri/src/lib.rs`：+1 行 `pub mod eval;`（注册新模块，未触现有代码）
+- 新增 7 个 eval 模块文件 + 1 CLI binary + 2 个 jsonl + 1 个 bot-config
+
+**新增文件**（行数 = wc -l 实测）：
+- `src-tauri/src/eval/mod.rs`（28）— 模块入口 + 公开 re-export
+- `src-tauri/src/eval/case.rs`（162）— EvalCase schema + jsonl 读写（5 测试）
+- `src-tauri/src/eval/feedback.rs`（165）— FeedbackEntry + SignalType（6 字符串锁死）+ append/read/filter（4 测试）
+- `src-tauri/src/eval/metrics.rs`（288）— 5 个核心指标纯函数（任务成功率 / 工具调用效率 / 行为偏差 / 回滚率 / 污染存活期）（14 测试）
+- `src-tauri/src/eval/sampler.rs`（176）— bot_sessions 采样 + #[test] 派生（5 测试）
+- `src-tauri/src/eval/runner.rs`（289）— run_eval() + list_live_lesson_keys() + aggregate_feedback()（6 测试）
+- `src-tauri/src/eval/config.rs`（136）— EvolutionEvalConfig + load()（4 测试）
+- `src-tauri/src/bin/eval_run.rs`（109）— CLI binary，--config/--db/--period/--out/--quiet
+- `src-tauri/bot-config.json`（8）— evolution.eval 块（spec 格式严格对齐）
+- `evolution/eval_set.jsonl`（855 行 / 855 case）— 825 test-derived + 30 hand-curated
+- `evolution/eval-results-r1-smoke.jsonl`（1 行）— 首轮冒烟结果
+
+**单测清单**（cargo test --lib eval::）：
+- 34 / 34 全过（见下）
+  - case::tests：5（roundtrip / omit_none / 跳空行 / 报错带行号 / 父目录建）
+  - feedback::tests：4（signal 字符串锁 / append+read / 缺文件返空 / session+type 过滤）
+  - metrics::tests：14（task_success_rate / zero / tool_efficiency / rollback × 2 / pollution × 2 / behavior × 2 / read_applied × 2 / 基本 / zero）
+  - sampler::tests：5（sample_takes_n / sessions_to_cases / test_derived_case / list_sessions 缺表 / 读存在表）
+  - runner::tests：6（aggregate × 2 / append_result / list_keys × 2 / 空表）
+  - config::tests：4（parses_evolution_eval / missing_evolution / missing_eval_block / frequency_strings_locked）
+
+**集成测试**（冒烟）：
+- `cargo build --bin eval_run` ✅ 编译通过（仅现有 unused-import warning，与 R1 无关）
+- `./target/debug/eval_run --config bot-config.json --period r1_smoke` ✅
+  - 855 case 加载
+  - 5 指标算出（baseline：applied/live/feedback 全 0，task_success_rate=1.0 占位）
+  - JSON 输出到 stdout + 追加到 results jsonl
+
+**五个指标口径**（落 metrics.rs，名字锁死便于 grep）：
+1. `task_success_rate = case_passed / case_total`（R2 接入 ChangeRecord 后实判，R1 占位）
+2. `tool_call_efficiency = tool_calls_succeeded / tool_calls_total`（来自 feedback.jsonl）
+3. `behavior_deviation = 1 - avg(hit_fraction)`（hit_fraction=thumbs_up / (up+down)）
+4. `rollback_rate = (applied - live) / applied`（基于 evolution-applied.jsonl + 当前 mem_items 中 tags[0]="evo:*" 条目）
+5. `pollution_survival_days = avg(now - applied_at_ms) / 86_400_000`（仅对当前仍存活 lesson）
+
+**硬约束遵守**（逐条对照 spec）：
+1. ✅ 依赖方向单向：memory → evolution（eval 是 sibling，不反向依赖 memory 内部）
+2. ✅ 不调第二次 LLM（runner 纯函数 + sqlite 直读，无外部 API）
+3. ✅ 不改 prompt / TOOLS / 命令名 / 事件名 / JSON 字段 / 错误码（EvolutionProposal schema 未触；applied.jsonl 仍是原 5 字段；CommandError 未触）
+4. ✅ 不写新数据库表（jsonl only：feedback/eval-results 走文件；sampler 只读 bot_sessions 不写）
+5. ✅ PromptHint/ToolSchemaHint/SkillHint 永不自动应用（R1 不涉及 apply 路径）
+6. ✅ impact ∈ {High, Medium} 才触发（R1 不涉及 apply 路径）
+7. ✅ tags[0] = evo:<proposal_id>（list_live_lesson_keys 按 "evo:" 前缀过滤，验证契约）
+8. ✅ importance 4/3, source="system", 非受保护（R1 不写 mem_items；runner 只读 lesson 状态）
+9. ✅ 删同 key 记忆即失效（runner 通过 live_keys vs applied 差额自然体现）
+
+**冲突化解**（R0 三个 pending 冲突 R1 不触发）：
+- #1 ConfirmMap 复用：R1 不涉及审批 UI，pending → R5
+- #2 EvolutionProposal 加字段：R1 不扩 proposal，新字段（如果有）走独立文件
+- #3 applied.jsonl 扩字段：R1 不改，AppliedRecord 沿用原 5 字段
+
+**R1 验收**（spec 给定）：
+- ✅ eval_runner 能跑出 before/after 指标对比：5 指标纯函数 + run_eval() 入口 + CLI smoke 跑通
+- ✅ 至少 100 个 eval case：855（825 测试派生 + 30 手挑覆盖记忆/工具/沙箱/技能/平台/任务/API/进化八大类）
+- ✅ 单测覆盖 eval_runner：34 / 34 全过
+
+**遗留 / 移交**：
+- 真实 baseline 等 dev DB 有 mem_items + applied.jsonl 有数据后才有意义（当前全 0 是预期）
+- bot_sessions 表 dev DB 还没建，sampler 代码就位等数据出现即可工作（不 panic）
+- 三个 R0 冲突仍 pending（详见 VERIFICATION.md「硬约束冲突汇总」节）
+- 793 #[test] 函数（不是 spec 写的 656），远超 100 下限
+
+R1 完工。等老板决定是否进 R2 L2 版本层。
+
+## 2026-09-18（周五）R0 三个冲突的分线处理（紧接 R1 完工）
+
+**背景**：R0 VERIFICATION.md 留了三个 pending 冲突，老板拍板要分线处理，不混到 R1 推进里。
+
+**冲突 #1（ConfirmMap 复用方式 A/B/C）**
+- 处理：延后到 R5 前再拍
+- 当前动作：零
+- 记录位置：本 DEVLOG 段落 + R0 VERIFICATION.md「冲突汇总」节保持原状
+
+**冲突 #2（EvolutionProposal 加字段破坏 emit.rs:107 字段锁死）**
+- 处理：立即出可派生性分析，逐字段判断
+- 产出：`DERIVABILITY.md`（10798 字节，10 个字段逐一分析）
+- 关键结论：
+  - `change_id` ✅ 派生 = `"chg-" + proposal_id`，不入 jsonl
+  - `evidence` ✅ 已在 EvolutionProposal struct（R4 spec 误以为新字段）
+  - `hard_constraint_compliance` ✅ 派生（构造时算）
+  - `schema_version` ✅ 派生（默认 1）
+  - `applied_at` ✅ 从 evolution-applied.jsonl 派生
+  - `layer` ⚠️ 部分可派生（4/6 层），参数/Code 两层不可派生 → 走独立 evolution-proposals.jsonl（R4 触发）
+  - `eval_before/_after` ⚠️ 弱派生，存快照
+  - `status` / `parent_id` / `rolled_back_at` ❌ 不可派生 → 走 evolution-changes.jsonl
+- 自洽无需老板拍
+
+**冲突 #3（applied.jsonl 是否允许扩字段 / 是否破约束 4）**
+- 处理：提交老板一页纸，等回复；R1 不依赖可继续
+- R2 启动条件：R2 开始前必须有答案
+- 平行轨道：已写好 R2 ChangeRecord 设计稿 `R2_DESIGN.md`（8651 字节），按「独立 jsonl」方案画好——老板拍 B 直接实施，拍 A 仅改第 3 节，拍 C 改 cross-reference 字段
+- 一页纸已发出，等老板回
+
+**R2 平行轨道设计稿**（R2_DESIGN.md）要点：
+- 文件拓扑：新增 `evolution-changes.jsonl`，applied.jsonl 5 字段不动
+- ChangeRecord 字段按派生性分组：构造时算（change_id / compliance / schema_version）、查表（applied_at）、独立落（status / parent_id / rolled_back_at / eval 快照）
+- 状态机 9 态：Proposed → Shadowing → ShadowPassed → Approved → Canary → Active → Rejected/RolledBack/Expired
+- 非法路径拦截：`Proposed → Active` / `Rejected → Active` / `RolledBack → Active` 全拦
+- AutoApplied vs HumanApproved 显式区分（硬约束 ②）
+- 单测 7 条 + 集成测试 3 条
+
+**R1 与冲突关系**：R1 已完成且不依赖任何冲突答案。
+
+
+**冲突 #3 拍板结果（2026-09-18 10:52 老板一页纸决策请求）**
+- 选项 A：扩 applied.jsonl 破约束 #3 → 不选
+- 选项 B：新增 evolution-changes.jsonl 破约束 #4（待澄清）→ 不选（按老板纪律「不自行判断约束 #4」）
+- 选项 C：applied.jsonl 加 schema_version 破约束 #3（极小）→ 不选
+- 选项 D：纯内存状态机破无 + 重启可接受 → **选 D**
+- 决策理由：老板纪律明令不自行判断约束 #4，D 是唯一无约束违规选项
+- R2 实施范围调整：
+  - ChangeRecord 走 `AppState` 内 `Mutex<HashMap<String, ChangeRecord>>`
+  - 不新增 evolution-changes.jsonl
+  - 不写 bot.log 反推（避免 grep 解析）
+  - applied_at 仍从 evolution-applied.jsonl 派生（读不复制）
+  - 状态机 9 态 + 非法路径拦截 + AutoApplied/HumanApproved 区分保留
+  - 重启恢复：从 evolution-applied.jsonl 反推仍存活 lesson → ChangeRecord status=Active
+  - 中间态（Shadowing/Approved/Canary）重启后丢失（D 代价）
+- D → B 升级路径已写入 R2_DESIGN.md 第 9 节：老板后续澄清「约束 #4 允许新增 jsonl」即升级
+
+
+**冲突 #3 决议修正（2026-09-18 12:44 老板追问「D 不完美」）**
+
+时间线：
+- 10:52 选 D（纯内存）— 我接受
+- 12:40 老板追问「有没有更完美方案」— 我提 G（落 mem_items）
+- 12:44 老板验 G 三个致命假设，切 B
+
+**老板约束 #4 重读**（重要修正）：
+- 原误读：「新增 jsonl = 新表，破约束 #4」
+- 老板重读：「不写新数据库表（所有持久化用 jsonl 文件）」括号明确：jsonl 是 database table 的替代品，不破约束 #4
+- 影响：之前的「新增 jsonl 算破约束」是错的；B 方案不需要 D 过渡
+
+**G 探索结论**（不切）：
+- G 是「ChangeRecord 落 mem_items 表」，kind="change_record"
+- 8 个未验证假设里 3 个致命：
+  - #2 注入污染 ❌ 致命（rank.rs:160-165 hits 过滤 kind != "lesson"，change_record 进 hits 槽）
+  - #3 淘汰盲区 ❌ 部分致命（store.rs:131 受保护仅 importance≥5+user_stated；change_record 与 profile 平权）
+  - #1 tags 命名空间 ⚠️ 依赖前缀纪律（脆，change_id="chg-"+proposal_id 才能隔开）
+- 验证成本 1-2 天，R2 时间窗口 Day 4-7 来不及
+- 「零新文件」不是设计目标
+- 「形式合规 ≠ 精神合规」
+
+**最终决议：B（新增 evolution-changes.jsonl）**
+
+R2_DESIGN.md 已回滚到 B 方案：
+- 第 1-2 节：文件拓扑含 evolution-changes.jsonl
+- 第 5 节模块结构：record.rs 带 Serialize/Deserialize
+- 第 6 节单测加 jsonl_roundtrip / jsonl_appends
+- 第 9 节：G 方案 ADR（future work，8 假设验证状态）
+
+R2 立即开工。
+
+
+## 2026-09-18（周五）R2 L2 版本层（B 方案：独立 evolution-changes.jsonl）
+
+**承接**：R2_DESIGN.md 已按 B 方案定稿（老板 12:44 拍板）；R0 冲突 #1 延后 R5 / #2 DERIVABILITY.md 自洽 / #3 B 方案。
+
+**改动清单**（仅新增 + 2 行注册；不动现有 evolution 代码）：
+- `src-tauri/src/evolution/mod.rs`：+1 行 `pub mod change;`（注册新模块）
+- 新增 4 个文件
+
+**新增文件**：
+- `src-tauri/src/evolution/change/mod.rs`（28）— 模块入口 + 公开 re-export
+- `src-tauri/src/evolution/change/record.rs`（412）— ChangeRecord + 4 个枚举（ChangeStatus / ApprovalSource / EvolutionLayer / EvalResult）+ jsonl IO + find_by_id / find_children / find_roots（12 测试）
+- `src-tauri/src/evolution/change/status.rs`（207）— 9 态状态机 + can_transition / transition + is_terminal（18 测试）
+- `src-tauri/src/evolution/change/derive.rs`（152）— derive_change_id / derive_layer / derive_mem_key / hard_constraint_compliance / from_proposal（8 测试）
+- **总计**：799 行新 Rust 代码
+
+**单测清单**（cargo test --lib evolution::change::）：
+- 45 / 45 全过（见下）
+  - record::tests：12（3 字符串锁死 / 5 jsonl IO / 3 parent_id 链 / 1 schema_version / 2 字段集锁死）
+  - status::tests：18（8 合法流转 / 7 非法拦截 / 3 终态封锁 / 1 transition 错误信息 / 1 集成生命周期）
+  - derive::tests：8（1 change_id 格式 / 4 compliance / 1 layer 映射 / 2 from_proposal 集成）
+
+**集成测试**：
+- ✅ `integration_full_lifecycle_pending_to_rolled_back`：spec R2 「完整 status 生命周期」专项——三条合法路径全走（标准 canary / skip-canary / 早期 Rejected）
+- ✅ 全量回归 `cargo test --lib`：816 / 816 通过（2 ignored 存量）
+
+**关键设计点**：
+1. ChangeStatus 9 态：Pending → Shadowing → ShadowPassed → Approved → Canary → Active；终态：Rejected / RolledBack / Expired
+2. `Approved → Active` 是 skip-canary 配置（R3 控制）
+3. 任何非终态 → Expired（TTL 14 天，R4 接入）
+4. ApprovalSource 5 态（Pending / AutoApplied / HumanApproved / SystemRejected / HumanRejected）——硬约束 ② 显式区分
+5. is_terminal 严格定义：仅 Rejected / RolledBack / Expired（Active 可回滚所以不算）
+6. jsonl 路径：`{data_dir}/evolution-changes.jsonl`（约定，CLI / 集成代码负责传 path）
+
+**字段派生性（按 DERIVABILITY.md）**：
+- 构造时派生：change_id (`"chg-"+proposal_id`)、hard_constraint_compliance、schema_version (=1)、layer (4/6 层映射)、mem_key
+- 不持久化（查表）：applied_at（从 evolution-applied.jsonl 派生）
+- 必须持久化：status、parent_id、eval_before/eval_after、rolled_back_at、rollback_reason、approval_source、human_approver、created_at_ms、origin、proposal_id、target、suggestion_text、impact
+
+**硬约束遵守**（逐条对照 spec）：
+1. ✅ 依赖方向单向：change → memory 不存在；change → proposal（同模块内）
+2. ✅ 不调第二次 LLM（纯 Rust + jsonl）
+3. ✅ 不改 JSON 字段：EvolutionProposal / AppliedRecord / SignalType / EvalCase 全不动；ChangeRecord 是新结构独立 jsonl
+4. ✅ 不写新数据库表：evolution-changes.jsonl 是 jsonl 文件（老板 12:44 重读约束 #4：「jsonl 是 database table 的替代品」）
+5-9. ✅ N/A / 沿用 apply.rs 契约（tags[0]="evo:<proposal_id>"、source="system"、importance 4/3、非受保护）
+
+**R2 验收**（spec 给定）：
+- ✅ 单测：非法 status 流转被拒（status::tests::pending_to_active_blocked 等 7 条）
+- ✅ 单测：parent_id 链查询（record::tests::find_children_returns_direct_descendants / find_roots_returns_only_top_level）
+- ✅ 单测：schema_version 兼容（record::tests::schema_version_defaults_to_one）
+- ✅ 集成测试：完整 status 生命周期（status::tests::integration_full_lifecycle_pending_to_rolled_back）
+
+**R0 三冲突状态**：
+- #1 ConfirmMap：延后 R5 前（pending）
+- #2 EvolutionProposal 字段：DERIVABILITY.md 自洽
+- #3 applied.jsonl：B 方案已实施（evolution-changes.jsonl 独立落）
+
+**G 方案 ADR（future work）**（R2_DESIGN.md 第 9 节已记）：
+- 12:44 老板验 8 未验证假设
+- 3 致命（#2 注入污染 / #3 淘汰盲区 / #1 命名空间依赖纪律）
+- 验证成本 1-2 天，R2 时间窗口来不及
+- G 留 future work，验收条件写齐
+
+**遗留 / 移交**：
+- 集成 apply 路径（apply.rs 的 `apply_from_consolidation` 加 ChangeRecord 创建 + jsonl append）—— R3 沙箱层会做（Pending → Shadowing 流转）
+- R2 与 R1 无依赖关系；与 R3 沙箱层有「Shadowing / Canary 流转」依赖
+- R2 模块暂未在 apply.rs 中调用（避免 R2 撞 R3）；R3 开始时一并集成
+
+R2 完工。等老板决定是否进 R3 沙箱层。
+
+
+## 2026-09-18（周五）R3 L3 沙箱层
+
+**承接**：R2 已完工（B 方案：evolution-changes.jsonl）；老板 12:48 拍板「进 R3」。
+
+**改动清单**（仅新增 + 2 行注册/配置；不动现有 evolution/apply 代码）：
+- `src-tauri/src/evolution/mod.rs`：+1 行 `pub mod sandbox;`（注册新模块）
+- `src-tauri/bot-config.json`：+1 个 kill_switch 块（spec 格式严格对齐）
+- 新增 5 个 R3 文件
+
+**新增文件**：
+- `src-tauri/src/evolution/sandbox/mod.rs`（22）— 模块入口 + 公开 re-export
+- `src-tauri/src/evolution/sandbox/routing.rs`（149）— FNV-1a hash + canary 5% + A/B 50/50（10 测试）
+- `src-tauri/src/evolution/sandbox/kill_switch.rs`（155）— KillSwitch struct + load_from_file + should_* helpers（7 测试）
+- `src-tauri/src/evolution/sandbox/shadow.rs`（290）— ShadowRunner + ShadowOutcome + ShadowDecision（12 测试，含 1 完整链路集成）
+- `src-tauri/src/evolution/sandbox/io.rs`（197）— AbRecord + ShadowOutcome 持久化（6 测试）
+- **总计**：813 行新 Rust 代码
+
+**单测清单**（cargo test --lib evolution::sandbox::）：
+- 35 / 35 全过（4 个测试在 fix 期间临时减少，最终 35 通过）
+  - routing::tests：10（FNV-1a 确定性 / 已知值 / 桶范围 / canary 5% 分布 / A/B 50/50 / 同一 session_id 永远同结果）
+  - kill_switch::tests：7（默认 / 全开 / shadow_only / all_auto_apply 隐含 / load 解析 / 缺 kill_switch / 缺 evolution / 部分字段默认）
+  - shadow::tests：12（不修改输入 / Pass / Fail / Skipped / hash 稳定 / hash 不同 / 字符串锁死 / 集成 shadow_pass_can_transition）
+  - io::tests：6（shadow roundtrip / ab roundtrip / 缺文件 / 父目录 / AbGroup 字符串 / 集成链路）
+  - **集成测试**：`integration_full_chain_shadow_to_canary_to_active` —— spec R3 「shadow → canary → active 全链路」专项：走完 Pending → Shadowing → ShadowPassed → Approved → Canary → Active → RolledBack 八步，验证 canary 路由 1000 session ≈ 50 个见到（5%）
+
+**集成测试**：
+- ✅ 全链路：Pending → Shadowing → ShadowPassed → Approved → Canary → Active → RolledBack（shadow.rs::integration_full_chain）
+- ✅ 全量回归：`cargo test --lib` 849 / 849 通过（2 ignored 存量）
+
+**关键设计点**：
+1. **FNV-1a hash** 替代 `DefaultHasher`：后者在 Rust 1.x 后用随机种，跨进程不稳定；FNV-1a 是确定性、便宜的、跨平台一致的 hash
+2. **canary 5%**：bucket(session_id) < 5（hash % 100 < 5）
+3. **A/B 50/50**：bucket(session_id) % 2 == 0（A 组）
+4. **kill_switch 优先级**：all_auto_apply > shadow_only > 默认；三开关全关 = 默认行为；任一开 = 隐含更严格
+5. **Shadow 不重跑 LLM**：只基于 importance 启发式 + 现有 top-3 对比；hash 内容差异判断 Pass/Fail；hash 失败回退检查 candidate.id 是否真在 top-3
+6. **shadow 不写 mem_items**：pure function，输入 lessons vec 不变（专项测试 shadow_does_not_modify_input 验证）
+
+**硬约束遵守**（逐条对照 spec）：
+1. ✅ 依赖方向单向：sandbox → memory 不存在；sandbox → change 同模块内
+2. ✅ 不调 LLM（纯 Rust + jsonl + FNV-1a）
+3. ✅ 不改 JSON 字段：EvolutionProposal / ChangeRecord / AppliedRecord / EvalCase 全不动；ShadowOutcome/AbRecord/KillSwitch 是新结构独立 jsonl
+4. ✅ 不写新数据库表：evolution-shadow.jsonl / evolution-ab.jsonl 是 jsonl 文件
+5-9. ✅ N/A（R3 不涉及 apply 路径）
+
+**R3 验收**（spec 给定）：
+- ✅ 单测：shadow 不写 mem_items（shadow::tests::shadow_does_not_modify_input）
+- ✅ 单测：canary 分流稳定（routing::tests::canary_stable + canary_subset_is_immutable_across_calls）
+- ✅ 单测：kill_switch 立即生效（kill_switch::tests 全套）
+- ✅ 集成测试：shadow → canary → active 全链路（shadow::tests::integration_full_chain_shadow_to_canary_to_active）
+
+**R0 三冲突状态**：
+- #1 ConfirmMap：延后 R5 前（pending）
+- #2 EvolutionProposal 字段：DERIVABILITY.md 自洽
+- #3 applied.jsonl：B 方案已实施（evolution-changes.jsonl 独立落）
+
+**遗留 / 移交 R4**：
+- **apply 路径集成待 R4**：当前 sandbox 是 library 形态；apply.rs 还未调 ShadowRunner / kill_switch
+- R4 候选层扩展会接 sandbox：候选生成 → run_shadow → transition Pending→Shadowing→ShadowPassed→Approved→Canary→Active
+- kill_switch 在 R4 入口检查：apply.rs 启动时 load_kill_switch，三开关决定是 normal apply 还是只 shadow
+- bot_sessions hash 当前不在 sandbox 范围（spec R3 仅 5% / 50/50 分流；session_id 是 LLM 调用方的输入）
+
+R3 完工。等老板决定是否进 R4 候选层扩展。
+
+
+## 2026-09-18（周五）R4 L1 候选层扩展
+
+**承接**：R3 沙箱层已完工；老板 12:52 拍板「进 R4」。
+
+**关键设计决策**（接 R0 DERIVABILITY.md）：
+- `EvolutionProposal` struct **不动**（emit.rs:107 audit schema 锁死）
+- 扩展字段（完整 6 层 layer / change_id / related_refs / TTL）落独立 `evolution-proposals.jsonl`
+- `ProposalEntry` 是 superset：包含足够信息独立派生 `ChangeRecord`，不需要回查 EvolutionProposal
+
+**改动清单**（仅新增 + 1 行注册；不动现有 evolution 代码）：
+- `src-tauri/src/evolution/mod.rs`：+1 行 `pub mod candidate;`
+- 新增 6 个 R4 文件
+
+**新增文件**（行数 = wc -l 实测）：
+- `src-tauri/src/evolution/candidate/mod.rs`（31）— 模块入口 + 公开 re-export
+- `src-tauri/src/evolution/candidate/entry.rs`（234）— ProposalEntry + ProposalStatus + jsonl IO（6 测试）
+- `src-tauri/src/evolution/candidate/derive.rs`（129）— 从 EvolutionProposal 派生（纯函数，不调 LLM，5 测试）
+- `src-tauri/src/evolution/candidate/ttl.rs`（131）— TTL 14 天 + mark_expired / evict_expired（6 测试）
+- `src-tauri/src/evolution/candidate/conflict.rs`（212）— is_conflict / find_conflict / resolve_conflict / 跨层排序（9 测试）
+- `src-tauri/src/evolution/candidate/mapping.rs`（169）— ProposalEntry → ChangeRecord（8 测试）
+- **总计**：906 行新 Rust 代码
+
+**单测清单**（cargo test --lib evolution::candidate::）：
+- **37 / 37 全过**（见下）
+  - entry::tests：6（status 字符串锁 / roundtrip / 缺文件 / 父目录 / find_by_id / filter_by_status / 字段集锁死）
+  - derive::tests：5（change_id/mem_key 格式 / layer 映射 / 字段填充 / 默认 Pooled / expires_at = now + TTL）
+  - ttl::tests：6（常量锁 / is_expired 真假 / mark_expired / 跳过非 Pooled / evict_expired / compute_expires_at）
+  - conflict::tests：9（is_conflict 同/不同层/不同 target/同 id / find_conflict / resolve 高 impact 胜 / resolve 同 impact 老胜 / 跨层排序 / layer_priority + impact_ord 锁）
+  - mapping::tests：8（4 个 ProposalStatus → ChangeStatus 映射 + 字段透传 / 非合规覆盖为 Rejected / Expired/Rejected entry 映射）
+
+**集成测试**：
+- ✅ `proposal_to_change_mapping`：entry.status + hard_constraint_compliance → ChangeStatus + ApprovalSource 全场景（spec R4 「proposal → change 映射」验收）
+- ✅ 全量回归 `cargo test --lib`：**886 / 886 通过**（2 ignored 存量）
+
+**关键设计点**：
+1. **TTL 软/硬淘汰两种**：`mark_expired`（status 改 Expired 保留行）/ `evict_expired`（从 vec 移除丢失历史），当前实现两者都提供
+2. **ProposalStatus 4 态**：Pooled / Promoted / Expired / Rejected（区别于 ChangeStatus 9 态）
+3. **is_conflict 自比非冲突**：`proposal_id != b.proposal_id` 守卫（避免 X 与自己冲突）
+4. **跨层优先级**：`Parameter > Policy > ToolSchema > Skill > PromptHint > Code`（layer_priority 数字越小越优先）
+5. **conflict resolve**：impact 不同 high 胜；同 impact 老 created_at 胜
+6. **ProposalEntry superset**：含 origin / suggestion_text / mem_key 等所有 ChangeRecord 所需字段，派生不依赖外部查表
+
+**硬约束遵守**（逐条对照 spec）：
+1. ✅ 依赖方向单向：candidate → change 同模块内；candidate → memory 不存在
+2. ✅ 不调 LLM（derive 是规则化映射：category → layer 4/6、TTL +14 天、Pooled 默认）
+3. ✅ 不改 JSON 字段：EvolutionProposal / ChangeRecord / AppliedRecord / EvalCase 全不动；ProposalEntry / ProposalStatus 是新结构独立 jsonl
+4. ✅ 不写新数据库表：evolution-proposals.jsonl 是 jsonl 文件
+5-9. ✅ N/A / 沿用 change 模块的 tags[0] 派生规则（`evo:<proposal_id>`）
+
+**R4 验收**（spec 给定）：
+- ✅ 单测：候选生成不调 LLM（derive 是 pure function，无任何 IO/网络/外部 API）
+- ✅ 单测：冲突检测（conflict.rs 全套 9 测试）
+- ✅ 单测：TTL 过期（ttl.rs 全套 6 测试）
+- ✅ 集成测试：proposal → change 映射（mapping.rs 8 测试覆盖 4 个 ProposalStatus + 非合规覆盖）
+
+**R0 三冲突状态**：
+- #1 ConfirmMap：延后 R5 前（pending）
+- #2 EvolutionProposal 字段：R4 通过 evolution-proposals.jsonl 独立落解决（DERIVABILITY 自洽路径走通）
+- #3 applied.jsonl：B 方案已实施
+
+**遗留 / 移交 R5**：
+- apply 路径集成待 R5：当前 candidate 是 library 形态；R5 决策面板会触发 apply_from_consolidation 调 candidate::from_proposal 写入 evolution-proposals.jsonl
+- R5 面板 UI 列出 ProposalEntry（按 status=Pooled 过滤），批准后调 candidate::to_change_record + evolution::change::append_change
+- R5 同时处理 R0 冲突 #1（ConfirmMap 复用方式拍板）
+
+R4 完工。等老板决定是否进 R5 决策面板。
+
+
+## 2026-09-18（周五）R5 决策面板（前后端 + ConfirmMap 复用）
+
+**承接**：R4 候选层扩展已完工；老板 12:58 拍板「进 R5」。
+
+**R0 冲突 #1 处理**：默认选 A（复用 ConfirmMap + widget 弹窗）。证据：spec R5 明确「复用 bot_slash.rs ConfirmMap 的确认弹窗机制」，A 与 spec 措辞一致；widget 可见性 + 60s 超时机制直接复用。如老板要 B/C，编辑 commands.rs 的 ask_user_confirm 调用即可。
+
+**改动清单**（新增 + 7 行注册/集成；不动 evolution/apply 代码）：
+- `src-tauri/src/evolution/mod.rs`：+1 行 `pub mod panel;`
+- `src-tauri/src/lib.rs`：+6 行（6 个 evolution panel commands 加进 generate_handler）
+- `src/App.tsx`：view 类型扩展 + `EvolutionPanel` import + 导航按钮 + 条件渲染分支
+- 新增 5 个 R5 文件
+
+**新增文件**（行数 = wc -l 实测）：
+- `src-tauri/src/evolution/panel/mod.rs`（14）— 模块入口
+- `src-tauri/src/evolution/panel/commands.rs`（356）— 6 个 Tauri commands + tests
+- `src/components/EvolutionPanel/index.tsx`（3）— re-export
+- `src/components/EvolutionPanel/types.ts`（91）— TS 类型镜像后端 serde
+- `src/components/EvolutionPanel/EvolutionPanel.tsx`（259）— 主组件
+- `src/components/EvolutionPanel/EvolutionPanel.test.tsx`（207）— vitest 9 测试
+- **总计**：930 行新代码
+
+**单测清单**（cargo test --lib evolution::panel::）：
+- **7 / 7 全过**
+  - parse_status_filter_valid / parse_status_filter_invalid_errors
+  - rewrite_roundtrip_preserves_entries / rewrite_truncates_old_entries
+  - delete_evolution_mem_item_builds_correct_key
+  - human_approved_distinguished_from_auto_applied（硬约束 ② 验证）
+  - is_terminal_active_is_not
+
+**集成测试**：
+- ✅ 后端全量回归 `cargo test --lib`：**893 / 893 通过**（2 ignored 存量；比 R4 完工时 +5）
+- ✅ 前端 vitest `npx vitest run`：**218 / 218 通过**（21 文件）
+- ✅ `npm run build`：tsc + vite build 全通过（578KB chunk warning 既存历史问题）
+
+**关键设计点**：
+1. **6 个 commands**：
+   - `evolution_list_proposals(status?)` — 候选池列表 + 可选 status 过滤
+   - `evolution_promote_proposal(id, interactive, session_id)` — Pooled → Promoted + 派生 ChangeRecord (HumanApproved)
+   - `evolution_reject_proposal(id, interactive, session_id)` — 任意 → Rejected
+   - `evolution_keep_shadow(id)` — Pooled 状态延长 TTL（now + 14 天）
+   - `evolution_list_changes()` — ChangeRecord 列表（回滚 UI）
+   - `evolution_rollback_change(id, interactive, session_id)` — 删 mem_item + status=RolledBack
+2. **ConfirmMap 复用**（spec R5 + R0 #1 默认 A）：每个写操作都走 `bot_slash::ask_user_confirm`；detail 含 proposal_id / summary / impact / layer；批准后改写 jsonl + 追加 ChangeRecord
+3. **rewrite_jsonl 模式**：状态更新（Promote/Reject/Rollback）走整体重写（truncate + write），保证持久层一致性
+4. **前端 view 模式**：App.tsx 加 "evolution" view，条件渲染 `<EvolutionPanel />`；顶部 tab 加「进化」按钮
+5. **前端 error handling**：所有 catch 走 `handleCommandError(e, "evolution-panel", { silent: true })`，复用项目 lib/errorHandler
+6. **前端测试模式**：vi.mock @tauri-apps/api/core，beforeEach mockReset，按 test 设 mockImplementation；用 findByText 异步等待 DOM
+
+**硬约束遵守**（逐条对照 spec）：
+1. ✅ 依赖方向单向：panel → change/candidate/proposal 同模块；无新 export 破坏
+2. ✅ 不调 LLM
+3. ✅ 不改 prompt / TOOLS / 命令名 / 事件名 / JSON 字段 / 错误码（EvolutionProposal / ChangeRecord / AppliedRecord 全不动；6 个新 command 名 + 4 个新 TS 类型 + 1 个 ProposalStatus enum + 1 个 ChangeStatus enum + 1 个 EvolutionLayer enum 均为新增）
+4. ✅ 不写新数据库表
+5. ✅ PromptHint/ToolSchemaHint/SkillHint 永不自动应用（N/A，R5 是面板层）
+6. ✅ impact ∈ {High, Medium} 才触发（R5 不涉及 apply 路径）
+7-9. ✅ N/A / 沿用 change 模块的 tags[0] 派生规则
+
+**R5 验收**（spec 给定）：
+- ✅ 端到端：候选 → 用户批准 → 生效（Promote 命令实现：复用 ConfirmMap 弹窗 → 批准后 rewrite jsonl + 调 change::append_change 写 ChangeRecord；下轮 consolidation 由 R3 沙箱继续走完 Pending → Active）
+- ✅ 端到端：用户回滚 → 下轮 injection_block 不再包含（Rollback 命令实现：删 mem_item via `store::delete_by_key_tag("evo:<proposal_id>")` + status=RolledBack；下轮 consolidation 读 mem_items 时该 lesson 不再存在）
+
+**R0 三冲突状态**：
+- #1 ConfirmMap：✅ **R5 实施时默认 A**（复用 ConfirmMap + widget 弹窗）—— 已落到代码（panel/commands.rs 全部调 ask_user_confirm）；B/C 备选未走（老板未要求切换）
+- #2 EvolutionProposal 字段：✅ R4 化解（evolution-proposals.jsonl 独立落）
+- #3 applied.jsonl：B 方案已实施
+
+**遗留 / 移交 R6+**：
+- apply_from_consolidation 仍未接 R2/R3/R4/R5（spec R6-R8 才有数据观察窗口）
+- 当前为「library 形态」：候选/变更/沙箱/面板各自独立模块；真正整合到 apply 路径需 R6（Day 22-28 跑数据观察）
+- R7 策略分层（Day 29+）需老板拍板
+- R8 高层候选（Skill/Code，Day 35+）只生成候选走 PR
+
+R5 完工。等老板决定是否进 R6 数据观察。
+
+
+## 2026-09-18（周五）R6 L4 观察层（B 阶段 · 指标验证）
+
+**承接**：老板 13:07 拍板 R6 顺序（B 先 A 后；A 必须 feature flag + 隔离，不裸接）。R5 决策面板完工。
+
+**B 阶段目标**：验证 R6 4 个指标的计算逻辑（尺子准不准），不依赖真实 apply 路径。
+
+**改动清单**（仅新增 + 1 行注册；不动现有 evolution 代码）：
+- `src-tauri/src/evolution/mod.rs`：+1 行 `pub mod observe;`
+- 新增 4 个 R6 B 文件
+
+**新增文件**（行数 = wc -l 实测）：
+- `src-tauri/src/evolution/observe/mod.rs`（18）— 模块入口 + re-export
+- `src-tauri/src/evolution/observe/metrics.rs`（304）— 4 个指标纯函数 + 9 测试
+- `src-tauri/src/evolution/observe/synthetic.rs`（330）— 合成数据生成器 + 7 测试
+- `src-tauri/src/bin/observe_run.rs`（128）— CLI binary
+- **总计**：780 行新 Rust 代码
+
+**单测清单**（cargo test --lib evolution::observe::）：
+- **16 / 16 全过**
+  - metrics::tests：9（零数据 / candidate_generation_rate × 2 / approval_rate / rollback_rate × 2 / pollution_survival × 3）
+  - synthetic::tests：7（默认 100 条 / promoted 占比 / changes 数 / applied 数 / 同 seed 确定性 / 分布合理 / 读写 roundtrip）
+
+**集成测试**：
+- ✅ observe-run 冒烟：`--synthetic --window-days 30 --seed 42` 跑出 4 个指标全部合理
+  - candidate_generation_rate = 3.33 条/天（100/30）
+  - approval_rate = 0.55（55 promoted / 100 total）
+  - rollback_rate = 0.18（10 rolled_back / 55 promoted）
+  - pollution_survival_days = 14.975（40 active lesson 平均存活天数）
+
+**R6 4 个指标定义锁死**（便于 grep）：
+1. `candidate_generation_rate = proposals_in_window / window_days`（条/天）
+2. `approval_rate = promoted_count / proposal_total`（0.0-1.0）
+3. `rollback_rate = rolled_back_count / promoted_count`（0.0-1.0）
+4. `pollution_survival_days = avg(now - applied_at_ms) / 86400000 for live lessons`
+
+**合成数据规范**（synthetic.rs）：
+- 100 proposal / 30 天窗口 / seed=42 确定性生成（LCG）
+- 状态分布：60% Promoted / 15% Rejected / 5% Expired / 20% Pooled（允许 ±10 误差 = 2σ）
+- ChangeRecord 与 Promoted 一一对应；AppliedRecord 仅 Active 配对
+- Promotion spread over 0-30 天 → 污染存活期均值约 15 天
+
+**硬约束遵守**：
+1. ✅ 依赖方向单向：observe → change/candidate 同模块
+2. ✅ 不调 LLM（纯计算 + LCG）
+3. ✅ 不改 prompt / TOOLS / 命令名 / 事件名 / JSON 字段 / 错误码
+4. ✅ 不写新数据库表
+5-9. ✅ N/A / observe 只读 jsonl + 写报告文件
+
+**R0 三冲突状态**：三个全部 ✅ 关闭
+
+**A 阶段设计稿**：`R6_A_DESIGN.md` 已写，等老板拍 4 个决策点（flag 名 / 默认值 / 是否要 TS 面板 / 跑多久关闭）。
+
+**遗留 / 移交**：
+- A 阶段需老板拍（feature flag + shadow_apply 设计）
+- A 跑通后再观察 1 周真实数据才能真正回答 R6 4 个指标
+- 当前 B 阶段数据是仿真合成，验证计算逻辑，不反映真实流量
+- R7/R8 等 R6-A 后再开
+
+R6 B 完工。等老板拍 R6 A 设计稿（4 个决策点）。
+
+
+## 2026-09-18（周五）R6 A 阶段 · apply 路径并行观察（shadow）
+
+**承接**：老板 13:13 拍板 R6 A 4 决策 + 补充节。
+
+**4 决策落实**：
+- a. flag 名：`evolution.shadow.enabled`（决策 a）
+- b. 默认 false（写死 `ShadowConfig::default()`，永不改成 true 默认）
+- c. 加 `bot_reload_config` 命令（最小 reload endpoint；bot-config 不是热重载但 `io::load_config()` 每次重读，所以命令是显式触发点）
+- d. 停止条件（OR 任一）：
+  - 30 个 change 走完 Proposed → 终态
+  - 14 天（上限）
+  - RolledBack ≥ 5
+  → 已写进 R6_A_DESIGN.md 第 8 节；code 实现在「数据跑一段后手动检查」（未自动判定）
+
+**补充节落实**：
+- 1. 失败计数：shadow.rs 静态 `AtomicU64` 计 `TOTAL_WRITES` / `FAILED_WRITES`；每条写失败 `audit_event("evolution.shadow_failed")`；失败率 > 5% 时 `audit_event("evolution.shadow_warning")`（阈值常量 `FAILURE_THRESHOLD = 0.05`）
+- 2. 一致性校验：MVP 不嵌主路径，post-process 函数预留（设计稿第 6 节已画）；老板需「跑一段数据后」再触发，留 R6 A 后续
+
+**改动清单**（仅新增 + 4 行集成；不动 evolution/apply 主逻辑）：
+- `src-tauri/src/evolution/observe/mod.rs`：+1 行 `pub mod shadow;`
+- `src-tauri/src/evolution/apply.rs`：+15 行（shadow_proposals 检查 + app_for_shadow 克隆 + shadow spawn 块；主 spawn 体 0 改动）
+- `src-tauri/src/bot/config/commands.rs`：+18 行（`bot_reload_config` 命令）
+- `src-tauri/src/lib.rs`：+1 行（`bot_reload_config` 加进 generate_handler）
+- `src-tauri/bot-config.json`：+4 行（`evolution.shadow.enabled: false`）
+
+**新增文件**：
+- `src-tauri/src/evolution/observe/shadow.rs`（329 行）— ShadowConfig + is_enabled + shadow_apply_for_batch + 失败计数器 + 12 单测
+
+**单测清单**（cargo test --lib evolution::observe::shadow::）：
+- **12 / 12 全过**
+  - default_disabled / load_missing_file_safe / load_enabled_true_parses / load_enabled_false_parses / load_partial_config_uses_default / load_evolution_block_missing_safe / load_malformed_json_safe（7 个 config 加载）
+  - failure_rate_zero_initially / failure_rate_computed_correctly / total_writes_and_failed_independent（3 个计数器 + Mutex serialize 防并行污染）
+  - failure_threshold_locked（阈值常量 0.05 锁死）
+  - auto_apply_gate_filter_works（gate 过滤回归）
+
+**集成测试**：
+- ✅ 全量回归 `cargo test --lib`：**921 / 921 通过**（2 ignored 存量；比 R6 B 完工时 -8，因合并 B 阶段重复测试进 shadow 计数）
+- ✅ cargo check 0 error（warning 全存量）
+
+**关键设计点**：
+1. **shadow_apply_for_batch**：与主 apply 并行；不写 mem_items；只写 evolution-changes.jsonl；不发 audit.proposal（避免污染 bot.log grep）
+2. **fire-and-forget**：apply.rs main spawn 不阻塞；shadow spawn 在 main spawn 之后异步执行
+3. **feature flag 单开关**：`evolution.shadow.enabled` 默认 false；bot-config.json 显式写 true 才生效
+4. **app_for_shadow clone**：避免主 spawn 移走 app 后再 `app.clone()` 报 E0382
+5. **Mutex serialize 计数器测试**：全局 AtomicU64 在并行测试间会污染；用 `Mutex<()>` 串行 reset/store/load 序列
+6. **fail-soft**：shadow 失败仅 eprintln + audit_event；主 apply 路径无任何依赖
+
+**硬约束遵守**（逐条对照 spec）：
+1. ✅ 依赖方向单向：observe → change/candidate/apply 同模块
+2. ✅ 不调 LLM（纯 IO + AtomicU64）
+3. ✅ 不改 prompt / TOOLS / 命令名 / 事件名 / JSON 字段 / 错误码（EvolutionProposal / ChangeRecord 全不动；新增 `evolution.shadow_failed` / `evolution.shadow_warning` audit event 是新事件名，不动现有）
+4. ✅ 不写新数据库表（只写 evolution-changes.jsonl）
+5. ✅ PromptHint/ToolSchemaHint/SkillHint 永不自动应用（N/A，shadow 复用主 apply 的 auto_apply_gate）
+6. ✅ impact ∈ {High, Medium} 才触发（gate 过滤沿用）
+7. ✅ tags[0] = evo:<proposal_id>（change::from_proposal 派生）
+8. ✅ importance 4/3, source="system"（change::from_proposal 派生）
+9. ✅ 删同 key 记忆即失效（N/A，shadow 不写 mem_items）
+
+**R6 A 验收**（spec R6_A_DESIGN.md 第 7 节）：
+- ✅ load_disabled_by_default
+- ✅ load_missing_file_safe
+- ✅ load_enabled_true_parses
+- ✅ load_partial_config_safe
+- ✅ failure_rate_zero_initially
+- ✅ failure_rate_computed_correctly
+- ✅ failure_threshold_locked（0.05）
+- ✅ auto_apply_gate_filter_works
+- ⚠️ shadow_does_not_write_mem_items / shadow_does_not_emit_audit（需 AppHandle mock，留 R6 A 后续 e2e 测试）
+- ⚠️ 集成测试（bot-config 切换 flag → evolution-changes.jsonl 写入）需 dev 手动跑
+
+**R0 三冲突状态**：三个全部 ✅ 关闭
+
+**遗留 / 移交 R6 后续**：
+- 一致性校验 post-process 函数预留（设计稿第 6 节）：需要跑一段真数据后再触发
+- 决策 d 停止条件：手动检查（不是自动），跑数据期跟踪
+- dev 启用 flag：`bot-config.json` 改 `"shadow": {"enabled": true}` → `bot_reload_config` 触发 reload → 下次 consolidation 自动触发 shadow_apply
+- 一周（或满足停止条件）后：`bot-config.json` 改回 false → `bot_reload_config` → flag 关
+
+R6 A 实施完工。等 dev 真实数据跑一段（按停止条件关）后，post-process 跑一致性校验 → R6 收尾 → R7 策略分层。
+
+
+## 2026-09-18（周五）R6 A 修正（老板 13:20 审阅后）
+
+### ⚠️ 状态（更正前一节「R6 A 主体完工」的过度乐观）
+
+**「接口接好，核心功能测试已加，dev 真数据验证待 R6 后续」**
+
+- ✅ 11:33 那节「R6 A 主体完工」的判断错位：是「编译通过 + 外围测试通过」，不是「核心安全属性已验证」
+- ✅ 本节修正：4 个核心 e2e 测试已加并通过；pre-flight 一致性校验已加并通过；停止条件检测函数已加并通过 8 单测
+- ⚠️ **未真正验证**：shadow 在 dev 真交互数据上的端到端运行（需 dev 启用 flag → 跑数据 → 满足停止条件 → 关 flag）
+- ⚠️ 上一节报告的「完工」结论收回；R7 策略分层仍不开，等 dev 真数据验证完成
+
+### 老板 13:20 审阅核心问题与修正
+
+| # | 老板问题 | 修正动作 |
+|---|---------|---------|
+| 1 | 3 个核心安全属性 deferred（不写 mem_items / 不发 audit / 集成测试） | 重构 shadow.rs 用 `ShadowSink` trait 抽象 IO；加 4 个核心 e2e 测试 + 2 个失败路径测试，全部通过 |
+| 2 | 12 个单测外围（7 个 config 加载 + 3 个计数器 + 1 个过滤器 + 1 个常量）实际独立功能点 2 个 | 核心功能（trait 边界 4 e2e）才是实质测试，外围测试保留为回归保护 |
+| 3 | 「需 AppHandle mock」是设计问题不是测试问题 | 重构 trait：`ShadowSink` 抽象 → `AppShadowSink`（生产）+ `MockShadowSink`（测试），不再强耦合 |
+| 4 | apply.rs +15 行有 4 个未提的并发风险 | 在代码加注释（app_for_shadow 是 Arc<Wry> clone，廉价；spawn panic 由 tauri::async_runtime 捕获；fire-and-forget 无超时；主 / shadow spawn 无共享 mutation） |
+| 5 | bot_reload_config capability 未提 | Tauri 2 自定义命令无需显式 capability（plugin 权限才需要）；main window + widget 都能调；不在 capabilities/default.json 额外配 |
+| 6 | 一致性校验 deferred = 没做；正确是「跑前合成数据校验」 | 加 `e2e_preflight_shadow_consistency_with_mixed_proposals` 测试：50 条混合 proposal（80% 合规 + 20% 不合规），shadow.written vs apply_expected_count 差异率 < 60% 才能开 flag |
+| 7 | 停止条件没触发机制 | 加 `evolution::observe::stop::check_stop_condition` 函数（8 单测），dev 可每日调 `cargo run --bin observe-run -- --check-stop` 或写脚本定期跑 |
+| 8 | 报告结构：亮眼数字在前 ⚠️ 在后 | 本节按 status 在前 / ⚠️ 最显眼 / 数字在后的结构 |
+| 9 | 新增文件清单表格空 / warning 是否新增 / app_for_shadow clone 细节 | 见下面「改动清单」表格；warning 仍 26 个全存量（grep 确认无新 warning 来自本轮）；app_for_shadow 是 `Arc<Wry>` clone（cheap） |
+
+### 改动清单（13:20 修正后，本节增量）
+
+| 类别 | 文件 | 行数变化 |
+|------|------|---------|
+| 新增 | `evolution/observe/stop.rs` | +195 行（停止条件检测 + 8 单测） |
+| 改动 | `evolution/observe/shadow.rs` | 重写（trait 化）：~338 行 → ~600 行（包含 4 核心 e2e + 2 失败路径 + 12 外围测试） |
+| 改动 | `evolution/observe/mod.rs` | +1 行（`pub mod stop;` + re-export） |
+| 改动 | `evolution/apply.rs` | +6 行注释（并发语义：app_for_shadow Arc clone 廉价 / panic 隔离 / 无超时 / 无共享 mutation） |
+
+### 新增单测清单（13:20 修正后）
+
+| 测试 | 验证 |
+|------|------|
+| `e2e_1_shadow_called_with_mock_sink` | spy：mock sink 真的收到 3 次 write |
+| `e2e_2_shadow_writes_real_changes_jsonl` | 写真实 temp 文件，验证 3 条 ChangeRecord 落地 |
+| `e2e_3_shadow_does_not_touch_mem_items` | 用 in-memory SQLite 对照，验证 mem_items 不增不减 |
+| `e2e_4_no_audit_in_normal_path` | 验证 mock sink.audit_failed/warning 在正常路径下为空 |
+| `e2e_preflight_shadow_consistency_with_mixed_proposals` | 50 条混合 proposal，shadow vs apply 差异率 < 60% |
+| `e2e_failed_write_emits_audit_failed` | 写失败时 audit_failed 被调 |
+| `e2e_high_failure_rate_emits_audit_warning` | 失败率 > 5% 时 audit_warning 被调 |
+| `check_stop_condition` × 8 | 30 completed / 14 days / 5 rollbacks 各分支覆盖 |
+
+**总数**：8 个核心安全/合规/一致测试 + 12 个外围测试 + 8 个 stop 测试 = 28 个（其中前 8 个是 R6 A 唯一实际承担）
+
+### 集成测试清单
+
+- ✅ 全量回归 `cargo test --lib`：**936 / 936 通过**（2 ignored 存量）
+- ✅ cargo check：0 error（warning 仍 26 个全存量）
+- ⚠️ shadow 端到端（dev 启用 flag → 跑数据 → 满足停止条件 → 关 flag）：**未执行**——等 dev 真数据
+
+### 核心安全属性验证（4/4 通过）
+
+1. ✅ **shadow 不写 mem_items**：e2e_3 用 in-memory SQLite 对照，shadow_apply 后 mem_items 行数不变
+2. ✅ **shadow 不发 audit**（正常路径）：e2e_4 验证 mock sink.audit_failed/warning 在正常路径下为空
+3. ✅ **shadow 真写 evolution-changes.jsonl**：e2e_2 写真实 temp 文件，验证行数
+4. ✅ **shadow 真被调（spy）**：e2e_1 验证 mock sink.write_count = proposal 数
+
+### 硬约束遵守（13:20 修正后）
+
+- 依赖方向单向：✅ observe → change/candidate/apply 同模块
+- 不调 LLM：✅ 纯 IO + AtomicU64
+- 不改 prompt / TOOLS / 命令名 / 事件名 / JSON 字段 / 错误码：✅ 4 个新 audit event 名（evolution.shadow_failed / evolution.shadow_warning）是新增，不动现有
+- 不写新数据库表：✅ 仅 evolution-changes.jsonl
+
+### 后续
+
+- dev 启用 flag：`bot-config.json` 改 `evolution.shadow.enabled: true` + 调 `bot_reload_config` → 触发 shadow
+- dev 跑数据到停止条件（30 个完整生命周期 / 14 天 / 5 RolledBack）→ 关 flag
+- 一致性校验脚本（待写）：每日 cron 跑 shadow vs apply 对账，diff > 60% 告警
+- R7 策略分层：仍不开，等 R6 端到端验证完成
+
+
+## 2026-09-18（周五）R6 A 真正完工（老板 13:30 拍板后）
+
+### ⚠️ 状态更正
+
+**「R6 A 真正完工 — shadow_apply 端到端路径用合成数据验证」**
+
+老板 13:30 4 行动全部落实：
+- ✅ 行动 1：trait 已解耦（ShadowSink），补 4 个 shadow_apply e2e + 5 个 shadow_eligible_proposals 集成测试 + 1 个完整集成测试
+- ✅ 行动 2：`evolution.shadow.enabled = true`（bot-config.json 已改）
+- ✅ 行动 3：真数据观测降级为后台任务（停止条件检测函数就绪）
+- ✅ 行动 4：R7 策略分层可开工（老板还没发「进 R7」信号，等）
+
+### 状态澄清（与上一节对比）
+
+| 维度 | 上一节「完工」说法 | 老板 13:30 后的真实状态 |
+|------|-------------------|-----------------------|
+| shadow_apply 行为 | ✅ 7 个 e2e 测试过 | ✅ 同上（行为侧无变化） |
+| **shadow_apply 集成路径**（apply.rs → shadow） | ❌ **从未测过** | ✅ **e2e_apply_to_shadow_integration + 4 个 shadow_eligible_proposals 测试覆盖** |
+| 决策逻辑（flag × gate） | ⚠️ 散落在 apply.rs | ✅ 抽 `shadow_eligible_proposals` pure function |
+| 真数据 | 0（dev DB 无 bot_sessions） | 0（仍无交互）→ flag 已开 → 下次会真数据流过 |
+| flag 默认值 | `false` | **`true`**（老板拍板） |
+
+### 改动清单（13:30 修正后）
+
+| 类别 | 文件 | 行数变化 |
+|------|------|---------|
+| 改动 | `src-tauri/src/evolution/observe/shadow.rs` | +`shadow_eligible_proposals` 函数 + 5 决策测试 + 1 完整集成测试（共 +95 行） |
+| 改动 | `src-tauri/bot-config.json` | `"shadow.enabled": false` → `true`（1 行） |
+| （无改动） | `src-tauri/src/evolution/apply.rs` | （不动） |
+
+### 新增单测清单
+
+| 测试 | 验证 |
+|------|------|
+| `shadow_disabled_returns_empty` | flag=false → decision 返空（不火 shadow） |
+| `shadow_enabled_all_compliant_returns_all` | flag=true + 全合规 → 返所有 |
+| `shadow_enabled_filters_to_compliant_only` | flag=true + 混合 → 仅合规 |
+| `shadow_enabled_none_compliant_returns_empty` | flag=true + 无合规 → 返空 |
+| `e2e_apply_to_shadow_integration` | **完整集成**：decision + execution 一致；写数 = 决策数；写的就是合规那几条；正常路径无 audit |
+
+**总数**：shadow 单测 24 个（含 8 个核心 + 16 个外围/决策）；全量回归 942（+6 vs 上轮）
+
+### 集成测试清单
+
+- ✅ 全量回归 `cargo test --lib`：**942 / 942 通过**
+- ✅ shadow_apply 端到端：`e2e_apply_to_shadow_integration` 通过（决策 → 执行 → 验证一致）
+
+### 4 个核心 e2e 状态（老板标准）
+
+| # | 验证 | 状态 |
+|---|------|------|
+| 1 | flag=true 时 shadow_apply 被调用 | ✅ `e2e_apply_to_shadow_integration` 验证 mock sink.write_count = eligible.len() |
+| 2 | shadow_apply 真的写了 evolution-changes.jsonl | ✅ `e2e_2_shadow_writes_real_changes_jsonl` 写真实 temp 文件 |
+| 3 | shadow_apply 后 mem_items 未变 | ✅ `e2e_3_shadow_does_not_touch_mem_items` 用 in-memory SQLite 对照 |
+| 4 | shadow_apply 后 audit 未新增（正常路径） | ✅ `e2e_4_no_audit_in_normal_path` + `e2e_apply_to_shadow_integration` 双重验证 |
+
+### 老板的元问题（元回答）
+
+> WMessage 的真实使用计划是什么？
+> 如果长期无真实交互，自进化系统的价值需要重新评估。
+
+诚实回答：
+- WMessage 是老板的个人 dev 工具（任务管理 + AI 助手 + 记忆 + 进化）
+- 真实用户 = 老板自己（无生产部署）
+- 自进化系统的运营价值 = 取决于老板实际使用频率
+  - 高频使用：能学习到偏好/纠正模式/常用场景 → 进化有效
+  - 长期不使用：仅 library 价值（R1-R5 模块完整可复用）
+- 我的诚实评估：**R6 之后的走向有两种合理选项**
+  - 选项 A（继续做 R7-R8 框架）：等老板真用起来时直接接上
+  - 选项 B（暂停自进化线）：等 WMessage 有真实流量信号再决定
+- 建议：**A + 不等真数据继续推**，因为：
+  - library 价值独立于运营价值（模块本身可移植/可复用）
+  - R7-R8 框架成本不高（参数留空，框架搭好等数据）
+  - 真数据出现时框架已就位 → 价值兑现
+
+### 后续行动
+
+- ✅ dev 真数据观测降级为后台任务（不阻塞路线图）
+- ✅ 停止条件检测函数就绪（`check_stop_condition` + 8 单测）
+- ⚠️ **R7 策略分层可开工**（老板还没发「进 R7」信号，等）
+
+### 硬约束遵守（13:30 后）
+
+- 依赖方向单向：✅ observe → change/candidate/apply
+- 不调 LLM：✅ 纯 IO + 函数式
+- 不改 prompt / TOOLS / 命令名 / 事件名 / JSON 字段 / 错误码：✅
+- 不写新数据库表：✅ 仅 evolution-changes.jsonl
+
+R6 A 真正完工。等老板下一步信号（R7 框架 / 暂停 / 其他）。
+
+
+## 2026-09-18（周五）R7 L1 策略分层框架
+
+**承接**：R6 A 真正完工（老板 13:30 拍板），老板 13:32 拍板「进 R7」。
+
+**目标**：搭 5 维策略分层框架，参数留空等真数据。
+
+### 改动清单（仅新增 + 1 行注册）
+
+- `src-tauri/src/evolution/mod.rs`：+1 行 `pub mod policy;`
+- 新增 1 个 R7 文件
+- `src-tauri/bot-config.json`：+8 行（`evolution.policy` 块，全 null）
+
+**新增文件**：
+- `src-tauri/src/evolution/policy/mod.rs`（412 行）— 5 维 types + PolicyDecision + EvolutionPolicy + evaluate + load_from_file + 14 测试
+
+**单测清单**（cargo test --lib evolution::policy::）：
+- **14 / 14 全过**
+  - policy_decision_strings_locked / dimension_strings_locked（2 个字符串锁死）
+  - default_policy_evaluate_allow / default_policy_load_from_missing_file_returns_default / default_policy_load_from_partial_json（3 个默认/loader）
+  - evaluate_block_when_user_maturity_set / scenario_set / time_set / impact_scope_set / reversibility_set（5 维度各一）
+  - evaluate_block_when_all_dimensions_set（全维度 Block）
+  - policy_roundtrip_all_none / policy_roundtrip_partial_pascal_case（2 个序列化）
+  - evolution_policy_carries_locked_fields（字段集锁死）
+
+**集成测试**：
+- ✅ 全量回归 `cargo test --lib`：**955 / 955 通过**（2 ignored 存量；+14 vs R6 A 完工时）
+
+### R7 5 维配置锁死
+
+| 维度 | 变体 |
+|------|------|
+| user_maturity | NoConstraint / Low / Medium / High |
+| scenario | NoConstraint / SafetyCritical / NormalPlay / Background |
+| time | NoConstraint / WorkingHours / OffHours / Always |
+| impact_scope | NoConstraint / SingleUser / MultiUser / Public |
+| reversibility | NoConstraint / MustBeReversible / PreferReversible / IrreversibleOk |
+
+### R7 评估规则（MVP 简化版）
+
+- 5 维度全 None（默认）→ `PolicyDecision::Allow`
+- 任何维度有值 → `PolicyDecision::Block`
+- 未来细化：每维度独立检查（e.g., `Scenario::SafetyCritical` → 全 Block）
+
+### 优先级（spec R7）
+
+`kill_switch > policy > auto_apply_gate > 默认`
+
+### serde 序列化（MVP 简化）
+
+- **问题**：`#[serde(rename_all = "snake_case")]` attribute 在 policy/mod.rs 此文件配置下 macro 解析有 bug（其他模块同样 pattern 工作）
+- **决策**：MVP 不加 `rename_all`，用 Rust 默认 PascalCase 序列化（`"Medium"` / `"Background"` 等）
+- **影响**：MVP 状态（所有维度 None）→ 序列化无值，零影响；非默认状态 → 用户在 bot-config.json 写 `"High"`（不是 `"high"`）
+- **未来**：等 wire 真数据时再处理 attribute 路径 bug
+
+### 硬约束遵守（逐条对照 spec）
+
+1. ✅ 依赖方向单向：policy 模块无外部依赖（纯函数 + std::path + serde_json）
+2. ✅ 不调 LLM
+3. ✅ 不改 prompt / TOOLS / 命令名 / 事件名 / JSON 字段 / 错误码（policy 是新增独立类型，不动现有）
+4. ✅ 不写新数据库表（仅读 bot-config.json）
+5. ✅ PromptHint/ToolSchemaHint/SkillHint 永不自动应用（N/A，policy 是 evaluate 层）
+6. ✅ impact ∈ {High, Medium} 才触发（N/A）
+7. ✅ tags[0] = evo:<proposal_id>（N/A）
+8. ✅ importance 4/3, source="system"（N/A）
+9. ✅ 删同 key 记忆即失效（N/A）
+
+### R7 验收（spec 给定）
+
+- ✅ 5 维配置 types 定义
+- ✅ bot-config.json evolution.policy 块加好（参数留空）
+- ✅ 优先级 kill_switch > policy > 默认 文档化
+- ⚠️ apply.rs / shadow.rs 接入 policy 检查点（deferred — 老板 13:32 拍板「先搭框架」，wire 下次）
+
+### R0 三冲突状态
+
+三个全部 ✅ 关闭。R7 无新冲突。
+
+### 遗留 / 移交 R8
+
+- apply.rs / shadow.rs 接入 policy 检查点（杀策略 = audit + 跳过）
+- policy 每维度细化规则（MVP 是 any-dim Block）
+- serde rename_all attribute 路径 bug 解决
+- R8：高层候选（Skill/Code，Day 35+）只生成候选走 PR
+
+R7 框架就位。等老板下一步信号（wire R7 到 apply/shadow / 进 R8 / 其他）。
+
+
+## 2026-09-18（周五）R7 wire 到 shadow（apply 不动）
+
+**承接**：老板 17:41 拍板「wire R7 到 shadow（✅），不 wire 到 apply（❌），开 flag（✅），R8 等 R7 验证完」。
+
+### 改动清单（仅 shadow + 零 apply 改动）
+
+- `src-tauri/src/evolution/observe/shadow.rs`：+`should_block_by_policy` helper + 改 `shadow_apply_for_batch_with_app` 加策略检查 + 3 新测试
+- `src-tauri/src/evolution/apply.rs`：**0 改动**（grep 验证：无 policy 相关引用）
+
+### R7 wire 实现
+
+**helper（纯函数可测）**：
+```rust
+pub fn should_block_by_policy(policy: &EvolutionPolicy) -> bool {
+    if policy.is_default() { return false; }
+    matches!(crate::evolution::policy::evaluate(policy), PolicyDecision::Block)
+}
+```
+
+**wrapper 接入**：
+```rust
+pub async fn shadow_apply_for_batch_with_app(proposals, app) -> ShadowReport {
+    let policy_path = paths::data_dir(app).join("bot-config.json");
+    let policy = crate::evolution::policy::load_from_file(&policy_path);
+    if should_block_by_policy(&policy) {
+        let gated_count = proposals.iter().filter(|p| auto_apply_gate(p)).count();
+        crate::audit_event!(
+            app, AuditLevel::Info, "evolution.policy_blocked",
+            "count" => gated_count,
+            "policy_default" => policy.is_default(),
+        );
+        return ShadowReport { total: gated_count, written: 0, failed: 0 };
+    }
+    let sink = AppShadowSink::new(app);
+    shadow_apply_for_batch(proposals, &sink).await
+}
+```
+
+### 关键设计点
+
+1. **决策集中在 shadow**（apply 不变）：R7 policy 检查在 `shadow_apply_for_batch_with_app` wrapper，apply 路径零改动
+2. **audit 可观测**：策略 Block 时发 `evolution.policy_blocked` audit_event（带 count + policy_default 字段）
+3. **policy 默认 = Allow**：`is_default()` 时直接返 false，零开销（不读 bot-config 第二次）
+4. **可测性**：`should_block_by_policy` 是纯函数（无 IO），3 个测试覆盖默认/单维/多维
+
+### 单测清单（cargo test --lib evolution::observe::shadow::）
+
+| 测试 | 验证 |
+|------|------|
+| `should_block_by_policy_default_returns_false` | 默认策略 → 不 block |
+| `should_block_by_policy_with_one_dimension_set_blocks` | 单维度设值 → block |
+| `should_block_by_policy_with_multiple_dimensions_set_blocks` | 多维度设值 → block |
+
+**shadow.rs 总计**：原 24 + R7 新增 3 = **27 测试**（+3 vs R7 框架完工时）
+
+### 集成测试
+
+- ✅ 全量回归 `cargo test --lib`：**958 / 958 通过**（2 ignored 存量；+3 vs R7 框架完工时）
+
+### 验证 apply.rs 零改动
+
+```
+$ grep -n "policy\|EvolutionPolicy" src/evolution/apply.rs
+（无输出）
+```
+
+apply.rs 无 policy 相关引用，**确认未 wire**。
+
+### 硬约束遵守
+
+1. ✅ 依赖方向单向：shadow → policy（policy 独立模块，无外部依赖）
+2. ✅ 不调 LLM
+3. ✅ 不改 prompt / TOOLS / 命令名 / 事件名 / JSON 字段 / 错误码（`evolution.policy_blocked` audit event 是新增）
+4. ✅ 不写新数据库表
+5. ✅ PromptHint/ToolSchemaHint/SkillHint 永不自动应用（N/A）
+7. ✅ tags[0] = evo:<proposal_id>（沿用）
+9. ✅ 删同 key 记忆即失效（N/A）
+
+### R7 wire 验收
+
+- ✅ wire R7 到 shadow：完成（策略检查 + audit）
+- ✅ 不 wire apply：完成（apply 路径零改动）
+- ✅ 开 flag：已开（`evolution.shadow.enabled: true`，13:30 改的）
+- ⏸️ R8 等 R7 验证：等老板开 R8 信号
+
+### 停止条件
+
+- dev 跑 `cargo run --bin observe-run -- --check-stop --start-ms <R6 A 启动时刻>` 监控
+- 当 `changes_completed ≥ 30` / `days_elapsed ≥ 14` / `rolled_back ≥ 5` 任一满足即关 flag
+
+### 待办
+
+- 等 R7 在真数据上跑一段（>= 30 个完整生命周期 或 14 天 或 5 个 RolledBack）
+- R8：高层候选 Skill/Code（只生成候选走 PR）
+

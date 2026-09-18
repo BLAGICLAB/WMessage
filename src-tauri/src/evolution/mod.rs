@@ -20,10 +20,16 @@
 //! 行为随之改变；留痕 evolution-applied.jsonl，回滚 = 删同 key 记忆。
 //! PromptHint / ToolSchemaHint / SkillHint 永不自动应用，仍只写 audit。
 
+pub mod activation;
 pub mod apply;
+pub mod candidate;
+pub mod change;
 pub mod derive;
 pub mod emit;
+pub mod observe;
+pub mod panel;
 pub mod proposal;
+pub mod sandbox;
 pub mod trace;
 
 use crate::memory::consolidate::{ConsolidateOp, ConsolidateReport};

@@ -25,6 +25,7 @@ pub mod db;
 mod due_notify;
 pub mod error;
 pub mod evolution;
+pub mod eval;
 mod exec_steps;
 pub mod intent_router;
 pub mod memory;
@@ -460,6 +461,7 @@ pub fn run() {
             bot_slash::bot_confirm_response,
             bot_artifacts::confirm_artifact_batch,
             bot::bot_log_read,
+            bot::config::commands::bot_reload_config,
             bot_py::py_get_enabled,
             bot_py::py_set_enabled,
             bot_py::py_env_check,
@@ -477,6 +479,12 @@ pub fn run() {
             migration::commands::migration_log_read,
             migration::commands::migration_run,
             migration::commands::migration_status,
+            evolution::panel::commands::evolution_list_proposals,
+            evolution::panel::commands::evolution_promote_proposal,
+            evolution::panel::commands::evolution_reject_proposal,
+            evolution::panel::commands::evolution_keep_shadow,
+            evolution::panel::commands::evolution_list_changes,
+            evolution::panel::commands::evolution_rollback_change,
         ])
         .build(tauri::generate_context!())
         // 启动期 panic 可接受（进程起不来就退）：Tauri builder 编译失败 = 环境/配置损坏，

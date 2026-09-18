@@ -1,0 +1,14 @@
+{
+  "candidate_generation_rate": 0.0,
+  "approval_rate": 0.0,
+  "rollback_rate": 0.0,
+  "pollution_survival_days": 0.0,
+  "proposal_total": 0,
+  "promoted_count": 0,
+  "rolled_back_count": 0,
+  "active_lessons": 0,
+  "observation_window_days": 30.0,
+  "observation_window_start_ms": 1787148681595,
+  "observation_window_end_ms": 1789740681595,
+  "evaluated_at_ms": 1789740681595
+}

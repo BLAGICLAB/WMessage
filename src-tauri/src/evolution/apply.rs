@@ -134,6 +134,17 @@ pub fn apply_from_consolidation(proposals: Vec<EvolutionProposal>) {
         return;
     };
     let app = app.clone();
+
+    // [R6 A] shadow 钩子（仅当 evolution.shadow.enabled=true 时）
+    // 克隆 proposals 供 shadow spawn（主 apply 仍用原 proposals）
+    let shadow_proposals = if crate::evolution::observe::shadow::is_enabled(&app) {
+        Some(proposals.clone())
+    } else {
+        None
+    };
+    // [R6 A] 先 clone app 供 shadow spawn（主 spawn 会移走 app）
+    let app_for_shadow = app.clone();
+
     tauri::async_runtime::spawn(async move {
         let app2 = app.clone();
         let r = tauri::async_runtime::spawn_blocking(move || -> Result<ApplyReport, String> {
@@ -191,6 +202,23 @@ pub fn apply_from_consolidation(proposals: Vec<EvolutionProposal>) {
             }
         }
     });
+
+    // [R6 A] fire shadow（fire-and-forget；仅当 flag=true 时执行）
+    if let Some(proposals_shadow) = shadow_proposals {
+        let app_shadow = app_for_shadow;
+        // 并发语义（老板 13:20 拍板后补）：
+        // - app_for_shadow 是 Arc<Wry> 的克隆，廉价（reference count bump）
+        // - 此 spawn 失败（panic）由 tauri::async_runtime 捕获，不传播到主 spawn
+        // - 任务生命周期：spawn_blocking 不阻塞此 spawn；fire-and-forget 无超时（依赖外部观察）
+        // - 共享状态：main spawn 用 proposals 引用，shadow spawn 用 proposals_shadow 克隆——无共享 mutation
+        tauri::async_runtime::spawn(async move {
+            crate::evolution::observe::shadow::shadow_apply_for_batch_with_app(
+                proposals_shadow,
+                &app_shadow,
+            )
+            .await;
+        });
+    }
 }
 
 // ───────────────────────── 单元测试 ─────────────────────────

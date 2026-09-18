@@ -122,3 +122,17 @@ pub fn bot_clear_api_key() -> CommandResult<()> {
 }
 
 pub use super::audit::bot_log_read;
+
+// ───────────────────────── bot_reload_config ─────────────────────────
+
+/// 显式 reload bot-config.json（决策 c：最小 reload endpoint，避免依赖重启）
+///
+/// io::load_config() 每次调用已重读文件 → 此命令作显式触发点。
+/// 返回当前 shadow flag 状态便于诊断。
+#[tauri::command]
+pub fn bot_reload_config(app: AppHandle) -> CommandResult<bool> {
+    let _cfg = io::load_config(&app);
+    let shadow_enabled = crate::evolution::observe::shadow::is_enabled(&app);
+    eprintln!("[bot] config reload: shadow_enabled={shadow_enabled}");
+    Ok(shadow_enabled)
+}

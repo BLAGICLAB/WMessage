@@ -9,6 +9,7 @@ import { ArchivePage } from "./components/ArchivePage";
 import { TrashPage } from "./components/TrashPage";
 import { WorkspacePage } from "./components/WorkspacePage";
 import { SettingsPage } from "./components/SettingsPage";
+import { EvolutionPanel } from "./components/EvolutionPanel";
 import { deleteTaskRows, diffTaskRows, loadTasksFromDb, taskEq, upsertTasks, exportTasksToFile, importTasksFromFile, exportWorkspaceToFile, importWorkspaceFromFile, STORAGE_KEY, sortByOrder, assignInsertOrder, upsertWorkspaceItems } from "./storage";
 import { handleCommandError } from "./lib/errorHandler";
 
@@ -109,7 +110,7 @@ function App() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const tasksRef = useRef<Task[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [view, setView] = useState<"board" | "archive" | "workspace" | "trash" | "settings">("board");
+  const [view, setView] = useState<"board" | "archive" | "workspace" | "trash" | "settings" | "evolution">("board");
   const [theme, setTheme] = useState<ThemeSetting>(getSetting);
 
   // 主题：启动时应用 + 监听其他窗口（挂件）切换 + 跟随系统模式监听系统外观变化
@@ -568,6 +569,15 @@ function App() {
             >
               回收站
             </button>
+            <button
+              className={`min-w-[94px] px-3 py-1.5 text-sm text-[var(--t3)] ${
+                view === "evolution" ? "nm-inset" : "nm-outset"
+              }`}
+              onClick={() => setView("evolution")}
+              title="自进化决策面板"
+            >
+              进化
+            </button>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -615,6 +625,8 @@ function App() {
           onUpdate={updateTask}
           onDelete={hardDeleteTask}
         />
+      ) : view === "evolution" ? (
+        <EvolutionPanel />
       ) : (
         <SettingsPage
           theme={theme}

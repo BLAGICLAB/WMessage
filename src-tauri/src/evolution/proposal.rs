@@ -164,6 +164,24 @@ pub fn proposal_id(category: ProposalCategory, target: &ProposalTarget, summary:
     short_hash(&raw)
 }
 
+/// R7→A 简化（老板 21:10 拍板）：判断 proposal 是否可逆（pure，no IO）
+///
+/// 规则（MVP）：
+/// - ToolSchemaHint：不可逆（改 schema 可能破坏现有 tool 调用）
+/// - High impact：不可逆（高风险需人工确认）
+/// - 其他：可逆
+///
+/// shadow 路径和 activation 路由都依赖它；放 proposal.rs 是其本体属性。
+pub fn is_reversible(p: &EvolutionProposal) -> bool {
+    if matches!(p.category, ProposalCategory::ToolSchemaHint) {
+        return false;
+    }
+    if matches!(p.impact, ImpactLevel::High) {
+        return false;
+    }
+    true
+}
+
 /// 8 字节（16 hex 字符）短 hash。沿用 `trace::compute_trace_id` 的实现模式。
 pub(crate) fn short_hash(s: &str) -> String {
     use std::collections::hash_map::DefaultHasher;
