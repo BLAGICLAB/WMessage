@@ -324,6 +324,9 @@ fn create_task(
         internal_err(req, log, &e);
         return;
     }
+    // 释放 API_RMW_LOCK 再 after_change：emit_fn 是 SSE fanout,
+    // 持锁会串行化所有 API 写跨 SSE 网络延迟
+    drop(_rmw);
     after_change(store, &task, "created", emit_fn, log);
     let _ = req.respond(json_ok(StatusCode(201), &TaskOut::from_task(&task)));
 }
@@ -459,6 +462,9 @@ fn update_task(
         upsert_err(req, log, &e);
         return;
     }
+    // 释放 API_RMW_LOCK 再 after_change：emit_fn 是 SSE fanout,
+    // 持锁会串行化所有 API 写跨 SSE 网络延迟
+    drop(_rmw);
     after_change(store, &t, "updated", emit_fn, log);
     let _ = req.respond(json_ok(StatusCode(200), &TaskOut::from_task(&t)));
 }
@@ -541,6 +547,9 @@ fn delete_task(
         upsert_err(req, log, &e);
         return;
     }
+    // 释放 API_RMW_LOCK 再 after_change：emit_fn 是 SSE fanout,
+    // 持锁会串行化所有 API 写跨 SSE 网络延迟
+    drop(_rmw);
     after_change(store, &t, "deleted", emit_fn, log);
     let _ = req.respond(json_ok(StatusCode(200), &TaskOut::from_task(&t)));
 }
