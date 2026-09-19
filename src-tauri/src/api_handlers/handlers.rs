@@ -367,7 +367,7 @@ fn update_task(
     // RMW 基线 = 本次 load 快照的 updated_at；upsert 写前比对，基线外有写者改行 → 409 拒写。
     // updated_at 为 NULL 的老行用「行存在性」哨兵基线
     // （BASELINE_NULL_ROW：行被删/被改都 409）
-    t.expected_updated_at = Some(t.updated_at.unwrap_or(db::BASELINE_NULL_ROW));
+    db::prepare_for_upsert(&mut t);
 
     if let Some(title) = input.title.as_deref() {
         let tt = title.trim();
@@ -507,7 +507,7 @@ fn delete_task(
     let mut t = tasks[idx].clone();
     // RMW 基线 = 本次 load 快照的 updated_at（同 update_task）；
     // NULL 老行同样走行存在性哨兵基线
-    t.expected_updated_at = Some(t.updated_at.unwrap_or(db::BASELINE_NULL_ROW));
+    db::prepare_for_upsert(&mut t);
     if t.deleted_at.is_some() {
         // 已在回收站：幂等返回当前状态
         let _ = req.respond(json_ok(StatusCode(200), &TaskOut::from_task(&t)));
