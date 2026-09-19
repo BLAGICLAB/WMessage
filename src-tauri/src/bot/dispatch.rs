@@ -392,17 +392,21 @@ mod early_return_events_tests {
 
 // ───────────────────────── 工具层 commit template ─────────────────────────
 
-/// 工具层写库收尾：调 `db::db_upsert` → `broadcast_after_mutation` → 返回
-/// `ToolResult`。覆盖 6 处原 inline `match db_upsert(...) { Ok => broadcast+ok, Err => ok(fail) }`
-/// 模板（bot/tools.rs 行 466/511/691/742/796/874）。
+/// 工具层写库收尾：调 `db::db_upsert_for` → `broadcast_after_mutation` → 返回
+/// `ToolResult`。覆盖 7 处原 inline `match db_upsert(...) { Ok => broadcast+ok, Err => ok(fail) }`
+/// 模板(bot/tools.rs: tool_create_task / tool_complete_task / tool_delete_task /
+/// tool_edit_task / tool_add_subtask / tool_toggle_subtask / tool_remove_subtask)。
 ///
 /// 调用方负责：
-/// 1. RMW 接线（通常 `db::prepare_for_upsert(&mut task)`；tool_complete_task /
-///    tool_delete_task 因 updated_at 要复用 completed_at/deleted_at 时间戳,保留 inline）
-/// 2. 构造成功消息（部分工具需要先 `let st_text = ...` 等中间变量,如 toggle_subtask）
-/// 3. 构造 `refs`（一般 `[TaskRef { id, title }]`）
+/// 1. RMW 接线(4 个标准 tool 用 `db::prepare_for_upsert(&mut task)`;
+///    `tool_complete_task` / `tool_delete_task` 复用 `completed_at` / `deleted_at`
+///    时间戳作为 `updated_at`,inline 自戳;`tool_create_task` 是新建,`expected_updated_at = None`)
+/// 2. 构造成功消息(部分工具需要先 `let st_text = ...` 等中间变量,如 toggle_subtask)
+/// 3. 构造 `refs`(一般 `[TaskRef { id, title }]`)
 ///
-/// 失败消息模板：`{fail_prefix}：{e}`,与历史 6 处 inline 行为 1:1 等价。
+/// 失败消息模板:`{fail_prefix}：{e}`,与历史 7 处 inline 行为 1:1 等价。
+/// **设计要点**:失败也走 `ToolResult::ok` 而非 `err`,让 LLM pipeline severity
+/// classifier 不把"完成任务失败:DB error"误判为 fatal。
 pub(crate) async fn commit_and_report<R: tauri::Runtime>(
     app: &AppHandle<R>,
     task: &crate::db::Task,

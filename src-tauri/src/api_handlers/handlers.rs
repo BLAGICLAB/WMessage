@@ -486,14 +486,8 @@ fn validate_update_input(input: &UpdateReq) -> Result<(), String> {
             return Err("status 必须是 todo/doing/done".to_string());
         }
     }
-    if let Some(fp_raw) = input.file_path.as_deref() {
-        let fp = fp_raw.trim();
-        // 与 create_task 对齐：filePath 同样限长
-        if !fp.is_empty() {
-            if let Some(e) = over_limit(fp, API_MAX_FILE_PATH, "文件路径") {
-                return Err(e);
-            }
-        }
+    if let Some(e) = super::validate::check_field(input.file_path.as_deref(), API_MAX_FILE_PATH, "文件路径") {
+        return Err(e);
     }
     if let Some(e) = super::validate::check_field(input.due.as_deref(), API_MAX_DUE, "截止时间") {
         return Err(e);

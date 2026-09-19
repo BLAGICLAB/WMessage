@@ -5,7 +5,7 @@
 ///
 /// 列 ID 字面量与前端 `src/types.ts` 的 ColumnId 保持一致；中文 label
 /// 与前端 `src/format.ts` 后续若引入同名函数时对齐。
-pub fn column_label(column: &str) -> &'static str {
+pub(crate) fn column_label(column: &str) -> &'static str {
     match column {
         "doing" => "进行中",
         "done" => "已完成",

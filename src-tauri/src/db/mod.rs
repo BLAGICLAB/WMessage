@@ -434,9 +434,15 @@ mod tests {
         let mut t = mk_task("t1", "test");
         t.updated_at = None;
         t.expected_updated_at = None;
+        let before_ms = chrono::Utc::now().timestamp_millis();
         prepare_for_upsert(&mut t);
         assert_eq!(t.expected_updated_at, Some(BASELINE_NULL_ROW));
-        assert!(t.updated_at.is_some(), "updated_at 必须被刷新为 now");
+        // 防止 `Some(0)` 这种"非 now 但 is_some"的回归
+        let stamped = t.updated_at.expect("updated_at 必须被刷新");
+        assert!(
+            stamped >= before_ms,
+            "updated_at 必须 >= 调用前时间戳; got {stamped}, pre-call {before_ms}"
+        );
     }
 
     /// 删任务后重启场景：库里只剩 t1，老 data.json 还有 t1/t2/t3 → 首次评估补回 t2/t3，
@@ -1151,7 +1157,7 @@ mod tests {
 
         // 快照时行是 NULL（基线=行存在性），但窗口内其他写者已改（updated_at=100 非 NULL）→ 拒
         let mut b = mk_task("t1", "覆盖者");
-        b.updated_at = None; // 显式 None,触发 prepare_for_upsert 的 BASELINE_NULL_ROW 哨兵分支
+        b.updated_at = None; // 显式 None，触发 prepare_for_upsert 的 BASELINE_NULL_ROW 哨兵分支
         prepare_for_upsert(&mut b);
         b.updated_at = Some(200);
         let err = upsert_tasks(&conn, std::slice::from_ref(&b)).unwrap_err();

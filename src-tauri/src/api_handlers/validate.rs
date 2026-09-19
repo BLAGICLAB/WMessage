@@ -78,12 +78,18 @@ mod tests {
         assert!(e.contains("备注"));
     }
 
-    /// 边界用例:`chars().count() == max` 严格要超限,
+    /// 边界用例:`chars().count() == max` 不得触发超限,
     /// 防 over_limit 从 `>` 退化成 `>=` 的 off-by-one 回归
     #[test]
-    fn check_field_boundary_len_equals_max_is_within_limit() {
+    fn check_field_len_equals_max_is_within_limit() {
         // max=3, 输入 3 字符 → 不超限(None)
         assert_eq!(check_field(Some("abc"), 3, "备注"), None);
+    }
+
+    /// 紧邻边界:`chars().count() == max + 1` 必须触发超限,
+    /// 防 off-by-one 回归
+    #[test]
+    fn check_field_len_equals_max_plus_one_is_over_limit() {
         // max=3, 输入 4 字符 → 超限(Some)
         assert!(check_field(Some("abcd"), 3, "备注").is_some());
     }
