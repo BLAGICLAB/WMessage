@@ -15,7 +15,13 @@ static RATE: Mutex<(u64, u32)> = Mutex::new((0, 0));
 /// 每分钟最多 `RATE_LIMIT_PER_MIN` 次；窗口基于毫秒时间戳
 pub(crate) fn rate_check() -> bool {
     let now = crate::api_handlers::util::now_ms() as u64;
-    let mut g = RATE.lock().unwrap_or_else(|e| e.into_inner());
+    // 锁 poisoning:持有 RATE 的线程 panic 会让 state 半修改。
+    // 仍然 into_inner() 恢复锁访问(stop-the-world 不接受),
+    // 但 eprintln! 一行标记,日志聚合 / 监控能据此告警。
+    let mut g = RATE.lock().unwrap_or_else(|e| {
+        eprintln!("[mutex_poisoned] api_handlers::ratelimit::RATE: {e:?}");
+        e.into_inner()
+    });
     if now.saturating_sub(g.0) > 60_000 {
         *g = (now, 0);
     }

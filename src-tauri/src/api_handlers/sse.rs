@@ -44,7 +44,11 @@ pub(crate) fn register_sse_writer(
     stop: Arc<AtomicBool>,
     handle: std::thread::JoinHandle<()>,
 ) {
-    let mut g = SSE_WRITERS.lock().unwrap_or_else(|e| e.into_inner());
+    // 锁 poisoning 审计:同 ratelimit::RATE 注释
+    let mut g = SSE_WRITERS.lock().unwrap_or_else(|e| {
+        eprintln!("[mutex_poisoned] api_handlers::sse::SSE_WRITERS: {e:?}");
+        e.into_inner()
+    });
     // 顺手收割已退出（客户端断开）的 writer，防注册表无界增长
     g.retain(|w| !w.handle.is_finished());
     g.push(SseWriterReg {
@@ -58,7 +62,11 @@ pub(crate) fn register_sse_writer(
 /// 超时仍不退出的 drop handle（detach）并记 ERROR 审计「sse_writer_leaked」。
 pub(crate) fn stop_sse_writers(hub_key: usize, timeout: Duration, audit: &mut dyn FnMut(&str)) {
     let writers = {
-        let mut g = SSE_WRITERS.lock().unwrap_or_else(|e| e.into_inner());
+        // 锁 poisoning 审计:同 ratelimit::RATE 注释
+    let mut g = SSE_WRITERS.lock().unwrap_or_else(|e| {
+        eprintln!("[mutex_poisoned] api_handlers::sse::SSE_WRITERS: {e:?}");
+        e.into_inner()
+    });
         let mut taken = Vec::new();
         let mut i = 0;
         while i < g.len() {
@@ -115,7 +123,11 @@ pub(crate) fn sse_connect(req: Request, store: &Arc<dyn TaskStore>, query: &str)
     // （否则安静期内尸体占满名额 → 新连接 503）
     let alive = Arc::new(());
     {
-        let mut clients = hub.clients.lock().unwrap_or_else(|e| e.into_inner());
+        // 锁 poisoning 审计:同 SSE_WRITERS 注释
+        let mut clients = hub.clients.lock().unwrap_or_else(|e| {
+            eprintln!("[mutex_poisoned] api_handlers::sse::hub.clients: {e:?}");
+            e.into_inner()
+        });
         clients.retain(|(_, token)| token.upgrade().is_some());
         // SSE 连接数上限——超限 503，防连接洪泛耗尽线程
         if clients.len() >= MAX_SSE_CLIENTS {

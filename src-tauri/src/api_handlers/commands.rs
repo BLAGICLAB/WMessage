@@ -28,7 +28,12 @@ use super::types::{ApiInfo, ApiStatus};
 pub fn api_start(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandResult<ApiInfo> {
     // 检查与写入在同一把锁内完成——锁释放后才 start 会让并发 invoke 双发都过检查，
     // 第二个收到误导的「端口占用」（服务其实已被第一个起好）
-    let mut g = state.0.lock().map_err(|e| e.to_string())?;
+    // 锁 poisoning 审计:这里 return error 给 caller,
+    // 但 eprintln! 一行标记 poisoning 事件,日志聚合能据此告警
+    let mut g = state.0.lock().map_err(|e| {
+        eprintln!("[mutex_poisoned] api_handlers::commands::state.0: {e:?}");
+        e.to_string()
+    })?;
     api_start_locked(&app, &mut g)
 }
 
@@ -124,7 +129,12 @@ fn api_stop_impl<R: tauri::Runtime>(
     state: &ApiState,
     clear_enabled: bool,
 ) -> CommandResult<()> {
-    let mut g = state.0.lock().map_err(|e| e.to_string())?;
+    // 锁 poisoning 审计:这里 return error 给 caller,
+    // 但 eprintln! 一行标记 poisoning 事件,日志聚合能据此告警
+    let mut g = state.0.lock().map_err(|e| {
+        eprintln!("[mutex_poisoned] api_handlers::commands::state.0: {e:?}");
+        e.to_string()
+    })?;
     api_stop_locked(app, &mut g, clear_enabled)
 }
 
@@ -209,7 +219,12 @@ pub fn api_rotate_token(
     // api_stop/api_start 各自再抢锁」，窗口内用户并发 stop 会被 rotate 把服务重新拉起
     // （违背用户关闭意图）。锁内只做端口绑定/join 等毫秒级操作，无死锁风险
     // （locked 变体不再抢同一把锁）。
-    let mut g = state.0.lock().map_err(|e| e.to_string())?;
+    // 锁 poisoning 审计:这里 return error 给 caller,
+    // 但 eprintln! 一行标记 poisoning 事件,日志聚合能据此告警
+    let mut g = state.0.lock().map_err(|e| {
+        eprintln!("[mutex_poisoned] api_handlers::commands::state.0: {e:?}");
+        e.to_string()
+    })?;
     let was_running = g.is_some();
     if !was_running {
         write_token_file(&path, &token)?;
