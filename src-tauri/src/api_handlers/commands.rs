@@ -48,7 +48,7 @@ fn api_start_locked(app: &AppHandle, g: &mut Option<RunningApi>) -> CommandResul
         if alive {
             return Ok(ApiInfo {
                 port: API_PORT,
-                token: load_or_create_token(app)?,
+                token: Some(load_or_create_token(app)?),
             });
         }
     }
@@ -97,7 +97,7 @@ fn api_start_locked(app: &AppHandle, g: &mut Option<RunningApi>) -> CommandResul
     write_enabled_flag(app);
     Ok(ApiInfo {
         port: API_PORT,
-        token,
+        token: Some(token),
     })
 }
 
@@ -180,9 +180,9 @@ pub fn api_status(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandR
     // load_or_create_token，从未开启过 API 的用户数据目录里也会落 runtime/flags/api-token.txt。
     // 前端只在 enabled 时展示 token（SettingsPage），disabled 态回空串即可。
     let token = if enabled {
-        load_or_create_token(&app)?
+        Some(load_or_create_token(&app)?)
     } else {
-        String::new()
+        None
     };
     Ok(ApiStatus {
         enabled,
@@ -214,7 +214,7 @@ pub fn api_rotate_token(
         write_token_file(&path, &token)?;
         return Ok(ApiInfo {
             port: API_PORT,
-            token,
+            token: Some(token),
         });
     }
     // 运行中：先落新 token（api_start 从文件读取），再重启生效。
