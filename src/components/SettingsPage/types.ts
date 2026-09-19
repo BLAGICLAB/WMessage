@@ -36,7 +36,9 @@ export function genModelId(): string {
 export type ApiStatus = {
   enabled: boolean;
   port: number;
-  token: string;
+  /// disabled 状态下后端用 `skip_serializing_if` 剔除字段,TS 端拿 undefined
+  /// (与 Rust 端 `Option<String>` + `skip_serializing_if = "Option::is_none"` 同步)
+  token?: string;
 };
 
 export type SkillOutcomeKind = "done" | "await_user" | "failed_recoverable" | "terminated";

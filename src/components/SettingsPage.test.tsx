@@ -36,7 +36,8 @@ mocks.invokeMock.mockImplementation(async (cmd: string) => {
     case "py_env_check":
       return { available: false, python: "", version: "", libs: [] };
     case "api_status":
-      return { enabled: false, port: 4763, token: "" };
+      // 模拟 disabled 状态:后端用 skip_serializing_if 剔除 token 字段
+      return { enabled: false, port: 4763 };
     case "skills_list":
       return [];
     case "migration_rules_load":

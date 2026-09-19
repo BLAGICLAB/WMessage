@@ -627,6 +627,9 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
   };
 
   const copyToken = async () => {
+    // disabled 状态下后端字段缺席(见 ApiStatus.token 注释),直接 return 避免
+    // 把 undefined 喂给 clipboard.writeText
+    if (!status.token) return;
     try {
       await navigator.clipboard.writeText(status.token);
       setCopied(true);

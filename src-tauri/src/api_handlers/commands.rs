@@ -178,7 +178,8 @@ pub fn api_status(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandR
     drop(g);
     // 未启用时不读/生成 token——否则每次查状态都
     // load_or_create_token，从未开启过 API 的用户数据目录里也会落 runtime/flags/api-token.txt。
-    // 前端只在 enabled 时展示 token（SettingsPage），disabled 态回空串即可。
+    // 前端只在 enabled 时展示 token(SettingsPage),disabled 态字段直接缺席
+    // (ApiStatus 用 skip_serializing_if = "Option::is_none" 剔除,见 types.rs)
     let token = if enabled {
         Some(load_or_create_token(&app)?)
     } else {
