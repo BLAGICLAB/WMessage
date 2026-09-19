@@ -74,7 +74,7 @@ mod tests {
             files: None,
             file_path: None,
             file_is_dir: None,
-            column: "todo".into(),
+            column: crate::db::TaskStatus::Todo,
             subtasks: None,
             completed_at: None,
             archived: None,

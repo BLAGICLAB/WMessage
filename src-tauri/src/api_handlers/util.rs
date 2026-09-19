@@ -30,7 +30,7 @@ pub(crate) const API_MAX_TAGS: usize = crate::bot::MAX_TAGS;
 pub(crate) const API_MAX_FILE_PATH: usize = 1024;
 
 pub(crate) fn valid_status(s: &str) -> bool {
-    matches!(s, "todo" | "doing" | "done")
+    s.parse::<crate::db::TaskStatus>().is_ok()
 }
 
 pub(crate) fn over_limit(v: &str, max: usize, what: &str) -> Option<String> {

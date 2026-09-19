@@ -14,7 +14,7 @@ use tauri::{AppHandle, Emitter};
 use crate::bot::dispatch::{commit_and_report, parse_args};
 use crate::bot::format::column_label;
 use crate::bot::registry::ToolResult;
-use crate::db::prepare_for_upsert;
+use crate::db::{prepare_for_upsert, TaskStatus};
 use crate::bot::{
     audit_log, check_len, escape_for_log, load_config, MAX_DUE, MAX_KEYWORD, MAX_NOTE,
     MAX_SUBTASK_TEXT, MAX_TAGS, MAX_TAG_LEN, MAX_TITLE,
@@ -149,7 +149,7 @@ async fn active_tasks(app: &AppHandle) -> Vec<crate::db::Task> {
         .await
         .unwrap_or_default()
         .into_iter()
-        .filter(|t| t.deleted_at.is_none() && t.archived != Some(true) && t.column != "done")
+        .filter(|t| t.deleted_at.is_none() && t.archived != Some(true) && t.column != TaskStatus::Done)
         .collect()
 }
 
@@ -162,7 +162,7 @@ pub(crate) async fn tool_list_tasks(app: &AppHandle) -> crate::bot::registry::To
     }
     let mut lines: Vec<String> = Vec::new();
     for t in &tasks {
-        let col = column_label(&t.column);
+        let col = column_label(t.column);
         let due = t
             .due
             .as_deref()
@@ -204,7 +204,7 @@ pub(crate) async fn tool_query_single_task(
     let Some(t) = tasks.into_iter().find(|t| t.id == id) else {
         return ToolResult::ok(format!("未找到 id={id} 的任务卡"), Vec::new());
     };
-    let col = column_label(&t.column);
+    let col = column_label(t.column);
     let mut lines: Vec<String> = vec![format!("- [{}] {}（id={}）", col, t.title, t.id)];
     if let Some(note) = &t.note {
         if !note.is_empty() {
@@ -319,7 +319,7 @@ pub(crate) async fn tool_search_tasks(
     });
     let mut lines: Vec<String> = Vec::new();
     for t in &hits {
-        let col = column_label(&t.column);
+        let col = column_label(t.column);
         let arch = if t.archived == Some(true) {
             "（已归档）"
         } else {
@@ -386,8 +386,8 @@ pub(crate) async fn tool_create_task(
         file_path: None,
         file_is_dir: None,
         column: match v["column"].as_str() {
-            Some("doing") => "doing".to_string(),
-            _ => "todo".to_string(),
+            Some("doing") => TaskStatus::Doing,
+            _ => TaskStatus::Todo,
         },
         subtasks: None,
         completed_at: None,
@@ -445,7 +445,7 @@ pub(crate) async fn tool_complete_task(
         Err(e) => return ToolResult::ok(e.to_string(), Vec::new()),
     };
     let mut next = task.clone();
-    next.column = "done".into();
+    next.column = TaskStatus::Done;
     next.completed_at = Some(chrono::Utc::now().timestamp_millis());
     next.expected_updated_at = next.updated_at; // RMW 写回基线 = 快照 updated_at
     next.updated_at = next.completed_at;
@@ -645,12 +645,14 @@ pub(crate) async fn tool_edit_task(
         apply_files_to_task(&mut next, files);
         changed.push("绑定文件");
     }
-    if let Some(c) = v["column"].as_str() {
-        let c = c.trim();
-        if matches!(c, "todo" | "doing" | "done") && c != next.column {
-            next.column = c.to_string();
+    if let Some(c) = v["column"]
+        .as_str()
+        .and_then(|s| s.trim().parse::<TaskStatus>().ok())
+    {
+        if c != next.column {
+            next.column = c;
             // 列变更补完成语义（与主窗口一致）
-            if c == "done" {
+            if c == TaskStatus::Done {
                 next.completed_at = Some(chrono::Utc::now().timestamp_millis());
                 next.archived = Some(false);
             } else {
@@ -1530,7 +1532,7 @@ mod task_files_arg_tests {
             files: None,
             file_path: Some("/old.txt".into()),
             file_is_dir: Some(false),
-            column: "todo".to_string(),
+            column: TaskStatus::Todo,
             subtasks: None,
             completed_at: None,
             archived: None,

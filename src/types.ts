@@ -1,3 +1,7 @@
+// 单一来源契约：与后端 `crate::db::TaskStatus` (src-tauri/src/db/tasks.rs) 一一对应。
+// 后端 wire format 是 lowercase 字符串 (serde 自定义实现),前端 union 必须同步;
+// 任何新增/删减 status 都需要同步改 Rust enum + 前端 union + DB 列约束 + 注册表 JSON schema。
+// 漂移会在 serde 边界静默失败(以 400 status 错或 column 校验失败形式出现)。
 export type ColumnId = "todo" | "doing" | "done";
 
 /** 工作区静态链接（与 Rust db::WorkspaceLink 对应） */

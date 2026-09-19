@@ -307,7 +307,7 @@ fn create_task(
             .map(|p| p.trim().to_string())
             .filter(|p| !p.is_empty()),
         file_is_dir: input.file_is_dir,
-        column: status.clone(),
+        column: status.parse().expect("status was validated by valid_status() above"),
         subtasks: None,
         completed_at: if status == "done" { Some(now) } else { None },
         archived: if status == "done" { Some(false) } else { None },
@@ -398,16 +398,21 @@ fn update_task(
         t.note = super::validate::take_trimmed_string(input.note.as_deref());
     }
     if let Some(s) = input.status.as_deref() {
-        if !s.is_empty() && s != t.column {
-            let now = now_ms();
-            if s == "done" {
-                t.completed_at = Some(now);
-                t.archived = Some(false);
-            } else if t.column == "done" {
-                t.completed_at = None;
-                t.archived = None;
+        if !s.is_empty() {
+            // s was validated by validate_update_input (uses valid_status) — parse is safe
+            let new_status: crate::db::TaskStatus =
+                s.parse().expect("validated by valid_status");
+            if new_status != t.column {
+                let now = now_ms();
+                if new_status == crate::db::TaskStatus::Done {
+                    t.completed_at = Some(now);
+                    t.archived = Some(false);
+                } else if t.column == crate::db::TaskStatus::Done {
+                    t.completed_at = None;
+                    t.archived = None;
+                }
+                t.column = new_status;
             }
-            t.column = s.to_string();
         }
     }
     if let Some(fp) = input.file_path.as_deref() {

@@ -265,7 +265,7 @@ async fn find_due_tasks(app: &AppHandle) -> Vec<crate::db::Task> {
         .filter(|t| {
             t.deleted_at.is_none()
                 && t.archived != Some(true)
-                && t.column != "done"
+                && t.column != crate::db::TaskStatus::Done
                 && t.schedule
                     .as_deref()
                     .map(str::trim)
@@ -278,7 +278,7 @@ async fn find_due_tasks(app: &AppHandle) -> Vec<crate::db::Task> {
     let due: Vec<crate::db::Task> = all
         .into_iter()
         .filter_map(|t| {
-            if t.deleted_at.is_some() || t.archived == Some(true) || t.column == "done" {
+            if t.deleted_at.is_some() || t.archived == Some(true) || t.column == crate::db::TaskStatus::Done {
                 return None;
             }
             let Some(sched) = t

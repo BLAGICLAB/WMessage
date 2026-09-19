@@ -21,7 +21,7 @@ impl TaskOut {
     pub fn from_task(t: &db::Task) -> Self {
         TaskOut {
             inner: t.clone(),
-            status: t.column.clone(),
+            status: t.column.as_str().to_string(),
         }
     }
 }
@@ -40,7 +40,7 @@ mod tests {
             files: None,
             file_path: None,
             file_is_dir: None,
-            column: "doing".into(),
+            column: crate::db::TaskStatus::Doing,
             subtasks: None,
             completed_at: None,
             archived: None,

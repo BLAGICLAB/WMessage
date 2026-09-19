@@ -216,7 +216,7 @@ async fn run_round(app: &AppHandle) {
     };
     let active: Vec<(String, String, String)> = all
         .iter()
-        .filter(|t| t.deleted_at.is_none() && t.archived != Some(true) && t.column != "done")
+        .filter(|t| t.deleted_at.is_none() && t.archived != Some(true) && t.column != crate::db::TaskStatus::Done)
         .filter_map(|t| {
             t.due
                 .as_deref()

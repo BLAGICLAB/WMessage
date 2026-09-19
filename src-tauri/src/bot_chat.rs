@@ -1388,7 +1388,7 @@ where
         .into_iter()
         .find(|t| t.id == task_id && t.deleted_at.is_none())
         .ok_or("任务卡不存在或已在回收站")?;
-    if task.column == "done" {
+    if task.column == crate::db::TaskStatus::Done {
         return Err(CommandError::TaskInvalidState {
             reason: "这张卡已标记完成；如需重新执行，先在卡片上取消完成".into(),
         });
@@ -1461,7 +1461,7 @@ where
             .map(|t| t.column)
     });
     if let Some(artifacts) =
-        crate::bot_artifacts::should_emit(app, task_id, origin, task_column.as_deref()).await
+        crate::bot_artifacts::should_emit(app, task_id, origin, task_column.as_ref().map(|s| s.as_str())).await
     {
         let _ = app.emit(
             "artifact-batch-ready",

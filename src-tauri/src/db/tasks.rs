@@ -23,6 +23,67 @@ pub struct TaskFile {
 
 pub const MAX_TASK_FILES: usize = 10;
 
+/// 任务状态(三列看板：todo / doing / done)。
+///
+/// **单一来源**:所有后端「状态列」比较 / 赋值 / 序列化都走此 enum。
+/// 序列化 / 反序列化都走裸字符串(serde 自定义实现),与前端
+/// `src/types.ts` 的 `ColumnId = "todo" | "doing" | "done"` 保持字节级一致;
+/// wire format 与 db::Task::column 改 enum 前的 String 完全兼容,不需要迁移。
+/// 前端代码不需要改;改 enum 只是后端内部表达。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TaskStatus {
+    Todo,
+    Doing,
+    Done,
+}
+
+impl TaskStatus {
+    /// 裸字符串表示(wire / DB / 前端共享的 3 个值)
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Todo => "todo",
+            Self::Doing => "doing",
+            Self::Done => "done",
+        }
+    }
+
+    /// 全部 variant,声明顺序(用于 registry JSON schema / 校验枚举 / UI 渲染顺序)
+    pub const ALL: &'static [TaskStatus] = &[Self::Todo, Self::Doing, Self::Done];
+}
+
+impl std::str::FromStr for TaskStatus {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "todo" => Ok(Self::Todo),
+            "doing" => Ok(Self::Doing),
+            "done" => Ok(Self::Done),
+            other => Err(format!("invalid task status: {other}")),
+        }
+    }
+}
+
+impl std::fmt::Display for TaskStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+// 字符串 ↔ enum 的 serde 手写实现:wire format 保持与原来 `String` 字段完全一致,
+// 前端按字符串接收无感知。
+impl serde::Serialize for TaskStatus {
+    fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        ser.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for TaskStatus {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        let s = <&str>::deserialize(de)?;
+        s.parse().map_err(serde::de::Error::custom)
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Task {
@@ -35,7 +96,7 @@ pub struct Task {
     pub files: Option<Vec<TaskFile>>,
     pub file_path: Option<String>,
     pub file_is_dir: Option<bool>,
-    pub column: String,
+    pub column: TaskStatus,
     pub subtasks: Option<Vec<Subtask>>,
     pub completed_at: Option<i64>,
     pub archived: Option<bool>,
@@ -174,7 +235,7 @@ pub fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), S
             tags,
             t.file_path,
             t.file_is_dir.map(|b| b as i64),
-            t.column,
+            t.column.as_str(),
             subtasks,
             t.completed_at,
             t.archived.map(|b| b as i64),
@@ -260,6 +321,9 @@ pub fn load_all(conn: &rusqlite::Connection) -> Result<Vec<super::Task>, String>
             bot_assigned,
             files,
         ) = r.map_err(|e| e.to_string())?;
+        // col 从 DB 读出仍是 String(列类型 TEXT),parse 到 TaskStatus enum;
+        // parse 失败 = 数据损坏,沿用外层 Result<_, String> 向上抛
+        let col: TaskStatus = col.parse().map_err(|e: String| e)?;
         let tags = match tags {
             Some(s) => serde_json::from_str(&s).ok(),
             None => None,
