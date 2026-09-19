@@ -1151,6 +1151,7 @@ mod tests {
 
         // 快照时行是 NULL（基线=行存在性），但窗口内其他写者已改（updated_at=100 非 NULL）→ 拒
         let mut b = mk_task("t1", "覆盖者");
+        b.updated_at = None; // 显式 None,触发 prepare_for_upsert 的 BASELINE_NULL_ROW 哨兵分支
         prepare_for_upsert(&mut b);
         b.updated_at = Some(200);
         let err = upsert_tasks(&conn, std::slice::from_ref(&b)).unwrap_err();

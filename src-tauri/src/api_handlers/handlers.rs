@@ -387,7 +387,9 @@ fn update_task(
         let _ = req.respond(json_err(StatusCode(400), &e));
         return;
     }
-    t.note = super::validate::take_trimmed_string(input.note.as_deref());
+    if input.note.is_some() {
+        t.note = super::validate::take_trimmed_string(input.note.as_deref());
+    }
     if let Some(s) = input.status.as_deref() {
         if !s.is_empty() {
             if !valid_status(s) {
@@ -446,7 +448,9 @@ fn update_task(
         let _ = req.respond(json_err(StatusCode(400), &e));
         return;
     }
-    t.due = super::validate::take_trimmed_string(input.due.as_deref());
+    if input.due.is_some() {
+        t.due = super::validate::take_trimmed_string(input.due.as_deref());
+    }
     if let Some(tags) = input.tags {
         if tags.len() > API_MAX_TAGS {
             let _ = req.respond(json_err(
