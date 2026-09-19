@@ -421,8 +421,8 @@ pub(crate) async fn tool_create_task(
     commit_and_report(
         app,
         &task,
-        format!("已新建任务「{}」{files_warn}", task.title),
-        vec![crate::bot_chat::TaskRef {
+        || format!("已新建任务「{}」{files_warn}", task.title),
+        || vec![crate::bot_chat::TaskRef {
             id: task.id.clone(),
             title: task.title.clone(),
         }],
@@ -452,8 +452,8 @@ pub(crate) async fn tool_complete_task(
     commit_and_report(
         app,
         &next,
-        format!("已完成任务「{}」", task.title),
-        vec![crate::bot_chat::TaskRef {
+        || format!("已完成任务「{}」", task.title),
+        || vec![crate::bot_chat::TaskRef {
             id: task.id.clone(),
             title: task.title.clone(),
         }],
@@ -493,8 +493,8 @@ pub(crate) async fn tool_delete_task(
     commit_and_report(
         app,
         &next,
-        format!("已删除任务「{}」（进回收站）", task.title),
-        vec![crate::bot_chat::TaskRef {
+        || format!("已删除任务「{}」（进回收站）", task.title),
+        || vec![crate::bot_chat::TaskRef {
             id: task.id.clone(),
             title: task.title.clone(),
         }],
@@ -668,12 +668,12 @@ pub(crate) async fn tool_edit_task(
     commit_and_report(
         app,
         &next,
-        format!(
+        || format!(
             "已更新任务「{}」（{}）{files_warn}",
             next.title,
             changed.join("、")
         ),
-        vec![crate::bot_chat::TaskRef {
+        || vec![crate::bot_chat::TaskRef {
             id: next.id.clone(),
             title: next.title.clone(),
         }],
@@ -715,8 +715,8 @@ pub(crate) async fn tool_add_subtask(
     commit_and_report(
         app,
         &next,
-        format!("已给任务「{}」添加子任务「{}」", next.title, text),
-        vec![crate::bot_chat::TaskRef {
+        || format!("已给任务「{}」添加子任务「{}」", next.title, text),
+        || vec![crate::bot_chat::TaskRef {
             id: next.id.clone(),
             title: next.title.clone(),
         }],
@@ -777,7 +777,7 @@ pub(crate) async fn tool_toggle_subtask(
     commit_and_report(
         app,
         &next,
-        format!(
+        || format!(
             "子任务「{st_text}」已{}",
             if done_mark {
                 "勾选 ✓"
@@ -785,7 +785,7 @@ pub(crate) async fn tool_toggle_subtask(
                 "取消勾选"
             }
         ),
-        vec![crate::bot_chat::TaskRef {
+        || vec![crate::bot_chat::TaskRef {
             id: next.id.clone(),
             title: next.title.clone(),
         }],
@@ -839,8 +839,8 @@ pub(crate) async fn tool_remove_subtask(
     commit_and_report(
         app,
         &next,
-        format!("已删除任务「{}」的子任务「{}」", next.title, removed_text),
-        vec![crate::bot_chat::TaskRef {
+        || format!("已删除任务「{}」的子任务「{}」", next.title, removed_text),
+        || vec![crate::bot_chat::TaskRef {
             id: next.id.clone(),
             title: next.title.clone(),
         }],

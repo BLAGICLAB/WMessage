@@ -410,14 +410,16 @@ mod early_return_events_tests {
 pub(crate) async fn commit_and_report<R: tauri::Runtime>(
     app: &AppHandle<R>,
     task: &crate::db::Task,
-    success_msg: String,
-    refs: Vec<crate::bot_chat::TaskRef>,
+    // thunk(impl FnOnce)而非直接 String/Vec:成功路径才求值,
+    // 失败路径(E)直接 drop 闭包,不分配 throw away。
+    success_msg: impl FnOnce() -> String,
+    refs: impl FnOnce() -> Vec<crate::bot_chat::TaskRef>,
     fail_prefix: &'static str,
 ) -> crate::bot::registry::ToolResult {
     match crate::db::db_upsert_for(app, vec![task.clone()]).await {
         Ok(()) => {
             broadcast_after_mutation(app, vec![task.clone()], Vec::new());
-            crate::bot::registry::ToolResult::ok(success_msg, refs)
+            crate::bot::registry::ToolResult::ok(success_msg(), refs())
         }
         Err(e) => crate::bot::registry::ToolResult::ok(
             format!("{fail_prefix}：{e}"),
