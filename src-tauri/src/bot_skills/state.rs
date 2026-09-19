@@ -106,7 +106,7 @@ pub(crate) fn reopen_failed_run_for_rollback<R: tauri::Runtime>(
     session_id: Option<&str>,
 ) -> bool {
     let registry = skill_runs(app);
-    let mut runs = registry.lock().unwrap_or_else(|e| e.into_inner());
+    let mut runs = registry.lock().unwrap_or_else(|e| { eprintln!("[mutex_poisoned] bot_skills::state::skill_runs: {e:?}"); e.into_inner() });
     let Some(run) = runs.get_mut(name) else {
         return false;
     };
@@ -125,7 +125,7 @@ pub(crate) fn restore_failed_run_after_rollback<R: tauri::Runtime>(
     session_id: Option<&str>,
 ) {
     let registry = skill_runs(app);
-    let mut runs = registry.lock().unwrap_or_else(|e| e.into_inner());
+    let mut runs = registry.lock().unwrap_or_else(|e| { eprintln!("[mutex_poisoned] bot_skills::state::skill_runs: {e:?}"); e.into_inner() });
     if let Some(run) = runs.get_mut(name) {
         if run.state == SkillState::Running && run.session_id.as_deref() == session_id {
             run.state = SkillState::Failed;
@@ -149,7 +149,7 @@ pub fn active_skill_run_for<R: tauri::Runtime>(
     session_id: Option<&str>,
 ) -> Option<SkillRun> {
     let registry = skill_runs(app);
-    let guard = registry.lock().unwrap_or_else(|e| e.into_inner());
+    let guard = registry.lock().unwrap_or_else(|e| { eprintln!("[mutex_poisoned] bot_skills::state::skill_runs: {e:?}"); e.into_inner() });
     guard
         .values()
         .find(|r| !matches!(r.state, SkillState::Loaded) && r.session_id.as_deref() == session_id)
@@ -163,7 +163,7 @@ pub fn active_skill_run_for<R: tauri::Runtime>(
 /// 本轮执行中新进入终态的 run 不受影响（清理发生在入口，轮内状态机照常可见）。
 pub fn clear_terminal_skill_runs<R: tauri::Runtime>(app: &AppHandle<R>) {
     let registry = skill_runs(app);
-    let mut guard = registry.lock().unwrap_or_else(|e| e.into_inner());
+    let mut guard = registry.lock().unwrap_or_else(|e| { eprintln!("[mutex_poisoned] bot_skills::state::skill_runs: {e:?}"); e.into_inner() });
     guard.retain(|_, r| {
         !matches!(
             r.state,
@@ -231,7 +231,7 @@ pub fn test_hook_skill_run_state<R: tauri::Runtime>(
     name: &str,
 ) -> Option<SkillState> {
     let registry = skill_runs(app);
-    let guard = registry.lock().unwrap_or_else(|e| e.into_inner());
+    let guard = registry.lock().unwrap_or_else(|e| { eprintln!("[mutex_poisoned] bot_skills::state::skill_runs: {e:?}"); e.into_inner() });
     guard.get(name).map(|r| r.state.clone())
 }
 
@@ -281,7 +281,7 @@ pub(crate) fn test_skill_run_state<R: tauri::Runtime>(
     name: &str,
 ) -> Option<SkillState> {
     let registry = skill_runs(app);
-    let guard = registry.lock().unwrap_or_else(|e| e.into_inner());
+    let guard = registry.lock().unwrap_or_else(|e| { eprintln!("[mutex_poisoned] bot_skills::state::skill_runs: {e:?}"); e.into_inner() });
     guard.get(name).map(|r| r.state.clone())
 }
 
@@ -336,14 +336,14 @@ mod tests {
         paused.state = SkillState::Paused;
         {
             let registry = skill_runs(&app);
-            let mut g = registry.lock().unwrap_or_else(|e| e.into_inner());
+            let mut g = registry.lock().unwrap_or_else(|e| { eprintln!("[mutex_poisoned] bot_skills::state::skill_runs: {e:?}"); e.into_inner() });
             g.insert(zombie.into(), failed);
             g.insert("test-zombie-clear-live".into(), paused);
         }
         clear_terminal_skill_runs(&app);
         {
             let registry = skill_runs(&app);
-            let g = registry.lock().unwrap_or_else(|e| e.into_inner());
+            let g = registry.lock().unwrap_or_else(|e| { eprintln!("[mutex_poisoned] bot_skills::state::skill_runs: {e:?}"); e.into_inner() });
             assert!(g.get(zombie).is_none(), "Failed 残留应被清除");
             assert!(
                 g.get("test-zombie-clear-live").is_some(),
@@ -352,7 +352,7 @@ mod tests {
         }
         // 收尾：不给其他测试留状态
         let registry = skill_runs(&app);
-        let mut g = registry.lock().unwrap_or_else(|e| e.into_inner());
+        let mut g = registry.lock().unwrap_or_else(|e| { eprintln!("[mutex_poisoned] bot_skills::state::skill_runs: {e:?}"); e.into_inner() });
         g.remove("test-zombie-clear-live");
     }
 
@@ -387,7 +387,7 @@ mod tests {
         assert_eq!(test_skill_run_state(&app, name), Some(SkillState::Failed));
         // 会话不匹配 → 不复原
         let registry = skill_runs(&app);
-        let mut runs = registry.lock().unwrap_or_else(|e| e.into_inner());
+        let mut runs = registry.lock().unwrap_or_else(|e| { eprintln!("[mutex_poisoned] bot_skills::state::skill_runs: {e:?}"); e.into_inner() });
         runs.get_mut(name).unwrap().state = SkillState::Running;
         drop(runs);
         restore_failed_run_after_rollback(&app, name, Some("other"));

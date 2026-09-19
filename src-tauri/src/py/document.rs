@@ -1101,7 +1101,7 @@ pub async fn run_doc_revisions(
     let handle = app.clone();
     let name_in = name.to_string();
     match spawn_blocking_map(move || {
-        let _gate = py_run_gate().lock().unwrap_or_else(|e| e.into_inner());
+        let _gate = py_run_gate().lock().unwrap_or_else(|e| { eprintln!("[mutex_poisoned] py::runtime::py_run_gate: {e:?}"); e.into_inner() });
         if let Some(r) = run_dotnet_revisions(&handle, &input) {
             match r {
                 Ok(res) if res.exit_code == Some(0) => return Ok((res, "dotnet")),

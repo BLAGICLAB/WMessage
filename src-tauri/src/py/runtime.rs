@@ -318,7 +318,7 @@ pub fn run_python(
     timeout_secs: Option<u64>,
     stop: Option<&StopToken>,
 ) -> Result<PyRunResult, CommandError> {
-    let _gate = py_run_gate().lock().unwrap_or_else(|e| e.into_inner());
+    let _gate = py_run_gate().lock().unwrap_or_else(|e| { eprintln!("[mutex_poisoned] py::runtime::py_run_gate: {e:?}"); e.into_inner() });
     if EXITING.load(std::sync::atomic::Ordering::SeqCst) {
         return Err(CommandError::DomainRule {
             domain: "python".to_string(),

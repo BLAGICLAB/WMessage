@@ -91,7 +91,7 @@ pub fn emit_proposals(proposals: Vec<EvolutionProposal>) -> EmitReport {
         return report;
     }
     let now_ms = chrono::Utc::now().timestamp_millis();
-    let mut g = emitted_map().lock().unwrap_or_else(|e| e.into_inner());
+    let mut g = emitted_map().lock().unwrap_or_else(|e| { eprintln!("[mutex_poisoned] evolution::emit::emitted_map: {e:?}"); e.into_inner() });
     // 清掉超过 24h 的 id（防止 map 无限增长）
     g.retain(|_, ts| now_ms - *ts < EMIT_DEDUP_TTL_MS);
 
@@ -190,7 +190,7 @@ mod tests {
 
     #[test]
     fn emit_empty_vec_is_noop() {
-        let _serial = EMIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _serial = EMIT_TEST_LOCK.lock().unwrap_or_else(|e| { eprintln!("[mutex_poisoned] evolution::emit::EMIT_TEST_LOCK: {e:?}"); e.into_inner() });
         let before = emitted_count();
         let report = emit_proposals(vec![]);
         assert_eq!(report, EmitReport::default());
@@ -199,7 +199,7 @@ mod tests {
 
     #[test]
     fn emit_first_time_writes_to_dedup() {
-        let _serial = EMIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _serial = EMIT_TEST_LOCK.lock().unwrap_or_else(|e| { eprintln!("[mutex_poisoned] evolution::emit::EMIT_TEST_LOCK: {e:?}"); e.into_inner() });
         // 用 nanos 戳确保 id 唯一（OnceLock 表无法 reset）
         let unique = format!(
             "emit_first_{}",
@@ -219,7 +219,7 @@ mod tests {
 
     #[test]
     fn emit_deduplicates_within_window() {
-        let _serial = EMIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _serial = EMIT_TEST_LOCK.lock().unwrap_or_else(|e| { eprintln!("[mutex_poisoned] evolution::emit::EMIT_TEST_LOCK: {e:?}"); e.into_inner() });
         let unique = format!(
             "emit_dedup_{}",
             chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
@@ -243,7 +243,7 @@ mod tests {
 
     #[test]
     fn emit_dedup_resets_after_24h() {
-        let _serial = EMIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _serial = EMIT_TEST_LOCK.lock().unwrap_or_else(|e| { eprintln!("[mutex_poisoned] evolution::emit::EMIT_TEST_LOCK: {e:?}"); e.into_inner() });
         // 直接操作 dedup 表的 TTL 清理路径：插入一个 25h 之前的 id，
         // 下次 emit 应能再次写入。
         let unique = format!(
@@ -265,7 +265,7 @@ mod tests {
 
     #[test]
     fn emit_mixed_dedup_and_new() {
-        let _serial = EMIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _serial = EMIT_TEST_LOCK.lock().unwrap_or_else(|e| { eprintln!("[mutex_poisoned] evolution::emit::EMIT_TEST_LOCK: {e:?}"); e.into_inner() });
         let unique_new = format!(
             "emit_mixed_new_{}",
             chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
@@ -284,7 +284,7 @@ mod tests {
 
     #[test]
     fn emit_dedup_works_without_app_handle() {
-        let _serial = EMIT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _serial = EMIT_TEST_LOCK.lock().unwrap_or_else(|e| { eprintln!("[mutex_poisoned] evolution::emit::EMIT_TEST_LOCK: {e:?}"); e.into_inner() });
         // AppHandle 未注册时：dedup 仍正常执行；audit 被跳过但不 panic
         let unique = format!(
             "emit_no_app_{}",

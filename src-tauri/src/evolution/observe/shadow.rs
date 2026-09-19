@@ -426,7 +426,7 @@ mod tests {
 
     static COUNTER_LOCK: Mutex<()> = Mutex::new(());
     fn counter_lock() -> std::sync::MutexGuard<'static, ()> {
-        COUNTER_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+        COUNTER_LOCK.lock().unwrap_or_else(|e| { eprintln!("[mutex_poisoned] evolution::observe::shadow::COUNTER_LOCK: {e:?}"); e.into_inner() })
     }
 
     // ─── MockShadowSink ───

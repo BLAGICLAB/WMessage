@@ -259,7 +259,7 @@ pub async fn tool_remember_fact(app: &AppHandle, args: &str) -> ToolResult {
         } else {
             embed::embed_text(&value)
         };
-        let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| { eprintln!("[mutex_poisoned] db::DB_WRITE_LOCK: {e:?}"); e.into_inner() });
         let conn = match crate::db::open_db(&app) {
             Ok(c) => c,
             // 「失败：打开数据库出错」以「失败」开头 → error

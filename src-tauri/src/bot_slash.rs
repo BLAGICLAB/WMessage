@@ -185,7 +185,7 @@ pub fn bot_stop(app: AppHandle, session_id: Option<String>) -> Result<(), String
     // 本会话在途确认弹窗立即按拒绝收尾——sender 随条目 drop，
     // 等待侧 rx 立即收到 Err 走超时拒绝分支；/stop 后迟到的确认点击不再放行危险动作
     {
-        let mut map = confirms(&app).lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = confirms(&app).lock().unwrap_or_else(|e| { eprintln!("[mutex_poisoned] app_state::confirms: {e:?}"); e.into_inner() });
         let keys: Vec<String> = map
             .iter()
             .filter(|(_, (_, sid))| sid.as_deref() == session_id.as_deref())

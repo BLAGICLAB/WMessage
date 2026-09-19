@@ -309,7 +309,11 @@ mod win {
     ) -> Result<(Vec<i64>, Vec<f32>), String> {
         let tensor = ort::value::Tensor::from_array((dims, data))
             .map_err(|e| format!("tensor 构造失败：{e}"))?;
-        let mut session = session.lock().map_err(|e| format!("session 锁失败：{e}"))?;
+        // 锁 poisoning 审计(同 ab74025 惯例):error-return 路径也加 eprintln
+        let mut session = session.lock().map_err(|e| {
+            eprintln!("[mutex_poisoned] ocr::run_first::session: {e:?}");
+            format!("session 锁失败：{e}")
+        })?;
         let outputs = session
             .run(ort::inputs![tensor])
             .map_err(|e| format!("ONNX 推理失败：{e}"))?;

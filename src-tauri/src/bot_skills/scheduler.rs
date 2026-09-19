@@ -169,7 +169,7 @@ pub fn skill_terminate_all<R: tauri::Runtime>(
     session_id: Option<&str>,
 ) {
     let registry = skill_runs(app);
-    let mut runs = registry.lock().unwrap_or_else(|e| e.into_inner());
+    let mut runs = registry.lock().unwrap_or_else(|e| { eprintln!("[mutex_poisoned] bot_skills::scheduler::skill_runs: {e:?}"); e.into_inner() });
     for (name, run) in runs.iter_mut() {
         if run.state == SkillState::Running || run.state == SkillState::Paused {
             if let Some(sid) = session_id {

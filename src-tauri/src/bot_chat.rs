@@ -506,7 +506,7 @@ impl ChatGuard {
             });
         };
         {
-            let mut set = running.lock().unwrap_or_else(|e| e.into_inner());
+            let mut set = running.lock().unwrap_or_else(|e| { eprintln!("[mutex_poisoned] app_state::chat_running: {e:?}"); e.into_inner() });
             if !set.insert(sid.to_string()) {
                 return Err(());
             }
@@ -1152,7 +1152,7 @@ impl ExecGuard {
     ) -> Option<Self> {
         let running = exec_running(app);
         {
-            let mut set = running.lock().unwrap_or_else(|e| e.into_inner());
+            let mut set = running.lock().unwrap_or_else(|e| { eprintln!("[mutex_poisoned] app_state::exec_running: {e:?}"); e.into_inner() });
             if set.contains(task_id) {
                 return None;
             }
