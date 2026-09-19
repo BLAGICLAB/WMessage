@@ -15,11 +15,12 @@ pub(crate) fn take_trimmed_string(s: Option<&str>) -> Option<String> {
 ///
 /// 调用方拿到 `Some(e)` 通常走 `req.respond(json_err(400, &e)); return;`。
 pub(crate) fn check_field(raw: Option<&str>, max: usize, label: &str) -> Option<String> {
-    if let Some(v) = take_trimmed_string(raw) {
-        over_limit(&v, max, label)
-    } else {
-        None
+    // 不经过 take_trimmed_string(to_owned 一次),直接在 borrow view 上跑
+    let trimmed = raw?.trim();
+    if trimmed.is_empty() {
+        return None;
     }
+    over_limit(trimmed, max, label)
 }
 
 #[cfg(test)]
@@ -75,5 +76,15 @@ mod tests {
         // 中文 1 字 = 1 char; 3 中文字符对 max=2 应该超限
         let e = check_field(Some("你好世"), 2, "备注").unwrap();
         assert!(e.contains("备注"));
+    }
+
+    /// 边界用例:`chars().count() == max` 严格要超限,
+    /// 防 over_limit 从 `>` 退化成 `>=` 的 off-by-one 回归
+    #[test]
+    fn check_field_boundary_len_equals_max_is_within_limit() {
+        // max=3, 输入 3 字符 → 不超限(None)
+        assert_eq!(check_field(Some("abc"), 3, "备注"), None);
+        // max=3, 输入 4 字符 → 超限(Some)
+        assert!(check_field(Some("abcd"), 3, "备注").is_some());
     }
 }

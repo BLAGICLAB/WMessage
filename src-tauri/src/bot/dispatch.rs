@@ -403,12 +403,12 @@ mod early_return_events_tests {
 /// 3. 构造 `refs`（一般 `[TaskRef { id, title }]`）
 ///
 /// 失败消息模板：`{fail_prefix}：{e}`,与历史 6 处 inline 行为 1:1 等价。
-pub async fn commit_and_report<R: tauri::Runtime>(
+pub(crate) async fn commit_and_report<R: tauri::Runtime>(
     app: &AppHandle<R>,
     task: &crate::db::Task,
     success_msg: String,
     refs: Vec<crate::bot_chat::TaskRef>,
-    fail_prefix: &str,
+    fail_prefix: &'static str,
 ) -> crate::bot::registry::ToolResult {
     match crate::db::db_upsert_for(app, vec![task.clone()]).await {
         Ok(()) => {
