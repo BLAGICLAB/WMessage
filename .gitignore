@@ -91,3 +91,12 @@ wmessage-portable/
 .evolution-*
 .audit-*
 .api-opt-*
+
+# 多 skill 审计产物（9/17 + 未来）
+.comment-consistency-*/
+
+# R6 A 旧合成数据（synthetic 隔离目录，eval / eval_set / 副本 jsonl）
+evolution.synthetic/
+
+# 老板诊断脚本（不进项目代码）
+health-check.sh
