@@ -23,18 +23,30 @@ pub(crate) enum BodyRead {
     Ok(String),
     TooLarge,
     IoFailed,
+    /// 头部格式非法(多 Content-Length / parse 失败) → 400 Bad Request
+    Malformed,
 }
 
 /// 读请求体（上限 `MAX_BODY_BYTES`，总时长 `BODY_READ_DEADLINE`）。
 /// Content-Length 声明即超限的直接预拒（413），不再读完才判。
 pub(crate) fn read_body_limited(req: &mut Request) -> BodyRead {
     // 按 Content-Length 预拒绝——声明 >1MB 的 body 不必读
-    if let Some(declared) = req
-        .headers()
-        .iter()
-        .find(|h| h.field.equiv("Content-Length"))
-        .and_then(|h| h.value.as_str().parse::<u64>().ok())
-    {
+    // 同时拒绝 RFC 7230 §3.3.2 禁止的多 Content-Length(可能被中间件拼出来)
+    // 以及 parse 失败的脏值(原代码 .ok() 静默吞,等价于「承认任何格式」)
+    let mut content_length_headers: Vec<&str> = Vec::new();
+    for h in req.headers().iter() {
+        if h.field.equiv("Content-Length") {
+            content_length_headers.push(h.value.as_str());
+        }
+    }
+    if content_length_headers.len() > 1 {
+        return BodyRead::Malformed;
+    }
+    if let Some(raw) = content_length_headers.first() {
+        let declared = match raw.parse::<u64>() {
+            Ok(n) => n,
+            Err(_) => return BodyRead::Malformed,
+        };
         if declared > MAX_BODY_BYTES {
             return BodyRead::TooLarge;
         }

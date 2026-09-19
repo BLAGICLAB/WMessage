@@ -201,6 +201,11 @@ fn create_task(
             let _ = req.respond(json_err(StatusCode(408), "body read failed or timed out"));
             return;
         }
+        // 多 Content-Length / parse 失败 → 400 拒绝
+        BodyRead::Malformed => {
+            let _ = req.respond(json_err(StatusCode(400), "malformed Content-Length header"));
+            return;
+        }
     };
     let input: CreateReq = match serde_json::from_str(&body) {
         Ok(v) => v,
@@ -339,6 +344,11 @@ fn update_task(
         // 读 IO 错误/超时不是「body 过大」，回 408
         BodyRead::IoFailed => {
             let _ = req.respond(json_err(StatusCode(408), "body read failed or timed out"));
+            return;
+        }
+        // 多 Content-Length / parse 失败 → 400 拒绝
+        BodyRead::Malformed => {
+            let _ = req.respond(json_err(StatusCode(400), "malformed Content-Length header"));
             return;
         }
     };
