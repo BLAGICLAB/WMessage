@@ -360,7 +360,15 @@ fn update_task(
         }
     };
 
-    // load→改→upsert 全程持 API_RMW_LOCK（API 写串行化）
+    // 入参校验:纯函数,不依赖 DB,锁前跑。
+    // 锁后校验会在 400 应答路径上持锁串行化所有后续 API 请求(DoS 放大面),
+    // 且 prepare_for_upsert 会白做一次内存戳。
+    if let Err(e) = validate_update_input(&input) {
+        let _ = req.respond(json_err(StatusCode(400), &e));
+        return;
+    }
+
+    // load→改→upsert 全程持 API_RMW_LOCK(API 写串行化)
     let _rmw = API_RMW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tasks = match store.load() {
         Ok(v) => v,
@@ -379,44 +387,24 @@ fn update_task(
     // （BASELINE_NULL_ROW：行被删/被改都 409）
     db::prepare_for_upsert(&mut t);
 
+    // 应用已校验入参(纯赋值,不再校验)
     if let Some(title) = input.title.as_deref() {
-        let tt = title.trim();
-        // 显式传了 trim 后为空的 title 按 400 拒绝，与 create 对齐
-        // （静默忽略会让调用方无法区分「没传」和「传了空白」）
-        if tt.is_empty() {
-            let _ = req.respond(json_err(StatusCode(400), "title 不能为空"));
-            return;
-        }
-        if let Some(e) = over_limit(tt, API_MAX_TITLE, "任务标题") {
-            let _ = req.respond(json_err(StatusCode(400), &e));
-            return;
-        }
-        t.title = tt.to_string();
-    }
-    if let Some(e) = super::validate::check_field(input.note.as_deref(), API_MAX_NOTE, "备注") {
-        let _ = req.respond(json_err(StatusCode(400), &e));
-        return;
+        t.title = title.trim().to_string();
     }
     if input.note.is_some() {
         t.note = super::validate::take_trimmed_string(input.note.as_deref());
     }
     if let Some(s) = input.status.as_deref() {
-        if !s.is_empty() {
-            if !valid_status(s) {
-                let _ = req.respond(json_err(StatusCode(400), "status 必须是 todo/doing/done"));
-                return;
+        if !s.is_empty() && s != t.column {
+            let now = now_ms();
+            if s == "done" {
+                t.completed_at = Some(now);
+                t.archived = Some(false);
+            } else if t.column == "done" {
+                t.completed_at = None;
+                t.archived = None;
             }
-            if s != t.column {
-                let now = now_ms();
-                if s == "done" {
-                    t.completed_at = Some(now);
-                    t.archived = Some(false);
-                } else if t.column == "done" {
-                    t.completed_at = None;
-                    t.archived = None;
-                }
-                t.column = s.to_string();
-            }
+            t.column = s.to_string();
         }
     }
     if let Some(fp) = input.file_path.as_deref() {
@@ -428,11 +416,6 @@ fn update_task(
             // 旧单绑定字段清空时同步清 files
             t.files = None;
         } else {
-            // 与 create_task 对齐：filePath 同样限长
-            if let Some(e) = over_limit(fp, API_MAX_FILE_PATH, "文件路径") {
-                let _ = req.respond(json_err(StatusCode(400), &e));
-                return;
-            }
             t.file_path = Some(fp.to_string());
             if let Some(fid) = input.file_is_dir {
                 t.file_is_dir = Some(fid);
@@ -454,27 +437,10 @@ fn update_task(
             }
         }
     }
-    if let Some(e) = super::validate::check_field(input.due.as_deref(), API_MAX_DUE, "截止时间") {
-        let _ = req.respond(json_err(StatusCode(400), &e));
-        return;
-    }
     if input.due.is_some() {
         t.due = super::validate::take_trimmed_string(input.due.as_deref());
     }
     if let Some(tags) = input.tags {
-        if tags.len() > API_MAX_TAGS {
-            let _ = req.respond(json_err(
-                StatusCode(400),
-                &format!("标签最多 {API_MAX_TAGS} 个"),
-            ));
-            return;
-        }
-        for tag in &tags {
-            if let Some(e) = over_limit(tag, API_MAX_TAG_LEN, "标签") {
-                let _ = req.respond(json_err(StatusCode(400), &e));
-                return;
-            }
-        }
         t.tags = if tags.is_empty() { None } else { Some(tags) };
     }
     if let Some(archived) = input.archived {
@@ -495,6 +461,54 @@ fn update_task(
     }
     after_change(store, &t, "updated", emit_fn, log);
     let _ = req.respond(json_ok(StatusCode(200), &TaskOut::from_task(&t)));
+}
+
+/// 校验 update_task 的入参。纯函数,不依赖任何 DB 状态,
+/// 在持锁前跑(否则 400 应答期间仍持 API_RMW_LOCK 串行化全 API,
+/// 是 DoS 放大面)。返回 Err(msg) 时调用方应回 400 + 该 msg。
+fn validate_update_input(input: &UpdateReq) -> Result<(), String> {
+    if let Some(title) = input.title.as_deref() {
+        let tt = title.trim();
+        // 显式传了 trim 后为空的 title 按 400 拒绝，与 create 对齐
+        // （静默忽略会让调用方无法区分「没传」和「传了空白」）
+        if tt.is_empty() {
+            return Err("title 不能为空".to_string());
+        }
+        if let Some(e) = over_limit(tt, API_MAX_TITLE, "任务标题") {
+            return Err(e);
+        }
+    }
+    if let Some(e) = super::validate::check_field(input.note.as_deref(), API_MAX_NOTE, "备注") {
+        return Err(e);
+    }
+    if let Some(s) = input.status.as_deref() {
+        if !s.is_empty() && !valid_status(s) {
+            return Err("status 必须是 todo/doing/done".to_string());
+        }
+    }
+    if let Some(fp_raw) = input.file_path.as_deref() {
+        let fp = fp_raw.trim();
+        // 与 create_task 对齐：filePath 同样限长
+        if !fp.is_empty() {
+            if let Some(e) = over_limit(fp, API_MAX_FILE_PATH, "文件路径") {
+                return Err(e);
+            }
+        }
+    }
+    if let Some(e) = super::validate::check_field(input.due.as_deref(), API_MAX_DUE, "截止时间") {
+        return Err(e);
+    }
+    if let Some(tags) = input.tags.as_ref() {
+        if tags.len() > API_MAX_TAGS {
+            return Err(format!("标签最多 {API_MAX_TAGS} 个"));
+        }
+        for tag in tags {
+            if let Some(e) = over_limit(tag, API_MAX_TAG_LEN, "标签") {
+                return Err(e);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// 软删（进回收站）：幂等，已删的再次 DELETE 返回 200 不再变更
