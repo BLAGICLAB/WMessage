@@ -34,6 +34,7 @@ pub mod ratelimit;
 pub mod sse;
 pub mod types;
 pub mod util;
+pub mod validate;
 
 // 非 cmd 入口透传给 lib.rs / api_server.rs（避免 cmd 宏 `__cmd__` 符号冲突）：
 // - handle_request: api_server.rs:206 用

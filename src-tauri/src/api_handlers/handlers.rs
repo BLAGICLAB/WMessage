@@ -219,39 +219,22 @@ fn create_task(
         let _ = req.respond(json_err(StatusCode(400), &e));
         return;
     }
-    if let Some(n) = input
-        .note
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        if let Some(e) = over_limit(n, API_MAX_NOTE, "备注") {
-            let _ = req.respond(json_err(StatusCode(400), &e));
-            return;
-        }
+    if let Some(e) = super::validate::check_field(input.note.as_deref(), API_MAX_NOTE, "备注") {
+        let _ = req.respond(json_err(StatusCode(400), &e));
+        return;
     }
-    if let Some(d) = input
-        .due
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        if let Some(e) = over_limit(d, API_MAX_DUE, "截止时间") {
-            let _ = req.respond(json_err(StatusCode(400), &e));
-            return;
-        }
+    if let Some(e) = super::validate::check_field(input.due.as_deref(), API_MAX_DUE, "截止时间") {
+        let _ = req.respond(json_err(StatusCode(400), &e));
+        return;
     }
     // filePath 与 title/note/due 同规则限长
-    if let Some(p) = input
-        .file_path
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        if let Some(e) = over_limit(p, API_MAX_FILE_PATH, "文件路径") {
-            let _ = req.respond(json_err(StatusCode(400), &e));
-            return;
-        }
+    if let Some(e) = super::validate::check_field(
+        input.file_path.as_deref(),
+        API_MAX_FILE_PATH,
+        "文件路径",
+    ) {
+        let _ = req.respond(json_err(StatusCode(400), &e));
+        return;
     }
     if let Some(tags) = input.tags.as_deref() {
         if tags.len() > API_MAX_TAGS {
@@ -400,20 +383,11 @@ fn update_task(
         }
         t.title = tt.to_string();
     }
-    if let Some(n) = input.note.as_deref() {
-        let nn = n.trim();
-        if !nn.is_empty() {
-            if let Some(e) = over_limit(nn, API_MAX_NOTE, "备注") {
-                let _ = req.respond(json_err(StatusCode(400), &e));
-                return;
-            }
-        }
-        t.note = if nn.is_empty() {
-            None
-        } else {
-            Some(nn.to_string())
-        };
+    if let Some(e) = super::validate::check_field(input.note.as_deref(), API_MAX_NOTE, "备注") {
+        let _ = req.respond(json_err(StatusCode(400), &e));
+        return;
     }
+    t.note = super::validate::take_trimmed_string(input.note.as_deref());
     if let Some(s) = input.status.as_deref() {
         if !s.is_empty() {
             if !valid_status(s) {
@@ -468,20 +442,11 @@ fn update_task(
             }
         }
     }
-    if let Some(due) = input.due.as_deref() {
-        let dd = due.trim();
-        if !dd.is_empty() {
-            if let Some(e) = over_limit(dd, API_MAX_DUE, "截止时间") {
-                let _ = req.respond(json_err(StatusCode(400), &e));
-                return;
-            }
-        }
-        t.due = if dd.is_empty() {
-            None
-        } else {
-            Some(dd.to_string())
-        };
+    if let Some(e) = super::validate::check_field(input.due.as_deref(), API_MAX_DUE, "截止时间") {
+        let _ = req.respond(json_err(StatusCode(400), &e));
+        return;
     }
+    t.due = super::validate::take_trimmed_string(input.due.as_deref());
     if let Some(tags) = input.tags {
         if tags.len() > API_MAX_TAGS {
             let _ = req.respond(json_err(
