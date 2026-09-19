@@ -9,7 +9,7 @@
 use tauri::AppHandle;
 
 use crate::bot::registry::{tools_index, ToolCtx, TOOLS_TABLE};
-use crate::bot::tools::files_audit_kv;
+use crate::bot::tools::{broadcast_after_mutation, files_audit_kv};
 
 // ───────────────────────── 工具调度核心（execute_tool dispatch） ─────────────────────────
 
@@ -386,5 +386,38 @@ mod early_return_events_tests {
             kv_get(&kv, "tool_call_id").is_none(),
             "空 id 不写（合成 id 前的畸形流不该出现空值行）"
         );
+    }
+}
+
+
+// ───────────────────────── 工具层 commit template ─────────────────────────
+
+/// 工具层写库收尾：调 `db::db_upsert` → `broadcast_after_mutation` → 返回
+/// `ToolResult`。覆盖 6 处原 inline `match db_upsert(...) { Ok => broadcast+ok, Err => ok(fail) }`
+/// 模板（bot/tools.rs 行 466/511/691/742/796/874）。
+///
+/// 调用方负责：
+/// 1. RMW 接线（通常 `db::prepare_for_upsert(&mut task)`；tool_complete_task /
+///    tool_delete_task 因 updated_at 要复用 completed_at/deleted_at 时间戳,保留 inline）
+/// 2. 构造成功消息（部分工具需要先 `let st_text = ...` 等中间变量,如 toggle_subtask）
+/// 3. 构造 `refs`（一般 `[TaskRef { id, title }]`）
+///
+/// 失败消息模板：`{fail_prefix}：{e}`,与历史 6 处 inline 行为 1:1 等价。
+pub async fn commit_and_report<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    task: &crate::db::Task,
+    success_msg: String,
+    refs: Vec<crate::bot_chat::TaskRef>,
+    fail_prefix: &str,
+) -> crate::bot::registry::ToolResult {
+    match crate::db::db_upsert_for(app, vec![task.clone()]).await {
+        Ok(()) => {
+            broadcast_after_mutation(app, vec![task.clone()], Vec::new());
+            crate::bot::registry::ToolResult::ok(success_msg, refs)
+        }
+        Err(e) => crate::bot::registry::ToolResult::ok(
+            format!("{fail_prefix}：{e}"),
+            Vec::new(),
+        ),
     }
 }

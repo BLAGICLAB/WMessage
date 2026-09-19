@@ -11,7 +11,7 @@
 
 use tauri::{AppHandle, Emitter};
 
-use crate::bot::dispatch::parse_args;
+use crate::bot::dispatch::{commit_and_report, parse_args};
 use crate::bot::format::column_label;
 use crate::bot::registry::ToolResult;
 use crate::bot::{
@@ -417,21 +417,17 @@ pub(crate) async fn tool_create_task(
             .fold(f64::INFINITY, f64::min);
         task.order = Some(if min.is_finite() { min - 1.0 } else { 0.0 });
     }
-    match crate::db::db_upsert(app.clone(), vec![task.clone()]).await {
-        Ok(()) => {
-            broadcast_after_mutation(app, vec![task.clone()], vec![]);
-            // 「已新建任务」首字「已」非 error/warn 前缀 → ok
-            ToolResult::ok(
-                format!("已新建任务「{}」{files_warn}", task.title),
-                vec![crate::bot_chat::TaskRef {
-                    id: task.id.clone(),
-                    title: task.title.clone(),
-                }],
-            )
-        }
-        // 「新建任务失败」首字「新」非错误/warn 前缀 → ok
-        Err(e) => ToolResult::ok(format!("新建任务失败：{e}"), Vec::new()),
-    }
+    commit_and_report(
+        app,
+        &task,
+        format!("已新建任务「{}」{files_warn}", task.title),
+        vec![crate::bot_chat::TaskRef {
+            id: task.id.clone(),
+            title: task.title.clone(),
+        }],
+        "新建任务失败",
+    )
+    .await
 }
 
 pub(crate) async fn tool_complete_task(
@@ -452,21 +448,17 @@ pub(crate) async fn tool_complete_task(
     next.completed_at = Some(chrono::Utc::now().timestamp_millis());
     next.expected_updated_at = next.updated_at; // RMW 写回基线 = 快照 updated_at
     next.updated_at = next.completed_at;
-    match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
-        Ok(()) => {
-            broadcast_after_mutation(app, vec![next.clone()], vec![]);
-            // 「已完成任务」首字「已」非 error/warn 前缀 → ok
-            ToolResult::ok(
-                format!("已完成任务「{}」", task.title),
-                vec![crate::bot_chat::TaskRef {
-                    id: task.id.clone(),
-                    title: task.title.clone(),
-                }],
-            )
-        }
-        // 「完成任务失败」首字「完」非「失败」前缀 → ok
-        Err(e) => ToolResult::ok(format!("完成任务失败：{e}"), Vec::new()),
-    }
+    commit_and_report(
+        app,
+        &next,
+        format!("已完成任务「{}」", task.title),
+        vec![crate::bot_chat::TaskRef {
+            id: task.id.clone(),
+            title: task.title.clone(),
+        }],
+        "完成任务失败",
+    )
+    .await
 }
 
 /// 删除任务到回收站：**弹窗确认后才执行**（危险操作护栏；60s 无响应默认拒绝）
@@ -497,21 +489,17 @@ pub(crate) async fn tool_delete_task(
     next.deleted_at = Some(chrono::Utc::now().timestamp_millis());
     next.expected_updated_at = next.updated_at; // RMW 写回基线 = 快照 updated_at
     next.updated_at = next.deleted_at;
-    match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
-        Ok(()) => {
-            broadcast_after_mutation(app, vec![next.clone()], vec![]);
-            // 「已删除任务」首字「已」非 error/warn 前缀 → ok
-            ToolResult::ok(
-                format!("已删除任务「{}」（进回收站）", task.title),
-                vec![crate::bot_chat::TaskRef {
-                    id: task.id.clone(),
-                    title: task.title.clone(),
-                }],
-            )
-        }
-        // 「删除任务失败」首字「删」非「失败」前缀 → ok
-        Err(e) => ToolResult::ok(format!("删除任务失败：{e}"), Vec::new()),
-    }
+    commit_and_report(
+        app,
+        &next,
+        format!("已删除任务「{}」（进回收站）", task.title),
+        vec![crate::bot_chat::TaskRef {
+            id: task.id.clone(),
+            title: task.title.clone(),
+        }],
+        "删除任务失败",
+    )
+    .await
 }
 
 /// 按标题关键词找第一条未完成任务（大小写不敏感）
@@ -677,25 +665,21 @@ pub(crate) async fn tool_edit_task(
     }
     next.expected_updated_at = next.updated_at; // RMW 写回基线 = 快照 updated_at（写前比对，防整行覆盖 lost-update）
     next.updated_at = Some(chrono::Utc::now().timestamp_millis());
-    match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
-        Ok(()) => {
-            broadcast_after_mutation(app, vec![next.clone()], vec![]);
-            // 「已更新任务」首字「已」非 error/warn 前缀 → ok
-            ToolResult::ok(
-                format!(
-                    "已更新任务「{}」（{}）{files_warn}",
-                    next.title,
-                    changed.join("、")
-                ),
-                vec![crate::bot_chat::TaskRef {
-                    id: next.id.clone(),
-                    title: next.title.clone(),
-                }],
-            )
-        }
-        // 「编辑任务失败」首字「编」非「失败」前缀 → ok
-        Err(e) => ToolResult::ok(format!("编辑任务失败：{e}"), Vec::new()),
-    }
+    commit_and_report(
+        app,
+        &next,
+        format!(
+            "已更新任务「{}」（{}）{files_warn}",
+            next.title,
+            changed.join("、")
+        ),
+        vec![crate::bot_chat::TaskRef {
+            id: next.id.clone(),
+            title: next.title.clone(),
+        }],
+        "编辑任务失败",
+    )
+    .await
 }
 
 pub(crate) async fn tool_add_subtask(
@@ -728,21 +712,17 @@ pub(crate) async fn tool_add_subtask(
     next.subtasks = Some(subs);
     next.expected_updated_at = next.updated_at; // RMW 写回基线 = 快照 updated_at（写前比对，防整行覆盖 lost-update）
     next.updated_at = Some(chrono::Utc::now().timestamp_millis());
-    match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
-        Ok(()) => {
-            broadcast_after_mutation(app, vec![next.clone()], vec![]);
-            // 「已给任务...添加子任务」首字「已」非 error/warn 前缀 → ok
-            ToolResult::ok(
-                format!("已给任务「{}」添加子任务「{}」", next.title, text),
-                vec![crate::bot_chat::TaskRef {
-                    id: next.id.clone(),
-                    title: next.title.clone(),
-                }],
-            )
-        }
-        // 「添加子任务失败」首字「添」非「失败」前缀 → ok
-        Err(e) => ToolResult::ok(format!("添加子任务失败：{e}"), Vec::new()),
-    }
+    commit_and_report(
+        app,
+        &next,
+        format!("已给任务「{}」添加子任务「{}」", next.title, text),
+        vec![crate::bot_chat::TaskRef {
+            id: next.id.clone(),
+            title: next.title.clone(),
+        }],
+        "添加子任务失败",
+    )
+    .await
 }
 
 pub(crate) async fn tool_toggle_subtask(
@@ -782,40 +762,36 @@ pub(crate) async fn tool_toggle_subtask(
     next.subtasks = Some(subs2);
     next.expected_updated_at = next.updated_at; // RMW 写回基线 = 快照 updated_at（写前比对，防整行覆盖 lost-update）
     next.updated_at = Some(chrono::Utc::now().timestamp_millis());
-    match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
-        Ok(()) => {
-            broadcast_after_mutation(app, vec![next.clone()], vec![]);
-            let st_text = next
-                .subtasks
-                .as_ref()
-                .and_then(|s| s.get(idx))
-                .map(|s| s.text.clone())
-                .unwrap_or_default();
-            let done_mark = next
-                .subtasks
-                .as_ref()
-                .and_then(|s| s.get(idx))
-                .map(|s| s.done)
-                .unwrap_or(false);
-            // 「子任务「...」已...」首字「子」非 error/warn 前缀 → ok
-            ToolResult::ok(
-                format!(
-                    "子任务「{st_text}」已{}",
-                    if done_mark {
-                        "勾选 ✓"
-                    } else {
-                        "取消勾选"
-                    }
-                ),
-                vec![crate::bot_chat::TaskRef {
-                    id: next.id.clone(),
-                    title: next.title.clone(),
-                }],
-            )
-        }
-        // 「切换子任务状态失败」首字「切」非「失败」前缀 → ok
-        Err(e) => ToolResult::ok(format!("切换子任务状态失败：{e}"), Vec::new()),
-    }
+    let st_text = next
+        .subtasks
+        .as_ref()
+        .and_then(|s| s.get(idx))
+        .map(|s| s.text.clone())
+        .unwrap_or_default();
+    let done_mark = next
+        .subtasks
+        .as_ref()
+        .and_then(|s| s.get(idx))
+        .map(|s| s.done)
+        .unwrap_or(false);
+    commit_and_report(
+        app,
+        &next,
+        format!(
+            "子任务「{st_text}」已{}",
+            if done_mark {
+                "勾选 ✓"
+            } else {
+                "取消勾选"
+            }
+        ),
+        vec![crate::bot_chat::TaskRef {
+            id: next.id.clone(),
+            title: next.title.clone(),
+        }],
+        "切换子任务状态失败",
+    )
+    .await
 }
 
 pub(crate) async fn tool_remove_subtask(
@@ -860,21 +836,17 @@ pub(crate) async fn tool_remove_subtask(
     next.subtasks = Some(subs2);
     next.expected_updated_at = next.updated_at; // RMW 写回基线 = 快照 updated_at（写前比对，防整行覆盖 lost-update）
     next.updated_at = Some(chrono::Utc::now().timestamp_millis());
-    match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
-        Ok(()) => {
-            broadcast_after_mutation(app, vec![next.clone()], vec![]);
-            // 「已删除任务...的子任务」首字「已」非 error/warn 前缀 → ok
-            ToolResult::ok(
-                format!("已删除任务「{}」的子任务「{}」", next.title, removed_text),
-                vec![crate::bot_chat::TaskRef {
-                    id: next.id.clone(),
-                    title: next.title.clone(),
-                }],
-            )
-        }
-        // 「删除子任务失败」首字「删」非「失败」前缀 → ok
-        Err(e) => ToolResult::ok(format!("删除子任务失败：{e}"), Vec::new()),
-    }
+    commit_and_report(
+        app,
+        &next,
+        format!("已删除任务「{}」的子任务「{}」", next.title, removed_text),
+        vec![crate::bot_chat::TaskRef {
+            id: next.id.clone(),
+            title: next.title.clone(),
+        }],
+        "删除子任务失败",
+    )
+    .await
 }
 
 /// 登记产物到任务卡执行流程的产物清单（不立即绑）
