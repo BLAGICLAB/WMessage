@@ -6,7 +6,7 @@
 //! - `stop_sse_writers` 通知指定 hub 的 writer 退出（带超时 join + 泄漏审计）
 
 use std::io::{empty, Write};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -25,8 +25,10 @@ pub(crate) const MAX_SSE_CLIENTS: usize = 32;
 /// writer 循环发 keepalive——旧客户端以为活着却永远收不到新事件，
 /// 且每次 rotate 累积一批泄漏线程。
 pub(crate) struct SseWriterReg {
-    /// Arc<EventHub> 身份指针（仅作分组键，永不解引用）
-    pub hub_key: usize,
+    /// hub 身份键（从 EventHub.hub_id 取，AtomicU64 计数器，跨进程单调；
+    /// 不再用 Arc 指针作身份 —— Arc drop 后地址可被复用，会导致
+    /// 跨 stop/start 的 writer 误关联）
+    pub hub_key: u64,
     pub stop: Arc<AtomicBool>,
     pub handle: std::thread::JoinHandle<()>,
 }
@@ -34,13 +36,13 @@ pub(crate) struct SseWriterReg {
 pub(crate) static SSE_WRITERS: Mutex<Vec<SseWriterReg>> = Mutex::new(Vec::new());
 
 /// 当前服务实例的 hub 分组键（api_start 时记录，api_stop 据此停对应 writer）
-pub(crate) static API_HUB_KEY: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static API_HUB_KEY: AtomicU64 = AtomicU64::new(0);
 
 /// writer 退出通知的兜底 join 超时：超时仍不退出的 detach + ERROR 审计
 pub(crate) const SSE_STOP_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(crate) fn register_sse_writer(
-    hub_key: usize,
+    hub_key: u64,
     stop: Arc<AtomicBool>,
     handle: std::thread::JoinHandle<()>,
 ) {
@@ -60,7 +62,7 @@ pub(crate) fn register_sse_writer(
 
 /// 停掉指定 hub 的全部 SSE writer：置 stop 标志 → 带超时 join；
 /// 超时仍不退出的 drop handle（detach）并记 ERROR 审计「sse_writer_leaked」。
-pub(crate) fn stop_sse_writers(hub_key: usize, timeout: Duration, audit: &mut dyn FnMut(&str)) {
+pub(crate) fn stop_sse_writers(hub_key: u64, timeout: Duration, audit: &mut dyn FnMut(&str)) {
     let writers = {
         // 锁 poisoning 审计:同 ratelimit::RATE 注释
     let mut g = SSE_WRITERS.lock().unwrap_or_else(|e| {
@@ -139,7 +141,7 @@ pub(crate) fn sse_connect(req: Request, store: &Arc<dyn TaskStore>, query: &str)
     }
     let hub = hub.clone();
     // writer 线程纳入追踪——stop 标志供 api_stop 通知退出，JoinHandle 入注册表
-    let hub_key = Arc::as_ptr(&hub) as usize;
+    let hub_key = hub.hub_id();
     let stop = Arc::new(AtomicBool::new(false));
     let stop_w = stop.clone();
     let handle = std::thread::spawn(move || {

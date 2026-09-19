@@ -53,9 +53,20 @@ pub struct EventHub {
     pub clients: Mutex<Vec<(SyncSender<(u64, Vec<u8>)>, std::sync::Weak<()>)>>,
     pub next_id: AtomicU64,
     pub history: Mutex<VecDeque<(u64, String)>>,
+    /// hub 身份键：构造时从全局计数器取，跨进程单调递增。
+    /// 用于 SSE writer 分组(api_stop 按 hub_id 通知停止)、api_rotate_token
+    /// 识别「是否还是同一个 hub」。旧实现用 `Arc::as_ptr(&hub) as usize`,
+    /// 指针可能在 Arc drop 后被复用,造成跨 stop/start 的 writer 误关联。
+    pub hub_id: u64,
     /// 事件 id 持久化路径（跨重启保持单调；None=仅内存，测试用）
     id_path: Option<PathBuf>,
 }
+
+/// hub 身份键单调计数器（进程内；每次 `fetch_add(1)` 返回一个不重复的 u64）。
+/// 不暴露到 sse.rs 是因为只有 EventHub 构造时取 ID,
+/// sse_connect 通过 `hub.hub_id()` 读;sse/commands 只用 API_HUB_KEY
+/// 跟踪「当前 API 实例」的 hub_id。
+static EVENT_HUB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 impl EventHub {
     /// 新建中枢
@@ -65,6 +76,7 @@ impl EventHub {
             clients: Mutex::new(Vec::new()),
             next_id: AtomicU64::new(0),
             history: Mutex::new(VecDeque::new()),
+            hub_id: EVENT_HUB_COUNTER.fetch_add(1, Ordering::SeqCst) + 1,
             id_path: None,
         })
     }
@@ -80,8 +92,14 @@ impl EventHub {
             clients: Mutex::new(Vec::new()),
             next_id: AtomicU64::new(start),
             history: Mutex::new(VecDeque::new()),
+            hub_id: EVENT_HUB_COUNTER.fetch_add(1, Ordering::SeqCst) + 1,
             id_path: Some(path),
         })
+    }
+
+    /// hub 身份键（用于 SSE writer 分组、rotate 识别）
+    pub fn hub_id(&self) -> u64 {
+        self.hub_id
     }
 
     /// 当前事件 id（给 SSE 连接首事件用，客户端据此决定下次 `since` 起点）

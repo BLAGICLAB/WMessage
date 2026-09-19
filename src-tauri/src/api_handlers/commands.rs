@@ -98,9 +98,9 @@ fn api_start_locked(
         Some(Box::new(move |lvl, ev, msg| {
             audit_event!(&audit_app, lvl, ev, "error" => msg);
         }));
-    // 提前取 hub 分组键(store 随后被 move 进 start_api),
+    // 提前取 hub 身份键（store 随后被 move 进 start_api），
     // api_stop 据此通知并 join 该 hub 的 SSE writer
-    let hub_key = Arc::as_ptr(store.event_hub()) as usize;
+    let hub_key = store.event_hub().hub_id();
     // 显式映射 HttpStartFailed——String 错误经
     // From<String> 落成无结构的 Internal,前端按 code 分支永远等不到 HTTP_START_FAILED
     let running =

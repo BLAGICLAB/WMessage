@@ -348,9 +348,13 @@ mod tests {
 
     // ── SSE writer 生命周期（stop 通知 + 带超时 join + 泄漏审计）──
 
-    /// 测试专用 hub 分组键：用本地 Arc 地址保证与并行测试的真实 hub 不撞
-    fn test_hub_key() -> usize {
-        Arc::as_ptr(&Arc::new(())) as usize
+    /// 测试专用 hub 分组键：从函数内 static AtomicU64 计数器取，
+    /// 与生产 EVENT_HUB_COUNTER 隔离,避免污染生产 ID 空间。
+    /// +1 跳过 0（保留为「无 hub」的哨兵，与 API_HUB_KEY 语义一致）。
+    fn test_hub_key() -> u64 {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        COUNTER.fetch_add(1, Ordering::SeqCst) + 1
     }
 
     #[test]
