@@ -28,6 +28,22 @@ pub mod skill_out;
 pub mod tasks;
 pub mod workspace;
 
+// ──────────────────── RMW helpers ────────────────────
+
+/// 写库前的标准接线：把当前 `updated_at` 作为下次 RMW 读快照基线，
+/// 然后把 `updated_at` 戳成"现在"。任何写库前的 mutate 路径都必须调。
+///
+/// 行为细节：
+/// - `task.updated_at` 为 None 时（老行 / 新建），基线降级为
+///   `BASELINE_NULL_ROW`（行存在性哨兵，防 NULL 老行被静默覆盖）
+/// - 一律刷 `updated_at` 为当前时间戳
+///
+/// 用法：`db::prepare_for_upsert(&mut task)` 后接 `db::db_upsert(...)`。
+pub fn prepare_for_upsert(t: &mut Task) {
+    t.expected_updated_at = Some(t.updated_at.unwrap_or(BASELINE_NULL_ROW));
+    t.updated_at = Some(chrono::Utc::now().timestamp_millis());
+}
+
 /// 打开数据库（泛型 Runtime：mock runtime 测试可直调）
 ///
 /// 连接级 PRAGMA（每次建连都要设——PRAGMA 是 **per-connection** 的，漏一处就静默跑默认档）：
@@ -399,6 +415,28 @@ mod tests {
             bot_assigned: None,
             expected_updated_at: None,
         }
+    }
+
+    /// prepare_for_upsert: updated_at=Some(x) → 基线=Some(x), updated_at 刷成 now
+    #[test]
+    fn prepare_for_upsert_with_some_timestamp_uses_current_as_baseline() {
+        let mut t = mk_task("t1", "test");
+        t.updated_at = Some(12345);
+        t.expected_updated_at = None;
+        prepare_for_upsert(&mut t);
+        assert_eq!(t.expected_updated_at, Some(12345));
+        assert!(t.updated_at.unwrap() > 12345, "updated_at 必须被刷新为 now");
+    }
+
+    /// prepare_for_upsert: updated_at=None → 基线=Some(BASELINE_NULL_ROW), updated_at 刷成 now
+    #[test]
+    fn prepare_for_upsert_with_none_timestamp_uses_baseline_null_row() {
+        let mut t = mk_task("t1", "test");
+        t.updated_at = None;
+        t.expected_updated_at = None;
+        prepare_for_upsert(&mut t);
+        assert_eq!(t.expected_updated_at, Some(BASELINE_NULL_ROW));
+        assert!(t.updated_at.is_some(), "updated_at 必须被刷新为 now");
     }
 
     /// 删任务后重启场景：库里只剩 t1，老 data.json 还有 t1/t2/t3 → 首次评估补回 t2/t3，
@@ -1039,14 +1077,14 @@ mod tests {
 
         // A 先写回：改标题，刷新时间戳，带基线 → 放行
         let mut a = snap_a.clone();
-        a.expected_updated_at = a.updated_at; // RMW 调用方的标准接线：基线=快照 updated_at
+        prepare_for_upsert(&mut a);
         a.title = "A改的标题".into();
         a.updated_at = Some(200);
         upsert_tasks(&conn, std::slice::from_ref(&a)).unwrap();
 
         // B 后写回：基于同一旧快照改备注，时间戳更新（300>200，旧时间戳守卫会放行）→ 必须被基线拒
         let mut b = snap_b;
-        b.expected_updated_at = b.updated_at;
+        prepare_for_upsert(&mut b);
         b.note = Some("B改的备注".into());
         b.updated_at = Some(300);
         let err = upsert_tasks(&conn, std::slice::from_ref(&b)).unwrap_err();
@@ -1065,7 +1103,7 @@ mod tests {
 
         // B 重读刷新基线后重试 → 放行（冲突可见、可恢复，而非静默丢）
         let mut b2 = load_all(&conn).unwrap().into_iter().next().unwrap();
-        b2.expected_updated_at = b2.updated_at;
+        prepare_for_upsert(&mut b2);
         b2.note = Some("B改的备注".into());
         b2.updated_at = Some(300);
         upsert_tasks(&conn, std::slice::from_ref(&b2)).unwrap();
@@ -1105,7 +1143,7 @@ mod tests {
         // 行原样（仍在且仍 NULL）→ 放行
         let mut a = load_all(&conn).unwrap().into_iter().next().unwrap();
         assert_eq!(a.updated_at, None);
-        a.expected_updated_at = Some(BASELINE_NULL_ROW);
+        prepare_for_upsert(&mut a);
         a.title = "放行".into();
         a.updated_at = Some(100);
         upsert_tasks(&conn, std::slice::from_ref(&a)).unwrap();
@@ -1113,7 +1151,7 @@ mod tests {
 
         // 快照时行是 NULL（基线=行存在性），但窗口内其他写者已改（updated_at=100 非 NULL）→ 拒
         let mut b = mk_task("t1", "覆盖者");
-        b.expected_updated_at = Some(BASELINE_NULL_ROW);
+        prepare_for_upsert(&mut b);
         b.updated_at = Some(200);
         let err = upsert_tasks(&conn, std::slice::from_ref(&b)).unwrap_err();
         assert!(

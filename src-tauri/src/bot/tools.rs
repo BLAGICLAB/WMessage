@@ -13,6 +13,7 @@ use tauri::{AppHandle, Emitter};
 
 use crate::bot::dispatch::parse_args;
 use crate::bot::registry::ToolResult;
+use crate::db::prepare_for_upsert;
 use crate::bot::{
     audit_log, check_len, escape_for_log, load_config, MAX_DUE, MAX_KEYWORD, MAX_NOTE,
     MAX_SUBTASK_TEXT, MAX_TAGS, MAX_TAG_LEN, MAX_TITLE,
@@ -686,8 +687,7 @@ pub(crate) async fn tool_edit_task(
         // 「没有可修改的字段」首字「没」非 error/warn 前缀 → ok
         return ToolResult::ok("没有可修改的字段".to_string(), Vec::new());
     }
-    next.expected_updated_at = next.updated_at; // RMW 写回基线 = 快照 updated_at（写前比对，防整行覆盖 lost-update）
-    next.updated_at = Some(chrono::Utc::now().timestamp_millis());
+    prepare_for_upsert(&mut next);
     match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
         Ok(()) => {
             broadcast_after_mutation(app, vec![next.clone()], vec![]);
@@ -737,8 +737,7 @@ pub(crate) async fn tool_add_subtask(
         done: false,
     });
     next.subtasks = Some(subs);
-    next.expected_updated_at = next.updated_at; // RMW 写回基线 = 快照 updated_at（写前比对，防整行覆盖 lost-update）
-    next.updated_at = Some(chrono::Utc::now().timestamp_millis());
+    prepare_for_upsert(&mut next);
     match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
         Ok(()) => {
             broadcast_after_mutation(app, vec![next.clone()], vec![]);
@@ -791,8 +790,7 @@ pub(crate) async fn tool_toggle_subtask(
     let mut subs2 = subs;
     subs2[idx].done = !subs2[idx].done;
     next.subtasks = Some(subs2);
-    next.expected_updated_at = next.updated_at; // RMW 写回基线 = 快照 updated_at（写前比对，防整行覆盖 lost-update）
-    next.updated_at = Some(chrono::Utc::now().timestamp_millis());
+    prepare_for_upsert(&mut next);
     match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
         Ok(()) => {
             broadcast_after_mutation(app, vec![next.clone()], vec![]);
@@ -869,8 +867,7 @@ pub(crate) async fn tool_remove_subtask(
     let mut subs2 = subs;
     subs2.remove(idx);
     next.subtasks = Some(subs2);
-    next.expected_updated_at = next.updated_at; // RMW 写回基线 = 快照 updated_at（写前比对，防整行覆盖 lost-update）
-    next.updated_at = Some(chrono::Utc::now().timestamp_millis());
+    prepare_for_upsert(&mut next);
     match crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
         Ok(()) => {
             broadcast_after_mutation(app, vec![next.clone()], vec![]);
