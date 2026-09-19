@@ -36,9 +36,18 @@ pub(crate) fn log_line(path: &Option<PathBuf>, line: &str) {
         .write(true)
         .open(p)
     {
+        // 防 log injection:caller 控制内容(handlers.rs:93 传的 path 是
+        // HTTP 请求路径,query string 等)可能含 `\n` / `\r`,会伪造日志行、
+        // 隐藏真实活动、或在行导向工具里错位。控制字符全部 escape 成可见
+        // 表示后写。
+        let sanitized = line
+            .replace('\r', "\\r")
+            .replace('\n', "\\n")
+            .replace('\t', "\\t")
+            .replace('\0', "\\0");
         let _ = writeln!(
             f,
-            "[{}] {line}",
+            "[{}] {sanitized}",
             chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
         );
     }
