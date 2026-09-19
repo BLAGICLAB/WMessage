@@ -297,8 +297,9 @@ async fn ask_confirm_inner(
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .insert(id.clone(), (tx, session_id.map(|s| s.to_string())));
-    let _ = app.emit_to(
-        "widget",
+    // 老板 14:45 拍板：confirm 弹窗是主窗口的事，不走 widget 挂件
+    // （挂件窗口是屏幕边缘小条，不适合弹确认框；用户操作 Promote 时在主窗口，期待主窗口弹）
+    let _ = app.emit(
         "bot-confirm",
         serde_json::json!({
             "id": id,

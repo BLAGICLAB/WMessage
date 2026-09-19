@@ -17,6 +17,7 @@ use crate::bot_slash;
 use crate::db::paths;
 use crate::evolution::candidate::{self, ProposalEntry, ProposalStatus};
 use crate::evolution::change::{self, ApprovalSource, ChangeRecord, ChangeStatus};
+use crate::audit::AuditLevel;
 
 // ───────────────────────── 路径辅助 ─────────────────────────
 
@@ -67,6 +68,162 @@ fn parse_status_filter(s: &str) -> Result<ProposalStatus, String> {
     }
 }
 
+// ───────────────────────── Toggle / Delete（老板 16:05 拍板）─────────────────────────
+//
+// 老板设计语义：
+// - toggle ON  → 写 ChangeRecord(status=pending)，dedup by proposal_id（已有 pending 不重写）
+// - toggle OFF → 移除 ChangeRecord，proposal.status → Rejected
+// - delete     → 删 proposals.jsonl 行 + 级联删 changes.jsonl 中 status=pending 行
+//                （老板拍板：只允许删 Pending；active/rolled_back 用 Rollback）
+// Promote/Reject 命令保留但语义改成 toggle ON/OFF（兼容老 UI/调用方）
+
+fn toggle_inner(app: &AppHandle, proposal_id: &str, enabled: bool) -> Result<(), String> {
+    let p_path = proposals_path(app);
+    let c_path = changes_path(app);
+
+    let mut proposals = load_proposals(app)?;
+    let idx = proposals
+        .iter()
+        .position(|e| e.proposal_id == proposal_id)
+        .ok_or_else(|| format!("proposal {proposal_id} 不存在"))?;
+    let mut entry = proposals[idx].clone();
+
+    let mut changes = load_changes(app)?;
+
+    if enabled {
+        // Toggle ON：dedup（已有 pending/shadowing/shadow_passed 不重写）
+        let has_active = changes.iter().any(|c| {
+            c.proposal_id == proposal_id
+                && matches!(
+                    c.status,
+                    ChangeStatus::Pending
+                        | ChangeStatus::Shadowing
+                        | ChangeStatus::ShadowPassed
+                )
+        });
+        if !has_active {
+            let mut cr = candidate::to_change_record(&entry, true);
+            cr.approval_source = ApprovalSource::HumanApproved;
+            cr.human_approver = Some("boss".into());
+            cr.status = ChangeStatus::Pending;
+            change::append_change(&c_path, &cr)?;
+            crate::audit_event!(
+                app,
+                AuditLevel::Info,
+                "evolution.toggle_on",
+                "proposal_id" => proposal_id.to_string(),
+                "change_id" => cr.change_id.clone(),
+            );
+        } else {
+            crate::audit_event!(
+                app,
+                AuditLevel::Info,
+                "evolution.toggle_on_dedup",
+                "proposal_id" => proposal_id.to_string(),
+            );
+        }
+        entry.status = ProposalStatus::Promoted;
+        proposals[idx] = entry.clone();
+        rewrite_jsonl(&p_path, &proposals)?;
+    } else {
+        // Toggle OFF：移除 pending ChangeRecord
+        let before = changes.len();
+        changes.retain(|c| {
+            !(c.proposal_id == proposal_id && c.status == ChangeStatus::Pending)
+        });
+        if changes.len() == before {
+            return Err(format!(
+                "proposal {proposal_id} 没有 pending ChangeRecord，无法 toggle OFF"
+            ));
+        }
+        rewrite_jsonl(&c_path, &changes)?;
+        entry.status = ProposalStatus::Rejected;
+        proposals[idx] = entry.clone();
+        rewrite_jsonl(&p_path, &proposals)?;
+        crate::audit_event!(
+            app,
+            AuditLevel::Warn,
+            "evolution.toggle_off",
+            "proposal_id" => proposal_id.to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn delete_inner(
+    app: &AppHandle,
+    proposal_id: &str,
+    cascade_source: bool,
+) -> Result<(), String> {
+    let p_path = proposals_path(app);
+    let c_path = changes_path(app);
+
+    // 加载 proposal entry（拿 related_refs，cascade 时用）
+    let proposals = load_proposals(app)?;
+    let entry = proposals
+        .iter()
+        .find(|e| e.proposal_id == proposal_id)
+        .ok_or_else(|| format!("proposal {proposal_id} 不存在"))?
+        .clone();
+    let related_refs = entry.related_refs.clone();
+
+    // 1. 删 proposals.jsonl 行（废案：下次 consolidation / LLM 也不会执行）
+    let mut proposals = proposals;
+    proposals.retain(|e| e.proposal_id != proposal_id);
+    rewrite_jsonl(&p_path, &proposals)?;
+
+    // 2. 级联删 changes.jsonl：仅删 status=pending（其他状态走 Rollback）
+    let mut changes = load_changes(app)?;
+    let before = changes.len();
+    changes.retain(|c| !(c.proposal_id == proposal_id && c.status == ChangeStatus::Pending));
+    let cascaded = before - changes.len();
+    rewrite_jsonl(&c_path, &changes)?;
+
+    // 3. 可选 cascade 源记忆（老板 16:35 拍板：默认关，复选框选）
+    let mut mem_deleted = 0usize;
+    if cascade_source && !related_refs.is_empty() {
+        let conn = crate::db::open_db(app)?;
+        mem_deleted = crate::memory::store::delete_by_ids(&conn, &related_refs)?;
+    }
+
+    crate::audit_event!(
+        app,
+        AuditLevel::Warn,
+        "evolution.delete",
+        "proposal_id" => proposal_id.to_string(),
+        "cascaded_changes" => cascaded.to_string(),
+        "cascaded_mem_items" => mem_deleted.to_string(),
+        "cascade_source" => cascade_source.to_string(),
+    );
+    Ok(())
+}
+
+/// Tauri command：toggle 开关（UI 主入口，老板 16:05 拍板）
+/// enabled=true  → toggle_inner(true)  写 ChangeRecord（pending）+ 标 promoted
+/// enabled=false → toggle_inner(false) 移除 ChangeRecord + 标 rejected
+/// 不走 ConfirmMap（toggle 是 UI 显式行为，不像 Promote/Reject 高危）
+#[tauri::command]
+pub async fn evolution_toggle_proposal(
+    app: AppHandle,
+    proposal_id: String,
+    enabled: bool,
+) -> Result<(), String> {
+    toggle_inner(&app, &proposal_id, enabled)
+}
+
+/// Tauri command：彻底废案（delete emoji 入口）
+/// 老板 16:05 拍板：只允许删 Pending（active 用 Rollback）
+/// 级联删 proposals.jsonl + changes.jsonl
+/// 老板 16:35 拍板：`cascade_source=true` 时连同源 mem_items 一起删（防止 24h 后重生）
+#[tauri::command]
+pub async fn evolution_delete_proposal(
+    app: AppHandle,
+    proposal_id: String,
+    cascade_source: bool,
+) -> Result<(), String> {
+    delete_inner(&app, &proposal_id, cascade_source)
+}
+
 // ───────────────────────── Commands ─────────────────────────
 
 /// 列出候选池（status 可选过滤）
@@ -87,10 +244,8 @@ pub async fn evolution_list_proposals(
 ///
 /// 复用 ConfirmMap：弹出 widget 弹窗等用户确认。
 /// 确认通过后：
-/// 1. ProposalEntry.status = Promoted
-/// 2. 调 candidate::to_change_record 派生 ChangeRecord
-/// 3. approval_source = HumanApproved, human_approver = "boss"
-/// 4. 追加写入 evolution-changes.jsonl
+/// 老板 16:05 拍板：Promote/Reject 语义 = toggle ON/OFF（兼容老 UI/调用方）
+/// 仍走 ConfirmMap（高危操作需显式确认），内部转 toggle_inner
 #[tauri::command]
 pub async fn evolution_promote_proposal(
     app: AppHandle,
@@ -98,24 +253,18 @@ pub async fn evolution_promote_proposal(
     interactive: bool,
     session_id: Option<String>,
 ) -> Result<ChangeRecord, String> {
-    let path = proposals_path(&app);
-    let mut entries = load_proposals(&app)?;
-
-    let idx = entries
+    let entries = load_proposals(&app)?;
+    let entry = entries
         .iter()
-        .position(|e| e.proposal_id == proposal_id)
+        .find(|e| e.proposal_id == proposal_id)
         .ok_or_else(|| format!("proposal {proposal_id} 不存在"))?;
-    let mut entry = entries[idx].clone();
 
-    if entry.status == ProposalStatus::Promoted {
-        return Err(format!("proposal {proposal_id} 已晋升"));
-    }
     if entry.status == ProposalStatus::Rejected {
         return Err(format!("proposal {proposal_id} 已被拒绝"));
     }
 
     let detail = format!(
-        "晋升提案\nproposal_id: {}\nsummary: {}\nimpact: {:?}\nlayer: {:?}\n\n批准后将写入 ChangeRecord 并进入沙箱流程",
+        "启用提案\nproposal_id: {}\nsummary: {}\nimpact: {:?}\nlayer: {:?}\n\n批准后将写入 ChangeRecord 并进入沙箱流程",
         entry.proposal_id, entry.summary, entry.impact, entry.layer
     );
     let approved = bot_slash::ask_user_confirm(
@@ -127,23 +276,29 @@ pub async fn evolution_promote_proposal(
     )
     .await;
     if !approved {
-        return Err("用户拒绝晋升".into());
+        return Err("用户拒绝启用".into());
     }
 
-    // 标记 Promoted
-    entry.status = ProposalStatus::Promoted;
-    entries[idx] = entry.clone();
-    rewrite_jsonl(&path, &entries)?;
+    toggle_inner(&app, &proposal_id, true)?;
 
-    // 派生 ChangeRecord
-    let mut cr = candidate::to_change_record(&entry, true);
-    cr.approval_source = ApprovalSource::HumanApproved;
-    cr.human_approver = Some("boss".into());
-    change::append_change(&changes_path(&app), &cr)?;
-    Ok(cr)
+    let changes = load_changes(&app)?;
+    let cr = changes
+        .iter()
+        .find(|c| {
+            c.proposal_id == proposal_id
+                && matches!(
+                    c.status,
+                    ChangeStatus::Pending
+                        | ChangeStatus::Shadowing
+                        | ChangeStatus::ShadowPassed
+                )
+        })
+        .ok_or_else(|| format!("toggle_inner 写完未找到 ChangeRecord"))?;
+    Ok(cr.clone())
 }
 
-/// 拒绝提案（任意 → Rejected）
+/// 老板 16:05 拍板：Reject 语义 = toggle OFF（兼容老 API）
+/// 仍走 ConfirmMap，警告用户要移除 ChangeRecord
 #[tauri::command]
 pub async fn evolution_reject_proposal(
     app: AppHandle,
@@ -151,21 +306,18 @@ pub async fn evolution_reject_proposal(
     interactive: bool,
     session_id: Option<String>,
 ) -> Result<(), String> {
-    let path = proposals_path(&app);
-    let mut entries = load_proposals(&app)?;
-
-    let idx = entries
+    let entries = load_proposals(&app)?;
+    let entry = entries
         .iter()
-        .position(|e| e.proposal_id == proposal_id)
+        .find(|e| e.proposal_id == proposal_id)
         .ok_or_else(|| format!("proposal {proposal_id} 不存在"))?;
-    let mut entry = entries[idx].clone();
 
     if entry.status == ProposalStatus::Rejected {
         return Err(format!("proposal {proposal_id} 已拒绝"));
     }
 
     let detail = format!(
-        "拒绝提案\nproposal_id: {}\nsummary: {}\n\n拒绝后将 status=Rejected，不会写入 ChangeRecord",
+        "停用提案\nproposal_id: {}\nsummary: {}\n\n批准后将移除对应的 ChangeRecord（如有）",
         entry.proposal_id, entry.summary
     );
     let approved = bot_slash::ask_user_confirm(
@@ -177,12 +329,9 @@ pub async fn evolution_reject_proposal(
     )
     .await;
     if !approved {
-        return Err("用户取消拒绝操作".into());
+        return Err("用户取消停用操作".into());
     }
-
-    entry.status = ProposalStatus::Rejected;
-    entries[idx] = entry.clone();
-    rewrite_jsonl(&path, &entries)?;
+    toggle_inner(&app, &proposal_id, false)?;
     Ok(())
 }
 

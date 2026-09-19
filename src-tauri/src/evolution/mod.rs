@@ -49,6 +49,27 @@ pub fn post_consolidation(ops: &[ConsolidateOp], report: &ConsolidateReport) {
         .filter(|p| apply::auto_apply_gate(p))
         .cloned()
         .collect();
+
+    // 补 R6 A 漏的连线（老板 12:29 拍板）：落盘候选池，让 shadow 钩子能读到。
+    // dedup by proposal_id：跳过 24h 内已存在的。
+    if let Some(app) = emit::app_handle() {
+        match candidate::write_proposals(app, &proposals) {
+            Ok(n) if n > 0 => crate::audit_event!(
+                app,
+                crate::audit::AuditLevel::Info,
+                "evolution.proposal.persisted",
+                "count" => n.to_string(),
+            ),
+            Ok(_) => {}
+            Err(e) => crate::audit_event!(
+                app,
+                crate::audit::AuditLevel::Warn,
+                "evolution.proposal_persist_failed",
+                "error" => e.clone(),
+            ),
+        }
+    }
+
     emit::emit_proposals(proposals);
     apply::apply_from_consolidation(gated);
 }

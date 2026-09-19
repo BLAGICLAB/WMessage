@@ -22,6 +22,7 @@ import {
 } from "./types";
 import { UI_FONT_SIZE_OPTIONS, type ApiProvider, type UiFontSize } from "./constants";
 import { SkillsPanel } from "./SkillsPanel";
+import { EvolutionPanel } from "../EvolutionPanel";
 import { ApiProviderSelect } from "./ApiProviderSelect";
 import { ProfileRow } from "./ProfileRow";
 import { ModelRow } from "./ModelRow";
@@ -1343,6 +1344,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
       </div>
 
       <SkillsPanel />
+      <EvolutionPanel />
       <MigrationPanel />
 
       {/* 机器人审计日志弹窗 */}

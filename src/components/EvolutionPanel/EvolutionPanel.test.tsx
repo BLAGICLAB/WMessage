@@ -87,8 +87,9 @@ describe("EvolutionPanel", () => {
       expect(invokeMock).toHaveBeenCalledWith("evolution_list_changes");
     });
     expect(screen.getByText(/自进化决策面板/)).toBeTruthy();
-    expect(screen.getByText(/候选池（0）/)).toBeTruthy();
-    expect(screen.getByText(/active ChangeRecord：0/)).toBeTruthy();
+    expect(screen.getByText(/自进化提案（0）/)).toBeTruthy();
+    // Rollback 区条件显示：0 active 时不渲染（老板 16:05 拍板）
+    expect(screen.queryByText(/active ChangeRecord：/)).toBeNull();
   });
 
   it("renders proposals with evidence / impact info", async () => {
@@ -152,7 +153,7 @@ describe("EvolutionPanel", () => {
 
     const user = userEvent.setup();
     invokeMock.mockClear();
-    const promoteBtn = screen.getByRole("button", { name: /Promote/ });
+    const promoteBtn = screen.getByRole("button", { name: /启用/ });
     await user.click(promoteBtn);
 
     await waitFor(() => {
@@ -181,7 +182,7 @@ describe("EvolutionPanel", () => {
 
     const user = userEvent.setup();
     invokeMock.mockClear();
-    const rejectBtn = screen.getByRole("button", { name: /Reject/ });
+    const rejectBtn = screen.getByRole("button", { name: /停用/ });
     await user.click(rejectBtn);
 
     await waitFor(() => {
@@ -206,7 +207,7 @@ describe("EvolutionPanel", () => {
 
     const user = userEvent.setup();
     invokeMock.mockClear();
-    const keepBtn = screen.getByRole("button", { name: /Keep Shadow/ });
+    const keepBtn = screen.getByRole("button", { name: /延长 shadow/ });
     await user.click(keepBtn);
 
     await waitFor(() => {
@@ -254,7 +255,7 @@ describe("EvolutionPanel", () => {
       expect(screen.queryByText(p.suggestion_text)).toBeTruthy()
     );
 
-    const promoteBtn = screen.getByRole("button", { name: /Promote/ });
+    const promoteBtn = screen.getByRole("button", { name: /启用/ });
     expect(promoteBtn).toBeDisabled();
   });
 
