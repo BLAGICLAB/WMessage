@@ -43,6 +43,7 @@ pub use crate::db::{load_all_skill_outcomes, upsert_skill_outcome, PersistedSkil
 // ──────────────────── 子模块声明 ────────────────────
 pub mod config;
 pub mod dispatch;
+pub mod format;
 pub mod registry;
 pub mod tools;
 
