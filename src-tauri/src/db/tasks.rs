@@ -321,9 +321,20 @@ pub fn load_all(conn: &rusqlite::Connection) -> Result<Vec<super::Task>, String>
             bot_assigned,
             files,
         ) = r.map_err(|e| e.to_string())?;
-        // col 从 DB 读出仍是 String(列类型 TEXT),parse 到 TaskStatus enum;
-        // parse 失败 = 数据损坏,沿用外层 Result<_, String> 向上抛
-        let col: TaskStatus = col.parse().map_err(|e: String| e)?;
+        // col 从 DB 读出仍是 String(列类型 TEXT),parse 到 TaskStatus enum。
+        // 与本函数 subtasks/files JSON 损坏「warn + 按空读取」的契约对齐:
+        // 单行 col 异常不应让整个 load_all 失败、把全部任务藏起来。
+        // DB 列是 TEXT 无 CHECK 约束,历史数据 / 老 client / 未来 bug 都可能
+        // 塞非法值进来 — 兑底 Todo 比炸整个看板安全得多。
+        let col: TaskStatus = match col.parse() {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!(
+                    "[db] 任务 {id} 的 col 值无法识别为 TaskStatus，按 Todo 兑底读取（原值未动）：{e}"
+                );
+                TaskStatus::Todo
+            }
+        };
         let tags = match tags {
             Some(s) => serde_json::from_str(&s).ok(),
             None => None,
