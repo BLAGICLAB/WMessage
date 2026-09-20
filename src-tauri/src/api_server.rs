@@ -41,6 +41,11 @@ pub struct ApiState(pub Mutex<Option<RunningApi>>);
 pub struct RunningApi {
     pub shutdown: Arc<AtomicBool>,
     pub handle: Option<std::thread::JoinHandle<()>>,
+    /// 本服务实例实际绑定的 Bearer token。
+    /// api_start 的「已有活服务」早退分支据此返回**权威** token：
+    /// 调用方 Phase 1 从磁盘读到的 token 与此刻内存服务绑定的可能不同
+    /// （中间插入过 api_rotate_token），返回旧值会让调用方拿到对不上活服务的凭证。
+    pub token: String,
 }
 
 /// SSE 事件中枢：客户端列表（bounded 256） + 自增事件 id + 历史环形缓冲（断线重放）
@@ -60,7 +65,8 @@ pub struct EventHub {
     /// 注:hub_id **不跨进程** — 进程重启后 EVENT_HUB_COUNTER 从 1 重计,
     /// 不同进程生命周期会复用同一 ID。writers 全在内存、进程退出全部销毁,
     /// 不会跨进程误关联。`api_status` 也不会持久化 hub_id。
-    pub hub_id: u64,
+    /// 只读访问一律走 `hub_id()` getter（对外不再暴露字段本身）。
+    hub_id: u64,
     /// 事件 id 持久化路径（跨重启保持单调；None=仅内存，测试用）
     id_path: Option<PathBuf>,
 }
@@ -257,6 +263,7 @@ pub fn start_api(
     Ok(RunningApi {
         shutdown,
         handle: Some(handle),
+        token,
     })
 }
 

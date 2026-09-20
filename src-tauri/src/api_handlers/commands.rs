@@ -28,6 +28,22 @@ use super::types::{ApiInfo, ApiStatus};
 
 // ───────────────────────── api_start ─────────────────────────
 
+/// 锁外复核用探针:重新抢锁读取「内存里是否仍有服务实例」。
+///
+/// 供「先 `drop(g)`、再写/清 enabled flag 文件」的锁外阶段复核用——
+/// 文件 I/O 不持锁是本模块约定,但两步之间的窗口里并发命令可能已改变内存状态,
+/// 盲目写/清会把 flag 与真实内存状态写反(下次启动误恢复 / 误不恢复)。
+/// 锁 poisoning 时返回 `None`,调用方据此保守处理。
+fn service_present(state: &ApiState) -> Option<bool> {
+    match state.0.lock() {
+        Ok(g) => Some(g.is_some()),
+        Err(e) => {
+            eprintln!("[mutex_poisoned] api_handlers::commands::state.0: {e:?}");
+            None
+        }
+    }
+}
+
 #[tauri::command]
 pub fn api_start(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandResult<ApiInfo> {
     // Phase 1: token 文件 I/O 在锁外(load_or_create_token 会 read/write token 文件)
@@ -38,9 +54,14 @@ pub fn api_start(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandRe
         e.to_string()
     })?;
     let info = api_start_locked(&app, token, &mut g)?;
-    // Phase 3: enabled flag 文件写入在锁外(避免与 start_api 的端口绑定/spawn 串行)
+    // Phase 3: enabled flag 文件写入在锁外(避免与 start_api 的端口绑定/spawn 串行)。
+    // 锁外写存在竞态:并发的 api_stop 可能已在 drop(g) 后清空 g 并清掉 flag,
+    // 此时再写 flag 会把「内存已无服务」记成「已开启」,下次启动误自动恢复。
+    // 写前重新抢锁复核:只有确认服务仍在才写。
     drop(g);
-    write_enabled_flag(&app);
+    if service_present(&state) != Some(false) {
+        write_enabled_flag(&app);
+    }
     Ok(info)
 }
 
@@ -65,9 +86,12 @@ fn api_start_locked(
             .map(|h| !h.is_finished())
             .unwrap_or(false);
         if alive {
+            // 返回**运行中服务实际绑定的** token,而不是调用方 Phase 1 从磁盘读到的那个:
+            // 两者之间可能插入过 api_rotate_token(内存服务已重绑新 token),
+            // 返回旧 token 会让调用方拿到对不上活服务的凭证。
             return Ok(ApiInfo {
                 port: API_PORT,
-                token: Some(token),
+                token: Some(running.token.clone()),
             });
         }
     }
@@ -213,7 +237,12 @@ pub fn api_status(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandR
     };
     drop(g);
     if needs_clear {
-        clear_enabled_flag(&app);
+        // 锁外清 flag 同样有竞态:并发的 api_start 可能已在 drop(g) 后重新拉起服务
+        // 并写了 flag,此处再清会把用户刚开启的服务记成「已关闭」,下次启动不恢复。
+        // 清前复核:确认 g 仍为空(没有并发 start 接手)才清。
+        if service_present(&state) != Some(true) {
+            clear_enabled_flag(&app);
+        }
     }
     // 未启用时不读/生成 token——否则每次查状态都
     // load_or_create_token,从未开启过 API 的用户数据目录里也会落 runtime/flags/api-token.txt。
@@ -232,6 +261,35 @@ pub fn api_status(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandR
 }
 
 // ───────────────────────── api_rotate_token ─────────────────────────
+
+/// api_rotate_token Phase 2 的结果。
+enum RotateOutcome {
+    NotRunning,
+    Started(ApiInfo),
+}
+
+/// api_rotate_token Phase 2 的「检查 → stop → start」原子段(全程持 `state.0`)。
+///
+/// 抽成独立函数而非闭包:`?` 从**本函数**返回错误,调用方的 Phase 3 回滚照常执行;
+/// 同时 `token` 按值传入,运行中分支直接 move 给 `api_start_locked`,无需 clone。
+fn rotate_apply(
+    app: &AppHandle,
+    state: &ApiState,
+    token: String,
+) -> Result<RotateOutcome, CommandError> {
+    // 锁 poisoning 审计:同 ab74025 惯例
+    let mut g = state.0.lock().map_err(|e| {
+        eprintln!("[mutex_poisoned] api_handlers::commands::state.0: {e:?}");
+        e.to_string()
+    })?;
+    if g.is_none() {
+        return Ok(RotateOutcome::NotRunning);
+    }
+    // 运行中:先 stop 再 start。
+    // stop 不清 enabled flag(start 会写);start 不写 enabled flag(由 Phase 3 补写)
+    api_stop_locked(app, &mut g)?;
+    api_start_locked(app, token, &mut g).map(RotateOutcome::Started)
+}
 
 /// 重新生成 Bearer token:写新 token 文件;若服务运行中则重启生效
 #[tauri::command]
@@ -252,34 +310,18 @@ pub fn api_rotate_token(
     write_token_file(&path, &token)?;
 
     // Phase 2: 锁内做 stop+start(若服务运行中),保持「检查→操作」原子。
-    enum RotateOutcome {
-        NotRunning(ApiInfo),
-        Started(ApiInfo),
-    }
-    let outcome: Result<RotateOutcome, CommandError> = (|| {
-        // 锁 poisoning 审计:同 ab74025 惯例
-        let mut g = state.0.lock().map_err(|e| {
-            eprintln!("[mutex_poisoned] api_handlers::commands::state.0: {e:?}");
-            e.to_string()
-        })?;
-        if g.is_none() {
-            return Ok(RotateOutcome::NotRunning(ApiInfo {
-                port: API_PORT,
-                token: Some(token.clone()),
-            }));
-        }
-        // 运行中:先 stop 再 start。
-        // stop 不清 enabled flag(start 会写);start 不写 enabled flag(由 Phase 3 补写)
-        api_stop_locked(&app, &mut g)?;
-        api_start_locked(&app, token.clone(), &mut g)
-            .map(|info| RotateOutcome::Started(info))
-    })();
+    // token 传副本进 rotate_apply(运行中分支直接 move 给 api_start_locked,不再 clone),
+    // 本地保留一份用于「未运行」应答与失败回滚的 CAS 比对。
+    let outcome = rotate_apply(&app, &state, token.clone());
 
     // Phase 3: 锁释放后再做文件 I/O。
     match outcome {
-        Ok(RotateOutcome::NotRunning(info)) => {
+        Ok(RotateOutcome::NotRunning) => {
             // 未运行:只更新 token 文件,不动 enabled flag(flag 本来就未设)
-            Ok(info)
+            Ok(ApiInfo {
+                port: API_PORT,
+                token: Some(token),
+            })
         }
         Ok(RotateOutcome::Started(info)) => {
             // 运行中重启:start_locked 没写 flag,此处补写
@@ -287,14 +329,26 @@ pub fn api_rotate_token(
             Ok(info)
         }
         Err(e) => {
-            // 回滚 token 文件(锁外)
-            if let Some(old) = &old {
-                let _ = write_token_file(&path, old);
+            // 回滚 token 文件(锁外)。仅当磁盘上仍是本次写入的 token 才回滚(CAS):
+            // 并发的 api_rotate_token 可能已写入更新的 token,盲目回滚会覆盖它的结果,
+            // 造成「内存服务绑新 token、磁盘却是旧 token」的分裂。
+            let disk_is_ours = std::fs::read_to_string(&path)
+                .ok()
+                .map(|s| s.trim() == token)
+                .unwrap_or(false);
+            if disk_is_ours {
+                if let Some(old) = &old {
+                    if let Err(err) = write_token_file(&path, old) {
+                        // 回滚失败必须留痕:token 文件与内存服务可能就此失配。
+                        audit_event!(&app, AuditLevel::Error, "api_rotate_rollback_failed",
+                            "error" => format!("token 文件回滚失败,磁盘与内存 token 可能不一致:{err}"));
+                    }
+                }
             }
             // 尽力用旧 token 恢复服务(再次抢锁,best-effort)。
             // Phase 2 失败→此处抢锁之间存在 TOCTOU 窗口:并发的 api_start /
             // api_rotate_token 可能已插入。因此:
-            //   ① 锁内若已有存活服务 → 并发 api_start 已接手,不得用 old_token
+            //   ① 锁内若已有存活服务 → 并发 api_start 已接手,不得用旧 token
             //      短路/覆盖(否则返回的 token 与活服务绑定的 token 不一致),
             //      直接放弃恢复并原样抛错;
             //   ② 否则在锁内重读磁盘 token 作为权威值(并发 rotate/stop 可能已改写),
@@ -314,9 +368,19 @@ pub fn api_rotate_token(
                             .ok()
                             .map(|s| s.trim().to_string())
                             .filter(|s| !s.is_empty());
-                        if let Some(tok) = authoritative {
-                            if api_start_locked(&app, tok, &mut g).is_ok() {
-                                write_enabled_flag(&app);
+                        match authoritative {
+                            Some(tok) => {
+                                if api_start_locked(&app, tok, &mut g).is_ok() {
+                                    write_enabled_flag(&app);
+                                } else {
+                                    // 恢复失败同样留痕:用户会看到 API 停在停止态。
+                                    audit_event!(&app, AuditLevel::Error, "api_rotate_recovery_failed",
+                                        "error" => "回滚后用磁盘 token 重启 API 失败,API 保持停止");
+                                }
+                            }
+                            None => {
+                                audit_event!(&app, AuditLevel::Error, "api_rotate_recovery_skipped",
+                                    "error" => "磁盘 token 文件不可读,放弃自动恢复");
                             }
                         }
                     }

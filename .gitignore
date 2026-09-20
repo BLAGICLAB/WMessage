@@ -100,3 +100,6 @@ evolution.synthetic/
 
 # 老板诊断脚本（不进项目代码）
 health-check.sh
+
+# OCR 代码审计报告导出（`ocr session export` 生成的本地产物，不进版本库）
+docs/OCR-CODE-REVIEW-*

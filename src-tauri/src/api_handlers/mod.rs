@@ -354,7 +354,8 @@ mod tests {
     fn test_hub_key() -> u64 {
         use std::sync::atomic::{AtomicU64, Ordering};
         static COUNTER: AtomicU64 = AtomicU64::new(0);
-        COUNTER.fetch_add(1, Ordering::SeqCst) + 1
+        // 只关心唯一性,不与其他内存操作建立顺序 → Relaxed 足够
+        COUNTER.fetch_add(1, Ordering::Relaxed) + 1
     }
 
     #[test]

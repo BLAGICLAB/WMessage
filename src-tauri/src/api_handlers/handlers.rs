@@ -18,7 +18,8 @@ use crate::task_out::TaskOut;
 use super::body::{read_body_limited, BodyRead};
 use super::ratelimit::{log_line, rate_check};
 use super::util::{
-    after_change, change_log_line, internal_err, upsert_err, valid_status, CreateReq, UpdateReq,
+    after_change, change_log_line, internal_err, parse_status, upsert_err, valid_status, CreateReq,
+    UpdateReq,
     API_MAX_DUE, API_MAX_FILE_PATH, API_MAX_NOTE, API_MAX_TAGS, API_MAX_TAG_LEN, API_MAX_TITLE,
 };
 use super::util::{now_ms, over_limit};
@@ -256,79 +257,81 @@ fn create_task(
             }
         }
     }
-    let status = match input.status.as_deref() {
-        None | Some("") => "todo".to_string(),
-        Some(s) if valid_status(s) => s.to_string(),
-        Some(_) => {
-            let _ = req.respond(json_err(StatusCode(400), "status 必须是 todo/doing/done"));
-            return;
-        }
+    // 校验与解析同源(parse_status):一次拿到 enum,后续不再 parse().expect(),
+    // 杜绝 valid_status 与 parse 日后分叉时在 handler 线程上 panic。
+    let column: db::TaskStatus = match input.status.as_deref() {
+        None | Some("") => db::TaskStatus::Todo,
+        Some(s) => match parse_status(s) {
+            Some(c) => c,
+            None => {
+                let _ = req.respond(json_err(StatusCode(400), "status 必须是 todo/doing/done"));
+                return;
+            }
+        },
     };
 
     // load→max_order→upsert 全程持 API_RMW_LOCK——
     // 两段式无锁会让并发 create 算出相同 order、并发写互相用旧快照整行覆盖
-    let _rmw = API_RMW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let all = match store.load() {
-        Ok(v) => v,
-        Err(e) => {
+    let task = {
+        let _rmw = API_RMW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let all = match store.load() {
+            Ok(v) => v,
+            Err(e) => {
+                internal_err(req, log, &e);
+                return;
+            }
+        };
+        let max_order = all.iter().filter_map(|t| t.order).fold(0.0f64, f64::max);
+        let now = now_ms();
+        let task = db::Task {
+            id: uuid::Uuid::new_v4().to_string(),
+            title,
+            // due 与 note 同规则：trim 后存储，首尾空白不进库
+            due: input
+                .due
+                .map(|d| d.trim().to_string())
+                .filter(|d| !d.is_empty()),
+            note: input
+                .note
+                .map(|n| n.trim().to_string())
+                .filter(|n| !n.is_empty()),
+            tags: input.tags,
+            // API 入参仍是单绑定字段，双写进 files 与多文件绑定保持一致
+            files: input
+                .file_path
+                .as_ref()
+                .map(|p| p.trim().to_string())
+                .filter(|p| !p.is_empty())
+                .map(|p| {
+                    vec![db::TaskFile {
+                        path: p,
+                        is_dir: input.file_is_dir.unwrap_or(false),
+                    }]
+                }),
+            file_path: input
+                .file_path
+                .map(|p| p.trim().to_string())
+                .filter(|p| !p.is_empty()),
+            file_is_dir: input.file_is_dir,
+            column,
+            subtasks: None,
+            completed_at: if column == db::TaskStatus::Done { Some(now) } else { None },
+            archived: if column == db::TaskStatus::Done { Some(false) } else { None },
+            deleted_at: None,
+            collapsed: None,
+            order: Some(max_order + 1.0),
+            updated_at: Some(now),
+            schedule: None,
+            sched_last: None,
+            bot_assigned: None,
+            expected_updated_at: None, // 新建任务：无读快照基线
+        };
+        if let Err(e) = store.upsert(vec![task.clone()]) {
             internal_err(req, log, &e);
             return;
         }
+        task
     };
-    let max_order = all.iter().filter_map(|t| t.order).fold(0.0f64, f64::max);
-    let now = now_ms();
-    let column: db::TaskStatus =
-        status.parse().expect("status was validated by valid_status() above");
-    let task = db::Task {
-        id: uuid::Uuid::new_v4().to_string(),
-        title,
-        // due 与 note 同规则：trim 后存储，首尾空白不进库
-        due: input
-            .due
-            .map(|d| d.trim().to_string())
-            .filter(|d| !d.is_empty()),
-        note: input
-            .note
-            .map(|n| n.trim().to_string())
-            .filter(|n| !n.is_empty()),
-        tags: input.tags,
-        // API 入参仍是单绑定字段，双写进 files 与多文件绑定保持一致
-        files: input
-            .file_path
-            .as_ref()
-            .map(|p| p.trim().to_string())
-            .filter(|p| !p.is_empty())
-            .map(|p| {
-                vec![db::TaskFile {
-                    path: p,
-                    is_dir: input.file_is_dir.unwrap_or(false),
-                }]
-            }),
-        file_path: input
-            .file_path
-            .map(|p| p.trim().to_string())
-            .filter(|p| !p.is_empty()),
-        file_is_dir: input.file_is_dir,
-        column,
-        subtasks: None,
-        completed_at: if column == db::TaskStatus::Done { Some(now) } else { None },
-        archived: if column == db::TaskStatus::Done { Some(false) } else { None },
-        deleted_at: None,
-        collapsed: None,
-        order: Some(max_order + 1.0),
-        updated_at: Some(now),
-        schedule: None,
-        sched_last: None,
-        bot_assigned: None,
-        expected_updated_at: None, // 新建任务：无读快照基线
-    };
-    if let Err(e) = store.upsert(vec![task.clone()]) {
-        internal_err(req, log, &e);
-        return;
-    }
-    // 释放 API_RMW_LOCK 再 after_change：emit_fn 是 SSE fanout,
-    // 持锁会串行化所有 API 写跨 SSE 网络延迟
-    drop(_rmw);
     after_change(store, &task, "created", emit_fn, log);
     let _ = req.respond(json_ok(StatusCode(201), &TaskOut::from_task(&task)));
 }
@@ -373,37 +376,50 @@ fn update_task(
         return;
     }
 
-    // load→改→upsert 全程持 API_RMW_LOCK(API 写串行化)
-    let _rmw = API_RMW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let tasks = match store.load() {
-        Ok(v) => v,
-        Err(e) => {
-            internal_err(req, log, &e);
-            return;
-        }
+    // 校验与解析同源:在持锁前一次性解出 enum,锁内直接复用。
+    // 避免锁内 s.parse().expect() 依赖「validate_update_input 已校验」这一跨函数不变量——
+    // 两者的状态字符串解读万一分叉,不再 panic 掉 handler 线程。
+    let new_column: Option<crate::db::TaskStatus> = match input.status.as_deref() {
+        Some(s) if !s.is_empty() => match parse_status(s) {
+            Some(c) => Some(c),
+            None => {
+                let _ = req.respond(json_err(StatusCode(400), "status 必须是 todo/doing/done"));
+                return;
+            }
+        },
+        _ => None,
     };
-    let Some(idx) = tasks.iter().position(|t| t.id == id) else {
-        let _ = req.respond(json_err(StatusCode(404), "task not found"));
-        return;
-    };
-    let mut t = tasks[idx].clone();
-    // RMW 基线 = 本次 load 快照的 updated_at；upsert 写前比对，基线外有写者改行 → 409 拒写。
-    // updated_at 为 NULL 的老行用「行存在性」哨兵基线
-    // （BASELINE_NULL_ROW：行被删/被改都 409）
-    db::prepare_for_upsert(&mut t);
 
-    // 应用已校验入参(纯赋值,不再校验)
-    if let Some(title) = input.title.as_deref() {
-        t.title = title.trim().to_string();
-    }
-    if input.note.is_some() {
-        t.note = super::validate::take_trimmed_string(input.note.as_deref());
-    }
-    if let Some(s) = input.status.as_deref() {
-        if !s.is_empty() {
-            // s was validated by validate_update_input (uses valid_status) — parse is safe
-            let new_status: crate::db::TaskStatus =
-                s.parse().expect("validated by valid_status");
+    // load→改→upsert 全程持 API_RMW_LOCK(API 写串行化)。
+    // 作用域块收窄锁:块一结束即释放,after_change(SSE fanout)不持锁
+    // (持锁会串行化所有 API 写跨 SSE 网络延迟)。
+    let t = {
+        let _rmw = API_RMW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tasks = match store.load() {
+            Ok(v) => v,
+            Err(e) => {
+                internal_err(req, log, &e);
+                return;
+            }
+        };
+        let Some(idx) = tasks.iter().position(|t| t.id == id) else {
+            let _ = req.respond(json_err(StatusCode(404), "task not found"));
+            return;
+        };
+        let mut t = tasks[idx].clone();
+        // RMW 基线 = 本次 load 快照的 updated_at；upsert 写前比对，基线外有写者改行 → 409 拒写。
+        // updated_at 为 NULL 的老行用「行存在性」哨兵基线
+        // （BASELINE_NULL_ROW：行被删/被改都 409）
+        db::prepare_for_upsert(&mut t);
+
+        // 应用已校验入参(纯赋值,不再校验)
+        if let Some(title) = input.title.as_deref() {
+            t.title = title.trim().to_string();
+        }
+        if input.note.is_some() {
+            t.note = super::validate::take_trimmed_string(input.note.as_deref());
+        }
+        if let Some(new_status) = new_column {
             if new_status != t.column {
                 let now = now_ms();
                 if new_status == crate::db::TaskStatus::Done {
@@ -416,62 +432,60 @@ fn update_task(
                 t.column = new_status;
             }
         }
-    }
-    if let Some(fp) = input.file_path.as_deref() {
-        // trim 后存储，首尾空白不进库
-        let fp = fp.trim();
-        if fp.is_empty() {
-            t.file_path = None;
-            t.file_is_dir = None;
-            // 旧单绑定字段清空时同步清 files
-            t.files = None;
-        } else {
-            t.file_path = Some(fp.to_string());
-            if let Some(fid) = input.file_is_dir {
-                t.file_is_dir = Some(fid);
-            }
-            // 双写 files（旧单绑定语义 = 唯一一条）
-            t.files = Some(vec![db::TaskFile {
-                path: fp.to_string(),
-                is_dir: t.file_is_dir.unwrap_or(false),
-            }]);
-        }
-    } else if let Some(fid) = input.file_is_dir {
-        if t.file_path.is_some() {
-            t.file_is_dir = Some(fid);
-            if let Some(fp) = t.file_path.clone() {
+        if let Some(fp) = input.file_path.as_deref() {
+            // trim 后存储，首尾空白不进库
+            let fp = fp.trim();
+            if fp.is_empty() {
+                t.file_path = None;
+                t.file_is_dir = None;
+                // 旧单绑定字段清空时同步清 files
+                t.files = None;
+            } else {
+                t.file_path = Some(fp.to_string());
+                if let Some(fid) = input.file_is_dir {
+                    t.file_is_dir = Some(fid);
+                }
+                // 双写 files（旧单绑定语义 = 唯一一条）
                 t.files = Some(vec![db::TaskFile {
-                    path: fp,
-                    is_dir: fid,
+                    path: fp.to_string(),
+                    is_dir: t.file_is_dir.unwrap_or(false),
                 }]);
             }
+        } else if let Some(fid) = input.file_is_dir {
+            if t.file_path.is_some() {
+                t.file_is_dir = Some(fid);
+                if let Some(fp) = t.file_path.clone() {
+                    t.files = Some(vec![db::TaskFile {
+                        path: fp,
+                        is_dir: fid,
+                    }]);
+                }
+            }
         }
-    }
-    if input.due.is_some() {
-        t.due = super::validate::take_trimmed_string(input.due.as_deref());
-    }
-    if let Some(tags) = input.tags {
-        t.tags = if tags.is_empty() { None } else { Some(tags) };
-    }
-    if let Some(archived) = input.archived {
-        t.archived = Some(archived);
-    }
-    if let Some(deleted) = input.deleted {
-        if deleted {
-            t.deleted_at = Some(now_ms());
-        } else {
-            t.deleted_at = None;
+        if input.due.is_some() {
+            t.due = super::validate::take_trimmed_string(input.due.as_deref());
         }
-    }
-    t.updated_at = Some(now_ms());
+        if let Some(tags) = input.tags {
+            t.tags = if tags.is_empty() { None } else { Some(tags) };
+        }
+        if let Some(archived) = input.archived {
+            t.archived = Some(archived);
+        }
+        if let Some(deleted) = input.deleted {
+            if deleted {
+                t.deleted_at = Some(now_ms());
+            } else {
+                t.deleted_at = None;
+            }
+        }
+        t.updated_at = Some(now_ms());
 
-    if let Err(e) = store.upsert(vec![t.clone()]) {
-        upsert_err(req, log, &e);
-        return;
-    }
-    // 释放 API_RMW_LOCK 再 after_change：emit_fn 是 SSE fanout,
-    // 持锁会串行化所有 API 写跨 SSE 网络延迟
-    drop(_rmw);
+        if let Err(e) = store.upsert(vec![t.clone()]) {
+            upsert_err(req, log, &e);
+            return;
+        }
+        t
+    };
     after_change(store, &t, "updated", emit_fn, log);
     let _ = req.respond(json_ok(StatusCode(200), &TaskOut::from_task(&t)));
 }
@@ -527,36 +541,36 @@ fn delete_task(
     log: &Option<PathBuf>,
 ) {
     // load→改→upsert 全程持 API_RMW_LOCK（API 写串行化）
-    let _rmw = API_RMW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let tasks = match store.load() {
-        Ok(v) => v,
-        Err(e) => {
-            internal_err(req, log, &e);
+    let t = {
+        let _rmw = API_RMW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tasks = match store.load() {
+            Ok(v) => v,
+            Err(e) => {
+                internal_err(req, log, &e);
+                return;
+            }
+        };
+        let Some(idx) = tasks.iter().position(|t| t.id == id) else {
+            let _ = req.respond(json_err(StatusCode(404), "task not found"));
+            return;
+        };
+        let mut t = tasks[idx].clone();
+        // RMW 基线 = 本次 load 快照的 updated_at（同 update_task）；
+        // NULL 老行同样走行存在性哨兵基线
+        db::prepare_for_upsert(&mut t);
+        if t.deleted_at.is_some() {
+            // 已在回收站：幂等返回当前状态
+            let _ = req.respond(json_ok(StatusCode(200), &TaskOut::from_task(&t)));
             return;
         }
+        t.deleted_at = Some(now_ms());
+        t.updated_at = Some(now_ms());
+        if let Err(e) = store.upsert(vec![t.clone()]) {
+            upsert_err(req, log, &e);
+            return;
+        }
+        t
     };
-    let Some(idx) = tasks.iter().position(|t| t.id == id) else {
-        let _ = req.respond(json_err(StatusCode(404), "task not found"));
-        return;
-    };
-    let mut t = tasks[idx].clone();
-    // RMW 基线 = 本次 load 快照的 updated_at（同 update_task）；
-    // NULL 老行同样走行存在性哨兵基线
-    db::prepare_for_upsert(&mut t);
-    if t.deleted_at.is_some() {
-        // 已在回收站：幂等返回当前状态
-        let _ = req.respond(json_ok(StatusCode(200), &TaskOut::from_task(&t)));
-        return;
-    }
-    t.deleted_at = Some(now_ms());
-    t.updated_at = Some(now_ms());
-    if let Err(e) = store.upsert(vec![t.clone()]) {
-        upsert_err(req, log, &e);
-        return;
-    }
-    // 释放 API_RMW_LOCK 再 after_change：emit_fn 是 SSE fanout,
-    // 持锁会串行化所有 API 写跨 SSE 网络延迟
-    drop(_rmw);
     after_change(store, &t, "deleted", emit_fn, log);
     let _ = req.respond(json_ok(StatusCode(200), &TaskOut::from_task(&t)));
 }

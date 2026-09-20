@@ -29,8 +29,15 @@ pub(crate) const API_MAX_TAGS: usize = crate::bot::MAX_TAGS;
 // 取 1024（macOS PATH_MAX 量级），与 title/note 等字段一样走 over_limit
 pub(crate) const API_MAX_FILE_PATH: usize = 1024;
 
+/// 解析 status 字符串为 `TaskStatus`（校验与解析的唯一入口）。
+/// `None` = 非法值。校验方（`valid_status`）与实际消费方都走此函数，
+/// 避免两处逻辑日后分叉后 `parse().expect()` 在 handler 线程上 panic。
+pub(crate) fn parse_status(s: &str) -> Option<crate::db::TaskStatus> {
+    s.parse::<crate::db::TaskStatus>().ok()
+}
+
 pub(crate) fn valid_status(s: &str) -> bool {
-    s.parse::<crate::db::TaskStatus>().is_ok()
+    parse_status(s).is_some()
 }
 
 pub(crate) fn over_limit(v: &str, max: usize, what: &str) -> Option<String> {

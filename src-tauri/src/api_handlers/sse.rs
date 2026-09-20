@@ -25,7 +25,8 @@ pub(crate) const MAX_SSE_CLIENTS: usize = 32;
 /// writer 循环发 keepalive——旧客户端以为活着却永远收不到新事件，
 /// 且每次 rotate 累积一批泄漏线程。
 pub(crate) struct SseWriterReg {
-    /// hub 身份键（从 EventHub.hub_id 取，AtomicU64 计数器，跨进程单调；
+    /// hub 身份键（从 EventHub.hub_id 取，AtomicU64 计数器，**进程内**单调递增；
+    /// 跨进程不保证 —— 进程重启后 EVENT_HUB_COUNTER 从 1 重计）；
     /// 不再用 Arc 指针作身份 —— Arc drop 后地址可被复用，会导致
     /// 跨 stop/start 的 writer 误关联）
     pub hub_key: u64,

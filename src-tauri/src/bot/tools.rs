@@ -12,7 +12,7 @@
 use tauri::{AppHandle, Emitter};
 
 use crate::bot::dispatch::{commit_and_report, parse_args};
-use crate::bot::format::column_label;
+use crate::bot::format::status_label;
 use crate::bot::registry::ToolResult;
 use crate::db::{prepare_for_upsert, TaskStatus};
 use crate::bot::{
@@ -162,7 +162,7 @@ pub(crate) async fn tool_list_tasks(app: &AppHandle) -> crate::bot::registry::To
     }
     let mut lines: Vec<String> = Vec::new();
     for t in &tasks {
-        let col = column_label(t.column);
+        let col = status_label(t.column);
         let due = t
             .due
             .as_deref()
@@ -204,7 +204,7 @@ pub(crate) async fn tool_query_single_task(
     let Some(t) = tasks.into_iter().find(|t| t.id == id) else {
         return ToolResult::ok(format!("未找到 id={id} 的任务卡"), Vec::new());
     };
-    let col = column_label(t.column);
+    let col = status_label(t.column);
     let mut lines: Vec<String> = vec![format!("- [{}] {}（id={}）", col, t.title, t.id)];
     if let Some(note) = &t.note {
         if !note.is_empty() {
@@ -319,7 +319,7 @@ pub(crate) async fn tool_search_tasks(
     });
     let mut lines: Vec<String> = Vec::new();
     for t in &hits {
-        let col = column_label(t.column);
+        let col = status_label(t.column);
         let arch = if t.archived == Some(true) {
             "（已归档）"
         } else {
