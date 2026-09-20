@@ -80,7 +80,7 @@ impl EventHub {
             clients: Mutex::new(Vec::new()),
             next_id: AtomicU64::new(0),
             history: Mutex::new(VecDeque::new()),
-            hub_id: EVENT_HUB_COUNTER.fetch_add(1, Ordering::SeqCst) + 1,
+            hub_id: EVENT_HUB_COUNTER.fetch_add(1, Ordering::SeqCst),
             id_path: None,
         })
     }

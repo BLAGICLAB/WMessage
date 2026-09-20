@@ -123,7 +123,8 @@ fn api_start_locked(
 
 #[tauri::command]
 pub fn api_stop(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandResult<()> {
-    api_stop_impl(&app, &state)
+    // 用户显式关闭:清 api-enabled.flag,否则下次启动会按 flag 自动恢复
+    api_stop_impl(&app, &state, true)
 }
 
 /// 应用退出路径(ExitRequested)的 API 停止——与 api_stop 同一清理
@@ -134,19 +135,29 @@ pub fn api_stop_for_exit<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     state: &ApiState,
 ) -> CommandResult<()> {
-    api_stop_impl(app, state)
+    // 退出不是用户关开关:保留 flag 供下次启动恢复
+    api_stop_impl(app, state, false)
 }
 
+/// `clear_enabled` 由调用方语义决定:`api_stop`(用户显式关闭)→ true,
+/// `api_stop_for_exit`(应用退出,下次启动按 flag 恢复)→ false。
+/// flag 文件 I/O 在锁释放后做(遵循本模块「文件 I/O 不持锁」约定)。
 fn api_stop_impl<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     state: &ApiState,
+    clear_enabled: bool,
 ) -> CommandResult<()> {
     // 锁 poisoning 审计:同 ab74025 惯例
     let mut g = state.0.lock().map_err(|e| {
         eprintln!("[mutex_poisoned] api_handlers::commands::state.0: {e:?}");
         e.to_string()
     })?;
-    api_stop_locked(app, &mut g)
+    api_stop_locked(app, &mut g)?;
+    drop(g);
+    if clear_enabled {
+        clear_enabled_flag(app);
+    }
+    Ok(())
 }
 
 /// api_stop_impl 的持锁实现:供 api_rotate_token
@@ -280,12 +291,33 @@ pub fn api_rotate_token(
             if let Some(old) = &old {
                 let _ = write_token_file(&path, old);
             }
-            // 尽力用旧 token 恢复服务(再次抢锁,best-effort)
-            if let Some(old_token) = old {
+            // 尽力用旧 token 恢复服务(再次抢锁,best-effort)。
+            // Phase 2 失败→此处抢锁之间存在 TOCTOU 窗口:并发的 api_start /
+            // api_rotate_token 可能已插入。因此:
+            //   ① 锁内若已有存活服务 → 并发 api_start 已接手,不得用 old_token
+            //      短路/覆盖(否则返回的 token 与活服务绑定的 token 不一致),
+            //      直接放弃恢复并原样抛错;
+            //   ② 否则在锁内重读磁盘 token 作为权威值(并发 rotate/stop 可能已改写),
+            //      不再用捕获的 old_token,避免内存服务与磁盘 token 不一致。
+            if old.is_some() {
                 match state.0.lock() {
                     Ok(mut g) => {
-                        if api_start_locked(&app, old_token, &mut g).is_ok() {
-                            write_enabled_flag(&app);
+                        let alive = g
+                            .as_ref()
+                            .and_then(|r| r.handle.as_ref())
+                            .map(|h| !h.is_finished())
+                            .unwrap_or(false);
+                        if alive {
+                            return Err(e);
+                        }
+                        let authoritative = std::fs::read_to_string(&path)
+                            .ok()
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty());
+                        if let Some(tok) = authoritative {
+                            if api_start_locked(&app, tok, &mut g).is_ok() {
+                                write_enabled_flag(&app);
+                            }
                         }
                     }
                     Err(ee) => {
