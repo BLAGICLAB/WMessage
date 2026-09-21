@@ -53,13 +53,65 @@ ocr review --format json --output /tmp/ocr-recheck-<批次名>.json
 
 ## 2. 阶段划分
 
-### Phase 0 — 准备（一次性，先做）
+### Phase 0 — 准备（已完成 2026-09-21）
 
-- [ ] **验证基线**：跑 `scripts/test-all.sh`，把结果记进本文件。基线不绿就先记录已知失败，否则后续无法区分新旧问题。
-- [ ] **triage 分类**：把 1145 条按 §3 规则预分类，产出跟踪表（见 §5）。
-- [ ] **确认排除清单**：`src-tauri/vendor/**`（第三方，另立 Phase 5）；`src-tauri/dotnet/WmDocxRevisions/Program.cs`（生成物？需确认）。
-- [ ] **定义 OCR 存量基线**：把本次 1145 条按 `path:line` 存成集合，复审时用于 diff 出"新增"。
-- [ ] 提交本计划文件。
+- [x] **验证基线**：跑 `scripts/test-all.sh`（结果见下）。**基线不绿**，已知失败已登记。
+- [x] **triage 分类**：产出 `docs/OCR-CODE-REVIEW-2026-09-21-baseline.json`（1052 条非 vendor，含 `path:line` + severity + category + 内容指纹）。
+- [x] **确认排除清单**：`src-tauri/vendor/**` 已排除（93 条，Phase 5 单独决策）。`dotnet/WmDocxRevisions/Program.cs` **已判定为手写源码**（27940 字节，头部有 09-02/09-05 开发决策注释，git 历史 3 个功能 commit，publish 脚本只打包不生成）→ **不排除**，4 个 high 进 Phase 2。
+- [x] **OCR 存量基线**：同上 baseline.json，后续复审用它 diff「新增 vs 存量」。
+- [x] 计划文件已提交 `2f9041c`。
+
+#### 基线结果（HEAD = `2f9041c`，工作区 clean）
+
+| 检查 | 结果 |
+| --- | --- |
+| `cargo nextest`（1/3） | ✅ **1061 passed / 2 skipped** |
+| `pytest tests-audit/`（2/3） | ❌ **10 failed / 28 passed / 1 skipped**（装好 pytest 后才第一次跑得到，见 Phase 0.5） |
+| `tsc --noEmit` | ✅ exit 0 |
+| `vitest run` | ❌ **2 files / 17 tests failed** |
+
+**已知失败明细（17 条，全部为同一个环境回归）**
+
+- `src/theme.test.ts` — 11 条、`src/components/WidgetApp.test.tsx` — 6 条。
+- 共同根因：测试环境里 **`localStorage` 是 `undefined`**，两个文件的 `beforeEach` 都在 `localStorage.clear()` 上抛 `TypeError: Cannot read properties of undefined (reading 'clear')`，导致整文件用例全挂。
+- 旁证：node 输出 `localStorage is not available because --localstorage-file was not provided` → 疑似 Node 26 自带的 `localStorage` 全局与 jsdom 的全局冲突（`vitest.config.ts` 已是 `environment: "jsdom"` + `setupFiles: ./src/test/setup.ts`，而 `setup.ts` **没有**兜底定义 `localStorage`）。
+- 与本轮 OCR 修复无关：`src/` 前端代码本轮未改动。
+
+### Phase 0.5 — 恢复验证基线（已完成 2026-09-21，commit `b0db1c8`）
+
+- [x] **D1 装 pytest**：`python3 -m pip install --user pytest` → pytest 8.4.2（`/usr/bin/python3` 3.9.6 可见）。
+- [x] **D2 修 17 个前端失败**：
+  - 根因：Node 26 自带 `localStorage` 全局（未传 `--localstorage-file` 时为 `undefined`）遮蔽了 jsdom 的实现；两个测试文件的 `beforeEach` 都在 `localStorage.clear()` 抛 `TypeError`，整文件用例全挂。
+  - 修法：`src/test/setup.ts` 按该文件既有风格（matchMedia/scrollTo/crypto 兜底）补内存版 `localStorage` → 11 个 theme + 5 个 WidgetApp 用例转绿。
+  - 第 17 个（`bot on → off → on 切换`）暴露的是**测试与产品契约冲突**：测试断言 `bot_sessions_load` 只调 1 次，而 `ChatPanel.tsx:217` 的 `useEffect(..., [enabled])` 在 bot 重开时会重跑并再拉一次（该 effect 自带注释说明这是有意行为）。**决策 A —— 改测试承认「重开重载」**，同时用 `vi.waitFor` 取代固定 tick 数断言，用例名改为反映真实契约（ChatPanel 不重挂仍是要害）。
+  - 验证：`vitest` 23 files / **229 passed**、`tsc --noEmit` clean。
+
+#### 真实基线（HEAD = `b0db1c8`）
+
+| 检查 | 结果 |
+| --- | --- |
+| `cargo nextest`（1/3） | ✅ **1061 passed / 2 skipped** |
+| `pytest tests-audit/`（2/3） | ❌ **10 failed / 28 passed / 1 skipped** |
+| `tsc --noEmit` | ✅ exit 0 |
+| `vitest run` | ✅ **23 files / 229 tests passed**（Phase 0.5 修好） |
+
+#### ⚠️ 新暴露的问题：pytest 10 个失败（D3，待决策）
+
+装了 pytest 后才第一次跑得到这批一致性检查 → 暴露**长期存在的架构漂移**（重构搬走了代码，检查脚本没跟着更新，因为一直跑不了）：
+
+| 脚本 | 失败项 |
+| --- | --- |
+| `audit_pre_step_pre_execute.py` | `test_pre_step_hit_triggers_start_skill`、`test_every_execute_tool_has_pre_execute_check`、`test_skill_on_step_called_in_execute_tool`、`test_audit_module_exists`（`classify_text` 不存在）、`test_post_execute_emits_structured_event`、`test_bypass_llm_switch_field_exists`、`test_bypass_llm_default_view_field` |
+| `audit_module_map.py` | `test_tree_entries_point_to_existing_files`、`test_every_source_file_is_mentioned`、`test_declared_modules_have_doc_entry` |
+
+**已核实与本轮 OCR 修复无关**：断言引用的是 `bot/` 分发、`audit.rs`、模块地图文档等我们没动过的地方（`tests-audit/` 里也没有 `status_label` 的引用）。
+
+- [ ] **D3：这 10 个怎么处理？**
+  - **A** 逐个更新检查脚本，使其匹配当前架构（工作量中等，但能让 pre-commit/push 门禁重新有效）
+  - **B** 登记为「已知失败」，每批只要求「不新增失败」（Phase 1 可立刻开工）
+  - **C** 先挑显然是「检查脚本过时」的几条批量修，其余登记
+
+> Phase 1 是否开工取决于 D3：选 B/C 可立即开始；选 A 建议先做完再进 Phase 1。
 
 ### Phase 1 — critical（24 条，非 vendor 17 条）
 
