@@ -50,6 +50,13 @@ grep 例：`grep 'C2b1' docs/OCR-FOLLOWUPS-INDEX.md`
 | C2d-v5 | C2d-r1 | low | `let mut raw = raw;` 重绑定遮蔽多余（FnOnce 直接消耗即可）| — | **won't fix**（纯风格）|
 | C2d-v6 | C2d-r1 | medium | per-path `canonical_string` 失败静默 drop（无 audit）| 绑定文件被删/不可达 | 顺手修 |
 | C2d-v7 | C2d-r1 | medium | 注释宣称「合并进一个 blocking 任务」但 `db_load` 自带 spawn_blocking（over-claim）| — | 顺手修（注释准确性）|
+| C4-v1 | C4 | high | `STORAGE_KEY = "***"`（src/storage.ts:2）—— 与 C4-3 同根因（占位未替换），但**影响真实用户数据迁移**（老版本升级时 `App.tsx:192` 读 "***" 取旧数据，多应用并存必撞）。严重度不低于 C4-3：本批**不修**，因不知老版本用什么 key 即改 = 仍读错位置（信息不足，非授权问题）。| 用户升级路径 | 独立评估（需先考据老 key）|
+| C4-v2 | C4 | — | `PANEL_H_MIN=800 > PANEL_H default=560` 逻辑矛盾真实存在，但具体 MIN 值是产品决策（widget 内容最小可用高度需设计定），三问无代码依据：本批**wontfix-pending-product-decision**，不动代码、不写 TODO（D2: 注释不算修复）。| 用户手动 resize | 独立评估（需产品输入）|
+| PROC-4 | 流程 | — | OCR 假阳性累积统计：C3 一批 1 条（H1），C4 一批 2 条（C4-2 / C4-5）—— 假阳性率需要被跟踪。C4-2 证据：nextest `--help` 列 `[possible values: integer or "num-cpus"]`；C4-5 证据：format.ts:93/124 实际内容均无 finding 描述的 bug。累积到 3-4 条再评估是否调 OCR prompt / config / 过滤规则。| OCR 轮次 | 独立评估（阈值触发）|
+| C4-r1-H1 | C4-r1 | critical→已修 | mutating 原声明在 App() 函数体内 → 每 render 重建 → 串行化跨 render 失效（OCR C4-r1 实证）。r2 验证：抬到模块作用域后链跨 render 衔接（同时改：mutate 闭包每 render 新建但读到同一模块对象），fix = 1 行 const 移位。| — | ✅ 已修（r2 验证）|
+| C4-r1-M1 | C4-r1 | medium | observe-run --synthetic --proposals /path/to/x.jsonl 时 CLI 给的路径被 silent 覆盖（synthetic 隔离的设计），用户无任何提示 | 用户传路径被无视 | 顺手修（可选：打印 stderr 警告）|
+| C4-r1-L1 | C4-r1 | low | r1 修复后 mutating 模块级 singleton 跨测试残留 → 测试间的 mutate 状态可能泄漏（机制与顺序测试的潜在缺陷边界）| 测试隔离 | 顺手修（测试 setup/teardown 重置 chain）|
+| C4-r1-L2 | C4-r1 | low | SIZE_KEY 新值无老 key 读回退（loadSize 无 fallback）—— 但全仓 grep 确认 *** 无任何残留引用，老数据实际不存在 | 老用户 | 顺手修（双向兼容：先读新 key、失败再读老 key）|
 | C3-r1-H1 | C3-r1 | high→**假阳性** | DbWriteGuard「隐式 Send」断言为假（std MutexGuard 本就 !Send，已静态断言实证）| — | **不改**（OCR false positive）|
 | C3-r1-H2 | C3-r1 | high | `evolution_keep_shadow` guard 持满 async 体（今天无 await、future 仍 Send；加 await 即编译错）| 未来加 await | Phase 6-T（注：无当前缺陷，失败模式=编译期拦截）|
 | C3-r1-M1 | C3-r1 | medium | DbWriteGuard 缺 `#[must_use]`（`lock_db_write();` 无绑定会立即析构）| 漏绑定 | 顺手修 |

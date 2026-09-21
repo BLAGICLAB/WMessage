@@ -15,5 +15,7 @@ export const CHAT_H_MIN = 120;
 export const SPLITTER_H = 16;
 export const DEFAULT_TASK_H = 280;
 
-export const SIZE_KEY = "***";
+// C4-3：与 POS_KEY 同一命名空间 `wmessage-widget-`，kebab-case。仓库无 `:vN` 版本后缀
+// 先例（grep 空）→ 不预设；后续若需迁移键，约定为 legacy/current 两键并存，不改本名。
+export const SIZE_KEY = "wmessage-widget-size";
 export const POS_KEY = "wmessage-widget-pos";

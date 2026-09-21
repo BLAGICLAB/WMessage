@@ -18,6 +18,11 @@ import { isDueToday } from "./format";
 import type { ThemeSetting } from "./theme";
 import type { Task, WorkspaceItem } from "./types";
 
+// OCR C4-r1 验证 + 修：mutate 串行化队列必须在**模块作用域**（App() 内会被每
+//   次 render 重建 → 跨 render 的并发 mutate 落到不同链 → 串行化失效）。
+//   抬到此处后全 App 实例共享同一链，跨 render 与 unmount/remount 都能衔接。
+const mutating: { chain: Promise<void> } = { chain: Promise.resolve() };
+
 const SEED: Task[] = [
   {
     id: "t1",
@@ -228,27 +233,33 @@ function App() {
     })();
   }, []);
 
-  // 统一变更出口：计算新数组 → diff → 行级增量落盘（await 落盘完成）→ 更新 state → 广播挂件
-  // tasksRef/setState 必须等落盘成功后才更新——落盘失败（upsertTasks 抛错）
-  // 时内存不得先行，否则 UI 已更新而磁盘没动，重启后 UI/DB 永久分叉
-  const mutate = async (fn: (prev: Task[]) => Task[]) => {
-    const prev = tasksRef.current;
-    const next = fn(prev);
-    // 打最后修改时间戳（合并导入按此比较同 id 取舍）；
-    // 纯排序变更保留原 updatedAt（diffTaskRows 内部判定）
-    const { upserts, deletes } = diffTaskRows(prev, next, Date.now());
-    // 先落盘再广播：挂件收到 tasks-changed 后立刻 db_load，必须读到已提交的快照
-    await upsertTasks(upserts);
-    await deleteTaskRows(deletes);
-    tasksRef.current = next;
-    setTasks(next);
-    if (upserts.length || deletes.length) {
-      try {
-        await emit("tasks-changed");
-      } catch (e) {
-        console.error("emit tasks-changed failed", e);
+  // OCR C4-6 + C4-r1-验证修复：mutate 串行化（并发保护）。
+  // 修法（r1 验证）：mutating 链已抬到模块作用域；此处只保留 mutate 闭包，
+  //   闭包每 render 新建但读到的 mutating 引用恒为模块同一对象 → 链跨 render 衔接。
+  // 验证限于：机制与顺序（并发场景无确定性回归测试）。
+  const mutate = (fn: (prev: Task[]) => Task[]) => {
+    const p = mutating.chain.then(async () => {
+      const prev = tasksRef.current;
+      const next = fn(prev);
+      // 打最后修改时间戳（合并导入按此比较同 id 取舍）；
+      // 纯排序变更保留原 updatedAt（diffTaskRows 内部判定）
+      const { upserts, deletes } = diffTaskRows(prev, next, Date.now());
+      // 先落盘再广播：挂件收到 tasks-changed 后立刻 db_load，必须读到已提交的快照
+      await upsertTasks(upserts);
+      await deleteTaskRows(deletes);
+      tasksRef.current = next;
+      setTasks(next);
+      if (upserts.length || deletes.length) {
+        try {
+          await emit("tasks-changed");
+        } catch (e) {
+          console.error("emit tasks-changed failed", e);
+        }
       }
-    }
+    });
+    // 推进链；then 空 catch 避免 unhandled rejection 阻塞后续
+    mutating.chain = p.then(() => undefined, () => undefined);
+    return p;
   };
 
   // mutate 的 fire-and-forget 入口：失败时 mutate 抛错（见上），这里终止 promise 链——

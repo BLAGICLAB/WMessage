@@ -97,76 +97,16 @@ fn main() {
         }
     }
 
-    // 老板 21:38 拍板：synthetic 隔离 — --synthetic 写 evolution.synthetic/，默认读 evolution/（真数据路径）
+    // OCR C4-1：合并双 argv 循环为一个，synthetic 覆盖块移到**循环后**。
+    // 原状：第二循环会反覆解析同一批 flag → 在 synthetic 块之后再次覆盖路径，
+    // 导致 `--proposals X --synthetic` 的 synthetic 隔离契约被静默打破（X 复盖回合成路径）。
+    // 改法：循环只跑一次、覆盖块只生效一次、synthetic 后置 → 路径优先级 = CLI < synthetic。
     if use_synthetic {
         let synth_base = PathBuf::from("../evolution.synthetic");
         proposals_path = synth_base.join("evolution-proposals.jsonl");
         changes_path = synth_base.join("evolution-changes.jsonl");
         applied_path = synth_base.join("evolution-applied.jsonl");
         output_path = PathBuf::from("./observe-report.synthetic.json");
-    }
-
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--proposals" => {
-                proposals_path = PathBuf::from(args.get(i + 1).expect("--proposals 后需路径"));
-                i += 2;
-            }
-            "--changes" => {
-                changes_path = PathBuf::from(args.get(i + 1).expect("--changes 后需路径"));
-                i += 2;
-            }
-            "--applied" => {
-                applied_path = PathBuf::from(args.get(i + 1).expect("--applied 后需路径"));
-                i += 2;
-            }
-            "--window-days" => {
-                window_days = args
-                    .get(i + 1)
-                    .expect("--window-days 后需 N")
-                    .parse()
-                    .expect("N 必须是整数");
-                i += 2;
-            }
-            "--synthetic" => {
-                use_synthetic = true;
-                i += 1;
-            }
-            "--seed" => {
-                seed = args
-                    .get(i + 1)
-                    .expect("--seed 后需 N")
-                    .parse()
-                    .expect("N 必须是整数");
-                i += 2;
-            }
-            "--output" => {
-                output_path = PathBuf::from(args.get(i + 1).expect("--output 后需路径"));
-                i += 2;
-            }
-            "--check-stop" => {
-                check_stop = true;
-                i += 1;
-            }
-            "--start-ms" => {
-                start_ms = Some(
-                    args.get(i + 1)
-                        .expect("--start-ms 后需 EPOCH_MS")
-                        .parse()
-                        .expect("必须是整数"),
-                );
-                i += 2;
-            }
-            "-h" | "--help" => {
-                print_help();
-                return;
-            }
-            other => {
-                eprintln!("未知参数：{other}");
-                std::process::exit(2);
-            }
-        }
     }
 
     let now_ms = chrono::Utc::now().timestamp_millis();

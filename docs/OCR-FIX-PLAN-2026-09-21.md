@@ -439,7 +439,7 @@ r2（364e2749）0 new high → 收口。
 | 批次 | 范围 | fix | wontfix | 验证 | OCR复审 | commit |
 | C1 | copy_file.rs(3) + bot_fs.rs(2) | 5 | 0 | ✅ test-all | ✅ 0 新增 | c9ff340 / 3501ae7 / 3266382 |
 | C2 | bot_skills/files.rs(1) + capabilities(1) | 2 | 0 | ✅ test-all | ✅ | 39675aa / 8b0dfdb / 95a25e9 |
-| C3 | db/tasks.rs + eval/metrics.rs + evolution/observe/stop.rs + evolution/panel/commands.rs | 4 | 0 | ✅ test-all（1073 Rust + 229 vitest） | r1（一次收口，未跑 r2） | 本批 commit（自引用；精确 sha 以 git log 为准） |
+| C3 | db/tasks.rs + eval/metrics.rs + evolution/observe/stop.rs + evolution/panel/commands.rs | 4 | 0 | ✅ test-all（1073 Rust + 229 vitest） | r1（一次收口，未跑 r2） | 62e245e |
 | C4 | WidgetApp/constants.ts(2) + observe_run.rs + test-all.sh + format.ts + App.tsx | — | — | 未开 | — | — |
 
 > **C3 批定性：2 critical（C3-3 / C3-4 实修）+ 1 high（C3-1，原 critical → 实现前发现生产路径已锁覆盖而降级）+ 1 medium（C3-2，原 critical → 字段级对外语义保留、无内部生产消费者而降级）。非「4 critical 完成」。**
