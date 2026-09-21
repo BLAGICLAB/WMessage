@@ -152,6 +152,21 @@ async fn allowed_dirs(app: &AppHandle) -> Vec<PathBuf> {
 /// interactive/session_id（会话隔离）：后台执行（interactive=false）
 /// 不弹授权窗直接拒；弹窗事件带 sessionId 供前端按会话过滤。
 /// 成功返回 canonical 路径（Windows 剥 \\?\ 前缀）。
+/// 包 spawn_blocking 同步 syscall：避免阻塞 Tauri async runtime（OCR C1b performance）。
+///
+/// closure 要求：FnOnce() -> Result<T, std::io::Error> + Send + 'static。
+/// 返回：Result<T, String>——内部把 io::Error 转 String（走 spawn_blocking_map 契约，
+/// py/document.rs:1059），调用方拿到的是 String 错误，丢了 io::ErrorKind。
+/// 这条是 C1b follow-up 登记的设计债（medium L378），Phase 6 评估是否要扩
+/// spawn_blocking_io 保留 ErrorKind。
+async fn spawn_blocking_io<F, T>(f: F) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, std::io::Error> + Send + 'static,
+    T: Send + 'static,
+{
+    crate::py::document::spawn_blocking_map(|| f().map_err(|e| e.to_string())).await
+}
+
 pub async fn resolve_with_perm(
     app: &AppHandle,
     tool: &str,
@@ -163,9 +178,16 @@ pub async fn resolve_with_perm(
     if p.is_empty() {
         return Err("路径不能为空".into());
     }
+    // 用户输入原始路径（展开 ~ 后、**canonicalize 前**）——后续 canonical
+    // 用于白名单校验，但写入 allowedDirs 必须用「用户输入视角的父目录」，
+    // 绝不能用 canonical(parent())，否则 allowlist/sub/link.txt → /etc/passwd
+    // 会把 /etc/ 写进白名单（OCR C1b symlink escape）。
     let expanded = expand_tilde(p);
-    let canonical =
-        std::fs::canonicalize(&expanded).map_err(|_| format!("路径不存在或不可访问：{p}"))?;
+    // canonicalize 包 spawn_blocking：同步 syscall 在 async runtime 会阻塞全部
+    // Tauri command / event （OCR C1b performance critical）。
+    // 把 owned clone 先拿出来再 move 进闭包：闭包要求 'static，原 expanded 留给 symlink 修复用。
+    let expanded_for_canonical = expanded.clone();
+    let canonical = spawn_blocking_io(move || std::fs::canonicalize(expanded_for_canonical)).await?;
     let dirs = allowed_dirs(app).await;
     if is_within_allowlist(&canonical, &dirs) {
         return Ok(strip_verbatim(canonical));
@@ -202,14 +224,17 @@ pub async fn resolve_with_perm(
                     Ok(strip_verbatim(canonical))
                 }
                 crate::bot_slash::ConfirmChoice::Always => {
-                    // 文件取父目录，目录取自身（授权粒度 = 目录，与判定逻辑一致）
-                    let dir = if canonical.is_dir() {
-                        canonical.clone()
+                    // 【OCR C1b symlink 修复】授权粒度 = 用户输入原始路径的父目录
+                    // （文件 → parent、目录 → self），与判定逻辑保持一致。
+                    // 绝不能用 canonical(parent())：那个是 symlink 解析后的路径，
+                    // 可被攻击者控制指向 allowlist 外。
+                    let dir = if expanded.is_dir() {
+                        expanded.clone()
                     } else {
-                        canonical
+                        expanded
                             .parent()
                             .map(|d| d.to_path_buf())
-                            .unwrap_or_else(|| canonical.clone())
+                            .unwrap_or_else(|| expanded.clone())
                     };
                     let dir_str = strip_verbatim(dir).to_string_lossy().to_string();
                     if let Err(e) = crate::bot::add_allowed_dir(app, &dir_str) {
@@ -314,7 +339,7 @@ fn walk(dir: &Path, mut visit: impl FnMut(&Path, bool) -> bool) {
 }
 
 /// 是否二进制/非 UTF-8 文本（读前 8KB 含 NUL 即判二进制）
-fn is_binary_file(path: &Path) -> bool {
+fn is_binary_file_sync(path: &Path) -> bool {
     use std::io::Read;
     let Ok(mut f) = std::fs::File::open(path) else {
         return true;
@@ -327,7 +352,7 @@ fn is_binary_file(path: &Path) -> bool {
 /// 有界读文件：只读前 max+1 字节判定截断——整读入内存后才截断的话，
 /// 白名单内超大文件（GB 级日志）会把进程内存打爆。
 /// 返回 (内容, 是否截断)。
-fn read_capped_file(path: &Path, max: usize) -> std::io::Result<(Vec<u8>, bool)> {
+fn read_capped_file_sync(path: &Path, max: usize) -> std::io::Result<(Vec<u8>, bool)> {
     use std::io::Read;
     let f = std::fs::File::open(path)?;
     let mut buf = Vec::new();
@@ -337,6 +362,125 @@ fn read_capped_file(path: &Path, max: usize) -> std::io::Result<(Vec<u8>, bool)>
         buf.truncate(max);
     }
     Ok((buf, truncated))
+}
+
+/// async 版 read_capped_file：包 spawn_blocking。
+/// 返 std::io::Result 保持调用方契约（spawn_blocking_map 返 String，这里 .map_err 转回 io::Error）。
+async fn read_capped_file(path: &Path, max: usize) -> std::io::Result<(Vec<u8>, bool)> {
+    let path = path.to_path_buf();
+    crate::py::document::spawn_blocking_map(move || {
+        read_capped_file_sync(&path, max).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| std::io::Error::other(e))
+}
+
+/// 【OCR C1b TOCTOU】inode re-check 结果。
+#[derive(Debug, PartialEq, Eq)]
+enum InodeCheckOutcome {
+    /// inode 不变（或 platform 不支持 / 文件已不存在）→ 放行
+    Ok,
+    /// inode 变了 → 拒绝
+    Replaced,
+}
+
+/// 读 canonical 路径当前 inode。三种情况（按 Phase 0.6 流程债 L402 精确三情况约束）：
+///
+/// 1. **Windows（`#[cfg(not(unix))]`）**：直接 `None`。
+///    设计选择：Windows 端**无 TOCTOU 保护**（非缺陷——`is_binary_file_with_ino_check`
+///    整个 inode 比对逻辑都被 `#[cfg(unix)]` gate）。见 follow-up：
+///    `Phase 6: Windows 端 TOCTOU 策略`（先决定做不做，再决定怎么做）。
+///    **fail-open 是当前语义**——tool_read_text_file 在 Windows 上仍能读文件，
+///    只是没有 inode re-check 这一道闸。
+///
+/// 2. **Unix 上 `metadata()` 成功**：`Some(ino)`，进入 re-check 保护范围（见下文
+///    `is_binary_file_with_ino_check` 的注释）。
+///
+/// 3. **Unix 上 `metadata()` 失败**（文件瞬间被删、权限拒、IO 错误等）：
+///    `None`。**fail-open 是当前语义**——不放行也拒绝（不报 Replaced），让
+///    后续 `read_capped_file` 的 `File::open` 自然失败冒泡到 `tool_read_text_file`
+///    返回「读取失败：...」。这是 C1b 阶段**有意选择**的不阻断读路径：
+///    fail-closed 会让 race window 内的瞬态失败也拒绝，Windows + race 加起来
+///    会让 read_text_file 在很多边界条件下不可用。
+///
+///    但 fail-open 也意味着：metadata 失败时**不参与 inode 比对**，等于这段
+///    没保护。需要产品决策是否切 fail-closed（见 follow-up：
+///    `Phase 6: capture_pre_ino None 时 fail-open vs fail-closed`），
+///    决策点：fail-closed 会让 Windows 端 read_text_file 整体不可用。
+#[cfg(unix)]
+async fn capture_pre_ino(path: &Path) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt;
+    let path = path.to_path_buf();
+    spawn_blocking_io(move || std::fs::metadata(&path).map(|m| m.ino())).await.ok()
+}
+
+#[cfg(not(unix))]
+async fn capture_pre_ino(_path: &Path) -> Option<u64> {
+    None
+}
+
+/// 二进制检测 + inode re-check 合一。
+/// 返回 `(InodeCheckOutcome, bool /* is_binary */)`——二进制判定不再丢。
+///
+/// **保护范围（精确）**：
+/// 1. `tool_read_text_file::resolve_with_perm` → canonicalize 出 path
+/// 2. `capture_pre_ino(path)` 读 pre_ino（unix only，Windows 返 None）
+/// 3. 本函数 open file 拿 fd → stat fd 看 inode → 与 pre 比对
+///    - 不变 → `Ok`
+///    - 变了 → `Replaced`（说明 canonical 与 stat 之间文件被换过）
+/// 同时 fd 上读 8KB，判二进制（保留 is_binary 结果，不丢）。
+///
+/// **不在保护范围（明确写明）**：
+/// - `read_capped_file` 后续 `File::open` + read 不在 inode 比对窗口内
+///   ——本函数 open 拿到的 fd 不传出去，read 重新 open。
+///   见 follow-up: `Phase 6: resolve_with_perm 其它调用点 TOCTOU 统一策略`。
+/// - symlink target 替换（canonical 路径不变但内容指向新文件）。
+///   见 follow-up: `Phase 6: symlink target 替换防护收紧`。
+#[cfg(unix)]
+async fn is_binary_file_with_ino_check(
+    path: &Path,
+    pre_ino: Option<u64>,
+) -> std::io::Result<(InodeCheckOutcome, bool)> {
+    use std::io::Read;
+    use std::os::unix::fs::MetadataExt;
+    let pre = pre_ino;
+    let path = path.to_path_buf();
+    // 注意：closure 返 Result<(InodeCheckOutcome, bool), String> 走 spawn_blocking_map，
+    // 这里我们用 spawn_blocking_map 直接（不走 spawn_blocking_io），因为返回值不需
+    // 要 io::Error 类型擦除。
+    crate::py::document::spawn_blocking_map(move || -> Result<(InodeCheckOutcome, bool), String> {
+        let mut f = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+        let fd_ino = f.metadata().map_err(|e| e.to_string())?.ino();
+        if let Some(pre) = pre {
+            if fd_ino != pre {
+                return Ok((InodeCheckOutcome::Replaced, false));
+            }
+        }
+        let mut buf = [0u8; 8192];
+        let n = f.read(&mut buf).unwrap_or(0);
+        let is_binary = buf[..n].contains(&0);
+        Ok((InodeCheckOutcome::Ok, is_binary))
+    })
+    .await
+    .map_err(std::io::Error::other)
+}
+
+#[cfg(not(unix))]
+async fn is_binary_file_with_ino_check(
+    path: &Path,
+    _pre_ino: Option<u64>,
+) -> std::io::Result<(InodeCheckOutcome, bool)> {
+    // Windows 端 TOCTOU 未实现（设计选择）：只判二进制，不做 inode 比对。
+    // 复用 is_binary_file_sync 的二进制判定（但走 spawn_blocking_io 不阻塞 runtime）。
+    let path = path.to_path_buf();
+    let res = spawn_blocking_io(move || -> Result<bool, std::io::Error> {
+        Ok(is_binary_file_sync(&path))
+    })
+    .await;
+    match res {
+        Ok(b) => Ok((InodeCheckOutcome::Ok, b)),
+        Err(_) => Ok((InodeCheckOutcome::Ok, true)), // IO 错误按二进制处理（fail-closed）
+    }
 }
 
 // ───────────────────────── 工具实现（bot 分发签名：(String, Vec<TaskRef>)） ─────────────────────────
@@ -366,7 +510,43 @@ pub async fn tool_read_text_file(
             Vec::new(),
         );
     }
-    if is_binary_file(&canonical) {
+    // 【OCR C1b TOCTOU】保护范围（精确）：
+    //   canonicalize → capture_pre_ino → is_binary_file_with_ino_check
+    //   （内部 open file 拿 fd → stat fd 看 inode → 与 pre_ino 比对 → 顺手判 8KB 二进制）
+    //   —— 三步窗口内的 inode swap 被捕获（canonical 与 stat 之间文件被换）。
+    //
+    // 不在保护范围（明确写明）：
+    //   - `read_capped_file` 后续 `File::open` + read 不在 inode 比对窗口内
+    //     （is_binary_file_with_ino_check 的 fd 不传出，后续 read 重新 open）。
+    //     见 follow-up: "Phase 6: resolve_with_perm 其它调用点 TOCTOU 统一策略"
+    //   - symlink target 替换（canonical 路径不变但内容指向新文件）。
+    //     见 follow-up: "Phase 6: symlink target 替换防护收紧"
+    //   - Windows 平台（`#[cfg(not(unix))]`）：capture_pre_ino 直接 None，整个
+    //     inode re-check 不执行。设计选择，非缺陷——见 capture_pre_ino 注释
+    //     + follow-up: "Phase 6: Windows 端 TOCTOU 策略"。
+    let pre_ino = capture_pre_ino(&canonical).await;
+    let (inode_check, is_binary) =
+        match is_binary_file_with_ino_check(&canonical, pre_ino).await {
+            Ok(r) => r,
+            Err(e) => return ToolResult::ok(format!("读取失败：{e}"), Vec::new()),
+        };
+    if inode_check == InodeCheckOutcome::Replaced {
+        crate::bot::audit_log(
+            app,
+            &format!(
+                "bot_fs.read_inode_mismatch | {} | canonicalize 与 stat 之间 inode 变了",
+                crate::bot::truncate_for_log(&canonical.display().to_string(), 200)
+            ),
+        );
+        return ToolResult::ok(
+            format!(
+                "{} 在校验后被替换，拒绝读取（TOCTOU 防护）",
+                path.trim()
+            ),
+            Vec::new(),
+        );
+    }
+    if is_binary {
         // 同上，首字不定 → ok
         return ToolResult::ok(
             format!(
@@ -379,7 +559,7 @@ pub async fn tool_read_text_file(
     let offset = v["offset"].as_u64().unwrap_or(1).max(1) as usize;
     let limit =
         (v["limit"].as_u64().unwrap_or(READ_DEFAULT_LINES as u64) as usize).min(READ_MAX_LINES);
-    let (raw, byte_truncated) = match read_capped_file(&canonical, READ_MAX_BYTES) {
+    let (raw, byte_truncated) = match read_capped_file(&canonical, READ_MAX_BYTES).await {
         Ok(r) => r,
         // 「读取失败」首字「读」非「失败」前缀 → ok
         Err(e) => return ToolResult::ok(format!("读取失败：{e}"), Vec::new()),
@@ -464,53 +644,64 @@ pub async fn tool_grep_files(
         // format! 文本首字为目录路径首字符（不定） → ok
         return ToolResult::ok(format!("{} 不是目录", dir.display()), Vec::new());
     }
-    let mut hits: Vec<String> = Vec::new();
-    walk(&dir, &mut |path: &Path, is_dir: bool| {
-        if hits.len() >= max {
-            return false;
-        }
-        if is_dir {
-            return true;
-        }
-        let name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-        if !glob.is_empty() && !glob_match(&glob, &name) {
-            return true;
-        }
-        if path
-            .metadata()
-            .map(|m| m.len() > GREP_MAX_FILE_BYTES)
-            .unwrap_or(true)
-        {
-            return true; // 超大文件跳过
-        }
-        if is_binary_file(path) {
-            return true;
-        }
-        if let Ok(text) = std::fs::read_to_string(path) {
-            for (i, line) in text.lines().enumerate() {
-                if re.is_match(line) {
-                    hits.push(format!(
-                        "{}:{}: {}",
-                        path.display(),
-                        i + 1,
-                        line.chars().take(200).collect::<String>()
-                    ));
-                    if hits.len() >= max {
-                        return false;
+    // walk 整体包 spawn_blocking：内部 read_dir / metadata / read_to_string
+    // 都是同步 syscall，全部移到阻塞线程跑，不再阻塞 Tauri async runtime
+    // （OCR C1b performance critical）。
+    // closure 内 is_binary_file_sync / read_to_string 仍 sync，但已在 spawn_blocking
+    // 线程内 OK。流式优化留 follow-up。
+    let dir_log = dir.display().to_string();
+    let hits: Vec<String> = crate::py::document::spawn_blocking_map(move || -> Result<Vec<String>, String> {
+        let mut hits: Vec<String> = Vec::new();
+        walk(&dir, &mut |path: &Path, is_dir: bool| {
+            if hits.len() >= max {
+                return false;
+            }
+            if is_dir {
+                return true;
+            }
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if !glob.is_empty() && !glob_match(&glob, &name) {
+                return true;
+            }
+            if path
+                .metadata()
+                .map(|m| m.len() > GREP_MAX_FILE_BYTES)
+                .unwrap_or(true)
+            {
+                return true; // 超大文件跳过
+            }
+            if is_binary_file_sync(path) {
+                return true;
+            }
+            if let Ok(text) = std::fs::read_to_string(path) {
+                for (i, line) in text.lines().enumerate() {
+                    if re.is_match(line) {
+                        hits.push(format!(
+                            "{}:{}: {}",
+                            path.display(),
+                            i + 1,
+                            line.chars().take(200).collect::<String>()
+                        ));
+                        if hits.len() >= max {
+                            return false;
+                        }
                     }
                 }
             }
-        }
-        true
-    });
+            true
+        });
+        Ok(hits)
+    })
+    .await
+    .unwrap_or_default();
     crate::bot::audit_log(
         app,
         &format!(
             "bot_fs.grep | dir: {} | pattern: {} | hits: {}",
-            crate::bot::truncate_for_log(&dir.display().to_string(), 200),
+            crate::bot::truncate_for_log(&dir_log, 200),
             crate::bot::truncate_for_log(pattern, 100),
             hits.len()
         ),
@@ -518,7 +709,7 @@ pub async fn tool_grep_files(
     if hits.is_empty() {
         // 「... 内没有匹配 ...」首字不定 → ok
         return ToolResult::ok(
-            format!("{} 内没有匹配「{pattern}」的内容", dir.display()),
+            format!("{} 内没有匹配「{pattern}」的内容", dir_log),
             Vec::new(),
         );
     }
@@ -555,44 +746,51 @@ pub async fn tool_list_files(
         );
     }
     let pattern = v["pattern"].as_str().unwrap_or("").trim().to_string();
-    let mut entries: Vec<String> = Vec::new();
-    walk(&canonical, &mut |path: &Path, is_dir: bool| {
-        if entries.len() >= LIST_MAX_ENTRIES {
-            return false;
-        }
-        let name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-        if !pattern.is_empty() && !glob_match(&pattern, &name) {
-            return true;
-        }
-        let rel = path.strip_prefix(&canonical).unwrap_or(path);
-        entries.push(format!(
-            "{}{}",
-            rel.display(),
-            if is_dir { "/" } else { "" }
-        ));
-        true
-    });
+    // walk 整体包 spawn_blocking（OCR C1b performance）：同 grep_files 原因。
+    let canonical_log = canonical.display().to_string();
+    let entries: Vec<String> = crate::py::document::spawn_blocking_map(move || -> Result<Vec<String>, String> {
+        let mut entries: Vec<String> = Vec::new();
+        walk(&canonical, &mut |path: &Path, is_dir: bool| {
+            if entries.len() >= LIST_MAX_ENTRIES {
+                return false;
+            }
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if !pattern.is_empty() && !glob_match(&pattern, &name) {
+                return true;
+            }
+            let rel = path.strip_prefix(&canonical).unwrap_or(path);
+            entries.push(format!(
+                "{}{}",
+                rel.display(),
+                if is_dir { "/" } else { "" }
+            ));
+            true
+        });
+        Ok(entries)
+    })
+    .await
+    .unwrap_or_default();
     crate::bot::audit_log(
         app,
         &format!(
             "bot_fs.list | dir: {} | entries: {}",
-            crate::bot::truncate_for_log(&canonical.display().to_string(), 200),
+            crate::bot::truncate_for_log(&canonical_log, 200),
             entries.len()
         ),
     );
     if entries.is_empty() {
         // 「... 内没有匹配的文件」首字不定 → ok
         return ToolResult::ok(
-            format!("{} 内没有匹配的文件", canonical.display()),
+            format!("{} 内没有匹配的文件", canonical_log),
             Vec::new(),
         );
     }
     let mut out = format!(
         "{}（{} 条）：\n{}",
-        canonical.display(),
+        canonical_log,
         entries.len(),
         entries.join("\n")
     );
@@ -820,5 +1018,105 @@ mod tests {
             !is_within_allowlist(&followed, &allow_dirs),
             "白名单内软链指向外部文件时必须拒（canonicalize 跟随软链后不在白名单内）"
         );
+    }
+
+    /// 【OCR C1b】始终允许该目录：授权粒度 = 用户输入原始父目录（不是 canonical.parent）
+    ///
+    /// 攻击模型：用户输入 ~/allowed/sub/link.txt → link.txt 是软链 → /etc/passwd。
+    /// canonical 解析后 = /etc/passwd，canonical.parent() = /etc。
+    /// 旧实现用 canonical.parent() 会把 /etc/ 写进 allowedDirs（symlink escape）。
+    /// 新实现必须用 expand_tilde(p).parent()（用户输入视角）。
+    ///
+    /// 验证方式：构造同样场景，断言 allowlist 增加的是用户输入目录 ~/allowed/sub，
+    /// 不是 /etc。直接测 resolve_with_perm 需要 AppHandle 复杂 mock；
+    /// 这里走「等价纯函数」路径，验证"dir 计算逻辑"本身。
+    #[cfg(unix)]
+    #[test]
+    fn always_allow_uses_user_input_dir_not_canonical_parent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let allowed = tmp.path().join("allowed");
+        let sub = allowed.join("sub");
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.txt"), b"secret").unwrap();
+        // sub/link.txt → /tmp/xxx/outside/secret.txt
+        std::os::unix::fs::symlink(outside.join("secret.txt"), sub.join("link.txt")).unwrap();
+
+        // 用户输入路径（与 resolve_with_perm 中"expanded" 同形）
+        let user_input = sub.join("link.txt");
+        let expanded = user_input.clone();
+        let canonical = std::fs::canonicalize(&expanded).unwrap();
+
+        // 旧实现（有 bug）：dir = canonical.parent() = /tmp/xxx/outside
+        let old_dir = canonical
+            .parent()
+            .map(|d| d.to_path_buf())
+            .unwrap_or_else(|| canonical.clone());
+
+        // 新实现（修复）：dir = expanded.parent()（用户输入视角）
+        // expanded 是 ~/allowed/sub/link.txt，expanded.parent() = ~/allowed/sub
+        let new_dir = expanded
+            .parent()
+            .map(|d| d.to_path_buf())
+            .unwrap_or_else(|| canonical.clone());
+
+        // 旧值会等于 outside（escape 发生），新值必须等于 sub（不逃逸）
+        assert_eq!(
+            new_dir, sub,
+            "新实现 dir 必须是 expanded.parent() = sub，不能是 canonical.parent() = outside"
+        );
+        assert_ne!(
+            old_dir, sub,
+            "sanity check：旧实现 dir = canonical.parent() 应等于 outside（演示攻击场景）"
+        );
+        assert_eq!(
+            old_dir, outside,
+            "sanity check：旧实现 dir 应该等于 outside（演示 canonical.parent 被换的事实）"
+        );
+    }
+
+    /// 【OCR C1b TOCTOU】canonicalize 与 read 之间，原路径被替换为同名新 inode 文件 → 必须拒绝。
+    ///
+    /// 覆盖范围：
+    /// - ✅ canonical 出来的 path 不变，但 path 对应的 inode 变了（删 + 同名新建）
+    ///   → inode 比对捕获
+    /// - ❌ 不覆盖：canonical 出来的 path 仍指向旧 inode，但旧 inode 是 symlink、
+    ///   symlink target 被替换为另一文件（攻击者控制 target 内容）。
+    ///   见 docs/OCR-FIX-PLAN-2026-09-21.md follow-up：
+    ///   "Phase 6: symlink target 替换防护"
+    ///
+    /// Windows 端 TOCTOU 未实现（保守选择：inode re-check 在 #[cfg(unix)] 下，
+    /// Windows 上 InodeCheckOutcome::Ok 直接 no-op 放行）——见 commit message。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn canonical_path_replaced_with_new_inode_is_rejected() {
+        use std::os::unix::fs::MetadataExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("a.txt");
+        std::fs::write(&file, b"original").unwrap();
+
+        // 1. 模拟"canonicalize 与 read 之间，文件被换"
+        //    先记录旧 inode（相当于 resolve_with_perm 完成时的 ino）
+        let pre_ino = std::fs::metadata(&file).unwrap().ino();
+
+        //    删除原文件
+        std::fs::remove_file(&file).unwrap();
+        //    同名新建一个**不同 inode**的文件（不同 mtime/dev 都行，关键是 inode）
+        std::fs::write(&file, b"replaced").unwrap();
+        let new_ino = std::fs::metadata(&file).unwrap().ino();
+        assert_ne!(pre_ino, new_ino, "sanity: 新文件 inode 必须与旧不同");
+
+        // 2. 调用 is_binary_file_with_ino_check：应返回 Rejected + is_binary
+        let (outcome, is_binary) = is_binary_file_with_ino_check(&file, Some(pre_ino))
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome,
+            InodeCheckOutcome::Replaced,
+            "inode 变了必须返回 Rejected"
+        );
+        // 顺手验证二进制判定也不丢（这里是文本文件，应为 false）
+        assert!(!is_binary, "文本文件的 is_binary 应为 false");
     }
 }

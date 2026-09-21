@@ -176,6 +176,38 @@ ocr review --format json --output /tmp/ocr-recheck-<批次名>.json
    - pre-commit / pre-push 全绿。
    - tree_entries 重映射日志为空。
 
+#### Phase 1 / C1b 实施期 follow-up 登记（2026-09-21）
+
+C1b commit 引入的技术债，Phase 6 一并处理：
+
+- **Phase 6: grep_files / walk 路径的 TOCTOU 复核**——C1b 只在 `tool_read_text_file` 加 inode re-check；`tool_grep_files` / `tool_list_files` 走 walk + ReadDir，TOCTOU 暴露面不同（迭代期间文件被换可能性），且 C1b 约束 2 明确"不碰 walk/grep 流式优化"。Phase 6 评估是统一策略（也加 inode re-check）还是承认 grep/list 的 TOCTOU 风险等级低。
+- **Phase 6: resolve_with_perm 其它调用点 TOCTOU 统一策略**——`tool_read_text_file` 用 inode re-check 保护"open file"窗口，但后续 `read_capped_file` 又开了一次 file（不同 fd），那段不在保护范围。Phase 6 评估 fd 是否需要传出 / 复用。
+- **Phase 6: symlink target 替换防护收紧**——C1b inode re-check 不覆盖 symlink target 被替换为另一文件的攻击（canonical 出来路径不变但内容指向新文件）。需更严策略（如：记录 canonicalize 时 target inode 并比对），但复杂且跨平台语义略异。
+- **Phase 6: Windows 端 TOCTOU 策略**——先决定做不做，再决定怎么做。当前 Windows 端 `capture_pre_ino` 直接 `None`，整个 inode re-check 不执行（设计选择，非缺陷，但 Windows 端 read_text_file 无 TOCTOU 保护）。
+- **Phase 6: capture_pre_ino None 时 fail-open vs fail-closed**——需要产品决策。当前 fail-open 是有意选择（避免 race window + Windows 端整体打死 read_text_file），但意味着 metadata 失败时不参与 inode 比对。fail-closed 会让 Windows 端 read_text_file 不可用。两个 follow-up 决策人和约束不同，分开写。
+- **Phase 6: spawn_blocking_io / spawn_blocking_map 丢失 io::ErrorKind**——C1b 走 spawn_blocking_map 契约，io::Error 转 String，调用方拿到的是 String 错误。Phase 6 评估是否要扩 spawn_blocking_io 保留 ErrorKind。
+- **Phase 6: grep_files / list_files walk 包 spawn_blocking 后 `unwrap_or_default()` 吞错误**——C1b 因闭包永远 Ok 所以今天不可达，但若 walk / read_to_string 后续扩展返 Err，会被静默吞。Phase 6 加日志或显式 match。
+
+#### ⚠️ 流程事故登记：OCR review 后台产物不可见（2026-09-21）
+
+- **现象**：OCR review 后台启动后，进程存活但无 stderr 中间输出、无 JSON 产物落盘。
+- **触发条件**：MiniMax API 调用长 round（diff 大 / 文件多轮 review）、节点暂态卡 IO、或 OCR CLI 静默期。
+- **与"被 reaper 清"的区别**：reaper 清是进程被 SIGKILL、产物可能部分落盘；静默挂起是进程仍 alive 但 OCR CLI 不 flush 中间步骤。
+- **已出现次数**（截至 2026-09-21）：
+  1. C1a 主 review：跑 ~3 分钟出产物（lucky-nudibranch 在 `/tmp`）——正常
+  2. A=a followup：vivid-haven session 被 reaper 清、产物丢失 —— **reaper 清**
+  3. C1b v1 review：sharp-meadow 跑 ~25 分钟出产物 ——正常但异常长
+  4. C1b v2 review：mellow-zephyr 后台跑 7+ 分钟只 1 行 log、产物缺失 —— **静默挂起**
+- **临时 SOP**（commit 前）：
+  1. 后台启动 OCR review 到稳态路径（`~/.openclaw/cache/ocr-<批次>.json`，避免 `/tmp` 被清）
+  2. 前台轮询产物（`ls -la`）+ pgrep 存活 + log 大小变化
+  3. 超过 N 分钟（建议 10 分钟）转前台重跑（`ocr review` foreground + 长 timeoutSeconds）
+  4. 仍失败 / exit 0 但产物缺失 → 转 D（commit 后异步补 review + commit message 诚实写明 + 本条目升级）
+- **follow-up**（流程修复，非本批）：
+  - 给 OCR CLI 加中间进度 flush（每隔 N 秒打 stderr 一行），不要只靠"等产物"
+  - 或产物心跳（每 N 秒 touch 一个 .heartbeat 文件），超时判定更准
+  - 不要把"D 路径"当常规路径（避免以后所有 review 都跳过）
+
 ### Phase 1 — critical（24 条，非 vendor 17 条）
 
 按文件聚类，4 个批次：
