@@ -165,6 +165,13 @@ pub const CONFLICT_ERR_PREFIX: &str = "写冲突";
 pub const BASELINE_NULL_ROW: i64 = i64::MIN;
 
 pub fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), String> {
+    // 契约断言（OCR C3-1）：调用方必须持 DB_WRITE_LOCK（经 lock_db_write() 的守卫）。
+    // 线程本地标记精确判定「当前线程持锁」—— try_lock 做不到（线程无关 + poisoned 也 Err）。
+    // debug_assert：release 编译掉，不给生产路径加开销，同时把契约钉在 debug/CI 上。
+    debug_assert!(
+        super::holding_db_write(),
+        "upsert_tasks 必须在持有 DB_WRITE_LOCK（lock_db_write()）时调用"
+    );
     if tasks.is_empty() {
         return Ok(());
     }
@@ -399,7 +406,16 @@ pub async fn db_load_for<R: tauri::Runtime>(
     let app = app.clone();
     async_runtime::spawn_blocking(move || {
         let mut conn = super::open_db(&app)?;
-        super::migrations::migrate_data_json(&app, &mut conn);
+        // C3-1：legacy 迁移会在**读路径**上写库（upsert_tasks），故须持 DB_WRITE_LOCK。
+        // 前置约束：exists() 早返回放在**锁外** —— 正常路径（无 data.json）根本不进临界区，
+        // 零串行化代价（只一次 stat）；迁移路径才进锁，且是一次性窗口（迁后改名 .json.migrated）。
+        if super::migrations::legacy_data_json_path(&app)
+            .map(|p| p.exists())
+            .unwrap_or(false)
+        {
+            let _g = super::lock_db_write();
+            super::migrations::migrate_data_json(&app, &mut conn);
+        }
         load_all(&conn).map_err(CommandError::from)
     })
     .await
@@ -420,9 +436,7 @@ pub async fn db_upsert_for<R: tauri::Runtime>(
         if tasks.is_empty() {
             return Ok(());
         }
-        let _g = super::DB_WRITE_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _g = super::lock_db_write();
         let mut conn = super::open_db(&app)?;
         let tx = conn
             .transaction()
@@ -491,9 +505,7 @@ pub async fn tasks_import(app: AppHandle, path: String) -> CommandResult<usize> 
         if ext.is_empty() {
             return Ok(0);
         }
-        let _g = super::DB_WRITE_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _g = super::lock_db_write();
         let mut conn = super::open_db(&app)?;
         let tx = conn.transaction().map_err(|e| e.to_string())?;
         let mut merged = 0usize;

@@ -84,14 +84,22 @@ pub fn reset_bot_assigned_with<F: FnOnce() -> Result<(), String>>(
 }
 
 /// 迁移方案2 的 data.json：json 里有库里缺的任务就按 id 集合差补回
+/// legacy `data.json` 路径（供调用方在**取写锁前**做「是否需要迁移」的锁外早返回）。
+/// 与 `migrate_data_json` 共用同一路径推导，避免两处重复（OCR C3-1）。
+pub fn legacy_data_json_path<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Option<std::path::PathBuf> {
+    app.path().app_data_dir().ok().map(|d| d.join("data.json"))
+}
+
 pub fn migrate_data_json<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     conn: &mut rusqlite::Connection,
 ) {
-    let Ok(dir) = app.path().app_data_dir() else {
+    let Some(path) = legacy_data_json_path(app) else {
         return;
     };
-    let _ = migrate_data_json_file(&dir.join("data.json"), conn);
+    let _ = migrate_data_json_file(&path, conn);
 }
 
 /// 可测内核：返回是否执行了迁移

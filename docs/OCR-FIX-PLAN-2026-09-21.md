@@ -24,6 +24,12 @@
 > 另有 1 条结构不完整的记录（缺 `severity`），按低优先人工看一眼。
 > 括号：`vendor` 里 7 个 critical / 31 个 high 属于 vendored 第三方代码，**默认不修**（见 Phase 5）。
 
+> **账本规则（2026-09-21 确立）**：本文件的 1145 条 = **基线 finding 账本**。
+> 修复批（C1b/C2a/C2b/C2c/C2d…）**衍生**的债**不入本账本**，另登记于
+> `docs/OCR-FOLLOWUPS-INDEX.md`（其头已标明「修复批衍生债，非基线 finding」）→ **两套账本分离**。
+> 且：**衍生债不单独开批** —— 遇到随对应主线批顺带清，或降级 `wontfix`。
+> 理由：单独开批清衍生债是**无限循环**（已实证 8 批：33 条衍生债 / 0 条基线 finding 被清）。
+
 **目标产出**：把 critical + high 里「真问题」清零；medium/low 按判定规则收敛（多数预期判 `wontfix`）。
 
 ---
@@ -145,6 +151,13 @@ ocr review --format json --output /tmp/ocr-recheck-<批次名>.json
 ### Phase 6 — 架构一致性门禁恢复（主线 Phase 1–5 完成后执行）
 
 **目标**：tests-audit 全绿，xfail 数量归 0，pre-commit / pre-push 门禁重新有效。
+
+> **Phase 6-T（前置子集，2026-09-21 裁决）**：**TOCTOU/权限「统一策略」收口** —— 即原索引中
+> 被我误标为 "Phase6" 的 **11 条**（`C1b-1..7` + `C2a-1/2/3` + `C2c-v1`）。
+> **边界**：6-T 只做**策略统一/决策**（TOCTOU 统一、Windows 策略、fail-open 决策、`ErrorKind` 保留、
+> walk 吞错、`reveal_item_in_dir` 范围、`openPath` 迁移、便携模式覆盖、TOCTOU 残窗）。
+> **与 6 的区别**：6-T = **策略**；6 = **tests-audit 门禁恢复**。**顺序：6-T 先于 6**。
+> 此前 follow-up 注释里的「Phase 6 一并处理」一律按本裁决读作「Phase 6-T」。
 
 **执行步骤**：
 
@@ -421,12 +434,16 @@ r2（364e2749）0 new high → 收口。
 - 每批的 `verdict` 汇总（多少 fix / 多少 wontfix + 理由）写进批次小节。
 - **红线**：**不要把批次号写进 `.rs/.ts/.tsx` 注释** —— pre-commit 的 `[0/N]` 审计批次号防线会直接拒提交，`audit-ok` 才能豁免。批次号只出现在本文件与 commit message 里。
 
-跟踪表样例：
+跟踪表（**2026-09-21 回填**；每批一行，收口时更新。C3 行即本批产物）：
 
-```
 | 批次 | 范围 | fix | wontfix | 验证 | OCR复审 | commit |
-| C1 | copy_file.rs + bot_fs.rs | 5 | 0 | ✅ test-all | ✅ 0 新增 | <sha> |
-```
+| C1 | copy_file.rs(3) + bot_fs.rs(2) | 5 | 0 | ✅ test-all | ✅ 0 新增 | c9ff340 / 3501ae7 / 3266382 |
+| C2 | bot_skills/files.rs(1) + capabilities(1) | 2 | 0 | ✅ test-all | ✅ | 39675aa / 8b0dfdb / 95a25e9 |
+| C3 | db/tasks.rs + eval/metrics.rs + evolution/observe/stop.rs + evolution/panel/commands.rs | 4 | 0 | ✅ test-all（1073 Rust + 229 vitest） | r1（一次收口，未跑 r2） | 本批 commit（自引用；精确 sha 以 git log 为准） |
+| C4 | WidgetApp/constants.ts(2) + observe_run.rs + test-all.sh + format.ts + App.tsx | — | — | 未开 | — | — |
+
+> **C3 批定性：2 critical（C3-3 / C3-4 实修）+ 1 high（C3-1，原 critical → 实现前发现生产路径已锁覆盖而降级）+ 1 medium（C3-2，原 critical → 字段级对外语义保留、无内部生产消费者而降级）。非「4 critical 完成」。**
+> C3-1 的三层现状（CI/debug 断言强制 / release 靠调用点事实 / 跨进程未覆盖）见本批 commit message。
 
 ---
 

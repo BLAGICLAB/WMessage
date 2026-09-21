@@ -83,12 +83,18 @@ pub fn rollback_rate(applied: &[AppliedRecord], live_keys: &[String]) -> f64 {
     if applied.is_empty() {
         return 0.0;
     }
+    rollback_count(applied, live_keys) as f64 / applied.len() as f64
+}
+
+/// 已回滚条数（**整数真源**，OCR C3-2）。
+/// `rollback_rate` 与 `rolled_back_total` 共用本函数：后者原先 `(len as f64 * rb_rate) as u64`
+/// 存在 IEEE-754 回程误差（2/3×3 → 1.999… → 截断成 1），与 `rb_rate` 字段自相矛盾。
+pub fn rollback_count(applied: &[AppliedRecord], live_keys: &[String]) -> u64 {
     let live: HashMap<&str, ()> = live_keys.iter().map(|k| (k.as_str(), ())).collect();
-    let rolled_back = applied
+    applied
         .iter()
         .filter(|r| !live.contains_key(r.mem_key.as_str()))
-        .count();
-    rolled_back as f64 / applied.len() as f64
+        .count() as u64
 }
 
 /// 污染存活期（天；当前仍存活 lesson 的 (now - applied_at) 均值）
@@ -170,7 +176,7 @@ pub fn compute(
         tool_call_efficiency,
         behavior_deviation: dev,
         applied_total: applied.len() as u64,
-        rolled_back_total: (applied.len() as f64 * rb_rate) as u64,
+        rolled_back_total: rollback_count(applied, live_keys),
         rollback_rate: rb_rate,
         live_lessons: live_keys.len() as u64,
         pollution_survival_days: survival,

@@ -59,24 +59,30 @@ pub fn check_stop_condition(
     start_ms: i64,
     now_ms: i64,
 ) -> StopConditionStatus {
-    // 走完 Proposed → 终态 的 change 数
+    // OCR C3-3：先按**观察窗**过滤（对齐 observe/metrics.rs 的 created_at_ms ∈ [start_ms, now_ms]），
+    // 否则 evolution-changes.jsonl 里的历史行会被计入，立即误触发
+    // CompletedChangesReach30 / FiveOrMoreRollbacks（调用方契约 = 传全量，本函数自己开窗）。
+    let in_window = |c: &ChangeRecord| c.created_at_ms >= start_ms && c.created_at_ms <= now_ms;
+
+    // 走完 Proposed → 终态 的 change 数（**窗口内**）
     // 终态 = Active | Rejected | RolledBack | Expired（pending/shadowing 等不算）
     let completed = changes
         .iter()
         .filter(|c| {
-            matches!(
-                c.status,
-                ChangeStatus::Active
-                    | ChangeStatus::Rejected
-                    | ChangeStatus::RolledBack
-                    | ChangeStatus::Expired
-            )
+            in_window(c)
+                && matches!(
+                    c.status,
+                    ChangeStatus::Active
+                        | ChangeStatus::Rejected
+                        | ChangeStatus::RolledBack
+                        | ChangeStatus::Expired
+                )
         })
         .count() as u64;
 
     let rolled_back = changes
         .iter()
-        .filter(|c| c.status == ChangeStatus::RolledBack)
+        .filter(|c| in_window(c) && c.status == ChangeStatus::RolledBack)
         .count() as u64;
 
     let days_elapsed = ((now_ms - start_ms) as f64 / 86_400_000.0).max(0.0);
@@ -108,6 +114,11 @@ mod tests {
     use crate::evolution::proposal::{ImpactLevel, ProposalOrigin, ProposalTarget};
 
     fn mk_change(id: &str, status: ChangeStatus) -> ChangeRecord {
+        mk_change_at(id, status, 1_700_000_000_000)
+    }
+
+    /// 指定 `created_at_ms` 的构造（OCR C3-3 后：计数按观察窗过滤，测试须让时间戳落在窗内）。
+    fn mk_change_at(id: &str, status: ChangeStatus, created_at_ms: i64) -> ChangeRecord {
         ChangeRecord {
             change_id: id.into(),
             parent_id: None,
@@ -127,7 +138,7 @@ mod tests {
             hard_constraint_compliance: true,
             approval_source: ApprovalSource::AutoApplied,
             human_approver: None,
-            created_at_ms: 1_700_000_000_000,
+            created_at_ms,
             rolled_back_at: None,
             rollback_reason: None,
         }
@@ -150,7 +161,7 @@ mod tests {
     fn stop_at_30_completed() {
         let now = DAY_MS * 5;
         let changes: Vec<_> = (0..30)
-            .map(|i| mk_change(&format!("p{i}"), ChangeStatus::Active))
+            .map(|i| mk_change_at(&format!("p{i}"), ChangeStatus::Active, now - 1))
             .collect();
         let r = check_stop_condition(&changes, 0, now);
         assert_eq!(r.changes_completed, 30);
@@ -172,7 +183,7 @@ mod tests {
     fn stop_at_5_rollbacks() {
         let now = DAY_MS * 5;
         let changes: Vec<_> = (0..5)
-            .map(|i| mk_change(&format!("rb{i}"), ChangeStatus::RolledBack))
+            .map(|i| mk_change_at(&format!("rb{i}"), ChangeStatus::RolledBack, now - 1))
             .collect();
         let r = check_stop_condition(&changes, 0, now);
         assert_eq!(r.rolled_back_count, 5);
@@ -193,7 +204,7 @@ mod tests {
         ]
         .iter()
         .enumerate()
-        .map(|(i, s)| mk_change(&format!("p{i}"), *s))
+        .map(|(i, s)| mk_change_at(&format!("p{i}"), *s, now - 1))
         .collect();
         let r = check_stop_condition(&changes, 0, now);
         assert_eq!(r.changes_completed, 0, "非终态不计 completed");
@@ -204,10 +215,14 @@ mod tests {
         // 同时满足 30 completed + 5 rollbacks
         let now = DAY_MS * 5;
         let mut changes: Vec<_> = (0..25)
-            .map(|i| mk_change(&format!("a{i}"), ChangeStatus::Active))
+            .map(|i| mk_change_at(&format!("a{i}"), ChangeStatus::Active, now - 1))
             .collect();
         for i in 0..5 {
-            changes.push(mk_change(&format!("rb{i}"), ChangeStatus::RolledBack));
+            changes.push(mk_change_at(
+                &format!("rb{i}"),
+                ChangeStatus::RolledBack,
+                now - 1,
+            ));
         }
         let r = check_stop_condition(&changes, 0, now);
         assert!(r.should_stop);
@@ -215,6 +230,31 @@ mod tests {
             .stop_reasons
             .contains(&StopReason::CompletedChangesReach30));
         assert!(r.stop_reasons.contains(&StopReason::FiveOrMoreRollbacks));
+    }
+
+    /// OCR C3-3 回归：**窗外**（created_at_ms < start_ms 或 > now_ms）的 change 不得计入
+    /// —— 否则 evolution-changes.jsonl 的历史行会立即误触发 CompletedChangesReach30 /
+    /// FiveOrMoreRollbacks。
+    #[test]
+    fn out_of_window_changes_not_counted() {
+        let now = DAY_MS * 5;
+        let start = DAY_MS * 2;
+        // 30 条终态，但全早于 start（窗外）
+        let mut changes: Vec<_> = (0..30)
+            .map(|i| mk_change_at(&format!("old{i}"), ChangeStatus::Active, DAY_MS))
+            .collect();
+        // 5 条回滚，但全晚于 now（窗外）
+        for i in 0..5 {
+            changes.push(mk_change_at(
+                &format!("fut{i}"),
+                ChangeStatus::RolledBack,
+                now + DAY_MS,
+            ));
+        }
+        let r = check_stop_condition(&changes, start, now);
+        assert_eq!(r.changes_completed, 0, "窗外 change 不得计入 completed");
+        assert_eq!(r.rolled_back_count, 0, "窗外 change 不得计入 rolled_back");
+        assert!(!r.should_stop, "窗外 change 不得触发停止条件");
     }
 
     #[test]

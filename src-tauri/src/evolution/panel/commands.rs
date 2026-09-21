@@ -29,6 +29,22 @@ fn changes_path(app: &AppHandle) -> PathBuf {
     paths::data_dir(app).join("evolution-changes.jsonl")
 }
 
+/// evolution 存储（proposals + changes 两个 jsonl）的**进程内单锁**。
+///
+/// **一把锁覆盖两个文件是有意设计（OCR C3-4）**：toggle/delete 一次操作**同时**改两个文件，
+/// 若按单文件各配一把锁，会出现「需要同时持两把锁」的顺序问题（死锁面）。
+/// **改动时勿「优化」成按文件锁。**
+static EVOLUTION_STORE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// 取 evolution 存储锁（poison 走仓库既有 `[mutex_poisoned]` 约定）。
+/// 临界区必须覆盖**完整 RMW 窗口**（load → mutate → rewrite），不是只锁 rewrite。
+fn lock_evolution_store() -> std::sync::MutexGuard<'static, ()> {
+    EVOLUTION_STORE_LOCK.lock().unwrap_or_else(|e| {
+        eprintln!("[mutex_poisoned] evolution::panel::EVOLUTION_STORE_LOCK: {e:?}");
+        e.into_inner()
+    })
+}
+
 // ───────────────────────── 读写辅助 ─────────────────────────
 
 fn load_proposals(app: &AppHandle) -> Result<Vec<ProposalEntry>, String> {
@@ -78,6 +94,7 @@ fn parse_status_filter(s: &str) -> Result<ProposalStatus, String> {
 // Promote/Reject 命令保留但语义改成 toggle ON/OFF（兼容老 UI/调用方）
 
 fn toggle_inner(app: &AppHandle, proposal_id: &str, enabled: bool) -> Result<(), String> {
+    let _g = lock_evolution_store(); // OCR C3-4：覆盖整个 load→mutate→rewrite 窗口
     let p_path = proposals_path(app);
     let c_path = changes_path(app);
 
@@ -147,6 +164,7 @@ fn toggle_inner(app: &AppHandle, proposal_id: &str, enabled: bool) -> Result<(),
 }
 
 fn delete_inner(app: &AppHandle, proposal_id: &str, cascade_source: bool) -> Result<(), String> {
+    let _g = lock_evolution_store(); // OCR C3-4：覆盖整个 load→mutate→rewrite 窗口
     let p_path = proposals_path(app);
     let c_path = changes_path(app);
 
@@ -333,6 +351,7 @@ pub async fn evolution_keep_shadow(
     app: AppHandle,
     proposal_id: String,
 ) -> Result<ProposalEntry, String> {
+    let _g = lock_evolution_store(); // OCR C3-4：覆盖整个 load→mutate→rewrite 窗口
     let path = proposals_path(&app);
     let mut entries = load_proposals(&app)?;
 
@@ -377,24 +396,18 @@ pub async fn evolution_rollback_change(
     interactive: bool,
     session_id: Option<String>,
 ) -> Result<ChangeRecord, String> {
-    let path = changes_path(&app);
-    let mut records = load_changes(&app)?;
-
-    let idx = records
-        .iter()
-        .position(|r| r.change_id == change_id)
-        .ok_or_else(|| format!("change {change_id} 不存在"))?;
-    let record = records[idx].clone();
-
-    if record.status == ChangeStatus::RolledBack {
-        return Err(format!("change {change_id} 已回滚"));
-    }
-    if record.status.is_terminal() && record.status != ChangeStatus::Active {
-        return Err(format!(
-            "change {change_id} 状态 {:?} 不可回滚",
-            record.status
-        ));
-    }
+    // ① 无锁只读快照 + 校验（仅供确认弹窗）—— 确认是 await，**不能持同步锁跨越**
+    //   （std MutexGuard 跨 await → future 不 Send，tauri command 编译器直接拒）。
+    let record = {
+        let records = load_changes(&app)?;
+        let r = records
+            .iter()
+            .find(|r| r.change_id == change_id)
+            .ok_or_else(|| format!("change {change_id} 不存在"))?
+            .clone();
+        rollback_precheck(&r, &change_id)?;
+        r
+    };
 
     let detail = format!(
         "回滚 ChangeRecord\nchange_id: {}\nproposal_id: {}\nsummary: {}\n\n回滚将删除对应 mem_items 记录",
@@ -412,8 +425,40 @@ pub async fn evolution_rollback_change(
         return Err("用户取消回滚".into());
     }
 
+    // ② 持锁执行 RMW（同步、不跨 await）——重新 load + 重新校验，保证临界区语义
+    rollback_change_locked(&app, &change_id)
+}
+
+/// 回滚前置校验（无锁快照与锁内复检共用，避免两处语义漂移）。
+fn rollback_precheck(record: &ChangeRecord, change_id: &str) -> Result<(), String> {
+    if record.status == ChangeStatus::RolledBack {
+        return Err(format!("change {change_id} 已回滚"));
+    }
+    if record.status.is_terminal() && record.status != ChangeStatus::Active {
+        return Err(format!(
+            "change {change_id} 状态 {:?} 不可回滚",
+            record.status
+        ));
+    }
+    Ok(())
+}
+
+/// 回滚的 RMW 部分（**同步**、持 store 锁）：load → 校验 → 删 mem_item → 改状态 → rewrite。
+/// 不含 `await` —— 故可安全被 async command 调用（锁不跨 await，future 保持 Send）。
+fn rollback_change_locked(app: &AppHandle, change_id: &str) -> Result<ChangeRecord, String> {
+    let _g = lock_evolution_store(); // OCR C3-4：覆盖整个 load→mutate→rewrite 窗口
+    let path = changes_path(app);
+    let mut records = load_changes(app)?;
+
+    let idx = records
+        .iter()
+        .position(|r| r.change_id == change_id)
+        .ok_or_else(|| format!("change {change_id} 不存在"))?;
+    let record = records[idx].clone();
+    rollback_precheck(&record, change_id)?;
+
     // 删除 mem_item（走 db 连接）
-    delete_evolution_mem_item(&app, &record.proposal_id)?;
+    delete_evolution_mem_item(app, &record.proposal_id)?;
 
     // 状态 → RolledBack + 写回 jsonl
     let mut updated = record.clone();

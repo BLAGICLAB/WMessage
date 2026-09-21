@@ -264,6 +264,41 @@ pub fn open_db<R: tauri::Runtime>(
 /// 写操作全局锁：主窗口（db_upsert/db_delete）与本地 API 线程共享同一把锁
 pub static DB_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+thread_local! {
+    /// 当前线程是否持有 DB_WRITE_LOCK（供契约断言用）。
+    /// `std::sync::Mutex` **线程无关**：`try_lock` 只能证明「锁被某线程持有」，不能证明
+    /// 「被当前线程持有」（且 poisoned 也返回 Err）→ 故用线程本地标记精确判定（OCR C3-1）。
+    static HOLDING_DB_WRITE: std::cell::Cell<bool> = std::cell::Cell::new(false);
+}
+
+/// `DB_WRITE_LOCK` 的守卫：取锁时置位线程本地标记，Drop 时**无条件**清位
+/// （Drop 同时覆盖正常释放与 unwind，故不写手动清位——OCR C3-1）。
+pub struct DbWriteGuard {
+    _g: std::sync::MutexGuard<'static, ()>,
+}
+
+impl Drop for DbWriteGuard {
+    fn drop(&mut self) {
+        HOLDING_DB_WRITE.with(|f| f.set(false));
+    }
+}
+
+/// 取 `DB_WRITE_LOCK` 并标记「本线程持锁」。poison 走仓库既有 `[mutex_poisoned]` 约定
+/// （`into_inner` 后照样置位，不让 poisoned 断掉标记语义；OCR C3-1）。
+pub fn lock_db_write() -> DbWriteGuard {
+    let g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
+        eprintln!("[mutex_poisoned] db::DB_WRITE_LOCK: {e:?}");
+        e.into_inner()
+    });
+    HOLDING_DB_WRITE.with(|f| f.set(true));
+    DbWriteGuard { _g: g }
+}
+
+/// 当前线程是否持有 `DB_WRITE_LOCK`（供 `upsert_tasks` 的契约断言用）。
+pub fn holding_db_write() -> bool {
+    HOLDING_DB_WRITE.with(|f| f.get())
+}
+
 // 抑制 unused warnings
 #[allow(dead_code)]
 fn _unused(_e: CommandError) {}
@@ -450,6 +485,7 @@ mod tests {
     /// 迁移/评估成功后 data.json 改名退役——再次评估不再复活已删任务。
     #[test]
     fn migrate_data_json_backfills_missing_after_user_delete() {
+        let _g = super::lock_db_write(); // C3-1 契约：upsert_tasks 调用方须持锁
         let (dir, mut conn) = setup_tasks_db();
         upsert_tasks(&conn, &[mk_task("t1", "新标题")]).unwrap();
 
@@ -488,6 +524,7 @@ mod tests {
     /// json 内容已全部在库里 → 不迁移，但文件同样退役（防未来硬删后计数复活）
     #[test]
     fn migrate_data_json_skips_when_db_not_behind() {
+        let _g = super::lock_db_write(); // C3-1 契约：upsert_tasks 调用方须持锁
         let (dir, mut conn) = setup_tasks_db();
         upsert_tasks(&conn, &[mk_task("t1", "a"), mk_task("t2", "b")]).unwrap();
         let file = dir.join("data.json");
@@ -622,6 +659,7 @@ mod tests {
     /// files 列读写回环：upsert 多文件 → load_all 原样读回
     #[test]
     fn files_roundtrip_via_upsert_load() {
+        let _g = super::lock_db_write(); // C3-1 契约：upsert_tasks 调用方须持锁
         let (dir, conn) = setup_tasks_db();
         let mut t = mk_task("t1", "多文件");
         t.files = Some(vec![
@@ -996,6 +1034,7 @@ mod tests {
     /// 五场景：incoming>current / incoming<current / 相等 / 老 NULL 行 / incoming NULL
     #[test]
     fn upsert_where_guard_prevents_lost_update() {
+        let _g = super::lock_db_write(); // C3-1 契约：upsert_tasks 调用方须持锁
         let (dir, conn) = setup_tasks_db();
         let title_of = |conn: &rusqlite::Connection, id: &str| -> String {
             conn.query_row("SELECT title FROM tasks WHERE id = ?1", [id], |r| r.get(0))
@@ -1070,6 +1109,7 @@ mod tests {
     /// 后写者重读刷新基线后重试可成功。另覆盖「快照后行被删 → 拒写防复活」。
     #[test]
     fn upsert_expected_baseline_rejects_stale_write() {
+        let _g = super::lock_db_write(); // C3-1 契约：upsert_tasks 调用方须持锁
         let (dir, conn) = setup_tasks_db();
         let mut seed = mk_task("t1", "原始");
         seed.updated_at = Some(100);
@@ -1140,6 +1180,7 @@ mod tests {
     /// 被删都拒写。NULL 行基线无法做时间戳比对，哨兵补齐老行的 lost-update 防护。
     #[test]
     fn upsert_null_row_existence_baseline() {
+        let _g = super::lock_db_write(); // C3-1 契约：upsert_tasks 调用方须持锁
         let (dir, conn) = setup_tasks_db();
         // 模拟迁移前的老行：updated_at 为 NULL
         let mut seed = mk_task("t1", "老行");
