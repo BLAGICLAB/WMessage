@@ -22,9 +22,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-use crate::evolution::proposal::{
-    is_reversible, EvolutionProposal, ImpactLevel, ProposalCategory,
-};
+use crate::evolution::proposal::{is_reversible, EvolutionProposal, ImpactLevel, ProposalCategory};
 
 // ───────────────────────── 三态 ─────────────────────────
 
@@ -117,9 +115,7 @@ impl ActivationConfig {
         if self.mode == "calibrating" {
             return false;
         }
-        self.mode == "active"
-            && self.min_occurrences.is_some()
-            && self.min_proposals.is_some()
+        self.mode == "active" && self.min_occurrences.is_some() && self.min_proposals.is_some()
     }
 }
 
@@ -174,7 +170,7 @@ pub fn shadow_route(state: ActivationState, p: &EvolutionProposal) -> RouteDecis
         return RouteDecision::Skip;
     }
     let _ = state; // 骨架阶段：S0/S1/S2 行为相同（都写 shadow jsonl）
-    // 未来 B 校准：S2 同时写主记忆
+                   // 未来 B 校准：S2 同时写主记忆
     RouteDecision::WriteShadow
 }
 
@@ -238,8 +234,8 @@ pub fn evaluate_s2(_p: &EvolutionProposal) -> S2Decision {
 pub fn save_state(state: ActivationState, config_path: &Path) -> Result<(), String> {
     let raw = std::fs::read_to_string(config_path)
         .map_err(|e| format!("读 {config_path:?} 失败：{e}"))?;
-    let mut v: serde_json::Value = serde_json::from_str(&raw)
-        .map_err(|e| format!("解析 {config_path:?} 失败：{e}"))?;
+    let mut v: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| format!("解析 {config_path:?} 失败：{e}"))?;
 
     let evo = v
         .as_object_mut()
@@ -254,8 +250,11 @@ pub fn save_state(state: ActivationState, config_path: &Path) -> Result<(), Stri
         serde_json::Value::String(state.as_str().to_string()),
     );
 
-    std::fs::write(config_path, serde_json::to_string_pretty(&v).map_err(|e| format!("序列化：{e}"))?)
-        .map_err(|e| format!("写 {config_path:?} 失败：{e}"))?;
+    std::fs::write(
+        config_path,
+        serde_json::to_string_pretty(&v).map_err(|e| format!("序列化：{e}"))?,
+    )
+    .map_err(|e| format!("写 {config_path:?} 失败：{e}"))?;
     Ok(())
 }
 
@@ -387,11 +386,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("bot-config.json");
-        std::fs::write(
-            &p,
-            r#"{"evolution":{"activation_state":"s2_active"}}"#,
-        )
-        .unwrap();
+        std::fs::write(&p, r#"{"evolution":{"activation_state":"s2_active"}}"#).unwrap();
         assert_eq!(load_state_from_file(&p), ActivationState::S2Active);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -407,17 +402,15 @@ mod tests {
 
     // ─── shadow_route ───
 
-    fn mk_proposal(
-        id: &str,
-        cat: ProposalCategory,
-        impact: ImpactLevel,
-    ) -> EvolutionProposal {
+    fn mk_proposal(id: &str, cat: ProposalCategory, impact: ImpactLevel) -> EvolutionProposal {
         EvolutionProposal {
             proposal_id: id.into(),
             created_at_ms: 1_700_000_000_000,
             origin: ProposalOrigin::ConsolidationReflection,
             category: cat,
-            target: ProposalTarget::MemoryPolicy { policy: "test".into() },
+            target: ProposalTarget::MemoryPolicy {
+                policy: "test".into(),
+            },
             impact,
             evidence: Evidence {
                 summary: format!("s-{id}"),
@@ -434,17 +427,18 @@ mod tests {
 
     #[test]
     fn route_skip_when_irreversible() {
-        let p = mk_proposal(
-            "p1",
-            ProposalCategory::ToolSchemaHint,
-            ImpactLevel::Low,
-        );
+        let p = mk_proposal("p1", ProposalCategory::ToolSchemaHint, ImpactLevel::Low);
         for state in [
             ActivationState::S0Observe,
             ActivationState::S1Suggest,
             ActivationState::S2Active,
         ] {
-            assert_eq!(shadow_route(state, &p), RouteDecision::Skip, "state={}", state.as_str());
+            assert_eq!(
+                shadow_route(state, &p),
+                RouteDecision::Skip,
+                "state={}",
+                state.as_str()
+            );
         }
     }
 
@@ -456,7 +450,12 @@ mod tests {
             ActivationState::S1Suggest,
             ActivationState::S2Active,
         ] {
-            assert_eq!(shadow_route(state, &p), RouteDecision::Skip, "state={}", state.as_str());
+            assert_eq!(
+                shadow_route(state, &p),
+                RouteDecision::Skip,
+                "state={}",
+                state.as_str()
+            );
         }
     }
 
@@ -494,11 +493,7 @@ mod tests {
         // 老板 22:10 选 A：is_reversible 防御纵深，evaluate_s2 占位全 Allow。
         // 即便不可逆 proposal 绕过 is_reversible 到 S2（不可能，但场景下），
         // evaluate_s2 仍返 Allow。Block 留给真 policy。
-        let p = mk_proposal(
-            "p1",
-            ProposalCategory::ToolSchemaHint,
-            ImpactLevel::Low,
-        );
+        let p = mk_proposal("p1", ProposalCategory::ToolSchemaHint, ImpactLevel::Low);
         let d = evaluate_s2(&p);
         assert!(matches!(d, S2Decision::Allow { .. }));
         assert!(d.reason().contains("占位"));
@@ -539,25 +534,18 @@ mod tests {
         let raw = std::fs::read_to_string(&p).unwrap();
         let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(
-            v["evolution"]["activation_state"],
-            "s2_active",
+            v["evolution"]["activation_state"], "s2_active",
             "activation_state 已写为 s2_active"
         );
         assert_eq!(
-            v["evolution"]["shadow"]["enabled"],
-            true,
+            v["evolution"]["shadow"]["enabled"], true,
             "shadow.enabled 保留"
         );
         assert_eq!(
-            v["evolution"]["activation"]["mode"],
-            "calibrating",
+            v["evolution"]["activation"]["mode"], "calibrating",
             "activation.mode 保留"
         );
-        assert_eq!(
-            v["other_top_level_field"],
-            "preserved",
-            "顶层其它字段保留"
-        );
+        assert_eq!(v["other_top_level_field"], "preserved", "顶层其它字段保留");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -569,11 +557,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("bot-config.json");
-        std::fs::write(
-            &p,
-            r#"{"evolution":{"shadow":{"enabled":true}}}"#,
-        )
-        .unwrap();
+        std::fs::write(&p, r#"{"evolution":{"shadow":{"enabled":true}}}"#).unwrap();
         // 写 S1
         save_state(ActivationState::S1Suggest, &p).unwrap();
         // 读回

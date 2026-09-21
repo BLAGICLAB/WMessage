@@ -19,8 +19,8 @@ use super::body::{read_body_limited, BodyRead};
 use super::ratelimit::{log_line, rate_check};
 use super::util::{
     after_change, change_log_line, internal_err, parse_status, upsert_err, valid_status, CreateReq,
-    UpdateReq,
-    API_MAX_DUE, API_MAX_FILE_PATH, API_MAX_NOTE, API_MAX_TAGS, API_MAX_TAG_LEN, API_MAX_TITLE,
+    UpdateReq, API_MAX_DUE, API_MAX_FILE_PATH, API_MAX_NOTE, API_MAX_TAGS, API_MAX_TAG_LEN,
+    API_MAX_TITLE,
 };
 use super::util::{now_ms, over_limit};
 
@@ -229,16 +229,15 @@ fn create_task(
         let _ = req.respond(json_err(StatusCode(400), &e));
         return;
     }
-    if let Some(e) = super::validate::check_field(input.due.as_deref(), API_MAX_DUE, "截止时间") {
+    if let Some(e) = super::validate::check_field(input.due.as_deref(), API_MAX_DUE, "截止时间")
+    {
         let _ = req.respond(json_err(StatusCode(400), &e));
         return;
     }
     // filePath 与 title/note/due 同规则限长
-    if let Some(e) = super::validate::check_field(
-        input.file_path.as_deref(),
-        API_MAX_FILE_PATH,
-        "文件路径",
-    ) {
+    if let Some(e) =
+        super::validate::check_field(input.file_path.as_deref(), API_MAX_FILE_PATH, "文件路径")
+    {
         let _ = req.respond(json_err(StatusCode(400), &e));
         return;
     }
@@ -315,8 +314,16 @@ fn create_task(
             file_is_dir: input.file_is_dir,
             column,
             subtasks: None,
-            completed_at: if column == db::TaskStatus::Done { Some(now) } else { None },
-            archived: if column == db::TaskStatus::Done { Some(false) } else { None },
+            completed_at: if column == db::TaskStatus::Done {
+                Some(now)
+            } else {
+                None
+            },
+            archived: if column == db::TaskStatus::Done {
+                Some(false)
+            } else {
+                None
+            },
             deleted_at: None,
             collapsed: None,
             order: Some(max_order + 1.0),
@@ -513,10 +520,13 @@ fn validate_update_input(input: &UpdateReq) -> Result<(), String> {
             return Err("status 必须是 todo/doing/done".to_string());
         }
     }
-    if let Some(e) = super::validate::check_field(input.file_path.as_deref(), API_MAX_FILE_PATH, "文件路径") {
+    if let Some(e) =
+        super::validate::check_field(input.file_path.as_deref(), API_MAX_FILE_PATH, "文件路径")
+    {
         return Err(e);
     }
-    if let Some(e) = super::validate::check_field(input.due.as_deref(), API_MAX_DUE, "截止时间") {
+    if let Some(e) = super::validate::check_field(input.due.as_deref(), API_MAX_DUE, "截止时间")
+    {
         return Err(e);
     }
     if let Some(tags) = input.tags.as_ref() {

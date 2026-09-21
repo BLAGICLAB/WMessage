@@ -14,11 +14,11 @@ use tauri::{AppHandle, Emitter};
 use crate::bot::dispatch::{commit_and_report, parse_args};
 use crate::bot::format::status_label;
 use crate::bot::registry::ToolResult;
-use crate::db::{prepare_for_upsert, TaskStatus};
 use crate::bot::{
     audit_log, check_len, escape_for_log, load_config, MAX_DUE, MAX_KEYWORD, MAX_NOTE,
     MAX_SUBTASK_TEXT, MAX_TAGS, MAX_TAG_LEN, MAX_TITLE,
 };
+use crate::db::{prepare_for_upsert, TaskStatus};
 use crate::error::CommandError;
 
 // ───────────────────────── 时间 + 长期记忆工具 ─────────────────────────
@@ -149,7 +149,9 @@ async fn active_tasks(app: &AppHandle) -> Vec<crate::db::Task> {
         .await
         .unwrap_or_default()
         .into_iter()
-        .filter(|t| t.deleted_at.is_none() && t.archived != Some(true) && t.column != TaskStatus::Done)
+        .filter(|t| {
+            t.deleted_at.is_none() && t.archived != Some(true) && t.column != TaskStatus::Done
+        })
         .collect()
 }
 
@@ -422,10 +424,12 @@ pub(crate) async fn tool_create_task(
         app,
         &task,
         || format!("已新建任务「{}」{files_warn}", task.title),
-        || vec![crate::bot_chat::TaskRef {
-            id: task.id.clone(),
-            title: task.title.clone(),
-        }],
+        || {
+            vec![crate::bot_chat::TaskRef {
+                id: task.id.clone(),
+                title: task.title.clone(),
+            }]
+        },
         "新建任务失败",
     )
     .await
@@ -453,10 +457,12 @@ pub(crate) async fn tool_complete_task(
         app,
         &next,
         || format!("已完成任务「{}」", task.title),
-        || vec![crate::bot_chat::TaskRef {
-            id: task.id.clone(),
-            title: task.title.clone(),
-        }],
+        || {
+            vec![crate::bot_chat::TaskRef {
+                id: task.id.clone(),
+                title: task.title.clone(),
+            }]
+        },
         "完成任务失败",
     )
     .await
@@ -494,10 +500,12 @@ pub(crate) async fn tool_delete_task(
         app,
         &next,
         || format!("已删除任务「{}」（进回收站）", task.title),
-        || vec![crate::bot_chat::TaskRef {
-            id: task.id.clone(),
-            title: task.title.clone(),
-        }],
+        || {
+            vec![crate::bot_chat::TaskRef {
+                id: task.id.clone(),
+                title: task.title.clone(),
+            }]
+        },
         "删除任务失败",
     )
     .await
@@ -670,19 +678,22 @@ pub(crate) async fn tool_edit_task(
     commit_and_report(
         app,
         &next,
-        || format!(
-            "已更新任务「{}」（{}）{files_warn}",
-            next.title,
-            changed.join("、")
-        ),
-        || vec![crate::bot_chat::TaskRef {
-            id: next.id.clone(),
-            title: next.title.clone(),
-        }],
+        || {
+            format!(
+                "已更新任务「{}」（{}）{files_warn}",
+                next.title,
+                changed.join("、")
+            )
+        },
+        || {
+            vec![crate::bot_chat::TaskRef {
+                id: next.id.clone(),
+                title: next.title.clone(),
+            }]
+        },
         "编辑任务失败",
     )
     .await
-
 }
 
 pub(crate) async fn tool_add_subtask(
@@ -718,14 +729,15 @@ pub(crate) async fn tool_add_subtask(
         app,
         &next,
         || format!("已给任务「{}」添加子任务「{}」", next.title, text),
-        || vec![crate::bot_chat::TaskRef {
-            id: next.id.clone(),
-            title: next.title.clone(),
-        }],
+        || {
+            vec![crate::bot_chat::TaskRef {
+                id: next.id.clone(),
+                title: next.title.clone(),
+            }]
+        },
         "添加子任务失败",
     )
     .await
-
 }
 
 pub(crate) async fn tool_toggle_subtask(
@@ -779,22 +791,25 @@ pub(crate) async fn tool_toggle_subtask(
     commit_and_report(
         app,
         &next,
-        || format!(
-            "子任务「{st_text}」已{}",
-            if done_mark {
-                "勾选 ✓"
-            } else {
-                "取消勾选"
-            }
-        ),
-        || vec![crate::bot_chat::TaskRef {
-            id: next.id.clone(),
-            title: next.title.clone(),
-        }],
+        || {
+            format!(
+                "子任务「{st_text}」已{}",
+                if done_mark {
+                    "勾选 ✓"
+                } else {
+                    "取消勾选"
+                }
+            )
+        },
+        || {
+            vec![crate::bot_chat::TaskRef {
+                id: next.id.clone(),
+                title: next.title.clone(),
+            }]
+        },
         "切换子任务状态失败",
     )
     .await
-
 }
 
 pub(crate) async fn tool_remove_subtask(
@@ -842,14 +857,15 @@ pub(crate) async fn tool_remove_subtask(
         app,
         &next,
         || format!("已删除任务「{}」的子任务「{}」", next.title, removed_text),
-        || vec![crate::bot_chat::TaskRef {
-            id: next.id.clone(),
-            title: next.title.clone(),
-        }],
+        || {
+            vec![crate::bot_chat::TaskRef {
+                id: next.id.clone(),
+                title: next.title.clone(),
+            }]
+        },
         "删除子任务失败",
     )
     .await
-
 }
 
 /// 登记产物到任务卡执行流程的产物清单（不立即绑）

@@ -84,7 +84,10 @@ pub static PY_CACHE: std::sync::Mutex<Option<Option<String>>> = std::sync::Mutex
 pub static PY_PROBE_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 pub fn cached_python() -> Option<String> {
-    let mut g = PY_CACHE.lock().unwrap_or_else(|e| { eprintln!("[mutex_poisoned] py::env::PY_CACHE: {e:?}"); e.into_inner() });
+    let mut g = PY_CACHE.lock().unwrap_or_else(|e| {
+        eprintln!("[mutex_poisoned] py::env::PY_CACHE: {e:?}");
+        e.into_inner()
+    });
     if let Some(cached) = &*g {
         return cached.clone();
     }
@@ -95,7 +98,10 @@ pub fn cached_python() -> Option<String> {
 }
 
 pub fn invalidate_python_cache() {
-    *PY_CACHE.lock().unwrap_or_else(|e| { eprintln!("[mutex_poisoned] py::env::PY_CACHE: {e:?}"); e.into_inner() }) = None;
+    *PY_CACHE.lock().unwrap_or_else(|e| {
+        eprintln!("[mutex_poisoned] py::env::PY_CACHE: {e:?}");
+        e.into_inner()
+    }) = None;
 }
 
 /// 检测本机 dotnet 运行时（修订版 Word 的 .NET 生成路径前置条件）：
@@ -121,7 +127,10 @@ pub fn detect_dotnet() -> Option<String> {
 pub static DOTNET_CACHE: std::sync::Mutex<Option<Option<String>>> = std::sync::Mutex::new(None);
 
 pub fn cached_dotnet() -> Option<String> {
-    let mut g = DOTNET_CACHE.lock().unwrap_or_else(|e| { eprintln!("[mutex_poisoned] py::env::DOTNET_CACHE: {e:?}"); e.into_inner() });
+    let mut g = DOTNET_CACHE.lock().unwrap_or_else(|e| {
+        eprintln!("[mutex_poisoned] py::env::DOTNET_CACHE: {e:?}");
+        e.into_inner()
+    });
     if let Some(cached) = &*g {
         return cached.clone();
     }

@@ -15,7 +15,7 @@ pub struct AbRecord {
     pub session_id: String,
     /// A 或 B 分组
     pub group: AbGroup,
-    pub change_applied: bool,   // 本组实际生效吗
+    pub change_applied: bool,                // 本组实际生效吗
     pub metrics_snapshot_id: Option<String>, // 关联 eval_results.jsonl 的某条
     pub recorded_at_ms: i64,
 }
@@ -48,7 +48,8 @@ pub fn append_shadow(path: &Path, record: &ShadowOutcome) -> Result<(), String> 
         .append(true)
         .open(path)
         .map_err(|e| format!("打开 {path:?} 失败：{e}"))?;
-    let line = serde_json::to_string(record).map_err(|e| format!("序列化 ShadowOutcome 失败：{e}"))?;
+    let line =
+        serde_json::to_string(record).map_err(|e| format!("序列化 ShadowOutcome 失败：{e}"))?;
     writeln!(f, "{line}").map_err(|e| format!("写入 {path:?} 失败：{e}"))?;
     Ok(())
 }
@@ -67,8 +68,7 @@ pub fn read_shadow(path: &Path) -> Result<Vec<ShadowOutcome>, String> {
             continue;
         }
         out.push(
-            serde_json::from_str(&line)
-                .map_err(|e| format!("第 {} 行 JSON 错误：{e}", i + 1))?,
+            serde_json::from_str(&line).map_err(|e| format!("第 {} 行 JSON 错误：{e}", i + 1))?,
         );
     }
     Ok(out)
@@ -105,8 +105,7 @@ pub fn read_ab(path: &Path) -> Result<Vec<AbRecord>, String> {
             continue;
         }
         out.push(
-            serde_json::from_str(&line)
-                .map_err(|e| format!("第 {} 行 JSON 错误：{e}", i + 1))?,
+            serde_json::from_str(&line).map_err(|e| format!("第 {} 行 JSON 错误：{e}", i + 1))?,
         );
     }
     Ok(out)
@@ -128,7 +127,9 @@ mod tests {
             layer: EvolutionLayer::Policy,
             origin: ProposalOrigin::ConsolidationReflection,
             proposal_id: id.trim_start_matches("chg-").into(),
-            target: ProposalTarget::MemoryPolicy { policy: "test".into() },
+            target: ProposalTarget::MemoryPolicy {
+                policy: "test".into(),
+            },
             suggestion_text: "shadow test".into(),
             mem_key: format!("evo:{}", id.trim_start_matches("chg-")),
             impact: ImpactLevel::High,
@@ -170,7 +171,10 @@ mod tests {
 
     #[test]
     fn shadow_append_then_read_roundtrip() {
-        let dir = std::env::temp_dir().join(format!("sb-sh-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        let dir = std::env::temp_dir().join(format!(
+            "sb-sh-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("evolution-shadow.jsonl");
         let s1 = mk_shadow("chg-1");
@@ -186,7 +190,10 @@ mod tests {
 
     #[test]
     fn ab_append_then_read_roundtrip() {
-        let dir = std::env::temp_dir().join(format!("sb-ab-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        let dir = std::env::temp_dir().join(format!(
+            "sb-ab-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("evolution-ab.jsonl");
         append_ab(&p, &mk_ab("chg-1", AbGroup::A)).unwrap();
@@ -208,7 +215,10 @@ mod tests {
 
     #[test]
     fn append_creates_parent_dirs() {
-        let dir = std::env::temp_dir().join(format!("sb-pd-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        let dir = std::env::temp_dir().join(format!(
+            "sb-pd-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
         let p = dir.join("nested").join("evolution-shadow.jsonl");
         append_shadow(&p, &mk_shadow("chg-x")).unwrap();
         assert!(p.exists());
@@ -223,5 +233,7 @@ mod tests {
 
     // 沉默未用变量
     #[allow(dead_code)]
-    fn _unused_silence() { mk_change("chg-dummy"); }
+    fn _unused_silence() {
+        mk_change("chg-dummy");
+    }
 }

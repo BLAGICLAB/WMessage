@@ -15,12 +15,12 @@
 //!   --start-ms <EPOCH_MS>  R6 A flag 开启时刻（--check-stop 必填）
 
 use std::path::PathBuf;
+use wmessage_lib::eval::metrics;
+use wmessage_lib::evolution::candidate;
+use wmessage_lib::evolution::change;
 use wmessage_lib::evolution::observe::{
     check_stop_condition, compute_metrics, generate_synthetic, write_to_files, SyntheticConfig,
 };
-use wmessage_lib::evolution::candidate;
-use wmessage_lib::evolution::change;
-use wmessage_lib::eval::metrics;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -50,7 +50,11 @@ fn main() {
                 i += 2;
             }
             "--window-days" => {
-                window_days = args.get(i + 1).expect("--window-days 后需 N").parse().expect("N 必须是整数");
+                window_days = args
+                    .get(i + 1)
+                    .expect("--window-days 后需 N")
+                    .parse()
+                    .expect("N 必须是整数");
                 i += 2;
             }
             "--synthetic" => {
@@ -58,7 +62,11 @@ fn main() {
                 i += 1;
             }
             "--seed" => {
-                seed = args.get(i + 1).expect("--seed 后需 N").parse().expect("N 必须是整数");
+                seed = args
+                    .get(i + 1)
+                    .expect("--seed 后需 N")
+                    .parse()
+                    .expect("N 必须是整数");
                 i += 2;
             }
             "--output" => {
@@ -70,7 +78,12 @@ fn main() {
                 i += 1;
             }
             "--start-ms" => {
-                start_ms = Some(args.get(i + 1).expect("--start-ms 后需 EPOCH_MS").parse().expect("必须是整数"));
+                start_ms = Some(
+                    args.get(i + 1)
+                        .expect("--start-ms 后需 EPOCH_MS")
+                        .parse()
+                        .expect("必须是整数"),
+                );
                 i += 2;
             }
             "-h" | "--help" => {
@@ -109,7 +122,11 @@ fn main() {
                 i += 2;
             }
             "--window-days" => {
-                window_days = args.get(i + 1).expect("--window-days 后需 N").parse().expect("N 必须是整数");
+                window_days = args
+                    .get(i + 1)
+                    .expect("--window-days 后需 N")
+                    .parse()
+                    .expect("N 必须是整数");
                 i += 2;
             }
             "--synthetic" => {
@@ -117,7 +134,11 @@ fn main() {
                 i += 1;
             }
             "--seed" => {
-                seed = args.get(i + 1).expect("--seed 后需 N").parse().expect("N 必须是整数");
+                seed = args
+                    .get(i + 1)
+                    .expect("--seed 后需 N")
+                    .parse()
+                    .expect("N 必须是整数");
                 i += 2;
             }
             "--output" => {
@@ -129,7 +150,12 @@ fn main() {
                 i += 1;
             }
             "--start-ms" => {
-                start_ms = Some(args.get(i + 1).expect("--start-ms 后需 EPOCH_MS").parse().expect("必须是整数"));
+                start_ms = Some(
+                    args.get(i + 1)
+                        .expect("--start-ms 后需 EPOCH_MS")
+                        .parse()
+                        .expect("必须是整数"),
+                );
                 i += 2;
             }
             "-h" | "--help" => {
@@ -155,18 +181,30 @@ fn main() {
             "changes_completed: {}/{}  {}",
             status.changes_completed,
             30,
-            if status.changes_completed >= 30 { "✓ 触发" } else { "✗" }
+            if status.changes_completed >= 30 {
+                "✓ 触发"
+            } else {
+                "✗"
+            }
         );
         println!(
             "days_elapsed:     {:.1}/14.0  {}",
             status.days_elapsed,
-            if status.days_elapsed >= 14.0 { "✓ 触发" } else { "✗" }
+            if status.days_elapsed >= 14.0 {
+                "✓ 触发"
+            } else {
+                "✗"
+            }
         );
         println!(
             "rolled_back:      {}/{}  {}",
             status.rolled_back_count,
             5,
-            if status.rolled_back_count >= 5 { "✓ 触发" } else { "✗" }
+            if status.rolled_back_count >= 5 {
+                "✓ 触发"
+            } else {
+                "✗"
+            }
         );
         println!("----");
         if status.should_stop {
@@ -189,7 +227,10 @@ fn main() {
     let applied: Vec<_>;
 
     if use_synthetic {
-        eprintln!("[observe-run] 用合成数据（seed={}，proposal_total=100）", seed);
+        eprintln!(
+            "[observe-run] 用合成数据（seed={}，proposal_total=100）",
+            seed
+        );
         let cfg = SyntheticConfig {
             seed,
             ..SyntheticConfig::default()

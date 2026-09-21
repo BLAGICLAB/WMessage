@@ -10,11 +10,11 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::eval::metrics::AppliedRecord;
 use crate::evolution::candidate::ProposalEntry;
 use crate::evolution::candidate::ProposalStatus;
 use crate::evolution::change::ChangeRecord;
 use crate::evolution::change::ChangeStatus;
-use crate::eval::metrics::AppliedRecord;
 
 /// R6 4 个核心指标（一轮观察的输出）
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -133,25 +133,21 @@ pub fn compute(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::evolution::candidate::{ProposalEntry, ProposalStatus};
-    use crate::evolution::change::{
-        ApprovalSource, ChangeRecord, ChangeStatus, EvolutionLayer,
-    };
-    use crate::evolution::proposal::{ImpactLevel, ProposalOrigin, ProposalTarget};
     use crate::eval::metrics::AppliedRecord;
+    use crate::evolution::candidate::{ProposalEntry, ProposalStatus};
+    use crate::evolution::change::{ApprovalSource, ChangeRecord, ChangeStatus, EvolutionLayer};
+    use crate::evolution::proposal::{ImpactLevel, ProposalOrigin, ProposalTarget};
 
-    fn mk_proposal(
-        id: &str,
-        status: ProposalStatus,
-        created_at_ms: i64,
-    ) -> ProposalEntry {
+    fn mk_proposal(id: &str, status: ProposalStatus, created_at_ms: i64) -> ProposalEntry {
         ProposalEntry {
             proposal_id: id.into(),
             change_id: format!("chg-{id}"),
             layer: EvolutionLayer::Policy,
             impact: ImpactLevel::Medium,
             origin: ProposalOrigin::ConsolidationReflection,
-            target: ProposalTarget::MemoryPolicy { policy: "test".into() },
+            target: ProposalTarget::MemoryPolicy {
+                policy: "test".into(),
+            },
             suggestion_text: format!("text-{id}"),
             mem_key: format!("evo:{id}"),
             related_refs: vec![],
@@ -164,11 +160,7 @@ mod tests {
         }
     }
 
-    fn mk_change(
-        id: &str,
-        status: ChangeStatus,
-        proposal_id: &str,
-    ) -> ChangeRecord {
+    fn mk_change(id: &str, status: ChangeStatus, proposal_id: &str) -> ChangeRecord {
         ChangeRecord {
             change_id: id.into(),
             parent_id: None,
@@ -176,7 +168,9 @@ mod tests {
             layer: EvolutionLayer::Policy,
             origin: ProposalOrigin::ConsolidationReflection,
             proposal_id: proposal_id.into(),
-            target: ProposalTarget::MemoryPolicy { policy: "test".into() },
+            target: ProposalTarget::MemoryPolicy {
+                policy: "test".into(),
+            },
             suggestion_text: format!("text-{id}"),
             mem_key: format!("evo:{proposal_id}"),
             impact: ImpactLevel::Medium,
@@ -234,10 +228,18 @@ mod tests {
         let window_start_ms = 86_400_000 * 50;
         let mut proposals = Vec::new();
         for i in 0..50 {
-            proposals.push(mk_proposal(&format!("p{i}"), ProposalStatus::Pooled, i * 86_400_000));
+            proposals.push(mk_proposal(
+                &format!("p{i}"),
+                ProposalStatus::Pooled,
+                i * 86_400_000,
+            ));
         }
         for i in 50..100 {
-            proposals.push(mk_proposal(&format!("q{i}"), ProposalStatus::Pooled, i * 86_400_000));
+            proposals.push(mk_proposal(
+                &format!("q{i}"),
+                ProposalStatus::Pooled,
+                i * 86_400_000,
+            ));
         }
         let r = compute(&proposals, &[], &[], now_ms, window_start_ms);
         assert_eq!(r.proposal_total, 100);
@@ -251,10 +253,18 @@ mod tests {
         // 10 条：6 promoted + 4 pooled → 60%
         let mut proposals = Vec::new();
         for i in 0..6 {
-            proposals.push(mk_proposal(&format!("promo{i}"), ProposalStatus::Promoted, i * 1000));
+            proposals.push(mk_proposal(
+                &format!("promo{i}"),
+                ProposalStatus::Promoted,
+                i * 1000,
+            ));
         }
         for i in 0..4 {
-            proposals.push(mk_proposal(&format!("pool{i}"), ProposalStatus::Pooled, i * 1000));
+            proposals.push(mk_proposal(
+                &format!("pool{i}"),
+                ProposalStatus::Pooled,
+                i * 1000,
+            ));
         }
         let r = compute(&proposals, &[], &[], 100_000, 0);
         assert!((r.approval_rate - 0.6).abs() < 1e-9);
@@ -275,7 +285,11 @@ mod tests {
         for i in 0..3 {
             let id = format!("rolled{i}");
             proposals.push(mk_proposal(&id, ProposalStatus::Promoted, i * 1000));
-            changes.push(mk_change(&format!("chg-{id}"), ChangeStatus::RolledBack, &id));
+            changes.push(mk_change(
+                &format!("chg-{id}"),
+                ChangeStatus::RolledBack,
+                &id,
+            ));
         }
         let r = compute(&proposals, &changes, &[], 100_000, 0);
         assert!((r.rollback_rate - 0.5).abs() < 1e-9);

@@ -21,9 +21,11 @@ pub mod sampler;
 
 pub use case::{read_jsonl, EvalCase, MetricSpec};
 pub use config::{load as load_config, EvolutionEvalConfig, RunFrequency};
-pub use feedback::{append as append_feedback, read_all as read_feedback, FeedbackEntry, SignalType};
+pub use feedback::{
+    append as append_feedback, read_all as read_feedback, FeedbackEntry, SignalType,
+};
 pub use metrics::{compute, read_applied, AppliedRecord, MetricsReport};
-pub use runner::{run as run_eval, append_result};
+pub use runner::{append_result, run as run_eval};
 pub use sampler::{
     list_sessions, sample_sessions, sessions_to_cases, test_name_to_case, SessionRow,
 };

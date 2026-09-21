@@ -56,7 +56,9 @@ mod tests {
             layer: EvolutionLayer::Policy,
             impact: ImpactLevel::Medium,
             origin: ProposalOrigin::ConsolidationReflection,
-            target: ProposalTarget::MemoryPolicy { policy: "test".into() },
+            target: ProposalTarget::MemoryPolicy {
+                policy: "test".into(),
+            },
             suggestion_text: "x".into(),
             mem_key: format!("evo:{id}"),
             related_refs: vec![],
@@ -93,7 +95,7 @@ mod tests {
         let mut entries = vec![
             mk("a", 100),  // expired + Pooled → 改 Expired
             mk("b", 100),  // expired + Pooled → 改 Expired
-            mk("c", 5000),  // not expired → 不动
+            mk("c", 5000), // not expired → 不动
         ];
         let n = mark_expired(&mut entries, 1000);
         assert_eq!(n, 2);
@@ -106,8 +108,16 @@ mod tests {
     fn mark_expired_skips_non_pooled() {
         // 已 Promoted / Expired / Rejected 不再改
         let mut entries = vec![
-            { let mut e = mk("a", 100); e.status = ProposalStatus::Promoted; e },
-            { let mut e = mk("b", 100); e.status = ProposalStatus::Rejected; e },
+            {
+                let mut e = mk("a", 100);
+                e.status = ProposalStatus::Promoted;
+                e
+            },
+            {
+                let mut e = mk("b", 100);
+                e.status = ProposalStatus::Rejected;
+                e
+            },
         ];
         let n = mark_expired(&mut entries, 1000);
         assert_eq!(n, 0);
@@ -127,6 +137,9 @@ mod tests {
     #[test]
     fn compute_expires_at_adds_ttl() {
         assert_eq!(compute_expires_at(0), TTL_MS);
-        assert_eq!(compute_expires_at(1_000_000_000_000), 1_000_000_000_000 + TTL_MS);
+        assert_eq!(
+            compute_expires_at(1_000_000_000_000),
+            1_000_000_000_000 + TTL_MS
+        );
     }
 }

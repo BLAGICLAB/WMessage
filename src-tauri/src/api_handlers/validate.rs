@@ -5,7 +5,9 @@ use super::util::over_limit;
 
 /// trim 输入字符串。None / 全空白返回 None；否则返回 trim 后的 Owned。
 pub(crate) fn take_trimmed_string(s: Option<&str>) -> Option<String> {
-    s.map(str::trim).filter(|t| !t.is_empty()).map(str::to_owned)
+    s.map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_owned)
 }
 
 /// 一次性 trim + 长度校验。返回 `Some(err_msg)` 当 trim 后非空且长度超
@@ -44,10 +46,7 @@ mod tests {
 
     #[test]
     fn take_trimmed_preserves_inner_content() {
-        assert_eq!(
-            take_trimmed_string(Some("  hello  ")).unwrap(),
-            "hello"
-        );
+        assert_eq!(take_trimmed_string(Some("  hello  ")).unwrap(), "hello");
     }
 
     #[test]

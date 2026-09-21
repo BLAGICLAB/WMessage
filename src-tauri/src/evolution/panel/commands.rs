@@ -13,11 +13,11 @@
 use std::path::PathBuf;
 use tauri::AppHandle;
 
+use crate::audit::AuditLevel;
 use crate::bot_slash;
 use crate::db::paths;
 use crate::evolution::candidate::{self, ProposalEntry, ProposalStatus};
 use crate::evolution::change::{self, ApprovalSource, ChangeRecord, ChangeStatus};
-use crate::audit::AuditLevel;
 
 // ───────────────────────── 路径辅助 ─────────────────────────
 
@@ -96,9 +96,7 @@ fn toggle_inner(app: &AppHandle, proposal_id: &str, enabled: bool) -> Result<(),
             c.proposal_id == proposal_id
                 && matches!(
                     c.status,
-                    ChangeStatus::Pending
-                        | ChangeStatus::Shadowing
-                        | ChangeStatus::ShadowPassed
+                    ChangeStatus::Pending | ChangeStatus::Shadowing | ChangeStatus::ShadowPassed
                 )
         });
         if !has_active {
@@ -128,9 +126,7 @@ fn toggle_inner(app: &AppHandle, proposal_id: &str, enabled: bool) -> Result<(),
     } else {
         // Toggle OFF：移除 pending ChangeRecord
         let before = changes.len();
-        changes.retain(|c| {
-            !(c.proposal_id == proposal_id && c.status == ChangeStatus::Pending)
-        });
+        changes.retain(|c| !(c.proposal_id == proposal_id && c.status == ChangeStatus::Pending));
         if changes.len() == before {
             return Err(format!(
                 "proposal {proposal_id} 没有 pending ChangeRecord，无法 toggle OFF"
@@ -150,11 +146,7 @@ fn toggle_inner(app: &AppHandle, proposal_id: &str, enabled: bool) -> Result<(),
     Ok(())
 }
 
-fn delete_inner(
-    app: &AppHandle,
-    proposal_id: &str,
-    cascade_source: bool,
-) -> Result<(), String> {
+fn delete_inner(app: &AppHandle, proposal_id: &str, cascade_source: bool) -> Result<(), String> {
     let p_path = proposals_path(app);
     let c_path = changes_path(app);
 
@@ -288,9 +280,7 @@ pub async fn evolution_promote_proposal(
             c.proposal_id == proposal_id
                 && matches!(
                     c.status,
-                    ChangeStatus::Pending
-                        | ChangeStatus::Shadowing
-                        | ChangeStatus::ShadowPassed
+                    ChangeStatus::Pending | ChangeStatus::Shadowing | ChangeStatus::ShadowPassed
                 )
         })
         .ok_or_else(|| format!("toggle_inner 写完未找到 ChangeRecord"))?;
@@ -353,7 +343,10 @@ pub async fn evolution_keep_shadow(
     let mut entry = entries[idx].clone();
 
     if entry.status != ProposalStatus::Pooled {
-        return Err(format!("proposal {proposal_id} 不在 Pooled 状态（当前 {:?}）", entry.status));
+        return Err(format!(
+            "proposal {proposal_id} 不在 Pooled 状态（当前 {:?}）",
+            entry.status
+        ));
     }
 
     // 重置 TTL（再续 14 天）
@@ -397,7 +390,10 @@ pub async fn evolution_rollback_change(
         return Err(format!("change {change_id} 已回滚"));
     }
     if record.status.is_terminal() && record.status != ChangeStatus::Active {
-        return Err(format!("change {change_id} 状态 {:?} 不可回滚", record.status));
+        return Err(format!(
+            "change {change_id} 状态 {:?} 不可回滚",
+            record.status
+        ));
     }
 
     let detail = format!(
@@ -460,7 +456,9 @@ mod tests {
             layer: EvolutionLayer::Policy,
             impact: ImpactLevel::Medium,
             origin: ProposalOrigin::ConsolidationReflection,
-            target: ProposalTarget::MemoryPolicy { policy: "test".into() },
+            target: ProposalTarget::MemoryPolicy {
+                policy: "test".into(),
+            },
             suggestion_text: format!("text-{id}"),
             mem_key: format!("evo:{id}"),
             related_refs: vec![],
@@ -481,7 +479,9 @@ mod tests {
             layer: EvolutionLayer::Policy,
             origin: ProposalOrigin::ConsolidationReflection,
             proposal_id: id.trim_start_matches("chg-").into(),
-            target: ProposalTarget::MemoryPolicy { policy: "test".into() },
+            target: ProposalTarget::MemoryPolicy {
+                policy: "test".into(),
+            },
             suggestion_text: format!("text-{id}"),
             mem_key: format!("evo:{}", id.trim_start_matches("chg-")),
             impact: ImpactLevel::Medium,
@@ -499,10 +499,22 @@ mod tests {
 
     #[test]
     fn parse_status_filter_valid() {
-        assert_eq!(parse_status_filter("pooled").unwrap(), ProposalStatus::Pooled);
-        assert_eq!(parse_status_filter("promoted").unwrap(), ProposalStatus::Promoted);
-        assert_eq!(parse_status_filter("expired").unwrap(), ProposalStatus::Expired);
-        assert_eq!(parse_status_filter("rejected").unwrap(), ProposalStatus::Rejected);
+        assert_eq!(
+            parse_status_filter("pooled").unwrap(),
+            ProposalStatus::Pooled
+        );
+        assert_eq!(
+            parse_status_filter("promoted").unwrap(),
+            ProposalStatus::Promoted
+        );
+        assert_eq!(
+            parse_status_filter("expired").unwrap(),
+            ProposalStatus::Expired
+        );
+        assert_eq!(
+            parse_status_filter("rejected").unwrap(),
+            ProposalStatus::Rejected
+        );
     }
 
     #[test]
@@ -514,7 +526,10 @@ mod tests {
     #[test]
     fn rewrite_roundtrip_preserves_entries() {
         // 验证 rewrite_jsonl：写入 → 读回 → 一致
-        let dir = std::env::temp_dir().join(format!("cmd-rw-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        let dir = std::env::temp_dir().join(format!(
+            "cmd-rw-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("evolution-proposals.jsonl");
         let entries = vec![
@@ -532,15 +547,21 @@ mod tests {
     #[test]
     fn rewrite_truncates_old_entries() {
         // 验证 truncate：第二次 rewrite 应清掉旧条目
-        let dir = std::env::temp_dir().join(format!("cmd-tr-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        let dir = std::env::temp_dir().join(format!(
+            "cmd-tr-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("evolution-proposals.jsonl");
         // 第一次：3 条
-        rewrite_jsonl(&p, &vec![
-            mk_entry("a", ProposalStatus::Pooled),
-            mk_entry("b", ProposalStatus::Pooled),
-            mk_entry("c", ProposalStatus::Pooled),
-        ])
+        rewrite_jsonl(
+            &p,
+            &vec![
+                mk_entry("a", ProposalStatus::Pooled),
+                mk_entry("b", ProposalStatus::Pooled),
+                mk_entry("c", ProposalStatus::Pooled),
+            ],
+        )
         .unwrap();
         assert_eq!(candidate::read_all(&p).unwrap().len(), 3);
         // 第二次：1 条

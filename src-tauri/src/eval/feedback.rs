@@ -86,8 +86,8 @@ pub fn read_all(path: &std::path::Path) -> Result<Vec<FeedbackEntry>, String> {
         if line.trim().is_empty() {
             continue;
         }
-        let e: FeedbackEntry = serde_json::from_str(&line)
-            .map_err(|e| format!("第 {} 行 JSON 错误：{e}", i + 1))?;
+        let e: FeedbackEntry =
+            serde_json::from_str(&line).map_err(|e| format!("第 {} 行 JSON 错误：{e}", i + 1))?;
         out.push(e);
     }
     out.sort_by_key(|e| e.timestamp_ms);
@@ -96,12 +96,20 @@ pub fn read_all(path: &std::path::Path) -> Result<Vec<FeedbackEntry>, String> {
 
 /// 过滤某 session 的反馈
 pub fn filter_session(entries: &[FeedbackEntry], session_id: &str) -> Vec<FeedbackEntry> {
-    entries.iter().filter(|e| e.session_id == session_id).cloned().collect()
+    entries
+        .iter()
+        .filter(|e| e.session_id == session_id)
+        .cloned()
+        .collect()
 }
 
 /// 过滤某信号类型
 pub fn filter_type(entries: &[FeedbackEntry], signal_type: SignalType) -> Vec<FeedbackEntry> {
-    entries.iter().filter(|e| e.signal_type == signal_type).cloned().collect()
+    entries
+        .iter()
+        .filter(|e| e.signal_type == signal_type)
+        .cloned()
+        .collect()
 }
 
 #[cfg(test)]
@@ -132,7 +140,10 @@ mod tests {
 
     #[test]
     fn append_then_read_roundtrip() {
-        let dir = std::env::temp_dir().join(format!("fb-rt-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        let dir = std::env::temp_dir().join(format!(
+            "fb-rt-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
         let p = dir.join("feedback.jsonl");
         let e1 = mk(SignalType::ThumbsUp, 1.0, "s1");
         let e2 = mk(SignalType::TaskComplete, 1.0, "s1");

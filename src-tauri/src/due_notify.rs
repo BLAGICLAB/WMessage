@@ -216,7 +216,11 @@ async fn run_round(app: &AppHandle) {
     };
     let active: Vec<(String, String, String)> = all
         .iter()
-        .filter(|t| t.deleted_at.is_none() && t.archived != Some(true) && t.column != crate::db::TaskStatus::Done)
+        .filter(|t| {
+            t.deleted_at.is_none()
+                && t.archived != Some(true)
+                && t.column != crate::db::TaskStatus::Done
+        })
         .filter_map(|t| {
             t.due
                 .as_deref()
@@ -228,7 +232,10 @@ async fn run_round(app: &AppHandle) {
     let now = Local::now();
     // 全程持锁：状态加载 → 合并 → 发送 → 落盘 原子完成，防与其他路径交叉
     //（锁中毒按项目惯例 into_inner 继续，不让通知循环 panic 退出）
-    let mut guard = notify_state().lock().unwrap_or_else(|e| { eprintln!("[mutex_poisoned] due_notify::notify_state: {e:?}"); e.into_inner() });
+    let mut guard = notify_state().lock().unwrap_or_else(|e| {
+        eprintln!("[mutex_poisoned] due_notify::notify_state: {e:?}");
+        e.into_inner()
+    });
     let state = guard.get_or_insert_with(|| load_state(app));
     let pending = plan_round(state, &active, now);
     for p in &pending {

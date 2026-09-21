@@ -71,11 +71,26 @@ pub fn sessions_to_cases(sessions: &[SessionRow]) -> Vec<EvalCase> {
             input: s.title.clone(),
             expected_behavior: vec!["chat_complete".into()],
             metrics: vec![
-                MetricSpec { metric: "task_success_rate".into(), weight: 0.3 },
-                MetricSpec { metric: "tool_call_efficiency".into(), weight: 0.2 },
-                MetricSpec { metric: "behavior_deviation".into(), weight: 0.2 },
-                MetricSpec { metric: "rollback_rate".into(), weight: 0.15 },
-                MetricSpec { metric: "pollution_survival_days".into(), weight: 0.15 },
+                MetricSpec {
+                    metric: "task_success_rate".into(),
+                    weight: 0.3,
+                },
+                MetricSpec {
+                    metric: "tool_call_efficiency".into(),
+                    weight: 0.2,
+                },
+                MetricSpec {
+                    metric: "behavior_deviation".into(),
+                    weight: 0.2,
+                },
+                MetricSpec {
+                    metric: "rollback_rate".into(),
+                    weight: 0.15,
+                },
+                MetricSpec {
+                    metric: "pollution_survival_days".into(),
+                    weight: 0.15,
+                },
             ],
             tags: vec!["session-derived".into()],
         })
@@ -94,18 +109,21 @@ pub fn test_name_to_case(test_name: &str, index: usize) -> EvalCase {
         input: test_name.into(),
         expected_behavior: vec!["test_passes".into()],
         metrics: vec![
-            MetricSpec { metric: "task_success_rate".into(), weight: 0.5 },
-            MetricSpec { metric: "behavior_deviation".into(), weight: 0.5 },
+            MetricSpec {
+                metric: "task_success_rate".into(),
+                weight: 0.5,
+            },
+            MetricSpec {
+                metric: "behavior_deviation".into(),
+                weight: 0.5,
+            },
         ],
         tags: vec!["test-derived".into()],
     }
 }
 
 /// 把 sample 结果追加到 eval_set.jsonl
-pub fn append_to_set(
-    path: &std::path::Path,
-    cases: &[EvalCase],
-) -> Result<(), String> {
+pub fn append_to_set(path: &std::path::Path, cases: &[EvalCase]) -> Result<(), String> {
     append_jsonl(path, cases)
 }
 
@@ -147,8 +165,14 @@ mod tests {
     #[test]
     fn test_derived_case_shape() {
         let c = test_name_to_case("apply_one_inserts_lesson_with_evolution_key", 7);
-        assert_eq!(c.source_test.as_deref(), Some("apply_one_inserts_lesson_with_evolution_key"));
-        assert_eq!(c.case_id, "test-0007-apply_one_inserts_lesson_with_evolution_key");
+        assert_eq!(
+            c.source_test.as_deref(),
+            Some("apply_one_inserts_lesson_with_evolution_key")
+        );
+        assert_eq!(
+            c.case_id,
+            "test-0007-apply_one_inserts_lesson_with_evolution_key"
+        );
         assert!(c.tags.contains(&"test-derived".to_string()));
     }
 

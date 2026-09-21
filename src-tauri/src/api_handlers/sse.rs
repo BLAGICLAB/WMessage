@@ -66,10 +66,10 @@ pub(crate) fn register_sse_writer(
 pub(crate) fn stop_sse_writers(hub_key: u64, timeout: Duration, audit: &mut dyn FnMut(&str)) {
     let writers = {
         // 锁 poisoning 审计:同 ratelimit::RATE 注释
-    let mut g = SSE_WRITERS.lock().unwrap_or_else(|e| {
-        eprintln!("[mutex_poisoned] api_handlers::sse::SSE_WRITERS: {e:?}");
-        e.into_inner()
-    });
+        let mut g = SSE_WRITERS.lock().unwrap_or_else(|e| {
+            eprintln!("[mutex_poisoned] api_handlers::sse::SSE_WRITERS: {e:?}");
+            e.into_inner()
+        });
         let mut taken = Vec::new();
         let mut i = 0;
         while i < g.len() {

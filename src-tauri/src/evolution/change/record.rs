@@ -209,8 +209,7 @@ pub fn read_all(path: &std::path::Path) -> Result<Vec<ChangeRecord>, String> {
             continue;
         }
         out.push(
-            serde_json::from_str(&line)
-                .map_err(|e| format!("第 {} 行 JSON 错误：{e}", i + 1))?,
+            serde_json::from_str(&line).map_err(|e| format!("第 {} 行 JSON 错误：{e}", i + 1))?,
         );
     }
     Ok(out)
@@ -221,15 +220,18 @@ pub fn find_by_id<'a>(
     records: &'a [ChangeRecord],
     change_id: &str,
 ) -> Option<(usize, &'a ChangeRecord)> {
-    records.iter().enumerate().find(|(_, r)| r.change_id == change_id)
+    records
+        .iter()
+        .enumerate()
+        .find(|(_, r)| r.change_id == change_id)
 }
 
 /// 按 parent_id 查询子代
-pub fn find_children<'a>(
-    records: &'a [ChangeRecord],
-    parent_id: &str,
-) -> Vec<&'a ChangeRecord> {
-    records.iter().filter(|r| r.parent_id.as_deref() == Some(parent_id)).collect()
+pub fn find_children<'a>(records: &'a [ChangeRecord], parent_id: &str) -> Vec<&'a ChangeRecord> {
+    records
+        .iter()
+        .filter(|r| r.parent_id.as_deref() == Some(parent_id))
+        .collect()
 }
 
 /// 根记录（parent_id = None）
@@ -252,7 +254,9 @@ mod tests {
             layer: EvolutionLayer::Policy,
             origin: ProposalOrigin::ConsolidationReflection,
             proposal_id: id.trim_start_matches("chg-").to_string(),
-            target: ProposalTarget::MemoryPolicy { policy: "test".into() },
+            target: ProposalTarget::MemoryPolicy {
+                policy: "test".into(),
+            },
             suggestion_text: "test".into(),
             mem_key: format!("evo:{}", id.trim_start_matches("chg-")),
             impact: ImpactLevel::Medium,
@@ -307,7 +311,10 @@ mod tests {
 
     #[test]
     fn append_then_read_roundtrip() {
-        let dir = std::env::temp_dir().join(format!("change-rt-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        let dir = std::env::temp_dir().join(format!(
+            "change-rt-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("evolution-changes.jsonl");
         let r1 = mk("chg-a", ChangeStatus::Pending);
@@ -330,7 +337,10 @@ mod tests {
 
     #[test]
     fn append_creates_parent_dirs() {
-        let dir = std::env::temp_dir().join(format!("change-parent-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        let dir = std::env::temp_dir().join(format!(
+            "change-parent-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
         let p = dir.join("nested").join("changes.jsonl");
         let r = mk("chg-c", ChangeStatus::Pending);
         append(&p, &r).unwrap();
@@ -340,7 +350,10 @@ mod tests {
 
     #[test]
     fn append_skips_empty_lines_on_read() {
-        let dir = std::env::temp_dir().join(format!("change-skip-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        let dir = std::env::temp_dir().join(format!(
+            "change-skip-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("changes.jsonl");
         append(&p, &mk("chg-a", ChangeStatus::Pending)).unwrap();

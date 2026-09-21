@@ -39,7 +39,8 @@ pub(crate) fn copy_file_macos(path: &str, title: &str) -> Result<(), String> {
     let path_str = NSString::from_str(path);
     let paths = NSArray::from_retained_slice(&[path_str]);
     // SAFETY: &NSString 由 NSString::from_str 创建存于本栈帧，调用期间不释放；&paths 是 CFArray 借用视图（paths 已 validate 非空），调用方保证生命周期。
-    if !unsafe { pb.setPropertyList_forType(&paths, &NSString::from_str("NSFilenamesPboardType")) } {
+    if !unsafe { pb.setPropertyList_forType(&paths, &NSString::from_str("NSFilenamesPboardType")) }
+    {
         return Err("写入文件列表类型失败".to_string());
     }
 
@@ -145,7 +146,9 @@ pub(crate) fn copy_file_windows(path: &str, title: &str) -> Result<(), crate::er
         if tbase.is_null() {
             let _ = GlobalFree(Some(th));
             if let Err(ec) = EmptyClipboard() {
-                eprintln!("[copy_file_windows] EmptyClipboard after GlobalLock(title) NULL failed: {ec}");
+                eprintln!(
+                    "[copy_file_windows] EmptyClipboard after GlobalLock(title) NULL failed: {ec}"
+                );
             }
             let _ = CloseClipboard();
             return Err(crate::error::CommandError::DomainRule {

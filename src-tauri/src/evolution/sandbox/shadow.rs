@@ -102,10 +102,18 @@ pub fn run_shadow(input: ShadowInput) -> ShadowOutcome {
 
     let (decision, would_inject, note) = if input.existing_lessons.is_empty() {
         // 无现有 lesson 作为对比基准
-        (ShadowDecision::Skipped, false, Some("no_baseline_lessons".into()))
+        (
+            ShadowDecision::Skipped,
+            false,
+            Some("no_baseline_lessons".into()),
+        )
     } else if hash_before == hash_after {
         // candidate 没进 top-3（重要性不够）
-        (ShadowDecision::Fail, false, Some("below_top3_threshold".into()))
+        (
+            ShadowDecision::Fail,
+            false,
+            Some("below_top3_threshold".into()),
+        )
     } else {
         // candidate 进了 top-3（有差异）
         // 但还要检查是否真的包含 candidate.id
@@ -114,7 +122,11 @@ pub fn run_shadow(input: ShadowInput) -> ShadowOutcome {
             (ShadowDecision::Pass, true, None)
         } else {
             // hash 不同但 candidate 不在 top-3（理论不应发生；防意外）
-            (ShadowDecision::Fail, false, Some("top3_diff_but_candidate_absent".into()))
+            (
+                ShadowDecision::Fail,
+                false,
+                Some("top3_diff_but_candidate_absent".into()),
+            )
         }
     };
 
@@ -184,7 +196,9 @@ mod tests {
             layer: EvolutionLayer::Policy,
             origin: ProposalOrigin::ConsolidationReflection,
             proposal_id: id.trim_start_matches("chg-").into(),
-            target: ProposalTarget::MemoryPolicy { policy: "test".into() },
+            target: ProposalTarget::MemoryPolicy {
+                policy: "test".into(),
+            },
             suggestion_text: format!("text for {id}"),
             mem_key: format!("evo:{}", id.trim_start_matches("chg-")),
             impact,
@@ -255,7 +269,7 @@ mod tests {
     #[test]
     fn shadow_fail_when_candidate_below_top3() {
         let lessons = vec![
-            mk_lesson("a", "alpha", 5),  // imp 5（受保护但是模拟数据）
+            mk_lesson("a", "alpha", 5), // imp 5（受保护但是模拟数据）
             mk_lesson("b", "beta", 5),
             mk_lesson("c", "gamma", 5),
         ];
@@ -338,8 +352,8 @@ mod tests {
     #[test]
     fn integration_full_chain_shadow_to_canary_to_active() {
         // spec R3 集成验收：shadow → canary → active 全链路
-        use crate::evolution::change::status::transition;
         use super::super::routing::is_canary;
+        use crate::evolution::change::status::transition;
 
         let lessons = vec![mk_lesson("a", "low", 2), mk_lesson("b", "lower", 1)];
         let mut change = mk_change("chg-chain", ImpactLevel::High);

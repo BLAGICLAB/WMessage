@@ -218,11 +218,7 @@ pub async fn shadow_apply_for_batch<S: ShadowSink>(
     let total = TOTAL_WRITES.load(Ordering::Relaxed);
     let failed_count = FAILED_WRITES.load(Ordering::Relaxed);
     if total > 0 && (failed_count as f64 / total as f64) > FAILURE_THRESHOLD {
-        sink.audit_warning(
-            failed_count as f64 / total as f64,
-            failed_count,
-            total,
-        );
+        sink.audit_warning(failed_count as f64 / total as f64, failed_count, total);
     }
 
     ShadowReport {
@@ -257,7 +253,8 @@ pub async fn shadow_apply_for_batch_with_reversibility<S: ShadowSink>(
     sink: &S,
     is_reversible_check: impl Fn(&EvolutionProposal) -> bool,
 ) -> ShadowReport {
-    let gated: Vec<EvolutionProposal> = proposals.into_iter()
+    let gated: Vec<EvolutionProposal> = proposals
+        .into_iter()
         .filter(|p| auto_apply_gate(p))
         .filter(|p| is_reversible_check(p))
         .collect();
@@ -281,7 +278,11 @@ pub async fn shadow_apply_for_batch_with_reversibility<S: ShadowSink>(
             }
         }
     }
-    ShadowReport { total: gated.len(), written, failed }
+    ShadowReport {
+        total: gated.len(),
+        written,
+        failed,
+    }
 }
 
 /// 便捷包装（apply.rs 调用入口；R7→A→B 后唯一对外入口）
@@ -300,7 +301,8 @@ pub async fn shadow_apply_for_batch_with_app(
 ) -> ShadowReport {
     use crate::evolution::activation::{evaluate_s2, S2Decision};
 
-    let gated: Vec<EvolutionProposal> = proposals.into_iter()
+    let gated: Vec<EvolutionProposal> = proposals
+        .into_iter()
         .filter(|p| auto_apply_gate(p))
         .collect();
     let config_path = paths::data_dir(app).join("bot-config.json");
@@ -346,8 +348,7 @@ pub async fn shadow_apply_for_batch_with_app(
             Ok(()) => {
                 written += 1;
                 match (state, &s2_decision) {
-                    (ActivationState::S0Observe, _)
-                    | (ActivationState::S1Suggest, _) => {
+                    (ActivationState::S0Observe, _) | (ActivationState::S1Suggest, _) => {
                         crate::audit_event!(
                             app,
                             AuditLevel::Info,
@@ -384,7 +385,11 @@ pub async fn shadow_apply_for_batch_with_app(
             }
         }
     }
-    ShadowReport { total: gated.len(), written, failed }
+    ShadowReport {
+        total: gated.len(),
+        written,
+        failed,
+    }
 }
 
 // ───────────────────────── 集成决策（纯函数，apply.rs 调用）─────────────────────────
@@ -426,7 +431,10 @@ mod tests {
 
     static COUNTER_LOCK: Mutex<()> = Mutex::new(());
     fn counter_lock() -> std::sync::MutexGuard<'static, ()> {
-        COUNTER_LOCK.lock().unwrap_or_else(|e| { eprintln!("[mutex_poisoned] evolution::observe::shadow::COUNTER_LOCK: {e:?}"); e.into_inner() })
+        COUNTER_LOCK.lock().unwrap_or_else(|e| {
+            eprintln!("[mutex_poisoned] evolution::observe::shadow::COUNTER_LOCK: {e:?}");
+            e.into_inner()
+        })
     }
 
     // ─── MockShadowSink ───
@@ -437,7 +445,7 @@ mod tests {
         pub writes: Mutex<Vec<ChangeRecord>>,
         pub audit_failed_calls: Mutex<Vec<(String, String)>>,
         pub audit_warning_calls: Mutex<Vec<(f64, u64, u64)>>,
-        pub write_should_fail: Mutex<bool>, // 测试时可注入失败
+        pub write_should_fail: Mutex<bool>,   // 测试时可注入失败
         pub fixed_now_ms: Mutex<Option<i64>>, // 测试时固定 now_ms
     }
 
@@ -490,17 +498,15 @@ mod tests {
         }
     }
 
-    fn mk_proposal(
-        id: &str,
-        cat: ProposalCategory,
-        impact: ImpactLevel,
-    ) -> EvolutionProposal {
+    fn mk_proposal(id: &str, cat: ProposalCategory, impact: ImpactLevel) -> EvolutionProposal {
         EvolutionProposal {
             proposal_id: id.into(),
             created_at_ms: 1_700_000_000_000,
             origin: ProposalOrigin::ConsolidationReflection,
             category: cat,
-            target: ProposalTarget::MemoryPolicy { policy: "test".into() },
+            target: ProposalTarget::MemoryPolicy {
+                policy: "test".into(),
+            },
             impact,
             evidence: Evidence {
                 summary: format!("s-{id}"),
@@ -532,7 +538,11 @@ mod tests {
         assert_eq!(report.written, 3);
         assert_eq!(report.failed, 0);
         // 验证 mock sink 收到 3 次 write
-        assert_eq!(sink.write_count(), 3, "shadow 真被调（mock 收到 3 次 write）");
+        assert_eq!(
+            sink.write_count(),
+            3,
+            "shadow 真被调（mock 收到 3 次 write）"
+        );
         let writes = sink.writes();
         assert_eq!(writes[0].proposal_id, "p1");
         assert_eq!(writes[1].proposal_id, "p2");
@@ -544,8 +554,10 @@ mod tests {
     async fn e2e_2_shadow_writes_real_changes_jsonl() {
         let _g = counter_lock();
         reset_counters_for_test();
-        let dir = std::env::temp_dir()
-            .join(format!("sh-e2e2-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        let dir = std::env::temp_dir().join(format!(
+            "sh-e2e2-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("evolution-changes.jsonl");
         let sink = AppShadowSink::new_for_test(path.clone());
@@ -576,10 +588,14 @@ mod tests {
             "INSERT INTO mem_items (id, kind, content, tags, importance, source, created_at, updated_at) VALUES ('existing', 'fact', 'baseline', '', 3, 'user_stated', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
             [],
         ).unwrap();
-        let before: i64 = conn.query_row("SELECT COUNT(*) FROM mem_items", [], |r| r.get(0)).unwrap();
+        let before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM mem_items", [], |r| r.get(0))
+            .unwrap();
         // 跑 shadow（用 AppShadowSink + temp 文件，不接触 conn）
-        let dir = std::env::temp_dir()
-            .join(format!("sh-e2e3-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        let dir = std::env::temp_dir().join(format!(
+            "sh-e2e3-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("evolution-changes.jsonl");
         let sink = AppShadowSink::new_for_test(path);
@@ -589,14 +605,21 @@ mod tests {
         ];
         shadow_apply_for_batch(proposals, &sink).await;
         // 验证 mem_items 未变（关键安全属性）
-        let after: i64 = conn.query_row("SELECT COUNT(*) FROM mem_items", [], |r| r.get(0)).unwrap();
-        assert_eq!(before, after, "shadow 不应写 mem_items（before={before}, after={after}）");
+        let after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM mem_items", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            before, after,
+            "shadow 不应写 mem_items（before={before}, after={after}）"
+        );
         // 验证没有 evo:* 标签的条目被新增
-        let evo_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM mem_items WHERE tags LIKE 'evo:%'",
-            [],
-            |r| r.get(0),
-        ).unwrap();
+        let evo_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM mem_items WHERE tags LIKE 'evo:%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(evo_count, 0, "shadow 不应新增 evo:* 条目");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -695,7 +718,11 @@ mod tests {
         reset_counters_for_test();
         let sink = MockShadowSink::new();
         sink.set_write_should_fail();
-        let proposals = vec![mk_proposal("p1", ProposalCategory::MemoryHint, ImpactLevel::High)];
+        let proposals = vec![mk_proposal(
+            "p1",
+            ProposalCategory::MemoryHint,
+            ImpactLevel::High,
+        )];
         let report = shadow_apply_for_batch(proposals, &sink).await;
         assert_eq!(report.failed, 1);
         assert_eq!(report.written, 0);
@@ -880,10 +907,10 @@ mod tests {
     #[test]
     fn shadow_enabled_filters_to_compliant_only() {
         let proposals = vec![
-            mk_proposal("c1", ProposalCategory::MemoryHint, ImpactLevel::High),     // 合规
-            mk_proposal("nc1", ProposalCategory::PromptHint, ImpactLevel::High),   // 不合规
-            mk_proposal("c2", ProposalCategory::MemoryHint, ImpactLevel::Medium),  // 合规
-            mk_proposal("nc2", ProposalCategory::PromptHint, ImpactLevel::Low),     // 不合规
+            mk_proposal("c1", ProposalCategory::MemoryHint, ImpactLevel::High), // 合规
+            mk_proposal("nc1", ProposalCategory::PromptHint, ImpactLevel::High), // 不合规
+            mk_proposal("c2", ProposalCategory::MemoryHint, ImpactLevel::Medium), // 合规
+            mk_proposal("nc2", ProposalCategory::PromptHint, ImpactLevel::Low), // 不合规
         ];
         let r = shadow_eligible_proposals(&proposals, true);
         assert_eq!(r.len(), 2, "应过滤出 2 条合规");
@@ -1011,7 +1038,11 @@ mod tests {
         std::fs::create_dir_all(&dir1).unwrap();
         let path1 = dir1.join("evolution-changes.jsonl");
         let proposals_v1 = vec![
-            mk_proposal("medium_v1", ProposalCategory::MemoryHint, ImpactLevel::Medium),
+            mk_proposal(
+                "medium_v1",
+                ProposalCategory::MemoryHint,
+                ImpactLevel::Medium,
+            ),
             mk_proposal("high_v1", ProposalCategory::MemoryHint, ImpactLevel::High),
         ];
         let sink1 = AppShadowSink::new_for_test(path1.clone());
@@ -1027,7 +1058,11 @@ mod tests {
         let path2 = dir2.join("evolution-changes.jsonl");
         let proposals_v2 = vec![
             mk_proposal("high_v2", ProposalCategory::MemoryHint, ImpactLevel::High),
-            mk_proposal("medium_v2", ProposalCategory::MemoryHint, ImpactLevel::Medium),
+            mk_proposal(
+                "medium_v2",
+                ProposalCategory::MemoryHint,
+                ImpactLevel::Medium,
+            ),
         ];
         let sink2 = AppShadowSink::new_for_test(path2.clone());
         let report2 =

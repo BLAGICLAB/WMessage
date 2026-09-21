@@ -32,8 +32,7 @@ pub const DEFAULT_SCHEMA_VERSION: u32 = 1;
 /// - 硬约束 5/6：仅 MemoryHint + High/Medium 可自动应用
 /// - 其他约束由 apply 入口校验（这里不重复）
 pub fn hard_constraint_compliance(p: &EvolutionProposal) -> bool {
-    matches!(p.category, ProposalCategory::MemoryHint)
-        && !matches!(p.impact, ImpactLevel::Low)
+    matches!(p.category, ProposalCategory::MemoryHint) && !matches!(p.impact, ImpactLevel::Low)
 }
 
 /// layer 从 category 派生（DERIVABILITY.md 字段 1，部分覆盖）
@@ -97,7 +96,9 @@ mod tests {
             created_at_ms: 1_700_000_000_000,
             origin: ProposalOrigin::ConsolidationReflection,
             category: cat,
-            target: ProposalTarget::MemoryPolicy { policy: "test".into() },
+            target: ProposalTarget::MemoryPolicy {
+                policy: "test".into(),
+            },
             impact,
             evidence: Evidence {
                 summary: format!("s-{id}"),
@@ -157,10 +158,22 @@ mod tests {
 
     #[test]
     fn layer_mapping_partial() {
-        assert_eq!(derive_layer(ProposalCategory::MemoryHint), EvolutionLayer::Policy);
-        assert_eq!(derive_layer(ProposalCategory::PromptHint), EvolutionLayer::PromptHint);
-        assert_eq!(derive_layer(ProposalCategory::ToolSchemaHint), EvolutionLayer::ToolSchema);
-        assert_eq!(derive_layer(ProposalCategory::SkillHint), EvolutionLayer::Skill);
+        assert_eq!(
+            derive_layer(ProposalCategory::MemoryHint),
+            EvolutionLayer::Policy
+        );
+        assert_eq!(
+            derive_layer(ProposalCategory::PromptHint),
+            EvolutionLayer::PromptHint
+        );
+        assert_eq!(
+            derive_layer(ProposalCategory::ToolSchemaHint),
+            EvolutionLayer::ToolSchema
+        );
+        assert_eq!(
+            derive_layer(ProposalCategory::SkillHint),
+            EvolutionLayer::Skill
+        );
     }
 
     // ─── from_proposal 集成 ───

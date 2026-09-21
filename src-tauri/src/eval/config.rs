@@ -63,8 +63,8 @@ pub struct EvolutionConfig {
 /// 加载 bot-config.json；缺文件 / 缺 evolution.eval 块时 return Err（强制显式）
 pub fn load(path: &std::path::Path) -> Result<EvolutionEvalConfig, String> {
     let raw = std::fs::read_to_string(path).map_err(|e| format!("读 {path:?} 失败：{e}"))?;
-    let cfg: BotConfig = serde_json::from_str(&raw)
-        .map_err(|e| format!("解析 bot-config.json 失败：{e}"))?;
+    let cfg: BotConfig =
+        serde_json::from_str(&raw).map_err(|e| format!("解析 bot-config.json 失败：{e}"))?;
     let evo = cfg
         .evolution
         .ok_or_else(|| "bot-config.json 缺少 evolution 块".to_string())?;
@@ -84,7 +84,10 @@ mod tests {
 
     #[test]
     fn load_parses_evolution_eval() {
-        let dir = std::env::temp_dir().join(format!("cfg-ok-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        let dir = std::env::temp_dir().join(format!(
+            "cfg-ok-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
         let p = dir.join("bot-config.json");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
@@ -101,14 +104,20 @@ mod tests {
         )
         .unwrap();
         let cfg = load(&p).unwrap();
-        assert_eq!(cfg.eval_set_path, PathBuf::from("../evolution/eval_set.jsonl"));
+        assert_eq!(
+            cfg.eval_set_path,
+            PathBuf::from("../evolution/eval_set.jsonl")
+        );
         assert_eq!(cfg.run_frequency, RunFrequency::Daily);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn load_missing_evolution_returns_err() {
-        let dir = std::env::temp_dir().join(format!("cfg-noevo-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        let dir = std::env::temp_dir().join(format!(
+            "cfg-noevo-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
         let p = dir.join("bot-config.json");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(&p, r#"{"foo":"bar"}"#).unwrap();
@@ -119,7 +128,10 @@ mod tests {
 
     #[test]
     fn load_missing_eval_block_returns_err() {
-        let dir = std::env::temp_dir().join(format!("cfg-noeval-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        let dir = std::env::temp_dir().join(format!(
+            "cfg-noeval-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
         let p = dir.join("bot-config.json");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(&p, r#"{"evolution":{"foo":"bar"}}"#).unwrap();

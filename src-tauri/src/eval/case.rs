@@ -49,8 +49,8 @@ pub fn read_jsonl(path: &std::path::Path) -> Result<Vec<EvalCase>, String> {
         if line.trim().is_empty() {
             continue;
         }
-        let c: EvalCase = serde_json::from_str(&line)
-            .map_err(|e| format!("第 {} 行 JSON 错误：{e}", i + 1))?;
+        let c: EvalCase =
+            serde_json::from_str(&line).map_err(|e| format!("第 {} 行 JSON 错误：{e}", i + 1))?;
         out.push(c);
     }
     Ok(out)
@@ -68,7 +68,8 @@ pub fn append_jsonl(path: &std::path::Path, cases: &[EvalCase]) -> Result<(), St
         .open(path)
         .map_err(|e| format!("打开 {path:?} 失败：{e}"))?;
     for c in cases {
-        let line = serde_json::to_string(c).map_err(|e| format!("序列化 {case_id} 失败：{e}", case_id = c.case_id))?;
+        let line = serde_json::to_string(c)
+            .map_err(|e| format!("序列化 {case_id} 失败：{e}", case_id = c.case_id))?;
         writeln!(f, "{line}").map_err(|e| format!("写入 {path:?} 失败：{e}"))?;
     }
     Ok(())
@@ -116,7 +117,10 @@ mod tests {
 
     #[test]
     fn read_skips_empty_lines() {
-        let dir = std::env::temp_dir().join(format!("eval-test-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        let dir = std::env::temp_dir().join(format!(
+            "eval-test-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("cases.jsonl");
         let content = "{\"case_id\":\"a\",\"input\":\"x\",\"expected_behavior\":[],\"metrics\":[]}\n\n{\"case_id\":\"b\",\"input\":\"y\",\"expected_behavior\":[],\"metrics\":[]}\n";
@@ -130,7 +134,10 @@ mod tests {
 
     #[test]
     fn read_reports_bad_line_number() {
-        let dir = std::env::temp_dir().join(format!("eval-bad-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        let dir = std::env::temp_dir().join(format!(
+            "eval-bad-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("bad.jsonl");
         std::fs::write(
@@ -145,7 +152,10 @@ mod tests {
 
     #[test]
     fn append_creates_parent_dirs() {
-        let dir = std::env::temp_dir().join(format!("eval-parent-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        let dir = std::env::temp_dir().join(format!(
+            "eval-parent-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
         let p = dir.join("nested").join("cases.jsonl");
         let c = EvalCase {
             case_id: "c".into(),

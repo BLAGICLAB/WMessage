@@ -53,7 +53,10 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
     // 阶段一：完成满 7 天且未归档的任务 → 归档（兜底：主窗口关闭时也照常到期）
     let mut due: Vec<db::Task> = vec![];
     for t in tasks.iter() {
-        if t.deleted_at.is_some() || t.archived == Some(true) || t.column != crate::db::TaskStatus::Done {
+        if t.deleted_at.is_some()
+            || t.archived == Some(true)
+            || t.column != crate::db::TaskStatus::Done
+        {
             continue;
         }
         if let Some(completed) = t.completed_at {

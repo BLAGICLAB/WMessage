@@ -46,8 +46,13 @@ pub fn is_conflict(a: &ProposalEntry, b: &ProposalEntry) -> bool {
 ///
 /// 冲突定义：同 layer + 同 target.tag()
 /// 返回第一个冲突项（如有）
-pub fn find_conflict<'a>(entries: &'a [ProposalEntry], new: &ProposalEntry) -> Option<&'a ProposalEntry> {
-    entries.iter().find(|e| is_conflict(e, new) && e.proposal_id != new.proposal_id)
+pub fn find_conflict<'a>(
+    entries: &'a [ProposalEntry],
+    new: &ProposalEntry,
+) -> Option<&'a ProposalEntry> {
+    entries
+        .iter()
+        .find(|e| is_conflict(e, new) && e.proposal_id != new.proposal_id)
 }
 
 /// 冲突解决：保留胜者，丢弃败者
@@ -56,7 +61,10 @@ pub fn find_conflict<'a>(entries: &'a [ProposalEntry], new: &ProposalEntry) -> O
 /// - impact 不同：higher impact 胜
 /// - impact 相同：older (created_at_ms 更小) 胜
 /// - 返回 (winner, loser)
-pub fn resolve_conflict<'a>(a: &'a ProposalEntry, b: &'a ProposalEntry) -> (&'a ProposalEntry, &'a ProposalEntry) {
+pub fn resolve_conflict<'a>(
+    a: &'a ProposalEntry,
+    b: &'a ProposalEntry,
+) -> (&'a ProposalEntry, &'a ProposalEntry) {
     if impact_ord(a.impact) != impact_ord(b.impact) {
         if impact_ord(a.impact) > impact_ord(b.impact) {
             (a, b)
@@ -88,7 +96,13 @@ mod tests {
     use super::*;
     use crate::evolution::proposal::{ProposalOrigin, ProposalTarget};
 
-    fn mk(id: &str, layer: EvolutionLayer, impact: ImpactLevel, target: String, created: i64) -> ProposalEntry {
+    fn mk(
+        id: &str,
+        layer: EvolutionLayer,
+        impact: ImpactLevel,
+        target: String,
+        created: i64,
+    ) -> ProposalEntry {
         ProposalEntry {
             proposal_id: id.into(),
             change_id: format!("chg-{id}"),
@@ -112,40 +126,106 @@ mod tests {
 
     #[test]
     fn is_conflict_same_layer_same_target() {
-        let a = mk("a", EvolutionLayer::Policy, ImpactLevel::Medium, "p1".into(), 1000);
-        let b = mk("b", EvolutionLayer::Policy, ImpactLevel::High, "p1".into(), 2000);
+        let a = mk(
+            "a",
+            EvolutionLayer::Policy,
+            ImpactLevel::Medium,
+            "p1".into(),
+            1000,
+        );
+        let b = mk(
+            "b",
+            EvolutionLayer::Policy,
+            ImpactLevel::High,
+            "p1".into(),
+            2000,
+        );
         assert!(is_conflict(&a, &b));
     }
 
     #[test]
     fn no_conflict_different_layer() {
-        let a = mk("a", EvolutionLayer::Policy, ImpactLevel::High, "p1".into(), 1000);
-        let b = mk("b", EvolutionLayer::ToolSchema, ImpactLevel::High, "p1".into(), 2000);
+        let a = mk(
+            "a",
+            EvolutionLayer::Policy,
+            ImpactLevel::High,
+            "p1".into(),
+            1000,
+        );
+        let b = mk(
+            "b",
+            EvolutionLayer::ToolSchema,
+            ImpactLevel::High,
+            "p1".into(),
+            2000,
+        );
         assert!(!is_conflict(&a, &b));
     }
 
     #[test]
     fn no_conflict_different_target() {
-        let a = mk("a", EvolutionLayer::Policy, ImpactLevel::High, "p1".into(), 1000);
-        let b = mk("b", EvolutionLayer::Policy, ImpactLevel::High, "p2".into(), 2000);
+        let a = mk(
+            "a",
+            EvolutionLayer::Policy,
+            ImpactLevel::High,
+            "p1".into(),
+            1000,
+        );
+        let b = mk(
+            "b",
+            EvolutionLayer::Policy,
+            ImpactLevel::High,
+            "p2".into(),
+            2000,
+        );
         assert!(!is_conflict(&a, &b));
     }
 
     #[test]
     fn no_conflict_same_proposal_id() {
         // 同一个 proposal_id 不算冲突（自比）
-        let a = mk("same", EvolutionLayer::Policy, ImpactLevel::High, "p1".into(), 1000);
+        let a = mk(
+            "same",
+            EvolutionLayer::Policy,
+            ImpactLevel::High,
+            "p1".into(),
+            1000,
+        );
         assert!(!is_conflict(&a, &a));
     }
 
     #[test]
     fn find_conflict_returns_first_match() {
         let entries = vec![
-            mk("a", EvolutionLayer::Skill, ImpactLevel::Medium, "other".into(), 1000),
-            mk("b", EvolutionLayer::Policy, ImpactLevel::High, "p1".into(), 2000),
-            mk("c", EvolutionLayer::Policy, ImpactLevel::Medium, "p1".into(), 3000),
+            mk(
+                "a",
+                EvolutionLayer::Skill,
+                ImpactLevel::Medium,
+                "other".into(),
+                1000,
+            ),
+            mk(
+                "b",
+                EvolutionLayer::Policy,
+                ImpactLevel::High,
+                "p1".into(),
+                2000,
+            ),
+            mk(
+                "c",
+                EvolutionLayer::Policy,
+                ImpactLevel::Medium,
+                "p1".into(),
+                3000,
+            ),
         ];
-        let new = mk("new", EvolutionLayer::Policy, ImpactLevel::Low, "p1".into(), 4000);
+        let new = mk(
+            "new",
+            EvolutionLayer::Policy,
+            ImpactLevel::Low,
+            "p1".into(),
+            4000,
+        );
         let conflict = find_conflict(&entries, &new).unwrap();
         assert_eq!(conflict.proposal_id, "b");
     }
@@ -154,8 +234,20 @@ mod tests {
 
     #[test]
     fn resolve_higher_impact_wins() {
-        let a = mk("a", EvolutionLayer::Policy, ImpactLevel::Medium, "p1".into(), 1000);
-        let b = mk("b", EvolutionLayer::Policy, ImpactLevel::High, "p1".into(), 2000);
+        let a = mk(
+            "a",
+            EvolutionLayer::Policy,
+            ImpactLevel::Medium,
+            "p1".into(),
+            1000,
+        );
+        let b = mk(
+            "b",
+            EvolutionLayer::Policy,
+            ImpactLevel::High,
+            "p1".into(),
+            2000,
+        );
         let (winner, loser) = resolve_conflict(&a, &b);
         assert_eq!(winner.proposal_id, "b"); // High 胜
         assert_eq!(loser.proposal_id, "a");
@@ -163,8 +255,20 @@ mod tests {
 
     #[test]
     fn resolve_same_impact_older_wins() {
-        let older = mk("old", EvolutionLayer::Policy, ImpactLevel::Medium, "p1".into(), 1000);
-        let newer = mk("new", EvolutionLayer::Policy, ImpactLevel::Medium, "p1".into(), 2000);
+        let older = mk(
+            "old",
+            EvolutionLayer::Policy,
+            ImpactLevel::Medium,
+            "p1".into(),
+            1000,
+        );
+        let newer = mk(
+            "new",
+            EvolutionLayer::Policy,
+            ImpactLevel::Medium,
+            "p1".into(),
+            2000,
+        );
         let (winner, loser) = resolve_conflict(&older, &newer);
         assert_eq!(winner.proposal_id, "old");
         assert_eq!(loser.proposal_id, "new");
@@ -175,10 +279,34 @@ mod tests {
     #[test]
     fn sort_by_layer_priority_then_impact_then_age() {
         let mut entries = vec![
-            mk("a", EvolutionLayer::PromptHint, ImpactLevel::High, "x".into(), 1000),
-            mk("b", EvolutionLayer::Policy, ImpactLevel::Low, "y".into(), 1000),
-            mk("c", EvolutionLayer::Policy, ImpactLevel::High, "z".into(), 500),
-            mk("d", EvolutionLayer::ToolSchema, ImpactLevel::Medium, "w".into(), 1000),
+            mk(
+                "a",
+                EvolutionLayer::PromptHint,
+                ImpactLevel::High,
+                "x".into(),
+                1000,
+            ),
+            mk(
+                "b",
+                EvolutionLayer::Policy,
+                ImpactLevel::Low,
+                "y".into(),
+                1000,
+            ),
+            mk(
+                "c",
+                EvolutionLayer::Policy,
+                ImpactLevel::High,
+                "z".into(),
+                500,
+            ),
+            mk(
+                "d",
+                EvolutionLayer::ToolSchema,
+                ImpactLevel::Medium,
+                "w".into(),
+                1000,
+            ),
         ];
         sort_entries_cross_layer(&mut entries);
         // 期望顺序：Policy 优先（priority=1），按 impact 降序，age 升序

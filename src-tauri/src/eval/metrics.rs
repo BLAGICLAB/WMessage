@@ -68,8 +68,7 @@ pub fn read_applied(path: &std::path::Path) -> Result<Vec<AppliedRecord>, String
             continue;
         }
         out.push(
-            serde_json::from_str(&line)
-                .map_err(|e| format!("第 {} 行 JSON 错误：{e}", i + 1))?,
+            serde_json::from_str(&line).map_err(|e| format!("第 {} 行 JSON 错误：{e}", i + 1))?,
         );
     }
     Ok(out)
@@ -100,7 +99,10 @@ pub fn pollution_survival_days(
     applied: &[AppliedRecord],
     now_ms: i64,
 ) -> f64 {
-    let lookup: HashMap<&str, i64> = applied.iter().map(|r| (r.mem_key.as_str(), r.applied_at_ms)).collect();
+    let lookup: HashMap<&str, i64> = applied
+        .iter()
+        .map(|r| (r.mem_key.as_str(), r.applied_at_ms))
+        .collect();
     let mut total_days = 0.0;
     let mut n = 0u64;
     for k in live_keys {
@@ -122,10 +124,7 @@ pub fn pollution_survival_days(
 /// 行为偏差：对每个 case 的 expected_behavior 列表，统计命中率；
 /// deviation = 1 - avg(hit_fraction)。
 /// `actual_hits`: case_id → 实际命中的 expected_behavior 子集
-pub fn behavior_deviation(
-    case_total: usize,
-    hit_fractions: &[(String, f64)],
-) -> f64 {
+pub fn behavior_deviation(case_total: usize, hit_fractions: &[(String, f64)]) -> f64 {
     if case_total == 0 {
         return 0.0;
     }
@@ -217,7 +216,11 @@ mod tests {
 
     #[test]
     fn rollback_rate_subtracts_live() {
-        let applied = vec![mk_applied("a", 1000), mk_applied("b", 2000), mk_applied("c", 3000)];
+        let applied = vec![
+            mk_applied("a", 1000),
+            mk_applied("b", 2000),
+            mk_applied("c", 3000),
+        ];
         let live = vec!["evo:a".into()]; // b, c 已回滚
         let r = rollback_rate(&applied, &live);
         assert!((r - 2.0 / 3.0).abs() < 1e-9, "回滚率应为 2/3：{r}");
@@ -233,11 +236,7 @@ mod tests {
     #[test]
     fn pollution_survival_days_avg() {
         let day_ms: i64 = 86_400_000;
-        let applied = vec![
-            mk_applied("a", 0),
-            mk_applied("b", 0),
-            mk_applied("c", 0),
-        ];
+        let applied = vec![mk_applied("a", 0), mk_applied("b", 0), mk_applied("c", 0)];
         let live = vec!["evo:a".into(), "evo:b".into(), "evo:c".into()];
         // 当前时刻 5 天后
         let r = pollution_survival_days(&live, &applied, 5 * day_ms);
@@ -276,7 +275,10 @@ mod tests {
 
     #[test]
     fn read_applied_roundtrip() {
-        let dir = std::env::temp_dir().join(format!("metrics-rt-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        let dir = std::env::temp_dir().join(format!(
+            "metrics-rt-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("applied.jsonl");
         let line = r#"{"proposal_id":"p1","mem_key":"evo:p1","applied_at_ms":1000,"impact":"high","summary":"x"}"#;

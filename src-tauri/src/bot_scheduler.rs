@@ -69,7 +69,10 @@ impl SchedGuard {
     fn acquire<R: tauri::Runtime>(app: &tauri::AppHandle<R>, task_id: &str) -> Option<Self> {
         let running = sched_running(app);
         {
-            let mut set = running.lock().unwrap_or_else(|e| { eprintln!("[mutex_poisoned] app_state::sched_running: {e:?}"); e.into_inner() });
+            let mut set = running.lock().unwrap_or_else(|e| {
+                eprintln!("[mutex_poisoned] app_state::sched_running: {e:?}");
+                e.into_inner()
+            });
             if set.contains(task_id) {
                 return None;
             }

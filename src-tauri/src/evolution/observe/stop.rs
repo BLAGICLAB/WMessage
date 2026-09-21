@@ -115,7 +115,9 @@ mod tests {
             layer: EvolutionLayer::Policy,
             origin: ProposalOrigin::ConsolidationReflection,
             proposal_id: id.into(),
-            target: ProposalTarget::MemoryPolicy { policy: "test".into() },
+            target: ProposalTarget::MemoryPolicy {
+                policy: "test".into(),
+            },
             suggestion_text: format!("text-{id}"),
             mem_key: format!("evo:{id}"),
             impact: ImpactLevel::Medium,
@@ -153,7 +155,9 @@ mod tests {
         let r = check_stop_condition(&changes, 0, now);
         assert_eq!(r.changes_completed, 30);
         assert!(r.should_stop);
-        assert!(r.stop_reasons.contains(&StopReason::CompletedChangesReach30));
+        assert!(r
+            .stop_reasons
+            .contains(&StopReason::CompletedChangesReach30));
     }
 
     #[test]
@@ -207,7 +211,9 @@ mod tests {
         }
         let r = check_stop_condition(&changes, 0, now);
         assert!(r.should_stop);
-        assert!(r.stop_reasons.contains(&StopReason::CompletedChangesReach30));
+        assert!(r
+            .stop_reasons
+            .contains(&StopReason::CompletedChangesReach30));
         assert!(r.stop_reasons.contains(&StopReason::FiveOrMoreRollbacks));
     }
 

@@ -389,7 +389,6 @@ mod early_return_events_tests {
     }
 }
 
-
 // ───────────────────────── 工具层 commit template ─────────────────────────
 
 /// 工具层写库收尾：调 `db::db_upsert_for` → `broadcast_after_mutation` → 返回
@@ -421,9 +420,6 @@ pub(crate) async fn commit_and_report<R: tauri::Runtime>(
             broadcast_after_mutation(app, vec![task.clone()], Vec::new());
             crate::bot::registry::ToolResult::ok(success_msg(), refs())
         }
-        Err(e) => crate::bot::registry::ToolResult::ok(
-            format!("{fail_prefix}：{e}"),
-            Vec::new(),
-        ),
+        Err(e) => crate::bot::registry::ToolResult::ok(format!("{fail_prefix}：{e}"), Vec::new()),
     }
 }

@@ -75,16 +75,15 @@ pub fn default_off() -> KillSwitch {
 /// 4. 缺 evolution / 缺 kill_switch → 返 Err（强制显式）
 pub fn load_from_file(path: &Path) -> Result<KillSwitch, String> {
     let raw = std::fs::read_to_string(path).map_err(|e| format!("读 {path:?} 失败：{e}"))?;
-    let v: serde_json::Value = serde_json::from_str(&raw)
-        .map_err(|e| format!("解析 {path:?} 失败：{e}"))?;
+    let v: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| format!("解析 {path:?} 失败：{e}"))?;
     let evo = v
         .get("evolution")
         .ok_or_else(|| "bot-config.json 缺少 evolution 块".to_string())?;
     let kill_switch = evo
         .get("kill_switch")
         .ok_or_else(|| "evolution 块缺少 kill_switch 子块".to_string())?;
-    serde_json::from_value(kill_switch.clone())
-        .map_err(|e| format!("kill_switch 解析失败：{e}"))
+    serde_json::from_value(kill_switch.clone()).map_err(|e| format!("kill_switch 解析失败：{e}"))
 }
 
 #[cfg(test)]
@@ -132,12 +131,18 @@ mod tests {
             shadow_only: false,
             disable_notification: false,
         };
-        assert!(k.should_shadow_only(), "all_auto_apply=true 应隐含 shadow_only");
+        assert!(
+            k.should_shadow_only(),
+            "all_auto_apply=true 应隐含 shadow_only"
+        );
     }
 
     #[test]
     fn load_parses_kill_switch_block() {
-        let dir = std::env::temp_dir().join(format!("ks-ok-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        let dir = std::env::temp_dir().join(format!(
+            "ks-ok-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("bot-config.json");
         std::fs::write(
@@ -166,7 +171,10 @@ mod tests {
 
     #[test]
     fn load_missing_kill_switch_block_errors() {
-        let dir = std::env::temp_dir().join(format!("ks-no-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        let dir = std::env::temp_dir().join(format!(
+            "ks-no-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("bot-config.json");
         std::fs::write(&p, r#"{"evolution":{"eval":{"eval_set_path":"x","feedback_path":"y","run_frequency":"daily"}}}"#).unwrap();
@@ -177,7 +185,10 @@ mod tests {
 
     #[test]
     fn load_missing_evolution_block_errors() {
-        let dir = std::env::temp_dir().join(format!("ks-ne-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        let dir = std::env::temp_dir().join(format!(
+            "ks-ne-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("bot-config.json");
         std::fs::write(&p, r#"{"foo":"bar"}"#).unwrap();
@@ -189,7 +200,10 @@ mod tests {
     #[test]
     fn load_partial_kill_switch_uses_defaults() {
         // 只给 all_auto_apply，shadow_only / disable_notification 用默认 false
-        let dir = std::env::temp_dir().join(format!("ks-p-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        let dir = std::env::temp_dir().join(format!(
+            "ks-p-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("bot-config.json");
         std::fs::write(

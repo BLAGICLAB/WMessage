@@ -942,7 +942,10 @@ mod tests {
         // 10 个并发请求同时抢闸门，临界区内 sleep 100ms 放大竞争窗口
         for _ in 0..10 {
             joins.push(std::thread::spawn(|| {
-                let _g = py_run_gate().lock().unwrap_or_else(|e| { eprintln!("[mutex_poisoned] py::runtime::py_run_gate: {e:?}"); e.into_inner() });
+                let _g = py_run_gate().lock().unwrap_or_else(|e| {
+                    eprintln!("[mutex_poisoned] py::runtime::py_run_gate: {e:?}");
+                    e.into_inner()
+                });
                 let cur = CUR.fetch_add(1, Ordering::SeqCst) + 1;
                 MAX.fetch_max(cur, Ordering::SeqCst);
                 std::thread::sleep(Duration::from_millis(100));

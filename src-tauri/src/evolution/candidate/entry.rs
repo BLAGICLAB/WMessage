@@ -108,15 +108,17 @@ pub fn read_all(path: &std::path::Path) -> Result<Vec<ProposalEntry>, String> {
             continue;
         }
         out.push(
-            serde_json::from_str(&line)
-                .map_err(|e| format!("第 {} 行 JSON 错误：{e}", i + 1))?,
+            serde_json::from_str(&line).map_err(|e| format!("第 {} 行 JSON 错误：{e}", i + 1))?,
         );
     }
     Ok(out)
 }
 
 /// 按 proposal_id 查询
-pub fn find_by_id<'a>(entries: &'a [ProposalEntry], proposal_id: &str) -> Option<&'a ProposalEntry> {
+pub fn find_by_id<'a>(
+    entries: &'a [ProposalEntry],
+    proposal_id: &str,
+) -> Option<&'a ProposalEntry> {
     entries.iter().find(|e| e.proposal_id == proposal_id)
 }
 
@@ -137,7 +139,9 @@ mod tests {
             layer: EvolutionLayer::Policy,
             impact: ImpactLevel::Medium,
             origin: ProposalOrigin::ConsolidationReflection,
-            target: ProposalTarget::MemoryPolicy { policy: "test".into() },
+            target: ProposalTarget::MemoryPolicy {
+                policy: "test".into(),
+            },
             suggestion_text: format!("text-{id}"),
             mem_key: format!("evo:{id}"),
             related_refs: vec![],
@@ -160,7 +164,10 @@ mod tests {
 
     #[test]
     fn append_then_read_roundtrip() {
-        let dir = std::env::temp_dir().join(format!("pe-rt-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        let dir = std::env::temp_dir().join(format!(
+            "pe-rt-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("evolution-proposals.jsonl");
         append(&p, &mk("a", ProposalStatus::Pooled)).unwrap();
@@ -180,7 +187,10 @@ mod tests {
 
     #[test]
     fn append_creates_parent_dirs() {
-        let dir = std::env::temp_dir().join(format!("pe-pd-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        let dir = std::env::temp_dir().join(format!(
+            "pe-pd-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
         let p = dir.join("nested").join("evolution-proposals.jsonl");
         append(&p, &mk("x", ProposalStatus::Pooled)).unwrap();
         assert!(p.exists());
@@ -189,7 +199,10 @@ mod tests {
 
     #[test]
     fn find_by_id_returns_match() {
-        let entries = vec![mk("a", ProposalStatus::Pooled), mk("b", ProposalStatus::Promoted)];
+        let entries = vec![
+            mk("a", ProposalStatus::Pooled),
+            mk("b", ProposalStatus::Promoted),
+        ];
         let found = find_by_id(&entries, "b").unwrap();
         assert_eq!(found.proposal_id, "b");
         assert!(find_by_id(&entries, "missing").is_none());

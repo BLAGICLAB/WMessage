@@ -13,4 +13,6 @@ pub mod synthetic;
 
 pub use metrics::{compute as compute_metrics, ObserveMetrics};
 pub use stop::{check_stop_condition, StopConditionStatus, StopReason};
-pub use synthetic::{generate as generate_synthetic, write_to_files, SyntheticConfig, SyntheticData};
+pub use synthetic::{
+    generate as generate_synthetic, write_to_files, SyntheticConfig, SyntheticData,
+};

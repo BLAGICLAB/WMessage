@@ -169,7 +169,16 @@ mod tests {
 
     #[test]
     fn rejected_is_terminal() {
-        for to in [Pending, Shadowing, ShadowPassed, Approved, Canary, Active, RolledBack, Expired] {
+        for to in [
+            Pending,
+            Shadowing,
+            ShadowPassed,
+            Approved,
+            Canary,
+            Active,
+            RolledBack,
+            Expired,
+        ] {
             assert!(!can_transition(Rejected, to), "Rejected -> {to:?} 应被禁");
         }
         assert!(Rejected.is_terminal());
@@ -177,15 +186,36 @@ mod tests {
 
     #[test]
     fn rolled_back_is_terminal() {
-        for to in [Pending, Shadowing, ShadowPassed, Approved, Canary, Active, Rejected, Expired] {
-            assert!(!can_transition(RolledBack, to), "RolledBack -> {to:?} 应被禁");
+        for to in [
+            Pending,
+            Shadowing,
+            ShadowPassed,
+            Approved,
+            Canary,
+            Active,
+            Rejected,
+            Expired,
+        ] {
+            assert!(
+                !can_transition(RolledBack, to),
+                "RolledBack -> {to:?} 应被禁"
+            );
         }
         assert!(RolledBack.is_terminal());
     }
 
     #[test]
     fn expired_is_terminal() {
-        for to in [Pending, Shadowing, ShadowPassed, Approved, Canary, Active, Rejected, RolledBack] {
+        for to in [
+            Pending,
+            Shadowing,
+            ShadowPassed,
+            Approved,
+            Canary,
+            Active,
+            Rejected,
+            RolledBack,
+        ] {
             assert!(!can_transition(Expired, to), "Expired -> {to:?} 应被禁");
         }
         assert!(Expired.is_terminal());
@@ -220,7 +250,15 @@ mod tests {
         // 集成验收：spec R2 「完整 status 生命周期」
         use ChangeStatus::*;
         // 合法路径 1：标准 canary 流程
-        let path1 = vec![Pending, Shadowing, ShadowPassed, Approved, Canary, Active, RolledBack];
+        let path1 = vec![
+            Pending,
+            Shadowing,
+            ShadowPassed,
+            Approved,
+            Canary,
+            Active,
+            RolledBack,
+        ];
         for window in path1.windows(2) {
             assert!(
                 can_transition(window[0], window[1]),
@@ -231,7 +269,14 @@ mod tests {
             assert!(transition(window[0], window[1]).is_ok());
         }
         // 合法路径 2：skip-canary
-        let path2 = vec![Pending, Shadowing, ShadowPassed, Approved, Active, RolledBack];
+        let path2 = vec![
+            Pending,
+            Shadowing,
+            ShadowPassed,
+            Approved,
+            Active,
+            RolledBack,
+        ];
         for window in path2.windows(2) {
             assert!(
                 can_transition(window[0], window[1]),

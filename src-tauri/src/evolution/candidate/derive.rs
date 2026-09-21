@@ -64,7 +64,9 @@ mod tests {
             created_at_ms: 1_700_000_000_000,
             origin: ProposalOrigin::ConsolidationReflection,
             category: cat,
-            target: ProposalTarget::MemoryPolicy { policy: "test".into() },
+            target: ProposalTarget::MemoryPolicy {
+                policy: "test".into(),
+            },
             impact,
             evidence: Evidence {
                 summary: format!("s-{id}"),
@@ -87,10 +89,22 @@ mod tests {
 
     #[test]
     fn layer_mapping_partial() {
-        assert_eq!(derive_layer(ProposalCategory::MemoryHint), EvolutionLayer::Policy);
-        assert_eq!(derive_layer(ProposalCategory::PromptHint), EvolutionLayer::PromptHint);
-        assert_eq!(derive_layer(ProposalCategory::ToolSchemaHint), EvolutionLayer::ToolSchema);
-        assert_eq!(derive_layer(ProposalCategory::SkillHint), EvolutionLayer::Skill);
+        assert_eq!(
+            derive_layer(ProposalCategory::MemoryHint),
+            EvolutionLayer::Policy
+        );
+        assert_eq!(
+            derive_layer(ProposalCategory::PromptHint),
+            EvolutionLayer::PromptHint
+        );
+        assert_eq!(
+            derive_layer(ProposalCategory::ToolSchemaHint),
+            EvolutionLayer::ToolSchema
+        );
+        assert_eq!(
+            derive_layer(ProposalCategory::SkillHint),
+            EvolutionLayer::Skill
+        );
     }
 
     #[test]

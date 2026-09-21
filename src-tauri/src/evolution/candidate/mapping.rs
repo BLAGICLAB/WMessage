@@ -25,10 +25,7 @@ pub fn map_proposal_status_to_change_status(s: ProposalStatus) -> ChangeStatus {
 ///
 /// 注意：approval_source 取决于合规检查。
 /// 这里默认 Pending（待人工/自动批准）；hard_constraint_compliance 由调用方传入。
-pub fn to_change_record(
-    entry: &ProposalEntry,
-    hard_constraint_compliance: bool,
-) -> ChangeRecord {
+pub fn to_change_record(entry: &ProposalEntry, hard_constraint_compliance: bool) -> ChangeRecord {
     let status = if !hard_constraint_compliance {
         ChangeStatus::Rejected
     } else {
@@ -75,7 +72,9 @@ mod tests {
             layer: EvolutionLayer::Policy,
             impact: ImpactLevel::High,
             origin: ProposalOrigin::ConsolidationReflection,
-            target: ProposalTarget::MemoryPolicy { policy: "test".into() },
+            target: ProposalTarget::MemoryPolicy {
+                policy: "test".into(),
+            },
             suggestion_text: format!("text-{id}"),
             mem_key: format!("evo:{id}"),
             related_refs: vec![],

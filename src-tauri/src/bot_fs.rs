@@ -190,7 +190,8 @@ pub async fn resolve_with_perm(
     // Tauri command / event （OCR C1b performance critical）。
     // 把 owned clone 先拿出来再 move 进闭包：闭包要求 'static，原 expanded 留给 symlink 修复用。
     let expanded_for_canonical = expanded.clone();
-    let canonical = spawn_blocking_io(move || std::fs::canonicalize(expanded_for_canonical)).await?;
+    let canonical =
+        spawn_blocking_io(move || std::fs::canonicalize(expanded_for_canonical)).await?;
     let dirs = allowed_dirs(app).await;
     if is_within_allowlist(&canonical, &dirs) {
         return Ok(strip_verbatim(canonical));
@@ -414,7 +415,9 @@ enum InodeCheckOutcome {
 async fn capture_pre_ino(path: &Path) -> Option<u64> {
     use std::os::unix::fs::MetadataExt;
     let path = path.to_path_buf();
-    spawn_blocking_io(move || std::fs::metadata(&path).map(|m| m.ino())).await.ok()
+    spawn_blocking_io(move || std::fs::metadata(&path).map(|m| m.ino()))
+        .await
+        .ok()
 }
 
 #[cfg(not(unix))]
@@ -528,11 +531,10 @@ pub async fn tool_read_text_file(
     //     inode re-check 不执行。设计选择，非缺陷——见 capture_pre_ino 注释
     //     + follow-up: "Phase 6: Windows 端 TOCTOU 策略"。
     let pre_ino = capture_pre_ino(&canonical).await;
-    let (inode_check, is_binary) =
-        match is_binary_file_with_ino_check(&canonical, pre_ino).await {
-            Ok(r) => r,
-            Err(e) => return ToolResult::ok(format!("读取失败：{e}"), Vec::new()),
-        };
+    let (inode_check, is_binary) = match is_binary_file_with_ino_check(&canonical, pre_ino).await {
+        Ok(r) => r,
+        Err(e) => return ToolResult::ok(format!("读取失败：{e}"), Vec::new()),
+    };
     if inode_check == InodeCheckOutcome::Replaced {
         crate::bot::audit_log(
             app,
@@ -542,10 +544,7 @@ pub async fn tool_read_text_file(
             ),
         );
         return ToolResult::ok(
-            format!(
-                "{} 在校验后被替换，拒绝读取（TOCTOU 防护）",
-                path.trim()
-            ),
+            format!("{} 在校验后被替换，拒绝读取（TOCTOU 防护）", path.trim()),
             Vec::new(),
         );
     }
@@ -653,53 +652,54 @@ pub async fn tool_grep_files(
     // closure 内 is_binary_file_sync / read_to_string 仍 sync，但已在 spawn_blocking
     // 线程内 OK。流式优化留 follow-up。
     let dir_log = dir.display().to_string();
-    let hits: Vec<String> = crate::py::document::spawn_blocking_map(move || -> Result<Vec<String>, String> {
-        let mut hits: Vec<String> = Vec::new();
-        walk(&dir, &mut |path: &Path, is_dir: bool| {
-            if hits.len() >= max {
-                return false;
-            }
-            if is_dir {
-                return true;
-            }
-            let name = path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-            if !glob.is_empty() && !glob_match(&glob, &name) {
-                return true;
-            }
-            if path
-                .metadata()
-                .map(|m| m.len() > GREP_MAX_FILE_BYTES)
-                .unwrap_or(true)
-            {
-                return true; // 超大文件跳过
-            }
-            if is_binary_file_sync(path) {
-                return true;
-            }
-            if let Ok(text) = std::fs::read_to_string(path) {
-                for (i, line) in text.lines().enumerate() {
-                    if re.is_match(line) {
-                        hits.push(format!(
-                            "{}:{}: {}",
-                            path.display(),
-                            i + 1,
-                            line.chars().take(200).collect::<String>()
-                        ));
-                        if hits.len() >= max {
-                            return false;
+    let hits: Vec<String> =
+        crate::py::document::spawn_blocking_map(move || -> Result<Vec<String>, String> {
+            let mut hits: Vec<String> = Vec::new();
+            walk(&dir, &mut |path: &Path, is_dir: bool| {
+                if hits.len() >= max {
+                    return false;
+                }
+                if is_dir {
+                    return true;
+                }
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                if !glob.is_empty() && !glob_match(&glob, &name) {
+                    return true;
+                }
+                if path
+                    .metadata()
+                    .map(|m| m.len() > GREP_MAX_FILE_BYTES)
+                    .unwrap_or(true)
+                {
+                    return true; // 超大文件跳过
+                }
+                if is_binary_file_sync(path) {
+                    return true;
+                }
+                if let Ok(text) = std::fs::read_to_string(path) {
+                    for (i, line) in text.lines().enumerate() {
+                        if re.is_match(line) {
+                            hits.push(format!(
+                                "{}:{}: {}",
+                                path.display(),
+                                i + 1,
+                                line.chars().take(200).collect::<String>()
+                            ));
+                            if hits.len() >= max {
+                                return false;
+                            }
                         }
                     }
                 }
-            }
-            true
-        });
-        Ok(hits)
-    })
-    .await
-    .unwrap_or_default();
+                true
+            });
+            Ok(hits)
+        })
+        .await
+        .unwrap_or_default();
     crate::bot::audit_log(
         app,
         &format!(
@@ -751,31 +751,32 @@ pub async fn tool_list_files(
     let pattern = v["pattern"].as_str().unwrap_or("").trim().to_string();
     // walk 整体包 spawn_blocking（OCR C1b performance）：同 grep_files 原因。
     let canonical_log = canonical.display().to_string();
-    let entries: Vec<String> = crate::py::document::spawn_blocking_map(move || -> Result<Vec<String>, String> {
-        let mut entries: Vec<String> = Vec::new();
-        walk(&canonical, &mut |path: &Path, is_dir: bool| {
-            if entries.len() >= LIST_MAX_ENTRIES {
-                return false;
-            }
-            let name = path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-            if !pattern.is_empty() && !glob_match(&pattern, &name) {
-                return true;
-            }
-            let rel = path.strip_prefix(&canonical).unwrap_or(path);
-            entries.push(format!(
-                "{}{}",
-                rel.display(),
-                if is_dir { "/" } else { "" }
-            ));
-            true
-        });
-        Ok(entries)
-    })
-    .await
-    .unwrap_or_default();
+    let entries: Vec<String> =
+        crate::py::document::spawn_blocking_map(move || -> Result<Vec<String>, String> {
+            let mut entries: Vec<String> = Vec::new();
+            walk(&canonical, &mut |path: &Path, is_dir: bool| {
+                if entries.len() >= LIST_MAX_ENTRIES {
+                    return false;
+                }
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                if !pattern.is_empty() && !glob_match(&pattern, &name) {
+                    return true;
+                }
+                let rel = path.strip_prefix(&canonical).unwrap_or(path);
+                entries.push(format!(
+                    "{}{}",
+                    rel.display(),
+                    if is_dir { "/" } else { "" }
+                ));
+                true
+            });
+            Ok(entries)
+        })
+        .await
+        .unwrap_or_default();
     crate::bot::audit_log(
         app,
         &format!(
@@ -786,10 +787,7 @@ pub async fn tool_list_files(
     );
     if entries.is_empty() {
         // 「... 内没有匹配的文件」首字不定 → ok
-        return ToolResult::ok(
-            format!("{} 内没有匹配的文件", canonical_log),
-            Vec::new(),
-        );
+        return ToolResult::ok(format!("{} 内没有匹配的文件", canonical_log), Vec::new());
     }
     let mut out = format!(
         "{}（{} 条）：\n{}",

@@ -68,7 +68,8 @@ pub fn append_result(path: &Path, report: &MetricsReport) -> Result<(), String> 
         .append(true)
         .open(path)
         .map_err(|e| format!("打开 {path:?} 失败：{e}"))?;
-    let line = serde_json::to_string(report).map_err(|e| format!("序列化 MetricsReport 失败：{e}"))?;
+    let line =
+        serde_json::to_string(report).map_err(|e| format!("序列化 MetricsReport 失败：{e}"))?;
     writeln!(f, "{line}").map_err(|e| format!("写入 {path:?} 失败：{e}"))?;
     Ok(())
 }
@@ -141,17 +142,26 @@ fn aggregate_feedback(
         let related: Vec<&FeedbackEntry> = feedback
             .iter()
             .filter(|f| {
-                    f.case_id.as_deref() == Some(c.case_id.as_str())
-                        || f.session_id == c.case_id
-                })
+                f.case_id.as_deref() == Some(c.case_id.as_str()) || f.session_id == c.case_id
+            })
             .collect();
         if related.is_empty() {
             hit_fractions.push((c.case_id.clone(), 1.0));
             continue;
         }
-        let pos = related.iter().filter(|f| matches!(f.signal_type, SignalType::ThumbsUp)).count() as f64;
-        let neg = related.iter().filter(|f| matches!(f.signal_type, SignalType::ThumbsDown)).count() as f64;
-        let frac = if pos + neg > 0.0 { pos / (pos + neg) } else { 1.0 };
+        let pos = related
+            .iter()
+            .filter(|f| matches!(f.signal_type, SignalType::ThumbsUp))
+            .count() as f64;
+        let neg = related
+            .iter()
+            .filter(|f| matches!(f.signal_type, SignalType::ThumbsDown))
+            .count() as f64;
+        let frac = if pos + neg > 0.0 {
+            pos / (pos + neg)
+        } else {
+            1.0
+        };
         hit_fractions.push((c.case_id.clone(), frac));
     }
     (total, succeeded, hit_fractions)
@@ -227,7 +237,10 @@ mod tests {
 
     #[test]
     fn append_result_writes_jsonl() {
-        let dir = std::env::temp_dir().join(format!("runner-res-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        let dir = std::env::temp_dir().join(format!(
+            "runner-res-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
         let p = dir.join("nested").join("results.jsonl");
         let report = MetricsReport {
             case_total: 10,
@@ -255,12 +268,16 @@ mod tests {
 
     #[test]
     fn list_live_lesson_keys_empty_when_table_missing() {
-        let dir = std::env::temp_dir().join(format!("runner-db-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        let dir = std::env::temp_dir().join(format!(
+            "runner-db-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("empty.db");
         // 建一个不含 mem_items 的空 DB
         let conn = Connection::open(&p).unwrap();
-        conn.execute_batch("CREATE TABLE dummy(id INTEGER);").unwrap();
+        conn.execute_batch("CREATE TABLE dummy(id INTEGER);")
+            .unwrap();
         drop(conn);
         let keys = list_live_lesson_keys(&p).unwrap();
         assert!(keys.is_empty());
@@ -269,7 +286,10 @@ mod tests {
 
     #[test]
     fn list_live_lesson_keys_returns_evo_prefixed() {
-        let dir = std::env::temp_dir().join(format!("runner-keys-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        let dir = std::env::temp_dir().join(format!(
+            "runner-keys-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("test.db");
         let conn = Connection::open(&p).unwrap();

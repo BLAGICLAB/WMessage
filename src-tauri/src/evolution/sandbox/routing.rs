@@ -93,7 +93,9 @@ mod tests {
     #[test]
     fn canary_distribution_roughly_5_percent() {
         // 1000 个 session，canary 数应在 ~50 附近（5%）
-        let count = (0..1000).filter(|i| is_canary(&format!("session-{i}"))).count();
+        let count = (0..1000)
+            .filter(|i| is_canary(&format!("session-{i}")))
+            .count();
         assert!(count >= 25 && count <= 100, "5% 桶应 ≈ 50，实测 {count}");
     }
 
@@ -109,9 +111,14 @@ mod tests {
 
     #[test]
     fn ab_distribution_roughly_50_percent() {
-        let count_a = (0..1000).filter(|i| is_ab_a(&format!("session-{i}"))).count();
+        let count_a = (0..1000)
+            .filter(|i| is_ab_a(&format!("session-{i}")))
+            .count();
         // 偶数桶 = A，所以 A 桶占比 ≈ 50%（含 0 桶）
-        assert!(count_a >= 450 && count_a <= 550, "A/B 应 ≈ 50/50，A={count_a}");
+        assert!(
+            count_a >= 450 && count_a <= 550,
+            "A/B 应 ≈ 50/50，A={count_a}"
+        );
     }
 
     #[test]
@@ -131,6 +138,9 @@ mod tests {
                 canary2 += 1;
             }
         }
-        assert_eq!(canary, canary2, "同一 session_id 必须永远同一个 canary 判定");
+        assert_eq!(
+            canary, canary2,
+            "同一 session_id 必须永远同一个 canary 判定"
+        );
     }
 }

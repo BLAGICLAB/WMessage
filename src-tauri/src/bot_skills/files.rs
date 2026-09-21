@@ -364,11 +364,17 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let bound = tmp.path().join("a.docx");
         std::fs::write(&bound, b"x").unwrap();
-        let bound_canon = std::fs::canonicalize(&bound).unwrap().to_string_lossy().to_string();
+        let bound_canon = std::fs::canonicalize(&bound)
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
         let s = set(&[bound_canon.as_str()]);
 
         // 精确命中（canonical 后入集、canonical 后查）
-        assert!(path_openable_in(bound_canon.as_str(), &s, None), "精确命中放行");
+        assert!(
+            path_openable_in(bound_canon.as_str(), &s, None),
+            "精确命中放行"
+        );
         // 近似路径不命中（集合是精确匹配，不是前缀匹配）
         let wrong = tmp.path().join("a.docx.bak");
         std::fs::write(&wrong, b"x").unwrap();

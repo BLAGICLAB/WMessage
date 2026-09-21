@@ -16,12 +16,10 @@
 //!
 //! 调用方负责写 jsonl 文件；本模块只生成 in-memory 数据。
 
-use crate::evolution::candidate::{ProposalEntry, ProposalStatus};
-use crate::evolution::change::{
-    ApprovalSource, ChangeRecord, ChangeStatus, EvolutionLayer,
-};
-use crate::evolution::proposal::{ImpactLevel, ProposalOrigin, ProposalTarget};
 use crate::eval::metrics::AppliedRecord;
+use crate::evolution::candidate::{ProposalEntry, ProposalStatus};
+use crate::evolution::change::{ApprovalSource, ChangeRecord, ChangeStatus, EvolutionLayer};
+use crate::evolution::proposal::{ImpactLevel, ProposalOrigin, ProposalTarget};
 
 const MS_PER_DAY: i64 = 86_400_000;
 
@@ -53,7 +51,7 @@ impl Default for SyntheticConfig {
             promoted_ratio: 0.60,
             rejected_ratio: 0.15,
             expired_ratio: 0.05,
-            active_ratio_of_promoted: 0.75, // 45/60
+            active_ratio_of_promoted: 0.75,      // 45/60
             rolled_back_ratio_of_promoted: 0.20, // 12/60
             window_days: 30,
             seed: 42,
@@ -141,7 +139,9 @@ pub fn generate(cfg: &SyntheticConfig, now_ms: i64) -> SyntheticData {
             layer: EvolutionLayer::Policy,
             origin: ProposalOrigin::ConsolidationReflection,
             proposal_id: id.clone(),
-            target: ProposalTarget::MemoryPolicy { policy: "synth".into() },
+            target: ProposalTarget::MemoryPolicy {
+                policy: "synth".into(),
+            },
             suggestion_text: format!("text-{id}"),
             mem_key: format!("evo:{id}"),
             impact: ImpactLevel::Medium,
@@ -238,7 +238,10 @@ impl SimpleRng {
     }
     fn next_u64(&mut self) -> u64 {
         // LCG
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         self.0
     }
     fn next_f64(&mut self) -> f64 {
@@ -359,14 +362,26 @@ mod tests {
             .filter(|p| p.status == ProposalStatus::Expired)
             .count();
         // 允许 ±5 误差（LCG 伪随机分布）
-        assert!((pooled as i64 - 20).abs() <= 5, "Pooled 数 ≈ 20，实测 {pooled}");
-        assert!((rejected as i64 - 15).abs() <= 5, "Rejected 数 ≈ 15，实测 {rejected}");
-        assert!((expired as i64 - 5).abs() <= 5, "Expired 数 ≈ 5，实测 {expired}");
+        assert!(
+            (pooled as i64 - 20).abs() <= 5,
+            "Pooled 数 ≈ 20，实测 {pooled}"
+        );
+        assert!(
+            (rejected as i64 - 15).abs() <= 5,
+            "Rejected 数 ≈ 15，实测 {rejected}"
+        );
+        assert!(
+            (expired as i64 - 5).abs() <= 5,
+            "Expired 数 ≈ 5，实测 {expired}"
+        );
     }
 
     #[test]
     fn write_and_read_back_roundtrip() {
-        let dir = std::env::temp_dir().join(format!("synth-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        let dir = std::env::temp_dir().join(format!(
+            "synth-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("evolution-proposals.jsonl");
         let c = dir.join("evolution-changes.jsonl");

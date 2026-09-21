@@ -563,7 +563,10 @@ mod task_status_tests {
             serde_json::from_str::<TaskStatus>("\"doing\"").unwrap(),
             TaskStatus::Doing
         );
-        assert_eq!(serde_json::to_string(&TaskStatus::Done).unwrap(), "\"done\"");
+        assert_eq!(
+            serde_json::to_string(&TaskStatus::Done).unwrap(),
+            "\"done\""
+        );
     }
 
     #[test]
