@@ -31,19 +31,24 @@ pub(crate) fn copy_file_macos(path: &str, title: &str) -> Result<(), String> {
     let url_obj: objc2::rc::Retained<ProtocolObject<dyn NSPasteboardWriting>> =
         ProtocolObject::from_retained(url);
     let objs = NSArray::from_retained_slice(&[url_obj]);
-    let _ok = pb.writeObjects(&objs);
+    if !pb.writeObjects(&objs) {
+        return Err("写入文件 URL 失败".to_string());
+    }
 
     // 2) 老式文件列表类型（NSFilenamesPboardType）：Electron 系应用（飞书等）读这个
     let path_str = NSString::from_str(path);
     let paths = NSArray::from_retained_slice(&[path_str]);
     // SAFETY: &NSString 由 NSString::from_str 创建存于本栈帧，调用期间不释放；&paths 是 CFArray 借用视图（paths 已 validate 非空），调用方保证生命周期。
-    let _ok =
-        unsafe { pb.setPropertyList_forType(&paths, &NSString::from_str("NSFilenamesPboardType")) };
+    if !unsafe { pb.setPropertyList_forType(&paths, &NSString::from_str("NSFilenamesPboardType")) } {
+        return Err("写入文件列表类型失败".to_string());
+    }
 
     // 3) 标题文本：文本应用粘贴即标题
     let text = NSString::from_str(title);
     // SAFETY: NSPasteboardTypeString 是 Foundation 公开常量，值稳定不释放、全局唯一无别名风险；unsafe 仅用于将 *const NSString 转为 &NSString。
-    let _ok = pb.setString_forType(&text, unsafe { NSPasteboardTypeString });
+    if !pb.setString_forType(&text, unsafe { NSPasteboardTypeString }) {
+        return Err("写入标题文本失败".to_string());
+    }
     Ok(())
 }
 
@@ -76,7 +81,18 @@ pub(crate) fn copy_file_windows(path: &str, title: &str) -> Result<(), crate::er
         // 1) 文件列表（CF_HDROP）
         let file_wide: Vec<u16> = OsStr::new(path).encode_wide().chain(Some(0)).collect();
         let total = size_of::<DROPFILES>() + file_wide.len() * 2 + 2;
-        let h = GlobalAlloc(GMEM_MOVEABLE, total).map_err(|e| e.to_string())?;
+        // 不能用 `?`：失败路径必须在返错前 CloseClipboard（见 OCR finding #79）
+        // 否则剪贴板被本进程独占，后续 OpenClipboard 全部 stall
+        let h = match GlobalAlloc(GMEM_MOVEABLE, total) {
+            Ok(h) => h,
+            Err(e) => {
+                let _ = CloseClipboard();
+                return Err(crate::error::CommandError::DomainRule {
+                    domain: "clipboard".to_string(),
+                    reason: format!("分配文件列表内存失败: {e}"),
+                });
+            }
+        };
         let base = GlobalLock(h) as *mut u8;
         if base.is_null() {
             let _ = GlobalFree(Some(h));
@@ -104,7 +120,18 @@ pub(crate) fn copy_file_windows(path: &str, title: &str) -> Result<(), crate::er
 
         // 2) 标题文本（CF_UNICODETEXT）
         let title_wide: Vec<u16> = OsStr::new(title).encode_wide().chain(Some(0)).collect();
-        let th = GlobalAlloc(GMEM_MOVEABLE, title_wide.len() * 2).map_err(|e| e.to_string())?;
+        // 同上：失败路径必须在返错前 CloseClipboard + GlobalFree
+        // 且以 typed CommandError 返（与上方一致，不被 `?` 降级成 String）
+        let th = match GlobalAlloc(GMEM_MOVEABLE, title_wide.len() * 2) {
+            Ok(th) => th,
+            Err(e) => {
+                let _ = CloseClipboard();
+                return Err(crate::error::CommandError::DomainRule {
+                    domain: "clipboard".to_string(),
+                    reason: format!("分配标题内存失败: {e}"),
+                });
+            }
+        };
         let tbase = GlobalLock(th) as *mut u16;
         if tbase.is_null() {
             let _ = GlobalFree(Some(th));
@@ -117,7 +144,14 @@ pub(crate) fn copy_file_windows(path: &str, title: &str) -> Result<(), crate::er
         ptr::copy_nonoverlapping(title_wide.as_ptr(), tbase, title_wide.len());
         let _ = GlobalUnlock(th);
         if SetClipboardData(CF_UNICODETEXT.0 as u32, Some(HANDLE(th.0))).is_err() {
+            // 见 OCR finding #119：之前 fallback 到 Ok(()) 是 bug，
+            // 与上方 CF_HDROP 分支不对称——文件已落剪贴板但契约谎报成功
             let _ = GlobalFree(Some(th));
+            let _ = CloseClipboard();
+            return Err(crate::error::CommandError::DomainRule {
+                domain: "clipboard".to_string(),
+                reason: "写入标题文本失败".to_string(),
+            });
         }
 
         let _ = CloseClipboard();
