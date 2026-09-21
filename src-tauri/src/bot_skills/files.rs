@@ -2,11 +2,13 @@ use crate::error::{CommandError, CommandResult};
 use tauri::AppHandle;
 
 /// 消费侧 kind 白名单（可测内核）：仅 {file, folder} 链接目标纳入可打开/删除集合
-/// （url 不是路径；app/command/未来 kind 一律不纳入）。与写入侧
-/// `db::workspace::ALLOWED_LINK_KINDS` 同集——**集合判断，不是 `!= "url"` 黑名单**
-/// （黑名单会继续漏未来 kind = OCR C2b #2 finding 的原始问题）。
+/// （url 不是路径；app/command/未来 kind 一律不纳入；**集合判断，不是 `!= "url"` 黑名单**）。
+///
+/// **单一来源（修 OCR C2b2-1）**：集合直接引用写入侧 `db::workspace::ALLOWED_LINK_KINDS`，
+/// 不再硬编码字面集——写入侧增删 kind 时消费者自动跟随，消除「注释称同集但无强制」的漂移。
 fn link_kind_contributes_path(kind: &str) -> bool {
-    matches!(kind, "file" | "folder")
+    // url 在白名单内但不是路径（打开走浏览器）；其余白名单 kind 均贡献路径。
+    kind != "url" && crate::db::workspace::ALLOWED_LINK_KINDS.contains(&kind)
 }
 
 /// 收集「允许直接打开/删除」的**绑集**路径（canonical form）：
@@ -23,14 +25,21 @@ fn link_kind_contributes_path(kind: &str) -> bool {
 /// （避免后续比对歧义）。
 ///
 /// **健壮性（修 #5 medium 静默收缩白名单）**：任务卡 DB 与 workspace 读取失败各自独立
-/// audit log，不静默丢错。collect 是 best-effort，不返回错误（接口契约稳定）。
+/// audit log，不静默丢错。
 ///
-/// **性能（修 OCR C2b M1）**：canonicalize 是同步 syscall，原先直接在 async fn 体内
-/// 跑会阻塞 Tauri async runtime（多 IPC 并发时明显）。按 C1b 同模式
-/// （`bot_fs.rs` resolve_with_perm → spawn_blocking_io）把整个 canonicalize 批次
-/// move 进 blocking 线程池（`crate::py::document::spawn_blocking_map`）。
-async fn collect_openable_paths(app: &AppHandle) -> std::collections::HashSet<String> {
-    // 先只收 raw 路径（DB 读取本身已是 async/轻量），canonicalize 统一到 blocking 批次
+/// **性能（修 OCR C2b M1 + C2c-v4 完整化）**：`open_db` / `load_workspace` /
+/// `canonicalize` 全是同步 IO，统一 move 进**一个** blocking 任务（`spawn_blocking_map`），
+/// 不再跑在 async runtime 上。
+///
+/// **失败语义（修 OCR C2c-v2）**：blocking 任务失败 → `Err`（audit + 可辨识内部错误），
+/// **不再静默塌成空集** —— 空集会让之后所有合法 open/delete 被误判「未绑定」直到进程重启。
+///
+/// **返回**：`(绑集 canonical form, gen_dir canonical form)`。gen_dir 在**同一 blocking 任务内**
+/// 算好一次（修 OCR C2b1-r3b：原先每次校验重 canonicalize，open/delete 各一次 IPC 算两遍）。
+async fn collect_openable_paths(
+    app: &AppHandle,
+) -> Result<(std::collections::HashSet<String>, Option<String>), CommandError> {
+    // db_load 已是 async；先只收 raw 路径
     let mut raw: Vec<String> = Vec::new();
 
     if let Ok(tasks) = crate::db::db_load(app.clone()).await {
@@ -46,53 +55,57 @@ async fn collect_openable_paths(app: &AppHandle) -> std::collections::HashSet<St
         );
     }
 
-    if let Ok(conn) = crate::db::open_db(app) {
-        match crate::db::load_workspace(&conn) {
-            Ok(items) => {
-                for it in items {
-                    for l in it.links {
-                        // 消费侧白名单（纵深防御，OCR C2b #2）：见 link_kind_contributes_path。
-                        if link_kind_contributes_path(&l.kind) {
-                            raw.push(l.target_uri);
+    // C2c-v4：open_db / load_workspace / canonicalize 同属同步 IO，合并进同一个 blocking 任务。
+    // C2c-v5：两处失败 audit 均带 `{e}`，审计可区分 DB 锁 / 迁移失败 / IO 错误。
+    let handle = app.clone();
+    let set = crate::py::document::spawn_blocking_map(move || {
+        let mut raw = raw;
+        match crate::db::open_db(&handle) {
+            Ok(conn) => match crate::db::load_workspace(&conn) {
+                Ok(items) => {
+                    for it in items {
+                        for l in it.links {
+                            // 消费侧白名单（纵深防御，OCR C2b #2）：见 link_kind_contributes_path。
+                            if link_kind_contributes_path(&l.kind) {
+                                raw.push(l.target_uri);
+                            }
                         }
                     }
                 }
-            }
-            Err(e) => {
-                crate::bot::audit_log(
-                    app,
+                Err(e) => crate::bot::audit_log(
+                    &handle,
                     &format!(
                         "collect_openable_paths workspace load failed | {e} | collecting continue (degraded)"
                     ),
-                );
-            }
+                ),
+            },
+            Err(e) => crate::bot::audit_log(
+                &handle,
+                &format!(
+                    "collect_openable_paths workspace db open failed | {e} | collecting continue (degraded)"
+                ),
+            ),
         }
-    } else {
-        crate::bot::audit_log(
-            app,
-            "collect_openable_paths workspace db open failed | collecting continue (degraded)",
-        );
-    }
-
-    match crate::py::document::spawn_blocking_map(move || {
-        Ok(raw
-            .into_iter()
-            .filter_map(|p| canonical_string(std::path::Path::new(&p)))
-            .collect::<std::collections::HashSet<String>>())
+        let gen_canon = crate::db::gen_dir(&handle)
+            .ok()
+            .and_then(|p| canonical_string(&p));
+        Ok((
+            raw.into_iter()
+                .filter_map(|p| canonical_string(std::path::Path::new(&p)))
+                .collect::<std::collections::HashSet<String>>(),
+            gen_canon,
+        ))
     })
     .await
-    {
-        Ok(set) => set,
-        Err(e) => {
-            crate::bot::audit_log(
-                app,
-                &format!(
-                    "collect_openable_paths canonicalize batch failed | {e} | empty set (degraded)"
-                ),
-            );
-            std::collections::HashSet::new()
-        }
-    }
+    .map_err(|e| {
+        // C2c-v2（功能中断真修）：不再返回空集，改为 audit + 可辨识内部错误（fail-closed）。
+        crate::bot::audit_log(
+            app,
+            &format!("collect_openable_paths blocking task failed | {e}"),
+        );
+        CommandError::Internal(format!("收集绑定路径失败，已拒绝本次操作：{e}"))
+    })?;
+    Ok(set)
 }
 
 /// canonicalize → 字符串（Windows 剥 `\\?\` 前缀，复用 `bot_fs::strip_verbatim`）。
@@ -113,9 +126,9 @@ fn recheck_canonical(
     op: &str,
     path: &str,
     set: &std::collections::HashSet<String>,
-    gen_dir: Option<&std::path::Path>,
+    gen_dir_canon: Option<&str>,
 ) -> Result<String, CommandError> {
-    match canonical_if_openable(path, set, gen_dir) {
+    match canonical_if_openable(path, set, gen_dir_canon) {
         Some(c) => Ok(c),
         None => {
             crate::bot::audit_log(
@@ -141,40 +154,45 @@ fn recheck_canonical(
 /// 「操作的路径 = 刚校验的路径」（修 OCR C2b M2）。
 ///
 /// - **绑集**：canonical 精确命中（集合只存 canonical form）
-/// - **gen_dir**：canonical 必须落在 AI_Gen_Files 目录内；两侧都 canonicalize
+/// - **gen_dir**：canonical 必须落在 AI_Gen_Files 目录内
+///   （`gen_dir_canon` 由调用方一次性算好——不再每次重 canonicalize，见下）
 /// - `..` 穿越与软链逃逸解析后再比较（「前端 XSS → 任意文件打开/删除」的关键防线）
 /// - 路径不存在 / 产物目录不可用 → None（拒）
 ///
 /// **平台无关**：Unix/Windows 均走 canonicalize（无 inode re-check——与 C1b bot_fs
 /// 限制一致：Windows 端 capture_pre_ino=None）。race-window 二次校验由调用方
 /// `recheck_canonical` 紧邻副作用实现。
+///
+/// **`gen_dir_canon` 必须是已 canonicalize 的字符串**（OCR C2c-verify #3 / C2b1-r3b）：
+/// 原先内部对 raw gen_dir 每次重算 canonicalize，open/delete 一条 IPC 会算两遍；
+/// 现由 `collect_openable_paths` 在同一 blocking 任务里算好一次。
 fn canonical_if_openable(
     path: &str,
     set: &std::collections::HashSet<String>,
-    gen_dir: Option<&std::path::Path>,
+    gen_dir_canon: Option<&str>,
 ) -> Option<String> {
     let path_str = canonical_string(std::path::Path::new(path))?;
     if set.contains(&path_str) {
         return Some(path_str);
     }
-    let gen = gen_dir.and_then(canonical_string)?;
+    let gen = gen_dir_canon?;
     // **分量边界而非字符串前缀**：Path::starts_with 按路径分量比较，
     // `AI_Gen_Files/x` 命中、`AI_Gen_Files-evil/x` 不命中（原 String::starts_with 是 bug，
     // 靠 macOS `/var` vs `/private/var` 偶然通过；本 commit 与测试同时修正）。
-    if std::path::Path::new(&path_str).starts_with(&gen) {
+    if std::path::Path::new(&path_str).starts_with(gen) {
         return Some(path_str);
     }
     None
 }
 
 /// bool 版（绑集精确命中 or gen_dir 内）——保留给现有测试与只需判定不需 canonical 的调用点。
-/// 实现委托 `canonical_if_openable`，单一真源。
+/// 实现委托 `canonical_if_openable`，单一真源。`gen_dir_canon` 必须已 canonical。
 fn path_openable_in(
     path: &str,
     set: &std::collections::HashSet<String>,
-    gen_dir: Option<&std::path::Path>,
+    gen_dir_canon: Option<&str>,
 ) -> bool {
-    canonical_if_openable(path, set, gen_dir).is_some()
+    canonical_if_openable(path, set, gen_dir_canon).is_some()
 }
 
 /// 打开文件/文件夹（Rust 侧调用 opener 插件）：绕过前端窗口的 opener scope，
@@ -210,9 +228,8 @@ pub async fn open_file_path(app: AppHandle, path: String) -> CommandResult<()> {
         )));
     }
 
-    // M3：gen_dir 只算一次，复用于两次校验
-    let set = collect_openable_paths(&app).await;
-    let gen = crate::db::gen_dir(&app).ok();
+    // M3 + C2b1-r3b：绑集与 gen_dir canonical 在 collect 内同一 blocking 任务一次算好
+    let (set, gen) = collect_openable_paths(&app).await?;
 
     // 入口 check：fail-fast + audit（真正的安全控制是紧邻 open 的二次校验）
     if !path_openable_in(&path, &set, gen.as_deref()) {
@@ -294,7 +311,7 @@ pub async fn delete_bound_file(app: AppHandle, path: String) -> CommandResult<()
         return Ok(());
     }
     // 只能删「任务卡绑定文件/文件夹」集合内的路径（前端 XSS 可批量删除用户文件）
-    let set = collect_openable_paths(&app).await;
+    let (set, _gen) = collect_openable_paths(&app).await?;
     // 入口 check：fail-fast + audit。
     // gen_dir 传 None：delete 只针对绑定文件/文件夹，不把 AI_Gen_Files 纳入删除范围
     // （OCR C2b-1 r3 high：此前误传 gen 导致静默扩大删除范围到 AI_Gen_Files，与注释不符）。
@@ -381,25 +398,33 @@ mod tests {
         // 测试也必须用 canonical gen，否则 macOS `/var` vs `/private/var` 路径
         // 解析导致 starts_with 误判：旧测试靠 OS 偶然幸运通过，但 `#3` 修复后
         // 这个缺陷被暴露。
-        let gen_canon = std::fs::canonicalize(&gen).unwrap();
+        let gen_canon = canonical_string(&gen).unwrap();
 
         let inside = gen.join("out.docx");
         assert!(path_openable_in(
             inside.to_str().unwrap(),
             &set(&[]),
-            Some(&gen_canon)
+            Some(gen_canon.as_str())
         ));
 
         let outside_file = outside.join("evil.txt");
         assert!(
-            !path_openable_in(outside_file.to_str().unwrap(), &set(&[]), Some(&gen_canon)),
+            !path_openable_in(
+                outside_file.to_str().unwrap(),
+                &set(&[]),
+                Some(gen_canon.as_str())
+            ),
             "产物目录外的文件不得放行"
         );
 
         // `..` 穿越：canonical 后落在产物目录外 → 拒
         let traversal = gen.join("../outside/evil.txt");
         assert!(
-            !path_openable_in(traversal.to_str().unwrap(), &set(&[]), Some(&gen_canon)),
+            !path_openable_in(
+                traversal.to_str().unwrap(),
+                &set(&[]),
+                Some(gen_canon.as_str())
+            ),
             "`..` 穿越到产物目录外必须被拒"
         );
 
@@ -408,7 +433,7 @@ mod tests {
         assert!(!path_openable_in(
             missing.to_str().unwrap(),
             &set(&[]),
-            Some(&gen_canon)
+            Some(gen_canon.as_str())
         ));
 
         // 前缀相似目录（AI_Gen_Files vs AI_Gen_Files-evil）：不得按字符串前缀误吞。
@@ -423,7 +448,7 @@ mod tests {
             !path_openable_in(
                 sibling_file_canon.to_str().unwrap(),
                 &set(&[]),
-                Some(&gen_canon)
+                Some(gen_canon.as_str())
             ),
             "前缀相似目录不得误判命中（分量比较，不是字符串前缀）"
         );
@@ -483,8 +508,11 @@ mod tests {
         std::os::unix::fs::symlink(outside.join("secret.txt"), gen.join("link.txt")).unwrap();
 
         let link = gen.join("link.txt");
+        // gen 传 canonical（修 C2b1-L2 测试 footgun：raw gen 在 macOS /var vs
+        // /private/var 下是假通过——旧测试靠 OS 偶然）
+        let gen_canon = canonical_string(&gen).unwrap();
         assert!(
-            !path_openable_in(link.to_str().unwrap(), &set(&[]), Some(&gen)),
+            !path_openable_in(link.to_str().unwrap(), &set(&[]), Some(gen_canon.as_str())),
             "产物目录内软链指向外部 → 必须拒"
         );
     }
@@ -551,9 +579,10 @@ mod tests {
         let file = gen.join("out.docx");
         let p = file.to_str().unwrap();
 
-        // open 侧（传 gen）：允许
+        // open 侧（传 canonical gen）：允许
+        let gen_canon = canonical_string(&gen).unwrap();
         assert!(
-            path_openable_in(p, &set(&[]), Some(&gen)),
+            path_openable_in(p, &set(&[]), Some(gen_canon.as_str())),
             "open 侧应允许 gen_dir 内文件"
         );
         // delete 侧（gen_dir=None）：拒绝——即便落在 gen_dir 内也不放行

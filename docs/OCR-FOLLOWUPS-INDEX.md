@@ -41,16 +41,24 @@ grep 例：`grep 'C2b1' docs/OCR-FOLLOWUPS-INDEX.md`
 | C2c-v4 | C2c-verify | medium | M1 不完整：`open_db`/`load_workspace` 仍同步跑在 async runtime | 多 IPC 并发 | 顺手修 |
 | C2c-v5 | C2c-verify | low | `db_load`/`open_db` 失败分支丢 `{e}`，审计无法区分 DB 锁/迁移/IO | DB 错误排查时 | 顺手修 |
 | PROC-3 | 流程 | low | docs-only 提交不被 OCR 审（path/extension 过滤）= 预期行为，非事故 | docs-only commit | 已固化 SOP（D1 诊断文档 + 本索引）|
+| C2d-v1 | C2d-r1 | medium | `gen_canon` 塌 None 时无 audit（C2c-v5 只盖了 DB/workspace 两分支，第三条失败路径仍隐形）| gen_dir/canonical 失败 | 顺手修 |
+| C2d-v2 | C2d-r1 | medium | `link_kind_contributes_path` 的 `kind != "url"` 隐含依赖 "url" 在 ALLOWED 内，脆耦合 | 写入侧白名单收缩时 | 顺手修 |
+| C2d-v3 | C2d-r1 | medium | `gen_dir_canon`「必预 canonical」契约仅文档未强制（raw `/var` 传入静默 fall through）| 新调用方传 raw gen | 顺手修 |
+| C2d-v4 | C2d-r1 | low | delete_bound_file 为 gen_dir 付了 create_dir_all+canonicalize 却 `_gen` 丢弃 | 每次 delete IPC | **won't fix**（微优化，无错误路径）|
+| C2d-v5 | C2d-r1 | low | `let mut raw = raw;` 重绑定遮蔽多余（FnOnce 直接消耗即可）| — | **won't fix**（纯风格）|
+| C2d-v6 | C2d-r1 | medium | per-path `canonical_string` 失败静默 drop（无 audit）| 绑定文件被删/不可达 | 顺手修 |
+| C2d-v7 | C2d-r1 | medium | 注释宣称「合并进一个 blocking 任务」但 `db_load` 自带 spawn_blocking（over-claim）| — | 顺手修（注释准确性）|
 
 ## 优先级分层（0 条本轮开修）
 
-- **A. 下次碰同文件顺手修（11）**：
+- **A. 下次碰同文件顺手修（16）**：
   `C2b1-L1`⁵ `C2b1-L2` `C2b1-r3a` `C2b1-r3b`⁵、`C2b2-1` `C2b2-2` `C2b2-3`、
-  **`C2c-v2` `C2c-v3` `C2c-v4` `C2c-v5`**（C2c-verify 新发现，均在 `bot_skills/files.rs`）。
+  `C2c-v2` `C2c-v3` `C2c-v4` `C2c-v5`、**`C2d-v1` `C2d-v2` `C2d-v3` `C2d-v6` `C2d-v7`**（均在 `bot_skills/files.rs`）。
 - **B. 独立小批（3）**：`C1b-8`（OCR 进度 flush / 产物心跳）、`PROC-2`（跨 IPC 流程）、`C2a-4`（GUI 补验）。
   （`PROC-1` 已落地 → 移出本层。）
 - **C. Phase 6 主线（11）**：`C1b-1..C1b-7`、`C2a-1`、`C2a-2`、`C2a-3`、**`C2c-v1`**（架构/TOCTOU 统一策略）。
-- **D. won't fix + 理由（1）**：`C2a-Q1` —— widget capability 拆分已尝试并**回滚**（未采纳，不产生 commit）。
+- **D. won't fix + 理由（3）**：`C2a-Q1` —— widget capability 拆分已尝试并**回滚**（未采纳，不产生 commit）；
+  `C2d-v4`（delete 侧 gen 微优化，无错误路径）；`C2d-v5`（`let mut raw = raw` 纯风格）。
 - **已闭环**：`PROC-1`（C2c Step 2 落地）、`PROC-3`（SOP 固化）。
 
 ⁵ = seen@C2c-verify（验证跑复现，仍未修）。
