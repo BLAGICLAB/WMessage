@@ -198,15 +198,96 @@ C1b commit 引入的技术债，Phase 6 一并处理：
   2. A=a followup：vivid-haven session 被 reaper 清、产物丢失 —— **reaper 清**
   3. C1b v1 review：sharp-meadow 跑 ~25 分钟出产物 ——正常但异常长
   4. C1b v2 review：mellow-zephyr 后台跑 7+ 分钟只 1 行 log、产物缺失 —— **静默挂起**
-- **临时 SOP**（commit 前）：
+- **临时 SOP**（commit 前，**已定稿，不再每批现场决**）：
   1. 后台启动 OCR review 到稳态路径（`~/.openclaw/cache/ocr-<批次>.json`，避免 `/tmp` 被清）
   2. 前台轮询产物（`ls -la`）+ pgrep 存活 + log 大小变化
-  3. 超过 N 分钟（建议 10 分钟）转前台重跑（`ocr review` foreground + 长 timeoutSeconds）
-  4. 仍失败 / exit 0 但产物缺失 → 转 D（commit 后异步补 review + commit message 诚实写明 + 本条目升级）
+  3. **超过 10 分钟无产物落盘** → 杀掉后台，转前台重跑（`ocr review` foreground，timeoutSeconds=900）
+  4. 前台仍失败 / exit 0 但产物缺失 → 转 D（commit 后异步补 review + commit message 诚实写明 + 本条目升级）
+  5. 每次走完在 commit message 里**明确写"走了 B 还是 D"**（避免报告含糊——C1b v2 的教训）
 - **follow-up**（流程修复，非本批）：
   - 给 OCR CLI 加中间进度 flush（每隔 N 秒打 stderr 一行），不要只靠"等产物"
   - 或产物心跳（每 N 秒 touch 一个 .heartbeat 文件），超时判定更准
   - 不要把"D 路径"当常规路径（避免以后所有 review 都跳过）
+
+#### C2a Q1 wontfix 登记：widget capability 拆分（2026-09-21，已回滚）
+
+**判定**：OCR C2a finding #1（`capabilities/default.json:5`，main + widget 共用 capability，severity medium→实际是 critical 级功能风险） —— **不修，登记 wontfix**。尝试过的 capability 拆分**已回滚**（未采纳，不产生 commit）。
+
+**事实**（为什么拆分走不通）：
+
+- `WidgetApp.tsx` 直接调用 `getCurrentWindow().setPosition / setSize / setAlwaysOnTop / startDragging / outerPosition / outerSize / scaleFactor / currentMonitor` 等 8+ 个窗口 API。
+- 来源：`ResizeEdge.tsx`（拖拽缩放手柄）+ WidgetApp 自身窗口逻辑（双击标题唤起、拖拽移动、缩放）。
+- **Tauri 2 的 `getCurrentWindow()` 是直调 API，不走 IPC** —— `grep invoke|tauri\.` 扫不到，因此初次调研漏判。
+- 拆掉 `core:window:allow-*` 会让这些调用在运行时被 `WidgetApp` 的 `.catch(()=>{})` 静默吞掉 → **CI 通过但 widget 拖拽/缩放功能失效**（比"过度授权"更糟：功能性破坏且不可见）。
+
+**为什么不是"过度授权"**：
+
+- 主窗口与 widget 共享同一批窗口权限，是**产品设计结果**（widget 需要拖拽/缩放/置顶），不是配置疏忽。
+- 注释里"widget 只能调 focus_main_window"是我的错误推断——`focus_main_window` 只是 widget 需要的能力**之一**，不是全部。
+
+**真正的降面路径**（不在本批、不默认做；Phase 6 / 产品决策条目）：
+
+- **产品层**：widget 是否可以取消拖拽缩放、改成固定尺寸 / 只读面板？若可以，capability 拆分才成立。
+- **进程层**：widget 是否可以独立进程（更小 IPC surface）？需评估 Tauri 多 webview 进程方案。
+- **触发条件**：若哪天 widget 重构为只读面板（去掉 `ResizeEdge.tsx` + 窗口操作逻辑），再回来做 capability 拆分。在此之前保持 `windows: ["main", "widget"]` 共享。
+
+**重评估触发条件**：widget 设计变更（去拖拽 / 去缩放 / 只读化）。
+
+#### ⚠️ 流程事故登记：跨 IPC 边界调用链调研不足（2026-09-21）
+
+**现象**：对前端/跨 IPC 调用链调研不足，基于不完整 grep 下"功能/安全"判断，导致改动在运行时破功能。
+
+**已发生（2 次，同一根因）**：
+
+| # | 批次 | 错误推断 | 实际后果 |
+| --- | --- | --- | --- |
+| 1 | C1b L402 | 认为 `capture_pre_ino` 改 fail-closed "不影响功能" | 会把 Windows 端 `read_text_file` 整体打死 |
+| 2 | C2a Q1 | 认为 widget "只需 focus_main_window，不需窗口权限" | 拆分后 widget 拖拽/缩放静默失效 |
+
+**根因**：`grep invoke|tauri\.` 只覆盖 IPC 调用，漏了 **Tauri 2 直调 API**（`getCurrentWindow()` / `getAllWindows()` / `WebviewWindow` 构造 / `emit` / `listen`）。
+
+**纠正（判定前强制步骤）**：涉及「改权限 / 改默认行为 / 改 fail 语义」的改动，判定前必须补一步**跨 IPC 边界的调用点搜索**，搜索模式至少包括：
+
+```
+invoke(          # IPC 命令调用
+getCurrentWindow / getAllWindows / WebviewWindow 构造   # 直调窗口 API（无 IPC）
+emit( / listen(  # 事件
+```
+
+并**列出实际调用清单**（文件:行 + 调用）再下结论。**不允许**只有一句"应该不需要"就改。
+
+**备注**：这条比"OCR review 后台被清"更值得记——它是 C1b L402 与 C2a Q1 两次熔断的**共同根因**，而后者只是工具/环境问题。
+
+#### C2a Q2/Q3 决策 = A1（2026-09-21）：opener path scope 摘 $HOME/**
+
+**决策**：`opener:allow-open-path` 从 `[$APPDATA/**, $HOME/**]` 收窄为 **`[$APPDATA/**]`**（摘除 `$HOME/**`）。
+
+**证据链**（决策级）：
+
+1. **`$APPDATA` 是 app-scoped，不是整个 app data 根**（Tauri 2.11.5 `path/mod.rs:141-143`：`AppData` resolves to `Data/{bundle_identifier}`）→ OCR finding #2「$APPDATA/** 暴露所有程序数据目录」**判定为误报**，`$APPDATA/**` 已是窄范围。
+2. **dcb9275（2026-08-19）保留 `$HOME/**` 的原始理由已被正面取代**：当时"主窗 openPath 打开任务绑定文件"。现证据：主窗三个任务绑定文件打开点全部走 Rust `open_file_path` —— `TodoCard.tsx:186`（任务卡）、`WorkspacePage.tsx:233`（工作区）、`ChatPanel.tsx:1205`（聊天区文件）；迁移 commit `5eb0a27`（2026-09-04）diff 已核。
+3. **全仓唯一前端 `openPath()` 调用点 = `SkillsPanel.tsx:91`**，打开 `skills_open_dir()` = `$APPDATA/skills` → 摘除零功能成本。
+4. **`openUrl` 独立**：opener ACL `allow-open-url`（commands: `open_url`）与 `allow-open-path`（`open_path`）分离 → markdown 链接不受影响。
+5. **便携模式 exports 走 Rust**：`AI_Gen_Files` 打开经 `openTarget()` → Rust `open_file_path`（`path_openable_in` 双侧 canonicalize + `gen_dir()` 便携感知）→ 不依赖前端 opener。
+
+**新测试**：`opener_path_scope_is_apdata_only`（`src-tauri/src/lib.rs`）——严格断言 `scope == ["$APPDATA/**"]`、显式断言 `$HOME` 不在 scope、禁裸通配、`/etc/passwd` 与 `~/.ssh` 不被覆盖。**替换**旧测试 `opener_open_path_scope_is_not_bare_wildcard`（语义已变）。
+
+**⚠️ 已知边缘（摘除引入的真实回归面，非"罕见即放过"）**：
+
+- **现象**：便携模式下，若 `app_data_dir()` 失败，`skills_dir()`（`bot_skills/manage.rs:33`）fallback 到 `crate::db::data_dir(app).join("skills")`（= 便携 exe 目录）。该路径**可能不在 `$APPDATA` 下** → `SkillsPanel` 的 `openPath` 会被 scope 拒绝（`.catch(()=>{})` 静默吞）。
+- **触发条件**：`app_data_dir()` 失败 **且** 便携模式（exe 目录可写且不在系统 app data 下）。
+- **为什么不在本批修**：修法之一是把 fallback 路径纳入 scope，但那要保留 `$HOME` 或引入新 scope 变量 → 与 A1 冲突，需重新判定。
+- **登记为 follow-up（见下）**：Phase 6 评估是否把 `SkillsPanel` 的 `openPath` 迁移到 Rust 命令（与 `5eb0a27` 同模式，可彻底移除前端 opener path 依赖）。
+- **本批验证**：`cargo test` 覆盖 `path_openable_in` 与 scope 断言；便携模式 `app_data_dir()` 失败分支无自动化覆盖 → **标记为未运行时验证分支**（诚实登记，不声称已验证）。
+
+**C2a follow-up（不在本批）**：
+
+- **Phase 6: `reveal_item_in_dir` 独立评估**——`opener:default` 含 `allow-reveal-item-in-dir`，**无 path scope**（ACL manifest `allow=[]`）。前端搜证当前未使用该命令，但它是独立于 `open-path` 的"在文件管理器中显示任意路径"能力，需单独评估是否要限制范围（潜在 XSS → 信息泄露面）。
+- **Phase 6: `SkillsPanel` 前端 `openPath` 迁移到 Rust 命令**——彻底移除前端 opener path 依赖，随之可考虑连 `$APPDATA/**` 也摘除（届时 `opener:allow-open-path` 整条可下线）。触发条件：便携模式边缘 case 需要正面解决时。
+- **⏳ 补验（非“已验证”）：解锁屏幕后补 GUI 点击验证**——C2a A1 commit 时屏幕锁定，GUI 点击级验证未执行。解钁/保持交互后补跑两项：
+  1. `SkillsPanel` → 点“打开目录”→ 应打开 `$APPDATA/skills`（不被 scope 拦）
+  2. 便携模式 exports 打开 → 确认走 Rust `open_file_path`、不被 scope 拦
+  —— 补验前，该两项状态为“运行时验证部分完成”（见 commit message）。
 
 ### Phase 1 — critical（24 条，非 vendor 17 条）
 

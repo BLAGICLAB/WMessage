@@ -525,19 +525,30 @@ mod f2_copy_file_tests {
 
 #[cfg(test)]
 mod capability_tests {
-    /// opener:allow-open-path 不得裸 "**" 通配（bot prompt 注入可诱导
-    /// 打开任意路径）。收敛为 $APPDATA/** + $HOME/**：数据目录（exports/skills）
-    /// 与用户主目录内文件放行，/etc/passwd 等系统路径默认拒绝。
+    /// opener:allow-open-path **严格限定为 `$APPDATA/**`**（app-scoped，非整个 app data 根）。
+    ///
+    /// 历史：dcb9275（2026-08-19）把裸 `**` 收敛为 `$APPDATA/** + $HOME/**`——当时主窗
+    /// openPath 还用于打开任务绑定文件（任意用户路径），故保留 `$HOME/**`。
+    /// 5eb0a27（2026-09-04）把任务卡/工作区打开绑定文件改走 Rust `open_file_path`，
+    /// 主窗 openPath 不再是任务绑定文件通路。
+    /// OCR C2a finding #3：`$HOME/**` 使 XSS 后可打开 `~/.ssh` 等敏感文件。
+    /// 现摘除 `$HOME/**`——全仓唯一前端 `openPath()` 调用点（SkillsPanel:91）只打开
+    /// `$APPDATA/skills`，零功能成本。
+    ///
+    /// 关键语义（依据 Tauri 2.11.5 path/mod.rs:141-143）：`$APPDATA` **不是**整个 app data
+    /// 根，而是 `Data/{bundle_identifier}` = 本 app 专属子目录（macOS =
+    /// `~/Library/Application Support/com.renshi.wmessage`）——所以 `$APPDATA/**` 已是窄范围，
+    /// 无需再收窄（OCR finding #2 因此判定为误报）。
+    ///
     /// 本测试锁死 capabilities/default.json 防回退。
     #[test]
-    fn opener_open_path_scope_is_not_bare_wildcard() {
+    fn opener_path_scope_is_appdata_only() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/capabilities/default.json");
         let text = std::fs::read_to_string(path).expect("capabilities/default.json 必须可读");
         let json: serde_json::Value = serde_json::from_str(&text).expect("必须是合法 JSON");
         let perms = json["permissions"]
             .as_array()
             .expect("permissions 必须是数组");
-        // 找到 opener:allow-open-path 对象项
         let open_path = perms
             .iter()
             .find_map(|p| (p["identifier"] == "opener:allow-open-path").then_some(p))
@@ -548,28 +559,29 @@ mod capability_tests {
             .iter()
             .filter_map(|e| e["path"].as_str())
             .collect::<Vec<_>>();
-        assert!(!allow.is_empty(), "allow 列表不得为空");
+
+        // 1. 严格等同 `[$APPDATA/**]`——多一条少一条都失败
+        assert_eq!(
+            allow,
+            vec!["$APPDATA/**"],
+            "opener:allow-open-path scope 必须严格等于 [$APPDATA/**]（app-scoped，防 XSS 后打开 ~/.ssh 等敏感路径）。如需新加安全 prefix，先在测试 doc + plan 里说明理由再改。"
+        );
+
+        // 2. 显式断言 $HOME 不在 scope 内（防未来有人加回）
+        assert!(
+            !allow.iter().any(|p| p.starts_with("$HOME")),
+            "$HOME/** 不得出现（OCR C2a finding #3：XSS 后可打开 ~/.ssh）: {allow:?}"
+        );
+
+        // 3. 禁裸通配 / 根目录——单条 scope 项 == "**"/"/"|"/*" 即违规
+        //    （注意 $APPDATA/** 包含 ** 字串但不是整条 == "**"，所以不误伤）
         assert!(
             !allow.iter().any(|p| *p == "**" || *p == "/" || *p == "/*"),
             "禁止裸通配/根目录全量放行: {allow:?}"
         );
-        // 每个 allow 根必须落在受控变量内（数据目录 / 用户主目录）
-        for p in &allow {
-            assert!(
-                p.starts_with("$APPDATA/") || p.starts_with("$HOME/"),
-                "allow 根必须是 $APPDATA 或 $HOME: {p}"
-            );
-        }
-        // 验收：${dataDir}/exports/foo.pdf 允许（$APPDATA/** 覆盖数据目录）；
-        // /etc/passwd 拒绝（不在任何 allow 根之下 → 默认 deny）
-        assert!(
-            allow.contains(&"$APPDATA/**"),
-            "必须放行数据目录（含 exports/skills）: {allow:?}"
-        );
-        let passwd_covered = allow
-            .iter()
-            .any(|p| "/etc/passwd".starts_with(p.trim_end_matches("**").trim_end_matches('/')));
-        assert!(!passwd_covered, "/etc/passwd 不得被任何 allow 覆盖");
+        // 注：早期版本有一段 "/etc/passwd 与 ~/.ssh 不被覆盖" 的循环
+        // (lib.rs:582，OCR re-review low #1)——用 scope 变量符号比对已解析路径，
+        // 永远返回 false，断言恒过，等同 noop。删掉不写，避免"假安全感测试"。
     }
 }
 
