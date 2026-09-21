@@ -56,6 +56,8 @@ pub enum CommandErrorCode {
     TaskInvalidState,
     #[serde(rename = "INVALID_ARGUMENT")]
     InvalidArgument,
+    #[serde(rename = "INVALID_WORKSPACE_LINK_KIND")]
+    InvalidWorkspaceLinkKind,
     #[serde(rename = "DB_ERROR")]
     DbError,
     #[serde(rename = "IO_ERROR")]
@@ -96,6 +98,7 @@ impl CommandErrorCode {
         Self::TaskNotFound,
         Self::TaskInvalidState,
         Self::InvalidArgument,
+        Self::InvalidWorkspaceLinkKind,
         Self::DbError,
         Self::IoError,
         Self::UnknownTool,
@@ -124,6 +127,7 @@ impl CommandErrorCode {
             Self::TaskNotFound => "TASK_NOT_FOUND",
             Self::TaskInvalidState => "TASK_INVALID_STATE",
             Self::InvalidArgument => "INVALID_ARGUMENT",
+            Self::InvalidWorkspaceLinkKind => "INVALID_WORKSPACE_LINK_KIND",
             Self::DbError => "DB_ERROR",
             Self::IoError => "IO_ERROR",
             Self::UnknownTool => "UNKNOWN_TOOL",
@@ -181,6 +185,15 @@ pub enum CommandError {
         value: String,
         reason: String,
     },
+    /// 工作区链接 kind 非法（写入侧 fail-closed；白名单 {url,file,folder}）
+    InvalidWorkspaceLinkKind {
+        /// 实际收到的 kind 值
+        kind: String,
+        /// 来源命令（workspace_upsert / workspace_import_merge）
+        source: String,
+        /// 出错的链接目标（定位用）
+        link: String,
+    },
     /// 数据库错误
     DbError(String),
     /// IO 错误
@@ -234,6 +247,7 @@ impl CommandError {
             Self::TaskNotFound(_) => CommandErrorCode::TaskNotFound,
             Self::TaskInvalidState { .. } => CommandErrorCode::TaskInvalidState,
             Self::InvalidArgument { .. } => CommandErrorCode::InvalidArgument,
+            Self::InvalidWorkspaceLinkKind { .. } => CommandErrorCode::InvalidWorkspaceLinkKind,
             Self::DbError(_) => CommandErrorCode::DbError,
             Self::IoError(_) => CommandErrorCode::IoError,
             Self::UnknownTool(_) => CommandErrorCode::UnknownTool,
@@ -265,6 +279,8 @@ impl CommandError {
             // 业务状态拒绝：用户可修正状态后重试（等执行完 / 取消完成 / 恢复归档）
             Self::TaskInvalidState { .. } => true,
             Self::InvalidArgument { .. } => true,
+            // 用户可修正 kind 后重试
+            Self::InvalidWorkspaceLinkKind { .. } => true,
             Self::DbError(_) => false,
             Self::IoError(_) => false,
             Self::UnknownTool(_) => false,
@@ -302,6 +318,9 @@ impl CommandError {
             } => {
                 format!("参数校验失败：{field}={value}（{reason}）")
             }
+            Self::InvalidWorkspaceLinkKind { kind, source, link } => format!(
+                "工作区链接类型非法：kind={kind}（来源 {source}，链接 {link}）；仅允许 url/file/folder"
+            ),
             Self::DbError(s) => format!("数据库错误：{s}"),
             Self::IoError(s) => format!("文件 IO 错误：{s}"),
             Self::UnknownTool(name) => format!("未知工具：{name}"),
@@ -473,6 +492,12 @@ mod tests {
                 reason: "r".into(),
             }
             .code(),
+            CommandError::InvalidWorkspaceLinkKind {
+                kind: "app".into(),
+                source: "workspace_upsert".into(),
+                link: "/x".into(),
+            }
+            .code(),
             CommandError::DbError("x".into()).code(),
             CommandError::IoError("x".into()).code(),
             CommandError::UnknownTool("x".into()).code(),
@@ -504,6 +529,28 @@ mod tests {
                 "code {code:?} 未登记进 CommandErrorCode::ALL"
             );
         }
+    }
+
+    /// OCR C2b #2 簇B：新 code 的 code()/recoverable/message/序列化契约。
+    #[test]
+    fn invalid_workspace_link_kind_contract() {
+        let e = CommandError::InvalidWorkspaceLinkKind {
+            kind: "app".into(),
+            source: "workspace_upsert".into(),
+            link: "/tmp/x.app".into(),
+        };
+        assert_eq!(e.code(), CommandErrorCode::InvalidWorkspaceLinkKind);
+        assert_eq!(e.code().as_str(), "INVALID_WORKSPACE_LINK_KIND");
+        assert!(e.is_recoverable(), "用户可修正 kind 后重试");
+        let m = e.message();
+        assert!(
+            m.contains("app") && m.contains("workspace_upsert") && m.contains("/tmp/x.app"),
+            "message 必须含 kind/source/link：{m}"
+        );
+        assert!(m.contains("url/file/folder"), "message 应含白名单提示：{m}");
+        let j = serde_json::to_value(&e).unwrap();
+        assert_eq!(j["code"], "INVALID_WORKSPACE_LINK_KIND");
+        assert_eq!(j["recoverable"], true);
     }
 
     #[test]

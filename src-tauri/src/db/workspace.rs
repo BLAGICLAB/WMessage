@@ -70,7 +70,37 @@ pub fn load_workspace(conn: &rusqlite::Connection) -> Result<Vec<WorkspaceItem>,
     Ok(items)
 }
 
+/// 允许的工作区链接 kind（写入侧白名单，fail-closed）。
+/// 消费侧 `bot_skills::files::collect_openable_paths` 用同一集合语义（纵深防御）。
+pub const ALLOWED_LINK_KINDS: [&str; 3] = ["url", "file", "folder"];
+
+/// 写入侧校验：任意链接 kind 不在白名单 → 返回可辨识错误 `InvalidWorkspaceLinkKind`
+/// （带 kind 值 + 来源 + 目标），**不静默丢、不降级 url**。fail-closed。
+fn validate_link_kinds(items: &[WorkspaceItem], source: &str) -> Result<(), CommandError> {
+    for it in items {
+        for l in &it.links {
+            if !ALLOWED_LINK_KINDS.contains(&l.kind.as_str()) {
+                return Err(CommandError::InvalidWorkspaceLinkKind {
+                    kind: l.kind.clone(),
+                    source: source.to_string(),
+                    link: l.target_uri.clone(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 写入工作区（校验后落库）。校验失败返回 `InvalidWorkspaceLinkKind`（fail-closed）。
 pub fn upsert_workspace(
+    conn: &mut rusqlite::Connection,
+    items: &[WorkspaceItem],
+) -> Result<(), CommandError> {
+    validate_link_kinds(items, "workspace_upsert")?;
+    upsert_workspace_unchecked(conn, items).map_err(CommandError::from)
+}
+
+fn upsert_workspace_unchecked(
     conn: &mut rusqlite::Connection,
     items: &[WorkspaceItem],
 ) -> Result<(), String> {
@@ -177,7 +207,16 @@ pub async fn workspace_export(app: AppHandle, path: String) -> CommandResult<usi
     .map_err(|e| CommandError::from(format!("工作区导出线程 join 失败：{e}")))?
 }
 
+/// 导入合并（校验后落库）。校验失败返回 `InvalidWorkspaceLinkKind`（fail-closed）。
 pub fn workspace_import_merge(
+    conn: &mut rusqlite::Connection,
+    ext: &[WorkspaceItem],
+) -> Result<usize, CommandError> {
+    validate_link_kinds(ext, "workspace_import_merge")?;
+    workspace_import_merge_unchecked(conn, ext).map_err(CommandError::from)
+}
+
+fn workspace_import_merge_unchecked(
     conn: &mut rusqlite::Connection,
     ext: &[WorkspaceItem],
 ) -> Result<usize, String> {

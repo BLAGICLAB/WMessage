@@ -138,7 +138,7 @@ describe("hintForCode 全覆盖（每个 code 必须有专属 hint）", () => {
   // 后端加新 code 时这里自动跟上，本测试迫使前端同步补 hint
   //（防再次出现 TASK_INVALID_STATE 落默认分支的漏配）。
   it("ALL_COMMAND_ERROR_CODES 全部有专属 hint（💡 行），无 code 落默认分支", () => {
-    expect(ALL_COMMAND_ERROR_CODES.length).toBe(23);
+    expect(ALL_COMMAND_ERROR_CODES.length).toBe(24);
     for (const code of ALL_COMMAND_ERROR_CODES) {
       alertSpy.mockClear();
       handleCommandError(ce(code, false));

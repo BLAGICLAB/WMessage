@@ -317,6 +317,30 @@ r3 high（delete 范围静默扩大）。
 
 **待办（簇 B 前置）**：存量 workspace-link kind 统计，出数字后再动簇 B（B2 白名单）。
 
+#### C2b-2（簇 B：workspace-link kind 白名单）—— 已 commit（2026-09-21）
+
+**收**：#2 high（`l.kind != "url"` 黑名单漏闸 → app/command/未来 kind 经 opener = RCE）。
+
+**写入侧（fail-closed）**：新增 `CommandError::InvalidWorkspaceLinkKind{kind,source,link}`
+（code `INVALID_WORKSPACE_LINK_KIND`，error.rs「变体+ALL+前端同步」三步全做）；
+`db::workspace::validate_link_kinds` 在 `upsert_workspace` / `workspace_import_merge`
+入口校验（事务前 → 混合批次零写入）。
+
+**消费侧（集合判断）**：`files::collect_openable_paths` 的 `!= "url"` 改为
+`link_kind_contributes_path(kind)`（仅 {file,folder} 贡献路径）。
+
+**存量统计（可复核）**：2026-09-21 20:25 前后 sqlite 只读 `SELECT links FROM workspace_items`：
+安装版 DB 0 行 / dev 便携 DB 0 行；workspace_items 无 deleted/archived 列 → 全量计入。
+→ 存量 0 / app·command 0 → B2 无迁移风险。
+
+**OCR**：r1（6e2f7eff）3 high（同根因：新 code 漏登记 `CommandErrorCode::ALL`+单测 every）→ 修；
+r2（364e2749）0 new high → 收口。
+
+**follow-up 登记（不修）**：
+- medium `files.rs:4`：消费侧字面集与 `db::workspace::ALLOWED_LINK_KINDS` 重复 → 应引用共用常量
+- low `errorHandler.ts`：hint「删除后重新添加」与 `recoverable=true` 语义需对齐
+- medium/low `db/mod.rs` 测试：`mk` 闭包硬编码 link id `"l1"` / target_uri `/tmp/x.app` → 测试数据语义不一致
+
 ### Phase 1 — critical（24 条，非 vendor 17 条）
 
 按文件聚类，4 个批次：

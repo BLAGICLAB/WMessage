@@ -38,6 +38,7 @@ export type CommandErrorCode =
   | "TASK_NOT_FOUND"
   | "TASK_INVALID_STATE"
   | "INVALID_ARGUMENT"
+  | "INVALID_WORKSPACE_LINK_KIND"
   | "DB_ERROR"
   | "IO_ERROR"
   | "UNKNOWN_TOOL"
@@ -64,6 +65,7 @@ export const ALL_COMMAND_ERROR_CODES: readonly CommandErrorCode[] = [
   "TASK_NOT_FOUND",
   "TASK_INVALID_STATE",
   "INVALID_ARGUMENT",
+  "INVALID_WORKSPACE_LINK_KIND",
   "DB_ERROR",
   "IO_ERROR",
   "UNKNOWN_TOOL",
@@ -124,6 +126,8 @@ function hintForCode(code: string): string | null {
       return "任务当前状态不允许该操作（执行中/已完成/已归档），请调整后重试";
     case "INVALID_ARGUMENT":
       return "请检查输入参数";
+    case "INVALID_WORKSPACE_LINK_KIND":
+      return "工作区链接类型不受支持（仅 url/file/folder），请删除后重新添加";
     case "SKILL_LOAD_FAILED":
     case "SKILL_NOT_INSTALLED":
       return "请先到设置页导入对应技能";

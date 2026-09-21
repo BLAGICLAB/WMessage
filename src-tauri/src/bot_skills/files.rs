@@ -1,6 +1,14 @@
 use crate::error::{CommandError, CommandResult};
 use tauri::AppHandle;
 
+/// 消费侧 kind 白名单（可测内核）：仅 {file, folder} 链接目标纳入可打开/删除集合
+/// （url 不是路径；app/command/未来 kind 一律不纳入）。与写入侧
+/// `db::workspace::ALLOWED_LINK_KINDS` 同集——**集合判断，不是 `!= "url"` 黑名单**
+/// （黑名单会继续漏未来 kind = OCR C2b #2 finding 的原始问题）。
+fn link_kind_contributes_path(kind: &str) -> bool {
+    matches!(kind, "file" | "folder")
+}
+
 /// 收集「允许直接打开/删除」的**绑集**路径（canonical form）：
 /// 任务卡绑定文件/文件夹（含回收站卡——彻底删除场景需要）+ 工作区链接目标。
 /// **注意**：AI_Gen_Files 目录**不在**本集合内——由 `canonical_if_openable` 的 gen_dir
@@ -43,7 +51,8 @@ async fn collect_openable_paths(app: &AppHandle) -> std::collections::HashSet<St
             Ok(items) => {
                 for it in items {
                     for l in it.links {
-                        if l.kind != "url" {
+                        // 消费侧白名单（纵深防御，OCR C2b #2）：见 link_kind_contributes_path。
+                        if link_kind_contributes_path(&l.kind) {
                             raw.push(l.target_uri);
                         }
                     }
@@ -551,6 +560,22 @@ mod tests {
         assert!(
             !path_openable_in(p, &set(&[]), None),
             "delete 侧（gen_dir=None）不得放行 gen_dir 内文件"
+        );
+    }
+
+    /// OCR C2b #2 簇B：消费侧是**白名单集合判断**，不是 `!= "url"` 黑名单——
+    /// 未来 kind（"future_foo"）必须被拒（黑名单实现会放行它）。
+    #[test]
+    fn consumer_link_kind_is_whitelist_not_blacklist() {
+        assert!(link_kind_contributes_path("file"));
+        assert!(link_kind_contributes_path("folder"));
+        assert!(!link_kind_contributes_path("url"), "url 不是路径");
+        assert!(!link_kind_contributes_path("app"));
+        assert!(!link_kind_contributes_path("command"));
+        // 关键：未来 kind 必须被拒（若实现是 `!= "url"` 黑名单，这里会是 true）
+        assert!(
+            !link_kind_contributes_path("future_foo"),
+            "未来 kind 必须被白名单拒（不是 != url 黑名单）"
         );
     }
 }

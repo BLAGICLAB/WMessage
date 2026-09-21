@@ -1257,6 +1257,157 @@ mod ws_tests {
         fs::remove_dir_all(&dir).ok();
     }
 
+    /// OCR C2b #2 簇B：写入侧 fail-closed —— upsert 遇非法 kind 返回可辨识错误
+    /// InvalidWorkspaceLinkKind（带 kind / 来源 / 目标），不静默丢、不降级 url。
+    /// 白名单内的 kind（url/file/folder）正常落库。
+    #[test]
+    fn upsert_rejects_invalid_link_kind() {
+        let dir = std::env::temp_dir().join(format!("wm-ws-badkind-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let mut conn = rusqlite::Connection::open(dir.join("t.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE workspace_items (
+               id TEXT PRIMARY KEY, title TEXT NOT NULL, collapsed INTEGER,
+               links TEXT NOT NULL, ord REAL, updated_at INTEGER);",
+        )
+        .unwrap();
+        let mk = |id: &str, kind: &str| WorkspaceItem {
+            id: id.into(),
+            title: "T".into(),
+            collapsed: None,
+            links: vec![WorkspaceLink {
+                id: "l1".into(),
+                display_name: "x".into(),
+                target_uri: "/tmp/x.app".into(),
+                kind: kind.into(),
+            }],
+            order: None,
+            updated_at: Some(1),
+        };
+
+        // 危险 kind + 未来 kind 全部拒（fail-closed）
+        for bad in ["app", "command", "future_foo"] {
+            match upsert_workspace(&mut conn, &[mk(&format!("w-{bad}"), bad)]).unwrap_err() {
+                crate::error::CommandError::InvalidWorkspaceLinkKind { kind, source, link } => {
+                    assert_eq!(kind, bad);
+                    assert_eq!(source, "workspace_upsert");
+                    assert_eq!(link, "/tmp/x.app");
+                }
+                other => panic!("应为 InvalidWorkspaceLinkKind，实得 {other:?}"),
+            }
+        }
+        // 白名单内的 kind 正常落库
+        for ok in ["url", "file", "folder"] {
+            upsert_workspace(&mut conn, &[mk(&format!("ok-{ok}"), ok)]).unwrap();
+        }
+        assert_eq!(load_workspace(&conn).unwrap().len(), 3);
+
+        // 混合批次（合法 + 非法同批）：整批拒绝且**零写入** —— 直接证明
+        // validate_link_kinds 在事务之前跑（否则合法项会先落库）。
+        let before = load_workspace(&conn).unwrap().len();
+        let mixed = vec![mk("ok-mixed", "file"), mk("bad-mixed", "app")];
+        assert!(matches!(
+            upsert_workspace(&mut conn, &mixed),
+            Err(crate::error::CommandError::InvalidWorkspaceLinkKind { .. })
+        ));
+        assert_eq!(
+            load_workspace(&conn).unwrap().len(),
+            before,
+            "混合批次不得部分写入（fail-closed 必须在事务之前）"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// OCR C2b #2 簇B：import 路径同样 fail-closed（workspace_import_merge），
+    /// 且拒绝时不产生任何写入。
+    #[test]
+    fn import_merge_rejects_invalid_link_kind() {
+        let dir = std::env::temp_dir().join(format!("wm-ws-impbad-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let mut conn = rusqlite::Connection::open(dir.join("t.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE workspace_items (
+               id TEXT PRIMARY KEY, title TEXT NOT NULL, collapsed INTEGER,
+               links TEXT NOT NULL, ord REAL, updated_at INTEGER);",
+        )
+        .unwrap();
+        let item = WorkspaceItem {
+            id: "w1".into(),
+            title: "T".into(),
+            collapsed: None,
+            links: vec![WorkspaceLink {
+                id: "l1".into(),
+                display_name: "x".into(),
+                target_uri: "/tmp/evil.command".into(),
+                kind: "command".into(),
+            }],
+            order: None,
+            updated_at: Some(1),
+        };
+        match workspace_import_merge(&mut conn, &[item]).unwrap_err() {
+            crate::error::CommandError::InvalidWorkspaceLinkKind { kind, source, link } => {
+                assert_eq!(kind, "command");
+                assert_eq!(source, "workspace_import_merge");
+                assert_eq!(link, "/tmp/evil.command");
+            }
+            other => panic!("应为 InvalidWorkspaceLinkKind，实得 {other:?}"),
+        }
+        // fail-closed：无任何写入
+        assert!(load_workspace(&conn).unwrap().is_empty());
+
+        // 混合批次（合法 + 非法）针对**已有行**：整批拒绝且不污染/删除既有数据。
+        // 先种一行合法数据，再交混合批次，验证拒绝是全局的（在事务之前）。
+        let seed = WorkspaceItem {
+            id: "seed".into(),
+            title: "seed".into(),
+            collapsed: None,
+            links: vec![WorkspaceLink {
+                id: "l0".into(),
+                display_name: "s".into(),
+                target_uri: "/tmp/ok.txt".into(),
+                kind: "file".into(),
+            }],
+            order: None,
+            updated_at: Some(1),
+        };
+        workspace_import_merge(&mut conn, &[seed]).unwrap();
+        assert_eq!(load_workspace(&conn).unwrap().len(), 1);
+        let ok_item = WorkspaceItem {
+            id: "w-ok".into(),
+            title: "ok".into(),
+            collapsed: None,
+            links: vec![WorkspaceLink {
+                id: "l1".into(),
+                display_name: "x".into(),
+                target_uri: "/tmp/ok.txt".into(),
+                kind: "file".into(),
+            }],
+            order: None,
+            updated_at: Some(2),
+        };
+        let bad_item = WorkspaceItem {
+            id: "w-bad".into(),
+            title: "bad".into(),
+            collapsed: None,
+            links: vec![WorkspaceLink {
+                id: "l2".into(),
+                display_name: "b".into(),
+                target_uri: "/tmp/evil.command".into(),
+                kind: "command".into(),
+            }],
+            order: None,
+            updated_at: Some(3),
+        };
+        assert!(matches!(
+            workspace_import_merge(&mut conn, &[ok_item, bad_item]),
+            Err(crate::error::CommandError::InvalidWorkspaceLinkKind { .. })
+        ));
+        let after = load_workspace(&conn).unwrap();
+        assert_eq!(after.len(), 1, "混合批次不得合并任何行（fail-closed）");
+        assert_eq!(after[0].id, "seed");
+        fs::remove_dir_all(&dir).ok();
+    }
+
     /// upsert_workspace 中途失败必须整体回滚——已写入的前序行不得落库。
     /// 用 BEFORE INSERT trigger 在第 2 条注入失败（RAISE ABORT），模拟「中途 panic/磁盘错」。
     #[test]
