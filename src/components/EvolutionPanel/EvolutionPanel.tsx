@@ -22,6 +22,7 @@ import {
   type ChangeRecord,
   type ProposalEntry,
   type ProposalStatus,
+  type ProposalTarget,
   IMPACT_LABEL,
   LAYER_LABEL,
   STATUS_LABEL,
@@ -455,7 +456,7 @@ function ChangeRow({
 }
 
 /** 格式化 ProposalTarget 为可读字符串 */
-function formatTarget(t: import("./types").ProposalTarget): string {
+function formatTarget(t: ProposalTarget): string {
   switch (t.kind) {
     case "prompt_section":
       return `prompt_section: ${t.name}`;

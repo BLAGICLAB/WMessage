@@ -16,7 +16,7 @@ export type EvolutionLayer =
 
 export type ImpactLevel = "low" | "medium" | "high";
 
-export type ProposalOrigin =
+type ProposalOrigin =
   | "consolidation_reflection"
   | "scheduler_audit"
   | "user_triggered";
@@ -45,7 +45,7 @@ export interface ProposalEntry {
   status: ProposalStatus;
 }
 
-export type ChangeStatus =
+type ChangeStatus =
   | "pending"
   | "shadowing"
   | "shadow_passed"
@@ -56,14 +56,14 @@ export type ChangeStatus =
   | "rolled_back"
   | "expired";
 
-export type ApprovalSource =
+type ApprovalSource =
   | "pending"
   | "auto_applied"
   | "human_approved"
   | "system_rejected"
   | "human_rejected";
 
-export interface EvalResult {
+interface EvalResult {
   task_success_rate: number;
   tool_call_efficiency: number;
   behavior_deviation: number;
