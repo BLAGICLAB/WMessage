@@ -10,7 +10,7 @@ src-tauri/src/
 ├── lib.rs (867)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
 ├── app_state.rs (255)   运行期全局状态单一入口 `AppState`（lib.rs setup `app.manage` 注入）：
 │                        8 张执行期表 + 「全局状态总表」文档；详见 §2.1
-├── consts.rs            前后端共享常量（app_consts 命令）
+│                        （原 consts.rs 已并入 app_consts 命令、本节不列）
 ├── error.rs             CommandError 结构化错误（code=CommandErrorCode 枚举/message/recoverable），全命令统一
 ├── paths.rs             数据目录解析 + 便携模式判定
 ├── audit.rs             审计事件写 bot.log（audit_event! 宏、write_event、error_kv 带 code）
@@ -19,16 +19,31 @@ src-tauri/src/
 ├── mutation.rs          任务变更来源枚举 MutationOrigin（Bot/Api/Widget…），tasks-updated 事件分流
 │
 │─ 数据层
-├── db.rs (2693)         SQLite（wmessage.db）：Task/Subtask/TaskFile、会话与聊天记录、workspace、
-│                        bind_files、导入导出、data_dir()/gen_dir()（AI_Gen_Files）
-├── migration.rs         归档任务绑定文件按 cleanup-rules.json 规则迁移清理
+├── db/                  SQLite（wmessage.db）+ 迁移 + 产物 + 工作区（按表分文件）
+│   ├── mod.rs          模块声明 + 公共 re-export
+│   ├── tasks.rs         Task / Subtask / TaskFile
+│   ├── bot_sessions.rs   BotSession / 会话归属
+│   ├── bot_history.rs   会话聊天记录
+│   ├── migrations.rs     数据库迁移（历史顶层 migration.rs 已并入）
+│   ├── paths.rs          data_dir()/gen_dir()（AI_Gen_Files）
+│   ├── skill_out.rs      技能产物输出
+│   └── workspace.rs      workspace / bind_files
 ├── task_out.rs          对外 TaskOut（Task flatten + status），api/api_handlers 共享
 │
 │─ 本地 HTTP API（127.0.0.1 微服务，与 bot 解耦，只操作任务数据）
 ├── api.rs               trait TaskStore + MemStore(测试) + TauriStore(生产)
 ├── api_server.rs        HTTP server 生命周期、端口绑定、EventHub（SSE 中枢）
 ├── api_auth.rs          Bearer token（runtime/flags/api-token.txt）、开关持久化（runtime/flags/api-enabled.flag）
-├── api_handlers.rs      REST /api/tasks CRUD + SSE + api_start/stop 等命令
+├── api_handlers/        REST /api/tasks CRUD + SSE + api_start/stop 等命令
+│   ├── mod.rs          模块声明 + 路由分发
+│   ├── handlers.rs      HTTP 路由层
+│   ├── commands.rs      tauri 命令层
+│   ├── body.rs          请求/响应模型
+│   ├── sse.rs           SSE 事件流
+│   ├── ratelimit.rs     限流
+│   ├── util.rs          工具函数
+│   ├── validate.rs      入参校验
+│   └── types.rs          共享类型
 │
 │─ Bot 核心（编排 → 决策 → 工具分发）
 ├── bot_chat.rs          入口编排：bot_chat / bot_compact / bot_execute_task 命令；五步主流程；
@@ -52,8 +67,14 @@ src-tauri/src/
 │                        MUTATING_TOOLS（mutating_tools:529）/ dispatch 查表三处全派生
 ├── bot/dispatch.rs (237)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+
 │                        pre_execute 洋葱入口 + skill_on_step 钩子 + tool.return 结构化审计
-├── bot/config.rs (1620)   BotConfig/ApiProvider/PermMode/KeySlot（bot-config.json，key 走系统 keyring）；
-│                        bot_get_config/bot_set_config；audit_log
+├── bot/config/          BotConfig/ApiProvider/PermMode/KeySlot（bot-config.json，key 走系统 keyring）；
+│   ├── mod.rs          模块声明
+│   ├── schema.rs        bot-config.json schemaVersion
+│   ├── types.rs         ApiProvider / PermMode / KeySlot
+│   ├── io.rs            配置读写 + 默认值
+│   ├── keyring.rs        API key 走系统 keyring
+│   ├── commands.rs      bot_get_config / bot_set_config
+│   └── audit.rs         audit_log
 ├── bot/tools.rs (1589)    28 个 tool_* 实现（任务卡 CRUD / 子任务 / 文档生成 / 联网 / 时间 / 记忆转发）
 ├── bot_anthropic.rs     Anthropic 协议适配（纯函数）：OpenAI ↔ /v1/messages 双向转换、auth 头、prompt caching
 ├── bot_plan.rs          PREVR 动态规划：复杂任务先生成计划注入 prompt，失败 Replan（≤2 次）
@@ -283,7 +304,7 @@ flowchart LR
 
     subgraph 本地 API 与 bot 解耦
         H1[api_server 127.0.0.1<br/>Bearer token] --> H2[api_handlers<br/>/api/tasks CRUD + SSE]
-        H2 --> H3[(db.rs SQLite)]
+        H2 --> H3[(db/ SQLite)]
     end
 
     BC[bot_chat 主流程] --> M1
@@ -304,3 +325,170 @@ flowchart TD
     底座 -.-> 决策
     底座 -.-> 工具
 ```
+
+## 6.4 源文件清单（完整列表，由 `tests-audit/audit_module_map.py` 对拍）
+
+`src-tauri/src/` 实际 136 个 `.rs` 文件（按模块分组）。本节由 `audit_module_map.py`
+通过相对路径或文件名提及强制要求；任何新增模块请同步登记。
+
+### 顶层
+- `api.rs`
+- `api_auth.rs`
+- `api_server.rs`
+- `app_state.rs`
+- `audit.rs`
+- `bot.rs`
+- `bot_anthropic.rs`
+- `bot_artifacts.rs`
+- `bot_chat.rs`
+- `bot_fs.rs`
+- `bot_model_loop.rs`
+- `bot_plan.rs`
+- `bot_py.rs`
+- `bot_scheduler.rs`
+- `bot_slash.rs`
+- `bot_web.rs`
+- `due_notify.rs`
+- `error.rs`
+- `exec_steps.rs`
+- `intent_router.rs`
+- `lib.rs`
+- `main.rs`
+- `middleware.rs`
+- `mutation.rs`
+- `ocr.rs`
+- `paths.rs`
+- `profile.rs`
+- `prompt_builder.rs`
+- `task_out.rs`
+- `tool_guard.rs`
+
+### `api_handlers/`
+- `api_handlers/body.rs`
+- `api_handlers/commands.rs`
+- `api_handlers/handlers.rs`
+- `api_handlers/mod.rs`
+- `api_handlers/ratelimit.rs`
+- `api_handlers/sse.rs`
+- `api_handlers/types.rs`
+- `api_handlers/util.rs`
+- `api_handlers/validate.rs`
+
+### `bin/`
+- `bin/eval_run.rs`
+- `bin/observe_run.rs`
+
+### `bot/`
+- `bot/config/audit.rs`
+- `bot/config/commands.rs`
+- `bot/config/io.rs`
+- `bot/config/keyring.rs`
+- `bot/config/mod.rs`
+- `bot/config/schema.rs`
+- `bot/config/types.rs`
+- `bot/dispatch.rs`
+- `bot/format.rs`
+- `bot/registry.rs`
+- `bot/tools.rs`
+
+### `bot_skills/`
+- `bot_skills/files.rs`
+- `bot_skills/manage.rs`
+- `bot_skills/mod.rs`
+- `bot_skills/parse.rs`
+- `bot_skills/runtime.rs`
+- `bot_skills/scheduler.rs`
+- `bot_skills/state.rs`
+- `bot_skills/vars.rs`
+
+### `db/`
+- `db/bot_history.rs`
+- `db/bot_sessions.rs`
+- `db/migrations.rs`
+- `db/mod.rs`
+- `db/paths.rs`
+- `db/skill_out.rs`
+- `db/tasks.rs`
+- `db/workspace.rs`
+
+### `eval/`
+- `eval/case.rs`
+- `eval/config.rs`
+- `eval/feedback.rs`
+- `eval/metrics.rs`
+- `eval/mod.rs`
+- `eval/runner.rs`
+- `eval/sampler.rs`
+
+### `evolution/`
+- `evolution/activation.rs`
+- `evolution/apply.rs`
+- `evolution/candidate/conflict.rs`
+- `evolution/candidate/derive.rs`
+- `evolution/candidate/entry.rs`
+- `evolution/candidate/mapping.rs`
+- `evolution/candidate/mod.rs`
+- `evolution/candidate/ttl.rs`
+- `evolution/change/derive.rs`
+- `evolution/change/mod.rs`
+- `evolution/change/record.rs`
+- `evolution/change/status.rs`
+- `evolution/derive.rs`
+- `evolution/emit.rs`
+- `evolution/mod.rs`
+- `evolution/observe/metrics.rs`
+- `evolution/observe/mod.rs`
+- `evolution/observe/shadow.rs`
+- `evolution/observe/stop.rs`
+- `evolution/observe/synthetic.rs`
+- `evolution/panel/commands.rs`
+- `evolution/panel/mod.rs`
+- `evolution/proposal.rs`
+- `evolution/sandbox/io.rs`
+- `evolution/sandbox/kill_switch.rs`
+- `evolution/sandbox/mod.rs`
+- `evolution/sandbox/routing.rs`
+- `evolution/sandbox/shadow.rs`
+- `evolution/trace.rs`
+
+### `memory/`
+- `memory/consolidate.rs`
+- `memory/consolidate/tests.rs`
+- `memory/embed.rs`
+- `memory/mod.rs`
+- `memory/rank.rs`
+- `memory/store.rs`
+- `memory/tests.rs`
+
+### `migration/`
+- `migration/commands.rs`
+- `migration/journal.rs`
+- `migration/mod.rs`
+- `migration/ops.rs`
+- `migration/recovery.rs`
+- `migration/rules.rs`
+- `migration/run.rs`
+- `migration/types.rs`
+
+### `platform/`
+- `platform/copy_file.rs`
+- `platform/mod.rs`
+
+### `prompts/`
+- `prompts/consolidate.rs`
+- `prompts/execute.rs`
+- `prompts/mod.rs`
+- `prompts/planner.rs`
+- `prompts/reflection.rs`
+- `prompts/summary.rs`
+- `prompts/system.rs`
+
+### `py/`
+- `py/audit.rs`
+- `py/commands.rs`
+- `py/document.rs`
+- `py/env.rs`
+- `py/harvest.rs`
+- `py/io.rs`
+- `py/mod.rs`
+- `py/runtime.rs`

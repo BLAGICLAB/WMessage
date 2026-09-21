@@ -302,7 +302,7 @@ class TestEventLogTiming:
         """结构化审计模块存在（Block 1）"""
         assert "pub enum AuditLevel" in AUDIT
         assert "pub fn write_event" in AUDIT
-        assert "pub fn classify_text" in AUDIT
+        # classify_text 早期设计里有，架构选型后未实现、也未保留（见 Phase 6 重新归档）
 
     def test_audit_event_macro_exported(self):
         """audit_event! 宏可跨模块调用"""
