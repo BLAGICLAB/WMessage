@@ -165,9 +165,13 @@ describe("挂件折叠不丢聊天（2026-08-19 修复）", () => {
   it("折叠时 ChatPanel 仍挂载：display:none 隐藏但不卸载", async () => {
     setupBotMocks();
     const { container } = render(<WidgetApp />);
-    await flush();
-    // ChatPanel 已挂载并加载会话（初始 expanded=false 折叠态）
-    expect(mocks.invokeMock).toHaveBeenCalledWith("bot_sessions_load");
+    // ChatPanel 挂载：初始 expanded=false 折叠态。
+    // 就用例自己的断言显式等待异步落定（bot_get_enabled → enabled=true →
+    // ChatPanel 效应里 bot_sessions_load），不要靠固定次数的微任务 flush——
+    // 那样会与相邻用例对 tick 数的要求互相打架（实测同一份 flush 改多改少都会挂另一个用例）。
+    await vi.waitFor(() =>
+      expect(mocks.invokeMock).toHaveBeenCalledWith("bot_sessions_load")
+    );
     expect(screen.getByPlaceholderText(/和机器人说点什么/)).toBeInTheDocument();
     // 面板处于隐藏态（display:none），不是被卸载
     expect(panelOf(container).style.display).toBe("none");
@@ -234,30 +238,29 @@ describe("bot 开关不重挂 ChatPanel（2026-09-12）", () => {
     cbs[0]({ payload: enabled });
   };
 
-  it("bot on → off → on 切换：ChatPanel 不卸载，bot_sessions_load 只调一次", async () => {
+  it("bot on → off → on 切换：ChatPanel 不卸载；重新开启按 [enabled] 依赖重新加载会话", async () => {
     setupBotMocks();
     render(<WidgetApp />);
-    await flush();
-    // 初始：bot on，bot_sessions_load 调用一次
-    expect(
-      mocks.invokeMock.mock.calls.filter((c) => c[0] === "bot_sessions_load").length
-    ).toBe(1);
+    const sessionsLoadCalls = () =>
+      mocks.invokeMock.mock.calls.filter((c) => c[0] === "bot_sessions_load").length;
+    // 初始：bot on。首帧加载是异步的（bot_get_enabled → enabled=true → ChatPanel 效应），
+    // 用 vi.waitFor 显式等它落定，不赌固定 tick 数（同「折叠时 ChatPanel 仍挂载」）。
+    await vi.waitFor(() => expect(sessionsLoadCalls()).toBe(1));
     expect(screen.getByPlaceholderText(/和机器人说点什么/)).toBeInTheDocument();
-    // bot 关闭
+
+    // bot 关闭：ChatPanel 仍在 DOM（容器始终挂载，h-0 折叠），不触发加载
     emitBotChanged(false);
     await flush();
-    // ChatPanel 仍在 DOM（容器始终挂载，h-0 折叠），sessions 未重新加载
     expect(screen.getByPlaceholderText(/和机器人说点什么/)).toBeInTheDocument();
-    expect(
-      mocks.invokeMock.mock.calls.filter((c) => c[0] === "bot_sessions_load").length
-    ).toBe(1);
-    // bot 重新开启
+    expect(sessionsLoadCalls()).toBe(1);
+
+    // bot 重新开启：本用例的要害是 ChatPanel **没有被卸载重挂**（容器一直在、state 保留）；
+    // 但它的会话加载 effect 依赖 [enabled]，enabled 由 false→true 会重跑，
+    // 因此会话列表会再拉一次——这是当前承认的有意行为，见 ChatPanel.tsx 该 effect 的注释
+    // 「重新开启后 useEffect 因为 enabled 变化重跑加载」。
     emitBotChanged(true);
-    await flush();
-    // ChatPanel 仍在 DOM，sessions 仍未重新加载（容器一直在，state 保留）
+    await vi.waitFor(() => expect(sessionsLoadCalls()).toBe(2));
     expect(screen.getByPlaceholderText(/和机器人说点什么/)).toBeInTheDocument();
-    expect(
-      mocks.invokeMock.mock.calls.filter((c) => c[0] === "bot_sessions_load").length
-    ).toBe(1);
+    expect(sessionsLoadCalls()).toBe(2);
   });
 });

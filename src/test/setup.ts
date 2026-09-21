@@ -57,3 +57,26 @@ if (typeof globalThis.crypto.randomUUID !== "function") {
   (globalThis.crypto as any).randomUUID = () =>
     `uuid-${Math.random().toString(36).slice(2)}-${Date.now()}`;
 }
+
+// Node 26 自带 `localStorage` 全局，未传 `--localstorage-file` 时其值为 undefined，
+// 会在 jsdom 环境里遮蔽 jsdom 的实现；theme / WidgetApp 等测试依赖它
+// （beforeEach 里 `localStorage.clear()`）。这里按需补一个内存实现，
+// 覆盖 Web Storage 的最小可用子集。
+if (typeof globalThis.localStorage === "undefined") {
+  const store = new Map<string, string>();
+  const localStorageShim: Storage = {
+    get length() {
+      return store.size;
+    },
+    clear: () => store.clear(),
+    getItem: (key: string) => (store.has(key) ? store.get(key)! : null),
+    key: (index: number) => Array.from(store.keys())[index] ?? null,
+    removeItem: (key: string) => void store.delete(key),
+    setItem: (key: string, value: string) => void store.set(key, String(value)),
+  };
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    writable: true,
+    value: localStorageShim,
+  });
+}
