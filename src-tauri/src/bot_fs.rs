@@ -77,7 +77,10 @@ fn expand_tilde(p: &str) -> PathBuf {
 /// 避免该前缀泄漏给模型/前端（复读回 path 参数虽仍能解析，但易读性差且易困惑模型）。
 /// 仅剥盘符形式（\\?\C:\...）；UNC 形式（\\?\UNC\...）保守起见原样保留。
 /// 非 Windows 平台路径不会有此前缀，天然 no-op。
-fn strip_verbatim(p: PathBuf) -> PathBuf {
+///
+/// `pub(crate)`：C2b-1 起 `bot_skills/files.rs` 的 open/delete 也要把 canonical
+/// 路径交给下游（「操作的就是刚校验的那条路径」），复用本函数而非另造一套前缀逻辑。
+pub(crate) fn strip_verbatim(p: PathBuf) -> PathBuf {
     let stripped = p
         .to_string_lossy()
         .strip_prefix(r"\\?\")

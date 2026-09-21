@@ -828,10 +828,10 @@ export function TodoCardView({
                   setPurgeBusy(true);
                   try {
                     // 多文件绑定：逐个移入废纸篓/回收站
+                    // OCR C2b #4：删 is_dir 参数（trash::delete 内部递归）；Rust IPC 表面只接 path
                     for (const f of boundFiles) {
                       await invoke("delete_bound_file", {
                         path: f.path,
-                        isDir: f.isDir,
                       });
                     }
                     onDelete(task.id);

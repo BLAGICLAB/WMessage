@@ -289,6 +289,34 @@ emit( / listen(  # 事件
   2. 便携模式 exports 打开 → 确认走 Rust `open_file_path`、不被 scope 拦
   —— 补验前，该两项状态为“运行时验证部分完成”（见 commit message）。
 
+#### C2b-1（簇 A：路径校验加固）—— 已 commit（2026-09-21）
+
+**收**：#1 critical（TOCTOU）、#3 high（归一化）、#6 medium（delete 防御）、#4 medium（is_dir 死参数）、
+M1（async 阻塞）、M2（open 用 canonical）、M3（gen_dir 缓存）、H1（delete 二次 re-check，r2 出）、
+r3 high（delete 范围静默扩大）。
+
+**实现要点**：
+- `canonical_string`：canonicalize + Windows 剥 `\\?\`（复用 `bot_fs::strip_verbatim`，已 pub(crate)）
+- `canonical_if_openable`：canonical 命中绑集或落 gen_dir → 返回 canonical 字符串；`path_openable_in` 委托它
+- `recheck_canonical`：紧邻副作用前的二次校验（fail-closed），返回 canonical
+- `open_file_path`：入口 check → 紧邻 open 二次校验 → open **canonical**（M2）；gen_dir 只算一次（M3）
+- `delete_bound_file`：删 is_dir；入口 check + 紧邻 trash::delete 二次校验（H1）；**gen_dir=None**（范围只含绑集）
+- `collect_openable_paths`：canonicalize 批次 move 进 `spawn_blocking_map`（M1）+ DB 失败 audit
+
+**OCR 轮次**：r1 SIGTERM 失败 → r2（1 high = H1，熔断）→ 修 → r3（1 high = delete 范围静默扩大，
+同根因最后一轮）→ 修 → r4（**0 comments**）。证据固化于 `~/.openclaw/cache/ocr-C2b-1-evidence/`。
+
+**注释自查**：全部新增/修改注释逐条对照代码；修正 1 处不实（collect doc 误称集合含 AI_Gen_Files）；
+引用 C1b 的 `capture_pre_ino`/Windows 限制已核实属实。
+
+**follow-up 登记（不修）**：
+- L1：`canonical_string` 用 `to_string_lossy` 丢非 UTF-8 字节（审计日志质量，非安全）
+- L2：部分测试仍传 raw `Some(&gen)` vs `gen_canon`（测试卫生）
+- r3 low：`Path::exists()` 在 check 之前（删除竞态时错误信息误导）
+- r3 low：`canonical_if_openable` 每次重 canonicalize gen_dir（open 一次 IPC 两次）
+
+**待办（簇 B 前置）**：存量 workspace-link kind 统计，出数字后再动簇 B（B2 白名单）。
+
 ### Phase 1 — critical（24 条，非 vendor 17 条）
 
 按文件聚类，4 个批次：
