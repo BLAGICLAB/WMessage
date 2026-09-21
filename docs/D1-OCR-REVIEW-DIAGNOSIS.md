@@ -55,6 +55,9 @@
    **不需要**防收割；harness hard deadline 假设不成立。
 3. **失败判据固化（SOP）**：成功 = exit 0 **且** 产物存在且 >0 字节 **且** log 无 `Round N failed` / `context canceled`；
    「stopping early」= **成功**，不触发 D；自愈噪音（#4/#5/#6）**可忽略**；**失败 → D，禁止从 stdout 捞 findings**。
+   - **docs-only 提交不被 OCR 审 = 预期行为，不触发 D**：若 diff 仅含 `.md` 等被 OCR
+     path/extension 规则过滤的文件 → OCR 跳过（`status=skipped`、`0 file(s) changed`），
+     无代码 diff 可审 = 不存在「缺证据」。验证跑须选**真代码 diff**（如 `ocr review --commit <hash>`）。
 4. 「中途被杀 → 产物全丢」的根治（OCR 侧增量 / 心跳写产物）= **工具改动**，
    登记 follow-up（`C1b-8` / `PROC-1`），下一批评估。**本轮禁改 OCR 代码**。
 
