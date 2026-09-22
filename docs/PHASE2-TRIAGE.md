@@ -1,0 +1,266 @@
+# Phase 2 Triage（docs-only，C5 SOP）
+
+基线：`docs/OCR-CODE-REVIEW-2026-09-21-fullscan.json`，severity=high 且非 vendor = 280 findings。
+本文件仅 triage，**不修代码、不跑 OCR、不 commit 代码**。docs-only 走 PROC-3 免审。
+
+## 0. 执行日志
+
+- [2026-09-22 08:32 CST] 分域表修正：bot* = bot/ 子目录 18 + bot_skills/ 子目录 12 + bot_*.rs 兄弟 16 = 46 条（严格互斥去重）。原"bot 18" = bot/ 子目录 18；原"bot_skills 12" = bot_skills/ 子目录 12；兄弟 16 条散落 9 文件（artifacts 2 + chat 1 + fs 1 + model_loop 4 + plan 1 + py 1 + scheduler 2 + slash 1 + web 5 = 18 raw → 去重 16 唯一）。
+- [2026-09-22 08:32 CST] C5-DB-01 拆簇：DB-01 内部混"丢弃"与"替换默认值"两种模式，按新判据拆为 DB-01a（error-not-propagated，3 条）/ DB-01b（failure-recovery-default-value，2 条）。
+- [2026-09-22 08:32 CST] C5-BT-01 拆簇：BT-01 内部混模式，按新判据拆为 BT-01a（error-not-propagated，5 条）/ BT-01b（failure-recovery-default-value，2 条）。
+- [2026-09-22 08:50 CST] Poisoned 冲突核清：BT-02 三站 OCR finding 的"silent"描述均不准确（实有 eprintln 走 C3-1 logged 路径）→ BT-02 整簇降级 OCR false positive，移出 poisoned-silent-recovery 家族。MI-01（migration/journal.rs:18 silent）保留 → 真 high（违反 C3-1 约定）。poisoned-silent-recovery 家族仅剩 MI-01 单成员 → 家族溶解（1 成员家族无跨域价值），MI-01 独立存在。
+- [2026-09-22 08:50 CST] C5-DB-02 拆簇：按破坏数据判据拆为 DB-02a（atomicity/partial-write，2 条：migrations.rs:51 + paths.rs:65）/ DB-02b（事务约定一致性 / 设计债，1 条：tasks.rs:439 → wontfix-pending-design-decision）。
+- [2026-09-22 08:50 CST] atomicity/partial-write 家族重划：原 {MI-06, paths.rs:65} → 现 {MI-06（migration/ops.rs:127，1 条）+ DB-02a migrations.rs:51（1 条）+ paths.rs:65（1 条）}= 3 条跨 2 域。
+- [2026-09-22 08:53 CST] 新发现登记：bot_py.rs:694/:705 测试代码内 silent into_inner，源 OCR high 名单未含（OCR 标的 :945 走 logged 路径）→ PHASE2-TRIAGE-NEW-1，下一轮评估。
+- [2026-09-22 08:53 CST] DB-02b 分类明确：wontfix-pending-design-decision（finding 自承"current single-statement DELETE is atomic, so this is not yet a correctness bug"，未来引入 cascade/soft-delete 时重审）。
+- [2026-09-22 08:53 CST] 累计口径分双数：triage 记录 140（BT-02 三条 FP 仍算记录）/ Phase 2 实工单 137（FP 不计入工作项）。
+- [2026-09-22 09:00 CST] WA-01 与 C4-v2 同源合并：OCR 标 constants.ts:13 实为 line 9（PANEL_H_MIN/MAX 字面 800/900），与 C4-4 同源。PANEL_H 家族升级合入 C4-v2（PANEL_H_MIN > PANEL_H 单项 → PANEL_H_MIN + range 100px 两子项同族，同一产品决策）。WA-01 拆为 WA-01b（storage.ts:113 + storage.ts:79 = 2 条，类型不一致 / JSON.parse 零校验，与 PANEL_H 无关）。
+- [2026-09-22 09:00 CST] WidgetApp 簇清单重写：3 簇 / 7 findings（WA-01 合入 C4-v2 后剩 WA-01b 2 + WA-02 3 + WA-03 2）。
+- [2026-09-22 09:10 CST] WA-01 命名修正：WA-01b 重命名为 WA-01（原 3 条拆为：a=constants.ts:13 已并入 C4-v2 不独立计 + b=storage.ts:113+:79 保留为现 WA-01 = 2 条）。原 WA-01 3 条 → 1 条并入 C4-v2 + 2 条构成现 WA-01。
+- [2026-09-22 09:10 CST] OCR 行号核：WA-01 finding（line 13）与 C4-4 finding（line 8）OCR JSON 行号均与实际字面行吻合（line 13 = PANEL_H_MIN/MAX 字面；line 8 = PANEL_H default 字面）。我之前报"OCR 实际指 line 9"是自查报告误差（误把 PANEL_H_MIN 当 line 9，实为 line 13）。**OCR JSON 行号机制无系统性问题**，无需在 triage 层加 OCR 行号偏移记录机制。
+- [2026-09-22 09:15 CST] frontend 碎片实抽：52 条 / 34 文件（你估 40，超出 12 条）。9 簇 / 批（FE-01 至 FE-08b），全部按文件组批 ≤5 文件/批 + ≤10 findings/批 + ≤+500/−300 行。剩 81 条（不是 92）。
+- [2026-09-22 09:18 CST] OCR 行号答（自查）：Finding A（C4-4）start_line=8 critical，Finding B（WA-01）start_line=13 high。OCR JSON 行号与 constants.ts 实际字面行（line 8 = PANEL_H default = 560；line 13 = PANEL_H_MIN/MAX = 800/900）完全吻合。我之前报"OCR 实际指 line 9"是 (b) 自查报告误差（误把 PANEL_H_MIN 当 line 9，实为 line 13）。**OCR JSON 行号机制无系统性问题**，不追加 PROC-4。
+- [2026-09-22 09:18 CST] frontend 数字校正：实测 FE-04..08b 6 个批的 finding 数与文件数有 2 处错（FE-06 列 6 文件我写 "5 文件"；FE-07 同病）。修正为精确 6 文件 / 6 条每批。
+- [2026-09-22 09:18 CST] 累计基准修正：plan §5 的 280 是 raw 计数（含 path+start_line 重复，如 bot_model_loop.rs:1079/:984 各 2 次）。去重后 unique = **271** non-vendor high。修正 triage 累计 = 197 unique findings（75 簇对应）/ 其他 remaining = 74 unique findings（不再是 81）。
+- [2026-09-22 09:00 CST] WidgetApp 簇清单重写：3 簇 / 7 findings（WA-01 合入 C4-v2 后剩 WA-01b 2 + WA-02 3 + WA-03 2）。
+
+## 1. 跨域同模式家族
+
+按"错误去哪了" + "是否破坏数据"两轴判，**4 家族**（poisoned-silent-recovery 已溶解 — 见执行日志）：
+
+### error-not-propagated（错误信号丢失，调用方收到空/无，**不破坏已有数据**）
+- C5-DB-01a（db，3 条：workspace.rs:54 返回空 Vec / tasks.rs:185 ON CONFLICT 哑火 / mod.rs:251 bool 被丢）
+- C5-EV-3b-A（evolution，5 条）
+- C5-BT-01a（bot*，5 条）
+- C5-MI-02（migration，3 条）
+
+### failure-recovery-default-value（错误被替换成默认值，**且可能覆写/破坏已有数据**——优先于 error-not-propagated）
+- C5-DB-05（db，4 条：默认 updated_at=0 / poison.into_inner 静默 / corrupt 源吞掉 / 批量 inserted_at 全用同一 now）
+- C5-DB-01b（db，2 条：workspace.rs:92/:209 unwrap_or_else("[]") 写入数据库 → 用户 links 被静默覆写为）
+- C5-BT-01b（bot*，2 条：tools.rs:147/:280 静默吞 DB load 失败返回空 task list）
+- C5-MI-03（migration，2 条：rules load fallback default + CSV 输入 coerce → 用户配置被静默覆写）
+
+### error-visible-non-blocking（错误日志可见但调用方继续，**非错误传播**，仅记录）—— 新
+- C5-DB-01a-3（db，1 条）：src-tauri/src/db/mod.rs:251 reset_bot_assigned_with bool 静默吞
+- C5-AP-06（api，1 条）：src-tauri/src/api_server.rs:127 atomic_write 失败仅 eprintln!
+
+**与 error-not-propagated 的区别**：error-not-propagated 是"错误不传播、调用方无感"；error-visible-non-blocking 是"错误不传播但日志可见（std/stderr）"。两者都不阻断调用方，但后者有可见痕迹（需运维查看 stderr）。
+
+修复路径不同：error-not-propagated 修法 = 错误显式传播（? / Err 返）；error-visible-non-blocking 修法 = 要么升级为 error-not-propagated（签名允许时），要么签名改（签名不允许时需动 N 调用点）。
+
+### atomicity/partial-write（写到一半失败，不清理不回滚，跨 db / migration 两域）
+- C5-MI-06（migration/ops.rs:127 copy_dir_recursive mid-fail → dst 部分填充，1 条）
+- C5-DB-02a（db，2 条：migrations.rs:51 multi-row UPDATE 无事务 + paths.rs:65 partial-copy after rename）
+
+跨 db / migration 两域同模式，3 条 findings。修复设施不同：db 走事务 rollback，migration 走 cleanup；不同批但同 family，跨域一致性检查同时出现。
+
+**两家族区分判据**：错误去哪了 = 丢弃 / 替换默认值；是否破坏数据 = 是/否。DB-01b vs DB-01a 的真正分界是"序列化失败时静默用空数组覆写用户数据"（破坏），不是"返回空"（不破坏）。跨域一致性检查时，failure-recovery-default-value 严格按破坏数据评估，error-not-propagated 仅按信号丢失评估。
+
+## 2. 簇清单（已确认域）
+
+### 域 db（7 簇 / 16 findings）
+- C5-DB-01a：error-not-propagated（workspace.rs:54 + tasks.rs:185 + mod.rs:251），3 条
+- C5-DB-01b：failure-recovery-default-value（workspace.rs:92 + :209），2 条
+- C5-DB-02a：atomicity/partial-write（migrations.rs:51 + paths.rs:65），2 条
+- C5-DB-02b：事务约定一致性 / 设计债（tasks.rs:439）→ **wontfix-pending-design-decision**，触发条件 = 未来引入 cascade/soft-delete 多语句 delete 时重审
+- C5-DB-03：race / TOCTOU（mod.rs:61 + tasks.rs:396），2 条
+- C5-DB-04：input-validation（bot_sessions.rs:115 + tasks.rs:485，含 1 security），2 条
+- C5-DB-05：failure-recovery-default-value（paths.rs:50 + tasks.rs:423 + workspace.rs:199 + bot_history.rs:52），4 条
+
+### 域 evolution（19 簇 / 39 findings）
+3a（C3 周边，3 簇 / 4 findings）：
+- C5-EV-3a-01：observe/stop.rs:82 静默吞负值，1 条
+- C5-EV-3a-02：panel/commands.rs:43/:282 RMW 缺陷，2 条
+- C5-EV-3a-03：observe/metrics.rs:86 O(n*m)，1 条
+
+3b（其余，11 簇 / 35 findings）：
+- C5-EV-3b-A：silent-error-swallow 跨文件（apply.rs:151 + activation.rs:136 + mod.rs:48 + record.rs:211 + entry.rs:110），5 条
+- C5-EV-3b-B：jsonl 写 race / 非原子（record.rs:187 + entry.rs:81 + sandbox/io.rs:46 + emit.rs:105 + activation.rs:257），5 条
+- C5-EV-3b-C1：状态转移/条件判定错（mapping.rs:37 + change/status.rs:36 + kill_switch.rs:39），3 条
+- C5-EV-3b-C2：双侧逻辑不一致（ttl.rs:23 + change/derive.rs:34），2 条
+- C5-EV-3b-C3：设计约定未强制（routing.rs:21 + kill_switch.rs:15），2 条
+- C5-EV-3b-D：批内 3 处独立改动（溢出/不可逆/去重，ttl.rs:41 + ttl.rs:34 + derive.rs:104），3 条
+- C5-EV-3b-E：死代码 / no-op（observe/shadow.rs:0 + :87 + :163），3 条
+- C5-EV-3b-F：哈希/校验缺（proposal.rs:186 + observe/synthetic.rs:29 + observe/shadow.rs:345），3 条
+- C5-EV-3b-G：持锁/async 阻塞 IO（apply.rs:156 + observe/shadow.rs:202 + panel/commands.rs:0），3 条
+- C5-EV-3b-H：trace 双轨/静默丢（trace.rs:104 + trace.rs:149 + trace.rs:193），3 条
+- C5-EV-3b-I：关键不变量测试缺（routing.rs:110），1 条
+
+### 域 migration（10 簇 / 15 findings）
+- C5-MI-01：poisoned mutex silent recovery（DB_WRITE_LOCK silent 路径，**违反 C3-1 约定**），1 条，**家族已溶解，独立存在**
+- C5-MI-02：error-not-propagated（migration/run.rs:132 + :270 + recovery.rs:87，unwrap_or(None) / filter_map(r.ok) 吞 DB err，调用方无感），3 条
+- C5-MI-03：failure-recovery-default-value（migration/rules.rs:27 + :121，破坏数据：rules 默认覆盖 + CSV 输入 coerce），2 条
+- C5-MI-04a：migration/journal.rs:34 INSERT 无去重，1 条
+- C5-MI-04b：migration/journal.rs:126 unlocked find+act TOCTOU，1 条
+- C5-MI-05a：migration/commands.rs:116 spawn_blocking 无 abort，1 条
+- C5-MI-05b：migration/commands.rs:19 + recovery.rs:197 sync/block_on 阻塞，2 条，**跨域阻塞族待核**
+- C5-MI-06：migration/ops.rs:127 copy_dir_recursive mid-fail → dst 部分填充（**atomicity/partial-write 家族**），1 条
+- C5-MI-07：migration/ops.rs:202 路径不一致（rotation target ≠ write target），1 条
+- C5-MI-08：migration/rules.rs:99 + :67 解析脆 / 校验缺（批内 2 处独立改动：contains 太宽松 + archive_dir 无路径校验 = 1 security），2 条
+
+### 域 scripts（5 簇 / 10 findings）
+- C5-SC-01：shell 解析脆（sync-version.mjs:11 + ci-guard-tiny-http-vendor.sh:46 + :27），3 条
+- C5-SC-02：非原子/非完整（sync-version.mjs:20 + fetch_ocr_models.sh:44 + :53），3 条
+- C5-SC-03：set -euo 边界未封（install-hooks.sh:10），1 条
+- C5-SC-04：第三方/CDN/用户输入未校验（fetch_ocr_models.sh:49 + publish-docx-dotnet.sh:12），2 条
+- C5-SC-05：hook 覆盖不全（test-fast.sh:56），1 条，**与 HOOK-1/HOOK-2 同根因家族**
+
+### 域 api（7 簇 / 14 findings）
+- C5-AP-01：TOCTOU race（api_auth.rs:27 + api_handlers/commands.rs:61 + :238 + api_server.rs:208），4 条
+- C5-AP-02：symlink + 权限（api_auth.rs:73），1 条
+- C5-AP-03：日志输出缺陷（api_handlers/ratelimit.rs:45 + :36，批内 2 处独立改动），2 条
+- C5-AP-04：SSE writer 缺陷（api_handlers/sse.rs:196 + :183），2 条
+- C5-AP-05：持锁跨 I/O（api_handlers/handlers.rs:277 + :405 + :561），3 条
+- C5-AP-06：静默吞错（api_server.rs:126），1 条，**error-not-propagated 家族**
+- C5-AP-07：sync block_on 隐式约定（api.rs:101），1 条
+
+### 域 bot*（15 簇 / 46 findings；去重后）
+子目录 = 18 / bot_skills 子目录 = 12 / 兄弟 bot_*.rs = 16
+- C5-BT-01a：error-not-propagated，bot/config + bot_skills/scheduler + bot_scheduler（5 条丢弃：commands.rs:30 + keyring.rs:263 + slash.rs:456 + skills/scheduler.rs:428 + scheduler.rs:0）
+- C5-BT-01b：failure-recovery-default-value，bot/tools（tools.rs:147 + tools.rs:280，替换成空 list）
+- C5-BT-02：**OCR false positive（3 条均不准确）** —— OCR 忽略代码中的 eprintln!("[mutex_poisoned] ...") 缓解措施，据此判定 "silent"——前提与实现不符。三站实际都是 logged 路径：C3-1 约定的合法实现。三条 finding 的站实有 eprintln：bot_py.rs:945 + bot_skills/state.rs:109 + bot_skills/runtime.rs:58。**记录 + 不改**，与 C3-r1-H1 / C4-2 / C4-5 同处理。**triage 记录 140 仍含此 3 条 FP，Phase 2 实工单 137 不计**。
+- C5-BT-03：config 写非原子 / RMW 无锁（commands.rs:86 + schema.rs:170/:178 + io.rs:100/:76），5 条
+- C5-BT-04：TOCTOU on canonicalize/whitelist（bot_fs.rs:167 + bot/tools.rs:102 + bot_chat.rs:399 + bot_artifacts.rs:67），4 条
+- C5-BT-05：URL/host bypass（config/io.rs:122 + bot_web.rs:21/:730/:881），4 条
+- C5-BT-06：log injection via model strings（bot_model_loop.rs:1079 + :984），2 条
+- C5-BT-07：state machine / 乐观并发不一致（bot_artifacts.rs:113 + bot_skills/state.rs:164 + bot_skills/scheduler.rs:149），3 条
+- C5-BT-08：input validation / serialization 缺（config/types.rs:198/:82 + config/keyring.rs:168 + bot_skills/parse.rs:86 + bot_skills/vars.rs:76），5 条
+- C5-BT-09：dispatch/scheduler 语义错（bot/dispatch.rs:248/:424 + bot_skills/scheduler.rs:283），3 条
+- C5-BT-10：持锁跨 IO / sync IO in loop（config/audit.rs:22 + bot_skills/runtime.rs:83/:393 + bot_scheduler.rs:468），4 条
+- C5-BT-11：web 解析脆（bot_web.rs:412 + :422），2 条
+- C5-BT-12：workspace-link 残留（bot_skills/files.rs:0 + :43），2 条，**与 C2b-2 修复边界重叠待核**
+- C5-BT-13：prompt injection via fail_reason（bot_plan.rs:234），1 条
+- C5-BT-14：StopGuard broken（bot/registry.rs:267），1 条
+
+### 域 WidgetApp（3 簇 / 7 findings）
+- C5-WA-01（原 WA-01 拆后残余，原 3 条拆为：a=constants.ts:13 已并入 C4-v2；b 仅剩 2 条 storage.ts:113 + storage.ts:79）：输入/反序列化校验缺（storage.ts:113 Anchor 结构不一致 + storage.ts:79 loadAnchor JSON.parse 零校验），批内 2 处独立改动（类型对齐 vs JSON.parse 校验，修复设施不同），2 条
+- C5-WA-02：window listener 管理缺（ResizeEdge.tsx:43 Promise.all 无 catch + ResizeEdge.tsx:72 同步附加无 useEffect + SplitBar.tsx:15 组件卸载不清理），批内 3 处独立改动（加 .catch vs 重构 useEffect vs 加 cleanup，修复设施不同），3 条
+- C5-WA-03：dnd-kit 可达性/事件冲突（SortableWorkspaceCard.tsx:23 键盘 drag 不可达 + SortableTaskCard.tsx:55 drag→click 选中误触发），批内 2 处独立改动（aria 属性 vs click/drag 阈值，修复设施不同），2 条
+
+**PANEL_H 同源合并**：OCR 标 constants.ts:13 = 实指 line 13（PANEL_H_MIN/MAX 字面 800/900），与 C4-4 同源。C4-v2 升级合入（PANEL_H_MIN > PANEL_H + range 100px 两子项同族）。WA-01 原 3 条拆为：a=constants.ts:13 已并入 C4-v2（不独立计），b=storage.ts:113+:79 保留为 WA-01（重命名后剩 2 条）。
+
+### 域 frontend 碎片（9 簇 / 52 findings；按文件组批 ≤5 文件/批 + ≤10 findings/批 + ≤+500/−300 行）
+
+- C5-FE-01：core 写入加载路径（src/storage.ts:62/109/113/122 + src/App.tsx:191/240/254/291 = 8 条），批内 8 处独立改动（错误返回 0 / mutate 副作用 / 错误传播断 / legacy data 丢 / source whitelist 注释错等），修复设施各异
+- C5-FE-02：React async 事件 race（src/components/ArtifactBatchDialog.tsx:34/35/79 + src/components/ConfirmMap/ConfirmMap.tsx:37/40/65 = 6 条），批内 6 处独立改动（listen/unlisten race / 异步 state race / reentrancy），修复设施各异
+- C5-FE-03：setup / 缓存 / 截断（src/test/setup.ts:12/37 + src/profile.ts:28/62 + src/lib/taskFiles.ts:9/43 = 6 条），批内 6 处独立改动（console.error 拦截泄漏 / profile force 失效 / taskFiles 截断静默 / 跨语言常量锁步），修复设施各异
+- C5-FE-04：UI 渲染（src/components/TodoCard/SubtaskRow.tsx:27/:48 + src/components/WorkspacePage.tsx:80/:99 + src/components/MarkdownText.tsx:21/:34 = 6 条），批内 6 处独立改动（SubtaskRow stale closure / readOnly 未重置 + WorkspacePage 乐观状态被覆盖 / in-place mutation + MarkdownText String(children) 不安全 / code 可点击不可聚焦），修复设施各异
+- C5-FE-05：UI 控件（src/components/SettingsPage/ProfileRow.tsx:78/:110 + src/components/FoldToggle.tsx:15/:21 + src/components/ChatPanel/RichText.tsx:22 + src/components/ChatPanel/Fold.tsx:16 = 6 条 / 4 文件），批内 6 处独立改动（ProfileRow setTimeout 未存句柄 / busy 未禁用 input + FoldToggle type 属性 / aria 状态 + RichText anchor 无 href + Fold 折叠状态不可访问），修复设施各异
+- C5-FE-06：ChatPanel / utility（src/components/ChatPanel/ChatPanel.tsx:416 + src/components/ChatPanel/constants.ts:9 + src/components/ChatPanel/types.ts:5 + src/lib/errorHandler.ts:216 + src/components/useInlineEdit.ts:44 + src/components/EvolutionPanel/EvolutionPanel.tsx:149 = 6 条 / 6 文件），批内 6 处独立改动（ChatPanel 并发 busyRef / Map 导出 / 类型泄漏 / onRetry 无 catch / 双提交 / 类型断言 bypass），修复设施各异
+- C5-FE-07：次要组件零散（src/components/SettingsPage/SkillsPanel.tsx:60 + src/components/SettingsPage/ApiProviderSelect.tsx:37 + src/components/EvolutionPanel/DeleteConfirmDialog.tsx:40 + src/components/EvolutionPanel/types.ts:24 + src/components/ActorAvatar.tsx:10 + src/components/ArchivePage.tsx:52 = 6 条 / 6 文件），批内 6 处独立改动（setTimeout unmounted / 无 WAI-ARIA / 无 focus 管理 / snake_case 泄 / promise 无 catch / displayTask 重复创建），修复设施各异
+- C5-FE-08a：其他 UI 组件（src/components/DoneCircle.tsx:13 + src/components/KanbanBoard.tsx:179 + src/components/TaskCardContent.tsx:293 = 3 条 / 3 文件），批内 3 处独立改动（button type 缺 / rect.current deref null / schedule 静默覆盖）
+- C5-FE-08b：顶层配置（src/main.tsx:10 + src/theme.ts:33 + src/ui/main.css:131 = 3 条 / 3 文件），批内 3 处独立改动（root null check 缺 / applySetting 不通知 / nm-card-hover transition 重复声明）
+
+**FE-08 拆分理由**：FE-08a = 通用 UI 组件（按钮 + 拖拽 + 卡片内文），FE-08b = 应用入口与全局配置（React root + 主题 + 全局样式）。主题域不同：UI 组件修复针对单组件行为，全局配置修复影响整个应用启动/主题传播。不混批。
+
+## 3. 待核区（首批启动前必核）
+
+- **C5-BT-12 ≈ C2b-2 修复未覆盖**：bot_skills/files.rs:0 显式标"l.kind != 'url' 接受 file/folder/app/command"。C2b-2（commit 95a25e9）修了"工作区链接 kind 白名单——写入侧 fail-closed + 消费侧集合判断"。需核 95a25e9 的 kind 集合是否漏 file/folder/app/command。
+- **C5-SC-05 ≈ HOOK-1/HOOK-2 家族**：test-fast.sh 审计批次号防线仅扫 tracked，不含 untracked。HOOK-1（fmt 全仓检查 × 既有漂移）/ HOOK-2（knip 静态盲区）已登记，SC-05 属同家族。
+- **AP-07 / BT-14 severity 来源**：源 JSON 验证 severity=high（OCR 真实定级，非 medium/low 混进），保留。
+- **C4-v2 升级（PANEL_H 同源合并，状态：wontfix-pending-product-decision）**：原 C4-v2 只含 PANEL_H_MIN > PANEL_H 单项。现 OCR WA-01 finding（constants.ts:13 start_line，OCR 行号与实指 line 13 PANEL_H_MIN/MAX 字面 800/900 同源）合入 → C4-v2 升为 **两个子项**：(a) PANEL_H_MIN > PANEL_H 逻辑矛盾（C4-4 原 observation）+ (b) PANEL_H_MIN/MAX range 仅 100px 窄区间（WA-01 新 observation）。**同一产品决策（widget 内容最小可用高度 + 上下限），产品拍板时一次改完两处，别只修一个**。**C4-v2 最终状态 = wontfix-pending-product-decision（继承 C4-4 状态，不进实工单 144 的"待修"集合，只占位 / 待产品拍板）**。WA-01 拆出的 constants.ts:13 条不独立计为 finding。首批决策时一并处理 C4-v2 升级。
+
+### 新发现登记（PHASE2-TRIAGE-NEW-*）
+
+不在源 OCR high 名单、triage 跑出过程中顺手发现，下一轮评估：
+
+- **PHASE2-TRIAGE-NEW-1**：bot_py.rs:694 + bot_py.rs:705 测试代码内 silent into_inner，无 eprintln 缓解措施。源 OCR 标的是 :945（有 eprintln），这两处不在 OCR 范围。是 silent 路径，与 C3-1 约定（带 eprintln）不一致。是否需引入 Phase 2 high 待评估。**不并入 BT-02 / MI-01**（"顺手扩"是 triage 层禁忌）。
+
+### 跨域一致性检查第一步（triage 全跑完后那一步）
+
+triage 全跑完后、首批决策前，按大类把簇列出复查修复设施是否真的统一，不统一的按 DB-01/BT-01 同法拆。**不做这一步，Phase 2 首批可能挑到一个看起来 ≤10 条实际跨 3 种设施的簇，重演 C2b 拆簇**。
+
+大类清单（triage 全跑完后填）：
+
+· 所有 TOCTOU/race 类 — 例：C5-DB-03（2 条，原子创建 vs 读锁不同设施）、C5-AP-01（4 条 token 并发 / state 原子化 / fetch_add 三设施）、C5-MI-04（2 条 UNIQUE 约束 vs 锁包整段）
+· 所有 error-swallow / silent-fallback 类
+· 所有 state machine 类
+· 所有 持锁跨 IO 类
+
+逐簇复查"修复设施是否真的统一"。当前已发现潜在不一致候选（待全 triage 完统一复查）：
+
+· C5-DB-03（mod.rs:61 check-then-act vs tasks.rs:396 读侧同步）— 原子创建 vs 读锁不同设施，可能拆
+· C5-AP-01（4 条 token 写并发 / state check-then-act / fetch_add）— 三种设施，可能拆
+· C5-EV-3b-C1（3 条 状态转移/条件判定错）— 已拆同根因，保留
+· C5-EV-3b-G（3 条 持锁/async 阻塞 IO）— DB_WRITE_LOCK 持锁跨 IO / shadow_apply 阻塞 / panel async 阻塞，三种设施，可能拆
+· 其他见 triage 全跑完后的复查结果
+
+### 跨域阻塞族待核区（triage 全跑完后复查）
+
+三个簇都含"阻塞"元素，但设施各异（spawn_blocking vs drop-then-respond vs 抬锁外）。跨域一致性检查时一并复核是否拆/合，**不现在动**：
+
+- C5-MI-05b（migration，sync/block_on 阻塞，2 条）
+- C5-AP-05（api，持锁跨 I/O，3 条）
+- C5-EV-3b-G（evolution，持锁/async 阻塞 IO，3 条）
+
+## 3.5 已知异常（commit 收口后登记，防“历史误读为当时正确”）
+
+### 首批 commit 1fcc418 已知异常
+
+首批 Phase 2 commit (1fcc418) 收口后自查发现的两个动作失误，记录于此防后人不读原 commit 不明所以：
+
+- **异常 1：批定性数字错**
+  - 拍板原文（13:40:34）：「首批 = AP-06 (1) + DB-01a-2 (2) + MI-02 (3) = **4 条**」
+  - 事实：1 + 2 + 3 = **6 条**。拍板时拍板文本「4 条」为算错（错在拍板者，未延展到被拍板者本轮出错）。
+  - 处置：amend 重写 commit message 标题为「2 簇 / 5 条」（AP-06 移出后）、body 标注“AP-06 移出本批独立处理”。**现存 commit (1fcc418) 数字以 5 条为准**。
+  - SOP（本轮起）：批定性数字不许沿用拍板者提供，必须自行加和核对一遍再报。
+
+- **异常 2：AP-06 自决降级未报**（17:14、首批草表未列入独立批登记）
+  - 拍板原文（13:40:34）：「C5-AP-06 (1 条) api_server.rs:126 → atomic_write(...)? 显式传播」
+  - 事实链：? 在 broadcast() -> () 编译不过（E0277）→ 改签名要动 5 调用点（超首批范围）→ 未拍板自行降级为 `if let Err(e) = ... { eprintln!(...) }`。
+  - 本质：C5-DB-01a-3（mod.rs:251）以“log-and-continue 形态、family 异质”为由移出首批。AP-06 同一形态（eprintln! 同样非错误传播），应同样移出；但本次未拍板自决降级，留在首批**破坏了 family 语义同质**。
+  - 处置：amend 还原 api_server.rs 为「let _ = atomic_write(...)」原版，AP-06 与 C5-DB-01a-3 同一独立批（error-visible-non-blocking family）统一登记。现存 commit (1fcc418) 不含 api_server.rs 改动。
+  - SOP（本轮起入 §5）：**拍板动作被执行时遇到编译/架构阻碍（签名不允许、类型不匹配、需动 N 调用点）→ 停手报，不降级。降级 = 改拍板 = 越权。可选项由用户拍。**
+
+### OCR 已知异常
+
+- **OCR: unavailable**：首批 commit 无 OCR 复审。工具内部 file_read 参数错（start_line 80 > end_line 60）。证据目录 `~/.openclaw/cache/ocr-C5-B1-failure/` 已建但文件未完整落盘。三层自测（fmt + check + test-all 全绿）代替 OCR 复审。
+- **PROC-5**：OCR 工具内部 file_read 参数错误，是 OCR 工具 bug，不进本批范围。
+
+## 4. 累计
+
+**已 triage（脚本 DOMAINS 12 域，不含 frontend）**: 145 unique
+
+**其他域（含 frontend 9 簇 / 52 条）**: 126 unique
+
+**Phase 2 实工单（已 triage 内，扣 BT-02 FP ×3）**: 142
+
+**baseline**: 271 ± 2 unique non-vendor high / 162 unique path
+
+**注解（口径说明）**: frontend 碎片 9 簇已完成聚簇，但 `scripts/triage-baseline-audit.py` 的 DOMAINS 列表当前未纳入 frontend，故 frontend 52 条落在 "其他域"。脚本 DOMAINS 待补后，两口径统一为「已 triage = 197 / 其他 = 74」。
+
+（补充：vendor raw=33, unique=33, dups=0；non-vendor raw=278, unique=271, dups=7。unique dups 对详：`×2 src-tauri/src/app_state.rs:0 / ×2 src-tauri/src/bot_model_loop.rs:984 / ×2 src-tauri/src/bot_model_loop.rs:1079 / ×2 src-tauri/src/evolution/candidate/mod.rs:48 / ×2 src-tauri/tests/memory_v2_degraded.rs:24 / ×2 src/components/TodoCard/SubtaskRow.tsx:27 / ×2 src/components/TodoCard/SubtaskRow.tsx:48`）。
+
+**首批开批**（1fcc418）：C5-DB-01a-2 (2 条) + C5-MI-02 (3 条) = 5 条 / 2 簇 / ≤+55/-34 行 / family = error-not-propagated / 跨 db + migration。
+
+- DB-01a-3（mod.rs:251）+ AP-06（api_server.rs:127）→ 同一独立批 error-visible-non-blocking（log-and-continue 形态），2 簇 / 2 条，理由：family 异质 + 签名/调用点约束（详见 §3.5 异常 2）。
+- tasks.rs:185 (i) 决策核验：9 调用点 = 7 dispatch 工具 + 1 bot_chat 后台 + 1 tasks_import Tauri command。8 Some + 1 None（tool_create_task）。M=1 语义变更：id 已存在且 updated_at 不满足谓词时，此前静默 no-op，现 Err。接受理由：创建语义下静默失败比报错更危险。
+
+## 5. 约束 + SOP
+
+**triage / 批组织 SOP**：
+- 每批 ≤10 findings + ≤+500/−300 行
+- 每行 ≤200 字符；超了标 需再读 拆 3–5 行 notes
+- 同根因判据必须含 file:line 证据（不许 pattern matching 代替读代码）
+- 批内多根因需如实标"批内 N 处独立改动，修复设施不共享"
+- 跨域同模式必登记 family，跨域一致性检查时同时出现
+- 不修代码、不跑 OCR、不 commit 代码（docs-only）
+- triage 中发现的新问题登记 PHASE2-TRIAGE-NEW-*，下一轮评估
+- 批次组织按 family + 语义同质，**不按"修复设施统一"**（family 必然跨多设施，这是 family 组织的固有属性）。“机械同质”指拆条动作重；“语义同质”指同一形状的改动（都是“停止吞错，让错误浮出来”）。
+- commit message 用 family 一句话概括改动形状，逐条列各文件的本机修复机制
+- 若某条修复伴随“产品行为变更 / schema 变更 / 跨域待核触达” → 该条移出本批，单独处理。不许用“标注一下”带进批
+
+**baseline 核验 SOP（手工或脚本一律适用）**：
+- 任何 baseline 数（总数、域数、文件数、dups）必须一次性 jq + sort -u 脚本输出验证 raw + unique 双口径，禁止人手算
+- 脚本进版本控制，任何人重跑都得同一结果
+- 断言含义应在跑之前定死；断言语义不得事后修改以通过
+- 命令 + 原始输出必须同条内可核（不许“上一轮贴了”这种跨轮引用）
+- baseline 变更时**所有下游产出**（簇、锚点、family、累计、跨域登记）必须随数字一起更新。不许“数字对账对到 145，簇清单还停在 199”。baseline 变 = 重跑下游全部
+
+**OCR / pre-commit hook SOP**：
+- 高批首选 r1 一次收口（r2 仅在有 critical 同根因已修时跑，验证修复）
+- 高批基线例外 ±2 写进首批 commit message（不走“再来一轮”）
+- commit message 必含：family 一句话 + 逐条 file:line → 本机修复机制 + 产品行为变更标注 + baseline ±2 + D2 三元组
+- D2 三元组：行为断言 + 前置断言 + 反例断言（反例断言 = “若不满足 X，则行为是 Y”，不写“避免某错误”这种愿望陈述）
+- **拍板动作遇阻碍停手报**：拍板动作被执行时遇到编译/架构阻碍（签名不允许、类型不匹配、需动 N 调用点）→ 停手报，不降级。降级 = 改拍板 = 越权。可选项由用户拍（首批 17:14 AP-06 自决降级为反面案例）。
+- **批定性数字需自行加和核对**：拍板者提供的批性数字（条数 / 簇数 / 面积）不许沿用，必须自行加和后报（首批 13:40:34 拍板“4 条”实为 6 条，反身以该错数报上去）。
