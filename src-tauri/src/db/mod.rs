@@ -1056,14 +1056,18 @@ mod tests {
         upsert_tasks(&conn, std::slice::from_ref(&t)).unwrap();
         assert_eq!(title_of(&conn, "t1"), "new-100", "场景 1: 更新的应压过老的");
 
-        // 场景 2: incoming(60) < current(100) → 跳过（lost update 防护）
+        // 场景 2: incoming(60) < current(100) → 拒绝（显式 lost update 防护）
         t.title = "old-snapshot-60".into();
         t.updated_at = Some(60);
-        upsert_tasks(&conn, std::slice::from_ref(&t)).unwrap();
+        let err = upsert_tasks(&conn, std::slice::from_ref(&t)).unwrap_err();
+        assert!(
+            err.starts_with(super::tasks::CONFLICT_ERR_PREFIX),
+            "场景 2: 更老的写入应被显式拒，err={err}"
+        );
         assert_eq!(
             title_of(&conn, "t1"),
             "new-100",
-            "场景 2: 更老的不应压过更新的"
+            "场景 2: 更老的不应压过更新的（数据不变量保留）"
         );
 
         // 场景 3: 相等 timestamp → 允许更新
@@ -1094,11 +1098,15 @@ mod tests {
         .unwrap();
         t.title = "incoming-null".into();
         t.updated_at = None;
-        upsert_tasks(&conn, std::slice::from_ref(&t)).unwrap();
+        let err = upsert_tasks(&conn, std::slice::from_ref(&t)).unwrap_err();
+        assert!(
+            err.starts_with(super::tasks::CONFLICT_ERR_PREFIX),
+            "场景 5: incoming NULL 应被显式拒，err={err}"
+        );
         assert_eq!(
             title_of(&conn, "t1"),
             "keep-me",
-            "场景 5: incoming NULL 不应覆盖 current 有值"
+            "场景 5: incoming NULL 不应覆盖 current 有值（数据不变量保留）"
         );
 
         fs::remove_dir_all(&dir).ok();

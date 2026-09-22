@@ -53,9 +53,11 @@ pub fn load_workspace(conn: &rusqlite::Connection) -> Result<Vec<WorkspaceItem>,
         let (id, title, collapsed, links, order, updated_at) = row.map_err(|e| e.to_string())?;
         let links = match serde_json::from_str(&links) {
             Ok(l) => l,
-            Err(_) => {
-                eprintln!("[db] 工作区条目 {id} 的 links JSON 损坏，按空读取（原值未动）");
-                Vec::new()
+            Err(e) => {
+                return Err(format!(
+                    "工作区条目 {} 的 links JSON 损坏：{}（原值未动，需手动恢复）",
+                    id, e
+                ));
             }
         };
         items.push(WorkspaceItem {

@@ -85,8 +85,8 @@ pub fn journal_replay_pending(app: &AppHandle) -> Result<(usize, usize), String>
             })
         })
         .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
 
     let mut recovered = 0usize;
     let mut errors = 0usize;

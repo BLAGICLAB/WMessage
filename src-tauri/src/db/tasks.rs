@@ -194,6 +194,7 @@ pub fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), S
              WHERE tasks.updated_at IS NULL OR excluded.updated_at >= tasks.updated_at",
         )
         .map_err(|e| e.to_string())?;
+    let mut affected_total: usize = 0;
     for t in tasks {
         if let Some(expected) = t.expected_updated_at {
             use rusqlite::OptionalExtension;
@@ -234,28 +235,38 @@ pub fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), S
             Some(v) => Some(serde_json::to_string(v).map_err(|e| e.to_string())?),
             None => None,
         };
-        stmt.execute(rusqlite::params![
-            t.id,
-            t.title,
-            t.due,
-            t.note,
-            tags,
-            t.file_path,
-            t.file_is_dir.map(|b| b as i64),
-            t.column.as_str(),
-            subtasks,
-            t.completed_at,
-            t.archived.map(|b| b as i64),
-            t.deleted_at,
-            t.collapsed.map(|b| b as i64),
-            t.order,
-            t.updated_at,
-            t.schedule,
-            t.sched_last,
-            t.bot_assigned.map(|b| b as i64),
-            files,
-        ])
-        .map_err(|e| e.to_string())?;
+        let affected = stmt
+            .execute(rusqlite::params![
+                t.id,
+                t.title,
+                t.due,
+                t.note,
+                tags,
+                t.file_path,
+                t.file_is_dir.map(|b| b as i64),
+                t.column.as_str(),
+                subtasks,
+                t.completed_at,
+                t.archived.map(|b| b as i64),
+                t.deleted_at,
+                t.collapsed.map(|b| b as i64),
+                t.order,
+                t.updated_at,
+                t.schedule,
+                t.sched_last,
+                t.bot_assigned.map(|b| b as i64),
+                files,
+            ])
+            .map_err(|e| e.to_string())?;
+        affected_total += affected;
+    }
+    // ON CONFLICT WHERE 子句不满足 → rows_affected=0（静默 no-op），
+    // 视为冲突，返 CONFLICT_ERR_PREFIX（与 expected_updated_at 路径共用错误码）。
+    if affected_total < tasks.len() {
+        return Err(format!(
+            "{CONFLICT_ERR_PREFIX}：ON CONFLICT WHERE 子句不满足，写入未生效（affected={affected_total}/{}）",
+            tasks.len()
+        ));
     }
     Ok(())
 }

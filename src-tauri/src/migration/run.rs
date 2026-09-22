@@ -136,7 +136,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
                     // NEW-B-1: 源不存在时先对账 journal——「上一轮 move 成功但 db_upsert 失败」
                     // 时 journal 仍 pending 且 dst 存在，此时应就地修复绑定到 dst，而非解绑
                     // （旧逻辑直接解绑 → 附件链接丢失一整个会话周期，要等重启 replay 才恢复）。
-                    let pending = journal_find_pending(&jconn, &t.id, &src).unwrap_or(None);
+                    let pending = journal_find_pending(&jconn, &t.id, &src)?;
                     let dst_exists = pending
                         .as_ref()
                         .and_then(|e| e.dst.as_ref())
@@ -273,7 +273,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
                 if !src.exists() {
                     // NEW-B-1: 同 move 分支——先对账 journal。pending delete 的终态本就是
                     // 解绑，落盘后提交 journal 关闭环路；pending move 且 dst 在 → 就地修复。
-                    let pending = journal_find_pending(&jconn, &t.id, &src).unwrap_or(None);
+                    let pending = journal_find_pending(&jconn, &t.id, &src)?;
                     let dst_exists = pending
                         .as_ref()
                         .and_then(|e| e.dst.as_ref())
