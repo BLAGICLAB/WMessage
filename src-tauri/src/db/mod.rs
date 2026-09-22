@@ -257,7 +257,7 @@ pub fn open_db<R: tauri::Runtime>(
         )
         .map(|_| ())
         .map_err(|e| e.to_string())
-    });
+    })?;
     Ok(conn)
 }
 
@@ -1603,27 +1603,27 @@ mod reset_tests {
         let calls = AtomicUsize::new(0);
 
         // 第一次失败（模拟首开遇库忙）：不置位，留待重试
-        let ok = reset_bot_assigned_with(&done, || {
+        let r = reset_bot_assigned_with(&done, || {
             calls.fetch_add(1, Ordering::SeqCst);
             Err("database is locked".into())
         });
-        assert!(!ok, "失败应返回 false");
+        assert!(matches!(r, Err(_)), "失败应返回 Err");
         assert!(!done.load(Ordering::SeqCst), "失败不得消耗 token");
 
         // 第二次重试成功 → 置位
-        let ok = reset_bot_assigned_with(&done, || {
+        let r = reset_bot_assigned_with(&done, || {
             calls.fetch_add(1, Ordering::SeqCst);
             Ok(())
         });
-        assert!(ok);
+        assert!(r.is_ok());
         assert!(done.load(Ordering::SeqCst));
 
         // 第三次：已置位 → 直接 true，不再执行 exec（保留「仅清一次」语义）
-        let ok = reset_bot_assigned_with(&done, || {
+        let r = reset_bot_assigned_with(&done, || {
             calls.fetch_add(1, Ordering::SeqCst);
             Ok(())
         });
-        assert!(ok);
+        assert!(r.is_ok());
         assert_eq!(calls.load(Ordering::SeqCst), 2, "置位后不应再执行 UPDATE");
     }
 
@@ -1641,7 +1641,7 @@ mod reset_tests {
         )
         .unwrap();
         let done = AtomicBool::new(false);
-        let ok = reset_bot_assigned_with(&done, || {
+        let r = reset_bot_assigned_with(&done, || {
             conn.execute(
                 "UPDATE tasks SET bot_assigned = 0 WHERE bot_assigned = 1",
                 [],
@@ -1649,7 +1649,7 @@ mod reset_tests {
             .map(|_| ())
             .map_err(|e| e.to_string())
         });
-        assert!(ok);
+        assert!(r.is_ok());
         let n: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM tasks WHERE bot_assigned = 1",

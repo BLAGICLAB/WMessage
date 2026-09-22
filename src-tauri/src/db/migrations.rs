@@ -69,17 +69,17 @@ pub fn migrate_legacy_file_bindings(conn: &rusqlite::Connection) -> Result<usize
 pub fn reset_bot_assigned_with<F: FnOnce() -> Result<(), String>>(
     done: &std::sync::atomic::AtomicBool,
     exec: F,
-) -> bool {
+) -> Result<(), String> {
     use std::sync::atomic::Ordering;
     if done.load(Ordering::SeqCst) {
-        return true;
+        return Ok(());
     }
     match exec() {
         Ok(()) => {
             done.store(true, Ordering::SeqCst);
-            true
+            Ok(())
         }
-        Err(_) => false,
+        Err(e) => Err(e),
     }
 }
 
