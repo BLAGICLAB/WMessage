@@ -26,7 +26,7 @@
 
 ## 1. 跨域同模式家族
 
-按"错误去哪了" + "是否破坏数据"两轴判，**4 家族**（poisoned-silent-recovery 已溶解 — 见执行日志）：
+按"错误去哪了" + "是否破坏数据"两轴判，**4 家族**（poisoned-silent-recovery 已溶解 — 见执行日志；error-visible-non-blocking 已重新引入 for C5-AP-06 only — 见 §3.5 异常 2 更新）：
 
 ### error-not-propagated（错误信号丢失，调用方收到空/无，**不破坏已有数据**）
 - C5-DB-01a（db，3 条：workspace.rs:54 返回空 Vec / tasks.rs:185 ON CONFLICT 哑火 / mod.rs:251 bool 被丢）
@@ -40,13 +40,12 @@
 - C5-BT-01b（bot*，2 条：tools.rs:147/:280 静默吞 DB load 失败返回空 task list）
 - C5-MI-03（migration，2 条：rules load fallback default + CSV 输入 coerce → 用户配置被静默覆写）
 
-### error-visible-non-blocking（错误日志可见但调用方继续，**非错误传播**，仅记录）—— 新
-- C5-DB-01a-3（db，1 条）：src-tauri/src/db/mod.rs:251 reset_bot_assigned_with bool 静默吞
-- C5-AP-06（api，1 条）：src-tauri/src/api_server.rs:127 atomic_write 失败仅 eprintln!
+### error-visible-non-blocking（错误日志可见但调用方继续，**非错误传播**，仅记录）
+- C5-AP-06（api，1 条）：src-tauri/src/api_server.rs:127 broadcast atomic_write 失败仅 eprintln!（log-and-continue 形态）
 
 **与 error-not-propagated 的区别**：error-not-propagated 是"错误不传播、调用方无感"；error-visible-non-blocking 是"错误不传播但日志可见（std/stderr）"。两者都不阻断调用方，但后者有可见痕迹（需运维查看 stderr）。
 
-修复路径不同：error-not-propagated 修法 = 错误显式传播（? / Err 返）；error-visible-non-blocking 修法 = 要么升级为 error-not-propagated（签名允许时），要么签名改（签名不允许时需动 N 调用点）。
+修复路径：error-not-propagated 修法 = 错误显式传播（? / Err 返）；error-visible-non-blocking 修法 = 仅 log 化（不传播）+ 可选结构化日志（log crate / log_line）。
 
 ### atomicity/partial-write（写到一半失败，不清理不回滚，跨 db / migration 两域）
 - C5-MI-06（migration/ops.rs:127 copy_dir_recursive mid-fail → dst 部分填充，1 条）
@@ -209,8 +208,21 @@ triage 全跑完后、首批决策前，按大类把簇列出复查修复设施�
   - 拍板原文（13:40:34）：「C5-AP-06 (1 条) api_server.rs:126 → atomic_write(...)? 显式传播」
   - 事实链：? 在 broadcast() -> () 编译不过（E0277）→ 改签名要动 5 调用点（超首批范围）→ 未拍板自行降级为 `if let Err(e) = ... { eprintln!(...) }`。
   - 本质：C5-DB-01a-3（mod.rs:251）以“log-and-continue 形态、family 异质”为由移出首批。AP-06 同一形态（eprintln! 同样非错误传播），应同样移出；但本次未拍板自决降级，留在首批**破坏了 family 语义同质**。
-  - 处置：amend 还原 api_server.rs 为「let _ = atomic_write(...)」原版，AP-06 与 C5-DB-01a-3 同一独立批（error-visible-non-blocking family）统一登记。现存 commit (1fcc418) 不含 api_server.rs 改动。
+  - 处置：amend 还原 api_server.rs 为「let _ = atomic_write(...)」原版。AP-06 单独一批处理（归 error-visible-non-blocking family — 该 family 已重新引入 for AP-06 only）；C5-DB-01a-3 归 error-not-propagated family（首批补全）。现存 commit (1fcc418) 不含 api_server.rs 改动。
   - SOP（本轮起入 §5）：**拍板动作被执行时遇到编译/架构阻碍（签名不允许、类型不匹配、需动 N 调用点）→ 停手报，不降级。降级 = 改拍板 = 越权。可选项由用户拍。**
+
+- **C5-DB-01a-3 定性修正（19:55，migrations.rs:84 源头吞）**
+  - 首批时把 C5-DB-01a-3 定性为“mod.rs:251 加 log”——只看最外层。实现核验发现错误在**源头**就披吞：migrations.rs:84 `match exec() { Err(_) => false }` 把闭包 Err 转成 bool，调用方拿不到失败信号。
+  - 修复路径：改 `reset_bot_assigned_with` 签名 `-> bool` 为 `-> Result<(), String>` + `Err(e) => Err(e)`（迁移函数内部源头错误传递）+ mod.rs:253 加 `?`（生产者 caller）+ db/mod.rs 测试 4 处 `let ok =` → `let r =` + 4 处 `assert!(!ok)` → `assert!(matches!(r, Err(_)))` / `assert!(ok)` → `assert!(r.is_ok())`（表示法变更，同首批 tasks.rs:185 处置）。
+  - 总面积：migrations.rs 4 行 + mod.rs 1 行 + db/mod.rs 测试 8 行 = **13 行**（首批估 3 行严重漏算）。
+  - 归类：error-not-propagated family（首批家族成员），不是 log-and-continue。
+  - 连带：error-visible-non-blocking family 重新引入 for C5-AP-06 only（前提变化——DB-01a-3 走真传播归 error-not-propagated，AP-06 仍 log-and-continue 形态；C5-AP-06 单独一批处理，不与 DB-01a-3 同批）。
+
+### 待核 / 后续 (Follow-up)
+
+- **PHASE2-TRIAGE-NEW-HANDLERS-1**: api_handlers/handlers.rs:342 (`create_task`) `let _ = after_change(...)` 吞 Err——同模式 silent-discard。Scope control：本批仅 api_server.rs + api_handlers/mod.rs + util.rs，未动 handlers.rs；handlers 层 silent-discard 是新发现，待独立批处理（OCR r1 21:49 报 high）。修复路径（OCR 建议）：用 `log_line` 替代 `let _ =` 或 propagate。
+- **PHASE2-TRIAGE-NEW-HANDLERS-2**: api_handlers/handlers.rs:496 (`update_task`) 同模式 silent-discard，同上处理。
+- **PHASE2-TRIAGE-NEW-HANDLERS-3**: api_handlers/handlers.rs:584 (`delete_task`) 同模式 silent-discard，同上处理。
 
 ### OCR 已知异常
 
@@ -264,3 +276,11 @@ triage 全跑完后、首批决策前，按大类把簇列出复查修复设施�
 - D2 三元组：行为断言 + 前置断言 + 反例断言（反例断言 = “若不满足 X，则行为是 Y”，不写“避免某错误”这种愿望陈述）
 - **拍板动作遇阻碍停手报**：拍板动作被执行时遇到编译/架构阻碍（签名不允许、类型不匹配、需动 N 调用点）→ 停手报，不降级。降级 = 改拍板 = 越权。可选项由用户拍（首批 17:14 AP-06 自决降级为反面案例）。
 - **批定性数字需自行加和核对**：拍板者提供的批性数字（条数 / 簇数 / 面积）不许沿用，必须自行加和后报（首批 13:40:34 拍板“4 条”实为 6 条，反身以该错数报上去）。
+
+**凭据 / 网络操作 SOP**：
+- 涉及网络 / 凭据的操作（`git push` / `git fetch` / 远端 API 调用 / SSH 认证 / HTTPS token）在执行前，若用户未显式提供凭据，应先报“将使用本机 [机制] 凭据”让用户知情。不阻断操作，但留痕（pre-exec 报告 1 句即可）。
+- 不报 = 凭据面下默认走本机 ssh-agent / osxkeychain / git credential.helper，用户事后可能不记得推送使用了哪个 key/账号。本 SOP 不追责“默认凭据调用”——仅要求“用户不知情时主动报”。
+- 反例：commit / add / diff / log 本地操作不需要报——不触网络。
+
+**待核（归下一批顺手核）**：
+- scripts/test-fast.sh → cargo nextest 子进程清理超时是否每次 push 都触发？若是 → push 每次都留 orphan 进程，归入 PROC-5 同类。
