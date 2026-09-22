@@ -124,7 +124,9 @@ impl EventHub {
         // 用 atomic_write（tmp+rename）落盘——fs::write 直写崩溃会留半截文件，
         // 重启 id 归 0 → 客户端 Last-Event-ID 去重静默丢全部新事件
         if let Some(p) = &self.id_path {
-            let _ = db::atomic_write(p, &id.to_string());
+            if let Err(e) = db::atomic_write(p, &id.to_string()) {
+                eprintln!("[event_hub] id persistence failed: {e}");
+            }
         }
         let msg = format!("id: {id}\ndata: {event}\n\n");
         if let Ok(mut h) = self.history.lock() {
