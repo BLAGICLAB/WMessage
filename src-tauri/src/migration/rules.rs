@@ -121,7 +121,12 @@ pub(crate) fn parse_rules_csv(text: &str) -> Result<RulesFile, crate::error::Com
         let action = match action_raw.as_str() {
             "移动归档" | "移动" | "move" | "Move" => "move".to_string(),
             "删除文件" | "删除" | "delete" | "Delete" => "delete".to_string(),
-            other if other.is_empty() => "move".to_string(),
+            other if other.is_empty() => {
+                return Err(crate::error::CommandError::DomainRule {
+                    domain: "csv".to_string(),
+                    reason: format!("第 {} 行动作为空（应填 移动归档 或 删除文件）", ri + 2),
+                })
+            }
             other => {
                 return Err(crate::error::CommandError::DomainRule {
                     domain: "csv".to_string(),
@@ -135,7 +140,13 @@ pub(crate) fn parse_rules_csv(text: &str) -> Result<RulesFile, crate::error::Com
         };
         let enabled = match get(ci_enable).as_str() {
             "是" | "true" | "True" | "TRUE" | "1" => true,
-            _ => false,
+            "否" | "false" | "False" | "FALSE" | "0" => false,
+            other => {
+                return Err(crate::error::CommandError::DomainRule {
+                    domain: "csv".to_string(),
+                    reason: format!("第 {} 行启用值「{}」无效（应填 是 或 否）", ri + 2, other),
+                })
+            }
         };
         let keywords: Vec<String> = kw_raw
             .split([',', '，', '、', ';', '；'])

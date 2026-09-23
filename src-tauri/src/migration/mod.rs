@@ -850,6 +850,46 @@ mod tests {
     }
 
     #[test]
+    fn parse_rules_csv_rejects_empty_action() {
+        // 空动作不再静默按 move 处理 → 行级报错（fail-closed）
+        let text = "启用,文件名关键字,动作,归档目录\n是,工资,,工资/{year}\n";
+        let err = parse_rules_csv(text).expect_err("空动作应报错");
+        assert!(
+            err.to_string().contains("第 2 行"),
+            "错误信息应指明行号：{err}"
+        );
+        assert!(
+            err.to_string().contains("动作"),
+            "错误信息应提到动作：{err}"
+        );
+    }
+
+    #[test]
+    fn parse_rules_csv_rejects_unknown_enabled() {
+        // 启用列白名单外 token（含空）→ 行级报错，不再静默按 false 处理
+        let text = "启用,文件名关键字,动作,归档目录\nmaybe,工资,移动归档,工资/{year}\n";
+        let err = parse_rules_csv(text).expect_err("未知启用值应报错");
+        assert!(
+            err.to_string().contains("maybe"),
+            "错误信息应提到无效启用值：{err}"
+        );
+        assert!(
+            err.to_string().contains("第 2 行"),
+            "错误信息应指明行号：{err}"
+        );
+    }
+
+    #[test]
+    fn parse_rules_csv_accepts_explicit_disabled_variants() {
+        // 显式关闭白名单：否 / false / 0
+        let text =
+            "启用,文件名关键字,动作,归档目录\n否,a,删除文件,\nfalse,b,删除文件,\n0,c,删除文件,\n";
+        let rules = parse_rules_csv(text).expect("显式关闭变体应可解析");
+        assert_eq!(rules.rules.len(), 3);
+        assert!(rules.rules.iter().all(|r| !r.enabled));
+    }
+
+    #[test]
     fn validate_rules_accepts_delete_without_archive_dir() {
         // delete 规则允许 archive_dir 为空
         let rf = RulesFile {
