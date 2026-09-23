@@ -14,7 +14,7 @@ journal.rs:15-17 注释明示）。
 - family: race/TOCTOU（单写者纪律收口）
 - 覆盖 findings: 1（C5-MI-04b，journal.rs:126 find_pending 无锁 → 实际竞态对在 run.rs
   spawn_polling 的 replay 调用点，行号漂移已核）
-- 预估 diff: 1 file / +14/-2 lines（B 类：插入守卫等待块）
+- 预估 diff: 1 file / +26/-3 lines（B 类：插入守卫等待块；OCR r1 critical 采纳后 + 作用域限制块 + 等待上限，budget 校正一次 14→26）
 - OCR 计划: r1, timeout 1800s, 期望 comments ≤ 2
 
 ## 红线
@@ -61,8 +61,8 @@ spec 被 reviewer 批准后:
   "expected_files": [
     "src-tauri/src/migration/run.rs"
   ],
-  "max_lines_added": 14,
-  "max_lines_removed": 2,
+  "max_lines_added": 26,
+  "max_lines_removed": 3,
   "findings": [
     {"id": "C5-MI-04b", "file": "src-tauri/src/migration/run.rs", "line": 410, "fix": "spawn_polling 启动 replay 前等待获取 MigrationGuard（5s 轮询 acquire），与 run_migration 互斥 → journal find+act 单写者化。竞态对两端：run.rs:139/:276（guarded run 内 find_pending→decide→committed）vs run.rs:410（unguarded replay 写 journal）。无 ripple：签名不变；Finding 原文所述 journal.rs:126 无锁 SELECT 本身保留（WAL 下读写不互斥，注释已述），关闭的是并发写者"}
   ],
