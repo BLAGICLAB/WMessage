@@ -32,7 +32,7 @@ pub fn ensure_files_column(conn: &rusqlite::Connection) -> Result<(), String> {
 }
 
 /// 多文件绑定：老单绑定 file_path/file_is_dir → files JSON
-pub fn migrate_legacy_file_bindings(conn: &rusqlite::Connection) -> Result<usize, String> {
+pub fn migrate_legacy_file_bindings(conn: &mut rusqlite::Connection) -> Result<usize, String> {
     let rows: Vec<(String, String, Option<i64>)> = {
         let mut stmt = conn
             .prepare(
@@ -48,6 +48,7 @@ pub fn migrate_legacy_file_bindings(conn: &rusqlite::Connection) -> Result<usize
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?
     };
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
     let mut n = 0;
     for (id, path, is_dir) in rows {
         let files = serde_json::to_string(&vec![super::TaskFile {
@@ -55,13 +56,14 @@ pub fn migrate_legacy_file_bindings(conn: &rusqlite::Connection) -> Result<usize
             is_dir: is_dir.map(|v| v != 0).unwrap_or(false),
         }])
         .map_err(|e| e.to_string())?;
-        conn.execute(
+        tx.execute(
             "UPDATE tasks SET files = ?1 WHERE id = ?2",
             rusqlite::params![files, id],
         )
         .map_err(|e| e.to_string())?;
         n += 1;
     }
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(n)
 }
 

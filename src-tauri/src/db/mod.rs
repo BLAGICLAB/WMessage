@@ -73,7 +73,7 @@ pub fn open_db<R: tauri::Runtime>(
             }
         }
     }
-    let conn = rusqlite::Connection::open(&db_path).map_err(|e| e.to_string())?;
+    let mut conn = rusqlite::Connection::open(&db_path).map_err(|e| e.to_string())?;
     // busy_timeout **有意保留 2s，不调 5000ms**：进程内写者已由 DB_WRITE_LOCK 串行化
     conn.busy_timeout(Duration::from_secs(2))
         .map_err(|e| e.to_string())?;
@@ -190,7 +190,7 @@ pub fn open_db<R: tauri::Runtime>(
             .map_err(|e| e.to_string())?;
     }
     migrations::ensure_files_column(&conn)?;
-    let migrated = migrations::migrate_legacy_file_bindings(&conn)?;
+    let migrated = migrations::migrate_legacy_file_bindings(&mut conn)?;
     if migrated > 0 {
         crate::audit::write_event(
             app,
@@ -569,7 +569,7 @@ mod tests {
     /// 覆盖：文件绑定、文件夹绑定（is_dir=1）、未绑定不动、幂等重跑不重复迁移。
     #[test]
     fn legacy_file_binding_migrates_to_files_column() {
-        let (dir, conn) = setup_legacy_tasks_db();
+        let (dir, mut conn) = setup_legacy_tasks_db();
         conn.execute_batch(
             "INSERT INTO tasks (id, title, file_path, file_is_dir, col) VALUES
                ('t-file', '绑文件', '/tmp/a.pdf', 0, 'todo'),
@@ -580,7 +580,7 @@ mod tests {
 
         ensure_files_column(&conn).unwrap();
         assert_eq!(
-            migrate_legacy_file_bindings(&conn).unwrap(),
+            migrate_legacy_file_bindings(&mut conn).unwrap(),
             2,
             "两条老绑定应迁移"
         );
@@ -623,7 +623,7 @@ mod tests {
 
         // 幂等：再跑一次迁移条数为 0，files 不变
         assert_eq!(
-            migrate_legacy_file_bindings(&conn).unwrap(),
+            migrate_legacy_file_bindings(&mut conn).unwrap(),
             0,
             "重跑不得重复迁移"
         );
@@ -633,7 +633,7 @@ mod tests {
     /// 已有 files 的任务不被老列回填覆盖（files 非空 → 跳过）
     #[test]
     fn migration_skips_tasks_with_existing_files() {
-        let (dir, conn) = setup_legacy_tasks_db();
+        let (dir, mut conn) = setup_legacy_tasks_db();
         conn.execute_batch(
             "INSERT INTO tasks (id, title, file_path, file_is_dir, col) VALUES
                ('t1', '已迁移过', '/tmp/old.txt', 0, 'todo');",
@@ -646,7 +646,7 @@ mod tests {
             [],
         )
         .unwrap();
-        assert_eq!(migrate_legacy_file_bindings(&conn).unwrap(), 0);
+        assert_eq!(migrate_legacy_file_bindings(&mut conn).unwrap(), 0);
         let t = &load_all(&conn).unwrap()[0];
         assert_eq!(
             t.files.as_deref().unwrap()[0].path,
