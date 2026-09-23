@@ -325,6 +325,20 @@ run A 仅靠 /tmp/ocr-APW-02b-r1.clean.json 找回。cache 命名亦误导：
 
 ## 4. 累计
 
+### EVNB-01 follow-up 登记（2026-09-23, commit 9b0d767）
+
+- **EVNB-01-OCR-1（medium/maintainability，挂起）**：keyring.rs:276 遗留清理失败走
+  eprintln（stderr 易逝）而非 bot.log。OCR 建议 thread `&AppHandle` 进 `delete_api_key_at`
+  ——**涉签名变更 + 调用点 ripple，超本批红线**；且 family 语义（error-visible-non-blocking）
+  已由 eprintln 满足（与 C5-AP-06 同先例）。若未来统一"bot 域错误落 bot.log"标准，随该批一并做。
+- **PROC-5 type 1 复发（n=2）**：EVNB-01 OCR r1（/tmp/ocr-EVNB-01-20260923-224348.json）run 内
+  `file_read failed: start_line 200 > end_line 100`——与首批 1fcc418 同类。本次 review 本体
+  complete（1 finding 产出），非整 run 失败。**type 1 累积 n=2，达单批评估触发线**（同 type 3
+  的 n=2 规则）；是否开评估批由 reviewer 排期。
+- 【OCR 原文核验记录（EVNB-01）】r1 = /tmp/ocr-EVNB-01-20260923-224348.json（原始首行为
+  [ocr] 错误行，.clean.json 为剥首行后解析版）：status=complete / comments=1（medium，
+  即 EVNB-01-OCR-1）/ 0 high / 4m33s / tool failure 1（file_read）。
+
 **已 triage（脚本 DOMAINS 12 域，不含 frontend）**: 145 unique
 
 **其他域（含 frontend 9 簇 / 52 条）**: 126 unique
