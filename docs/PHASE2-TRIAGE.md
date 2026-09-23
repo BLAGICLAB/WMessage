@@ -30,6 +30,7 @@
 - [2026-09-23 23:50 CST] DB-04 收口（commit c9a3041）：C5-DB-04 全簇 2 条已修——bot_session_rename 空标题 fail-closed（InvalidArgument）+ tasks_import 复用 check_export_path + 64MiB 读侧 bounded 强制。OCR r1 2 comments（medium TOCTOU + low 文案截断，同根=本批新代码）均采纳入批（metadata 预检 → bounded reader）。db 域 7 簇剩 2 簇未清：DB-03（race/TOCTOU）、DB-05 余 3 条（均 B 类候选）。
 - [2026-09-24 00:02 CST] MI-04a 收口（commit 414cf08）：C5-MI-04a（journal_pending 无条件 INSERT → 同 key 孤儿 pending）已修——持锁内 check-then-reuse（零 schema 变更；UNIQUE partial index 选项因既有库可能含重复行会建索引失败而弃）。OCR r1 1 low（双写分配）采纳。既有库孤儿 pending 清理 = 数据迁移方向，B 类攒批。migration 域剩 3 簇：MI-04b、MI-05a/b、MI-08。
 - [2026-09-24 00:20 CST] MI-04b 收口（commit 5819f76）：C5-MI-04b（journal find+act TOCTOU）已修——核后真实竞态对 = spawn_polling 启动 replay（无 MigrationGuard）vs run_migration（有）；修法 = replay 挂守卫（不取 try_claim 状态机变更；DB_WRITE_LOCK 包 find+act 因 db_upsert 重入死锁不可取）。OCR r1 抓回本批自引入 critical（guard 作用域泄漏会永久锁死后台迁移）→ 修复 + r2 验证 0 critical/0 high。migration 域剩 2 簇：MI-05a/b、MI-08。
+- [2026-09-24 00:40 CST] MI-08 收口（commit bbe4f59）：C5-MI-08 全簇 2 条已修——CSV 表头 contains → 别名集精确匹配 + 重复列拒绝；archive_dir `..` 组件拒绝（resolve_archive_dir 单点 + validate_rules 导入期早错）。OCR r1 5 comments：3 采纳（注释行为不一致 / 别名展示 / 契约钉测试），2 挂起（symlink 逃逸 → 并入 B 类绝对路径 policy 项；破坏性变更用户提示）。**migration 域 10 簇全清**（MI-05a spawn_blocking 无 abort + MI-05b sync block_on 转入 B 类/待核区——见 §2 标注）。
 
 ## 1. 跨域同模式家族
 
@@ -98,11 +99,11 @@
 - C5-MI-03：failure-recovery-default-value（migration/rules.rs:27 + :121，破坏数据：rules 默认覆盖 + CSV 输入 coerce），2 条 → **:121 已修（FRDV-01，commit 46f8437）；剩 :27（B 类候选，攒批待拍）**
 - C5-MI-04a：migration/journal.rs:34 INSERT 无去重，1 条 → **已修（MI-04a，commit 414cf08）**
 - C5-MI-04b：migration/journal.rs:126 unlocked find+act TOCTOU，1 条 → **已修（MI-04b，commit 5819f76；replay 纳入 MigrationGuard）**
-- C5-MI-05a：migration/commands.rs:116 spawn_blocking 无 abort，1 条
-- C5-MI-05b：migration/commands.rs:19 + recovery.rs:197 sync/block_on 阻塞，2 条，**跨域阻塞族待核**
+- C5-MI-05a：migration/commands.rs:116 spawn_blocking 无 abort，1 条 → **B 类候选**（修法 = CancellationToken 贯穿 run_migration 阶段 + 取消语义方向「迁一半的文件怎么办」，签名改 + 语义变更，攒批报人拍）
+- C5-MI-05b：migration/commands.rs:19 + recovery.rs:197 sync/block_on 阻塞，2 条，**跨域阻塞族待核**（§3 待核区明确「不现在动」）
 - C5-MI-06：migration/ops.rs:127 copy_dir_recursive mid-fail → dst 部分填充（**atomicity/partial-write 家族**），1 条
 - C5-MI-07：migration/ops.rs:202 路径不一致（rotation target ≠ write target），1 条 → **已修（MI-07，commit 613e07a）**
-- C5-MI-08：migration/rules.rs:99 + :67 解析脆 / 校验缺（批内 2 处独立改动：contains 太宽松 + archive_dir 无路径校验 = 1 security），2 条
+- C5-MI-08：migration/rules.rs:99 + :67 解析脆 / 校验缺（批内 2 处独立改动：contains 太宽松 + archive_dir 无路径校验 = 1 security），2 条 → **已修（MI-08，commit bbe4f59；archive_dir 绝对路径收窄部分转 B 类）**
 
 ### 域 scripts（5 簇 / 10 findings）
 - C5-SC-01：shell 解析脆（sync-version.mjs:11 + ci-guard-tiny-http-vendor.sh:46 + :27），3 条
@@ -278,7 +279,7 @@ DB-01b-BT-01b 收口后自查发现 4 项 follow-up：
 
 - **OCR: unavailable**：首批 commit 无 OCR 复审。工具内部 file_read 参数错（start_line 80 > end_line 60）。证据目录 `~/.openclaw/cache/ocr-C5-B1-failure/` 已建但文件未完整落盘。三层自测（fmt + check + test-all 全绿）代替 OCR 复审。
 - **PROC-5: OCR 工具与 infra 稳定性**
-  - 类型 1: file_read tool-bug（start_line > end_line），证据: 1fcc418 批次 + EVNB-01（n=2）+ EVNB-02 单 run 4 次（n=3）+ FRDV-01（n=4）+ MI-07 单 run 2 次（**n=5**，超触发线仍复发，评估批待 reviewer 排期）
+  - 类型 1: file_read tool-bug（start_line > end_line），证据: 1fcc418 批次 + EVNB-01（n=2）+ EVNB-02 单 run 4 次（n=3）+ FRDV-01（n=4）+ MI-07 单 run 2 次（n=5）+ MI-08 单 run 2 次（**n=6**，超触发线仍复发，评估批待 reviewer 排期）
   - 类型 2: timeout-class hang（SIGKILL / stdout 0 bytes），证据: APW-02a 批次
   - 类型 3: rate-limit（HTTP 429 重试耗尽，status=failed，comments=null），证据: APW-02b 批次 + BT-01a 批次（**n=2**）
   - 累积规则: 同类 ≥2 次触发单批评估 OCR 调用方式调整 —— **type 3 已 n=2，触发条件达成**（待评估项：退避策略 / 调用频率 / 供应商限流配额；本轮不动作，开独立评估）
