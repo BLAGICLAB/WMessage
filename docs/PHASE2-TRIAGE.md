@@ -32,8 +32,9 @@
 - [2026-09-24 00:20 CST] MI-04b 收口（commit 5819f76）：C5-MI-04b（journal find+act TOCTOU）已修——核后真实竞态对 = spawn_polling 启动 replay（无 MigrationGuard）vs run_migration（有）；修法 = replay 挂守卫（不取 try_claim 状态机变更；DB_WRITE_LOCK 包 find+act 因 db_upsert 重入死锁不可取）。OCR r1 抓回本批自引入 critical（guard 作用域泄漏会永久锁死后台迁移）→ 修复 + r2 验证 0 critical/0 high。migration 域剩 2 簇：MI-05a/b、MI-08。
 - [2026-09-24 00:40 CST] MI-08 收口（commit bbe4f59）：C5-MI-08 全簇 2 条已修——CSV 表头 contains → 别名集精确匹配 + 重复列拒绝；archive_dir `..` 组件拒绝（resolve_archive_dir 单点 + validate_rules 导入期早错）。OCR r1 5 comments：3 采纳（注释行为不一致 / 别名展示 / 契约钉测试），2 挂起（symlink 逃逸 → 并入 B 类绝对路径 policy 项；破坏性变更用户提示）。**migration 域 10 簇全清**（MI-05a spawn_blocking 无 abort + MI-05b sync block_on 转入 B 类/待核区——见 §2 标注）。
 
-## 1. 跨域同模式家族
+- [2026-09-24 01:00 CST] AP-03 收口（commit a78de81）：C5-AP-03 全簇 2 条已修——ratelimit.rs 访问日志 4 字符 replace 链 → sanitize_log_line 全控制字符转义（is_control + U+2028/U+2029 显式臂，\r\n\t\0 短形式不变）；并发写撕裂 → static LOG_WRITE Mutex 包 rotate+append 整段（C3-1 poison 形态）。OCR r1 4 low：3 采纳（2028/2029 两臂 + 测试扩展 + capacity×2），1 不采纳（锁注释——静态文档注释已覆盖）。budget 校正一次（+60→+70，OCR 采纳所致）。新发现登记 PHASE2-TRIAGE-NEW-3（audit.rs 同族两站，见 §3.5）。spec budget 校正 6dd509b / spec 立项 3d43265。
 
+## 1. 跨域同模式家族
 按"错误去哪了" + "是否破坏数据"两轴判，**4 家族**（poisoned-silent-recovery 已溶解 — 见执行日志；error-visible-non-blocking 已重新引入 for C5-AP-06 only — 见 §3.5 异常 2 更新）：
 
 ### error-not-propagated（错误信号丢失，调用方收到空/无，**不破坏已有数据**）
@@ -115,7 +116,7 @@
 ### 域 api（7 簇 / 14 findings）
 - C5-AP-01：TOCTOU race（api_auth.rs:27 + api_handlers/commands.rs:61 + :238 + api_server.rs:208），4 条
 - C5-AP-02：symlink + 权限（api_auth.rs:73），1 条
-- C5-AP-03：日志输出缺陷（api_handlers/ratelimit.rs:45 + :36，批内 2 处独立改动），2 条
+- C5-AP-03：日志输出缺陷（api_handlers/ratelimit.rs:45 + :36，批内 2 处独立改动），2 条 → **已修（AP-03，commit a78de81）**
 - C5-AP-04：SSE writer 缺陷（api_handlers/sse.rs:196 + :183），2 条
 - C5-AP-05：持锁跨 I/O（api_handlers/handlers.rs:277 + :405 + :561），3 条
 - C5-AP-06：静默吞错（api_server.rs:126），1 条，**error-not-propagated 家族**
@@ -173,6 +174,7 @@
 
 - **PHASE2-TRIAGE-NEW-1**：bot_py.rs:694 + bot_py.rs:705 测试代码内 silent into_inner，无 eprintln 缓解措施。源 OCR 标的是 :945（有 eprintln），这两处不在 OCR 范围。是 silent 路径，与 C3-1 约定（带 eprintln）不一致。是否需引入 Phase 2 high 待评估。**不并入 BT-02 / MI-01**（"顺手扩"是 triage 层禁忌）。
 - **PHASE2-TRIAGE-NEW-2**（2026-09-23 EVNB-02 批登记）：db / migration / bot.config 三域 **12 处同形静默 into_inner**，均不在源 OCR 271 high 名单。站点（±3 行上下文 grep 核实无 eprintln，2026-09-23 23:2x 工作树）：workspace.rs:173 / :189 / :278、bot_history.rs:89 / :108、bot_sessions.rs:78 / :100 / :112、migration/ops.rs:236 / :246、bot/config/audit.rs:26、bot/config/mod.rs:581。与 C3-1 约定（logged 恢复）不一致。EVNB-02 只修 OCR 名单内 2 站，**不顺手扩**（triage SOP）。修复形态预期与 EVNB-02 相同（统一走 `lock_db_write()` 或补 eprintln），下一轮评估是否引入 Phase 2 工单。注：bot_skills/* 与 py/* 域另有大量 into_inner 站点，多数已有 eprintln（BT-02 先例），本登记仅含已核实静默的 12 处。
+- **PHASE2-TRIAGE-NEW-3**（2026-09-24 AP-03 批登记）：bot/config/audit.rs 两处同族缺口，均不在 OCR 271 high 名单——(a) `escape_for_log` 只转义 `|` `\n` `\r`，缺 `\t` / `\0` / ESC 等其余控制字符（AP-03 sanitize_log_line 已覆盖的全集）；(b) audit.rs:302 `audit_log` 与 ratelimit.rs 同形态 rotate+append 无锁，并发写可撕裂。AP-03 只修 ratelimit.rs（OCR 名单内），**不顺手扩**（triage SOP）。修复形态预期：复用/对齐 sanitize_log_line + LOG_WRITE 同款锁，下一轮评估是否引入 Phase 2 工单。
 
 ### 跨域一致性检查第一步（triage 全跑完后那一步）
 
@@ -405,6 +407,14 @@ run A 仅靠 /tmp/ocr-APW-02b-r1.clean.json 找回。cache 命名亦误导：
   （1 critical guard 作用域泄漏 + 2 medium 等待无上限 + 2 重复条目；同根=本批新代码，
   全部采纳修复）；r2 = /tmp/ocr-MI-04b-r2-20260924-001839.clean.json（0 critical / 0 high /
   3 comments = 上述三条；tool failure 0；critical 修复验证通过）。
+
+### AP-03 follow-up 登记（2026-09-24, commit a78de81）
+
+- **AP-03-OCR-1（low，不采纳登记）**：OCR 建议在 LOG_WRITE 锁处加注释命名锁覆盖的三步
+  ——不采纳：`static LOG_WRITE` 的文档注释已写明"串行化 rotate+append"，再加是重复。
+- 【OCR 原文核验记录（AP-03）】r1 = ~/.openclaw/cache/AP-03/ocr-r1-20260924-005403.json
+  （status complete；4 comments 全 low：锁注释[不采纳] / capacity×2[采纳] /
+  U+2028-U+2029 未覆盖[采纳，同根] / 测试扩展[采纳]；tool failure 0；elapsed 1m25s）。
 
 **已 triage（脚本 DOMAINS 12 域，不含 frontend）**: 145 unique
 
