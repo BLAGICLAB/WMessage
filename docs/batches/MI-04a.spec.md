@@ -12,7 +12,7 @@ C5-MI-04a：journal_pending 无条件 INSERT 新 pending 行——同 (task_id, 
 - family: 无跨域 family（journal 完整性单点 bug；finding 原文建议二选一：UNIQUE partial
   index **或** 复用既有 id——本批取后者，零 schema 变更）
 - 覆盖 findings: 1（C5-MI-04a，journal.rs:34 → 实际 :36 的 INSERT，行号漂移已核）
-- 预估 diff: 2 files / +65/-18 lines（B 类：inner 函数体重写 + 既有测试块改写 + 新测试）
+- 预估 diff: 2 files / +70/-18 lines（实测 +66/-3，added 超估 1 行 = 估算错，按 SOP 校正一次）（B 类：inner 函数体重写 + 既有测试块改写 + 新测试）
 - OCR 计划: r1, timeout 1800s, 期望 comments ≤ 3
 
 ## 红线
@@ -63,7 +63,7 @@ spec 被 reviewer 批准后:
     "src-tauri/src/migration/journal.rs",
     "src-tauri/src/migration/mod.rs"
   ],
-  "max_lines_added": 65,
+  "max_lines_added": 70,
   "max_lines_removed": 18,
   "findings": [
     {"id": "C5-MI-04a", "file": "src-tauri/src/migration/journal.rs", "line": 36, "fix": "journal_pending_inner 先 SELECT 同 (task_id,src) 最新 pending，存在则 UPDATE 刷新 op/dst/created_at 并复用其 id（持锁内 check-then-act，原子性由 db_write_lock 保证），否则原样 INSERT。ripple：migration/mod.rs:393-416 测试块编码旧行为（同 key 双 pending 取 id 最大者），改写为新不变量（复用同 id + dst 刷新）；新增 journal_pending_dedups_same_key 测试（id 复用 + pending 行数恒 1 + op/dst 刷新）"}
