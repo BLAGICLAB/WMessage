@@ -250,19 +250,22 @@ pub(crate) fn move_remove_permanently_failed(src: &str) -> bool {
 // ───────────────────────── 日志 / 事件 ─────────────────────────
 
 pub(crate) fn log_line(app: &AppHandle, line: &str) {
-    let log_path = super::rules::log_path(app);
+    // rotation 与 append 共用同一次 canonicalize 的结果：旧实现 rotation 走
+    // rules::log_path（未 canonicalize）、append 走 canonicalize 后的路径，
+    // 数据目录穿 symlink 时两者可分裂（rotation 改名一个拼写、写入仍进另一个）。
+    let raw = db::data_dir(app);
+    let dir = std::fs::canonicalize(&raw).unwrap_or_else(|_| raw);
+    let log_path = dir.join(super::rules::LOG_FILE);
     crate::db::rotate_log_if_large(&log_path, 5 * 1024 * 1024);
     let full = format!("[{}] {line}", now_str());
-    if let Ok(dir) = std::fs::canonicalize(db::data_dir(app)) {
-        let _ = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(dir.join(super::rules::LOG_FILE))
-            .and_then(|mut f| {
-                use std::io::Write;
-                writeln!(f, "{full}")
-            });
-    }
+    let _ = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .and_then(|mut f| {
+            use std::io::Write;
+            writeln!(f, "{full}")
+        });
     // 无论如何也打到开发日志，便于排查
     println!("[migration] {full}");
 }
