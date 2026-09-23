@@ -144,21 +144,25 @@ pub fn broadcast_after_mutation<R: tauri::Runtime>(
     }
 }
 
-async fn active_tasks(app: &AppHandle) -> Vec<crate::db::Task> {
-    crate::db::db_load(app.clone())
-        .await
-        .unwrap_or_default()
+async fn active_tasks(app: &AppHandle) -> Result<Vec<crate::db::Task>, String> {
+    let tasks = crate::db::db_load(app.clone()).await?;
+    Ok(tasks
         .into_iter()
         .filter(|t| {
             t.deleted_at.is_none() && t.archived != Some(true) && t.column != TaskStatus::Done
         })
-        .collect()
+        .collect())
 }
 
 // ───────────────────────── 任务管理工具实现（20+ functions） ─────────────────────────
 
 pub(crate) async fn tool_list_tasks(app: &AppHandle) -> crate::bot::registry::ToolResult {
-    let tasks = active_tasks(app).await;
+    let tasks = match active_tasks(app).await {
+        Ok(t) => t,
+        // 设计意图(dispatch.rs:402-404)：失败走 ok 而非 err，避免 severity classifier
+        // 把 DB 错误误判为 fatal。family=error-not-propagated 要求 Err 可见，故文本前缀明示。
+        Err(e) => return ToolResult::ok(format!("查询任务失败：{e}"), Vec::new()),
+    };
     if tasks.is_empty() {
         return ToolResult::ok("当前没有未完成的任务".to_string(), Vec::new());
     }
@@ -512,11 +516,14 @@ pub(crate) async fn tool_delete_task(
 }
 
 /// 按标题关键词找第一条未完成任务（大小写不敏感）
-async fn find_task_by_keyword(app: &AppHandle, kw: &str) -> Option<crate::db::Task> {
-    active_tasks(app)
-        .await
+async fn find_task_by_keyword(
+    app: &AppHandle,
+    kw: &str,
+) -> Result<Option<crate::db::Task>, String> {
+    let tasks = active_tasks(app).await?;
+    Ok(tasks
         .into_iter()
-        .find(|t| t.title.to_lowercase().contains(kw))
+        .find(|t| t.title.to_lowercase().contains(kw)))
 }
 
 /// 定位任务：优先 taskId 精确匹配，其次标题关键词模糊匹配。
@@ -528,13 +535,16 @@ async fn resolve_task(
     if let Some(id) = v["taskId"].as_str() {
         let id = id.trim();
         if !id.is_empty() {
-            if let Some(t) = active_tasks(app).await.into_iter().find(|t| t.id == id) {
+            let tasks = active_tasks(app)
+                .await
+                .map_err(|e| CommandError::DbError(format!("读取未完成任务失败：{e}")))?;
+            if let Some(t) = tasks.into_iter().find(|t| t.id == id) {
                 // 交叉校验：同窗格连续操作不同任务卡时，模型会沿用上一张卡的
                 // taskId 张冠李戴。taskId 与 title 关键词同时给出且对不上 → 不信 id，
                 // 改用 title 重新定位（定位不到就报错，让模型/用户确认）
                 if let Some(kw) = v["title"].as_str().map(|s| s.trim().to_lowercase()) {
                     if !kw.is_empty() && !t.title.to_lowercase().contains(&kw) {
-                        if let Some(t2) = find_task_by_keyword(app, &kw).await {
+                        if let Some(t2) = find_task_by_keyword(app, &kw).await? {
                             return Ok(t2);
                         }
                         return Err(CommandError::DomainRule {
@@ -558,7 +568,7 @@ async fn resolve_task(
     if let Some(kw) = v["title"].as_str() {
         let kw = kw.trim().to_lowercase();
         if !kw.is_empty() {
-            if let Some(t) = find_task_by_keyword(app, &kw).await {
+            if let Some(t) = find_task_by_keyword(app, &kw).await? {
                 return Ok(t);
             }
             return Err(CommandError::DomainRule {

@@ -126,7 +126,7 @@ fn upsert_workspace_unchecked(
                 it.id,
                 it.title,
                 it.collapsed.map(|v| v as i64),
-                serde_json::to_string(&it.links).unwrap_or_else(|_| "[]".into()),
+                serde_json::to_string(&it.links).map_err(|e| e.to_string())?,
                 it.order,
                 it.updated_at,
             ])
@@ -251,7 +251,7 @@ fn workspace_import_merge_unchecked(
                     it.id,
                     it.title,
                     it.collapsed.map(|v| v as i64),
-                    serde_json::to_string(&it.links).unwrap_or_else(|_| "[]".into()),
+                    serde_json::to_string(&it.links).map_err(|e| e.to_string())?,
                     it.order,
                     it.updated_at,
                 ],
