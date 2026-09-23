@@ -404,7 +404,8 @@ B. 结构性重写（函数体搬移 / 顶层重排 / 新增 helper / 整块嵌�
 3. 若 3 次全挂 → 等 5min 再试 1 次；成功 → 窗口 5min 级，B（间隔 5min+）成主选；
    挂 → 等 30min 再试 1 次；成功 → 窗口 30min 级，需先拍"OCR 是否允许延后到批后
    异步跑"（与 batch discipline 冲突）；挂 → 窗口非分钟级，C（换 quota pool）成主选
-4. 每次 429 的完整时间序列落 `~/.openclaw/cache/ocr-429-observations.log`
+4. 每次 429 的完整时间序列落 `~/.openclaw/cache/ocr-429-observations.log`；
+   **同时记录当日累计 OCR 调用次数**（判定"偶发"vs"系统性限流"需全天数据）
 5. n 到 3 次后回看数据，拍 A/B/C
 
 **凭据 / 网络操作 SOP**：
