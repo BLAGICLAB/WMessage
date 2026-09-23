@@ -41,6 +41,9 @@ C5-BT-01a 剩余 2 条（前 3 条已在前批修复）：
    无签名 ripple。✓
 2. budget → B 类：runtime.rs transitioned 标记 + 审计块 +10/-0；bot_scheduler.rs 两处
    is_ok→match 各 +8/-1 ≈ +16/-2；注释微调 +4。合计 ≈+30/-2 → budget +40/-10。✓
+   校正一次（OCR r1：high 同根采纳——:1006 普通聊天路径每轮调 skill_finish(true,"")，
+   零迁移日志须加 session_has_run 闸门防刷；2 low 采纳——ids 列表 truncate 200）：
+   实际 +42/-10 → budget 校正为 +50/-10。
 3. findings fix 字段列 ripple → runtime.rs 签名不变无 ripple；finding 1 的源站
    scheduler.rs:428 本身代码行不动（修在被调函数内），fix 字段注明。✓
 
@@ -72,10 +75,10 @@ spec 被 reviewer 批准后:
     "src-tauri/src/bot_skills/runtime.rs",
     "src-tauri/src/bot_scheduler.rs"
   ],
-  "max_lines_added": 40,
+  "max_lines_added": 50,
   "max_lines_removed": 10,
   "findings": [
-    {"id": "C5-BT-01a.4", "file": "src-tauri/src/bot_skills/runtime.rs", "line": 368, "fix": "skill_finish 加 transitioned 标记；ok=true 且零迁移时 audit_log_hook(skill_finish_no_transition)。源 finding 站 scheduler.rs:428 的 let _ = 本身无害（返回值 ok 路径恒空串），真实缺口=零迁移不可见，修在被调函数内。ripple：无（签名不变）"},
+    {"id": "C5-BT-01a.4", "file": "src-tauri/src/bot_skills/runtime.rs", "line": 368, "fix": "skill_finish 加 transitioned + session_has_run 双标记；ok=true 且零迁移且该 session 有 run 记录时 audit_log_hook(skill_finish_no_transition)——session_has_run 闸门防 bot_model_loop:1006 普通聊天路径每轮刷日志（OCR r1 同根 high 采纳）。源 finding 站 scheduler.rs:428 的 let _ = 本身无害（返回值 ok 路径恒空串），真实缺口=零迁移不可见，修在被调函数内。ripple：无（签名不变）"},
     {"id": "C5-BT-01a.5", "file": "src-tauri/src/bot_scheduler.rs", "line": 263, "fix": "find_due_tasks 两处 db_upsert .is_ok() → match：Ok 广播不变；Err → audit_log（sched_stale_cleanup_failed / sched_missed_mark_failed，err truncate 200）。ripple：无（函数签名不变）"}
   ],
   "assertions_min": {
