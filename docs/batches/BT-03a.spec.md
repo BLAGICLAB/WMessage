@@ -55,6 +55,8 @@ tests/ 下如有）。两文件当前 assert 数均为 0。
    *_locked 为新增 pub(crate) 内核）。✓
 2. budget → B 类：设施 A+B ≈+45；io.rs 5 写点替换 ≈+25/-15；schema.rs 双检 + 拆内核
    ≈+20/-8；测试 +20。合计 ≈+110/-23 → budget +120/-30。✓
+   校正一次（OCR r1 三采纳：父目录 fsync / migrate_search_keys 审计移到放锁后 /
+   rename 失败清理补测试）：实际 +163/-14 → budget +170/-30。
 3. findings fix 字段列 ripple → write_bot_config_file 签名不变（commands.rs 调用点不动）；
    migrate_config_file 签名不变（schema.rs 内 + tests 调用点不动）；新增 static/helper
    无 ripple。✓
@@ -87,7 +89,7 @@ spec 被 reviewer 批准后:
     "src-tauri/src/bot/config/io.rs",
     "src-tauri/src/bot/config/schema.rs"
   ],
-  "max_lines_added": 120,
+  "max_lines_added": 170,
   "max_lines_removed": 30,
   "findings": [
     {"id": "C5-BT-03.1", "file": "src-tauri/src/bot/config/io.rs", "line": 100, "fix": "write_bot_config_file 的 std::fs::write → write_config_atomic（tmp+fsync+rename+失败清 tmp）；拆 write_bot_config_file_locked 无锁内核防 update_config_file 自锁。ripple：无（签名不变）"},
@@ -96,7 +98,7 @@ spec 被 reviewer 批准后:
     {"id": "C5-BT-03.4", "file": "src-tauri/src/bot/config/schema.rs", "line": 178, "fix": "SCHEMA_MIGRATION_CHECKED check-then-act → 锁外快路径 + 锁内复查双检（锁=CONFIG_WRITE_LOCK）。ripple：无"}
   ],
   "assertions_min": {
-    "src-tauri/src/bot/config/io.rs": 3,
+    "src-tauri/src/bot/config/io.rs": 5,
     "src-tauri/src/bot/config/schema.rs": 0
   },
   "ocr_plan": {
