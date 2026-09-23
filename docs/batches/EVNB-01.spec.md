@@ -33,8 +33,8 @@ error-visible-non-blocking family 收口：BT-01a 退批登记的 2 条（C5-BT-
     "src-tauri/src/bot/config/commands.rs",
     "src-tauri/src/bot/config/keyring.rs"
   ],
-  "max_lines_added": 16,
-  "max_lines_removed": 6,
+  "max_lines_added": 28,
+  "max_lines_removed": 5,
   "findings": [
     {
       "id": "C5-BT-01a-1",
@@ -89,7 +89,10 @@ error-visible-non-blocking family 收口：BT-01a 退批登记的 2 条（C5-BT-
 | 2 | keyring.rs:275-277 3 行 → 7 行（r.is_ok() 守卫 + 嵌套错误分流） | A | 7 | 3 |
 | **合计** | | | **15** | **5** |
 
-**budget: max_lines_added: 16 / max_lines_removed: 6**（预估 +15/-5；执行时按 numstat 校正一次）
+**budget: max_lines_added: 28 / max_lines_removed: 5**（初估 +15/-5，实测 +28/-5——
+A 类公式未计 rustfmt 多行展开开销：嵌套调用 `audit_log(&app, &format!(...))` 超行宽被 fmt
+拆成 8 行。估算错一次校正，scope 未变（同 2 findings / 同 2 文件 / 同形态）。
+公式教训：含嵌套调用的行内展开应按 fmt 后行数估，不按逻辑行数估。）
 
 ## 提交信息骨架
 
