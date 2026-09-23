@@ -2,6 +2,11 @@
 
 > 触发条件达成：type 3 累积 n=2（APW-02b run B + BT-01a r1）。
 > 本文档为**评估产物**：选项 + 事实，**不出建议**。拍板留给 reviewer。
+> **拍板（2026-09-23 reviewer）：D（观测）**——不选 A/B/C。A/B/C 均建立在
+> "429 = LLM/gateway 配额耗尽"的未证假设上；而两次失败 token 全 0（未到 LLM）、
+> failure_details 为空（无 attempt/backoff 数据）、间隔 ~2h 仍挂、第三次
+> （TEST-FIX-01 21:56，距上次失败 1h57m）成功证伪"固定 2h 窗口"。
+> 观测规则入 `PHASE2-TRIAGE.md` §5，n≥3 后回看数据再拍 A/B/C。
 
 ## 1. 现象（事实）
 
@@ -38,16 +43,19 @@
 
 - **能解决什么**：若 OCR 工具支持 backoff 自定义，传递更长 base/max；可能避开短窗口 429
 - **不能解决什么**：若工具不暴露 backoff 参数 / 已内置固定 backoff → 无效；若 429 是 token-per-min 配额 → 仍超限
+- **适用条件**：仅当观测规则判定为**短时抖动**（3 次快速重试 15s/30s/60s 内有成功）时适用
 
 ### 选项 B：拉长 OCR 调用频率（每批 / 跨批间隔）
 
 - **能解决什么**：降低单位时间请求数，可能避开 requests-per-min 限制
 - **不能解决什么**：拉长 commit 周期影响 batch discipline（"完成一次报"要求快速收口）；不能解决 token 配额；若跨天 commit → 仍触发
+- **适用条件**：仅当观测到窗口为 **5min/30min 级**（3 次快重试全挂、延时重试成功）时适用；若为 30min 级，需先拍"OCR 是否允许延后到批后异步跑"（与 batch discipline 冲突）
 
 ### 选项 C：换端点 / 换模型（如 minimax-cn/MiniMax-M3 → 其他 provider 或 model）
 
 - **能解决什么**：换 provider 即换 quota pool，绕开当前限流；换 model 可能降 token 用量
 - **不能解决什么**：切换成本（CLI 配置 / 鉴权 / 输出格式）；新 provider 可能更慢 / 更贵；不解决根本原因（quota 上限存在）；OCR 工具是否支持 provider 配置需查
+- **适用条件**：仅当观测到 **30min 延时重试仍挂**（窗口非分钟级）时适用
 
 ## 5. 未决问题（需补信息才能评估）
 
