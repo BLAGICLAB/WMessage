@@ -155,7 +155,21 @@ pub(crate) fn migrate_config_value(value: &mut serde_json::Value) -> Option<(u32
 /// 文件不存在 / JSON 损坏 → Ok(None)（读取侧本来就会回默认，不在这里纠错）。
 /// **保留**文件里的全部字段——含尚未迁进 keyring 的明文 apiKey；
 /// 明文清除是 migrate_legacy_key / migrate_search_keys 的职责，调用顺序不能反。
+/// 加锁外壳：与其他写路径互斥（C5-BT-03）。
 pub(crate) fn migrate_config_file(path: &std::path::Path) -> Result<Option<(u32, u32)>, String> {
+    let _g = super::io::lock_config_write();
+    migrate_config_file_locked(path)
+}
+
+/// 无锁内核：调用方必须已持 CONFIG_WRITE_LOCK（migrate_bot_config_schema 的
+/// 双检段内复用——std Mutex 不可重入，经加锁外壳会自锁）。
+pub(crate) fn migrate_config_file_locked(
+    path: &std::path::Path,
+) -> Result<Option<(u32, u32)>, String> {
+    debug_assert!(
+        super::io::holding_config_write(),
+        "必须持 CONFIG_WRITE_LOCK"
+    );
     if !path.exists() {
         return Ok(None);
     }
@@ -171,7 +185,8 @@ pub(crate) fn migrate_config_file(path: &std::path::Path) -> Result<Option<(u32,
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    std::fs::write(path, out).map_err(|e| e.to_string())?;
+    // 原子写：文件可能仍含明文 apiKey，std::fs::write 半截写 = 配置+密钥同毁
+    super::io::write_config_atomic(path, &out).map_err(|e| e.to_string())?;
     Ok(Some(pair))
 }
 
@@ -186,7 +201,30 @@ pub fn migrate_bot_config_schema(app: &AppHandle) -> Result<(), String> {
     if SCHEMA_MIGRATION_CHECKED.load(std::sync::atomic::Ordering::SeqCst) {
         return Ok(());
     }
-    match migrate_config_file(&super::io::config_path(app)) {
+    // try_lock 让路：持锁 RMW 段内经 load_config 调进这里，直接 lock 会自锁。
+    // 让路不丢迁移：持锁写路径进段已先调 migrate_bot_config_schema_locked。
+    let _g = match super::io::CONFIG_WRITE_LOCK.try_lock() {
+        Ok(g) => super::io::ConfigWriteGuard::from_acquired(g),
+        Err(std::sync::TryLockError::WouldBlock) => return Ok(()),
+        Err(std::sync::TryLockError::Poisoned(e)) => {
+            eprintln!("[mutex_poisoned] bot::config::io::CONFIG_WRITE_LOCK: {e:?}");
+            super::io::ConfigWriteGuard::from_acquired(e.into_inner())
+        }
+    };
+    migrate_bot_config_schema_locked(app)
+}
+
+/// 持锁调用方专用（RMW 段内 + try_lock 包装）：推进迁移 + 置位 + 审计；
+/// 锁内复查消除 check-then-act 窗口。审计在锁内（锁序允许 CONFIG→BOT_LOG）。
+pub(crate) fn migrate_bot_config_schema_locked(app: &AppHandle) -> Result<(), String> {
+    debug_assert!(
+        super::io::holding_config_write(),
+        "必须持 CONFIG_WRITE_LOCK"
+    );
+    if SCHEMA_MIGRATION_CHECKED.load(std::sync::atomic::Ordering::SeqCst) {
+        return Ok(());
+    }
+    match migrate_config_file_locked(&super::io::config_path(app)) {
         Ok(pair) => {
             SCHEMA_MIGRATION_CHECKED.store(true, std::sync::atomic::Ordering::SeqCst);
             if let Some((from, to)) = pair {
