@@ -407,15 +407,38 @@ pub fn spawn_polling(app: AppHandle) {
         std::thread::sleep(Duration::from_secs(60));
         // B1: 启动时 replay 上轮未提交的 pending journal 条目，修复 move/delete 成功但
         // db_upsert 失败造成的 DB 不一致。出错只记日志，不影响后续轮询。
-        match journal_replay_pending(&app) {
-            Ok((rec, err)) if rec > 0 || err > 0 => {
-                log_line(
-                    &app,
-                    &format!("journal replay 启动：恢复 {rec} 条，失败 {err} 条"),
-                );
+        // MI-04b：replay 是 run_migration 之外唯一另一个 journal 写者，不挂守卫时其
+        // find+act 会与进行中的迁移 run 在相同 (task_id, src) 上交错。等到拿到
+        // MigrationGuard 再 replay——互斥后 journal 回到单写者语义。
+        // 守卫作用域只包住 replay（guard 在 replay 结束后立即 drop）：polling loop 在
+        // 同一闭包内，guard 若泄漏到 loop 会把 RUNNING 永久置 true，后台自动迁移全灭。
+        // 等待设上限（60×5s=5min）：RUNNING 若因未来 bug 卡死，跳过本轮 replay 并记
+        // 日志，而不是无限阻塞轮询线程。
+        let mut guard = None;
+        for _ in 0..60 {
+            match MigrationGuard::acquire() {
+                Ok(g) => {
+                    guard = Some(g);
+                    break;
+                }
+                Err(_) => std::thread::sleep(Duration::from_secs(5)),
             }
-            Ok(_) => {}
-            Err(e) => log_line(&app, &format!("journal replay 启动失败：{e}")),
+        }
+        match guard {
+            Some(_g) => match journal_replay_pending(&app) {
+                Ok((rec, err)) if rec > 0 || err > 0 => {
+                    log_line(
+                        &app,
+                        &format!("journal replay 启动：恢复 {rec} 条，失败 {err} 条"),
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => log_line(&app, &format!("journal replay 启动失败：{e}")),
+            },
+            None => log_line(
+                &app,
+                "journal replay 跳过：迁移守卫 5 分钟内未释放（疑似卡死）",
+            ),
         }
         loop {
             std::thread::sleep(Duration::from_secs(POLL_INTERVAL_SECS));
