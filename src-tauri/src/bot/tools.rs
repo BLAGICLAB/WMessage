@@ -283,7 +283,10 @@ pub(crate) async fn tool_search_tasks(
         // check_len 错误首字是「任务」/「备注」等中文描述，非 error/warn 前缀 → ok
         return ToolResult::ok(e.to_string(), Vec::new());
     }
-    let tasks = crate::db::db_load(app.clone()).await.unwrap_or_default();
+    let Ok(tasks) = crate::db::db_load(app.clone()).await else {
+        // 首字「搜」非 error/warn 前缀 → ok；DB 读失败不再静默返空 list（与「无命中」不可区分）
+        return ToolResult::ok("搜索失败：数据库读取错误".to_string(), Vec::new());
+    };
     let mut hits: Vec<crate::db::Task> = tasks
         .into_iter()
         .filter(|t| {
@@ -544,7 +547,10 @@ async fn resolve_task(
                 // 改用 title 重新定位（定位不到就报错，让模型/用户确认）
                 if let Some(kw) = v["title"].as_str().map(|s| s.trim().to_lowercase()) {
                     if !kw.is_empty() && !t.title.to_lowercase().contains(&kw) {
-                        if let Some(t2) = find_task_by_keyword(app, &kw).await? {
+                        if let Some(t2) = find_task_by_keyword(app, &kw)
+                            .await
+                            .map_err(|e| CommandError::DbError(format!("按关键词查找失败：{e}")))?
+                        {
                             return Ok(t2);
                         }
                         return Err(CommandError::DomainRule {
@@ -568,7 +574,10 @@ async fn resolve_task(
     if let Some(kw) = v["title"].as_str() {
         let kw = kw.trim().to_lowercase();
         if !kw.is_empty() {
-            if let Some(t) = find_task_by_keyword(app, &kw).await? {
+            if let Some(t) = find_task_by_keyword(app, &kw)
+                .await
+                .map_err(|e| CommandError::DbError(format!("按关键词查找失败：{e}")))?
+            {
                 return Ok(t);
             }
             return Err(CommandError::DomainRule {
