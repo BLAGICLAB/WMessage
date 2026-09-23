@@ -327,11 +327,17 @@ async fn find_due_tasks(app: &AppHandle) -> Vec<crate::db::Task> {
                 .collect();
             if !fresh.is_empty() {
                 // 调度器写库也要广播（主窗口无轮询，不广播会长期显示旧的 ⏰ 徽标/备注）
-                if crate::db::db_upsert(app.clone(), fresh.clone())
-                    .await
-                    .is_ok()
-                {
-                    crate::bot::broadcast_after_mutation(app, fresh, vec![]);
+                match crate::db::db_upsert(app.clone(), fresh.clone()).await {
+                    Ok(()) => crate::bot::broadcast_after_mutation(app, fresh, vec![]),
+                    // 乐观锁冲突 / IO 失败：清理静默丢失会反复重试同一批 stale id，留痕
+                    Err(e) => crate::bot::audit_log(
+                        app,
+                        &format!(
+                            "sched_stale_cleanup_failed | ids: {} | err: {}",
+                            crate::bot::truncate_for_log(&stale_ids.join(","), 200),
+                            crate::bot::truncate_for_log(&e.to_string(), 200)
+                        ),
+                    ),
                 }
             }
         }
@@ -352,11 +358,17 @@ async fn find_due_tasks(app: &AppHandle) -> Vec<crate::db::Task> {
                 })
                 .collect();
             if !fresh.is_empty() {
-                if crate::db::db_upsert(app.clone(), fresh.clone())
-                    .await
-                    .is_ok()
-                {
-                    crate::bot::broadcast_after_mutation(app, fresh, vec![]);
+                match crate::db::db_upsert(app.clone(), fresh.clone()).await {
+                    Ok(()) => crate::bot::broadcast_after_mutation(app, fresh, vec![]),
+                    // 乐观锁冲突 / IO 失败：sched_last 未推进 → 下个 tick 重复判 missed，留痕
+                    Err(e) => crate::bot::audit_log(
+                        app,
+                        &format!(
+                            "sched_missed_mark_failed | ids: {} | err: {}",
+                            crate::bot::truncate_for_log(&missed_ids.join(","), 200),
+                            crate::bot::truncate_for_log(&e.to_string(), 200)
+                        ),
+                    ),
                 }
             }
         }

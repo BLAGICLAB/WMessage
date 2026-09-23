@@ -377,6 +377,7 @@ pub fn skill_finish<R: tauri::Runtime>(
         eprintln!("[mutex_poisoned] bot_skills::runtime::skill_runs: {e:?}");
         e.into_inner()
     });
+    let mut transitioned = false;
     for (name, run) in runs.iter_mut() {
         if run.state != SkillState::Running && run.state != SkillState::Paused {
             continue;
@@ -384,6 +385,7 @@ pub fn skill_finish<R: tauri::Runtime>(
         if run.session_id.as_deref() != session_id {
             continue;
         }
+        transitioned = true;
         if ok {
             run.state = SkillState::Completed;
             crate::bot::audit_log_hook(
@@ -425,6 +427,20 @@ pub fn skill_finish<R: tauri::Runtime>(
             }
             crate::bot::audit_log_hook(app, &log);
         }
+    }
+    // 零迁移留痕的闸门 = reason 非空:传 reason 的调用方(scheduler "done" 收尾)
+    // 期待状态机真的迁移,零迁移 = 僵尸 Running 不可见,记审计;空 reason 是清理性
+    // 调用(bot_model_loop :1006 每轮聊天收尾 / :594 Finish 后兜底),零迁移是常态不记。
+    // false 路径不记:无活动技能时的错误收尾是合法 no-op,记了会刷正常路径日志。
+    if ok && !transitioned && !reason.is_empty() {
+        crate::bot::audit_log_hook(
+            app,
+            &format!(
+                "skill_finish_no_transition | session: {} | reason: {}",
+                session_id.unwrap_or("-"),
+                crate::bot::truncate_for_log(reason, 120)
+            ),
+        );
     }
     rollback_hint
 }
@@ -523,6 +539,43 @@ pub fn advance_dsl(run: &SkillRun, now_ms: i64) -> DslAdvanceAction {
 mod tests {
     use super::*;
     use crate::bot_skills::test_run;
+
+    // ── skill_finish 零迁移审计门 ──
+
+    #[test]
+    fn skill_finish_no_transition_audits_only_when_reason_non_empty() {
+        // 读写共享 bot.log，必须持测试串行锁（与 audit / bot::config 同名用例互斥）
+        let _serial = crate::audit::BOT_LOG_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let app = tauri::test::mock_app();
+        let bot_log = crate::db::data_dir(app.handle()).join("bot.log");
+        let read = || std::fs::read_to_string(&bot_log).unwrap_or_default();
+        // 空注册表 + ok=true + reason 非空 → 记 no_transition
+        let _ = std::fs::remove_file(&bot_log);
+        skill_finish(app.handle(), true, "done", Some("sess-bt01c"));
+        let c1 = read();
+        assert!(
+            c1.contains("skill_finish_no_transition"),
+            "reason 非空零迁移应留痕: {c1}"
+        );
+        // 空 reason（清理性调用）→ 不记
+        let _ = std::fs::remove_file(&bot_log);
+        skill_finish(app.handle(), true, "", Some("sess-bt01c"));
+        let c2 = read();
+        assert!(
+            !c2.contains("skill_finish_no_transition"),
+            "空 reason 不应留痕: {c2}"
+        );
+        // ok=false + reason 非空 → 不记（合法 no-op 路径）
+        let _ = std::fs::remove_file(&bot_log);
+        skill_finish(app.handle(), false, "boom", Some("sess-bt01c"));
+        let c3 = read();
+        assert!(
+            !c3.contains("skill_finish_no_transition"),
+            "ok=false 不应留痕: {c3}"
+        );
+    }
 
     // ── 状态机推进 ──
 
