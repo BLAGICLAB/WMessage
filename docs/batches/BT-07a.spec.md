@@ -55,6 +55,8 @@ restore no-op 语义保证）。约 5 断言。
    ripple：guard 为私有 struct；run_rollback_segment_core 签名不变。✓
 2. budget → A/B 混合：guard+impl ≈+20；用法 +3/-0；测试 ≈+35。合计 ≈+58/-0 →
    budget +70/-10。✓
+   校正一次（实施实测：mock AppHandle 组装 + catch_unwind 断言行比估算长）：实际
+   +76/-0 → budget +80/-10。
 3. findings fix 字段列 ripple → 无（全在 scheduler.rs 内部）。✓
 
 ## 自主执行规则
@@ -82,7 +84,7 @@ spec 被 reviewer 批准后:
   "expected_files": [
     "src-tauri/src/bot_skills/scheduler.rs"
   ],
-  "max_lines_added": 70,
+  "max_lines_added": 80,
   "max_lines_removed": 10,
   "findings": [
     {"id": "C5-BT-07.3", "file": "src-tauri/src/bot_skills/scheduler.rs", "line": 149, "fix": "新增 RollbackRestoreGuard（Drop 兜底 restore_failed_run_after_rollback）；reopen 后 armed=reopened，正常路径手动 restore 后 disarm；panic 路径 Drop 复原 Failed。新增 panic 路径单测。ripple：无（私有 struct，签名不变）"}
