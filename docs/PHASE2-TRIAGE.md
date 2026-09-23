@@ -275,6 +275,43 @@ DB-01b-BT-01b 收口后自查发现 4 项 follow-up：
   - 类型 3: rate-limit（HTTP 429 重试耗尽，status=failed，comments=null），证据: APW-02b 批次
   - 累积规则: 同类 ≥2 次触发单批评估 OCR 调用方式调整
 
+### APW-02b OCR r1 disposition（2026-09-23 补，audit 链修正）
+
+【审计链修正】commit 497e4c1 message OCR 段写「【OCR r1: D 路径 unavailable】原因: HTTP 429 rate_limited」
+——与实际不符。实际 OCR r1 有**两次运行**：
+- **run A 成功**：status=complete，5 findings，MiniMax-M3，7m32s，run_id 33bbb88f-c275-4db4-ad7f-815af341e80f（17:49）
+- run B 失败：status=failed，429 rate_limited，0 findings，run_id c8da10cc-6132-4f5a-9d82-90e490e2e175（18:01）
+
+497e4c1 的「unavailable」只对 run B 成立，**漏了 run A 的成功结果**。497e4c1 已 push（amend 窗口关闭），
+按既有规矩用本修正 commit 补 audit 链，不改 497e4c1。
+
+【两次运行「都叫 r1」的根因】路径撞车：两次都写 /tmp/ocr-APW-02b-r1.json —— run B 覆盖 run A 的 raw；
+run A 仅靠 /tmp/ocr-APW-02b-r1.clean.json 找回。cache 命名亦误导：
+- ~/.openclaw/cache/APW-02b/ocr-r1.json = run A（complete）
+- ~/.openclaw/cache/APW-02b/ocr-r1-raw.json = run B（failed）
+改进（下次）：OCR 输出按 run_id 命名，不硬编码 -r1。
+
+【5 条 finding 逐条处置（对当前 71a35bf 工作树核）】
+| # | file:line | sev | 处置 |
+|---|---|---|---|
+| 1 | db/paths.rs:97 | **critical** | **已在 497e4c1 修复** ✓ —— Phase 2a/2b 已加 `if tmp_wal.exists()` / `if tmp_shm.exists()` 守卫（OCR 与测试 ENOENT 同指一 bug） |
+| 2 | db/paths.rs:79 | medium | 挂起 → follow-up（`Ok(0)` sentinel 混淆「零字节成功」与「不适用」） |
+| 3 | db/mod.rs:456 | low | 挂起 → follow-up（`writes_three_files_returns_warns` 断言恒真） |
+| 4 | db/mod.rs:419 | low | 挂起 → follow-up（`returns_err_when_legacy_db_missing` 未触达 tmp-* 清理） |
+| 5 | db/paths.rs:90 | low | 挂起 → follow-up（4 组 cleanup 近似重复，建议提 helper） |
+
+【5 条原文】见 ~/.openclaw/cache/APW-02b/ocr-r1.json（run A）。
+
+### APW-02b OCR follow-up 索引（2-5 挂起项）
+
+- **APW-02b-OCR-2（medium）**：db/paths.rs:79 `Ok(0)` sentinel —— 下游 `copy_main.err().or(...)` 链无法区分
+  「边车不存在（不适用）」与「零字节成功拷贝」。修法候选：用 `Option<u64>` 或显式 enum。
+- **APW-02b-OCR-3（low）**：db/mod.rs:456 断言 `warns.is_empty() || warns.iter().any(...)` 恒真，不锁定契约。修法：改成精确断言（如 `assert_eq!(warns.len(), N)` 或指定 warn 内容）。
+- **APW-02b-OCR-4（low）**：db/mod.rs:419 测试未真正触达 tmp-* 清理路径（legacy_db 不存在 → copy 在写 tmp-* 前已失败 → remove_file 是 no-op）。修法：构造「copy 成功但后续阶段失败」的场景。
+- **APW-02b-OCR-5（low）**：db/paths.rs:90 四组 cleanup 近似重复，建议提 `fn cleanup_staging(...)` helper。
+
+（均不本批修；下次 APW-02b follow-up 或相关批并入。）
+
 ## 4. 累计
 
 **已 triage（脚本 DOMAINS 12 域，不含 frontend）**: 145 unique
