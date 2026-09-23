@@ -26,7 +26,7 @@ PHASE2-TRIAGE-OCR-001（§4 follow-up 已登记，未修）：`resolve_task` 内
    `let Ok(tasks) = crate::db::db_load(app.clone()).await else { return ToolResult::ok("搜索失败：数据库读取错误".to_string(), Vec::new()); };`
    首字「搜」非「失败」开头 → 机械首字符判定 = ok（同 :208 注释理由）。
 2. :547 / :571 两处 `.await?` →
-   `.await.map_err(|e| CommandError::DbError(format!("按关键词查找任务失败：{e}")))?`，
+   `.await.map_err(|e| CommandError::DbError(format!("按关键词查找失败：{e}")))?`，
    对齐 :539-541 既有 map_err 形态。
 
 ## 行为变更
@@ -73,7 +73,7 @@ spec 被 reviewer 批准后:
   "max_lines_removed": 6,
   "findings": [
     {"id": "C5-BT-01b.R", "file": "src-tauri/src/bot/tools.rs", "line": 286, "fix": "tool_search_tasks 的 db_load().await.unwrap_or_default() → let-else 显式返 ToolResult::ok(\"搜索失败：数据库读取错误\")（照 tool_query_single_task :207-210 模式）。ripple：无"},
-    {"id": "PHASE2-TRIAGE-OCR-001", "file": "src-tauri/src/bot/tools.rs", "line": 547, "fix": ":547 与 :571 两处 find_task_by_keyword(app, &kw).await? → .await.map_err(|e| CommandError::DbError(format!(\"按关键词查找任务失败：{e}\")))?，对齐 resolve_task :539-541 的 DbError 形态。ripple：无"}
+    {"id": "PHASE2-TRIAGE-OCR-001", "file": "src-tauri/src/bot/tools.rs", "line": 547, "fix": ":547 与 :571 两处 find_task_by_keyword(app, &kw).await? → .await.map_err(|e| CommandError::DbError(format!(\"按关键词查找失败：{e}\")))?，对齐 resolve_task :539-541 的 DbError 形态。ripple：无"}
   ],
   "assertions_min": {
     "src-tauri/src/bot/tools.rs": 0
