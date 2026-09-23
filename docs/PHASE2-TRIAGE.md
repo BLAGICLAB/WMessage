@@ -40,6 +40,8 @@
 
 - [2026-09-24 07:31 CST] BT-03a 收口（commit f86fc7a）：C5-BT-03 五取四已修——bot-config.json 五条写路径全改 write_config_atomic（tmp {name}.{pid}.{seq} 唯一名 + fsync + rename + 失败清 tmp + cfg(unix) 父目录 fsync best-effort）+ 新增 CONFIG_WRITE_LOCK 全局写锁（ConfigWriteGuard must_use + 线程本地持锁标记 + debug_assert，照 db::lock_db_write 先例）杀 RMW 竞态；四个持锁写路径进段先调 migrate_bot_config_schema_locked（OCR r4 high2 结构性修复：钩子锁内只 try_lock 让路，不推则 RMW 跑旧 schema）；schema 迁移拆加锁外壳/locked 内核消 SCHEMA_MIGRATION_CHECKED check-then-act 窗口。commands.rs:86（keyring 先于文件写无回滚 = 半成功陷阱方向）转 B 类攒批第 9 项。budget 二度校正（+120→+170→+215，均 OCR 驱动，同 MI-04b/BT-01c 形态，并入 META-8 待拍材料）。PROC-5 type 1 复发 n=11→n=15（r3×3 + r4×1，均 file_read start>end，review 本体 complete）；另 r3 有 1 条 file_read「路径不存在 db.rs」= 非 type 1 新形态，登记观察。spec 立项 / 校正 4f130b1 / 5150af4。
 
+- [2026-09-24 07:50 CST] BT-01d 收口（commit c55d35d）：C5-BT-01b 残余 1 条 + OCR-001/002 已修——tool_search_tasks（triage 标 :280 现 :286）db_load().unwrap_or_default() → let-else 显式「搜索失败：数据库读取错误」（1e023e3 spec 未覆盖该站点，残余来源登记）；find_task_by_keyword 两 call site（:551/:578）`.await?` → map_err DbError 对齐（Internal/DbError 双 code 统计漏算收口）。family 归 error-not-propagated（按 §1 判据该条是信号丢失非数据破坏，与 1e023e3 commit 所标一致）。OCR r1 1 low（spec 文案与代码不一致）→ 采纳=校正 spec 对齐代码（零代码 churn），r1 tool failure 0。**C5-BT-01b 簇全清**（:147 前批 + :280 本批）。spec 立项 + 文案对齐各 1 commit。
+
 ## 1. 跨域同模式家族
 按"错误去哪了" + "是否破坏数据"两轴判，**4 家族**（poisoned-silent-recovery 已溶解 — 见执行日志；error-visible-non-blocking 已重新引入 for C5-AP-06 only — 见 §3.5 异常 2 更新）：
 
@@ -131,7 +133,7 @@
 ### 域 bot*（15 簇 / 46 findings；去重后）
 子目录 = 18 / bot_skills 子目录 = 12 / 兄弟 bot_*.rs = 16
 - C5-BT-01a：error-not-propagated，bot/config + bot_skills/scheduler + bot_scheduler（5 条丢弃：commands.rs:30 + keyring.rs:263 + slash.rs:456 + skills/scheduler.rs:428 + scheduler.rs:0）→ **已清**：-1/-2 退批 error-visible-non-blocking（见退批登记）；slash.rs:456 前批已修；skills/scheduler.rs:428 + scheduler.rs:0 **已修（BT-01c，commit eb11651）**
-- C5-BT-01b：failure-recovery-default-value，bot/tools（tools.rs:147 + tools.rs:280，替换成空 list）
+- C5-BT-01b：failure-recovery-default-value，bot/tools（tools.rs:147 + tools.rs:280，替换成空 list）→ **已清**：:147（active_tasks + 三 call site）前批 1e023e3；:280（tool_search_tasks 残余）**已修（BT-01d，commit 见 §0）**
 - C5-BT-02：**OCR false positive（3 条均不准确）** —— OCR 忽略代码中的 eprintln!("[mutex_poisoned] ...") 缓解措施，据此判定 "silent"——前提与实现不符。三站实际都是 logged 路径：C3-1 约定的合法实现。三条 finding 的站实有 eprintln：bot_py.rs:945 + bot_skills/state.rs:109 + bot_skills/runtime.rs:58。**记录 + 不改**，与 C3-r1-H1 / C4-2 / C4-5 同处理。**triage 记录 140 仍含此 3 条 FP，Phase 2 实工单 137 不计**。
 - C5-BT-03：config 写非原子 / RMW 无锁（commands.rs:86 + schema.rs:170/:178 + io.rs:100/:76），5 条 → **4/5 已修（BT-03a，commit f86fc7a）；commands.rs:86（keyring 先于文件写无回滚 = 半成功陷阱方向）转 B 类攒批待拍**
 - C5-BT-04：TOCTOU on canonicalize/whitelist（bot_fs.rs:167 + bot/tools.rs:102 + bot_chat.rs:399 + bot_artifacts.rs:67），4 条
@@ -244,8 +246,8 @@ DB-01b-BT-01b 收口后自查发现 4 项 follow-up：
   - SPEC-001 例：BT-01b.2 fix 字段写 `ToolResult::ok(text, refs, status=ToolStatus::Fail)` —— 实际 `ToolResult::ok` 是 2 参数固定 status=Ok（registry.rs:60-62），`ToolStatus` 只有 `Ok/Warn/Error` 无 `Fail`（registry.rs:42-46）。
   - SPEC-002 例：BT-01b.2b 标 tools.rs:516 = tool_complete_task 直接调用，实际经中间函数 `find_task_by_keyword`（tool_tools.rs:516 定义 + :547/571 调用）触发 —— 只核了函数签名，未核调用链。
   - 修法（下批起生效）：spec 起草工具加三检脚本（grep 签名 + grep caller + grep 枚举值），与 NEW-META-6 同型（hook 拦不到的事前补漏）。
-- **PHASE2-TRIAGE-OCR-001**：tools.rs:547 [medium/maintainability] —— `find_task_by_keyword` `.await?` → `CommandError::Internal`（code=INTERNAL, recoverable=false），与同一函数 resolve_task 内 active_tasks 显式 `CommandError::DbError(...)`（code=DB_ERROR）不一致；同一 DB 故障两条路径产出两种 code，前端 `CommandError.code()` / 审计 `grep code=DB_ERROR` 统计都会漏算一半。修法：两处都改 `.map_err(|e| CommandError::DbError(format!("按关键词查找任务失败：{e}")))?` 显式映射，对齐 active_tasks 模式。预算 +4/-2（OCR r1 /tmp/ocr-DB-01b-BT-01b-r1.json 原文核验）。
-- **PHASE2-TRIAGE-OCR-002**：tools.rs:571 [medium/maintainability] —— 同 OCR-001。修法同上 + 同样预算。
+- **PHASE2-TRIAGE-OCR-001**：tools.rs:547 [medium/maintainability] —— **已修（BT-01d，文案定稿「按关键词查找失败」）**。原登记：`find_task_by_keyword` `.await?` → `CommandError::Internal`，与 resolve_task 内 active_tasks 显式 `CommandError::DbError` 不一致；同一 DB 故障两种 code，统计漏算一半。
+- **PHASE2-TRIAGE-OCR-002**：tools.rs:571 [medium/maintainability] —— **已修（BT-01d，同 OCR-001 一并）**。
 - **PHASE2-TRIAGE-OCR-003**：tools.rs:160 [medium/bug] wontfix-with-rationale —— `ToolResult::ok` + 错误文本是 dispatch.rs:402-404 明确设计意图（原文：“失败也走 `ToolResult::ok` 而非 `err`，让 LLM pipeline severity classifier 不把‘完成任务失败：DB error’误判为 fatal”），OCR 建议改 `ToolResult::error` 与既有约定冲突，**不修**。若产品决定后续加 `ToolStatus::Fail` 变体，可同时改 handler 层 + commit message 解释（当前为应用层应用既有约定的动作，不构成 family 异质——family 边界见 1e023e3 commit message）。
 
 【OCR 原文核验记录（DB-01b-BT-01b）】
@@ -466,6 +468,9 @@ run A 仅靠 /tmp/ocr-APW-02b-r1.clean.json 找回。cache 命名亦误导：
   = 重引入竞态）；add_allowed_dir 剥 key 统一走 locked 内核（r5 medium：防御纵深方向
   正确，但迁移失败（keyring 不可用）时明文 key 仍在文件，剥 key 写盘 = 密钥丢失——
   数据破坏相关修法方向，转 B 类攒批第 10 项待拍）。
+- 【OCR 原文核验记录（BT-01d）】r1 = ~/.openclaw/cache/BT-01d/ocr-r1-20260924-073830.json
+  （1 low：spec 文案「按关键词查找任务失败」与代码「按关键词查找失败」不一致——
+  采纳=校正 spec 对齐代码，零代码 churn；tool failure 0；status complete）。
 
 **已 triage（脚本 DOMAINS 12 域，不含 frontend）**: 145 unique
 
