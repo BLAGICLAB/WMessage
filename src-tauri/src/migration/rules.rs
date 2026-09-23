@@ -67,6 +67,13 @@ pub fn validate_rules(rules: &RulesFile) -> Result<(), String> {
         if r.action == "move" && r.archive_dir.trim().is_empty() {
             return Err(format!("第 {} 条规则是移动归档，归档目录不能为空", i + 1));
         }
+        if r.action == "move" {
+            // 与 resolve_archive_dir 同一校验：导入期早错（run 期 ops 侧还有一道）
+            super::ops::reject_parent_dir_components(
+                std::path::Path::new(&r.archive_dir),
+                &r.archive_dir,
+            )?;
+        }
         if !r.keywords.iter().any(|k| !k.trim().is_empty()) {
             return Err(format!("第 {} 条规则缺少文件名关键字", i + 1));
         }
@@ -95,14 +102,31 @@ pub(crate) fn parse_rules_csv(text: &str) -> Result<RulesFile, crate::error::Com
         .headers()
         .map_err(|e| format!("CSV 表头解析失败：{e}"))?
         .clone();
-    // 表头定位（宽容匹配：包含关键字即可）
-    let find_col =
-        |needle: &str| -> Option<usize> { headers.iter().position(|h| h.contains(needle)) };
+    // 表头定位：按列别名集精确匹配（Trim::All 已修边）。contains 宽容匹配会把
+    // 「子关键字」错绑到「关键字」列、多列同 needle 时静默取首列——精确匹配 +
+    // 重复命中报错（MI-08）。
+    let find_col = |aliases: &[&str]| -> Result<Option<usize>, crate::error::CommandError> {
+        let mut hits = headers
+            .iter()
+            .enumerate()
+            .filter(|(_, h)| aliases.contains(h));
+        let first = hits.next().map(|(i, _)| i);
+        if hits.next().is_some() {
+            return Err(crate::error::CommandError::DomainRule {
+                domain: "migration".to_string(),
+                reason: format!(
+                    "CSV 表头含重复列（{}），无法确定目标列",
+                    aliases.join(" / ")
+                ),
+            });
+        }
+        Ok(first)
+    };
     let (Some(ci_enable), Some(ci_kw), Some(ci_action), Some(ci_dir)) = (
-        find_col("启用"),
-        find_col("关键字"),
-        find_col("动作"),
-        find_col("目录"),
+        find_col(&["启用"])?,
+        find_col(&["文件名关键字", "关键字"])?,
+        find_col(&["动作"])?,
+        find_col(&["归档目录", "目录"])?,
     ) else {
         return Err(crate::error::CommandError::DomainRule {
             domain: "migration".to_string(),

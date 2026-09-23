@@ -74,6 +74,7 @@ pub(crate) fn expand_year_placeholder(template: &str) -> String {
 pub fn resolve_archive_dir(app: &AppHandle, template: &str) -> Result<PathBuf, String> {
     let expanded = expand_year_placeholder(template);
     let p = PathBuf::from(&expanded);
+    reject_parent_dir_components(&p, template)?;
     if p.is_absolute() {
         Ok(p)
     } else {
@@ -83,6 +84,18 @@ pub fn resolve_archive_dir(app: &AppHandle, template: &str) -> Result<PathBuf, S
             .map_err(|e| format!("无法定位桌面目录：{e}"))?;
         Ok(desktop.join(p))
     }
+}
+
+/// 归档目录 containment：拒绝 `..` 组件（相对路径会逃逸桌面基准；对绝对路径同样生效——
+/// /tmp/../etc 可直接写 /etc 表达，无能力损失）。绝对路径本身放行（文档化特性），
+/// 其收窄与 symlink 逃逸（需 canonicalize + 前缀校验）同属 B 类待拍项。
+pub(crate) fn reject_parent_dir_components(p: &Path, template: &str) -> Result<(), String> {
+    if p.components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(format!("归档目录不允许含 \"..\" 组件：{template}"));
+    }
+    Ok(())
 }
 
 /// 同名冲突时生成 `名 (n).ext`（最多试 99 个）；返回 None 表示无可用名

@@ -929,6 +929,57 @@ mod tests {
     }
 
     #[test]
+    fn parse_rules_csv_rejects_duplicate_header_column() {
+        // 同一别名命中两列 → 报错（旧 contains 逻辑静默取首列）
+        let text = "启用,启用,动作,归档目录\n是,a,移动归档,X\n";
+        let err = parse_rules_csv(text).expect_err("重复列应报错");
+        assert!(
+            err.to_string().contains("重复列"),
+            "错误应提到重复列：{err}"
+        );
+    }
+
+    #[test]
+    fn parse_rules_csv_rejects_contains_style_header() {
+        // 「子关键字」contains「关键字」但不在别名集 → 视为缺列报错（旧逻辑静默错绑列）
+        let text = "启用,子关键字,动作,归档目录\n是,a,移动归档,X\n";
+        let err = parse_rules_csv(text).expect_err("contains 型自定义表头应报错");
+        assert!(
+            err.to_string().contains("四列"),
+            "错误应提到四列表头：{err}"
+        );
+    }
+
+    #[test]
+    fn reject_parent_dir_components_blocks_dotdot() {
+        let f = crate::migration::ops::reject_parent_dir_components;
+        assert!(f(Path::new("../escape"), "../escape").is_err());
+        assert!(f(Path::new("a/../../b"), "a/../../b").is_err());
+        assert!(f(Path::new("工资/{year}"), "工资/{year}").is_ok());
+        assert!(f(Path::new("a/b/c"), "a/b/c").is_ok());
+        // 绝对路径本身放行（文档化特性），但含 .. 的绝对路径同样拒绝（契约钉死）
+        assert!(f(Path::new("/tmp/x"), "/tmp/x").is_ok());
+        assert!(f(Path::new("/tmp/../etc"), "/tmp/../etc").is_err());
+    }
+
+    #[test]
+    fn validate_rules_rejects_dotdot_archive_dir() {
+        // move 规则的归档目录含 .. → 拒绝（与 resolve_archive_dir 同一校验，导入期早错）
+        let rf = RulesFile {
+            version: 1,
+            rules: vec![rule(vec!["tmp"], "move", "../escape")],
+        };
+        let err = validate_rules(&rf).expect_err("含 .. 的归档目录应拒绝");
+        assert!(err.contains(".."), "错误应提到 ..：{err}");
+        // 正常相对路径放行
+        let ok = RulesFile {
+            version: 1,
+            rules: vec![rule(vec!["tmp"], "move", "工资/{year}")],
+        };
+        assert!(validate_rules(&ok).is_ok());
+    }
+
+    #[test]
     fn validate_rules_accepts_delete_without_archive_dir() {
         // delete 规则允许 archive_dir 为空
         let rf = RulesFile {
