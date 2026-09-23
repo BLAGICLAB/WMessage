@@ -62,13 +62,20 @@ pub fn open_db<R: tauri::Runtime>(
         if let Ok(legacy_dir) = app.path().app_data_dir() {
             let legacy_db = legacy_dir.join("wmessage.db");
             if legacy_db.exists() && legacy_db != db_path {
-                for w in paths::copy_legacy_db(&legacy_db, &db_path) {
-                    crate::audit::write_event(
-                        app,
-                        crate::audit::AuditLevel::Warn,
-                        "legacy_db_copy",
-                        &[("warn", w)],
-                    );
+                match paths::copy_legacy_db(&legacy_db, &db_path) {
+                    Ok(warns) => {
+                        for w in warns {
+                            crate::audit::write_event(
+                                app,
+                                crate::audit::AuditLevel::Warn,
+                                "legacy_db_copy",
+                                &[("warn", w)],
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        return Err(e.to_string());
+                    }
                 }
             }
         }
@@ -368,7 +375,7 @@ mod tests {
             let _ = rows.next().unwrap(); // 游标保持打开 = 读标记存活
             let writer = rusqlite::Connection::open(&legacy).unwrap();
             writer.execute_batch("INSERT INTO t VALUES ('y');").unwrap();
-            let warns = copy_legacy_db(&legacy, &dst);
+            let warns = copy_legacy_db(&legacy, &dst).unwrap();
             drop(writer);
             warns
         };
@@ -399,13 +406,72 @@ mod tests {
                 .unwrap();
         }
         let dst = dir.join("wmessage-copy.db");
-        let warns = copy_legacy_db(&legacy, &dst);
+        let warns = copy_legacy_db(&legacy, &dst).unwrap();
         assert!(warns.is_empty(), "happy path 不应有 warn；got: {warns:?}");
         let c = rusqlite::Connection::open(&dst).unwrap();
         let n: i64 = c
             .query_row("SELECT COUNT(*) FROM t", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 1, "拷贝后的库应含老数据");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// staging 失败：legacy_db 路径不存在 → fs::copy 失败 → Err + tmp-* 无残留。
+    /// 本函数 trust caller 前置 `if !db_path.exists()`，本测试验证 staging 阶段本身不漏 tmp。
+    #[test]
+    fn copy_legacy_db_returns_err_when_legacy_db_missing() {
+        let dir = std::env::temp_dir().join(format!("wm-legacy-missing-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let legacy = dir.join("nonexistent-dir").join("wmessage.db"); // parent 不存在 → open 失败 + copy 失败
+        let dst = dir.join("new").join("wmessage.db");
+        fs::create_dir_all(dst.parent().unwrap()).unwrap();
+
+        let result = copy_legacy_db(&legacy, &dst);
+
+        assert!(result.is_err(), "legacy_db 不存在应返 Err，实际 {result:?}");
+        assert!(
+            !dst.exists(),
+            "dst 不应被创建（Phase 1 fail 已 clean tmp-*）"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 成功路径：3 文件落地（main + -wal + -shm）+ warns 返回 Ok(Vec)。
+    /// happy_path_no_warns 已覆盖零 warn 路径；本测试确认三件套全到位 + Result 结构。
+    #[test]
+    fn copy_legacy_db_writes_three_files_returns_warns() {
+        let dir = std::env::temp_dir().join(format!("wm-legacy-3files-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let legacy = dir.join("wmessage.db");
+        let keeper = rusqlite::Connection::open(&legacy).unwrap();
+        keeper
+            .execute_batch(
+                "PRAGMA journal_mode=WAL; CREATE TABLE t (id TEXT); INSERT INTO t VALUES ('x');",
+            )
+            .unwrap();
+        assert!(
+            wal_sidecar(&legacy, "wal").exists(),
+            "setup: legacy -wal 应存在"
+        );
+        assert!(
+            wal_sidecar(&legacy, "shm").exists(),
+            "setup: legacy -shm 应存在"
+        );
+        let dst = dir.join("new").join("wmessage.db");
+        fs::create_dir_all(dst.parent().unwrap()).unwrap();
+
+        let warns = copy_legacy_db(&legacy, &dst).unwrap();
+        drop(keeper);
+
+        assert!(dst.exists(), "主库必须落地");
+        assert!(wal_sidecar(&dst, "wal").exists(), "-wal 边车必须落地");
+        assert!(wal_sidecar(&dst, "shm").exists(), "-shm 边车必须落地");
+        assert!(
+            warns.is_empty()
+                || warns
+                    .iter()
+                    .any(|w| w.contains("checkpoint") || w.contains("BUSY"))
+        );
         fs::remove_dir_all(&dir).ok();
     }
 

@@ -3,6 +3,8 @@
 use std::path::PathBuf;
 use tauri::Manager;
 
+use crate::error::CommandError;
+
 /// 便携模式：数据库优先放 exe 同目录（U盘/绿色目录随走随带）；
 /// 目录不可写（如 Program Files）时兜底到系统应用数据目录
 pub fn db_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> std::path::PathBuf {
@@ -44,9 +46,15 @@ pub(crate) fn atomic_write(path: &std::path::Path, contents: &str) -> Result<(),
     Ok(())
 }
 
-/// 便携模式首启拷贝老库——checkpoint 失败记 warn 继续；同时拷 `-wal` / `-shm` 边车
-pub fn copy_legacy_db(legacy_db: &std::path::Path, db_path: &std::path::Path) -> Vec<String> {
+/// 便携模式首启拷贝老库——Phase 1 (3 文件 to staging) + Phase 2 (rename order sidecar-first then main)；
+/// 任一 Phase 失败 → clean tmp-* + 回滚 db_path-* → Err。APW-02b。
+pub fn copy_legacy_db(
+    legacy_db: &std::path::Path,
+    db_path: &std::path::Path,
+) -> Result<Vec<String>, CommandError> {
     let mut warns = Vec::new();
+
+    // checkpoint section（不变）
     match rusqlite::Connection::open(legacy_db) {
         Ok(conn) => match conn.query_row("PRAGMA wal_checkpoint(TRUNCATE);", [], |r| {
             r.get::<_, i64>(0)
@@ -61,24 +69,68 @@ pub fn copy_legacy_db(legacy_db: &std::path::Path, db_path: &std::path::Path) ->
         },
         Err(e) => warns.push(format!("老库打开失败（跳过 checkpoint 直接拷贝）：{e}")),
     }
-    let tmp = db_path.with_extension("db.copying");
-    let copied = std::fs::copy(legacy_db, &tmp)
-        .map_err(|e| e.to_string())
-        .and_then(|_| std::fs::rename(&tmp, db_path).map_err(|e| e.to_string()));
-    if let Err(e) = copied {
-        let _ = std::fs::remove_file(&tmp);
-        warns.push(format!("老库拷贝失败：{e}"));
-        return warns;
+
+    // Phase 1: copy 3 files to staging tmp-*
+    let legacy_wal = wal_sidecar(legacy_db, "wal");
+    let legacy_shm = wal_sidecar(legacy_db, "shm");
+    let tmp_main = db_path.with_extension("db.copying");
+    let tmp_wal = wal_sidecar(&tmp_main, "wal");
+    let tmp_shm = wal_sidecar(&tmp_main, "shm");
+
+    let copy_main = std::fs::copy(legacy_db, &tmp_main);
+    let copy_wal = if legacy_wal.exists() {
+        std::fs::copy(&legacy_wal, &tmp_wal)
+    } else {
+        Ok(0)
+    };
+    let copy_shm = if legacy_shm.exists() {
+        std::fs::copy(&legacy_shm, &tmp_shm)
+    } else {
+        Ok(0)
+    };
+
+    if let Some(e) = copy_main.err().or(copy_wal.err()).or(copy_shm.err()) {
+        let _ = std::fs::remove_file(&tmp_main);
+        let _ = std::fs::remove_file(&tmp_wal);
+        let _ = std::fs::remove_file(&tmp_shm);
+        return Err(CommandError::IoError(format!("老库 staging 拷贝失败：{e}")));
     }
-    for ext in ["wal", "shm"] {
-        let src = wal_sidecar(legacy_db, ext);
-        if src.exists() {
-            if let Err(e) = std::fs::copy(&src, wal_sidecar(db_path, ext)) {
-                warns.push(format!("老库 -{ext} 边车拷贝失败：{e}"));
-            }
+
+    // Phase 2a: rename tmp_wal → db_path-wal（仅当 tmp_wal 存在；legacy 无 -wal 则 skip）
+    if tmp_wal.exists() {
+        if let Err(e) = std::fs::rename(&tmp_wal, wal_sidecar(db_path, "wal")) {
+            let _ = std::fs::remove_file(&tmp_main);
+            let _ = std::fs::remove_file(&tmp_wal);
+            let _ = std::fs::remove_file(&tmp_shm);
+            return Err(CommandError::IoError(format!("老库 -wal 提交失败：{e}")));
         }
     }
-    warns
+
+    // Phase 2b: rename tmp_shm → db_path-shm（仅当 tmp_shm 存在；legacy 无 -shm 则 skip）
+    if tmp_shm.exists() {
+        if let Err(e) = std::fs::rename(&tmp_shm, wal_sidecar(db_path, "shm")) {
+            // 回滚 2a（db_path-wal 已建）+ 清 tmp-*
+            let _ = std::fs::remove_file(wal_sidecar(db_path, "wal"));
+            let _ = std::fs::remove_file(&tmp_main);
+            let _ = std::fs::remove_file(&tmp_shm);
+            return Err(CommandError::IoError(format!(
+                "老库 -shm 提交失败（已回滚 -wal staging）：{e}"
+            )));
+        }
+    }
+
+    // Phase 2c: rename tmp_main → db_path（最后，main commit 是 final）
+    if let Err(e) = std::fs::rename(&tmp_main, db_path) {
+        // 回滚 2a + 2b（db_path-wal / db_path-shm 已建）
+        let _ = std::fs::remove_file(wal_sidecar(db_path, "wal"));
+        let _ = std::fs::remove_file(wal_sidecar(db_path, "shm"));
+        let _ = std::fs::remove_file(&tmp_main);
+        return Err(CommandError::IoError(format!(
+            "老库主文件提交失败（已回滚 staging）：{e}"
+        )));
+    }
+
+    Ok(warns)
 }
 
 /// SQLite WAL 边车路径：`wmessage.db` → `wmessage.db-wal` / `wmessage.db-shm`
