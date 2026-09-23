@@ -1040,6 +1040,8 @@ mod tests {
         let outside = tmp.path().join("outside");
         std::fs::create_dir_all(&sub).unwrap();
         std::fs::create_dir_all(&outside).unwrap();
+        // macOS firmlink：/var → /private/var，setup 即规范化，下方断言在 canonical 视角比较
+        let outside = std::fs::canonicalize(&outside).unwrap();
         std::fs::write(outside.join("secret.txt"), b"secret").unwrap();
         // sub/link.txt → /tmp/xxx/outside/secret.txt
         std::os::unix::fs::symlink(outside.join("secret.txt"), sub.join("link.txt")).unwrap();
