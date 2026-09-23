@@ -271,9 +271,14 @@ pub(crate) fn delete_api_key_at(
                 .delete_credential()
                 .map_err(|e| CommandError::KeyringError(format!("清除 API Key 失败：{e}")));
             // 顺带清 v0 遗留条目：否则下次读取会把它当作「可迁移的旧 key」搬回新条目，
-            // 用户「清除」后 key 复活
-            if let Ok(old) = key_entry_for_service(LEGACY_KEYRING_SERVICE, slot) {
-                let _ = old.delete_credential();
+            // 用户「清除」后 key 复活。主删除成功才清（主删除失败时遗留原样保留，
+            // 避免「主 key 没删成、旧条目反被清」的半清状态）；清理失败记日志不阻断
+            if r.is_ok() {
+                if let Ok(old) = key_entry_for_service(LEGACY_KEYRING_SERVICE, slot) {
+                    if let Err(e) = old.delete_credential() {
+                        eprintln!("[keyring] legacy entry cleanup failed: {e}");
+                    }
+                }
             }
             r
         }

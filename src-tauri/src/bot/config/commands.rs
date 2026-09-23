@@ -27,8 +27,26 @@ pub fn perm_mode(app: &AppHandle) -> PermMode {
 
 #[tauri::command]
 pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
-    let _ = io::migrate_legacy_key(&app); // 兜底：设置页读配置时也确保无明文残留
-    let _ = io::migrate_search_keys(&app); // 兜底：Tavily/Brave 明文 key 同样迁进 keyring
+    // 兜底：设置页读配置时也确保无明文残留；迁移幂等可重试，失败记审计不阻断读取
+    if let Err(e) = io::migrate_legacy_key(&app) {
+        audit::audit_log(
+            &app,
+            &format!(
+                "bot_config.migrate_legacy_key_failed | {}",
+                audit::escape_for_log(&e, 200)
+            ),
+        );
+    }
+    // 兜底：Tavily/Brave 明文 key 同样迁进 keyring；同上记审计不阻断
+    if let Err(e) = io::migrate_search_keys(&app) {
+        audit::audit_log(
+            &app,
+            &format!(
+                "bot_config.migrate_search_keys_failed | {}",
+                audit::escape_for_log(&e, 200)
+            ),
+        );
+    }
     let cfg = io::load_config(&app);
 
     // keyring 真实故障（钥匙串锁定/权限拒绝）不吞成「未配置」，
