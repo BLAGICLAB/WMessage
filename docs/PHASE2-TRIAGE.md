@@ -272,8 +272,8 @@ DB-01b-BT-01b 收口后自查发现 4 项 follow-up：
 - **PROC-5: OCR 工具与 infra 稳定性**
   - 类型 1: file_read tool-bug（start_line > end_line），证据: 1fcc418 批次
   - 类型 2: timeout-class hang（SIGKILL / stdout 0 bytes），证据: APW-02a 批次
-  - 类型 3: rate-limit（HTTP 429 重试耗尽，status=failed，comments=null），证据: APW-02b 批次
-  - 累积规则: 同类 ≥2 次触发单批评估 OCR 调用方式调整
+  - 类型 3: rate-limit（HTTP 429 重试耗尽，status=failed，comments=null），证据: APW-02b 批次 + BT-01a 批次（**n=2**）
+  - 累积规则: 同类 ≥2 次触发单批评估 OCR 调用方式调整 —— **type 3 已 n=2，触发条件达成**（待评估项：退避策略 / 调用频率 / 供应商限流配额；本轮不动作，开独立评估）
 
 ### APW-02b OCR r1 disposition（2026-09-23 补，audit 链修正）
 
