@@ -67,20 +67,51 @@ fn tighten_token_permissions(_path: &std::path::Path) -> Result<(), String> {
 /// 写 token 文件并把权限收紧到 0600（token 等价于密码，默认 0644 可被同机其他用户读）。
 /// 抽出独立函数便于单测（load_or_create_token 依赖 AppHandle 无法直测）。
 ///
-/// 用 `OpenOptions` + `.mode(0o600)` 创建即收紧——
-/// 先 `fs::write`（umask 默认 0644）后 chmod 会留同机其他用户可读的窗口。
-/// 注意 mode() 只对新建文件生效，存量文件（历史 0644）靠结尾补 chmod 覆盖。
+/// tmp + rename 原子写，一次杀两个缺口（C5-AP-02）：
+/// - tmp 用 `OpenOptions` + `.mode(0o600)` 创建即收紧，全程无旧权限可读窗口
+///   （truncate 直写存量 0644 文件时，chmod 前 token 以旧权限落盘）；
+/// - `rename` 替换目录项本身，**不跟随 symlink**——token 路径被预置 symlink 时
+///   旧实现会把 token 写进 symlink 指向的文件，新实现把 symlink 整个替换成普通文件。
+/// tmp 名带 pid+自增序号：api_start / api_rotate_token 的写路径互不加锁，固定 tmp 名
+/// 会被并发写双方 truncate 撕裂。`create_new` 打开：tmp 必为新建 inode（mode(0o600)
+/// 只对新建生效，残留/预置 tmp 不复用），撞名则报错不静默。写或 rename 失败都
+/// best-effort 清理 tmp（里面装着明文 token，不能遗留）。
 pub(crate) fn write_token_file(path: &std::path::Path, token: &str) -> Result<(), String> {
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static TMP_SEQ: AtomicU32 = AtomicU32::new(0);
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| format!("无效的目标路径：{}", path.display()))?;
+    let tmp = path.with_file_name(format!(
+        "{}.{}.{}.tmp",
+        file_name.to_string_lossy(),
+        std::process::id(),
+        TMP_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    let write_result = (|| {
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut f = opts
+            .open(&tmp)
+            .map_err(|e| format!("打开临时文件 {} 失败：{e}", tmp.display()))?;
+        use std::io::Write;
+        f.write_all(token.as_bytes())
+            .map_err(|e| format!("写入临时文件 {} 失败：{e}", tmp.display()))
+    })();
+    if let Err(e) = write_result {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
     }
-    let mut f = opts.open(path).map_err(|e| e.to_string())?;
-    use std::io::Write;
-    f.write_all(token.as_bytes()).map_err(|e| e.to_string())?;
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("落盘重命名失败：{e}"));
+    }
+    // belt & suspenders：tmp 创建即 0600，补 chmod 防极端文件系统 rename 权限继承差异
     tighten_token_permissions(path)?;
     Ok(())
 }
@@ -168,6 +199,52 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "new-token");
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "存量 0644 文件必须被补收紧，实际 {mode:o}");
+    }
+
+    /// token 路径是 symlink 时不得跟随写入：rename 替换目录项本身，
+    /// symlink 目标的内容必须原样保留，token 路径变成普通文件。
+    #[cfg(unix)]
+    #[test]
+    fn write_token_file_replaces_symlink_not_follow() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim.txt");
+        std::fs::write(&victim, "victim-content").unwrap();
+        let path = dir.path().join("api-token.txt");
+        symlink(&victim, &path).unwrap();
+        write_token_file(&path, "tok123").unwrap();
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "victim-content");
+        assert!(!std::fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "tok123");
+        assert!(
+            !dir.path().read_dir().unwrap().any(|e| e
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp")),
+            "成功后不得遗留 tmp 残渣"
+        );
+    }
+
+    /// 覆盖写（token 轮换）必须正常工作，且不留 tmp 残渣。
+    #[test]
+    fn write_token_file_overwrite_rotates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("api-token.txt");
+        write_token_file(&path, "tok-v1").unwrap();
+        write_token_file(&path, "tok-v2").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "tok-v2");
+        assert!(
+            !dir.path().read_dir().unwrap().any(|e| e
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp")),
+            "成功后不得遗留 tmp 残渣"
+        );
     }
 }
 
