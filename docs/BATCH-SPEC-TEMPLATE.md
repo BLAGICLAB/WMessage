@@ -17,6 +17,14 @@
 - 0 FP / 0 family 异质
 - 编译层事实必须核实，不许凭印象
 
+## spec 起草后自查三条（APW-02a 2026-09-23 立）
+
+1. `expected_files` 是否覆盖全部写入路径（含签名 ripple 的 caller + 新测试文件）
+2. budget 是 A 类还是 B 类？两类公式分开算？（见 PHASE2-TRIAGE.md §5 “budget 估算法 SOP”）
+3. findings 逐条 fix 字段是否显式列出 ripple 的文件 + 行号？
+
+自查未过不许发审。补完再审。
+
 ## 自主执行规则
 
 spec 被 reviewer 批准后:
