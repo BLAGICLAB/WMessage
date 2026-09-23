@@ -100,6 +100,25 @@ pub(crate) fn is_tool_failure_text(text: &str) -> bool {
 /// 结束后复原（reopen/restore，见 state.rs）；逐步判定成败并记审计，
 /// 吞掉结果会让回滚全挂也返回 true，护栏被架空。
 /// 泛型 Runtime + execute_tool 注入（stop 分支选择由调用方闭包承接），调度器本体可被集成测试直驱。
+/// 回滚复原守卫：回滚段 execute_tool panic / 提前 return 时 Drop 兜底复原
+/// Failed 终态——否则 run 永久卡 Running，AtomicGuard 放行窗口被永久重开。
+/// 正常路径仍走原位置手动 restore（审计行顺序不变），随后 disarm；
+/// 双重 restore 安全（restore 对非 Running 是 no-op）。
+struct RollbackRestoreGuard<'a, R: tauri::Runtime> {
+    app: &'a tauri::AppHandle<R>,
+    name: &'a str,
+    session_id: Option<&'a str>,
+    armed: bool,
+}
+
+impl<R: tauri::Runtime> Drop for RollbackRestoreGuard<'_, R> {
+    fn drop(&mut self) {
+        if self.armed {
+            super::state::restore_failed_run_after_rollback(self.app, self.name, self.session_id);
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_rollback_segment_core<R: tauri::Runtime, X, XP>(
     app: &tauri::AppHandle<R>,
@@ -128,6 +147,12 @@ where
     // 回滚窗口：Failed → Running（原子工具放行）。窗口内 skill_on_step 仍计数/可熔断，
     // 熔断会再把 run 标 Failed —— 后续回滚步骤的原子工具随之被拦，按失败计入。
     let reopened = super::state::reopen_failed_run_for_rollback(app, name, session_id);
+    let mut restore_guard = RollbackRestoreGuard {
+        app,
+        name,
+        session_id,
+        armed: reopened,
+    };
     let mut failed_steps = 0usize;
     for rb in rollback {
         let rb_args = substitute_vars(&rb.args_json, ctx);
@@ -149,6 +174,7 @@ where
     if reopened {
         super::state::restore_failed_run_after_rollback(app, name, session_id);
     }
+    restore_guard.armed = false;
     crate::bot::audit_log_hook(
         app,
         &format!(
@@ -917,5 +943,58 @@ mod tests {
             return;
         }
         eprintln!("端到端 smoke：{} 个 Skill 全部跑通", skill_count);
+    }
+
+    /// 回滚复原守卫：回滚段 panic 时 Drop 兜底把临时重开的 run 复原 Failed——
+    /// 否则 run 永久卡 Running，AtomicGuard 放行窗口被永久重开。
+    #[test]
+    fn rollback_restore_guard_restores_failed_on_panic() {
+        let app = {
+            let app = tauri::test::mock_app();
+            tauri::Manager::manage(&app, crate::app_state::AppState::default());
+            app.handle().clone()
+        };
+        let name = "test-rb-guard-panic";
+        let mut run = test_run(8, 180);
+        run.name = name.into();
+        run.state = SkillState::Failed;
+        run.session_id = Some("s-rb-g".into());
+        {
+            let registry = skill_runs(&app);
+            registry.lock().unwrap().insert(name.into(), run);
+        }
+        let reopened =
+            crate::bot_skills::state::reopen_failed_run_for_rollback(&app, name, Some("s-rb-g"));
+        assert!(reopened, "Failed run 应被临时重开");
+        {
+            let registry = skill_runs(&app);
+            let g = registry.lock().unwrap();
+            assert_eq!(
+                g.get(name).map(|r| r.state.clone()),
+                Some(SkillState::Running)
+            );
+        }
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _g = RollbackRestoreGuard {
+                app: &app,
+                name,
+                session_id: Some("s-rb-g"),
+                armed: reopened,
+            };
+            panic!("模拟回滚步骤 execute_tool panic");
+        }));
+        assert!(caught.is_err(), "panic 应被捕获");
+        {
+            let registry = skill_runs(&app);
+            let g = registry.lock().unwrap();
+            assert_eq!(
+                g.get(name).map(|r| r.state.clone()),
+                Some(SkillState::Failed),
+                "Drop 兜底应复原 Failed 终态"
+            );
+        }
+        // 收尾：不给其他测试留状态
+        let registry = skill_runs(&app);
+        registry.lock().unwrap().remove(name);
     }
 }
