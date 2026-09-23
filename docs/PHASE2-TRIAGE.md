@@ -27,6 +27,7 @@
 - [2026-09-23 23:20 CST] 新发现登记：db/migration/bot.config 三域 12 处同形静默 into_inner（不在 OCR 271 名单，±3 行上下文 grep 核实无 eprintln）→ PHASE2-TRIAGE-NEW-2，下一轮评估。
 - [2026-09-23 23:25 CST] FRDV-01 收口（commit 46f8437）：C5-MI-03.2（rules.rs:121 CSV 双静默默认值）已修 fail-closed——空动作行 / 未知启用 token → 行级 DomainRule Err。C5-MI-03 2 条 → 剩 1 条（rules.rs:27 load_rules 静默 fallback default，quarantine vs 结构化 Err = B 类候选，攒批待拍）。
 - [2026-09-23 23:35 CST] MI-07 收口（commit 613e07a）：C5-MI-07（ops.rs log_line rotation/写入路径分裂）已修——单次 canonicalize 结果共用 + 失败兜底不丢日志。OCR r1 唯一 low（data_dir 双调）已采纳入批。migration 域 10 簇剩 4 簇未清：MI-04a/b、MI-05a/b、MI-08。
+- [2026-09-23 23:50 CST] DB-04 收口（commit c9a3041）：C5-DB-04 全簇 2 条已修——bot_session_rename 空标题 fail-closed（InvalidArgument）+ tasks_import 复用 check_export_path + 64MiB 读侧 bounded 强制。OCR r1 2 comments（medium TOCTOU + low 文案截断，同根=本批新代码）均采纳入批（metadata 预检 → bounded reader）。db 域 7 簇剩 2 簇未清：DB-03（race/TOCTOU）、DB-05 余 3 条（均 B 类候选）。
 
 ## 1. 跨域同模式家族
 
@@ -67,7 +68,7 @@
 - C5-DB-02a：atomicity/partial-write（migrations.rs:51 + paths.rs:65），2 条
 - C5-DB-02b：事务约定一致性 / 设计债（tasks.rs:439）→ **wontfix-pending-design-decision**，触发条件 = 未来引入 cascade/soft-delete 多语句 delete 时重审
 - C5-DB-03：race / TOCTOU（mod.rs:61 + tasks.rs:396），2 条
-- C5-DB-04：input-validation（bot_sessions.rs:115 + tasks.rs:485，含 1 security），2 条
+- C5-DB-04：input-validation（bot_sessions.rs:115 + tasks.rs:485，含 1 security），2 条 → **已修（DB-04，commit c9a3041）**
 - C5-DB-05：failure-recovery-default-value（paths.rs:50 + workspace.rs:199 + bot_history.rs:52），3 条（tasks.rs:423 poison.into_inner 条已修 → EVNB-02，归 error-visible-non-blocking）
 
 ### 域 evolution（19 簇 / 39 findings）
