@@ -305,6 +305,7 @@ fn _unused(_e: CommandError) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::migration::ops::copy_dir_recursive;
     use std::fs;
 
     // ── 连接级 PRAGMA 回归锁 ──
@@ -563,6 +564,40 @@ mod tests {
         )
         .unwrap();
         (dir, conn)
+    }
+
+    // ── APW-02a: copy_dir_recursive 防护 ──
+
+    /// dst 已存在 → 返 Err（保守语义，不改现有“dst 不存在”行为）
+    #[test]
+    fn copy_dir_recursive_rejects_existing_dst() {
+        let dir = std::env::temp_dir().join(format!("wm-copy-dst-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("src");
+        let dst = dir.join("dst");
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&dst).unwrap();
+        fs::write(src.join("file.txt"), b"x").unwrap();
+        let result = copy_dir_recursive(&src, &dst);
+        assert!(result.is_err(), "dst 已存在应返 Err，实际 {result:?}");
+        assert!(dst.exists(), "dst 路径应原样未变（无半截内容）");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// src 是 symlink → 返 Err（read_dir 跟读目标 = move 语义失控）
+    #[test]
+    fn copy_dir_recursive_rejects_symlink_src() {
+        let dir = std::env::temp_dir().join(format!("wm-copy-sym-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let real_src = dir.join("real_src");
+        fs::create_dir_all(&real_src).unwrap();
+        fs::write(real_src.join("file.txt"), b"x").unwrap();
+        let sym_src = dir.join("sym_src");
+        std::os::unix::fs::symlink(&real_src, &sym_src).unwrap();
+        let dst = dir.join("dst");
+        let result = copy_dir_recursive(&sym_src, &dst);
+        assert!(result.is_err(), "src 是 symlink 应返 Err，实际 {result:?}");
+        fs::remove_dir_all(&dir).ok();
     }
 
     /// 老数据 → 新 schema 完整链路：ALTER 补 files 列 + file_path 回填 files + 读回解析。

@@ -124,7 +124,57 @@ pub(crate) fn claim_dst_name(dir: &Path, file_name: &str) -> Option<PathBuf> {
 }
 
 /// 递归拷贝目录（跨盘移动兜底用）：遇符号链接中止，失败时不破坏源
+///
+/// APW-02a 改造（atomicity-partial-write family +1）：
+/// 1. top-level src symlink 检查 —— read_dir 跟读目标 = move 语义失控 → 返 Err
+/// 2. top-level dst 已存在检查 —— 保守语义，不改现有"dst 不存在"行为 → 返 Err
+/// 3. 顶层建 staging sibling（dst.parent().join(format!("{}.copying", file_name))，
+///    显式追加不用 with_extension），递归直写 staging，顶层 fs::rename 原子 commit
+/// 4. 失败 fs::remove_dir_all(&staging) 清 staging，dst 未被触碰
 pub(crate) fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), CommandError> {
+    // 1. top-level src symlink 检查（read_dir 跟读目标 = move 语义失控）
+    if src
+        .symlink_metadata()
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        return Err(CommandError::DomainRule {
+            domain: "migration".to_string(),
+            reason: format!(
+                "src 是符号链接，read_dir 跟读目标，entries 与用户预期不一致：{}",
+                src.display()
+            ),
+        });
+    }
+    // 2. top-level dst 已存在检查（保守语义）
+    if dst.symlink_metadata().is_ok() {
+        return Err(CommandError::DomainRule {
+            domain: "migration".to_string(),
+            reason: format!("dst 已存在，不允许覆盖：{}", dst.display()),
+        });
+    }
+    // 3. 顶层 staging sibling 构造（不用 with_extension，避免 .tar/.pdf 等扩展名被替换错）
+    let parent = dst.parent().ok_or_else(|| CommandError::DomainRule {
+        domain: "migration".to_string(),
+        reason: format!("dst 无 parent：{}", dst.display()),
+    })?;
+    let file_name = dst.file_name().ok_or_else(|| CommandError::DomainRule {
+        domain: "migration".to_string(),
+        reason: format!("dst 无 file_name：{}", dst.display()),
+    })?;
+    let staging = parent.join(format!("{}.copying", file_name.to_string_lossy()));
+    // 4. 递归直写 staging，失败清 staging
+    if let Err(e) = copy_dir_recursive_into(src, &staging) {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(e);
+    }
+    // 5. 顶层 fs::rename(staging, dst) 原子 commit
+    fs::rename(&staging, dst).map_err(|e| format!("staging 提交失败：{e}"))?;
+    Ok(())
+}
+
+/// 内部 helper：直写目标路径（不建子级 staging，完整镜像 src 目录结构）
+fn copy_dir_recursive_into(src: &Path, dst: &Path) -> Result<(), CommandError> {
     fs::create_dir_all(dst).map_err(|e| format!("创建目录失败：{e}"))?;
     for entry in fs::read_dir(src).map_err(|e| format!("读取目录失败：{e}"))? {
         let entry = entry.map_err(|e| e.to_string())?;
@@ -138,7 +188,7 @@ pub(crate) fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), CommandEr
         let s = entry.path();
         let d = dst.join(entry.file_name());
         if ty.is_dir() {
-            copy_dir_recursive(&s, &d)?;
+            copy_dir_recursive_into(&s, &d)?;
         } else {
             fs::copy(&s, &d).map_err(|e| format!("复制文件失败：{e}"))?;
         }
