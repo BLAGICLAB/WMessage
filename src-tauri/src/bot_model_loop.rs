@@ -1078,7 +1078,7 @@ where
             );
             audit_log(&format!(
                 "tool: {} | args: {} | result: {}",
-                // 工具名是模型给的字符串，直插可伪造日志行
+                // 工具名是模型给的字符串：truncate_for_log = escape_for_log 别名（\n\r| 已转义），不可伪造日志行
                 crate::bot::truncate_for_log(name, 60),
                 crate::bot::truncate_for_log(args, 500),
                 crate::bot::truncate_for_log(&result, 300)
