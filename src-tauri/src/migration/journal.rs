@@ -25,6 +25,9 @@ pub(crate) fn db_write_lock() -> std::sync::MutexGuard<'static, ()> {
 
 /// B1 inner: 记录一个 pending 操作，返回 row id。
 /// 抽出来为方便单测（不需 AppHandle）。生产仍走 journal_pending 包一层。
+/// MI-04a：同一 (task_id, src) 至多一条 pending——重入/重试复用既有行
+/// （刷新 op/dst/created_at），不再制造 id DESC 下不可见、但仍被 replay 扫到的孤儿。
+/// 去重原子性依赖调用方持 db_write_lock（journal_pending 已持锁，见同文件 db_write_lock 注释）。
 pub(crate) fn journal_pending_inner(
     conn: &rusqlite::Connection,
     op: &str,
@@ -33,16 +36,32 @@ pub(crate) fn journal_pending_inner(
     task_id: &str,
     now_ms: i64,
 ) -> Result<i64, String> {
+    use rusqlite::OptionalExtension;
+    let dst_s = dst.map(|p| p.to_string_lossy().into_owned());
+    let existing: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM migration_journal
+             WHERE task_id = ?1 AND src = ?2 AND state = 'pending'
+             ORDER BY id DESC LIMIT 1",
+            rusqlite::params![task_id, src.to_string_lossy()],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    if let Some(id) = existing {
+        conn.execute(
+            "UPDATE migration_journal
+             SET op = ?2, dst = ?3, created_at = ?4
+             WHERE id = ?1",
+            rusqlite::params![id, op, dst_s, now_ms],
+        )
+        .map_err(|e| e.to_string())?;
+        return Ok(id);
+    }
     conn.execute(
         "INSERT INTO migration_journal (op, src, dst, task_id, state, created_at)
          VALUES (?1, ?2, ?3, ?4, 'pending', ?5)",
-        rusqlite::params![
-            op,
-            src.to_string_lossy(),
-            dst.map(|p| p.to_string_lossy().to_string()),
-            task_id,
-            now_ms,
-        ],
+        rusqlite::params![op, src.to_string_lossy(), dst_s, task_id, now_ms,],
     )
     .map_err(|e| e.to_string())?;
     Ok(conn.last_insert_rowid())

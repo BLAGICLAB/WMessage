@@ -390,7 +390,7 @@ mod tests {
             "其他 task/src 的 pending 不应串扰"
         );
 
-        // 同 task+src 多条 pending 时取最新（id 最大）
+        // MI-04a：同 (task, src) 重复 pending 复用既有行（不再产生 id DESC 下的孤儿）
         let id3 = journal_pending_inner(
             &conn,
             "move",
@@ -409,11 +409,50 @@ mod tests {
             6000,
         )
         .unwrap();
+        assert_eq!(id3, id4, "同 key 重入应复用既有 pending 行");
         let e = journal_find_pending_inner(&conn, "task-9", src)
             .unwrap()
             .unwrap();
-        assert_eq!(e.id, id4, "应取最新一条 pending");
-        assert!(id4 > id3);
+        assert_eq!(e.id, id3, "复用后 find 命中同一行");
+        assert_eq!(
+            e.dst.as_deref(),
+            Some("/dst/new"),
+            "复用时 dst 应刷新为最新"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// MI-04a：同 key 二次 pending → 同 id + 行数恒 1 + op/dst 刷新；异 key 不受影响。
+    #[test]
+    fn journal_pending_dedups_same_key() {
+        let (dir, conn) = setup_journal_db();
+        let src = Path::new("/src/a");
+
+        let id1 =
+            journal_pending_inner(&conn, "move", src, Some(Path::new("/dst/1")), "t", 100).unwrap();
+        let id2 = journal_pending_inner(&conn, "delete", src, None, "t", 200).unwrap();
+        assert_eq!(id1, id2, "同 (task_id, src) 重入应复用同一 pending 行");
+
+        let pending_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM migration_journal
+                 WHERE task_id = 't' AND src = '/src/a' AND state = 'pending'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pending_count, 1, "同 key 至多一条 pending");
+
+        let e = journal_find_pending_inner(&conn, "t", src)
+            .unwrap()
+            .unwrap();
+        assert_eq!(e.op, "delete", "复用时 op 应刷新为最新");
+        assert_eq!(e.dst, None, "复用时 dst 应刷新为最新（含清空）");
+
+        // 异 key 仍各自 INSERT 新行
+        let id3 =
+            journal_pending_inner(&conn, "move", Path::new("/src/b"), None, "t", 300).unwrap();
+        assert!(id3 > id1, "异 src 应新建 pending 行");
         std::fs::remove_dir_all(&dir).ok();
     }
 
