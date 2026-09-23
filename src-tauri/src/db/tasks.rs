@@ -483,7 +483,7 @@ pub fn check_export_path(path: &str) -> CommandResult<()> {
         return Err(CommandError::InvalidArgument {
             field: "path".into(),
             value: path.to_string(),
-            reason: "导出路径必须是 .json 文件".into(),
+            reason: "必须是 .json 文件".into(),
         });
     }
     Ok(())
@@ -504,11 +504,34 @@ pub async fn tasks_export(app: AppHandle, path: String) -> CommandResult<usize> 
     .map_err(|e| CommandError::from(format!("任务导出线程 join 失败：{e}")))?
 }
 
+/// tasks_import 读入文件大小上限（防内存 DoS：用户误选多 GB 文件时 read_to_string 直接吃满内存）
+const MAX_IMPORT_BYTES: u64 = 64 * 1024 * 1024;
+
 #[tauri::command]
 pub async fn tasks_import(app: AppHandle, path: String) -> CommandResult<usize> {
+    check_export_path(&path)?;
     async_runtime::spawn_blocking(move || {
         use rusqlite::OptionalExtension;
-        let raw = std::fs::read_to_string(&path).map_err(|e| format!("无法读取所选文件：{e}"))?;
+        // 上限在读侧强制（bounded reader），不做 metadata 预检——check-then-act 之间
+        // 文件可被换大（symlink swap），只有限制实际读入字节数才兜底。
+        // 先读字节再转 String：Take 截断可能切断 UTF-8 码点边界，直接 read_to_string
+        // 会把超限文件误报成编码错误。
+        let f = std::fs::File::open(&path).map_err(|e| format!("无法读取所选文件：{e}"))?;
+        let mut limited = std::io::Read::take(f, MAX_IMPORT_BYTES + 1);
+        let mut buf = Vec::new();
+        std::io::Read::read_to_end(&mut limited, &mut buf)
+            .map_err(|e| format!("无法读取所选文件：{e}"))?;
+        if buf.len() as u64 > MAX_IMPORT_BYTES {
+            return Err(CommandError::InvalidArgument {
+                field: "path".into(),
+                value: path.clone(),
+                reason: format!(
+                    "任务数据文件超过大小上限（{} MB）",
+                    MAX_IMPORT_BYTES / (1024 * 1024)
+                ),
+            });
+        }
+        let raw = String::from_utf8(buf).map_err(|e| format!("不是有效的 UTF-8 文本：{e}"))?;
         let ext: Vec<super::Task> =
             serde_json::from_str(&raw).map_err(|e| format!("不是有效的任务数据 JSON：{e}"))?;
         if ext.is_empty() {

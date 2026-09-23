@@ -107,6 +107,14 @@ pub async fn bot_session_delete(app: AppHandle, id: String) -> CommandResult<()>
 
 #[tauri::command]
 pub fn bot_session_rename(app: AppHandle, id: String, title: String) -> CommandResult<()> {
+    let title = title.trim().to_string();
+    if title.is_empty() {
+        return Err(CommandError::InvalidArgument {
+            field: "title".into(),
+            value: String::new(),
+            reason: "会话标题不能为空（或全为空白字符）".into(),
+        });
+    }
     let _g = super::DB_WRITE_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
@@ -114,7 +122,7 @@ pub fn bot_session_rename(app: AppHandle, id: String, title: String) -> CommandR
     let now = chrono::Utc::now().timestamp_millis();
     conn.execute(
         "UPDATE bot_sessions SET title = ?1, updated_at = ?2 WHERE id = ?3",
-        rusqlite::params![title.trim(), now, id],
+        rusqlite::params![title, now, id],
     )
     .map_err(|e| e.to_string())?;
     Ok(())

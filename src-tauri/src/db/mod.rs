@@ -1814,4 +1814,24 @@ mod atomic_write_tests {
         );
         fs::remove_dir_all(&dir).ok();
     }
+
+    // ── check_export_path（tasks_export / tasks_import 共用的 .json 扩展名闸门） ──
+
+    #[test]
+    fn check_export_path_accepts_json_case_insensitive() {
+        assert!(tasks::check_export_path("/tmp/a.json").is_ok());
+        assert!(tasks::check_export_path("/tmp/a.JSON").is_ok());
+    }
+
+    #[test]
+    fn check_export_path_rejects_non_json_extension() {
+        let err = tasks::check_export_path("/tmp/a.txt").expect_err("非 .json 应拒绝");
+        assert!(err.to_string().contains(".json"), "错误应提到 .json：{err}");
+    }
+
+    #[test]
+    fn check_export_path_rejects_missing_extension() {
+        assert!(tasks::check_export_path("/tmp/a").is_err());
+        assert!(tasks::check_export_path("/tmp/dir/").is_err());
+    }
 }
