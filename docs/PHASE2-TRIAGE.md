@@ -23,6 +23,8 @@
 - [2026-09-22 09:18 CST] frontend 数字校正：实测 FE-04..08b 6 个批的 finding 数与文件数有 2 处错（FE-06 列 6 文件我写 "5 文件"；FE-07 同病）。修正为精确 6 文件 / 6 条每批。
 - [2026-09-22 09:18 CST] 累计基准修正：plan §5 的 280 是 raw 计数（含 path+start_line 重复，如 bot_model_loop.rs:1079/:984 各 2 次）。去重后 unique = **271** non-vendor high。修正 triage 累计 = 197 unique findings（75 簇对应）/ 其他 remaining = 74 unique findings（不再是 81）。
 - [2026-09-22 09:00 CST] WidgetApp 簇清单重写：3 簇 / 7 findings（WA-01 合入 C4-v2 后剩 WA-01b 2 + WA-02 3 + WA-03 2）。
+- [2026-09-23 23:20 CST] EVNB-02 收口（commit 299e776）：C5-DB-05 的 poison.into_inner 静默条（tasks.rs:423，实际修复点 db_delete tasks.rs:469-471，行号漂移）+ C5-MI-01（migration/journal.rs:18）已修。两站统一走 C3-1 logged-path（eprintln("[mutex_poisoned] ...") + into_inner 恢复语义不变）。**family 归属修正**：该 mutex 条原挂 failure-recovery-default-value（C5-DB-05），实为 error-visible-non-blocking（C3-1 约定 = logged 恢复即合法，BT-02 FP 先例）——triage 时归错 family，借此修正。C5-DB-05 4 条 → 3 条；C5-MI-01 单条已清。
+- [2026-09-23 23:20 CST] 新发现登记：db/migration/bot.config 三域 12 处同形静默 into_inner（不在 OCR 271 名单，±3 行上下文 grep 核实无 eprintln）→ PHASE2-TRIAGE-NEW-2，下一轮评估。
 
 ## 1. 跨域同模式家族
 
@@ -35,7 +37,7 @@
 - C5-MI-02（migration，3 条）
 
 ### failure-recovery-default-value（错误被替换成默认值，**且可能覆写/破坏已有数据**——优先于 error-not-propagated）
-- C5-DB-05（db，4 条：默认 updated_at=0 / poison.into_inner 静默 / corrupt 源吞掉 / 批量 inserted_at 全用同一 now）
+- C5-DB-05（db，3 条：默认 updated_at=0 / corrupt 源吞掉 / 批量 inserted_at 全用同一 now；poison.into_inner 静默条已修 → EVNB-02，family 修正为 error-visible-non-blocking）
 - C5-DB-01b（db，2 条：workspace.rs:92/:209 unwrap_or_else("[]") 写入数据库 → 用户 links 被静默覆写为）
 - C5-BT-01b（bot*，2 条：tools.rs:147/:280 静默吞 DB load 失败返回空 task list）
 - C5-MI-03（migration，2 条：rules load fallback default + CSV 输入 coerce → 用户配置被静默覆写）
@@ -64,7 +66,7 @@
 - C5-DB-02b：事务约定一致性 / 设计债（tasks.rs:439）→ **wontfix-pending-design-decision**，触发条件 = 未来引入 cascade/soft-delete 多语句 delete 时重审
 - C5-DB-03：race / TOCTOU（mod.rs:61 + tasks.rs:396），2 条
 - C5-DB-04：input-validation（bot_sessions.rs:115 + tasks.rs:485，含 1 security），2 条
-- C5-DB-05：failure-recovery-default-value（paths.rs:50 + tasks.rs:423 + workspace.rs:199 + bot_history.rs:52），4 条
+- C5-DB-05：failure-recovery-default-value（paths.rs:50 + workspace.rs:199 + bot_history.rs:52），3 条（tasks.rs:423 poison.into_inner 条已修 → EVNB-02，归 error-visible-non-blocking）
 
 ### 域 evolution（19 簇 / 39 findings）
 3a（C3 周边，3 簇 / 4 findings）：
@@ -86,7 +88,7 @@
 - C5-EV-3b-I：关键不变量测试缺（routing.rs:110），1 条
 
 ### 域 migration（10 簇 / 15 findings）
-- C5-MI-01：poisoned mutex silent recovery（DB_WRITE_LOCK silent 路径，**违反 C3-1 约定**），1 条，**家族已溶解，独立存在**
+- C5-MI-01：poisoned mutex silent recovery（DB_WRITE_LOCK silent 路径，**违反 C3-1 约定**），1 条，**家族已溶解，独立存在** → **已修（EVNB-02，commit 299e776：journal.rs db_write_lock 闭包加 mutex_poisoned eprintln，恢复语义不变）**
 - C5-MI-02：error-not-propagated（migration/run.rs:132 + :270 + recovery.rs:87，unwrap_or(None) / filter_map(r.ok) 吞 DB err，调用方无感），3 条
 - C5-MI-03：failure-recovery-default-value（migration/rules.rs:27 + :121，破坏数据：rules 默认覆盖 + CSV 输入 coerce），2 条
 - C5-MI-04a：migration/journal.rs:34 INSERT 无去重，1 条
@@ -164,6 +166,7 @@
 不在源 OCR high 名单、triage 跑出过程中顺手发现，下一轮评估：
 
 - **PHASE2-TRIAGE-NEW-1**：bot_py.rs:694 + bot_py.rs:705 测试代码内 silent into_inner，无 eprintln 缓解措施。源 OCR 标的是 :945（有 eprintln），这两处不在 OCR 范围。是 silent 路径，与 C3-1 约定（带 eprintln）不一致。是否需引入 Phase 2 high 待评估。**不并入 BT-02 / MI-01**（"顺手扩"是 triage 层禁忌）。
+- **PHASE2-TRIAGE-NEW-2**（2026-09-23 EVNB-02 批登记）：db / migration / bot.config 三域 **12 处同形静默 into_inner**，均不在源 OCR 271 high 名单。站点（±3 行上下文 grep 核实无 eprintln，2026-09-23 23:2x 工作树）：workspace.rs:173 / :189 / :278、bot_history.rs:89 / :108、bot_sessions.rs:78 / :100 / :112、migration/ops.rs:236 / :246、bot/config/audit.rs:26、bot/config/mod.rs:581。与 C3-1 约定（logged 恢复）不一致。EVNB-02 只修 OCR 名单内 2 站，**不顺手扩**（triage SOP）。修复形态预期与 EVNB-02 相同（统一走 `lock_db_write()` 或补 eprintln），下一轮评估是否引入 Phase 2 工单。注：bot_skills/* 与 py/* 域另有大量 into_inner 站点，多数已有 eprintln（BT-02 先例），本登记仅含已核实静默的 12 处。
 
 ### 跨域一致性检查第一步（triage 全跑完后那一步）
 
@@ -270,7 +273,7 @@ DB-01b-BT-01b 收口后自查发现 4 项 follow-up：
 
 - **OCR: unavailable**：首批 commit 无 OCR 复审。工具内部 file_read 参数错（start_line 80 > end_line 60）。证据目录 `~/.openclaw/cache/ocr-C5-B1-failure/` 已建但文件未完整落盘。三层自测（fmt + check + test-all 全绿）代替 OCR 复审。
 - **PROC-5: OCR 工具与 infra 稳定性**
-  - 类型 1: file_read tool-bug（start_line > end_line），证据: 1fcc418 批次
+  - 类型 1: file_read tool-bug（start_line > end_line），证据: 1fcc418 批次 + EVNB-01（n=2）+ EVNB-02 单 run 4 次（**n=3**，超触发线仍复发，评估批待 reviewer 排期）
   - 类型 2: timeout-class hang（SIGKILL / stdout 0 bytes），证据: APW-02a 批次
   - 类型 3: rate-limit（HTTP 429 重试耗尽，status=failed，comments=null），证据: APW-02b 批次 + BT-01a 批次（**n=2**）
   - 累积规则: 同类 ≥2 次触发单批评估 OCR 调用方式调整 —— **type 3 已 n=2，触发条件达成**（待评估项：退避策略 / 调用频率 / 供应商限流配额；本轮不动作，开独立评估）
@@ -338,6 +341,24 @@ run A 仅靠 /tmp/ocr-APW-02b-r1.clean.json 找回。cache 命名亦误导：
 - 【OCR 原文核验记录（EVNB-01）】r1 = /tmp/ocr-EVNB-01-20260923-224348.json（原始首行为
   [ocr] 错误行，.clean.json 为剥首行后解析版）：status=complete / comments=1（medium，
   即 EVNB-01-OCR-1）/ 0 high / 4m33s / tool failure 1（file_read）。
+
+### EVNB-02 follow-up 登记（2026-09-23, commit 299e776）
+
+- **PROC-5 type 1 复发（n=3）**：EVNB-02 OCR r1（/tmp/ocr-EVNB-02-20260923-230527.raw.json）
+  单 run 内 **4 次** `file_read failed: start_line > end_line`（range 反转：160>30 / 80>30 /
+  70>25 / 165>30；目标 tasks.rs 1 次 + 上下文文件 bot_history/bot_sessions/workspace 3 次）。
+  4 次失败均未中目标区段——files_reviewed=2（tasks.rs + journal.rs 均实际审到）、
+  comments=0、terminal_state=complete，非整 run 失败。**type 1 累积 n=3**（首批 1fcc418 /
+  EVNB-01 / EVNB-02），超 n=2 触发线后仍在复发；评估批仍待 reviewer 排期（同 EVNB-01 登记）。
+- 【OCR 原文核验记录（EVNB-02）】r1 raw = /tmp/ocr-EVNB-02-20260923-230527.raw.json
+  （raw 文件头部混有多行 `[ocr] ✘ file_read failed ...` 前缀行——比 EVNB-01 的单行更重，
+  解析需 `grep -v '^\[ocr\]'` 全量剥除，.clean2.json 为剥后解析版）：status=complete /
+  comments=0 / 0 high / 16s / tool failure 4（均 file_read range 反转，见上）/
+  model=MiniMax-M3 / run_id=8b52e6ce-65b3-4a2e-878b-bb16d9bcb255。
+- **comments=0 的可信度注记**：reviewer 曾尝试 file_read 上下文文件 bot_history.rs /
+  bot_sessions.rs / workspace.rs（正是 NEW-2 登记的同形站点域），均因 type 1 bug 失败；
+  但 diff 本体经 source_artifact 提供，目标 2 文件审到且 0 findings。0 comments 成立，
+  不因工具失败打折。
 
 **已 triage（脚本 DOMAINS 12 域，不含 frontend）**: 145 unique
 
