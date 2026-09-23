@@ -1,4 +1,29 @@
 #!/usr/bin/env bash
+# install-git-hook.sh — 生成 .githooks/pre-commit（幂等）
+#
+# 策略：全量生成，不 patch。每次跑输出逐字节相同。
+# 所有权语义：本脚本拥有 .githooks/pre-commit，用户自定义逻辑请勿直接编辑，改为扩展本模板。
+# 安全阀：检测现有 hook 是否本工具生成（看 marker），不是则拒绝覆盖。
+
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+cd "$REPO_ROOT"
+
+HOOK=".githooks/pre-commit"
+MARK_BEGIN="# >>> batch-verify gate (managed) >>>"
+MARK_END="# <<< batch-verify gate (managed) <<<"
+
+# --- 安全阀：marker-based 所有权检测 ---
+if [[ -f "$HOOK" ]] && ! grep -qF "$MARK_BEGIN" "$HOOK"; then
+    echo "[install-hook] ERROR: $HOOK 已存在且非本工具生成，拒绝覆盖" >&2
+    echo "[install-hook] 手工处理（备份+删除或改名）后重试" >&2
+    exit 1
+fi
+
+# --- 全量生成 ---
+cat > "$HOOK" <<'HOOK_TEMPLATE'
+#!/usr/bin/env bash
 cd "$(git rev-parse --show-toplevel)" || { echo "[pre-commit] 无法定位 repo root"; exit 1; }
 
 # >>> batch-verify gate (managed) >>>
@@ -47,3 +72,8 @@ fi
 
 # versioned pre-commit → scripts/test-fast.sh
 exec "$(dirname "$0")/../scripts/test-fast.sh"
+HOOK_TEMPLATE
+
+chmod +x "$HOOK"
+echo "[install-hook] 生成 $HOOK"
+bash -n "$HOOK" && echo "[install-hook] 语法 OK"
