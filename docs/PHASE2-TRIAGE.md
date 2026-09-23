@@ -312,6 +312,10 @@ run A 仅靠 /tmp/ocr-APW-02b-r1.clean.json 找回。cache 命名亦误导：
 
 （均不本批修；下次 APW-02b follow-up 或相关批并入。）
 
+### C5-BT-01a 退批登记（2026-09-23）
+
+- **C5-BT-01a-1**（bot/config/commands.rs:30 + :31）：`bot_get_config` 内 `let _ = io::migrate_legacy_key(&app);` / `let _ = io::migrate_search_keys(&app);`。**修法 = (b) log warn + 继续**（migrate 是幂等 + 可重试 + 非前置副作用，callee doc 明示「App 启动时调用一次，设置页读配置时也会兜底触发」）→ **family = error-visible-non-blocking**（与 C5-AP-06 同 family），非 error-not-propagated。**退 BT-01a 批**；未来 error-visible-non-blocking family 成批时并入。
+
 ## 4. 累计
 
 **已 triage（脚本 DOMAINS 12 域，不含 frontend）**: 145 unique
