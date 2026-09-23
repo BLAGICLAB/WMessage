@@ -36,6 +36,8 @@
 
 - [2026-09-24 01:35 CST] BT-01c 收口（commit eb11651）：C5-BT-01a 余 2 条已修——skill_finish 零迁移可见化（reason 非空闸门：传 reason=期待迁移记 skill_finish_no_transition，空 reason=清理性调用不记；OCR r1 抓回"普通聊天路径每轮误记"high→修、r2 抓回 session_has_run 形态误记→改 reason 门、r3 补三态门单测）；find_due_tasks 两处 db_upsert 失败 audit_log 留痕。budget 二度校正（+40→+50→+80，全 OCR 驱动，同 MI-04b 形态，并入 META-8 待拍材料）。PROC-5 type 1 复发 n=6→n=9（r2×2 + r3×1，均 file_read start>end，review 本体 complete）。spec 立项 13d194a / 校正 1bd8a92 / eeed791。
 
+- [2026-09-24 02:05 CST] AP-02 收口（commit 5d8e878）：C5-AP-02 已修——write_token_file 改 tmp+rename 原子写（pid+seq 唯一 tmp 名 + create_new + mode(0o600)，rename 不跟随 symlink；写/rename 失败均清 tmp）。OCR r1 2 medium + 2 low 全同根全采纳（rename 清 tmp / 并发撕裂 tmp 名 / create_new 保 mode / 错误带路径），r2 0 comments 验证。budget 校正一次（+70→+95）。PROC-5 type 1 复发 n=9→n=11（r1×2 均 file_read start>end）。
+
 ## 1. 跨域同模式家族
 按"错误去哪了" + "是否破坏数据"两轴判，**4 家族**（poisoned-silent-recovery 已溶解 — 见执行日志；error-visible-non-blocking 已重新引入 for C5-AP-06 only — 见 §3.5 异常 2 更新）：
 
@@ -117,7 +119,7 @@
 
 ### 域 api（7 簇 / 14 findings）
 - C5-AP-01：TOCTOU race（api_auth.rs:27 + api_handlers/commands.rs:61 + :238 + api_server.rs:208），4 条
-- C5-AP-02：symlink + 权限（api_auth.rs:73），1 条
+- C5-AP-02：symlink + 权限（api_auth.rs:73），1 条 → **已修（AP-02，commit 5d8e878）**
 - C5-AP-03：日志输出缺陷（api_handlers/ratelimit.rs:45 + :36，批内 2 处独立改动），2 条 → **已修（AP-03，commit a78de81）**
 - C5-AP-04：SSE writer 缺陷（api_handlers/sse.rs:196 + :183），2 条
 - C5-AP-05：持锁跨 I/O（api_handlers/handlers.rs:277 + :405 + :561），3 条
@@ -432,6 +434,15 @@ run A 仅靠 /tmp/ocr-APW-02b-r1.clean.json 找回。cache 命名亦误导：
   连发下仍误记 → 闸门改 reason 非空；tool failure 2=type 1）；r3 =
   ocr-r3-20260924-012658.json（0 high；1 low=三态门补单测，采纳；tool failure 1=type 1）。
   r3 后仅新增测试，生产码未变，无 r4。
+
+### AP-02 follow-up 登记（2026-09-24, commit 5d8e878）
+
+- **PROC-5 type 1 复发（n=11）**：AP-02 OCR r1 ×2（file_read start>end：300>50、240>50），
+  review 本体 complete。type 1 累计 n=9→n=11。
+- 【OCR 原文核验记录（AP-02）】r1 = ~/.openclaw/cache/AP-02/ocr-r1-20260924-063129.json
+  （2 medium + 2 low 全同根：rename 失败遗留明文 tmp / 固定 tmp 名并发撕裂 /
+  mode 只对新建生效 / 错误缺路径——全采纳；tool failure 2=type 1）；
+  r2 = ocr-r2-20260924-063631.json（0 comments，修复验证通过；tool failure 0；elapsed 1m36s）。
 
 **已 triage（脚本 DOMAINS 12 域，不含 frontend）**: 145 unique
 
