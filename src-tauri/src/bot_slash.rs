@@ -459,7 +459,13 @@ pub fn bot_set_enabled(app: AppHandle, enabled: bool) -> CommandResult<bool> {
     if enabled {
         std::fs::write(bot_flag_path(&app), b"1")?;
     } else {
-        let _ = std::fs::remove_file(bot_flag_path(&app));
+        // 承认语义：flag 文件本就不存在 = 禁用目标已达成，非吞错
+        // （与 keyring.rs PlaintextFile 分支 Err(NotFound) => Ok(()) 同款）
+        match std::fs::remove_file(bot_flag_path(&app)) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
     }
     Ok(enabled)
 }
