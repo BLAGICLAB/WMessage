@@ -29,6 +29,7 @@
 - [2026-09-23 23:35 CST] MI-07 收口（commit 613e07a）：C5-MI-07（ops.rs log_line rotation/写入路径分裂）已修——单次 canonicalize 结果共用 + 失败兜底不丢日志。OCR r1 唯一 low（data_dir 双调）已采纳入批。migration 域 10 簇剩 4 簇未清：MI-04a/b、MI-05a/b、MI-08。
 - [2026-09-23 23:50 CST] DB-04 收口（commit c9a3041）：C5-DB-04 全簇 2 条已修——bot_session_rename 空标题 fail-closed（InvalidArgument）+ tasks_import 复用 check_export_path + 64MiB 读侧 bounded 强制。OCR r1 2 comments（medium TOCTOU + low 文案截断，同根=本批新代码）均采纳入批（metadata 预检 → bounded reader）。db 域 7 簇剩 2 簇未清：DB-03（race/TOCTOU）、DB-05 余 3 条（均 B 类候选）。
 - [2026-09-24 00:02 CST] MI-04a 收口（commit 414cf08）：C5-MI-04a（journal_pending 无条件 INSERT → 同 key 孤儿 pending）已修——持锁内 check-then-reuse（零 schema 变更；UNIQUE partial index 选项因既有库可能含重复行会建索引失败而弃）。OCR r1 1 low（双写分配）采纳。既有库孤儿 pending 清理 = 数据迁移方向，B 类攒批。migration 域剩 3 簇：MI-04b、MI-05a/b、MI-08。
+- [2026-09-24 00:20 CST] MI-04b 收口（commit 5819f76）：C5-MI-04b（journal find+act TOCTOU）已修——核后真实竞态对 = spawn_polling 启动 replay（无 MigrationGuard）vs run_migration（有）；修法 = replay 挂守卫（不取 try_claim 状态机变更；DB_WRITE_LOCK 包 find+act 因 db_upsert 重入死锁不可取）。OCR r1 抓回本批自引入 critical（guard 作用域泄漏会永久锁死后台迁移）→ 修复 + r2 验证 0 critical/0 high。migration 域剩 2 簇：MI-05a/b、MI-08。
 
 ## 1. 跨域同模式家族
 
@@ -96,7 +97,7 @@
 - C5-MI-02：error-not-propagated（migration/run.rs:132 + :270 + recovery.rs:87，unwrap_or(None) / filter_map(r.ok) 吞 DB err，调用方无感），3 条
 - C5-MI-03：failure-recovery-default-value（migration/rules.rs:27 + :121，破坏数据：rules 默认覆盖 + CSV 输入 coerce），2 条 → **:121 已修（FRDV-01，commit 46f8437）；剩 :27（B 类候选，攒批待拍）**
 - C5-MI-04a：migration/journal.rs:34 INSERT 无去重，1 条 → **已修（MI-04a，commit 414cf08）**
-- C5-MI-04b：migration/journal.rs:126 unlocked find+act TOCTOU，1 条
+- C5-MI-04b：migration/journal.rs:126 unlocked find+act TOCTOU，1 条 → **已修（MI-04b，commit 5819f76；replay 纳入 MigrationGuard）**
 - C5-MI-05a：migration/commands.rs:116 spawn_blocking 无 abort，1 条
 - C5-MI-05b：migration/commands.rs:19 + recovery.rs:197 sync/block_on 阻塞，2 条，**跨域阻塞族待核**
 - C5-MI-06：migration/ops.rs:127 copy_dir_recursive mid-fail → dst 部分填充（**atomicity/partial-write 家族**），1 条
@@ -380,6 +381,29 @@ run A 仅靠 /tmp/ocr-APW-02b-r1.clean.json 找回。cache 命名亦误导：
   （.clean.json 为 `grep -v '^\[ocr\]'` 剥前缀后解析版）：status=complete / comments=3
   （全 low 同根，即 FRDV-01-OCR-1）/ 0 high / 1m17s / tool failure 1（file_read range 反转）/
   model=MiniMax-M3 / run_id 见 manifest。
+
+### MI-04b follow-up 登记（2026-09-24, commit 5819f76）
+
+- **MI-04b-OCR-1（medium，挂起）**：replay 单次性——journal_replay_pending 只在
+  spawn_polling 启动路径调用一次；本批新增的 5min 守卫等待超时后跳过本轮 = 该启动期内
+  pending 留待下次重启。OCR 建议 replay 纳入 polling loop 或超时后调度延迟重试——
+  属 polling loop 语义设计变更，超 MI-04b scope。注意 run.rs 内联 src-missing 修复路径
+  （:139/:276）对 pending 有兜底，非"永久卡死"。
+- **MI-04b-OCR-2（low，FP 登记）**：OCR 建议 `Some(_g)` → `Some(_)`——**不采纳**：
+  `Some(_)` 不绑定值会立即 drop guard，replay 在无守卫状态下执行 = 恰好破坏本批修复。
+  `_g` 绑定是语义必需（持活到 replay 结束）。同类"模式匹配建议丢绑定"属 OCR 系统性
+  误判倾向，后续批遇同类直接按 FP 处理并登记。
+- **MI-04b-OCR-3（low，挂起）**：守卫等待 60×5s 双魔数未绑定为单一不变量（建议抽
+  const WAIT_MAX/RETRY_STEP）。采纳需 +3 行超本批已二次校正的 budget，挂起；改超时时
+  连同注释/日志文案一起改。
+- **PHASE2-TRIAGE-NEW-META-8**：budget 校正同批两次（14→26 OCR critical 采纳；26→33/-10
+  rustfmt 嵌套重排）超 SOP「估算错允许一次」额度。根因：OCR 驱动的批内形态变更发生在
+  budget 设定之后。SOP 补充候选：OCR r1 采纳 critical/medium 导致的形态变更允许跟随
+  校正（不计入一次额度），或 spec budget 统一加 OCR 采纳余量。待 reviewer 拍。
+- 【OCR 原文核验记录（MI-04b）】r1 = /tmp/ocr-MI-04b-20260924-001336.clean.json
+  （1 critical guard 作用域泄漏 + 2 medium 等待无上限 + 2 重复条目；同根=本批新代码，
+  全部采纳修复）；r2 = /tmp/ocr-MI-04b-r2-20260924-001839.clean.json（0 critical / 0 high /
+  3 comments = 上述三条；tool failure 0；critical 修复验证通过）。
 
 **已 triage（脚本 DOMAINS 12 域，不含 frontend）**: 145 unique
 
