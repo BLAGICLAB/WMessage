@@ -269,7 +269,10 @@ DB-01b-BT-01b 收口后自查发现 4 项 follow-up：
 ### OCR 已知异常
 
 - **OCR: unavailable**：首批 commit 无 OCR 复审。工具内部 file_read 参数错（start_line 80 > end_line 60）。证据目录 `~/.openclaw/cache/ocr-C5-B1-failure/` 已建但文件未完整落盘。三层自测（fmt + check + test-all 全绿）代替 OCR 复审。
-- **PROC-5**：OCR 工具内部 file_read 参数错误，是 OCR 工具 bug，不进本批范围。
+- **PROC-5: OCR 工具与 infra 稳定性**
+  - 类型 1: file_read tool-bug（start_line > end_line），证据: 1fcc418 批次
+  - 类型 2: timeout-class hang（SIGKILL / stdout 0 bytes），证据: APW-02a 批次
+  - 累积规则: 同类 ≥2 次触发单批评估 OCR 调用方式调整
 
 ## 4. 累计
 
