@@ -218,11 +218,53 @@ triage 全跑完后、首批决策前，按大类把簇列出复查修复设施�
   - 归类：error-not-propagated family（首批家族成员），不是 log-and-continue。
   - 连带：error-visible-non-blocking family 重新引入 for C5-AP-06 only（前提变化——DB-01a-3 走真传播归 error-not-propagated，AP-06 仍 log-and-continue 形态；C5-AP-06 单独一批处理，不与 DB-01a-3 同批）。
 
+### DB-01b-BT-01b batch follow-up（2026-09-23, commit 1e023e3）
+
+DB-01b-BT-01b 收口后自查发现 4 项 follow-up：
+
+- **报告数字纠正（无 ID）**：报告原文“spec 列 5 项”数字错；正确“spec 列 4 条，实修 6 处”（spec findings 数组只有 DB-01b.1/.2 + BT-01b.1/.2 = 4 条；BT-01b.2 单 finding 覆盖 3 call site，拆为 BT-01b.2a/2b/2c 三个修改点）。commit 1e023e3 message 已写“实修 6 处”，未含错数；**commit 不动**，本节留痕为下次报告 review 拍板 SOP 补充。SOP（本轮起生效）：spec findings 数自行 `jq '.findings | length'` 核，不沿用拍板者提供数字。
+- **PHASE2-TRIAGE-SPEC-001（合并 SPEC-001 + SPEC-002）**：spec 起草前置核 = **函数签名 + 调用链 + 返回类型枚举值** —— 三条任一没核，spec 前提可能错。
+  - SPEC-001 例：BT-01b.2 fix 字段写 `ToolResult::ok(text, refs, status=ToolStatus::Fail)` —— 实际 `ToolResult::ok` 是 2 参数固定 status=Ok（registry.rs:60-62），`ToolStatus` 只有 `Ok/Warn/Error` 无 `Fail`（registry.rs:42-46）。
+  - SPEC-002 例：BT-01b.2b 标 tools.rs:516 = tool_complete_task 直接调用，实际经中间函数 `find_task_by_keyword`（tool_tools.rs:516 定义 + :547/571 调用）触发 —— 只核了函数签名，未核调用链。
+  - 修法（下批起生效）：spec 起草工具加三检脚本（grep 签名 + grep caller + grep 枚举值），与 NEW-META-6 同型（hook 拦不到的事前补漏）。
+- **PHASE2-TRIAGE-OCR-001**：tools.rs:547 [medium/maintainability] —— `find_task_by_keyword` `.await?` → `CommandError::Internal`（code=INTERNAL, recoverable=false），与同一函数 resolve_task 内 active_tasks 显式 `CommandError::DbError(...)`（code=DB_ERROR）不一致；同一 DB 故障两条路径产出两种 code，前端 `CommandError.code()` / 审计 `grep code=DB_ERROR` 统计都会漏算一半。修法：两处都改 `.map_err(|e| CommandError::DbError(format!("按关键词查找任务失败：{e}")))?` 显式映射，对齐 active_tasks 模式。预算 +4/-2（OCR r1 /tmp/ocr-DB-01b-BT-01b-r1.json 原文核验）。
+- **PHASE2-TRIAGE-OCR-002**：tools.rs:571 [medium/maintainability] —— 同 OCR-001。修法同上 + 同样预算。
+- **PHASE2-TRIAGE-OCR-003**：tools.rs:160 [medium/bug] wontfix-with-rationale —— `ToolResult::ok` + 错误文本是 dispatch.rs:402-404 明确设计意图（原文：“失败也走 `ToolResult::ok` 而非 `err`，让 LLM pipeline severity classifier 不把‘完成任务失败：DB error’误判为 fatal”），OCR 建议改 `ToolResult::error` 与既有约定冲突，**不修**。若产品决定后续加 `ToolStatus::Fail` 变体，可同时改 handler 层 + commit message 解释（当前为应用层应用既有约定的动作，不构成 family 异质——family 边界见 1e023e3 commit message）。
+
+【OCR 原文核验记录（DB-01b-BT-01b）】
+- PHASE2-TRIAGE-OCR-001/002/003：均为 OCR r1 /tmp/ocr-DB-01b-BT-01b-r1.json 原文，handlers.rs 评论数 = 0（与 OCR-001/002/003 路径无关，本批仅改 workspace.rs + tools.rs）；comments 数组长度 3 条，全 medium 0 high，无 stop condition 触发（compile_failure / architecture_blocker / family_heterogeneity / new_high_different_root / gate_fail 均未触发）。
+
 ### 待核 / 后续 (Follow-up)
 
 - **PHASE2-TRIAGE-NEW-HANDLERS-1**: api_handlers/handlers.rs:342 (`create_task`) `let _ = after_change(...)` 吞 Err——同模式 silent-discard。Scope control：本批仅 api_server.rs + api_handlers/mod.rs + util.rs，未动 handlers.rs；handlers 层 silent-discard 是新发现，待独立批处理（OCR r1 21:49 报 high）。修复路径（OCR 建议）：用 `log_line` 替代 `let _ =` 或 propagate。
 - **PHASE2-TRIAGE-NEW-HANDLERS-2**: api_handlers/handlers.rs:496 (`update_task`) 同模式 silent-discard，同上处理。
 - **PHASE2-TRIAGE-NEW-HANDLERS-3**: api_handlers/handlers.rs:584 (`delete_task`) 同模式 silent-discard，同上处理。
+
+【OCR 原文核验记录（今日补）】
+- PHASE2-TRIAGE-NEW-HANDLERS-FP-1：HANDLERS spec 撤销 / FP 登记
+  - OCR/报告描述：handlers.rs:342/496/584 "silently discarding after_change errors"
+  - 核验结果：after_change（util.rs:90）-> ()；notify_change（api.rs:34）-> ()；两函数均无 Result 返回，无 Err 可丢
+  - 判定：finding 前提不成立 → FP（OCR r1 /tmp/ocr-C5-AP-06-r1.json 无 handlers.rs 评论，handlers.rs 评论数 = 0）
+  - 影响：HANDLERS.spec.md 未执行（gate 前 stop 触发），working tree 已回 HEAD
+  - 状态：撤销，不开批
+
+- PHASE2-TRIAGE-NEW-META-6：hook 用 --fast，不带 --tests → 编译错漏过 hook
+  - 事实：gate-pre-commit.txt 不含 cargo_check_tests
+  - 影响：E0308 这类编译错到 commit 时才发现
+  - 修法（下批起生效）：spec 加 manual_gate_full_tests: true 字段，hook 校验该字段存在
+  - 不本批动作
+
+- PHASE2-TRIAGE-NEW-META-7：报告层脑补 findings（不核 OCR 原文直接报为事实）
+  - 事实：handlers.rs 3 条 silent-discard 是 21:46 报告里被写进 §3.5 NEW-HANDLERS-1..3，但 OCR 原文 (/tmp/ocr-C5-AP-06-r1.json) 无 handlers.rs 评论
+  - 同源问题已发生多次（"已贴/✓ 无内容"模式），与今天前面几次截断同型
+  - 修法（下批起生效）：审计链重审 + triage spot check（明日 09:00 后做：随机抽 5–10 条 finding 核对 OCR 原文，不合格就修 triage）
+  - 不本批动作
+
+【明日 triage spot check（今日登记，明日做）】
+- 抽 5–10 条 finding 核对 OCR 原文：handlers.rs 3 条是脑补 → 其他 high 也可能有同类问题
+- 时间：明天 09:00 后开
+- 触发条件：开下一批 family 前必须完成
+- 工具：jq + grep OCR 原文 paths + cross-check finding 注册来源
 
 ### OCR 已知异常
 
