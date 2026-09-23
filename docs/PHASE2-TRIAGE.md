@@ -25,6 +25,7 @@
 - [2026-09-22 09:00 CST] WidgetApp 簇清单重写：3 簇 / 7 findings（WA-01 合入 C4-v2 后剩 WA-01b 2 + WA-02 3 + WA-03 2）。
 - [2026-09-23 23:20 CST] EVNB-02 收口（commit 299e776）：C5-DB-05 的 poison.into_inner 静默条（tasks.rs:423，实际修复点 db_delete tasks.rs:469-471，行号漂移）+ C5-MI-01（migration/journal.rs:18）已修。两站统一走 C3-1 logged-path（eprintln("[mutex_poisoned] ...") + into_inner 恢复语义不变）。**family 归属修正**：该 mutex 条原挂 failure-recovery-default-value（C5-DB-05），实为 error-visible-non-blocking（C3-1 约定 = logged 恢复即合法，BT-02 FP 先例）——triage 时归错 family，借此修正。C5-DB-05 4 条 → 3 条；C5-MI-01 单条已清。
 - [2026-09-23 23:20 CST] 新发现登记：db/migration/bot.config 三域 12 处同形静默 into_inner（不在 OCR 271 名单，±3 行上下文 grep 核实无 eprintln）→ PHASE2-TRIAGE-NEW-2，下一轮评估。
+- [2026-09-23 23:25 CST] FRDV-01 收口（commit 46f8437）：C5-MI-03.2（rules.rs:121 CSV 双静默默认值）已修 fail-closed——空动作行 / 未知启用 token → 行级 DomainRule Err。C5-MI-03 2 条 → 剩 1 条（rules.rs:27 load_rules 静默 fallback default，quarantine vs 结构化 Err = B 类候选，攒批待拍）。
 
 ## 1. 跨域同模式家族
 
@@ -40,7 +41,7 @@
 - C5-DB-05（db，3 条：默认 updated_at=0 / corrupt 源吞掉 / 批量 inserted_at 全用同一 now；poison.into_inner 静默条已修 → EVNB-02，family 修正为 error-visible-non-blocking）
 - C5-DB-01b（db，2 条：workspace.rs:92/:209 unwrap_or_else("[]") 写入数据库 → 用户 links 被静默覆写为）
 - C5-BT-01b（bot*，2 条：tools.rs:147/:280 静默吞 DB load 失败返回空 task list）
-- C5-MI-03（migration，2 条：rules load fallback default + CSV 输入 coerce → 用户配置被静默覆写）
+- C5-MI-03（migration，2 条：rules load fallback default + CSV 输入 coerce → 用户配置被静默覆写）→ **CSV coerce 条已修（FRDV-01）；剩 1 条（rules.rs:27，B 类候选）**
 
 ### error-visible-non-blocking（错误日志可见但调用方继续，**非错误传播**，仅记录）
 - C5-AP-06（api，1 条）：src-tauri/src/api_server.rs:127 broadcast atomic_write 失败仅 eprintln!（log-and-continue 形态）
@@ -90,7 +91,7 @@
 ### 域 migration（10 簇 / 15 findings）
 - C5-MI-01：poisoned mutex silent recovery（DB_WRITE_LOCK silent 路径，**违反 C3-1 约定**），1 条，**家族已溶解，独立存在** → **已修（EVNB-02，commit 299e776：journal.rs db_write_lock 闭包加 mutex_poisoned eprintln，恢复语义不变）**
 - C5-MI-02：error-not-propagated（migration/run.rs:132 + :270 + recovery.rs:87，unwrap_or(None) / filter_map(r.ok) 吞 DB err，调用方无感），3 条
-- C5-MI-03：failure-recovery-default-value（migration/rules.rs:27 + :121，破坏数据：rules 默认覆盖 + CSV 输入 coerce），2 条
+- C5-MI-03：failure-recovery-default-value（migration/rules.rs:27 + :121，破坏数据：rules 默认覆盖 + CSV 输入 coerce），2 条 → **:121 已修（FRDV-01，commit 46f8437）；剩 :27（B 类候选，攒批待拍）**
 - C5-MI-04a：migration/journal.rs:34 INSERT 无去重，1 条
 - C5-MI-04b：migration/journal.rs:126 unlocked find+act TOCTOU，1 条
 - C5-MI-05a：migration/commands.rs:116 spawn_blocking 无 abort，1 条
@@ -273,7 +274,7 @@ DB-01b-BT-01b 收口后自查发现 4 项 follow-up：
 
 - **OCR: unavailable**：首批 commit 无 OCR 复审。工具内部 file_read 参数错（start_line 80 > end_line 60）。证据目录 `~/.openclaw/cache/ocr-C5-B1-failure/` 已建但文件未完整落盘。三层自测（fmt + check + test-all 全绿）代替 OCR 复审。
 - **PROC-5: OCR 工具与 infra 稳定性**
-  - 类型 1: file_read tool-bug（start_line > end_line），证据: 1fcc418 批次 + EVNB-01（n=2）+ EVNB-02 单 run 4 次（**n=3**，超触发线仍复发，评估批待 reviewer 排期）
+  - 类型 1: file_read tool-bug（start_line > end_line），证据: 1fcc418 批次 + EVNB-01（n=2）+ EVNB-02 单 run 4 次（n=3）+ FRDV-01（**n=4**，超触发线仍复发，评估批待 reviewer 排期）
   - 类型 2: timeout-class hang（SIGKILL / stdout 0 bytes），证据: APW-02a 批次
   - 类型 3: rate-limit（HTTP 429 重试耗尽，status=failed，comments=null），证据: APW-02b 批次 + BT-01a 批次（**n=2**）
   - 累积规则: 同类 ≥2 次触发单批评估 OCR 调用方式调整 —— **type 3 已 n=2，触发条件达成**（待评估项：退避策略 / 调用频率 / 供应商限流配额；本轮不动作，开独立评估）
@@ -359,6 +360,23 @@ run A 仅靠 /tmp/ocr-APW-02b-r1.clean.json 找回。cache 命名亦误导：
   bot_sessions.rs / workspace.rs（正是 NEW-2 登记的同形站点域），均因 type 1 bug 失败；
   但 diff 本体经 source_artifact 提供，目标 2 文件审到且 0 findings。0 comments 成立，
   不因工具失败打折。
+
+### FRDV-01 follow-up 登记（2026-09-23, commit 46f8437）
+
+- **FRDV-01-OCR-1（low ×3 同根，挂起）**：rules.rs `domain: "csv"` vs `domain: "migration"`
+  不一致（OCR r1 指 :125/:131/:145 三处）。**根因是既有代码**：行级错误的 `domain: "csv"`
+  约定先于本批存在（未知动作 arm 原本就是 "csv"），本批两个新 arm 沿袭同函数行级错误约定。
+  源 fullscan 已有同根 medium（rules.rs:94-111 "Mixed error-type conventions"），非 271 high
+  名单项。统一方向（全改 "migration"）会动既有 arm + domain 是前端消费的契约字段 → 超
+  C5-MI-03.2 scope，挂起待与源 medium 同批评估。**只改本批新 arm 不改旧 arm = 函数内更碎，
+  明确不做。**
+- **PROC-5 type 1 复发（n=4）**：FRDV-01 OCR r1 又一次 `file_read failed: start_line 120 >
+  end_line 110`（rules.rs，未中目标区段）。累积：1fcc418 / EVNB-01 / EVNB-02（单 run 4 次）/
+  FRDV-01 = **n=4 runs**。评估批仍待 reviewer 排期。
+- 【OCR 原文核验记录（FRDV-01）】r1 = /tmp/ocr-FRDV-01-20260923-232054.raw.json
+  （.clean.json 为 `grep -v '^\[ocr\]'` 剥前缀后解析版）：status=complete / comments=3
+  （全 low 同根，即 FRDV-01-OCR-1）/ 0 high / 1m17s / tool failure 1（file_read range 反转）/
+  model=MiniMax-M3 / run_id 见 manifest。
 
 **已 triage（脚本 DOMAINS 12 域，不含 frontend）**: 145 unique
 
