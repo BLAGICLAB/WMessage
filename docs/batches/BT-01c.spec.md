@@ -44,6 +44,10 @@ C5-BT-01a 剩余 2 条（前 3 条已在前批修复）：
    校正一次（OCR r1：high 同根采纳——:1006 普通聊天路径每轮调 skill_finish(true,"")，
    零迁移日志须加 session_has_run 闸门防刷；2 low 采纳——ids 列表 truncate 200）：
    实际 +42/-10 → budget 校正为 +50/-10。
+   校正二次（OCR r2 两条 low 指出 session_has_run 方案在 :594+:1006 连续调用下
+   每次技能完成仍误记一条 → 闸门改为 reason 非空（传 reason=期待迁移，空 reason=
+   清理性调用）；OCR r3 low 采纳——三态门补单测 +31）：实际 +75/-10 → +80/-10。
+   二度校正同 MI-04b 形态（OCR 驱动），并入 META-8 待拍材料。
 3. findings fix 字段列 ripple → runtime.rs 签名不变无 ripple；finding 1 的源站
    scheduler.rs:428 本身代码行不动（修在被调函数内），fix 字段注明。✓
 
@@ -75,14 +79,14 @@ spec 被 reviewer 批准后:
     "src-tauri/src/bot_skills/runtime.rs",
     "src-tauri/src/bot_scheduler.rs"
   ],
-  "max_lines_added": 50,
+  "max_lines_added": 80,
   "max_lines_removed": 10,
   "findings": [
-    {"id": "C5-BT-01a.4", "file": "src-tauri/src/bot_skills/runtime.rs", "line": 368, "fix": "skill_finish 加 transitioned + session_has_run 双标记；ok=true 且零迁移且该 session 有 run 记录时 audit_log_hook(skill_finish_no_transition)——session_has_run 闸门防 bot_model_loop:1006 普通聊天路径每轮刷日志（OCR r1 同根 high 采纳）。源 finding 站 scheduler.rs:428 的 let _ = 本身无害（返回值 ok 路径恒空串），真实缺口=零迁移不可见，修在被调函数内。ripple：无（签名不变）"},
+    {"id": "C5-BT-01a.4", "file": "src-tauri/src/bot_skills/runtime.rs", "line": 368, "fix": "skill_finish 加 transitioned 标记；ok=true 且零迁移且 reason 非空时 audit_log_hook(skill_finish_no_transition)——reason 非空=调用方期待迁移（scheduler done），空 reason=清理性调用（bot_model_loop:1006 每轮聊天收尾）不记，防刷日志（OCR r1 high + r2 2 low 迭代后的最终闸门形态）。三态门有单测钉死（OCR r3 采纳）。源 finding 站 scheduler.rs:428 的 let _ = 本身无害（返回值 ok 路径恒空串），真实缺口=零迁移不可见，修在被调函数内。ripple：无（签名不变）"},
     {"id": "C5-BT-01a.5", "file": "src-tauri/src/bot_scheduler.rs", "line": 263, "fix": "find_due_tasks 两处 db_upsert .is_ok() → match：Ok 广播不变；Err → audit_log（sched_stale_cleanup_failed / sched_missed_mark_failed，err truncate 200）。ripple：无（函数签名不变）"}
   ],
   "assertions_min": {
-    "src-tauri/src/bot_skills/runtime.rs": 57,
+    "src-tauri/src/bot_skills/runtime.rs": 60,
     "src-tauri/src/bot_scheduler.rs": 46
   },
   "ocr_plan": {
