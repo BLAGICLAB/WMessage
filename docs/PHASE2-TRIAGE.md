@@ -34,6 +34,8 @@
 
 - [2026-09-24 01:00 CST] AP-03 收口（commit a78de81）：C5-AP-03 全簇 2 条已修——ratelimit.rs 访问日志 4 字符 replace 链 → sanitize_log_line 全控制字符转义（is_control + U+2028/U+2029 显式臂，\r\n\t\0 短形式不变）；并发写撕裂 → static LOG_WRITE Mutex 包 rotate+append 整段（C3-1 poison 形态）。OCR r1 4 low：3 采纳（2028/2029 两臂 + 测试扩展 + capacity×2），1 不采纳（锁注释——静态文档注释已覆盖）。budget 校正一次（+60→+70，OCR 采纳所致）。新发现登记 PHASE2-TRIAGE-NEW-3（audit.rs 同族两站，见 §3.5）。spec budget 校正 6dd509b / spec 立项 3d43265。
 
+- [2026-09-24 01:35 CST] BT-01c 收口（commit eb11651）：C5-BT-01a 余 2 条已修——skill_finish 零迁移可见化（reason 非空闸门：传 reason=期待迁移记 skill_finish_no_transition，空 reason=清理性调用不记；OCR r1 抓回"普通聊天路径每轮误记"high→修、r2 抓回 session_has_run 形态误记→改 reason 门、r3 补三态门单测）；find_due_tasks 两处 db_upsert 失败 audit_log 留痕。budget 二度校正（+40→+50→+80，全 OCR 驱动，同 MI-04b 形态，并入 META-8 待拍材料）。PROC-5 type 1 复发 n=6→n=9（r2×2 + r3×1，均 file_read start>end，review 本体 complete）。spec 立项 13d194a / 校正 1bd8a92 / eeed791。
+
 ## 1. 跨域同模式家族
 按"错误去哪了" + "是否破坏数据"两轴判，**4 家族**（poisoned-silent-recovery 已溶解 — 见执行日志；error-visible-non-blocking 已重新引入 for C5-AP-06 only — 见 §3.5 异常 2 更新）：
 
@@ -124,7 +126,7 @@
 
 ### 域 bot*（15 簇 / 46 findings；去重后）
 子目录 = 18 / bot_skills 子目录 = 12 / 兄弟 bot_*.rs = 16
-- C5-BT-01a：error-not-propagated，bot/config + bot_skills/scheduler + bot_scheduler（5 条丢弃：commands.rs:30 + keyring.rs:263 + slash.rs:456 + skills/scheduler.rs:428 + scheduler.rs:0）
+- C5-BT-01a：error-not-propagated，bot/config + bot_skills/scheduler + bot_scheduler（5 条丢弃：commands.rs:30 + keyring.rs:263 + slash.rs:456 + skills/scheduler.rs:428 + scheduler.rs:0）→ **已清**：-1/-2 退批 error-visible-non-blocking（见退批登记）；slash.rs:456 前批已修；skills/scheduler.rs:428 + scheduler.rs:0 **已修（BT-01c，commit eb11651）**
 - C5-BT-01b：failure-recovery-default-value，bot/tools（tools.rs:147 + tools.rs:280，替换成空 list）
 - C5-BT-02：**OCR false positive（3 条均不准确）** —— OCR 忽略代码中的 eprintln!("[mutex_poisoned] ...") 缓解措施，据此判定 "silent"——前提与实现不符。三站实际都是 logged 路径：C3-1 约定的合法实现。三条 finding 的站实有 eprintln：bot_py.rs:945 + bot_skills/state.rs:109 + bot_skills/runtime.rs:58。**记录 + 不改**，与 C3-r1-H1 / C4-2 / C4-5 同处理。**triage 记录 140 仍含此 3 条 FP，Phase 2 实工单 137 不计**。
 - C5-BT-03：config 写非原子 / RMW 无锁（commands.rs:86 + schema.rs:170/:178 + io.rs:100/:76），5 条
@@ -415,6 +417,21 @@ run A 仅靠 /tmp/ocr-APW-02b-r1.clean.json 找回。cache 命名亦误导：
 - 【OCR 原文核验记录（AP-03）】r1 = ~/.openclaw/cache/AP-03/ocr-r1-20260924-005403.json
   （status complete；4 comments 全 low：锁注释[不采纳] / capacity×2[采纳] /
   U+2028-U+2029 未覆盖[采纳，同根] / 测试扩展[采纳]；tool failure 0；elapsed 1m25s）。
+
+### BT-01c follow-up 登记（2026-09-24, commit eb11651）
+
+- **BT-01c-OCR-1（low，挂起）**：find_due_tasks "每 tick 最多 3 次 db_load" 的 race 窗口
+  （源 finding 附带提及）——窗口收窄属设计变更（合并 RMW 为单次 load+upsert 事务），
+  本批只加可见性，挂起待与 DB-03 race 簇同批评估。
+- **PROC-5 type 1 复发（n=9）**：BT-01c OCR r2 ×2 + r3 ×1，均
+  `file_read start_line > end_line`（bot_model_loop.rs:1010>830、runtime.rs:370>120、
+  runtime.rs:360>110），review 本体 complete。type 1 累计 n=6→n=9。
+- 【OCR 原文核验记录（BT-01c）】r1 = ~/.openclaw/cache/BT-01c/ocr-r1-20260924-010950.json
+  （1 high 同根=普通聊天路径误记闸门缺失 + 2 low ids 未截断，全采纳；tool failure 0）；
+  r2 = ocr-r2-20260924-011525.json（0 high；2 low=session_has_run 形态在 :594+:1006
+  连发下仍误记 → 闸门改 reason 非空；tool failure 2=type 1）；r3 =
+  ocr-r3-20260924-012658.json（0 high；1 low=三态门补单测，采纳；tool failure 1=type 1）。
+  r3 后仅新增测试，生产码未变，无 r4。
 
 **已 triage（脚本 DOMAINS 12 域，不含 frontend）**: 145 unique
 
