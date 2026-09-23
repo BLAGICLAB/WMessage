@@ -38,6 +38,8 @@
 
 - [2026-09-24 02:05 CST] AP-02 收口（commit 5d8e878）：C5-AP-02 已修——write_token_file 改 tmp+rename 原子写（pid+seq 唯一 tmp 名 + create_new + mode(0o600)，rename 不跟随 symlink；写/rename 失败均清 tmp）。OCR r1 2 medium + 2 low 全同根全采纳（rename 清 tmp / 并发撕裂 tmp 名 / create_new 保 mode / 错误带路径），r2 0 comments 验证。budget 校正一次（+70→+95）。PROC-5 type 1 复发 n=9→n=11（r1×2 均 file_read start>end）。
 
+- [2026-09-24 07:31 CST] BT-03a 收口（commit f86fc7a）：C5-BT-03 五取四已修——bot-config.json 五条写路径全改 write_config_atomic（tmp {name}.{pid}.{seq} 唯一名 + fsync + rename + 失败清 tmp + cfg(unix) 父目录 fsync best-effort）+ 新增 CONFIG_WRITE_LOCK 全局写锁（ConfigWriteGuard must_use + 线程本地持锁标记 + debug_assert，照 db::lock_db_write 先例）杀 RMW 竞态；四个持锁写路径进段先调 migrate_bot_config_schema_locked（OCR r4 high2 结构性修复：钩子锁内只 try_lock 让路，不推则 RMW 跑旧 schema）；schema 迁移拆加锁外壳/locked 内核消 SCHEMA_MIGRATION_CHECKED check-then-act 窗口。commands.rs:86（keyring 先于文件写无回滚 = 半成功陷阱方向）转 B 类攒批第 9 项。budget 二度校正（+120→+170→+215，均 OCR 驱动，同 MI-04b/BT-01c 形态，并入 META-8 待拍材料）。PROC-5 type 1 复发 n=11→n=15（r3×3 + r4×1，均 file_read start>end，review 本体 complete）；另 r3 有 1 条 file_read「路径不存在 db.rs」= 非 type 1 新形态，登记观察。spec 立项 / 校正 4f130b1 / 5150af4。
+
 ## 1. 跨域同模式家族
 按"错误去哪了" + "是否破坏数据"两轴判，**4 家族**（poisoned-silent-recovery 已溶解 — 见执行日志；error-visible-non-blocking 已重新引入 for C5-AP-06 only — 见 §3.5 异常 2 更新）：
 
@@ -131,7 +133,7 @@
 - C5-BT-01a：error-not-propagated，bot/config + bot_skills/scheduler + bot_scheduler（5 条丢弃：commands.rs:30 + keyring.rs:263 + slash.rs:456 + skills/scheduler.rs:428 + scheduler.rs:0）→ **已清**：-1/-2 退批 error-visible-non-blocking（见退批登记）；slash.rs:456 前批已修；skills/scheduler.rs:428 + scheduler.rs:0 **已修（BT-01c，commit eb11651）**
 - C5-BT-01b：failure-recovery-default-value，bot/tools（tools.rs:147 + tools.rs:280，替换成空 list）
 - C5-BT-02：**OCR false positive（3 条均不准确）** —— OCR 忽略代码中的 eprintln!("[mutex_poisoned] ...") 缓解措施，据此判定 "silent"——前提与实现不符。三站实际都是 logged 路径：C3-1 约定的合法实现。三条 finding 的站实有 eprintln：bot_py.rs:945 + bot_skills/state.rs:109 + bot_skills/runtime.rs:58。**记录 + 不改**，与 C3-r1-H1 / C4-2 / C4-5 同处理。**triage 记录 140 仍含此 3 条 FP，Phase 2 实工单 137 不计**。
-- C5-BT-03：config 写非原子 / RMW 无锁（commands.rs:86 + schema.rs:170/:178 + io.rs:100/:76），5 条
+- C5-BT-03：config 写非原子 / RMW 无锁（commands.rs:86 + schema.rs:170/:178 + io.rs:100/:76），5 条 → **4/5 已修（BT-03a，commit f86fc7a）；commands.rs:86（keyring 先于文件写无回滚 = 半成功陷阱方向）转 B 类攒批待拍**
 - C5-BT-04：TOCTOU on canonicalize/whitelist（bot_fs.rs:167 + bot/tools.rs:102 + bot_chat.rs:399 + bot_artifacts.rs:67），4 条
 - C5-BT-05：URL/host bypass（config/io.rs:122 + bot_web.rs:21/:730/:881），4 条
 - C5-BT-06：log injection via model strings（bot_model_loop.rs:1079 + :984），2 条
@@ -443,6 +445,27 @@ run A 仅靠 /tmp/ocr-APW-02b-r1.clean.json 找回。cache 命名亦误导：
   （2 medium + 2 low 全同根：rename 失败遗留明文 tmp / 固定 tmp 名并发撕裂 /
   mode 只对新建生效 / 错误缺路径——全采纳；tool failure 2=type 1）；
   r2 = ocr-r2-20260924-063631.json（0 comments，修复验证通过；tool failure 0；elapsed 1m36s）。
+
+- 【OCR 原文核验记录（BT-03a）】r1 = ~/.openclaw/cache/BT-03a/ocr-r1-20260924-064640.json
+  （3 medium + 1 low：dir fsync / 审计移锁后 / rename 失败测试——采纳；keyring 在锁内
+  不拆有论证；tool failure 0）；r2 = ocr-r2-20260924-065235.json（1 medium + 3 low：
+  cfg(unix) 门采纳，锁窗/测试锁/死锁测试不采纳；tool failure 0）；
+  r3 = ocr-r3-20260924-065843.json（11 comments：采纳 ConfigWriteGuard + 持锁标记 +
+  debug_assert + guard 命名统一，其余 7 条不采纳有论证；tool failure 4 = type 1×3 +
+  路径不存在 db.rs×1）；r4 = ocr-r4-20260924-070813.json（10 comments 含 2 high 同根：
+  high1 注释精确化 + high2 schema 迁移进锁——结构性修复；tmp 唯一名/参数更名/去 cfg 门
+  采纳；tool failure 1 = type 1）；r5 = ocr-r5-20260924-072227.json（0 high，6 medium +
+  10 low：采纳 2 条=闭包锁内禁重入文档化 + migrate_bot_config_schema_locked 收窄
+  pub(crate)；tool failure 0；elapsed 3m9s）。
+- 【BT-03a 不采纳登记】keyring 锁窗（r1/r5：启动期一次性路径可接受，commands.rs:86 顺序
+  问题已单独立 B 类）；tmp 崩溃残渣（rename 后崩溃留 tmp，下次写覆盖，低风险）；
+  try_lock/lock 不对称（让路语义有意）；测试用生产锁（debug_assert 要求持锁，契约如此）；
+  remove_file 静默（best-effort 清理）；release 模式持锁强校验（debug_assert + 命名约定
+  + guard 类型 = 既定设计，照 db 先例）；毒锁恢复后 audit_event!（改 C3-1 约定属 B 类，
+  现状照 db::lock_db_write 先例）；读移出锁（RMW 原子性正是本批要修的行为，读出锁
+  = 重引入竞态）；add_allowed_dir 剥 key 统一走 locked 内核（r5 medium：防御纵深方向
+  正确，但迁移失败（keyring 不可用）时明文 key 仍在文件，剥 key 写盘 = 密钥丢失——
+  数据破坏相关修法方向，转 B 类攒批第 10 项待拍）。
 
 **已 triage（脚本 DOMAINS 12 域，不含 frontend）**: 145 unique
 
