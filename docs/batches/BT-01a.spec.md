@@ -32,8 +32,8 @@ C5-BT-01a 剩余 1 条（bot* 域，error-not-propagated family）：`let _ = st
   "expected_files": [
     "src-tauri/src/bot_slash.rs"
   ],
-  "max_lines_added": 6,
-  "max_lines_removed": 3,
+  "max_lines_added": 7,
+  "max_lines_removed": 1,
   "findings": [
     {
       "id": "C5-BT-01a-3",
@@ -76,7 +76,7 @@ C5-BT-01a 剩余 1 条（bot* 域，error-not-propagated family）：`let _ = st
 | 3 | bot_slash.rs:462 match 展开（5 行 / 旧 1 行） | A | 4 | 1 |
 | **合计** | | | **4** | **1** |
 
-**budget: max_lines_added: 6 / max_lines_removed: 3**（A 类实测预期 ≈ +4/-1；执行时按 numstat 校正一次）
+**budget: max_lines_added: 7 / max_lines_removed: 1**（A 类实测预期 ≈ +4/-1；执行时按 numstat 校正一次）
 
 ## 提交信息骨架
 
