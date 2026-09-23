@@ -316,6 +316,13 @@ run A 仅靠 /tmp/ocr-APW-02b-r1.clean.json 找回。cache 命名亦误导：
 
 - **C5-BT-01a-1**（bot/config/commands.rs:30 + :31）：`bot_get_config` 内 `let _ = io::migrate_legacy_key(&app);` / `let _ = io::migrate_search_keys(&app);`。**修法 = (b) log warn + 继续**（migrate 是幂等 + 可重试 + 非前置副作用，callee doc 明示「App 启动时调用一次，设置页读配置时也会兜底触发」）→ **family = error-visible-non-blocking**（与 C5-AP-06 同 family），非 error-not-propagated。**退 BT-01a 批**；未来 error-visible-non-blocking family 成批时并入。
 
+- **C5-BT-01a-2**（bot/config/keyring.rs:272-276）：`delete_api_key_at` 内 v0 遗留条目清理 `let _ = old.delete_credential();`。
+  **修法 (d)**：保留原顺序（主删除先算 `let r = ...`）+ 双 Error 分流——
+  主删除失败 → 返 Err（遗留未动，无副作用）；主删除成功 + 遗留清理失败 → 记审计 + 不阻断（返 Ok，主目标达成）。
+  **family = error-visible-non-blocking**（同 C5-AP-06 / C5-BT-01a-1）。
+  **退 (c) 理由**：(c)「遗留清理挪到主删除前」= 反方向半成功陷阱（遗留成功 + 主删除失败 → 遗留已清、主 key 未删；用户以为没删掉任何东西 = 半清）。
+  退 BT-01a 批；未来 error-visible-non-blocking family 成批时并入。
+
 ## 4. 累计
 
 **已 triage（脚本 DOMAINS 12 域，不含 frontend）**: 145 unique
