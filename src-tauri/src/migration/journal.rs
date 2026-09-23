@@ -16,9 +16,11 @@ use super::types::JournalEntry;
 /// 会在 spawn_blocking 线程里再抢同一把锁，std Mutex 不可重入 → 死锁。
 /// 因此只在每次 journal 写时短临界区持锁。
 pub(crate) fn db_write_lock() -> std::sync::MutexGuard<'static, ()> {
-    crate::db::DB_WRITE_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
+    crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
+        // C3-1：poison 事件必须可见（同 db::lock_db_write 形态），恢复行为不变
+        eprintln!("[mutex_poisoned] migration::journal DB_WRITE_LOCK: {e:?}");
+        e.into_inner()
+    })
 }
 
 /// B1 inner: 记录一个 pending 操作，返回 row id。

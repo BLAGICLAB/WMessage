@@ -466,9 +466,7 @@ pub async fn db_delete(app: AppHandle, ids: Vec<String>) -> CommandResult<()> {
         if ids.is_empty() {
             return Ok(());
         }
-        let _g = super::DB_WRITE_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _g = super::lock_db_write();
         let conn = super::open_db(&app)?;
         delete_tasks(&conn, &ids).map_err(CommandError::from)
     })
