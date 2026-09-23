@@ -26,6 +26,7 @@
 - [2026-09-23 23:20 CST] EVNB-02 收口（commit 299e776）：C5-DB-05 的 poison.into_inner 静默条（tasks.rs:423，实际修复点 db_delete tasks.rs:469-471，行号漂移）+ C5-MI-01（migration/journal.rs:18）已修。两站统一走 C3-1 logged-path（eprintln("[mutex_poisoned] ...") + into_inner 恢复语义不变）。**family 归属修正**：该 mutex 条原挂 failure-recovery-default-value（C5-DB-05），实为 error-visible-non-blocking（C3-1 约定 = logged 恢复即合法，BT-02 FP 先例）——triage 时归错 family，借此修正。C5-DB-05 4 条 → 3 条；C5-MI-01 单条已清。
 - [2026-09-23 23:20 CST] 新发现登记：db/migration/bot.config 三域 12 处同形静默 into_inner（不在 OCR 271 名单，±3 行上下文 grep 核实无 eprintln）→ PHASE2-TRIAGE-NEW-2，下一轮评估。
 - [2026-09-23 23:25 CST] FRDV-01 收口（commit 46f8437）：C5-MI-03.2（rules.rs:121 CSV 双静默默认值）已修 fail-closed——空动作行 / 未知启用 token → 行级 DomainRule Err。C5-MI-03 2 条 → 剩 1 条（rules.rs:27 load_rules 静默 fallback default，quarantine vs 结构化 Err = B 类候选，攒批待拍）。
+- [2026-09-23 23:35 CST] MI-07 收口（commit 613e07a）：C5-MI-07（ops.rs log_line rotation/写入路径分裂）已修——单次 canonicalize 结果共用 + 失败兜底不丢日志。OCR r1 唯一 low（data_dir 双调）已采纳入批。migration 域 10 簇剩 4 簇未清：MI-04a/b、MI-05a/b、MI-08。
 
 ## 1. 跨域同模式家族
 
@@ -97,7 +98,7 @@
 - C5-MI-05a：migration/commands.rs:116 spawn_blocking 无 abort，1 条
 - C5-MI-05b：migration/commands.rs:19 + recovery.rs:197 sync/block_on 阻塞，2 条，**跨域阻塞族待核**
 - C5-MI-06：migration/ops.rs:127 copy_dir_recursive mid-fail → dst 部分填充（**atomicity/partial-write 家族**），1 条
-- C5-MI-07：migration/ops.rs:202 路径不一致（rotation target ≠ write target），1 条
+- C5-MI-07：migration/ops.rs:202 路径不一致（rotation target ≠ write target），1 条 → **已修（MI-07，commit 613e07a）**
 - C5-MI-08：migration/rules.rs:99 + :67 解析脆 / 校验缺（批内 2 处独立改动：contains 太宽松 + archive_dir 无路径校验 = 1 security），2 条
 
 ### 域 scripts（5 簇 / 10 findings）
@@ -274,7 +275,7 @@ DB-01b-BT-01b 收口后自查发现 4 项 follow-up：
 
 - **OCR: unavailable**：首批 commit 无 OCR 复审。工具内部 file_read 参数错（start_line 80 > end_line 60）。证据目录 `~/.openclaw/cache/ocr-C5-B1-failure/` 已建但文件未完整落盘。三层自测（fmt + check + test-all 全绿）代替 OCR 复审。
 - **PROC-5: OCR 工具与 infra 稳定性**
-  - 类型 1: file_read tool-bug（start_line > end_line），证据: 1fcc418 批次 + EVNB-01（n=2）+ EVNB-02 单 run 4 次（n=3）+ FRDV-01（**n=4**，超触发线仍复发，评估批待 reviewer 排期）
+  - 类型 1: file_read tool-bug（start_line > end_line），证据: 1fcc418 批次 + EVNB-01（n=2）+ EVNB-02 单 run 4 次（n=3）+ FRDV-01（n=4）+ MI-07 单 run 2 次（**n=5**，超触发线仍复发，评估批待 reviewer 排期）
   - 类型 2: timeout-class hang（SIGKILL / stdout 0 bytes），证据: APW-02a 批次
   - 类型 3: rate-limit（HTTP 429 重试耗尽，status=failed，comments=null），证据: APW-02b 批次 + BT-01a 批次（**n=2**）
   - 累积规则: 同类 ≥2 次触发单批评估 OCR 调用方式调整 —— **type 3 已 n=2，触发条件达成**（待评估项：退避策略 / 调用频率 / 供应商限流配额；本轮不动作，开独立评估）
