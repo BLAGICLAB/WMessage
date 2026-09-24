@@ -25,8 +25,8 @@ record.rs:211 + entry.rs:110（read_all 单行损坏全读失败）**移出本�
 
 - family: silent-error-swallow（吞值→可见化）
 - 覆盖 findings: 3（原簇 5 条 - 2 条转 B 类）
-- 预估 diff: 3 files / +67/-12 lines 实测（A 类，budget 执行中校正 +45/-15 → **+75/-20**；
-  activation 双 loader 每错误分支独立 eprintln + let-else→match 重排超估）
+- 预估 diff: 3 files / +77/-18 lines 实测（A 类，budget 两次校正 +45/-15 → +75/-20
+  → **+85/-25**；初估漏算双 loader 分支文案，二次漏算 OCR r1 采纳项增量）
 - OCR 计划: r1, timeout 1800s, 期望 comments ≤ 4
 
 ## 核实的编译层事实（spec 前已核）
@@ -64,8 +64,8 @@ record.rs:211 + entry.rs:110（read_all 单行损坏全读失败）**移出本�
 
 1. `expected_files` = 3：apply.rs / activation.rs / mod.rs（全
    src-tauri/src/evolution/ 下）。无 ripple（无签名变更）。
-2. budget = **A 类**：初估 +30/-8 → 实测 +67/-12（双 loader 每错误分支
-   独立文案 + let-else→match 重排），校正 → **max +75/-20**。
+2. budget = **A 类**：初估 +30/-8 → 实测 +77/-18（两次校正：双 loader
+   分支文案超估；OCR r1 采纳 high/medium 增量超估）→ **max +85/-25**。
 3. 三条 findings 的 fix 字段均已写明无 ripple；转 B 类的 2 条不进
    机器可读 findings 数组（零代码处置不进 gate）。
 
@@ -80,8 +80,8 @@ record.rs:211 + entry.rs:110（read_all 单行损坏全读失败）**移出本�
     "src-tauri/src/evolution/activation.rs",
     "src-tauri/src/evolution/mod.rs"
   ],
-  "max_lines_added": 75,
-  "max_lines_removed": 20,
+  "max_lines_added": 85,
+  "max_lines_removed": 25,
   "findings": [
     {"id": "C5-EV-3b-A-1", "file": "src-tauri/src/evolution/apply.rs", "line": 151, "fix": "embs collect 后统计 None 数，>0 时 eprintln [evolution_apply] 留痕（数量级，embed_text 不报错因）；行为不变，无 ripple"},
     {"id": "C5-EV-3b-A-2", "file": "src-tauri/src/evolution/activation.rs", "line": 136, "fix": "两个 loader 的「存在但坏」三类路径（IO≠NotFound / parse 失败 / 值无效）加 eprintln [evolution_activation]，缺块缺 key 保持静默 default；行为不变，无 ripple"},
