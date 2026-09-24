@@ -33,7 +33,8 @@ candidate 池完整性）但**批内 3 处独立改动**，互无 ripple：
 
 - family: candidate-pool-integrity（溢出 / 不可逆 / 去重坍缩）
 - 覆盖 findings: 3（+1 同文件 medium 一并 doc）
-- 预估 diff: 4 files / +31/-6 lines（A 类，含 ~30% 注释/折行浮动预算 +45/-12）
+- 预估 diff: 4 files / +31/-6 lines → 实测 +52/-6（A 类；finding 2 的 doc
+  段落本身是交付物，注释不可压，budget 执行中校正 +45/-12 → **+55/-12**）
 - OCR 计划: r1, timeout 1800s, 期望 comments ≤ 3
 
 ## 核实的编译层事实（spec 前已核）
@@ -78,8 +79,8 @@ candidate 池完整性）但**批内 3 处独立改动**，互无 ripple：
    candidate/derive.rs + panel/commands.rs。ripple = 后两文件各 1 行
    调用点收敛（已列）。
 2. budget = **A 类**：ttl +16/-2、evolution/derive +12/-1、
-   candidate/derive +2/-2、commands +1/-1：初估 +31/-6 → 含浮动
-   **max +45/-12**。
+   candidate/derive +2/-2、commands +1/-1：初估 +31/-6 → 实测 +52/-6
+   （doc 交付物行数超初估），校正 → **max +55/-12**。
 3. 三条 findings 的 fix 字段均已写明 ripple（finding 1 的 ripple =
    两个内联调用点文件）。
 
@@ -95,7 +96,7 @@ candidate 池完整性）但**批内 3 处独立改动**，互无 ripple：
     "src-tauri/src/evolution/candidate/derive.rs",
     "src-tauri/src/evolution/panel/commands.rs"
   ],
-  "max_lines_added": 45,
+  "max_lines_added": 55,
   "max_lines_removed": 12,
   "findings": [
     {"id": "C5-EV-3b-D-1", "file": "src-tauri/src/evolution/candidate/ttl.rs", "line": 41, "fix": "compute_expires_at 改 saturating_add（溢出=永不过期保审计轨迹，非 wrap 成负数静默立刻淘汰）+ 回归测试；ripple: candidate/derive.rs:49 与 panel/commands.rs:357 两处内联 now_ms+TTL_MS 收敛到该 fn 单点实现"},
