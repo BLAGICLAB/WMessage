@@ -92,6 +92,8 @@
 
 - [2026-09-24 21:29 CST] EV-3b-B 收口（commit c0472de）：**C5-EV-3b-B 全簇 5 条已清**。核心动作：EVOLUTION_STORE_LOCK 从 panel/commands.rs 上移到 evolution/mod.rs（pub(crate)，C3-4 一把锁约定不变），post_consolidation 的 write_proposals 包锁——**消除「panel 持锁 vs consolidate 无锁」两套机制互踩的真 race 面**；entry/record append 整行单次 write_all（POSIX O_APPEND 单写原子 + 锁契约注释）；sandbox/io 两个 append 收敛 append_line（单写 + SANDBOX_IO_LOCK）；emit.rs dedup 锁瘦身（audit_event! 移出锁，dedup 标记先于 audit 写=崩溃窗口对称互换）；save_state 加 SAVE_STATE_LOCK + db::paths::atomic_write。不引 fs2 新依赖（跨进程 flock 残余注释声明）；fsync 不加（照 AP-01b 挂起先例）。OCR r1 4 comments（0 high：1 medium 部分采纳=锁收窄仅 write_proposals，「sync 持锁于 async 链」不改=同步 I/O 先于本批存在 + caller spawn_blocking 化是跨域 ripple 不自决；3 low 采纳）/ 0 failure；type 1 n=25 不变。spec 立项 a25e80e。diff +105/-54 在 budget（+110/-85）内。**evolution 3b 剩 9 簇（C1/C2/C3/D/E/F/G/H/I）。** follow-up：bot-config 跨写者统一锁（bot/config/io.rs 不在 SAVE_STATE_LOCK 内）。
 
+- [2026-09-24 21:43 CST] EV-3b-C1 收口（commit f72e253）：**C5-EV-3b-C1 全簇 3 条已清**。① mapping.rs:37 approval_source 由 resolved status 派生（Rejected→SystemRejected，Expired 保持 Pending 注释声明=无对应变体）——**既有测试 to_change_record_rejected_entry 锁的正是缺陷值，已改断言**；② status.rs:36 取轻量选项：doc 收紧为「纯拓扑表 + skip-canary 策略门属调用方契约」（加配置入参=签名改=B 类不做），Active 无 Rejected 出口写明有意；③ kill_switch.rs:39 should_auto_apply 改 `!all_auto_apply && !shadow_only`——**零生产调用方**（apply.rs auto_apply_gate 不查 kill switch，finding 所述「apply.rs 只看 should_auto_apply」当前不成立，修的是 latent API 陷阱），自有测试注释已述意图未断言 → 补断言锁死。OCR r1 1 low 采纳（approval_source 收敛单 match）/ 0 failure；type 1 n=25 不变。spec 立项 819fd14。diff +21/-12 在 budget（+55/-15）内。**evolution 3b 剩 8 簇（C2/C3/D/E/F/G/H/I）。**
+
 ## 1. 跨域同模式家族
 按"错误去哪了" + "是否破坏数据"两轴判，**4 家族**（poisoned-silent-recovery 已溶解 — 见执行日志；error-visible-non-blocking 已重新引入 for C5-AP-06 only — 见 §3.5 异常 2 更新）：
 
@@ -142,7 +144,7 @@
 3b（其余，11 簇 / 35 findings）：
 - C5-EV-3b-A：silent-error-swallow 跨文件（apply.rs:151 + activation.rs:136 + mod.rs:48 + record.rs:211 + entry.rs:110），5 条 —— **3 条已清**（31fee88，§0 2026-09-24 21:05）；record.rs:211 + entry.rs:110（read_all 单行损坏 fail-closed vs fail-open 方向）→ **B 类攒批第 17 项**
 - C5-EV-3b-B：jsonl 写 race / 非原子（record.rs:187 + entry.rs:81 + sandbox/io.rs:46 + emit.rs:105 + activation.rs:257），5 条 —— **已清**（c0472de，§0 2026-09-24 21:29）
-- C5-EV-3b-C1：状态转移/条件判定错（mapping.rs:37 + change/status.rs:36 + kill_switch.rs:39），3 条
+- C5-EV-3b-C1：状态转移/条件判定错（mapping.rs:37 + change/status.rs:36 + kill_switch.rs:39），3 条 —— **已清**（f72e253，§0 2026-09-24 21:43）
 - C5-EV-3b-C2：双侧逻辑不一致（ttl.rs:23 + change/derive.rs:34），2 条
 - C5-EV-3b-C3：设计约定未强制（routing.rs:21 + kill_switch.rs:15），2 条
 - C5-EV-3b-D：批内 3 处独立改动（溢出/不可逆/去重，ttl.rs:41 + ttl.rs:34 + derive.rs:104），3 条
