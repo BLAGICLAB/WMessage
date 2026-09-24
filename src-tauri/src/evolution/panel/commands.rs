@@ -18,6 +18,7 @@ use crate::bot_slash;
 use crate::db::paths;
 use crate::evolution::candidate::{self, ProposalEntry, ProposalStatus};
 use crate::evolution::change::{self, ApprovalSource, ChangeRecord, ChangeStatus};
+use crate::evolution::lock_evolution_store;
 
 // ───────────────────────── 路径辅助 ─────────────────────────
 
@@ -27,22 +28,6 @@ fn proposals_path(app: &AppHandle) -> PathBuf {
 
 fn changes_path(app: &AppHandle) -> PathBuf {
     paths::data_dir(app).join("evolution-changes.jsonl")
-}
-
-/// evolution 存储（proposals + changes 两个 jsonl）的**进程内单锁**。
-///
-/// **一把锁覆盖两个文件是有意设计（OCR C3-4）**：toggle/delete 一次操作**同时**改两个文件，
-/// 若按单文件各配一把锁，会出现「需要同时持两把锁」的顺序问题（死锁面）。
-/// **改动时勿「优化」成按文件锁。**
-static EVOLUTION_STORE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-/// 取 evolution 存储锁（poison 走仓库既有 `[mutex_poisoned]` 约定）。
-/// 临界区必须覆盖**完整 RMW 窗口**（load → mutate → rewrite），不是只锁 rewrite。
-fn lock_evolution_store() -> std::sync::MutexGuard<'static, ()> {
-    EVOLUTION_STORE_LOCK.lock().unwrap_or_else(|e| {
-        eprintln!("[mutex_poisoned] evolution::panel::EVOLUTION_STORE_LOCK: {e:?}");
-        e.into_inner()
-    })
 }
 
 // ───────────────────────── 读写辅助 ─────────────────────────

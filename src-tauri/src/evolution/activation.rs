@@ -267,11 +267,22 @@ pub fn evaluate_s2(_p: &EvolutionProposal) -> S2Decision {
 
 // ───────────────────────── 状态持久化（v4.1 §12.7）─────────────────────────
 
+/// save_state 的 RMW 锁（bot-config.json 读→改→写全程）。
+static SAVE_STATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// 保存当前状态到 bot-config.json 的 evolution.activation_state 字段
 ///
 /// 老板 22:02 spec v4.1 §12.7：“运行时切态必须写回，不能只手动改文件”。
 /// 写后原文件其它字段保留。
+/// RMW 全程持 SAVE_STATE_LOCK（并发 save_state 最后写者胜 = 静默丢转移）；
+/// 最终写走 atomic_write（tmp+rename）——std::fs::write 直写崩溃会截断整个
+/// bot-config.json（§12.7 要求保留其它字段）。
+/// 残余：bot/config 其它写者不在此锁内（跨写者统一锁 = follow-up）。
 pub fn save_state(state: ActivationState, config_path: &Path) -> Result<(), String> {
+    let _g = SAVE_STATE_LOCK.lock().unwrap_or_else(|e| {
+        eprintln!("[mutex_poisoned] evolution::activation::SAVE_STATE_LOCK: {e:?}");
+        e.into_inner()
+    });
     let raw = std::fs::read_to_string(config_path)
         .map_err(|e| format!("读 {config_path:?} 失败：{e}"))?;
     let mut v: serde_json::Value =
@@ -290,12 +301,10 @@ pub fn save_state(state: ActivationState, config_path: &Path) -> Result<(), Stri
         serde_json::Value::String(state.as_str().to_string()),
     );
 
-    std::fs::write(
+    crate::db::paths::atomic_write(
         config_path,
-        serde_json::to_string_pretty(&v).map_err(|e| format!("序列化：{e}"))?,
+        &serde_json::to_string_pretty(&v).map_err(|e| format!("序列化：{e}"))?,
     )
-    .map_err(|e| format!("写 {config_path:?} 失败：{e}"))?;
-    Ok(())
 }
 
 // ───────────────────────── 单元测试 ─────────────────────────

@@ -77,7 +77,11 @@ impl ProposalStatus {
 
 // ───────────────────────── jsonl IO ─────────────────────────
 
-/// 追加一条 ProposalEntry
+/// 追加一条 ProposalEntry。
+/// 整行（含显式 `\n`）拼成单个 buffer 后**一次 write_all**——POSIX O_APPEND
+/// 对常规文件的单次 write() 原子，配合调用方持 evolution store 锁
+///（evolution::lock_evolution_store，本函数内部不加锁）防进程内交错。
+/// 残余：跨进程（如 observe_run bin 与主进程同写）无 flock，见批次 spec。
 pub fn append(path: &std::path::Path, entry: &ProposalEntry) -> Result<(), String> {
     use std::io::Write;
     if let Some(parent) = path.parent() {
@@ -88,8 +92,10 @@ pub fn append(path: &std::path::Path, entry: &ProposalEntry) -> Result<(), Strin
         .append(true)
         .open(path)
         .map_err(|e| format!("打开 {path:?} 失败：{e}"))?;
-    let line = serde_json::to_string(entry).map_err(|e| format!("序列化失败：{e}"))?;
-    writeln!(f, "{line}").map_err(|e| format!("写入 {path:?} 失败：{e}"))?;
+    let mut line = serde_json::to_string(entry).map_err(|e| format!("序列化失败：{e}"))?;
+    line.push('\n');
+    f.write_all(line.as_bytes())
+        .map_err(|e| format!("写入 {path:?} 失败：{e}"))?;
     Ok(())
 }
 

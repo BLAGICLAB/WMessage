@@ -91,20 +91,33 @@ pub fn emit_proposals(proposals: Vec<EvolutionProposal>) -> EmitReport {
         return report;
     }
     let now_ms = chrono::Utc::now().timestamp_millis();
-    let mut g = emitted_map().lock().unwrap_or_else(|e| {
-        eprintln!("[mutex_poisoned] evolution::emit::emitted_map: {e:?}");
-        e.into_inner()
-    });
-    // 清掉超过 24h 的 id（防止 map 无限增长）
-    g.retain(|_, ts| now_ms - *ts < EMIT_DEDUP_TTL_MS);
+    // 锁内只做 map 操作（retain / contains / insert / 分流）——audit_event!
+    // 是磁盘 I/O，持锁跨循环会把所有并发调用者序列化在别人的写盘后面。
+    // 行为权衡：dedup 标记先于 audit 写（崩溃窗口对称互换：旧=写了没标记，
+    // 新=标记了没写；两者都是单条 audit 行级别，可接受）。
+    let to_emit: Vec<EvolutionProposal> = {
+        let mut g = emitted_map().lock().unwrap_or_else(|e| {
+            eprintln!("[mutex_poisoned] evolution::emit::emitted_map: {e:?}");
+            e.into_inner()
+        });
+        // 清掉超过 24h 的 id（防止 map 无限增长）
+        g.retain(|_, ts| now_ms - *ts < EMIT_DEDUP_TTL_MS);
+        let mut to_emit = Vec::new();
+        for p in proposals {
+            if g.contains_key(&p.proposal_id) {
+                report.deduped += 1;
+                continue;
+            }
+            g.insert(p.proposal_id.clone(), now_ms);
+            report.written += 1;
+            to_emit.push(p);
+        }
+        to_emit
+    };
 
     let app = APP_HANDLE.get(); // Option<&AppHandle<tauri::Wry>>
 
-    for p in proposals {
-        if g.contains_key(&p.proposal_id) {
-            report.deduped += 1;
-            continue;
-        }
+    for p in &to_emit {
         if let Some(app) = app {
             // 写一条 audit：event = "evolution.proposal"
             // kv 字段锁死——后续若加新字段会破坏 `grep evolution.proposal bot.log` 解析
@@ -130,8 +143,6 @@ pub fn emit_proposals(proposals: Vec<EvolutionProposal>) -> EmitReport {
                 p.proposal_id
             );
         }
-        g.insert(p.proposal_id, now_ms);
-        report.written += 1;
     }
     report
 }

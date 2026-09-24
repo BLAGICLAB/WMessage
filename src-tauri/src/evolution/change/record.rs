@@ -178,7 +178,8 @@ impl EvolutionLayer {
 
 // ───────────────────────── jsonl IO ─────────────────────────
 
-/// 追加一条 ChangeRecord 到 jsonl；保证父目录存在
+/// 追加一条 ChangeRecord 到 jsonl；保证父目录存在。
+/// 整行单次 write_all（锁契约与残余风险同 candidate::entry::append 注释）。
 pub fn append(path: &std::path::Path, record: &ChangeRecord) -> Result<(), String> {
     use std::io::Write;
     if let Some(parent) = path.parent() {
@@ -189,8 +190,10 @@ pub fn append(path: &std::path::Path, record: &ChangeRecord) -> Result<(), Strin
         .append(true)
         .open(path)
         .map_err(|e| format!("打开 {path:?} 失败：{e}"))?;
-    let line = serde_json::to_string(record).map_err(|e| format!("序列化失败：{e}"))?;
-    writeln!(f, "{line}").map_err(|e| format!("写入 {path:?} 失败：{e}"))?;
+    let mut line = serde_json::to_string(record).map_err(|e| format!("序列化失败：{e}"))?;
+    line.push('\n');
+    f.write_all(line.as_bytes())
+        .map_err(|e| format!("写入 {path:?} 失败：{e}"))?;
     Ok(())
 }
 

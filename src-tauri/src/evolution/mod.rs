@@ -34,6 +34,25 @@ pub mod trace;
 
 use crate::memory::consolidate::{ConsolidateOp, ConsolidateReport};
 
+/// evolution 存储（proposals + changes 两个 jsonl）的**进程内单锁**。
+///
+/// **一把锁覆盖两个文件是有意设计（OCR C3-4）**：toggle/delete 一次操作**同时**改两个文件，
+/// 若按单文件各配一把锁，会出现「需要同时持两把锁」的顺序问题（死锁面）。
+/// **改动时勿「优化」成按文件锁。**
+/// 覆盖所有写路径：panel commands（toggle/delete/keep_shadow/rollback）+
+/// post_consolidation 的 write_proposals。**entry/record 的 append/read_all
+/// 内部不加锁**（外层已持锁，内层加锁必死锁）。
+pub(crate) static EVOLUTION_STORE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// 取 evolution 存储锁（poison 走仓库既有 `[mutex_poisoned]` 约定）。
+/// 临界区必须覆盖**完整 RMW 窗口**（load → mutate → rewrite），不是只锁 rewrite。
+pub(crate) fn lock_evolution_store() -> std::sync::MutexGuard<'static, ()> {
+    EVOLUTION_STORE_LOCK.lock().unwrap_or_else(|e| {
+        eprintln!("[mutex_poisoned] evolution::EVOLUTION_STORE_LOCK: {e:?}");
+        e.into_inner()
+    })
+}
+
 /// 反思完成后的桥接入口（`memory::consolidate::run_consolidation` 末尾调用）。
 ///
 /// 签名严格按 spec：不接收 AppHandle / session_id / 任何反向依赖 memory 内部的状态。
@@ -53,7 +72,14 @@ pub fn post_consolidation(ops: &[ConsolidateOp], report: &ConsolidateReport) {
     // 补 R6 A 漏的连线（老板 12:29 拍板）：落盘候选池，让 shadow 钩子能读到。
     // dedup by proposal_id：跳过 24h 内已存在的。
     if let Some(app) = emit::app_handle() {
-        match candidate::write_proposals(app, &proposals) {
+        // write_proposals 内部是 read_all→dedup→append 完整 RMW——必须整体
+        // 持 store 锁（与 panel 的 toggle/rewrite 同一把，否则两套机制互踩）。
+        // 锁只覆盖 write_proposals 本身；audit 写在锁外（不持锁跨磁盘 I/O）。
+        let persist = {
+            let _g = lock_evolution_store();
+            candidate::write_proposals(app, &proposals)
+        };
+        match persist {
             Ok(n) if n > 0 => crate::audit_event!(
                 app,
                 crate::audit::AuditLevel::Info,

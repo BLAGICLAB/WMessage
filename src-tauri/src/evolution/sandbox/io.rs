@@ -38,20 +38,41 @@ impl AbGroup {
 
 // ───────────────────────── shadow jsonl ─────────────────────────
 
-pub fn append_shadow(path: &Path, record: &ShadowOutcome) -> Result<(), String> {
+/// shadow/ab 两个 jsonl 的进程内 append 锁（append 频率低，一把锁足够）。
+/// 临界区仅覆盖 open→write_all；read_* 不加锁（读旧快照可接受）。
+static SANDBOX_IO_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn lock_sandbox_io() -> std::sync::MutexGuard<'static, ()> {
+    SANDBOX_IO_LOCK.lock().unwrap_or_else(|e| {
+        eprintln!("[mutex_poisoned] evolution::sandbox::SANDBOX_IO_LOCK: {e:?}");
+        e.into_inner()
+    })
+}
+
+/// 追加一行 jsonl：整行（显式 `\n`）单次 write_all——POSIX O_APPEND 对常规
+/// 文件的单次 write() 原子；持 SANDBOX_IO_LOCK 防进程内交错。
+/// 残余：跨进程无 flock（与 evolution store 同姿态）。
+fn append_line(path: &Path, mut line: String) -> Result<(), String> {
     use std::io::Write;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("建目录 {parent:?} 失败：{e}"))?;
     }
+    let _g = lock_sandbox_io();
     let mut f = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)
         .map_err(|e| format!("打开 {path:?} 失败：{e}"))?;
+    line.push('\n');
+    f.write_all(line.as_bytes())
+        .map_err(|e| format!("写入 {path:?} 失败：{e}"))?;
+    Ok(())
+}
+
+pub fn append_shadow(path: &Path, record: &ShadowOutcome) -> Result<(), String> {
     let line =
         serde_json::to_string(record).map_err(|e| format!("序列化 ShadowOutcome 失败：{e}"))?;
-    writeln!(f, "{line}").map_err(|e| format!("写入 {path:?} 失败：{e}"))?;
-    Ok(())
+    append_line(path, line)
 }
 
 pub fn read_shadow(path: &Path) -> Result<Vec<ShadowOutcome>, String> {
@@ -77,18 +98,8 @@ pub fn read_shadow(path: &Path) -> Result<Vec<ShadowOutcome>, String> {
 // ───────────────────────── A/B jsonl ─────────────────────────
 
 pub fn append_ab(path: &Path, record: &AbRecord) -> Result<(), String> {
-    use std::io::Write;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("建目录 {parent:?} 失败：{e}"))?;
-    }
-    let mut f = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .map_err(|e| format!("打开 {path:?} 失败：{e}"))?;
     let line = serde_json::to_string(record).map_err(|e| format!("序列化 AbRecord 失败：{e}"))?;
-    writeln!(f, "{line}").map_err(|e| format!("写入 {path:?} 失败：{e}"))?;
-    Ok(())
+    append_line(path, line)
 }
 
 pub fn read_ab(path: &Path) -> Result<Vec<AbRecord>, String> {
