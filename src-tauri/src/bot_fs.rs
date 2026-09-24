@@ -136,15 +136,23 @@ async fn allowed_dirs(app: &AppHandle) -> Vec<PathBuf> {
         .ok()
         .map(|p| p.to_string_lossy().to_string());
     let raw = merge_raw_dirs(&cfg.allowed_dirs, home_dir().as_deref(), task_dirs, gen);
-    let mut out: Vec<PathBuf> = Vec::new();
-    for r in raw {
-        let p = expand_tilde(r.trim());
-        if let Ok(c) = std::fs::canonicalize(&p) {
-            if c.is_dir() && !out.contains(&c) {
-                out.push(c);
+    // canonicalize 循环整体包 spawn_blocking：逐目录同步 syscall 在 async runtime
+    // 上会阻塞全部 Tauri command / event（OCR C5-BT-04 performance）。
+    // JoinError → unwrap_or_default 保「拿不到目录 → 空白名单」语义（fail-closed 不变）。
+    let out = spawn_blocking_io(move || {
+        let mut out: Vec<PathBuf> = Vec::new();
+        for r in raw {
+            let p = expand_tilde(r.trim());
+            if let Ok(c) = std::fs::canonicalize(&p) {
+                if c.is_dir() && !out.contains(&c) {
+                    out.push(c);
+                }
             }
         }
-    }
+        Ok(out)
+    })
+    .await
+    .unwrap_or_default();
     out
 }
 
@@ -168,6 +176,15 @@ where
     T: Send + 'static,
 {
     crate::py::document::spawn_blocking_map(|| f().map_err(|e| e.to_string())).await
+}
+
+/// async 版 is_dir：单次 metadata syscall 同样移出 runtime 线程（OCR C5-BT-04）。
+/// JoinError → false（按「不是目录」处理，后续 open/read_dir 自然失败冒泡）。
+async fn is_dir_async(path: &Path) -> bool {
+    let p = path.to_path_buf();
+    spawn_blocking_io(move || Ok(p.is_dir()))
+        .await
+        .unwrap_or(false)
 }
 
 pub async fn resolve_with_perm(
@@ -232,7 +249,7 @@ pub async fn resolve_with_perm(
                     // （文件 → parent、目录 → self），与判定逻辑保持一致。
                     // 绝不能用 canonical(parent())：那个是 symlink 解析后的路径，
                     // 可被攻击者控制指向 allowlist 外。
-                    let dir = if expanded.is_dir() {
+                    let dir = if is_dir_async(&expanded).await {
                         expanded.clone()
                     } else {
                         expanded
@@ -509,7 +526,7 @@ pub async fn tool_read_text_file(
             // resolve_with_perm Err 返 String，首字不定 → ok
             Err(e) => return ToolResult::ok(e, Vec::new()),
         };
-    if canonical.is_dir() {
+    if is_dir_async(&canonical).await {
         // format! 文本首字为路径首字符（不定） → ok
         return ToolResult::ok(
             format!("{} 是目录，列文件请用 list_files", path.trim()),
@@ -642,7 +659,7 @@ pub async fn tool_grep_files(
             None => return ToolResult::ok("没有可用的白名单目录".to_string(), Vec::new()),
         },
     };
-    if !dir.is_dir() {
+    if !is_dir_async(&dir).await {
         // format! 文本首字为目录路径首字符（不定） → ok
         return ToolResult::ok(format!("{} 不是目录", dir.display()), Vec::new());
     }
@@ -741,7 +758,7 @@ pub async fn tool_list_files(
         // resolve_with_perm Err 返 String，首字不定 → ok
         Err(e) => return ToolResult::ok(e, Vec::new()),
     };
-    if !canonical.is_dir() {
+    if !is_dir_async(&canonical).await {
         // format! 文本首字为目录路径首字符（不定） → ok
         return ToolResult::ok(
             format!("{} 不是目录；读文件请用 read_text_file", dir.trim()),

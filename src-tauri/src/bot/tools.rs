@@ -71,16 +71,32 @@ fn parse_task_files_arg(v: &serde_json::Value) -> Option<(Vec<crate::db::TaskFil
 /// `allowed_dirs` 会把它并入文件白名单（且先于 permMode 分流），strict 模式也被架空。
 /// 收窄（对齐 link_file_to_task）：仅放行 AI_Gen_Files 目录内的已存在文件，强制 isDir=false；
 /// 被拒条目记审计。用户亲手绑定走 bind_file 系统弹框，不在此限。
-fn sanitize_task_files_arg(
+async fn sanitize_task_files_arg(
     app: &AppHandle,
     v: &serde_json::Value,
 ) -> Option<(Vec<crate::db::TaskFile>, bool)> {
     let (files, truncated) = parse_task_files_arg(v)?;
-    // gen_dir 拿不到（创建失败）则按 None 处理——白名单校验「拿不到则拒」
-    let gen_canon = crate::db::gen_dir(app)
-        .ok()
-        .and_then(|d| std::fs::canonicalize(d).ok());
-    let (out, dropped) = sanitize_task_files_in(gen_canon.as_deref(), files);
+    // gen_dir + canonicalize 逐文件校验整体包 spawn_blocking：同步 syscall 在
+    // async runtime（tool_create_task/tool_edit_task）上会阻塞全部 Tauri
+    // command / event（OCR C5-BT-04 performance）。JoinError → 全丢并记审计
+    // （dropped = 全部），与 sanitize「拿不到则拒」fail-closed 语义一致。
+    let app_for_gen = app.clone();
+    let n_files = files.len();
+    let (out, dropped) = crate::py::document::spawn_blocking_map(move || {
+        // gen_dir 拿不到（创建失败）则按 None 处理——白名单校验「拿不到则拒」
+        let gen_canon = crate::db::gen_dir(&app_for_gen)
+            .ok()
+            .and_then(|d| std::fs::canonicalize(d).ok());
+        Ok::<_, String>(sanitize_task_files_in(gen_canon.as_deref(), files))
+    })
+    .await
+    .unwrap_or_else(|e| {
+        audit_log(
+            app,
+            &format!("task_files_sanitized | join_error: {e} | 绑定文件全部丢弃"),
+        );
+        (Vec::new(), n_files)
+    });
     if dropped > 0 {
         audit_log(
             app,
@@ -413,7 +429,7 @@ pub(crate) async fn tool_create_task(
     // 多文件绑定：files 参数 [{path,isDir}]，超 10 截断 + 警告
     // 模型来源 files 经安全校验（仅 AI_Gen_Files 内文件）
     let mut files_warn = "";
-    if let Some((files, truncated)) = sanitize_task_files_arg(app, &v) {
+    if let Some((files, truncated)) = sanitize_task_files_arg(app, &v).await {
         if truncated {
             files_warn = "（绑定文件超上限，已截断为前 10 个）";
         }
@@ -665,7 +681,7 @@ pub(crate) async fn tool_edit_task(
     // 多文件绑定：files 参数 [{path,isDir}] 整体替换列表；空数组清除；超 10 截断 + 警告
     // 模型来源 files 经安全校验（仅 AI_Gen_Files 内文件）
     let mut files_warn = "";
-    if let Some((files, truncated)) = sanitize_task_files_arg(app, &v) {
+    if let Some((files, truncated)) = sanitize_task_files_arg(app, &v).await {
         if truncated {
             files_warn = "（绑定文件超上限，已截断为前 10 个）";
         }
