@@ -347,6 +347,9 @@ pub async fn shadow_apply_for_batch_with_app(
         match change::append_change(&path, &cr) {
             Ok(()) => {
                 written += 1;
+                // 与 trait 变体一致的计数器增量——本入口是生产路径，
+                // 不碰原子计数器会让「失败率 >5% 告警」对生产流量永不触发
+                TOTAL_WRITES.fetch_add(1, Ordering::Relaxed);
                 match (state, &s2_decision) {
                     (ActivationState::S0Observe, _) | (ActivationState::S1Suggest, _) => {
                         crate::audit_event!(
@@ -375,6 +378,8 @@ pub async fn shadow_apply_for_batch_with_app(
             }
             Err(e) => {
                 failed += 1;
+                TOTAL_WRITES.fetch_add(1, Ordering::Relaxed);
+                FAILED_WRITES.fetch_add(1, Ordering::Relaxed);
                 crate::audit_event!(
                     app,
                     AuditLevel::Warn,

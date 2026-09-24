@@ -182,18 +182,12 @@ pub fn is_reversible(p: &EvolutionProposal) -> bool {
     true
 }
 
-/// 8 字节（16 hex 字符）短 hash。沿用 `trace::compute_trace_id` 的实现模式。
+/// 8 字节（16 hex 字符）短 hash。**算法 = 仓内固定 FNV-1a-64**
+/// （`sandbox::routing::fnv1a`）：跨 Rust 版本 / 跨机确定性——
+/// `DefaultHasher` 的算法不在稳定性契约内，toolchain 升级会静默
+/// 打破 dedup 契约，故不用。
 pub(crate) fn short_hash(s: &str) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut h = DefaultHasher::new();
-    s.hash(&mut h);
-    let bytes = h.finish().to_be_bytes();
-    let mut out = String::with_capacity(16);
-    for b in bytes {
-        out.push_str(&format!("{b:02x}"));
-    }
-    out
+    format!("{:016x}", crate::evolution::sandbox::routing::fnv1a(s))
 }
 
 #[cfg(test)]
@@ -257,6 +251,14 @@ mod tests {
     }
 
     // ─── proposal_id 稳定性 ───
+
+    #[test]
+    fn short_hash_fnv1a_known_answer() {
+        // FNV-1a-64 标准向量——锁死算法不被换回 DefaultHasher 之类
+        // （跨版本/跨机确定性是 dedup 契约的前提）
+        assert_eq!(short_hash(""), "cbf29ce484222325");
+        assert_eq!(short_hash("a"), "af63dc4c8601ec8c");
+    }
 
     #[test]
     fn proposal_id_is_deterministic() {

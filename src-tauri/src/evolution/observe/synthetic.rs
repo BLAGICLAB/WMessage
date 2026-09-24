@@ -59,6 +59,58 @@ impl Default for SyntheticConfig {
     }
 }
 
+impl SyntheticConfig {
+    /// 生成前必过的合法性校验。不合法配置会静默歪斜分布
+    /// （负数/NaN/总和>1 的余量概率全落 Pooled）或直接 panic
+    /// （window_days=0 → modulo-by-zero；负数 → as u32 回绕），
+    /// 打败「验证 R6 指标逻辑」的既定目的——fail-fast 带明确消息。
+    pub fn validate(&self) -> Result<(), String> {
+        let ratios = [
+            ("promoted_ratio", self.promoted_ratio),
+            ("rejected_ratio", self.rejected_ratio),
+            ("expired_ratio", self.expired_ratio),
+            ("active_ratio_of_promoted", self.active_ratio_of_promoted),
+            (
+                "rolled_back_ratio_of_promoted",
+                self.rolled_back_ratio_of_promoted,
+            ),
+        ];
+        for (name, r) in ratios {
+            if !r.is_finite() || !(0.0..=1.0).contains(&r) {
+                return Err(format!("{name} 必须是 [0,1] 有限值，实测 {r}"));
+            }
+        }
+        let status_sum = self.promoted_ratio + self.rejected_ratio + self.expired_ratio;
+        if status_sum > 1.0 {
+            return Err(format!(
+                "promoted+rejected+expired 占比总和必须 ≤1.0，实测 {status_sum}"
+            ));
+        }
+        let active_sum = self.active_ratio_of_promoted + self.rolled_back_ratio_of_promoted;
+        if active_sum > 1.0 {
+            return Err(format!(
+                "active+rolled_back（占 Promoted）总和必须 ≤1.0，实测 {active_sum}"
+            ));
+        }
+        if self.window_days < 1 {
+            return Err(format!(
+                "window_days 必须 ≥1（0 会 modulo-by-zero panic，负数 as u32 回绕），实测 {}",
+                self.window_days
+            ));
+        }
+        // 上限：window_days * MS_PER_DAY 不得溢出 i64（release 下静默回绕
+        // 会把 window_start_ms 算成正/负垃圾值）；as u32 用法也要求 ≤ u32::MAX
+        let max_days = (i64::MAX / MS_PER_DAY).min(u32::MAX as i64);
+        if self.window_days > max_days {
+            return Err(format!(
+                "window_days 必须 ≤{max_days}（i64 乘法溢出 / u32 转换上限），实测 {}",
+                self.window_days
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// 合成数据输出
 pub struct SyntheticData {
     pub proposals: Vec<ProposalEntry>,
@@ -67,7 +119,12 @@ pub struct SyntheticData {
 }
 
 /// 生成合成数据
+///
+/// 入口先 `cfg.validate()`：不合法配置直接 panic（fail-fast，
+/// 唯一生产调用方是 observe_run dev bin，与其中 expect 风格一致）。
 pub fn generate(cfg: &SyntheticConfig, now_ms: i64) -> SyntheticData {
+    cfg.validate()
+        .unwrap_or_else(|e| panic!("SyntheticConfig 非法: {e}"));
     let mut rng = SimpleRng::new(cfg.seed);
     let window_start_ms = now_ms - cfg.window_days * MS_PER_DAY;
 
@@ -274,6 +331,65 @@ fn pick_impact(rng: &mut SimpleRng) -> ImpactLevel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validate_accepts_default() {
+        assert!(SyntheticConfig::default().validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_bad_ratios() {
+        let bad = [
+            SyntheticConfig {
+                promoted_ratio: -0.1,
+                ..Default::default()
+            },
+            SyntheticConfig {
+                promoted_ratio: f64::NAN,
+                ..Default::default()
+            },
+            SyntheticConfig {
+                promoted_ratio: 0.8,
+                rejected_ratio: 0.3,
+                ..Default::default()
+            }, // 三桶和 0.8+0.3+0.05 > 1
+            SyntheticConfig {
+                active_ratio_of_promoted: 0.8,
+                rolled_back_ratio_of_promoted: 0.3,
+                ..Default::default()
+            }, // 占 Promoted 和 > 1
+        ];
+        for cfg in &bad {
+            assert!(cfg.validate().is_err(), "应拒：{cfg:?}");
+        }
+    }
+
+    #[test]
+    fn validate_rejects_window_days_out_of_range() {
+        // 契约锚在 validator 本体（不只 generate 的 panic 路径）
+        for bad_days in [0, -1, i64::MAX] {
+            let cfg = SyntheticConfig {
+                window_days: bad_days,
+                ..Default::default()
+            };
+            let msg = cfg.validate().expect_err("应拒 window_days 越界");
+            assert!(
+                msg.contains("window_days"),
+                "错误消息应指名字段，实测：{msg}"
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "SyntheticConfig 非法")]
+    fn generate_panics_on_zero_window_days() {
+        // window_days=0 → next_int modulo-by-zero；validate fail-fast 拦在入口
+        let cfg = SyntheticConfig {
+            window_days: 0,
+            ..Default::default()
+        };
+        let _ = generate(&cfg, 1_000);
+    }
 
     #[test]
     fn default_config_generates_100_proposals() {
