@@ -28,6 +28,7 @@
 - [2026-09-23 23:25 CST] FRDV-01 收口（commit 46f8437）：C5-MI-03.2（rules.rs:121 CSV 双静默默认值）已修 fail-closed——空动作行 / 未知启用 token → 行级 DomainRule Err。C5-MI-03 2 条 → 剩 1 条（rules.rs:27 load_rules 静默 fallback default，quarantine vs 结构化 Err = B 类候选，攒批待拍）。
 - [2026-09-23 23:35 CST] MI-07 收口（commit 613e07a）：C5-MI-07（ops.rs log_line rotation/写入路径分裂）已修——单次 canonicalize 结果共用 + 失败兜底不丢日志。OCR r1 唯一 low（data_dir 双调）已采纳入批。migration 域 10 簇剩 4 簇未清：MI-04a/b、MI-05a/b、MI-08。
 - [2026-09-23 23:50 CST] DB-04 收口（commit c9a3041）：C5-DB-04 全簇 2 条已修——bot_session_rename 空标题 fail-closed（InvalidArgument）+ tasks_import 复用 check_export_path + 64MiB 读侧 bounded 强制。OCR r1 2 comments（medium TOCTOU + low 文案截断，同根=本批新代码）均采纳入批（metadata 预检 → bounded reader）。db 域 7 簇剩 2 簇未清：DB-03（race/TOCTOU）、DB-05 余 3 条（均 B 类候选）。
+- [2026-09-25 02:34 CST] **SC-05**（scripts 域「hook 覆盖不全」簇，commit 66fbbec）：实修 1 处——test-fast.sh:56 步骤 0 审计防线补 untracked 全文扫描（`git ls-files -z --others` 并入扫描流，同 audit-ok 豁免；同步段注释/docblock/横幅口径）。非 B 类（不改约定，补执行漏洞）。验证：本仓库步骤 0 三场景（untracked 坏=exit 1 / audit-ok=放行 / 干净=过）。OCR r1 exit 0 / 0 comments（scripts/** exclude）。**scripts 域 5 簇全清。**D2: files=1(+15/-5) asserts=0→0 tests=n/a。
 - [2026-09-25 02:31 CST] **SC-04**（scripts 域「第三方/CDN/用户输入未校验」簇，commit 114440b）：实修 2 处——fetch_ocr_models.sh:49 嵌入仓内 pp-ocr-v6/ 实测 SHA256 pinning 清单（det/rec/cls/keys），partial 在 mv 前比对，不匹配/不在清单/无 sha256 工具全 fail-closed；publish-docx-dotnet.sh:12 OUT_ROOT 校验拒空/绝对路径/含 `..`/`-` 开头 + rm/mkdir 加 `--`。验证：stub curl SHA256 矩阵（错=1 对=0 跳过=0）+ OUT_ROOT 注入矩阵（五非法全拒、正常放行）+ macOS BSD `--` 兼容实测。OCR r1 exit 0 / 0 comments（scripts/** exclude）。**第 50 批 reviewer 抽查（agent-11，只读 git show + 文件原文 + 自算 SHA256 比对）：pass。**D2: files=2(+47/-2) asserts=0→0 tests=n/a。
 - [2026-09-25 02:25 CST] **SC-03**（scripts 域「set -euo 边界未封」簇，commit 9047712）：实修 1 处——install-hooks.sh:10 裸 glob → `shopt -s nullglob` + 数组收集 + 空数组 if 守卫（`&&` 链在 set -e 下整体返 1 会中止，故用 if）。验证：tmp 仓库两场景（.githooks 空 exit 0 / 全在 +x 生效 + hooksPath 写入）。OCR r1 exit 0 / 0 comments（scripts/** exclude）。D2: files=1(+6/-1) asserts=0→0 tests=n/a。
 - [2026-09-25 02:23 CST] **SC-02**（scripts 域「非原子/非完整」簇，commit 1227af9）：实修 3 处——sync-version.mjs:20 就地 writeFileSync → .tmp + renameSync 原子替换；fetch_ocr_models.sh:44 curl 直写目标 + `-s` 跳过 → `$out.partial` 校验后 mv 就位；:53 curl `-f` 盲信 → mv 前大小下限（onnx≥1MB / keys≥10KB）+ 首字节非 `<` 校验。验证：stub curl 对抗矩阵 9/9（HTML 页 / 小文件 / 双源 fail / 已存在跳过 / partial 零残留）。OCR r1 exit 0 / 0 comments（scripts/** exclude）。D2: files=2(+31/-6) asserts=0→0 tests=n/a。
@@ -191,7 +192,7 @@
 - C5-SC-02：非原子/非完整（sync-version.mjs:20 + fetch_ocr_models.sh:44 + :53），3 条 → **已清（SC-02，commit 1227af9，§0 02:23）**
 - C5-SC-03：set -euo 边界未封（install-hooks.sh:10），1 条 → **已清（SC-03，commit 9047712，§0 02:25）**
 - C5-SC-04：第三方/CDN/用户输入未校验（fetch_ocr_models.sh:49 + publish-docx-dotnet.sh:12），2 条 → **已清（SC-04，commit 114440b，§0 02:31）**
-- C5-SC-05：hook 覆盖不全（test-fast.sh:56），1 条，**与 HOOK-1/HOOK-2 同根因家族**
+- C5-SC-05：hook 覆盖不全（test-fast.sh:56），1 条，**与 HOOK-1/HOOK-2 同根因家族** → **已清（SC-05，commit 66fbbec，§0 02:34）**
 
 ### 域 api（7 簇 / 14 findings）
 - C5-AP-01：TOCTOU race（api_auth.rs:27 + api_handlers/commands.rs:61 + :238 + api_server.rs:208），4 条 → **api_auth.rs:27 + api_server.rs:208 已修（AP-01b，commit c49bba3）；commands.rs:61/:238 转 B 类攒批第 15 项（改「文件 I/O 不持锁」约定方向）**
