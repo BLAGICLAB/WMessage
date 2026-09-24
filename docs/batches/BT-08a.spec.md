@@ -47,6 +47,10 @@
 2. budget → types 3 行 attr + 注释 ≈+4/-3；parse 改动 + 测试 ≈+16/-4。
    合计 ≈+20/-7 → budget +28/-10。✓
 3. findings fix 字段列 ripple → 均无。✓
+4. （执行中校正）零代码处置三条（:198 FP / :168 B 类 / :76 wontfix）从机器可读
+   findings 数组移除——gate findings_files_in_diff 要求每条 finding 的 file 在
+   staged 集合内，零代码条目的文件不可能 staged。处置记录以本文「拆批与处置」
+   节为准，随 triage 收口 docs commit 登记。
 
 ## 自主执行规则
 
@@ -78,10 +82,7 @@ spec 被 reviewer 批准后:
   "max_lines_removed": 10,
   "findings": [
     {"id": "C5-BT-08.2", "file": "src-tauri/src/bot/config/types.rs", "line": 82, "fix": "api_key/tavily_key/brave_key 三字段 skip_serializing_if → skip_serializing（永不序列化明文 key，fail-closed 纵深）。ripple：无（写路径本就剥 None，输出等价）"},
-    {"id": "C5-BT-08.4", "file": "src-tauri/src/bot_skills/parse.rs", "line": 86, "fix": "mode_explicit 移到合法值分支内置位；非法 mode 按未声明处理（low→auto 提升不被吞）。新增 3 断言测试。ripple：无"},
-    {"id": "C5-BT-08.1", "file": "src-tauri/src/bot/config/types.rs", "line": 198, "fix": "FP 登记（deepseek-v4-flash 旧名仍被接受，deepseek.ai/pricing 实证）。零代码。ripple：无"},
-    {"id": "C5-BT-08.3", "file": "src-tauri/src/bot/config/keyring.rs", "line": 168, "fix": "转 B 类攒批第 13 项（Windows ACL 方向，macOS 不可测）。零代码。ripple：无"},
-    {"id": "C5-BT-08.5", "file": "src-tauri/src/bot_skills/vars.rs", "line": 76, "fix": "wontfix-with-rationale 登记（占位符使模板构造上非合法 JSON，启发式是结构必然；替换后 serde_json 兜底）。零代码。ripple：无"}
+    {"id": "C5-BT-08.4", "file": "src-tauri/src/bot_skills/parse.rs", "line": 86, "fix": "mode_explicit 移到合法值分支内置位；非法 mode 按未声明处理（low→auto 提升不被吞）。新增 3 断言测试。ripple：无"}
   ],
   "assertions_min": {
     "src-tauri/src/bot/config/types.rs": 0,
