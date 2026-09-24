@@ -95,17 +95,24 @@ pub const DURATION_THRESHOLD_MS: i64 = 60_000;
 pub const TOOL_CALLS_THRESHOLD: u32 = 10;
 
 /// Trace 上报入参。builder 模式让 Phase 1 只填实测字段，
-/// 未追踪字段（turn_count / tool_calls / skill_used / memory_injected_count）
+/// 未追踪字段（turn_count / skill_used / memory_injected_count）
 /// 默认为 0/None 并在 HANDOFF.md 标注（Phase 2 再补）。
+///
+/// **aborted 唯一事实源 = `outcome` 枚举**：`TraceOutcome::Aborted`
+/// 即用户 /stop，无独立 bool 旗标（双轨可矛盾，已坍塌）。
 pub struct TraceContext<'a> {
     pub session_id: &'a str,
     pub origin: MutationOrigin,
     pub started_at_ms: i64,
     pub outcome: TraceOutcome,
     pub task_refs: Vec<String>,
-    pub was_aborted: bool,
+    /// 工具调用明细（name + success + duration_ms + error_kind 分类）。
+    /// Phase 1 生产 caller 尚无明细来源（run_model_loop 不返回），
+    /// 管道先通；接线待 bot_model_loop 返回类型扩展（follow-up）。
+    pub tool_calls: Vec<ToolCallSummary>,
     // Phase 1 占位字段：未追踪，统一 0/None
-    pub tool_calls_count: u32,
+    // （采样用的工具调用计数由 tool_calls.len() 派生，无独立占位字段——
+    //  两个相关字段无同步是双轨隐患）
     pub turn_count: u32,
     pub skill_used: Option<&'a str>,
     pub memory_injected_count: u32,
@@ -119,8 +126,7 @@ impl<'a> TraceContext<'a> {
             started_at_ms,
             outcome: TraceOutcome::Success,
             task_refs: Vec::new(),
-            was_aborted: false,
-            tool_calls_count: 0,
+            tool_calls: Vec::new(),
             turn_count: 0,
             skill_used: None,
             memory_injected_count: 0,
@@ -130,38 +136,36 @@ impl<'a> TraceContext<'a> {
         self.outcome = o;
         self
     }
-    pub fn with_aborted(mut self, a: bool) -> Self {
-        self.was_aborted = a;
-        self
-    }
     pub fn with_task_refs(mut self, refs: Vec<String>) -> Self {
         self.task_refs = refs;
+        self
+    }
+    pub fn with_tool_calls(mut self, calls: Vec<ToolCallSummary>) -> Self {
+        self.tool_calls = calls;
         self
     }
 }
 
 /// 采样决策（纯函数，可单测）：
 /// 只在以下条件之一成立时记录 trace：
-/// 1. `outcome` 是 `Failure`
-/// 2. `tool_calls_count > 10`
+/// 1. `outcome` 是 `Failure` 或 `Aborted`（用户 /stop 恒记录，不静默丢）
+/// 2. 工具调用数 > 10（`tool_calls.len()`）
 /// 3. `duration_ms > 60_000`（即 60s）
-/// 4. `was_aborted` 为 true（用户 /stop）
 pub fn should_record_trace(
     outcome: &TraceOutcome,
     tool_calls_count: u32,
     duration_ms: i64,
-    was_aborted: bool,
 ) -> bool {
-    if matches!(outcome, TraceOutcome::Failure { .. }) {
+    if matches!(
+        outcome,
+        TraceOutcome::Failure { .. } | TraceOutcome::Aborted
+    ) {
         return true;
     }
     if tool_calls_count > TOOL_CALLS_THRESHOLD {
         return true;
     }
     if duration_ms > DURATION_THRESHOLD_MS {
-        return true;
-    }
-    if was_aborted {
         return true;
     }
     false
@@ -175,12 +179,7 @@ pub fn should_record_trace(
 pub fn maybe_record_trace(ctx: TraceContext<'_>) {
     let ended_at_ms = chrono::Utc::now().timestamp_millis();
     let duration_ms = ended_at_ms - ctx.started_at_ms;
-    if !should_record_trace(
-        &ctx.outcome,
-        ctx.tool_calls_count,
-        duration_ms,
-        ctx.was_aborted,
-    ) {
+    if !should_record_trace(&ctx.outcome, ctx.tool_calls.len() as u32, duration_ms) {
         return;
     }
     let trace_id = compute_trace_id(ctx.session_id, ctx.started_at_ms, ended_at_ms);
@@ -191,7 +190,7 @@ pub fn maybe_record_trace(ctx: TraceContext<'_>) {
         started_at_ms: ctx.started_at_ms,
         ended_at_ms,
         turn_count: ctx.turn_count,
-        tool_calls: Vec::new(),
+        tool_calls: ctx.tool_calls,
         outcome: ctx.outcome,
         skill_used: ctx.skill_used.map(String::from),
         memory_injected_count: ctx.memory_injected_count,
@@ -211,14 +210,16 @@ pub fn maybe_record_trace(ctx: TraceContext<'_>) {
         "trace_id" => trace.trace_id.clone(),
         "session_id" => trace.session_id.clone(),
         "origin" => trace.origin.as_str(),
-        "outcome" => format!("{:?}", trace.outcome),
+        // serde 规范形（snake_case tag）——与锁定测试契约一致，不用 Debug 文本
+        "outcome" => serde_json::to_string(&trace.outcome)
+            .unwrap_or_else(|_| String::from("unknown")),
         "duration_ms" => duration_ms,
         "turn_count" => trace.turn_count,
         "tool_calls" => trace.tool_calls.len() as u64,
         "skill_used" => trace.skill_used.clone().unwrap_or_default(),
         "memory_injected_count" => trace.memory_injected_count,
         "task_ref_count" => trace.task_refs.len() as u64,
-        "aborted" => ctx.was_aborted,
+        "aborted" => matches!(trace.outcome, TraceOutcome::Aborted),
     );
 }
 
@@ -313,77 +314,55 @@ mod tests {
     #[test]
     fn sampling_rule_outcome_failure_fires() {
         assert!(
-            should_record_trace(&TraceOutcome::Failure { reason: "x".into() }, 0, 100, false),
-            "Failure outcome 无论 tool_calls / duration / aborted 都应记录"
+            should_record_trace(&TraceOutcome::Failure { reason: "x".into() }, 0, 100),
+            "Failure outcome 无论 tool_calls / duration 都应记录"
         );
         // 即使 duration 短、tool_calls 少
         assert!(should_record_trace(
             &TraceOutcome::Failure { reason: "x".into() },
             0,
-            0,
-            false
+            0
         ));
-        // 负例：Success / Aborted 单独不触发
-        assert!(!should_record_trace(&TraceOutcome::Success, 0, 100, false));
-        assert!(!should_record_trace(&TraceOutcome::Aborted, 0, 100, false));
+        // 负例：Success 单独不触发
+        assert!(!should_record_trace(&TraceOutcome::Success, 0, 100));
     }
 
     #[test]
     fn sampling_rule_tool_calls_over_ten_fires() {
         // 边界：> 10 才触发（11 起）
-        assert!(should_record_trace(&TraceOutcome::Success, 11, 100, false));
-        assert!(should_record_trace(&TraceOutcome::Success, 100, 100, false));
+        assert!(should_record_trace(&TraceOutcome::Success, 11, 100));
+        assert!(should_record_trace(&TraceOutcome::Success, 100, 100));
         // 边界以下：10 不触发
-        assert!(!should_record_trace(&TraceOutcome::Success, 10, 100, false));
-        assert!(!should_record_trace(&TraceOutcome::Success, 0, 100, false));
+        assert!(!should_record_trace(&TraceOutcome::Success, 10, 100));
+        assert!(!should_record_trace(&TraceOutcome::Success, 0, 100));
     }
 
     #[test]
     fn sampling_rule_duration_over_60s_fires() {
         // 边界：> 60_000ms 才触发（60_001 起）
-        assert!(should_record_trace(
-            &TraceOutcome::Success,
-            0,
-            60_001,
-            false
-        ));
-        assert!(should_record_trace(
-            &TraceOutcome::Success,
-            0,
-            300_000,
-            false
-        ));
+        assert!(should_record_trace(&TraceOutcome::Success, 0, 60_001));
+        assert!(should_record_trace(&TraceOutcome::Success, 0, 300_000));
         // 边界值：60_000 不触发
-        assert!(!should_record_trace(
-            &TraceOutcome::Success,
-            0,
-            60_000,
-            false
-        ));
-        assert!(!should_record_trace(&TraceOutcome::Success, 0, 100, false));
+        assert!(!should_record_trace(&TraceOutcome::Success, 0, 60_000));
+        assert!(!should_record_trace(&TraceOutcome::Success, 0, 100));
         // 零边界
-        assert!(!should_record_trace(&TraceOutcome::Success, 0, 0, false));
+        assert!(!should_record_trace(&TraceOutcome::Success, 0, 0));
     }
 
     #[test]
     fn sampling_rule_aborted_fires() {
-        assert!(should_record_trace(&TraceOutcome::Success, 0, 100, true));
-        // 即使 outcome 是 Aborted 本身，仍记录
-        assert!(should_record_trace(&TraceOutcome::Aborted, 0, 100, true));
+        // 双轨坍塌：Aborted 由 outcome 枚举唯一承载，恒记录（用户 /stop
+        // 不再因漏翻 bool 旗标而静默丢）
+        assert!(should_record_trace(&TraceOutcome::Aborted, 0, 100));
         // 负例
-        assert!(!should_record_trace(&TraceOutcome::Success, 0, 100, false));
+        assert!(!should_record_trace(&TraceOutcome::Success, 0, 100));
     }
 
     #[test]
     fn sampling_rule_priority_is_or_not_priority() {
         // spec 未规定优先级；任一规则命中即记。
         // 验证：两条规则同时命中不会变成「记录两次」——只是 should_record 返回 true。
-        let r = should_record_trace(
-            &TraceOutcome::Failure { reason: "x".into() },
-            100,
-            100_000,
-            true,
-        );
+        let r = should_record_trace(&TraceOutcome::Failure { reason: "x".into() }, 100, 100_000);
         assert!(r);
     }
 
@@ -391,7 +370,7 @@ mod tests {
 
     #[test]
     fn maybe_record_drops_silent_when_no_rule_fires() {
-        // Success / 0 tool_calls / 100ms / not aborted → 不记录
+        // Success outcome / 0 tool_calls / 100ms → 不采样（aborted 已并入 outcome）
         // AppHandle 未注册 → 不 panic
         let ctx = TraceContext::new(
             "silent",
@@ -421,5 +400,34 @@ mod tests {
         let started = chrono::Utc::now().timestamp_millis() - (DURATION_THRESHOLD_MS + 1);
         let ctx = TraceContext::new("long", MutationOrigin::Main, started);
         maybe_record_trace(ctx); // 不应 panic；AppHandle 未注册时仅 eprintln
+    }
+
+    #[test]
+    fn outcome_serde_json_form_locked_for_emit() {
+        // emit 的 outcome 键用 serde_json（非 Debug 文本）——锁 emit 输入的
+        // snake_case tag 形态（无 AppHandle seam，端到端落盘不在这里验）
+        let s = serde_json::to_string(&TraceOutcome::Failure {
+            reason: "llm_5xx".into(),
+        })
+        .unwrap();
+        assert_eq!(s, r#"{"kind":"failure","reason":"llm_5xx"}"#);
+        assert_eq!(
+            serde_json::to_string(&TraceOutcome::Aborted).unwrap(),
+            r#"{"kind":"aborted"}"#
+        );
+    }
+
+    #[test]
+    fn trace_context_tool_calls_forwarded() {
+        // tool_calls 管道：builder 接收 → ExecutionTrace 不再恒空
+        let calls = vec![ToolCallSummary {
+            name: "run_python".into(),
+            success: true,
+            duration_ms: 12,
+            error_kind: None,
+        }];
+        let ctx = TraceContext::new("s", MutationOrigin::Main, 0).with_tool_calls(calls);
+        assert_eq!(ctx.tool_calls.len(), 1);
+        assert_eq!(ctx.tool_calls[0].name, "run_python");
     }
 }

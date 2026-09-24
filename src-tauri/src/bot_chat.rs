@@ -933,7 +933,6 @@ pub async fn bot_chat(
         } else {
             TraceOutcome::Success
         })
-        .with_aborted(aborted)
         .with_task_refs(refs.iter().map(|t| t.id.clone()).collect()),
     );
     Ok(BotChatResult {
