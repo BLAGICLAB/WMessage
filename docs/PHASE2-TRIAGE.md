@@ -94,6 +94,8 @@
 
 - [2026-09-24 21:43 CST] EV-3b-C1 收口（commit f72e253）：**C5-EV-3b-C1 全簇 3 条已清**。① mapping.rs:37 approval_source 由 resolved status 派生（Rejected→SystemRejected，Expired 保持 Pending 注释声明=无对应变体）——**既有测试 to_change_record_rejected_entry 锁的正是缺陷值，已改断言**；② status.rs:36 取轻量选项：doc 收紧为「纯拓扑表 + skip-canary 策略门属调用方契约」（加配置入参=签名改=B 类不做），Active 无 Rejected 出口写明有意；③ kill_switch.rs:39 should_auto_apply 改 `!all_auto_apply && !shadow_only`——**零生产调用方**（apply.rs auto_apply_gate 不查 kill switch，finding 所述「apply.rs 只看 should_auto_apply」当前不成立，修的是 latent API 陷阱），自有测试注释已述意图未断言 → 补断言锁死。OCR r1 1 low 采纳（approval_source 收敛单 match）/ 0 failure；type 1 n=25 不变。spec 立项 819fd14。diff +21/-12 在 budget（+55/-15）内。**evolution 3b 剩 8 簇（C2/C3/D/E/F/G/H/I）。**
 
+- [2026-09-24 23:41 CST] EV-3b-I 收口（零代码处置）：**C5-EV-3b-I 已被 EV-3b-C3 覆盖清**。finding（routing.rs:110 缺 canary×A/B 联合分布断言）要求的测试正是 C3 新增的 `ab_orthogonal_to_canary`（canary 群内 A 占比 ≈0.5，区间 [0.35,0.55] 收紧到能卡住 buggy 回归值 0.589）——C3 把 A/B 改独立加盐 hash（ab_bucket = fnv1a("ab:"+id)）时一并落地。核实测试原文在 routing.rs:132-145。**零代码，无 batch commit，triage 直接收口。****evolution 3b 全 11 簇清零。**
+
 - [2026-09-24 23:38 CST] EV-3b-H 收口（commit d4ad243）：**C5-EV-3b-H 全簇 3 条已清**（+1 同 family medium 一并）。① aborted 双轨坍塌：删 was_aborted 字段+setter，TraceOutcome::Aborted 枚举唯一事实源（ripple: bot_chat.rs 删一行，唯一 caller 本就两轨同源=latent）；② should_record_trace 删 bool 入参，Aborted 恒记录（/stop trace 不再静默丢）——**既有测试 :328 锁旧缺陷行为已翻正**；③ TraceContext 加 tool_calls vec + setter + forward（audit payload 计数不再恒空）——producer 接线（run_model_loop 返回类型）=跨域登记 follow-up。附带 :214 emit outcome 改 serde_json 规范形（消 Debug/serde 双轨）。OCR r1 7 comments（采纳 4：删 tool_calls_count 占位消新双轨 + 测试改名 + 过时注释 + 显式化；不采纳 2 假设性/信息性）/ 0 failure；type 1 n=25 不变。spec 立项 aca979c / 校正 1 次（budget +45/-35→+80/-70）。diff +76/-69。**evolution 3b 剩 1 簇（I）。**（补：**第 45 批 reviewer 抽查 = pass**——EV-3b-G，explore 子 agent 只读 git show/spec/OCR json/代码原文核验。）
 
 - [2026-09-24 23:25 CST] EV-3b-G 收口（commit 59a46e3）：**C5-EV-3b-G 全簇 3 条已清**。① apply.rs DB_WRITE_LOCK 收窄到仅 apply_one（open_db/ledger/now 锁外预计算；append+audit 锁外；逐条 ? 中止语义不变）——核出 finding 前提部分过时：整批本就在 spawn_blocking 内，真问题=锁范围；② observe/shadow.rs with_app append_change 包 spawn_blocking（唯一生产入口）；trait 两变体零生产调用方加 doc 注明测试/内存 sink 专用；③ panel/commands.rs 8 个 async command 阻塞段包 spawn_blocking_map（5 整体闭包 + 3 个含 confirm await 的拆两段，await 不跨闭包）——签名零变更。OCR r1 3 low（采纳 cr move；不采纳 Arc<PathBuf> YAGNI / is_panic 分支 tauri::Error 无此 API 编译证伪回退）/ 0 failure；type 1 n=25 不变。spec 立项 a3946cc / 校正 1 次（budget +140/-55→+165/-85）。diff +159/-77。**evolution 3b 剩 2 簇（H/I）。**
@@ -166,7 +168,7 @@
 - C5-EV-3b-F：哈希/校验缺（proposal.rs:186 + observe/synthetic.rs:29 + observe/shadow.rs:345），3 条 —— **已清**（2c70cb6，§0 2026-09-24 23:09 CST）
 - C5-EV-3b-G：持锁/async 阻塞 IO（apply.rs:156 + observe/shadow.rs:202 + panel/commands.rs:0），3 条 —— **已清**（59a46e3，§0 2026-09-24 23:25 CST）
 - C5-EV-3b-H：trace 双轨/静默丢（trace.rs:104 + trace.rs:149 + trace.rs:193），3 条 —— **已清**（d4ad243，§0 2026-09-24 23:38 CST）
-- C5-EV-3b-I：关键不变量测试缺（routing.rs:110），1 条
+- C5-EV-3b-I：关键不变量测试缺（routing.rs:110），1 条 —— **已清**（C3 7f84fcf 覆盖，§0 2026-09-24 23:41 CST 零代码处置）
 
 ### 域 migration（10 簇 / 15 findings）
 - C5-MI-01：poisoned mutex silent recovery（DB_WRITE_LOCK silent 路径，**违反 C3-1 约定**），1 条，**家族已溶解，独立存在** → **已修（EVNB-02，commit 299e776：journal.rs db_write_lock 闭包加 mutex_poisoned eprintln，恢复语义不变）**
