@@ -24,8 +24,11 @@ candidate 池完整性）但**批内 3 处独立改动**，互无 ripple：
 3. **evolution/derive.rs:104**（high）：Contradiction 分支 summary 是固定串
    → 一轮 N 条矛盾产出 N 个**相同** proposal_id → 下游 dedup 坍缩成 1 条，
    静默丢 N-1 个 keep/drop 信号。修：summary 并入 keep/drop refs
-   （`contradiction ruled between two memories (keep=..., drop=...)`），
-   确定性保持（同输入同 id）。ids 是记忆条目 id（哈希串），不属
+   （`contradiction ruled between two memories (keep=..., drop=...)`）
+   + id 追加 `short_hash(keep|drop_id)` 原始判别位——**normalize_for_hash
+   把数字位归一成 'N'**，UUID hex 记忆 id 仅数字不同时 summary 归一化后
+   仍坍缩（测试实测暴露），判别位须绕开归一化。确定性保持（同输入同 id）。
+   ids 是记忆条目 id（哈希串），不属
    「summary 不泄原始路径/PII」契约的禁止项（该契约针对 content，
    既有测试只用 merge 路径，不受影响）。
 
@@ -80,7 +83,9 @@ candidate 池完整性）但**批内 3 处独立改动**，互无 ripple：
    调用点收敛（已列）。
 2. budget = **A 类**：ttl +16/-2、evolution/derive +12/-1、
    candidate/derive +2/-2、commands +1/-1：初估 +31/-6 → 实测 +52/-6
-   （doc 交付物行数超初估），校正 → **max +55/-12**。
+   （doc 交付物行数超初估），校正 +55/-12 → 测试暴露第二层缺陷
+   （normalize_for_hash 数字归一化使 UUID 判别位坍缩，需追加原始 hash
+   判别位 + 回归测试）实测 +59/-9，再校正 → **max +65/-12**。
 3. 三条 findings 的 fix 字段均已写明 ripple（finding 1 的 ripple =
    两个内联调用点文件）。
 
@@ -96,12 +101,12 @@ candidate 池完整性）但**批内 3 处独立改动**，互无 ripple：
     "src-tauri/src/evolution/candidate/derive.rs",
     "src-tauri/src/evolution/panel/commands.rs"
   ],
-  "max_lines_added": 55,
+  "max_lines_added": 65,
   "max_lines_removed": 12,
   "findings": [
     {"id": "C5-EV-3b-D-1", "file": "src-tauri/src/evolution/candidate/ttl.rs", "line": 41, "fix": "compute_expires_at 改 saturating_add（溢出=永不过期保审计轨迹，非 wrap 成负数静默立刻淘汰）+ 回归测试；ripple: candidate/derive.rs:49 与 panel/commands.rs:357 两处内联 now_ms+TTL_MS 收敛到该 fn 单点实现"},
     {"id": "C5-EV-3b-D-2", "file": "src-tauri/src/evolution/candidate/ttl.rs", "line": 34, "fix": "doc-only：模块头写明 evict 调用约定（先 mark_expired 后 evict_expired；evict 前持久化快照；零生产调用方）+ now_ms 时间源契约（wall-clock Unix ms 同源；NTP 回拨风险知悉接受）；status 门已被 EV-3b-C2 修掉不重复"},
-    {"id": "C5-EV-3b-D-3", "file": "src-tauri/src/evolution/derive.rs", "line": 104, "fix": "Contradiction 分支 summary 并入 keep/drop refs 使每条矛盾产相异 proposal_id（修 dedup 坍缩丢 N-1 信号）；确定性保持；无 ripple（固定串无下游依赖）"}
+    {"id": "C5-EV-3b-D-3", "file": "src-tauri/src/evolution/derive.rs", "line": 104, "fix": "Contradiction 分支 summary 并入 keep/drop refs + id 追加 short_hash(keep|drop_id) 原始判别位（normalize_for_hash 数字归一化使 UUID 仅数字不同的对仍坍缩，判别位绕开归一化）使每条矛盾产相异 proposal_id；确定性保持；无 ripple（固定串无下游依赖）"}
   ],
   "assertions_min": {
     "src-tauri/src/evolution/candidate/ttl.rs": 21,
