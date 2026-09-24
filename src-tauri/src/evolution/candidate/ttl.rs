@@ -3,9 +3,10 @@
 //! spec R4：候选池 evolution-proposals.jsonl TTL = 14 天
 //! 超期后 status 转为 Expired（软淘汰，保留历史）。
 //!
-//! 也可以选择硬淘汰（从 jsonl 删除）；当前实现支持两种：
+//! 软淘汰为默认路径；硬淘汰（evict_expired）只删 Pooled/Expired 条目——
+//! Promoted/Rejected 超期也**永不硬删**（保审计轨迹，与 mark_expired 可组合）。
 //! - mark_expired：把 status 改为 Expired（保留行）
-//! - evict_expired：从 vec 中移除（丢失历史）
+//! - evict_expired：从 vec 中移除过期的 Pooled/Expired 行（非活跃状态的历史）
 
 use super::entry::{ProposalEntry, ProposalStatus};
 
@@ -31,10 +32,14 @@ pub fn mark_expired(entries: &mut Vec<ProposalEntry>, now_ms: i64) -> usize {
     count
 }
 
-/// 硬淘汰：从 vec 中移除过期条目（返回淘汰数）
+/// 硬淘汰：移除「过期且 status ∈ {Pooled, Expired}」的条目（返回淘汰数）。
+/// Promoted / Rejected 超期不删——它们承载审计/回滚轨迹，硬删会丢历史。
 pub fn evict_expired(entries: &mut Vec<ProposalEntry>, now_ms: i64) -> usize {
     let before = entries.len();
-    entries.retain(|e| !is_expired(e, now_ms));
+    entries.retain(|e| {
+        !(is_expired(e, now_ms)
+            && matches!(e.status, ProposalStatus::Pooled | ProposalStatus::Expired))
+    });
     before - entries.len()
 }
 
@@ -132,6 +137,23 @@ mod tests {
         assert_eq!(n, 2);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].proposal_id, "b");
+    }
+
+    #[test]
+    fn evict_expired_never_drops_promoted_or_rejected() {
+        // 过期 Promoted/Rejected 保审计轨迹，永不硬删
+        let mut promoted = mk("p", 100);
+        promoted.status = ProposalStatus::Promoted;
+        let mut rejected = mk("r", 100);
+        rejected.status = ProposalStatus::Rejected;
+        let mut expired = mk("e", 100);
+        expired.status = ProposalStatus::Expired;
+        let mut entries = vec![promoted, rejected, expired, mk("pool", 100)];
+        let n = evict_expired(&mut entries, 1000);
+        assert_eq!(n, 2); // 只删 expired + pooled
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().any(|e| e.proposal_id == "p"));
+        assert!(entries.iter().any(|e| e.proposal_id == "r"));
     }
 
     #[test]

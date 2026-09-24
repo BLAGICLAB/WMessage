@@ -3,7 +3,8 @@
 //! 派生规则（按 DERIVABILITY.md）：
 //! - `change_id`           = `"chg-" + proposal_id`
 //! - `schema_version`      = 1（默认；R2+ bump）
-//! - `hard_constraint_compliance` = category+impact 判定
+//! - `hard_constraint_compliance` = category+impact 判定（仅约束 5/6，
+//!   见 passes_auto_apply_gate 文档；ChangeRecord 字段名=jsonl schema 不动）
 //! - `layer`               = 从 category 派生（4/6 层覆盖；Parameter/Code 不在当前 category）
 //! - `mem_key`             = `"evo:" + proposal_id`
 //!
@@ -26,13 +27,15 @@ pub fn derive_mem_key(proposal_id: &str) -> String {
 /// schema_version 默认值
 pub const DEFAULT_SCHEMA_VERSION: u32 = 1;
 
-/// 硬约束合规检查（构造时算，DERIVABILITY.md 字段 8）
+/// 自动应用门槛判定（构造时算，DERIVABILITY.md 字段 8）。
 ///
-/// 满足所有 9 条硬约束才合规：
-/// - 硬约束 5/6：仅 MemoryHint + High/Medium 可自动应用
-/// - 其他约束由 apply 入口校验（这里不重复）
-pub fn hard_constraint_compliance(p: &EvolutionProposal) -> bool {
-    matches!(p.category, ProposalCategory::MemoryHint) && !matches!(p.impact, ImpactLevel::Low)
+/// **只检硬约束 5/6**（仅 MemoryHint + High/Medium 可自动应用）——其余约束
+/// 由 apply 入口校验，本函数**不代表 9 条全合规**——这正是改名的原因
+///（旧名让调用方按名字推断成全合规，可能跳过下游复核）。
+/// impact 用显式白名单（High | Medium）：未来新增变体必须显式 opt-in。
+pub fn passes_auto_apply_gate(p: &EvolutionProposal) -> bool {
+    matches!(p.category, ProposalCategory::MemoryHint)
+        && matches!(p.impact, ImpactLevel::High | ImpactLevel::Medium)
 }
 
 /// layer 从 category 派生（DERIVABILITY.md 字段 1，部分覆盖）
@@ -54,7 +57,7 @@ pub fn derive_layer(category: ProposalCategory) -> EvolutionLayer {
 /// - compliance=true  → Pending（待沙箱或批准）
 /// - compliance=false → Rejected（SystemRejected）
 pub fn from_proposal(p: &EvolutionProposal, now_ms: i64) -> ChangeRecord {
-    let compliance = hard_constraint_compliance(p);
+    let compliance = passes_auto_apply_gate(p);
     let (status, approval_source) = if compliance {
         (ChangeStatus::Pending, ApprovalSource::Pending)
     } else {
@@ -122,35 +125,35 @@ mod tests {
         assert_eq!(derive_mem_key("abc123"), "evo:abc123");
     }
 
-    // ─── compliance 检查 ───
+    // ─── 自动应用门槛检查 ───
 
     #[test]
-    fn compliance_true_for_memory_high() {
+    fn gate_true_for_memory_high() {
         let p = mk_proposal("p1", ProposalCategory::MemoryHint, ImpactLevel::High);
-        assert!(hard_constraint_compliance(&p));
+        assert!(passes_auto_apply_gate(&p));
     }
 
     #[test]
-    fn compliance_true_for_memory_medium() {
+    fn gate_true_for_memory_medium() {
         let p = mk_proposal("p1", ProposalCategory::MemoryHint, ImpactLevel::Medium);
-        assert!(hard_constraint_compliance(&p));
+        assert!(passes_auto_apply_gate(&p));
     }
 
     #[test]
-    fn compliance_false_for_memory_low() {
+    fn gate_false_for_memory_low() {
         let p = mk_proposal("p1", ProposalCategory::MemoryHint, ImpactLevel::Low);
-        assert!(!hard_constraint_compliance(&p));
+        assert!(!passes_auto_apply_gate(&p));
     }
 
     #[test]
-    fn compliance_false_for_non_memory_hint() {
+    fn gate_false_for_non_memory_hint() {
         for cat in [
             ProposalCategory::PromptHint,
             ProposalCategory::ToolSchemaHint,
             ProposalCategory::SkillHint,
         ] {
             let p = mk_proposal("p1", cat, ImpactLevel::High);
-            assert!(!hard_constraint_compliance(&p), "{cat:?} 不应合规");
+            assert!(!passes_auto_apply_gate(&p), "{cat:?} 不应合规");
         }
     }
 

@@ -12,7 +12,7 @@ pub mod record;
 pub mod status;
 
 pub use derive::{
-    derive_change_id, derive_layer, derive_mem_key, from_proposal, hard_constraint_compliance,
+    derive_change_id, derive_layer, derive_mem_key, from_proposal, passes_auto_apply_gate,
     DEFAULT_SCHEMA_VERSION,
 };
 pub use record::{
