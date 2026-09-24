@@ -282,16 +282,16 @@ export default function WidgetApp() {
       const x = pos.x / scale;
       const y = pos.y / scale;
       const w = size.width / scale;
-      const { anchor, edge: e2 } = anchorFromRect(x, y, w, sw);
+      const anchor = anchorFromRect(x, y, w, sw);
       let nx = x;
       let ny = y;
-      if (e2 === "right") nx = sw - w;
-      else if (e2 === "left") nx = 0;
-      else if (e2 === "top") ny = 0;
+      if (anchor.edge === "right") nx = sw - w;
+      else if (anchor.edge === "left") nx = 0;
+      else if (anchor.edge === "top") ny = 0;
       if (nx !== x || ny !== y) await win.setPosition(new LogicalPosition(nx, ny));
-      anchorRef.current = { ...anchor, edge: e2 };
-      setEdge(e2);
-      saveAnchor({ ...anchor, edge: e2 });
+      anchorRef.current = anchor;
+      setEdge(anchor.edge);
+      saveAnchor(anchor);
     };
     const unlisten = win.onMoved(() => {
       window.clearTimeout(timer);
@@ -322,17 +322,17 @@ export default function WidgetApp() {
     const size = await win.outerSize();
     const scale = await win.scaleFactor();
     const { w: sw } = await screenSize();
-    const { anchor, edge: e2 } = anchorFromRect(
+    const anchor = anchorFromRect(
       pos.x / scale, pos.y / scale, size.width / scale, sw
     );
-    anchorRef.current = { ...anchor, edge: e2 };
-    setEdge(e2);
-    saveAnchor({ ...anchor, edge: e2 });
+    anchorRef.current = anchor;
+    setEdge(anchor.edge);
+    saveAnchor(anchor);
     await win.setPosition(new LogicalPosition(anchor.x, anchor.y));
     await win.setSize(
       new LogicalSize(
-        e2 === "top" ? STRIP_H : STRIP_W,
-        e2 === "top" ? STRIP_W : STRIP_H
+        anchor.edge === "top" ? STRIP_H : STRIP_W,
+        anchor.edge === "top" ? STRIP_W : STRIP_H
       )
     );
     setExpanded(false);

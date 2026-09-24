@@ -23,7 +23,9 @@ export interface WidgetSize {
   h: number;
 }
 
-export type Edge = "right" | "left" | "top" | "float";
+const EDGES = ["right", "left", "top", "float"] as const;
+
+export type Edge = (typeof EDGES)[number];
 
 export interface Anchor {
   x: number;
@@ -79,7 +81,20 @@ export function setTaskH(h: number) {
 export function loadAnchor(): Anchor | null {
   try {
     const raw = localStorage.getItem(POS_KEY);
-    if (raw) return JSON.parse(raw) as Anchor;
+    if (!raw) return null;
+    // 形状校验（对齐 loadSize 策略：坏值返 null，不清除不落盘）：
+    // object 非 null + x/y 为 finite number + edge 在 allow-list
+    const p: unknown = JSON.parse(raw);
+    if (p !== null && typeof p === "object" && !Array.isArray(p)) {
+      const a = p as Record<string, unknown>;
+      if (
+        typeof a.x === "number" && Number.isFinite(a.x) &&
+        typeof a.y === "number" && Number.isFinite(a.y) &&
+        typeof a.edge === "string" && (EDGES as readonly string[]).includes(a.edge)
+      ) {
+        return { x: a.x, y: a.y, edge: a.edge as Edge };
+      }
+    }
   } catch {
     /* ignore */
   }
@@ -110,15 +125,16 @@ export async function screenSize(): Promise<{ w: number; h: number }> {
 // ────────────────────────── 贴边检测 ──────────────────────────
 
 // 按窗口当前矩形推算：贴边检测（右/左/顶，24px 容差）+ 触发条锚点
+// 返回扁平 Anchor（与导出接口同形，调用方直接用，不再有 anchor 包装层）
 export function anchorFromRect(
   x: number,
   y: number,
   w: number,
   sw: number,
-): { anchor: { x: number; y: number }; edge: Edge } {
+): Anchor {
   const MARGIN = 24;
-  if (x + w >= sw - MARGIN) return { anchor: { x: sw - STRIP_W, y }, edge: "right" };
-  if (x <= MARGIN) return { anchor: { x: 0, y }, edge: "left" };
-  if (y <= MARGIN) return { anchor: { x, y: 0 }, edge: "top" };
-  return { anchor: { x, y }, edge: "float" };
+  if (x + w >= sw - MARGIN) return { x: sw - STRIP_W, y, edge: "right" };
+  if (x <= MARGIN) return { x: 0, y, edge: "left" };
+  if (y <= MARGIN) return { x, y: 0, edge: "top" };
+  return { x, y, edge: "float" };
 }
