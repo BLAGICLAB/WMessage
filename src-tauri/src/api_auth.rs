@@ -38,8 +38,48 @@ pub fn load_or_create_token(app: &AppHandle) -> Result<String, String> {
         }
     }
     let token = uuid::Uuid::new_v4().simple().to_string();
-    write_token_file(&path, &token)?;
-    Ok(token)
+    // 原子首建（OCR C5-AP-01）：并发首跑（双开应用/后台任务）两进程都可能
+    // 观测不到 token 各生成 UUID——check-then-act 让后写覆盖先写，输家返回
+    // 与磁盘不符的 token。create_new 原子占位：唯一胜者写自己的 token；
+    // 输家重读胜者落盘的那份（胜者 create 与 write_all 之间有空窗，短暂重试）。
+    if create_token_file_atomic(&path, &token)? {
+        return Ok(token);
+    }
+    for _ in 0..50 {
+        // 同步阻塞重试（上限 500ms 与胜者 create→write_all 空窗同量级）：
+        // 本函数仅供 sync Tauri command 调用，勿在 async/UI 线程直接用。
+        if let Ok(s) = std::fs::read_to_string(&path) {
+            let s = s.trim().to_string();
+            if !s.is_empty() {
+                return Ok(s);
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    Err("token 文件被并发创建但内容一直为空（读超时，下次调用自愈）".into())
+}
+
+/// 原子首建 token 文件（create_new 占位 + unix 0600）：Ok(true)=本次创建成功，
+/// Ok(false)=已存在（并发首跑胜者占位）。仅 load_or_create_token 首建路径用；
+/// 覆写/轮换走 write_token_file（tmp+rename）。
+fn create_token_file_atomic(path: &std::path::Path, token: &str) -> Result<bool, String> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    use std::io::Write;
+    match opts.open(path) {
+        Ok(mut f) => {
+            f.write_all(token.as_bytes())
+                .map_err(|e| format!("写入 token 文件失败：{e}"))?;
+            Ok(true)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(e) => Err(format!("创建 token 文件 {} 失败：{e}", path.display())),
+    }
 }
 
 /// unix：把 token 文件权限收紧到 0600；其他平台无操作（返回 Ok）。
@@ -171,6 +211,22 @@ mod tests {
     fn ct_eq_different_length_is_false() {
         assert!(!ct_eq("short", "much-longer-token"));
         assert!(!ct_eq("", "x"));
+    }
+
+    /// OCR C5-AP-01：原子首建——首个调用者占位成功，后续调用者不覆盖。
+    #[cfg(unix)]
+    #[test]
+    fn create_token_file_atomic_first_wins() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("api-token.txt");
+        assert!(create_token_file_atomic(&path, "tok-first").unwrap());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "tok-first");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "首建 token 文件必须 0600，实际 {mode:o}");
+        // 并发首跑输家：不覆盖胜者内容
+        assert!(!create_token_file_atomic(&path, "tok-second").unwrap());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "tok-first");
     }
 
     #[cfg(unix)]

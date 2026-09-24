@@ -206,15 +206,19 @@ pub fn start_api(
         }
         match server.recv_timeout(Duration::from_millis(400)) {
             Ok(Some(req)) => {
-                // A6: worker 数上限 —— 超限直接 503，不再无上限 spawn 线程
-                if active.load(Ordering::SeqCst) >= MAX_WORKERS {
+                // A6: worker 数上限 —— 原子占位（OCR C5-AP-01）：fetch_add 返回值
+                // 即占位序号，超限立即归还并 503；不再 load+fetch_add 两步竞态
+                // （burst 下两线程可同时观察到 active < MAX 都放行）。
+                // （SeqCst 与文件内其余原子一致——纯占位计数用 Relaxed 也够，此处取一致性）
+                let n = active.fetch_add(1, Ordering::SeqCst) + 1;
+                if n > MAX_WORKERS {
+                    active.fetch_sub(1, Ordering::SeqCst);
                     let _ = req.respond(
                         Response::from_data(br#"{"error":"server busy"}"#.to_vec())
                             .with_status_code(StatusCode(503)),
                     );
                     continue;
                 }
-                active.fetch_add(1, Ordering::SeqCst);
                 let active_w = active.clone();
                 // A1: 每个请求独立 worker 线程 + catch_unwind（panic 不带垮 accept 循环）。
                 // spawn 后 accept 线程立即回到 recv，不等 worker——
