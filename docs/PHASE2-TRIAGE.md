@@ -88,6 +88,8 @@
 
 - [2026-09-24 20:41 CST] EV-3a-03 收口（commit 46fffe5）：**C5-EV-3a-03 单条已清，evolution 3a 三簇全清**。metrics.rs:86 污染存活期 O(changes×applied) 嵌套扫描 → 循环前建 `HashMap<&str, &AppliedRecord>`（mem_key 索引）O(n+m)；`entry().or_insert()` 保「首个匹配」语义（与 iter().find 一致，重复 mem_key 不漂移）。零语义变化（纯函数内部重排）。新增测试 1（重复 mem_key 取首条回归）。diff +25/-1 在 budget（+40/-10）内。OCR r1 0 comments / 0 failure（13s）；type 1 n=25 不变。spec 立项 cf373a9。同文件 :60/:66/:68/:86 的 medium/low（窗口边界 / max(1.0) / 时间口径 / 未来日期静默跳过）归 3b 簇，本批未动。**evolution 域剩 3b 11 簇 35 条。**
 
+- [2026-09-24 21:05 CST] EV-3b-A 收口（commit 31fee88）：**簇 5 条中 3 条已清，2 条转 B 类**。① apply.rs:151 embedding 失败塌 None 静默 → collect 后统计，>0 走 `audit_event! evolution.embed_failed`（Warn，落 bot.log）；② activation.rs:136 双 loader 「存在但坏」（IO≠NotFound / parse 失败 / schema 不匹配 / state 非字符串或未知值）eprintln `[evolution_activation]`，缺文件/缺块/缺 key 保持合法静默；③ mod.rs:55（triage :48 漂移）app_handle None 落盘块静默跳过 → else eprintln（audit_event! 需 AppHandle，None 分支只能 stderr，注释已注明）。零行为变化（纯留痕）。**record.rs:211 + entry.rs:110（read_all 单行损坏全读失败）修法 = fail-closed vs fail-open 语义方向 → B 类攒批第 17 项**。budget 两次校正（+45/-15→+75/-20→+85/-25：双 loader 分支文案 + OCR r1 采纳增量）。OCR r1 6 comments（1 high 采纳=自身新策略一致性缺口；2 medium 采纳；1 medium + 2 low 不采纳/stale 有论证）/ 0 failure；type 1 n=25 不变。spec 立项 e2bd744 / 校正 ×2。**evolution 3b 剩 10 簇。**
+
 ## 1. 跨域同模式家族
 按"错误去哪了" + "是否破坏数据"两轴判，**4 家族**（poisoned-silent-recovery 已溶解 — 见执行日志；error-visible-non-blocking 已重新引入 for C5-AP-06 only — 见 §3.5 异常 2 更新）：
 
@@ -136,7 +138,7 @@
 - C5-EV-3a-03：observe/metrics.rs:86 O(n*m)，1 条 —— **已清**（46fffe5，§0 2026-09-24 20:41）
 
 3b（其余，11 簇 / 35 findings）：
-- C5-EV-3b-A：silent-error-swallow 跨文件（apply.rs:151 + activation.rs:136 + mod.rs:48 + record.rs:211 + entry.rs:110），5 条
+- C5-EV-3b-A：silent-error-swallow 跨文件（apply.rs:151 + activation.rs:136 + mod.rs:48 + record.rs:211 + entry.rs:110），5 条 —— **3 条已清**（31fee88，§0 2026-09-24 21:05）；record.rs:211 + entry.rs:110（read_all 单行损坏 fail-closed vs fail-open 方向）→ **B 类攒批第 17 项**
 - C5-EV-3b-B：jsonl 写 race / 非原子（record.rs:187 + entry.rs:81 + sandbox/io.rs:46 + emit.rs:105 + activation.rs:257），5 条
 - C5-EV-3b-C1：状态转移/条件判定错（mapping.rs:37 + change/status.rs:36 + kill_switch.rs:39），3 条
 - C5-EV-3b-C2：双侧逻辑不一致（ttl.rs:23 + change/derive.rs:34），2 条
