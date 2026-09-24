@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { emit, listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -64,26 +64,60 @@ export function WorkspacePage() {
     kind: WorkspaceLink["kind"];
   }>({ displayName: "", targetUri: "", kind: "url" });
   const [draftFor, setDraftFor] = useState<string | null>(null);
+  /** 写并发守卫：写在飞时 reload 不得落地（防冲乐观态）；错过的刷新写毕补一次 */
+  const writeInFlight = useRef(0);
+  const reloadQueued = useRef(false);
+
+  const reload = () => {
+    // 读失败保持旧数据（判别式契约：失败 ≠ 空库，不能用 [] 冲掉当前列表）；
+    // resolve 时若已有新写在飞，同样改走排队（防陈旧 load 冲掉后续写的乐观态）
+    loadWorkspaceFromDb().then((res) => {
+      if (writeInFlight.current > 0) {
+        reloadQueued.current = true;
+        return;
+      }
+      if (res.ok) setItems(res.items);
+    });
+  };
+  const guardedReload = () => {
+    if (writeInFlight.current > 0) {
+      reloadQueued.current = true;
+      return;
+    }
+    reload();
+  };
+  const beginWrite = () => {
+    writeInFlight.current += 1;
+  };
+  const endWrite = () => {
+    if (writeInFlight.current <= 0) return; // 防不对称调用把计数扣成负数
+    writeInFlight.current -= 1;
+    if (writeInFlight.current === 0 && reloadQueued.current) {
+      reloadQueued.current = false;
+      reload();
+    }
+  };
 
   useEffect(() => {
-    const reload = () => {
-      // 读失败保持旧数据（判别式契约：失败 ≠ 空库，不能用 [] 冲掉当前列表）
-      loadWorkspaceFromDb().then((res) => {
-        if (res.ok) setItems(res.items);
-      });
-    };
     reload();
     // 挂件改工作区（折叠/排序）后同步刷新（此前只加载一次，挂件改动不回显）
-    const unlisten = listen("workspace-changed", reload);
+    const unlisten = listen("workspace-changed", guardedReload);
     return () => {
       unlisten.then((f) => f());
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const persist = async (next: WorkspaceItem[]) => {
     setItems(next);
-    await upsertWorkspaceItems(next);
-    emit("workspace-changed").catch(() => {});
+    beginWrite();
+    try {
+      await upsertWorkspaceItems(next);
+      // emit 放在 endWrite 之前：listener 看到写在飞会排队，由 endWrite 统一补发 reload
+      emit("workspace-changed").catch(() => {});
+    } finally {
+      endWrite();
+    }
   };
 
   const sensors = useSensors(
@@ -99,20 +133,30 @@ export function WorkspacePage() {
     const to = ids.indexOf(String(over.id));
     if (from < 0 || to < 0) return;
     const byId = new Map(items.map((it) => [it.id, it]));
-    const next = assignInsertOrder(
+    const next0 = assignInsertOrder(
       arrayMove(ids, from, to).map((id) => byId.get(id)!),
       String(active.id)
     );
-    setItems(next);
-    const prevMap = new Map(items.map((it) => [it.id, it]));
-    const changed = next.filter(
-      (it) => JSON.stringify(it) !== JSON.stringify(prevMap.get(it.id))
+    // 不可变更新：先按内容 diff 出变化 id，再产副本写 updatedAt——
+    // 不就地突变共享 state 对象（React 引用相等假设）
+    const changedIds = new Set(
+      next0
+        .filter((it) => JSON.stringify(it) !== JSON.stringify(byId.get(it.id)))
+        .map((it) => it.id)
     );
     const now = Date.now();
-    changed.forEach((it) => (it.updatedAt = now));
-    if (changed.length) {
-      upsertWorkspaceItems(changed);
-      emit("workspace-changed").catch(() => {});
+    const next = next0.map((it) =>
+      changedIds.has(it.id) ? { ...it, updatedAt: now } : it
+    );
+    setItems(next);
+    if (changedIds.size) {
+      const changed = next.filter((it) => changedIds.has(it.id));
+      beginWrite();
+      // 仅写成功才广播（失败静默 = 既有 silent persistence 约定）；catch 防 unhandled
+      void upsertWorkspaceItems(changed)
+        .then(() => emit("workspace-changed").catch(() => {}))
+        .catch(() => {})
+        .finally(endWrite);
     }
   };
 

@@ -124,6 +124,48 @@ describe("WorkspacePage", () => {
     });
   });
 
+  it("写在飞时 workspace-changed 不落地 reload（不冲乐观态）；写毕补一次 reload", async () => {
+    const handlers: Record<string, () => void> = {};
+    mocks.listenMock.mockImplementation(
+      async (event: string, cb: () => void) => {
+        handlers[event] = cb;
+        return () => {};
+      }
+    );
+    let resolveUpsert: (() => void) | null = null;
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "workspace_load") return [];
+      if (cmd === "workspace_upsert")
+        return new Promise((res) => {
+          resolveUpsert = () => res(null);
+        });
+      return null;
+    });
+    const user = userEvent.setup();
+    render(<WorkspacePage />);
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith("workspace_load");
+    });
+    const loadCalls = () =>
+      mocks.invokeMock.mock.calls.filter((c) => c[0] === "workspace_load")
+        .length;
+    expect(loadCalls()).toBe(1);
+    // 触发写（新建工作区 → persist 的 upsert 在飞，promise 受控不返回）
+    await user.click(screen.getByText("+ 新建工作区"));
+    await waitFor(() => {
+      expect(resolveUpsert).not.toBeNull();
+    });
+    // 写在飞中收到 workspace-changed → 不得 reload（load 计数不变）
+    handlers["workspace-changed"]?.();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(loadCalls()).toBe(1);
+    // 写完成 → 排队的一次 reload 补发
+    resolveUpsert!();
+    await waitFor(() => {
+      expect(loadCalls()).toBe(2);
+    });
+  });
+
   it("删除工作区：点 🗑️ → confirm 接受 → workspace_delete 调用 + items 从 UI 移除", async () => {
     const user = userEvent.setup();
     mocks.invokeMock.mockImplementation(async (cmd: string) => {

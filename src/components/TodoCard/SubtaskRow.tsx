@@ -4,7 +4,7 @@
 // 每行独立 editing 状态，所以拆成组件（useInlineEdit 一份状态管一行）。
 // 空提交保留原文（与标题编辑一致，避免误触清空子任务）。
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useInlineEdit } from "../useInlineEdit";
 
 /** 阻止拖拽手柄触发卡片点击编辑（SubtaskRow 内联使用） */
@@ -35,6 +35,11 @@ export function SubtaskRow({
     onCancel: () => setEditing(false),
   });
 
+  // readOnly flip 到 true 时退出编辑态（只读契约：不允许在飞编辑继续提交）
+  useEffect(() => {
+    if (readOnly) setEditing(false);
+  }, [readOnly]);
+
   return (
     <div className="flex items-start gap-2 group py-1.5">
       <input
@@ -49,6 +54,7 @@ export function SubtaskRow({
         <input
           autoFocus
           value={edit.draft}
+          readOnly={readOnly}
           onChange={(e) => edit.setDraft(e.target.value)}
           onBlur={edit.onBlur}
           onKeyDown={edit.onKeyDown}

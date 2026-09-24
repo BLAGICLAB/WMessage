@@ -75,22 +75,24 @@ describe("MarkdownText 链接识别", () => {
 });
 
 describe("MarkdownText 行内代码/代码块识别", () => {
-  it("行内代码是 URL：渲染为可点 code，点击调 openUrl", async () => {
+  it("行内代码是 URL：渲染为 <a> 链接（键盘可聚焦），点击调 openUrl", async () => {
     const user = userEvent.setup();
     render(<MarkdownText text={"打开 `https://example.com/x` 看看"} />);
-    const code = screen.getByText("https://example.com/x");
-    expect(code.tagName).toBe("CODE");
-    expect(code).toHaveAttribute("title", "在浏览器打开");
-    await user.click(code);
+    const link = screen.getByRole("link", { name: "https://example.com/x" });
+    expect(link.tagName).toBe("A");
+    expect(link).toHaveAttribute("href", "https://example.com/x");
+    expect(link).toHaveAttribute("title", "在浏览器打开");
+    await user.click(link);
     expect(mocks.openUrlMock).toHaveBeenCalledWith("https://example.com/x");
   });
 
-  it("行内代码是 Windows 路径：可点，点击走 open_file_path", async () => {
+  it("行内代码是 Windows 路径：渲染为 <a>，点击走 open_file_path", async () => {
     const user = userEvent.setup();
     render(<MarkdownText text={"文件在 `C:\\Users\\x\\a.txt`"} />);
-    const code = screen.getByText(String.raw`C:\Users\x\a.txt`);
-    expect(code).toHaveAttribute("title", "打开文件/文件夹");
-    await user.click(code);
+    const link = screen.getByRole("link", { name: String.raw`C:\Users\x\a.txt` });
+    expect(link.tagName).toBe("A");
+    expect(link).toHaveAttribute("title", "打开文件/文件夹");
+    await user.click(link);
     expect(mocks.invokeMock).toHaveBeenCalledWith("open_file_path", {
       path: String.raw`C:\Users\x\a.txt`,
     });
