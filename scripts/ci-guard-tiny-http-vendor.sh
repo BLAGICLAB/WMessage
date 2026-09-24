@@ -24,8 +24,8 @@ fail() {
     exit 1
 }
 
-# 1. Cargo.toml patch 段
-if ! grep -q 'tiny_http = { path = "vendor/tiny_http" }' "$CARGO_TOML"; then
+# 1. Cargo.toml patch 段（行首锚定：注释掉的 # tiny_http = ... 行首是 #，不匹配）
+if ! grep -q '^[[:space:]]*tiny_http = { path = "vendor/tiny_http" }' "$CARGO_TOML"; then
     fail "Cargo.toml 已无 [patch.crates-io] tiny_http = vendor 指向，请查 PATCHES.md §3 重新 vendor"
 fi
 
@@ -43,8 +43,9 @@ if [ -z "$SOURCE" ] || [ "$SOURCE" = "null" ]; then
 fi
 
 # source 应形如 "directory+file:///.../src-tauri/vendor/tiny_http"
+# 双端锚定：scheme 前缀 + 路径后缀，防同名后缀目录（tiny_http_evil）或非 directory scheme 误判
 case "$SOURCE" in
-    *vendor/tiny_http*) : ;;  # OK
+    directory+file://*/src-tauri/vendor/tiny_http) : ;;  # OK
     *) fail "tiny_http source 不是 vendor 目录：$SOURCE" ;;
 esac
 
