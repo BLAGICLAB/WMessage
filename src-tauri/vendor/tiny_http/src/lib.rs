@@ -134,11 +134,29 @@ pub use connection::{ConfigListenAddr, ListenAddr, Listener};
 ///   本 patch 仍只管「单次 read 静默」。
 /// - 超时触发走 tiny_http 原生 `ErrorKind::TimedOut` 路径（client.rs）：回 408 后
 ///   关闭连接，无 panic，accept 循环照常。
-/// - 只影响读，不影响写：SSE（Request::upgrade 后只写不读）不受任何影响；
-///   且 upgrade 后 per-connection 读线程阻塞在 SequentialReader 的 channel 上
-///   （等 data_reader drop），不会对 socket 做带超时的 read。
+/// - 只影响读，不影响写；写侧超时由 `HTTP_WRITE_TIMEOUT_MS` 接管（2026-09-24
+///   AP-04 起，见下）。upgrade 后 per-connection 读线程阻塞在 SequentialReader
+///   的 channel 上（等 data_reader drop），不会对 socket 做带超时的 read。
 /// - 测试可临时调小该值（进程内全局），生产勿动。
 pub static HTTP_READ_TIMEOUT_MS: AtomicU64 = AtomicU64::new(30_000);
+
+/// [wmessage patch] 2026-09-24 AP-04：per-connection 写超时（毫秒，默认 30s）。
+///
+/// accept 后对每个 TcpStream 调 `set_write_timeout`（与读超时同处，见
+/// connection.rs `Listener::accept`），堵「写死连接挂住 writer 线程」：
+/// SSE writer（Request::upgrade 后只写不读）对慢/半开对端的 `write_all`
+/// 可永久阻塞在 syscall 里，stop 标志只在两次写之间轮询，api_stop 停不掉
+/// 写死的 writer——join 超时后 handle 被 detach，OS 线程泄漏。
+///
+/// 语义与取舍：
+/// - 超时是「单次 write 系统调用」级（非响应总时长）：kernel send buffer
+///   满且对端不读时，写阻塞超过该值即 `ErrorKind::TimedOut` 报错，
+///   SSE writer / 普通响应写路径均据此退出，不再永久挂线程。
+/// - 作用同一 socket 的所有写：普通 API 响应（小 JSON，瞬时完成，无感知）
+///   与 SSE upgrade 流（正是本 patch 目标）。30s 对人级事件节奏极宽。
+/// - 失败忽略（不阻塞 accept），与读超时 patch 同策略。
+/// - 测试可临时调小该值（进程内全局），生产勿动。
+pub static HTTP_WRITE_TIMEOUT_MS: AtomicU64 = AtomicU64::new(30_000);
 pub use request::{ReadWrite, Request};
 pub use response::{Response, ResponseBox};
 pub use test::TestRequest;

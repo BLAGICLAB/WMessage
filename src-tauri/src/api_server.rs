@@ -118,7 +118,26 @@ impl EventHub {
     }
 
     /// 编号、入历史、广播给所有在线客户端
+    ///
+    /// id 契约（sse.rs 断线重放去重的先决条件）：进程内严格单调递增——
+    /// fetch_add 在本函数 clients 锁内执行，id 分配与推送同临界区，
+    /// 每个 client 队列的事件序 = id 序；跨重启单调由 persisted() 的
+    /// id_path 落盘保证；hub 换代时旧 writer 全停（api_stop），无跨代复用。
     pub fn broadcast(&self, event: serde_json::Value) {
+        // 单临界区（OCR C5-AP-04）：fetch_add / 落盘 / history / 推送全在
+        // clients 锁内。若 fetch_add 在锁外，并发广播 A(id5)/B(id6) 可 B 先
+        // 入队——writer 端 `id <= last_sent` 去重会静默丢迟到的 id5；同理
+        // id 落盘在锁外可致先 6 后 5 落盘，重启后 id 回退复用。
+        // 锁序：clients→history 是全仓唯一嵌套点（其余站点均单锁），无死锁对。
+        // 事件频率为人级，锁内文件 I/O 开销可忽略（落盘移出锁需另加同步
+        // 才能保住「落盘序 = id 序」，代价大于收益）。
+        // Value 序列化在锁外先做（payload KB 级），锁内只剩拼接。
+        let data = event.to_string();
+        let mut clients = self.clients.lock().unwrap_or_else(|e| {
+            eprintln!("[mutex_poisoned] api_server::broadcast clients: {e:?}");
+            e.into_inner()
+        });
+        // SeqCst 与 last_id() 的锁外读保持一致（纯锁内序 Relaxed 也够，此处取一致性）
         let id = self.next_id.fetch_add(1, Ordering::SeqCst) + 1;
         // A6: 每次广播落盘当前 id（事件频率为人级，开销可忽略），重启后接续递增
         // 用 atomic_write（tmp+rename）落盘——fs::write 直写崩溃会留半截文件，
@@ -128,7 +147,7 @@ impl EventHub {
                 eprintln!("[event_hub] id persistence failed: {e}");
             }
         }
-        let msg = format!("id: {id}\ndata: {event}\n\n");
+        let msg = format!("id: {id}\ndata: {data}\n\n");
         if let Ok(mut h) = self.history.lock() {
             h.push_back((id, msg.clone()));
             while h.len() > EVENT_HISTORY {
@@ -136,19 +155,17 @@ impl EventHub {
             }
         }
         // A2: sync_channel(256) + try_send — 队列满时 try_send 立即返回 Err，广播不阻塞
-        if let Ok(mut clients) = self.clients.lock() {
-            let mut i = 0;
-            while i < clients.len() {
-                // try_send: bounded 队列满时 Err 表示 client 积压过深，跳过并移除
-                if clients[i]
-                    .0
-                    .try_send((id, msg.as_bytes().to_vec()))
-                    .is_err()
-                {
-                    clients.remove(i);
-                } else {
-                    i += 1;
-                }
+        let mut i = 0;
+        while i < clients.len() {
+            // try_send: bounded 队列满时 Err 表示 client 积压过深，跳过并移除
+            if clients[i]
+                .0
+                .try_send((id, msg.as_bytes().to_vec()))
+                .is_err()
+            {
+                clients.remove(i);
+            } else {
+                i += 1;
             }
         }
     }
@@ -419,5 +436,42 @@ mod tests {
         // since=0（全新客户端）→ 全量 11 条；since=last_id → 空
         assert_eq!(hub.replay(0).len(), 11);
         assert!(hub.replay(11).is_empty());
+    }
+
+    /// 并发广播回归（OCR C5-AP-04）：fetch_add 与推送同临界区后，
+    /// 每个 client 队列的事件序必须 = id 单调序。修复前两者分离，
+    /// 并发下 id6 可先于 id5 入队 → writer 端 `id <= last_sent` 去重
+    /// 静默丢迟到的 id5。确定性断言（非 timing 概率复现）。
+    #[test]
+    fn broadcast_concurrent_delivery_order_matches_id_order() {
+        let hub = EventHub::new();
+        let (tx, rx) = std::sync::mpsc::sync_channel::<(u64, Vec<u8>)>(256);
+        hub.clients
+            .lock()
+            .unwrap()
+            .push((tx, std::sync::Weak::new()));
+        let h1 = hub.clone();
+        let h2 = hub.clone();
+        let t1 = std::thread::spawn(move || {
+            for _ in 0..50 {
+                h1.broadcast(serde_json::json!({"t":1}));
+            }
+        });
+        let t2 = std::thread::spawn(move || {
+            for _ in 0..50 {
+                h2.broadcast(serde_json::json!({"t":2}));
+            }
+        });
+        t1.join().unwrap();
+        t2.join().unwrap();
+        let mut last = 0u64;
+        let mut count = 0u32;
+        while let Ok((id, _)) = rx.try_recv() {
+            assert!(id > last, "乱序投递：id={id} <= last={last}");
+            last = id;
+            count += 1;
+        }
+        assert_eq!(count, 100, "100 条广播应全部入队（容量 256）");
+        assert_eq!(hub.last_id(), 100);
     }
 }

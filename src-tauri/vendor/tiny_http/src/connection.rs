@@ -30,6 +30,12 @@ impl Listener {
                 let _ = conn.set_read_timeout(Some(std::time::Duration::from_millis(
                     crate::HTTP_READ_TIMEOUT_MS.load(std::sync::atomic::Ordering::Relaxed),
                 )));
+                // [wmessage patch] 2026-09-24 AP-04：per-connection 写超时
+                // （写死连接挂线程防护），语义与取值见 lib.rs `HTTP_WRITE_TIMEOUT_MS`
+                // 注释。失败忽略（不阻塞 accept）。
+                let _ = conn.set_write_timeout(Some(std::time::Duration::from_millis(
+                    crate::HTTP_WRITE_TIMEOUT_MS.load(std::sync::atomic::Ordering::Relaxed),
+                )));
                 (Connection::from(conn), Some(addr))
             }),
             #[cfg(unix)]

@@ -159,8 +159,9 @@ pub(crate) fn sse_connect(req: Request, store: &Arc<dyn TaskStore>, query: &str)
         ];
         let resp = Response::new(StatusCode(200), headers, empty(), Some(0), None);
         let mut stream = req.upgrade("text/event-stream", resp);
-        // 写超时通过 recv_timeout 心跳 + 客户端断开检测协同处理
-        // （tiny_http ResponseBox 不提供 set_write_timeout，故通过 recv 端超时兜底）。
+        // 写超时由 vendor patch 在 accept 级设置（HTTP_WRITE_TIMEOUT_MS，默认 30s，
+        // 单次 write syscall 级，见 vendor/tiny_http/PATCHES.md §2.3）：慢/半开对端
+        // 的 write_all 至多阻塞 30s 即报错退出，本线程不再永久泄漏；
         // recv tick 1s、每 15 tick 发一次心跳（对外节奏不变），
         // 使 stop 标志最迟 1s 内被轮询到，writer 能及时退出被 join
 
@@ -180,6 +181,11 @@ pub(crate) fn sse_connect(req: Request, store: &Arc<dyn TaskStore>, query: &str)
         // 重放与在线推送存在竞态——客户端注册进 clients 之后、重放快照之前
         // 广播的事件会同时出现在 history 与在线队列里。记录已发最大 id，
         // 在线循环里 id <= last_sent 的一律跳过（服务器侧去重）。
+        // 去重契约（api_server.rs EventHub::broadcast 注释同述）：id 进程内
+        // 严格单调（fetch_add 在 clients 锁内，投递序 = id 序）、跨重启单调
+        // （persisted id_path）、hub 换代 writer 全停（无跨代复用）。
+        // 合法重复只可能落在重放快照内（id <= replay_max）；
+        // id > replay_max 的丢弃 = 投递序 ≠ id 序，留痕见 live 分支。
         let mut last_sent: u64 = since.unwrap_or(0);
         if since.is_some() {
             for (id, msg) in hub.replay(last_sent) {
@@ -192,6 +198,10 @@ pub(crate) fn sse_connect(req: Request, store: &Arc<dyn TaskStore>, query: &str)
             }
             let _ = stream.flush();
         }
+        // 重放快照上界（含等于）：live 臂 id <= replay_max 一律是快照已重放过的
+        // 副本（合法跳过）；id > replay_max 的丢弃 = 投递序 ≠ id 序，异常留痕
+        let replay_max = last_sent;
+        let mut out_of_order_logged = false;
         let mut idle_ticks = 0u32;
         loop {
             // 服务停止/重启时 api_stop 置位——不停则旧客户端看着 keepalive
@@ -203,6 +213,15 @@ pub(crate) fn sse_connect(req: Request, store: &Arc<dyn TaskStore>, query: &str)
                 Ok((id, data)) => {
                     // 重放已覆盖的事件（id <= last_sent）跳过，不重复推
                     if id <= last_sent {
+                        // 合法重复只会落在重放快照内；id > replay_max 的丢弃
+                        // 说明投递序 ≠ id 序（broadcast 临界区被破坏），留痕
+                        // （每连接只记一次，异常风暴不刷 stderr）
+                        if id > replay_max && !out_of_order_logged {
+                            out_of_order_logged = true;
+                            eprintln!(
+                                "[sse] out-of-order live event dropped: id={id} last_sent={last_sent}"
+                            );
+                        }
                         continue;
                     }
                     last_sent = id;

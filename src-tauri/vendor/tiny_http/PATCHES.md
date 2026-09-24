@@ -1,6 +1,6 @@
 # tiny_http Vendor Patch 治理
 
-> **目的**：记录 `src-tauri/vendor/tiny_http/` 这个 vendored crate 的两处 wmessage 自定义改动，
+> **目的**：记录 `src-tauri/vendor/tiny_http/` 这个 vendored crate 的 wmessage 自定义改动，
 > 锁版本、锁改动点、锁 rebase 流程，避免 patch 漂移。
 
 ## 1. 上游版本
@@ -9,7 +9,7 @@
 - vendor 来源：`src-tauri/vendor/tiny_http/Cargo.toml` 已写 `version = "0.12.0"`，与 crates.io 一致
 - 本地引入 commit（首个 vendor + patch）：`10acf42`（`fix(audit): tiny_http 读超时 patch 堵 slowloris + MarkdownText 代码块误判修复`）
 
-## 2. wmessage 自定义改动（共 2 处，均带 `[wmessage patch]` 标记）
+## 2. wmessage 自定义改动（共 3 处，均带 `[wmessage patch]` 标记）
 
 ### 2.1 `src/lib.rs`
 
@@ -38,7 +38,7 @@ pub static HTTP_READ_TIMEOUT_MS: AtomicU64 = AtomicU64::new(30_000);
 
 ### 2.2 `src/connection.rs`
 
-- 行号范围：`~28-31`（`Listener::accept` 的 Tcp 分支内）
+- 行号范围：`~28-38`（`Listener::accept` 的 Tcp 分支内；AP-04 起含读+写两条 set_timeout）
 - 关键改动：
 
 ```rust
@@ -59,6 +59,21 @@ pub(crate) fn accept(&self) -> std::io::Result<(Connection, Option<SocketAddr>)>
 ```
 
 - Unix socket 分支保持原样（slowloris 威胁模型针对 TCP）
+
+### 2.3 写超时 patch（2026-09-24 AP-04，跨 §2.1/§2.2 同两文件）
+
+- `src/lib.rs`：新增 `pub static HTTP_WRITE_TIMEOUT_MS: AtomicU64 = AtomicU64::new(30_000)`
+  （紧跟 `HTTP_READ_TIMEOUT_MS` 之后，带 `[wmessage patch]` 标记 + 取舍注释）；
+  同时修订读超时注释尾弹——原「只影响读，不影响写：SSE 不受影响」自本 patch 起过时
+  （读超时仍只管读；写侧由新 static 接管）。
+- `src/connection.rs`：`Listener::accept` Tcp 分支既有 `set_read_timeout` 旁新增
+  `set_write_timeout`（同 `[wmessage patch]` 标记、同失败忽略策略）。
+- 目的：SSE writer（upgrade 后只写不读）对慢/半开对端的 `write_all` 可永久阻塞在
+  syscall，stop 标志只在两次写之间轮询 → api_stop 停不掉写死的 writer，join 超时后
+  handle detach、OS 线程泄漏（OCR C5-AP-04 sse.rs:196）。30s 单次 write syscall 级超时
+  后写报错 → writer 退出可 join。普通 API 响应（小 JSON）写瞬时完成，无感知。
+- Unix socket 分支不动（与读超时 patch 一致）。
+- rebase 锚点：`grep "HTTP_WRITE_TIMEOUT_MS"`（lib.rs 定义 + connection.rs 调用）。
 
 ## 3. Rebase 步骤（升级 upstream 时）
 
@@ -104,3 +119,4 @@ cd src-tauri && cargo clippy --all-targets -- -D warnings
 |---|---|---|---|
 | 2026-09-03 | tiny_http 0.12.0 | `10acf42` | 首次引入 vendor + 两处 patch（slowloris 防护） |
 | 2026-09-14 | tiny_http 0.12.0 | `e1dd21e`（HEAD） | 仅文档治理（`PATCHES.md` + CI 守卫），未改 vendor 代码 |
+| 2026-09-24 | tiny_http 0.12.0 | AP-04 批（本 commit） | 新增写超时 patch（§2.3）：lib.rs `HTTP_WRITE_TIMEOUT_MS` + connection.rs `set_write_timeout` |
