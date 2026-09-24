@@ -50,6 +50,8 @@
 
 - [2026-09-24 09:10 CST] BT-09a 收口（commit b1c0b4f）+ BT-09b 收口（commit 3f62d74）：**C5-BT-09 全清**。:283 Finish 早退假完成——finish_signal 标记分流：summary 标题/skill_dsl_done 审计改 results.len() 实执步数、早退追加介入说明行、skill_finish 仅自然跑完路径调（早退路径 run 已外部置 Completed，再调误记 no_transition）；outcome kind 保持 done（外部终态属实）。:248 索引复用（tool_def 存 lookup 结果，杀 TOOLS_TABLE.iter().find 二次线性扫；use 移除 TOOLS_TABLE）。:424 wontfix-with-rationale（OCR-003 同型设计意图）。两批 OCR r1 均 0 comments / tool failure 0。
 
+- [2026-09-24 08:20 CST] BT-05 收口（commit 51efb80）：C5-BT-05 四取三——io.rs:122 base_url_is_safe 改 url::Url::parse + Host 精确判定（localhost.evil.com / 127.0.0.1.evil.com / [::1].evil.com 前缀绕过全杀，fail-closed）；bot_web:21 降级 client 钉 60s 硬超时 + Policy::none() + 留痕（原降级 = 无超时 + 自动重定向，SSRF 防护全架空）；:730 fetch_text 拒 https→http 降级重定向。:881 转 B 类第 12 项（Jina 审计需签名改）。OCR r1 0 comments；PROC-5 type 1 复发 n=15→n=18（r1×3 均 file_read start>end）。bot 域簇剩 BT-04 / BT-08。
+
 ## 1. 跨域同模式家族
 按"错误去哪了" + "是否破坏数据"两轴判，**4 家族**（poisoned-silent-recovery 已溶解 — 见执行日志；error-visible-non-blocking 已重新引入 for C5-AP-06 only — 见 §3.5 异常 2 更新）：
 
@@ -145,7 +147,7 @@
 - C5-BT-02：**OCR false positive（3 条均不准确）** —— OCR 忽略代码中的 eprintln!("[mutex_poisoned] ...") 缓解措施，据此判定 "silent"——前提与实现不符。三站实际都是 logged 路径：C3-1 约定的合法实现。三条 finding 的站实有 eprintln：bot_py.rs:945 + bot_skills/state.rs:109 + bot_skills/runtime.rs:58。**记录 + 不改**，与 C3-r1-H1 / C4-2 / C4-5 同处理。**triage 记录 140 仍含此 3 条 FP，Phase 2 实工单 137 不计**。
 - C5-BT-03：config 写非原子 / RMW 无锁（commands.rs:86 + schema.rs:170/:178 + io.rs:100/:76），5 条 → **4/5 已修（BT-03a，commit f86fc7a）；commands.rs:86（keyring 先于文件写无回滚 = 半成功陷阱方向）转 B 类攒批待拍**
 - C5-BT-04：TOCTOU on canonicalize/whitelist（bot_fs.rs:167 + bot/tools.rs:102 + bot_chat.rs:399 + bot_artifacts.rs:67），4 条
-- C5-BT-05：URL/host bypass（config/io.rs:122 + bot_web.rs:21/:730/:881），4 条
+- C5-BT-05：URL/host bypass（config/io.rs:122 + bot_web.rs:21/:730/:881），4 条 → **3/4 已修（BT-05，commit 51efb80）**；:881（Jina 回退审计缺口，补需 fetch_text 签名改 + 调用链）**转 B 类攒批第 12 项**
 - C5-BT-06：log injection via model strings（bot_model_loop.rs:1079 + :984），2 条 → **OCR false positive（2 条均不准确）**——`truncate_for_log` 自 dcbf167（2026-09-14，早于 0921 全扫）起为 `escape_for_log` 别名（bot/config/audit.rs:74），`\n` `\r` `|` 已转义，注入面不存在；finding 前提「只限长度不剥换行」与实现不符。FP 诱因 = :1081 陈旧注释（描述修复前行为），**已改述（BT-06，commit 841922b）**。与 C5-BT-02 同处理：记录 + 不改行为。**triage 记录仍含此 2 条 FP，Phase 2 实工单 142 再扣 2 = 140**。
 - C5-BT-07：state machine / 乐观并发不一致（bot_artifacts.rs:113 + bot_skills/state.rs:164 + bot_skills/scheduler.rs:149），3 条 → **拆批**：:149 **已修（BT-07a，commit 6bd43c0，Drop 兜底）**；:113 **OCR false positive（BT-07b 判定）**——finding 称「upsert_tasks does not compare expected_updated_at」与实现不符：db/tasks.rs:199-224 显式 SELECT + 冲突返 CONFLICT_ERR_PREFIX（另有 ON CONFLICT WHERE 谓词 + affected 行数双保险），confirm_artifacts_batch :127 正设置了 expected_updated_at 快照基线，并发窗写时被拒非「silently」；:164 全局清理 vs 按会话 = 语义方向，**B 类候选（攒批第 11 项）**
 - C5-BT-08：input validation / serialization 缺（config/types.rs:198/:82 + config/keyring.rs:168 + bot_skills/parse.rs:86 + bot_skills/vars.rs:76），5 条
@@ -479,6 +481,10 @@ run A 仅靠 /tmp/ocr-APW-02b-r1.clean.json 找回。cache 命名亦误导：
 - 【OCR 原文核验记录（BT-01d）】r1 = ~/.openclaw/cache/BT-01d/ocr-r1-20260924-073830.json
   （1 low：spec 文案「按关键词查找任务失败」与代码「按关键词查找失败」不一致——
   采纳=校正 spec 对齐代码，零代码 churn；tool failure 0；status complete）。
+- **PROC-5 type 1 复发（n=18）**：BT-05 OCR r1 ×3（file_read start>end：770>100、
+  805>50、855>15），review 本体 complete（0 comments）。type 1 累计 n=15→n=18。
+- 【OCR 原文核验记录（BT-05）】r1 = ~/.openclaw/cache/BT-05/ocr-r1-20260924-081624.json
+  （0 comments；tool failure 3 = type 1×3；elapsed 1m23s；status complete）。
 
 **已 triage（脚本 DOMAINS 12 域，不含 frontend）**: 145 unique
 
