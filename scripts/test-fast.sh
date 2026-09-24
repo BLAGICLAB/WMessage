@@ -4,7 +4,8 @@
 # 设计意图：每次 commit 不该卡 1-3 分钟；fmt + 编译 + 收集能挡掉 90% 误操作。
 #
 # 步骤总览（详见 docs/testing.md；编号即运行时输出里的 [N/N]）：
-#   [0/N]   审计批次号防线：staged .rs/.ts/.tsx 新增行含批次号模式拒提交
+#   [0/N]   审计批次号防线：staged/unstaged 新增行 + untracked 全文的
+#           .rs/.ts/.tsx 含批次号模式拒提交
 #           （防注释考古回潮；audit-ok 行内豁免）——纯文本检查，<1s
 #   [1/N]   cargo fmt --check：格式漂移
 #   [2/N]   cargo check：编译错误（增量缓存）
@@ -50,18 +51,27 @@ $UNTRACKED"
 fi
 
 # ─── 步骤 0: 审计批次号防线（防注释考古回潮） ─────────────────────────
-# staged（无 staged 时看 unstaged）的 .rs/.ts/.tsx 新增行不得带审计批次号
-#（批次N审计 / P0-12 / T1-3 / NEW-C-6 等——批次号是审计过程产物，入注释即化石）；
+# 扫描口径 = diff 新增行（staged，无 staged 时看 unstaged）+ untracked 新文件全文：
+# untracked 不进任何 diff，不扫则新写文件不 add 即可绕过（下游 NEED_* 判定本就含 untracked）。
+# 禁入模式：批次N审计 / P0-12 / T1-3 / NEW-C-6 等（批次号是审计过程产物，入注释即化石）；
 # 确需引用历史口径时行内加 audit-ok 放行。
 DIFF_SRC=$(git diff --cached -U0 -- '*.rs' '*.ts' '*.tsx' 2>/dev/null || true)
 if [[ -z "$DIFF_SRC" ]]; then
     DIFF_SRC=$(git diff -U0 -- '*.rs' '*.ts' '*.tsx' 2>/dev/null || true)
 fi
-BAD_LINES=$(echo "$DIFF_SRC" | grep '^+' | grep -v '^+++' \
+NEW_LINES=$(echo "$DIFF_SRC" | grep '^+' | grep -v '^+++' || true)
+# untracked 的 .rs/.ts/.tsx 全文并入同一扫描流（-z 读法防空格/特殊字符路径被引号包裹漏读）
+while IFS= read -r -d '' f; do
+    if [[ -f "$f" ]]; then
+        NEW_LINES="$NEW_LINES
+$(cat "$f")"
+    fi
+done < <(git ls-files -z --others --exclude-standard -- '*.rs' '*.ts' '*.tsx' 2>/dev/null)
+BAD_LINES=$(echo "$NEW_LINES" \
     | grep -v 'audit-ok' \
     | grep -E '批次[0-9]+审计|\bP[012]-[0-9]+\b|\bT[0-9]-[0-9]+\b|\bNEW-[A-Z]-[0-9]+\b' || true)
 if [[ -n "$BAD_LINES" ]]; then
-    echo "✗ [0/N] 审计批次号防线：新增行含审计批次号（阶段5起禁止入注释；确需引用加 audit-ok）："
+    echo "✗ [0/N] 审计批次号防线：diff 新增行 / untracked 文件含审计批次号（阶段5起禁止入注释；确需引用加 audit-ok）："
     echo "$BAD_LINES" | head -10 | sed 's/^/    /'
     exit 1
 fi
