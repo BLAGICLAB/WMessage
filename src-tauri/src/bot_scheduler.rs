@@ -9,6 +9,7 @@
 //!   绕开 exec_steps 逐步确认（无人在场，直接整体执行）
 
 use chrono::Datelike;
+use futures_util::FutureExt;
 use tauri::AppHandle;
 use tauri_plugin_notification::NotificationExt;
 
@@ -479,41 +480,102 @@ async fn run_scheduled(app: AppHandle, task: crate::db::Task) {
     crate::bot::audit_log(&app, &format!("sched_done | id: {}", task.id));
 }
 
+/// 同时执行的定时任务上限（OCR C5-BT-10）：burst 到点卡排队，不打爆 runtime。
+/// 取值 4 = 经验值（定时任务多为 LLM 调用 + 文档生成，重在外部等待不在 CPU；
+/// 4 路并发足够消化每日 burst，又不至于同时打满 LLM 配额）。
+const SCHED_MAX_CONCURRENT: usize = 4;
+
 /// 启动定时调度器：每 30s 扫一次到点任务卡并顺序执行（App 启动时调用）
 pub fn start_scheduler(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
         ticker.tick().await; // 消耗首个立即触发的 tick
+        let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(SCHED_MAX_CONCURRENT));
         loop {
             ticker.tick().await;
-            let due = find_due_tasks(&app).await;
-            for t in due {
-                // 每张卡独立 spawn 且【不 await】：
-                // spawn 后立即 await 的话，单张长任务（最坏可跑数小时）会堵死调度循环，
-                // 后续所有到点任务排队。spawn 本身已隔离 panic（主循环不受影响）；
-                // 同卡重入由 SchedGuard/ExecGuard 防护；另加单任务整体超时兜底。
-                let app2 = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    let id = t.id.clone();
-                    let timed_out =
-                        tokio::time::timeout(SCHED_TASK_TIMEOUT, run_scheduled(app2.clone(), t))
-                            .await
-                            .is_err();
-                    if timed_out {
-                        crate::bot::audit_log(
-                            &app2,
-                            &format!(
-                                "sched_timeout | id: {id} | 超过 {} 分钟未完成，强制收尾",
-                                SCHED_TASK_TIMEOUT.as_secs() / 60
-                            ),
-                        );
-                        // 超时被 drop 的执行没走到 set_bot_assigned(false)，这里兜底复位
-                        crate::bot_chat::set_bot_assigned(&app2, &id, false).await;
-                    }
-                });
+            // panic recovery（OCR C5-BT-10）：单轮 panic 不杀调度器，审计后续跑。
+            // AssertUnwindSafe 安全依据：scheduler_tick 只读 db + spawn 任务，
+            // 不持任何「跨 await 必须保持」的不变量，panic 后无可破坏状态。
+            // 关闭信号不加：生命周期 = App，退出时 runtime 整体回收。
+            let tick = std::panic::AssertUnwindSafe(scheduler_tick(&app, &sem));
+            if let Err(panic) = tick.catch_unwind().await {
+                let msg = panic
+                    .downcast_ref::<&str>()
+                    .map(|s| (*s).to_string())
+                    .or_else(|| panic.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "非字符串 panic".into());
+                crate::bot::audit_log(
+                    &app,
+                    &format!(
+                        "sched_tick_panic | {} | 单轮 panic 已兜底，调度器继续",
+                        crate::bot::truncate_for_log(&msg, 200)
+                    ),
+                );
             }
         }
     });
+}
+
+/// 单轮扫描 + 分发（从 start_scheduler 抽出以便 catch_unwind 兜底整轮）。
+async fn scheduler_tick(app: &AppHandle, sem: &std::sync::Arc<tokio::sync::Semaphore>) {
+    let due = find_due_tasks(app).await;
+    for t in due {
+        // 每张卡独立 spawn 且【不 await】：
+        // spawn 后立即 await 的话，单张长任务（最坏可跑数小时）会堵死调度循环，
+        // 后续所有到点任务排队。spawn 本身已隔离 panic（主循环不受影响）；
+        // 同卡重入由 SchedGuard/ExecGuard 防护；另加单任务整体超时兜底。
+        let app2 = app.clone();
+        let sem2 = sem.clone();
+        tauri::async_runtime::spawn(async move {
+            // 并发上限：permit 排队；acquire 失败仅当 semaphore 关闭（不关闭）→ 审计后放弃。
+            let Ok(_permit) = sem2.acquire().await else {
+                crate::bot::audit_log(
+                    &app2,
+                    &format!(
+                        "sched_permit_fail | id: {} | 并发许可获取失败，本轮放弃",
+                        t.id
+                    ),
+                );
+                return;
+            };
+            let id = t.id.clone();
+            // per-task panic 可见性（OCR C5-BT-10 r1）：spawn-and-forget 的 panic
+            // 只有 JoinError 无人观测——catch_unwind 落审计，不再静默死。
+            let body = std::panic::AssertUnwindSafe(async {
+                let timed_out =
+                    tokio::time::timeout(SCHED_TASK_TIMEOUT, run_scheduled(app2.clone(), t))
+                        .await
+                        .is_err();
+                if timed_out {
+                    crate::bot::audit_log(
+                        &app2,
+                        &format!(
+                            "sched_timeout | id: {id} | 超过 {} 分钟未完成，强制收尾",
+                            SCHED_TASK_TIMEOUT.as_secs() / 60
+                        ),
+                    );
+                    // 超时被 drop 的执行没走到 set_bot_assigned(false)，这里兜底复位
+                    crate::bot_chat::set_bot_assigned(&app2, &id, false).await;
+                }
+            });
+            if let Err(panic) = body.catch_unwind().await {
+                let msg = panic
+                    .downcast_ref::<&str>()
+                    .map(|s| (*s).to_string())
+                    .or_else(|| panic.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "非字符串 panic".into());
+                crate::bot::audit_log(
+                    &app2,
+                    &format!(
+                        "sched_task_panic | id: {id} | {} | 任务 panic 已隔离",
+                        crate::bot::truncate_for_log(&msg, 200)
+                    ),
+                );
+                // panic 时 set_bot_assigned 兜底复位（同超时路径）
+                crate::bot_chat::set_bot_assigned(&app2, &id, false).await;
+            }
+        });
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────
