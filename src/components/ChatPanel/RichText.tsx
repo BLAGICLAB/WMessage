@@ -19,14 +19,29 @@ export function RichText({ text }: { text: string }) {
     const isUrl = isHttpUrl(token);
     const clean = isUrl ? token.replace(/[.,;:!?]+$/, "") : token;
     parts.push(
+      // URL 给真 href；路径不设 href（防中键/复制链接把文件路径当 URL），
+      // 补 role/tabIndex/Enter 保持键盘可达（与 MarkdownText 行内代码链接同形态）
       <a
         key={key++}
+        href={isUrl ? clean : undefined}
+        role={isUrl ? undefined : "link"}
+        tabIndex={isUrl ? undefined : 0}
         className="text-[var(--brand)] underline decoration-dotted underline-offset-2 cursor-pointer break-all"
         title={isUrl ? "在浏览器打开" : "打开文件/文件夹"}
         onClick={(e) => {
           e.preventDefault();
           openTarget(clean);
         }}
+        onKeyDown={
+          isUrl
+            ? undefined
+            : (e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  openTarget(clean);
+                }
+              }
+        }
       >
         {clean}
       </a>

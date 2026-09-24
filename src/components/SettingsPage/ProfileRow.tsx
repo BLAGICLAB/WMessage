@@ -1,7 +1,7 @@
 // SettingsPage 子模块：个人资料编辑行（头像 + 姓名）。
 // 用户/机器人共用：kind 决定用 profile.user 还是 profile.bot。
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
 import { setProfileName, setProfileAvatar, removeProfileAvatar } from "../../profile";
@@ -24,6 +24,14 @@ export function ProfileRow({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
+  /** 「已保存 ✓」复位计时器句柄：重复保存先 clear 旧的，卸载时清理（防卸载后 setState） */
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (savedTimer.current) clearTimeout(savedTimer.current);
+    },
+    []
+  );
 
   // 资料加载/变更后回填姓名（编辑中不回填，避免覆盖输入）
   useEffect(() => {
@@ -78,7 +86,8 @@ export function ProfileRow({
       await setProfileName(kind, n);
       setDirty(false);
       setSaved(true);
-      setTimeout(() => setSaved(false), 1500);
+      if (savedTimer.current) clearTimeout(savedTimer.current);
+      savedTimer.current = setTimeout(() => setSaved(false), 1500);
     } catch (e) {
       handleCommandError(e, `profile_set_name:${kind}`, { silent: true });
       setError(formatCommandError(e));
@@ -109,6 +118,7 @@ export function ProfileRow({
           <p className="w-10 shrink-0 text-xs font-medium text-[var(--t4)]">{label}</p>
           <input
             value={name}
+            disabled={busy}
             onChange={(e) => {
               setName(e.target.value);
               setDirty(true);

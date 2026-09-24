@@ -13,6 +13,9 @@ export function FoldToggle({
   const stop = (e: React.PointerEvent) => e.stopPropagation();
   return (
     <button
+      type="button"
+      aria-expanded={!collapsed}
+      aria-label={collapsed ? "展开" : "收起"}
       className={`shrink-0 w-5 h-5 flex items-center justify-center rounded-full text-sm leading-none text-[var(--t5)] hover:text-[var(--t2)] hover:bg-[var(--hover-bg)] transition-opacity ${
         alwaysVisible || collapsed
           ? "opacity-100"
