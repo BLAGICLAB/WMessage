@@ -72,6 +72,8 @@
 
 - [2026-09-24 18:55 CST] AP-01b 收口（commit c49bba3）：C5-AP-01 拆批 b——api_auth.rs:27 token 首建改 create_token_file_atomic（OpenOptions create_new + unix 0600 直写最终路径；Ok(true)=胜者返回自己的 token，AlreadyExists=输家 50×10ms 空窗重试读胜者 token，仍空 Err 下次自愈）；api_server.rs:208 worker 上限改 fetch_add 原子占位（超限立即 fetch_sub 归还 + 503，删 load+fetch_add 两步竞态）。行为变更：并发首跑输家从「返回与磁盘不符的 token」变「读胜者 token」（单进程零变化）；worker 计数严格 ≤ MAX_WORKERS。同批拆出 commands.rs:61/:238（flag 写 vs 内存状态 TOCTOU，涉「文件 I/O 不持锁」既有约定）→ B 类攒批第 15 项。OCR r1 3 comments（1 medium fsync 耐久性→挂起登记 §4，与模块既有姿态一致；2 low 注释采纳）；tool failure 0；type 1 n=25 不变。spec 立项 76e619e / budget 执行中校正 5512228（+48→+68，numstat 预估偏低规律）。**C5-AP-01 剩 commands.rs 2 条（B 类待拍）；api 域剩 AP-04/05/06/07。**
 
+- [2026-09-24 19:15 CST] AP-04 收口（commit 8d49a26）：**C5-AP-04 全簇 2 条已清**。sse.rs:196 写无超时 → vendor tiny_http accept 级 set_write_timeout patch（HTTP_WRITE_TIMEOUT_MS 30s 单次 write syscall 级；照 10acf42 读超时先例走 PATCHES.md 治理：§2 共 2 处→3 处 + §2.3 + §5 记录；lib.rs 读超时注释「不影响写」过时句修订）——**vendor 改动非 architecture_blocker（既有治理流程）**。sse.rs:183 乱序投递根因属实（fetch_add 锁外 + try_send 锁内）→ broadcast 单临界区化（clients 锁内 fetch_add→落盘→history→推送；锁序 clients→history 全仓唯一嵌套点已核无死锁对）；顺带修 id 落盘并发乱序 + clients poison 改 C3-1 形态；sse.rs replay_max 快照 + 异常丢弃留痕（每连接一次）；契约双侧文档化；新增确定性并发回归测试。写超时行为级测试需填 kernel buffer（flaky）不加，spec 已声明。OCR r1 6 comments（0 high）：采纳 4（Value 序列化移出锁 / SeqCst 注释 / replay_max 语义注释 / 留痕每连接一次），不采纳 2 有论证（落盘移出锁 / 测试封装重构）；tool failure 0；type 1 n=25 不变。spec 立项 9833abb。**api 域剩 AP-05/06/07。**
+
 ## 1. 跨域同模式家族
 按"错误去哪了" + "是否破坏数据"两轴判，**4 家族**（poisoned-silent-recovery 已溶解 — 见执行日志；error-visible-non-blocking 已重新引入 for C5-AP-06 only — 见 §3.5 异常 2 更新）：
 
@@ -155,7 +157,7 @@
 - C5-AP-01：TOCTOU race（api_auth.rs:27 + api_handlers/commands.rs:61 + :238 + api_server.rs:208），4 条 → **api_auth.rs:27 + api_server.rs:208 已修（AP-01b，commit c49bba3）；commands.rs:61/:238 转 B 类攒批第 15 项（改「文件 I/O 不持锁」约定方向）**
 - C5-AP-02：symlink + 权限（api_auth.rs:73），1 条 → **已修（AP-02，commit 5d8e878）**
 - C5-AP-03：日志输出缺陷（api_handlers/ratelimit.rs:45 + :36，批内 2 处独立改动），2 条 → **已修（AP-03，commit a78de81）**
-- C5-AP-04：SSE writer 缺陷（api_handlers/sse.rs:196 + :183），2 条
+- C5-AP-04：SSE writer 缺陷（api_handlers/sse.rs:196 + :183），2 条 → **已修（AP-04，commit 8d49a26：vendor 写超时 patch + broadcast 单临界区化）**
 - C5-AP-05：持锁跨 I/O（api_handlers/handlers.rs:277 + :405 + :561），3 条
 - C5-AP-06：静默吞错（api_server.rs:126），1 条，**error-not-propagated 家族**
 - C5-AP-07：sync block_on 隐式约定（api.rs:101），1 条
@@ -519,6 +521,19 @@ run A 仅靠 /tmp/ocr-APW-02b-r1.clean.json 找回。cache 命名亦误导：
   （status=complete / comments=3：1 medium=fsync（挂起，见上）+ 2 low=sync 阻塞说明 /
   SeqCst 一致性说明（均以注释采纳）/ 0 high / tool failure 0 / elapsed 2m33s /
   files_reviewed=2）。
+
+### AP-04 follow-up 登记（2026-09-24, commit 8d49a26）
+
+- **AP-04-OCR-1（medium，不采纳有论证）**：broadcast 锁内 atomic_write 的盘 I/O stall
+  会阻塞并发 sse_connect 注册（同 clients 锁）。不采纳：落盘移出锁需另加同步才能保住
+  「落盘序 = id 序」（CAS 只守 last_persisted 值，管不住并发 atomic_write 的 rename
+  先后），代价大于收益；事件频率人级，注释已写明取舍。若未来事件频率量级变化，
+  随「锁内 I/O」统一重构批再评。
+- **AP-04-OCR-2（low，不采纳）**：测试直用 `pub clients` 字段（建议 cfg(test) 访问器）。
+  与 api_handlers/mod.rs:504 既有测试模式一致；EventHub 封装重构超本批 scope。
+- 【OCR 原文核验记录（AP-04）】r1 = ~/.openclaw/cache/AP-04/ocr-r1-20260924-190845.raw.json
+  （status=complete / comments=6：2 medium + 4 low 全同根，0 high；采纳 4 不采纳 2，见上 /
+  tool failure 0 / elapsed ~2m16s / files_reviewed=2）。
 
 **已 triage（脚本 DOMAINS 12 域，不含 frontend）**: 145 unique
 
