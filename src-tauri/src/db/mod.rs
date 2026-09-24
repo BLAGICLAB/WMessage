@@ -59,22 +59,30 @@ pub fn open_db<R: tauri::Runtime>(
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let db_path = dir.join("wmessage.db");
     if !db_path.exists() {
-        if let Ok(legacy_dir) = app.path().app_data_dir() {
-            let legacy_db = legacy_dir.join("wmessage.db");
-            if legacy_db.exists() && legacy_db != db_path {
-                match paths::copy_legacy_db(&legacy_db, &db_path) {
-                    Ok(warns) => {
-                        for w in warns {
-                            crate::audit::write_event(
-                                app,
-                                crate::audit::AuditLevel::Warn,
-                                "legacy_db_copy",
-                                &[("warn", w)],
-                            );
+        // 进程内锁 + 双检（OCR C5-DB-03）：并发 open_db（首装多线程/多命令并发）
+        // 可同时过外层 exists 检查并竞态拷贝 → 半成品 db/-wal/-shm 三元组。
+        // 锁内复检查让后到者直接跳过；锁仅护首装一次性窗口，常态零代价
+        // （外层 exists 不进锁）。照 BOT_ASSIGNED_RESET_DONE / DB_WRITE_LOCK 先例。
+        static LEGACY_COPY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _g = LEGACY_COPY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        if !db_path.exists() {
+            if let Ok(legacy_dir) = app.path().app_data_dir() {
+                let legacy_db = legacy_dir.join("wmessage.db");
+                if legacy_db.exists() && legacy_db != db_path {
+                    match paths::copy_legacy_db(&legacy_db, &db_path) {
+                        Ok(warns) => {
+                            for w in warns {
+                                crate::audit::write_event(
+                                    app,
+                                    crate::audit::AuditLevel::Warn,
+                                    "legacy_db_copy",
+                                    &[("warn", w)],
+                                );
+                            }
                         }
-                    }
-                    Err(e) => {
-                        return Err(e.to_string());
+                        Err(e) => {
+                            return Err(e.to_string());
+                        }
                     }
                 }
             }
