@@ -13,7 +13,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::routing::fnv1a;
 use crate::evolution::change::ChangeRecord;
 use crate::evolution::proposal::ImpactLevel;
 
@@ -85,7 +84,6 @@ pub struct ShadowLesson {
 ///           现有 lessons 为空 → Skipped
 pub fn run_shadow(input: ShadowInput) -> ShadowOutcome {
     let candidate = candidate_lesson(input.change);
-    let candidate_importance = candidate.importance;
 
     // 现有 lessons 按 importance 降序取 top-3
     let mut existing = input.existing_lessons.to_vec();
@@ -140,8 +138,6 @@ pub fn run_shadow(input: ShadowInput) -> ShadowOutcome {
         note,
         evaluated_at_ms: input.now_ms,
     }
-    // candidate_importance 暂未用，避免 unused 警告
-    .with_dummy_for(candidate_importance)
 }
 
 /// 构造 candidate lesson（基于 ChangeRecord 模拟 apply 后的样子）
@@ -170,16 +166,6 @@ fn hash_lessons_content(lessons: &[&ShadowLesson]) -> String {
         h = h.wrapping_mul(0x100000001b3);
     }
     format!("{:016x}", h)
-}
-
-// ShadowOutcome helper trait：避免 unused variable warning
-trait WithDummy {
-    fn with_dummy_for(self, _i: i64) -> Self;
-}
-impl WithDummy for ShadowOutcome {
-    fn with_dummy_for(self, _i: i64) -> Self {
-        self
-    }
 }
 
 #[cfg(test)]
