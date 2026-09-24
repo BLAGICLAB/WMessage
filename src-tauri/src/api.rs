@@ -27,6 +27,11 @@ pub const API_PORT: u16 = 4763;
 ///
 /// `event_hub()`：返回 store 内嵌的 SSE 中枢引用（SSE 客户端注册 / 广播均通过 store）。
 /// `notify_change()`：写操作完成后调用，store 内部广播 SSE（保证前端看板实时更新）。
+///
+/// 调用线程约定（OCR C5-AP-07）：sync 方法经 `block_on` 桥接 async db fn，
+/// **调用方必须不在 tokio runtime 线程上**（编译期无法表达；TauriStore 内有
+/// 运行时检查兜底，违反即 panic 并点名本约定）。handler 全在 tiny_http
+/// per-request std::thread 里跑，满足约定。
 pub trait TaskStore: Send + Sync {
     fn load(&self) -> Result<Vec<db::Task>, String>;
     fn upsert(&self, tasks: Vec<db::Task>) -> Result<(), String>;
@@ -97,18 +102,59 @@ pub struct TauriStore {
     pub hub: Arc<EventHub>,
 }
 
+/// OCR C5-AP-07：sync 桥接约定（见 TaskStore trait doc）的运行时强制。
+/// `block_on` 只在非 runtime 线程安全；在 tokio runtime 线程上误调用会
+/// panic/死锁且原生消息不指因——先显式检查，panic 消息直接点名约定。
+fn assert_sync_bridge_caller() {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        panic!(
+            "TaskStore::load/upsert 是 sync 桥接（block_on），禁止在 tokio runtime \
+             线程上调用；调用方必须在普通 std::thread（tiny_http worker）里"
+        );
+    }
+}
+
 impl TaskStore for TauriStore {
     fn load(&self) -> Result<Vec<db::Task>, String> {
         // B3: db_load/db_upsert 改 async 了；TaskStore trait 仍是 sync（handler 在 per-request
         // std::thread 里跑，不在 tokio runtime 上 → block_on 不会死锁）。
+        // OCR C5-AP-07：该约定已显式化（trait doc）并由 assert_sync_bridge_caller
+        // 运行时强制——runtime 线程误调用立即 panic 并点名约定。
+        assert_sync_bridge_caller();
         tauri::async_runtime::block_on(async { db::db_load(self.app.clone()).await })
             .map_err(|e| e.to_string())
     }
     fn upsert(&self, tasks: Vec<db::Task>) -> Result<(), String> {
+        assert_sync_bridge_caller();
         tauri::async_runtime::block_on(async { db::db_upsert(self.app.clone(), tasks).await })
             .map_err(|e| e.to_string())
     }
     fn event_hub(&self) -> &Arc<EventHub> {
         &self.hub
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// runtime 线程上误调 sync 桥接 → 必须 panic 且消息点名约定（C5-AP-07）
+    #[tokio::test]
+    async fn sync_bridge_check_panics_on_runtime_thread() {
+        let res = std::panic::catch_unwind(super::assert_sync_bridge_caller);
+        let Err(payload) = res else {
+            panic!("runtime 线程上调用检查必须 panic");
+        };
+        let msg = payload
+            .downcast_ref::<String>()
+            .map(|s| s.as_str())
+            .or_else(|| payload.downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        assert!(msg.contains("sync 桥接"), "panic 消息须点名约定: {msg}");
+        assert!(msg.contains("tokio runtime"), "panic 消息须点名场景: {msg}");
+    }
+
+    /// 非 runtime 线程（普通 std::thread）→ 检查放行
+    #[test]
+    fn sync_bridge_check_allows_plain_thread() {
+        super::assert_sync_bridge_caller();
     }
 }

@@ -56,7 +56,7 @@ base64 = "0.22"
 csv = "1"
 
 # 危险操作确认：挂件弹窗等待用户批准/拒绝（oneshot 通道 + 超时）
-tokio = { version = "1", features = ["sync", "time"] }
+tokio = { version = "1", features = ["sync", "time", "rt"] }
 
 # 前置意图路由关键词/正则匹配（老板 2026-08-17 18:14 Q1 拍板）
 regex = "1"
