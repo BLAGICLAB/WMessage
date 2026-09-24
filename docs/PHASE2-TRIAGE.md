@@ -54,6 +54,8 @@
 
 - [2026-09-24 08:30 CST] BT-04a 收口（commit ca73ec0）：C5-BT-04 拆批 1/2——bot_chat.rs:399 图片白名单校验/读取同一化（read(&canon) 不 read(p)，symlink 掉包窗关闭）；bot_artifacts.rs:67 确认并发窗晚登记产物重注册不静默丢。OCR r1 1 low（O(n·m) membership）不采纳（OCR 自认小批量可接受）；type 1 n=18→n=19（r1×1）。拆批：bot_fs.rs:167 + tools.rs:102（spawn_blocking 方向）下批 BT-04b 细评。
 
+- [2026-09-24 ~09:30 CST] BT-08a 收口（commit e7b2381）：**C5-BT-08 全清（2 实修 + 1 FP + 1 B 类 + 1 wontfix）**。types.rs:82 三 key 字段 skip_serializing（永不序列化，fail-closed 纵深，零行为变更）；parse.rs:86 非法 mode 按未声明处理（low→auto 提升不被吞，新增 3 断言测试）。:198 FP（deepseek-v4-flash 旧名仍被接受，web 实证）；:168 B 类第 13 项；:76 wontfix（结构必然）。OCR r1 1 low（mod.rs:541 注释机制名旧）已修同批；tool failure 1 = 新形态 code_comment 空数组拒收（良性，登记观察）；type 1 n=19 不变。spec 两处执行中校正（零代码 findings 移出机器可读数组；expected_files 加 mod.rs）。**bot 域 C5 簇剩 BT-10 / BT-11 / BT-12 + BT-04b 半簇。**
+
 ## 1. 跨域同模式家族
 按"错误去哪了" + "是否破坏数据"两轴判，**4 家族**（poisoned-silent-recovery 已溶解 — 见执行日志；error-visible-non-blocking 已重新引入 for C5-AP-06 only — 见 §3.5 异常 2 更新）：
 
@@ -152,7 +154,7 @@
 - C5-BT-05：URL/host bypass（config/io.rs:122 + bot_web.rs:21/:730/:881），4 条 → **3/4 已修（BT-05，commit 51efb80）**；:881（Jina 回退审计缺口，补需 fetch_text 签名改 + 调用链）**转 B 类攒批第 12 项**
 - C5-BT-06：log injection via model strings（bot_model_loop.rs:1079 + :984），2 条 → **OCR false positive（2 条均不准确）**——`truncate_for_log` 自 dcbf167（2026-09-14，早于 0921 全扫）起为 `escape_for_log` 别名（bot/config/audit.rs:74），`\n` `\r` `|` 已转义，注入面不存在；finding 前提「只限长度不剥换行」与实现不符。FP 诱因 = :1081 陈旧注释（描述修复前行为），**已改述（BT-06，commit 841922b）**。与 C5-BT-02 同处理：记录 + 不改行为。**triage 记录仍含此 2 条 FP，Phase 2 实工单 142 再扣 2 = 140**。
 - C5-BT-07：state machine / 乐观并发不一致（bot_artifacts.rs:113 + bot_skills/state.rs:164 + bot_skills/scheduler.rs:149），3 条 → **拆批**：:149 **已修（BT-07a，commit 6bd43c0，Drop 兜底）**；:113 **OCR false positive（BT-07b 判定）**——finding 称「upsert_tasks does not compare expected_updated_at」与实现不符：db/tasks.rs:199-224 显式 SELECT + 冲突返 CONFLICT_ERR_PREFIX（另有 ON CONFLICT WHERE 谓词 + affected 行数双保险），confirm_artifacts_batch :127 正设置了 expected_updated_at 快照基线，并发窗写时被拒非「silently」；:164 全局清理 vs 按会话 = 语义方向，**B 类候选（攒批第 11 项）**
-- C5-BT-08：input validation / serialization 缺（config/types.rs:198/:82 + config/keyring.rs:168 + bot_skills/parse.rs:86 + bot_skills/vars.rs:76），5 条
+- C5-BT-08：input validation / serialization 缺（config/types.rs:198/:82 + config/keyring.rs:168 + bot_skills/parse.rs:86 + bot_skills/vars.rs:76），5 条 → **拆批**：:82 **已修（BT-08a，commit e7b2381，三 key 字段 skip_serializing 永不序列化，零行为变更）**；:86 **已修（同 commit，非法 mode 按未声明处理，low→auto 提升不被吞，语义归一 SKILL_DSL.md）**；:198 **FP（web 实证）**——deepseek-v4-flash 旧名仍被接受（V4.1-Flash GA 后服务名 deepseek-flash，旧名请求由新模型服务，deepseek.ai/pricing 2026-09-18）；:168 **转 B 类攒批第 13 项**（Windows ACL，macOS 不可测）；:76 **wontfix-with-rationale（待醒后确认）**——占位符使模板构造上非合法 JSON，启发式是结构必然，替换后 serde_json 兜底
 - C5-BT-09：dispatch/scheduler 语义错（bot/dispatch.rs:248/:424 + bot_skills/scheduler.rs:283），3 条 → **已清（拆批）**：:283 **已修（BT-09a，commit b1c0b4f，Finish 早退假完成收口）**；:248 **已修（BT-09b，commit 3f62d74，索引复用）**；:424 **wontfix-with-rationale**（与 OCR-003 同型：ToolResult::ok 失败文案是 dispatch.rs:402-404 注释钉死的设计意图）
 - C5-BT-10：持锁跨 IO / sync IO in loop（config/audit.rs:22 + bot_skills/runtime.rs:83/:393 + bot_scheduler.rs:468），4 条
 - C5-BT-11：web 解析脆（bot_web.rs:412 + :422），2 条
