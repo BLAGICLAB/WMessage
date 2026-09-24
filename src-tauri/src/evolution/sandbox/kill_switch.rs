@@ -74,6 +74,9 @@ pub fn default_off() -> KillSwitch {
 /// 2. 提取 evolution.kill_switch 子树
 /// 3. 反序列化为 KillSwitch（缺字段用默认 false）
 /// 4. 缺 evolution / 缺 kill_switch → 返 Err（强制显式）
+/// 5. 归一化矛盾组合：all_auto_apply=true 隐含 shadow_only（契约本由
+///    should_shadow_only 的 || 兜底；边界强制落盘值与语义一致，防配置
+///    写入方持久化「all_auto_apply=true + shadow_only=false」矛盾态）
 pub fn load_from_file(path: &Path) -> Result<KillSwitch, String> {
     let raw = std::fs::read_to_string(path).map_err(|e| format!("读 {path:?} 失败：{e}"))?;
     let v: serde_json::Value =
@@ -84,7 +87,15 @@ pub fn load_from_file(path: &Path) -> Result<KillSwitch, String> {
     let kill_switch = evo
         .get("kill_switch")
         .ok_or_else(|| "evolution 块缺少 kill_switch 子块".to_string())?;
-    serde_json::from_value(kill_switch.clone()).map_err(|e| format!("kill_switch 解析失败：{e}"))
+    let mut k: KillSwitch = serde_json::from_value(kill_switch.clone())
+        .map_err(|e| format!("kill_switch 解析失败：{e}"))?;
+    if k.all_auto_apply && !k.shadow_only {
+        eprintln!(
+            "[evolution_kill_switch] 矛盾组合 all_auto_apply=true + shadow_only=false，归一化为 shadow_only=true"
+        );
+        k.shadow_only = true;
+    }
+    Ok(k)
 }
 
 #[cfg(test)]
@@ -165,7 +176,9 @@ mod tests {
         .unwrap();
         let k = load_from_file(&p).unwrap();
         assert!(k.all_auto_apply);
-        assert!(!k.shadow_only);
+        // 矛盾组合（all_auto_apply=true + shadow_only=false）边界归一化：
+        // all_auto_apply 隐含 shadow_only
+        assert!(k.shadow_only);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -199,7 +212,8 @@ mod tests {
 
     #[test]
     fn load_partial_kill_switch_uses_defaults() {
-        // 只给 all_auto_apply，shadow_only / disable_notification 用默认 false
+        // 只给 all_auto_apply → 归一化隐含 shadow_only=true（矛盾组合边界修正）；
+        // disable_notification 用默认 false
         let dir = std::env::temp_dir().join(format!(
             "ks-p-{}",
             chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
@@ -213,7 +227,10 @@ mod tests {
         .unwrap();
         let k = load_from_file(&p).unwrap();
         assert!(k.all_auto_apply);
-        assert!(!k.shadow_only);
+        assert!(
+            k.shadow_only,
+            "all_auto_apply=true 隐含 shadow_only（归一化）"
+        );
         assert!(!k.disable_notification);
         let _ = std::fs::remove_dir_all(&dir);
     }

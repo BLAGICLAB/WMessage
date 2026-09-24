@@ -17,5 +17,5 @@ pub use io::{append_ab, append_shadow, read_ab, read_shadow, AbGroup, AbRecord};
 pub use kill_switch::{
     default_off as default_kill_switch, load_from_file as load_kill_switch, KillSwitch,
 };
-pub use routing::{bucket, fnv1a, is_ab_a, is_canary};
+pub use routing::{fnv1a, is_ab_a, is_canary};
 pub use shadow::{run_shadow, ShadowDecision, ShadowInput, ShadowLesson, ShadowOutcome};

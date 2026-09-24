@@ -18,9 +18,16 @@ pub fn fnv1a(s: &str) -> u64 {
     h
 }
 
-/// 桶号 0-99
-pub fn bucket(session_id: &str) -> u32 {
+/// 桶号 0-99。**实现细节**（pub(crate)）：下游只准用语义谓词 is_canary /
+/// is_ab_a，勿依赖数值映射。
+pub(crate) fn bucket(session_id: &str) -> u32 {
     (fnv1a(session_id) % 100) as u32
+}
+
+/// A/B 专用桶（**独立加盐 hash**）——与 canary 桶正交：复用同桶会让
+/// canary 群 60% A / 40% B，联合分布破坏、效应无法归因单变量。
+fn ab_bucket(session_id: &str) -> u32 {
+    (fnv1a(&format!("ab:{session_id}")) % 100) as u32
 }
 
 /// 是否 canary 5% 桶
@@ -28,9 +35,9 @@ pub fn is_canary(session_id: &str) -> bool {
     bucket(session_id) < 5
 }
 
-/// A/B 分组（true = A, false = B；50/50 按桶号奇偶）
+/// A/B 分组（true = A, false = B；独立 hash 50/50，与 canary 正交）
 pub fn is_ab_a(session_id: &str) -> bool {
-    bucket(session_id) % 2 == 0
+    ab_bucket(session_id) % 2 == 0
 }
 
 #[cfg(test)]
@@ -114,10 +121,26 @@ mod tests {
         let count_a = (0..1000)
             .filter(|i| is_ab_a(&format!("session-{i}")))
             .count();
-        // 偶数桶 = A，所以 A 桶占比 ≈ 50%（含 0 桶）
+        // 独立加盐 hash ≈ 50/50
         assert!(
             count_a >= 450 && count_a <= 550,
             "A/B 应 ≈ 50/50，A={count_a}"
+        );
+    }
+
+    #[test]
+    fn ab_orthogonal_to_canary() {
+        // canary 与 A/B 正交：canary 群内 A 占比应 ≈ 50%（复用同桶时是 60/40）
+        let canary_a = (0..10000)
+            .filter(|i| is_canary(&format!("session-{i}")) && is_ab_a(&format!("session-{i}")))
+            .count();
+        let canary_total = (0..10000)
+            .filter(|i| is_canary(&format!("session-{i}")))
+            .count();
+        let ratio = canary_a as f64 / canary_total as f64;
+        assert!(
+            (0.35..=0.55).contains(&ratio), // 上限 0.55 卡住 buggy 回归（复用同桶时=0.589）
+            "canary 群内 A 占比应 ≈ 0.5，实测 {ratio:.2}（{canary_a}/{canary_total}）"
         );
     }
 
