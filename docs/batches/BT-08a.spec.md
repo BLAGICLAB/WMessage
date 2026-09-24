@@ -51,6 +51,9 @@
    findings 数组移除——gate findings_files_in_diff 要求每条 finding 的 file 在
    staged 集合内，零代码条目的文件不可能 staged。处置记录以本文「拆批与处置」
    节为准，随 triage 收口 docs commit 登记。
+5. （执行中校正 2）expected_files 加 `src-tauri/src/bot/config/mod.rs`——OCR r1
+   低危指出 mod.rs:541 测试注释仍写旧机制名（skip_serializing_if），注释同步
+   1 行；numstat 合计 +21/-6 仍在 budget 内。
 
 ## 自主执行规则
 
@@ -76,7 +79,8 @@ spec 被 reviewer 批准后:
   "family": "serialization-defense-and-parse-validation",
   "expected_files": [
     "src-tauri/src/bot/config/types.rs",
-    "src-tauri/src/bot_skills/parse.rs"
+    "src-tauri/src/bot_skills/parse.rs",
+    "src-tauri/src/bot/config/mod.rs"
   ],
   "max_lines_added": 28,
   "max_lines_removed": 10,
