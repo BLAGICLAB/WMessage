@@ -84,6 +84,8 @@
 
 - [2026-09-24 20:03 CST] EV-3a-01 收口（commit dcd4808）：**C5-EV-3a-01 单条已清**。observe/stop.rs:82（现 :88，C3-3 注释块致行漂移）静默吞负值 → `days_elapsed` 改 `now_ms.saturating_sub(start_ms)`（i64 溢出饱和→时间门正常响，不再被 max(0.0) 静默压零）+ 负时长 eprintln `[evolution_stop]` 留痕（仍计 0.0 天不误触发）。新增 2 测试（负时长 0 天不停 / i64::MIN 溢出饱和触发 FourteenDaysElapsed）。签名未动——Result 化 = 调用链变更 = B 类，spec 已声明不自决。实际 diff +28/-1 恰好压 budget 线（注释压缩三轮）。OCR r1 0 comments / 0 failure；type 1 n=25 不变。spec 立项 e1c4199。**evolution 域 3a 剩 EV-3a-02/03。**
 
+- [2026-09-24 20:30 CST] EV-3a-02 收口（commit 1992904）：**C5-EV-3a-02 全簇 2 条已清**。① rewrite_jsonl:59 非原子重写（truncate+逐行写，崩溃留半截）→ 全量序列化 + `db::paths::atomic_write`（tmp+rename，复用 api_server/api_auth 既有模式；fsync 不超仓规不加）；② promote:292 TOCTOU（toggle_inner 与锁外 load_changes+find 两窗口，并发 delete 致误导性错误「toggle_inner 写完未找到 ChangeRecord」）→ toggle_inner 私有签名改 `Result<Option<ChangeRecord>>`（锁内返回写入/dedup 记录），promote 删锁外重读；调用点 3 处全在本文件无 ripple。行为变更：崩溃半截窗口消除 + 误导错误不可能再现；OFF/reject/toggle 语义不变。新增测试 1（rewrite 原子形态无 .tmp 残留）。budget 校正一次（+55/-40→+75/-60，toggle_inner if/else→match 重构重缩进超估，同 DB-03 教训）。OCR r1 3 low（2 条空行已修 + 1 条 c.clone() 风格建议不采纳——OFF 分支仍需 changes.retain，into_iter 不可行）/ 0 failure；type 1 n=25 不变。spec 立项 8bac6ae / 校正 fe287e4。**第 35 批，reviewer 抽查 = pass**（另揪出 commit message tests 计数 8→9 实为 7→8，amend 修正——HEAD 未 push 已核）。**evolution 域 3a 剩 EV-3a-03（metrics.rs O(n*m)，1 条）。**
+
 ## 1. 跨域同模式家族
 按"错误去哪了" + "是否破坏数据"两轴判，**4 家族**（poisoned-silent-recovery 已溶解 — 见执行日志；error-visible-non-blocking 已重新引入 for C5-AP-06 only — 见 §3.5 异常 2 更新）：
 
@@ -128,7 +130,7 @@
 ### 域 evolution（19 簇 / 39 findings）
 3a（C3 周边，3 簇 / 4 findings）：
 - C5-EV-3a-01：observe/stop.rs:82 静默吞负值，1 条 —— **已清**（dcd4808，§0 2026-09-24 20:03）
-- C5-EV-3a-02：panel/commands.rs:43/:282 RMW 缺陷，2 条
+- C5-EV-3a-02：panel/commands.rs:43/:282 RMW 缺陷，2 条 —— **已清**（1992904，§0 2026-09-24 20:30）
 - C5-EV-3a-03：observe/metrics.rs:86 O(n*m)，1 条
 
 3b（其余，11 簇 / 35 findings）：
