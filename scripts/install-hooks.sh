@@ -7,7 +7,12 @@ cd "$(dirname "$0")/.."
 HOOKS_DIR="$(pwd)/.githooks"
 
 # 确保 hook 和脚本可执行（clone 后权限可能丢）
-chmod +x .githooks/* scripts/*.sh
+# nullglob + 空守卫：目录缺失/为空（partial checkout）时 glob 不字面展开，chmod 不中止安装
+shopt -s nullglob
+_hooks=(.githooks/*)
+_scripts=(scripts/*.sh)
+if [ ${#_hooks[@]} -gt 0 ]; then chmod +x "${_hooks[@]}"; fi
+if [ ${#_scripts[@]} -gt 0 ]; then chmod +x "${_scripts[@]}"; fi
 
 # 本仓库 only：core.hooksPath 是 repo-local 配置，不会影响其它项目
 git config core.hooksPath "$HOOKS_DIR"
