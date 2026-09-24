@@ -8,7 +8,7 @@
 
 use tauri::AppHandle;
 
-use crate::bot::registry::{tools_index, ToolCtx, TOOLS_TABLE};
+use crate::bot::registry::{tools_index, ToolCtx};
 use crate::bot::tools::{broadcast_after_mutation, files_audit_kv};
 
 // ───────────────────────── 工具调度核心（execute_tool dispatch） ─────────────────────────
@@ -231,8 +231,10 @@ async fn execute_tool_impl(
     };
     // B1：工具仍返 (String, Vec<TaskRef>) 元组；From 过渡层默认 Ok。
     // B2 cleanup 会删除 From impl，工具届时改为显式 ok/warn/error。
-    let result: crate::bot::registry::ToolResult = match tools_index().get(name).copied() {
-        // T7：O(n) 线性扫描 → O(1) HashMap 查找。
+    // T7：O(n) 线性扫描 → O(1) HashMap 查找；结果存 tool_def 供 post-execute 复用
+    // （原先下方又走 TOOLS_TABLE.iter().find 线性扫，每次调用两次 name 查找）。
+    let tool_def = tools_index().get(name).copied();
+    let result: crate::bot::registry::ToolResult = match tool_def {
         Some(t) => (t.call)(&ctx, args).await.into(),
         None => crate::bot::registry::ToolResult::error(format!("未知工具：{name}"), Vec::new()),
     };
@@ -245,7 +247,7 @@ async fn execute_tool_impl(
     let level = crate::audit::AuditLevel::from_tool_status(result.status);
     // T6：保守 token 预算——仅 audit，不截断。超阈值的工具输出走 `tool.output.over_budget`
     // 事件供事后分析，默认阈值 8192，read_text_file/fetch_url/list_files 等长输出工具 65536。
-    if let Some(t) = TOOLS_TABLE.iter().find(|t| t.name == name) {
+    if let Some(t) = tool_def {
         let output_len = result.text.chars().count();
         if output_len > t.max_output_chars {
             crate::audit::write_event(
