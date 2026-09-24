@@ -78,11 +78,13 @@
 
 - [2026-09-24 ~19:55 CST] AP-07 收口（commit 3d6b1a8）：**C5-AP-07 单条已清**。api.rs:101 sync 桥接隐式约定 → assert_sync_bridge_caller（tokio Handle::try_current 检查，Cargo.toml tokio 加 rt feature 非新依赖）+ trait doc 契约段；不用 catch_unwind 包 block_on（误吞 db fn 自身 panic 误标）；不做 async trait 改造（扩 scope）。行为变更仅限 runtime 线程误调用的 panic 消息点名约定，现状调用路径零变化。新增 2 测试（runtime 内 panic 点名 / 普通线程放行）。OCR r1 0 comments / 0 failure；type 1 n=25 不变。spec 立项 700b5d3。**api 域剩 AP-06（与 DB-01a-3 合批）。**
 
+- [2026-09-24 ~20:05 CST] AP-06 + DB-01a-3 状态核清（docs-only，零代码）：**两条均已在历史 commit 修复，§2 行漏标**。AP-06 已由独立批 0b6ee69（2026-09-23，error-visible-non-blocking）修复——atomic_write 失败 eprintln 留痕（当前代码 api_server.rs:127-129 即是）；DB-01a-3 已由首批补全 f93f4a9 修复——reset_bot_assigned_with bool→Result + open_db `?` 传播（当前代码 mod.rs:266 即是，§3.5 修复路径已落地）。**C5-DB-01a 全簇 3 条已清（1fcc418 ×2 + f93f4a9）；api 域 7 簇全清**。db 域剩 DB-03 / DB-05（B 类候选 3 条）。OCR 对 AP-06 残留的进一步建议（重试 / refuse-to-advance）属语义方向 → 并入 B 类攒批第 16 项（A=写失败拒推进 id（fail-closed，SSE 事件暂停）/ B=瞬时错误重试 ×N / C=维持 eprintln 现状）。
+
 ## 1. 跨域同模式家族
 按"错误去哪了" + "是否破坏数据"两轴判，**4 家族**（poisoned-silent-recovery 已溶解 — 见执行日志；error-visible-non-blocking 已重新引入 for C5-AP-06 only — 见 §3.5 异常 2 更新）：
 
 ### error-not-propagated（错误信号丢失，调用方收到空/无，**不破坏已有数据**）
-- C5-DB-01a（db，3 条：workspace.rs:54 返回空 Vec / tasks.rs:185 ON CONFLICT 哑火 / mod.rs:251 bool 被丢）
+- C5-DB-01a（db，3 条：workspace.rs:54 返回空 Vec / tasks.rs:185 ON CONFLICT 哑火 / mod.rs:251 bool 被丢）→ **已清（1fcc418 ×2 + f93f4a9 ×1）**
 - C5-EV-3b-A（evolution，5 条）
 - C5-BT-01a（bot*，5 条）
 - C5-MI-02（migration，3 条）
@@ -111,7 +113,7 @@
 ## 2. 簇清单（已确认域）
 
 ### 域 db（7 簇 / 16 findings）
-- C5-DB-01a：error-not-propagated（workspace.rs:54 + tasks.rs:185 + mod.rs:251），3 条
+- C5-DB-01a：error-not-propagated（workspace.rs:54 + tasks.rs:185 + mod.rs:251），3 条 → **已清**：workspace.rs:54 + tasks.rs:185 首批 1fcc418；mod.rs:251 首批补全 f93f4a9（reset_bot_assigned_with bool→Result + `?` 传播）
 - C5-DB-01b：failure-recovery-default-value（workspace.rs:92 + :209），2 条
 - C5-DB-02a：atomicity/partial-write（migrations.rs:51 + paths.rs:65），2 条
 - C5-DB-02b：事务约定一致性 / 设计债（tasks.rs:439）→ **wontfix-pending-design-decision**，触发条件 = 未来引入 cascade/soft-delete 多语句 delete 时重审
@@ -163,7 +165,7 @@
 - C5-AP-03：日志输出缺陷（api_handlers/ratelimit.rs:45 + :36，批内 2 处独立改动），2 条 → **已修（AP-03，commit a78de81）**
 - C5-AP-04：SSE writer 缺陷（api_handlers/sse.rs:196 + :183），2 条 → **已修（AP-04，commit 8d49a26：vendor 写超时 patch + broadcast 单临界区化）**
 - C5-AP-05：持锁跨 I/O（api_handlers/handlers.rs:277 + :405 + :561），3 条 → **已修（AP-05，commit bfe30b9：labeled block 装盒出锁后响应）**
-- C5-AP-06：静默吞错（api_server.rs:126），1 条，**error-not-propagated 家族**
+- C5-AP-06：静默吞错（api_server.rs:126），1 条，error-visible-non-blocking 家族 → **已修（独立批 0b6ee69，2026-09-23：atomic_write 失败 eprintln 留痕）**
 - C5-AP-07：sync block_on 隐式约定（api.rs:101），1 条 → **已修（AP-07，commit 3d6b1a8：运行时检查 + trait 契约文档化）**
 
 ### 域 bot*（15 簇 / 46 findings；去重后）
