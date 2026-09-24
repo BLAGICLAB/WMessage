@@ -270,15 +270,15 @@ fn create_task(
     };
 
     // load→max_order→upsert 全程持 API_RMW_LOCK——
-    // 两段式无锁会让并发 create 算出相同 order、并发写互相用旧快照整行覆盖
-    let task = {
+    // 两段式无锁会让并发 create 算出相同 order、并发写互相用旧快照整行覆盖。
+    // 锁内只做 DB 读写，错误经 labeled block 装盒、出锁后再响应（OCR C5-AP-05）——
+    // 持锁跨 socket I/O 会让慢客户端串行化全部并发 API 写。
+    // create 的 load/upsert 失败原都走 internal_err（500），保持。
+    let task = match 'rmw: {
         let _rmw = API_RMW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let all = match store.load() {
             Ok(v) => v,
-            Err(e) => {
-                internal_err(req, log, &e);
-                return;
-            }
+            Err(e) => break 'rmw Err(e),
         };
         let max_order = all.iter().filter_map(|t| t.order).fold(0.0f64, f64::max);
         let now = now_ms();
@@ -334,10 +334,15 @@ fn create_task(
             expected_updated_at: None, // 新建任务：无读快照基线
         };
         if let Err(e) = store.upsert(vec![task.clone()]) {
+            break 'rmw Err(e);
+        }
+        Ok(task)
+    } {
+        Ok(t) => t,
+        Err(e) => {
             internal_err(req, log, &e);
             return;
         }
-        task
     };
     after_change(store, &task, "created", emit_fn, log);
     let _ = req.respond(json_ok(StatusCode(201), &TaskOut::from_task(&task)));
@@ -400,18 +405,20 @@ fn update_task(
     // load→改→upsert 全程持 API_RMW_LOCK(API 写串行化)。
     // 作用域块收窄锁:块一结束即释放,after_change(SSE fanout)不持锁
     // (持锁会串行化所有 API 写跨 SSE 网络延迟)。
-    let t = {
+    // 锁内只做 DB 读写，错误经 labeled block 装盒、出锁后再响应（OCR C5-AP-05）。
+    enum ErrOut {
+        Load(String),
+        NotFound,
+        Upsert(String),
+    }
+    let t = match 'rmw: {
         let _rmw = API_RMW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tasks = match store.load() {
             Ok(v) => v,
-            Err(e) => {
-                internal_err(req, log, &e);
-                return;
-            }
+            Err(e) => break 'rmw Err(ErrOut::Load(e)),
         };
         let Some(idx) = tasks.iter().position(|t| t.id == id) else {
-            let _ = req.respond(json_err(StatusCode(404), "task not found"));
-            return;
+            break 'rmw Err(ErrOut::NotFound);
         };
         let mut t = tasks[idx].clone();
         // RMW 基线 = 本次 load 快照的 updated_at；upsert 写前比对，基线外有写者改行 → 409 拒写。
@@ -488,10 +495,23 @@ fn update_task(
         t.updated_at = Some(now_ms());
 
         if let Err(e) = store.upsert(vec![t.clone()]) {
+            break 'rmw Err(ErrOut::Upsert(e));
+        }
+        Ok(t)
+    } {
+        Ok(t) => t,
+        Err(ErrOut::Load(e)) => {
+            internal_err(req, log, &e);
+            return;
+        }
+        Err(ErrOut::NotFound) => {
+            let _ = req.respond(json_err(StatusCode(404), "task not found"));
+            return;
+        }
+        Err(ErrOut::Upsert(e)) => {
             upsert_err(req, log, &e);
             return;
         }
-        t
     };
     after_change(store, &t, "updated", emit_fn, log);
     let _ = req.respond(json_ok(StatusCode(200), &TaskOut::from_task(&t)));
@@ -550,19 +570,24 @@ fn delete_task(
     emit_fn: &Option<Arc<dyn Fn(&db::Task) + Send + Sync>>,
     log: &Option<PathBuf>,
 ) {
-    // load→改→upsert 全程持 API_RMW_LOCK（API 写串行化）
-    let t = {
+    // load→改→upsert 全程持 API_RMW_LOCK（API 写串行化）。
+    // 锁内只做 DB 读写，错误/幂等重删经 labeled block 装盒、出锁后再响应
+    // （OCR C5-AP-05）。
+    enum ErrOut {
+        Load(String),
+        NotFound,
+        Upsert(String),
+        /// 幂等重删：已在回收站 → 出锁后 200 当前状态（不 after_change，不变）
+        AlreadyDeleted(db::Task),
+    }
+    let t = match 'rmw: {
         let _rmw = API_RMW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tasks = match store.load() {
             Ok(v) => v,
-            Err(e) => {
-                internal_err(req, log, &e);
-                return;
-            }
+            Err(e) => break 'rmw Err(ErrOut::Load(e)),
         };
         let Some(idx) = tasks.iter().position(|t| t.id == id) else {
-            let _ = req.respond(json_err(StatusCode(404), "task not found"));
-            return;
+            break 'rmw Err(ErrOut::NotFound);
         };
         let mut t = tasks[idx].clone();
         // RMW 基线 = 本次 load 快照的 updated_at（同 update_task）；
@@ -570,16 +595,32 @@ fn delete_task(
         db::prepare_for_upsert(&mut t);
         if t.deleted_at.is_some() {
             // 已在回收站：幂等返回当前状态
-            let _ = req.respond(json_ok(StatusCode(200), &TaskOut::from_task(&t)));
-            return;
+            break 'rmw Err(ErrOut::AlreadyDeleted(t));
         }
         t.deleted_at = Some(now_ms());
         t.updated_at = Some(now_ms());
         if let Err(e) = store.upsert(vec![t.clone()]) {
+            break 'rmw Err(ErrOut::Upsert(e));
+        }
+        Ok(t)
+    } {
+        Ok(t) => t,
+        Err(ErrOut::Load(e)) => {
+            internal_err(req, log, &e);
+            return;
+        }
+        Err(ErrOut::NotFound) => {
+            let _ = req.respond(json_err(StatusCode(404), "task not found"));
+            return;
+        }
+        Err(ErrOut::Upsert(e)) => {
             upsert_err(req, log, &e);
             return;
         }
-        t
+        Err(ErrOut::AlreadyDeleted(t)) => {
+            let _ = req.respond(json_ok(StatusCode(200), &TaskOut::from_task(&t)));
+            return;
+        }
     };
     after_change(store, &t, "deleted", emit_fn, log);
     let _ = req.respond(json_ok(StatusCode(200), &TaskOut::from_task(&t)));
