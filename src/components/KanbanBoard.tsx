@@ -176,7 +176,8 @@ export function KanbanBoard({
     const activeCol = columnOf(String(active.id));
     const overCol = columnOf(String(over.id));
     if (!activeCol || !overCol) return;
-    const translated = active.rect.current.translated ?? active.rect.current.initial;
+    const translated =
+      active.rect.current?.translated ?? active.rect.current?.initial;
     const below =
       translated && over.rect
         ? translated.top + translated.height / 2 >

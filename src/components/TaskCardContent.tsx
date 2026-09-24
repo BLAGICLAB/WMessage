@@ -292,7 +292,11 @@ export function TaskCardContent({
                   onPointerDown={stop}
                   onClick={(e) => {
                     e.stopPropagation();
-                    setSchedOnce(scheduleToDatetime(task.schedule));
+                    // 仅展开且草稿为空时初始化：收起不动草稿——
+                    // 误触 ⏰ 不丢正在输入的值（取消定时清空后重开自然重置）
+                    if (!schedOpen && !schedOnce) {
+                      setSchedOnce(scheduleToDatetime(task.schedule));
+                    }
                     setSchedOpen((v) => !v);
                   }}
                   title={
@@ -362,6 +366,7 @@ export function TaskCardContent({
                     onClick={(e) => {
                       e.stopPropagation();
                       onSetSchedule(undefined);
+                      setSchedOnce(""); // 清草稿：下次 ⏰ 展开自然重新初始化
                       setSchedOpen(false);
                     }}
                   >

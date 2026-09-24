@@ -178,3 +178,47 @@ describe("TaskCardContent 完成时间显示（与主窗口一致）", () => {
     expect(container.textContent).not.toContain("完成 ");
   });
 });
+
+// 定时草稿保护：误触 ⏰ 收起再展开，未提交草稿须保留（旧代码每次点击都重置为 schedule 值）
+describe("TaskCardContent 定时草稿保护（FE-08a）", () => {
+  const schedTask: Task = {
+    id: "t9",
+    title: "带定时的任务",
+    column: "todo",
+    schedule: "at:2026-10-01T10:00:00",
+  };
+
+  it("收起再展开：草稿保留不被重置", async () => {
+    const user = userEvent.setup();
+    render(<TaskCardContent task={schedTask} onSetSchedule={vi.fn(async () => {})} />);
+    const toggle = screen.getByTitle(/点击修改\/取消/);
+    // 展开：初始化为 schedule 值
+    await user.click(toggle);
+    const input = screen.getByDisplayValue("2026-10-01T10:00");
+    // 输入新草稿
+    await user.clear(input);
+    await user.type(input, "2026-11-05T08:30");
+    // 误触收起 → 再展开：草稿应在（旧代码此处回退为 2026-10-01T10:00）
+    await user.click(toggle);
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    await user.click(toggle);
+    expect(screen.getByDisplayValue("2026-11-05T08:30")).toBeInTheDocument();
+  });
+
+  it("取消定时清空草稿：重开 ⏰ 重新初始化为 schedule 值（无残留旧草稿）", async () => {
+    const user = userEvent.setup();
+    const onSetSchedule = vi.fn(async () => {});
+    render(<TaskCardContent task={schedTask} onSetSchedule={onSetSchedule} />);
+    const toggle = screen.getByTitle(/点击修改\/取消/);
+    await user.click(toggle);
+    const input = screen.getByDisplayValue("2026-10-01T10:00");
+    await user.clear(input);
+    await user.type(input, "2026-11-05T08:30");
+    // 取消定时 → 草稿清空
+    await user.click(screen.getByText("取消"));
+    expect(onSetSchedule).toHaveBeenCalledWith(undefined);
+    // 重开：初始化回 schedule 值（非残留 2026-11-05T08:30）
+    await user.click(toggle);
+    expect(screen.getByDisplayValue("2026-10-01T10:00")).toBeInTheDocument();
+  });
+});

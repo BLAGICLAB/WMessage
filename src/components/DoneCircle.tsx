@@ -11,6 +11,7 @@ export function DoneCircle({
   const stop = (e: React.PointerEvent) => e.stopPropagation();
   return (
     <button
+      type="button"
       className={`shrink-0 w-5 h-5 rounded-full nm-inset flex items-center justify-center text-xs leading-none ${
         done ? "text-[var(--success)]" : "text-transparent hover:text-[var(--t5)]"
       }`}

@@ -611,7 +611,10 @@ export function TodoCardView({
           }`}
           onPointerDown={stop}
           onClick={() => {
-            setSchedOnce(scheduleToDatetime(task.schedule));
+            // 仅展开且草稿为空时初始化：收起不动草稿（与 TaskCardContent 同形态）
+            if (!schedOpen && !schedOnce) {
+              setSchedOnce(scheduleToDatetime(task.schedule));
+            }
             setSchedOpen((v) => !v);
           }}
           title={
@@ -678,6 +681,7 @@ export function TodoCardView({
                 onPointerDown={stop}
                 onClick={() => {
                   onUpdate(task.id, { schedule: undefined });
+                  setSchedOnce(""); // 取消定时清草稿，下次 ⏰ 展开自然重新初始化
                   setSchedOpen(false);
                 }}
               >

@@ -462,3 +462,26 @@ describe("TodoCardView 子任务", () => {
     expect(screen.queryByDisplayValue("第一步子任务")).not.toBeInTheDocument();
   });
 });
+
+// ⏰ 定时草稿保护（与挂件 TaskCardContent 同形态，FE-08a）
+describe("TodoCard 定时草稿保护", () => {
+  it("收起再展开：草稿保留不被重置；取消定时清草稿", async () => {
+    const user = userEvent.setup();
+    const task = { ...baseTask, schedule: "at:2026-10-01T10:00:00" };
+    const onUpdate = vi.fn();
+    render(<TodoCardView task={task} onUpdate={onUpdate} onDelete={vi.fn()} />);
+    const toggle = screen.getByTitle(/点击修改\/取消/);
+    await user.click(toggle);
+    const input = screen.getByDisplayValue("2026-10-01T10:00");
+    await user.clear(input);
+    await user.type(input, "2026-11-05T08:30");
+    await user.click(toggle);
+    await user.click(toggle);
+    expect(screen.getByDisplayValue("2026-11-05T08:30")).toBeInTheDocument();
+    // 取消定时：草稿清空 + onUpdate(schedule: undefined)
+    await user.click(screen.getByText("取消"));
+    expect(onUpdate).toHaveBeenCalledWith(task.id, { schedule: undefined });
+    await user.click(toggle);
+    expect(screen.getByDisplayValue("2026-10-01T10:00")).toBeInTheDocument();
+  });
+});
