@@ -126,7 +126,7 @@ describe("useInlineEdit（P2-23）", () => {
     expect(onCommit).toHaveBeenCalledWith("原标题改");
   });
 
-  it("Enter 显式提交后跟随的 blur 不重复提交语义由调用方控制（hook 不拦截）", async () => {
+  it("Enter 显式提交后跟随的卸载 blur 不二次提交（committedRef 拦截）", async () => {
     const user = userEvent.setup();
     const onCommit = vi.fn();
     render(<Harness value="原标题" editing={true} onCommit={onCommit} />);
@@ -134,9 +134,11 @@ describe("useInlineEdit（P2-23）", () => {
     await user.type(input, "改");
     fireEvent.keyDown(input, { key: "Enter" });
     expect(onCommit).toHaveBeenCalledTimes(1);
-    // Enter 已重置取消标记，blur 仍会走 onCommit——
-    // 生产组件里 Enter 提交会让父组件退出编辑态卸载 input，blur 不会再触发；
-    // 若调用方让 input 保持挂载，重复提交是幂等的（父组件 trim/比较后自行决定写不写）
+    // Enter 提交置 committedRef：生产组件里 Enter 提交会让父组件退编辑态卸载 input，
+    // 卸载期 blur 必须跳过（否则同一草稿二次提交）
+    fireEvent.blur(input);
+    expect(onCommit).toHaveBeenCalledTimes(1);
+    // 跳过后标记复位：再次 blur 可正常提交
     fireEvent.blur(input);
     expect(onCommit).toHaveBeenCalledTimes(2);
   });

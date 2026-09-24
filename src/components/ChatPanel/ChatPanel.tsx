@@ -20,7 +20,6 @@ import { MarkdownText } from "../MarkdownText";
 import type { Msg, Session, TaskRef, ToolCall, SkillFailure } from "./types";
 import {
   DELTA_BATCH_MS,
-  EXEC_TASK_DEDUP_MS,
   SLASH_COMMANDS,
   execTaskDedup,
 } from "./constants";
@@ -446,9 +445,7 @@ export function ChatPanel({
     const unExec = listen<{ id?: string; title?: string }>("execute-task", (e) => {
       const { id } = e.payload ?? {};
       if (!id) return;
-      const now = Date.now();
-      if (now - (execTaskDedup.get(id) ?? 0) < EXEC_TASK_DEDUP_MS) return;
-      execTaskDedup.set(id, now);
+      if (execTaskDedup.shouldSkip(id, Date.now())) return;
       invoke("bot_execute_task", { taskId: id, sessionId: null })
         .then(() => {
           // 执行收尾：刷新会话列表（新会话入列）；若正围观该执行会话，

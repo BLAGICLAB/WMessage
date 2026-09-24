@@ -31,7 +31,7 @@ import {
 
 type StatusFilter = ProposalStatus | null;
 
-const ACTIVE_STATUSES = new Set([
+const ACTIVE_STATUSES: ReadonlySet<ChangeRecord["status"]> = new Set([
   "pending",
   "shadowing",
   "shadow_passed",
@@ -152,7 +152,7 @@ export function EvolutionPanel() {
       return changes.some(
         (c) =>
           c.proposal_id === proposalId &&
-          ACTIVE_STATUSES.has(c.status as string)
+          ACTIVE_STATUSES.has(c.status)
       );
     },
     [changes]

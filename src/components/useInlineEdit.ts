@@ -32,7 +32,10 @@ export function useInlineEdit({
   // 进入编辑态（false→true）那一瞬重置草稿为当前值
   const prevEditing = useRef(editing);
   useEffect(() => {
-    if (editing && !prevEditing.current) setDraft(value);
+    if (editing && !prevEditing.current) {
+      setDraft(value);
+      committedRef.current = false; // 新一轮编辑复位提交标记
+    }
     prevEditing.current = editing;
     // value 不进依赖：编辑中外部值变化不得覆盖用户输入
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -40,8 +43,12 @@ export function useInlineEdit({
   // E4：Escape 取消标记——取消后若 blur 仍触发，必须跳过本次提交；
   // 提交/跳过后重置标记，不污染下一轮编辑
   const cancelledRef = useRef(false);
+  // Enter 显式提交后 input 卸载（父组件退编辑态）会触发一次 blur：
+  // 标记本轮已提交，紧随的 blur 跳过一次，防双提交
+  const committedRef = useRef(false);
 
   const commit = () => {
+    committedRef.current = true; // 前置：onCommit 同步触发的卸载 blur 也要能读到
     cancelledRef.current = false; // 显式提交，重置取消标记
     onCommit(draft);
   };
@@ -50,10 +57,14 @@ export function useInlineEdit({
     setDraft(value);
     onCancel?.();
   };
-  /** blur 提交：Escape 已取消则跳过并重置标记 */
+  /** blur 提交：Escape 已取消则跳过；Enter 已提交则跳过一次（卸载 blur） */
   const onBlur = () => {
     if (cancelledRef.current) {
       cancelledRef.current = false;
+      return;
+    }
+    if (committedRef.current) {
+      committedRef.current = false;
       return;
     }
     onCommit(draft);

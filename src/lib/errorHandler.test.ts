@@ -86,6 +86,22 @@ describe("handleCommandError recoverable 驱动重试 UI（P0-6B）", () => {
     expect(alertSpy).not.toHaveBeenCalled();
     expect(onRetry).not.toHaveBeenCalled();
   });
+
+  it("onRetry 同步抛错 → 不外逃，回收进 handleCommandError（silent 不二次弹窗）", () => {
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const onRetry = vi.fn(() => {
+      throw ce("DB_ERROR", false, "重试时也挂了");
+    });
+    expect(() =>
+      handleCommandError(ce("BOT_DISABLED", true), "test", { onRetry })
+    ).not.toThrow();
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    // 回收路径 silent：不再弹 alert/confirm；console 留痕（两条：原始 + 回收）
+    expect(alertSpy).not.toHaveBeenCalled();
+    expect(consoleSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(consoleSpy.mock.calls[1][0]).toContain("DB_ERROR");
+    consoleSpy.mockRestore();
+  });
 });
 
 describe("空 message 兜底（P2-35）", () => {  let alertSpy: ReturnType<typeof vi.spyOn>;

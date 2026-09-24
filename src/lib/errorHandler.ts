@@ -218,7 +218,15 @@ export function handleCommandError(
     // recoverable 驱动 UI：可恢复 + 调用方给了重试回调 → confirm 提供「重试」选择；
     // 不可恢复（或无回调）→ alert + hint 引导（hint 已按 code 区分「去设置页」/「反馈日志」）
     if (e.recoverable && options.onRetry) {
-      if (confirm(`❌ ${body}\n\n🔁 是否重试？`)) options.onRetry();
+      if (confirm(`❌ ${body}\n\n🔁 是否重试？`)) {
+        try {
+          options.onRetry();
+        } catch (retryErr) {
+          // 重试回调同步抛错不能逃出错误处理器本身——回收进同一入口
+          // （silent：confirm 刚弹过，不二次弹窗）
+          handleCommandError(retryErr, ctx, { silent: true });
+        }
+      }
     } else {
       alert(`❌ ${body}`);
     }
