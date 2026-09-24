@@ -73,3 +73,20 @@ describe("mergeFiles", () => {
     expect(capped.truncated).toBe(true);
   });
 });
+
+// 跨语言锁步：TS 的 MAX_TASK_FILES 必须与 Rust db::MAX_TASK_FILES 同值——
+// 分叉会让 FFI 两侧截断行为静默不一致（一侧截 10 另一侧放 20）。
+// 不开 Tauri command（零运行时面）：直接读 Rust 源码正则断言。
+describe("MAX_TASK_FILES 跨语言锁步", () => {
+  it("TS 常量 == Rust db::MAX_TASK_FILES", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { resolve } = await import("node:path");
+    const rustSrc = readFileSync(
+      resolve(__dirname, "../../src-tauri/src/db/tasks.rs"),
+      "utf-8"
+    );
+    const m = rustSrc.match(/MAX_TASK_FILES:\s*usize\s*=\s*(\d+)/);
+    expect(m, "tasks.rs 里应能找到 MAX_TASK_FILES 常量定义").toBeTruthy();
+    expect(Number(m![1])).toBe(MAX_TASK_FILES);
+  });
+});

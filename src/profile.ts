@@ -17,33 +17,42 @@ export type ProfileView = {
 
 let cache: ProfileView | null = null;
 let loading: Promise<ProfileView> | null = null;
+// 代际：force 发起新加载后递增，旧在飞 promise 的 resolve 不得覆盖新结果
+let loadGen = 0;
 const subs = new Set<() => void>();
 
 function notify() {
   subs.forEach((cb) => cb());
 }
 
-/** 拉取资料（缓存命中直接返回） */
+/** 拉取资料（缓存命中直接返回；force=true 无视缓存与在飞请求，强制重新拉取） */
 export async function loadProfile(force = false): Promise<ProfileView> {
   ensureProfileListen();
   if (cache && !force) return cache;
-  if (!loading) {
-    loading = invoke<ProfileView>("profile_get")
-      .then((v) => {
+  // force 时旧在飞请求不得复用（否则显式刷新拿到的是未强制的结果）；
+  // 旧 promise 晚到时由 loadGen 挡下，不覆盖 cache / 不重复 notify
+  if (loading && !force) return loading;
+  const gen = ++loadGen;
+  const p = invoke<ProfileView>("profile_get")
+    .then((v) => {
+      if (gen === loadGen) {
         cache = v;
-        loading = null;
         notify();
-        return v;
-      })
-      .catch((e) => {
-        loading = null;
-        // 加载失败：不静默吞错，让上层 try/catch 处理（SettingsPage ProfileRow 有 inline UI，
-        // 这里只是把异常原样上抛，避免双重提示）
-        handleCommandError(e, "profile_get", { silent: true });
-        throw e;
-      });
-  }
-  return loading;
+      }
+      return v;
+    })
+    .catch((e) => {
+      // 加载失败：不静默吞错，让上层 try/catch 处理（SettingsPage ProfileRow 有 inline UI，
+      // 这里只是把异常原样上抛，避免双重提示）
+      handleCommandError(e, "profile_get", { silent: true });
+      throw e;
+    })
+    .finally(() => {
+      // 只清「自己这条链」——force 新链已接替时不动 loading
+      if (loading === p) loading = null;
+    });
+  loading = p;
+  return p;
 }
 
 /** 订阅资料变更；返回取消函数 */

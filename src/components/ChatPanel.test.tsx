@@ -2,7 +2,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ChatPanel } from "./ChatPanel";
+import { stubScrollNoop } from "../test/scrollNoop";
 import type { Task } from "../types";
+
+// ChatPanel 自动滚动依赖 jsdom 未实现的 scrollTo/scrollIntoView（scoped noop）
+stubScrollNoop();
 
 // vi.mock 工厂会被提升到顶部，因此共享 mock 变量必须用 vi.hoisted 包裹
 const mocks = vi.hoisted(() => {

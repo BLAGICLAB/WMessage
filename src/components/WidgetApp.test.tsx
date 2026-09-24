@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import WidgetApp from "./WidgetApp";
+import { stubScrollNoop } from "../test/scrollNoop";
+
+// WidgetApp 面板滚动依赖 jsdom 未实现的 scrollTo/scrollIntoView（scoped noop）
+stubScrollNoop();
 
 // —— Tauri mocks ——
 const mocks = vi.hoisted(() => {

@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { afterEach, vi } from "vitest";
+import { afterEach, beforeEach, vi } from "vitest";
 import { cleanup } from "@testing-library/react";
 
 afterEach(() => {
@@ -9,12 +9,15 @@ afterEach(() => {
 
 // React 19 + @testing-library：子组件异步状态更新（如 ActorAvatar useProfile
 // 的 loadProfile promise）会产生未包装 act 的警告；测试结果不受影响，仅净化日志。
-const originalError = console.error;
-console.error = (...args: unknown[]) => {
-  const msg = typeof args[0] === "string" ? args[0] : "";
-  if (msg.includes("not wrapped in act")) return;
-  originalError(...args);
-};
+// 真身在模块加载期捕获一次（spy 恢复与否不影响）；正则须带 act( 括号防误吞。
+const realConsoleError = console.error;
+beforeEach(() => {
+  vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+    const msg = typeof args[0] === "string" ? args[0] : "";
+    if (/not wrapped in act\(/.test(msg)) return;
+    realConsoleError(...args);
+  });
+});
 
 // jsdom 不实现 matchMedia，theme.ts 的 subscribeSystem 要用到；返回基础 mock
 if (typeof window !== "undefined" && !window.matchMedia) {
@@ -33,19 +36,9 @@ if (typeof window !== "undefined" && !window.matchMedia) {
   });
 }
 
-// jsdom 不实现 HTMLDivElement.scrollTo / scrollIntoView；ChatPanel 自动滚动会用到
-if (typeof Element !== "undefined") {
-  if (!Element.prototype.scrollTo) {
-    Element.prototype.scrollTo = function () {
-      // noop：测试不需要真实滚动
-    };
-  }
-  if (!Element.prototype.scrollIntoView) {
-    Element.prototype.scrollIntoView = function () {
-      // noop
-    };
-  }
-}
+// Element.scrollTo / scrollIntoView 的 jsdom noop 已按 suite scope 收进
+// src/test/scrollNoop.ts（渲染 ChatPanel / WidgetApp 的测试文件各自引入）——
+// 不再全局常驻原型补丁（原型链安全规则）。
 
 // crypto.randomUUID 在 jsdom 中默认存在，但部分老环境下缺失；这里兜底
 if (typeof globalThis.crypto === "undefined") {
