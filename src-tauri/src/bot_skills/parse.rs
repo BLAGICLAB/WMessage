@@ -84,11 +84,13 @@ pub fn parse_meta(text: &str, dir_name: &str) -> SkillMeta {
                 }
             }
             "mode" => {
-                mode_explicit = true;
                 let v2 = v.to_ascii_lowercase();
                 m.mode = if matches!(v2.as_str(), "auto" | "interactive") {
+                    mode_explicit = true;
                     v2
                 } else {
+                    // 非法 mode 按未声明处理：下方风险推导接管，
+                    // low 未显式声明 → auto 提升不被非法值吞掉
                     "interactive".into()
                 }
             }
@@ -390,6 +392,18 @@ mod tests {
         let t = "---\nrisk_level: high\nmode: auto\n---\n";
         let m = parse_meta(t, "d");
         assert_eq!(m.mode, "interactive"); // 安全兜底：high 强制人机协同
+    }
+
+    #[test]
+    fn meta_invalid_mode_does_not_block_low_auto_promotion() {
+        // 非法 mode 按未声明处理：low 未显式声明 → auto 提升不被吞
+        let m = parse_meta("---\nmode: bg\nrisk_level: low\n---\n", "d");
+        assert_eq!(m.mode, "auto");
+        // 合法显式声明保留（不受提升逻辑改写）
+        let m2 = parse_meta("---\nmode: interactive\nrisk_level: low\n---\n", "d");
+        assert_eq!(m2.mode, "interactive");
+        let m3 = parse_meta("---\nmode: auto\nrisk_level: low\n---\n", "d");
+        assert_eq!(m3.mode, "auto");
     }
 
     #[test]

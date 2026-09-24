@@ -79,8 +79,9 @@ pub struct BotConfig {
     /// OpenAI 兼容接口地址，如 https://api.deepseek.com/v1
     pub base_url: String,
     pub model: String,
-    /// 仅用于旧版本迁移：老 bot-config.json 里的明文 key，读出迁入凭据存储后置 None 写回
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// 仅用于旧版本迁移：老 bot-config.json 里的明文 key，读出迁入凭据存储后置 None 写回；
+    /// 永不序列化——明文 key 不落盘，任何未来忘剥 key 的写路径 fail-closed
+    #[serde(skip_serializing)]
     pub api_key: Option<String>,
     /// pre-step 命中 Skill 时是否跳过外层主 LLM。
     /// true = auto 模式 bypass LLM，interactive 模式仍走 LLM 但 Skill body 注入 system prompt；
@@ -94,7 +95,7 @@ pub struct BotConfig {
     /// 仅用于旧版本迁移（Tavily key 存系统凭据存储，不再明文落盘）：
     /// 老 bot-config.json 里的明文 Tavily key，由 migrate_search_keys 读出迁入
     /// keyring 后置 None 写回。新代码读写 Tavily key 一律走 read/write_search_key。
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing)]
     pub tavily_key: Option<String>,
     /// 「Tavily 搜索」开关（可选）：None = 未显式设置，按旧行为自动
     /// （配了 tavilyKey 就当开启）；Some(true) = 强制走 Tavily；Some(false) = 强制
@@ -104,7 +105,7 @@ pub struct BotConfig {
     /// 仅用于旧版本迁移（Brave key 存系统凭据存储，不再明文落盘）：
     /// 老 bot-config.json 里的明文 Brave key，由 migrate_search_keys 读出迁入
     /// keyring 后置 None 写回。新代码读写 Brave key 一律走 read/write_search_key。
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing)]
     pub brave_key: Option<String>,
     /// 「Brave 搜索」开关（可选）：语义与 tavily_enabled 对齐——
     /// None = 未显式设置，配了 braveKey 就当开启；Some(false) 强制不走 Brave。

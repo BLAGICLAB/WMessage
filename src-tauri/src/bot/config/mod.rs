@@ -538,7 +538,7 @@ mod tests {
         assert!(!raw.contains("***"), "LLM key 不得落盘：{raw}");
         assert!(!raw.contains("tvly-plain"), "Tavily key 不得落盘：{raw}");
         assert!(!raw.contains("bsa-plain"), "Brave key 不得落盘：{raw}");
-        // 字段本身也应消失（skip_serializing_if + 强制 None）
+        // 字段本身也应消失（skip_serializing 永不序列化 + 强制 None）
         let saved: BotConfig = serde_json::from_str(&raw).unwrap();
         assert!(saved.api_key.is_none() && saved.tavily_key.is_none() && saved.brave_key.is_none());
     }
