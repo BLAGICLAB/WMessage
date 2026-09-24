@@ -20,12 +20,15 @@ pub fn audit_log_hook<R: tauri::Runtime>(app: &tauri::AppHandle<R>, line: &str) 
 }
 
 pub fn audit_log<R: tauri::Runtime>(app: &tauri::AppHandle<R>, line: &str) {
-    // 与 audit::write_event 共用同一把写锁，防并发 append 交错错行
+    // data_dir 解析 + rotation（stat+rename 数 MB）在锁外跑：慢 IO 不饿死其它
+    // audit 写者。rotate_log_if_large 容错竞争（metadata 失败跳过 / rename 失败
+    // 静默）——双写者并发 rotation 最坏 = 当次不轮转，下次调用补上，无数据破坏。
+    let p = db::data_dir(app).join("bot.log");
+    crate::db::rotate_log_if_large(&p, 5 * 1024 * 1024);
+    // 与 audit::write_event 共用同一把写锁，锁内只剩 open+append 防交错错行
     let _g = crate::audit::BOT_LOG_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    let p = db::data_dir(app).join("bot.log");
-    crate::db::rotate_log_if_large(&p, 5 * 1024 * 1024);
     let _ = append_bot_log_line(&p, line);
 }
 

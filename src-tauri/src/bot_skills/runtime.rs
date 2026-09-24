@@ -72,7 +72,9 @@ pub fn start_skill(
     // 步骤钩子/暂停/确认按「唯一活动技能」定位，多技能同时 Running 会导致
     // 步骤计数与暂停确认全部记到第一个技能、后续技能被静默忽略。
     // 会话隔离：只结束同会话的技能，别的会话的活动技能不受影响。
-    let mut switched: Vec<String> = Vec::new();
+    // 锁内只做状态迁移 + 收集审计载荷；audit_log_hook（写盘 IO）移到锁外发，
+    // 持锁跨外部调用 = 慢 IO 串行化全部写者 + 钩子重入 registry 即死锁。
+    let mut switched: Vec<(String, usize)> = Vec::new();
     for (n, r) in runs.iter_mut() {
         if *n != meta.name
             && (r.state == SkillState::Running || r.state == SkillState::Paused)
@@ -80,19 +82,17 @@ pub fn start_skill(
         {
             r.state = SkillState::Completed;
             r.end_reason = "切换到其他技能".into();
-            switched.push(n.clone());
+            switched.push((n.clone(), r.step));
         }
     }
-    for n in &switched {
+    runs.insert(meta.name.clone(), run);
+    drop(runs);
+    for (n, step) in &switched {
         crate::bot::audit_log_hook(
             app,
-            &format!(
-                "skill_completed | name: {n} | 切换技能结束 | steps: {}",
-                runs.get(n).map(|r| r.step).unwrap_or(0)
-            ),
+            &format!("skill_completed | name: {n} | 切换技能结束 | steps: {step}"),
         );
     }
-    runs.insert(meta.name.clone(), run);
     // 审计：skill.start 结构化
     audit_event!(
         app,
@@ -377,7 +377,15 @@ pub fn skill_finish<R: tauri::Runtime>(
         eprintln!("[mutex_poisoned] bot_skills::runtime::skill_runs: {e:?}");
         e.into_inner()
     });
+    // 锁内只做状态迁移 + 收集审计/回滚载荷；load_skill_meta（逐技能读 SKILL.md
+    // 磁盘 IO）与 audit_log_hook（写盘）移到锁外——持锁跨 IO 会把全部并发
+    // start/step/confirm 串行到磁盘速度，钩子重入 registry 即死锁。
+    enum FinishPayload {
+        Completed(String, usize),
+        Failed(String, Vec<String>, String),
+    }
     let mut transitioned = false;
+    let mut payloads: Vec<FinishPayload> = Vec::new();
     for (name, run) in runs.iter_mut() {
         if run.state != SkillState::Running && run.state != SkillState::Paused {
             continue;
@@ -388,44 +396,58 @@ pub fn skill_finish<R: tauri::Runtime>(
         transitioned = true;
         if ok {
             run.state = SkillState::Completed;
-            crate::bot::audit_log_hook(
-                app,
-                &format!("skill_completed | name: {name} | steps: {}", run.step),
-            );
+            payloads.push(FinishPayload::Completed(name.clone(), run.step));
         } else {
             run.state = SkillState::Failed;
             run.end_reason = reason.to_string();
-            // reason 可含模型给的工具名/错误文本，转义后再落日志
-            let mut log = format!(
-                "skill_failed | name: {name} | {} | actions: {}",
-                crate::bot::truncate_for_log(reason, 200),
-                run.actions.len()
-            );
-            // 回滚建议（务实版）：失败 + 声明可回滚 + 有已执行动作 → 生成建议文本
-            if run.rollback == "auto" && !run.actions.is_empty() {
-                log.push_str(" | rollback_suggested");
-                let actions_text = run
-                    .actions
-                    .iter()
-                    .map(|a| format!("- {a}"))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                let rb_section = rollback_section(
-                    &load_skill_meta(app, name)
-                        .map(|(_, b)| b)
-                        .unwrap_or_default(),
-                );
-                rollback_hint = format!(
-                    "\n\n【技能回滚建议】技能「{name}」执行中断（{reason}），已执行 {n} 个动作：\n{actions_text}\n{}",
-                    if rb_section.is_empty() {
-                        "该技能未提供回滚章节，请向用户说明已执行动作，由用户决定手动补救。".to_string()
-                    } else {
-                        format!("技能文档回滚章节：\n{rb_section}\n请先询问用户是否需要回滚；用户同意后，按回滚章节逐条执行逆操作（每一步同样经过安全校验）。")
-                    },
-                    n = run.actions.len()
+            payloads.push(FinishPayload::Failed(
+                name.clone(),
+                run.actions.clone(),
+                run.rollback.clone(),
+            ));
+        }
+    }
+    drop(runs);
+    for p in payloads {
+        match p {
+            FinishPayload::Completed(name, step) => {
+                crate::bot::audit_log_hook(
+                    app,
+                    &format!("skill_completed | name: {name} | steps: {step}"),
                 );
             }
-            crate::bot::audit_log_hook(app, &log);
+            FinishPayload::Failed(name, actions, rollback) => {
+                // reason 可含模型给的工具名/错误文本，转义后再落日志
+                let mut log = format!(
+                    "skill_failed | name: {name} | {} | actions: {}",
+                    crate::bot::truncate_for_log(reason, 200),
+                    actions.len()
+                );
+                // 回滚建议（务实版）：失败 + 声明可回滚 + 有已执行动作 → 生成建议文本
+                if rollback == "auto" && !actions.is_empty() {
+                    log.push_str(" | rollback_suggested");
+                    let actions_text = actions
+                        .iter()
+                        .map(|a| format!("- {a}"))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    let rb_section = rollback_section(
+                        &load_skill_meta(app, &name)
+                            .map(|(_, b)| b)
+                            .unwrap_or_default(),
+                    );
+                    rollback_hint = format!(
+                        "\n\n【技能回滚建议】技能「{name}」执行中断（{reason}），已执行 {n} 个动作：\n{actions_text}\n{}",
+                        if rb_section.is_empty() {
+                            "该技能未提供回滚章节，请向用户说明已执行动作，由用户决定手动补救。".to_string()
+                        } else {
+                            format!("技能文档回滚章节：\n{rb_section}\n请先询问用户是否需要回滚；用户同意后，按回滚章节逐条执行逆操作（每一步同样经过安全校验）。")
+                        },
+                        n = actions.len()
+                    );
+                }
+                crate::bot::audit_log_hook(app, &log);
+            }
         }
     }
     // 零迁移留痕的闸门 = reason 非空:传 reason 的调用方(scheduler "done" 收尾)
