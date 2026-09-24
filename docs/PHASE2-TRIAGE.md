@@ -28,6 +28,7 @@
 - [2026-09-23 23:25 CST] FRDV-01 收口（commit 46f8437）：C5-MI-03.2（rules.rs:121 CSV 双静默默认值）已修 fail-closed——空动作行 / 未知启用 token → 行级 DomainRule Err。C5-MI-03 2 条 → 剩 1 条（rules.rs:27 load_rules 静默 fallback default，quarantine vs 结构化 Err = B 类候选，攒批待拍）。
 - [2026-09-23 23:35 CST] MI-07 收口（commit 613e07a）：C5-MI-07（ops.rs log_line rotation/写入路径分裂）已修——单次 canonicalize 结果共用 + 失败兜底不丢日志。OCR r1 唯一 low（data_dir 双调）已采纳入批。migration 域 10 簇剩 4 簇未清：MI-04a/b、MI-05a/b、MI-08。
 - [2026-09-23 23:50 CST] DB-04 收口（commit c9a3041）：C5-DB-04 全簇 2 条已修——bot_session_rename 空标题 fail-closed（InvalidArgument）+ tasks_import 复用 check_export_path + 64MiB 读侧 bounded 强制。OCR r1 2 comments（medium TOCTOU + low 文案截断，同根=本批新代码）均采纳入批（metadata 预检 → bounded reader）。db 域 7 簇剩 2 簇未清：DB-03（race/TOCTOU）、DB-05 余 3 条（均 B 类候选）。
+- [2026-09-25 02:18 CST] **SC-01**（scripts 域「shell 解析脆」簇，commit 9629fe9，spec 703b949）：实修 2 处——ci-guard-tiny-http-vendor.sh:27 grep 加行首锚 `^[[:space:]]*`（注释行不再误判通过）；:46 case glob 双端锚定 `directory+file://*/src-tauri/vendor/tiny_http`（同名后缀目录 / 非 directory scheme 不再误判通过）。sync-version.mjs:11 high → **FP**（finding 前提错误：正则字面 `\]` + `[^[]*?` 跨不过 section 头，node 对抗实证 + reviewer agent-10 pass），零代码处置。验证：对抗用例 7/7 过；guard 本机 check #2 既有环境红（cargo metadata 提取不到 source），与改动无关。OCR r1 exit 0 / 0 comments（scripts/** exclude，0 为正常）。D2: files=1(+4/-3) asserts=0→0 tests=n/a。
 - [2026-09-24 00:02 CST] MI-04a 收口（commit 414cf08）：C5-MI-04a（journal_pending 无条件 INSERT → 同 key 孤儿 pending）已修——持锁内 check-then-reuse（零 schema 变更；UNIQUE partial index 选项因既有库可能含重复行会建索引失败而弃）。OCR r1 1 low（双写分配）采纳。既有库孤儿 pending 清理 = 数据迁移方向，B 类攒批。migration 域剩 3 簇：MI-04b、MI-05a/b、MI-08。
 - [2026-09-24 00:20 CST] MI-04b 收口（commit 5819f76）：C5-MI-04b（journal find+act TOCTOU）已修——核后真实竞态对 = spawn_polling 启动 replay（无 MigrationGuard）vs run_migration（有）；修法 = replay 挂守卫（不取 try_claim 状态机变更；DB_WRITE_LOCK 包 find+act 因 db_upsert 重入死锁不可取）。OCR r1 抓回本批自引入 critical（guard 作用域泄漏会永久锁死后台迁移）→ 修复 + r2 验证 0 critical/0 high。migration 域剩 2 簇：MI-05a/b、MI-08。
 - [2026-09-24 00:40 CST] MI-08 收口（commit bbe4f59）：C5-MI-08 全簇 2 条已修——CSV 表头 contains → 别名集精确匹配 + 重复列拒绝；archive_dir `..` 组件拒绝（resolve_archive_dir 单点 + validate_rules 导入期早错）。OCR r1 5 comments：3 采纳（注释行为不一致 / 别名展示 / 契约钉测试），2 挂起（symlink 逃逸 → 并入 B 类绝对路径 policy 项；破坏性变更用户提示）。**migration 域 10 簇全清**（MI-05a spawn_blocking 无 abort + MI-05b sync block_on 转入 B 类/待核区——见 §2 标注）。
@@ -183,7 +184,7 @@
 - C5-MI-08：migration/rules.rs:99 + :67 解析脆 / 校验缺（批内 2 处独立改动：contains 太宽松 + archive_dir 无路径校验 = 1 security），2 条 → **已修（MI-08，commit bbe4f59；archive_dir 绝对路径收窄部分转 B 类）**
 
 ### 域 scripts（5 簇 / 10 findings）
-- C5-SC-01：shell 解析脆（sync-version.mjs:11 + ci-guard-tiny-http-vendor.sh:46 + :27），3 条
+- C5-SC-01：shell 解析脆（sync-version.mjs:11 + ci-guard-tiny-http-vendor.sh:46 + :27），3 条 → **已清（SC-01，commit 9629fe9；sync-version.mjs:11 判 FP 零代码处置，§0 02:18）**
 - C5-SC-02：非原子/非完整（sync-version.mjs:20 + fetch_ocr_models.sh:44 + :53），3 条
 - C5-SC-03：set -euo 边界未封（install-hooks.sh:10），1 条
 - C5-SC-04：第三方/CDN/用户输入未校验（fetch_ocr_models.sh:49 + publish-docx-dotnet.sh:12），2 条
