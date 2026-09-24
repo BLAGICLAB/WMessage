@@ -153,6 +153,18 @@ pub fn apply_from_consolidation(proposals: Vec<EvolutionProposal>) {
                 .iter()
                 .map(|p| crate::memory::embed::embed_text(&p.suggestion.text))
                 .collect();
+            // embed_text 返回 None = 空文本或推理失败（调用侧不可区分）——
+            // 无向量的 lesson 永不可语义召回，留痕不静默（audit 落 bot.log）。
+            let embed_failed = embs.iter().filter(|e| e.is_none()).count();
+            if embed_failed > 0 {
+                crate::audit_event!(
+                    &app2,
+                    crate::audit::AuditLevel::Warn,
+                    "evolution.embed_failed",
+                    "failed" => embed_failed.to_string(),
+                    "total" => proposals.len().to_string(),
+                );
+            }
             let _g = crate::db::DB_WRITE_LOCK
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());

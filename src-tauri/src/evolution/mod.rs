@@ -68,6 +68,13 @@ pub fn post_consolidation(ops: &[ConsolidateOp], report: &ConsolidateReport) {
                 "error" => e.clone(),
             ),
         }
+    } else {
+        // app_handle 未注册时整个落盘块被跳过——留痕不静默（audit_event! 需要
+        // AppHandle，None 分支只能用 eprintln）。
+        eprintln!(
+            "[evolution] app_handle 未注册，候选池落盘跳过（{} 条 proposals）",
+            proposals.len()
+        );
     }
 
     emit::emit_proposals(proposals);

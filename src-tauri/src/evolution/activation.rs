@@ -121,40 +121,80 @@ impl ActivationConfig {
 
 // ───────────────────────── bot-config.json loader ──────────────────────────
 
-/// 从 bot-config.json 读 activation 块（lenient）
+/// 从 bot-config.json 读 activation 块（lenient）。
+/// 缺文件/缺块 = 合法默认模式静默；**存在但坏**（IO 错 / parse 失败 / schema 不匹配）留痕。
 pub fn load_config_from_file(path: &Path) -> ActivationConfig {
-    let Ok(raw) = std::fs::read_to_string(path) else {
-        return ActivationConfig::default();
+    let raw = match std::fs::read_to_string(path) {
+        Ok(r) => r,
+        Err(e) => {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                eprintln!("[evolution_activation] 读 {path:?} 失败（{e}），activation 用默认值");
+            }
+            return ActivationConfig::default();
+        }
     };
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
-        return ActivationConfig::default();
+    let v = match serde_json::from_str::<serde_json::Value>(&raw) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[evolution_activation] {path:?} JSON 解析失败（{e}），activation 用默认值");
+            return ActivationConfig::default();
+        }
     };
     let Some(activation) = v.get("evolution").and_then(|e| e.get("activation")) else {
-        return ActivationConfig::default();
+        return ActivationConfig::default(); // 缺块 = 未配置，合法静默
     };
-    serde_json::from_value(activation.clone()).unwrap_or_default()
+    match serde_json::from_value(activation.clone()) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!(
+                "[evolution_activation] {path:?} activation 块 schema 不匹配（{e}），用默认值"
+            );
+            ActivationConfig::default()
+        }
+    }
 }
 
-/// 从 bot-config.json 读 activation_state（当前状态）
+/// 从 bot-config.json 读 activation_state（当前状态）。留痕策略同上。
 pub fn load_state_from_file(path: &Path) -> ActivationState {
-    let Ok(raw) = std::fs::read_to_string(path) else {
-        return ActivationState::default();
+    let raw = match std::fs::read_to_string(path) {
+        Ok(r) => r,
+        Err(e) => {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                eprintln!(
+                    "[evolution_activation] 读 {path:?} 失败（{e}），activation_state 用默认值"
+                );
+            }
+            return ActivationState::default();
+        }
     };
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
-        return ActivationState::default();
+    let v = match serde_json::from_str::<serde_json::Value>(&raw) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!(
+                "[evolution_activation] {path:?} JSON 解析失败（{e}），activation_state 用默认值"
+            );
+            return ActivationState::default();
+        }
     };
-    let Some(s) = v
-        .get("evolution")
-        .and_then(|e| e.get("activation_state"))
-        .and_then(|s| s.as_str())
-    else {
+    let Some(state_val) = v.get("evolution").and_then(|e| e.get("activation_state")) else {
+        return ActivationState::default(); // 缺 key = 未设置，合法静默
+    };
+    let Some(s) = state_val.as_str() else {
+        eprintln!(
+            "[evolution_activation] {path:?} activation_state 非字符串（{state_val}），用默认值"
+        );
         return ActivationState::default();
     };
     match s {
         "s0_observe" => ActivationState::S0Observe,
         "s1_suggest" => ActivationState::S1Suggest,
         "s2_active" => ActivationState::S2Active,
-        _ => ActivationState::default(),
+        unknown => {
+            eprintln!(
+                "[evolution_activation] {path:?} 未知 activation_state \"{unknown}\"，用默认值"
+            );
+            ActivationState::default()
+        }
     }
 }
 
