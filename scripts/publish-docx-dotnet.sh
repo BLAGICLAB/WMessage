@@ -10,6 +10,14 @@ PROJECT="src-tauri/dotnet/WmDocxRevisions/WmDocxRevisions.csproj"
 RID="win-x64"
 PUBLISH_DIR="src-tauri/dotnet/WmDocxRevisions/bin/Release/net8.0/${RID}/publish"
 OUT_ROOT="${1:-wmessage-portable-$(date +%F)}"
+# OUT_ROOT 校验（fail-closed）：拒空 / 绝对路径 / 含 .. / 以 - 开头——rm -rf "$OUT_DIR" 不可被路径注入
+case "$OUT_ROOT" in
+  ""|/*|*..*|-*)
+    echo "✗ OUT_ROOT 非法：'$OUT_ROOT'（须为相对路径，不含 ..，不以 - 开头）" >&2
+    echo "  用法：scripts/publish-docx-dotnet.sh [输出根目录]" >&2
+    exit 1
+    ;;
+esac
 OUT_DIR="${OUT_ROOT}/dotnet"
 
 command -v dotnet >/dev/null 2>&1 || { echo "✗ 未找到 dotnet SDK，请先安装 https://dot.net"; exit 1; }
@@ -18,8 +26,8 @@ echo "[1/3] dotnet publish -c Release -r ${RID} --self-contained"
 dotnet publish "$PROJECT" -c Release -r "$RID" --self-contained
 
 echo "[2/3] 归位 publish 产物 → ${OUT_DIR}/（剔除 .pdb，幂等重建）"
-rm -rf "$OUT_DIR"
-mkdir -p "$OUT_DIR"
+rm -rf -- "$OUT_DIR"
+mkdir -p -- "$OUT_DIR"
 # 手工包核对结论：dotnet/ 与 publish 目录文件清单一致，唯一差别是不带 wm-docx-revisions.pdb
 find "$PUBLISH_DIR" -maxdepth 1 -type f ! -name '*.pdb' -exec cp {} "$OUT_DIR/" \;
 

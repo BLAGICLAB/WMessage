@@ -34,6 +34,28 @@ mkdir -p "$DEST"
 
 WITH_CLS="${WITH_CLS:-1}"            # 1=下载 cls.onnx（方向分类，可选）
 
+# SHA256 pinning 清单：以仓内 pp-ocr-v6/ 已提交模型的实测值为准（2026-09-25）。
+# 上游模型若真更新，需同步更新本清单——这是 pinning 语义，不是 bug。
+# sha256 工具探测：Linux/Git Bash 用 sha256sum，macOS 用 shasum；都无则 fail-closed。
+if command -v sha256sum >/dev/null 2>&1; then
+  SHA256_BIN="sha256sum"
+elif command -v shasum >/dev/null 2>&1; then
+  SHA256_BIN="shasum -a 256"
+else
+  echo "✗ 未找到 sha256sum / shasum，无法校验模型完整性，拒绝继续" >&2
+  exit 1
+fi
+
+expected_sha256() {
+  case "$1" in
+    det.onnx)  echo "090f04abcd9d9a7498bc4ebf677e4cb9bdce1fe4197ddb7e529f1ef44e1ff94f" ;;
+    rec.onnx)  echo "6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884" ;;
+    cls.onnx)  echo "54379ae5174d026780215fc748a7f31910dee36818e63d49e17dc598ecc82df7" ;;
+    keys.txt)  echo "b5f2bfe2bdd9448429e3e82b51c789775d9b42f2403d082b00662eb77e401c5d" ;;
+    *)         echo "" ;;
+  esac
+}
+
 MS_BASE="https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/master"
 HF_BASE="https://huggingface.co/RapidAI/RapidOCR/resolve/main"
 
@@ -70,6 +92,21 @@ curl_fetch() {
   if [ "$(head -c 1 "$tmp")" = "<" ]; then
     rm -f "$tmp"
     echo "✗ $out 以 '<' 开头，疑似 HTML 错误页而非模型，请重跑" >&2
+    return 1
+  fi
+  # SHA256 pinning：与仓内已提交模型的实测值比对，不匹配即 fail-closed
+  local want got
+  want=$(expected_sha256 "$out")
+  got=$($SHA256_BIN "$tmp" | awk '{print $1}')
+  if [ -z "$want" ]; then
+    rm -f "$tmp"
+    echo "✗ $out 不在 SHA256 pinning 清单内，拒绝接受" >&2
+    return 1
+  fi
+  if [ "$got" != "$want" ]; then
+    rm -f "$tmp"
+    echo "✗ $out SHA256 不匹配（got $got，want $want）" >&2
+    echo "  若上游模型确已更新，请核对来源后同步更新脚本内 pinning 清单" >&2
     return 1
   fi
   mv "$tmp" "$DEST/$out"
