@@ -225,17 +225,28 @@ pub(crate) fn update_config_file(
 
 // ───────────────────────── base_url 安全判定 ─────────────────────────
 
-/// base_url 安全判定：空 / https:// / 回环地址（localhost、127.x、::1）
-/// 视为安全；其余（http:// 公网/内网 IP 域名等）不安全——调用方打警告，不拒写。
+/// base_url 安全判定：空 / https / 回环 host（localhost、127.0.0.0/8、::1）
+/// 视为安全；其余（http 公网/内网、解析失败、其他 scheme）不安全——调用方打警告，不拒写。
+/// host 经 url::Url 解析后精确判定：前缀匹配会被 localhost.evil.com /
+/// 127.0.0.1.evil.com / userinfo 变体绕过（解析失败按不安全 = fail-closed）。
 pub(crate) fn base_url_is_safe(url: &str) -> bool {
     let u = url.trim();
-    if u.is_empty() || u.starts_with("https://") {
+    if u.is_empty() {
         return true;
     }
-    let lower = u.to_lowercase();
-    lower.starts_with("http://localhost")
-        || lower.starts_with("http://127.")
-        || lower.starts_with("http://[::1]")
+    let Ok(parsed) = url::Url::parse(u) else {
+        return false;
+    };
+    match parsed.scheme() {
+        "https" => true,
+        "http" => match parsed.host() {
+            Some(url::Host::Domain(h)) => h.eq_ignore_ascii_case("localhost"),
+            Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+            Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+            None => false,
+        },
+        _ => false,
+    }
 }
 
 // ───────────────────────── 老版本 key 迁移 ─────────────────────────

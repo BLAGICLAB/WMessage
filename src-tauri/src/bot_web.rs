@@ -24,8 +24,17 @@ fn http_client() -> reqwest::Client {
         .get_or_init(|| {
             http_client_builder()
                 .build()
-                // 理论不可达：builder 失败意味着超时配置无效
-                .unwrap_or_else(|_| reqwest::Client::new())
+                // builder 失败（TLS 后端等）≠ 放弃约束：降级 client 仍钉硬超时 +
+                // 禁自动重定向（无约束 client 会架空 SSRF 逐跳校验与 30s 超时）；
+                // 再失败 = panic loud（OCR 选项 a——无超时 client 比 panic 更危险）
+                .unwrap_or_else(|e| {
+                    eprintln!("[bot_web] http_client builder 失败（{e}），降级：60s 硬超时 + 禁自动重定向");
+                    reqwest::Client::builder()
+                        .timeout(Duration::from_secs(60))
+                        .redirect(reqwest::redirect::Policy::none())
+                        .build()
+                        .expect("bot_web 降级 client 构建失败")
+                })
         })
         .clone()
 }
@@ -825,9 +834,21 @@ pub async fn fetch_text(raw_url: &str) -> Result<String, CommandError> {
                 });
             };
             let loc = loc.to_str().map_err(|_| "Location 头编码无效")?.to_string();
+            let prev_scheme = url_cursor.scheme().to_string();
             url_cursor = url_cursor
                 .join(&loc)
                 .map_err(|_| format!("重定向目标无效：{loc}"))?;
+            // https→http 降级重定向拒：首跳 TLS 不保护后续明文跳（中间人可篡改返回内容）；
+            // 用户直接给 http 起始 URL 不受影响（既有语义）
+            if prev_scheme == "https" && url_cursor.scheme() == "http" {
+                return Err(CommandError::DomainRule {
+                    domain: "web".to_string(),
+                    reason: format!(
+                        "拒绝 https→http 降级重定向：{}",
+                        crate::bot::escape_for_log(&loc, 100)
+                    ),
+                });
+            }
             hops += 1;
             continue;
         }

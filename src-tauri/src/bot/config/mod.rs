@@ -642,6 +642,12 @@ mod tests {
         assert!(!base_url_is_safe("http://api.example.com/v1"));
         assert!(!base_url_is_safe("http://192.168.1.10:8000/v1"));
         assert!(!base_url_is_safe("ftp://example.com"));
+        // 不安全：前缀匹配时代的绕过变体（host 精确判定后全拒）
+        assert!(!base_url_is_safe("http://localhost.evil.com"));
+        assert!(!base_url_is_safe("http://127.0.0.1.evil.com"));
+        assert!(!base_url_is_safe("http://[::1].evil.com"));
+        // 安全：userinfo 不影响连接目标——host 解析后确为回环
+        assert!(base_url_is_safe("http://attacker.com@127.0.0.1"));
     }
 }
 
