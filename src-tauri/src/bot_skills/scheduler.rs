@@ -300,6 +300,8 @@ where
 
     let mut ctx: Vec<CompletedStep> = Vec::new();
     let mut results: Vec<(usize, String, String)> = Vec::new();
+    // 外部完成信号早退标记：Finish = 外部已置 run Completed，break 是承认外部终态非跑完
+    let mut finish_signal = false;
     for step in &steps {
         // 每 step 前查 advance_dsl 状态机，拦截漏停场景：
         // step_check 步数熔断 / skill_on_step_post 工具失败 /
@@ -317,6 +319,7 @@ where
                             step.index
                         ),
                     );
+                    finish_signal = true;
                     break;
                 }
                 DslAdvanceAction::AwaitUser => {
@@ -446,18 +449,29 @@ where
     let mut summary = format!(
         "✅ 技能「{}」自动执行完成（{} 步）：\n",
         meta.name,
-        steps.len()
+        results.len()
     );
+    if finish_signal {
+        summary.push_str(&format!(
+            "\n（外部完成信号介入：计划共 {} 步，实际执行 {} 步，剩余步骤跳过）\n",
+            steps.len(),
+            results.len()
+        ));
+    }
     for (idx, title, result) in &results {
         summary.push_str(&format!("\n### Step {}: {}\n{}\n", idx, title, result));
     }
     // Done 路径收尾状态机（Running → Completed）：成功路径必须调 skill_finish，
     // 否则 run 泄漏为「僵尸 Running」——原子工具闸门在技能结束后仍对本会话放行，
     // 且后续消息的工具调用被计入僵尸 run 直至步数熔断卡死会话。
-    let _ = super::runtime::skill_finish(app, true, "done", session_id);
+    // finish_signal 路径跳过：run 已被外部置 Completed（无僵尸泄漏），再调 = 误记 no_transition。
+    if !finish_signal {
+        let _ = super::runtime::skill_finish(app, true, "done", session_id);
+    }
+    let steps_ok = results.len();
     crate::bot::audit_log_hook(
         app,
-        &format!("skill_dsl_done | name: {name} | steps_ok: {}", steps.len()),
+        &format!("skill_dsl_done | name: {name} | steps_ok: {steps_ok}"),
     );
     persist_outcome(name, "done", None, Some(&summary), None);
     Ok(DslOutcome::Done(summary))
