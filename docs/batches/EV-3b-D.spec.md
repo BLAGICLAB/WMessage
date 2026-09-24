@@ -85,7 +85,7 @@ candidate 池完整性）但**批内 3 处独立改动**，互无 ripple：
    candidate/derive +2/-2、commands +1/-1：初估 +31/-6 → 实测 +52/-6
    （doc 交付物行数超初估），校正 +55/-12 → 测试暴露第二层缺陷
    （normalize_for_hash 数字归一化使 UUID 判别位坍缩，需追加原始 hash
-   判别位 + 回归测试）实测 +59/-9，再校正 → **max +65/-12**。
+   判别位 + 回归测试）实测 +59/-9，再校正 +65/-12 → OCR r1 采纳（medium：复合 id 破 16 hex 契约 → 改二次 hash 保持 16 hex；low：summary 不并入 refs 避免与 related_refs 重复 + 32 字符 UUID 回归断言 + ttl 测试固定 now_ms）实测 +76/-8，三校正 → **max +80/-12**。
 3. 三条 findings 的 fix 字段均已写明 ripple（finding 1 的 ripple =
    两个内联调用点文件）。
 
@@ -101,7 +101,7 @@ candidate 池完整性）但**批内 3 处独立改动**，互无 ripple：
     "src-tauri/src/evolution/candidate/derive.rs",
     "src-tauri/src/evolution/panel/commands.rs"
   ],
-  "max_lines_added": 65,
+  "max_lines_added": 80,
   "max_lines_removed": 12,
   "findings": [
     {"id": "C5-EV-3b-D-1", "file": "src-tauri/src/evolution/candidate/ttl.rs", "line": 41, "fix": "compute_expires_at 改 saturating_add（溢出=永不过期保审计轨迹，非 wrap 成负数静默立刻淘汰）+ 回归测试；ripple: candidate/derive.rs:49 与 panel/commands.rs:357 两处内联 now_ms+TTL_MS 收敛到该 fn 单点实现"},
