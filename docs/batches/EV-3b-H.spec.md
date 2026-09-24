@@ -34,7 +34,7 @@ snake_case JSON 形态——同一字段两种序列化。修：emit 改
 
 - family: dual-track / silent-drop
 - 覆盖 findings: 3（+1 同 family medium 一并）
-- 预估 diff: 2 files / +30/-27 lines（A 类，budget +45/-35）
+- 预估 diff: 2 files / +30/-27 lines → 实测 +72/-65（A 类，budget 校正 **+80/-70**）
 - OCR 计划: r1, timeout 1800s, 期望 comments ≤ 3
 
 ## 核实的编译层事实（spec 前已核）
@@ -74,8 +74,7 @@ snake_case JSON 形态——同一字段两种序列化。修：emit 改
 
 1. `expected_files` = 2：trace.rs + bot_chat.rs。ripple = bot_chat
    删一行（已列）。
-2. budget = **A 类**：trace +29/-26、bot_chat +0/-1：初估 +29/-27 →
-   含浮动 **max +45/-35**。
+2. budget = **A 类**：trace +29/-26、bot_chat +0/-1：初估 +29/-27 → 实测 +72/-65（采样测试 4 参→3 参 fmt 重折行双向计数超估），校正 → **max +80/-70**。
 3. 三条 findings 的 fix 字段均已写明 ripple。
 
 ## 机器可读（脚本读取，勿改格式）
@@ -88,8 +87,8 @@ snake_case JSON 形态——同一字段两种序列化。修：emit 改
     "src-tauri/src/evolution/trace.rs",
     "src-tauri/src/bot_chat.rs"
   ],
-  "max_lines_added": 45,
-  "max_lines_removed": 35,
+  "max_lines_added": 80,
+  "max_lines_removed": 70,
   "findings": [
     {"id": "C5-EV-3b-H-1", "file": "src-tauri/src/evolution/trace.rs", "line": 104, "fix": "aborted 双轨坍塌为枚举唯一事实源：删 was_aborted 字段+with_aborted setter；ripple: bot_chat.rs 删 .with_aborted 一行（唯一 caller）"},
     {"id": "C5-EV-3b-H-2", "file": "src-tauri/src/evolution/trace.rs", "line": 149, "fix": "should_record_trace 删 was_aborted 入参，Aborted 与 Failure 同待遇恒记录（用户中止 trace 不再静默丢）；零外部 caller 无 ripple；锁旧缺陷行为的测试改断言"},
