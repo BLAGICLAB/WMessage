@@ -36,6 +36,9 @@ bot_scheduler.rs:468 finding 三条：
 1. `expected_files` → `src-tauri/src/bot_scheduler.rs`（单文件）。✓
 2. budget → scheduler_tick 抽出 + catch_unwind ≈+30/-18；semaphore ≈+8；
    合计 ≈+38/-18 → budget +50/-25。✓
+   （执行中校正）实际 +56/-25：scheduler_tick 抽出把 per-task spawn 的 4 行
+   既有注释迁移计入 added，预估未计；budget 校正 +50→+62。另：import 用
+   futures_util（直接依赖 :44）不用 futures（非 lib 依赖，E0432 已实证）。✓
 3. findings fix 字段列 ripple → 无（start_scheduler 签名不变，main 调用点不动）。✓
 
 ## 自主执行规则
@@ -63,7 +66,7 @@ spec 被 reviewer 批准后:
   "expected_files": [
     "src-tauri/src/bot_scheduler.rs"
   ],
-  "max_lines_added": 50,
+  "max_lines_added": 62,
   "max_lines_removed": 25,
   "findings": [
     {"id": "C5-BT-10.4", "file": "src-tauri/src/bot_scheduler.rs", "line": 468, "fix": "scheduler_tick 抽出 + AssertUnwindSafe/catch_unwind tick panic 兜底（sched_tick_panic 审计后续跑）；Semaphore(4) 并发上限；关闭信号按 App 生命周期登记不加。ripple：无（start_scheduler 签名不变）"}
