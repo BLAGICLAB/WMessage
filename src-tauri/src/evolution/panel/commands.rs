@@ -55,23 +55,20 @@ fn load_changes(app: &AppHandle) -> Result<Vec<ChangeRecord>, String> {
     change::read_all(&changes_path(app))
 }
 
-/// 整体重写 jsonl（更新 status / TTL 用）
+/// 整体重写 jsonl（更新 status / TTL 用）。
+/// 全量序列化后走 tmp+rename 原子落盘——truncate+逐行写在崩溃时留空/半截文件
+///（jsonl 是提案生命周期唯一持久化）。
 fn rewrite_jsonl<T: serde::Serialize>(path: &PathBuf, entries: &[T]) -> Result<(), String> {
-    use std::io::Write;
+    use std::fmt::Write as _;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("建目录 {parent:?} 失败：{e}"))?;
     }
-    let mut f = std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(path)
-        .map_err(|e| format!("打开 {path:?} 失败：{e}"))?;
+    let mut buf = String::new();
     for e in entries {
         let line = serde_json::to_string(e).map_err(|e| format!("序列化失败：{e}"))?;
-        writeln!(f, "{line}").map_err(|e| format!("写入 {path:?} 失败：{e}"))?;
+        writeln!(buf, "{line}").map_err(|e| format!("拼接缓冲失败：{e}"))?;
     }
-    Ok(())
+    crate::db::paths::atomic_write(path, &buf)
 }
 
 fn parse_status_filter(s: &str) -> Result<ProposalStatus, String> {
@@ -93,7 +90,14 @@ fn parse_status_filter(s: &str) -> Result<ProposalStatus, String> {
 //                （老板拍板：只允许删 Pending；active/rolled_back 用 Rollback）
 // Promote/Reject 命令保留但语义改成 toggle ON/OFF（兼容老 UI/调用方）
 
-fn toggle_inner(app: &AppHandle, proposal_id: &str, enabled: bool) -> Result<(), String> {
+/// ON 返回 Some（锁内新写入或 dedup 命中的既有 ChangeRecord），OFF 返回 None。
+/// promote 直接用返回值——**不要在锁外再 load_changes 找**（TOCTOU：并发
+/// delete 会让锁外 find 落空，错误文案还会误导成「toggle_inner 写失败」）。
+fn toggle_inner(
+    app: &AppHandle,
+    proposal_id: &str,
+    enabled: bool,
+) -> Result<Option<ChangeRecord>, String> {
     let _g = lock_evolution_store(); // OCR C3-4：覆盖整个 load→mutate→rewrite 窗口
     let p_path = proposals_path(app);
     let c_path = changes_path(app);
@@ -109,37 +113,43 @@ fn toggle_inner(app: &AppHandle, proposal_id: &str, enabled: bool) -> Result<(),
 
     if enabled {
         // Toggle ON：dedup（已有 pending/shadowing/shadow_passed 不重写）
-        let has_active = changes.iter().any(|c| {
+        let existing = changes.iter().find(|c| {
             c.proposal_id == proposal_id
                 && matches!(
                     c.status,
                     ChangeStatus::Pending | ChangeStatus::Shadowing | ChangeStatus::ShadowPassed
                 )
         });
-        if !has_active {
-            let mut cr = candidate::to_change_record(&entry, true);
-            cr.approval_source = ApprovalSource::HumanApproved;
-            cr.human_approver = Some("boss".into());
-            cr.status = ChangeStatus::Pending;
-            change::append_change(&c_path, &cr)?;
-            crate::audit_event!(
-                app,
-                AuditLevel::Info,
-                "evolution.toggle_on",
-                "proposal_id" => proposal_id.to_string(),
-                "change_id" => cr.change_id.clone(),
-            );
-        } else {
-            crate::audit_event!(
-                app,
-                AuditLevel::Info,
-                "evolution.toggle_on_dedup",
-                "proposal_id" => proposal_id.to_string(),
-            );
-        }
+        let cr = match existing {
+            Some(c) => {
+                crate::audit_event!(
+                    app,
+                    AuditLevel::Info,
+                    "evolution.toggle_on_dedup",
+                    "proposal_id" => proposal_id.to_string(),
+                );
+                c.clone()
+            }
+            None => {
+                let mut cr = candidate::to_change_record(&entry, true);
+                cr.approval_source = ApprovalSource::HumanApproved;
+                cr.human_approver = Some("boss".into());
+                cr.status = ChangeStatus::Pending;
+                change::append_change(&c_path, &cr)?;
+                crate::audit_event!(
+                    app,
+                    AuditLevel::Info,
+                    "evolution.toggle_on",
+                    "proposal_id" => proposal_id.to_string(),
+                    "change_id" => cr.change_id.clone(),
+                );
+                cr
+            }
+        };
         entry.status = ProposalStatus::Promoted;
         proposals[idx] = entry.clone();
         rewrite_jsonl(&p_path, &proposals)?;
+        Ok(Some(cr))
     } else {
         // Toggle OFF：移除 pending ChangeRecord
         let before = changes.len();
@@ -159,8 +169,8 @@ fn toggle_inner(app: &AppHandle, proposal_id: &str, enabled: bool) -> Result<(),
             "evolution.toggle_off",
             "proposal_id" => proposal_id.to_string(),
         );
+        Ok(None)
     }
-    Ok(())
 }
 
 fn delete_inner(app: &AppHandle, proposal_id: &str, cascade_source: bool) -> Result<(), String> {
@@ -218,7 +228,7 @@ pub async fn evolution_toggle_proposal(
     proposal_id: String,
     enabled: bool,
 ) -> Result<(), String> {
-    toggle_inner(&app, &proposal_id, enabled)
+    toggle_inner(&app, &proposal_id, enabled).map(|_| ())
 }
 
 /// Tauri command：彻底废案（delete emoji 入口）
@@ -289,20 +299,9 @@ pub async fn evolution_promote_proposal(
         return Err("用户拒绝启用".into());
     }
 
-    toggle_inner(&app, &proposal_id, true)?;
-
-    let changes = load_changes(&app)?;
-    let cr = changes
-        .iter()
-        .find(|c| {
-            c.proposal_id == proposal_id
-                && matches!(
-                    c.status,
-                    ChangeStatus::Pending | ChangeStatus::Shadowing | ChangeStatus::ShadowPassed
-                )
-        })
-        .ok_or_else(|| format!("toggle_inner 写完未找到 ChangeRecord"))?;
-    Ok(cr.clone())
+    let cr = toggle_inner(&app, &proposal_id, true)?
+        .ok_or_else(|| "toggle_inner ON 未返回 ChangeRecord（不变量破坏）".to_string())?;
+    Ok(cr)
 }
 
 /// 老板 16:05 拍板：Reject 语义 = toggle OFF（兼容老 API）
@@ -339,7 +338,7 @@ pub async fn evolution_reject_proposal(
     if !approved {
         return Err("用户取消停用操作".into());
     }
-    toggle_inner(&app, &proposal_id, false)?;
+    let _ = toggle_inner(&app, &proposal_id, false)?; // OFF 恒 None
     Ok(())
 }
 
@@ -614,6 +613,24 @@ mod tests {
         let read = candidate::read_all(&p).unwrap();
         assert_eq!(read.len(), 1);
         assert_eq!(read[0].status, ProposalStatus::Promoted);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rewrite_atomic_leaves_no_tmp() {
+        // 原子形态回归：tmp+rename 后目标内容正确且无 .tmp 残留
+        let dir = std::env::temp_dir().join(format!(
+            "cmd-atomic-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("evolution-proposals.jsonl");
+        let entries = vec![mk_entry("a", ProposalStatus::Pooled)];
+        rewrite_jsonl(&p, &entries).unwrap();
+        let read = candidate::read_all(&p).unwrap();
+        assert_eq!(read.len(), 1);
+        let tmp = p.with_file_name("evolution-proposals.jsonl.tmp");
+        assert!(!tmp.exists(), "rename 后不应残留 tmp：{tmp:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
