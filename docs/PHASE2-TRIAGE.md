@@ -74,6 +74,8 @@
 
 - [2026-09-24 19:15 CST] AP-04 收口（commit 8d49a26）：**C5-AP-04 全簇 2 条已清**。sse.rs:196 写无超时 → vendor tiny_http accept 级 set_write_timeout patch（HTTP_WRITE_TIMEOUT_MS 30s 单次 write syscall 级；照 10acf42 读超时先例走 PATCHES.md 治理：§2 共 2 处→3 处 + §2.3 + §5 记录；lib.rs 读超时注释「不影响写」过时句修订）——**vendor 改动非 architecture_blocker（既有治理流程）**。sse.rs:183 乱序投递根因属实（fetch_add 锁外 + try_send 锁内）→ broadcast 单临界区化（clients 锁内 fetch_add→落盘→history→推送；锁序 clients→history 全仓唯一嵌套点已核无死锁对）；顺带修 id 落盘并发乱序 + clients poison 改 C3-1 形态；sse.rs replay_max 快照 + 异常丢弃留痕（每连接一次）；契约双侧文档化；新增确定性并发回归测试。写超时行为级测试需填 kernel buffer（flaky）不加，spec 已声明。OCR r1 6 comments（0 high）：采纳 4（Value 序列化移出锁 / SeqCst 注释 / replay_max 语义注释 / 留痕每连接一次），不采纳 2 有论证（落盘移出锁 / 测试封装重构）；tool failure 0；type 1 n=25 不变。spec 立项 9833abb。**api 域剩 AP-05/06/07。**
 
+- [2026-09-24 19:40 CST] AP-05 收口（commit bfe30b9）：**C5-AP-05 全簇 3 条已清**。create_task:277 / update_task:405 / delete_task:561 持锁跨 I/O 统一改 labeled block（'rmw）装盒 Result、出锁后 match 分流响应——锁内只做 DB 读写。行为逐项等价（核后保持 create upsert 失败走 internal_err 500 原分流；delete 幂等重删 200 不 after_change 不变）。实现形态校正一次：闭包 IIFE 会重缩进 ~90 行 → 换 labeled block（同一函数内三处风格统一，diff 收窄到 +67/-26）。不加新测试（纯结构性重排，mod.rs HTTP 级测试已覆盖全分支）。OCR r1 1 low（AlreadyDeleted 去 Box）采纳；tool failure 1 = code_comment 空数组拒收（良性形态 n=3）；type 1 n=25 不变。spec 立项 3d4a2c1。**第 30 批，reviewer 抽查 = pass**（explore 子 agent 只读 git show/spec/OCR json 核验：状态码路径/锁释放时机/budget/commit message 与 diff 一致性）。**api 域剩 AP-06/07。**
+
 ## 1. 跨域同模式家族
 按"错误去哪了" + "是否破坏数据"两轴判，**4 家族**（poisoned-silent-recovery 已溶解 — 见执行日志；error-visible-non-blocking 已重新引入 for C5-AP-06 only — 见 §3.5 异常 2 更新）：
 
@@ -158,7 +160,7 @@
 - C5-AP-02：symlink + 权限（api_auth.rs:73），1 条 → **已修（AP-02，commit 5d8e878）**
 - C5-AP-03：日志输出缺陷（api_handlers/ratelimit.rs:45 + :36，批内 2 处独立改动），2 条 → **已修（AP-03，commit a78de81）**
 - C5-AP-04：SSE writer 缺陷（api_handlers/sse.rs:196 + :183），2 条 → **已修（AP-04，commit 8d49a26：vendor 写超时 patch + broadcast 单临界区化）**
-- C5-AP-05：持锁跨 I/O（api_handlers/handlers.rs:277 + :405 + :561），3 条
+- C5-AP-05：持锁跨 I/O（api_handlers/handlers.rs:277 + :405 + :561），3 条 → **已修（AP-05，commit bfe30b9：labeled block 装盒出锁后响应）**
 - C5-AP-06：静默吞错（api_server.rs:126），1 条，**error-not-propagated 家族**
 - C5-AP-07：sync block_on 隐式约定（api.rs:101），1 条
 
@@ -534,6 +536,10 @@ run A 仅靠 /tmp/ocr-APW-02b-r1.clean.json 找回。cache 命名亦误导：
 - 【OCR 原文核验记录（AP-04）】r1 = ~/.openclaw/cache/AP-04/ocr-r1-20260924-190845.raw.json
   （status=complete / comments=6：2 medium + 4 low 全同根，0 high；采纳 4 不采纳 2，见上 /
   tool failure 0 / elapsed ~2m16s / files_reviewed=2）。
+- 【OCR 原文核验记录（AP-05）】r1 = ~/.openclaw/cache/AP-05/ocr-r1-20260924-192325.raw.json
+  （status=complete / comments=1：low=AlreadyDeleted 去 Box，采纳 / 0 high /
+  tool failure 1 = code_comment 空数组拒收（良性形态 n=3）/ elapsed ~4m2s /
+  files_reviewed=1）。
 
 **已 triage（脚本 DOMAINS 12 域，不含 frontend）**: 145 unique
 
