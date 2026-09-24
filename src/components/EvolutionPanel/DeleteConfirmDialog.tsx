@@ -8,7 +8,7 @@
 //! - 默认关（保护）：mem_items 可能参与其他 proposal，连带删破坏更广
 //! - 勾选后：permanent block，但不可逆
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ProposalEntry } from "./types";
 
 type Props = {
@@ -26,6 +26,16 @@ export function DeleteConfirmDialog({
 }: Props) {
   const [cascadeSource, setCascadeSource] = useState(false);
   const refsCount = proposal.related_refs.length;
+  const cancelRef = useRef<HTMLButtonElement>(null);
+
+  // 焦点管理（aria-modal 契约）：挂载时焦点移入弹窗（默认落「取消」——
+  // 破坏性确认的安全默认），卸载时恢复到触发源。
+  // focus trap 不实现：弹窗仅 checkbox + 两钮，Tab 循环价值低，此处显式声明。
+  useEffect(() => {
+    const prev = document.activeElement as HTMLElement | null;
+    cancelRef.current?.focus();
+    return () => prev?.focus();
+  }, []);
 
   // Esc 关闭
   useEffect(() => {
@@ -43,8 +53,15 @@ export function DeleteConfirmDialog({
       role="dialog"
       aria-modal="true"
       aria-labelledby="delete-confirm-title"
+      onClick={() => {
+        // backdrop 点击 = 取消（与 Esc 一致；取消是无害路径，busy 时忽略）
+        if (!busy) onCancel();
+      }}
     >
-      <div className="nm-card w-full max-w-md p-5 space-y-4">
+      <div
+        className="nm-card w-full max-w-md p-5 space-y-4"
+        onClick={(e) => e.stopPropagation()}
+      >
         <h3
           id="delete-confirm-title"
           className="text-base font-semibold text-[var(--t1)]"
@@ -91,6 +108,7 @@ export function DeleteConfirmDialog({
 
         <div className="flex gap-2 justify-end">
           <button
+            ref={cancelRef}
             className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)]"
             onClick={onCancel}
             disabled={busy}

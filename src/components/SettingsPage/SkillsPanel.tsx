@@ -2,7 +2,7 @@
 // SkillsPanel：数据目录 skills/<name>/SKILL.md 的导入/删除/打开入口。
 // SkillOutcomeBadge：技能最近一次执行结果的颜色 + 图标。
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
@@ -35,6 +35,14 @@ export function SkillsPanel() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  /** notice 自动消退计时器：重设前 clear 旧的（防新提示被旧计时提前清掉），卸载清理 */
+  const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (noticeTimer.current) clearTimeout(noticeTimer.current);
+    },
+    []
+  );
 
   const refresh = async () => {
     try {
@@ -59,7 +67,8 @@ export function SkillsPanel() {
       if (typeof selected !== "string") return;
       const name = await invoke<string>("skills_import", { path: selected });
       setNotice(`技能「${name}」已安装`);
-      setTimeout(() => setNotice(""), 3000);
+      if (noticeTimer.current) clearTimeout(noticeTimer.current);
+      noticeTimer.current = setTimeout(() => setNotice(""), 3000);
       await refresh();
     } catch (e) {
       handleCommandError(e, "skills_import", { silent: true });

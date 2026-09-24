@@ -48,9 +48,10 @@ export function ArchivePage({
   }, [archived, query, activeTag]);
 
   /** 归档卡片默认折叠（collapsed 为 false 时说明用户已展开，保持展开）；
-   *  编辑态命中（机器人 📌 跳转）时展开，否则折叠卡片里看不到跳转效果 */
+   *  编辑态命中（机器人 📌 跳转）时展开，否则折叠卡片里看不到跳转效果。
+   *  仅真正翻转（collapsed 未定义）才产副本——已折叠的复用引用，保 memo/引用相等 */
   const displayTask = (t: Task): Task =>
-    t.collapsed === false || t.id === editingId
+    t.collapsed !== undefined || t.id === editingId
       ? t
       : { ...t, collapsed: true };
 

@@ -7,9 +7,13 @@ export function useProfile(): ProfileView | null {
   const [p, setP] = useState<ProfileView | null>(getProfileCache());
   useEffect(() => {
     let alive = true;
-    loadProfile().then((v) => {
-      if (alive) setP(v);
-    });
+    loadProfile()
+      .then((v) => {
+        if (alive) setP(v);
+      })
+      // profile.ts 内已 handleCommandError 留痕；此处仅防 unhandled rejection，
+      // 保持当前缓存（null 时走首字母兜底）
+      .catch(() => {});
     const un = subscribeProfile(() => {
       if (alive) setP(getProfileCache());
     });
