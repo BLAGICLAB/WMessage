@@ -98,6 +98,8 @@
 
 - [2026-09-24 22:19 CST] EV-3b-C3 收口（commit 7f84fcf）：**C5-EV-3b-C3 全簇 2 条已清**（+1 同位置 low 一并）。① routing.rs:21 A/B 改独立加盐 hash `ab_bucket`（fnv1a("ab:"+id)），与 canary 桶正交——canary 不动（成员稳定契约）；is_ab_a 零生产调用方=契约修正无消费者；bucket 降 pub(crate) 移出 re-export（同位置 low，零外部调用方）。新增 ab_orthogonal_to_canary 测试（区间 [0.35,0.55]，OCR 指出 [0.30,0.70] 含 buggy 值 0.589 卡不住回归 → 收紧，实测正交后 0.411）。② kill_switch.rs:15 边界归一化：load_from_file 对 all_auto_apply=true+shadow_only=false 矛盾组合强制 shadow_only=true + eprintln 留痕；**两处既有测试锁旧矛盾态已改断言**；类型级禁绝（私有字段重构）YAGNI。finding 所述 should_auto_apply 部分已被 C1 修复。OCR r1 1 medium 采纳 / 0 failure；type 1 n=25 不变。spec 立项（随抽查补记同 push）。diff +50/-10 恰压 budget（+50/-15）。**evolution 3b 剩 6 簇（D/E/F/G/H/I）。**
 
+- [2026-09-24 22:42 CST] EV-3b-D 收口（commit e244309）：**C5-EV-3b-D 全簇 3 条已清**（+1 同文件 medium 一并）。① ttl.rs compute_expires_at 改 saturating_add（腐败/对抗 created_at_ms 近 i64::MAX 不再 wrap 成负数=静默立刻淘汰；溢出=永不过期保审计轨迹）——**核出真实生产路径不走该 fn**：candidate/derive.rs:49 + panel/commands.rs:357 两处内联 now_ms+TTL_MS 同缺陷，一并收敛单点实现；② ttl.rs doc-only：evict 调用约定（先 mark 后 evict / evict 前持久化快照；零生产调用方）+ now_ms 时间源契约（wall-clock 同源，NTP 回拨知悉接受）——(a) status 门 C2 已修不重复；③ derive.rs Contradiction id 追加 short_hash(keep|drop_id) 二次 hash 判别位（一轮 N 条矛盾不再坍缩成 1 个 proposal_id 丢 N-1 信号）——**测试暴露第二层缺陷**：normalize_for_hash 数字归一化成 'N'，UUID hex 仅数字不同的对在 base_id 仍坍缩，判别位绕开归一化。OCR r1 5 comments（1 medium + 4 low 全采纳：复合 33 字符 id 破 16 hex 契约 → 改二次 hash 保形态；summary 不并入 refs 避免与 related_refs 双写；32 字符 UUID 回归断言；ttl 测试固定 now_ms）/ 0 failure；type 1 n=25 不变。spec 立项 649e9ad / 校正 3 次（budget +45→+55→+65→+80/-12：doc 交付物超初估 + 第二层缺陷 + OCR 采纳增量）。diff +76/-8。**evolution 3b 剩 5 簇（E/F/G/H/I）。**
+
 ## 1. 跨域同模式家族
 按"错误去哪了" + "是否破坏数据"两轴判，**4 家族**（poisoned-silent-recovery 已溶解 — 见执行日志；error-visible-non-blocking 已重新引入 for C5-AP-06 only — 见 §3.5 异常 2 更新）：
 
@@ -151,7 +153,7 @@
 - C5-EV-3b-C1：状态转移/条件判定错（mapping.rs:37 + change/status.rs:36 + kill_switch.rs:39），3 条 —— **已清**（f72e253，§0 2026-09-24 21:43）
 - C5-EV-3b-C2：双侧逻辑不一致（ttl.rs:23 + change/derive.rs:34），2 条 —— **已清**（92d1b9a，§0 2026-09-24 22:02）
 - C5-EV-3b-C3：设计约定未强制（routing.rs:21 + kill_switch.rs:15），2 条 —— **已清**（7f84fcf，§0 2026-09-24 22:19）
-- C5-EV-3b-D：批内 3 处独立改动（溢出/不可逆/去重，ttl.rs:41 + ttl.rs:34 + derive.rs:104），3 条
+- C5-EV-3b-D：批内 3 处独立改动（溢出/不可逆/去重，ttl.rs:41 + ttl.rs:34 + derive.rs:104），3 条 —— **已清**（e244309，§0 2026-09-24 22:42）
 - C5-EV-3b-E：死代码 / no-op（observe/shadow.rs:0 + :87 + :163），3 条
 - C5-EV-3b-F：哈希/校验缺（proposal.rs:186 + observe/synthetic.rs:29 + observe/shadow.rs:345），3 条
 - C5-EV-3b-G：持锁/async 阻塞 IO（apply.rs:156 + observe/shadow.rs:202 + panel/commands.rs:0），3 条
