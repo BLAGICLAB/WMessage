@@ -64,6 +64,8 @@
 
 - [2026-09-24 ~11:10 CST] BT-11 收口（commit b1d9212）：**C5-BT-11 全清**。find_tag_open 开标签精确匹配（后字符须空白/>//），first_between/first_open_tag 换用，杀 <a 误中 <abbr>、<p 误中 <pre>；行为修复 abbr 前置时标题/链接错位，正常形态不变。OCR r1 0 comments / 0 failure；type 1 n=25 不变。**bot 域 C5 簇剩 BT-10b / BT-12。**
 
+- [2026-09-24 ~11:35 CST] BT-12 收口（docs-only）：**C5-BT-12 全清（6 条全 stale，零代码）**。核 C2b-2（95a25e9，2026-09-21 20:39）晚于 0921 全扫快照：:0 kind 白名单（写入侧 ALLOWED_LINK_KINDS + 消费侧仅 {file,folder}）+ :43 归一化（绑集 canonical 双侧）已修；另 4 条漏分簇（:0 is_dir 死参数已删 / :10 静默收缩已带 audit+fail-closed / :83 TOCTOU 已有 recheck_canonical / :144 已走 path_openable_in）同判 stale。**reviewer 抽查 pass**（OCR high 判 stale/FP 按规则触发独立核验）。§3 待核项同步消解。**bot 域 C5 簇剩 BT-10b + BT-13 / BT-14 / BT-15。**
+
 ## 1. 跨域同模式家族
 按"错误去哪了" + "是否破坏数据"两轴判，**4 家族**（poisoned-silent-recovery 已溶解 — 见执行日志；error-visible-non-blocking 已重新引入 for C5-AP-06 only — 见 §3.5 异常 2 更新）：
 
@@ -166,7 +168,7 @@
 - C5-BT-09：dispatch/scheduler 语义错（bot/dispatch.rs:248/:424 + bot_skills/scheduler.rs:283），3 条 → **已清（拆批）**：:283 **已修（BT-09a，commit b1c0b4f，Finish 早退假完成收口）**；:248 **已修（BT-09b，commit 3f62d74，索引复用）**；:424 **wontfix-with-rationale**（与 OCR-003 同型：ToolResult::ok 失败文案是 dispatch.rs:402-404 注释钉死的设计意图）
 - C5-BT-10：持锁跨 IO / sync IO in loop（config/audit.rs:22 + bot_skills/runtime.rs:83/:393 + bot_scheduler.rs:468），4 条 → **拆批**：:22 + :83 + :393 **已修（BT-10a，commit a4e3bf1，锁内 IO/钩子全移出临界区，零行为变更）**；:468（scheduler 无 panic recovery/关闭信号/并发上限）family 不同（调度器韧性）→ **BT-10b 单独评**
 - C5-BT-11：web 解析脆（bot_web.rs:412 + :422），2 条 → **已清（BT-11，commit b1d9212）**：find_tag_open 开标签精确匹配（后字符须空白/>//），杀 <a 误中 <abbr>、<p 误中 <pre>；行为修复 abbr 前置时标题/链接错位
-- C5-BT-12：workspace-link 残留（bot_skills/files.rs:0 + :43），2 条，**与 C2b-2 修复边界重叠待核**
+- C5-BT-12：workspace-link 残留（bot_skills/files.rs:0 + :43），2 条 → **全清（stale，C2b-2 已修）**：:0 kind 白名单 + :43 归一化不一致均已被 95a25e9（2026-09-21 20:39，**晚于 0921 全扫快照**）修复——link_kind_contributes_path 白名单（ALLOWED_LINK_KINDS 单一来源）+ 绑集 canonical 双侧比对。同文件另 4 条（:0 is_dir 死参数 / :10 静默收缩 / :83 TOCTOU / :144 raw contains，**triage 漏分簇补登记**）同判 stale——is_dir 已从 IPC 删、Err 分支全带 audit + C2c-v2 fail-closed、recheck_canonical 紧邻副作用、delete 走 path_openable_in。**reviewer 抽查 pass**（6 条独立核验）
 - C5-BT-13：prompt injection via fail_reason（bot_plan.rs:234），1 条
 - C5-BT-14：StopGuard broken（bot/registry.rs:267），1 条
 
@@ -193,7 +195,7 @@
 
 ## 3. 待核区（首批启动前必核）
 
-- **C5-BT-12 ≈ C2b-2 修复未覆盖**：bot_skills/files.rs:0 显式标"l.kind != 'url' 接受 file/folder/app/command"。C2b-2（commit 95a25e9）修了"工作区链接 kind 白名单——写入侧 fail-closed + 消费侧集合判断"。需核 95a25e9 的 kind 集合是否漏 file/folder/app/command。
+- **C5-BT-12 ≈ C2b-2 修复未覆盖** → **已核消解（2026-09-24）**：95a25e9 的 kind 集合 = 写入侧 ALLOWED_LINK_KINDS ["url","file","folder"] + 消费侧仅 {file,folder} 贡献路径，app/command/未来 kind 两侧均拒。C5-BT-12 全簇 6 条（含漏分簇 4 条）均为 0921 全扫快照早于 95a25e9 的 stale finding，零代码处置，见 §2 C5-BT-12 行。
 - **C5-SC-05 ≈ HOOK-1/HOOK-2 家族**：test-fast.sh 审计批次号防线仅扫 tracked，不含 untracked。HOOK-1（fmt 全仓检查 × 既有漂移）/ HOOK-2（knip 静态盲区）已登记，SC-05 属同家族。
 - **AP-07 / BT-14 severity 来源**：源 JSON 验证 severity=high（OCR 真实定级，非 medium/low 混进），保留。
 - **C4-v2 升级（PANEL_H 同源合并，状态：wontfix-pending-product-decision）**：原 C4-v2 只含 PANEL_H_MIN > PANEL_H 单项。现 OCR WA-01 finding（constants.ts:13 start_line，OCR 行号与实指 line 13 PANEL_H_MIN/MAX 字面 800/900 同源）合入 → C4-v2 升为 **两个子项**：(a) PANEL_H_MIN > PANEL_H 逻辑矛盾（C4-4 原 observation）+ (b) PANEL_H_MIN/MAX range 仅 100px 窄区间（WA-01 新 observation）。**同一产品决策（widget 内容最小可用高度 + 上下限），产品拍板时一次改完两处，别只修一个**。**C4-v2 最终状态 = wontfix-pending-product-decision（继承 C4-4 状态，不进实工单 144 的"待修"集合，只占位 / 待产品拍板）**。WA-01 拆出的 constants.ts:13 条不独立计为 finding。首批决策时一并处理 C4-v2 升级。
