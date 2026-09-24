@@ -18,7 +18,7 @@
 
 - family: contract-consistency（双侧不一致/名实不符）
 - 覆盖 findings: 2（+1 同根 medium 一并）
-- 预估 diff: 3 files / +30/-12 lines（A 类，budget +42/-18）
+- 预估 diff: 3 files / +47/-22 lines 实测（A 类，budget 执行中校正 +42/-18 → **+55/-28**；OCR r1 采纳项：测试名随 fn 改 4 处 + 措辞修订）
 - OCR 计划: r1, timeout 1800s, 期望 comments ≤ 3
 
 ## 核实的编译层事实（spec 前已核）
@@ -56,8 +56,7 @@
 
 1. `expected_files` = 3：candidate/ttl.rs + change/derive.rs +
    change/mod.rs。ripple = change/mod.rs re-export 一行（已列）。
-2. budget = **A 类**：ttl +15/-4、derive +13/-7、mod +1/-1：估 +29/-12，
-   预留 → **max +42/-18**。
+2. budget = **A 类**：ttl +15/-4、derive +13/-7、mod +1/-1：初估 +29/-12 → 实测 +47/-22（OCR r1 采纳增量），校正 → **max +55/-28**。
 3. 两条 findings 的 fix 字段均已写明 ripple。
 
 ## 机器可读（脚本读取，勿改格式）
@@ -71,8 +70,8 @@
     "src-tauri/src/evolution/change/derive.rs",
     "src-tauri/src/evolution/change/mod.rs"
   ],
-  "max_lines_added": 42,
-  "max_lines_removed": 18,
+  "max_lines_added": 55,
+  "max_lines_removed": 28,
   "findings": [
     {"id": "C5-EV-3b-C2-1", "file": "src-tauri/src/evolution/candidate/ttl.rs", "line": 23, "fix": "evict_expired 谓词加 status 门（仅 Pooled/Expired 可硬删，Promoted/Rejected 保历史）+ doc 修订 + 回归测试；零生产调用方无 ripple"},
     {"id": "C5-EV-3b-C2-2", "file": "src-tauri/src/evolution/change/derive.rs", "line": 34, "fix": "fn 重命名 passes_auto_apply_gate + doc 写明仅检约束 5/6 + impact 谓词改显式白名单 High|Medium；ripple: change/mod.rs re-export 一行 + 测试改名；ChangeRecord 字段/jsonl schema 不动"}
