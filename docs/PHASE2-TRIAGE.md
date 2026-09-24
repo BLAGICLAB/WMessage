@@ -64,7 +64,9 @@
 
 - [2026-09-24 ~11:10 CST] BT-11 收口（commit b1d9212）：**C5-BT-11 全清**。find_tag_open 开标签精确匹配（后字符须空白/>//），first_between/first_open_tag 换用，杀 <a 误中 <abbr>、<p 误中 <pre>；行为修复 abbr 前置时标题/链接错位，正常形态不变。OCR r1 0 comments / 0 failure；type 1 n=25 不变。**bot 域 C5 簇剩 BT-10b / BT-12。**
 
-- [2026-09-24 ~11:35 CST] BT-12 收口（docs-only）：**C5-BT-12 全清（6 条全 stale，零代码）**。核 C2b-2（95a25e9，2026-09-21 20:39）晚于 0921 全扫快照：:0 kind 白名单（写入侧 ALLOWED_LINK_KINDS + 消费侧仅 {file,folder}）+ :43 归一化（绑集 canonical 双侧）已修；另 4 条漏分簇（:0 is_dir 死参数已删 / :10 静默收缩已带 audit+fail-closed / :83 TOCTOU 已有 recheck_canonical / :144 已走 path_openable_in）同判 stale。**reviewer 抽查 pass**（OCR high 判 stale/FP 按规则触发独立核验）。§3 待核项同步消解。**bot 域 C5 簇剩 BT-10b + BT-13 / BT-14 / BT-15。**
+- [2026-09-24 ~11:35 CST] BT-12 收口（docs-only）：**C5-BT-12 全清（6 条全 stale，零代码）**。核 C2b-2（95a25e9，2026-09-21 20:39）晚于 0921 全扫快照：:0 kind 白名单（写入侧 ALLOWED_LINK_KINDS + 消费侧仅 {file,folder}）+ :43 归一化（绑集 canonical 双侧）已修；另 4 条漏分簇（:0 is_dir 死参数已删 / :10 静默收缩已带 audit+fail-closed / :83 TOCTOU 已有 recheck_canonical / :144 已走 path_openable_in）同判 stale。**reviewer 抽查 pass**（OCR high 判 stale/FP 按规则触发独立核验；兼作第 25 批抽查）。§3 待核项同步消解。**bot 域 C5 簇剩 BT-10b + BT-13 / BT-14 / BT-15。**
+
+- [2026-09-24 ~11:55 CST] BT-13 收口（commit 11cf4f7）：**C5-BT-13 全清**。sanitize_fail_reason（剥控制字符/拆 ``` 序列/截 500）+ 围栏 + 「数据非指令」标注，replan fail_reason 注入面闭合。OCR r1 0 comments / 0 failure；type 1 n=25 不变。**bot 域 C5 簇剩 BT-10b / BT-14。**
 
 ## 1. 跨域同模式家族
 按"错误去哪了" + "是否破坏数据"两轴判，**4 家族**（poisoned-silent-recovery 已溶解 — 见执行日志；error-visible-non-blocking 已重新引入 for C5-AP-06 only — 见 §3.5 异常 2 更新）：
@@ -169,7 +171,7 @@
 - C5-BT-10：持锁跨 IO / sync IO in loop（config/audit.rs:22 + bot_skills/runtime.rs:83/:393 + bot_scheduler.rs:468），4 条 → **拆批**：:22 + :83 + :393 **已修（BT-10a，commit a4e3bf1，锁内 IO/钩子全移出临界区，零行为变更）**；:468（scheduler 无 panic recovery/关闭信号/并发上限）family 不同（调度器韧性）→ **BT-10b 单独评**
 - C5-BT-11：web 解析脆（bot_web.rs:412 + :422），2 条 → **已清（BT-11，commit b1d9212）**：find_tag_open 开标签精确匹配（后字符须空白/>//），杀 <a 误中 <abbr>、<p 误中 <pre>；行为修复 abbr 前置时标题/链接错位
 - C5-BT-12：workspace-link 残留（bot_skills/files.rs:0 + :43），2 条 → **全清（stale，C2b-2 已修）**：:0 kind 白名单 + :43 归一化不一致均已被 95a25e9（2026-09-21 20:39，**晚于 0921 全扫快照**）修复——link_kind_contributes_path 白名单（ALLOWED_LINK_KINDS 单一来源）+ 绑集 canonical 双侧比对。同文件另 4 条（:0 is_dir 死参数 / :10 静默收缩 / :83 TOCTOU / :144 raw contains，**triage 漏分簇补登记**）同判 stale——is_dir 已从 IPC 删、Err 分支全带 audit + C2c-v2 fail-closed、recheck_canonical 紧邻副作用、delete 走 path_openable_in。**reviewer 抽查 pass**（6 条独立核验）
-- C5-BT-13：prompt injection via fail_reason（bot_plan.rs:234），1 条
+- C5-BT-13：prompt injection via fail_reason（bot_plan.rs:234），1 条 → **已修（BT-13，commit 11cf4f7）**：sanitize_fail_reason 剥控制字符+拆 ``` 序列+截 500，围栏+「数据非指令」标注
 - C5-BT-14：StopGuard broken（bot/registry.rs:267），1 条
 
 ### 域 WidgetApp（3 簇 / 7 findings）
