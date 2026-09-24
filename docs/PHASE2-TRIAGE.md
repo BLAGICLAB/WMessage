@@ -28,6 +28,7 @@
 - [2026-09-23 23:25 CST] FRDV-01 收口（commit 46f8437）：C5-MI-03.2（rules.rs:121 CSV 双静默默认值）已修 fail-closed——空动作行 / 未知启用 token → 行级 DomainRule Err。C5-MI-03 2 条 → 剩 1 条（rules.rs:27 load_rules 静默 fallback default，quarantine vs 结构化 Err = B 类候选，攒批待拍）。
 - [2026-09-23 23:35 CST] MI-07 收口（commit 613e07a）：C5-MI-07（ops.rs log_line rotation/写入路径分裂）已修——单次 canonicalize 结果共用 + 失败兜底不丢日志。OCR r1 唯一 low（data_dir 双调）已采纳入批。migration 域 10 簇剩 4 簇未清：MI-04a/b、MI-05a/b、MI-08。
 - [2026-09-23 23:50 CST] DB-04 收口（commit c9a3041）：C5-DB-04 全簇 2 条已修——bot_session_rename 空标题 fail-closed（InvalidArgument）+ tasks_import 复用 check_export_path + 64MiB 读侧 bounded 强制。OCR r1 2 comments（medium TOCTOU + low 文案截断，同根=本批新代码）均采纳入批（metadata 预检 → bounded reader）。db 域 7 簇剩 2 簇未清：DB-03（race/TOCTOU）、DB-05 余 3 条（均 B 类候选）。
+- [2026-09-25 06:59 CST] **TRIAGE 状态清扫**：全量比对 §2 各域行标 vs git log，发现 4 簇已修但行标漏打（早期批 APW-01/APW-02a/APW-02b/DB-01b-BT-01b/首批开批先于行标纪律）。逐点源码复核（migrations.rs tx 包裹 / paths.rs staging+swap / ops.rs staging+rename / run.rs·recovery.rs 显式传播 / workspace.rs map_err 传播）全部在位后补打行标。**结论：DB-01b / DB-02a / MI-02 / MI-06 无需新批**。剩余未清 = 跨域阻塞族待核区 3 簇（明示不动）+ wontfix / B 类待拍 23 项。
 - [2026-09-25 07:06 CST] **FE-08b**（frontend 域「入口/主题/样式」簇，commit 2f006ef）：实修 2 处——main.tsx:10 root as HTMLElement 直转型 → 判空 + 描述性 Error fail-fast；main.css:131 基类 transition 补 transform 0.2s ease（nm-card-hover 悬停进出对称）。FP 1 条（reviewer agent-19 pass，零代码）：theme.ts:33 applySetting 不通知 in-process subscribers——全仓唯一订阅方 App:126/WidgetApp:142 均自身为写入方，无可失同步者。OCR r1 0 comments（一轮清零）。D2: files=3(+33/-2, 新测试 main.css.test.ts +24) asserts=0→0 tests=vitest 306 全量绿 + tsc 0。
 - [2026-09-25 06:59 CST] **FE-08a**（frontend 域「挂件/看板」簇，commit d937b01）：实修 3 处——DoneCircle.tsx:13 type=button；KanbanBoard.tsx:179 active.rect.current 可选链守卫（防御拖拽中卸载）；TaskCardContent.tsx:293 + TodoCard.tsx:614 ⏰ 点击无条件重置定时草稿 → 仅展开且草稿空时初始化 + 取消定时清草稿（OCR r1 high 指出主窗口/挂件镜像必须双侧同修）。行为变更：误触 ⏰ 收起再展开草稿保留。OCR r1 2 high 同根因全采纳（spec 校正 1 扩 expected_files/budget）/ r2 0 comments（high 验证通过）。D2: files=7(+81/-3, 新测试 +25) asserts=0→0 tests=vitest 55 相关绿 + 全量绿 + tsc 0。
 - [2026-09-25 06:47 CST] **FE-07**（frontend 域「次要组件零散」簇，commit 487b499）：实修 5 处——SkillsPanel.tsx:60 noticeTimer ref + 重设前 clear + 卸载清理；ApiProviderSelect.tsx:37 零 ARIA 自绘下拉补全（haspopup/expanded/controls/activedescendant 挂焦点元素 + listbox/option/aria-selected + 方向键/Home/End/Enter 导航 + 关闭态方向键展开 + Tab 收起 + 焦点归还 + tabIndex=-1 不进 Tab 序 + useId 选项 id）；DeleteConfirmDialog.tsx:40 焦点进/出恢复（默认落取消钮）+ backdrop onCancel（内卡 stopPropagation，trap 不实现注释声明）；ActorAvatar.tsx:10 loadProfile catch 防护（留痕在 profile.ts 侧不重复）；ArchivePage.tsx:52 displayTask 仅 collapsed===undefined 才产副本。转 B 类 1 项（types.ts:24 snake_case union → #23）。SettingsPage.test 5 处旧断言翻 role=option（锁旧非 ARIA 结构）。OCR r1 6 全采纳 / r2 4（1 high 采纳 + 1 medium 采纳 + 1 low 不采纳有论证 + 1 无问题）/ r3 6（0 high 验证通过：5 采纳 1 low 不采纳有论证）。spec 校正 ×2。D2: files=10(+122/-25, 新测试 4 文件 +248) asserts=0→0 tests=vitest 71 相关绿 + 全量绿 + tsc 0。
@@ -161,8 +162,8 @@
 
 ### 域 db（7 簇 / 16 findings）
 - C5-DB-01a：error-not-propagated（workspace.rs:54 + tasks.rs:185 + mod.rs:251），3 条 → **已清**：workspace.rs:54 + tasks.rs:185 首批 1fcc418；mod.rs:251 首批补全 f93f4a9（reset_bot_assigned_with bool→Result + `?` 传播）
-- C5-DB-01b：failure-recovery-default-value（workspace.rs:92 + :209），2 条
-- C5-DB-02a：atomicity/partial-write（migrations.rs:51 + paths.rs:65），2 条
+- C5-DB-01b：failure-recovery-default-value（workspace.rs:92 + :209），2 条 → **已清（DB-01b-BT-01b，commit 1e023e3）：序列化失败返 Err 拒写，不再 silent "[]" 覆写——2026-09-25 06:59 源码复核 map_err 传播在位，行标补打**
+- C5-DB-02a：atomicity/partial-write（migrations.rs:51 + paths.rs:65），2 条 → **已清（APW-01 8e7c9b4 迁移包事务 + APW-02b 497e4c1 3 文件 swap+回滚）——2026-09-25 06:59 源码复核 tx/staging 在位，行标补打**
 - C5-DB-02b：事务约定一致性 / 设计债（tasks.rs:439）→ **wontfix-pending-design-decision**，触发条件 = 未来引入 cascade/soft-delete 多语句 delete 时重审
 - C5-DB-03：race / TOCTOU（mod.rs:61 + tasks.rs:396），2 条 → **已清（DB-03，commit 59f81c8：mod.rs:61 锁+双检实修；tasks.rs:396 判 FP——load_all 单语句快照一致，reviewer 核验 pass）**
 - C5-DB-04：input-validation（bot_sessions.rs:115 + tasks.rs:485，含 1 security），2 条 → **已修（DB-04，commit c9a3041）**
@@ -189,13 +190,13 @@
 
 ### 域 migration（10 簇 / 15 findings）
 - C5-MI-01：poisoned mutex silent recovery（DB_WRITE_LOCK silent 路径，**违反 C3-1 约定**），1 条，**家族已溶解，独立存在** → **已修（EVNB-02，commit 299e776：journal.rs db_write_lock 闭包加 mutex_poisoned eprintln，恢复语义不变）**
-- C5-MI-02：error-not-propagated（migration/run.rs:132 + :270 + recovery.rs:87，unwrap_or(None) / filter_map(r.ok) 吞 DB err，调用方无感），3 条
+- C5-MI-02：error-not-propagated（migration/run.rs:132 + :270 + recovery.rs:87，unwrap_or(None) / filter_map(r.ok) 吞 DB err，调用方无感），3 条 → **已清（首批开批，commit eca3622）：unwrap_or(None)/filter_map(r.ok) → ? 显式传播——2026-09-25 06:59 源码复核在位，行标补打** 条
 - C5-MI-03：failure-recovery-default-value（migration/rules.rs:27 + :121，破坏数据：rules 默认覆盖 + CSV 输入 coerce），2 条 → **:121 已修（FRDV-01，commit 46f8437）；剩 :27（B 类候选，攒批待拍）**
 - C5-MI-04a：migration/journal.rs:34 INSERT 无去重，1 条 → **已修（MI-04a，commit 414cf08）**
 - C5-MI-04b：migration/journal.rs:126 unlocked find+act TOCTOU，1 条 → **已修（MI-04b，commit 5819f76；replay 纳入 MigrationGuard）**
 - C5-MI-05a：migration/commands.rs:116 spawn_blocking 无 abort，1 条 → **B 类候选**（修法 = CancellationToken 贯穿 run_migration 阶段 + 取消语义方向「迁一半的文件怎么办」，签名改 + 语义变更，攒批报人拍）
 - C5-MI-05b：migration/commands.rs:19 + recovery.rs:197 sync/block_on 阻塞，2 条，**跨域阻塞族待核**（§3 待核区明确「不现在动」）
-- C5-MI-06：migration/ops.rs:127 copy_dir_recursive mid-fail → dst 部分填充（**atomicity/partial-write 家族**），1 条
+- C5-MI-06：migration/ops.rs:127 copy_dir_recursive mid-fail → dst 部分填充（**atomicity/partial-write 家族**），1 条 → **已清（APW-02a，commit d443a07）：顶层 staging sibling + 原子 rename + 失败清 staging——2026-09-25 06:59 源码复核在位，行标补打**
 - C5-MI-07：migration/ops.rs:202 路径不一致（rotation target ≠ write target），1 条 → **已修（MI-07，commit 613e07a）**
 - C5-MI-08：migration/rules.rs:99 + :67 解析脆 / 校验缺（批内 2 处独立改动：contains 太宽松 + archive_dir 无路径校验 = 1 security），2 条 → **已修（MI-08，commit bbe4f59；archive_dir 绝对路径收窄部分转 B 类）**
 
