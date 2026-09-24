@@ -5,6 +5,7 @@
 
 ## 0. 执行日志
 
+- [2026-09-25 07:25 CST] **B 类决策权威清单重建（zcode 接手第一步）**：23 项全量重建入 §4 末段（grep 攒批/转 B 类/B 类候选全量 + 逐项源码 file:line 现场核对 + OCR fullscan 原文复核）。勘误：HANDOFF-2026-09-25 §3.1 表 #10 误标 EV-3b-A（实为 add_allowed_dir 剥 key，§4:555-557）；EV-3b-A 残 2 条 = #17。#1–#9 为新赋编号。**环境漂移登记：本机 `python3` 现解析 ~/.local/bin/python3（3.14.7，无 pytest），test-all.sh 第 2 步 pytest 失败；以 `PATH=/usr/bin:$PATH` 前置系统 python3（3.9.6 + pytest 8.4.2）复跑全绿（26s，1119 passed + pytest + vitest）。后续批三层自测须带此 PATH 前缀，或用户拍板给 3.14 装 pytest。**
 - [2026-09-22 08:32 CST] 分域表修正：bot* = bot/ 子目录 18 + bot_skills/ 子目录 12 + bot_*.rs 兄弟 16 = 46 条（严格互斥去重）。原"bot 18" = bot/ 子目录 18；原"bot_skills 12" = bot_skills/ 子目录 12；兄弟 16 条散落 9 文件（artifacts 2 + chat 1 + fs 1 + model_loop 4 + plan 1 + py 1 + scheduler 2 + slash 1 + web 5 = 18 raw → 去重 16 唯一）。
 - [2026-09-22 08:32 CST] C5-DB-01 拆簇：DB-01 内部混"丢弃"与"替换默认值"两种模式，按新判据拆为 DB-01a（error-not-propagated，3 条）/ DB-01b（failure-recovery-default-value，2 条）。
 - [2026-09-22 08:32 CST] C5-BT-01 拆簇：BT-01 内部混模式，按新判据拆为 BT-01a（error-not-propagated，5 条）/ BT-01b（failure-recovery-default-value，2 条）。
@@ -621,6 +622,60 @@ run A 仅靠 /tmp/ocr-APW-02b-r1.clean.json 找回。cache 命名亦误导：
 - **FE-08a（d937b01，2026-09-25 06:59）OCR 核验记录**：r1 = ~/.openclaw/cache/FE-08a/ocr-r1.raw.json（comments=2 全 high 同根因采纳：TodoCard 镜像 + 取消清草稿）；r2 = ~/.openclaw/cache/FE-08a/ocr-r2.raw.json（comments=0，high 验证通过）。无 B 类新增。
 
 - **FE-08b（2f006ef，2026-09-25 07:06）OCR 核验记录**：r1 = ~/.openclaw/cache/FE-08b/ocr-r1.raw.json（status=complete / comments=0）。备注：本批一次 test-all 后台跑 exit=1 无失败详情，立即复跑 exit=0 全绿，判环境偶发。无 B 类新增。
+
+### B 类决策权威清单（2026-09-25 07:25 CST zcode 重建，23 项待用户逐项拍板；拍板前禁写代码）
+
+> 重建方法：grep「转 B 类｜B 类候选｜单独立 B 类｜攒批」全量 + 每项源码 file:line 现场核对 + OCR fullscan（docs/OCR-CODE-REVIEW-2026-09-21-fullscan.json）原文复核。
+> 编号：#1–#9 为本清单新赋（triage 原散落无编号）；#10–#23 沿用 triage 既有编号。triage 行号引用为本次插入前快照（本节插于 §4 累计区前，§0/§2 及 §4 前段行号不受影响）。
+> 勘误：HANDOFF-2026-09-25 §3.1 表中 #10 写作「EV-3b-A 残 2 条之一（§4 ~557）」有误——§4:555-557 实为 add_allowed_dir 剥 key 项；EV-3b-A 残 2 条 = #17（§2:179）。以本清单为准。
+> 选项标注：〔triage 已载〕= 选项原文来自 triage；〔重建构造〕= triage 未载选项，由主控按 triage 议题原文构造，仅供拍板参考。
+
+- **#1** src-tauri/src/migration/rules.rs:27 —— load_rules 两臂静默降级空规则：解析失败仅 log_line + `RulesFile::default()`，读失败 `Err(_) => default()` 全静默；caller 后续 save 即把用户规则覆写为空（OCR high）。
+  - A=quarantine〔triage 载方向〕：坏文件改名 `.bad-<ts>` 保全原文件 + 空规则继续——用户配置不被无痕覆写，可人工恢复；B=结构化 Err〔triage 载方向〕：load_rules → Result，caller（migration_rules_load / run_migration / migration_status 等 ≥3 处）显式分流 UI 报错 vs 降级——签名改 + ripple；C=维持现状（留痕已有，覆写风险留给 save 侧）。triage：§0:28 / §2:194
+- **#2** src-tauri/src/migration/commands.rs:116 —— migration_run 的 spawn_blocking 无 abort/cancel 接线，前端取消（关窗/退出）后 future 无人接收（OCR high）。
+  - A=〔triage 载方向〕CancellationToken 贯穿 run_migration 各阶段（migration_run 签名改 + 取消语义「迁一半的文件怎么办」——staging 原子化后中止安全性需逐阶段核定）；B=〔重建构造〕不可取消语义文档化（任务后台自然跑完并落 journal，结果丢弃无害）；C=〔重建构造〕wontfix-with-rationale。triage：§2:197
+- **#3** src-tauri/src/db/paths.rs:50 —— copy_legacy_db 源库 open 失败（损坏/加密/IO）仅追加 warn 字符串，坏源静默继续传播（OCR high，C5-DB-05 成员）。
+  - A=〔重建构造〕fail-closed：open 失败 → Err 拒拷贝，不产半成品目标库；B=〔重建构造〕维持 warn + 继续拷贝（便携首启容错优先——老库偶发锁定/权限时仍能拿到可用目标库）；C=〔重建构造〕warn 升级为迁移日志 ERROR + UI 可见提示，行为不变。triage：§2:170 / §0:30
+- **#4** src-tauri/src/db/workspace.rs:199 —— workspace_import_merge `it.updated_at.unwrap_or(0) > cur_ua`：导入行无 updated_at 当 0、库内行 NULL 也当 0——NULL 语义双侧重载（OCR high，C5-DB-05 成员）。
+  - A=〔重建构造〕NULL→i64::MAX（无时间戳=最新，导入覆盖 NULL 目标行）；B=〔重建构造〕维持 NULL→0（无时间戳=最旧永不覆盖；库内 NULL 行可被任何导入行覆盖，现状）；C=〔重建构造〕遇 NULL 显式 Err（要求导入源带时间戳，破坏向后兼容）。triage：§2:170
+- **#5** src-tauri/src/db/bot_history.rs:52 —— bot_history_save_inner 整批 inserted_at 用循环前单次 now，全量覆写后历史时间戳坍缩为一刻（OCR high，C5-DB-05 成员）。
+  - A=〔重建构造〕每行独立 now（保真实时序，微成本）；B=〔重建构造〕维持单 now（语义=本次覆写的原子时刻，整批本来就是一次 overwrite）；C=〔重建构造〕now + 行序单调递增合成时间戳（无真实来源时保序）。triage：§2:170
+- **#6** src-tauri/src/bot_skills/vars.rs:76 —— in_quotes 字节级启发式对常见 JSON 形态（占位符所在字符串含转义引号等）误判——triage 已判 wontfix-with-rationale（占位符模板构造上非合法 JSON，启发式是结构必然），**待用户确认**。
+  - A=确认 wontfix-with-rationale（triage 论证在案）；B=立项修（结构化 JSON 处理或 escaped-quote 前瞻，扩 scope）；C=暂缓观察（维持登记状态）。triage：§2:229
+- **#7** 全仓毒锁恢复点（db::lock_db_write 先例形态；BT-03a 语境 = CONFIG_WRITE_LOCK 等）—— 毒锁恢复后 eprintln vs audit_event! 落 bot.log：改即改 C3-1 约定（「logged 恢复即合法」现以 eprintln 满足）。
+  - A=〔重建构造〕维持 eprintln（C3-1 现约定，零改动）；B=〔重建构造〕统一升级 audit_event! 落 bot.log（改 C3-1 约定 + 全仓 N 处恢复点统一 + audit_event! 需 AppHandle 的调用点改造，扩 scope）；C=〔重建构造〕仅新增锁（未来批）用 audit_event!、存量不动（双轨，约定分叉风险）。triage：§4:552
+- **#8** src-tauri/src/migration/journal.rs（journal_pending）—— MI-04a 修复前历史遗留：既有库同 key 孤儿 pending 行清理 = 数据迁移方向。
+  - A=〔重建构造〕启动 replay 前一次性清理（扫 journal，同 key 已完成 op 的孤儿 pending 删除 + 留痕——改迁移启动语义）；B=〔重建构造〕不清理（MI-04a 后 check-then-reuse，孤儿只占行数无行为危害——需核 replay 扫到孤儿时的实际行为）；C=〔重建构造〕提供手动清理命令/文档（运维面）。triage：§0:49
+- **#9** src-tauri/src/migration/rules.rs:67 —— MI-08 残余：archive_dir 绝对路径 policy（`..` 组件拒绝已修 bbe4f59）+ symlink 逃逸校验 + 破坏性变更（move）用户提示。
+  - A=〔重建构造〕三项全做（绝对路径拒绝 + canonicalize 后须仍在数据目录 + 执行前 UI 提示）；B=〔重建构造〕只做路径/symlink 校验，不加 UI 提示；C=〔重建构造〕只文档化威胁模型（cleanup-rules.json 属本地用户可控文件，威胁=用户自伤）。triage：§0:51 / §2:201
+- **#10** src-tauri/src/bot/config/io.rs:161（add_allowed_dir）—— keyring 迁移成功后文件内明文 key 是否剥除（BT-03a OCR r5 medium 不采纳转 B）：防御纵深 vs 迁移误判成功时剥 key 写盘 = 密钥永久丢失（数据破坏方向）。
+  - A=〔重建构造〕迁移成功后剥 key（防御纵深；前提=「成功」判定零误判）；B=〔重建构造〕不剥 + 文档化（文件副本=keyring 不可用时的降级兜底，明文留存是可用性取舍=现状）；C=〔重建构造〕剥 key 前 keyring 读回验证（belt-and-suspenders，实现最重）。triage：§4:555-557
+- **#11** src-tauri/src/bot_skills/state.rs:164（clear_terminal_skill_runs）—— 终态 run 全局清理 vs 按会话清理（语义方向）。
+  - A=〔重建构造〕按会话参数化（签名改 + caller ripple；避免 A 会话清掉 B 会话刚终态待读的 run——跨会话读窗口是否存在需先核）；B=〔重建构造〕维持全局清理（现状=入口一次性清全部终态）；C=〔重建构造〕带时间阈值清理（只清 N 分钟前终态 run）。triage：§2:228 / §0:65
+- **#12** src-tauri/src/bot_web.rs:881（行漂移，现 ~:920 Jina 回退段）—— fetch_text 直连失败回退 Jina Reader 时无审计留痕；补审计需 fetch_text(raw_url) 签名改 + 调用链 ripple。
+  - A=〔重建构造〕签名改 + 审计参数贯通（Jina 回退记 audit，扩 scope）；B=〔重建构造〕不改签名，回退处 eprintln 留痕（stderr 可见不落 bot.log）；C=〔重建构造〕维持现状（注释已声明隐私边界「URL 发给 r.jina.ai」，仅审计缺口无安全洞）。triage：§2:226 / §0:71
+- **#13** src-tauri/src/bot/config/keyring.rs:168（write_key_file_to，现 :163 起）—— 降级文件存储的权限控制仅 unix 分支（0600 已修），Windows 无 ACL 等价（macOS 开发环境不可测）。
+  - A=〔重建构造〕补 `#[cfg(windows)]` DACL 0600 等价（代码进仓但本仓无 Windows CI 验证手段）；B=〔重建构造〕wontfix-with-rationale（主平台 macOS，Windows 降级存储暂不承诺权限语义）；C=〔重建构造〕文档化声明（注释/README 载明 Windows 明文 key 权限不受控）。triage：§2:229
+- **#14** src-tauri/src/bot/registry.rs:267（StopGuard 接线）—— ctx.stop 仅 tool_run_python 已接；全接线 = 13+ mutating adapter 工具签名改 + 内部取消检查（扩 scope）；循环级 4 处 stop 检查已覆盖「排在长调用后」场景。
+  - A=全签名接线〔triage 已载〕（扩 scope）；B=adapter 层 pre-flight 检查〔triage 已载〕（语义增量小，循环级已近似覆盖）；C=wontfix-with-rationale〔triage 已载〕（StopGuard 设计意图=长操作+循环级中断）。triage：§2:235 / §0:89
+- **#15** src-tauri/src/api_handlers/commands.rs:61 + :238 —— enabled flag 文件写/清在锁外 + 复核（service_present）后仍余 TOCTOU 微窗：并 api_stop/api_start 可交错致 flag 与内存态背离（下次启动自动恢复状态错一次）。
+  - A=〔重建构造〕改「文件 I/O 不持锁」既有约定：flag 写/清移锁内（动约定，须与 AP-05 抬锁外方向做全仓一致性核定）；B=〔重建构造〕世代号/版本号 CAS 复核（写 flag 时带世代，消除窗口不加锁）；C=〔重建构造〕维持现状 + 注释文档化残余窗（误写后果可自愈：用户下次手动纠正）。triage：§2:211 / §0:91
+- **#16** src-tauri/src/api_server.rs:127（AP-06 残留）—— broadcast 落盘 atomic_write 失败仅 eprintln 且 id 已推进：崩溃/重启后 SSE 事件历史缺一段（error-visible-non-blocking family）。
+  - A=写失败拒推进 id〔triage 已载〕（fail-closed，SSE 事件暂停直至落盘恢复）；B=瞬时错误重试 ×N〔triage 已载〕；C=维持 eprintln 现状〔triage 已载〕。triage：§0:99
+- **#17** src-tauri/src/evolution/change/record.rs:211 + candidate/entry.rs:110 —— read_all 逐行解析，单行 JSON 损坏 → 整读 Err（现状 fail-closed，一坏行拖死全部读取）。
+  - A=〔重建构造〕维持 fail-closed（损坏立即可见，但 evolution 面板整挂）；B=〔重建构造〕fail-open：跳坏行 + 留痕（可用性优先；审计轨迹有缺口）；C=〔重建构造〕折中：首行坏 → Err，中间坏行 → 跳过 + audit 留痕（需定阈值依据）。triage：§2:179 / §0:109
+- **#18** src/App.tsx:240 —— tasks-updated 合并路径半成功：upsert 成功 + delete 抛错时 UI 不更新、不广播。
+  - A=回滚已成功 upserts〔triage 已载〕（补偿写，复杂且自身可失败）；B=仍合并广播〔triage 已载〕（delete 失败行暂留 UI，下事件自愈）；C=维持现状仅靠 storage 层 alert 提示〔triage 已载〕。triage：§4:598
+- **#19** src/App.tsx:191 —— 迁移失败 → 种子仍落库 → legacy localStorage 数据永久 orphan（finding 字面前提已证伪：removeItem 本就在 upsert 后）。
+  - A=迁移失败时跳过种子落库、保留 legacy 待下次启动重试〔triage 已载〕；B=维持现状〔triage 已载〕（orphan 无害但不雅）。triage：§4:599
+- **#20** src/components/ArtifactBatchDialog.tsx:79 —— skip 纯前端 setReady(null)，无永久 dismiss 路径（后端无 ack 协议，skip 后登记保留、下次同任务重弹）。
+  - A=维持现状+注释文档化〔triage 已载〕（skip=这次不绑下次再问）；B=新增 dismiss Tauri command 清登记〔triage 已载〕（扩 scope）；C=skip 走 confirm 空 paths + 改后端早返为清登记〔triage 已载〕（后端行为变更）。triage：§4:604
+- **#21** src/components/ConfirmMap/ConfirmMap.tsx:40 —— 新 bot-confirm 直接覆盖未响应 pending，旧 id 靠后端 60s 超时兜底拒（前端单窗 UI 是瓶颈，后端并发未决合法）。
+  - A=前端队列逐个展示〔triage 已载〕；B=切换前自动拒绝旧 id〔triage 已载〕（用户未看到的请求被立即拒）；C=维持现状靠 60s 兜底+文档化〔triage 已载〕。triage：§4:605
+- **#22** src/components/ChatPanel/ChatPanel.tsx:416 —— 围观执行会话期 Send 与 bot_execute_task 并发同会话（响应交错 + 收尾 bot_history_load 冲掉围观期输入）；busy 锁会连带堵 switchSession/newSession/deleteSession。
+  - A=finding 原方案全 busy 锁〔triage 已载〕（围观期被困直到执行完）；B=专用 execWatchRef 只拦 Send〔triage 已载〕（切换会话自由，收尾 .then 里清）；C=维持现状 + 先核后端 bot_chat 同会话并发是否自有防重入〔triage 已载〕。triage：§4:606
+- **#23** src/components/EvolutionPanel/types.ts:24 —— ProposalTarget 的 tool_name/skill_name/policy 为 snake_case（verbatim 来自 serde response），camelCase 习惯 consumer 写 toolName 静默 undefined 但编译过。
+  - A=字段 camelCase 重命名〔triage 已载〕（serde rename + 全部消费方改 = 跨域签名改）；B=字段级 JSDoc 文档化 verbatim 契约〔triage 已载〕（不改类型）；C=wontfix〔triage 已载〕。triage：§4:607
 
 **已 triage（脚本 DOMAINS 12 域，不含 frontend）**: 145 unique
 
