@@ -70,6 +70,8 @@
 
 - [2026-09-24 ~12:30 CST] BT-10b 收口（commit 455c7c1）+ BT-14 处置：**C5-BT-10 全清**。:468 tick 层 catch_unwind（sched_tick_panic 审计后续跑）+ per-task 层 catch_unwind（spawn-and-forget panic 落 sched_task_panic + set_bot_assigned 兜底）+ Semaphore(4) 并发上限 + acquire 失败审计；关闭信号 YAGNI。OCR r1 2 medium 一修一不采纳（AssertUnwindSafe=middleware.rs:87 同族既有模式）+ 3 low 修 + 1 low 登记 NEW-4（panic_message 4 处重复）；type 1 n=25 不变。BT-14（StopGuard 接线）**转 B 类攒批第 14 项**——底层 fn 仅 tool_run_python 接受 stop（已接），全接线=13+ 签名改扩 scope；循环级 4 处 stop 检查已覆盖「排在长调用后」场景；A/B/C 待拍。**bot 域 C5 簇全清（BT-14 为 B 类待拍项）。**
 
+- [2026-09-24 18:55 CST] AP-01b 收口（commit c49bba3）：C5-AP-01 拆批 b——api_auth.rs:27 token 首建改 create_token_file_atomic（OpenOptions create_new + unix 0600 直写最终路径；Ok(true)=胜者返回自己的 token，AlreadyExists=输家 50×10ms 空窗重试读胜者 token，仍空 Err 下次自愈）；api_server.rs:208 worker 上限改 fetch_add 原子占位（超限立即 fetch_sub 归还 + 503，删 load+fetch_add 两步竞态）。行为变更：并发首跑输家从「返回与磁盘不符的 token」变「读胜者 token」（单进程零变化）；worker 计数严格 ≤ MAX_WORKERS。同批拆出 commands.rs:61/:238（flag 写 vs 内存状态 TOCTOU，涉「文件 I/O 不持锁」既有约定）→ B 类攒批第 15 项。OCR r1 3 comments（1 medium fsync 耐久性→挂起登记 §4，与模块既有姿态一致；2 low 注释采纳）；tool failure 0；type 1 n=25 不变。spec 立项 76e619e / budget 执行中校正 5512228（+48→+68，numstat 预估偏低规律）。**C5-AP-01 剩 commands.rs 2 条（B 类待拍）；api 域剩 AP-04/05/06/07。**
+
 ## 1. 跨域同模式家族
 按"错误去哪了" + "是否破坏数据"两轴判，**4 家族**（poisoned-silent-recovery 已溶解 — 见执行日志；error-visible-non-blocking 已重新引入 for C5-AP-06 only — 见 §3.5 异常 2 更新）：
 
@@ -150,7 +152,7 @@
 - C5-SC-05：hook 覆盖不全（test-fast.sh:56），1 条，**与 HOOK-1/HOOK-2 同根因家族**
 
 ### 域 api（7 簇 / 14 findings）
-- C5-AP-01：TOCTOU race（api_auth.rs:27 + api_handlers/commands.rs:61 + :238 + api_server.rs:208），4 条
+- C5-AP-01：TOCTOU race（api_auth.rs:27 + api_handlers/commands.rs:61 + :238 + api_server.rs:208），4 条 → **api_auth.rs:27 + api_server.rs:208 已修（AP-01b，commit c49bba3）；commands.rs:61/:238 转 B 类攒批第 15 项（改「文件 I/O 不持锁」约定方向）**
 - C5-AP-02：symlink + 权限（api_auth.rs:73），1 条 → **已修（AP-02，commit 5d8e878）**
 - C5-AP-03：日志输出缺陷（api_handlers/ratelimit.rs:45 + :36，批内 2 处独立改动），2 条 → **已修（AP-03，commit a78de81）**
 - C5-AP-04：SSE writer 缺陷（api_handlers/sse.rs:196 + :183），2 条
@@ -504,6 +506,19 @@ run A 仅靠 /tmp/ocr-APW-02b-r1.clean.json 找回。cache 命名亦误导：
   805>50、855>15），review 本体 complete（0 comments）。type 1 累计 n=15→n=18。
 - 【OCR 原文核验记录（BT-05）】r1 = ~/.openclaw/cache/BT-05/ocr-r1-20260924-081624.json
   （0 comments；tool failure 3 = type 1×3；elapsed 1m23s；status complete）。
+
+### AP-01b follow-up 登记（2026-09-24, commit c49bba3）
+
+- **AP-01b-OCR-1（medium/durability，挂起）**：create_token_file_atomic 写后无 fsync/
+  sync_data——胜者进程在 write_all 返回后被杀（OOM/断电）时，输家重试窗内可读空文件。
+  OCR 自认该遗漏与模块既有耐久性姿态一致（write_token_file 轮换路径亦无 fsync）。
+  加 fsync = 耐久性语义变更 + 首建路径性能特征变化，超本批 scope；若未来统一
+  「token/配置落盘 fsync」标准，随该批一并做（与 BT-03a r1 已采纳的父目录 fsync
+  best-effort 对齐）。
+- 【OCR 原文核验记录（AP-01b）】r1 = ~/.openclaw/cache/AP-01b/ocr-r1-20260924-184844.raw.json
+  （status=complete / comments=3：1 medium=fsync（挂起，见上）+ 2 low=sync 阻塞说明 /
+  SeqCst 一致性说明（均以注释采纳）/ 0 high / tool failure 0 / elapsed 2m33s /
+  files_reviewed=2）。
 
 **已 triage（脚本 DOMAINS 12 域，不含 frontend）**: 145 unique
 
