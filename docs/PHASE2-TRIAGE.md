@@ -82,6 +82,8 @@
 
 - [2026-09-24 ~20:25 CST] DB-03 收口（commit 59f81c8）：**C5-DB-03 全簇清（1 实修 + 1 FP）**。mod.rs:61 legacy 拷贝段加 LEGACY_COPY_LOCK 进程内锁 + 锁内双检（照 DB_WRITE_LOCK 先例，仅护首装一次性窗口）；tasks.rs:396 判 **OCR FP**——「load_all 多语句读」前提不实（单条 SELECT，subtasks/files 同行 JSON 列，WAL/rollback 下单语句均快照一致），与 BT-02/BT-06/BT-07b 同处理。**FP 判定 reviewer 独立核验 = pass**（explore 子 agent 只读原文：load_all 单语句 + diff/spec 一致 + 双检逻辑）。budget 校正一次（+20/-8→+28/-18，双检嵌套重缩进 ~13 行未计入 A 类估——**A 类估教训：包裹嵌套必带重缩进，预算按重缩进行数计**）。OCR r1 0 comments / 0 failure（13s）；type 1 n=25 不变。spec 立项 d5f0258 / 校正（budget）。实工单口径 139→138。**db 域 7 簇全清（DB-05 余 3 条均 B 类候选）。**
 
+- [2026-09-24 20:03 CST] EV-3a-01 收口（commit dcd4808）：**C5-EV-3a-01 单条已清**。observe/stop.rs:82（现 :88，C3-3 注释块致行漂移）静默吞负值 → `days_elapsed` 改 `now_ms.saturating_sub(start_ms)`（i64 溢出饱和→时间门正常响，不再被 max(0.0) 静默压零）+ 负时长 eprintln `[evolution_stop]` 留痕（仍计 0.0 天不误触发）。新增 2 测试（负时长 0 天不停 / i64::MIN 溢出饱和触发 FourteenDaysElapsed）。签名未动——Result 化 = 调用链变更 = B 类，spec 已声明不自决。实际 diff +28/-1 恰好压 budget 线（注释压缩三轮）。OCR r1 0 comments / 0 failure；type 1 n=25 不变。spec 立项 e1c4199。**evolution 域 3a 剩 EV-3a-02/03。**
+
 ## 1. 跨域同模式家族
 按"错误去哪了" + "是否破坏数据"两轴判，**4 家族**（poisoned-silent-recovery 已溶解 — 见执行日志；error-visible-non-blocking 已重新引入 for C5-AP-06 only — 见 §3.5 异常 2 更新）：
 
@@ -125,7 +127,7 @@
 
 ### 域 evolution（19 簇 / 39 findings）
 3a（C3 周边，3 簇 / 4 findings）：
-- C5-EV-3a-01：observe/stop.rs:82 静默吞负值，1 条
+- C5-EV-3a-01：observe/stop.rs:82 静默吞负值，1 条 —— **已清**（dcd4808，§0 2026-09-24 20:03）
 - C5-EV-3a-02：panel/commands.rs:43/:282 RMW 缺陷，2 条
 - C5-EV-3a-03：observe/metrics.rs:86 O(n*m)，1 条
 
