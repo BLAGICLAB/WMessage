@@ -36,7 +36,7 @@
 
 - family: integrity-missing（哈希不稳定 / 配置校验缺 / 计数器绕开）
 - 覆盖 findings: 3（+1 同根 medium 一并）
-- 预估 diff: 3 files / +63/-9 lines（A 类，budget +85/-15）
+- 预估 diff: 3 files / +63/-9 lines → 实测 +109/-11（A 类，budget 校正 **+115/-15**）
 - OCR 计划: r1, timeout 1800s, 期望 comments ≤ 3
 
 ## 核实的编译层事实（spec 前已核）
@@ -76,7 +76,7 @@
 1. `expected_files` = 3：proposal.rs + observe/synthetic.rs +
    observe/shadow.rs。无 ripple（fnv1a 复用不改 routing.rs）。
 2. budget = **A 类**：proposal +15/-8、synthetic +46/-1、shadow +2/-0：
-   初估 +63/-9 → 含浮动 **max +85/-15**。
+   初估 +63/-9 → 实测 +109/-11（validate 结构体更新语法测试块 fmt 展开超估），校正 → **max +115/-15**。
 3. 三条 findings 的 fix 字段均已写明 ripple（均无）。
 
 ## 机器可读（脚本读取，勿改格式）
@@ -90,7 +90,7 @@
     "src-tauri/src/evolution/observe/synthetic.rs",
     "src-tauri/src/evolution/observe/shadow.rs"
   ],
-  "max_lines_added": 85,
+  "max_lines_added": 115,
   "max_lines_removed": 15,
   "findings": [
     {"id": "C5-EV-3b-F-1", "file": "src-tauri/src/evolution/proposal.rs", "line": 186, "fix": "short_hash 换仓内 FNV-1a-64（routing::fnv1a 复用），跨版本/跨机确定性 + known-answer 测试；id 形态 16 hex 不变；前向生效（既有 jsonl 旧 id 保留）；无 ripple（调用方仅 proposal_id + derive 判别位）"},
