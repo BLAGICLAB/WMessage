@@ -52,7 +52,8 @@ invoke mock 基建已存在：
 ## spec 起草后自查三条
 
 1. `expected_files`：src/storage.ts + src/App.tsx + src/components/WorkspacePage.tsx + src/components/WidgetApp/WidgetApp.tsx + src/storage.test.ts（=5，达批上限）✓
-2. budget A 类：storage.ts +45/-20（4 处改写 + LoadWorkspaceResult），App.tsx +12/-4（守卫集合），WorkspacePage +3/-1，WidgetApp +4/-1，测试 +35 ≈ 合计 +95/-30，上限 max +130/-45 ✓
+2. budget A 类：storage.ts +45/-20（4 处改写 + LoadWorkspaceResult），App.tsx +12/-4（守卫集合），WorkspacePage +3/-1，WidgetApp +4/-1，测试 +35 ≈ 合计 +95/-30，上限 max +130/-45
+   【校正 1】实测 numstat +107/-65：storage.ts 删除侧 -49 超估（4 处 try/catch 包装整段移除 + diffTaskRows 就地突变分支替换），测试旧断言替换 -11。改为 max +140/-80。其余不变。
 3. findings 逐条 fix 字段列 ripple 文件+行号 ✓
 
 ## 自主执行规则
@@ -84,8 +85,8 @@ spec 被 reviewer 批准后:
     "src/components/WidgetApp/WidgetApp.tsx",
     "src/storage.test.ts"
   ],
-  "max_lines_added": 130,
-  "max_lines_removed": 45,
+  "max_lines_added": 140,
+  "max_lines_removed": 80,
   "findings": [
     {"id": "C5-FE-01a", "file": "src/storage.ts", "line": 109, "fix": "diffTaskRows upserts 改产出新对象，不再就地突变 caller 的 next；ripple 无（返回类型不变）"},
     {"id": "C5-FE-01b", "file": "src/storage.ts", "line": 62, "fix": "4 个导出/导入函数失败返 0 → throw（去 storage 侧 alert 防双弹，caller App.tsx:416/434/458/476 已有 catch+handleCommandError+onRetry）"},
