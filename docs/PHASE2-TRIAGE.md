@@ -68,6 +68,8 @@
 
 - [2026-09-24 ~11:55 CST] BT-13 收口（commit 11cf4f7）：**C5-BT-13 全清**。sanitize_fail_reason（剥控制字符/拆 ``` 序列/截 500）+ 围栏 + 「数据非指令」标注，replan fail_reason 注入面闭合。OCR r1 0 comments / 0 failure；type 1 n=25 不变。**bot 域 C5 簇剩 BT-10b / BT-14。**
 
+- [2026-09-24 ~12:30 CST] BT-10b 收口（commit 455c7c1）+ BT-14 处置：**C5-BT-10 全清**。:468 tick 层 catch_unwind（sched_tick_panic 审计后续跑）+ per-task 层 catch_unwind（spawn-and-forget panic 落 sched_task_panic + set_bot_assigned 兜底）+ Semaphore(4) 并发上限 + acquire 失败审计；关闭信号 YAGNI。OCR r1 2 medium 一修一不采纳（AssertUnwindSafe=middleware.rs:87 同族既有模式）+ 3 low 修 + 1 low 登记 NEW-4（panic_message 4 处重复）；type 1 n=25 不变。BT-14（StopGuard 接线）**转 B 类攒批第 14 项**——底层 fn 仅 tool_run_python 接受 stop（已接），全接线=13+ 签名改扩 scope；循环级 4 处 stop 检查已覆盖「排在长调用后」场景；A/B/C 待拍。**bot 域 C5 簇全清（BT-14 为 B 类待拍项）。**
+
 ## 1. 跨域同模式家族
 按"错误去哪了" + "是否破坏数据"两轴判，**4 家族**（poisoned-silent-recovery 已溶解 — 见执行日志；error-visible-non-blocking 已重新引入 for C5-AP-06 only — 见 §3.5 异常 2 更新）：
 
@@ -168,11 +170,11 @@
 - C5-BT-07：state machine / 乐观并发不一致（bot_artifacts.rs:113 + bot_skills/state.rs:164 + bot_skills/scheduler.rs:149），3 条 → **拆批**：:149 **已修（BT-07a，commit 6bd43c0，Drop 兜底）**；:113 **OCR false positive（BT-07b 判定）**——finding 称「upsert_tasks does not compare expected_updated_at」与实现不符：db/tasks.rs:199-224 显式 SELECT + 冲突返 CONFLICT_ERR_PREFIX（另有 ON CONFLICT WHERE 谓词 + affected 行数双保险），confirm_artifacts_batch :127 正设置了 expected_updated_at 快照基线，并发窗写时被拒非「silently」；:164 全局清理 vs 按会话 = 语义方向，**B 类候选（攒批第 11 项）**
 - C5-BT-08：input validation / serialization 缺（config/types.rs:198/:82 + config/keyring.rs:168 + bot_skills/parse.rs:86 + bot_skills/vars.rs:76），5 条 → **拆批**：:82 **已修（BT-08a，commit e7b2381，三 key 字段 skip_serializing 永不序列化，零行为变更）**；:86 **已修（同 commit，非法 mode 按未声明处理，low→auto 提升不被吞，语义归一 SKILL_DSL.md）**；:198 **FP（web 实证）**——deepseek-v4-flash 旧名仍被接受（V4.1-Flash GA 后服务名 deepseek-flash，旧名请求由新模型服务，deepseek.ai/pricing 2026-09-18）；:168 **转 B 类攒批第 13 项**（Windows ACL，macOS 不可测）；:76 **wontfix-with-rationale（待醒后确认）**——占位符使模板构造上非合法 JSON，启发式是结构必然，替换后 serde_json 兜底
 - C5-BT-09：dispatch/scheduler 语义错（bot/dispatch.rs:248/:424 + bot_skills/scheduler.rs:283），3 条 → **已清（拆批）**：:283 **已修（BT-09a，commit b1c0b4f，Finish 早退假完成收口）**；:248 **已修（BT-09b，commit 3f62d74，索引复用）**；:424 **wontfix-with-rationale**（与 OCR-003 同型：ToolResult::ok 失败文案是 dispatch.rs:402-404 注释钉死的设计意图）
-- C5-BT-10：持锁跨 IO / sync IO in loop（config/audit.rs:22 + bot_skills/runtime.rs:83/:393 + bot_scheduler.rs:468），4 条 → **拆批**：:22 + :83 + :393 **已修（BT-10a，commit a4e3bf1，锁内 IO/钩子全移出临界区，零行为变更）**；:468（scheduler 无 panic recovery/关闭信号/并发上限）family 不同（调度器韧性）→ **BT-10b 单独评**
+- C5-BT-10：持锁跨 IO / sync IO in loop（config/audit.rs:22 + bot_skills/runtime.rs:83/:393 + bot_scheduler.rs:468），4 条 → **全清（拆批）**：:22 + :83 + :393 **已修（BT-10a，commit a4e3bf1，锁内 IO/钩子全移出临界区，零行为变更）**；:468 **已修（BT-10b，commit 455c7c1，tick/task 双层 catch_unwind + Semaphore(4)）**，关闭信号按 App 生命周期 YAGNI 登记
 - C5-BT-11：web 解析脆（bot_web.rs:412 + :422），2 条 → **已清（BT-11，commit b1d9212）**：find_tag_open 开标签精确匹配（后字符须空白/>//），杀 <a 误中 <abbr>、<p 误中 <pre>；行为修复 abbr 前置时标题/链接错位
 - C5-BT-12：workspace-link 残留（bot_skills/files.rs:0 + :43），2 条 → **全清（stale，C2b-2 已修）**：:0 kind 白名单 + :43 归一化不一致均已被 95a25e9（2026-09-21 20:39，**晚于 0921 全扫快照**）修复——link_kind_contributes_path 白名单（ALLOWED_LINK_KINDS 单一来源）+ 绑集 canonical 双侧比对。同文件另 4 条（:0 is_dir 死参数 / :10 静默收缩 / :83 TOCTOU / :144 raw contains，**triage 漏分簇补登记**）同判 stale——is_dir 已从 IPC 删、Err 分支全带 audit + C2c-v2 fail-closed、recheck_canonical 紧邻副作用、delete 走 path_openable_in。**reviewer 抽查 pass**（6 条独立核验）
 - C5-BT-13：prompt injection via fail_reason（bot_plan.rs:234），1 条 → **已修（BT-13，commit 11cf4f7）**：sanitize_fail_reason 剥控制字符+拆 ``` 序列+截 500，围栏+「数据非指令」标注
-- C5-BT-14：StopGuard broken（bot/registry.rs:267），1 条
+- C5-BT-14：StopGuard broken（bot/registry.rs:267），1 条 → **转 B 类攒批第 14 项**：finding 要求把 ctx.stop 接进 13 个 mutating adapter，但**底层 fn 只有 tool_run_python 接受 stop**（已接）——全接线 = 13+ 工具签名改 + 内部取消检查（扩 scope）。且模型循环已有 4 处循环级 stop 检查（bot_model_loop.rs:571/:839/:1020/:1028），「排在长 Python 调用后」场景已覆盖；mutating 工具全是快 DB/文件操作。三方向：A=全签名接线（扩 scope）/ B=adapter 层 pre-flight 检查（语义增量小，循环级已近似覆盖）/ C=wontfix-with-rationale（StopGuard 设计意图=长操作+循环级中断）。待拍
 
 ### 域 WidgetApp（3 簇 / 7 findings）
 - C5-WA-01（原 WA-01 拆后残余，原 3 条拆为：a=constants.ts:13 已并入 C4-v2；b 仅剩 2 条 storage.ts:113 + storage.ts:79）：输入/反序列化校验缺（storage.ts:113 Anchor 结构不一致 + storage.ts:79 loadAnchor JSON.parse 零校验），批内 2 处独立改动（类型对齐 vs JSON.parse 校验，修复设施不同），2 条
@@ -209,6 +211,7 @@
 - **PHASE2-TRIAGE-NEW-1**：bot_py.rs:694 + bot_py.rs:705 测试代码内 silent into_inner，无 eprintln 缓解措施。源 OCR 标的是 :945（有 eprintln），这两处不在 OCR 范围。是 silent 路径，与 C3-1 约定（带 eprintln）不一致。是否需引入 Phase 2 high 待评估。**不并入 BT-02 / MI-01**（"顺手扩"是 triage 层禁忌）。
 - **PHASE2-TRIAGE-NEW-2**（2026-09-23 EVNB-02 批登记）：db / migration / bot.config 三域 **12 处同形静默 into_inner**，均不在源 OCR 271 high 名单。站点（±3 行上下文 grep 核实无 eprintln，2026-09-23 23:2x 工作树）：workspace.rs:173 / :189 / :278、bot_history.rs:89 / :108、bot_sessions.rs:78 / :100 / :112、migration/ops.rs:236 / :246、bot/config/audit.rs:26、bot/config/mod.rs:581。与 C3-1 约定（logged 恢复）不一致。EVNB-02 只修 OCR 名单内 2 站，**不顺手扩**（triage SOP）。修复形态预期与 EVNB-02 相同（统一走 `lock_db_write()` 或补 eprintln），下一轮评估是否引入 Phase 2 工单。注：bot_skills/* 与 py/* 域另有大量 into_inner 站点，多数已有 eprintln（BT-02 先例），本登记仅含已核实静默的 12 处。
 - **PHASE2-TRIAGE-NEW-3**（2026-09-24 AP-03 批登记）：bot/config/audit.rs 两处同族缺口，均不在 OCR 271 high 名单——(a) `escape_for_log` 只转义 `|` `\n` `\r`，缺 `\t` / `\0` / ESC 等其余控制字符（AP-03 sanitize_log_line 已覆盖的全集）；(b) audit.rs:302 `audit_log` 与 ratelimit.rs 同形态 rotate+append 无锁，并发写可撕裂。AP-03 只修 ratelimit.rs（OCR 名单内），**不顺手扩**（triage SOP）。修复形态预期：复用/对齐 sanitize_log_line + LOG_WRITE 同款锁，下一轮评估是否引入 Phase 2 工单。
+- **PHASE2-TRIAGE-NEW-4**（2026-09-24 BT-10b 批登记）：panic payload 字符串化逻辑（downcast_ref::<&str> → String → "非字符串 panic"）已 4 处重复：api_server.rs panic_message helper / middleware.rs panic_message helper / migration 域 1 处 / bot_scheduler.rs 新增 2 处（tick + task 层）。抽统一 helper 到 audit 或 util 模块 = 跨文件重构，超 BT-10b scope。下一轮评估是否引入。
 
 ### 跨域一致性检查第一步（triage 全跑完后那一步）
 
