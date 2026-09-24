@@ -33,6 +33,8 @@ B=写后校验收敛 / C=wontfix 窗口小后果轻）。本批只收另两条�
    无签名 ripple（load_or_create_token 签名不变）。✓
 2. budget → api_auth helper+调用改+测试 ≈+32/-2；api_server ≈+7/-5。
    合计 ≈+39/-7 → budget +48/-12。✓
+   （执行中校正）实际 +62/-5：create_new helper 注释 + 空窗重试循环 +
+   0600 断言测试比估算长；budget 校正 +48→+68。✓
 3. findings fix 字段列 ripple → 均无。✓
 
 ## 自主执行规则
@@ -61,7 +63,7 @@ spec 被 reviewer 批准后:
     "src-tauri/src/api_auth.rs",
     "src-tauri/src/api_server.rs"
   ],
-  "max_lines_added": 48,
+  "max_lines_added": 68,
   "max_lines_removed": 12,
   "findings": [
     {"id": "C5-AP-01.1", "file": "src-tauri/src/api_auth.rs", "line": 27, "fix": "create_token_file_atomic（create_new+0600 原子占位）；输家重读胜者 token（≤500ms 空窗重试，超时报错自愈）。新增 3 断言测试。ripple：无（签名不变）"},
