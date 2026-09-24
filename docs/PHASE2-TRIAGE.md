@@ -90,6 +90,8 @@
 
 - [2026-09-24 21:05 CST] EV-3b-A 收口（commit 31fee88）：**簇 5 条中 3 条已清，2 条转 B 类**。① apply.rs:151 embedding 失败塌 None 静默 → collect 后统计，>0 走 `audit_event! evolution.embed_failed`（Warn，落 bot.log）；② activation.rs:136 双 loader 「存在但坏」（IO≠NotFound / parse 失败 / schema 不匹配 / state 非字符串或未知值）eprintln `[evolution_activation]`，缺文件/缺块/缺 key 保持合法静默；③ mod.rs:55（triage :48 漂移）app_handle None 落盘块静默跳过 → else eprintln（audit_event! 需 AppHandle，None 分支只能 stderr，注释已注明）。零行为变化（纯留痕）。**record.rs:211 + entry.rs:110（read_all 单行损坏全读失败）修法 = fail-closed vs fail-open 语义方向 → B 类攒批第 17 项**。budget 两次校正（+45/-15→+75/-20→+85/-25：双 loader 分支文案 + OCR r1 采纳增量）。OCR r1 6 comments（1 high 采纳=自身新策略一致性缺口；2 medium 采纳；1 medium + 2 low 不采纳/stale 有论证）/ 0 failure；type 1 n=25 不变。spec 立项 e2bd744 / 校正 ×2。**evolution 3b 剩 10 簇。**
 
+- [2026-09-24 21:29 CST] EV-3b-B 收口（commit c0472de）：**C5-EV-3b-B 全簇 5 条已清**。核心动作：EVOLUTION_STORE_LOCK 从 panel/commands.rs 上移到 evolution/mod.rs（pub(crate)，C3-4 一把锁约定不变），post_consolidation 的 write_proposals 包锁——**消除「panel 持锁 vs consolidate 无锁」两套机制互踩的真 race 面**；entry/record append 整行单次 write_all（POSIX O_APPEND 单写原子 + 锁契约注释）；sandbox/io 两个 append 收敛 append_line（单写 + SANDBOX_IO_LOCK）；emit.rs dedup 锁瘦身（audit_event! 移出锁，dedup 标记先于 audit 写=崩溃窗口对称互换）；save_state 加 SAVE_STATE_LOCK + db::paths::atomic_write。不引 fs2 新依赖（跨进程 flock 残余注释声明）；fsync 不加（照 AP-01b 挂起先例）。OCR r1 4 comments（0 high：1 medium 部分采纳=锁收窄仅 write_proposals，「sync 持锁于 async 链」不改=同步 I/O 先于本批存在 + caller spawn_blocking 化是跨域 ripple 不自决；3 low 采纳）/ 0 failure；type 1 n=25 不变。spec 立项 a25e80e。diff +105/-54 在 budget（+110/-85）内。**evolution 3b 剩 9 簇（C1/C2/C3/D/E/F/G/H/I）。** follow-up：bot-config 跨写者统一锁（bot/config/io.rs 不在 SAVE_STATE_LOCK 内）。
+
 ## 1. 跨域同模式家族
 按"错误去哪了" + "是否破坏数据"两轴判，**4 家族**（poisoned-silent-recovery 已溶解 — 见执行日志；error-visible-non-blocking 已重新引入 for C5-AP-06 only — 见 §3.5 异常 2 更新）：
 
@@ -139,7 +141,7 @@
 
 3b（其余，11 簇 / 35 findings）：
 - C5-EV-3b-A：silent-error-swallow 跨文件（apply.rs:151 + activation.rs:136 + mod.rs:48 + record.rs:211 + entry.rs:110），5 条 —— **3 条已清**（31fee88，§0 2026-09-24 21:05）；record.rs:211 + entry.rs:110（read_all 单行损坏 fail-closed vs fail-open 方向）→ **B 类攒批第 17 项**
-- C5-EV-3b-B：jsonl 写 race / 非原子（record.rs:187 + entry.rs:81 + sandbox/io.rs:46 + emit.rs:105 + activation.rs:257），5 条
+- C5-EV-3b-B：jsonl 写 race / 非原子（record.rs:187 + entry.rs:81 + sandbox/io.rs:46 + emit.rs:105 + activation.rs:257），5 条 —— **已清**（c0472de，§0 2026-09-24 21:29）
 - C5-EV-3b-C1：状态转移/条件判定错（mapping.rs:37 + change/status.rs:36 + kill_switch.rs:39），3 条
 - C5-EV-3b-C2：双侧逻辑不一致（ttl.rs:23 + change/derive.rs:34），2 条
 - C5-EV-3b-C3：设计约定未强制（routing.rs:21 + kill_switch.rs:15），2 条
