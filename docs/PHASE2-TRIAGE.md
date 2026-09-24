@@ -44,7 +44,9 @@
 
 - [2026-09-24 08:10 CST] BT-06 收口（commit 841922b）：C5-BT-06 判定 **OCR FP×2**——`truncate_for_log` 自 dcbf167（2026-09-14，早于 0921 全扫）起为 `escape_for_log` 别名（bot/config/audit.rs:74），`\n\r|` 已转义；finding 前提与实现不符。与 BT-02 同处理（记录 + 不改行为）。FP 诱因 :1081 陈旧注释已改述（+1/-1，唯一代码改动）。OCR r1 0 findings。实工单口径 142→140。bot 域簇剩余：BT-04/05/07/08/09。
 
-- [2026-09-24 08:35 CST] BT-07a 收口（commit 6bd43c0）：C5-BT-07 拆批 1/3——scheduler.rs:149 回滚复原 Drop 兜底（RollbackRestoreGuard：reopen 后 armed，正常路径手动 restore 后 disarm，panic 路径 Drop 复原 Failed 终态，AtomicGuard 放行窗口不再永久化）。新增 panic 路径单测（mock AppHandle + catch_unwind，4 断言）。拆批登记：bot_artifacts.rs:113 疑似 FP 下批先核；state.rs:164 转 B 类攒批第 11 项。budget 校正一次（+70→+80）。OCR r1 0 comments（tool failure 0）。**第 15 批，触发 reviewer 抽查**。
+- [2026-09-24 08:35 CST] BT-07a 收口（commit 6bd43c0）：C5-BT-07 拆批 1/3——scheduler.rs:149 回滚复原 Drop 兜底（RollbackRestoreGuard：reopen 后 armed，正常路径手动 restore 后 disarm，panic 路径 Drop 复原 Failed 终态，AtomicGuard 放行窗口不再永久化）。新增 panic 路径单测（mock AppHandle + catch_unwind，4 断言）。拆批登记：bot_artifacts.rs:113 疑似 FP 下批先核；state.rs:164 转 B 类攒批第 11 项。budget 校正一次（+70→+80）。OCR r1 0 comments（tool failure 0）。**第 15 批，reviewer 抽查 = pass**（explore 子 agent 只读 git show/spec/OCR json 一手材料）。
+
+- [2026-09-24 08:50 CST] BT-07b 收口（纯判定，零代码）：bot_artifacts.rs:113 判定 **OCR FP**——finding 核心断言「upsert_tasks does not compare expected_updated_at」经原文核实为假（db/tasks.rs:199-224 显式 SELECT 比对 + CONFLICT_ERR_PREFIX 拒写 + ON CONFLICT WHERE 谓词 + affected 行数双保险）；confirm_artifact_batch :127 设置 expected_updated_at 快照基线，并发窗在写时被拒（Err「绑定失败」），非 silently。与 BT-02/BT-06 同处理：记录 + 不改。实工单口径 140→139。C5-BT-07 剩 state.rs:164（B 类）。
 
 ## 1. 跨域同模式家族
 按"错误去哪了" + "是否破坏数据"两轴判，**4 家族**（poisoned-silent-recovery 已溶解 — 见执行日志；error-visible-non-blocking 已重新引入 for C5-AP-06 only — 见 §3.5 异常 2 更新）：
@@ -143,7 +145,7 @@
 - C5-BT-04：TOCTOU on canonicalize/whitelist（bot_fs.rs:167 + bot/tools.rs:102 + bot_chat.rs:399 + bot_artifacts.rs:67），4 条
 - C5-BT-05：URL/host bypass（config/io.rs:122 + bot_web.rs:21/:730/:881），4 条
 - C5-BT-06：log injection via model strings（bot_model_loop.rs:1079 + :984），2 条 → **OCR false positive（2 条均不准确）**——`truncate_for_log` 自 dcbf167（2026-09-14，早于 0921 全扫）起为 `escape_for_log` 别名（bot/config/audit.rs:74），`\n` `\r` `|` 已转义，注入面不存在；finding 前提「只限长度不剥换行」与实现不符。FP 诱因 = :1081 陈旧注释（描述修复前行为），**已改述（BT-06，commit 841922b）**。与 C5-BT-02 同处理：记录 + 不改行为。**triage 记录仍含此 2 条 FP，Phase 2 实工单 142 再扣 2 = 140**。
-- C5-BT-07：state machine / 乐观并发不一致（bot_artifacts.rs:113 + bot_skills/state.rs:164 + bot_skills/scheduler.rs:149），3 条 → **拆批**：:149 **已修（BT-07a，commit 6bd43c0，Drop 兜底）**；:113 疑似 FP（finding 称 db_upsert 不比 expected_updated_at，与 tasks.rs:185 (i) 决策核验矛盾，下批先核）；:164 全局清理 vs 按会话 = 语义方向，**B 类候选（攒批第 11 项）**
+- C5-BT-07：state machine / 乐观并发不一致（bot_artifacts.rs:113 + bot_skills/state.rs:164 + bot_skills/scheduler.rs:149），3 条 → **拆批**：:149 **已修（BT-07a，commit 6bd43c0，Drop 兜底）**；:113 **OCR false positive（BT-07b 判定）**——finding 称「upsert_tasks does not compare expected_updated_at」与实现不符：db/tasks.rs:199-224 显式 SELECT + 冲突返 CONFLICT_ERR_PREFIX（另有 ON CONFLICT WHERE 谓词 + affected 行数双保险），confirm_artifacts_batch :127 正设置了 expected_updated_at 快照基线，并发窗写时被拒非「silently」；:164 全局清理 vs 按会话 = 语义方向，**B 类候选（攒批第 11 项）**
 - C5-BT-08：input validation / serialization 缺（config/types.rs:198/:82 + config/keyring.rs:168 + bot_skills/parse.rs:86 + bot_skills/vars.rs:76），5 条
 - C5-BT-09：dispatch/scheduler 语义错（bot/dispatch.rs:248/:424 + bot_skills/scheduler.rs:283），3 条
 - C5-BT-10：持锁跨 IO / sync IO in loop（config/audit.rs:22 + bot_skills/runtime.rs:83/:393 + bot_scheduler.rs:468），4 条
@@ -480,7 +482,7 @@ run A 仅靠 /tmp/ocr-APW-02b-r1.clean.json 找回。cache 命名亦误导：
 
 **其他域（含 frontend 9 簇 / 52 条）**: 126 unique
 
-**Phase 2 实工单（已 triage 内，扣 BT-02 FP ×3 + BT-06 FP ×2）**: 140
+**Phase 2 实工单（已 triage 内，扣 BT-02 FP ×3 + BT-06 FP ×2 + BT-07b FP ×1）**: 139
 
 **baseline**: 271 ± 2 unique non-vendor high / 162 unique path
 
