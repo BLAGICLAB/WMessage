@@ -56,6 +56,10 @@
 
 - [2026-09-24 ~09:30 CST] BT-08a 收口（commit e7b2381）：**C5-BT-08 全清（2 实修 + 1 FP + 1 B 类 + 1 wontfix）**。types.rs:82 三 key 字段 skip_serializing（永不序列化，fail-closed 纵深，零行为变更）；parse.rs:86 非法 mode 按未声明处理（low→auto 提升不被吞，新增 3 断言测试）。:198 FP（deepseek-v4-flash 旧名仍被接受，web 实证）；:168 B 类第 13 项；:76 wontfix（结构必然）。OCR r1 1 low（mod.rs:541 注释机制名旧）已修同批；tool failure 1 = 新形态 code_comment 空数组拒收（良性，登记观察）；type 1 n=19 不变。spec 两处执行中校正（零代码 findings 移出机器可读数组；expected_files 加 mod.rs）。**bot 域 C5 簇剩 BT-10 / BT-11 / BT-12 + BT-04b 半簇。**
 
+- [2026-09-24 ~10:15 CST] 抽查登记（每 5 批抽 1）：**BT-04a（commit ca73ec0）reviewer 抽查 pass**（第 20 批漏抽补跑，只读 git show + spec + OCR json 原文核验）。
+
+- [2026-09-24 ~10:15 CST] BT-04b 收口（commit 93182f3）：**C5-BT-04 全清**。bot_fs.rs:167 剩余未包点收尾（allowed_dirs 尾部 gen_dir+canonicalize 循环整体进 spawn_blocking_io；is_dir 单次 stat ×4 走新 helper is_dir_async；C1b 已包 4 点不动）；tools.rs:102 sanitize_task_files_arg async 化（gen_dir+canonicalize+sanitize 内核进 spawn_blocking_map，JoinError 全丢+记审计，fail-closed 一致）。零行为变更。OCR r1 1 medium（JoinError 吞审计）+2 low（gen_dir 闭包外 / expanded.is_dir 漏包）已修，1 low（clone PathBuf）不采纳（'static 约束既有模式）；type 1 n=19→n=23（r1×4）。TOCTOU 维度归 Phase 6 既有 follow-up。**bot 域 C5 簇剩 BT-10 / BT-11 / BT-12。**
+
 ## 1. 跨域同模式家族
 按"错误去哪了" + "是否破坏数据"两轴判，**4 家族**（poisoned-silent-recovery 已溶解 — 见执行日志；error-visible-non-blocking 已重新引入 for C5-AP-06 only — 见 §3.5 异常 2 更新）：
 
@@ -150,7 +154,7 @@
 - C5-BT-01b：failure-recovery-default-value，bot/tools（tools.rs:147 + tools.rs:280，替换成空 list）→ **已清**：:147（active_tasks + 三 call site）前批 1e023e3；:280（tool_search_tasks 残余）**已修（BT-01d，commit 见 §0）**
 - C5-BT-02：**OCR false positive（3 条均不准确）** —— OCR 忽略代码中的 eprintln!("[mutex_poisoned] ...") 缓解措施，据此判定 "silent"——前提与实现不符。三站实际都是 logged 路径：C3-1 约定的合法实现。三条 finding 的站实有 eprintln：bot_py.rs:945 + bot_skills/state.rs:109 + bot_skills/runtime.rs:58。**记录 + 不改**，与 C3-r1-H1 / C4-2 / C4-5 同处理。**triage 记录 140 仍含此 3 条 FP，Phase 2 实工单 137 不计**。
 - C5-BT-03：config 写非原子 / RMW 无锁（commands.rs:86 + schema.rs:170/:178 + io.rs:100/:76），5 条 → **4/5 已修（BT-03a，commit f86fc7a）；commands.rs:86（keyring 先于文件写无回滚 = 半成功陷阱方向）转 B 类攒批待拍**
-- C5-BT-04：TOCTOU on canonicalize/whitelist（bot_fs.rs:167 + bot/tools.rs:102 + bot_chat.rs:399 + bot_artifacts.rs:67），4 条 → **拆批**：:399 + :67 **已修（BT-04a，commit ca73ec0）**；bot_fs.rs:167（critical，blocking-syscall-on-async-runtime）+ tools.rs:102 = spawn_blocking 重构方向，**下批 BT-04b 单独评**
+- C5-BT-04：TOCTOU on canonicalize/whitelist（bot_fs.rs:167 + bot/tools.rs:102 + bot_chat.rs:399 + bot_artifacts.rs:67），4 条 → **全清（拆批）**：:399 + :67 **已修（BT-04a，commit ca73ec0）**；:167 + :102 **已修（BT-04b，commit 93182f3，blocking syscall 全量移出 async runtime）**——:167 的 TOCTOU 维度归既有 follow-up「Phase 6: resolve_with_perm 其它调用点 TOCTOU 统一策略」
 - C5-BT-05：URL/host bypass（config/io.rs:122 + bot_web.rs:21/:730/:881），4 条 → **3/4 已修（BT-05，commit 51efb80）**；:881（Jina 回退审计缺口，补需 fetch_text 签名改 + 调用链）**转 B 类攒批第 12 项**
 - C5-BT-06：log injection via model strings（bot_model_loop.rs:1079 + :984），2 条 → **OCR false positive（2 条均不准确）**——`truncate_for_log` 自 dcbf167（2026-09-14，早于 0921 全扫）起为 `escape_for_log` 别名（bot/config/audit.rs:74），`\n` `\r` `|` 已转义，注入面不存在；finding 前提「只限长度不剥换行」与实现不符。FP 诱因 = :1081 陈旧注释（描述修复前行为），**已改述（BT-06，commit 841922b）**。与 C5-BT-02 同处理：记录 + 不改行为。**triage 记录仍含此 2 条 FP，Phase 2 实工单 142 再扣 2 = 140**。
 - C5-BT-07：state machine / 乐观并发不一致（bot_artifacts.rs:113 + bot_skills/state.rs:164 + bot_skills/scheduler.rs:149），3 条 → **拆批**：:149 **已修（BT-07a，commit 6bd43c0，Drop 兜底）**；:113 **OCR false positive（BT-07b 判定）**——finding 称「upsert_tasks does not compare expected_updated_at」与实现不符：db/tasks.rs:199-224 显式 SELECT + 冲突返 CONFLICT_ERR_PREFIX（另有 ON CONFLICT WHERE 谓词 + affected 行数双保险），confirm_artifacts_batch :127 正设置了 expected_updated_at 快照基线，并发窗写时被拒非「silently」；:164 全局清理 vs 按会话 = 语义方向，**B 类候选（攒批第 11 项）**
