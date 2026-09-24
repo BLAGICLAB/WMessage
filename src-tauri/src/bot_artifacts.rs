@@ -131,8 +131,14 @@ pub async fn confirm_artifact_batch(
         .await
         .map_err(|e| format!("绑定失败：{e}"))?;
     crate::bot::broadcast_after_mutation(&app, vec![next.clone()], vec![]);
-    // 弹窗已确认，清登记表
-    take_all(&app, &task_id).await;
+    // 弹窗已确认，清登记表。TOCTOU 兜底：take_all 返回里「弹窗快照后、确认前
+    // 新登记」的产物不在用户勾选内——重新登记留下一轮弹窗，不静默丢弃。
+    let removed = take_all(&app, &task_id).await;
+    for a in removed {
+        if !paths.iter().any(|p| p == &a.path) {
+            register(&app, &task_id, a.path, a.kind).await;
+        }
+    }
     Ok(paths.len())
 }
 

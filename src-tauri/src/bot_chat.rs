@@ -395,19 +395,21 @@ fn attach_images_in(roots: &[std::path::PathBuf], content: &str) -> (serde_json:
         if !IMAGE_EXTS.contains(&ext.as_str()) {
             continue;
         }
-        // 白名单判定：canonical 双向比较（软链解析后落点必须在白名单根内）
-        let allowed = std::fs::canonicalize(p).ok().is_some_and(|c| {
+        // 白名单判定：canonical 双向比较（软链解析后落点必须在白名单根内）。
+        // 校验与读取必须同一对象——读 canonical 落点而非原路径 p，
+        // 消 check-then-read 之间 symlink 掉包窗（掉包则任意文件进 LLM prompt）
+        let canon = std::fs::canonicalize(p).ok().filter(|c| {
             roots.iter().any(|r| {
                 std::fs::canonicalize(r)
                     .map(|rc| c.starts_with(&rc))
                     .unwrap_or(false)
             })
         });
-        if !allowed {
+        let Some(canon) = canon else {
             skipped += 1;
             continue;
-        }
-        let Ok(bytes) = std::fs::read(p) else {
+        };
+        let Ok(bytes) = std::fs::read(&canon) else {
             continue;
         };
         if bytes.is_empty() || bytes.len() > MAX_IMAGE_BYTES {
