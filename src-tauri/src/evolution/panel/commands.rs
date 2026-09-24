@@ -354,7 +354,7 @@ pub async fn evolution_keep_shadow(
 
     // 重置 TTL（再续 14 天）
     let now_ms = chrono::Utc::now().timestamp_millis();
-    entry.expires_at_ms = now_ms + candidate::TTL_MS;
+    entry.expires_at_ms = candidate::compute_expires_at(now_ms);
     entries[idx] = entry.clone();
     rewrite_jsonl(&path, &entries)?;
     Ok(entry)

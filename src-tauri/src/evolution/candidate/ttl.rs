@@ -7,6 +7,20 @@
 //! Promoted/Rejected 超期也**永不硬删**（保审计轨迹，与 mark_expired 可组合）。
 //! - mark_expired：把 status 改为 Expired（保留行）
 //! - evict_expired：从 vec 中移除过期的 Pooled/Expired 行（非活跃状态的历史）
+//!
+//! ## 调用约定
+//!
+//! 典型顺序：**先 mark_expired 再 evict_expired**。evict 是不可逆硬删、
+//! 无留痕——调用方应在 evict 前持久化被删条目的快照（当前零生产调用方，
+//! 仅测试/re-export 触达）。
+//!
+//! ## 时间源契约
+//!
+//! 所有 `now_ms` 入参必须是与 `created_at_ms` / `expires_at_ms` **同源的
+//! wall-clock Unix 毫秒**（`chrono::Utc::now().timestamp_millis()`）。
+//! 条目跨重启持久化在 jsonl，故不可用单调时钟。已知脆弱性：NTP 回拨/
+//! 时钟回跳可能把刚入池条目提前判过期——14 天 TTL 粒度下影响有限，
+//! 接受该风险；调用方不得混用时间源。
 
 use super::entry::{ProposalEntry, ProposalStatus};
 
@@ -43,9 +57,13 @@ pub fn evict_expired(entries: &mut Vec<ProposalEntry>, now_ms: i64) -> usize {
     before - entries.len()
 }
 
-/// 计算 expires_at_ms（from_proposal 用）
+/// 计算 expires_at_ms（候选条目创建/续期用）。
+///
+/// 饱和加法：created_at_ms 来自 jsonl（不可信输入），近 i64::MAX 的
+/// 腐败/对抗值不会让结果 wrap 成负数——溢出时饱和到 i64::MAX =
+/// **永不过期**（条目留存保审计轨迹），而非静默立刻过期被淘汰。
 pub fn compute_expires_at(created_at_ms: i64) -> i64 {
-    created_at_ms + TTL_MS
+    created_at_ms.saturating_add(TTL_MS)
 }
 
 #[cfg(test)]
@@ -163,5 +181,15 @@ mod tests {
             compute_expires_at(1_000_000_000_000),
             1_000_000_000_000 + TTL_MS
         );
+    }
+
+    #[test]
+    fn compute_expires_at_saturates_on_overflow() {
+        // 腐败/对抗 created_at_ms 近 i64::MAX：饱和到 MAX（永不过期保轨迹），
+        // 不得 wrap 成负数（那会让 is_expired 恒 true = 静默立刻淘汰）
+        assert_eq!(compute_expires_at(i64::MAX), i64::MAX);
+        assert_eq!(compute_expires_at(i64::MAX - 1000), i64::MAX);
+        let e = mk("corrupt", compute_expires_at(i64::MAX - 1000));
+        assert!(!is_expired(&e, 0)); // 固定 now_ms，不依赖墙钟
     }
 }

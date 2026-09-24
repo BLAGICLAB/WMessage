@@ -3,7 +3,7 @@
 //! 纯函数；不调 LLM（spec R4 硬约束）；规则化映射。
 
 use super::entry::{ProposalEntry, ProposalStatus};
-use super::ttl::TTL_MS;
+use super::ttl::compute_expires_at;
 use crate::evolution::change::EvolutionLayer;
 use crate::evolution::proposal::{EvolutionProposal, ProposalCategory};
 
@@ -46,7 +46,7 @@ pub fn from_proposal(p: &EvolutionProposal, now_ms: i64) -> ProposalEntry {
         occurrence_count: p.evidence.occurrence_count,
         window_hours: p.evidence.window_hours,
         created_at_ms: p.created_at_ms,
-        expires_at_ms: now_ms + TTL_MS,
+        expires_at_ms: compute_expires_at(now_ms),
         status: ProposalStatus::Pooled,
     }
 }
@@ -54,6 +54,7 @@ pub fn from_proposal(p: &EvolutionProposal, now_ms: i64) -> ProposalEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::evolution::candidate::ttl::TTL_MS;
     use crate::evolution::proposal::{
         Evidence, ImpactLevel, ProposalCategory, ProposalOrigin, ProposalTarget, Suggestion,
     };

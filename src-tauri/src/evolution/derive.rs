@@ -31,8 +31,8 @@
 use crate::memory::consolidate::{ConsolidateOp, ConsolidateReport};
 
 use super::proposal::{
-    proposal_id, Evidence, EvolutionProposal, ImpactLevel, ProposalCategory, ProposalOrigin,
-    ProposalTarget, Suggestion,
+    proposal_id, short_hash, Evidence, EvolutionProposal, ImpactLevel, ProposalCategory,
+    ProposalOrigin, ProposalTarget, Suggestion,
 };
 
 /// 单次反思最多产出 proposal 数（spec 1.3 上限）。
@@ -111,7 +111,12 @@ fn derive_one(op: &ConsolidateOp, now_ms: i64) -> Option<EvolutionProposal> {
             let target = ProposalTarget::MemoryPolicy {
                 policy: "contradiction".into(),
             };
-            let id = proposal_id(category, &target, &summary);
+            // 一轮 N 条矛盾的 base_id 相同（summary 固定串；且 normalize_for_hash
+            // 把数字位归一成 'N'，UUID hex 记忆 id 仅数字不同也坍缩）——把原始
+            // refs 拼进二次 hash 输入作判别位（绕开归一化），保持 16 hex 形态。
+            // 哪两条记忆由 evidence.related_refs 承载，不进 summary。
+            let base_id = proposal_id(category, &target, &summary);
+            let id = short_hash(&format!("{base_id}|{keep}|{drop_id}"));
             Some(EvolutionProposal {
                 proposal_id: id,
                 created_at_ms: now_ms,
@@ -278,6 +283,41 @@ mod tests {
         assert_eq!(proposals[0].impact, ImpactLevel::High);
         assert_eq!(proposals[0].evidence.occurrence_count, 1);
         assert_eq!(proposals[0].evidence.related_refs, vec!["keep-1", "drop-1"]);
+    }
+
+    #[test]
+    fn contradiction_proposals_have_distinct_ids_per_pair() {
+        // 每条矛盾的 id 含绕开数字归一化的 refs 判别位 → 相异，
+        // 下游 dedup 不再把一轮 N 条矛盾坍缩成 1 条。
+        // 用仅数字不同的 id（UUID hex 的真实形态）回归数字归一化坍缩。
+        let ops = vec![
+            contradiction_op("ab12cd", "ef12ab", "c1"),
+            contradiction_op("ab34cd", "ef34ab", "c2"),
+        ];
+        let proposals = derive_proposals(&ops, &empty_report());
+        assert_eq!(proposals.len(), 2);
+        assert_ne!(proposals[0].proposal_id, proposals[1].proposal_id);
+        // 完整 32 字符 UUID hex、仅数字不同的对也相异
+        let ops32 = vec![
+            contradiction_op(
+                "abcdef0123456789abcdef0123456789",
+                "0123456789abcdef0123456789abcdef",
+                "x",
+            ),
+            contradiction_op(
+                "abcdef9987654321abcdef9987654321",
+                "9987654321abcdef9987654321abcdef",
+                "y",
+            ),
+        ];
+        let p32 = derive_proposals(&ops32, &empty_report());
+        assert_eq!(p32.len(), 2);
+        assert_ne!(p32[0].proposal_id, p32[1].proposal_id);
+        // 16 hex 形态不破（与 Merge/Distill 的 id 同构）
+        assert_eq!(p32[0].proposal_id.len(), 16);
+        // 同输入仍同 id（dedup 前提的确定性不破）
+        let again = derive_proposals(&ops, &empty_report());
+        assert_eq!(proposals[0].proposal_id, again[0].proposal_id);
     }
 
     #[test]
