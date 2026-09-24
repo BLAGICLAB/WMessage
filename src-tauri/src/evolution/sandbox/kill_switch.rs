@@ -40,9 +40,10 @@ impl KillSwitch {
     ///
     /// 优先级：
     /// - all_auto_apply=true → 全关
+    /// - shadow_only=true → 也不允许真实写入（只跑 shadow）
     /// - 否则 → 允许
     pub fn should_auto_apply(&self) -> bool {
-        !self.all_auto_apply
+        !self.all_auto_apply && !self.shadow_only
     }
 
     /// 是否只跑 shadow（apply.rs 入口检查）
@@ -116,10 +117,9 @@ mod tests {
             shadow_only: true,
             disable_notification: false,
         };
-        // shadow_only=true → should_auto_apply=false（因为要 shadow）
-        // 但 should_auto_apply 只看 all_auto_apply
-        // 实际语义：apply.rs 应先看 should_shadow_only
+        // shadow_only=true → should_auto_apply=false（只跑 shadow，不真实写入）
         assert!(k.should_shadow_only());
+        assert!(!k.should_auto_apply());
         assert!(!k.should_disable_notification());
     }
 

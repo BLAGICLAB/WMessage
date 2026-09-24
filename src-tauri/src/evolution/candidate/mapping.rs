@@ -23,18 +23,20 @@ pub fn map_proposal_status_to_change_status(s: ProposalStatus) -> ChangeStatus {
 
 /// 从 ProposalEntry 派生 ChangeRecord
 ///
-/// 注意：approval_source 取决于合规检查。
-/// 这里默认 Pending（待人工/自动批准）；hard_constraint_compliance 由调用方传入。
+/// 注意：approval_source 取决于合规检查与 resolved status（两者一起派生，
+/// 避免「status=Rejected 却 approval_source=Pending」的内部不一致）。
+/// Expired 保持 Pending：ApprovalSource 无 Expired 对应变体（从未批准也未被拒）。
 pub fn to_change_record(entry: &ProposalEntry, hard_constraint_compliance: bool) -> ChangeRecord {
     let status = if !hard_constraint_compliance {
         ChangeStatus::Rejected
     } else {
         map_proposal_status_to_change_status(entry.status)
     };
-    let approval_source = if !hard_constraint_compliance {
-        ApprovalSource::SystemRejected
-    } else {
-        ApprovalSource::Pending
+    // approval_source 与 status 一起派生：不合规/被拒 → SystemRejected，
+    // 其余 → Pending（不合规时 status 已被压成 Rejected，走同一分支）。
+    let approval_source = match status {
+        ChangeStatus::Rejected => ApprovalSource::SystemRejected,
+        _ => ApprovalSource::Pending,
     };
     ChangeRecord {
         change_id: entry.change_id.clone(),
@@ -164,6 +166,7 @@ mod tests {
         let entry = mk_entry("p4", ProposalStatus::Rejected);
         let cr = to_change_record(&entry, true);
         assert_eq!(cr.status, ChangeStatus::Rejected);
-        assert_eq!(cr.approval_source, ApprovalSource::Pending);
+        // status 与 approval_source 一起派生：Rejected 不再配 Pending
+        assert_eq!(cr.approval_source, ApprovalSource::SystemRejected);
     }
 }

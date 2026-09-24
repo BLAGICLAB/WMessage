@@ -19,7 +19,13 @@
 
 use super::record::ChangeStatus;
 
-/// 状态流转是否合法
+/// 状态流转是否合法。
+///
+/// **本表是纯拓扑约束，不含策略门**：`Approved -> Active`（skip-canary）是否
+/// 允许由调用方按 kill switch / 配置另行判定——本函数无配置入参，放行不代表
+/// 策略合规。调用方忘记挂策略门 = skip-canary 硬约束失守。
+/// Active 的退出只有 RolledBack / Expired（**无** Active→Rejected，有意设计：
+/// 已生效变更只能回滚或到期，不可直接拒）。
 pub fn can_transition(from: ChangeStatus, to: ChangeStatus) -> bool {
     use ChangeStatus::*;
     matches!(
