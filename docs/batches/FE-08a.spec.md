@@ -43,8 +43,15 @@ setSchedOpen((v) => !v);
 ## spec 起草后自查三条
 
 1. `expected_files`：DoneCircle.tsx + KanbanBoard.tsx + TaskCardContent.tsx + DoneCircle.test.tsx（新）+ TaskCardContent.test.tsx = 5 ✓
+   【校正 1】OCR r1 high 同根因扩 2 文件：TodoCard.tsx 同款 ⏰ 无条件重置（镜像修法）+ 取消定时清草稿；TodoCard.test.tsx 镜像回归。= 7 文件。
 2. budget A 类：DoneCircle +1/-0，KanbanBoard +2/-2，TaskCardContent +2/-1，DoneCircle.test +18，TaskCardContent.test +28 ≈ +51/-3，上限 max +70/-15；新文件 DoneCircle.test.tsx ~18 行走 max_new_files_lines 40 ✓
+   【校正 1】实测 +84/-4（TodoCard.tsx +6/-1 + TodoCard.test +26 + TaskCardContent 取消清草稿 +1）。改为 max +100/-20。
 3. findings 逐条 fix 字段列 ripple 文件+行号 ✓（3 实修 ripple 全文件内；caller TodoCard/WidgetApp/KanbanBoard 零改动——props 不变）
+
+## OCR r1 处置（2 comments 同根因）
+
+- **high TaskCardContent.tsx:297 采纳（扩 TodoCard.tsx 镜像修法）**：TodoCard.tsx:608-616 同款 ⏰ 无条件重置——两文件头注释互为镜像要求同步，修一处漏一处属同根因。TodoCard.tsx:614 同形态修 + TodoCard.test.tsx 镜像回归测试。
+- **high TaskCardContent.tsx:366 采纳**：取消定时不清 schedOnce，`!schedOnce` 守卫下重开仍见陈旧草稿，与 spec ③ 修法注释矛盾 → 取消按钮补 `setSchedOnce("")`（TaskCardContent + TodoCard 两侧）。
 
 ## 自主执行规则
 
@@ -73,10 +80,12 @@ spec 被 reviewer 批准后:
     "src/components/KanbanBoard.tsx",
     "src/components/TaskCardContent.tsx",
     "src/components/DoneCircle.test.tsx",
-    "src/components/TaskCardContent.test.tsx"
+    "src/components/TaskCardContent.test.tsx",
+    "src/components/TodoCard/TodoCard.tsx",
+    "src/components/TodoCard.test.tsx"
   ],
-  "max_lines_added": 70,
-  "max_lines_removed": 15,
+  "max_lines_added": 100,
+  "max_lines_removed": 20,
   "max_new_files_lines": 40,
   "findings": [
     {"id": "C5-FE-08a-1", "file": "src/components/DoneCircle.tsx", "line": 13, "fix": "button 无 type → type=button；ripple 无"},
@@ -111,7 +120,7 @@ fix(fe): FE-08a — frontend-widget-kanban
 【实修 3 处】
 - DoneCircle.tsx:13 type=button
 - KanbanBoard.tsx:179 rect 可选链守卫
-- TaskCardContent.tsx:293 定时草稿仅展开初始化
+- TaskCardContent.tsx:293 + TodoCard.tsx:614 定时草稿仅展开初始化 + 取消定时清草稿（镜像）
 【自测】vitest + tsc + cargo fmt/check + test-all 全绿
 【OCR】r1：exit <code> / <N> comments
 【基线】D2: files=5(+A/-R, 新测试 +N) asserts=0→0 tests=vitest
