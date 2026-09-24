@@ -54,24 +54,14 @@ export async function deleteTaskRows(ids: string[]): Promise<void> {
   }
 }
 
-/** 导出任务卡数据为 JSON 文件（全量：含归档、回收站），返回条数 */
+/** 导出任务卡数据为 JSON 文件（全量：含归档、回收站），返回条数；失败 throw（alert 职责在 caller） */
 export async function exportTasksToFile(path: string): Promise<number> {
-  try {
-    return await invoke<number>("tasks_export", { path });
-  } catch (e) {
-    handleCommandError(e, "tasks_export");
-    return 0;
-  }
+  return await invoke<number>("tasks_export", { path });
 }
 
-/** 从 JSON 文件导入任务卡数据：按 id 合并，同 id 保留最后修改更晚的。返回写入条数。 */
+/** 从 JSON 文件导入任务卡数据：按 id 合并，同 id 保留最后修改更晚的。返回写入条数；失败 throw */
 export async function importTasksFromFile(path: string): Promise<number> {
-  try {
-    return await invoke<number>("tasks_import", { path });
-  } catch (e) {
-    handleCommandError(e, "tasks_import");
-    return 0;
-  }
+  return await invoke<number>("tasks_import", { path });
 }
 
 /** 按 order 稳定排序（旧数据无 order 时保持原相对顺序） */
@@ -84,6 +74,7 @@ export const sortByOrder = (tasks: Task[]) =>
  * 纯排序变更（除 order 外无字段差异）保留原 updatedAt——
  * 否则拖拽排序把被重排行的 updatedAt 全刷成 now，多客户端按 updatedAt 合并时
  * 排序写互相覆盖，顺序来回乱跳。
+ * 不就地突变 caller 的 next 对象：upserts 全是新建副本（React state 引用相等假设不破坏）。
  */
 export function diffTaskRows(
   prev: Task[],
@@ -91,40 +82,40 @@ export function diffTaskRows(
   now: number
 ): { upserts: Task[]; deletes: string[] } {
   const prevMap = new Map(prev.map((t) => [t.id, t]));
-  const upserts = next.filter((t) => {
+  const upserts: Task[] = [];
+  for (const t of next) {
     const p = prevMap.get(t.id);
-    return !p || !taskEq(p, t);
-  });
+    if (p && taskEq(p, t)) continue;
+    // 纯 order 变更：不刷新 updatedAt（新任务 p 为 undefined，照常打戳）；
+    // 纯排序也带基线——排序写若撞上他端内容修改同样拒写，不用旧行整行压过去
+    if (p && taskEq({ ...p, order: t.order }, t)) {
+      upserts.push({ ...t, expectedUpdatedAt: p.updatedAt });
+      continue;
+    }
+    // RMW 写回基线 = 快照行 updatedAt；新任务（无 prev）不带基线。
+    // 基线字段不参与「是否变化」比较（taskEq 已剔除），否则纯排序豁免会被脏基线击穿。
+    upserts.push({ ...t, updatedAt: now, expectedUpdatedAt: p?.updatedAt });
+  }
   const nextIds = new Set(next.map((t) => t.id));
   const deletes = prev.filter((t) => !nextIds.has(t.id)).map((t) => t.id);
-  upserts.forEach((t) => {
-    const p = prevMap.get(t.id);
-    // 纯 order 变更：不刷新 updatedAt（新任务 p 为 undefined，照常打戳）
-    if (p && taskEq({ ...p, order: t.order }, t)) {
-      // 纯排序也带基线（在 taskEq 之后设置，不参与内容比较）——
-      // 排序写若撞上他端内容修改同样拒写，不用旧行整行压过去
-      t.expectedUpdatedAt = p.updatedAt;
-      return;
-    }
-    t.updatedAt = now;
-    // RMW 写回基线 = 快照行 updatedAt；新任务（无 prev）不带基线。
-    // 注意必须在 taskEq 判定之后赋值：基线字段不参与「是否变化」比较，
-    // 否则纯排序豁免会被脏基线击穿。
-    t.expectedUpdatedAt = p?.updatedAt;
-  });
   return { upserts, deletes };
 }
 
 // ───────────── 工作区（静态链接） ─────────────
 import type { WorkspaceItem } from "./types";
 
-/** 全量读取工作区条目 */
-export async function loadWorkspaceFromDb(): Promise<WorkspaceItem[]> {
+/** loadWorkspaceFromDb 结果：区分「读失败」与「空库」（对齐 loadTasksFromDb 的判别式契约） */
+export type LoadWorkspaceResult =
+  | { ok: true; items: WorkspaceItem[] }
+  | { ok: false; error: unknown };
+
+/** 全量读取工作区条目；失败返回错误载荷（不再静默返 [] 冒充空库） */
+export async function loadWorkspaceFromDb(): Promise<LoadWorkspaceResult> {
   try {
-    return await invoke<WorkspaceItem[]>("workspace_load");
+    return { ok: true, items: await invoke<WorkspaceItem[]>("workspace_load") };
   } catch (e) {
     handleCommandError(e, "workspace_load", { silent: true });
-    return [];
+    return { ok: false, error: e };
   }
 }
 
@@ -150,24 +141,14 @@ export async function deleteWorkspaceRows(ids: string[]): Promise<void> {
   }
 }
 
-/** 导出工作区链接数据为 JSON 文件（全量 WorkspaceItem），返回条数 */
+/** 导出工作区链接数据为 JSON 文件（全量 WorkspaceItem），返回条数；失败 throw */
 export async function exportWorkspaceToFile(path: string): Promise<number> {
-  try {
-    return await invoke<number>("workspace_export", { path });
-  } catch (e) {
-    handleCommandError(e, "workspace_export");
-    return 0;
-  }
+  return await invoke<number>("workspace_export", { path });
 }
 
-/** 从 JSON 文件导入工作区链接数据：按 id 合并，同 id 保留 updatedAt 更晚的。返回写入条数。 */
+/** 从 JSON 文件导入工作区链接数据：按 id 合并，同 id 保留 updatedAt 更晚的。返回写入条数；失败 throw */
 export async function importWorkspaceFromFile(path: string): Promise<number> {
-  try {
-    return await invoke<number>("workspace_import", { path });
-  } catch (e) {
-    handleCommandError(e, "workspace_import");
-    return 0;
-  }
+  return await invoke<number>("workspace_import", { path });
 }
 
 /**

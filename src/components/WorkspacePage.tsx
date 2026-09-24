@@ -67,7 +67,10 @@ export function WorkspacePage() {
 
   useEffect(() => {
     const reload = () => {
-      loadWorkspaceFromDb().then(setItems);
+      // 读失败保持旧数据（判别式契约：失败 ≠ 空库，不能用 [] 冲掉当前列表）
+      loadWorkspaceFromDb().then((res) => {
+        if (res.ok) setItems(res.items);
+      });
     };
     reload();
     // 挂件改工作区（折叠/排序）后同步刷新（此前只加载一次，挂件改动不回显）

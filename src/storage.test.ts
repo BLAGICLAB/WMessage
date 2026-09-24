@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   loadTasksFromDb,
+  loadWorkspaceFromDb,
   upsertTasks,
   deleteTaskRows,
   upsertWorkspaceItems,
@@ -208,8 +209,9 @@ describe("diffTaskRows 携带 RMW 写回基线（T1-1）", () => {
   });
 });
 
-// 导出/导入同属写数据类——invoke reject 必须弹 alert，不得静默吞。
-describe("导出/导入失败弹 alert（P2-34）", () => {
+// 导出/导入同属写数据类——invoke reject 必须传播给 caller（caller 统一 alert），
+// storage 侧不再自行弹窗，否则 App.tsx 四个 caller 的 catch 会双弹。
+describe("导出/导入失败 throw（不静默返 0，alert 职责在 caller）", () => {
   const alertMock = vi.fn();
   const ioErr = { code: "IO_ERROR", message: "permission denied", recoverable: false };
 
@@ -219,18 +221,69 @@ describe("导出/导入失败弹 alert（P2-34）", () => {
     window.alert = alertMock;
   });
 
-  it("tasks_export 失败 → alert 出现", async () => {
+  it("tasks_export 失败 → rejects，storage 侧不弹 alert", async () => {
     invokeMock.mockRejectedValue(ioErr);
-    const n = await exportTasksToFile("/tmp/x.json");
-    expect(n).toBe(0);
-    expect(alertMock).toHaveBeenCalledTimes(1);
-    expect(alertMock.mock.calls[0][0]).toContain("permission denied");
+    await expect(exportTasksToFile("/tmp/x.json")).rejects.toBe(ioErr);
+    expect(alertMock).not.toHaveBeenCalled();
   });
 
-  it("tasks_import 失败 → alert 出现", async () => {
+  it("tasks_import 失败 → rejects，storage 侧不弹 alert", async () => {
     invokeMock.mockRejectedValue(ioErr);
-    const n = await importTasksFromFile("/tmp/x.json");
-    expect(n).toBe(0);
-    expect(alertMock).toHaveBeenCalledTimes(1);
+    await expect(importTasksFromFile("/tmp/x.json")).rejects.toBe(ioErr);
+    expect(alertMock).not.toHaveBeenCalled();
+  });
+});
+
+// loadWorkspaceFromDb 判别式契约：读失败与空库必须可区分（对齐 loadTasksFromDb）。
+describe("loadWorkspaceFromDb 判别式结果", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+  });
+
+  it("invoke 正常返回时包装为 { ok: true, items }", async () => {
+    const items: WorkspaceItem[] = [{ id: "w1", title: "w", collapsed: false, links: [] }];
+    invokeMock.mockResolvedValue(items);
+    const res = await loadWorkspaceFromDb();
+    expect(res).toEqual({ ok: true, items });
+  });
+
+  it("invoke 抛错时返回 { ok: false, error }（不静默返 [] 冒充空库）", async () => {
+    const err = new Error("database is locked");
+    invokeMock.mockRejectedValue(err);
+    const res = await loadWorkspaceFromDb();
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toBe(err);
+  });
+});
+
+// diffTaskRows 不得就地突变 caller 的 next 行（React state 引用相等假设）。
+describe("diffTaskRows 不突变输入", () => {
+  const base: Task[] = [
+    { id: "t1", title: "a", column: "todo", updatedAt: 1000 },
+    { id: "t2", title: "b", column: "todo", updatedAt: 1000 },
+  ];
+
+  it("内容变化行：next 原对象 updatedAt 保持原值，upsert 是新副本", () => {
+    const next: Task[] = [
+      { id: "t1", title: "a 改", column: "todo", updatedAt: 1000 },
+      base[1],
+    ];
+    const { upserts } = diffTaskRows(base, next, 999999);
+    expect(upserts).toHaveLength(1);
+    expect(next[0].updatedAt).toBe(1000);
+    expect(next[0].expectedUpdatedAt).toBeUndefined();
+    expect(upserts[0]).not.toBe(next[0]);
+  });
+
+  it("纯排序行：next 原对象不带基线，upsert 是新副本", () => {
+    const next: Task[] = [
+      { ...base[0], order: 2 },
+      { ...base[1], order: 1 },
+    ];
+    const { upserts } = diffTaskRows(base, next, 999999);
+    expect(upserts).toHaveLength(2);
+    expect(next[0].expectedUpdatedAt).toBeUndefined();
+    expect(next[1].expectedUpdatedAt).toBeUndefined();
+    expect(upserts[0]).not.toBe(next[0]);
   });
 });

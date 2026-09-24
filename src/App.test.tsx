@@ -288,6 +288,68 @@ describe("App", () => {
     infoSpy.mockRestore();
   });
 
+  // tasks-updated source 守卫（mutation.rs 协议）：bot/api/migration 已由后端落盘，
+  // 主窗口只合并 UI 不回写——否则异步回写用旧事件快照覆盖后端新写入（归档/软删被回滚）。
+  // 回归锚：BACKEND_PERSISTED_SOURCES 若被改窄，这里立刻红。
+  describe("tasks-updated source 守卫", () => {
+    const setupHandler = async () => {
+      const handlers: Record<string, (e: unknown) => Promise<void>> = {};
+      mocks.listenMock.mockImplementation(
+        async (event: string, cb: (e: unknown) => Promise<void>) => {
+          handlers[event] = cb;
+          return () => {};
+        }
+      );
+      render(<App />);
+      await waitFor(() => {
+        expect(screen.getByText("梳理 WMessage 需求清单")).toBeInTheDocument();
+      });
+      mocks.invokeMock.mockClear();
+      return handlers;
+    };
+    // 不触发归档/今日规则的普通 todo 行（规则改动落盘是独立路径，不在断言范围）
+    const mkTask = (id: string): Task => ({
+      id,
+      title: `后端写入 ${id}`,
+      column: "todo",
+      order: 100,
+    });
+    const dbWriteCalls = () =>
+      mocks.invokeMock.mock.calls.filter(
+        (c) => c[0] === "db_upsert" || c[0] === "db_delete"
+      );
+
+    it.each(["bot", "api", "migration"])(
+      "source=%s（后端已落盘）→ 主窗口不回写 db",
+      async (source) => {
+        const handlers = await setupHandler();
+        await act(async () => {
+          await handlers["tasks-updated"]({
+            payload: { upserts: [mkTask(`${source}1`)], deletes: [], source },
+          });
+        });
+        expect(dbWriteCalls()).toHaveLength(0);
+        // UI 仍合并：新行出现在看板
+        expect(screen.getByText(`后端写入 ${source}1`)).toBeInTheDocument();
+      }
+    );
+
+    it("未知 source（协议外字符串）→ WARN + 按未落盘处理仍回写", async () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const handlers = await setupHandler();
+      await act(async () => {
+        await handlers["tasks-updated"]({
+          payload: { upserts: [mkTask("u1")], deletes: [], source: "cron" },
+        });
+      });
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("unknown source: cron")
+      );
+      expect(dbWriteCalls().length).toBeGreaterThan(0);
+      warnSpy.mockRestore();
+    });
+  });
+
   // 导入后必须以 DB 为单一真源——importTasksFromFile 成功后
   // 重新 db_load 全量 → setTasks(fresh) → 再广播，而不是清空 UI 直接广播
   // （避免其他窗口读到中间态，制造"数据全丢"假象）。实现已符合，本例为回归测试。

@@ -188,7 +188,9 @@ export default function WidgetApp() {
   useEffect(() => {
     const load = async () => {
       try {
-        const list = await loadWorkspaceFromDb();
+        const res = await loadWorkspaceFromDb();
+        if (!res.ok) throw res.error; // 读失败不当空列表处理，走外层忽略（保持现状行为）
+        const list = res.items;
         setWorkspace((prev) => {
           const same = JSON.stringify(list) === JSON.stringify(prev);
           return same ? prev : list;
