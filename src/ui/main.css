@@ -125,7 +125,8 @@
     /* 双阴影：左上高光 + 右下暗影 → 凸起；深色模式额外加顶部 1px 内高光 */
     box-shadow: inset 0 1px 0 var(--sh-top), 6px 6px 12px var(--sh-low),
       -6px -6px 12px var(--sh-high);
-    transition: background-color 0.28s ease, box-shadow 0.2s ease;
+    transition: background-color 0.28s ease, box-shadow 0.2s ease,
+      transform 0.2s ease;
   }
 
   .nm-card-hover {
