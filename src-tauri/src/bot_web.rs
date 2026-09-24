@@ -417,9 +417,26 @@ async fn search_baidu(query: &str) -> Result<Vec<(String, String, String)>, Comm
     Ok(results)
 }
 
+/// 开标签精确匹配：`<a` 这类前缀 `find` 会误中 `<abbr>`/`<address>`/`<pre>`
+/// 等同前缀标签——开标签后一个字符必须是空白 / `>` / `/` 才算该标签
+///（OCR C5-BT-11：abbr 前置时标题与链接来自不同 DOM 节点）。
+/// 扫描全部命中取第一个合格位置。
+fn find_tag_open(s: &str, pat: &str) -> Option<usize> {
+    let mut from = 0;
+    while let Some(i) = s[from..].find(pat) {
+        let idx = from + i;
+        match s[idx + pat.len()..].chars().next() {
+            None => return Some(idx),
+            Some(c) if c.is_whitespace() || c == '>' || c == '/' => return Some(idx),
+            _ => from = idx + pat.len(),
+        }
+    }
+    None
+}
+
 /// 取第一个 `<open ...> ... </close>` 的中间内容
 fn first_between<'a>(s: &'a str, open: &str, close: &str) -> Option<&'a str> {
-    let a = s.find(open)?;
+    let a = find_tag_open(s, open)?;
     let tail = &s[a..];
     let gt = tail.find('>')?;
     let start = gt + 1;
@@ -429,7 +446,7 @@ fn first_between<'a>(s: &'a str, open: &str, close: &str) -> Option<&'a str> {
 
 /// 取第一个 `<open ...>` 完整开标签
 fn first_open_tag<'a>(s: &'a str, open: &str) -> Option<&'a str> {
-    let a = s.find(open)?;
+    let a = find_tag_open(s, open)?;
     let gt = s[a..].find('>')?;
     Some(&s[a..a + gt + 1])
 }
@@ -1194,6 +1211,26 @@ mod tests {
     fn parse_brave_results_bad_json() {
         let err = parse_brave_results("not json").unwrap_err();
         assert!(err.contains("Brave 响应解析失败"), "应明确报错：{err}");
+    }
+
+    #[test]
+    fn tag_open_exact_match_skips_prefix_siblings() {
+        // <abbr> 前置于 <a>：first_open_tag / first_between 须取真 <a> 节点
+        let h = r#"<h3 class="t"><abbr>缩写</abbr><a href="http://x/1">真标题</a></h3>"#;
+        let tag = first_open_tag(h, "<a").unwrap();
+        assert!(
+            tag.starts_with("<a "),
+            "应取真 <a> 开标签而非 <abbr>：{tag}"
+        );
+        assert!(href_from_tag(tag).unwrap().contains("http://x/1"));
+        let text = first_between(h, "<a", "</a>").unwrap();
+        assert_eq!(text, "真标题");
+        // 正常形态不回归：<a> 直接出现
+        let h2 = r#"<h2><a href="http://x/2">标题2</a></h2>"#;
+        assert!(first_open_tag(h2, "<a").unwrap().starts_with("<a href"));
+        // <p 不误中 <pre>
+        let b = r#"<pre>code</pre><p>摘要</p>"#;
+        assert_eq!(first_between(b, "<p", "</p>").unwrap(), "摘要");
     }
 
     #[test]
