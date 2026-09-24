@@ -52,9 +52,19 @@ invoke mock 基建已存在：
 ## spec 起草后自查三条
 
 1. `expected_files`：src/storage.ts + src/App.tsx + src/components/WorkspacePage.tsx + src/components/WidgetApp/WidgetApp.tsx + src/storage.test.ts（=5，达批上限）✓
+   【校正 2】OCR r1 同根因处置扩 2 文件：+ src/lib/mutationOrigin.ts（新建，镜像 mutation.rs 枚举）+ src/App.test.tsx（守卫回归测试）。=7 文件（5 改 + 1 新 + 1 测试改）。
 2. budget A 类：storage.ts +45/-20（4 处改写 + LoadWorkspaceResult），App.tsx +12/-4（守卫集合），WorkspacePage +3/-1，WidgetApp +4/-1，测试 +35 ≈ 合计 +95/-30，上限 max +130/-45
    【校正 1】实测 numstat +107/-65：storage.ts 删除侧 -49 超估（4 处 try/catch 包装整段移除 + diffTaskRows 就地突变分支替换），测试旧断言替换 -11。改为 max +140/-80。其余不变。
+   【校正 2】OCR r1 处置追加：mutationOrigin.ts 新建 ~+30（走 max_new_files_lines），App.tsx 守卫改引用模块级集合 ±3，App.test.tsx 回归测试 +65。改为 max +220/-80 + max_new_files_lines 60。
 3. findings 逐条 fix 字段列 ripple 文件+行号 ✓
+
+## OCR r1 处置（5 comments，全部同根因——均指向本批新引入的守卫代码）
+
+- **high App.tsx:307-316（test）实收**：新守卫缺回归测试 → App.test.tsx 补 4 条（source=bot/api/migration 落盘跳过 + 未知 source WARN+仍落盘）。
+- **medium App.tsx:307-308（maintainability）实收**：守卫集合应有命名的协议载体 → 新建 `src/lib/mutationOrigin.ts` 镜像 mutation.rs 枚举（Rust 头注释本就引用此文件，此前不存在），导出 BACKEND_PERSISTED_SOURCES / KNOWN_SOURCES。
+- **low App.tsx:307-308 实收**：常量提升到模块级（随 mutationOrigin.ts 一并，闭包内不再每次事件重建数组）。
+- **low App.tsx:307-311 实收**：4 子句 WARN 条件 → KNOWN_SOURCES 集合成员判定（含 main/widget/initial-load，行为不变：已知未持久化 source 不 WARN 仍回写，未知 WARN+回写）。
+- **low WorkspacePage.tsx:71-73 FP**：称 error 载荷被静默丢弃——实际 loadWorkspaceFromDb catch 内 handleCommandError(silent) 仍 console.error（errorHandler.ts:209/229，silent 只抑制 alert）。零代码。
 
 ## 自主执行规则
 
@@ -83,10 +93,13 @@ spec 被 reviewer 批准后:
     "src/App.tsx",
     "src/components/WorkspacePage.tsx",
     "src/components/WidgetApp/WidgetApp.tsx",
-    "src/storage.test.ts"
+    "src/storage.test.ts",
+    "src/lib/mutationOrigin.ts",
+    "src/App.test.tsx"
   ],
-  "max_lines_added": 140,
+  "max_lines_added": 220,
   "max_lines_removed": 80,
+  "max_new_files_lines": 60,
   "findings": [
     {"id": "C5-FE-01a", "file": "src/storage.ts", "line": 109, "fix": "diffTaskRows upserts 改产出新对象，不再就地突变 caller 的 next；ripple 无（返回类型不变）"},
     {"id": "C5-FE-01b", "file": "src/storage.ts", "line": 62, "fix": "4 个导出/导入函数失败返 0 → throw（去 storage 侧 alert 防双弹，caller App.tsx:416/434/458/476 已有 catch+handleCommandError+onRetry）"},
