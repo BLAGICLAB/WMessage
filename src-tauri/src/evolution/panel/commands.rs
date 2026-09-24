@@ -213,7 +213,11 @@ pub async fn evolution_toggle_proposal(
     proposal_id: String,
     enabled: bool,
 ) -> Result<(), String> {
-    toggle_inner(&app, &proposal_id, enabled).map(|_| ())
+    // 阻塞 fs IO（jsonl load→mutate→rewrite）移出 async worker
+    crate::py::document::spawn_blocking_map(move || {
+        toggle_inner(&app, &proposal_id, enabled).map(|_| ())
+    })
+    .await
 }
 
 /// Tauri command：彻底废案（delete emoji 入口）
@@ -226,7 +230,11 @@ pub async fn evolution_delete_proposal(
     proposal_id: String,
     cascade_source: bool,
 ) -> Result<(), String> {
-    delete_inner(&app, &proposal_id, cascade_source)
+    // 阻塞 fs IO + 级联 mem_items 删除（SQLite）移出 async worker
+    crate::py::document::spawn_blocking_map(move || {
+        delete_inner(&app, &proposal_id, cascade_source)
+    })
+    .await
 }
 
 // ───────────────────────── Commands ─────────────────────────
@@ -237,12 +245,16 @@ pub async fn evolution_list_proposals(
     app: AppHandle,
     status: Option<String>,
 ) -> Result<Vec<ProposalEntry>, String> {
-    let mut entries = load_proposals(&app)?;
-    if let Some(s) = status {
-        let target = parse_status_filter(&s)?;
-        entries.retain(|e| e.status == target);
-    }
-    Ok(entries)
+    // 阻塞 fs IO（全量 load jsonl）移出 async worker
+    crate::py::document::spawn_blocking_map(move || {
+        let mut entries = load_proposals(&app)?;
+        if let Some(s) = status {
+            let target = parse_status_filter(&s)?;
+            entries.retain(|e| e.status == target);
+        }
+        Ok(entries)
+    })
+    .await
 }
 
 /// 晋升提案（Pooled → Promoted + 创建 ChangeRecord）
@@ -258,20 +270,29 @@ pub async fn evolution_promote_proposal(
     interactive: bool,
     session_id: Option<String>,
 ) -> Result<ChangeRecord, String> {
-    let entries = load_proposals(&app)?;
-    let entry = entries
-        .iter()
-        .find(|e| e.proposal_id == proposal_id)
-        .ok_or_else(|| format!("proposal {proposal_id} 不存在"))?;
+    // 段 A（阻塞 IO：load + 校验 + 组 detail）移出 async worker；
+    // confirm 是 await，两段阻塞闭包分列其前后（await 不跨闭包）
+    let detail = {
+        let app = app.clone();
+        let proposal_id = proposal_id.clone();
+        crate::py::document::spawn_blocking_map(move || {
+            let entries = load_proposals(&app)?;
+            let entry = entries
+                .iter()
+                .find(|e| e.proposal_id == proposal_id)
+                .ok_or_else(|| format!("proposal {proposal_id} 不存在"))?;
 
-    if entry.status == ProposalStatus::Rejected {
-        return Err(format!("proposal {proposal_id} 已被拒绝"));
-    }
+            if entry.status == ProposalStatus::Rejected {
+                return Err(format!("proposal {proposal_id} 已被拒绝"));
+            }
 
-    let detail = format!(
-        "启用提案\nproposal_id: {}\nsummary: {}\nimpact: {:?}\nlayer: {:?}\n\n批准后将写入 ChangeRecord 并进入沙箱流程",
-        entry.proposal_id, entry.summary, entry.impact, entry.layer
-    );
+            Ok(format!(
+                "启用提案\nproposal_id: {}\nsummary: {}\nimpact: {:?}\nlayer: {:?}\n\n批准后将写入 ChangeRecord 并进入沙箱流程",
+                entry.proposal_id, entry.summary, entry.impact, entry.layer
+            ))
+        })
+        .await?
+    };
     let approved = bot_slash::ask_user_confirm(
         &app,
         "evolution_promote",
@@ -284,9 +305,12 @@ pub async fn evolution_promote_proposal(
         return Err("用户拒绝启用".into());
     }
 
-    let cr = toggle_inner(&app, &proposal_id, true)?
-        .ok_or_else(|| "toggle_inner ON 未返回 ChangeRecord（不变量破坏）".to_string())?;
-    Ok(cr)
+    // 段 B（阻塞 IO：持锁 RMW + rewrite）
+    crate::py::document::spawn_blocking_map(move || {
+        toggle_inner(&app, &proposal_id, true)?
+            .ok_or_else(|| "toggle_inner ON 未返回 ChangeRecord（不变量破坏）".to_string())
+    })
+    .await
 }
 
 /// 老板 16:05 拍板：Reject 语义 = toggle OFF（兼容老 API）
@@ -298,20 +322,28 @@ pub async fn evolution_reject_proposal(
     interactive: bool,
     session_id: Option<String>,
 ) -> Result<(), String> {
-    let entries = load_proposals(&app)?;
-    let entry = entries
-        .iter()
-        .find(|e| e.proposal_id == proposal_id)
-        .ok_or_else(|| format!("proposal {proposal_id} 不存在"))?;
+    // 段 A（阻塞 IO：load + 校验 + 组 detail）移出 async worker
+    let detail = {
+        let app = app.clone();
+        let proposal_id = proposal_id.clone();
+        crate::py::document::spawn_blocking_map(move || {
+            let entries = load_proposals(&app)?;
+            let entry = entries
+                .iter()
+                .find(|e| e.proposal_id == proposal_id)
+                .ok_or_else(|| format!("proposal {proposal_id} 不存在"))?;
 
-    if entry.status == ProposalStatus::Rejected {
-        return Err(format!("proposal {proposal_id} 已拒绝"));
-    }
+            if entry.status == ProposalStatus::Rejected {
+                return Err(format!("proposal {proposal_id} 已拒绝"));
+            }
 
-    let detail = format!(
-        "停用提案\nproposal_id: {}\nsummary: {}\n\n批准后将移除对应的 ChangeRecord（如有）",
-        entry.proposal_id, entry.summary
-    );
+            Ok(format!(
+                "停用提案\nproposal_id: {}\nsummary: {}\n\n批准后将移除对应的 ChangeRecord（如有）",
+                entry.proposal_id, entry.summary
+            ))
+        })
+        .await?
+    };
     let approved = bot_slash::ask_user_confirm(
         &app,
         "evolution_reject",
@@ -323,8 +355,11 @@ pub async fn evolution_reject_proposal(
     if !approved {
         return Err("用户取消停用操作".into());
     }
-    let _ = toggle_inner(&app, &proposal_id, false)?; // OFF 恒 None
-    Ok(())
+    // 段 B（阻塞 IO：持锁 RMW + rewrite）
+    crate::py::document::spawn_blocking_map(move || {
+        toggle_inner(&app, &proposal_id, false).map(|_| ()) // OFF 恒 None
+    })
+    .await
 }
 
 /// Keep Shadow：延长 shadow 期（重置 expires_at_ms = now + TTL）
@@ -335,35 +370,41 @@ pub async fn evolution_keep_shadow(
     app: AppHandle,
     proposal_id: String,
 ) -> Result<ProposalEntry, String> {
-    let _g = lock_evolution_store(); // OCR C3-4：覆盖整个 load→mutate→rewrite 窗口
-    let path = proposals_path(&app);
-    let mut entries = load_proposals(&app)?;
+    // 阻塞 fs IO（持锁 load→mutate→rewrite）移出 async worker；
+    // store 锁随闭包走，不跨 await
+    crate::py::document::spawn_blocking_map(move || {
+        let _g = lock_evolution_store(); // OCR C3-4：覆盖整个 load→mutate→rewrite 窗口
+        let path = proposals_path(&app);
+        let mut entries = load_proposals(&app)?;
 
-    let idx = entries
-        .iter()
-        .position(|e| e.proposal_id == proposal_id)
-        .ok_or_else(|| format!("proposal {proposal_id} 不存在"))?;
-    let mut entry = entries[idx].clone();
+        let idx = entries
+            .iter()
+            .position(|e| e.proposal_id == proposal_id)
+            .ok_or_else(|| format!("proposal {proposal_id} 不存在"))?;
+        let mut entry = entries[idx].clone();
 
-    if entry.status != ProposalStatus::Pooled {
-        return Err(format!(
-            "proposal {proposal_id} 不在 Pooled 状态（当前 {:?}）",
-            entry.status
-        ));
-    }
+        if entry.status != ProposalStatus::Pooled {
+            return Err(format!(
+                "proposal {proposal_id} 不在 Pooled 状态（当前 {:?}）",
+                entry.status
+            ));
+        }
 
-    // 重置 TTL（再续 14 天）
-    let now_ms = chrono::Utc::now().timestamp_millis();
-    entry.expires_at_ms = candidate::compute_expires_at(now_ms);
-    entries[idx] = entry.clone();
-    rewrite_jsonl(&path, &entries)?;
-    Ok(entry)
+        // 重置 TTL（再续 14 天）
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        entry.expires_at_ms = candidate::compute_expires_at(now_ms);
+        entries[idx] = entry.clone();
+        rewrite_jsonl(&path, &entries)?;
+        Ok(entry)
+    })
+    .await
 }
 
 /// 列出 ChangeRecord（回滚 UI 用）
 #[tauri::command]
 pub async fn evolution_list_changes(app: AppHandle) -> Result<Vec<ChangeRecord>, String> {
-    load_changes(&app)
+    // 阻塞 fs IO（全量 load jsonl）移出 async worker
+    crate::py::document::spawn_blocking_map(move || load_changes(&app)).await
 }
 
 /// 回滚 ChangeRecord
@@ -382,15 +423,21 @@ pub async fn evolution_rollback_change(
 ) -> Result<ChangeRecord, String> {
     // ① 无锁只读快照 + 校验（仅供确认弹窗）—— 确认是 await，**不能持同步锁跨越**
     //   （std MutexGuard 跨 await → future 不 Send，tauri command 编译器直接拒）。
+    //   阻塞 fs IO（load jsonl）包 spawn_blocking 移出 async worker。
     let record = {
-        let records = load_changes(&app)?;
-        let r = records
-            .iter()
-            .find(|r| r.change_id == change_id)
-            .ok_or_else(|| format!("change {change_id} 不存在"))?
-            .clone();
-        rollback_precheck(&r, &change_id)?;
-        r
+        let app = app.clone();
+        let change_id = change_id.clone();
+        crate::py::document::spawn_blocking_map(move || {
+            let records = load_changes(&app)?;
+            let r = records
+                .iter()
+                .find(|r| r.change_id == change_id)
+                .ok_or_else(|| format!("change {change_id} 不存在"))?
+                .clone();
+            rollback_precheck(&r, &change_id)?;
+            Ok(r)
+        })
+        .await?
     };
 
     let detail = format!(
@@ -409,8 +456,9 @@ pub async fn evolution_rollback_change(
         return Err("用户取消回滚".into());
     }
 
-    // ② 持锁执行 RMW（同步、不跨 await）——重新 load + 重新校验，保证临界区语义
-    rollback_change_locked(&app, &change_id)
+    // ② 持锁执行 RMW（同步、不跨 await）——重新 load + 重新校验，保证临界区语义；
+    //    阻塞 IO（含 SQLite 删 mem_item + rewrite）包 spawn_blocking 移出 async worker
+    crate::py::document::spawn_blocking_map(move || rollback_change_locked(&app, &change_id)).await
 }
 
 /// 回滚前置校验（无锁快照与锁内复检共用，避免两处语义漂移）。

@@ -165,16 +165,29 @@ pub fn apply_from_consolidation(proposals: Vec<EvolutionProposal>) {
                     "total" => proposals.len().to_string(),
                 );
             }
-            let _g = crate::db::DB_WRITE_LOCK
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
+            // 锁外预计算：open_db（文件打开 syscall，内部不拿 DB_WRITE_LOCK）、
+            // ledger 路径、now——不占临界区
             let conn = crate::db::open_db(&app2)?;
-            store::ensure_table(&conn)?;
             let now = crate::memory::now_ms();
             let ledger = crate::db::paths::data_dir(&app2).join("evolution-applied.jsonl");
+            // DDL 单独一个短临界区
+            {
+                let _g = crate::db::DB_WRITE_LOCK
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                store::ensure_table(&conn)?;
+            }
             let mut report = ApplyReport::default();
             for (p, emb) in proposals.iter().zip(embs.iter()) {
-                match apply_one(&conn, p, emb.as_deref(), now)? {
+                // 临界区仅覆盖 SQL 写；jsonl append + audit emit 在锁外——
+                // 无关 DB 写者不再被整条流水线（syscall/emit）串行化
+                let outcome = {
+                    let _g = crate::db::DB_WRITE_LOCK
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    apply_one(&conn, p, emb.as_deref(), now)?
+                };
+                match outcome {
                     ApplyOutcome::Applied => {
                         report.applied += 1;
                         append_applied_record(&ledger, p, now)?;

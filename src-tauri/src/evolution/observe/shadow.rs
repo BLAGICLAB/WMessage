@@ -186,6 +186,10 @@ pub struct ShadowReport {
 /// - 不写 mem_items（trait 没暴露 mem_items 接口）
 /// - 正常路径不发 audit（除非写失败 / 失败率 > 阈值）
 /// - 失败仅 audit_event + 原子计数
+///
+/// **调用约束**：当前零生产调用方，仅测试 + MockShadowSink（内存 sink，
+/// 无真实 IO）。sink.write_change 是同步调用——若未来接真实 fs sink
+/// 上生产 async 路径，须先把写路径 spawn_blocking 化（参考 with_app）。
 pub async fn shadow_apply_for_batch<S: ShadowSink>(
     proposals: Vec<EvolutionProposal>,
     sink: &S,
@@ -248,6 +252,9 @@ pub async fn shadow_apply_for_batch<S: ShadowSink>(
 /// 3. 写 evolution-changes.jsonl
 ///
 /// 不可逆的 proposal 跳过（不写 jsonl），不在这发 audit（audit 由调用方决定）
+///
+/// **调用约束**：同 `shadow_apply_for_batch`——当前零生产调用方（测试/
+/// 内存 sink 专用），接真实 fs sink 上生产 async 路径前须 spawn_blocking 化。
 pub async fn shadow_apply_for_batch_with_reversibility<S: ShadowSink>(
     proposals: Vec<EvolutionProposal>,
     sink: &S,
@@ -344,7 +351,21 @@ pub async fn shadow_apply_for_batch_with_app(
         }
         // Allow 决策或 S0/S1：写 shadow + audit
         let cr = change::from_proposal(p, now);
-        match change::append_change(&path, &cr) {
+        // append_change 是阻塞 fs IO（open+writeln syscall）——包 spawn_blocking
+        // 避免钉住 tokio worker（本 fn 是生产唯一入口，跑在 Tauri async runtime 上）
+        let write_result = {
+            let path = path.clone();
+            // cr 本轮迭代仅此处消费，直接 move（不 clone）
+            match tauri::async_runtime::spawn_blocking(move || change::append_change(&path, &cr))
+                .await
+            {
+                Ok(r) => r,
+                // tauri::Error（非 tokio JoinError）无 is_panic/into_panic——
+                // Display 已带 panic payload 信息，直接透传
+                Err(e) => Err(format!("shadow 写线程 join 失败：{e}")),
+            }
+        };
+        match write_result {
             Ok(()) => {
                 written += 1;
                 // 与 trait 变体一致的计数器增量——本入口是生产路径，
