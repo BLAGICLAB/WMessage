@@ -131,4 +131,77 @@ describe("ConfirmMap", () => {
     );
     expect(approveCalls).toHaveLength(1);
   });
+
+  it("确认 invoke 挂起 + 倒计时冲零 → 只 invoke 一次（busyRef 挡 respond(false)）", async () => {
+    vi.useFakeTimers();
+    let resolveInvoke: (() => void) | undefined;
+    invokeMock.mockImplementation(
+      () => new Promise<void>((r) => (resolveInvoke = r))
+    );
+    render(<ConfirmMap />);
+    await act(async () => {
+      emit({
+        id: "race-1",
+        tool: "evolution_promote",
+        detail: "d",
+        kind: "danger",
+        sessionId: null,
+      });
+    });
+    // 点击确认（invoke 挂起不返回），倒计时冲到 0 → effect 触发 respond(false)
+    fireEvent.click(screen.getByTestId("confirm-map-approve"));
+    await act(async () => {
+      vi.advanceTimersByTime(61000);
+    });
+    await act(async () => {
+      resolveInvoke?.();
+    });
+    const calls = invokeMock.mock.calls.filter(
+      (c) => c[0] === "bot_confirm_response"
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0][1]).toMatchObject({ requestId: "race-1", approved: true });
+  });
+
+  it("响应 invoke 挂起期间新请求到达 → 旧响应完成后新弹窗仍在（快照清理）", async () => {
+    let resolveInvoke: (() => void) | undefined;
+    invokeMock.mockImplementation(
+      () => new Promise<void>((r) => (resolveInvoke = r))
+    );
+    render(<ConfirmMap />);
+    await act(async () => {
+      emit({
+        id: "old-1",
+        tool: "evolution_promote",
+        detail: "old",
+        kind: "danger",
+        sessionId: null,
+      });
+    });
+    fireEvent.click(screen.getByTestId("confirm-map-approve"));
+    // invoke 挂起期间新请求覆盖 pending
+    await act(async () => {
+      emit({
+        id: "new-1",
+        tool: "evolution_reject",
+        detail: "new detail",
+        kind: "file_access",
+        sessionId: null,
+      });
+    });
+    expect(screen.getByTestId("confirm-map-detail").textContent).toContain(
+      "new detail"
+    );
+    // 旧 invoke 完成：不得清掉用户正在看的新请求弹窗
+    await act(async () => {
+      resolveInvoke?.();
+    });
+    expect(screen.getByTestId("confirm-map-detail").textContent).toContain(
+      "new detail"
+    );
+    const calls = invokeMock.mock.calls.filter(
+      (c) => c[0] === "bot_confirm_response"
+    );
+    expect(calls).toHaveLength(1);
+  });
 });

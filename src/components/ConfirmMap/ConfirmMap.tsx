@@ -11,8 +11,8 @@
 //! ConfirmMap 是 spec R0 #1 「复用 widget 弹窗」的前端实现。
 
 import { useEffect, useRef, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
+import { useTauriListen } from "../../lib/useTauriListen";
 
 /// 与后端 emit 的 payload 字段对齐（bot_slash.rs:301 附近）
 type BotConfirmPayload = {
@@ -32,23 +32,15 @@ export default function ConfirmMap() {
   // 闭包内稳定的 responder（避免 useCallback 依赖 pending）
   const pendingRef = useRef<BotConfirmPayload | null>(null);
   pendingRef.current = pending;
+  // busy 的同步镜像：respond 重入守卫用（state busy 异步提交，同窗双发防不住）
+  const busyRef = useRef(false);
 
   // 监听后端 bot-confirm 事件
-  useEffect(() => {
-    let unlistenFn: (() => void) | undefined;
-    (async () => {
-      const u = await listen<BotConfirmPayload>("bot-confirm", (e) => {
-        const p = e.payload;
-        if (!p || !p.id) return;
-        setPending(p);
-        setRemaining(TIMEOUT_SECS);
-      });
-      unlistenFn = u;
-    })();
-    return () => {
-      unlistenFn?.();
-    };
-  }, []);
+  useTauriListen<BotConfirmPayload>("bot-confirm", (p) => {
+    if (!p || !p.id) return;
+    setPending(p);
+    setRemaining(TIMEOUT_SECS);
+  });
 
   // 60s 倒计时：到 0 自动拒绝（前端防御，后端会兜底）
   useEffect(() => {
@@ -64,7 +56,10 @@ export default function ConfirmMap() {
 
   async function respond(approved: boolean) {
     const cur = pendingRef.current;
-    if (!cur || busy) return;
+    // busyRef 同步 check-and-set：state busy 下一渲染才提交，
+    // 倒计时归零的 respond(false) 与按钮点击可同窗双发 bot_confirm_response
+    if (!cur || busyRef.current) return;
+    busyRef.current = true;
     setBusy(true);
     try {
       await invoke("bot_confirm_response", {
@@ -76,8 +71,11 @@ export default function ConfirmMap() {
       // 不阻塞 UI；后端超时也会兜底
       console.error("bot_confirm_response failed:", e);
     } finally {
+      busyRef.current = false;
       setBusy(false);
-      setPending(null);
+      // 只清「本次响应的那一条」：await 期间到达的新 bot-confirm 已覆盖 pending，
+      // 无条件 setPending(null) 会把用户正在看的新请求杀掉（后端仍等该 id 的响应）
+      setPending((p) => (p === cur ? null : p));
     }
   }
 

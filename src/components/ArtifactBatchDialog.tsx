@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { formatCommandError } from "../lib/errorHandler";
+import { useTauriListen } from "../lib/useTauriListen";
 
 type BatchReady = {
   taskId: string;
@@ -30,17 +30,20 @@ export function ArtifactBatchDialog() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // busyRef：confirm 重入同步守卫（state busy 下一渲染才提交，同 tick 双击可双发）；
+  // readyRef：confirm 挂起期间读当前弹窗是否仍为同一批（渲染期直写，对齐 ConfirmMap
+  // pendingRef 既有模式——useEffect 同步在「事件与 invoke reject 同 tick」下有 stale 窗口）
+  const busyRef = useRef(false);
+  const readyRef = useRef<BatchReady | null>(null);
+  readyRef.current = ready;
 
-  useEffect(() => {
-    const un = listen<BatchReady>("artifact-batch-ready", (e) => {
-      setReady(e.payload);
-      setSelected(new Set(e.payload.paths));
-      setError("");
-    });
-    return () => {
-      un.then((f) => f());
-    };
-  }, []);
+  useTauriListen<BatchReady>("artifact-batch-ready", (payload) => {
+    // 防御坏 payload（缺 paths / null）：不更新状态，保旧弹窗
+    if (!payload || !Array.isArray(payload.paths)) return;
+    setReady(payload);
+    setSelected(new Set(payload.paths));
+    setError("");
+  });
 
   if (!ready) return null;
 
@@ -60,18 +63,25 @@ export function ArtifactBatchDialog() {
   };
 
   const confirm = async () => {
+    // 快照当前批次：await 期间新 artifact-batch-ready 事件会覆盖 ready——
+    // 本批次的 confirm 完成后不得把用户正在看的新批次弹窗杀掉/挂上旧错误
+    const batch = ready;
+    if (!batch || busyRef.current) return;
+    busyRef.current = true;
     setBusy(true);
     setError("");
     try {
       const paths = Array.from(selected);
       await invoke<number>("confirm_artifact_batch", {
-        taskId: ready.taskId,
+        taskId: batch.taskId,
         paths,
       });
-      setReady(null);
+      // 只在弹窗仍显示同一批次时关闭；期间到达的新批次留待用户处理
+      setReady((cur) => (cur === batch ? null : cur));
     } catch (e) {
-      setError(formatCommandError(e));
+      if (readyRef.current === batch) setError(formatCommandError(e));
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   };
