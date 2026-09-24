@@ -43,7 +43,7 @@
 
 - family: async-blocking-io（锁范围过宽 / worker 钉住）
 - 覆盖 findings: 3
-- 预估 diff: 3 files / +106/-39 lines（A 类，budget +140/-55）
+- 预估 diff: 3 files / +106/-39 lines → 实测 +157/-77（A 类，budget 校正 **+165/-85**）
 - OCR 计划: r1, timeout 1800s, 期望 comments ≤ 3
 
 ## 核实的编译层事实（spec 前已核）
@@ -89,7 +89,7 @@
 1. `expected_files` = 3：apply.rs + observe/shadow.rs +
    panel/commands.rs。无 ripple（签名全不变）。
 2. budget = **A 类**：apply +20/-12、shadow +16/-2、panel +70/-25：
-   初估 +106/-39 → 含浮动 **max +140/-55**。
+   初估 +106/-39 → 实测 +157/-77（闭包化重缩进双向计数超估），校正 → **max +165/-85**。
 3. 三条 findings 的 fix 字段均已写明 ripple（均无）。
 
 ## 机器可读（脚本读取，勿改格式）
@@ -103,8 +103,8 @@
     "src-tauri/src/evolution/observe/shadow.rs",
     "src-tauri/src/evolution/panel/commands.rs"
   ],
-  "max_lines_added": 140,
-  "max_lines_removed": 55,
+  "max_lines_added": 165,
+  "max_lines_removed": 85,
   "findings": [
     {"id": "C5-EV-3b-G-1", "file": "src-tauri/src/evolution/apply.rs", "line": 156, "fix": "DB_WRITE_LOCK 临界区收窄到仅 apply_one（SQL 写）；open_db/ledger/now 锁外预计算，append_applied_record+audit 锁外；逐条 ? 中止语义不变；无 ripple（内部重排，签名不变）"},
     {"id": "C5-EV-3b-G-2", "file": "src-tauri/src/evolution/observe/shadow.rs", "line": 202, "fix": "with_app（唯一生产入口）append_change 包 spawn_blocking，JoinError 映射为写失败走既有 failed/audit 路径；trait 两变体零生产调用方加 doc 注明测试/内存 sink 专用；无 ripple"},
