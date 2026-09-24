@@ -39,18 +39,40 @@ HF_BASE="https://huggingface.co/RapidAI/RapidOCR/resolve/main"
 
 # curl_fetch <远端相对路径> <本地文件名>
 # ModelScope 主源失败时回退 HuggingFace 镜像（同一 RapidAI/RapidOCR 仓库）。
+# 完整性强约束：先写 $out.partial，校验大小下限 + 首字节非 HTML 后才 mv 就位——
+# 截断文件 / CDN 错误页不会被 -s 当成「已存在」永久跳过。
 curl_fetch() {
   local rel="$1" out="$2"
   if [ -s "$DEST/$out" ]; then
     echo "已存在，跳过：$out"
     return 0
   fi
+  local tmp="$DEST/$out.partial"
+  rm -f "$tmp"
   echo "下载 $out ← $rel"
-  if curl -fL --retry 3 -o "$DEST/$out" "$MS_BASE/$rel"; then
-    return 0
+  if ! curl -fL --retry 3 -o "$tmp" "$MS_BASE/$rel"; then
+    echo "ModelScope 失败，回退 HuggingFace：$rel"
+    if ! curl -fL --retry 3 -o "$tmp" "$HF_BASE/$rel"; then
+      rm -f "$tmp"
+      return 1
+    fi
   fi
-  echo "ModelScope 失败，回退 HuggingFace：$rel"
-  curl -fL --retry 3 -o "$DEST/$out" "$HF_BASE/$rel"
+  # 校验：大小下限（ONNX ≥ 1MB，字典 ≥ 10KB，远低于标称值不误伤）+ 首字节非 '<'（HTML 错误页）
+  local min_size=1000000
+  case "$out" in keys.txt) min_size=10000 ;; esac
+  local size
+  size=$(wc -c < "$tmp" | tr -d ' ')
+  if [ "$size" -lt "$min_size" ]; then
+    rm -f "$tmp"
+    echo "✗ $out 仅 $size 字节（< 下限 $min_size），疑似截断/错误页，请重跑" >&2
+    return 1
+  fi
+  if [ "$(head -c 1 "$tmp")" = "<" ]; then
+    rm -f "$tmp"
+    echo "✗ $out 以 '<' 开头，疑似 HTML 错误页而非模型，请重跑" >&2
+    return 1
+  fi
+  mv "$tmp" "$DEST/$out"
 }
 
 # det：检测（PP-OCRv6 small，9.5MB）
