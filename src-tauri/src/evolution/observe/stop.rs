@@ -85,7 +85,15 @@ pub fn check_stop_condition(
         .filter(|c| in_window(c) && c.status == ChangeStatus::RolledBack)
         .count() as u64;
 
-    let days_elapsed = ((now_ms - start_ms) as f64 / 86_400_000.0).max(0.0);
+    // OCR C5-EV-3a-01：saturating_sub 防溢出（溢出曾被 max(0.0) 静默压零；
+    // 饱和后 days 巨大，时间门正常响）；负时长（时钟回拨/参数颠倒）留痕
+    // 不静默（仍计 0.0 天不误触发）。Result 化签名变更属 B 类，不自决。
+    if now_ms < start_ms {
+        eprintln!(
+            "[evolution_stop] negative observation window: now_ms={now_ms} < start_ms={start_ms}（按 0.0 天计，请核时钟/参数）"
+        );
+    }
+    let days_elapsed = (now_ms.saturating_sub(start_ms) as f64 / 86_400_000.0).max(0.0);
 
     let mut stop_reasons = Vec::new();
     if completed >= STOP_COMPLETED_CHANGES {
@@ -145,6 +153,25 @@ mod tests {
     }
 
     const DAY_MS: i64 = 86_400_000;
+
+    /// C5-EV-3a-01：负时长（now < start）不 panic、按 0.0 天计、不误停（eprintln 留痕）
+    #[test]
+    fn negative_window_counts_zero_days_without_time_stop() {
+        let r = check_stop_condition(&[], DAY_MS * 10, DAY_MS * 5);
+        assert_eq!(r.days_elapsed, 0.0);
+        assert!(!r.should_stop);
+        assert!(!r.stop_reasons.contains(&StopReason::FourteenDaysElapsed));
+    }
+
+    /// C5-EV-3a-01：start_ms=i64::MIN 时减法溢出 → saturating_sub 饱和为
+    /// i64::MAX（days 巨大）→ 时间门正常触发，不再被 max(0.0) 静默压零
+    #[test]
+    fn overflow_window_saturates_and_trips_time_gate() {
+        let r = check_stop_condition(&[], i64::MIN, 0);
+        assert!(r.days_elapsed > 1_000_000.0);
+        assert!(r.stop_reasons.contains(&StopReason::FourteenDaysElapsed));
+        assert!(r.should_stop);
+    }
 
     #[test]
     fn no_change_no_stop() {
