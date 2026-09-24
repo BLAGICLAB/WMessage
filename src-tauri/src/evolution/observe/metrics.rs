@@ -84,11 +84,20 @@ pub fn compute(
         .count();
 
     // 污染存活期：active ChangeRecord 对应的 applied_at 在 (now - applied_at) 上平均
+    // mem_key 索引一次构建（O(n+m)）；entry().or_insert() 保「首个匹配」语义
+    // （与 iter().find 一致——applied.jsonl 有重复 mem_key 时结果不漂移）
+    let applied_by_key: std::collections::HashMap<&str, &AppliedRecord> = {
+        let mut m = std::collections::HashMap::with_capacity(applied.len());
+        for a in applied {
+            m.entry(a.mem_key.as_str()).or_insert(a);
+        }
+        m
+    };
     let mut survival_total_days = 0.0;
     let mut survival_n = 0u64;
     for change in changes.iter().filter(|c| c.status == ChangeStatus::Active) {
         // 查 applied.jsonl：找 mem_key 对应的 applied_at_ms
-        if let Some(app) = applied.iter().find(|a| a.mem_key == change.mem_key) {
+        if let Some(app) = applied_by_key.get(change.mem_key.as_str()) {
             let days = (now_ms - app.applied_at_ms) as f64 / 86_400_000.0;
             if days >= 0.0 {
                 survival_total_days += days;
@@ -349,5 +358,20 @@ mod tests {
         let proposals = vec![mk_proposal("p1", ProposalStatus::Pooled, 1000)];
         let r = compute(&proposals, &[], &[], 100_000, 0);
         assert_eq!(r.pollution_survival_days, 0.0);
+    }
+
+    #[test]
+    fn pollution_survival_duplicate_mem_key_uses_first() {
+        // 锁死首匹配语义：applied.jsonl 重复 mem_key 时取首条（与 iter().find 一致）
+        let day_ms = 86_400_000;
+        let now_ms = day_ms * 30;
+        let proposals = vec![mk_proposal("p1", ProposalStatus::Promoted, 0)];
+        let changes = vec![mk_change("chg-p1", ChangeStatus::Active, "p1")];
+        let applied = vec![
+            mk_applied("p1", now_ms - 5 * day_ms),  // 首条：5 天前
+            mk_applied("p1", now_ms - 20 * day_ms), // 重复：20 天前（不取）
+        ];
+        let r = compute(&proposals, &changes, &applied, now_ms, 0);
+        assert!((r.pollution_survival_days - 5.0).abs() < 1e-9);
     }
 }
