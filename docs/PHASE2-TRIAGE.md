@@ -28,6 +28,7 @@
 - [2026-09-23 23:25 CST] FRDV-01 收口（commit 46f8437）：C5-MI-03.2（rules.rs:121 CSV 双静默默认值）已修 fail-closed——空动作行 / 未知启用 token → 行级 DomainRule Err。C5-MI-03 2 条 → 剩 1 条（rules.rs:27 load_rules 静默 fallback default，quarantine vs 结构化 Err = B 类候选，攒批待拍）。
 - [2026-09-23 23:35 CST] MI-07 收口（commit 613e07a）：C5-MI-07（ops.rs log_line rotation/写入路径分裂）已修——单次 canonicalize 结果共用 + 失败兜底不丢日志。OCR r1 唯一 low（data_dir 双调）已采纳入批。migration 域 10 簇剩 4 簇未清：MI-04a/b、MI-05a/b、MI-08。
 - [2026-09-23 23:50 CST] DB-04 收口（commit c9a3041）：C5-DB-04 全簇 2 条已修——bot_session_rename 空标题 fail-closed（InvalidArgument）+ tasks_import 复用 check_export_path + 64MiB 读侧 bounded 强制。OCR r1 2 comments（medium TOCTOU + low 文案截断，同根=本批新代码）均采纳入批（metadata 预检 → bounded reader）。db 域 7 簇剩 2 簇未清：DB-03（race/TOCTOU）、DB-05 余 3 条（均 B 类候选）。
+- [2026-09-25 03:20 CST] **FE-01a**（frontend 域「core 写入加载路径」簇可自主部分，commit e2faf6a）：实修 4 处——storage.ts diffTaskRows upserts 全改新建副本（不再就地突变 caller 的 next 行，React 引用相等假设修复）；导出/导入 4 函数失败返 0+自带 alert → throw（storage 侧去 handleCommandError 防双弹，caller 本有 catch+onRetry）；loadWorkspaceFromDb 静默返 [] → LoadWorkspaceResult 判别式（ripple WorkspacePage.tsx:70 仅 ok 才 setItems / WidgetApp.tsx:191 失败 throw 进外层 catch，读失败不再清空工作区 UI）；App.tsx tasks-updated 守卫补 bot/api（实现 mutation.rs 文档化协议，bot/tools.rs:157 + api_handlers/commands.rs:116 实发），回写竞态关闭。FP 2 条（storage.ts:113 基线字段 types.ts:90 已有 + App.tsx:254 storage 层确有 alert，reviewer agent-12 pass）；转 B 类 2 项（App.tsx:240 半成功方向 #18 + App.tsx:191 迁移失败种子 orphan #19）。OCR r1 5 comments 全同根因：high（守卫缺回归测试）+ medium（守卫缺协议载体→新建 src/lib/mutationOrigin.ts 镜像 mutation.rs）+ 2 low（模块级常量 + KNOWN_SOURCES 集合判定）实收；1 low FP（WorkspacePage error 载荷——handleCommandError silent 仍 console.error）。spec 校正 ×2（budget +130/-45→+220/-80；expected_files 5→7 + max_new_files_lines 60）。**第 55 批，reviewer 抽查（agent-13）= pass。**D2: files=7(+198/-65, 含新文件 mutationOrigin.ts +31) asserts=0→0 tests=vitest 260/260 + tsc 0 + cargo fmt/check 绿。
 - [2026-09-25 03:00 CST] **WA-03**（WidgetApp 域「dnd-kit 可达性/事件冲突」簇，commit 9b90ebd）：实修 2 处——SortableWorkspaceCard.tsx:23 render prop 改传合并手柄 props（attributes+listeners，wrapper 不再铺 attributes，caller WidgetApp.tsx:746 零改动，键盘可 tab 到 ☰ 手柄）；SortableTaskCard.tsx:55 useDndMonitor wasDragging 守卫（setTimeout(0) 复位，拖拽衍生 click 不再误切选中）。OCR r1 exit 0 / 1 low（onDragEnd/onDragCancel 重复 → 抽 resetIfSelf）已处置。新测试 sortable-a11y.test.tsx 3 passed；**WidgetApp 域 3 簇全清。**D2: files=3(+41/-6, 新测试 +92) asserts=0→0 tests=vitest 3 新增。
 - [2026-09-25 02:53 CST] **WA-02**（WidgetApp 域「window listener 管理缺」簇，commit 328fa76）：实修 3 处——ResizeEdge.tsx:43 Promise.all 加 .catch（unhandled rejection 消除，拖动可恢复）；ResizeEdge.tsx:72 + SplitBar.tsx:15 cleanup 签名 `(ev?: PointerEvent)` + useDragCleanup 卸载兜底。OCR r1 exit 0 / 5 comments 全同根因同批处置（抽 useDragCleanup.ts 共享 hook ×2 medium + catch 路径补测试 medium + 直赋值 ×2 low），无 high。新测试 drag-cleanup.test.tsx 7 passed（含 catch 路径）；spec 校正版 d2ace11。D2: files=4(+34/-14, 新文件 +149) asserts=0→0 tests=vitest 7 新增。
 - [2026-09-25 02:45 CST] **WA-01**（WidgetApp 域「输入/反序列化校验缺」簇，commit 919aa0e）：实修 2 处——storage.ts:113 anchorFromRect 返回扁平 Anchor（ripple WidgetApp.tsx:285/:325 两 call site 简化）；storage.ts:79 loadAnchor 形状校验（object 非 null 非数组 + x/y finite + edge allow-list），坏值返 null 对齐 loadSize。OCR r1 exit 0 / 4 comments（2 medium 命名 na→anchor + 1 low EDGES as const + 1 low 补 Array.isArray 排除，全同根因同批处置，无 high）。新测试 storage.test.ts 13 passed；既有 WidgetApp.test.tsx 6 passed 不退化。assertions_min 校正 10→0（gate 计数只认 Rust assert! 宏，vitest expect() 由实跑担保——前端批通行先例）。D2: files=3(+36/-20, 新测试 +93) asserts=0→0 tests=vitest 13 新增。
@@ -233,7 +234,7 @@
 
 ### 域 frontend 碎片（9 簇 / 52 findings；按文件组批 ≤5 文件/批 + ≤10 findings/批 + ≤+500/−300 行）
 
-- C5-FE-01：core 写入加载路径（src/storage.ts:62/109/113/122 + src/App.tsx:191/240/254/291 = 8 条），批内 8 处独立改动（错误返回 0 / mutate 副作用 / 错误传播断 / legacy data 丢 / source whitelist 注释错等），修复设施各异
+- C5-FE-01：core 写入加载路径（src/storage.ts:62/109/113/122 + src/App.tsx:191/240/254/291 = 8 条），批内 8 处独立改动（错误返回 0 / mutate 副作用 / 错误传播断 / legacy data 丢 / source whitelist 注释错等），修复设施各异 → **部分清（FE-01a，commit e2faf6a，§0 2026-09-25 03:20）：4 实修 + 2 FP（reviewer pass）；:240 → B 类 #18、:191 → B 类 #19**
 - C5-FE-02：React async 事件 race（src/components/ArtifactBatchDialog.tsx:34/35/79 + src/components/ConfirmMap/ConfirmMap.tsx:37/40/65 = 6 条），批内 6 处独立改动（listen/unlisten race / 异步 state race / reentrancy），修复设施各异
 - C5-FE-03：setup / 缓存 / 截断（src/test/setup.ts:12/37 + src/profile.ts:28/62 + src/lib/taskFiles.ts:9/43 = 6 条），批内 6 处独立改动（console.error 拦截泄漏 / profile force 失效 / taskFiles 截断静默 / 跨语言常量锁步），修复设施各异
 - C5-FE-04：UI 渲染（src/components/TodoCard/SubtaskRow.tsx:27/:48 + src/components/WorkspacePage.tsx:80/:99 + src/components/MarkdownText.tsx:21/:34 = 6 条），批内 6 处独立改动（SubtaskRow stale closure / readOnly 未重置 + WorkspacePage 乐观状态被覆盖 / in-place mutation + MarkdownText String(children) 不安全 / code 可点击不可聚焦），修复设施各异
@@ -582,6 +583,12 @@ run A 仅靠 /tmp/ocr-APW-02b-r1.clean.json 找回。cache 命名亦误导：
   （status=complete / comments=1：low=AlreadyDeleted 去 Box，采纳 / 0 high /
   tool failure 1 = code_comment 空数组拒收（良性形态 n=3）/ elapsed ~4m2s /
   files_reviewed=1）。
+
+### FE-01a follow-up 登记（2026-09-25, commit e2faf6a）
+
+- **B 类攒批第 18 项（App.tsx:240，半成功陷阱方向）**：tasks-updated 合并路径 upsert 成功 + delete 抛错时 UI 不更新、不广播。修法方向选项：A=回滚已成功的 upserts（补偿写，复杂且自身可失败）；B=仍合并广播（delete 失败行暂留 UI，下事件自愈）；C=维持现状仅靠 storage 层 alert 提示。待拍。
+- **B 类攒批第 19 项（App.tsx:191，数据破坏相关修法方向）**：finding 字面前提错误（removeItem 本就在 upsert 之后，reject 不执行）；真实残留 = 迁移失败 → 种子落库 → legacy localStorage 数据永久 orphan。修法方向：A=迁移失败时跳过种子落库、保留 legacy 待下次启动重试；B=维持现状（orphan 无害但不雅）。待拍。
+- 【OCR 原文核验记录（FE-01a）】r1 = ~/.openclaw/cache/FE-01a/ocr-r1.raw.json（status=complete / comments=5：1 high + 1 medium + 3 low 全部同根因，处置见 §0 / 0 failure / elapsed ~2m28s / files_reviewed=3）。
 
 **已 triage（脚本 DOMAINS 12 域，不含 frontend）**: 145 unique
 
