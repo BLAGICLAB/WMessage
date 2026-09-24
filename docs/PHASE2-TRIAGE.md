@@ -62,6 +62,8 @@
 
 - [2026-09-24 ~10:50 CST] BT-10a 收口（commit a4e3bf1）：C5-BT-10 拆批 1/2——audit.rs:22 data_dir+rotation 移出 BOT_LOG_LOCK（锁内只剩 open+append）；runtime.rs:83 start_skill 锁内状态迁移+收集，锁外发审计；:393 skill_finish 锁内 FinishPayload 快照，锁外 load_skill_meta+钩子（迭代顺序/末 run 覆盖语义不变）。零行为变更。OCR r1 0 comments；type 1 n=23→n=25（r1×2）+ code_comment 空数组 ×1（良性）。:468 scheduler 韧性拆 BT-10b。**bot 域 C5 簇剩 BT-10b / BT-11 / BT-12。**
 
+- [2026-09-24 ~11:10 CST] BT-11 收口（commit b1d9212）：**C5-BT-11 全清**。find_tag_open 开标签精确匹配（后字符须空白/>//），first_between/first_open_tag 换用，杀 <a 误中 <abbr>、<p 误中 <pre>；行为修复 abbr 前置时标题/链接错位，正常形态不变。OCR r1 0 comments / 0 failure；type 1 n=25 不变。**bot 域 C5 簇剩 BT-10b / BT-12。**
+
 ## 1. 跨域同模式家族
 按"错误去哪了" + "是否破坏数据"两轴判，**4 家族**（poisoned-silent-recovery 已溶解 — 见执行日志；error-visible-non-blocking 已重新引入 for C5-AP-06 only — 见 §3.5 异常 2 更新）：
 
@@ -163,7 +165,7 @@
 - C5-BT-08：input validation / serialization 缺（config/types.rs:198/:82 + config/keyring.rs:168 + bot_skills/parse.rs:86 + bot_skills/vars.rs:76），5 条 → **拆批**：:82 **已修（BT-08a，commit e7b2381，三 key 字段 skip_serializing 永不序列化，零行为变更）**；:86 **已修（同 commit，非法 mode 按未声明处理，low→auto 提升不被吞，语义归一 SKILL_DSL.md）**；:198 **FP（web 实证）**——deepseek-v4-flash 旧名仍被接受（V4.1-Flash GA 后服务名 deepseek-flash，旧名请求由新模型服务，deepseek.ai/pricing 2026-09-18）；:168 **转 B 类攒批第 13 项**（Windows ACL，macOS 不可测）；:76 **wontfix-with-rationale（待醒后确认）**——占位符使模板构造上非合法 JSON，启发式是结构必然，替换后 serde_json 兜底
 - C5-BT-09：dispatch/scheduler 语义错（bot/dispatch.rs:248/:424 + bot_skills/scheduler.rs:283），3 条 → **已清（拆批）**：:283 **已修（BT-09a，commit b1c0b4f，Finish 早退假完成收口）**；:248 **已修（BT-09b，commit 3f62d74，索引复用）**；:424 **wontfix-with-rationale**（与 OCR-003 同型：ToolResult::ok 失败文案是 dispatch.rs:402-404 注释钉死的设计意图）
 - C5-BT-10：持锁跨 IO / sync IO in loop（config/audit.rs:22 + bot_skills/runtime.rs:83/:393 + bot_scheduler.rs:468），4 条 → **拆批**：:22 + :83 + :393 **已修（BT-10a，commit a4e3bf1，锁内 IO/钩子全移出临界区，零行为变更）**；:468（scheduler 无 panic recovery/关闭信号/并发上限）family 不同（调度器韧性）→ **BT-10b 单独评**
-- C5-BT-11：web 解析脆（bot_web.rs:412 + :422），2 条
+- C5-BT-11：web 解析脆（bot_web.rs:412 + :422），2 条 → **已清（BT-11，commit b1d9212）**：find_tag_open 开标签精确匹配（后字符须空白/>//），杀 <a 误中 <abbr>、<p 误中 <pre>；行为修复 abbr 前置时标题/链接错位
 - C5-BT-12：workspace-link 残留（bot_skills/files.rs:0 + :43），2 条，**与 C2b-2 修复边界重叠待核**
 - C5-BT-13：prompt injection via fail_reason（bot_plan.rs:234），1 条
 - C5-BT-14：StopGuard broken（bot/registry.rs:267），1 条
