@@ -4,6 +4,7 @@
 // ▼ = 任务区变大(聊天区变小)
 
 import { setWidgetDragActive } from "./storage";
+import { useDragCleanup } from "./useDragCleanup";
 
 export function SplitBar({
   onSplit,
@@ -12,6 +13,9 @@ export function SplitBar({
   onSplit: (delta: number) => void;
   onArrow: (delta: number) => void;
 }) {
+  // mid-drag unmount 兜底：组件卸载时强制结束进行中的拖动
+  const dragCleanupRef = useDragCleanup();
+
   const onDown = (e: React.PointerEvent) => {
     if ((e.target as HTMLElement).closest("button")) return;
     if (e.button !== 0) return;
@@ -28,16 +32,20 @@ export function SplitBar({
       acc = dy;
       onSplit(inc);
     };
-    const cleanup = (ev: PointerEvent) => {
-      try { el.releasePointerCapture(ev.pointerId); } catch { /* ignore */ }
+    const cleanup = (ev?: PointerEvent) => {
+      if (ev) {
+        try { el.releasePointerCapture(ev.pointerId); } catch { /* ignore */ }
+      }
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", cleanup);
       window.removeEventListener("pointercancel", cleanup);
+      dragCleanupRef.current = null;
       setWidgetDragActive(false);
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", cleanup);
     window.addEventListener("pointercancel", cleanup);
+    dragCleanupRef.current = cleanup;
   };
 
   return (

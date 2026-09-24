@@ -5,6 +5,7 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { setWidgetDragActive } from "./storage";
+import { useDragCleanup } from "./useDragCleanup";
 
 export function ResizeEdge({
   side,
@@ -17,6 +18,8 @@ export function ResizeEdge({
     startPos: { x: number; y: number; w: number; h: number; sw: number; sh: number }
   ) => void;
 }) {
+  // mid-drag unmount 兜底：组件卸载时强制结束进行中的拖动
+  const dragCleanupRef = useDragCleanup();
   const isH = side === "n" || side === "s";
   const pos =
     side === "n"
@@ -45,16 +48,21 @@ export function ResizeEdge({
       win.outerSize(),
       win.scaleFactor(),
       import("./storage").then((s) => s.screenSize()),
-    ]).then(([p, s, sc, ss]) => {
-      startPos = {
-        x: p.x / sc,
-        y: p.y / sc,
-        w: s.width / sc,
-        h: s.height / sc,
-        sw: ss.w,
-        sh: ss.h,
-      };
-    });
+    ])
+      .then(([p, s, sc, ss]) => {
+        startPos = {
+          x: p.x / sc,
+          y: p.y / sc,
+          w: s.width / sc,
+          h: s.height / sc,
+          sw: ss.w,
+          sh: ss.h,
+        };
+      })
+      .catch((err: unknown) => {
+        // 起始位置读取失败：startPos 保持 null（move 忽略），pointerup 时 cleanup 正常复位
+        console.warn("[ResizeEdge] 起始位置读取失败，本次拖动忽略", err);
+      });
     setWidgetDragActive(true);
     // 监听器同步注册(不等异步读取):避免快速点按时漏掉 pointerup 造成监听残留
     const move = (ev: PointerEvent) => {
@@ -62,16 +70,20 @@ export function ResizeEdge({
       if (!sp) return;
       onDelta(ev.clientX - sx, ev.clientY - sy, sp);
     };
-    const cleanup = (ev: PointerEvent) => {
-      try { el.releasePointerCapture(ev.pointerId); } catch { /* ignore */ }
+    const cleanup = (ev?: PointerEvent) => {
+      if (ev) {
+        try { el.releasePointerCapture(ev.pointerId); } catch { /* ignore */ }
+      }
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", cleanup);
       window.removeEventListener("pointercancel", cleanup);
+      dragCleanupRef.current = null;
       setWidgetDragActive(false);
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", cleanup);
     window.addEventListener("pointercancel", cleanup);
+    dragCleanupRef.current = cleanup;
   };
 
   return (
