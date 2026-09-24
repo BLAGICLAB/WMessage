@@ -76,6 +76,8 @@
 
 - [2026-09-24 19:40 CST] AP-05 收口（commit bfe30b9）：**C5-AP-05 全簇 3 条已清**。create_task:277 / update_task:405 / delete_task:561 持锁跨 I/O 统一改 labeled block（'rmw）装盒 Result、出锁后 match 分流响应——锁内只做 DB 读写。行为逐项等价（核后保持 create upsert 失败走 internal_err 500 原分流；delete 幂等重删 200 不 after_change 不变）。实现形态校正一次：闭包 IIFE 会重缩进 ~90 行 → 换 labeled block（同一函数内三处风格统一，diff 收窄到 +67/-26）。不加新测试（纯结构性重排，mod.rs HTTP 级测试已覆盖全分支）。OCR r1 1 low（AlreadyDeleted 去 Box）采纳；tool failure 1 = code_comment 空数组拒收（良性形态 n=3）；type 1 n=25 不变。spec 立项 3d4a2c1。**第 30 批，reviewer 抽查 = pass**（explore 子 agent 只读 git show/spec/OCR json 核验：状态码路径/锁释放时机/budget/commit message 与 diff 一致性）。**api 域剩 AP-06/07。**
 
+- [2026-09-24 ~19:55 CST] AP-07 收口（commit 3d6b1a8）：**C5-AP-07 单条已清**。api.rs:101 sync 桥接隐式约定 → assert_sync_bridge_caller（tokio Handle::try_current 检查，Cargo.toml tokio 加 rt feature 非新依赖）+ trait doc 契约段；不用 catch_unwind 包 block_on（误吞 db fn 自身 panic 误标）；不做 async trait 改造（扩 scope）。行为变更仅限 runtime 线程误调用的 panic 消息点名约定，现状调用路径零变化。新增 2 测试（runtime 内 panic 点名 / 普通线程放行）。OCR r1 0 comments / 0 failure；type 1 n=25 不变。spec 立项 700b5d3。**api 域剩 AP-06（与 DB-01a-3 合批）。**
+
 ## 1. 跨域同模式家族
 按"错误去哪了" + "是否破坏数据"两轴判，**4 家族**（poisoned-silent-recovery 已溶解 — 见执行日志；error-visible-non-blocking 已重新引入 for C5-AP-06 only — 见 §3.5 异常 2 更新）：
 
@@ -162,7 +164,7 @@
 - C5-AP-04：SSE writer 缺陷（api_handlers/sse.rs:196 + :183），2 条 → **已修（AP-04，commit 8d49a26：vendor 写超时 patch + broadcast 单临界区化）**
 - C5-AP-05：持锁跨 I/O（api_handlers/handlers.rs:277 + :405 + :561），3 条 → **已修（AP-05，commit bfe30b9：labeled block 装盒出锁后响应）**
 - C5-AP-06：静默吞错（api_server.rs:126），1 条，**error-not-propagated 家族**
-- C5-AP-07：sync block_on 隐式约定（api.rs:101），1 条
+- C5-AP-07：sync block_on 隐式约定（api.rs:101），1 条 → **已修（AP-07，commit 3d6b1a8：运行时检查 + trait 契约文档化）**
 
 ### 域 bot*（15 簇 / 46 findings；去重后）
 子目录 = 18 / bot_skills 子目录 = 12 / 兄弟 bot_*.rs = 16
