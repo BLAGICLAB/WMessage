@@ -141,10 +141,15 @@ impl EventHub {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst) + 1;
         // A6: 每次广播落盘当前 id（事件频率为人级，开销可忽略），重启后接续递增
         // 用 atomic_write（tmp+rename）落盘——fs::write 直写崩溃会留半截文件，
-        // 重启 id 归 0 → 客户端 Last-Event-ID 去重静默丢全部新事件
+        // 重启 id 归 0 → 客户端 Last-Event-ID 去重静默丢全部新事件。
+        // 写失败拒推进（拍板 #16=A fail-closed）：归还 id + 本事件不进历史不推送
+        // ——「要么持久化要么不推进」，重启后 Last-Event-ID 语义不破。归还后下一次
+        // 广播重新 fetch_add 取同一 id 重试写盘（本临界区内单写者，无竞争）。
         if let Some(p) = &self.id_path {
             if let Err(e) = db::atomic_write(p, &id.to_string()) {
-                eprintln!("[event_hub] id persistence failed: {e}");
+                eprintln!("[event_hub] id persistence failed, event dropped (fail-closed): {e}");
+                self.next_id.fetch_sub(1, Ordering::SeqCst);
+                return;
             }
         }
         let msg = format!("id: {id}\ndata: {data}\n\n");
@@ -313,6 +318,58 @@ fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 落盘写失败 fail-closed（拍板 #16=A）：broadcast 时 id 无法持久化 → 归还 id
+    /// （last_id 不变=下次 broadcast 重取同 id）且事件不进历史不推送。
+    /// 恢复段用新 hub 验证独立正常路径（同 hub 写盘恢复需真实目录翻转，不模拟）。
+    #[test]
+    fn broadcast_persist_failure_fails_closed() {
+        // id_path 指向目录：atomic_write 的 rename(→目录) 必败（EISDIR）
+        let dir = std::env::temp_dir().join(format!(
+            "wmessage-test-event-hub-dir-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let hub = EventHub::persisted(dir.clone());
+        let (tx, rx) = std::sync::mpsc::sync_channel::<(u64, Vec<u8>)>(256);
+        hub.clients
+            .lock()
+            .unwrap()
+            .push((tx, std::sync::Weak::new()));
+
+        hub.broadcast(serde_json::json!({"type":"tasks-changed","op":"created"}));
+
+        // fail-closed：id 未推进、事件未入队
+        assert_eq!(hub.last_id(), 0, "写失败 id 必须归还（拒推进）");
+        assert!(rx.try_recv().is_err(), "事件不得投递给 client");
+        let h = hub.history.lock().unwrap();
+        assert!(h.is_empty(), "事件不得进入重放历史");
+        drop(h);
+
+        // 恢复路径：可写 id 文件的新 hub 正常广播，id 从 1 接续（归还语义）
+        let ok_path = std::env::temp_dir().join(format!(
+            "wmessage-test-event-hub-ok-{}.txt",
+            uuid::Uuid::new_v4()
+        ));
+        let hub2 = EventHub::persisted(ok_path.clone());
+        hub2.broadcast(serde_json::json!({"type":"tasks-changed","op":"created"}));
+        assert_eq!(hub2.last_id(), 1, "恢复后 id 从 1 正常接续");
+        assert!(ok_path.exists(), "id 文件已落盘");
+        let _ = std::fs::remove_dir_all(&dir);
+        // atomic_write rename 失败会残留同级 tmp（既有缺口，另登记）——测试自清理
+        if let Some(parent) = dir.parent() {
+            for e in std::fs::read_dir(parent).unwrap() {
+                let p = e.unwrap().path();
+                if p.file_name()
+                    .map(|n| n.to_string_lossy().contains(".tmp"))
+                    .unwrap_or(false)
+                {
+                    let _ = std::fs::remove_file(p);
+                }
+            }
+        }
+        let _ = std::fs::remove_file(&ok_path);
+    }
 
     /// A6：事件 id 跨"重启"（drop 后重建 hub）保持单调递增
     #[test]

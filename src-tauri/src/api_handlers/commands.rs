@@ -58,6 +58,9 @@ pub fn api_start(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandRe
     // 锁外写存在竞态:并发的 api_stop 可能已在 drop(g) 后清空 g 并清掉 flag,
     // 此时再写 flag 会把「内存已无服务」记成「已开启」,下次启动误自动恢复。
     // 写前重新抢锁复核:只有确认服务仍在才写。
+    // 残余窗声明(拍板 #15=C 维持现状):复核≠原子——service_present 与 write 之间
+    // 仍有理论微窗,后果=flag 与内存态背离一次,下次启动自动恢复状态错一次,
+    // 用户手动开关即自愈;锁内 I/O 违反「文件 I/O 不持锁」约定、世代号 CAS 成本高,均未取。
     drop(g);
     if service_present(&state) != Some(false) {
         write_enabled_flag(&app);
@@ -240,6 +243,7 @@ pub fn api_status(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandR
         // 锁外清 flag 同样有竞态:并发的 api_start 可能已在 drop(g) 后重新拉起服务
         // 并写了 flag,此处再清会把用户刚开启的服务记成「已关闭」,下次启动不恢复。
         // 清前复核:确认 g 仍为空(没有并发 start 接手)才清。
+        // 残余窗同 api_start:复核≠原子,误清后果可由用户手动开关自愈(拍板 #15=C)。
         if service_present(&state) != Some(true) {
             clear_enabled_flag(&app);
         }
