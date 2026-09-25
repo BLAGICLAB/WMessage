@@ -8,7 +8,7 @@
 
 - family: poisoned-silent-recovery
 - 覆盖: 21 处 / 6 文件（memory 8 + evolution 5 + py 4 + api_handlers 3 + db 1，全为生产代码）
-- 预估 diff: 6 文件 / +90/-21
+- 预估 diff: 6 文件 / +84/-43（执行中校正 ×1：rustfmt 重排实测）
 - OCR 计划: r1, timeout 1800s, 期望 comments ≤ 3
 
 ## 逐条处置（用户拍板 2026-09-26）
@@ -50,7 +50,7 @@
     "src-tauri/src/db/mod.rs"
   ],
   "max_lines_added": 95,
-  "max_lines_removed": 25,
+  "max_lines_removed": 50,
   "findings": [
     {"id": "NEW-2b-2", "file": "src-tauri/src/memory/mod.rs", "line": 178, "fix": "非 bot 域 21 处 silent into_inner 补 eprintln（DB_WRITE_LOCK/emitted_map/API_RMW_LOCK/PY_CHILDREN/BOT_LOG_LOCK/LEGACY_COPY_LOCK，NEW-2 同形态）；ripple：无"}
   ],
