@@ -691,14 +691,19 @@ run A 仅靠 /tmp/ocr-APW-02b-r1.clean.json 找回。cache 命名亦误导：
   - A=〔重建构造〕维持 fail-closed（损坏立即可见，但 evolution 面板整挂）；B=〔重建构造〕fail-open：跳坏行 + 留痕（可用性优先；审计轨迹有缺口）；C=〔重建构造〕折中：首行坏 → Err，中间坏行 → 跳过 + audit 留痕（需定阈值依据）。triage：§2:179 / §0:109
 - **#18** src/App.tsx:240 —— tasks-updated 合并路径半成功：upsert 成功 + delete 抛错时 UI 不更新、不广播。
   - A=回滚已成功 upserts〔triage 已载〕（补偿写，复杂且自身可失败）；B=仍合并广播〔triage 已载〕（delete 失败行暂留 UI，下事件自愈）；C=维持现状仅靠 storage 层 alert 提示〔triage 已载〕。triage：§4:598
+  - → **已拍 B（2026-09-25）→ 已清（FE-B，3dc8e3a；mutate 路径同治——OCR r1 high 一致性采纳）**
 - **#19** src/App.tsx:191 —— 迁移失败 → 种子仍落库 → legacy localStorage 数据永久 orphan（finding 字面前提已证伪：removeItem 本就在 upsert 后）。
   - A=迁移失败时跳过种子落库、保留 legacy 待下次启动重试〔triage 已载〕；B=维持现状〔triage 已载〕（orphan 无害但不雅）。triage：§4:599
+  - → **已拍 A（2026-09-25）→ 已清（FE-B，3dc8e3a）**
 - **#20** src/components/ArtifactBatchDialog.tsx:79 —— skip 纯前端 setReady(null)，无永久 dismiss 路径（后端无 ack 协议，skip 后登记保留、下次同任务重弹）。
   - A=维持现状+注释文档化〔triage 已载〕（skip=这次不绑下次再问）；B=新增 dismiss Tauri command 清登记〔triage 已载〕（扩 scope）；C=skip 走 confirm 空 paths + 改后端早返为清登记〔triage 已载〕（后端行为变更）。triage：§4:604
+  - → **已拍 A（2026-09-25）→ 已清（FE-B，3dc8e3a；零行为变更）**
 - **#21** src/components/ConfirmMap/ConfirmMap.tsx:40 —— 新 bot-confirm 直接覆盖未响应 pending，旧 id 靠后端 60s 超时兜底拒（前端单窗 UI 是瓶颈，后端并发未决合法）。
   - A=前端队列逐个展示〔triage 已载〕；B=切换前自动拒绝旧 id〔triage 已载〕（用户未看到的请求被立即拒）；C=维持现状靠 60s 兜底+文档化〔triage 已载〕。triage：§4:605
+  - → **已拍 B（2026-09-25）→ 已清（FE-B，3dc8e3a；busyRef 在途不补刀）**
 - **#22** src/components/ChatPanel/ChatPanel.tsx:416 —— 围观执行会话期 Send 与 bot_execute_task 并发同会话（响应交错 + 收尾 bot_history_load 冲掉围观期输入）；busy 锁会连带堵 switchSession/newSession/deleteSession。
   - A=finding 原方案全 busy 锁〔triage 已载〕（围观期被困直到执行完）；B=专用 execWatchRef 只拦 Send〔triage 已载〕（切换会话自由，收尾 .then 里清）；C=维持现状 + 先核后端 bot_chat 同会话并发是否自有防重入〔triage 已载〕。triage：§4:606
+  - → **已拍 B（2026-09-25）→ 已清（FE-B，3dc8e3a；后端 ChatGuard 已核在位=并发软拒兜底；watch 拦 Send 含斜杠命令，/stop 白名单）**
 - **#23** src/components/EvolutionPanel/types.ts:24 —— ProposalTarget 的 tool_name/skill_name/policy 为 snake_case（verbatim 来自 serde response），camelCase 习惯 consumer 写 toolName 静默 undefined 但编译过。
   - A=字段 camelCase 重命名〔triage 已载〕（serde rename + 全部消费方改 = 跨域签名改）；B=字段级 JSDoc 文档化 verbatim 契约〔triage 已载〕（不改类型）；C=wontfix〔triage 已载〕。triage：§4:607
 
