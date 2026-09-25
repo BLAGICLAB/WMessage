@@ -49,7 +49,8 @@ pub fn write_proposals<R: tauri::Runtime>(
 ) -> Result<u32, String> {
     use std::collections::HashSet;
     let path = crate::db::paths::data_dir(app).join("evolution-proposals.jsonl");
-    let existing = entry::read_all(&path).unwrap_or_default();
+    // read_all Err（首行结构级损坏）必须传播——dedup 基线不可得时盲写会重复追加
+    let existing = entry::read_all(&path)?;
     let existing_ids: HashSet<String> = existing.iter().map(|e| e.proposal_id.clone()).collect();
     let mut written = 0u32;
     let now_ms = chrono::Utc::now().timestamp_millis();

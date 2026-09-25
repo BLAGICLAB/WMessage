@@ -24,6 +24,41 @@ pub mod activation;
 pub mod apply;
 pub mod candidate;
 pub mod change;
+
+/// jsonl 读取共享内核（OCR r2 medium 采纳：record/entry 两处 30 行 read_all 收敛
+/// 单点防漂移）。语义（拍板 #17=C）：文件不存在 → Ok(空)；首个非空行损坏 = 结构级
+/// 损坏 → Err（fail-closed）；中间坏行 → stderr 留痕跳过返回好行（已知代价：坏行 id
+/// 缺失时 dedup 调用方可能同 id 再追加——无害重复）。
+pub(crate) fn read_jsonl<T: serde::de::DeserializeOwned>(
+    path: &std::path::Path,
+    label: &str,
+) -> Result<Vec<T>, String> {
+    use std::io::BufRead;
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let f = std::fs::File::open(path).map_err(|e| format!("打开 {path:?} 失败：{e}"))?;
+    let reader = std::io::BufReader::new(f);
+    let mut out = Vec::new();
+    let mut first_parsed = false;
+    for (i, line) in reader.lines().enumerate() {
+        let line = line.map_err(|e| format!("读取第 {} 行失败：{e}", i + 1))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<T>(&line) {
+            Ok(v) => out.push(v),
+            Err(e) if out.is_empty() && !first_parsed => {
+                return Err(format!("第 1 行 JSON 错误：{e}"));
+            }
+            Err(e) => {
+                eprintln!("[evolution] {label} jsonl 第 {} 行损坏已跳过：{e}", i + 1);
+            }
+        }
+        first_parsed = true;
+    }
+    Ok(out)
+}
 pub mod derive;
 pub mod emit;
 pub mod observe;

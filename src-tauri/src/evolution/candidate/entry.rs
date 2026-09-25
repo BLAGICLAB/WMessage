@@ -101,23 +101,7 @@ pub fn append(path: &std::path::Path, entry: &ProposalEntry) -> Result<(), Strin
 
 /// 读全部 ProposalEntry
 pub fn read_all(path: &std::path::Path) -> Result<Vec<ProposalEntry>, String> {
-    use std::io::BufRead;
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let f = std::fs::File::open(path).map_err(|e| format!("打开 {path:?} 失败：{e}"))?;
-    let reader = std::io::BufReader::new(f);
-    let mut out = Vec::new();
-    for (i, line) in reader.lines().enumerate() {
-        let line = line.map_err(|e| format!("读取第 {} 行失败：{e}", i + 1))?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        out.push(
-            serde_json::from_str(&line).map_err(|e| format!("第 {} 行 JSON 错误：{e}", i + 1))?,
-        );
-    }
-    Ok(out)
+    crate::evolution::read_jsonl(path, "proposals")
 }
 
 /// 按 proposal_id 查询
@@ -250,5 +234,30 @@ mod tests {
         ] {
             assert!(v.get(key).is_some(), "ProposalEntry 缺字段 {key}");
         }
+    }
+
+    /// 中间坏行：留痕跳过返回好行（拍板 #17=C 折中——单行损坏不拖死全部读取）
+    #[test]
+    fn read_all_skips_corrupt_middle_line() {
+        let dir = std::env::temp_dir().join(format!("wm-pe-corrupt-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("proposals.jsonl");
+        let good = serde_json::to_string(&mk("pe-1", ProposalStatus::Pooled)).unwrap();
+        std::fs::write(&p, format!("{good}\n{{ broken json\n{good}\n")).unwrap();
+        let read = read_all(&p).unwrap();
+        assert_eq!(read.len(), 2, "中间坏行跳过，两条好行返回");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 首行坏 = 结构级损坏：Err（fail-closed）
+    #[test]
+    fn read_all_corrupt_first_line_fails_closed() {
+        let dir = std::env::temp_dir().join(format!("wm-pe-corrupt2-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("proposals.jsonl");
+        std::fs::write(&p, "{ broken json\n").unwrap();
+        let err = read_all(&p).expect_err("首行损坏必须 Err");
+        assert!(err.contains("第 1 行"), "got: {err}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
