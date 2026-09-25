@@ -204,4 +204,40 @@ describe("ConfirmMap", () => {
     );
     expect(calls).toHaveLength(1);
   });
+
+  it("新 confirm 到达 → 未响应旧 id 自动拒旧（approved=false）+ 新 confirm 上屏", async () => {
+    render(<ConfirmMap />);
+    await act(async () => {
+      emit({
+        id: "stale-1",
+        tool: "evolution_promote",
+        detail: "old request",
+        kind: "danger",
+        sessionId: null,
+      });
+    });
+    expect(screen.getByTestId("confirm-map-modal")).toBeInTheDocument();
+    await act(async () => {
+      emit({
+        id: "fresh-2",
+        tool: "evolution_promote",
+        detail: "new request",
+        kind: "danger",
+        sessionId: null,
+      });
+    });
+    // 旧 id 立即被拒（不靠 60s 超时兜底）
+    const rejectCalls = invokeMock.mock.calls.filter(
+      (c) => c[0] === "bot_confirm_response"
+    );
+    expect(rejectCalls).toHaveLength(1);
+    expect(rejectCalls[0][1]).toMatchObject({
+      requestId: "stale-1",
+      approved: false,
+    });
+    // 新 confirm 正常上屏
+    expect(screen.getByTestId("confirm-map-detail").textContent).toContain(
+      "new request"
+    );
+  });
 });

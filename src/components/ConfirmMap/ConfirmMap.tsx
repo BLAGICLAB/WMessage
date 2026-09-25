@@ -38,6 +38,18 @@ export default function ConfirmMap() {
   // 监听后端 bot-confirm 事件
   useTauriListen<BotConfirmPayload>("bot-confirm", (p) => {
     if (!p || !p.id) return;
+    // 新 confirm 到达前自动拒掉未响应的旧请求（拍板 #21=B）：后端每 confirm 独立
+    // uuid + oneshot + 60s 兜底，重复拒收幂等安全；旧 id 不再依赖超时才被拒。
+    // busyRef 在途时旧请求已有响应在飞，不补刀；fire-and-forget 不阻塞新 confirm
+    // 上屏（失败仅留痕，60s 兜底仍在）。
+    const stale = pendingRef.current;
+    if (stale && stale.id !== p.id && !busyRef.current) {
+      invoke("bot_confirm_response", {
+        requestId: stale.id,
+        approved: false,
+        always: null,
+      }).catch((e) => console.error("auto-reject stale confirm failed:", e));
+    }
     setPending(p);
     setRemaining(TIMEOUT_SECS);
   });

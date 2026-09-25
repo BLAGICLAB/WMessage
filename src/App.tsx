@@ -194,6 +194,7 @@ function App() {
         }
         let list = res.tasks;        if (list.length === 0) {
           let migrated = false;
+          let migrateFailed = false;
           try {
             const legacy = localStorage.getItem(STORAGE_KEY);
             if (legacy) {
@@ -205,10 +206,13 @@ function App() {
               }
               localStorage.removeItem(STORAGE_KEY);
             }
-          } catch {
-            /* ignore */
+          } catch (e) {
+            // 迁移失败（拍板 #19=A）：保留 legacy 待下次启动重试，并跳过种子落库——
+            // 若照旧落 SEED，下次启动库非空不再进迁移分支，legacy 数据永久 orphan
+            migrateFailed = true;
+            console.error("[init] legacy 迁移失败，保留 localStorage 待下次重试", e);
           }
-          if (!migrated) {
+          if (!migrated && !migrateFailed) {
             await upsertTasks(SEED);
             list = SEED;
           }
@@ -247,7 +251,13 @@ function App() {
       const { upserts, deletes } = diffTaskRows(prev, next, Date.now());
       // 先落盘再广播：挂件收到 tasks-changed 后立刻 db_load，必须读到已提交的快照
       await upsertTasks(upserts);
-      await deleteTaskRows(deletes);
+      try {
+        await deleteTaskRows(deletes);
+      } catch (e) {
+        // delete 失败不阻断 UI 更新与广播（与 tasks-updated #18=B 同 rationale）：
+        // 失败行仍留在库中，下次 db_load 自愈回来
+        console.error("[mutate] deleteTaskRows failed", e);
+      }
       tasksRef.current = next;
       setTasks(next);
       if (upserts.length || deletes.length) {
@@ -312,7 +322,13 @@ function App() {
         if (!persisted) {
           // await 落盘完成后再合并/广播，避免挂件 db_load 读到未提交快照
           await upsertTasks(upserts);
-          await deleteTaskRows(deletes);
+          try {
+            await deleteTaskRows(deletes);
+          } catch (e) {
+            // delete 失败不阻断合并广播（拍板 #18=B）：行已从内存 map 移除（UI 消失）
+            // 但库中仍在——下次 db_load 会重新出现，后续事件自愈；storage 层已 alert
+            console.error("[tasks-updated] deleteTaskRows failed", e);
+          }
         }
         // 合并 + 套规则（在 setTasks 之外基于 tasksRef 计算，保证 updater 纯净）
         const map = new Map(tasksRef.current.map((t) => [t.id, t]));

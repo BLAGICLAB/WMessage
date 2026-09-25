@@ -412,11 +412,16 @@ export function ChatPanel({
     };
   }, []);
 
+  // 围观中的执行会话 sid；执行收尾（execute-task 的 history_load 完成）后清除
+  const execWatchRef = useRef<string | null>(null);
   /** 切到执行会话围观：加载已落库历史 + 末尾 streaming 占位气泡承接后续流式增量 */
   const openExecSession = async (sid: string) => {
     setSessionMenuOpen(false);
     setSessionId(sid);
     streamingMeta.current = {};
+    // 围观守卫（拍板 #22=B）：记录当前围观的执行会话——执行期间拦 Send
+    //（防用户输入与执行响应交错 + 被收尾 history_load 冲掉）；切换会话自由
+    execWatchRef.current = sid;
     try {
       const rows = await invoke<Parameters<typeof rowsToMsgs>[0]>(
         "bot_history_load",
@@ -455,18 +460,35 @@ export function ChatPanel({
           invoke<Session[]>("bot_sessions_load")
             .then(setSessions)
             .catch(() => {});
-          if (sid && sessionIdRef.current === sid) {
-            invoke<Parameters<typeof rowsToMsgs>[0]>("bot_history_load", { sessionId: sid })
-              .then((rows) => setMessages(rowsToMsgs(rows)))
+          // 收尾 history_load 无条件发起：围观守卫的解除必须等它完成（早清会
+          // 重新打开「输入被最终历史冲掉」的窗）；UI 更新仅当用户仍在该会话
+          const load = sid
+            ? invoke<Parameters<typeof rowsToMsgs>[0]>("bot_history_load", { sessionId: sid })
+            : null;
+          if (load) {
+            load
+              .then((rows) => {
+                if (sessionIdRef.current === sid) setMessages(rowsToMsgs(rows));
+              })
               .catch(() => {});
+            // 独立订阅清守卫：先 catch 再 finally，避免 finally 链 unhandled rejection
+            load.catch(() => {}).finally(() => {
+              // 围观守卫解除——不论用户当前是否仍在该会话（切换后回来不得被永久拦截）
+              if (execWatchRef.current === sid) execWatchRef.current = null;
+            });
           }
         })
-        .catch((err) =>
+        .catch((err) => {
           // TASK_INVALID_STATE（执行中重复触发/已完成/已归档）按业务状态提示而非错误
           addHint(
             `${isCommandError(err) && err.code === "TASK_INVALID_STATE" ? "⏳" : "⚠️"} ${formatCommandError(err)}`
-          )
-        );
+          );
+          // 执行失败同样解除围观守卫（chat-open-session 已置值、.then 不会跑，
+          // 不清则该会话被永久拦 Send）
+          const sid = execSessionByTaskRef.current.get(id);
+          execSessionByTaskRef.current.delete(id);
+          if (sid && execWatchRef.current === sid) execWatchRef.current = null;
+        });
     });
     return () => {
       unExec.then((f) => f());
@@ -766,6 +788,13 @@ export function ChatPanel({
 
   const send = async () => {
     const text = input.trim();
+    // 围观执行会话期拦发送——含 /retry /clean /compact 等斜杠命令（runChat 同样
+    // 会往执行中的会话发消息，ChatGuard 只软拒不防交错）；/stop 例外：停执行是
+    // 围观期的合法操作（拍板 #22=B）
+    if (execWatchRef.current !== null && execWatchRef.current === sessionId && text !== "/stop") {
+      addHint("⏳ 执行进行中，围观模式暂不能发送");
+      return;
+    }
     // 斜杠命令优先处理（/stop 在 busy 时也能生效）；未知斜杠文本当普通消息发
     if (text.startsWith("/")) {
       if (await runSlashCommand(text)) return;

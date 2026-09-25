@@ -86,6 +86,10 @@ export function ArtifactBatchDialog() {
     }
   };
 
+  // skip 语义（拍板 #20=A，文档化）：仅前端关闭弹窗——后端无 ack 协议（should_emit
+  // peek 不取、confirm 空 paths 早返不清登记），登记表保留，下次同任务执行会重弹。
+  // 「这次不绑、下次再问」；无永久 dismiss 路径为已知限制（新增 dismiss command
+  // 属扩 scope，另行拍板）。
   const skip = () => setReady(null);
 
   return (

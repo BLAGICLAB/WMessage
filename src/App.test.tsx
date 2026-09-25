@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import App from "./App";
+import { STORAGE_KEY } from "./storage";
 import type { Task } from "./types";
 
 // vi.mock 工厂会被提升到顶部，因此共享 mock 变量必须用 vi.hoisted 包裹
@@ -286,6 +287,120 @@ describe("App", () => {
     // 观测行：merge_tasks | N changed
     expect(infoSpy).toHaveBeenCalledWith("[tasks-updated] merge_tasks | 1 changed");
     infoSpy.mockRestore();
+  });
+
+  // 迁移失败（拍板 #19=A）：legacy localStorage 迁移抛错 → 保留 legacy 待下次
+  // 启动重试，跳过 SEED 落库——否则下次启动库非空不再进迁移分支，legacy 永久 orphan
+  it("legacy 迁移失败 → 跳过种子落库、legacy 保留", async () => {
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "db_load") return [];
+      if (cmd === "db_upsert") throw new Error("db unavailable");
+      return null;
+    });
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify([
+        { id: "legacy-1", title: "老数据一条", column: "todo", order: 0 },
+      ])
+    );
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    render(<App />);
+    await waitFor(() => {
+      expect(errSpy).toHaveBeenCalledWith(
+        "[init] legacy 迁移失败，保留 localStorage 待下次重试",
+        expect.any(Error)
+      );
+    });
+    // db_upsert 仅 1 次（失败的 legacy 迁移写入）；SEED 未落库
+    const upsertCalls = mocks.invokeMock.mock.calls.filter(
+      (c) => c[0] === "db_upsert"
+    );
+    expect(upsertCalls).toHaveLength(1);
+    expect(JSON.stringify(upsertCalls[0][1])).not.toContain(
+      "梳理 WMessage 需求清单"
+    );
+    // legacy 保留（未 removeItem，下次启动重试）
+    expect(localStorage.getItem(STORAGE_KEY)).not.toBeNull();
+    errSpy.mockRestore();
+  });
+
+  // delete 失败不阻断合并广播（拍板 #18=B）：失败行暂留 UI，
+  // 后续 tasks-updated/tasks-changed 事件自愈
+  it("tasks-updated delete 失败仍合并广播", async () => {
+    const handlers: Record<string, (e: unknown) => Promise<void>> = {};
+    mocks.listenMock.mockImplementation(
+      async (event: string, cb: (e: unknown) => Promise<void>) => {
+        handlers[event] = cb;
+        return () => {};
+      }
+    );
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "db_load") return [];
+      if (cmd === "db_delete") throw new Error("delete boom");
+      return null;
+    });
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    render(<App />);
+    await waitFor(() => {
+      expect(handlers["tasks-updated"]).toBeDefined();
+    });
+    await act(async () => {
+      await handlers["tasks-updated"]({
+        payload: {
+          upserts: [
+            { id: "d1", title: "删失败仍上屏", column: "todo", order: 50 },
+          ],
+          deletes: ["gone-1"],
+        },
+      });
+    });
+    expect(screen.getByText("删失败仍上屏")).toBeInTheDocument();
+    expect(errSpy).toHaveBeenCalledWith(
+      "[tasks-updated] deleteTaskRows failed",
+      expect.any(Error)
+    );
+    errSpy.mockRestore();
+  });
+
+  // mutate 路径 delete 失败同治（OCR r2 medium 采纳）：彻底删除走 mutate 的
+  // deleteTaskRows，失败不阻断 UI 更新与后续链（失败行留库，下次 db_load 自愈回来）
+  it("彻底删除 db_delete 失败 → mutate 不阻断，行从 UI 消失 + console 留痕", async () => {
+    const user = userEvent.setup();
+    const trashed: Task[] = [
+      {
+        id: "t9",
+        title: "回收站里的任务",
+        column: "todo",
+        order: 0,
+        updatedAt: 1,
+        deletedAt: 123,
+      },
+    ];
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "db_load") return trashed;
+      if (cmd === "db_delete") throw new Error("delete boom");
+      return null;
+    });
+    render(<App />);
+    // 切到回收站视图（trash 态卡片不在看板渲染）
+    await waitFor(() => {
+      expect(screen.getByText("回收站")).toBeInTheDocument();
+    });
+    await user.click(screen.getByText("回收站"));
+    await waitFor(() => {
+      expect(screen.getByText("回收站里的任务")).toBeInTheDocument();
+    });
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    await user.click(screen.getByText(/彻底删除/));
+    await waitFor(() => {
+      expect(errSpy).toHaveBeenCalledWith(
+        "[mutate] deleteTaskRows failed",
+        expect.any(Error)
+      );
+    });
+    // UI 照常更新（mutate 未被 delete 失败阻断）：行从看板消失
+    expect(screen.queryByText("回收站里的任务")).not.toBeInTheDocument();
+    errSpy.mockRestore();
   });
 
   // tasks-updated source 守卫（mutation.rs 协议）：bot/api/migration 已由后端落盘，
