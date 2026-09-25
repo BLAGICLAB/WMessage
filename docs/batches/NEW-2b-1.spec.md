@@ -8,7 +8,7 @@
 
 - family: poisoned-silent-recovery（与 NEW-2 同族延续）
 - 覆盖: 24 处 / 7 文件（bot_skills 7 + bot_slash 7 + bot_chat 5 + exec_steps 3 + bot_scheduler 2，其中 1 处测试代码）
-- 预估 diff: 7 文件 / +100/-24
+- 预估 diff: 7 文件 / +100/-32（执行中校正 ×1：rustfmt 重排实测）
 - OCR 计划: r1, timeout 1800s, 期望 comments ≤ 3
 
 ## 逐条处置（用户拍板 2026-09-26）
@@ -49,7 +49,7 @@
     "src-tauri/src/exec_steps.rs"
   ],
   "max_lines_added": 110,
-  "max_lines_removed": 30,
+  "max_lines_removed": 45,
   "findings": [
     {"id": "NEW-2b-1", "file": "src-tauri/src/bot_skills/state.rs", "line": 231, "fix": "bot 域 24 处 silent into_inner 补 eprintln（skill_runs/confirms/running/pending_map 各按锁名，NEW-2 同形态）；ripple：无"}
   ],
