@@ -40,7 +40,7 @@
 ## spec 起草后自查三条
 
 1. expected_files：db/paths.rs + db/mod.rs + db/workspace.rs + db/bot_history.rs = 4（全路径已列）
-2. budget：A 类（臂替换 + match 展开行内小改）≈ +25/-3；B 类（3 个测试函数整块 ≈ 135 行）合计 ≈ +160/-6，上限 +220/-25；无新文件（max_new_files_lines 不设）
+2. budget：A 类（臂替换 + match 展开行内小改）≈ +40/-3；B 类（4 个测试函数整块 ≈ 165 行）合计 ≈ +230/-5，上限 +260/-25（执行中校正 ×1：OCR r1 low 采纳——checkpoint 非 BUSY 错误 fail-closed 收紧 + NOTADB 测试，同 #3 根因）；无新文件（max_new_files_lines 不设）
 3. fix 字段 ripple：① mod.rs Err 臂 +audit 一处（已入 expected_files）；② 函数内闭环走既有 From<String> 映射；③ 纯注释+测试
 
 ## 自主执行规则
@@ -71,7 +71,7 @@ spec 经用户拍板（B 类 3 项方向 2026-09-25）后：
     "src-tauri/src/db/workspace.rs",
     "src-tauri/src/db/bot_history.rs"
   ],
-  "max_lines_added": 220,
+  "max_lines_added": 260,
   "max_lines_removed": 25,
   "findings": [
     {"id": "C5-DB-05.1", "file": "src-tauri/src/db/paths.rs", "line": 58, "fix": "open 失败臂 warn 继续 → 早退 Err(IoError) 可操作消息（fail-closed，原库保留）；ripple：db/mod.rs Err 臂 +audit write_event Error"},
