@@ -53,6 +53,17 @@ pub(crate) fn atomic_write(path: &std::path::Path, contents: &str) -> Result<(),
 /// 便携模式首启拷贝老库——Phase 1 (3 文件 to staging) + Phase 2 (rename order sidecar-first then main)；
 /// 任一 Phase 失败 → clean tmp-* + 回滚 db_path-* → Err；源库 open 失败 → 直接 Err（fail-closed，
 /// 损坏/占用/加密的源被字节级拷贝只会复制出坏主库），原始老库全程只读、原样保留。APW-02b。
+/// 清理 copy_legacy_db 的三件 staging tmp-*（best-effort，任一失败不阻断回滚流程）
+fn remove_staging(
+    tmp_main: &std::path::Path,
+    tmp_wal: &std::path::Path,
+    tmp_shm: &std::path::Path,
+) {
+    let _ = std::fs::remove_file(tmp_main);
+    let _ = std::fs::remove_file(tmp_wal);
+    let _ = std::fs::remove_file(tmp_shm);
+}
+
 pub fn copy_legacy_db(
     legacy_db: &std::path::Path,
     db_path: &std::path::Path,
@@ -115,18 +126,14 @@ pub fn copy_legacy_db(
     };
 
     if let Some(e) = copy_main.err().or(copy_wal.err()).or(copy_shm.err()) {
-        let _ = std::fs::remove_file(&tmp_main);
-        let _ = std::fs::remove_file(&tmp_wal);
-        let _ = std::fs::remove_file(&tmp_shm);
+        remove_staging(&tmp_main, &tmp_wal, &tmp_shm);
         return Err(CommandError::IoError(format!("老库 staging 拷贝失败：{e}")));
     }
 
     // Phase 2a: rename tmp_wal → db_path-wal（仅当 tmp_wal 存在；legacy 无 -wal 则 skip）
     if tmp_wal.exists() {
         if let Err(e) = std::fs::rename(&tmp_wal, wal_sidecar(db_path, "wal")) {
-            let _ = std::fs::remove_file(&tmp_main);
-            let _ = std::fs::remove_file(&tmp_wal);
-            let _ = std::fs::remove_file(&tmp_shm);
+            remove_staging(&tmp_main, &tmp_wal, &tmp_shm);
             return Err(CommandError::IoError(format!("老库 -wal 提交失败：{e}")));
         }
     }
@@ -136,8 +143,7 @@ pub fn copy_legacy_db(
         if let Err(e) = std::fs::rename(&tmp_shm, wal_sidecar(db_path, "shm")) {
             // 回滚 2a（db_path-wal 已建）+ 清 tmp-*
             let _ = std::fs::remove_file(wal_sidecar(db_path, "wal"));
-            let _ = std::fs::remove_file(&tmp_main);
-            let _ = std::fs::remove_file(&tmp_shm);
+            remove_staging(&tmp_main, &tmp_wal, &tmp_shm);
             return Err(CommandError::IoError(format!(
                 "老库 -shm 提交失败（已回滚 -wal staging）：{e}"
             )));
@@ -149,7 +155,7 @@ pub fn copy_legacy_db(
         // 回滚 2a + 2b（db_path-wal / db_path-shm 已建）
         let _ = std::fs::remove_file(wal_sidecar(db_path, "wal"));
         let _ = std::fs::remove_file(wal_sidecar(db_path, "shm"));
-        let _ = std::fs::remove_file(&tmp_main);
+        remove_staging(&tmp_main, &tmp_wal, &tmp_shm);
         return Err(CommandError::IoError(format!(
             "老库主文件提交失败（已回滚 staging）：{e}"
         )));

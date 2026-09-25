@@ -534,11 +534,12 @@ mod tests {
         assert!(dst.exists(), "主库必须落地");
         assert!(wal_sidecar(&dst, "wal").exists(), "-wal 边车必须落地");
         assert!(wal_sidecar(&dst, "shm").exists(), "-shm 边车必须落地");
+        // BUSY warn 是否出现取决于 sqlite checkpoint 对并发读游标的行为（实测本环境
+        // 可为空=checkpoint 成功）——契约 = Ok + 三件套到位（上方断言），warn 值域只有
+        // 两种合法形态；任何其他 warn 内容都算回退。禁改回恒真或断言 warn 必现。
         assert!(
-            warns.is_empty()
-                || warns
-                    .iter()
-                    .any(|w| w.contains("checkpoint") || w.contains("BUSY"))
+            warns.is_empty() || warns.iter().any(|w| w.contains("checkpoint")),
+            "warn 只能为空或 checkpoint 容错（BUSY）；got: {warns:?}"
         );
         fs::remove_dir_all(&dir).ok();
     }

@@ -33,6 +33,10 @@ pub(crate) const POLL_INTERVAL_SECS: u64 = 600;
 /// 不回滚，未开始的不再开始）；单文件操作中间态不中断。
 static MIGRATION_CANCEL: AtomicBool = AtomicBool::new(false);
 
+/// replay 前守卫等待上限（次数 × 步长 = 5min）：RUNNING 卡死时跳过本轮 replay
+const GUARD_WAIT_ATTEMPTS: u32 = 60;
+const GUARD_WAIT_STEP_SECS: u64 = 5;
+
 /// 请求取消当前迁移：当前 run（若有）在下一检查点安全停止；无 run 时置位留存，
 /// 下一轮 run 首个检查点即命中并立即取消返回——run 结束时统一清零。
 pub fn migration_request_cancel() {
@@ -471,13 +475,13 @@ pub fn spawn_polling(app: AppHandle) {
         // 等待设上限（60×5s=5min）：RUNNING 若因未来 bug 卡死，跳过本轮 replay 并记
         // 日志，而不是无限阻塞轮询线程。
         let mut guard = None;
-        for _ in 0..60 {
+        for _ in 0..GUARD_WAIT_ATTEMPTS {
             match MigrationGuard::acquire() {
                 Ok(g) => {
                     guard = Some(g);
                     break;
                 }
-                Err(_) => std::thread::sleep(Duration::from_secs(5)),
+                Err(_) => std::thread::sleep(Duration::from_secs(GUARD_WAIT_STEP_SECS)),
             }
         }
         match guard {

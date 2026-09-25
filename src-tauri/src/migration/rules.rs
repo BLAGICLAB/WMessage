@@ -174,13 +174,13 @@ pub(crate) fn parse_rules_csv(text: &str) -> Result<RulesFile, crate::error::Com
             "删除文件" | "删除" | "delete" | "Delete" => "delete".to_string(),
             other if other.is_empty() => {
                 return Err(crate::error::CommandError::DomainRule {
-                    domain: "csv".to_string(),
+                    domain: "migration".to_string(),
                     reason: format!("第 {} 行动作为空（应填 移动归档 或 删除文件）", ri + 2),
                 })
             }
             other => {
                 return Err(crate::error::CommandError::DomainRule {
-                    domain: "csv".to_string(),
+                    domain: "migration".to_string(),
                     reason: format!(
                         "第 {} 行动作「{}」无效（应填 移动归档 或 删除文件）",
                         ri + 2,
@@ -194,7 +194,7 @@ pub(crate) fn parse_rules_csv(text: &str) -> Result<RulesFile, crate::error::Com
             "否" | "false" | "False" | "FALSE" | "0" => false,
             other => {
                 return Err(crate::error::CommandError::DomainRule {
-                    domain: "csv".to_string(),
+                    domain: "migration".to_string(),
                     reason: format!("第 {} 行启用值「{}」无效（应填 是 或 否）", ri + 2, other),
                 })
             }
