@@ -43,10 +43,10 @@
 
 ## spec 起草后自查三条
 
-（执行中校正 ×1：assertions_min 8/5 → 7/4——gate 整文件 assert 宏实测计数，起草时误估）
+（执行中校正 ×2：×1 assertions_min 8/5→7/4 gate 实测计数；×2 budget +300→+380/-50，OCR r1 high + r2 critical 采纳增量）
 
 1. expected_files：migration/rules.rs + migration/ops.rs + migration/run.rs + migration/commands.rs = 4（全路径已列）
-2. budget：A 类（签名/臂行内改 ≈ +35/-16）+ B 类（确认框块 ≈ +24；两处测试整块 ≈ +165）合计 ≈ +230/-28，上限 +300/-45；无新文件
+2. budget：A 类（签名/臂行内改 ≈ +35/-16）+ B 类（确认框块 ≈ +24；两处测试整块 ≈ +165）合计 ≈ +350/-42，上限 +380/-50（执行中校正 ×2：OCR r1 high+r2 critical 采纳——load_rules/run_migration 结构化 CommandError 链 + 确认框 audit/启用行计数 + 补测；OCR 采纳增量随批校正）
 3. fix 字段 ripple：① 三调用点全列（run.rs/commands.rs×2）+ 前端零改动已核；② validate_rules/ops/commands 三点已入 expected_files；ConfirmRejected 为既有错误码零新增
 
 ## 自主执行规则
@@ -77,8 +77,8 @@ spec 经用户拍板（B 类 2 项方向 2026-09-25）后：
     "src-tauri/src/migration/run.rs",
     "src-tauri/src/migration/commands.rs"
   ],
-  "max_lines_added": 300,
-  "max_lines_removed": 45,
+  "max_lines_added": 380,
+  "max_lines_removed": 50,
   "findings": [
     {"id": "C5-MI-03.1", "file": "src-tauri/src/migration/rules.rs", "line": 26, "fix": "load_rules 拆纯函数 load_rules_from（NotFound→Ok default 边界钉住；读/解析失败→Err 可操作消息）+ wrapper log_line 留痕；三调用点显式分流：run.rs ? 中止迁移 / migration_rules_load→CommandResult / migration_status→CommandResult（前端 try/catch 已核零改动）。ripple：commands.rs 两签名 + run.rs 一行"},
     {"id": "C5-MI-08.3", "file": "src-tauri/src/migration/ops.rs", "line": 74, "fix": "resolve_archive_dir 拆 checked 纯内核三道闸：..拒绝（既有）+ 绝对路径拒绝（拍板收窄）+ symlink 逃逸 canonicalize 祖先校验；validate_rules 补绝对路径早错；migration_rules_import 破坏性 move/delete 系统确认框（spawn_blocking + ConfirmRejected）。ripple：rules.rs validate_rules + commands.rs import 确认块"}
