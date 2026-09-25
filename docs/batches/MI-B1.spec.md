@@ -43,6 +43,8 @@
 
 ## spec 起草后自查三条
 
+（执行中校正 ×1：assertions_min 8/5 → 7/4——gate 整文件 assert 宏实测计数，起草时误估）
+
 1. expected_files：migration/rules.rs + migration/ops.rs + migration/run.rs + migration/commands.rs = 4（全路径已列）
 2. budget：A 类（签名/臂行内改 ≈ +35/-16）+ B 类（确认框块 ≈ +24；两处测试整块 ≈ +165）合计 ≈ +230/-28，上限 +300/-45；无新文件
 3. fix 字段 ripple：① 三调用点全列（run.rs/commands.rs×2）+ 前端零改动已核；② validate_rules/ops/commands 三点已入 expected_files；ConfirmRejected 为既有错误码零新增
@@ -82,8 +84,8 @@ spec 经用户拍板（B 类 2 项方向 2026-09-25）后：
     {"id": "C5-MI-08.3", "file": "src-tauri/src/migration/ops.rs", "line": 74, "fix": "resolve_archive_dir 拆 checked 纯内核三道闸：..拒绝（既有）+ 绝对路径拒绝（拍板收窄）+ symlink 逃逸 canonicalize 祖先校验；validate_rules 补绝对路径早错；migration_rules_import 破坏性 move/delete 系统确认框（spawn_blocking + ConfirmRejected）。ripple：rules.rs validate_rules + commands.rs import 确认块"}
   ],
   "assertions_min": {
-    "src-tauri/src/migration/rules.rs": 8,
-    "src-tauri/src/migration/ops.rs": 5
+    "src-tauri/src/migration/rules.rs": 7,
+    "src-tauri/src/migration/ops.rs": 4
   },
   "ocr_plan": {
     "rounds": 1,
