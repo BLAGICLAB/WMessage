@@ -1,7 +1,7 @@
 //! 迁移模块 Tauri command 入口 + 日志读取纯函数。
 //!
-//! 共 5 个 #[tauri::command]（migration_rules_load / _import / _template_save /
-//! migration_run / _log_read / migration_status）+ 3 个内部辅助
+//! 共 7 个 #[tauri::command]（migration_rules_load / _import / _template_save /
+//! _run / _cancel / _log_read / _status）+ 内部辅助
 //! （parse_rules_csv 已在 rules.rs；read_migration_log / tail_log_lines 在此模块
 //! 因与 _log_read 同生命周期）。
 
@@ -17,8 +17,12 @@ use super::run::POLL_INTERVAL_SECS;
 use super::types::{MigrationReport, MigrationStatus, RulesFile};
 
 #[tauri::command]
-pub fn migration_rules_load(app: AppHandle) -> CommandResult<RulesFile> {
-    Ok(load_rules(&app)?)
+pub async fn migration_rules_load(app: AppHandle) -> CommandResult<RulesFile> {
+    // load_rules 是文件读（慢盘可冻结窗口）——spawn_blocking 桥接，不在主线程做 IO
+    let loaded = tauri::async_runtime::spawn_blocking(move || load_rules(&app))
+        .await
+        .map_err(|e| CommandError::Internal(format!("迁移线程 join 失败：{e}")))?;
+    Ok(loaded?)
 }
 
 /// 文件对话框导入规则表（CSV 表格 / 旧 JSON 都支持），返回导入的规则数。
@@ -240,8 +244,12 @@ pub(crate) fn tail_log_lines(raw: &str, limit: Option<usize>) -> String {
 }
 
 #[tauri::command]
-pub fn migration_status(app: AppHandle) -> CommandResult<MigrationStatus> {
-    let rules = load_rules(&app)?;
+pub async fn migration_status(app: AppHandle) -> CommandResult<MigrationStatus> {
+    // 轮询路径每次 fs 读——同 rules_load 桥接 spawn_blocking
+    let loaded = tauri::async_runtime::spawn_blocking(move || load_rules(&app))
+        .await
+        .map_err(|e| CommandError::Internal(format!("迁移线程 join 失败：{e}")))?;
+    let rules = loaded?;
     Ok(MigrationStatus {
         rules_count: rules.rules.len(),
         poll_interval_secs: POLL_INTERVAL_SECS,
