@@ -4,6 +4,7 @@
 本文件仅 triage，**不修代码、不跑 OCR、不 commit 代码**。docs-only 走 PROC-3 免审。
 
 ## 0. 执行日志
+- [2026-09-26 02:50 CST] **FUP-1**（小挂起 follow-up 批，commit 2ba5062）：① APW-02b-OCR-3 恒真断言——收紧过程暴露真发现：BUSY warn 本环境非确定性（checkpoint 可成功，恒真自原批起掩盖）→ 改 warn 值域断言 + 注释钉住非确定性；② APW-02b-OCR-5 staging 清理 4 组提 remove_staging helper；③ FRDV-01-OCR-1 domain "csv"→"migration" ×3（前端无 domain 消费已核）；④ MI-04b-OCR-3 守卫等待双魔数抽 const。APW-02b-OCR-2/4 维持挂起（enum 改动/场景构造复杂）。OCR r1 4 low：1 采纳 + 3 不采纳（.zcodeignore 清理超 scope）。D2: files=4(+29/-18) asserts=0→0 tests=copy_legacy_db 6 绿 + test-all 1147 全绿。**APW-02b OCR follow-up 3/5 清、1 部分清（4 场景构造维持挂起）、2 维持挂起。**
 - [2026-09-26 02:35 CST] **NEW-2b-2**（NEW-2b 非 bot 域批，commit a5e90c1）：memory ×8 / evolution ×5 / api_handlers ×3 / py ×4 / db ×1 共 21 处 silent into_inner 补 C3-1 留痕——**全仓 silent into_inner 归零（NEW-2 12 + NEW-2b-1 24 + NEW-2b-2 21 = 57 处全部可见化）**。OCR r1 2 low：1 采纳（db::mod 标签改 db::open_db）+ 1 不采纳有论证（泛型 helper 抽象成本）。spec 校正 ×1（max_removed +25→+50）。D2: files=8(+84/-43) asserts=0→0 tests=test-all 1147 全绿。**NEW-2b 全部清零，poisoned-silent-recovery 家族收官。**
 - [2026-09-26 02:20 CST] **NEW-2b-1**（NEW-2b bot 域批，commit 9523329）：bot 域 24 处 silent into_inner 补 C3-1 留痕（bot_skills skill_runs ×7 / bot_slash confirms ×7（4 处测试） / bot_chat ×5 / bot_scheduler ×2（1 测试） / exec_steps ×3）——恢复语义不变。OCR r1 3 comments：2 采纳（标签对齐既有 :: 约定 + 测试站点标签核正）+ 1 不采纳有论证（泛型 helper 抽象成本）。spec 校正 ×1（max_removed +30→+45）。D2: files=7(+96/-32) asserts=0→0 tests=test-all 1147 全绿。
 
@@ -442,9 +443,9 @@ run A 仅靠 /tmp/ocr-APW-02b-r1.clean.json 找回。cache 命名亦误导：
 
 - **APW-02b-OCR-2（medium）**：db/paths.rs:79 `Ok(0)` sentinel —— 下游 `copy_main.err().or(...)` 链无法区分
   「边车不存在（不适用）」与「零字节成功拷贝」。修法候选：用 `Option<u64>` 或显式 enum。
-- **APW-02b-OCR-3（low）**：db/mod.rs:456 断言 `warns.is_empty() || warns.iter().any(...)` 恒真，不锁定契约。修法：改成精确断言（如 `assert_eq!(warns.len(), N)` 或指定 warn 内容）。
+- **APW-02b-OCR-3（low）**：db/mod.rs:456 断言 `warns.is_empty() || warns.iter().any(...)` 恒真，不锁定契约。修法：改成精确断言（如 `assert_eq!(warns.len(), N)` 或指定 warn 内容）。 **→ 已清（FUP-1，commit 2ba5062，§0 2026-09-26 02:50）——收紧暴露 BUSY 非确定性，落 warn 值域断言**
 - **APW-02b-OCR-4（low）**：db/mod.rs:419 测试未真正触达 tmp-* 清理路径（legacy_db 不存在 → copy 在写 tmp-* 前已失败 → remove_file 是 no-op）。修法：构造「copy 成功但后续阶段失败」的场景。
-- **APW-02b-OCR-5（low）**：db/paths.rs:90 四组 cleanup 近似重复，建议提 `fn cleanup_staging(...)` helper。
+- **APW-02b-OCR-5（low）**：db/paths.rs:90 四组 cleanup 近似重复，建议提 `fn cleanup_staging(...)` helper。 **→ 已清（FUP-1，commit 2ba5062：remove_staging helper）**
 
 （均不本批修；下次 APW-02b follow-up 或相关批并入。）
 
@@ -495,7 +496,7 @@ run A 仅靠 /tmp/ocr-APW-02b-r1.clean.json 找回。cache 命名亦误导：
 
 ### FRDV-01 follow-up 登记（2026-09-23, commit 46f8437）
 
-- **FRDV-01-OCR-1（low ×3 同根，挂起）**：rules.rs `domain: "csv"` vs `domain: "migration"`
+- **FRDV-01-OCR-1（low ×3 同根）**：rules.rs `domain: "csv"` vs `domain: "migration"`（**已清——FUP-1，commit 2ba5062：×3 统一 "migration"，前端无 domain 消费已核；源 medium Mixed error-type conventions 维持挂起**
   不一致（OCR r1 指 :125/:131/:145 三处）。**根因是既有代码**：行级错误的 `domain: "csv"`
   约定先于本批存在（未知动作 arm 原本就是 "csv"），本批两个新 arm 沿袭同函数行级错误约定。
   源 fullscan 已有同根 medium（rules.rs:94-111 "Mixed error-type conventions"），非 271 high
@@ -521,7 +522,7 @@ run A 仅靠 /tmp/ocr-APW-02b-r1.clean.json 找回。cache 命名亦误导：
   `Some(_)` 不绑定值会立即 drop guard，replay 在无守卫状态下执行 = 恰好破坏本批修复。
   `_g` 绑定是语义必需（持活到 replay 结束）。同类"模式匹配建议丢绑定"属 OCR 系统性
   误判倾向，后续批遇同类直接按 FP 处理并登记。
-- **MI-04b-OCR-3（low，挂起）**：守卫等待 60×5s 双魔数未绑定为单一不变量（建议抽
+- **MI-04b-OCR-3（low）**：守卫等待 60×5s 双魔数未绑定为单一不变量（**已清——FUP-1，commit 2ba5062：GUARD_WAIT_ATTEMPTS/STEP_SECS const**（建议抽
   const WAIT_MAX/RETRY_STEP）。采纳需 +3 行超本批已二次校正的 budget，挂起；改超时时
   连同注释/日志文案一起改。
 - **PHASE2-TRIAGE-NEW-META-8**：budget 校正同批两次（14→26 OCR critical 采纳；26→33/-10
