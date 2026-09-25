@@ -43,7 +43,7 @@
 ## spec 起草后自查三条
 
 1. expected_files：migration/run.rs + migration/types.rs + migration/commands.rs + migration/recovery.rs + src-tauri/src/lib.rs + src/types.ts = 6（全路径已列）
-2. budget：A 类（static+fn+检查点 ×2 + command + 注册 + types 字段 ≈ +48/-3）+ B 类（recovery 清理 ≈ +22；测试 ≈ +45）合计 ≈ +115/-5，上限 +180/-20；无新文件
+2. budget：A 类（static+fn+检查点 ×2 + command + 注册 + types 字段 ≈ +48/-3）+ B 类（recovery 清理 ≈ +22；测试 ≈ +45）合计 ≈ +184/0，上限 +210/-20（执行中校正 ×1：OCR r1/r2 采纳增量——检查点扩阶段一/落盘 + CancelGuard Drop + doc 对齐 + 测试修订）
 3. fix 字段 ripple：① lib.rs 注册 + types.rs + src/types.ts 已入 expected_files；② replay 内部闭环
 
 ## 自主执行规则
@@ -76,7 +76,7 @@ spec 经用户拍板（B 类 2 项方向 2026-09-25）后：
     "src-tauri/src/lib.rs",
     "src/types.ts"
   ],
-  "max_lines_added": 180,
+  "max_lines_added": 210,
   "max_lines_removed": 20,
   "findings": [
     {"id": "C5-MI-05.1", "file": "src-tauri/src/migration/run.rs", "line": 96, "fix": "static MIGRATION_CANCEL + request/cancelled fn + run 入口清零 + 阶段循环检查点（命中 log_line + report.cancelled=true + 提前 return）+ MigrationReport #[serde(default)] cancelled + migration_cancel command 注册 lib.rs；前端 types.ts 加可选字段。ripple：lib.rs + types.rs + src/types.ts"},
