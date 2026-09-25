@@ -5,6 +5,8 @@
 
 ## 0. 执行日志
 
+- [2026-09-25 10:23 CST] **API-B**（api 域 B 类拍板落地批，commit 6de187b，amend 177aaa8 仅修 D2 数字）：实修 2 处——① #16=A api_server.rs broadcast 落盘写失败 → fetch_sub 归还 id + 事件不进重放历史不推送（fail-closed「要么持久化要么不推进」；归还后下次广播重取同 id 重试；单临界区单写者无竞争）；② #15=C commands.rs:61/:238 flag 写/清残余 TOCTOU 微窗注释声明（复核≠原子、可自愈）。OCR r1 2 low 全采纳（测试名/docstring 对齐实际行为 / atomic_write rename 失败残留 tmp 测试自清理）。**PHASE2-TRIAGE-NEW-5 登记：db/paths.rs atomic_write 在 rename 失败时残留同级 .tmp 文件（既有缺口，本批测试暴露），下一轮评估。** D2: files=2(+63/-2) asserts=0→19 tests=api_server 6 绿 + test-all 1138 全绿。
+
 - [2026-09-25 10:14 CST] **FE-B**（frontend 域 B 类拍板落地批，commit 3dc8e3a，amend 8ffafcb 仅修 D2 数字）：实修 5 处（批内独立改动如实声明）——① #19=A App.tsx legacy 迁移失败 catch 标记 + 跳过 SEED（不再造成 legacy 永久 orphan）；② #18=B tasks-updated delete 失败 try/catch 不阻断合并广播（行已从内存移除、库中仍在 → db_load 自愈）；③ #21=B ConfirmMap 新 confirm 自动拒未响应旧请求（fire-and-forget；busyRef 在途不补刀）；④ #22=B ChatPanel execWatchRef 围观守卫（置值/收尾 history_load **完成后**无条件清 + execute-task 失败路径清 / send 拦截上移 + /stop 白名单 / load 链 catch 全覆盖）；⑤ #20=A ArtifactBatchDialog skip 语义注释。OCR 3 轮：r1 9 comments（3 high 采纳：mutate 同治 + watch 清理嵌套 ×2；3 medium 采纳；3 low 1 采纳）/ r2 8 comments（1 high 采纳：清早于 load 完成 → 无条件发起 + finally 清；3 medium 采纳：ref 序 / mutate 测试 / 失败路径泄漏）/ r3 7 comments **0 critical 0 high**（3 medium：2 采纳=load 链 unhandled rejection + 斜杠绕过拦截；1 不采纳=初始 load 失败有 execute-task 收尾兜底）。**flaky 第 5 例**：ChatPanel 流式合并 scrollTo（jsdom 滚动桩偶发），隔离+全量双过。spec 校正 ×1（assertions 0 先例）。D2: files=6(+223/-11) asserts=0→0 tests=vitest 310 全量绿 + tsc 0。
 
 - [2026-09-25 09:41 CST] **BOT-B**（bot 域 B 类拍板落地批，commit ea6317d，amend 623fc34 仅修 D2 数字）：实修 5 处（批内独立改动如实声明）——① #10=C io.rs add_allowed_dir 剥 key 前置 keyring 读回验证（空槽写入→读回；原有值非空即剥=值优先；本次写入读回等值才剥；读不回保留明文零丢失；audit 挪写盘成功+放锁后——r1 high 采纳；has+read 并单 read——r1 low 采纳；内核 plaintext_strippable+单测）；② #11=A state.rs clear_terminal_skill_runs 按会话隔离（签名加 session_id，三调用点随动；他会话终态 run 不再被入口误删）；③ #12=B bot_web.rs Jina 回退三路 stderr 留痕（失败/采用/未采用带 URL，签名不动）；④ #6=A vars.rs in_quotes wontfix 确认（设计边界注释 + 2 回归测试锁现状）；⑤ #13=B keyring.rs Windows 权限 wontfix 文档化（权限语义仅 Unix 承诺）。OCR r1 4 comments 全同根：2 high 采纳（audit 时序 / strip 内核测试漏加）+ 1 medium 采纳（读回等值比对）+ 1 low 采纳（单 read）；r2 3 comments 0 high（1 medium 不采纳=持锁 keyring IO 系既有约定同 migrate_legacy_key 先例；2 low 不采纳有论证）。D2: files=7(+171/-22) asserts=0→55 tests=io/vars/state 23 相关绿 + test-all 1137 全绿。
@@ -221,7 +223,7 @@
 - C5-AP-03：日志输出缺陷（api_handlers/ratelimit.rs:45 + :36，批内 2 处独立改动），2 条 → **已修（AP-03，commit a78de81）**
 - C5-AP-04：SSE writer 缺陷（api_handlers/sse.rs:196 + :183），2 条 → **已修（AP-04，commit 8d49a26：vendor 写超时 patch + broadcast 单临界区化）**
 - C5-AP-05：持锁跨 I/O（api_handlers/handlers.rs:277 + :405 + :561），3 条 → **已修（AP-05，commit bfe30b9：labeled block 装盒出锁后响应）**
-- C5-AP-06：静默吞错（api_server.rs:126），1 条，error-visible-non-blocking 家族 → **已修（独立批 0b6ee69，2026-09-23：atomic_write 失败 eprintln 留痕）**
+- C5-AP-06：静默吞错（api_server.rs:126），1 条，error-visible-non-blocking 家族 → **已修（独立批 0b6ee69，2026-09-23：atomic_write 失败 eprintln 留痕）；残留语义方向（B 类 #16）已清（API-B，commit 6de187b：写失败拒推进 id fail-closed——§0 2026-09-25 10:23）**
 - C5-AP-07：sync block_on 隐式约定（api.rs:101），1 条 → **已修（AP-07，commit 3d6b1a8：运行时检查 + trait 契约文档化）**
 
 ### 域 bot*（15 簇 / 46 findings；去重后）
@@ -277,6 +279,7 @@
 - **PHASE2-TRIAGE-NEW-1**：bot_py.rs:694 + bot_py.rs:705 测试代码内 silent into_inner，无 eprintln 缓解措施。源 OCR 标的是 :945（有 eprintln），这两处不在 OCR 范围。是 silent 路径，与 C3-1 约定（带 eprintln）不一致。是否需引入 Phase 2 high 待评估。**不并入 BT-02 / MI-01**（"顺手扩"是 triage 层禁忌）。
 - **PHASE2-TRIAGE-NEW-2**（2026-09-23 EVNB-02 批登记）：db / migration / bot.config 三域 **12 处同形静默 into_inner**，均不在源 OCR 271 high 名单。站点（±3 行上下文 grep 核实无 eprintln，2026-09-23 23:2x 工作树）：workspace.rs:173 / :189 / :278、bot_history.rs:89 / :108、bot_sessions.rs:78 / :100 / :112、migration/ops.rs:236 / :246、bot/config/audit.rs:26、bot/config/mod.rs:581。与 C3-1 约定（logged 恢复）不一致。EVNB-02 只修 OCR 名单内 2 站，**不顺手扩**（triage SOP）。修复形态预期与 EVNB-02 相同（统一走 `lock_db_write()` 或补 eprintln），下一轮评估是否引入 Phase 2 工单。注：bot_skills/* 与 py/* 域另有大量 into_inner 站点，多数已有 eprintln（BT-02 先例），本登记仅含已核实静默的 12 处。
 - **PHASE2-TRIAGE-NEW-3**（2026-09-24 AP-03 批登记）：bot/config/audit.rs 两处同族缺口，均不在 OCR 271 high 名单——(a) `escape_for_log` 只转义 `|` `\n` `\r`，缺 `\t` / `\0` / ESC 等其余控制字符（AP-03 sanitize_log_line 已覆盖的全集）；(b) audit.rs:302 `audit_log` 与 ratelimit.rs 同形态 rotate+append 无锁，并发写可撕裂。AP-03 只修 ratelimit.rs（OCR 名单内），**不顺手扩**（triage SOP）。修复形态预期：复用/对齐 sanitize_log_line + LOG_WRITE 同款锁，下一轮评估是否引入 Phase 2 工单。
+- **PHASE2-TRIAGE-NEW-5**（2026-09-25 API-B 批登记）：db/paths.rs `atomic_write` 在 rename 失败时残留同级 `.tmp` 文件（`fs::write(&tmp)` 成功、`rename(&tmp, path)` 失败的路径无清理）。API-B fail-closed 测试（id_path 指向目录）暴露。影响面：所有 atomic_write 调用点（api_server SSE id / storage 导出等），失败残留为匿名 tmp 垃圾文件，无数据危害（下次同名写覆盖）。修法候选：rename 失败臂 best-effort `remove_file(&tmp)`（照 AP-02 write_token_file 先例）。下一轮评估。
 - **PHASE2-TRIAGE-NEW-4**（2026-09-24 BT-10b 批登记）：panic payload 字符串化逻辑（downcast_ref::<&str> → String → "非字符串 panic"）已 4 处重复：api_server.rs panic_message helper / middleware.rs panic_message helper / migration 域 1 处 / bot_scheduler.rs 新增 2 处（tick + task 层）。抽统一 helper 到 audit 或 util 模块 = 跨文件重构，超 BT-10b scope。下一轮评估是否引入。
 
 ### 跨域一致性检查第一步（triage 全跑完后那一步）
@@ -638,6 +641,8 @@ run A 仅靠 /tmp/ocr-APW-02b-r1.clean.json 找回。cache 命名亦误导：
 
 - **FE-B（3dc8e3a，2026-09-25 10:14）OCR 核验记录**：r1 = ~/.openclaw/cache/FE-B/ocr-r1.raw.json（status=complete / comments=9 全同根：3 high 采纳 + 3 medium 采纳 + 3 low 1 采纳 2 不采纳 / 0 failure）；r2 = ocr-r2.raw.json（comments=8：1 high 采纳[watch 清理时序——改无条件发起 load + finally 清] + 3 medium 采纳 + 4 low）；r3 = ocr-r3.raw.json（comments=7 **0 critical 0 high——r2 验证通过**：3 medium 2 采纳[load 链 catch 全覆盖 / 斜杠命令绕过拦截→守卫上移+/stop 白名单] 1 不采纳有论证 + 4 low）。无 B 类新增。**flaky 样本 +1（第 5 例）**：ChatPanel.test 流式合并「scrollTo is not a function」（jsdom 滚动桩偶发未生效）——隔离 13 绿 + 全量复跑 1137 绿双过判 flaky，与前端批改动无涉。
 
+- **API-B（6de187b，2026-09-25 10:23）OCR 核验记录**：r1 = ~/.openclaw/cache/API-B/ocr-r1.raw.json（status=complete / comments=2 全 low 采纳：测试名/docstring 对齐实际行为[同 hub 重试由 last_id 归还断言覆盖，恢复段为独立 hub 正常路径] / atomic_write rename 失败残留同级 tmp 测试自清理[既有缺口 → NEW-5 登记]）/ 0 failure / 0 high 0 medium。无 B 类新增。
+
 ### B 类决策权威清单（2026-09-25 07:25 CST zcode 重建，23 项待用户逐项拍板；拍板前禁写代码）
 
 > 重建方法：grep「转 B 类｜B 类候选｜单独立 B 类｜攒批」全量 + 每项源码 file:line 现场核对 + OCR fullscan（docs/OCR-CODE-REVIEW-2026-09-21-fullscan.json）原文复核。
@@ -685,8 +690,10 @@ run A 仅靠 /tmp/ocr-APW-02b-r1.clean.json 找回。cache 命名亦误导：
   - A=全签名接线〔triage 已载〕（扩 scope）；B=adapter 层 pre-flight 检查〔triage 已载〕（语义增量小，循环级已近似覆盖）；C=wontfix-with-rationale〔triage 已载〕（StopGuard 设计意图=长操作+循环级中断）。triage：§2:235 / §0:89
 - **#15** src-tauri/src/api_handlers/commands.rs:61 + :238 —— enabled flag 文件写/清在锁外 + 复核（service_present）后仍余 TOCTOU 微窗：并 api_stop/api_start 可交错致 flag 与内存态背离（下次启动自动恢复状态错一次）。
   - A=〔重建构造〕改「文件 I/O 不持锁」既有约定：flag 写/清移锁内（动约定，须与 AP-05 抬锁外方向做全仓一致性核定）；B=〔重建构造〕世代号/版本号 CAS 复核（写 flag 时带世代，消除窗口不加锁）；C=〔重建构造〕维持现状 + 注释文档化残余窗（误写后果可自愈：用户下次手动纠正）。triage：§2:211 / §0:91
+  - → **已拍 C（2026-09-25）→ 已清（API-B，6de187b；两处注释补残余窗声明，零行为变更）**
 - **#16** src-tauri/src/api_server.rs:127（AP-06 残留）—— broadcast 落盘 atomic_write 失败仅 eprintln 且 id 已推进：崩溃/重启后 SSE 事件历史缺一段（error-visible-non-blocking family）。
   - A=写失败拒推进 id〔triage 已载〕（fail-closed，SSE 事件暂停直至落盘恢复）；B=瞬时错误重试 ×N〔triage 已载〕；C=维持 eprintln 现状〔triage 已载〕。triage：§0:99
+  - → **已拍 A（2026-09-25）→ 已清（API-B，6de187b；归还 id + 事件丢弃不投递，下次广播重取同 id 重试；事件丢弃为拍板明示接受）**
 - **#17** src-tauri/src/evolution/change/record.rs:211 + candidate/entry.rs:110 —— read_all 逐行解析，单行 JSON 损坏 → 整读 Err（现状 fail-closed，一坏行拖死全部读取）。
   - A=〔重建构造〕维持 fail-closed（损坏立即可见，但 evolution 面板整挂）；B=〔重建构造〕fail-open：跳坏行 + 留痕（可用性优先；审计轨迹有缺口）；C=〔重建构造〕折中：首行坏 → Err，中间坏行 → 跳过 + audit 留痕（需定阈值依据）。triage：§2:179 / §0:109
 - **#18** src/App.tsx:240 —— tasks-updated 合并路径半成功：upsert 成功 + delete 抛错时 UI 不更新、不广播。
