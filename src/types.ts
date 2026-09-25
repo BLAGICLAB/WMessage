@@ -45,6 +45,8 @@ export interface MigrationReport {
   deleted: number;
   skipped: number;
   log: string[];
+  /** 是否被用户取消而提前停止（可选：后端恒发，前端向后兼容标记） */
+  cancelled?: boolean;
 }
 
 interface Subtask {

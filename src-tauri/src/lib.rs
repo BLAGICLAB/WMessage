@@ -476,6 +476,7 @@ pub fn run() {
             migration::commands::migration_rules_load,
             migration::commands::migration_rules_import,
             migration::commands::migration_rules_template_save,
+            migration::commands::migration_cancel,
             migration::commands::migration_log_read,
             migration::commands::migration_run,
             migration::commands::migration_status,

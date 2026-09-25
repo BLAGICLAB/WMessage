@@ -67,6 +67,16 @@ pub(crate) fn decide_src_missing(
 /// 返回（恢复条数, 错误条数）供调用者记日志。
 pub fn journal_replay_pending(app: &AppHandle) -> Result<(usize, usize), String> {
     let conn = db::open_db(app).map_err(|e| e.to_string())?;
+    // 孤儿 pending 清理（拍板 #8=A）：MI-04a 修复前产生的同 (task_id, src) 多条
+    // pending（id DESC 下不可见、仍被 replay 扫描 → 同 key 重复处置）。启动重放前
+    // 一次性清理：只留 id 最大（最新尝试），其余删除 + 留痕。
+    let purged = purge_orphan_pending(&conn).map_err(|e| e.to_string())?;
+    if purged > 0 {
+        log_line(
+            app,
+            &format!("journal replay: 清理孤儿 pending {purged} 条（同任务同源仅保留最新一条）"),
+        );
+    }
     let mut stmt = conn
         .prepare(
             "SELECT id, op, src, dst, task_id
@@ -228,4 +238,119 @@ fn recover_delete_db(app: &AppHandle, task_id: &str, expected_src: &str) -> Resu
     tauri::async_runtime::block_on(async { db::db_upsert(app.clone(), vec![t]).await })
         .map_err(|e| e.to_string())?;
     Ok(true)
+}
+
+/// 孤儿 pending 清理内核（纯函数供单测）：同 (task_id, src) 的多条 pending
+/// 仅保留 id 最大的一条，其余删除，返回删除行数。含 committed 共存的 pending
+/// 不动（可能是新一轮中断尝试，replay 自身能处置）。
+pub(crate) fn purge_orphan_pending(conn: &rusqlite::Connection) -> Result<usize, String> {
+    conn.execute(
+        "DELETE FROM migration_journal
+         WHERE state = 'pending'
+           AND EXISTS (
+             SELECT 1 FROM migration_journal newer
+             WHERE newer.task_id = migration_journal.task_id
+               AND newer.src = migration_journal.src
+               AND newer.state = 'pending'
+               AND newer.id > migration_journal.id
+           )",
+        [],
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn setup_journal() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE migration_journal (
+               id          INTEGER PRIMARY KEY AUTOINCREMENT,
+               op          TEXT    NOT NULL,
+               src         TEXT    NOT NULL,
+               dst         TEXT,
+               task_id     TEXT    NOT NULL,
+               state       TEXT    NOT NULL,
+               created_at  INTEGER NOT NULL
+             );",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn insert(conn: &rusqlite::Connection, task_id: &str, src: &str, state: &str) -> i64 {
+        conn.execute(
+            "INSERT INTO migration_journal (op, src, dst, task_id, state, created_at)
+             VALUES ('move', ?1, NULL, ?2, ?3, 1)",
+            rusqlite::params![src, task_id, state],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    /// 同 (task_id, src) 多条 pending → 只留 id 最大，其余删除；返回删除数
+    #[test]
+    fn purge_orphan_pending_keeps_latest_per_key() {
+        let conn = setup_journal();
+        insert(&conn, "t1", "/a/file.txt", "pending");
+        insert(&conn, "t1", "/a/file.txt", "pending");
+        let latest = insert(&conn, "t1", "/a/file.txt", "pending");
+        insert(&conn, "t2", "/b/other.txt", "pending");
+
+        let purged = purge_orphan_pending(&conn).unwrap();
+
+        assert_eq!(purged, 2, "同 key 前两条 pending 应删除");
+        let left: Vec<i64> = conn
+            .prepare("SELECT id FROM migration_journal WHERE state = 'pending' ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            left,
+            vec![latest, 4],
+            "同 key 仅保留 id 最大的 pending；其他 key 不动"
+        );
+    }
+
+    /// committed 共存的 pending 不删（可能是新一轮中断尝试，replay 自身能处置）
+    #[test]
+    fn purge_orphan_pending_leaves_committed_coexistence() {
+        let conn = setup_journal();
+        insert(&conn, "t1", "/a/file.txt", "committed");
+        let pending = insert(&conn, "t1", "/a/file.txt", "pending");
+
+        // 补组合：committed + 同 key 多 pending → 同 key 重复处置风险仍在，仍留最新
+        insert(&conn, "t1", "/a/file.txt", "pending");
+        let purged = purge_orphan_pending(&conn).unwrap();
+        assert_eq!(
+            purged, 1,
+            "多 pending 时仍清旧留新（committed 不参与删除判定）"
+        );
+        let left: Vec<i64> = conn
+            .prepare("SELECT id FROM migration_journal WHERE state = 'pending' ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(left.len(), 1, "committed 共存场景同 key 也仅留最新一条");
+        // 终态：committed(1) 与最新 pending(3) 存活；孤儿 pending(2) 已删
+        let final_states: Vec<(i64, String)> = conn
+            .prepare("SELECT id, state FROM migration_journal ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            final_states,
+            vec![(1, "committed".to_string()), (3, "pending".to_string())],
+            "committed 保留；同 key pending 仅留最新"
+        );
+        assert_eq!(pending, 2);
+    }
 }

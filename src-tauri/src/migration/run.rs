@@ -5,6 +5,7 @@
 
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tauri::AppHandle;
@@ -27,8 +28,33 @@ pub const ARCHIVE_AFTER_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 pub(crate) const POLL_INTERVAL_SECS: u64 = 600;
 
 /// 核心迁移：返回报告。silent 模式（轮询）不向 UI 抛错。
+/// 迁移取消请求（拍板 #2=A）：migration_cancel command 置位，run_migration 各
+/// 阶段循环边界检查。粒度 = 循环边界（安全停止在事务/staging 边界，已完成操作
+/// 不回滚，未开始的不再开始）；单文件操作中间态不中断。
+static MIGRATION_CANCEL: AtomicBool = AtomicBool::new(false);
+
+/// 请求取消当前迁移：当前 run（若有）在下一检查点安全停止；无 run 时置位留存，
+/// 下一轮 run 首个检查点即命中并立即取消返回——run 结束时统一清零。
+pub fn migration_request_cancel() {
+    MIGRATION_CANCEL.store(true, Ordering::SeqCst);
+}
+
+pub(crate) fn migration_cancel_requested() -> bool {
+    MIGRATION_CANCEL.load(Ordering::SeqCst)
+}
+
 pub fn run_migration(app: &AppHandle) -> Result<MigrationReport, CommandError> {
     let _guard = MigrationGuard::acquire()?;
+    // 取消标志不在此清零：无 run 在跑时的取消请求（migration_cancel）必须被下一轮
+    // run 尊重——run 结束（成功/取消/出错/panic 展开经 DropGuard）统一清零
+    //（OCR r1 high 采纳；Drop 保证 panic 路径不残留标志，OCR r2 high 采纳）
+    struct CancelGuard;
+    impl Drop for CancelGuard {
+        fn drop(&mut self) {
+            MIGRATION_CANCEL.store(false, Ordering::SeqCst);
+        }
+    }
+    let _cancel = CancelGuard;
     run_migration_inner(app)
 }
 
@@ -74,6 +100,14 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError>
         }
     }
     if !due.is_empty() {
+        // 取消检查点（拍板 #2=A）：归档落盘前响应取消
+        if migration_cancel_requested() {
+            report.cancelled = true;
+            let line = "迁移被取消：安全停止（已完成操作不回滚，未开始的不再开始）";
+            report.log.push(line.to_string());
+            log_line(app, line);
+            return Ok(report);
+        }
         tauri::async_runtime::block_on(async { db::db_upsert(app.clone(), due.clone()).await })
             .map_err(|e| e.to_string())?;
         // T1-1：due 已落盘（updated_at=now），changed 末尾统一重写的基线须重武装为
@@ -94,6 +128,14 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError>
     // 要到下一轮（10 分钟后）才会走规则。这是有意行为（审计 P3-5 补注释）：
     // 避免归档与迁移在同一次扫描里链式触发，用户看到的中间状态更少。
     for t in tasks.iter() {
+        // 取消检查点（拍板 #2=A）：命中即安全停止，已完成操作不回滚
+        if migration_cancel_requested() {
+            report.cancelled = true;
+            let line = "迁移被取消：安全停止（已完成操作不回滚，未开始的不再开始）";
+            report.log.push(line.to_string());
+            log_line(app, line);
+            return Ok(report);
+        }
         if t.archived != Some(true) || t.deleted_at.is_some() {
             continue; // 保护：非归档/回收站任务一律不动
         }
@@ -468,4 +510,24 @@ pub fn spawn_polling(app: AppHandle) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod cancel_tests {
+    use super::*;
+
+    /// 取消存取器行为（拍板 #2=A）：request → requested=true；run 侧清零由
+    /// CancelGuard（Drop）承担，run_migration 端到端行为依赖 AppHandle+DB
+    /// 不可轻量 mock，由 OCR/代码审查担保（r2 medium 登记）。测试后置清理，
+    /// 不向其他测试泄漏取消态。
+    #[test]
+    fn migration_cancel_accessor_roundtrip() {
+        MIGRATION_CANCEL.store(false, Ordering::SeqCst);
+        assert!(!migration_cancel_requested(), "默认未取消");
+        migration_request_cancel();
+        assert!(migration_cancel_requested(), "请求后应为取消态");
+        // 模拟 run 结束的 CancelGuard 清零
+        MIGRATION_CANCEL.store(false, Ordering::SeqCst);
+        assert!(!migration_cancel_requested(), "清零后回到未取消");
+    }
 }

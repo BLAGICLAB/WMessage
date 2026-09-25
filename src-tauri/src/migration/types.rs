@@ -63,6 +63,9 @@ pub struct MigrationReport {
     pub skipped: usize,
     /// 本轮日志行
     pub log: Vec<String>,
+    /// 是否被用户取消而提前停止（拍板 #2=A；仅 Serialize，序列化恒带该字段，
+    /// 前端类型以可选标记向后兼容）
+    pub cancelled: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

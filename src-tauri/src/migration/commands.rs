@@ -182,6 +182,15 @@ pub async fn migration_run(app: AppHandle) -> CommandResult<MigrationReport> {
         .map_err(|e| CommandError::from(format!("迁移线程 join 失败：{e}")))?
 }
 
+/// 请求取消当前迁移（拍板 #2=A）：置位取消标志——当前 run（若有）在下一检查点
+/// 安全停止（已完成操作不回滚）；无 run 时置位留存，下一轮 run 首个检查点即命中。
+/// 标志由 run 结束时统一清零。取消 UI 由未来迭代接线；始终返回 true（请求已受理）。
+#[tauri::command]
+pub fn migration_cancel() -> bool {
+    super::run::migration_request_cancel();
+    true
+}
+
 /// 迁移日志读取：尾部 limit 行、最新在前（与机器人审计日志同模式，老板指定）
 /// NEW-B-3: 日志最大 5MB，sync 读阻塞主线程 → async + spawn_blocking（B3 同模式）
 /// F3（Phase 6b）：读失败（权限/磁盘/损坏）返回 Err(IoError) + ERROR 审计，
