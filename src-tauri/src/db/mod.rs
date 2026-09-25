@@ -64,7 +64,10 @@ pub fn open_db<R: tauri::Runtime>(
         // 锁内复检查让后到者直接跳过；锁仅护首装一次性窗口，常态零代价
         // （外层 exists 不进锁）。照 BOT_ASSIGNED_RESET_DONE / DB_WRITE_LOCK 先例。
         static LEGACY_COPY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _g = LEGACY_COPY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = LEGACY_COPY_LOCK.lock().unwrap_or_else(|e| {
+            eprintln!("[mutex_poisoned] db::open_db LEGACY_COPY_LOCK: {e:?}");
+            e.into_inner()
+        });
         if !db_path.exists() {
             if let Ok(legacy_dir) = app.path().app_data_dir() {
                 let legacy_db = legacy_dir.join("wmessage.db");

@@ -226,7 +226,10 @@ impl ChildRegGuard {
     pub fn register(child: &Child) -> Self {
         py_children()
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(|e| {
+                eprintln!("[mutex_poisoned] py::runtime PY_CHILDREN: {e:?}");
+                e.into_inner()
+            })
             .insert(child.id());
         Self(child.id())
     }
@@ -236,7 +239,10 @@ impl Drop for ChildRegGuard {
     fn drop(&mut self) {
         py_children()
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(|e| {
+                eprintln!("[mutex_poisoned] py::runtime PY_CHILDREN: {e:?}");
+                e.into_inner()
+            })
             .remove(&self.0);
     }
 }
@@ -270,7 +276,10 @@ pub fn kill_py_children(pids: &[u32]) -> usize {
 pub fn kill_all_py_children() -> usize {
     let pids: Vec<u32> = py_children()
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(|e| {
+            eprintln!("[mutex_poisoned] py::runtime PY_CHILDREN: {e:?}");
+            e.into_inner()
+        })
         .iter()
         .copied()
         .collect();

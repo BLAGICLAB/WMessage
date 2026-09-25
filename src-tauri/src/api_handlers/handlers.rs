@@ -275,7 +275,10 @@ fn create_task(
     // 持锁跨 socket I/O 会让慢客户端串行化全部并发 API 写。
     // create 的 load/upsert 失败原都走 internal_err（500），保持。
     let task = match 'rmw: {
-        let _rmw = API_RMW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _rmw = API_RMW_LOCK.lock().unwrap_or_else(|e| {
+            eprintln!("[mutex_poisoned] api_handlers::handlers API_RMW_LOCK: {e:?}");
+            e.into_inner()
+        });
         let all = match store.load() {
             Ok(v) => v,
             Err(e) => break 'rmw Err(e),
@@ -412,7 +415,10 @@ fn update_task(
         Upsert(String),
     }
     let t = match 'rmw: {
-        let _rmw = API_RMW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _rmw = API_RMW_LOCK.lock().unwrap_or_else(|e| {
+            eprintln!("[mutex_poisoned] api_handlers::handlers API_RMW_LOCK: {e:?}");
+            e.into_inner()
+        });
         let tasks = match store.load() {
             Ok(v) => v,
             Err(e) => break 'rmw Err(ErrOut::Load(e)),
@@ -581,7 +587,10 @@ fn delete_task(
         AlreadyDeleted(db::Task),
     }
     let t = match 'rmw: {
-        let _rmw = API_RMW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _rmw = API_RMW_LOCK.lock().unwrap_or_else(|e| {
+            eprintln!("[mutex_poisoned] api_handlers::handlers API_RMW_LOCK: {e:?}");
+            e.into_inner()
+        });
         let tasks = match store.load() {
             Ok(v) => v,
             Err(e) => break 'rmw Err(ErrOut::Load(e)),

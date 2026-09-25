@@ -190,7 +190,10 @@ mod tests {
     fn emitted_count() -> usize {
         emitted_map()
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(|e| {
+                eprintln!("[mutex_poisoned] evolution::emit emitted_map: {e:?}");
+                e.into_inner()
+            })
             .len()
     }
 
@@ -198,7 +201,10 @@ mod tests {
     fn emitted_contains(id: &str) -> bool {
         emitted_map()
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(|e| {
+                eprintln!("[mutex_poisoned] evolution::emit emitted_map: {e:?}");
+                e.into_inner()
+            })
             .contains_key(id)
     }
 
@@ -281,7 +287,10 @@ mod tests {
         let stale_ts = chrono::Utc::now().timestamp_millis() - (25 * 3_600_000);
         emitted_map()
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(|e| {
+                eprintln!("[mutex_poisoned] evolution::emit emitted_map: {e:?}");
+                e.into_inner()
+            })
             .insert(p.proposal_id.clone(), stale_ts);
         // 同 id emit：触发 retain 清理后再写
         let r = emit_proposals(vec![p.clone()]);
