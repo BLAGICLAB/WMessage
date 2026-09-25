@@ -52,8 +52,9 @@
 ## spec 起草后自查三条
 
 1. expected_files：src/App.tsx + src/App.test.tsx + src/components/ConfirmMap/ConfirmMap.tsx + src/components/ConfirmMap/ConfirmMap.test.tsx + src/components/ChatPanel/ChatPanel.tsx + src/components/ArtifactBatchDialog.tsx = 6（全路径已列）
-2. budget：A 类（App 初始化块重构 +14/-8；#18 try/catch +7/-1；ConfirmMap 拒旧 +12/-1；ChatPanel ref+守卫 +12/-2；skip 注释 +5/-1）+ B 类（App.test 2 用例 ≈ +90；ConfirmMap.test 1 用例 ≈ +45）合计 ≈ +195/-13，上限 +270/-30；无新文件
-3. fix 字段 ripple：全部组件内闭环；#22 后端 ChatGuard 已核（bot_chat.rs:683）；#19/#18 无跨文件 ripple
+2. assertions_min 填 0（gate 计数只认 Rust assert 宏，vitest expect 由实跑担保——WA-01/FE-08b 前端批通行先例；执行中校正 ×1）
+3. budget：A 类（App 初始化块重构 +14/-8；#18 try/catch +7/-1；ConfirmMap 拒旧 +12/-1；ChatPanel ref+守卫 +12/-2；skip 注释 +5/-1）+ B 类（App.test 2 用例 ≈ +90；ConfirmMap.test 1 用例 ≈ +45）合计 ≈ +195/-13，上限 +270/-30；无新文件
+4. fix 字段 ripple：全部组件内闭环；#22 后端 ChatGuard 已核（bot_chat.rs:683）；#19/#18 无跨文件 ripple
 
 ## 自主执行规则
 
@@ -95,8 +96,8 @@ spec 经用户拍板（B 类 5 项方向 2026-09-25）后：
     {"id": "C5-FE-02.20", "file": "src/components/ArtifactBatchDialog.tsx", "line": 79, "fix": "skip 语义注释文档化（这次不绑下次再问；无永久 dismiss 为已知限制）。ripple：无（零行为变更）"}
   ],
   "assertions_min": {
-    "src/App.test.tsx": 4,
-    "src/components/ConfirmMap/ConfirmMap.test.tsx": 3
+    "src/App.test.tsx": 0,
+    "src/components/ConfirmMap/ConfirmMap.test.tsx": 0
   },
   "ocr_plan": {
     "rounds": 1,
