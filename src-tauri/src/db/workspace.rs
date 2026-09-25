@@ -237,7 +237,22 @@ fn workspace_import_merge_unchecked(
             )
             .optional()
             .map_err(|e| e.to_string())?;
-        let cur_ua = cur.flatten().unwrap_or(0);
+        // 目标行「不存在」与「updated_at 为 NULL」必须分开：NULL 行与导入行的新旧
+        // 比较没有定义——静默取 0 会造成 NULL 行被任意时间戳覆盖或永不覆盖。
+        // NULL → 整批 Err（tx 未 commit 即返回，drop 回滚，fail-closed）；导入行缺
+        // updated_at 维持视 0 = 永不覆盖非 NULL 行。库内去 NULL 化（COALESCE +
+        // NOT NULL）属 schema 迁移方向，另批处理。
+        let cur_ua = match cur {
+            None => 0,
+            Some(None) => {
+                return Err(format!(
+                    "导入中止：看板项「{}」在库中的 updated_at 为空（NULL），新旧比较语义未定义。\
+                     请先在应用内编辑并保存该项（回填时间戳）后重新导入。",
+                    it.id
+                ));
+            }
+            Some(Some(ua)) => ua,
+        };
         let take = it.updated_at.unwrap_or(0) > cur_ua;
         if take {
             tx.execute(

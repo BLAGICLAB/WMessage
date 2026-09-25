@@ -81,6 +81,12 @@ pub fn open_db<R: tauri::Runtime>(
                             }
                         }
                         Err(e) => {
+                            crate::audit::write_event(
+                                app,
+                                crate::audit::AuditLevel::Error,
+                                "legacy_db_copy",
+                                &[("error", e.to_string())],
+                            );
                             return Err(e.to_string());
                         }
                     }
@@ -441,6 +447,57 @@ mod tests {
             !dst.exists(),
             "dst 不应被创建（Phase 1 fail 已 clean tmp-*）"
         );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 源库 open 失败（损坏/占用/加密类）→ fail-closed：Err 拒拷贝，
+    /// dst 主库/-wal/-shm 一概不产生，无 staging 残留。
+    #[test]
+    fn copy_legacy_db_open_failure_fails_closed() {
+        let dir = std::env::temp_dir().join(format!("wm-legacy-openfail-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        // 目标路径是目录 → Connection::open 必败（open(2) EISDIR）
+        let legacy = dir.join("not-a-db");
+        fs::create_dir_all(&legacy).unwrap();
+        let dst = dir.join("new").join("wmessage.db");
+        fs::create_dir_all(dst.parent().unwrap()).unwrap();
+
+        let result = copy_legacy_db(&legacy, &dst);
+
+        let err = result.expect_err("源库打不开必须拒拷贝（fail-closed）");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("拒绝拷贝"),
+            "错误消息应可操作（指明已拒绝拷贝且原库未动），got: {msg}"
+        );
+        assert!(!dst.exists(), "dst 主库不得产生");
+        assert!(!wal_sidecar(&dst, "wal").exists(), "dst -wal 不得产生");
+        assert!(!wal_sidecar(&dst, "shm").exists(), "dst -shm 不得产生");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 损坏源库（非 SQLite 文件：open 惰性成功、checkpoint 报 NOTADB）→ fail-closed：
+    /// 与 open 失败同治，Err 拒拷贝、dst 三件套一概不产生（BUSY 之外的错误不裸拷）。
+    #[test]
+    fn copy_legacy_db_corrupt_source_fails_closed() {
+        let dir = std::env::temp_dir().join(format!("wm-legacy-corrupt-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let legacy = dir.join("wmessage.db");
+        // >100 字节垃圾：SQLite 头校验必败（NOTADB）；零长度才会被当空库
+        std::fs::write(&legacy, &[b'x'; 512]).unwrap();
+        let dst = dir.join("new").join("wmessage.db");
+        fs::create_dir_all(dst.parent().unwrap()).unwrap();
+
+        let result = copy_legacy_db(&legacy, &dst);
+
+        let err = result.expect_err("损坏源库必须拒拷贝（fail-closed）");
+        assert!(
+            err.to_string().contains("拒绝拷贝"),
+            "错误消息应可操作，got: {err}"
+        );
+        assert!(!dst.exists(), "dst 主库不得产生");
+        assert!(!wal_sidecar(&dst, "wal").exists(), "dst -wal 不得产生");
+        assert!(!wal_sidecar(&dst, "shm").exists(), "dst -shm 不得产生");
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -998,6 +1055,70 @@ mod tests {
             )
             .unwrap();
         assert!(updated_at >= 5000, "updated_at 应被 update 为 now >= 5000");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 覆写行序不变量：全量覆写后 load 行序 == 写入序，批内 created_at 相等
+    /// （覆写原子时刻），id 单调递增——行序唯一由自增 id 恢复，与 created_at 无关。
+    #[test]
+    fn bot_history_overwrite_restores_order_and_batch_created_at() {
+        let (dir, mut conn) = setup_bhs_db();
+        conn.execute(
+            "INSERT INTO bot_sessions VALUES ('s1', 'T', 1000, 5000)",
+            [],
+        )
+        .unwrap();
+        let mk = |content: &str| BotMsgRow {
+            role: "user".into(),
+            content: content.into(),
+            refs_json: None,
+            thinking: None,
+            tools_json: None,
+        };
+
+        // 第一批 3 条 → 整批覆写为 2 条（内容可辨识顺序）
+        let first = vec![mk("a"), mk("b"), mk("c")];
+        let tx = conn.transaction().unwrap();
+        bot_history_save_inner(&tx, "s1", &first).unwrap();
+        tx.commit().unwrap();
+        let second = vec![mk("d"), mk("e")];
+        let tx = conn.transaction().unwrap();
+        bot_history_save_inner(&tx, "s1", &second).unwrap();
+        tx.commit().unwrap();
+
+        // load（生产查询同款 ORDER BY id）行序 == 写入序
+        let mut stmt = conn
+            .prepare("SELECT role, content, refs, thinking, tools FROM bot_messages WHERE session_id = 's1' ORDER BY id")
+            .unwrap();
+        let loaded: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            loaded,
+            vec!["d".to_string(), "e".to_string()],
+            "覆写后行序应恢复写入序"
+        );
+        drop(stmt);
+
+        // 批内 created_at 全等（覆写原子时刻）+ id 单调递增
+        let rows: Vec<(i64, i64)> = conn
+            .prepare("SELECT id, created_at FROM bot_messages WHERE session_id = 's1' ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(rows.len(), 2, "覆写后应只剩第二批 2 条");
+        let ids: Vec<i64> = rows.iter().map(|(id, _)| *id).collect();
+        let cats: Vec<i64> = rows.iter().map(|(_, ca)| *ca).collect();
+        assert!(ids[0] < ids[1], "id 应单调递增：{ids:?}");
+        assert_eq!(
+            cats[0], cats[1],
+            "批内 created_at 应全等（覆写原子时刻）：{cats:?}"
+        );
 
         fs::remove_dir_all(&dir).ok();
     }
@@ -1695,6 +1816,66 @@ mod ws_tests {
             )
             .unwrap();
         assert_eq!(blank_count, 0, "空 id 应被跳过");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 目标行 updated_at 为 NULL → 整批 Err（fail-closed，tx 回滚）：
+    /// NULL 与导入行的新旧比较语义未定义，不得静默取 0。
+    #[test]
+    fn workspace_import_aborts_on_null_updated_at_target() {
+        let dir = std::env::temp_dir().join(format!("wm-ws-null-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let mut conn = rusqlite::Connection::open(dir.join("t.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE workspace_items (
+               id TEXT PRIMARY KEY, title TEXT NOT NULL, collapsed INTEGER,
+               links TEXT NOT NULL, ord REAL, updated_at INTEGER);
+             INSERT INTO workspace_items VALUES ('null-ua','cur-null',NULL,'[]',NULL,NULL);
+             INSERT INTO workspace_items VALUES ('ok','cur-50',NULL,'[]',NULL,50);",
+        )
+        .unwrap();
+        let mk = |id: &str, ua: i64| WorkspaceItem {
+            id: id.into(),
+            title: format!("in-{ua}"),
+            collapsed: None,
+            links: vec![],
+            order: None,
+            updated_at: Some(ua),
+        };
+
+        // 同批两条：一条命中 NULL 目标行（Err），另一条本可正常合并——整批回滚
+        let err = workspace_import_merge(&mut conn, &[mk("ok", 100), mk("null-ua", 1)])
+            .expect_err("NULL updated_at 目标行必须中止导入");
+
+        match err {
+            CommandError::Internal(ref m) => {
+                assert!(
+                    m.contains("updated_at 为空"),
+                    "错误消息应指明 NULL 语义未定义，got: {m}"
+                );
+                assert!(m.contains("null-ua"), "错误消息应指认目标行 id，got: {m}");
+            }
+            other => panic!("应返 Internal(String)，实际 {other:?}"),
+        }
+
+        // tx 回滚：本可合并的 ok 行未被写入，NULL 行未被覆盖
+        let ok_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM workspace_items WHERE id='ok' AND title='in-100'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(ok_count, 0, "整批回滚：本可合并的行也不得写入");
+        let null_title: String = conn
+            .query_row(
+                "SELECT title FROM workspace_items WHERE id='null-ua'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(null_title, "cur-null", "NULL 目标行内容不得被覆盖");
+
         fs::remove_dir_all(&dir).ok();
     }
 }

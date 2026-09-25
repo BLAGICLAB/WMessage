@@ -47,7 +47,8 @@ pub(crate) fn atomic_write(path: &std::path::Path, contents: &str) -> Result<(),
 }
 
 /// 便携模式首启拷贝老库——Phase 1 (3 文件 to staging) + Phase 2 (rename order sidecar-first then main)；
-/// 任一 Phase 失败 → clean tmp-* + 回滚 db_path-* → Err。APW-02b。
+/// 任一 Phase 失败 → clean tmp-* + 回滚 db_path-* → Err；源库 open 失败 → 直接 Err（fail-closed，
+/// 损坏/占用/加密的源被字节级拷贝只会复制出坏主库），原始老库全程只读、原样保留。APW-02b。
 pub fn copy_legacy_db(
     legacy_db: &std::path::Path,
     db_path: &std::path::Path,
@@ -63,11 +64,31 @@ pub fn copy_legacy_db(
             Ok(_) => warns.push(
                 "老库 WAL checkpoint 被占（BUSY），WAL 未落主库——-wal/-shm 已一并拷贝".to_string(),
             ),
-            Err(e) => warns.push(format!(
-                "老库 WAL checkpoint 失败（继续拷贝，-wal/-shm 一并带走）：{e}"
-            )),
+            Err(e) => {
+                // BUSY（源库被其他连接占用）是良性：-wal/-shm 原样带走即可继续；
+                // 其余（损坏 NOTADB / IO 等）= 源库不可信，与 open 失败同治：fail-closed。
+                if e.sqlite_error_code() == Some(rusqlite::ErrorCode::DatabaseBusy) {
+                    warns.push(
+                        "老库 WAL checkpoint 被占（BUSY），WAL 未落主库——-wal/-shm 已一并拷贝"
+                            .to_string(),
+                    );
+                } else {
+                    return Err(CommandError::IoError(format!(
+                        "老库校验失败，已拒绝拷贝以保护数据（原始老库未改动）：{e}。\
+                         请先人工检查老库是否损坏，再重试或删除老库。"
+                    )));
+                }
+            }
         },
-        Err(e) => warns.push(format!("老库打开失败（跳过 checkpoint 直接拷贝）：{e}")),
+        Err(e) => {
+            // 源库打不开（损坏/被占用/加密）时继续裸拷 = 把坏库复制成主库。
+            // 拒绝拷贝：原库只读未动，留给人工排障后重试。
+            return Err(CommandError::IoError(format!(
+                "老库打开失败，已拒绝拷贝以保护数据（原始老库未改动）：{e}。\
+                 请关闭可能占用该库的程序（如旧版应用/数据库工具）后重启重试；\
+                 若反复出现，请先人工检查老库是否损坏。"
+            )));
+        }
     }
 
     // Phase 1: copy 3 files to staging tmp-*

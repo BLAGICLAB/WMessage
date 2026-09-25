@@ -6,7 +6,8 @@ use tauri::AppHandle;
 use super::bot_sessions::BotMsgRow;
 use crate::error::{CommandError, CommandResult};
 
-/// 加载指定会话的消息（按写入顺序）
+/// 加载指定会话的消息（按写入顺序：行序由自增 id 恢复——写入侧批内 created_at
+/// 相同（覆写原子时刻），id 是唯一行序事实源）
 #[tauri::command]
 pub async fn bot_history_load(app: AppHandle, session_id: String) -> CommandResult<Vec<BotMsgRow>> {
     async_runtime::spawn_blocking(move || {
@@ -49,6 +50,10 @@ pub fn bot_history_save_inner(
         [session_id],
     )
     .map_err(|e| e.to_string())?;
+    // created_at 取单次 now 系有意：整批 DELETE+INSERT 是一次原子覆写，created_at
+    // 记录「本次覆写的原子时刻」（同批相同）。行序恢复不依赖 created_at——自增 id
+    // 即 (created_at, id) 复合排序键的 row_sequence 分量；按 created_at 排
+    // bot_messages 的消费方均属缺陷。
     let now = chrono::Utc::now().timestamp_millis();
     if !messages.is_empty() {
         let mut stmt = conn
