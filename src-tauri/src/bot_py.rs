@@ -691,7 +691,10 @@ mod tests {
             assert!(
                 py_children()
                     .lock()
-                    .unwrap_or_else(|e| e.into_inner())
+                    .unwrap_or_else(|e| {
+                        eprintln!("[mutex_poisoned] bot_py::tests py_children: {e:?}");
+                        e.into_inner()
+                    })
                     .contains(&pid),
                 "注册后必须能查到 pid"
             );
@@ -702,7 +705,10 @@ mod tests {
         assert!(
             !py_children()
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(|e| {
+                    eprintln!("[mutex_poisoned] bot_py::tests py_children: {e:?}");
+                    e.into_inner()
+                })
                 .contains(&pid),
             "守卫 Drop 后必须注销（防 pid 复用误杀）"
         );

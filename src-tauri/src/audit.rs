@@ -41,6 +41,18 @@ const KV_VALUE_MAX: usize = 500;
 /// 不必再解析人读文案。核心模型循环拿不到 AppHandle（审计走注入回调），
 /// 所以这里提供 kv 级 helper，与 `write_event_with_error` / `audit_event!(..., err => &e)`
 /// 共用同一份拼装，避免两条路径的键名 drift。
+/// 从 catch_unwind payload 提取 panic 信息（&str / String / 其他三种情况）。
+/// 全仓唯一实现（middleware / api_server / migration 轮询 / bot_scheduler 共用）。
+pub(crate) fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "non-string panic payload".to_string()
+    }
+}
+
 pub fn error_kv(err: &crate::error::CommandError) -> Vec<(&'static str, String)> {
     vec![
         ("code", err.code().as_str().to_string()),

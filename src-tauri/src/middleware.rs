@@ -107,7 +107,7 @@ impl MiddlewareRegistry {
                 }
                 Ok(None) => {}
                 Err(payload) => {
-                    let msg = panic_message(payload);
+                    let msg = crate::audit::panic_message(payload);
                     crate::audit::write_error_audit(
                         app,
                         "middleware_panic",
@@ -155,7 +155,7 @@ impl MiddlewareRegistry {
                     }
                 }
                 Err(payload) => {
-                    let msg = panic_message(payload);
+                    let msg = crate::audit::panic_message(payload);
                     crate::audit::write_error_audit(
                         app,
                         "middleware_panic",
@@ -250,17 +250,6 @@ pub fn run_pre_execute<R: tauri::Runtime>(
 // ────────────────────────────────────────────────────────────────────
 // 内置中间件：包装现有 intent_router / tool_guard
 // ────────────────────────────────────────────────────────────────────
-
-/// 从 catch_unwind payload 提取 panic 信息（&str / String / 其他三种情况）
-fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
-    if let Some(s) = payload.downcast_ref::<&str>() {
-        (*s).to_string()
-    } else if let Some(s) = payload.downcast_ref::<String>() {
-        s.clone()
-    } else {
-        "non-string panic payload".to_string()
-    }
-}
 
 /// 内置：选择任务卡批量执行路由中间件
 ///

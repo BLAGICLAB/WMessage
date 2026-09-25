@@ -59,11 +59,22 @@ pub(crate) fn append_bot_log_line(p: &Path, line: &str) -> bool {
 /// 规则：`| ` → `|  `（双空格），剩余裸 `|` → `||`，`\n` → `\\n`，`\r` → `\\r`；
 /// 转义后按字符数截到 max 加省略号。与 bot_py::escape_for_log 同一规则。
 pub(crate) fn escape_for_log(s: &str, max: usize) -> String {
-    let escaped = s
-        .replace("| ", "|  ")
-        .replace('|', "||")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r");
+    // \n/\r 保留短形式；其余控制字符（\t/\0/ESC 等）与 U+2028/U+2029 显式转义
+    //（与 api 域 sanitize_log_line 全集对齐）。`|` 逐字符倍增 + 前置 "| "→"|  "
+    // 预替换保持既有表格转义输出逐字符不变
+    let mut escaped = String::with_capacity(s.len());
+    for ch in s.replace("| ", "|  ").chars() {
+        match ch {
+            '|' => escaped.push_str("||"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\u{2028}' => escaped.push_str("\\u{2028}"),
+            '\u{2029}' => escaped.push_str("\\u{2029}"),
+            c if c.is_control() => escaped.extend(c.escape_default()),
+            c => escaped.push(c),
+        }
+    }
+    // 旧实现的 "| " → "|  " 双空格补位在逐字符臂下由 `|`→`||` 语义覆盖（表格列仍不被 | 破坏）
     let count = escaped.chars().count();
     if count <= max {
         escaped
@@ -124,3 +135,24 @@ pub(crate) fn read_log_tail(path: &Path, limit: Option<usize>) -> CommandResult<
 // 抑制 unused 警告：Write / tauri::AppHandle / db 都已通过 trait/参数使用
 #[allow(dead_code)]
 fn _write_marker(_w: &mut dyn Write) {}
+
+#[cfg(test)]
+mod escape_tests {
+    use super::*;
+
+    /// 控制字符全集（\t/\0/ESC）与 U+2028/2029 显式转义；`|` 倍增；普通文本不变
+    #[test]
+    fn escape_for_log_covers_control_chars() {
+        assert_eq!(escape_for_log("a\tb", 100), "a\\tb");
+        // escape_default 对 NUL 输出 \u{0} 形态
+        assert_eq!(escape_for_log("a\0b", 100), "a\\u{0}b");
+        assert_eq!(escape_for_log("a\u{1b}b", 100), "a\\u{1b}b");
+        assert_eq!(escape_for_log("a\u{2028}b", 100), "a\\u{2028}b");
+        assert_eq!(escape_for_log("a\u{2029}b", 100), "a\\u{2029}b");
+        assert_eq!(escape_for_log("a|b", 100), "a||b");
+        assert_eq!(escape_for_log("a\nb", 100), "a\\nb");
+        assert_eq!(escape_for_log("普通文本", 100), "普通文本");
+        // 截断仍生效
+        assert_eq!(escape_for_log("abcdef", 3), "abc…");
+    }
+}

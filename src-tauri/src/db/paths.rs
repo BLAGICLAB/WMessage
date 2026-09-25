@@ -42,7 +42,11 @@ pub(crate) fn atomic_write(path: &std::path::Path, contents: &str) -> Result<(),
         .ok_or_else(|| format!("无效的目标路径：{}", path.display()))?;
     let tmp = path.with_file_name(format!("{}.tmp", file_name.to_string_lossy()));
     std::fs::write(&tmp, contents).map_err(|e| format!("写入临时文件失败：{e}"))?;
-    std::fs::rename(&tmp, path).map_err(|e| format!("落盘重命名失败：{e}"))?;
+    std::fs::rename(&tmp, path).map_err(|e| {
+        // rename 失败不留 .tmp 垃圾（API-B fail-closed 测试暴露的残留面）
+        let _ = std::fs::remove_file(&tmp);
+        format!("落盘重命名失败：{e}")
+    })?;
     Ok(())
 }
 
@@ -159,4 +163,29 @@ pub fn wal_sidecar(db: &std::path::Path, ext: &str) -> PathBuf {
     let mut s = db.as_os_str().to_owned();
     s.push(format!("-{ext}"));
     std::path::PathBuf::from(s)
+}
+
+#[cfg(test)]
+mod atomic_write_tmp_tests {
+    use super::*;
+
+    /// rename 失败（dst 为目录）→ tmp 不残留（NEW-5：不留 .tmp 垃圾）
+    #[test]
+    fn atomic_write_rename_failure_cleans_tmp() {
+        let dir = std::env::temp_dir().join(format!("wm-aw-tmp-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dst = dir.join("target"); // 目录：rename 必败
+        std::fs::create_dir_all(&dst).unwrap();
+
+        let r = atomic_write(&dst, "content");
+
+        assert!(r.is_err(), "rename 到目录必须失败");
+        let residue: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp"))
+            .collect();
+        assert!(residue.is_empty(), "tmp 不得残留：{residue:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

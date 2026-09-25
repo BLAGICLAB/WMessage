@@ -268,7 +268,7 @@ pub fn start_api(
                             );
                         }));
                     if let Err(payload) = catch_result {
-                        let msg = panic_message(payload);
+                        let msg = crate::audit::panic_message(payload);
                         if let Some(log) = &on_error_w {
                             log(
                                 AuditLevel::Error,
@@ -301,17 +301,6 @@ struct ActiveGuard(Arc<AtomicUsize>);
 impl Drop for ActiveGuard {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::SeqCst);
-    }
-}
-
-/// 从 catch_unwind payload 提取 panic 信息（处理 &str / String / 其他三种情况）
-fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
-    if let Some(s) = payload.downcast_ref::<&str>() {
-        (*s).to_string()
-    } else if let Some(s) = payload.downcast_ref::<String>() {
-        s.clone()
-    } else {
-        "non-string panic payload".to_string()
     }
 }
 

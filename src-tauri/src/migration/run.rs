@@ -501,11 +501,7 @@ pub fn spawn_polling(app: AppHandle) {
             // 防 panic 杀死轮询线程（审计 P2）：单轮崩溃只废这一轮，后台自动迁移永久可用
             let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_migration(&app)));
             if let Err(e) = r {
-                let msg = e
-                    .downcast_ref::<&str>()
-                    .map(|s| s.to_string())
-                    .or_else(|| e.downcast_ref::<String>().cloned())
-                    .unwrap_or_else(|| "未知 panic".into());
+                let msg = crate::audit::panic_message(e);
                 log_line(&app, &format!("轮询迁移 panic（已恢复）：{msg}"));
             }
         }

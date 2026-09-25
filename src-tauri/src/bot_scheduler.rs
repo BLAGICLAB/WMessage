@@ -499,11 +499,7 @@ pub fn start_scheduler(app: AppHandle) {
             // 关闭信号不加：生命周期 = App，退出时 runtime 整体回收。
             let tick = std::panic::AssertUnwindSafe(scheduler_tick(&app, &sem));
             if let Err(panic) = tick.catch_unwind().await {
-                let msg = panic
-                    .downcast_ref::<&str>()
-                    .map(|s| (*s).to_string())
-                    .or_else(|| panic.downcast_ref::<String>().cloned())
-                    .unwrap_or_else(|| "非字符串 panic".into());
+                let msg = crate::audit::panic_message(panic);
                 crate::bot::audit_log(
                     &app,
                     &format!(
@@ -559,11 +555,7 @@ async fn scheduler_tick(app: &AppHandle, sem: &std::sync::Arc<tokio::sync::Semap
                 }
             });
             if let Err(panic) = body.catch_unwind().await {
-                let msg = panic
-                    .downcast_ref::<&str>()
-                    .map(|s| (*s).to_string())
-                    .or_else(|| panic.downcast_ref::<String>().cloned())
-                    .unwrap_or_else(|| "非字符串 panic".into());
+                let msg = crate::audit::panic_message(panic);
                 crate::bot::audit_log(
                     &app2,
                     &format!(
