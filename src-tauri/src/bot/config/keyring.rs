@@ -157,8 +157,9 @@ fn read_key_file_from(p: &std::path::Path) -> CommandResult<String> {
 }
 
 /// 降级文件写入：父目录不存在则创建；Unix 创建即 0600（OpenOptionsExt::mode，
-/// 与 api-token.txt 同策略）——「先写后 chmod」存在
-/// umask 默认权限窗口，且 chmod 失败会被静默吞（key 以 0644 留存无告警）。
+/// 与 api-token.txt 同策略——无「先写后 chmod」的 umask 窗口，chmod 失败问题不存在）。
+/// Windows：无 DACL 等价收紧——权限语义仅在 Unix 承诺（拍板 #13=B wontfix-with-rationale：
+/// 本仓无 Windows CI/验证手段，写 ACL 无法保证正确；降级存储本就是 keyring 不可用时的兜底）。
 fn write_key_file_to(p: &std::path::Path, key: &str) -> CommandResult<()> {
     if let Some(dir) = p.parent() {
         std::fs::create_dir_all(dir).map_err(|e| {

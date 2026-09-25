@@ -171,10 +171,79 @@ pub(crate) fn add_allowed_dir(app: &AppHandle, dir: &str) -> Result<(), String> 
         return Ok(());
     }
     cfg.allowed_dirs.push(d);
+    // 密钥防御纵深（拍板 #10=C）：写盘前对残留明文 key 逐槽执行「keyring 写入
+    // （仅空槽，不覆盖用户新值）→ 读回验证」，验证通过才剥该槽明文；任一环节
+    // 失败保留明文下次再试——keyring 读不回时剥除即丢密钥（零丢失优先）。
+    let stripped = strip_verified_keys(&mut cfg);
     let data_dir = db::data_dir(app);
     std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
     let raw = serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?;
-    write_config_atomic(&config_path(app), &raw).map_err(|e| e.to_string())
+    let res = write_config_atomic(&config_path(app), &raw).map_err(|e| e.to_string());
+    // 审计在写盘成功后 + 放锁后（锁内不夹审计写 IO；先审计后写盘会出现
+    // 「审计已剥、盘上未剥」的取证漂移——同 migrate_search_keys 先例）
+    drop(_g);
+    if res.is_ok() && !stripped.is_empty() {
+        let names = stripped.join(",");
+        crate::audit_event!(
+            app,
+            crate::audit::AuditLevel::Info,
+            "config.plaintext_key_stripped",
+            "slots" => names,
+        );
+    }
+    res
+}
+
+/// 明文 key 剥除前置验证（拍板 #10=C 内核）：对三个槽位独立处理——
+/// ① keyring 已有可读值 → 文件副本视为过期残留，可剥（keyring 值优先，
+///   不覆盖用户新值也不要求等值）；
+/// ② keyring 为空 → 写入明文并读回，读回等值才剥（读回无关值=并发竞争/后端异常，不剥）；
+/// ③ keyring 故障/读不回 → 保留明文，下次再试。
+/// 每槽至多一次 read + （空槽时）一次 write（keyring 读路径自带 prepare 副作用，
+/// has+read 双探测会把副作用翻倍）。返回成功剥除的槽位名（供审计留痕）。
+fn strip_verified_keys(cfg: &mut BotConfig) -> Vec<&'static str> {
+    let mut stripped = Vec::new();
+    for (slot, field) in [
+        (KeySlot::Llm, &mut cfg.api_key),
+        (KeySlot::Tavily, &mut cfg.tavily_key),
+        (KeySlot::Brave, &mut cfg.brave_key),
+    ] {
+        let Some(k) = field.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        // 单 read 探测：非空 = keyring 已有值（keyring 值优先，文件副本是过期残留）
+        let existing = keyring::read_key_of_slot(slot)
+            .ok()
+            .filter(|v| !v.trim().is_empty());
+        let wrote_now = existing.is_none();
+        let backed = match existing {
+            Some(v) => Some(v),
+            None => {
+                // 空槽：写入明文再读回——读回等值才担保落位（写入失败/读回缺失/读回
+                // 无关值都不剥，密钥零丢失优先）
+                if keyring::write_key_of_slot(slot, k).is_err() {
+                    continue;
+                }
+                keyring::read_key_of_slot(slot).ok()
+            }
+        };
+        if plaintext_strippable(backed.as_deref(), wrote_now, k) {
+            *field = None;
+            stripped.push(slot.keyring_user());
+        }
+    }
+    stripped
+}
+
+/// 纯决策内核（供单测）：keyring 侧实际读到的值能否担保文件明文可安全剥除。
+/// keyring 原有值（wrote_now=false）→ 非空即剥（keyring 值优先于文件副本）；
+/// 本次新写入（wrote_now=true）→ 读回值必须与明文等值（trim 后比对）——
+/// 读回无关值（并发竞争/后端别名）时剥除即丢失唯一可信比对基准。
+fn plaintext_strippable(backed: Option<&str>, wrote_now: bool, plaintext: &str) -> bool {
+    match backed.map(str::trim) {
+        Some(v) if !v.is_empty() => !wrote_now || v == plaintext.trim(),
+        _ => false,
+    }
 }
 
 // ───────────────────────── write_bot_config_file / update_config_file ─────────────────────────
@@ -405,5 +474,21 @@ mod tests {
                 .ends_with(".tmp")),
             "rename 失败也不得遗留 tmp 残渣"
         );
+    }
+
+    /// 剥 key 决策内核三态：keyring 原有值非空即剥 / 本次写入等值才剥 /
+    /// 无值（None 或空白）保留——零丢失优先
+    #[test]
+    fn plaintext_strippable_decides_by_verification() {
+        // keyring 原有值（非本次写入）：非空即剥（keyring 值优先于文件副本）
+        assert!(plaintext_strippable(Some("stored"), false, "file-copy"));
+        assert!(plaintext_strippable(Some("stored"), false, "stored"));
+        // 本次写入：读回等值才剥（不等值=并发竞争/后端异常，剥除即丢钥）
+        assert!(plaintext_strippable(Some("k"), true, "k"));
+        assert!(!plaintext_strippable(Some("other"), true, "k"));
+        // 无值 / 空白读回：保留
+        assert!(!plaintext_strippable(None, false, "k"));
+        assert!(!plaintext_strippable(None, true, "k"));
+        assert!(!plaintext_strippable(Some("  "), true, "k"));
     }
 }

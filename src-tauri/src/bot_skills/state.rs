@@ -165,22 +165,26 @@ pub fn active_skill_run_for<R: tauri::Runtime>(
         .cloned()
 }
 
-/// 清理终态 SkillRun（Completed/Failed/Terminated）。
+/// 清理指定会话的终态 SkillRun（Completed/Failed/Terminated）——只清本会话，
+/// 其他会话刚终态、正待各自调度器感知（/stop、工具失败）的 run 不受影响（拍板 #11=A）。
 /// SKILL_RUNS 只进不出：上轮遗留的终态 run 会被 active_skill_run 当"活动"，
 /// 在新一轮执行的第 0 步被 advance 短路——静默返回空文本、不发 LLM 请求（agent 假死）。
-/// 在每轮执行入口（run_model_loop / run_skill_scheduler）调用；
+/// 在每轮执行入口（run_model_loop / run_skill_scheduler）以本会话 id 调用；
 /// 本轮执行中新进入终态的 run 不受影响（清理发生在入口，轮内状态机照常可见）。
-pub fn clear_terminal_skill_runs<R: tauri::Runtime>(app: &AppHandle<R>) {
+/// 增长注记：仅本会话入口触发清理，长期不再执行的会话会留存末条终态记录
+/// （每会话至多一条，量级可控）。
+pub fn clear_terminal_skill_runs<R: tauri::Runtime>(app: &AppHandle<R>, session_id: Option<&str>) {
     let registry = skill_runs(app);
     let mut guard = registry.lock().unwrap_or_else(|e| {
         eprintln!("[mutex_poisoned] bot_skills::state::skill_runs: {e:?}");
         e.into_inner()
     });
     guard.retain(|_, r| {
-        !matches!(
-            r.state,
-            SkillState::Completed | SkillState::Failed | SkillState::Terminated
-        )
+        r.session_id.as_deref() != session_id
+            || !matches!(
+                r.state,
+                SkillState::Completed | SkillState::Failed | SkillState::Terminated
+            )
     });
 }
 
@@ -339,19 +343,26 @@ mod tests {
         app.handle().clone()
     }
 
-    /// 僵尸终态清理：入口清理后终态 run 不再被当"活动"，
-    /// Running/Paused 不受影响（测试用 Paused：is_skill_active 只认 Running，避免与并行测试竞争）
+    /// 僵尸终态清理：入口清理后本会话终态 run 不再被当"活动"，
+    /// Running/Paused 不受影响（测试用 Paused：is_skill_active 只认 Running，避免与并行测试竞争）；
+    /// 跨会话隔离：其他会话的终态 run 不得被本会话入口清理误删（拍板 #11=A）
     #[test]
     fn clear_terminal_removes_only_terminal_states() {
         let app = test_handle();
         let zombie = "test-zombie-clear";
-        // 用一个 Failed 残留 + 一个 Paused 活跃
+        // 本会话：一个 Failed 残留 + 一个 Paused 活跃；他会话：一个 Failed 终态
         let mut failed = test_run(8, 180);
         failed.name = zombie.into();
         failed.state = SkillState::Failed;
+        failed.session_id = Some("sess-clear-a".into());
         let mut paused = test_run(8, 180);
         paused.name = "test-zombie-clear-live".into();
         paused.state = SkillState::Paused;
+        paused.session_id = Some("sess-clear-a".into());
+        let mut other = test_run(8, 180);
+        other.name = "test-zombie-clear-other".into();
+        other.state = SkillState::Failed;
+        other.session_id = Some("sess-clear-b".into());
         {
             let registry = skill_runs(&app);
             let mut g = registry.lock().unwrap_or_else(|e| {
@@ -360,18 +371,23 @@ mod tests {
             });
             g.insert(zombie.into(), failed);
             g.insert("test-zombie-clear-live".into(), paused);
+            g.insert("test-zombie-clear-other".into(), other);
         }
-        clear_terminal_skill_runs(&app);
+        clear_terminal_skill_runs(&app, Some("sess-clear-a"));
         {
             let registry = skill_runs(&app);
             let g = registry.lock().unwrap_or_else(|e| {
                 eprintln!("[mutex_poisoned] bot_skills::state::skill_runs: {e:?}");
                 e.into_inner()
             });
-            assert!(g.get(zombie).is_none(), "Failed 残留应被清除");
+            assert!(g.get(zombie).is_none(), "本会话 Failed 残留应被清除");
             assert!(
                 g.get("test-zombie-clear-live").is_some(),
-                "Paused 不应被误清"
+                "本会话 Paused 不应被误清"
+            );
+            assert!(
+                g.get("test-zombie-clear-other").is_some(),
+                "其他会话终态 run 不应被本会话入口清理误删"
             );
         }
         // 收尾：不给其他测试留状态
@@ -381,6 +397,7 @@ mod tests {
             e.into_inner()
         });
         g.remove("test-zombie-clear-live");
+        g.remove("test-zombie-clear-other");
     }
 
     /// 回滚窗口重开/复原——Failed 可重开为 Running（按会话匹配），

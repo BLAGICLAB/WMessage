@@ -74,6 +74,10 @@ fn replace_ctx(
         let Some(val) = f(&caps) else { continue };
         out.push_str(&text[last..m.start()]);
         let bytes = text.as_bytes();
+        // in_quotes 字节级启发式（设计边界，wontfix 确认）：只看占位符紧邻字节是否
+        // 为 `"`，无法解析转义引号/多行结构——占位符模板本身构造上非合法 JSON，
+        // 启发式是结构必然；错配时替换后由下游 serde_json 兜底拒绝（可诊断不静默）。
+        // 若未来误判引发安全/权限错误，再转结构化 JSON 处理（另拍板）。
         let in_quotes =
             m.start() > 0 && bytes[m.start() - 1] == b'"' && bytes.get(m.end()) == Some(&b'"');
         if in_quotes {
@@ -432,6 +436,40 @@ mod tests {
         assert_eq!(
             substitute_vars(r#"{"i": "${step1.id}"}"#, &ctx),
             r#"{"i": "task-uuid"}"#
+        );
+    }
+
+    /// in_quotes 命中路径（占位符紧邻 JSON 字符串引号）：替换值含引号/换行时
+    /// 自动按 JSON 字符串内容转义，结果仍是可解析 JSON——当前行为的回归锁
+    #[test]
+    fn substitute_vars_escapes_inside_json_string() {
+        let ctx = ctx_one_step("task-uuid", "he said \"no\"\nline2");
+        let args = r#"{"a": "${step1.result}"}"#;
+        let out = substitute_vars(args, &ctx);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&out).expect("in_quotes 路径替换后必须仍是合法 JSON");
+        assert_eq!(
+            parsed["a"].as_str().unwrap(),
+            "he said \"no\"\nline2",
+            "转义后读回应与原始值逐字符一致，got: {out}"
+        );
+    }
+
+    /// 已知限制锁（wontfix 确认）：占位符紧邻字节非 `"`（所在字符串内含转义引号
+    /// 的形态）→ 启发式不判定 in_quotes，替换值原样插入、结果非合法 JSON——
+    /// 结构必然，替换后由下游 parse_args/serde_json 兜底拒绝（可诊断不静默）
+    #[test]
+    fn substitute_vars_raw_insert_when_quote_heuristic_misses() {
+        let ctx = ctx_one_step("task-uuid", "he said \"no\"");
+        let args = r#"{"a": "say \"hi\" ${step1.result}"}"#;
+        let out = substitute_vars(args, &ctx);
+        assert!(
+            out.contains("he said \"no\""),
+            "现状=原样插入（不转义），got: {out}"
+        );
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&out).is_err(),
+            "已知限制：该形态替换后不是合法 JSON（下游兜底拒绝），got: {out}"
         );
     }
 }

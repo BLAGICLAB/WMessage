@@ -919,11 +919,19 @@ pub async fn fetch_text(raw_url: &str) -> Result<String, CommandError> {
     // 正文仍过短（多半是 JS 渲染的 SPA 页面，静态抓取只能拿到空壳）→
     // 回退 Jina Reader 公共代理（服务端渲染后返回 markdown，免费无需 key）。
     // 隐私边界：目标 URL 会发给 r.jina.ai（公网地址本身，低风险）。
+    // 留痕（拍板 #12=B）：回退属基本审计面——失败/采用/未采用三路 stderr 记录，
+    // 不改 fetch_text 签名（签名改 + 调用链属扩 scope，另行拍板）。
     if plain.chars().count() < 100 {
-        if let Ok(jina) = fetch_jina_reader(raw_url).await {
-            if jina.chars().count() > plain.chars().count() {
-                plain = jina;
+        match fetch_jina_reader(raw_url).await {
+            Ok(jina) => {
+                if jina.chars().count() > plain.chars().count() {
+                    eprintln!("[bot_web] Jina Reader 回退并采用：{raw_url}");
+                    plain = jina;
+                } else {
+                    eprintln!("[bot_web] Jina Reader 回退未采用（不优于直连）：{raw_url}");
+                }
             }
+            Err(e) => eprintln!("[bot_web] Jina Reader 回退失败：{raw_url} | {e}"),
         }
     }
     if plain.is_empty() {

@@ -445,7 +445,7 @@ pub async fn run_model_loop(
     // 僵尸终态清理上移到薄壳（口径：写操作不该在模型循环核心）：
     // 上轮遗留的 Completed/Failed/Terminated run 会在第 0 轮被 advance 短路（agent 假死根因）。
     // 位置与原核心内调用等价——都发生在进入轮循环之前。
-    crate::bot_skills::clear_terminal_skill_runs(&app);
+    crate::bot_skills::clear_terminal_skill_runs(&app, session_id);
     let execute_tool = |name: String, args: String, trace: crate::bot::ToolCallTrace| {
         let app = app.clone();
         async move { crate::bot::execute_tool_traced(&app, &name, &args, Some(stop), &trace).await }

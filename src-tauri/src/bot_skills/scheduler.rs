@@ -279,8 +279,8 @@ where
     P: Fn(&str, &str, Option<&str>, Option<&str>, Option<bool>),
 {
     // 僵尸终态清理：上轮遗留的 Completed/Failed/Terminated run 会在第 0 步被 advance_dsl
-    // 误判为完成信号直接 break（与主循环同款假死根因）
-    clear_terminal_skill_runs(app);
+    // 误判为完成信号直接 break（与主循环同款假死根因）；只清本会话（跨会话隔离）
+    clear_terminal_skill_runs(app, session_id);
     let (steps, rollback) =
         parse_skill_steps(body).map_err(|e| DslFailure::Terminated { reason: e })?;
     if steps.is_empty() {
