@@ -5,6 +5,9 @@
 
 ## 0. 执行日志
 
+- [2026-09-25 11:10 CST] **EV-B**（evolution 域 B 类拍板落地批，commit e753185）：实修 1 处（#17=C）——record.rs/entry.rs read_all 收敛到 evolution/mod.rs 新增 read_jsonl<T> 泛型内核：首个非空行损坏 → Err（结构级 fail-closed，first_parsed 标志防前导空行偏移）；中间坏行 → stderr 留痕跳过返回好行；candidate/mod.rs write_proposals 的 unwrap_or_default → ?（dedup 基线不可得不再盲写）。行为变更：部分损坏 jsonl 不再整挂 evolution 面板；损坏文件写路径 Err 传播。OCR r1 8 comments 全同根：2 high 采纳（i==0 判定偏移 → first_parsed）+ 4 medium 不采纳有论证（eprintln 同域先例/dedup 代价拍板明示）+ 2 low 采纳；r2 8 comments 0 high（1 medium 采纳=read_jsonl 泛型收敛；7 low）。#23 ProposalTarget：**reviewer 核验（agent-21）前提不成立**——TS types.ts:26-28 与 Rust proposal.rs:66-72 已逐字段镜像 snake_case，唯一消费方 formatTarget 全 snake_case 访问，全 src/ 零 camelCase 误用点，文件头注释已钉约定——拍板 A 对象为假设性风险非现存缺陷，重命名纯 churn，零代码登记勘误。D2: files=4(+98/-36) asserts=0→56 tests=evolution 275 绿 + test-all 1145 全绿。
+- [2026-09-25 11:10 CST] **POISON-7**（docs-only）：拍板 #7=A（若 N≤5 则 B）条件判定——全仓毒锁恢复点（eprintln [mutex_poisoned] 形态）实测 **87 处**（grep 全 src-tauri/src，28 文件；profile.rs 25 / bot_skills/state.rs 10 / evolution/emit.rs 7 为前三），远超 ≤5 阈值 → **维持 eprintln（A），不升级 audit_event!**，C3-1 约定不变。#14（StopGuard 接线）已拍 C=wontfix-with-rationale 登记于 §2 BT-14 行。
+
 - [2026-09-25 10:55 CST] **MI-B2**（migration 域 B 类拍板落地批，commit ab47f1b）：实修 2 处——① #2=A 取消机制：static MIGRATION_CANCEL + CancelGuard(Drop) run 结束统一清零（panic 安全）+ 阶段一归档落盘前/阶段二主循环双检查点安全停止（已完成不回滚）+ report.cancelled 字段 + migration_cancel command 注册（取消 UI 未来迭代接线）；② #8=A replay 前置 purge_orphan_pending：同 (task_id,src) 多 pending 留最新删其余 + 留痕（MI-04a 修复前历史遗留不再同 key 重复处置）。OCR 3 轮：r1 2 high 采纳（检查点缺阶段一/轮询入口清零吞请求）+ 2m + 2l；r2 1 high 采纳（清零可被 panic 绕过 → DropGuard）+ 3m（2 采纳 doc 对齐；1 不采纳 mock 成本）+ 5l；r3 8 comments 0 critical 0 high（4m：1 采纳组合测试终态断言，3 不采纳有论证）。spec 校正 ×1（budget +180→+210）。D2: files=6(+202/-0) asserts=0→9 tests=migration 68 绿 + test-all 1141 全绿。
 
 - [2026-09-25 10:23 CST] **API-B**（api 域 B 类拍板落地批，commit 6de187b，amend 177aaa8 仅修 D2 数字）：实修 2 处——① #16=A api_server.rs broadcast 落盘写失败 → fetch_sub 归还 id + 事件不进重放历史不推送（fail-closed「要么持久化要么不推进」；归还后下次广播重取同 id 重试；单临界区单写者无竞争）；② #15=C commands.rs:61/:238 flag 写/清残余 TOCTOU 微窗注释声明（复核≠原子、可自愈）。OCR r1 2 low 全采纳（测试名/docstring 对齐实际行为 / atomic_write rename 失败残留 tmp 测试自清理）。**PHASE2-TRIAGE-NEW-5 登记：db/paths.rs atomic_write 在 rename 失败时残留同级 .tmp 文件（既有缺口，本批测试暴露），下一轮评估。** D2: files=2(+63/-2) asserts=0→19 tests=api_server 6 绿 + test-all 1138 全绿。
@@ -244,7 +247,7 @@
 - C5-BT-11：web 解析脆（bot_web.rs:412 + :422），2 条 → **已清（BT-11，commit b1d9212）**：find_tag_open 开标签精确匹配（后字符须空白/>//），杀 <a 误中 <abbr>、<p 误中 <pre>；行为修复 abbr 前置时标题/链接错位
 - C5-BT-12：workspace-link 残留（bot_skills/files.rs:0 + :43），2 条 → **全清（stale，C2b-2 已修）**：:0 kind 白名单 + :43 归一化不一致均已被 95a25e9（2026-09-21 20:39，**晚于 0921 全扫快照**）修复——link_kind_contributes_path 白名单（ALLOWED_LINK_KINDS 单一来源）+ 绑集 canonical 双侧比对。同文件另 4 条（:0 is_dir 死参数 / :10 静默收缩 / :83 TOCTOU / :144 raw contains，**triage 漏分簇补登记**）同判 stale——is_dir 已从 IPC 删、Err 分支全带 audit + C2c-v2 fail-closed、recheck_canonical 紧邻副作用、delete 走 path_openable_in。**reviewer 抽查 pass**（6 条独立核验）
 - C5-BT-13：prompt injection via fail_reason（bot_plan.rs:234），1 条 → **已修（BT-13，commit 11cf4f7）**：sanitize_fail_reason 剥控制字符+拆 ``` 序列+截 500，围栏+「数据非指令」标注
-- C5-BT-14：StopGuard broken（bot/registry.rs:267），1 条 → **转 B 类攒批第 14 项**：finding 要求把 ctx.stop 接进 13 个 mutating adapter，但**底层 fn 只有 tool_run_python 接受 stop**（已接）——全接线 = 13+ 工具签名改 + 内部取消检查（扩 scope）。且模型循环已有 4 处循环级 stop 检查（bot_model_loop.rs:571/:839/:1020/:1028），「排在长 Python 调用后」场景已覆盖；mutating 工具全是快 DB/文件操作。三方向：A=全签名接线（扩 scope）/ B=adapter 层 pre-flight 检查（语义增量小，循环级已近似覆盖）/ C=wontfix-with-rationale（StopGuard 设计意图=长操作+循环级中断）。待拍
+- C5-BT-14：StopGuard broken（bot/registry.rs:267），1 条 → **B 类 #14 已拍 C（2026-09-25）→ wontfix-with-rationale**：全接线=13+ 签名改扩 scope、循环级 4 处 stop 检查已覆盖长调用场景、mutating 工具全为快 DB/文件操作——StopGuard 设计意图=长操作+循环级中断，已知风险登记
 
 ### 域 WidgetApp（3 簇 / 7 findings）
 - C5-WA-01（原 WA-01 拆后残余，原 3 条拆为：a=constants.ts:13 已并入 C4-v2；b 仅剩 2 条 storage.ts:113 + storage.ts:79）：输入/反序列化校验缺（storage.ts:113 Anchor 结构不一致 + storage.ts:79 loadAnchor JSON.parse 零校验），批内 2 处独立改动（类型对齐 vs JSON.parse 校验，修复设施不同），2 条 → **已清（WA-01，commit 919aa0e，§0 02:45）**
@@ -643,6 +646,7 @@ run A 仅靠 /tmp/ocr-APW-02b-r1.clean.json 找回。cache 命名亦误导：
 
 - **FE-B（3dc8e3a，2026-09-25 10:14）OCR 核验记录**：r1 = ~/.openclaw/cache/FE-B/ocr-r1.raw.json（status=complete / comments=9 全同根：3 high 采纳 + 3 medium 采纳 + 3 low 1 采纳 2 不采纳 / 0 failure）；r2 = ocr-r2.raw.json（comments=8：1 high 采纳[watch 清理时序——改无条件发起 load + finally 清] + 3 medium 采纳 + 4 low）；r3 = ocr-r3.raw.json（comments=7 **0 critical 0 high——r2 验证通过**：3 medium 2 采纳[load 链 catch 全覆盖 / 斜杠命令绕过拦截→守卫上移+/stop 白名单] 1 不采纳有论证 + 4 low）。无 B 类新增。**flaky 样本 +1（第 5 例）**：ChatPanel.test 流式合并「scrollTo is not a function」（jsdom 滚动桩偶发未生效）——隔离 13 绿 + 全量复跑 1137 绿双过判 flaky，与前端批改动无涉。
 
+- **EV-B（e753185，2026-09-25 11:10）OCR 核验记录**：r1 = ~/.openclaw/cache/EV-B/ocr-r1.raw.json（status=complete / comments=8 全同根：2 high 采纳[i==0 判定偏移 → first_parsed 首个非空行判定] + 4 medium 不采纳有论证[eprintln 留痕=同域先例、dedup 代价=拍板明示，注释声明] + 2 low 采纳[新测试 tempfile 化与断言精化]）；r2 = ocr-r2.raw.json（comments=8 **0 high——r1 验证通过**：1 medium 采纳[read_jsonl 泛型收敛两处 30 行重复] + 7 low）。无 B 类新增。
 - **MI-B2（ab47f1b，2026-09-25 10:55）OCR 核验记录**：r1 = ~/.openclaw/cache/MI-B2/ocr-r1.raw.json（comments=6：2 high 采纳[检查点覆盖/清零时序] + 2 medium 1 采纳 1 不采纳 + 2 low 采纳）；r2 = ocr-r2.raw.json（comments=9：1 high 采纳[panic 绕过清零 → CancelGuard Drop] + 3 medium 2 采纳 1 不采纳 + 5 low）；r3 = ocr-r3.raw.json（comments=8 **0 critical 0 high——r2 验证通过**：4 medium 1 采纳[组合测试终态断言] 3 不采纳有论证 + 4 low）。无 B 类新增。
 - **API-B（6de187b，2026-09-25 10:23）OCR 核验记录**：r1 = ~/.openclaw/cache/API-B/ocr-r1.raw.json（status=complete / comments=2 全 low 采纳：测试名/docstring 对齐实际行为[同 hub 重试由 last_id 归还断言覆盖，恢复段为独立 hub 正常路径] / atomic_write rename 失败残留同级 tmp 测试自清理[既有缺口 → NEW-5 登记]）/ 0 failure / 0 high 0 medium。无 B 类新增。
 
@@ -673,6 +677,7 @@ run A 仅靠 /tmp/ocr-APW-02b-r1.clean.json 找回。cache 命名亦误导：
   - → **已拍 A（2026-09-25）→ 已清（BOT-B，ea6317d；设计边界注释 + 2 回归测试锁现状）**
 - **#7** 全仓毒锁恢复点（db::lock_db_write 先例形态；BT-03a 语境 = CONFIG_WRITE_LOCK 等）—— 毒锁恢复后 eprintln vs audit_event! 落 bot.log：改即改 C3-1 约定（「logged 恢复即合法」现以 eprintln 满足）。
   - A=〔重建构造〕维持 eprintln（C3-1 现约定，零改动）；B=〔重建构造〕统一升级 audit_event! 落 bot.log（改 C3-1 约定 + 全仓 N 处恢复点统一 + audit_event! 需 AppHandle 的调用点改造，扩 scope）；C=〔重建构造〕仅新增锁（未来批）用 audit_event!、存量不动（双轨，约定分叉风险）。triage：§4:552
+  - → **已拍 A（若 N≤5 则 B）（2026-09-25）→ 判定 N=87 处 >5 → 维持 eprintln，C3-1 约定不变（POISON-7 docs-only，§0）**
 - **#8** src-tauri/src/migration/journal.rs（journal_pending）—— MI-04a 修复前历史遗留：既有库同 key 孤儿 pending 行清理 = 数据迁移方向。
   - A=〔重建构造〕启动 replay 前一次性清理（扫 journal，同 key 已完成 op 的孤儿 pending 删除 + 留痕——改迁移启动语义）；B=〔重建构造〕不清理（MI-04a 后 check-then-reuse，孤儿只占行数无行为危害——需核 replay 扫到孤儿时的实际行为）；C=〔重建构造〕提供手动清理命令/文档（运维面）。triage：§0:49
   - → **已拍 A（2026-09-25）→ 已清（MI-B2，ab47f1b；同 key 多 pending 留最新删其余 + 留痕；committed 共存不删）**
@@ -693,6 +698,7 @@ run A 仅靠 /tmp/ocr-APW-02b-r1.clean.json 找回。cache 命名亦误导：
   - → **已拍 B（2026-09-25）→ 已清（BOT-B，ea6317d；doc 文档化，顺带修正 0600 直写陈旧注释）**
 - **#14** src-tauri/src/bot/registry.rs:267（StopGuard 接线）—— ctx.stop 仅 tool_run_python 已接；全接线 = 13+ mutating adapter 工具签名改 + 内部取消检查（扩 scope）；循环级 4 处 stop 检查已覆盖「排在长调用后」场景。
   - A=全签名接线〔triage 已载〕（扩 scope）；B=adapter 层 pre-flight 检查〔triage 已载〕（语义增量小，循环级已近似覆盖）；C=wontfix-with-rationale〔triage 已载〕（StopGuard 设计意图=长操作+循环级中断）。triage：§2:235 / §0:89
+  - → **已拍 C（2026-09-25）→ wontfix-with-rationale 维持，零代码**
 - **#15** src-tauri/src/api_handlers/commands.rs:61 + :238 —— enabled flag 文件写/清在锁外 + 复核（service_present）后仍余 TOCTOU 微窗：并 api_stop/api_start 可交错致 flag 与内存态背离（下次启动自动恢复状态错一次）。
   - A=〔重建构造〕改「文件 I/O 不持锁」既有约定：flag 写/清移锁内（动约定，须与 AP-05 抬锁外方向做全仓一致性核定）；B=〔重建构造〕世代号/版本号 CAS 复核（写 flag 时带世代，消除窗口不加锁）；C=〔重建构造〕维持现状 + 注释文档化残余窗（误写后果可自愈：用户下次手动纠正）。triage：§2:211 / §0:91
   - → **已拍 C（2026-09-25）→ 已清（API-B，6de187b；两处注释补残余窗声明，零行为变更）**
@@ -701,6 +707,7 @@ run A 仅靠 /tmp/ocr-APW-02b-r1.clean.json 找回。cache 命名亦误导：
   - → **已拍 A（2026-09-25）→ 已清（API-B，6de187b；归还 id + 事件丢弃不投递，下次广播重取同 id 重试；事件丢弃为拍板明示接受）**
 - **#17** src-tauri/src/evolution/change/record.rs:211 + candidate/entry.rs:110 —— read_all 逐行解析，单行 JSON 损坏 → 整读 Err（现状 fail-closed，一坏行拖死全部读取）。
   - A=〔重建构造〕维持 fail-closed（损坏立即可见，但 evolution 面板整挂）；B=〔重建构造〕fail-open：跳坏行 + 留痕（可用性优先；审计轨迹有缺口）；C=〔重建构造〕折中：首行坏 → Err，中间坏行 → 跳过 + audit 留痕（需定阈值依据）。triage：§2:179 / §0:109
+  - → **已拍 C（2026-09-25）→ 已清（EV-B，e753185；read_jsonl 共享内核：首个非空行坏 Err / 中间坏行 stderr 留痕跳过；write_proposals Err 传播对齐）**
 - **#18** src/App.tsx:240 —— tasks-updated 合并路径半成功：upsert 成功 + delete 抛错时 UI 不更新、不广播。
   - A=回滚已成功 upserts〔triage 已载〕（补偿写，复杂且自身可失败）；B=仍合并广播〔triage 已载〕（delete 失败行暂留 UI，下事件自愈）；C=维持现状仅靠 storage 层 alert 提示〔triage 已载〕。triage：§4:598
   - → **已拍 B（2026-09-25）→ 已清（FE-B，3dc8e3a；mutate 路径同治——OCR r1 high 一致性采纳）**
@@ -718,6 +725,7 @@ run A 仅靠 /tmp/ocr-APW-02b-r1.clean.json 找回。cache 命名亦误导：
   - → **已拍 B（2026-09-25）→ 已清（FE-B，3dc8e3a；后端 ChatGuard 已核在位=并发软拒兜底；watch 拦 Send 含斜杠命令，/stop 白名单）**
 - **#23** src/components/EvolutionPanel/types.ts:24 —— ProposalTarget 的 tool_name/skill_name/policy 为 snake_case（verbatim 来自 serde response），camelCase 习惯 consumer 写 toolName 静默 undefined 但编译过。
   - A=字段 camelCase 重命名〔triage 已载〕（serde rename + 全部消费方改 = 跨域签名改）；B=字段级 JSDoc 文档化 verbatim 契约〔triage 已载〕（不改类型）；C=wontfix〔triage 已载〕。triage：§4:607
+  - → **已拍 A（2026-09-25）→ 前提不成立零代码处置（reviewer agent-21 核验：TS/Rust 已逐字段镜像 snake_case、消费方零 camelCase 误用点、文件头注释钉死约定——finding 为假设性风险非现存缺陷，重命名纯 churn 不执行；勘误登记 §0）**
 
 **已 triage（脚本 DOMAINS 12 域，不含 frontend）**: 145 unique
 
