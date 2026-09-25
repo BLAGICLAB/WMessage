@@ -5,6 +5,8 @@
 
 ## 0. 执行日志
 
+- [2026-09-25 10:55 CST] **MI-B2**（migration 域 B 类拍板落地批，commit ab47f1b）：实修 2 处——① #2=A 取消机制：static MIGRATION_CANCEL + CancelGuard(Drop) run 结束统一清零（panic 安全）+ 阶段一归档落盘前/阶段二主循环双检查点安全停止（已完成不回滚）+ report.cancelled 字段 + migration_cancel command 注册（取消 UI 未来迭代接线）；② #8=A replay 前置 purge_orphan_pending：同 (task_id,src) 多 pending 留最新删其余 + 留痕（MI-04a 修复前历史遗留不再同 key 重复处置）。OCR 3 轮：r1 2 high 采纳（检查点缺阶段一/轮询入口清零吞请求）+ 2m + 2l；r2 1 high 采纳（清零可被 panic 绕过 → DropGuard）+ 3m（2 采纳 doc 对齐；1 不采纳 mock 成本）+ 5l；r3 8 comments 0 critical 0 high（4m：1 采纳组合测试终态断言，3 不采纳有论证）。spec 校正 ×1（budget +180→+210）。D2: files=6(+202/-0) asserts=0→9 tests=migration 68 绿 + test-all 1141 全绿。
+
 - [2026-09-25 10:23 CST] **API-B**（api 域 B 类拍板落地批，commit 6de187b，amend 177aaa8 仅修 D2 数字）：实修 2 处——① #16=A api_server.rs broadcast 落盘写失败 → fetch_sub 归还 id + 事件不进重放历史不推送（fail-closed「要么持久化要么不推进」；归还后下次广播重取同 id 重试；单临界区单写者无竞争）；② #15=C commands.rs:61/:238 flag 写/清残余 TOCTOU 微窗注释声明（复核≠原子、可自愈）。OCR r1 2 low 全采纳（测试名/docstring 对齐实际行为 / atomic_write rename 失败残留 tmp 测试自清理）。**PHASE2-TRIAGE-NEW-5 登记：db/paths.rs atomic_write 在 rename 失败时残留同级 .tmp 文件（既有缺口，本批测试暴露），下一轮评估。** D2: files=2(+63/-2) asserts=0→19 tests=api_server 6 绿 + test-all 1138 全绿。
 
 - [2026-09-25 10:14 CST] **FE-B**（frontend 域 B 类拍板落地批，commit 3dc8e3a，amend 8ffafcb 仅修 D2 数字）：实修 5 处（批内独立改动如实声明）——① #19=A App.tsx legacy 迁移失败 catch 标记 + 跳过 SEED（不再造成 legacy 永久 orphan）；② #18=B tasks-updated delete 失败 try/catch 不阻断合并广播（行已从内存移除、库中仍在 → db_load 自愈）；③ #21=B ConfirmMap 新 confirm 自动拒未响应旧请求（fire-and-forget；busyRef 在途不补刀）；④ #22=B ChatPanel execWatchRef 围观守卫（置值/收尾 history_load **完成后**无条件清 + execute-task 失败路径清 / send 拦截上移 + /stop 白名单 / load 链 catch 全覆盖）；⑤ #20=A ArtifactBatchDialog skip 语义注释。OCR 3 轮：r1 9 comments（3 high 采纳：mutate 同治 + watch 清理嵌套 ×2；3 medium 采纳；3 low 1 采纳）/ r2 8 comments（1 high 采纳：清早于 load 完成 → 无条件发起 + finally 清；3 medium 采纳：ref 序 / mutate 测试 / 失败路径泄漏）/ r3 7 comments **0 critical 0 high**（3 medium：2 采纳=load 链 unhandled rejection + 斜杠绕过拦截；1 不采纳=初始 load 失败有 execute-task 收尾兜底）。**flaky 第 5 例**：ChatPanel 流式合并 scrollTo（jsdom 滚动桩偶发），隔离+全量双过。spec 校正 ×1（assertions 0 先例）。D2: files=6(+223/-11) asserts=0→0 tests=vitest 310 全量绿 + tsc 0。
@@ -204,7 +206,7 @@
 - C5-MI-03：failure-recovery-default-value（migration/rules.rs:27 + :121，破坏数据：rules 默认覆盖 + CSV 输入 coerce），2 条 → **:121 已修（FRDV-01，commit 46f8437）；:27 已清（MI-B1，commit 5b5f360，§0 2026-09-25 08:53；用户拍板 #1=B 主案 caller=3）**
 - C5-MI-04a：migration/journal.rs:34 INSERT 无去重，1 条 → **已修（MI-04a，commit 414cf08）**
 - C5-MI-04b：migration/journal.rs:126 unlocked find+act TOCTOU，1 条 → **已修（MI-04b，commit 5819f76；replay 纳入 MigrationGuard）**
-- C5-MI-05a：migration/commands.rs:116 spawn_blocking 无 abort，1 条 → **B 类候选**（修法 = CancellationToken 贯穿 run_migration 阶段 + 取消语义方向「迁一半的文件怎么办」，签名改 + 语义变更，攒批报人拍）
+- C5-MI-05a：migration/commands.rs:116 spawn_blocking 无 abort，1 条 → **B 类候选（#2）已拍 A → 已清（MI-B2，commit ab47f1b，§0 2026-09-25 10:55：取消机制贯穿 + command 就绪，取消 UI 未来接线）**
 - C5-MI-05b：migration/commands.rs:19 + recovery.rs:197 sync/block_on 阻塞，2 条，**跨域阻塞族待核**（§3 待核区明确「不现在动」）
 - C5-MI-06：migration/ops.rs:127 copy_dir_recursive mid-fail → dst 部分填充（**atomicity/partial-write 家族**），1 条 → **已清（APW-02a，commit d443a07）：顶层 staging sibling + 原子 rename + 失败清 staging——2026-09-25 06:59 源码复核在位，行标补打**
 - C5-MI-07：migration/ops.rs:202 路径不一致（rotation target ≠ write target），1 条 → **已修（MI-07，commit 613e07a）**
@@ -641,6 +643,7 @@ run A 仅靠 /tmp/ocr-APW-02b-r1.clean.json 找回。cache 命名亦误导：
 
 - **FE-B（3dc8e3a，2026-09-25 10:14）OCR 核验记录**：r1 = ~/.openclaw/cache/FE-B/ocr-r1.raw.json（status=complete / comments=9 全同根：3 high 采纳 + 3 medium 采纳 + 3 low 1 采纳 2 不采纳 / 0 failure）；r2 = ocr-r2.raw.json（comments=8：1 high 采纳[watch 清理时序——改无条件发起 load + finally 清] + 3 medium 采纳 + 4 low）；r3 = ocr-r3.raw.json（comments=7 **0 critical 0 high——r2 验证通过**：3 medium 2 采纳[load 链 catch 全覆盖 / 斜杠命令绕过拦截→守卫上移+/stop 白名单] 1 不采纳有论证 + 4 low）。无 B 类新增。**flaky 样本 +1（第 5 例）**：ChatPanel.test 流式合并「scrollTo is not a function」（jsdom 滚动桩偶发未生效）——隔离 13 绿 + 全量复跑 1137 绿双过判 flaky，与前端批改动无涉。
 
+- **MI-B2（ab47f1b，2026-09-25 10:55）OCR 核验记录**：r1 = ~/.openclaw/cache/MI-B2/ocr-r1.raw.json（comments=6：2 high 采纳[检查点覆盖/清零时序] + 2 medium 1 采纳 1 不采纳 + 2 low 采纳）；r2 = ocr-r2.raw.json（comments=9：1 high 采纳[panic 绕过清零 → CancelGuard Drop] + 3 medium 2 采纳 1 不采纳 + 5 low）；r3 = ocr-r3.raw.json（comments=8 **0 critical 0 high——r2 验证通过**：4 medium 1 采纳[组合测试终态断言] 3 不采纳有论证 + 4 low）。无 B 类新增。
 - **API-B（6de187b，2026-09-25 10:23）OCR 核验记录**：r1 = ~/.openclaw/cache/API-B/ocr-r1.raw.json（status=complete / comments=2 全 low 采纳：测试名/docstring 对齐实际行为[同 hub 重试由 last_id 归还断言覆盖，恢复段为独立 hub 正常路径] / atomic_write rename 失败残留同级 tmp 测试自清理[既有缺口 → NEW-5 登记]）/ 0 failure / 0 high 0 medium。无 B 类新增。
 
 ### B 类决策权威清单（2026-09-25 07:25 CST zcode 重建，23 项待用户逐项拍板；拍板前禁写代码）
@@ -655,6 +658,7 @@ run A 仅靠 /tmp/ocr-APW-02b-r1.clean.json 找回。cache 命名亦误导：
   - → **已拍 B（2026-09-25，caller 实测恰 3 处走主案）→ 已清（MI-B1，5b5f360；NotFound=首装合法态 Ok 空规则、读失败 IoError、解析失败 DomainRule；run.rs 迁移中止）**
 - **#2** src-tauri/src/migration/commands.rs:116 —— migration_run 的 spawn_blocking 无 abort/cancel 接线，前端取消（关窗/退出）后 future 无人接收（OCR high）。
   - A=〔triage 载方向〕CancellationToken 贯穿 run_migration 各阶段（migration_run 签名改 + 取消语义「迁一半的文件怎么办」——staging 原子化后中止安全性需逐阶段核定）；B=〔重建构造〕不可取消语义文档化（任务后台自然跑完并落 journal，结果丢弃无害）；C=〔重建构造〕wontfix-with-rationale。triage：§2:197
+  - → **已拍 A（2026-09-25）→ 已清（MI-B2，ab47f1b；AtomicBool 等价实现 + 阶段边界检查点 + migration_cancel command；staging/journal 原子化使取消安全）**
 - **#3** src-tauri/src/db/paths.rs:50 —— copy_legacy_db 源库 open 失败（损坏/加密/IO）仅追加 warn 字符串，坏源静默继续传播（OCR high，C5-DB-05 成员）。
   - A=〔重建构造〕fail-closed：open 失败 → Err 拒拷贝，不产半成品目标库；B=〔重建构造〕维持 warn + 继续拷贝（便携首启容错优先——老库偶发锁定/权限时仍能拿到可用目标库）；C=〔重建构造〕warn 升级为迁移日志 ERROR + UI 可见提示，行为不变。triage：§2:170 / §0:30
   - → **已拍 A+C 组合（2026-09-25）→ 已清（DB-B，f137536）**
@@ -671,6 +675,7 @@ run A 仅靠 /tmp/ocr-APW-02b-r1.clean.json 找回。cache 命名亦误导：
   - A=〔重建构造〕维持 eprintln（C3-1 现约定，零改动）；B=〔重建构造〕统一升级 audit_event! 落 bot.log（改 C3-1 约定 + 全仓 N 处恢复点统一 + audit_event! 需 AppHandle 的调用点改造，扩 scope）；C=〔重建构造〕仅新增锁（未来批）用 audit_event!、存量不动（双轨，约定分叉风险）。triage：§4:552
 - **#8** src-tauri/src/migration/journal.rs（journal_pending）—— MI-04a 修复前历史遗留：既有库同 key 孤儿 pending 行清理 = 数据迁移方向。
   - A=〔重建构造〕启动 replay 前一次性清理（扫 journal，同 key 已完成 op 的孤儿 pending 删除 + 留痕——改迁移启动语义）；B=〔重建构造〕不清理（MI-04a 后 check-then-reuse，孤儿只占行数无行为危害——需核 replay 扫到孤儿时的实际行为）；C=〔重建构造〕提供手动清理命令/文档（运维面）。triage：§0:49
+  - → **已拍 A（2026-09-25）→ 已清（MI-B2，ab47f1b；同 key 多 pending 留最新删其余 + 留痕；committed 共存不删）**
 - **#9** src-tauri/src/migration/rules.rs:67 —— MI-08 残余：archive_dir 绝对路径 policy（`..` 组件拒绝已修 bbe4f59）+ symlink 逃逸校验 + 破坏性变更（move）用户提示。
   - A=〔重建构造〕三项全做（绝对路径拒绝 + canonicalize 后须仍在数据目录 + 执行前 UI 提示）；B=〔重建构造〕只做路径/symlink 校验，不加 UI 提示；C=〔重建构造〕只文档化威胁模型（cleanup-rules.json 属本地用户可控文件，威胁=用户自伤）。triage：§0:51 / §2:201
   - → **已拍 A（2026-09-25）→ 已清（MI-B1，5b5f360；三道闸 + create 后终态复验 + 导入破坏性确认框；确认框=「执行前提示」落地口径，run 期自动迁移无交互点已在 spec 声明）**
