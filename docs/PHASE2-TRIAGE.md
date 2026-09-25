@@ -5,6 +5,8 @@
 
 ## 0. 执行日志
 
+- [2026-09-26 01:45 CST] **PHASE2 终态清扫（zcode 会话收口）**：B 类 23 项全部处置完毕——20 项实修落地（DB-B/MI-B1/BOT-B/FE-B/API-B/MI-B2/EV-B 共 7 批）、#7 判定 A（N=87>5 维持 eprintln）、#14 wontfix（C）、#23 前提不成立零代码（reviewer agent-21）。附加批：MI-B3（跨域阻塞族 MI-05b=A，recovery.rs:197 stale 零代码 agent-22——三簇全处置）、NEW-2（12 处 C3-1 留痕）、NEW-1345（NEW-1/3a/4/5 实修 + 3b stale）。**待拍板遗留：NEW-2b（47 处同形 silent into_inner，§3 登记）。** 择机项维持 leave：C4-v2 / DB-02b / META-8；PROC-5 eval 更新（见 §3.5）——n=25+ 但近期 10 批仅零星发作且均未影响 review 本体，**不立项**。环境根治：python3.14 装 pytest（--break-system-packages），test-all 无 PATH 前缀验证全绿（310+1147）。工程入库：HANDOFF-2026-09-25 + 9 份历史 spec 归档 commit（HANDLERS 为已撤销 spec 证据）；HANDOFF-2026-09-23 仍 untracked 待定；tests-audit/__pycache__ 加入 .gitignore。
+
 - [2026-09-25 12:10 CST] **NEW-1345**（混合批，commit 9f50382）：NEW-1 bot_py 测试 ×2 silent into_inner 补 eprintln（锁名现场核正=py_children）；NEW-3a escape_for_log 控制字符全集（is_control→escape_default + U+2028/2029 显式臂，"| " 预替换保输出逐字节不变）+ 全集单测；NEW-4 panic payload 提取 5 处收敛 crate::audit::panic_message（middleware/api_server 本地 fn 删、run/bot_scheduler 内联改调，文案统一 pure 措辞）；NEW-5 atomic_write rename 失败 tmp 清理 + 单测。**NEW-3b stale 零代码**：rotate 锁外容错 + append 锁内，撕裂面已闭合。OCR r1 3 low（2 采纳 extend/capacity；1 不采纳预替换防漂移）。spec 校正 ×1（assertions 3→2 实测）。D2: files=8(+93/-48) asserts=0→56 tests=+2 绿 + test-all 1147 全绿。
 
 - [2026-09-25 11:50 CST] **NEW-2**（三域同形批，commit 6a7cce6，amend 80bd6f7 仅修 D2 数字）：12 处 silent into_inner 补 C3-1 eprintln 留痕（db/workspace x3 + bot_history x2 + bot_sessions x3 DB_WRITE_LOCK / migration/ops x2 / bot/config/audit x1 + mod x1 测试）——恢复语义不变，纯日志。**范围发现：全仓实测另有 47 处同形 silent into_inner（NEW-2 登记注记「其他域多数已有 eprintln」与现状不符）→ 不越权扩，NEW-2b 登记待拍板。** OCR r1 0 comments（一轮清零）。spec 校正 x1（max_removed +20→+45）。D2: files=6(+60/-36) asserts=0→0 tests=test-all 1145 全绿。
@@ -403,6 +405,7 @@ DB-01b-BT-01b 收口后自查发现 4 项 follow-up：
   - 类型 2: timeout-class hang（SIGKILL / stdout 0 bytes），证据: APW-02a 批次
   - 类型 3: rate-limit（HTTP 429 重试耗尽，status=failed，comments=null），证据: APW-02b 批次 + BT-01a 批次（**n=2**）
   - 累积规则: 同类 ≥2 次触发单批评估 OCR 调用方式调整 —— **type 3 已 n=2，触发条件达成**（待评估项：退避策略 / 调用频率 / 供应商限流配额；本轮不动作，开独立评估）
+  - **[2026-09-26 eval 结论（用户拍板：不出新批）]** type 1 累计 n=25+，但 2026-09-25/26 的 10 个批（B 类 7 + NEW 3）实测仅零星发作（file_read 参数越界均被重试机制兜底、review 本体全部 complete、0 批因 OCR 失败受阻）——**维持现状不立项**；后续若出现 review 本体失败或 comments 丢失再重估。type 3 同批维持观察。
 
 ### APW-02b OCR r1 disposition（2026-09-23 补，audit 链修正）
 
@@ -659,7 +662,7 @@ run A 仅靠 /tmp/ocr-APW-02b-r1.clean.json 找回。cache 命名亦误导：
 - **MI-B2（ab47f1b，2026-09-25 10:55）OCR 核验记录**：r1 = ~/.openclaw/cache/MI-B2/ocr-r1.raw.json（comments=6：2 high 采纳[检查点覆盖/清零时序] + 2 medium 1 采纳 1 不采纳 + 2 low 采纳）；r2 = ocr-r2.raw.json（comments=9：1 high 采纳[panic 绕过清零 → CancelGuard Drop] + 3 medium 2 采纳 1 不采纳 + 5 low）；r3 = ocr-r3.raw.json（comments=8 **0 critical 0 high——r2 验证通过**：4 medium 1 采纳[组合测试终态断言] 3 不采纳有论证 + 4 low）。无 B 类新增。
 - **API-B（6de187b，2026-09-25 10:23）OCR 核验记录**：r1 = ~/.openclaw/cache/API-B/ocr-r1.raw.json（status=complete / comments=2 全 low 采纳：测试名/docstring 对齐实际行为[同 hub 重试由 last_id 归还断言覆盖，恢复段为独立 hub 正常路径] / atomic_write rename 失败残留同级 tmp 测试自清理[既有缺口 → NEW-5 登记]）/ 0 failure / 0 high 0 medium。无 B 类新增。
 
-### B 类决策权威清单（2026-09-25 07:25 CST zcode 重建，23 项待用户逐项拍板；拍板前禁写代码）
+### B 类决策权威清单（2026-09-25 07:25 CST zcode 重建；**23 项已全部处置完毕（2026-09-25/26）**：20 项实修（7 批，各项见 → 标注）+ #7 判定 A（N=87）+ #14 wontfix + #23 前提不成立零代码）
 
 > 重建方法：grep「转 B 类｜B 类候选｜单独立 B 类｜攒批」全量 + 每项源码 file:line 现场核对 + OCR fullscan（docs/OCR-CODE-REVIEW-2026-09-21-fullscan.json）原文复核。
 > 编号：#1–#9 为本清单新赋（triage 原散落无编号）；#10–#23 沿用 triage 既有编号。triage 行号引用为本次插入前快照（本节插于 §4 累计区前，§0/§2 及 §4 前段行号不受影响）。

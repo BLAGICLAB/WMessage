@@ -103,3 +103,6 @@ health-check.sh
 
 # OCR 代码审计报告导出（`ocr session export` 生成的本地产物，不进版本库）
 docs/OCR-CODE-REVIEW-*
+
+# pytest 运行残留
+__pycache__/
