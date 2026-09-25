@@ -17,8 +17,8 @@ use super::run::POLL_INTERVAL_SECS;
 use super::types::{MigrationReport, MigrationStatus, RulesFile};
 
 #[tauri::command]
-pub fn migration_rules_load(app: AppHandle) -> RulesFile {
-    load_rules(&app)
+pub fn migration_rules_load(app: AppHandle) -> CommandResult<RulesFile> {
+    Ok(load_rules(&app)?)
 }
 
 /// 文件对话框导入规则表（CSV 表格 / 旧 JSON 都支持），返回导入的规则数。
@@ -75,9 +75,73 @@ pub async fn migration_rules_import(app: AppHandle) -> CommandResult<usize> {
         parse_rules_csv(&text)?
     };
     super::rules::validate_rules(&rules)?;
+    // 破坏性规则导入确认：move=文件离开原位置 / delete=文件删除，均不可自动撤销。
+    // 只数启用行（与执行器口径一致：禁用行不触发）；blocking 确认框必须
+    // spawn_blocking（主线程阻塞对话框会死锁，同上 pick_file 先例）。
+    let mut moves = 0usize;
+    let mut deletes = 0usize;
+    let mut disabled = 0usize;
+    for r in &rules.rules {
+        if !r.enabled {
+            disabled += 1;
+            continue;
+        }
+        match r.action.as_str() {
+            "move" => moves += 1,
+            "delete" => deletes += 1,
+            _ => {}
+        }
+    }
+    if moves + deletes > 0 {
+        let mut msg = format!(
+            "导入的规则表含 {} 条移动归档、{} 条删除动作（启用行）。\n\n执行后文件将离开原位置或被删除（不可自动撤销）。确认导入？",
+            moves, deletes
+        );
+        if disabled > 0 {
+            msg.push_str(&format!("\n另有 {disabled} 条禁用规则一并导入。"));
+        }
+        let handle2 = app.clone();
+        let confirmed = tauri::async_runtime::spawn_blocking(move || {
+            use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
+            handle2
+                .dialog()
+                .message(msg)
+                .title("破坏性规则确认")
+                .buttons(MessageDialogButtons::OkCancelCustom(
+                    "确认导入".to_string(),
+                    "取消".to_string(),
+                ))
+                .blocking_show()
+        })
+        .await
+        .map_err(|e| CommandError::Internal(format!("对话框线程失败：{e}")))?;
+        if !confirmed {
+            crate::audit_event!(
+                &app,
+                crate::audit::AuditLevel::Info,
+                "rules.import_rejected",
+                "moves" => moves.to_string(),
+                "deletes" => deletes.to_string(),
+                "disabled" => disabled.to_string(),
+                "count" => rules.rules.len().to_string(),
+            );
+            return Err(CommandError::ConfirmRejected);
+        }
+    }
     let count = rules.rules.len();
     save_rules(&app, &rules)?;
     super::ops::log_line(&app, &format!("导入规则表 {} 条", count));
+    // confirmed 审计在 save_rules 成功后落——审计与实际落盘对账一致（先审计后写盘
+    // 会出现「审计已确认、盘上无变更」的取证漂移）
+    crate::audit_event!(
+        &app,
+        crate::audit::AuditLevel::Info,
+        "rules.import_confirmed",
+        "moves" => moves.to_string(),
+        "deletes" => deletes.to_string(),
+        "disabled" => disabled.to_string(),
+        "count" => count.to_string(),
+    );
     Ok(count)
 }
 
@@ -116,7 +180,6 @@ pub async fn migration_run(app: AppHandle) -> CommandResult<MigrationReport> {
     tauri::async_runtime::spawn_blocking(move || super::run::run_migration(&app))
         .await
         .map_err(|e| CommandError::from(format!("迁移线程 join 失败：{e}")))?
-        .map_err(CommandError::from)
 }
 
 /// 迁移日志读取：尾部 limit 行、最新在前（与机器人审计日志同模式，老板指定）
@@ -168,12 +231,12 @@ pub(crate) fn tail_log_lines(raw: &str, limit: Option<usize>) -> String {
 }
 
 #[tauri::command]
-pub fn migration_status(app: AppHandle) -> MigrationStatus {
-    let rules = load_rules(&app);
-    MigrationStatus {
+pub fn migration_status(app: AppHandle) -> CommandResult<MigrationStatus> {
+    let rules = load_rules(&app)?;
+    Ok(MigrationStatus {
         rules_count: rules.rules.len(),
         poll_interval_secs: POLL_INTERVAL_SECS,
-    }
+    })
 }
 
 // ───────────────────────── 单元测试 ─────────────────────────

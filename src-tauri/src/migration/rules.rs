@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use tauri::AppHandle;
 
 use crate::db;
+use crate::error::CommandError;
 
 use super::types::{MigrationRule, RulesFile};
 
@@ -23,20 +24,39 @@ pub(crate) fn log_path(app: &AppHandle) -> PathBuf {
     db::data_dir(app).join(LOG_FILE)
 }
 
-pub fn load_rules(app: &AppHandle) -> RulesFile {
-    match fs::read_to_string(rules_path(app)) {
-        Ok(text) => match serde_json::from_str::<RulesFile>(&text) {
-            Ok(r) => r,
-            Err(e) => {
-                crate::migration::ops::log_line(
-                    app,
-                    &format!("规则文件解析失败（按空规则处理）：{e}"),
-                );
-                RulesFile::default()
-            }
-        },
-        Err(_) => RulesFile::default(),
+pub fn load_rules(app: &AppHandle) -> Result<RulesFile, CommandError> {
+    let path = rules_path(app);
+    match load_rules_from(&path) {
+        Ok(r) => Ok(r),
+        Err(e) => {
+            crate::migration::ops::log_line(app, &e.to_string());
+            Err(e)
+        }
     }
+}
+
+/// 规则文件读取内核（纯函数供单测）。文件不存在 = 首装合法态 → Ok(空规则)；
+/// 存在但读不了（权限/IO）→ IoError；解析失败（损坏）→ DomainRule（migration 域）。
+/// 结构化变体而非 Internal：文件类故障前端 hintForCode 按 code 分流提示。
+/// 坏文件不得被空规则静默顶替——否则后续任何 save 都会以空规则覆写用户配置。
+pub fn load_rules_from(path: &Path) -> Result<RulesFile, CommandError> {
+    let text = match fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(RulesFile::default()),
+        Err(e) => {
+            return Err(CommandError::IoError(format!(
+                "规则文件读取失败（{}）：{e}。请检查文件权限后重试",
+                path.display()
+            )))
+        }
+    };
+    serde_json::from_str::<RulesFile>(&text).map_err(|e| CommandError::DomainRule {
+        domain: "migration".to_string(),
+        reason: format!(
+            "规则文件解析失败（{}）：{e}。请修复或删除该文件后重试；应用不会以空规则静默替代",
+            path.display()
+        ),
+    })
 }
 
 pub(crate) fn save_rules(app: &AppHandle, rules: &RulesFile) -> Result<(), String> {
@@ -54,7 +74,8 @@ pub(crate) fn save_rules_to(path: &Path, rules: &RulesFile) -> Result<(), String
     crate::db::atomic_write(path, &text)
 }
 
-/// 校验规则：action 合法；move 必须有归档目录；关键字至少一个非空
+/// 校验规则：action 合法；move 必须有归档目录；归档目录相对路径（所有动作，
+/// 含 `..`/绝对路径拒绝）；关键字至少一个非空
 pub fn validate_rules(rules: &RulesFile) -> Result<(), String> {
     for (i, r) in rules.rules.iter().enumerate() {
         if r.action != "move" && r.action != "delete" {
@@ -64,15 +85,21 @@ pub fn validate_rules(rules: &RulesFile) -> Result<(), String> {
                 r.action
             ));
         }
+        // 归档目录 containment 对所有规则生效：delete 的 archive_dir 应为空（空/相对
+        // 天然通过），未来新增动作变体自动获得同款校验；与 resolve_archive_dir 同一
+        // 校验，导入期早错（run 期 ops 侧还有一道）
+        let p = std::path::Path::new(&r.archive_dir);
+        super::ops::reject_parent_dir_components(p, &r.archive_dir)?;
+        // has_root 补 Windows 无前缀根式路径（"/foo" is_absolute=false 但 join 会替换基准）
+        if p.is_absolute() || p.has_root() {
+            return Err(format!(
+                "第 {} 条规则归档目录必须是相对路径（相对桌面目录）：{}",
+                i + 1,
+                r.archive_dir
+            ));
+        }
         if r.action == "move" && r.archive_dir.trim().is_empty() {
             return Err(format!("第 {} 条规则是移动归档，归档目录不能为空", i + 1));
-        }
-        if r.action == "move" {
-            // 与 resolve_archive_dir 同一校验：导入期早错（run 期 ops 侧还有一道）
-            super::ops::reject_parent_dir_components(
-                std::path::Path::new(&r.archive_dir),
-                &r.archive_dir,
-            )?;
         }
         if !r.keywords.iter().any(|k| !k.trim().is_empty()) {
             return Err(format!("第 {} 条规则缺少文件名关键字", i + 1));
@@ -199,4 +226,135 @@ pub(crate) fn parse_rules_csv(text: &str) -> Result<RulesFile, crate::error::Com
         });
     }
     Ok(RulesFile { version: 1, rules })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp_rules_file(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("wm-rules-{tag}-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        dir.join("cleanup-rules.json")
+    }
+
+    /// 缺文件 = 首装合法态：Ok(空规则)（该边界与「存在但坏 = Err」的分界必须钉住）
+    #[test]
+    fn load_rules_from_missing_file_returns_default() {
+        let p = tmp_rules_file("missing");
+        let r = load_rules_from(&p).unwrap();
+        assert!(r.rules.is_empty(), "缺文件=首装合法态：空规则");
+        fs::remove_dir_all(p.parent().unwrap()).ok();
+    }
+
+    /// 坏 JSON = fail-closed：Err，不得被空规则静默顶替（结构化 DomainRule，非 Internal）
+    #[test]
+    fn load_rules_from_corrupt_json_fails_closed() {
+        let p = tmp_rules_file("corrupt");
+        fs::write(&p, "{ not valid json !!!").unwrap();
+        match load_rules_from(&p) {
+            Err(CommandError::DomainRule { reason, domain }) => {
+                assert_eq!(domain, "migration");
+                assert!(reason.contains("规则文件解析失败"), "got: {reason}");
+            }
+            other => panic!("应返 DomainRule，实际 {other:?}"),
+        }
+        fs::remove_dir_all(p.parent().unwrap()).ok();
+    }
+
+    /// 非 NotFound 的 IO 故障（路径是目录 → IsADirectory）= IoError 分支
+    #[test]
+    fn load_rules_from_directory_path_fails_closed() {
+        let dir = std::env::temp_dir().join(format!("wm-rules-io-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        match load_rules_from(&dir) {
+            Err(CommandError::IoError(m)) => {
+                assert!(m.contains("规则文件读取失败"), "got: {m}");
+            }
+            other => panic!("应返 IoError，实际 {other:?}"),
+        }
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 合法 JSON（camelCase 字段）→ 字段回读正确
+    #[test]
+    fn load_rules_from_valid_json_roundtrips() {
+        let p = tmp_rules_file("valid");
+        fs::write(
+            &p,
+            r#"{"version":1,"rules":[{"id":"r1","enabled":true,"keywords":["工资"],"action":"move","archiveDir":"工资/{year}"}]}"#,
+        )
+        .unwrap();
+        let r = load_rules_from(&p).unwrap();
+        assert_eq!(r.version, 1, "camelCase/version 契约");
+        assert_eq!(r.rules.len(), 1);
+        assert_eq!(r.rules[0].id, "r1");
+        assert_eq!(r.rules[0].keywords, vec!["工资".to_string()]);
+        assert_eq!(r.rules[0].action, "move");
+        assert_eq!(r.rules[0].archive_dir, "工资/{year}");
+        assert!(r.rules[0].enabled);
+        fs::remove_dir_all(p.parent().unwrap()).ok();
+    }
+
+    /// 导入期早错：归档目录绝对路径拒绝（拍板收窄原「文档化特性」）。
+    /// 用 temp_dir 构造绝对路径：unix 前导 `/` 在 Windows 不算 absolute（驱动器/UNC 才算），
+    /// temp_dir 两平台都返回真绝对路径。
+    #[test]
+    fn validate_rules_rejects_absolute_archive_dir() {
+        let rules = RulesFile {
+            version: 1,
+            rules: vec![MigrationRule {
+                id: "r1".into(),
+                enabled: true,
+                keywords: vec!["a".into()],
+                action: "move".into(),
+                archive_dir: std::env::temp_dir().to_string_lossy().to_string(),
+            }],
+        };
+        let err = validate_rules(&rules).expect_err("绝对路径必须早错");
+        assert!(err.contains("相对路径"), "got: {err}");
+    }
+
+    /// 空 JSON 文件（0 字节，手工误存/损坏的现实形态）= 解析失败 → DomainRule
+    #[test]
+    fn load_rules_from_empty_file_fails_closed() {
+        let p = tmp_rules_file("empty");
+        fs::write(&p, "").unwrap();
+        match load_rules_from(&p) {
+            Err(CommandError::DomainRule { reason, .. }) => {
+                assert!(reason.contains("规则文件解析失败"), "got: {reason}");
+            }
+            other => panic!("应返 DomainRule，实际 {other:?}"),
+        }
+        fs::remove_dir_all(p.parent().unwrap()).ok();
+    }
+
+    /// containment 收窄到所有动作后的边界：delete + 空归档目录 / delete + 合法相对
+    /// 归档目录 → 通过；delete + 绝对路径 → 拒绝（未来动作变体自动获得同款校验）
+    #[test]
+    fn validate_rules_delete_action_archive_dir_boundaries() {
+        let mk = |archive_dir: &str| MigrationRule {
+            id: "r1".into(),
+            enabled: true,
+            keywords: vec!["a".into()],
+            action: "delete".into(),
+            archive_dir: archive_dir.into(),
+        };
+        assert!(validate_rules(&RulesFile {
+            version: 1,
+            rules: vec![mk("")],
+        })
+        .is_ok());
+        assert!(validate_rules(&RulesFile {
+            version: 1,
+            rules: vec![mk("归档/旧文件")],
+        })
+        .is_ok());
+        let err = validate_rules(&RulesFile {
+            version: 1,
+            rules: vec![mk(&std::env::temp_dir().to_string_lossy())],
+        })
+        .expect_err("delete 规则的绝对路径归档目录同样拒绝");
+        assert!(err.contains("相对路径"), "got: {err}");
+    }
 }

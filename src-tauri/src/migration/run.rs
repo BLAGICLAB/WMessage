@@ -10,11 +10,12 @@ use std::time::Duration;
 use tauri::AppHandle;
 
 use crate::db;
+use crate::error::CommandError;
 
 use super::journal::{journal_cleared, journal_committed, journal_find_pending, journal_pending};
 use super::ops::{
     emit_upserts, filename_matches, log_line, move_entry, move_remove_permanently_failed, now_ms,
-    resolve_archive_dir, MigrationGuard, MAX_MOVE_REMOVE_FAILURES,
+    resolve_archive_dir, verify_archive_dir_created, MigrationGuard, MAX_MOVE_REMOVE_FAILURES,
 };
 use super::recovery::{decide_src_missing, journal_replay_pending, SrcMissingAction};
 use super::rules::load_rules;
@@ -26,19 +27,22 @@ pub const ARCHIVE_AFTER_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 pub(crate) const POLL_INTERVAL_SECS: u64 = 600;
 
 /// 核心迁移：返回报告。silent 模式（轮询）不向 UI 抛错。
-pub fn run_migration(app: &AppHandle) -> Result<MigrationReport, String> {
+pub fn run_migration(app: &AppHandle) -> Result<MigrationReport, CommandError> {
     let _guard = MigrationGuard::acquire()?;
     run_migration_inner(app)
 }
 
-fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
+fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError> {
     // B3: db_load/db_upsert 改 async 了；run_migration_inner 在 spawn_polling 的 std::thread
     // 或 spawn_blocking(migration_run) 线程里跑，不在 tokio runtime 上 → 用 block_on 桥接。
     let mut report = MigrationReport {
         ts: now_ms(),
         ..Default::default()
     };
-    let rules = load_rules(app);
+    // 规则不可读（损坏/权限）→ 本轮迁移中止：绝不以空规则执行任何 move/delete。
+    // 本调用点保持 CommandError 结构化直传（IoError/DomainRule 不塌回 Internal）；
+    // 函数内 DB 类错误维持既有 String/Internal 口径，全量改造属独立批不做
+    let rules = load_rules(app)?;
     let tasks = tauri::async_runtime::block_on(async { db::db_load(app.clone()).await })
         .map_err(|e| e.to_string())?;
     // NEW-B-2: 本轮所有 journal 读写复用同一条连接（原来每次 journal 调用各 open_db 一次，
@@ -128,6 +132,16 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, String> {
                 if let Err(e) = fs::create_dir_all(&dir) {
                     report.skipped += 1;
                     let line = format!("跳过「{name}」：创建归档目录失败：{e}");
+                    report.log.push(line.clone());
+                    log_line(app, &line);
+                    continue;
+                }
+                // 落地后复验：关闭 resolve→create 之间祖先被换成符号链接的窗口
+                // （canonicalize 终态目录比对基准前缀；残余窗缩至 create→verify 间，
+                // 文件系统原语限制归既有 follow-up）
+                if let Err(e) = verify_archive_dir_created(app, &dir, &rule.archive_dir) {
+                    report.skipped += 1;
+                    let line = format!("跳过「{name}」：{e}");
                     report.log.push(line.clone());
                     log_line(app, &line);
                     continue;

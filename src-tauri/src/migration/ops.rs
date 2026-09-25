@@ -70,25 +70,91 @@ pub(crate) fn expand_year_placeholder(template: &str) -> String {
     template.replace("{year}", &year)
 }
 
-/// 归档目录解析：{year} → 当前年份；相对路径基于桌面；绝对路径原样
+/// 归档目录解析：{year} → 当前年份；相对路径基于桌面（AppHandle 供桌面目录定位）。
+/// 校验三道闸见 resolve_archive_dir_checked。
 pub fn resolve_archive_dir(app: &AppHandle, template: &str) -> Result<PathBuf, String> {
+    let desktop = app
+        .path()
+        .desktop_dir()
+        .map_err(|e| format!("无法定位桌面目录（规则：{template}）：{e}"))?;
+    resolve_archive_dir_checked(&desktop, template)
+}
+
+/// 纯函数内核（供单测直调）——三道闸：
+/// 1. `..` 组件拒绝（相对路径逃逸桌面基准；/tmp/../etc 形态表达同被拒，无能力损失）；
+/// 2. 绝对路径拒绝（存量「文档化特性」按拍板收窄：归档位置必须相对基准目录，可审计可随库迁移）；
+/// 3. symlink 逃逸校验：沿目标最深已存在祖先 canonicalize，须仍位于 canonical 基准目录内
+///    （叶子通常尚不存在，只能校到最深已存在祖先——祖先在基准外即拒；新建叶层走
+///    create_dir_all 常规目录创建，落在 canonical 祖先之下；以符号链接充当新建叶层
+///    的场景超出本闸能力，与 exists→canonicalize 的 TOCTOU 残余同属文件系统原语限制，
+///    归既有「Phase 6 TOCTOU 统一策略」follow-up）。
+pub(crate) fn resolve_archive_dir_checked(base: &Path, template: &str) -> Result<PathBuf, String> {
     let expanded = expand_year_placeholder(template);
     let p = PathBuf::from(&expanded);
-    reject_parent_dir_components(&p, template)?;
-    if p.is_absolute() {
-        Ok(p)
-    } else {
-        let desktop = app
-            .path()
-            .desktop_dir()
-            .map_err(|e| format!("无法定位桌面目录：{e}"))?;
-        Ok(desktop.join(p))
+    // 绝对路径先行：is_absolute 之外补 has_root——Windows 下 "/foo" 这类无前缀根式
+    // 路径 is_absolute=false 但 join 会替换基准，同样必须拒（unix 两值同真，无行为差）
+    if p.is_absolute() || p.has_root() {
+        return Err(format!(
+            "归档目录必须是相对路径（相对桌面目录）：{template}。请改为如「工资/{{year}}」的相对写法"
+        ));
     }
+    reject_parent_dir_components(&p, template)?;
+    let resolved = base.join(&p);
+    let mut anc: &Path = resolved.as_path();
+    while !anc.exists() {
+        match anc.parent() {
+            Some(parent) => anc = parent,
+            None => break,
+        }
+    }
+    let canon_anc = anc
+        .canonicalize()
+        .map_err(|e| format!("归档目录解析失败（{}）：{e}", anc.display()))?;
+    let canon_base = base
+        .canonicalize()
+        .map_err(|e| format!("基准目录解析失败（{}）：{e}", base.display()))?;
+    if !canon_anc.starts_with(&canon_base) {
+        return Err(format!(
+            "归档目录解析后逃逸基准目录（疑似符号链接指向基准外）：{} → {}",
+            resolved.display(),
+            canon_anc.display()
+        ));
+    }
+    Ok(resolved)
+}
+
+/// 归档目录落地后复验（终态 canonicalize 前缀校验）：resolve 时只能校「最深已存在
+/// 祖先」，create_dir_all 之前祖先可能被并发换成基准外符号链接——创建完成后对
+/// 终态目录整链 canonicalize 复验，不落基准即拒。残余窗缩至 create→verify 之间
+/// （文件系统原语限制，归既有「Phase 6 TOCTOU 统一策略」follow-up）。
+pub fn verify_archive_dir_created(
+    app: &AppHandle,
+    dir: &Path,
+    template: &str,
+) -> Result<(), String> {
+    let desktop = app
+        .path()
+        .desktop_dir()
+        .map_err(|e| format!("无法定位桌面目录（规则：{template}）：{e}"))?;
+    let canon_dir = dir
+        .canonicalize()
+        .map_err(|e| format!("归档目录复验失败（{}）：{e}", dir.display()))?;
+    let canon_base = desktop
+        .canonicalize()
+        .map_err(|e| format!("基准目录解析失败（{}）：{e}", desktop.display()))?;
+    if !canon_dir.starts_with(&canon_base) {
+        return Err(format!(
+            "归档目录创建后逃逸基准目录（疑似符号链接指向基准外）：{} → {}",
+            dir.display(),
+            canon_dir.display()
+        ));
+    }
+    Ok(())
 }
 
 /// 归档目录 containment：拒绝 `..` 组件（相对路径会逃逸桌面基准；对绝对路径同样生效——
-/// /tmp/../etc 可直接写 /etc 表达，无能力损失）。绝对路径本身放行（文档化特性），
-/// 其收窄与 symlink 逃逸（需 canonicalize + 前缀校验）同属 B 类待拍项。
+/// /tmp/../etc 可直接写 /etc 表达，无能力损失）。契约边界：本函数只管 `..` 组件，
+/// 绝对路径/根式路径由调用方闸（resolve_archive_dir_checked / validate_rules）负责。
 pub(crate) fn reject_parent_dir_components(p: &Path, template: &str) -> Result<(), String> {
     if p.components()
         .any(|c| matches!(c, std::path::Component::ParentDir))
@@ -289,4 +355,57 @@ pub(crate) fn emit_upserts(app: &AppHandle, tasks: &[db::Task]) {
     }
     let payload = serde_json::json!({ "upserts": tasks, "deletes": [], "source": crate::mutation::MutationOrigin::Migration.as_str() });
     let _ = app.emit_to("main", "tasks-updated", &payload);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("wm-arch-{tag}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// 正常相对模板 → 落在基准目录内
+    #[test]
+    fn resolve_checked_relative_ok() {
+        let base = tmp_dir("rel");
+        let p = resolve_archive_dir_checked(&base, "工资/{year}").unwrap();
+        assert!(p.starts_with(&base), "应落在基准目录内：{p:?}");
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// `..` 组件拒绝（既有闸，回归锁）
+    #[test]
+    fn resolve_checked_rejects_parent_components() {
+        let base = tmp_dir("dotdot");
+        let err = resolve_archive_dir_checked(&base, "../escape").unwrap_err();
+        assert!(err.contains(".."), "got: {err}");
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// 绝对路径拒绝（拍板收窄：存量「文档化特性」关闭）。
+    /// temp_dir 两平台都返回根级/驱动器级绝对路径，测试不依赖平台 is_absolute 细节
+    #[test]
+    fn resolve_checked_rejects_absolute() {
+        let base = tmp_dir("abs");
+        let abs = std::env::temp_dir().join("wmessage-arch-abs");
+        let err = resolve_archive_dir_checked(&base, &abs.to_string_lossy()).unwrap_err();
+        assert!(err.contains("相对路径"), "got: {err}");
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// symlink 逃逸：基准内符号链接指向基准外 → 拒绝
+    #[cfg(unix)]
+    #[test]
+    fn resolve_checked_rejects_symlink_escape() {
+        let base = tmp_dir("symlink");
+        let outside = tmp_dir("outside");
+        std::os::unix::fs::symlink(&outside, base.join("link")).unwrap();
+        let err = resolve_archive_dir_checked(&base, "link/sub").unwrap_err();
+        assert!(err.contains("逃逸"), "got: {err}");
+        std::fs::remove_dir_all(&base).ok();
+        std::fs::remove_dir_all(&outside).ok();
+    }
 }
