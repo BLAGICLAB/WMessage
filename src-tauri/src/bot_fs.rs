@@ -152,7 +152,11 @@ async fn allowed_dirs(app: &AppHandle) -> Vec<PathBuf> {
         Ok(out)
     })
     .await
-    .unwrap_or_default();
+    .unwrap_or_else(|e| {
+        // 桥接失败（JoinError）/白名单读取失败（已转 String）：可见化后按既有契约回空白名单（fail-closed 不变）
+        eprintln!("[bot_fs] 白名单 canonicalize 失败，回空白名单：{e}");
+        Vec::new()
+    });
     out
 }
 
@@ -333,9 +337,17 @@ fn walk(dir: &Path, mut visit: impl FnMut(&Path, bool) -> bool) {
             continue;
         }
         let Ok(rd) = std::fs::read_dir(&d) else {
+            eprintln!("[bot_fs] walk 跳过不可读目录：{}", d.display());
             continue;
         };
-        for entry in rd.flatten() {
+        for entry in rd {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(err) => {
+                    eprintln!("[bot_fs] walk 跳过不可读条目（{}）：{err}", d.display());
+                    continue;
+                }
+            };
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().to_string();
             let ft = entry.file_type().ok();
