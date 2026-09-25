@@ -55,7 +55,6 @@ Phase 3 首批：medium security 类 25 条中 5 条清晰修复（其余 20 条
     {"id": "P3S-0", "file": ".gitignore", "line": 66, "fix": "明文凭据 sibling 模式补齐"},
     {"id": "P3S-2", "file": "src-tauri/src/api_handlers/body.rs", "line": 46, "fix": "Transfer-Encoding 出现即 Malformed(400)"},
     {"id": "P3S-16", "file": "src-tauri/src/ocr.rs", "line": 37, "fix": "scheme 前缀小写归一比较"},
-    {"id": "P3S-17", "file": "src-tauri/src/db/paths.rs", "line": 330, "fix": "escape_for_log_inline 与 audit 全集字符级对齐（parity 测试担保）"},
     {"id": "P3S-17b", "file": ".zcodeignore", "line": 65, "fix": "凭据 ignore 模式镜像 .gitignore 新增项（OCR critical 采纳）"}
   ],
   "assertions_min": {
