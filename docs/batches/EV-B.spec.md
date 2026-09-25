@@ -32,8 +32,8 @@
 
 ## spec 起草后自查三条
 
-1. expected_files：evolution/change/record.rs + evolution/candidate/entry.rs + evolution/candidate/mod.rs = 3（全路径已列）
-2. budget：A 类（两处 read_all 循环改造 ≈ +30/-8；mod.rs 一行 ≈ +1/-1）+ B 类（4 测试 ≈ +80）合计 ≈ +115/-8，上限 +170/-20；无新文件
+1. expected_files：record.rs + entry.rs + candidate/mod.rs + evolution/mod.rs = 4（执行中校正 ×1：r2 medium 采纳抽 read_jsonl 泛型 helper 进 mod.rs）
+2. budget：A 类（两处 read_all 循环改造 ≈ +30/-8；mod.rs 一行 ≈ +1/-1）+ B 类（4 测试 ≈ +80）合计 ≈ +165/-45，上限 +210/-50（执行中校正 ×1：helper 抽取去重）；无新文件
 3. fix 字段 ripple：mod.rs 一行已入 expected_files；panel/commands.rs 签名不变零改动
 
 ## 自主执行规则
@@ -61,10 +61,11 @@ spec 经用户拍板（B 类方向 2026-09-25）后：
   "expected_files": [
     "src-tauri/src/evolution/change/record.rs",
     "src-tauri/src/evolution/candidate/entry.rs",
-    "src-tauri/src/evolution/candidate/mod.rs"
+    "src-tauri/src/evolution/candidate/mod.rs",
+    "src-tauri/src/evolution/mod.rs"
   ],
-  "max_lines_added": 170,
-  "max_lines_removed": 20,
+  "max_lines_added": 210,
+  "max_lines_removed": 50,
   "findings": [
     {"id": "C5-EV-3b-A.17", "file": "src-tauri/src/evolution/change/record.rs", "line": 201, "fix": "read_all 折中语义（拍板 C）：首行坏 → Err（结构级损坏 fail-closed）；中间坏行 → eprintln 留痕 + 跳过返回好行。candidate/entry.rs 同形改造。ripple：candidate/mod.rs:52 unwrap_or_default → ?（Err 传播恢复，dedup 基线不盲写）"}
   ],
