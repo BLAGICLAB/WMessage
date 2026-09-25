@@ -5,6 +5,7 @@
 
 ## 0. 执行日志
 
+- [2026-09-25 08:07 CST] **DB-B**（db 域 B 类拍板落地批，commit f137536）：实修 3 处——① #3 paths.rs copy_legacy_db 源库 open 失败（warn+继续裸拷）→ 早退 Err fail-closed（原库只读保留 + mod.rs Err 臂补 audit ERROR + 可操作消息含排障步骤；OCR r1 low 采纳同根收紧：checkpoint 臂非 BUSY 错误（NOTADB/IO）同治 fail-closed，仅 BUSY 容错走 -wal/-shm 带走良性路径）；② #4 workspace_import_merge NULL updated_at → match 三臂，Some(None)=整批 Err（tx 回滚 + 行 id 指认 + 回填指引；行不存在/有值现状保留；导入行缺时间戳视 0 文档化）；③ #5 bot_history (created_at,id) 复合排序键不变量注释固化（load 本就 ORDER BY id，行序不依赖 created_at）+ 回归测试。行为变更：坏源/损坏老库不再被裸拷为主库；NULL 目标行导入由静默改整批 Err。OCR r1 4 low（0 high / 0 medium / complete）：1 采纳（同根收紧）+ 3 不采纳有论证。spec 校正 ×1（budget +220→+260，5a25a66）。D2: files=4(+229/-7) asserts=0→167 tests=cargo 新增 4 回归绿（BUSY 良性路径 6/6 不回归）+ test-all 全绿。
 - [2026-09-25 07:25 CST] **B 类决策权威清单重建（zcode 接手第一步）**：23 项全量重建入 §4 末段（grep 攒批/转 B 类/B 类候选全量 + 逐项源码 file:line 现场核对 + OCR fullscan 原文复核）。勘误：HANDOFF-2026-09-25 §3.1 表 #10 误标 EV-3b-A（实为 add_allowed_dir 剥 key，§4:555-557）；EV-3b-A 残 2 条 = #17。#1–#9 为新赋编号。**环境漂移登记：本机 `python3` 现解析 ~/.local/bin/python3（3.14.7，无 pytest），test-all.sh 第 2 步 pytest 失败；以 `PATH=/usr/bin:$PATH` 前置系统 python3（3.9.6 + pytest 8.4.2）复跑全绿（26s，1119 passed + pytest + vitest）。后续批三层自测须带此 PATH 前缀，或用户拍板给 3.14 装 pytest。**
 - [2026-09-22 08:32 CST] 分域表修正：bot* = bot/ 子目录 18 + bot_skills/ 子目录 12 + bot_*.rs 兄弟 16 = 46 条（严格互斥去重）。原"bot 18" = bot/ 子目录 18；原"bot_skills 12" = bot_skills/ 子目录 12；兄弟 16 条散落 9 文件（artifacts 2 + chat 1 + fs 1 + model_loop 4 + plan 1 + py 1 + scheduler 2 + slash 1 + web 5 = 18 raw → 去重 16 唯一）。
 - [2026-09-22 08:32 CST] C5-DB-01 拆簇：DB-01 内部混"丢弃"与"替换默认值"两种模式，按新判据拆为 DB-01a（error-not-propagated，3 条）/ DB-01b（failure-recovery-default-value，2 条）。
@@ -168,7 +169,7 @@
 - C5-DB-02b：事务约定一致性 / 设计债（tasks.rs:439）→ **wontfix-pending-design-decision**，触发条件 = 未来引入 cascade/soft-delete 多语句 delete 时重审
 - C5-DB-03：race / TOCTOU（mod.rs:61 + tasks.rs:396），2 条 → **已清（DB-03，commit 59f81c8：mod.rs:61 锁+双检实修；tasks.rs:396 判 FP——load_all 单语句快照一致，reviewer 核验 pass）**
 - C5-DB-04：input-validation（bot_sessions.rs:115 + tasks.rs:485，含 1 security），2 条 → **已修（DB-04，commit c9a3041）**
-- C5-DB-05：failure-recovery-default-value（paths.rs:50 + workspace.rs:199 + bot_history.rs:52），3 条（tasks.rs:423 poison.into_inner 条已修 → EVNB-02，归 error-visible-non-blocking）
+- C5-DB-05：failure-recovery-default-value（paths.rs:50 + workspace.rs:199 + bot_history.rs:52），3 条（tasks.rs:423 poison.into_inner 条已修 → EVNB-02，归 error-visible-non-blocking）→ **B 类 3 条已清（DB-B，commit f137536，§0 2026-09-25 08:07；用户拍板 #3=A+C / #4=C / #5=C）**
 
 ### 域 evolution（19 簇 / 39 findings）
 3a（C3 周边，3 簇 / 4 findings）：
@@ -623,6 +624,8 @@ run A 仅靠 /tmp/ocr-APW-02b-r1.clean.json 找回。cache 命名亦误导：
 
 - **FE-08b（2f006ef，2026-09-25 07:06）OCR 核验记录**：r1 = ~/.openclaw/cache/FE-08b/ocr-r1.raw.json（status=complete / comments=0）。备注：本批一次 test-all 后台跑 exit=1 无失败详情，立即复跑 exit=0 全绿，判环境偶发。无 B 类新增。
 
+- **DB-B（f137536，2026-09-25 08:07）OCR 核验记录**：r1 = ~/.openclaw/cache/DB-B/ocr-r1.raw.json（status=complete / comments=4 全 low：① audit 调用形态重复[不采纳：Ok-warns 循环与 Err 臂 level/分支语义不同，统一徒增间接层] ② open-fail 测试仅 EISDIR 单模式[采纳=checkpoint 非 BUSY fail-closed 收紧 + NOTADB 损坏源测试，同 #3 根因] ③ 错误文案断言脆[不采纳：文案即拍板要求的可操作提示，锁定防退化] ④ 批内等时断言依赖单次 now[不采纳：该断言正是本批锁死的不变量本身，非 flaky]）/ 0 failure / 0 high。
+
 ### B 类决策权威清单（2026-09-25 07:25 CST zcode 重建，23 项待用户逐项拍板；拍板前禁写代码）
 
 > 重建方法：grep「转 B 类｜B 类候选｜单独立 B 类｜攒批」全量 + 每项源码 file:line 现场核对 + OCR fullscan（docs/OCR-CODE-REVIEW-2026-09-21-fullscan.json）原文复核。
@@ -636,10 +639,13 @@ run A 仅靠 /tmp/ocr-APW-02b-r1.clean.json 找回。cache 命名亦误导：
   - A=〔triage 载方向〕CancellationToken 贯穿 run_migration 各阶段（migration_run 签名改 + 取消语义「迁一半的文件怎么办」——staging 原子化后中止安全性需逐阶段核定）；B=〔重建构造〕不可取消语义文档化（任务后台自然跑完并落 journal，结果丢弃无害）；C=〔重建构造〕wontfix-with-rationale。triage：§2:197
 - **#3** src-tauri/src/db/paths.rs:50 —— copy_legacy_db 源库 open 失败（损坏/加密/IO）仅追加 warn 字符串，坏源静默继续传播（OCR high，C5-DB-05 成员）。
   - A=〔重建构造〕fail-closed：open 失败 → Err 拒拷贝，不产半成品目标库；B=〔重建构造〕维持 warn + 继续拷贝（便携首启容错优先——老库偶发锁定/权限时仍能拿到可用目标库）；C=〔重建构造〕warn 升级为迁移日志 ERROR + UI 可见提示，行为不变。triage：§2:170 / §0:30
+  - → **已拍 A+C 组合（2026-09-25）→ 已清（DB-B，f137536）**
 - **#4** src-tauri/src/db/workspace.rs:199 —— workspace_import_merge `it.updated_at.unwrap_or(0) > cur_ua`：导入行无 updated_at 当 0、库内行 NULL 也当 0——NULL 语义双侧重载（OCR high，C5-DB-05 成员）。
   - A=〔重建构造〕NULL→i64::MAX（无时间戳=最新，导入覆盖 NULL 目标行）；B=〔重建构造〕维持 NULL→0（无时间戳=最旧永不覆盖；库内 NULL 行可被任何导入行覆盖，现状）；C=〔重建构造〕遇 NULL 显式 Err（要求导入源带时间戳，破坏向后兼容）。triage：§2:170
+  - → **已拍 C（2026-09-25）→ 已清（DB-B，f137536）**
 - **#5** src-tauri/src/db/bot_history.rs:52 —— bot_history_save_inner 整批 inserted_at 用循环前单次 now，全量覆写后历史时间戳坍缩为一刻（OCR high，C5-DB-05 成员）。
   - A=〔重建构造〕每行独立 now（保真实时序，微成本）；B=〔重建构造〕维持单 now（语义=本次覆写的原子时刻，整批本来就是一次 overwrite）；C=〔重建构造〕now + 行序单调递增合成时间戳（无真实来源时保序）。triage：§2:170
+  - → **已拍 C（2026-09-25）→ 已清（DB-B，f137536；核后 load 已 ORDER BY id，C 落地为不变量注释固化 + 回归测试）**
 - **#6** src-tauri/src/bot_skills/vars.rs:76 —— in_quotes 字节级启发式对常见 JSON 形态（占位符所在字符串含转义引号等）误判——triage 已判 wontfix-with-rationale（占位符模板构造上非合法 JSON，启发式是结构必然），**待用户确认**。
   - A=确认 wontfix-with-rationale（triage 论证在案）；B=立项修（结构化 JSON 处理或 escaped-quote 前瞻，扩 scope）；C=暂缓观察（维持登记状态）。triage：§2:229
 - **#7** 全仓毒锁恢复点（db::lock_db_write 先例形态；BT-03a 语境 = CONFIG_WRITE_LOCK 等）—— 毒锁恢复后 eprintln vs audit_event! 落 bot.log：改即改 C3-1 约定（「logged 恢复即合法」现以 eprintln 满足）。
