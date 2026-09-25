@@ -43,7 +43,7 @@
 ## spec 起草后自查三条
 
 1. expected_files：db/workspace.rs + db/bot_history.rs + db/bot_sessions.rs + migration/ops.rs + bot/config/audit.rs + bot/config/mod.rs = 6（全路径已列）
-2. budget：每站点 +4/-1 × 12 = +48/-12，上限 +70/-20；无新文件
+2. budget：每站点 +4/-1 × 12 = +48/-12，上限 +70/-45（执行中校正 ×1：rustfmt 对多行闭包重排后实测 -36 超 -20 估）；无新文件
 3. fix 字段：无签名/调用链变化；assertions_min 全 0（纯日志无新断言，vitest/Rust 同理由 grep 验证 + test-all 担保）
 
 ## 自主执行规则
@@ -77,7 +77,7 @@ spec 经用户拍板（NEW 全立项，2026-09-26）后：
     "src-tauri/src/bot/config/mod.rs"
   ],
   "max_lines_added": 70,
-  "max_lines_removed": 20,
+  "max_lines_removed": 45,
   "findings": [
     {"id": "NEW-2.ws", "file": "src-tauri/src/db/workspace.rs", "line": 173, "fix": "3 处 silent into_inner 补 eprintln [mutex_poisoned] db::workspace DB_WRITE_LOCK（C3-1/EVNB-02 形态）；ripple：无"},
     {"id": "NEW-2.bh", "file": "src-tauri/src/db/bot_history.rs", "line": 94, "fix": "2 处同上（db::bot_history DB_WRITE_LOCK）；ripple：无"},
