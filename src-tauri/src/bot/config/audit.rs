@@ -26,9 +26,11 @@ pub fn audit_log<R: tauri::Runtime>(app: &tauri::AppHandle<R>, line: &str) {
     let p = db::data_dir(app).join("bot.log");
     crate::db::rotate_log_if_large(&p, 5 * 1024 * 1024);
     // 与 audit::write_event 共用同一把写锁，锁内只剩 open+append 防交错错行
-    let _g = crate::audit::BOT_LOG_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let _g = crate::audit::BOT_LOG_LOCK.lock().unwrap_or_else(|e| {
+        eprintln!("[mutex_poisoned] bot::config::audit BOT_LOG_LOCK: {e:?}");
+
+        e.into_inner()
+    });
     let _ = append_bot_log_line(&p, line);
 }
 

@@ -89,9 +89,11 @@ pub async fn bot_history_save(
     messages: Vec<BotMsgRow>,
 ) -> CommandResult<()> {
     async_runtime::spawn_blocking(move || {
-        let _g = super::DB_WRITE_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _g = super::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
+            eprintln!("[mutex_poisoned] db::bot_history DB_WRITE_LOCK: {e:?}");
+
+            e.into_inner()
+        });
         let mut conn = super::open_db(&app)?;
         let tx = conn
             .transaction()
@@ -108,9 +110,11 @@ pub async fn bot_history_save(
 #[tauri::command]
 pub async fn bot_history_clear(app: AppHandle, session_id: String) -> CommandResult<()> {
     async_runtime::spawn_blocking(move || {
-        let _g = super::DB_WRITE_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _g = super::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
+            eprintln!("[mutex_poisoned] db::bot_history DB_WRITE_LOCK: {e:?}");
+
+            e.into_inner()
+        });
         let conn = super::open_db(&app)?;
         conn.execute(
             "DELETE FROM bot_messages WHERE session_id = ?1",

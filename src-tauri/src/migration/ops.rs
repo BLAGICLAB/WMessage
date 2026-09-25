@@ -310,9 +310,11 @@ pub(crate) fn move_remove_fail_counts(
 
 /// 记录一次「copy 成功但 remove 失败」，返回该 src 累计失败次数
 pub(crate) fn record_move_remove_failure(src: &str) -> u32 {
-    let mut m = move_remove_fail_counts()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let mut m = move_remove_fail_counts().lock().unwrap_or_else(|e| {
+        eprintln!("[mutex_poisoned] migration::ops move_remove_fail_counts: {e:?}");
+
+        e.into_inner()
+    });
     let n = m.entry(src.to_string()).or_insert(0);
     *n += 1;
     *n
@@ -320,9 +322,11 @@ pub(crate) fn record_move_remove_failure(src: &str) -> u32 {
 
 /// 该 src 是否已因 remove 持续失败被永久跳过（不再 copy，防止副本累积）
 pub(crate) fn move_remove_permanently_failed(src: &str) -> bool {
-    let m = move_remove_fail_counts()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let m = move_remove_fail_counts().lock().unwrap_or_else(|e| {
+        eprintln!("[mutex_poisoned] migration::ops move_remove_fail_counts: {e:?}");
+
+        e.into_inner()
+    });
     m.get(src).copied().unwrap_or(0) >= MAX_MOVE_REMOVE_FAILURES
 }
 

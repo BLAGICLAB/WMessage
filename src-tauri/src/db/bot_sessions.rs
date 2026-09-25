@@ -73,9 +73,11 @@ pub fn bot_session_create_inner(
 
 #[tauri::command]
 pub fn bot_session_create(app: AppHandle, title: Option<String>) -> CommandResult<BotSession> {
-    let _g = super::DB_WRITE_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let _g = super::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
+        eprintln!("[mutex_poisoned] db::bot_sessions DB_WRITE_LOCK: {e:?}");
+
+        e.into_inner()
+    });
     let conn = super::open_db(&app)?;
     bot_session_create_inner(&conn, title).map_err(CommandError::DbError)
 }
@@ -95,9 +97,11 @@ pub fn bot_session_delete_inner(conn: &mut rusqlite::Connection, id: &str) -> Co
 #[tauri::command]
 pub async fn bot_session_delete(app: AppHandle, id: String) -> CommandResult<()> {
     async_runtime::spawn_blocking(move || {
-        let _g = super::DB_WRITE_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _g = super::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
+            eprintln!("[mutex_poisoned] db::bot_sessions DB_WRITE_LOCK: {e:?}");
+
+            e.into_inner()
+        });
         let mut conn = super::open_db(&app)?;
         bot_session_delete_inner(&mut conn, &id)
     })
@@ -115,9 +119,11 @@ pub fn bot_session_rename(app: AppHandle, id: String, title: String) -> CommandR
             reason: "会话标题不能为空（或全为空白字符）".into(),
         });
     }
-    let _g = super::DB_WRITE_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let _g = super::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
+        eprintln!("[mutex_poisoned] db::bot_sessions DB_WRITE_LOCK: {e:?}");
+
+        e.into_inner()
+    });
     let conn = super::open_db(&app)?;
     let now = chrono::Utc::now().timestamp_millis();
     conn.execute(
