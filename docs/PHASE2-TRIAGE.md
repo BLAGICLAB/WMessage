@@ -5,6 +5,8 @@
 
 ## 0. 执行日志
 
+- [2026-09-25 11:35 CST] **MI-B3**（migration 域，C5-MI-05b 拍板 A 落地，commit db6d8e9）：commands.rs migration_rules_load / migration_status 两条 sync command → async + spawn_blocking（log_read 既有模式，主线程不再做文件 IO；前端契约不变）；docstring 计数对齐（7 个 command）。**同簇 recovery.rs:197 经 reviewer（agent-22）核验为 stale 零代码**：block_on 在 spawn_polling std::thread 上是 B3 设计内唯一合法桥接（调用链 lib.rs:305→run.rs:462 std::thread::spawn→:484→recovery.rs:110 双证 + run.rs:62 先例逐字同款），async 化需重构 spawn_polling 顶层=扩 scope 零收益。OCR r1 4 low（2 采纳：join 文案统一 / `??` 显式化；2 不采纳有论证）。D2: files=1(+14/-6) asserts=0→9 tests=migration::commands 4 绿 + test-all 1145 全绿。
+
 - [2026-09-25 11:10 CST] **EV-B**（evolution 域 B 类拍板落地批，commit e753185）：实修 1 处（#17=C）——record.rs/entry.rs read_all 收敛到 evolution/mod.rs 新增 read_jsonl<T> 泛型内核：首个非空行损坏 → Err（结构级 fail-closed，first_parsed 标志防前导空行偏移）；中间坏行 → stderr 留痕跳过返回好行；candidate/mod.rs write_proposals 的 unwrap_or_default → ?（dedup 基线不可得不再盲写）。行为变更：部分损坏 jsonl 不再整挂 evolution 面板；损坏文件写路径 Err 传播。OCR r1 8 comments 全同根：2 high 采纳（i==0 判定偏移 → first_parsed）+ 4 medium 不采纳有论证（eprintln 同域先例/dedup 代价拍板明示）+ 2 low 采纳；r2 8 comments 0 high（1 medium 采纳=read_jsonl 泛型收敛；7 low）。#23 ProposalTarget：**reviewer 核验（agent-21）前提不成立**——TS types.ts:26-28 与 Rust proposal.rs:66-72 已逐字段镜像 snake_case，唯一消费方 formatTarget 全 snake_case 访问，全 src/ 零 camelCase 误用点，文件头注释已钉约定——拍板 A 对象为假设性风险非现存缺陷，重命名纯 churn，零代码登记勘误。D2: files=4(+98/-36) asserts=0→56 tests=evolution 275 绿 + test-all 1145 全绿。
 - [2026-09-25 11:10 CST] **POISON-7**（docs-only）：拍板 #7=A（若 N≤5 则 B）条件判定——全仓毒锁恢复点（eprintln [mutex_poisoned] 形态）实测 **87 处**（grep 全 src-tauri/src，28 文件；profile.rs 25 / bot_skills/state.rs 10 / evolution/emit.rs 7 为前三），远超 ≤5 阈值 → **维持 eprintln（A），不升级 audit_event!**，C3-1 约定不变。#14（StopGuard 接线）已拍 C=wontfix-with-rationale 登记于 §2 BT-14 行。
 
@@ -210,7 +212,7 @@
 - C5-MI-04a：migration/journal.rs:34 INSERT 无去重，1 条 → **已修（MI-04a，commit 414cf08）**
 - C5-MI-04b：migration/journal.rs:126 unlocked find+act TOCTOU，1 条 → **已修（MI-04b，commit 5819f76；replay 纳入 MigrationGuard）**
 - C5-MI-05a：migration/commands.rs:116 spawn_blocking 无 abort，1 条 → **B 类候选（#2）已拍 A → 已清（MI-B2，commit ab47f1b，§0 2026-09-25 10:55：取消机制贯穿 + command 就绪，取消 UI 未来接线）**
-- C5-MI-05b：migration/commands.rs:19 + recovery.rs:197 sync/block_on 阻塞，2 条，**跨域阻塞族待核**（§3 待核区明确「不现在动」）
+- C5-MI-05b：migration/commands.rs:19 + recovery.rs:197 sync/block_on 阻塞，2 条 → **已拍 A（2026-09-25）→ 已清（MI-B3，commit db6d8e9，§0 2026-09-25 11:35）：commands.rs 两条 async 化；recovery.rs:197 stale 零代码（reviewer agent-22：std::thread 上 B3 设计内合法桥接）——跨域阻塞族三簇至此全部处置完毕**
 - C5-MI-06：migration/ops.rs:127 copy_dir_recursive mid-fail → dst 部分填充（**atomicity/partial-write 家族**），1 条 → **已清（APW-02a，commit d443a07）：顶层 staging sibling + 原子 rename + 失败清 staging——2026-09-25 06:59 源码复核在位，行标补打**
 - C5-MI-07：migration/ops.rs:202 路径不一致（rotation target ≠ write target），1 条 → **已修（MI-07，commit 613e07a）**
 - C5-MI-08：migration/rules.rs:99 + :67 解析脆 / 校验缺（批内 2 处独立改动：contains 太宽松 + archive_dir 无路径校验 = 1 security），2 条 → **已修（MI-08，commit bbe4f59）；残余（archive_dir 绝对路径/symlink/破坏性提示，B 类 #9）已清（MI-B1，commit 5b5f360，§0 2026-09-25 08:53）**
@@ -646,6 +648,7 @@ run A 仅靠 /tmp/ocr-APW-02b-r1.clean.json 找回。cache 命名亦误导：
 
 - **FE-B（3dc8e3a，2026-09-25 10:14）OCR 核验记录**：r1 = ~/.openclaw/cache/FE-B/ocr-r1.raw.json（status=complete / comments=9 全同根：3 high 采纳 + 3 medium 采纳 + 3 low 1 采纳 2 不采纳 / 0 failure）；r2 = ocr-r2.raw.json（comments=8：1 high 采纳[watch 清理时序——改无条件发起 load + finally 清] + 3 medium 采纳 + 4 low）；r3 = ocr-r3.raw.json（comments=7 **0 critical 0 high——r2 验证通过**：3 medium 2 采纳[load 链 catch 全覆盖 / 斜杠命令绕过拦截→守卫上移+/stop 白名单] 1 不采纳有论证 + 4 low）。无 B 类新增。**flaky 样本 +1（第 5 例）**：ChatPanel.test 流式合并「scrollTo is not a function」（jsdom 滚动桩偶发未生效）——隔离 13 绿 + 全量复跑 1137 绿双过判 flaky，与前端批改动无涉。
 
+- **MI-B3（db6d8e9，2026-09-25 11:35）OCR 核验记录**：r1 = ~/.openclaw/cache/MI-B3/ocr-r1.raw.json（status=complete / comments=4 全 low：2 采纳[join 文案统一 / `??` 拆两步] + 2 不采纳有论证[泛型桥接 helper Send bound 复杂度 / AppHandle mock 成本]）/ 0 failure / 0 high。无 B 类新增。
 - **EV-B（e753185，2026-09-25 11:10）OCR 核验记录**：r1 = ~/.openclaw/cache/EV-B/ocr-r1.raw.json（status=complete / comments=8 全同根：2 high 采纳[i==0 判定偏移 → first_parsed 首个非空行判定] + 4 medium 不采纳有论证[eprintln 留痕=同域先例、dedup 代价=拍板明示，注释声明] + 2 low 采纳[新测试 tempfile 化与断言精化]）；r2 = ocr-r2.raw.json（comments=8 **0 high——r1 验证通过**：1 medium 采纳[read_jsonl 泛型收敛两处 30 行重复] + 7 low）。无 B 类新增。
 - **MI-B2（ab47f1b，2026-09-25 10:55）OCR 核验记录**：r1 = ~/.openclaw/cache/MI-B2/ocr-r1.raw.json（comments=6：2 high 采纳[检查点覆盖/清零时序] + 2 medium 1 采纳 1 不采纳 + 2 low 采纳）；r2 = ocr-r2.raw.json（comments=9：1 high 采纳[panic 绕过清零 → CancelGuard Drop] + 3 medium 2 采纳 1 不采纳 + 5 low）；r3 = ocr-r3.raw.json（comments=8 **0 critical 0 high——r2 验证通过**：4 medium 1 采纳[组合测试终态断言] 3 不采纳有论证 + 4 low）。无 B 类新增。
 - **API-B（6de187b，2026-09-25 10:23）OCR 核验记录**：r1 = ~/.openclaw/cache/API-B/ocr-r1.raw.json（status=complete / comments=2 全 low 采纳：测试名/docstring 对齐实际行为[同 hub 重试由 last_id 归还断言覆盖，恢复段为独立 hub 正常路径] / atomic_write rename 失败残留同级 tmp 测试自清理[既有缺口 → NEW-5 登记]）/ 0 failure / 0 high 0 medium。无 B 类新增。
