@@ -90,7 +90,10 @@ impl Drop for SchedGuard {
     fn drop(&mut self) {
         self.running
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(|e| {
+                eprintln!("[mutex_poisoned] bot_scheduler::SchedGuard::running: {e:?}");
+                e.into_inner()
+            })
             .remove(&self.task_id);
     }
 }
@@ -825,7 +828,10 @@ mod sched_guard_tests {
     fn len_of(app: &tauri::AppHandle<tauri::test::MockRuntime>) -> usize {
         crate::app_state::sched_running(app)
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(|e| {
+                eprintln!("[mutex_poisoned] bot_scheduler::tests::sched_running (test): {e:?}");
+                e.into_inner()
+            })
             .len()
     }
 

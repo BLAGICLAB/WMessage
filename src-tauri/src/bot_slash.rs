@@ -298,7 +298,10 @@ async fn ask_confirm_inner(
     let id = uuid::Uuid::new_v4().simple().to_string();
     confirms(app)
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(|e| {
+            eprintln!("[mutex_poisoned] bot_slash confirms: {e:?}");
+            e.into_inner()
+        })
         .insert(id.clone(), (tx, session_id.map(|s| s.to_string())));
     // 老板 14:45 拍板：confirm 弹窗是主窗口的事，不走 widget 挂件
     // （挂件窗口是屏幕边缘小条，不适合弹确认框；用户操作 Promote 时在主窗口，期待主窗口弹）
@@ -325,7 +328,10 @@ async fn ask_confirm_inner(
         _ => {
             confirms(app)
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(|e| {
+                    eprintln!("[mutex_poisoned] bot_slash confirms: {e:?}");
+                    e.into_inner()
+                })
                 .remove(&id);
             // 确认超时默认拒绝留痕
             crate::bot::audit_log(
@@ -415,7 +421,10 @@ fn take_confirm<R: tauri::Runtime>(
 ) -> Result<(tokio::sync::oneshot::Sender<ConfirmReply>, Option<String>), String> {
     confirms(app)
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(|e| {
+            eprintln!("[mutex_poisoned] bot_slash confirms: {e:?}");
+            e.into_inner()
+        })
         .remove(request_id)
         .ok_or_else(|| {
             format!(
@@ -533,19 +542,28 @@ mod command_result_tests {
         let (tx, _rx) = tokio::sync::oneshot::channel();
         super::confirms(&a)
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(|e| {
+                eprintln!("[mutex_poisoned] bot_slash confirms: {e:?}");
+                e.into_inner()
+            })
             .insert("req-iso".into(), (tx, Some("sess-1".into())));
         assert_eq!(
             super::confirms(&a)
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(|e| {
+                    eprintln!("[mutex_poisoned] bot_slash confirms: {e:?}");
+                    e.into_inner()
+                })
                 .len(),
             1
         );
         assert_eq!(
             super::confirms(&b)
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(|e| {
+                    eprintln!("[mutex_poisoned] bot_slash confirms: {e:?}");
+                    e.into_inner()
+                })
                 .len(),
             0,
             "另一个注入实例不得看到该条目"
@@ -556,7 +574,10 @@ mod command_result_tests {
         assert_eq!(
             super::confirms(&a)
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(|e| {
+                    eprintln!("[mutex_poisoned] bot_slash confirms: {e:?}");
+                    e.into_inner()
+                })
                 .len(),
             0
         );

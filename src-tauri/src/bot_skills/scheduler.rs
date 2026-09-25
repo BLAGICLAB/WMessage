@@ -20,9 +20,10 @@ fn persist_outcome_quiet(
         return;
     };
     // 纳入 DB_WRITE_LOCK：主窗长事务期间锁外直写会 SQLITE_BUSY 静默丢记录
-    let _g = crate::db::DB_WRITE_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
+        eprintln!("[mutex_poisoned] bot_skills::scheduler::skill_runs: {e:?}");
+        e.into_inner()
+    });
     let outcome = crate::db::PersistedSkillOutcome {
         skill_name: name.to_string(),
         kind: kind.to_string(),

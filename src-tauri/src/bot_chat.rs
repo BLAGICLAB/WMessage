@@ -528,7 +528,10 @@ impl Drop for ChatGuard {
         if let Some(sid) = &self.session_id {
             self.running
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(|e| {
+                    eprintln!("[mutex_poisoned] bot_chat::ChatGuard::running: {e:?}");
+                    e.into_inner()
+                })
                 .remove(sid);
         }
     }
@@ -541,7 +544,10 @@ impl Drop for ChatGuard {
 pub fn chat_guard_is_held<R: tauri::Runtime>(app: &AppHandle<R>, session_id: &str) -> bool {
     chat_running(app)
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(|e| {
+            eprintln!("[mutex_poisoned] bot_chat::chat_running: {e:?}");
+            e.into_inner()
+        })
         .contains(session_id)
 }
 
@@ -1176,7 +1182,10 @@ impl Drop for ExecGuard {
     fn drop(&mut self) {
         self.running
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(|e| {
+                eprintln!("[mutex_poisoned] bot_chat::DB_WRITE_LOCK: {e:?}");
+                e.into_inner()
+            })
             .remove(&self.task_id);
     }
 }
@@ -1245,9 +1254,10 @@ async fn create_exec_session<R: tauri::Runtime>(
     let app2 = app.clone();
     let session =
         tauri::async_runtime::spawn_blocking(move || -> Result<crate::db::BotSession, String> {
-            let _g = crate::db::DB_WRITE_LOCK
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
+            let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
+                eprintln!("[mutex_poisoned] bot_chat::DB_WRITE_LOCK: {e:?}");
+                e.into_inner()
+            });
             let conn = crate::db::open_db(&app2)?;
             let s = crate::db::bot_session_create_inner(&conn, Some(title))?;
             crate::db::bot_history_save_inner(
@@ -1295,9 +1305,10 @@ async fn persist_exec_reply<R: tauri::Runtime>(
     let app2 = app.clone();
     let sid = sid.to_string();
     let r = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
-        let _g = crate::db::DB_WRITE_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
+            eprintln!("[mutex_poisoned] bot_chat::DB_WRITE_LOCK: {e:?}");
+            e.into_inner()
+        });
         let mut conn = crate::db::open_db(&app2)?;
         let tx = conn.transaction().map_err(|e| e.to_string())?;
         crate::db::bot_history_save_inner(

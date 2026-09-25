@@ -49,7 +49,10 @@ fn session_key(session_id: Option<&str>) -> String {
 pub fn has_pending_for<R: tauri::Runtime>(app: &AppHandle<R>, session_id: Option<&str>) -> bool {
     pending_map(app)
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(|e| {
+            eprintln!("[mutex_poisoned] exec_steps::pending_map: {e:?}");
+            e.into_inner()
+        })
         .contains_key(&session_key(session_id))
 }
 
@@ -57,7 +60,10 @@ fn park<R: tauri::Runtime>(app: &AppHandle<R>, p: PendingExec) {
     let key = session_key(p.session_id.as_deref());
     pending_map(app)
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(|e| {
+            eprintln!("[mutex_poisoned] exec_steps::pending_map: {e:?}");
+            e.into_inner()
+        })
         .insert(key, p);
 }
 
@@ -67,7 +73,10 @@ fn take_pending_for<R: tauri::Runtime>(
 ) -> Option<PendingExec> {
     pending_map(app)
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(|e| {
+            eprintln!("[mutex_poisoned] exec_steps::pending_map: {e:?}");
+            e.into_inner()
+        })
         .remove(&session_key(session_id))
 }
 

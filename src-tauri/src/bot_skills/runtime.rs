@@ -567,9 +567,10 @@ mod tests {
     #[test]
     fn skill_finish_no_transition_audits_only_when_reason_non_empty() {
         // 读写共享 bot.log，必须持测试串行锁（与 audit / bot::config 同名用例互斥）
-        let _serial = crate::audit::BOT_LOG_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _serial = crate::audit::BOT_LOG_TEST_LOCK.lock().unwrap_or_else(|e| {
+            eprintln!("[mutex_poisoned] bot_skills::runtime::skill_runs: {e:?}");
+            e.into_inner()
+        });
         let app = tauri::test::mock_app();
         let bot_log = crate::db::data_dir(app.handle()).join("bot.log");
         let read = || std::fs::read_to_string(&bot_log).unwrap_or_default();

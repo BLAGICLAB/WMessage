@@ -228,7 +228,10 @@ pub fn test_hook_insert_skill_run<R: tauri::Runtime>(app: &AppHandle<R>, run: Sk
     let registry = skill_runs(app);
     registry
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(|e| {
+            eprintln!("[mutex_poisoned] bot_skills::state::skill_runs: {e:?}");
+            e.into_inner()
+        })
         .insert(run.name.clone(), run);
 }
 
@@ -237,7 +240,10 @@ pub fn test_hook_remove_skill_run<R: tauri::Runtime>(app: &AppHandle<R>, name: &
     let registry = skill_runs(app);
     registry
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(|e| {
+            eprintln!("[mutex_poisoned] bot_skills::state::skill_runs: {e:?}");
+            e.into_inner()
+        })
         .remove(name);
 }
 
@@ -279,7 +285,10 @@ pub(crate) fn test_insert_skill_run<R: tauri::Runtime>(
     let registry = skill_runs(app);
     registry
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(|e| {
+            eprintln!("[mutex_poisoned] bot_skills::state::skill_runs: {e:?}");
+            e.into_inner()
+        })
         .insert(name.into(), run);
 }
 
@@ -289,7 +298,10 @@ pub(crate) fn test_remove_skill_run<R: tauri::Runtime>(app: &AppHandle<R>, name:
     let registry = skill_runs(app);
     registry
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(|e| {
+            eprintln!("[mutex_poisoned] bot_skills::state::skill_runs: {e:?}");
+            e.into_inner()
+        })
         .remove(name);
 }
 
@@ -415,7 +427,10 @@ mod tests {
             let registry = skill_runs(&app);
             registry
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(|e| {
+                    eprintln!("[mutex_poisoned] bot_skills::state::skill_runs: {e:?}");
+                    e.into_inner()
+                })
                 .insert(name.into(), run);
         }
 
