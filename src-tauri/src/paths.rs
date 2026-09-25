@@ -328,7 +328,21 @@ fn write_fallback_warn(dir: &std::path::Path, event: &str, kv: &[(&str, &str)]) 
 /// 与 audit::escape_for_log 字符级一致——单测 `kv_value_pipe_space_and_newline_stay_escaped`
 /// 锁住两路输出不可漂移。
 fn escape_for_log_inline(s: &str) -> String {
-    s.replace('\n', "\\n").replace("| ", "|| ")
+    // 与 audit::escape_for_log 字符级一致（NEW-1345 后 = 控制字符全集 + U+2028/2029
+    // + `|` 倍增 + `| ` 预替换）。不直接复用是避免 db→bot/config 循环依赖。
+    let mut out = String::with_capacity(s.len());
+    for ch in s.replace("| ", "|  ").chars() {
+        match ch {
+            '|' => out.push_str("||"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\u{2028}' => out.push_str("\\u{2028}"),
+            '\u{2029}' => out.push_str("\\u{2029}"),
+            c if c.is_control() => out.extend(c.escape_default()),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -537,7 +551,7 @@ mod tests {
     fn escape_for_log_inline_strips_newline_and_pipe() {
         // 与 audit::escape_for_log 同语义：value 里的 \n → \\n，"| " → "|| "
         assert_eq!(escape_for_log_inline("a\nb"), "a\\nb");
-        assert_eq!(escape_for_log_inline("a| b"), "a|| b");
+        assert_eq!(escape_for_log_inline("a| b"), "a||  b");
         assert_eq!(escape_for_log_inline("clean"), "clean");
     }
 

@@ -34,7 +34,9 @@ pub async fn tool_ocr_image(
     }
     // 隐私红线：只接受本地文件路径。网络图片一律不抓取（resolve_with_perm 也会因
     // canonicalize 失败而拒，这里前置给出明确原因）
-    if path.starts_with("http://") || path.starts_with("https://") || path.starts_with("data:") {
+    // RFC 3986 §3.1：scheme 大小写不敏感——小写归一后前缀比较
+    let lower = path.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("data:") {
         // 「失败：ocr_image 只接受本地图片路径」以「失败」开头 → error
         return ToolResult::error(
             "失败：ocr_image 只接受本地图片路径，网络地址不予抓取（隐私红线：识别绝不上传外网）"

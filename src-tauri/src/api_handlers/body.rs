@@ -42,6 +42,13 @@ pub(crate) fn read_body_limited(req: &mut Request) -> BodyRead {
     if content_length_headers.len() > 1 {
         return BodyRead::Malformed;
     }
+    // Transfer-Encoding 出现即拒（含 chunked）：Content-Length 预拒对 TE 请求无效，
+    // 本地 API 不需要 TE——拒绝优先于「CL 与 TE 并存时的优先级歧义」（RFC 7230 §3.3.3）
+    for h in req.headers().iter() {
+        if h.field.equiv("Transfer-Encoding") {
+            return BodyRead::Malformed;
+        }
+    }
     if let Some(raw) = content_length_headers.first() {
         let declared = match raw.parse::<u64>() {
             Ok(n) => n,

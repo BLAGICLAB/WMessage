@@ -464,6 +464,9 @@ pub fn run_python_at(
                     rlim_cur: mem_bytes as libc::rlim_t,
                     rlim_max: mem_bytes as libc::rlim_t,
                 };
+                // setrlimit 失败（实测 macOS test sandbox 返回 EINVAL）只能静默：
+                // 硬失败 = py_exec 在该环境整体不可用（候选修法登记
+                // PHASE3-MEDIUM-TRIAGE P3S-20 pending-environment-decision）
                 libc::setrlimit(libc::RLIMIT_AS, &mem);
                 let cpu = libc::rlimit {
                     rlim_cur: cpu_secs as libc::rlim_t,
