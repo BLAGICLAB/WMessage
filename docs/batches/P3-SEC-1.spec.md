@@ -17,7 +17,7 @@ Phase 3 首批：medium security 类 25 条中 5 条清晰修复（其余 20 条
 **② api_handlers/body.rs**：Transfer-Encoding 出现即 Malformed(400)——CL 预拒对 TE 请求无效（RFC 7230 §3.3.3 歧义优先拒绝）。
 **③ ocr.rs**：scheme 前缀比较小写归一（RFC 3986 §3.1，`HTTP://` 原可绕过隐私红线拒绝）。
 **④ db/paths.rs escape_for_log_inline**：与 audit::escape_for_log（NEW-1345 后全集）字符级对齐；不直接复用避免 db→bot/config 循环依赖。
-**⑤ py/runtime.rs setrlimit**：返回值检查（≠0 → spawn 失败）——原静默吞失败 = 限额未生效时放行无上限子进程。
+**⑤ setrlimit（回退登记）**：硬失败修法实测打断 py_exec（macOS sandbox EINVAL）→ 回退静默形态 + 注释登记 pending-environment-decision（P3S-20）。
 
 **Skip 20 条**（详见 docs/PHASE3-MEDIUM-TRIAGE.md）。
 
@@ -43,22 +43,24 @@ Phase 3 首批：medium security 类 25 条中 5 条清晰修复（其余 20 条
   "family": "medium-security-fixes",
   "expected_files": [
     ".gitignore",
+    ".zcodeignore",
     "src-tauri/src/api_handlers/body.rs",
     "src-tauri/src/ocr.rs",
-    "src-tauri/src/db/paths.rs",
+    "src-tauri/src/paths.rs",
     "src-tauri/src/py/runtime.rs"
   ],
-  "max_lines_added": 60,
-  "max_lines_removed": 10,
+  "max_lines_added": 75,
+  "max_lines_removed": 12,
   "findings": [
     {"id": "P3S-0", "file": ".gitignore", "line": 66, "fix": "明文凭据 sibling 模式补齐"},
     {"id": "P3S-2", "file": "src-tauri/src/api_handlers/body.rs", "line": 46, "fix": "Transfer-Encoding 出现即 Malformed(400)"},
     {"id": "P3S-16", "file": "src-tauri/src/ocr.rs", "line": 37, "fix": "scheme 前缀小写归一比较"},
     {"id": "P3S-17", "file": "src-tauri/src/db/paths.rs", "line": 330, "fix": "escape_for_log_inline 与 audit 全集字符级对齐（parity 测试担保）"},
-    {"id": "P3S-20", "file": "src-tauri/src/py/runtime.rs", "line": 462, "fix": "setrlimit 返回值检查，失败即 spawn 失败"}
+    {"id": "P3S-17b", "file": ".zcodeignore", "line": 65, "fix": "凭据 ignore 模式镜像 .gitignore 新增项（OCR critical 采纳）"}
   ],
   "assertions_min": {
-    "src-tauri/src/db/paths.rs": 0
+    "src-tauri/src/paths.rs": 0,
+    "src-tauri/src/py/runtime.rs": 0
   },
   "ocr_plan": {
     "rounds": 1,
