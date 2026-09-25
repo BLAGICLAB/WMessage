@@ -5,6 +5,8 @@
 
 ## 0. 执行日志
 
+- [2026-09-25 08:53 CST] **MI-B1**（migration 域 B 类拍板落地批，commit 5b5f360，amend 00bab18 仅修 D2 数字）：实修 2 处——① #1 rules.rs load_rules 拆纯函数 load_rules_from（Result<RulesFile, CommandError>：NotFound=首装合法态 / 读失败 IoError / 解析失败 DomainRule(migration)；坏文件不再被空规则顶替）+ 三调用点分流（run.rs 迁移中止 / rules_load·status→CommandResult，MigrationPanel try/catch 已核前端零改动）+ run_migration 链 String→CommandError 结构化直传；② #9 归档目录三道闸（`..` 既有 / 绝对路径+has_root 根式 / symlink 逃逸祖先 canonicalize）+ run.rs create_dir_all 后 verify_archive_dir_created 终态复验 + validate_rules containment 抬出 move 块全动作生效 + 导入破坏性确认框（spawn_blocking，启用行计数，confirm 审计落 save_rules 后）。行为变更：坏规则文件 fail-closed；存量绝对路径归档配置拒绝执行（拍板接受）；导入前确认框。OCR 4 轮：r1 1 high 采纳（From<String> 塌码）+4m+10l；r2 0 high（1 critical 采纳=run.rs String 桥接）+3m+16l；r3 3 high 全采纳同根（create 后复验 / audit 补 disabled+count / 注释精确化）；r4 0 critical 0 high（3m 采纳 3 不采纳 + 11l 处置）。spec 校正 ×3（assertions 计数 / budget +300→+380→+450）——**≥3 次触发 reviewer 抽查（agent-20，另行登记）**。D2: files=4(+397/-43) asserts=0→16 tests=migration 65 绿 + test-all 1134 全绿。**reviewer 抽查（agent-20，spec 校正 ×3 触发）= PASS**（8 项逐核：diff-spec 一致 / load_rules_from 边界 / 调用点与返回类型链无残留 / 三道闸+复验位置 / 确认框+审计时序 / 65 测试实跑 / r3 high 与 raw json 对账 / 新注释零批次号；唯一瑕疵=commit message r1/r2 medium/low 计数各差 1 的表述笔误——medium 被解析脚本归 low，总 comments 与 high/critical 计数吻合，不影响处置实质）。
+
 - [2026-09-25 08:07 CST] **DB-B**（db 域 B 类拍板落地批，commit f137536）：实修 3 处——① #3 paths.rs copy_legacy_db 源库 open 失败（warn+继续裸拷）→ 早退 Err fail-closed（原库只读保留 + mod.rs Err 臂补 audit ERROR + 可操作消息含排障步骤；OCR r1 low 采纳同根收紧：checkpoint 臂非 BUSY 错误（NOTADB/IO）同治 fail-closed，仅 BUSY 容错走 -wal/-shm 带走良性路径）；② #4 workspace_import_merge NULL updated_at → match 三臂，Some(None)=整批 Err（tx 回滚 + 行 id 指认 + 回填指引；行不存在/有值现状保留；导入行缺时间戳视 0 文档化）；③ #5 bot_history (created_at,id) 复合排序键不变量注释固化（load 本就 ORDER BY id，行序不依赖 created_at）+ 回归测试。行为变更：坏源/损坏老库不再被裸拷为主库；NULL 目标行导入由静默改整批 Err。OCR r1 4 low（0 high / 0 medium / complete）：1 采纳（同根收紧）+ 3 不采纳有论证。spec 校正 ×1（budget +220→+260，5a25a66）。D2: files=4(+229/-7) asserts=0→167 tests=cargo 新增 4 回归绿（BUSY 良性路径 6/6 不回归）+ test-all 全绿。
 - [2026-09-25 07:25 CST] **B 类决策权威清单重建（zcode 接手第一步）**：23 项全量重建入 §4 末段（grep 攒批/转 B 类/B 类候选全量 + 逐项源码 file:line 现场核对 + OCR fullscan 原文复核）。勘误：HANDOFF-2026-09-25 §3.1 表 #10 误标 EV-3b-A（实为 add_allowed_dir 剥 key，§4:555-557）；EV-3b-A 残 2 条 = #17。#1–#9 为新赋编号。**环境漂移登记：本机 `python3` 现解析 ~/.local/bin/python3（3.14.7，无 pytest），test-all.sh 第 2 步 pytest 失败；以 `PATH=/usr/bin:$PATH` 前置系统 python3（3.9.6 + pytest 8.4.2）复跑全绿（26s，1119 passed + pytest + vitest）。后续批三层自测须带此 PATH 前缀，或用户拍板给 3.14 装 pytest。**
 - [2026-09-22 08:32 CST] 分域表修正：bot* = bot/ 子目录 18 + bot_skills/ 子目录 12 + bot_*.rs 兄弟 16 = 46 条（严格互斥去重）。原"bot 18" = bot/ 子目录 18；原"bot_skills 12" = bot_skills/ 子目录 12；兄弟 16 条散落 9 文件（artifacts 2 + chat 1 + fs 1 + model_loop 4 + plan 1 + py 1 + scheduler 2 + slash 1 + web 5 = 18 raw → 去重 16 唯一）。
@@ -193,14 +195,14 @@
 ### 域 migration（10 簇 / 15 findings）
 - C5-MI-01：poisoned mutex silent recovery（DB_WRITE_LOCK silent 路径，**违反 C3-1 约定**），1 条，**家族已溶解，独立存在** → **已修（EVNB-02，commit 299e776：journal.rs db_write_lock 闭包加 mutex_poisoned eprintln，恢复语义不变）**
 - C5-MI-02：error-not-propagated（migration/run.rs:132 + :270 + recovery.rs:87，unwrap_or(None) / filter_map(r.ok) 吞 DB err，调用方无感），3 条 → **已清（首批开批，commit eca3622）：unwrap_or(None)/filter_map(r.ok) → ? 显式传播——2026-09-25 06:59 源码复核在位，行标补打** 条
-- C5-MI-03：failure-recovery-default-value（migration/rules.rs:27 + :121，破坏数据：rules 默认覆盖 + CSV 输入 coerce），2 条 → **:121 已修（FRDV-01，commit 46f8437）；剩 :27（B 类候选，攒批待拍）**
+- C5-MI-03：failure-recovery-default-value（migration/rules.rs:27 + :121，破坏数据：rules 默认覆盖 + CSV 输入 coerce），2 条 → **:121 已修（FRDV-01，commit 46f8437）；:27 已清（MI-B1，commit 5b5f360，§0 2026-09-25 08:53；用户拍板 #1=B 主案 caller=3）**
 - C5-MI-04a：migration/journal.rs:34 INSERT 无去重，1 条 → **已修（MI-04a，commit 414cf08）**
 - C5-MI-04b：migration/journal.rs:126 unlocked find+act TOCTOU，1 条 → **已修（MI-04b，commit 5819f76；replay 纳入 MigrationGuard）**
 - C5-MI-05a：migration/commands.rs:116 spawn_blocking 无 abort，1 条 → **B 类候选**（修法 = CancellationToken 贯穿 run_migration 阶段 + 取消语义方向「迁一半的文件怎么办」，签名改 + 语义变更，攒批报人拍）
 - C5-MI-05b：migration/commands.rs:19 + recovery.rs:197 sync/block_on 阻塞，2 条，**跨域阻塞族待核**（§3 待核区明确「不现在动」）
 - C5-MI-06：migration/ops.rs:127 copy_dir_recursive mid-fail → dst 部分填充（**atomicity/partial-write 家族**），1 条 → **已清（APW-02a，commit d443a07）：顶层 staging sibling + 原子 rename + 失败清 staging——2026-09-25 06:59 源码复核在位，行标补打**
 - C5-MI-07：migration/ops.rs:202 路径不一致（rotation target ≠ write target），1 条 → **已修（MI-07，commit 613e07a）**
-- C5-MI-08：migration/rules.rs:99 + :67 解析脆 / 校验缺（批内 2 处独立改动：contains 太宽松 + archive_dir 无路径校验 = 1 security），2 条 → **已修（MI-08，commit bbe4f59；archive_dir 绝对路径收窄部分转 B 类）**
+- C5-MI-08：migration/rules.rs:99 + :67 解析脆 / 校验缺（批内 2 处独立改动：contains 太宽松 + archive_dir 无路径校验 = 1 security），2 条 → **已修（MI-08，commit bbe4f59）；残余（archive_dir 绝对路径/symlink/破坏性提示，B 类 #9）已清（MI-B1，commit 5b5f360，§0 2026-09-25 08:53）**
 
 ### 域 scripts（5 簇 / 10 findings）
 - C5-SC-01：shell 解析脆（sync-version.mjs:11 + ci-guard-tiny-http-vendor.sh:46 + :27），3 条 → **已清（SC-01，commit 9629fe9；sync-version.mjs:11 判 FP 零代码处置，§0 02:18）**
@@ -626,6 +628,8 @@ run A 仅靠 /tmp/ocr-APW-02b-r1.clean.json 找回。cache 命名亦误导：
 
 - **DB-B（f137536，2026-09-25 08:07）OCR 核验记录**：r1 = ~/.openclaw/cache/DB-B/ocr-r1.raw.json（status=complete / comments=4 全 low：① audit 调用形态重复[不采纳：Ok-warns 循环与 Err 臂 level/分支语义不同，统一徒增间接层] ② open-fail 测试仅 EISDIR 单模式[采纳=checkpoint 非 BUSY fail-closed 收紧 + NOTADB 损坏源测试，同 #3 根因] ③ 错误文案断言脆[不采纳：文案即拍板要求的可操作提示，锁定防退化] ④ 批内等时断言依赖单次 now[不采纳：该断言正是本批锁死的不变量本身，非 flaky]）/ 0 failure / 0 high。
 
+- **MI-B1（5b5f360，2026-09-25 08:53）OCR 核验记录**：r1 = ocr-r1.raw.json（15 comments：1 high From<String> 塌码[采纳→load_rules_from 结构化 CommandError] / 4 medium 2 采纳 2 不采纳 / 10 low 3 采纳 7 不采纳有论证）；r2 = ocr-r2.raw.json（20 comments 0 high——r1 验证通过；1 critical run.rs String 桥接塌回 Internal[采纳→run_migration 链 CommandError 直传，照 MI-04b critical→修复→复验先例] / 3 medium 2 采纳 1 不采纳 / 16 low 6 采纳 10 不采纳）；r3 = ocr-r3.raw.json（19 comments：3 high 全采纳同根——create 后终态复验 verify_archive_dir_created / audit 补 disabled+count / 注释过度承诺精确化）；r4 = ocr-r4.raw.json（17 comments **0 critical 0 high**——r3 验证通过；6 medium 3 采纳[reject_parent_dir_components 契约文档 / has_root 补 Windows 根式路径 / confirmed 审计挪 save_rules 后] 3 不采纳[AppHandle 依赖不可单测 / Windows 无验证手段 / 三通道受众不同] + 11 low 轻量随批处置）。无 tool failure。**B 类 #1/#9 拍板（B / A）+ 已清登记见 §0。**
+
 ### B 类决策权威清单（2026-09-25 07:25 CST zcode 重建，23 项待用户逐项拍板；拍板前禁写代码）
 
 > 重建方法：grep「转 B 类｜B 类候选｜单独立 B 类｜攒批」全量 + 每项源码 file:line 现场核对 + OCR fullscan（docs/OCR-CODE-REVIEW-2026-09-21-fullscan.json）原文复核。
@@ -635,6 +639,7 @@ run A 仅靠 /tmp/ocr-APW-02b-r1.clean.json 找回。cache 命名亦误导：
 
 - **#1** src-tauri/src/migration/rules.rs:27 —— load_rules 两臂静默降级空规则：解析失败仅 log_line + `RulesFile::default()`，读失败 `Err(_) => default()` 全静默；caller 后续 save 即把用户规则覆写为空（OCR high）。
   - A=quarantine〔triage 载方向〕：坏文件改名 `.bad-<ts>` 保全原文件 + 空规则继续——用户配置不被无痕覆写，可人工恢复；B=结构化 Err〔triage 载方向〕：load_rules → Result，caller（migration_rules_load / run_migration / migration_status 等 ≥3 处）显式分流 UI 报错 vs 降级——签名改 + ripple；C=维持现状（留痕已有，覆写风险留给 save 侧）。triage：§0:28 / §2:194
+  - → **已拍 B（2026-09-25，caller 实测恰 3 处走主案）→ 已清（MI-B1，5b5f360；NotFound=首装合法态 Ok 空规则、读失败 IoError、解析失败 DomainRule；run.rs 迁移中止）**
 - **#2** src-tauri/src/migration/commands.rs:116 —— migration_run 的 spawn_blocking 无 abort/cancel 接线，前端取消（关窗/退出）后 future 无人接收（OCR high）。
   - A=〔triage 载方向〕CancellationToken 贯穿 run_migration 各阶段（migration_run 签名改 + 取消语义「迁一半的文件怎么办」——staging 原子化后中止安全性需逐阶段核定）；B=〔重建构造〕不可取消语义文档化（任务后台自然跑完并落 journal，结果丢弃无害）；C=〔重建构造〕wontfix-with-rationale。triage：§2:197
 - **#3** src-tauri/src/db/paths.rs:50 —— copy_legacy_db 源库 open 失败（损坏/加密/IO）仅追加 warn 字符串，坏源静默继续传播（OCR high，C5-DB-05 成员）。
@@ -654,6 +659,7 @@ run A 仅靠 /tmp/ocr-APW-02b-r1.clean.json 找回。cache 命名亦误导：
   - A=〔重建构造〕启动 replay 前一次性清理（扫 journal，同 key 已完成 op 的孤儿 pending 删除 + 留痕——改迁移启动语义）；B=〔重建构造〕不清理（MI-04a 后 check-then-reuse，孤儿只占行数无行为危害——需核 replay 扫到孤儿时的实际行为）；C=〔重建构造〕提供手动清理命令/文档（运维面）。triage：§0:49
 - **#9** src-tauri/src/migration/rules.rs:67 —— MI-08 残余：archive_dir 绝对路径 policy（`..` 组件拒绝已修 bbe4f59）+ symlink 逃逸校验 + 破坏性变更（move）用户提示。
   - A=〔重建构造〕三项全做（绝对路径拒绝 + canonicalize 后须仍在数据目录 + 执行前 UI 提示）；B=〔重建构造〕只做路径/symlink 校验，不加 UI 提示；C=〔重建构造〕只文档化威胁模型（cleanup-rules.json 属本地用户可控文件，威胁=用户自伤）。triage：§0:51 / §2:201
+  - → **已拍 A（2026-09-25）→ 已清（MI-B1，5b5f360；三道闸 + create 后终态复验 + 导入破坏性确认框；确认框=「执行前提示」落地口径，run 期自动迁移无交互点已在 spec 声明）**
 - **#10** src-tauri/src/bot/config/io.rs:161（add_allowed_dir）—— keyring 迁移成功后文件内明文 key 是否剥除（BT-03a OCR r5 medium 不采纳转 B）：防御纵深 vs 迁移误判成功时剥 key 写盘 = 密钥永久丢失（数据破坏方向）。
   - A=〔重建构造〕迁移成功后剥 key（防御纵深；前提=「成功」判定零误判）；B=〔重建构造〕不剥 + 文档化（文件副本=keyring 不可用时的降级兜底，明文留存是可用性取舍=现状）；C=〔重建构造〕剥 key 前 keyring 读回验证（belt-and-suspenders，实现最重）。triage：§4:555-557
 - **#11** src-tauri/src/bot_skills/state.rs:164（clear_terminal_skill_runs）—— 终态 run 全局清理 vs 按会话清理（语义方向）。
