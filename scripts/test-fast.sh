@@ -151,7 +151,7 @@ fi
 # ─── 步骤 3: pytest collect-only ──────────────────────────
 if [[ "$NEED_PYTEST" == true ]]; then
     step "[3/N] pytest collect-only" \
-        python3 -m pytest tests-audit/audit_pre_step_pre_execute.py --collect-only -q
+        python3 -m pytest tests-audit/audit_pre_step_pre_execute.py tests-audit/audit_tauri_bridge.py tests-audit/audit_error_codes.py tests-audit/audit_module_map.py --collect-only -q
 fi
 
 # ─── 步骤 2.5: cargo machete（未使用 Rust 依赖门禁，未安装则 skip） ──

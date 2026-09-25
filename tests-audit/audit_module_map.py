@@ -46,28 +46,35 @@ def resolve_entry(name):
     """把 tree entry 名字解析为 SRC 下真实文件路径。
 
     1. 直接 `SRC/name` 存在 → 原路径（不重映射）
-    2. 否则在 SRC 里找同名 .rs：
-       - 唯一同名 → 直接返回
-       - 多同名 → 按路径字符串排序、列表里第一个作为「就近」返回
+    2. 否则在 SRC 里找路径末段匹配的 .rs（候选路径以 entry 名结尾，
+       多段名如 `config/types.rs` 要求完整尾段一致）：
+       - 唯一尾段匹配 → 返回（stderr 打印重映射行）
+       - 零个或多个匹配 → None（响亮失败，让调用方报“指不到”/“歧义”）
     3. 都不存在 → None（让调用方报“指不到”）
 
-    每个被重映射的 entry 都会在 stderr 打印一行（保留所有候选），
-    调用方人会在 pytest 输出里看到完整名单，
-    Phase 6 重新收紧为「路径末段 + 模块前缀」匹配时能复盘。
+    Phase 6 收紧：废弃「同名就近取第一个」——多同名歧义必须显式修文档树，
+    不允许静默吞掉错误映射。
     """
     candidates = sorted(SRC.rglob(name))
     direct = SRC / name
     if direct.exists():
         return direct.relative_to(SRC)
-    if candidates:
-        rels = [c.relative_to(SRC).as_posix() for c in candidates]
-        chosen = rels[0]
+    rels = [c.relative_to(SRC).as_posix() for c in candidates]
+    tail_matches = [r for r in rels if r.endswith(name)]
+    if len(tail_matches) == 1:
+        chosen = tail_matches[0]
         print(
             f"[audit_module_map] tree entry {name!r}: 原路径不在，"
-            f"{len(candidates)} 个同名候选 → {rels}（就近取 {chosen}）",
+            f"尾段唯一匹配 → {chosen}",
             flush=True,
         )
         return chosen
+    if len(tail_matches) > 1:
+        print(
+            f"[audit_module_map] tree entry {name!r}: 尾段匹配歧义 "
+            f"{len(tail_matches)} 个 → {tail_matches}（拒绝静默就近，请修文档树）",
+            flush=True,
+        )
     return None
 
 

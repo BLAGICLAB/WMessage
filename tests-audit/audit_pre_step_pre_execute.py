@@ -28,6 +28,7 @@ SRC = Path("/Users/renshi/Projects/wmessage/src-tauri/src")
 BOT = "\n".join(
     [(SRC / "bot.rs").read_text()]
     + [p.read_text() for p in sorted((SRC / "bot").glob("*.rs"))]
+    + [p.read_text() for p in sorted((SRC / "bot" / "config").glob("*.rs"))]
 )
 # F-6 step 5（2026-08-18）后：聊天编排在 bot_chat.rs、工具循环在 bot_model_loop.rs。
 # 编排/路由/事件类断言统一对合并文本 BOT_ALL 做（行为仍在，只是位置搬家）
@@ -106,18 +107,21 @@ class TestPreStepRouting:
             "bot_chat 应调 middleware::run_pre_step（F-2 抽象层）"
         )
 
-    @pytest.mark.xfail(reason="Phase 6 技术债: bot_chat.rs 四拆后 facade 不再含 start_skill(&app 直调；调度路径在 bot_skills/runtime.rs。OCR 重构造成，检查脚本未跟进。Phase 6 重新对齐断言位置或改 facade 重新导出。")
     def test_pre_step_hit_triggers_start_skill(self):
         """pre-step 命中 → start_skill 调用（Skill 进入 Running 状态）"""
-        # 在 bot_chat 的 pre-step 分支里能找到 start_skill 调用
-        assert "start_skill(&app" in BOT_ALL or "start_skill(\\&app" in BOT_ALL
+        # Phase 6 对齐：调用形态 = start_skill_with_audit(&app, ...) 包装
+        # crate::bot_skills::start_skill（bot_chat.rs::start_skill_with_audit）
+        assert "start_skill_with_audit(&app" in BOT_ALL, (
+            "pre-step 命中分支应经 start_skill_with_audit(&app, ...) 调 start_skill"
+        )
         # 且调用路径在 Some(RouteAction::Skill(_)) 分支内（F-2 抽象层包装）
-        # 用更宽松的检查：start_skill 调用存在且 RouteAction::Skill 存在
         skill_branch = re.search(
-            r"Some\(RouteAction::Skill\([^)]+\)\)\s*=>\s*\{[^}]*start_skill", BOT_ALL, re.DOTALL
+            r"Some\(RouteAction::Skill\([^)]+\)\)\s*=>\s*\{[^}]*start_skill_with_audit",
+            BOT_ALL,
+            re.DOTALL,
         )
         assert skill_branch is not None, (
-            "pre-step 命中分支里没看到 start_skill 调用 → pre-step 形同虚设（F-2 抽象层：Some(RouteAction::Skill(...)) => {...}）"
+            "pre-step 命中分支里没看到 start_skill_with_audit 调用 → pre-step 形同虚设（F-2 抽象层：Some(RouteAction::Skill(...)) => {...}）"
         )
 
     @pytest.mark.skip(reason="[2026-08-18 F-4 A 路径] interactive mode 允许 Skill 内部调用 LLM，"
@@ -201,13 +205,13 @@ class TestPreStepMissFlowsToLLM:
             "bot_chat 必须在 pre-step 处理后无条件调用 run_model_loop"
         )
 
-    @pytest.mark.xfail(reason="Phase 6 技术债: bot/dispatch.rs 内化前置闸后 execute_tool 入口签名未变，但 run_pre_execute 调入点改在内部函数。Phase 6 判断是改断言定位新调入点，还是确认意图改写。")
     def test_every_execute_tool_has_pre_execute_check(self):
         """execute_tool 入口必走 pre_execute（middleware::run_pre_execute，F-2 抽象层 2026-08-18）"""
+        # Phase 6 对齐：run_pre_execute 调入点在 execute_tool_impl（薄 wrapper 委托）
         fn_match = re.search(
-            r"async fn execute_tool\([^)]*\)[^{]*\{", BOT
+            r"async fn execute_tool_impl\([^)]*\)[^{]*\{", BOT
         )
-        assert fn_match is not None, "没找到 execute_tool 函数"
+        assert fn_match is not None, "没找到 execute_tool_impl 函数"
         fn_start = fn_match.end()
 
         fn_body = BOT[fn_start:fn_start + 2000]
@@ -220,11 +224,11 @@ class TestPreStepMissFlowsToLLM:
             "execute_tool 仍需 is_skill_active 状态传给 middleware"
         )
 
-    @pytest.mark.xfail(reason="Phase 6 技术债: 同 run_pre_execute —— skill_on_step 也被 dispatch.rs 内化，入口函数体不再出现该 token。Phase 6 与 run_pre_execute 同步处理。")
     def test_skill_on_step_called_in_execute_tool(self):
         """execute_tool 还应调 skill_on_step（步骤计数/熔断）"""
+        # Phase 6 对齐：skill_on_step 调入点同在 execute_tool_impl
         fn_match = re.search(
-            r"async fn execute_tool\([^)]*\)[^{]*\{", BOT
+            r"async fn execute_tool_impl\([^)]*\)[^{]*\{", BOT
         )
         assert fn_match is not None
         fn_body = BOT[fn_match.end():fn_match.end() + 2500]
@@ -314,15 +318,15 @@ class TestEventLogTiming:
         # bot 编排层实际在用（bot_chat.rs 全限定调用 crate::audit_event!）
         assert "crate::audit_event!" in BOT_ALL
 
-    @pytest.mark.xfail(reason="Phase 6 技术债: F-3 改名为 tool.return 后，埋点位置/调用形态可能在 execute_tool_impl / execute_tool_with_stop 之间漂移。Phase 6 grep 当前 tool.return 事件名实际发出位置，重写断言。")
     def test_post_execute_emits_structured_event(self):
         """execute_tool 末尾应发结构化 tool.return 事件（F-3 第三步 2026-08-18 改名）"""
-        # NEW-C-4 后 execute_tool 是薄 wrapper，真正实现（事件埋点）在 execute_tool_with_stop
+        # Phase 6 对齐：事件埋点在 execute_tool_impl（tool.call 入口 + tool.return 配平
+        # + 早退路径 early_return_events 均在 impl 函数体内）
         fn_match = re.search(
-            r"async fn execute_tool_with_stop\([^)]*\)[^{]*\{", BOT
+            r"async fn execute_tool_impl\([^)]*\)[^{]*\{", BOT
         )
         assert fn_match is not None
-        fn_body = BOT[fn_match.end():fn_match.end() + 6000]
+        fn_body = BOT[fn_match.end():fn_match.end() + 9000]
         assert 'audit_event!' in fn_body or "write_event" in fn_body
         assert '"tool.return"' in fn_body, "execute_tool 末尾应发 tool.return 事件（2026-08-18 F-3 改名）"
         # 同步验证入口应有 tool.call（拆分自原 tool_done）
@@ -376,7 +380,6 @@ class TestNoRegression:
 class TestBypassLlmSwitch:
     """F‑1 bypass_llm_on_pre_step_hit 开关存在 + toggle off 行为"""
 
-    @pytest.mark.xfail(reason="Phase 6 技术债: BotConfig 里的 bypass_llm_on_pre_step_hit 字段可能改名/类型变了（F-1 后期重构）。Phase 6 grep 当前字段名，调整断言。")
     def test_bypass_llm_switch_field_exists(self):
         """BotConfig 必须包含 bypass_llm_on_pre_step_hit 字段（F‑1 P0 release blocker）"""
         assert "pub bypass_llm_on_pre_step_hit: bool" in BOT, (
@@ -394,7 +397,6 @@ class TestBypassLlmSwitch:
             "缺二次 shadow：bypass=false 时强制 None"
         )
 
-    @pytest.mark.xfail(reason="Phase 6 技术债: BotConfigView 可能拆到 bot/config/types.rs（路径漂移），字段名或保留策略待确认。Phase 6 grep 当前 View 定义位置。")
     def test_bypass_llm_default_view_field(self):
         """BotConfigView 必须暴露 bypass_llm_on_pre_step_hit 给前端"""
         assert "pub bypass_llm_on_pre_step_hit: bool" in BOT, (

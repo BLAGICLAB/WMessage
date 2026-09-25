@@ -20,7 +20,7 @@ src-tauri/src/
 │
 │─ 数据层
 ├── db/                  SQLite（wmessage.db）+ 迁移 + 产物 + 工作区（按表分文件）
-│   ├── mod.rs          模块声明 + 公共 re-export
+│   ├── db/mod.rs      模块声明 + 公共 re-export
 │   ├── tasks.rs         Task / Subtask / TaskFile
 │   ├── bot_sessions.rs   BotSession / 会话归属
 │   ├── bot_history.rs   会话聊天记录
@@ -35,15 +35,15 @@ src-tauri/src/
 ├── api_server.rs        HTTP server 生命周期、端口绑定、EventHub（SSE 中枢）
 ├── api_auth.rs          Bearer token（runtime/flags/api-token.txt）、开关持久化（runtime/flags/api-enabled.flag）
 ├── api_handlers/        REST /api/tasks CRUD + SSE + api_start/stop 等命令
-│   ├── mod.rs          模块声明 + 路由分发
+│   ├── api_handlers/mod.rs  模块声明 + 路由分发
 │   ├── handlers.rs      HTTP 路由层
-│   ├── commands.rs      tauri 命令层
+│   ├── api_handlers/commands.rs  tauri 命令层
 │   ├── body.rs          请求/响应模型
 │   ├── sse.rs           SSE 事件流
 │   ├── ratelimit.rs     限流
 │   ├── util.rs          工具函数
 │   ├── validate.rs      入参校验
-│   └── types.rs          共享类型
+│   └── api_handlers/types.rs    共享类型
 │
 │─ Bot 核心（编排 → 决策 → 工具分发）
 ├── bot_chat.rs          入口编排：bot_chat / bot_compact / bot_execute_task 命令；五步主流程；
@@ -68,12 +68,12 @@ src-tauri/src/
 ├── bot/dispatch.rs (237)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+
 │                        pre_execute 洋葱入口 + skill_on_step 钩子 + tool.return 结构化审计
 ├── bot/config/          BotConfig/ApiProvider/PermMode/KeySlot（bot-config.json，key 走系统 keyring）；
-│   ├── mod.rs          模块声明
-│   ├── schema.rs        bot-config.json schemaVersion
-│   ├── types.rs         ApiProvider / PermMode / KeySlot
-│   ├── io.rs            配置读写 + 默认值
+│   ├── bot/config/mod.rs  模块声明
+│   ├── bot/config/schema.rs        bot-config.json schemaVersion
+│   ├── bot/config/types.rs  ApiProvider / PermMode / KeySlot
+│   ├── bot/config/io.rs    配置读写 + 默认值
 │   ├── keyring.rs        API key 走系统 keyring
-│   ├── commands.rs      bot_get_config / bot_set_config
+│   ├── bot/config/commands.rs  bot_get_config / bot_set_config
 │   └── audit.rs         audit_log
 ├── bot/tools.rs (1589)    28 个 tool_* 实现（任务卡 CRUD / 子任务 / 文档生成 / 联网 / 时间 / 记忆转发）
 ├── bot_anthropic.rs     Anthropic 协议适配（纯函数）：OpenAI ↔ /v1/messages 双向转换、auth 头、prompt caching

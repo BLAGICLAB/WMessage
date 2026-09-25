@@ -68,3 +68,13 @@
 - 本 issue **只调查事实**
 - **不改** `.githooks/`、`scripts/test-all.sh`、push 流程、batch 纪律
 - 修法（若需要）待事实查清后另行立项
+
+## 5. 结案（2026-09-26，Phase 6 复核）
+
+- **实测**：`bot_fs::tests::always_allow_uses_user_input_dir_not_canonical_parent` 当前
+  **通过**（nextest 单测 1/1 passed）。§1 陈述 3 的「确定性失败」前提已不再成立——
+  /var firmlink 断言问题在后续批次中被修复（setup 路径规范化），矛盾自然消解。
+- **结论**：四件事实的冲突依赖「测试确定性失败」这一条；该条被后续修复推翻后，
+  「7 次 push 全部成功」与现状一致，无门禁完整性缺口需要解释。
+- **处置**：本 issue 结案（调查完成，无需修法）。若未来再出现「确定性失败测试 + push
+  成功」的组合，按 §3 清单重新立案。
