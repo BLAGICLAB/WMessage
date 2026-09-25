@@ -440,7 +440,9 @@ r2（364e2749）0 new high → 收口。
 | C1 | copy_file.rs(3) + bot_fs.rs(2) | 5 | 0 | ✅ test-all | ✅ 0 新增 | c9ff340 / 3501ae7 / 3266382 |
 | C2 | bot_skills/files.rs(1) + capabilities(1) | 2 | 0 | ✅ test-all | ✅ | 39675aa / 8b0dfdb / 95a25e9 |
 | C3 | db/tasks.rs + eval/metrics.rs + evolution/observe/stop.rs + evolution/panel/commands.rs | 4 | 0 | ✅ test-all（1073 Rust + 229 vitest） | r1（一次收口，未跑 r2） | 62e245e |
-| C4 | WidgetApp/constants.ts(2) + observe_run.rs + test-all.sh + format.ts + App.tsx | — | — | 未开 | — | — |
+| C4 | WidgetApp/constants.ts(2) + observe_run.rs + test-all.sh + format.ts + App.tsx | 1（App.tsx C4-6 mutate 串行化） | 2（PANEL_H×2 → C4-v2 wontfix-pending-product-decision） | ✅ test-all | 逐条现读核验（2026-09-26 C4-R docs-only） | 见 PHASE2-TRIAGE §0 C4-R |
+
+> **C4 收口核验（2026-09-26，C4-R docs-only）**：① observe_run.rs:96 已修（历史批，注释「合并双 argv 循环 + synthetic 后置」在位）；② test-all.sh:13 `-j num-cpus` 判 **FP**——`num-cpus` 是 nextest `-j` 文档值（=全部 CPU），实证 exit 0 + 历次 test-all 全绿，OCR「立即失败」前提错误；③ format.ts monthly 已修（现读年份位正确，OCR 所述 month-as-year 缺陷不在）；④ constants.ts:18 SIZE_KEY 判 **FP**——OCR 误读注释行，实际 :20 `SIZE_KEY = "wmessage-widget-size"` 命名空间正常；⑤ constants.ts:8/:13 PANEL_H 矛盾+窄区间 → **C4-v2 wontfix-pending-product-decision**（维持，产品拍板时一次改两处）；⑥ App.tsx C4-6 mutate 串行化已修（代码注释在位）。
 
 > **C3 批定性：2 critical（C3-3 / C3-4 实修）+ 1 high（C3-1，原 critical → 实现前发现生产路径已锁覆盖而降级）+ 1 medium（C3-2，原 critical → 字段级对外语义保留、无内部生产消费者而降级）。非「4 critical 完成」。**
 > C3-1 的三层现状（CI/debug 断言强制 / release 靠调用点事实 / 跨进程未覆盖）见本批 commit message。

@@ -5,6 +5,8 @@
 
 ## 0. 执行日志
 
+- [2026-09-26 02:00 CST] **C4-R**（Phase 1 C4 残余收口，docs-only 零代码）：全 6 条现读核验——observe_run.rs:96 已修（历史批注释在位）/ test-all.sh:13 `-j num-cpus` 判 FP（nextest `-j` 文档值，实证 exit 0）/ format.ts monthly 已修（年份位正确）/ constants.ts:18 SIZE_KEY 判 FP（OCR 误读注释行，:20 实际值 namespaced 正常）/ PANEL_H ×2 维持 C4-v2 wontfix-pending-product-decision / App.tsx C4-6 已修。**Phase 1（critical）至此全清**。fix-plan 跟踪表 C4 行已回填。
+
 - [2026-09-26 01:45 CST] **PHASE2 终态清扫（zcode 会话收口）**：B 类 23 项全部处置完毕——20 项实修落地（DB-B/MI-B1/BOT-B/FE-B/API-B/MI-B2/EV-B 共 7 批）、#7 判定 A（N=87>5 维持 eprintln）、#14 wontfix（C）、#23 前提不成立零代码（reviewer agent-21）。附加批：MI-B3（跨域阻塞族 MI-05b=A，recovery.rs:197 stale 零代码 agent-22——三簇全处置）、NEW-2（12 处 C3-1 留痕）、NEW-1345（NEW-1/3a/4/5 实修 + 3b stale）。**待拍板遗留：NEW-2b（47 处同形 silent into_inner，§3 登记）。** 择机项维持 leave：C4-v2 / DB-02b / META-8；PROC-5 eval 更新（见 §3.5）——n=25+ 但近期 10 批仅零星发作且均未影响 review 本体，**不立项**。环境根治：python3.14 装 pytest（--break-system-packages），test-all 无 PATH 前缀验证全绿（310+1147）。工程入库：HANDOFF-2026-09-25 + 9 份历史 spec 归档 commit（HANDLERS 为已撤销 spec 证据）；HANDOFF-2026-09-23 仍 untracked 待定；tests-audit/__pycache__ 加入 .gitignore。
 
 - [2026-09-25 12:10 CST] **NEW-1345**（混合批，commit 9f50382）：NEW-1 bot_py 测试 ×2 silent into_inner 补 eprintln（锁名现场核正=py_children）；NEW-3a escape_for_log 控制字符全集（is_control→escape_default + U+2028/2029 显式臂，"| " 预替换保输出逐字节不变）+ 全集单测；NEW-4 panic payload 提取 5 处收敛 crate::audit::panic_message（middleware/api_server 本地 fn 删、run/bot_scheduler 内联改调，文案统一 pure 措辞）；NEW-5 atomic_write rename 失败 tmp 清理 + 单测。**NEW-3b stale 零代码**：rotate 锁外容错 + append 锁内，撕裂面已闭合。OCR r1 3 low（2 采纳 extend/capacity；1 不采纳预替换防漂移）。spec 校正 ×1（assertions 3→2 实测）。D2: files=8(+93/-48) asserts=0→56 tests=+2 绿 + test-all 1147 全绿。
