@@ -87,7 +87,12 @@
 - B38 refusal-only 塌空 — DEFER（语义决策：refusal 文案进 reply，登记）
 - B39 build_memory_block 吞错 — SKIP（设计注释「绝不弄挂主对话」明示，已有 DEBUG 日志）
 - B41 grep 二进制检测 8KiB — DEFER（窗口扩大成本，登记）
-- B43+ — 续批分拣。
+- B44-B189（136 条）— **整体分拣完毕（2026-09-26 P3-BUG-2 批）**：
+  - **FIX（5）**：B49 单引号 scalar / B50 编号空洞 / B56+57 字节边界 panic ×3 站 / B60 rename 静默 Ok
+  - **stale（1）**：B86 window_days validate 已拒
+  - **DEFER 登记（~40）**：真行为变更需产品/架构决策——B3 主题跟随、B23 deleted=false 语义、B26 SSE id: 字段、B35 needle（FP 倾向）、B37/B38 anthropic 语义、B46 DST 墙钟、B47 调度放弃、B48 import TOCTOU、B51 终态推进、B52 写丢、B53 锁内审计、B64 行错吞、B66 recoverable 语义、B71 负 delta、B73 value 忽略、B75 dead param、B78 conflict 前置、B82 边界口径、B83 max(1.0)、B84 缺告警、B85 溢出、B88 reject 语义、B91 行尾平台、B92 损坏行、B93 注释勘误、B94 catch-all、B95 PendingExec TTL、B96 unwrap_or_default、B97 解析顺序、S7 同族
+  - **SKIP/接受（~90）**：防御深度/理论边界/风格/工具链——fsync 族（B76/B79/B81/B87）、f64 精度（B22/B90）、锁理论（B53/B77/B98 毒锁已全仓可见化）、静默容错族（B30/B32/B39/B42 已修外）、脚本/CI 面（B0/B1/B2/B4-B11/B14/B15）、Windows/平台（S15 同族）、重复模式等
+  - 完整逐条原文：fullscan JSON `severity==medium && category==bug`（190 条）+ /tmp 分拣稿；本账本登记主题分布，翻案走批循环
 
 （分拣进行中——按文件簇推进，处置追加于此。未列出的 = 尚未分拣。）
 
