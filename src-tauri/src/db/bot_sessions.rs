@@ -126,10 +126,18 @@ pub fn bot_session_rename(app: AppHandle, id: String, title: String) -> CommandR
     });
     let conn = super::open_db(&app)?;
     let now = chrono::Utc::now().timestamp_millis();
-    conn.execute(
-        "UPDATE bot_sessions SET title = ?1, updated_at = ?2 WHERE id = ?3",
-        rusqlite::params![title, now, id],
-    )
-    .map_err(|e| e.to_string())?;
+    let rows = conn
+        .execute(
+            "UPDATE bot_sessions SET title = ?1, updated_at = ?2 WHERE id = ?3",
+            rusqlite::params![title, now, id],
+        )
+        .map_err(|e| e.to_string())?;
+    if rows == 0 {
+        return Err(CommandError::InvalidArgument {
+            field: "id".into(),
+            value: id.to_string(),
+            reason: "会话不存在（重命名未命中任何行）".into(),
+        });
+    }
     Ok(())
 }

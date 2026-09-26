@@ -319,7 +319,7 @@ async fn ask_confirm_inner(
         app,
         &format!(
             "confirm | id: {} | kind: {kind} | {tool} | {}",
-            &id[..8],
+            &id.chars().take(8).collect::<String>(),
             crate::bot::truncate_for_log(detail, 120)
         ),
     );
@@ -401,7 +401,7 @@ pub fn bot_confirm_response(
             &app,
             &format!(
                 "confirm_denied | id: {} | 用户拒绝",
-                &request_id[..8.min(request_id.len())]
+                &request_id.chars().take(8).collect::<String>()
             ),
         );
     }
@@ -429,7 +429,7 @@ fn take_confirm<R: tauri::Runtime>(
         .ok_or_else(|| {
             format!(
                 "确认请求不存在或已超时：{}",
-                &request_id[..8.min(request_id.len())]
+                &request_id.chars().take(8).collect::<String>()
             )
         })
 }

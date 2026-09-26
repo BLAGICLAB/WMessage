@@ -71,7 +71,8 @@ pub fn parse_meta(text: &str, dir_name: &str) -> SkillMeta {
         let Some((k, v)) = line.split_once(':') else {
             continue;
         };
-        let v = v.trim().trim_matches('"');
+        // 单引号 YAML scalar 与双引号同权剥离（原仅剥双引号：'foo-bar' 带引号进值）
+        let v = v.trim().trim_matches(['"', '\'']);
         match k.trim() {
             "name" => m.name = v.to_string(),
             "description" => m.description = v.to_string(),
@@ -317,6 +318,16 @@ pub fn parse_skill_steps(body: &str) -> Result<(Vec<SkillStep>, Vec<SkillStep>),
         if !seen.insert(s.index) {
             return Err(format!(
                 "步骤序号 {} 重复——${{stepN.result}} 替换会静默错位，请修正编号为连续不重复",
+                s.index
+            ));
+        }
+    }
+    // 编号必须从 1 连续递增：空洞会让 ${stepN.*} 引用静默落空（Step 1→3 时 step2 引用悬空）
+    for (i, s) in steps.iter().enumerate() {
+        if s.index != i + 1 {
+            return Err(format!(
+                "步骤编号必须从 1 连续递增（第 {} 条实际编号 {}）——${{stepN.*}} 引用会静默落空",
+                i + 1,
                 s.index
             ));
         }
