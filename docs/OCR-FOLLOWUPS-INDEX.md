@@ -23,9 +23,9 @@ grep 例：`grep 'C2b1' docs/OCR-FOLLOWUPS-INDEX.md`
 | C1b-8 | C1b | low | OCR CLI 无进度 flush / 产物心跳，中途被杀则产物全丢 | review 耗时 > 调用侧上限 | 独立小批(与 DIAG 决策配套) |
 | PROC-1 | 流程 | medium | OCR review「后台产物不可见」流程事故 | review 后台跑 | ✅ 已落地（C2c Step 2，commit `4a3e64a`）|
 | PROC-2 | 流程 | medium | 跨 IPC 边界调用链调研不足（漏 getCurrentWindow 直调类） | 做跨边界搜证时 | 独立小批(流程) |
-| C2a-Q1 | C2a | critical(功能) | main+widget 共用 capability；拆分尝试已回滚 | widget 打开文件 | **won't fix**（已决，见 plan 附录） |
+| C2a-Q1 | C2a | critical(功能) | main+widget 共用 capability；拆分尝试已回滚 | widget 打开文件 | **永久 wontfix**（2026-09-26 拍板 A：widget 保留拖拽/缩放为产品特性；翻案唯一路径=widget 只读化重构，届时 capability 拆分同批） |
 | C2a-1 | C2a | medium | opener:default 含 reveal-item-in-dir 且无 path scope | 若启用该命令 | Phase 6-T |
-| C2a-2 | C2a | low | SkillsPanel 前端 openPath 未迁 Rust，仍是前端 opener path 依赖 | 便携模式边缘/要摘 $APPDATA 时 | Phase 6-T |
+| C2a-2 | C2a | low | SkillsPanel 前端 openPath 未迁 Rust，仍是前端 opener path 依赖 | 便携模式边缘/要摘 $APPDATA 时 | Phase 6-T defer 维持（2026-09-26 拍板 B：便携模式真实报障触发） |
 | C2a-3 | C2a | low | 便携模式 app_data_dir() 失败分支无自动化覆盖 | app_data_dir 失败 | Phase 6-T |
 | C2a-4 | C2a | low | GUI 点击级验证未做（屏幕锁定） | 解锁后 | 独立小批(补验) |
 | C2b1-L1 | C2b-1 | low | canonical_string 用 to_string_lossy 丢非 UTF-8 字节 | 路径含非 UTF-8 | 顺手修（seen@C2c-verify #4）|
@@ -51,7 +51,7 @@ grep 例：`grep 'C2b1' docs/OCR-FOLLOWUPS-INDEX.md`
 | C2d-v6 | C2d-r1 | medium | per-path `canonical_string` 失败静默 drop（无 audit）| 绑定文件被删/不可达 | 顺手修 |
 | C2d-v7 | C2d-r1 | medium | 注释宣称「合并进一个 blocking 任务」但 `db_load` 自带 spawn_blocking（over-claim）| — | 顺手修（注释准确性）|
 | C4-v1 | C4 | high | `STORAGE_KEY = "***"`（src/storage.ts:2）—— 与 C4-3 同根因（占位未替换），但**影响真实用户数据迁移**（老版本升级时 `App.tsx:192` 读 "***" 取旧数据，多应用并存必撞）。严重度不低于 C4-3：本批**不修**，因不知老版本用什么 key 即改 = 仍读错位置（信息不足，非授权问题）。| 用户升级路径 | 独立评估（需先考据老 key）|
-| C4-v2 | C4 | — | `PANEL_H_MIN=800 > PANEL_H default=560` 逻辑矛盾真实存在，但具体 MIN 值是产品决策（widget 内容最小可用高度需设计定），三问无代码依据：本批**wontfix-pending-product-decision**，不动代码、不写 TODO（D2: 注释不算修复）。| 用户手动 resize | 独立评估（需产品输入）|
+| C4-v2 | C4 | — | `PANEL_H_MIN=800 > PANEL_H default=560` 逻辑矛盾真实存在，但具体 MIN 值是产品决策（widget 内容最小可用高度需设计定），三问无代码依据：本批**wontfix-pending-product-decision**，不动代码、不写 TODO（D2: 注释不算修复）。| 用户手动 resize | ✅ 已修（DEC-1 9ff9d1a，2026-09-26 拍板 A 底部放开：MIN 800→400，区间 400–900，默认 560 不动）|
 | PROC-4 | 流程 | — | OCR 假阳性累积统计：C3 一批 1 条（H1），C4 一批 2 条（C4-2 / C4-5）—— 假阳性率需要被跟踪。C4-2 证据：nextest `--help` 列 `[possible values: integer or "num-cpus"]`；C4-5 证据：format.ts:93/124 实际内容均无 finding 描述的 bug。累积到 3-4 条再评估是否调 OCR prompt / config / 过滤规则。| OCR 轮次 | 独立评估（阈值触发）|
 | C4-r1-H1 | C4-r1 | critical→已修 | mutating 原声明在 App() 函数体内 → 每 render 重建 → 串行化跨 render 失效（OCR C4-r1 实证）。r2 验证：抬到模块作用域后链跨 render 衔接（同时改：mutate 闭包每 render 新建但读到同一模块对象），fix = 1 行 const 移位。| — | ✅ 已修（r2 验证）|
 | C4-r1-M1 | C4-r1 | medium | observe-run --synthetic --proposals /path/to/x.jsonl 时 CLI 给的路径被 silent 覆盖（synthetic 隔离的设计），用户无任何提示 | 用户传路径被无视 | 顺手修（可选：打印 stderr 警告）|

@@ -17,7 +17,7 @@
 | C1b-6 | spawn_blocking_map 丢 ErrorKind | **wontfix-with-rationale** | 无调用方按 kind 分流；String 已是用户面错误形态；改契约 ripple 全部调用方，零现役收益 | 无 |
 | C1b-7 | walk / 白名单读失败静默 | **修（本批）** | read_dir / entry / JoinError 三处补 eprintln 可见化，语义不变 | bot_fs.rs |
 | C2a-1 | reveal_item_in_dir 无 scope | **维持 + 触发器** | 权限模型不动（红线）；前端现无调用方；重估触发 = 任何前端引用该命令 | 无 |
-| C2a-2 | SkillsPanel openPath 迁 Rust | **defer** | 仅便携模式 app_data_dir 失败边缘触发；涉前端+command+capability 三面迁移，非缺陷修复 | 无 |
+| C2a-2 | SkillsPanel openPath 迁 Rust | **defer 维持（2026-09-26 拍板 B）** | 触发条件：便携模式用户 openPath/app_data_dir 真实报障，或需摘 $APPDATA scope 时随批迁 Rust command；无报障不做防御性迁移 | 无 |
 | C2a-3 | app_data_dir 失败分支无测试 | **defer** | 3 行 fallback 的 mock 成本 > 价值 | 无 |
 | C2c-v1 | recheck→副作用内核级窗口 | **接受** | opener API 无 fd/O_NOFOLLOW 暴露面；recheck_canonical 已缩到最小；剩余 = 内核原语限制，登记已知边界 | 无 |
 

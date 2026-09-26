@@ -4,6 +4,7 @@
 > maintainability 156 / performance 42 / test 27 / other 34 / documentation 7 / style 1
 > = 267 条按计划「走 ponytail 判定，多数 wontfix」→ **整体登记 wontfix-for-now**（Phase 4 前如需翻案逐条提）。
 > 分拣格式：`[编号] 文件:行 | 处置（FIX/SKIP+理由）`。分拣未完成项持续补充。
+> 翻案通道确认（2026-09-26 拍板 A）：**维持被动**——运行时真实复现某条才提 issue 走批循环，不做主动抽查（Phase 3 实测 low 级真问题率很低）。
 
 ## security（25 条，2026-09-26 分拣完毕）
 
@@ -28,7 +29,7 @@
 | S17 | paths.rs:330 | **FIX（P3-SEC-1）** inline 与 audit 全集对齐（parity 期望更新） |
 | S18 | py/document.rs:847 | SKIP——桌面应用无 sandbox 语境 |
 | S19 | py/document.rs:1172 | SKIP——抽样调用已 escape_for_log；全量审计登记低优 |
-| S20 | py/runtime.rs:455 | **FIX→回退登记**——硬失败实测打断 py_exec（sandbox EINVAL）；pending-environment-decision |
+| S20 | py/runtime.rs:455 | **FIX（DEC-1 9ff9d1a，2026-09-26 拍板 A）**——setrlimit 逐资源探测降级：同解释器子进程探测+OnceLock 缓存，未生效/探测失败不设限额且 audit 每运行留痕（探测失败≠可用）；实测裸 macOS AS 限额旧实现下从未生效、CPU 照设 |
 | S21 | tauri.conf.json:21 | SKIP——CSP unsafe-inline 改动需前端渲染全量验证（wontfix-pending-product） |
 | S22 | ChatPanel/types.ts:21 | SKIP——React 默认转义；MarkdownText 已在 FE-04 处理 |
 | S23 | lib/openTarget.ts:88 | SKIP——服务端 path_openable_in fail-closed 才是边界 |
