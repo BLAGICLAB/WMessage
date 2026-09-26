@@ -524,6 +524,159 @@ pub async fn task_set_column(
     Ok(row)
 }
 
+/// TP-2：task_patch 的字段白名单应用器（纯逻辑，单测锚点）。
+/// **null = 清空**、缺键 = 不动；未知键/受保护键/空标题 → InvalidArgument 响亮失败。
+/// 受保护字段：id（主键）、updatedAt/expectedUpdatedAt（服务端统一打戳，前端快照不许带）。
+pub(crate) fn apply_task_patch(
+    task: &mut super::Task,
+    patch: &serde_json::Value,
+) -> CommandResult<()> {
+    let obj = patch
+        .as_object()
+        .ok_or_else(|| CommandError::InvalidArgument {
+            field: "patch".into(),
+            value: "非对象".into(),
+            reason: "patch 必须是 JSON 对象".into(),
+        })?;
+    fn set_from<T: serde::de::DeserializeOwned>(
+        slot: &mut T,
+        v: &serde_json::Value,
+        field: &str,
+    ) -> CommandResult<()> {
+        *slot = serde_json::from_value(v.clone()).map_err(|e| CommandError::InvalidArgument {
+            field: field.into(),
+            value: v.to_string(),
+            reason: format!("类型不匹配: {e}"),
+        })?;
+        Ok(())
+    }
+    for (k, v) in obj {
+        match k.as_str() {
+            // TaskStatus 的自定义 Deserialize 只支持借用字符串，from_value 走不通——
+            // 特判经 FromStr 解析（wire = todo/doing/done）
+            "column" => {
+                let s = v.as_str().ok_or_else(|| CommandError::InvalidArgument {
+                    field: k.into(),
+                    value: v.to_string(),
+                    reason: "column 必须是字符串".into(),
+                })?;
+                task.column = <TaskStatus as std::str::FromStr>::from_str(s).map_err(|e| {
+                    CommandError::InvalidArgument {
+                        field: k.into(),
+                        value: v.to_string(),
+                        reason: e,
+                    }
+                })?;
+            }
+            "completedAt" => set_from(&mut task.completed_at, v, k)?,
+            "archived" => set_from(&mut task.archived, v, k)?,
+            "deletedAt" => set_from(&mut task.deleted_at, v, k)?,
+            "collapsed" => set_from(&mut task.collapsed, v, k)?,
+            "note" => set_from(&mut task.note, v, k)?,
+            "tags" => set_from(&mut task.tags, v, k)?,
+            "subtasks" => set_from(&mut task.subtasks, v, k)?,
+            "due" => set_from(&mut task.due, v, k)?,
+            "files" => set_from(&mut task.files, v, k)?,
+            "filePath" => set_from(&mut task.file_path, v, k)?,
+            "fileIsDir" => set_from(&mut task.file_is_dir, v, k)?,
+            "order" => set_from(&mut task.order, v, k)?,
+            "schedule" => set_from(&mut task.schedule, v, k)?,
+            "schedLast" => set_from(&mut task.sched_last, v, k)?,
+            "botAssigned" => set_from(&mut task.bot_assigned, v, k)?,
+            "title" => {
+                let t: String = serde_json::from_value(v.clone()).map_err(|e| {
+                    CommandError::InvalidArgument {
+                        field: k.into(),
+                        value: v.to_string(),
+                        reason: format!("类型不匹配: {e}"),
+                    }
+                })?;
+                if t.trim().is_empty() {
+                    return Err(CommandError::InvalidArgument {
+                        field: "title".into(),
+                        value: v.to_string(),
+                        reason: "标题不能为空".into(),
+                    });
+                }
+                task.title = t;
+            }
+            "id" | "updatedAt" | "expectedUpdatedAt" => {
+                return Err(CommandError::InvalidArgument {
+                    field: k.into(),
+                    value: v.to_string(),
+                    reason: "受保护字段：id/updated_at 由服务端管理，不可经 patch 修改".into(),
+                })
+            }
+            other => {
+                return Err(CommandError::InvalidArgument {
+                    field: other.into(),
+                    value: v.to_string(),
+                    reason: "未知 patch 字段".into(),
+                })
+            }
+        }
+    }
+    Ok(())
+}
+
+/// task_patch 的锁内段（纯 DB 逻辑，单测锚点）：读现值 → 白名单应用 →
+/// 基线 = 锁内现读 updated_at → 服务端打戳 → 写。
+pub(crate) fn task_patch_locked(
+    conn: &mut rusqlite::Connection,
+    id: &str,
+    patch: &serde_json::Value,
+    now: i64,
+) -> CommandResult<super::Task> {
+    let mut task = load_all(conn)?
+        .into_iter()
+        .find(|t| t.id == id)
+        .ok_or_else(|| CommandError::TaskNotFound(id.to_string()))?;
+    apply_task_patch(&mut task, patch)?;
+    task.expected_updated_at = task.updated_at;
+    task.updated_at = Some(now);
+    let tx = conn
+        .transaction()
+        .map_err(|e| CommandError::DbError(e.to_string()))?;
+    upsert_tasks(&tx, std::slice::from_ref(&task)).map_err(CommandError::from)?;
+    tx.commit()
+        .map_err(|e| CommandError::DbError(e.to_string()))?;
+    Ok(task)
+}
+
+/// TP-2：单任务定向补丁（通用状态变更：软删/恢复/归档/编辑/折叠/日程……）。
+/// 与 task_set_column 同架构：**同一把写锁内**读现值 → 白名单逐键应用（null=清空，
+/// 缺键=不动）→ 基线 = 锁内现读 → 写 → 广播。前端快照不参与。
+#[tauri::command]
+pub async fn task_patch(
+    app: AppHandle,
+    id: String,
+    patch: serde_json::Value,
+) -> CommandResult<super::Task> {
+    let app_emit = app.clone();
+    let row = async_runtime::spawn_blocking(move || {
+        let _g = super::lock_db_write();
+        let mut conn = super::open_db(&app)?;
+        let now = chrono::Utc::now().timestamp_millis();
+        task_patch_locked(&mut conn, &id, &patch, now)
+    })
+    .await
+    .map_err(|e| CommandError::from(format!("数据库补丁线程 join 失败：{e}")))??;
+    {
+        use tauri::Emitter;
+        let _ = app_emit.emit("tasks-changed", ());
+        let _ = app_emit.emit_to(
+            "main",
+            "tasks-updated",
+            serde_json::json!({
+                "source": crate::mutation::MutationOrigin::Main.as_str(),
+                "upserts": [row],
+                "deletes": []
+            }),
+        );
+    }
+    Ok(row)
+}
+
 pub async fn db_upsert_for<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     tasks: Vec<super::Task>,
@@ -739,6 +892,105 @@ mod task_set_column_tests {
             Ok(_) => panic!("missing id 应返回 TaskNotFound"),
         };
         assert!(matches!(err, CommandError::TaskNotFound(_)), "got: {err:?}");
+    }
+}
+
+#[cfg(test)]
+mod task_patch_tests {
+    use super::*;
+
+    fn setup_conn() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tasks (
+               id TEXT PRIMARY KEY, title TEXT NOT NULL, due TEXT, note TEXT, tags TEXT,
+               file_path TEXT, file_is_dir INTEGER, col TEXT NOT NULL, subtasks TEXT,
+               completed_at INTEGER, archived INTEGER, deleted_at INTEGER, collapsed INTEGER,
+               ord REAL, updated_at INTEGER, schedule TEXT, sched_last INTEGER,
+               bot_assigned INTEGER, files TEXT );",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn run_patch(
+        conn: &mut rusqlite::Connection,
+        id: &str,
+        patch: serde_json::Value,
+    ) -> CommandResult<super::Task> {
+        let _g = crate::db::lock_db_write(); // upsert_tasks 锁持有断言要求
+        task_patch_locked(conn, id, &patch, 9000)
+    }
+
+    #[test]
+    fn task_patch_applies_fields_and_null_clears() {
+        let mut conn = setup_conn();
+        conn.execute(
+            "INSERT INTO tasks (id, title, col, completed_at, archived, schedule, sched_last, updated_at)
+             VALUES ('a', '任务A', 'done', 111, 1, 'daily:09:00', 222, 1000)",
+            [],
+        )
+        .unwrap();
+        // 归档恢复语义：archived=false + completedAt 重置为 now（服务端打戳）
+        let row = run_patch(&mut conn, "a", serde_json::json!({"archived": false})).unwrap();
+        assert_eq!(row.archived, Some(false));
+        assert_eq!(row.updated_at, Some(9000));
+        // null = 清空：deletedAt/schedule/schedLast（软删恢复/清调度语义）
+        let row = run_patch(
+            &mut conn,
+            "a",
+            serde_json::json!({"deletedAt": 123, "schedule": null, "schedLast": null, "column": "todo"}),
+        )
+        .unwrap();
+        assert_eq!(row.deleted_at, Some(123));
+        assert_eq!(row.schedule, None);
+        assert_eq!(row.sched_last, None);
+        assert_eq!(row.column, TaskStatus::Todo);
+        let reloaded = load_all(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == "a")
+            .unwrap();
+        assert_eq!(reloaded.schedule, None);
+        assert_eq!(reloaded.deleted_at, Some(123));
+    }
+
+    #[test]
+    fn task_patch_rejects_unknown_and_protected_keys() {
+        let mut conn = setup_conn();
+        conn.execute(
+            "INSERT INTO tasks (id, title, col, updated_at) VALUES ('b', '任务B', 'todo', 1000)",
+            [],
+        )
+        .unwrap();
+        for bad in ["foo", "id", "updatedAt", "expectedUpdatedAt"] {
+            let err = match run_patch(&mut conn, "b", serde_json::json!({ bad: 1 })) {
+                Err(e) => e,
+                Ok(_) => panic!("{bad} 应被拒绝"),
+            };
+            assert!(
+                matches!(err, CommandError::InvalidArgument { .. }),
+                "{bad} 应 InvalidArgument，got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn task_patch_rejects_empty_title_and_missing_id() {
+        let mut conn = setup_conn();
+        conn.execute(
+            "INSERT INTO tasks (id, title, col, updated_at) VALUES ('c', '任务C', 'todo', 1000)",
+            [],
+        )
+        .unwrap();
+        assert!(matches!(
+            run_patch(&mut conn, "c", serde_json::json!({"title": "  "})),
+            Err(CommandError::InvalidArgument { .. })
+        ));
+        assert!(matches!(
+            run_patch(&mut conn, "ghost", serde_json::json!({"title": "x"})),
+            Err(CommandError::TaskNotFound(_))
+        ));
     }
 }
 

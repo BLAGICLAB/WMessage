@@ -289,17 +289,20 @@ describe("App", () => {
     });
     mocks.invokeMock.mockClear();
     await user.click(screen.getByTitle("删除任务"));
+    // TP-2：软删改走 task_patch 定向补丁（null=清空调度字段）
     await waitFor(() => {
       const calls = mocks.invokeMock.mock.calls.filter(
-        (c) => c[0] === "db_upsert"
+        (c) => c[0] === "task_patch"
       );
       expect(calls.length).toBeGreaterThan(0);
-      const written = (calls[0][1] as { tasks: Task[] }).tasks.find(
-        (t) => t.id === "s1"
-      );
-      expect(written?.deletedAt).toBeTruthy();
-      expect(written?.schedule).toBeNull();
-      expect(written?.schedLast).toBeNull();
+      const args = calls[0][1] as {
+        id: string;
+        patch: Record<string, unknown>;
+      };
+      expect(args.id).toBe("s1");
+      expect(args.patch.deletedAt).toBeTruthy();
+      expect(args.patch.schedule).toBeNull();
+      expect(args.patch.schedLast).toBeNull();
     });
   });
 

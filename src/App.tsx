@@ -547,31 +547,39 @@ function App() {
     setTasks(next);
   };
 
-  const updateTask = (taskId: string, patch: Partial<Task>) => {
-    mutateFire((prev) =>
-      prev.map((t) => {
-        if (t.id !== taskId) return t;
-        const next = { ...t, ...patch };
-        // 设了截止日期后立即套用今日规则
-        if (patch.due !== undefined && isDueToday(next.due) && next.column === "todo") {
-          next.column = "doing";
-        }
-        return next;
-      })
+  // TP-2：单任务定向补丁——undefined 归一为 null（JSON 序列化丢 undefined 键，
+  // 不归一则「清空」语义静默丢失）；服务端同锁内读现值打基线，前端快照不参与
+  const patchTask = async (taskId: string, patch: Partial<Task>) => {
+    const normalized = Object.fromEntries(
+      Object.entries(patch).map(([k, v]) => [k, v === undefined ? null : v])
     );
+    try {
+      const row = await invoke<Task>("task_patch", { id: taskId, patch: normalized });
+      if (row) applyRemoteRows([row]);
+    } catch (e) {
+      handleCommandError(e, "更新任务");
+    }
+  };
+
+  const updateTask = (taskId: string, patch: Partial<Task>) => {
+    // due 设为今天且当前在待办 → 同一补丁内立即套用今日规则
+    const p: Partial<Task> = { ...patch };
+    if ("due" in patch && patch.due && isDueToday(patch.due)) {
+      const cur = tasksRef.current.find((t) => t.id === taskId);
+      if (cur && cur.column === "todo") p.column = "doing";
+    }
+    void patchTask(taskId, p);
     setEditingId(null);
   };
 
   // 软删除：进回收站
   // 软删必须清调度字段——否则任务躺在回收站里 schedule 仍到点触发
   const deleteTask = (taskId: string) => {
-    mutateFire((prev) =>
-      prev.map((t) =>
-        t.id === taskId
-          ? { ...t, deletedAt: Date.now(), schedule: null, schedLast: null }
-          : t
-      )
-    );
+    void patchTask(taskId, {
+      deletedAt: Date.now(),
+      schedule: null,
+      schedLast: null,
+    });
     setEditingId((cur) => (cur === taskId ? null : cur));
   };
 
