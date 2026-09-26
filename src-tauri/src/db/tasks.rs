@@ -677,6 +677,70 @@ pub async fn task_patch(
     Ok(row)
 }
 
+/// TP-3：批量排序条目（ord-only 写）
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReorderItem {
+    pub id: String,
+    pub order: f64,
+}
+
+/// task_reorder 的锁内段（纯 DB 逻辑，单测锚点）：逐条读现值 → **只改 order**
+/// （内容/updated_at 零改动）→ 基线 = 锁内现读（等值通过）→ 缺失行跳过。
+pub(crate) fn task_reorder_locked(
+    conn: &mut rusqlite::Connection,
+    items: &[ReorderItem],
+) -> CommandResult<Vec<super::Task>> {
+    let all = load_all(conn)?;
+    let mut out = Vec::with_capacity(items.len());
+    let tx = conn
+        .transaction()
+        .map_err(|e| CommandError::DbError(e.to_string()))?;
+    for it in items {
+        if let Some(mut task) = all.iter().find(|t| t.id == it.id).cloned() {
+            task.expected_updated_at = task.updated_at;
+            task.order = Some(it.order);
+            upsert_tasks(&tx, std::slice::from_ref(&task)).map_err(CommandError::from)?;
+            out.push(task);
+        }
+    }
+    tx.commit()
+        .map_err(|e| CommandError::DbError(e.to_string()))?;
+    Ok(out)
+}
+
+/// TP-3：批量排序（拖拽/列内重排专用）。**只改 order，内容与 updated_at 零改动**——
+/// RMW 守卫防的是「旧内容压新内容」，排序写不携带内容，ord-only 对任何并发写者
+/// 天然安全；缺失行（他端已删）跳过不报错。广播同 TP-1/2。
+#[tauri::command]
+pub async fn task_reorder(
+    app: AppHandle,
+    items: Vec<ReorderItem>,
+) -> CommandResult<Vec<super::Task>> {
+    let app_emit = app.clone();
+    let rows = async_runtime::spawn_blocking(move || {
+        let _g = super::lock_db_write();
+        let mut conn = super::open_db(&app)?;
+        task_reorder_locked(&mut conn, &items)
+    })
+    .await
+    .map_err(|e| CommandError::from(format!("数据库排序线程 join 失败：{e}")))??;
+    {
+        use tauri::Emitter;
+        let _ = app_emit.emit("tasks-changed", ());
+        let _ = app_emit.emit_to(
+            "main",
+            "tasks-updated",
+            serde_json::json!({
+                "source": crate::mutation::MutationOrigin::Main.as_str(),
+                "upserts": rows,
+                "deletes": []
+            }),
+        );
+    }
+    Ok(rows)
+}
+
 pub async fn db_upsert_for<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     tasks: Vec<super::Task>,
@@ -991,6 +1055,85 @@ mod task_patch_tests {
             run_patch(&mut conn, "ghost", serde_json::json!({"title": "x"})),
             Err(CommandError::TaskNotFound(_))
         ));
+    }
+}
+
+#[cfg(test)]
+mod task_reorder_tests {
+    use super::*;
+
+    fn setup_conn() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tasks (
+               id TEXT PRIMARY KEY, title TEXT NOT NULL, due TEXT, note TEXT, tags TEXT,
+               file_path TEXT, file_is_dir INTEGER, col TEXT NOT NULL, subtasks TEXT,
+               completed_at INTEGER, archived INTEGER, deleted_at INTEGER, collapsed INTEGER,
+               ord REAL, updated_at INTEGER, schedule TEXT, sched_last INTEGER,
+               bot_assigned INTEGER, files TEXT );",
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn task_reorder_sets_ord_only_keeps_content_and_updated_at() {
+        let _g = crate::db::lock_db_write(); // upsert_tasks 锁持有断言要求
+        let mut conn = setup_conn();
+        conn.execute(
+            "INSERT INTO tasks (id, title, col, note, updated_at, ord) VALUES ('a', '任务A', 'todo', '备注', 1000, 1.0)",
+            [],
+        )
+        .unwrap();
+        let rows = task_reorder_locked(
+            &mut conn,
+            &[ReorderItem {
+                id: "a".into(),
+                order: 7.5,
+            }],
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 1);
+        // 只动 order：内容与 updated_at 零改动
+        assert_eq!(rows[0].order, Some(7.5));
+        assert_eq!(rows[0].note.as_deref(), Some("备注"));
+        assert_eq!(rows[0].updated_at, Some(1000));
+        let reloaded = load_all(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == "a")
+            .unwrap();
+        assert_eq!(reloaded.order, Some(7.5));
+        assert_eq!(reloaded.updated_at, Some(1000));
+    }
+
+    #[test]
+    fn task_reorder_skips_missing_rows_and_supports_batch() {
+        let _g = crate::db::lock_db_write();
+        let mut conn = setup_conn();
+        conn.execute(
+            "INSERT INTO tasks (id, title, col, updated_at, ord) VALUES ('a', '任务A', 'todo', 1000, 1.0)",
+            [],
+        )
+        .unwrap();
+        let rows = task_reorder_locked(
+            &mut conn,
+            &[
+                ReorderItem {
+                    id: "ghost".into(),
+                    order: 0.0,
+                },
+                ReorderItem {
+                    id: "a".into(),
+                    order: 2.0,
+                },
+            ],
+        )
+        .unwrap();
+        // 缺失行跳过（他端已删不报错），存在的行照常更新
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "a");
+        assert_eq!(rows[0].order, Some(2.0));
     }
 }
 

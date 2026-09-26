@@ -447,10 +447,21 @@ export default function WidgetApp() {
     );
   };
 
-  const toggleCollapsed = (t: Task) =>
-    applyAndSync((prev) =>
+  // TP-3：本地乐观更新（不 emit tasks-updated 整行回写）——配合各定向命令的
+  // tasks-changed 广播收敛三端
+  const applyLocal = (fn: (prev: Task[]) => Task[]) => {
+    tasksRef.current = fn(tasksRef.current);
+    setTasks(tasksRef.current);
+  };
+
+  const toggleCollapsed = (t: Task) => {
+    applyLocal((prev) =>
       prev.map((x) => (x.id === t.id ? { ...x, collapsed: !x.collapsed } : x))
     );
+    invoke<Task>("task_patch", { id: t.id, patch: { collapsed: !t.collapsed } }).catch(
+      (e) => handleCommandError(e, "切换任务状态")
+    );
+  };
 
   // 新建任务：今日视图直接进 doing（今日列），否则进 todo；创建后立即进入标题编辑态
   const addTask = () => {
@@ -472,16 +483,25 @@ export default function WidgetApp() {
 
   const commitTitle = (t: Task, title: string) => {
     const next = title.trim() || t.title;
-    applyAndSync((prev) =>
+    applyLocal((prev) =>
       prev.map((x) => (x.id === t.id ? { ...x, title: next } : x))
     );
+    if (next !== t.title) {
+      invoke<Task>("task_patch", { id: t.id, patch: { title: next } }).catch((e) =>
+        handleCommandError(e, "更新任务")
+      );
+    }
     setEditingId(null);
   };
 
-  const setSchedule = (t: Task, schedule: string | undefined) =>
-    applyAndSync((prev) =>
+  const setSchedule = (t: Task, schedule: string | undefined) => {
+    applyLocal((prev) =>
       prev.map((x) => (x.id === t.id ? { ...x, schedule } : x))
     );
+    invoke<Task>("task_patch", { id: t.id, patch: { schedule: schedule ?? null } }).catch(
+      (e) => handleCommandError(e, "更新任务")
+    );
+  };
 
   const cancelTitle = () => setEditingId(null);
 
@@ -510,8 +530,8 @@ export default function WidgetApp() {
     }
   }, [editingId]);
 
-  const toggleSubtask = (t: Task, subtaskId: string) =>
-    applyAndSync((prev) =>
+  const toggleSubtask = (t: Task, subtaskId: string) => {
+    applyLocal((prev) =>
       prev.map((x) =>
         x.id !== t.id
           ? x
@@ -523,6 +543,13 @@ export default function WidgetApp() {
             }
       )
     );
+    const cur = tasksRef.current.find((x) => x.id === t.id);
+    if (cur) {
+      invoke<Task>("task_patch", { id: t.id, patch: { subtasks: cur.subtasks ?? [] } }).catch(
+        (e) => handleCommandError(e, "更新任务")
+      );
+    }
+  };
 
   const openFilePath = (path: string) => {
     openTarget(path);
@@ -534,16 +561,17 @@ export default function WidgetApp() {
     );
   };
 
-  const removeFile = (t: Task, path: string) =>
-    applyAndSync((prev) =>
-      prev.map((x) =>
-        x.id !== t.id
-          ? x
-          : { ...x, ...filesPatch(taskFiles(x).filter((f) => f.path !== path)) }
-      )
+  const removeFile = (t: Task, path: string) => {
+    const patch = filesPatch(taskFiles(t).filter((f) => f.path !== path));
+    applyLocal((prev) =>
+      prev.map((x) => (x.id !== t.id ? x : { ...x, ...patch }))
     );
+    invoke<Task>("task_patch", { id: t.id, patch }).catch((e) =>
+      handleCommandError(e, "更新任务")
+    );
+  };
 
-  // 挂件可见列表排序结束：重建全局顺序
+  // 挂件可见列表排序结束：本地重排 + task_reorder（ord-only 定向写，免快照竞态）
   const handleDragEnd = (e: DragEndEvent) => {
     const { active, over } = e;
     if (!over || active.id === over.id) return;
@@ -552,7 +580,8 @@ export default function WidgetApp() {
     const to = ids.indexOf(String(over.id));
     if (from < 0 || to < 0) return;
     const newIds = arrayMove(ids, from, to);
-    applyAndSync((prev) => {
+    const prevMap = new Map(tasksRef.current.map((t) => [t.id, t]));
+    applyLocal((prev) => {
       const visibleSet = new Set(ids);
       const byId = new Map(prev.map((t) => [t.id, t]));
       const arr: Task[] = [];
@@ -563,6 +592,18 @@ export default function WidgetApp() {
       }
       return assignInsertOrder(arr, String(active.id));
     });
+    const items = tasksRef.current
+      .filter((t) => {
+        const p = prevMap.get(t.id);
+        return !p || p.order !== t.order;
+      })
+      .map((t) => ({ id: t.id, order: t.order ?? 0 }));
+    if (items.length) {
+      // 本地已乐观更新；服务端广播 tasks-changed → 挂件既有监听 db_load 收敛
+      invoke<Task[]>("task_reorder", { items }).catch((e) =>
+        handleCommandError(e, "排序任务")
+      );
+    }
   };
 
   // 挂件「待办 / 今日」显示未完成；「完成」显示已完成列
