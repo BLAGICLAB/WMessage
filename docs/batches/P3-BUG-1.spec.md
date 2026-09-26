@@ -8,7 +8,7 @@ Phase 3 bug 类首批：medium bug 190 条中 6 条清晰低风险修复（B20/B
 
 - family: medium-bug-fixes-r1
 - 覆盖: bug 6 修
-- 预估 diff: 6 文件 / +71/-20（执行中校正 ×1：ratelimit match 重排实测）
+- 预估 diff: 6 文件 / +119/-21（执行中校正 ×2：ratelimit 重排 + OCR r1 采纳增量——eval_run exit(2) 对齐 / byte literal / doc 修正）
 - OCR 计划: r1（含 API 数据完整性项）, timeout 1800s, 期望 comments ≤ 3
 
 ## 逐条处置（用户授权自决 2026-09-26）
@@ -48,8 +48,8 @@ Phase 3 bug 类首批：medium bug 190 条中 6 条清晰低风险修复（B20/B
     "src-tauri/src/bot_chat.rs",
     "src-tauri/src/bot_model_loop.rs"
   ],
-  "max_lines_added": 75,
-  "max_lines_removed": 25,
+  "max_lines_added": 125,
+  "max_lines_removed": 30,
   "findings": [
     {"id": "B20", "file": "src-tauri/src/api_handlers/handlers.rs", "line": 39, "fix": "序列化失败显式 500 + 错误体（原静默 2xx+{}）；ripple：无"},
     {"id": "B24", "file": "src-tauri/src/api_handlers/ratelimit.rs", "line": 47, "fix": "访问日志 open/writeln 失败 eprintln 可见化；ripple：无"},

@@ -36,6 +36,50 @@
 
 ## bug（190 条）
 
+### 已修（P3-BUG-1，commit 见 §0）
+
+- B20 handlers.rs:39 json_ok 序列化失败静默 2xx+`{}` → **FIX**：显式 500 + 错误体
+- B24 ratelimit.rs:47 open/writeln 双静默 → **FIX**：eprintln 可见化
+- B27 util.rs now_ms 时钟异常取 0 无诊断 → **FIX**：留痕后取 0（行为不变）
+- B29 eval_run.rs flag 值吃 flag → **FIX**：arg_value 拒绝（exit 2 对齐 CLI 风格，OCR r1 采纳）
+- B40 bot_chat.rs:1432 register 早于 ChatGuard → **FIX**：移到 acquire 成功后（早退不泄漏）
+- B42 bot_model_loop.rs:680/:692 重试 sleep 不响应 /stop → **FIX**：sleep 前 stopped() 早退 ×2（镜像主循环口径）
+
+### 分拣（续批处理；本批未覆盖）
+
+- B0 .cargo mingw 跨平台 guard — SKIP（CI 工具链问题，非应用 bug）
+- B1/B2 pre-commit 路径健壮性 — SKIP（hook 基建，HOOK-1 族）
+- B3 index.html system 主题不跟随 — DEFER（产品行为：跟随需订阅链路，涉 theme 架构）
+- B4/B5 ci-guard stderr/exit code — SKIP（CI 脚本卫生）
+- B6 fetch_ocr_models trap — SKIP（同上）
+- B7/B8 install-hooks 静默/未验证 — SKIP（同上）
+- B9/B10 publish-docx rm-rf/完整性 — SKIP（发布脚本，非应用运行时）
+- B11 sync-version semver 校验 — DEFER（脚本健壮性，低频）
+- B12 test-fast CJK \b 边界 — SKIP（平台差异，登记）
+- B13 test-fast config-only 全跑 vitest — DEFER（门禁性能，非正确性）
+- B14 dotnet Heading1 样式 — SKIP（dotnet 面，独立评估）
+- B15 pbtest.rs 结果未检查 — SKIP（example 二进制）
+- B16 api_auth write_enabled_flag 静默 — DEFER（与 #15/#16 同语义域，登记）
+- B17 service_present None 处理 — DEFER（语义设计域，登记）
+- B18 start_api 持锁注释 — DEFER（登记）
+- B22 max_order f64 2^53 — DEFER（量级理论，登记）
+- B23 update_task deleted=false 不清 archived — DEFER（API 语义决策，登记）
+- B25 ratelimit rotate TOCTOU — SKIP（与 AP-03 同域，rotation 容错设计）
+- B26 SSE lastEventId 无 id: 字段 — DEFER（前端 EventSource 兼容域，登记）
+- B28 after_change emit 顺序 — SKIP（理论 panic 顺序，emit_fn 不 panic 契约）
+- B30 audit_log let _ 布尔丢弃 — SKIP（helper 内已有 eprintln，可见性已达成）
+- B31 bot_set_config 空 key 静默 — DEFER（UX 语义，登记）
+- B32 load_config 迁移错误吞 — SKIP（fallback 到 parse 已是链路设计）
+- B33 keyring has/read TOCTOU — SKIP（keyring 面单进程）
+- B34 migrate 重试无退避 — DEFER（登记）
+- B35 minimaxi needle — SKIP（MiniMax 官方域名实为 minimaxi.com，needle 正确，OCR FP）
+- B36 migrate_config_file 跨写者 race — SKIP（CONFIG_WRITE_LOCK 已在 NEW-1345 前后覆盖写路径，迁移钩子 try_lock 让路设计）
+- B37 anthropic 空 id unwrap_or("") — DEFER（登记）
+- B38 refusal-only 塌空 — DEFER（语义决策：refusal 文案进 reply，登记）
+- B39 build_memory_block 吞错 — SKIP（设计注释「绝不弄挂主对话」明示，已有 DEBUG 日志）
+- B41 grep 二进制检测 8KiB — DEFER（窗口扩大成本，登记）
+- B43+ — 续批分拣。
+
 （分拣进行中——按文件簇推进，处置追加于此。未列出的 = 尚未分拣。）
 
 ## 统计
