@@ -45,6 +45,15 @@
 - B40 bot_chat.rs:1432 register 早于 ChatGuard → **FIX**：移到 acquire 成功后（早退不泄漏）
 - B42 bot_model_loop.rs:680/:692 重试 sleep 不响应 /stop → **FIX**：sleep 前 stopped() 早退 ×2（镜像主循环口径）
 
+### 已修（P3-BUG-2，commit 见 §0）
+
+- B49 parse.rs:74 单引号 scalar → **FIX**：trim_matches 双臂
+- B50 parse.rs:319 编号空洞静默 → **FIX**：1 起连续递增检查
+- B56/B57 bot_slash.rs:322/:404/:432 字节边界 panic → **FIX**：chars().take(8)（:322 逗号修复当批自愈）
+- B60 bot_sessions.rs:129 rename 静默 Ok → **FIX**：rows==0 → InvalidArgument
+- B86 synthetic window_days → **stale**：validate() 入口已拒（EV-3b-F）
+
+
 ### 分拣（续批处理；本批未覆盖）
 
 - B0 .cargo mingw 跨平台 guard — SKIP（CI 工具链问题，非应用 bug）
