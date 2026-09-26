@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, act } from "@testing-library/react";
+import { render, screen, waitFor, act, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ChatPanel } from "./ChatPanel";
 import { stubScrollNoop } from "../test/scrollNoop";
@@ -524,6 +524,113 @@ describe("ChatPanel", () => {
     await waitFor(() => {
       expect(screen.queryByText("DeepSeek-V3")).toBeNull();
     });
+  });
+
+  // ── SWITCH-1：busy 期实时切换对话，回复不串台 ──
+
+  it("busy 中切换/新建/删除（拦回复中会话），回复仍落原会话", async () => {
+    const user = userEvent.setup();
+    // 捕获事件监听器（手动触发流式增量用）
+    const evListeners: Record<string, ((e: { payload: unknown }) => void)[]> = {};
+    const prevListenImpl = mocks.listenMock.getMockImplementation();
+    mocks.listenMock.mockImplementation(async (ev: string, cb: (e: { payload: unknown }) => void) => {
+      (evListeners[ev] ??= []).push(cb);
+      return () => {};
+    });
+    const historyLoads: unknown[] = [];
+    const saves: Array<Record<string, unknown> | undefined> = [];
+    let releaseChat!: (v: { text: string; taskRefs: [] }) => void;
+    const chatGate = new Promise<{ text: string; taskRefs: [] }>((r) => {
+      releaseChat = r;
+    });
+    const prevInvokeImpl = mocks.invokeMock.getMockImplementation();
+    mocks.invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
+      switch (cmd) {
+        case "bot_sessions_load":
+          return [
+            { id: "s1", title: "默认会话" },
+            { id: "s2", title: "另一个" },
+          ];
+        case "bot_chat":
+          return chatGate;
+        case "bot_history_load":
+          historyLoads.push(args?.sessionId);
+          return [];
+        case "bot_history_save":
+          saves.push(args);
+          return null;
+        case "bot_session_create":
+          return { id: "s-new", title: "新对话" };
+        default:
+          return defaultInvoke(cmd);
+      }
+    });
+    try {
+      render(<ChatPanel {...defaultProps} />);
+      await screen.findByText("🤖 默认会话");
+      // 发送 → bot_chat 挂起 → busy
+      const input = screen.getByPlaceholderText(/和机器人说点什么/);
+      await user.type(input, "你好");
+      await user.keyboard("{Enter}");
+      await waitFor(() => {
+        expect(mocks.invokeMock).toHaveBeenCalledWith(
+          "bot_chat",
+          expect.objectContaining({ sessionId: "s1" })
+        );
+      });
+      // busy 中切换到 s2 → 允许（回归钉 1：不再被 busy 拦截）
+      await user.click(screen.getByTitle("切换会话"));
+      await user.click(await screen.findByText("另一个"));
+      await waitFor(() => {
+        expect(historyLoads).toContain("s2");
+      });
+      // 向 s1（后台回复中）发流式增量 → 不得污染当前 s2 视图
+      await act(async () => {
+        for (const cb of evListeners["bot-chat-delta"] ?? []) {
+          cb({ payload: { sessionId: "s1", text: "串台密文" } });
+        }
+      });
+      expect(screen.queryByText(/串台密文/)).toBeNull();
+      // busy 中删除正在回复的 s1 → 拦截（不弹 confirm、不调 delete）
+      const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+      await user.click(screen.getByTitle("切换会话"));
+      const s1Row = screen.getByText("默认会话").closest("div");
+      await user.click(within(s1Row!).getByTitle("删除此对话"));
+      expect(
+        mocks.invokeMock.mock.calls.some((c) => c[0] === "bot_session_delete")
+      ).toBe(false);
+      confirmSpy.mockRestore();
+      // 删除守卫返回后菜单仍开：busy 中新建对话 → 允许（回归钉 2）
+      await user.click(screen.getByText("＋ 新建对话"));
+      await waitFor(() => {
+        expect(mocks.invokeMock).toHaveBeenCalledWith("bot_session_create", { title: null });
+      });
+      // 切回 s1（回复仍在进行）→ 允许并补占位气泡（s1 的 history_load 比挂载时 +1）
+      const s1LoadsBefore = historyLoads.filter((x) => x === "s1").length;
+      await user.click(screen.getByTitle("切换会话"));
+      await user.click(await screen.findByText("默认会话"));
+      expect(historyLoads.filter((x) => x === "s1").length).toBe(s1LoadsBefore + 1);
+      // 收尾：回复落回原会话 s1（不串台核心钉 3），绝不写 s2
+      await act(async () => {
+        releaseChat({ text: "回复A", taskRefs: [] });
+      });
+      await waitFor(() => {
+        expect(saves.length).toBeGreaterThan(0);
+      });
+      for (const sv of saves) {
+        expect(sv?.sessionId).toBe("s1");
+      }
+      const lastSave = saves[saves.length - 1] as {
+        sessionId: string;
+        messages: { role: string; content: string }[];
+      };
+      expect(
+        lastSave.messages[lastSave.messages.length - 1].content
+      ).toBe("回复A");
+    } finally {
+      mocks.invokeMock.mockImplementation(prevInvokeImpl!);
+      mocks.listenMock.mockImplementation(prevListenImpl!);
+    }
   });
 
   it("点选模型调用 bot_set_active_model（窄口径）并广播同步", async () => {
