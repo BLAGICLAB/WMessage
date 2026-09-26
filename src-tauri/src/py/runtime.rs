@@ -427,6 +427,174 @@ pub fn silent_cmd(program: &str) -> Command {
     Command::new(program)
 }
 
+// ── S20：setrlimit 可用性探测（子进程一次探测 + 进程内缓存，逐资源结论）──
+//
+// 背景：pre_exec 里的 setrlimit 在部分环境被拒（实测：裸 macOS 内核即拒
+// setrlimit(RLIMIT_AS)，测试 sandbox 连 CPU 一起拒），旧实现静默吞掉
+// →「限额看似生效实则没生效」；硬失败方案此前实测打断 py_exec
+// （PHASE3-MEDIUM-TRIAGE P3S-20 FIX→回退登记）。折中：首次 py 执行前用同一解释器
+// 子进程逐资源探测一次并缓存；未生效项不设限额但必须 audit 留痕，可用项照设。
+// 硬约束：**探测失败 ≠ 可用**——ProbeError 项一律按「未探测到」处理，不许静默放行。
+
+/// 单个资源的 setrlimit 探测结论。ProbeError 表示探测自身失败（spawn/超时/输出
+/// 缺项/不可解析），**不许当可用**。
+#[cfg(unix)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SetrlimitProbe {
+    Available,
+    Unavailable(String),
+    ProbeError(String),
+}
+
+/// RLIMIT_AS / RLIMIT_CPU 逐资源探测结论。
+#[cfg(unix)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SetrlimitSupport {
+    pub rlimit_as: SetrlimitProbe,
+    pub rlimit_cpu: SetrlimitProbe,
+}
+
+impl SetrlimitSupport {
+    #[cfg(unix)]
+    fn all_available(&self) -> bool {
+        self.rlimit_as == SetrlimitProbe::Available && self.rlimit_cpu == SetrlimitProbe::Available
+    }
+}
+
+#[cfg(unix)]
+static SETRLIMIT_PROBE: OnceLock<SetrlimitSupport> = OnceLock::new();
+
+#[cfg(unix)]
+const SETRLIMIT_PROBE_SCRIPT: &str = concat!(
+    "import resource as _r\n",
+    "def _t(res, v):\n",
+    "    try:\n",
+    "        _r.setrlimit(res, (v, v))\n",
+    "        return 'OK'\n",
+    "    except (OSError, ValueError) as e:\n",
+    "        # CPython 把 setrlimit 的 EINVAL 映射成 ValueError（文案固定），一并捕获\n",
+    "        return '%s: %s' % (type(e).__name__, e)\n",
+    "print('WM_RLIMIT_AS=' + _t(_r.RLIMIT_AS, 2 * 1024 * 1024 * 1024))\n",
+    "print('WM_RLIMIT_CPU=' + _t(_r.RLIMIT_CPU, 310))\n",
+);
+// 探测值取生产上限（AS 2GB = mem_limit_bytes 封顶 / CPU 310s = timeout 300+10 宽限封顶）：
+// 上限通过 → 单调 ceiling 下全部生产值可用；上限被拒 → 从严判 Unavailable 留痕。
+// 方向性硬约束：宁可误判「不可用」留痕（丢限额但诚实），不可误判「可用」静默（S20 原罪）。
+// 已知残差（OCR r1 采纳）：仅拒中间值、放行两端的非单调沙箱不在覆盖；pre_exec 内仍
+// best-effort 静默，不做二次探测。
+
+/// 从探测 stdout 逐资源提结论；缺项/空值按探测失败算（绝不猜成可用）。
+#[cfg(unix)]
+pub fn parse_setrlimit_probe_output(out: &str) -> SetrlimitSupport {
+    fn pick(tag: &str, out: &str) -> SetrlimitProbe {
+        let line = out
+            .lines()
+            .map(str::trim)
+            .find(|l| l.starts_with(tag))
+            .map(|l| &l[tag.len()..]);
+        match line {
+            Some("OK") => SetrlimitProbe::Available,
+            Some("") | None => SetrlimitProbe::ProbeError(format!("探测输出缺 {tag} 项")),
+            Some(err) => SetrlimitProbe::Unavailable(err.to_string()),
+        }
+    }
+    SetrlimitSupport {
+        rlimit_as: pick("WM_RLIMIT_AS=", out),
+        rlimit_cpu: pick("WM_RLIMIT_CPU=", out),
+    }
+}
+
+/// 未生效/探测失败项的每运行 audit 行（全部可用时返回 None，不另扰）。
+/// 硬约束文案：「限额未生效」/「未探测到 setrlimit 可用性」。
+#[cfg(unix)]
+pub fn rlimit_warn_line(s: &SetrlimitSupport) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    for (name, p) in [("RLIMIT_AS", &s.rlimit_as), ("RLIMIT_CPU", &s.rlimit_cpu)] {
+        match p {
+            SetrlimitProbe::Available => {}
+            SetrlimitProbe::Unavailable(w) => {
+                parts.push(format!("{name}: 限额未生效({w})"));
+            }
+            SetrlimitProbe::ProbeError(w) => {
+                parts.push(format!("{name}: 未探测到 setrlimit 可用性，限额未设({w})"));
+            }
+        }
+    }
+    (!parts.is_empty()).then(|| format!("run_python warn | rlimit_off | {}", parts.join("; ")))
+}
+
+#[cfg(unix)]
+pub fn run_setrlimit_probe(py: &str) -> SetrlimitSupport {
+    // 与 run_python_at 同一构造器（参数列表传参，无 shell 参与，无注入面）。
+    let mut cmd = silent_cmd(py);
+    cmd.arg("-c")
+        .arg(SETRLIMIT_PROBE_SCRIPT)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            return SetrlimitSupport {
+                rlimit_as: SetrlimitProbe::ProbeError(format!("探测子进程 spawn 失败: {e}")),
+                rlimit_cpu: SetrlimitProbe::ProbeError("同上（探测子进程未运行）".to_string()),
+            };
+        }
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(st)) => break Some(st),
+            Ok(None) if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(25)),
+            Err(e) => {
+                return SetrlimitSupport {
+                    rlimit_as: SetrlimitProbe::ProbeError(format!("探测子进程 wait 失败: {e}")),
+                    rlimit_cpu: SetrlimitProbe::ProbeError("同上（探测子进程未运行）".to_string()),
+                };
+            }
+        }
+    };
+    let Some(status) = status else {
+        let msg = "探测子进程超时（10s）已强杀".to_string();
+        return SetrlimitSupport {
+            rlimit_as: SetrlimitProbe::ProbeError(msg.clone()),
+            rlimit_cpu: SetrlimitProbe::ProbeError(msg),
+        };
+    };
+    if !status.success() {
+        let msg = format!("探测子进程退出码异常: {status}");
+        return SetrlimitSupport {
+            rlimit_as: SetrlimitProbe::ProbeError(msg.clone()),
+            rlimit_cpu: SetrlimitProbe::ProbeError(msg),
+        };
+    }
+    let mut out = String::new();
+    if let Some(mut s) = child.stdout.take() {
+        let _ = std::io::Read::read_to_string(&mut s, &mut out);
+    }
+    parse_setrlimit_probe_output(&out)
+}
+
+/// 进程内一次缓存：rlimit 可用性是 OS/沙箱属性，与具体解释器实例无关，
+/// py 路径中途失效不重探。全可用时 audit 一条确认；未生效/探测失败留给每运行 warn。
+#[cfg(unix)]
+fn setrlimit_probe_cached(py: &str, audit: &mut dyn FnMut(&str)) -> SetrlimitSupport {
+    SETRLIMIT_PROBE
+        .get_or_init(|| {
+            let r = run_setrlimit_probe(py);
+            if r.all_available() {
+                audit("run_python | rlimit_probe | setrlimit 全可用，限额照设");
+            }
+            r
+        })
+        .clone()
+}
+
 pub fn run_python_at(
     py: &str,
     entry: Option<&str>,
@@ -454,27 +622,41 @@ pub fn run_python_at(
     {
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
-        // SAFETY: pre_exec 在 fork 后 exec 前运行，处于单线程上下文（POSIX 要求 async-signal-safe）。
-        // libc::setrlimit 对 RLIMIT_AS / RLIMIT_CPU 是 async-signal-safe 调用。
-        // mem_bytes / cpu_secs 来自 RunLimits，由调用方在子进程 spawn 前已 validate 非零。
-        // process_group(0) 已将子进程设为新进程组，避免 setpgid 边界。
-        unsafe {
-            cmd.pre_exec(move || {
-                let mem = libc::rlimit {
-                    rlim_cur: mem_bytes as libc::rlim_t,
-                    rlim_max: mem_bytes as libc::rlim_t,
-                };
-                // setrlimit 失败（实测 macOS test sandbox 返回 EINVAL）只能静默：
-                // 硬失败 = py_exec 在该环境整体不可用（候选修法登记
-                // PHASE3-MEDIUM-TRIAGE P3S-20 pending-environment-decision）
-                libc::setrlimit(libc::RLIMIT_AS, &mem);
-                let cpu = libc::rlimit {
-                    rlim_cur: cpu_secs as libc::rlim_t,
-                    rlim_max: cpu_secs as libc::rlim_t,
-                };
-                libc::setrlimit(libc::RLIMIT_CPU, &cpu);
-                Ok(())
-            });
+        // S20 探测降级：逐资源——可用项照设；未生效/探测失败项不设但必须 audit 留痕
+        // （探测失败 ≠ 可用，见 SetrlimitProbe）。进程组隔离与限额无关，必须保留
+        //（kill_tree 的进程组杀依赖它），任何分支都不能丢。
+        let support = setrlimit_probe_cached(py, audit);
+        if let Some(w) = rlimit_warn_line(&support) {
+            audit(&w);
+        }
+        let as_ok = support.rlimit_as == SetrlimitProbe::Available;
+        let cpu_ok = support.rlimit_cpu == SetrlimitProbe::Available;
+        if as_ok || cpu_ok {
+            // SAFETY: pre_exec 在 fork 后 exec 前运行，处于单线程上下文（POSIX 要求 async-signal-safe）。
+            // libc::setrlimit 对 RLIMIT_AS / RLIMIT_CPU 是 async-signal-safe 调用。
+            // mem_bytes / cpu_secs 来自 RunLimits，由调用方在子进程 spawn 前已 validate 非零。
+            // process_group(0) 已将子进程设为新进程组，避免 setpgid 边界。
+            // 部分可用（如裸 macOS：AS 被内核拒、CPU 可设）只设可用项；探测可用后此处
+            // 再失败（环境突变的极端组合）仍 best-effort 静默，不回退硬失败。
+            unsafe {
+                cmd.pre_exec(move || {
+                    if as_ok {
+                        let mem = libc::rlimit {
+                            rlim_cur: mem_bytes as libc::rlim_t,
+                            rlim_max: mem_bytes as libc::rlim_t,
+                        };
+                        libc::setrlimit(libc::RLIMIT_AS, &mem);
+                    }
+                    if cpu_ok {
+                        let cpu = libc::rlimit {
+                            rlim_cur: cpu_secs as libc::rlim_t,
+                            rlim_max: cpu_secs as libc::rlim_t,
+                        };
+                        libc::setrlimit(libc::RLIMIT_CPU, &cpu);
+                    }
+                    Ok(())
+                });
+            }
         }
     }
     #[cfg(windows)]

@@ -10,7 +10,10 @@ export const TOP_Y = 140; // 默认贴右缘的初始 Y
 
 // 老板拍板：边框调整边界 + Splitter 上下限
 export const PANEL_W_MIN = 400, PANEL_W_MAX = 800;
-export const PANEL_H_MIN = 800, PANEL_H_MAX = 900;
+// C4-v2（2026-09-26 拍板）：底部放开 800→400。旧 MIN 800 > 默认 PANEL_H 560，
+// 默认/存量高度落在非法区间、首次 resize 即被强钳到 800；MIN 必须不高于默认值。
+// 400 为暂行下界，区间 400–900。
+export const PANEL_H_MIN = 400, PANEL_H_MAX = 900;
 export const CHAT_H_MIN = 120;
 export const SPLITTER_H = 16;
 export const DEFAULT_TASK_H = 280;

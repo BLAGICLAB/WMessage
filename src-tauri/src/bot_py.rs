@@ -514,6 +514,80 @@ mod tests {
         assert_eq!(cpu_limit_secs(u64::MAX), u64::MAX);
     }
 
+    // ── S20：setrlimit 逐资源探测（探测失败 ≠ 可用；未生效必须 audit 留痕）──
+
+    #[cfg(unix)]
+    #[test]
+    fn setrlimit_probe_output_parse_covers_states() {
+        // 双资源全可用
+        let ok = parse_setrlimit_probe_output("WM_RLIMIT_AS=OK\nWM_RLIMIT_CPU=OK\n");
+        assert_eq!(ok.rlimit_as, SetrlimitProbe::Available);
+        assert_eq!(ok.rlimit_cpu, SetrlimitProbe::Available);
+        // AS 被拒（裸 macOS 实测：CPython 把内核 EINVAL 映射成 ValueError）+ CPU 可用
+        let partial = parse_setrlimit_probe_output(
+            "WM_RLIMIT_AS=ValueError: current limit exceeds maximum limit\nWM_RLIMIT_CPU=OK\n",
+        );
+        assert_eq!(
+            partial.rlimit_as,
+            SetrlimitProbe::Unavailable("ValueError: current limit exceeds maximum limit".into())
+        );
+        assert_eq!(partial.rlimit_cpu, SetrlimitProbe::Available);
+        // 缺 CPU 项 → 该资源按探测失败算，绝不猜成可用
+        let missing = parse_setrlimit_probe_output("WM_RLIMIT_AS=OK\n");
+        assert_eq!(missing.rlimit_as, SetrlimitProbe::Available);
+        assert!(matches!(missing.rlimit_cpu, SetrlimitProbe::ProbeError(_)));
+        // 全不可解析 → 双探测失败
+        let garbage = parse_setrlimit_probe_output("Traceback (most recent call last):");
+        assert!(matches!(garbage.rlimit_as, SetrlimitProbe::ProbeError(_)));
+        assert!(matches!(garbage.rlimit_cpu, SetrlimitProbe::ProbeError(_)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rlimit_warn_line_pins_hard_constraint() {
+        let all_ok = SetrlimitSupport {
+            rlimit_as: SetrlimitProbe::Available,
+            rlimit_cpu: SetrlimitProbe::Available,
+        };
+        assert!(rlimit_warn_line(&all_ok).is_none());
+        // 硬约束钉死：未生效项必须明说「限额未生效」；探测失败项必须明说
+        // 「未探测到 setrlimit 可用性」+「限额未设」，不许静默、不许含糊。
+        let off = rlimit_warn_line(&SetrlimitSupport {
+            rlimit_as: SetrlimitProbe::Unavailable("ValueError: bad".to_string()),
+            rlimit_cpu: SetrlimitProbe::Available,
+        })
+        .expect("未生效项必须留痕");
+        assert!(off.contains("限额未生效"), "got: {off}");
+        assert!(off.contains("RLIMIT_AS"), "got: {off}");
+        let err = rlimit_warn_line(&SetrlimitSupport {
+            rlimit_as: SetrlimitProbe::Available,
+            rlimit_cpu: SetrlimitProbe::ProbeError("spawn 失败".to_string()),
+        })
+        .expect("探测失败必须留痕");
+        assert!(err.contains("未探测到 setrlimit 可用性"), "got: {err}");
+        assert!(err.contains("限额未设"), "got: {err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn setrlimit_probe_real_python_gives_definite_verdict() {
+        let Some(py) = detect_python() else {
+            return; // 无 Python 环境跳过
+        };
+        let s = run_setrlimit_probe(&py);
+        // 有真实解释器在手，逐资源结论必须是确定的（Available/Unavailable）；
+        // ProbeError 意味着探测层故障，本机不该出现。裸 macOS 的真相是
+        // AS 被内核拒（Unavailable）+ CPU 可设（Available）——正是本批要暴露的。
+        assert!(
+            !matches!(s.rlimit_as, SetrlimitProbe::ProbeError(_)),
+            "RLIMIT_AS 探测层故障: {s:?}"
+        );
+        assert!(
+            !matches!(s.rlimit_cpu, SetrlimitProbe::ProbeError(_)),
+            "RLIMIT_CPU 探测层故障: {s:?}"
+        );
+    }
+
     // ── 失败路径审计（超时 / spawn_fail 必留痕）──
 
     #[test]

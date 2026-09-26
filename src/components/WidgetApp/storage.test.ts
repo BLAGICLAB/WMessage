@@ -4,8 +4,8 @@ vi.mock("@tauri-apps/api/window", () => ({
   currentMonitor: vi.fn(async () => null),
 }));
 
-import { anchorFromRect, loadAnchor, saveAnchor } from "./storage";
-import { POS_KEY } from "./constants";
+import { anchorFromRect, loadAnchor, loadSize, saveAnchor } from "./storage";
+import { PANEL_H, PANEL_W, POS_KEY, SIZE_KEY } from "./constants";
 
 describe("loadAnchor 形状校验", () => {
   beforeEach(() => {
@@ -89,5 +89,39 @@ describe("anchorFromRect 返回扁平 Anchor", () => {
     expect(a.edge).toBe("float");
     expect(a.x).toBe(500);
     expect(a.y).toBe(300);
+  });
+});
+
+// C4-v2（2026-09-26 拍板）：PANEL_H_MIN 800→400 后默认 560 必须落在合法区间。
+// 默认值用常量（MIN 若再高于默认值此测试必红），边界用字面量钉住拍板区间 400–900。
+describe("loadSize 高度区间校验（C4-v2）", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it("默认尺寸（560）在合法区间 → 原样返回（C4-v2 回归钉）", () => {
+    localStorage.setItem(SIZE_KEY, JSON.stringify({ w: PANEL_W, h: PANEL_H }));
+    expect(loadSize()).toEqual({ w: PANEL_W, h: PANEL_H });
+  });
+
+  it("高度边界 400 / 900 → 返回", () => {
+    localStorage.setItem(SIZE_KEY, JSON.stringify({ w: 480, h: 400 }));
+    expect(loadSize()).toEqual({ w: 480, h: 400 });
+    localStorage.setItem(SIZE_KEY, JSON.stringify({ w: 480, h: 900 }));
+    expect(loadSize()).toEqual({ w: 480, h: 900 });
+  });
+
+  it("高度越界 399 / 901 → null", () => {
+    localStorage.setItem(SIZE_KEY, JSON.stringify({ w: 480, h: 399 }));
+    expect(loadSize()).toBeNull();
+    localStorage.setItem(SIZE_KEY, JSON.stringify({ w: 480, h: 901 }));
+    expect(loadSize()).toBeNull();
+  });
+
+  it("宽度区间不变：399 → null、800 → 返回", () => {
+    localStorage.setItem(SIZE_KEY, JSON.stringify({ w: 399, h: 560 }));
+    expect(loadSize()).toBeNull();
+    localStorage.setItem(SIZE_KEY, JSON.stringify({ w: 800, h: 560 }));
+    expect(loadSize()).toEqual({ w: 800, h: 560 });
   });
 });
