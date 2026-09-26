@@ -1,20 +1,23 @@
-//! Bot 配置模块的 tauri 命令（4 个）+ perm_mode 公开 helper。
+//! Bot 配置模块的 tauri 命令（5 个）+ perm_mode 公开 helper。
 //!
 //! - `bot_get_config` 设置页读取（含老配置迁移兜底）
 //! - `bot_set_config` 设置页保存（key 走 keyring，配置文件强制剥 key）
+//! - `bot_set_active_model` 聊天区/挂件 🧠 下拉窄口径切 active 模型
 //! - `bot_clear_api_key` 设置页清除主 LLM key
 //! - `bot_log_read` 设置页读 bot.log 审计日志
 //! - `perm_mode` 当前授权模式（chat 入口用）
 
 use tauri::AppHandle;
 
-use crate::error::CommandResult;
+use crate::error::{CommandError, CommandResult};
 
 use super::audit;
 use super::io;
 use super::keyring;
 use super::schema;
-use super::types::{BotConfig, BotConfigView, ModelsByProvider, PermMode};
+use super::types::{
+    ActiveModelId, ApiProvider, BotConfig, BotConfigView, ModelsByProvider, PermMode,
+};
 
 // ───────────────────────── perm_mode ─────────────────────────
 
@@ -125,6 +128,51 @@ pub fn bot_set_config(
     let mut config = config;
     schema::derive_legacy_fields_from_active(&mut config);
     super::io::write_bot_config_file(&crate::db::data_dir(&app), config)
+}
+
+// ───────────────────────── bot_set_active_model ─────────────────────────
+
+/// 纯逻辑（单测锚点）：校验 model_id 存在于**当前协议**的模型列表并置为 active。
+/// 列表为空 / id 不在当前协议列表（已删除或属另一协议）→ InvalidArgument 响亮失败，
+/// 不静默回退到 first——用户点的是哪一个就该切哪一个。
+pub fn apply_active_model_switch(cfg: &mut BotConfig, model_id: &str) -> CommandResult<()> {
+    let provider = ApiProvider::from_cfg(cfg.api_provider.as_deref());
+    let mbp = cfg
+        .models_by_provider
+        .get_or_insert_with(ModelsByProvider::default);
+    let hit = match provider {
+        ApiProvider::Openai => mbp.openai.iter().any(|e| e.id == model_id),
+        ApiProvider::Anthropic => mbp.anthropic.iter().any(|e| e.id == model_id),
+    };
+    if !hit {
+        return Err(CommandError::InvalidArgument {
+            field: "modelId".into(),
+            value: model_id.into(),
+            reason: "模型 id 不在当前协议的模型列表中".into(),
+        });
+    }
+    let active = cfg
+        .active_model_id
+        .get_or_insert_with(ActiveModelId::default);
+    match provider {
+        ApiProvider::Openai => active.openai = Some(model_id.into()),
+        ApiProvider::Anthropic => active.anthropic = Some(model_id.into()),
+    }
+    Ok(())
+}
+
+/// 窄口径切换 active 模型（聊天区/挂件 🧠 下拉专用）：读盘上最新配置（单一事实源），
+/// 只动当前协议的 active_model_id，派生 base_url/model 老字段后落盘。
+/// **不做整份配置写回**——避免前端旧快照覆盖设置页并发修改的字段（白名单/开关等）。
+/// key 相关路径完全不触碰。返回切换后的 BotConfigView，前端免二次读取。
+#[tauri::command]
+pub fn bot_set_active_model(app: AppHandle, model_id: String) -> CommandResult<BotConfigView> {
+    let mut cfg = io::load_config(&app);
+    schema::migrate_legacy_models(&mut cfg);
+    apply_active_model_switch(&mut cfg, &model_id)?;
+    schema::derive_legacy_fields_from_active(&mut cfg);
+    io::write_bot_config_file(&crate::db::data_dir(&app), cfg)?;
+    bot_get_config(app)
 }
 
 // ───────────────────────── bot_clear_api_key / bot_log_read ─────────────────────────

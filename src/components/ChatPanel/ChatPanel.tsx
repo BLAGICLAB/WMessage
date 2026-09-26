@@ -17,7 +17,14 @@ import type { Task } from "../../types";
 import { basename } from "../../format";
 import { MarkdownText } from "../MarkdownText";
 
-import type { Msg, Session, TaskRef, ToolCall, SkillFailure } from "./types";
+import type {
+  ChatModelEntry,
+  Msg,
+  Session,
+  SkillFailure,
+  TaskRef,
+  ToolCall,
+} from "./types";
 import {
   DELTA_BATCH_MS,
   SLASH_COMMANDS,
@@ -79,6 +86,14 @@ export function ChatPanel({
   const rootRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLButtonElement>(null);
   const sessionDropdownRef = useRef<HTMLDivElement>(null);
+  // 🧠 模型下拉（MP-01）：同会话菜单三件套——开合 + 按钮 ref + 下拉 ref，
+  // 另带当前协议的模型列表与 active id（reload 里一并维护）
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const [models, setModels] = useState<ChatModelEntry[]>([]);
+  const [activeModelId, setActiveModelId] = useState<string | null>(null);
+  const [modelDropdownTop, setModelDropdownTop] = useState(0);
+  const modelBtnRef = useRef<HTMLButtonElement>(null);
+  const modelDropdownRef = useRef<HTMLDivElement>(null);
   /** 头部 🧠 标签：显示当前模型（设置页维护，聊天面板只读展示） */
   const [modelLabel, setModelLabel] = useState("…");
   // 顶部行引用 + 下拉 top 定位（紧贴 🤖/🧠 按钮底部，0 间距）
@@ -92,6 +107,11 @@ export function ChatPanel({
       const br = btn.getBoundingClientRect();
       const rr = root.getBoundingClientRect();
       setDropdownTop(br.bottom - rr.top);
+      if (modelBtnRef.current) {
+        setModelDropdownTop(
+          modelBtnRef.current.getBoundingClientRect().bottom - rr.top
+        );
+      }
     };
     update();
     if (typeof ResizeObserver !== "undefined" && rootRef.current) {
@@ -230,12 +250,46 @@ export function ChatPanel({
     return () => document.removeEventListener("mousedown", onDown);
   }, [sessionMenuOpen]);
 
-  // 挂载：读当前模型配置，头部 🧠 按钮显示当前提供商（自定义地址显示模型名）；
-  // 设置页保存配置后广播 bot-config-changed，这里同步刷新
+  // 点击模型下拉外关闭（镜像会话菜单：按钮与下拉不在同一 ref 容器，双 ref 检测）
+  useEffect(() => {
+    if (!modelMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (
+        !modelBtnRef.current?.contains(t) &&
+        !modelDropdownRef.current?.contains(t)
+      )
+        setModelMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [modelMenuOpen]);
+
+  // 挂载：读当前模型配置，头部 🧠 下拉展示当前协议的模型列表 + active id；
+  // 设置页/另一窗口保存配置后广播 bot-config-changed，这里同步刷新
   useEffect(() => {
     const reload = () =>
-      invoke<{ baseUrl?: string; model?: string }>("bot_get_config")
-        .then((c) => setModelLabel(c.model || "未配置"))
+      invoke<{
+        baseUrl?: string;
+        model?: string;
+        apiProvider?: string | null;
+        modelsByProvider?: {
+          openai?: ChatModelEntry[];
+          anthropic?: ChatModelEntry[];
+        } | null;
+        activeModelId?: { openai: string | null; anthropic: string | null } | null;
+      }>("bot_get_config")
+        .then((c) => {
+          setModelLabel(c.model || "未配置");
+          const isOpenai = (c.apiProvider ?? "openai") !== "anthropic";
+          const mbp = c.modelsByProvider ?? {};
+          setModels((isOpenai ? mbp.openai : mbp.anthropic) ?? []);
+          setActiveModelId(
+            (c.activeModelId ?? { openai: null, anthropic: null })[
+              isOpenai ? "openai" : "anthropic"
+            ] ?? null
+          );
+        })
         .catch(() => setModelLabel("未配置"));
     reload();
     const un = listen("bot-config-changed", reload);
@@ -243,6 +297,30 @@ export function ChatPanel({
       un.then((f) => f());
     };
   }, []);
+
+  // 🧠 下拉选中：走窄口径命令（后端读盘最新配置，只动 active + 派生老字段，
+  // 不做整份写回——避免旧快照覆盖设置页并发修改）。成功后广播 bot-config-changed，
+  // 另一窗口（主窗口 ↔ 挂件）的 ChatPanel 靠既有 listener 刷新
+  const switchModel = async (id: string) => {
+    try {
+      const c = await invoke<{
+        model?: string;
+        apiProvider?: string | null;
+        activeModelId?: { openai: string | null; anthropic: string | null } | null;
+      }>("bot_set_active_model", { modelId: id });
+      setModelLabel(c.model || "未配置");
+      const isOpenai = (c.apiProvider ?? "openai") !== "anthropic";
+      setActiveModelId(
+        (c.activeModelId ?? { openai: null, anthropic: null })[
+          isOpenai ? "openai" : "anthropic"
+        ] ?? null
+      );
+      setModelMenuOpen(false);
+      emit("bot-config-changed", null).catch(() => {});
+    } catch (e) {
+      handleCommandError(e, "切换模型");
+    }
+  };
 
   // 流式增量：追加到最后一条 streaming 中的助手消息
   // 会话过滤：六个流式事件 payload 均带 sessionId
@@ -993,14 +1071,20 @@ export function ChatPanel({
               {sessionMenuOpen ? "▴" : "▾"}
             </span>
           </button>
-          {/* 🧠 当前模型标签（只读；模型在设置页维护）
-              宽度按内容收窄：flex-1 → shrink-0 max-w-fit，剩余空间全部让给 🤖 会话按钮 */}
-          <span
+          {/* 🧠 当前模型下拉（MP-01：原只读标签升级，与 🤖 会话切换器同款交互；
+              模型仍可在设置页维护，这里切的是各协议列表里的 active）
+              宽度按内容收窄：shrink-0 max-w-fit，剩余空间全部让给 🤖 会话按钮 */}
+          <button
+            ref={modelBtnRef}
             className="nm-outset shrink-0 max-w-fit flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-[var(--t2)]"
-            title={`当前模型：${modelLabel}（设置页切换）`}
+            title="切换模型"
+            onClick={() => setModelMenuOpen((v) => !v)}
           >
             <span className="truncate text-left">🧠 {modelLabel}</span>
-          </span>
+            <span className="shrink-0 text-[10px] text-[var(--t5)]">
+              {modelMenuOpen ? "▴" : "▾"}
+            </span>
+          </button>
         </div>
         {/* 右侧：🎯 移到原 🧹 位置（最右；外框 px-2 py-1 跟 🤖/🧠 等高，emoji 内部 16px 免受字体档位影响） */}
         <button
@@ -1051,6 +1135,35 @@ export function ChatPanel({
           >
             ＋ 新建对话
           </button>
+        </div>
+      )}
+
+      {modelMenuOpen && (
+        <div
+          ref={modelDropdownRef}
+          className="absolute right-0 w-52 nm-card p-1 rounded-xl z-50 max-h-40 overflow-y-auto"
+          style={{ top: modelDropdownTop > 0 ? `${modelDropdownTop}px` : undefined }}
+        >
+          {models.length === 0 ? (
+            <p className="px-2 py-1 text-xs text-[var(--t5)]">
+              模型列表为空，去设置页添加
+            </p>
+          ) : (
+            models.map((m) => (
+              <button
+                key={m.id}
+                className={`w-full text-left px-2 py-1 rounded-lg text-xs truncate ${
+                  m.id === activeModelId
+                    ? "nm-inset text-[var(--t1)] font-medium"
+                    : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
+                }`}
+                onClick={() => switchModel(m.id)}
+                title={m.label}
+              >
+                {m.label}
+              </button>
+            ))
+          )}
         </div>
       )}
 

@@ -39,7 +39,10 @@ pub mod types;
 // 子模块内符号分别 re-export 到此，供 facade 一一加载，保持外部路径 crate::bot::X 不变。
 
 pub use audit::{audit_log, audit_log_hook, bot_log_read};
-pub use commands::{bot_clear_api_key, bot_get_config, bot_set_config, perm_mode};
+pub use commands::{
+    apply_active_model_switch, bot_clear_api_key, bot_get_config, bot_set_active_model,
+    bot_set_config, perm_mode,
+};
 pub use io::{config_path, migrate_legacy_key, migrate_search_keys, read_bypass_llm_switch};
 pub use keyring::{has_api_key, has_search_key, read_api_key, read_search_key, write_search_key};
 pub use schema::{
@@ -62,8 +65,9 @@ pub(crate) use io::{
 // tauri 命令宏生成物（__cmd__* / __tauri_command_name_*）：在 commands.rs 里
 // #[tauri::command] 函数旁边自动生成；同样 re-export 以让 bot.rs 的 facade 一行不动。
 pub use commands::{
-    __cmd__bot_clear_api_key, __cmd__bot_get_config, __cmd__bot_set_config,
-    __tauri_command_name_bot_clear_api_key, __tauri_command_name_bot_get_config,
+    __cmd__bot_clear_api_key, __cmd__bot_get_config, __cmd__bot_set_active_model,
+    __cmd__bot_set_config, __tauri_command_name_bot_clear_api_key,
+    __tauri_command_name_bot_get_config, __tauri_command_name_bot_set_active_model,
     __tauri_command_name_bot_set_config,
 };
 // bot_log_read 是 #[tauri::command] 但住在 audit.rs（同模块同生命周期），
@@ -94,6 +98,63 @@ mod tests {
         migrate_legacy_models, resolve_max_tokens, SCHEMA_VERSION_KEY,
     };
     use crate::bot::config::schema::{DEFAULT_MAX_TOKENS, MAX_MAX_TOKENS, MIN_MAX_TOKENS};
+
+    // ── bot_set_active_model 纯逻辑（MP-01）：命中置 active，未命中响亮失败 ──
+
+    fn entry(id: &str, base_url: &str, model: &str) -> ModelEntry {
+        ModelEntry {
+            id: id.into(),
+            label: format!("label-{id}"),
+            base_url: base_url.into(),
+            model: model.into(),
+        }
+    }
+
+    #[test]
+    fn apply_active_model_switch_sets_active_and_derives_legacy() {
+        let mut cfg = BotConfig::default();
+        cfg.models_by_provider = Some(ModelsByProvider {
+            openai: vec![
+                entry("a", "https://a.example", "m-a"),
+                entry("b", "https://b.example", "m-b"),
+            ],
+            anthropic: vec![],
+        });
+        apply_active_model_switch(&mut cfg, "b").expect("命中应 Ok");
+        assert_eq!(
+            cfg.active_model_id.as_ref().unwrap().openai.as_deref(),
+            Some("b")
+        );
+        // 派生老字段随 active 切换（与 bot_set_config 同一 derive 函数）
+        derive_legacy_fields_from_active(&mut cfg);
+        assert_eq!(cfg.base_url, "https://b.example");
+        assert_eq!(cfg.model, "m-b");
+    }
+
+    #[test]
+    fn apply_active_model_switch_rejects_unknown_and_empty_list() {
+        let mut cfg = BotConfig::default();
+        cfg.models_by_provider = Some(ModelsByProvider {
+            openai: vec![entry("a", "u", "m-a")],
+            anthropic: vec![],
+        });
+        assert!(apply_active_model_switch(&mut cfg, "nope").is_err());
+        // 列表为空同样拒绝（不静默回退）
+        let mut empty = BotConfig::default();
+        empty.models_by_provider = Some(ModelsByProvider::default());
+        assert!(apply_active_model_switch(&mut empty, "a").is_err());
+    }
+
+    #[test]
+    fn apply_active_model_switch_rejects_cross_protocol_id() {
+        // apiProvider 缺省回退 openai：anthropic 列表里的 id 不可切到 openai 协议
+        let mut cfg = BotConfig::default();
+        cfg.models_by_provider = Some(ModelsByProvider {
+            openai: vec![],
+            anthropic: vec![entry("c", "https://c.example", "m-c")],
+        });
+        assert!(apply_active_model_switch(&mut cfg, "c").is_err());
+    }
     use crate::bot::config::types::{
         check_len, ActiveModelId, ApiProvider, BotConfig, KeySlot, ModelEntry, ModelsByProvider,
         PermMode, BOT_CONFIG_SCHEMA_VERSION, KEYRING_SERVICE, LEGACY_KEYRING_SERVICE, MAX_DUE,

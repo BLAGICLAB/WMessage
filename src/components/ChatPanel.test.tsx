@@ -22,8 +22,9 @@ const mocks = vi.hoisted(() => {
   return { invokeMock, listenMock, emitMock, dragDropHandlers, listeners };
 });
 
-// 默认实现
-mocks.invokeMock.mockImplementation(async (cmd: string) => {
+// 默认实现（具名：beforeEach 只 mockClear 不重置 implementation，
+// 后跑的用例需显式 mockImplementation(defaultInvoke) 恢复）
+const defaultInvoke = async (cmd: string) => {
   switch (cmd) {
     case "bot_sessions_load":
       return [{ id: "s1", title: "默认会话" }];
@@ -38,6 +39,27 @@ mocks.invokeMock.mockImplementation(async (cmd: string) => {
       return null;
     case "bot_chat":
       return { text: "机器人回复", taskRefs: [] };
+    // MP-01：🧠 模型下拉的双命令（列表 + 窄口径切换）
+    case "bot_get_config":
+      return {
+        baseUrl: "https://api.example.com/v1",
+        model: "MiniMax-M3",
+        apiProvider: "openai",
+        modelsByProvider: {
+          openai: [
+            { id: "m1", label: "MiniMax-M3", baseUrl: "https://api.example.com/v1", model: "MiniMax-M3" },
+            { id: "m2", label: "DeepSeek-V3", baseUrl: "https://api.deepseek.com", model: "deepseek-chat" },
+          ],
+          anthropic: [],
+        },
+        activeModelId: { openai: "m1", anthropic: null },
+      };
+    case "bot_set_active_model":
+      return {
+        model: "deepseek-chat",
+        apiProvider: "openai",
+        activeModelId: { openai: "m2", anthropic: null },
+      };
     case "bot_execute_task":
       return { text: "任务执行结果", taskRefs: [] };
     case "bot_compact":
@@ -49,7 +71,8 @@ mocks.invokeMock.mockImplementation(async (cmd: string) => {
     default:
       return null;
   }
-});
+};
+mocks.invokeMock.mockImplementation(defaultInvoke);
 mocks.listenMock.mockImplementation(async () => () => {});
 mocks.emitMock.mockImplementation(async () => {});
 
@@ -479,5 +502,46 @@ describe("ChatPanel", () => {
     await waitFor(() =>
       expect(mocks.invokeMock).toHaveBeenCalledWith("bot_history_load", { sessionId: "s-exec" })
     );
+  });
+
+  // ── MP-01：🧠 模型下拉 ──
+
+  it("点 🧠 弹出当前协议模型列表，再点收起", async () => {
+    const user = userEvent.setup();
+    // 前面用例换过的 mockImplementation 会跨用例残留（beforeEach 只 mockClear），
+    // 先恢复默认实现拿到 bot_get_config / bot_set_active_model 的 mock
+    mocks.invokeMock.mockImplementation(defaultInvoke);
+    render(<ChatPanel {...defaultProps} />);
+    await screen.findByText("🤖 默认会话");
+    // 等 bot_get_config reload 完成（chip 标签与 setModels 同一个 .then 刷新）
+    await screen.findByText("🧠 MiniMax-M3");
+    const chip = screen.getByTitle("切换模型");
+    await user.click(chip);
+    expect(await screen.findByText("DeepSeek-V3")).toBeInTheDocument();
+    expect(screen.getByText("MiniMax-M3")).toBeInTheDocument();
+    // 再点收起
+    await user.click(chip);
+    await waitFor(() => {
+      expect(screen.queryByText("DeepSeek-V3")).toBeNull();
+    });
+  });
+
+  it("点选模型调用 bot_set_active_model（窄口径）并广播同步", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(defaultInvoke);
+    render(<ChatPanel {...defaultProps} />);
+    await screen.findByText("🤖 默认会话");
+    await screen.findByText("🧠 MiniMax-M3");
+    await user.click(screen.getByTitle("切换模型"));
+    await user.click(await screen.findByText("DeepSeek-V3"));
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith("bot_set_active_model", {
+        modelId: "m2",
+      });
+    });
+    // 标签随返回 view 刷新（active 模型的 model 字段）
+    expect(await screen.findByText(/deepseek-chat/)).toBeInTheDocument();
+    // 广播给另一窗口（主窗口 ↔ 挂件同步）
+    expect(mocks.emitMock).toHaveBeenCalledWith("bot-config-changed", null);
   });
 });

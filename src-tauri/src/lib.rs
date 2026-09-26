@@ -452,6 +452,7 @@ pub fn run() {
             bot_slash::bot_set_enabled,
             bot::bot_get_config,
             bot::bot_set_config,
+            bot::bot_set_active_model,
             bot::bot_clear_api_key,
             memory::consolidate::memory_consolidate_now,
             bot_chat::bot_chat,

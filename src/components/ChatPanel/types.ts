@@ -36,3 +36,8 @@ export type Msg = {
 };
 
 export type Session = { id: string; title: string };
+
+/** 🧠 模型下拉条目（bot_get_config 的 modelsByProvider 当前协议子列表）。
+ *  与设置页 ModelEntry 同形（id/label/model），但独立声明——SettingsPage/types.ts
+ *  头部注明「外部不直接引用」，ChatPanel 不跨目录 import。 */
+export type ChatModelEntry = { id: string; label: string; model: string };
