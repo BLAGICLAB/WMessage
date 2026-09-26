@@ -22,22 +22,37 @@ fn main() {
     let mut out_path: Option<PathBuf> = None;
     let mut quiet = false;
     let mut i = 1;
+    // flag 值若以下一个 flag 开头 = 漏了实参——按非法参数拒绝而非静默吞
+    fn arg_value(args: &[String], i: usize, flag: &str) -> String {
+        let v = match args.get(i + 1) {
+            Some(v) => v.clone(),
+            None => {
+                eprintln!("{flag} 后需值");
+                std::process::exit(2);
+            }
+        };
+        if v.starts_with("--") {
+            eprintln!("{flag} 后需值，却拿到下一个 flag：{v}");
+            std::process::exit(2);
+        }
+        v.clone()
+    }
     while i < args.len() {
         match args[i].as_str() {
             "--config" => {
-                config_path = PathBuf::from(args.get(i + 1).expect("--config 后需路径"));
+                config_path = PathBuf::from(arg_value(&args, i, "--config"));
                 i += 2;
             }
             "--db" => {
-                db_path = Some(PathBuf::from(args.get(i + 1).expect("--db 后需路径")));
+                db_path = Some(PathBuf::from(arg_value(&args, i, "--db")));
                 i += 2;
             }
             "--period" => {
-                period = args.get(i + 1).expect("--period 后需标签").clone();
+                period = arg_value(&args, i, "--period");
                 i += 2;
             }
             "--out" => {
-                out_path = Some(PathBuf::from(args.get(i + 1).expect("--out 后需路径")));
+                out_path = Some(PathBuf::from(arg_value(&args, i, "--out")));
                 i += 2;
             }
             "--quiet" => {

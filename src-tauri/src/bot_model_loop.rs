@@ -677,6 +677,11 @@ where
                             ],
                         );
                         drop(r);
+                        // 重试等待期响应 /stop——不再发出下一次请求（与主循环停止口径一致）
+                        if stop.stopped() {
+                            let hint = skill_finish(false, "用户停止");
+                            return Ok((format!("⏹ 已停止{hint}"), collected_refs));
+                        }
                         tokio::time::sleep(LLM_RETRY_DELAY).await;
                         continue;
                     }
@@ -689,6 +694,10 @@ where
                             "llm.retry",
                             vec![("err", e.to_string()), ("attempt", attempt.to_string())],
                         );
+                        if stop.stopped() {
+                            let hint = skill_finish(false, "用户停止");
+                            return Ok((format!("⏹ 已停止{hint}"), collected_refs));
+                        }
                         tokio::time::sleep(LLM_RETRY_DELAY).await;
                         continue;
                     }

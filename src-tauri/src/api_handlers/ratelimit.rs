@@ -36,7 +36,7 @@ pub(crate) fn rate_check() -> bool {
     true
 }
 
-/// 追加一行访问/变更日志（`None` 或写入失败则静默忽略）
+/// 追加一行访问/变更日志（`None` 时不写；open/writeln 失败 eprintln 留痕）
 pub(crate) fn log_line(path: &Option<PathBuf>, line: &str) {
     let Some(p) = path else { return };
     let _g = LOG_WRITE.lock().unwrap_or_else(|e| {
@@ -44,22 +44,30 @@ pub(crate) fn log_line(path: &Option<PathBuf>, line: &str) {
         e.into_inner()
     });
     crate::db::rotate_log_if_large(p, 5 * 1024 * 1024);
-    if let Ok(mut f) = std::fs::OpenOptions::new()
+    match std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .write(true)
         .open(p)
     {
-        // 防 log injection:caller 控制内容(handlers.rs:93 传的 path 是
-        // HTTP 请求路径,query string 等)可能含 `\n` / `\r` / ESC 等控制
-        // 字符,会伪造日志行、隐藏真实活动、或在行导向工具里错位(ESC 还
-        // 能注入终端转义序列)。控制字符全部 escape 成可见表示后写。
-        let sanitized = sanitize_log_line(line);
-        let _ = writeln!(
-            f,
-            "[{}] {sanitized}",
-            chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
-        );
+        Ok(mut f) => {
+            // 防 log injection:caller 控制内容(handlers.rs:93 传的 path 是
+            // HTTP 请求路径,query string 等)可能含 `\n` / `\r` / ESC 等控制
+            // 字符,会伪造日志行、隐藏真实活动、或在行导向工具里错位(ESC 还
+            // 能注入终端转义序列)。控制字符全部 escape 成可见表示后写。
+            let sanitized = sanitize_log_line(line);
+            // 审计行写失败可见化（磁盘满/权限）——访问日志静默丢失不可接受
+            if let Err(e) = writeln!(
+                f,
+                "[{}] {sanitized}",
+                chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+            ) {
+                eprintln!("[ratelimit] 访问日志写入失败（{}）：{e}", p.display());
+            }
+        }
+        Err(e) => {
+            eprintln!("[ratelimit] 访问日志打开失败（{}）：{e}", p.display());
+        }
     }
 }
 

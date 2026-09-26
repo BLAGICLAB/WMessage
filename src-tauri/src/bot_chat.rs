@@ -1427,9 +1427,6 @@ where
     );
     // 1. 新会话 + 任务块 user 消息落库 + chat-open-session 广播
     let sid = create_exec_session(app, &task, origin).await?;
-    // D4d：登记 session_id → TaskExecOrigin 映射，tool_link_file_to_task 内部查询。
-    // 末尾无论成败都要 unregister_exec_session 清理。
-    crate::tool_guard::register_exec_session(&sid, origin);
     // 2. ChatGuard（设计 3.4：bot_execute_task 纳入会话锁——执行期间同会话的
     // bot_chat 插话会被拒「稍候再发」，防流式/历史交错）。新会话正常不会冲突，
     // 冲突说明守卫串号，按内部错误处理。
@@ -1441,6 +1438,10 @@ where
             )));
         }
     };
+    // D4d：登记 session_id → TaskExecOrigin 映射，tool_link_file_to_task 内部查询。
+    // 末尾无论成败都要 unregister_exec_session 清理。守卫成功后再登记——
+    // acquire 失败的早退分支不应泄漏登记（无人 unregister）。
+    crate::tool_guard::register_exec_session(&sid, origin);
     let stop = StopGuard::new_task_exec(app, true, Some(sid.clone()));
     let block = build_task_block(&task);
     let mut msgs = vec![

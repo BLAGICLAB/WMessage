@@ -36,7 +36,23 @@ static API_RMW_LOCK: Mutex<()> = Mutex::new(());
 // ───────────────────────── 响应辅助 ─────────────────────────
 
 pub(crate) fn json_ok<T: Serialize>(status: StatusCode, v: &T) -> Response<Cursor<Vec<u8>>> {
-    let body = serde_json::to_vec(v).unwrap_or_else(|_| b"{}".to_vec());
+    // 序列化失败显式 500 + 错误体——静默降级成 2xx + `{}` 会把数据完整性
+    // 问题伪装成成功响应
+    let body = match serde_json::to_vec(v) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("[api] 响应序列化失败（返回 500）：{e}");
+            return Response::from_data(br#"{"error":"response serialization failed"}"#.to_vec())
+                .with_status_code(StatusCode(500))
+                .with_header(
+                    Header::from_bytes(
+                        &b"Content-Type"[..],
+                        &b"application/json; charset=utf-8"[..],
+                    )
+                    .expect("静态 header 字节不可能失败"),
+                );
+        }
+    };
     Response::from_data(body)
         .with_status_code(status)
         .with_header(
