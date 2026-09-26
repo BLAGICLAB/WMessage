@@ -109,3 +109,7 @@ docs/OCR-CODE-REVIEW-*
 
 # pytest 运行残留
 __pycache__/
+
+# Mimosa 安全扫描插件 hook-state / finding-ledger 缓存（工具本地产物，勿入库；
+# 数百文件曾把 pre-commit 枚举撑爆 scanner_enobufs）
+.mimosa/
