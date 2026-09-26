@@ -359,14 +359,20 @@ function App() {
           console.error("emit tasks-changed failed", err);
         }
     };
-    let queue: Promise<void> = Promise.resolve();
     const unlisten = listen<{ upserts?: Task[]; deletes?: string[]; source?: string }>(
       "tasks-updated",
       (e) => {
-        queue = queue.then(() => handle(e.payload ?? {})).catch((err) => {
-          // 落盘失败等异常：不阻断后续事件队列（原先未处理 rejection 直接终止监听器）
-          console.error("[tasks-updated] handler failed", err);
-        });
+        // SYNC-1：并入全局 mutating.chain（与 UI mutate/每分钟规则定时器同一条串行链）。
+        // 原先独立局部 queue 与 mutate 链互不感知：handle 的 await 让出窗口内，
+        // UI 写从另一条链读到旧 tasksRef，merge 落盘后该写基线过期 →
+        // db_upsert RMW 守卫拒写 →「写冲突」弹窗（实测：主窗完成列取消✅）。
+        // 合并后「读快照→落盘→更新 tasksRef」全窗口严格串行。单事件失败
+        // catch 住不阻断后续（落盘冲突靠下次事件/db_load 自愈）。
+        mutating.chain = mutating.chain
+          .then(() => handle(e.payload ?? {}))
+          .catch((err) => {
+            console.error("[tasks-updated] handler failed", err);
+          });
       }
     );
     return () => {

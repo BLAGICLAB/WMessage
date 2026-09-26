@@ -170,6 +170,64 @@ describe("App", () => {
 
   // mutate 落盘失败必须抛错、tasksRef/state 不得先行更新——
   // 修复前 tasksRef.current = next 在 await 落盘之前，失败时 UI 已更新但磁盘没动
+  it("SYNC-1：tasks-updated 合并与 UI mutate 共串行链（merge await 期间 UI 写排队，写冲突回归钉）", async () => {
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByText("梳理 WMessage 需求清单")).toBeInTheDocument();
+    });
+    // 排掉初始装载尾巴（规则回写等），避免占用 db_upsert 门闩
+    await act(async () => {});
+    const upsertCalls = () =>
+      mocks.invokeMock.mock.calls.filter((c) => c[0] === "db_upsert").length;
+    const callsBefore = upsertCalls();
+    // 捕获 tasks-updated 监听器回调
+    const lu = mocks.listenMock.mock.calls.find(([ev]) => ev === "tasks-updated");
+    expect(lu).toBeTruthy();
+    const onTasksUpdated = lu![1] as (e: { payload: unknown }) => void;
+    // 第一次 db_upsert（事件合并回写）挂起在门闩上
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    mocks.invokeMock.mockImplementationOnce(async (cmd: string) => {
+      if (cmd === "db_upsert") {
+        await gate;
+        return null;
+      }
+      return defaultInvokeImpl(cmd);
+    });
+    // 模拟挂件上报（无 source → 主窗回写路径）
+    await act(async () => {
+      onTasksUpdated({
+        payload: {
+          upserts: [
+            {
+              id: "evt-1",
+              title: "事件合并任务",
+              column: "todo",
+              order: 99,
+              updatedAt: 1234000,
+              expectedUpdatedAt: 1234000,
+            },
+          ],
+          deletes: [],
+        },
+      });
+    });
+    await waitFor(() => {
+      expect(upsertCalls()).toBe(callsBefore + 1);
+    });
+    // 核心断言：merge 的落盘还挂在门闩上时，UI 写（新建任务）不得出队——
+    // 修复前两条独立链会让它立即落盘（基线跨链失效 → 写冲突弹窗的根因）
+    await userEvent.setup().click(screen.getByText("+ 新建任务"));
+    expect(upsertCalls()).toBe(callsBefore + 1);
+    // 放行 merge → UI 写才落盘
+    release();
+    await waitFor(() => {
+      expect(upsertCalls()).toBe(callsBefore + 2);
+    });
+  });
+
   it("mutate 落盘失败：抛错 + UI 不更新（tasksRef 未先行赋值）", async () => {
     const user = userEvent.setup();
     const dbErr = { code: "DB_ERROR", message: "disk full", recoverable: false };
