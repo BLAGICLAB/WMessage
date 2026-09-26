@@ -424,15 +424,28 @@ export default function WidgetApp() {
     }
   };
 
-  const toggleDone = (t: Task) =>
-    applyAndSync((prev) =>
-      prev.map((x): Task => {
-        if (x.id !== t.id) return x;
-        return x.column === "done"
-          ? { ...x, column: isDueToday(x.due) ? "doing" : "todo", completedAt: undefined, archived: undefined }
-          : { ...x, column: "done", completedAt: Date.now(), archived: false, botAssigned: undefined };
-      })
+  // TP-1：✅ 切换走服务端定向命令（同锁内读现值打基线写库）——不再 emit
+  // tasks-updated 整行回写（免快照竞态）；本地乐观更新 + tasks-changed 广播收敛
+  const toggleDone = (t: Task) => {
+    const target: "todo" | "doing" | "done" = t.column === "done"
+      ? isDueToday(t.due)
+        ? "doing"
+        : "todo"
+      : "done";
+    const now = Date.now();
+    const next = tasksRef.current.map((x): Task =>
+      x.id !== t.id
+        ? x
+        : target === "done"
+          ? { ...x, column: "done", completedAt: now, archived: false, botAssigned: undefined }
+          : { ...x, column: target, completedAt: undefined, archived: undefined }
     );
+    tasksRef.current = next;
+    setTasks(next);
+    invoke<Task>("task_set_column", { id: t.id, col: target }).catch((e) =>
+      handleCommandError(e, "切换任务状态")
+    );
+  };
 
   const toggleCollapsed = (t: Task) =>
     applyAndSync((prev) =>

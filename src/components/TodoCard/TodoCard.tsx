@@ -42,6 +42,7 @@ export function TodoCardView({
   autoEdit = false,
   onUpdate,
   onDelete,
+  onSetColumn,
   archived = false,
   trashed = false,
   drag,
@@ -159,11 +160,21 @@ export function TodoCardView({
   };
 
   // 标题右侧圆圈：待办/今日 → 完成（自动记完成时间）；完成 → 截止日期是今天回「今日」、否则回「待办」，完成时间删除
+  // TP-1：优先走 onSetColumn（服务端定向命令，同锁内读现值打基线，免快照竞态）；
+  // 未接线时回落 onUpdate 整行写（向后兼容）
   const toggleDone = () => {
     if (task.column === "done") {
       const back = isDueToday(task.due) ? "doing" : "todo";
+      if (onSetColumn) {
+        onSetColumn(task.id, back);
+        return;
+      }
       onUpdate(task.id, { column: back, completedAt: undefined, archived: undefined });
     } else {
+      if (onSetColumn) {
+        onSetColumn(task.id, "done");
+        return;
+      }
       // 人完成：清机器人标记 → 显示用户头像
       onUpdate(task.id, { column: "done", completedAt: Date.now(), archived: false, botAssigned: undefined });
     }

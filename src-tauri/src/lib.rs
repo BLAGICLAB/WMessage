@@ -430,6 +430,7 @@ pub fn run() {
             crate::db::tasks::db_load,
             crate::db::tasks::db_upsert,
             crate::db::tasks::db_delete,
+            crate::db::tasks::task_set_column,
             crate::db::tasks::tasks_export,
             crate::db::tasks::tasks_import,
             crate::db::workspace::workspace_load,

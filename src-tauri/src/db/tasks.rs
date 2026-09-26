@@ -438,6 +438,92 @@ pub async fn db_upsert(app: AppHandle, tasks: Vec<super::Task>) -> CommandResult
     db_upsert_for(&app, tasks).await
 }
 
+/// task_set_column 的锁内段（纯 DB 逻辑，单测锚点）：**同一把写锁内**读现值 →
+/// 应用列语义 → 打新基线（= 锁内现读 updated_at）→ 写。基线在锁内现读，
+/// 对任何并发写者（规则定时器/迁移/其他实例）都不可能冲突。
+/// 语义与前端 toggleDone 1:1：
+/// → done：completed_at=now、archived=false、bot_assigned 清（用户完成显示用户头像）
+/// → todo/doing：completed_at/archived 清（bot_assigned 保留）
+pub(crate) fn task_set_column_locked(
+    conn: &mut rusqlite::Connection,
+    id: &str,
+    status: TaskStatus,
+    now: i64,
+) -> CommandResult<super::Task> {
+    let mut task = load_all(conn)?
+        .into_iter()
+        .find(|t| t.id == id)
+        .ok_or_else(|| CommandError::TaskNotFound(id.to_string()))?;
+    task.expected_updated_at = task.updated_at;
+    task.updated_at = Some(now);
+    match status {
+        TaskStatus::Done => {
+            task.column = TaskStatus::Done;
+            task.completed_at = Some(now);
+            task.archived = Some(false);
+            task.bot_assigned = None;
+        }
+        TaskStatus::Todo | TaskStatus::Doing => {
+            task.column = status;
+            task.completed_at = None;
+            task.archived = None;
+        }
+    }
+    let tx = conn
+        .transaction()
+        .map_err(|e| CommandError::DbError(e.to_string()))?;
+    upsert_tasks(&tx, std::slice::from_ref(&task)).map_err(CommandError::from)?;
+    tx.commit()
+        .map_err(|e| CommandError::DbError(e.to_string()))?;
+    Ok(task)
+}
+
+/// TP-1：单任务列状态定向迁移（完成✅/取消✅ 专用）。前端传意图（id + 目标列），
+/// 服务端锁内现读现写，**前端快照完全不参与**——彻底免除整行回写的 RMW 写冲突。
+#[tauri::command]
+pub async fn task_set_column(
+    app: AppHandle,
+    id: String,
+    col: String,
+) -> CommandResult<super::Task> {
+    let status = match col.as_str() {
+        "todo" => TaskStatus::Todo,
+        "doing" => TaskStatus::Doing,
+        "done" => TaskStatus::Done,
+        _ => {
+            return Err(CommandError::InvalidArgument {
+                field: "col".into(),
+                value: col,
+                reason: "合法值 todo/doing/done".into(),
+            })
+        }
+    };
+    let app_emit = app.clone();
+    let row = async_runtime::spawn_blocking(move || {
+        let _g = super::lock_db_write();
+        let mut conn = super::open_db(&app)?;
+        let now = chrono::Utc::now().timestamp_millis();
+        task_set_column_locked(&mut conn, &id, status, now)
+    })
+    .await
+    .map_err(|e| CommandError::from(format!("数据库列状态线程 join 失败：{e}")))??;
+    // 广播：挂件 tasks-changed 重读收敛；主窗 tasks-updated（source=main 已落盘，只合并不回写）
+    {
+        use tauri::Emitter;
+        let _ = app_emit.emit("tasks-changed", ());
+        let _ = app_emit.emit_to(
+            "main",
+            "tasks-updated",
+            serde_json::json!({
+                "source": crate::mutation::MutationOrigin::Main.as_str(),
+                "upserts": [row],
+                "deletes": []
+            }),
+        );
+    }
+    Ok(row)
+}
+
 pub async fn db_upsert_for<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     tasks: Vec<super::Task>,
@@ -452,7 +538,24 @@ pub async fn db_upsert_for<R: tauri::Runtime>(
         let tx = conn
             .transaction()
             .map_err(|e| CommandError::DbError(e.to_string()))?;
-        upsert_tasks(&tx, &tasks).map_err(CommandError::from)?;
+        if let Err(e) = upsert_tasks(&tx, &tasks) {
+            let msg = e.to_string();
+            // TP-1：RMW 写冲突审计留痕（bot.log）——「其他写者」归因证据链
+            if msg.starts_with(CONFLICT_ERR_PREFIX) {
+                crate::audit::write_event(
+                    &app,
+                    crate::audit::AuditLevel::Warn,
+                    "rmw_conflict",
+                    &[(
+                        "detail",
+                        msg.trim_start_matches(CONFLICT_ERR_PREFIX)
+                            .trim_start_matches('：')
+                            .to_string(),
+                    )],
+                );
+            }
+            return Err(CommandError::from(msg));
+        }
         tx.commit()
             .map_err(|e| CommandError::DbError(e.to_string()))
     })
@@ -565,6 +668,78 @@ pub async fn tasks_import(app: AppHandle, path: String) -> CommandResult<usize> 
     })
     .await
     .map_err(|e| CommandError::from(format!("任务导入线程 join 失败：{e}")))?
+}
+
+#[cfg(test)]
+mod task_set_column_tests {
+    use super::*;
+
+    fn setup_conn() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tasks (
+               id TEXT PRIMARY KEY, title TEXT NOT NULL, due TEXT, note TEXT, tags TEXT,
+               file_path TEXT, file_is_dir INTEGER, col TEXT NOT NULL, subtasks TEXT,
+               completed_at INTEGER, archived INTEGER, deleted_at INTEGER, collapsed INTEGER,
+               ord REAL, updated_at INTEGER, schedule TEXT, sched_last INTEGER,
+               bot_assigned INTEGER, files TEXT );",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn insert_task(conn: &rusqlite::Connection, id: &str, col: &str, bot: Option<bool>) {
+        conn.execute(
+            "INSERT INTO tasks (id, title, col, updated_at, bot_assigned) VALUES (?1, ?2, ?3, 1000, ?4)",
+            rusqlite::params![id, format!("t-{id}"), col, bot],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn set_column_todo_clears_completion_keeps_bot_assigned() {
+        let _g = crate::db::lock_db_write(); // upsert_tasks 锁持有断言要求（测试模块的 super 是 tasks 非 db）
+        let mut conn = setup_conn();
+        insert_task(&conn, "a", "done", Some(true));
+        let row = task_set_column_locked(&mut conn, "a", TaskStatus::Todo, 5000).unwrap();
+        assert_eq!(row.column, TaskStatus::Todo);
+        assert_eq!(row.completed_at, None);
+        assert_eq!(row.archived, None);
+        // bot_assigned 保留（挂件 toggleDone 语义）
+        assert_eq!(row.bot_assigned, Some(true));
+        assert_eq!(row.updated_at, Some(5000));
+        // 基线 = 锁内现读值，写后重新加载一致
+        let reloaded = load_all(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == "a")
+            .unwrap();
+        assert_eq!(reloaded.column, TaskStatus::Todo);
+        assert_eq!(reloaded.updated_at, Some(5000));
+    }
+
+    #[test]
+    fn set_column_done_records_completion_clears_bot_assigned() {
+        let _g = crate::db::lock_db_write(); // upsert_tasks 锁持有断言要求（测试模块的 super 是 tasks 非 db）
+        let mut conn = setup_conn();
+        insert_task(&conn, "b", "todo", Some(true));
+        let row = task_set_column_locked(&mut conn, "b", TaskStatus::Done, 6000).unwrap();
+        assert_eq!(row.column, TaskStatus::Done);
+        assert_eq!(row.completed_at, Some(6000));
+        assert_eq!(row.archived, Some(false));
+        // 用户完成清机器人标记（显示用户头像）
+        assert_eq!(row.bot_assigned, None);
+    }
+
+    #[test]
+    fn set_column_missing_id_is_task_not_found() {
+        let mut conn = setup_conn();
+        let err = match task_set_column_locked(&mut conn, "ghost", TaskStatus::Done, 1) {
+            Err(e) => e,
+            Ok(_) => panic!("missing id 应返回 TaskNotFound"),
+        };
+        assert!(matches!(err, CommandError::TaskNotFound(_)), "got: {err:?}");
+    }
 }
 
 #[cfg(test)]

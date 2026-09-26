@@ -33,6 +33,7 @@ function Column({
   tasks,
   editingId,
   onUpdate,
+  onSetColumn,
   onDelete,
   footer = null,
 }: {
@@ -41,6 +42,7 @@ function Column({
   tasks: Task[];
   editingId: string | null;
   onUpdate: (taskId: string, patch: Partial<Task>) => void;
+  onSetColumn: (taskId: string, col: ColumnId) => void;
   onDelete: (taskId: string) => void;
   footer?: React.ReactNode;
 }) {
@@ -69,6 +71,7 @@ function Column({
               task={t}
               autoEdit={t.id === editingId}
               onUpdate={onUpdate}
+              onSetColumn={onSetColumn}
               onDelete={onDelete}
             />
           ))}
@@ -115,6 +118,7 @@ export function KanbanBoard({
   editingId,
   onReorder,
   onUpdate,
+  onSetColumn,
   onDelete,
   onOpenArchive,
 }: {
@@ -123,6 +127,8 @@ export function KanbanBoard({
   /** 拖拽结束后提交最终顺序（含跨列变更），order 由上层统一分配 */
   onReorder: (activeId: string, next: Task[]) => void;
   onUpdate: (taskId: string, patch: Partial<Task>) => void;
+  /** TP-1：列状态定向迁移（服务端命令） */
+  onSetColumn: (taskId: string, col: ColumnId) => void;
   onDelete: (taskId: string) => void;
   onOpenArchive: () => void;
 }) {
@@ -221,6 +227,7 @@ export function KanbanBoard({
             )}
             editingId={editingId}
             onUpdate={onUpdate}
+            onSetColumn={onSetColumn}
             onDelete={onDelete}
             footer={
               c.id === "done" && archivedCount > 0 ? (

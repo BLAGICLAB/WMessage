@@ -17,7 +17,7 @@ import { isBackendPersisted, KNOWN_SOURCES } from "./lib/mutationOrigin";
 import { applySetting, getSetting, subscribeSystem, subscribeTheme, toggleTheme } from "./theme";
 import { isDueToday } from "./format";
 import type { ThemeSetting } from "./theme";
-import type { Task, WorkspaceItem } from "./types";
+import type { Task, ColumnId, WorkspaceItem } from "./types";
 
 // OCR C4-r1 验证 + 修：mutate 串行化队列必须在**模块作用域**（App() 内会被每
 //   次 render 重建 → 跨 render 的并发 mutate 落到不同链 → 串行化失效）。
@@ -527,6 +527,26 @@ function App() {
     });
   };
 
+  // TP-1：✅ 状态切换走服务端定向命令——服务端同一把 DB 写锁内读现值打基线写库，
+  // 前端快照不参与，规则定时器/迁移/实例重启并发不再触发写冲突弹窗
+  const setTaskColumn = async (taskId: string, col: ColumnId) => {
+    try {
+      const row = await invoke<Task>("task_set_column", { id: taskId, col });
+      applyRemoteRows([row]);
+    } catch (e) {
+      handleCommandError(e, "切换任务状态");
+    }
+  };
+
+  // 远端行合并进本地快照（与 tasks-updated 合并同规则；本地不回写）
+  const applyRemoteRows = (rows: Task[]) => {
+    const map = new Map(tasksRef.current.map((t) => [t.id, t]));
+    rows.forEach((t) => map.set(t.id, t));
+    const next = applyArchiveRule(applyTodayRule(sortByOrder([...map.values()])));
+    tasksRef.current = next;
+    setTasks(next);
+  };
+
   const updateTask = (taskId: string, patch: Partial<Task>) => {
     mutateFire((prev) =>
       prev.map((t) => {
@@ -633,6 +653,7 @@ function App() {
           editingId={editingId}
           onReorder={commitBoardOrder}
           onUpdate={updateTask}
+          onSetColumn={setTaskColumn}
           onDelete={deleteTask}
           onOpenArchive={() => setView("archive")}
         />
