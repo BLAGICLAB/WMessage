@@ -44,8 +44,9 @@ FIFO（超限 queued 不失败）；task_tool_calls 预算计数（dispatch 层�
 
 ## spec 起草后自查三条
 
-1. expected_files 7【校正 ×1：并发闸用进程级 OnceLock（与 tool_guard 注册表同款），
-   不动 app_state.rs；无新增 .rs 文件不动架构文档】
+1. expected_files 8【校正 ×1：并发闸用进程级 OnceLock，不动 app_state.rs】
+   【校正 ×2：补 lib.rs——cancel_subagent 注册为 tauri 命令（bridge 门禁：前端
+   invoke 必须有注册命令；设计 §4.3 停止按钮同 API 的落地入口）】
 2. budget：修改 +550/-30（实测 +514/-12）【校正 ×1】
    assertions_min 对 vitest 文件填 0（SOP 坑 2：gate 正则只认 Rust assert 宏）
 3. fix 字段：并发闸集中 orchestrator 新增并发模块；前端三字段纯投影
@@ -63,7 +64,8 @@ FIFO（超限 queued 不失败）；task_tool_calls 预算计数（dispatch 层�
     "src/types.ts",
     "src/components/TaskCardContent.tsx",
     "src/components/TaskCardContent.test.tsx",
-    "src/components/ChatPanel/ChatPanel.tsx"
+    "src/components/ChatPanel/ChatPanel.tsx",
+    "src-tauri/src/lib.rs"
   ],
   "max_lines_added": 700,
   "max_lines_removed": 90,
