@@ -61,9 +61,9 @@ SSRF 复核补测试。前置：RE1-MP02-LAND 已落地（run_model_loop 现签�
 
 1. expected_files 16（2 新代码文件 + 4 提示词镜像 + 10 修改）
    【校正 ×1：补 app_state.rs（subagent_stops 表）/bot_slash.rs（StopToken::stop）】
-2. budget：新文件 +280；修改 +1600/-100（实测 +1521/-44：runner 全链 + 5 工具实现
-   + 白名单闸 + 包装渲染 + 收尾解析，行数按 fmt 后实测校正）
-   【校正 ×1：补 app_state/bot_slash】【校正 ×2：实测行数】
+2. budget：新文件 +280；修改 +1700/-100（OCR r1 采纳后实测 +1621/-45：事务化/
+   竞态闸/trace_kv 补全/watcher 只读化/filename 校验等修复行数计入）
+   【校正 ×1：补 app_state/bot_slash】【校正 ×2：实测行数】【校正 ×3：OCR r1 采纳】
 3. fix 字段：runner 白名单/递归闸集中在 tool_guard+dispatch+registry 三点；其余各自闭环
 
 ## 机器可读（脚本读取，勿改格式）
@@ -90,7 +90,7 @@ SSRF 复核补测试。前置：RE1-MP02-LAND 已落地（run_model_loop 现签�
     "src-tauri/src/bot_slash.rs",
     "docs/rust-bot-architecture.md"
   ],
-  "max_lines_added": 1600,
+  "max_lines_added": 1700,
   "max_lines_removed": 100,
   "max_new_files_lines": 320,
   "findings": [
