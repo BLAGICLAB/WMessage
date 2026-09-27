@@ -64,7 +64,9 @@ SSRF 复核补测试。前置：RE1-MP02-LAND 已落地（run_model_loop 现签�
 2. budget：新文件 +280；修改 +1700/-100（OCR r1 采纳后实测 +1621/-45：事务化/
    竞态闸/trace_kv 补全/watcher 只读化/filename 校验等修复行数计入）
    【校正 ×1：补 app_state/bot_slash】【校正 ×2：实测行数】【校正 ×3：OCR r1 采纳】
-   【校正 ×4：OCR r2 采纳后实测 +1736/-45】
+   【校正 ×4：OCR r2 采纳后实测 +1736/-45】【校正 ×5：OCR r3 high 全采纳后实测
+   +19xx/-45（RAII 守卫/锁中毒 into_inner/包装历史合一/content 上限/filename 加固/
+   watcher AbortOnDrop）】
 3. fix 字段：runner 白名单/递归闸集中在 tool_guard+dispatch+registry 三点；其余各自闭环
 
 ## 机器可读（脚本读取，勿改格式）
@@ -91,7 +93,7 @@ SSRF 复核补测试。前置：RE1-MP02-LAND 已落地（run_model_loop 现签�
     "src-tauri/src/bot_slash.rs",
     "docs/rust-bot-architecture.md"
   ],
-  "max_lines_added": 1800,
+  "max_lines_added": 2000,
   "max_lines_removed": 100,
   "max_new_files_lines": 320,
   "findings": [
