@@ -67,7 +67,10 @@ export function ChatPanel({
   const [slashIdx, setSlashIdx] = useState(0);
   /** 斜杠命令 picker 被 Esc 关掉后，输入未变化前不再自动浮出 */
   const [slashDismissed, setSlashDismissed] = useState(false);
-  const [busy, setBusy] = useState(false);
+  /** PAR-1 并行回复：每个会话独立在途。inflightSids 驱动 UI（按视图会话判定），
+   *  inflightRef 供事件监听同步判断（⚠️ 必须与 setInflightSids 同步更新，
+   *  useEffect 镜像在同一帧内连按会有并发窗口） */
+  const [inflightSids, setInflightSids] = useState<ReadonlySet<string>>(new Set());
   /** 逐条复制按钮的反馈：记录当前“已复制”的消息下标 */
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
   /** 已添加的附件文件路径（➕ 或拖入，随消息一起发送） */
@@ -124,45 +127,48 @@ export function ChatPanel({
       window.removeEventListener("resize", update);
     };
   }, []);
-  /** 流式过程中的装饰（思考/工具行/Skill 失败），bot_chat 完成后并入最终消息 */
-  const streamingMeta = useRef<{
-    thinking?: string;
-    tools?: ToolCall[];
-    skillFailure?: SkillFailure;
-  }>({});
-  /** busy 镜像：供事件监听里同步判断。
-   *  ⚠️ 必须与 setBusy 同步更新（useEffect 在重渲染后才跑，同一帧内连按会有并发窗口） */
-  const busyRef = useRef(false);
-  useEffect(() => {
-    busyRef.current = busy;
-  }, [busy]);
-  /** 任务执行聊天化：busy 时到达的执行会话跳转排队（只留最新一个）；
-   *  执行本身不排队——后端已在新会话开跑，这里只排「自动跳转查看」 */
+  /** PAR-1：每会话流式元数据（thinking/tools/skillFailure 权威副本，按 sid 隔离；
+   *  并行回复各自累积互不串台，收尾并入最终消息后删除条目） */
+  const streamingMetaMapRef = useRef<
+    Map<string, { thinking?: string; tools?: ToolCall[]; skillFailure?: SkillFailure }>
+  >(new Map());
+  const metaFor = (sid: string | null) => {
+    if (!sid) return undefined;
+    let m = streamingMetaMapRef.current.get(sid);
+    if (!m) {
+      m = {};
+      streamingMetaMapRef.current.set(sid, m);
+    }
+    return m;
+  };
+  /** 在途会话集合（同步镜像，见 inflightSids 注释） */
+  const inflightRef = useRef<Set<string>>(new Set());
+  /** 任务执行聊天化：围观流式回复中的会话时，到达的执行会话跳转排队（只留最新一个）；
+   *  执行本身不排队——后端已在新会话开跑 */
   const pendingExecRef = useRef<{ sid: string; title: string } | null>(null);
   /** 任务 id → 执行会话 id（chat-open-session 事件建立；invoke 收尾时按它刷新历史） */
   const execSessionByTaskRef = useRef<Map<string, string>>(new Map());
-  /** 当前在回复的会话（SWITCH-1）：busy 期可自由切换/新建对话，
-   *  流式元数据按它累加（视图无关）、/stop 按它定向、删除它被拦 */
-  const busySidRef = useRef<string | null>(null);
-  const enterBusy = (sid?: string) => {
-    busyRef.current = true;
-    busySidRef.current = sid ?? null;
-    setBusy(true);
+  const enterChat = (sid: string) => {
+    inflightRef.current.add(sid);
+    setInflightSids(new Set(inflightRef.current));
   };
-  const exitBusy = () => {
-    busyRef.current = false;
-    busySidRef.current = null;
-    setBusy(false);
-    // 忙碌期排队的执行会话跳转：忙完提示「已执行，点击查看」（不打断刚结束的对话）
-    const pending = pendingExecRef.current;
-    if (pending) {
-      pendingExecRef.current = null;
-      addHint(
-        `${pending.title || "任务"}已在新会话执行，点击查看执行对话`,
-        pending.sid
-      );
+  const exitChat = (sid: string) => {
+    inflightRef.current.delete(sid);
+    setInflightSids(new Set(inflightRef.current));
+    // 全部会话回复结束 → 兑现排队中的执行会话跳转提示（不打断刚结束的对话）
+    if (inflightRef.current.size === 0) {
+      const pending = pendingExecRef.current;
+      if (pending) {
+        pendingExecRef.current = null;
+        addHint(
+          `${pending.title || "任务"}已在新会话执行，点击查看执行对话`,
+          pending.sid
+        );
+      }
     }
   };
+  /** 视图会话是否有在途回复（驱动停止键/placeholder/禁用态） */
+  const viewedBusy = sessionId !== null && inflightSids.has(sessionId);
   /** 本地提示消息：只显示不持久化（不污染上下文） */
   const addHint = (content: string, actionSessionId?: string) => {
     setMessages((prev) => [...prev, { role: "assistant", content, actionSessionId }]);
@@ -337,7 +343,7 @@ export function ChatPanel({
   // 观感不变而 CPU 更稳。
   // **只延迟不丢**：同一窗口内的片段按到达顺序拼接后一次性写入，不会少字/错序；
   // 另有两层兜底——正文最终内容由 bot_chat 返回值 full.text 在收尾时整体覆盖，
-  // thinking 的权威副本是 streamingMeta.current（事件到达即累加，不受缓冲影响）。
+  // thinking 的权威副本是各会话的 streamingMetaMapRef 条目（事件到达即累加，不受缓冲影响）。
   useEffect(() => {
     const pending = { text: "", think: false };
     let frame: number | null = null;
@@ -356,7 +362,9 @@ export function ChatPanel({
         copy[copy.length - 1] = {
           ...last,
           content: add ? last.content + add : last.content,
-          thinking: thinkTouched ? streamingMeta.current.thinking : last.thinking,
+          thinking: thinkTouched
+            ? streamingMetaMapRef.current.get(sessionIdRef.current ?? "")?.thinking
+            : last.thinking,
         };
         return copy;
       });
@@ -384,8 +392,9 @@ export function ChatPanel({
         if (!t) return;
         // 权威副本按「回复所属会话」累加（SWITCH-1：不随视图切换丢失），
         // 仅展示走同帧合并且只进当前视图
-        if (sid === busySidRef.current) {
-          streamingMeta.current.thinking = (streamingMeta.current.thinking ?? "") + t;
+        if ((sid !== null && inflightRef.current.has(sid)) || sid === sessionIdRef.current) {
+          const m = metaFor(sid);
+          if (m) m.thinking = (m.thinking ?? "") + t;
         }
         if (sid !== sessionIdRef.current) return;
         pending.think = true;
@@ -397,12 +406,16 @@ export function ChatPanel({
       (e) => {
         const sid = e.payload?.sessionId ?? null;
         // 元数据按回复所属会话累加（SWITCH-1）；视觉更新仅当前视图
-        if (sid !== sessionIdRef.current && sid !== busySidRef.current) return;
+        if (sid === null) return;
+        if (sid === null) return;
+      if (sid !== sessionIdRef.current && !inflightRef.current.has(sid)) return;
         const { id, name } = e.payload ?? {};
         if (!id) return;
-        const tools = [...(streamingMeta.current.tools ?? [])];
+        const m = metaFor(sid);
+        if (!m) return;
+        const tools = [...(m.tools ?? [])];
         if (!tools.some((x) => x.id === id)) tools.push({ id, name: name ?? "" });
-        streamingMeta.current.tools = tools;
+        m.tools = tools;
         if (sid !== sessionIdRef.current) return;
         setMessages((prev) => {
           const last = prev[prev.length - 1];
@@ -417,13 +430,17 @@ export function ChatPanel({
       "bot-tool-name",
       (e) => {
         const sid = e.payload?.sessionId ?? null;
-        if (sid !== sessionIdRef.current && sid !== busySidRef.current) return;
+        if (sid === null) return;
+        if (sid === null) return;
+      if (sid !== sessionIdRef.current && !inflightRef.current.has(sid)) return;
         const { id, name } = e.payload ?? {};
         if (!id || !name) return;
-        const tools = (streamingMeta.current.tools ?? []).map((x) =>
+        const m = metaFor(sid);
+        if (!m) return;
+        const tools = (m.tools ?? []).map((x) =>
           x.id === id ? { ...x, name } : x
         );
-        streamingMeta.current.tools = tools;
+        m.tools = tools;
         if (sid !== sessionIdRef.current) return;
         setMessages((prev) => {
           const last = prev[prev.length - 1];
@@ -441,13 +458,16 @@ export function ChatPanel({
       sessionId?: string | null;
     }>("bot-tool-done", (e) => {
       const sid = e.payload?.sessionId ?? null;
-      if (sid !== sessionIdRef.current && sid !== busySidRef.current) return;
+      if (sid === null) return;
+      if (sid !== sessionIdRef.current && !inflightRef.current.has(sid)) return;
       const { id, name, args } = e.payload ?? {};
       if (!id) return;
-      const tools = (streamingMeta.current.tools ?? []).map((x) =>
+      const m = metaFor(sid);
+      if (!m) return;
+      const tools = (m.tools ?? []).map((x) =>
         x.id === id ? { ...x, name: name ?? x.name, args, done: true } : x
       );
-      streamingMeta.current.tools = tools;
+      m.tools = tools;
       if (sid !== sessionIdRef.current) return;
       setMessages((prev) => {
         const last = prev[prev.length - 1];
@@ -469,7 +489,8 @@ export function ChatPanel({
       sessionId?: string | null;
     }>("bot-skill-failed", (e) => {
       const sid = e.payload?.sessionId ?? null;
-      if (sid !== sessionIdRef.current && sid !== busySidRef.current) return;
+      if (sid === null) return;
+      if (sid !== sessionIdRef.current && !inflightRef.current.has(sid)) return;
       const p = e.payload ?? {};
       if (!p.skillName) return;
       const failure: SkillFailure = {
@@ -478,7 +499,9 @@ export function ChatPanel({
         completedSummary: p.completedSummary ?? "(无已完成步骤)",
         rollbackAttempted: !!p.rollbackAttempted,
       };
-      streamingMeta.current.skillFailure = failure;
+      const m = metaFor(sid);
+      if (!m) return;
+      m.skillFailure = failure;
       if (sid !== sessionIdRef.current) return;
       setMessages((prev) => {
         const last = prev[prev.length - 1];
@@ -509,7 +532,7 @@ export function ChatPanel({
   const openExecSession = async (sid: string) => {
     setSessionMenuOpen(false);
     setSessionId(sid);
-    streamingMeta.current = {};
+    streamingMetaMapRef.current.set(sid, {});
     // 围观守卫（拍板 #22=B）：记录当前围观的执行会话——执行期间拦 Send
     //（防用户输入与执行响应交错 + 被收尾 history_load 冲掉）；切换会话自由
     execWatchRef.current = sid;
@@ -535,7 +558,7 @@ export function ChatPanel({
   // 任务卡交给机器人执行（execute-task 事件：主窗口/挂件卡片 🤖 按钮触发）
   // 任务执行聊天化：不再在当前会话执行——后端建新会话跑（run_task_in_chat），
   // 前端收 chat-open-session 切过去围观。执行本身不吃 busy 锁（会话隔离天然并发），
-  // 只有「自动跳转查看」在 busy 时排队（exitBusy 时 hint 提示）。
+  // 只有「自动跳转查看」在围观流式回复时排队（exitChat 清空在途时 hint 提示）。
   useEffect(() => {
     // 去重表在模块级 execTaskDedup（泄漏的监听器实例间共享才有效，见文件头注释）
     const unExec = listen<{ id?: string; title?: string }>("execute-task", (e) => {
@@ -588,7 +611,7 @@ export function ChatPanel({
 
   // chat-open-session：后端新建执行会话后广播——
   // 非 busy 直接切过去围观（流式增量按 sessionId 过滤自动落到新会话的占位气泡）；
-  // busy 不打断当前对话，跳转排队，当前轮结束后 exitBusy 弹「点击查看」提示。
+  // 围观流式回复中不打断，跳转排队，全部在途回复结束后弹「点击查看」提示。
   useEffect(() => {
     const un = listen<{
       sessionId?: string;
@@ -605,7 +628,7 @@ export function ChatPanel({
           ? prev
           : [{ id: sid, title: title ?? "执行" }, ...prev]
       );
-      if (busyRef.current) {
+      if (inflightRef.current.has(sessionIdRef.current ?? "")) {
         pendingExecRef.current = { sid, title: title ?? "" };
         return;
       }
@@ -655,7 +678,7 @@ export function ChatPanel({
   }, [messages]);
 
   const switchSession = async (sid: string) => {
-    // SWITCH-1：busy 期允许实时切换——回复仍按发起会话落库/流式路由（busySidRef），
+    // SWITCH-1/PAR-1：busy 期允许实时切换——回复仍按发起会话落库/流式路由（inflightRef），
     // 切走不影响它在后台完成
     if (sid === sessionId) {
       setSessionMenuOpen(false);
@@ -677,7 +700,7 @@ export function ChatPanel({
       let msgs = rowsToMsgs(rows);
       // 切回正在回复的会话：补一个流式占位气泡承接后续增量（已错过的增量段
       // 由收尾 full.text 整体校正，不会串进其他会话）
-      if (busyRef.current && sid === busySidRef.current) {
+      if (inflightRef.current.has(sid)) {
         msgs = [...msgs, { role: "assistant", content: "", streaming: true }];
       }
       setMessages(msgs);
@@ -702,7 +725,7 @@ export function ChatPanel({
 
   const deleteSession = async (sid: string) => {
     // SWITCH-1：只拦「删除正在回复的会话」（回复落库目标不能被删）；其他会话随便删
-    if (busyRef.current && sid === busySidRef.current) {
+    if (inflightRef.current.has(sid)) {
       addHint("⏳ 该对话正在回复中，完成后才能删除");
       return;
     }
@@ -744,18 +767,18 @@ export function ChatPanel({
    *  收尾时校验会话未切换才更新 UI；持久化始终按 sid 写（写的是正确会话） */
   const runChat = async (history: Msg[], renameText?: string) => {
     const sid = sessionId;
-    if (!sid) return;
-    enterBusy(sid);
+    if (!sid || inflightRef.current.has(sid)) return;
+    enterChat(sid);
     setMessages([...history, { role: "assistant", content: "", streaming: true }]);
-    streamingMeta.current = {};
+    streamingMetaMapRef.current.set(sid, {});
     try {
       const full = await invoke<{ text: string; taskRefs?: TaskRef[] }>(
         "bot_chat",
         { messages: history.map((m) => ({ role: m.role, content: m.content })), sessionId: sid }
       );
       // 把流式过程中累积的思考/工具行并入最终消息
-      const meta = streamingMeta.current;
-      streamingMeta.current = {};
+      const meta = streamingMetaMapRef.current.get(sid) ?? {};
+      streamingMetaMapRef.current.delete(sid);
       const done: Msg[] = [
         ...history,
         {
@@ -795,7 +818,7 @@ export function ChatPanel({
       // 流式错误已经写进消息气泡了，不重复弹 alert
       handleCommandError(e, "bot_chat", { silent: true });
     } finally {
-      exitBusy();
+      exitChat(sid);
     }
   };
 
@@ -804,13 +827,13 @@ export function ChatPanel({
     const cmd = raw.split(/\s+/)[0].toLowerCase();
     if (cmd === "/stop") {
       setInput("");
-      if (busyRef.current) {
-        // /stop 按会话停止——SWITCH-1：busy 期可切换视图，停「正在回复的那个」
-        invoke("bot_stop", { sessionId: busySidRef.current ?? sessionIdRef.current }).catch((e) =>
+      // PAR-1：/stop 停「当前视图会话」的在途回复（并行回复按会话隔离）
+      if (inflightRef.current.has(sessionIdRef.current ?? "")) {
+        invoke("bot_stop", { sessionId: sessionIdRef.current }).catch((e) =>
           handleCommandError(e, "bot_stop", { silent: true })
         );
       } else {
-        addHint("当前没有进行中的回复");
+        addHint("当前对话没有进行中的回复");
       }
       return true;
     }
@@ -829,14 +852,14 @@ export function ChatPanel({
     }
     if (cmd === "/compact") {
       setInput("");
-      if (busyRef.current || !sessionId) return true;
+      if (inflightRef.current.has(sessionIdRef.current ?? "") || !sessionId) return true;
       const sid = sessionId;
       const history = messages.filter((m) => !m.streaming && m.content.trim());
       if (history.length < 2) {
         addHint("消息太少，暂无需压缩");
         return true;
       }
-      enterBusy();
+      enterChat(sid);
       // 进度占位：压缩请求期间有可见反馈（否则界面像卡死）
       if (sessionIdRef.current === sid) {
         setMessages((prev) => [
@@ -863,13 +886,13 @@ export function ChatPanel({
         if (sessionIdRef.current === sid) setMessages(failed);
         handleCommandError(e, "bot_compact", { silent: true });
       } finally {
-        exitBusy();
+        exitChat(sid);
       }
       return true;
     }
     if (cmd === "/retry") {
       setInput("");
-      if (busyRef.current || !sessionId) return true;
+      if (inflightRef.current.has(sessionIdRef.current ?? "") || !sessionId) return true;
       const msgs = messages.filter((m) => !m.streaming);
       // 找到最后一条用户消息，砍掉它之后的所有内容，重新生成回复
       let lastUserIdx = -1;
@@ -903,12 +926,12 @@ export function ChatPanel({
       if (await runSlashCommand(text)) return;
     }
     if (!text && !files.length) return;
-    // SWITCH-1：busy 期可自由切换/新建对话；交互式发送保持单飞行（防串台），给指引
-    if (busyRef.current) {
-      addHint("⏳ 上一条回复还在进行中：可自由切换/新建对话，发送请等它完成或 /stop");
+    // PAR-1：并行回复按会话隔离——本会话在途时拦重复发送（其他会话可自由发送）
+    if (sessionId !== null && inflightRef.current.has(sessionId)) {
+      addHint("⏳ 本对话正在回复中：可切换到其他对话发送，或输入 /stop 停止本条");
       return;
     }
-    // busyRef 同步检查：state 重渲染前连续两次 Enter 也能拦下重复发送
+    // 同步检查：state 重渲染前连续两次 Enter 也能拦下重复发送
     if (!sessionId) return;
     setInput("");
     // 已选任务以 [已选任务] 引用块附在消息后，模型按 taskId 精确操作
@@ -1008,7 +1031,7 @@ export function ChatPanel({
 
   // 移除一条回复：不满意时删掉，不再作为上下文发给模型（全量持久化）
   const removeMessage = (idx: number) => {
-    if (busyRef.current || !sessionId) return;
+    if (!sessionId || inflightRef.current.has(sessionId)) return;
     const next = messages.filter((_, j) => j !== idx);
     setMessages(next);
     persistHistory(sessionId, next);
@@ -1360,7 +1383,7 @@ export function ChatPanel({
                         className="nm-btn inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t4)] hover:text-[var(--danger)]"
                         title="移除这条回复（不满意时删除，不再作为上下文）"
                         onClick={() => removeMessage(i)}
-                        disabled={busy}
+                        disabled={viewedBusy}
                       >
                         🗑 移除
                       </button>
@@ -1474,7 +1497,7 @@ export function ChatPanel({
           className="nm-btn shrink-0 px-2.5 py-1.5 text-xs text-[var(--t3)]"
           title="添加文件或图片，和消息一起发送（如：添加 Word 后输入「润色」；图片发给机器人识别：png / jpg / jpeg / webp / gif / bmp，最大 3MB/张、最多 4 张/消息）"
           onClick={pickFiles}
-          disabled={busy}
+          disabled={viewedBusy}
         >
           ➕
         </button>
@@ -1517,7 +1540,7 @@ export function ChatPanel({
             if (e.key === "Enter" && !e.nativeEvent.isComposing) send();
           }}
           placeholder={
-            busy
+            viewedBusy
               ? "回复中…（点右侧 ■ 或输入 /stop 可停止）"
               : files.length
                 ? "输入指令，如：润色这个文件"
@@ -1529,7 +1552,7 @@ export function ChatPanel({
         />
         {/* 发送/停止一体键：回复中变为红框正方形停止键，
             点击即 bot_stop 中断本次运行；中断/回答结束自动变回发送键 */}
-        {busy ? (
+        {viewedBusy ? (
           <button
             className="nm-btn shrink-0 px-3 py-1.5 text-xs text-[var(--danger)] flex items-center"
             title="停止当前回复"

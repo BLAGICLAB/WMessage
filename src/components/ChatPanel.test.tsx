@@ -170,7 +170,7 @@ describe("ChatPanel", () => {
     expect(await screen.findByText("机器人回复")).toBeInTheDocument();
   });
 
-  it("输入 /stop 后按发送：busy=false → 提示「当前没有进行中的回复」", async () => {
+  it("输入 /stop 后按发送：本会话无在途回复 → 提示「当前对话没有进行中的回复」", async () => {
     const user = userEvent.setup();
     render(<ChatPanel {...defaultProps} />);
     await waitFor(() => {
@@ -181,9 +181,9 @@ describe("ChatPanel", () => {
     await user.type(input, "/stop ");
     // 点击「发送」按钮触发 send → runSlashCommand → /stop
     await user.click(screen.getByText("发送"));
-    // 当前没有进行中的回复 → addHint："当前没有进行中的回复"，bot_stop 不调用
+    // 本会话无在途回复 → addHint："当前对话没有进行中的回复"，bot_stop 不调用
     await waitFor(() => {
-      expect(screen.getByText(/当前没有进行中的回复/)).toBeInTheDocument();
+      expect(screen.getByText(/当前对话没有进行中的回复/)).toBeInTheDocument();
     });
     expect(mocks.invokeMock).not.toHaveBeenCalledWith("bot_stop");
   });
@@ -650,5 +650,84 @@ describe("ChatPanel", () => {
     expect(await screen.findByText(/deepseek-chat/)).toBeInTheDocument();
     // 广播给另一窗口（主窗口 ↔ 挂件同步）
     expect(mocks.emitMock).toHaveBeenCalledWith("bot-config-changed", null);
+  });
+
+  // ── PAR-1：并行回复（每会话独立在途，互不串台）──
+
+  it("S1 回复中切到 S2 发消息——两会话并行回复、各自落库", async () => {
+    const user = userEvent.setup();
+    let release1!: (v: { text: string; taskRefs: [] }) => void;
+    let release2!: (v: { text: string; taskRefs: [] }) => void;
+    const gate1 = new Promise<{ text: string; taskRefs: [] }>((r) => {
+      release1 = r;
+    });
+    const gate2 = new Promise<{ text: string; taskRefs: [] }>((r) => {
+      release2 = r;
+    });
+    const chatCalls: Array<Record<string, unknown> | undefined> = [];
+    const saves: Array<Record<string, unknown> | undefined> = [];
+    const prevInvokeImpl = mocks.invokeMock.getMockImplementation();
+    mocks.invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
+      switch (cmd) {
+        case "bot_sessions_load":
+          return [
+            { id: "s1", title: "默认会话" },
+            { id: "s2", title: "另一个" },
+          ];
+        case "bot_chat":
+          chatCalls.push(args);
+          return chatCalls.length === 1 ? gate1 : gate2;
+        case "bot_history_load":
+          return [];
+        case "bot_history_save":
+          saves.push(args);
+          return null;
+        default:
+          return defaultInvoke(cmd);
+      }
+    });
+    try {
+      render(<ChatPanel {...defaultProps} />);
+      await screen.findByText("🤖 默认会话");
+      // S1 发送 → 挂起（在途）
+      const input = screen.getByPlaceholderText(/和机器人说点什么/);
+      await user.type(input, "问题一");
+      await user.keyboard("{Enter}");
+      await waitFor(() => {
+        expect(chatCalls.length).toBe(1);
+        expect(chatCalls[0]?.sessionId).toBe("s1");
+      });
+      // 切到 S2 → 发送 → 第二个 bot_chat（并行，不拦）
+      await user.click(screen.getByTitle("切换会话"));
+      await user.click(await screen.findByText("另一个"));
+      const input2 = screen.getByPlaceholderText(/和机器人说点什么/);
+      await user.type(input2, "问题二");
+      await user.keyboard("{Enter}");
+      await waitFor(() => {
+        expect(chatCalls.length).toBe(2);
+        expect(chatCalls[1]?.sessionId).toBe("s2");
+      });
+      // 各自落库不串台：S1 的回复不进 S2 的历史
+      await act(async () => {
+        release1({ text: "答一", taskRefs: [] });
+      });
+      await waitFor(() => {
+        expect(saves.some((sv) => sv?.sessionId === "s1")).toBe(true);
+      });
+      await act(async () => {
+        release2({ text: "答二", taskRefs: [] });
+      });
+      await waitFor(() => {
+        expect(saves.some((sv) => sv?.sessionId === "s2")).toBe(true);
+      });
+      const s2Save = saves.find((sv) => sv?.sessionId === "s2") as {
+        messages: { role: string; content: string }[];
+      };
+      expect(s2Save.messages.some((m) => m.content.includes("问题二"))).toBe(true);
+      expect(s2Save.messages.some((m) => m.content.includes("答二"))).toBe(true);
+      expect(s2Save.messages.some((m) => m.content.includes("答一"))).toBe(false);
+    } finally {
+      mocks.invokeMock.mockImplementation(prevInvokeImpl!);
+    }
   });
 });
