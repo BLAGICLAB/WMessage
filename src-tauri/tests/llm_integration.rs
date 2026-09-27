@@ -545,6 +545,8 @@ fn core_http(server: &MockLlmServer) -> LlmHttp {
         model: "mock-model".into(),
         provider: ApiProvider::Openai,
         max_tokens: DEFAULT_MAX_TOKENS,
+        // RE-1：mock 测试不发推理字段（None = 不注入，既有断言不受影响）
+        reasoning: wmessage_lib::bot::reasoning::ReasoningWire::None,
     }
 }
 
@@ -643,6 +645,98 @@ async fn core_text_reply_happy_path() {
     assert!(
         events.contains(&"llm.request") && events.contains(&"llm.response"),
         "应记 llm.request/response 审计：{events:?}"
+    );
+}
+
+// RE-1（推理强度）：LlmHttp.reasoning 解析结果必须真的落进请求体——
+// OpenAI 兼容分支注入 reasoning_effort 字段（GLM-5.3 等映射出 low/high/max）。
+#[tokio::test]
+async fn core_injects_reasoning_effort_into_openai_body() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::TextReply("收到".into()));
+    let h = CoreHarness::new();
+    let mut http = core_http(&server);
+    http.model = "glm-5.3-flash".into();
+    http.reasoning = wmessage_lib::bot::reasoning::ReasoningWire::OpenAiEffort("high".into());
+
+    let (text, _) = run_model_loop_core(
+        &http,
+        user_msgs(),
+        5,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec_never,
+        noop_replan,
+    )
+    .await
+    .expect("纯文本回复应 Ok");
+    assert_eq!(text, "收到");
+    let bodies = server.request_bodies();
+    assert_eq!(bodies.len(), 1);
+    assert!(
+        bodies[0].contains(r#""reasoning_effort":"high""#),
+        "OpenAI 分支应注入 reasoning_effort：{}",
+        bodies[0]
+    );
+}
+
+// RE-1：Anthropic 分支注入 thinking 块（type=enabled + budget_tokens）。
+#[tokio::test]
+async fn core_injects_anthropic_thinking_block() {
+    let server = MockLlmServer::start();
+    // Anthropic 分支的 mock 响应必须用 AnthropicTextReply（Anthropic SSE 形状）
+    server.push_behavior(MockBehavior::AnthropicTextReply("好的".into()));
+    let h = CoreHarness::new();
+    let mut http = core_http_anthropic(&server);
+    http.reasoning = wmessage_lib::bot::reasoning::ReasoningWire::AnthropicBudget(4_096);
+
+    run_model_loop_core(
+        &http,
+        user_msgs(),
+        5,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec_never,
+        noop_replan,
+    )
+    .await
+    .expect("纯文本回复应 Ok");
+    let bodies = server.request_bodies();
+    assert_eq!(bodies.len(), 1);
+    assert!(
+        bodies[0].contains(r#""budget_tokens":4096"#) && bodies[0].contains(r#""type":"enabled""#),
+        "Anthropic 分支应注入 thinking 块：{}",
+        bodies[0]
+    );
+}
+
+// RE-1：None 档不发任何推理字段（旧行为零影响）。
+#[tokio::test]
+async fn core_reasoning_none_keeps_body_clean() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::TextReply("ok".into()));
+    let h = CoreHarness::new();
+    let http = core_http(&server); // reasoning: None（测试构造默认）
+
+    run_model_loop_core(
+        &http,
+        user_msgs(),
+        5,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec_never,
+        noop_replan,
+    )
+    .await
+    .expect("纯文本回复应 Ok");
+    let bodies = server.request_bodies();
+    assert!(
+        !bodies[0].contains("reasoning_effort") && !bodies[0].contains("budget_tokens"),
+        "None 档不应出现推理字段：{}",
+        bodies[0]
     );
 }
 

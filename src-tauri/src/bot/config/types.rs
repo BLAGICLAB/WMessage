@@ -133,6 +133,13 @@ pub struct BotConfig {
     /// OpenAI 兼容模式不发送该字段（多数兼容网关不认识）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
+    /// 推理强度后台默认（可选）："off" / "low" / "medium" / "high"。
+    /// None = "medium"（老板拍板默认中）。这是**抽象档位**，发送前按具体模型族
+    /// 映射到各 provider 的线上参数（glm 的 reasoning_effort/thinking、
+    /// OpenAI 的 reasoning_effort、Anthropic 的 thinking.budget_tokens，
+    /// 映射表见 bot/reasoning.rs）。挂件聊天可按会话覆盖此值（不回写）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
     /// 每协议下的大模型列表：双协议各自独立维护一个
     /// ModelEntry 列表。设置页协议切换时整体切换显示；新增的 ModelEntry 落在当前
     /// 协议下。None = 老配置未迁移过来（load_config 时会从 base_url/model 兜底迁移）；
@@ -207,6 +214,7 @@ impl Default for BotConfig {
             brave_key: None,                  // 未配置 = 不走 Brave
             brave_enabled: None,              // 未显式设置 = 配了 key 就自动启用（同 Tavily）
             python_timeout_secs: None,        // 未配置 = 60s 默认
+            reasoning_effort: None,           // 未配置 = medium 默认（RE-1，resolve 兜底）
             perm_mode: None,                  // 未配置 = ask（弹授权）
             api_provider: None,               // 未配置 = openai（旧行为）
             max_tokens: None,                 // 未配置 = 8192 默认（仅 Anthropic 模式用）
@@ -300,6 +308,9 @@ pub struct BotConfigView {
     pub api_provider: Option<String>,
     /// max_tokens 原样透传（None = 8192 默认；仅 Anthropic 模式用，后端钳 256..=200000）
     pub max_tokens: Option<u32>,
+    /// 推理强度后台默认原样透传（None = "medium"；抽象档位 off/low/medium/high，
+    /// 线上参数映射在后端 bot/reasoning.rs，前端只存档位）
+    pub reasoning_effort: Option<String>,
     /// 每协议下的模型列表：None = 老配置未迁移（前端显示空列表让用户点「添加大模型」）；
     /// 已有数据则透传。
     #[serde(skip_serializing_if = "Option::is_none")]

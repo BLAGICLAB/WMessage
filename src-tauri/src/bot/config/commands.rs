@@ -84,6 +84,7 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
         perm_mode: cfg.perm_mode,
         api_provider: cfg.api_provider,
         max_tokens: cfg.max_tokens,
+        reasoning_effort: cfg.reasoning_effort,
         models_by_provider: cfg.models_by_provider,
         active_model_id: cfg.active_model_id,
         ui_font_size: cfg.ui_font_size,
@@ -132,25 +133,32 @@ pub fn bot_set_config(
 
 // ───────────────────────── bot_set_active_model ─────────────────────────
 
-/// 纯逻辑（单测锚点）：校验 model_id 存在于**当前协议**的模型列表并置为 active。
-/// 列表为空 / id 不在当前协议列表（已删除或属另一协议）→ InvalidArgument 响亮失败，
+/// 纯逻辑（单测锚点）：校验 model_id 存在于**任一协议**的模型列表并置为 active。
+/// 聊天区 🧠 下拉双协议同列展示（MP-02）：命中**另一协议**的模型 → 连协议一起切
+/// （api_provider + 该协议的 active_model_id），derive 老字段自然跟随新协议。
+/// 列表为空 / id 两边都不在（已删除）→ InvalidArgument 响亮失败，
 /// 不静默回退到 first——用户点的是哪一个就该切哪一个。
 pub fn apply_active_model_switch(cfg: &mut BotConfig, model_id: &str) -> CommandResult<()> {
-    let provider = ApiProvider::from_cfg(cfg.api_provider.as_deref());
     let mbp = cfg
         .models_by_provider
         .get_or_insert_with(ModelsByProvider::default);
-    let hit = match provider {
-        ApiProvider::Openai => mbp.openai.iter().any(|e| e.id == model_id),
-        ApiProvider::Anthropic => mbp.anthropic.iter().any(|e| e.id == model_id),
-    };
-    if !hit {
+    let in_openai = mbp.openai.iter().any(|e| e.id == model_id);
+    let in_anthropic = mbp.anthropic.iter().any(|e| e.id == model_id);
+    if !in_openai && !in_anthropic {
         return Err(CommandError::InvalidArgument {
             field: "modelId".into(),
             value: model_id.into(),
-            reason: "模型 id 不在当前协议的模型列表中".into(),
+            reason: "模型 id 不在任一协议的模型列表中".into(),
         });
     }
+    // 跨协议命中 → 协议跟着模型走（id 是前端 UUID，两边同时命中理论不可达；
+    // 真发生则保持当前协议不动，防御处理）
+    if in_anthropic && !in_openai {
+        cfg.api_provider = Some(ApiProvider::Anthropic.as_str().into());
+    } else if in_openai && !in_anthropic {
+        cfg.api_provider = Some(ApiProvider::Openai.as_str().into());
+    }
+    let provider = ApiProvider::from_cfg(cfg.api_provider.as_deref());
     let active = cfg
         .active_model_id
         .get_or_insert_with(ActiveModelId::default);
@@ -162,7 +170,8 @@ pub fn apply_active_model_switch(cfg: &mut BotConfig, model_id: &str) -> Command
 }
 
 /// 窄口径切换 active 模型（聊天区/挂件 🧠 下拉专用）：读盘上最新配置（单一事实源），
-/// 只动当前协议的 active_model_id，派生 base_url/model 老字段后落盘。
+/// 只动目标协议的 active_model_id（MP-02 双协议同列：跨协议选中时连 api_provider
+/// 一起切），派生 base_url/model 老字段后落盘。
 /// **不做整份配置写回**——避免前端旧快照覆盖设置页并发修改的字段（白名单/开关等）。
 /// key 相关路径完全不触碰。返回切换后的 BotConfigView，前端免二次读取。
 #[tauri::command]

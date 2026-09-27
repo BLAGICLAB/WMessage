@@ -180,7 +180,8 @@ describe("ChatPanel", () => {
     // 直接以带空格的形式输入（picker 不会因含空格弹出，send 路径走 runSlashCommand）
     await user.type(input, "/stop ");
     // 点击「发送」按钮触发 send → runSlashCommand → /stop
-    await user.click(screen.getByText("发送"));
+    // （UI-1 圆形发送键：图标按钮以 aria-label 定位）
+    await user.click(screen.getByRole("button", { name: "发送" }));
     // 本会话无在途回复 → addHint："当前对话没有进行中的回复"，bot_stop 不调用
     await waitFor(() => {
       expect(screen.getByText(/当前对话没有进行中的回复/)).toBeInTheDocument();
@@ -205,12 +206,103 @@ describe("ChatPanel", () => {
     const input = screen.getByPlaceholderText(/和机器人说点什么/);
     await user.type(input, "你好");
     await user.keyboard("{Enter}");
-    // busy=true：发送键消失，红框正方形停止键出现
+    // busy=true：发送键消失，红描边圆形停止键出现
     const stopBtn = await screen.findByTitle("停止当前回复");
-    expect(screen.queryByText("发送")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "发送" })).not.toBeInTheDocument();
     await user.click(stopBtn);
     // /stop 按会话停止——携带当前会话 id
     expect(mocks.invokeMock).toHaveBeenCalledWith("bot_stop", { sessionId: "s1" });
+  });
+
+  it("推理强度：默认跟随后台（中·默认）随发送传入；会话覆盖只影响本会话且不回写（RE-1）", async () => {
+    const user = userEvent.setup();
+    // 上一个用例把 bot_chat 换成挂起 Promise，这里恢复默认实现（见 defaultInvoke 注释）
+    mocks.invokeMock.mockImplementation(defaultInvoke);
+    render(<ChatPanel {...defaultProps} />);
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith("bot_sessions_load");
+    });
+    // bot_get_config 未带 reasoningEffort → 基线 medium；按钮显示「中·默认」
+    expect(await screen.findByText(/中·默认/)).toBeInTheDocument();
+
+    // 发送第一条：生效档位 medium 随 bot_chat 传出；等回复落盘（busy 清除）
+    const input = screen.getByPlaceholderText(/和机器人说点什么/);
+    await user.type(input, "你好");
+    await user.keyboard("{Enter}");
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith(
+        "bot_chat",
+        expect.objectContaining({ reasoningEffort: "medium" })
+      );
+    });
+    expect(await screen.findByText("机器人回复")).toBeInTheDocument();
+
+    // 打开覆盖下拉选「高」→ 按钮去掉「·默认」角标
+    await user.click(
+      screen.getByTitle("推理强度：只影响当前会话的发送，不写入设置")
+    );
+    await user.click(await screen.findByText("高"));
+    expect(screen.getByText(/⚡ 高/)).toBeInTheDocument();
+
+    // 第二条发送：reasoningEffort 变为 high
+    await user.type(screen.getByPlaceholderText(/和机器人说点什么/), "再来一条");
+    await user.keyboard("{Enter}");
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith(
+        "bot_chat",
+        expect.objectContaining({ reasoningEffort: "high" })
+      );
+    });
+
+    // 覆盖不回写后台：全程不应出现 bot_set_config
+    expect(mocks.invokeMock).not.toHaveBeenCalledWith(
+      "bot_set_config",
+      expect.anything()
+    );
+  });
+
+  it("输入窗口锁定对话：草稿按会话隔离，切走再切回各自保留、发送不串台（DRAFT-1）", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_sessions_load")
+        return [
+          { id: "s1", title: "默认会话" },
+          { id: "s2", title: "另一个" },
+        ];
+      return defaultInvoke(cmd);
+    });
+    render(<ChatPanel {...defaultProps} />);
+    await screen.findByText("🤖 默认会话");
+
+    // S1 打草稿 → 切到 S2：输入框清空（不带走 S1 的内容）
+    const input = screen.getByPlaceholderText(/和机器人说点什么/);
+    await user.type(input, "给一会的草稿");
+    await user.click(screen.getByTitle("切换会话"));
+    await user.click(await screen.findByText("另一个"));
+    const input2 = screen.getByPlaceholderText(/和机器人说点什么/);
+    expect(input2).toHaveValue("");
+
+    // S2 打自己的草稿 → 切回 S1：草稿原样恢复
+    await user.type(input2, "给二会的草稿");
+    await user.click(screen.getByTitle("切换会话"));
+    await user.click(await screen.findByText("默认会话"));
+    const input3 = screen.getByPlaceholderText(/和机器人说点什么/);
+    expect(input3).toHaveValue("给一会的草稿");
+
+    // 直接回车发送：进的是 S1、内容是 S1 的草稿（A 的字不会误发给 B）
+    await user.click(input3);
+    await user.keyboard("{Enter}");
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith(
+        "bot_chat",
+        expect.objectContaining({
+          sessionId: "s1",
+          messages: expect.arrayContaining([
+            expect.objectContaining({ role: "user", content: "给一会的草稿" }),
+          ]),
+        })
+      );
+    });
   });
 
   it("确认弹窗按会话过滤：别的会话的 bot-confirm 不弹窗（2026-08-26 会话隔离）", async () => {
@@ -650,6 +742,50 @@ describe("ChatPanel", () => {
     expect(await screen.findByText(/deepseek-chat/)).toBeInTheDocument();
     // 广播给另一窗口（主窗口 ↔ 挂件同步）
     expect(mocks.emitMock).toHaveBeenCalledWith("bot-config-changed", null);
+  });
+
+  it("模型下拉双协议同列：两组分组展示，跨协议选中连协议一起切（MP-02）", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_get_config")
+        return {
+          baseUrl: "https://a.example/v1",
+          model: "glm-5.3-flash",
+          apiProvider: "openai",
+          modelsByProvider: {
+            openai: [
+              { id: "m1", label: "GLM-5.3-Flash", baseUrl: "https://a.example/v1", model: "glm-5.3-flash" },
+            ],
+            anthropic: [
+              { id: "m2", label: "Claude Sonnet", baseUrl: "https://b.example", model: "claude-sonnet" },
+            ],
+          },
+          activeModelId: { openai: "m1", anthropic: "m2" },
+        };
+      if (cmd === "bot_set_active_model")
+        return {
+          model: "claude-sonnet",
+          apiProvider: "anthropic",
+          activeModelId: { openai: "m1", anthropic: "m2" },
+        };
+      return defaultInvoke(cmd);
+    });
+    render(<ChatPanel {...defaultProps} />);
+    await screen.findByText("🤖 默认会话");
+    await user.click(screen.getByTitle("切换模型"));
+    // 两组都在：分组头 + 各自模型（openai 是当前协议 → GLM 高亮）
+    expect(await screen.findByText("OpenAI 兼容")).toBeInTheDocument();
+    expect(screen.getByText("Anthropic 兼容")).toBeInTheDocument();
+    const glm = screen.getByText("GLM-5.3-Flash");
+    expect(glm.className).toContain("nm-inset");
+    // 点另一协议的模型 → 窄口径命令原样传 id；后端返回切好的协议 → 🧠 标签刷新
+    await user.click(screen.getByText("Claude Sonnet"));
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith("bot_set_active_model", {
+        modelId: "m2",
+      });
+    });
+    expect(await screen.findByText(/claude-sonnet/)).toBeInTheDocument();
   });
 
   // ── PAR-1：并行回复（每会话独立在途，互不串台）──

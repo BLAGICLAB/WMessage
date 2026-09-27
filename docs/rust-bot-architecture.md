@@ -76,6 +76,9 @@ src-tauri/src/
 │   ├── bot/config/io.rs    配置读写 + 默认值
 │   ├── keyring.rs        API key 走系统 keyring
 │   ├── bot/config/commands.rs  bot_get_config / bot_set_config
+│   ├── bot/reasoning.rs  推理强度线上参数映射（RE-1）：EffortLevel 档位 →
+│   │                     按模型族/协议的 ReasoningWire（OpenAI effort/GLM thinking/
+│   │                     Anthropic budget），resolve 装配 + describe 审计展示
 │   └── audit.rs         audit_log
 ├── bot/tools.rs (1589)    28 个 tool_* 实现（任务卡 CRUD / 子任务 / 文档生成 / 联网 / 时间 / 记忆转发）
 ├── bot_anthropic.rs     Anthropic 协议适配（纯函数）：OpenAI ↔ /v1/messages 双向转换、auth 头、prompt caching

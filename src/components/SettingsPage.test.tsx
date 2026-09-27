@@ -280,6 +280,55 @@ describe("SettingsPage", () => {
     });
   });
 
+  it("推理强度：缺字段默认「中」高亮；点「低」→ bot_set_config 持久化 reasoningEffort（RE-1）", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_get_enabled") return true;
+      if (cmd === "bot_get_config")
+        return {
+          baseUrl: "https://api.example.com/v1",
+          model: "glm-5.3-flash",
+          hasApiKey: true,
+          bypassLlmOnPreStepHit: true,
+          allowedDirs: [],
+          pythonTimeoutSecs: null,
+          // 老配置缺 reasoningEffort 字段 → 前端按 medium 显示
+        };
+      if (cmd === "bot_set_config") return null;
+      if (cmd === "api_status") return { enabled: false, port: 4763, token: "" };
+      if (cmd === "profile_get")
+        return {
+          user: { name: "我", avatarDataUrl: null },
+          bot: { name: "机器人", avatarDataUrl: null },
+        };
+      if (cmd === "py_get_enabled") return false;
+      if (cmd === "skills_list") return [];
+      if (cmd === "migration_rules_load") return { version: 1, rules: [] };
+      if (cmd === "migration_status") return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_log_read") return "";
+      return null;
+    });
+    render(<SettingsPage {...defaultProps} />);
+    // 「推理强度」四档控件出现；缺字段 → 「中」是选中态（nm-inset）。
+    // 门在 botEnabled 翻转后才打开，放宽轮询窗口防时序抖动
+    const title = await screen.findByText("推理强度", {}, { timeout: 3000 });
+    const block = title.parentElement;
+    const btns = Array.from(block?.querySelectorAll("button") ?? []);
+    expect(btns.map((b) => b.textContent)).toEqual(["关闭", "低", "中", "高"]);
+    const medium = btns.find((b) => b.textContent === "中");
+    expect(medium?.className).toContain("nm-inset");
+    // 点「低」→ 点击即持久化 reasoningEffort: "low"
+    await user.click(btns.find((b) => b.textContent === "低")!);
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith(
+        "bot_set_config",
+        expect.objectContaining({
+          config: expect.objectContaining({ reasoningEffort: "low" }),
+        })
+      );
+    });
+  });
+
   it("Tavily 开关：开启但没填 key → 显示缺 key 提示（不静默走百度）", async () => {
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "bot_get_enabled") return true;

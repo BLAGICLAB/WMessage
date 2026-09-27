@@ -682,6 +682,10 @@ pub async fn bot_chat(
     app: AppHandle,
     messages: Vec<ChatMsg>,
     session_id: Option<String>,
+    // 推理强度单次覆盖（RE-1）：挂件输入框按会话选的抽象档位（off/low/medium/high），
+    // 由前端解析「会话覆盖 ?? 后台默认」后传入具体值；None = 按后台默认。
+    // 只影响本次聊天调用，不回写 bot-config.json。
+    reasoning_effort: Option<String>,
 ) -> CommandResult<BotChatResult> {
     require_bot_enabled(bot_get_enabled(app.clone()))?;
     // Phase 1 追加：执行起点时间戳（trace 采集用；同步 < 1ms，不影响主流程）
@@ -920,9 +924,15 @@ pub async fn bot_chat(
             msgs.push(serde_json::json!({"role": role, "content": m.content}));
         }
     }
-    let (text, refs) =
-        crate::bot_model_loop::run_model_loop(app, msgs, max_rounds, &stop, plan_state.as_mut())
-            .await?;
+    let (text, refs) = crate::bot_model_loop::run_model_loop(
+        app,
+        msgs,
+        max_rounds,
+        &stop,
+        plan_state.as_mut(),
+        reasoning_effort,
+    )
+    .await?;
     // Phase 1 追加：trace 采集——同步、< 1ms、不记录对话原文。
     // 仅在最终 return 处 hook：早期 return（ChatGuard 拦截 / chat_execute_tasks
     // / skill auto-mode 终态）均不走 run_model_loop，不构成完整 bot 执行轨迹，
@@ -1360,6 +1370,8 @@ pub async fn run_task_in_chat(
             msgs,
             crate::bot_model_loop::DEFAULT_MAX_ROUNDS,
             &stop,
+            None,
+            // 任务执行链路不挂单次覆盖，按 bot-config.json 全局默认（RE-1）
             None,
         )
         .await

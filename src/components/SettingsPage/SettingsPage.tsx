@@ -91,6 +91,9 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     // max_tokens（仅 Anthropic 模式用；空 = 8192 默认，范围 256-200000）
     // 仍是顶层配置——同一协议下多个模型共用一个 max_tokens
     maxTokens: "",
+    // 推理强度后台默认（RE-1）：off/low/medium/high，默认 medium；
+    // 抽象档位——发送时后端按具体模型族映射到 reasoning_effort / thinking.budget_tokens
+    reasoningEffort: "medium" as "off" | "low" | "medium" | "high",
     // 定时记忆整理：开关 + 频率（off/12h/daily/weekly）+ 上次整理时间
     // 后端 None/缺字段 → 默认 { enabled: true, interval: "daily", lastRunAt: null }
     memoryConsolidation: {
@@ -144,6 +147,8 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         permMode?: string | null;
         apiProvider?: string | null;
         maxTokens?: number | null;
+        // 推理强度后台默认（RE-1）：off/low/medium/high；缺字段/非法值 → 前端按 medium 显示
+        reasoningEffort?: string | null;
         // 每协议下的大模型列表 + active 模型 id
         // 老后端版本（无这俩字段）→ undefined → 前端按空列表处理（"不设置默认厂商"）
         modelsByProvider?: ModelsByProvider | null;
@@ -189,6 +194,13 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
           c.permMode === "strict" || c.permMode === "yolo" ? c.permMode : "ask",
         // 空 = 8192 默认（仅 Anthropic 模式用）
         maxTokens: c.maxTokens != null ? String(c.maxTokens) : "",
+        // 推理强度：缺字段/非法值 → medium（与后端 EffortLevel::from_cfg 回退一致）
+        reasoningEffort:
+          c.reasoningEffort === "off" ||
+          c.reasoningEffort === "low" ||
+          c.reasoningEffort === "high"
+            ? c.reasoningEffort
+            : "medium",
         // 记忆整理：缺字段/老后端 → 默认（启用 + daily）；非法 interval 回退 daily
         memoryConsolidation: {
           enabled: c.memoryConsolidation?.enabled ?? true,
@@ -342,6 +354,8 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
             const n = parseInt(c.maxTokens.trim(), 10);
             return Number.isFinite(n) && n > 0 ? n : null;
           })(),
+          // 推理强度后台默认（RE-1）：四档抽象档位原样落盘
+          reasoningEffort: c.reasoningEffort,
           // 定时记忆整理：原样透传（后端 serde default 兜底缺字段）
           memoryConsolidation: c.memoryConsolidation,
         },
@@ -468,6 +482,17 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
   const setPermMode = async (mode: "strict" | "ask" | "yolo") => {
     if (configBusy || config.permMode === mode) return;
     const next = { ...config, permMode: mode };
+    setConfig(next);
+    await saveConfig(next);
+  };
+
+  /** 推理强度后台默认切换（RE-1）：点击即持久化（同 setPermMode 模式）。
+   *  只写后台默认值——挂件聊天里的单次覆盖存在前端会话级，不经这里 */
+  const setReasoningEffort = async (
+    level: "off" | "low" | "medium" | "high",
+  ) => {
+    if (configBusy || config.reasoningEffort === level) return;
+    const next = { ...config, reasoningEffort: level };
     setConfig(next);
     await saveConfig(next);
   };
@@ -1131,6 +1156,36 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
                   "白名单内的文件直接读；白名单外弹窗请你授权（允许一次 / 始终允许该目录 / 拒绝）。"}
                 {config.permMode === "yolo" &&
                   "⚠️ 不弹任何授权：机器人可读本机任意文件，且 Python 编程免开关直接执行（以本机用户权限，可联网）。仅在你完全信任所用模型时开启。"}
+              </p>
+            </div>
+            {/* 推理强度后台默认（RE-1）：抽象档位，后端按具体模型族映射线上参数 */}
+            <div className="space-y-1">
+              <p className="text-sm font-medium text-[var(--t2)]">推理强度</p>
+              <div className="flex gap-2">
+                {(
+                  [
+                    ["off", "关闭"],
+                    ["low", "低"],
+                    ["medium", "中"],
+                    ["high", "高"],
+                  ] as const
+                ).map(([level, label]) => (
+                  <button
+                    key={level}
+                    className={`flex-1 px-2 py-1.5 text-xs ${
+                      config.reasoningEffort === level ? "nm-inset" : "nm-outset"
+                    } text-[var(--t3)]`}
+                    onClick={() => setReasoningEffort(level)}
+                    disabled={configBusy}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[10px] text-[var(--t6)] leading-snug">
+                大模型回复前的思考深度，全局默认「中」。挂件聊天输入框里可按会话临时覆盖。
+                实际参数按模型各自的 API 映射（如 GLM-5.3 的 reasoning_effort、
+                Claude 的 thinking.budget_tokens）；模型不支持某档位时自动就近。
               </p>
             </div>
             {/* 本地文件工具白名单（read_text_file/grep_files/list_files；

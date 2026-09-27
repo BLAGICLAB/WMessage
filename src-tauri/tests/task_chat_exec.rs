@@ -88,6 +88,8 @@ fn core_http(server: &MockLlmServer) -> LlmHttp {
         model: "mock-model".into(),
         provider: ApiProvider::Openai,
         max_tokens: DEFAULT_MAX_TOKENS,
+        // RE-1：mock 测试不发推理字段（None = 不注入，既有断言不受影响）
+        reasoning: wmessage_lib::bot::reasoning::ReasoningWire::None,
     }
 }
 

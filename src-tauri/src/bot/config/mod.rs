@@ -146,14 +146,29 @@ mod tests {
     }
 
     #[test]
-    fn apply_active_model_switch_rejects_cross_protocol_id() {
-        // apiProvider 缺省回退 openai：anthropic 列表里的 id 不可切到 openai 协议
+    fn apply_active_model_switch_cross_protocol_switches_provider() {
+        // MP-02 双协议同列：当前协议 openai，点 anthropic 列表里的模型 →
+        // 连协议一起切（api_provider + 该协议 active），derive 后老字段跟过去
         let mut cfg = BotConfig::default();
         cfg.models_by_provider = Some(ModelsByProvider {
-            openai: vec![],
+            openai: vec![entry("a", "https://a.example", "m-a")],
             anthropic: vec![entry("c", "https://c.example", "m-c")],
         });
-        assert!(apply_active_model_switch(&mut cfg, "c").is_err());
+        apply_active_model_switch(&mut cfg, "c").expect("跨协议命中应 Ok");
+        assert_eq!(cfg.api_provider.as_deref(), Some("anthropic"));
+        assert_eq!(
+            cfg.active_model_id.as_ref().unwrap().anthropic.as_deref(),
+            Some("c")
+        );
+        // 当前协议自己的列表照常切换，不动 api_provider
+        apply_active_model_switch(&mut cfg, "a").expect("本协议命中应 Ok");
+        assert_eq!(cfg.api_provider.as_deref(), Some("openai"));
+        assert_eq!(
+            cfg.active_model_id.as_ref().unwrap().openai.as_deref(),
+            Some("a")
+        );
+        // 两边都不在 → 仍然拒绝
+        assert!(apply_active_model_switch(&mut cfg, "nope").is_err());
     }
     use crate::bot::config::types::{
         check_len, ActiveModelId, ApiProvider, BotConfig, KeySlot, ModelEntry, ModelsByProvider,

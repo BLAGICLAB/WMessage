@@ -268,6 +268,7 @@ async fn run_step(
         crate::bot_model_loop::DEFAULT_MAX_ROUNDS,
         stop,
         None,
+        None, // 执行步骤恢复链路：按 bot-config.json 全局默认（RE-1）
     )
     .await?;
     park(

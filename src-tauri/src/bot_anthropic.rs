@@ -318,6 +318,17 @@ pub fn build_anthropic_body(
     Ok(body)
 }
 
+/// 注入 extended thinking 块（RE-1 推理强度）：
+/// `thinking: {type: "enabled", budget_tokens: budget}`。
+/// budget 已在 reasoning::resolve 阶段夹紧（≥1024 且 < max_tokens），这里只管注入；
+/// None 档（关闭）不调用本函数，body 保持无 thinking 字段 = 非思考模式。
+pub fn apply_anthropic_thinking(body: &mut serde_json::Value, budget: u32) {
+    body["thinking"] = serde_json::json!({
+        "type": "enabled",
+        "budget_tokens": budget,
+    });
+}
+
 /// Anthropic messages URL 归一化：去尾斜杠后，已含 /v1 结尾直接拼 /messages，
 /// 否则拼 /v1/messages（设置页 baseUrl 两种填法都可用）。
 pub fn anthropic_messages_url(base_url: &str) -> String {

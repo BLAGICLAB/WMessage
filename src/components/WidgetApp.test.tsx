@@ -148,16 +148,17 @@ describe("挂件折叠不丢聊天（2026-08-19 修复）", () => {
     });
   };
 
-  /** 展开面板（含 ChatPanel 输入框的那个 .nm-sidebar-panel；另一个是触发条） */
+  /** 展开面板（含 ChatPanel 输入框的那个 .nm-sidebar-panel；另一个是触发条）
+   *  （UI-1 后 ChatPanel 输入框是 textarea，不再有 input） */
   const panelOf = (container: HTMLElement) =>
     Array.from(container.querySelectorAll<HTMLElement>(".nm-sidebar-panel")).find(
-      (el) => el.querySelector("input")
+      (el) => el.querySelector("textarea")
     )!;
 
   /** 触发条（不含输入框的 .nm-sidebar-panel） */
   const stripOf = (container: HTMLElement) =>
     Array.from(container.querySelectorAll<HTMLElement>(".nm-sidebar-panel")).find(
-      (el) => !el.querySelector("input")
+      (el) => !el.querySelector("textarea")
     )!;
 
   /** 展开/折叠是多段 await 的异步链，flush 两轮确保 setState 与被动 effect 都落地 */

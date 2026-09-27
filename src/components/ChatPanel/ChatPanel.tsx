@@ -34,6 +34,22 @@ import { Fold } from "./Fold";
 import { RichText } from "./RichText";
 import { UserBubbleContent, isImagePath } from "./UserBubbleContent";
 
+/** 推理强度抽象档位（RE-1）：与后端 EffortLevel::from_cfg 的合法值一一对应 */
+type ReasoningLevel = "off" | "low" | "medium" | "high";
+const EFFORT_LABELS: Record<ReasoningLevel, string> = {
+  off: "关闭",
+  low: "低",
+  medium: "中",
+  high: "高",
+};
+
+/** 模型下拉条目（MP-02 双协议同列）：在 ModelEntry 上带来源协议，供分组展示 */
+type ModelItem = ChatModelEntry & { provider: "openai" | "anthropic" };
+const PROVIDER_LABELS: Record<ModelItem["provider"], string> = {
+  openai: "OpenAI 兼容",
+  anthropic: "Anthropic 兼容",
+};
+
 type Props = {
   /** 是否处于选任务模式（点任务卡切换选中） */
   selecting: boolean;
@@ -62,7 +78,21 @@ export function ChatPanel({
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
   const [messages, setMessages] = useState<Msg[]>([]);
-  const [input, setInput] = useState("");
+  // 输入窗口锁定对话（DRAFT-1）：草稿/附件按会话隔离——切走再切回各自保留，
+  // 会话 A 打的字切到 B 不会误发给 B。input/files 是「当前会话」的派生值，
+  // setInput/setFiles 伪装成 React setter，原有调用点（onChange/send/斜杠补全/
+  // 发送清空/附件增删）语义不变。覆盖只在内存，不落盘（会话历史由后端管）。
+  const [drafts, setDrafts] = useState<Map<string, string>>(new Map());
+  const draftKey = sessionId ?? "";
+  const input = drafts.get(draftKey) ?? "";
+  const setInput = (v: string) =>
+    setDrafts((prev) => {
+      const next = new Map(prev);
+      next.set(draftKey, v);
+      return next;
+    });
+  /** 输入卡 textarea 引用：自动增高用（UI-1 单行 input 升级为多行 textarea） */
+  const taRef = useRef<HTMLTextAreaElement>(null);
   /** 斜杠命令 autocomplete 选中项下标（输入「/」浮出后用 ↑↓ / Tab / 点选） */
   const [slashIdx, setSlashIdx] = useState(0);
   /** 斜杠命令 picker 被 Esc 关掉后，输入未变化前不再自动浮出 */
@@ -73,8 +103,20 @@ export function ChatPanel({
   const [inflightSids, setInflightSids] = useState<ReadonlySet<string>>(new Set());
   /** 逐条复制按钮的反馈：记录当前“已复制”的消息下标 */
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
-  /** 已添加的附件文件路径（➕ 或拖入，随消息一起发送） */
-  const [files, setFiles] = useState<string[]>([]);
+  /** 已添加的附件文件路径（➕ 或拖入，随消息一起发送）——按会话隔离（DRAFT-1） */
+  const [filesBySession, setFilesBySession] = useState<Map<string, string[]>>(
+    new Map()
+  );
+  const files = filesBySession.get(draftKey) ?? [];
+  const setFiles = (v: string[] | ((prev: string[]) => string[])) =>
+    setFilesBySession((prev) => {
+      const next = new Map(prev);
+      next.set(
+        draftKey,
+        typeof v === "function" ? v(prev.get(draftKey) ?? []) : v
+      );
+      return next;
+    });
   /** 拖放悬停：文件拖到聊天区上时显示提示层 */
   const [dragHover, setDragHover] = useState(false);
   /** 危险操作确认请求（机器人删任务前弹窗）；kind="file_access" 时为文件访问授权（三按钮） */
@@ -92,14 +134,24 @@ export function ChatPanel({
   // 🧠 模型下拉（MP-01）：同会话菜单三件套——开合 + 按钮 ref + 下拉 ref，
   // 另带当前协议的模型列表与 active id（reload 里一并维护）
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
-  const [models, setModels] = useState<ChatModelEntry[]>([]);
+  const [models, setModels] = useState<ModelItem[]>([]);
+  // 当前协议（MP-02）：双协议同列展示后，active 高亮只认本协议的 active 模型
+  const [apiProvider, setApiProvider] = useState<"openai" | "anthropic">("openai");
   const [activeModelId, setActiveModelId] = useState<string | null>(null);
-  const [modelDropdownTop, setModelDropdownTop] = useState(0);
   const modelBtnRef = useRef<HTMLButtonElement>(null);
   const modelDropdownRef = useRef<HTMLDivElement>(null);
-  /** 头部 🧠 标签：显示当前模型（设置页维护，聊天面板只读展示） */
+  /** 输入卡底栏 🧠 标签：显示当前模型（设置页维护，聊天面板只读展示） */
   const [modelLabel, setModelLabel] = useState("…");
-  // 顶部行引用 + 下拉 top 定位（紧贴 🤖/🧠 按钮底部，0 间距）
+  // ⚡ 推理强度（RE-1）：后台默认基线（bot-config-changed 时刷新）+ 会话级覆盖。
+  // 覆盖只存内存 Map，绝不回写 bot-config.json；会话切换后无覆盖的会话直接跟随后台。
+  const [effortBase, setEffortBase] = useState<ReasoningLevel>("medium");
+  const [effortBySession, setEffortBySession] = useState<Map<string, ReasoningLevel>>(
+    new Map()
+  );
+  const [effortMenuOpen, setEffortMenuOpen] = useState(false);
+  const effortBtnRef = useRef<HTMLButtonElement>(null);
+  const effortDropdownRef = useRef<HTMLDivElement>(null);
+  // 顶部行引用 + 下拉 top 定位（紧贴 🤖 按钮底部，0 间距）
   const topBarRef = useRef<HTMLDivElement>(null);
   const [dropdownTop, setDropdownTop] = useState(0);
   useEffect(() => {
@@ -110,11 +162,6 @@ export function ChatPanel({
       const br = btn.getBoundingClientRect();
       const rr = root.getBoundingClientRect();
       setDropdownTop(br.bottom - rr.top);
-      if (modelBtnRef.current) {
-        setModelDropdownTop(
-          modelBtnRef.current.getBoundingClientRect().bottom - rr.top
-        );
-      }
     };
     update();
     if (typeof ResizeObserver !== "undefined" && rootRef.current) {
@@ -127,6 +174,18 @@ export function ChatPanel({
       window.removeEventListener("resize", update);
     };
   }, []);
+  /** 输入卡 textarea 自动增高：随内容长到 max-h-40 后内部滚动；发送清空后缩回 */
+  useEffect(() => {
+    const ta = taRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    ta.style.height = `${ta.scrollHeight}px`;
+  }, [input]);
+  /** 切会话：斜杠 picker 状态复位（草稿/附件已按会话隔离，picker 是瞬时 UI 态） */
+  useEffect(() => {
+    setSlashIdx(0);
+    setSlashDismissed(false);
+  }, [sessionId]);
   /** PAR-1：每会话流式元数据（thinking/tools/skillFailure 权威副本，按 sid 隔离；
    *  并行回复各自累积互不串台，收尾并入最终消息后删除条目） */
   const streamingMetaMapRef = useRef<
@@ -276,7 +335,22 @@ export function ChatPanel({
     return () => document.removeEventListener("mousedown", onDown);
   }, [modelMenuOpen]);
 
-  // 挂载：读当前模型配置，头部 🧠 下拉展示当前协议的模型列表 + active id；
+  // 点击推理强度下拉外关闭（镜像模型菜单：双 ref 检测）
+  useEffect(() => {
+    if (!effortMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (
+        !effortBtnRef.current?.contains(t) &&
+        !effortDropdownRef.current?.contains(t)
+      )
+        setEffortMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [effortMenuOpen]);
+
+  // 挂载：读当前模型配置，输入卡底栏 🧠 下拉展示当前协议的模型列表 + active id；
   // 设置页/另一窗口保存配置后广播 bot-config-changed，这里同步刷新
   useEffect(() => {
     const reload = () =>
@@ -289,16 +363,32 @@ export function ChatPanel({
           anthropic?: ChatModelEntry[];
         } | null;
         activeModelId?: { openai: string | null; anthropic: string | null } | null;
+        reasoningEffort?: string | null;
       }>("bot_get_config")
         .then((c) => {
           setModelLabel(c.model || "未配置");
           const isOpenai = (c.apiProvider ?? "openai") !== "anthropic";
+          setApiProvider(isOpenai ? "openai" : "anthropic");
           const mbp = c.modelsByProvider ?? {};
-          setModels((isOpenai ? mbp.openai : mbp.anthropic) ?? []);
+          // MP-02：双协议同列——两组模型都列出（带协议分组标签），
+          // 跨协议选中由后端 apply_active_model_switch 连协议一起切
+          setModels([
+            ...(mbp.openai ?? []).map((m) => ({ ...m, provider: "openai" as const })),
+            ...(mbp.anthropic ?? []).map((m) => ({
+              ...m,
+              provider: "anthropic" as const,
+            })),
+          ]);
           setActiveModelId(
             (c.activeModelId ?? { openai: null, anthropic: null })[
               isOpenai ? "openai" : "anthropic"
             ] ?? null
+          );
+          // RE-1 推理强度后台默认：缺字段/非法值回 medium（与后端 from_cfg 一致）。
+          // 只刷新基线——已选过覆盖的会话保持覆盖（验收 3），没覆盖过的即时跟随新默认
+          const raw = c.reasoningEffort;
+          setEffortBase(
+            raw === "off" || raw === "low" || raw === "high" ? raw : "medium"
           );
         })
         .catch(() => setModelLabel("未配置"));
@@ -320,7 +410,9 @@ export function ChatPanel({
         activeModelId?: { openai: string | null; anthropic: string | null } | null;
       }>("bot_set_active_model", { modelId: id });
       setModelLabel(c.model || "未配置");
+      // MP-02：跨协议选中时后端已连协议一起切，这里同步本地协议态
       const isOpenai = (c.apiProvider ?? "openai") !== "anthropic";
+      setApiProvider(isOpenai ? "openai" : "anthropic");
       setActiveModelId(
         (c.activeModelId ?? { openai: null, anthropic: null })[
           isOpenai ? "openai" : "anthropic"
@@ -717,7 +809,8 @@ export function ChatPanel({
       setSessionMenuOpen(false);
       setSessionId(s.id);
       setMessages([]);
-      setInput("");
+      // DRAFT-1：不再清 input——草稿按会话隔离，新会话天然是空的，
+      // 原会话的草稿切回去还在（旧实现的全局清空会误删原会话草稿）
     } catch (e) {
       handleCommandError(e, "bot_session_create", { silent: true });
     }
@@ -735,6 +828,22 @@ export function ChatPanel({
       await invoke("bot_session_delete", { id: sid });
       const rest = sessions.filter((s) => s.id !== sid);
       setSessions(rest);
+      // DRAFT-1：被删会话的草稿/附件/推理强度覆盖一并清掉（内存 Map 防积攒）
+      setDrafts((prev) => {
+        const next = new Map(prev);
+        next.delete(sid);
+        return next;
+      });
+      setFilesBySession((prev) => {
+        const next = new Map(prev);
+        next.delete(sid);
+        return next;
+      });
+      setEffortBySession((prev) => {
+        const next = new Map(prev);
+        next.delete(sid);
+        return next;
+      });
       if (sid === sessionId) {
         // 删的是当前会话：切到剩余第一个；没有则新建
         if (rest.length) {
@@ -771,10 +880,17 @@ export function ChatPanel({
     enterChat(sid);
     setMessages([...history, { role: "assistant", content: "", streaming: true }]);
     streamingMetaMapRef.current.set(sid, {});
+    // RE-1 推理强度：生效档位 = 本会话覆盖 ?? 后台默认（具体值传后端，
+    // 覆盖本身只存前端内存，不回写 bot-config.json）
+    const effort = effortBySession.get(sid) ?? effortBase;
     try {
       const full = await invoke<{ text: string; taskRefs?: TaskRef[] }>(
         "bot_chat",
-        { messages: history.map((m) => ({ role: m.role, content: m.content })), sessionId: sid }
+        {
+          messages: history.map((m) => ({ role: m.role, content: m.content })),
+          sessionId: sid,
+          reasoningEffort: effort,
+        }
       );
       // 把流式过程中累积的思考/工具行并入最终消息
       const meta = streamingMetaMapRef.current.get(sid) ?? {};
@@ -960,6 +1076,10 @@ export function ChatPanel({
       setFiles((prev) => [...prev, ...clean.filter((p) => !prev.includes(p))]);
     }
   };
+  // 拖放回调只在挂载时注册一次，闭包会捕获 mount 时的 addFiles（其 draftKey
+  // 彼时 sessionId 还是 null）——用 latest ref 指到最新实现，落点才是当前会话
+  const addFilesRef = useRef(addFiles);
+  addFilesRef.current = addFiles;
 
   // ➕ 添加附件：选文件（文档或图片均可），与消息一起发送（如：加 Word 后输入「润色」）。
   // Rust 侧弹框：此前前端 dialog.open 在挂件窗口不弹框（点击无反应）
@@ -1004,7 +1124,7 @@ export function ChatPanel({
           }
           if (p.type === "drop") {
             setDragHover(false);
-            if (await insideChat(p.position)) addFiles(p.paths);
+            if (await insideChat(p.position)) addFilesRef.current(p.paths);
           }
         })
         .then((f) => {
@@ -1046,6 +1166,24 @@ export function ChatPanel({
 
   const currentTitle =
     sessions.find((s) => s.id === sessionId)?.title ?? "新对话";
+
+  // RE-1 推理强度：底栏按钮显示的生效档位 = 本会话覆盖 ?? 后台默认；
+  // effortIsOverridden 决定要不要缀「·默认」角标
+  const effectiveEffort: ReasoningLevel =
+    (sessionId != null ? effortBySession.get(sessionId) : undefined) ??
+    effortBase;
+  const effortIsOverridden = sessionId != null && effortBySession.has(sessionId);
+  /** 选档：写入会话覆盖 Map（内存）；选「后台默认」= 清除覆盖跟随后台 */
+  const setEffortForSession = (level: ReasoningLevel | null) => {
+    if (!sessionId) return;
+    setEffortBySession((prev) => {
+      const next = new Map(prev);
+      if (level == null) next.delete(sessionId);
+      else next.set(sessionId, level);
+      return next;
+    });
+    setEffortMenuOpen(false);
+  };
 
   return (
     <div ref={rootRef} className="relative flex flex-col shrink-0 h-full min-h-0">
@@ -1111,36 +1249,19 @@ export function ChatPanel({
         </div>
       )}
       <div ref={topBarRef} className="flex items-center mb-2 shrink-0 gap-1">
-        {/* 左侧：🤖 会话 + 🧠 模型 两块平分空间 */}
-        <div className="flex items-center gap-1 flex-1 min-w-0">
-          {/* 🤖 会话切换器（平分第一块） */}
-          <button
-            ref={menuRef}
-            className="nm-outset flex-1 min-w-0 flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-[var(--t2)]"
-            title="切换会话"
-            onClick={() => setSessionMenuOpen((v) => !v)}
-          >
-            <span className="truncate flex-1 text-left">🤖 {currentTitle}</span>
-            <span className="shrink-0 text-[10px] text-[var(--t5)]">
-              {sessionMenuOpen ? "▴" : "▾"}
-            </span>
-          </button>
-          {/* 🧠 当前模型下拉（MP-01：原只读标签升级，与 🤖 会话切换器同款交互；
-              模型仍可在设置页维护，这里切的是各协议列表里的 active）
-              宽度按内容收窄：shrink-0 max-w-fit，剩余空间全部让给 🤖 会话按钮 */}
-          <button
-            ref={modelBtnRef}
-            className="nm-outset shrink-0 max-w-fit flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-[var(--t2)]"
-            title="切换模型"
-            onClick={() => setModelMenuOpen((v) => !v)}
-          >
-            <span className="truncate text-left">🧠 {modelLabel}</span>
-            <span className="shrink-0 text-[10px] text-[var(--t5)]">
-              {modelMenuOpen ? "▴" : "▾"}
-            </span>
-          </button>
-        </div>
-        {/* 右侧：🎯 移到原 🧹 位置（最右；外框 px-2 py-1 跟 🤖/🧠 等高，emoji 内部 16px 免受字体档位影响） */}
+        {/* 左侧：🤖 会话切换器（UI-1 输入卡改版后独占左侧；🧠 模型下拉已移入输入卡底栏） */}
+        <button
+          ref={menuRef}
+          className="nm-outset flex-1 min-w-0 flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-[var(--t2)]"
+          title="切换会话"
+          onClick={() => setSessionMenuOpen((v) => !v)}
+        >
+          <span className="truncate flex-1 text-left">🤖 {currentTitle}</span>
+          <span className="shrink-0 text-[10px] text-[var(--t5)]">
+            {sessionMenuOpen ? "▴" : "▾"}
+          </span>
+        </button>
+        {/* 右侧：🎯 移到原 🧹 位置（最右；外框 px-2 py-1 跟 🤖 等高，emoji 内部 16px 免受字体档位影响） */}
         <button
           className={`shrink-0 px-2 py-1 flex items-center justify-center ${
             selecting
@@ -1189,35 +1310,6 @@ export function ChatPanel({
           >
             ＋ 新建对话
           </button>
-        </div>
-      )}
-
-      {modelMenuOpen && (
-        <div
-          ref={modelDropdownRef}
-          className="absolute right-0 w-52 nm-card p-1 rounded-xl z-50 max-h-40 overflow-y-auto"
-          style={{ top: modelDropdownTop > 0 ? `${modelDropdownTop}px` : undefined }}
-        >
-          {models.length === 0 ? (
-            <p className="px-2 py-1 text-xs text-[var(--t5)]">
-              模型列表为空，去设置页添加
-            </p>
-          ) : (
-            models.map((m) => (
-              <button
-                key={m.id}
-                className={`w-full text-left px-2 py-1 rounded-lg text-xs truncate ${
-                  m.id === activeModelId
-                    ? "nm-inset text-[var(--t1)] font-medium"
-                    : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
-                }`}
-                onClick={() => switchModel(m.id)}
-                title={m.label}
-              >
-                {m.label}
-              </button>
-            ))
-          )}
         </div>
       )}
 
@@ -1418,49 +1510,6 @@ export function ChatPanel({
           })
         )}
       </div>
-      {/* 已添加附件：随消息一起发送 */}
-      {files.length > 0 && (
-        <div className="mb-1.5 flex flex-wrap gap-1 shrink-0">
-          {files.map((f) => {
-            const isImg = isImagePath(f);
-            return (
-              <div key={f} className="relative group">
-                <span
-                  className="nm-inset inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t3)] max-w-full"
-                  title={f}
-                >
-                  <span className="truncate max-w-[280px]">
-                    {isImg ? "🖼️" : "📎"} {basename(f)}
-                  </span>
-                  <button
-                    className="text-[var(--t5)] hover:text-[var(--danger)]"
-                    onClick={() => setFiles((prev) => prev.filter((x) => x !== f))}
-                    title="移除"
-                  >
-                    ×
-                  </button>
-                </span>
-                {/* 图片附件悬停缩略图：convertFileSrc 走 asset:// 协议。
-                    tauri.conf.json 启用 assetProtocol.enable 后可读图；
-                    未启用时 <img> 加载失败自然隐藏，chip 行为不变。 */}
-                {isImg && (
-                  <img
-                    src={convertFileSrc(f)}
-                    alt={basename(f)}
-                    loading="lazy"
-                    onError={(e) => {
-                      // 资产协议未启用（403）时隐藏占位元素
-                      (e.currentTarget as HTMLImageElement).style.display = "none";
-                    }}
-                    className="pointer-events-none absolute bottom-full left-0 mb-1 hidden group-hover:block max-w-[220px] max-h-[120px] rounded-lg border border-[var(--border)] bg-[var(--bg)] shadow-lg object-contain z-10"
-                  />
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-
       {/* 斜杠命令 autocomplete：第一个字是 / 且无空格时浮出 picker。
           点选 / Tab / ↑↓ 选 / Esc 关 */}
       {!slashDismissed && input.startsWith("/") && !input.includes(" ") && (
@@ -1492,16 +1541,54 @@ export function ChatPanel({
         </div>
       )}
 
-      <div className="flex gap-1.5 shrink-0">
-        <button
-          className="nm-btn shrink-0 px-2.5 py-1.5 text-xs text-[var(--t3)]"
-          title="添加文件或图片，和消息一起发送（如：添加 Word 后输入「润色」；图片发给机器人识别：png / jpg / jpeg / webp / gif / bmp，最大 3MB/张、最多 4 张/消息）"
-          onClick={pickFiles}
-          disabled={viewedBusy}
-        >
-          ➕
-        </button>
-        <input
+      {/* 输入卡（UI-1 改版）：圆角卡片一体式——上多行输入区（placeholder 左上、
+          自动增高到 max-h-40 后内部滚动）、下工具栏（左 ➕ 附件，右 🧠 模型下拉 +
+          圆形发送键）；附件 chip 移入卡内输入区上方。斜杠 picker 仍浮在卡片上方 */}
+      <div className="nm-card rounded-2xl border border-[var(--edge)] p-2.5 shrink-0">
+        {/* 已添加附件：随消息一起发送 */}
+        {files.length > 0 && (
+          <div className="mb-1.5 flex flex-wrap gap-1">
+            {files.map((f) => {
+              const isImg = isImagePath(f);
+              return (
+                <div key={f} className="relative group">
+                  <span
+                    className="nm-inset inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t3)] max-w-full"
+                    title={f}
+                  >
+                    <span className="truncate max-w-[280px]">
+                      {isImg ? "🖼️" : "📎"} {basename(f)}
+                    </span>
+                    <button
+                      className="text-[var(--t5)] hover:text-[var(--danger)]"
+                      onClick={() => setFiles((prev) => prev.filter((x) => x !== f))}
+                      title="移除"
+                    >
+                      ×
+                    </button>
+                  </span>
+                  {/* 图片附件悬停缩略图：convertFileSrc 走 asset:// 协议。
+                      tauri.conf.json 启用 assetProtocol.enable 后可读图；
+                      未启用时 <img> 加载失败自然隐藏，chip 行为不变。 */}
+                  {isImg && (
+                    <img
+                      src={convertFileSrc(f)}
+                      alt={basename(f)}
+                      loading="lazy"
+                      onError={(e) => {
+                        // 资产协议未启用（403）时隐藏占位元素
+                        (e.currentTarget as HTMLImageElement).style.display = "none";
+                      }}
+                      className="pointer-events-none absolute bottom-full left-0 mb-1 hidden group-hover:block max-w-[220px] max-h-[120px] rounded-lg border border-[var(--border)] bg-[var(--bg)] shadow-lg object-contain z-10"
+                    />
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+        <textarea
+          ref={taRef}
           value={input}
           onChange={(e) => {
             setInput(e.target.value);
@@ -1536,8 +1623,12 @@ export function ChatPanel({
               setSlashIdx(0);
               return;
             }
-            // 与 TodoCard 一致：中文输入法组合态下回车确认候选词不应触发发送
-            if (e.key === "Enter" && !e.nativeEvent.isComposing) send();
+            // 与 TodoCard 一致：中文输入法组合态下回车确认候选词不应触发发送；
+            // 多行输入（UI-1）：Shift+Enter 换行，Enter 发送（textarea 需手动阻止默认换行）
+            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              send();
+            }
           }}
           placeholder={
             viewedBusy
@@ -1548,30 +1639,164 @@ export function ChatPanel({
                   ? "输入操作指令，如：标记完成"
                   : "和机器人说点什么"
           }
-          className="nm-inset flex-1 min-w-0 rounded-xl px-3 py-1.5 text-xs text-[var(--t3)] outline-none placeholder:text-[var(--t5)]"
+          rows={1}
+          className="w-full min-h-[48px] max-h-40 overflow-y-auto resize-none bg-transparent outline-none text-xs text-[var(--t2)] leading-relaxed placeholder:text-[var(--t4)]"
         />
-        {/* 发送/停止一体键：回复中变为红框正方形停止键，
-            点击即 bot_stop 中断本次运行；中断/回答结束自动变回发送键 */}
-        {viewedBusy ? (
+        <div className="mt-1 flex items-center gap-1">
           <button
-            className="nm-btn shrink-0 px-3 py-1.5 text-xs text-[var(--danger)] flex items-center"
-            title="停止当前回复"
-            onClick={() =>
-              invoke("bot_stop", { sessionId: sessionIdRef.current }).catch((e) =>
-                handleCommandError(e, "bot_stop", { silent: true })
-              )
-            }
+            className="shrink-0 h-7 px-1.5 flex items-center justify-center rounded-lg text-lg leading-none text-[var(--t4)] hover:text-[var(--t2)] hover:bg-[var(--hover-bg)] transition-colors"
+            title="添加文件或图片，和消息一起发送（如：添加 Word 后输入「润色」；图片发给机器人识别：png / jpg / jpeg / webp / gif / bmp，最大 3MB/张、最多 4 张/消息）"
+            onClick={pickFiles}
+            disabled={viewedBusy}
           >
-            ■
+            ＋
           </button>
-        ) : (
-          <button
-            className="nm-btn shrink-0 px-3 py-1.5 text-xs text-[var(--t3)]"
-            onClick={send}
-          >
-            发送
-          </button>
-        )}
+          <div className="flex-1 min-w-0" />
+          {/* 🧠 模型下拉（UI-1 从顶栏移入输入卡底栏；按钮/列表/切换逻辑不变，
+              相对按钮向上弹出，免 JS 测量定位） */}
+          <div className="relative shrink-0">
+            <button
+              ref={modelBtnRef}
+              className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-[var(--t4)] hover:text-[var(--t2)] hover:bg-[var(--hover-bg)] transition-colors"
+              title="切换模型"
+              onClick={() => setModelMenuOpen((v) => !v)}
+            >
+              <span className="truncate max-w-[150px]">🧠 {modelLabel}</span>
+              <span className="shrink-0 text-[10px]">
+                {modelMenuOpen ? "▴" : "▾"}
+              </span>
+            </button>
+            {modelMenuOpen && (
+              <div
+                ref={modelDropdownRef}
+                className="absolute bottom-full right-0 mb-2 w-52 nm-card p-1 rounded-xl z-50 max-h-40 overflow-y-auto"
+              >
+                {models.length === 0 ? (
+                  <p className="px-2 py-1 text-xs text-[var(--t5)]">
+                    模型列表为空，去设置页添加
+                  </p>
+                ) : (
+                  // MP-02：双协议同列——各协议一组（组头小字），当前协议下的
+                  // active 模型高亮；跨协议选中由后端连协议一起切
+                  (["openai", "anthropic"] as const).map((prov) => {
+                    const list = models.filter((m) => m.provider === prov);
+                    if (!list.length) return null;
+                    return (
+                      <div key={prov}>
+                        <p className="px-2 pt-1.5 pb-0.5 text-[10px] text-[var(--t5)]">
+                          {PROVIDER_LABELS[prov]}
+                        </p>
+                        {list.map((m) => {
+                          const isActive =
+                            prov === apiProvider && m.id === activeModelId;
+                          return (
+                            <button
+                              key={m.id}
+                              className={`w-full text-left px-2 py-1 rounded-lg text-xs truncate ${
+                                isActive
+                                  ? "nm-inset text-[var(--t1)] font-medium"
+                                  : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
+                              }`}
+                              onClick={() => switchModel(m.id)}
+                              title={`${PROVIDER_LABELS[prov]} · ${m.label}`}
+                            >
+                              {m.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            )}
+          </div>
+          {/* ⚡ 推理强度（RE-1）：会话级覆盖下拉——默认跟随后台（缀「·默认」），
+              选档只存本会话内存、不回写设置；向上弹出，交互镜像模型下拉 */}
+          <div className="relative shrink-0">
+            <button
+              ref={effortBtnRef}
+              className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-[var(--t4)] hover:text-[var(--t2)] hover:bg-[var(--hover-bg)] transition-colors"
+              title="推理强度：只影响当前会话的发送，不写入设置"
+              onClick={() => setEffortMenuOpen((v) => !v)}
+            >
+              <span>
+                ⚡ {EFFORT_LABELS[effectiveEffort]}
+                {effortIsOverridden ? "" : "·默认"}
+              </span>
+              <span className="shrink-0 text-[10px]">
+                {effortMenuOpen ? "▴" : "▾"}
+              </span>
+            </button>
+            {effortMenuOpen && (
+              <div
+                ref={effortDropdownRef}
+                className="absolute bottom-full right-0 mb-2 w-44 nm-card p-1 rounded-xl z-50"
+              >
+                <button
+                  className={`w-full text-left px-2 py-1 rounded-lg text-xs truncate ${
+                    !effortIsOverridden
+                      ? "nm-inset text-[var(--t1)] font-medium"
+                      : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
+                  }`}
+                  onClick={() => setEffortForSession(null)}
+                  title={`清掉本会话覆盖，跟随后台默认（当前：${EFFORT_LABELS[effortBase]}）`}
+                >
+                  后台默认（{EFFORT_LABELS[effortBase]}）
+                </button>
+                {(["off", "low", "medium", "high"] as const).map((lv) => (
+                  <button
+                    key={lv}
+                    className={`w-full text-left px-2 py-1 rounded-lg text-xs truncate ${
+                      effectiveEffort === lv && effortIsOverridden
+                        ? "nm-inset text-[var(--t1)] font-medium"
+                        : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
+                    }`}
+                    onClick={() => setEffortForSession(lv)}
+                  >
+                    {EFFORT_LABELS[lv]}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          {/* 发送/停止一体键：回复中变为红描边圆形停止键，
+              点击即 bot_stop 中断本次运行；中断/回答结束自动变回发送键 */}
+          {viewedBusy ? (
+            <button
+              className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center border border-[var(--danger)] text-[10px] text-[var(--danger)] hover:bg-[var(--hover-bg)] transition-colors"
+              title="停止当前回复"
+              onClick={() =>
+                invoke("bot_stop", { sessionId: sessionIdRef.current }).catch((e) =>
+                  handleCommandError(e, "bot_stop", { silent: true })
+                )
+              }
+            >
+              ■
+            </button>
+          ) : (
+            <button
+              className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center bg-[var(--t1)] text-[var(--bg)] hover:opacity-85 transition-opacity"
+              title="发送（Enter 发送，Shift+Enter 换行）"
+              aria-label="发送"
+              onClick={send}
+            >
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M8 12.5v-9M3.8 7.7 8 3.5l4.2 4.2" />
+              </svg>
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );

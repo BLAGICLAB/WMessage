@@ -362,6 +362,9 @@ pub struct LlmHttp {
     /// max_tokens（仅 Anthropic 模式发送——Anthropic 必填；OpenAI 兼容模式不发，
     /// 多数兼容网关不认识该字段）。装配时已 resolve_max_tokens 钳制过。
     pub max_tokens: u32,
+    /// 推理强度线上参数（RE-1）：按模型族映射好的注入载荷
+    /// （bot/reasoning::resolve），None = 不发任何推理字段。
+    pub reasoning: crate::bot::reasoning::ReasoningWire,
 }
 
 /// run_model_loop_core 的同步副作用出口：
@@ -396,6 +399,10 @@ pub async fn run_model_loop(
     max_rounds: usize,
     stop: &StopGuard,
     plan_state: Option<&mut crate::bot_plan::PlanState>,
+    // 推理强度单次覆盖（RE-1）：挂件聊天 bot_chat 传入具体档位（off/low/medium/high）；
+    // None = 任务执行/定时等后台链路，回落 bot-config.json 的全局默认。
+    // 抽象档位 → 线上参数的按模型映射在 bot/reasoning.rs。
+    reasoning_override: Option<String>,
 ) -> Result<(String, Vec<TaskRef>), CommandError> {
     let cfg = crate::bot::bot_get_config(app.clone())?;
     let api_key = crate::bot::read_api_key()?;
@@ -407,6 +414,7 @@ pub async fn run_model_loop(
         .timeout(std::time::Duration::from_secs(300))
         .build()
         .map_err(|e| format!("初始化 HTTP 客户端失败：{e}"))?;
+    let model_for_reasoning = cfg.model.clone();
     let http = LlmHttp {
         client,
         base_url: cfg.base_url,
@@ -415,6 +423,17 @@ pub async fn run_model_loop(
         // None/非法值 → Openai（旧行为零影响）
         provider: crate::bot::ApiProvider::from_cfg(cfg.api_provider.as_deref()),
         max_tokens: crate::bot::resolve_max_tokens(cfg.max_tokens),
+        // 推理强度：覆盖优先于后台默认；抽象档位按模型族映射到线上参数
+        reasoning: crate::bot::reasoning::resolve(
+            crate::bot::ApiProvider::from_cfg(cfg.api_provider.as_deref()),
+            &model_for_reasoning,
+            crate::bot::reasoning::EffortLevel::from_cfg(
+                reasoning_override
+                    .as_deref()
+                    .or(cfg.reasoning_effort.as_deref()),
+            ),
+            crate::bot::resolve_max_tokens(cfg.max_tokens),
+        ),
     };
     // 会话隔离：流式事件（bot-chat-delta 等）只由交互实例广播；
     // 后台定时任务（interactive=false）不向挂件推流——否则后台执行的输出会
@@ -607,7 +626,7 @@ where
         // body 按协议分支——内部消息流保持 OpenAI
         // 形状不动，只在发请求前这一边界转换（bot_anthropic::build_anthropic_body）。
         // 转换失败（理论不可达，msgs 必含 user 消息）记审计并报错，不静默发出畸形请求。
-        let body = match http.provider {
+        let mut body = match http.provider {
             crate::bot::ApiProvider::Openai => serde_json::json!({
                 "model": http.model,
                 "messages": msgs,
@@ -636,6 +655,24 @@ where
                 }
             }
         };
+        // 推理强度注入（RE-1）：OpenAI 兼容分支直接加字段；
+        // Anthropic 分支加 thinking 块（budget < max_tokens 约束已在 resolve 时夹紧）。
+        match &http.reasoning {
+            crate::bot::reasoning::ReasoningWire::OpenAiEffort(effort) => {
+                body["reasoning_effort"] = serde_json::json!(effort);
+            }
+            crate::bot::reasoning::ReasoningWire::GlmThinking(on) => {
+                body["thinking"] = serde_json::json!({
+                    "type": if *on { "enabled" } else { "disabled" }
+                });
+            }
+            crate::bot::reasoning::ReasoningWire::AnthropicBudget(budget) => {
+                if http.provider == crate::bot::ApiProvider::Anthropic {
+                    crate::bot_anthropic::apply_anthropic_thinking(&mut body, *budget);
+                }
+            }
+            crate::bot::reasoning::ReasoningWire::None => {}
+        }
 
         // LLM 请求前记录
         audit(
@@ -645,6 +682,7 @@ where
                 ("model", http.model.clone()),
                 ("msgs_count", msgs.len().to_string()),
                 ("provider", http.provider.as_str().to_string()),
+                ("reasoning", http.reasoning.describe()),
             ],
         );
 
