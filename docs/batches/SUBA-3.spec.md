@@ -47,6 +47,7 @@ FIFO（超限 queued 不失败）；task_tool_calls 预算计数（dispatch 层�
 1. expected_files 8【校正 ×1：并发闸用进程级 OnceLock，不动 app_state.rs】
    【校正 ×2：补 lib.rs——cancel_subagent 注册为 tauri 命令（bridge 门禁：前端
    invoke 必须有注册命令；设计 §4.3 停止按钮同 API 的落地入口）】
+   【校正 ×3：OCR r1 采纳——补 db/subagents.rs（find_subagent_by_session 第三路由）】
 2. budget：修改 +550/-30（实测 +514/-12）【校正 ×1】
    assertions_min 对 vitest 文件填 0（SOP 坑 2：gate 正则只认 Rust assert 宏）
 3. fix 字段：并发闸集中 orchestrator 新增并发模块；前端三字段纯投影
@@ -61,6 +62,7 @@ FIFO（超限 queued 不失败）；task_tool_calls 预算计数（dispatch 层�
     "src-tauri/src/bot_orchestrator.rs",
     "src-tauri/src/bot/dispatch.rs",
     "src-tauri/src/tool_guard.rs",
+    "src-tauri/src/db/subagents.rs",
     "src/types.ts",
     "src/components/TaskCardContent.tsx",
     "src/components/TaskCardContent.test.tsx",
