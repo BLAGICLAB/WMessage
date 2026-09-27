@@ -21,6 +21,7 @@ mod consolidate;
 mod execute;
 mod planner;
 mod reflection;
+mod subagent;
 mod summary;
 mod system;
 
@@ -28,6 +29,10 @@ pub(crate) use consolidate::CONSOLIDATE_PROMPT;
 pub(crate) use execute::{EXECUTE_SYSTEM_PROMPT, STEPWISE_ADDENDUM};
 pub(crate) use planner::{PLANNER_PROMPT, REPLANNER_PROMPT};
 pub(crate) use reflection::REFLECTION_SYSTEM_PROMPT;
+pub(crate) use subagent::{
+    MAIN_AGENT_ADDENDUM, PROFILE_CODER, PROFILE_GENERAL, PROFILE_RESEARCH, RESULT_SCHEMA_HINT,
+    SUBAGENT_BASE,
+};
 pub(crate) use summary::{COMPACT_SYSTEM_PROMPT, SUMMARY_SYSTEM_PROMPT};
 pub(crate) use system::SYSTEM_PROMPT;
 
@@ -46,11 +51,17 @@ mod tests {
         ("PLANNER_PROMPT", PLANNER_PROMPT),
         ("REPLANNER_PROMPT", REPLANNER_PROMPT),
         ("CONSOLIDATE_PROMPT", CONSOLIDATE_PROMPT),
+        ("MAIN_AGENT_ADDENDUM", MAIN_AGENT_ADDENDUM),
+        ("SUBAGENT_BASE", SUBAGENT_BASE),
+        ("PROFILE_RESEARCH", PROFILE_RESEARCH),
+        ("PROFILE_CODER", PROFILE_CODER),
+        ("PROFILE_GENERAL", PROFILE_GENERAL),
+        ("RESULT_SCHEMA_HINT", RESULT_SCHEMA_HINT),
     ];
 
     #[test]
     fn all_prompts_are_registered_and_non_empty() {
-        assert_eq!(ALL.len(), 9, "prompt 清单与实际常量数不一致（新增请登记）");
+        assert_eq!(ALL.len(), 15, "prompt 清单与实际常量数不一致（新增请登记）");
         for (name, p) in ALL {
             assert!(
                 p.chars().count() >= 30,

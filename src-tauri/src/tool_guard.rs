@@ -73,6 +73,101 @@ pub fn is_task_execution_flow(session_id: Option<&str>) -> bool {
         .unwrap_or(false)
 }
 
+// ───────────────────────── 子 agent 会话注册表（SUBA-2） ─────────────────────────
+
+use crate::db::{SubagentBudget, SubagentProfile};
+use std::path::PathBuf;
+
+/// 子 agent 执行会话的上下文（runner 开跑时写、收尾删）。
+/// 白名单闸（dispatch）与 spawn 递归身份校验的数据源（设计 §5/§10 双保险②）。
+#[derive(Debug, Clone)]
+pub struct SubagentSessionCtx {
+    pub subagent_id: String,
+    pub task_id: String,
+    pub profile: SubagentProfile,
+    pub budget: SubagentBudget,
+    /// 产物目录 gen_dir/subagents/{subagent_id}/（write_artifact_file 的唯一可写区）
+    pub artifact_dir: PathBuf,
+}
+
+static SUBAGENT_SESSIONS: OnceLock<std::sync::Mutex<HashMap<String, SubagentSessionCtx>>> =
+    OnceLock::new();
+
+fn subagent_sessions() -> &'static std::sync::Mutex<HashMap<String, SubagentSessionCtx>> {
+    SUBAGENT_SESSIONS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+/// 锁中毒按 into_inner 取数据（全仓 mutex 口径，OCR r2/r3 high 采纳）：
+/// 安全闸的锁不能 fail-open（中毒时把子会话当主会话 = 递归闸失守），
+/// 也不能 fail-closed 到吞掉注册/清理（泄漏更难查）——取回数据继续跑 + eprintln 留痕。
+fn lock_subagent_sessions() -> std::sync::MutexGuard<'static, HashMap<String, SubagentSessionCtx>> {
+    subagent_sessions().lock().unwrap_or_else(|e| {
+        eprintln!("[mutex_poisoned] tool_guard::SUBAGENT_SESSIONS: {e:?}");
+        e.into_inner()
+    })
+}
+
+/// 注册子 agent 会话上下文。同 id 已存在 = 上一 runner 泄漏或双跑 bug：
+/// warn 留痕后覆盖（OCR r3 high 采纳：不静默）。
+pub fn register_subagent_session(session_id: &str, ctx: SubagentSessionCtx) {
+    let mut m = lock_subagent_sessions();
+    if m.contains_key(session_id) {
+        eprintln!(
+            "[tool_guard] 子 agent 会话重复注册（旧条目被覆盖，疑似泄漏/双跑）：{session_id}"
+        );
+    }
+    m.insert(session_id.to_string(), ctx);
+}
+
+pub fn unregister_subagent_session(session_id: &str) {
+    lock_subagent_sessions().remove(session_id);
+}
+
+/// 会话是否为子 agent 执行会话（子 agent 调 spawn → 递归硬禁的身份依据）。
+/// 锁中毒不改变判定语义（见 [lock_subagent_sessions]）。
+pub fn is_subagent_session(session_id: Option<&str>) -> bool {
+    let Some(sid) = session_id else {
+        return false;
+    };
+    lock_subagent_sessions().contains_key(sid)
+}
+
+/// RAII 注册守卫：构造即注册、Drop 即反注册——runner 在 register 与 unregister
+/// 之间 panic 也不会泄漏条目（OCR r2 high 采纳）。Drop 仅在条目仍属于本守卫的
+/// subagent 时反注册——同会话被后来的注册覆盖时不误删他人条目（OCR r3 high 采纳）。
+pub(crate) struct SubagentSessionGuard {
+    session_id: String,
+    subagent_id: String,
+}
+
+impl SubagentSessionGuard {
+    pub(crate) fn new(session_id: &str, ctx: SubagentSessionCtx) -> Self {
+        let subagent_id = ctx.subagent_id.clone();
+        register_subagent_session(session_id, ctx);
+        Self {
+            session_id: session_id.to_string(),
+            subagent_id,
+        }
+    }
+}
+
+impl Drop for SubagentSessionGuard {
+    fn drop(&mut self) {
+        let still_ours = lock_subagent_sessions()
+            .get(&self.session_id)
+            .map(|c| c.subagent_id == self.subagent_id)
+            .unwrap_or(false);
+        if still_ours {
+            unregister_subagent_session(&self.session_id);
+        }
+    }
+}
+
+pub fn subagent_ctx(session_id: Option<&str>) -> Option<SubagentSessionCtx> {
+    let sid = session_id?;
+    lock_subagent_sessions().get(sid).cloned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,6 +273,41 @@ mod tests {
         assert!(is_task_execution_flow(Some(sid)));
         unregister_exec_session(sid);
         assert!(!is_task_execution_flow(Some(sid)));
+    }
+
+    // ── SUBA-2：子 agent 会话注册表（OCR r1 要求与 sibling API 同等测试覆盖）──
+
+    fn sample_ctx(subagent_id: &str) -> SubagentSessionCtx {
+        SubagentSessionCtx {
+            subagent_id: subagent_id.into(),
+            task_id: format!("card-{subagent_id}"),
+            profile: crate::db::SubagentProfile::Research,
+            budget: crate::db::SubagentBudget::default(),
+            artifact_dir: std::path::PathBuf::from(format!("/tmp/art/{subagent_id}")),
+        }
+    }
+
+    #[test]
+    fn subagent_session_register_query_unregister_roundtrip() {
+        let sid = "test_subagent_session_roundtrip";
+        assert!(!is_subagent_session(Some(sid)));
+        register_subagent_session(sid, sample_ctx("sa_rt1"));
+        assert!(is_subagent_session(Some(sid)));
+        let ctx = subagent_ctx(Some(sid)).expect("注册后必能取到 ctx");
+        assert_eq!(ctx.subagent_id, "sa_rt1");
+        assert_eq!(ctx.task_id, "card-sa_rt1");
+        assert_eq!(ctx.profile, crate::db::SubagentProfile::Research);
+        assert_eq!(ctx.budget.max_turns, crate::db::DEFAULT_MAX_TURNS);
+        unregister_subagent_session(sid);
+        assert!(!is_subagent_session(Some(sid)));
+        assert!(subagent_ctx(Some(sid)).is_none());
+    }
+
+    #[test]
+    fn subagent_session_none_and_unknown_are_false() {
+        assert!(!is_subagent_session(None));
+        assert!(subagent_ctx(None).is_none());
+        assert!(!is_subagent_session(Some("never_registered_subagent")));
     }
 
     #[test]

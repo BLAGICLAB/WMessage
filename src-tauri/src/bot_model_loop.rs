@@ -325,16 +325,16 @@ fn is_retryable_llm_status(status: u16) -> bool {
     status == 429 || (500..=599).contains(&status)
 }
 
-/// 熔断判定：第 n 次（1-based 累计）Function 调用是否超上限
-fn should_fuse(calls_so_far: usize) -> bool {
-    calls_so_far > MAX_FUNCTION_CALLS_PER_REQUEST
+/// 熔断判定：第 n 次（1-based 累计）Function 调用是否超上限。
+/// cap 由会话派生（SUBA-2）：子 agent = 预算 max_tool_calls，其余 = 默认 50。
+fn should_fuse(calls_so_far: usize, cap: usize) -> bool {
+    calls_so_far > cap
 }
 
 /// 熔断返回消息（与主循环文案同源，单测直接断言）
-fn fuse_message(final_text: &str, hint: &str) -> String {
+fn fuse_message(final_text: &str, hint: &str, cap: usize) -> String {
     format!(
-        "{final_text}\n\n⏹ 已熔断：本轮 Function 调用超过 {} 次上限（安全保护），已停止后续执行{hint}",
-        MAX_FUNCTION_CALLS_PER_REQUEST
+        "{final_text}\n\n⏹ 已熔断：本轮 Function 调用超过 {cap} 次上限（安全保护），已停止后续执行{hint}"
     )
 }
 
@@ -536,8 +536,22 @@ where
             crate::bot_anthropic::anthropic_messages_url(&http.base_url)
         }
     };
-    let tools: serde_json::Value = serde_json::from_str(TOOLS()).unwrap();
+    // SUBA-2：工具 schema 按会话选取——子 agent 会话给 profile 白名单
+    //（递归双保险①：清单里无 spawn 等），其他会话默认全量
+    let tools: serde_json::Value =
+        serde_json::from_str(crate::bot::registry::tools_json_for(stop.session_id())).unwrap();
 
+    // SUBA-2：熔断上限按会话派生——子 agent 预算 max_tool_calls（子会话注册表），
+    // 其余 50。软警阈值 = cap*7/10（cap=50 时即既有 35，行为字节级不变）。
+    let fuse_cap = stop
+        .session_id()
+        .and_then(|sid| crate::tool_guard::subagent_ctx(Some(sid)))
+        .map(|c| c.budget.max_tool_calls as usize)
+        .unwrap_or(MAX_FUNCTION_CALLS_PER_REQUEST)
+        .max(1);
+    // 小 cap 收敛：cap≤9 时 7/10 会塌到 0（提示「已调用 0 个」失真）——钳到
+    // [1, cap-1]；cap=1 时软警本就无意义（下一次调用即熔断），钳到 1 即可
+    let soft_warn_at = (fuse_cap * 7 / 10).clamp(1, fuse_cap.saturating_sub(1).max(1));
     let mut msgs = msgs;
     let emit = deps.emit;
     let audit = deps.audit;
@@ -1081,24 +1095,24 @@ where
                 continue;
             }
             function_calls_total += 1;
-            if should_fuse(function_calls_total) {
+            if should_fuse(function_calls_total, fuse_cap) {
                 let hint = skill_finish(false, "单轮 Function 调用超上限");
                 audit_log(&format!(
                     "fuse | 单轮 Function 调用超过 {} 次，已熔断",
-                    MAX_FUNCTION_CALLS_PER_REQUEST
+                    fuse_cap
                 ));
-                return Ok((fuse_message(&final_text, &hint), collected_refs));
+                return Ok((fuse_message(&final_text, &hint, fuse_cap), collected_refs));
             }
-            // 软警告（SOFT_WARN_AT）：置标志，推迟到本轮 tool 响应全部回填后再注入——
+            // 软警告（soft_warn_at，按会话熔断上限派生）：置标志，推迟到本轮 tool 响应全部回填后再注入——
             // 若在此直接 push user 消息，会插进 assistant(tool_calls) 与 tool 响应之间，
             // 破坏「tool_calls 后必须紧跟 tool 消息」的协议，下一轮请求被 API 拒为
             // 400 invalid params（实锤：两次 400 均紧跟 soft_warn 注入）
-            if !soft_warn_sent && function_calls_total >= SOFT_WARN_AT {
+            if !soft_warn_sent && function_calls_total >= soft_warn_at {
                 soft_warn_sent = true;
                 soft_warn_queued = true;
                 audit_log(&format!(
                     "soft_warn | Function 调用达 {} 次（上限 {}），追加收尾提醒",
-                    SOFT_WARN_AT, MAX_FUNCTION_CALLS_PER_REQUEST
+                    soft_warn_at, fuse_cap
                 ));
             }
             // 把 /stop 守卫透传给 execute_tool，run_python 在途可中断；
@@ -1221,8 +1235,8 @@ where
             msgs.push(serde_json::json!({
                 "role": "user",
                 "content": format!(
-                    "【系统提示】你已累计调用 {SOFT_WARN_AT} 个工具（全程累计），最多还能调 {} 个。请尽快收尾：合并调用、必要时汇总报告给用户、避免在剩余额度内继续展开新步骤。",
-                    MAX_FUNCTION_CALLS_PER_REQUEST - SOFT_WARN_AT
+                    "【系统提示】你已累计调用 {soft_warn_at} 个工具（全程累计），最多还能调 {} 个。请尽快收尾：合并调用、必要时汇总报告给用户、避免在剩余额度内继续展开新步骤。",
+                    fuse_cap - soft_warn_at
                 ),
             }));
         }
@@ -1846,8 +1860,8 @@ mod rounds_fuse_tests {
         let mut fused_msg: Option<String> = None;
         for _ in 0..51 {
             calls += 1;
-            if should_fuse(calls) {
-                fused_msg = Some(fuse_message("前文", ""));
+            if should_fuse(calls, 50) {
+                fused_msg = Some(fuse_message("前文", "", 50));
                 break;
             }
         }
@@ -1855,7 +1869,7 @@ mod rounds_fuse_tests {
         assert!(msg.contains("⏹ 已熔断"), "熔断消息应含「⏹ 已熔断」：{msg}");
         assert!(msg.contains("50 次上限"), "熔断消息应带上限值：{msg}");
         // 边界：第 50 次放行，第 51 次熔断
-        assert!(!should_fuse(50));
-        assert!(should_fuse(51));
+        assert!(!should_fuse(50, 50));
+        assert!(should_fuse(51, 50));
     }
 }

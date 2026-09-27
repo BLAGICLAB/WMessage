@@ -53,6 +53,9 @@ src-tauri/src/
 │                        （prompt 常量已移出，见 prompts/）
 │─ 提示词 prompts/（AI 应用的业务逻辑，与代码同等对待；统一从 `crate::prompts::NAME` 取）
 ├── prompts/mod.rs        模块声明 + `crate::prompts::NAME` 统一出口 + prompt 清单锁测试
+│   ├── prompts/subagent.rs 子 Agent 编排提示词（设计 §8）：主 agent 派发职责段/
+│   │                     子 agent 通用段/research·coder·general 三 profile/收尾
+│   │                     JSON schema 提示；镜像资产 docs/prompts/subagent/
 │   prompts/system.rs       SYSTEM_PROMPT（主聊天规则底座 + 安全红线）
 │   prompts/summary.rs      SUMMARY_SYSTEM_PROMPT（截断即摘要 ≤200 字）/ COMPACT_SYSTEM_PROMPT（/compact ≤300 字）
 │   prompts/reflection.rs   REFLECTION_SYSTEM_PROMPT（多摘要 → 阶段总结）

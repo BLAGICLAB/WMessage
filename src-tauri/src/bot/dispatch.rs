@@ -223,6 +223,57 @@ async fn execute_tool_impl(
             return crate::bot::registry::ToolResult::warn(e.to_string(), Vec::new());
         }
     }
+    // 1.6 SUBA-2（置于 skill 钩子后：tests-audit 结构锚点锁 skill_on_step 在函数头部窗口）：子 agent 会话白名单闸（设计 §5.1/§10 服务端强制）。
+    // schema 层已按 profile 过滤（tools_json_for，递归双保险①），此处兜底：
+    // 白名单外工具一律拒——含 spawn/check/cancel（递归禁用②的 dispatch 侧）与
+    // 任务卡主状态写（主状态只读）。早退事件配平 tool.return。
+    if let Some(ctx) = crate::tool_guard::subagent_ctx(session_id) {
+        if !crate::bot::registry::profile_whitelist(ctx.profile).contains(&name) {
+            // OCR r2 high 采纳：不复用 early_return_events（那会发误导性的
+            // pre_execute.deny——本处 pre-execute 实际是通过的）。事件顺序：
+            // 先 subagent_whitelist_deny（真实原因，带 trace），再 tool.return
+            // 配平（reason=subagent_whitelist_deny，与 call 可按会话整轮对齐）。
+            let mut deny_kv: Vec<(&str, String)> = vec![
+                ("subagent_id", ctx.subagent_id.clone()),
+                ("profile", ctx.profile.as_str().to_string()),
+                ("tool", name.to_string()),
+            ];
+            deny_kv.extend(trace_kv(trace, session_id));
+            crate::audit::write_event(
+                app,
+                crate::audit::AuditLevel::Warn,
+                "subagent_whitelist_deny",
+                &deny_kv,
+            );
+            let mut ret_kv: Vec<(&str, String)> = vec![
+                ("tool", name.to_string()),
+                ("reason", "subagent_whitelist_deny".to_string()),
+                ("exit_code", "none".to_string()),
+                ("duration_ms", start.elapsed().as_millis().to_string()),
+            ];
+            ret_kv.extend(trace_kv(trace, session_id));
+            crate::audit::write_event(app, crate::audit::AuditLevel::Warn, "tool.return", &ret_kv);
+            return crate::bot::registry::ToolResult::warn(
+                format!(
+                    "子 agent 白名单外工具「{name}」已拒绝（profile={}）。只能使用白名单内工具；遇到阻塞在收尾 JSON 的 blockers 里如实记录。",
+                    ctx.profile.as_str()
+                ),
+                Vec::new(),
+            );
+        }
+        // 进度事件（设计 §3 subagent_progress：按 subagent_id 串链，工具粒度）
+        let mut prog_kv: Vec<(&str, String)> = vec![
+            ("subagent_id", ctx.subagent_id.clone()),
+            ("task_id", ctx.task_id.clone()),
+        ];
+        prog_kv.extend(trace_kv(trace, session_id));
+        crate::audit::write_event(
+            app,
+            crate::audit::AuditLevel::Info,
+            "subagent_progress",
+            &prog_kv,
+        );
+    }
     let ctx = ToolCtx {
         app,
         stop,

@@ -245,6 +245,32 @@ pub const SCHEMA_RECORD_LESSON: &str = r##"{"type":"function","function":{"name"
 pub const SCHEMA_USE_SKILL: &str = r##"{"type":"function","function":{"name":"use_skill","description":"读取已安装技能（skill）的完整文档并按文档步骤执行。任务涉及的每个相关技能都要读（可多次调用）：例如做 PPT 时，若清单里同时有编排、生成、配色、风格类技能，应逐个读取、取长补短综合运用，不要只读一个","parameters":{"type":"object","properties":{
     "name":{"type":"string","description":"技能名（系统提示词「已安装技能」清单里的名称，一次一个，可多次调用）"}
   },"required":["name"]}}}"##;
+// ─────────────────── SUBA-2：子 agent 编排三工具（主 agent 可见） ───────────────────
+pub const SCHEMA_SPAWN_SUBAGENT: &str = r##"{"type":"function","function":{"name":"spawn_subagent","description":"派发受管子 agent 执行单一目标长任务（非阻塞，立即返回 subagentId/taskId/status）。适用：预计超 5 轮工具调用、多来源调研、写代码跑脚本、用户要求后台/并行。objective 单一目标；acceptanceCriteria 必填且每条可检验（不要写「调研清楚」，要写「覆盖至少 5 个产品，每个含官网 URL，输出 report.md」）；contextSummary 只给必要背景，不要倒主对话全文。完成后用 check_subagent 轮询结果再汇总","parameters":{"type":"object","properties":{
+    "objective":{"type":"string","description":"单一目标（一句话说清做什么）"},
+    "profile":{"type":"string","enum":["research","coder","general"],"description":"工具档位：research=联网调研写报告 / coder=读代码跑 Python 写文件 / general=两者并集"},
+    "acceptanceCriteria":{"type":"array","items":{"type":"string"},"minItems":1,"description":"验收标准，每条可检验"},
+    "contextSummary":{"type":"string","description":"必要上下文摘要（可选；不含主对话全文）"},
+    "budget":{"type":"object","properties":{"maxTurns":{"type":"integer","description":"工具循环轮数上限，默认 30，硬顶 50"},"maxToolCalls":{"type":"integer","description":"累计工具调用上限，默认 100"},"maxWallSeconds":{"type":"integer","description":"墙钟秒数上限，默认 600（排队不计）"}},"description":"预算三硬顶（可选，默认值见上；上卡可见）"},
+    "modelProfile":{"type":"string","description":"指定模型名（可选；未指定/无效回退当前激活模型）"},
+    "parentTaskId":{"type":"string","description":"主卡 id（可选；编排计划卡，缺卡报错）"}
+  },"required":["objective","profile","acceptanceCriteria"]}}}"##;
+pub const SCHEMA_CHECK_SUBAGENT: &str = r##"{"type":"function","function":{"name":"check_subagent","description":"查询子 agent 状态（幂等可轮询）：status=queued|running|succeeded|failed|cancelled|budget_exceeded + 进度 + 收尾结果（summary/artifacts/blockers）。waitMs>0 时短等待至终态或超时（上限 5000，不要高频空转）","parameters":{"type":"object","properties":{
+    "subagentId":{"type":"string","description":"子 agent id（spawn 返回值），与 taskId 二选一"},
+    "taskId":{"type":"string","description":"子任务卡 id，与 subagentId 二选一"},
+    "waitMs":{"type":"integer","description":"短等待毫秒数（可选，0=立即返回，上限 5000）"}
+  },"required":[]}}}"##;
+pub const SCHEMA_CANCEL_SUBAGENT: &str = r##"{"type":"function","function":{"name":"cancel_subagent","description":"取消子 agent（与任务卡停止按钮同 API）：置 cancelled 并停止其执行；已终态则 no-op","parameters":{"type":"object","properties":{
+    "subagentId":{"type":"string","description":"子 agent id，与 taskId 二选一"},
+    "taskId":{"type":"string","description":"子任务卡 id，与 subagentId 二选一"},
+    "reason":{"type":"string","description":"取消原因（可选）"}
+  },"required":[]}}}"##;
+// ─────────────────── SUBA-2：子 agent 白名单内工具（不进主 agent schema） ───────────────────
+pub const SCHEMA_WRITE_ARTIFACT_FILE: &str = r##"{"type":"function","function":{"name":"write_artifact_file","description":"把文本内容写进自己的产物目录（gen_dir/subagents/{subagentId}/，报告/中间结果落地用）。filename 为纯文件名（不含路径分隔符），已存在会自动加 (n) 序号不覆盖","parameters":{"type":"object","properties":{
+    "filename":{"type":"string","description":"纯文件名（不含路径分隔符 / 与 \\、不允许 .. 路径段与 NUL；Windows 保留设备名如 CON/NUL 拒绝），如 report.md / data.csv；同名自动加 (n) 序号"},
+    "content":{"type":"string","description":"完整文本内容"}
+  },"required":["filename","content"]}}}"##;
+pub const SCHEMA_READ_OWN_CARD: &str = r##"{"type":"function","function":{"name":"read_own_card","description":"重读自己的任务卡（标题/验收标准 note/子任务清单/预算）：每轮开始建议先调，subtasks/note 有变更则调整计划；deletedAt 非空 = 卡片已被软删，立即停止新探索并收尾","parameters":{"type":"object","properties":{}}}}"##;
 // ─────────────────── 29 个适配器（统一签名，按需拆 ctx 字段）───────────────────
 // list_tasks 在原 bot.rs:155 收 (app) 不收 args——拆出来后已修正。
 // link_file_to_task 是 async fn，必须 .await——拆出来后已修正。
@@ -389,6 +415,46 @@ fn call_record_lesson<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a>
 fn call_use_skill<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
     let session_id = ctx.session_id;
     Box::pin(async move { tool_use_skill(ctx.app, args, session_id) })
+}
+
+// ─────────────────── SUBA-2 适配器：编排三工具 + 子 agent 白名单工具 ───────────────────
+fn call_spawn_subagent<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    let app = ctx.app.clone();
+    let args = args.to_string();
+    let session_id = ctx.session_id.map(|s| s.to_string());
+    Box::pin(
+        async move { crate::bot_orchestrator::tool_spawn_subagent(&app, &args, session_id).await },
+    )
+}
+
+fn call_check_subagent<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    let app = ctx.app.clone();
+    let args = args.to_string();
+    Box::pin(async move { crate::bot_orchestrator::tool_check_subagent(&app, &args).await })
+}
+
+fn call_cancel_subagent<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    let app = ctx.app.clone();
+    let args = args.to_string();
+    let session_id = ctx.session_id.map(|s| s.to_string());
+    Box::pin(
+        async move { crate::bot_orchestrator::tool_cancel_subagent(&app, &args, session_id).await },
+    )
+}
+
+fn call_write_artifact_file<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    let app = ctx.app.clone();
+    let args = args.to_string();
+    let session_id = ctx.session_id.map(|s| s.to_string());
+    Box::pin(async move {
+        crate::bot_orchestrator::tool_write_artifact_file(&app, &args, session_id).await
+    })
+}
+
+fn call_read_own_card<'a>(ctx: &'a ToolCtx<'a>, _args: &'a str) -> ToolFuture<'a> {
+    let app = ctx.app.clone();
+    let session_id = ctx.session_id.map(|s| s.to_string());
+    Box::pin(async move { crate::bot_orchestrator::tool_read_own_card(&app, session_id).await })
 }
 
 /// T4：合并 TOOLS_TABLE 中所有 mutating 工具的 claims_patterns，
@@ -745,22 +811,164 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         max_output_chars: 8192,
         call: call_use_skill,
     },
+    // ─────────────────── SUBA-2：子 agent 编排（主 agent 可见，追加表尾） ───────────────────
+    ToolDef {
+        name: "spawn_subagent",
+        schema: SCHEMA_SPAWN_SUBAGENT,
+        mutating: true,
+        claims_patterns: &[
+            "已派发",
+            "已派出",
+            "已派子任务",
+            "已启动子任务",
+            "已创建子任务",
+        ],
+        max_output_chars: 8192,
+        call: call_spawn_subagent,
+    },
+    ToolDef {
+        name: "check_subagent",
+        schema: SCHEMA_CHECK_SUBAGENT,
+        mutating: false,
+        claims_patterns: &[],
+        max_output_chars: 8192,
+        call: call_check_subagent,
+    },
+    ToolDef {
+        name: "cancel_subagent",
+        schema: SCHEMA_CANCEL_SUBAGENT,
+        mutating: true,
+        claims_patterns: &["已取消子任务", "已取消派发", "已终止子任务"],
+        max_output_chars: 8192,
+        call: call_cancel_subagent,
+    },
+    // ─────────────────── SUBA-2：子 agent 白名单工具（不进主 agent 默认 schema） ───────────────────
+    ToolDef {
+        name: "write_artifact_file",
+        schema: SCHEMA_WRITE_ARTIFACT_FILE,
+        mutating: true,
+        claims_patterns: &["已写入产物", "产物已写入", "已保存产物", "已写入报告"],
+        max_output_chars: 8192,
+        call: call_write_artifact_file,
+    },
+    ToolDef {
+        name: "read_own_card",
+        schema: SCHEMA_READ_OWN_CARD,
+        mutating: false,
+        claims_patterns: &[],
+        max_output_chars: 8192,
+        call: call_read_own_card,
+    },
 ];
 /// TOOLS JSON 由 TOOLS_TABLE 顺序拼装（schema 常量原文直拼，不做 parse + re-serialize）。
 /// 少一次运行期解析，也不给「schema 非法 → expect panic 杀聊天」留路径
 /// （合法性 + 与 baseline 的一致性由 registry_tests 锁死）。
+///
+/// SUBA-2：仅子 agent 可见的工具（write_artifact_file / read_own_card）不出现在
+/// 主 agent 的默认清单里——主可见 = 29 既有 + 编排三工具。
 pub fn tools_json() -> &'static str {
     static CACHE: OnceLock<String> = OnceLock::new();
     CACHE.get_or_init(|| {
         let mut s = String::with_capacity(16 * 1024);
         s.push('[');
-        for (i, tool) in TOOLS_TABLE.iter().enumerate() {
-            s.push_str(if i > 0 { ",\n  " } else { "\n  " });
+        let mut first = true;
+        for tool in TOOLS_TABLE.iter() {
+            if SUBAGENT_ONLY_TOOLS.contains(&tool.name) {
+                continue;
+            }
+            s.push_str(if first { "\n  " } else { ",\n  " });
+            first = false;
             s.push_str(tool.schema);
         }
         s.push_str("\n]");
         s
     })
+}
+
+/// 仅子 agent 白名单可见的工具（主 agent 默认 schema 不含）。
+pub const SUBAGENT_ONLY_TOOLS: &[&str] = &["write_artifact_file", "read_own_card"];
+
+/// 子 agent 工具白名单（设计 §5.1 → 本仓工具映射）。
+/// 禁止（所有 profile）：spawn_subagent / check_subagent / cancel_subagent /
+/// 任务卡主状态写（create_task/complete_task/edit_task/toggle_subtask 等全部不在列）/
+/// 任务执行 / 权限变更——白名单外一律由 dispatch 闸拒绝。
+pub const RESEARCH_TOOLS: &[&str] = &[
+    "web_search",
+    "fetch_url",
+    "list_files",
+    "read_text_file",
+    "write_artifact_file",
+    "read_own_card",
+];
+pub const CODER_TOOLS: &[&str] = &[
+    "read_text_file",
+    "list_files",
+    "grep_files",
+    "run_python",
+    "write_artifact_file",
+    "read_own_card",
+];
+pub const GENERAL_TOOLS: &[&str] = &[
+    "web_search",
+    "fetch_url",
+    "read_text_file",
+    "list_files",
+    "grep_files",
+    "run_python",
+    "write_artifact_file",
+    "read_own_card",
+];
+
+pub fn profile_whitelist(profile: crate::db::SubagentProfile) -> &'static [&'static str] {
+    match profile {
+        crate::db::SubagentProfile::Research => RESEARCH_TOOLS,
+        crate::db::SubagentProfile::Coder => CODER_TOOLS,
+        crate::db::SubagentProfile::General => GENERAL_TOOLS,
+    }
+}
+
+/// 按会话选工具 schema：子 agent 会话 → profile 白名单 JSON；其他 → 默认全量。
+/// run_model_loop_core 每轮经此处取 tools（设计 §5.1 白名单 + §10 递归双保险①）。
+pub fn tools_json_for(session_id: Option<&str>) -> &'static str {
+    let profile = session_id
+        .and_then(|sid| crate::tool_guard::subagent_ctx(Some(sid)))
+        .map(|c| c.profile);
+    match profile {
+        None => tools_json(),
+        Some(p) => profile_tools_json(p),
+    }
+}
+
+pub fn profile_tools_json(profile: crate::db::SubagentProfile) -> &'static str {
+    static CACHE: OnceLock<HashMap<&'static str, String>> = OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            let mut map = HashMap::new();
+            for p in [
+                crate::db::SubagentProfile::Research,
+                crate::db::SubagentProfile::Coder,
+                crate::db::SubagentProfile::General,
+            ] {
+                let whitelist = profile_whitelist(p);
+                let mut s = String::with_capacity(4 * 1024);
+                s.push('[');
+                let mut first = true;
+                for tool in TOOLS_TABLE.iter() {
+                    if !whitelist.contains(&tool.name) {
+                        continue;
+                    }
+                    s.push_str(if first { "\n  " } else { ",\n  " });
+                    first = false;
+                    s.push_str(tool.schema);
+                }
+                s.push_str("\n]");
+                map.insert(p.as_str(), s);
+            }
+            map
+        })
+        .get(profile.as_str())
+        .map(|s| s.as_str())
+        .unwrap_or_else(|| tools_json())
 }
 
 /// MUTATING_TOOLS 由 TOOLS_TABLE 过滤（mutating == true）。
@@ -778,11 +986,18 @@ mod registry_tests {
     use std::collections::HashSet;
 
     #[test]
-    fn tools_table_contains_29_unique_tools() {
+    fn tools_table_contains_32_main_visible_tools() {
         let v: serde_json::Value =
             serde_json::from_str(tools_json()).expect("tools_json() 必须是合法 JSON");
         let arr = v.as_array().expect("TOOLS 顶层必须是数组");
-        assert_eq!(arr.len(), 29, "TOOLS 必须含 29 个工具");
+        // SUBA-2：主可见 = 29 既有 + spawn/check/cancel 三编排工具；
+        // write_artifact_file / read_own_card 仅子 agent 白名单可见
+        assert_eq!(arr.len(), 32, "主 agent 可见工具必须为 32");
+        assert_eq!(
+            TOOLS_TABLE.len(),
+            34,
+            "TOOLS_TABLE 全量 34（含 2 个 subagent-only）"
+        );
 
         let mut seen: HashSet<String> = HashSet::new();
         for t in arr.iter() {
@@ -837,6 +1052,9 @@ mod registry_tests {
             "recall_facts",
             "record_lesson",
             "use_skill",
+            "spawn_subagent",
+            "check_subagent",
+            "cancel_subagent",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -883,6 +1101,9 @@ mod registry_tests {
             "recall_facts",
             "record_lesson",
             "use_skill",
+            "spawn_subagent",
+            "check_subagent",
+            "cancel_subagent",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -909,6 +1130,9 @@ mod registry_tests {
             "create_pdf",
             "remember_fact",
             "record_lesson",
+            "spawn_subagent",
+            "cancel_subagent",
+            "write_artifact_file",
         ]
         .into_iter()
         .collect();
@@ -922,6 +1146,9 @@ mod registry_tests {
     ///
     /// 不比字节：tools_json() 用统一的 `,\n  ` 缩进拼装，而原 const 的
     /// link_file_to_task 条目顶格写（无 2 空格），故两者只差这一处空白。
+    ///
+    /// SUBA-2：主可见清单 = baseline 29 + 编排三工具——baseline 必须是 derived 的
+    /// **前缀**（新工具只追加表尾，既有 29 个 schema 字节不动）。
     #[test]
     fn tools_json_matches_baseline() {
         let fixture = include_str!("../../tests/fixtures/tools_baseline.json");
@@ -931,7 +1158,14 @@ mod registry_tests {
             .expect("fixture 内 const TOOLS 正文必须是合法 JSON");
         let derived: serde_json::Value =
             serde_json::from_str(tools_json()).expect("tools_json() 必须是合法 JSON");
-        assert_eq!(derived, baseline, "tools_json() 与 baseline 不一致");
+        let base_arr = baseline.as_array().unwrap();
+        let der_arr = derived.as_array().unwrap();
+        assert_eq!(
+            &der_arr[..base_arr.len()],
+            base_arr.as_slice(),
+            "tools_json() 前 29 项与 baseline 漂移（新工具必须只追加表尾）"
+        );
+        assert_eq!(der_arr.len(), base_arr.len() + 3, "主可见应为 29+3");
     }
 
     /// 单源真相的核心不变式：ToolDef.name 必须等于它自己 schema 里的 function.name。
@@ -973,6 +1207,9 @@ mod registry_tests {
             ("create_pdf", "已生成 PDF 文件"),
             ("remember_fact", "已记住你的偏好"),
             ("record_lesson", "已保存到 AI_Gen_Files"),
+            ("spawn_subagent", "已派发子 agent 执行调研"),
+            ("cancel_subagent", "已取消子任务派发"),
+            ("write_artifact_file", "已写入产物 report.md"),
         ];
         for (tool_name, sample) in samples {
             let t = TOOLS_TABLE
@@ -1045,5 +1282,105 @@ mod registry_tests {
                 t.name
             );
         }
+    }
+
+    // ─────────────────── SUBA-2：子 agent 白名单 schema ───────────────────
+
+    /// 设计 §5/§13：子 agent 工具清单断言无 spawn（递归双保险①——schema 层）；
+    /// 三个 profile 都不含任务卡主状态写工具与编排工具。
+    #[test]
+    fn subagent_whitelists_exclude_spawn_and_task_writes() {
+        let forbidden = [
+            "spawn_subagent",
+            "check_subagent",
+            "cancel_subagent",
+            "create_task",
+            "complete_task",
+            "delete_task",
+            "edit_task",
+            "add_subtask",
+            "toggle_subtask",
+            "remove_subtask",
+            "link_file_to_task",
+            "use_skill",
+        ];
+        for p in [
+            crate::db::SubagentProfile::Research,
+            crate::db::SubagentProfile::Coder,
+            crate::db::SubagentProfile::General,
+        ] {
+            let json = profile_tools_json(p);
+            let v: serde_json::Value = serde_json::from_str(json).expect("白名单必须是合法 JSON");
+            let names: Vec<&str> = v
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| t["function"]["name"].as_str().unwrap())
+                .collect();
+            for f in forbidden {
+                assert!(
+                    !names.contains(&f),
+                    "{:?} 白名单不得含 {f}（递归禁用/主状态只读）",
+                    p
+                );
+            }
+            assert!(
+                names.contains(&"read_own_card"),
+                "白名单必须含 read_own_card"
+            );
+            assert!(names.contains(&"write_artifact_file"));
+        }
+    }
+
+    /// 白名单内容精确性：research 联网 + 读列；coder 本仓五件 + run_python；
+    /// general = research ∪ coder 去重。
+    #[test]
+    fn profile_whitelists_match_design_mapping() {
+        assert_eq!(
+            RESEARCH_TOOLS,
+            &[
+                "web_search",
+                "fetch_url",
+                "list_files",
+                "read_text_file",
+                "write_artifact_file",
+                "read_own_card",
+            ]
+        );
+        assert_eq!(
+            CODER_TOOLS,
+            &[
+                "read_text_file",
+                "list_files",
+                "grep_files",
+                "run_python",
+                "write_artifact_file",
+                "read_own_card",
+            ]
+        );
+        let mut union: Vec<&str> = RESEARCH_TOOLS
+            .iter()
+            .chain(CODER_TOOLS.iter())
+            .copied()
+            .collect();
+        union.sort();
+        union.dedup();
+        let mut general: Vec<&str> = GENERAL_TOOLS.to_vec();
+        general.sort();
+        assert_eq!(general, union, "general 必须是 research ∪ coder 去重");
+        // 白名单里的名字全部真实存在（防拼写漂移）
+        for name in GENERAL_TOOLS {
+            assert!(
+                tools_index().contains_key(name),
+                "白名单工具 {name} 不在 TOOLS_TABLE"
+            );
+        }
+    }
+
+    /// 无会话上下文 → 默认全量（含编排三工具，不含 subagent-only）
+    #[test]
+    fn tools_json_for_plain_session_is_default() {
+        assert_eq!(tools_json_for(Some("not-a-subagent-session")), tools_json());
+        assert_eq!(tools_json_for(None), tools_json());
     }
 }

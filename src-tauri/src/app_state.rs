@@ -156,6 +156,9 @@ pub(crate) struct AppState {
     pub(crate) pending: Mutex<HashMap<String, crate::exec_steps::PendingExec>>,
     /// 待确认请求（`ConfirmMap`：id → (oneshot 通道, 归属会话 id)）
     pub(crate) confirm_requests: ConfirmMap,
+    /// 子 agent 取消令牌表（SUBA-2：subagent_id → StopToken；
+    /// cancel_subagent 持有的句柄，runner 注册 / 收尾删除）
+    pub(crate) subagent_stops: Arc<Mutex<HashMap<String, crate::bot_slash::StopToken>>>,
 }
 
 /// 兜底实例：只在 `AppState` 未注入的路径上用（见上面的口径说明）
@@ -250,4 +253,12 @@ pub(crate) fn pending_map<'a, R: tauri::Runtime>(
     app: &'a tauri::AppHandle<R>,
 ) -> &'a Mutex<HashMap<String, crate::exec_steps::PendingExec>> {
     &ext(app).pending
+}
+
+/// 子 agent 取消令牌表访问器（返回 Arc 克隆——cancel 与 runner 分属不同任务，
+/// 令牌生命周期需跨任务存活）。
+pub(crate) fn subagent_stops<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Arc<Mutex<HashMap<String, crate::bot_slash::StopToken>>> {
+    ext(app).subagent_stops.clone()
 }

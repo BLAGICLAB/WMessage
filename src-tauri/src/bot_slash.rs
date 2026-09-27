@@ -120,6 +120,11 @@ impl StopToken {
     pub fn stopped(&self) -> bool {
         self.0.load(std::sync::atomic::Ordering::SeqCst)
     }
+
+    /// 远程置位停止标志（SUBA-2：cancel_subagent 持令牌停对应 runner）
+    pub fn stop(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 impl Drop for StopGuard {

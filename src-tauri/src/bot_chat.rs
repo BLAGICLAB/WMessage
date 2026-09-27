@@ -487,7 +487,7 @@ enum PreStepRoute {
 use crate::app_state::chat_running;
 
 /// 会话级防重入守卫：Drop（含 panic 展开）时释放本会话槽位。
-struct ChatGuard {
+pub(crate) struct ChatGuard {
     /// None = 调用没带会话 id（不加锁）；清理只在 Some 时发生
     session_id: Option<String>,
     /// 表句柄：与 acquire 时取的注入实例是同一个 `Mutex`
@@ -496,7 +496,7 @@ struct ChatGuard {
 
 impl ChatGuard {
     /// Ok = 允许进入（无会话 id 不加锁）；Err = 本会话已有执行实例在跑
-    fn acquire<R: tauri::Runtime>(
+    pub(crate) fn acquire<R: tauri::Runtime>(
         app: &tauri::AppHandle<R>,
         session_id: Option<&str>,
     ) -> Result<Self, ()> {
@@ -737,6 +737,12 @@ pub async fn bot_chat(
     // 段间用 \n\n 分隔；后续 SkillBody/Recovery/Plan 拼在尾部，无分隔符。
     let mut prompt = SystemPromptBuilder::new();
     prompt.push(PromptSlot::Base, SYSTEM_PROMPT);
+    // SUBA-2（设计 §8.1）：主 agent 派发子 agent 的职责段——同 Base 槽位按 push
+    // 顺序追加在 SYSTEM_PROMPT 之后（同槽多次 push 按顺序拼接，无新 slot）。
+    prompt.push(
+        PromptSlot::Base,
+        format!("\n\n{}", crate::prompts::MAIN_AGENT_ADDENDUM.trim_start()),
+    );
     prompt.push(PromptSlot::GenDir, format!("\n\n{}", gen_dir_rule(&app)));
     prompt.push(
         PromptSlot::SkillCatalog,
