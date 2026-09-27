@@ -56,10 +56,11 @@ SUBA-1 = 设计 §11 A1「orchestrator 核心（服务端，不暴露 LLM 工具
 1. expected_files 10（2 新建 + 8 修改）【校正 ×1：补 lib.rs 模块声明】【校正 ×2：Task 结构体
    新增三字段的字面量涟漪——bot/tools.rs（tool_create_task+测试）/api_handlers/handlers.rs/
    api_handlers/mod.rs/task_out.rs 四处 Task 构造补 None 三臂，机械无语义】
-2. budget：新文件 +1350（OCR r1 采纳 13 条修复后的实测 +1276：DDL 单源化/索引/
-   UNIQUE/同态戳保留/兜底 warn/回填校验 + 新增 6 个回归测试）；修改 +250/-20
-   （实测 +220/-9：patch 钳制 + 往返/损坏/钳制三测试）
-   【校正 ×2：字段涟漪】【校正 ×3：fmt 实测】【校正 ×4：OCR r1 采纳修复的行数增长】
+2. budget：新文件 +1350（实测 +1309）；修改 +400/-150（OCR r2 再采纳 9 条后的
+   实测 +350/-123：含 load_all 行映射抽 task_from_row 共享函数的重构位移——
+   旧代码 -100 行以新函数形式回归，非净增逻辑）
+   【校正 ×2：字段涟漪】【校正 ×3：fmt 实测】【校正 ×4：OCR r1 修复】
+   【校正 ×5：OCR r2 采纳 + load_task/task_exists 定点读重构】
 3. fix 字段：全部新建模块内闭环；tasks.rs 仅追加字段/列/patch 臂（既有路径零语义变更）
 
 ## 机器可读（脚本读取，勿改格式）
@@ -80,8 +81,8 @@ SUBA-1 = 设计 §11 A1「orchestrator 核心（服务端，不暴露 LLM 工具
     "src-tauri/src/task_out.rs",
     "docs/rust-bot-architecture.md"
   ],
-  "max_lines_added": 250,
-  "max_lines_removed": 20,
+  "max_lines_added": 400,
+  "max_lines_removed": 150,
   "max_new_files_lines": 1350,
   "findings": [
     {"id": "SUBA-1", "file": "src-tauri/src/bot_orchestrator.rs", "line": 1, "fix": "orchestrator 核心：spawn/check/cancel 纯 DB 核心（_locked，单测锚点）+ 异步包装（spawn_blocking+DB_WRITE_LOCK）；spawn=校验+预算钳制+建子卡（🧩/note 双写验收/column=doing/budget 上卡）+插 queued 行+audit subagent_spawned；check 双键幂等；cancel queued/running→cancelled、终态 no-op；缺 parent 卡 TaskNotFound"},
