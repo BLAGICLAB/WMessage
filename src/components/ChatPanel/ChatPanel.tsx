@@ -8,6 +8,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen, emit } from "@tauri-apps/api/event";
+import { useTauriListen } from "../../lib/useTauriListen";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 
@@ -237,6 +238,28 @@ export function ChatPanel({
   useEffect(() => {
     sessionIdRef.current = sessionId;
   }, [sessionId]);
+
+  // SUBA-3：子 agent 收尾事件——派发者主会话里轻提示（围观过滤沿用 PAR-1 的
+  // sessionId 流式隔离；这里补「后台子任务完成」的可见性）。
+  // 复用 useTauriListen（OCR r1 采纳：与手写 listen 生命周期等价且更稳）。
+  const subagentStatusLabel: Record<string, string> = {
+    succeeded: "已完成",
+    failed: "失败",
+    cancelled: "已取消",
+    budget_exceeded: "预算耗尽",
+  };
+  useTauriListen<{
+    subagentId: string;
+    parentSessionId: string | null;
+    status: string;
+    summary: string;
+  }>("subagent-finished", (payload) => {
+    const parent = payload.parentSessionId;
+    if (parent && parent === sessionIdRef.current) {
+      const label = subagentStatusLabel[payload.status] ?? payload.status;
+      addHint(`🧩 子任务${label}：${payload.summary || payload.subagentId}`);
+    }
+  });
 
   const persistHistory = (sid: string, msgs: Msg[]) => {
     invoke("bot_history_save", {
@@ -945,9 +968,16 @@ export function ChatPanel({
       setInput("");
       // PAR-1：/stop 停「当前视图会话」的在途回复（并行回复按会话隔离）
       if (inflightRef.current.has(sessionIdRef.current ?? "")) {
-        invoke("bot_stop", { sessionId: sessionIdRef.current }).catch((e) =>
-          handleCommandError(e, "bot_stop", { silent: true })
-        );
+        if (isSubagentSession) {
+          // SUBA-3：子 agent 会话 → cancel_subagent（状态机置 cancelled 并硬停）
+          invoke("cancel_subagent", { key: sessionIdRef.current })
+            .catch((e) => handleCommandError(e, "cancel_subagent", { silent: true }))
+            .finally(() => invoke("bot_stop", { sessionId: sessionIdRef.current }).catch(() => {}));
+        } else {
+          invoke("bot_stop", { sessionId: sessionIdRef.current }).catch((e) =>
+            handleCommandError(e, "bot_stop", { silent: true })
+          );
+        }
       } else {
         addHint("当前对话没有进行中的回复");
       }
@@ -1166,6 +1196,9 @@ export function ChatPanel({
 
   const currentTitle =
     sessions.find((s) => s.id === sessionId)?.title ?? "新对话";
+  // SUBA-3：视图会话是子 agent 执行会话（🧩 前缀标题由 runner 建会话时写入）——
+  // 停止按钮/斜杠 /stop 走 cancel_subagent（与任务卡停止按钮同 API），而非 bot_stop
+  const isSubagentSession = currentTitle.startsWith("🧩");
 
   // RE-1 推理强度：底栏按钮显示的生效档位 = 本会话覆盖 ?? 后台默认；
   // effortIsOverridden 决定要不要缀「·默认」角标
@@ -1765,12 +1798,27 @@ export function ChatPanel({
           {viewedBusy ? (
             <button
               className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center border border-[var(--danger)] text-[10px] text-[var(--danger)] hover:bg-[var(--hover-bg)] transition-colors"
-              title="停止当前回复"
-              onClick={() =>
-                invoke("bot_stop", { sessionId: sessionIdRef.current }).catch((e) =>
-                  handleCommandError(e, "bot_stop", { silent: true })
-                )
+              title={
+                isSubagentSession
+                  ? "取消子任务（cancel_subagent）"
+                  : "停止当前回复"
               }
+              onClick={() => {
+                if (isSubagentSession) {
+                  // SUBA-3：子 agent 会话停止键 = cancel_subagent（与任务卡按钮同 API）
+                  invoke("cancel_subagent", { key: sessionIdRef.current })
+                    .catch((e) =>
+                      handleCommandError(e, "cancel_subagent", { silent: true })
+                    )
+                    .finally(() =>
+                      invoke("bot_stop", { sessionId: sessionIdRef.current }).catch(() => {})
+                    );
+                } else {
+                  invoke("bot_stop", { sessionId: sessionIdRef.current }).catch((e) =>
+                    handleCommandError(e, "bot_stop", { silent: true })
+                  );
+                }
+              }}
             >
               ■
             </button>

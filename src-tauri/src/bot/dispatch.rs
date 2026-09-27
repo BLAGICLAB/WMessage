@@ -261,7 +261,56 @@ async fn execute_tool_impl(
                 Vec::new(),
             );
         }
-        // 进度事件（设计 §3 subagent_progress：按 subagent_id 串链，工具粒度）
+        // SUBA-3 预算强制（设计 §6 max_tool_calls）：白名单工具执行前核对——
+        // 触顶拒绝新调用（模型收到后自然收尾；墙钟/轮数两顶在 runner 侧）。
+        // 原子 check-and-increment（OCR r2 high 采纳）：load→比较→add 三步在并行
+        // tool_call 下可同时通过——fetch_update 保证「仅 prev<max 时 +1」原子完成。
+        let max = ctx.budget.max_tool_calls as usize;
+        let acquired = ctx
+            .used_tool_calls
+            .fetch_update(
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+                |prev| {
+                    if prev < max {
+                        Some(prev + 1)
+                    } else {
+                        None
+                    }
+                },
+            )
+            .is_ok();
+        if !acquired {
+            let used = ctx
+                .used_tool_calls
+                .load(std::sync::atomic::Ordering::SeqCst);
+            let mut budget_kv: Vec<(&str, String)> = vec![
+                ("subagent_id", ctx.subagent_id.clone()),
+                ("used", used.to_string()),
+                ("max", ctx.budget.max_tool_calls.to_string()),
+            ];
+            budget_kv.extend(trace_kv(trace, session_id));
+            crate::audit::write_event(
+                app,
+                crate::audit::AuditLevel::Warn,
+                "subagent_budget_tool_calls_exceeded",
+                &budget_kv,
+            );
+            let mut ret_kv: Vec<(&str, String)> = vec![
+                ("tool", name.to_string()),
+                ("reason", "budget_tool_calls_exceeded".to_string()),
+                ("exit_code", "none".to_string()),
+                ("duration_ms", start.elapsed().as_millis().to_string()),
+            ];
+            ret_kv.extend(trace_kv(trace, session_id));
+            crate::audit::write_event(app, crate::audit::AuditLevel::Warn, "tool.return", &ret_kv);
+            return crate::bot::registry::ToolResult::warn(
+                format!(
+                    "⏱ 工具调用预算已触顶（{used} / {max}）：停止新探索，整理当前结果并输出收尾 JSON。"
+                ),
+                Vec::new(),
+            );
+        }
         let mut prog_kv: Vec<(&str, String)> = vec![
             ("subagent_id", ctx.subagent_id.clone()),
             ("task_id", ctx.task_id.clone()),

@@ -461,6 +461,7 @@ pub fn run() {
             memory::consolidate::memory_consolidate_now,
             bot_chat::bot_chat,
             bot_chat::bot_execute_task,
+            bot_orchestrator::cancel_subagent,
             bot_slash::bot_stop,
             bot_chat::bot_compact,
             bot_slash::bot_confirm_response,

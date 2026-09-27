@@ -222,3 +222,56 @@ describe("TaskCardContent 定时草稿保护（FE-08a）", () => {
     expect(screen.getByDisplayValue("2026-10-01T10:00")).toBeInTheDocument();
   });
 });
+
+// ───────── SUBA-3：子 agent 编排三字段投影 ─────────
+describe("TaskCardContent 子 agent 编排投影（SUBA-3）", () => {
+  it("普通任务卡（无 budget/result）不渲染编排区", () => {
+    render(<TaskCardContent task={task} />);
+    expect(screen.queryByText("收尾结果")).toBeNull();
+    expect(screen.queryByText(/⏱/)).toBeNull();
+  });
+
+  it("budget 徽标展示轮数与墙钟，悬停含完整预算", () => {
+    render(
+      <TaskCardContent
+        task={{
+          ...task,
+          budget: { maxTurns: 30, maxToolCalls: 100, maxWallSeconds: 600 },
+        }}
+      />,
+    );
+    const badge = screen.getByText(/⏱ 30轮·600s/);
+    expect(badge).toBeTruthy();
+    expect(badge.getAttribute("title")).toContain("工具调用 100");
+  });
+
+  it("result 折叠卡：状态 + 摘要 + 产物路径，展开可见", async () => {
+    const user = userEvent.setup();
+    render(
+      <TaskCardContent
+        task={{
+          ...task,
+          result: {
+            status: "succeeded",
+            summary: "调研完成，覆盖 5 个竞品",
+            confidence: 0.9,
+            artifacts: [{ path: "/gen/report.md" }],
+            blockers: ["一个阻塞"],
+          },
+        }}
+      />,
+    );
+    const summary = screen.getByText(/收尾结果/);
+    expect(summary.textContent).toContain("succeeded");
+    expect(summary.textContent).toContain("置信 0.9");
+    const details = summary.closest("details");
+    expect(details).toBeTruthy();
+    // 默认折叠（jsdom 不隐藏 details 内容，用 open 属性断言折叠态）
+    expect(details!.hasAttribute("open")).toBe(false);
+    await user.click(summary);
+    expect(details!.hasAttribute("open")).toBe(true);
+    expect(screen.getByText(/调研完成，覆盖 5 个竞品/)).toBeTruthy();
+    expect(screen.getByText(/\/gen\/report\.md/)).toBeTruthy();
+    expect(screen.getByText(/未完成项 1 条/)).toBeTruthy();
+  });
+});

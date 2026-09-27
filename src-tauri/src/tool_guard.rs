@@ -88,6 +88,9 @@ pub struct SubagentSessionCtx {
     pub budget: SubagentBudget,
     /// 产物目录 gen_dir/subagents/{subagent_id}/（write_artifact_file 的唯一可写区）
     pub artifact_dir: PathBuf,
+    /// 已执行工具调用累计（SUBA-3 预算强制：dispatch 白名单闸后自增，
+    /// 触顶拒绝新调用——max_tool_calls 的强制点）
+    pub used_tool_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 static SUBAGENT_SESSIONS: OnceLock<std::sync::Mutex<HashMap<String, SubagentSessionCtx>>> =
@@ -284,6 +287,7 @@ mod tests {
             profile: crate::db::SubagentProfile::Research,
             budget: crate::db::SubagentBudget::default(),
             artifact_dir: std::path::PathBuf::from(format!("/tmp/art/{subagent_id}")),
+            used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
     }
 

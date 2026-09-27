@@ -208,19 +208,25 @@ pub(crate) fn spawn_subagent_locked(
     ))
 }
 
-/// 按 subagent_id 或 task_id 解析行（设计 §5：check 接受双键；cancel/stop 按钮同款）。
-/// 前缀约定：subagent_id 恒以 `sa_` 开头、task_id 恒为裸 uuid（无前缀）——
-/// 若未来 task_id 引入前缀，此处路由必须同步改。
+/// 按 subagent_id / task_id / 子会话 id 解析行（设计 §5 双键 + SUBA-3 会话键：
+/// 任务卡停止按钮与子会话停止键只持有会话 id）。
+/// 前缀约定：subagent_id 恒以 `sa_` 开头；task_id 与 session_id 均为裸 uuid——
+/// 先 task_id 后 session_id 双探测（SUBA-3 批勘误）。
 fn resolve_row(conn: &rusqlite::Connection, key: &str) -> CommandResult<SubagentRow> {
     let row = if key.starts_with("sa_") {
         crate::db::load_subagent(conn, key).map_err(CommandError::DbError)?
     } else {
-        crate::db::find_subagent_by_task(conn, key).map_err(CommandError::DbError)?
+        match crate::db::find_subagent_by_task(conn, key).map_err(CommandError::DbError)? {
+            Some(r) => Some(r),
+            None => {
+                crate::db::find_subagent_by_session(conn, key).map_err(CommandError::DbError)?
+            }
+        }
     };
     row.ok_or_else(|| CommandError::InvalidArgument {
         field: "subagent_id".into(),
         value: key.to_string(),
-        reason: "subagent 不存在（subagent_id 或 task_id 均未命中）".into(),
+        reason: "subagent 不存在（subagent_id / task_id / 会话 id 均未命中）".into(),
     })
 }
 
@@ -239,15 +245,25 @@ pub(crate) fn check_subagent_locked(
         .result_json
         .as_deref()
         .and_then(|s| serde_json::from_str(s).ok());
+    // 排队位次（SUBA-3）：queued 状态时给出 FIFO 前面还有几个
+    let queue_position = if row.status == SubagentStatus::Queued {
+        SubagentGate::queue_position(row.parent_session_id.as_deref())
+    } else {
+        None
+    };
+    let mut progress = serde_json::json!({
+        "subtasksDone": subtasks_done,
+        "subtasksTotal": subtasks_total,
+    });
+    if let Some(pos) = queue_position {
+        progress["queuePosition"] = serde_json::json!(pos);
+    }
     Ok(CheckState {
         subagent_id: row.id,
         task_id: row.task_id,
         session_id: row.session_id,
         status: row.status,
-        progress: serde_json::json!({
-            "subtasksDone": subtasks_done,
-            "subtasksTotal": subtasks_total,
-        }),
+        progress,
         result,
         error: row.error,
     })
@@ -375,7 +391,11 @@ pub async fn check_subagent(app: &AppHandle, key: &str, wait_ms: u64) -> Command
 
 /// cancel 异步包装：置 cancelled + 子卡回退 + 审计 + 广播（前端即时感知，
 /// OCR r2 采纳）。SUBA-2 接 runner 后在此叠加 force_stop。
-pub async fn cancel_subagent(app: &AppHandle, key: &str, reason: &str) -> CommandResult<CancelAck> {
+pub async fn cancel_subagent_async(
+    app: &AppHandle,
+    key: &str,
+    reason: &str,
+) -> CommandResult<CancelAck> {
     let app2 = app.clone();
     let key = key.to_string();
     let reason = reason.to_string();
@@ -430,6 +450,7 @@ pub async fn cancel_subagent(app: &AppHandle, key: &str, reason: &str) -> Comman
 // ═══════════════════════ SUBA-2：工具实现 + runner + 收尾解析 ═══════════════════════
 
 use crate::bot_chat::{ChatGuard, ExecGuard};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use tauri::Emitter;
 
@@ -696,6 +717,156 @@ pub(crate) fn artifact_dir_of(gen_root: &std::path::Path, subagent_id: &str) -> 
     gen_root.join("subagents").join(subagent_id)
 }
 
+// ───────────────────────── 并发闸（SUBA-3：per-session 2 / global 3 FIFO） ─────────────────────────
+
+/// 并发上限（设计 §6 已拍板）：全局 3、每个派发主会话 2。超限排队不失败
+///（status=queued），有槽位唤醒。
+pub const MAX_GLOBAL_RUNNING: usize = 3;
+pub const MAX_PER_SESSION_RUNNING: usize = 2;
+
+fn gate() -> &'static SubagentGate {
+    static GATE: std::sync::OnceLock<SubagentGate> = std::sync::OnceLock::new();
+    GATE.get_or_init(|| SubagentGate {
+        state: std::sync::Mutex::new(GateState {
+            global_running: 0,
+            per_session: HashMap::new(),
+            waiting: HashMap::new(),
+        }),
+        notify: tokio::sync::Notify::new(),
+    })
+}
+
+/// 进程级并发闸。FIFO 口径勘误（SUBA-3，OCR r1 high 采纳后的简化）：
+/// 持久队列 + notified().await 在 future 被 drop 时会泄漏队列项（取消不安全），
+/// 改为「RAII 等待计数 + 轮询/唤醒重试」——同会话内先到先得（严格），
+/// 跨会话近似公平（3 槽争用面极小，A 期接受）。
+pub(crate) struct SubagentGate {
+    state: std::sync::Mutex<GateState>,
+    notify: tokio::sync::Notify,
+}
+
+struct GateState {
+    global_running: usize,
+    /// running 计数：parent_session → 数
+    per_session: HashMap<String, usize>,
+    /// 等待计数：parent_session → 数（WaitingGuard Drop 递减，取消安全）
+    waiting: HashMap<String, usize>,
+}
+
+/// 排队票据：Drop 释放槽位 + 递减等待计数（全部 RAII，无泄漏面）。
+pub(crate) struct GateTicket {
+    parent_session: Option<String>,
+}
+
+impl Drop for GateTicket {
+    fn drop(&mut self) {
+        let mut st = gate().state.lock().unwrap_or_else(|e| {
+            eprintln!("[mutex_poisoned] subagent gate: {e:?}");
+            e.into_inner()
+        });
+        st.global_running = st.global_running.saturating_sub(1);
+        if let Some(k) = &self.parent_session {
+            if let Some(c) = st.per_session.get_mut(k) {
+                *c = c.saturating_sub(1);
+                if *c == 0 {
+                    st.per_session.remove(k);
+                }
+            }
+        }
+        drop(st);
+        gate().notify.notify_one();
+    }
+}
+
+/// 等待席位：Drop 递减 waiting 计数（waiter future 被 drop 也安全）。
+struct WaitingGuard {
+    parent_session: Option<String>,
+}
+
+impl Drop for WaitingGuard {
+    fn drop(&mut self) {
+        if let Some(k) = &self.parent_session {
+            let mut st = gate().state.lock().unwrap_or_else(|e| {
+                eprintln!("[mutex_poisoned] subagent gate: {e:?}");
+                e.into_inner()
+            });
+            if let Some(c) = st.waiting.get_mut(k) {
+                *c = c.saturating_sub(1);
+                if *c == 0 {
+                    st.waiting.remove(k);
+                }
+            }
+        }
+    }
+}
+
+impl SubagentGate {
+    /// 等到槽位。同会话内按等待先后放行（waiting 计数=1 者优先），
+    /// 跨会话近似公平。所有状态变更 RAII 化：future 被 drop 无任何残留。
+    pub(crate) async fn wait_slot(parent_session: Option<String>) -> GateTicket {
+        // 登记等待席位（RAII：无论从哪条路径退出，计数都会被递减）
+        {
+            let mut st = gate().state.lock().unwrap_or_else(|e| {
+                eprintln!("[mutex_poisoned] subagent gate: {e:?}");
+                e.into_inner()
+            });
+            if let Some(k) = &parent_session {
+                *st.waiting.entry(k.clone()).or_insert(0) += 1;
+            }
+        }
+        let _waiting = WaitingGuard {
+            parent_session: parent_session.clone(),
+        };
+        loop {
+            let outcome = {
+                let mut st = gate().state.lock().unwrap_or_else(|e| {
+                    eprintln!("[mutex_poisoned] subagent gate: {e:?}");
+                    e.into_inner()
+                });
+                let global_ok = st.global_running < MAX_GLOBAL_RUNNING;
+                let sess_running = parent_session
+                    .as_deref()
+                    .and_then(|k| st.per_session.get(k).copied())
+                    .unwrap_or(0);
+                let sess_ok = sess_running < MAX_PER_SESSION_RUNNING;
+                // OCR r2 high 采纳：不做「等待序数」公平判定（waiting<=1 的判定
+                // 在两个并发 waiter 同见 waiting=2 时会互相让行 → 集体饿死）。
+                // 改为纯「试占」：有空槽即取，50ms 重试保证无饥饿。
+                // FIFO 降级为 best-effort（waiting 计数仅供 check 展示排队位），
+                // 勘误登记于批 spec。
+                if global_ok && sess_ok {
+                    st.global_running += 1;
+                    if let Some(k) = &parent_session {
+                        *st.per_session.entry(k.to_string()).or_insert(0) += 1;
+                    }
+                    Some(true)
+                } else {
+                    None
+                }
+            };
+            if outcome == Some(true) {
+                return GateTicket { parent_session };
+            }
+            // 没轮到：等唤醒或 50ms 退避重试（无持久队列项，取消安全）
+            gate().notify.notify_one();
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
+    /// 排队位次（check progress 用）：同会话前面还有几个等待者；
+    /// None = 不在等待（运行中或无关会话）。
+    pub(crate) fn queue_position(parent_session: Option<&str>) -> Option<usize> {
+        let st = gate().state.lock().unwrap_or_else(|e| {
+            eprintln!("[mutex_poisoned] subagent gate: {e:?}");
+            e.into_inner()
+        });
+        let n = parent_session
+            .and_then(|k| st.waiting.get(k).copied())
+            .unwrap_or(0);
+        (n > 0).then(|| n - 1)
+    }
+}
+
 // ───────────────────────── runner（执行引擎） ─────────────────────────
 
 /// 子 agent 执行引擎：独立会话 + 工具循环 + 收尾落库。spawn 异步包装末尾派发
@@ -777,6 +948,41 @@ async fn run_subagent(app: AppHandle, subagent_id: String) {
         .map_err(CommandError::DbError)
     })
     .await;
+    let sid_still_queued = row.id.clone();
+    // 并发闸（SUBA-3：global 3 / per-session 2，超限等待不失败）。
+    // 排队时间不计墙钟：max_wall_seconds 的 timeout 从 run_model_loop 起算（下方），
+    // 天然满足设计 §6。
+    let _ticket =
+        crate::bot_orchestrator::SubagentGate::wait_slot(row.parent_session_id.clone()).await;
+    {
+        // OCR r2 high 采纳：running 状态在 wait_slot **之前**已写——排队窗口内被
+        // 取消的行是 cancelled（终态）。读到非 running = 有并发改写 → 中止；
+        // DB 读失败保守中止（执行已取消的任务比不跑更糟）。
+        let state_now = db_locked(&app, move |conn| {
+            Ok(crate::db::load_subagent(conn, &sid_still_queued)
+                .ok()
+                .flatten()
+                .map(|r| r.status))
+        })
+        .await
+        .unwrap_or(None);
+        match state_now {
+            Some(SubagentStatus::Running) => {}
+            other => {
+                crate::bot::audit_log(
+                    &app,
+                    &format!(
+                        "subagent_runner_abort | id: {} | err: aborted_while_queued | state: {}",
+                        row.id,
+                        other
+                            .map(|s| s.as_str().to_string())
+                            .unwrap_or_else(|| "db_read_failed".into()),
+                    ),
+                );
+                return;
+            }
+        }
+    }
     let started = std::time::Instant::now();
 
     // 产物目录（设计 §6 隔离）：gen_dir/subagents/{subagent_id}/
@@ -878,6 +1084,7 @@ async fn run_subagent(app: AppHandle, subagent_id: String) {
             profile: row.profile,
             budget: budget.clone(),
             artifact_dir: artifact_dir.clone(),
+            used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         },
     );
 
@@ -1325,7 +1532,7 @@ pub async fn tool_cancel_subagent(
         return ToolResult::warn("cancel 失败：subagentId 与 taskId 至少提供一个", Vec::new());
     };
     let reason = v["reason"].as_str().unwrap_or("主 agent 取消").to_string();
-    match cancel_subagent(app, &key, &reason).await {
+    match cancel_subagent_async(app, &key, &reason).await {
         Ok(ack) => ToolResult::ok(
             if ack.already_terminal {
                 format!(
@@ -1449,6 +1656,17 @@ pub async fn tool_write_artifact_file(
     }
 }
 
+/// cancel_subagent tauri 命令（SUBA-3：任务卡停止按钮 / 子会话停止键的同 API 入口，
+/// 设计 §4.3；薄壳转内部 cancel_subagent_async）。
+#[tauri::command]
+pub async fn cancel_subagent(
+    app: AppHandle,
+    key: String,
+    reason: Option<String>,
+) -> CommandResult<CancelAck> {
+    cancel_subagent_async(&app, &key, reason.as_deref().unwrap_or("用户取消")).await
+}
+
 /// read_own_card 工具：只读自己的子卡（卡即契约——重读 note/subtasks/deletedAt）。
 pub async fn tool_read_own_card(
     app: &AppHandle,
@@ -1535,6 +1753,128 @@ mod orchestrator_tests {
         };
         crate::db::upsert_tasks(conn, std::slice::from_ref(&card)).unwrap();
         "parent-1".into()
+    }
+
+    // ─────────────────── SUBA-3：并发闸（FIFO/上限/释放） ───────────────────
+
+    /// 并发闸状态机（合并为单测：static GATE 进程级共享，cargo 并行跑两个测试
+    /// 会互相踩计数；手动构造票据，不调 wait_slot——它会与其他并行测试竞争
+    /// 全局槽导致排队挂死）。
+    #[test]
+    fn gate_state_machine_acquire_release_and_queue_position() {
+        let before_running = gate().state.lock().unwrap().global_running;
+        // ① 拿槽 → 计数 +1、per_session 登记、未排队
+        {
+            let mut t = Some(GateTicket {
+                parent_session: Some("ps_drop".into()),
+            });
+            // 手动占槽（wait_slot 锁内路径的等价操作）
+            {
+                let mut st = gate().state.lock().unwrap();
+                st.global_running += 1;
+                *st.per_session.entry("ps_drop".into()).or_insert(0) += 1;
+            }
+            {
+                let st = gate().state.lock().unwrap();
+                assert_eq!(st.global_running, before_running + 1, "拿槽 +1");
+                assert_eq!(st.per_session.get("ps_drop"), Some(&1));
+            }
+            // queue_position 也拿 gate 锁（非递归 mutex），必须在持锁块外调用，
+            // 否则同线程二次加锁自死锁
+            assert_eq!(SubagentGate::queue_position(Some("ps_drop")), None);
+            // ② Drop → 释放：计数回基线、归零清键
+            t = None;
+        }
+        {
+            let st = gate().state.lock().unwrap();
+            assert_eq!(st.global_running, before_running, "Drop 必须释放槽位");
+            assert!(st.per_session.get("ps_drop").is_none(), "计数归零须清键");
+        }
+        // ③ 多持多放对称：两张票据只放一张 → 残 1；全放 → 清键
+        {
+            let mut t1 = Some(GateTicket {
+                parent_session: Some("ps_rel".into()),
+            });
+            let t2 = GateTicket {
+                parent_session: Some("ps_rel".into()),
+            };
+            {
+                let mut st = gate().state.lock().unwrap();
+                st.global_running += 2;
+                *st.per_session.entry("ps_rel".into()).or_insert(0) += 2;
+            }
+            drop(t2);
+            assert_eq!(
+                gate().state.lock().unwrap().per_session.get("ps_rel"),
+                Some(&1),
+                "放一张残 1"
+            );
+            t1 = None;
+        }
+        {
+            let st = gate().state.lock().unwrap();
+            assert_eq!(st.global_running, before_running, "全放回基线");
+            assert!(st.per_session.get("ps_rel").is_none(), "归零清键");
+        }
+        // ④ queue_position：同会话等待计数语义——前面还有 waiting-1 个
+        {
+            let mut st = gate().state.lock().unwrap();
+            *st.waiting.entry("ps_q1".into()).or_insert(0) += 2;
+            *st.waiting.entry("ps_q2".into()).or_insert(0) += 1;
+        }
+        assert_eq!(SubagentGate::queue_position(Some("ps_q1")), Some(1));
+        assert_eq!(SubagentGate::queue_position(Some("ps_q2")), Some(0));
+        assert_eq!(SubagentGate::queue_position(Some("ps_not_waiting")), None);
+        {
+            let mut st = gate().state.lock().unwrap();
+            st.waiting.clear();
+        }
+        assert_eq!(SubagentGate::queue_position(Some("ps_q1")), None, "清场");
+    }
+
+    /// OCR r3 high 处置：前端以「会话标题 🧩 前缀」判定子 agent 会话并分流停止键
+    /// （cancel_subagent / bot_stop，后者已作运行时兜底）。此处锁定两处标题生成
+    /// 都带前缀——子卡标题（spawn）与执行会话标题（runner setup）漂移即测试红。
+    #[test]
+    fn subagent_titles_keep_emoji_prefix_for_frontend_routing() {
+        // concat! 拼接防本测试自匹配（dead_command_tests 同款手法）
+        let prefix = concat!("🧩 子", "任务：");
+        let src = include_str!("bot_orchestrator.rs");
+        let hits: Vec<usize> = src.match_indices(prefix).map(|(i, _)| i).collect();
+        assert_eq!(
+            hits.len(),
+            3,
+            "三处 = spawn 子卡标题 + runner 会话标题两处生成点 + SUBA-1 既有卡片标题断言；任一生成点丢前缀（前端停止键按标题分流 cancel_subagent/bot_stop）即路由失守"
+        );
+    }
+
+    /// SUBA-3：tool_calls 预算计数器（ctx 侧）——dispatch 累计语义的单测锚点
+    #[test]
+    fn tool_call_counter_accumulates() {
+        let ctx = crate::tool_guard::SubagentSessionCtx {
+            subagent_id: "sa_c1".into(),
+            task_id: "card_c1".into(),
+            profile: SubagentProfile::Coder,
+            budget: SubagentBudget {
+                max_turns: 5,
+                max_tool_calls: 2,
+                max_wall_seconds: 60,
+            },
+            artifact_dir: std::path::PathBuf::from("/tmp/art_c1"),
+            used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        };
+        assert_eq!(
+            ctx.used_tool_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        assert_eq!(
+            ctx.used_tool_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        // used(2) >= max(2) → dispatch 层下一次调用将拒绝
+        assert!(2 >= ctx.budget.max_tool_calls as usize);
     }
 
     // ─────────────────── SUBA-2：收尾解析 / 包装渲染 ───────────────────

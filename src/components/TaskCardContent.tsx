@@ -164,6 +164,57 @@ export function TaskCardContent({
             </div>
           )}
 
+          {/* 子 agent 编排（SUBA-3）：预算徽标 + 收尾结果折叠展示。
+              两个字段均可选——普通任务卡无此信息不渲染（undefined 安全） */}
+          {(task.budget || task.result) && (
+            <div className="mt-2 flex flex-col gap-1.5">
+              {task.budget && (
+                <div className="flex flex-wrap items-center gap-1.5 text-xs text-[var(--t4)]">
+                  <span
+                    className="nm-inset px-2 py-0.5"
+                    title={`预算：轮数 ${task.budget.maxTurns} / 工具调用 ${task.budget.maxToolCalls} / 墙钟 ${task.budget.maxWallSeconds}s`}
+                  >
+                    ⏱ {task.budget.maxTurns}轮·{task.budget.maxWallSeconds}s
+                  </span>
+                </div>
+              )}
+              {task.result && (
+                <details className="nm-inset rounded-lg px-2 py-1.5 text-xs">
+                  <summary className="cursor-pointer select-none text-[var(--t4)]">
+                    🧩 收尾结果
+                    {typeof task.result.status === "string" && (
+                      <span className="ml-1">
+                        （{task.result.status}
+                        {typeof task.result.confidence === "number" &&
+                          ` · 置信 ${task.result.confidence}`}
+                        ）
+                      </span>
+                    )}
+                  </summary>
+                  {task.result.summary && (
+                    <p className="mt-1 whitespace-pre-wrap break-words text-[var(--t4)]">
+                      {task.result.summary}
+                    </p>
+                  )}
+                  {(task.result.blockers ?? []).length > 0 && (
+                    <p className="mt-1 text-[var(--t4)]">
+                      ⚠️ 未完成项 {(task.result.blockers ?? []).length} 条
+                    </p>
+                  )}
+                  {(task.result.artifacts ?? []).length > 0 && (
+                    <ul className="mt-1 list-inside list-disc text-[var(--t4)]">
+                      {(task.result.artifacts ?? []).map((a, i) => (
+                        <li key={i} className="truncate" title={a.path}>
+                          {a.path}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </details>
+              )}
+            </div>
+          )}
+
           {/* 子任务清单（checkbox 可勾选，与主窗口一致；分隔线分行 + 长文本单行截断） */}
           {subtasks.length > 0 && (
             <div className="mt-2 flex flex-col divide-y divide-[var(--edge)]">

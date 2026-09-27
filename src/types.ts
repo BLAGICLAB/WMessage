@@ -97,4 +97,16 @@ export interface Task {
   schedule?: string | null;
   /** 上次定时执行时间（epoch ms） */
   schedLast?: number | null;
+  /** 子 agent 编排（SUBA-3 投影）：串链键 = 子 agent 执行会话 id（不直接展示） */
+  assignee?: string | null;
+  /** 预算三硬顶（上卡可见）：轮数 / 工具调用 / 墙钟秒 */
+  budget?: { maxTurns: number; maxToolCalls: number; maxWallSeconds: number } | null;
+  /** 收尾结构化结果（设计 §7）：卡片折叠展示 */
+  result?: {
+    status?: string;
+    summary?: string;
+    artifacts?: Array<{ path?: string; description?: string }>;
+    blockers?: unknown[];
+    confidence?: number;
+  } | null;
 }

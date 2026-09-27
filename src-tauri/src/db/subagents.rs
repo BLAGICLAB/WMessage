@@ -229,6 +229,9 @@ const SQL_SELECT_BY_ID: &str = "SELECT id, status, profile, model, parent_sessio
 const SQL_SELECT_BY_TASK: &str = "SELECT id, status, profile, model, parent_session_id, session_id, \
      task_id, objective, trace_id, acceptance_json, budget_json, result_json, error, \
      created_at, started_at, finished_at FROM subagents WHERE task_id = ?1 ORDER BY created_at DESC LIMIT 1";
+const SQL_SELECT_BY_SESSION: &str = "SELECT id, status, profile, model, parent_session_id, session_id, \
+     task_id, objective, trace_id, acceptance_json, budget_json, result_json, error, \
+     created_at, started_at, finished_at FROM subagents WHERE session_id = ?1 ORDER BY created_at DESC LIMIT 1";
 const SQL_SELECT_BY_STATUS: &str =
     "SELECT id, status, profile, model, parent_session_id, session_id, \
      task_id, objective, trace_id, acceptance_json, budget_json, result_json, error, \
@@ -282,6 +285,17 @@ pub fn find_subagent_by_task(
     task_id: &str,
 ) -> Result<Option<SubagentRow>, String> {
     conn.query_row(SQL_SELECT_BY_TASK, [task_id], row_to_subagent)
+        .optional()
+        .map_err(|e| e.to_string())
+}
+
+/// 按子 agent 执行会话 id 反查（SUBA-3：前端停止键只持有会话 id——
+/// runner 的 set_subagent_session 回填后即可反查）。
+pub fn find_subagent_by_session(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+) -> Result<Option<SubagentRow>, String> {
+    conn.query_row(SQL_SELECT_BY_SESSION, [session_id], row_to_subagent)
         .optional()
         .map_err(|e| e.to_string())
 }
