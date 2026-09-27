@@ -44,8 +44,10 @@ FIFO（超限 queued 不失败）；task_tool_calls 预算计数（dispatch 层�
 
 ## spec 起草后自查三条
 
-1. expected_files 9（orchestrator/dispatch/app_state/排队器 + ChatPanel 组 + 类型）
-2. budget：修改 +650/-80
+1. expected_files 7【校正 ×1：并发闸用进程级 OnceLock（与 tool_guard 注册表同款），
+   不动 app_state.rs；无新增 .rs 文件不动架构文档】
+2. budget：修改 +550/-30（实测 +514/-12）【校正 ×1】
+   assertions_min 对 vitest 文件填 0（SOP 坑 2：gate 正则只认 Rust assert 宏）
 3. fix 字段：并发闸集中 orchestrator 新增并发模块；前端三字段纯投影
 
 ## 机器可读（脚本读取，勿改格式）
@@ -58,12 +60,10 @@ FIFO（超限 queued 不失败）；task_tool_calls 预算计数（dispatch 层�
     "src-tauri/src/bot_orchestrator.rs",
     "src-tauri/src/bot/dispatch.rs",
     "src-tauri/src/tool_guard.rs",
-    "src-tauri/src/app_state.rs",
     "src/types.ts",
     "src/components/TaskCardContent.tsx",
     "src/components/TaskCardContent.test.tsx",
-    "src/components/ChatPanel/ChatPanel.tsx",
-    "docs/rust-bot-architecture.md"
+    "src/components/ChatPanel/ChatPanel.tsx"
   ],
   "max_lines_added": 700,
   "max_lines_removed": 90,
@@ -74,8 +74,7 @@ FIFO（超限 queued 不失败）；task_tool_calls 预算计数（dispatch 层�
     {"id": "SUBA-3", "file": "src/components/ChatPanel/ChatPanel.tsx", "line": 1, "fix": "子卡流式停止按钮走 cancel_subagent；subagent-finished 按 parentSessionId 轻提示"}
   ],
   "assertions_min": {
-    "src-tauri/src/bot_orchestrator.rs": 30,
-    "src/components/TaskCardContent.test.tsx": 8
+    "src-tauri/src/bot_orchestrator.rs": 30
   },
   "ocr_plan": {
     "rounds": 1,
