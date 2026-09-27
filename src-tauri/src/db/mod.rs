@@ -11,6 +11,7 @@ pub use crate::db::bot_sessions::*;
 pub use crate::db::migrations::*;
 pub use crate::db::paths::*;
 pub use crate::db::skill_out::*;
+pub use crate::db::subagents::*;
 pub use crate::db::tasks::*;
 pub use crate::db::workspace::*;
 use std::time::Duration;
@@ -25,6 +26,7 @@ pub mod bot_sessions;
 pub mod migrations;
 pub mod paths;
 pub mod skill_out;
+pub mod subagents;
 pub mod tasks;
 pub mod workspace;
 
@@ -166,8 +168,26 @@ pub fn open_db<R: tauri::Runtime>(
          );",
     )
     .map_err(|e| e.to_string())?;
+    // subagents 表走单源 DDL（含 task_id UNIQUE + status/parent 索引），与测试建表共用
+    conn.execute_batch(subagents::SUBAGENTS_DDL)
+        .map_err(|e| e.to_string())?;
     // 迁移：定时任务卡
     for (col, ty) in [("schedule", "TEXT"), ("sched_last", "INTEGER")] {
+        let has: bool = conn
+            .prepare("PRAGMA table_info(tasks)")
+            .and_then(|mut stmt| {
+                let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+                Ok(rows.filter_map(|n| n.ok()).any(|n| n == col))
+            })
+            .unwrap_or(false);
+        if !has {
+            conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"), [])
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    // 迁移：子 agent 编排三字段（SUBA-1，设计 §4.1——assignee/budget/result 走
+    // task_patch 既有通道；budget/result 存 JSON TEXT）
+    for (col, ty) in [("assignee", "TEXT"), ("budget", "TEXT"), ("result", "TEXT")] {
         let has: bool = conn
             .prepare("PRAGMA table_info(tasks)")
             .and_then(|mut stmt| {
@@ -556,7 +576,8 @@ mod tests {
                tags TEXT, file_path TEXT, file_is_dir INTEGER, col TEXT NOT NULL,
                subtasks TEXT, completed_at INTEGER, archived INTEGER,
                deleted_at INTEGER, collapsed INTEGER, ord REAL, updated_at INTEGER,
-               schedule TEXT, sched_last INTEGER, bot_assigned INTEGER, files TEXT
+               schedule TEXT, sched_last INTEGER, bot_assigned INTEGER, files TEXT,
+               assignee TEXT, budget TEXT, result TEXT
              );",
         )
         .unwrap();
@@ -584,6 +605,9 @@ mod tests {
             schedule: None,
             sched_last: None,
             bot_assigned: None,
+            assignee: None,
+            budget: None,
+            result: None,
             expected_updated_at: None,
         }
     }
@@ -683,7 +707,9 @@ mod tests {
 
     // ── 多文件绑定：files 列迁移 + 老数据回填 + 上限 ──
 
-    /// 老 schema（无 files 列）建库：模拟 2026-08-19 前的真实老库
+    /// 老 schema（无 files 列）建库：files 迁移测试的「中间态」fixture——
+    /// 2026-08-19 前无 files 列 + 已含 SUBA-1 三列（SUBA-1 的 upsert 需要它们）。
+    /// 本组测试只针对 files 列迁移，新增列的存在不影响该前提（OCR r2 澄清）。
     fn setup_legacy_tasks_db() -> (std::path::PathBuf, rusqlite::Connection) {
         let dir = std::env::temp_dir().join(format!("wm-files-mig-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
@@ -694,7 +720,8 @@ mod tests {
                tags TEXT, file_path TEXT, file_is_dir INTEGER, col TEXT NOT NULL,
                subtasks TEXT, completed_at INTEGER, archived INTEGER,
                deleted_at INTEGER, collapsed INTEGER, ord REAL, updated_at INTEGER,
-               schedule TEXT, sched_last INTEGER, bot_assigned INTEGER
+               schedule TEXT, sched_last INTEGER, bot_assigned INTEGER,
+               assignee TEXT, budget TEXT, result TEXT
              );",
         )
         .unwrap();

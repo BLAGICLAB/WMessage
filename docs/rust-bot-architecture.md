@@ -27,6 +27,8 @@ src-tauri/src/
 │   ├── migrations.rs     数据库迁移（历史顶层 migration.rs 已并入）
 │   ├── paths.rs          data_dir()/gen_dir()（AI_Gen_Files）
 │   ├── skill_out.rs      技能产物输出
+│   ├── subagents.rs      子 agent 编排持久化（SubagentRow / 六态状态机 transition_allowed /
+│   │                     SubagentBudget 预算三硬顶；spawn 插 queued 行，check 幂等轮询）
 │   └── workspace.rs      workspace / bind_files
 ├── task_out.rs          对外 TaskOut（Task flatten + status），api/api_handlers 共享
 │
@@ -85,6 +87,11 @@ src-tauri/src/
 ├── bot_slash.rs         StopGuard/StopRegistry（/stop 按执行实例隔离；注册表已迁 app_state::AppState，
 │                        见 §2.1）、危险操作确认弹窗、机器人总开关
 ├── exec_steps.rs        任务卡逐步执行模式：多子任务逐个做、用户确认「继续/重做/停」
+├── bot_orchestrator.rs  子 Agent 编排器（方案 B，SUBA 设计 2026-09-27）：受管子 agent 的
+│                        spawn/check/cancel 生命周期状态机 + 子卡（🧩）创建 + acceptance
+│                        双写 + 预算钳制；与 bot_execute_task（单发子 agent）入口/存储/事件
+│                        各自独立；LLM 工具暴露/runner（SUBA-2）与预算强制/并发排队（SUBA-3）
+│                        按设计 §11 分批接入
 ├── bot_artifacts.rs     产物登记：link_file_to_task → 收尾按 TaskExecOrigin 分流 →
 │                        emit artifact-batch-ready → 前端勾选 → confirm_artifact_batch 落库
 │

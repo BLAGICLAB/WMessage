@@ -15,6 +15,7 @@ pub mod bot_artifacts;
 pub mod bot_chat;
 mod bot_fs;
 mod bot_model_loop;
+pub mod bot_orchestrator;
 mod bot_plan;
 mod bot_py;
 mod bot_scheduler;

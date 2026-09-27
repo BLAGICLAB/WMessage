@@ -1,5 +1,6 @@
 //! 任务卡 CRUD：upsert / delete / load + db_* tauri command + tasks_export/import
 
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use tauri::async_runtime;
 use tauri::AppHandle;
@@ -110,6 +111,16 @@ pub struct Task {
     pub sched_last: Option<i64>,
     #[serde(default)]
     pub bot_assigned: Option<bool>,
+    /// 子 agent 编排（SUBA-1，设计 §4.1）：子卡上 = 派发子 agent 的串链标识；
+    /// 普通卡恒为 None。经 task_patch 通道读写（服务端编排写）。
+    #[serde(default)]
+    pub assignee: Option<String>,
+    /// 预算三硬顶（上卡可见，非隐藏参数）；存 JSON TEXT
+    #[serde(default)]
+    pub budget: Option<super::subagents::SubagentBudget>,
+    /// 收尾结构化结果（设计 §7 schema）；存 JSON TEXT，卡片折叠展示
+    #[serde(default)]
+    pub result: Option<serde_json::Value>,
     #[serde(default, skip_serializing)]
     pub expected_updated_at: Option<i64>,
 }
@@ -179,8 +190,9 @@ pub fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), S
         .prepare(
             "INSERT INTO tasks
                (id, title, due, note, tags, file_path, file_is_dir, col, subtasks,
-                completed_at, archived, deleted_at, collapsed, ord, updated_at, schedule, sched_last, bot_assigned, files)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)
+                completed_at, archived, deleted_at, collapsed, ord, updated_at, schedule, sched_last, bot_assigned, files,
+                assignee, budget, result)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)
              ON CONFLICT(id) DO UPDATE SET
                title=excluded.title, due=excluded.due, note=excluded.note,
                tags=excluded.tags, file_path=excluded.file_path,
@@ -190,7 +202,8 @@ pub fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), S
                collapsed=excluded.collapsed, ord=excluded.ord,
                updated_at=excluded.updated_at,
                schedule=excluded.schedule, sched_last=excluded.sched_last,
-               bot_assigned=excluded.bot_assigned, files=excluded.files
+               bot_assigned=excluded.bot_assigned, files=excluded.files,
+               assignee=excluded.assignee, budget=excluded.budget, result=excluded.result
              WHERE tasks.updated_at IS NULL OR excluded.updated_at >= tasks.updated_at",
         )
         .map_err(|e| e.to_string())?;
@@ -235,6 +248,14 @@ pub fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), S
             Some(v) => Some(serde_json::to_string(v).map_err(|e| e.to_string())?),
             None => None,
         };
+        let budget = match &t.budget {
+            Some(v) => Some(serde_json::to_string(v).map_err(|e| e.to_string())?),
+            None => None,
+        };
+        let result = match &t.result {
+            Some(v) => Some(serde_json::to_string(v).map_err(|e| e.to_string())?),
+            None => None,
+        };
         let affected = stmt
             .execute(rusqlite::params![
                 t.id,
@@ -256,6 +277,9 @@ pub fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), S
                 t.sched_last,
                 t.bot_assigned.map(|b| b as i64),
                 files,
+                t.assignee,
+                budget,
+                result,
             ])
             .map_err(|e| e.to_string())?;
         affected_total += affected;
@@ -283,127 +307,154 @@ pub fn delete_tasks(conn: &rusqlite::Connection, ids: &[String]) -> Result<(), S
     Ok(())
 }
 
+/// 行 → Task 的共享解析（load_all 全表 / load_task 单行两条读路径共用，防漂移）。
+/// 损坏容错契约：col/subtasks/files/budget/result 任一解析失败 → warn + 兜底值，
+/// 行仍可读（单行脏不让整表藏起来；原值未动，取证看 eprintln）。
+fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<super::Task> {
+    let id: String = row.get(0)?;
+    let title: String = row.get(1)?;
+    let due: Option<String> = row.get(2)?;
+    let note: Option<String> = row.get(3)?;
+    let tags: Option<String> = row.get(4)?;
+    let file_path: Option<String> = row.get(5)?;
+    let file_is_dir: Option<i64> = row.get(6)?;
+    let col: String = row.get(7)?;
+    let subtasks: Option<String> = row.get(8)?;
+    let completed_at: Option<i64> = row.get(9)?;
+    let archived: Option<i64> = row.get(10)?;
+    let deleted_at: Option<i64> = row.get(11)?;
+    let collapsed: Option<i64> = row.get(12)?;
+    let order: Option<f64> = row.get(13)?;
+    let updated_at: Option<i64> = row.get(14)?;
+    let schedule: Option<String> = row.get(15)?;
+    let sched_last: Option<i64> = row.get(16)?;
+    let bot_assigned: Option<i64> = row.get(17)?;
+    let files: Option<String> = row.get(18)?;
+    let assignee: Option<String> = row.get(19)?;
+    let budget: Option<String> = row.get(20)?;
+    let result: Option<String> = row.get(21)?;
+    // col 从 DB 读出仍是 String(列类型 TEXT),parse 到 TaskStatus enum。
+    // 与 subtasks/files JSON 损坏「warn + 按空读取」的契约对齐:
+    // 单行 col 异常不应让整个读失败、把全部任务藏起来。
+    // DB 列是 TEXT 无 CHECK 约束,历史数据 / 老 client / 未来 bug 都可能
+    // 塞非法值进来 — 兜底 Todo 比炸整个看板安全得多。
+    // 先绑定原始值再 parse:否则 shadow 后日志里只剩解析错误,
+    // 定位不到 DB 里实际是哪个脏值(取证需要原值)。
+    let raw_col = col;
+    let col: TaskStatus = match raw_col.parse() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!(
+                "[db] 任务 {id} 的 col 值「{raw_col}」无法识别为 TaskStatus，按 Todo 兜底读取（原值未动）：{e}"
+            );
+            TaskStatus::Todo
+        }
+    };
+    let tags = match tags {
+        Some(s) => serde_json::from_str(&s).ok(),
+        None => None,
+    };
+    let subtasks = match &subtasks {
+        Some(s) => match serde_json::from_str(s) {
+            Ok(v) => Some(v),
+            Err(_) => {
+                eprintln!("[db] 任务 {id} 的 subtasks JSON 损坏，按空读取（原值未动）");
+                None
+            }
+        },
+        None => None,
+    };
+    let files = match &files {
+        Some(s) => match serde_json::from_str(s) {
+            Ok(v) => Some(v),
+            Err(_) => {
+                eprintln!("[db] 任务 {id} 的 files JSON 损坏，按空读取（原值未动）");
+                None
+            }
+        },
+        None => None,
+    };
+    // SUBA-1：budget/result 存 JSON TEXT；损坏按空读取（同 subtasks/files 契约）
+    let budget = match &budget {
+        Some(s) => match serde_json::from_str(s) {
+            Ok(v) => Some(v),
+            Err(_) => {
+                eprintln!("[db] 任务 {id} 的 budget JSON 损坏，按空读取（原值未动）");
+                None
+            }
+        },
+        None => None,
+    };
+    let result = match &result {
+        Some(s) => match serde_json::from_str(s) {
+            Ok(v) => Some(v),
+            Err(_) => {
+                eprintln!("[db] 任务 {id} 的 result JSON 损坏，按空读取（原值未动）");
+                None
+            }
+        },
+        None => None,
+    };
+    Ok(super::Task {
+        id,
+        title,
+        due,
+        note,
+        tags,
+        files,
+        file_path,
+        file_is_dir: file_is_dir.map(|v| v != 0),
+        column: col,
+        subtasks,
+        completed_at,
+        archived: archived.map(|v| v != 0),
+        deleted_at,
+        collapsed: collapsed.map(|v| v != 0),
+        order,
+        updated_at,
+        schedule,
+        sched_last,
+        bot_assigned: bot_assigned.map(|v| v != 0),
+        assignee,
+        budget,
+        result,
+        expected_updated_at: None,
+    })
+}
+
+const TASK_SELECT_COLS: &str =
+    "SELECT id, title, due, note, tags, file_path, file_is_dir, col, subtasks, \
+     completed_at, archived, deleted_at, collapsed, ord, updated_at, schedule, sched_last, \
+     bot_assigned, files, assignee, budget, result FROM tasks";
+
 pub fn load_all(conn: &rusqlite::Connection) -> Result<Vec<super::Task>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, title, due, note, tags, file_path, file_is_dir, col, subtasks,
-                    completed_at, archived, deleted_at, collapsed, ord, updated_at, schedule, sched_last, bot_assigned, files
-             FROM tasks ORDER BY ord, rowid",
-        )
-        .map_err(|e| e.to_string())?;
+    let sql = format!("{TASK_SELECT_COLS} ORDER BY ord, rowid");
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, Option<String>>(3)?,
-                row.get::<_, Option<String>>(4)?,
-                row.get::<_, Option<String>>(5)?,
-                row.get::<_, Option<i64>>(6)?,
-                row.get::<_, String>(7)?,
-                row.get::<_, Option<String>>(8)?,
-                row.get::<_, Option<i64>>(9)?,
-                row.get::<_, Option<i64>>(10)?,
-                row.get::<_, Option<i64>>(11)?,
-                row.get::<_, Option<i64>>(12)?,
-                row.get::<_, Option<f64>>(13)?,
-                row.get::<_, Option<i64>>(14)?,
-                row.get::<_, Option<String>>(15)?,
-                row.get::<_, Option<i64>>(16)?,
-                row.get::<_, Option<i64>>(17)?,
-                row.get::<_, Option<String>>(18)?,
-            ))
-        })
+        .query_map([], task_from_row)
         .map_err(|e| e.to_string())?;
     let mut tasks = Vec::new();
     for r in rows {
-        let (
-            id,
-            title,
-            due,
-            note,
-            tags,
-            file_path,
-            file_is_dir,
-            col,
-            subtasks,
-            completed_at,
-            archived,
-            deleted_at,
-            collapsed,
-            order,
-            updated_at,
-            schedule,
-            sched_last,
-            bot_assigned,
-            files,
-        ) = r.map_err(|e| e.to_string())?;
-        // col 从 DB 读出仍是 String(列类型 TEXT),parse 到 TaskStatus enum。
-        // 与本函数 subtasks/files JSON 损坏「warn + 按空读取」的契约对齐:
-        // 单行 col 异常不应让整个 load_all 失败、把全部任务藏起来。
-        // DB 列是 TEXT 无 CHECK 约束,历史数据 / 老 client / 未来 bug 都可能
-        // 塞非法值进来 — 兜底 Todo 比炸整个看板安全得多。
-        // 先绑定原始值再 parse:否则 shadow 后日志里只剩解析错误,
-        // 定位不到 DB 里实际是哪个脏值(取证需要原值)。
-        let raw_col = col;
-        let col: TaskStatus = match raw_col.parse() {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!(
-                    "[db] 任务 {id} 的 col 值「{raw_col}」无法识别为 TaskStatus，按 Todo 兜底读取（原值未动）：{e}"
-                );
-                TaskStatus::Todo
-            }
-        };
-        let tags = match tags {
-            Some(s) => serde_json::from_str(&s).ok(),
-            None => None,
-        };
-        let subtasks = match &subtasks {
-            Some(s) => match serde_json::from_str(s) {
-                Ok(v) => Some(v),
-                Err(_) => {
-                    eprintln!("[db] 任务 {id} 的 subtasks JSON 损坏，按空读取（原值未动）");
-                    None
-                }
-            },
-            None => None,
-        };
-        let files = match &files {
-            Some(s) => match serde_json::from_str(s) {
-                Ok(v) => Some(v),
-                Err(_) => {
-                    eprintln!("[db] 任务 {id} 的 files JSON 损坏，按空读取（原值未动）");
-                    None
-                }
-            },
-            None => None,
-        };
-        tasks.push(super::Task {
-            id,
-            title,
-            due,
-            note,
-            tags,
-            files,
-            file_path,
-            file_is_dir: file_is_dir.map(|v| v != 0),
-            column: col,
-            subtasks,
-            completed_at,
-            archived: archived.map(|v| v != 0),
-            deleted_at,
-            collapsed: collapsed.map(|v| v != 0),
-            order,
-            updated_at,
-            schedule,
-            sched_last,
-            bot_assigned: bot_assigned.map(|v| v != 0),
-            expected_updated_at: None,
-        });
+        tasks.push(r.map_err(|e| e.to_string())?);
     }
     Ok(tasks)
+}
+
+/// 单卡定点读（SUBA-1：orchestrator 的 check 进度小计用；PK 索引直查，
+/// 不走 load_all 全表扫——OCR r2 采纳）。
+pub fn load_task(conn: &rusqlite::Connection, id: &str) -> Result<Option<super::Task>, String> {
+    let sql = format!("{TASK_SELECT_COLS} WHERE id = ?1");
+    conn.query_row(&sql, [id], task_from_row)
+        .optional()
+        .map_err(|e| e.to_string())
+}
+
+/// 行存在性定点查（SUBA-1：spawn 的 parent 卡校验用——OCR r2 采纳）。
+pub fn task_exists(conn: &rusqlite::Connection, id: &str) -> Result<bool, String> {
+    conn.query_row("SELECT 1 FROM tasks WHERE id = ?1", [id], |_| Ok(()))
+        .optional()
+        .map(|o| o.is_some())
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -583,6 +634,30 @@ pub(crate) fn apply_task_patch(
             "schedule" => set_from(&mut task.schedule, v, k)?,
             "schedLast" => set_from(&mut task.sched_last, v, k)?,
             "botAssigned" => set_from(&mut task.bot_assigned, v, k)?,
+            // SUBA-1（设计 §4.1）：子 agent 编排三字段走 task_patch 既有通道；
+            // null = 清空。assignee/budget/result 由服务端编排写，前端仅投影展示。
+            // budget 落库前必须过 clamped()——硬顶契约在写口强制，防 task_patch
+            // 旁路 maxTurns（OCR r1 high 采纳）。assignee 拒绝空串（它是串链
+            // subagents 表的 join 键，空串会产生孤儿指向——OCR r2 采纳）。
+            "assignee" => {
+                set_from(&mut task.assignee, v, k)?;
+                if task
+                    .assignee
+                    .as_deref()
+                    .is_some_and(|s| s.trim().is_empty())
+                {
+                    return Err(CommandError::InvalidArgument {
+                        field: k.into(),
+                        value: v.to_string(),
+                        reason: "assignee 不能为空串（子 agent 串链键）".into(),
+                    });
+                }
+            }
+            "budget" => {
+                set_from(&mut task.budget, v, k)?;
+                task.budget = task.budget.take().map(|b| b.clamped());
+            }
+            "result" => set_from(&mut task.result, v, k)?,
             "title" => {
                 let t: String = serde_json::from_value(v.clone()).map_err(|e| {
                     CommandError::InvalidArgument {
@@ -899,7 +974,7 @@ mod task_set_column_tests {
                file_path TEXT, file_is_dir INTEGER, col TEXT NOT NULL, subtasks TEXT,
                completed_at INTEGER, archived INTEGER, deleted_at INTEGER, collapsed INTEGER,
                ord REAL, updated_at INTEGER, schedule TEXT, sched_last INTEGER,
-               bot_assigned INTEGER, files TEXT );",
+               bot_assigned INTEGER, files TEXT, assignee TEXT, budget TEXT, result TEXT );",
         )
         .unwrap();
         conn
@@ -971,7 +1046,7 @@ mod task_patch_tests {
                file_path TEXT, file_is_dir INTEGER, col TEXT NOT NULL, subtasks TEXT,
                completed_at INTEGER, archived INTEGER, deleted_at INTEGER, collapsed INTEGER,
                ord REAL, updated_at INTEGER, schedule TEXT, sched_last INTEGER,
-               bot_assigned INTEGER, files TEXT );",
+               bot_assigned INTEGER, files TEXT, assignee TEXT, budget TEXT, result TEXT );",
         )
         .unwrap();
         conn
@@ -1056,6 +1131,108 @@ mod task_patch_tests {
             Err(CommandError::TaskNotFound(_))
         ));
     }
+
+    /// SUBA-1：子 agent 编排三字段（assignee/budget/result）——设值、null 清空、
+    /// 往返落库一致（JSON TEXT 序列化）。
+    #[test]
+    fn task_patch_orchestration_fields_set_and_null_clears() {
+        let mut conn = setup_conn();
+        conn.execute(
+            "INSERT INTO tasks (id, title, col, updated_at) VALUES ('suba', '子任务卡', 'doing', 1000)",
+            [],
+        )
+        .unwrap();
+        let row = run_patch(
+            &mut conn,
+            "suba",
+            serde_json::json!({
+                "assignee": "sess-child-1",
+                "budget": {"maxTurns": 30, "maxToolCalls": 100, "maxWallSeconds": 600},
+                "result": {"status": "succeeded", "summary": "结论"}
+            }),
+        )
+        .unwrap();
+        assert_eq!(row.assignee.as_deref(), Some("sess-child-1"));
+        assert_eq!(row.budget.as_ref().unwrap().max_turns, 30);
+        assert_eq!(row.result.as_ref().unwrap()["status"], "succeeded");
+        let reloaded = load_all(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == "suba")
+            .unwrap();
+        assert_eq!(reloaded.assignee.as_deref(), Some("sess-child-1"));
+        // 往返后按值复核（不只 is_some）：JSON TEXT 序列化无损
+        let rb = reloaded.budget.as_ref().unwrap();
+        assert_eq!(rb.max_turns, 30);
+        assert_eq!(rb.max_tool_calls, 100);
+        assert_eq!(rb.max_wall_seconds, 600);
+        assert_eq!(reloaded.result.as_ref().unwrap()["summary"], "结论");
+        // null = 清空三字段
+        let cleared = run_patch(
+            &mut conn,
+            "suba",
+            serde_json::json!({"assignee": null, "budget": null, "result": null}),
+        )
+        .unwrap();
+        assert_eq!(cleared.assignee, None);
+        assert_eq!(cleared.budget, None);
+        assert_eq!(cleared.result, None);
+    }
+
+    /// OCR r1 high 采纳：budget 走 task_patch 也必须被硬顶钳制（写口强制，防旁路）
+    #[test]
+    fn task_patch_budget_is_clamped_to_hard_cap() {
+        let mut conn = setup_conn();
+        conn.execute(
+            "INSERT INTO tasks (id, title, col, updated_at) VALUES ('clamp', '预算钳制', 'doing', 1000)",
+            [],
+        )
+        .unwrap();
+        let row = run_patch(
+            &mut conn,
+            "clamp",
+            serde_json::json!({"budget": {"maxTurns": 9999, "maxToolCalls": 0, "maxWallSeconds": 0}}),
+        )
+        .unwrap();
+        let b = row.budget.as_ref().unwrap();
+        assert_eq!(b.max_turns, 50, "上超钳到硬顶");
+        assert_eq!(b.max_tool_calls, 1, "下超钳到下限");
+        assert_eq!(b.max_wall_seconds, 1, "下超钳到下限");
+    }
+
+    /// OCR r1 采纳：budget/result 列损坏 → 兜底 None + 行仍可读（同 subtasks/files 契约）
+    #[test]
+    fn load_all_tolerates_corrupted_budget_result_json() {
+        let mut conn = setup_conn();
+        conn.execute(
+            "INSERT INTO tasks (id, title, col, updated_at) VALUES ('bad', '损坏行', 'doing', 1000)",
+            [],
+        )
+        .unwrap();
+        run_patch(
+            &mut conn,
+            "bad",
+            serde_json::json!({"assignee": "keep-me", "budget": {"maxTurns": 10, "maxToolCalls": 10, "maxWallSeconds": 60}}),
+        )
+        .unwrap();
+        conn.execute("UPDATE tasks SET result = '{not-json' WHERE id = 'bad'", [])
+            .unwrap();
+        let row = load_all(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == "bad")
+            .unwrap();
+        assert_eq!(row.result, None, "损坏 result 必须兜底 None");
+        assert_eq!(
+            row.assignee.as_deref(),
+            Some("keep-me"),
+            "同行其他字段不受影响"
+        );
+        assert!(
+            row.budget.is_some(),
+            "完好的 budget 不受同行的损坏 result 影响"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1070,7 +1247,7 @@ mod task_reorder_tests {
                file_path TEXT, file_is_dir INTEGER, col TEXT NOT NULL, subtasks TEXT,
                completed_at INTEGER, archived INTEGER, deleted_at INTEGER, collapsed INTEGER,
                ord REAL, updated_at INTEGER, schedule TEXT, sched_last INTEGER,
-               bot_assigned INTEGER, files TEXT );",
+               bot_assigned INTEGER, files TEXT, assignee TEXT, budget TEXT, result TEXT );",
         )
         .unwrap();
         conn

@@ -424,6 +424,9 @@ pub(crate) async fn tool_create_task(
         schedule: None,
         sched_last: None,
         bot_assigned: None,
+        assignee: None,
+        budget: None,
+        result: None,
         expected_updated_at: None, // 新建任务：无读快照基线
     };
     // 多文件绑定：files 参数 [{path,isDir}]，超 10 截断 + 警告
@@ -1594,6 +1597,9 @@ mod task_files_arg_tests {
             schedule: None,
             sched_last: None,
             bot_assigned: None,
+            assignee: None,
+            budget: None,
+            result: None,
             expected_updated_at: None,
         };
         apply_files_to_task(

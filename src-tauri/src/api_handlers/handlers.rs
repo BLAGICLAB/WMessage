@@ -350,6 +350,9 @@ fn create_task(
             schedule: None,
             sched_last: None,
             bot_assigned: None,
+            assignee: None,
+            budget: None,
+            result: None,
             expected_updated_at: None, // 新建任务：无读快照基线
         };
         if let Err(e) = store.upsert(vec![task.clone()]) {

@@ -85,6 +85,9 @@ mod tests {
             schedule: None,
             sched_last: None,
             bot_assigned: None,
+            assignee: None,
+            budget: None,
+            result: None,
             expected_updated_at: None,
         }
     }
