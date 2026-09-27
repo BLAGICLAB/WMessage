@@ -53,8 +53,12 @@ SUBA-1 = 设计 §11 A1「orchestrator 核心（服务端，不暴露 LLM 工具
 
 ## spec 起草后自查三条
 
-1. expected_files 5（2 新建 + 3 修改，含架构文档模块树登记——audit_module_map.py 门禁）
-2. budget：新文件 +850（两文件约 700 行含测试）；修改 +130/-15
+1. expected_files 10（2 新建 + 8 修改）【校正 ×1：补 lib.rs 模块声明】【校正 ×2：Task 结构体
+   新增三字段的字面量涟漪——bot/tools.rs（tool_create_task+测试）/api_handlers/handlers.rs/
+   api_handlers/mod.rs/task_out.rs 四处 Task 构造补 None 三臂，机械无语义】
+2. budget：新文件 +1250（fmt 后实测 +1188：subagents.rs ~510 + bot_orchestrator.rs ~680，
+   含测试与文档注释）；修改 +200/-20（实测 +170/-7）
+   【校正 ×2：字段涟漪】【校正 ×3：新文件行数按 fmt 实测校正】
 3. fix 字段：全部新建模块内闭环；tasks.rs 仅追加字段/列/patch 臂（既有路径零语义变更）
 
 ## 机器可读（脚本读取，勿改格式）
@@ -68,11 +72,16 @@ SUBA-1 = 设计 §11 A1「orchestrator 核心（服务端，不暴露 LLM 工具
     "src-tauri/src/bot_orchestrator.rs",
     "src-tauri/src/db/mod.rs",
     "src-tauri/src/db/tasks.rs",
+    "src-tauri/src/lib.rs",
+    "src-tauri/src/bot/tools.rs",
+    "src-tauri/src/api_handlers/handlers.rs",
+    "src-tauri/src/api_handlers/mod.rs",
+    "src-tauri/src/task_out.rs",
     "docs/rust-bot-architecture.md"
   ],
-  "max_lines_added": 150,
+  "max_lines_added": 200,
   "max_lines_removed": 20,
-  "max_new_files_lines": 900,
+  "max_new_files_lines": 1250,
   "findings": [
     {"id": "SUBA-1", "file": "src-tauri/src/bot_orchestrator.rs", "line": 1, "fix": "orchestrator 核心：spawn/check/cancel 纯 DB 核心（_locked，单测锚点）+ 异步包装（spawn_blocking+DB_WRITE_LOCK）；spawn=校验+预算钳制+建子卡（🧩/note 双写验收/column=doing/budget 上卡）+插 queued 行+audit subagent_spawned；check 双键幂等；cancel queued/running→cancelled、终态 no-op；缺 parent 卡 TaskNotFound"},
     {"id": "SUBA-1", "file": "src-tauri/src/db/subagents.rs", "line": 1, "fix": "subagents 表持久化：六态状态枚举+transition_allowed 合法转移表（queued→running|cancelled；running→succeeded|failed|cancelled|budget_exceeded；终态禁移）+insert/load/find_by_task/update_status（打 started/finished 戳）"},
