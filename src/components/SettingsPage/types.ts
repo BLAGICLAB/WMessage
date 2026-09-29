@@ -51,3 +51,55 @@ export type SkillOutcome = {
   lastAtMs: number;
 };
 export type SkillInfo = { name: string; description: string; lastOutcome?: SkillOutcome | null };
+
+// ───────────────────────── MCP（外部工具服务器） ─────────────────────────
+
+/** 单个外部 MCP 服务器配置（与 Rust bot::mcp::config::McpServerConfig 同形，camelCase） */
+export type McpServerConfig = {
+  /** "" = 新建（后端生成 uuid） */
+  id: string;
+  name: string;
+  /** "stdio" | "http" */
+  transport: string;
+  /** stdio：启动器（后端白名单校验） */
+  command?: string | null;
+  args?: string[];
+  /** stdio：环境变量（明文存本机 bot-config.json） */
+  env?: Record<string, string>;
+  /** http：端点 URL */
+  url?: string | null;
+  /** http：随每个请求发送的自定义头（鉴权头等；明文存本机配置文件） */
+  headers?: Record<string, string>;
+  /** 单次工具调用超时秒数；null/undefined = 后端默认 60（钳 5..=600） */
+  timeoutSecs?: number | null;
+  enabled: boolean;
+};
+
+/** mcp_status 返回：配置 × 连接槽合并视图 */
+export type McpServerStatus = {
+  id: string;
+  name: string;
+  transport: string;
+  enabled: boolean;
+  /** "connected" | "down" | "absent" */
+  state: string;
+  error?: string | null;
+  toolCount: number;
+};
+
+/** 服务器已发现的工具（名称 + 描述，设置页展示用） */
+export type McpToolBrief = { name: string; description?: string | null };
+
+/** stdio 启动器白名单（与 Rust STDIO_LAUNCH_ALLOWLIST 同步——保存前后端双重把关） */
+export const MCP_STDIO_LAUNCHERS = [
+  "npx",
+  "bunx",
+  "uvx",
+  "pipx",
+  "node",
+  "deno",
+  "python",
+  "python3",
+  "docker",
+  "podman",
+] as const;

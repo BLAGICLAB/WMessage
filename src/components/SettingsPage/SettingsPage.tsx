@@ -22,6 +22,7 @@ import {
 } from "./types";
 import { UI_FONT_SIZE_OPTIONS, type ApiProvider, type UiFontSize } from "./constants";
 import { SkillsPanel } from "./SkillsPanel";
+import { McpPanel } from "./McpPanel";
 import { EvolutionPanel } from "../EvolutionPanel";
 import { ApiProviderSelect } from "./ApiProviderSelect";
 import { ProfileRow } from "./ProfileRow";
@@ -1402,6 +1403,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
       </div>
 
       <SkillsPanel />
+      <McpPanel />
       <EvolutionPanel />
       <MigrationPanel />
 

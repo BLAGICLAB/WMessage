@@ -161,6 +161,10 @@ pub struct BotConfig {
     /// None = 默认（启用 + daily；见 ConsolidationConfig::default）。
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub memory_consolidation: Option<crate::memory::consolidate::ConsolidationConfig>,
+    /// 外部 MCP 服务器配置（MCP 宿主支持，2026-09-28 拍板 1B）：
+    /// None = 老配置无此字段 = 未配置任何服务器。结构见 bot::mcp::config。
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub mcp_servers: Option<Vec<crate::bot::mcp::config::McpServerConfig>>,
     /// 配置 schema 版本（迁移钩子）：缺失就补默认 + 写回（migrate_bot_config_schema）。
     /// 字段级 default 让老配置（无此字段）反序列化即拿到当前版本，「文件里没有这个
     /// key」的判定走 raw JSON（见 migrate_config_value），不靠反序列化结果。
@@ -222,6 +226,7 @@ impl Default for BotConfig {
             active_model_id: None,            // 未配置 = 两协议都没选 active
             ui_font_size: None,               // 未配置 = small（老板拍板默认；前端读取时回退）
             memory_consolidation: None, // 未配置 = 启用 + daily（ConsolidationConfig::default）
+            mcp_servers: None,          // 未配置 = 无外部 MCP 服务器（老配置零影响）
             schema_version: BOT_CONFIG_SCHEMA_VERSION, // 新建配置即当前版本
         }
     }
@@ -324,6 +329,8 @@ pub struct BotConfigView {
     pub ui_font_size: Option<String>,
     /// 定时记忆整理配置：None 时解析为默认（启用 + daily）透传前端
     pub memory_consolidation: crate::memory::consolidate::ConsolidationConfig,
+    /// 外部 MCP 服务器配置原样透传（None 归一为空数组，前端永远拿数组形态）
+    pub mcp_servers: Vec<crate::bot::mcp::config::McpServerConfig>,
 }
 
 // ───────────────────────── 字段上限 + check_len ─────────────────────────

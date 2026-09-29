@@ -72,6 +72,16 @@ src-tauri/src/
 │                        MUTATING_TOOLS（mutating_tools:529）/ dispatch 查表三处全派生
 ├── bot/dispatch.rs (237)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+
 │                        pre_execute 洋葱入口 + skill_on_step 钩子 + tool.return 结构化审计
+├── bot/mcp/             外部 MCP 服务器接入（stdio/HTTP，设置页 McpPanel 管理）：
+│   ├── bot/mcp/mod.rs   模块声明
+│   ├── bot/mcp/config.rs        McpServerConfig/校验（stdio 启动器白名单、URL 公网闸、
+│   │                            normalize/timeout 钳制）+ 工具命名 mcp_tool_name/tool_prefix
+│   ├── bot/mcp/manager.rs       McpManager（OnceLock 单例）：连接槽 ensure_connected/call_tool、
+│   │                            指纹懒重连、stderr 环形缓冲、spawn 白名单字面量构造
+│   ├── bot/mcp/mount.rs         挂载层：连接快照 → 工具 schema 段（撞名消歧/条数/schema 体积
+│   │                            上限）+ dispatch miss 反查 execute_mcp_tool（带超时/结果整形）
+│   └── bot/mcp/commands.rs      设置页 tauri 命令：mcp_server_save/delete/toggle、
+│                                mcp_status、mcp_server_tools（写路径 CONFIG_WRITE_LOCK 全程持锁）
 ├── bot/config/          BotConfig/ApiProvider/PermMode/KeySlot（bot-config.json，key 走系统 keyring）；
 │   ├── bot/config/mod.rs  模块声明
 │   ├── bot/config/schema.rs        bot-config.json schemaVersion

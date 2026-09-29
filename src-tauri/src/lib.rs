@@ -156,6 +156,8 @@ fn cleanup_on_exit_with<R: tauri::Runtime>(
     // 复查标志直接拒绝，不会 spawn 出无人收割的孤儿进程
     bot_py::mark_exiting();
     let py_killed = kill_py();
+    // MCP 服务器连接收尾：取消全部令牌，子进程由传输 Drop 兜底 kill（不孤儿）
+    bot::mcp::manager::shutdown_all(app);
     audit::write_event(
         app,
         audit::AuditLevel::Info,
@@ -237,6 +239,16 @@ pub fn run() {
             app.manage(middleware::build_default_registry());
             // 全局可变状态容器（单一入口）；产物登记表已迁入，其余表逐张迁移
             app.manage(app_state::AppState::default());
+            // MCP 宿主（拍板 1B，阶段 2）：进程级连接管理器 + 启动即连启用的服务器
+            {
+                bot::mcp::manager::shared();
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    bot::mcp::manager::shared()
+                        .reload_from_config(&handle)
+                        .await;
+                });
+            }
 
             // 运行期文件收口：老版本散在数据目录根的 flag/token 迁进 runtime/flags
             //（幂等 rename；移动成功才记 Info 审计）
@@ -458,6 +470,11 @@ pub fn run() {
             bot::bot_set_config,
             bot::bot_set_active_model,
             bot::bot_clear_api_key,
+            bot::mcp::commands::mcp_server_save,
+            bot::mcp::commands::mcp_server_delete,
+            bot::mcp::commands::mcp_server_toggle,
+            bot::mcp::commands::mcp_status,
+            bot::mcp::commands::mcp_server_tools,
             memory::consolidate::memory_consolidate_now,
             bot_chat::bot_chat,
             bot_chat::bot_execute_task,

@@ -2,6 +2,93 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-09-28（周一）出包：Windows 绿色版 `wmessage-portable-2026-09-28.zip`（104 MB）
+
+**背景**：老板要一份最新绿色包。按 `docs/PACKAGING-WINDOWS-PORTABLE.md` 全流程跑完，无 Windows
+机器参与，全程 macOS 交叉编译（mingw-w64 + x86_64-pc-windows-gnu）。
+
+**产物**：
+- 路径：`/Users…sage-portable-2026-09-28.zip`
+- 大小：104,276,195 B（≈104 MB）；含 205 个条目
+- `wmessage.exe`：57,127,631 B（54.5 MiB / 57.1 MB，release 编译 33.11 s，基于 main @ b59928f）
+- `onnxruntime.dll`：15.8 MB；`WebView2Loader.dll`：160 KB；`dotnet/`：79 MB（含 189 文件）
+- `bge-small-zh-v1.5/`（23 MB，语义模型）+ `pp-ocr-v6/`（31 MB，OCR 模型）
+
+**校验**：
+- `python3 zipfile.testzip()` 通过；顶层 9 类条目齐全（exe / WebView2Loader / ort ×2 / Edge setup / README / dotnet / bge / pp-ocr）
+- `dotnet/wm-docx-revisions.exe` / `bge-small-zh-v1.5/onnx/model_quantized.onnx` / `pp-ocr-v6/{det,rec,cls}.onnx` + `keys.txt` 全部在位
+- `objdump -p wmessage.exe | grep -i onnxruntime` 无输出 → ort 走 `load-dynamic`，无静态导入
+- `cd src-tauri && cargo check` exit 0（macOS 回归无影响）
+
+**本次出包触发的 1 处未提交修复**（建议老板按 09-16 惯例单独 commit）：
+- `src-tauri/src/py/runtime.rs:457` `impl SetrlimitSupport` 漏 `#[cfg(unix)]` gate —— 9ff9d1a 加 S20 py
+  setrlimit 探测时漏配（结构体本身已 gate，但 impl 块漏了），macOS dev 不编非-unix 路径所以未发现；
+  本次出包交叉编译 Windows-gnu 触发 E0425，就地补 `#[cfg(unix)]` on impl（+1 行）。建议 commit：
+  `fix(rust): impl SetrlimitSupport 漏 cfg(unix) —— 9ff9d1a 加 S20 探测时漏配，macOS dev 不编非-unix 路径所以未发现`
+
+**自 6cce1c0 起的 423 个 commit 要点**：
+- **SUBAGENT A 期三批（SUBA-1/2/3）**：子 Agent 编排核心（67f00c3：`subagents` 表 + 生命周期状态机
+  + spawn/check/cancel + 子卡双写）→ 工具暴露 + 递归双保险 + 任务包装 + 提示词 + runner + 收尾解析
+  （c4f60d7）→ 并发闸 FIFO + tool_calls 预算强制 + 前端三字段/停止按钮（995ec3a）。A 期总账见 b59928f。
+- **DEC-1 决策批（9ff9d1a）**：C4-v2 widget 高度底部放开（PANEL_H_MIN 800→400，默认 560 回归合法
+  区间）+ S20 py setrlimit 逐资源探测降级（RLIMIT_AS/RLIMIT_CPU 独立探测；Available 照设 /
+  Unavailable 不设+audit「限额未生效」/ ProbeError 不设+audit「未探测到 setrlimit 可用性」——
+  裸 macOS 实测 AS 被内核 EINVAL 拒、CPU 可设，旧实现下 AS 从未生效过）。
+- **P3-SEC-1 中危安全修复批（a03a4dc）**：medium-security-fixes Phase 3 首批（security 5 项落地 +
+  20 项登记）。
+- **OCR 审计多轮**（SUBAGENT 工具暴露相关）：r1/r2/r3 处置（采纳补 `db/subagents.rs` 会话路由
+  + runner 账 + `lib.rs` cancel_subagent 命令注册 + bridge 门禁 + 闸走 OnceLock 不动 app_state）。
+- **Sprint H 注释一致性 / poisoned-silent-recovery（f196352）/ mutex_poisoned 审计约定
+  （4573f80）/ 全仓 cargo fmt（ffb79ff，311 块 / 57 文件，纯机械）**。
+
+**待人工验收**：Windows 实机双击 wmessage.exe，确认数据库与 AI_Gen_Files 落在 exe 同目录（便携锚定），
+重点验证：
+1. 机器人记忆语义检索（模型/引擎异常会自动降级关键词模式，不报错但功能缩水，需肉眼确认）
+2. SUBA 子 Agent：触发一次「让子 agent 跑个 ocr」之类任务，确认子卡渲染、并发闸不串话、停止按钮生效
+3. `ocr_image` 工具：本地图片跑一次（缺 pp-ocr-v6/ 时工具会报「请运行 scripts/fetch_ocr_models.sh…」）
+
+## 2026-09-29（周二）MCP-B0 批：外部 MCP 服务器接入（stdio/HTTP）+ 合入前必修（B0）一次合入
+
+**背景**：两轮全仓审计定稿（`docs/AUDIT-FULL-2026-09-29.md`，合并工作区未提交的
+MCP 改动清点），老板拍板「自进化保留、MCP 改过 B0 后合入」。修复方案
+`docs/AUDIT-FIX-PLAN-2026-09-29.md`（B0–B6 七批，语义决策 5 项全拍板）。本批 = B0 + MCP 本体合入。
+
+**合入内容**：
+- **MCP 功能本体**：`bot/mcp/` 五文件（config 校验+白名单+URL 公网闸 / manager 连接槽+
+  懒重连+stderr 环形缓冲 / mount 挂载+schema 上限+结果整形 / commands 设置页命令 /
+  mod）+ registry 摘尾增量挂载 + dispatch miss 反查 + McpPanel（保存前确认弹窗，拍板 3A）
+  + `tests/fixtures/mcp_echo_server.py` 零依赖 e2e 桩。
+- **B0 必修**：① registry 摘尾回退（base/body 双侧契约，破坏回退静态清单不产出非法 JSON，
+  告警限频第 1 次+每 100 次）；② 数据面定界（schema 8KB 降级、结果 30K 字符钳制）；
+  ③ e2e 串行锁防并行串扰；④ 面板 timeoutSecs 钳 5..=600/定时器防抖/headers 打码。
+- **ocr review 两轮**：r1 60 条（4 HIGH）→ 修复 4 HIGH（load_config 同步 IO 挪
+  spawn_blocking；确认弹窗含空白参数加引号；normalize 空键只按键判定；白名单×match
+  双清单 parity 单测锁——字面量构造按 Mimosa 闸要求保留）→ r2 37 条 0 HIGH，
+  其中 9 条 medium/low 顺手修（SSRF 补数字形式/.local/localhost 别名/db8 段/zone-id、
+  非法参数 JSON 本地拒、toggle 响亮报错 DomainRule、connected_service 拆指纹过期、
+  shutdown 清 stderr、id 卫生、fail-soft 兜底回退静态清单等），余 20+ 条登记见下。
+- **PKG-1 捎带**：`py/runtime.rs` impl SetrlimitSupport 补 `#[cfg(unix)]`
+  （09-28 Windows 交叉编译 E0425 单行修复；因 pre-commit worktree_clean 门禁强制
+  工作区无未暂存改动，与 B0 合并落地，独立 spec 留档）。
+- **文档**：架构文档模块树补 bot/mcp/ 五条；新文件注释去掉历史批次号引用（P1-x/P2-x
+  →「评审」，符合 test-fast [0/N] 防线）。
+
+**验收**：`cargo test mcp` 36 / `registry` 20 / `model_loop` 44、vitest SettingsPage 38、
+`tsc --noEmit`、模块地图/桥一致性/错误码三审计、`bash scripts/test-fast.sh` 全绿；
+Mimosa 命令注入闸复核（白名单字面量构造保留，parity 单测 `stdio_allowlist_and_spawn_match_stay_in_sync`）。
+
+**实施偏差登记**：
+- B0-3 e2e 去单例 → 实际改为 `SHARED_MCP_TEST_LOCK` 串行化（保留生产同路径单例，
+  消并行 flaky 的目标一致；局部实例方案会丢「挂载层读 shared()」的真实路径覆盖）。
+- 分拆提交计划（09-28 DEVLOG / MCP+B0）被 worktree_clean 门禁阻断 → 单批合入。
+
+**遗留登记（r2 未修，后续批处理）**：reload_from_config 无合流去抖；save/delete/toggle
+锁内多余 clone+O(n) find（可改 set_enabled 返回值）；mcp_tools_json_body 每轮重挂载表重建
+（性能，连 B3 流式批一起看）；挂载表快照与调用反查两次 `mounted()` 的窗口；DNS rebinding
+TOCTOU（docstring 已声明二期）；spawn_blocking join 失败吞错（load_config 无 panic 面）；
+aggregate 工具总条数无上限（单服务器 128 已钳）；前端 expand 错误已行内化但 stdio/http
+表单切换丢字段回填等 B5-4 范围项。
+
 ## 2026-09-18（周五）出包：Windows 绿色版 `wmessage-portable-2026-09-18.zip`（104 MB）
 
 **背景**：老板要一份最新绿色包。按 `docs/PACKAGING-WINDOWS-PORTABLE.md` 全流程跑完，无 Windows

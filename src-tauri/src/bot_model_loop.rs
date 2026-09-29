@@ -537,9 +537,28 @@ where
         }
     };
     // SUBA-2：工具 schema 按会话选取——子 agent 会话给 profile 白名单
-    //（递归双保险①：清单里无 spawn 等），其他会话默认全量
-    let tools: serde_json::Value =
-        serde_json::from_str(crate::bot::registry::tools_json_for(stop.session_id())).unwrap();
+    //（递归双保险①：清单里无 spawn 等），其他会话默认全量；
+    // 阶段 3：主 agent 清单尾部追加外部 MCP 工具（tools_json_with_mcp，
+    // 子 agent 分支短路不受影响）。
+    // B0-1（AUDIT-FIX-PLAN-2026-09-29）：拼装结果含外部 MCP description（外部
+    // 数据引入面），此处兜底改 fail-soft——解析失败记审计并回退「无 MCP 的
+    // 静态清单」（B0 评审：内置 32 工具不陪 MCP 动态段陪葬；静态 base 恒合法，
+    // 末层空表只为防御到底），不再 panic 打断模型循环。
+    let tools: serde_json::Value = {
+        let assembled = crate::bot::registry::tools_json_with_mcp(stop.session_id());
+        match serde_json::from_str(assembled.as_ref()) {
+            Ok(v) => v,
+            Err(e) => {
+                (deps.audit)(
+                    crate::audit::AuditLevel::Error,
+                    "bot.tools_json_parse_fail",
+                    vec![("err", e.to_string())],
+                );
+                serde_json::from_str(crate::bot::registry::tools_json_for(stop.session_id()))
+                    .unwrap_or_else(|_| serde_json::json!([]))
+            }
+        }
+    };
 
     // SUBA-2：熔断上限按会话派生——子 agent 预算 max_tool_calls（子会话注册表），
     // 其余 50。软警阈值 = cap*7/10（cap=50 时即既有 35，行为字节级不变）。

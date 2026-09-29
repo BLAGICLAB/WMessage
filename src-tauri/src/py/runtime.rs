@@ -454,6 +454,7 @@ pub struct SetrlimitSupport {
     pub rlimit_cpu: SetrlimitProbe,
 }
 
+#[cfg(unix)]
 impl SetrlimitSupport {
     #[cfg(unix)]
     fn all_available(&self) -> bool {

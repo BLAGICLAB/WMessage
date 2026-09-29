@@ -76,6 +76,16 @@ tokenizers = { version = "0.23", default-features = false, features = ["fancy-re
 # macOS 走系统 Vision（objc2-vision），Windows 走本地 PP-OCRv6 ONNX（复用上面的 ort）
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
+# MCP 宿主（2026-09-28 拍板 1B）：官方 SDK，wmessage 作为 Host/Client 连外部 MCP 服务器。
+# default-features 关掉 server 侧（default = base64, macros, server——宿主场景不用 server，
+# 且其 Streamable HTTP 服务端有 CVE-2026-63128 历史，客户端只留最小攻击面）。
+# stdio（子进程 stdin/stdout）+ Streamable HTTP（远程端点，reqwest 0.13 与主工程同源）。
+rmcp = { version = "3.5", default-features = false, features = [
+    "client",
+    "transport-child-process",
+    "transport-streamable-http-client-reqwest",
+] }
+
 # Windows 交叉编译（x86_64-pc-windows-gnu）：ort 官方预编译库无 gnu target，
 # 叠加 load-dynamic（特性取并集）→ ort-sys disable-linking，构建期不下载不链接，
 # 运行时按名加载 onnxruntime.dll（随绿色包放 exe 同目录）；macOS 路径不受影响。

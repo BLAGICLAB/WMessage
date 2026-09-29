@@ -939,6 +939,62 @@ pub fn tools_json_for(session_id: Option<&str>) -> &'static str {
     }
 }
 
+/// 主 agent 的完整工具清单（阶段 3 MCP 挂载点，拍板 2A 机制 A）：
+/// 内置静态 JSON 尾部追加外部 MCP 工具（增量挂载，内置 32 工具 schema 字节不动）。
+/// - 子 agent 会话：短路返回白名单（外部 MCP 工具不进子 agent，§5.1 边界不破）；
+/// - 无 MCP 连接：原样返回静态 &'static str（零分配，热路径不变）；
+/// - 有连接：Owned String = 静态 JSON 摘尾 + `mount::mcp_tools_json_body()` + 收尾。
+/// 消费点 bot_model_loop 对拼装结果 fail-soft（B0-1）：schema 构建层保证 JSON
+/// 合法（mount/registry 单测锁），解析失败记审计走空工具表，不再 panic。
+pub fn tools_json_with_mcp(session_id: Option<&str>) -> std::borrow::Cow<'static, str> {
+    // 子 agent 判定显式化（B0 评审：原 ptr::eq 指针比较对 tools_json_for 的
+    // 返回形态有隐式契约，重构易碎）——subagent_ctx 是内存查表，重复一次开销可忽略
+    let is_subagent = session_id
+        .and_then(|sid| crate::tool_guard::subagent_ctx(Some(sid)))
+        .is_some();
+    let base = tools_json_for(session_id);
+    if is_subagent {
+        // 子 agent 白名单：静态借用返回
+        return std::borrow::Cow::Borrowed(base);
+    }
+    let body = crate::bot::mcp::mount::mcp_tools_json_body();
+    if body.is_empty() {
+        return std::borrow::Cow::Borrowed(base);
+    }
+    // base 恒以 "\n]" 收尾（tools_json 拼装格式）。契约破坏属"永不发生"态：
+    // 每轮模型循环都走这里，告警限频防刷屏——第 1 次 + 之后每 100 次
+    //（B0 评审：OnceLock 只告一次，持续破坏会彻底静默）；回退 base 后
+    // 消费点的 fail-soft 兜底接住（B0-1：release 无 debug_assert，不产出非法 JSON）。
+    static CONTRACT_BREAKS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    if !base.ends_with("\n]") {
+        let n = CONTRACT_BREAKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        if n == 1 || n % 100 == 0 {
+            eprintln!(
+                "[registry] tools_json 格式契约破坏（未以 \\n] 收尾，第 {n} 次），MCP 工具本轮不挂载"
+            );
+        }
+    }
+    splice_mcp_body(base, &body)
+}
+
+/// 摘尾拼接内核（纯函数，单测直打）：base 恒以 `"\n]"` 收尾、动态段恒以
+/// `",\n"` 起头（build_tools_json_body 构造保证），摘尾接段再补收尾；
+/// 任一侧契约破坏回退 base 原样返回（宁可本轮少挂 MCP 工具，不产出非法 JSON。
+/// B0-1，AUDIT-FIX-PLAN-2026-09-29；body 侧对偶检查为 B0 评审补充）。
+fn splice_mcp_body<'a>(base: &'a str, body: &str) -> std::borrow::Cow<'a, str> {
+    let Some(head) = base.strip_suffix("\n]") else {
+        return std::borrow::Cow::Borrowed(base);
+    };
+    if !body.starts_with(",\n") {
+        return std::borrow::Cow::Borrowed(base);
+    }
+    let mut s = String::with_capacity(head.len() + body.len() + 2);
+    s.push_str(head);
+    s.push_str(body);
+    s.push_str("\n]");
+    std::borrow::Cow::Owned(s)
+}
+
 pub fn profile_tools_json(profile: crate::db::SubagentProfile) -> &'static str {
     static CACHE: OnceLock<HashMap<&'static str, String>> = OnceLock::new();
     CACHE
@@ -1382,5 +1438,73 @@ mod registry_tests {
     fn tools_json_for_plain_session_is_default() {
         assert_eq!(tools_json_for(Some("not-a-subagent-session")), tools_json());
         assert_eq!(tools_json_for(None), tools_json());
+    }
+
+    // ─────────────────── 阶段 3：MCP 动态挂载点 ───────────────────
+
+    /// 无 MCP 连接：tools_json_with_mcp 必须原样借用静态 JSON（零分配、零漂移）。
+    /// 与 manager e2e 共用测试锁（B0-3）：e2e 的连接存活窗口会让「无连接」断言
+    /// 在 cargo test 并行下 flaky；先清残留（前序用例 panic 可能留下连接槽）。
+    #[test]
+    fn tools_json_with_mcp_without_connections_is_borrowed_static() {
+        // blocking_lock 须在 block_on 进入 runtime 上下文之前取（tokio Mutex 语义）
+        let _serial = crate::bot::mcp::manager::SHARED_MCP_TEST_LOCK.blocking_lock();
+        let _ = tauri::async_runtime::block_on(crate::bot::mcp::manager::shared().shutdown());
+        let with = tools_json_with_mcp(None);
+        assert!(matches!(with, std::borrow::Cow::Borrowed(_)));
+        assert_eq!(with.as_ref(), tools_json());
+        // 子 agent 会话短路：不碰 MCP（挂载层根本不被调用）
+        let sub = tools_json_with_mcp(Some("not-a-subagent-session"));
+        assert!(matches!(sub, std::borrow::Cow::Borrowed(_)));
+    }
+
+    /// B0-1：摘尾拼接契约——base 正常时摘尾接段补收尾；契约破坏（未以 \n] 收尾）
+    /// 回退 base 原样返回，绝不产出非法 JSON（release 无 debug_assert 保护）。
+    #[test]
+    fn splice_mcp_body_falls_back_when_base_contract_broken() {
+        let broken = "[\n  {\"type\":\"function\"}";
+        assert!(matches!(
+            super::splice_mcp_body(broken, ",\n  {}"),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        let out = super::splice_mcp_body("[\n  {}\n]", ",\n  {}");
+        assert_eq!(out.as_ref(), "[\n  {},\n  {}\n]");
+        // 拼装结果恒为合法 JSON 数组
+        let v: serde_json::Value = serde_json::from_str(out.as_ref()).expect("拼装结果应合法");
+        assert_eq!(v.as_array().map(|a| a.len()), Some(2));
+        // body 侧对偶契约（B0 评审）：动态段不以 ",\n" 起头（mount 层构造破坏）
+        // 同样回退 base，不产出非法 JSON
+        assert!(matches!(
+            super::splice_mcp_body("[\n  {}\n]", "garbage"),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        assert!(matches!(
+            super::splice_mcp_body("[\n  {}\n]", ",garbage"),
+            std::borrow::Cow::Borrowed(_)
+        ));
+    }
+
+    /// 动态拼装契约（纯格式）：拿 mount 的纯函数造一个假 body，
+    /// 拼装结果必须是合法 JSON 数组、内置 32 工具在前 + MCP 条目在后。
+    /// （真实连接路径由 manager e2e 测试覆盖：连接后 with_mcp 含 mcp_echo_echo。）
+    #[test]
+    fn tools_json_with_mcp_assembly_contract() {
+        let base = tools_json();
+        let body = crate::bot::mcp::mount::build_tools_json_body(&[]);
+        assert!(body.is_empty(), "无服务器时空段");
+        // 模拟 registry 拼装路径（与 tools_json_with_mcp Owned 分支同构）
+        let fake_body = r#",
+  {"type":"function","function":{"name":"mcp_fake_x","description":"d","parameters":{"type":"object","properties":{}}}}"#;
+        let mut s = String::with_capacity(base.len() + fake_body.len() + 2);
+        s.push_str(&base[..base.len() - 2]);
+        s.push_str(fake_body);
+        s.push_str("\n]");
+        let v: serde_json::Value = serde_json::from_str(&s).expect("拼装结果必须合法");
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 33, "32 内置 + 1 假 MCP");
+        assert_eq!(arr[32]["function"]["name"], "mcp_fake_x");
+        // 内置前 32 项顺序不变（增量挂载不漂移）
+        let base_arr = serde_json::from_str::<serde_json::Value>(base).unwrap();
+        assert_eq!(&arr[..32], base_arr.as_array().unwrap().as_slice());
     }
 }

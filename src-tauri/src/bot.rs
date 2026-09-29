@@ -44,6 +44,7 @@ pub use crate::db::{load_all_skill_outcomes, upsert_skill_outcome, PersistedSkil
 pub mod config;
 pub mod dispatch;
 pub mod format;
+pub mod mcp;
 pub mod reasoning;
 pub mod registry;
 pub mod tools;

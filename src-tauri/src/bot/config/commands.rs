@@ -89,6 +89,7 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
         active_model_id: cfg.active_model_id,
         ui_font_size: cfg.ui_font_size,
         memory_consolidation: cfg.memory_consolidation.unwrap_or_default(),
+        mcp_servers: cfg.mcp_servers.unwrap_or_default(),
     })
 }
 
