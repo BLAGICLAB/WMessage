@@ -108,10 +108,6 @@ pub(crate) fn after_change(
 
 // ───────────────────────── 任务 JSON 形状 ─────────────────────────
 
-/// 对外任务对象：`db::Task` 字段 + `status`（todo/doing/done，即看板列）
-// TaskOut 抽到 crate::task_out 模块（数据层 api.rs 也需用，不能反向依赖 api_handlers）
-pub(crate) use crate::task_out::TaskOut;
-
 // ───────────────────────── 请求体形状 ─────────────────────────
 
 #[derive(Deserialize)]

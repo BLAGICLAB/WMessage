@@ -17,8 +17,6 @@ pub use crate::db::workspace::*;
 use std::time::Duration;
 use tauri::Manager;
 
-use serde::{Deserialize, Serialize};
-
 use crate::error::CommandError;
 
 pub mod bot_history;

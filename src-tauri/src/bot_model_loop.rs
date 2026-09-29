@@ -21,7 +21,6 @@ use tauri::{AppHandle, Emitter};
 // 从 crate::bot::registry 单源派生的 TOOLS / MUTATING_TOOLS。
 // 原 const 字符串 / 数组现为函数（OnceLock 缓存）——保持向后兼容路径。
 pub use crate::bot::registry::mutating_tools as MUTATING_TOOLS;
-pub use crate::bot::registry::tools_json as TOOLS;
 
 // ───────────────────────── 防幻觉汇报守卫 ─────────────────────────
 // 实锤事故：MiniMax-M3 多次不调任何工具就回复「已添加子任务」「已移至回收站」，
@@ -1901,6 +1900,7 @@ mod stream_accumulate_tests {
 #[cfg(test)]
 mod tools_schema_tests {
     use super::*;
+    use crate::bot::registry::tools_json as TOOLS;
 
     /// TOOLS 是编译期字符串、运行期解析：语法坏会 panic 杀死聊天（历史 bug）。
     /// 此测试守住：加/改工具后必须合法且字段完整。

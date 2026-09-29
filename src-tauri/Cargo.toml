@@ -6,6 +6,19 @@ authors = ["张晓峰 <zxf_83117@163.com>"]
 edition = "2021"
 default-run = "wmessage"
 
+# B5-6（clippy 分级治理）：三类纯噪音 lint 显式放宽（各带理由；其余 0 warning
+# 目标不变）。放宽 = 有意的工程决策并在此留痕，非漏修。
+[lints.clippy]
+# 文档列表续行格式（52 条）：历史文档的列表续行/新段落判定需逐条人工改写，
+# 纯格式无运行时影响。机械化修复有改写文档语义的风险 → 登记 follow-up 手修
+doc_lazy_continuation = "allow"
+# 复杂类型（24 条）：集中在测试 mock 的执行器注入泛型签名与 LlmHttp 装配——
+# 抽 type 别名会让签名更难读（类型拼写移出定义点），测试代码可读性优先
+type_complexity = "allow"
+# 参数个数（4 条）：run_model_loop 等装配入口，参数皆为必要依赖注入；
+# 收拢成 struct 只是换个形式的样板代码
+too_many_arguments = "allow"
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]

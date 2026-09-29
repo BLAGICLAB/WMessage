@@ -22,7 +22,6 @@ use crate::audit_event;
 use crate::db;
 use crate::error::{CommandError, CommandResult};
 
-use super::ratelimit::log_line;
 use super::sse::{stop_sse_writers, API_HUB_KEY, SSE_STOP_JOIN_TIMEOUT};
 use super::types::{ApiInfo, ApiStatus};
 

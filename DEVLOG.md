@@ -47,6 +47,32 @@
 2. SUBA 子 Agent：触发一次「让子 agent 跑个 ocr」之类任务，确认子卡渲染、并发闸不串话、停止按钮生效
 3. `ocr_image` 工具：本地图片跑一次（缺 pp-ocr-v6/ 时工具会报「请运行 scripts/fetch_ocr_models.sh…」）
 
+## 2026-09-29（周二）B5-HEALTH 批：工程健康自动化（B5-1/B5-5/B5-6 一阶段/B5-7 部分）
+
+**背景**：审计修复批第 7 批。B5-2/B5-3（ChatPanel memo+拆分）与其余 clippy
+机械微修单独成批；本批铺地基（linter 挂载 + clippy 分级 + tsconfig 收紧）。
+
+**改动**：
+- **B5-6 clippy 273→169（-38%）**：`cargo fix` 清 24 个死 import（两个误删的
+  测试 facade import 已恢复，bot_py.rs use 区立注释禁自动 fix 触碰）；三类纯
+  噪音 lint 在 `[lints.clippy]` 显式放宽（各带理由：doc_lazy_continuation 52
+  条需逐条改写文档语义、type_complexity 24 条测试 mock 签名、
+  too_many_arguments 4 条装配入口）；await_holding_lock 15 条（审计点名类）
+  核实为测试串行锁**故意持有**（#[tokio::test] 独立 runtime 无死锁面）→ 三
+  测试文件 allow + 理由。剩余 169 条 = 30+ 类风格微修（清单 `cargo clippy
+  --all-targets` 再生），--fix 无 suggestion，登记后批逐条手修。
+- **B5-1**：oxlint 1.86 接入（`.oxlintrc.json`：correctness/perf + react-hooks
+  ——6 处既有 eslint-disable 注释重新生效）；test-fast.sh 新增 [4.6/N]
+  （error 拦 warning 放行）；`npm run lint`；knip ignoreDependencies。存量
+  32 条 warn 随 ChatPanel 批清。
+- **B5-5**：noImplicitOverride 启用（3 处补 override）；noUncheckedIndexedAccess
+  实测 **174 处**（72% 在测试文件，审计预估「十余处」差一个量级）→ 登记后批。
+- **B5-7 部分**：npm audit 复核（3 moderate 无 high；fix 无动作）；cargo-deny
+  登记随 B6。
+
+**验收**：test-fast 7s 全绿（含 oxlint 步骤）；clippy 169（从 273）；vitest 339 /
+tsc 0 错。
+
 ## 2026-09-29（周二）MCP-KEYSLOT 批：MCP env/headers 迁系统凭据存储（B4-6，拍板③）
 
 **背景**：审计修复批第 6 批（B4 主批=`359db6d`）。MCP env/headers 明文落

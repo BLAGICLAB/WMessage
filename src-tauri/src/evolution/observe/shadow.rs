@@ -507,6 +507,10 @@ pub fn shadow_eligible_proposals(
 
 #[cfg(test)]
 mod tests {
+    // B5-6：await_holding_lock 豁免——测试串行锁（counter_lock 等 std Mutex
+    // guard）**故意**持跨 await：#[tokio::test] 独立 current-thread runtime，
+    // guard 持有至测试结束正是串行化语义，无真实死锁面
+    #![allow(clippy::await_holding_lock)]
     use super::*;
     use crate::evolution::proposal::{
         Evidence, ImpactLevel, ProposalCategory, ProposalOrigin, ProposalTarget, Suggestion,

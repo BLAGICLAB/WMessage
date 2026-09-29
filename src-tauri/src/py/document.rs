@@ -16,8 +16,7 @@ use crate::error::{CommandError, CommandResult};
 use crate::py::audit::py_audit;
 use crate::py::env::{run_dotnet_revisions, PyEnv};
 use crate::py::runtime::{
-    kill_all_py_children, mark_exiting, py_gate_acquire, py_runs_root, run_python, run_python_at,
-    run_python_ungated, PyRunResult, RunFail, MAX_TIMEOUT_SECS, OUTPUT_CAP,
+    py_gate_acquire, run_python, run_python_ungated, PyRunResult, RunFail, MAX_TIMEOUT_SECS,
 };
 
 // ───────────── 固定文档脚本模板 ─────────────

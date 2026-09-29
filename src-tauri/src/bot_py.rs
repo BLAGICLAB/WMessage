@@ -11,6 +11,8 @@
 
 // 显式 re-export 每个子模块的 pub 项（glob `pub use crate::py::*` 只展开
 // py 的顶层项即子模块声明本身，不递归 re-export 子模块内部 pub 项）
+// audit/env/io 三行「看似未用」是有意的 facade：测试模块经 super::X 解析
+// （B5-6 教训：cargo fix 会误删它们，勿让自动 fix 碰本文件 use 区）
 pub use crate::py::audit::*;
 pub use crate::py::commands::*;
 pub use crate::py::document::*;

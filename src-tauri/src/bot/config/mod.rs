@@ -57,10 +57,7 @@ pub use types::{
 
 // pub(crate) 项：bot.rs 的 `pub(crate) use config::{...}` 块需要。
 pub(crate) use audit::{escape_for_log, truncate_for_log};
-pub(crate) use io::{
-    add_allowed_dir, base_url_is_safe, load_config, migrate_search_key_slot, update_config_file,
-    write_bot_config_file,
-};
+pub(crate) use io::{add_allowed_dir, load_config, update_config_file};
 
 // tauri 命令宏生成物（__cmd__* / __tauri_command_name_*）：在 commands.rs 里
 // #[tauri::command] 函数旁边自动生成；同样 re-export 以让 bot.rs 的 facade 一行不动。

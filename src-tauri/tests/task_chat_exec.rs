@@ -1,4 +1,9 @@
 //! 任务执行聊天化全链路测试（2026-09-10，docs/TASK-CHAT-EXECUTION-DESIGN.md 第 6 节）
+//! B5-6：`#![allow(clippy::await_holding_lock)]`——测试串行锁（SERIAL/MutexGuard）
+//! **故意**持跨 await：#[tokio::test] 独立 current-thread runtime，guard 持有
+//! 至测试结束正是串行化语义，无真实死锁面（std Mutex 阻塞的是本测试线程）。
+#![allow(clippy::await_holding_lock)]
+
 //!
 //! 覆盖：
 //! 1. run_task_in_chat 全链路（mock LLM）：会话创建（📋 标题前缀）、任务块 user 消息落库、
@@ -19,7 +24,7 @@ use mock_llm_shared::{MockBehavior, MockLlmServer, ToolCallResponse};
 use wmessage_lib::bot::registry::ToolResult;
 use wmessage_lib::bot::{
     noop_replan, run_model_loop_core, ApiProvider, AuditLevel, LlmHttp, ModelLoopDeps, StopGuard,
-    TaskRef, ToolCallTrace, DEFAULT_MAX_TOKENS,
+    ToolCallTrace, DEFAULT_MAX_TOKENS,
 };
 use wmessage_lib::bot_chat::{chat_guard_is_held, run_task_in_chat_with, TaskExecOrigin};
 

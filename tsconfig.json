@@ -19,6 +19,9 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
+    /* B5-5：noUncheckedIndexedAccess 实测 174 处（72% 在测试文件，审计预估
+       「十余处」差一个量级）——登记后批单独处理；先收 noImplicitOverride */
+    "noImplicitOverride": true,
 
     /* Tests */
     "types": ["vitest/globals", "@testing-library/jest-dom"],

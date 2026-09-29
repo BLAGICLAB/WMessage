@@ -18,9 +18,8 @@ use crate::task_out::TaskOut;
 use super::body::{read_body_limited, BodyRead};
 use super::ratelimit::{log_line, rate_check};
 use super::util::{
-    after_change, change_log_line, internal_err, parse_status, upsert_err, valid_status, CreateReq,
-    UpdateReq, API_MAX_DUE, API_MAX_FILE_PATH, API_MAX_NOTE, API_MAX_TAGS, API_MAX_TAG_LEN,
-    API_MAX_TITLE,
+    after_change, internal_err, parse_status, upsert_err, valid_status, CreateReq, UpdateReq,
+    API_MAX_DUE, API_MAX_FILE_PATH, API_MAX_NOTE, API_MAX_TAGS, API_MAX_TAG_LEN, API_MAX_TITLE,
 };
 use super::util::{now_ms, over_limit};
 

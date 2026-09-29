@@ -22,7 +22,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-use crate::evolution::proposal::{is_reversible, EvolutionProposal, ImpactLevel, ProposalCategory};
+use crate::evolution::proposal::{is_reversible, EvolutionProposal};
 
 // ───────────────────────── 三态 ─────────────────────────
 

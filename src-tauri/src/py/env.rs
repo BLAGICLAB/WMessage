@@ -1,6 +1,6 @@
 //! Python / .NET 环境探测 + 缓存
 
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 use tauri::AppHandle;
 

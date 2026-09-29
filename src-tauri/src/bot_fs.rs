@@ -15,7 +15,6 @@ use std::path::{Path, PathBuf};
 use tauri::AppHandle;
 
 use crate::bot::registry::ToolResult;
-use crate::bot_chat::TaskRef;
 
 const READ_MAX_BYTES: usize = 100 * 1024;
 const READ_DEFAULT_LINES: usize = 500;

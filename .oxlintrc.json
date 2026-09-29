@@ -1,0 +1,17 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  // B5-1：linter 接入。categories 启用正确性/性能系列；
+  // react-hooks 让既有 6 处 eslint-disable-next-line react-hooks/exhaustive-deps
+  // 重新生效（此前无 linter 挂载，注释是死的）。
+  "categories": {
+    "correctness": "warn",
+    "perf": "warn"
+  },
+  "plugins": ["react", "react-hooks", "typescript", "oxc"],
+  "rules": {
+    "react-hooks/exhaustive-deps": "warn",
+    "react-hooks/rules-of-hooks": "error",
+    "typescript/no-explicit-any": "off"
+  },
+  "ignorePatterns": ["dist/**", "src-tauri/target/**", "node_modules/**"]
+}

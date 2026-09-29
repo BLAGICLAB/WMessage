@@ -218,7 +218,7 @@ pub fn mcp_status(app: AppHandle) -> CommandResult<Vec<McpServerStatus>> {
 /// 单服务器已发现工具清单（设置页「查看工具」展开用）：只读连接槽的缓存快照，
 /// 不触发连接（未连接 → 空列表）。
 #[tauri::command]
-pub fn mcp_server_tools(app: AppHandle, id: String) -> CommandResult<Vec<McpToolBrief>> {
+pub fn mcp_server_tools(_app: AppHandle, id: String) -> CommandResult<Vec<McpToolBrief>> {
     Ok(shared()
         .tools_of(&id)
         .into_iter()

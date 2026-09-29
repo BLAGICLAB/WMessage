@@ -1,7 +1,6 @@
 //! 路径解析 + 日志轮转 + 原子写 + 老库拷贝边
 
 use std::path::PathBuf;
-use tauri::Manager;
 
 use crate::error::CommandError;
 

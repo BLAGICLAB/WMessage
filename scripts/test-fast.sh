@@ -197,6 +197,15 @@ if [[ "$NEED_TS" == true ]]; then
         npx --no-install knip --no-progress
 fi
 
+# ─── 步骤 4.6: oxlint（前端 linter，B5-1） ──
+# 规则配置见 .oxlintrc.json（react-hooks 让既有 eslint-disable 注释重新生效）。
+# 门禁口径：默认退出码——error 拦（rules-of-hooks 等），warning 放行（存量 32
+# 条 warn 随 ChatPanel 批清理）
+if [[ "$NEED_TS" == true ]]; then
+    step "[4.6/N] oxlint（error 级门禁）" \
+        npx --no-install oxlint src
+fi
+
 # ─── 步骤 5: vitest run（前端 unit） ──────────────────────
 # vitest --changed 只跑与改动文件相关的测试（基于 git diff）
 # 全部未改 → 跳过整个 vitest

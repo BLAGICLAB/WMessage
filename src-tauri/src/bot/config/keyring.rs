@@ -8,12 +8,10 @@
 //! - v0 service 名 → v1 带版本后缀 service 名迁移
 
 use std::io::Write;
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tauri::AppHandle;
 
-use crate::db;
 use crate::error::{CommandError, CommandResult};
 
 use super::types::{KeySlot, KEYRING_SERVICE, LEGACY_KEYRING_SERVICE};

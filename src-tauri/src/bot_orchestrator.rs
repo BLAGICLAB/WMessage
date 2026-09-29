@@ -1122,7 +1122,7 @@ async fn run_subagent(app: AppHandle, subagent_id: String) {
         })
     }
     .await;
-    let (session_id, card, wrapper) = match setup {
+    let (session_id, _card, wrapper) = match setup {
         Ok(v) => v,
         Err(e) => {
             let msg = e.message();
@@ -1278,7 +1278,7 @@ async fn run_subagent(app: AppHandle, subagent_id: String) {
 
     // 收尾清理：watcher 由 AbortOnDrop Drop 保证中止（含 panic/unwind 路径——
     // OCR r3 high 采纳：StopGuard::drop 不置位停止标志，单靠手动 abort 会泄漏）
-    let watcher = AbortOnDrop(watcher);
+    let _watcher = AbortOnDrop(watcher);
     // tool_guard 注册走 RAII 守卫（_session_guard Drop 反注册）
     crate::app_state::subagent_stops(&app)
         .lock()
@@ -1627,7 +1627,7 @@ pub async fn tool_cancel_subagent(
 
 /// write_artifact_file 工具：仅限子 agent 会话 + 产物目录内（设计 §6 产物目录隔离）。
 pub async fn tool_write_artifact_file(
-    app: &AppHandle,
+    _app: &AppHandle,
     args: &str,
     session_id: Option<String>,
 ) -> crate::bot::registry::ToolResult {

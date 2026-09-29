@@ -1,4 +1,9 @@
 //! F-6 端到端测试（2026-08-18）
+//! B5-6：`#![allow(clippy::await_holding_lock)]`——测试串行锁（SERIAL/MutexGuard）
+//! **故意**持跨 await：#[tokio::test] 独立 current-thread runtime，guard 持有
+//! 至测试结束正是串行化语义，无真实死锁面（std Mutex 阻塞的是本测试线程）。
+#![allow(clippy::await_holding_lock)]
+
 //!
 //! 设计要点（务实方案）：
 //! - **不依赖 Tauri runtime**（macOS EventLoop 主线程限制 + mock_runtime state lookup 失效）
@@ -307,12 +312,12 @@ fn bot_log_path() -> PathBuf {
 
 /// 记录运行前 bot.log 长度，运行后只断言新增尾巴（别的测试/历史运行也会写该文件）
 fn bot_log_tail_since(offset: u64) -> String {
-    let data = std::fs::read(&bot_log_path()).unwrap_or_default();
+    let data = std::fs::read(bot_log_path()).unwrap_or_default();
     String::from_utf8_lossy(&data[(offset as usize).min(data.len())..]).into_owned()
 }
 
 fn bot_log_len() -> u64 {
-    std::fs::metadata(&bot_log_path())
+    std::fs::metadata(bot_log_path())
         .map(|m| m.len())
         .unwrap_or(0)
 }

@@ -53,15 +53,15 @@ class ErrorBoundary extends Component<
   { children: ReactNode },
   { error: Error | null }
 > {
-  state = { error: null as Error | null };
+  override state = { error: null as Error | null };
   static getDerivedStateFromError(error: Error) {
     return { error };
   }
-  componentDidCatch(error: Error, info: ErrorInfo) {
+  override componentDidCatch(error: Error, info: ErrorInfo) {
     console.error("[App ErrorBoundary]", error, info.componentStack);
   }
   reset = () => this.setState({ error: null });
-  render() {
+  override render() {
     if (this.state.error) {
       return (
         <div className="min-h-screen bg-[var(--bg)] p-6 flex items-center justify-center">
