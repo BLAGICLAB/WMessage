@@ -147,12 +147,139 @@ pub(crate) fn load_config(app: &AppHandle) -> BotConfig {
     let p = config_path(app);
     if p.exists() {
         if let Ok(raw) = std::fs::read_to_string(&p) {
-            if let Ok(cfg) = serde_json::from_str::<BotConfig>(&raw) {
+            if let Ok(mut cfg) = serde_json::from_str::<BotConfig>(&raw) {
+                // B4-6：MCP env/headers 机密水合（文件里没有，值在 keyring/
+                // 降级文件；读失败留空 + stderr WARN，不炸配置加载）
+                crate::bot::mcp::secrets::hydrate_mcp_servers(app, &mut cfg);
                 return cfg;
             }
         }
     }
     BotConfig::default()
+}
+
+/// B4-6：MCP env/headers 明文 → keyring 迁移（设计
+/// `docs/MCP-KEYSLOT-MIGRATION-DESIGN-2026-09-29.md` §4）。调用方必须已持
+/// CONFIG_WRITE_LOCK（与 schema 迁移同款契约）。
+///
+/// 返回 Err = 迁移未完成，**调用方必须中止本次配置写**（关键不变式：任何配置
+/// 写回都会因 skip_serializing 剥离 env/headers——迁移未成功就写回 = 明文丢失，
+/// 评审 CRITICAL ①）。顺序即安全性：备份原文件 → 逐台写 keyring → 读回比对 →
+/// 全部成功才**外科手术式**写回（Value 级只删 mcpServers.env/headers，
+/// 不碰 apiKey/tavily/brave 等其他字段——评审 HIGH：BotConfig 整体写回会把
+/// 未迁移的 legacy 明文 key 一并清空）；任一台失败不写回（明文原样），WARN
+/// 审计，下次重试。
+pub(crate) fn migrate_mcp_server_secrets_locked(app: &AppHandle) -> Result<(), String> {
+    debug_assert!(holding_config_write(), "必须持 CONFIG_WRITE_LOCK");
+    // 幂等短路：解析原始文件（水合前——文件里的明文还是真相源）
+    let p = config_path(app);
+    let Ok(raw) = std::fs::read_to_string(&p) else {
+        return Ok(());
+    };
+    let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return Ok(()); // 解析失败由 schema/常规加载路径处理，此处跳过
+    };
+    let Some(servers) = v.get_mut("mcpServers").and_then(|x| x.as_array_mut()) else {
+        return Ok(());
+    };
+    let pending: Vec<(String, String, serde_json::Value)> = servers
+        .iter()
+        .filter_map(|s| {
+            let id = s.get("id")?.as_str()?.to_string();
+            let env = s.get("env").cloned().unwrap_or(serde_json::Value::Null);
+            let headers = s.get("headers").cloned().unwrap_or(serde_json::Value::Null);
+            let inline = !env.as_object().map(|m| m.is_empty()).unwrap_or(true)
+                || !headers.as_object().map(|m| m.is_empty()).unwrap_or(true);
+            inline.then_some((
+                id,
+                s.get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                serde_json::json!({"env": env, "headers": headers}),
+            ))
+        })
+        .collect();
+    if pending.is_empty() {
+        return Ok(()); // 已迁移 / 无机密：短路
+    }
+    // 首台迁移前备份（0600；含明文——它就是回滚网，见设计 §5。
+    // 写一次不覆盖：首迁失败重试时快照仍是最初原文件，评审 M 采纳）
+    let backup = config_path(app).with_file_name("bot-config.backup-mcp-keys.json");
+    if !backup.exists() {
+        match std::fs::copy(&p, &backup) {
+            Ok(_) => {
+                #[cfg(unix)]
+                {
+                    let _ = std::fs::set_permissions(
+                        &backup,
+                        std::os::unix::fs::PermissionsExt::from_mode(0o600),
+                    );
+                }
+                crate::audit::write_event(
+                    app,
+                    crate::audit::AuditLevel::Info,
+                    "mcp.secret_backup_created",
+                    &[("path", backup.to_string_lossy().to_string())],
+                );
+            }
+            Err(e) => {
+                // 备份失败 = 回滚网缺失 → 不迁移（明文保留原样，无丢失风险）
+                crate::audit::write_event(
+                    app,
+                    crate::audit::AuditLevel::Warn,
+                    "mcp.secret_migrate_failed",
+                    &[("stage", "backup".to_string()), ("err", e.to_string())],
+                );
+                return Err(format!("mcp 机密迁移失败（备份）：{e}"));
+            }
+        }
+    }
+    // 逐台写 keyring + 读回比对（secrets::store 内含读回校验）
+    for (id, name, blob_val) in &pending {
+        let env = blob_val
+            .get("env")
+            .and_then(|x| serde_json::from_value(x.clone()).unwrap_or_default())
+            .unwrap_or_default();
+        let headers = blob_val
+            .get("headers")
+            .and_then(|x| serde_json::from_value(x.clone()).unwrap_or_default())
+            .unwrap_or_default();
+        if let Err(e) = crate::bot::mcp::secrets::store_server_secrets(app, id, &env, &headers) {
+            // 任一台失败 → 整体不写回（明文原样），调用方中止本次写，下次重试
+            crate::audit::write_event(
+                app,
+                crate::audit::AuditLevel::Warn,
+                "mcp.secret_migrate_failed",
+                &[
+                    ("id", id.clone()),
+                    ("name", name.clone()),
+                    ("err", e.clone()),
+                ],
+            );
+            return Err(format!("mcp 机密迁移失败（id: {id}）：{e}"));
+        }
+    }
+    // 全部成功 → 外科手术式写回：只删 mcpServers 内的 env/headers，
+    // 其余字段（含未迁移的 legacy 明文 key）原样保留
+    if let Some(arr) = v.get_mut("mcpServers").and_then(|x| x.as_array_mut()) {
+        for s in arr.iter_mut() {
+            if let Some(obj) = s.as_object_mut() {
+                obj.remove("env");
+                obj.remove("headers");
+            }
+        }
+    }
+    let raw_out = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
+    write_config_atomic(&p, &raw_out)
+        .map_err(|e| format!("mcp 机密迁移写回失败：{}", e.to_string()))?;
+    crate::audit::write_event(
+        app,
+        crate::audit::AuditLevel::Info,
+        "mcp.secret_migrated",
+        &[("count", pending.len().to_string())],
+    );
+    Ok(())
 }
 
 /// 授权弹窗「始终允许该目录」落盘：把目录追加进 allowedDirs 并写回
@@ -166,6 +293,9 @@ pub(crate) fn add_allowed_dir(app: &AppHandle, dir: &str) -> Result<(), String> 
     // RMW 全程持锁（C5-BT-03）；持锁段内先推 schema 迁移（钩子锁内会 try_lock 让路）
     let _g = lock_config_write();
     let _ = schema::migrate_bot_config_schema_locked(app);
+    // B4-6：MCP 机密迁移（任何配置写都可能剥离明文，必须先迁；
+    // 失败中止本次写 = 明文原样保留，评审 CRITICAL① 采纳）
+    migrate_mcp_server_secrets_locked(app)?;
     let mut cfg = load_config(app);
     if cfg.allowed_dirs.iter().any(|x| x.trim() == d) {
         return Ok(());
@@ -287,6 +417,9 @@ pub(crate) fn update_config_file(
 ) -> CommandResult<()> {
     let _g = lock_config_write();
     let _ = schema::migrate_bot_config_schema_locked(app); // 同 add_allowed_dir 先推迁移
+                                                           // B4-6：MCP 机密迁移先于本迁移（写回外科手术式只动 mcpServers，
+                                                           // 不碰 legacy 明文 key；失败中止本次写，评审 HIGH 采纳）
+    migrate_mcp_server_secrets_locked(app)?;
     let mut cfg = load_config(app);
     f(&mut cfg);
     write_bot_config_file_locked(&db::data_dir(app), cfg)
@@ -325,6 +458,9 @@ pub(crate) fn base_url_is_safe(url: &str) -> bool {
 pub fn migrate_legacy_key(app: &AppHandle) -> Result<(), String> {
     let _g = lock_config_write();
     let _ = schema::migrate_bot_config_schema_locked(app); // 同 add_allowed_dir 先推迁移
+                                                           // B4-6：MCP 机密迁移先于本迁移（写回外科手术式只动 mcpServers，
+                                                           // 不碰 legacy 明文 key；失败中止本次写，评审 HIGH 采纳）
+    migrate_mcp_server_secrets_locked(app)?;
     let p = config_path(app);
     if !p.exists() {
         return Ok(());
@@ -357,6 +493,9 @@ pub fn migrate_legacy_key(app: &AppHandle) -> Result<(), String> {
 pub fn migrate_search_keys(app: &AppHandle) -> Result<(), String> {
     let _g = lock_config_write();
     let _ = schema::migrate_bot_config_schema_locked(app); // 同 add_allowed_dir 先推迁移
+                                                           // B4-6：MCP 机密迁移先于本迁移（写回外科手术式只动 mcpServers，
+                                                           // 不碰 legacy 明文 key；失败中止本次写，评审 HIGH 采纳）
+    migrate_mcp_server_secrets_locked(app)?;
     let p = config_path(app);
     if !p.exists() {
         return Ok(());

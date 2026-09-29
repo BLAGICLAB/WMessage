@@ -80,6 +80,9 @@ src-tauri/src/
 │   │                            指纹懒重连、stderr 环形缓冲、spawn 白名单字面量构造
 │   ├── bot/mcp/mount.rs         挂载层：连接快照 → 工具 schema 段（撞名消歧/条数/schema 体积
 │   │                            上限）+ dispatch miss 反查 execute_mcp_tool（带超时/结果整形）
+│   ├── bot/mcp/secrets.rs       B4-6 机密存储：env/headers blob 走 keyring `mcp:<id>` 条目
+│   │                            （Linux 降级单文件 0600）+ 进程内缓存 + load_config 水合 +
+│   │                            迁移判据；配置永不明文（skip_serializing 收口）
 │   └── bot/mcp/commands.rs      设置页 tauri 命令：mcp_server_save/delete/toggle、
 │                                mcp_status、mcp_server_tools（写路径 CONFIG_WRITE_LOCK 全程持锁）
 ├── bot/config/          BotConfig/ApiProvider/PermMode/KeySlot（bot-config.json，key 走系统 keyring）；

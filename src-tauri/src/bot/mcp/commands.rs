@@ -16,7 +16,7 @@
 use tauri::AppHandle;
 
 use crate::bot::BotConfig;
-use crate::error::CommandResult;
+use crate::error::{CommandError, CommandResult};
 
 use super::config::{
     normalize_server, remove_from_config, set_enabled_in_config, upsert_in_config, McpServerConfig,
@@ -40,6 +40,9 @@ fn with_locked_config<T>(
 ) -> CommandResult<T> {
     let _g = crate::bot::config::io::lock_config_write();
     let _ = crate::bot::config::schema::migrate_bot_config_schema_locked(app);
+    // B4-6：MCP 机密迁移（本写路径最可能首次触达老明文配置；失败中止本次写
+    // ——否则写回会剥离未迁移的明文 = 丢数据，评审 CRITICAL① 采纳）
+    crate::bot::config::io::migrate_mcp_server_secrets_locked(app).map_err(CommandError::from)?;
     let mut cfg = crate::bot::config::io::load_config(app);
     let out = f(&mut cfg)?;
     crate::bot::config::io::write_bot_config_file_locked(&crate::db::data_dir(app), cfg)?;
@@ -75,7 +78,19 @@ pub fn mcp_server_save(
     if server.id.trim().is_empty() {
         server.id = uuid::Uuid::new_v4().simple().to_string();
     }
+    let server_id = server.id.clone();
+    let app_for_blob = app.clone();
     let (list, saved) = with_locked_config(&app, |cfg| {
+        // B4-6：机密落 keyring/降级文件——**锁内、迁移之后**（评审 CRITICAL②：
+        // 若在锁外先写，紧随其后的迁移会读文件里的旧明文同 id 覆盖刚写的新值）。
+        // 写败 → f 返 Err → 配置不动（先 keyring 后配置的次序仍成立）
+        crate::bot::mcp::secrets::store_server_secrets(
+            &app_for_blob,
+            &server_id,
+            &server.env,
+            &server.headers,
+        )
+        .map_err(CommandError::KeyringError)?;
         upsert_in_config(cfg, server.clone())?;
         let saved = cfg
             .mcp_servers
@@ -105,6 +120,18 @@ pub fn mcp_server_delete(app: AppHandle, id: String) -> CommandResult<Vec<McpSer
     })?;
     if let Some(s) = &removed {
         audit(&app, "mcp.server_deleted", s);
+    }
+    // B4-6：配置删除成功后清机密 blob；清败 WARN 留孤儿（可追溯，重装同 id
+    // 概率≈0）——不回滚删除
+    if removed.is_some() {
+        if let Err(e) = crate::bot::mcp::secrets::purge_server_secrets(&app, &id) {
+            crate::audit::write_event(
+                &app,
+                crate::audit::AuditLevel::Warn,
+                "mcp.secret_purge_failed",
+                &[("id", id.clone()), ("err", e)],
+            );
+        }
     }
     trigger_reload(&app);
     Ok(list)

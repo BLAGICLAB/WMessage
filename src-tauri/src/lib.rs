@@ -300,6 +300,18 @@ pub fn run() {
                 if let Err(e) = bot::migrate_search_keys(&handle) {
                     eprintln!("[bot] search key migration failed: {e}");
                 }
+                // B4-6：MCP env/headers 明文 → keyring/降级文件（幂等；
+                // 无机密 = 短路）。持 CONFIG_WRITE_LOCK（与其他迁移同款互斥）；
+                // 失败只记日志不中止启动——后续任何配置写路径会重试迁移
+                {
+                    let g = crate::bot::config::io::lock_config_write();
+                    if let Err(e) =
+                        crate::bot::config::io::migrate_mcp_server_secrets_locked(&handle)
+                    {
+                        eprintln!("[bot] mcp secret migration failed: {e}");
+                    }
+                    drop(g);
+                }
             }
 
             // 记忆 v2：嵌入引擎后台预热；定时记忆整理调度器

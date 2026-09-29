@@ -47,6 +47,62 @@
 2. SUBA 子 Agent：触发一次「让子 agent 跑个 ocr」之类任务，确认子卡渲染、并发闸不串话、停止按钮生效
 3. `ocr_image` 工具：本地图片跑一次（缺 pp-ocr-v6/ 时工具会报「请运行 scripts/fetch_ocr_models.sh…」）
 
+## 2026-09-29（周二）MCP-KEYSLOT 批：MCP env/headers 迁系统凭据存储（B4-6，拍板③）
+
+**背景**：审计修复批第 6 批（B4 主批=`359db6d`）。MCP env/headers 明文落
+bot-config.json 是审计定的 P2 安全项，拍板「迁 KeySlot，方案先行」——设计
+`docs/MCP-KEYSLOT-MIGRATION-DESIGN-2026-09-29.md`（A1 全量迁）。
+
+**改动**：
+- `McpServerConfig.env/.headers` 加 `#[serde(skip_serializing)]`——任何写路径
+  都不可能把明文写回盘（fail-closed，与 tavily_key 同款）；读侧仍认老配置。
+- 新 `bot/mcp/secrets.rs`：每台服务器一个 blob（`{"env":{},"headers":{}}`，
+  ≤2048 字节——Windows 凭据 blob 上限留余量）存 keyring `mcp:<id>` 条目；
+  Linux 无 dbus 降级单文件 `bot-mcp-secrets.json`（0600 tmp+rename，WARN 一次）；
+  进程内缓存（mcp_status 高频读不反复敲 keychain）。
+- 迁移：`migrate_mcp_server_secrets_locked` 挂全部 CONFIG_WRITE_LOCK 写点
+  （mcp with_locked_config + io.rs 4 处 + 启动一次）——**任何配置写都会剥离
+  明文，必须先迁**。顺序即安全性：备份 `bot-config.backup-mcp-keys.json`
+  （0600，回滚网）→ 逐台写 keyring + 读回比对 → 全成才原子写回剥离；任一台
+  失败不写回（明文原样），WARN `mcp.secret_migrate_failed` 下次重试。
+- save：机密**先 keyring 后配置**（写败整体报错配置不动）；空 env+headers =
+  清条目。delete：配置删除成功后 purge blob（清败 WARN 留孤儿可追溯）。
+- load_config：水合（缓存命中不敲 keychain；读失败留空 + WARN——服务器连接
+  失败状态点红可见，绝不炸配置加载）。
+- 前端：SaveConfirmDialog 文案（机密存系统钥匙串）；表单/payload 零改动。
+
+**回滚（文档化手动步骤）**：退出应用 → `bot-config.backup-mcp-keys.json`
+改回 `bot-config.json` → 启动（README 维护节随 B6 补）。
+
+**测试**：新增 6（blob 往返/2048 上限/has_inline_secrets/**skip_serializing
+永不泄值**（序列化 grep 无值 + 老配置读回认 env）/降级后端 0600 往返/损坏
+文件 Err 不炸；后端注入内核 `_at` 变体直打 tempdir，不碰真实钥匙串）。
+mcp 42 / config 74 / evolution 283 / keyring 5 / vitest 38 / tsc 全绿。
+
+**ocr 复审处置**（r1：28 条，**2 CRITICAL + 4 HIGH**）：
+- **CRITICAL①（部分失败后丢数据）**：迁移失败「不写回」只挡了迁移自己的写回，
+  外层配置写（save/allowed_dir 等）继续执行时照样剥离未迁移明文 → 丢数据。
+  修：`migrate_mcp_server_secrets_locked` 改返 `Result<(), String>`，**失败中止
+  所在写路径**（5 个调用点全部 `?` 传播；lib.rs 启动点只记日志，后续写路径重试）。
+- **CRITICAL②（save 与迁移竞态覆盖新值）**：save 在锁外先写新 blob，紧随其后
+  锁内迁移读文件旧明文同 id 覆盖刚写的新值 → 保存成功但钥匙串是旧机密。
+  修：blob 写挪进 `with_locked_config` 闭包内、迁移之后（锁内串行化）。
+- **HIGH（写回抹掉 legacy 明文 key）**：迁移写回走 `write_bot_config_file_locked`
+  会把未迁移的 apiKey/tavily/brave 明文一并清空 → 改**外科手术式**写回
+  （Value 级只删 mcpServers.env/headers，其余字段原样保留）。
+- **HIGH（瞬态故障永久丢机密）**：hydrate 读失败缓存 None 固化故障 → 改不缓存
+  （下次 load 重试）+ put 前双检防旧值覆盖。
+- **HIGH（删除路径丢 0600）**：delete 的 tmp 用默认 0644 创建、rename 换 inode
+  后目标文件退化全局可读 → 抽 `write_tmp_0600` 两路共用。
+- **HIGH（legacy 迁移顺序）**：mcp 迁移挂在 legacy/search key 迁移之前且写回
+  抹 key ——外科手术式写回后顺序无害化 + 调用点注释说明。
+- 顺手修：降级单文件 RMW 进程内互斥（并发 save 丢条目）；write/delete 读失败
+  不再 `unwrap_or_default` 静默吞（瞬时不可读当空 map = 覆盖丢其余条目）；
+  SaveConfirmDialog env 标签「明文存本机配置文件」→「存系统钥匙串」（与新材料
+  矛盾）；备份写一次不覆盖（重试时快照仍是最初原文件）。
+- 登记（低危，文档/二期）：备份文件永久保留（含明文，0600，删除走文档化手动
+  步骤）；`bot-config` 原子 rename 与 kill 现读 TOCTOU 窗口（固有）。
+
 ## 2026-09-29（周二）EV-B4 批：自进化工具补全 + 实验态决断（P2×3 + P3 + 拍板②⑤；B4-6 KeySlot 另批）
 
 **背景**：审计修复批第 5 批。B4-6（MCP env/headers 迁 KeySlot，方案

@@ -4,6 +4,8 @@
 //! - `commands`：设置页 CRUD 命令（保存/删除/启停/状态，窄口径 RMW 写 bot-config.json）
 //! - `manager`：连接生命周期（连/断/指纹对齐重载/懒重连/调用，McpManager 托管状态）
 //!
+//! - `secrets`：B4-6 机密存储（env/headers 走 keyring/降级文件，配置永不明文）
+//!
 //! 边界（老板 2026-09-28 拍板）：只做宿主侧——连接**外部** MCP 服务器；
 //! 不做 wmessage 自身作为 MCP Server 对外暴露（另开任务）。
 //! 接入方式：外部工具是「增量挂载」——不改既有 29+3 内置工具的注册机制，
@@ -13,3 +15,4 @@ pub mod commands;
 pub mod config;
 pub mod manager;
 pub mod mount;
+pub mod secrets;

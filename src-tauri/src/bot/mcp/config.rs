@@ -4,11 +4,11 @@
 //! 老配置缺字段 → None = 空，struct 级 #[serde(default)] 自动兼容，
 //! 与 models_by_provider 同模式）。
 //!
-//! 敏感边界（有意为之，非遗漏）：stdio 的 `env` 值明文存 bot-config.json——
-//! 大多数 env 是非敏感运行配置（NODE_HOME 等）；与主 LLM key / 搜索 key
-//! 「永不落盘」策略不同，MCP env 是用户给**外部服务器**的配置，本机配置文件
-//! （数据目录，非系统全局）是它的常规存放处。若未来出现高频敏感 token 场景，
-//! 再按 KeySlot 模式迁 keyring。
+//! 敏感边界（B4-6 起，拍板③）：`env`/`headers` 的**值视为机密**——存系统凭据
+//! 存储（keyring `mcp:<id>` 条目，Linux 降级单文件 0600），bot-config.json
+//! **永不明文**（字段 `skip_serializing` 收口：任何写路径都不可能把明文写回盘）。
+//! 读写两侧：读 = load_config 时经 secrets.rs 水合；写 = mcp_server_save 落
+//! blob。迁移与回滚见 `docs/MCP-KEYSLOT-MIGRATION-DESIGN-2026-09-29.md`。
 
 use std::collections::BTreeMap;
 
@@ -95,15 +95,18 @@ pub struct McpServerConfig {
     /// stdio：参数列表
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
-    /// stdio：环境变量（BTreeMap：落盘键序稳定，diff 可读）
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    /// stdio：环境变量（BTreeMap：内存键序稳定）。
+    /// B4-6：**值视为机密**——`skip_serializing` 使任何写路径都写不回盘
+    ///（与 tavily_key 的 fail-closed 同款语义）；读侧仍可反序列化（认老配置）。
+    /// 真实值存 keyring/降级文件（secrets.rs），load_config 时水合进内存。
+    #[serde(skip_serializing, default)]
     pub env: BTreeMap<String, String>,
     /// http：MCP 端点 URL（Streamable HTTP）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
-    /// http：随每个请求发送的自定义头（鉴权头等）。与 stdio env 同策略：
-    /// 明文存本机 bot-config.json（数据目录），不进 keyring——见模块头敏感边界。
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    /// http：随每个请求发送的自定义头（鉴权头等）。B4-6：值视为机密，策略同
+    /// `env`（skip_serializing + secrets.rs 存储/水合）——模块头敏感边界。
+    #[serde(skip_serializing, default)]
     pub headers: BTreeMap<String, String>,
     /// 单次工具调用超时秒数；None = 60（钳 5..=600）
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -218,6 +221,13 @@ pub fn validate_server(s: &McpServerConfig) -> Result<(), String> {
 /// 超时入参钳制（保存路径）：None 保留 None（= 默认），Some 钳 5..=600。
 pub fn clamp_timeout(v: Option<u64>) -> Option<u64> {
     v.map(|n| n.clamp(MCP_TIMEOUT_MIN_SECS, MCP_TIMEOUT_MAX_SECS))
+}
+
+/// B4-6 迁移判据：配置里这台服务器是否还带着内联机密（env/headers 非空）。
+/// 只用于**迁移前对原始文件内容**判定（水合后的内存值不适用——水合会让所有
+/// 服务器看起来都带机密）。
+pub fn has_inline_secrets(s: &McpServerConfig) -> bool {
+    !s.env.is_empty() || !s.headers.is_empty()
 }
 
 /// 规范化：trim 各字符串字段 + 丢弃空 env 键 + 超时钳制。保存前调用。

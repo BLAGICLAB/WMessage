@@ -151,7 +151,7 @@ function SaveConfirmDialog({
         </div>
         {envEntries.length > 0 && (
           <div className="mt-2 text-xs text-[var(--t4)]">
-            环境变量（明文存本机配置文件）：
+            环境变量（存系统钥匙串，不明文写配置文件）：
             {envEntries.map(([k, v]) => (
               <div key={k} className="mt-0.5 font-mono break-all">
                 {k}={v}
@@ -170,7 +170,8 @@ function SaveConfirmDialog({
           </div>
         )}
         <p className="mt-2 text-xs text-[var(--t5)]">
-          该服务器的工具将进入机器人的工具清单，机器人可代你调用。删除或关闭开关即停用。
+          该服务器的工具将进入机器人的工具清单，机器人可代你调用。env 与自定义头存系统钥匙串
+          （不再明文写配置文件），删除或关闭开关即停用。
         </p>
         <div className="mt-4 flex justify-end gap-2">
           <button className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)]" onClick={onCancel}>
