@@ -238,8 +238,8 @@
 - [ ] win10 / win11 解压直接运行
 - [ ] 不报「找不到 webview2loader.dll」（缺 WebView2Loader.dll 必报）
 
-### C. SKILL_DSL.md 编写文档
-- [ ] 文档在 `docs/SKILL_DSL.md`，8941 字节
+### C. SKILL-DSL.md 编写文档
+- [ ] 文档在 `docs/SKILL-DSL.md`，8941 字节
 - [ ] 10 节覆盖：概述 / 目录结构 / frontmatter / 步骤语法 / 变量替换 / 状态机 / LLM 兜底 / 完整示例 / 调试测试 / FAQ
 - [ ] 工具白名单（含 19 个工具）
 - [ ] 嵌套路径规则（数字段→数组索引、非数字→对象字段）

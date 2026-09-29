@@ -1,6 +1,11 @@
 # WMessage — SPEC v1
 
 > 唯一依据。来源：老板 2026-08-13 发来的最终 OpenClaw 完整 Prompt（含样式说明）。
+>
+> **历史存档声明（B6，2026-09-29）**：本 SPEC 是项目起点的原始需求快照。此后
+> 功能已大幅演进（子 Agent 编排、自进化观察态、MCP 宿主、双协议等），现行
+> 架构以 `docs/rust-bot-architecture.md` 为准，迭代记录见 `DEVLOG.md` 与
+> `docs/batches/`；本文件不再随功能更新。
 
 ## 项目定位
 

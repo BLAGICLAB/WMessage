@@ -110,7 +110,7 @@
 2. `git mv` 根目录五稿（R2_DESIGN/R6_A_DESIGN/DERIVABILITY/OBSERVATION_STATUS/VERIFICATION）→ `docs/evolution/`；`evolution/observe-report-r6b-smoke.json` 同迁。
 3. 建 `docs/archive/`：AUDIT-*（8 月批 20 份）、HANDOFF-2026-09-23(-v2)/09-25、OCR-CODE-REVIEW 三格式留一、kimi-audit/、bug-hunt-/、comment-hygiene-/。
 4. `.gitignore` 移除 `health-check.sh` 并 `git mv` 进 `scripts/`；`README.txt` → `packaging/`（同步改 PACKAGING 文档引用）。
-5. README.md 目录树 4 处更正 + 文档清单补 `docs/rust-bot-architecture.md`；SPEC.md 顶部加「历史存档」声明；`SKILL_DSL.md` → `SKILL-DSL.md`。
+5. README.md 目录树 4 处更正 + 文档清单补 `docs/rust-bot-architecture.md`；SPEC.md 顶部加「历史存档」声明；`SKILL-DSL.md` → `SKILL-DSL.md`。
 6. DEVLOG 补 10 天未提交增量 + 本轮审计条目；OBSERVATION_STATUS/phase-2 的历史测试数字加「截至日期」标注（B1/B2 完成后更新恢复条件状态）。
 
 ## 9. 语义决策（2026-09-29 已全部拍板）

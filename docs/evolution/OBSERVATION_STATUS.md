@@ -11,7 +11,8 @@
 | B 骨架 | 3 态状态机 + 4 态 audit + `evaluate_s2` 占位 + synthetic 隔离 | +14 |
 | B 校准前置 | §12.7 状态持久化（`save_state`）+ S2 真调 evaluate（A 方案） | +5 |
 
-**全量回归**：969 / 969 通过
+**全量回归**：969 / 969 通过（**截至 2026-09-18 交付时**；此后 B0–B5 修复批与
+MCP/KeySlot 合入使总数持续增长，现行基线见 DEVLOG 2026-09-29 各批验收记录）
 
 **关键路径**：
 - `src-tauri/src/evolution/activation.rs` — 状态机 / 配置 / 评估 / 持久化

@@ -37,7 +37,7 @@
 
 - types.rs：零（当前写路径本就剥 None；Some 序列化路径不存在）。
 - parse.rs：`mode: 非法值` + `risk_level: low` 的 Skill 从「滞留 interactive」变
-  「按未声明提升 auto」——这是 finding 指正的语义，SKILL_DSL.md「low 强制 auto」
+  「按未声明提升 auto」——这是 finding 指正的语义，SKILL-DSL.md「low 强制 auto」
   约定归一。合法 mode 行为不变。
 
 ## spec 起草后自查三条

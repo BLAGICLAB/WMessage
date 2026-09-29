@@ -74,13 +74,17 @@ src/
 src-tauri/
   src/lib.rs                  # 窗口管理、快捷键（容错注册）、托盘、命令注册
   src/app_state.rs            # 运行期全局状态单一入口 AppState（8 张执行期表，lib.rs 注入）
-  src/db.rs                   # SQLite 全部表读写 + 迁移链 + 日志轮转
+  src/db/                     # SQLite 全部表读写 + 迁移链 + 日志轮转（paths.rs 数据目录单一入口）
   src/bot.rs                  # 机器人门面：跨模块 re-export + 子模块声明
   src/bot/registry.rs         # 工具单源真相：29 个 schema + TOOLS_TABLE → TOOLS/MUTATING_TOOLS/dispatch
   src/bot/dispatch.rs         # execute_tool 分发（查表）+ pre_execute/skill 钩子 + tool.return 审计
+  src/bot/mcp/                # 外部 MCP 服务器接入（stdio/HTTP）：连接/挂载/机密（B4-6 走钥匙串）
   src/bot/tools.rs            # 28 个 tool_* 实现（任务卡 CRUD/子任务/文档生成/联网/时间/记忆转发）
-  src/bot/config.rs           # BotConfig/ApiProvider/PermMode/KeySlot（key 走系统 keyring）+ audit_log
-  src/bot_py.rs               # 本机 Python 执行 + 文档脚本模板（EXTRACT/MAKE_DOCX 等）
+  src/bot/config/             # BotConfig/ApiProvider/PermMode/KeySlot（key 走系统 keyring）+ audit_log
+  src/bot_py.rs               # 本机 Python 执行门面（实现在 src/py/：runtime/io/document/env 等）
+  src/bot_skills/             # Skill DSL 加载与执行（中间件/变量替换/步骤推进）
+  src/bot_orchestrator.rs     # 子 Agent 编排（生命周期/并发闸/runner）
+  src/evolution/              # 自进化观察态（S0：提案/影子/面板/trace；docs/evolution/ 有状态说明）
   src/bot_web.rs              # 联网搜索（Tavily/Brave 可配置，未配置走 Bing+百度）/ 网页抓取（公网白名单）
   src/migration.rs            # 桌面清理引擎（规则匹配/文件迁移/轮询）
   src/profile.rs              # 头像资料
@@ -158,9 +162,12 @@ npx tauri build --target x86_64-pc-windows-gnu --no-bundle
 
 ## 文档
 
-- `SPEC.md` — 产品规格（唯一依据）
+- `SPEC.md` — 产品规格（原始需求快照，功能演进见架构文档与 DEVLOG）
+- `docs/rust-bot-architecture.md` — Rust 侧架构与模块树（现行架构以此为准）
 - `DEVLOG.md` — 开发日志（里程碑 + 踩坑记录）
 - `docs/testing.md` — 测试与门禁手册（日常提交流程 / 各门禁防什么 / 全量验证 / 豁免方式）
+- `docs/evolution/` — 自进化观察态状态与设计（OBSERVATION_STATUS 等）
+- `docs/archive/` — 过程性文档归档（历史审计/交接/评审报告）
 - `docs/logo/` — Logo 规范 V1.0（`WMessage-LOGO-GUIDELINES.md`，含老板裁定「以图片为准」）+ 5 版处理资产（去水印/透明底/多尺寸）
 
 ## 深色模式

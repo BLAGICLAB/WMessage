@@ -57,7 +57,7 @@ importance 映射、key 幂等、回滚、jsonl 留痕。
 
 ## 验证
 
-- `cargo test` 全量 812 通过 / 0 失败，连跑 6 轮稳定
+- `cargo test` 全量 812 通过 / 0 失败，连跑 6 轮稳定（**截至 Phase 2 交付日的历史数字**，现行基线见 DEVLOG）
 - `cargo fmt --check` ✓；`cargo clippy --all-targets` 0 error（无新增 warning）
 
 ## 明确不做（Phase 3 候选）

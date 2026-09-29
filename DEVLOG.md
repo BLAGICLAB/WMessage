@@ -913,14 +913,14 @@ fast gate 全绿（含新 `[3.7/N]` 模块地图对拍）。fail-path 注入验�
 承接「午 3」P1 修复，把审计报告剩余 P2 全部清掉（至此 P0/P1/P2 三轮清零）：
 
 - **parse.rs**：BOM 剥离（原先带 BOM 的 SKILL.md frontmatter 整体静默丢失）；`risk_level: low` 未显式声明 mode 时按文档约定推导 auto（补 mode_explicit 标记区分「没写」与「显式默认值」）；回滚段标题统一识别 `## Rollback` / `## 回滚` / `## 回滚（Rollback）`（`is_rollback_heading` 共享给 runtime::rollback_section，原先两个解析器各认一半）；回滚段每行工具调用是一个独立回滚步骤（原先后续行静默覆盖只留最后一行）；Step 内多行工具调用 / 步骤序号重复 → 解析期 fail-fast（原先静默覆盖/错位）
-- **vars.rs**：`${...}` 替换值落在 JSON 字符串内时自动转义（`replace_ctx` 上下文感知）——原先裸插含换行/引号的结果产出非法 JSON，被 parse_args 静默降级成 Null 参数，SKILL_DSL.md §8.3 示例不可能工作；`${stepN.id}` 无 UUID 时保留占位符（原先替换为空串无法诊断）
+- **vars.rs**：`${...}` 替换值落在 JSON 字符串内时自动转义（`replace_ctx` 上下文感知）——原先裸插含换行/引号的结果产出非法 JSON，被 parse_args 静默降级成 Null 参数，SKILL-DSL.md §8.3 示例不可能工作；`${stepN.id}` 无 UUID 时保留占位符（原先替换为空串无法诊断）
 - **manage.rs**：`skills_import` 校验最终技能名合法性（原先非法名「装得上、用不了、删不掉」）；SkillInfo 补 enabled 字段，`build_skill_block` 过滤禁用技能（原先禁用技能仍被广告给 LLM，与路由表口径不一致）
 - **middleware.rs**：registry 存在但 pre_execute 为空时，原子工具从「有声放行」改 fail-closed（与 registry 缺失口径一致）
 - **审计补洞**：LLM 网络失败（llm.request_failed）、流式中断（llm.stream_failed）、轮数熔断（fuse_rounds）、Replan 预算耗尽（plan.replan_budget_exhausted，只记一次）、确认弹窗超时（confirm_timeout）、用户点拒绝（confirm_denied）全部留痕
 - **bot_slash.rs**：/stop 时本会话在途确认弹窗立即按拒绝收尾（sender drop → 等待侧走超时拒绝分支）——原先 /stop 后迟到的确认点击仍会放行危险动作
 - **bot_chat.rs**：会话级防重入 ChatGuard（原先聊天路径无锁，两条并发消息命中同一技能路由会 start_skill 互踩 + 副作用工具重复执行）；主循环 AwaitConfirm 跳出时 last_streamed 为空给可读提示（原先空白回复）
 - **schema 文案漂移**：create_ppt「三套主题」→「10 套 + customColors」；web_search 补 Tavily 路由；run_python 补 yolo 免开关说明
-- **SKILL_DSL.md**：max_steps 数字对齐实现（默认 8，clamp 1-20）；Rollback 段标题别名与「按声明顺序执行」语义写清
+- **SKILL-DSL.md**：max_steps 数字对齐实现（默认 8，clamp 1-20）；Rollback 段标题别名与「按声明顺序执行」语义写清
 
 **测试**：cargo test --lib 425 → **428 全绿**（vars 转义 ×3），集成 29 全绿。前端本轮无改动。
 
@@ -948,7 +948,7 @@ fast gate 全绿（含新 `[3.7/N]` 模块地图对拍）。fail-path 注入验�
 - **P0-2 任务卡执行路径的原子工具合法化**：`StopGuard` 加 `allow_atomic`（`new_task_exec` 构造），`execute_task_core` / `exec_steps` 三处切换；`execute_tool_impl` 门禁放行 `is_skill_active || allow_atomic`——此前 EXECUTE prompt 要求的 `link_file_to_task`/`create_word_revisions` 在无 Skill 的任务卡路径必被自家网关硬拦；SYSTEM_PROMPT 规则 10 补「被拦改用 create_word」回退措辞；两个原子工具的 schema description 标注「内部原子」属性
 - **P0-3 `complete_task` 走 `resolve_task`**：taskId 精确匹配优先 + 交叉校验，与 schema「taskId 优先于 title」和 EXECUTE 规则 4 对齐——原先只读 title，只传 taskId 时确定性失败
 - **P0-4 `mutation_done` 按执行结果置位**：新增 `mutation_succeeded`（门禁拦截 ⚠️ / 用户拒绝 / Warn/Error 分级失败都不算「动过手」），幻觉守卫不再被「调过但失败」的调用架空；顺手把 `link_file_to_task` 补进 `MUTATING_TOOLS`（审计 P1-10 之首，与本次改动直接相关）
-- **P0-5 回滚段不再自咬**：`state.rs` 新增 `reopen_failed_run_for_rollback` / `restore_failed_run_after_rollback`（回滚窗口内 Failed→Running 临时重开让原子工具过门禁，结束后复原终态）；`run_rollback_segment` 逐步判定成败 + 逐条审计（不再 `let _ =` 吞掉），返回值改为契约语义「段存在且全部回滚步骤无失败」（对齐 SKILL_DSL.md §4.3.2）
+- **P0-5 回滚段不再自咬**：`state.rs` 新增 `reopen_failed_run_for_rollback` / `restore_failed_run_after_rollback`（回滚窗口内 Failed→Running 临时重开让原子工具过门禁，结束后复原终态）；`run_rollback_segment` 逐步判定成败 + 逐条审计（不再 `let _ =` 吞掉），返回值改为契约语义「段存在且全部回滚步骤无失败」（对齐 SKILL-DSL.md §4.3.2）
 
 **测试**：新增 mutation_succeeded 4 例 + reopen/restore 1 例；cargo test --lib 416 → **421 全绿**，skill_e2e 8 全绿。踩坑：`⚠️` 是双码点字符（U+26A0+FE0F），char 字面量编译报错，用字符串字面量。
 
@@ -2391,7 +2391,7 @@ DSL 调度器从「解析 + 单次顺序执行」演进到「全链路生产可�
 ### Phase 5（4 项生产化）
 - **A. 11 个真业务 Skill 端到端 smoke test**（07:30）：新增 `generic_mock_executor` 覆盖 17 个工具 + `smoke_all_real_skills_run_dsl_loop_with_mock_executor` 扫所有 13 个 mock Skill 跑通
 - **B. Windows release 打包**（07:35）：Mac 上 mingw 交叉编译 `x86_64-pc-windows-gnu` + Python zipfile 打绿色包 13.19 MB（wmessage.exe 42.4 MB + WebView2Loader.dll 157 KB），修 `unused_mut` warning
-- **C. SKILL_DSL.md 编写文档**（07:52）：8941 字节作者视角实操指南，10 节覆盖（概述 / 目录结构 / frontmatter / 步骤语法 / 变量替换 / 状态机 / LLM 兜底 / 4 个完整示例 / 调试测试 / 10 个 FAQ）
+- **C. SKILL-DSL.md 编写文档**（07:52）：8941 字节作者视角实操指南，10 节覆盖（概述 / 目录结构 / frontmatter / 步骤语法 / 变量替换 / 状态机 / LLM 兜底 / 4 个完整示例 / 调试测试 / 10 个 FAQ）
 - **D. Skill 监控 UI + SQLite 持久化**（08:00）：`skill_outcomes` 表 + `PersistedSkillOutcome` struct + `persist_outcome_quiet` 在 6 个 return 点 + `SettingsPage` 加 `SkillOutcomeBadge`（4 色对应 4 种状态）
 
 ### 关键决策
