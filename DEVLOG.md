@@ -2,6 +2,42 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-09-29/30（周二）审计修复战役总账：B0–B6 八批全落库（9 commit）
+
+**依据**：`docs/AUDIT-FULL-2026-09-29.md`（两轮审计定稿）+ `docs/AUDIT-FIX-PLAN-2026-09-29.md`
+（分批方案，语义决策 5 项拍板）。**全部八批完成**：
+
+| 批 | commit | 内容 |
+|---|---|---|
+| B0（MCP-B0） | `5a64345` | MCP 功能本体合入 + 数据面定界 + 评审 4 HIGH（PKG-1 cfg(unix) 同批） |
+| B1（EV-B1） | `438c8d8` | P0×2：配置写丢 evolution 块（保真+回填+运行时恢复）/删除回滚闭环 + 孤儿清理 |
+| B2（EV-B2） | `49d75e7` | P1×4：lesson 幂等三重闸/changes.jsonl 单写者锁/shadow 去重/二次回滚卡死 + 失败率告警 |
+| B3（B3-CONC） | `4eddf00` | 排队可取消+Running 槽后写/墙钟先 stop/流式 idle 120s+共享 Client/Python 闸有界并发 2 |
+| B4（EV-B4） | `359db6d` | eval 路径修正/trace 接真实数据/jsonl 损坏自愈/panel 纪律/kill_switch 真接线/拍板⑤文案 |
+| B4-6（MCP-KEYSLOT） | `d0d1057` | MCP env/headers 迁系统凭据存储（skip_serializing fail-closed + 外科手术式迁移） |
+| B5（B5-HEALTH） | `d0b77ab` | oxlint 接入（react-hooks 生效）/clippy 分级治理 273→169/noImplicitOverride |
+| B6（B6-HYGIENE） | `4b09cc1` | 五稿迁 docs/evolution/、61 份归档 docs/archive/、health-check 入库、SPEC 存档声明、README 更正 |
+| FIXT-1 | `d056c60` | tools_baseline 同步拍板⑤文案（test-all 基线锁拦截） |
+
+**§10 全量验收闸**：`bash scripts/test-all.sh` exit 0——1277 tests 全绿
+（strict 四件套 tests-audit 含内）；`cargo fmt --check` / `cargo check` /
+`tsc --noEmit` / `vitest 339` / knip / oxlint / 模块地图三审计全过。
+**Mimosa 终扫**（2026-09-30，seal `sha256:0561d129…96fc`，1166 packages，
+0 advisory 命中）：7 findings 全 medium 且均为误报类——① ×6
+「Web 请求输入 → eval/config.rs:64 文件路径」：eval 是老板拍板保留的 dev 工具
+（CLI --config/--db/--applied 本地数据源，无生产 Web 暴露面，AUDIT-FULL §7 已
+登记）；② ×1「MongoDB 动态排序注入」命中 `target/doc/static.files/search-*.js`
+（rustdoc 构建产物内嵌脚本，非项目代码）。对照 §1.2 复核攻击面无回归。
+原始报告：`~/.mimosa/security-scans/project-35c8c4f5947b2bbdf573b390/scan-2026-09-29T23-25-59.638Z-94975605a00e/`。
+
+**登记的后续批（不在 B0–B6 范围）**：
+- B3-5：`run_model_loop_core` 749 行拆三单元（大件）；
+- B5-2/3：ChatPanel memo+拆分（1851 行，含 oxlint 存量 32 warn）；
+- clippy 剩余 169 条机械微修（30+ 类，清单 `cargo clippy --all-targets` 再生）；
+- tsconfig noUncheckedIndexedAccess（实测 174 处，72% 在测试文件）；
+- MCP KeySlot：设置页「删除迁移备份」按钮（二期）+ README 维护节回滚步骤；
+- Mimosa 钩子 scanner_enobufs（钩子自身缓冲不足，每批提交均报，兼容放行）。
+
 ## 2026-09-28（周一）出包：Windows 绿色版 `wmessage-portable-2026-09-28.zip`（104 MB）
 
 **背景**：老板要一份最新绿色包。按 `docs/PACKAGING-WINDOWS-PORTABLE.md` 全流程跑完，无 Windows
