@@ -78,6 +78,10 @@ fn parse_status_filter(s: &str) -> Result<ProposalStatus, String> {
 /// ON 返回 Some（锁内新写入或 dedup 命中的既有 ChangeRecord），OFF 返回 None。
 /// promote 直接用返回值——**不要在锁外再 load_changes 找**（TOCTOU：并发
 /// delete 会让锁外 find 落空，错误文案还会误导成「toggle_inner 写失败」）。
+///
+/// B2-4（拍板①）：已回滚提案允许再次 toggle ON（前端有回滚历史时先弹二次确认，
+/// 见 EvolutionPanel onToggle）——新 CR 拿行级唯一 change_id（next_unique_change_id），
+/// 回滚按 id 定位不再撞旧行。
 fn toggle_inner(
     app: &AppHandle,
     proposal_id: &str,
@@ -120,6 +124,17 @@ fn toggle_inner(
                 cr.approval_source = ApprovalSource::HumanApproved;
                 cr.human_approver = Some("boss".into());
                 cr.status = ChangeStatus::Pending;
+                // B2-4（P1-EV5）：复用 toggle（重启用）场景下基础 change_id 已被
+                // 旧行占用——旧实现直接同 id 再 append，rollback 的 position() 首
+                // 匹配永远命中旧行（二次回滚永久卡死）。改派生行级唯一 id：
+                // chg-<pid> / chg-<pid>-2 / chg-<pid>-3 …（change::unique_change_id_for，
+                // shadow/apply 同款）；并挂 parent_id 血缘指向前一条 CR。
+                cr.change_id = change::unique_change_id_for(&changes, proposal_id);
+                cr.parent_id = changes
+                    .iter()
+                    .filter(|c| c.proposal_id == proposal_id)
+                    .last()
+                    .map(|c| c.change_id.clone());
                 change::append_change(&c_path, &cr)?;
                 crate::audit_event!(
                     app,
@@ -240,9 +255,11 @@ pub async fn evolution_toggle_proposal(
 }
 
 /// Tauri command：彻底废案（delete emoji 入口）
-/// 老板 16:05 拍板：只允许删 Pending（active 用 Rollback）
-/// 级联删 proposals.jsonl + changes.jsonl
-/// 老板 16:35 拍板：`cascade_source=true` 时连同源 mem_items 一起删（防止 24h 后重生）
+/// 行为口径（拍板④ 2026-09-29：维持现行为，注释对齐）：
+/// - proposals.jsonl 行**无论 status 一律删除**（「只允许删 Pending」的旧说法
+///   与实现不符；Active 的 CR 仍可走 Rollback，删除不动它）；
+/// - changes.jsonl 仅级联删 status=pending 行（其他状态保留作历史）；
+/// - `cascade_source=true` 时连同源 mem_items + evo lesson 一起删（防 24h 重生）。
 #[tauri::command]
 pub async fn evolution_delete_proposal(
     app: AppHandle,
@@ -637,6 +654,20 @@ mod tests {
         // 空 related_refs + 无 lesson：幂等 0
         let n2 = super::cascade_delete_mem_items(&conn, &[], "orph1").unwrap();
         assert_eq!(n2, 0, "重复级联幂等");
+    }
+
+    #[test]
+    fn unique_change_id_avoids_collision() {
+        // B2-4（P1-EV5）：复用 toggle 时基础 id 被旧行占用 → -2/-3 递增；
+        // 空闲则直接用基础 id（首次启用行为不变）。实现抽到 change::derive
+        // 供 shadow/apply 同用，此处锁行为。
+        let rolled = vec![mk_change("chg-p9", ChangeStatus::RolledBack)];
+        assert_eq!(change::unique_change_id_for(&rolled, "p9"), "chg-p9-2");
+        let mut two = rolled.clone();
+        two.push(mk_change("chg-p9-2", ChangeStatus::RolledBack));
+        assert_eq!(change::unique_change_id_for(&two, "p9"), "chg-p9-3");
+        let empty: Vec<ChangeRecord> = vec![];
+        assert_eq!(change::unique_change_id_for(&empty, "p1"), "chg-p1");
     }
 
     #[test]

@@ -47,6 +47,50 @@
 2. SUBA 子 Agent：触发一次「让子 agent 跑个 ocr」之类任务，确认子卡渲染、并发闸不串话、停止按钮生效
 3. `ocr_image` 工具：本地图片跑一次（缺 pp-ocr-v6/ 时工具会报「请运行 scripts/fetch_ocr_models.sh…」）
 
+## 2026-09-29（周二）EV-B2 批：自进化闭环语义（P1×4 + 拍板④）
+
+**背景**：审计修复批第 3 批（B0=`5a64345`、B1=`438c8d8` 已合入）。四个 P1 全部
+有运行时实证：同提案 apply 3 次（lesson 被吸收丢 key）、行 cb60ad9b 被 lesson
+merge-on-write 劫持、shadow 绕锁并发写 + 同 id 重复 Pending 行、二次回滚永久卡死。
+
+**改动**：
+- **B2-1（P1-EV3）幂等三重闸**：① consolidation merge/contradiction 跳过
+  `evo:` key 行（lesson 不被吸收删除）；② apply 查重补残留复查（key 任意 tag 位
+  + 同内容 lesson）；③ `insert_item` 对异 key 的 evo lesson merge-on-write 拒写
+  （新 `InsertOutcome::RefusedForeignMerge`）→ apply 层 `evolution.apply_conflict`
+  audit + `conflicts_refused` 计数。同 key 重放与用户记忆路径行为不变。
+- **B2-2（P1-EV4）单写者锁**：shadow 生产循环与 apply 的 CR 补写全部纳入
+  `EVOLUTION_STORE_LOCK`（阻塞闭包内取锁；apply 先释放 DB_WRITE_LOCK 再取本锁，
+  与 panel 无锁序环）。mod.rs「一把锁」声明自此属实；4 线程×25 并发 append
+  回归锁死无丢行无重 id。
+- **B2-3（P1-EV4）shadow 去重**：生产入口先读存量 CR，同 proposal_id 已有
+  未终态（Pending/Shadowing/ShadowPassed）→ 跳过 append；`ShadowReport` 增
+  `deduped` 字段。
+- **B2-4（P1-EV5）二次回滚卡死**：复用 toggle 改派生行级唯一 change_id
+  （`chg-<pid>-2/-3` 递增）；前端 onToggle 对有 RolledBack 行的提案再点 ON 弹
+  「上次已回滚，确认再次启用？」（拍板①：允许 + 二次确认）。
+- **B2-5（P1-EV6）失败率告警**：生产入口收尾补 `evolution.shadow_warning`
+  （全局计数 >5%），对齐 trait 版。
+- **拍板④**：delete 注释与行为对齐（proposals 行无论 status 一律删、changes 仅
+  级联删 pending）——后端 doc + 前端注释两处，行为零变更。
+
+**回归测试**（新增 13）：拒写防劫持×2、merge 排除 lesson×2、contradiction 保护×1
+（双侧）、apply 残留查重×2、apply 冲突拒写×1、唯一 change_id×1、并发 append 无丢行×1、
+前端二次确认×4（弹确认/确认后调用/取消不调/无历史免确认）。
+
+**ocr 复审处置**（r2：41 条，3 HIGH）：① 生产 `ShadowReport.deduped` 被
+批量替换误写为字面量 0（指标失效）→ 改回真实计数；② 唯一 change_id 只覆盖
+toggle 一家写者，shadow/apply 仍可能撞 `chg-<pid>` → 抽
+`change::derive::unique_change_id_for` 三家写者统一落行前派生（shadow/apply
+锁内读存量再派生）；③ 同 key 重放测试断言过弱（len==1 对 Refused 也真）→
+改为解构 Merged 变体逐字段断言。顺手修：contradiction 的 keep 侧同样保护
+（对称）、shadow 去重判定挪进锁内窗口（消 TOCTOU + 读不受半行写干扰）、
+复用 toggle 挂 parent_id 血缘、memory 防御臂注释改准确、前端 ROLLED_BACK
+常量化。
+
+**验收**：evolution:: 283 / memory 56 **连跑 5 轮全绿**；tsc / EvolutionPanel
+vitest 17 过。
+
 ## 2026-09-29（周二）EV-B1 批：自进化数据安全（P0-EV1/EV2 + 孤儿清理）
 
 **背景**：审计修复批第 2 批（B0 已合入 `5a64345`）。自进化功能老板拍板保留，

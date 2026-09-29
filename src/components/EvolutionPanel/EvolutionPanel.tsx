@@ -40,6 +40,9 @@ const ACTIVE_STATUSES: ReadonlySet<ChangeRecord["status"]> = new Set([
   "active",
 ]);
 
+/** B2-4（拍板①）：有回滚历史的提案再点 ON 需二次确认 */
+const ROLLED_BACK_STATUS: ChangeRecord["status"] = "rolled_back";
+
 export function EvolutionPanel() {
   const [proposals, setProposals] = useState<ProposalEntry[]>([]);
   const [changes, setChanges] = useState<ChangeRecord[]>([]);
@@ -96,14 +99,23 @@ export function EvolutionPanel() {
   );
 
   // Toggle 入口（老板 16:05 拍板的主操作）
-  const onToggle = (id: string, enabled: boolean) =>
-    void runCmd(
+  // B2-4（拍板①）：有回滚历史的提案再点 ON → 二次确认「上次已回滚」——
+  // 禁止会锁死重试路径，静默放行易误点循环，二次确认兼顾。
+  const onToggle = (id: string, enabled: boolean) => {
+    if (
+      enabled &&
+      changes.some((c) => c.proposal_id === id && c.status === ROLLED_BACK_STATUS)
+    ) {
+      if (!window.confirm(`提案 ${id} 上次已回滚，确认再次启用？`)) return;
+    }
+    return void runCmd(
       "evolution_toggle_proposal",
       { proposalId: id, enabled },
       enabled ? `已启用 ${id}` : `已停用 ${id}`
     );
+  };
 
-  // 删除 emoji（仅允许删 pending 的，老板拍板）
+  // 删除 emoji（后端口径：proposals 行无论 status 一律删，changes 仅级联删 pending）
   // 老板 16:35：弹 DeleteConfirmDialog（可勾选 cascade_source）
   const onDeleteClick = (p: ProposalEntry) => setDeleteTarget(p);
   const onDeleteConfirm = async (cascadeSource: boolean) => {

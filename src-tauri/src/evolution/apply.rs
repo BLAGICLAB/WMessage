@@ -33,12 +33,15 @@ pub fn evolution_key(proposal_id: &str) -> String {
 }
 
 /// 单条应用结果。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApplyOutcome {
     /// 新写入一条 lesson 记忆
     Applied,
     /// 同 key 已存在（持久幂等命中），跳过
     AlreadyPresent,
+    /// B2-1（P1-EV3）：merge-on-write 命中异 key 既有行被拒写（防记忆劫持）——
+    /// 调用方记 evolution.apply_conflict audit（store 层无 AppHandle）
+    ConflictRefused { target_key: String },
 }
 
 /// 批量应用报告。
@@ -46,12 +49,18 @@ pub enum ApplyOutcome {
 pub struct ApplyReport {
     pub applied: usize,
     pub already_present: usize,
+    /// B2-1：拒写（防劫持）条数
+    pub conflicts_refused: usize,
 }
 
 /// 应用单条提案（纯函数内核，注入连接与向量，内存库可单测）：
 /// 幂等查重 → 写 lesson 记忆。语义去重由 `insert_item` 承担（≥0.92 合并更新）。
 ///
 /// 调用前先过 `auto_apply_gate`；本函数不再重复判定类别/门槛。
+/// B2-1（P1-EV3）幂等双保险：`find_by_key_tag` 只认 tags[0]，lesson 被 merge
+/// 吸收/挪位后 key 查不到会重复应用——补两层残留复查：
+/// ① key tag 出现在**任意** tag 位（挪位不丢）；② 同 kind=lesson 且内容逐字相同
+/// （吸收后内容残存）。真正的语义相似由 store 层拒写闸兜底（ConflictRefused）。
 pub fn apply_one(
     conn: &Connection,
     p: &EvolutionProposal,
@@ -59,9 +68,17 @@ pub fn apply_one(
     now_ms: i64,
 ) -> Result<ApplyOutcome, String> {
     let key = evolution_key(&p.proposal_id);
-    if store::find_by_key_tag(conn, &key)?.is_some() {
+    let all = store::load_all(conn)?;
+    if all.iter().any(|m| m.tags.iter().any(|t| t == &key)) {
         return Ok(ApplyOutcome::AlreadyPresent);
     }
+    if all
+        .iter()
+        .any(|m| m.kind == "lesson" && m.content == p.suggestion.text)
+    {
+        return Ok(ApplyOutcome::AlreadyPresent);
+    }
+    drop(all);
     let item = NewItem {
         kind: "lesson".to_string(),
         content: p.suggestion.text.clone(),
@@ -72,8 +89,13 @@ pub fn apply_one(
         },
         source: "system".to_string(),
     };
-    store::insert_item(conn, &item, embedding, now_ms)?;
-    Ok(ApplyOutcome::Applied)
+    let (outcome, _merged_ids) = store::insert_item(conn, &item, embedding, now_ms)?;
+    match outcome {
+        store::InsertOutcome::RefusedForeignMerge { target_key } => {
+            Ok(ApplyOutcome::ConflictRefused { target_key })
+        }
+        _ => Ok(ApplyOutcome::Applied),
+    }
 }
 
 /// 回滚：删除某提案落下的记忆。返回是否有条目被删。
@@ -201,8 +223,18 @@ pub fn apply_from_consolidation(proposals: Vec<EvolutionProposal>) {
                         // 不让留痕问题炸掉整条 apply。
                         let cr_path =
                             crate::db::paths::data_dir(&app2).join("evolution-changes.jsonl");
+                        // B2-2（P1-EV4）：changes.jsonl 收敛单写者锁——apply 与
+                        // shadow/panel 同锁（EVOLUTION_STORE_LOCK），闭包内同步持锁
+                        // 不跨 await。锁序：此处 DB_WRITE_LOCK 已释放才取本锁，
+                        // 与 panel（本锁内开 DB 连接）无环。
                         match super::change::derive::auto_applied_from_proposal(p, now) {
-                            Ok(cr) => {
+                            Ok(mut cr) => {
+                                let _store = super::lock_evolution_store();
+                                // B2-4：chg-<pid> 可能被 toggle/shadow 历史行占用，
+                                // 锁内读存量派生唯一 id 再落行
+                                let rows = super::change::read_all(&cr_path).unwrap_or_default();
+                                cr.change_id =
+                                    super::change::unique_change_id_for(&rows, &cr.proposal_id);
                                 if let Err(e) = super::change::append_change(&cr_path, &cr) {
                                     crate::audit_event!(
                                         &app2,
@@ -233,6 +265,18 @@ pub fn apply_from_consolidation(proposals: Vec<EvolutionProposal>) {
                         );
                     }
                     ApplyOutcome::AlreadyPresent => report.already_present += 1,
+                    ApplyOutcome::ConflictRefused { target_key } => {
+                        // B2-1（P1-EV3 防劫持）：拒写响亮留痕，不静默丢 lesson
+                        report.conflicts_refused += 1;
+                        crate::audit_event!(
+                            &app2,
+                            crate::audit::AuditLevel::Warn,
+                            "evolution.apply_conflict",
+                            "proposal_id" => p.proposal_id.clone(),
+                            "target_key" => target_key,
+                            "action" => "lesson_write_refused_foreign_merge",
+                        );
+                    }
                 }
             }
             Ok(report)
@@ -454,5 +498,69 @@ mod tests {
             super::super::change::derive::auto_applied_from_proposal(&p, 1000).is_err(),
             "Low 不过 auto_apply_gate，CR 构造应拒绝"
         );
+    }
+
+    // ─── B2-1（P1-EV3）幂等双保险 ───
+
+    #[test]
+    fn apply_one_rechecks_key_in_any_tag_position() {
+        // key tag 被挪到非首位（merge/整理扰动）时仍能查重
+        let conn = mem_conn();
+        let item = store::NewItem {
+            kind: "fact".into(),
+            content: "无关内容".into(),
+            tags: vec!["evolution".into(), "evo:any1".into()],
+            importance: 2,
+            source: "user".into(),
+        };
+        store::insert_item(&conn, &item, None, 900).unwrap();
+        let p = make_proposal("any1", ImpactLevel::Medium);
+        let r = apply_one(&conn, &p, None, 1000).unwrap();
+        assert_eq!(r, ApplyOutcome::AlreadyPresent, "key 在任意位即命中");
+    }
+
+    #[test]
+    fn apply_one_rechecks_same_content_lesson() {
+        // key 彻底丢失但同内容 lesson 仍在（吸收残存）→ 不重复写入
+        let conn = mem_conn();
+        let p = make_proposal("same1", ImpactLevel::Medium);
+        let item = store::NewItem {
+            kind: "lesson".into(),
+            content: p.suggestion.text.clone(),
+            tags: vec!["unrelated".into()],
+            importance: 3,
+            source: "system".into(),
+        };
+        store::insert_item(&conn, &item, None, 900).unwrap();
+        let r = apply_one(&conn, &p, None, 1000).unwrap();
+        assert_eq!(r, ApplyOutcome::AlreadyPresent, "同内容 lesson 即命中");
+        assert_eq!(store::load_all(&conn).unwrap().len(), 1, "不重复落行");
+    }
+
+    #[test]
+    fn apply_one_refuses_foreign_merge_and_preserves_target() {
+        // 同向量的既有用户记忆（异 key）：cos=1.0 命中 merge → 防劫持闸拒写
+        let conn = mem_conn();
+        let emb = vec![1.0f32, 0.0, 0.0];
+        let user = store::NewItem {
+            kind: "fact".into(),
+            content: "用户既有记忆".into(),
+            tags: vec!["用户键".into()],
+            importance: 3,
+            source: "user_stated".into(),
+        };
+        store::insert_item(&conn, &user, Some(&emb), 900).unwrap();
+        let p = make_proposal("hij1", ImpactLevel::High);
+        let r = apply_one(&conn, &p, Some(&emb), 1000).unwrap();
+        match r {
+            ApplyOutcome::ConflictRefused { target_key } => {
+                assert_eq!(target_key, "用户键");
+            }
+            other => panic!("应 ConflictRefused，实得 {other:?}"),
+        }
+        let all = store::load_all(&conn).unwrap();
+        assert_eq!(all.len(), 1, "拒写不落库");
+        assert_eq!(all[0].content, "用户既有记忆", "原行未被劫持");
+        assert_eq!(all[0].tags, vec!["用户键"]);
     }
 }

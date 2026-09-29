@@ -211,6 +211,11 @@ pub enum InsertOutcome {
     },
     /// 容量满且无可淘汰条目 → 拒写
     RejectedFull(String),
+    /// B2-1（P1-EV3 防记忆劫持）：带 `evo:` key 的 lesson 命中了**异 key** 的
+    /// merge 目标（cosine ≥0.92）——merge-on-write 会把 lesson 内容+tags 覆盖到
+    /// 既有记忆行（实证发生过行被劫持），此场景拒写不落库，由 apply 层记
+    /// `evolution.apply_conflict` audit。target_key = 被拒绝合并的原行 key。
+    RefusedForeignMerge { target_key: String },
 }
 
 /// 新条目草稿
@@ -251,6 +256,24 @@ pub fn insert_item(
             }
         }
         if let Some((_, target)) = best {
+            // B2-1（P1-EV3）：lesson（evo: key）不许 merge 进异 key 既有行——
+            // merge-on-write 是整行覆盖（content+tags 都换成 lesson 的），会把
+            // 目标行劫持成 lesson、原记忆丢失。同 key = 本链路自己的重放，放行。
+            let incoming_key = item.tags.first().cloned();
+            let target_key = target.tags.first().cloned().unwrap_or_default();
+            if incoming_key
+                .as_deref()
+                .map(|k| k.starts_with("evo:"))
+                .unwrap_or(false)
+                && target_key != incoming_key.unwrap_or_default()
+            {
+                return Ok((
+                    InsertOutcome::RefusedForeignMerge {
+                        target_key: target_key,
+                    },
+                    Vec::new(),
+                ));
+            }
             let orig_key = target.tags.first().cloned();
             conn.execute(
                 "UPDATE mem_items SET content = ?1, tags = ?2, importance = ?3, source = ?4,

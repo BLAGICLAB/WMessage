@@ -26,7 +26,7 @@ use crate::audit::AuditLevel;
 use crate::db::paths;
 use crate::evolution::activation::ActivationState;
 use crate::evolution::apply::auto_apply_gate;
-use crate::evolution::change::{self, ChangeRecord};
+use crate::evolution::change::{self, ChangeRecord, ChangeStatus};
 use crate::evolution::proposal::{is_reversible, EvolutionProposal};
 
 /// 失败率告警阈值（5% = 100 次写中允许 5 次失败）
@@ -178,6 +178,8 @@ pub struct ShadowReport {
     pub total: usize,
     pub written: usize,
     pub failed: usize,
+    /// B2-3：同 proposal_id 已有未终态 CR 而跳过的条数（去重命中）
+    pub deduped: usize,
 }
 
 /// 跑一轮 shadow apply
@@ -229,6 +231,7 @@ pub async fn shadow_apply_for_batch<S: ShadowSink>(
         total: gated.len(),
         written,
         failed,
+        deduped: 0,
     }
 }
 
@@ -289,6 +292,7 @@ pub async fn shadow_apply_for_batch_with_reversibility<S: ShadowSink>(
         total: gated.len(),
         written,
         failed,
+        deduped: 0,
     }
 }
 
@@ -317,6 +321,7 @@ pub async fn shadow_apply_for_batch_with_app(
     let path = paths::data_dir(app).join("evolution-changes.jsonl");
     let mut written = 0usize;
     let mut failed = 0usize;
+    let mut deduped = 0usize;
     let now = crate::memory::now_ms();
 
     for p in &gated {
@@ -349,15 +354,45 @@ pub async fn shadow_apply_for_batch_with_app(
             );
             continue;
         }
-        // Allow 决策或 S0/S1：写 shadow + audit
-        let cr = change::from_proposal(p, now);
+        // Allow 决策或 S0/S1：写 shadow + audit。
         // append_change 是阻塞 fs IO（open+writeln syscall）——包 spawn_blocking
-        // 避免钉住 tokio worker（本 fn 是生产唯一入口，跑在 Tauri async runtime 上）
+        // 避免钉住 tokio worker（本 fn 是生产唯一入口，跑在 Tauri async runtime 上）；
+        // B2-2（P1-EV4）：读/判/写整个窗口走 EVOLUTION_STORE_LOCK（锁在阻塞闭包
+        // 内取，不跨 await）——与 panel RMW/apply 补写同一把单写者锁，不再绕锁
+        // 并发写 changes.jsonl；B2-3 去重与 B2-4 唯一 id 同窗判定（锁内重读，
+        // 无 TOCTOU、读不受半行写干扰）。
+        enum ShadowWrite {
+            Appended,
+            Deduped,
+        }
+        let proposal_id = p.proposal_id.clone();
         let write_result = {
             let path = path.clone();
             // cr 本轮迭代仅此处消费，直接 move（不 clone）
-            match tauri::async_runtime::spawn_blocking(move || change::append_change(&path, &cr))
-                .await
+            let cr = change::from_proposal(p, now);
+            match tauri::async_runtime::spawn_blocking(move || {
+                let _store = crate::evolution::lock_evolution_store();
+                let rows = change::read_all(&path)?;
+                // B2-3：同 proposal_id 已有未终态行（Pending/Shadowing/ShadowPassed，
+                // 含 panel toggle ON 写的）→ 跳过 append，不重复追加 Pending 行
+                if rows.iter().any(|c| {
+                    c.proposal_id == proposal_id
+                        && matches!(
+                            c.status,
+                            ChangeStatus::Pending
+                                | ChangeStatus::Shadowing
+                                | ChangeStatus::ShadowPassed
+                        )
+                }) {
+                    return Ok(ShadowWrite::Deduped);
+                }
+                // B2-4（P1-EV5）：chg-<pid> 可能被历史行占用（回滚后复用），落行
+                // 前派生行级唯一 id——rollback 按 id 定位不再撞行
+                let mut cr = cr;
+                cr.change_id = change::unique_change_id_for(&rows, &cr.proposal_id);
+                change::append_change(&path, &cr).map(|()| ShadowWrite::Appended)
+            })
+            .await
             {
                 Ok(r) => r,
                 // tauri::Error（非 tokio JoinError）无 is_panic/into_panic——
@@ -366,7 +401,7 @@ pub async fn shadow_apply_for_batch_with_app(
             }
         };
         match write_result {
-            Ok(()) => {
+            Ok(ShadowWrite::Appended) => {
                 written += 1;
                 // 与 trait 变体一致的计数器增量——本入口是生产路径，
                 // 不碰原子计数器会让「失败率 >5% 告警」对生产流量永不触发
@@ -397,6 +432,15 @@ pub async fn shadow_apply_for_batch_with_app(
                     _ => {} // 不可达（state+S2Decision 组合穷尽）
                 }
             }
+            Ok(ShadowWrite::Deduped) => {
+                deduped += 1;
+                crate::audit_event!(
+                    app,
+                    AuditLevel::Info,
+                    "evolution.shadow_dedup_hit",
+                    "proposal_id" => p.proposal_id.clone(),
+                );
+            }
             Err(e) => {
                 failed += 1;
                 TOTAL_WRITES.fetch_add(1, Ordering::Relaxed);
@@ -411,10 +455,26 @@ pub async fn shadow_apply_for_batch_with_app(
             }
         }
     }
+    // B2-5（P1-EV6）：生产入口补失败率告警，对齐 trait 版（sink.audit_warning）——
+    // 此前生产流量写失败 >5% 永不告警（只有 trait 路径有）
+    let total = TOTAL_WRITES.load(Ordering::Relaxed);
+    let failed_count = FAILED_WRITES.load(Ordering::Relaxed);
+    if total > 0 && (failed_count as f64 / total as f64) > FAILURE_THRESHOLD {
+        crate::audit_event!(
+            app,
+            AuditLevel::Warn,
+            "evolution.shadow_warning",
+            "failure_rate" => failed_count as f64 / total as f64,
+            "failed" => failed_count,
+            "total" => total,
+            "threshold" => FAILURE_THRESHOLD,
+        );
+    }
     ShadowReport {
         total: gated.len(),
         written,
         failed,
+        deduped,
     }
 }
 
@@ -775,6 +835,41 @@ mod tests {
         assert_eq!(report.failed, 2);
         // 失败率 = 2/2 = 100% > 5% → 触发 audit_warning
         assert_eq!(sink.audit_warning_count(), 1, "失败率 100% > 5% 应告警");
+    }
+
+    #[test]
+    fn changes_jsonl_appends_survive_concurrent_writers() {
+        // B2-2（P1-EV4）：changes.jsonl 三写者（shadow/panel/apply）收敛到
+        // EVOLUTION_STORE_LOCK——并发 append 一行不少、change_id 无碰撞
+        //（此前 shadow 绕锁，与 panel rewrite 并发有丢更新窗口）。
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("changes.jsonl");
+        let mut handles = Vec::new();
+        for t in 0..4 {
+            let file = path.clone();
+            handles.push(std::thread::spawn(move || {
+                for i in 0..25 {
+                    let prop = mk_proposal(
+                        &format!("w{t}-{i}"),
+                        ProposalCategory::MemoryHint,
+                        ImpactLevel::Medium,
+                    );
+                    let cr = change::from_proposal(&prop, 1000);
+                    let _g = crate::evolution::lock_evolution_store();
+                    change::append_change(&file, &cr).unwrap();
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        let rows = change::read_all(&path).unwrap();
+        assert_eq!(rows.len(), 100, "4×25 并发 append 一行不少");
+        let mut ids: Vec<String> = rows.iter().map(|r| r.change_id.clone()).collect();
+        ids.sort();
+        let before = ids.len();
+        ids.dedup();
+        assert_eq!(ids.len(), before, "change_id 两两不同（每行独立提案）");
     }
 
     // ─── 原有 12 个单测保留（外围测试）───

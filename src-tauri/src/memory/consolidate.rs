@@ -264,9 +264,20 @@ pub fn apply_ops(
         let emb = embs.get(i).and_then(|e| e.as_deref());
         match op {
             ConsolidateOp::Merge { ids, content } => {
+                // B2-1（P1-EV3）：evolution lesson（evo: key tag）不参与 merge——
+                // merge 把来源行整行删掉、内容并进目标行，lesson 被吸收 = evo key
+                // 消失 = apply 幂等查重失效（实证同提案 apply 3 次）。引用里含
+                // lesson 时把 lesson 排除，剩余不足 2 条则整条跳过。
                 let items: Vec<MemItem> = store::load_all(&tx)?
                     .into_iter()
-                    .filter(|m| ids.contains(&m.id))
+                    .filter(|m| {
+                        ids.contains(&m.id)
+                            && !m
+                                .tags
+                                .first()
+                                .map(|t| t.starts_with("evo:"))
+                                .unwrap_or(false)
+                    })
                     .collect();
                 if items.len() < 2 {
                     continue;
@@ -307,6 +318,20 @@ pub fn apply_ops(
                     continue;
                 };
                 if !all.iter().any(|m| &m.id == drop_id) {
+                    continue;
+                }
+                // B2-1：contradiction 不碰 evolution lesson——drop 行会被删、
+                // keep 行内容会被 update_by_id 覆盖，任一侧是 lesson 都跳过整条
+                let is_lesson_row = |m: &MemItem| {
+                    m.tags
+                        .first()
+                        .map(|t| t.starts_with("evo:"))
+                        .unwrap_or(false)
+                };
+                if all
+                    .iter()
+                    .any(|m| (&m.id == drop_id || &m.id == keep) && is_lesson_row(m))
+                {
                     continue;
                 }
                 store::update_by_id(

@@ -71,6 +71,23 @@ beforeEach(() => {
   invokeMock.mockReset();
 });
 
+// ── B2-4（拍板①）：有回滚历史的提案再点 ON 需二次确认 ──
+
+function renderWithRollbackHistory() {
+  const p = mkProposal("p-rb", { status: "promoted" });
+  const rolled = mkChange("chg-p-rb", {
+    proposal_id: "p-rb",
+    status: "rolled_back",
+  });
+  invokeMock.mockImplementation((cmd: string) => {
+    if (cmd === "evolution_list_proposals") return [p];
+    if (cmd === "evolution_list_changes") return [rolled];
+    if (cmd === "evolution_toggle_proposal") return null;
+    return null;
+  });
+  return p;
+}
+
 describe("EvolutionPanel", () => {
   it("renders and loads proposals + changes on mount", async () => {
     invokeMock.mockImplementation((cmd: string) => {
@@ -270,5 +287,69 @@ describe("EvolutionPanel", () => {
     render(<EvolutionPanel />);
     await waitFor(() => expect(screen.getByText("chg-a")).toBeTruthy());
     expect(screen.getByText(/by boss/)).toBeTruthy();
+  });
+
+  it("B2-4: toggle ON with rollback history triggers window.confirm", async () => {
+    renderWithRollbackHistory();
+    render(<EvolutionPanel />);
+    const switchBtn = await screen.findByRole("switch", { name: "切换 p-rb" });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const user = userEvent.setup();
+    await user.click(switchBtn);
+    expect(confirmSpy).toHaveBeenCalledWith(
+      expect.stringContaining("上次已回滚")
+    );
+    confirmSpy.mockRestore();
+  });
+
+  it("B2-4: confirming the dialog invokes evolution_toggle_proposal", async () => {
+    renderWithRollbackHistory();
+    render(<EvolutionPanel />);
+    const switchBtn = await screen.findByRole("switch", { name: "切换 p-rb" });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const user = userEvent.setup();
+    await user.click(switchBtn);
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith(
+        "evolution_toggle_proposal",
+        expect.objectContaining({ proposalId: "p-rb", enabled: true })
+      );
+    });
+    confirmSpy.mockRestore();
+  });
+
+  it("B2-4: cancelling the dialog does not invoke toggle", async () => {
+    renderWithRollbackHistory();
+    render(<EvolutionPanel />);
+    const switchBtn = await screen.findByRole("switch", { name: "切换 p-rb" });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const user = userEvent.setup();
+    await user.click(switchBtn);
+    expect(confirmSpy).toHaveBeenCalled();
+    expect(
+      invokeMock.mock.calls.some(([c]) => c === "evolution_toggle_proposal")
+    ).toBe(false);
+    confirmSpy.mockRestore();
+  });
+
+  it("B2-4: toggle ON without rollback history skips confirm", async () => {
+    const p = mkProposal("p-clean", { status: "pooled" });
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "evolution_list_proposals") return [p];
+      if (cmd === "evolution_list_changes") return [];
+      if (cmd === "evolution_toggle_proposal") return null;
+      return null;
+    });
+    render(<EvolutionPanel />);
+    const switchBtn = await screen.findByRole("switch", { name: "切换 p-clean" });
+    const confirmSpy = vi.spyOn(window, "confirm");
+    const user = userEvent.setup();
+    await user.click(switchBtn);
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(invokeMock).toHaveBeenCalledWith(
+      "evolution_toggle_proposal",
+      expect.objectContaining({ proposalId: "p-clean", enabled: true })
+    );
+    confirmSpy.mockRestore();
   });
 });

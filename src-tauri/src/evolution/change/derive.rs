@@ -86,6 +86,26 @@ pub fn from_proposal(p: &EvolutionProposal, now_ms: i64) -> ChangeRecord {
     }
 }
 
+/// B2-4（P1-EV5）：行级唯一 change_id——基础 `chg-<pid>` 空闲则直接用；被占
+/// （上次启用已回滚/已过期）则 `-2`、`-3` 递增。同 id 双行是「二次回滚永久
+/// 卡死」的根因（rollback 按 id position() 首匹配）。三家写者（panel toggle /
+/// shadow / apply CR）落行前统一经此派生。
+pub fn unique_change_id_for(rows: &[ChangeRecord], proposal_id: &str) -> String {
+    let base = derive_change_id(proposal_id);
+    let taken = |id: &str| rows.iter().any(|c| c.change_id == id);
+    if !taken(&base) {
+        return base;
+    }
+    for n in 2..=9999 {
+        let candidate = format!("{base}-{n}");
+        if !taken(&candidate) {
+            return candidate;
+        }
+    }
+    // 理论不可达兜底：时间戳后缀保证唯一
+    format!("{base}-{}", chrono::Utc::now().timestamp_millis())
+}
+
 /// B1-3：自动应用路径的 CR 构造（生产 apply 与回归测试共用，锁「Active +
 /// AutoApplied 经合法流转达成」这一不变量）。
 ///

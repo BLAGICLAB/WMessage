@@ -535,3 +535,73 @@ fn lesson_section_absent_without_lessons() {
     let block = super::format_memory_block(&inj).unwrap();
     assert!(!block.contains("经验教训"), "无 lesson 不出第四段：{block}");
 }
+
+// ── B2-1（P1-EV3 防记忆劫持）：evo lesson 不许 merge 进异 key 行 ──
+
+#[test]
+fn lesson_insert_refused_foreign_merge_on_high_cosine() {
+    let conn = mem_db();
+    let now = 1_000_000;
+    // 既有用户记忆（onehot(0)）
+    let mut u = item("fact", "用户偏好简短回答");
+    u.tags = vec!["偏好".into()];
+    store::insert_item(&conn, &u, Some(&onehot(0)), now).unwrap();
+    // 同向量的 evo lesson：cos=1.0 ≥ 0.92 命中 merge 目标，key 异 → 必须拒写
+    let lesson = NewItem {
+        kind: "lesson".into(),
+        content: "lesson: 回答保持简短".into(),
+        tags: vec!["evo:abc123".into(), "evolution".into()],
+        importance: 4,
+        source: "system".into(),
+    };
+    let (out, _) = store::insert_item(&conn, &lesson, Some(&onehot(0)), now + 1).unwrap();
+    match out {
+        InsertOutcome::RefusedForeignMerge { target_key } => {
+            assert_eq!(target_key, "偏好");
+        }
+        other => panic!("应拒写防劫持，实得 {other:?}"),
+    }
+    // 原行内容未被覆盖（劫持未遂）
+    let all = store::load_all(&conn).unwrap();
+    assert_eq!(all.len(), 1, "拒写不落库");
+    assert_eq!(all[0].content, "用户偏好简短回答");
+    assert_eq!(all[0].tags, vec!["偏好"]);
+}
+
+#[test]
+fn lesson_same_key_replay_still_merges() {
+    // 同 key（本链路自己的重放）放行 merge，不受防劫持闸影响
+    let conn = mem_db();
+    let now = 1_000_000;
+    let l1 = NewItem {
+        kind: "lesson".into(),
+        content: "lesson v1".into(),
+        tags: vec!["evo:rep1".into(), "evolution".into()],
+        importance: 3,
+        source: "system".into(),
+    };
+    let (r1, _) = store::insert_item(&conn, &l1, Some(&onehot(0)), now).unwrap();
+    assert!(matches!(r1, InsertOutcome::Inserted(_)));
+    let l2 = NewItem {
+        kind: "lesson".into(),
+        content: "lesson v2".into(),
+        tags: vec!["evo:rep1".into(), "evolution".into()],
+        importance: 3,
+        source: "system".into(),
+    };
+    let (r2, _) = store::insert_item(&conn, &l2, Some(&onehot(0)), now + 1).unwrap();
+    // 断言合并本身（而非仅行数）：r2 是 Merged 且内容被刷新，行内 content = v2
+    let InsertOutcome::Merged {
+        item: merged,
+        orig_key,
+    } = r2
+    else {
+        panic!("同 key 重放应 Merged，实得 {r2:?}");
+    };
+    assert_eq!(merged.content, "lesson v2");
+    assert_eq!(orig_key.as_deref(), Some("evo:rep1"));
+    let all = store::load_all(&conn).unwrap();
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].content, "lesson v2");
+    assert_eq!(all[0].tags.first().map(String::as_str), Some("evo:rep1"));
+}

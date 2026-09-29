@@ -337,6 +337,14 @@ pub async fn tool_remember_fact(app: &AppHandle, args: &str) -> ToolResult {
                             ),
                         }
                     }
+                    // B2-1 防劫持闸：evo: key 保留给 evolution 链路；validate_fact_kv
+                    // 不拦 evo: 前缀 key（用户真传会到这里被闸住），防御臂按冲突报错
+                    Ok((InsertOutcome::RefusedForeignMerge { target_key }, _)) => {
+                        ToolResult::error(
+                            format!("失败：与受保护条目「{target_key}」语义冲突，拒写"),
+                            Vec::new(),
+                        )
+                    }
                     Ok((InsertOutcome::RejectedFull(e), _)) => {
                         ToolResult::error(format!("失败：{e}"), Vec::new())
                     }
@@ -491,6 +499,11 @@ pub fn record_lesson_core(
                 "已记录教训（与已有教训语义重复，已合并更新）：{}",
                 truncate_chars(lesson, 60)
             )
+        }
+        // B2-1 防劫持闸：record_lesson 的 key 是 "lesson" 前缀正常不触发；
+        // 保留 exhaustive match 防御臂（与 remember 同口径报错）
+        Ok((InsertOutcome::RefusedForeignMerge { target_key }, _)) => {
+            format!("失败：与受保护条目「{target_key}」语义冲突，拒写")
         }
         Ok((InsertOutcome::RejectedFull(e), _)) => format!("失败：{e}"),
         Err(e) => format!("失败：{e}"),
