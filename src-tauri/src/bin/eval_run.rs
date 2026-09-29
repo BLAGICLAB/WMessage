@@ -18,6 +18,7 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mut config_path = PathBuf::from("bot-config.json");
     let mut db_path: Option<PathBuf> = None;
+    let mut applied_path: Option<PathBuf> = None;
     let mut period = "manual".to_string();
     let mut out_path: Option<PathBuf> = None;
     let mut quiet = false;
@@ -45,6 +46,11 @@ fn main() {
             }
             "--db" => {
                 db_path = Some(PathBuf::from(arg_value(&args, i, "--db")));
+                i += 2;
+            }
+            // B4-1：applied.jsonl 覆盖（默认 db 同目录 / eval_set 同目录兜底）
+            "--applied" => {
+                applied_path = Some(PathBuf::from(arg_value(&args, i, "--applied")));
                 i += 2;
             }
             "--period" => {
@@ -81,7 +87,7 @@ fn main() {
         eprintln!("[eval-run] feedback: {:?}", cfg.feedback_path);
         eprintln!("[eval-run] period: {period}");
     }
-    let report = match eval::run_eval(&cfg, db_path.as_deref(), &period) {
+    let report = match eval::run_eval(&cfg, db_path.as_deref(), applied_path.as_deref(), &period) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("跑评估失败：{e}");
@@ -112,11 +118,12 @@ fn print_help() {
         "eval-run — 跑一轮 eval，输出五个指标
 
 用法:
-  cargo run --bin eval-run -- [--config PATH] [--db PATH] [--period LABEL] [--out PATH] [--quiet]
+  cargo run --bin eval-run -- [--config PATH] [--db PATH] [--applied PATH] [--period LABEL] [--out PATH] [--quiet]
 
 参数:
   --config PATH    bot-config.json 路径 (默认: ./bot-config.json)
   --db PATH        dev DB 路径 (可选)
+  --applied PATH   evolution-applied.jsonl 覆盖 (默认: db 同目录，兜底 eval_set 同目录)
   --period LABEL   周期标签 (默认: manual)
   --out PATH       结果 jsonl 路径 (默认: eval_set 同目录的 evolution-eval-results.jsonl)
   --quiet          静默模式（只打印指标 JSON）

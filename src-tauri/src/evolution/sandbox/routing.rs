@@ -1,4 +1,6 @@
 //! R3 L3 沙箱层 · session_id 分流（FNV-1a + canary 5% + A/B 50/50）
+//! **实验态（B4-5 登记）**：S0 观察态设计（OBSERVATION_STATUS §2/§3）——canary/A/B
+//! 分流当前无生产调用（shadow 走全量观察），等真数据后接线；接口按 spec 冻结。
 //!
 //! spec R3：
 //! - Canary 分流：session_id hash 取 5%

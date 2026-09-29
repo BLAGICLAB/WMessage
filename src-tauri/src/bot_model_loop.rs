@@ -415,6 +415,17 @@ pub const STREAM_CHUNK_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::
 /// 不含流式 body——服务端收下请求却挂起不回时兜底，防永久挂起
 pub const LLM_HEADER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// B4-2：模型循环执行明细（trace 管道接线，trace.rs:110 既定计划的落地）。
+/// 轮数 = `llm.request` 审计事件计数（每轮恰好发一次请求）；工具摘要由薄壳的
+/// execute_tool 包装器采集——真实分发路径零改动。
+#[derive(Debug, Clone, Default)]
+pub struct LoopTrace {
+    /// LLM 轮数（llm.request 事件数）
+    pub turn_count: u32,
+    /// 每次工具调用摘要（name + success + duration_ms）
+    pub tool_calls: Vec<crate::evolution::trace::ToolCallSummary>,
+}
+
 pub async fn run_model_loop(
     app: AppHandle,
     msgs: Vec<serde_json::Value>,
@@ -425,7 +436,7 @@ pub async fn run_model_loop(
     // None = 任务执行/定时等后台链路，回落 bot-config.json 的全局默认。
     // 抽象档位 → 线上参数的按模型映射在 bot/reasoning.rs。
     reasoning_override: Option<String>,
-) -> Result<(String, Vec<TaskRef>), CommandError> {
+) -> Result<(String, Vec<TaskRef>, LoopTrace), CommandError> {
     let cfg = crate::bot::bot_get_config(app.clone())?;
     let api_key = crate::bot::read_api_key()?;
     if api_key.trim().is_empty() {
@@ -471,9 +482,24 @@ pub async fn run_model_loop(
             let _ = app.emit_to("widget", event, payload);
         }
     };
+    // B4-2：执行明细采集（薄壳层，真实分发路径零改动）——
+    // 轮数：audit 闭包数 llm.request 事件；工具摘要：execute_tool 包装器计时+判定
+    // （声明在 deps 之前：deps 的 audit 闭包要引用轮数计数器）
+    let round_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let round_for_audit = round_count.clone();
+    let tool_trace: std::sync::Arc<
+        std::sync::Mutex<Vec<crate::evolution::trace::ToolCallSummary>>,
+    > = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let tool_trace_for_exec = tool_trace.clone();
     let deps = ModelLoopDeps {
         emit: &emit,
-        audit: &|level, event, kv| crate::audit::write_event(&app, level, event, &kv),
+        audit: &|level, event, kv| {
+            // B4-2：llm.request 事件计数 = 轮数（trace turn_count 的数据源）
+            if event == "llm.request" {
+                round_for_audit.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            crate::audit::write_event(&app, level, event, &kv)
+        },
         audit_log: &|line| crate::bot::audit_log(&app, line),
         skill_finish: &|ok, reason| crate::bot_skills::skill_finish(&app, ok, reason, session_id),
         // 阶段 3.3（口径：只读走注入）：核心每轮要读「本会话活动技能快照」决定是否短路，
@@ -486,7 +512,23 @@ pub async fn run_model_loop(
     crate::bot_skills::clear_terminal_skill_runs(&app, session_id);
     let execute_tool = |name: String, args: String, trace: crate::bot::ToolCallTrace| {
         let app = app.clone();
-        async move { crate::bot::execute_tool_traced(&app, &name, &args, Some(stop), &trace).await }
+        let sink = tool_trace_for_exec.clone();
+        async move {
+            let t0 = std::time::Instant::now();
+            let out = crate::bot::execute_tool_traced(&app, &name, &args, Some(stop), &trace).await;
+            // 成败口径与全链路统一（audit::tool_call_failed：门禁拦截/熔断/
+            // 用户拒绝/执行失败都算失败）；error_kind 分类器为后续接线（先通管道）
+            let failed = crate::audit::tool_call_failed(&name, &out.text);
+            if let Ok(mut sink) = sink.lock() {
+                sink.push(crate::evolution::trace::ToolCallSummary {
+                    name,
+                    success: !failed,
+                    duration_ms: t0.elapsed().as_millis() as u64,
+                    error_kind: None,
+                });
+            }
+            out
+        }
     };
     let replan = |plan: crate::bot_plan::PlanState, reason: String| {
         let app = app.clone();
@@ -503,6 +545,14 @@ pub async fn run_model_loop(
         replan,
     )
     .await
+    .map(|(text, refs)| {
+        // B4-2：组装执行明细随返回值带出（trace 管道消费）
+        let loop_trace = LoopTrace {
+            turn_count: round_count.load(std::sync::atomic::Ordering::Relaxed) as u32,
+            tool_calls: tool_trace.lock().map(|m| m.clone()).unwrap_or_default(),
+        };
+        (text, refs, loop_trace)
+    })
 }
 
 /// 流完整性收尾状态：替代旧 `saw_done_or_finish: bool`，区分具体收尾来源。

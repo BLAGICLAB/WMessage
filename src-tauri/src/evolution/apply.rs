@@ -157,6 +157,17 @@ pub fn apply_from_consolidation(proposals: Vec<EvolutionProposal>) {
     };
     let app = app.clone();
 
+    // B4-5：kill_switch 真接线（拍板②：本模块方法文档一直声称「apply.rs 入口
+    // 检查」，此前无任何调用方 = 假接线）。判定在 spawn_blocking 内**现读现判**
+    //（评审 HIGH 采纳：整文件读取+JSON 解析不占 async worker）：
+    // - shadow_only / all_auto_apply=true → 主 apply 空转返回（lesson 不落库）；
+    //   shadow 钩子照常（kill 只停「写」不强制开「观察」，shadow 仍受
+    //   evolution.shadow.enabled 独立控制）
+    // - disable_notification → apply 完成的 bot.log 摘要行静默
+    // - 读取失败显式 WARN 后按全关默认（评审 HIGH 采纳：不再静默吞）
+    // 配置缺 evolution.kill_switch 块 = Err → 全关默认（行为与无开关一致）
+    let kill_cfg_path = crate::db::paths::data_dir(&app).join("bot-config.json");
+
     // [R6 A] shadow 钩子（仅当 evolution.shadow.enabled=true 时）
     // 克隆 proposals 供 shadow spawn（主 apply 仍用原 proposals）
     let shadow_proposals = if crate::evolution::observe::shadow::is_enabled(&app) {
@@ -170,6 +181,27 @@ pub fn apply_from_consolidation(proposals: Vec<EvolutionProposal>) {
     tauri::async_runtime::spawn(async move {
         let app2 = app.clone();
         let r = tauri::async_runtime::spawn_blocking(move || -> Result<ApplyReport, String> {
+            // kill 现读现判（spawn_blocking 内，不占 async worker）
+            let kill = match crate::evolution::sandbox::kill_switch::load_from_file(&kill_cfg_path)
+            {
+                Ok(k) => k,
+                Err(e) => {
+                    eprintln!("[evolution_kill_switch] 读取失败（{e}），按全关默认继续 apply");
+                    crate::evolution::sandbox::kill_switch::default_off()
+                }
+            };
+            if kill.should_shadow_only() {
+                crate::audit_event!(
+                    &app2,
+                    crate::audit::AuditLevel::Warn,
+                    "evolution.apply_killed",
+                    "switch" => if kill.all_auto_apply { "all_auto_apply" } else { "shadow_only" },
+                    "notify_disabled" => kill.should_disable_notification().to_string(),
+                    "effect" => "main_apply_skipped",
+                );
+                return Ok(ApplyReport::default());
+            }
+            let notify_disabled = kill.should_disable_notification();
             // 嵌入在持锁前批量算好（ONNX 推理数十 ms，不占 DB 写锁临界区）
             let embs: Vec<Option<Vec<f32>>> = proposals
                 .iter()
@@ -279,19 +311,22 @@ pub fn apply_from_consolidation(proposals: Vec<EvolutionProposal>) {
                     }
                 }
             }
-            Ok(report)
-        })
-        .await;
-        match r {
-            Ok(Ok(report)) if report.applied > 0 => {
+            // B4-5：完成通知按 kill.disable_notification 口径静默
+            //（移入闭包内：notify_disabled 在此作用域）
+            if report.applied > 0 && !notify_disabled {
                 crate::bot::audit_log_hook(
-                    &app,
+                    &app2,
                     &format!(
                         "evolution_apply | applied: {} | already_present: {}",
                         report.applied, report.already_present
                     ),
                 );
             }
+            Ok(report)
+        })
+        .await;
+        match r {
+            // Ok：完成通知已在闭包内按 notify_disabled 口径落
             Ok(Ok(_)) => {}
             Ok(Err(e)) => {
                 crate::audit_event!(&app, crate::audit::AuditLevel::Warn, "evolution.apply_failed",

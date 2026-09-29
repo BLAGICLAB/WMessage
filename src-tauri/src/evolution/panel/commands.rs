@@ -101,6 +101,18 @@ fn toggle_inner(
     let mut changes = load_changes(app)?;
 
     if enabled {
+        // B4-4（P3 组）：终态校验——Rejected/Expired 是终态，不允许 toggle ON
+        // 复活（此检查在 EVOLUTION_STORE_LOCK 内 = promote 段 B 的段间复检）；
+        // RolledBack 复用走前端二次确认（拍板①），此处放行
+        if matches!(
+            entry.status,
+            ProposalStatus::Rejected | ProposalStatus::Expired
+        ) {
+            return Err(format!(
+                "proposal {proposal_id} 状态为 {:?}（终态），不可再启用",
+                entry.status
+            ));
+        }
         // Toggle ON：dedup（已有 pending/shadowing/shadow_passed 不重写）
         let existing = changes.iter().find(|c| {
             c.proposal_id == proposal_id
@@ -200,9 +212,14 @@ fn delete_inner(app: &AppHandle, proposal_id: &str, cascade_source: bool) -> Res
     rewrite_jsonl(&c_path, &changes)?;
 
     // 3. 可选 cascade 源记忆（老板 16:35 拍板：默认关，复选框选）
+    //    B4-4（P3 组）：mem_items 删除持 DB_WRITE_LOCK（此前裸连接写绕全局写锁）
     let mut mem_deleted = 0usize;
     if cascade_source {
         let conn = crate::db::open_db(app)?;
+        let _db_write = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
+            eprintln!("[mutex_poisoned] evolution::panel DB_WRITE_LOCK (cascade): {e:?}");
+            e.into_inner()
+        });
         mem_deleted = cascade_delete_mem_items(&conn, &related_refs, &proposal_id)?;
     }
 
@@ -546,6 +563,11 @@ fn delete_evolution_mem_item(app: &AppHandle, proposal_id: &str) -> Result<(), S
     use crate::db;
     let key = format!("evo:{proposal_id}");
     let conn = db::open_db(app).map_err(|e| format!("打开 DB 失败：{e}"))?;
+    // B4-4（P3 组）：mem_items 删除持 DB_WRITE_LOCK（此前裸连接写绕全局写锁）
+    let _db_write = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
+        eprintln!("[mutex_poisoned] evolution::panel DB_WRITE_LOCK (rollback): {e:?}");
+        e.into_inner()
+    });
     let deleted = crate::memory::store::delete_by_key_tag(&conn, &key)
         .map_err(|e| format!("删除 mem_item 失败：{e}"))?;
     if !deleted {

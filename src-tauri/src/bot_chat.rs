@@ -930,7 +930,10 @@ pub async fn bot_chat(
             msgs.push(serde_json::json!({"role": role, "content": m.content}));
         }
     }
-    let (text, refs) = crate::bot_model_loop::run_model_loop(
+    // B4-2：Failure 分支可达——模型循环 Err（LLM 5xx/流断/头超时等）也落 trace
+    //（此前只在 Ok 收尾处 hook，失败轨迹全丢，trace 的 Failure 采样规则不可达）。
+    // reason 用粗分类，不带原始错误消息（含路径/参数，不入 trace/audit 明细）
+    let (text, refs, loop_trace) = match crate::bot_model_loop::run_model_loop(
         app,
         msgs,
         max_rounds,
@@ -938,7 +941,23 @@ pub async fn bot_chat(
         plan_state.as_mut(),
         reasoning_effort,
     )
-    .await?;
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            crate::evolution::trace::maybe_record_trace(
+                TraceContext::new(
+                    session_id.as_deref().unwrap_or("none"),
+                    MutationOrigin::Main,
+                    started_at_ms,
+                )
+                .with_outcome(TraceOutcome::Failure {
+                    reason: "model_loop_error".into(),
+                }),
+            );
+            return Err(e);
+        }
+    };
     // Phase 1 追加：trace 采集——同步、< 1ms、不记录对话原文。
     // 仅在最终 return 处 hook：早期 return（ChatGuard 拦截 / chat_execute_tasks
     // / skill auto-mode 终态）均不走 run_model_loop，不构成完整 bot 执行轨迹，
@@ -955,7 +974,10 @@ pub async fn bot_chat(
         } else {
             TraceOutcome::Success
         })
-        .with_task_refs(refs.iter().map(|t| t.id.clone()).collect()),
+        .with_task_refs(refs.iter().map(|t| t.id.clone()).collect())
+        // B4-2：turn 数 + 工具明细接真实数据（此前恒 0/空，trace.rs 既定计划）
+        .with_turn_count(loop_trace.turn_count)
+        .with_tool_calls(loop_trace.tool_calls),
     );
     Ok(BotChatResult {
         text,
@@ -1382,6 +1404,8 @@ pub async fn run_task_in_chat(
             None,
         )
         .await
+        // LoopTrace 暂无消费方（子卡三字段已够用），此处剥掉保返回类型不变
+        .map(|(text, refs, _trace)| (text, refs))
     })
     .await
 }

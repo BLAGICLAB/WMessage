@@ -1,4 +1,6 @@
 //! R4 L1 候选层 · TTL 14 天过期机制
+//! **实验态（B4-5 登记）**：S0 观察态设计（OBSERVATION_STATUS §2/§3）——当前无生产调用
+//!（候选池暂不做 TTL 过期推进），等真数据后接线；接口按 spec 冻结。
 //!
 //! spec R4：候选池 evolution-proposals.jsonl TTL = 14 天
 //! 超期后 status 转为 Expired（软淘汰，保留历史）。

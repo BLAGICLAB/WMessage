@@ -205,6 +205,9 @@ pub fn load_state_from_file(path: &Path) -> ActivationState {
 /// 骨架阶段行为：
 /// - 不可逆 → Skip
 /// - 可逆 + 任何状态 → WriteShadow（4 态 audit 在 wrapper 区分）
+///
+/// **实验态（B4-5 登记）**：当前无生产调用（shadow 走全量观察，不经此路由），
+/// S0 观察态设计等真数据（OBSERVATION_STATUS §2/§3）后接线；接口按 spec 冻结。
 pub fn shadow_route(state: ActivationState, p: &EvolutionProposal) -> RouteDecision {
     if !is_reversible(p) {
         return RouteDecision::Skip;
@@ -278,6 +281,10 @@ static SAVE_STATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// 最终写走 atomic_write（tmp+rename）——std::fs::write 直写崩溃会截断整个
 /// bot-config.json（§12.7 要求保留其它字段）。
 /// 残余：bot/config 其它写者不在此锁内（跨写者统一锁 = follow-up）。
+///
+/// **实验态（B4-5 登记）**：当前无生产调用（切态 Tauri 命令等 §6 候选生成器，
+/// 见 OBSERVATION_STATUS §2「有意未做」）；S0 观察态设计等真数据后接线，
+/// 接口按 spec 冻结。
 pub fn save_state(state: ActivationState, config_path: &Path) -> Result<(), String> {
     let _g = SAVE_STATE_LOCK.lock().unwrap_or_else(|e| {
         eprintln!("[mutex_poisoned] evolution::activation::SAVE_STATE_LOCK: {e:?}");

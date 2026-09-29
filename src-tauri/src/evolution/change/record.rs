@@ -335,20 +335,25 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// 首行坏 = 结构级损坏：Err（fail-closed）。前导空行后首个非空行损坏同样 Err
-    ///（首个非空行判定：行号 i==0 会被空行偏移）
+    /// 首行坏：B4-3 自愈——整体备份 `.corrupt-<ts>` 后跳过坏行返回好行
+    ///（不再永久 fail-closed；备份是取证/手工修复入口）
     #[test]
-    fn read_all_corrupt_first_line_fails_closed() {
+    fn read_all_corrupt_first_line_self_heals_with_backup() {
         let dir = std::env::temp_dir().join(format!("wm-chg-corrupt2-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("changes.jsonl");
-        std::fs::write(&p, "{ broken json\n").unwrap();
-        let err = read_all(&p).expect_err("首行损坏必须 Err");
-        assert!(err.contains("第 1 行"), "got: {err}");
-        // 前导空行后首条 JSON 行损坏 → 仍 Err
-        std::fs::write(&p, "\n\n{ broken json\n").unwrap();
-        let err = read_all(&p).expect_err("前导空行后首个非空行损坏仍必须 Err");
-        assert!(err.contains("JSON 错误"), "got: {err}");
+        let good = serde_json::to_string(&mk("chg-ok", ChangeStatus::Active)).unwrap();
+        std::fs::write(&p, format!("{{ broken json\n{good}\n")).unwrap();
+        let read = read_all(&p).unwrap();
+        assert_eq!(read.len(), 1, "首行损坏跳过，好行返回");
+        // 备份存在（固定名 `<name>.corrupt`），内容 = 损坏时的原文件
+        let backup = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .find(|e| e.file_name().to_string_lossy().ends_with(".corrupt"))
+            .expect("必须留下 .corrupt 备份");
+        let backed = std::fs::read_to_string(backup.path()).unwrap();
+        assert!(backed.contains("broken json"), "备份应是原文件内容");
         std::fs::remove_dir_all(&dir).ok();
     }
 

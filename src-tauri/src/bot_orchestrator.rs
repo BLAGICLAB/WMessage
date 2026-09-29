@@ -1294,10 +1294,10 @@ async fn run_subagent(app: AppHandle, subagent_id: String) {
     let (status, error, result) = match &wall {
         Err(_elapsed) => classify_outcome(None, true, None),
         Ok(Err(e)) => classify_outcome(Some(&e.message()), false, None),
-        Ok(Ok((text, _refs))) => classify_outcome(None, false, Some(text)),
+        Ok(Ok((text, _refs, _loop_trace))) => classify_outcome(None, false, Some(text)),
     };
     let final_text: String = match &wall {
-        Ok(Ok((text, _))) => text.clone(),
+        Ok(Ok((text, _, _))) => text.clone(),
         Ok(Err(e)) => format!("⚠️ 执行失败：{}", e.message()),
         Err(_) => "⏹ 墙钟预算触达，执行被强制停止（部分产物已保留）".into(),
     };

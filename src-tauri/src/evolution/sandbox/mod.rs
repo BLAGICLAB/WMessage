@@ -7,6 +7,11 @@
 //! - `io`          evolution-shadow.jsonl / evolution-ab.jsonl 持久化
 //!
 //! 不调 LLM；不写新数据库表；持久化一律 jsonl。
+//!
+//! **实验态（B4-5 登记）**：`routing` / `shadow`（ShadowRunner 决策件）/ `io`
+//! 当前无生产调用（S0 观察态设计，OBSERVATION_STATUS §2/§3，等真数据后接线；
+//! `routing` 内 fnv1a 已被 proposal::short_hash 使用）。`kill_switch` 已于 B4-5
+//! 真接线（apply_from_consolidation 入口现读）。
 
 pub mod io;
 pub mod kill_switch;

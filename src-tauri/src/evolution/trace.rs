@@ -107,12 +107,11 @@ pub struct TraceContext<'a> {
     pub outcome: TraceOutcome,
     pub task_refs: Vec<String>,
     /// 工具调用明细（name + success + duration_ms + error_kind 分类）。
-    /// Phase 1 生产 caller 尚无明细来源（run_model_loop 不返回），
-    /// 管道先通；接线待 bot_model_loop 返回类型扩展（follow-up）。
+    /// B4-2 已接真实数据：run_model_loop 返回 LoopTrace（薄壳 execute_tool
+    /// 包装器采集）；error_kind 分类器为后续接线（当前 None）
     pub tool_calls: Vec<ToolCallSummary>,
-    // Phase 1 占位字段：未追踪，统一 0/None
-    // （采样用的工具调用计数由 tool_calls.len() 派生，无独立占位字段——
-    //  两个相关字段无同步是双轨隐患）
+    // B4-2：turn_count 已接真实数据（llm.request 审计事件计数）；
+    // skill_used / memory_injected_count 仍为占位（0/None）
     pub turn_count: u32,
     pub skill_used: Option<&'a str>,
     pub memory_injected_count: u32,
@@ -142,6 +141,11 @@ impl<'a> TraceContext<'a> {
     }
     pub fn with_tool_calls(mut self, calls: Vec<ToolCallSummary>) -> Self {
         self.tool_calls = calls;
+        self
+    }
+    /// B4-2：轮数接线（llm.request 审计事件计数）
+    pub fn with_turn_count(mut self, n: u32) -> Self {
+        self.turn_count = n;
         self
     }
 }

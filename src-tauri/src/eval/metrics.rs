@@ -18,6 +18,11 @@ pub struct MetricsReport {
     pub case_total: usize,
     /// 评估 case 成功数（基于 expected_behavior 命中）
     pub case_passed: usize,
+    /// B4-1 标注：case_passed 恒等于 case_total（无 case 级判定，100% 占位）——
+    /// 消费方据此把 task_success_rate 显示为「占位」而非真实指标；
+    /// serde default 兼容旧结果 jsonl（缺字段按 false 读）
+    #[serde(default)]
+    pub case_passed_placeholder: bool,
     /// 任务成功率（0.0-1.0）
     pub task_success_rate: f64,
     /// 工具调用总次数（来自反馈 + applied 记录）
@@ -171,6 +176,9 @@ pub fn compute(
         case_total,
         case_passed,
         task_success_rate,
+        // B4-1：当前无 case 级判定，task_success_rate 是 100% 占位——输出里显式
+        // 标注，消费方不再把占位值当真实指标
+        case_passed_placeholder: true,
         tool_calls_total,
         tool_calls_succeeded,
         tool_call_efficiency,

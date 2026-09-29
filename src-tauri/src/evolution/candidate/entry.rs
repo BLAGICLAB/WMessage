@@ -249,15 +249,24 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// 首行坏 = 结构级损坏：Err（fail-closed）
+    /// 首行坏：B4-3 自愈——备份后跳过坏行（不再永久 fail-closed）
     #[test]
-    fn read_all_corrupt_first_line_fails_closed() {
+    fn read_all_corrupt_first_line_self_heals_with_backup() {
         let dir = std::env::temp_dir().join(format!("wm-pe-corrupt2-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("proposals.jsonl");
         std::fs::write(&p, "{ broken json\n").unwrap();
-        let err = read_all(&p).expect_err("首行损坏必须 Err");
-        assert!(err.contains("第 1 行"), "got: {err}");
+        let read = read_all(&p).unwrap();
+        assert!(read.is_empty(), "只有坏行 → 空 vec");
+        let backup = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .find(|e| e.file_name().to_string_lossy().ends_with(".corrupt"))
+            .expect("必须留下 .corrupt 备份");
+        assert!(backup
+            .file_name()
+            .to_string_lossy()
+            .starts_with("proposals.jsonl.corrupt"));
         std::fs::remove_dir_all(&dir).ok();
     }
 }

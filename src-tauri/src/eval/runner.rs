@@ -10,7 +10,7 @@
 //!
 //! 不调 LLM；不动 prompt / TOOLS / 命令名 / 事件名 / JSON 字段 / 错误码。
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 
@@ -23,15 +23,19 @@ use super::metrics::{compute, read_applied, MetricsReport};
 ///
 /// `period` 标签："manual" / "before" / "after" / 自定义
 /// `db_path`：dev SQLite 文件路径（None 时跳过 mem_items 状态读取，回滚率/存活期=0）
+/// `applied_path`：B4-1 覆盖（CLI `--applied`）；None 按优先级推导
+///（db 同目录 > eval_set 同目录兜底）
 pub fn run(
     cfg: &EvolutionEvalConfig,
     db_path: Option<&Path>,
+    applied_override: Option<&Path>,
     period: &str,
 ) -> Result<MetricsReport, String> {
     // 1. eval set
     let cases: Vec<EvalCase> = read_jsonl(&cfg.eval_set_path)?;
-    // 2. applied
-    let applied = read_applied(&cfg.eval_set_path_with_applied())?;
+    // 2. applied（B4-1：路径推导修正）
+    let applied_path = resolve_applied_path(cfg, db_path, applied_override);
+    let applied = read_applied(&applied_path)?;
     // 3. live keys
     let live_keys: Vec<String> = if let Some(p) = db_path {
         list_live_lesson_keys(p)?
@@ -45,7 +49,7 @@ pub fn run(
     let now_ms = chrono::Utc::now().timestamp_millis();
     let report = compute(
         cases.len(),
-        cases.len(), // 简化：当前无 case-level pass 判定，按 100% 占位；R2 接入 ChangeRecord 后实判
+        cases.len(), // B4-1 标注：无 case 级判定，恒 100% 占位（MetricsReport.case_passed_placeholder=true）；R2 接入 ChangeRecord 后实判
         tool_total,
         tool_ok,
         &applied,
@@ -167,19 +171,31 @@ fn aggregate_feedback(
     (total, succeeded, hit_fractions)
 }
 
-// EvolutionEvalConfig 扩展：applied_path 推导（与 eval_set 同目录的 applied.jsonl）
+// EvolutionEvalConfig 扩展：applied 路径兜底推导。B4-1（P2-EV8）：真实路径
+// 优先级 = 显式 --applied > db_path 同目录（applied.jsonl 与 DB 同在 data_dir）
+// > 此兜底；此前直接用本兜底会读到 `<eval_set>.applied.jsonl`（不存在 → 空
+// applied → 回滚率/污染存活期恒 0）
 trait ConfigExt {
     fn eval_set_path_with_applied(&self) -> std::path::PathBuf;
 }
 impl ConfigExt for EvolutionEvalConfig {
     fn eval_set_path_with_applied(&self) -> std::path::PathBuf {
-        // applied.jsonl 在 eval_set 同目录（约定：evolution-applied.jsonl 在 data_dir）
-        // 实际 data_dir 路径由调用方通过 db_path 推断：dev 默认 ~/Library/Application Support/wmessage/evolution-applied.jsonl
-        // 这里只返回 eval_set 同目录的 .applied.jsonl 备选；CLI binary 走 --applied 覆盖
         let mut p = self.eval_set_path.clone();
         p.set_extension("applied.jsonl");
         p
     }
+}
+
+/// B4-1：applied.jsonl 路径解析（--applied 覆盖 > db 同目录 > 兜底）
+pub(crate) fn resolve_applied_path(
+    cfg: &EvolutionEvalConfig,
+    db_path: Option<&Path>,
+    applied_override: Option<&Path>,
+) -> std::path::PathBuf {
+    applied_override
+        .map(Path::to_path_buf)
+        .or_else(|| db_path.and_then(|p| p.parent().map(|d| d.join("evolution-applied.jsonl"))))
+        .unwrap_or_else(|| cfg.eval_set_path_with_applied())
 }
 
 #[cfg(test)]
@@ -214,6 +230,52 @@ mod tests {
         assert_eq!(ok, 2);
     }
 
+    // ── B4-1（P2-EV8）：applied 路径三分支优先级 ──
+
+    fn mk_cfg() -> EvolutionEvalConfig {
+        EvolutionEvalConfig {
+            eval_set_path: PathBuf::from("/cfg/eval-set.jsonl"),
+            feedback_path: PathBuf::from("/cfg/feedback.jsonl"),
+            run_frequency: crate::eval::config::RunFrequency::Manual,
+        }
+    }
+
+    #[test]
+    fn applied_path_override_wins() {
+        let p = super::resolve_applied_path(
+            &mk_cfg(),
+            Some(Path::new("/data/wmessage.db")),
+            Some(Path::new("/explicit/applied.jsonl")),
+        );
+        assert_eq!(
+            p,
+            PathBuf::from("/explicit/applied.jsonl"),
+            "--applied 最优先"
+        );
+    }
+
+    #[test]
+    fn applied_path_defaults_to_db_sibling() {
+        // 修复的回归点：默认应取 db 同目录（= data_dir）的 evolution-applied.jsonl，
+        // 而非旧的 eval_set 同目录兜底（读不到 → 恒 0 指标）
+        let p = super::resolve_applied_path(&mk_cfg(), Some(Path::new("/data/wmessage.db")), None);
+        assert_eq!(
+            p,
+            PathBuf::from("/data/evolution-applied.jsonl"),
+            "db 同目录优先于兜底"
+        );
+    }
+
+    #[test]
+    fn applied_path_falls_back_to_eval_set_sibling() {
+        let p = super::resolve_applied_path(&mk_cfg(), None, None);
+        assert_eq!(
+            p,
+            PathBuf::from("/cfg/eval-set.applied.jsonl"),
+            "无 db 时走兜底"
+        );
+    }
+
     #[test]
     fn aggregate_feedback_hit_fractions_match_case() {
         let cases = vec![EvalCase {
@@ -245,6 +307,7 @@ mod tests {
         let report = MetricsReport {
             case_total: 10,
             case_passed: 8,
+            case_passed_placeholder: false,
             task_success_rate: 0.8,
             tool_calls_total: 5,
             tool_calls_succeeded: 4,

@@ -262,7 +262,7 @@ async fn run_step(
         json!({"role": "system", "content": sys}),
         json!({"role": "user", "content": block}),
     ];
-    let (text, refs) = crate::bot_model_loop::run_model_loop(
+    let (text, refs, _loop_trace) = crate::bot_model_loop::run_model_loop(
         app.clone(),
         msgs,
         crate::bot_model_loop::DEFAULT_MAX_ROUNDS,

@@ -26,9 +26,12 @@ pub mod candidate;
 pub mod change;
 
 /// jsonl 读取共享内核（OCR r2 medium 采纳：record/entry 两处 30 行 read_all 收敛
-/// 单点防漂移）。语义（拍板 #17=C）：文件不存在 → Ok(空)；首个非空行损坏 = 结构级
-/// 损坏 → Err（fail-closed）；中间坏行 → stderr 留痕跳过返回好行（已知代价：坏行 id
-/// 缺失时 dedup 调用方可能同 id 再追加——无害重复）。
+/// 单点防漂移）。语义（B4-3 自愈化，原拍板 #17=C 的 fail-closed 已按审计修正）：
+/// 文件不存在 → Ok(空)；**任何行损坏 → 先把原文件整体备份为 `<name>.corrupt`
+///（已存在不覆盖——损坏是持久态时热路径最多拷一次）再跳过坏行**（首行损坏不再
+/// 永久 fail-closed——实证一个坏字节能让面板永久打不开且无自愈出口），stderr
+/// 留痕。已知代价：坏行 id 缺失时 dedup 调用方可能同 id 再追加——无害重复；
+/// 备份保证取证/手工修复有入口。
 pub(crate) fn read_jsonl<T: serde::de::DeserializeOwned>(
     path: &std::path::Path,
     label: &str,
@@ -40,7 +43,7 @@ pub(crate) fn read_jsonl<T: serde::de::DeserializeOwned>(
     let f = std::fs::File::open(path).map_err(|e| format!("打开 {path:?} 失败：{e}"))?;
     let reader = std::io::BufReader::new(f);
     let mut out = Vec::new();
-    let mut first_parsed = false;
+    let mut corrupt_backed_up = false;
     for (i, line) in reader.lines().enumerate() {
         let line = line.map_err(|e| format!("读取第 {} 行失败：{e}", i + 1))?;
         if line.trim().is_empty() {
@@ -48,14 +51,41 @@ pub(crate) fn read_jsonl<T: serde::de::DeserializeOwned>(
         }
         match serde_json::from_str::<T>(&line) {
             Ok(v) => out.push(v),
-            Err(e) if out.is_empty() && !first_parsed => {
-                return Err(format!("第 1 行 JSON 错误：{e}"));
-            }
             Err(e) => {
-                eprintln!("[evolution] {label} jsonl 第 {} 行损坏已跳过：{e}", i + 1);
+                // B4-3：首个坏行触发一次整体备份（固定名 `.corrupt`，已存在则
+                // 不覆盖——评审 HIGH 采纳：损坏是持久态时热路径每次读都不该
+                // 重拷全文件；首个快照即取证所需），跳过坏行继续（好行不丢）。
+                // 快照与并发 append 之间允许轻微偏移（备份是 best-effort 取证）。
+                if !corrupt_backed_up {
+                    corrupt_backed_up = true;
+                    let backup = path.with_file_name(format!(
+                        "{}.corrupt",
+                        path.file_name()
+                            .map(|s| s.to_string_lossy().to_string())
+                            .unwrap_or_else(|| "changes".into())
+                    ));
+                    if backup.exists() {
+                        eprintln!(
+                            "[evolution] {label} jsonl 第 {} 行损坏（备份已存在 {backup:?}），跳过坏行：{e}",
+                            i + 1
+                        );
+                    } else {
+                        match std::fs::copy(path, &backup) {
+                            Ok(_) => eprintln!(
+                                "[evolution] {label} jsonl 第 {} 行损坏（已整体备份到 {backup:?}），跳过坏行：{e}",
+                                i + 1
+                            ),
+                            Err(be) => eprintln!(
+                                "[evolution] {label} jsonl 第 {} 行损坏（备份失败：{be}），跳过坏行：{e}",
+                                i + 1
+                            ),
+                        }
+                    }
+                } else {
+                    eprintln!("[evolution] {label} jsonl 第 {} 行损坏已跳过：{e}", i + 1);
+                }
             }
         }
-        first_parsed = true;
     }
     Ok(out)
 }

@@ -47,6 +47,50 @@
 2. SUBA 子 Agent：触发一次「让子 agent 跑个 ocr」之类任务，确认子卡渲染、并发闸不串话、停止按钮生效
 3. `ocr_image` 工具：本地图片跑一次（缺 pp-ocr-v6/ 时工具会报「请运行 scripts/fetch_ocr_models.sh…」）
 
+## 2026-09-29（周二）EV-B4 批：自进化工具补全 + 实验态决断（P2×3 + P3 + 拍板②⑤；B4-6 KeySlot 另批）
+
+**背景**：审计修复批第 5 批。B4-6（MCP env/headers 迁 KeySlot，方案
+`docs/MCP-KEYSLOT-MIGRATION-DESIGN-2026-09-29.md`）单独成批随后做。
+
+**改动**：
+- **B4-1（P2-EV8）**：eval_run 的 applied 路径修正——新增 `--applied` 覆盖，
+  默认 db 同目录（= data_dir），兜底 eval_set 同目录；此前读不存在的
+  `<eval_set>.applied.jsonl` 导致回滚率/污染存活期恒 0。`case_passed` 100%
+  占位显式标注（`case_passed_placeholder` 字段入 JSON）。
+- **B4-2（P2-EV10）**：trace 接真实数据——`run_model_loop` 返回追加
+  `LoopTrace`（轮数 = llm.request 审计计数，工具明细 = 薄壳 execute_tool
+  包装器采集，真实分发路径零改动）；bot_chat Failure 分支可达（Err 也落
+  trace，粗分类 reason）；四个调用方同步适配。
+- **B4-3（P2-EV11）**：jsonl 损坏自愈——任何行损坏先整体备份 `.corrupt-<ts>`
+  再跳坏行；首行损坏不再永久 fail-closed（此前一个坏字节能让面板永久打不开）。
+- **B4-4（P3 组）**：cascade/rollback 两处 mem_items 裸连接写持 `DB_WRITE_LOCK`
+  （锁序无环：apply 先放 DB 锁再取 EVO 锁，panel 反序）；toggle ON 终态校验
+  （Rejected/Expired 不可复活，锁内 = promote 段间复检；RolledBack 走前端
+  二次确认放行）。
+- **B4-5（拍板②）**：kill_switch 真接线——apply 入口现读 `evolution.kill_switch`
+  （文档声称的「apply.rs 入口检查」自此为真）；shadow_only/all_auto_apply 跳
+  主 apply（shadow 照常），disable_notification 静默完成摘要。实验态模块头
+  标注：candidate/ttl、conflict、sandbox/routing、sandbox/mod、activation
+  的 save_state/shadow_route（无生产调用，等真数据接线）。
+- **拍板⑤**：run_python schema「本机沙箱」→「资源受限：CPU/内存/时长限额 +
+  独立临时目录，无文件系统隔离」。
+
+**回归**：evolution 283 / eval 38 / task_chat_exec 14 / llm_integration 37 /
+memory 56 / model_loop 44 / py 64 全绿；fail-closed 测试 ×2 改写为自愈断言。
+
+**ocr 复审处置**（r1：29 条，4 HIGH）：① 备份用 `.corrupt-<ts>` 时间戳名——损坏
+是持久态时热路径每次读都重拷全文件 → 改固定名 `.corrupt`（存在不覆盖，最多拷
+一次；并发 append 下允许快照轻微偏移，best-effort 取证）；② `resolve_applied_path`
+零测试覆盖（三分支正是本次修的回归点）→ 补 3 个分支测试；③ kill_switch 读取
+失败被 `unwrap_or_else` 静默吞（I/O 坏/JSON 坏全默认关）→ 显式 WARN 后按全关
+继续（缺块=默认语义不变，但不再不可见）；④ kill 加载（整文件 JSON 解析）在
+async worker 上同步执行 → 挪进 spawn_blocking（判定随主任务空转早退）。顺手修：
+apply 的完成通知移入闭包内按 notify_disabled 口径落；kill 审计补
+notify_disabled 字段；`applied_path`/`applied_override` 命名统一。登记：
+apply_from_consolidation 集成测试需 AppHandle 挂账（load_from_file 纯函数已有
+4 测）；bot-config 原子 rename 与 kill 现读之间的 TOCTOU 窗口（固有，影响=一次
+旧配置判定）。
+
 ## 2026-09-29（周二）B3-CONC 批：后端并发与流式稳健（B3-1~4；B3-5 登记后批）
 
 **背景**：审计修复批第 4 批。四个病灶都有可感知症状：排队中的子 agent 假挂
