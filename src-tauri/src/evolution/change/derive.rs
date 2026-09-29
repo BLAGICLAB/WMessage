@@ -86,6 +86,30 @@ pub fn from_proposal(p: &EvolutionProposal, now_ms: i64) -> ChangeRecord {
     }
 }
 
+/// B1-3：自动应用路径的 CR 构造（生产 apply 与回归测试共用，锁「Active +
+/// AutoApplied 经合法流转达成」这一不变量）。
+///
+/// 自动应用（MemoryHint lesson 直写记忆）不经沙箱/影子——那是整改流水线的
+/// 门，不是 lesson 路径的门——但 CR 形态仍走满合法流转
+///（Pending → Shadowing → ShadowPassed → Approved → Active，中间态瞬时通过），
+/// 不裸写 status 绕状态机（Pending → Active 直跳被 status.rs 硬约束②显式拦截，
+/// 评审 HIGH）。入口提案须已过 auto_apply_gate（compliance=false 的
+/// from_proposal 是终态 Rejected，流转即 Err）。
+pub fn auto_applied_from_proposal(
+    p: &EvolutionProposal,
+    now_ms: i64,
+) -> Result<ChangeRecord, String> {
+    let mut cr = from_proposal(p, now_ms);
+    use ChangeStatus::{Active, Approved, ShadowPassed, Shadowing};
+    for step in [Shadowing, ShadowPassed, Approved, Active] {
+        super::status::transition(cr.status, step)?;
+        cr.status = step;
+    }
+    cr.approval_source = ApprovalSource::AutoApplied;
+    cr.hard_constraint_compliance = true;
+    Ok(cr)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -95,6 +95,14 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
 
 // ───────────────────────── bot_set_config ─────────────────────────
 
+/// P0-EV1 回填内核（纯函数，单测直打）：**盘上值权威**。前端视图（BotConfigView）
+/// 不含 evolution 块，bot_set_config 是整体替换写——不回填则设置页任意一次保存
+/// 都把自进化块写丢（运行时配置上实际发生过）。即便前端理论上带了值也以盘上
+/// 为准：该块只归 evolution/ 模块读写，设置页没有编辑入口。
+pub(crate) fn preserve_evolution(incoming: &mut BotConfig, disk: &BotConfig) {
+    incoming.evolution = disk.evolution.clone();
+}
+
 /// 保存配置。api_key / tavily_key / brave_key 三个顶层参数同语义：
 /// Some(非空) 写入系统凭据存储并覆盖；None/空串不动已存的 key。
 /// （Tavily/Brave key 与主 key 同模式，不落配置文件）
@@ -129,7 +137,13 @@ pub fn bot_set_config(
     // base_url/model/api_provider 三个派生字段——bot_model_loop 只看老字段。
     let mut config = config;
     schema::derive_legacy_fields_from_active(&mut config);
-    super::io::write_bot_config_file(&crate::db::data_dir(&app), config)
+    // P0-EV1：前端整体替换写不丢 evolution 块。读盘回填必须与写**同锁**
+    //（评审 HIGH：无锁 load → 有锁 write 之间 persist_last_run 等并发写会被
+    // 本写覆盖——丢更新窗口）；write_bot_config_file 自带加锁不可重入，走 _locked 变体
+    let _g = super::io::lock_config_write();
+    let disk = super::io::load_config(&app);
+    preserve_evolution(&mut config, &disk);
+    super::io::write_bot_config_file_locked(&crate::db::data_dir(&app), config)
 }
 
 // ───────────────────────── bot_set_active_model ─────────────────────────
@@ -211,4 +225,35 @@ pub fn bot_reload_config(app: AppHandle) -> CommandResult<bool> {
     let shadow_enabled = crate::evolution::observe::shadow::is_enabled(&app);
     eprintln!("[bot] config reload: shadow_enabled={shadow_enabled}");
     Ok(shadow_enabled)
+}
+
+#[cfg(test)]
+mod evolution_preserve_tests {
+    use super::*;
+
+    #[test]
+    fn preserve_evolution_disk_value_is_authoritative() {
+        // P0-EV1 回归：前端视图不含 evolution 块——盘上有则以盘上回填
+        let mut incoming: BotConfig = serde_json::from_str("{}").unwrap();
+        assert!(incoming.evolution.is_none());
+        let disk: BotConfig = serde_json::from_str(
+            r#"{"evolution":{"shadow":{"enabled":true},"activation_state":"s0_observe"}}"#,
+        )
+        .unwrap();
+        preserve_evolution(&mut incoming, &disk);
+        assert_eq!(
+            incoming
+                .evolution
+                .as_ref()
+                .and_then(|v| v.get("activation_state"))
+                .and_then(|v| v.as_str()),
+            Some("s0_observe")
+        );
+        // 盘上没有 → 前端即便带了也清掉（该块只归 evolution 模块写，设置页无编辑入口）
+        let mut incoming2: BotConfig = serde_json::from_str("{}").unwrap();
+        incoming2.evolution = Some(serde_json::json!({"x": 1}));
+        let disk2: BotConfig = serde_json::from_str("{}").unwrap();
+        preserve_evolution(&mut incoming2, &disk2);
+        assert!(incoming2.evolution.is_none());
+    }
 }

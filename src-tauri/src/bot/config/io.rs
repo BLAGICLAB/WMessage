@@ -491,4 +491,48 @@ mod tests {
         assert!(!plaintext_strippable(None, true, "k"));
         assert!(!plaintext_strippable(Some("  "), true, "k"));
     }
+
+    #[test]
+    fn evolution_block_survives_config_rewrite_cycle() {
+        // P0-EV1 回归：三条写路径（bot_set_config 整体替换 / update_config_file
+        // RMW / persist_last_run 回写）都经 BotConfig serde 落盘——未知字段曾被
+        // 静默丢弃，运行时配置的 evolution 块实际被写丢过。此处锁 serde 层保真：
+        // 读入带块 → 序列化 → 块原样仍在（三条路径的公共层）。
+        let raw = r#"{
+            "baseUrl": "https://api.example.com/v1",
+            "model": "m",
+            "evolution": {
+                "shadow": {"enabled": true},
+                "activation": {"mode": "calibrating", "min_occurrences": null, "min_proposals": null},
+                "activation_state": "s0_observe"
+            }
+        }"#;
+        let cfg: BotConfig = serde_json::from_str(raw).unwrap();
+        assert!(cfg.evolution.is_some(), "读入应带上 evolution 块");
+        let out = serde_json::to_string_pretty(&cfg).unwrap();
+        let back: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            back["evolution"]["shadow"]["enabled"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            back["evolution"]["activation"]["mode"],
+            serde_json::json!("calibrating")
+        );
+        assert_eq!(
+            back["evolution"]["activation_state"],
+            serde_json::json!("s0_observe")
+        );
+        // RMW 语义（update_config_file/persist_last_run 同构：load → 改别处 → 写回）：
+        // 二次反序列化再序列化，块仍不丢
+        let cfg2: BotConfig = serde_json::from_str(&out).unwrap();
+        let out2 = serde_json::to_string(&cfg2).unwrap();
+        assert!(out2.contains("\"evolution\""), "二次改写后块仍在");
+        // 无块的配置写盘不得引入空 evolution 键（skip_serializing_if）
+        let cfg3: BotConfig =
+            serde_json::from_str(r#"{"baseUrl":"https://x/v1","model":"m"}"#).unwrap();
+        assert!(!serde_json::to_string(&cfg3)
+            .unwrap()
+            .contains("\"evolution\""));
+    }
 }

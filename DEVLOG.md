@@ -47,6 +47,46 @@
 2. SUBA 子 Agent：触发一次「让子 agent 跑个 ocr」之类任务，确认子卡渲染、并发闸不串话、停止按钮生效
 3. `ocr_image` 工具：本地图片跑一次（缺 pp-ocr-v6/ 时工具会报「请运行 scripts/fetch_ocr_models.sh…」）
 
+## 2026-09-29（周二）EV-B1 批：自进化数据安全（P0-EV1/EV2 + 孤儿清理）
+
+**背景**：审计修复批第 2 批（B0 已合入 `5a64345`）。自进化功能老板拍板保留，
+但两个 P0 都是数据安全级：配置写丢 evolution 块、删除提案后 lesson 变孤儿。
+
+**改动**：
+- **P0-EV1（B1-1）BotConfig 保真 evolution 块**：`BotConfig` 增
+  `evolution: Option<serde_json::Value>` 原样透传（方案 A，拍板）；`bot_set_config`
+  是前端整体替换写（BotConfigView 不含此块），落盘前 `preserve_evolution`
+  从盘上现值回填（盘上值权威：该块只归 evolution/ 模块写，设置页无编辑入口）。
+  三条写路径（bot_set_config 整体替换 / update_config_file RMW /
+  persist_last_run 回写）全经同一 serde 层，回归锁死。运行时
+  `bot-config.json` 的 evolution 块已按 OBSERVATION_STATUS §1 原值手工恢复
+  （shadow.enabled=true / activation.mode=calibrating / activation_state=s0_observe；
+  改前备份 `.bak-b1-1-20260929`）。
+- **P0-EV2（B1-2 + B1-3）删除/回滚闭环**：delete 级联 `cascade_delete_mem_items`
+  （related_refs 源记忆 + `evo:<id>` lesson 同删，注入连接可单测）；apply 落
+  lesson 时补写 ChangeRecord（Active + AutoApplied）到 evolution-changes.jsonl
+  ——面板回滚只读这个文件，此前自动应用只落 applied.jsonl（面板不读），
+  回滚对自动应用不可达。CR 留痕失败仅 Warn audit，不影响 lesson 已生效。
+- **B1-4 孤儿清理**：dev 库（`target/debug/wmessage.db`）2 条孤儿 lesson
+  （`evo:d1b23b6e4eb80156` / `evo:48f454e7491a62bb`）按 `delete_by_key_tag`
+  精确语义（tags 首元素匹配）删除；删前备份 `.bak-b1-4-20260929`，删 2 剩 0。
+
+**回归测试**（新增 5）：`preserve_evolution_disk_value_is_authoritative` /
+`evolution_block_survives_config_rewrite_cycle`（serde 层 + RMW 二次改写）/
+`applied_proposal_records_active_change` + `auto_applied_cr_rejects_non_gate_proposal` /
+`cascade_mem_items_deletes_refs_and_lesson`。
+
+**ocr 复审处置**（r3：11 条，2 HIGH）：① `bot_set_config` 读盘回填与写不同锁的
+TOCTOU 丢更新窗口 → 同锁化（lock_config_write + `_locked` 写变体）；② apply 的 CR
+裸写 `status = Active` 绕状态机（Pending→Active 直跳被硬约束②拦截）→ 抽
+`change::derive::auto_applied_from_proposal`（生产/测试共用，走满
+Pending→Shadowing→ShadowPassed→Approved→Active 合法流转，门槛外提案 Err）。
+medium 登记：changes.jsonl 现在有三家写者（panel RMW 持 EVOLUTION_STORE_LOCK、
+shadow append、apply append）——单写者锁收口正是 B2-2 范围，随 B2 修。
+
+**验收**：evolution:: 278 / config 74 / mcp 36 / registry 20 / model_loop 44 全绿；
+待人工冒烟：设置页改一次配置 → bot-config.json 仍含 evolution 块。
+
 ## 2026-09-29（周二）MCP-B0 批：外部 MCP 服务器接入（stdio/HTTP）+ 合入前必修（B0）一次合入
 
 **背景**：两轮全仓审计定稿（`docs/AUDIT-FULL-2026-09-29.md`，合并工作区未提交的

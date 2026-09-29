@@ -193,6 +193,36 @@ pub fn apply_from_consolidation(proposals: Vec<EvolutionProposal>) {
                     ApplyOutcome::Applied => {
                         report.applied += 1;
                         append_applied_record(&ledger, p, now)?;
+                        // B1-3（P0-EV2 另半）：补写 ChangeRecord（Active + AutoApplied）
+                        // 到 evolution-changes.jsonl——面板回滚只读这个文件，此前自动
+                        // 应用只落 applied.jsonl（面板不读它），回滚对自动应用不可达。
+                        // 构造走 change::derive::auto_applied_from_proposal（合法流转，
+                        // 不裸写 status）；构造/落盘失败仅 Warn audit——lesson 已生效，
+                        // 不让留痕问题炸掉整条 apply。
+                        let cr_path =
+                            crate::db::paths::data_dir(&app2).join("evolution-changes.jsonl");
+                        match super::change::derive::auto_applied_from_proposal(p, now) {
+                            Ok(cr) => {
+                                if let Err(e) = super::change::append_change(&cr_path, &cr) {
+                                    crate::audit_event!(
+                                        &app2,
+                                        crate::audit::AuditLevel::Warn,
+                                        "evolution.apply_change_record_failed",
+                                        "proposal_id" => p.proposal_id.clone(),
+                                        "error" => e,
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                crate::audit_event!(
+                                    &app2,
+                                    crate::audit::AuditLevel::Warn,
+                                    "evolution.apply_change_record_failed",
+                                    "proposal_id" => p.proposal_id.clone(),
+                                    "error" => e,
+                                );
+                            }
+                        }
                         crate::audit_event!(
                             &app2,
                             crate::audit::AuditLevel::Info,
@@ -386,5 +416,43 @@ mod tests {
         assert_eq!(v["impact"], "high");
         assert_eq!(v["summary"], "summary-j1");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn applied_proposal_records_active_change() {
+        // B1-3（P0-EV2 另半）回归：apply 落 lesson 的同时补写 Active+AutoApplied
+        // 的 ChangeRecord——面板 rollback 只读 changes.jsonl（load_changes →
+        // change::read_all），缺这条则自动应用对回滚不可达（P0-EV2 的另一半）。
+        // 构造走生产同一入口 auto_applied_from_proposal（合法流转达成 Active，
+        // 不裸写 status），锁「写进去读得回、形态是面板回滚接受的样子」。
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("evolution-changes.jsonl");
+        let p = make_proposal("cr1", ImpactLevel::Medium);
+        let cr = super::super::change::derive::auto_applied_from_proposal(&p, 1000)
+            .expect("门槛内提案应可合法流转到 Active");
+        super::super::change::append_change(&path, &cr).unwrap();
+        let all = super::super::change::read_all(&path).unwrap();
+        assert_eq!(all.len(), 1, "一条 apply 一条 CR");
+        assert_eq!(all[0].proposal_id, "cr1");
+        assert_eq!(all[0].change_id, "chg-cr1");
+        assert_eq!(
+            all[0].status,
+            super::super::change::record::ChangeStatus::Active
+        );
+        assert_eq!(
+            all[0].approval_source,
+            super::super::change::record::ApprovalSource::AutoApplied
+        );
+        assert!(all[0].hard_constraint_compliance);
+    }
+
+    #[test]
+    fn auto_applied_cr_rejects_non_gate_proposal() {
+        // 门槛外提案（from_proposal → 终态 Rejected）流转必须 Err（不裸写绕状态机）
+        let p = make_proposal("low1", ImpactLevel::Low);
+        assert!(
+            super::super::change::derive::auto_applied_from_proposal(&p, 1000).is_err(),
+            "Low 不过 auto_apply_gate，CR 构造应拒绝"
+        );
     }
 }

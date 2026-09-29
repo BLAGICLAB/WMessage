@@ -186,9 +186,9 @@ fn delete_inner(app: &AppHandle, proposal_id: &str, cascade_source: bool) -> Res
 
     // 3. 可选 cascade 源记忆（老板 16:35 拍板：默认关，复选框选）
     let mut mem_deleted = 0usize;
-    if cascade_source && !related_refs.is_empty() {
+    if cascade_source {
         let conn = crate::db::open_db(app)?;
-        mem_deleted = crate::memory::store::delete_by_ids(&conn, &related_refs)?;
+        mem_deleted = cascade_delete_mem_items(&conn, &related_refs, &proposal_id)?;
     }
 
     crate::audit_event!(
@@ -201,6 +201,25 @@ fn delete_inner(app: &AppHandle, proposal_id: &str, cascade_source: bool) -> Res
         "cascade_source" => cascade_source.to_string(),
     );
     Ok(())
+}
+
+/// B1-2（P0-EV2 半）：cascade_source 的记忆级联内核（注入连接，内存库可单测）——
+/// related_refs 源记忆整删 + apply 落下的 lesson 按 key_tag（evo:<id>）删。
+/// 只删 related_refs 会把废案提案的 lesson 留成孤儿（injection_block 永带出）。
+pub(crate) fn cascade_delete_mem_items(
+    conn: &rusqlite::Connection,
+    related_refs: &[String],
+    proposal_id: &str,
+) -> Result<usize, String> {
+    let mut n = if related_refs.is_empty() {
+        0
+    } else {
+        crate::memory::store::delete_by_ids(conn, related_refs)?
+    };
+    if crate::evolution::apply::rollback_applied(conn, proposal_id)? {
+        n += 1;
+    }
+    Ok(n)
 }
 
 /// Tauri command：toggle 开关（UI 主入口，老板 16:05 拍板）
@@ -572,6 +591,52 @@ mod tests {
             rolled_back_at: None,
             rollback_reason: None,
         }
+    }
+
+    #[test]
+    fn cascade_mem_items_deletes_refs_and_lesson() {
+        // B1-2（P0-EV2 半）回归：cascade_source 必须连 apply 落下的 lesson
+        // （tags[0]=evo:<id>）一起删——只删 related_refs 会留孤儿 lesson，
+        // injection_block 永远带出废案建议。
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::memory::store::ensure_table(&conn).unwrap();
+        let lesson = crate::memory::store::NewItem {
+            kind: "lesson".into(),
+            content: "废案 lesson".into(),
+            tags: vec!["evo:orph1".into(), "evolution".into()],
+            importance: 3,
+            source: "system".into(),
+        };
+        crate::memory::store::insert_item(&conn, &lesson, None, 1000).unwrap();
+        let src = crate::memory::store::NewItem {
+            kind: "fact".into(),
+            content: "源记忆".into(),
+            tags: vec!["src:ref1".into()],
+            importance: 2,
+            source: "user".into(),
+        };
+        crate::memory::store::insert_item(&conn, &src, None, 1001).unwrap();
+        let src_id = crate::memory::store::find_by_key_tag(&conn, "src:ref1")
+            .unwrap()
+            .expect("前置：源记忆入库")
+            .id;
+        assert!(
+            crate::memory::store::find_by_key_tag(&conn, "evo:orph1")
+                .unwrap()
+                .is_some(),
+            "前置：lesson 在库"
+        );
+        let n = super::cascade_delete_mem_items(&conn, &[src_id], "orph1").unwrap();
+        assert_eq!(n, 2, "源记忆 + lesson 各删一条");
+        assert!(
+            crate::memory::store::find_by_key_tag(&conn, "evo:orph1")
+                .unwrap()
+                .is_none(),
+            "lesson 应随级联删除"
+        );
+        // 空 related_refs + 无 lesson：幂等 0
+        let n2 = super::cascade_delete_mem_items(&conn, &[], "orph1").unwrap();
+        assert_eq!(n2, 0, "重复级联幂等");
     }
 
     #[test]
