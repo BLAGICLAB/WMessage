@@ -118,11 +118,8 @@ async fn call_planner(
 ) -> CommandResult<Vec<String>> {
     let cfg = crate::bot::bot_get_config(app.clone())?;
     let api_key = crate::bot::read_api_key()?;
-    let client = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(15))
-        .timeout(std::time::Duration::from_secs(60))
-        .build()
-        .map_err(|e| format!("初始化 HTTP 客户端失败：{e}"))?;
+    // B3-3：共享客户端（连接池复用）；原 60s 总超时改为 per-request 保留
+    let client = crate::bot_model_loop::shared_llm_client().clone();
     let provider = crate::bot::ApiProvider::from_cfg(cfg.api_provider.as_deref());
     let (url, body) = match provider {
         crate::bot::ApiProvider::Openai => (
@@ -155,7 +152,11 @@ async fn call_planner(
             )
         }
     };
-    let req = client.post(&url).json(&body);
+    let req = client
+        .post(&url)
+        // per-request 总超时（共享客户端无默认超时）：Planner 单次请求预算不变
+        .timeout(std::time::Duration::from_secs(60))
+        .json(&body);
     let req = match provider {
         crate::bot::ApiProvider::Openai => req.bearer_auth(api_key.trim()),
         crate::bot::ApiProvider::Anthropic => {

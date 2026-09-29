@@ -47,6 +47,45 @@
 2. SUBA 子 Agent：触发一次「让子 agent 跑个 ocr」之类任务，确认子卡渲染、并发闸不串话、停止按钮生效
 3. `ocr_image` 工具：本地图片跑一次（缺 pp-ocr-v6/ 时工具会报「请运行 scripts/fetch_ocr_models.sh…」）
 
+## 2026-09-29（周二）B3-CONC 批：后端并发与流式稳健（B3-1~4；B3-5 登记后批）
+
+**背景**：审计修复批第 4 批。四个病灶都有可感知症状：排队中的子 agent 假挂
+"运行中"且无法取消；墙钟超时掐掉 future 后在飞 Python/MCP 无人通知（孤儿进程）；
+300s 流式**总**超时误杀合法长生成；Python 闸全串行（一个长任务堵死整个队列）。
+
+**改动**：
+- **B3-1**：`SubagentGate::wait_slot_cancellable`（每轮 50ms 退避查行终态，
+  取消即退队、守卫 RAII 释放）；Running 写库挪到拿到槽位并复核之后——排队中的
+  行保持 queued 语义，不再假挂运行中；cancel-vs-runner 竞态闸与 DB 读失败保守
+  中止口径保留。
+- **B3-2**：墙钟触达先 `stop.force_stop()` + 750ms grace 再收尾——spawn_blocking
+  脱离 runtime 的在飞 Python/MCP 靠 StopToken 自行退出清理。
+- **B3-3**：`shared_llm_client()`（OnceLock 连接池复用）三处共用；model_loop
+  去掉 300s 总超时改逐 chunk idle 120s（超时记 `llm.stream_idle_timeout`）；
+  摘要/Planner 60s 预算改 per-request timeout 保留。
+- **B3-4**：`PY_RUN_GATE` 互斥锁 → Condvar 许可池（2 并发），`PyGateGuard` RAII
+  归还；EXITING 复查平移进闸门等待循环（等待前/唤醒后/拿到后）；doc 生成流持
+  一个许可跨 dotnet+python 兜底。
+- **B3-5（登记后批）**：`run_model_loop_core` 749 行拆分（回合抽流消费/工具执行/
+  收尾三单元）——大件独立成批，避免与本批并发改动混叠。
+
+**测试**：`py_run_gate_caps_concurrent_runs`（10 线程抢许可，MAX==2 满载断言——
+退化回串行会响亮失败）、`exiting_check_is_inside_gate_lock`（源码锁加严：函数体
+边界 + EXITING 终检必须在成功取许可分支之后）改造 2 个；py 64 /
+task_chat_exec 14 / llm_integration 37 / model_loop 44 / orchestrator 17 /
+evolution 283 / memory 56 全绿。
+
+**ocr 复审处置**（r1：18 条，2 HIGH）：① 共享客户端去总超时后 send() 等响应头
+无界（挂起服务端永久卡住）→ send() 单独包 60s 响应头超时（`LLM_HEADER_TIMEOUT`，
+per-request total 会连流式 body 一起算不能用；body 由逐 chunk idle 接管）；
+② Running 写库 `let _ =` 吞错——recheck 与写之间 cancel 可抢先，吞错等于在已
+取消任务上继续跑 → 写失败响亮中止。顺手修：取消检测闭包节流（50ms 一次 open_db
+→ 500ms）、gate 断言收紧 MAX==2、探针改名 `py_gate_acquire_for_test`、EXITING
+「拿到许可后终检」真实现（归还许可并拒绝）+ 源码锁验证位置。medium 登记：
+流式停止延迟受 idle 120s 上界约束（健康流 chunk 不断，实际毫秒级）、
+cancel 落在 grace 窗口时历史文本显示墙钟超时而非取消原因（窄竞态，围观文案级别）、
+apply_one 双 load_all 表扫描（perf，随 B3-5 拆分批一起看）。
+
 ## 2026-09-29（周二）EV-B2 批：自进化闭环语义（P1×4 + 拍板④）
 
 **背景**：审计修复批第 3 批（B0=`5a64345`、B1=`438c8d8` 已合入）。四个 P1 全部

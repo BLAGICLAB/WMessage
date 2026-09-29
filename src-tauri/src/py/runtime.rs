@@ -297,10 +297,87 @@ pub const PARENT_WATCHDOG: &str = concat!(
     "_wm_th.Thread(target=_wm_watchdog, daemon=True).start()",
 );
 
-pub static PY_RUN_GATE: Mutex<()> = Mutex::new(());
+/// B3-4：Python 并发闸从互斥锁改**有界并发**（信号量语义）——std Mutex 全程
+/// 持锁把所有 Python 任务串行化，一个长任务能把后面全部排队堵死。许可数 2：
+/// 并行 run 各自独立子进程 + 独立产物目录，2 是 CPU/内存争用的保守上界。
+pub const PY_RUN_MAX_CONCURRENT: usize = 2;
 
-pub fn py_run_gate() -> &'static Mutex<()> {
-    &PY_RUN_GATE
+/// 可用许可数（Condvar 信号量：run_python 跑在 spawn_blocking 阻塞线程上，
+/// 保持同步 API；等待带 200ms 超时轮询以便复查 EXITING）
+static PY_PERMITS: Mutex<usize> = Mutex::new(PY_RUN_MAX_CONCURRENT);
+static PY_PERMITS_CV: std::sync::Condvar = std::sync::Condvar::new();
+
+/// 闸门许可句柄（RAII：Drop 归还许可并唤醒一个等待者）。
+/// acquired=false = 因应用退出拒发（不是真持有），Drop 无副作用。
+pub struct PyGateGuard {
+    acquired: bool,
+}
+
+impl Drop for PyGateGuard {
+    fn drop(&mut self) {
+        if self.acquired {
+            let mut avail = PY_PERMITS.lock().unwrap_or_else(|e| {
+                eprintln!("[mutex_poisoned] py::runtime::PY_PERMITS: {e:?}");
+                e.into_inner()
+            });
+            *avail += 1;
+            drop(avail);
+            PY_PERMITS_CV.notify_one();
+        }
+    }
+}
+
+/// 取一个 Python 执行许可（阻塞至有空位）。EXITING 三点复查（原「拿锁后复查」
+/// 语义平移）：等待前、每轮唤醒后（循环顶）、拿到许可后终检——排队者过闸即拒。
+/// pub(crate)：py/document 的 doc 生成流持一个许可跨 dotnet+python 兜底
+///（内部 run_python_ungated 不重复计闸）。
+pub(crate) fn py_gate_acquire() -> Result<PyGateGuard, CommandError> {
+    py_gate_acquire_inner(true)
+}
+
+fn py_gate_acquire_inner(check_exiting: bool) -> Result<PyGateGuard, CommandError> {
+    let mut avail = PY_PERMITS.lock().unwrap_or_else(|e| {
+        eprintln!("[mutex_poisoned] py::runtime::PY_PERMITS: {e:?}");
+        e.into_inner()
+    });
+    loop {
+        // EXITING 复查①：本轮循环顶（= 等待前 / 每轮唤醒后）
+        if check_exiting && EXITING.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(CommandError::DomainRule {
+                domain: "python".to_string(),
+                reason: "应用正在退出，不再启动新的 Python 任务".to_string(),
+            });
+        }
+        if *avail > 0 {
+            // EXITING 复查②（拿到许可后终检）：等待期间退出标志可能置位，
+            // 置位即归还许可并拒绝——不 spawn 无人收割的孤儿进程
+            if check_exiting && EXITING.load(std::sync::atomic::Ordering::SeqCst) {
+                *avail += 1;
+                drop(avail);
+                PY_PERMITS_CV.notify_one();
+                return Err(CommandError::DomainRule {
+                    domain: "python".to_string(),
+                    reason: "应用正在退出，不再启动新的 Python 任务".to_string(),
+                });
+            }
+            *avail -= 1;
+            return Ok(PyGateGuard { acquired: true });
+        }
+        let (g, _timeout) = PY_PERMITS_CV
+            .wait_timeout(avail, std::time::Duration::from_millis(200))
+            .unwrap_or_else(|e| {
+                eprintln!("[mutex_poisoned] py::runtime::PY_PERMITS_CV: {e:?}");
+                e.into_inner()
+            });
+        avail = g;
+    }
+}
+
+/// 测试入口：同一条许可获取路径、不查 EXITING（并行测试里其他用例可能置位）。
+/// 阻塞式取许可（非 try 语义），名字按评审 M 采纳与行为对齐。
+#[cfg(test)]
+pub fn py_gate_acquire_for_test() -> PyGateGuard {
+    py_gate_acquire_inner(false).expect("非退出态取许可必须成功")
 }
 
 pub static EXITING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -327,16 +404,9 @@ pub fn run_python(
     timeout_secs: Option<u64>,
     stop: Option<&StopToken>,
 ) -> Result<PyRunResult, CommandError> {
-    let _gate = py_run_gate().lock().unwrap_or_else(|e| {
-        eprintln!("[mutex_poisoned] py::runtime::py_run_gate: {e:?}");
-        e.into_inner()
-    });
-    if EXITING.load(std::sync::atomic::Ordering::SeqCst) {
-        return Err(CommandError::DomainRule {
-            domain: "python".to_string(),
-            reason: "应用正在退出，不再启动新的 Python 任务".to_string(),
-        });
-    }
+    // B3-4：有界并发闸（许可 2）。EXITING 复查在闸门内完成（等待前/唤醒后/
+    // 拿到许可后），排队者过闸即拒——不会 spawn 出无人收割的孤儿进程
+    let _gate = py_gate_acquire()?;
     run_python_ungated(app, script, input_json, args, timeout_secs, stop)
 }
 

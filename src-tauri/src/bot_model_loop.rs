@@ -393,6 +393,28 @@ pub struct ModelLoopDeps<'a> {
 /// 模型工具循环薄壳：只做 AppHandle 依赖装配——
 /// 读配置/Key、构 HTTP 客户端、把 widget emit / 审计 / skill_finish / execute_tool /
 /// replan 包成回调，实际循环逻辑全在 run_model_loop_core（可注入 mock server 集成测试）。
+/// B3-3：全局共享 LLM HTTP 客户端（OnceLock 连接池复用）——每轮模型循环新建
+/// Client 会各建连接池/TLS 握手，且旧 Client drop 后连接粗暴关闭。**无默认总
+/// 超时**：流式路径逐 chunk idle 超时（stream_chunk_idle_timeout），非流式调用方
+/// （摘要/Planner）在 RequestBuilder 上挂 per-request timeout。
+pub fn shared_llm_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(15))
+            .build()
+            .expect("共享 LLM 客户端构建失败（builder 配置静态合法，失败即 bug）")
+    })
+}
+
+/// 流式逐 chunk idle 超时：对端持续吐 delta，两 chunk 间隔超过此值即判定死连接
+///（旧实现的 300s **总**超时会掐掉合法长生成——长正文/长工具参数总时长可超 5 分钟）
+pub const STREAM_CHUNK_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// send() 响应头超时（B3-3，ocr HIGH 采纳）：只覆盖连接+发请求+收到响应头，
+/// 不含流式 body——服务端收下请求却挂起不回时兜底，防永久挂起
+pub const LLM_HEADER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 pub async fn run_model_loop(
     app: AppHandle,
     msgs: Vec<serde_json::Value>,
@@ -409,11 +431,8 @@ pub async fn run_model_loop(
     if api_key.trim().is_empty() {
         return Err(CommandError::ApiKeyMissing);
     }
-    let client = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(15))
-        .timeout(std::time::Duration::from_secs(300))
-        .build()
-        .map_err(|e| format!("初始化 HTTP 客户端失败：{e}"))?;
+    // B3-3：共享客户端（连接池复用）；总超时取消，流式路径逐 chunk idle 超时兜底
+    let client = shared_llm_client().clone();
     let model_for_reasoning = cfg.model.clone();
     let http = LlmHttp {
         client,
@@ -733,7 +752,18 @@ where
                     crate::bot_anthropic::apply_anthropic_auth(req, http.api_key.trim())
                 }
             };
-            match req.send().await {
+            // B3-3（ocr HIGH 采纳）：send() 单独挂响应头超时——共享客户端无默认
+            // 总超时，等头阶段（服务端收下请求但不回）会永久挂起；per-request
+            // total timeout 会连流式 body 一起算，不能用。60s 只覆盖
+            // 连接+发请求+收到响应头，body 由下方逐 chunk idle 超时接管
+            let send_result = match tokio::time::timeout(LLM_HEADER_TIMEOUT, req.send()).await {
+                Ok(r) => r.map_err(|e| e.to_string()),
+                Err(_) => Err(format!(
+                    "响应头超时（{}s 无响应，判定服务端挂起）",
+                    LLM_HEADER_TIMEOUT.as_secs()
+                )),
+            };
+            match send_result {
                 Ok(r) => {
                     if !r.status().is_success()
                         && is_retryable_llm_status(r.status().as_u16())
@@ -915,14 +945,36 @@ where
                 }
                 parsed.error
             };
-            while let Some(chunk) = stream.next().await {
+            // B3-3：逐 chunk idle 超时——next() 单次等待超过 STREAM_CHUNK_IDLE_TIMEOUT
+            // 即判定死连接（总时长不再设限，合法长生成不受 300s 总超时误杀）
+            loop {
                 if stop.stopped() {
                     stopped = true;
                     break;
                 }
-                let chunk = match chunk {
-                    Ok(c) => c,
-                    Err(e) => {
+                // next() 包 idle 超时：Ok(Some(inner)) = 拿到 chunk/流错误，
+                // Ok(None) = 对端干净 EOF，Err = Elapsed（idle 超时）
+                let item = match tokio::time::timeout(STREAM_CHUNK_IDLE_TIMEOUT, stream.next())
+                    .await
+                {
+                    Ok(inner) => inner,
+                    Err(_elapsed) => {
+                        audit(
+                            crate::audit::AuditLevel::Error,
+                            "llm.stream_idle_timeout",
+                            vec![("idle_secs", STREAM_CHUNK_IDLE_TIMEOUT.as_secs().to_string())],
+                        );
+                        return Err(format!(
+                            "流式读取超时：连续 {}s 未收到数据，判定连接死亡",
+                            STREAM_CHUNK_IDLE_TIMEOUT.as_secs()
+                        )
+                        .into());
+                    }
+                };
+                let chunk = match item {
+                    Some(Ok(c)) => c,
+                    None => break, // 对端干净 EOF
+                    Some(Err(e)) => {
                         audit(
                             crate::audit::AuditLevel::Error,
                             "llm.stream_failed",

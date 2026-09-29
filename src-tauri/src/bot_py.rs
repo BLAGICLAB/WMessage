@@ -1011,21 +1011,19 @@ mod tests {
         assert!(out.ends_with('…'));
     }
 
-    // ── 并发闸门（同一时刻只允许一个 Python 任务在执行）──
+    // ── 并发闸门（B3-4：有界并发 2，长任务不再把队列堵死）──
 
     #[test]
-    fn py_run_gate_serializes_concurrent_runs() {
+    fn py_run_gate_caps_concurrent_runs() {
+        use crate::py::runtime::{py_gate_acquire_for_test, PY_RUN_MAX_CONCURRENT};
         use std::sync::atomic::{AtomicUsize, Ordering};
         static CUR: AtomicUsize = AtomicUsize::new(0);
         static MAX: AtomicUsize = AtomicUsize::new(0);
         let mut joins = Vec::new();
-        // 10 个并发请求同时抢闸门，临界区内 sleep 100ms 放大竞争窗口
+        // 10 个并发请求同时抢许可，临界区内 sleep 100ms 放大竞争窗口
         for _ in 0..10 {
             joins.push(std::thread::spawn(|| {
-                let _g = py_run_gate().lock().unwrap_or_else(|e| {
-                    eprintln!("[mutex_poisoned] py::runtime::py_run_gate: {e:?}");
-                    e.into_inner()
-                });
+                let _g = py_gate_acquire_for_test();
                 let cur = CUR.fetch_add(1, Ordering::SeqCst) + 1;
                 MAX.fetch_max(cur, Ordering::SeqCst);
                 std::thread::sleep(Duration::from_millis(100));
@@ -1035,10 +1033,16 @@ mod tests {
         for j in joins {
             j.join().unwrap();
         }
+        let max_seen = MAX.load(Ordering::SeqCst);
+        assert!(
+            max_seen <= PY_RUN_MAX_CONCURRENT,
+            "闸门内并发数不得超过 {PY_RUN_MAX_CONCURRENT}（实测 {max_seen}）"
+        );
+        // 评审 M 采纳收紧：10 线程 × 100ms 临界区在 2 许可下几乎必然观察到
+        // 满载并发——闸门若退化回串行（max==1）此处响亮失败
         assert_eq!(
-            MAX.load(Ordering::SeqCst),
-            1,
-            "闸门内并发数必须恒为 1（多余请求排队，不并行）"
+            max_seen, PY_RUN_MAX_CONCURRENT,
+            "应观察到满载并发 {PY_RUN_MAX_CONCURRENT}（实测 {max_seen}）"
         );
     }
 
@@ -1219,21 +1223,47 @@ mod tests {
 
 #[cfg(test)]
 mod exiting_tests {
-    /// 回归锁：EXITING 复查必须在 PY_RUN_GATE 拿锁之后
-    ///（锁前检查挡不住「kill 完成后才拿到锁的排队者」）。
+    /// 回归锁（B3-4 改有界并发后平移）：EXITING 复查必须在许可闸门内完成——
+    /// 排队者过闸（拿到许可）即复查，挡住「kill 完成后才排到」的请求。
     /// 全局标志不在测试里翻转（会污染并行测试的 run_python），源码锁防回退。
     #[test]
-    fn exiting_check_is_after_gate_lock() {
+    fn exiting_check_is_inside_gate_acquire() {
         let text =
             std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/py/runtime.rs"))
                 .unwrap();
+        // 生产入口必须过闸门（函数体边界：到下一个顶层收括号，防「闸门调用只在
+        // 后续辅助函数里」的假阳性——评审 M 采纳）
         let fn_pos = text
             .find("pub fn run_python(")
             .expect("run_python 必须存在");
-        let body = &text[fn_pos..];
-        let gate = body.find("py_run_gate().lock()").expect("必须过并发闸门");
-        let check = body.find("EXITING.load").expect("必须有退出标志复查");
-        assert!(check > gate, "EXITING 复查必须在闸门拿锁之后");
+        let run_body_end = text[fn_pos..]
+            .find("\n}\n")
+            .expect("run_python 顶层收括号必须存在");
+        let run_body = &text[fn_pos..fn_pos + run_body_end];
+        assert!(
+            run_body.contains("py_gate_acquire()"),
+            "run_python 必须过并发闸门"
+        );
+        // 闸门内核：EXITING 终检必须在等待循环体内、且位于成功取许可分支之后
+        //（「拿到许可后复查」这条防线不许被挪到循环外变死代码——评审 M 采纳）
+        let gate_pos = text
+            .find("fn py_gate_acquire_inner(")
+            .expect("闸门内核必须存在");
+        let gate_body_end = text[gate_pos..]
+            .find("\n}\n")
+            .expect("闸门内核顶层收括号必须存在");
+        let gate_body = &text[gate_pos..gate_pos + gate_body_end];
+        let loop_pos = gate_body.find("loop {").expect("闸门内核必须有等待循环");
+        let success_pos = gate_body
+            .find("if *avail > 0")
+            .expect("闸门内核必须有成功取许可分支");
+        let check = gate_body
+            .rfind("EXITING.load")
+            .expect("闸门内必须有退出复查");
+        assert!(
+            check > loop_pos && check > success_pos,
+            "EXITING 终检必须在等待循环内且位于成功取许可分支之后（拿到许可后复查）"
+        );
     }
 }
 

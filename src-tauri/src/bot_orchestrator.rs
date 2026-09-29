@@ -804,6 +804,18 @@ impl SubagentGate {
     /// 等到槽位。同会话内按等待先后放行（waiting 计数=1 者优先），
     /// 跨会话近似公平。所有状态变更 RAII 化：future 被 drop 无任何残留。
     pub(crate) async fn wait_slot(parent_session: Option<String>) -> GateTicket {
+        Self::wait_slot_cancellable(parent_session, || false)
+            .await
+            .expect("不可取消的 wait_slot 不会返回 None")
+    }
+
+    /// B3-1：可取消排队——每轮 50ms 退避后调 `should_abort`，true 即退队返回
+    /// None（waiting 计数由 WaitingGuard RAII 递减）。取消判定由调用方给
+    ///（runner 查 DB 行终态），闸门本身不依赖存储。
+    pub(crate) async fn wait_slot_cancellable(
+        parent_session: Option<String>,
+        mut should_abort: impl FnMut() -> bool,
+    ) -> Option<GateTicket> {
         // 登记等待席位（RAII：无论从哪条路径退出，计数都会被递减）
         {
             let mut st = gate().state.lock().unwrap_or_else(|e| {
@@ -818,6 +830,9 @@ impl SubagentGate {
             parent_session: parent_session.clone(),
         };
         loop {
+            if should_abort() {
+                return None;
+            }
             let outcome = {
                 let mut st = gate().state.lock().unwrap_or_else(|e| {
                     eprintln!("[mutex_poisoned] subagent gate: {e:?}");
@@ -845,7 +860,7 @@ impl SubagentGate {
                 }
             };
             if outcome == Some(true) {
-                return GateTicket { parent_session };
+                return Some(GateTicket { parent_session });
             }
             // 没轮到：等唤醒或 50ms 退避重试（无持久队列项，取消安全）
             gate().notify.notify_one();
@@ -936,28 +951,55 @@ async fn run_subagent(app: AppHandle, subagent_id: String) {
         .await;
         return;
     };
-    let sid_running = row.id.clone();
-    let _ = db_locked(&app, move |conn| {
-        crate::db::update_subagent_status(
-            conn,
-            &sid_running,
-            SubagentStatus::Running,
-            now_ms(),
-            None,
-        )
-        .map_err(CommandError::DbError)
-    })
-    .await;
-    let sid_still_queued = row.id.clone();
     // 并发闸（SUBA-3：global 3 / per-session 2，超限等待不失败）。
     // 排队时间不计墙钟：max_wall_seconds 的 timeout 从 run_model_loop 起算（下方），
     // 天然满足设计 §6。
-    let _ticket =
-        crate::bot_orchestrator::SubagentGate::wait_slot(row.parent_session_id.clone()).await;
+    // B3-1：排队可取消——每轮退避同时查行终态，取消即退队（ExecGuard RAII
+    // 释放）；Running 改在**拿到槽位并复核后**才写，排队中的行不再假挂运行中。
+    let sid_gate_check = row.id.clone();
+    let app_gate_check = app.clone();
+    // 评审 M 采纳：节流 DB 读——open_db 含建目录+pragmas 文件 IO，不该 50ms
+    // 一次压在 async worker 上；取消检测 500ms 粒度足够（槽后复核兜底）
+    let gate_tick = std::cell::Cell::new(0u32);
+    let mut cancelled_while_queued = move || {
+        let n = gate_tick.get();
+        gate_tick.set(n.wrapping_add(1));
+        if n % 10 != 0 {
+            return false;
+        }
+        crate::db::open_db(&app_gate_check)
+            .ok()
+            .and_then(|conn| {
+                crate::db::load_subagent(&conn, &sid_gate_check)
+                    .ok()
+                    .flatten()
+            })
+            .map(|r| r.status.is_terminal())
+            .unwrap_or(false) // DB 读失败不误判取消（拿到槽位后的复核兜底）
+    };
+    let ticket = crate::bot_orchestrator::SubagentGate::wait_slot_cancellable(
+        row.parent_session_id.clone(),
+        &mut cancelled_while_queued,
+    )
+    .await;
+    let _ticket = match ticket {
+        Some(t) => t,
+        // 排队中被取消：行已被 cancel 写成终态，此处仅退出（守卫 RAII 清理）
+        None => {
+            crate::bot::audit_log(
+                &app,
+                &format!(
+                    "subagent_runner_abort | id: {} | err: cancelled_while_queued",
+                    row.id
+                ),
+            );
+            return;
+        }
+    };
     {
-        // OCR r2 high 采纳：running 状态在 wait_slot **之前**已写——排队窗口内被
-        // 取消的行是 cancelled（终态）。读到非 running = 有并发改写 → 中止；
-        // DB 读失败保守中止（执行已取消的任务比不跑更糟）。
+        // 拿到槽位后复核（cancel-vs-runner 竞态闸）：行已终态 = cancel 先赢 →
+        // 中止；DB 读失败保守中止（执行已取消的任务比不跑更糟，OCR r2 口径保留）
+        let sid_still_queued = row.id.clone();
         let state_now = db_locked(&app, move |conn| {
             Ok(crate::db::load_subagent(conn, &sid_still_queued)
                 .ok()
@@ -967,7 +1009,7 @@ async fn run_subagent(app: AppHandle, subagent_id: String) {
         .await
         .unwrap_or(None);
         match state_now {
-            Some(SubagentStatus::Running) => {}
+            Some(s) if !s.is_terminal() => {}
             other => {
                 crate::bot::audit_log(
                     &app,
@@ -981,6 +1023,32 @@ async fn run_subagent(app: AppHandle, subagent_id: String) {
                 );
                 return;
             }
+        }
+        // B3-1：Running 写库挪到槽位拿到之后（排队窗口内行保持 queued 语义）。
+        // 写失败必须中止（评审 HIGH 采纳）：recheck 与本写之间 cancel 可抢先写
+        // Cancelled，update_subagent_status 因非法状态转移报错——吞错等于在
+        // 已取消任务上继续跑
+        let sid_running = row.id.clone();
+        let run_write = db_locked(&app, move |conn| {
+            crate::db::update_subagent_status(
+                conn,
+                &sid_running,
+                SubagentStatus::Running,
+                now_ms(),
+                None,
+            )
+            .map_err(CommandError::DbError)
+        })
+        .await;
+        if let Err(e) = run_write {
+            crate::bot::audit_log(
+                &app,
+                &format!(
+                    "subagent_runner_abort | id: {} | err: running_write_failed | {e}",
+                    row.id
+                ),
+            );
+            return;
         }
     }
     let started = std::time::Instant::now();
@@ -1199,6 +1267,14 @@ async fn run_subagent(app: AppHandle, subagent_id: String) {
         run,
     )
     .await;
+
+    // B3-2：墙钟触达先 stop 后收尾——run future 被 timeout 掐掉时，脱离 runtime
+    // 的在飞 Python/MCP（spawn_blocking 不随 future 取消）靠 StopToken 自行退出；
+    // 短 grace 给它们的退出清理/Drop 留时间，不留孤儿进程
+    if wall.is_err() {
+        stop.force_stop();
+        tokio::time::sleep(std::time::Duration::from_millis(750)).await;
+    }
 
     // 收尾清理：watcher 由 AbortOnDrop Drop 保证中止（含 panic/unwind 路径——
     // OCR r3 high 采纳：StopGuard::drop 不置位停止标志，单靠手动 abort 会泄漏）
