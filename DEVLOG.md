@@ -2,6 +2,39 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-09-30（周三）UI 改造 U1-TOKEN 批：设计 token 与材质地基（`22cdd36`）
+
+**内容**：main.css token 重写为 Linear 式扁平分层——三层表面（`--bg #14161d/
+#eef1f6` → `--surface` → `--surface-raised`，深色默认观感基准、浅色同步重做）、
+1px 边框语义（`--edge`/`--edge-strong`）、圆角梯度 8/12/16、字号阶梯 13/14/15/16
+（新组件取 var，四档字号拍板机制不动）、单层柔和投影 `--shadow-sm`、键盘焦点环
+`--focus-ring`（brand 3px @28%）；`nm-card/inset/outset/btn/sidebar-panel/task-title`
+**同名重实现**为扁平材质（悬停=背景抬升+边框提亮，无 transform 无双阴影），
+悬空类名 `nm-input`/`nm-tag` 补定义，新增 `nm-icon-btn`；引入 lucide-react +
+IconButton 基础件，WorkspacePage×3 / McpPanel×2 emoji 顺手替换；main.css.test.ts
+过渡对称断言迁移新语义。main.css +150/-84，全局 9 文件 +377/-114。
+
+**验证**：vitest 341 绿 / tsc / oxlint 32 warn 持平 / knip 0 / 门禁 7s。ocr 复审
+15 条（1H/8M/6L）：HIGH nm-btn 焦点态当场修；MED 修 8（inset 对比度、t6 加深、
+radius 接 token、disabled 语义、过渡统一 150ms/100ms、--shadow-lg 删等）；LOW 修 5
+驳回 1（拒绝 hover 回归 transform 位移）；唯一部分处理=浅色 t6 全量 AA 复核留 U4
+（spec findings 记录）。视觉验收：web-gui-tester 黑盒截图三主题 × 看板/归档/工作区/
+回收站/设置 + nm-input 焦点环 + 工作区卡实渲染（截图在本地 `gui-test-screenshots/`，
+不入库）；主题切换走设置页真实芯片，持久化与 system 解析逐项核对。
+
+**本批发现的两项存量问题（非 U1 回归，基线 commit 复现，登记挂账）**：
+- 纯浏览器模式下主窗口 boot 期 invoke 全失败 → `handleCommandError` 原生
+  alert 洪水把页面挂死（对 Tauri 宿主无影响；做前端自动化验收时需临时 shim
+  alert，本批用 dev-only `public/__dev_shim.html` 夹具解决、提交前已删）。
+- 挂件窗口（#/widget）在浏览器必白屏：WidgetApp 无 ErrorBoundary 且 effect 里
+  直调 `getCurrentWindow()`；主窗口有边界所以存活。聊天页换肤覆盖面由 nm-*
+  同名重实现保证，U3 批在 Tauri 环境补截图。
+
+**5 维评审结论**（design-critique，均值 6.6）：哲学一致性 7 / 视觉层级 7 /
+细节执行 7 / 功能性 7 / 创新性 5。Keep：亮度分档+1px 边框体系、inset/outset
+选中语义、统一焦点环、动效纪律。Fix：看板空列头浮 pill 观感、空态缺行动组件
+（U4 EmptyState）、挂件/浏览器两项存量问题。
+
 ## 2026-09-30（周三）UI 改造战役立项：U1–U4 交接文档 + 开工提示词入库
 
 **背景**：老板看了 ZCode 风格深色三栏截图，拍板将「新拟态凸起卡」整体换为「Linear 式
