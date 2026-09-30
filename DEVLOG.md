@@ -2,6 +2,39 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-01（周四）UI 改造 U3b-CHAT-SKIN 批：ChatPanel 换肤对齐截图（`6bc0d7b`）
+
+**内容**（纯表现，数据流零改动）：会话切换器加会话数徽章+活动圆点栈行；助手消息
+**无边框富文本卡**（去 nm-inset，近贴列左全宽）；用户消息**右对齐浅底气泡**
+（--inset-bg 20px 圆角）；工具调用改 **mono pill 徽章行**（名称+✓绿/…状态）+
+折叠**「进程 N/M」**详情（ToolBadges 子 memo）；**文件变更摘要条**（extractFilePaths
+既有接口，≤2 平铺/≥3 折叠「📄 N 个文件」）；输入卡圆角 20px + **🛡 授权模式只读
+pill**——读 bot_get_config 既有载荷 `permMode`（BotConfigView camelCase 序列化，
+None/非法回 ask），PERM_LABELS 本地化。types+PermMode/constants+PERM_LABELS。
+
+**两项未实现（登记，见 spec findings）**：会话相对时间（bot_sessions 表有
+updated_at 但 Session 载荷不带，扩展需动 src-tauri 序列化，超 UI 批红线）；
++/- 行级 diff 统计（bot-tool-* 事件面无 diff 数据源，不接假数据——摘要条先用
+真实文件数）。
+
+**验证**：vitest 348 绿 / tsc / oxlint 0 / knip 0；perf 数据 U3a 59× → 本批
+72.7×/35.9×/**85.5×**（0.26ms vs 22.51ms，ToolBadges 子 memo 后不降反升）。
+视觉验收：**夹具升级**——stub `__TAURI_INTERNALS__.invoke` 返回真实数据形状罐装
+数据并直接挂载真实 ChatPanel（绕开挂件路由纯浏览器白屏的存量问题），三主题截图
+全过（深/浅实拍 + system DOM 断言）：会话栈/气泡形态/pill/进程折叠/摘要条/
+大圆角输入卡/🛡 pill 逐项到位。夹具踩坑：public/ 下 html 被 vite 原样直出不走
+转换（裸模块名 react 无法解析），移到项目根走 html-proxy 解决；夹具已删。
+ocr 复审 14 条（2H/3M/1?/8L）：**high 2 修**（perm_mode 线字段名错误——camelCase
+序列化，原写法恒 undefined；payload 声明+读取同步修正）；medium 4 修（PermMode
+入 types/pill 本地化/ToolBadges memo/FileSummary 统一 DOM）；low 修 3 记 5。
+ChatPanel.test.tsx 两处断言随表现更新（工具行断言 → pill 文本+进程折叠），语义
+不变。
+
+**5 维评审结论**（均值 8.0）：哲学一致性 8 / 视觉层级 8 / 细节执行 8 / 功能性 8 /
+创新性 6。会话形态三件套（无边框卡/浅底气泡/mono pill+进程折叠）与参考截图逐项
+对齐；不接假数据、不为对齐截图造数据是本批纪律亮点。U4（设置/挂件/打磨/a11y）
+待验收后接续。
+
 ## 2026-10-01（周四）UI 改造 U3a-CHAT-SPLIT 批：ChatPanel 行为等价拆分 + memo + lint 清零（`6107d92`）
 
 **内容**（与 B5-2/3 合并批，只拆不换肤）：ChatPanel.tsx 1862 行 → orchestrator
