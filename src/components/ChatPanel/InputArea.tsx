@@ -7,8 +7,8 @@ import type { Dispatch, RefObject, SetStateAction } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { basename } from "../../format";
 import { isImagePath } from "./UserBubbleContent";
-import { EFFORT_LABELS, PROVIDER_LABELS, SLASH_COMMANDS } from "./constants";
-import type { ModelItem, ReasoningLevel } from "./types";
+import { EFFORT_LABELS, PERM_LABELS, PROVIDER_LABELS, SLASH_COMMANDS } from "./constants";
+import type { ModelItem, PermMode, ReasoningLevel } from "./types";
 
 /** 输入框占位文案：回复中 / 带附件 / 选任务 / 默认 四态（原嵌套三元提取） */
 function placeholderOf(viewedBusy: boolean, hasFiles: boolean, selecting: boolean): string {
@@ -41,6 +41,8 @@ type InputAreaProps = {
   viewedBusy: boolean;
   selecting: boolean;
   isSubagentSession: boolean;
+  /** 🛡 授权模式只读展示（U3b）：bot-config 的 permMode，设置页维护 */
+  permMode: PermMode;
   // 🧠/⚡ 的按钮与下拉 ref 顶层传（与滚动容器同模式）：ref 与普通值混嵌同一
   // prop 对象会触发 react/refs 的全对象标记
   modelBtnRef: RefObject<HTMLButtonElement | null>;
@@ -82,6 +84,7 @@ export function InputArea({
   viewedBusy,
   selecting,
   isSubagentSession,
+  permMode,
   modelBtnRef,
   modelDropdownRef,
   effortBtnRef,
@@ -125,10 +128,10 @@ export function InputArea({
         )
       )}
 
-      {/* 输入卡（UI-1 改版）：圆角卡片一体式——上多行输入区（placeholder 左上、
-          自动增高到 max-h-40 后内部滚动）、下工具栏（左 ➕ 附件，右 🧠 模型下拉 +
-          圆形发送键）；附件 chip 移入卡内输入区上方。斜杠 picker 仍浮在卡片上方 */}
-      <div className="nm-card rounded-2xl border border-[var(--edge)] p-2.5 shrink-0">
+      {/* 输入卡（U3b 换肤）：大圆角（20px）卡片一体式——上多行输入区（placeholder 左上、
+          自动增高到 max-h-40 后内部滚动）、下工具栏（左 ➕ 附件，中 🛡 授权模式 +
+          🧠 模型下拉 + ⚡ 推理强度，右圆形发送键）；斜杠 picker 仍浮在卡片上方 */}
+      <div className="nm-card rounded-[20px] border border-[var(--edge)] p-2.5 shrink-0">
         {/* 已添加附件：随消息一起发送 */}
         {files.length > 0 && (
           <div className="mb-1.5 flex flex-wrap gap-1">
@@ -232,6 +235,14 @@ export function InputArea({
             ＋
           </button>
           <div className="flex-1 min-w-0" />
+          {/* 🛡 授权模式（U3b 只读展示）：读 bot-config 的 perm_mode，设置页维护；
+              与 🧠/⚡ 同排的静态 pill，不承载操作 */}
+          <span
+            className="shrink-0 inline-flex items-center gap-1 rounded-full border border-[var(--edge)] px-2 py-0.5 text-[10px] leading-4 text-[var(--t4)]"
+            title={`授权模式 ${permMode}（设置页维护）：ask=白名单外弹授权窗，strict=白名单外硬拒，yolo=全放行（仍记审计）`}
+          >
+            🛡 {PERM_LABELS[permMode]}
+          </span>
           {/* 🧠 模型下拉（UI-1 从顶栏移入输入卡底栏；按钮/列表/切换逻辑不变，
               相对按钮向上弹出，免 JS 测量定位） */}
           <div className="relative shrink-0">

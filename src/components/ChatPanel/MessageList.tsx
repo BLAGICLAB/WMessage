@@ -4,14 +4,14 @@
 // RichText 的 markdown 解析是重活，N 条消息 × 每帧一次的全列表重渲染是
 // 长会话掉帧主因）。回调句柄由父级 useCallback 固定，memo 浅比较即可命中。
 
-import { memo, type ComponentType } from "react";
+import { memo, useState, type ComponentType } from "react";
 import { basename } from "../../format";
 import { extractFilePaths, openTarget } from "../../lib/openTarget";
 import { MarkdownText } from "../MarkdownText";
 import { Fold } from "./Fold";
 import { RichText } from "./RichText";
 import { UserBubbleContent } from "./UserBubbleContent";
-import type { Msg, TaskRef } from "./types";
+import type { Msg, TaskRef, ToolCall } from "./types";
 
 /** 气泡回调（父级 useCallback 固定引用，memo 浅比较依赖这一点） */
 type BubbleCallbacks = {
@@ -51,16 +51,12 @@ function MsgBubbleBase({ msg: m, idx, isCopied, busy, onCopy, onRemove, onOpenTa
     return <MarkdownText text={msg.content} />;
   }
   return (
-    <div
-      className={`max-w-[85%] ${
-        m.role === "user" ? "ml-auto" : "mr-auto"
-      }`}
-    >
+    <div className={m.role === "user" ? "max-w-[85%] ml-auto" : "max-w-full mr-auto"}>
       <div
-        className={`px-2.5 py-1.5 text-xs leading-relaxed whitespace-pre-wrap break-words ${
+        className={`text-xs leading-relaxed whitespace-pre-wrap break-words ${
           m.role === "user"
-            ? "nm-outset rounded-xl text-[var(--t2)]"
-            : "nm-inset rounded-xl text-[var(--t3)]"
+            ? "rounded-2xl bg-[var(--inset-bg)] px-3 py-2 text-[var(--t2)]"
+            : "px-0.5 py-1 text-[var(--t2)]"
         }`}
       >
         {m.role === "assistant" && (m.thinking?.length ?? 0) > 0 && (
@@ -107,29 +103,8 @@ function MsgBubbleBase({ msg: m, idx, isCopied, busy, onCopy, onRemove, onOpenTa
             </div>
           </Fold>
         )}
-        {(m.tools?.length ?? 0) > 0 && (
-          <div className="mt-0.5 space-y-0.5">
-            {m.tools!.map((t) => (
-              <Fold
-                key={t.id}
-                title={
-                  <span>
-                    🔧 {t.name || "工具调用"}
-                    {t.done ? " ✓" : " …"}
-                  </span>
-                }
-              >
-                {t.args ? (
-                  <code className="opacity-80">
-                    {t.args.length > 500
-                      ? t.args.slice(0, 500) + "…"
-                      : t.args}
-                  </code>
-                ) : null}
-              </Fold>
-            ))}
-          </div>
-        )}
+        {/* 工具调用（U3b 对齐截图）：mono pill 徽章行 + 可折叠「进程 N/M」详情 */}
+        {(m.tools?.length ?? 0) > 0 && <ToolBadges tools={m.tools!} />}
         {bubbleBody(m)}
         {/* 「查看执行对话」跳转（任务执行聊天化：busy 时跳转排队，
             忙完 hint + 按钮切换到执行会话） */}
@@ -164,19 +139,7 @@ function MsgBubbleBase({ msg: m, idx, isCopied, busy, onCopy, onRemove, onOpenTa
               🗑 移除
             </button>
           )}
-          {fps.map((f) => (
-            <button
-              key={f}
-              className="nm-btn inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t3)] max-w-full"
-              title={`打开文件：${f}`}
-              onClick={() => {
-                // Rust 侧打开（挂件窗口 openPath 前端权限可能被拒）；失败弹错不静默
-                openTarget(f);
-              }}
-            >
-              <span className="truncate max-w-[280px]">📄 {basename(f)}</span>
-            </button>
-          ))}
+          <FileSummary fps={fps} />
           {(m.refs ?? []).map((r) => (
             <button
               key={r.id}
@@ -195,6 +158,89 @@ function MsgBubbleBase({ msg: m, idx, isCopied, busy, onCopy, onRemove, onOpenTa
 
 /** memo 边界：流式更新时历史气泡 props 全等 → 跳过重渲染（见文件头注释） */
 const MsgBubble = memo(MsgBubbleBase);
+
+/** 工具调用（U3b 对齐截图）：mono pill 徽章行（名称 + ✓/… 状态），
+ *  折叠「进程 N/M」承载逐工具入参详情（默认收起）。
+ *  memo：文本流式 tick 不改 tools 引用，跳过徽章行重渲染 */
+const ToolBadges = memo(function ToolBadges({ tools }: { tools: ToolCall[] }) {
+  const done = tools.filter((t) => t.done).length;
+  return (
+    <div className="mb-1 space-y-1">
+      <div className="flex flex-wrap gap-1">
+        {tools.map((t) => (
+          <span
+            key={t.id}
+            className="inline-flex items-center gap-1 rounded-full border border-[var(--edge)] px-2 py-0.5 font-mono text-[10px] leading-4 text-[var(--t4)]"
+          >
+            {t.name || "tool"}
+            <span aria-hidden className={t.done ? "text-[var(--success)]" : ""}>
+              {t.done ? "✓" : "…"}
+            </span>
+          </span>
+        ))}
+      </div>
+      <Fold title={<span className="font-mono">进程 {done}/{tools.length}</span>}>
+        <div className="space-y-1">
+          {tools.map((t) => (
+            <div key={t.id}>
+              <span className="font-mono text-[10px] text-[var(--t4)]">
+                {t.name || "tool"}
+              </span>
+              {t.args ? (
+                <pre className="opacity-80 whitespace-pre-wrap break-words font-mono text-[10px]">
+                  {t.args.length > 500 ? t.args.slice(0, 500) + "…" : t.args}
+                </pre>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      </Fold>
+    </div>
+  );
+});
+
+/** 文件变更摘要条（U3b 对齐截图）：≤2 个文件平铺 pill，更多则折叠为
+ *  「📄 N 个文件」摘要条（点击展开）。+/- 行级统计当前事件面无数据源，
+ *  不接假数据（见 spec findings） */
+function FileSummary({ fps }: { fps: string[] }) {
+  const [open, setOpen] = useState(false);
+  const pillOf = (f: string) => (
+    <button
+      key={f}
+      type="button"
+      className="nm-btn inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t3)] max-w-full"
+      title={`打开文件：${f}`}
+      onClick={() => {
+        // Rust 侧打开（挂件窗口 openPath 前端权限可能被拒）；失败弹错不静默
+        openTarget(f);
+      }}
+    >
+      <span className="truncate max-w-[280px]">📄 {basename(f)}</span>
+    </button>
+  );
+  // 统一 DOM 形状（w-full 容器），≤2 与 >2 只是容器内子元素不同
+  return (
+    <div className="w-full">
+      {fps.length <= 2 ? (
+        <div className="flex flex-wrap gap-1">{fps.map(pillOf)}</div>
+      ) : (
+        <>
+          <button
+            type="button"
+            className="nm-btn inline-flex items-center gap-1 rounded-lg px-2 py-0.5 font-mono text-[10px] text-[var(--t3)]"
+            aria-expanded={open}
+            title={open ? "收起文件列表" : "展开文件列表"}
+            onClick={() => setOpen((v) => !v)}
+          >
+            📄 {fps.length} 个文件
+            <span aria-hidden>{open ? "▴" : "▾"}</span>
+          </button>
+          {open && <div className="mt-1 flex flex-wrap gap-1">{fps.map(pillOf)}</div>}
+        </>
+      )}
+    </div>
+  );
+}
 
 type MessageListProps = BubbleCallbacks & {
   /** 滚动容器 ref（父级「新消息自动滚到底」用） */

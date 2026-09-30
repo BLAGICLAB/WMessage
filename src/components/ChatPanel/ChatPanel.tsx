@@ -21,6 +21,7 @@ import type {
   ChatModelEntry,
   ModelItem,
   Msg,
+  PermMode,
   ReasoningLevel,
   Session,
   SkillFailure,
@@ -138,6 +139,8 @@ export function ChatPanel({
   const [effortMenuOpen, setEffortMenuOpen] = useState(false);
   const effortBtnRef = useRef<HTMLButtonElement>(null);
   const effortDropdownRef = useRef<HTMLDivElement>(null);
+  /** 🛡 授权模式（U3b 只读展示）：bot-config 的 permMode，设置页维护 */
+  const [permMode, setPermMode] = useState<PermMode>("ask");
   // 顶部行引用 + 下拉 top 定位（紧贴 🤖 按钮底部，0 间距）
   const topBarRef = useRef<HTMLDivElement>(null);
   const dropdownTop = useDropdownTop(rootRef, menuRef);
@@ -313,6 +316,9 @@ export function ChatPanel({
         } | null;
         activeModelId?: { openai: string | null; anthropic: string | null } | null;
         reasoningEffort?: string | null;
+        /** 授权模式（U3b 只读展示）：strict/ask/yolo，None = ask。
+         *  ⚠️ BotConfigView 序列化为 camelCase（rename_all），线字段是 permMode */
+        permMode?: string | null;
       }>("bot_get_config")
         .then((c) => {
           setModelLabel(c.model || "未配置");
@@ -339,6 +345,9 @@ export function ChatPanel({
           setEffortBase(
             raw === "off" || raw === "low" || raw === "high" ? raw : "medium"
           );
+          // 授权模式只读展示（U3b）：非法/缺省回 ask（与后端 PermMode::from_cfg 一致）
+          const pm = c.permMode;
+          setPermMode(pm === "strict" || pm === "yolo" ? pm : "ask");
         })
         .catch(() => setModelLabel("未配置"));
     reload();
@@ -1318,6 +1327,7 @@ export function ChatPanel({
         viewedBusy={viewedBusy}
         selecting={selecting}
         isSubagentSession={isSubagentSession}
+        permMode={permMode}
         modelBtnRef={modelBtnRef}
         modelDropdownRef={modelDropdownRef}
         effortBtnRef={effortBtnRef}

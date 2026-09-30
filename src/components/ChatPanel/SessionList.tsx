@@ -45,17 +45,20 @@ export function SessionList({
   return (
     <>
       <div ref={topBarRef} className="flex items-center mb-2 shrink-0 gap-1">
-        {/* 左侧：🤖 会话切换器（UI-1 输入卡改版后独占左侧；🧠 模型下拉已移入输入卡底栏） */}
+        {/* 左侧：🤖 会话切换器（U3b 会话栈入口：标题 + 会话数徽章） */}
         <button
           ref={menuRef}
           type="button"
           aria-haspopup="true"
           aria-expanded={sessionMenuOpen}
-          className="nm-outset flex-1 min-w-0 flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-[var(--t2)]"
+          className="nm-outset flex-1 min-w-0 flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-[var(--t2)]"
           title="切换会话"
           onClick={onToggleMenu}
         >
           <span className="truncate flex-1 text-left">🤖 {currentTitle}</span>
+          <span className="shrink-0 rounded-full border border-[var(--edge)] px-1.5 font-mono text-[10px] leading-4 text-[var(--t5)]">
+            {sessions.length}
+          </span>
           <span className="shrink-0 text-[10px] text-[var(--t5)]">
             {sessionMenuOpen ? "▴" : "▾"}
           </span>
@@ -76,8 +79,8 @@ export function SessionList({
           <span className="text-[16px] leading-none">🎯</span>
         </button>
       </div>
-      {/* 会话下拉：作为 rootRef 直接子元素，absolute 横跨整个 panel 宽度
-          （左对齐 🤖、右对齐 🎯） */}
+      {/* 会话栈（U3b）：作为 rootRef 直接子元素，absolute 横跨整个 panel 宽度；
+          行 = 活动圆点 + 标题，悬停浮出删除 */}
       {sessionMenuOpen && (
         <div
           ref={dropdownRef}
@@ -92,7 +95,7 @@ export function SessionList({
                 type="button"
                 role="menuitem"
                 aria-current={s.id === sessionId || undefined}
-                className={`flex-1 min-w-0 text-left px-2 py-1 rounded-lg text-xs truncate ${
+                className={`flex-1 min-w-0 flex items-center gap-1.5 text-left px-2 py-1.5 rounded-lg text-xs truncate ${
                   s.id === sessionId
                     ? "nm-inset text-[var(--t1)] font-medium"
                     : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
@@ -100,7 +103,13 @@ export function SessionList({
                 onClick={() => onSelect(s.id)}
                 title={s.title}
               >
-                {s.title}
+                <span
+                  aria-hidden
+                  className={`shrink-0 h-1.5 w-1.5 rounded-full ${
+                    s.id === sessionId ? "bg-[var(--brand)]" : "bg-[var(--t6)]"
+                  }`}
+                />
+                <span className="truncate">{s.title}</span>
               </button>
               <button
                 type="button"

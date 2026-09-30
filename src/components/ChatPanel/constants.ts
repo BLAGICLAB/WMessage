@@ -1,7 +1,7 @@
 // ChatPanel 子模块：常量集合（模块级变量 + 斜杠命令清单）。
 // 不依赖 React；纯数据 / 跨实例共享状态。
 
-import type { ModelItem, ReasoningLevel } from "./types";
+import type { ModelItem, PermMode, ReasoningLevel } from "./types";
 
 /** execute-task 事件去重窗口（毫秒）：同一 id 窗口内重复触发直接跳过 */
 const EXEC_TASK_DEDUP_MS = 2000;
@@ -49,4 +49,11 @@ export const EFFORT_LABELS: Record<ReasoningLevel, string> = {
 export const PROVIDER_LABELS: Record<ModelItem["provider"], string> = {
   openai: "OpenAI 兼容",
   anthropic: "Anthropic 兼容",
+};
+
+/** 授权模式展示文案（U3b 只读 pill）：短标签进 pill，完整语义在 title */
+export const PERM_LABELS: Record<PermMode, string> = {
+  ask: "弹授权",
+  strict: "硬拒",
+  yolo: "全放行",
 };

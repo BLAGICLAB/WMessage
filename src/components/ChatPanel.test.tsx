@@ -416,9 +416,11 @@ describe("ChatPanel", () => {
       return null;
     });
     render(<ChatPanel {...defaultProps} />);
-    // 思考与工具默认折叠，title 包含「思考过程」/「search」
+    // 思考与工具默认折叠：思考 title 含「思考过程」；工具 = mono pill 徽章行
+    // （U3b：名称 + ✓ 状态）+「进程 N/M」折叠详情
     expect(await screen.findByText(/💭 思考过程/)).toBeInTheDocument();
-    expect(await screen.findByText(/🔧 search/)).toBeInTheDocument();
+    expect(await screen.findByText("search")).toBeInTheDocument();
+    expect(await screen.findByText(/进程 1\/1/)).toBeInTheDocument();
     // 点击思考 toggle，展开内容
     await userEvent.setup().click(screen.getByText(/💭 思考过程/));
     expect(await screen.findByText("我在想……")).toBeInTheDocument();
