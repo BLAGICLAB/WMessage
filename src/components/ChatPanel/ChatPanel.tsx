@@ -839,6 +839,17 @@ export function ChatPanel({
     }
   };
 
+  // ⌘K 跨窗口跳会话（U2 命令面板）：主窗口发 chat-focus-session，复用 switchSession
+  // 走完整切换（清消息 + bot_history_load + inflight 占位），仅 setSessionId 不会加载历史；
+  // 面板展开由 WidgetApp 负责。ref 写放 effect（render 期写 ref 会新增 lint warn）
+  const switchSessionRef = useRef<(sid: string) => void>(() => {});
+  useEffect(() => {
+    switchSessionRef.current = switchSession;
+  });
+  useTauriListen<{ sessionId?: string }>("chat-focus-session", (payload) => {
+    if (payload.sessionId) switchSessionRef.current(payload.sessionId);
+  });
+
   const deleteSession = async (sid: string) => {
     // SWITCH-1：只拦「删除正在回复的会话」（回复落库目标不能被删）；其他会话随便删
     if (inflightRef.current.has(sid)) {

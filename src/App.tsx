@@ -3,7 +3,17 @@ import { emit, listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { isPermissionGranted, requestPermission } from "@tauri-apps/plugin-notification";
+import {
+  Archive,
+  FolderOpen,
+  Plus,
+  Search,
+  Settings as SettingsIcon,
+  SquareKanban,
+  Trash2,
+} from "lucide-react";
 import { KanbanBoard } from "./components/KanbanBoard";
+import { CommandPalette } from "./components/CommandPalette";
 import mainLogo from "./assets/main-logo.png";
 import { ArchivePage } from "./components/ArchivePage";
 import { TrashPage } from "./components/TrashPage";
@@ -44,6 +54,73 @@ function localDateStr(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
     d.getDate()
   ).padStart(2, "0")}`;
+}
+
+// 左侧导航栏条目（U2）：视图切换职能自顶部工具条迁入；设置单独走底部入口
+type RailView = "board" | "archive" | "workspace" | "trash";
+const NAV_ITEMS: { key: RailView; label: string; icon: typeof SquareKanban }[] = [
+  { key: "board", label: "首页", icon: SquareKanban },
+  { key: "archive", label: "归档", icon: Archive },
+  { key: "workspace", label: "工作区", icon: FolderOpen },
+  { key: "trash", label: "回收站", icon: Trash2 },
+];
+
+/** 快捷键提示文案：mac ⌘ / 其他平台 Ctrl（纯前端 keydown，两平台同实现）。
+ *  userAgent 而非已废弃的 navigator.platform（后者在现代浏览器可能返回空串） */
+const IS_MAC =
+  typeof navigator !== "undefined" && /Mac|iP(hone|ad|od)/.test(navigator.userAgent);
+const KBD_NEW = IS_MAC ? "⌘N" : "Ctrl+N";
+const KBD_SEARCH = IS_MAC ? "⌘K" : "Ctrl+K";
+
+/** 任务所在视图：回收站 > 归档 > 看板（edit-task 事件与 ⌘K 跳转共用一套映射） */
+function viewForTask(t: Pick<Task, "deletedAt" | "archived">): RailView {
+  if (t.deletedAt) return "trash";
+  if (t.archived) return "archive";
+  return "board";
+}
+
+/** 导航栏按钮（U2）：action=带边框动作钮（新建/搜索，可挂快捷键提示）；
+ *  item=导航项（hover 淡底，选中走 nm-inset 凹陷语义） */
+function RailButton({
+  icon: Icon,
+  label,
+  kbd,
+  active = false,
+  onClick,
+  variant = "item",
+}: {
+  icon: typeof SquareKanban;
+  label: string;
+  kbd?: string;
+  active?: boolean;
+  onClick: () => void;
+  variant?: "action" | "item";
+}) {
+  const base =
+    "flex h-8 w-full items-center gap-2 px-2.5 text-sm transition-colors duration-100";
+  let skin: string;
+  if (variant === "action") {
+    skin = "nm-btn text-[var(--t3)]";
+  } else if (active) {
+    skin = "nm-inset rounded-[var(--r-sm)] text-[var(--t1)]";
+  } else {
+    skin = "rounded-[var(--r-sm)] text-[var(--t3)] hover:bg-[var(--hover-bg)]";
+  }
+  return (
+    <button
+      aria-current={active || undefined}
+      onClick={onClick}
+      className={`${base} ${skin}`}
+    >
+      <Icon size={15} aria-hidden />
+      <span className="flex-1 text-left">{label}</span>
+      {kbd && (
+        <kbd className="shrink-0 rounded border border-[var(--edge)] px-1 py-0.5 text-[10px] font-medium text-[var(--t5)]">
+          {kbd}
+        </kbd>
+      )}
+    </button>
+  );
 }
 
 /** ErrorBoundary：主窗口任何子组件抛错时不再 unmount 变白，
@@ -118,6 +195,7 @@ function App() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [view, setView] = useState<"board" | "archive" | "workspace" | "trash" | "settings">("board");
   const [theme, setTheme] = useState<ThemeSetting>(getSetting);
+  const [paletteOpen, setPaletteOpen] = useState(false);
 
   // 主题：启动时应用 + 监听其他窗口（挂件）切换 + 跟随系统模式监听系统外观变化
   useEffect(() => {
@@ -388,9 +466,7 @@ function App() {
       if (id) {
         const t = tasksRef.current.find((x) => x.id === id);
         // 按任务实际所在位置跳转：回收站 → trash；归档 → archive；其余 → 看板
-        if (t?.deletedAt) setView("trash");
-        else if (t?.archived) setView("archive");
-        else setView("board");
+        setView(t ? viewForTask(t) : "board");
         setEditingId(id);
       }
     });
@@ -402,13 +478,11 @@ function App() {
   // 全局快捷键快速新建（Rust 侧 Cmd+Ctrl+N / Ctrl+Alt+N）：切回看板 + 新建任务进入编辑态
   useEffect(() => {
     const unlisten = listen("quick-add", () => {
-      setView("board");
-      addTask();
+      startNewTaskRef.current();
     });
     return () => {
       unlisten.then((f) => f());
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // 每分钟重套今日规则 + 归档规则：覆盖跨零点归位、完成超时归档（diff 后行级落盘）
@@ -428,6 +502,49 @@ function App() {
       return [...prev, { id, title: "新任务", column: "todo", order: max + 1 }];
     });
     setEditingId(id); // 新建后自动进入编辑态
+  };
+
+  // 快捷新建（⌘/Ctrl+N 与 quick-add 事件共用）：关面板 + 切看板 + 新建进编辑态
+  const startNewTaskRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    startNewTaskRef.current = () => {
+      setPaletteOpen(false);
+      setView("board");
+      addTaskRef.current();
+    };
+  });
+
+  // 全局快捷键（U2，纯前端 keydown 实现，不碰 Rust 全局注册）：
+  // ⌘/Ctrl+N 新建任务（切回看板）、⌘/Ctrl+K 命令面板开合。
+  // isComposing 跳过：中文输入法组合期不得触发（防选词按到修饰键误新建）
+  const addTaskRef = useRef(addTask);
+  addTaskRef.current = addTask;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.isComposing) return;
+      if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return;
+      const k = e.key.toLowerCase();
+      if (k === "n") {
+        e.preventDefault();
+        startNewTaskRef.current();
+      } else if (k === "k") {
+        e.preventDefault();
+        setPaletteOpen((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // ⌘K 跳转：任务按所在位置切视图并进入编辑；会话发事件让挂件展开并切会话
+  const jumpToTask = (t: Task) => {
+    setView(viewForTask(t));
+    setEditingId(t.id);
+  };
+  const jumpToSession = (sessionId: string) => {
+    emit("chat-focus-session", { sessionId }).catch((e) => {
+      console.error("emit chat-focus-session failed", e);
+    });
   };
 
   // 导出任务数据：全量任务卡（含归档、回收站）写 JSON 文件
@@ -611,110 +728,105 @@ function App() {
 
   return (
     <ErrorBoundary>
-    <div className="min-h-screen bg-[var(--bg)] p-6">
-      <header className="mb-4 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <img
+      <div className="flex h-screen overflow-hidden bg-[var(--bg)]">
+        {/* 左侧导航栏（U2）：新建(⌘N)/搜索(⌘K)/视图切换/底部设置——职能自顶部工具条迁入 */}
+        <nav
+          aria-label="主导航"
+          className="flex w-44 shrink-0 flex-col gap-1 border-r border-[var(--edge)] p-3"
+        >
+          <div className="mb-2 flex items-center gap-2 px-1 pt-1">
+            <img
               src={mainLogo}
               alt="WMessage"
-              className="w-7 h-7 shrink-0"
+              className="h-6 w-6 shrink-0"
               draggable={false}
             />
-            <h1 className="text-xl font-semibold text-[var(--t2)]">WMessage</h1>
-          <div className="flex gap-1">
-            <button
-              className={`min-w-[94px] px-3 py-1.5 text-sm text-[var(--t3)] ${
-                view === "board" ? "nm-inset" : "nm-outset"
-              }`}
-              onClick={() => setView("board")}
-            >
-              首页
-            </button>
-            <button
-              className={`min-w-[94px] px-3 py-1.5 text-sm text-[var(--t3)] ${
-                view === "archive" ? "nm-inset" : "nm-outset"
-              }`}
-              onClick={() => setView("archive")}
-            >
-              归档
-            </button>
-            <button
-              className={`min-w-[94px] px-3 py-1.5 text-sm text-[var(--t3)] ${
-                view === "workspace" ? "nm-inset" : "nm-outset"
-              }`}
-              onClick={() => setView("workspace")}
-            >
-              工作区
-            </button>
-            <button
-              className={`min-w-[94px] px-3 py-1.5 text-sm text-[var(--t3)] ${
-                view === "trash" ? "nm-inset" : "nm-outset"
-              }`}
-              onClick={() => setView("trash")}
-            >
-              回收站
-            </button>
+            <h1 className="text-sm font-semibold text-[var(--t2)]">WMessage</h1>
           </div>
-        </div>
-        <div className="flex items-center gap-2">
-          {view === "board" && (
-            <button
-              className="nm-btn px-3 py-1.5 text-sm text-[var(--t3)]"
-              onClick={addTask}
-            >
-              + 新建任务
-            </button>
-          )}
-          <button
-            className={`px-3 py-1.5 text-sm text-[var(--t3)] ${
-              view === "settings" ? "nm-inset" : "nm-outset"
-            }`}
-            title="设置"
+          <RailButton
+            variant="action"
+            icon={Plus}
+            label="新建任务"
+            kbd={KBD_NEW}
+            onClick={() => {
+              setView("board");
+              addTask();
+            }}
+          />
+          <RailButton
+            variant="action"
+            icon={Search}
+            label="搜索"
+            kbd={KBD_SEARCH}
+            onClick={() => setPaletteOpen(true)}
+          />
+          <div role="separator" className="my-2 border-t border-[var(--edge)]" />
+          {NAV_ITEMS.map((item) => (
+            <RailButton
+              key={item.key}
+              icon={item.icon}
+              label={item.label}
+              active={view === item.key}
+              onClick={() => setView(item.key)}
+            />
+          ))}
+          <div className="flex-1" />
+          <RailButton
+            icon={SettingsIcon}
+            label="设置"
+            active={view === "settings"}
             onClick={() => setView("settings")}
-          >
-            ⚙️
-          </button>
-        </div>
-      </header>
-      {view === "board" ? (
-        <KanbanBoard
-          tasks={tasks}
-          editingId={editingId}
-          onReorder={commitBoardOrder}
-          onUpdate={updateTask}
-          onSetColumn={setTaskColumn}
-          onDelete={deleteTask}
-          onOpenArchive={() => setView("archive")}
-        />
-      ) : view === "archive" ? (
-        <ArchivePage
-          tasks={tasks}
-          editingId={editingId}
-          onUpdate={updateTask}
-          onDelete={deleteTask}
-        />
-      ) : view === "workspace" ? (
-        <WorkspacePage />
-      ) : view === "trash" ? (
-        <TrashPage
-          tasks={tasks}
-          editingId={editingId}
-          onUpdate={updateTask}
-          onDelete={hardDeleteTask}
-        />
-      ) : (
-        <SettingsPage
-          theme={theme}
-          onThemeChange={setTheme}
-          onExportTasks={exportTasks}
-          onImportTasks={importTasks}
-          onExportWorkspace={exportWorkspace}
-          onImportWorkspace={importWorkspace}
-        />
-      )}
-      {/* 全局确认弹窗（老板 14:45 拍板：confirm 走主窗口，不走 widget 挂件） */}
-      <ConfirmMap />
-    </div>
+          />
+        </nav>
+        <main className="min-w-0 flex-1 overflow-y-auto p-6">
+          {view === "board" ? (
+            <KanbanBoard
+              tasks={tasks}
+              editingId={editingId}
+              onReorder={commitBoardOrder}
+              onUpdate={updateTask}
+              onSetColumn={setTaskColumn}
+              onDelete={deleteTask}
+              onOpenArchive={() => setView("archive")}
+            />
+          ) : view === "archive" ? (
+            <ArchivePage
+              tasks={tasks}
+              editingId={editingId}
+              onUpdate={updateTask}
+              onDelete={deleteTask}
+            />
+          ) : view === "workspace" ? (
+            <WorkspacePage />
+          ) : view === "trash" ? (
+            <TrashPage
+              tasks={tasks}
+              editingId={editingId}
+              onUpdate={updateTask}
+              onDelete={hardDeleteTask}
+            />
+          ) : (
+            <SettingsPage
+              theme={theme}
+              onThemeChange={setTheme}
+              onExportTasks={exportTasks}
+              onImportTasks={importTasks}
+              onExportWorkspace={exportWorkspace}
+              onImportWorkspace={importWorkspace}
+            />
+          )}
+          {/* 全局确认弹窗（老板 14:45 拍板：confirm 走主窗口，不走 widget 挂件） */}
+          <ConfirmMap />
+        </main>
+        {paletteOpen && (
+          <CommandPalette
+            onClose={() => setPaletteOpen(false)}
+            tasks={tasks}
+            onJumpTask={jumpToTask}
+            onJumpSession={jumpToSession}
+          />
+        )}
+      </div>
     </ErrorBoundary>
   );
 }

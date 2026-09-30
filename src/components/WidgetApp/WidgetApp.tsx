@@ -343,6 +343,20 @@ export default function WidgetApp() {
   // 产物绑定弹窗挂在挂件窗口：面板始终挂载（收起只是 display:none），事件监听不丢
   const expandedRef = useRef(expanded);
   expandedRef.current = expanded;
+  // ⌘K 跨窗口跳会话（U2 命令面板）：主窗口发 chat-focus-session，这里负责展开面板；
+  // 会话切换由 ChatPanel 自行监听同名事件。ref 写走 effect（render 期写 ref 会被 lint 拦）
+  const expandFnRef = useRef<() => Promise<void>>(async () => {});
+  useEffect(() => {
+    expandFnRef.current = expand;
+  });
+  useEffect(() => {
+    const un = listen("chat-focus-session", () => {
+      if (!expandedRef.current) expandFnRef.current().catch(() => {});
+    });
+    return () => {
+      un.then((f) => f());
+    };
+  }, []);
   useEffect(() => {
     const un = listen("artifact-batch-ready", () => {
       if (!expandedRef.current) expand().catch(() => {});

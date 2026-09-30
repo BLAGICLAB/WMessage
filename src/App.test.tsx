@@ -113,7 +113,7 @@ describe("App", () => {
     expect(screen.queryByText("待办")).not.toBeInTheDocument();
   });
 
-  it("mutate 流程：点击 + 新建任务 → db_upsert 收到新任务 + 标题进入编辑态", async () => {
+  it("mutate 流程：点击「新建任务」→ db_upsert 收到新任务 + 标题进入编辑态", async () => {
     const user = userEvent.setup();
     render(<App />);
     await waitFor(() => {
@@ -122,7 +122,8 @@ describe("App", () => {
     const callsBefore = mocks.invokeMock.mock.calls.filter(
       (c) => c[0] === "db_upsert"
     ).length;
-    await user.click(screen.getByText("+ 新建任务"));
+    // U2：新建任务按钮迁入左侧导航栏（文案从「+ 新建任务」改为图标 + 「新建任务」）
+    await user.click(screen.getByText("新建任务"));
     // 新建后立即进入编辑态：input value = "新任务"
     const input = await screen.findByDisplayValue("新任务");
     expect(input).toBeInTheDocument();
@@ -219,7 +220,7 @@ describe("App", () => {
     });
     // 核心断言：merge 的落盘还挂在门闩上时，UI 写（新建任务）不得出队——
     // 修复前两条独立链会让它立即落盘（基线跨链失效 → 写冲突弹窗的根因）
-    await userEvent.setup().click(screen.getByText("+ 新建任务"));
+    await userEvent.setup().click(screen.getByText("新建任务"));
     expect(upsertCalls()).toBe(callsBefore + 1);
     // 放行 merge → UI 写才落盘
     release();
@@ -248,7 +249,7 @@ describe("App", () => {
       // emit mock 跨用例共享（beforeEach 不清），先清零再断言「失败不广播」
       const { emit } = await import("@tauri-apps/api/event");
       (emit as ReturnType<typeof vi.fn>).mockClear();
-      await user.click(screen.getByText("+ 新建任务"));
+      await user.click(screen.getByText("新建任务"));
       // storage 层 alert 已弹（upsertTasks → handleCommandError）
       await waitFor(() => expect(alertMock).toHaveBeenCalled());
       // mutate 抛错（错误从 upsertTasks 一路抛到 call site 的 catch）
@@ -556,7 +557,8 @@ describe("App", () => {
       expect(screen.getByText("梳理 WMessage 需求清单")).toBeInTheDocument();
     });
     // 进设置页点「📥 导入」（eefa78f 起有任务导入 + 工作区导入两个，取第一个 = 任务导入）
-    await user.click(screen.getByTitle("设置"));
+    // U2：设置入口迁入左侧导航栏（icon + 文字「设置」，旧 ⚙️ 的 title 属性取消）
+    await user.click(screen.getByText("设置"));
     const importBtn = (await screen.findAllByRole("button", { name: "📥 导入" }))[0];
     await user.click(importBtn);
     // 导入完成 alert（证明 importTasks 全流程走完）
