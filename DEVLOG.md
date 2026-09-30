@@ -2,6 +2,33 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-01（周四）UI 改造 U3a-CHAT-SPLIT 批：ChatPanel 行为等价拆分 + memo + lint 清零（`6107d92`）
+
+**内容**（与 B5-2/3 合并批，只拆不换肤）：ChatPanel.tsx 1862 行 → orchestrator
+1213 行 + 四子文件——SessionList（会话切换器+下拉+🎯）/ MessageList（消息列表 +
+**MsgBubble React.memo**）/ InputArea（斜杠 picker+输入卡三段）/ useChatUi
+（useDropdownTop/useOutsideClose/useAutoGrow，三处 outside-click effect 去重）。
+数据流逐字保留：流式六事件、runChat/send/runSlashCommand、DRAFT-1、Tauri 调用面
+零改动；types/constants 各迁入 ReasoningLevel/ModelItem 与两组 Label 常量。
+**B5-2 验收数据**（MessageList.perf.test.tsx，Profiler actualDuration，30 气泡 ×
+50 次流式更新）：memo=0.28ms vs 无 memo=16.43ms ≈ **59×**（三跑 22.5/61.6/59.0×，
+倍率稳定）；配套 useCallback 稳句柄（removeMessage 走 messagesRef 防 deps 击穿
+memo）。**B5-1 存量 32 warn 清零**：no-map-spread 配置关（React 不可变更新惯用法，
+配置注释说明）+ 23 处逐点处置（6 真修：artifact key、MigrationPanel effect 后移、
+artifact 监听切 expandFnRef、InputArea ref 顶层化、空斜杠容器守卫、三元提取；
+17 处 disable 带理由）。
+
+**验证**：vitest 348 绿（44 文件，+1 perf；ChatPanel.test.tsx 869 行断言零改动全
+绿=DOM 等价铁证）/ tsc / oxlint 0/0 / knip 0。门禁首拦：新文件预算漏计 spec 自身
+（990<1061，B6 自查条②同款失误），修正 1100 后过。ocr 复审 49 条（5H/16M/28L）：
+high 5 修（removeMessage deps 击穿 memo、useOutsideClose 每帧重订阅、两处嵌套
+三元、🎯 aria-label）；medium 修 8 驳 4（会话删除「无确认」不实——deleteSession
+有 confirm；isImagePath 迁移/title 硬编码/Tab 劫持留 U3b/U4）；low 修 8 记 20。
+
+**5 维评审结论**（均值 7.4）：哲学一致性 8 / 视觉层级 7 / 细节执行 7 / 功能性 8 /
+创新性 6。行为等价铁证=测试零改动全绿 + DOM 断言逐项对应；memo 边界与句柄稳定
+性是本批核心工程价值。U3b 换肤（会话栈/气泡形态/输入卡对齐截图）待验收后接续。
+
 ## 2026-09-30（周三）UI 改造 U2-NAV 批：主窗口骨架——左导航 + ⌘K（`1b9e9b2`）
 
 **内容**：App.tsx 加左侧窄导航栏（品牌行 / 新建任务⌘N / 搜索⌘K / 首页归档工作区
