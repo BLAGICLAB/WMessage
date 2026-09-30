@@ -2,6 +2,20 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-09-30（周三）UI 改造战役立项：U1–U4 交接文档 + 开工提示词入库
+
+**背景**：老板看了 ZCode 风格深色三栏截图，拍板将「新拟态凸起卡」整体换为「Linear 式
+扁平分层」设计语言。方案四项已定（看板主视图+左导航 / 深浅双主题可切 / 引入
+lucide-react / 顺序各一批），两项默认（vibrancy 缓做、a11y 并入 U4）。
+
+**产出**：`docs/UI-REDESIGN-PROPOSAL-2026-09-30.md`（方案与截图拆解）+
+`docs/UI-REDESIGN-HANDOFF-2026-09-30.md`（批次定义、红线、spec/门禁速查、开工提示词）。
+流程沿用审计战役七步：实现 → 定向测试 → ocr 复审 → 修意见 → 批 spec →
+BATCH_SPEC 门禁提交 → DEVLOG。批次：U0 交接 / U1 token+材质+lucide /
+U2 左导航+⌘K / U3a ChatPanel 拆分（并 B5-2/3）→ U3b 换肤 / U4 设置+挂件+打磨。
+设计素材三件套装在助手侧 `~/.agents/skills/`（design-ref-linear 参照、frontend-design
+审美纪律、design-critique 5 维验收），与仓库无关。
+
 ## 2026-09-29/30（周二）审计修复战役总账：B0–B6 八批全落库（9 commit）
 
 **依据**：`docs/AUDIT-FULL-2026-09-29.md`（两轮审计定稿）+ `docs/AUDIT-FIX-PLAN-2026-09-29.md`
