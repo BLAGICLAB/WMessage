@@ -2,6 +2,35 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-09-30（周三）UI 改造 U2-NAV 批：主窗口骨架——左导航 + ⌘K（`1b9e9b2`）
+
+**内容**：App.tsx 加左侧窄导航栏（品牌行 / 新建任务⌘N / 搜索⌘K / 首页归档工作区
+回收站视图切换 / 底部设置；lucide 15px 图标；选中走 U1 nm-inset 凹陷语义 +
+aria-current；RailButton 局部组件统一五种按钮），顶部工具条职能全迁移后解散，
+内容区整屏（h-screen flex，子页面无滚动假设不受影响）。新组件 CommandPalette
+（条件挂载无 open prop）：任务+会话聚合搜索，↑↓/回车/Esc 键盘流 + 遮罩关闭 +
+空态 + 位置徽标；材质 = surface-raised + --shadow-lg（U1 预告的 U2 消费点引回，
+main.css +3/-1）。⌘N/⌘K 纯前端 window keydown（不碰 Rust 全局注册），isComposing
+守卫；新增增量事件 chat-focus-session（既有事件桥零改动）——WidgetApp 监听展开
+面板、ChatPanel 复用 switchSession 完整切会话。App.tsx +216/-104（超交接预估
+±120：壳+去重组件+处理器同文件，净 +112，spec 注记）。
+
+**验证**：vitest 347 绿（+6 CommandPalette 测试）/ tsc / oxlint 32 持平 / knip 0 /
+门禁 3s。拖拽回归 = KanbanBoard 零 diff + 8 单测；双窗口 = theme.ts/事件桥零 diff +
+theme.test 11 绿。ocr 复审 24 条（1C/3H/10M/10L）：critical = CommandPalette 残留
+`if (!open)` 引用全局 window.open 的地雷行（当场删）；high = switchSession 完整
+切换修正 / 嵌套三元 / isComposing 守卫；med+low 修 13 驳 1 记 2（详见 spec）。
+视觉验收：深浅两主题看板+导航栏、深色工作区三张实截图；⌘K 面板 DOM 断言全过
+（aria-modal/自动聚焦/空态/提亮层/投影实测）——期间抓出 Tailwind
+`shadow-[var(--x)]` 解析为阴影颜色的陷阱，改内联 style。**受限记录**：面板展开
+态截图必超时（IAB 全屏遮罩合成限制，DOM+单测背书、U3 补）；浏览器模式任务/
+会话数据为空（U1 存量）；⌘N/⌘K 为浏览器保留键（Tauri 实测待补，按钮为等价路径）。
+
+**5 维评审结论**（均值 7.0）：哲学一致性 8 / 视觉层级 7 / 细节执行 7 / 功能性 7 /
+创新性 6。Keep：导航栏选中凹陷语义与 U1 token 咬合、⌘K 材质三件套（提亮层+
+边框+投影）、快捷键与既有事件共用处理器。Fix：导航栏仅图标依赖 tooltip 的
+可达性待 a11y 批、面板结果行选中态视觉待 Tauri 实拍。
+
 ## 2026-09-30（周三）UI 改造 U1-TOKEN 批：设计 token 与材质地基（`22cdd36`）
 
 **内容**：main.css token 重写为 Linear 式扁平分层——三层表面（`--bg #14161d/
