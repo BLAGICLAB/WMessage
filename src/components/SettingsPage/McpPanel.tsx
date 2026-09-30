@@ -8,7 +8,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { Pencil, Trash2 } from "lucide-react";
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
+import { IconButton } from "../../ui/IconButton";
 import {
   MCP_STDIO_LAUNCHERS,
   type McpServerConfig,
@@ -456,22 +458,24 @@ export function McpPanel() {
                 >
                   {expandedId === s.id ? "收起" : "工具"}
                 </button>
-                <button
-                  className="shrink-0 text-xs text-[var(--t5)] hover:text-[var(--t2)]"
+                <IconButton
+                  className="p-0.5 text-xs hover:text-[var(--t2)]"
                   onClick={() => startEdit(s)}
                   disabled={busy || form !== null}
                   title="编辑"
+                  aria-label="编辑"
                 >
-                  ✎
-                </button>
-                <button
-                  className="shrink-0 text-xs text-[var(--t5)] hover:text-[var(--danger)]"
+                  <Pencil size={13} aria-hidden />
+                </IconButton>
+                <IconButton
+                  className="p-0.5 text-xs hover:text-[var(--danger)]"
                   onClick={() => remove(s)}
                   disabled={busy}
                   title="删除"
+                  aria-label="删除"
                 >
-                  🗑
-                </button>
+                  <Trash2 size={13} aria-hidden />
+                </IconButton>
                 {/* 启停开关：与设置页其他 Toggle 同款语义——点击即持久化 */}
                 <label className="flex shrink-0 cursor-pointer items-center gap-1">
                   <input

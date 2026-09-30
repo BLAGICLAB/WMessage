@@ -3,64 +3,77 @@
 @tailwind utilities;
 
 /* ═══════════════════════════════════════════════════════════════
-   新拟态主题变量：浅色 / 深色 两套独立定义
-   背景（页面底 ≠ 卡片表面）、双阴影、文字五级、品牌色统一管理
+   扁平分层主题变量（U1，Linear 式）：浅色 / 深色 两套独立定义
+   三层表面靠亮度分档（页面底 --bg → 面板 --surface → 悬浮
+   --surface-raised），1px 边框做结构，单层柔和投影只给悬浮件；
+   文字五级、品牌色统一管理。nm-* 类同名重实现，上层组件零改动换肤
    ═══════════════════════════════════════════════════════════════ */
 :root {
   /* 挂件 Splitter 拖动实时变量(任务区高度)；不在 React state 里 */
   --task-h: 280px;
 
-  /* 表面与背景 */
-  --bg: #f4f7fa;            /* 页面底色 */
-  --surface: #f4f7fa;       /* 卡片/按钮表面 */
-  /* 新拟态双阴影（亮阴影 + 暗阴影，两套独立，不互相复用） */
-  --sh-low: #d5dbe3;        /* 右下暗阴影 */
-  --sh-high: #ffffff;       /* 左上亮阴影 */
-  --sh-low-strong: #cbd3dd; /* hover 加深暗阴影 */
-  --sh-high-strong: #ffffff;
-  --sh-top: transparent;    /* 顶部 1px 内高光（深色专属玻璃感，浅色关闭） */
-  --edge: #dde3ea;          /* 面板内阴影边 */
-  --input-bg: rgba(255, 255, 255, 0.7);
-  --hover-bg: rgba(15, 23, 42, 0.05);
+  /* 三层表面：页面底 < 面板 < 悬浮，逐档提亮 */
+  --bg: #eef1f6;            /* 页面底色 */
+  --surface: #fafbfd;       /* 卡片/面板表面 */
+  --surface-raised: #ffffff; /* 悬浮卡/选中项（hover 抬升目标） */
+  /* 1px 边框语义：--edge 默认结构线，--edge-strong hover/强调 */
+  --edge: #e2e7ef;
+  --edge-strong: #cbd4e1;
+  /* 凹陷/按压底：半透明暗色叠加，叠在卡片或页面底上都比所在层深一档 */
+  --inset-bg: rgba(23, 32, 51, 0.075);
+  --input-bg: rgba(23, 32, 51, 0.03);
+  --hover-bg: rgba(23, 32, 51, 0.055);
+  /* 单层柔和投影（默认卡）；悬浮层投影（弹窗/命令面板）U2 起随浮层组件引入 */
+  --shadow-sm: 0 1px 2px rgba(23, 32, 51, 0.06);
   /* 文字五级：强 > 主 > 次 > 弱 > 幽灵 */
-  --t1: #1f2937; /* 列头/强调 */
-  --t2: #374151; /* 主文字 */
-  --t3: #4b5563; /* 次要文字 */
-  --t4: #6b7280; /* 辅助文字 */
-  --t5: #9ca3af; /* 弱文字/计数 */
-  --t6: #c7ced8; /* 幽灵提示（+备注 等） */
+  --t1: #182031; /* 列头/强调 */
+  --t2: #2b3548; /* 主文字 */
+  --t3: #45506a; /* 次要文字 */
+  --t4: #64708c; /* 辅助文字 */
+  --t5: #8e99b0; /* 弱文字/计数 */
+  --t6: #9fadc4; /* 幽灵提示（+备注 等）；U4 a11y 批做全量对比度复核 */
   /* 品牌（低饱和蓝紫灰）与语义色 */
   --brand: #5f6f94;
   --brand-strong: #4a5879;
   --success: #16a34a;
   --danger: #dc2626;
+  /* 键盘焦点环（:focus-visible 统一配方） */
+  --focus-ring: 0 0 0 3px color-mix(in srgb, var(--brand) 28%, transparent);
+  /* 圆角梯度与字号阶梯（新组件取 var；存量 Tailwind 圆角与字号类不动） */
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --fs-xs: 13px;
+  --fs-sm: 14px;
+  --fs-md: 15px;
+  --fs-lg: 16px;
 }
 
 .dark {
-  /* 中度深灰底色（非纯黑），微带蓝调；页面底比卡片表面更暗，拉出层次 */
-  --bg: #1f242b;
-  --surface: #2d333e;
-  /* 深色专属双阴影：更深暗阴影 + 偏亮弱高光，凸起感靠阴影对比而非色差 */
-  --sh-low: #13161b;
-  --sh-high: #4a5464;
-  --sh-low-strong: #0f1116;
-  --sh-high-strong: #576173;
-  --sh-top: rgba(255, 255, 255, 0.07); /* 顶部 1px 内高光，玻璃边缘感 */
-  --edge: #333a46;
-  --input-bg: rgba(255, 255, 255, 0.07);
-  --hover-bg: rgba(255, 255, 255, 0.09);
+  /* 深色：近黑蓝调三层表面，逐档提亮；边框用实色低反差线 */
+  --bg: #14161d;
+  --surface: #1b1f29;
+  --surface-raised: #232836;
+  --edge: #272d3b;
+  --edge-strong: #3a4254;
+  --inset-bg: rgba(0, 0, 0, 0.3);
+  --input-bg: rgba(255, 255, 255, 0.04);
+  --hover-bg: rgba(255, 255, 255, 0.06);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
   /* 深色文字：主浅灰白（非纯白），逐级降亮但保证可读 */
-  --t1: #f0f3f8;
-  --t2: #dfe5ef;
-  --t3: #bcc4d4;
-  --t4: #9aa4b8;
-  --t5: #7e8898;
-  --t6: #687283;
+  --t1: #eef1f7;
+  --t2: #dbe1ec;
+  --t3: #b6bfd0;
+  --t4: #8d97ac;
+  --t5: #6e7889;
+  --t6: #545e70;
   /* 品牌色深色模式提亮 */
   --brand: #a3b6dd;
   --brand-strong: #c0cdea;
   --success: #4ade80;
   --danger: #f87171;
+  /* 键盘焦点环（:focus-visible 统一配方） */
+  --focus-ring: 0 0 0 3px color-mix(in srgb, var(--brand) 28%, transparent);
 }
 
 @layer base {
@@ -69,9 +82,9 @@
     background-color: var(--bg);
     color: var(--t2);
   }
-  /* 主题切换平滑过渡（背景/文字/阴影，不影响 transform 动画） */
+  /* 主题切换平滑过渡（背景/文字，不影响 transform 动画）；150ms 与组件层同步 */
   body {
-    transition: background-color 0.28s ease, color 0.28s ease;
+    transition: background-color 0.15s ease, color 0.15s ease;
   }
   input::placeholder,
   textarea::placeholder {
@@ -83,7 +96,7 @@
    滚动条主题适配（2026-08-28，主窗口/挂件共用本文件）：
    - color-scheme 告诉 WebView2/Chromium 当前主题，原生滚动条与表单控件自动换深色
    - 自定义 webkit 细滚动条走主题变量（浅色 --t6 灰 / 深色 --t6 亮灰蓝），
-     hover 加深一档；轨道透明，贴合新拟态低饱和风格
+     hover 加深一档；轨道透明，贴合低饱和风格
    ═══════════════════════════════════════════════════════════════ */
 :root {
   color-scheme: light;
@@ -114,30 +127,26 @@
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   新拟态组件类（全部走变量，深浅两套自动生效）
+   扁平分层组件类（nm-* 同名重实现：类名不动、材质全换，深浅两套自动生效）
+   动效纪律：卡片 150ms，按钮/ Chips 100ms，无弹跳
    ═══════════════════════════════════════════════════════════════ */
 @layer components {
-  /* === 凸起卡片 === */
+  /* === 卡片：亮度分档 +1 + 1px 边框 + 单层柔和投影 === */
   .nm-card,
   .nm-card-hover {
-    @apply rounded-2xl;
+    border-radius: var(--r-lg);
     background-color: var(--surface);
-    /* 双阴影：左上高光 + 右下暗影 → 凸起；深色模式额外加顶部 1px 内高光 */
-    box-shadow: inset 0 1px 0 var(--sh-top), 6px 6px 12px var(--sh-low),
-      -6px -6px 12px var(--sh-high);
-    transition: background-color 0.28s ease, box-shadow 0.2s ease,
-      transform 0.2s ease;
+    border: 1px solid var(--edge);
+    box-shadow: var(--shadow-sm);
+    transition: background-color 0.15s ease, border-color 0.15s ease;
   }
 
   .nm-card-hover {
     @apply cursor-pointer;
   }
   .nm-card-hover:hover {
-    transform: translateY(-3px) scale(1.01);
-    box-shadow: inset 0 1px 0 var(--sh-top), 8px 8px 16px var(--sh-low-strong),
-      -8px -8px 16px var(--sh-high-strong);
-    transition: background-color 0.28s ease, box-shadow 0.2s ease,
-      transform 0.2s ease;
+    background-color: var(--surface-raised);
+    border-color: var(--edge-strong);
   }
 
   /* === 任务卡标题排版（共用） === */
@@ -146,57 +155,114 @@
     color: var(--t2);
   }
 
-  /* === 内凹（选中/按下凹陷） === */
+  /* === 凹陷（选中/按压/输入内底）：比所在层深一档 + 1px 边线 === */
   .nm-inset {
-    @apply rounded-xl;
-    background-color: var(--surface);
-    box-shadow: inset 4px 4px 8px var(--sh-low),
-      inset -4px -4px 8px var(--sh-high);
-    transition: background-color 0.28s ease, box-shadow 0.2s ease;
+    border-radius: var(--r-md);
+    background-color: var(--inset-bg);
+    border: 1px solid var(--edge);
+    transition: background-color 0.1s ease, border-color 0.1s ease;
   }
 
-  /* === 外凸胶囊（未选中） === */
+  /* === 抬升胶囊（未选中）：面板底 + 边线，与 .nm-inset 的对比承载「选中」语义 === */
   .nm-outset {
-    @apply rounded-xl;
+    border-radius: var(--r-md);
     background-color: var(--surface);
-    box-shadow: inset 0 1px 0 var(--sh-top), 4px 4px 8px var(--sh-low),
-      -4px -4px 8px var(--sh-high);
-    transition: background-color 0.28s ease, box-shadow 0.2s ease;
+    border: 1px solid var(--edge);
+    transition: background-color 0.1s ease, border-color 0.1s ease;
   }
-  .nm-outset:hover {
-    box-shadow: inset 0 1px 0 var(--sh-top), 5px 5px 10px var(--sh-low-strong),
-      -5px -5px 10px var(--sh-high-strong);
+  .nm-outset:hover:not(:disabled) {
+    background-color: var(--hover-bg);
+    border-color: var(--edge-strong);
   }
 
-  /* === 动作按钮：默认凸起，hover 上浮反馈，按下瞬间凹陷 === */
+  /* === 动作按钮：hover 底色抬升一档，active 压暗（按压感不靠阴影） === */
   .nm-btn {
-    @apply rounded-lg;
+    border-radius: var(--r-sm);
     background-color: var(--surface);
-    box-shadow: inset 0 1px 0 var(--sh-top), 3px 3px 6px var(--sh-low),
-      -3px -3px 6px var(--sh-high);
-    transition: background-color 0.28s ease, box-shadow 0.15s ease;
+    border: 1px solid var(--edge);
+    transition: background-color 0.1s ease, border-color 0.1s ease;
   }
-  .nm-btn:hover {
-    box-shadow: inset 0 1px 0 var(--sh-top), 4px 4px 8px var(--sh-low-strong),
-      -4px -4px 8px var(--sh-high-strong);
+  .nm-btn:hover:not(:disabled) {
+    background-color: var(--hover-bg);
+    border-color: var(--edge-strong);
   }
-  .nm-btn:active {
-    box-shadow: inset 2px 2px 4px var(--sh-low),
-      inset -2px -2px 4px var(--sh-high);
+  .nm-btn:active:not(:disabled) {
+    background-color: var(--inset-bg);
+  }
+  .nm-btn:focus-visible {
+    outline: none;
+    border-color: var(--brand);
+    box-shadow: var(--focus-ring);
+  }
+  .nm-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
   }
 
-  /* === 侧边挂件面板（内阴影保持边缘层次） === */
+  /* === 图标按钮基件（IconButton）：无底色，hover 淡底提字 === */
+  .nm-icon-btn {
+    @apply inline-flex shrink-0 items-center justify-center;
+    color: var(--t4);
+    border-radius: var(--r-sm);
+    transition: background-color 0.1s ease, color 0.1s ease;
+  }
+  .nm-icon-btn:hover:not(:disabled) {
+    color: var(--t2);
+    background-color: var(--hover-bg);
+  }
+  .nm-icon-btn:active:not(:disabled) {
+    color: var(--t1);
+  }
+  .nm-icon-btn:focus-visible {
+    outline: none;
+    color: var(--t2);
+    box-shadow: var(--focus-ring);
+  }
+  .nm-icon-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+
+  /* === 输入框（此前为悬空类名，U1 补实现）：内平底 + 边线，聚焦描品牌色 === */
+  .nm-input {
+    background-color: var(--input-bg);
+    border: 1px solid var(--edge);
+    border-radius: var(--r-sm);
+    color: var(--t2);
+    transition: background-color 0.1s ease, border-color 0.1s ease;
+  }
+  .nm-input:focus {
+    outline: none;
+    border-color: var(--brand);
+    box-shadow: var(--focus-ring);
+  }
+  .nm-input:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+  }
+
+  /* === 标签 pill 徽章（静态件：无 hover/focus 态，不做交互芯片用） === */
+  .nm-tag {
+    @apply inline-flex items-center gap-1;
+    padding: 0.1em 0.6em;
+    border: 1px solid var(--edge);
+    border-radius: 9999px;
+    color: var(--t3);
+    font-weight: 500;
+  }
+
+  /* === 挂件分栏面板：分缝处 1px 接缝线 === */
   .nm-sidebar-panel {
     @apply p-4;
     background-color: var(--surface);
-    box-shadow: inset -6px 0 10px -4px var(--edge);
-    transition: background-color 0.28s ease, box-shadow 0.28s ease;
+    border-top: 1px solid var(--edge);
+    transition: background-color 0.15s ease;
   }
   .nm-sidebar-panel-top {
     @apply p-4;
     background-color: var(--surface);
-    box-shadow: inset 0 -6px 10px -4px var(--edge);
-    transition: background-color 0.28s ease, box-shadow 0.28s ease;
+    border-bottom: 1px solid var(--edge);
+    transition: background-color 0.15s ease;
   }
 
   /* 深色模式：挂件深蓝 logo 提亮 */

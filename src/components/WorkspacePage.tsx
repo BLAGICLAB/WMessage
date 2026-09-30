@@ -20,8 +20,10 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { Pencil, Trash2 } from "lucide-react";
 import type { WorkspaceItem, WorkspaceLink } from "../types";
 import { basename } from "../format";
+import { IconButton } from "../ui/IconButton";
 import {
   loadWorkspaceFromDb,
   upsertWorkspaceItems,
@@ -342,13 +344,13 @@ export function WorkspacePage() {
                 </button>
               )}
               <FoldToggle collapsed={!!it.collapsed} onToggle={() => toggleCollapsed(it.id)} />
-              <button
-                className="shrink-0 w-5 h-5 flex items-center justify-center rounded-full text-xs text-[var(--t5)] hover:text-[var(--danger)] hover:bg-[var(--hover-bg)]"
+              <IconButton
+                className="w-5 h-5 rounded-full text-xs hover:text-[var(--danger)]"
                 title="删除工作区"
                 onClick={() => removeItem(it.id)}
               >
-                🗑️
-              </button>
+                <Trash2 size={13} aria-hidden />
+              </IconButton>
             </div>
 
             {/* 折叠展开内容：链接三列网格，从左到右 */}
@@ -437,8 +439,8 @@ export function WorkspacePage() {
                             onPointerDown={stop}
                             onClick={(e) => e.stopPropagation()}
                           >
-                            <button
-                              className="w-5 h-5 flex items-center justify-center rounded-full text-[10px] text-[var(--t4)] hover:text-[var(--brand)] hover:bg-[var(--hover-bg)]"
+                            <IconButton
+                              className="w-5 h-5 rounded-full text-[10px] hover:text-[var(--brand)]"
                               title="编辑显示名称/目标地址"
                               onClick={() =>
                                 setEditingLink({
@@ -450,15 +452,15 @@ export function WorkspacePage() {
                                 })
                               }
                             >
-                              ✏️
-                            </button>
-                            <button
-                              className="w-5 h-5 flex items-center justify-center rounded-full text-[10px] text-[var(--t4)] hover:text-[var(--danger)] hover:bg-[var(--hover-bg)]"
+                              <Pencil size={12} aria-hidden />
+                            </IconButton>
+                            <IconButton
+                              className="w-5 h-5 rounded-full text-[10px] hover:text-[var(--danger)]"
                               title="删除链接"
                               onClick={() => removeLink(it.id, link.id)}
                             >
-                              🗑️
-                            </button>
+                              <Trash2 size={12} aria-hidden />
+                            </IconButton>
                           </div>
                         </div>
                       )
