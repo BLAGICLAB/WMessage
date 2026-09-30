@@ -70,6 +70,8 @@ export function EvolutionPanel() {
   }, [filter]);
 
   useEffect(() => {
+    // 挂载/筛选变更后刷新提案列表（外部数据同步；setState 发生在 async 内部）
+    // oxlint-disable-next-line react/set-state-in-effect
     void refresh();
   }, [refresh]);
 

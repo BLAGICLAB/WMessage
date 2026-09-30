@@ -35,8 +35,10 @@ export function SubtaskRow({
     onCancel: () => setEditing(false),
   });
 
-  // readOnly flip 到 true 时退出编辑态（只读契约：不允许在飞编辑继续提交）
+  // readOnly flip 到 true 时退出编辑态（只读契约：不允许在飞编辑继续提交）；
+  // props→state 受控同步，改成渲染期派生会改变编辑提交时序
   useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect
     if (readOnly) setEditing(false);
   }, [readOnly]);
 

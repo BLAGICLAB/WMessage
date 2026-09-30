@@ -41,3 +41,9 @@ export type Session = { id: string; title: string };
  *  与设置页 ModelEntry 同形（id/label/model），但独立声明——SettingsPage/types.ts
  *  头部注明「外部不直接引用」，ChatPanel 不跨目录 import。 */
 export type ChatModelEntry = { id: string; label: string; model: string };
+
+/** 模型下拉条目（MP-02 双协议同列）：在 ChatModelEntry 上带来源协议，供分组展示 */
+export type ModelItem = ChatModelEntry & { provider: "openai" | "anthropic" };
+
+/** 推理强度抽象档位（RE-1）：与后端 EffortLevel::from_cfg 的合法值一一对应 */
+export type ReasoningLevel = "off" | "low" | "medium" | "high";

@@ -10,6 +10,9 @@ export function useDragCleanup() {
   const dragCleanupRef = useRef<(() => void) | null>(null);
   useEffect(() => {
     return () => {
+      // 卸载兜底必须调「最新登记」的 cleanup（拖动中卸载：摘监听+复位标记），
+      // 非渲染节点 ref，不能在 effect 内固化快照
+      // eslint-disable-next-line react-hooks/exhaustive-deps
       dragCleanupRef.current?.();
     };
   }, []);

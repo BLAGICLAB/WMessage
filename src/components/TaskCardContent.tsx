@@ -155,6 +155,8 @@ export function TaskCardContent({
             <div className="mt-2 flex flex-wrap items-center gap-1.5">
               {(task.tags ?? []).map((tag, i) => (
                 <span
+                  // 键带序号防重复标签撞 key（标签可手输，非天然唯一）
+                  // oxlint-disable-next-line react/no-array-index-key
                   key={`${tag}-${i}`}
                   className="nm-inset px-2 py-0.5 text-xs text-[var(--t4)]"
                 >
@@ -204,7 +206,7 @@ export function TaskCardContent({
                   {(task.result.artifacts ?? []).length > 0 && (
                     <ul className="mt-1 list-inside list-disc text-[var(--t4)]">
                       {(task.result.artifacts ?? []).map((a, i) => (
-                        <li key={i} className="truncate" title={a.path}>
+                        <li key={a.path ?? `artifact-${i}`} className="truncate" title={a.path}>
                           {a.path}
                         </li>
                       ))}

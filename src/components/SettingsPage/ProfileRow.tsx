@@ -33,8 +33,10 @@ export function ProfileRow({
     []
   );
 
-  // 资料加载/变更后回填姓名（编辑中不回填，避免覆盖输入）
+  // 资料加载/变更后回填姓名（编辑中不回填，避免覆盖输入）；
+  // props→state 受控同步，改写为派生会改变输入竞态语义，保直写
   useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect
     if (entry && !dirty) setName(entry.name);
   }, [entry, dirty]);
 

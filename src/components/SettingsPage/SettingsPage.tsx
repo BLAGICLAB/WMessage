@@ -258,8 +258,13 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
   };
 
   useEffect(() => {
+    // 挂载期多面板初始刷新（外部数据同步既有模式）：被调函数内部链路含 setState，
+    // lint 对 effect 内调用一律按同步路径处理，保既有直写
+    // oxlint-disable-next-line react/set-state-in-effect
     refreshBot();
+    // oxlint-disable-next-line react/set-state-in-effect
     loadConfig();
+    // oxlint-disable-next-line react/set-state-in-effect
     refreshPy();
     // 拉取开机自启动状态
     invoke<boolean>("plugin:autostart|is_enabled")
@@ -587,6 +592,9 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
   };
 
   useEffect(() => {
+    // 挂载即刷新（外部数据同步既有模式）：refresh 链路含 setState，
+    // lint 对 effect 内调用按同步路径处理，保既有直写
+    // oxlint-disable-next-line react/set-state-in-effect
     refresh();
   }, []);
 

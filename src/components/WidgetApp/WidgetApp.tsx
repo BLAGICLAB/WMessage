@@ -108,6 +108,9 @@ export default function WidgetApp() {
     getCurrentWindow()
       .setSize(new LogicalSize(size.w, panelH(botOn)))
       .catch(() => {});
+    // 只随开合/bot 开关重挂：尺寸变化路径（拖拽/resize）各自显式 setSize，
+    // 挂进 deps 会与用户拖动互相覆盖
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [botOn, expanded]);
 
   // 字体大小同步（老板拍板）：挂件 webview 独立 document
@@ -342,6 +345,10 @@ export default function WidgetApp() {
 
   // 产物绑定弹窗挂在挂件窗口：面板始终挂载（收起只是 display:none），事件监听不丢
   const expandedRef = useRef(expanded);
+  // render 期直写（镜像 ConfirmMap pendingRef 既有模式）：chat-focus-session /
+  // artifact-batch-ready 监听读「同帧最新」展开态，useEffect 写在事件与提交同
+  // tick 时有 stale 窗
+  // oxlint-disable-next-line react/refs
   expandedRef.current = expanded;
   // ⌘K 跨窗口跳会话（U2 命令面板）：主窗口发 chat-focus-session，这里负责展开面板；
   // 会话切换由 ChatPanel 自行监听同名事件。ref 写走 effect（render 期写 ref 会被 lint 拦）
@@ -359,11 +366,12 @@ export default function WidgetApp() {
   }, []);
   useEffect(() => {
     const un = listen("artifact-batch-ready", () => {
-      if (!expandedRef.current) expand().catch(() => {});
+      if (!expandedRef.current) expandFnRef.current().catch(() => {});
     });
     return () => {
       un.then((f) => f());
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [botOn]);
 
   const startDrag = (e: React.PointerEvent) => {
@@ -446,6 +454,8 @@ export default function WidgetApp() {
         ? "doing"
         : "todo"
       : "done";
+    // 事件回调内取时间戳（补 completedAt），非 render 路径
+    // oxlint-disable-next-line react/purity
     const now = Date.now();
     const next = tasksRef.current.map((x): Task =>
       x.id !== t.id

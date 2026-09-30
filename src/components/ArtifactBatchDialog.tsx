@@ -35,6 +35,8 @@ export function ArtifactBatchDialog() {
   // pendingRef 既有模式——useEffect 同步在「事件与 invoke reject 同 tick」下有 stale 窗口）
   const busyRef = useRef(false);
   const readyRef = useRef<BatchReady | null>(null);
+  // 渲染期直写（理由见上）
+  // oxlint-disable-next-line react/refs
   readyRef.current = ready;
 
   useTauriListen<BatchReady>("artifact-batch-ready", (payload) => {

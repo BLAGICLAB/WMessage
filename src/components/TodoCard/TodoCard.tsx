@@ -62,11 +62,13 @@ export function TodoCardView({
 
   // autoEdit 切到 true 时进入编辑态（草稿同步由 useInlineEdit 在 editing false→true 时负责：
   // 挂件新建/改名后主窗口的 TodoCardView 因 key 不变不会重挂，hook 会把草稿重置为
-  // 当前 task.title，不会显示成旧的"新任务"）。
+  // 当前 task.title，不会显示成旧的"新任务"）；props→state 受控同步保直写
   useEffect(() => {
     if (autoEdit && !archived && !trashed) {
+      // oxlint-disable-next-line react/set-state-in-effect
       setEditing(true);
     } else if (!autoEdit) {
+      // oxlint-disable-next-line react/set-state-in-effect
       setEditing(false);
     }
   }, [autoEdit, archived, trashed]);
@@ -345,6 +347,8 @@ export function TodoCardView({
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
         {(task.tags ?? []).map((tag, i) => (
           <span
+            // 键带序号防重复标签撞 key（标签可手输，非天然唯一）
+            // oxlint-disable-next-line react/no-array-index-key
             key={`${tag}-${i}`}
             className="nm-inset px-2 py-0.5 text-xs text-[var(--t4)] flex items-center gap-1"
           >
@@ -845,6 +849,8 @@ export function TodoCardView({
                     // 多文件绑定：逐个移入废纸篓/回收站
                     // OCR C2b #4：删 is_dir 参数（trash::delete 内部递归）；Rust IPC 表面只接 path
                     for (const f of boundFiles) {
+                      // 顺序删除是有意为之（保持失败顺序可观测），不并行
+                      // oxlint-disable-next-line eslint/no-await-in-loop
                       await invoke("delete_bound_file", {
                         path: f.path,
                       });

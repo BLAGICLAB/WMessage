@@ -55,6 +55,9 @@ export function SkillsPanel() {
   };
 
   useEffect(() => {
+    // 挂载即刷新已装技能（外部数据同步既有模式）：refresh 链路含 setState，
+    // lint 对 effect 内调用按同步路径处理，保既有直写
+    // oxlint-disable-next-line react/set-state-in-effect
     refresh();
   }, []);
 

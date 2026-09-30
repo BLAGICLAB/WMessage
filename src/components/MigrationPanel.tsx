@@ -21,10 +21,6 @@ export function MigrationPanel() {
   const [logText, setLogText] = useState("");
   const [logBusy, setLogBusy] = useState(false);
 
-  useEffect(() => {
-    refresh();
-  }, []);
-
   const refresh = async () => {
     try {
       const loaded = await invoke<{ version: number; rules: MigrationRule[] }>(
@@ -37,6 +33,12 @@ export function MigrationPanel() {
       handleCommandError(e, "migration refresh", { silent: true });
     }
   };
+
+  // 挂载即刷新（原 effect 声明在 refresh 定义之前——immutability lint 误判自引用）
+  useEffect(() => {
+    refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const downloadTemplate = async () => {
     try {

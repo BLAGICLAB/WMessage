@@ -1,6 +1,8 @@
 // ChatPanel 子模块：常量集合（模块级变量 + 斜杠命令清单）。
 // 不依赖 React；纯数据 / 跨实例共享状态。
 
+import type { ModelItem, ReasoningLevel } from "./types";
+
 /** execute-task 事件去重窗口（毫秒）：同一 id 窗口内重复触发直接跳过 */
 const EXEC_TASK_DEDUP_MS = 2000;
 
@@ -34,3 +36,17 @@ export const SLASH_COMMANDS = [
   { cmd: "/clean", description: "清空当前对话" },
   { cmd: "/retry", description: "重新生成上一条回复" },
 ];
+
+/** 推理强度档位展示文案（RE-1） */
+export const EFFORT_LABELS: Record<ReasoningLevel, string> = {
+  off: "关闭",
+  low: "低",
+  medium: "中",
+  high: "高",
+};
+
+/** 模型协议分组展示文案（MP-02） */
+export const PROVIDER_LABELS: Record<ModelItem["provider"], string> = {
+  openai: "OpenAI 兼容",
+  anthropic: "Anthropic 兼容",
+};

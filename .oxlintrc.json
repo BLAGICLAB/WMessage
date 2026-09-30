@@ -3,6 +3,8 @@
   // B5-1：linter 接入。categories 启用正确性/性能系列；
   // react-hooks 让既有 6 处 eslint-disable-next-line react-hooks/exhaustive-deps
   // 重新生效（此前无 linter 挂载，注释是死的）。
+  // U3a：no-map-spread 关——`.map(t => ({...t, x}))` 是本仓 React 不可变更新的
+  // 惯用写法（9 处），lint 建议的 Object.assign 改写纯风格噪音且无实害。
   "categories": {
     "correctness": "warn",
     "perf": "warn"
@@ -11,7 +13,8 @@
   "rules": {
     "react-hooks/exhaustive-deps": "warn",
     "react-hooks/rules-of-hooks": "error",
-    "typescript/no-explicit-any": "off"
+    "typescript/no-explicit-any": "off",
+    "oxc/no-map-spread": "off"
   },
   "ignorePatterns": ["dist/**", "src-tauri/target/**", "node_modules/**"]
 }

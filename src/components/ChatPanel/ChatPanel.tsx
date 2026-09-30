@@ -1,26 +1,27 @@
 // ChatPanel 主组件（orchestrator）。
-// 1531 → 1340 行：types / constants / Fold / RichText / UserBubbleContent
-// 拆到同目录子文件，本文件保留所有 useState / useRef / useEffect / handlers / JSX。
+// 1862 → 拆分：SessionList / MessageList / InputArea / useChatUi 到同目录子文件
+// （U3a，行为等价拆分——消息数据流/斜杠命令语义/Tauri 命令调用零改动），
+// 本文件保留所有 useState / useRef / useEffect / handlers / 数据流监听 / 装配 JSX。
+// MsgBubble 的 React.memo 流式性能边界见 MessageList.tsx 头注释（B5-2）。
 //
 // 公开 import 路径保持稳定：外部仍 `import { ChatPanel } from "./components/ChatPanel"`，
 // Vite 解析到 `./ChatPanel/index.tsx` → 透传 `./ChatPanel`。
 
-import { useEffect, useRef, useState } from "react";
-import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { listen, emit } from "@tauri-apps/api/event";
 import { useTauriListen } from "../../lib/useTauriListen";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 
 import { handleCommandError, formatCommandError, isCommandError } from "../../lib/errorHandler";
-import { extractFilePaths, openTarget } from "../../lib/openTarget";
 import type { Task } from "../../types";
-import { basename } from "../../format";
-import { MarkdownText } from "../MarkdownText";
 
 import type {
   ChatModelEntry,
+  ModelItem,
   Msg,
+  ReasoningLevel,
   Session,
   SkillFailure,
   TaskRef,
@@ -28,29 +29,14 @@ import type {
 } from "./types";
 import {
   DELTA_BATCH_MS,
-  SLASH_COMMANDS,
   execTaskDedup,
 } from "./constants";
-import { Fold } from "./Fold";
-import { RichText } from "./RichText";
-import { UserBubbleContent, isImagePath } from "./UserBubbleContent";
+import { useAutoGrow, useDropdownTop, useOutsideClose } from "./useChatUi";
+import { SessionList } from "./SessionList";
+import { MessageList } from "./MessageList";
+import { InputArea } from "./InputArea";
 
-/** 推理强度抽象档位（RE-1）：与后端 EffortLevel::from_cfg 的合法值一一对应 */
-type ReasoningLevel = "off" | "low" | "medium" | "high";
-const EFFORT_LABELS: Record<ReasoningLevel, string> = {
-  off: "关闭",
-  low: "低",
-  medium: "中",
-  high: "高",
-};
-
-/** 模型下拉条目（MP-02 双协议同列）：在 ModelEntry 上带来源协议，供分组展示 */
-type ModelItem = ChatModelEntry & { provider: "openai" | "anthropic" };
-const PROVIDER_LABELS: Record<ModelItem["provider"], string> = {
-  openai: "OpenAI 兼容",
-  anthropic: "Anthropic 兼容",
-};
-
+/** 模型下拉条目集合协议（MP-02）：types.ModelItem 的来源协议收窄用 */
 type Props = {
   /** 是否处于选任务模式（点任务卡切换选中） */
   selecting: boolean;
@@ -154,37 +140,15 @@ export function ChatPanel({
   const effortDropdownRef = useRef<HTMLDivElement>(null);
   // 顶部行引用 + 下拉 top 定位（紧贴 🤖 按钮底部，0 间距）
   const topBarRef = useRef<HTMLDivElement>(null);
-  const [dropdownTop, setDropdownTop] = useState(0);
-  useEffect(() => {
-    const update = () => {
-      const root = rootRef.current;
-      const btn = menuRef.current;
-      if (!root || !btn) return;
-      const br = btn.getBoundingClientRect();
-      const rr = root.getBoundingClientRect();
-      setDropdownTop(br.bottom - rr.top);
-    };
-    update();
-    if (typeof ResizeObserver !== "undefined" && rootRef.current) {
-      const ro = new ResizeObserver(update);
-      ro.observe(rootRef.current);
-      return () => ro.disconnect();
-    }
-    window.addEventListener("resize", update);
-    return () => {
-      window.removeEventListener("resize", update);
-    };
-  }, []);
+  const dropdownTop = useDropdownTop(rootRef, menuRef);
   /** 输入卡 textarea 自动增高：随内容长到 max-h-40 后内部滚动；发送清空后缩回 */
-  useEffect(() => {
-    const ta = taRef.current;
-    if (!ta) return;
-    ta.style.height = "auto";
-    ta.style.height = `${ta.scrollHeight}px`;
-  }, [input]);
+  useAutoGrow(taRef, input);
   /** 切会话：斜杠 picker 状态复位（草稿/附件已按会话隔离，picker 是瞬时 UI 态） */
   useEffect(() => {
+    // 挂载式 mount-refresh：复位瞬时 UI 态（可改写为派生但会换执行时机，拆分批保行为）
+    // oxlint-disable-next-line react/set-state-in-effect
     setSlashIdx(0);
+    // oxlint-disable-next-line react/set-state-in-effect
     setSlashDismissed(false);
   }, [sessionId]);
   /** PAR-1：每会话流式元数据（thinking/tools/skillFailure 权威副本，按 sid 隔离；
@@ -329,49 +293,11 @@ export function ChatPanel({
   }, [enabled]);
 
   // 点击会话菜单外关闭（下拉与按钮不在同一个 ref 容器里，需同时检测两者）
-  useEffect(() => {
-    if (!sessionMenuOpen) return;
-    const onDown = (e: MouseEvent) => {
-      const t = e.target as Node;
-      if (
-        !menuRef.current?.contains(t) &&
-        !sessionDropdownRef.current?.contains(t)
-      )
-        setSessionMenuOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [sessionMenuOpen]);
-
+  useOutsideClose(sessionMenuOpen, () => setSessionMenuOpen(false), menuRef, sessionDropdownRef);
   // 点击模型下拉外关闭（镜像会话菜单：按钮与下拉不在同一 ref 容器，双 ref 检测）
-  useEffect(() => {
-    if (!modelMenuOpen) return;
-    const onDown = (e: MouseEvent) => {
-      const t = e.target as Node;
-      if (
-        !modelBtnRef.current?.contains(t) &&
-        !modelDropdownRef.current?.contains(t)
-      )
-        setModelMenuOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [modelMenuOpen]);
-
+  useOutsideClose(modelMenuOpen, () => setModelMenuOpen(false), modelBtnRef, modelDropdownRef);
   // 点击推理强度下拉外关闭（镜像模型菜单：双 ref 检测）
-  useEffect(() => {
-    if (!effortMenuOpen) return;
-    const onDown = (e: MouseEvent) => {
-      const t = e.target as Node;
-      if (
-        !effortBtnRef.current?.contains(t) &&
-        !effortDropdownRef.current?.contains(t)
-      )
-        setEffortMenuOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [effortMenuOpen]);
+  useOutsideClose(effortMenuOpen, () => setEffortMenuOpen(false), effortBtnRef, effortDropdownRef);
 
   // 挂载：读当前模型配置，输入卡底栏 🧠 下拉展示当前协议的模型列表 + active id；
   // 设置页/另一窗口保存配置后广播 bot-config-changed，这里同步刷新
@@ -420,6 +346,7 @@ export function ChatPanel({
     return () => {
       un.then((f) => f());
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // 🧠 下拉选中：走窄口径命令（后端读盘最新配置，只动 active + 派生老字段，
@@ -522,8 +449,7 @@ export function ChatPanel({
         const sid = e.payload?.sessionId ?? null;
         // 元数据按回复所属会话累加（SWITCH-1）；视觉更新仅当前视图
         if (sid === null) return;
-        if (sid === null) return;
-      if (sid !== sessionIdRef.current && !inflightRef.current.has(sid)) return;
+        if (sid !== sessionIdRef.current && !inflightRef.current.has(sid)) return;
         const { id, name } = e.payload ?? {};
         if (!id) return;
         const m = metaFor(sid);
@@ -546,8 +472,7 @@ export function ChatPanel({
       (e) => {
         const sid = e.payload?.sessionId ?? null;
         if (sid === null) return;
-        if (sid === null) return;
-      if (sid !== sessionIdRef.current && !inflightRef.current.has(sid)) return;
+        if (sid !== sessionIdRef.current && !inflightRef.current.has(sid)) return;
         const { id, name } = e.payload ?? {};
         if (!id || !name) return;
         const m = metaFor(sid);
@@ -666,6 +591,9 @@ export function ChatPanel({
   };
   // openExecSession 经 ref 暴露给事件监听（避免闭包旧状态）
   const openExecSessionRef = useRef<(sid: string) => void>(() => {});
+  // latest-ref 模式：事件监听闭包要调到最新一帧实现（React 官方推荐转发法；
+  // render 期写 ref 为既有语义，拆分批不改时机）
+  // oxlint-disable-next-line react/refs
   openExecSessionRef.current = (sid) => {
     openExecSession(sid);
   };
@@ -792,7 +720,7 @@ export function ChatPanel({
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [messages]);
 
-  const switchSession = async (sid: string) => {
+  const switchSession = useCallback(async (sid: string) => {
     // SWITCH-1/PAR-1：busy 期允许实时切换——回复仍按发起会话落库/流式路由（inflightRef），
     // 切走不影响它在后台完成
     if (sid === sessionId) {
@@ -822,7 +750,7 @@ export function ChatPanel({
     } catch (e) {
       handleCommandError(e, "bot_history_load", { silent: true });
     }
-  };
+  }, [sessionId]);
 
   const newSession = async () => {
     // SWITCH-1：busy 期允许新建对话（进行中的回复继续落在原会话）
@@ -1120,6 +1048,8 @@ export function ChatPanel({
   // 拖放回调只在挂载时注册一次，闭包会捕获 mount 时的 addFiles（其 draftKey
   // 彼时 sessionId 还是 null）——用 latest ref 指到最新实现，落点才是当前会话
   const addFilesRef = useRef(addFiles);
+  // latest-ref 模式：同 openExecSessionRef（render 期写 ref 为既有语义，拆分批不改时机）
+  // oxlint-disable-next-line react/refs
   addFilesRef.current = addFiles;
 
   // ➕ 添加附件：选文件（文档或图片均可），与消息一起发送（如：加 Word 后输入「润色」）。
@@ -1179,8 +1109,8 @@ export function ChatPanel({
     return () => unlisten?.();
   }, []);
 
-  // 逐条复制回复内容（按钮反馈在消息下方）
-  const copyMessage = async (idx: number, content: string) => {
+  // 逐条复制回复内容（按钮反馈在消息下方）；useCallback 固定句柄供 MsgBubble memo
+  const copyMessage = useCallback(async (idx: number, content: string) => {
     try {
       await navigator.clipboard.writeText(content);
       setCopiedIdx(idx);
@@ -1188,28 +1118,54 @@ export function ChatPanel({
     } catch (e) {
       handleCommandError(e, "clipboard", { silent: true });
     }
-  };
+  }, []);
 
-  // 移除一条回复：不满意时删掉，不再作为上下文发给模型（全量持久化）
-  const removeMessage = (idx: number) => {
-    if (!sessionId || inflightRef.current.has(sessionId)) return;
-    const next = messages.filter((_, j) => j !== idx);
+  // 移除一条回复：不满意时删掉，不再作为上下文发给模型（全量持久化）。
+  // 句柄必须稳定（MsgBubble memo 依赖）：messages 走 latest ref——流式期间
+  // messages 每帧换引用，进 deps 会每帧重建回调、击穿全部气泡的 memo 边界
+  const messagesRef = useRef<Msg[]>([]);
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+  const removeMessage = useCallback((idx: number) => {
+    const sid = sessionIdRef.current;
+    if (!sid || inflightRef.current.has(sid)) return;
+    const next = messagesRef.current.filter((_, j) => j !== idx);
     setMessages(next);
-    persistHistory(sessionId, next);
-  };
+    persistHistory(sid, next);
+  }, []);
 
   // 点任务引用按钮：通知主窗口打开该任务编辑态 + 唤起主窗口并强制置顶
   // （与挂件双击标题同一规则：主窗口要出现在桌面屏幕最顶层）
-  const openTaskInMain = async (ref: TaskRef) => {
+  const openTaskInMain = useCallback(async (ref: TaskRef) => {
     emit("edit-task", { id: ref.id }).catch(() => {});
     invoke("focus_main_window").catch(() => {});
-  };
+  }, []);
 
   const currentTitle =
     sessions.find((s) => s.id === sessionId)?.title ?? "新对话";
   // SUBA-3：视图会话是子 agent 执行会话（🧩 前缀标题由 runner 建会话时写入）——
   // 停止按钮/斜杠 /stop 走 cancel_subagent（与任务卡停止按钮同 API），而非 bot_stop
   const isSubagentSession = currentTitle.startsWith("🧩");
+
+  // 停止键点击（发送/停止一体键的 busy 分支）：子 agent 会话走 cancel_subagent，
+  // 普通会话走 bot_stop——与 /stop 斜杠命令同一套分派
+  const stopCurrent = useCallback(() => {
+    if (isSubagentSession) {
+      // SUBA-3：子 agent 会话停止键 = cancel_subagent（与任务卡按钮同 API）
+      invoke("cancel_subagent", { key: sessionIdRef.current })
+        .catch((e) =>
+          handleCommandError(e, "cancel_subagent", { silent: true })
+        )
+        .finally(() =>
+          invoke("bot_stop", { sessionId: sessionIdRef.current }).catch(() => {})
+        );
+    } else {
+      invoke("bot_stop", { sessionId: sessionIdRef.current }).catch((e) =>
+        handleCommandError(e, "bot_stop", { silent: true })
+      );
+    }
+  }, [isSubagentSession]);
 
   // RE-1 推理强度：底栏按钮显示的生效档位 = 本会话覆盖 ?? 后台默认；
   // effortIsOverridden 决定要不要缀「·默认」角标
@@ -1292,70 +1248,22 @@ export function ChatPanel({
           </div>
         </div>
       )}
-      <div ref={topBarRef} className="flex items-center mb-2 shrink-0 gap-1">
-        {/* 左侧：🤖 会话切换器（UI-1 输入卡改版后独占左侧；🧠 模型下拉已移入输入卡底栏） */}
-        <button
-          ref={menuRef}
-          className="nm-outset flex-1 min-w-0 flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-[var(--t2)]"
-          title="切换会话"
-          onClick={() => setSessionMenuOpen((v) => !v)}
-        >
-          <span className="truncate flex-1 text-left">🤖 {currentTitle}</span>
-          <span className="shrink-0 text-[10px] text-[var(--t5)]">
-            {sessionMenuOpen ? "▴" : "▾"}
-          </span>
-        </button>
-        {/* 右侧：🎯 移到原 🧹 位置（最右；外框 px-2 py-1 跟 🤖 等高，emoji 内部 16px 免受字体档位影响） */}
-        <button
-          className={`shrink-0 px-2 py-1 flex items-center justify-center ${
-            selecting
-              ? "nm-inset text-[var(--t1)] font-medium"
-              : "nm-outset text-[var(--t4)]"
-          }`}
-          onClick={onToggleSelecting}
-          title="选任务模式：点击下方任务卡选中，再输入操作指令"
-        >
-          <span className="text-[16px] leading-none">🎯</span>
-        </button>
-      </div>
-      {/* 会话下拉：作为 rootRef 直接子元素，absolute 横跨整个 panel 宽度
-          （左对齐 🤖、右对齐 🎯） */}
-      {sessionMenuOpen && (
-        <div
-          ref={sessionDropdownRef}
-          className="absolute left-0 right-0 nm-card p-1 rounded-xl z-50 max-h-40 overflow-y-auto"
-          style={{ top: dropdownTop > 0 ? `${dropdownTop}px` : undefined }}
-        >
-          {sessions.map((s) => (
-            <div key={s.id} className="flex items-center gap-1">
-              <button
-                className={`flex-1 min-w-0 text-left px-2 py-1 rounded-lg text-xs truncate ${
-                  s.id === sessionId
-                    ? "nm-inset text-[var(--t1)] font-medium"
-                    : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
-                }`}
-                onClick={() => switchSession(s.id)}
-                title={s.title}
-              >
-                {s.title}
-              </button>
-              <button
-                className="shrink-0 w-5 h-5 flex items-center justify-center rounded text-[10px] text-[var(--t5)] hover:text-[var(--danger)] hover:bg-[var(--hover-bg)]"
-                title="删除此对话"
-                onClick={() => deleteSession(s.id)}
-              >
-                🗑
-              </button>
-            </div>
-          ))}
-          <button
-            className="w-full text-left px-2 py-1 rounded-lg text-xs text-[var(--brand)] hover:bg-[var(--hover-bg)]"
-            onClick={newSession}
-          >
-            ＋ 新建对话
-          </button>
-        </div>
-      )}
+      <SessionList
+        sessions={sessions}
+        sessionId={sessionId}
+        currentTitle={currentTitle}
+        sessionMenuOpen={sessionMenuOpen}
+        onToggleMenu={() => setSessionMenuOpen((v) => !v)}
+        topBarRef={topBarRef}
+        menuRef={menuRef}
+        dropdownRef={sessionDropdownRef}
+        dropdownTop={dropdownTop}
+        selecting={selecting}
+        onToggleSelecting={onToggleSelecting}
+        onSelect={switchSession}
+        onNew={newSession}
+        onDelete={deleteSession}
+      />
 
       {selecting && (
         <p className="mb-1.5 text-[10px] text-[var(--brand)] shrink-0">
@@ -1384,479 +1292,54 @@ export function ChatPanel({
         </div>
       )}
 
-      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto space-y-1.5 pr-0.5">
-        {messages.length === 0 ? (
-          <p className="text-xs text-[var(--t5)] text-center mt-6">
-            跟我说：新建任务、列出任务、完成某任务…（输入 / 看可用命令）
-          </p>
-        ) : (
-          messages.map((m, i) => {
-            // 一次性算文件路径 + 是否显示操作行（避免在渲染条件里 IIFE + mutation m._fps 的反模式）
-            const fps = extractFilePaths(m.content);
-            const showActions =
-              m.role === "assistant" &&
-              !m.streaming &&
-              (m.content.trim() || (m.refs?.length ?? 0) > 0 || fps.length > 0);
-            return (
-            <div
-              key={i}
-              className={`max-w-[85%] ${
-                m.role === "user" ? "ml-auto" : "mr-auto"
-              }`}
-            >
-              <div
-                className={`px-2.5 py-1.5 text-xs leading-relaxed whitespace-pre-wrap break-words ${
-                  m.role === "user"
-                    ? "nm-outset rounded-xl text-[var(--t2)]"
-                    : "nm-inset rounded-xl text-[var(--t3)]"
-                }`}
-              >
-                {m.role === "assistant" && (m.thinking?.length ?? 0) > 0 && (
-                  <Fold title={<span>💭 思考过程{m.streaming ? " …" : ""}</span>}>
-                    {m.thinking}
-                  </Fold>
-                )}
-                {/* Skill 失败半成品。
-                 *  区别于 🔧 工具折叠行：用 ⚠️ 标记，视觉上提示「这不是普通工具调用」；
-                 *  默认折叠，点开才看哪个 step 成功 + 是否回滚。 */}
-                {m.role === "assistant" && m.skillFailure && (
-                  <Fold
-                    title={
-                      <span
-                        className={
-                          m.skillFailure.rollbackAttempted
-                            ? "text-[var(--t4)]"
-                            : "text-[var(--danger)]"
-                        }
-                      >
-                        ⚠️ Skill 失败：{m.skillFailure.skillName}
-                        {m.skillFailure.rollbackAttempted
-                          ? "（已回滚）"
-                          : "（未回滚，请人工核对）"}
-                      </span>
-                    }
-                  >
-                    <div className="space-y-1">
-                      <div>
-                        <span className="opacity-70">原因：</span>
-                        <span>{m.skillFailure.reason}</span>
-                      </div>
-                      <div>
-                        <span className="opacity-70">已完成步骤：</span>
-                        <pre className="opacity-80 whitespace-pre-wrap break-words">
-                          {m.skillFailure.completedSummary}
-                        </pre>
-                      </div>
-                      {!m.skillFailure.rollbackAttempted && (
-                        <div className="text-[var(--danger)]">
-                          ⚠️ 已完成步骤未回滚，请检查任务卡状态。
-                        </div>
-                      )}
-                    </div>
-                  </Fold>
-                )}
-                {(m.tools?.length ?? 0) > 0 && (
-                  <div className="mt-0.5 space-y-0.5">
-                    {m.tools!.map((t) => (
-                      <Fold
-                        key={t.id}
-                        title={
-                          <span>
-                            🔧 {t.name || "工具调用"}
-                            {t.done ? " ✓" : " …"}
-                          </span>
-                        }
-                      >
-                        {t.args ? (
-                          <code className="opacity-80">
-                            {t.args.length > 500
-                              ? t.args.slice(0, 500) + "…"
-                              : t.args}
-                          </code>
-                        ) : null}
-                      </Fold>
-                    ))}
-                  </div>
-                )}
-                {m.content ? (
-                  m.role === "user" ? (
-                    <UserBubbleContent content={m.content} />
-                  ) : m.streaming ? (
-                    <RichText text={m.content} />
-                  ) : (
-                    <MarkdownText text={m.content} />
-                  )
-                ) : m.streaming ? (
-                  "…"
-                ) : (
-                  ""
-                )}
-                {/* 「查看执行对话」跳转（任务执行聊天化：busy 时跳转排队，
-                    忙完 hint + 按钮切换到执行会话） */}
-                {m.actionSessionId && (
-                  <button
-                    className="nm-btn mt-1 inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t2)]"
-                    onClick={() => switchSession(m.actionSessionId!)}
-                  >
-                    💬 查看执行对话
-                  </button>
-                )}
-              </div>
-              {/* 回复完成后的操作行：复制按钮 + 任务引用按钮（点击去主窗口打开该任务） */}
-              {showActions && (
-                  <div className="mt-1 flex flex-wrap items-center gap-1">
-                    {m.content.trim() && (
-                      <button
-                        className="nm-btn inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t3)]"
-                        title="复制回复内容"
-                        onClick={() => copyMessage(i, m.content)}
-                      >
-                        {copiedIdx === i ? "✓ 已复制" : "📋 复制"}
-                      </button>
-                    )}
-                    {m.content.trim() && (
-                      <button
-                        className="nm-btn inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t4)] hover:text-[var(--danger)]"
-                        title="移除这条回复（不满意时删除，不再作为上下文）"
-                        onClick={() => removeMessage(i)}
-                        disabled={viewedBusy}
-                      >
-                        🗑 移除
-                      </button>
-                    )}
-                    {fps.map((f) => (
-                      <button
-                        key={f}
-                        className="nm-btn inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t3)] max-w-full"
-                        title={`打开文件：${f}`}
-                        onClick={() => {
-                          // Rust 侧打开（挂件窗口 openPath 前端权限可能被拒）；失败弹错不静默
-                          openTarget(f);
-                        }}
-                      >
-                        <span className="truncate max-w-[280px]">📄 {basename(f)}</span>
-                      </button>
-                    ))}
-                    {(m.refs ?? []).map((r) => (
-                      <button
-                        key={r.id}
-                        className="nm-btn inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t3)] max-w-full"
-                        title={`打开任务：${r.title}`}
-                        onClick={() => openTaskInMain(r)}
-                      >
-                        <span className="truncate max-w-[260px]">📌 {r.title}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-            </div>
-            );
-          })
-        )}
-      </div>
-      {/* 斜杠命令 autocomplete：第一个字是 / 且无空格时浮出 picker。
-          点选 / Tab / ↑↓ 选 / Esc 关 */}
-      {!slashDismissed && input.startsWith("/") && !input.includes(" ") && (
-        <div className="mb-1.5 nm-card rounded-xl p-1 max-h-40 overflow-y-auto shrink-0">
-          {SLASH_COMMANDS.filter((c) => c.cmd.startsWith(input)).map(
-            (c, i) => (
-              <button
-                key={c.cmd}
-                className={`w-full flex flex-col items-start gap-0 px-2 py-1 rounded-lg text-left ${
-                  i === slashIdx ? "nm-inset" : "hover:bg-[var(--hover-bg)]"
-                }`}
-                onMouseEnter={() => setSlashIdx(i)}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setInput(c.cmd + " ");
-                  setSlashIdx(0);
-                  setSlashDismissed(false);
-                }}
-              >
-                <span className="text-xs text-[var(--t2)] font-medium">
-                  {c.cmd}
-                </span>
-                <span className="text-[10px] text-[var(--t4)]">
-                  {c.description}
-                </span>
-              </button>
-            )
-          )}
-        </div>
-      )}
-
-      {/* 输入卡（UI-1 改版）：圆角卡片一体式——上多行输入区（placeholder 左上、
-          自动增高到 max-h-40 后内部滚动）、下工具栏（左 ➕ 附件，右 🧠 模型下拉 +
-          圆形发送键）；附件 chip 移入卡内输入区上方。斜杠 picker 仍浮在卡片上方 */}
-      <div className="nm-card rounded-2xl border border-[var(--edge)] p-2.5 shrink-0">
-        {/* 已添加附件：随消息一起发送 */}
-        {files.length > 0 && (
-          <div className="mb-1.5 flex flex-wrap gap-1">
-            {files.map((f) => {
-              const isImg = isImagePath(f);
-              return (
-                <div key={f} className="relative group">
-                  <span
-                    className="nm-inset inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t3)] max-w-full"
-                    title={f}
-                  >
-                    <span className="truncate max-w-[280px]">
-                      {isImg ? "🖼️" : "📎"} {basename(f)}
-                    </span>
-                    <button
-                      className="text-[var(--t5)] hover:text-[var(--danger)]"
-                      onClick={() => setFiles((prev) => prev.filter((x) => x !== f))}
-                      title="移除"
-                    >
-                      ×
-                    </button>
-                  </span>
-                  {/* 图片附件悬停缩略图：convertFileSrc 走 asset:// 协议。
-                      tauri.conf.json 启用 assetProtocol.enable 后可读图；
-                      未启用时 <img> 加载失败自然隐藏，chip 行为不变。 */}
-                  {isImg && (
-                    <img
-                      src={convertFileSrc(f)}
-                      alt={basename(f)}
-                      loading="lazy"
-                      onError={(e) => {
-                        // 资产协议未启用（403）时隐藏占位元素
-                        (e.currentTarget as HTMLImageElement).style.display = "none";
-                      }}
-                      className="pointer-events-none absolute bottom-full left-0 mb-1 hidden group-hover:block max-w-[220px] max-h-[120px] rounded-lg border border-[var(--border)] bg-[var(--bg)] shadow-lg object-contain z-10"
-                    />
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-        <textarea
-          ref={taRef}
-          value={input}
-          onChange={(e) => {
-            setInput(e.target.value);
-            setSlashIdx(0);
-            setSlashDismissed(false);
-          }}
-          onKeyDown={(e) => {
-            // 斜杠 picker 开着时拦截上下/Tab/Esc
-            const pickerOpen =
-              !slashDismissed && input.startsWith("/") && !input.includes(" ");
-            const matches = SLASH_COMMANDS.filter((c) => c.cmd.startsWith(input));
-            if (pickerOpen && e.key === "ArrowDown" && matches.length) {
-              e.preventDefault();
-              setSlashIdx((slashIdx + 1) % matches.length);
-              return;
-            }
-            if (pickerOpen && e.key === "ArrowUp" && matches.length) {
-              e.preventDefault();
-              setSlashIdx((slashIdx - 1 + matches.length) % matches.length);
-              return;
-            }
-            if (pickerOpen && (e.key === "Tab" || e.key === "Enter") && matches.length) {
-              // Tab 总是补全；Enter 在 picker 开着时也补全（避免输入半截命令误发送）
-              e.preventDefault();
-              setInput(matches[slashIdx].cmd + " ");
-              setSlashIdx(0);
-              return;
-            }
-            if (pickerOpen && e.key === "Escape") {
-              e.preventDefault();
-              setSlashDismissed(true);
-              setSlashIdx(0);
-              return;
-            }
-            // 与 TodoCard 一致：中文输入法组合态下回车确认候选词不应触发发送；
-            // 多行输入（UI-1）：Shift+Enter 换行，Enter 发送（textarea 需手动阻止默认换行）
-            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-              e.preventDefault();
-              send();
-            }
-          }}
-          placeholder={
-            viewedBusy
-              ? "回复中…（点右侧 ■ 或输入 /stop 可停止）"
-              : files.length
-                ? "输入指令，如：润色这个文件"
-                : selecting
-                  ? "输入操作指令，如：标记完成"
-                  : "和机器人说点什么"
-          }
-          rows={1}
-          className="w-full min-h-[48px] max-h-40 overflow-y-auto resize-none bg-transparent outline-none text-xs text-[var(--t2)] leading-relaxed placeholder:text-[var(--t4)]"
-        />
-        <div className="mt-1 flex items-center gap-1">
-          <button
-            className="shrink-0 h-7 px-1.5 flex items-center justify-center rounded-lg text-lg leading-none text-[var(--t4)] hover:text-[var(--t2)] hover:bg-[var(--hover-bg)] transition-colors"
-            title="添加文件或图片，和消息一起发送（如：添加 Word 后输入「润色」；图片发给机器人识别：png / jpg / jpeg / webp / gif / bmp，最大 3MB/张、最多 4 张/消息）"
-            onClick={pickFiles}
-            disabled={viewedBusy}
-          >
-            ＋
-          </button>
-          <div className="flex-1 min-w-0" />
-          {/* 🧠 模型下拉（UI-1 从顶栏移入输入卡底栏；按钮/列表/切换逻辑不变，
-              相对按钮向上弹出，免 JS 测量定位） */}
-          <div className="relative shrink-0">
-            <button
-              ref={modelBtnRef}
-              className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-[var(--t4)] hover:text-[var(--t2)] hover:bg-[var(--hover-bg)] transition-colors"
-              title="切换模型"
-              onClick={() => setModelMenuOpen((v) => !v)}
-            >
-              <span className="truncate max-w-[150px]">🧠 {modelLabel}</span>
-              <span className="shrink-0 text-[10px]">
-                {modelMenuOpen ? "▴" : "▾"}
-              </span>
-            </button>
-            {modelMenuOpen && (
-              <div
-                ref={modelDropdownRef}
-                className="absolute bottom-full right-0 mb-2 w-52 nm-card p-1 rounded-xl z-50 max-h-40 overflow-y-auto"
-              >
-                {models.length === 0 ? (
-                  <p className="px-2 py-1 text-xs text-[var(--t5)]">
-                    模型列表为空，去设置页添加
-                  </p>
-                ) : (
-                  // MP-02：双协议同列——各协议一组（组头小字），当前协议下的
-                  // active 模型高亮；跨协议选中由后端连协议一起切
-                  (["openai", "anthropic"] as const).map((prov) => {
-                    const list = models.filter((m) => m.provider === prov);
-                    if (!list.length) return null;
-                    return (
-                      <div key={prov}>
-                        <p className="px-2 pt-1.5 pb-0.5 text-[10px] text-[var(--t5)]">
-                          {PROVIDER_LABELS[prov]}
-                        </p>
-                        {list.map((m) => {
-                          const isActive =
-                            prov === apiProvider && m.id === activeModelId;
-                          return (
-                            <button
-                              key={m.id}
-                              className={`w-full text-left px-2 py-1 rounded-lg text-xs truncate ${
-                                isActive
-                                  ? "nm-inset text-[var(--t1)] font-medium"
-                                  : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
-                              }`}
-                              onClick={() => switchModel(m.id)}
-                              title={`${PROVIDER_LABELS[prov]} · ${m.label}`}
-                            >
-                              {m.label}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            )}
-          </div>
-          {/* ⚡ 推理强度（RE-1）：会话级覆盖下拉——默认跟随后台（缀「·默认」），
-              选档只存本会话内存、不回写设置；向上弹出，交互镜像模型下拉 */}
-          <div className="relative shrink-0">
-            <button
-              ref={effortBtnRef}
-              className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-[var(--t4)] hover:text-[var(--t2)] hover:bg-[var(--hover-bg)] transition-colors"
-              title="推理强度：只影响当前会话的发送，不写入设置"
-              onClick={() => setEffortMenuOpen((v) => !v)}
-            >
-              <span>
-                ⚡ {EFFORT_LABELS[effectiveEffort]}
-                {effortIsOverridden ? "" : "·默认"}
-              </span>
-              <span className="shrink-0 text-[10px]">
-                {effortMenuOpen ? "▴" : "▾"}
-              </span>
-            </button>
-            {effortMenuOpen && (
-              <div
-                ref={effortDropdownRef}
-                className="absolute bottom-full right-0 mb-2 w-44 nm-card p-1 rounded-xl z-50"
-              >
-                <button
-                  className={`w-full text-left px-2 py-1 rounded-lg text-xs truncate ${
-                    !effortIsOverridden
-                      ? "nm-inset text-[var(--t1)] font-medium"
-                      : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
-                  }`}
-                  onClick={() => setEffortForSession(null)}
-                  title={`清掉本会话覆盖，跟随后台默认（当前：${EFFORT_LABELS[effortBase]}）`}
-                >
-                  后台默认（{EFFORT_LABELS[effortBase]}）
-                </button>
-                {(["off", "low", "medium", "high"] as const).map((lv) => (
-                  <button
-                    key={lv}
-                    className={`w-full text-left px-2 py-1 rounded-lg text-xs truncate ${
-                      effectiveEffort === lv && effortIsOverridden
-                        ? "nm-inset text-[var(--t1)] font-medium"
-                        : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
-                    }`}
-                    onClick={() => setEffortForSession(lv)}
-                  >
-                    {EFFORT_LABELS[lv]}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-          {/* 发送/停止一体键：回复中变为红描边圆形停止键，
-              点击即 bot_stop 中断本次运行；中断/回答结束自动变回发送键 */}
-          {viewedBusy ? (
-            <button
-              className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center border border-[var(--danger)] text-[10px] text-[var(--danger)] hover:bg-[var(--hover-bg)] transition-colors"
-              title={
-                isSubagentSession
-                  ? "取消子任务（cancel_subagent）"
-                  : "停止当前回复"
-              }
-              onClick={() => {
-                if (isSubagentSession) {
-                  // SUBA-3：子 agent 会话停止键 = cancel_subagent（与任务卡按钮同 API）
-                  invoke("cancel_subagent", { key: sessionIdRef.current })
-                    .catch((e) =>
-                      handleCommandError(e, "cancel_subagent", { silent: true })
-                    )
-                    .finally(() =>
-                      invoke("bot_stop", { sessionId: sessionIdRef.current }).catch(() => {})
-                    );
-                } else {
-                  invoke("bot_stop", { sessionId: sessionIdRef.current }).catch((e) =>
-                    handleCommandError(e, "bot_stop", { silent: true })
-                  );
-                }
-              }}
-            >
-              ■
-            </button>
-          ) : (
-            <button
-              className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center bg-[var(--t1)] text-[var(--bg)] hover:opacity-85 transition-opacity"
-              title="发送（Enter 发送，Shift+Enter 换行）"
-              aria-label="发送"
-              onClick={send}
-            >
-              <svg
-                width="14"
-                height="14"
-                viewBox="0 0 16 16"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
-              >
-                <path d="M8 12.5v-9M3.8 7.7 8 3.5l4.2 4.2" />
-              </svg>
-            </button>
-          )}
-        </div>
-      </div>
+      <MessageList
+        scrollRef={scrollRef}
+        messages={messages}
+        viewedBusy={viewedBusy}
+        copiedIdx={copiedIdx}
+        onCopy={copyMessage}
+        onRemove={removeMessage}
+        onOpenTask={openTaskInMain}
+        onOpenExecSession={switchSession}
+      />
+      <InputArea
+        input={input}
+        setInput={setInput}
+        files={files}
+        setFiles={setFiles}
+        taRef={taRef}
+        slashIdx={slashIdx}
+        setSlashIdx={setSlashIdx}
+        slashDismissed={slashDismissed}
+        setSlashDismissed={setSlashDismissed}
+        send={send}
+        pickFiles={pickFiles}
+        onStop={stopCurrent}
+        viewedBusy={viewedBusy}
+        selecting={selecting}
+        isSubagentSession={isSubagentSession}
+        modelBtnRef={modelBtnRef}
+        modelDropdownRef={modelDropdownRef}
+        effortBtnRef={effortBtnRef}
+        effortDropdownRef={effortDropdownRef}
+        model={{
+          models,
+          provider: apiProvider,
+          activeId: activeModelId,
+          label: modelLabel,
+          menuOpen: modelMenuOpen,
+          setMenuOpen: setModelMenuOpen,
+          onSwitch: switchModel,
+        }}
+        effort={{
+          base: effortBase,
+          effective: effectiveEffort,
+          isOverridden: effortIsOverridden,
+          menuOpen: effortMenuOpen,
+          setMenuOpen: setEffortMenuOpen,
+          setForSession: setEffortForSession,
+        }}
+      />
     </div>
   );
 }
