@@ -2,6 +2,32 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-01（周四）UI 改造 U5-DEBT 批：战役挂账治理（`1cfb9a7`）
+
+**内容**（U1–U4 登记项收口）：①**会话相对时间**——侦查修正 U3b findings 的
+误判：Rust `BotSession` 本就 `rename_all = "camelCase"` 序列化 createdAt/
+updatedAt，`bot_sessions_load` 返回即带，**src-tauri 零改动**；前端 Session
+类型 +可选时间戳（chat-open-session 前端补行不带，按无时间渲染）、format.ts
++`relativeTime`（五档+now 注入+非法/未来回「刚刚」，+2 测试）、SessionList
+下拉行弱色相对时间。②**挂件 ErrorBoundary**（U1 登记）——App.tsx 的类提取
+`src/ui/ErrorBoundary.tsx` 共享，WidgetApp 根包裹（异常不再白屏；ocr medium
+修：非 Error throw 运行时规整）。③**纯浏览器 alert 洪水**（U1 登记）——
+errorHandler 加 `isTauriHost()`（`__TAURI_INTERNALS__` 探测），非 Tauri 宿主
+一律只 console；全局 setup.ts 统一模拟 Tauri 宿主（=真实运行环境），降级分支
+显式 delete 单测（+2）。④**会话过滤时序用例**（U4 登记）——根因 sessionIdRef
+镜像在 passive effect、findByText 可在 effects 前解析，fire 前 `act` flush。
+
+**验证**：vitest **354 绿**（+4）/ tsc / oxlint 0 / knip 0 / **test-all 含
+Rust+审计 exit 0（70s）** / perf 89.3×。ocr 复审 2 条（0H/1M/1L）：medium 修
+（非 Error throw 规整），low 记 1（SessionList 相对时间由 relativeTime 单测+
+集成覆盖，无独立断言）。
+
+**战役最终账**（U0–U5 六批，12 个 commit）：U0 交接（1ddf89d）/ U1 token+
+材质（22cdd36）/ U2 导航+⌘K（1b9e9b2）/ U3a 拆分+memo+lint 清零（6107d92）/
+U3b 换肤（6bc0d7b）/ U4 打磨+a11y（0c69d17）/ U5 挂账治理（1cfb9a7）。
+**唯一剩余挂账**：+/- diff 统计摘要（需 bot-tool 事件面携带 diff 行数，后端
+扩展），维持登记。
+
 ## 2026-10-01（周四）UI 改造 U4-POLISH 收官批：a11y 基线 + 空态统一 + 图标清尾（`0c69d17`）
 
 **内容**：①**a11y 基线**（拍板 §2-6）——六档文字 token 实测 WCAG luminance 后
