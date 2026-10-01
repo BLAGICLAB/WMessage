@@ -2,6 +2,26 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-01（周四）U7-SETTINGS-SHELL：设置壳重设计——分类导航 + 大标题卡片流（`40d7689`）
+
+**老板需求**（参照 ZCode 设置截图）：设置页太乱，重排为左侧分类导航 + 右侧
+大标题卡片流，点设置进新页、点返回回原视图。
+
+**实现**：SettingsPage 布局层改造（面板内容 JSX 零改动）——左侧 w-52 侧栏
+（「← 返回」+ 四分类：通用/任务与工作区/机器人/智能体与扩展，lucide 图标，
+选中 nm-inset + aria-current）+ 右侧大标题 + max-w-3xl 卡片流；五面板四组
+重排。**惰性挂载**（ocr HIGH 采纳）：分类首次激活才挂载、挂后 hidden 切换——
+首屏不跑未访问面板的加载 invoke（migration/mcp/skills 按需拉取），未保存
+输入跨分类保留（旧单页为全面板同挂，此为体验升级）。App settings 视图
+**全屏接管**（早退分支替换 Rail+main，壳内自带 ⌘K），lastViewRef 记录进入前
+视图供返回；view 类型复用 RailView。测试同步 14 处导航（hidden 下 getByRole
+按 a11y 树过滤，需先点侧栏=真实用户路径）。
+
+**验证**：vitest 354 绿 / tsc / oxlint 0 / knip 0 / perf 41×。视觉验收
+（dev shim 实拍）：深色通用/机器人两分类 + 浅色通用三张，骨架逐项对齐截图
+（返回+四分类侧栏、大标题、卡片流、选中态迁移），返回跳回看板实测。ocr 复审
+6 条（1H/1M/4L）：HIGH→惰性挂载、medium→onBack disabled 语义、low 修 1 记 3。
+
 ## 2026-10-01（周四）U6-WINSIZE：主窗口默认尺寸 800×600 → 1200×900（`84d7f13`）
 
 老板需求（宽高各 +50%）。单点配置批：`tauri.conf.json` 主窗口 width/height；
