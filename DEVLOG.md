@@ -2,6 +2,32 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-01（周四）U8-SIDEBAR：设置侧栏十项重排 + 机器人大卡拆解（`9d6aeca`）
+
+**老板需求**（U7 壳的分组细化）：侧栏改十项——通用设置/数据管理/机器人/
+模型设置/记忆/技能/MCP 服务/自进化/桌面整理/词元统计；机器人大卡拆分，
+授权模式留机器人，两个搜索引擎做成 MCP 服务（可选开启）。
+
+**实现**：SECTIONS 十项重排（MigrationPanel 标题本即「桌面清理」→ 桌面整理；
+词元统计全仓无 token 用量数据源 → EmptyState 诚实占位）。机器人大卡拆三卡：
+卡1 开关/Python 三件/审计日志、卡2 授权模式+文件白名单、卡3 智能技能路由+
+外部 API+token；记忆整理→「记忆」、大模型 API+推理强度→「模型设置」（推理
+强度不受 botEnabled 门控）、Tavily/Brave（含互斥提示）→「MCP 服务」与
+McpPanel 同组。**零块搬移**：「机器人」section 三段同名同亮、「MCP 服务」
+两段（原 botEnabled 条件块在 Key 段后闭合，授权/推理/白名单/搜索切出恒显=
+可预配置）。**持久化回归修复**（ocr HIGH×3 采纳）：拆卡后 Python 超时/白名单
+textarea/技能路由等 setConfig 字段失去保存路径（原靠大卡单一保存钮，model
+卡按钮被 botEnabled 门挡）——bot 三卡各补「保存配置」钮 + renderSaveButton
+局部函数消 5 处复制粘贴 + 技能路由补 configBusy 守卫。
+
+**验证**：vitest 354 绿 / tsc / oxlint 0 / knip 0 / perf 59×。视觉验收
+（dev shim 实拍）：深色十项侧栏全清单、「MCP 服务」页（Tavily 已开启/Brave
+已关闭两张搜索引擎卡+互斥提示+保存配置+McpPanel 空态）、「自进化」切换实测。
+ocr 复审 9 条（5H/3M/1L）：HIGH×3 采纳（持久化回归）、HIGH×2 驳回/记录
+（三段 nm-card 为拆卡设计意图；授权/白名单脱离 botEnabled 门为有意预配置）、
+medium 2 修、low 1 记。测试同步：初始渲染改十分类逐项断言、模型/Tavily/
+推理/导出/导入导航改新分类名、两处同名文本改 getAllByText。
+
 ## 2026-10-01（周四）U7-SETTINGS-SHELL：设置壳重设计——分类导航 + 大标题卡片流（`40d7689`）
 
 **老板需求**（参照 ZCode 设置截图）：设置页太乱，重排为左侧分类导航 + 右侧
