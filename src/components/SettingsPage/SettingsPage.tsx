@@ -39,9 +39,29 @@ import { UI_FONT_SIZE_OPTIONS, type ApiProvider, type UiFontSize } from "./const
 import { SkillsPanel } from "./SkillsPanel";
 import { McpPanel } from "./McpPanel";
 import { EvolutionPanel } from "../EvolutionPanel";
-import { ApiProviderSelect } from "./ApiProviderSelect";
 import { ProfileRow } from "./ProfileRow";
 import { ModelRow } from "./ModelRow";
+
+/** 供应商预设（U9 添加供应商网格）：点击 = 切协议 + 预填 baseUrl/模型列表，
+ *  完全落在现有双协议数据模型内（同一协议仅一份配置，预设会覆盖该协议当前
+ *  Base URL/模型列表——网格页注明）。模型名用户可改。 */
+type ProviderPreset = {
+  name: string;
+  icon: string;
+  protocol: "openai" | "anthropic";
+  baseUrl: string;
+  models: string[];
+};
+const PROVIDER_PRESETS: ProviderPreset[] = [
+  { name: "DeepSeek", icon: "🐳", protocol: "openai", baseUrl: "https://api.deepseek.com", models: ["deepseek-chat", "deepseek-reasoner"] },
+  { name: "Kimi", icon: "🌙", protocol: "openai", baseUrl: "https://api.moonshot.cn/v1", models: ["kimi-k2-0711-preview", "moonshot-v1-8k"] },
+  { name: "MiniMax", icon: "🔴", protocol: "anthropic", baseUrl: "https://api.minimaxi.com/anthropic", models: ["MiniMax-M3"] },
+  { name: "OpenRouter", icon: "🛰️", protocol: "openai", baseUrl: "https://openrouter.ai/api/v1", models: ["openrouter/auto"] },
+  { name: "阿里云百炼", icon: "☁️", protocol: "openai", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", models: ["qwen-plus", "qwen-max"] },
+  { name: "OpenAI", icon: "🟢", protocol: "openai", baseUrl: "https://api.openai.com/v1", models: ["gpt-4o", "gpt-4o-mini"] },
+  { name: "Anthropic", icon: "🅰️", protocol: "anthropic", baseUrl: "https://api.anthropic.com", models: ["claude-sonnet-4-20250514"] },
+  { name: "xAI", icon: "⚡", protocol: "openai", baseUrl: "https://api.x.ai/v1", models: ["grok-4"] },
+];
 
 type Props = {
   theme: ThemeSetting;
@@ -105,6 +125,31 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
+  /** 添加供应商网格（U9）：model 分类右栏的子视图 */
+  const [showProviderPicker, setShowProviderPicker] = useState(false);
+  /** 应用供应商预设（U9）：切协议 + 覆盖该协议模型列表（预填 baseUrl/模型名）+
+   *  首个设为 active——完全落在现有双协议数据模型内，预设可整表替换。
+   *  覆盖后立即落盘（同 toggleTavily 模式；显式选择预设=接受覆盖该协议配置）。 */
+  const applyProviderPreset = (p: (typeof PROVIDER_PRESETS)[number]) => {
+    const models = p.models.map((m) => ({
+      id: genModelId(),
+      label: m,
+      model: m,
+      baseUrl: p.baseUrl,
+    }));
+    const next = {
+      ...config,
+      apiProvider: p.protocol,
+      modelsByProvider: { ...config.modelsByProvider, [p.protocol]: models },
+      activeModelId: {
+        ...config.activeModelId,
+        [p.protocol]: models[0]?.id ?? null,
+      },
+    };
+    setConfig(next);
+    void saveConfig(next);
+    setShowProviderPicker(false);
+  };
   const [exporting, setExporting] = useState(false);
   const [importing, setImporting] = useState(false);
   const [exportingWs, setExportingWs] = useState(false);
@@ -1173,19 +1218,127 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
       )}
       {mountedSections.has("model") && (
       <section hidden={activeSection !== "model"} className="space-y-4 pt-4">
+      {/* U9 页首：说明 + 刷新 + 添加供应商 */}
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-xs text-[var(--t5)]">
+          管理模型供应商，配置后可在挂件聊天时选择使用。
+        </p>
+        <div className="flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            className="nm-btn px-2.5 py-1.5 text-xs text-[var(--t3)]"
+            title="重新读取配置（丢弃未保存的本地改动）"
+            onClick={() => {
+              // 显式刷新 = 以服务端配置为准（覆盖未保存改动是预期语义）
+              invoke("bot_get_config")
+                .then((c) => setConfig((prev) => ({ ...prev, ...(c ?? {}) })))
+                .catch((e) =>
+                  console.error("[settings] bot_get_config 刷新失败", e)
+                );
+            }}
+          >
+            刷新
+          </button>
+          <button
+            type="button"
+            className="nm-btn px-3 py-1.5 text-xs text-[var(--t2)]"
+            onClick={() => setShowProviderPicker(true)}
+          >
+            ＋ 添加供应商
+          </button>
+        </div>
+      </div>
       <div className="nm-card p-5">
         {/* 大模型 API 配置（开关开启后显示） */}
         {botEnabled && (
           <div className="space-y-3">
-            <p className="text-xs font-medium text-[var(--t4)]">大模型 API 配置</p>
-            {/* API 协议：自绘下拉（原生 select 弹系统菜单不跟随主题） */}
-            <div className="space-y-1">
-              <p className="text-[10px] text-[var(--t5)]">API 协议</p>
-              <ApiProviderSelect
-                value={config.apiProvider}
-                onChange={(v) => setConfig((c) => ({ ...c, apiProvider: v }))}
-              />
-            </div>
+            {/* U9 双栏：左供应商列表 + 右详情（截图骨架） */}
+            <div className="flex min-h-[320px] gap-4">
+              {/* 左栏：供应商 = 协议槽（绿点 = 该协议已设 active 模型） */}
+              <div className="w-40 shrink-0 space-y-1 border-r border-[var(--edge)] pr-3">
+                <p className="text-[10px] text-[var(--t5)]">供应商</p>
+                {(
+                  [
+                    ["openai", "OpenAI 兼容"],
+                    ["anthropic", "Anthropic 兼容"],
+                  ] as const
+                ).map(([prov, label]) => {
+                  const hasActive =
+                    (config.activeModelId?.[prov] ?? null) !== null;
+                  return (
+                    <button
+                      key={prov}
+                      type="button"
+                      aria-pressed={config.apiProvider === prov}
+                      onClick={() =>
+                        setConfig((c) => ({ ...c, apiProvider: prov }))
+                      }
+                      className={`flex w-full items-center gap-2 rounded-[var(--r-sm)] px-2.5 py-2 text-left text-xs transition-colors duration-100 ${
+                        config.apiProvider === prov
+                          ? "nm-inset text-[var(--t1)]"
+                          : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
+                      }`}
+                    >
+                      <span className="flex-1 truncate">{label}</span>
+                      <span
+                        aria-hidden
+                        className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                          hasActive ? "bg-[var(--success)]" : "bg-[var(--t6)]"
+                        }`}
+                      />
+                    </button>
+                  );
+                })}
+              </div>
+              {/* 右栏详情 */}
+              <div className="min-w-0 flex-1 space-y-3">
+            {showProviderPicker ? (
+              <>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    className="nm-btn px-2 py-1 text-xs text-[var(--t3)]"
+                    onClick={() => setShowProviderPicker(false)}
+                  >
+                    ← 返回
+                  </button>
+                  <p className="text-sm font-medium text-[var(--t1)]">添加供应商</p>
+                </div>
+                <p className="text-[10px] text-[var(--t5)]">
+                  预设会切换协议并覆盖该协议当前的 Base URL 与模型列表（同一协议仅保存一份配置）。
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  {PROVIDER_PRESETS.map((p) => (
+                    <button
+                      key={p.name}
+                      type="button"
+                      onClick={() => applyProviderPreset(p)}
+                      className="nm-btn flex items-center gap-2 px-3 py-2.5 text-left text-xs text-[var(--t2)]"
+                    >
+                      <span aria-hidden className="text-base">{p.icon}</span>
+                      <span className="flex-1 truncate">{p.name}</span>
+                      <span aria-hidden className="text-[10px] text-[var(--t5)]">
+                        {p.protocol === "anthropic" ? "Anthropic 兼容" : "OpenAI 兼容"}
+                      </span>
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      // 创建自定义：关网格并直接加一行空模型开始填写（有真实行为）
+                      setShowProviderPicker(false);
+                      addModel();
+                    }}
+                    className="nm-btn flex items-center gap-2 px-3 py-2.5 text-left text-xs text-[var(--t2)]"
+                  >
+                    <span aria-hidden className="text-base">＋</span>
+                    <span className="flex-1">创建自定义供应商</span>
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+            {/* API 协议选择已上移至左栏供应商列表（U9） */}
             {/* 该协议下的大模型：
                 双协议各自独立维护一份列表，协议切换时整体切换显示；列表可加多个；
                 radio 表示当前 active（机器人实际调用的那个）。老板要求「不设置默认厂商」，
@@ -1265,6 +1418,10 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
               )}
             </div>
             {renderSaveButton("mt-3 flex justify-end")}
+              </>
+            )}
+              </div>
+            </div>
           </div>
         )}
         {/* 推理强度后台默认（RE-1）：抽象档位，后端按具体模型族映射线上参数（不受机器人开关门控） */}

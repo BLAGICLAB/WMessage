@@ -532,7 +532,7 @@ describe("SettingsPage", () => {
     // 切到 Anthropic 后再点添加，验证新行落到 anthropic 协议下
     const trigger = await screen.findByRole("button", { name: /OpenAI 兼容/ });
     await user.click(trigger);
-    await user.click(screen.getByRole("option", { name: /Anthropic 兼容/ }));
+    await user.click(screen.getByRole("button", { name: "Anthropic 兼容" }));
     expect(await screen.findByText(/暂无大模型/)).toBeInTheDocument();
     // 点「添加大模型」（用 role=button 避免和空态描述里同款文字冲突）
     await user.click(screen.getByRole("button", { name: /添加大模型/ }));
@@ -544,7 +544,7 @@ describe("SettingsPage", () => {
     // OpenAI 协议下仍然是空（列表不串协议）
     const trigger2 = screen.getByRole("button", { name: /Anthropic 兼容/ });
     await user.click(trigger2);
-    await user.click(screen.getByRole("option", { name: /OpenAI 兼容/ }));
+    await user.click(screen.getByRole("button", { name: "OpenAI 兼容" }));
     expect(screen.getByText(/暂无大模型/)).toBeInTheDocument();
   });
 
@@ -590,7 +590,7 @@ describe("SettingsPage", () => {
     // 切到 Anthropic
     const trigger = screen.getByRole("button", { name: /OpenAI 兼容/ });
     await user.click(trigger);
-    await user.click(screen.getByRole("option", { name: /Anthropic 兼容/ }));
+    await user.click(screen.getByRole("button", { name: "Anthropic 兼容" }));
     // 现在 Anthropic 协议：只有 Claude
     await screen.findByDisplayValue("Claude Sonnet");
     expect(screen.queryByDisplayValue("DeepSeek")).toBeNull();
@@ -598,7 +598,7 @@ describe("SettingsPage", () => {
     // 切回 OpenAI
     const trigger2 = screen.getByRole("button", { name: /Anthropic 兼容/ });
     await user.click(trigger2);
-    await user.click(screen.getByRole("option", { name: /OpenAI 兼容/ }));
+    await user.click(screen.getByRole("button", { name: "OpenAI 兼容" }));
     // DeepSeek/Kimi 又回来了
     await screen.findByDisplayValue("DeepSeek");
     expect(screen.getByDisplayValue("Kimi")).toBeInTheDocument();
@@ -692,7 +692,7 @@ describe("SettingsPage", () => {
     await user.click(screen.getByRole("button", { name: "模型设置" }));
     const trigger = await screen.findByRole("button", { name: /OpenAI 兼容/ });
     await user.click(trigger);
-    await user.click(screen.getByRole("option", { name: /Anthropic 兼容/ }));
+    await user.click(screen.getByRole("button", { name: "Anthropic 兼容" }));
     // 添加大模型（用 role=button 避免和空态描述里同款文字冲突）
     await user.click(screen.getByRole("button", { name: /添加大模型/ }));
     // 填 label
