@@ -2,6 +2,27 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-01（周四）Mimosa 复扫（UI 战役 U0–U5 后）：攻击面无回归，新增 findings 为既有误报类的细化展开
+
+**扫描**（2026-10-01，deep，seal `sha256:6e5c8c2b…a3b7`，scanId
+`scan-2026-10-01T01-48-35.351Z-6bc8359381bc`，1068 packages）：离线 advisory
+**0 命中**——唯一新增依赖 lucide-react 无已知漏洞。findings 13 条 vs 上次终扫
+7 条，差异核对：
+
+- 12 条（6 high path-traversal + 6 medium 跨文件污点）集中在
+  `src-tauri/src/py/document.rs`，污点链与上次误报类①**同源**（「Web 请求输入
+  → eval/config.rs:64 文件路径」；eval 为老板拍板保留的 dev 工具，CLI 本地
+  数据源、无生产 Web 暴露面，AUDIT-FULL §7 登记）——本次为同一链在
+  document.rs 六个 load 调用点的细化展开（检测器粒度变化），非代码回归：
+  `git log 00c7fc7..HEAD -- src-tauri` 为空，战役 14 commit 零触及 src-tauri。
+- 1 条 medium MongoDB 排序注入 @ `target/doc/static.files/search-*.js`——与
+  上次同款（rustdoc 构建产物内嵌脚本，非项目代码）。
+
+**结论**：对照 §1.2 复核，UI 改造战役攻击面无回归；document.rs 污点链沿用
+既往登记判定（dev 工具误报类）。原始报告：
+`~/.mimosa/security-scans/project-35c8c4f5947b2bbdf573b390/scan-2026-10-01T01-48-35.351Z-6bc8359381bc/`。
+（可选降噪：扫描排除 `src-tauri/target/`；document.rs 链如需人工复核另开专项。）
+
 ## 2026-10-01（周四）UI 战役终审：唯一剩余挂账「+X -Y diff 统计」判定不适用，正式关闭
 
 **调研结论**（证据链，纯文档追记零代码）：「N 个文件已更改 +X -Y」摘要条的行级
