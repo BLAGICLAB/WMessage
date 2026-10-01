@@ -8,6 +8,14 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
+import {
+  ArrowLeft,
+  Bot,
+  Boxes,
+  DatabaseBackup,
+  Settings2,
+  type LucideIcon,
+} from "lucide-react";
 
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
 import type { ThemeSetting } from "../../theme";
@@ -36,10 +44,34 @@ type Props = {
   /** 可选：未传时按钮置 disabled（App.tsx 已传；测试可选） */
   onExportWorkspace?: () => Promise<void>;
   onImportWorkspace?: () => Promise<void>;
+  /** 返回入口（U7 设置壳）：未传时按钮 disabled（App 恒传；测试可省） */
+  onBack?: () => void;
 };
 
-/** 设置页：个人资料 + 深浅色模式 + 任务数据管理 + 外部机器人 API 开关（默认关闭）+ token 展示与复制 */
-export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTasks, onExportWorkspace, onImportWorkspace }: Props) {
+/** 设置分类（U7 壳）：侧栏顺序 = 源码面板顺序；面板 keep-mounted hidden，
+ *  切分类不卸载（未保存输入保留、既有测试按文本断言零导航） */
+type SectionKey = "general" | "data" | "bot" | "agents";
+const SECTIONS: { key: SectionKey; label: string; icon: LucideIcon }[] = [
+  { key: "general", label: "通用", icon: Settings2 },
+  { key: "data", label: "任务与工作区", icon: DatabaseBackup },
+  { key: "bot", label: "机器人", icon: Bot },
+  { key: "agents", label: "智能体与扩展", icon: Boxes },
+];
+
+/** 设置壳（U7 重设计）：左侧分类导航 + 右侧分类内容（大标题 + 卡片流）。
+ *  面板惰性挂载（ocr HIGH）：分类首次激活才挂载，挂后保留（hidden 切换）——
+ *  首屏不跑未访问面板的加载 invoke，未保存输入跨分类保留。 */
+export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTasks, onExportWorkspace, onImportWorkspace, onBack }: Props) {
+  const [activeSection, setActiveSection] = useState<SectionKey>("general");
+  const [mountedSections, setMountedSections] = useState<ReadonlySet<SectionKey>>(
+    new Set(["general"])
+  );
+  const openSection = (key: SectionKey) => {
+    setActiveSection(key);
+    setMountedSections((prev) =>
+      prev.has(key) ? prev : new Set(prev).add(key)
+    );
+  };
   const [status, setStatus] = useState<ApiStatus>({
     enabled: false,
     port: 4763,
@@ -690,8 +722,46 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     }
   };
 
+  const activeMeta = SECTIONS.find((s) => s.key === activeSection) ?? SECTIONS[0];
   return (
-    <div className="space-y-4">
+    <div className="flex h-full min-h-0 bg-[var(--bg)]">
+      {/* 左侧分类导航（U7 设置壳）：返回 + 分类项（选中 nm-inset 语义） */}
+      <aside className="flex w-52 shrink-0 flex-col gap-1 overflow-y-auto border-r border-[var(--edge)] p-3">
+        <button
+          type="button"
+          className="nm-btn mb-2 flex h-8 items-center gap-2 px-2.5 text-sm text-[var(--t3)]"
+          onClick={() => onBack?.()}
+          disabled={!onBack}
+          title="返回主界面"
+        >
+          <ArrowLeft size={15} aria-hidden />
+          返回
+        </button>
+        {SECTIONS.map((s) => (
+        <button
+          key={s.key}
+          type="button"
+          aria-current={activeSection === s.key || undefined}
+          onClick={() => openSection(s.key)}
+            className={`flex h-8 w-full items-center gap-2 rounded-[var(--r-sm)] px-2.5 text-sm transition-colors duration-100 ${
+              activeSection === s.key
+                ? "nm-inset rounded-[var(--r-sm)] text-[var(--t1)]"
+                : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
+            }`}
+          >
+            <s.icon size={15} aria-hidden />
+            <span className="flex-1 text-left">{s.label}</span>
+          </button>
+        ))}
+      </aside>
+      {/* 右侧分类内容：大标题 + 卡片流（max-w 收行宽，截图节奏） */}
+      <div className="min-w-0 flex-1 overflow-y-auto">
+        <div className="mx-auto max-w-3xl px-8 py-6">
+          <h1 className="text-xl font-semibold text-[var(--t1)]">
+            {activeMeta.label}
+          </h1>
+          {mountedSections.has("general") && (
+          <section hidden={activeSection !== "general"} className="space-y-4 pt-4">
       {/* 个人资料 */}
       <div className="nm-card p-5">
         <h2 className="text-lg font-semibold text-[var(--t1)]">个人资料</h2>
@@ -783,6 +853,10 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         </div>
       </div>
 
+      </section>
+          )}
+          {mountedSections.has("data") && (
+          <section hidden={activeSection !== "data"} className="space-y-4 pt-4">
       {/* 任务数据管理 */}
       <div className="nm-card p-5">
         <h2 className="text-lg font-semibold text-[var(--t1)]">任务数据管理</h2>
@@ -868,6 +942,10 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         </div>
       </div>
 
+      </section>
+          )}
+          {mountedSections.has("bot") && (
+          <section hidden={activeSection !== "bot"} className="space-y-4 pt-4">
       <div className="nm-card p-5">
         <h2 className="text-lg font-semibold text-[var(--t1)]">机器人设置</h2>
 
@@ -1410,10 +1488,18 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         )}
       </div>
 
+      </section>
+          )}
+          {mountedSections.has("agents") && (
+          <section hidden={activeSection !== "agents"} className="space-y-4 pt-4">
       <SkillsPanel />
       <McpPanel />
       <EvolutionPanel />
       <MigrationPanel />
+      </section>
+          )}
+        </div>
+      </div>
 
       {/* 机器人审计日志弹窗 */}
       {logOpen && (

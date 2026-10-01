@@ -151,7 +151,7 @@ function App() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const tasksRef = useRef<Task[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [view, setView] = useState<"board" | "archive" | "workspace" | "trash" | "settings">("board");
+  const [view, setView] = useState<RailView | "settings">("board");
   const [theme, setTheme] = useState<ThemeSetting>(getSetting);
   const [paletteOpen, setPaletteOpen] = useState(false);
 
@@ -684,6 +684,39 @@ function App() {
     mutateFire((prev) => prev.filter((t) => t.id !== taskId));
   };
 
+  // 记录进入设置前的视图（U7 设置壳）：「返回」跳回进入前的界面
+  const lastViewRef = useRef<RailView>("board");
+  useEffect(() => {
+    if (view !== "settings") lastViewRef.current = view;
+  }, [view]);
+
+  // 设置视图全屏接管（U7）：替换左导航+主内容，壳内自带返回与分类导航
+  if (view === "settings") {
+    return (
+      <ErrorBoundary>
+        <div className="h-screen overflow-hidden bg-[var(--bg)]">
+          <SettingsPage
+            theme={theme}
+            onThemeChange={setTheme}
+            onExportTasks={exportTasks}
+            onImportTasks={importTasks}
+            onExportWorkspace={exportWorkspace}
+            onImportWorkspace={importWorkspace}
+            onBack={() => setView(lastViewRef.current)}
+          />
+          {paletteOpen && (
+            <CommandPalette
+              onClose={() => setPaletteOpen(false)}
+              tasks={tasks}
+              onJumpTask={jumpToTask}
+              onJumpSession={jumpToSession}
+            />
+          )}
+        </div>
+      </ErrorBoundary>
+    );
+  }
+
   return (
     <ErrorBoundary>
       <div className="flex h-screen overflow-hidden bg-[var(--bg)]">
@@ -732,7 +765,6 @@ function App() {
           <RailButton
             icon={SettingsIcon}
             label="设置"
-            active={view === "settings"}
             onClick={() => setView("settings")}
           />
         </nav>
@@ -763,16 +795,7 @@ function App() {
               onUpdate={updateTask}
               onDelete={hardDeleteTask}
             />
-          ) : (
-            <SettingsPage
-              theme={theme}
-              onThemeChange={setTheme}
-              onExportTasks={exportTasks}
-              onImportTasks={importTasks}
-              onExportWorkspace={exportWorkspace}
-              onImportWorkspace={importWorkspace}
-            />
-          )}
+          ) : null}
           {/* 全局确认弹窗（老板 14:45 拍板：confirm 走主窗口，不走 widget 挂件） */}
           <ConfirmMap />
         </main>

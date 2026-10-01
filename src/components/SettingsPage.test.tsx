@@ -1,6 +1,6 @@
 /// <reference types="node" />
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SettingsPage } from "./SettingsPage";
 import type { ThemeSetting } from "../theme";
@@ -122,16 +122,20 @@ const defaultProps = {
 describe("SettingsPage", () => {
   it("初始渲染：所有主要 section 都出现", async () => {
     render(<SettingsPage {...defaultProps} />);
-    // 各 section 标题
+    // U7 壳：分类惰性挂载——逐分类导航断言各面板标题
     expect(screen.getByText("个人资料")).toBeInTheDocument();
     expect(screen.getByText("通用设置")).toBeInTheDocument();
-    expect(screen.getByText("任务数据管理")).toBeInTheDocument();
-    expect(screen.getByText("机器人设置")).toBeInTheDocument();
-    expect(screen.getByText("机器人技能")).toBeInTheDocument();
     // 主题三按钮
     expect(screen.getByText("☀️ 浅色")).toBeInTheDocument();
     expect(screen.getByText("🌙 深色")).toBeInTheDocument();
     expect(screen.getByText("🖥️ 跟随系统")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "任务与工作区" }));
+    expect(screen.getByText("任务数据管理")).toBeInTheDocument();
+    expect(screen.getByText("工作区管理")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "机器人" }));
+    expect(screen.getByText("机器人设置")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "智能体与扩展" }));
+    expect(screen.getByText("机器人技能")).toBeInTheDocument();
     // 等待初始 invoke 异步加载完成
     await waitFor(() => {
       expect(mocks.invokeMock).toHaveBeenCalledWith("bot_get_enabled");
@@ -201,6 +205,8 @@ describe("SettingsPage", () => {
       return null;
     });
     render(<SettingsPage {...defaultProps} />);
+    // U7：导航到「机器人」分类
+    await user.click(screen.getByRole("button", { name: "机器人" }));
     await waitFor(() => {
       expect(mocks.invokeMock).toHaveBeenCalledWith("bot_get_enabled");
     });
@@ -254,6 +260,8 @@ describe("SettingsPage", () => {
       return null;
     });
     render(<SettingsPage {...defaultProps} />);
+    // U7：导航到「机器人」分类
+    await user.click(screen.getByRole("button", { name: "机器人" }));
     // 「Tavily 搜索」行出现（开关初始为关）
     const title = await screen.findByText("Tavily 搜索");
     const row = title.closest("div")?.parentElement;
@@ -309,6 +317,8 @@ describe("SettingsPage", () => {
       return null;
     });
     render(<SettingsPage {...defaultProps} />);
+    // U7：导航到「机器人」分类
+    await user.click(screen.getByRole("button", { name: "机器人" }));
     // 「推理强度」四档控件出现；缺字段 → 「中」是选中态（nm-inset）。
     // 门在 botEnabled 翻转后才打开，放宽轮询窗口防时序抖动
     const title = await screen.findByText("推理强度", {}, { timeout: 3000 });
@@ -358,6 +368,8 @@ describe("SettingsPage", () => {
       return null;
     });
     render(<SettingsPage {...defaultProps} />);
+    // U7：导航到「机器人」分类
+    fireEvent.click(screen.getByRole("button", { name: "机器人" }));
     expect(
       await screen.findByText(/已开启但未填 key/)
     ).toBeInTheDocument();
@@ -393,6 +405,8 @@ describe("SettingsPage", () => {
       return null;
     });
     render(<SettingsPage {...defaultProps} />);
+    // U7：导航到「机器人」分类
+    await user.click(screen.getByRole("button", { name: "机器人" }));
     // 已存 key：placeholder 提示 + 输入框不回填
     const input = await screen.findByPlaceholderText(/已存入系统凭据存储/);
     expect(input).toHaveValue("");
@@ -425,6 +439,8 @@ describe("SettingsPage", () => {
     const onExportTasks = vi.fn(async () => {});
     const user = userEvent.setup();
     render(<SettingsPage {...defaultProps} onExportTasks={onExportTasks} />);
+    // U7：导航到「任务与工作区」分类（导出按钮所在面板）
+    await user.click(screen.getByRole("button", { name: "任务与工作区" }));
     // eefa78f 起页面有两个「📤 导出」（任务导出 + 工作区导出），取第一个（任务导出）
     await user.click(screen.getAllByText("📤 导出")[0]);
     await waitFor(() => {
@@ -461,6 +477,8 @@ describe("SettingsPage", () => {
       return null;
     });
     render(<SettingsPage {...defaultProps} />);
+    // U7 设置壳：模型面板在「机器人」分类下（hidden section 的元素查不到 role，先导航）
+    fireEvent.click(screen.getByRole("button", { name: "机器人" }));
     // 空态：列表为空提示 + 添加按钮（用 role=button 避免和空态描述里“添加大模型”同款文字冲突）
     expect(await screen.findByText(/暂无大模型/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /添加大模型/ })).toBeInTheDocument();
@@ -495,6 +513,8 @@ describe("SettingsPage", () => {
       return null;
     });
     render(<SettingsPage {...defaultProps} />);
+    // U7：导航到「机器人」分类
+    await user.click(screen.getByRole("button", { name: "机器人" }));
     // 切到 Anthropic 后再点添加，验证新行落到 anthropic 协议下
     const trigger = await screen.findByRole("button", { name: /OpenAI 兼容/ });
     await user.click(trigger);
@@ -547,6 +567,8 @@ describe("SettingsPage", () => {
       return null;
     });
     render(<SettingsPage {...defaultProps} />);
+    // U7：导航到「机器人」分类
+    await user.click(screen.getByRole("button", { name: "机器人" }));
     // 默认 OpenAI 协议：DeepSeek + Kimi 都在，Claude 不在
     await screen.findByDisplayValue("DeepSeek");
     expect(screen.getByDisplayValue("Kimi")).toBeInTheDocument();
@@ -601,6 +623,8 @@ describe("SettingsPage", () => {
       return null;
     });
     render(<SettingsPage {...defaultProps} />);
+    // U7：导航到「机器人」分类
+    await user.click(screen.getByRole("button", { name: "机器人" }));
     await screen.findByDisplayValue("DeepSeek");
     // 初始：m1(DeepSeek) active，m2(Kimi) 不是
     expect(screen.getByTitle("当前选中（点其它条目可切换）")).toBeInTheDocument();
@@ -650,7 +674,8 @@ describe("SettingsPage", () => {
       return null;
     });
     render(<SettingsPage {...defaultProps} />);
-    // 切到 Anthropic
+    // U7：导航到「机器人」分类；切到 Anthropic
+    await user.click(screen.getByRole("button", { name: "机器人" }));
     const trigger = await screen.findByRole("button", { name: /OpenAI 兼容/ });
     await user.click(trigger);
     await user.click(screen.getByRole("option", { name: /Anthropic 兼容/ }));

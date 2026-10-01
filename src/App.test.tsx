@@ -559,6 +559,8 @@ describe("App", () => {
     // 进设置页点「📥 导入」（eefa78f 起有任务导入 + 工作区导入两个，取第一个 = 任务导入）
     // U2：设置入口迁入左侧导航栏（icon + 文字「设置」，旧 ⚙️ 的 title 属性取消）
     await user.click(screen.getByText("设置"));
+    // U7 设置壳：任务数据面板在「任务与工作区」分类下（hidden 查不到 role，先导航）
+    await user.click(screen.getByRole("button", { name: "任务与工作区" }));
     const importBtn = (await screen.findAllByRole("button", { name: "📥 导入" }))[0];
     await user.click(importBtn);
     // 导入完成 alert（证明 importTasks 全流程走完）
@@ -578,8 +580,8 @@ describe("App", () => {
     expect(mocks.invokeMock.mock.invocationCallOrder[secondLoadIdx]).toBeGreaterThan(
       importOrder
     );
-    // setTasks 收到 fresh 数据：切回看板，fresh 任务在、种子任务不在
-    await user.click(screen.getByText("首页"));
+    // setTasks 收到 fresh 数据：点设置壳「返回」回看板（U7：进入前视图 = 首页），fresh 任务在、种子任务不在
+    await user.click(screen.getByRole("button", { name: /返回/ }));
     expect(await screen.findByText("导入的 fresh 任务")).toBeInTheDocument();
     expect(screen.queryByText("梳理 WMessage 需求清单")).not.toBeInTheDocument();
   });
