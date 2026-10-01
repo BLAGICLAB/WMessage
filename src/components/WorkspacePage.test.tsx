@@ -60,9 +60,8 @@ describe("WorkspacePage", () => {
       expect(mocks.invokeMock).toHaveBeenCalledWith("workspace_load");
     });
     expect(screen.getByText("+ 新建工作区")).toBeInTheDocument();
-    expect(
-      screen.getByText(/暂无工作区：新建一个/)
-    ).toBeInTheDocument();
+    // U4：空态改 EmptyState 组件（标题+说明拆两行）
+    expect(screen.getByText(/暂无工作区/)).toBeInTheDocument();
   });
 
   it("点击 + 新建工作区：调用 workspace_upsert，新工作区标题「新工作区」进入编辑态", async () => {

@@ -20,10 +20,11 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { Pencil, Trash2 } from "lucide-react";
+import { FolderOpen, Pencil, Trash2 } from "lucide-react";
 import type { WorkspaceItem, WorkspaceLink } from "../types";
 import { basename } from "../format";
 import { IconButton } from "../ui/IconButton";
+import { EmptyState } from "./EmptyState";
 import {
   loadWorkspaceFromDb,
   upsertWorkspaceItems,
@@ -295,9 +296,12 @@ export function WorkspacePage() {
       </button>
 
       {items.length === 0 ? (
-        <p className="text-xs text-[var(--t5)] text-center mt-10">
-          暂无工作区：新建一个，把常用文件、文件夹、网址放进卡片里
-        </p>
+        <EmptyState
+          icon={<FolderOpen size={18} aria-hidden />}
+          title="暂无工作区"
+          description="新建一个，把常用文件、文件夹、网址放进卡片里"
+          action={{ label: "新建工作区", onClick: addItem }}
+        />
       ) : (
         <DndContext
           sensors={sensors}

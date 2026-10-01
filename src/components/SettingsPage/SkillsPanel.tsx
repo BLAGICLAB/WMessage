@@ -6,7 +6,9 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
+import { FolderInput, Trash2 } from "lucide-react";
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
+import { EmptyState } from "../EmptyState";
 import type { SkillInfo, SkillOutcome, SkillOutcomeKind } from "./types";
 
 /** Skill 状态徽章颜色 + 图标 */
@@ -124,9 +126,11 @@ export function SkillsPanel() {
         {error && <span className="text-xs text-[var(--danger)]">{error}</span>}
       </div>
       {skills.length === 0 ? (
-        <p className="mt-3 text-xs text-[var(--t5)]">
-          暂无技能：点「导入技能文件夹」选择含 SKILL.md 的文件夹
-        </p>
+        <EmptyState
+          icon={<FolderInput size={18} aria-hidden />}
+          title="暂无技能"
+          description="点上方「导入技能文件夹」选择含 SKILL.md 的文件夹"
+        />
       ) : (
         <div className="mt-3 flex flex-col gap-1.5">
           {skills.map((s) => (
@@ -139,12 +143,13 @@ export function SkillsPanel() {
               </span>
               {s.lastOutcome && <SkillOutcomeBadge outcome={s.lastOutcome} />}
               <button
-                className="shrink-0 text-xs text-[var(--t5)] hover:text-[var(--danger)]"
+                className="shrink-0 flex items-center text-[var(--t5)] hover:text-[var(--danger)]"
                 onClick={() => removeSkill(s.name)}
                 disabled={busy}
+                aria-label={`删除技能 ${s.name}`}
                 title="删除技能"
               >
-                🗑
+                <Trash2 size={12} aria-hidden />
               </button>
             </div>
           ))}

@@ -5,14 +5,14 @@
 
 import type { Dispatch, RefObject, SetStateAction } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { basename } from "../../format";
-import { isImagePath } from "./UserBubbleContent";
+import { Brain, Plus, Square, Zap } from "lucide-react";
+import { basename, isImagePath } from "../../format";
 import { EFFORT_LABELS, PERM_LABELS, PROVIDER_LABELS, SLASH_COMMANDS } from "./constants";
 import type { ModelItem, PermMode, ReasoningLevel } from "./types";
 
 /** 输入框占位文案：回复中 / 带附件 / 选任务 / 默认 四态（原嵌套三元提取） */
 function placeholderOf(viewedBusy: boolean, hasFiles: boolean, selecting: boolean): string {
-  if (viewedBusy) return "回复中…（点右侧 ■ 或输入 /stop 可停止）";
+  if (viewedBusy) return "回复中…（点右侧停止键或输入 /stop 可停止）";
   if (hasFiles) return "输入指令，如：润色这个文件";
   if (selecting) return "输入操作指令，如：标记完成";
   return "和机器人说点什么";
@@ -227,12 +227,12 @@ export function InputArea({
           <button
             type="button"
             aria-label="添加文件或图片"
-            className="shrink-0 h-7 px-1.5 flex items-center justify-center rounded-lg text-lg leading-none text-[var(--t4)] hover:text-[var(--t2)] hover:bg-[var(--hover-bg)] transition-colors"
+            className="shrink-0 h-7 px-1.5 flex items-center justify-center rounded-lg text-[var(--t4)] hover:text-[var(--t2)] hover:bg-[var(--hover-bg)] transition-colors"
             title="添加文件或图片，和消息一起发送（如：添加 Word 后输入「润色」；图片发给机器人识别：png / jpg / jpeg / webp / gif / bmp，最大 3MB/张、最多 4 张/消息）"
             onClick={pickFiles}
             disabled={viewedBusy}
           >
-            ＋
+            <Plus size={15} aria-hidden />
           </button>
           <div className="flex-1 min-w-0" />
           {/* 🛡 授权模式（U3b 只读展示）：读 bot-config 的 perm_mode，设置页维护；
@@ -253,7 +253,10 @@ export function InputArea({
               title="切换模型"
               onClick={() => model.setMenuOpen((v) => !v)}
             >
-              <span className="truncate max-w-[150px]">🧠 {model.label}</span>
+              <span className="flex min-w-0 items-center gap-1 truncate">
+                <Brain size={13} aria-hidden className="shrink-0" />
+                <span className="truncate max-w-[150px]">{model.label}</span>
+              </span>
               <span className="shrink-0 text-[10px]">
                 {model.menuOpen ? "▴" : "▾"}
               </span>
@@ -313,9 +316,12 @@ export function InputArea({
               title="推理强度：只影响当前会话的发送，不写入设置"
               onClick={() => effort.setMenuOpen((v) => !v)}
             >
-              <span>
-                ⚡ {EFFORT_LABELS[effort.effective]}
-                {effort.isOverridden ? "" : "·默认"}
+              <span className="flex items-center gap-1">
+                <Zap size={13} aria-hidden className="shrink-0" />
+                <span>
+                  {EFFORT_LABELS[effort.effective]}
+                  {effort.isOverridden ? "" : "·默认"}
+                </span>
               </span>
               <span className="shrink-0 text-[10px]">
                 {effort.menuOpen ? "▴" : "▾"}
@@ -359,7 +365,7 @@ export function InputArea({
             <button
               type="button"
               aria-label={isSubagentSession ? "取消子任务" : "停止当前回复"}
-              className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center border border-[var(--danger)] text-[10px] text-[var(--danger)] hover:bg-[var(--hover-bg)] transition-colors"
+              className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center border border-[var(--danger)] text-[var(--danger)] hover:bg-[var(--hover-bg)] transition-colors"
               title={
                 isSubagentSession
                   ? "取消子任务（cancel_subagent）"
@@ -367,7 +373,7 @@ export function InputArea({
               }
               onClick={onStop}
             >
-              ■
+              <Square size={10} aria-hidden fill="currentColor" />
             </button>
           ) : (
             <button

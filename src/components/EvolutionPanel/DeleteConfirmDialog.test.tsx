@@ -29,8 +29,8 @@ describe("DeleteConfirmDialog 焦点管理与关闭路径", () => {
     render(
       <DeleteConfirmDialog proposal={proposal} busy={false} onConfirm={() => {}} onCancel={onCancel} />
     );
-    // 内卡点击不外冒
-    fireEvent.click(screen.getByText("🗑️ 彻底删除提案"));
+    // 内卡点击不外冒（U4：标题 emoji 改 lucide 图标，断言按文本）
+    fireEvent.click(screen.getByText("彻底删除提案"));
     expect(onCancel).not.toHaveBeenCalled();
     fireEvent.click(screen.getByTestId("delete-confirm-modal"));
     expect(onCancel).toHaveBeenCalledTimes(1);

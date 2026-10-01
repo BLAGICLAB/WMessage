@@ -139,7 +139,7 @@ describe("TodoCard (归档/回收站版)", () => {
     render(
       <TodoCard task={baseTask} archived onUpdate={onUpdate} onDelete={onDelete} />
     );
-    expect(screen.getByText("↩ 恢复")).toBeInTheDocument();
+    expect(screen.getByText("恢复")).toBeInTheDocument();
     expect(screen.queryByTitle("标记完成")).not.toBeInTheDocument();
     // 标题行右侧的删除按钮（🗑️）在归档态不渲染
     expect(screen.queryByTitle("删除任务")).not.toBeInTheDocument();
@@ -151,7 +151,7 @@ describe("TodoCard (归档/回收站版)", () => {
     render(
       <TodoCard task={baseTask} trashed onUpdate={onUpdate} onDelete={onDelete} />
     );
-    expect(screen.getByText("↩ 恢复")).toBeInTheDocument();
+    expect(screen.getByText("恢复")).toBeInTheDocument();
     expect(screen.getByText(/彻底删除/)).toBeInTheDocument();
   });
 

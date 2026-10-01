@@ -7,6 +7,7 @@
 
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
+import { Trash2, Undo2 } from "lucide-react";
 import { useDraggable } from "@dnd-kit/core";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -575,7 +576,8 @@ export function TodoCardView({
             onUpdate(task.id, { archived: false, completedAt: Date.now() })
           }
         >
-          ↩ 恢复
+          <Undo2 size={11} aria-hidden className="mr-1" />
+          恢复
         </button>
       )}
 
@@ -586,7 +588,8 @@ export function TodoCardView({
             onPointerDown={stop}
             onClick={() => onUpdate(task.id, { deletedAt: undefined })}
           >
-            ↩ 恢复
+            <Undo2 size={11} aria-hidden className="mr-1" />
+            恢复
           </button>
           <button
             className="nm-btn px-3 py-1 text-xs text-red-400"
@@ -603,7 +606,8 @@ export function TodoCardView({
               onDelete(task.id);
             }}
           >
-            🗑 彻底删除
+            <Trash2 size={11} aria-hidden className="mr-1 inline" />
+            彻底删除
           </button>
         </div>
       )}
@@ -789,12 +793,12 @@ export function TodoCardView({
             </p>
             {!archived && (
               <button
-                className="ml-auto shrink-0 w-5 h-5 flex items-center justify-center text-[14px] leading-none text-[var(--t5)] hover:text-[var(--danger)]"
+                className="ml-auto shrink-0 w-5 h-5 flex items-center justify-center text-[var(--t5)] hover:text-[var(--danger)]"
                 title="删除任务"
                 onPointerDown={stop}
                 onClick={() => onDelete(task.id)}
               >
-                🗑️
+                <Trash2 size={12} aria-hidden />
               </button>
             )}
           </div>
@@ -816,8 +820,9 @@ export function TodoCardView({
             className="nm-card w-full max-w-md p-5 flex flex-col gap-3"
             onPointerDown={(e) => e.stopPropagation()}
           >
-            <div className="text-sm font-medium text-[var(--t2)]">
-              🗑 彻底删除任务卡
+            <div className="flex items-center gap-1.5 text-sm font-medium text-[var(--t2)]">
+              <Trash2 size={13} aria-hidden className="text-[var(--danger)]" />
+              彻底删除任务卡
             </div>
             <div className="text-xs text-[var(--t3)] leading-relaxed">
               任务卡「<span className="text-[var(--t2)] font-medium">{task.title}</span>」绑定了
@@ -865,7 +870,10 @@ export function TodoCardView({
                   }
                 }}
               >
-                <span className="font-medium">🗑 全部删除</span>
+                <span className="flex items-center gap-1 font-medium">
+                  <Trash2 size={11} aria-hidden />
+                  全部删除
+                </span>
                 <span className="text-[10px] text-[var(--t4)] font-normal">任务卡删除，并把绑定的本地{boundFiles.length > 1 ? "文件/文件夹" : boundFiles[0].isDir ? "文件夹" : "文件"}移到废纸篓/回收站</span>
               </button>
               <button

@@ -7,6 +7,18 @@ export function basename(p: string): string {
   return parts[parts.length - 1] || p;
 }
 
+/** 图片扩展名白名单（与 Rust bot_chat.rs::IMAGE_EXTS 对齐；后端 attach_images
+ *  按同一列表判断是否转 base64 image_url）。改动需两侧同步。 */
+const IMAGE_EXTS = ["png", "jpg", "jpeg", "webp", "gif", "bmp"] as const;
+const IMAGE_EXT_SET = new Set<string>(IMAGE_EXTS);
+
+/** 路径后缀是否图片类型（大小写不敏感）。无后缀或未知后缀按文件处理。
+ *  （U4 自 ChatPanel/UserBubbleContent 归位：纯路径谓词与 basename 同属此处） */
+export function isImagePath(p: string): boolean {
+  const m = p.toLowerCase().match(/\.([a-z0-9]+)$/);
+  return m ? IMAGE_EXT_SET.has(m[1]) : false;
+}
+
 // due 格式兼容两种："YYYY-MM-DD"（旧数据）与 "YYYY-MM-DDTHH:mm"
 // 输出含年份：与完成时间显示对齐（避免跨年任务识别不清）
 export function formatDue(due: string): string {

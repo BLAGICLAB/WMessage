@@ -15,6 +15,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { Trash2 } from "lucide-react";
 import { handleCommandError } from "../../lib/errorHandler";
 import { Toggle } from "../Toggle";
 import { DeleteConfirmDialog } from "./DeleteConfirmDialog";
@@ -420,13 +421,14 @@ function ProposalCard({
         </button>
         <div className="flex-1" />
         <button
-          className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)] hover:text-[var(--danger)] disabled:opacity-50"
+          className="nm-btn inline-flex items-center gap-1 px-3 py-1.5 text-xs text-[var(--t3)] hover:text-[var(--danger)] disabled:opacity-50"
           onClick={() => onDelete(proposal)}
           disabled={busy}
           title="彻底删除（仅 status=pending 可删，其他用回滚）"
           data-testid={`btn-delete-${proposal.proposal_id}`}
         >
-          🗑️ 删除
+          <Trash2 size={11} aria-hidden />
+          删除
         </button>
       </div>
     </div>

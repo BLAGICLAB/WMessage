@@ -5,6 +5,7 @@
 // 长会话掉帧主因）。回调句柄由父级 useCallback 固定，memo 浅比较即可命中。
 
 import { memo, useState, type ComponentType } from "react";
+import { Copy, FileText, MessagesSquare, Pin, Trash2 } from "lucide-react";
 import { basename } from "../../format";
 import { extractFilePaths, openTarget } from "../../lib/openTarget";
 import { MarkdownText } from "../MarkdownText";
@@ -113,7 +114,8 @@ function MsgBubbleBase({ msg: m, idx, isCopied, busy, onCopy, onRemove, onOpenTa
             className="nm-btn mt-1 inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t2)]"
             onClick={() => onOpenExecSession(m.actionSessionId!)}
           >
-            💬 查看执行对话
+            <MessagesSquare size={11} aria-hidden />
+            查看执行对话
           </button>
         )}
       </div>
@@ -126,7 +128,14 @@ function MsgBubbleBase({ msg: m, idx, isCopied, busy, onCopy, onRemove, onOpenTa
               title="复制回复内容"
               onClick={() => onCopy(idx, m.content)}
             >
-              {isCopied ? "✓ 已复制" : "📋 复制"}
+              {isCopied ? (
+                "✓ 已复制"
+              ) : (
+                <>
+                  <Copy size={11} aria-hidden />
+                  复制
+                </>
+              )}
             </button>
           )}
           {hasContent && (
@@ -136,7 +145,8 @@ function MsgBubbleBase({ msg: m, idx, isCopied, busy, onCopy, onRemove, onOpenTa
               onClick={() => onRemove(idx)}
               disabled={busy}
             >
-              🗑 移除
+              <Trash2 size={11} aria-hidden />
+              移除
             </button>
           )}
           <FileSummary fps={fps} />
@@ -147,7 +157,8 @@ function MsgBubbleBase({ msg: m, idx, isCopied, busy, onCopy, onRemove, onOpenTa
               title={`打开任务：${r.title}`}
               onClick={() => onOpenTask(r)}
             >
-              <span className="truncate max-w-[260px]">📌 {r.title}</span>
+              <Pin size={11} aria-hidden className="shrink-0" />
+              <span className="truncate max-w-[260px]">{r.title}</span>
             </button>
           ))}
         </div>
@@ -215,7 +226,10 @@ function FileSummary({ fps }: { fps: string[] }) {
         openTarget(f);
       }}
     >
-      <span className="truncate max-w-[280px]">📄 {basename(f)}</span>
+      <span className="truncate max-w-[280px]">
+        <FileText size={11} aria-hidden className="mr-1 inline text-[var(--t4)]" />
+        {basename(f)}
+      </span>
     </button>
   );
   // 统一 DOM 形状（w-full 容器），≤2 与 >2 只是容器内子元素不同
@@ -232,7 +246,8 @@ function FileSummary({ fps }: { fps: string[] }) {
             title={open ? "收起文件列表" : "展开文件列表"}
             onClick={() => setOpen((v) => !v)}
           >
-            📄 {fps.length} 个文件
+            <FileText size={11} aria-hidden />
+            {fps.length} 个文件
             <span aria-hidden>{open ? "▴" : "▾"}</span>
           </button>
           {open && <div className="mt-1 flex flex-wrap gap-1">{fps.map(pillOf)}</div>}

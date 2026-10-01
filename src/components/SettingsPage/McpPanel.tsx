@@ -8,9 +8,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Pencil, Trash2 } from "lucide-react";
+import { Pencil, Plug, Trash2 } from "lucide-react";
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
 import { IconButton } from "../../ui/IconButton";
+import { EmptyState } from "../EmptyState";
 import {
   MCP_STDIO_LAUNCHERS,
   type McpServerConfig,
@@ -435,9 +436,18 @@ export function McpPanel() {
 
       {/* 服务器列表 */}
       {servers.length === 0 && form === null ? (
-        <p className="mt-3 text-xs text-[var(--t5)]">
-          暂无服务器：点「添加服务器」接入第一个 MCP 服务器
-        </p>
+        <EmptyState
+          icon={<Plug size={18} aria-hidden />}
+          title="暂无服务器"
+          description="接入第一个 MCP 服务器，把外部工具挂进机器人工具清单"
+          action={{
+            label: "添加服务器",
+            onClick: () => {
+              setError("");
+              setForm({ ...EMPTY_FORM });
+            },
+          }}
+        />
       ) : (
         <div className="mt-3 flex flex-col gap-1.5">
           {servers.map((s) => (

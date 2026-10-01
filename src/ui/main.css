@@ -26,13 +26,14 @@
   /* 单层柔和投影：默认卡 --shadow-sm / 悬浮层（⌘K 命令面板等）--shadow-lg */
   --shadow-sm: 0 1px 2px rgba(23, 32, 51, 0.06);
   --shadow-lg: 0 8px 24px rgba(23, 32, 51, 0.14);
-  /* 文字五级：强 > 主 > 次 > 弱 > 幽灵 */
+  /* 文字五级：强 > 主 > 次 > 弱 > 幽灵（U4 a11y：全层级 ≥ WCAG AA 4.5:1，
+     底部两档因此贴近——AA 的真实代价，token 名保留、视觉档位收窄） */
   --t1: #182031; /* 列头/强调 */
   --t2: #2b3548; /* 主文字 */
   --t3: #45506a; /* 次要文字 */
-  --t4: #64708c; /* 辅助文字 */
-  --t5: #8e99b0; /* 弱文字/计数 */
-  --t6: #9fadc4; /* 幽灵提示（+备注 等）；U4 a11y 批做全量对比度复核 */
+  --t4: #525e7a; /* 辅助文字 */
+  --t5: #5d6984; /* 弱文字/计数 */
+  --t6: #606c88; /* 幽灵提示（+备注 等） */
   /* 品牌（低饱和蓝紫灰）与语义色 */
   --brand: #5f6f94;
   --brand-strong: #4a5879;
@@ -62,13 +63,13 @@
   --hover-bg: rgba(255, 255, 255, 0.06);
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.55);
-  /* 深色文字：主浅灰白（非纯白），逐级降亮但保证可读 */
+  /* 深色文字：主浅灰白（非纯白），逐级降亮但保证可读（U4 a11y：全层级 ≥4.5:1） */
   --t1: #eef1f7;
   --t2: #dbe1ec;
   --t3: #b6bfd0;
   --t4: #8d97ac;
-  --t5: #6e7889;
-  --t6: #545e70;
+  --t5: #808a9e;
+  --t6: #7d879b;
   /* 品牌色深色模式提亮 */
   --brand: #a3b6dd;
   --brand-strong: #c0cdea;
@@ -91,6 +92,25 @@
   input::placeholder,
   textarea::placeholder {
     color: var(--t5);
+  }
+  /* 键盘焦点基线（U4 a11y）：未定制焦点态的交互件走 outline 兜底；
+     nm-btn/nm-icon-btn/nm-input 有各自的 focus-ring 环，类选择器优先 */
+  :focus-visible {
+    outline: 2px solid var(--brand);
+    outline-offset: 2px;
+    border-radius: var(--r-sm);
+  }
+}
+
+/* 动效克制（U4）：系统声明减少动效时，过渡/动画一律瞬时化 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
   }
 }
 

@@ -9,6 +9,7 @@
 //! - 勾选后：permanent block，但不可逆
 
 import { useEffect, useRef, useState } from "react";
+import { Trash2 } from "lucide-react";
 import type { ProposalEntry } from "./types";
 
 type Props = {
@@ -64,9 +65,10 @@ export function DeleteConfirmDialog({
       >
         <h3
           id="delete-confirm-title"
-          className="text-base font-semibold text-[var(--t1)]"
+          className="flex items-center gap-1.5 text-base font-semibold text-[var(--t1)]"
         >
-          🗑️ 彻底删除提案
+          <Trash2 size={15} aria-hidden className="text-[var(--danger)]" />
+          彻底删除提案
         </h3>
 
         <div className="text-xs space-y-1">
@@ -117,12 +119,13 @@ export function DeleteConfirmDialog({
             取消
           </button>
           <button
-            className="nm-btn px-3 py-1.5 text-xs text-white bg-[var(--danger)] disabled:opacity-50"
+            className="nm-btn inline-flex items-center gap-1 px-3 py-1.5 text-xs text-white bg-[var(--danger)] disabled:opacity-50"
             onClick={() => onConfirm(cascadeSource)}
             disabled={busy}
             data-testid="delete-confirm"
           >
-            🗑️ 确定删除
+            <Trash2 size={11} aria-hidden />
+            确定删除
           </button>
         </div>
       </div>

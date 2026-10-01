@@ -1,7 +1,9 @@
 import { useMemo, useState } from "react";
+import { Archive } from "lucide-react";
 import type { Task } from "../types";
 import { sortByOrder } from "../storage";
 import { TodoCard } from "./TodoCard";
+import { EmptyState } from "./EmptyState";
 
 /**
  * 归档页：搜索 → 标签计数（点击筛选，与搜索 AND 叠加）→ 三列卡片网格。
@@ -88,7 +90,11 @@ export function ArchivePage({
       )}
 
       {archived.length === 0 ? (
-        <p className="py-16 text-center text-sm text-[var(--t5)]">暂无归档内容</p>
+        <EmptyState
+          icon={<Archive size={18} aria-hidden />}
+          title="暂无归档内容"
+          description="任务完成后超过 7 天会自动归档到这里"
+        />
       ) : filtered.length === 0 ? (
         <p className="py-10 text-center text-sm text-[var(--t5)]">没有匹配的归档</p>
       ) : (

@@ -139,7 +139,7 @@ describe("ChatPanel", () => {
       await screen.findByText(/跟我说：新建任务|输入 \/ 看可用命令/, { exact: false })
     ).toBeInTheDocument();
     // 会话标题
-    expect(screen.getByText("🤖 默认会话")).toBeInTheDocument();
+    expect(screen.getByText("默认会话")).toBeInTheDocument();
   });
 
   it("空消息时输入框可以打字，回车后调用 bot_chat 并展示用户消息", async () => {
@@ -242,7 +242,7 @@ describe("ChatPanel", () => {
       screen.getByTitle("推理强度：只影响当前会话的发送，不写入设置")
     );
     await user.click(await screen.findByText("高"));
-    expect(screen.getByText(/⚡ 高/)).toBeInTheDocument();
+    expect(screen.getByText("高")).toBeInTheDocument();
 
     // 第二条发送：reasoningEffort 变为 high
     await user.type(screen.getByPlaceholderText(/和机器人说点什么/), "再来一条");
@@ -272,7 +272,7 @@ describe("ChatPanel", () => {
       return defaultInvoke(cmd);
     });
     render(<ChatPanel {...defaultProps} />);
-    await screen.findByText("🤖 默认会话");
+    await screen.findByText("默认会话");
 
     // S1 打草稿 → 切到 S2：输入框清空（不带走 S1 的内容）
     const input = screen.getByPlaceholderText(/和机器人说点什么/);
@@ -315,7 +315,7 @@ describe("ChatPanel", () => {
     render(<ChatPanel {...defaultProps} />);
     // 等初始会话加载完成（标题渲染 = sessionId 已 set 且 sessionIdRef 已同步），
     // 否则 fire 时 sessionIdRef.current 还是 null，「本会话」用例会被误过滤（全量跑时序敏感）
-    expect(await screen.findByText("🤖 默认会话")).toBeInTheDocument();
+    expect(await screen.findByText("默认会话")).toBeInTheDocument();
     expect(confirmHandler).not.toBeNull();
     const fire = (payload: Record<string, unknown>) =>
       (confirmHandler as unknown as (e: { payload: Record<string, unknown> }) => void)({ payload });
@@ -347,7 +347,7 @@ describe("ChatPanel", () => {
     });
     render(<ChatPanel {...defaultProps} />);
     // 等初始会话加载完成（sessionIdRef 同步后再 fire，否则「本会话」用例会被误过滤）
-    expect(await screen.findByText("🤖 默认会话")).toBeInTheDocument();
+    expect(await screen.findByText("默认会话")).toBeInTheDocument();
     expect(deltaHandler).not.toBeNull();
     const input = screen.getByPlaceholderText(/和机器人说点什么/);
     await user.type(input, "你好");
@@ -379,7 +379,7 @@ describe("ChatPanel", () => {
       return null;
     });
     render(<ChatPanel {...defaultProps} />);
-    expect(await screen.findByText("🤖 默认会话")).toBeInTheDocument();
+    expect(await screen.findByText("默认会话")).toBeInTheDocument();
     const input = screen.getByPlaceholderText(/和机器人说点什么/);
     await user.type(input, "你好");
     await user.keyboard("{Enter}");
@@ -486,7 +486,7 @@ describe("ChatPanel", () => {
 
   it("拖文件进聊天区：enter 显示提示层，drop 落在聊天区内加入附件（区外忽略、去重）", async () => {
     render(<ChatPanel {...defaultProps} />);
-    expect(await screen.findByText("🤖 默认会话")).toBeInTheDocument();
+    expect(await screen.findByText("默认会话")).toBeInTheDocument();
     const handler = mocks.dragDropHandlers[mocks.dragDropHandlers.length - 1];
     expect(handler).toBeDefined();
     // jsdom 的 getBoundingClientRect 全 0：position (0,0) 视为聊天区内，(10,10) 视为区外
@@ -540,7 +540,7 @@ describe("ChatPanel", () => {
       return null;
     });
     render(<ChatPanel {...defaultProps} />);
-    expect(await screen.findByText("🤖 默认会话")).toBeInTheDocument();
+    expect(await screen.findByText("默认会话")).toBeInTheDocument();
     await act(async () => {
       for (const cb of mocks.listeners["chat-open-session"] ?? []) {
         cb({ payload: { sessionId: "s-exec", taskId: "t1", title: "📋 任务：写报告", origin: "manual" } });
@@ -574,7 +574,7 @@ describe("ChatPanel", () => {
       return null;
     });
     render(<ChatPanel {...defaultProps} />);
-    expect(await screen.findByText("🤖 默认会话")).toBeInTheDocument();
+    expect(await screen.findByText("默认会话")).toBeInTheDocument();
     const input = screen.getByPlaceholderText(/和机器人说点什么/);
     await user.type(input, "你好");
     await user.keyboard("{Enter}");
@@ -584,14 +584,14 @@ describe("ChatPanel", () => {
         cb({ payload: { sessionId: "s-exec", taskId: "t1", title: "📋 任务：写报告", origin: "scheduled" } });
       }
     });
-    expect(screen.getByText("🤖 默认会话")).toBeInTheDocument();
+    expect(screen.getByText("默认会话")).toBeInTheDocument();
     expect(mocks.invokeMock).not.toHaveBeenCalledWith("bot_history_load", { sessionId: "s-exec" });
     // 当前轮结束 → 排队跳转兑现为提示 + 按钮
     await act(async () => {
       releaseChat({ text: "回复", taskRefs: [] });
     });
     expect(await screen.findByText(/已在新会话执行/)).toBeInTheDocument();
-    const btn = await screen.findByText("💬 查看执行对话");
+    const btn = await screen.findByText("查看执行对话");
     await user.click(btn);
     await waitFor(() =>
       expect(mocks.invokeMock).toHaveBeenCalledWith("bot_history_load", { sessionId: "s-exec" })
@@ -606,13 +606,17 @@ describe("ChatPanel", () => {
     // 先恢复默认实现拿到 bot_get_config / bot_set_active_model 的 mock
     mocks.invokeMock.mockImplementation(defaultInvoke);
     render(<ChatPanel {...defaultProps} />);
-    await screen.findByText("🤖 默认会话");
-    // 等 bot_get_config reload 完成（chip 标签与 setModels 同一个 .then 刷新）
-    await screen.findByText("🧠 MiniMax-M3");
+    await screen.findByText("默认会话");
+    // 等 bot_get_config reload 完成（chip 标签与 setModels 同一个 .then 刷新）；
+    // chip 与下拉项同名，一律在 chip 按钮内查询（findByText 作用于按钮本身）
     const chip = screen.getByTitle("切换模型");
+    await waitFor(() => {
+      expect(chip).toHaveTextContent("MiniMax-M3");
+    });
     await user.click(chip);
     expect(await screen.findByText("DeepSeek-V3")).toBeInTheDocument();
-    expect(screen.getByText("MiniMax-M3")).toBeInTheDocument();
+    // chip 与下拉项同名：chip 用 toHaveTextContent，下拉项按 class 限定
+    expect(chip).toHaveTextContent("MiniMax-M3");
     // 再点收起
     await user.click(chip);
     await waitFor(() => {
@@ -661,7 +665,7 @@ describe("ChatPanel", () => {
     });
     try {
       render(<ChatPanel {...defaultProps} />);
-      await screen.findByText("🤖 默认会话");
+      await screen.findByText("默认会话");
       // 发送 → bot_chat 挂起 → busy
       const input = screen.getByPlaceholderText(/和机器人说点什么/);
       await user.type(input, "你好");
@@ -695,7 +699,7 @@ describe("ChatPanel", () => {
       ).toBe(false);
       confirmSpy.mockRestore();
       // 删除守卫返回后菜单仍开：busy 中新建对话 → 允许（回归钉 2）
-      await user.click(screen.getByText("＋ 新建对话"));
+      await user.click(screen.getByText("新建对话"));
       await waitFor(() => {
         expect(mocks.invokeMock).toHaveBeenCalledWith("bot_session_create", { title: null });
       });
@@ -731,9 +735,12 @@ describe("ChatPanel", () => {
     const user = userEvent.setup();
     mocks.invokeMock.mockImplementation(defaultInvoke);
     render(<ChatPanel {...defaultProps} />);
-    await screen.findByText("🤖 默认会话");
-    await screen.findByText("🧠 MiniMax-M3");
-    await user.click(screen.getByTitle("切换模型"));
+    await screen.findByText("默认会话");
+    const chip = screen.getByTitle("切换模型");
+    await waitFor(() => {
+      expect(chip).toHaveTextContent("MiniMax-M3");
+    });
+    await user.click(chip);
     await user.click(await screen.findByText("DeepSeek-V3"));
     await waitFor(() => {
       expect(mocks.invokeMock).toHaveBeenCalledWith("bot_set_active_model", {
@@ -773,7 +780,7 @@ describe("ChatPanel", () => {
       return defaultInvoke(cmd);
     });
     render(<ChatPanel {...defaultProps} />);
-    await screen.findByText("🤖 默认会话");
+    await screen.findByText("默认会话");
     await user.click(screen.getByTitle("切换模型"));
     // 两组都在：分组头 + 各自模型（openai 是当前协议 → GLM 高亮）
     expect(await screen.findByText("OpenAI 兼容")).toBeInTheDocument();
@@ -826,7 +833,7 @@ describe("ChatPanel", () => {
     });
     try {
       render(<ChatPanel {...defaultProps} />);
-      await screen.findByText("🤖 默认会话");
+      await screen.findByText("默认会话");
       // S1 发送 → 挂起（在途）
       const input = screen.getByPlaceholderText(/和机器人说点什么/);
       await user.type(input, "问题一");

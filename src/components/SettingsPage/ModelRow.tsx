@@ -1,5 +1,6 @@
 // SettingsPage 子模块：单条大模型条目（radio + label + baseUrl + model + 删除）。
 
+import { Trash2 } from "lucide-react";
 import type { ModelEntry } from "./types";
 import type { ApiProvider } from "./constants";
 
@@ -46,10 +47,11 @@ export function ModelRow({
         <button
           type="button"
           onClick={onDelete}
-          className="shrink-0 text-xs text-[var(--t5)] hover:text-[var(--danger)] px-1"
+          aria-label="删除此模型"
+          className="shrink-0 flex items-center text-[var(--t5)] hover:text-[var(--danger)] px-1"
           title="删除此模型"
         >
-          🗑
+          <Trash2 size={12} aria-hidden />
         </button>
       </div>
       <div className="mt-1.5 ml-7 space-y-1">
