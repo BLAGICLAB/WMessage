@@ -2,6 +2,34 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-02（周四）U10-VENDOR：模型设置按厂商分类（`8fcfefd`）
+
+**老板需求**（MiniMax 厂商页截图）：模型设置不按 openai/anthropic 兼容分类，
+直接**按厂商分类**；每个厂商设置页含 Base URL / API 格式 / 模型列表。
+
+**实现**：①**Rust 单字段扩展**——ModelEntry + `vendor: Option<String>`
+（serde default + skip_serializing_if：老配置缺字段加载 None 不拒绝，None 不
+落盘；bot_get_config View 本就把 active 模型摊平为 base_url/model，**聊天
+循环零改动**）。定向测试：vendor 往返 + 老配置兼容（config 模块 46 绿）。
+②**前端厂商中心**——model 分类整段重写：左栏厂商列表（跨双协议按 entry.vendor
+聚合，老条目按协议名兜底；绿点=含全局 active）+ 右厂商页（图标标题/「设为当前
+使用」/删除厂商/Base URL 厂商共用/API 格式双钮=条目跨协议搬移/API Key 全局
+共用注明/模型列表厂商内新增首条自动 active/max_tokens/保存配置）。预设网格改
+「添加厂商」语义：点选=新增该厂商（同名覆盖其条目）+直接进厂商页+落盘。
+③**handlers 全函数式**（ocr 2 critical+3 high stale-closure 家族根修：原实现
+从外层 render 闭包读 config 快照，连续操作互相覆盖；厂商页 ModelRow 走全局
+apiProvider 键写错列表——重写为 setConfig updater 内读最新 state +
+protocolOfVendorIn 纯函数 + vendor 版 handler）。
+
+**验证**：vitest 354 绿 / tsc / oxlint 0 / knip 0 / cargo config 定向 46 绿 /
+**test-all 全量含 Rust+审计 exit 0（150s）** / perf 59×。视觉验收：深色厂商
+列表（MiniMax/OpenAI 绿点）+ MiniMax 厂商页全要素实拍（图标标题/当前使用 ✓/
+Base URL/API 格式 Anthropic Messages 选中/模型列表 M3 active+M2.7/max_tokens/
+保存配置）——对齐截图。ocr 复审 29 条（2C/4H/8M/10L/5 空）：critical+high
+全修（stale-closure 家族）；medium 采纳删除厂商 confirm/void 死代码，记
+saveConfig 吞错（U5 既有）；low 10 记。**登记挂账**：API Key 仍全局一份
+（keyring 单 key），厂商级 key 需 keyring 多 slot 扩展。
+
 ## 2026-10-01（周四）U9-MODELHUB：模型中心双栏重排 + 供应商预设网格（`d1f60e2`）
 
 **老板需求**（两张截图）：「模型设置」按图一重排为模型中心，点「添加供应商」
