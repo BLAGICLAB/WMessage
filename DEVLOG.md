@@ -2,6 +2,36 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-01（周四）UI 改造 U4-POLISH 收官批：a11y 基线 + 空态统一 + 图标清尾（`0c69d17`）
+
+**内容**：①**a11y 基线**（拍板 §2-6）——六档文字 token 实测 WCAG luminance 后
+全层级调至 ≥4.5:1（light t4/t5/t6 = #525e7a/#5d6984/#606c88，dark t5/t6 =
+#808a9e/#7d879b；层叠单调保住，底部两档贴近是 AA 的真实代价，css 注释说明）；
+全局 `:focus-visible`（brand 2px outline + r-sm 兜底，nm-* 焦点环类优先）；
+`prefers-reduced-motion` 全局尊重；会话下拉 Esc 关闭挂触发钮（ocr 纠正：容器无
+tabindex 键盘不可达）。②**EmptyState 统一**（icon/标题/说明/行动按钮）接入
+归档/回收站/工作区/MCP/技能五处空态。③**emoji 图标清尾**——ChatPanel 家族/
+TodoCard/设置面板/Evolution 全部 lucide 化（约 20 处）；📎/🖼️/📁 内容标记与
+📌锚等功能性 emoji 保留（测试按文本断言+专项语义）。isImagePath+IMAGE_EXTS
+归位 format.ts。测试断言随图标同步（语义不变；模型 chip 断言改
+toHaveTextContent 防同名多重）。
+
+**验证**：vitest **350 绿**（+2 EmptyState；全量连跑两次稳定）/ tsc / oxlint 0 /
+knip 0 / **test-all 全量含 Rust+审计 exit 0（110s）**。perf 数据波动带内
+（30.1×~90.5×）。视觉终审：夹具（stub invoke+真实 App）矩阵截图——深色看板/
+归档/回收站（EmptyState 实拍）/浅色看板（对比度提亮后 t4-t6 明显更清晰）。
+ocr 复审 10 条（0H/4M/6L）：medium 4 修（Undo2 间距反哺 Trash2、focus-visible
+注释+圆角、Esc 迁触发钮），low 记 6。
+
+**5 维终版评审结论**（U1–U4 整体，均值 7.8）：哲学一致性 8（扁平分层一个方向
+贯穿四批）/ 视觉层级 8（亮度分档+1px 边框+AA 文字梯级）/ 细节执行 7（动效纪律
+与焦点环统一；t5/t6 档位贴近是 AA 代价）/ 功能性 8（键盘流+焦点+对比度+
+reduced-motion 四件套齐）/ 创新性 6（nm-* 同名换肤与 perf 可测化是工程亮点）。
+**战役收尾**：U0–U4 五批全落库（U0 交接 / U1 token+材质 / U2 导航+⌘K /
+U3a 拆分+memo / U3b 换肤 / U4 打磨+a11y），登记挂账随战役总结：会话相对时间
+与 +/- diff 统计（需 src-tauri 数据面）、挂件 ErrorBoundary、纯浏览器模式
+alert 洪水、ChatPanel 会话过滤用例时序敏感。
+
 ## 2026-10-01（周四）UI 改造 U3b-CHAT-SKIN 批：ChatPanel 换肤对齐截图（`6bc0d7b`）
 
 **内容**（纯表现，数据流零改动）：会话切换器加会话数徽章+活动圆点栈行；助手消息
