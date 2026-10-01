@@ -183,6 +183,8 @@ pub struct BotConfig {
 /// 单个模型条目：一个 (label, baseUrl, model) 三元组 + 稳定 id。
 /// id 是前端 crypto.randomUUID() 生成的字符串，仅用于 React key + 标识 active；
 /// 不参与 API 调用。
+/// vendor（U10 厂商中心）：条目所属厂商名，前端按它分组渲染厂商页；
+/// 老配置缺字段 → None（前端按协议名兜底分组），None 序列化时跳过保持文件干净。
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelEntry {
@@ -190,6 +192,8 @@ pub struct ModelEntry {
     pub label: String,
     pub base_url: String,
     pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vendor: Option<String>,
 }
 
 /// 双协议下各自的模型列表；Vec 为空序列化时跳过，保持配置文件干净。

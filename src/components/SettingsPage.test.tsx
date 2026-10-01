@@ -493,16 +493,14 @@ describe("SettingsPage", () => {
     render(<SettingsPage {...defaultProps} />);
     // U8：导航到「模型设置」分类（hidden section 的元素查不到 role，先导航）
     fireEvent.click(screen.getByRole("button", { name: "模型设置" }));
-    // 空态：列表为空提示 + 添加按钮（用 role=button 避免和空态描述里“添加大模型”同款文字冲突）
-    expect(await screen.findByText(/暂无大模型/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /添加大模型/ })).toBeInTheDocument();
-    // 老「提供商预设」UI 已经全部拿掉
-    expect(screen.queryByText("MiniMax")).toBeNull();
-    expect(screen.queryByText("DeepSeek")).toBeNull();
-    expect(screen.queryByText(/自定义/)).toBeNull();
+    // U10 厂商中心：未选厂商显示引导；点「添加厂商」出预设网格
+    expect(await screen.findByText(/从左侧选择一个厂商/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /添加厂商/ }));
+    expect(screen.getByText("MiniMax")).toBeInTheDocument();
+    expect(screen.getByText("DeepSeek")).toBeInTheDocument();
   });
 
-  it("大模型 API 配置：点「添加大模型」→ 列表加一行 + 自动 active（空列表首次添加）", async () => {
+  it("大模型 API 配置：点「添加厂商」选预设 → 添加模型自动 active（厂商首条）", async () => {
     const user = userEvent.setup();
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "bot_get_enabled") return true;
@@ -527,25 +525,18 @@ describe("SettingsPage", () => {
       return null;
     });
     render(<SettingsPage {...defaultProps} />);
-    // U8：导航到「模型设置」分类
+    // U10：导航到「模型设置」→ 添加厂商 → 选 Anthropic 预设 → 厂商页
     await user.click(screen.getByRole("button", { name: "模型设置" }));
-    // 切到 Anthropic 后再点添加，验证新行落到 anthropic 协议下
-    const trigger = await screen.findByRole("button", { name: /OpenAI 兼容/ });
-    await user.click(trigger);
-    await user.click(screen.getByRole("button", { name: "Anthropic 兼容" }));
-    expect(await screen.findByText(/暂无大模型/)).toBeInTheDocument();
-    // 点「添加大模型」（用 role=button 避免和空态描述里同款文字冲突）
-    await user.click(screen.getByRole("button", { name: /添加大模型/ }));
-    // 列表里出现一行（用 ModelRow 的 label placeholder 定位）
-    const labelInput = await screen.findByPlaceholderText(/DeepSeek \/ Kimi/);
-    expect(labelInput).toBeInTheDocument();
-    // 这一行自动 active——radio 按钮 title 走到「当前选中」分支
+    await user.click(screen.getByRole("button", { name: "添加厂商" }));
+    await user.click(screen.getByRole("button", { name: /Anthropic/ }));
+    // 预设自带 claude 模型行（首个自动 active）；label 与 model 输入同值
+    expect(screen.getAllByDisplayValue("claude-sonnet-4-20250514").length).toBeGreaterThan(0);
     expect(screen.getByTitle("当前选中（点其它条目可切换）")).toBeInTheDocument();
-    // OpenAI 协议下仍然是空（列表不串协议）
-    const trigger2 = screen.getByRole("button", { name: /Anthropic 兼容/ });
-    await user.click(trigger2);
-    await user.click(screen.getByRole("button", { name: "OpenAI 兼容" }));
-    expect(screen.getByText(/暂无大模型/)).toBeInTheDocument();
+    // 点「＋ 添加模型」→ 新空行加入，active 不被抢走
+    await user.click(screen.getByRole("button", { name: /添加模型/ }));
+    expect(screen.getAllByPlaceholderText(/DeepSeek \/ Kimi/).length).toBe(2);
+    expect(screen.getAllByTitle("当前选中（点其它条目可切换）").length).toBe(1);
+    expect(screen.getByTitle("当前选中（点其它条目可切换）")).toBeInTheDocument();
   });
 
   it("大模型 API 配置：切协议 → 列表整体切换（OpenAI 模型不在 Anthropic 协议下显示）", async () => {
@@ -581,14 +572,15 @@ describe("SettingsPage", () => {
       return null;
     });
     render(<SettingsPage {...defaultProps} />);
-    // U8：导航到「模型设置」分类
+    // U8：导航到「模型设置」分类；老条目无 vendor → 按协议名兜底为两个厂商行
     await user.click(screen.getByRole("button", { name: "模型设置" }));
+    await user.click(screen.getByRole("button", { name: "OpenAI 兼容" }));
     // 默认 OpenAI 协议：DeepSeek + Kimi 都在，Claude 不在
     await screen.findByDisplayValue("DeepSeek");
     expect(screen.getByDisplayValue("Kimi")).toBeInTheDocument();
     expect(screen.queryByDisplayValue("Claude Sonnet")).toBeNull();
     // 切到 Anthropic
-    const trigger = screen.getByRole("button", { name: /OpenAI 兼容/ });
+    const trigger = screen.getByRole("button", { name: "OpenAI 兼容" });
     await user.click(trigger);
     await user.click(screen.getByRole("button", { name: "Anthropic 兼容" }));
     // 现在 Anthropic 协议：只有 Claude
@@ -596,7 +588,7 @@ describe("SettingsPage", () => {
     expect(screen.queryByDisplayValue("DeepSeek")).toBeNull();
     expect(screen.queryByDisplayValue("Kimi")).toBeNull();
     // 切回 OpenAI
-    const trigger2 = screen.getByRole("button", { name: /Anthropic 兼容/ });
+    const trigger2 = screen.getByRole("button", { name: "Anthropic 兼容" });
     await user.click(trigger2);
     await user.click(screen.getByRole("button", { name: "OpenAI 兼容" }));
     // DeepSeek/Kimi 又回来了
@@ -637,8 +629,9 @@ describe("SettingsPage", () => {
       return null;
     });
     render(<SettingsPage {...defaultProps} />);
-    // U8：导航到「模型设置」分类
+    // U8：导航到「模型设置」分类；进 OpenAI 兼容厂商页
     await user.click(screen.getByRole("button", { name: "模型设置" }));
+    await user.click(screen.getByRole("button", { name: "OpenAI 兼容" }));
     await screen.findByDisplayValue("DeepSeek");
     // 初始：m1(DeepSeek) active，m2(Kimi) 不是
     expect(screen.getByTitle("当前选中（点其它条目可切换）")).toBeInTheDocument();
@@ -654,10 +647,10 @@ describe("SettingsPage", () => {
     // DeepSeek 没了，Kimi 还在
     expect(screen.queryByDisplayValue("DeepSeek")).toBeNull();
     expect(screen.getByDisplayValue("Kimi")).toBeInTheDocument();
-    // 删 m2 → 列表空，回到「暂无大模型」提示
+    // 删 m2 → 列表空，回到「暂无模型」空态
     const delButtons2 = screen.getAllByTitle("删除此模型");
     await user.click(delButtons2[0]);
-    expect(await screen.findByText(/暂无大模型/)).toBeInTheDocument();
+    expect(await screen.findByText(/暂无模型/)).toBeInTheDocument();
   });
 
   it("大模型 API 配置：保存 → bot_set_config 透传新结构（modelsByProvider + activeModelId + apiProvider + maxTokens），老 baseUrl/model 字段不再传", async () => {
@@ -688,29 +681,34 @@ describe("SettingsPage", () => {
       return null;
     });
     render(<SettingsPage {...defaultProps} />);
-    // U8：导航到「模型设置」分类；切到 Anthropic
+    // U8：导航到「模型设置」分类；添加厂商选「Anthropic」预设（携带 vendor 字段）
     await user.click(screen.getByRole("button", { name: "模型设置" }));
-    const trigger = await screen.findByRole("button", { name: /OpenAI 兼容/ });
-    await user.click(trigger);
-    await user.click(screen.getByRole("button", { name: "Anthropic 兼容" }));
-    // 添加大模型（用 role=button 避免和空态描述里同款文字冲突）
-    await user.click(screen.getByRole("button", { name: /添加大模型/ }));
-    // 填 label
-    const labelInput = await screen.findByPlaceholderText(/DeepSeek \/ Kimi/);
+    await user.click(screen.getByRole("button", { name: "添加厂商" }));
+    await user.click(screen.getByRole("button", { name: /Anthropic/ }));
+    // 添加大模型（厂商页内）
+    await user.click(screen.getByRole("button", { name: /添加模型/ }));
+    // 填 label（新空行在列表尾部）
+    const labelInputs = await screen.findAllByPlaceholderText(/DeepSeek \/ Kimi/);
+    const labelInput = labelInputs[labelInputs.length - 1];
     await user.type(labelInput, "Claude Sonnet");
     // 填 max_tokens（Anthropic 模式出现）
     const maxTokensInput = screen.getByPlaceholderText("8192");
     await user.type(maxTokensInput, "4096");
-    // 保存 → bot_set_config 透传新结构
-    await user.click(screen.getByText("保存配置"));
+    // 保存 → bot_set_config 透传新结构（aria-label 恒定，不受「已保存 ✓」瞬态影响）
+    const saveBtns = await screen.findAllByRole("button", { name: "保存配置" });
+    await user.click(saveBtns[saveBtns.length - 1]);
     await waitFor(() => {
-      const setCall = mocks.invokeMock.mock.calls.find(
+      // 预设落盘也会发一次 bot_set_config；这里取「保存按钮」触发的最后一次
+      const setCalls = mocks.invokeMock.mock.calls.filter(
         (c) => c[0] === "bot_set_config",
       );
-      expect(setCall).toBeDefined();
+      expect(setCalls.length).toBeGreaterThan(0);
+      const setCall = setCalls[setCalls.length - 1];
       const arg = setCall![1] as {
         config: {
-          modelsByProvider: { anthropic: Array<{ label: string; id: string }> };
+          modelsByProvider: {
+            anthropic: Array<{ label: string; id: string; vendor?: string }>;
+          };
           activeModelId: { anthropic: string | null };
           apiProvider: string;
           maxTokens: number | null;
@@ -719,10 +717,13 @@ describe("SettingsPage", () => {
         tavilyKey: string | null;
         braveKey: string | null;
       };
-      // 新结构：modelsByProvider.anthropic 有刚加的那一条
-      expect(arg.config.modelsByProvider.anthropic).toHaveLength(1);
-      expect(arg.config.modelsByProvider.anthropic[0].label).toBe("Claude Sonnet");
-      // activeModelId.anthropic 是该条目的 id
+      // U10：预设自带 claude 行 + 新加的 Claude Sonnet 行，共两条
+      expect(arg.config.modelsByProvider.anthropic).toHaveLength(2);
+      expect(
+        arg.config.modelsByProvider.anthropic[1].label,
+      ).toBe("Claude Sonnet");
+      // activeModelId.anthropic 仍是预设首条（添加不抢 active）
+      expect(arg.config.modelsByProvider.anthropic[1].vendor).toBe("Anthropic");
       expect(arg.config.activeModelId.anthropic).toBe(
         arg.config.modelsByProvider.anthropic[0].id,
       );

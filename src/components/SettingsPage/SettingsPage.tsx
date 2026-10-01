@@ -18,8 +18,10 @@ import {
   FolderOutput,
   GitBranch,
   Plug,
+  Plus,
   Settings2,
   Sparkles,
+  Trash2,
   type LucideIcon,
 } from "lucide-react";
 
@@ -130,25 +132,36 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
   /** 应用供应商预设（U9）：切协议 + 覆盖该协议模型列表（预填 baseUrl/模型名）+
    *  首个设为 active——完全落在现有双协议数据模型内，预设可整表替换。
    *  覆盖后立即落盘（同 toggleTavily 模式；显式选择预设=接受覆盖该协议配置）。 */
-  const applyProviderPreset = (p: (typeof PROVIDER_PRESETS)[number]) => {
+  const applyProviderPreset = async (p: (typeof PROVIDER_PRESETS)[number]) => {
     const models = p.models.map((m) => ({
       id: genModelId(),
       label: m,
       model: m,
       baseUrl: p.baseUrl,
+      vendor: p.name,
     }));
+    // 厂商制语义：同协议下其他厂商条目保留，仅替换同名厂商旧条目（若有）
+    const list = config.modelsByProvider[p.protocol] ?? [];
+    const kept = list.filter(
+      (m) => (m.vendor ?? `__legacy__${p.protocol}`) !== p.name,
+    );
     const next = {
       ...config,
       apiProvider: p.protocol,
-      modelsByProvider: { ...config.modelsByProvider, [p.protocol]: models },
+      modelsByProvider: {
+        ...config.modelsByProvider,
+        [p.protocol]: [...kept, ...models],
+      },
       activeModelId: {
         ...config.activeModelId,
         [p.protocol]: models[0]?.id ?? null,
       },
     };
     setConfig(next);
-    void saveConfig(next);
+    // skipReload：本地 state 已是合并后最新（loadConfig 会拿旧 mock/磁盘值覆盖刚点字段）
+    await saveConfig(next, { skipReload: true });
     setShowProviderPicker(false);
+    setActiveVendor(p.name);
   };
   const [exporting, setExporting] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -215,10 +228,12 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
   const [braveKeyInput, setBraveKeyInput] = useState("");
   const [configBusy, setConfigBusy] = useState(false);
   const [configSaved, setConfigSaved] = useState(false);
-  /** 「保存配置」按钮（U8 拆卡后各含 setConfig 字段的卡各配一枚；cls 控制外距） */
+  /** 「保存配置」按钮（U8 拆卡后各含 setConfig 字段的卡各配一枚；cls 控制外距）。
+   *  aria-label 恒为「保存配置」：可见文本随状态变（已保存 ✓/保存中…），可访问名不变。 */
   const renderSaveButton = (cls: string) => (
     <div className={cls}>
       <button
+        aria-label="保存配置"
         className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] ${
           configBusy ? "nm-inset" : "nm-outset"
         }`}
@@ -509,36 +524,8 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
   };
 
   // ───────── 双协议下大模型列表 handlers ─────────
-  // 当前协议下的模型列表 + active id（每次渲染取一次，避免重复计算）
-  // 老后端返回的 modelsByProvider 可能缺 anthropic/openai 字段；
-  // fallback 空数组避免 undefined.length 报栈
-  const currentModels = config.modelsByProvider[config.apiProvider] ?? [];
-  const currentActiveId = config.activeModelId[config.apiProvider] ?? null;
-
-  /** 添加大模型：append 到当前协议列表的第一个空行；若是空列表则同时设为 active */
-  const addModel = () => {
-    const entry: ModelEntry = {
-      id: genModelId(),
-      label: "",
-      baseUrl: "",
-      model: "",
-    };
-    setConfig((c) => {
-      const list = c.modelsByProvider[c.apiProvider] ?? [];
-      return {
-        ...c,
-        modelsByProvider: {
-          ...c.modelsByProvider,
-          [c.apiProvider]: [...list, entry],
-        },
-        // 空列表首次添加 → 自动 active；非空 → 保持现有 active
-        activeModelId:
-          list.length === 0
-            ? { ...c.activeModelId, [c.apiProvider]: entry.id }
-            : c.activeModelId,
-      };
-    });
-  };
+  // 厂商中心（U10）按厂商分组渲染；老配置可能缺 anthropic/openai 字段，
+  // 读取处一律 ?? [] 兜底
 
   /** 更新大模型条目（label / baseUrl / model 任一字段变化） */
   const updateModel = (id: string, patch: Partial<ModelEntry>) => {
@@ -584,6 +571,185 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
       ...c,
       activeModelId: { ...c.activeModelId, [c.apiProvider]: id },
     }));
+  };
+
+  // ───────── 厂商中心（U10）：按厂商分组渲染，条目仍存双协议列表 ─────────
+  // 全部 handler 走 setConfig 函数式（updater 内读最新 c.modelsByProvider）——
+  // 连续操作（改 URL→切格式→加模型）不得用外层 render 快照互相覆盖（ocr HIGH）。
+  /** 选中厂商页（左栏）；null = 未选（显示引导）。值 = 厂商名 */
+  const [activeVendor, setActiveVendor] = useState<string | null>(null);
+
+  /** 条目归属厂商名：有 vendor 用 vendor，老条目按所在列表协议名兜底。
+   *  prov 必须传「条目所在列表」的协议——不能用活的 apiProvider（会漂）。
+   *  已知边界：兜底名与预设厂商名撞名时二者合并展示（概率低，登记）。 */
+  const vendorNameOf = (m: ModelEntry, prov: "openai" | "anthropic") =>
+    m.vendor ?? (prov === "anthropic" ? "Anthropic 兼容" : "OpenAI 兼容");
+
+  /** 厂商分组：跨双协议列表聚合；绿点 = 该厂商含全局 active 模型。
+   *  普通派生而非 useMemo（数据量小；compiler 对含 config 依赖的 memo 化报 warn） */
+  const vendorGroups = (() => {
+    const map = new Map<
+      string,
+      { name: string; hasActive: boolean; isActiveVendor: boolean }
+    >();
+    (["openai", "anthropic"] as const).forEach((prov) => {
+      const list = config.modelsByProvider[prov] ?? [];
+      const activeId = config.activeModelId[prov] ?? null;
+      list.forEach((m) => {
+        const name = vendorNameOf(m, prov);
+        const g = map.get(name) ?? { name, hasActive: false, isActiveVendor: false };
+        if (m.id === activeId) {
+          g.hasActive = true;
+          if (config.apiProvider === prov) g.isActiveVendor = true;
+        }
+        map.set(name, g);
+      });
+    });
+    return [...map.values()].sort((a, b) => a.name.localeCompare(b.name));
+  })();
+
+  const vendorOf = (name: string) =>
+    vendorGroups.find((v) => v.name === name) ?? null;
+
+  /** 厂商名 → 所在协议列表（渲染期版本，读 config state）；找不到 = null */
+  const protocolOfVendor = (name: string): "openai" | "anthropic" | null =>
+    protocolOfVendorIn(config, name);
+
+  /** updater 内版本：读传入的 config 快照（函数式 handler 用） */
+  const protocolOfVendorIn = (
+    cfg: typeof config,
+    name: string,
+  ): "openai" | "anthropic" | null => {
+    if ((cfg.modelsByProvider.openai ?? []).some((m) => vendorNameOf(m, "openai") === name))
+      return "openai";
+    if ((cfg.modelsByProvider.anthropic ?? []).some((m) => vendorNameOf(m, "anthropic") === name))
+      return "anthropic";
+    return null;
+  };
+
+  /** 当前厂商页条目与协议（activeVendor 为 null 时空） */
+  const activeVendorProtocol: "openai" | "anthropic" =
+    activeVendor !== null && protocolOfVendor(activeVendor) === "anthropic"
+      ? "anthropic"
+      : "openai";
+  const activeVendorEntries =
+    activeVendor === null
+      ? []
+      : (config.modelsByProvider[activeVendorProtocol] ?? []).filter(
+          (m) => vendorNameOf(m, activeVendorProtocol) === activeVendor,
+        );
+  const vendorBaseUrl = activeVendorEntries[0]?.baseUrl ?? "";
+
+  /** 厂商页 Base URL 编辑：函数式同步全部同名条目 */
+  const setVendorBaseUrl = (url: string) => {
+    setConfig((c) => {
+      const rewrite = (list: ModelEntry[], prov: "openai" | "anthropic") =>
+        list.map((m) =>
+          vendorNameOf(m, prov) === activeVendor ? { ...m, baseUrl: url } : m,
+        );
+      return {
+        ...c,
+        modelsByProvider: {
+          openai: rewrite(c.modelsByProvider.openai ?? [], "openai"),
+          anthropic: rewrite(c.modelsByProvider.anthropic ?? [], "anthropic"),
+        },
+      };
+    });
+  };
+
+  /** 厂商 API 格式切换：整厂商条目搬到另一协议列表（active 指针随条目走） */
+  const setVendorProtocol = (prov: "openai" | "anthropic") => {
+    setConfig((c) => {
+      if (!activeVendor) return c;
+      const from = protocolOfVendorIn(c, activeVendor);
+      if (from === null || from === prov) return c;
+      const fromList = c.modelsByProvider[from] ?? [];
+      const toList = c.modelsByProvider[prov] ?? [];
+      const moving = fromList.filter((m) => vendorNameOf(m, from) === activeVendor);
+      const stay = fromList.filter((m) => vendorNameOf(m, from) !== activeVendor);
+      const curActive = c.activeModelId[from];
+      return {
+        ...c,
+        modelsByProvider: {
+          openai: prov === "openai" ? [...toList, ...moving] : stay,
+          anthropic: prov === "anthropic" ? [...toList, ...moving] : stay,
+        },
+        activeModelId: {
+          openai: prov === "openai" ? curActive : null,
+          anthropic: prov === "anthropic" ? curActive : null,
+        },
+      };
+    });
+  };
+
+  /** 厂商页「＋ 添加模型」：新条目带厂商名；该厂商首条 → 自动 active */
+  const addModelToVendor = () => {
+    setConfig((c) => {
+      if (!activeVendor) return c;
+      const from = protocolOfVendorIn(c, activeVendor) ?? "openai";
+      const list = c.modelsByProvider[from] ?? [];
+      const hadModels = list.some((m) => vendorNameOf(m, from) === activeVendor);
+      const baseUrl =
+        (list.find((m) => vendorNameOf(m, from) === activeVendor) ?? {}).baseUrl ?? "";
+      const entry: ModelEntry = {
+        id: genModelId(),
+        label: "",
+        baseUrl,
+        model: "",
+        vendor: activeVendor,
+      };
+      return {
+        ...c,
+        modelsByProvider: { ...c.modelsByProvider, [from]: [...list, entry] },
+        activeModelId: hadModels
+          ? c.activeModelId
+          : { ...c.activeModelId, [from]: entry.id },
+      };
+    });
+  };
+
+  /** 删除厂商：移除其全部条目（active 指针函数式兜底） */
+  const deleteVendor = (name: string) => {
+    setConfig((c) => {
+      const drop = (list: ModelEntry[], prov: "openai" | "anthropic") =>
+        list.filter((m) => vendorNameOf(m, prov) !== name);
+      const openai = drop(c.modelsByProvider.openai ?? [], "openai");
+      const anthropic = drop(c.modelsByProvider.anthropic ?? [], "anthropic");
+      const fix = (prov: "openai" | "anthropic", list: ModelEntry[]) => {
+        const cur = c.activeModelId[prov] ?? null;
+        if (cur === null) return null;
+        return list.some((m) => m.id === cur) ? cur : list[0]?.id ?? null;
+      };
+      return {
+        ...c,
+        modelsByProvider: { openai, anthropic },
+        activeModelId: {
+          openai: fix("openai", openai),
+          anthropic: fix("anthropic", anthropic),
+        },
+      };
+    });
+    setActiveVendor((cur) => (cur === name ? null : cur));
+  };
+
+  /** 厂商页「设为当前使用」：把该厂商 active 模型设为全局聊天所用 */
+  const makeVendorActive = () => {
+    setConfig((c) => {
+      if (!activeVendor) return c;
+      const from = protocolOfVendorIn(c, activeVendor);
+      if (from === null) return c;
+      const mine = (c.modelsByProvider[from] ?? []).filter(
+        (m) => vendorNameOf(m, from) === activeVendor,
+      );
+      if (!mine.length) return c;
+      const cur = c.activeModelId[from] ?? null;
+      const target = mine.some((m) => m.id === cur) ? cur : mine[0].id;
+      return {
+        ...c,
+        apiProvider: from,
+        activeModelId: { ...c.activeModelId, [from]: target },
+      };
+    });
   };
 
   /** 「Tavily 搜索」开关：与「开启机器人聊天」同款——点击即持久化（复用整份配置保存） */
@@ -1252,45 +1418,46 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         {/* 大模型 API 配置（开关开启后显示） */}
         {botEnabled && (
           <div className="space-y-3">
-            {/* U9 双栏：左供应商列表 + 右详情（截图骨架） */}
+            {/* U10 厂商中心：左厂商列表 + 右厂商页（截图骨架） */}
             <div className="flex min-h-[320px] gap-4">
-              {/* 左栏：供应商 = 协议槽（绿点 = 该协议已设 active 模型） */}
-              <div className="w-40 shrink-0 space-y-1 border-r border-[var(--edge)] pr-3">
-                <p className="text-[10px] text-[var(--t5)]">供应商</p>
-                {(
-                  [
-                    ["openai", "OpenAI 兼容"],
-                    ["anthropic", "Anthropic 兼容"],
-                  ] as const
-                ).map(([prov, label]) => {
-                  const hasActive =
-                    (config.activeModelId?.[prov] ?? null) !== null;
-                  return (
-                    <button
-                      key={prov}
-                      type="button"
-                      aria-pressed={config.apiProvider === prov}
-                      onClick={() =>
-                        setConfig((c) => ({ ...c, apiProvider: prov }))
-                      }
-                      className={`flex w-full items-center gap-2 rounded-[var(--r-sm)] px-2.5 py-2 text-left text-xs transition-colors duration-100 ${
-                        config.apiProvider === prov
-                          ? "nm-inset text-[var(--t1)]"
-                          : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
+              {/* 左栏：厂商列表（绿点 = 该厂商含全局 active 模型） */}
+              <div className="w-44 shrink-0 space-y-1 border-r border-[var(--edge)] pr-3">
+                <p className="text-[10px] text-[var(--t5)]">厂商</p>
+                {vendorGroups.map((v) => (
+                  <button
+                    key={v.name}
+                    type="button"
+                    aria-current={activeVendor === v.name || undefined}
+                    onClick={() => setActiveVendor(v.name)}
+                    className={`flex w-full items-center gap-2 rounded-[var(--r-sm)] px-2.5 py-2 text-left text-xs transition-colors duration-100 ${
+                      activeVendor === v.name
+                        ? "nm-inset text-[var(--t1)]"
+                        : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
+                    }`}
+                  >
+                    <span className="flex-1 truncate">{v.name}</span>
+                    <span
+                      aria-hidden
+                      className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                        v.hasActive ? "bg-[var(--success)]" : "bg-[var(--t6)]"
                       }`}
-                    >
-                      <span className="flex-1 truncate">{label}</span>
-                      <span
-                        aria-hidden
-                        className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-                          hasActive ? "bg-[var(--success)]" : "bg-[var(--t6)]"
-                        }`}
-                      />
-                    </button>
-                  );
-                })}
-              </div>
-              {/* 右栏详情 */}
+                    />
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveVendor(null);
+                    setShowProviderPicker(true);
+                  }}
+                  className={`flex w-full items-center gap-2 rounded-[var(--r-sm)] px-2.5 py-2 text-left text-xs text-[var(--brand)] hover:bg-[var(--hover-bg)] ${
+                    showProviderPicker && activeVendor === null ? "nm-inset" : ""
+                  }`}
+                >
+                  <Plus size={12} aria-hidden />
+                  添加厂商
+                </button>              </div>
+              {/* 右栏：厂商页 / 添加厂商网格 / 引导 */}
               <div className="min-w-0 flex-1 space-y-3">
             {showProviderPicker ? (
               <>
@@ -1302,10 +1469,10 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
                   >
                     ← 返回
                   </button>
-                  <p className="text-sm font-medium text-[var(--t1)]">添加供应商</p>
+                  <p className="text-sm font-medium text-[var(--t1)]">添加厂商</p>
                 </div>
                 <p className="text-[10px] text-[var(--t5)]">
-                  预设会切换协议并覆盖该协议当前的 Base URL 与模型列表（同一协议仅保存一份配置）。
+                  点选厂商即添加（同名厂商重新选择会覆盖其 Base URL 与模型列表）；添加后可改 Base URL、API 格式与模型列表。
                 </p>
                 <div className="grid grid-cols-2 gap-2">
                   {PROVIDER_PRESETS.map((p) => (
@@ -1318,88 +1485,93 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
                       <span aria-hidden className="text-base">{p.icon}</span>
                       <span className="flex-1 truncate">{p.name}</span>
                       <span aria-hidden className="text-[10px] text-[var(--t5)]">
-                        {p.protocol === "anthropic" ? "Anthropic 兼容" : "OpenAI 兼容"}
+                        {p.protocol === "anthropic" ? "Anthropic 格式" : "OpenAI 格式"}
                       </span>
                     </button>
                   ))}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      // 创建自定义：关网格并直接加一行空模型开始填写（有真实行为）
-                      setShowProviderPicker(false);
-                      addModel();
-                    }}
-                    className="nm-btn flex items-center gap-2 px-3 py-2.5 text-left text-xs text-[var(--t2)]"
-                  >
-                    <span aria-hidden className="text-base">＋</span>
-                    <span className="flex-1">创建自定义供应商</span>
-                  </button>
                 </div>
               </>
+            ) : !activeVendor ? (
+              <p className="py-10 text-center text-xs text-[var(--t5)]">
+                从左侧选择一个厂商，或点「添加厂商」接入新的模型供应商
+              </p>
             ) : (
               <>
-            {/* API 协议选择已上移至左栏供应商列表（U9） */}
-            {/* 该协议下的大模型：
-                双协议各自独立维护一份列表，协议切换时整体切换显示；列表可加多个；
-                radio 表示当前 active（机器人实际调用的那个）。老板要求「不设置默认厂商」，
-                所以列表初始为空，用户点「添加大模型」自己加。 */}
-            <div className="space-y-1">
-              <p className="text-[10px] text-[var(--t5)]">
-                {config.apiProvider === "anthropic" ? "Anthropic" : "OpenAI"} 兼容协议下的大模型
-              </p>
-              {currentModels.length === 0 ? (
-                <p className="text-[11px] text-[var(--t5)] py-1">
-                  暂无大模型，点下面「添加大模型」开始添加
-                </p>
-              ) : (
-                <div className="space-y-1.5">
-                  {currentModels.map((m) => (
-                    <ModelRow
-                      key={m.id}
-                      model={m}
-                      isActive={m.id === currentActiveId}
-                      apiProvider={config.apiProvider}
-                      onChange={(patch) => updateModel(m.id, patch)}
-                      onSelect={() => selectModel(m.id)}
-                      onDelete={() => deleteModel(m.id)}
-                    />
-                  ))}
-                </div>
-              )}
+            {/* 厂商标题行：图标 + 名称 + 设为当前使用 */}
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex min-w-0 items-center gap-2">
+                <span aria-hidden className="text-lg">
+                  {PROVIDER_PRESETS.find((p) => p.name === activeVendor)?.icon ?? "📦"}
+                </span>
+                <h3 className="truncate text-base font-semibold text-[var(--t1)]">
+                  {activeVendor}
+                </h3>
+              </div>
               <button
                 type="button"
-                className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)]"
-                onClick={addModel}
+                className="nm-btn shrink-0 px-3 py-1.5 text-xs text-[var(--t2)]"
+                disabled={!activeVendorEntries.length}
+                title="把该厂商的 active 模型设为聊天当前使用的模型"
+                onClick={makeVendorActive}
               >
-                ➕ 添加大模型
+                {vendorOf(activeVendor)?.isActiveVendor ? "当前使用 ✓" : "设为当前使用"}
               </button>
-              <p className="text-[10px] text-[var(--t6)] leading-snug">
-                ● 表示当前选中的模型（机器人实际调用的）；切换协议时列表整体切换。
-              </p>
+              <button
+                type="button"
+                aria-label={`删除厂商 ${activeVendor}`}
+                className="nm-icon-btn shrink-0 text-[var(--t5)] hover:text-[var(--danger)]"
+                title="删除厂商（其全部模型条目一并移除）"
+                onClick={() => {
+                  if (
+                    window.confirm(
+                      `删除厂商「${activeVendor}」？其全部模型条目将一并移除。`,
+                    )
+                  ) {
+                    deleteVendor(activeVendor);
+                  }
+                }}
+              >
+                <Trash2 size={13} aria-hidden />
+              </button>
             </div>
-            {/* max_tokens：仅 Anthropic 模式显示；仍是顶层配置——
-                同协议下多个模型共用一个 max_tokens。留空 = 8192 默认。 */}
-            {config.apiProvider === "anthropic" && (
-              <div className="space-y-1">
-                <p className="text-[10px] text-[var(--t5)]">max_tokens</p>
-                <input
-                  value={config.maxTokens}
-                  onChange={(e) => setConfig((c) => ({ ...c, maxTokens: e.target.value }))}
-                  placeholder="8192"
-                  inputMode="numeric"
-                  className="nm-inset w-full rounded-xl px-3 py-2 text-xs text-[var(--t3)] outline-none"
-                />
-                <p className="text-[10px] text-[var(--t6)] leading-snug">
-                  单次回复的最大 token 数（Anthropic 必填）。留空 = 8192；范围 256-200000，超出自动钳制。
-                </p>
+            {/* Base URL：厂商条目共用一个（编辑同步全部条目） */}
+            <div className="space-y-1">
+              <p className="text-[10px] text-[var(--t5)]">Base URL</p>
+              <input
+                value={vendorBaseUrl}
+                onChange={(e) => setVendorBaseUrl(e.target.value)}
+                placeholder="https://api.example.com/v1"
+                className="nm-inset w-full rounded-xl px-3 py-2 text-xs text-[var(--t3)] outline-none"
+              />
+            </div>
+            {/* API 格式：该厂商条目所在的协议列表（切换 = 条目整体搬移） */}
+            <div className="space-y-1">
+              <p className="text-[10px] text-[var(--t5)]">API 格式</p>
+              <div className="flex gap-2">
+                {(
+                  [
+                    ["openai", "OpenAI Chat Completions"],
+                    ["anthropic", "Anthropic Messages (/v1/messages)"],
+                  ] as const
+                ).map(([prov, label]) => (
+                  <button
+                    key={prov}
+                    type="button"
+                    className={`flex-1 px-2 py-1.5 text-xs ${
+                      activeVendorProtocol === prov ? "nm-inset text-[var(--t1)]" : "nm-outset text-[var(--t3)]"
+                    }`}
+                    onClick={() => setVendorProtocol(prov)}
+                    disabled={configBusy}
+                  >
+                    {label}
+                  </button>
+                ))}
               </div>
-            )}
-            {/* API Key：全局一份，所有协议所有模型共用一个 key。
-                后端把 key 存到系统凭据存储（不回填到输入框），前端只在 hasApiKey=true
-                时显示「已保存」标识。 */}
+            </div>
+            {/* API Key：全局一份（keyring 存储），所有厂商共用——挂账记录 */}
             <div className="space-y-1">
               <p className="text-[10px] text-[var(--t5)]">
-                API Key{config.hasApiKey && <span className="text-[var(--success)]"> · 已存入系统凭据存储 ✓</span>}
+                API Key（全局共用）{config.hasApiKey && <span className="text-[var(--success)]"> · 已存入系统凭据存储 ✓</span>}
               </p>
               <input
                 type="password"
@@ -1417,6 +1589,56 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
                 </button>
               )}
             </div>
+            {/* 模型列表：行 = radio（设为当前）+ 名称 + baseUrl + model + 删除 */}
+            <div className="space-y-1">
+              <div className="flex items-center justify-between">
+                <p className="text-[10px] text-[var(--t5)]">模型列表</p>
+                <button
+                  type="button"
+                  className="nm-btn px-2.5 py-1 text-[10px] text-[var(--t3)]"
+                  onClick={addModelToVendor}
+                >
+                  ＋ 添加模型
+                </button>
+              </div>
+              {activeVendorEntries.length === 0 ? (
+                <p className="py-1 text-[11px] text-[var(--t5)]">
+                  暂无模型，点「＋ 添加模型」开始添加
+                </p>
+              ) : (
+                <div className="space-y-1.5">
+                  {activeVendorEntries.map((m) => (
+                    <ModelRow
+                      key={m.id}
+                      model={m}
+                      isActive={m.id === (config.activeModelId[activeVendorProtocol] ?? null)}
+                      apiProvider={activeVendorProtocol}
+                      onChange={(patch) => updateModel(m.id, patch)}
+                      onSelect={() => selectModel(m.id)}
+                      onDelete={() => deleteModel(m.id)}
+                    />
+                  ))}
+                </div>
+              )}
+              <p className="text-[10px] text-[var(--t6)] leading-snug">
+                圆点 = 当前使用的模型（机器人实际调用）；max_tokens 在 Anthropic 格式下按厂商设置。
+              </p>
+            </div>
+            {activeVendorProtocol === "anthropic" && (
+              <div className="space-y-1">
+                <p className="text-[10px] text-[var(--t5)]">max_tokens</p>
+                <input
+                  value={config.maxTokens}
+                  onChange={(e) => setConfig((c) => ({ ...c, maxTokens: e.target.value }))}
+                  placeholder="8192"
+                  inputMode="numeric"
+                  className="nm-inset w-full rounded-xl px-3 py-2 text-xs text-[var(--t3)] outline-none"
+                />
+                <p className="text-[10px] text-[var(--t6)] leading-snug">
+                  单次回复的最大 token 数（Anthropic 必填）。留空 = 8192；范围 256-200000，超出自动钳制。
+                </p>
+              </div>
+            )}
             {renderSaveButton("mt-3 flex justify-end")}
               </>
             )}

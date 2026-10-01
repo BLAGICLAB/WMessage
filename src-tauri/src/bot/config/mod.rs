@@ -104,7 +104,33 @@ mod tests {
             label: format!("label-{id}"),
             base_url: base_url.into(),
             model: model.into(),
+            vendor: None,
         }
+    }
+
+    // U10 厂商中心：ModelEntry.vendor 序列化往返 + 老配置缺字段向后兼容
+    #[test]
+    fn model_entry_vendor_roundtrip_and_legacy_compat() {
+        use crate::bot::config::types::ModelEntry;
+        let e = ModelEntry {
+            id: "m1".into(),
+            label: "MiniMax".into(),
+            base_url: "https://api.minimaxi.com/anthropic".into(),
+            model: "MiniMax-M3".into(),
+            vendor: Some("MiniMax".into()),
+        };
+        let json = serde_json::to_string(&e).unwrap();
+        assert!(json.contains("\"vendor\":\"MiniMax\""));
+        let back: ModelEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.vendor.as_deref(), Some("MiniMax"));
+
+        // 老配置 JSON 无 vendor 字段 → None（不拒绝加载）
+        let legacy = r#"{"id":"m2","label":"旧条目","baseUrl":"https://x","model":"m"}"#;
+        let old: ModelEntry = serde_json::from_str(legacy).unwrap();
+        assert_eq!(old.vendor, None);
+        // None 不写进序列化输出（保持配置文件干净）
+        let clean = serde_json::to_string(&old).unwrap();
+        assert!(!clean.contains("vendor"));
     }
 
     #[test]

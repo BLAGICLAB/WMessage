@@ -9,6 +9,8 @@ export type ModelEntry = {
   label: string;
   baseUrl: string;
   model: string;
+  /** 所属厂商名（U10 厂商中心）：老配置缺省 → 前端按协议名兜底分组 */
+  vendor?: string;
 };
 
 /** 双协议下各自的模型列表：设置页协议切换时整体切换显示；
