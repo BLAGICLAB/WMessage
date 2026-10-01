@@ -313,9 +313,11 @@ describe("ChatPanel", () => {
       return () => {};
     });
     render(<ChatPanel {...defaultProps} />);
-    // 等初始会话加载完成（标题渲染 = sessionId 已 set 且 sessionIdRef 已同步），
-    // 否则 fire 时 sessionIdRef.current 还是 null，「本会话」用例会被误过滤（全量跑时序敏感）
+    // 等初始会话加载完成（标题渲染 = sessionId 已 set），再显式 flush passive
+    // effects（sessionIdRef 镜像在 useEffect 里；findByText 走 MutationObserver，
+    // 全量慢机上可能在 effects 运行前解析——fire 时 ref 还是 null 会误过滤）
     expect(await screen.findByText("默认会话")).toBeInTheDocument();
+    await act(async () => {});
     expect(confirmHandler).not.toBeNull();
     const fire = (payload: Record<string, unknown>) =>
       (confirmHandler as unknown as (e: { payload: Record<string, unknown> }) => void)({ payload });

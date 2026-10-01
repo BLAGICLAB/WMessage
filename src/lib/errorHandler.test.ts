@@ -2,6 +2,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { handleCommandError, ALL_COMMAND_ERROR_CODES } from "./errorHandler";
 
+// Tauri 宿主由全局 setup.ts 统一模拟；非宿主降级分支在文末 describe 显式 delete
+
 /** 构造一个 CommandErrorPayload 形状的对象 */
 const ce = (code: string, recoverable: boolean, message = "出错了") => ({
   code,
@@ -175,5 +177,34 @@ describe("hintForCode 全覆盖（每个 code 必须有专属 hint）", () => {
     const text = alertSpy.mock.calls[0][0] as string;
     expect(text).toContain("💡");
     expect(text).toContain("按提示调整后重试");
+  });
+});
+
+describe("非 Tauri 宿主降级（U5：治自动化 alert 洪水）", () => {
+  let alertSpy: ReturnType<typeof vi.spyOn>;
+  let confirmSpy: ReturnType<typeof vi.spyOn>;
+  let errSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
+    alertSpy = vi.spyOn(window, "alert").mockImplementation(() => {});
+    confirmSpy = vi.spyOn(window, "confirm").mockImplementation(() => true);
+    errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  it("无 __TAURI_INTERNALS__：CommandError 只 console，不弹窗、不 confirm", () => {
+    handleCommandError(ce("DB_ERROR", true, "boom"), "db", {
+      onRetry: () => {},
+    });
+    expect(alertSpy).not.toHaveBeenCalled();
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(errSpy).toHaveBeenCalledTimes(1);
+    expect(String(errSpy.mock.calls[0][0])).toContain("non-tauri host");
+  });
+
+  it("无 __TAURI_INTERNALS__：非结构化错误同样只 console", () => {
+    handleCommandError(new Error("plain"));
+    expect(alertSpy).not.toHaveBeenCalled();
+    expect(errSpy).toHaveBeenCalledTimes(1);
   });
 });

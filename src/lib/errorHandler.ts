@@ -192,6 +192,15 @@ export interface HandleOptions {
 }
 
 /**
+ * 非 Tauri 宿主（纯浏览器 / 自动化夹具）检测：invoke 全部不可用，
+ * boot 期每个调用都会失败——弹窗只会洪水化（U1 登记的自动化挂死根因），
+ * 降级为只留 console。Tauri 宿主行为不变（真实用户必须看到弹窗）。
+ */
+function isTauriHost(): boolean {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
+
+/**
  * 统一错误处理入口。CommandError → console 打 code + 弹 alert；其他原样。
  *
  * @param e    invoke() 抛出的 unknown
@@ -205,6 +214,11 @@ export function handleCommandError(
   options: HandleOptions = {}
 ): void {
   const prefix = ctx ? `[${ctx}]` : "[invoke]";
+  if (!isTauriHost()) {
+    // 非 Tauri 宿主：一律只 console，不弹窗、不重试询问
+    console.error(`${prefix} (non-tauri host, popup suppressed)`, e);
+    return;
+  }
   if (isCommandError(e)) {
     console.error(
       `${prefix} CommandError code=${e.code} recoverable=${e.recoverable}`,

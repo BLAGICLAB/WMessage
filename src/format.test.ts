@@ -7,6 +7,7 @@ import {
   formatSchedule,
   formatDue,
   basename,
+  relativeTime,
 } from "./format";
 
 describe("isValidDateTimeLocal", () => {
@@ -97,5 +98,25 @@ describe("formatDue / basename", () => {
   it("basename 处理 unix/windows 分隔符", () => {
     expect(basename("/Users/x/report.docx")).toBe("report.docx");
     expect(basename("C:\\Users\\x\\report.docx")).toBe("report.docx");
+  });
+});
+
+describe("relativeTime（U5 会话栈）", () => {
+  const now = Date.parse("2026-10-01T12:00:00");
+  const ago = (ms: number) => now - ms;
+
+  it("五档：刚刚 / 分钟 / 小时 / 天 / 落日期", () => {
+    expect(relativeTime(ago(30_000), now)).toBe("刚刚");
+    expect(relativeTime(ago(5 * 60_000), now)).toBe("5 分钟前");
+    expect(relativeTime(ago(3 * 3_600_000), now)).toBe("3 小时前");
+    expect(relativeTime(ago(2 * 86_400_000), now)).toBe("2 天前");
+    expect(relativeTime(ago(8 * 86_400_000), now)).toBe("2026-09-23");
+  });
+
+  it("边界：59 秒=刚刚、60 分钟=1 小时前、未来/非法=刚刚", () => {
+    expect(relativeTime(ago(59_000), now)).toBe("刚刚");
+    expect(relativeTime(ago(60 * 60_000), now)).toBe("1 小时前");
+    expect(relativeTime(now + 5_000, now)).toBe("刚刚");
+    expect(relativeTime(NaN, now)).toBe("刚刚");
   });
 });

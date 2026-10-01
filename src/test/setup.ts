@@ -7,6 +7,13 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+// 模拟 Tauri 宿主（U5）：产品运行环境是 Tauri webview（__TAURI_INTERNALS__ 恒在），
+// errorHandler 的弹窗降级只应在纯浏览器触发——测试环境统一按宿主模拟，
+// 降级分支由 errorHandler.test 显式 delete 后单测
+if (typeof window !== "undefined") {
+  (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};
+}
+
 // React 19 + @testing-library：子组件异步状态更新（如 ActorAvatar useProfile
 // 的 loadProfile promise）会产生未包装 act 的警告；测试结果不受影响，仅净化日志。
 // 真身在模块加载期捕获一次（spy 恢复与否不影响）；正则须带 act( 括号防误吞。

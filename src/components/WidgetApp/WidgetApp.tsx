@@ -23,6 +23,7 @@ import { LogicalPosition, LogicalSize, getCurrentWindow } from "@tauri-apps/api/
 import { listen, emit } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { openTarget } from "../../lib/openTarget";
+import { ErrorBoundary } from "../../ui/ErrorBoundary";
 import { linkDisplayName } from "../WorkspacePage";
 
 import { handleCommandError } from "../../lib/errorHandler";
@@ -653,7 +654,8 @@ export default function WidgetApp() {
       : "rounded-2xl";
 
   return (
-    <div className="w-screen h-screen bg-transparent overflow-hidden">
+    <ErrorBoundary>
+      <div className="w-screen h-screen bg-transparent overflow-hidden">
       {!expanded && (
         <div
           className={`${
@@ -946,6 +948,7 @@ export default function WidgetApp() {
           <ArtifactBatchDialog />
         </div>
       }
-    </div>
+      </div>
+    </ErrorBoundary>
   );
 }

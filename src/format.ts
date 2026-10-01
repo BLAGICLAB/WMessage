@@ -50,6 +50,22 @@ export function formatCompletedAt(ms: number): string {
   )}`;
 }
 
+/** 相对时间（U5 会话栈）：刚刚 / N 分钟前 / N 小时前 / N 天前 / 超过 7 天落日期。
+ *  now 可注入（测试）；非法/未来时间戳回「刚刚」。 */
+export function relativeTime(ms: number, now: number = Date.now()): string {
+  const d = new Date(ms);
+  if (isNaN(d.getTime()) || ms > now) return "刚刚";
+  const diffMs = now - ms;
+  const minutes = Math.floor(diffMs / 60_000);
+  if (minutes < 1) return "刚刚";
+  if (minutes < 60) return `${minutes} 分钟前`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} 小时前`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days} 天前`;
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
 // datetime-local 值校验：格式完整 + 时分在界 + Date 往返一致
 // （防 2026-02-31 被 Date 静默进位、防 25:99、防不完整输入产生坏数据——
 // 沿用定时面板 NaN 事故教训：无效值一律不写库）

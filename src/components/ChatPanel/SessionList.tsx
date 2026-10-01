@@ -4,6 +4,7 @@
 
 import type { RefObject } from "react";
 import { Bot, Crosshair, Plus, Trash2 } from "lucide-react";
+import { relativeTime } from "../../format";
 import type { Session } from "./types";
 
 type SessionListProps = {
@@ -120,6 +121,11 @@ export function SessionList({
                   }`}
                 />
                 <span className="truncate">{s.title}</span>
+                {s.updatedAt != null && (
+                  <span className="ml-auto shrink-0 text-[10px] text-[var(--t5)]">
+                    {relativeTime(s.updatedAt)}
+                  </span>
+                )}
               </button>
               <button
                 type="button"

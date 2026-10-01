@@ -1,4 +1,4 @@
-import { Component, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from "react";
+import { useEffect, useRef, useState } from "react";
 import { emit, listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { KanbanBoard } from "./components/KanbanBoard";
 import { CommandPalette } from "./components/CommandPalette";
+import { ErrorBoundary } from "./ui/ErrorBoundary";
 import mainLogo from "./assets/main-logo.png";
 import { ArchivePage } from "./components/ArchivePage";
 import { TrashPage } from "./components/TrashPage";
@@ -121,49 +122,6 @@ function RailButton({
       )}
     </button>
   );
-}
-
-/** ErrorBoundary：主窗口任何子组件抛错时不再 unmount 变白，
- *  捕到错误显示堆栈 + 「重试」按钮重置 state。class component 必需（hooks
- *  写法目前 React 还没稳定 API）。 */
-class ErrorBoundary extends Component<
-  { children: ReactNode },
-  { error: Error | null }
-> {
-  override state = { error: null as Error | null };
-  static getDerivedStateFromError(error: Error) {
-    return { error };
-  }
-  override componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error("[App ErrorBoundary]", error, info.componentStack);
-  }
-  reset = () => this.setState({ error: null });
-  override render() {
-    if (this.state.error) {
-      return (
-        <div className="min-h-screen bg-[var(--bg)] p-6 flex items-center justify-center">
-          <div className="nm-card p-6 max-w-2xl">
-            <p className="text-base font-semibold text-[var(--danger)] mb-2">
-              ⚠️ 主窗口发生错误
-            </p>
-            <p className="text-sm text-[var(--t2)] mb-2">
-              {this.state.error.message}
-            </p>
-            <pre className="text-[10px] text-[var(--t4)] whitespace-pre-wrap overflow-auto max-h-64 bg-[var(--inset)] p-3 rounded-xl mb-3">
-              {this.state.error.stack}
-            </pre>
-            <button
-              className="nm-btn px-4 py-1.5 text-sm text-[var(--t2)]"
-              onClick={this.reset}
-            >
-              🔄 重试
-            </button>
-          </div>
-        </div>
-      );
-    }
-    return this.props.children;
-  }
 }
 
 // 今日规则：截止日期为当天的任务自动进「今日」列（「完成」列不受影响）
