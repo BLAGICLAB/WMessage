@@ -560,7 +560,7 @@ describe("App", () => {
     // U2：设置入口迁入左侧导航栏（icon + 文字「设置」，旧 ⚙️ 的 title 属性取消）
     await user.click(screen.getByText("设置"));
     // U7 设置壳：任务数据面板在「任务与工作区」分类下（hidden 查不到 role，先导航）
-    await user.click(screen.getByRole("button", { name: "任务与工作区" }));
+    await user.click(screen.getByRole("button", { name: "数据管理" }));
     const importBtn = (await screen.findAllByRole("button", { name: "📥 导入" }))[0];
     await user.click(importBtn);
     // 导入完成 alert（证明 importTasks 全流程走完）

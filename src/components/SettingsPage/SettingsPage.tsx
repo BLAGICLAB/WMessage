@@ -10,14 +10,21 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import {
   ArrowLeft,
+  BarChart3,
   Bot,
-  Boxes,
+  Brain,
+  Cpu,
   DatabaseBackup,
+  FolderOutput,
+  GitBranch,
+  Plug,
   Settings2,
+  Sparkles,
   type LucideIcon,
 } from "lucide-react";
 
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
+import { EmptyState } from "../EmptyState";
 import type { ThemeSetting } from "../../theme";
 import { MigrationPanel } from "../MigrationPanel";
 
@@ -48,14 +55,32 @@ type Props = {
   onBack?: () => void;
 };
 
-/** 设置分类（U7 壳）：侧栏顺序 = 源码面板顺序；面板 keep-mounted hidden，
- *  切分类不卸载（未保存输入保留、既有测试按文本断言零导航） */
-type SectionKey = "general" | "data" | "bot" | "agents";
+/** 设置分类（U8 十项，老板拍板）：key 顺序 = 侧栏顺序。
+ *  「机器人」section 在源码中三段出现（同名同亮）：卡1 开关/Python/日志、
+ *  卡2 授权/白名单、卡3 技能路由/外部 API；「MCP 服务」两段：Tavily/Brave
+ *  搜索引擎卡 + McpPanel。面板惰性挂载同 U7。 */
+type SectionKey =
+  | "general"
+  | "data"
+  | "bot"
+  | "model"
+  | "memory"
+  | "skills"
+  | "mcp"
+  | "evolution"
+  | "desk"
+  | "tokens";
 const SECTIONS: { key: SectionKey; label: string; icon: LucideIcon }[] = [
-  { key: "general", label: "通用", icon: Settings2 },
-  { key: "data", label: "任务与工作区", icon: DatabaseBackup },
+  { key: "general", label: "通用设置", icon: Settings2 },
+  { key: "data", label: "数据管理", icon: DatabaseBackup },
   { key: "bot", label: "机器人", icon: Bot },
-  { key: "agents", label: "智能体与扩展", icon: Boxes },
+  { key: "model", label: "模型设置", icon: Cpu },
+  { key: "memory", label: "记忆", icon: Brain },
+  { key: "skills", label: "技能", icon: Sparkles },
+  { key: "mcp", label: "MCP 服务", icon: Plug },
+  { key: "evolution", label: "自进化", icon: GitBranch },
+  { key: "desk", label: "桌面整理", icon: FolderOutput },
+  { key: "tokens", label: "词元统计", icon: BarChart3 },
 ];
 
 /** 设置壳（U7 重设计）：左侧分类导航 + 右侧分类内容（大标题 + 卡片流）。
@@ -145,6 +170,20 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
   const [braveKeyInput, setBraveKeyInput] = useState("");
   const [configBusy, setConfigBusy] = useState(false);
   const [configSaved, setConfigSaved] = useState(false);
+  /** 「保存配置」按钮（U8 拆卡后各含 setConfig 字段的卡各配一枚；cls 控制外距） */
+  const renderSaveButton = (cls: string) => (
+    <div className={cls}>
+      <button
+        className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] ${
+          configBusy ? "nm-inset" : "nm-outset"
+        }`}
+        onClick={() => saveConfig()}
+        disabled={configBusy}
+      >
+        {configSaved ? "已保存 ✓" : configBusy ? "保存中…" : "保存配置"}
+      </button>
+    </div>
+  );
   const [pyEnabled, setPyEnabled] = useState(false);
   const [pyBusy, setPyBusy] = useState(false);
   const [pyEnv, setPyEnv] = useState<{ available: boolean; python: string; version: string; libs: string[] } | null>(null);
@@ -1049,9 +1088,16 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
             {logBusy ? "读取中…" : "查看日志"}
           </button>
         </div>
-
+        {/* U8：Python 超时等 setConfig 字段靠本卡保存钮落盘（bot 关闭时 model 卡按钮不可达） */}
+        {renderSaveButton("mt-3 flex justify-end")}
+      </div>
+      </section>
+      )}
+      {mountedSections.has("memory") && (
+      <section hidden={activeSection !== "memory"} className="space-y-4 pt-4">
+      <div className="nm-card p-5">
         {/* 定时记忆整理 */}
-        <div className="mt-3 border-t border-[var(--edge)] pt-3 space-y-2">
+        <div className="space-y-2">
           <div className="flex items-center justify-between gap-4">
             <div className="min-w-0">
               <p className="text-xs font-medium text-[var(--t4)]">记忆整理</p>
@@ -1122,10 +1168,15 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
             </>
           )}
         </div>
-
+      </div>
+      </section>
+      )}
+      {mountedSections.has("model") && (
+      <section hidden={activeSection !== "model"} className="space-y-4 pt-4">
+      <div className="nm-card p-5">
         {/* 大模型 API 配置（开关开启后显示） */}
         {botEnabled && (
-          <div className="mt-4 border-t border-[var(--edge)] pt-4 space-y-3">
+          <div className="space-y-3">
             <p className="text-xs font-medium text-[var(--t4)]">大模型 API 配置</p>
             {/* API 协议：自绘下拉（原生 select 弹系统菜单不跟随主题） */}
             <div className="space-y-1">
@@ -1213,6 +1264,45 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
                 </button>
               )}
             </div>
+            {renderSaveButton("mt-3 flex justify-end")}
+          </div>
+        )}
+        {/* 推理强度后台默认（RE-1）：抽象档位，后端按具体模型族映射线上参数（不受机器人开关门控） */}
+        <div className="mt-4 border-t border-[var(--edge)] pt-4 space-y-1">
+          <p className="text-sm font-medium text-[var(--t2)]">推理强度</p>
+          <div className="flex gap-2">
+            {(
+              [
+                ["off", "关闭"],
+                ["low", "低"],
+                ["medium", "中"],
+                ["high", "高"],
+              ] as const
+            ).map(([level, label]) => (
+              <button
+                key={level}
+                className={`flex-1 px-2 py-1.5 text-xs ${
+                  config.reasoningEffort === level ? "nm-inset" : "nm-outset"
+                } text-[var(--t3)]`}
+                onClick={() => setReasoningEffort(level)}
+                disabled={configBusy}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <p className="text-[10px] text-[var(--t6)] leading-snug">
+            大模型回复前的思考深度，全局默认「中」。挂件聊天输入框里可按会话临时覆盖。
+            实际参数按模型各自的 API 映射（如 GLM-5.3 的 reasoning_effort、
+            Claude 的 thinking.budget_tokens）；模型不支持某档位时自动就近。
+          </p>
+        </div>
+      </div>
+      </section>
+      )}
+      {mountedSections.has("bot") && (
+      <section hidden={activeSection !== "bot"} className="space-y-4 pt-4">
+      <div className="nm-card p-5">
             {/* 授权模式（Kimi CLI 风格执行前授权） */}
             <div className="space-y-1">
               <p className="text-sm font-medium text-[var(--t2)]">授权模式</p>
@@ -1245,36 +1335,6 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
                   "⚠️ 不弹任何授权：机器人可读本机任意文件，且 Python 编程免开关直接执行（以本机用户权限，可联网）。仅在你完全信任所用模型时开启。"}
               </p>
             </div>
-            {/* 推理强度后台默认（RE-1）：抽象档位，后端按具体模型族映射线上参数 */}
-            <div className="space-y-1">
-              <p className="text-sm font-medium text-[var(--t2)]">推理强度</p>
-              <div className="flex gap-2">
-                {(
-                  [
-                    ["off", "关闭"],
-                    ["low", "低"],
-                    ["medium", "中"],
-                    ["high", "高"],
-                  ] as const
-                ).map(([level, label]) => (
-                  <button
-                    key={level}
-                    className={`flex-1 px-2 py-1.5 text-xs ${
-                      config.reasoningEffort === level ? "nm-inset" : "nm-outset"
-                    } text-[var(--t3)]`}
-                    onClick={() => setReasoningEffort(level)}
-                    disabled={configBusy}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-              <p className="text-[10px] text-[var(--t6)] leading-snug">
-                大模型回复前的思考深度，全局默认「中」。挂件聊天输入框里可按会话临时覆盖。
-                实际参数按模型各自的 API 映射（如 GLM-5.3 的 reasoning_effort、
-                Claude 的 thinking.budget_tokens）；模型不支持某档位时自动就近。
-              </p>
-            </div>
             {/* 本地文件工具白名单（read_text_file/grep_files/list_files；
                 追加语义：在内置默认之上追加放行） */}
             <div className="space-y-1">
@@ -1290,6 +1350,14 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
                 白名单内静默放行；白名单外按授权模式处理（见上）。授权弹窗点「始终允许该目录」会自动追加到这里。
               </p>
             </div>
+        {/* U8：白名单 textarea 等 setConfig 字段靠本卡保存钮落盘 */}
+        {renderSaveButton("mt-3 flex justify-end")}
+      </div>
+      </section>
+      )}
+      {mountedSections.has("mcp") && (
+      <section hidden={activeSection !== "mcp"} className="space-y-4 pt-4">
+      <div className="nm-card p-5">
             {/* Tavily 搜索 */}
             <div className="space-y-1">
               <div className="flex items-center justify-between gap-4">
@@ -1380,6 +1448,13 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
                 ⚠️ Tavily 与 Brave 只能开启一个，请关闭其中一个。
               </p>
             )}
+            {renderSaveButton("mt-3 flex justify-end")}
+      </div>
+      </section>
+      )}
+      {mountedSections.has("bot") && (
+      <section hidden={activeSection !== "bot"} className="space-y-4 pt-4">
+      <div className="nm-card p-5">
             {/* F-1 bypass_llm_on_pre_step_hit 开关：技能路由新链路 / 旧链路回退闸 */}
             <div className="space-y-1">
               <p className="text-[10px] text-[var(--t5)]">智能技能路由</p>
@@ -1393,6 +1468,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
                     bypassLlmOnPreStepHit: !c.bypassLlmOnPreStepHit,
                   }))
                 }
+                disabled={configBusy}
               >
                 {config.bypassLlmOnPreStepHit
                   ? "已开启（推荐）"
@@ -1403,19 +1479,8 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
                 关闭：退回旧链路，由主 LLM 自由选择技能——仅当新路由行为异常时紧急回退用。
               </p>
             </div>
-            <button
-              className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] ${
-                configBusy ? "nm-inset" : "nm-outset"
-              }`}
-              onClick={() => saveConfig()}
-              disabled={configBusy}
-            >
-              {configSaved ? "已保存 ✓" : configBusy ? "保存中…" : "保存配置"}
-            </button>
-          </div>
-        )}
 
-        {/* 外部机器人 API 开关 */}
+            {/* 外部机器人 API 开关 */}
         <div className="mt-4 flex items-center justify-between gap-4">
           <div className="min-w-0">
             <p className="text-sm font-medium text-[var(--t2)]">
@@ -1486,18 +1551,42 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
             </div>
           </>
         )}
+        {/* U8：技能路由/外部 API 段的保存入口 */}
+        {renderSaveButton("mt-4 flex justify-end")}
       </div>
-
       </section>
-          )}
-          {mountedSections.has("agents") && (
-          <section hidden={activeSection !== "agents"} className="space-y-4 pt-4">
+      )}
+      {mountedSections.has("skills") && (
+      <section hidden={activeSection !== "skills"} className="space-y-4 pt-4">
       <SkillsPanel />
+      </section>
+      )}
+      {mountedSections.has("mcp") && (
+      <section hidden={activeSection !== "mcp"} className="space-y-4 pt-4">
       <McpPanel />
+      </section>
+      )}
+      {mountedSections.has("evolution") && (
+      <section hidden={activeSection !== "evolution"} className="space-y-4 pt-4">
       <EvolutionPanel />
+      </section>
+      )}
+      {mountedSections.has("desk") && (
+      <section hidden={activeSection !== "desk"} className="space-y-4 pt-4">
       <MigrationPanel />
       </section>
-          )}
+      )}
+      {mountedSections.has("tokens") && (
+      <section hidden={activeSection !== "tokens"} className="space-y-4 pt-4">
+      <div className="nm-card p-5">
+        <EmptyState
+          icon={<BarChart3 size={18} aria-hidden />}
+          title="词元统计"
+          description="大模型调用的词元用量统计规划中：将在机器人对话与任务执行里按会话/工具聚合展示"
+        />
+      </div>
+      </section>
+      )}
         </div>
       </div>
 
