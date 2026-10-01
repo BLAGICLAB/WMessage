@@ -2,6 +2,13 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-01（周四）U6-WINSIZE：主窗口默认尺寸 800×600 → 1200×900（`84d7f13`）
+
+老板需求（宽高各 +50%）。单点配置批：`tauri.conf.json` 主窗口 width/height；
+核对主窗口尺寸唯一来源（Rust 侧 WebviewWindowBuilder 仅挂件触发条 44×220 与
+测试 mock，无第二处硬编码），挂件窗口自管尺寸零改动，不附加 min/居中等属性。
+门禁 8s（cargo fmt/check + 桥一致性）。
+
 ## 2026-10-01（周四）Mimosa 复扫（UI 战役 U0–U5 后）：攻击面无回归，新增 findings 为既有误报类的细化展开
 
 **扫描**（2026-10-01，deep，seal `sha256:6e5c8c2b…a3b7`，scanId
