@@ -6,7 +6,7 @@
 // 开关 = ModelEntry.enabled（聊天 🧠 下拉只显示 enabled 模型）。
 // 厂商被禁用（vendorDisabled）时整行变淡、启用开关与连接测试禁用。
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Pencil, Plug, Trash2 } from "lucide-react";
 import { formatCommandError } from "../../lib/errorHandler";
@@ -53,8 +53,33 @@ export function ModelRow({
   const [testState, setTestState] = useState<TestState>("idle");
   const [testMsg, setTestMsg] = useState("");
   const isOn = model.enabled !== false;
-  // 插头颜色：本行刚测失败 > 红；已验证（持久化）或刚测通过 > 绿；否则灰
-  const plugOk = testState === "ok" || (testState !== "fail" && vendorVerified === true);
+  // Base URL / API 格式变了 → 本行瞬态测试结果作废（请求路径已指向新地址，
+  // 绿色与「改 URL/格式后需重新测试」的提示不能自相矛盾）
+  useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect
+    setTestState("idle");
+    // oxlint-disable-next-line react/set-state-in-effect
+    setTestMsg("");
+  }, [model.baseUrl, apiProvider]);
+
+  /** 插头颜色/文案（映射表替代嵌套三元）：
+   *  刚测失败 > 红；测试中 > 灰；已验证（持久化）或刚测通过 > 绿；否则灰 */
+  const plugClass =
+    testState === "fail"
+      ? "text-[var(--danger)]"
+      : testState === "testing"
+        ? "text-[var(--t5)]"
+        : testState === "ok" || vendorVerified
+          ? "text-[var(--success)]"
+          : "text-[var(--t5)] hover:text-[var(--t2)]";
+  const plugTitle =
+    testState === "testing"
+      ? "连接测试中…"
+      : testMsg
+        ? `连接测试：${testMsg}`
+        : vendorVerified
+          ? "连接测试已通过（改 key/URL/格式后需重新测试）"
+          : "测试连接（按该模型的 Base URL + API 格式探测 /models）";
 
   /** 插头连接测试：bot_test_connection 只判 HTTP 状态（后端 5s 超时） */
   const runTest = async () => {
@@ -108,22 +133,8 @@ export function ModelRow({
           type="button"
           aria-label="测试连接"
           disabled={vendorDisabled || testState === "testing"}
-          className={`nm-icon-btn shrink-0 ${
-            testState === "fail"
-              ? "text-[var(--danger)]"
-              : plugOk
-                ? "text-[var(--success)]"
-                : "text-[var(--t5)] hover:text-[var(--t2)]"
-          }`}
-          title={
-            testState === "testing"
-              ? "连接测试中…"
-              : testMsg
-                ? `连接测试：${testMsg}`
-                : plugOk
-                  ? "连接测试已通过（改 key/URL/格式后需重新测试）"
-                  : "测试连接（按该模型的 Base URL + API 格式探测 /models）"
-          }
+          className={`nm-icon-btn shrink-0 ${plugClass}`}
+          title={plugTitle}
           onClick={runTest}
         >
           <Plug size={13} aria-hidden />

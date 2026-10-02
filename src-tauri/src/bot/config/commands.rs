@@ -298,14 +298,15 @@ pub fn bot_clear_api_key() -> CommandResult<()> {
 }
 
 /// 清除指定厂商的 API Key（keyring 条目按厂商名分存）；
-/// 顺带把该厂商移出已验证名单（key 没了可用性随之失效）
+/// 先把厂商移出已验证名单（配置落盘成功）再删 key——顺序保证失败时
+/// fail-closed（宁可用不了，不留「key 没了但还显示已验证」的假绿）。
 #[tauri::command]
 pub fn bot_clear_vendor_key(app: AppHandle, vendor: String) -> CommandResult<()> {
     let vendor = vendor.trim();
-    keyring::delete_vendor_key(vendor)?;
     super::io::update_config_file(&app, |cfg| {
         cfg.verified_vendors.retain(|v| v != vendor);
-    })
+    })?;
+    keyring::delete_vendor_key(vendor)
 }
 
 pub use super::audit::bot_log_read;
@@ -460,6 +461,13 @@ pub async fn probe_connection(
     api_key: &str,
 ) -> ConnectionTestResult {
     let b = base_url.trim_end_matches('/');
+    // 误粘完整端点的填法先剥掉端点尾段（与 anthropic_messages_url 同规则），
+    // 否则探测路径叠成 /v1/messages/v1/models、/chat/completions/models
+    let b = b
+        .strip_suffix("/v1/messages")
+        .or_else(|| b.strip_suffix("/messages"))
+        .or_else(|| b.strip_suffix("/chat/completions"))
+        .unwrap_or(b);
     let url = if api_format == "anthropic" {
         if b.ends_with("/v1") {
             format!("{b}/models")
@@ -496,11 +504,13 @@ pub async fn probe_connection(
 }
 
 /// 厂商详情页模型行「测试连接」（参照 open-webui POST /verify）：
-/// key 从系统凭据存储读：传了 vendor 时该厂商的厂商级 key 优先，否则全局主 key；
-/// 读不到（未配置 / keyring 故障）按无 key 探活——
-/// 无 key 时厂商会回 401，状态如实返回，不在此处把 keyring 故障伪装成连接失败。
+/// key 从系统凭据存储读：传了 vendor 时该厂商的厂商级 key 优先，没配过才回落
+/// 全局主 key；厂商 keyring 真实故障（钥匙串锁定/权限拒绝）上抛 KeyringError，
+/// 不静默拿全局 key 去探测（会报出误导性的「厂商鉴权失败」401）。
+/// 全局主 key 读不到（未配置 / 故障）按无 key 探活——无 key 时厂商会回 401，
+/// 状态如实返回。
 /// 结果落盘可用性：ok → 厂商进 verified_vendors（设置页绿点 + 聊天下拉放行），
-/// 失败 → 移出；写盘失败不阻断测试结果的返回。
+/// 失败 → 移出；写盘失败记审计，不阻断测试结果的返回。
 #[tauri::command]
 pub async fn bot_test_connection(
     app: AppHandle,
@@ -510,15 +520,23 @@ pub async fn bot_test_connection(
 ) -> CommandResult<ConnectionTestResult> {
     use crate::bot_model_loop::shared_llm_client;
 
-    let key = vendor
+    let vendor = vendor
         .as_deref()
         .map(str::trim)
         .filter(|v| !v.is_empty())
-        .and_then(|v| keyring::read_vendor_key(v).ok())
-        .filter(|k| !k.trim().is_empty())
-        .unwrap_or_else(|| keyring::read_api_key().unwrap_or_default());
+        .map(str::to_string);
+    let key = match &vendor {
+        Some(v) => {
+            if keyring::has_vendor_key(v)? {
+                keyring::read_vendor_key(v)?
+            } else {
+                keyring::read_api_key().unwrap_or_default()
+            }
+        }
+        None => keyring::read_api_key().unwrap_or_default(),
+    };
     let r = probe_connection(shared_llm_client(), &base_url, &api_format, &key).await;
-    if let Some(v) = vendor.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+    if let Some(v) = vendor.as_deref() {
         let ok = r.ok;
         if let Err(e) = super::io::update_config_file(&app, |cfg| {
             if ok {
@@ -529,7 +547,14 @@ pub async fn bot_test_connection(
                 cfg.verified_vendors.retain(|x| x != v);
             }
         }) {
-            eprintln!("[bot] verified_vendors 写盘失败: {e}");
+            // 写盘失败 = 验证态没落盘（下次启动回到未验证）：记审计，不回改测试结果
+            super::audit::audit_log(
+                &app,
+                &format!(
+                    "bot_config.verified_vendors_persist_failed | {}",
+                    super::audit::escape_for_log(&e.to_string(), 200)
+                ),
+            );
         }
     }
     Ok(r)

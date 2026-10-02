@@ -30,12 +30,11 @@ export type MetaModel = {
   source?: string;
 };
 
-export type MetaSyncResult = {
-  ok: boolean;
-  providers?: number;
-  models?: number;
-  error?: string;
-};
+/** 同步结果：与 Rust 侧 MetaSyncResult 的两种实际形态一一对应（判别联合）——
+ *  ok:true 时 providers/models 必有；ok:false 时 error 必有 */
+export type MetaSyncResult =
+  | { ok: true; providers: number; models: number }
+  | { ok: false; error: string };
 
 /** 全部服务商；null = meta 模块异常（调用方按降级路径处理） */
 export async function fetchProviders(): Promise<MetaProvider[] | null> {

@@ -108,24 +108,37 @@ pub fn apply_sync(
     })
 }
 
-/// 拉取 api.json 原文（解析与网络分离，解析可纯单测）
+/// 拉取 api.json 原文（解析与网络分离，解析可纯单测）。
+/// 响应体 16MB 上限：api.json 正常量级几 MB，超限视为异常/劫持响应直接拒绝
+///（防无限 body 把进程内存打爆）。
 async fn fetch_models_dev(url: &str) -> Result<String, String> {
+    const MAX_BODY: usize = 16 * 1024 * 1024;
     let resp = crate::bot_model_loop::shared_llm_client()
         .get(url)
         .timeout(SYNC_TIMEOUT)
         .send()
         .await
         .map_err(|e| format!("models.dev 请求失败：{e}"))?;
-    let resp = resp
+    let mut resp = resp
         .error_for_status()
         .map_err(|e| format!("models.dev HTTP 错误：{e}"))?;
-    resp.text()
-        .await
-        .map_err(|e| format!("models.dev 读取响应失败：{e}"))
+    let mut buf = Vec::new();
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = futures_util::StreamExt::next(&mut stream).await {
+        let chunk = chunk.map_err(|e| format!("models.dev 读取响应失败：{e}"))?;
+        if buf.len() + chunk.len() > MAX_BODY {
+            return Err(format!(
+                "models.dev 响应超过 {}MB 上限，已中止",
+                MAX_BODY / 1024 / 1024
+            ));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    String::from_utf8(buf).map_err(|e| format!("models.dev 响应非 UTF-8：{e}"))
 }
 
 /// 可测内核：URL 可注入（坏 URL → Err 且不落库）；正式路径走 `sync_models_dev`
-pub async fn sync_models_dev_with_url<R: tauri::Runtime>(
+pub(crate) async fn sync_models_dev_with_url<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     url: &str,
 ) -> Result<SyncStats, String> {

@@ -79,6 +79,35 @@ async fn connection_test_anthropic_base_without_v1_gets_v1_prefix() {
 }
 
 #[tokio::test]
+async fn connection_test_endpoint_suffix_stripped() {
+    // 回归（ocr high）：误把完整端点粘进 Base URL 时先剥尾段再拼探测路径——
+    // anthropic …/v1/messages 不得叠成 /v1/messages/v1/models，
+    // openai …/chat/completions 不得叠成 /chat/completions/models
+    let server = MockLlmServer::start();
+    let r = probe_connection(
+        &reqwest::Client::new(),
+        &format!("{}/messages", server.base_url),
+        "anthropic",
+        "k",
+    )
+    .await;
+    assert!(r.ok, "{r:?}");
+    let r = probe_connection(
+        &reqwest::Client::new(),
+        &format!("{}/chat/completions", server.base_url),
+        "openai",
+        "k",
+    )
+    .await;
+    assert!(r.ok, "{r:?}");
+    let paths = server.request_paths();
+    assert!(
+        paths.iter().all(|p| p.contains("GET /v1/models")),
+        "两次探测都应打 /v1/models：{paths:?}"
+    );
+}
+
+#[tokio::test]
 async fn connection_test_unreachable_reports_error() {
     // 端口无人监听：bind 拿端口后立即 drop → connect refused
     let port = {

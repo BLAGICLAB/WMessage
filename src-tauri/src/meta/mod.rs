@@ -254,6 +254,7 @@ pub fn upsert_provider_sync(
     conn: &rusqlite::Connection,
     p: &MetaProvider,
 ) -> Result<(), rusqlite::Error> {
+    debug_assert!(crate::db::holding_db_write(), "meta 写操作必须持有 db 写锁");
     conn.execute(
         "INSERT INTO meta_provider (provider_key, provider_name, logo_url, fallback_color, fallback_char, default_base_url, source)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'models_dev')
@@ -280,6 +281,7 @@ pub fn upsert_model_sync(
     conn: &rusqlite::Connection,
     m: &MetaModel,
 ) -> Result<(), rusqlite::Error> {
+    debug_assert!(crate::db::holding_db_write(), "meta 写操作必须持有 db 写锁");
     conn.execute(
         "INSERT INTO meta_model (model_key, provider_key, display_name, context_length, source)
          VALUES (?1, ?2, ?3, ?4, 'models_dev')
@@ -304,6 +306,7 @@ pub fn upsert_provider_user(
     conn: &rusqlite::Connection,
     p: &MetaProvider,
 ) -> Result<(), rusqlite::Error> {
+    debug_assert!(crate::db::holding_db_write(), "meta 写操作必须持有 db 写锁");
     let fallback_char = if p.fallback_char.is_empty() {
         first_char_upper(&p.provider_name)
     } else {
@@ -335,6 +338,7 @@ pub fn upsert_provider_user(
 
 /// 用户自建/更新模型（source='user_custom'）：provider 须先存在，否则 Err
 pub fn upsert_model_user(conn: &rusqlite::Connection, m: &MetaModel) -> Result<(), String> {
+    debug_assert!(crate::db::holding_db_write(), "meta 写操作必须持有 db 写锁");
     let exists: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM meta_provider WHERE provider_key = ?1",
@@ -576,6 +580,7 @@ mod tests {
     /// models_dev 行可被再次同步更新（name/logo/base_url 刷新）
     #[test]
     fn sync_upsert_updates_models_dev_rows() {
+        let _g = crate::db::lock_db_write(); // 写锁契约（debug_assert）
         let conn = mem_conn();
         upsert_provider_sync(&conn, &dev_provider("openai", "OpenAI")).unwrap();
         upsert_provider_sync(&conn, &dev_provider("openai", "OpenAI-New")).unwrap();
@@ -588,6 +593,7 @@ mod tests {
     /// provider 与 model 两侧同语义
     #[test]
     fn sync_upsert_never_overwrites_user_custom() {
+        let _g = crate::db::lock_db_write(); // 写锁契约（debug_assert）
         let conn = mem_conn();
         upsert_provider_sync(&conn, &dev_provider("openai", "OpenAI")).unwrap();
         upsert_model_sync(&conn, &dev_model("openai/gpt-4o", "openai", "GPT-4o")).unwrap();
@@ -631,6 +637,7 @@ mod tests {
     /// 用户自建模型：provider 不存在 → Err（fail-closed，对应原服务 ok:false 语义）
     #[test]
     fn upsert_model_user_rejects_missing_provider() {
+        let _g = crate::db::lock_db_write(); // 写锁契约（debug_assert）
         let conn = mem_conn();
         let err = upsert_model_user(&conn, &dev_model("ghost/m", "ghost", "M")).unwrap_err();
         assert!(err.contains("provider 不存在"), "err={err}");
@@ -659,6 +666,7 @@ mod tests {
     /// JOIN 查询：模型附带 provider 的 logo/兜底字段；upsert 写后读回一致
     #[test]
     fn joined_query_carries_provider_fields() {
+        let _g = crate::db::lock_db_write(); // 写锁契约（debug_assert）
         let conn = mem_conn();
         upsert_provider_user(&conn, &dev_provider("acme", "Acme")).unwrap();
         upsert_model_user(&conn, &dev_model("acme/m1", "acme", "M1")).unwrap();
@@ -677,6 +685,7 @@ mod tests {
     /// fallback_char 为空时自动取 provider_name 首字符大写
     #[test]
     fn user_provider_fallback_char_defaults_to_name_initial() {
+        let _g = crate::db::lock_db_write(); // 写锁契约（debug_assert）
         let conn = mem_conn();
         let mut p = dev_provider("zhipu", "智谱");
         p.fallback_char = String::new(); // 用户没填

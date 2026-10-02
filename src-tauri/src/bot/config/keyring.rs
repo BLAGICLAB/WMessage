@@ -522,8 +522,22 @@ fn vendor_entry(vendor: &str) -> CommandResult<keyring::Entry> {
         .map_err(|e| CommandError::KeyringError(format!("系统凭据存储不可用：{e}")))
 }
 
+/// 厂商名守卫：空名会造出无意义条目（keyring 用户名 "vendor:" / 文件名 "--hash"）
+fn require_vendor(vendor: &str) -> CommandResult<&str> {
+    let v = vendor.trim();
+    if v.is_empty() {
+        return Err(CommandError::InvalidArgument {
+            field: "vendor".into(),
+            value: vendor.into(),
+            reason: "厂商名不能为空".into(),
+        });
+    }
+    Ok(v)
+}
+
 /// 读厂商 key：未配置 → KeyringError（同 read_api_key 的 NoEntry 口径）
 pub fn read_vendor_key(vendor: &str) -> CommandResult<String> {
+    let vendor = require_vendor(vendor)?;
     let backend = key_backend();
     if backend == KeyBackend::PlaintextFile {
         warn_fallback_once(KeySlot::Llm);
@@ -536,6 +550,7 @@ pub fn read_vendor_key(vendor: &str) -> CommandResult<String> {
 
 /// 厂商 key 存在性检查（bot_get_config 组 vendorKeys 列表用）
 pub fn has_vendor_key(vendor: &str) -> CommandResult<bool> {
+    let vendor = require_vendor(vendor)?;
     let backend = key_backend();
     if backend == KeyBackend::PlaintextFile {
         warn_fallback_once(KeySlot::Llm);
@@ -554,6 +569,7 @@ pub fn has_vendor_key(vendor: &str) -> CommandResult<bool> {
 
 /// 写厂商 key（bot_set_config 的 vendorKey 参数用）
 pub fn write_vendor_key(vendor: &str, key: &str) -> CommandResult<()> {
+    let vendor = require_vendor(vendor)?;
     let backend = key_backend();
     if backend == KeyBackend::PlaintextFile {
         warn_fallback_once(KeySlot::Llm);
@@ -568,7 +584,12 @@ pub fn write_vendor_key(vendor: &str, key: &str) -> CommandResult<()> {
 
 /// 删厂商 key（幂等：不存在 = Ok）
 pub fn delete_vendor_key(vendor: &str) -> CommandResult<()> {
-    match key_backend() {
+    let vendor = require_vendor(vendor)?;
+    let backend = key_backend();
+    if backend == KeyBackend::PlaintextFile {
+        warn_fallback_once(KeySlot::Llm);
+    }
+    match backend {
         KeyBackend::System => vendor_entry(vendor)?
             .delete_credential()
             .map_err(|e| CommandError::KeyringError(format!("清除 API Key 失败：{e}"))),
@@ -602,16 +623,21 @@ pub(crate) fn active_vendor_of(
 }
 
 /// 解析 LLM 请求用 key：active 模型所属厂商的厂商级 key 优先，
-/// 没配过（或厂商 keyring 读失败）回落全局主 key——存量配置零迁移感。
+/// 没配过回落全局主 key——存量配置零迁移感。
+/// keyring 真实故障（钥匙串锁定/权限拒绝）不透传吞掉：厂商路径报错直接上抛，
+/// 不静默回落全局 key（否则用户拿别的厂商的 key 打过去拿 401，误判成厂商故障）。
 pub fn read_llm_key(
     api_provider: Option<&str>,
     active_model_id: Option<&ActiveModelId>,
     models_by_provider: Option<&ModelsByProvider>,
 ) -> CommandResult<String> {
     if let Some(vendor) = active_vendor_of(api_provider, active_model_id, models_by_provider) {
-        if let Ok(k) = read_vendor_key(&vendor) {
-            if !k.trim().is_empty() {
-                return Ok(k);
+        // has 先行：Ok(false)=未配置（回落全局）；Err=真实故障（上抛）
+        if has_vendor_key(&vendor)? {
+            if let Ok(k) = read_vendor_key(&vendor) {
+                if !k.trim().is_empty() {
+                    return Ok(k);
+                }
             }
         }
     }

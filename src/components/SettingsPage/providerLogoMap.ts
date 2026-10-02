@@ -104,14 +104,18 @@ function slugIcon(slug: string): string | null {
   return LOBE_ICONS[`${slug}-color`] ?? LOBE_ICONS[slug] ?? null;
 }
 
-/** 厂商名归一化：小写 + 去掉尾部括号备注（models.dev 有 "MiniMax (minimax.cn)" 这类显示名）
- *  + 去掉尾部套餐后缀（models.dev 的 "MiniMax Token Plan"/"ZhipuAI Coding Plan" 命名规约） */
+/** 厂商名归一化：小写 + 循环剥尾部「括号备注 / 套餐后缀」直到稳定——
+ *  两种后缀的先后组合都能剥净（"MiniMax Token Plan (minimax.cn)" 先括号后套餐、
+ *  "Alibaba (China) Token Plan" 先套餐后括号，单遍任一顺序都会漏一种） */
 export function normalizeVendorName(s: string): string {
-  return s
-    .trim()
-    .toLowerCase()
-    .replace(/\s*[（(][^)）]*[)）]\s*$/, "")
-    .replace(/\s+(token plan|coding plan|step plan)$/, "");
+  let out = s.trim().toLowerCase();
+  for (;;) {
+    const next = out
+      .replace(/\s*[（(][^)）]*[)）]\s*$/, "")
+      .replace(/\s+(token plan|coding plan|step plan)$/, "");
+    if (next === out) return out;
+    out = next;
+  }
 }
 
 /** 厂商图标资产 URL；providerKey（models.dev key）优先，name 次之；未命中 → null */

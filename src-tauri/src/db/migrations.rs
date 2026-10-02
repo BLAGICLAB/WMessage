@@ -91,7 +91,9 @@ pub fn ensure_meta_tables(conn: &rusqlite::Connection) -> Result<(), String> {
            max_tokens            INTEGER,
            default_system_prompt TEXT,
            source                TEXT NOT NULL
-         );",
+         );
+         -- by-provider 查询（models_by_provider / JOIN）全按 provider_key 过滤
+         CREATE INDEX IF NOT EXISTS idx_meta_model_provider ON meta_model(provider_key);",
     )
     .map_err(|e| e.to_string())
 }

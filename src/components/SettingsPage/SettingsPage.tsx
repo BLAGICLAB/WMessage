@@ -301,7 +301,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     try {
       const r = await syncModelsDev();
       if (r?.ok) {
-        setMetaSyncMsg(`已更新：${r.providers ?? "?"} 个厂商 / ${r.models ?? "?"} 个模型`);
+        setMetaSyncMsg(`已更新：${r.providers} 个厂商 / ${r.models} 个模型`);
         const ps = await fetchProviders();
         if (ps) setMetaProviders(curateProviders(ps));
       } else {
