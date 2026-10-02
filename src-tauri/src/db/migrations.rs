@@ -67,6 +67,35 @@ pub fn migrate_legacy_file_bindings(conn: &mut rusqlite::Connection) -> Result<u
     Ok(n)
 }
 
+/// 模型元数据双表（meta_provider / meta_model）：models.dev 同步缓存 + 用户自建，
+/// key 即主键（去自增 id），幂等建表。CRUD/命令见 `crate::meta`。
+pub fn ensure_meta_tables(conn: &rusqlite::Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS meta_provider (
+           provider_key     TEXT PRIMARY KEY,
+           provider_name    TEXT NOT NULL,
+           logo_url         TEXT,
+           fallback_color   TEXT NOT NULL,
+           fallback_char    TEXT NOT NULL,
+           default_base_url TEXT,
+           timeout          INTEGER,
+           source           TEXT NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS meta_model (
+           model_key             TEXT PRIMARY KEY,
+           provider_key          TEXT NOT NULL,
+           display_name          TEXT NOT NULL,
+           context_length        INTEGER,
+           temperature           REAL,
+           top_p                 REAL,
+           max_tokens            INTEGER,
+           default_system_prompt TEXT,
+           source                TEXT NOT NULL
+         );",
+    )
+    .map_err(|e| e.to_string())
+}
+
 /// 可重试的一次性执行——done 未置位时跑 exec，仅成功才置位
 pub fn reset_bot_assigned_with<F: FnOnce() -> Result<(), String>>(
     done: &std::sync::atomic::AtomicBool,

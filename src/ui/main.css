@@ -197,6 +197,16 @@
     border-color: var(--edge-strong);
   }
 
+  /* === 浮层面板（下拉/菜单容器）：实色悬浮底 + 大投影，无 hover 换底 ===
+     不能用 nm-outset 当浮层底：其 hover 态切半透明 --hover-bg（按钮语义），
+     鼠标移入浮层选选项时整个面板会变透明，透出下方内容（API 格式下拉 bug） */
+  .nm-popover {
+    border-radius: var(--r-md);
+    background-color: var(--surface-raised);
+    border: 1px solid var(--edge);
+    box-shadow: var(--shadow-lg);
+  }
+
   /* === 动作按钮：hover 底色抬升一档，active 压暗（按压感不靠阴影） === */
   .nm-btn {
     border-radius: var(--r-sm);

@@ -331,8 +331,14 @@ pub fn apply_anthropic_thinking(body: &mut serde_json::Value, budget: u32) {
 
 /// Anthropic messages URL 归一化：去尾斜杠后，已含 /v1 结尾直接拼 /messages，
 /// 否则拼 /v1/messages（设置页 baseUrl 两种填法都可用）。
+/// 误把端点路径粘进 base_url 的填法（…/v1/messages、…/messages）先剥掉再拼，
+/// 否则请求路径会叠成 /v1/messages/v1/messages 打不通。
 pub fn anthropic_messages_url(base_url: &str) -> String {
     let b = base_url.trim_end_matches('/');
+    let b = b
+        .strip_suffix("/v1/messages")
+        .or_else(|| b.strip_suffix("/messages"))
+        .unwrap_or(b);
     if b.ends_with("/v1") {
         format!("{b}/messages")
     } else {
@@ -907,6 +913,19 @@ mod tests {
         assert_eq!(
             anthropic_messages_url("https://api.anthropic.com/v1/"),
             "https://api.anthropic.com/v1/messages"
+        );
+        // 误把端点路径粘进 base_url：剥掉再拼，不得叠成 /v1/messages/v1/messages
+        assert_eq!(
+            anthropic_messages_url("https://api.anthropic.com/v1/messages"),
+            "https://api.anthropic.com/v1/messages"
+        );
+        assert_eq!(
+            anthropic_messages_url("https://api.anthropic.com/v1/messages/"),
+            "https://api.anthropic.com/v1/messages"
+        );
+        assert_eq!(
+            anthropic_messages_url("https://api.minimaxi.com/anthropic/messages"),
+            "https://api.minimaxi.com/anthropic/v1/messages"
         );
     }
 

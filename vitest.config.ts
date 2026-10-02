@@ -4,6 +4,12 @@ import path from "node:path";
 
 export default defineConfig({
   plugins: [react()],
+  // 同 vite.config.ts：lobehub 图标 SVG 在测试里也走文件路径（不内联 data URI），
+  // 让 logo 断言能稳定匹配 lobe/<slug> 路径
+  build: {
+    assetsInlineLimit: (filePath) =>
+      filePath.endsWith(".svg") ? false : undefined,
+  },
   test: {
     environment: "jsdom",
     globals: true,

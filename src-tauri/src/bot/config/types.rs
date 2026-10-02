@@ -173,6 +173,16 @@ pub struct BotConfig {
     /// 落盘前从盘上现值回填（见 config::commands）。
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub evolution: Option<serde_json::Value>,
+    /// 厂商级禁用列表（厂商详情页总开关）：名单内厂商的模型行在设置页变淡、
+    /// 启用开关禁用，聊天选模型入口过滤。空 = 全部启用；
+    /// 老配置缺字段 → 空 Vec（struct 级 #[serde(default)] + 字段级 default）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disabled_vendors: Vec<String>,
+    /// 连接测试通过的厂商名单（可用性依据：设置页左栏绿点 + 聊天模型下拉过滤）。
+    /// 厂商 key 被覆盖/清除、条目 Base URL 或 API 格式变化都会使其失效
+    ///（bot_set_config 落盘前对比盘上值剔除，见 prune_verified_vendors）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verified_vendors: Vec<String>,
     /// 配置 schema 版本（迁移钩子）：缺失就补默认 + 写回（migrate_bot_config_schema）。
     /// 字段级 default 让老配置（无此字段）反序列化即拿到当前版本，「文件里没有这个
     /// key」的判定走 raw JSON（见 migrate_config_value），不靠反序列化结果。
@@ -187,6 +197,10 @@ pub struct BotConfig {
 /// 老配置缺字段 → None（前端按协议名兜底分组），None 序列化时跳过保持文件干净。
 /// enabled（U11 模型列表开关）：false = 聊天 🧠 下拉不显示该模型；缺字段默认启用。
 /// context_k（U11 徽标）：上下文窗口（千 token），前端显示「204.8K」样式；None 不显示。
+/// capabilities（能力徽标）：如 ["视觉"]；老配置缺字段 → None，None 序列化时跳过。
+/// temperature/top_p/max_tokens/system_prompt（每模型推理参数覆盖）：None = 用全局
+/// 默认（BotConfig.max_tokens / 后端常量），不写入请求；老配置缺字段 → None，
+/// None 序列化时跳过保持文件干净。
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelEntry {
@@ -200,6 +214,16 @@ pub struct ModelEntry {
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_k: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -250,6 +274,8 @@ impl Default for BotConfig {
             memory_consolidation: None, // 未配置 = 启用 + daily（ConsolidationConfig::default）
             mcp_servers: None,          // 未配置 = 无外部 MCP 服务器（老配置零影响）
             evolution: None,            // 未配置 = 无自进化块（evolution 模块自管读写）
+            disabled_vendors: Vec::new(), // 未配置 = 无厂商被禁用
+            verified_vendors: Vec::new(), // 未配置 = 无厂商通过连接测试
             schema_version: BOT_CONFIG_SCHEMA_VERSION, // 新建配置即当前版本
         }
     }
@@ -354,6 +380,13 @@ pub struct BotConfigView {
     pub memory_consolidation: crate::memory::consolidate::ConsolidationConfig,
     /// 外部 MCP 服务器配置原样透传（None 归一为空数组，前端永远拿数组形态）
     pub mcp_servers: Vec<crate::bot::mcp::config::McpServerConfig>,
+    /// 厂商级禁用列表原样透传（空 = 全部启用）
+    pub disabled_vendors: Vec<String>,
+    /// 已存 API Key 的厂商名列表（keyring 无法枚举条目，按配置里出现过的
+    /// 厂商名逐个探测 has_vendor_key）：前端厂商页按它显示「已存入 ✓」
+    pub vendor_keys: Vec<String>,
+    /// 连接测试通过的厂商名单原样透传（空 = 都未验证；聊天下拉过滤用）
+    pub verified_vendors: Vec<String>,
 }
 
 // ───────────────────────── 字段上限 + check_len ─────────────────────────

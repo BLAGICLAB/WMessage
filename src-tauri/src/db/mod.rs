@@ -169,6 +169,8 @@ pub fn open_db<R: tauri::Runtime>(
     // subagents 表走单源 DDL（含 task_id UNIQUE + status/parent 索引），与测试建表共用
     conn.execute_batch(subagents::SUBAGENTS_DDL)
         .map_err(|e| e.to_string())?;
+    // 模型元数据双表（meta_provider/meta_model，meta 模块的存储面），幂等
+    migrations::ensure_meta_tables(&conn)?;
     // 迁移：定时任务卡
     for (col, ty) in [("schedule", "TEXT"), ("sched_last", "INTEGER")] {
         let has: bool = conn

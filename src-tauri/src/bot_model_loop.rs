@@ -437,7 +437,11 @@ pub async fn run_model_loop(
     reasoning_override: Option<String>,
 ) -> Result<(String, Vec<TaskRef>, LoopTrace), CommandError> {
     let cfg = crate::bot::bot_get_config(app.clone())?;
-    let api_key = crate::bot::read_api_key()?;
+    let api_key = crate::bot::read_llm_key(
+        cfg.api_provider.as_deref(),
+        cfg.active_model_id.as_ref(),
+        cfg.models_by_provider.as_ref(),
+    )?;
     if api_key.trim().is_empty() {
         return Err(CommandError::ApiKeyMissing);
     }

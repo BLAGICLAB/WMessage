@@ -2,6 +2,32 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-02（周五）模型设置全面改造：厂商中心 + 内置模型库 + 厂商级 key + 可用性门禁
+
+**需求串**（多轮对话合批）：厂商详情页复刻参考截图（厂商头开关/⋯菜单/API 格式
+下拉/Key 显隐/模型行连接测试）；模型元数据内置 Rust meta 模块（models.dev 同步
+进 SQLite，meta_* 命令，废弃独立 Python 服务方案）；厂商 logo 换本地 lobehub
+SVG 资产（342 个 vendor，providerKey 别名表 + 名称归一化 + 兜底色块）；
+添加厂商网格收敛中国厂商+头部外国+OpenRouter（CURATED_PROVIDER_KEYS）；
+API Key 按厂商名分存 keyring（vendor:{name} 条目，read_llm_key 厂商优先
+回落全局）；可用性一等状态 verified_vendors（连接测试通过才进名单：左栏
+绿点 + 聊天下拉过滤 + 插头常绿都读它；key 覆盖/清除、URL/协议变化由
+prune_verified_vendors 剔除）；厂商页保存配置联动自动连接测试（有开启模型
+才测）；删「从厂商获取」功能与 fetch_provider_models 命令；删除厂商/模型
+即时落盘（不再只改内存）；下拉浮层换 nm-popover（修 nm-outset hover 半透明
+透出下方内容）；Anthropic 标签去掉 /v1/messages 且 anthropic_messages_url
+容忍误粘端点路径。
+
+**审计修复**（提交前全量 diff 审查）：P0 probe_connection 的 anthropic 分支
+补 /v1 前缀（否则 Anthropic 厂商永远进不了 verified）；prune 签名改
+（协议,URL）无序集合（顺序变化不误剔、换协议必剔）；onTested await
+loadConfig 后再广播（防旧 state 整写擦掉刚落盘的验证态）；模型库空库也
+回退内置预设网格并保留「更新模型库」入口；厂商降级 key 文件名加 FNV 短
+散列防净化撞名；vendorMetaOf 两段式匹配（精确优先于归一化，防兄弟厂商
+误抢）；模型页保存失败补可见错误。
+
+**验证**：test-all 全量绿（nextest 1222+ / pytest 审计 / vitest 377）。
+
 ## 2026-10-02（周四）U11-MODELLIST：模型列表紧凑行 + 从厂商获取 + 推理强度收进聊天（`563319f`）
 
 **老板需求**（MiniMax 截图）：厂商设置页模型列表改紧凑行（名称+上下文徽标+

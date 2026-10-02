@@ -46,6 +46,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 
 vi.mock("@tauri-apps/plugin-opener", () => ({
   openPath: vi.fn(async () => {}),
+  openUrl: vi.fn(async () => {}),
 }));
 
 // alert / confirm：vitest 用 spy 替身，避免 jsdom 弹原生弹框卡住测试

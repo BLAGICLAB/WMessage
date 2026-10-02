@@ -9,9 +9,12 @@ import { API_PROVIDER_OPTIONS, type ApiProvider } from "./constants";
 export function ApiProviderSelect({
   value,
   onChange,
+  options = API_PROVIDER_OPTIONS,
 }: {
   value: ApiProvider;
   onChange: (v: ApiProvider) => void;
+  /** 选项覆盖（厂商详情页 API 格式用「OpenAI Chat Completions」等全名）；缺省协议短名 */
+  options?: readonly { value: ApiProvider; label: string }[];
 }) {
   const [open, setOpen] = useState(false);
   /** 键盘导航高亮项；open 时对齐当前值 */
@@ -39,15 +42,15 @@ export function ApiProviderSelect({
     };
   }, [open]);
   const current =
-    API_PROVIDER_OPTIONS.find((o) => o.value === value) ?? API_PROVIDER_OPTIONS[0];
+    options.find((o) => o.value === value) ?? options[0];
   const openList = () => {
     setActiveIdx(
-      Math.max(0, API_PROVIDER_OPTIONS.findIndex((o) => o.value === value))
+      Math.max(0, options.findIndex((o) => o.value === value))
     );
     setOpen(true);
   };
   const commit = (idx: number) => {
-    onChange(API_PROVIDER_OPTIONS[idx].value);
+    onChange(options[idx].value);
     setOpen(false);
     // 选项按钮即将卸载：焦点收回触发钮，不掉 body
     triggerRef.current?.focus();
@@ -66,7 +69,7 @@ export function ApiProviderSelect({
       setOpen(false);
       return;
     }
-    const n = API_PROVIDER_OPTIONS.length;
+    const n = options.length;
     if (e.key === "ArrowDown") {
       e.preventDefault();
       setActiveIdx((i) => (i + 1) % n);
@@ -93,7 +96,7 @@ export function ApiProviderSelect({
         aria-expanded={open}
         aria-controls={listboxId}
         aria-activedescendant={
-          open ? `${listboxId}-opt-${API_PROVIDER_OPTIONS[activeIdx].value}` : undefined
+          open ? `${listboxId}-opt-${options[activeIdx].value}` : undefined
         }
         className="nm-inset w-full rounded-xl px-3 py-2 text-xs text-[var(--t3)] outline-none flex items-center justify-between gap-2"
         onClick={() => (open ? setOpen(false) : openList())}
@@ -109,9 +112,9 @@ export function ApiProviderSelect({
         <div
           id={listboxId}
           role="listbox"
-          className="nm-outset absolute z-50 mt-1 w-full p-1 space-y-0.5"
+          className="nm-popover absolute z-50 mt-1 w-full p-1 space-y-0.5"
         >
-          {API_PROVIDER_OPTIONS.map((o, i) => (
+          {options.map((o, i) => (
             <button
               key={o.value}
               id={`${listboxId}-opt-${o.value}`}

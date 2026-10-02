@@ -24,8 +24,8 @@
 //!              （migrate_legacy_key/migrate_search_keys/migrate_search_key_slot）
 //! - `audit`    bot.log 审计写入（audit_log/audit_log_hook/append_bot_log_line）
 //!              + escape_for_log/truncate_for_log + read_log_tail
-//! - `commands` 4 个 tauri command（bot_get_config/bot_set_config/
-//!              bot_clear_api_key/bot_log_read）+ perm_mode helper
+//! - `commands` 7 个 tauri command（bot_get_config/bot_set_config/bot_set_active_model/
+//!              bot_clear_api_key/bot_log_read/bot_reload_config/bot_test_connection）+ perm_mode helper
 
 pub mod audit;
 pub mod commands;
@@ -44,7 +44,10 @@ pub use commands::{
     bot_set_config, perm_mode,
 };
 pub use io::{config_path, migrate_legacy_key, migrate_search_keys, read_bypass_llm_switch};
-pub use keyring::{has_api_key, has_search_key, read_api_key, read_search_key, write_search_key};
+pub use keyring::{
+    has_api_key, has_search_key, has_vendor_key, read_api_key, read_llm_key, read_search_key,
+    write_search_key,
+};
 pub use schema::{
     migrate_bot_config_schema, resolve_max_tokens, DEFAULT_MAX_TOKENS, MAX_MAX_TOKENS,
     MIN_MAX_TOKENS,
@@ -107,6 +110,11 @@ mod tests {
             vendor: None,
             enabled: true,
             context_k: None,
+            capabilities: None,
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            system_prompt: None,
         }
     }
 
@@ -122,6 +130,11 @@ mod tests {
             vendor: Some("MiniMax".into()),
             enabled: true,
             context_k: Some(1024.0),
+            capabilities: None,
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            system_prompt: None,
         };
         let json = serde_json::to_string(&e).unwrap();
         assert!(json.contains("\"vendor\":\"MiniMax\""));
@@ -137,6 +150,86 @@ mod tests {
         // None 不写进序列化输出（保持配置文件干净）
         let clean = serde_json::to_string(&old).unwrap();
         assert!(!clean.contains("vendor"));
+    }
+
+    // 能力徽标：ModelEntry.capabilities 序列化往返 + 老配置缺字段向后兼容
+    #[test]
+    fn model_entry_capabilities_roundtrip_and_legacy_compat() {
+        let mut e = entry("m1", "https://x", "m");
+        e.capabilities = Some(vec!["视觉".into()]);
+        let json = serde_json::to_string(&e).unwrap();
+        assert!(json.contains(r#""capabilities":["视觉"]"#));
+        let back: ModelEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            back.capabilities.as_deref(),
+            Some(&["视觉".to_string()][..])
+        );
+
+        // 老配置 JSON 无 capabilities 字段 → None（不拒绝加载）；
+        // None 不写进序列化输出（保持配置文件干净）
+        let legacy = r#"{"id":"m2","label":"旧条目","baseUrl":"https://x","model":"m"}"#;
+        let old: ModelEntry = serde_json::from_str(legacy).unwrap();
+        assert_eq!(old.capabilities, None);
+        let clean = serde_json::to_string(&old).unwrap();
+        assert!(!clean.contains("capabilities"));
+    }
+
+    // 每模型推理参数覆盖：temperature/top_p/max_tokens/system_prompt 序列化往返
+    // + 老配置缺字段向后兼容
+    #[test]
+    fn model_entry_inference_params_roundtrip_and_legacy_compat() {
+        let mut e = entry("m1", "https://x", "m");
+        e.temperature = Some(0.7);
+        e.top_p = Some(0.9);
+        e.max_tokens = Some(4096);
+        e.system_prompt = Some("你是助手".into());
+        let json = serde_json::to_string(&e).unwrap();
+        // camelCase 键名协议锁：topP/maxTokens/systemPrompt
+        assert!(json.contains(r#""temperature":0.7"#));
+        assert!(json.contains(r#""topP":0.9"#));
+        assert!(json.contains(r#""maxTokens":4096"#));
+        assert!(json.contains(r#""systemPrompt":"你是助手""#));
+        let back: ModelEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.temperature, Some(0.7));
+        assert_eq!(back.top_p, Some(0.9));
+        assert_eq!(back.max_tokens, Some(4096));
+        assert_eq!(back.system_prompt.as_deref(), Some("你是助手"));
+
+        // 老配置 JSON 无这些字段 → None（不拒绝加载）；
+        // None 不写进序列化输出（保持配置文件干净）
+        let legacy = r#"{"id":"m2","label":"旧条目","baseUrl":"https://x","model":"m"}"#;
+        let old: ModelEntry = serde_json::from_str(legacy).unwrap();
+        assert_eq!(old.temperature, None);
+        assert_eq!(old.top_p, None);
+        assert_eq!(old.max_tokens, None);
+        assert_eq!(old.system_prompt, None);
+        let clean = serde_json::to_string(&old).unwrap();
+        assert!(!clean.contains("temperature"));
+        assert!(!clean.contains("topP"));
+        assert!(!clean.contains("maxTokens"));
+        assert!(!clean.contains("systemPrompt"));
+    }
+
+    // 厂商级开关：disabledVendors 序列化往返 + 老配置缺字段向后兼容
+    #[test]
+    fn disabled_vendors_roundtrip_and_legacy_compat() {
+        // 老配置 JSON 无 disabledVendors 字段 → 空 Vec（不拒绝加载）
+        let legacy = r#"{"baseUrl":"https://api.example.com/v1","model":"m"}"#;
+        let old: BotConfig = serde_json::from_str(legacy).unwrap();
+        assert!(old.disabled_vendors.is_empty());
+        // 空 Vec 不写进序列化输出（保持配置文件干净）
+        let clean = serde_json::to_string(&old).unwrap();
+        assert!(!clean.contains("disabledVendors"));
+
+        // 写入 → 读回保真（camelCase 键名）
+        let cfg = BotConfig {
+            disabled_vendors: vec!["OpenAI".into(), "自定义".into()],
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(json.contains(r#""disabledVendors":["OpenAI","自定义"]"#));
+        let back: BotConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.disabled_vendors, vec!["OpenAI", "自定义"]);
     }
 
     #[test]

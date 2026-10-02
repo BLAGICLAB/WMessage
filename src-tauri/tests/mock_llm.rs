@@ -37,6 +37,9 @@ pub struct ToolCallResponse {
     pub arguments: String,
 }
 
+// 各 include! 方只消费部分变体（如 bot_test_connection.rs 只用 HttpError/TextReply），
+// 逐调用点 allow 会重复——统一挂枚举上
+#[allow(dead_code)]
 #[derive(Clone)]
 pub enum MockBehavior {
     /// 默认文本回复

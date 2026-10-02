@@ -626,6 +626,40 @@ describe("ChatPanel", () => {
     });
   });
 
+  it("模型下拉可用性过滤：带厂商但未通过连接测试的模型不显示，已验证的显示", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_get_config")
+        return {
+          baseUrl: "https://api.deepseek.com",
+          model: "deepseek-chat",
+          apiProvider: "openai",
+          modelsByProvider: {
+            openai: [
+              { id: "m1", label: "DeepSeek Chat", baseUrl: "https://api.deepseek.com", model: "deepseek-chat", vendor: "DeepSeek" },
+              { id: "m2", label: "Kimi K3", baseUrl: "https://api.moonshot.cn/v1", model: "kimi-k3", vendor: "Kimi" },
+              { id: "m3", label: "自建直连", baseUrl: "https://llm.example.com/v1", model: "my-model" },
+            ],
+            anthropic: [],
+          },
+          activeModelId: { openai: "m1", anthropic: null },
+          // 只有 Kimi 通过了连接测试
+          verifiedVendors: ["Kimi"],
+        };
+      if (cmd === "bot_sessions_load") return [{ id: "s1", title: "默认会话" }];
+      if (cmd === "bot_history_load") return [];
+      return null;
+    });
+    render(<ChatPanel {...defaultProps} />);
+    await screen.findByText("默认会话");
+    const chip = screen.getByTitle("切换模型");
+    await user.click(chip);
+    // Kimi 已验证 → 显示；DeepSeek 未验证 → 不显示；无 vendor 的自建条目不受影响
+    expect(await screen.findByText("Kimi K3")).toBeInTheDocument();
+    expect(screen.queryByText("DeepSeek Chat")).toBeNull();
+    expect(screen.getByText("自建直连")).toBeInTheDocument();
+  });
+
   // ── SWITCH-1：busy 期实时切换对话，回复不串台 ──
 
   it("busy 中切换/新建/删除（拦回复中会话），回复仍落原会话", async () => {

@@ -14,7 +14,9 @@ use tauri::AppHandle;
 
 use crate::error::{CommandError, CommandResult};
 
-use super::types::{KeySlot, KEYRING_SERVICE, LEGACY_KEYRING_SERVICE};
+use super::types::{
+    ActiveModelId, ApiProvider, KeySlot, ModelsByProvider, KEYRING_SERVICE, LEGACY_KEYRING_SERVICE,
+};
 
 // ───────────────────────── 后端探测 ─────────────────────────
 
@@ -93,19 +95,22 @@ fn linux_app_data_dir() -> Option<std::path::PathBuf> {
     None
 }
 
-/// 降级 key 文件路径：与数据目录同一便携策略——优先复用 probe_log_dir
+/// 降级后端的 key 文件目录：与数据目录同一便携策略——优先复用 probe_log_dir
 /// 已定版的缓存结果（防每次探测瞬时失败导致 key 文件与数据库分裂两地）；
 /// 未初始化（如启动早期 keyring 迁移先于首次 data_dir 调用）回退原现探逻辑。
-/// 按 KeySlot 参数化（LLM/Tavily/Brave 各一个降级文件）。
-pub(crate) fn plaintext_key_path_for(slot: KeySlot) -> std::path::PathBuf {
+fn plaintext_key_dir() -> std::path::PathBuf {
     if let Some(cached) = crate::paths::cached_probe_dir() {
-        return cached.join(slot.plaintext_filename());
+        return cached;
     }
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|e| e.parent().map(|p| p.to_path_buf()));
     crate::paths::probe_dir(exe_dir.as_deref(), linux_app_data_dir())
-        .join(slot.plaintext_filename())
+}
+
+/// 按 KeySlot 参数化（LLM/Tavily/Brave 各一个降级文件）。
+pub(crate) fn plaintext_key_path_for(slot: KeySlot) -> std::path::PathBuf {
+    plaintext_key_dir().join(slot.plaintext_filename())
 }
 
 /// 降级告警：每进程首用降级后端时记一条 WARN 审计（避免每次读 key 刷屏；
@@ -475,6 +480,210 @@ fn prepare_system_backend(slot: KeySlot) {
     migrate_legacy_keyring_entry(slot);
 }
 
+// ───────────────────────── 厂商级 LLM key（按厂商名分条目）─────────────────────────
+// 设置页厂商页一厂一 key：keyring 条目用户名 `vendor:{厂商名}`，与全局 "api-key"
+// 条目隔离；Linux 降级后端每厂商一个 0600 明文文件。新条目无历史包袱，
+// 不走 v0 service 迁移/明文回迁（prepare_system_backend 只服务三个固定 slot）。
+
+/// keyring 条目用户名：vendor:{厂商名}
+fn vendor_account(vendor: &str) -> String {
+    format!("vendor:{}", vendor.trim())
+}
+
+/// 降级文件名：路径不友好字符折叠为 _（中文/字母/数字/.-_ 保留）；
+/// 尾部追加原名的 FNV-1a 短散列——防净化撞名（"a b"/"a/b" 同名折叠）
+/// 与大小写不敏感文件系统上的 Kimi/kimi 互覆（厂商 key 静默串号）
+fn vendor_plaintext_filename(vendor: &str) -> String {
+    let v = vendor.trim();
+    let safe: String = v
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let mut h: u32 = 0x811c_9dc5;
+    for b in v.as_bytes() {
+        h ^= u32::from(*b);
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    format!("bot-api-key-vendor-{safe}-{h:08x}.txt")
+}
+
+fn vendor_plaintext_path(vendor: &str) -> std::path::PathBuf {
+    plaintext_key_dir().join(vendor_plaintext_filename(vendor))
+}
+
+fn vendor_entry(vendor: &str) -> CommandResult<keyring::Entry> {
+    keyring::Entry::new(KEYRING_SERVICE, &vendor_account(vendor))
+        .map_err(|e| CommandError::KeyringError(format!("系统凭据存储不可用：{e}")))
+}
+
+/// 读厂商 key：未配置 → KeyringError（同 read_api_key 的 NoEntry 口径）
+pub fn read_vendor_key(vendor: &str) -> CommandResult<String> {
+    let backend = key_backend();
+    if backend == KeyBackend::PlaintextFile {
+        warn_fallback_once(KeySlot::Llm);
+    }
+    match backend {
+        KeyBackend::System => classify_get_password(vendor_entry(vendor)?.get_password()),
+        KeyBackend::PlaintextFile => read_key_file_from(&vendor_plaintext_path(vendor)),
+    }
+}
+
+/// 厂商 key 存在性检查（bot_get_config 组 vendorKeys 列表用）
+pub fn has_vendor_key(vendor: &str) -> CommandResult<bool> {
+    let backend = key_backend();
+    if backend == KeyBackend::PlaintextFile {
+        warn_fallback_once(KeySlot::Llm);
+    }
+    match backend {
+        KeyBackend::System => classify_has_key(vendor_entry(vendor)?.get_password()),
+        KeyBackend::PlaintextFile => match std::fs::read_to_string(vendor_plaintext_path(vendor)) {
+            Ok(s) => Ok(!s.trim().is_empty()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(CommandError::KeyringError(format!(
+                "检查 API Key 失败（降级文件存储）：{e}"
+            ))),
+        },
+    }
+}
+
+/// 写厂商 key（bot_set_config 的 vendorKey 参数用）
+pub fn write_vendor_key(vendor: &str, key: &str) -> CommandResult<()> {
+    let backend = key_backend();
+    if backend == KeyBackend::PlaintextFile {
+        warn_fallback_once(KeySlot::Llm);
+    }
+    match backend {
+        KeyBackend::System => vendor_entry(vendor)?
+            .set_password(key)
+            .map_err(|e| CommandError::KeyringError(format!("保存 API Key 失败：{e}"))),
+        KeyBackend::PlaintextFile => write_key_file_to(&vendor_plaintext_path(vendor), key),
+    }
+}
+
+/// 删厂商 key（幂等：不存在 = Ok）
+pub fn delete_vendor_key(vendor: &str) -> CommandResult<()> {
+    match key_backend() {
+        KeyBackend::System => vendor_entry(vendor)?
+            .delete_credential()
+            .map_err(|e| CommandError::KeyringError(format!("清除 API Key 失败：{e}"))),
+        KeyBackend::PlaintextFile => match std::fs::remove_file(vendor_plaintext_path(vendor)) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(CommandError::KeyringError(format!(
+                "清除 API Key 失败（降级文件存储）：{e}"
+            ))),
+        },
+    }
+}
+
+/// active 模型所属厂商名（当前协议 + active_model_id → 条目 vendor 字段）；
+/// 无 active / 条目无 vendor（老配置）→ None
+pub(crate) fn active_vendor_of(
+    api_provider: Option<&str>,
+    active_model_id: Option<&ActiveModelId>,
+    models_by_provider: Option<&ModelsByProvider>,
+) -> Option<String> {
+    let active = active_model_id?;
+    let mbp = models_by_provider?;
+    let (id, list) = match ApiProvider::from_cfg(api_provider) {
+        ApiProvider::Openai => (active.openai.as_ref()?, &mbp.openai),
+        ApiProvider::Anthropic => (active.anthropic.as_ref()?, &mbp.anthropic),
+    };
+    list.iter()
+        .find(|e| &e.id == id)
+        .and_then(|e| e.vendor.clone())
+        .filter(|v| !v.trim().is_empty())
+}
+
+/// 解析 LLM 请求用 key：active 模型所属厂商的厂商级 key 优先，
+/// 没配过（或厂商 keyring 读失败）回落全局主 key——存量配置零迁移感。
+pub fn read_llm_key(
+    api_provider: Option<&str>,
+    active_model_id: Option<&ActiveModelId>,
+    models_by_provider: Option<&ModelsByProvider>,
+) -> CommandResult<String> {
+    if let Some(vendor) = active_vendor_of(api_provider, active_model_id, models_by_provider) {
+        if let Ok(k) = read_vendor_key(&vendor) {
+            if !k.trim().is_empty() {
+                return Ok(k);
+            }
+        }
+    }
+    read_api_key()
+}
+
 // 抑制 unused 警告：AppHandle 暂未直接用于本模块（迁移走数据目录）
 #[allow(dead_code)]
 fn _app_handle_marker(_a: &AppHandle) {}
+
+#[cfg(test)]
+mod vendor_key_tests {
+    use super::*;
+    use crate::bot::config::types::{ActiveModelId, ModelEntry, ModelsByProvider};
+
+    fn entry(id: &str, vendor: Option<&str>) -> ModelEntry {
+        ModelEntry {
+            id: id.into(),
+            label: id.into(),
+            base_url: "https://api.example.com/v1".into(),
+            model: "m".into(),
+            vendor: vendor.map(str::to_string),
+            enabled: true,
+            context_k: None,
+            capabilities: None,
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            system_prompt: None,
+        }
+    }
+
+    #[test]
+    fn vendor_plaintext_filename_sanitizes_path_hostile_chars() {
+        // 净化 + 短散列后缀：前缀可读、撞名可区分
+        let mm = vendor_plaintext_filename("MiniMax");
+        assert!(mm.starts_with("bot-api-key-vendor-MiniMax-"));
+        assert!(mm.ends_with(".txt"));
+        // 净化撞名（"a b" vs "a/b"）靠散列区分；大小写差异同样区分
+        assert_ne!(
+            vendor_plaintext_filename("a b"),
+            vendor_plaintext_filename("a/b")
+        );
+        assert_ne!(
+            vendor_plaintext_filename("Kimi"),
+            vendor_plaintext_filename("kimi")
+        );
+        // 中文保留
+        assert!(vendor_plaintext_filename("阿里云百炼").contains("阿里云百炼"));
+    }
+
+    #[test]
+    fn active_vendor_of_resolves_active_entry_vendor() {
+        let mbp = ModelsByProvider {
+            openai: vec![entry("m1", Some("DeepSeek")), entry("m2", Some("Kimi"))],
+            anthropic: vec![entry("m3", None)],
+        };
+        let active = ActiveModelId {
+            openai: Some("m2".into()),
+            anthropic: Some("m3".into()),
+        };
+        assert_eq!(
+            active_vendor_of(Some("openai"), Some(&active), Some(&mbp)).as_deref(),
+            Some("Kimi")
+        );
+        // anthropic 的 active 条目无 vendor（老配置）→ None（回落全局 key）
+        assert_eq!(
+            active_vendor_of(Some("anthropic"), Some(&active), Some(&mbp)),
+            None
+        );
+        // 无 active / 无列表 → None
+        assert_eq!(active_vendor_of(Some("openai"), None, Some(&mbp)), None);
+        assert_eq!(active_vendor_of(Some("openai"), Some(&active), None), None);
+    }
+}

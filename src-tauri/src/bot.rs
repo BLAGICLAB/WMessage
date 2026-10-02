@@ -80,6 +80,7 @@ pub use config::{
     perm_mode,
     read_api_key,
     read_bypass_llm_switch,
+    read_llm_key,
     read_search_key,
     resolve_max_tokens,
     write_search_key,

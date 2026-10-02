@@ -47,7 +47,15 @@ export type Session = {
 /** 🧠 模型下拉条目（bot_get_config 的 modelsByProvider 当前协议子列表）。
  *  与设置页 ModelEntry 同形（id/label/model），但独立声明——SettingsPage/types.ts
  *  头部注明「外部不直接引用」，ChatPanel 不跨目录 import。 */
-export type ChatModelEntry = { id: string; label: string; model: string };
+export type ChatModelEntry = {
+  id: string;
+  label: string;
+  model: string;
+  /** 所属厂商名：命中设置页 disabledVendors 时从 🧠 下拉过滤 */
+  vendor?: string;
+  /** 启用开关（设置页模型行）：false = 未启用，🧠 下拉不显示；缺省视为启用 */
+  enabled?: boolean;
+};
 
 /** 模型下拉条目（MP-02 双协议同列）：在 ChatModelEntry 上带来源协议，供分组展示 */
 export type ModelItem = ChatModelEntry & { provider: "openai" | "anthropic" };

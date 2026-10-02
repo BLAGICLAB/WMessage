@@ -30,6 +30,7 @@ pub mod evolution;
 mod exec_steps;
 pub mod intent_router;
 pub mod memory;
+pub mod meta;
 pub mod middleware;
 mod migration;
 mod mutation;
@@ -324,6 +325,22 @@ pub fn run() {
             crate::evolution::emit::register_app_handle(app.handle().clone());
             memory::consolidate::start_consolidation_scheduler(app.handle().clone());
 
+            // 模型元数据：启动后台同步 models.dev（网络失败只记审计、用库内缓存，
+            // 不 panic 不阻断启动；手动同步走 meta_sync_models_dev 命令）
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = meta::sync::sync_models_dev(&handle).await {
+                        audit::write_event(
+                            &handle,
+                            audit::AuditLevel::Warn,
+                            "meta_sync_models_dev",
+                            &[("err", e)],
+                        );
+                    }
+                });
+            }
+
             // 桌面清理：后台轮询线程（每 10 分钟检测到期归档任务并执行规则迁移）
             {
                 let handle = app.handle().clone();
@@ -497,7 +514,8 @@ pub fn run() {
             bot_artifacts::confirm_artifact_batch,
             bot::bot_log_read,
             bot::config::commands::bot_reload_config,
-            bot::config::commands::fetch_provider_models,
+            bot::config::commands::bot_test_connection,
+            bot::config::commands::bot_clear_vendor_key,
             bot_py::py_get_enabled,
             bot_py::py_set_enabled,
             bot_py::py_env_check,
@@ -524,6 +542,14 @@ pub fn run() {
             evolution::panel::commands::evolution_keep_shadow,
             evolution::panel::commands::evolution_list_changes,
             evolution::panel::commands::evolution_rollback_change,
+            meta::meta_list_providers,
+            meta::meta_get_provider,
+            meta::meta_list_models,
+            meta::meta_models_by_provider,
+            meta::meta_get_model,
+            meta::meta_upsert_provider,
+            meta::meta_upsert_model,
+            meta::meta_sync_models_dev,
         ])
         .build(tauri::generate_context!())
         // 启动期 panic 可接受（进程起不来就退）：Tauri builder 编译失败 = 环境/配置损坏，

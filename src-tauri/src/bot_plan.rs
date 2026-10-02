@@ -117,7 +117,11 @@ async fn call_planner(
     user: &str,
 ) -> CommandResult<Vec<String>> {
     let cfg = crate::bot::bot_get_config(app.clone())?;
-    let api_key = crate::bot::read_api_key()?;
+    let api_key = crate::bot::read_llm_key(
+        cfg.api_provider.as_deref(),
+        cfg.active_model_id.as_ref(),
+        cfg.models_by_provider.as_ref(),
+    )?;
     // B3-3：共享客户端（连接池复用）；原 60s 总超时改为 per-request 保留
     let client = crate::bot_model_loop::shared_llm_client().clone();
     let provider = crate::bot::ApiProvider::from_cfg(cfg.api_provider.as_deref());

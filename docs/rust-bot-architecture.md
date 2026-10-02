@@ -32,6 +32,13 @@ src-tauri/src/
 │   └── workspace.rs      workspace / bind_files
 ├── task_out.rs          对外 TaskOut（Task flatten + status），api/api_handlers 共享
 │
+│─ 模型元数据 meta/（原独立 Python 服务 model-meta-service 的内嵌版，127.0.0.1:8765 已退役）
+├── meta/mod.rs          MetaProvider/MetaModel/MetaModelJoined + meta_provider/meta_model
+│                        双表 CRUD（DDL 在 db/migrations.rs ensure_meta_tables，open_db 幂等建表）+
+│                        8 个 meta_* 命令；user_custom 行永不被同步覆盖（ON CONFLICT WHERE 守卫）
+└── meta/sync.rs         models.dev 同步：parse_models_dev 纯函数 + sync_models_dev
+                         （shared_llm_client + 30s 超时；lib.rs setup 后台 spawn，失败仅审计不阻断）
+│
 │─ 本地 HTTP API（127.0.0.1 微服务，与 bot 解耦，只操作任务数据）
 ├── api.rs               trait TaskStore + MemStore(测试) + TauriStore(生产)
 ├── api_server.rs        HTTP server 生命周期、端口绑定、EventHub（SSE 中枢）
@@ -168,6 +175,7 @@ src-tauri/src/
 | `SkillMeta` | bot_skills/parse.rs |
 | `DslOutcome` | bot_skills/scheduler.rs |
 | `MemItem` | memory/store.rs |
+| `MetaProvider` / `MetaModel` / `MetaModelJoined` / `MetaSyncResult` | meta/mod.rs |
 | `StopGuard` | bot_slash.rs（注册表 `StopMap` 见 app_state.rs） |
 | 确认弹窗 `ConfirmMap` | app_state.rs（`confirms(app)` 访问器） |
 | `AppState` / `TOOLS_TABLE` / `ToolDef` | app_state.rs:113 / bot/registry.rs:335 / :36 |

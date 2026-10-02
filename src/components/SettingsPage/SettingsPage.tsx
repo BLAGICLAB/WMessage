@@ -5,9 +5,10 @@
 // 公开 import 路径保持稳定：外部仍 `import { SettingsPage } from "./components/SettingsPage"`，
 // Vite 解析到 `./SettingsPage/index.tsx` → 透传 `./SettingsPage`。
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   ArrowLeft,
   BarChart3,
@@ -15,17 +16,26 @@ import {
   Brain,
   Cpu,
   DatabaseBackup,
+  Eye,
+  EyeOff,
   FolderOutput,
   GitBranch,
+  MoreHorizontal,
   Plug,
   Plus,
   Settings2,
   Sparkles,
-  Trash2,
   type LucideIcon,
 } from "lucide-react";
 
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
+import {
+  fetchProviders,
+  fetchModelsByProvider,
+  syncModelsDev,
+  type MetaProvider,
+  type MetaModel,
+} from "../../lib/modelMeta";
 import { EmptyState } from "../EmptyState";
 import type { ThemeSetting } from "../../theme";
 import { MigrationPanel } from "../MigrationPanel";
@@ -39,31 +49,101 @@ import {
 } from "./types";
 import { UI_FONT_SIZE_OPTIONS, type ApiProvider, type UiFontSize } from "./constants";
 import { SkillsPanel } from "./SkillsPanel";
+import { normalizeVendorName } from "./providerLogoMap";
 import { McpPanel } from "./McpPanel";
 import { EvolutionPanel } from "../EvolutionPanel";
 import { ProfileRow } from "./ProfileRow";
 import { ModelRow } from "./ModelRow";
+import { Toggle } from "../Toggle/Toggle";
+import { ProviderLogo } from "./ProviderLogo";
+import { ApiProviderSelect } from "./ApiProviderSelect";
 
 /** 供应商预设（U9 添加供应商网格）：点击 = 切协议 + 预填 baseUrl/模型列表，
  *  完全落在现有双协议数据模型内（同一协议仅一份配置，预设会覆盖该协议当前
- *  Base URL/模型列表——网格页注明）。模型名用户可改。 */
+ *  Base URL/模型列表——网格页注明）。模型名用户可改。
+ *  keyUrl = 厂商控制台的 API Key 获取页（详情页「获取 API Key」外链）。 */
+type PresetModel = { id: string; contextK?: number; capabilities?: string[] };
 type ProviderPreset = {
   name: string;
-  icon: string;
   protocol: "openai" | "anthropic";
   baseUrl: string;
-  models: string[];
+  keyUrl: string;
+  models: PresetModel[];
 };
 const PROVIDER_PRESETS: ProviderPreset[] = [
-  { name: "DeepSeek", icon: "🐳", protocol: "openai", baseUrl: "https://api.deepseek.com", models: ["deepseek-chat", "deepseek-reasoner"] },
-  { name: "Kimi", icon: "🌙", protocol: "openai", baseUrl: "https://api.moonshot.cn/v1", models: ["kimi-k2-0711-preview", "moonshot-v1-8k"] },
-  { name: "MiniMax", icon: "🔴", protocol: "anthropic", baseUrl: "https://api.minimaxi.com/anthropic", models: ["MiniMax-M3"] },
-  { name: "OpenRouter", icon: "🛰️", protocol: "openai", baseUrl: "https://openrouter.ai/api/v1", models: ["openrouter/auto"] },
-  { name: "阿里云百炼", icon: "☁️", protocol: "openai", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", models: ["qwen-plus", "qwen-max"] },
-  { name: "OpenAI", icon: "🟢", protocol: "openai", baseUrl: "https://api.openai.com/v1", models: ["gpt-4o", "gpt-4o-mini"] },
-  { name: "Anthropic", icon: "🅰️", protocol: "anthropic", baseUrl: "https://api.anthropic.com", models: ["claude-sonnet-4-20250514"] },
-  { name: "xAI", icon: "⚡", protocol: "openai", baseUrl: "https://api.x.ai/v1", models: ["grok-4"] },
+  { name: "DeepSeek", protocol: "openai", baseUrl: "https://api.deepseek.com", keyUrl: "https://platform.deepseek.com/api_keys", models: [{ id: "deepseek-chat", contextK: 128 }, { id: "deepseek-reasoner", contextK: 128 }] },
+  { name: "Kimi", protocol: "openai", baseUrl: "https://api.moonshot.cn/v1", keyUrl: "https://platform.moonshot.cn/console/api-keys", models: [{ id: "kimi-k2-0711-preview", contextK: 256 }, { id: "moonshot-v1-8k", contextK: 8 }] },
+  { name: "MiniMax", protocol: "anthropic", baseUrl: "https://api.minimaxi.com/anthropic", keyUrl: "https://platform.minimaxi.com/user-center/basic-information/interface-key", models: [{ id: "MiniMax-M3", contextK: 1000, capabilities: ["视觉"] }, { id: "MiniMax-M2", contextK: 204.8 }] },
+  { name: "OpenRouter", protocol: "openai", baseUrl: "https://openrouter.ai/api/v1", keyUrl: "https://openrouter.ai/keys", models: [{ id: "openrouter/auto" }] },
+  { name: "阿里云百炼", protocol: "openai", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", keyUrl: "https://bailian.console.aliyun.com/?apiKey=1#/api-key", models: [{ id: "qwen-plus", contextK: 1024 }, { id: "qwen-max", contextK: 32 }] },
+  { name: "OpenAI", protocol: "openai", baseUrl: "https://api.openai.com/v1", keyUrl: "https://platform.openai.com/api-keys", models: [{ id: "gpt-4o", contextK: 128, capabilities: ["视觉"] }, { id: "gpt-4o-mini", contextK: 128, capabilities: ["视觉"] }] },
+  { name: "Anthropic", protocol: "anthropic", baseUrl: "https://api.anthropic.com", keyUrl: "https://console.anthropic.com/settings/keys", models: [{ id: "claude-sonnet-4-20250514", contextK: 200, capabilities: ["视觉"] }] },
+  { name: "xAI", protocol: "openai", baseUrl: "https://api.x.ai/v1", keyUrl: "https://console.x.ai/", models: [{ id: "grok-4", contextK: 256, capabilities: ["视觉"] }] },
 ];
+
+/** 厂商详情页 API 格式下拉选项（ApiProviderSelect 默认是协议短名，这里用全名） */
+const API_FORMAT_OPTIONS = [
+  { value: "openai", label: "OpenAI Chat Completions" },
+  { value: "anthropic", label: "Anthropic Messages" },
+] as const;
+
+/** 已知厂商的双协议 Base URL（key = 归一化厂商名，见 normalizeVendorName）：
+ *  API 格式切换时 Base URL 自动跟随的数据源之一（预设/模型库只带单一协议端点，
+ *  这里补「另一协议」的已知端点——目前只有 MiniMax 双协议都有官方端点） */
+const KNOWN_PROTOCOL_URLS: Record<string, { openai?: string; anthropic?: string }> = {
+  minimax: {
+    openai: "https://api.minimaxi.com/v1",
+    anthropic: "https://api.minimaxi.com/anthropic",
+  },
+};
+
+/** 添加厂商网格白名单（models.dev 200+ 家收敛）：中国厂商尽量保留，
+ *  外国厂商只留头部（OpenAI/Anthropic/Google/xAI）+ OpenRouter */
+const CURATED_PROVIDER_KEYS = new Set([
+  // 中国厂商
+  "302ai", "aihubmix",
+  "alibaba", "alibaba-cn", "alibaba-coding-plan", "alibaba-coding-plan-cn",
+  "alibaba-token-plan", "alibaba-token-plan-cn",
+  "bailing", "deepseek", "iflowcn", "kimi-code-plan-cn", "longcat",
+  "minimax", "minimax-cn", "minimax-cn-coding-plan", "minimax-coding-plan",
+  "modelscope", "moonshotai", "moonshotai-cn",
+  "qiniu-ai", "sensenova", "siliconflow", "siliconflow-cn",
+  "stepfun", "stepfun-ai", "stepfun-ai-step-plan", "stepfun-step-plan",
+  "tencent-coding-plan", "tencent-token-plan", "tencent-tokenhub",
+  "volcengine", "volcengine-coding-plan",
+  "xiaomi", "xiaomi-token-plan-cn",
+  "zai", "zai-coding-plan", "zhipuai", "zhipuai-coding-plan",
+  // 头部外国厂商 + OpenRouter
+  "openai", "anthropic", "google", "xai", "openrouter",
+]);
+
+/** 模型库模型 → ModelEntry：model 去掉 "provider/" 前缀（API 调用 id 取后段）、
+ *  contextK = context_length/1000 四舍五入一位小数；推理参数仅非空才带（不写 undefined 字段） */
+function metaModelToEntry(m: MetaModel, vendor: string, baseUrl: string): ModelEntry {
+  const slash = m.model_key.indexOf("/");
+  return {
+    id: genModelId(),
+    label: m.display_name || m.model_key,
+    model: slash >= 0 ? m.model_key.slice(slash + 1) : m.model_key,
+    baseUrl,
+    vendor,
+    ...(m.context_length ? { contextK: Math.round(m.context_length / 100) / 10 } : {}),
+    ...(m.temperature != null ? { temperature: m.temperature } : {}),
+    ...(m.top_p != null ? { topP: m.top_p } : {}),
+    ...(m.max_tokens != null ? { maxTokens: m.max_tokens } : {}),
+    ...(m.default_system_prompt ? { systemPrompt: m.default_system_prompt } : {}),
+  };
+}
+
+/** 模型库网格右侧标注：默认 base URL 的域名（无法解析 → 空串不显示） */
+function hostOf(url: string | null): string {
+  if (!url) return "";
+  try {
+    return new URL(url).host;
+  } catch {
+    return "";
+  }
+}
 
 type Props = {
   theme: ThemeSetting;
@@ -129,42 +209,107 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
   const [copied, setCopied] = useState(false);
   /** 添加供应商网格（U9）：model 分类右栏的子视图 */
   const [showProviderPicker, setShowProviderPicker] = useState(false);
-  /** 从厂商网站获取模型列表（U11）：busy + 结果文案 */
-  const [fetchModelsBusy, setFetchModelsBusy] = useState(false);
-  const [fetchModelsMsg, setFetchModelsMsg] = useState("");
-  /** 应用供应商预设（U9）：切协议 + 覆盖该协议模型列表（预填 baseUrl/模型名）+
-   *  首个设为 active——完全落在现有双协议数据模型内，预设可整表替换。
-   *  覆盖后立即落盘（同 toggleTavily 模式；显式选择预设=接受覆盖该协议配置）。 */
-  const applyProviderPreset = async (p: (typeof PROVIDER_PRESETS)[number]) => {
-    const models = p.models.map((m) => ({
-      id: genModelId(),
-      label: m,
-      model: m,
-      baseUrl: p.baseUrl,
-      vendor: p.name,
-    }));
+  /** 模型库（内置 Rust meta 模块）：null = 模块异常/不可用（回退内置预设网格）。
+   *  model 分类首次挂载时拉取一次（fetchProviders 内部 invoke，异常 → null） */
+  const [metaProviders, setMetaProviders] = useState<MetaProvider[] | null>(null);
+  /** 模型库网格：搜索过滤词 / 同步 busy / 结果与错误文案 / 点选服务商 busy */
+  const [metaSearch, setMetaSearch] = useState("");
+  const [metaSyncBusy, setMetaSyncBusy] = useState(false);
+  const [metaSyncMsg, setMetaSyncMsg] = useState("");
+  const [metaApplyBusy, setMetaApplyBusy] = useState(false);
+  /** 预设/模型库共用的写入逻辑：同协议下替换同名厂商旧条目、首条启用+active、
+   *  其余 enabled:false；覆盖后立即落盘（skipReload 同 toggleTavily 模式） */
+  const applyVendorModels = async (
+    name: string,
+    protocol: "openai" | "anthropic",
+    models: ModelEntry[],
+  ) => {
+    const list = config.modelsByProvider[protocol] ?? [];
     // 厂商制语义：同协议下其他厂商条目保留，仅替换同名厂商旧条目（若有）
-    const list = config.modelsByProvider[p.protocol] ?? [];
     const kept = list.filter(
-      (m) => (m.vendor ?? `__legacy__${p.protocol}`) !== p.name,
+      (m) => (m.vendor ?? `__legacy__${protocol}`) !== name,
     );
+    const flagged = models.map((m, i) => ({ ...m, enabled: i === 0 }));
     const next = {
       ...config,
-      apiProvider: p.protocol,
+      apiProvider: protocol,
       modelsByProvider: {
         ...config.modelsByProvider,
-        [p.protocol]: [...kept, ...models],
+        [protocol]: [...kept, ...flagged],
       },
       activeModelId: {
         ...config.activeModelId,
-        [p.protocol]: models[0]?.id ?? null,
+        [protocol]: flagged[0]?.id ?? null,
       },
     };
     setConfig(next);
     // skipReload：本地 state 已是合并后最新（loadConfig 会拿旧 mock/磁盘值覆盖刚点字段）
     await saveConfig(next, { skipReload: true });
     setShowProviderPicker(false);
-    setActiveVendor(p.name);
+    setActiveVendor(name);
+  };
+  /** 应用供应商预设（U9）：预填 baseUrl/模型列表，写入走共用 applyVendorModels */
+  const applyProviderPreset = async (p: (typeof PROVIDER_PRESETS)[number]) => {
+    const models = p.models.map((m) => ({
+      id: genModelId(),
+      label: m.id,
+      model: m.id,
+      baseUrl: p.baseUrl,
+      vendor: p.name,
+      ...(m.contextK != null ? { contextK: m.contextK } : {}),
+      ...(m.capabilities ? { capabilities: m.capabilities } : {}),
+    }));
+    await applyVendorModels(p.name, p.protocol, models);
+  };
+  /** 点选模型库服务商：拉该服务商模型列表 → 字段映射 → 共用写入。
+   *  协议启发：provider_key === "anthropic" 或 base_url 含 "anthropic" → anthropic，否则 openai；
+   *  default_base_url 为 null 时用空串（用户手填）。 */
+  const applyMetaProvider = async (p: MetaProvider) => {
+    if (metaApplyBusy) return;
+    setMetaApplyBusy(true);
+    setMetaSyncMsg("");
+    try {
+      const ms = await fetchModelsByProvider(p.provider_key);
+      if (ms === null) {
+        // meta 模块中途异常：网格整体降级回内置预设
+        setMetaProviders(null);
+        return;
+      }
+      if (ms.length === 0) {
+        setMetaSyncMsg(`「${p.provider_name}」在模型库中暂无模型数据`);
+        return;
+      }
+      const baseUrl = p.default_base_url ?? "";
+      const protocol: "openai" | "anthropic" =
+        p.provider_key === "anthropic" || baseUrl.includes("anthropic")
+          ? "anthropic"
+          : "openai";
+      await applyVendorModels(
+        p.provider_name,
+        protocol,
+        ms.map((m) => metaModelToEntry(m, p.provider_name, baseUrl)),
+      );
+    } finally {
+      setMetaApplyBusy(false);
+    }
+  };
+  /** 「⟳ 更新模型库」：meta_sync_models_dev 回源 models.dev，完成后刷新服务商列表 */
+  const syncMetaLibrary = async () => {
+    if (metaSyncBusy) return;
+    setMetaSyncBusy(true);
+    setMetaSyncMsg("");
+    try {
+      const r = await syncModelsDev();
+      if (r?.ok) {
+        setMetaSyncMsg(`已更新：${r.providers ?? "?"} 个厂商 / ${r.models ?? "?"} 个模型`);
+        const ps = await fetchProviders();
+        if (ps) setMetaProviders(curateProviders(ps));
+      } else {
+        setMetaSyncMsg(r ? `更新失败：${r.error ?? "未知错误"}` : "更新失败：模型库服务不可用");
+      }
+    } finally {
+      setMetaSyncBusy(false);
+    }
   };
   const [exporting, setExporting] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -187,10 +332,18 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     modelsByProvider: { openai: [], anthropic: [] } as ModelsByProvider,
     // 每协议当前选中的模型 id：null = 该协议还没选 active
     activeModelId: { openai: null, anthropic: null } as ActiveModelId,
+    // 被禁用的厂商名列表：禁用后该厂商模型行变淡、开关禁用，聊天选模型入口过滤
+    disabledVendors: [] as string[],
+    // 连接测试通过的厂商名列表（可用性依据：左栏绿点 + 聊天下拉过滤；
+    // key/URL/格式变更由后端置失效）
+    verifiedVendors: [] as string[],
     // 界面字体大小：small/standard/large/xlarge 四档
     // 默认 small（老板拍板「目前字号为小」）；后端 None 也回退到 small
     uiFontSize: "small" as UiFontSize,
     hasApiKey: false,
+    // 已存 API Key 的厂商名列表（后端按配置里的厂商名逐个探测 keyring）：
+    // 厂商页按它显示「已存入 ✓」，key 按厂商名分条目存储
+    vendorKeys: [] as string[],
     bypassLlmOnPreStepHit: true, // F-1 [P0] pre-step 路由外层是否跳过主 LLM；老配置默认 true
     // 本地文件工具白名单目录（textarea 一行一个；空 = 后端内置默认 桌面/下载/文档+绑定文件夹）
     allowedDirs: "",
@@ -288,6 +441,12 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         // 老后端版本（无这俩字段）→ undefined → 前端按空列表处理（"不设置默认厂商"）
         modelsByProvider?: ModelsByProvider | null;
         activeModelId?: ActiveModelId | null;
+        // 被禁用的厂商名列表（老后端版本没返 → 空）
+        disabledVendors?: string[] | null;
+        // 已存 API Key 的厂商名列表（老后端版本没返 → 空）
+        vendorKeys?: string[] | null;
+        // 连接测试通过的厂商名列表（老后端版本没返 → 空）
+        verifiedVendors?: string[] | null;
         // 界面字体大小（small/standard/large/xlarge）
         // 老后端版本没返 → 前端按 small 回退（老板拍板默认）
         uiFontSize?: string | null;
@@ -306,6 +465,9 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         // 老后端版本没返 modelsByProvider → 空列表（无默认厂商）
         modelsByProvider: c.modelsByProvider ?? { openai: [], anthropic: [] },
         activeModelId: c.activeModelId ?? { openai: null, anthropic: null },
+        disabledVendors: c.disabledVendors ?? [],
+        // 连接测试通过的厂商名单（老后端没返 → 空）
+        verifiedVendors: c.verifiedVendors ?? [],
         // 字体大小：老后端 / None / 非法值都回退 small（"目前字号为小"）
         uiFontSize:
           c.uiFontSize === "standard" ||
@@ -314,6 +476,8 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
             ? c.uiFontSize
             : "small",
         hasApiKey: !!c.hasApiKey,
+        // 已存 key 的厂商名列表（老后端没返 → 空）
+        vendorKeys: c.vendorKeys ?? [],
         // 老后端版本（没返 bypass 字段）默认 true，避免意外走 LEGACY 路径
         bypassLlmOnPreStepHit: c.bypassLlmOnPreStepHit ?? true,
         allowedDirs: (c.allowedDirs ?? []).join("\n"),
@@ -449,8 +613,8 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
   const saveConfig = async (
     override?: typeof config | ((c: typeof config) => typeof config),
     opts?: { skipReload?: boolean },
-  ) => {
-    if (configBusy) return;
+  ): Promise<boolean> => {
+    if (configBusy) return false;
     const c =
       typeof override === "function" ? override(config) : (override ?? config);
     setConfigBusy(true);
@@ -463,6 +627,10 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
           // （bot_model_loop 不感知新结构，沿用 base_url/model/api_provider 三个老字段）
           modelsByProvider: c.modelsByProvider,
           activeModelId: c.activeModelId,
+          disabledVendors: c.disabledVendors,
+          // 已验证厂商名单透传（后端按 key/URL 变化 prune；前端整体替换写必须带上，
+          // 否则每次保存配置都把验证状态清成空）
+          verifiedVendors: c.verifiedVendors,
           // 字体大小直接透传，后端原样存（None = small 默认）
           uiFontSize: c.uiFontSize,
           bypassLlmOnPreStepHit: c.bypassLlmOnPreStepHit,
@@ -499,8 +667,13 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
           // 定时记忆整理：原样透传（后端 serde default 兜底缺字段）
           memoryConsolidation: c.memoryConsolidation,
         },
-        // 输入框非空才写凭据存储；留空保持原 key 不变
-        apiKey: keyInput.trim() ? keyInput.trim() : null,
+        // 厂商页 key 输入框非空且当前在厂商页 → 按厂商名写入凭据存储；
+        // 留空保持该厂商已存 key 不变。apiKey 是旧全局槽位参数，前端已弃用（固定 null）
+        apiKey: null,
+        vendorKey:
+          keyInput.trim() && activeVendor
+            ? { vendor: activeVendor, key: keyInput.trim() }
+            : null,
         // Tavily/Brave key 同主 key 模式——非空才覆盖写入系统凭据存储，
         // null = 不动已存 key（开关切换走 toggleTavily/toggleBrave → saveConfig，
         // 此时输入框为空 → keyring 不受任何影响）
@@ -518,62 +691,103 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
       emit("bot-config-changed", null).catch(() => {});
       setConfigSaved(true);
       setTimeout(() => setConfigSaved(false), 1500);
+      return true;
     } catch (e) {
       handleCommandError(e, "bot_set_config", { silent: true });
       setBotError(formatCommandError(e));
+      return false;
     } finally {
       setConfigBusy(false);
     }
+  };
+
+  /** 厂商页保存 + 自动连接测试联动：保存成功后，厂商下有开关为开的模型
+   *  才跑一次厂商级探测（同厂商模型共享 Base URL/key，探一次即代表全部）；
+   *  结果落盘 verified_vendors（后端），这里 reload 刷绿点并广播给聊天下拉 */
+  const [vendorTestBusy, setVendorTestBusy] = useState(false);
+  /** null = 未测；true/false = 最近一次自动测试结果 */
+  const [vendorTestOk, setVendorTestOk] = useState<boolean | null>(null);
+  const [vendorTestMsg, setVendorTestMsg] = useState("");
+  const saveVendorPage = async () => {
+    if (!(await saveConfig())) return;
+    if (!activeVendor || !activeVendorEntries.some((m) => m.enabled !== false)) return;
+    setVendorTestBusy(true);
+    setVendorTestOk(null);
+    setVendorTestMsg("");
+    try {
+      const r = await invoke<{ ok: boolean; status?: number; error?: string }>(
+        "bot_test_connection",
+        {
+          baseUrl: vendorBaseUrl,
+          apiFormat: activeVendorProtocol,
+          vendor: activeVendor,
+        },
+      );
+      const ok = r?.ok === true;
+      setVendorTestOk(ok);
+      setVendorTestMsg(
+        ok
+          ? "连接测试通过 ✓"
+          : `连接测试失败：${r?.error ?? (r?.status ? `HTTP ${r.status}` : "未知错误")}`,
+      );
+    } catch (e) {
+      setVendorTestOk(false);
+      setVendorTestMsg(`连接测试失败：${formatCommandError(e)}`);
+    } finally {
+      setVendorTestBusy(false);
+    }
+    await loadConfig();
+    emit("bot-config-changed", null).catch(() => {});
   };
 
   // ───────── 双协议下大模型列表 handlers ─────────
   // 厂商中心（U10）按厂商分组渲染；老配置可能缺 anthropic/openai 字段，
   // 读取处一律 ?? [] 兜底
 
-  /** 更新大模型条目（label / baseUrl / model 任一字段变化） */
+  /** 更新大模型条目（label / baseUrl / model 任一字段变化）。
+   *  按条目实际所在的协议列表定位——不能用 config.apiProvider（厂商页可停留在
+   *  另一协议的厂商上，跨协议编辑会漂移到错的列表/写不进去）。 */
   const updateModel = (id: string, patch: Partial<ModelEntry>) => {
     setConfig((c) => {
-      const list = (c.modelsByProvider[c.apiProvider] ?? []).map((m) =>
+      const prov = (["openai", "anthropic"] as const).find((p) =>
+        (c.modelsByProvider[p] ?? []).some((m) => m.id === id),
+      );
+      if (!prov) return c;
+      const list = (c.modelsByProvider[prov] ?? []).map((m) =>
         m.id === id ? { ...m, ...patch } : m,
       );
       return {
         ...c,
         modelsByProvider: {
           ...c.modelsByProvider,
-          [c.apiProvider]: list,
+          [prov]: list,
         },
       };
     });
   };
 
-  /** 删除大模型条目：若删的是 active → 取列表第一个作为新 active（无则 null） */
-  const deleteModel = (id: string) => {
-    setConfig((c) => {
-      const list = (c.modelsByProvider[c.apiProvider] ?? []).filter((m) => m.id !== id);
-      let nextActive = c.activeModelId[c.apiProvider] ?? null;
-      if (nextActive === id) {
-        nextActive = list.length > 0 ? list[0].id : null;
-      }
-      return {
-        ...c,
-        modelsByProvider: {
-          ...c.modelsByProvider,
-          [c.apiProvider]: list,
-        },
-        activeModelId: {
-          ...c.activeModelId,
-          [c.apiProvider]: nextActive,
-        },
-      };
-    });
-  };
-
-  /** 选中大模型（设为当前协议 active）；仅切 activeModelId 字段，UI 由 currentActiveId 联动刷新 */
-  const selectModel = (id: string) => {
-    setConfig((c) => ({
-      ...c,
-      activeModelId: { ...c.activeModelId, [c.apiProvider]: id },
-    }));
+  /** 删除大模型条目：确认后移除并立即落盘（同 deleteVendor 语义——
+   *  只改内存刷新会复活）；按条目实际所在协议定位（厂商页可停留在另一协议）；
+   *  若删的是该协议 active → 列表第一个顶替（无则 null） */
+  const deleteModel = async (id: string) => {
+    const prov = (["openai", "anthropic"] as const).find((p) =>
+      (config.modelsByProvider[p] ?? []).some((m) => m.id === id),
+    );
+    if (!prov) return;
+    if (!window.confirm("删除该模型？删除后立即生效。")) return;
+    const list = (config.modelsByProvider[prov] ?? []).filter((m) => m.id !== id);
+    let nextActive = config.activeModelId[prov] ?? null;
+    if (nextActive === id) {
+      nextActive = list[0]?.id ?? null;
+    }
+    const next = {
+      ...config,
+      modelsByProvider: { ...config.modelsByProvider, [prov]: list },
+      activeModelId: { ...config.activeModelId, [prov]: nextActive },
+    };
+    setConfig(next);
+    // skipReload：本地 state 已是删除后最新（loadConfig 会拿盘上旧值把模型复活）
+    await saveConfig(next, { skipReload: true });
   };
 
   // ───────── 厂商中心（U10）：按厂商分组渲染，条目仍存双协议列表 ─────────
@@ -581,6 +795,27 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
   // 连续操作（改 URL→切格式→加模型）不得用外层 render 快照互相覆盖（ocr HIGH）。
   /** 选中厂商页（左栏）；null = 未选（显示引导）。值 = 厂商名 */
   const [activeVendor, setActiveVendor] = useState<string | null>(null);
+  /** API Key 显隐（本地态，不落盘） */
+  const [showKey, setShowKey] = useState(false);
+  /** 厂商头「⋯」菜单开合（浮层/点外部/Esc 收起，同 ApiProviderSelect 模式） */
+  const [vendorMenuOpen, setVendorMenuOpen] = useState(false);
+  const vendorMenuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!vendorMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (vendorMenuRef.current && !vendorMenuRef.current.contains(e.target as Node))
+        setVendorMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setVendorMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [vendorMenuOpen]);
 
   /** 条目归属厂商名：有 vendor 用 vendor，老条目按所在列表协议名兜底。
    *  prov 必须传「条目所在列表」的协议——不能用活的 apiProvider（会漂）。
@@ -588,23 +823,17 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
   const vendorNameOf = (m: ModelEntry, prov: "openai" | "anthropic") =>
     m.vendor ?? (prov === "anthropic" ? "Anthropic 兼容" : "OpenAI 兼容");
 
-  /** 厂商分组：跨双协议列表聚合；绿点 = 该厂商含全局 active 模型。
+  /** 厂商分组：跨双协议列表聚合；isActiveVendor = 该厂商含全局 active 模型（⋯菜单「当前使用」）。
    *  普通派生而非 useMemo（数据量小；compiler 对含 config 依赖的 memo 化报 warn） */
   const vendorGroups = (() => {
-    const map = new Map<
-      string,
-      { name: string; hasActive: boolean; isActiveVendor: boolean }
-    >();
+    const map = new Map<string, { name: string; isActiveVendor: boolean }>();
     (["openai", "anthropic"] as const).forEach((prov) => {
       const list = config.modelsByProvider[prov] ?? [];
       const activeId = config.activeModelId[prov] ?? null;
       list.forEach((m) => {
         const name = vendorNameOf(m, prov);
-        const g = map.get(name) ?? { name, hasActive: false, isActiveVendor: false };
-        if (m.id === activeId) {
-          g.hasActive = true;
-          if (config.apiProvider === prov) g.isActiveVendor = true;
-        }
+        const g = map.get(name) ?? { name, isActiveVendor: false };
+        if (m.id === activeId && config.apiProvider === prov) g.isActiveVendor = true;
         map.set(name, g);
       });
     });
@@ -660,16 +889,52 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     });
   };
 
-  /** 厂商 API 格式切换：整厂商条目搬到另一协议列表（active 指针随条目走） */
+  /** 厂商级 Base URL 记忆（API 格式切换用）：{ 厂商名: { 协议: 上次用的 URL } }，
+   *  切换时先把现值记到旧协议名下，再从目标协议恢复（无记忆走已知端点/预设/模型库） */
+  const [vendorUrlMem, setVendorUrlMem] = useState<
+    Record<string, Partial<Record<"openai" | "anthropic", string>>>
+  >({});
+  /** 目标协议的种子 URL：已知双协议表 > 预设（协议匹配时）> 模型库默认（端点风格匹配时） */
+  const seedVendorUrl = (vendor: string, prov: "openai" | "anthropic"): string | null => {
+    const norm = normalizeVendorName(vendor);
+    const known = KNOWN_PROTOCOL_URLS[norm]?.[prov];
+    if (known) return known;
+    const preset = PROVIDER_PRESETS.find((p) => normalizeVendorName(p.name) === norm);
+    if (preset?.protocol === prov) return preset.baseUrl;
+    const meta = metaProviders?.find(
+      (p) => p.provider_key === norm || normalizeVendorName(p.provider_name) === norm,
+    );
+    if (meta?.default_base_url) {
+      const metaIsAnthropic =
+        meta.provider_key === "anthropic" || meta.default_base_url.includes("anthropic");
+      if (metaIsAnthropic === (prov === "anthropic")) return meta.default_base_url;
+    }
+    return null;
+  };
+
+  /** 厂商 API 格式切换：整厂商条目搬到另一协议列表（active 指针随条目走）；
+   *  Base URL 自动跟随目标协议（记忆 > 已知端点 > 保持现值） */
   const setVendorProtocol = (prov: "openai" | "anthropic") => {
+    if (!activeVendor) return;
+    const from = protocolOfVendor(activeVendor);
+    if (from === null || from === prov) return;
+    const vendor = activeVendor;
+    const curUrl = vendorBaseUrl;
+    if (curUrl) {
+      setVendorUrlMem((m) => ({
+        ...m,
+        [vendor]: { ...m[vendor], [from]: curUrl },
+      }));
+    }
+    const targetUrl = vendorUrlMem[vendor]?.[prov] || seedVendorUrl(vendor, prov);
     setConfig((c) => {
-      if (!activeVendor) return c;
-      const from = protocolOfVendorIn(c, activeVendor);
-      if (from === null || from === prov) return c;
       const fromList = c.modelsByProvider[from] ?? [];
       const toList = c.modelsByProvider[prov] ?? [];
-      const moving = fromList.filter((m) => vendorNameOf(m, from) === activeVendor);
-      const stay = fromList.filter((m) => vendorNameOf(m, from) !== activeVendor);
+      const moving = fromList
+        .filter((m) => vendorNameOf(m, from) === vendor)
+        // 有目标协议的 URL 数据才改写；没有则保持用户现值
+        .map((m) => (targetUrl ? { ...m, baseUrl: targetUrl } : m));
+      const stay = fromList.filter((m) => vendorNameOf(m, from) !== vendor);
       const curActive = c.activeModelId[from];
       return {
         ...c,
@@ -711,27 +976,30 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     });
   };
 
-  /** 删除厂商：移除其全部条目（active 指针函数式兜底） */
-  const deleteVendor = (name: string) => {
-    setConfig((c) => {
-      const drop = (list: ModelEntry[], prov: "openai" | "anthropic") =>
-        list.filter((m) => vendorNameOf(m, prov) !== name);
-      const openai = drop(c.modelsByProvider.openai ?? [], "openai");
-      const anthropic = drop(c.modelsByProvider.anthropic ?? [], "anthropic");
-      const fix = (prov: "openai" | "anthropic", list: ModelEntry[]) => {
-        const cur = c.activeModelId[prov] ?? null;
-        if (cur === null) return null;
-        return list.some((m) => m.id === cur) ? cur : list[0]?.id ?? null;
-      };
-      return {
-        ...c,
-        modelsByProvider: { openai, anthropic },
-        activeModelId: {
-          openai: fix("openai", openai),
-          anthropic: fix("anthropic", anthropic),
-        },
-      };
-    });
+  /** 删除厂商：移除其全部条目（active 指针兜底）并立即落盘——
+   *  确认框语义 = 最终操作，不能只改内存 state（否则刷新/重启后厂商复活） */
+  const deleteVendor = async (name: string) => {
+    const drop = (list: ModelEntry[], prov: "openai" | "anthropic") =>
+      list.filter((m) => vendorNameOf(m, prov) !== name);
+    const openai = drop(config.modelsByProvider.openai ?? [], "openai");
+    const anthropic = drop(config.modelsByProvider.anthropic ?? [], "anthropic");
+    const fix = (prov: "openai" | "anthropic", list: ModelEntry[]) => {
+      const cur = config.activeModelId[prov] ?? null;
+      if (cur === null) return null;
+      return list.some((m) => m.id === cur) ? cur : list[0]?.id ?? null;
+    };
+    const next = {
+      ...config,
+      modelsByProvider: { openai, anthropic },
+      disabledVendors: config.disabledVendors.filter((v) => v !== name),
+      activeModelId: {
+        openai: fix("openai", openai),
+        anthropic: fix("anthropic", anthropic),
+      },
+    };
+    setConfig(next);
+    // skipReload：本地 state 已是删除后最新（loadConfig 会拿盘上旧值把厂商复活）
+    await saveConfig(next, { skipReload: true });
     setActiveVendor((cur) => (cur === name ? null : cur));
   };
 
@@ -753,6 +1021,135 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         activeModelId: { ...c.activeModelId, [from]: target },
       };
     });
+  };
+
+  /** 厂商总开关：checked = 不在 disabledVendors；切换即落盘（skipReload 同预设应用模式）。
+   *  只影响 UI 过滤与展示，不动 bot_set_active_model 的既有语义。 */
+  const vendorEnabled =
+    activeVendor !== null && !config.disabledVendors.includes(activeVendor);
+  const toggleVendorEnabled = async (next: boolean) => {
+    if (!activeVendor || configBusy) return;
+    const cur = config.disabledVendors;
+    const disabledVendors = next
+      ? cur.filter((v) => v !== activeVendor)
+      : [...cur.filter((v) => v !== activeVendor), activeVendor];
+    const nextCfg = { ...config, disabledVendors };
+    setConfig(nextCfg);
+    await saveConfig(nextCfg, { skipReload: true });
+  };
+  /** 当前厂商命中预设时携带的「获取 API Key」控制台地址 */
+  const activeVendorKeyUrl =
+    PROVIDER_PRESETS.find((p) => p.name === activeVendor)?.keyUrl ?? null;
+  /** 当前厂商是否已存 key（key 按厂商名分条目存 keyring） */
+  const activeVendorHasKey =
+    activeVendor !== null && config.vendorKeys.includes(activeVendor);
+
+  // 切厂商时清空 key 输入框与显隐（key 按厂商分存，输入框不带跨厂商残留）+ 自动测试结果
+  useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect
+    setKeyInput("");
+    // oxlint-disable-next-line react/set-state-in-effect
+    setShowKey(false);
+    // oxlint-disable-next-line react/set-state-in-effect
+    setVendorTestOk(null);
+    // oxlint-disable-next-line react/set-state-in-effect
+    setVendorTestMsg("");
+  }, [activeVendor]);
+
+  // ───────── 模型库（内置 Rust meta 模块）对接 ─────────
+  /** 模型库服务商列表收敛到白名单（中国厂商 + 头部外国 + OpenRouter） */
+  const curateProviders = (ps: MetaProvider[]) =>
+    ps.filter((p) => CURATED_PROVIDER_KEYS.has(p.provider_key));
+
+  /** model 分类首次挂载后拉取一次服务商列表（异步回调 setState，非同步路径） */
+  const modelMounted = mountedSections.has("model");
+  useEffect(() => {
+    if (!modelMounted) return;
+    let cancelled = false;
+    fetchProviders().then((ps) => {
+      if (!cancelled) setMetaProviders(ps ? curateProviders(ps) : ps);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [modelMounted]);
+
+  /** 厂商名 → 模型库记录：先精确匹配（provider_name / provider_key），
+   *  再归一化匹配——两段式防兄弟厂商误抢（minimax / minimax-cn 归一化后同名）。
+   *  左栏列表与厂商头共用——左栏也要靠它拿 providerKey 解析 logo，
+   *  纯名字解析顶不住 models.dev 长显示名（"MiniMax Token Plan (minimax.cn)"） */
+  const vendorMetaOf = (name: string): MetaProvider | null => {
+    if (!metaProviders) return null;
+    const norm = normalizeVendorName(name);
+    return (
+      metaProviders.find(
+        (p) => p.provider_name === name || p.provider_key === name,
+      ) ??
+      metaProviders.find((p) => normalizeVendorName(p.provider_name) === norm) ??
+      null
+    );
+  };
+
+  /** 当前厂商在模型库里的记录（用于厂商头图标 +「从模型库添加」入口）；服务不可用/无匹配 → null */
+  const activeVendorMeta =
+    activeVendor !== null ? vendorMetaOf(activeVendor) : null;
+
+  /** 「从模型库添加」自绘下拉（同 ApiProviderSelect 模式：浮层/点外部/Esc 收起） */
+  const [metaPickerOpen, setMetaPickerOpen] = useState(false);
+  /** 当前厂商在模型库中的模型列表（打开下拉时拉取）；null = 拉取失败 */
+  const [metaPickerModels, setMetaPickerModels] = useState<MetaModel[] | null>(null);
+  const metaPickerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!metaPickerOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (metaPickerRef.current && !metaPickerRef.current.contains(e.target as Node))
+        setMetaPickerOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMetaPickerOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [metaPickerOpen]);
+
+  /** 开/收「从模型库添加」下拉；打开时拉该厂商的模型库模型 */
+  const toggleMetaPicker = async () => {
+    if (metaPickerOpen) {
+      setMetaPickerOpen(false);
+      return;
+    }
+    setMetaPickerOpen(true);
+    if (activeVendorMeta) {
+      setMetaPickerModels(
+        await fetchModelsByProvider(activeVendorMeta.provider_key),
+      );
+    }
+  };
+
+  /** 从模型库添加单个模型：追加一条 enabled:false 的 ModelEntry（字段映射同网格点选），立即落盘 */
+  const addMetaModel = async (m: MetaModel) => {
+    if (!activeVendor || !activeVendorMeta || configBusy) return;
+    const proto = activeVendorProtocol;
+    const entry: ModelEntry = {
+      ...metaModelToEntry(
+        m,
+        activeVendor,
+        vendorBaseUrl || activeVendorMeta.default_base_url || "",
+      ),
+      enabled: false,
+    };
+    const list = config.modelsByProvider[proto] ?? [];
+    const next = {
+      ...config,
+      modelsByProvider: { ...config.modelsByProvider, [proto]: [...list, entry] },
+    };
+    setConfig(next);
+    setMetaPickerOpen(false);
+    await saveConfig(next, { skipReload: true });
   };
 
   /** 「Tavily 搜索」开关：与「开启机器人聊天」同款——点击即持久化（复用整份配置保存） */
@@ -788,62 +1185,6 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     await saveConfig(next);
   };
 
-  /** 从厂商网站拉取模型列表（U11）：GET {baseUrl}/models，按 API 格式带鉴权头。
-   *  合并语义：按 model id 去重，新 id append（label=id、baseUrl=厂商 Base URL、
-   *  enabled、vendor=当前厂商）；已存在的不动。完成后立即落盘。 */
-  const fetchModelsForVendor = async () => {
-    if (!activeVendor || !activeVendorEntries.length) return;
-    const vendor = activeVendor;
-    const proto = activeVendorProtocol;
-    const baseUrl = vendorBaseUrl;
-    setFetchModelsBusy(true);
-    setFetchModelsMsg("");
-    try {
-      const ids = await invoke<string[]>("fetch_provider_models", {
-        baseUrl,
-        apiFormat: proto,
-        apiKey: keyInput.trim() ? keyInput.trim() : null,
-      });
-      // 合并：新 id append（label=model 名、baseUrl=厂商 Base URL、enabled=false、
-      // vendor=当前厂商）；其他厂商条目不动。
-      // 从 config 闭包快照算出 next 并显式传给 setConfig + saveConfig（critical 修：
-      // 无参 saveConfig() 读闭包旧 config 会丢刚拉的模型）
-      const list = config.modelsByProvider[proto] ?? [];
-      const mine = list.filter((m) => (m.vendor ?? "") === vendor);
-      const existing = new Set(mine.map((m) => m.model));
-      const fresh = ids
-        .filter((id) => !existing.has(id))
-        .map((id) => ({
-          id: genModelId(),
-          label: id,
-          model: id,
-          baseUrl,
-          vendor,
-          enabled: false,
-        }));
-      const next = {
-        ...config,
-        modelsByProvider: {
-          ...config.modelsByProvider,
-          [proto]: [...list.filter((m) => (m.vendor ?? "") !== vendor), ...mine, ...fresh],
-        },
-      };
-      setConfig(next);
-      const newCount = fresh.length;
-      setFetchModelsMsg(
-        newCount > 0
-          ? `已获取 ${ids.length} 个模型，新增 ${newCount} 个（默认禁用，打开开关启用）`
-          : `厂商返回 ${ids.length} 个模型，均已存在`,
-      );
-      await saveConfig(next, { skipReload: true });
-    } catch (e) {
-      handleCommandError(e, "fetch_provider_models");
-      setFetchModelsMsg("");
-    } finally {
-      setFetchModelsBusy(false);
-    }
-  };
-
   /** 立即整理：转圈 → 结果文案短暂展示（同 configSaved 的 setTimeout 清除模式），并刷新「上次整理时间」 */
   const consolidateNow = async () => {
     if (consolidateBusy) return;
@@ -866,16 +1207,16 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     }
   };
 
-  const clearApiKey = async () => {
-    if (configBusy) return;
-    if (!window.confirm("清除已保存的 API Key？清除后机器人将无法调用大模型。")) return;
+  const clearVendorKey = async () => {
+    if (configBusy || !activeVendor) return;
+    if (!window.confirm(`清除厂商「${activeVendor}」已保存的 API Key？清除后该厂商的机器人调用将失败。`)) return;
     setConfigBusy(true);
     setBotError("");
     try {
-      await invoke("bot_clear_api_key");
+      await invoke("bot_clear_vendor_key", { vendor: activeVendor });
       await loadConfig();
     } catch (e) {
-      handleCommandError(e, "bot_clear_api_key", { silent: true });
+      handleCommandError(e, "bot_clear_vendor_key", { silent: true });
       setBotError(formatCommandError(e));
     } finally {
       setConfigBusy(false);
@@ -1432,46 +1773,23 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
       )}
       {mountedSections.has("model") && (
       <section hidden={activeSection !== "model"} className="space-y-4 pt-4">
-      {/* U9 页首：说明 + 刷新 + 添加供应商 */}
-      <div className="flex items-center justify-between gap-3">
-        <p className="text-xs text-[var(--t5)]">
-          管理模型供应商，配置后可在挂件聊天时选择使用。
-        </p>
-        <div className="flex shrink-0 items-center gap-2">
-          <button
-            type="button"
-            className="nm-btn px-2.5 py-1.5 text-xs text-[var(--t3)]"
-            title="重新读取配置（丢弃未保存的本地改动）"
-            onClick={() => {
-              // 显式刷新 = 以服务端配置为准（覆盖未保存改动是预期语义）
-              invoke("bot_get_config")
-                .then((c) => setConfig((prev) => ({ ...prev, ...(c ?? {}) })))
-                .catch((e) =>
-                  console.error("[settings] bot_get_config 刷新失败", e)
-                );
-            }}
-          >
-            刷新
-          </button>
-          <button
-            type="button"
-            className="nm-btn px-3 py-1.5 text-xs text-[var(--t2)]"
-            onClick={() => setShowProviderPicker(true)}
-          >
-            ＋ 添加供应商
-          </button>
-        </div>
-      </div>
+      {/* U9 页首：说明（原「刷新」按钮删除——bot_get_config 只合顶层字段，
+          厂商列表不跟随刷新，点了像没反应，属于误导性按钮） */}
+      <p className="text-xs text-[var(--t5)]">
+        管理模型供应商，配置后可在挂件聊天时选择使用。
+      </p>
       <div className="nm-card p-5">
         {/* 大模型 API 配置（开关开启后显示） */}
         {botEnabled && (
           <div className="space-y-3">
-            {/* U10 厂商中心：左厂商列表 + 右厂商页（截图骨架） */}
-            <div className="flex min-h-[320px] gap-4">
+            {/* U10 厂商中心：左厂商列表 + 右厂商页；高度跟随窗口（视口高 - 页头占用），两视图对齐 */}
+            <div className="flex h-[calc(100vh-14rem)] min-h-[320px] gap-4">
               {/* 左栏：厂商列表（绿点 = 该厂商含全局 active 模型） */}
-              <div className="w-44 shrink-0 space-y-1 border-r border-[var(--edge)] pr-3">
+              <div className="w-44 shrink-0 space-y-1 overflow-y-auto border-r border-[var(--edge)] pr-3">
                 <p className="text-[10px] text-[var(--t5)]">厂商</p>
-                {vendorGroups.map((v) => (
+                {vendorGroups.map((v) => {
+                  const meta = vendorMetaOf(v.name);
+                  return (
                   <button
                     key={v.name}
                     type="button"
@@ -1483,15 +1801,30 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
                         : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
                     }`}
                   >
+                    <ProviderLogo
+                      name={v.name}
+                      className="h-4 w-4"
+                      providerKey={meta?.provider_key}
+                      fallbackColor={meta?.fallback_color}
+                      fallbackChar={meta?.fallback_char}
+                    />
                     <span className="flex-1 truncate">{v.name}</span>
+                    {/* 可用性提示点：绿 = 连接测试通过（key/URL/格式变了会自动失效需重测） */}
                     <span
-                      aria-hidden
                       className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-                        v.hasActive ? "bg-[var(--success)]" : "bg-[var(--t6)]"
+                        config.verifiedVendors.includes(v.name)
+                          ? "bg-[var(--success)]"
+                          : "bg-[var(--t6)]"
                       }`}
+                      title={
+                        config.verifiedVendors.includes(v.name)
+                          ? "连接测试已通过，模型可在聊天窗口选用"
+                          : "未通过连接测试：点模型行的插头图标测试，通过后模型才进聊天窗口"
+                      }
                     />
                   </button>
-                ))}
+                  );
+                })}
                 <button
                   type="button"
                   onClick={() => {
@@ -1505,8 +1838,8 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
                   <Plus size={12} aria-hidden />
                   添加厂商
                 </button>              </div>
-              {/* 右栏：厂商页 / 添加厂商网格 / 引导 */}
-              <div className="min-w-0 flex-1 space-y-3">
+              {/* 右栏：厂商页 / 添加厂商网格 / 引导（flex 列：列表区 flex-1 填满剩余高度） */}
+              <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
             {showProviderPicker ? (
               <>
                 <div className="flex items-center gap-2">
@@ -1522,65 +1855,193 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
                 <p className="text-[10px] text-[var(--t5)]">
                   点选厂商即添加（同名厂商重新选择会覆盖其 Base URL 与模型列表）；添加后可改 Base URL、API 格式与模型列表。
                 </p>
-                <div className="grid grid-cols-2 gap-2">
-                  {PROVIDER_PRESETS.map((p) => (
-                    <button
-                      key={p.name}
-                      type="button"
-                      onClick={() => applyProviderPreset(p)}
-                      className="nm-btn flex items-center gap-2 px-3 py-2.5 text-left text-xs text-[var(--t2)]"
-                    >
-                      <span aria-hidden className="text-base">{p.icon}</span>
-                      <span className="flex-1 truncate">{p.name}</span>
-                      <span aria-hidden className="text-[10px] text-[var(--t5)]">
-                        {p.protocol === "anthropic" ? "Anthropic 格式" : "OpenAI 格式"}
-                      </span>
-                    </button>
-                  ))}
-                </div>
+                {metaProviders === null || metaProviders.length === 0 ? (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <p className="min-w-0 flex-1 text-[10px] text-[var(--t5)]">
+                        模型库为空或同步中——启动时自动同步 models.dev，也可手动同步
+                      </p>
+                      <button
+                        type="button"
+                        className="nm-btn shrink-0 px-2.5 py-1.5 text-xs text-[var(--t3)]"
+                        title="从 models.dev 回源同步最新厂商与模型数据"
+                        onClick={syncMetaLibrary}
+                        disabled={metaSyncBusy}
+                      >
+                        {metaSyncBusy ? "更新中…" : "⟳ 更新模型库"}
+                      </button>
+                    </div>
+                    {metaSyncMsg && (
+                      <p className="text-[10px] text-[var(--t5)]">{metaSyncMsg}</p>
+                    )}
+                    <div className="grid grid-cols-2 gap-2">
+                      {PROVIDER_PRESETS.map((p) => (
+                        <button
+                          key={p.name}
+                          type="button"
+                          onClick={() => applyProviderPreset(p)}
+                          className="nm-btn flex items-center gap-2 px-3 py-2.5 text-left text-xs text-[var(--t2)]"
+                        >
+                          <ProviderLogo name={p.name} />
+                          <span className="flex-1 truncate">{p.name}</span>
+                          <span aria-hidden className="text-[10px] text-[var(--t5)]">
+                            {p.protocol === "anthropic" ? "Anthropic 格式" : "OpenAI 格式"}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <input
+                        value={metaSearch}
+                        onChange={(e) => setMetaSearch(e.target.value)}
+                        placeholder="搜索厂商…"
+                        aria-label="搜索厂商"
+                        className="nm-inset min-w-0 flex-1 rounded-lg px-2.5 py-1.5 text-xs text-[var(--t3)] outline-none"
+                      />
+                      <button
+                        type="button"
+                        className="nm-btn shrink-0 px-2.5 py-1.5 text-xs text-[var(--t3)]"
+                        title="从 models.dev 回源同步最新厂商与模型数据"
+                        onClick={syncMetaLibrary}
+                        disabled={metaSyncBusy}
+                      >
+                        {metaSyncBusy ? "更新中…" : "⟳ 更新模型库"}
+                      </button>
+                    </div>
+                    {metaSyncMsg && (
+                      <p className="text-[10px] text-[var(--t5)]">{metaSyncMsg}</p>
+                    )}
+                    {/* 列数随宽度自适应；flex-1 填满右栏剩余高度，内部滚动保持搜索栏可见 */}
+                    <div className="grid min-h-0 flex-1 grid-cols-[repeat(auto-fill,minmax(13rem,1fr))] content-start gap-2 overflow-y-auto">
+                      {metaProviders
+                        .filter((p) => {
+                          const q = metaSearch.trim().toLowerCase();
+                          if (!q) return true;
+                          return (
+                            p.provider_name.toLowerCase().includes(q) ||
+                            p.provider_key.toLowerCase().includes(q)
+                          );
+                        })
+                        .map((p) => (
+                          <button
+                            key={p.provider_key}
+                            type="button"
+                            onClick={() => applyMetaProvider(p)}
+                            disabled={metaApplyBusy}
+                            className="nm-btn flex items-center gap-2 px-3 py-2.5 text-left text-xs text-[var(--t2)]"
+                          >
+                            <ProviderLogo
+                              name={p.provider_name}
+                              providerKey={p.provider_key}
+                              fallbackColor={p.fallback_color}
+                              fallbackChar={p.fallback_char}
+                              className="h-7 w-7"
+                            />
+                            <span className="flex-1 truncate">{p.provider_name}</span>
+                            <span aria-hidden className="truncate text-[10px] text-[var(--t5)]">
+                              {hostOf(p.default_base_url)}
+                            </span>
+                          </button>
+                        ))}
+                    </div>
+                    {metaProviders.length > 0 &&
+                      metaSearch.trim() &&
+                      !metaProviders.some((p) => {
+                        const q = metaSearch.trim().toLowerCase();
+                        return (
+                          p.provider_name.toLowerCase().includes(q) ||
+                          p.provider_key.toLowerCase().includes(q)
+                        );
+                      }) && (
+                        <p className="text-[10px] text-[var(--t5)]">
+                          无匹配厂商，换个关键词试试
+                        </p>
+                      )}
+                  </>
+                )}
               </>
             ) : !activeVendor ? (
-              <p className="py-10 text-center text-xs text-[var(--t5)]">
+              <p className="m-auto text-center text-xs text-[var(--t5)]">
                 从左侧选择一个厂商，或点「添加厂商」接入新的模型供应商
               </p>
             ) : (
               <>
-            {/* 厂商标题行：图标 + 名称 + 设为当前使用 */}
+            {/* 厂商标题行：logo + 名称 ｜ 右侧厂商总开关 +「⋯」菜单（设为当前使用/删除厂商） */}
             <div className="flex items-center justify-between gap-3">
               <div className="flex min-w-0 items-center gap-2">
-                <span aria-hidden className="text-lg">
-                  {PROVIDER_PRESETS.find((p) => p.name === activeVendor)?.icon ?? "📦"}
-                </span>
+                <ProviderLogo
+                  name={activeVendor}
+                  className="h-6 w-6"
+                  providerKey={activeVendorMeta?.provider_key}
+                  fallbackColor={activeVendorMeta?.fallback_color}
+                  fallbackChar={activeVendorMeta?.fallback_char}
+                />
                 <h3 className="truncate text-base font-semibold text-[var(--t1)]">
                   {activeVendor}
                 </h3>
               </div>
-              <button
-                type="button"
-                className="nm-btn shrink-0 px-3 py-1.5 text-xs text-[var(--t2)]"
-                disabled={!activeVendorEntries.length}
-                title="把该厂商的 active 模型设为聊天当前使用的模型"
-                onClick={makeVendorActive}
-              >
-                {vendorOf(activeVendor)?.isActiveVendor ? "当前使用 ✓" : "设为当前使用"}
-              </button>
-              <button
-                type="button"
-                aria-label={`删除厂商 ${activeVendor}`}
-                className="nm-icon-btn shrink-0 text-[var(--t5)] hover:text-[var(--danger)]"
-                title="删除厂商（其全部模型条目一并移除）"
-                onClick={() => {
-                  if (
-                    window.confirm(
-                      `删除厂商「${activeVendor}」？其全部模型条目将一并移除。`,
-                    )
-                  ) {
-                    deleteVendor(activeVendor);
-                  }
-                }}
-              >
-                <Trash2 size={13} aria-hidden />
-              </button>
+              <div className="flex shrink-0 items-center gap-2">
+                <Toggle
+                  checked={vendorEnabled}
+                  onChange={toggleVendorEnabled}
+                  ariaLabel={`启用厂商 ${activeVendor}`}
+                  size="sm"
+                />
+                <div ref={vendorMenuRef} className="relative">
+                  <button
+                    type="button"
+                    aria-label={`厂商 ${activeVendor} 更多操作`}
+                    aria-haspopup="menu"
+                    aria-expanded={vendorMenuOpen}
+                    className="nm-icon-btn text-[var(--t5)] hover:text-[var(--t2)]"
+                    onClick={() => setVendorMenuOpen((v) => !v)}
+                  >
+                    <MoreHorizontal size={15} aria-hidden />
+                  </button>
+                  {vendorMenuOpen && (
+                    <div
+                      role="menu"
+                      className="nm-popover absolute right-0 z-50 mt-1 w-40 p-1 space-y-0.5"
+                    >
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="w-full text-left px-3 py-1.5 text-xs rounded-lg text-[var(--t3)] hover:bg-[var(--hover-bg)]"
+                        disabled={!activeVendorEntries.length}
+                        title="把该厂商的 active 模型设为聊天当前使用的模型"
+                        onClick={() => {
+                          setVendorMenuOpen(false);
+                          makeVendorActive();
+                        }}
+                      >
+                        {vendorOf(activeVendor)?.isActiveVendor
+                          ? "当前使用 ✓"
+                          : "设为当前使用"}
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="w-full text-left px-3 py-1.5 text-xs rounded-lg text-[var(--danger)] hover:bg-[var(--hover-bg)]"
+                        onClick={() => {
+                          setVendorMenuOpen(false);
+                          if (
+                            window.confirm(
+                              `删除厂商「${activeVendor}」？其全部模型条目将一并移除。`,
+                            )
+                          ) {
+                            deleteVendor(activeVendor);
+                          }
+                        }}
+                      >
+                        删除厂商
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
             {/* Base URL：厂商条目共用一个（编辑同步全部条目） */}
             <div className="space-y-1">
@@ -1592,65 +2053,135 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
                 className="nm-inset w-full rounded-xl px-3 py-2 text-xs text-[var(--t3)] outline-none"
               />
             </div>
-            {/* API 格式：该厂商条目所在的协议列表（切换 = 条目整体搬移） */}
+            {/* API 格式：该厂商条目所在的协议列表（切换 = 条目整体搬移）；自绘下拉同 ApiProviderSelect 模式 */}
             <div className="space-y-1">
               <p className="text-[10px] text-[var(--t5)]">API 格式</p>
-              <div className="flex gap-2">
-                {(
-                  [
-                    ["openai", "OpenAI Chat Completions"],
-                    ["anthropic", "Anthropic Messages (/v1/messages)"],
-                  ] as const
-                ).map(([prov, label]) => (
-                  <button
-                    key={prov}
-                    type="button"
-                    className={`flex-1 px-2 py-1.5 text-xs ${
-                      activeVendorProtocol === prov ? "nm-inset text-[var(--t1)]" : "nm-outset text-[var(--t3)]"
-                    }`}
-                    onClick={() => setVendorProtocol(prov)}
-                    disabled={configBusy}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </div>
-            {/* API Key：全局一份（keyring 存储），所有厂商共用——挂账记录 */}
-            <div className="space-y-1">
-              <p className="text-[10px] text-[var(--t5)]">
-                API Key（全局共用）{config.hasApiKey && <span className="text-[var(--success)]"> · 已存入系统凭据存储 ✓</span>}
-              </p>
-              <input
-                type="password"
-                value={keyInput}
-                onChange={(e) => setKeyInput(e.target.value)}
-                placeholder={config.hasApiKey ? "已保存（输入新 Key 可覆盖）" : "sk-…"}
-                className="nm-inset w-full rounded-xl px-3 py-2 text-xs text-[var(--t3)] outline-none"
+              <ApiProviderSelect
+                value={activeVendorProtocol}
+                onChange={setVendorProtocol}
+                options={API_FORMAT_OPTIONS}
               />
-              {config.hasApiKey && (
+            </div>
+            {/* API Key：按厂商分存（keyring 条目按厂商名），各厂商独立——挂账记录 */}
+            <div className="space-y-1">
+              <div className="flex items-center justify-between">
+                <p className="text-[10px] text-[var(--t5)]">
+                  API Key{activeVendorHasKey && <span className="text-[var(--success)]"> · 已存入系统凭据存储 ✓</span>}
+                </p>
+                {activeVendorKeyUrl && (
+                  <button
+                    type="button"
+                    className="text-[10px] text-[var(--brand)] hover:underline"
+                    onClick={() => {
+                      openUrl(activeVendorKeyUrl).catch((e) =>
+                        handleCommandError(e, "open url"),
+                      );
+                    }}
+                  >
+                    获取 API Key
+                  </button>
+                )}
+              </div>
+              <div className="relative">
+                <input
+                  type={showKey ? "text" : "password"}
+                  value={keyInput}
+                  onChange={(e) => setKeyInput(e.target.value)}
+                  placeholder={activeVendorHasKey ? "已保存（输入新 Key 可覆盖）" : "sk-…"}
+                  className="nm-inset w-full rounded-xl px-3 py-2 pr-9 text-xs text-[var(--t3)] outline-none"
+                />
+                <button
+                  type="button"
+                  aria-label={showKey ? "隐藏 API Key" : "显示 API Key"}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--t5)] hover:text-[var(--t2)]"
+                  onClick={() => setShowKey((v) => !v)}
+                >
+                  {showKey ? <EyeOff size={13} aria-hidden /> : <Eye size={13} aria-hidden />}
+                </button>
+              </div>
+              {activeVendorHasKey && (
                 <button
                   className="text-[10px] text-[var(--danger)] hover:underline"
-                  onClick={clearApiKey}
+                  onClick={clearVendorKey}
                 >
                   清除已保存的 Key
                 </button>
               )}
             </div>
-            {/* 模型列表：行 = radio（设为当前）+ 名称 + 上下文徽标 + 铅笔编辑 + 开关 */}
-            <div className="space-y-1">
+            {/* 模型列表：行 = 名称 + 上下文徽标 + 能力徽标 + 插头（连接测试）+ 铅笔编辑 + 开关；flex-1 与添加厂商网格同高对齐 */}
+            <div className="flex min-h-0 flex-1 flex-col gap-1">
               <div className="flex items-center justify-between">
                 <p className="text-[10px] text-[var(--t5)]">模型列表</p>
                 <div className="flex items-center gap-1.5">
-                  <button
-                    type="button"
-                    className="nm-btn px-2.5 py-1 text-[10px] text-[var(--t3)]"
-                    title="从厂商的 /models 接口拉取模型列表；需该厂商已有模型条目（提供 Base URL），保存后新模型默认禁用"
-                    onClick={fetchModelsForVendor}
-                    disabled={fetchModelsBusy || !activeVendorEntries.length}
-                  >
-                    {fetchModelsBusy ? "获取中…" : "从厂商获取"}
-                  </button>
+                  {activeVendorMeta && (
+                    <div ref={metaPickerRef} className="relative">
+                      <button
+                        type="button"
+                        aria-haspopup="listbox"
+                        aria-expanded={metaPickerOpen}
+                        className="nm-btn px-2.5 py-1 text-[10px] text-[var(--t3)]"
+                        title="从模型库挑选该厂商的模型，自动填充上下文与推理参数；新模型默认禁用"
+                        onClick={toggleMetaPicker}
+                      >
+                        从模型库添加 ▾
+                      </button>
+                      {metaPickerOpen && (
+                        <div
+                          role="listbox"
+                          aria-label="从模型库添加"
+                          className="nm-popover absolute right-0 z-50 mt-1 max-h-56 w-64 space-y-0.5 overflow-y-auto p-1"
+                        >
+                          {(() => {
+                            const added = new Set(
+                              activeVendorEntries.map((m) => m.model),
+                            );
+                            const options = (metaPickerModels ?? []).filter(
+                              (m) =>
+                                !added.has(
+                                  m.model_key.includes("/")
+                                    ? m.model_key.slice(m.model_key.indexOf("/") + 1)
+                                    : m.model_key,
+                                ),
+                            );
+                            if (metaPickerModels === null)
+                              return (
+                                <p className="px-3 py-1.5 text-[10px] text-[var(--t5)]">
+                                  模型库服务不可用
+                                </p>
+                              );
+                            if (options.length === 0)
+                              return (
+                                <p className="px-3 py-1.5 text-[10px] text-[var(--t5)]">
+                                  模型库中的模型均已添加
+                                </p>
+                              );
+                            return options.map((m) => (
+                              <button
+                                key={m.model_key}
+                                type="button"
+                                role="option"
+                                aria-selected={false}
+                                className="flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left text-xs text-[var(--t3)] hover:bg-[var(--hover-bg)]"
+                                onClick={() => addMetaModel(m)}
+                              >
+                                <span className="min-w-0 flex-1 truncate">
+                                  {m.display_name || m.model_key}
+                                </span>
+                                {m.context_length ? (
+                                  <span
+                                    aria-hidden
+                                    className="shrink-0 font-mono text-[10px] text-[var(--t5)]"
+                                  >
+                                    {Math.round(m.context_length / 100) / 10}K
+                                  </span>
+                                ) : null}
+                              </button>
+                            ));
+                          })()}
+                        </div>
+                      )}
+                    </div>
+                  )}
                   <button
                     type="button"
                     className="nm-btn px-2.5 py-1 text-[10px] text-[var(--t3)]"
@@ -1660,30 +2191,33 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
                   </button>
                 </div>
               </div>
-              {fetchModelsMsg && (
-                <p className="text-[10px] text-[var(--t5)]">{fetchModelsMsg}</p>
-              )}
               {activeVendorEntries.length === 0 ? (
                 <p className="py-1 text-[11px] text-[var(--t5)]">
                   暂无模型，点「＋ 添加模型」开始添加
                 </p>
               ) : (
-                <div className="space-y-1.5">
+                <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto">
                   {activeVendorEntries.map((m) => (
                     <ModelRow
                       key={m.id}
                       model={m}
-                      isActive={m.id === (config.activeModelId[activeVendorProtocol] ?? null)}
                       apiProvider={activeVendorProtocol}
+                      vendorDisabled={!vendorEnabled}
+                      vendorVerified={config.verifiedVendors.includes(activeVendor ?? "")}
                       onChange={(patch) => updateModel(m.id, patch)}
-                      onSelect={() => selectModel(m.id)}
                       onDelete={() => deleteModel(m.id)}
+                      onTested={async () => {
+                        // 可用性已落盘：await reload 拿到最新 verifiedVendors 再广播——
+                        // 否则旧 state 的下一次整写会把刚落盘的验证状态覆盖掉
+                        await loadConfig();
+                        emit("bot-config-changed", null).catch(() => {});
+                      }}
                     />
                   ))}
                 </div>
               )}
               <p className="text-[10px] text-[var(--t6)] leading-snug">
-                圆点 = 当前使用的模型（机器人实际调用）；max_tokens 在 Anthropic 格式下按厂商设置。
+                插头 = 连接测试：通过后厂商点亮绿点、开启的模型才进聊天窗口下拉（key/URL/格式变更后需重新测试）。当前使用的模型在聊天窗口 🧠 下拉切换；max_tokens 在 Anthropic 格式下按厂商设置。
               </p>
             </div>
             {activeVendorProtocol === "anthropic" && (
@@ -1701,7 +2235,38 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
                 </p>
               </div>
             )}
-            {renderSaveButton("mt-3 flex justify-end")}
+            {/* 保存 + 自动连接测试：保存成功后厂商下有开启的模型即自动探测，
+                结果决定左栏绿点与聊天下拉可见性 */}
+            <div className="mt-3 flex items-center justify-end gap-3">
+              {botError && (
+                <p className="text-[10px] text-[var(--danger)]">{botError}</p>
+              )}
+              {vendorTestMsg && (
+                <p
+                  className={`text-[10px] ${
+                    vendorTestOk ? "text-[var(--success)]" : "text-[var(--danger)]"
+                  }`}
+                >
+                  {vendorTestMsg}
+                </p>
+              )}
+              <button
+                aria-label="保存配置"
+                className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] ${
+                  configBusy || vendorTestBusy ? "nm-inset" : "nm-outset"
+                }`}
+                onClick={saveVendorPage}
+                disabled={configBusy || vendorTestBusy}
+              >
+                {configSaved
+                  ? "已保存 ✓"
+                  : configBusy
+                    ? "保存中…"
+                    : vendorTestBusy
+                      ? "测试连接中…"
+                      : "保存配置"}
+              </button>
+            </div>
               </>
             )}
               </div>

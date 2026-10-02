@@ -1,11 +1,11 @@
-//! Bot 配置模块的 tauri 命令（6 个）+ perm_mode 公开 helper。
+//! Bot 配置模块的 tauri 命令（7 个）+ perm_mode 公开 helper。
 //!
 //! - `bot_get_config` 设置页读取（含老配置迁移兜底）
 //! - `bot_set_config` 设置页保存（key 走 keyring，配置文件强制剥 key）
 //! - `bot_set_active_model` 聊天区/挂件 🧠 下拉窄口径切 active 模型
 //! - `bot_clear_api_key` 设置页清除主 LLM key
 //! - `bot_log_read` 设置页读 bot.log 审计日志
-//! - `fetch_provider_models` 厂商中心从厂商网站拉取模型列表（U11）
+//! - `bot_test_connection` 厂商详情页模型行「测试连接」（只判 HTTP 状态）
 //! - `perm_mode` 当前授权模式（chat 入口用）
 
 use tauri::AppHandle;
@@ -71,6 +71,27 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
     let _ = cfg
         .models_by_provider
         .get_or_insert_with(ModelsByProvider::default);
+    // 已存 key 的厂商列表：keyring 无法枚举条目，按配置里出现过的厂商名逐个探测。
+    // 真实 keyring 故障透传 Err（与 has_api_key 同策略）
+    let mut vendor_names: Vec<String> = cfg
+        .models_by_provider
+        .as_ref()
+        .map(|m| {
+            m.openai
+                .iter()
+                .chain(m.anthropic.iter())
+                .filter_map(|e| e.vendor.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    vendor_names.sort();
+    vendor_names.dedup();
+    let mut vendor_keys = Vec::new();
+    for v in vendor_names {
+        if keyring::has_vendor_key(&v)? {
+            vendor_keys.push(v);
+        }
+    }
     Ok(BotConfigView {
         base_url: cfg.base_url,
         model: cfg.model,
@@ -91,6 +112,9 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
         ui_font_size: cfg.ui_font_size,
         memory_consolidation: cfg.memory_consolidation.unwrap_or_default(),
         mcp_servers: cfg.mcp_servers.unwrap_or_default(),
+        disabled_vendors: cfg.disabled_vendors,
+        vendor_keys,
+        verified_vendors: cfg.verified_vendors,
     })
 }
 
@@ -104,9 +128,60 @@ pub(crate) fn preserve_evolution(incoming: &mut BotConfig, disk: &BotConfig) {
     incoming.evolution = disk.evolution.clone();
 }
 
-/// 保存配置。api_key / tavily_key / brave_key 三个顶层参数同语义：
+/// 保存配置。api_key / tavily_key / brave_key / vendor_key 几个顶层参数同语义：
 /// Some(非空) 写入系统凭据存储并覆盖；None/空串不动已存的 key。
-/// （Tavily/Brave key 与主 key 同模式，不落配置文件）
+/// （Tavily/Brave key 与主 key 同模式，不落配置文件；
+/// vendor_key 按厂商名分条目存储——厂商页一厂一 key）
+#[derive(serde::Deserialize)]
+pub struct VendorKeyParam {
+    pub vendor: String,
+    pub key: String,
+}
+
+/// 可用性失效（纯函数，单测直打）：已验证厂商名单剔除三类——
+/// 1) key 被本次保存覆盖的厂商（新 key 未验证过）；
+/// 2) 配置里已消失的厂商（删除厂商/重命名）；
+/// 3) 条目签名（协议 + Base URL）集合变了的厂商——改 URL、换协议搬移、
+///    增删条目都体现为集合差异；集合无序（BTreeSet），条目顺序变化不误剔。
+pub(crate) fn prune_verified_vendors(
+    incoming: &mut BotConfig,
+    disk: &BotConfig,
+    key_overwritten: Option<&str>,
+) {
+    // 厂商 → 条目签名集合：(协议, base_url) 无序去重
+    fn sig_sets(
+        cfg: &BotConfig,
+    ) -> std::collections::BTreeMap<String, std::collections::BTreeSet<(String, String)>> {
+        let mut m: std::collections::BTreeMap<
+            String,
+            std::collections::BTreeSet<(String, String)>,
+        > = Default::default();
+        if let Some(mbp) = &cfg.models_by_provider {
+            for (proto, list) in [("openai", &mbp.openai), ("anthropic", &mbp.anthropic)] {
+                for e in list {
+                    if let Some(v) = &e.vendor {
+                        m.entry(v.clone())
+                            .or_default()
+                            .insert((proto.to_string(), e.base_url.clone()));
+                    }
+                }
+            }
+        }
+        m
+    }
+    let new_sigs = sig_sets(incoming);
+    let old_sigs = sig_sets(disk);
+    incoming.verified_vendors.retain(|v| {
+        if Some(v.as_str()) == key_overwritten {
+            return false;
+        }
+        match (new_sigs.get(v), old_sigs.get(v)) {
+            (Some(n), Some(o)) => n == o,
+            _ => false,
+        }
+    });
+}
+
 #[tauri::command]
 pub fn bot_set_config(
     app: AppHandle,
@@ -114,11 +189,20 @@ pub fn bot_set_config(
     api_key: Option<String>,
     tavily_key: Option<String>,
     brave_key: Option<String>,
+    vendor_key: Option<VendorKeyParam>,
 ) -> CommandResult<()> {
     if let Some(k) = api_key {
         let k = k.trim();
         if !k.is_empty() {
             keyring::write_api_key(k)?;
+        }
+    }
+    let mut key_overwritten: Option<String> = None;
+    if let Some(vk) = vendor_key {
+        let (v, k) = (vk.vendor.trim(), vk.key.trim());
+        if !v.is_empty() && !k.is_empty() {
+            keyring::write_vendor_key(v, k)?;
+            key_overwritten = Some(v.to_string());
         }
     }
     for (slot, key) in [
@@ -144,6 +228,7 @@ pub fn bot_set_config(
     let _g = super::io::lock_config_write();
     let disk = super::io::load_config(&app);
     preserve_evolution(&mut config, &disk);
+    prune_verified_vendors(&mut config, &disk, key_overwritten.as_deref());
     super::io::write_bot_config_file_locked(&crate::db::data_dir(&app), config)
 }
 
@@ -212,6 +297,17 @@ pub fn bot_clear_api_key() -> CommandResult<()> {
     )
 }
 
+/// 清除指定厂商的 API Key（keyring 条目按厂商名分存）；
+/// 顺带把该厂商移出已验证名单（key 没了可用性随之失效）
+#[tauri::command]
+pub fn bot_clear_vendor_key(app: AppHandle, vendor: String) -> CommandResult<()> {
+    let vendor = vendor.trim();
+    keyring::delete_vendor_key(vendor)?;
+    super::io::update_config_file(&app, |cfg| {
+        cfg.verified_vendors.retain(|v| v != vendor);
+    })
+}
+
 pub use super::audit::bot_log_read;
 
 // ───────────────────────── bot_reload_config ─────────────────────────
@@ -231,6 +327,82 @@ pub fn bot_reload_config(app: AppHandle) -> CommandResult<bool> {
 #[cfg(test)]
 mod evolution_preserve_tests {
     use super::*;
+
+    #[test]
+    fn prune_verified_vendors_drops_overwritten_missing_and_url_changed() {
+        use crate::bot::config::types::{ModelEntry, ModelsByProvider};
+        let entry = |vendor: &str, url: &str| ModelEntry {
+            id: "m1".into(),
+            label: "m".into(),
+            base_url: url.into(),
+            model: "m".into(),
+            vendor: Some(vendor.into()),
+            enabled: true,
+            context_k: None,
+            capabilities: None,
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            system_prompt: None,
+        };
+        let cfg_with = |entries: Vec<ModelEntry>| BotConfig {
+            models_by_provider: Some(ModelsByProvider {
+                openai: entries,
+                anthropic: vec![],
+            }),
+            ..Default::default()
+        };
+        // 盘上：DeepSeek/Kimi 已验证；新配置：DeepSeek URL 未变、Kimi URL 变了、
+        // OpenAI 已被删除、MiniMax 本次被覆盖 key
+        let disk = cfg_with(vec![
+            entry("DeepSeek", "https://a"),
+            entry("Kimi", "https://k1"),
+        ]);
+        let mut incoming = cfg_with(vec![
+            entry("DeepSeek", "https://a"),
+            entry("Kimi", "https://k2"),
+            entry("MiniMax", "https://m"),
+        ]);
+        incoming.verified_vendors = vec![
+            "DeepSeek".into(),
+            "Kimi".into(),
+            "OpenAI".into(),
+            "MiniMax".into(),
+        ];
+        prune_verified_vendors(&mut incoming, &disk, Some("MiniMax"));
+        // 只剩 DeepSeek：Kimi（URL 变）/OpenAI（消失）/MiniMax（key 覆盖）全部失效
+        assert_eq!(incoming.verified_vendors, vec!["DeepSeek".to_string()]);
+
+        // 条目顺序变化（重应用预设会把条目挪到列表尾）不误剔
+        let disk2 = cfg_with(vec![
+            entry("DeepSeek", "https://a"),
+            entry("Kimi", "https://k"),
+        ]);
+        let mut incoming2 = cfg_with(vec![
+            entry("Kimi", "https://k"),
+            entry("DeepSeek", "https://a"),
+        ]);
+        incoming2.verified_vendors = vec!["DeepSeek".into(), "Kimi".into()];
+        prune_verified_vendors(&mut incoming2, &disk2, None);
+        assert_eq!(
+            incoming2.verified_vendors,
+            vec!["DeepSeek".to_string(), "Kimi".to_string()],
+            "仅顺序变化不应失效"
+        );
+
+        // 换协议搬移（同 URL）也失效——验证是按旧协议测的
+        let disk3 = cfg_with(vec![entry("DeepSeek", "https://a")]);
+        let mut incoming3 = BotConfig {
+            models_by_provider: Some(crate::bot::config::types::ModelsByProvider {
+                openai: vec![],
+                anthropic: vec![entry("DeepSeek", "https://a")],
+            }),
+            ..Default::default()
+        };
+        incoming3.verified_vendors = vec!["DeepSeek".into()];
+        prune_verified_vendors(&mut incoming3, &disk3, None);
+        assert!(incoming3.verified_vendors.is_empty(), "换协议应失效");
+    }
 
     #[test]
     fn preserve_evolution_disk_value_is_authoritative() {
@@ -259,80 +431,130 @@ mod evolution_preserve_tests {
     }
 }
 
-/// U11 厂商中心：从厂商网站拉取模型列表（GET {base_url}/models）。
-/// OpenAI 兼容格式：Authorization: Bearer；Anthropic 格式：x-api-key + anthropic-version。
-/// 解析两种响应共有的 `data[].id`。失败返回 CommandError（网络/HTTP 状态原文）。
-#[derive(serde::Deserialize)]
-struct ModelsResponse {
-    #[serde(default)]
-    data: Vec<ModelsResponseEntry>,
+// ───────────────────────── bot_test_connection ─────────────────────────
+
+/// 连接测试结果（厂商详情页模型行插头按钮）：只判 HTTP 状态，不解析 body。
+/// ok = 2xx；非 2xx（401/403 等）→ ok:false + status；网络错/超时 → ok:false + error。
+/// status/error 为 None 时不序列化，前端按字段有无区分失败类别。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionTestResult {
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
-#[derive(serde::Deserialize)]
-struct ModelsResponseEntry {
-    id: String,
-}
-
-fn parse_models_json(body: &str) -> Result<Vec<String>, String> {
-    match serde_json::from_str::<ModelsResponse>(body) {
-        Ok(r) => Ok(r.data.into_iter().map(|e| e.id).collect()),
-        // 区分「厂商返回 0 个模型」与「响应解析失败」——后者报错而非折叠成空
-        Err(e) => Err(format!("响应解析失败：{e}")),
-    }
-}
-
-#[tauri::command]
-pub async fn fetch_provider_models(
-    base_url: String,
-    api_format: String,
-    api_key: Option<String>,
-) -> CommandResult<Vec<String>> {
-    use crate::bot_model_loop::shared_llm_client;
-
-    let url = format!("{}/models", base_url.trim_end_matches('/'));
-    let mut req = shared_llm_client().get(&url);
-    let key = api_key.unwrap_or_default();
+/// 可测内核（注入 client + key，不碰 AppHandle/keyring，集成测试直打）：
+/// 探活路径按协议归一化——openai → GET {base}/models；anthropic →
+/// GET {base}/v1/models（base 已含 /v1 结尾则直接拼 /models，与
+/// anthropic_messages_url 同款「两种填法都可用」）。
+/// 鉴权：openai → Authorization: Bearer；anthropic → x-api-key + anthropic-version
+///（apply_anthropic_auth）。有 key 才带鉴权头（部分代理 /models 免鉴权）。
+/// 5s 超时（连接测试是前台交互，不能让慢厂商挂住 UI）。
+pub async fn probe_connection(
+    client: &reqwest::Client,
+    base_url: &str,
+    api_format: &str,
+    api_key: &str,
+) -> ConnectionTestResult {
+    let b = base_url.trim_end_matches('/');
+    let url = if api_format == "anthropic" {
+        if b.ends_with("/v1") {
+            format!("{b}/models")
+        } else {
+            format!("{b}/v1/models")
+        }
+    } else {
+        format!("{b}/models")
+    };
+    let mut req = client.get(&url);
+    let key = api_key.trim();
     if !key.is_empty() {
-        // 有 key 才带鉴权头（部分代理 /models 免鉴权，空头也可能被网关拒）
         if api_format == "anthropic" {
-            req = req.header("x-api-key", key);
+            req = crate::bot_anthropic::apply_anthropic_auth(req, key);
         } else {
             req = req.header("Authorization", format!("Bearer {key}"));
         }
     }
-    // 厂商 /models 响应很小：请求级 20s 超时 + 1MB 上限，防慢厂商挂住调用方
-    let body = req
-        .timeout(std::time::Duration::from_secs(20))
-        .send()
-        .await
-        .map_err(|e| CommandError::LlmRequestFailed(format!("获取模型列表失败：{e}")))?
-        .error_for_status()
-        .map_err(|e| CommandError::LlmRequestFailed(format!("获取模型列表失败：{e}")))?
-        .text()
-        .await
-        .map_err(|e| CommandError::LlmRequestFailed(format!("读取响应失败：{e}")))?;
-    if body.len() > 1024 * 1024 {
-        return Err(CommandError::LlmRequestFailed(
-            "模型列表响应超过 1MB，已中止".into(),
-        ));
+    match req.timeout(std::time::Duration::from_secs(5)).send().await {
+        Ok(resp) => {
+            let status = resp.status();
+            ConnectionTestResult {
+                ok: status.is_success(),
+                status: Some(status.as_u16()),
+                error: None,
+            }
+        }
+        Err(e) => ConnectionTestResult {
+            ok: false,
+            status: None,
+            error: Some(e.to_string()),
+        },
     }
-    parse_models_json(&body).map_err(CommandError::LlmRequestFailed)
+}
+
+/// 厂商详情页模型行「测试连接」（参照 open-webui POST /verify）：
+/// key 从系统凭据存储读：传了 vendor 时该厂商的厂商级 key 优先，否则全局主 key；
+/// 读不到（未配置 / keyring 故障）按无 key 探活——
+/// 无 key 时厂商会回 401，状态如实返回，不在此处把 keyring 故障伪装成连接失败。
+/// 结果落盘可用性：ok → 厂商进 verified_vendors（设置页绿点 + 聊天下拉放行），
+/// 失败 → 移出；写盘失败不阻断测试结果的返回。
+#[tauri::command]
+pub async fn bot_test_connection(
+    app: AppHandle,
+    base_url: String,
+    api_format: String,
+    vendor: Option<String>,
+) -> CommandResult<ConnectionTestResult> {
+    use crate::bot_model_loop::shared_llm_client;
+
+    let key = vendor
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .and_then(|v| keyring::read_vendor_key(v).ok())
+        .filter(|k| !k.trim().is_empty())
+        .unwrap_or_else(|| keyring::read_api_key().unwrap_or_default());
+    let r = probe_connection(shared_llm_client(), &base_url, &api_format, &key).await;
+    if let Some(v) = vendor.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+        let ok = r.ok;
+        if let Err(e) = super::io::update_config_file(&app, |cfg| {
+            if ok {
+                if !cfg.verified_vendors.iter().any(|x| x == v) {
+                    cfg.verified_vendors.push(v.to_string());
+                }
+            } else {
+                cfg.verified_vendors.retain(|x| x != v);
+            }
+        }) {
+            eprintln!("[bot] verified_vendors 写盘失败: {e}");
+        }
+    }
+    Ok(r)
 }
 
 #[cfg(test)]
-mod fetch_models_tests {
-    use super::parse_models_json;
+mod test_connection_tests {
+    use super::ConnectionTestResult;
 
     #[test]
-    fn parses_openai_and_anthropic_shapes_and_garbage() {
-        let ids = parse_models_json(r#"{"data":[{"id":"gpt-4o"},{"id":"gpt-4o-mini"}]}"#).unwrap();
-        assert_eq!(ids, vec!["gpt-4o".to_string(), "gpt-4o-mini".to_string()]);
-        let ids = parse_models_json(r#"{"data":[{"id":"claude-x"}]}"#).unwrap();
-        assert_eq!(ids, vec!["claude-x".to_string()]);
-        // 非 JSON → Err（前端可区分「厂商返回 0 个」与「响应坏」）；无 data 字段 → 空列表
-        assert!(parse_models_json("not json").is_err());
-        assert!(parse_models_json(r#"{"object":"list"}"#)
-            .unwrap()
-            .is_empty());
+    fn result_serializes_camel_case_and_skips_none() {
+        let ok = ConnectionTestResult {
+            ok: true,
+            status: Some(200),
+            error: None,
+        };
+        let json = serde_json::to_string(&ok).unwrap();
+        assert_eq!(json, r#"{"ok":true,"status":200}"#);
+
+        let err = ConnectionTestResult {
+            ok: false,
+            status: None,
+            error: Some("boom".into()),
+        };
+        let json = serde_json::to_string(&err).unwrap();
+        assert_eq!(json, r#"{"ok":false,"error":"boom"}"#);
     }
 }

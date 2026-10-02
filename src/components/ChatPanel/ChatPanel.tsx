@@ -315,6 +315,10 @@ export function ChatPanel({
           anthropic?: ChatModelEntry[];
         } | null;
         activeModelId?: { openai: string | null; anthropic: string | null } | null;
+        /** 被禁用的厂商名列表：其模型不进 🧠 下拉 */
+        disabledVendors?: string[] | null;
+        /** 连接测试通过的厂商名单：带 vendor 的模型仅当厂商已验证才进下拉 */
+        verifiedVendors?: string[] | null;
         reasoningEffort?: string | null;
         /** 授权模式（U3b 只读展示）：strict/ask/yolo，None = ask。
          *  ⚠️ BotConfigView 序列化为 camelCase（rename_all），线字段是 permMode */
@@ -325,11 +329,18 @@ export function ChatPanel({
           const isOpenai = (c.apiProvider ?? "openai") !== "anthropic";
           setApiProvider(isOpenai ? "openai" : "anthropic");
           const mbp = c.modelsByProvider ?? {};
+          // 过滤：厂商总开关命中的厂商、启用开关关闭的模型、未通过连接测试的厂商
+          // 都不进下拉；无 vendor 的老条目/自定义条目没有厂商验证概念，不受影响
+          const disabled = new Set(c.disabledVendors ?? []);
+          const verified = new Set(c.verifiedVendors ?? []);
+          const visible = (m: ChatModelEntry) =>
+            m.enabled !== false &&
+            (!m.vendor || (!disabled.has(m.vendor) && verified.has(m.vendor)));
           // MP-02：双协议同列——两组模型都列出（带协议分组标签），
           // 跨协议选中由后端 apply_active_model_switch 连协议一起切
           setModels([
-            ...(mbp.openai ?? []).map((m) => ({ ...m, provider: "openai" as const })),
-            ...(mbp.anthropic ?? []).map((m) => ({
+            ...(mbp.openai ?? []).filter(visible).map((m) => ({ ...m, provider: "openai" as const })),
+            ...(mbp.anthropic ?? []).filter(visible).map((m) => ({
               ...m,
               provider: "anthropic" as const,
             })),
