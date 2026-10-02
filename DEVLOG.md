@@ -2,6 +2,37 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-02（周四）U11-MODELLIST：模型列表紧凑行 + 从厂商获取 + 推理强度收进聊天（`563319f`）
+
+**老板需求**（MiniMax 截图）：厂商设置页模型列表改紧凑行（名称+上下文徽标+
+编辑铅笔+启用开关）；模型列表可从厂商网站获取；厂商 logo 视觉标识；模型推理
+强度设置页不显示，只保留聊天窗内设置。
+
+**实现**：①**Rust**——ModelEntry + `enabled: bool`（serde default true）+
+`context_k: Option<f64>`（徽标「204.8K」），ModelsByProvider 去 Eq；新命令
+`fetch_provider_models(base_url, api_format, api_key)`：GET {base_url}/models，
+OpenAI 带 Bearer / Anthropic 带 x-api-key（空 key 省略鉴权头），请求级 20s
+超时 + 响应 1MB 上限，解析 `data[].id`（解析失败 **Err 上抛**，可区分「厂商
+返回 0 个」与「响应坏」），注册 lib.rs，parse 纯函数 + 单测。②**ModelRow
+重写**——非编辑态 = radio（role=radio+aria-checked）+ 模型名 mono + contextK
+徽标 + 铅笔 + Toggle 启用开关（复用 Toggle 原语）；编辑态 = 名称/Base URL/
+model + 删除。③厂商页列表头「从厂商获取」→ 合并（同厂商按 model id 去重，
+新 id 默认禁用）+ 显式 saveConfig(next, {skipReload:true})（**ocr critical 修**：
+无参 saveConfig 读闭包旧 config 丢刚拉的模型）+ 结果文案。④设置页删推理强度
+卡与 setReasoningEffort 死代码——后台默认字段仍随配置透传，聊天 🧠 会话级
+覆盖照旧（老板拍板「只在聊天窗里设置」）。⑤厂商 logo：favicon 直连抓取不稳
+（429/403/超时实测），改内置品牌色徽章方案待后续，本批以厂商页图标+预设 emoji
+过渡。
+
+**验证**：vitest 353 绿（-1 推理用例随 UI 移除）/ tsc / oxlint 0 / knip 0 /
+cargo config 47 绿（含 fetch parse 测试）/ **test-all 全量含 Rust+审计
+exit 0（120s）**。视觉验收：深色模型列表紧凑行实拍对齐截图（mono 名/徽标/
+铅笔/开关）。ocr 复审 27 条（1C/3H/12M/9L/2 空）：critical 修（saveConfig
+闭包丢模型——skipReload+显式传 next）；high 3 修 2（20s 超时+1MB 上限、解析
+Err 上抛）驳回 1（ContextBadge 非死 UI——本批起填充数据）；medium 修 6 记 2
+（context_k f64 展示用可接受；reasoningEffort 字段保留因聊天消费）。门禁两次
+拦截均已处理（spec 行数预算漏计、cargo fmt）。
+
 ## 2026-10-02（周四）U10-VENDOR：模型设置按厂商分类（`8fcfefd`）
 
 **老板需求**（MiniMax 厂商页截图）：模型设置不按 openai/anthropic 兼容分类，
