@@ -40,6 +40,8 @@ pub(crate) fn migrate_legacy_models(cfg: &mut BotConfig) {
         base_url: cfg.base_url.clone(),
         model: cfg.model.clone(),
         vendor: None,
+        enabled: true,
+        context_k: None,
     };
     let provider = ApiProvider::from_cfg(cfg.api_provider.as_deref());
     let mut mbp = ModelsByProvider::default();

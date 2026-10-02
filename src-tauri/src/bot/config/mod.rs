@@ -105,6 +105,8 @@ mod tests {
             base_url: base_url.into(),
             model: model.into(),
             vendor: None,
+            enabled: true,
+            context_k: None,
         }
     }
 
@@ -118,11 +120,15 @@ mod tests {
             base_url: "https://api.minimaxi.com/anthropic".into(),
             model: "MiniMax-M3".into(),
             vendor: Some("MiniMax".into()),
+            enabled: true,
+            context_k: Some(1024.0),
         };
         let json = serde_json::to_string(&e).unwrap();
         assert!(json.contains("\"vendor\":\"MiniMax\""));
         let back: ModelEntry = serde_json::from_str(&json).unwrap();
         assert_eq!(back.vendor.as_deref(), Some("MiniMax"));
+        assert!(back.enabled);
+        assert_eq!(back.context_k, Some(1024.0));
 
         // 老配置 JSON 无 vendor 字段 → None（不拒绝加载）
         let legacy = r#"{"id":"m2","label":"旧条目","baseUrl":"https://x","model":"m"}"#;

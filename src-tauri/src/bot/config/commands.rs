@@ -1,10 +1,11 @@
-//! Bot 配置模块的 tauri 命令（5 个）+ perm_mode 公开 helper。
+//! Bot 配置模块的 tauri 命令（6 个）+ perm_mode 公开 helper。
 //!
 //! - `bot_get_config` 设置页读取（含老配置迁移兜底）
 //! - `bot_set_config` 设置页保存（key 走 keyring，配置文件强制剥 key）
 //! - `bot_set_active_model` 聊天区/挂件 🧠 下拉窄口径切 active 模型
 //! - `bot_clear_api_key` 设置页清除主 LLM key
 //! - `bot_log_read` 设置页读 bot.log 审计日志
+//! - `fetch_provider_models` 厂商中心从厂商网站拉取模型列表（U11）
 //! - `perm_mode` 当前授权模式（chat 入口用）
 
 use tauri::AppHandle;
@@ -255,5 +256,83 @@ mod evolution_preserve_tests {
         let disk2: BotConfig = serde_json::from_str("{}").unwrap();
         preserve_evolution(&mut incoming2, &disk2);
         assert!(incoming2.evolution.is_none());
+    }
+}
+
+/// U11 厂商中心：从厂商网站拉取模型列表（GET {base_url}/models）。
+/// OpenAI 兼容格式：Authorization: Bearer；Anthropic 格式：x-api-key + anthropic-version。
+/// 解析两种响应共有的 `data[].id`。失败返回 CommandError（网络/HTTP 状态原文）。
+#[derive(serde::Deserialize)]
+struct ModelsResponse {
+    #[serde(default)]
+    data: Vec<ModelsResponseEntry>,
+}
+
+#[derive(serde::Deserialize)]
+struct ModelsResponseEntry {
+    id: String,
+}
+
+fn parse_models_json(body: &str) -> Result<Vec<String>, String> {
+    match serde_json::from_str::<ModelsResponse>(body) {
+        Ok(r) => Ok(r.data.into_iter().map(|e| e.id).collect()),
+        // 区分「厂商返回 0 个模型」与「响应解析失败」——后者报错而非折叠成空
+        Err(e) => Err(format!("响应解析失败：{e}")),
+    }
+}
+
+#[tauri::command]
+pub async fn fetch_provider_models(
+    base_url: String,
+    api_format: String,
+    api_key: Option<String>,
+) -> CommandResult<Vec<String>> {
+    use crate::bot_model_loop::shared_llm_client;
+
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    let mut req = shared_llm_client().get(&url);
+    let key = api_key.unwrap_or_default();
+    if !key.is_empty() {
+        // 有 key 才带鉴权头（部分代理 /models 免鉴权，空头也可能被网关拒）
+        if api_format == "anthropic" {
+            req = req.header("x-api-key", key);
+        } else {
+            req = req.header("Authorization", format!("Bearer {key}"));
+        }
+    }
+    // 厂商 /models 响应很小：请求级 20s 超时 + 1MB 上限，防慢厂商挂住调用方
+    let body = req
+        .timeout(std::time::Duration::from_secs(20))
+        .send()
+        .await
+        .map_err(|e| CommandError::LlmRequestFailed(format!("获取模型列表失败：{e}")))?
+        .error_for_status()
+        .map_err(|e| CommandError::LlmRequestFailed(format!("获取模型列表失败：{e}")))?
+        .text()
+        .await
+        .map_err(|e| CommandError::LlmRequestFailed(format!("读取响应失败：{e}")))?;
+    if body.len() > 1024 * 1024 {
+        return Err(CommandError::LlmRequestFailed(
+            "模型列表响应超过 1MB，已中止".into(),
+        ));
+    }
+    parse_models_json(&body).map_err(CommandError::LlmRequestFailed)
+}
+
+#[cfg(test)]
+mod fetch_models_tests {
+    use super::parse_models_json;
+
+    #[test]
+    fn parses_openai_and_anthropic_shapes_and_garbage() {
+        let ids = parse_models_json(r#"{"data":[{"id":"gpt-4o"},{"id":"gpt-4o-mini"}]}"#).unwrap();
+        assert_eq!(ids, vec!["gpt-4o".to_string(), "gpt-4o-mini".to_string()]);
+        let ids = parse_models_json(r#"{"data":[{"id":"claude-x"}]}"#).unwrap();
+        assert_eq!(ids, vec!["claude-x".to_string()]);
+        // 非 JSON → Err（前端可区分「厂商返回 0 个」与「响应坏」）；无 data 字段 → 空列表
+        assert!(parse_models_json("not json").is_err());
+        assert!(parse_models_json(r#"{"object":"list"}"#)
+            .unwrap()
+            .is_empty());
     }
 }

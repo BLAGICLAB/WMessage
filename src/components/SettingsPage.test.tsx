@@ -135,8 +135,6 @@ describe("SettingsPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "机器人" }));
     expect(screen.getByText("机器人设置")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "模型设置" }));
-    // 大模型 API 配置块受 botEnabled 门控（默认关不渲染），恒显的推理强度可断言
-    expect(screen.getByText("推理强度")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "记忆" }));
     expect(screen.getByText("记忆整理")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "技能" }));
@@ -302,57 +300,6 @@ describe("SettingsPage", () => {
     });
   });
 
-  it("推理强度：缺字段默认「中」高亮；点「低」→ bot_set_config 持久化 reasoningEffort（RE-1）", async () => {
-    const user = userEvent.setup();
-    mocks.invokeMock.mockImplementation(async (cmd: string) => {
-      if (cmd === "bot_get_enabled") return true;
-      if (cmd === "bot_get_config")
-        return {
-          baseUrl: "https://api.example.com/v1",
-          model: "glm-5.3-flash",
-          hasApiKey: true,
-          bypassLlmOnPreStepHit: true,
-          allowedDirs: [],
-          pythonTimeoutSecs: null,
-          // 老配置缺 reasoningEffort 字段 → 前端按 medium 显示
-        };
-      if (cmd === "bot_set_config") return null;
-      if (cmd === "api_status") return { enabled: false, port: 4763, token: "" };
-      if (cmd === "profile_get")
-        return {
-          user: { name: "我", avatarDataUrl: null },
-          bot: { name: "机器人", avatarDataUrl: null },
-        };
-      if (cmd === "py_get_enabled") return false;
-      if (cmd === "skills_list") return [];
-      if (cmd === "migration_rules_load") return { version: 1, rules: [] };
-      if (cmd === "migration_status") return { rules_count: 0, poll_interval_secs: 600 };
-      if (cmd === "migration_log_read") return "";
-      return null;
-    });
-    render(<SettingsPage {...defaultProps} />);
-    // U8：导航到「模型设置」分类（推理强度所在）
-    await user.click(screen.getByRole("button", { name: "模型设置" }));
-    // 「推理强度」四档控件出现；缺字段 → 「中」是选中态（nm-inset）。
-    // 门在 botEnabled 翻转后才打开，放宽轮询窗口防时序抖动
-    const title = await screen.findByText("推理强度", {}, { timeout: 3000 });
-    const block = title.parentElement;
-    const btns = Array.from(block?.querySelectorAll("button") ?? []);
-    expect(btns.map((b) => b.textContent)).toEqual(["关闭", "低", "中", "高"]);
-    const medium = btns.find((b) => b.textContent === "中");
-    expect(medium?.className).toContain("nm-inset");
-    // 点「低」→ 点击即持久化 reasoningEffort: "low"
-    await user.click(btns.find((b) => b.textContent === "低")!);
-    await waitFor(() => {
-      expect(mocks.invokeMock).toHaveBeenCalledWith(
-        "bot_set_config",
-        expect.objectContaining({
-          config: expect.objectContaining({ reasoningEffort: "low" }),
-        })
-      );
-    });
-  });
-
   it("Tavily 开关：开启但没填 key → 显示缺 key 提示（不静默走百度）", async () => {
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "bot_get_enabled") return true;
@@ -466,7 +413,7 @@ describe("SettingsPage", () => {
   // 老「提供商预设」3 个测试 + 1 个「API 协议」测试全部重写：新行为是每协议独立
   // 一份 ModelEntry 列表，点「添加大模型」自己加，切换协议时列表整体切换。
 
-  it("大模型 API 配置：初始无模型（老板要求「不设置默认厂商」）→ 列表为空 + 显示「暂无大模型」", async () => {
+  it("大模型 API 配置：初始无模型（老板要求「不设置默认厂商」）→ 厂商列表空 + 显示引导", async () => {
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "bot_get_enabled") return true;
       if (cmd === "bot_get_config")
@@ -529,14 +476,13 @@ describe("SettingsPage", () => {
     await user.click(screen.getByRole("button", { name: "模型设置" }));
     await user.click(screen.getByRole("button", { name: "添加厂商" }));
     await user.click(screen.getByRole("button", { name: /Anthropic/ }));
-    // 预设自带 claude 模型行（首个自动 active）；label 与 model 输入同值
-    expect(screen.getAllByDisplayValue("claude-sonnet-4-20250514").length).toBeGreaterThan(0);
+    // 预设自带 claude 模型行（首个自动 active）
+    expect(await screen.findByText("claude-sonnet-4-20250514")).toBeInTheDocument();
     expect(screen.getByTitle("当前选中（点其它条目可切换）")).toBeInTheDocument();
-    // 点「＋ 添加模型」→ 新空行加入，active 不被抢走
+    // 点「＋ 添加模型」→ 新空行加入（紧凑行「（未命名）」），active 不被抢走
     await user.click(screen.getByRole("button", { name: /添加模型/ }));
-    expect(screen.getAllByPlaceholderText(/DeepSeek \/ Kimi/).length).toBe(2);
+    expect(screen.getAllByText("（未命名）").length).toBe(1);
     expect(screen.getAllByTitle("当前选中（点其它条目可切换）").length).toBe(1);
-    expect(screen.getByTitle("当前选中（点其它条目可切换）")).toBeInTheDocument();
   });
 
   it("大模型 API 配置：切协议 → 列表整体切换（OpenAI 模型不在 Anthropic 协议下显示）", async () => {
@@ -575,26 +521,22 @@ describe("SettingsPage", () => {
     // U8：导航到「模型设置」分类；老条目无 vendor → 按协议名兜底为两个厂商行
     await user.click(screen.getByRole("button", { name: "模型设置" }));
     await user.click(screen.getByRole("button", { name: "OpenAI 兼容" }));
-    // 默认 OpenAI 协议：DeepSeek + Kimi 都在，Claude 不在
-    await screen.findByDisplayValue("DeepSeek");
-    expect(screen.getByDisplayValue("Kimi")).toBeInTheDocument();
-    expect(screen.queryByDisplayValue("Claude Sonnet")).toBeNull();
-    // 切到 Anthropic
-    const trigger = screen.getByRole("button", { name: "OpenAI 兼容" });
-    await user.click(trigger);
+    // OpenAI 兼容厂商页：DeepSeek + Kimi 都在（紧凑行显示模型名文本），Claude 不在
+    expect(await screen.findByText("DeepSeek")).toBeInTheDocument();
+    expect(screen.getByText("Kimi")).toBeInTheDocument();
+    expect(screen.queryByText("Claude Sonnet")).toBeNull();
+    // 切到 Anthropic 兼容厂商页
     await user.click(screen.getByRole("button", { name: "Anthropic 兼容" }));
-    // 现在 Anthropic 协议：只有 Claude
-    await screen.findByDisplayValue("Claude Sonnet");
-    expect(screen.queryByDisplayValue("DeepSeek")).toBeNull();
-    expect(screen.queryByDisplayValue("Kimi")).toBeNull();
-    // 切回 OpenAI
-    const trigger2 = screen.getByRole("button", { name: "Anthropic 兼容" });
-    await user.click(trigger2);
+    // 现在 Anthropic 兼容页：只有 Claude
+    expect(await screen.findByText("Claude Sonnet")).toBeInTheDocument();
+    expect(screen.queryByText("DeepSeek")).toBeNull();
+    expect(screen.queryByText("Kimi")).toBeNull();
+    // 切回 OpenAI 兼容厂商页
     await user.click(screen.getByRole("button", { name: "OpenAI 兼容" }));
     // DeepSeek/Kimi 又回来了
-    await screen.findByDisplayValue("DeepSeek");
-    expect(screen.getByDisplayValue("Kimi")).toBeInTheDocument();
-    // 且 DeepSeek（m1）仍是 active——回到原协议时 active 模型是协议级记忆
+    expect(await screen.findByText("DeepSeek")).toBeInTheDocument();
+    expect(screen.getByText("Kimi")).toBeInTheDocument();
+    // 且 DeepSeek（m1）仍是 active——回到原厂商页时 active 模型是协议级记忆
     expect(screen.getByTitle("当前选中（点其它条目可切换）")).toBeInTheDocument();
   });
 
@@ -632,11 +574,12 @@ describe("SettingsPage", () => {
     // U8：导航到「模型设置」分类；进 OpenAI 兼容厂商页
     await user.click(screen.getByRole("button", { name: "模型设置" }));
     await user.click(screen.getByRole("button", { name: "OpenAI 兼容" }));
-    await screen.findByDisplayValue("DeepSeek");
+    expect(await screen.findByText("DeepSeek")).toBeInTheDocument();
     // 初始：m1(DeepSeek) active，m2(Kimi) 不是
     expect(screen.getByTitle("当前选中（点其它条目可切换）")).toBeInTheDocument();
     expect(screen.getByTitle("点此切换为当前模型")).toBeInTheDocument();
-    // 删 m1 → 列表里只剩 m2(Kimi)，应该顶替成 active
+    // 删 m1 → 进编辑态点删除（U11：删除钮收进编辑态）
+    await user.click(screen.getAllByRole("button", { name: "编辑此模型" })[0]);
     const delButtons1 = screen.getAllByTitle("删除此模型");
     await user.click(delButtons1[0]);
     await waitFor(() => {
@@ -645,9 +588,10 @@ describe("SettingsPage", () => {
       expect(radios).toHaveLength(1);
     });
     // DeepSeek 没了，Kimi 还在
-    expect(screen.queryByDisplayValue("DeepSeek")).toBeNull();
-    expect(screen.getByDisplayValue("Kimi")).toBeInTheDocument();
-    // 删 m2 → 列表空，回到「暂无模型」空态
+    expect(screen.queryByText("DeepSeek")).toBeNull();
+    expect(screen.getByText("Kimi")).toBeInTheDocument();
+    // 删 m2 → 进编辑态点删除，列表空回到「暂无模型」空态（厂商页保留）
+    await user.click(screen.getAllByRole("button", { name: "编辑此模型" })[0]);
     const delButtons2 = screen.getAllByTitle("删除此模型");
     await user.click(delButtons2[0]);
     expect(await screen.findByText(/暂无模型/)).toBeInTheDocument();
@@ -687,9 +631,11 @@ describe("SettingsPage", () => {
     await user.click(screen.getByRole("button", { name: /Anthropic/ }));
     // 添加大模型（厂商页内）
     await user.click(screen.getByRole("button", { name: /添加模型/ }));
-    // 填 label（新空行在列表尾部）
-    const labelInputs = await screen.findAllByPlaceholderText(/DeepSeek \/ Kimi/);
-    const labelInput = labelInputs[labelInputs.length - 1];
+    // 填 label（U11：新行为紧凑行，点铅笔进编辑态后出现输入框）
+    await user.click(
+      screen.getAllByRole("button", { name: "编辑此模型" }).slice(-1)[0],
+    );
+    const labelInput = await screen.findByPlaceholderText(/DeepSeek \/ Kimi/);
     await user.type(labelInput, "Claude Sonnet");
     // 填 max_tokens（Anthropic 模式出现）
     const maxTokensInput = screen.getByPlaceholderText("8192");

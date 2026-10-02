@@ -185,7 +185,9 @@ pub struct BotConfig {
 /// 不参与 API 调用。
 /// vendor（U10 厂商中心）：条目所属厂商名，前端按它分组渲染厂商页；
 /// 老配置缺字段 → None（前端按协议名兜底分组），None 序列化时跳过保持文件干净。
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+/// enabled（U11 模型列表开关）：false = 聊天 🧠 下拉不显示该模型；缺字段默认启用。
+/// context_k（U11 徽标）：上下文窗口（千 token），前端显示「204.8K」样式；None 不显示。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelEntry {
     pub id: String,
@@ -194,10 +196,18 @@ pub struct ModelEntry {
     pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vendor: Option<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_k: Option<f64>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// 双协议下各自的模型列表；Vec 为空序列化时跳过，保持配置文件干净。
-#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ModelsByProvider {
     #[serde(skip_serializing_if = "Vec::is_empty")]

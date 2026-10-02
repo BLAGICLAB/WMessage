@@ -129,6 +129,9 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
   const [copied, setCopied] = useState(false);
   /** 添加供应商网格（U9）：model 分类右栏的子视图 */
   const [showProviderPicker, setShowProviderPicker] = useState(false);
+  /** 从厂商网站获取模型列表（U11）：busy + 结果文案 */
+  const [fetchModelsBusy, setFetchModelsBusy] = useState(false);
+  const [fetchModelsMsg, setFetchModelsMsg] = useState("");
   /** 应用供应商预设（U9）：切协议 + 覆盖该协议模型列表（预填 baseUrl/模型名）+
    *  首个设为 active——完全落在现有双协议数据模型内，预设可整表替换。
    *  覆盖后立即落盘（同 toggleTavily 模式；显式选择预设=接受覆盖该协议配置）。 */
@@ -774,17 +777,6 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     await saveConfig(next);
   };
 
-  /** 推理强度后台默认切换（RE-1）：点击即持久化（同 setPermMode 模式）。
-   *  只写后台默认值——挂件聊天里的单次覆盖存在前端会话级，不经这里 */
-  const setReasoningEffort = async (
-    level: "off" | "low" | "medium" | "high",
-  ) => {
-    if (configBusy || config.reasoningEffort === level) return;
-    const next = { ...config, reasoningEffort: level };
-    setConfig(next);
-    await saveConfig(next);
-  };
-
   /** 记忆整理开关/频率：点击即持久化（同 toggleTavily / setPermMode 模式） */
   const setConsolidation = async (patch: Partial<{ enabled: boolean; interval: string }>) => {
     if (configBusy) return;
@@ -794,6 +786,62 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     };
     setConfig(next);
     await saveConfig(next);
+  };
+
+  /** 从厂商网站拉取模型列表（U11）：GET {baseUrl}/models，按 API 格式带鉴权头。
+   *  合并语义：按 model id 去重，新 id append（label=id、baseUrl=厂商 Base URL、
+   *  enabled、vendor=当前厂商）；已存在的不动。完成后立即落盘。 */
+  const fetchModelsForVendor = async () => {
+    if (!activeVendor || !activeVendorEntries.length) return;
+    const vendor = activeVendor;
+    const proto = activeVendorProtocol;
+    const baseUrl = vendorBaseUrl;
+    setFetchModelsBusy(true);
+    setFetchModelsMsg("");
+    try {
+      const ids = await invoke<string[]>("fetch_provider_models", {
+        baseUrl,
+        apiFormat: proto,
+        apiKey: keyInput.trim() ? keyInput.trim() : null,
+      });
+      // 合并：新 id append（label=model 名、baseUrl=厂商 Base URL、enabled=false、
+      // vendor=当前厂商）；其他厂商条目不动。
+      // 从 config 闭包快照算出 next 并显式传给 setConfig + saveConfig（critical 修：
+      // 无参 saveConfig() 读闭包旧 config 会丢刚拉的模型）
+      const list = config.modelsByProvider[proto] ?? [];
+      const mine = list.filter((m) => (m.vendor ?? "") === vendor);
+      const existing = new Set(mine.map((m) => m.model));
+      const fresh = ids
+        .filter((id) => !existing.has(id))
+        .map((id) => ({
+          id: genModelId(),
+          label: id,
+          model: id,
+          baseUrl,
+          vendor,
+          enabled: false,
+        }));
+      const next = {
+        ...config,
+        modelsByProvider: {
+          ...config.modelsByProvider,
+          [proto]: [...list.filter((m) => (m.vendor ?? "") !== vendor), ...mine, ...fresh],
+        },
+      };
+      setConfig(next);
+      const newCount = fresh.length;
+      setFetchModelsMsg(
+        newCount > 0
+          ? `已获取 ${ids.length} 个模型，新增 ${newCount} 个（默认禁用，打开开关启用）`
+          : `厂商返回 ${ids.length} 个模型，均已存在`,
+      );
+      await saveConfig(next, { skipReload: true });
+    } catch (e) {
+      handleCommandError(e, "fetch_provider_models");
+      setFetchModelsMsg("");
+    } finally {
+      setFetchModelsBusy(false);
+    }
   };
 
   /** 立即整理：转圈 → 结果文案短暂展示（同 configSaved 的 setTimeout 清除模式），并刷新「上次整理时间」 */
@@ -1589,18 +1637,32 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
                 </button>
               )}
             </div>
-            {/* 模型列表：行 = radio（设为当前）+ 名称 + baseUrl + model + 删除 */}
+            {/* 模型列表：行 = radio（设为当前）+ 名称 + 上下文徽标 + 铅笔编辑 + 开关 */}
             <div className="space-y-1">
               <div className="flex items-center justify-between">
                 <p className="text-[10px] text-[var(--t5)]">模型列表</p>
-                <button
-                  type="button"
-                  className="nm-btn px-2.5 py-1 text-[10px] text-[var(--t3)]"
-                  onClick={addModelToVendor}
-                >
-                  ＋ 添加模型
-                </button>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    className="nm-btn px-2.5 py-1 text-[10px] text-[var(--t3)]"
+                    title="从厂商的 /models 接口拉取模型列表；需该厂商已有模型条目（提供 Base URL），保存后新模型默认禁用"
+                    onClick={fetchModelsForVendor}
+                    disabled={fetchModelsBusy || !activeVendorEntries.length}
+                  >
+                    {fetchModelsBusy ? "获取中…" : "从厂商获取"}
+                  </button>
+                  <button
+                    type="button"
+                    className="nm-btn px-2.5 py-1 text-[10px] text-[var(--t3)]"
+                    onClick={addModelToVendor}
+                  >
+                    ＋ 添加模型
+                  </button>
+                </div>
               </div>
+              {fetchModelsMsg && (
+                <p className="text-[10px] text-[var(--t5)]">{fetchModelsMsg}</p>
+              )}
               {activeVendorEntries.length === 0 ? (
                 <p className="py-1 text-[11px] text-[var(--t5)]">
                   暂无模型，点「＋ 添加模型」开始添加
@@ -1646,36 +1708,6 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
             </div>
           </div>
         )}
-        {/* 推理强度后台默认（RE-1）：抽象档位，后端按具体模型族映射线上参数（不受机器人开关门控） */}
-        <div className="mt-4 border-t border-[var(--edge)] pt-4 space-y-1">
-          <p className="text-sm font-medium text-[var(--t2)]">推理强度</p>
-          <div className="flex gap-2">
-            {(
-              [
-                ["off", "关闭"],
-                ["low", "低"],
-                ["medium", "中"],
-                ["high", "高"],
-              ] as const
-            ).map(([level, label]) => (
-              <button
-                key={level}
-                className={`flex-1 px-2 py-1.5 text-xs ${
-                  config.reasoningEffort === level ? "nm-inset" : "nm-outset"
-                } text-[var(--t3)]`}
-                onClick={() => setReasoningEffort(level)}
-                disabled={configBusy}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-          <p className="text-[10px] text-[var(--t6)] leading-snug">
-            大模型回复前的思考深度，全局默认「中」。挂件聊天输入框里可按会话临时覆盖。
-            实际参数按模型各自的 API 映射（如 GLM-5.3 的 reasoning_effort、
-            Claude 的 thinking.budget_tokens）；模型不支持某档位时自动就近。
-          </p>
-        </div>
       </div>
       </section>
       )}

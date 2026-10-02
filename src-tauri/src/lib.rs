@@ -497,6 +497,7 @@ pub fn run() {
             bot_artifacts::confirm_artifact_batch,
             bot::bot_log_read,
             bot::config::commands::bot_reload_config,
+            bot::config::commands::fetch_provider_models,
             bot_py::py_get_enabled,
             bot_py::py_set_enabled,
             bot_py::py_env_check,

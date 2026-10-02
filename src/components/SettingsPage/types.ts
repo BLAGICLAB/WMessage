@@ -11,6 +11,10 @@ export type ModelEntry = {
   model: string;
   /** 所属厂商名（U10 厂商中心）：老配置缺省 → 前端按协议名兜底分组 */
   vendor?: string;
+  /** U11：false = 聊天 🧠 下拉不显示；老配置缺省 = 启用 */
+  enabled?: boolean;
+  /** U11：上下文窗口（千 token），徽标显示「204.8K」样式；缺省不显示 */
+  contextK?: number;
 };
 
 /** 双协议下各自的模型列表：设置页协议切换时整体切换显示；
