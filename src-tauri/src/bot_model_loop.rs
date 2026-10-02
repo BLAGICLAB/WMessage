@@ -359,11 +359,36 @@ pub struct LlmHttp {
     /// Anthropic = /v1/messages + x-api-key + anthropic-version（转换在 bot_anthropic）
     pub provider: crate::bot::ApiProvider,
     /// max_tokens（仅 Anthropic 模式发送——Anthropic 必填；OpenAI 兼容模式不发，
-    /// 多数兼容网关不认识该字段）。装配时已 resolve_max_tokens 钳制过。
+    /// 多数兼容网关不认识该字段）。装配时已 resolve_max_tokens 钳制过；
+    /// 条目级覆盖（U13）也在此值里生效，thinking budget 夹紧用同一个值。
     pub max_tokens: u32,
     /// 推理强度线上参数（RE-1）：按模型族映射好的注入载荷
     /// （bot/reasoning::resolve），None = 不发任何推理字段。
     pub reasoning: crate::bot::reasoning::ReasoningWire,
+    /// 条目级采样参数（U13）：active 模型条目的 temperature/top_p 覆盖，
+    /// OpenAI 与 Anthropic 请求体都注入；None = 不写字段（用模型服务端默认）。
+    pub temperature: Option<f64>,
+    pub top_p: Option<f64>,
+    /// 条目级 system prompt（U13）：Some = 追加到消息栈末尾的额外 system 消息
+    ///（内部消息流保持 OpenAI 形状；Anthropic 分支转换时归并进顶层 system）。
+    pub system_prompt: Option<String>,
+}
+
+/// 条目级采样参数注入（U13）：temperature/top_p 有值才写请求体（有值才写 =
+/// 不打扰不认识这些字段或用服务端默认的模型）。OpenAI /chat/completions 与
+/// Anthropic /v1/messages 的顶层字段同名，一处实现两协议共用；
+/// 摘要（summarize_http）与 Planner（call_planner）也走这里。
+pub fn apply_inference_params(
+    body: &mut serde_json::Value,
+    temperature: Option<f64>,
+    top_p: Option<f64>,
+) {
+    if let Some(t) = temperature {
+        body["temperature"] = serde_json::json!(t);
+    }
+    if let Some(p) = top_p {
+        body["top_p"] = serde_json::json!(p);
+    }
 }
 
 /// run_model_loop_core 的同步副作用出口：
@@ -448,24 +473,37 @@ pub async fn run_model_loop(
     // B3-3：共享客户端（连接池复用）；总超时取消，流式路径逐 chunk idle 超时兜底
     let client = shared_llm_client().clone();
     let model_for_reasoning = cfg.model.clone();
+    // None/非法值 → Openai（旧行为零影响）
+    let provider = crate::bot::ApiProvider::from_cfg(cfg.api_provider.as_deref());
+    // 条目级推理参数（U13）：active 条目 > 全局 > 内置默认（解析见 schema::effective_inference；
+    // cfg 是对外视图 BotConfigView，拆参传入与 keyring::read_llm_key 同风格）
+    let inference = crate::bot::effective_inference(
+        cfg.api_provider.as_deref(),
+        cfg.max_tokens,
+        cfg.active_model_id.as_ref(),
+        cfg.models_by_provider.as_ref(),
+    );
     let http = LlmHttp {
         client,
         base_url: cfg.base_url,
         api_key,
         model: cfg.model,
-        // None/非法值 → Openai（旧行为零影响）
-        provider: crate::bot::ApiProvider::from_cfg(cfg.api_provider.as_deref()),
-        max_tokens: crate::bot::resolve_max_tokens(cfg.max_tokens),
-        // 推理强度：覆盖优先于后台默认；抽象档位按模型族映射到线上参数
+        provider,
+        max_tokens: inference.max_tokens,
+        temperature: inference.temperature,
+        top_p: inference.top_p,
+        system_prompt: inference.system_prompt,
+        // 推理强度：覆盖优先于后台默认；抽象档位按模型族映射到线上参数。
+        // budget < max_tokens 夹紧用的就是条目覆盖后的 max_tokens（U13）
         reasoning: crate::bot::reasoning::resolve(
-            crate::bot::ApiProvider::from_cfg(cfg.api_provider.as_deref()),
+            provider,
             &model_for_reasoning,
             crate::bot::reasoning::EffortLevel::from_cfg(
                 reasoning_override
                     .as_deref()
                     .or(cfg.reasoning_effort.as_deref()),
             ),
-            crate::bot::resolve_max_tokens(cfg.max_tokens),
+            inference.max_tokens,
         ),
     };
     // 会话隔离：流式事件（bot-chat-delta 等）只由交互实例广播；
@@ -644,6 +682,11 @@ where
     // [1, cap-1]；cap=1 时软警本就无意义（下一次调用即熔断），钳到 1 即可
     let soft_warn_at = (fuse_cap * 7 / 10).clamp(1, fuse_cap.saturating_sub(1).max(1));
     let mut msgs = msgs;
+    // 条目级 system prompt（U13）：追加到消息栈末尾——OpenAI 直接多一条 system
+    // 消息；Anthropic 分支 openai_msgs_to_anthropic 会把它归并进顶层 system 块。
+    if let Some(sp) = &http.system_prompt {
+        msgs.push(serde_json::json!({ "role": "system", "content": sp }));
+    }
     let emit = deps.emit;
     let audit = deps.audit;
     let audit_log = deps.audit_log;
@@ -760,6 +803,8 @@ where
                 }
             }
         };
+        // 条目级采样参数注入（U13）：temperature/top_p 有值才写（两协议顶层字段同名）
+        apply_inference_params(&mut body, http.temperature, http.top_p);
         // 推理强度注入（RE-1）：OpenAI 兼容分支直接加字段；
         // Anthropic 分支加 thinking 块（budget < max_tokens 约束已在 resolve 时夹紧）。
         match &http.reasoning {
@@ -1379,6 +1424,56 @@ where
 // ────────────────────────────────────────────────────────────────────
 // 测试：feed_think / parse_sse_chunk / TOOLS schema
 // ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod inference_param_tests {
+    use super::*;
+
+    #[test]
+    fn injects_sampling_params_only_when_present() {
+        // 两个都有 → 都写
+        let mut body = serde_json::json!({"model": "m"});
+        apply_inference_params(&mut body, Some(0.7), Some(0.9));
+        assert_eq!(body["temperature"], 0.7);
+        assert_eq!(body["top_p"], 0.9);
+        // 只有 temperature → top_p 字段不出现
+        let mut body = serde_json::json!({});
+        apply_inference_params(&mut body, Some(0.5), None);
+        assert_eq!(body["temperature"], 0.5);
+        assert!(body.get("top_p").is_none(), "无值不应写出 top_p 字段");
+        // 只有 top_p → temperature 字段不出现
+        let mut body = serde_json::json!({});
+        apply_inference_params(&mut body, None, Some(0.8));
+        assert!(
+            body.get("temperature").is_none(),
+            "无值不应写出 temperature 字段"
+        );
+        assert_eq!(body["top_p"], 0.8);
+        // 都无 → body 原样（不得出现空字段污染请求体）
+        let mut body = serde_json::json!({"model": "m"});
+        apply_inference_params(&mut body, None, None);
+        assert_eq!(body, serde_json::json!({"model": "m"}));
+    }
+
+    #[test]
+    fn anthropic_body_takes_sampling_after_build() {
+        // Anthropic /v1/messages 的 temperature/top_p 是与 OpenAI 同名的顶层字段：
+        // build_anthropic_body 之后注入即生效，max_tokens 等既有字段不受影响
+        let msgs = vec![serde_json::json!({"role": "user", "content": "hi"})];
+        let mut body = crate::bot_anthropic::build_anthropic_body(
+            "claude-sonnet-4-5",
+            &msgs,
+            &serde_json::json!([]),
+            8_192,
+            false,
+        )
+        .expect("msgs 合法，转换必须成功");
+        apply_inference_params(&mut body, Some(0.2), Some(1.0));
+        assert_eq!(body["temperature"], 0.2);
+        assert_eq!(body["top_p"], 1.0);
+        assert_eq!(body["max_tokens"], 8_192);
+    }
+}
 
 #[cfg(test)]
 mod think_tests {

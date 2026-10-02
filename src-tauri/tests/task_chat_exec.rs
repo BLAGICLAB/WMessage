@@ -95,6 +95,10 @@ fn core_http(server: &MockLlmServer) -> LlmHttp {
         max_tokens: DEFAULT_MAX_TOKENS,
         // RE-1：mock 测试不发推理字段（None = 不注入，既有断言不受影响）
         reasoning: wmessage_lib::bot::reasoning::ReasoningWire::None,
+        // 条目级采样参数 / system prompt（U13）：既有用例不发不追加
+        temperature: None,
+        top_p: None,
+        system_prompt: None,
     }
 }
 

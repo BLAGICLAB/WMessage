@@ -406,6 +406,44 @@ mod evolution_preserve_tests {
     }
 
     #[test]
+    fn prune_verified_vendors_kept_when_only_entry_params_change() {
+        // 可用性只看 key / URL / 协议：编辑条目级推理参数
+        //（temperature/top_p/max_tokens/system_prompt）不改变条目签名，
+        // verified_vendors 必须原样保留
+        use crate::bot::config::types::{ModelEntry, ModelsByProvider};
+        let entry = |vendor: &str, params: bool| ModelEntry {
+            id: "m1".into(),
+            label: "m".into(),
+            base_url: "https://a".into(),
+            model: "m".into(),
+            vendor: Some(vendor.into()),
+            enabled: true,
+            context_k: None,
+            capabilities: None,
+            temperature: params.then_some(0.7),
+            top_p: params.then_some(0.9),
+            max_tokens: params.then_some(16_384),
+            system_prompt: params.then(|| "用中文回复".to_string()),
+        };
+        let cfg_with = |entries: Vec<ModelEntry>| BotConfig {
+            models_by_provider: Some(ModelsByProvider {
+                openai: entries,
+                anthropic: vec![],
+            }),
+            ..Default::default()
+        };
+        let disk = cfg_with(vec![entry("DeepSeek", false)]);
+        let mut incoming = cfg_with(vec![entry("DeepSeek", true)]);
+        incoming.verified_vendors = vec!["DeepSeek".into()];
+        prune_verified_vendors(&mut incoming, &disk, None);
+        assert_eq!(
+            incoming.verified_vendors,
+            vec!["DeepSeek".to_string()],
+            "仅条目参数变化不应失效"
+        );
+    }
+
+    #[test]
     fn preserve_evolution_disk_value_is_authoritative() {
         // P0-EV1 回归：前端视图不含 evolution 块——盘上有则以盘上回填
         let mut incoming: BotConfig = serde_json::from_str("{}").unwrap();

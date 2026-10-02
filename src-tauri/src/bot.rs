@@ -62,6 +62,7 @@ pub use config::{
     __tauri_command_name_bot_set_active_model,
     __tauri_command_name_bot_set_config,
     // ── 公开函数（15 个普通 pub）──
+    active_model_entry,
     audit_log,
     audit_log_hook,
     bot_clear_api_key,
@@ -72,6 +73,7 @@ pub use config::{
     bot_set_config,
     check_len,
     config_path,
+    effective_inference,
     has_api_key,
     has_search_key,
     migrate_bot_config_schema,
@@ -90,6 +92,7 @@ pub use config::{
     ApiProvider,
     BotConfig,
     BotConfigView,
+    EffectiveInference,
     KeySlot,
     ModelEntry,
     ModelsByProvider,

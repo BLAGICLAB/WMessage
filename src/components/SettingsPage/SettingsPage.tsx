@@ -20,6 +20,7 @@ import {
   EyeOff,
   FolderOutput,
   GitBranch,
+  Info,
   MoreHorizontal,
   Plug,
   Plus,
@@ -218,18 +219,32 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
   const [metaSyncMsg, setMetaSyncMsg] = useState("");
   const [metaApplyBusy, setMetaApplyBusy] = useState(false);
   /** 预设/模型库共用的写入逻辑：同协议下替换同名厂商旧条目、首条启用+active、
-   *  其余 enabled:false；覆盖后立即落盘（skipReload 同 toggleTavily 模式） */
+   *  其余 enabled:false；覆盖后立即落盘（skipReload 同 toggleTavily 模式）。
+   *  「同名」判定走 normalizeVendorName（U13 收尾）：预设名与模型库 provider_name
+   *  的大小写/命名差异不再造成同厂商两条目并存；合并保留**既有厂商名**——
+   *  keyring vendor:{名} 条目与 verified_vendors 都按既有名登记，换成新名即丢 key。 */
   const applyVendorModels = async (
     name: string,
     protocol: "openai" | "anthropic",
     models: ModelEntry[],
   ) => {
     const list = config.modelsByProvider[protocol] ?? [];
-    // 厂商制语义：同协议下其他厂商条目保留，仅替换同名厂商旧条目（若有）
+    const norm = normalizeVendorName(name);
+    // 厂商制语义：同协议下其他厂商条目保留，仅替换同名（归一化后）厂商旧条目（若有）。
+    // 无 vendor 的老条目用 __legacy__ 哨兵而非 vendorNameOf 的「兼容」兜底名——
+    // 保证永不会被归一化匹配进任何真实厂商（哨兵名不可能出现在条目里）
     const kept = list.filter(
-      (m) => (m.vendor ?? `__legacy__${protocol}`) !== name,
+      (m) => normalizeVendorName(m.vendor ?? `__legacy__${protocol}`) !== norm,
     );
-    const flagged = models.map((m, i) => ({ ...m, enabled: i === 0 }));
+    const existingName =
+      list.find(
+        (m) => normalizeVendorName(m.vendor ?? `__legacy__${protocol}`) === norm,
+      )?.vendor ?? name;
+    const flagged = models.map((m, i) => ({
+      ...m,
+      vendor: existingName,
+      enabled: i === 0,
+    }));
     const next = {
       ...config,
       apiProvider: protocol,
@@ -246,7 +261,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     // skipReload：本地 state 已是合并后最新（loadConfig 会拿旧 mock/磁盘值覆盖刚点字段）
     await saveConfig(next, { skipReload: true });
     setShowProviderPicker(false);
-    setActiveVendor(name);
+    setActiveVendor(existingName);
   };
   /** 应用供应商预设（U9）：预填 baseUrl/模型列表，写入走共用 applyVendorModels */
   const applyProviderPreset = async (p: (typeof PROVIDER_PRESETS)[number]) => {
@@ -839,6 +854,13 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     });
     return [...map.values()].sort((a, b) => a.name.localeCompare(b.name));
   })();
+
+  // U13 收尾引导：配置里有带 vendor 的条目，但 verifiedVendors 为空——
+  // 可用性改造（U12）后无自动迁移，需逐厂商点一次插头（连接测试）恢复聊天下拉可见
+  const needVendorReVerify =
+    ((config.modelsByProvider.openai ?? []).some((m) => m.vendor) ||
+      (config.modelsByProvider.anthropic ?? []).some((m) => m.vendor)) &&
+    config.verifiedVendors.length === 0;
 
   const vendorOf = (name: string) =>
     vendorGroups.find((v) => v.name === name) ?? null;
@@ -1778,6 +1800,17 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
       <p className="text-xs text-[var(--t5)]">
         管理模型供应商，配置后可在挂件聊天时选择使用。
       </p>
+      {/* U13 收尾引导：有带 vendor 的条目但 verifiedVendors 为空（可用性状态无自动迁移） */}
+      {needVendorReVerify && (
+        <p
+          className="flex items-center gap-1.5 text-xs text-[var(--t3)]"
+          role="note"
+          aria-label="厂商可用性引导"
+        >
+          <Info size={13} className="shrink-0 text-[var(--brand)]" aria-hidden />
+          检测到已有厂商模型但均未通过连接测试：升级后需逐厂商点一次插头恢复可用。
+        </p>
+      )}
       <div className="nm-card p-5">
         {/* 大模型 API 配置（开关开启后显示） */}
         {botEnabled && (

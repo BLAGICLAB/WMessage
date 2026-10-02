@@ -1,6 +1,6 @@
 /// <reference types="node" />
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, fireEvent, within } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, within, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SettingsPage } from "./SettingsPage";
 import { ProviderLogo } from "./SettingsPage/ProviderLogo";
@@ -1579,6 +1579,143 @@ describe("SettingsPage", () => {
     expect(list[1]).not.toHaveProperty("maxTokens");
     expect(list[1]).not.toHaveProperty("systemPrompt");
     expect(arg.config.activeModelId.openai).toBe(list[0].id);
+  });
+
+  // ───────── 每模型推理参数接线（U13） ─────────
+
+  it("推理参数接线：编辑态填四参数 → 保存落盘 bot_set_config；重载后编辑态回显 + Anthropic 说明行", async () => {
+    const user = userEvent.setup();
+    let stored: Record<string, unknown> | null = null;
+    mocks.invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === "bot_get_enabled") return true;
+      if (cmd === "bot_get_config") return stored ?? deepseekVendorConfig;
+      if (cmd === "bot_set_config") {
+        stored = args!.config as Record<string, unknown>;
+        return null;
+      }
+      if (cmd === "bot_test_connection") return { ok: true, status: 200 };
+      if (cmd === "api_status") return { enabled: false, port: 4763, token: "" };
+      if (cmd === "profile_get")
+        return {
+          user: { name: "我", avatarDataUrl: null },
+          bot: { name: "机器人", avatarDataUrl: null },
+        };
+      if (cmd === "py_get_enabled") return false;
+      if (cmd === "skills_list") return [];
+      if (cmd === "migration_rules_load") return { version: 1, rules: [] };
+      if (cmd === "migration_status") return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_log_read") return "";
+      return null;
+    });
+    render(<SettingsPage {...defaultProps} />);
+    await openVendorPage(user, "DeepSeek");
+    // 铅笔进编辑态（非受控输入 + onBlur 提交）
+    await user.click(await screen.findByRole("button", { name: "编辑此模型" }));
+    const fill = async (label: string, value: string) => {
+      const el = screen.getByLabelText(label);
+      await user.type(el, value);
+      fireEvent.blur(el);
+    };
+    await fill("temperature", "0.5");
+    await fill("top_p", "0.9");
+    await fill("max_tokens", "16384");
+    await fill("system prompt", "用中文回复");
+    // 厂商页「保存配置」→ bot_set_config 落盘
+    await user.click(screen.getByRole("button", { name: "保存配置" }));
+    await waitFor(() => expect(stored).not.toBeNull());
+    const saved = (stored as unknown as {
+      modelsByProvider: { openai: Array<Record<string, unknown>> };
+    }).modelsByProvider.openai[0];
+    expect(saved).toMatchObject({
+      temperature: 0.5,
+      topP: 0.9,
+      maxTokens: 16384,
+      systemPrompt: "用中文回复",
+    });
+    // 重载回显：以「盘上」配置重新挂载，编辑态输入框带出已存值
+    cleanup();
+    render(<SettingsPage {...defaultProps} />);
+    await openVendorPage(user, "DeepSeek");
+    await user.click(await screen.findByRole("button", { name: "编辑此模型" }));
+    expect(screen.getByLabelText("temperature")).toHaveValue("0.5");
+    expect(screen.getByLabelText("top_p")).toHaveValue("0.9");
+    expect(screen.getByLabelText("max_tokens")).toHaveValue("16384");
+    expect(screen.getByLabelText("system prompt")).toHaveValue("用中文回复");
+    // 说明行：max_tokens 仅 Anthropic 格式生效（避免 OpenAI 格式用户填了没反应）
+    expect(screen.getByText(/max_tokens 仅 Anthropic 格式生效/)).toBeInTheDocument();
+  });
+
+  it("模型设置页首引导：有带 vendor 条目但 verifiedVendors 为空 → 显示升级引导；已验证或有条目无 vendor 不显示", async () => {
+    const user = userEvent.setup();
+    // 场景 1：带 vendor 条目 + verifiedVendors 空 → 引导出现
+    mockVendorConfig(deepseekVendorConfig);
+    render(<SettingsPage {...defaultProps} />);
+    await user.click(screen.getByRole("button", { name: "模型设置" }));
+    expect(
+      await screen.findByRole("note", { name: "厂商可用性引导" }),
+    ).toHaveTextContent(/升级后需逐厂商点一次插头恢复可用/);
+    cleanup();
+    // 场景 2：verifiedVendors 已有厂商 → 不再引导
+    mockVendorConfig({
+      ...deepseekVendorConfig,
+      verifiedVendors: ["DeepSeek"],
+    });
+    render(<SettingsPage {...defaultProps} />);
+    await user.click(screen.getByRole("button", { name: "模型设置" }));
+    expect(await screen.findByRole("button", { name: /DeepSeek/ })).toBeInTheDocument();
+    expect(screen.queryByRole("note", { name: "厂商可用性引导" })).toBeNull();
+    cleanup();
+    // 场景 3：条目无 vendor（老配置按协议名兜底分组）→ 不引导
+    mockVendorConfig({
+      modelsByProvider: {
+        openai: [
+          { id: "m1", label: "DeepSeek Chat", model: "deepseek-chat", baseUrl: "https://api.deepseek.com" },
+        ],
+        anthropic: [],
+      },
+      activeModelId: { openai: "m1", anthropic: null },
+      apiProvider: "openai",
+      hasApiKey: true,
+      bypassLlmOnPreStepHit: true,
+    });
+    render(<SettingsPage {...defaultProps} />);
+    await user.click(screen.getByRole("button", { name: "模型设置" }));
+    await user.click(await screen.findByRole("button", { name: "OpenAI 兼容" }));
+    expect(screen.queryByRole("note", { name: "厂商可用性引导" })).toBeNull();
+  });
+
+  it("模型库同名厂商合并：已存 DeepSeek 条目时点选 provider_name 大小写不同的同厂商 → 归一化查重替换，不并存两条目；厂商名保留既有（keyring 条目不动）", async () => {
+    const user = userEvent.setup();
+    mockVendorConfig(deepseekVendorConfig);
+    // 模型库同名厂商：provider_name 与既有 vendor 仅大小写不同（归一化后同名）
+    stubMetaInvoke(
+      [{ ...metaDeepSeek, provider_name: "deepseek" }],
+      { deepseek: metaOpenAIModels },
+    );
+    render(<SettingsPage {...defaultProps} />);
+    await user.click(screen.getByRole("button", { name: "模型设置" }));
+    await user.click(screen.getByRole("button", { name: "添加厂商" }));
+    await user.click(await screen.findByRole("button", { name: /deepseek/ }));
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith(
+        "bot_set_config",
+        expect.objectContaining({}),
+      );
+    });
+    const setCalls = mocks.invokeMock.mock.calls.filter(
+      (c) => c[0] === "bot_set_config",
+    );
+    const arg = setCalls[setCalls.length - 1]![1] as {
+      config: {
+        modelsByProvider: { openai: Array<Record<string, unknown> & { label: string }> };
+      };
+    };
+    const list = arg.config.modelsByProvider.openai;
+    // 合并而非并存：旧「DeepSeek Chat」条目被模型库列表替换，vendor 保留既有名
+    expect(list).toHaveLength(metaOpenAIModels.length);
+    expect(list.every((m) => m.vendor === "DeepSeek")).toBe(true);
+    expect(list.some((m) => m.label === "GPT-4o")).toBe(true);
+    expect(list.some((m) => m.label === "DeepSeek Chat")).toBe(false);
   });
 
   it("模型库不可用：meta_list_providers 抛错 → 回退 8 预设网格 + 提示文案，预设仍可点选", async () => {

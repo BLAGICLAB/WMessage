@@ -547,6 +547,10 @@ fn core_http(server: &MockLlmServer) -> LlmHttp {
         max_tokens: DEFAULT_MAX_TOKENS,
         // RE-1：mock 测试不发推理字段（None = 不注入，既有断言不受影响）
         reasoning: wmessage_lib::bot::reasoning::ReasoningWire::None,
+        // 条目级采样参数 / system prompt（U13）：既有用例不发不追加
+        temperature: None,
+        top_p: None,
+        system_prompt: None,
     }
 }
 
@@ -1288,6 +1292,9 @@ async fn core_anthropic_summarize_http_non_stream() {
         &[chat_msg("user", "聊聊适配方案")],
         ApiProvider::Anthropic,
         DEFAULT_MAX_TOKENS,
+        // 条目级采样参数（U13）：本用例不发
+        None,
+        None,
     )
     .await
     .expect("Anthropic 摘要应成功");
@@ -1306,6 +1313,202 @@ async fn core_anthropic_summarize_http_non_stream() {
         v.get("system").is_some(),
         "system prompt 应转顶层 system 字段"
     );
+}
+
+// ───────────── U13 条目级推理参数：请求体实参断言（mock_llm 真路径） ─────────────
+
+// OpenAI 分支：temperature/top_p 有值 → 落进 /chat/completions 请求体。
+#[tokio::test]
+async fn core_injects_openai_sampling_params_into_body() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::TextReply("好".into()));
+    let h = CoreHarness::new();
+    let mut http = core_http(&server);
+    http.temperature = Some(0.7);
+    http.top_p = Some(0.9);
+
+    run_model_loop_core(
+        &http,
+        user_msgs(),
+        5,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec_never,
+        noop_replan,
+    )
+    .await
+    .expect("纯文本回复应 Ok");
+    let bodies = server.request_bodies();
+    assert_eq!(bodies.len(), 1);
+    let v: serde_json::Value = serde_json::from_str(&bodies[0]).expect("请求体应为合法 JSON");
+    assert_eq!(
+        v["temperature"],
+        serde_json::json!(0.7),
+        "条目 temperature 应出现在请求体：{}",
+        bodies[0]
+    );
+    assert_eq!(v["top_p"], serde_json::json!(0.9));
+}
+
+// OpenAI 分支：条目参数全空 → 请求体不出现 temperature/top_p 字段（多数兼容
+// 网关不认识额外字段，保持请求体干净）。
+#[tokio::test]
+async fn core_omits_sampling_params_when_entry_absent() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::TextReply("好".into()));
+    let h = CoreHarness::new();
+
+    run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        5,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec_never,
+        noop_replan,
+    )
+    .await
+    .expect("纯文本回复应 Ok");
+    let v: serde_json::Value =
+        serde_json::from_str(&server.request_bodies()[0]).expect("请求体应为合法 JSON");
+    assert!(
+        v.get("temperature").is_none() && v.get("top_p").is_none(),
+        "无条目参数不得写出空字段：{v}"
+    );
+}
+
+// Anthropic 分支：temperature/top_p 注入 /v1/messages 请求体（顶层字段同名）。
+#[tokio::test]
+async fn core_injects_anthropic_sampling_params_into_body() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::AnthropicTextReply("好".into()));
+    let h = CoreHarness::new();
+    let mut http = core_http_anthropic(&server);
+    http.temperature = Some(0.3);
+    http.top_p = Some(0.8);
+
+    run_model_loop_core(
+        &http,
+        user_msgs(),
+        5,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec_never,
+        noop_replan,
+    )
+    .await
+    .expect("纯文本回复应 Ok");
+    let v: serde_json::Value =
+        serde_json::from_str(&server.request_bodies()[0]).expect("请求体应为合法 JSON");
+    assert_eq!(v["temperature"], serde_json::json!(0.3));
+    assert_eq!(v["top_p"], serde_json::json!(0.8));
+    assert_eq!(
+        v["max_tokens"],
+        serde_json::json!(DEFAULT_MAX_TOKENS),
+        "max_tokens 沿用装配值（Anthropic 必填字段不动）"
+    );
+}
+
+// 条目 system_prompt：追加到消息栈末尾——OpenAI 分支 messages 数组末条
+// 应是 role=system、content 为条目值（排在用户消息之后）。
+#[tokio::test]
+async fn core_appends_entry_system_prompt_at_msgs_tail_openai() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::TextReply("好".into()));
+    let h = CoreHarness::new();
+    let mut http = core_http(&server);
+    http.system_prompt = Some("总是用中文回复".into());
+
+    run_model_loop_core(
+        &http,
+        user_msgs(),
+        5,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec_never,
+        noop_replan,
+    )
+    .await
+    .expect("纯文本回复应 Ok");
+    let v: serde_json::Value =
+        serde_json::from_str(&server.request_bodies()[0]).expect("请求体应为合法 JSON");
+    let msgs = v["messages"].as_array().expect("messages 应为数组");
+    let last = msgs.last().expect("应有末条消息");
+    assert_eq!(last["role"], serde_json::json!("system"), "末条应为 system");
+    assert_eq!(last["content"], serde_json::json!("总是用中文回复"));
+    assert_eq!(
+        msgs[0]["role"],
+        serde_json::json!("user"),
+        "既有消息序不动（system 追加在尾）"
+    );
+}
+
+// 条目 system_prompt：Anthropic 分支归并进顶层 system 块数组，条目块在最后。
+#[tokio::test]
+async fn core_appends_entry_system_prompt_at_msgs_tail_anthropic() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::AnthropicTextReply("好".into()));
+    let h = CoreHarness::new();
+    let mut http = core_http_anthropic(&server);
+    http.system_prompt = Some("总是用中文回复".into());
+
+    run_model_loop_core(
+        &http,
+        user_msgs(),
+        5,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec_never,
+        noop_replan,
+    )
+    .await
+    .expect("纯文本回复应 Ok");
+    let v: serde_json::Value =
+        serde_json::from_str(&server.request_bodies()[0]).expect("请求体应为合法 JSON");
+    let blocks = v["system"].as_array().expect("system 应为块数组");
+    let last = blocks.last().expect("system 块不应为空");
+    assert_eq!(last["text"], serde_json::json!("总是用中文回复"));
+    assert!(
+        v["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|m| m["role"] != "system"),
+        "Anthropic 协议 system 不留在 messages 里"
+    );
+}
+
+// 摘要路径（summarize_http）：条目采样参数同样落进 OpenAI 请求体。
+#[tokio::test]
+async fn summarize_http_injects_sampling_params() {
+    let server = MockLlmServer::start();
+    // OpenAI 分支非流式：resp.json() 需要 JSON 单体响应（SSE 会解析失败）
+    server.push_behavior(MockBehavior::OpenAiJsonReply("摘要结果".into()));
+    let client = reqwest::Client::new();
+    let text = summarize_http(
+        &client,
+        &server.base_url,
+        "test-key",
+        "mock-model",
+        "总结",
+        &[chat_msg("user", "正文")],
+        ApiProvider::Openai,
+        DEFAULT_MAX_TOKENS,
+        Some(0.1),
+        Some(0.2),
+    )
+    .await
+    .expect("OpenAI 摘要应成功");
+    assert_eq!(text, "摘要结果");
+    let v: serde_json::Value =
+        serde_json::from_str(&server.request_bodies()[0]).expect("请求体应为合法 JSON");
+    assert_eq!(v["temperature"], serde_json::json!(0.1));
+    assert_eq!(v["top_p"], serde_json::json!(0.2));
 }
 
 use wmessage_lib::bot_chat::{summarize_http, ChatMsg};

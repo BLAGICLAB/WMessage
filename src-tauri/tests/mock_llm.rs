@@ -66,6 +66,8 @@ pub enum MockBehavior {
     AnthropicStreamError(String),
     /// 非流式 Anthropic message JSON 回复（Planner/摘要走 stream:false + resp.json()）
     AnthropicJsonReply(String),
+    /// 非流式 OpenAI chat.completion JSON 回复（摘要 OpenAI 分支走 stream:false + resp.json()）
+    OpenAiJsonReply(String),
     /// 文本块在前 + tool_use 块在后（2026-09-05 真实环境 400 回归基准）：
     /// text 块占 index 0、tool_use 块 index 1——Anthropic 块序号连文本一起数，
     /// 重映射防线（bot_anthropic::ToolSlotMapper）必须把它归位到工具槽位 0
@@ -270,6 +272,23 @@ fn build_http_response(behavior: &MockBehavior) -> String {
             let escaped = content.replace('\\', "\\\\").replace('"', "\\\"");
             let body = format!(
                 r#"{{"id":"msg_mock","type":"message","role":"assistant","model":"mock-model","content":[{{"type":"text","text":"{escaped}"}}],"stop_reason":"end_turn","usage":{{"input_tokens":10,"output_tokens":5}}}}"#
+            );
+            format!(
+                "HTTP/1.1 200 OK\r\n\
+                 Content-Type: application/json\r\n\
+                 Content-Length: {}\r\n\
+                 Connection: close\r\n\
+                 \r\n\
+                 {}",
+                body.len(),
+                body
+            )
+        }
+        MockBehavior::OpenAiJsonReply(content) => {
+            // 非流式 OpenAI chat.completion 单体响应（摘要 OpenAI 分支：stream:false + resp.json()）
+            let escaped = content.replace('\\', "\\\\").replace('"', "\\\"");
+            let body = format!(
+                r#"{{"id":"chatcmpl-mock","object":"chat.completion","model":"mock-model","choices":[{{"index":0,"message":{{"role":"assistant","content":"{escaped}"}},"finish_reason":"stop"}}],"usage":{{"prompt_tokens":10,"completion_tokens":5}}}}"#
             );
             format!(
                 "HTTP/1.1 200 OK\r\n\

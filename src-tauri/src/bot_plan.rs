@@ -125,7 +125,15 @@ async fn call_planner(
     // B3-3：共享客户端（连接池复用）；原 60s 总超时改为 per-request 保留
     let client = crate::bot_model_loop::shared_llm_client().clone();
     let provider = crate::bot::ApiProvider::from_cfg(cfg.api_provider.as_deref());
-    let (url, body) = match provider {
+    // 条目级推理参数（U13）：max_tokens 条目值覆盖全局（再钳制）；
+    // temperature/top_p 条目有值才写。Planner 不追加条目 system_prompt（system 是固定规划提示词）
+    let inference = crate::bot::effective_inference(
+        cfg.api_provider.as_deref(),
+        cfg.max_tokens,
+        cfg.active_model_id.as_ref(),
+        cfg.models_by_provider.as_ref(),
+    );
+    let (url, mut body) = match provider {
         crate::bot::ApiProvider::Openai => (
             format!("{}/chat/completions", cfg.base_url.trim_end_matches('/')),
             serde_json::json!({
@@ -146,7 +154,7 @@ async fn call_planner(
                 &cfg.model,
                 &msgs,
                 &serde_json::json!([]),
-                crate::bot::resolve_max_tokens(cfg.max_tokens),
+                inference.max_tokens,
                 false,
             )
             .map_err(|e| format!("Planner 消息转换失败：{e}"))?;
@@ -156,6 +164,12 @@ async fn call_planner(
             )
         }
     };
+    // 条目级采样参数注入（U13）：temperature/top_p 有值才写（两协议顶层字段同名）
+    crate::bot_model_loop::apply_inference_params(
+        &mut body,
+        inference.temperature,
+        inference.top_p,
+    );
     let req = client
         .post(&url)
         // per-request 总超时（共享客户端无默认超时）：Planner 单次请求预算不变

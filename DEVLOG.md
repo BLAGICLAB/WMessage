@@ -2,6 +2,44 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-03（周六）U13-MODELPARAMS：每模型推理参数接线 + 遗留收尾
+
+**需求**：把 U11 起随 ModelEntry 持久化的每模型推理参数（temperature / top_p /
+max_tokens / system_prompt）真正接进请求装配——U12 挂账「已持久化但未消费，
+填了没反应」；顺带收尾两项：设置页可用性引导、模型库厂商名归一化查重。
+
+**实现**：①**Rust**——`bot/config/schema.rs` 新增 `active_model_entry`（与
+`derive_legacy_fields_from_active` 同源解析：active id 命中优先 / 悬空或槽位
+未选回退第一条，拆参签名同 `active_vendor_of` 风格）+ `effective_inference`
+（条目值 > 全局值 > 内置默认；max_tokens 走 8192 兜底与 256..=200000 钳制）；
+`LlmHttp` 扩 temperature / top_p / system_prompt 三字段，`apply_inference_params`
+纯函数注入请求体（OpenAI /chat/completions 与 Anthropic /v1/messages 顶层
+字段同名，一处实现两协议共用）；三处消费点接线——聊天主循环薄壳、
+summarize_messages（摘要/compact/Reflection）、call_planner（规划器）；
+temperature/top_p 注入前按协议钳制（Anthropic 0..=1 / OpenAI 0..=2、top_p
+0..=1，超界上游直接 400）；OpenAI 格式维持不发 max_tokens；reasoning::resolve
+的 thinking budget 夹紧吃条目覆盖后的 max_tokens（条目 max_tokens=1500 时
+Anthropic high 档自动放弃注入）；条目 system_prompt 只追加聊天主循环消息栈
+末尾（摘要/Planner 保持各自固定任务提示词，不掺用户人设指令）。
+prune_verified_vendors 零改动：条目参数不进（协议,URL）签名，参数变更不失效
+verified_vendors（新增回归单测锁定）。②**前端**——ModelRow 编辑态加说明行
+「max_tokens 仅 Anthropic 格式生效」；模型设置页首在有带 vendor 条目但
+verifiedVendors 为空时显示「升级后需逐厂商点一次插头恢复可用」引导（无自动
+迁移）；applyVendorModels 用 normalizeVendorName 查重合并（保留**既有**厂商名
+——keyring vendor:{名} 条目与 verified_vendors 都按既有名登记，换名即丢 key），
+预设中文名与模型库英文名不再造成同厂商两条目并存。
+
+**ocr 复审**（16 条 4M/12L）：修 6——temperature/top_p 协议感知钳制（M，
+resolve_max_tokens 同策略）、EffectiveInference 补 Debug/Clone、system_prompt
+trim 先行省分配、__legacy__ 哨兵注释、enabled 契约锁定测试；「system 追加在
+消息栈尾跨轮持久」一条为 spec 明文语义拍板保留（登记 OpenAI 网关位置容忍度
+差异）；其余 low 登记或驳回（见 U13 spec 处置记录）。model-meta-service/main.py
+三条不适用（未入库的已废弃 Python 服务目录）。
+
+**验证**：test-all 全量绿（nextest 1332 / pytest 审计 / vitest 全量）；
+集成测试新增 6 条走 mock_llm 真路径断言请求体实参（temperature/top_p 落
+body、system_prompt 在消息序尾、无值时请求体干净）。
+
 ## 2026-10-02（周五）模型设置全面改造：厂商中心 + 内置模型库 + 厂商级 key + 可用性门禁
 
 **需求串**（多轮对话合批）：厂商详情页复刻参考截图（厂商头开关/⋯菜单/API 格式

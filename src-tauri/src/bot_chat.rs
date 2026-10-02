@@ -1006,6 +1006,7 @@ const SUMMARIZE_MAX_CHARS: usize = 200_000;
 /// pub：tests/llm_integration.rs 直用（与 bot::run_model_loop_core 同先例）。
 /// Anthropic 兼容模式：provider/max_tokens 注入，按协议分支
 /// URL/鉴权头/请求体/响应解析（Anthropic 侧转换走 bot_anthropic 纯函数）。
+/// temperature/top_p（U13 条目级覆盖）有值才写请求体，两协议顶层字段同名。
 pub async fn summarize_http(
     client: &reqwest::Client,
     base_url: &str,
@@ -1015,6 +1016,8 @@ pub async fn summarize_http(
     messages: &[ChatMsg],
     provider: crate::bot::ApiProvider,
     max_tokens: u32,
+    temperature: Option<f64>,
+    top_p: Option<f64>,
 ) -> CommandResult<String> {
     let mut msgs: Vec<serde_json::Value> = vec![serde_json::json!({
         "role": "system",
@@ -1033,7 +1036,7 @@ pub async fn summarize_http(
     for m in kept.iter().rev() {
         msgs.push(serde_json::json!({"role": m.role, "content": m.content}));
     }
-    let (url, body) = match provider {
+    let (url, mut body) = match provider {
         crate::bot::ApiProvider::Openai => (
             format!("{}/chat/completions", base_url.trim_end_matches('/')),
             serde_json::json!({
@@ -1054,6 +1057,8 @@ pub async fn summarize_http(
             (crate::bot_anthropic::anthropic_messages_url(base_url), body)
         }
     };
+    // 条目级采样参数注入（U13）：temperature/top_p 有值才写（两协议顶层字段同名）
+    crate::bot_model_loop::apply_inference_params(&mut body, temperature, top_p);
     let req = client
         .post(&url)
         // per-request 总超时（共享客户端无默认超时）：摘要单次请求预算不变
@@ -1120,6 +1125,14 @@ pub(crate) async fn summarize_messages(
     require_api_key(&api_key)?;
     // B3-3：共享客户端（连接池复用）；原 60s 总超时改为 per-request 保留
     let client = crate::bot_model_loop::shared_llm_client().clone();
+    // 条目级推理参数（U13）：max_tokens 条目值覆盖全局（再钳制）；temperature/top_p
+    // 条目有值才发。摘要不追加条目 system_prompt（这里的 system_prompt 是固定任务提示词）
+    let inference = crate::bot::effective_inference(
+        cfg.api_provider.as_deref(),
+        cfg.max_tokens,
+        cfg.active_model_id.as_ref(),
+        cfg.models_by_provider.as_ref(),
+    );
     summarize_http(
         &client,
         &cfg.base_url,
@@ -1130,7 +1143,9 @@ pub(crate) async fn summarize_messages(
         // Anthropic 兼容模式：协议与 max_tokens 从配置解析
         //（None/非法值 → Openai，老配置零影响）
         crate::bot::ApiProvider::from_cfg(cfg.api_provider.as_deref()),
-        crate::bot::resolve_max_tokens(cfg.max_tokens),
+        inference.max_tokens,
+        inference.temperature,
+        inference.top_p,
     )
     .await
 }

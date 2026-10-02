@@ -280,6 +280,12 @@ export function ModelRow({
           aria-label="system prompt"
           className="nm-inset w-full rounded-lg px-2 py-1 text-[11px] text-[var(--t3)] outline-none"
         />
+        {/* U13：max_tokens 只在 Anthropic 格式请求体发送（OpenAI 兼容网关多不认识该字段），
+            说明行避免用户填了没反应；temperature/top_p 两种格式都生效 */}
+        <p className="text-[10px] leading-4 text-[var(--t5)]">
+          temperature / top_p 留空跟随默认；max_tokens 仅 Anthropic 格式生效（留空 =
+          全局/8192 默认）
+        </p>
       </div>
     </div>
   );

@@ -94,7 +94,9 @@ src-tauri/src/
 │                                mcp_status、mcp_server_tools（写路径 CONFIG_WRITE_LOCK 全程持锁）
 ├── bot/config/          BotConfig/ApiProvider/PermMode/KeySlot（bot-config.json，key 走系统 keyring）；
 │   ├── bot/config/mod.rs  模块声明
-│   ├── bot/config/schema.rs        bot-config.json schemaVersion
+│   ├── bot/config/schema.rs        bot-config.json schemaVersion 迁移 + 双协议派生
+│   │                               （derive_legacy_fields_from_active / active_model_entry
+│   │                               / effective_inference 条目级推理参数解析）+ resolve_max_tokens
 │   ├── bot/config/types.rs  ApiProvider / PermMode / KeySlot
 │   ├── bot/config/io.rs    配置读写 + 默认值
 │   ├── keyring.rs        API key 走系统 keyring
