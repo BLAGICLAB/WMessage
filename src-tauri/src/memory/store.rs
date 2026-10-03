@@ -92,6 +92,18 @@ fn blob_to_embedding(b: &[u8]) -> Option<Vec<f32>> {
     )
 }
 
+/// source 契约归一（读取侧）：历史数据存在 'user' 脏值（三值契约
+/// user_stated/model_inferred/system 定型前写入），不归一则 importance=5 的
+/// 口述条目进不了 is_protected、会被容量淘汰误删。只改读取结果，不动盘上
+/// 历史数据；编辑保存时自然落契约值。
+fn normalize_source(s: String) -> String {
+    if s == "user" {
+        "user_stated".into()
+    } else {
+        s
+    }
+}
+
 /// 全表读取（≤500 条 × ~2KB 向量，微秒级；不引 sqlite-vec 扩展）
 pub fn load_all(conn: &rusqlite::Connection) -> Result<Vec<MemItem>, String> {
     let mut stmt = conn
@@ -114,7 +126,7 @@ pub fn load_all(conn: &rusqlite::Connection) -> Result<Vec<MemItem>, String> {
                         .collect()
                 },
                 importance: r.get(4)?,
-                source: r.get(5)?,
+                source: normalize_source(r.get(5)?),
                 created_at_ms: ts_to_ms(&r.get::<_, String>(6)?),
                 updated_at_ms: ts_to_ms(&r.get::<_, String>(7)?),
                 access_count: r.get(8)?,

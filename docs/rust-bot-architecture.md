@@ -158,6 +158,9 @@ src-tauri/src/
 ├── memory/embed.rs          bge-small-zh-v1.5 ONNX 本地嵌入（OnceCell 懒加载，失败全局降级关键词模式）
 ├── memory/rank.rs           混合打分 0.55 语义 + 0.20 关键词 + 0.15 重要度 + 0.10 新近度
 ├── memory/consolidate.rs    定时记忆整理：LLM 反思合并/裁决矛盾，10 分钟扫一次
+├── memory/panel.rs          设置页记忆库命令：mem_list（混合检索纯读不刷访问计数）/
+│                            mem_update（content 变更重算嵌入）/ mem_delete / mem_stats
+│                            （统计 + 嵌入引擎状态），MemItemView 不含向量本体
 └── memory/tests.rs + memory/consolidate/tests.rs   记忆单测（假向量，不依赖 ONNX）
 ```
 
@@ -492,6 +495,7 @@ flowchart TD
 - `memory/consolidate/tests.rs`
 - `memory/embed.rs`
 - `memory/mod.rs`
+- `memory/panel.rs`
 - `memory/rank.rs`
 - `memory/store.rs`
 - `memory/tests.rs`

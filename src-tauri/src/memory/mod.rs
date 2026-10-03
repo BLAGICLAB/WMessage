@@ -17,6 +17,7 @@
 
 pub mod consolidate;
 pub mod embed;
+pub mod panel;
 pub mod rank;
 pub mod store;
 

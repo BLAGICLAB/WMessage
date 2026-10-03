@@ -2,6 +2,37 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-03（周六）U14-MEMORYPANEL：设置页记忆库管理面板 + source 契约归一
+
+**需求**（记忆模块升级第一期，方向对比后拍板）：设置页「记忆」此前只有整理
+开关/频率/立即整理五样，机器人记了什么看不见、改不了、删不掉。本批把已有
+语义记忆引擎暴露成管理面板。
+
+**实现**：①**Rust**——新模块 `memory/panel.rs` 四命令：`mem_list`（无查询词
+按更新时间倒序全量，带查询词走混合检索；**纯读不刷 access_count**——访问
+强化只属于真实聊天注入，面板搜索不算「想起」）、`mem_update`（内容/重要度/
+类型可改，tags 与 source 不可改；内容变更重算嵌入，不变保留旧向量）、
+`mem_delete`（evo: 前缀自进化条目允许删、前端确认文案点名影响）、`mem_stats`
+（SQL 聚合统计 + 嵌入引擎状态）；`MemItemView` 不含向量本体只给 hasEmbedding
+标志（同 BotConfigView 不含 key 先例）；`embed.rs` 增 `engine_status` 查询口。
+`store.rs` `load_all` 读取侧归一历史 source 脏值 'user'→'user_stated'——
+否则 importance=5 的口述条目进不了淘汰保护。②**前端**——`MemoryPanel.tsx`
+挂进记忆 section：统计行（N/500 · 向量覆盖）、嵌入降级横幅、搜索（300ms
+防抖 + 竞态令牌）、类型筛选 chips、紧凑行（类型/来源徽标 + 重要度星标 +
+被想起次数）、行内编辑、删除确认（自进化条目文案点名）。
+
+**ocr 复审**（21 条 6M/12L/3 无级别）：修 8——搜索竞态令牌 + allSettled 解耦
+统计失败（M）、编辑/取消按钮 busy 门禁（M）、统计改 SQL 聚合不在写锁内
+反序列化 1MB 向量（M）、空内容预检、tags 可选链、reload 清行错误、测试
+时间戳走 ts_to_text；驳回 2（update 写回脏 source 不成立——existing 经
+load_all 已归一；unmount setState——React 18 起 no-op）；登记不修（降级模式
+NULL 向量为既有正确语义，横幅/徽标/统计三层可见；两次 load_all 500 条微秒级；
+删除无审计与 bot_clear_vendor_key 同口径）；model-meta-service 三条不适用
+（未入库废弃目录）。处置详见 U14 spec。
+
+**验证**：test-all 全量绿（nextest 1340 / pytest 审计 / vitest 387）；
+panel.rs 单测 8 条（内存库 + 假向量）、MemoryPanel vitest 7 条。
+
 ## 2026-10-03（周六）U13-MODELPARAMS：每模型推理参数接线 + 遗留收尾
 
 **需求**：把 U11 起随 ModelEntry 持久化的每模型推理参数（temperature / top_p /

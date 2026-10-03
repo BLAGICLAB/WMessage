@@ -52,6 +52,7 @@ import { UI_FONT_SIZE_OPTIONS, type ApiProvider, type UiFontSize } from "./const
 import { SkillsPanel } from "./SkillsPanel";
 import { normalizeVendorName } from "./providerLogoMap";
 import { McpPanel } from "./McpPanel";
+import { MemoryPanel } from "./MemoryPanel";
 import { EvolutionPanel } from "../EvolutionPanel";
 import { ProfileRow } from "./ProfileRow";
 import { ModelRow } from "./ModelRow";
@@ -1791,6 +1792,8 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
           )}
         </div>
       </div>
+      {/* 记忆库管理面板（U14）：列表/搜索/编辑/删除 + 统计与嵌入引擎状态 */}
+      <MemoryPanel />
       </section>
       )}
       {mountedSections.has("model") && (
