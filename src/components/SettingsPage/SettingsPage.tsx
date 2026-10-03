@@ -318,7 +318,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
       setMetaApplyBusy(false);
     }
   };
-  /** 「⟳ 更新模型库」：meta_sync_models_dev 回源 models.dev，完成后刷新服务商列表 */
+  /** 「更新模型库」：meta_sync_models_dev 回源 models.dev，完成后刷新服务商列表 */
   const syncMetaLibrary = async () => {
     if (metaSyncBusy) return;
     setMetaSyncBusy(true);
@@ -2038,7 +2038,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
                         onClick={syncMetaLibrary}
                         disabled={metaSyncBusy}
                       >
-                        {metaSyncBusy ? "更新中…" : "⟳ 更新模型库"}
+                        {metaSyncBusy ? "更新中…" : "更新模型库"}
                       </button>
                     </div>
                     {metaSyncMsg && (
@@ -2078,7 +2078,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
                         onClick={syncMetaLibrary}
                         disabled={metaSyncBusy}
                       >
-                        {metaSyncBusy ? "更新中…" : "⟳ 更新模型库"}
+                        {metaSyncBusy ? "更新中…" : "更新模型库"}
                       </button>
                     </div>
                     {metaSyncMsg && (

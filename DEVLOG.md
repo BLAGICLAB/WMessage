@@ -2,6 +2,21 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-04（周六）U20A-BTNUNIFY：功能按键风格统一——刷新键归 IconButton 家族 + 去 emoji 孤例
+
+**需求**（老板拍板）：自进化决策板「🔄 刷新」nm-btn 文字键太丑，对齐记忆库
+头部刷新键（IconButton 扁平图标形态）；顺带普查全仓功能按键风格统一性。
+
+**实现**：普查确认两大家族——`nm-btn`（浮雕文字键，47 处形态聚类零漂移）与
+`IconButton`/`.nm-icon-btn`（扁平图标键，lucide 13px + `--t5` hover `--t2`，
+MemoryPanel/McpPanel/WorkspacePage 同款）。归一三处孤例：自进化头部刷新键换
+`IconButton` + `RefreshCw`（aria-label/title 齐备）；EvolutionPanel 五处
+emoji 前缀（🪞✅⛔⏳↩️）去除归一纯文字 `nm-btn`；设置页「⟳ 更新模型库」
+去符号（两处）。ChatPanel 的 emoji 在提示消息文案非按钮，不在范围。
+
+**验证**：vitest 401/401 全绿（存量测试断言全走正则/testid 零改动）；
+test-fast.sh exit 0；普查表见 spec。
+
 ## 2026-10-04（周六）U20-EVOGOV：自进化治理归一——批准即生效 + 应用策略二档 + 决策板冒烟
 
 **需求**（自进化系统治理）：决策板 toggle ON 只登记 pending ChangeRecord、

@@ -7,7 +7,7 @@
 //    - 中部：suggestion + 证据 + 影响
 //    - 左侧：proposal_id + status badge
 //    - 底部：[启用] [停用] [Keep Shadow] 中文按钮（兼容旧 Promote/Reject）
-//    - 右下：🗑️ 删除 emoji
+//    - 右下：删除（图标+文字）
 // 3. 后端 toggle=true → 写 ChangeRecord + 人工批准执行器落库（U20 W1：
 //    policy 层提案 ON 即生效，幂等）；toggle=false → 移除 pending ChangeRecord
 // 4. 后端 delete → 仅删 pending ChangeRecord + proposals 行（老板拍板只允许删 pending）
@@ -17,9 +17,10 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Trash2 } from "lucide-react";
+import { RefreshCw, Trash2 } from "lucide-react";
 import { handleCommandError } from "../../lib/errorHandler";
 import { Toggle } from "../Toggle";
+import { IconButton } from "../../ui/IconButton";
 import { DeleteConfirmDialog } from "./DeleteConfirmDialog";
 import {
   type ApplyPolicy,
@@ -282,13 +283,16 @@ export function EvolutionPanel() {
         <h2 className="text-xl font-semibold text-[var(--t2)]">
           自进化决策面板
         </h2>
-        <button
-          className="nm-btn px-3 py-1.5 text-sm text-[var(--t3)]"
+        {/* 头部轻操作对齐全仓 IconButton 家族（同 MemoryPanel 头部刷新键） */}
+        <IconButton
+          aria-label="刷新提案与变更"
+          title="刷新提案与变更"
+          className="text-[var(--t5)] hover:text-[var(--t2)]"
           onClick={() => void refresh()}
           disabled={busy}
         >
-          🔄 刷新
-        </button>
+          <RefreshCw size={13} aria-hidden />
+        </IconButton>
       </div>
 
       {info && (
@@ -390,7 +394,7 @@ export function EvolutionPanel() {
                 disabled={busy || reflecting}
                 data-testid="btn-reflect-now"
               >
-                🪞 立即反思
+                立即反思
               </button>
               <p className="text-[11px] text-[var(--t5)]">
                 对记忆库跑一轮反思（合并 / 提炼 / 裁决），反思产出会出现在这里等你决策
@@ -571,7 +575,7 @@ function ProposalCard({
           title={isPending ? "启用（ConfirmMap 弹窗确认）" : "非 pooled 状态不可启用"}
           data-testid={`btn-enable-${proposal.proposal_id}`}
         >
-          ✅ 启用
+          启用
         </button>
         <button
           className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)] disabled:opacity-50"
@@ -580,7 +584,7 @@ function ProposalCard({
           title="停用（ConfirmMap 弹窗确认）"
           data-testid={`btn-disable-${proposal.proposal_id}`}
         >
-          ⛔ 停用
+          停用
         </button>
         <button
           className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)] disabled:opacity-50"
@@ -589,7 +593,7 @@ function ProposalCard({
           title={isPending ? "延长 shadow 期（重置 TTL）" : "非 pooled 状态不可 keep shadow"}
           data-testid={`btn-keep-shadow-${proposal.proposal_id}`}
         >
-          ⏳ 延长 shadow
+          延长 shadow
         </button>
         <div className="flex-1" />
         <button
@@ -637,7 +641,7 @@ function ChangeRow({
         disabled={busy}
         title="回滚：删 mem_item + status=RolledBack"
       >
-        ↩️ 回滚
+        回滚
       </button>
     </div>
   );
