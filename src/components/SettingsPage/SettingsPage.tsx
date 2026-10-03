@@ -89,6 +89,15 @@ const API_FORMAT_OPTIONS = [
   { value: "anthropic", label: "Anthropic Messages" },
 ] as const;
 
+/** U16 自动记忆抽取三档（档位唯一事实源：state 默认/校验/UI 映射都从这里派生） */
+const AUTO_EXTRACT_MODES = [
+  { value: "off", label: "关闭", aria: "自动记忆抽取：关闭" },
+  { value: "auto", label: "自动入库", aria: "自动记忆抽取：自动入库" },
+  { value: "confirm", label: "需确认", aria: "自动记忆抽取：需确认" },
+] as const;
+type AutoExtractMode = (typeof AUTO_EXTRACT_MODES)[number]["value"];
+const isAutoExtractMode = (v: unknown): v is AutoExtractMode =>
+  AUTO_EXTRACT_MODES.some((m) => m.value === v);
 /** 已知厂商的双协议 Base URL（key = 归一化厂商名，见 normalizeVendorName）：
  *  API 格式切换时 Base URL 自动跟随的数据源之一（预设/模型库只带单一协议端点，
  *  这里补「另一协议」的已知端点——目前只有 MiniMax 双协议都有官方端点） */
@@ -389,11 +398,16 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
       interval: "daily",
       lastRunAt: null as number | null,
     },
-    // U15 记忆可控开关：注入总闸 + 模型主动记忆门禁（后端缺字段 = 全开）
+    // U15 记忆可控开关：注入总闸 + 模型主动记忆门禁（后端缺字段 = 全开）；
+    // U16 自动记忆抽取档位（后端缺字段/非法值 = off）
     memoryControl: {
       injectionEnabled: true,
       autoWriteEnabled: true,
+      autoExtract: "off" as AutoExtractMode,
     },
+    // U17 记忆参数（手改 bot-config.json 生效，本页无 UI）：
+    // 原样回传保存，防止设置页整体替换写把手改值冲掉
+    memoryTuning: null as Record<string, number> | null,
   });
   // 「立即整理」按钮状态与结果提示（转圈 → 短暂 toast 式文案，同 configSaved 模式）
   const [consolidateBusy, setConsolidateBusy] = useState(false);
@@ -477,11 +491,14 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
           interval?: string;
           lastRunAt?: number | null;
         } | null;
-        // U15 记忆可控开关（老后端没返 → 全开）
+        // U15 记忆可控开关（老后端没返 → 全开）；U16 抽取档位（缺字段/非法值 → off）
         memoryControl?: {
           injectionEnabled?: boolean;
           autoWriteEnabled?: boolean;
+          autoExtract?: AutoExtractMode | string | null;
         } | null;
+        // U17 记忆参数（老后端没返 → null；原样回传）
+        memoryTuning?: Record<string, number> | null;
       }>(
         "bot_get_config"
       );
@@ -536,11 +553,16 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
             : "daily",
           lastRunAt: c.memoryConsolidation?.lastRunAt ?? null,
         },
-        // U15 记忆可控开关：缺字段/老后端 → 全开
+        // U15 记忆可控开关：缺字段/老后端 → 全开；U16 抽取档位缺字段/非法 → off
         memoryControl: {
           injectionEnabled: c.memoryControl?.injectionEnabled ?? true,
           autoWriteEnabled: c.memoryControl?.autoWriteEnabled ?? true,
+          autoExtract: isAutoExtractMode(c.memoryControl?.autoExtract)
+            ? c.memoryControl.autoExtract
+            : "off",
         },
+        // U17 记忆参数原样回传
+        memoryTuning: c.memoryTuning ?? null,
       });
     } catch (e) {
       handleCommandError(e, "bot_get_config", { silent: true });
@@ -699,6 +721,8 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
           memoryConsolidation: c.memoryConsolidation,
           // U15 记忆可控开关：原样透传
           memoryControl: c.memoryControl,
+          // U17 记忆参数：原样透传（手改 bot-config.json 的值不被整体替换写冲掉）
+          memoryTuning: c.memoryTuning,
         },
         // 厂商页 key 输入框非空且当前在厂商页 → 按厂商名写入凭据存储；
         // 留空保持该厂商已存 key 不变。apiKey 是旧全局槽位参数，前端已弃用（固定 null）
@@ -1225,9 +1249,13 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     await saveConfig(next);
   };
 
-  /** U15 记忆可控开关：点档即时落盘（同 setConsolidation 模式） */
+  /** U15/U16 记忆可控开关（含抽取档位）：点档即时落盘（同 setConsolidation 模式） */
   const setMemoryControl = async (
-    patch: Partial<{ injectionEnabled: boolean; autoWriteEnabled: boolean }>,
+    patch: Partial<{
+      injectionEnabled: boolean;
+      autoWriteEnabled: boolean;
+      autoExtract: AutoExtractMode;
+    }>,
   ) => {
     if (configBusy) return;
     const next = {
@@ -1865,6 +1893,37 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
             "关闭后模型调用「记住 / 记教训」工具只会收到关闭提示，不写入",
             "autoWriteEnabled",
           )}
+          {/* U16 自动记忆抽取三档：会话收尾低频触发；总闸（模型自动记忆）关闭时不跑，
+              三档随总闸禁用（radiogroup/radio 与厂商开关的 switch 同一可访问标准） */}
+          <div className="space-y-1.5">
+            <p className="text-[11px] text-[var(--t3)]">自动记忆抽取</p>
+            <p className="text-[11px] text-[var(--t5)]">
+              每次聊天结束后低频（≥30 分钟一次）用大模型从对话里提取值得长期记住的偏好与事实；
+              需「模型自动记忆」开启；「需确认」档会先存入下方待确认列表
+            </p>
+            <div className="flex gap-2" role="radiogroup" aria-label="自动记忆抽取">
+              {AUTO_EXTRACT_MODES.map(({ value, label, aria }) => {
+                const selected = config.memoryControl.autoExtract === value;
+                const disabled = configBusy || !config.memoryControl.autoWriteEnabled;
+                return (
+                  <button
+                    key={value}
+                    type="button"
+                    role="radio"
+                    aria-checked={selected}
+                    aria-label={aria}
+                    className={`flex-1 px-2 py-1.5 text-xs text-[var(--t3)] ${
+                      selected ? "nm-inset" : "nm-outset"
+                    } ${disabled ? "opacity-50" : ""}`}
+                    onClick={() => setMemoryControl({ autoExtract: value })}
+                    disabled={disabled}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
         </div>
       </div>
       {/* 记忆库管理面板（U14）：列表/搜索/编辑/删除 + 统计与嵌入引擎状态 */}

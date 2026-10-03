@@ -605,3 +605,90 @@ fn lesson_same_key_replay_still_merges() {
     assert_eq!(all[0].content, "lesson v2");
     assert_eq!(all[0].tags.first().map(String::as_str), Some("evo:rep1"));
 }
+
+// ───────────────────────── U17 参数化 ─────────────────────────
+
+use crate::memory::{MemoryControl, MemoryTuning};
+
+#[test]
+fn memory_tuning_clamps_all_fields() {
+    let t = MemoryTuning {
+        injection_budget_chars: 50,
+        top_n: 99,
+        recent_n: 0,
+        lesson_n: 100,
+        capacity: 5,
+        decay_days: 0.0,
+        dedup_merge_cosine: 7.0,
+        dedup_hint_cosine: 2.0,
+    }
+    .clamped();
+    assert_eq!(t.injection_budget_chars, 1_000);
+    assert_eq!(t.top_n, 10);
+    assert_eq!(t.recent_n, 0, "recent_n=0 合法（关闭该段）");
+    assert_eq!(t.lesson_n, 10);
+    assert_eq!(t.capacity, 100);
+    assert_eq!(t.decay_days, 30.0, "非正衰减回默认");
+    assert_eq!(t.dedup_merge_cosine, 1.0);
+    assert!(
+        t.dedup_hint_cosine < t.dedup_merge_cosine,
+        "hint 必须严格小于 merge"
+    );
+}
+
+#[test]
+fn memory_tuning_default_matches_pre_u17_constants() {
+    let d = MemoryTuning::default();
+    assert_eq!(d.injection_budget_chars, 4_000);
+    assert_eq!(d.top_n, 5);
+    assert_eq!(d.recent_n, 3);
+    assert_eq!(d.lesson_n, 3);
+    assert_eq!(d.capacity, 500);
+    assert_eq!(d.decay_days, 30.0);
+    assert_eq!(d.dedup_merge_cosine, 0.92);
+    assert_eq!(d.dedup_hint_cosine, 0.75);
+}
+
+#[test]
+fn store_params_capacity_override_evicts_at_custom_limit() {
+    let conn = mem_db();
+    let sp = store::StoreParams {
+        capacity: 1,
+        ..store::StoreParams::default()
+    };
+    let first = item("fact", "第一条");
+    let second = item("fact", "第二条");
+    store::insert_item_with(&conn, &first, None, 1_000, &sp).unwrap();
+    store::insert_item_with(&conn, &second, None, 2_000, &sp).unwrap();
+    let all = store::load_all(&conn).unwrap();
+    assert_eq!(all.len(), 1, "容量=1 时第二条应挤掉第一条");
+    assert_eq!(all[0].content, "第二条");
+}
+
+#[test]
+fn store_params_dedup_merge_threshold_override() {
+    let conn = mem_db();
+    // dedup_merge=1.0：只有完全同向才合并；默认 0.92 下 onehot(0) 与 tilted(0.99) 会合并
+    let sp = store::StoreParams {
+        dedup_merge: 1.0,
+        ..store::StoreParams::default()
+    };
+    let a = item("fact", "甲");
+    let b = item("fact", "乙");
+    store::insert_item_with(&conn, &a, Some(&onehot(0)), 1_000, &sp).unwrap();
+    store::insert_item_with(&conn, &b, Some(&tilted(0.99)), 2_000, &sp).unwrap();
+    assert_eq!(
+        store::load_all(&conn).unwrap().len(),
+        2,
+        "阈值抬到 1.0 后高相似不再合并"
+    );
+    // 对照：默认阈值下同两条合并为一条
+    let conn2 = mem_db();
+    store::insert_item(&conn2, &a, Some(&onehot(0)), 1_000).unwrap();
+    store::insert_item(&conn2, &b, Some(&tilted(0.99)), 2_000).unwrap();
+    assert_eq!(
+        store::load_all(&conn2).unwrap().len(),
+        1,
+        "默认阈值维持合并"
+    );
+}

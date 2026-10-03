@@ -2,6 +2,43 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-03（周六）第二期合批 U16-MEMAUTO + U17-MEMTUNE：自动记忆抽取 + 记忆参数化
+
+**需求**（记忆升级第二期，老板对三个拍板点采纳推荐案）：①自动事实抽取——
+交互式会话收尾低频触发，大模型从对话里提取值得长期记住的偏好/事实，记忆
+生态从「被动等模型调工具」走向「主动从对话中学习」；②记忆参数化——注入
+预算/条数/容量/衰减/去重阈值可调。
+
+**实现**：①**抽取**——`memory/extract.rs`：bot_chat 收尾 fire-and-forget
+（仅交互式聊天、/stop 中止不抽、每会话 30 分钟限频 check-and-set、U15
+autoWriteEnabled 总闸优先）；EXTRACT_PROMPT 宁缺勿滥（prompt 清单锁测试
+15→16）；`parse_extract` 容错解析（kind 白名单/importance 钳制/超长截断）；
+三档 `autoExtract`：off（默认）/ auto（直接入库，[推断] 徽标可见）/
+confirm（进 `mem_pending` 待确认队列，approve 三段式锁纪律入库，上限 50
+满丢最旧）。②**参数化**——`memoryTuning` 块（注入预算/topN/recentN/
+lessonN/容量/衰减/去重双阈值，读取侧统一钳制 + 解析失败 stderr 告警）；
+rank/store 的 `RankParams`/`StoreParams` `_with` 变体贯穿全部调用点
+（injection/format/recall/remember/save_summary/apply_reflection/
+consolidate/import/list），**旧签名全部保留委托默认值——默认行为零变化，
+存量测试零改动**；前端无 UI，原样回传保存防手改配置被冲。③**前端**——
+权限卡三档选择器（radiogroup/radio，总闸关时禁用）；MemoryPanel 待确认
+队列区块（单条/全批收下忽略，全批忽略带 confirm，队列限高滚动）。
+
+**ocr 复审**（两轮 20+42 条，合并轮 3H/15M/24L）：修 27——/stop 会话不抽、
+衰减参数 NaN 守卫（H）、approve 入库 Err 不删队列行可重试（数据丢失级）、
+Auto 档失败聚合审计、空抽取 Info 审计、confirm 事务化 + pending 批量
+删除、预嵌入/配置读挪出写锁、apply_ops 恢复旧签名委托契约、hybrid_search
+统一 RankParams 且召回路径真贯穿 decayDays（原变体无调用方静默失效）、
+tuning 解析失败 stderr 告警、三档 radio 语义 + 总闸联动禁用、全批忽略
+confirm、档位常量唯一事实源等；登记不修 6（锁内 open_db 全模块既有口径、
+String 档位防御性、热路径配置读同成本级、限频进程级、approve 可重入自愈、
+store_lock 命名）；model-meta-service 不适用。处置详见合批 spec。
+
+**验证**：test-all 全量绿（nextest 1361 / pytest 审计 / vitest 392）；
+extract 单测 12 条（解析矩阵/限频/档位/pending CRUD）、参数化 4 条（钳制/
+默认值回归/容量与去重阈值覆盖行为）、io 内核矩阵扩充（半字段/空对象/
+显式 null）、consolidate distill×capacity 用例。
+
 ## 2026-10-03（周六）U15-MEMORYCTRL：记忆可控开关 + 导出导入（记忆升级第一期收官）
 
 **需求**（方向对比拍板的 B 开关部分 + F）：①注入总闸与模型主动记忆门禁——

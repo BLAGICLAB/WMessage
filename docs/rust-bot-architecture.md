@@ -69,6 +69,7 @@ src-tauri/src/
 │   prompts/execute.rs      EXECUTE_SYSTEM_PROMPT（任务卡执行）/ STEPWISE_ADDENDUM（逐步执行附加段）
 │   prompts/planner.rs      PLANNER_PROMPT / REPLANNER_PROMPT（bot_plan 动态计划，只输出 JSON）
 │   prompts/consolidate.rs  CONSOLIDATE_PROMPT（记忆整理，只输出 JSON ops）
+│   prompts/extract.rs      EXTRACT_PROMPT（U16 会话收尾记忆抽取，只输出 JSON 数组）
 ├── bot_model_loop.rs (1711) LLM 流式调用+工具循环：run_model_loop(薄壳装配)/run_model_loop_core(可注入 mock)；
 │                        SSE 解析、思考块拆分；单轮 Function 熔断；LlmHttp / ModelLoopDeps 依赖注入
 │                        （TOOLS schema 已移出，见 bot/registry.rs）
@@ -163,6 +164,10 @@ src-tauri/src/
 │                            mem_update（content 变更重算嵌入）/ mem_delete / mem_stats
 │                            （统计 + 嵌入引擎状态），MemItemView 不含向量本体；
 │                            mem_export/mem_import（JSON 带向量，导入走语义去重只增不删）
+├── memory/extract.rs        U16 自动记忆抽取：bot_chat 收尾触发（fire-and-forget，仅交互
+│                            会话 + 30 分钟限频）→ LLM 抽取 → parse_extract 容错解析 →
+│                            auto 直接入库 / confirm 进 mem_pending 待确认队列
+│                            （mem_pending_list/approve/reject，approve 走语义去重入库）
 └── memory/tests.rs + memory/consolidate/tests.rs   记忆单测（假向量，不依赖 ONNX）
 ```
 
@@ -494,6 +499,7 @@ flowchart TD
 
 ### `memory/`
 - `memory/consolidate.rs`
+- `memory/extract.rs`
 - `memory/consolidate/tests.rs`
 - `memory/embed.rs`
 - `memory/mod.rs`

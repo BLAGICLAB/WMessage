@@ -36,6 +36,16 @@ export type MemStats = {
   embedError: string | null;
 };
 
+/** U16 待确认条目（confirm 档自动抽取的产物） */
+export type MemPendingView = {
+  id: number;
+  content: string;
+  kind: string;
+  importance: number;
+  sessionId: string;
+  createdAt: number;
+};
+
 /** kind → 中文徽标（与注入块的 kind 英文原样契约对齐） */
 const KIND_LABELS: Record<string, string> = {
   profile: "画像",
@@ -88,6 +98,9 @@ export function MemoryPanel() {
   const [rowError, setRowError] = useState("");
   /** 导出/导入结果提示（4s 自动清除，同 consolidateMsg 的 toast 模式） */
   const [ioMsg, setIoMsg] = useState("");
+  /** U16 待确认队列（confirm 档抽取产物） */
+  const [pending, setPending] = useState<MemPendingView[]>([]);
+  const [pendingBusy, setPendingBusy] = useState(false);
   const ioMsgTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** 设置提示并重置自动清除计时器（重设前清旧，卸载时清尾） */
   const showIoMsg = (msg: string) => {
@@ -186,6 +199,50 @@ export function MemoryPanel() {
   useEffect(() => {
     reload(debouncedQuery, kindFilter);
   }, [debouncedQuery, kindFilter, reload]);
+
+  /** U16 待确认队列：加载（静默失败 = 无队列，不打扰） */
+  const reloadPending = useCallback(async () => {
+    try {
+      const list = await invoke<MemPendingView[]>("mem_pending_list");
+      setPending(Array.isArray(list) ? list : []);
+    } catch (e) {
+      // 静默降级为空队列，但留 console 痕迹（命令消失/DB 锁死等回归可查）
+      console.warn("[MemoryPanel] mem_pending_list 失败，按空队列处理：", e);
+      setPending([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    reloadPending();
+  }, [reloadPending]);
+
+  /** 收下 / 忽略待确认条目（支持单条与全批）。
+   *  reject 只动队列（不进库）→ 不刷主列表；approve 才双刷 */
+  const actOnPending = useCallback(
+    async (ids: number[], action: "approve" | "reject") => {
+      if (ids.length === 0) return;
+      setPendingBusy(true);
+      try {
+        if (action === "approve") {
+          const r = await invoke<{ inserted: number; merged: number }>(
+            "mem_pending_approve",
+            { ids },
+          );
+          showIoMsg(`已收下 ${r.inserted + r.merged} 条记忆入库`);
+          await Promise.all([reloadPending(), reload(debouncedQuery, kindFilter)]);
+        } else {
+          await invoke("mem_pending_reject", { ids });
+          showIoMsg(`已忽略 ${ids.length} 条`);
+          await reloadPending();
+        }
+      } catch (e) {
+        showIoMsg(`操作失败：${formatCommandError(e)}`);
+      } finally {
+        setPendingBusy(false);
+      }
+    },
+    [pendingBusy, debouncedQuery, kindFilter, reload, reloadPending, showIoMsg],
+  );
 
   const startEdit = (m: MemItemView) => {
     setEditingId(m.id);
@@ -287,6 +344,80 @@ export function MemoryPanel() {
           </div>
         </div>
         {ioMsg && <p className="text-[11px] text-[var(--t4)]">{ioMsg}</p>}
+        {/* U16 待确认队列（confirm 档抽取的条目在此过目） */}
+        {pending.length > 0 && (
+          <div className="rounded-xl nm-inset px-3 py-2">
+            <div className="flex items-center gap-2">
+              <p
+                className="min-w-0 flex-1 text-[11px] font-medium text-[var(--t3)]"
+              >
+                待确认记忆（{pending.length}）——来自自动抽取，收下后进入记忆库
+              </p>
+              <button
+                type="button"
+                className="nm-btn shrink-0 px-2 py-1 text-[10px] text-[var(--t2)]"
+                onClick={() => actOnPending(pending.map((p) => p.id), "approve")}
+                disabled={pendingBusy}
+              >
+                全部收下
+              </button>
+              <button
+                type="button"
+                className="nm-btn shrink-0 px-2 py-1 text-[10px] text-[var(--t5)]"
+                onClick={() => {
+                  if (
+                    window.confirm(
+                      `忽略全部 ${pending.length} 条待确认记忆？忽略后不会入库，无法恢复。`,
+                    )
+                  ) {
+                    actOnPending(pending.map((p) => p.id), "reject");
+                  }
+                }}
+                disabled={pendingBusy}
+              >
+                全部忽略
+              </button>
+            </div>
+            <div className="mt-1.5 max-h-60 space-y-1 overflow-y-auto">
+              {pending.map((p) => (
+                <div key={p.id} className="flex items-center gap-2">
+                  <span className="nm-tag shrink-0 text-[10px]">
+                    {KIND_LABELS[p.kind] ?? p.kind}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate text-[11px] text-[var(--t2)]" title={p.content}>
+                    {p.content}
+                  </span>
+                  <span
+                    className="shrink-0 font-mono text-[10px] text-[var(--t5)]"
+                    title={`重要度 ${p.importance}/5`}
+                  >
+                    ★{p.importance}
+                  </span>
+                  <button
+                    type="button"
+                    aria-label={`收下：${p.content}`}
+                    title="收下入库"
+                    className="nm-btn shrink-0 px-2 py-0.5 text-[10px] text-[var(--t2)]"
+                    onClick={() => actOnPending([p.id], "approve")}
+                    disabled={pendingBusy}
+                  >
+                    收下
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`忽略：${p.content}`}
+                    title="忽略并丢弃"
+                    className="nm-btn shrink-0 px-2 py-0.5 text-[10px] text-[var(--t5)]"
+                    onClick={() => actOnPending([p.id], "reject")}
+                    disabled={pendingBusy}
+                  >
+                    忽略
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         {/* 嵌入引擎降级横幅：界面照常可用（关键词检索），但语义相似度缺位 */}
         {stats && !stats.embedOk && (
           <p

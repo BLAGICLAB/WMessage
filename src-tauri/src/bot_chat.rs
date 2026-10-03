@@ -933,6 +933,8 @@ pub async fn bot_chat(
     // B4-2：Failure 分支可达——模型循环 Err（LLM 5xx/流断/头超时等）也落 trace
     //（此前只在 Ok 收尾处 hook，失败轨迹全丢，trace 的 Failure 采样规则不可达）。
     // reason 用粗分类，不带原始错误消息（含路径/参数，不入 trace/audit 明细）
+    // U16：收尾自动记忆抽取要用的句柄（run_model_loop 按值消费 app，提前克隆）
+    let extract_app = app.clone();
     let (text, refs, loop_trace) = match crate::bot_model_loop::run_model_loop(
         app,
         msgs,
@@ -979,6 +981,16 @@ pub async fn bot_chat(
         .with_turn_count(loop_trace.turn_count)
         .with_tool_calls(loop_trace.tool_calls),
     );
+    // U16 自动记忆抽取（fire-and-forget）：交互式会话收尾触发，抽取失败静默
+    // 降级不冒泡；非交互（任务执行/定时）、/stop 中止的会话、非 off 档的判定
+    // 在入口内完成。session_id 此后不再使用，按值转移。
+    if !aborted {
+        crate::memory::extract::maybe_extract_from_session(
+            extract_app,
+            session_id,
+            stop.is_interactive(),
+        );
+    }
     Ok(BotChatResult {
         text,
         task_refs: refs,

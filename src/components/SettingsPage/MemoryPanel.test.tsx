@@ -2,9 +2,14 @@
 // 编辑保存 / 删除确认（含自进化条目文案）/ 取消删除。
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, act } from "@testing-library/react";
+import { render, screen, act, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryPanel, type MemItemView, type MemStats } from "./MemoryPanel";
+import {
+  MemoryPanel,
+  type MemItemView,
+  type MemStats,
+  type MemPendingView,
+} from "./MemoryPanel";
 
 const mocks = vi.hoisted(() => ({
   invokeMock: vi.fn(),
@@ -28,7 +33,6 @@ beforeEach(() => {
   mocks.openMock.mockImplementation(async () => null);
   window.confirm = vi.fn(() => true);
 });
-
 async function flush() {
   await act(async () => {});
 }
@@ -264,5 +268,81 @@ describe("MemoryPanel", () => {
     await screen.findByText("喜欢简洁的回复风格");
     await user.click(screen.getByRole("button", { name: "导入记忆" }));
     expect(await screen.findByText(/导入失败：导入文件解析失败/)).toBeInTheDocument();
+  });
+
+  // ───────── U16 待确认队列（confirm 档自动抽取） ─────────
+
+  function samplePending(over: Partial<MemPendingView> = {}): MemPendingView {
+    return {
+      id: 1,
+      content: "用户在做后端开发，偏好 Rust",
+      kind: "profile",
+      importance: 3,
+      sessionId: "s1",
+      createdAt: 1_760_000_000_000,
+      ...over,
+    };
+  }
+
+  it("待确认队列：非空渲染条目与操作按钮；空队列不显示区块", async () => {
+    stubData();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "mem_list") return [sampleItem()];
+      if (cmd === "mem_stats") return sampleStats();
+      if (cmd === "mem_pending_list")
+        return [samplePending(), samplePending({ id: 2, content: "每周三固定复盘", kind: "fact" })];
+      return null;
+    });
+    render(<MemoryPanel />);
+    expect(await screen.findByText(/待确认记忆（2）/)).toBeInTheDocument();
+    expect(screen.getByText("用户在做后端开发，偏好 Rust")).toBeInTheDocument();
+    // 空队列：mem_pending_list 返回空 → 区块不渲染
+    cleanup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "mem_list") return [sampleItem()];
+      if (cmd === "mem_stats") return sampleStats();
+      if (cmd === "mem_pending_list") return [];
+      return null;
+    });
+    render(<MemoryPanel />);
+    await screen.findByText("喜欢简洁的回复风格");
+    expect(screen.queryByText(/待确认记忆/)).toBeNull();
+  });
+
+  it("单条收下：mem_pending_approve 带 [id] 调用 + 显示入库提示 + 刷新列表", async () => {
+    const user = userEvent.setup();
+    stubData();
+    mocks.invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === "mem_list") return [sampleItem()];
+      if (cmd === "mem_stats") return sampleStats();
+      if (cmd === "mem_pending_list")
+        return args?.ids ? [] : [samplePending()];
+      if (cmd === "mem_pending_approve") return { inserted: 1, merged: 0, skipped: 0 };
+      return null;
+    });
+    render(<MemoryPanel />);
+    await screen.findByText(/待确认记忆（1）/);
+    await user.click(screen.getByRole("button", { name: /收下：用户在做后端开发/ }));
+    expect(await screen.findByText("已收下 1 条记忆入库")).toBeInTheDocument();
+    const call = mocks.invokeMock.mock.calls.find((c) => c[0] === "mem_pending_approve");
+    expect(call?.[1]).toEqual({ ids: [1] });
+  });
+
+  it("全部忽略：mem_pending_reject 带全部 id 调用", async () => {
+    const user = userEvent.setup();
+    stubData();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "mem_list") return [sampleItem()];
+      if (cmd === "mem_stats") return sampleStats();
+      if (cmd === "mem_pending_list")
+        return [samplePending(), samplePending({ id: 2, content: "每周三固定复盘", kind: "fact" })];
+      return null;
+    });
+    render(<MemoryPanel />);
+    await screen.findByText(/待确认记忆（2）/);
+    await user.click(screen.getByRole("button", { name: "全部忽略" }));
+    await flush();
+    const call = mocks.invokeMock.mock.calls.find((c) => c[0] === "mem_pending_reject");
+    expect(call?.[1]).toEqual({ ids: [1, 2] });
   });
 });

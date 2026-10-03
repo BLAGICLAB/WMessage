@@ -382,3 +382,40 @@ fn consolidation_config_serde_roundtrip_and_defaults() {
     let back: ConsolidationConfig = serde_json::from_str(&json).unwrap();
     assert_eq!(back, cc);
 }
+
+#[test]
+fn apply_ops_distill_respects_store_params_capacity() {
+    // U17：distill 走 insert_item_with——容量=1 时新 distill 条目会挤掉库中既有条目
+    let mut conn = mem_db();
+    let sp = store::StoreParams {
+        capacity: 1,
+        ..store::StoreParams::default()
+    };
+    // 预置一条占位记忆（distill 防幻觉守卫要求 ids 引用真实条目）
+    let seed = store::insert_item_with(
+        &conn,
+        &NewItem {
+            kind: "fact".into(),
+            content: "占位条目".into(),
+            tags: vec![],
+            importance: 1,
+            source: "system".into(),
+        },
+        None,
+        100,
+        &sp,
+    )
+    .unwrap();
+    let seed_id = match seed.0 {
+        store::InsertOutcome::Inserted(m) => m.id,
+        other => panic!("应直接插入：{other:?}"),
+    };
+    let ops = parse_ops(&format!(
+        r#"{{"ops":[{{"action":"distill","ids":["{seed_id}"],"content":"提炼规律"}}]}}"#
+    ));
+    let report = apply_ops_with(&mut conn, &ops, &fake_embs(&ops), 200, &sp).unwrap();
+    assert_eq!(report.distilled, 1);
+    let all = store::load_all(&conn).unwrap();
+    assert_eq!(all.len(), 1, "容量=1：distill 条目挤掉占位条目");
+    assert_eq!(all[0].content, "提炼规律");
+}

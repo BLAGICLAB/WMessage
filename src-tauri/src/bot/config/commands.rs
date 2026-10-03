@@ -112,6 +112,7 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
         ui_font_size: cfg.ui_font_size,
         memory_consolidation: cfg.memory_consolidation.unwrap_or_default(),
         memory_control: cfg.memory_control,
+        memory_tuning: cfg.memory_tuning,
         mcp_servers: cfg.mcp_servers.unwrap_or_default(),
         disabled_vendors: cfg.disabled_vendors,
         vendor_keys,

@@ -38,6 +38,7 @@ pub mod types;
 // bot.rs 的 `pub use config::{...}` 块需要这些符号在 crate::bot::config::* 路径可见。
 // 子模块内符号分别 re-export 到此，供 facade 一一加载，保持外部路径 crate::bot::X 不变。
 
+pub use crate::memory::MemoryTuning;
 pub use audit::{audit_log, audit_log_hook, bot_log_read};
 pub use commands::{
     apply_active_model_switch, bot_clear_api_key, bot_get_config, bot_set_active_model,
@@ -45,7 +46,7 @@ pub use commands::{
 };
 pub use io::{
     config_path, migrate_legacy_key, migrate_search_keys, read_bypass_llm_switch,
-    read_memory_control,
+    read_memory_control, read_memory_tuning,
 };
 pub use keyring::{
     has_api_key, has_search_key, has_vendor_key, read_api_key, read_llm_key, read_search_key,
@@ -88,7 +89,7 @@ mod tests {
     use crate::bot::config::io::{
         add_allowed_dir, base_url_is_safe, load_config, migrate_legacy_key,
         migrate_search_key_slot, read_bypass_llm_switch_at, read_memory_control_at,
-        update_config_file, write_bot_config_file,
+        read_memory_tuning_at, update_config_file, write_bot_config_file,
     };
     use crate::bot::config::keyring::{
         backend_for, classify_get_password, classify_has_key, delete_api_key_at, has_api_key,
@@ -522,6 +523,7 @@ mod tests {
             Some(MemoryControl {
                 injection_enabled: false,
                 auto_write_enabled: true,
+                auto_extract: "off".into(),
             })
         );
         // 半字段 → serde default 补全缺的字段（全开）
@@ -531,6 +533,7 @@ mod tests {
             Some(MemoryControl {
                 injection_enabled: false,
                 auto_write_enabled: true,
+                auto_extract: "off".into(),
             })
         );
         // 空对象 → 全开；显式 null → None（= 无控制）
@@ -541,6 +544,31 @@ mod tests {
         // JSON 损坏 → None（门禁不 panic）
         std::fs::write(&p, "{not json").unwrap();
         assert_eq!(read_memory_control_at(&p), None, "损坏配置应全开而非 panic");
+    }
+
+    /// U17 记忆参数读取：缺字段/缺块/损坏 → 默认；超界值 → 钳制。
+    #[test]
+    fn read_memory_tuning_defaults_and_clamps() {
+        use crate::memory::MemoryTuning;
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("bot-config.json");
+        // 无文件 / 缺块 / 损坏 → 默认
+        assert_eq!(read_memory_tuning_at(&p), MemoryTuning::default());
+        std::fs::write(&p, r#"{"baseUrl":"https://api.example.com/v1"}"#).unwrap();
+        assert_eq!(read_memory_tuning_at(&p), MemoryTuning::default());
+        std::fs::write(&p, "{not json").unwrap();
+        assert_eq!(read_memory_tuning_at(&p), MemoryTuning::default());
+        // 部分字段 → 缺的补默认；超界 → 钳制
+        std::fs::write(
+            &p,
+            r#"{"memoryTuning":{"topN":99,"capacity":5,"dedupMergeCosine":7}}"#,
+        )
+        .unwrap();
+        let t = read_memory_tuning_at(&p);
+        assert_eq!(t.top_n, 10);
+        assert_eq!(t.capacity, 100);
+        assert_eq!(t.dedup_merge_cosine, 1.0);
+        assert_eq!(t.recent_n, 3, "未写的字段补默认");
     }
 
     // ────────── keyring 错误分类纯函数单测 ──────────

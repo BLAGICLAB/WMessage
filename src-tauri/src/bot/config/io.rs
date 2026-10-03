@@ -149,6 +149,30 @@ pub(crate) fn read_memory_control_at(path: &Path) -> Option<crate::memory::Memor
     }
 }
 
+/// 记忆参数读取（U17）：文件缺失 / 读失败 / 解析失败 / 缺字段 / 超界值 →
+/// 默认或钳制（下游只见合法值）。解析失败时 stderr 告警——与
+/// read_memory_control_at 对称（手改配置改坏了要可诊断）。
+pub fn read_memory_tuning<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> crate::memory::MemoryTuning {
+    read_memory_tuning_at(&config_path(app))
+}
+
+/// 可测内核（纯路径参数）：文件缺失/读失败/JSON 损坏/缺字段 → 默认；
+/// 超界值 → 钳制；解析失败 → stderr 一行告警 + 默认。
+pub(crate) fn read_memory_tuning_at(path: &Path) -> crate::memory::MemoryTuning {
+    let Some(raw) = std::fs::read_to_string(path).ok() else {
+        return crate::memory::MemoryTuning::default();
+    };
+    match serde_json::from_str::<BotConfig>(&raw) {
+        Ok(cfg) => cfg.memory_tuning.unwrap_or_default().clamped(),
+        Err(e) => {
+            eprintln!("[memory] bot-config.json 解析失败，记忆参数按默认放行：{e}");
+            crate::memory::MemoryTuning::default()
+        }
+    }
+}
+
 /// 可测内核（纯路径参数）：文件缺失 / 读失败 / JSON 损坏 / 缺字段 → true。
 /// 只有显式 `bypassLlmOnPreStepHit: false` 才关掉 bypass——老配置零迁移语义，
 /// 也是 F-1 拍板的默认行为（默认走 bypass，避免命中 Skill 后还要多烧一次外层 LLM）。

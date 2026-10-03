@@ -91,6 +91,7 @@ pub(crate) fn list_core(
     query_emb: Option<&[f32]>,
     kind: Option<&str>,
     now_ms: i64,
+    decay_days: f64,
 ) -> Result<Vec<MemItemView>, String> {
     store::ensure_table(conn)?;
     let items = store::load_all(conn)?;
@@ -101,7 +102,17 @@ pub(crate) fn list_core(
         _ => items,
     };
     let list: Vec<MemItem> = match query.filter(|q| !q.trim().is_empty()) {
-        Some(q) => rank::hybrid_search(&filtered, q, query_emb, now_ms, filtered.len().max(1)),
+        Some(q) => rank::hybrid_search_with(
+            &filtered,
+            q,
+            query_emb,
+            now_ms,
+            &rank::RankParams {
+                top_n: filtered.len().max(1),
+                decay_days,
+                ..rank::RankParams::default()
+            },
+        ),
         None => {
             let mut v = filtered;
             v.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
@@ -168,10 +179,9 @@ pub(crate) fn delete_core(conn: &rusqlite::Connection, id: &str) -> Result<bool,
 /// 不存在「有 blob 但解析失败」的行。
 pub(crate) fn stats_core(conn: &rusqlite::Connection) -> Result<MemStats, String> {
     store::ensure_table(conn)?;
-    let mut stats = MemStats {
-        capacity: store::MAX_MEM_ITEMS,
-        ..Default::default()
-    };
+    // capacity 由命令层按 memoryTuning.capacity 覆盖（此处不填，避免误导）
+    let mut stats = MemStats::default();
+
     stats.total = conn
         .query_row("SELECT COUNT(*) FROM mem_items", [], |r| r.get(0))
         .map_err(|e| e.to_string())?;
@@ -203,13 +213,8 @@ pub(crate) fn stats_core(conn: &rusqlite::Connection) -> Result<MemStats, String
 
 // ───────────────────────── tauri 命令 ─────────────────────────
 
-/// 写闸获取（DB_WRITE_LOCK 是 Mutex<()> 写入闸，连接在闸内现开——同 memory/mod.rs 口径）
-fn lock_db() -> std::sync::MutexGuard<'static, ()> {
-    crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
-        eprintln!("[mutex_poisoned] memory::panel DB_WRITE_LOCK: {e:?}");
-        e.into_inner()
-    })
-}
+/// 写闸获取：收敛到 memory::store_lock（毒锁日志前缀统一，排障不分裂）
+use super::store_lock as lock_db;
 
 /// 列表 + 可选混合检索（面板搜索）。纯读：不刷新 access_count。
 #[tauri::command]
@@ -224,7 +229,8 @@ pub async fn mem_list(
         let emb = q.and_then(|s| embed::embed_text(s));
         let _g = lock_db();
         let conn = crate::db::open_db(&app).map_err(|e| e.to_string())?;
-        list_core(&conn, q, emb.as_deref(), kind.as_deref(), now_ms())
+        let decay = crate::bot::read_memory_tuning(&app).decay_days;
+        list_core(&conn, q, emb.as_deref(), kind.as_deref(), now_ms(), decay)
     })
     .await;
     r.map_err(|e| CommandError::from(format!("记忆列表线程 join 失败：{e}")))?
@@ -407,6 +413,7 @@ pub(crate) fn import_items(
     conn: &rusqlite::Connection,
     prepared: &[(MemExportItem, Option<Vec<f32>>)],
     now_ms: i64,
+    sp: &store::StoreParams,
 ) -> Result<MemImportReport, String> {
     store::ensure_table(conn)?;
     let mut report = MemImportReport::default();
@@ -418,7 +425,7 @@ pub(crate) fn import_items(
             importance: item.importance,
             source: item.source.clone(),
         };
-        match store::insert_item(conn, &draft, emb.as_deref(), now_ms) {
+        match store::insert_item_with(conn, &draft, emb.as_deref(), now_ms, sp) {
             Ok((store::InsertOutcome::Inserted(_), _)) => report.inserted += 1,
             Ok((store::InsertOutcome::Merged { .. }, _)) => report.merged += 1,
             Ok((store::InsertOutcome::RejectedFull(_), _)) => report.skipped += 1,
@@ -443,7 +450,7 @@ pub(crate) fn import_core(
 ) -> Result<MemImportReport, String> {
     let file = parse_import(json)?;
     let (prepared, skipped) = prepare_import_items(&file.items, reembed);
-    let mut report = import_items(conn, &prepared, now_ms)?;
+    let mut report = import_items(conn, &prepared, now_ms, &store::StoreParams::default())?;
     report.skipped += skipped;
     Ok(report)
 }
@@ -457,6 +464,8 @@ pub async fn mem_stats(app: AppHandle) -> CommandResult<MemStats> {
             let conn = crate::db::open_db(&app).map_err(|e| e.to_string())?;
             stats_core(&conn)?
         };
+        // U17：容量显示跟随 memoryTuning.capacity
+        stats.capacity = crate::bot::read_memory_tuning(&app).capacity;
         match embed::engine_status() {
             Ok(()) => stats.embed_ok = true,
             Err(e) => stats.embed_error = Some(e),
@@ -515,9 +524,10 @@ pub async fn mem_import(app: AppHandle, path: String) -> CommandResult<MemImport
         let json = std::fs::read_to_string(&path).map_err(|e| format!("读取导入文件失败：{e}"))?;
         let file = parse_import(&json)?;
         let (prepared, skipped) = prepare_import_items(&file.items, &|t| embed::embed_text(t));
+        let sp = store::StoreParams::of(&crate::bot::read_memory_tuning(&app));
         let _g = lock_db();
         let conn = crate::db::open_db(&app).map_err(|e| e.to_string())?;
-        let mut report = import_items(&conn, &prepared, now_ms())?;
+        let mut report = import_items(&conn, &prepared, now_ms(), &sp)?;
         report.skipped += skipped;
         Ok(report)
     })
@@ -576,7 +586,7 @@ mod tests {
             None,
             2_000,
         );
-        let views = list_core(&conn, None, None, None, 3_000).unwrap();
+        let views = list_core(&conn, None, None, None, 3_000, 30.0).unwrap();
         assert_eq!(views.len(), 2);
         let va = views.iter().find(|v| v.id == a).unwrap();
         let vb = views.iter().find(|v| v.id == b).unwrap();
@@ -606,13 +616,13 @@ mod tests {
             None,
             2_000,
         );
-        let all = list_core(&conn, None, None, None, 3_000).unwrap();
+        let all = list_core(&conn, None, None, None, 3_000, 30.0).unwrap();
         assert_eq!(all.len(), 2);
         assert_eq!(all[0].content, "新条目", "按 updated_at 倒序");
-        let prefs = list_core(&conn, None, None, Some("preference"), 3_000).unwrap();
+        let prefs = list_core(&conn, None, None, Some("preference"), 3_000, 30.0).unwrap();
         assert_eq!(prefs.len(), 1);
         assert_eq!(prefs[0].content, "新条目");
-        assert!(list_core(&conn, None, None, Some("lesson"), 3_000)
+        assert!(list_core(&conn, None, None, Some("lesson"), 3_000, 30.0)
             .unwrap()
             .is_empty());
     }
@@ -634,7 +644,8 @@ mod tests {
             2_000,
         );
         // 查询词与两条内容都无 bigram 重合，纯语义命中
-        let views = list_core(&conn, Some("西北方向"), Some(&onehot(0)), None, 3_000).unwrap();
+        let views =
+            list_core(&conn, Some("西北方向"), Some(&onehot(0)), None, 3_000, 30.0).unwrap();
         assert_eq!(views.len(), 1, "零分条目不得混进搜索结果");
         assert_eq!(views[0].id, hit);
         assert_ne!(views[0].id, miss);
@@ -738,7 +749,8 @@ mod tests {
         insert(&conn, &new_item("lesson", "c", "system"), None, 1_200);
         let stats = stats_core(&conn).unwrap();
         assert_eq!(stats.total, 3);
-        assert_eq!(stats.capacity, store::MAX_MEM_ITEMS);
+        // capacity 由命令层按 memoryTuning 覆盖，内核恒 0（默认值）
+        assert_eq!(stats.capacity, 0);
         assert_eq!(stats.with_embedding, 1);
         assert_eq!(
             stats.by_kind,
@@ -774,7 +786,7 @@ mod tests {
         assert_eq!(raw.len(), 1);
         assert_eq!(raw[0].source, "user_stated", "读取侧归一历史脏值");
         assert!(store::is_protected(&raw[0]), "归一后享受保护语义");
-        let views = list_core(&conn, None, None, None, 3_000).unwrap();
+        let views = list_core(&conn, None, None, None, 3_000, 30.0).unwrap();
         assert_eq!(views[0].source, "user_stated");
     }
 

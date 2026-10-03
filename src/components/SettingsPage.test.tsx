@@ -1965,6 +1965,7 @@ describe("SettingsPage", () => {
     expect(first.memoryControl).toEqual({
       injectionEnabled: false,
       autoWriteEnabled: true,
+      autoExtract: "off",
     });
     // 回读后开关态持久（有状态 mock 保存了保存值）
     await waitFor(() =>
@@ -1982,7 +1983,69 @@ describe("SettingsPage", () => {
       expect(last.memoryControl).toEqual({
         injectionEnabled: false,
         autoWriteEnabled: false,
+        autoExtract: "off",
       });
     });
+  });
+
+  it("U16 自动记忆抽取三档：点选即时落盘 autoExtract；缺字段默认关闭", async () => {
+    const user = userEvent.setup();
+    const stored: Array<Record<string, unknown>> = [];
+    let savedCtrl: Record<string, unknown> | null = null;
+    mocks.invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === "bot_get_enabled") return true;
+      if (cmd === "bot_get_config") {
+        return {
+          hasApiKey: false,
+          bypassLlmOnPreStepHit: true,
+          ...(savedCtrl ? { memoryControl: savedCtrl } : {}),
+        };
+      }
+      if (cmd === "bot_set_config") {
+        const cfg = args!.config as { memoryControl?: Record<string, unknown> };
+        savedCtrl = cfg.memoryControl ?? null;
+        stored.push(cfg);
+        return null;
+      }
+      if (cmd === "api_status") return { enabled: false, port: 4763, token: "" };
+      if (cmd === "profile_get")
+        return {
+          user: { name: "我", avatarDataUrl: null },
+          bot: { name: "机器人", avatarDataUrl: null },
+        };
+      if (cmd === "py_get_enabled") return false;
+      if (cmd === "skills_list") return [];
+      if (cmd === "migration_rules_load") return { version: 1, rules: [] };
+      if (cmd === "migration_status") return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_log_read") return "";
+      return null;
+    });
+    render(<SettingsPage {...defaultProps} />);
+    await user.click(screen.getByRole("button", { name: "记忆" }));
+    // 三档选择器：radio 语义；缺字段默认「关闭」高亮
+    const autoBtn = screen.getByRole("radio", { name: "自动记忆抽取：自动入库" });
+    expect(autoBtn).toHaveAttribute("aria-checked", "false");
+    // 切到「自动入库」→ 即时落盘
+    await user.click(autoBtn);
+    await waitFor(() => expect(stored.length).toBeGreaterThan(0));
+    const first = stored[0] as {
+      memoryControl: { autoExtract: string };
+    };
+    expect(first.memoryControl.autoExtract).toBe("auto");
+    // 回读后高亮跟随（有状态 mock 持久化）
+    await waitFor(() => expect(autoBtn.className).toContain("nm-inset"));
+    // 再切「需确认」
+    await user.click(screen.getByRole("radio", { name: "自动记忆抽取：需确认" }));
+    await waitFor(() => {
+      const last = stored[stored.length - 1] as {
+        memoryControl: { autoExtract: string };
+      };
+      expect(last.memoryControl.autoExtract).toBe("confirm");
+    });
+    // 总闸联动：关「模型自动记忆」后三档禁用（后端总闸优先，档位是静默 no-op）
+    await user.click(screen.getByRole("switch", { name: "模型自动记忆" }));
+    await waitFor(() =>
+      expect(screen.getByRole("radio", { name: "自动记忆抽取：自动入库" })).toBeDisabled(),
+    );
   });
 });

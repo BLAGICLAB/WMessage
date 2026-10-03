@@ -20,6 +20,43 @@ pub const MEMORY_RECENT_N: usize = 3;
 /// 经验教训条数（lesson 类型 top-3）
 pub const MEMORY_LESSON_N: usize = 3;
 
+/// 打分/取数参数（U17 参数化）：Default = U17 前常量语义，
+/// 旧函数全部委托默认值——存量调用与测试零改动。
+/// top_n/recent_n/lesson_n 为注入各段条数（take(n) 截断，0 = 该段为空）；
+/// decay_days 为检索新近度 exp(-age/decay) 的时间常数（天，越大衰减越慢）。
+#[derive(Clone, Copy, Debug)]
+pub struct RankParams {
+    pub top_n: usize,
+    pub recent_n: usize,
+    pub lesson_n: usize,
+    pub decay_days: f64,
+}
+
+/// 检索新近度时间基准（默认 30 天）
+pub const MEMORY_DECAY_DAYS: f64 = 30.0;
+
+impl Default for RankParams {
+    fn default() -> Self {
+        Self {
+            top_n: MEMORY_TOP_N,
+            recent_n: MEMORY_RECENT_N,
+            lesson_n: MEMORY_LESSON_N,
+            decay_days: MEMORY_DECAY_DAYS,
+        }
+    }
+}
+
+impl RankParams {
+    pub fn of(t: &crate::memory::MemoryTuning) -> Self {
+        Self {
+            top_n: t.top_n,
+            recent_n: t.recent_n,
+            lesson_n: t.lesson_n,
+            decay_days: t.decay_days,
+        }
+    }
+}
+
 /// 关键词提取（无依赖）：英文/数字连续段转小写成一个词；
 /// 连续 CJK 字符段取字符 bigram；单字 CJK 段保留单字。去重保序。
 pub(crate) fn extract_keywords(text: &str) -> Vec<String> {
@@ -76,6 +113,17 @@ pub fn hybrid_score(
     item: &MemItem,
     now_ms: i64,
 ) -> f64 {
+    hybrid_score_with(query_kws, query_emb, item, now_ms, 30.0)
+}
+
+/// 带衰减参数变体（U17）：decay_days 为检索新近度的时间基准
+pub fn hybrid_score_with(
+    query_kws: &[String],
+    query_emb: Option<&[f32]>,
+    item: &MemItem,
+    now_ms: i64,
+    decay_days: f64,
+) -> f64 {
     let semantic = cosine(query_emb, item.embedding.as_deref()).unwrap_or(0.0);
     let kw = if query_kws.is_empty() {
         0.0
@@ -97,7 +145,7 @@ pub fn hybrid_score(
         .max(item.updated_at_ms);
     let age_days = ((now_ms - base) as f64 / 86_400_000.0).max(0.0);
     let imp = (item.importance.clamp(1, 5) as f64) / 5.0;
-    let rec = (-age_days / 30.0).exp();
+    let rec = (-age_days / decay_days).exp();
     if query_emb.is_some() {
         0.55 * semantic + 0.20 * kw + 0.15 * imp + 0.10 * rec
     } else {
@@ -126,6 +174,17 @@ pub fn injection_snapshot(
     query_emb: Option<&[f32]>,
     now_ms: i64,
 ) -> (MemInjection, Vec<String>) {
+    injection_snapshot_with(items, query, query_emb, now_ms, &RankParams::default())
+}
+
+/// 带参数变体（U17）
+pub fn injection_snapshot_with(
+    items: &[MemItem],
+    query: &str,
+    query_emb: Option<&[f32]>,
+    now_ms: i64,
+    p: &RankParams,
+) -> (MemInjection, Vec<String>) {
     let pinned: Vec<MemItem> = items
         .iter()
         .filter(|m| m.importance >= 4 && (m.kind == "profile" || m.kind == "preference"))
@@ -138,7 +197,12 @@ pub fn injection_snapshot(
         items
             .iter()
             .filter(|m| !pinned.iter().any(|p| p.id == m.id))
-            .map(|m| (hybrid_score(&query_kws, query_emb, m, now_ms), m.clone()))
+            .map(|m| {
+                (
+                    hybrid_score_with(&query_kws, query_emb, m, now_ms, p.decay_days),
+                    m.clone(),
+                )
+            })
             .filter(|(s, _)| *s > 0.0)
             .collect()
     };
@@ -146,13 +210,13 @@ pub fn injection_snapshot(
     let lessons: Vec<MemItem> = scored
         .iter()
         .filter(|(_, m)| m.kind == "lesson")
-        .take(MEMORY_LESSON_N)
+        .take(p.lesson_n)
         .map(|(_, m)| m.clone())
         .collect();
     let hits: Vec<MemItem> = scored
         .into_iter()
         .filter(|(_, m)| m.kind != "lesson")
-        .take(MEMORY_TOP_N)
+        .take(p.top_n)
         .map(|(_, m)| m)
         .collect();
     let hit_ids: Vec<String> = hits
@@ -166,7 +230,7 @@ pub fn injection_snapshot(
         .cloned()
         .collect();
     recent.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
-    recent.truncate(MEMORY_RECENT_N);
+    recent.truncate(p.recent_n);
     (
         MemInjection {
             pinned,
@@ -186,15 +250,40 @@ pub fn hybrid_search(
     now_ms: i64,
     top_n: usize,
 ) -> Vec<MemItem> {
+    hybrid_search_with(
+        items,
+        query,
+        query_emb,
+        now_ms,
+        &RankParams {
+            top_n,
+            ..RankParams::default()
+        },
+    )
+}
+
+/// 带参数变体（U17）：与 injection_snapshot_with 同一参数风格
+pub fn hybrid_search_with(
+    items: &[MemItem],
+    query: &str,
+    query_emb: Option<&[f32]>,
+    now_ms: i64,
+    p: &RankParams,
+) -> Vec<MemItem> {
     let query_kws = extract_keywords(query);
     if query_kws.is_empty() && query_emb.is_none() {
         return Vec::new();
     }
     let mut scored: Vec<(f64, MemItem)> = items
         .iter()
-        .map(|m| (hybrid_score(&query_kws, query_emb, m, now_ms), m.clone()))
+        .map(|m| {
+            (
+                hybrid_score_with(&query_kws, query_emb, m, now_ms, p.decay_days),
+                m.clone(),
+            )
+        })
         .filter(|(s, _)| *s > 0.0)
         .collect();
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-    scored.into_iter().take(top_n).map(|(_, m)| m).collect()
+    scored.into_iter().take(p.top_n).map(|(_, m)| m).collect()
 }

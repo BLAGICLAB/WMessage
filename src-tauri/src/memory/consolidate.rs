@@ -252,11 +252,23 @@ fn format_candidates(items: &[MemItem]) -> String {
 /// - distill：新建 kind=reflection、importance=4、source=system 条目。
 /// 指令引用的 id 不存在/不足以执行 → 跳过该条（计数不增）。
 /// embs 与 ops 平行（embs[i] = ops[i].content 的嵌入；None = 嵌入失败按降级处理）。
+/// 旧签名委托默认参数（U17 契约：旧调用与测试零改动）
 pub fn apply_ops(
     conn: &mut rusqlite::Connection,
     ops: &[ConsolidateOp],
     embs: &[Option<Vec<f32>>],
     now_ms: i64,
+) -> Result<ConsolidateReport, String> {
+    apply_ops_with(conn, ops, embs, now_ms, &store::StoreParams::default())
+}
+
+/// 带参数变体（U17）
+pub fn apply_ops_with(
+    conn: &mut rusqlite::Connection,
+    ops: &[ConsolidateOp],
+    embs: &[Option<Vec<f32>>],
+    now_ms: i64,
+    sp: &store::StoreParams,
 ) -> Result<ConsolidateReport, String> {
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let mut report = ConsolidateReport::default();
@@ -358,7 +370,7 @@ pub fn apply_ops(
                     importance: 4,
                     source: "system".to_string(),
                 };
-                store::insert_item(&tx, &item, emb, now_ms)?;
+                store::insert_item_with(&tx, &item, emb, now_ms, sp)?;
                 report.distilled += 1;
             }
         }
@@ -420,6 +432,8 @@ pub async fn run_consolidation(app: &AppHandle) -> CommandResult<ConsolidateRepo
     // 不改反思逻辑：ops 被应用一次（apply_ops）+ 被审计一次（emit_proposals），结果一致。
     let ops_for_audit = ops.clone();
     let app3 = app.clone();
+    // U17：整理写入也走 memoryTuning（容量/去重阈值统一口径）
+    let tuning = crate::bot::read_memory_tuning(app);
     let report =
         tauri::async_runtime::spawn_blocking(move || -> Result<ConsolidateReport, String> {
             let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
@@ -428,7 +442,13 @@ pub async fn run_consolidation(app: &AppHandle) -> CommandResult<ConsolidateRepo
             });
             let mut conn = crate::db::open_db(&app3)?;
             store::ensure_table(&conn)?;
-            apply_ops(&mut conn, &ops, &embs, now_ms())
+            apply_ops_with(
+                &mut conn,
+                &ops,
+                &embs,
+                now_ms(),
+                &store::StoreParams::of(&tuning),
+            )
         })
         .await
         .map_err(|e| CommandError::from(format!("记忆整理写入线程 join 失败：{e}")))?

@@ -17,6 +17,7 @@
 
 pub mod consolidate;
 pub mod embed;
+pub mod extract;
 pub mod panel;
 pub mod rank;
 pub mod store;
@@ -31,20 +32,23 @@ use tauri::AppHandle;
 /// 记忆块注入预算（字符数上限）
 const MEMORY_BUDGET_CHARS: usize = 4_000;
 
-// ───────────────────────── 可控开关（U15） ─────────────────────────
+// ───────────────────────── 可控开关（U15/U16） ─────────────────────────
 
 /// 记忆可控开关：存 bot-config.json 的 memoryControl 字段。
 /// None（老配置缺字段）= 全开，行为与 U15 之前完全一致。
 /// 范围口径：auto_write_enabled 只门禁**模型主动写入**的两个工具
-///（remember_fact / record_lesson）；摘要/反思/定时整理等系统驱动的
-/// 写入流水线不受影响（那是记忆生态自身的运转，不是「模型乱记」）。
+///（remember_fact / record_lesson）与 U16 的会话收尾自动抽取（总体闸优先）；
+/// 摘要/反思/定时整理等纯系统流水线不受影响。
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct MemoryControl {
     /// 聊天 / 任务执行是否注入「## 记忆」块（隐私总闸：关 = 记忆保留但不发给模型）
     pub injection_enabled: bool,
-    /// 模型主动记忆开关：false = 两个记忆工具返回「已关闭」提示
+    /// 模型主动记忆开关：false = 两个记忆工具返回「已关闭」提示，且自动抽取不跑
     pub auto_write_enabled: bool,
+    /// U16 自动记忆抽取档位：off（默认）/ auto（抽取直接入库）/ confirm（进待确认队列）
+    /// 缺字段/非法值 = off
+    pub auto_extract: String,
 }
 
 impl Default for MemoryControl {
@@ -52,12 +56,36 @@ impl Default for MemoryControl {
         Self {
             injection_enabled: true,
             auto_write_enabled: true,
+            auto_extract: "off".into(),
         }
     }
 }
 
-/// 注入门禁判定（纯函数，单测直打）：None = 老配置全开。
-/// I/O 包装（下方 *_allowed → control_of_view）收 AppHandle，经集成测试覆盖。
+/// 自动抽取档位（auto_extract 配置字符串的解析结果）
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum AutoExtract {
+    /// 不抽取（默认）
+    #[default]
+    Off,
+    /// 抽取直接入库（source=model_inferred，[推断] 徽标可见）
+    Auto,
+    /// 抽取进待确认队列，用户过目后入库
+    Confirm,
+}
+
+/// 档位解析（纯函数，单测直打）：缺字段/非法值 = Off
+pub fn auto_extract_mode(ctrl: Option<&MemoryControl>) -> AutoExtract {
+    let Some(c) = ctrl else {
+        return AutoExtract::Off;
+    };
+    match c.auto_extract.trim() {
+        "auto" => AutoExtract::Auto,
+        "confirm" => AutoExtract::Confirm,
+        _ => AutoExtract::Off,
+    }
+}
+
+/// 注入门禁判定（纯函数，单测直打）：None = 老配置全开
 pub fn injection_enabled(ctrl: Option<&MemoryControl>) -> bool {
     ctrl.map(|c| c.injection_enabled).unwrap_or(true)
 }
@@ -85,7 +113,82 @@ fn auto_write_allowed<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
     auto_write_enabled(control_of_view(app).as_ref())
 }
 
-/// content 上限（表契约 ≤800 字；remember_fact 工具侧 value ≤500 更严，在入参校验处拦）
+/// DB 写闸获取（毒锁回 Inner；memory 子模块共用——连接在闸内现开）
+pub(crate) fn store_lock() -> std::sync::MutexGuard<'static, ()> {
+    crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
+        eprintln!("[mutex_poisoned] memory DB_WRITE_LOCK: {e:?}");
+        e.into_inner()
+    })
+}
+
+// ───────────────────────── 参数化（U17） ─────────────────────────
+
+/// 记忆参数：存 bot-config.json 的 memoryTuning 字段。
+/// None（老配置缺字段）= 全默认，行为与 U17 之前完全一致。
+/// 读取侧统一过 [`MemoryTuning::clamped`]（超界值收敛到合法区间）。
+/// 本期无设置页 UI——手改 bot-config.json 生效（架构文档有注记）。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct MemoryTuning {
+    /// 注入块字符预算（默认 4000）
+    pub injection_budget_chars: usize,
+    /// 注入「相关记忆」条数（默认 5）
+    pub top_n: usize,
+    /// 注入「近期摘要」条数（默认 3）
+    pub recent_n: usize,
+    /// 注入「经验教训」条数（默认 3）
+    pub lesson_n: usize,
+    /// 容量上限（默认 500）
+    pub capacity: i64,
+    /// 检索时间衰减基准天数（默认 30：exp(-age/decay)）
+    pub decay_days: f64,
+    /// 语义去重合并阈值（默认 0.92：cos ≥ 阈值合并为同一条）
+    pub dedup_merge_cosine: f64,
+    /// 冲突提示阈值（默认 0.75：merge > cos ≥ hint 拼冲突提示）
+    pub dedup_hint_cosine: f64,
+}
+
+impl Default for MemoryTuning {
+    fn default() -> Self {
+        Self {
+            injection_budget_chars: 4_000,
+            top_n: 5,
+            recent_n: 3,
+            lesson_n: 3,
+            capacity: 500,
+            decay_days: 30.0,
+            dedup_merge_cosine: 0.92,
+            dedup_hint_cosine: 0.75,
+        }
+    }
+}
+
+impl MemoryTuning {
+    /// 全字段钳制（读取侧统一调用，下游只见合法值）
+    pub fn clamped(mut self) -> Self {
+        self.injection_budget_chars = self.injection_budget_chars.clamp(1_000, 8_000);
+        self.top_n = self.top_n.min(10);
+        self.recent_n = self.recent_n.min(10);
+        self.lesson_n = self.lesson_n.min(10);
+        self.capacity = self.capacity.clamp(100, 2_000);
+        if !self.decay_days.is_finite() || self.decay_days < 7.0 {
+            self.decay_days = 30.0;
+        }
+        self.decay_days = self.decay_days.clamp(7.0, 365.0);
+        if !self.dedup_merge_cosine.is_finite() {
+            self.dedup_merge_cosine = 0.92;
+        }
+        self.dedup_merge_cosine = self.dedup_merge_cosine.clamp(0.5, 1.0);
+        if !self.dedup_hint_cosine.is_finite() || self.dedup_hint_cosine >= self.dedup_merge_cosine
+        {
+            self.dedup_hint_cosine = (self.dedup_merge_cosine - 0.05).max(0.5);
+        }
+        self.dedup_hint_cosine = self.dedup_hint_cosine.clamp(0.5, self.dedup_merge_cosine);
+        self
+    }
+}
+
+/// 内容 上限（表契约 ≤800 字；remember_fact 工具侧 value ≤500 更严，在入参校验处拦）
 pub(crate) const MAX_CONTENT_CHARS: usize = 800;
 
 pub(crate) fn now_ms() -> i64 {
@@ -105,6 +208,11 @@ pub(crate) fn truncate_chars(s: &str, n: usize) -> String {
 /// 行格式：fact 类 `- [kind]{[推断]}key：content`（无 key 省略「key：」），
 /// summary/reflection 类 `- [日期]{[推断]}content`；超预算从后往前砍（画像段不砍）。
 pub fn format_memory_block(inj: &MemInjection) -> Option<String> {
+    format_memory_block_with(inj, MEMORY_BUDGET_CHARS)
+}
+
+/// 带预算变体（U17）：budget 来自 memoryTuning.injectionBudgetChars
+pub fn format_memory_block_with(inj: &MemInjection, budget_chars: usize) -> Option<String> {
     fn inferred(m: &MemItem) -> &'static str {
         if m.source == "model_inferred" {
             "[推断]"
@@ -186,7 +294,7 @@ pub fn format_memory_block(inj: &MemInjection) -> Option<String> {
     // 超预算从后往前砍（画像段不砍）
     let trimmable_from = if inj.pinned.is_empty() { 0 } else { 1 };
     let mut guard = 0;
-    while block_chars(&sections) > MEMORY_BUDGET_CHARS && guard < 10_000 {
+    while block_chars(&sections) > budget_chars && guard < 10_000 {
         guard += 1;
         match sections
             .iter_mut()
@@ -230,23 +338,33 @@ pub async fn injection_block<R: tauri::Runtime>(
     }
     let app2 = app.clone();
     let query = query.to_string();
-    let r = tauri::async_runtime::spawn_blocking(move || -> Result<MemInjection, String> {
-        // 嵌入在持锁前算（ONNX 推理 ~数十 ms，不占 DB 写锁临界区）
-        let emb = embed::embed_text(&query);
-        let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] memory::mod DB_WRITE_LOCK: {e:?}");
-            e.into_inner()
-        });
-        let conn = crate::db::open_db(&app2)?;
-        store::ensure_table(&conn)?;
-        let items = store::load_all(&conn)?;
-        let (inj, hit_ids) = rank::injection_snapshot(&items, &query, emb.as_deref(), now_ms());
-        store::touch_accessed(&conn, &hit_ids, now_ms())?;
-        Ok(inj)
-    })
+    let r = tauri::async_runtime::spawn_blocking(
+        move || -> Result<(MemInjection, MemoryTuning), String> {
+            // 嵌入在持锁前算（ONNX 推理 ~数十 ms，不占 DB 写锁临界区）
+            let emb = embed::embed_text(&query);
+            let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
+                eprintln!("[mutex_poisoned] memory::mod DB_WRITE_LOCK: {e:?}");
+                e.into_inner()
+            });
+            let conn = crate::db::open_db(&app2)?;
+            store::ensure_table(&conn)?;
+            let items = store::load_all(&conn)?;
+            let tuning = crate::bot::read_memory_tuning(&app2);
+            let (inj, hit_ids) = rank::injection_snapshot_with(
+                &items,
+                &query,
+                emb.as_deref(),
+                now_ms(),
+                &rank::RankParams::of(&tuning),
+            );
+            store::touch_accessed(&conn, &hit_ids, now_ms())?;
+            Ok((inj, tuning))
+        },
+    )
     .await;
+    let r = r.map(|res| res.map(|(inj, tuning)| (inj, tuning)));
     match r {
-        Ok(Ok(inj)) => format_memory_block(&inj),
+        Ok(Ok((inj, tuning))) => format_memory_block_with(&inj, tuning.injection_budget_chars),
         Ok(Err(e)) => {
             crate::audit_event!(&app, crate::audit::AuditLevel::Warn, "memory.injection_failed",
                 "error" => e);
@@ -373,7 +491,8 @@ pub async fn tool_remember_fact<R: tauri::Runtime>(
                     importance,
                     source: source.to_string(),
                 };
-                match store::insert_item(&conn, &item, emb.as_deref(), now) {
+                let tuning = crate::bot::read_memory_tuning(&app);
+                match store::insert_item_with(&conn, &item, emb.as_deref(), now, &store::StoreParams::of(&tuning)) {
                     Ok((InsertOutcome::Inserted(_), hints)) => {
                         let msg = format!("已记住「{key}」：{value}");
                         if hints.is_empty() {
@@ -463,8 +582,15 @@ pub async fn tool_recall_facts(app: &AppHandle, args: &str) -> ToolResult {
             format!("- {key}：{}", m.content)
         };
         if !query.is_empty() {
-            let hits =
-                rank::hybrid_search(&items, &query, emb.as_deref(), now_ms(), rank::MEMORY_TOP_N);
+            // U17：召回路径衰减/条数同走 memoryTuning（此前 _with 变体无调用方）
+            let tuning = crate::bot::read_memory_tuning(&app);
+            let hits = rank::hybrid_search_with(
+                &items,
+                &query,
+                emb.as_deref(),
+                now_ms(),
+                &rank::RankParams::of(&tuning),
+            );
             if hits.is_empty() {
                 // 「没有找到相关记忆」首字「没」非 error/warn 前缀 → ok
                 return ToolResult::ok("没有找到相关记忆".to_string(), Vec::new());
@@ -721,7 +847,14 @@ pub async fn save_summary(
             importance: 2,
             source: "model_inferred".to_string(),
         };
-        store::insert_item(&conn, &item, emb.as_deref(), now_ms())?;
+        let tuning = crate::bot::read_memory_tuning(&app);
+        store::insert_item_with(
+            &conn,
+            &item,
+            emb.as_deref(),
+            now_ms(),
+            &store::StoreParams::of(&tuning),
+        )?;
         store::oldest_by_kind(&conn, "summary", crate::db::REFLECTION_BATCH)
     })
     .await
@@ -753,7 +886,14 @@ pub async fn apply_reflection(
             importance: 3,
             source: "model_inferred".to_string(),
         };
-        store::insert_item(&tx, &item, emb.as_deref(), now_ms())?;
+        let tuning = crate::bot::read_memory_tuning(&app);
+        store::insert_item_with(
+            &tx,
+            &item,
+            emb.as_deref(),
+            now_ms(),
+            &store::StoreParams::of(&tuning),
+        )?;
         store::delete_by_ids(&tx, &delete_ids)?;
         tx.commit().map_err(|e| e.to_string())
     })

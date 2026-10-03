@@ -26,6 +26,35 @@ pub const DEDUP_HINT_COSINE: f64 = 0.75;
 /// 冲突提示最多带几条相似记忆
 const CONFLICT_HINT_TOP: usize = 3;
 
+/// 存储参数（U17 参数化）：Default = U17 前常量语义，
+/// insert_item 旧签名委托默认值——存量调用与测试零改动。
+#[derive(Clone, Copy, Debug)]
+pub struct StoreParams {
+    pub capacity: i64,
+    pub dedup_merge: f64,
+    pub dedup_hint: f64,
+}
+
+impl Default for StoreParams {
+    fn default() -> Self {
+        Self {
+            capacity: MAX_MEM_ITEMS,
+            dedup_merge: DEDUP_MERGE_COSINE,
+            dedup_hint: DEDUP_HINT_COSINE,
+        }
+    }
+}
+
+impl StoreParams {
+    pub fn of(t: &crate::memory::MemoryTuning) -> Self {
+        Self {
+            capacity: t.capacity,
+            dedup_merge: t.dedup_merge_cosine,
+            dedup_hint: t.dedup_hint_cosine,
+        }
+    }
+}
+
 /// 记忆条目（mem_items 行）
 #[derive(Clone, Debug)]
 pub struct MemItem {
@@ -181,11 +210,11 @@ pub(crate) fn evict_score(item: &MemItem, now_ms: i64) -> f64 {
 }
 
 /// 容量淘汰：达上限时删淘汰分最低的非保护条目；无可淘汰 → Err（拒写，信息给模型）
-fn evict_if_needed(conn: &rusqlite::Connection, now_ms: i64) -> Result<(), String> {
+fn evict_if_needed(conn: &rusqlite::Connection, now_ms: i64, capacity: i64) -> Result<(), String> {
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM mem_items", [], |r| r.get(0))
         .map_err(|e| e.to_string())?;
-    if count < MAX_MEM_ITEMS {
+    if count < capacity {
         return Ok(());
     }
     let all = load_all(conn)?;
@@ -250,6 +279,17 @@ pub fn insert_item(
     embedding: Option<&[f32]>,
     now_ms: i64,
 ) -> Result<(InsertOutcome, Vec<String>), String> {
+    insert_item_with(conn, item, embedding, now_ms, &StoreParams::default())
+}
+
+/// 带参数变体（U17）：容量与去重阈值由调用方传（读 memoryTuning）
+pub fn insert_item_with(
+    conn: &rusqlite::Connection,
+    item: &NewItem,
+    embedding: Option<&[f32]>,
+    now_ms: i64,
+    p: &StoreParams,
+) -> Result<(InsertOutcome, Vec<String>), String> {
     ensure_table(conn)?;
     let all = load_all(conn)?;
     // 语义去重（仅有向量时；降级模式无余弦可算，跳过）
@@ -258,11 +298,11 @@ pub fn insert_item(
         let mut hints: Vec<(f64, &MemItem)> = Vec::new();
         for m in &all {
             if let Some(c) = cosine(Some(emb), m.embedding.as_deref()) {
-                if c >= DEDUP_MERGE_COSINE {
+                if c >= p.dedup_merge {
                     if best.map_or(true, |(s, _)| c > s) {
                         best = Some((c, m));
                     }
-                } else if c >= DEDUP_HINT_COSINE {
+                } else if c >= p.dedup_hint {
                     hints.push((c, m));
                 }
             }
@@ -339,9 +379,9 @@ pub fn insert_item(
                 }
             })
             .collect();
-        return insert_new(conn, item, embedding, now_ms).map(|outcome| (outcome, hint_texts));
+        return insert_new(conn, item, embedding, now_ms, p).map(|outcome| (outcome, hint_texts));
     }
-    insert_new(conn, item, embedding, now_ms).map(|outcome| (outcome, Vec::new()))
+    insert_new(conn, item, embedding, now_ms, p).map(|outcome| (outcome, Vec::new()))
 }
 
 fn insert_new(
@@ -349,8 +389,9 @@ fn insert_new(
     item: &NewItem,
     embedding: Option<&[f32]>,
     now_ms: i64,
+    p: &StoreParams,
 ) -> Result<InsertOutcome, String> {
-    if let Err(e) = evict_if_needed(conn, now_ms) {
+    if let Err(e) = evict_if_needed(conn, now_ms, p.capacity) {
         return Ok(InsertOutcome::RejectedFull(e));
     }
     let id = uuid::Uuid::new_v4().simple().to_string();

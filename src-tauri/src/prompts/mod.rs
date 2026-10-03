@@ -19,6 +19,7 @@
 
 mod consolidate;
 mod execute;
+mod extract;
 mod planner;
 mod reflection;
 mod subagent;
@@ -27,6 +28,7 @@ mod system;
 
 pub(crate) use consolidate::CONSOLIDATE_PROMPT;
 pub(crate) use execute::{EXECUTE_SYSTEM_PROMPT, STEPWISE_ADDENDUM};
+pub(crate) use extract::EXTRACT_PROMPT;
 pub(crate) use planner::{PLANNER_PROMPT, REPLANNER_PROMPT};
 pub(crate) use reflection::REFLECTION_SYSTEM_PROMPT;
 pub(crate) use subagent::{
@@ -51,6 +53,7 @@ mod tests {
         ("PLANNER_PROMPT", PLANNER_PROMPT),
         ("REPLANNER_PROMPT", REPLANNER_PROMPT),
         ("CONSOLIDATE_PROMPT", CONSOLIDATE_PROMPT),
+        ("EXTRACT_PROMPT", EXTRACT_PROMPT),
         ("MAIN_AGENT_ADDENDUM", MAIN_AGENT_ADDENDUM),
         ("SUBAGENT_BASE", SUBAGENT_BASE),
         ("PROFILE_RESEARCH", PROFILE_RESEARCH),
@@ -61,7 +64,7 @@ mod tests {
 
     #[test]
     fn all_prompts_are_registered_and_non_empty() {
-        assert_eq!(ALL.len(), 15, "prompt 清单与实际常量数不一致（新增请登记）");
+        assert_eq!(ALL.len(), 16, "prompt 清单与实际常量数不一致（新增请登记）");
         for (name, p) in ALL {
             assert!(
                 p.chars().count() >= 30,
