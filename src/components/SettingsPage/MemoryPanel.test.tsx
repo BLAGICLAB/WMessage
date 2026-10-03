@@ -6,13 +6,26 @@ import { render, screen, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryPanel, type MemItemView, type MemStats } from "./MemoryPanel";
 
-const mocks = vi.hoisted(() => ({ invokeMock: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  invokeMock: vi.fn(),
+  saveMock: vi.fn(),
+  openMock: vi.fn(),
+}));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invokeMock }));
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  save: mocks.saveMock,
+  open: mocks.openMock,
+}));
 
 beforeEach(() => {
   mocks.invokeMock.mockClear();
   mocks.invokeMock.mockImplementation(async () => null);
+  // mockReset（而非 mockClear）：清掉上个用例 mockResolvedValue 残留的实现
+  mocks.saveMock.mockReset();
+  mocks.openMock.mockReset();
+  mocks.saveMock.mockImplementation(async () => null);
+  mocks.openMock.mockImplementation(async () => null);
   window.confirm = vi.fn(() => true);
 });
 
@@ -186,5 +199,70 @@ describe("MemoryPanel", () => {
     await user.click(screen.getByRole("button", { name: "删除记忆" }));
     await flush();
     expect(mocks.invokeMock.mock.calls.some((c) => c[0] === "mem_delete")).toBe(false);
+  });
+
+  it("导出：save 对话框取路径 → mem_export 带路径调用 → 显示条数", async () => {
+    const user = userEvent.setup();
+    stubData();
+    mocks.saveMock.mockResolvedValue("/tmp/wmessage-memories.json");
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "mem_list") return [sampleItem()];
+      if (cmd === "mem_stats") return sampleStats();
+      if (cmd === "mem_export") return { count: 3 };
+      return null;
+    });
+    render(<MemoryPanel />);
+    await screen.findByText("喜欢简洁的回复风格");
+    await user.click(screen.getByRole("button", { name: "导出记忆" }));
+    expect(await screen.findByText("已导出 3 条记忆")).toBeInTheDocument();
+    const call = mocks.invokeMock.mock.calls.find((c) => c[0] === "mem_export");
+    expect(call?.[1]).toEqual({ path: "/tmp/wmessage-memories.json" });
+  });
+
+  it("导出：save 取消（null）不调 mem_export", async () => {
+    const user = userEvent.setup();
+    stubData();
+    render(<MemoryPanel />);
+    await screen.findByText("喜欢简洁的回复风格");
+    await user.click(screen.getByRole("button", { name: "导出记忆" }));
+    await flush();
+    expect(mocks.invokeMock.mock.calls.some((c) => c[0] === "mem_export")).toBe(false);
+  });
+
+  it("导入：open 取路径 → mem_import → 显示报告并刷新列表", async () => {
+    const user = userEvent.setup();
+    stubData();
+    mocks.openMock.mockResolvedValue("/tmp/import.json");
+    let importCalled = false;
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "mem_list") return [sampleItem()];
+      if (cmd === "mem_stats") return sampleStats();
+      if (cmd === "mem_import") {
+        importCalled = true;
+        return { inserted: 2, merged: 1, skipped: 0 };
+      }
+      return null;
+    });
+    render(<MemoryPanel />);
+    await screen.findByText("喜欢简洁的回复风格");
+    await user.click(screen.getByRole("button", { name: "导入记忆" }));
+    expect(await screen.findByText("导入完成：新增 2 条、合并 1 条、跳过 0 条")).toBeInTheDocument();
+    expect(importCalled).toBe(true);
+  });
+
+  it("导入失败：显示错误提示不误报成功", async () => {
+    const user = userEvent.setup();
+    stubData();
+    mocks.openMock.mockResolvedValue("/tmp/bad.json");
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "mem_list") return [sampleItem()];
+      if (cmd === "mem_stats") return sampleStats();
+      if (cmd === "mem_import") throw "导入文件解析失败：坏 JSON";
+      return null;
+    });
+    render(<MemoryPanel />);
+    await screen.findByText("喜欢简洁的回复风格");
+    await user.click(screen.getByRole("button", { name: "导入记忆" }));
+    expect(await screen.findByText(/导入失败：导入文件解析失败/)).toBeInTheDocument();
   });
 });

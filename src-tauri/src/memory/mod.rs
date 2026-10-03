@@ -24,11 +24,66 @@ pub mod store;
 use crate::bot::registry::ToolResult;
 use crate::error::{CommandError, CommandResult};
 use rank::MemInjection;
+use serde::{Deserialize, Serialize};
 use store::{InsertOutcome, MemItem, NewItem};
 use tauri::AppHandle;
 
 /// 记忆块注入预算（字符数上限）
 const MEMORY_BUDGET_CHARS: usize = 4_000;
+
+// ───────────────────────── 可控开关（U15） ─────────────────────────
+
+/// 记忆可控开关：存 bot-config.json 的 memoryControl 字段。
+/// None（老配置缺字段）= 全开，行为与 U15 之前完全一致。
+/// 范围口径：auto_write_enabled 只门禁**模型主动写入**的两个工具
+///（remember_fact / record_lesson）；摘要/反思/定时整理等系统驱动的
+/// 写入流水线不受影响（那是记忆生态自身的运转，不是「模型乱记」）。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct MemoryControl {
+    /// 聊天 / 任务执行是否注入「## 记忆」块（隐私总闸：关 = 记忆保留但不发给模型）
+    pub injection_enabled: bool,
+    /// 模型主动记忆开关：false = 两个记忆工具返回「已关闭」提示
+    pub auto_write_enabled: bool,
+}
+
+impl Default for MemoryControl {
+    fn default() -> Self {
+        Self {
+            injection_enabled: true,
+            auto_write_enabled: true,
+        }
+    }
+}
+
+/// 注入门禁判定（纯函数，单测直打）：None = 老配置全开。
+/// I/O 包装（下方 *_allowed → control_of_view）收 AppHandle，经集成测试覆盖。
+pub fn injection_enabled(ctrl: Option<&MemoryControl>) -> bool {
+    ctrl.map(|c| c.injection_enabled).unwrap_or(true)
+}
+
+/// 写入门禁判定（纯函数，单测直打）
+pub fn auto_write_enabled(ctrl: Option<&MemoryControl>) -> bool {
+    ctrl.map(|c| c.auto_write_enabled).unwrap_or(true)
+}
+
+/// 配置读取薄壳（视图级，两个门禁共用）：文件缺失/解析失败 → None = 全开——
+/// 与注入路径失败静默降级的总纪律一致，门禁绝不能把聊天弄挂。
+/// 走 bot facade 的 read_memory_control 轻量读取（运行时泛型：注入路径被
+/// 泛型任务执行复用；1KB 级文件读，与同路径的 read_bypass_llm_switch 同成本级）。
+fn control_of_view<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<MemoryControl> {
+    crate::bot::read_memory_control(app)
+}
+
+/// 注入门禁（injection_block 开头调用）
+fn injection_allowed<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
+    injection_enabled(control_of_view(app).as_ref())
+}
+
+/// 写入门禁（模型主动记忆工具开头调用）
+fn auto_write_allowed<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
+    auto_write_enabled(control_of_view(app).as_ref())
+}
 
 /// content 上限（表契约 ≤800 字；remember_fact 工具侧 value ≤500 更严，在入参校验处拦）
 pub(crate) const MAX_CONTENT_CHARS: usize = 800;
@@ -169,6 +224,10 @@ pub async fn injection_block<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     query: &str,
 ) -> Option<String> {
+    // 注入总闸（U15）：关 = 记忆保留在库里但不发给模型。判定在装配前短路。
+    if !injection_allowed(app) {
+        return None;
+    }
     let app2 = app.clone();
     let query = query.to_string();
     let r = tauri::async_runtime::spawn_blocking(move || -> Result<MemInjection, String> {
@@ -235,7 +294,14 @@ fn category_to_kind(category: &str) -> &'static str {
 
 /// remember_fact 工具（v2）：同 key（tags[0] 精确匹配）覆盖更新；新条目走语义去重 +
 /// 容量淘汰。工具名/参数 schema 不变，模型无感。返回工具结果文本（含冲突提示）。
-pub async fn tool_remember_fact(app: &AppHandle, args: &str) -> ToolResult {
+pub async fn tool_remember_fact<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    args: &str,
+) -> ToolResult {
+    // 模型主动记忆总闸（U15）：ok 而非 error——不是故障，模型拿到提示后自然转述，不会重试刷屏
+    if !auto_write_allowed(app) {
+        return ToolResult::ok("记忆功能已在设置中关闭，无需记录。".to_string(), Vec::new());
+    }
     let v = crate::bot::parse_args(args);
     let key = v["key"].as_str().unwrap_or("").trim().to_string();
     let value = v["value"].as_str().unwrap_or("").trim().to_string();
@@ -512,7 +578,14 @@ pub fn record_lesson_core(
 }
 
 /// record_lesson 工具：模型被用户纠正 / 工具连续失败 / 发现更优做法时主动记教训。
-pub async fn tool_record_lesson(app: &AppHandle, args: &str) -> ToolResult {
+pub async fn tool_record_lesson<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    args: &str,
+) -> ToolResult {
+    // 模型主动记忆总闸（U15）：同 remember_fact，ok 提示不报错
+    if !auto_write_allowed(app) {
+        return ToolResult::ok("记忆功能已在设置中关闭，无需记录。".to_string(), Vec::new());
+    }
     let v = crate::bot::parse_args(args);
     let lesson = v["lesson"].as_str().unwrap_or("").trim().to_string();
     let scenario = v["scenario"].as_str().unwrap_or("").trim().to_string();

@@ -83,6 +83,7 @@ pub use config::{
     read_api_key,
     read_bypass_llm_switch,
     read_llm_key,
+    read_memory_control,
     read_search_key,
     resolve_max_tokens,
     write_search_key,

@@ -98,7 +98,7 @@ src-tauri/src/
 │   │                               （derive_legacy_fields_from_active / active_model_entry
 │   │                               / effective_inference 条目级推理参数解析）+ resolve_max_tokens
 │   ├── bot/config/types.rs  ApiProvider / PermMode / KeySlot
-│   ├── bot/config/io.rs    配置读写 + 默认值
+│   ├── bot/config/io.rs    配置读写 + 默认值 + read_memory_control（U15 记忆开关轻量读取）
 │   ├── keyring.rs        API key 走系统 keyring
 │   ├── bot/config/commands.rs  bot_get_config / bot_set_config
 │   ├── bot/reasoning.rs  推理强度线上参数映射（RE-1）：EffortLevel 档位 →
@@ -152,15 +152,17 @@ src-tauri/src/
 ├── tool_guard.rs        原子工具黑名单后置拦截（现黑名单已清空，留壳）
 │
 └─ 记忆系统 memory/（v2，语义嵌入）
-├── memory/mod.rs            门面：injection_block 聊天注入记忆块、save_summary/apply_reflection、
-│                            工具 tool_remember_fact/recall_facts/record_lesson
+├── memory/mod.rs            门面：injection_block 聊天注入记忆块（U15 注入总闸）、
+│                            save_summary/apply_reflection、工具 tool_remember_fact/
+│                            recall_facts/record_lesson（U15 主动记忆门禁）、MemoryControl
 ├── memory/store.rs          mem_items 表 CRUD、500 条上限、余弦语义去重（合并/提示）
 ├── memory/embed.rs          bge-small-zh-v1.5 ONNX 本地嵌入（OnceCell 懒加载，失败全局降级关键词模式）
 ├── memory/rank.rs           混合打分 0.55 语义 + 0.20 关键词 + 0.15 重要度 + 0.10 新近度
 ├── memory/consolidate.rs    定时记忆整理：LLM 反思合并/裁决矛盾，10 分钟扫一次
 ├── memory/panel.rs          设置页记忆库命令：mem_list（混合检索纯读不刷访问计数）/
 │                            mem_update（content 变更重算嵌入）/ mem_delete / mem_stats
-│                            （统计 + 嵌入引擎状态），MemItemView 不含向量本体
+│                            （统计 + 嵌入引擎状态），MemItemView 不含向量本体；
+│                            mem_export/mem_import（JSON 带向量，导入走语义去重只增不删）
 └── memory/tests.rs + memory/consolidate/tests.rs   记忆单测（假向量，不依赖 ONNX）
 ```
 

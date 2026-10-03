@@ -1519,3 +1519,130 @@ fn chat_msg(role: &str, content: &str) -> ChatMsg {
         content: content.into(),
     }
 }
+
+// ───────────── U15 记忆可控开关：双门禁真路径（mock app 数据目录） ─────────────
+//
+// ⚠️ db::data_dir 在 cargo test 下解析到 target/debug/deps/——该目录的
+// bot-config.json 与 wmessage.db 被**所有测试进程共享**（paths.rs「测试期的
+// 跨进程共享」一段的既知地雷；本次实证：nextest 并行进程互踩配置文件 +
+// 共享库历史脏数据打穿绝对断言）。因此：
+// - 三个门禁场景合并为一个测试（nextest 下即单进程，配置写读全程本进程有序）；
+// - DB 断言一律增量口径（共享库里有历史条目，不做绝对断言）；
+// - 结束时恢复共享现场（删本测试写的配置文件 + 清理种子条目与历史遗留）。
+
+fn write_config_with_memory_control(
+    handle: &tauri::AppHandle<tauri::test::MockRuntime>,
+    injection: bool,
+    auto_write: bool,
+) {
+    let cfg = serde_json::json!({
+        "baseUrl": "http://127.0.0.1:1",
+        "model": "mock-model",
+        "memoryControl": {
+            "injectionEnabled": injection,
+            "autoWriteEnabled": auto_write,
+        },
+    });
+    std::fs::write(
+        wmessage_lib::bot::config_path(handle),
+        serde_json::to_string(&cfg).unwrap(),
+    )
+    .unwrap();
+}
+
+fn seed_memory(handle: &tauri::AppHandle<tauri::test::MockRuntime>, content: &str) {
+    // insert_item 内部已 ensure_table，无需前置
+    let conn = wmessage_lib::db::open_db(handle).unwrap();
+    let item = wmessage_lib::memory::store::NewItem {
+        kind: "fact".into(),
+        content: content.into(),
+        tags: vec![],
+        importance: 3,
+        source: "user_stated".into(),
+    };
+    // 1_000 = 固定占位时间戳（created/updated_at；检索断言只看内容不看排序）
+    match wmessage_lib::memory::store::insert_item(&conn, &item, None, 1_000).unwrap() {
+        (wmessage_lib::memory::store::InsertOutcome::Inserted(_), _) => {}
+        other => panic!("种记忆应直接插入：{other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn memory_gate_scenarios_injection_and_auto_write() {
+    let app = mock_handle();
+    let SEED_CONTENT = SEED_CONTENT_PLACEHOLDER;
+
+    // 清理前移：先扫掉历史运行留在共享库的种子/漏写条目与共享配置文件——
+    // 即使本运行中途 panic，下一次运行开场也会自愈（不依赖收尾路径执行）。
+    clean_gate_leftovers(&app);
+
+    // 场景一：注入关 → 记忆保留在库但不产出注入块
+    write_config_with_memory_control(&app, false, true);
+    seed_memory(&app, SEED_CONTENT);
+    assert!(
+        wmessage_lib::memory::injection_block(&app, "测试记忆")
+            .await
+            .is_none(),
+        "注入关闭时不得产出记忆块"
+    );
+
+    // 场景二：注入开 → 照常产出且含库内内容
+    write_config_with_memory_control(&app, true, true);
+    let block = wmessage_lib::memory::injection_block(&app, "测试记忆")
+        .await
+        .expect("注入开启 + 库有记忆应产出记忆块");
+    assert!(
+        block.contains("## 记忆") && block.contains(SEED_CONTENT),
+        "{block}"
+    );
+    // 结构窄化：fact 条目应以标准行格式落在记忆块（kind 行格式契约）
+    assert!(
+        block.contains(&format!("- [fact]{SEED_CONTENT}")),
+        "fact 种子应以标准行格式出现：{block}"
+    );
+
+    // 场景三：自动写入关 → 两工具返回「已关闭」提示且不落库。
+    // 断言走键位（find_by_key_tag）而非全表计数——共享库可能被并行测试
+    // 进程写入别的条目，计数口径会误伤；本工具写入的键唯一可精确判定。
+    write_config_with_memory_control(&app, true, false);
+    let conn = wmessage_lib::db::open_db(&app).unwrap();
+    let r = wmessage_lib::memory::tool_remember_fact(&app, r#"{"key":"测试键","value":"测试值"}"#)
+        .await;
+    assert!(r.text.contains("无需记录"), "{}", r.text);
+    let r = wmessage_lib::memory::tool_record_lesson(&app, r#"{"lesson":"某教训"}"#).await;
+    assert!(r.text.contains("无需记录"), "{}", r.text);
+    assert!(
+        wmessage_lib::memory::store::find_by_key_tag(&conn, "测试键")
+            .unwrap()
+            .is_none(),
+        "门禁关闭时不得写入「测试键」"
+    );
+
+    // 收尾同样恢复现场（成功路径；中途 panic 由下一次运行的开场清理兜底）
+    clean_gate_leftovers(&app);
+}
+
+const SEED_CONTENT_PLACEHOLDER: &str = "测试记忆内容甲乙丙丁";
+
+/// 清共享现场：本测试的配置文件、种子条目（含历史轮次残留）、漏写的「测试键」。
+/// 清理失败只 eprintln 不 panic——共享目录的清理是尽力而为，失败信息留诊断。
+fn clean_gate_leftovers(app: &tauri::AppHandle<tauri::test::MockRuntime>) {
+    if let Err(e) = std::fs::remove_file(wmessage_lib::bot::config_path(app)) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            eprintln!("[memory_gate] 清理共享 bot-config.json 失败：{e}");
+        }
+    }
+    let conn = wmessage_lib::db::open_db(app).unwrap();
+    let junk: Vec<String> = wmessage_lib::memory::store::load_all(&conn)
+        .unwrap()
+        .into_iter()
+        .filter(|m| {
+            m.content == SEED_CONTENT_PLACEHOLDER
+                || m.tags.first().map(|t| t.as_str()) == Some("测试键")
+        })
+        .map(|m| m.id)
+        .collect();
+    if let Err(e) = wmessage_lib::memory::store::delete_by_ids(&conn, &junk) {
+        eprintln!("[memory_gate] 清理共享库条目失败：{e}");
+    }
+}

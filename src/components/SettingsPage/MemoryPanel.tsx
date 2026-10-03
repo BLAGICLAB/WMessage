@@ -6,7 +6,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Brain, Info, Pencil, RefreshCw, Trash2 } from "lucide-react";
+import { open, save } from "@tauri-apps/plugin-dialog";
+import { Brain, Download, Info, Pencil, RefreshCw, Trash2, Upload } from "lucide-react";
 import { formatCommandError } from "../../lib/errorHandler";
 import { IconButton } from "../../ui/IconButton";
 import { EmptyState } from "../EmptyState";
@@ -85,6 +86,68 @@ export function MemoryPanel() {
   const [editKind, setEditKind] = useState("fact");
   const [busy, setBusy] = useState(false);
   const [rowError, setRowError] = useState("");
+  /** 导出/导入结果提示（4s 自动清除，同 consolidateMsg 的 toast 模式） */
+  const [ioMsg, setIoMsg] = useState("");
+  const ioMsgTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** 设置提示并重置自动清除计时器（重设前清旧，卸载时清尾） */
+  const showIoMsg = (msg: string) => {
+    if (ioMsgTimer.current) clearTimeout(ioMsgTimer.current);
+    ioMsgTimer.current = setTimeout(() => setIoMsg(""), 4000);
+    setIoMsg(msg);
+  };
+  useEffect(
+    () => () => {
+      if (ioMsgTimer.current) clearTimeout(ioMsgTimer.current);
+    },
+    [],
+  );
+
+  /** 导出记忆：plugin-dialog save 取路径 → 后端写 JSON（含向量，跨机不丢语义检索）。
+   *  对话框取消不清上一条提示（清提示时机在拿到 path 之后） */
+  const exportMemories = async () => {
+    if (busy) return;
+    try {
+      const path = await save({
+        defaultPath: `wmessage-memories-${new Date()
+          .toISOString()
+          .slice(0, 10)
+          .replace(/-/g, "")}.json`,
+        filters: [{ name: "JSON", extensions: ["json"] }],
+      });
+      if (!path) return;
+      setBusy(true);
+      const f = await invoke<{ count: number }>("mem_export", { path });
+      showIoMsg(`已导出 ${f.count} 条记忆`);
+    } catch (e) {
+      showIoMsg(`导出失败：${formatCommandError(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** 导入记忆：plugin-dialog open 取路径 → 后端走既有语义去重只增不删 → 刷新列表 */
+  const importMemories = async () => {
+    if (busy) return;
+    try {
+      // open(multiple:false) 返回 string | null
+      const path = await open({
+        multiple: false,
+        filters: [{ name: "JSON", extensions: ["json"] }],
+      });
+      if (typeof path !== "string" || !path) return;
+      setBusy(true);
+      const r = await invoke<{ inserted: number; merged: number; skipped: number }>(
+        "mem_import",
+        { path },
+      );
+      showIoMsg(`导入完成：新增 ${r.inserted} 条、合并 ${r.merged} 条、跳过 ${r.skipped} 条`);
+      await reload(debouncedQuery, kindFilter);
+    } catch (e) {
+      showIoMsg(`导入失败：${formatCommandError(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   // 搜索防抖 300ms（输入不中断，停顿后才打后端）
   useEffect(() => {
@@ -191,16 +254,39 @@ export function MemoryPanel() {
                 : "加载中…"}
             </p>
           </div>
-          <IconButton
-            aria-label="刷新记忆列表"
-            title="刷新记忆列表"
-            className="shrink-0 text-[var(--t5)] hover:text-[var(--t2)]"
-            onClick={() => reload(debouncedQuery, kindFilter)}
-            disabled={busy}
-          >
-            <RefreshCw size={13} aria-hidden />
-          </IconButton>
+          <div className="flex shrink-0 items-center gap-1">
+            {/* 导出/导入（U15）：向量随 JSON 带出，导入走语义去重只增不删；
+                低风险的导出在左，导入紧随，刷新贴列表侧 */}
+            <IconButton
+              aria-label="导出记忆"
+              title="导出全部记忆到 JSON 文件（含语义向量）"
+              className="text-[var(--t5)] hover:text-[var(--t2)]"
+              onClick={exportMemories}
+              disabled={busy}
+            >
+              <Download size={13} aria-hidden />
+            </IconButton>
+            <IconButton
+              aria-label="导入记忆"
+              title="从 JSON 文件导入记忆（与现有记忆语义重复的会自动合并）"
+              className="text-[var(--t5)] hover:text-[var(--t2)]"
+              onClick={importMemories}
+              disabled={busy}
+            >
+              <Upload size={13} aria-hidden />
+            </IconButton>
+            <IconButton
+              aria-label="刷新记忆列表"
+              title="刷新记忆列表"
+              className="text-[var(--t5)] hover:text-[var(--t2)]"
+              onClick={() => reload(debouncedQuery, kindFilter)}
+              disabled={busy}
+            >
+              <RefreshCw size={13} aria-hidden />
+            </IconButton>
+          </div>
         </div>
+        {ioMsg && <p className="text-[11px] text-[var(--t4)]">{ioMsg}</p>}
         {/* 嵌入引擎降级横幅：界面照常可用（关键词检索），但语义相似度缺位 */}
         {stats && !stats.embedOk && (
           <p

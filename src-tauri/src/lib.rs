@@ -506,6 +506,8 @@ pub fn run() {
             bot::mcp::commands::mcp_server_tools,
             memory::consolidate::memory_consolidate_now,
             memory::panel::mem_delete,
+            memory::panel::mem_export,
+            memory::panel::mem_import,
             memory::panel::mem_list,
             memory::panel::mem_stats,
             memory::panel::mem_update,

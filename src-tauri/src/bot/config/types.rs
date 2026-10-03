@@ -161,6 +161,10 @@ pub struct BotConfig {
     /// None = 默认（启用 + daily；见 ConsolidationConfig::default）。
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub memory_consolidation: Option<crate::memory::consolidate::ConsolidationConfig>,
+    /// 记忆可控开关（U15）：注入总闸 + 模型主动记忆门禁。
+    /// None（老配置缺字段）= 全开，行为与开关引入前完全一致。
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub memory_control: Option<crate::memory::MemoryControl>,
     /// 外部 MCP 服务器配置（MCP 宿主支持，2026-09-28 拍板 1B）：
     /// None = 老配置无此字段 = 未配置任何服务器。结构见 bot::mcp::config。
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -272,6 +276,7 @@ impl Default for BotConfig {
             active_model_id: None,            // 未配置 = 两协议都没选 active
             ui_font_size: None,               // 未配置 = small（老板拍板默认；前端读取时回退）
             memory_consolidation: None, // 未配置 = 启用 + daily（ConsolidationConfig::default）
+            memory_control: None,       // 未配置 = 注入/主动记忆全开（U15 前行为）
             mcp_servers: None,          // 未配置 = 无外部 MCP 服务器（老配置零影响）
             evolution: None,            // 未配置 = 无自进化块（evolution 模块自管读写）
             disabled_vendors: Vec::new(), // 未配置 = 无厂商被禁用
@@ -378,6 +383,9 @@ pub struct BotConfigView {
     pub ui_font_size: Option<String>,
     /// 定时记忆整理配置：None 时解析为默认（启用 + daily）透传前端
     pub memory_consolidation: crate::memory::consolidate::ConsolidationConfig,
+    /// 记忆可控开关原样透传（None = 全开，前端按开启显示）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_control: Option<crate::memory::MemoryControl>,
     /// 外部 MCP 服务器配置原样透传（None 归一为空数组，前端永远拿数组形态）
     pub mcp_servers: Vec<crate::bot::mcp::config::McpServerConfig>,
     /// 厂商级禁用列表原样透传（空 = 全部启用）

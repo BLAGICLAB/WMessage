@@ -2,6 +2,51 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-03（周六）U15-MEMORYCTRL：记忆可控开关 + 导出导入（记忆升级第一期收官）
+
+**需求**（方向对比拍板的 B 开关部分 + F）：①注入总闸与模型主动记忆门禁——
+隐私敏感用户需要「记忆保留但不发给模型」「不许模型自己乱记」；②换机/清库
+安全感——记忆导出导入。
+
+**实现**：①**开关**——bot-config.json 新增 `memoryControl` 块
+（`injectionEnabled` / `autoWriteEnabled`，serde default 全开，老配置零影响）；
+`io.rs` 增 `read_memory_control` 轻量读取（可测内核 `read_memory_control_at`，
+同 `read_bypass_llm_switch` 先例；运行时泛型——注入路径被泛型任务执行复用，
+`config_path` 随之泛型化）。两个门禁：`injection_block` 开头短路（关 = 记忆
+保留但不注入）；`remember_fact` / `record_lesson` 入口返回 ok 提示（不是故障，
+模型不重试刷屏）。范围口径：autoWrite 只门禁模型主动写入，摘要/反思/定时
+整理等系统流水线不受影响。②**导出导入**——`mem_export`（全量 JSON，向量
+随行带出，导入机即使引擎降级不丢语义检索；plugin-dialog save 取路径 Rust
+侧写文件）/ `mem_import`（走既有语义去重只增不删，无向量条目现场重算；
+版本守卫拒导入过新文件；报告 inserted/merged/skipped）。③**前端**——记忆
+section 增「记忆权限」双开关卡（点档即时落盘）；MemoryPanel 头部增导入/
+导出按钮 + 结果提示。
+
+**集成测试踩坑实录**：三个门禁测试最初按独立用例写，nextest 下 flaky——
+根因是 `db::data_dir` 在 cargo test 下解析到 `target/debug/deps/`，其
+bot-config.json 与 wmessage.db 被**所有测试进程共享**（paths.rs「测试期的
+跨进程共享」既知地雷的又一次实证：并行进程互踩配置 + 共享库历史脏数据
+打穿 `is_empty()` 绝对断言）。处置：三场景合并为单测试（nextest 下即单
+进程），断言改增量口径，测试收尾恢复共享现场（删配置文件 + 清种子与遗留
+条目）。另：测试期间磁盘被 target 撑满（109G），`cargo clean -p wmessage`
+回收 93G。
+
+**验证**：test-all 全量绿（nextest 1345 / pytest 审计 / vitest 392）；
+门禁单测（io 内核矩阵 + panel 导出导入 roundtrip）+ 集成三场景（注入关/
+注入开/写入关）三连跑稳定；前端双开关有状态 mock 用例 + 导入导出四用例。
+
+**ocr 复审**（47 条 6H/23M/18L，json 于 docs/OCR-CODE-REVIEW-2026-10-03-u15.json）：
+修 19——导入存储故障上抛不再混入 skipped（H）、预嵌入/序列化挪出 DB 写锁
+临界区（M×2）、导出改轻量返回+原子写（M）、导入 kind/source 契约校验（M）、
+集成场景三改键位断言 + 清理前移（H/M×2）、双开关补 role=switch + aria-checked
+（M）、开关行去重、ioMsg 4s 自动清除、对话框取消不清提示、facade 再导出
+read_memory_control、io 内核补半字段/空对象/显式 null 用例、损坏配置 stderr
+告警、路径 .json 守卫、按钮顺序与死分支等；驳回/登记 8（门禁每轮全量解析
+配置与 read_bypass_llm_switch 同成本先例、async 线程 1KB 文件读属噪音级、
+config_path 泛型化无外部调用方、乐观更新系 setConsolidation 既有模式族、
+存储故障注入单测不可行等）；model-meta-service 10 条不适用（未入库废弃
+目录）。处置详见 U15 spec。
+
 ## 2026-10-03（周六）U14-MEMORYPANEL：设置页记忆库管理面板 + source 契约归一
 
 **需求**（记忆模块升级第一期，方向对比后拍板）：设置页「记忆」此前只有整理

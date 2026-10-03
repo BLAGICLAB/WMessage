@@ -389,6 +389,11 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
       interval: "daily",
       lastRunAt: null as number | null,
     },
+    // U15 记忆可控开关：注入总闸 + 模型主动记忆门禁（后端缺字段 = 全开）
+    memoryControl: {
+      injectionEnabled: true,
+      autoWriteEnabled: true,
+    },
   });
   // 「立即整理」按钮状态与结果提示（转圈 → 短暂 toast 式文案，同 configSaved 模式）
   const [consolidateBusy, setConsolidateBusy] = useState(false);
@@ -472,6 +477,11 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
           interval?: string;
           lastRunAt?: number | null;
         } | null;
+        // U15 记忆可控开关（老后端没返 → 全开）
+        memoryControl?: {
+          injectionEnabled?: boolean;
+          autoWriteEnabled?: boolean;
+        } | null;
       }>(
         "bot_get_config"
       );
@@ -525,6 +535,11 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
             ? (c.memoryConsolidation?.interval as string)
             : "daily",
           lastRunAt: c.memoryConsolidation?.lastRunAt ?? null,
+        },
+        // U15 记忆可控开关：缺字段/老后端 → 全开
+        memoryControl: {
+          injectionEnabled: c.memoryControl?.injectionEnabled ?? true,
+          autoWriteEnabled: c.memoryControl?.autoWriteEnabled ?? true,
         },
       });
     } catch (e) {
@@ -682,6 +697,8 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
           reasoningEffort: c.reasoningEffort,
           // 定时记忆整理：原样透传（后端 serde default 兜底缺字段）
           memoryConsolidation: c.memoryConsolidation,
+          // U15 记忆可控开关：原样透传
+          memoryControl: c.memoryControl,
         },
         // 厂商页 key 输入框非空且当前在厂商页 → 按厂商名写入凭据存储；
         // 留空保持该厂商已存 key 不变。apiKey 是旧全局槽位参数，前端已弃用（固定 null）
@@ -1206,6 +1223,48 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     };
     setConfig(next);
     await saveConfig(next);
+  };
+
+  /** U15 记忆可控开关：点档即时落盘（同 setConsolidation 模式） */
+  const setMemoryControl = async (
+    patch: Partial<{ injectionEnabled: boolean; autoWriteEnabled: boolean }>,
+  ) => {
+    if (configBusy) return;
+    const next = {
+      ...config,
+      memoryControl: { ...config.memoryControl, ...patch },
+    };
+    setConfig(next);
+    await saveConfig(next);
+  };
+
+  /** 记忆权限开关行（U15）：role=switch + aria-checked（与厂商总开关同一可访问语义） */
+  const renderMemoryToggle = (
+    label: string,
+    description: string,
+    field: "injectionEnabled" | "autoWriteEnabled",
+  ) => {
+    const on = config.memoryControl[field];
+    return (
+      <div className="flex items-center justify-between gap-4">
+        <div className="min-w-0">
+          <p className="text-[11px] text-[var(--t3)]">{label}</p>
+          <p className="mt-0.5 text-[11px] text-[var(--t5)]">{description}</p>
+        </div>
+        <button
+          role="switch"
+          aria-checked={on}
+          aria-label={label}
+          className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] ${
+            on ? "nm-inset" : "nm-outset"
+          }`}
+          onClick={() => setMemoryControl({ [field]: !on })}
+          disabled={configBusy}
+        >
+          {on ? "已开启" : "已关闭"}
+        </button>
+      </div>
+    );
   };
 
   /** 立即整理：转圈 → 结果文案短暂展示（同 configSaved 的 setTimeout 清除模式），并刷新「上次整理时间」 */
@@ -1789,6 +1848,22 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
                 <p className="text-[11px] text-[var(--t4)]">{consolidateMsg}</p>
               )}
             </>
+          )}
+        </div>
+      </div>
+      {/* U15 记忆可控开关：注入总闸 + 模型主动记忆门禁（点档即时落盘） */}
+      <div className="nm-card p-5">
+        <div className="space-y-3">
+          <p className="text-xs font-medium text-[var(--t4)]">记忆权限</p>
+          {renderMemoryToggle(
+            "聊天注入记忆",
+            "关闭后记忆仍会保留，但不再随对话发给模型（隐私总闸）",
+            "injectionEnabled",
+          )}
+          {renderMemoryToggle(
+            "模型自动记忆",
+            "关闭后模型调用「记住 / 记教训」工具只会收到关闭提示，不写入",
+            "autoWriteEnabled",
           )}
         </div>
       </div>

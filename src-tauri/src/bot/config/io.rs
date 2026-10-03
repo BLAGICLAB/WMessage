@@ -3,6 +3,7 @@
 //! - `config_path` / `load_config` / `add_allowed_dir` / `update_config_file`
 //! - `write_bot_config_file` 强制剥离 key 字段（双保险）+ base_url 安全告警
 //! - `read_bypass_llm_switch` 轻量开关读取（bot_chat 入口用）
+//! - `read_memory_control` 记忆可控开关轻量读取（U15，memory 门禁用）
 //! - `base_url_is_safe` SSRF / 明文传输警告
 //! - `migrate_legacy_key` / `migrate_search_keys` 老配置明文 → keyring
 
@@ -115,7 +116,7 @@ pub(crate) fn write_config_atomic(path: &Path, raw: &str) -> std::io::Result<()>
 
 // ───────────────────────── 路径 ─────────────────────────
 
-pub fn config_path(app: &AppHandle) -> PathBuf {
+pub fn config_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> PathBuf {
     db::data_dir(app).join("bot-config.json")
 }
 
@@ -123,6 +124,29 @@ pub fn config_path(app: &AppHandle) -> PathBuf {
 /// 比 bot_get_config 轻量：跳过 BotConfigView 构造 + key 校验，bot_chat 入口用。
 pub fn read_bypass_llm_switch(app: &AppHandle) -> bool {
     read_bypass_llm_switch_at(&config_path(app))
+}
+
+/// 记忆可控开关读取（U15，运行时泛型——注入路径被泛型任务执行复用；
+/// 同模块 read_bypass_llm_switch 收具体句柄是历史签名，不追改）：
+/// 文件缺失 / 读失败 / 解析失败 / 缺字段 → None = 全开，门禁绝不弄挂聊天。
+/// 比 bot_get_config 轻量（只取 memoryControl 一个字段，同 read_bypass_llm_switch 精神）。
+pub fn read_memory_control<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Option<crate::memory::MemoryControl> {
+    read_memory_control_at(&config_path(app))
+}
+
+/// 可测内核（纯路径参数）：None = 无控制（全开）。
+/// 文件存在但解析失败 → stderr 一行告警（隐私开关静默失效要可诊断）。
+pub(crate) fn read_memory_control_at(path: &Path) -> Option<crate::memory::MemoryControl> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    match serde_json::from_str::<BotConfig>(&raw) {
+        Ok(cfg) => cfg.memory_control,
+        Err(e) => {
+            eprintln!("[memory] bot-config.json 解析失败，记忆开关按全开放行：{e}");
+            None
+        }
+    }
 }
 
 /// 可测内核（纯路径参数）：文件缺失 / 读失败 / JSON 损坏 / 缺字段 → true。

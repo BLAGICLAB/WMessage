@@ -43,7 +43,10 @@ pub use commands::{
     apply_active_model_switch, bot_clear_api_key, bot_get_config, bot_set_active_model,
     bot_set_config, perm_mode,
 };
-pub use io::{config_path, migrate_legacy_key, migrate_search_keys, read_bypass_llm_switch};
+pub use io::{
+    config_path, migrate_legacy_key, migrate_search_keys, read_bypass_llm_switch,
+    read_memory_control,
+};
 pub use keyring::{
     has_api_key, has_search_key, has_vendor_key, read_api_key, read_llm_key, read_search_key,
     write_search_key,
@@ -84,8 +87,8 @@ mod tests {
     use crate::bot::config::audit::{escape_for_log, read_log_tail, truncate_for_log};
     use crate::bot::config::io::{
         add_allowed_dir, base_url_is_safe, load_config, migrate_legacy_key,
-        migrate_search_key_slot, read_bypass_llm_switch_at, update_config_file,
-        write_bot_config_file,
+        migrate_search_key_slot, read_bypass_llm_switch_at, read_memory_control_at,
+        update_config_file, write_bot_config_file,
     };
     use crate::bot::config::keyring::{
         backend_for, classify_get_password, classify_has_key, delete_api_key_at, has_api_key,
@@ -494,6 +497,50 @@ mod tests {
             read_bypass_llm_switch_at(&p),
             "损坏配置应默认 bypass 而非 panic"
         );
+    }
+
+    /// U15 记忆开关读取语义：文件缺失 / 损坏 / 缺字段 → None（全开，门禁不弄挂聊天）；
+    /// 显式关闭的块才生效。走可测内核（纯路径参数），不碰 mock app 的共享数据目录。
+    #[test]
+    fn read_memory_control_defaults_none_and_honors_explicit_block() {
+        use crate::memory::MemoryControl;
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("bot-config.json");
+        // 文件不存在 → None（全开）
+        assert_eq!(read_memory_control_at(&p), None);
+        // 缺字段（老配置）→ None
+        std::fs::write(&p, r#"{"baseUrl":"https://api.example.com/v1"}"#).unwrap();
+        assert_eq!(read_memory_control_at(&p), None);
+        // 显式关闭块 → 原样带出
+        std::fs::write(
+            &p,
+            r#"{"memoryControl":{"injectionEnabled":false,"autoWriteEnabled":true}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            read_memory_control_at(&p),
+            Some(MemoryControl {
+                injection_enabled: false,
+                auto_write_enabled: true,
+            })
+        );
+        // 半字段 → serde default 补全缺的字段（全开）
+        std::fs::write(&p, r#"{"memoryControl":{"injectionEnabled":false}}"#).unwrap();
+        assert_eq!(
+            read_memory_control_at(&p),
+            Some(MemoryControl {
+                injection_enabled: false,
+                auto_write_enabled: true,
+            })
+        );
+        // 空对象 → 全开；显式 null → None（= 无控制）
+        std::fs::write(&p, r#"{"memoryControl":{}}"#).unwrap();
+        assert_eq!(read_memory_control_at(&p), Some(MemoryControl::default()));
+        std::fs::write(&p, r#"{"memoryControl":null}"#).unwrap();
+        assert_eq!(read_memory_control_at(&p), None);
+        // JSON 损坏 → None（门禁不 panic）
+        std::fs::write(&p, "{not json").unwrap();
+        assert_eq!(read_memory_control_at(&p), None, "损坏配置应全开而非 panic");
     }
 
     // ────────── keyring 错误分类纯函数单测 ──────────
