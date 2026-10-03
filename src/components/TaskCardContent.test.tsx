@@ -97,8 +97,8 @@ describe("TaskCardContent 多文件绑定", () => {
     const user = userEvent.setup();
     const onRemoveFile = vi.fn();
     render(<TaskCardContent task={multiTask} onRemoveFile={onRemoveFile} />);
-    expect(screen.getByText("📎 a.pdf")).toBeInTheDocument();
-    expect(screen.getByText("📎 b.docx")).toBeInTheDocument();
+    expect(screen.getByText("a.pdf")).toBeInTheDocument();
+    expect(screen.getByText("b.docx")).toBeInTheDocument();
     const removes = screen.getAllByTitle("移除该文件");
     expect(removes).toHaveLength(2);
     await user.click(removes[1]);
@@ -107,7 +107,7 @@ describe("TaskCardContent 多文件绑定", () => {
 
   it("不传 onRemoveFile 时不渲染 ×（只读场景）", () => {
     render(<TaskCardContent task={multiTask} />);
-    expect(screen.getByText("📎 a.pdf")).toBeInTheDocument();
+    expect(screen.getByText("a.pdf")).toBeInTheDocument();
     expect(screen.queryByTitle("移除该文件")).not.toBeInTheDocument();
   });
 
@@ -123,10 +123,10 @@ describe("TaskCardContent 多文件绑定", () => {
       })),
     };
     render(<TaskCardContent task={seven} />);
-    expect(screen.queryByText("📎 5.txt")).not.toBeInTheDocument();
+    expect(screen.queryByText("5.txt")).not.toBeInTheDocument();
     await user.click(screen.getByText("还有 2 个"));
-    expect(screen.getByText("📎 5.txt")).toBeInTheDocument();
-    expect(screen.getByText("📎 6.txt")).toBeInTheDocument();
+    expect(screen.getByText("5.txt")).toBeInTheDocument();
+    expect(screen.getByText("6.txt")).toBeInTheDocument();
   });
 
   it("点绑定文件名直接打开（2026-08-26 起不再有 📂 多选列表）", async () => {
@@ -138,7 +138,7 @@ describe("TaskCardContent 多文件绑定", () => {
         onOpenFilePath={onOpenFilePath}
       />
     );
-    await user.click(screen.getByText("📎 b.docx"));
+    await user.click(screen.getByText("b.docx"));
     expect(onOpenFilePath).toHaveBeenCalledWith("/docs/b.docx");
   });
 

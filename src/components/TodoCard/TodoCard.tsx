@@ -7,7 +7,7 @@
 
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { Trash2, Undo2 } from "lucide-react";
+import { Bot, Clock, FileText, Folder, FolderOpen, GripVertical, Paperclip, Trash2, Undo2 } from "lucide-react";
 import { useDraggable } from "@dnd-kit/core";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -246,7 +246,7 @@ export function TodoCardView({
             title="拖拽移动"
             className="shrink-0 mt-0.5 w-4 h-4 flex items-center justify-center text-[12px] leading-none text-[var(--t5)] rounded hover:bg-[var(--hover-bg)] opacity-0 group-hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing"
           >
-            ☰
+            <GripVertical size={12} aria-hidden />
           </span>
         )}
         {editing ? (
@@ -482,7 +482,12 @@ export function TodoCardView({
                   onPointerDown={stop}
                   onClick={() => openOneFile(f.path)}
                 >
-                  {f.isDir ? "📁" : "📎"} {basename(f.path)}
+                  {f.isDir ? (
+                    <Folder size={11} aria-hidden className="inline-block align-[-2px]" />
+                  ) : (
+                    <Paperclip size={11} aria-hidden className="inline-block align-[-2px]" />
+                  )}{" "}
+                  {basename(f.path)}
                 </button>
                 <button
                   className="shrink-0 text-[10px] text-[var(--t5)] hover:text-[var(--t3)]"
@@ -535,7 +540,7 @@ export function TodoCardView({
                   onPointerDown={stop}
                   onClick={pickFolder}
                 >
-                  📁
+                  <FolderOpen size={11} aria-hidden />
                 </button>
               )}
               <button
@@ -556,14 +561,14 @@ export function TodoCardView({
             onPointerDown={stop}
             onClick={pickFile}
           >
-            <span className="text-[11px] leading-none">📎</span> 绑定文件
+            <span className="text-[11px] leading-none inline-flex"><Paperclip size={11} aria-hidden /></span> 绑定文件
           </button>
           <button
             className="nm-btn px-2 py-0.5 text-xs text-[var(--t4)] flex items-center gap-1"
             onPointerDown={stop}
             onClick={pickFolder}
           >
-            <span className="text-[11px] leading-none">📁</span> 绑定文件夹
+            <span className="text-[11px] leading-none inline-flex"><FolderOpen size={11} aria-hidden /></span> 绑定文件夹
           </button>
         </div>
       )}
@@ -622,7 +627,7 @@ export function TodoCardView({
           onClick={runWithBot}
           title="交给机器人执行这张任务卡"
         >
-          🤖 交给机器人
+          <Bot size={11} aria-hidden /> 交给机器人
         </button>
         <button
           className={`nm-btn px-2 py-0.5 text-[11px] leading-none ${
@@ -642,7 +647,7 @@ export function TodoCardView({
               : "定时执行：到点自动交给机器人跑"
           }
         >
-          ⏰ {task.schedule ? formatSchedule(task.schedule) : "定时"}
+          <Clock size={11} aria-hidden /> {task.schedule ? formatSchedule(task.schedule) : "定时"}
         </button>
       </div>
       {schedOpen && (
@@ -884,7 +889,7 @@ export function TodoCardView({
                   setPurgeOpen(false);
                 }}
               >
-                <span className="font-medium">📄 保留文件删除</span>
+                <span className="font-medium inline-flex items-center gap-1"><FileText size={11} aria-hidden /> 保留文件删除</span>
                 <span className="text-[10px] text-[var(--t4)] font-normal">只删除任务卡，本地{boundFiles.length > 1 ? "文件/文件夹" : boundFiles[0].isDir ? "文件夹" : "文件"}保留</span>
               </button>
               <button

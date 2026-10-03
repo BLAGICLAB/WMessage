@@ -5,7 +5,7 @@
 
 import type { Dispatch, RefObject, SetStateAction } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { Brain, Plus, Square, Zap } from "lucide-react";
+import { Brain, Image as ImageIcon, Paperclip, Plus, Shield, Square, Zap } from "lucide-react";
 import { basename, isImagePath } from "../../format";
 import { EFFORT_LABELS, PERM_LABELS, PROVIDER_LABELS, SLASH_COMMANDS } from "./constants";
 import type { ModelItem, PermMode, ReasoningLevel } from "./types";
@@ -144,7 +144,12 @@ export function InputArea({
                     title={f}
                   >
                     <span className="truncate max-w-[280px]">
-                      {isImg ? "🖼️" : "📎"} {basename(f)}
+                      {isImg ? (
+                        <ImageIcon size={10} aria-hidden className="inline-block align-[-1px]" />
+                      ) : (
+                        <Paperclip size={10} aria-hidden className="inline-block align-[-1px]" />
+                      )}{" "}
+                      {basename(f)}
                     </span>
                     <button
                       type="button"
@@ -241,7 +246,7 @@ export function InputArea({
             className="shrink-0 inline-flex items-center gap-1 rounded-full border border-[var(--edge)] px-2 py-0.5 text-[10px] leading-4 text-[var(--t4)]"
             title={`授权模式 ${permMode}（设置页维护）：ask=白名单外弹授权窗，strict=白名单外硬拒，yolo=全放行（仍记审计）`}
           >
-            🛡 {PERM_LABELS[permMode]}
+            <Shield size={10} aria-hidden /> {PERM_LABELS[permMode]}
           </span>
           {/* 🧠 模型下拉（UI-1 从顶栏移入输入卡底栏；按钮/列表/切换逻辑不变，
               相对按钮向上弹出，免 JS 测量定位） */}

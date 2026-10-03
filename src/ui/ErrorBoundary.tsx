@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
+import { RotateCcw, TriangleAlert } from "lucide-react";
 
 /** ErrorBoundary（U5 自 App.tsx 提取共享）：任何子组件抛错时不再 unmount 变白，
  *  捕到错误显示堆栈 + 「重试」按钮重置 state。主窗口与挂件窗口共用（挂件此前
@@ -27,7 +28,7 @@ export class ErrorBoundary extends Component<
         <div className="min-h-screen bg-[var(--bg)] p-6 flex items-center justify-center">
           <div className="nm-card p-6 max-w-2xl">
             <p className="text-base font-semibold text-[var(--danger)] mb-2">
-              ⚠️ 窗口发生错误
+              <TriangleAlert size={14} aria-hidden className="inline-block align-[-2px]" /> 窗口发生错误
             </p>
             <p className="text-sm text-[var(--t2)] mb-2">{message}</p>
             <pre className="text-[10px] text-[var(--t4)] whitespace-pre-wrap overflow-auto max-h-64 bg-[var(--inset)] p-3 rounded-xl mb-3">
@@ -37,7 +38,7 @@ export class ErrorBoundary extends Component<
               className="nm-btn px-4 py-1.5 text-sm text-[var(--t2)]"
               onClick={this.reset}
             >
-              🔄 重试
+              <RotateCcw size={13} aria-hidden className="inline-block align-[-2px]" /> 重试
             </button>
           </div>
         </div>

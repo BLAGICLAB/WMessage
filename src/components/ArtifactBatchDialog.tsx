@@ -1,5 +1,7 @@
 import { useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { Bot, Clock, Archive } from "lucide-react";
 import { formatCommandError } from "../lib/errorHandler";
 import { useTauriListen } from "../lib/useTauriListen";
 
@@ -11,10 +13,22 @@ type BatchReady = {
   paths: string[];
 };
 
-const ORIGIN_LABEL: Record<BatchReady["origin"], string> = {
-  manual: "🤖 手动执行",
-  scheduled: "⏰ 定时执行",
-  batch: "📦 批量执行",
+const ORIGIN_LABEL: Record<BatchReady["origin"], ReactNode> = {
+  manual: (
+    <>
+      <Bot size={11} aria-hidden className="inline-block align-[-2px]" /> 手动执行
+    </>
+  ),
+  scheduled: (
+    <>
+      <Clock size={11} aria-hidden className="inline-block align-[-2px]" /> 定时执行
+    </>
+  ),
+  batch: (
+    <>
+      <Archive size={11} aria-hidden className="inline-block align-[-2px]" /> 批量执行
+    </>
+  ),
 };
 
 /** 任务卡执行流程结束后的产物汇总弹窗（D4d 触发）

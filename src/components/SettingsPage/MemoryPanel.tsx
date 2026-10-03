@@ -7,7 +7,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { Brain, Download, Info, Pencil, RefreshCw, Trash2, Upload } from "lucide-react";
+import { Brain, Download, Info, Pencil, RefreshCw, Star, Trash2, Upload } from "lucide-react";
 import { formatCommandError } from "../../lib/errorHandler";
 import { IconButton } from "../../ui/IconButton";
 import { EmptyState } from "../EmptyState";
@@ -391,7 +391,8 @@ export function MemoryPanel() {
                     className="shrink-0 font-mono text-[10px] text-[var(--t5)]"
                     title={`重要度 ${p.importance}/5`}
                   >
-                    ★{p.importance}
+                    <Star size={10} aria-hidden className="inline-block align-[-1px]" />
+                    {p.importance}
                   </span>
                   <button
                     type="button"
@@ -545,7 +546,8 @@ export function MemoryPanel() {
                   className="shrink-0 font-mono text-[10px] text-[var(--t5)]"
                   title={`重要度 ${m.importance}/5`}
                 >
-                  ★{m.importance}
+                  <Star size={10} aria-hidden className="inline-block align-[-1px]" />
+                  {m.importance}
                 </span>
                 <span className="nm-tag shrink-0 text-[10px]">
                   {SOURCE_LABELS[m.source] ?? m.source}

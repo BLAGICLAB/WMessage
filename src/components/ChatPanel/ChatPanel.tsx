@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, emit } from "@tauri-apps/api/event";
+import { Pin } from "lucide-react";
 import { useTauriListen } from "../../lib/useTauriListen";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
@@ -1299,7 +1300,9 @@ export function ChatPanel({
               key={t.id}
               className="nm-inset inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t3)] max-w-full"
             >
-              <span className="truncate max-w-[280px]">📌 {t.title}</span>
+              <span className="truncate max-w-[280px]">
+                <Pin size={10} aria-hidden className="inline-block align-[-1px]" /> {t.title}
+              </span>
               <button
                 className="text-[var(--t5)] hover:text-[var(--danger)]"
                 onClick={() => onRemoveSelected(t.id)}

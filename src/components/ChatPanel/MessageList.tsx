@@ -5,7 +5,7 @@
 // 长会话掉帧主因）。回调句柄由父级 useCallback 固定，memo 浅比较即可命中。
 
 import { memo, useState, type ComponentType } from "react";
-import { Copy, FileText, MessagesSquare, Pin, Trash2 } from "lucide-react";
+import { Check, Copy, FileText, MessageCircle, MessagesSquare, Pin, Trash2, TriangleAlert } from "lucide-react";
 import { basename } from "../../format";
 import { extractFilePaths, openTarget } from "../../lib/openTarget";
 import { MarkdownText } from "../MarkdownText";
@@ -61,7 +61,7 @@ function MsgBubbleBase({ msg: m, idx, isCopied, busy, onCopy, onRemove, onOpenTa
         }`}
       >
         {m.role === "assistant" && (m.thinking?.length ?? 0) > 0 && (
-          <Fold title={<span>💭 思考过程{m.streaming ? " …" : ""}</span>}>
+          <Fold title={<span><MessageCircle size={11} aria-hidden className="inline-block align-[-2px]" /> 思考过程{m.streaming ? " …" : ""}</span>}>
             {m.thinking}
           </Fold>
         )}
@@ -78,7 +78,7 @@ function MsgBubbleBase({ msg: m, idx, isCopied, busy, onCopy, onRemove, onOpenTa
                     : "text-[var(--danger)]"
                 }
               >
-                ⚠️ Skill 失败：{m.skillFailure.skillName}
+                <TriangleAlert size={11} aria-hidden className="inline-block align-[-2px]" /> Skill 失败：{m.skillFailure.skillName}
                 {m.skillFailure.rollbackAttempted
                   ? "（已回滚）"
                   : "（未回滚，请人工核对）"}
@@ -98,7 +98,7 @@ function MsgBubbleBase({ msg: m, idx, isCopied, busy, onCopy, onRemove, onOpenTa
               </div>
               {!m.skillFailure.rollbackAttempted && (
                 <div className="text-[var(--danger)]">
-                  ⚠️ 已完成步骤未回滚，请检查任务卡状态。
+                  <TriangleAlert size={11} aria-hidden className="inline-block align-[-2px]" /> 已完成步骤未回滚，请检查任务卡状态。
                 </div>
               )}
             </div>
@@ -129,7 +129,9 @@ function MsgBubbleBase({ msg: m, idx, isCopied, busy, onCopy, onRemove, onOpenTa
               onClick={() => onCopy(idx, m.content)}
             >
               {isCopied ? (
-                "✓ 已复制"
+                <>
+                  <Check size={12} aria-hidden /> 已复制
+                </>
               ) : (
                 <>
                   <Copy size={11} aria-hidden />
@@ -185,7 +187,7 @@ const ToolBadges = memo(function ToolBadges({ tools }: { tools: ToolCall[] }) {
           >
             {t.name || "tool"}
             <span aria-hidden className={t.done ? "text-[var(--success)]" : ""}>
-              {t.done ? "✓" : "…"}
+              {t.done ? <Check size={10} strokeWidth={3} /> : "…"}
             </span>
           </span>
         ))}

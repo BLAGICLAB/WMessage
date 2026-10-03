@@ -108,7 +108,7 @@ describe("MemoryPanel", () => {
     expect(screen.getAllByText("偏好").length).toBeGreaterThan(0);
     expect(screen.getAllByText("教训").length).toBeGreaterThan(0);
     expect(screen.getByText("推断")).toBeInTheDocument();
-    expect(screen.getByText("★4")).toBeInTheDocument();
+    expect(screen.getByTitle("重要度 4/5").textContent).toContain("4");
     // 无向量条目徽标半透明 + title 标注（「教训」与筛选 chip 重名，走 title 定位）
     const lessonBadge = screen.getByTitle("无向量（关键词模式检索）");
     expect(lessonBadge.className).toContain("opacity-50");

@@ -1,4 +1,6 @@
 // 任务卡标题右侧的完成圆圈 —— 主窗口 TodoCard 与挂件 TaskCardContent 共用（保持一致）
+import { Check } from "lucide-react";
+
 export function DoneCircle({
   done,
   onToggle,
@@ -22,7 +24,7 @@ export function DoneCircle({
         onToggle();
       }}
     >
-      ✓
+      <Check size={12} strokeWidth={3} aria-hidden />
     </button>
   );
 }

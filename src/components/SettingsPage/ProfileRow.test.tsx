@@ -46,23 +46,23 @@ describe("ProfileRow 保存计时器与 busy 契约", () => {
     try {
       fireEvent.click(screen.getByText("保存"));
       await flush();
-      expect(screen.getByText("已保存 ✓")).toBeInTheDocument();
+      expect(screen.getByText("已保存")).toBeInTheDocument();
       // 1400ms 后仍在
       act(() => {
         vi.advanceTimersByTime(1400);
       });
-      expect(screen.getByText("已保存 ✓")).toBeInTheDocument();
+      expect(screen.getByText("已保存")).toBeInTheDocument();
       // 再保存一次 → 计时器重置（从第二次起算 1500ms）
-      fireEvent.click(screen.getByText("已保存 ✓"));
+      fireEvent.click(screen.getByText("已保存"));
       await flush();
       act(() => {
         vi.advanceTimersByTime(1400);
       });
-      expect(screen.getByText("已保存 ✓")).toBeInTheDocument();
+      expect(screen.getByText("已保存")).toBeInTheDocument();
       act(() => {
         vi.advanceTimersByTime(200);
       });
-      expect(screen.queryByText("已保存 ✓")).not.toBeInTheDocument();
+      expect(screen.queryByText("已保存")).not.toBeInTheDocument();
       expect(mocks.setProfileNameMock).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
@@ -75,7 +75,7 @@ describe("ProfileRow 保存计时器与 busy 契约", () => {
     try {
       fireEvent.click(screen.getByText("保存"));
       await flush();
-      expect(screen.getByText("已保存 ✓")).toBeInTheDocument();
+      expect(screen.getByText("已保存")).toBeInTheDocument();
       unmount();
       // 前进超过 1500ms：回调已被清理，无残留计时器
       act(() => {

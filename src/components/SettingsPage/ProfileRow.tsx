@@ -3,6 +3,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { Check, Image as ImageIcon } from "lucide-react";
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
 import { setProfileName, setProfileAvatar, removeProfileAvatar } from "../../profile";
 import { useProfile } from "../ActorAvatar";
@@ -133,7 +134,15 @@ export function ProfileRow({
             onClick={saveName}
             disabled={busy}
           >
-            {saved ? "已保存 ✓" : busy ? "…" : "保存"}
+            {saved ? (
+              <>
+                <Check size={11} aria-hidden /> 已保存
+              </>
+            ) : busy ? (
+              "…"
+            ) : (
+              "保存"
+            )}
           </button>
         </div>
         <div className="mt-1.5 flex items-center gap-2 pl-10">
@@ -142,7 +151,7 @@ export function ProfileRow({
             onClick={pick}
             disabled={busy}
           >
-            🖼 选择图片
+            <ImageIcon size={11} aria-hidden /> 选择图片
           </button>
           {src && (
             <button

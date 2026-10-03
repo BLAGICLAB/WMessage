@@ -142,9 +142,9 @@ describe("SettingsPage", () => {
     expect(screen.getByText("个人资料")).toBeInTheDocument();
     // U8：侧栏分类名与面板标题同文（「通用设置」两处），取全量断言
     expect(screen.getAllByText("通用设置").length).toBeGreaterThan(0);
-    expect(screen.getByText("☀️ 浅色")).toBeInTheDocument();
-    expect(screen.getByText("🌙 深色")).toBeInTheDocument();
-    expect(screen.getByText("🖥️ 跟随系统")).toBeInTheDocument();
+    expect(screen.getByText("浅色")).toBeInTheDocument();
+    expect(screen.getByText("深色")).toBeInTheDocument();
+    expect(screen.getByText("跟随系统")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "数据管理" }));
     expect(screen.getByText("任务数据管理")).toBeInTheDocument();
     expect(screen.getByText("工作区管理")).toBeInTheDocument();
@@ -174,19 +174,19 @@ describe("SettingsPage", () => {
     const onThemeChange = vi.fn();
     const user = userEvent.setup();
     render(<SettingsPage {...defaultProps} onThemeChange={onThemeChange} />);
-    await user.click(screen.getByText("☀️ 浅色"));
+    await user.click(screen.getByText("浅色"));
     expect(onThemeChange).toHaveBeenLastCalledWith("light");
-    await user.click(screen.getByText("🌙 深色"));
+    await user.click(screen.getByText("深色"));
     expect(onThemeChange).toHaveBeenLastCalledWith("dark");
-    await user.click(screen.getByText("🖥️ 跟随系统"));
+    await user.click(screen.getByText("跟随系统"));
     expect(onThemeChange).toHaveBeenLastCalledWith("system");
     expect(onThemeChange).toHaveBeenCalledTimes(3);
   });
 
   it("主题激活态：当前 theme 对应按钮带 nm-inset 类（视觉反馈）", async () => {
     render(<SettingsPage {...defaultProps} theme="dark" />);
-    const darkBtn = screen.getByText("🌙 深色");
-    const lightBtn = screen.getByText("☀️ 浅色");
+    const darkBtn = screen.getByText("深色");
+    const lightBtn = screen.getByText("浅色");
     // 当前选中的按钮包含 nm-inset，未选中的用 nm-outset
     expect(darkBtn.className).toContain("nm-inset");
     expect(lightBtn.className).toContain("nm-outset");
@@ -418,8 +418,8 @@ describe("SettingsPage", () => {
     render(<SettingsPage {...defaultProps} onExportTasks={onExportTasks} />);
     // U8：导航到「数据管理」分类（导出按钮所在面板）
     await user.click(screen.getByRole("button", { name: "数据管理" }));
-    // eefa78f 起页面有两个「📤 导出」（任务导出 + 工作区导出），取第一个（任务导出）
-    await user.click(screen.getAllByText("📤 导出")[0]);
+    // eefa78f 起页面有两个「导出」（任务导出 + 工作区导出），取第一个（任务导出）；U20B 图标化后为纯文字
+    await user.click(screen.getAllByText("导出")[0]);
     await waitFor(() => {
       expect(onExportTasks).toHaveBeenCalledTimes(1);
     });

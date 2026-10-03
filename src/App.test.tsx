@@ -557,12 +557,12 @@ describe("App", () => {
     await waitFor(() => {
       expect(screen.getByText("梳理 WMessage 需求清单")).toBeInTheDocument();
     });
-    // 进设置页点「📥 导入」（eefa78f 起有任务导入 + 工作区导入两个，取第一个 = 任务导入）
+    // 进设置页点「导入」（eefa78f 起有任务导入 + 工作区导入两个，取第一个 = 任务导入；U20B 图标化后 name 为纯文字）
     // U2：设置入口迁入左侧导航栏（icon + 文字「设置」，旧 ⚙️ 的 title 属性取消）
     await user.click(screen.getByText("设置"));
     // U7 设置壳：任务数据面板在「任务与工作区」分类下（hidden 查不到 role，先导航）
     await user.click(screen.getByRole("button", { name: "数据管理" }));
-    const importBtn = (await screen.findAllByRole("button", { name: "📥 导入" }))[0];
+    const importBtn = (await screen.findAllByRole("button", { name: "导入" }))[0];
     await user.click(importBtn);
     // 导入完成 alert（证明 importTasks 全流程走完）
     await waitFor(() => {

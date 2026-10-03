@@ -20,7 +20,7 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { FolderOpen, Pencil, Trash2 } from "lucide-react";
+import { FileText, Folder, FolderOpen, GripVertical, Link2, Pencil, Trash2 } from "lucide-react";
 import type { WorkspaceItem, WorkspaceLink } from "../types";
 import { basename } from "../format";
 import { IconButton } from "../ui/IconButton";
@@ -323,7 +323,7 @@ export function WorkspacePage() {
                 title="拖拽排序"
                 className="shrink-0 w-4 h-4 flex items-center justify-center text-[12px] leading-none text-[var(--t5)] rounded hover:bg-[var(--hover-bg)] opacity-0 group-hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing"
               >
-                ☰
+                <GripVertical size={12} aria-hidden />
               </span>
               {editingId === it.id ? (
                 <input
@@ -421,8 +421,14 @@ export function WorkspacePage() {
                           onClick={() => openLink(link)}
                         >
                           <div className="flex items-center gap-1.5">
-                            <span className="shrink-0 text-xs">
-                              {link.kind === "url" ? "🔗" : link.kind === "folder" ? "📁" : "📄"}
+                            <span className="shrink-0 text-xs inline-flex">
+                              {link.kind === "url" ? (
+                                <Link2 size={11} aria-hidden />
+                              ) : link.kind === "folder" ? (
+                                <Folder size={11} aria-hidden />
+                              ) : (
+                                <FileText size={11} aria-hidden />
+                              )}
                             </span>
                             <span
                               className="min-w-0 flex-1 truncate text-xs font-medium text-[var(--t2)]"
@@ -503,7 +509,7 @@ export function WorkspacePage() {
                       onClick={() => pickLocal(false)}
                       onPointerDown={stop}
                     >
-                      📄
+                      <FileText size={12} aria-hidden />
                     </button>
                     <button
                       className="nm-btn shrink-0 px-2.5 py-1 text-xs text-[var(--t3)]"
@@ -511,7 +517,7 @@ export function WorkspacePage() {
                       onClick={() => pickLocal(true)}
                       onPointerDown={stop}
                     >
-                      📁
+                      <FolderOpen size={12} aria-hidden />
                     </button>
                     <button
                       className="nm-btn shrink-0 px-3 py-1 text-xs text-[var(--t3)]"

@@ -91,7 +91,7 @@ describe("MigrationPanel", () => {
       return null;
     });
     render(<MigrationPanel />);
-    expect(await screen.findByText(/⚠ 有启用的删除规则/)).toBeInTheDocument();
+    expect(await screen.findByText(/有启用的删除规则/)).toBeInTheDocument();
     expect(screen.getByText("删除文件")).toBeInTheDocument();
   });
 
@@ -104,7 +104,7 @@ describe("MigrationPanel", () => {
     });
     render(<MigrationPanel />);
     expect(await screen.findByText("报表，周报")).toBeInTheDocument();
-    expect(screen.queryByText(/⚠ 有启用的删除规则/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/有启用的删除规则/)).not.toBeInTheDocument();
   });
 
   it("立即执行迁移：confirm 取消不调 migration_run；确认后执行并展示报告", async () => {
@@ -130,7 +130,7 @@ describe("MigrationPanel", () => {
   it("查看迁移日志：点击后弹窗展示 migration_log_read 返回内容，可关闭", async () => {
     const user = userEvent.setup();
     render(<MigrationPanel />);
-    await user.click(await screen.findByText("📋 查看迁移日志"));
+    await user.click(await screen.findByText("查看迁移日志"));
     await waitFor(() => {
       expect(mocks.invokeMock).toHaveBeenCalledWith("migration_log_read", { limit: 500 });
     });
@@ -146,7 +146,7 @@ describe("MigrationPanel", () => {
   it("导入规则表：成功后显示「已导入 N 条规则」并重新加载", async () => {
     const user = userEvent.setup();
     render(<MigrationPanel />);
-    await user.click(await screen.findByText("⬆ 导入规则表"));
+    await user.click(await screen.findByText("导入规则表"));
     await waitFor(() => {
       expect(mocks.invokeMock).toHaveBeenCalledWith("migration_rules_import");
     });

@@ -200,16 +200,16 @@ describe("TodoCardView 多文件绑定", () => {
 
   it("多 chip 列表渲染：每个文件一行（图标 + basename + 移除按钮）", () => {
     render(<TodoCardView task={multiTask} onUpdate={vi.fn()} onDelete={vi.fn()} />);
-    expect(screen.getByText("📎 a.pdf")).toBeInTheDocument();
-    expect(screen.getByText("📎 b.docx")).toBeInTheDocument();
-    expect(screen.getByText("📎 c.txt")).toBeInTheDocument();
+    expect(screen.getByText("a.pdf")).toBeInTheDocument();
+    expect(screen.getByText("b.docx")).toBeInTheDocument();
+    expect(screen.getByText("c.txt")).toBeInTheDocument();
     expect(screen.getAllByTitle("移除该文件")).toHaveLength(3);
   });
 
   it("旧字段兜底：只有 filePath 的老数据也渲染单 chip", () => {
     const legacy: Task = { ...baseTask, filePath: "/old/legacy.pdf", fileIsDir: false };
     render(<TodoCardView task={legacy} onUpdate={vi.fn()} onDelete={vi.fn()} />);
-    expect(screen.getByText("📎 legacy.pdf")).toBeInTheDocument();
+    expect(screen.getByText("legacy.pdf")).toBeInTheDocument();
   });
 
   it("chip × 单独移除：files 去掉该条，旧字段双写首条", async () => {
@@ -238,11 +238,11 @@ describe("TodoCardView 多文件绑定", () => {
     };
     render(<TodoCardView task={seven} onUpdate={vi.fn()} onDelete={vi.fn()} />);
     // 默认只显示前 5 个
-    expect(screen.getByText("📎 4.txt")).toBeInTheDocument();
-    expect(screen.queryByText("📎 5.txt")).not.toBeInTheDocument();
+    expect(screen.getByText("4.txt")).toBeInTheDocument();
+    expect(screen.queryByText("5.txt")).not.toBeInTheDocument();
     expect(screen.getByText("还有 2 个")).toBeInTheDocument();
     await user.click(screen.getByText("还有 2 个"));
-    expect(screen.getByText("📎 6.txt")).toBeInTheDocument();
+    expect(screen.getByText("6.txt")).toBeInTheDocument();
     expect(screen.getByText("收起")).toBeInTheDocument();
   });
 
@@ -252,7 +252,7 @@ describe("TodoCardView 多文件绑定", () => {
       files: [{ path: "/some/dir", isDir: true }],
     };
     render(<TodoCardView task={dirTask} onUpdate={vi.fn()} onDelete={vi.fn()} />);
-    expect(screen.getByText("📁 dir")).toBeInTheDocument();
+    expect(screen.getByText("dir")).toBeInTheDocument();
     expect(screen.getByTitle("继续绑定文件")).toBeInTheDocument();
     expect(screen.queryByTitle("绑定文件夹")).not.toBeInTheDocument();
   });
@@ -352,7 +352,7 @@ describe("TodoCardView 多文件绑定", () => {
     const { invoke } = await import("@tauri-apps/api/core");
     const user = userEvent.setup();
     render(<TodoCardView task={multiTask} onUpdate={vi.fn()} onDelete={vi.fn()} />);
-    await user.click(screen.getByText("📎 b.docx"));
+    await user.click(screen.getByText("b.docx"));
     expect(vi.mocked(invoke)).toHaveBeenCalledWith("open_file_path", {
       path: "/docs/b.docx",
     });

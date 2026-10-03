@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { Check, ClipboardList, Download, TriangleAlert, Upload } from "lucide-react";
 import { handleCommandError, formatCommandError } from "../lib/errorHandler";
 import type { MigrationRule, MigrationReport } from "../types";
 
@@ -125,7 +126,7 @@ export function MigrationPanel() {
               className={`shrink-0 text-xs ${r.enabled ? "text-[var(--success)]" : "text-[var(--t5)]"}`}
               title={r.enabled ? "已启用" : "已停用"}
             >
-              {r.enabled ? "✓" : "—"}
+              {r.enabled ? <Check size={10} strokeWidth={3} /> : "—"}
             </span>
             <span className="min-w-0 flex-1 truncate text-xs text-[var(--t3)]" title={r.keywords.join("，")}>
               {r.keywords.join("，") || "（无关键字）"}
@@ -150,26 +151,32 @@ export function MigrationPanel() {
           className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)]"
           onClick={downloadTemplate}
         >
-          ⬇ 下载表格模版
+          <Download size={12} aria-hidden /> 下载表格模版
         </button>
         <button
           className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)]"
           onClick={importRules}
         >
-          ⬆ 导入规则表
+          <Upload size={12} aria-hidden /> 导入规则表
         </button>
         <button
           className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)]"
           onClick={openLog}
           disabled={logBusy}
         >
-          {logBusy ? "读取中…" : "📋 查看迁移日志"}
+          {logBusy ? (
+            "读取中…"
+          ) : (
+            <>
+              <ClipboardList size={12} aria-hidden /> 查看迁移日志
+            </>
+          )}
         </button>
       </div>
 
       {deleteEnabled && (
         <p className="mt-2 text-xs text-[var(--danger)]">
-          ⚠ 有启用的删除规则：匹配的文件将被直接删除，请确认规则无误
+          <TriangleAlert size={11} aria-hidden className="inline-block align-[-2px]" /> 有启用的删除规则：匹配的文件将被直接删除，请确认规则无误
         </p>
       )}
 

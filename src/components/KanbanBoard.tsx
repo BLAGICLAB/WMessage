@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Archive } from "lucide-react";
 import {
   DndContext,
   DragEndEvent,
@@ -235,7 +236,7 @@ export function KanbanBoard({
                   className="mt-2 text-xs text-[var(--t5)] hover:text-[var(--t2)]"
                   onClick={onOpenArchive}
                 >
-                  🗄 已归档 {archivedCount}
+                  <Archive size={11} aria-hidden className="inline-block align-[-2px]" /> 已归档 {archivedCount}
                 </button>
               ) : null
             }

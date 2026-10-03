@@ -3,6 +3,7 @@ import type { DraggableSyntheticListeners } from "@dnd-kit/core";
 import type { Task } from "../types";
 import { taskFiles } from "../lib/taskFiles";
 import { basename, formatCompletedAt, formatDue, formatSchedule, scheduleToDatetime } from "../format";
+import { Bot, Clock, Folder, GripVertical, Paperclip, Puzzle, TriangleAlert } from "lucide-react";
 import { DoneCircle } from "./DoneCircle";
 import { FoldToggle } from "./FoldToggle";
 import { ActorAvatar } from "./ActorAvatar";
@@ -91,7 +92,7 @@ export function TaskCardContent({
             title="拖拽移动"
             className="shrink-0 mt-0.5 w-4 h-4 flex items-center justify-center text-[12px] leading-none text-[var(--t5)] rounded hover:bg-[var(--hover-bg)] opacity-0 group-hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing"
           >
-            ☰
+            <GripVertical size={12} aria-hidden />
           </span>
         )}
         {editingTitle ? (
@@ -183,7 +184,7 @@ export function TaskCardContent({
               {task.result && (
                 <details className="nm-inset rounded-lg px-2 py-1.5 text-xs">
                   <summary className="cursor-pointer select-none text-[var(--t4)]">
-                    🧩 收尾结果
+                    <Puzzle size={11} aria-hidden className="inline-block align-[-2px]" /> 收尾结果
                     {typeof task.result.status === "string" && (
                       <span className="ml-1">
                         （{task.result.status}
@@ -200,7 +201,8 @@ export function TaskCardContent({
                   )}
                   {(task.result.blockers ?? []).length > 0 && (
                     <p className="mt-1 text-[var(--t4)]">
-                      ⚠️ 未完成项 {(task.result.blockers ?? []).length} 条
+                      <TriangleAlert size={11} aria-hidden className="inline-block align-[-2px]" />{" "}
+                      未完成项 {(task.result.blockers ?? []).length} 条
                     </p>
                   )}
                   {(task.result.artifacts ?? []).length > 0 && (
@@ -269,11 +271,21 @@ export function TaskCardContent({
                         onOpenFilePath(f.path);
                       }}
                     >
-                      {f.isDir ? "📁" : "📎"} {basename(f.path)}
+                      {f.isDir ? (
+                        <Folder size={11} aria-hidden className="inline-block align-[-2px]" />
+                      ) : (
+                        <Paperclip size={11} aria-hidden className="inline-block align-[-2px]" />
+                      )}{" "}
+                      {basename(f.path)}
                     </button>
                   ) : (
                     <p className="flex-1 min-w-0 text-[11px] text-[var(--t4)] truncate" title={f.path}>
-                      {f.isDir ? "📁" : "📎"} {basename(f.path)}
+                      {f.isDir ? (
+                        <Folder size={11} aria-hidden className="inline-block align-[-2px]" />
+                      ) : (
+                        <Paperclip size={11} aria-hidden className="inline-block align-[-2px]" />
+                      )}{" "}
+                      {basename(f.path)}
                     </p>
                   )}
                   {onCopyFilePath && (
@@ -334,7 +346,7 @@ export function TaskCardContent({
                   }}
                   title="交给机器人执行这张任务卡"
                 >
-                  🤖 交给机器人
+                  <Bot size={11} aria-hidden /> 交给机器人
                 </button>
               )}
               {onSetSchedule && (
@@ -358,7 +370,7 @@ export function TaskCardContent({
                       : "定时执行：到点自动交给机器人跑"
                   }
                 >
-                  ⏰ {task.schedule ? formatSchedule(task.schedule) : "定时"}
+                  <Clock size={11} aria-hidden /> {task.schedule ? formatSchedule(task.schedule) : "定时"}
                 </button>
               )}
             </div>

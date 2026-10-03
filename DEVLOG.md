@@ -2,6 +2,26 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-04（周六）U20C-ICON1：emoji → lucide 图标迁移第一批——任务卡/聊天/设置页 45 处
+
+**需求**（方案 `docs/UI-ICON-PLAN-2026-10-04.md` 批 1–3 落地）：彩色 emoji 与
+文本符号（☰✓★）跨平台渲染不一致、无法跟随主题、与 nm 线性设计语言冲突，
+统一替换为 lucide stroke 图标。
+
+**实现**：18 个源文件约 45 处——任务卡家族（拖拽手柄 GripVertical、文件 chip
+Paperclip/Folder、🤖→Bot、⏰→Clock、收尾 Puzzle、完成 Check；TodoCard 与
+TaskCardContent 挂件/主窗双端同步）；聊天面板（授权 pill Shield、附件 chip
+Image/Paperclip、思考过程 MessageCircle、置顶 Pin、复制/工具行 Check）；设置
+页与工作台（主题三档 Sun/Moon/Monitor、导出导入 Download/Upload、重要度
+Star、已归档 Archive 等）。**有意保留**：聊天消息正文里的 emoji（内容纪律）、
+🧩 子任务会话标题契约（后端发前缀 + 前端 startsWith 判流，方案批 5）、句内
+单色 ✓ 文案、errorHandler 原生弹窗（批 4 随弹窗组件化）。规范：按钮 12–13px、
+chip 10–11px、一律 currentColor、图标 aria-hidden 不改可访问名。
+
+**验证**：vitest 401/401 全绿（9 个测试文件的 emoji 断言适配为图标化后的
+文本节点/accessible name，消息正文与契约断言零改动）；tsc + test-fast.sh
+exit 0；残余 DOM emoji 24 行终扫全部为方案保留项。改动 +233/-120。
+
 ## 2026-10-04（周六）U20A-BTNUNIFY：功能按键风格统一——刷新键归 IconButton 家族 + 去 emoji 孤例
 
 **需求**（老板拍板）：自进化决策板「🔄 刷新」nm-btn 文字键太丑，对齐记忆库

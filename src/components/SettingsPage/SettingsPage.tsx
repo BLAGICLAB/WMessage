@@ -14,18 +14,25 @@ import {
   BarChart3,
   Bot,
   Brain,
+  Check,
   Cpu,
   DatabaseBackup,
+  Download,
   Eye,
   EyeOff,
   FolderOutput,
   GitBranch,
   Info,
+  Monitor,
+  Moon,
   MoreHorizontal,
   Plug,
   Plus,
   Settings2,
   Sparkles,
+  Sun,
+  TriangleAlert,
+  Upload,
   type LucideIcon,
 } from "lucide-react";
 
@@ -431,7 +438,15 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         onClick={() => saveConfig()}
         disabled={configBusy}
       >
-        {configSaved ? "已保存 ✓" : configBusy ? "保存中…" : "保存配置"}
+                {configSaved ? (
+                  <>
+                    <Check size={12} aria-hidden /> 已保存
+                  </>
+                ) : configBusy ? (
+                  "保存中…"
+                ) : (
+                  "保存配置"
+                )}
       </button>
     </div>
   );
@@ -1533,11 +1548,11 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
             <div className="mt-3 flex gap-1">
               {(
                 [
-                  ["light", "☀️ 浅色"],
-                  ["dark", "🌙 深色"],
-                  ["system", "🖥️ 跟随系统"],
-                ] as [ThemeSetting, string][]
-              ).map(([value, label]) => (
+                  { value: "light", label: "浅色", icon: Sun },
+                  { value: "dark", label: "深色", icon: Moon },
+                  { value: "system", label: "跟随系统", icon: Monitor },
+                ] as { value: ThemeSetting; label: string; icon: LucideIcon }[]
+              ).map(({ value, label, icon: Icon }) => (
                 <button
                   key={value}
                   className={`px-4 py-1.5 text-sm text-[var(--t3)] ${
@@ -1545,7 +1560,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
                   }`}
                   onClick={() => onThemeChange(value)}
                 >
-                  {label}
+                  <Icon size={13} aria-hidden className="inline-block align-[-2px]" /> {label}
                 </button>
               ))}
             </div>
@@ -1624,7 +1639,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
               onClick={runExport}
               disabled={exporting}
             >
-              {exporting ? "导出中…" : "📤 导出"}
+              {exporting ? "导出中…" : (<><Download size={12} aria-hidden /> 导出</>)}
             </button>
           </div>
           <div className="flex items-center justify-between gap-4">
@@ -1641,7 +1656,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
               onClick={runImport}
               disabled={importing}
             >
-              {importing ? "导入中…" : "📥 导入"}
+              {importing ? "导入中…" : (<><Upload size={12} aria-hidden /> 导入</>)}
             </button>
           </div>
         </div>
@@ -1668,7 +1683,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
               onClick={runExportWs}
               disabled={exportingWs}
             >
-              {exportingWs ? "导出中…" : "📤 导出"}
+              {exportingWs ? "导出中…" : (<><Download size={12} aria-hidden /> 导出</>)}
             </button>
           </div>
           <div className="flex items-center justify-between gap-4">
@@ -1685,7 +1700,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
               onClick={runImportWs}
               disabled={importingWs}
             >
-              {importingWs ? "导入中…" : "📥 导入"}
+              {importingWs ? "导入中…" : (<><Upload size={12} aria-hidden /> 导入</>)}
             </button>
           </div>
         </div>
@@ -2416,7 +2431,9 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
                 disabled={configBusy || vendorTestBusy}
               >
                 {configSaved
-                  ? "已保存 ✓"
+                  ? (<>
+                      <Check size={12} aria-hidden /> 已保存
+                    </>)
                   : configBusy
                     ? "保存中…"
                     : vendorTestBusy
@@ -2578,7 +2595,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
             {/* Tavily/Brave 双开冲突提示：后端同样明确报错，这里提前可见 */}
             {config.tavilyEnabled && config.braveEnabled && (
               <p className="text-[10px] text-[var(--danger)] leading-snug">
-                ⚠️ Tavily 与 Brave 只能开启一个，请关闭其中一个。
+                <TriangleAlert size={10} aria-hidden className="inline-block align-[-1px]" /> Tavily 与 Brave 只能开启一个，请关闭其中一个。
               </p>
             )}
             {renderSaveButton("mt-3 flex justify-end")}
@@ -2656,7 +2673,13 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
                   className="nm-btn shrink-0 px-3 py-2 text-xs text-[var(--t3)]"
                   onClick={copyToken}
                 >
-                  {copied ? "已复制 ✓" : "复制"}
+                  {copied ? (
+                    <>
+                      <Check size={12} aria-hidden /> 已复制
+                    </>
+                  ) : (
+                    "复制"
+                  )}
                 </button>
                 <button
                   className="nm-btn shrink-0 px-3 py-2 text-xs text-[var(--danger)]"

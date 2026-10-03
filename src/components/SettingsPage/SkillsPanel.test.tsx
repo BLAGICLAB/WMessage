@@ -30,7 +30,7 @@ describe("SkillsPanel notice 计时器生命周期", () => {
     await flush(); // refresh 初始加载
     vi.useFakeTimers();
     try {
-      fireEvent.click(screen.getByText("⬆ 导入技能文件夹"));
+      fireEvent.click(screen.getByText("导入技能文件夹"));
       await flush();
       expect(screen.getByText(/已安装/)).toBeInTheDocument();
       // 2.5s 后二次导入 → 计时器重置
@@ -38,7 +38,7 @@ describe("SkillsPanel notice 计时器生命周期", () => {
         vi.advanceTimersByTime(2500);
       });
       expect(screen.getByText(/已安装/)).toBeInTheDocument();
-      fireEvent.click(screen.getByText("⬆ 导入技能文件夹"));
+      fireEvent.click(screen.getByText("导入技能文件夹"));
       await flush();
       // 距第二次导入 2.5s（若旧计时器没清，此刻已被误清）
       act(() => {
@@ -59,7 +59,7 @@ describe("SkillsPanel notice 计时器生命周期", () => {
     await flush();
     vi.useFakeTimers();
     try {
-      fireEvent.click(screen.getByText("⬆ 导入技能文件夹"));
+      fireEvent.click(screen.getByText("导入技能文件夹"));
       await flush();
       expect(screen.getByText(/已安装/)).toBeInTheDocument();
       unmount();

@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
-import { FolderInput, Trash2 } from "lucide-react";
+import { FolderInput, FolderOpen, Trash2, Upload } from "lucide-react";
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
 import { EmptyState } from "../EmptyState";
 import type { SkillInfo, SkillOutcome, SkillOutcomeKind } from "./types";
@@ -117,10 +117,16 @@ export function SkillsPanel() {
       </p>
       <div className="mt-3 flex items-center gap-2">
         <button className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)]" onClick={importSkill} disabled={busy}>
-          {busy ? "导入中…" : "⬆ 导入技能文件夹"}
+          {busy ? (
+            "导入中…"
+          ) : (
+            <>
+              <Upload size={12} aria-hidden /> 导入技能文件夹
+            </>
+          )}
         </button>
         <button className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)]" onClick={openDir}>
-          📂 打开技能目录
+          <FolderOpen size={12} aria-hidden /> 打开技能目录
         </button>
         {notice && <span className="text-xs text-[var(--success)]">{notice}</span>}
         {error && <span className="text-xs text-[var(--danger)]">{error}</span>}

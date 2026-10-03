@@ -2,6 +2,8 @@
 // 1260 → 900 行：constants / storage / ResizeEdge / SplitBar / SortableTaskCard /
 // SortableWorkspaceCard 拆到同目录子文件，本文件保留 hooks + handlers + JSX render。
 //
+import { FileText, Folder, GripVertical, Link2, Lock, Pin } from "lucide-react";
+//
 // 公开 import 路径保持稳定：外部 `import WidgetApp from "./components/WidgetApp"`
 // （默认导入），Vite 解析到 `./WidgetApp/index.tsx` → 透传 `./WidgetApp.tsx` 的 default。
 
@@ -791,7 +793,7 @@ export default function WidgetApp() {
                 title={locked ? "取消常驻" : "常驻锁定"}
                 onClick={() => setLocked((v) => !v)}
               >
-                {locked ? "🔒" : "📌"}
+                {locked ? <Lock size={12} aria-hidden /> : <Pin size={12} aria-hidden />}
               </button>
             </div>
           </div>
@@ -833,7 +835,7 @@ export default function WidgetApp() {
                                 title="拖拽排序"
                                 className="shrink-0 w-4 h-4 flex items-center justify-center text-[12px] leading-none text-[var(--t5)] rounded hover:bg-[var(--hover-bg)] opacity-0 group-hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing"
                               >
-                                ☰
+                                <GripVertical size={12} aria-hidden />
                               </span>
                               <p className="min-w-0 flex-1 truncate text-xs font-medium text-[var(--t1)]">
                                 {it.title}
@@ -856,8 +858,14 @@ export default function WidgetApp() {
                                       title={`${linkDisplayName(link)}\n${link.targetUri}`}
                                       onClick={() => openLink(link)}
                                     >
-                                      <span className="shrink-0 text-[10px]">
-                                        {link.kind === "url" ? "🔗" : link.kind === "folder" ? "📁" : "📄"}
+                                      <span className="shrink-0 text-[10px] inline-flex">
+                                        {link.kind === "url" ? (
+                                          <Link2 size={10} aria-hidden />
+                                        ) : link.kind === "folder" ? (
+                                          <Folder size={10} aria-hidden />
+                                        ) : (
+                                          <FileText size={10} aria-hidden />
+                                        )}
                                       </span>
                                       <span className="min-w-0 flex-1 truncate text-xs text-[var(--t2)]">
                                         {linkDisplayName(link)}

@@ -9,7 +9,7 @@
 //! - 勾选后：permanent block，但不可逆
 
 import { useEffect, useRef, useState } from "react";
-import { Trash2 } from "lucide-react";
+import { Trash2, TriangleAlert } from "lucide-react";
 import type { ProposalEntry } from "./types";
 
 type Props = {
@@ -100,7 +100,8 @@ export function DeleteConfirmDialog({
                 连同源记忆一起删（{refsCount} 条 mem_items）
               </div>
               <div className="text-[var(--t4)] mt-1 leading-relaxed">
-                ⚠️ 勾选后永久删除派生源记忆，LLM 无法重新派生。
+                <TriangleAlert size={11} aria-hidden className="inline-block align-[-2px] text-[var(--danger)]" />{" "}
+                勾选后永久删除派生源记忆，LLM 无法重新派生。
                 <br />
                 不勾选：24h dedup 期内不会重生，过期后可能被重新发现。
               </div>
