@@ -167,7 +167,10 @@ src-tauri/src/
 ├── memory/extract.rs        U16 自动记忆抽取：bot_chat 收尾触发（fire-and-forget，仅交互
 │                            会话 + 30 分钟限频）→ LLM 抽取 → parse_extract 容错解析 →
 │                            auto 直接入库 / confirm 进 mem_pending 待确认队列
-│                            （mem_pending_list/approve/reject，approve 走语义去重入库）
+│                            （mem_pending_list/approve/reject，approve 走语义去重入库）；
+│                            U19 写入时冲突裁决（两段式）：相似候选（cos≥dedupHint，
+│                            只查抽取域 kind）→ LLM 逐条裁决 new/update/skip——改口
+│                            update_by_id 更新原条目不堆积，坏输出回退全 new
 └── memory/tests.rs + memory/consolidate/tests.rs   记忆单测（假向量，不依赖 ONNX）
 ```
 

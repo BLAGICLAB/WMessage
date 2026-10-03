@@ -2,6 +2,32 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-03（周六）U19-MEMCONFLICT：写入时冲突裁决——改口更新原条目，不再堆积
+
+**需求**（记忆升级第三期·质量，验收锚点 = U18 基线）：auto 抽取开起来之后
+同一事实会反复入库堆积（「用户住在上海」和「用户住在成都」并存），本批给
+抽取管线装上写入时裁决：与既有记忆语义相近时先让模型逐条裁决
+new / update / skip，改口更新原条目。
+
+**实现**：extract.rs v2 两段式——抽取（U16 原样）后逐条与既有记忆比对相似
+（cos ≥ dedupHint=0.75 才算候选，只查抽取域 kind profile/preference/fact，
+summary/lesson 不该被「改口」），有候选才发第二次 LLM（ADJUDICATE_PROMPT，
+prompts 清单锁 16→17）逐条裁决：new 走原入库路径（语义去重/容量兜底不变）；
+update 走 `update_by_id` 改写原条目——只换 content+向量，kind/importance/
+source/tags 保持原口径（改口不改档，key 覆盖语义与 pinned 判定不漂移）；
+skip 丢弃。坏输出整体回退全 new、幻觉 existing_id/缺项/未知 action 逐条回退
+new——裁决失败只降级为 U16 行为，绝不丢数据。三段式锁纪律保持（嵌入/LLM/
+解析锁外，快照/应用两段短临界区）；管线主体 `run_extract_with` LLM 调用方
+注入（生产 summarize_messages 薄壳不变，集成测试 summarize_http 直连 mock，
+同 run_model_loop_core 先例）。Confirm 档不经裁决语义不变；检索评分路径
+零改动。
+
+**验证**：改口集成测试 10 组真管线（mock LLM + 真实嵌入 + 共享测试库，
+唯一标记 key + 按内容双向清理承 U15 实录）10/10 更新原条目 ≥9/10 门槛、
+3 连跑稳定；U18 评估器复跑 recall@5 = 0.9000 与基线持平（锚点达标）；
+单测 +7（解析矩阵/候选规划/无候选短路/应用分支），extract 17 绿；
+nextest 1379 全绿；ocr 复审处置见 spec。
+
 ## 2026-10-03（周六）U18-MEMEVAL：记忆检索黄金集 + 评估器（第三期第一斧，只装尺子不改行为）
 
 **需求**（记忆升级第三期·测量）：前两期把记忆系统做厚（混合检索/去重/自动

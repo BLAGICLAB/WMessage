@@ -1,5 +1,8 @@
 //! 自动记忆抽取提示词（memory::extract 会话收尾抽取用）：输出 JSON 数组，
 //! 解析失败/空数组都是合法出口，措辞是「宁缺勿滥」的第一道防线。
+//! U19 起抽取升级两段式：第一段 EXTRACT_PROMPT 抽事实，第二段
+//! ADJUDICATE_PROMPT 对「与既有记忆语义相近」的条目逐条裁决
+//! new / update(existing_id) / skip——改口更新原条目，不堆积。
 
 /// 抽取 prompt（中文；只抽用户画像/偏好/稳定事实，临时任务与助手发言不抽）
 pub(crate) const EXTRACT_PROMPT: &str = "\
@@ -10,3 +13,13 @@ pub(crate) const EXTRACT_PROMPT: &str = "\
 [{\"content\":\"用户的稳定偏好或事实（中文，不超过200字）\",\"kind\":\"profile\",\"importance\":2}]。\
 kind 口径：profile=用户画像（称呼/职业/背景），preference=偏好（风格/习惯/喜好），\
 fact=其他稳定事实。importance 取 1-5：默认 2-3，只有明确强烈的偏好才给 4-5。";
+
+/// 冲突裁决 prompt（U19 两段式第二段；只对与既有记忆相近的条目发起）
+pub(crate) const ADJUDICATE_PROMPT: &str = "\
+你是记忆冲突裁决助手。下面每条「新抽取的事实」都配了一条语义相近的「已有记忆」。\
+请逐条裁决，只输出一个 JSON 数组（不要输出其它任何文字），每项格式：\
+{\"index\":编号,\"action\":\"new|update|skip\",\"existing_id\":\"已有记忆的id（仅update时需要）\"}。\
+裁决口径：new=新事实带来了已有记忆没有的新信息（两条并存有价值）；\
+update=新事实是对同一件事的改口或更新（应替换旧内容，不要堆积两条）；\
+skip=新事实与已有记忆重复、没有增量价值。宁可 update 也不要让同一事实存两条；\
+拿不准时给 new。index 必须与输入编号一致，只裁决列出的条目。";
