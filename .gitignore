@@ -110,3 +110,6 @@ __pycache__/
 # Mimosa 安全扫描插件 hook-state / finding-ledger 缓存（工具本地产物，勿入库；
 # 数百文件曾把 pre-commit 枚举撑爆 scanner_enobufs）
 .mimosa/
+
+# U18 抽取产物人工标注采样（评估器从真实用户库导出，含隐私内容，不入库）
+fixtures/memory_extract_sample.jsonl
