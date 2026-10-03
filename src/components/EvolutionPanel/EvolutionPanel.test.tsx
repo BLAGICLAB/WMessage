@@ -353,3 +353,149 @@ describe("EvolutionPanel", () => {
     confirmSpy.mockRestore();
   });
 });
+
+// ── U20-EVOGOV：应用策略二档 / 决策徽标 / 立即反思 / 四指标条 ──
+
+describe("EvolutionPanel U20 governance", () => {
+  it("W2: apply policy radiogroup defaults to auto and persists on click", async () => {
+    const p = mkProposal("p-gov");
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "evolution_list_proposals") return [p];
+      if (cmd === "evolution_list_changes") return [];
+      if (cmd === "evolution_get_apply_policy") return "auto";
+      if (cmd === "evolution_set_apply_policy") return null;
+      return null;
+    });
+    render(<EvolutionPanel />);
+    const group = await screen.findByRole("radiogroup", {
+      name: "自进化应用策略",
+    });
+    expect(group).toBeTruthy();
+    expect(
+      screen.getByRole("radio", { name: "应用策略：自动生效" })
+    ).toHaveAttribute("aria-checked", "true");
+    expect(
+      screen.getByRole("radio", { name: "应用策略：需我确认" })
+    ).toHaveAttribute("aria-checked", "false");
+
+    const user = userEvent.setup();
+    invokeMock.mockClear();
+    await user.click(screen.getByRole("radio", { name: "应用策略：需我确认" }));
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("evolution_set_apply_policy", {
+        policy: "confirm",
+      });
+    });
+    expect(
+      screen.getByRole("radio", { name: "应用策略：需我确认" })
+    ).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("W2: reading confirm from backend selects the confirm tier", async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "evolution_list_proposals") return [];
+      if (cmd === "evolution_list_changes") return [];
+      if (cmd === "evolution_get_apply_policy") return "confirm";
+      return null;
+    });
+    render(<EvolutionPanel />);
+    await waitFor(() => {
+      expect(
+        screen.getByRole("radio", { name: "应用策略：需我确认" })
+      ).toHaveAttribute("aria-checked", "true");
+    });
+  });
+
+  it("W3: shows decision badges 已自动生效 / 你已启用 / 待你决策", async () => {
+    const pAuto = mkProposal("p-auto", { status: "promoted" });
+    const pHuman = mkProposal("p-human", { status: "promoted" });
+    const pPooled = mkProposal("p-pooled", { status: "pooled" });
+    const crAuto = mkChange("chg-p-auto", {
+      proposal_id: "p-auto",
+      status: "active",
+      approval_source: "auto_applied",
+    });
+    const crHuman = mkChange("chg-p-human", {
+      proposal_id: "p-human",
+      status: "active",
+      approval_source: "human_approved",
+      human_approver: "boss",
+    });
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "evolution_list_proposals") return [pAuto, pHuman, pPooled];
+      if (cmd === "evolution_list_changes") return [crAuto, crHuman];
+      return null;
+    });
+    render(<EvolutionPanel />);
+    expect(await screen.findByTestId("decision-badge-p-auto")).toHaveTextContent(
+      "已自动生效"
+    );
+    expect(screen.getByTestId("decision-badge-p-human")).toHaveTextContent(
+      "你已启用"
+    );
+    expect(screen.getByTestId("decision-badge-p-pooled")).toHaveTextContent(
+      "待你决策"
+    );
+  });
+
+  it("W3: empty state shows 立即反思 and reports consolidate result", async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "evolution_list_proposals") return [];
+      if (cmd === "evolution_list_changes") return [];
+      if (cmd === "memory_consolidate_now")
+        return { merged: 2, distilled: 1, contradictions: 3 };
+      return null;
+    });
+    render(<EvolutionPanel />);
+    const btn = await screen.findByTestId("btn-reflect-now");
+    const user = userEvent.setup();
+    invokeMock.mockClear();
+    await user.click(btn);
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith("memory_consolidate_now");
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("evolution-info")).toHaveTextContent(
+        "反思完成：合并 2 · 提炼 1 · 裁决 3"
+      );
+    });
+  });
+
+  it("W3: metrics strip renders four metrics and hides on empty", async () => {
+    const metrics = {
+      candidate_generation_rate: 0.5,
+      approval_rate: 0.6,
+      rollback_rate: 0.1,
+      pollution_survival_days: 5.25,
+      proposal_total: 10,
+      promoted_count: 6,
+      rolled_back_count: 1,
+      active_lessons: 5,
+      observation_window_days: 30,
+      observation_window_start_ms: 0,
+      observation_window_end_ms: 1,
+      evaluated_at_ms: 1,
+    };
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "evolution_list_proposals") return [];
+      if (cmd === "evolution_list_changes") return [];
+      if (cmd === "evolution_metrics") return metrics;
+      return null;
+    });
+    const { unmount } = render(<EvolutionPanel />);
+    expect(await screen.findByTestId("evolution-metrics")).toHaveTextContent(
+      /候选 0\.5 条\/天 · 通过 60% · 回滚 10% · 存活 5\.3 天/
+    );
+    unmount();
+
+    // 读失败/无数据 → 不显示（不阻塞面板）
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "evolution_list_proposals") return [];
+      if (cmd === "evolution_list_changes") return [];
+      return null;
+    });
+    render(<EvolutionPanel />);
+    await screen.findByText(/自进化提案（0）/);
+    expect(screen.queryByTestId("evolution-metrics")).toBeNull();
+  });
+});

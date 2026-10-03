@@ -2,6 +2,33 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-04（周六）U20-EVOGOV：自进化治理归一——批准即生效 + 应用策略二档 + 决策板冒烟
+
+**需求**（自进化系统治理）：决策板 toggle ON 只登记 pending ChangeRecord、
+没有任何执行器落库（apply_one 只被 auto 轨调用），板上批准永不生效；High/
+Medium 记忆建议又走 auto 轨直落库，板上决策与实际生效双轨脱节。本批三件事：
+W1 人工批准执行器（toggle ON 即 apply_one 落库，幂等）、W2 治理开关
+`evolution.applyPolicy`（auto=现状 / confirm=全留池等板，缺字段=auto=默认
+零变化）、W3 决策板冒烟（空状态「立即反思」接 memory_consolidate_now、
+evolution_metrics 四指标命令、行内「已自动生效/待你决策/你已启用」徽标）。
+
+**实现**：toggle_inner 泛型化（`AppHandle<R>`，命令面不变，MockRuntime 可测）
+后 ON 路径对 policy 层提案同步 apply_one 落 lesson（evo:<pid> 持久幂等 +
+dedup 口径加 Active 重复批零副作用）→ applied.jsonl 留痕 → CR 经 transition
+合法流转到 Active（approval_source 保持 HumanApproved）；ConflictRefused 走
+审计+面板错误，CR 留 pending 可重试。嵌入锁外预计算（同 auto 轨纪律）。
+新 evolution/policy.rs 轻读写（读取缺什么都是 auto；写入 RMW+atomic_write+
+坏文件拒绝写）；post_consolidation 尾部按 auto_apply_allowed 分流，confirm
+档全留池 + evolution.apply_deferred 审计。设置页自进化头部二档 radiogroup
+（同记忆三档先例，点档即时落盘）。顺手修一个存量 bug：toggle 新建 CR 不进
+内存 vec，后续整文件重写会把刚落的 CR 清掉（集成测试实测抓到）。
+
+**验证**：evolution 存量 283 条测试（git worktree 基线计数）零改动通过，
+全量 1391 nextest + 401 vitest + pytest 审计全绿；集成 tests/evolution_gov.rs
+单用例叙事（nextest 每测试一进程 × jsonl 整文件重写的互踩对冲）：真 ops→
+derive→入池→toggle ON 落库→重复批幂等→防劫持拒写，3 连跑稳定；前端 5 新
+用例 22/22 绿；ocr 复审处置见 spec。
+
 ## 2026-10-03（周六）U19-MEMCONFLICT：写入时冲突裁决——改口更新原条目，不再堆积
 
 **需求**（记忆升级第三期·质量，验收锚点 = U18 基线）：auto 抽取开起来之后

@@ -123,3 +123,33 @@ export const IMPACT_LABEL: Record<ImpactLevel, string> = {
   medium: "中",
   high: "高",
 };
+
+/** U20 W2：自进化应用策略二档（后端缺字段/非法值 = auto = 自动生效） */
+export type ApplyPolicy = "auto" | "confirm";
+
+/** 档位中文标签（本模块内构建 LABELS 用，外部只消费 APPLY_POLICY_LABELS） */
+const APPLY_POLICY_LABEL: Record<ApplyPolicy, string> = {
+  auto: "自动生效",
+  confirm: "需我确认",
+};
+
+/** radiogroup 渲染用档位清单（label 唯一事实源的派生形态） */
+export const APPLY_POLICY_LABELS = (
+  Object.keys(APPLY_POLICY_LABEL) as ApplyPolicy[]
+).map((value) => ({ value, label: APPLY_POLICY_LABEL[value] }));
+
+/** U20 W3：observe::compute_metrics 的四指标快照（snake_case 镜像后端 serde） */
+export interface ObserveMetrics {
+  candidate_generation_rate: number;
+  approval_rate: number;
+  rollback_rate: number;
+  pollution_survival_days: number;
+  proposal_total: number;
+  promoted_count: number;
+  rolled_back_count: number;
+  active_lessons: number;
+  observation_window_days: number;
+  observation_window_start_ms: number;
+  observation_window_end_ms: number;
+  evaluated_at_ms: number;
+}

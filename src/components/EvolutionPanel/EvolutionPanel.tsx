@@ -8,10 +8,12 @@
 //    - 左侧：proposal_id + status badge
 //    - 底部：[启用] [停用] [Keep Shadow] 中文按钮（兼容旧 Promote/Reject）
 //    - 右下：🗑️ 删除 emoji
-// 3. 后端 toggle=true → 写 ChangeRecord(pending)；toggle=false → 移除 ChangeRecord
+// 3. 后端 toggle=true → 写 ChangeRecord + 人工批准执行器落库（U20 W1：
+//    policy 层提案 ON 即生效，幂等）；toggle=false → 移除 pending ChangeRecord
 // 4. 后端 delete → 仅删 pending ChangeRecord + proposals 行（老板拍板只允许删 pending）
 // 5. Rollback 区条件显示：仅当 active ChangeRecord 存在时折叠展开
-// 6. applied.jsonl 完全不动（与 toggle 解耦，auto_apply 路径独立）
+// 6. U20 W2 头部应用策略二档 radiogroup（auto/confirm，点档即时落盘）；
+//    W3 空状态「立即反思」接 memory_consolidate_now + 四指标条 + 行内决策徽标
 
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -20,10 +22,13 @@ import { handleCommandError } from "../../lib/errorHandler";
 import { Toggle } from "../Toggle";
 import { DeleteConfirmDialog } from "./DeleteConfirmDialog";
 import {
+  type ApplyPolicy,
   type ChangeRecord,
+  type ObserveMetrics,
   type ProposalEntry,
   type ProposalStatus,
   type ProposalTarget,
+  APPLY_POLICY_LABELS,
   IMPACT_LABEL,
   LAYER_LABEL,
   STATUS_LABEL,
@@ -44,6 +49,32 @@ const ACTIVE_STATUSES: ReadonlySet<ChangeRecord["status"]> = new Set([
 /** B2-4（拍板①）：有回滚历史的提案再点 ON 需二次确认 */
 const ROLLED_BACK_STATUS: ChangeRecord["status"] = "rolled_back";
 
+/** U20 W2 应用策略二档（同记忆三档 radiogroup 先例；档位唯一事实源，aria 前缀从 label 派生防漂移） */
+const APPLY_POLICY_MODES = APPLY_POLICY_LABELS.map(({ value, label }) => ({
+  value,
+  label,
+  aria: `应用策略：${label}`,
+}))
+
+/** U20 W3：行内决策徽标（优先级：已自动生效 > 你已启用 > 待你决策） */
+function decisionBadge(p: ProposalEntry, changes: ChangeRecord[]): string | null {
+  const mine = changes.filter((c) => c.proposal_id === p.proposal_id);
+  if (mine.some((c) => c.status === "active" && c.approval_source === "auto_applied")) {
+    return "已自动生效";
+  }
+  if (
+    mine.some(
+      (c) =>
+        c.approval_source === "human_approved" &&
+        (c.status === "active" || c.status === "pending")
+    )
+  ) {
+    return "你已启用";
+  }
+  if (p.status === "pooled") return "待你决策";
+  return null;
+}
+
 export function EvolutionPanel() {
   const [proposals, setProposals] = useState<ProposalEntry[]>([]);
   const [changes, setChanges] = useState<ChangeRecord[]>([]);
@@ -53,6 +84,14 @@ export function EvolutionPanel() {
   const [info, setInfo] = useState("");
   // 删除确认弹窗状态（老板 16:35 拍板）
   const [deleteTarget, setDeleteTarget] = useState<ProposalEntry | null>(null);
+  // U20 W2 应用策略档位（缺字段/读失败 = auto 显示，与后端同口径）
+  const [applyPolicy, setApplyPolicy] = useState<ApplyPolicy>("auto");
+  // 点档 in-flight guard（OCR R1 高位采纳：防连点 auto→confirm→auto 乱序回滚）
+  const [policyBusy, setPolicyBusy] = useState(false);
+  // U20 W3 四指标（读失败 = 不显示，不阻塞面板）
+  const [metrics, setMetrics] = useState<ObserveMetrics | null>(null);
+  // U20 W3 立即反思进行中（LLM 调用秒级，与列表 busy 分开避免整板禁用）
+  const [reflecting, setReflecting] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -75,6 +114,67 @@ export function EvolutionPanel() {
     // oxlint-disable-next-line react/set-state-in-effect
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    // U20：挂载时拉一次治理开关与四指标（读失败静默降级，开关按 auto 显示）
+    void (async () => {
+      try {
+        const p = await invoke<ApplyPolicy>("evolution_get_apply_policy");
+        if (p === "auto" || p === "confirm") setApplyPolicy(p);
+      } catch {
+        /* 读失败按 auto 显示（后端同口径），不打断面板 */
+      }
+      try {
+        const m = await invoke<ObserveMetrics>("evolution_metrics");
+        setMetrics(m ?? null);
+      } catch {
+        setMetrics(null);
+      }
+    })();
+  }, []);
+
+  // U20 W2：点档即时落盘（同记忆三档先例：先改 state 再落盘，失败回滚+报错；
+  // in-flight 期间忽略并发点档，防乱序回滚）
+  const onApplyPolicyChange = (next: ApplyPolicy) => {
+    if (policyBusy || next === applyPolicy) return;
+    const prev = applyPolicy;
+    setApplyPolicy(next);
+    setPolicyBusy(true);
+    setError("");
+    setInfo("");
+    void (async () => {
+      try {
+        await invoke("evolution_set_apply_policy", { policy: next });
+      } catch (e) {
+        setApplyPolicy(prev);
+        handleCommandError(e, "evolution-panel", { silent: true });
+        setError(String(e));
+      } finally {
+        setPolicyBusy(false);
+      }
+    })();
+  };
+
+  // U20 W3：空状态「立即反思」——对记忆库跑一轮反思，产出可决策的提案
+  const onReflectNow = async () => {
+    setReflecting(true);
+    setError("");
+    setInfo("");
+    try {
+      const r = await invoke<{
+        merged: number;
+        distilled: number;
+        contradictions: number;
+      }>("memory_consolidate_now");
+      setInfo(`反思完成：合并 ${r.merged} · 提炼 ${r.distilled} · 裁决 ${r.contradictions}`);
+      await refresh();
+    } catch (e) {
+      handleCommandError(e, "evolution-panel", { silent: true });
+      setError(String(e));
+    } finally {
+      setReflecting(false);
+    }
+  };
 
   const runCmd = useCallback(
     async (
@@ -208,6 +308,50 @@ export function EvolutionPanel() {
         </p>
       )}
 
+      {/* U20 W2：应用策略二档（头部 radiogroup，同记忆三档样式；点档即时落盘） */}
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div className="space-y-1.5">
+          <p className="text-[11px] text-[var(--t3)]">应用策略</p>
+          <p className="text-[11px] text-[var(--t5)]">
+            「自动生效」= 反思产出的记忆建议直接写入，不用逐条过目；「需我确认」= 一律留在下方列表，等你拨开关才生效
+          </p>
+          <div className="flex gap-2" role="radiogroup" aria-label="自进化应用策略">
+            {APPLY_POLICY_MODES.map(({ value, label, aria }) => {
+              const selected = applyPolicy === value;
+              return (
+                <button
+                  key={value}
+                  type="button"
+                  role="radio"
+                  aria-checked={selected}
+                  aria-label={aria}
+                  className={`px-3 py-1.5 text-xs text-[var(--t3)] ${
+                    selected ? "nm-inset" : "nm-outset"
+                  } ${policyBusy ? "opacity-50" : ""}`}
+                  onClick={() => onApplyPolicyChange(value)}
+                  disabled={busy || policyBusy}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        {/* U20 W3：四指标条（读失败不显示；窗口天数取后端字段防漂移） */}
+        {metrics && (
+          <p
+            className="text-[11px] text-[var(--t5)]"
+            data-testid="evolution-metrics"
+          >
+            近{Math.round(metrics.observation_window_days)}天：候选{" "}
+            {metrics.candidate_generation_rate.toFixed(1)} 条/天 · 通过{" "}
+            {(metrics.approval_rate * 100).toFixed(0)}% · 回滚{" "}
+            {(metrics.rollback_rate * 100).toFixed(0)}% · 存活{" "}
+            {metrics.pollution_survival_days.toFixed(1)} 天
+          </p>
+        )}
+      </div>
+
       {/* 候选池列表（老板 16:05：去掉独立分区，单列表所有提案） */}
       <section>
         <div className="flex items-center justify-between mb-3">
@@ -234,9 +378,25 @@ export function EvolutionPanel() {
         </div>
 
         {proposals.length === 0 ? (
-          <p className="text-sm text-[var(--t4)] px-3 py-4">
-            （空 — 当前筛选下没有提案）
-          </p>
+          <div className="px-3 py-4 space-y-2.5">
+            <p className="text-sm text-[var(--t4)]">
+              （空 — 当前筛选下没有提案）
+            </p>
+            {/* U20 W3：空状态「立即反思」——记忆库没提案时手动跑一轮反思 */}
+            <div className="flex items-center gap-3">
+              <button
+                className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)] disabled:opacity-50"
+                onClick={() => void onReflectNow()}
+                disabled={busy || reflecting}
+                data-testid="btn-reflect-now"
+              >
+                🪞 立即反思
+              </button>
+              <p className="text-[11px] text-[var(--t5)]">
+                对记忆库跑一轮反思（合并 / 提炼 / 裁决），反思产出会出现在这里等你决策
+              </p>
+            </div>
+          </div>
         ) : (
           <div className="space-y-3">
             {proposals.map((p) => (
@@ -245,6 +405,7 @@ export function EvolutionPanel() {
                 proposal={p}
                 busy={busy}
                 toggleOn={isToggleOn(p.proposal_id)}
+                decision={decisionBadge(p, changes)}
                 onToggle={onToggle}
                 onDelete={onDeleteClick}
                 onPromote={onPromote}
@@ -313,6 +474,7 @@ function ProposalCard({
   proposal,
   busy,
   toggleOn,
+  decision,
   onToggle,
   onDelete,
   onPromote,
@@ -322,6 +484,8 @@ function ProposalCard({
   proposal: ProposalEntry;
   busy: boolean;
   toggleOn: boolean;
+  /** U20 W3 行内决策徽标（null = 不显示） */
+  decision: string | null;
   onToggle: (id: string, enabled: boolean) => void;
   onDelete: (p: ProposalEntry) => void;
   onPromote: (id: string) => void;
@@ -351,6 +515,14 @@ function ProposalCard({
             disabled={busy}
             ariaLabel={`切换 ${proposal.proposal_id}`}
           />
+          {decision && (
+            <span
+              className="nm-tag text-xs"
+              data-testid={`decision-badge-${proposal.proposal_id}`}
+            >
+              {decision}
+            </span>
+          )}
           <span
             className="nm-tag text-xs"
             data-testid={`status-badge-${proposal.proposal_id}`}

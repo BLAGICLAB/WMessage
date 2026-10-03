@@ -24,6 +24,7 @@ pub mod activation;
 pub mod apply;
 pub mod candidate;
 pub mod change;
+pub mod policy;
 
 /// jsonl 读取共享内核（OCR r2 medium 采纳：record/entry 两处 30 行 read_all 收敛
 /// 单点防漂移）。语义（B4-3 自愈化，原拍板 #17=C 的 fail-closed 已按审计修正）：
@@ -169,5 +170,18 @@ pub fn post_consolidation(ops: &[ConsolidateOp], report: &ConsolidateReport) {
     }
 
     emit::emit_proposals(proposals);
-    apply::apply_from_consolidation(gated);
+    // U20 治理归一：applyPolicy=confirm 档不再自动落库，达门槛提案全留候选池
+    // 等决策板人工批准（W1 执行器在 toggle ON 时落库）。缺字段/非法值/无句柄
+    //（测试环境）= auto = 改前行为（默认档零变化）；confirm 分流留 Info 审计。
+    if policy::auto_apply_allowed(emit::app_handle()) {
+        apply::apply_from_consolidation(gated);
+    } else if let Some(app) = emit::app_handle() {
+        crate::audit_event!(
+            app,
+            crate::audit::AuditLevel::Info,
+            "evolution.apply_deferred",
+            "count" => gated.len().to_string(),
+            "policy" => "confirm",
+        );
+    }
 }

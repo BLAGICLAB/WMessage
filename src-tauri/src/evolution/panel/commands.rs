@@ -8,6 +8,12 @@
 //! 5. `evolution_list_changes()` — ChangeRecord 列表（回滚 UI）
 //! 6. `evolution_rollback_change(id, interactive, session_id)` — 回滚（删 mem_item + status=RolledBack）
 //!
+//! U20 增量：
+//! - W1 人工批准执行器：policy 层（MemoryHint）提案 toggle ON 即 `apply_one`
+//!   落库（幂等），CR pending→Active——此前批准只登记 pending、无执行器生效；
+//! - W2 治理开关：`evolution_get/set_apply_policy`（evolution.applyPolicy 二档）；
+//! - W3 冒烟：`evolution_metrics` 薄壳包 observe::compute_metrics。
+//!
 //! 全部走 ask_user_confirm 复用 ConfirmMap（spec R0 #1 默认 A）。
 
 use std::path::PathBuf;
@@ -16,27 +22,35 @@ use tauri::AppHandle;
 use crate::audit::AuditLevel;
 use crate::bot_slash;
 use crate::db::paths;
+use crate::evolution::apply::{self, ApplyOutcome};
 use crate::evolution::candidate::{self, ProposalEntry, ProposalStatus};
-use crate::evolution::change::{self, ApprovalSource, ChangeRecord, ChangeStatus};
+use crate::evolution::change::{self, ApprovalSource, ChangeRecord, ChangeStatus, EvolutionLayer};
 use crate::evolution::lock_evolution_store;
+use crate::evolution::observe::{self, ObserveMetrics};
+use crate::evolution::policy::{read_apply_policy, set_apply_policy, ApplyPolicy};
+use crate::evolution::proposal::EvolutionProposal;
 
 // ───────────────────────── 路径辅助 ─────────────────────────
 
-fn proposals_path(app: &AppHandle) -> PathBuf {
+fn proposals_path<R: tauri::Runtime>(app: &AppHandle<R>) -> PathBuf {
     paths::data_dir(app).join("evolution-proposals.jsonl")
 }
 
-fn changes_path(app: &AppHandle) -> PathBuf {
+fn changes_path<R: tauri::Runtime>(app: &AppHandle<R>) -> PathBuf {
     paths::data_dir(app).join("evolution-changes.jsonl")
+}
+
+fn applied_path<R: tauri::Runtime>(app: &AppHandle<R>) -> PathBuf {
+    paths::data_dir(app).join("evolution-applied.jsonl")
 }
 
 // ───────────────────────── 读写辅助 ─────────────────────────
 
-fn load_proposals(app: &AppHandle) -> Result<Vec<ProposalEntry>, String> {
+fn load_proposals<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<Vec<ProposalEntry>, String> {
     candidate::read_all(&proposals_path(app))
 }
 
-fn load_changes(app: &AppHandle) -> Result<Vec<ChangeRecord>, String> {
+fn load_changes<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<Vec<ChangeRecord>, String> {
     change::read_all(&changes_path(app))
 }
 
@@ -82,25 +96,73 @@ fn parse_status_filter(s: &str) -> Result<ProposalStatus, String> {
 /// B2-4（拍板①）：已回滚提案允许再次 toggle ON（前端有回滚历史时先弹二次确认，
 /// 见 EvolutionPanel onToggle）——新 CR 拿行级唯一 change_id（next_unique_change_id），
 /// 回滚按 id 定位不再撞旧行。
-fn toggle_inner(
-    app: &AppHandle,
+///
+/// U20 W1：policy 层（MemoryHint）提案 ON 即人工批准执行器落库——
+/// `apply_one` 写 lesson（evo:<pid> 持久幂等，重复批零副作用）→ applied.jsonl
+/// 留痕 → CR pending 合法流转到 Active。落库被防劫持闸拒绝（ConflictRefused）
+/// 时 CR 保持 pending + 返回 Err（面板错误提示），可重试或停用。
+/// 非 policy 层（Prompt/ToolSchema/SkillHint）维持原行为：只登记 pending CR。
+/// auto 轨（consolidate 自动应用）不经此处，零改动。
+///
+/// 锁纪律（三段式，OCR R1 高位采纳：apply 不进 EVOLUTION_STORE_LOCK）：
+/// ① 锁内——dedup/建 CR(pending) + 提案晋升 + rewrite（登记即落盘，此后的
+///   apply 失败天然留下「待决策」盘面：CR pending 可重试/停用/删除）；
+/// ② 锁外——human_apply_one（open_db + DB_WRITE_LOCK + apply_one）+ applied
+///   留痕 + 审计（同 auto 轨「DB 全家桶不进 store 锁、锁内不夹审计 IO」纪律）；
+/// ③ 锁内——CR 合法流转到 Active，仅状态真正变化才 rewrite（重复批 no-op）。
+#[doc(hidden)] // 内部内核，pub 仅为集成测试可见（run_extract_with 先例）
+pub fn toggle_inner<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     proposal_id: &str,
     enabled: bool,
 ) -> Result<Option<ChangeRecord>, String> {
-    let _g = lock_evolution_store(); // OCR C3-4：覆盖整个 load→mutate→rewrite 窗口
-    let p_path = proposals_path(app);
-    let c_path = changes_path(app);
+    // W1：嵌入在持锁前算（同 apply_from_consolidation「嵌入不进锁」纪律）——
+    // 无锁预读只为定位 suggestion 文本；预读落空（并发写/非 policy 层）= None，
+    // lesson 照常落库仅无向量（auto 轨 embed_failed 同口径）。
+    let pre_emb = if enabled {
+        precompute_human_apply_embedding(app, proposal_id)
+    } else {
+        None
+    };
 
-    let mut proposals = load_proposals(app)?;
-    let idx = proposals
-        .iter()
-        .position(|e| e.proposal_id == proposal_id)
-        .ok_or_else(|| format!("proposal {proposal_id} 不存在"))?;
-    let mut entry = proposals[idx].clone();
+    // ── 段 ①：持 store 锁完成登记（CR pending + 提案晋升）──
+    let (mut cr, apply_target) = {
+        let _g = lock_evolution_store(); // OCR C3-4：覆盖整个 load→mutate→rewrite 窗口
+        let p_path = proposals_path(app);
+        let c_path = changes_path(app);
 
-    let mut changes = load_changes(app)?;
+        let mut proposals = load_proposals(app)?;
+        let idx = proposals
+            .iter()
+            .position(|e| e.proposal_id == proposal_id)
+            .ok_or_else(|| format!("proposal {proposal_id} 不存在"))?;
+        let mut entry = proposals[idx].clone();
 
-    if enabled {
+        let mut changes = load_changes(app)?;
+
+        if !enabled {
+            // Toggle OFF：移除 pending ChangeRecord
+            let before = changes.len();
+            changes
+                .retain(|c| !(c.proposal_id == proposal_id && c.status == ChangeStatus::Pending));
+            if changes.len() == before {
+                return Err(format!(
+                    "proposal {proposal_id} 没有 pending ChangeRecord，无法 toggle OFF"
+                ));
+            }
+            rewrite_jsonl(&c_path, &changes)?;
+            entry.status = ProposalStatus::Rejected;
+            proposals[idx] = entry.clone();
+            rewrite_jsonl(&p_path, &proposals)?;
+            crate::audit_event!(
+                app,
+                AuditLevel::Warn,
+                "evolution.toggle_off",
+                "proposal_id" => proposal_id.to_string(),
+            );
+            return Ok(None);
+        }
+
         // B4-4（P3 组）：终态校验——Rejected/Expired 是终态，不允许 toggle ON
         // 复活（此检查在 EVOLUTION_STORE_LOCK 内 = promote 段 B 的段间复检）；
         // RolledBack 复用走前端二次确认（拍板①），此处放行
@@ -113,15 +175,20 @@ fn toggle_inner(
                 entry.status
             ));
         }
-        // Toggle ON：dedup（已有 pending/shadowing/shadow_passed 不重写）
+        // Toggle ON：dedup（已有 pending/shadowing/shadow_passed 不重写）。
+        // U20 W1 口径加 Active：已生效提案重复拨 ON 不再新开 CR 行（重复批准
+        // 零副作用），lesson 幂等由 apply_one 的 evo:<pid> 查重兜底。
         let existing = changes.iter().find(|c| {
             c.proposal_id == proposal_id
                 && matches!(
                     c.status,
-                    ChangeStatus::Pending | ChangeStatus::Shadowing | ChangeStatus::ShadowPassed
+                    ChangeStatus::Pending
+                        | ChangeStatus::Shadowing
+                        | ChangeStatus::ShadowPassed
+                        | ChangeStatus::Active
                 )
         });
-        let cr = match existing {
+        let mut cr = match existing {
             Some(c) => {
                 crate::audit_event!(
                     app,
@@ -161,28 +228,148 @@ fn toggle_inner(
         entry.status = ProposalStatus::Promoted;
         proposals[idx] = entry.clone();
         rewrite_jsonl(&p_path, &proposals)?;
-        Ok(Some(cr))
-    } else {
-        // Toggle OFF：移除 pending ChangeRecord
-        let before = changes.len();
-        changes.retain(|c| !(c.proposal_id == proposal_id && c.status == ChangeStatus::Pending));
-        if changes.len() == before {
-            return Err(format!(
-                "proposal {proposal_id} 没有 pending ChangeRecord，无法 toggle OFF"
-            ));
+
+        // U20 W1：只有 policy 层（MemoryHint）落 lesson 记忆；落库本身在段 ②
+        // （锁外）执行——此处只把待落库提案带出锁。layer→category 双射反推，
+        // Parameter/Code 两层（派生侧不产）防御性 Err。
+        let apply_target = if entry.layer == EvolutionLayer::Policy {
+            Some(entry_to_proposal(&entry).ok_or_else(|| {
+                format!(
+                    "proposal {proposal_id} layer={:?} 无对应提案类别，无法落库",
+                    entry.layer
+                )
+            })?)
+        } else {
+            None
+        };
+        (cr, apply_target)
+    };
+
+    // ── 段 ②：锁外落库（失败语义：Err 向上抛，段 ① 盘面即「待决策」）──
+    if let Some(p) = &apply_target {
+        let outcome = human_apply_one(app, p, pre_emb.as_deref())?;
+        match outcome {
+            ApplyOutcome::Applied => {
+                apply::append_applied_record(&applied_path(app), p, crate::memory::now_ms())?;
+                crate::audit_event!(
+                    app,
+                    AuditLevel::Info,
+                    "evolution.human_applied",
+                    "proposal_id" => p.proposal_id.clone(),
+                    "mem_key" => apply::evolution_key(&p.proposal_id),
+                );
+            }
+            ApplyOutcome::AlreadyPresent => {}
+            ApplyOutcome::ConflictRefused { target_key } => {
+                // B2-1 防劫持闸：响亮留痕 + 面板错误提示（CR 保持 pending）
+                crate::audit_event!(
+                    app,
+                    AuditLevel::Warn,
+                    "evolution.apply_conflict",
+                    "proposal_id" => p.proposal_id.clone(),
+                    "target_key" => target_key.clone(),
+                    "action" => "human_apply_refused_foreign_merge",
+                );
+                return Err(format!(
+                    "落库被拒绝：该建议与既有记忆「{target_key}」语义撞车（防记忆劫持闸）。提案已登记为待决策，可重试、停用或删除。"
+                ));
+            }
         }
-        rewrite_jsonl(&c_path, &changes)?;
-        entry.status = ProposalStatus::Rejected;
-        proposals[idx] = entry.clone();
-        rewrite_jsonl(&p_path, &proposals)?;
-        crate::audit_event!(
-            app,
-            AuditLevel::Warn,
-            "evolution.toggle_off",
-            "proposal_id" => proposal_id.to_string(),
-        );
-        Ok(None)
+
+        // ── 段 ③：锁内把 CR 流转到 Active——重新 load 定位（段 ② 期间文件
+        // 可能被并发改），仅状态真正变化才 rewrite（重复批 no-op 零写放大）。
+        // pending 的 CR 不可被回滚（rollback_precheck 拒绝），段 ② 窗口无竞争面。
+        if cr.status != ChangeStatus::Active {
+            let _g = lock_evolution_store();
+            mark_human_applied(&mut cr)?;
+            let mut changes = load_changes(app)?;
+            if let Some(pos) = changes.iter().position(|c| c.change_id == cr.change_id) {
+                changes[pos] = cr.clone();
+                rewrite_jsonl(&changes_path(app), &changes)?;
+            }
+        }
     }
+    Ok(Some(cr))
+}
+
+/// W1 内核：ProposalEntry → EvolutionProposal 还原（apply_one 入参）。
+/// layer ↔ category 按 candidate::derive_layer 的双射反推；Parameter/Code 两层
+/// 当前无 category 对应（派生侧只产 4 层），返 None（调用方跳过落库）。
+/// evidence/suggestion 从 entry 透传字段重组；structured_patch 未落盘，恒 None。
+fn entry_to_proposal(entry: &ProposalEntry) -> Option<EvolutionProposal> {
+    use crate::evolution::proposal::{Evidence, ProposalCategory, Suggestion};
+    let category = match entry.layer {
+        EvolutionLayer::Policy => ProposalCategory::MemoryHint,
+        EvolutionLayer::PromptHint => ProposalCategory::PromptHint,
+        EvolutionLayer::ToolSchema => ProposalCategory::ToolSchemaHint,
+        EvolutionLayer::Skill => ProposalCategory::SkillHint,
+        EvolutionLayer::Parameter | EvolutionLayer::Code => return None,
+    };
+    Some(EvolutionProposal {
+        proposal_id: entry.proposal_id.clone(),
+        created_at_ms: entry.created_at_ms,
+        origin: entry.origin,
+        category,
+        target: entry.target.clone(),
+        impact: entry.impact,
+        evidence: Evidence {
+            summary: entry.summary.clone(),
+            occurrence_count: entry.occurrence_count,
+            window_hours: entry.window_hours,
+            related_refs: entry.related_refs.clone(),
+        },
+        suggestion: Suggestion {
+            text: entry.suggestion_text.clone(),
+            structured_patch: None,
+        },
+    })
+}
+
+/// W1：toggle ON 落库前的嵌入预计算（锁外调用）。只对 policy 层提案算
+///（非 policy 不落库，白算几十 ms ONNX）；读失败/找不到条目返 None 不阻塞。
+fn precompute_human_apply_embedding<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    proposal_id: &str,
+) -> Option<Vec<f32>> {
+    let entries = candidate::read_all(&proposals_path(app)).ok()?;
+    let entry = entries.iter().find(|e| e.proposal_id == proposal_id)?;
+    if entry.layer != EvolutionLayer::Policy {
+        return None;
+    }
+    crate::memory::embed::embed_text(&entry.suggestion_text)
+}
+
+/// W1 人工批准执行器内核：apply_one 写 lesson（幂等由 evo:<pid> key 查重承担）。
+/// 锁序同 delete_inner 先例：外层已持 EVOLUTION_STORE_LOCK，内取 DB_WRITE_LOCK
+///（apply 轨是先放 DB 锁再取 store 锁、两向不嵌套，无环）。
+fn human_apply_one<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    p: &EvolutionProposal,
+    embedding: Option<&[f32]>,
+) -> Result<ApplyOutcome, String> {
+    let conn = crate::db::open_db(app)?;
+    let _db_write = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
+        eprintln!("[mutex_poisoned] evolution::panel DB_WRITE_LOCK (human_apply): {e:?}");
+        e.into_inner()
+    });
+    crate::memory::store::ensure_table(&conn)?;
+    apply::apply_one(&conn, p, embedding, crate::memory::now_ms())
+}
+
+/// W1：人工批准落库成功后 CR 合法流转到 Active——瞬时走完
+/// Pending→Shadowing→ShadowPassed→Approved→Active（同 auto_applied_from_proposal；
+/// Pending→Active 直跳被 status.rs 硬约束②拦截，不裸写）。已 Active（重复批）
+/// 幂等跳过。approval_source 保持 HumanApproved 不变（自动/人工来源显式区分）。
+fn mark_human_applied(cr: &mut ChangeRecord) -> Result<(), String> {
+    use ChangeStatus::{Active, Approved, ShadowPassed, Shadowing};
+    if cr.status == Active {
+        return Ok(());
+    }
+    for step in [Shadowing, ShadowPassed, Approved, Active] {
+        change::transition(cr.status, step)?;
+        cr.status = step;
+    }
+    Ok(())
 }
 
 fn delete_inner(app: &AppHandle, proposal_id: &str, cascade_source: bool) -> Result<(), String> {
@@ -458,6 +645,44 @@ pub async fn evolution_keep_shadow(
 pub async fn evolution_list_changes(app: AppHandle) -> Result<Vec<ChangeRecord>, String> {
     // 阻塞 fs IO（全量 load jsonl）移出 async worker
     crate::py::document::spawn_blocking_map(move || load_changes(&app)).await
+}
+
+/// U20 W3：四指标薄壳——读三个 jsonl 走 observe::compute_metrics 纯函数。
+/// 观察窗口 30 天（同 bin/observe_run.rs 默认口径）；空文件 = 纯函数零值。
+#[tauri::command]
+pub async fn evolution_metrics(app: AppHandle) -> Result<ObserveMetrics, String> {
+    // 阻塞 fs IO（三份 jsonl 全量 load）移出 async worker
+    crate::py::document::spawn_blocking_map(move || {
+        let applied = crate::eval::metrics::read_applied(&applied_path(&app))?;
+        let now = crate::memory::now_ms();
+        let window_start = now - 30 * 86_400_000;
+        Ok(observe::compute_metrics(
+            &load_proposals(&app)?,
+            &load_changes(&app)?,
+            &applied,
+            now,
+            window_start,
+        ))
+    })
+    .await
+}
+
+/// U20 W2：读应用策略档位（serde 小写序列化 "auto"/"confirm"；缺字段/读失败
+/// = auto = 现状）。返回类型化枚举（OCR R1 采纳），非法值在读取层已归一 auto。
+#[tauri::command]
+pub async fn evolution_get_apply_policy(app: AppHandle) -> Result<ApplyPolicy, String> {
+    crate::py::document::spawn_blocking_map(move || Ok(read_apply_policy(&app))).await
+}
+
+/// U20 W2：点档即时落盘（设置页自进化头部 radiogroup，同记忆三档先例）。
+#[tauri::command]
+pub async fn evolution_set_apply_policy(app: AppHandle, policy: String) -> Result<(), String> {
+    crate::py::document::spawn_blocking_map(move || {
+        let p = ApplyPolicy::from_config_str(&policy)
+            .ok_or_else(|| format!("未知应用策略：{policy}（仅 auto / confirm）"))?;
+        set_apply_policy(&app, p)
+    })
+    .await
 }
 
 /// 回滚 ChangeRecord
@@ -810,5 +1035,66 @@ mod tests {
         assert!(ChangeStatus::RolledBack.is_terminal());
         assert!(ChangeStatus::Rejected.is_terminal());
         assert!(ChangeStatus::Expired.is_terminal());
+    }
+
+    #[test]
+    fn w1_entry_to_proposal_roundtrip() {
+        let mut e = mk_entry("u20-w1e", ProposalStatus::Pooled);
+        e.summary = "证据摘要".into();
+        e.occurrence_count = 7;
+        e.window_hours = 48;
+        e.related_refs = vec!["r1".into()];
+        let p = entry_to_proposal(&e).expect("policy 层应可还原");
+        assert_eq!(p.proposal_id, e.proposal_id);
+        assert_eq!(
+            p.category,
+            crate::evolution::proposal::ProposalCategory::MemoryHint
+        );
+        assert_eq!(p.evidence.summary, "证据摘要");
+        assert_eq!(p.evidence.occurrence_count, 7);
+        assert_eq!(p.evidence.window_hours, 48);
+        assert_eq!(p.evidence.related_refs, vec!["r1"]);
+        assert_eq!(p.suggestion.text, e.suggestion_text);
+        assert!(p.suggestion.structured_patch.is_none());
+
+        // layer ↔ category 双射的其余三角
+        for (layer, cat) in [
+            (
+                EvolutionLayer::PromptHint,
+                crate::evolution::proposal::ProposalCategory::PromptHint,
+            ),
+            (
+                EvolutionLayer::ToolSchema,
+                crate::evolution::proposal::ProposalCategory::ToolSchemaHint,
+            ),
+            (
+                EvolutionLayer::Skill,
+                crate::evolution::proposal::ProposalCategory::SkillHint,
+            ),
+        ] {
+            e.layer = layer;
+            assert_eq!(entry_to_proposal(&e).unwrap().category, cat);
+        }
+        // Parameter/Code 无 category 对应 → None（跳过落库）
+        e.layer = EvolutionLayer::Parameter;
+        assert!(entry_to_proposal(&e).is_none());
+        e.layer = EvolutionLayer::Code;
+        assert!(entry_to_proposal(&e).is_none());
+    }
+
+    #[test]
+    fn w1_mark_human_applied_walks_legally_and_idempotent() {
+        let mut cr = mk_change("chg-idem", ChangeStatus::Pending);
+        cr.approval_source = ApprovalSource::HumanApproved;
+        mark_human_applied(&mut cr).unwrap();
+        assert_eq!(cr.status, ChangeStatus::Active);
+        assert_eq!(
+            cr.approval_source,
+            ApprovalSource::HumanApproved,
+            "来源不漂移"
+        );
+        // 已 Active（重复批）幂等跳过——再走一遍不 Err 也不回退
+        mark_human_applied(&mut cr).unwrap();
+        assert_eq!(cr.status, ChangeStatus::Active);
     }
 }
