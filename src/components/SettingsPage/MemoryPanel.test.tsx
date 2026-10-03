@@ -95,8 +95,9 @@ describe("MemoryPanel", () => {
     // 无向量条目徽标半透明 + title 标注（「教训」与筛选 chip 重名，走 title 定位）
     const lessonBadge = screen.getByTitle("无向量（关键词模式检索）");
     expect(lessonBadge.className).toContain("opacity-50");
-    // 访问次数进 title
-    expect(screen.getByTitle(/被想起 2 次/)).toBeInTheDocument();
+    // 被想起次数行内直显；0 次不显示
+    expect(screen.getByText("想起 2")).toBeInTheDocument();
+    expect(screen.queryByText("想起 0")).toBeNull();
   });
 
   it("统计行与嵌入降级横幅：embedOk=false 显示原因；正常态不显示", async () => {

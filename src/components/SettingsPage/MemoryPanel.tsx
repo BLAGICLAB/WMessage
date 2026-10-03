@@ -333,9 +333,15 @@ export function MemoryPanel() {
                 <span className="nm-tag shrink-0 text-[10px]">
                   {SOURCE_LABELS[m.source] ?? m.source}
                 </span>
+                {/* 被想起次数：行内直显（= 聊天注入命中的累计次数；面板搜索不计入） */}
+                {m.accessCount > 0 && (
+                  <span className="shrink-0 text-[10px] text-[var(--t6)]" title="被聊天注入命中的次数">
+                    想起 {m.accessCount}
+                  </span>
+                )}
                 <span
                   className="shrink-0 text-[10px] text-[var(--t6)]"
-                  title={`更新于 ${fmtTime(m.updatedAt)}${m.accessCount > 0 ? ` · 被想起 ${m.accessCount} 次` : ""}`}
+                  title={`更新于 ${fmtTime(m.updatedAt)}`}
                 >
                   {fmtTime(m.updatedAt)}
                 </span>

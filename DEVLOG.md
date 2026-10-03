@@ -33,6 +33,11 @@ NULL 向量为既有正确语义，横幅/徽标/统计三层可见；两次 loa
 **验证**：test-all 全量绿（nextest 1340 / pytest 审计 / vitest 387）；
 panel.rs 单测 8 条（内存库 + 假向量）、MemoryPanel vitest 7 条。
 
+**追记（同日 U14A-MEMROW-COUNT）**：老板看板反馈「被想起 N 次」只收在悬停
+title 里看不见——改为行内直显「想起 N」（0 次不占位），title 改口径说明
+（面板搜索不计入）。同轮确认：老板机器嵌入引擎正常（向量覆盖 6/6），
+降级横幅为条件显示、当前正确隐藏。
+
 ## 2026-10-03（周六）U13-MODELPARAMS：每模型推理参数接线 + 遗留收尾
 
 **需求**：把 U11 起随 ModelEntry 持久化的每模型推理参数（temperature / top_p /
