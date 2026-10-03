@@ -375,8 +375,8 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     pythonTimeoutSecs: "",
     // 授权模式：strict=白名单外硬拒 / ask=白名单外弹授权（默认）/ yolo=全放行
     permMode: "ask" as "strict" | "ask" | "yolo",
-    // max_tokens（仅 Anthropic 模式用；空 = 8192 默认，范围 256-200000）
-    // 仍是顶层配置——同一协议下多个模型共用一个 max_tokens
+    // max_tokens 兜底层（仅 Anthropic 模式发送）：无设置页 UI 入口（每模型编辑里
+    // 都有 max_tokens，页底重复已删）；loadConfig 读到已存值原样透传保存，不丢
     maxTokens: "",
     // 推理强度后台默认（RE-1）：off/low/medium/high，默认 medium；
     // 抽象档位——发送时后端按具体模型族映射到 reasoning_effort / thinking.budget_tokens
@@ -2250,24 +2250,11 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
                 </div>
               )}
               <p className="text-[10px] text-[var(--t6)] leading-snug">
-                插头 = 连接测试：通过后厂商点亮绿点、开启的模型才进聊天窗口下拉（key/URL/格式变更后需重新测试）。当前使用的模型在聊天窗口 🧠 下拉切换；max_tokens 在 Anthropic 格式下按厂商设置。
+                插头 = 连接测试：通过后厂商点亮绿点、开启的模型才进聊天窗口下拉（key/URL/格式变更后需重新测试）。当前使用的模型在聊天窗口 🧠 下拉切换；max_tokens 在各模型的编辑里设置（仅 Anthropic 格式生效）。
               </p>
             </div>
-            {activeVendorProtocol === "anthropic" && (
-              <div className="space-y-1">
-                <p className="text-[10px] text-[var(--t5)]">max_tokens</p>
-                <input
-                  value={config.maxTokens}
-                  onChange={(e) => setConfig((c) => ({ ...c, maxTokens: e.target.value }))}
-                  placeholder="8192"
-                  inputMode="numeric"
-                  className="nm-inset w-full rounded-xl px-3 py-2 text-xs text-[var(--t3)] outline-none"
-                />
-                <p className="text-[10px] text-[var(--t6)] leading-snug">
-                  单次回复的最大 token 数（Anthropic 必填）。留空 = 8192；范围 256-200000，超出自动钳制。
-                </p>
-              </div>
-            )}
+            {/* 全局 max_tokens 输入已删（每模型编辑里都有，页底重复）；BotConfig.maxTokens
+                仍作条目留空时的兜底层透传保存（条目 > 全局 > 8192 默认），无 UI 入口 */}
             {/* 保存 + 自动连接测试：保存成功后厂商下有开启的模型即自动探测，
                 结果决定左栏绿点与聊天下拉可见性 */}
             <div className="mt-3 flex items-center justify-end gap-3">

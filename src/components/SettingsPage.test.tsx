@@ -611,7 +611,7 @@ describe("SettingsPage", () => {
     expect(await screen.findByText(/暂无模型/)).toBeInTheDocument();
   });
 
-  it("大模型 API 配置：保存 → bot_set_config 透传新结构（modelsByProvider + activeModelId + apiProvider + maxTokens），老 baseUrl/model 字段不再传", async () => {
+  it("大模型 API 配置：保存 → bot_set_config 透传新结构（modelsByProvider + activeModelId + apiProvider），老 baseUrl/model 字段不再传", async () => {
     const user = userEvent.setup();
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "bot_get_enabled") return true;
@@ -651,9 +651,6 @@ describe("SettingsPage", () => {
     );
     const labelInput = await screen.findByPlaceholderText(/DeepSeek \/ Kimi/);
     await user.type(labelInput, "Claude Sonnet");
-    // 填 max_tokens（Anthropic 模式出现）
-    const maxTokensInput = screen.getByPlaceholderText("8192");
-    await user.type(maxTokensInput, "4096");
     // 保存 → bot_set_config 透传新结构（aria-label 恒定，不受「已保存 ✓」瞬态影响）
     const saveBtns = await screen.findAllByRole("button", { name: "保存配置" });
     await user.click(saveBtns[saveBtns.length - 1]);
@@ -689,8 +686,8 @@ describe("SettingsPage", () => {
       );
       // apiProvider 透传
       expect(arg.config.apiProvider).toBe("anthropic");
-      // maxTokens 透传
-      expect(arg.config.maxTokens).toBe(4096);
+      // maxTokens 兜底层无 UI 入口（每模型编辑里都有）：未配置原样透传 null
+      expect(arg.config.maxTokens).toBeNull();
       // 顶层 key 字段仍按以前模式传 null
       expect(arg.apiKey).toBeNull();
       expect(arg.tavilyKey).toBeNull();
