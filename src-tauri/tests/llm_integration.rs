@@ -601,6 +601,7 @@ impl CoreHarness {
 
     fn deps(&self) -> ModelLoopDeps<'_> {
         ModelLoopDeps {
+            fuse_cap_override: None,
             emit: &*self.emit,
             audit: &*self.audit,
             audit_log: &*self.audit_log,

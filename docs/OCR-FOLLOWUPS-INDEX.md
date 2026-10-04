@@ -224,3 +224,14 @@ grep 例：`grep 'C2b1' docs/OCR-FOLLOWUPS-INDEX.md`
 | FULL-66 | low | WorkflowPage.tsx | Three different `alert( | | W4F-1 已账（alert 先例） |
 | FULL-67 | low | WorkflowPage.tsx | `useCallback` here returns a function that is immediately invoked on every render (`snapshot()` at line 134) | | 观察项（无行为面/已有注释/收益<30 行） |
 | FULL-68 | medium | WorkflowPage.tsx | `stopRun` keeps `running` as `true` after the backend acknowledges stop and only updates it via the 300 ms rec | | 观察（时钟源差异无语义影响） |
+
+## Mimosa 完整安全扫描（2026-10-04，deep，seal sha256:cc5f36…）
+
+> 扫描 ID `scan-2026-10-04T09-58-00.914Z-6286ace6087f`，产物在
+> `~/.mimosa/security-scans/project-35c8c4f5947b2bbdf573b390/<scanId>/`。
+> 13 条 = 6H+7M，全部与工作流功能无关（工作流 9 个 focus 文件**零发现**）。
+
+| ID | 批次 | 严重度 | 根因一句话 | 触发条件 | 处置 |
+|---|---|---|---|---|---|
+| SEC-1 | Mimosa-1004 | high×6+medium×6（同一发现重复计数） | eval/config.rs:64 `load(path)` 接收本地 API 请求侧路径读文件，污点链未做白名单归一 | 本地 HTTP API 的 eval 配置加载被恶意路径调用 | 独立小批（eval family：路径白名单/固定到数据目录；既有代码，非本功能引入） |
+| SEC-2 | Mimosa-1004 | medium | "MongoDB 动态排序字段注入"——全项目无 MongoDB 依赖（Cargo.toml/package.json/源码零命中） | — | 误报（heuristic 误配），不改代码 |

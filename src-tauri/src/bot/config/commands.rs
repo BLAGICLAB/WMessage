@@ -103,6 +103,7 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
         has_brave_key,
         brave_enabled: cfg.brave_enabled,
         python_timeout_secs: cfg.python_timeout_secs,
+        max_function_calls: cfg.max_function_calls,
         perm_mode: cfg.perm_mode,
         api_provider: cfg.api_provider,
         max_tokens: cfg.max_tokens,

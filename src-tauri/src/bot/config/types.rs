@@ -140,6 +140,11 @@ pub struct BotConfig {
     /// 映射表见 bot/reasoning.rs）。挂件聊天可按会话覆盖此值（不回写）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
+    /// 单次请求 Function 调用熔断上限（可选，全域）：None = 默认 100；
+    /// 子 agent 会话不受此字段影响（走各自预算 max_tool_calls）。
+    /// 工作流节点等长链任务可调大；软警阈值 = cap*7/10 自动跟随。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_function_calls: Option<u32>,
     /// 每协议下的大模型列表：双协议各自独立维护一个
     /// ModelEntry 列表。设置页协议切换时整体切换显示；新增的 ModelEntry 落在当前
     /// 协议下。None = 老配置未迁移过来（load_config 时会从 base_url/model 兜底迁移）；
@@ -283,6 +288,7 @@ impl Default for BotConfig {
             memory_control: None,       // 未配置 = 注入/主动记忆全开（U15 前行为）
             memory_tuning: None,        // 未配置 = 参数全默认（U17 前行为）
             mcp_servers: None,          // 未配置 = 无外部 MCP 服务器（老配置零影响）
+            max_function_calls: None,   // 未配置 = 100 默认（W5-FUSE，全域熔断上限）
             evolution: None,            // 未配置 = 无自进化块（evolution 模块自管读写）
             disabled_vendors: Vec::new(), // 未配置 = 无厂商被禁用
             verified_vendors: Vec::new(), // 未配置 = 无厂商通过连接测试
@@ -366,6 +372,9 @@ pub struct BotConfigView {
     pub brave_enabled: Option<bool>,
     /// run_python 默认超时秒数（None = 60s 默认；设置页可改，硬钳 300s）
     pub python_timeout_secs: Option<u64>,
+    /// 单次请求 Function 调用熔断上限（W5-FUSE 全域）：None = 默认 100；
+    /// 子 agent 会话不受影响（走各自预算）
+    pub max_function_calls: Option<u32>,
     /// 授权模式原样透传给设置页（None = ask 默认；非法值前端按 ask 显示）
     pub perm_mode: Option<String>,
     /// API 协议原样透传给设置页（None = openai 旧行为，非法值前端按 openai 显示）

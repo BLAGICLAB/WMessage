@@ -307,11 +307,12 @@ pub(crate) fn resolve_max_rounds(skill_max_rounds: Option<usize>) -> usize {
 // Harness 第 5 层：单轮对话 Function 总调用上限（每轮可并行多个 tool_calls，
 // max_rounds 管轮数管不住并行调用数，必须有独立计数熔断）
 //
-// 上限 50 与对话轮数上限拉齐：复杂多步任务 10 次不够用，而更高会掩护
-// LLM 死循环 / 幻觉调工具。失控防护靠幻觉守卫（claims_mutation）+ 软警告 + /stop，
-// 不靠压低上限。软警告阈值 35 保持 ~30% buffer（50-15=35）。
-const MAX_FUNCTION_CALLS_PER_REQUEST: usize = 50;
-const SOFT_WARN_AT: usize = 35;
+// 上限默认 100（W5-FUSE，老板拍板从 50 上调）：工作流节点等长链任务
+// 50 次不够用；更高上限的失控风险由幻觉守卫（claims_mutation）+ 软警告 +
+// /stop 兜底。可用 bot-config.json `maxFunctionCalls` 覆盖（None = 100）；
+// 子 agent 会话不受此值影响（走各自预算 max_tool_calls）。
+// 软警告阈值动态 = cap*7/10（保持 ~30% buffer），钳 [1, cap-1]。
+const MAX_FUNCTION_CALLS_PER_REQUEST: usize = 100;
 
 /// LLM 请求重试：429/5xx/网络错误重试一次（1.5s 退避）。
 /// 只在流式产出开始前重试——响应已开始流式产出后不重试（无重放风险：
@@ -396,6 +397,10 @@ pub fn apply_inference_params(
 /// 使核心循环不依赖 AppHandle；异步出口（execute_tool / replan）因 Rust 闭包生命周期
 /// 限制走泛型参数。生产薄壳 run_model_loop 传入 AppHandle 实现，测试传 stub。
 pub struct ModelLoopDeps<'a> {
+    /// 单次请求 Function 调用熔断上限覆盖（W5-FUSE）：薄壳从 bot-config
+    /// `maxFunctionCalls` 读入；None = 默认 100。子 agent 预算优先级更高
+    /// （core 派生链第一级），测试直驱 core 传 Some(n) 可锚定任意 cap。
+    pub fuse_cap_override: Option<usize>,
     /// 流式事件出口（bot-chat-delta / bot-think-delta / bot-tool / bot-tool-name / bot-tool-done）
     pub emit: &'a (dyn Fn(&str, serde_json::Value) + Send + Sync),
     /// 结构化审计事件（audit_event! 等价物：level + event + kv 列表）
@@ -533,6 +538,12 @@ pub async fn run_model_loop(
     > = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let tool_trace_for_exec = tool_trace.clone();
     let deps = ModelLoopDeps {
+        // 全域熔断上限（W5-FUSE）：config 有值用之（钳 ≥1），None = 默认 100
+        fuse_cap_override: Some(
+            cfg.max_function_calls
+                .map(|v| v.max(1) as usize)
+                .unwrap_or(MAX_FUNCTION_CALLS_PER_REQUEST),
+        ),
         emit: &emit,
         audit: &|level, event, kv| {
             // B4-2：llm.request 事件计数 = 轮数（trace turn_count 的数据源）
@@ -672,10 +683,12 @@ where
 
     // SUBA-2：熔断上限按会话派生——子 agent 预算 max_tool_calls（子会话注册表），
     // 其余 50。软警阈值 = cap*7/10（cap=50 时即既有 35，行为字节级不变）。
+    // 派生链（W5-FUSE）：子 agent 预算 → bot-config maxFunctionCalls → 默认 100
     let fuse_cap = stop
         .session_id()
         .and_then(|sid| crate::tool_guard::subagent_ctx(Some(sid)))
         .map(|c| c.budget.max_tool_calls as usize)
+        .or(deps.fuse_cap_override)
         .unwrap_or(MAX_FUNCTION_CALLS_PER_REQUEST)
         .max(1);
     // 小 cap 收敛：cap≤9 时 7/10 会塌到 0（提示「已调用 0 个」失真）——钳到
@@ -2073,21 +2086,24 @@ mod rounds_fuse_tests {
     #[test]
     fn fuse_trips_on_51st_function_call() {
         // MAX_FUNCTION_CALLS_PER_REQUEST = 50 实际生效：模拟主循环计数，
-        // 构造 51 个 tool_calls → 第 51 次触发熔断并返回「⏹ 已熔断」消息
-        assert_eq!(MAX_FUNCTION_CALLS_PER_REQUEST, 50);
-        assert_eq!(SOFT_WARN_AT, 35);
+        // 构造 101 个 tool_calls → 第 101 次触发熔断（W5-FUSE：默认上限 50→100）
+        assert_eq!(MAX_FUNCTION_CALLS_PER_REQUEST, 100);
         let mut calls = 0usize;
         let mut fused_msg: Option<String> = None;
-        for _ in 0..51 {
+        for _ in 0..101 {
             calls += 1;
-            if should_fuse(calls, 50) {
-                fused_msg = Some(fuse_message("前文", "", 50));
+            if should_fuse(calls, MAX_FUNCTION_CALLS_PER_REQUEST) {
+                fused_msg = Some(fuse_message("前文", "", MAX_FUNCTION_CALLS_PER_REQUEST));
                 break;
             }
         }
-        let msg = fused_msg.expect("51 次 Function 调用内必须触发熔断");
+        let msg = fused_msg.expect("101 次 Function 调用内必须触发熔断");
         assert!(msg.contains("⏹ 已熔断"), "熔断消息应含「⏹ 已熔断」：{msg}");
-        assert!(msg.contains("50 次上限"), "熔断消息应带上限值：{msg}");
+        assert!(msg.contains("100 次上限"), "熔断消息应带上限值：{msg}");
+        // 配置覆盖：maxFunctionCalls=30 → 第 31 次熔断（派生链第二级）
+        let mut calls = 0usize;
+        let fused = (1..=31).any(|n| should_fuse(n, 30));
+        assert!(fused, "cap=30 时第 31 次必须熔断");
         // 边界：第 50 次放行，第 51 次熔断
         assert!(!should_fuse(50, 50));
         assert!(should_fuse(51, 50));

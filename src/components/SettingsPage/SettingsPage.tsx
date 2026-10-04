@@ -405,6 +405,8 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     braveEnabled: false,
     // run_python 默认超时秒数（空 = 60s 默认；模型 timeoutSecs 参数优先；硬钳 300s）
     pythonTimeoutSecs: "",
+    // Function 调用熔断上限（空 = 100 默认；W5-FUSE 全域，含工作流节点执行）
+    maxFunctionCalls: "",
     // 授权模式：strict=白名单外硬拒 / ask=白名单外弹授权（默认）/ yolo=全放行
     permMode: "ask" as "strict" | "ask" | "yolo",
     // max_tokens 兜底层（仅 Anthropic 模式发送）：无设置页 UI 入口（每模型编辑里
@@ -497,6 +499,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         hasBraveKey?: boolean;
         braveEnabled?: boolean | null;
         pythonTimeoutSecs?: number | null;
+        maxFunctionCalls?: number | null;
         permMode?: string | null;
         apiProvider?: string | null;
         maxTokens?: number | null;
@@ -561,6 +564,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         hasBraveKey: c.hasBraveKey ?? false,
         braveEnabled: c.braveEnabled ?? (c.hasBraveKey ?? false),
         pythonTimeoutSecs: c.pythonTimeoutSecs != null ? String(c.pythonTimeoutSecs) : "",
+        maxFunctionCalls: c.maxFunctionCalls != null ? String(c.maxFunctionCalls) : "",
         // 老配置缺字段/非法值 → ask（与后端 PermMode::from_cfg 回退一致）
         permMode:
           c.permMode === "strict" || c.permMode === "yolo" ? c.permMode : "ask",
@@ -734,6 +738,11 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
           // 空 = 60s 默认；非法输入按未配置处理（后端 resolve_timeout 硬钳 300s）
           pythonTimeoutSecs: (() => {
             const n = parseInt(c.pythonTimeoutSecs.trim(), 10);
+            return Number.isFinite(n) && n > 0 ? n : null;
+          })(),
+          // Function 调用熔断上限：空 = 100 默认；非法输入按未配置处理
+          maxFunctionCalls: (() => {
+            const n = parseInt(c.maxFunctionCalls.trim(), 10);
             return Number.isFinite(n) && n > 0 ? n : null;
           })(),
           // 授权模式（strict/ask/yolo）
@@ -2744,7 +2753,14 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
       )}
       {mountedSections.has("workflow") && (
       <section hidden={activeSection !== "workflow"} className="space-y-4 pt-4">
-      <WorkflowSettingsCard />
+      <WorkflowSettingsCard
+        maxFunctionCalls={config.maxFunctionCalls}
+        onMaxFunctionCallsChange={(v) =>
+          void saveConfig((c) => ({ ...c, maxFunctionCalls: v }), {
+            skipReload: true,
+          })
+        }
+      />
       </section>
       )}
       {mountedSections.has("desk") && (
@@ -2802,7 +2818,14 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
 /** 工作流设置卡（W1-CANVAS §10 + W2-DECOMPOSE §6.3）：可见性开关 + 拆解提示词。
  *  提示词两段式：这里编辑的是「指引段」；「输出契约段」在后端代码硬拼，
  *  用户改指引段破坏不了 JSON 契约。 */
-function WorkflowSettingsCard() {
+function WorkflowSettingsCard({
+  maxFunctionCalls,
+  onMaxFunctionCallsChange,
+}: {
+  /** 熔断上限（字符串态，空 = 默认 100） */
+  maxFunctionCalls: string;
+  onMaxFunctionCallsChange: (v: string) => void;
+}) {
   const [showTasks, setShowTasks] = useState(getShowWorkflowTasks);
   const [guidance, setGuidance] = useState(getDecomposeGuidance);
   const [guidanceSaved, setGuidanceSaved] = useState(false);
@@ -2865,6 +2888,26 @@ function WorkflowSettingsCard() {
           >
             {showTasks ? "已开启" : "已关闭"}
           </button>
+        </div>
+      </div>
+      <div className="nm-card p-5">
+        <h2 className="text-lg font-semibold text-[var(--t1)]">调用工具上限（全域熔断）</h2>
+        <p className="mt-1 text-xs text-[var(--t5)]">
+          单次执行累计调用工具达到该次数即熔断停止（默认 100）。工作流节点等长链任务
+          被熔断时，调高后点「继续执行」可从断点接着跑。作用于所有机器人执行（含普通聊天）。
+        </p>
+        <div className="mt-3 flex items-center gap-2">
+          <input
+            aria-label="调用工具上限"
+            className="h-8 w-28 rounded-[var(--r-sm)] nm-inset px-3 text-sm text-[var(--t1)] outline-none"
+            inputMode="numeric"
+            placeholder="100"
+            value={maxFunctionCalls}
+            onChange={(e) => {
+              onMaxFunctionCallsChange(e.target.value.replace(/[^0-9]/g, ""));
+            }}
+          />
+          <span className="text-xs text-[var(--t5)]">次（留空 = 默认 100）</span>
         </div>
       </div>
       <div className="nm-card p-5">

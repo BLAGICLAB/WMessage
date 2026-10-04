@@ -648,6 +648,12 @@ function WorkflowPageInner({
 
   // ────────────── 渲染 ──────────────
 
+  // 已完成节点数（驱动「继续执行」按钮态，与总目标卡进度同源）
+  const doneCount =
+    activeId !== null
+      ? tasks.filter((t) => t.workflowId === activeId && t.column === "done").length
+      : 0;
+
   const toolbarBtn =
     "flex h-8 items-center gap-1.5 whitespace-nowrap rounded-[var(--r-sm)] px-3 text-sm text-[var(--t3)] nm-outset disabled:cursor-not-allowed disabled:opacity-50";
 
@@ -732,9 +738,13 @@ function WorkflowPageInner({
             className={toolbarBtn}
             onClick={() => void startRun()}
             disabled={activeId === null || dirty || nodes.length === 0}
-            title={runButtonTitle(dirty, activeId !== null)}
+            title={
+              doneCount > 0
+                ? `继续执行：已完成 ${doneCount} 个节点将跳过（断点续跑），失败/未跑的重新执行`
+                : runButtonTitle(dirty, activeId !== null)
+            }
           >
-            <Play size={14} aria-hidden /> 开始执行
+            <Play size={14} aria-hidden /> {doneCount > 0 ? "继续执行" : "开始执行"}
           </button>
         )}
         {activeId && (

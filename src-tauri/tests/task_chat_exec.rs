@@ -170,6 +170,7 @@ async fn run_task_in_chat_full_chain_manual_origin() {
                 }
             };
             let deps = ModelLoopDeps {
+                fuse_cap_override: None,
                 emit: &|_, _| {},
                 audit: &|_: AuditLevel, _: &'static str, _| {},
                 audit_log: &|_| {},

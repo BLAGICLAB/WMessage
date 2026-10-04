@@ -182,6 +182,8 @@ struct NodeOutcome {
     ok: bool,
     /// 取消（在 Gate 排队时被取消）：不计失败，控制器按「已停止」归档
     cancelled: bool,
+    /// 熔断（Function 调用超上限）：失败的一种，但归因备注不同（W5-FUSE）
+    fused: bool,
 }
 
 // ────────────── 命令 ──────────────
@@ -334,11 +336,14 @@ async fn run_controller(
                         id,
                         ok: false,
                         cancelled: true,
+                        fused: false,
                     });
                     return;
                 }
                 let _ticket = ticket; // RAII 占槽：任务结束自动释放
                 let result = run_task_in_chat(&app, &id, TaskExecOrigin::Workflow).await;
+                // 熔断识别（W5-FUSE）：循环优雅返回「⏹ 已熔断」消息且任务未完成
+                let fused = matches!(&result, Ok(r) if r.result.text.contains("已熔断"));
                 let ok = match &result {
                     Ok(_) => crate::db::db_load(app.clone())
                         .await
@@ -353,6 +358,7 @@ async fn run_controller(
                     id,
                     ok,
                     cancelled: false,
+                    fused,
                 });
             });
         }
@@ -397,6 +403,15 @@ async fn run_controller(
                 }
             }
         } else {
+            if outcome.fused {
+                // 熔断归因写卡（W5-FUSE）：卡片本身带 ⚠️ 说明，用户知道调上限后可续跑
+                mark_note_prefix(
+                    &app,
+                    &outcome.id,
+                    "⚠️ 已熔断：调用工具达上限被停止。可到 设置→工作流 调高「调用工具上限」，然后单卡 🤖 重跑本卡，或直接「继续执行」",
+                )
+                .await;
+            }
             let failed_name = name_by_id
                 .get(&outcome.id)
                 .cloned()
@@ -411,7 +426,7 @@ async fn run_controller(
                     continue;
                 }
                 resolved.insert(skipped.clone());
-                mark_skipped(
+                mark_note_prefix(
                     &app,
                     &skipped,
                     &format!("⏭ 因上游「{}」失败未执行", failed_name),
@@ -432,7 +447,7 @@ async fn run_controller(
         .cloned()
         .collect();
     for id in &to_mark {
-        mark_skipped(&app, id, "⏭ 已停止，未执行").await;
+        mark_note_prefix(&app, id, "⏭ 已停止，未执行").await;
     }
 
     runs().lock().map(|mut m| m.remove(&workflow_id));
@@ -457,8 +472,9 @@ async fn run_controller(
     notify_workflow_done(&app, total, done_count, failed_n);
 }
 
-/// ⏭ 跳过标记（RMW 合并，与调度器 ⏰ 摘要前置同款；基于执行后最新数据合并）
-async fn mark_skipped(app: &AppHandle, task_id: &str, reason: &str) {
+/// note 前置标记（RMW 合并，与调度器 ⏰ 摘要前置同款；基于执行后最新数据合并）。
+/// 调用方：⏭ 跳过 / ⚠️ 熔断归因（W5-FUSE）
+async fn mark_note_prefix(app: &AppHandle, task_id: &str, reason: &str) {
     if let Ok(cur) = crate::db::db_load(app.clone()).await {
         if let Some(mut fresh) = cur.into_iter().find(|t| t.id == task_id) {
             let note = match fresh.note.as_deref().filter(|n| !n.trim().is_empty()) {
