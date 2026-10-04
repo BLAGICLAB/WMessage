@@ -192,13 +192,7 @@ pub fn open_db<R: tauri::Runtime>(
     }
     // 迁移（W1-CANVAS，设计 §3.1）：工作流四字段 + 画布坐标。
     // origin 缺省 NULL 视作 "user"（读路径归一），不加 DEFAULT 避免 ALTER 语义分叉
-    for (col, ty) in [
-        ("origin", "TEXT"),
-        ("workflow_id", "TEXT"),
-        ("depends_on", "TEXT"),
-        ("canvas_x", "REAL"),
-        ("canvas_y", "REAL"),
-    ] {
+    for (col, ty) in crate::db::tasks::W1_TASK_COLUMNS {
         let has: bool = conn
             .prepare("PRAGMA table_info(tasks)")
             .and_then(|mut stmt| {
@@ -752,14 +746,9 @@ mod tests {
         .unwrap();
         // W1-CANVAS 起进程内共有 5 个新列（origin/workflow_id/depends_on/canvas_x/canvas_y）——
         // 与 files 列同为 open_db 幂等 ALTER 的一部分；fixture 保持「仅缺 files 列」的
-        // 被测前提不变，把其余列补齐，否则迁移后 load_all 查新列会炸
-        for (col, ty) in [
-            ("origin", "TEXT"),
-            ("workflow_id", "TEXT"),
-            ("depends_on", "TEXT"),
-            ("canvas_x", "REAL"),
-            ("canvas_y", "REAL"),
-        ] {
+        // 被测前提不变，把其余列补齐，否则迁移后 load_all 查新列会炸。
+        // 列清单单源 = tasks::W1_TASK_COLUMNS（OCR r1 medium：勿手工镜像）
+        for (col, ty) in crate::db::tasks::W1_TASK_COLUMNS {
             conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"), [])
                 .unwrap();
         }

@@ -813,9 +813,8 @@ function App() {
               onSetColumn={setTaskColumn}
               onUpdate={updateTask}
               onTasksReload={() => {
-                void reloadTasks().catch((e) =>
-                  handleCommandError(e, "重读任务", { silent: true })
-                );
+                // 不 silent：保存/删除后重读失败必须让用户看到（errorHandler 默认弹窗）
+                void reloadTasks().catch((e) => handleCommandError(e, "重读任务"));
               }}
             />
           ) : view === "archive" ? (

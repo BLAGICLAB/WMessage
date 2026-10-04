@@ -349,11 +349,19 @@ fn task_fp_at(
 
 // ────────────── 指纹 diff 保存（锁内事务，设计 §7） ──────────────
 
+/// 保存的完整产出：result 给前端重建绑定；upserts/deleted_ids 由**锁内**写定，
+/// 广播直接携带（OCR r1 high：锁外重读 DB 会与其他写者交错，快照可能与本次保存不一致）
+pub(crate) struct WorkflowSaveOutcome {
+    pub result: WorkflowSaveResult,
+    pub upserts: Vec<Task>,
+    pub deleted_ids: Vec<String>,
+}
+
 pub(crate) fn workflow_save_locked(
     conn: &mut rusqlite::Connection,
     input: WorkflowSaveInput,
     now: i64,
-) -> CommandResult<WorkflowSaveResult> {
+) -> CommandResult<WorkflowSaveOutcome> {
     debug_assert!(
         super::holding_db_write(),
         "workflow_save_locked 必须在持有 DB_WRITE_LOCK（lock_db_write()）时调用"
@@ -370,18 +378,17 @@ pub(crate) fn workflow_save_locked(
     // ① 指纹（内部完成环检测 + 悬空引用检测）
     let draft_fps = draft_fingerprints(&input.nodes, &index)?;
 
-    // ② 工作流行 upsert（新建行 created_at=now；既有行保留 created_at）
-    let wf_id = match &input.workflow_id {
+    // ② 工作流行 upsert（新建行 created_at=now；既有行保留 created_at）——
+    // 一次 load 同时完成存在性校验与 created_at 读取（OCR r1 low：勿查两遍）
+    let (wf_id, prev_row) = match &input.workflow_id {
         Some(id) => {
-            if load_workflow(conn, id)?.is_none() {
-                return Err(CommandError::TaskNotFound(id.clone()));
-            }
-            id.clone()
+            let prev = load_workflow(conn, id)?.ok_or(CommandError::TaskNotFound(id.clone()))?;
+            (id.clone(), Some(prev))
         }
-        None => uuid::Uuid::new_v4().simple().to_string(),
+        None => (uuid::Uuid::new_v4().simple().to_string(), None),
     };
-    let (created_at, _) = match load_workflow(conn, &wf_id)? {
-        Some(prev) => (prev.created_at, prev.name),
+    let (created_at, _) = match prev_row {
+        Some(p) => (p.created_at, p.name),
         None => (Some(now), name.clone()),
     };
     upsert_workflow(
@@ -502,21 +509,25 @@ pub(crate) fn workflow_save_locked(
         .map_err(|e| CommandError::DbError(e.to_string()))?;
 
     let created_n = input.nodes.len() - kept_flags.iter().filter(|k| **k).count();
-    Ok(WorkflowSaveResult {
-        workflow_id: wf_id,
-        bindings: input
-            .nodes
-            .iter()
-            .enumerate()
-            .map(|(i, n)| WorkflowSaveBinding {
-                local_id: n.local_id.clone(),
-                task_id: real_id[i].clone(),
-                created: !kept_flags[i],
-            })
-            .collect(),
-        kept: input.nodes.len() - created_n,
-        created: created_n,
-        deleted: deleted_n,
+    Ok(WorkflowSaveOutcome {
+        result: WorkflowSaveResult {
+            workflow_id: wf_id,
+            bindings: input
+                .nodes
+                .iter()
+                .enumerate()
+                .map(|(i, n)| WorkflowSaveBinding {
+                    local_id: n.local_id.clone(),
+                    task_id: real_id[i].clone(),
+                    created: !kept_flags[i],
+                })
+                .collect(),
+            kept: input.nodes.len() - created_n,
+            created: created_n,
+            deleted: deleted_n,
+        },
+        upserts,
+        deleted_ids,
     })
 }
 
@@ -534,46 +545,41 @@ pub async fn workflow_save(
     input: WorkflowSaveInput,
 ) -> CommandResult<WorkflowSaveResult> {
     let app_emit = app.clone();
-    let result = async_runtime::spawn_blocking(move || {
+    let outcome = async_runtime::spawn_blocking(move || {
         let _g = super::lock_db_write();
         let mut conn = super::open_db(&app)?;
         let now = chrono::Utc::now().timestamp_millis();
         workflow_save_locked(&mut conn, input, now)
     })
     .await
-    .map_err(|e| CommandError::from(format!("工作流保存线程 join 失败：{e}")))?;
-    if let Ok(r) = &result {
-        audit_event(
-            &app_emit,
-            "workflow_save",
-            &r.workflow_id,
-            &[
-                ("kept", r.kept.to_string()),
-                ("created", r.created.to_string()),
-                ("deleted", r.deleted.to_string()),
-            ],
+    .map_err(|e| CommandError::from(format!("工作流保存线程 join 失败：{e}")))??;
+    let r = &outcome.result;
+    audit_event(
+        &app_emit,
+        "workflow_save",
+        &r.workflow_id,
+        &[
+            ("kept", r.kept.to_string()),
+            ("created", r.created.to_string()),
+            ("deleted", r.deleted.to_string()),
+        ],
+    );
+    // 广播：挂件/主窗收敛（与 task_patch 同款协议）。载荷 = 锁内写定的行，
+    // 不锁外重读（OCR r1 high TOCTOU）
+    {
+        use tauri::Emitter;
+        let _ = app_emit.emit("tasks-changed", ());
+        let _ = app_emit.emit_to(
+            "main",
+            "tasks-updated",
+            serde_json::json!({
+                "source": crate::mutation::MutationOrigin::Main.as_str(),
+                "upserts": outcome.upserts,
+                "deletes": outcome.deleted_ids
+            }),
         );
-        // 广播：挂件/主窗收敛（与 task_patch 同款协议；批量保存载荷走全量重读）
-        {
-            use tauri::Emitter;
-            let _ = app_emit.emit("tasks-changed", ());
-            let conn = match super::open_db(&app_emit) {
-                Ok(c) => c,
-                Err(_) => return result,
-            };
-            let all = super::tasks::load_all(&conn).unwrap_or_default();
-            let _ = app_emit.emit_to(
-                "main",
-                "tasks-updated",
-                serde_json::json!({
-                    "source": crate::mutation::MutationOrigin::Main.as_str(),
-                    "upserts": all,
-                    "deletes": []
-                }),
-            );
-        }
     }
-    result
+    Ok(outcome.result)
 }
 
 #[tauri::command]
@@ -713,6 +719,7 @@ mod tests {
             1_000,
         )
         .unwrap()
+        .result
     }
 
     #[test]
@@ -837,16 +844,24 @@ mod tests {
             )
         };
         // 自环
-        let err = run(vec![node("n1", "A", &["n1"])]).unwrap_err();
+        let err = run(vec![node("n1", "A", &["n1"])])
+            .map(|o| o.result)
+            .unwrap_err();
         assert!(err.to_string().contains("循环依赖"));
         // 间接环 A→B→A
-        let err = run(vec![node("n1", "A", &["n2"]), node("n2", "B", &["n1"])]).unwrap_err();
+        let err = run(vec![node("n1", "A", &["n2"]), node("n2", "B", &["n1"])])
+            .map(|o| o.result)
+            .unwrap_err();
         assert!(err.to_string().contains("循环依赖"));
         // 悬空引用
-        let err = run(vec![node("n1", "A", &["不存在"])]).unwrap_err();
+        let err = run(vec![node("n1", "A", &["不存在"])])
+            .map(|o| o.result)
+            .unwrap_err();
         assert!(err.to_string().contains("不在本画布内"));
         // localId 重复
-        let err = run(vec![node("n1", "A", &[]), node("n1", "B", &[])]).unwrap_err();
+        let err = run(vec![node("n1", "A", &[]), node("n1", "B", &[])])
+            .map(|o| o.result)
+            .unwrap_err();
         assert!(err.to_string().contains("重复"));
     }
 
@@ -870,10 +885,12 @@ mod tests {
         let nodes: Vec<WorkflowNodeDraft> = (0..MAX_WORKFLOW_NODES + 1)
             .map(|i| node(&format!("n{i}"), &format!("N{i}"), &[]))
             .collect();
-        let err = run(nodes).unwrap_err();
+        let err = run(nodes).map(|o| o.result).unwrap_err();
         assert!(err.to_string().contains("上限"));
         // 空标题
-        let err = run(vec![node("n1", "   ", &[])]).unwrap_err();
+        let err = run(vec![node("n1", "   ", &[])])
+            .map(|o| o.result)
+            .unwrap_err();
         assert!(err.to_string().contains("不能为空"));
         // 空名称
         let err = workflow_save_locked(
@@ -886,6 +903,7 @@ mod tests {
             },
             1_000,
         )
+        .map(|o| o.result)
         .unwrap_err();
         assert!(err.to_string().contains("不能为空"));
     }
@@ -906,12 +924,14 @@ mod tests {
             2_000,
         )
         .unwrap();
-        assert_eq!(r2.deleted, 1);
-        assert!(load_tasks_by_workflow(&conn, &r2.workflow_id)
+        assert_eq!(r2.result.deleted, 1);
+        assert!(load_tasks_by_workflow(&conn, &r2.result.workflow_id)
             .unwrap()
             .is_empty());
         // 工作流行仍在
-        assert!(load_workflow(&conn, &r2.workflow_id).unwrap().is_some());
+        assert!(load_workflow(&conn, &r2.result.workflow_id)
+            .unwrap()
+            .is_some());
     }
 
     #[test]

@@ -91,3 +91,21 @@ grep 例：`grep 'C2b1' docs/OCR-FOLLOWUPS-INDEX.md`
 
 **C3-r1（C3 批 OCR 轮，16 条）分层**：`C3-r1-H1` 假阳性（不改）｜`C3-r1-H2` → Phase 6-T｜`C3-r1-M1..M5` / `C3-r1-L1..L7` → 顺手修｜
 `C3-r1-L8` → **D2 射程，单独看**（文案与实现不符）｜`DESIGN-1`（rolled_back_at 窗口语义）→ 独立评估。
+
+## W1-CANVAS（工作流画布骨架，2026-10-04 OCR r1 修复批衍生债）
+
+> 修复批 commit 见 git log `W1-CANVAS`；r1 全量报告 `docs/OCR-CODE-REVIEW-2026-10-04-w1.json`。
+> 3 critical + 2 high + 8 medium/low 已随批修复，以下为显式缓期项。
+
+| ID | 批次 | 严重度 | 根因一句话 | 触发条件 | 处置 |
+|---|---|---|---|---|---|
+| W1F-1 | W1-CANVAS-r1 | low | `un.then((f)=>f())` 清理模式吞 unsubscribe 拒绝 | listen promise reject | wontfix（与全仓既有 listen 用法一致；统一收口属独立批） |
+| W1F-2 | W1-CANVAS-r1 | medium | open_db 迁移循环 PRAGMA+ALTER 样板已三份 | 加新列时 | 独立小批（迁移辅助函数化，db family，不混入 workflow-canvas） |
+| W1F-3 | W1-CANVAS-r1 | medium | workflow_rename 改名不广播 | 其他窗口正在看工作流列表 | wontfix-by-design（改名经「保存」路径持久化；画布打开时 workflow_load 取现值；跨窗列表刷新随 W3 执行态一并处理） |
+| W1F-4 | W1-CANVAS-r1 | medium | reloadTasks 并发调用无串行化 | 快速连续保存 | Phase2（两次读均为已提交快照，后完成者胜，无丢数据面；与 mutating 链合并属编排批次） |
+| W1F-5 | W1-CANVAS-r1 | low | createBlank/openWorkflow 丢弃未保存编辑无确认 | dirty 时切换工作流 | W2（需确认弹窗 promise 化，随拆解 UX 批处理） |
+| W1F-6 | W1-CANVAS-r1 | low | TaskNode memo 因 data 每次重建而失效 | 每渲染 | wontfix（画布 ≤30 节点， reconciliation 开销可忽略） |
+| W1F-7 | W1-CANVAS-r1 | low | types.ts CanvasPos/WorkflowSaveBinding 未导出 | 外部引用类型时 | wontfix（knip 禁止无消费导出；需要时随消费方同批导出） |
+| W1F-8 | W1-CANVAS-r1 | low | edge id 以 "->" 拼接的格式耦合 | localId 含 "->" 时 | wontfix（localId 恒为 uuid/真实任务 id，不变量已注释在生成/解析两处） |
+| W1F-9 | W1-CANVAS-r1 | low | addNode 以窗口中心而非画布中心落点 | 画布被遮挡/滚动时 | W2（画布 DOM 中心换算，随 UX 小批） |
+| W1F-10 | W1-CANVAS-r1 | low | App reloadTasks 每渲染新引用 | 每渲染 | wontfix（仅在保存/删除后调用，无热路径） |

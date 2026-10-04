@@ -27,6 +27,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { openTarget } from "../../lib/openTarget";
 import {
   getShowWorkflowTasks,
+  isWorkflowTask,
   WORKFLOW_VISIBILITY_EVENT,
 } from "../../lib/workflowVisibility";
 import { ErrorBoundary } from "../../ui/ErrorBoundary";
@@ -639,7 +640,7 @@ export default function WidgetApp() {
   };
 
   // 挂件「待办 / 今日」显示未完成；「完成」显示已完成列。
-  // W1-CANVAS：工作流节点卡默认不在挂件清单混入（设计 §3.3），开关走 localStorage + 事件
+  // W1-CANVAS：工作流节点卡默认不在挂件清单混入（设计 §3.3），开关走 localStorage + Tauri 事件
   const [wfVisible, setWfVisible] = useState(getShowWorkflowTasks);
   useEffect(() => {
     const un = listen(WORKFLOW_VISIBILITY_EVENT, () =>
@@ -649,20 +650,13 @@ export default function WidgetApp() {
       un.then((f) => f());
     };
   }, []);
+  const notWorkflow = (t: Task) => wfVisible || !isWorkflowTask(t);
   const visible = tasks.filter(
-    (t) =>
-      (wfVisible || t.origin !== "workflow") &&
-      !t.archived &&
-      !t.deletedAt &&
-      t.column !== "done"
+    (t) => notWorkflow(t) && !t.archived && !t.deletedAt && t.column !== "done"
   );
   const doneList = tasks
     .filter(
-      (t) =>
-        (wfVisible || t.origin !== "workflow") &&
-        !t.archived &&
-        !t.deletedAt &&
-        t.column === "done"
+      (t) => notWorkflow(t) && !t.archived && !t.deletedAt && t.column === "done"
     )
     .slice()
     .sort((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0));

@@ -2819,6 +2819,9 @@ function WorkflowSettingsCard() {
           </p>
         </div>
         <button
+          role="switch"
+          aria-checked={showTasks}
+          aria-label="在看板中显示工作流任务"
           className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] ${
             showTasks ? "nm-inset" : "nm-outset"
           }`}

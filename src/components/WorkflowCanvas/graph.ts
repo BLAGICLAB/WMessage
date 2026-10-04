@@ -28,9 +28,6 @@ export function wouldCreateCycle(
   to: string
 ): boolean {
   if (from === to) return true;
-  const adj = new Map<string, string[]>();
-  for (const n of nodes) adj.set(n.localId, n.dependsOn);
-  // DFS：从 to 沿边（下游方向 = dependsOn 的反向）能到 from 则成环。
   // dependsOn[k] = k 的上游；因此 k 的下游是所有 dependsOn 包含 k 的节点
   const down = new Map<string, string[]>();
   for (const n of nodes)
@@ -61,11 +58,12 @@ export function layoutGraph(
   const g = new dagre.graphlib.Graph();
   g.setGraph({ rankdir: "TB", nodesep: 60, ranksep: 90, marginx: 40, marginy: 40 });
   g.setDefaultEdgeLabel(() => ({}));
+  const ids = new Set(nodes.map((n) => n.localId));
   for (const n of nodes) g.setNode(n.localId, { width: NODE_WIDTH, height: NODE_HEIGHT });
   for (const n of nodes)
     for (const d of n.dependsOn) {
       // 悬空引用防御：布局只画画布内存在的边
-      if (nodes.some((m) => m.localId === d)) g.setEdge(d, n.localId);
+      if (ids.has(d)) g.setEdge(d, n.localId);
     }
   dagre.layout(g);
   const out: Record<string, { x: number; y: number }> = {};
@@ -99,10 +97,9 @@ export function draftFromTasks(
     dependsOn: [...(t.dependsOn ?? [])],
     pos: t.canvasPos ?? { x: 0, y: 0 },
   }));
-  const missing = base.some(
-    (n) => !tasks.find((t) => t.id === n.localId)?.canvasPos
-  );
-  if (missing) {
+  // 任一行缺坐标 → 全图重排；全有坐标（用户手拖过）则原样保留
+  const missingPos = tasks.some((t) => t.canvasPos == null);
+  if (missingPos) {
     const laid = layoutGraph(base);
     for (const n of base) n.pos = laid[n.localId] ?? n.pos;
   }

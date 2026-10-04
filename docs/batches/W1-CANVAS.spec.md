@@ -65,6 +65,8 @@ spec 起草即视为 reviewer 批准（自主模式），agent 全权执行至 c
   "batch_id": "W1-CANVAS",
   "family": "workflow-canvas",
   "expected_files": [
+    "docs/OCR-CODE-REVIEW-2026-10-04-w1.json",
+    "docs/OCR-FOLLOWUPS-INDEX.md",
     "docs/WORKFLOW-CANVAS-DESIGN-2026-10-04.md",
     "docs/batches/W1-CANVAS.spec.md",
     "docs/rust-bot-architecture.md",

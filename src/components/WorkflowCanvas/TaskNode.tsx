@@ -19,6 +19,15 @@ export interface TaskNodeData extends Record<string, unknown> {
   onToggleSubtask?: (taskId: string, subtaskId: string) => void;
 }
 
+/** 节点描边态：执行中（蓝）/ 完成（绿）/ 失败（红），三态互斥拆成独立分支（OCR r1） */
+function nodeBorder(task: Task | undefined): string {
+  if (task?.column === "doing" && task.botAssigned) return "ring-2 ring-[var(--info,#3b82f6)]";
+  if (task?.column !== "done") return "";
+  if (task.result?.status === "success") return "ring-2 ring-[var(--ok,#22c55e)]";
+  if (task.result?.status != null) return "ring-2 ring-[var(--danger,#ef4444)]";
+  return "";
+}
+
 export const TaskNode = memo(function TaskNode({
   id,
   data,
@@ -27,21 +36,8 @@ export const TaskNode = memo(function TaskNode({
   data: TaskNodeData;
 }) {
   const { task, draftTitle } = data;
-  const isDone = task?.column === "done";
-  const isDoing = task?.column === "doing" && task?.botAssigned;
-  const failed =
-    task?.column === "done" &&
-    task?.result?.status != null &&
-    task.result.status !== "success";
-  const border = isDoing
-    ? "ring-2 ring-[var(--info,#3b82f6)]"
-    : isDone
-      ? failed
-        ? "ring-2 ring-[var(--danger,#ef4444)]"
-        : "ring-2 ring-[var(--ok,#22c55e)]"
-      : "";
   return (
-    <div className={`nm-card w-[340px] px-1 pt-1 pb-2 ${border}`}>
+    <div className={`nm-card w-[340px] px-1 pt-1 pb-2 ${nodeBorder(task)}`}>
       {/* 连线手柄：上=下游入（被依赖），下=上游出（依赖别人）——
           视觉上"从卡底拉到卡顶"与图流向（上→下）一致 */}
       <Handle type="target" position={Position.Top} />
@@ -60,9 +56,7 @@ export const TaskNode = memo(function TaskNode({
       {task ? (
         <TaskCardContent
           task={task}
-          onTitleClick={() => {}}
           onCommitTitle={(t) => data.onCommitTitle?.(task.id, t)}
-          onCancelTitle={() => {}}
           onToggleDone={() => data.onToggleDone?.(task.id)}
           onToggleSubtask={(sid) => data.onToggleSubtask?.(task.id, sid)}
         />

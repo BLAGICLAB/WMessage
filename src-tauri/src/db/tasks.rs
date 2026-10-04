@@ -128,6 +128,15 @@ pub struct CanvasPos {
 pub const TASK_ORIGIN_USER: &str = "user";
 pub const TASK_ORIGIN_WORKFLOW: &str = "workflow";
 
+/// W1-CANVAS 新增列清单（open_db 幂等迁移与 legacy 迁移测试 fixture 共用，防两处漂移——OCR r1）
+pub const W1_TASK_COLUMNS: [(&str, &str); 5] = [
+    ("origin", "TEXT"),
+    ("workflow_id", "TEXT"),
+    ("depends_on", "TEXT"),
+    ("canvas_x", "REAL"),
+    ("canvas_y", "REAL"),
+];
+
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Task {

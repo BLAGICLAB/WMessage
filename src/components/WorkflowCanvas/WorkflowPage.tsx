@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   ReactFlow,
@@ -79,6 +79,24 @@ function WorkflowPageInner({
   const [saving, setSaving] = useState(false);
   /** 两步确认： armed 的 workflowId，第二次点击才真删 */
   const [deleteArmed, setDeleteArmed] = useState(false);
+  /** 最新 props 镜像：useCallback 闭包里读 tasksRef 而非捕获 tasks，防过期（OCR r1 high）。
+   *  经 useEffect 同步（render 期写 ref 会被 lint 拦；回调只在交互后触发，晚一拍无碍） */
+  const tasksRef = useRef(tasks);
+  const propsRef = useRef({ onSetColumn, onUpdate });
+  useEffect(() => {
+    tasksRef.current = tasks;
+    propsRef.current = { onSetColumn, onUpdate };
+  });
+  /** 打开竞态守卫：慢的旧 workflow_load 响应不得覆盖用户后来的选择（OCR r1 medium） */
+  const openSeqRef = useRef(0);
+  /** 删除确认的 3s 复位定时器（卸载/重臂时清理，OCR r1 medium） */
+  const armedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (armedTimerRef.current) clearTimeout(armedTimerRef.current);
+    },
+    []
+  );
 
   // 工作流列表（进入页面拉一次）
   useEffect(() => {
@@ -96,19 +114,18 @@ function WorkflowPageInner({
   // ────────────── 打开/新建 ──────────────
 
   const openWorkflow = async (id: string) => {
+    const seq = ++openSeqRef.current;
     try {
       const detail = await invoke<Workflow & { tasks: Task[] }>("workflow_load", { id });
+      if (seq !== openSeqRef.current) return; // 期间用户已切换：丢弃本次响应
+      const fresh = draftFromTasks(detail.tasks);
       setActiveId(id);
       setName(detail.name);
       setGoal(detail.goal);
-      setNodes(draftFromTasks(detail.tasks));
+      setNodes(fresh);
       setSelectedIds([]);
       setSavedSnapshot(
-        JSON.stringify({
-          name: detail.name,
-          goal: detail.goal,
-          nodes: draftFromTasks(detail.tasks),
-        })
+        JSON.stringify({ name: detail.name, goal: detail.goal, nodes: fresh })
       );
       setMode("edit");
       setDeleteArmed(false);
@@ -118,6 +135,7 @@ function WorkflowPageInner({
   };
 
   const createBlank = () => {
+    openSeqRef.current++; // 使在途的 workflow_load 失效
     setActiveId(null);
     setName(`工作流 ${new Date().toLocaleDateString()}`);
     setGoal("");
@@ -145,7 +163,7 @@ function WorkflowPageInner({
     setNodes((prev) => [...prev, n]);
   };
 
-  const deleteNode = (localId: string) => {
+  const deleteNode = useCallback((localId: string) => {
     // 连带清理：删掉它自己 + 所有人对它的依赖（设计 §决策8）
     setNodes((prev) =>
       prev
@@ -153,7 +171,7 @@ function WorkflowPageInner({
         .map((n) => ({ ...n, dependsOn: n.dependsOn.filter((d) => d !== localId) }))
     );
     setSelectedIds((prev) => prev.filter((s) => s !== localId));
-  };
+  }, []);
 
   const onNodesChange = useCallback((changes: NodeChange[]) => {
     setNodes((prev) => {
@@ -181,6 +199,9 @@ function WorkflowPageInner({
           next = c.selected
             ? [...next, c.id]
             : next.filter((s) => s !== c.id);
+        } else if (c.type === "remove") {
+          // 节点被键盘/程序删除时同步清理选中态，防悬空 id（OCR r1 medium）
+          next = next.filter((s) => s !== c.id);
         }
       }
       return next;
@@ -217,7 +238,9 @@ function WorkflowPageInner({
       let next = prev;
       for (const c of changes) {
         if (c.type === "remove") {
-          // edge id = `${source}->${target}`；删边 = 下游 dependsOn 移除上游
+          // edge id = `${source}->${target}`；删边 = 下游 dependsOn 移除上游。
+          // id 格式约定：localId 恒为 uuid/真实任务 id（不含 "->"），本文件内
+          // 生成与解析一一对应（rfEdges useMemo 与此处），不外溢成通用格式
           const [, target] = c.id.split("->");
           next = next.map((n) =>
             n.localId === target
@@ -236,41 +259,47 @@ function WorkflowPageInner({
   }, []);
 
   // ────────────── 已保存节点的任务卡操作（同步草稿 + 真实任务） ──────────────
+  // 一律经 ref 读最新 props/tasks，避免闭包过期被 React Flow 的节点 data 缓存
+  // （OCR r1 high：rfNodes useMemo 不依赖回调身份，回调必须自身稳定）
 
-  const commitTitle = (taskId: string, title: string) => {
+  const commitTitle = useCallback((taskId: string, title: string) => {
     setNodes((prev) =>
       prev.map((n) => (n.taskId === taskId ? { ...n, title } : n))
     );
-    onUpdate(taskId, { title });
-  };
+    propsRef.current.onUpdate(taskId, { title });
+  }, []);
 
-  const toggleDone = (taskId: string) => {
-    const t = tasks.find((x) => x.id === taskId);
+  const toggleDone = useCallback((taskId: string) => {
+    const t = tasksRef.current.find((x) => x.id === taskId);
     if (!t) return;
-    onSetColumn(taskId, t.column === "done" ? "todo" : "done");
-  };
+    propsRef.current.onSetColumn(taskId, t.column === "done" ? "todo" : "done");
+  }, []);
 
-  const toggleSubtask = (taskId: string, subtaskId: string) => {
-    const t = tasks.find((x) => x.id === taskId);
+  const toggleSubtask = useCallback((taskId: string, subtaskId: string) => {
+    const t = tasksRef.current.find((x) => x.id === taskId);
     if (!t?.subtasks) return;
-    onUpdate(taskId, {
+    propsRef.current.onUpdate(taskId, {
       subtasks: t.subtasks.map((s) =>
         s.id === subtaskId ? { ...s, done: !s.done } : s
       ),
     });
-  };
+  }, []);
 
   // ────────────── 保存（指纹 diff 落库，设计 §7） ──────────────
 
   const save = async () => {
     if (saving) return;
     setSaving(true);
+    // 后端的 name/goal 会 trim，本地 state 同步成 trim 后的值——
+    // 否则保存后 snapshot 用原值算 dirty 恒为 true（OCR r1 medium）
+    const effectiveName = name.trim() || "未命名工作流";
+    const effectiveGoal = goal.trim() || effectiveName;
     try {
       const res = await invoke<WorkflowSaveResult>("workflow_save", {
         input: {
           workflowId: activeId,
-          name: name.trim() || "未命名工作流",
-          goal: goal.trim() || name.trim() || "未命名工作流",
+          name: effectiveName,
+          goal: effectiveGoal,
           nodes: nodes.map((n) => ({
             localId: n.localId,
             taskId: n.taskId ?? null,
@@ -296,7 +325,11 @@ function WorkflowPageInner({
         return mapped;
       });
       setNodes(next);
-      setSavedSnapshot(JSON.stringify({ name, goal, nodes: next }));
+      setName(effectiveName);
+      setGoal(effectiveGoal);
+      setSavedSnapshot(
+        JSON.stringify({ name: effectiveName, goal: effectiveGoal, nodes: next })
+      );
       setActiveId(res.workflowId);
       setSelectedIds([]);
       onTasksReload();
@@ -315,9 +348,12 @@ function WorkflowPageInner({
     if (!activeId) return;
     if (!deleteArmed) {
       setDeleteArmed(true);
-      setTimeout(() => setDeleteArmed(false), 3000);
+      if (armedTimerRef.current) clearTimeout(armedTimerRef.current);
+      armedTimerRef.current = setTimeout(() => setDeleteArmed(false), 3000);
       return;
     }
+    if (armedTimerRef.current) clearTimeout(armedTimerRef.current);
+    setDeleteArmed(false);
     try {
       await invoke("workflow_delete", { id: activeId });
       setWorkflows((prev) => prev.filter((w) => w.id !== activeId));
@@ -364,21 +400,24 @@ function WorkflowPageInner({
         };
       }),
     ],
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [nodes, tasks, name, goal, savedSnapshot, selectedIds]
+    // 依赖含全部 data 回调（deleteNode/toggle* 均为 useCallback 稳定引用，
+    // 内部经 ref 读最新 tasks/props——此处完整列出是防过期闭包的兜底，OCR r1 high）
+    [nodes, tasks, name, goal, savedSnapshot, selectedIds, deleteNode, toggleDone, commitTitle, toggleSubtask]
   );
 
   const rfEdges = useMemo<Edge[]>(
-    () =>
-      nodes.flatMap((n) =>
+    () => {
+      const ids = new Set(nodes.map((n) => n.localId));
+      return nodes.flatMap((n) =>
         n.dependsOn
-          .filter((d) => nodes.some((m) => m.localId === d))
+          .filter((d) => ids.has(d))
           .map((d) => ({
             id: `${d}->${n.localId}`,
             source: d,
             target: n.localId,
           }))
-      ),
+      );
+    },
     [nodes]
   );
 
