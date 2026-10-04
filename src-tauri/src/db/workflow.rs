@@ -391,18 +391,6 @@ pub(crate) fn workflow_save_locked(
         Some(p) => (p.created_at, p.name),
         None => (Some(now), name.clone()),
     };
-    upsert_workflow(
-        conn,
-        &Workflow {
-            id: wf_id.clone(),
-            name,
-            goal,
-            created_at,
-            updated_at: Some(now),
-        },
-    )
-    .map_err(CommandError::from)?;
-
     // ③ 现有节点卡 + 指纹
     let existing = load_tasks_by_workflow(conn, &wf_id).map_err(CommandError::from)?;
     let existing_fps = task_fingerprints(&existing);
@@ -428,6 +416,19 @@ pub(crate) fn workflow_save_locked(
     let tx = conn
         .transaction()
         .map_err(|e| CommandError::DbError(e.to_string()))?;
+    // workflows 行与节点卡**同一事务**（全量对照 high：原先行在事务外先落，
+    // 后续失败会留下无节点的孤儿工作流行，违背"锁内事务"承诺）
+    upsert_workflow(
+        &tx,
+        &Workflow {
+            id: wf_id.clone(),
+            name,
+            goal,
+            created_at,
+            updated_at: Some(now),
+        },
+    )
+    .map_err(CommandError::from)?;
 
     let mut upserts: Vec<Task> = Vec::with_capacity(input.nodes.len());
     for (i, node) in input.nodes.iter().enumerate() {

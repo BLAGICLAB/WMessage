@@ -151,6 +151,7 @@ function WorkflowPageInner({
         JSON.stringify({ name: detail.name, goal: detail.goal, nodes: fresh })
       );
       setNameAuto(false); // 打开的是已保存工作流：名称是作者起的，拆解不得覆盖（OCR r2）
+      setRunning(false); // 先复位：A 在跑时切到 B，停止按钮不得跨工作流残留（全量对照 high）
       const iseq = openSeqRef.current;
       invoke<boolean>("workflow_is_running", { workflowId: id })
         .then((v) => {

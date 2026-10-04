@@ -144,3 +144,83 @@ grep 例：`grep 'C2b1' docs/OCR-FOLLOWUPS-INDEX.md`
 | W4F-4 | W4-TEMPLATE-r1 | low | description 死字段（导出恒 None） | — | wontfix-by-design（格式 v1 完整性保留；将来加列时启用，serde default 无害） |
 | W4F-5 | W4-TEMPLATE-r1 | medium | 空 goal/空 dependsOn 由下游校验链报错（非文件层） | 导入畸形文件 | wontfix（下游报错已带节点序号归属，文件层重复校验无增益） |
 | W4F-6 | W4-TEMPLATE-r1 | low | rfNodes deps 中 activeId 仅喂 progress 三元 | 每渲染 | wontfix（≤30 节点冗余重算无观察开销） |
+
+
+## W1–W4 全量对照（2026-10-04 收口，4f371cd..HEAD 合并 diff 复审）
+
+> 报告（本地）`docs/OCR-CODE-REVIEW-2026-10-04-w1-w4-full.json`：73 条 = 1C+4H+37M+31L。
+> **1C+4H 全部随收口批修复**（TOCTOU 防重入原子化 / 断点续跑死锁 / workflows 行入事务 /
+> 停止按钮跨工作流残留 / createBlank 复位回归），含死锁回归测试。
+> 68 条 medium/low 按主题三分落账如下（"已账"= 既有条目覆盖；"顺手修候选"= 独立小批；
+> "观察项"= 无行为面，收益不抵 churn）。
+
+| ID | 级 | 文件 | 要点 | 处置 |
+|---|---|---|---|---|
+| FULL-1 | low | bot_chat.rs | The `as_str()` mapping (lines 1298-1305) is duplicated verbatim at lines 1570-1575 to produce the same `"manua | | 顺手修候选（小批） |
+| FULL-2 | low | WidgetApp.tsx | The shared filter condition `notWorkflow(t) && !t | | 观察（行为正确） |
+| FULL-3 | medium | App.tsx | reloadTasks and the inline onTasksReload arrow are recreated on every render | | W1F-10 已账 |
+| FULL-4 | medium | App.tsx | The inline arrow for onTasksReload is recreated on every render | | W1F-10 已账 |
+| FULL-5 | medium | GoalNode.tsx | The invisible `Handle type="target"` contradicts the docstring's "不参与连线" claim | | 观察（隐藏手柄为实现需要） |
+| FULL-6 | low | GoalNode.tsx | `React | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-7 | medium | tasks.rs | The `dependsOn` branch only rejects empty-string elements | | W4F-5 已账（下游报错带归属） |
+| FULL-8 | medium | tasks.rs | The new validation branches (`origin`, `workflowId`, `dependsOn`, `canvasPos`) and the new `load_tasks_by_work | | 观察（enum 化属契约小批） |
+| FULL-9 | low | tasks.rs | `Task::origin` is exposed as `Option<String>` despite this diff also introducing `TASK_ORIGIN_USER` / `TASK_OR | | 观察（enum 化属契约小批） |
+| FULL-10 | medium | tasks.rs | `canvas_x` and `canvas_y` are read and written as `Option<f64>` with no `is_finite()` guard | | 顺手修候选（写口 is_finite 拦截） |
+| FULL-11 | low | tasks.rs | `workflow_id` lacks referential integrity | | 观察（级联删除已保证一致性） |
+| FULL-12 | medium | SettingsPage.tsx | Silent failure when persistence fails: `setDecomposeGuidance` returns `false` when `localStorage` is unavailab | | W4F/设置卡 已账（返回 bool 已修 UI 侧） |
+| FULL-13 | medium | workflow.rs | Production panic risk: ` | | 顺手修候选（expect→可读错误） |
+| FULL-14 | medium | workflow.rs | Inconsistent time source inside the same file: `workflow_save` reads `let now = chrono::Utc::now() | | 观察（时钟源差异无语义影响） |
+| FULL-15 | medium | workflow.rs | NaN ordering collapses to `Equal` and silently corrupts the topological export order | | 顺手修候选（写口 is_finite 拦截） |
+| FULL-16 | low | workflow.rs | `depends_on | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-17 | low | workflow.rs | Unused tuple destructure: both slots (`p | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-18 | low | workflow.rs | `workflow_rename` is the only write command in this file that does not broadcast on the existing `tasks-change | | W3 批已账（W1F-3） |
+| FULL-19 | medium | TaskNode.tsx | `memo` on TaskNode is effectively decorative given how the parent assembles `data` | | W1F-6 已账（memo 失效 ≤30 节点） |
+| FULL-20 | low | TaskNode.tsx | `nodeBorder` conflates two distinct cases under "green ring" | | 观察（两绿态语义合并已注释） |
+| FULL-21 | medium | workflow_runner.rs | **Audit and notification understate `done` and inflate `skipped` on breakpoint-resume runs | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-22 | medium | workflow_runner.rs | **O(N²) DB load per node completion — single-row API already exists | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-23 | medium | workflow_runner.rs | **`mark_skipped` does the same O(N²) full-table load — use the single-row lookup here too | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-24 | medium | workflow_runner.rs | **Controller hangs indefinitely if any spawned node task panics before `tx | | 顺手修候选（expect→可读错误） |
+| FULL-25 | low | workflow_runner.rs | **`mark_skipped` silently swallows all errors — no audit/log on failure | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-26 | low | workflow_runner.rs | **Notification send failure logged via `eprintln!` instead of the structured audit channel | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-27 | medium | workflow_decompose.rs | Macro hygiene: `$err` is interpolated twice (in `$err | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-28 | medium | workflow_decompose.rs | Asymmetric validation: `title` is trimmed and rejected when empty, but `note` is only checked for the upper ch | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-29 | medium | workflow_decompose.rs | Duplicate indices inside a single `depends_on` (e | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-30 | low | workflow_decompose.rs | User-facing `reason` strings embed Rust identifiers and the raw field name `dependsOn` (`第 {} 个任务的 dependsOn 含 | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-31 | low | workflow_decompose.rs | `goal_trimmed` is interpolated raw into `user_content` via `format!("总目标：{goal_trimmed}")` | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-32 | medium | SettingsPage.tsx | Stale-ref race on unmount: `guidanceRef | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-33 | low | SettingsPage.tsx | listen() cleanup has two latent issues: (1) if the promise rejects (Tauri IPC failure) the rejection is silent | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-34 | medium | GoalNode.tsx | Accessibility: `outline-none` removes the default focus indicator without supplying a `focus-visible` alternat | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-35 | medium | GoalNode.tsx | Accessibility: same focus-visible issue as the input — `outline-none` strips the default ring with no replacem | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-36 | medium | GoalNode.tsx | Permanently-disabled button doesn't read as disabled on a neumorphic surface: it still has the raised `nm-outs | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-37 | medium | TaskNode.tsx | The node container has no `relative` positioning class, but the delete button uses `absolute -right-2 -top-2` | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-38 | medium | workflow_runner.rs | `build_dag` is O(N×D) due to a nested linear scan: for each dep `d`, it calls `tasks | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-39 | medium | workflow_runner.rs | Error context is dropped when a node task fails | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-40 | low | workflow_runner.rs | `running | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-41 | low | workflow.rs | `by_id` is built with `iter() | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-42 | low | workflow.rs | When a node is kept, `j` was already known at the moment `real_id[i] = existing[j] | | 观察（时钟源差异无语义影响） |
+| FULL-43 | low | workflow.rs | When a node is kept, `j` was already known at the moment `real_id[i] = existing[j] | | 观察（时钟源差异无语义影响） |
+| FULL-44 | low | workflow.rs | `by_id` is built with `iter() | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-45 | low | types.ts | Workflow | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-46 | low | workflow_decompose.rs | `strip_fences` doesn't handle the case where the language tag is adjacent to the opening fence with no newline | | 观察（隐藏手柄为实现需要） |
+| FULL-47 | medium | workflow_decompose.rs | `audit::write_event` is a synchronous function that performs filesystem I/O (resolves `data_dir`, rotates the  | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-48 | medium | workflow_decompose.rs | The retry loop has no backoff or timeout | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-49 | medium | workflow_decompose.rs | Contract and validation disagree on the upper bound | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-50 | low | workflow_decompose.rs | The success audit event omits an `outcome` field while the failure path emits `("outcome", "failed")` | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-51 | medium | graph.ts | `draftFromDecompose` blindly indexes `nodes[d]` from LLM-returned indices with no defensive check | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-52 | medium | graph.ts | `draftFromTasks` keeps `dependsOn` entries whose ids aren't in the reconstructed `nodes` array | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-53 | low | graph.ts | `if (from === to) return true;` is redundant: BFS initializes the stack with `to` and the first iteration chec | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-54 | low | graph.ts | The comment says "缺坐标的行补 dagre 布局" (rows missing coords get dagre layout), but the implementation re-lays out  | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-55 | low | tasks.rs | Validation gap: the dependsOn branch only rejects empty-string elements | | W4F-5 已账（下游报错带归属） |
+| FULL-56 | medium | tasks.rs | `workflow_id` is a plain `TEXT` column without an index, yet `load_tasks_by_workflow` filters by it and `workf | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-57 | medium | tasks.rs | The `TASK_ORIGIN_USER` constant exists for validation but is silently normalized to `None` on storage — so the | | 观察（enum 化属契约小批） |
+| FULL-58 | low | graph.ts | `draftFromTasks` uses an inline `import(" | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-59 | low | graph.ts | `wouldCreateCycle` rebuilds the entire downstream adjacency map from scratch on every invocation | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-60 | medium | WorkflowPage.tsx | The single `armedTimerRef` is shared between two independent two-step confirmations | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-61 | medium | WorkflowPage.tsx | TaskNode and GoalNode are both wrapped in `React | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-62 | medium | WorkflowPage.tsx | `cancelDecompose` only bumps `decomposeSeqRef` so the late response is discarded (the comment explicitly says  | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-63 | low | WorkflowPage.tsx | The `useEffect(() => { tasksRef | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-64 | medium | WorkflowPage.tsx | Several fire-and-forget `invoke( | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-65 | low | WorkflowPage.tsx | In `onEdgesChange`, `const [, target] = c | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-66 | low | WorkflowPage.tsx | Three different `alert( | | W4F-1 已账（alert 先例） |
+| FULL-67 | low | WorkflowPage.tsx | `useCallback` here returns a function that is immediately invoked on every render (`snapshot()` at line 134) | | 观察项（无行为面/已有注释/收益<30 行） |
+| FULL-68 | medium | WorkflowPage.tsx | `stopRun` keeps `running` as `true` after the backend acknowledges stop and only updates it via the 300 ms rec | | 观察（时钟源差异无语义影响） |

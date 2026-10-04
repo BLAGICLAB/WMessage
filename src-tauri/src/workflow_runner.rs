@@ -30,7 +30,8 @@ pub(crate) struct Dag {
     pub indegree: HashMap<String, usize>,
     /// 上游 id → 直接下游 id 列表
     pub dependents: HashMap<String, Vec<String>>,
-    /// 全部节点 id（输入顺序）
+    /// **将执行**节点 id（done+success 已排除——它们不上报终态，
+    /// 计入 total 会让控制器 recv 永久等待，W4 全量对照 critical 级教训）
     pub nodes: Vec<String>,
     /// 入度 0 的初始就绪集（稳定序：按 tasks 输入顺序）
     pub ready: Vec<String>,
@@ -107,7 +108,11 @@ pub(crate) fn build_dag(tasks: &[Task], is_success: &dyn Fn(&Task) -> bool) -> R
     Ok(Dag {
         indegree,
         dependents,
-        nodes: tasks.iter().map(|t| t.id.clone()).collect(),
+        nodes: tasks
+            .iter()
+            .filter(|t| !is_success(t))
+            .map(|t| t.id.clone())
+            .collect(),
         ready,
     })
 }
@@ -567,6 +572,21 @@ mod tests {
         let dag2 = build_dag(&tasks2, &node_is_success).unwrap();
         assert!(!dag2.ready.contains(&"c".to_string()));
         assert_eq!(dag2.indegree["c"], 1);
+    }
+
+    #[test]
+    fn dag_nodes_exclude_done_success() {
+        // 全量对照 critical 回归锁：done+success 节点不得进 nodes——
+        // 它们不上报终态，计入 total 会让控制器 recv 永久等待（断点续跑死锁）
+        let tasks = vec![
+            task("a", &[]),
+            done_success(task("b", &["a"])),
+            task("c", &["b"]),
+            done_success(task("d", &[])),
+        ];
+        let dag = build_dag(&tasks, &node_is_success).unwrap();
+        assert_eq!(dag.nodes, vec!["a".to_string(), "c".to_string()]);
+        assert!(!dag.nodes.iter().any(|id| id == "b" || id == "d"));
     }
 
     #[test]
