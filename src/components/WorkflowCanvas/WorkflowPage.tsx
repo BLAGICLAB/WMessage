@@ -14,10 +14,12 @@ import {
   type NodeChange,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Download, Play, Plus, RefreshCw, Save, Trash2, Upload } from "lucide-react";
+import { Download, Loader2, Play, Plus, RefreshCw, Save, Trash2, Upload } from "lucide-react";
 import { handleCommandError } from "../../lib/errorHandler";
+import { getDecomposeGuidance } from "../../lib/workflowPrompt";
 import type { Task, Workflow, WorkflowSaveResult } from "../../types";
 import {
+  draftFromDecompose,
   draftFromTasks,
   wouldCreateCycle,
   type CanvasNode,
@@ -91,8 +93,14 @@ function WorkflowPageInner({
   const openSeqRef = useRef(0);
   /** 删除确认的 3s 复位定时器（卸载/重臂时清理，OCR r1 medium） */
   const armedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** 重新生成两步确认 */
+  const [regenArmed, setRegenArmed] = useState(false);
+  /** AI 拆解进行中 + 竞态守卫（取消 = 递增序号丢弃在途响应） */
+  const [decomposing, setDecomposing] = useState(false);
+  const decomposeSeqRef = useRef(0);
   useEffect(
     () => () => {
+      decomposeSeqRef.current++; // 卸载时使在途拆解响应失效
       if (armedTimerRef.current) clearTimeout(armedTimerRef.current);
     },
     []
@@ -144,6 +152,55 @@ function WorkflowPageInner({
     setSavedSnapshot(null);
     setMode("edit");
     setDeleteArmed(false);
+  };
+
+  // ────────────── AI 拆解（W2-DECOMPOSE，设计 §6） ──────────────
+
+  const runDecompose = async (goalText: string) => {
+    if (decomposing) return;
+    const seq = ++decomposeSeqRef.current;
+    setDecomposing(true);
+    try {
+      const res = await invoke<{
+        subtasks: Array<{ title: string; note: string | null; dependsOn: number[] }>;
+        attempts: number;
+      }>("workflow_decompose", {
+        goal: goalText,
+        guidance: getDecomposeGuidance(),
+      });
+      if (seq !== decomposeSeqRef.current) return; // 已取消/已卸载：丢弃响应
+      const fresh = draftFromDecompose(res.subtasks);
+      setNodes(fresh);
+      setSelectedIds([]);
+      setName((prev) => (prev && prev !== `工作流 ${new Date().toLocaleDateString()}` ? prev : goalText.slice(0, 12)));
+      setSavedSnapshot(null); // 拆解结果 = 新草稿，保存才落库（设计 §7）
+      setMode("edit");
+    } catch (e) {
+      if (seq === decomposeSeqRef.current) {
+        handleCommandError(e, "AI 拆解", { onRetry: () => void runDecompose(goalText) });
+      }
+    } finally {
+      if (seq === decomposeSeqRef.current) setDecomposing(false);
+    }
+  };
+
+  const cancelDecompose = () => {
+    decomposeSeqRef.current++; // 在途响应作废（v1 语义：忽略结果，非中断请求）
+    setDecomposing(false);
+  };
+
+  const regenerate = () => {
+    if (decomposing) return;
+    if (!regenArmed) {
+      setRegenArmed(true);
+      if (armedTimerRef.current) clearTimeout(armedTimerRef.current);
+      armedTimerRef.current = setTimeout(() => setRegenArmed(false), 3000);
+      return;
+    }
+    if (armedTimerRef.current) clearTimeout(armedTimerRef.current);
+    setRegenArmed(false);
+    // 回输入框预填原目标（设计 §5.3）；activeId 保留——再次保存时按指纹 diff 替换
+    setMode("hero");
   };
 
   // ────────────── 节点编辑 ──────────────
@@ -459,11 +516,16 @@ function WorkflowPageInner({
           <Plus size={14} aria-hidden /> 加卡
         </button>
         <button
-          className={toolbarBtn}
-          disabled
-          title="AI 拆解生成将在 W2 批次上线"
+          className={`${toolbarBtn} ${regenArmed ? "nm-inset text-[var(--t1)]" : ""}`}
+          onClick={regenerate}
+          disabled={decomposing}
+          title={
+            regenArmed
+              ? "再点一次确认回到目标输入（当前画布在保存前保持不变）"
+              : "修改目标后重新拆解（当前画布在保存前保持不变）"
+          }
         >
-          <RefreshCw size={14} aria-hidden /> 重新生成
+          <RefreshCw size={14} aria-hidden /> {regenArmed ? "确认重生成？" : "重新生成"}
         </button>
         <button className={toolbarBtn} disabled title="模板导入导出将在 W4 批次上线">
           <Upload size={14} aria-hidden /> 导入
@@ -505,6 +567,10 @@ function WorkflowPageInner({
             onCreateBlank={createBlank}
             workflows={workflows}
             onOpen={(id) => void openWorkflow(id)}
+            decomposing={decomposing}
+            onDecompose={() => void runDecompose(goal)}
+            onCancelDecompose={cancelDecompose}
+            isRegenerate={activeId !== null}
           />
         ) : (
           <ReactFlow
@@ -528,26 +594,40 @@ function WorkflowPageInner({
   );
 }
 
-/** 空态引导（设计 §5.1 空态）：一句话目标输入 + 创建空白 + 已有工作流列表 */
+/** 空态引导（设计 §5.1 空态）：一句话目标 → AI 生成（W2 点亮）/ 创建空白 + 已有工作流列表。
+ *  重新生成复用本组件：工具栏「重新生成」回到此态，goal 预填原目标 */
 function EmptyHero({
   goal,
   onGoalChange,
   onCreateBlank,
   workflows,
   onOpen,
+  decomposing,
+  onDecompose,
+  onCancelDecompose,
+  isRegenerate,
 }: {
   goal: string;
   onGoalChange: (v: string) => void;
   onCreateBlank: () => void;
   workflows: Workflow[];
   onOpen: (id: string) => void;
+  decomposing: boolean;
+  onDecompose: () => void;
+  onCancelDecompose: () => void;
+  /** 重新生成流程中（activeId 已存在）——按钮文案区分 */
+  isRegenerate: boolean;
 }) {
   return (
     <div className="flex h-full items-center justify-center">
       <div className="nm-card w-full max-w-xl p-6">
-        <h2 className="text-base font-semibold text-[var(--t1)]">新建工作流</h2>
+        <h2 className="text-base font-semibold text-[var(--t1)]">
+          {isRegenerate ? "重新生成工作流" : "新建工作流"}
+        </h2>
         <p className="mt-1 text-xs text-[var(--t5)]">
-          描述你想让 AI 帮你完成的工作流程，AI 将拆解成任务卡并自动连线（AI 拆解 W2 上线），也可以先创建空白画布手动编排。
+          {isRegenerate
+            ? "修改目标描述后重新生成——点「保存」前原画布保持不变，保存时按内容指纹保留未变更节点的执行痕迹。"
+            : "描述你想让 AI 帮你完成的工作流程，AI 将拆解成任务卡并自动连线；也可以先创建空白画布手动编排。"}
         </p>
         <textarea
           aria-label="工作流目标描述"
@@ -555,21 +635,39 @@ function EmptyHero({
           placeholder="例：每周五收集本周完成的任务，汇总成一份周报文档并绑定到任务卡"
           value={goal}
           onChange={(e) => onGoalChange(e.target.value)}
+          disabled={decomposing}
         />
-        <div className="mt-3 flex justify-end gap-2">
-          <button
-            className="nm-outset rounded-[var(--r-sm)] px-4 py-1.5 text-sm text-[var(--t3)] opacity-50"
-            disabled
-            title="AI 拆解生成将在 W2 批次上线"
-          >
-            AI 生成
-          </button>
-          <button
-            className="nm-inset rounded-[var(--r-sm)] px-4 py-1.5 text-sm text-[var(--t1)]"
-            onClick={onCreateBlank}
-          >
-            创建空白工作流
-          </button>
+        <div className="mt-3 flex items-center justify-end gap-2">
+          {decomposing && (
+            <span className="mr-auto flex items-center gap-1.5 text-xs text-[var(--t5)]">
+              <Loader2 size={13} className="animate-spin" aria-hidden /> AI 拆解中…
+            </span>
+          )}
+          {decomposing ? (
+            <button
+              className="nm-outset rounded-[var(--r-sm)] px-4 py-1.5 text-sm text-[var(--t3)]"
+              onClick={onCancelDecompose}
+            >
+              取消
+            </button>
+          ) : (
+            <>
+              <button
+                className="nm-inset rounded-[var(--r-sm)] px-4 py-1.5 text-sm text-[var(--t1)] disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={!goal.trim()}
+                title={goal.trim() ? "AI 拆解为任务卡并自动连线" : "先填写目标描述"}
+                onClick={onDecompose}
+              >
+                {isRegenerate ? "AI 重新生成" : "AI 生成"}
+              </button>
+              <button
+                className="nm-outset rounded-[var(--r-sm)] px-4 py-1.5 text-sm text-[var(--t3)]"
+                onClick={onCreateBlank}
+              >
+                创建空白工作流
+              </button>
+            </>
+          )}
         </div>
         {workflows.length > 0 && (
           <div className="mt-5 border-t border-[var(--edge)] pt-4">

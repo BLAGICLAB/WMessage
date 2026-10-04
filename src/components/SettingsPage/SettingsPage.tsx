@@ -42,6 +42,11 @@ import {
   setShowWorkflowTasks,
   WORKFLOW_VISIBILITY_EVENT,
 } from "../../lib/workflowVisibility";
+import {
+  getDecomposeGuidance,
+  resetDecomposeGuidance,
+  setDecomposeGuidance,
+} from "../../lib/workflowPrompt";
 
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
 import {
@@ -2793,10 +2798,13 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
   );
 }
 
-/** 工作流设置卡（W1-CANVAS，设计 §10）：可见性开关。
- *  W2 将在此分区追加「AI 拆解提示词（指引段）」与恢复默认。 */
+/** 工作流设置卡（W1-CANVAS §10 + W2-DECOMPOSE §6.3）：可见性开关 + 拆解提示词。
+ *  提示词两段式：这里编辑的是「指引段」；「输出契约段」在后端代码硬拼，
+ *  用户改指引段破坏不了 JSON 契约。 */
 function WorkflowSettingsCard() {
   const [showTasks, setShowTasks] = useState(getShowWorkflowTasks);
+  const [guidance, setGuidance] = useState(getDecomposeGuidance);
+  const [guidanceSaved, setGuidanceSaved] = useState(false);
   useEffect(() => {
     const un = listen(WORKFLOW_VISIBILITY_EVENT, () =>
       setShowTasks(getShowWorkflowTasks())
@@ -2806,33 +2814,69 @@ function WorkflowSettingsCard() {
     };
   }, []);
   return (
-    <div className="nm-card p-5">
-      <h2 className="text-lg font-semibold text-[var(--t1)]">工作流任务</h2>
-      <p className="mt-1 text-xs text-[var(--t5)]">
-        工作流画布的节点卡默认只在「工作流」栏目显示。开启后它们也会出现在首页看板、归档与挂件清单里。
-      </p>
-      <div className="mt-4 flex items-center justify-between gap-4">
-        <div className="min-w-0">
-          <p className="text-sm font-medium text-[var(--t2)]">在看板中显示工作流任务</p>
-          <p className="mt-1 text-xs text-[var(--t5)]">
-            关闭时工作流节点卡只在画布编辑、执行与查看结果；开关改完即时生效
-          </p>
+    <div className="space-y-4">
+      <div className="nm-card p-5">
+        <h2 className="text-lg font-semibold text-[var(--t1)]">工作流任务</h2>
+        <p className="mt-1 text-xs text-[var(--t5)]">
+          工作流画布的节点卡默认只在「工作流」栏目显示。开启后它们也会出现在首页看板、归档与挂件清单里。
+        </p>
+        <div className="mt-4 flex items-center justify-between gap-4">
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-[var(--t2)]">在看板中显示工作流任务</p>
+            <p className="mt-1 text-xs text-[var(--t5)]">
+              关闭时工作流节点卡只在画布编辑、执行与查看结果；开关改完即时生效
+            </p>
+          </div>
+          <button
+            role="switch"
+            aria-checked={showTasks}
+            aria-label="在看板中显示工作流任务"
+            className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] ${
+              showTasks ? "nm-inset" : "nm-outset"
+            }`}
+            onClick={() => {
+              const next = !showTasks;
+              setShowTasks(next);
+              setShowWorkflowTasks(next);
+            }}
+          >
+            {showTasks ? "已开启" : "已关闭"}
+          </button>
         </div>
-        <button
-          role="switch"
-          aria-checked={showTasks}
-          aria-label="在看板中显示工作流任务"
-          className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] ${
-            showTasks ? "nm-inset" : "nm-outset"
-          }`}
-          onClick={() => {
-            const next = !showTasks;
-            setShowTasks(next);
-            setShowWorkflowTasks(next);
+      </div>
+      <div className="nm-card p-5">
+        <h2 className="text-lg font-semibold text-[var(--t1)]">AI 拆解提示词</h2>
+        <p className="mt-1 text-xs text-[var(--t5)]">
+          「AI 生成」拆解目标时给模型的指引（拆解风格、粒度要求、领域偏好）。输出 JSON
+          格式约束由系统强制追加，不在此处、也无需配置。
+        </p>
+        <textarea
+          aria-label="AI 拆解提示词"
+          className="mt-3 h-40 w-full resize-y rounded-[var(--r-sm)] nm-inset p-3 text-sm leading-6 text-[var(--t1)] outline-none"
+          value={guidance}
+          onChange={(e) => {
+            setGuidance(e.target.value);
+            setGuidanceSaved(false);
           }}
-        >
-          {showTasks ? "已开启" : "已关闭"}
-        </button>
+          onBlur={() => {
+            setDecomposeGuidance(guidance);
+            setGuidanceSaved(true);
+          }}
+        />
+        <div className="mt-3 flex items-center justify-end gap-2">
+          {guidanceSaved && (
+            <span className="text-xs text-[var(--t5)]">已保存</span>
+          )}
+          <button
+            className="nm-outset rounded-[var(--r-sm)] px-3 py-1 text-xs text-[var(--t3)]"
+            onClick={() => {
+              setGuidance(resetDecomposeGuidance());
+              setGuidanceSaved(false);
+            }}
+          >
+            恢复默认
+          </button>
+        </div>
       </div>
     </div>
   );

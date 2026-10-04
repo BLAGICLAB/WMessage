@@ -411,6 +411,7 @@ flowchart TD
 - `prompt_builder.rs`
 - `task_out.rs`
 - `tool_guard.rs`
+- `workflow_decompose.rs`
 
 ### `api_handlers/`
 - `api_handlers/body.rs`

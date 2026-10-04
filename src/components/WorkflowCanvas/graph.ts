@@ -78,6 +78,27 @@ export function layoutGraph(
   return out;
 }
 
+/** AI 拆解结果 → 画布草稿（W2-DECOMPOSE，设计 §6）：
+ *  模型输出 dependsOn 是数组下标（且服务端已保证 < 自身下标），
+ *  这里映射为本地节点 id 并跑 dagre 分层布局——坐标永远不来自 LLM */
+export function draftFromDecompose(
+  subtasks: Array<{ title: string; note?: string | null; dependsOn: number[] }>
+): CanvasNode[] {
+  const nodes: CanvasNode[] = subtasks.map((s, i) => ({
+    localId: `n${i}`,
+    title: s.title,
+    note: s.note ?? undefined,
+    dependsOn: [],
+    pos: { x: 0, y: 0 },
+  }));
+  subtasks.forEach((s, i) => {
+    nodes[i].dependsOn = s.dependsOn.map((d) => nodes[d].localId);
+  });
+  const laid = layoutGraph(nodes);
+  for (const n of nodes) n.pos = laid[n.localId] ?? n.pos;
+  return nodes;
+}
+
 /** 从已保存的工作流任务行重建画布节点（localId = 真实任务 id；
  *  dependsOn 里的 id 天然是 localId；缺坐标的行补 dagre 布局） */
 export function draftFromTasks(

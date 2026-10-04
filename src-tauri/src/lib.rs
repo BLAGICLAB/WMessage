@@ -43,6 +43,7 @@ mod prompts;
 pub mod py;
 pub mod task_out;
 pub mod tool_guard;
+pub mod workflow_decompose;
 use tauri::{Emitter, Manager};
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
@@ -482,6 +483,7 @@ pub fn run() {
             crate::db::workflow::workflow_list,
             crate::db::workflow::workflow_rename,
             crate::db::workflow::workflow_delete,
+            crate::workflow_decompose::workflow_decompose,
             crate::db::workspace::workspace_load,
             crate::db::workspace::workspace_upsert,
             crate::db::workspace::workspace_delete,

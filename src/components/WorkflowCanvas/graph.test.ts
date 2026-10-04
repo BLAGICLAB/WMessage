@@ -3,6 +3,7 @@ import {
   wouldCreateCycle,
   layoutGraph,
   draftFromTasks,
+  draftFromDecompose,
   NODE_HEIGHT,
   NODE_WIDTH,
   type CanvasNode,
@@ -94,5 +95,28 @@ describe("draftFromTasks", () => {
     ]);
     expect(nodes[0].pos).toEqual({ x: 1, y: 2 });
     expect(nodes[1].pos).toEqual({ x: 3, y: 4 });
+  });
+});
+
+describe("draftFromDecompose", () => {
+  it("下标依赖映射为本地节点 id（n0/n1…）", () => {
+    const nodes = draftFromDecompose([
+      { title: "收集", note: "产出清单", dependsOn: [] },
+      { title: "写稿", dependsOn: [0] },
+      { title: "终审", dependsOn: [0, 1] },
+    ]);
+    expect(nodes.map((n) => n.localId)).toEqual(["n0", "n1", "n2"]);
+    expect(nodes[1].dependsOn).toEqual(["n0"]);
+    expect(nodes[2].dependsOn).toEqual(["n0", "n1"]);
+    expect(nodes[0].note).toBe("产出清单");
+  });
+
+  it("坐标由 dagre 产生，下游 y 严格大于上游（LLM 不产坐标）", () => {
+    const nodes = draftFromDecompose([
+      { title: "A", dependsOn: [] },
+      { title: "B", dependsOn: [0] },
+    ]);
+    expect(nodes[1].pos.y).toBeGreaterThan(nodes[0].pos.y);
+    expect(nodes[0].pos.x).not.toBe(0);
   });
 });
