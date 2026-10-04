@@ -177,6 +177,8 @@ function WorkflowPageInner({
     setSavedSnapshot(null);
     setMode("edit");
     setDeleteArmed(false);
+    // regenArmed/running 必须随画布销毁复位（W4 r1：regenArmed 残留会让下次
+    // 一次点击即触发生成；running 残留会让新画布显示停止按钮）
     setRegenArmed(false);
     setRunning(false);
   };
@@ -212,9 +214,13 @@ function WorkflowPageInner({
       const res = await invoke<WorkflowSaveResult>("workflow_import", {
         path: selected,
       });
-      invoke<Workflow[]>("workflow_list").then(setWorkflows).catch(() => {});
-      alert(`导入完成：实例化 ${res.created} 个节点（全新副本，与原模板互不影响）`);
+      // 先打开新实例再提示（OCR r1 high：顺序颠倒会在 openWorkflow 失败时
+      // 出现"已成功 + 重试又导入一份"的悖论）；列表刷新失败走既有 silent 弹窗模式
       await openWorkflow(res.workflowId);
+      invoke<Workflow[]>("workflow_list")
+        .then(setWorkflows)
+        .catch((e) => handleCommandError(e, "读取工作流列表", { silent: true }));
+      alert(`导入完成：实例化 ${res.created} 个节点（全新副本，与原模板互不影响）`);
     } catch (e) {
       handleCommandError(e, "导入工作流模板", { onRetry: () => void doImport() });
     }
@@ -421,9 +427,12 @@ function WorkflowPageInner({
       return;
     }
     startBusyRef.current = true;
+    const seq = openSeqRef.current;
     try {
-      // running 置真放在成功后：避免后端尚未登记时轮询提前开跑（OCR r1 medium）
+      // running 置真放在成功后：避免后端尚未登记时轮询提前开跑（OCR r1 medium）；
+      // seq 守卫：执行期间用户新建/切换画布，晚到响应不得置新画布为执行态（OCR r1）
       await invoke("workflow_run", { workflowId: activeId });
+      if (seq !== openSeqRef.current) return;
       setRunning(true);
     } catch (e) {
       setRunning(false);

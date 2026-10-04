@@ -628,24 +628,23 @@ pub struct WorkflowFile {
 /// 拓扑导出序（纯逻辑，单测锚点）：多轮扫描就绪节点（依赖已全放置即就绪），
 /// 同轮按输入序稳定输出；悬空/自环依赖不阻塞（导出端防御，导入端另有校验）；
 /// 环内节点按输入序追加在后（不影响本地 id 映射的唯一性）。
-pub(crate) fn topo_export_order(tasks: &[Task]) -> Vec<String> {
-    let ids: std::collections::HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
-    let mut placed: std::collections::HashSet<&str> = std::collections::HashSet::new();
-    let mut out: Vec<String> = Vec::with_capacity(tasks.len());
+/// 入参是 (id, deps) 视图——topo 只需要这两样，避免整卡深拷贝（OCR r1）。
+pub(crate) fn topo_export_order(items: &[(String, Vec<String>)]) -> Vec<String> {
+    let ids: std::collections::HashSet<&str> = items.iter().map(|(id, _)| id.as_str()).collect();
+    let mut placed: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut out: Vec<String> = Vec::with_capacity(items.len());
     loop {
         let mut progressed = false;
-        for t in tasks {
-            if placed.contains(t.id.as_str()) {
+        for (id, deps) in items {
+            if placed.contains(id) {
                 continue;
             }
-            let blocked = t.depends_on.iter().flatten().any(|d| {
-                ids.contains(d.as_str())
-                    && d.as_str() != t.id.as_str()
-                    && !placed.contains(d.as_str())
-            });
+            let blocked = deps
+                .iter()
+                .any(|d| ids.contains(d.as_str()) && d != id && !placed.contains(d));
             if !blocked {
-                placed.insert(t.id.as_str());
-                out.push(t.id.clone());
+                placed.insert(id.clone());
+                out.push(id.clone());
                 progressed = true;
             }
         }
@@ -653,9 +652,9 @@ pub(crate) fn topo_export_order(tasks: &[Task]) -> Vec<String> {
             break;
         }
     }
-    for t in tasks {
-        if !placed.contains(t.id.as_str()) {
-            out.push(t.id.clone());
+    for (id, _) in items {
+        if !placed.contains(id) {
+            out.push(id.clone());
         }
     }
     out
@@ -673,7 +672,17 @@ pub(crate) fn workflow_file_from(wf: &Workflow, tasks: &[Task]) -> WorkflowFile 
             .unwrap_or(std::cmp::Ordering::Equal)
             .then(a.id.cmp(&b.id))
     });
-    let topo = topo_export_order(&sorted.iter().copied().cloned().collect::<Vec<_>>());
+    // (id, deps) 视图：topo 只需要这两样，避免整卡深拷贝（OCR r1 medium）
+    let id_deps: Vec<(String, Vec<String>)> = sorted
+        .iter()
+        .map(|t| {
+            (
+                t.id.clone(),
+                t.depends_on.iter().flatten().cloned().collect(),
+            )
+        })
+        .collect();
+    let topo = topo_export_order(&id_deps);
     let id_map: std::collections::HashMap<String, String> = topo
         .iter()
         .enumerate()
@@ -829,7 +838,10 @@ pub async fn workflow_export(
         &app,
         "workflow_export",
         &workflow_id,
-        &[("nodes", file.nodes.len().to_string())],
+        &[
+            ("nodes", file.nodes.len().to_string()),
+            ("path", crate::bot::truncate_for_log(&path, 120)),
+        ],
     );
     Ok(file.nodes.len())
 }
@@ -839,10 +851,10 @@ pub async fn workflow_export(
 #[tauri::command]
 pub async fn workflow_import(app: AppHandle, path: String) -> CommandResult<WorkflowSaveResult> {
     crate::db::tasks::check_export_path(&path)?;
+    let path_for_audit = path.clone(); // 审计用；本体 move 进读文件闭包
     let input = {
-        let path2 = path.clone();
         async_runtime::spawn_blocking(move || -> CommandResult<WorkflowSaveInput> {
-            let f = std::fs::File::open(&path2)
+            let f = std::fs::File::open(&path)
                 .map_err(|e| CommandError::from(format!("无法读取所选文件：{e}")))?;
             let mut limited = std::io::Read::take(f, MAX_IMPORT_FILE_BYTES + 1);
             let mut buf = Vec::new();
@@ -851,7 +863,7 @@ pub async fn workflow_import(app: AppHandle, path: String) -> CommandResult<Work
             if buf.len() as u64 > MAX_IMPORT_FILE_BYTES {
                 return Err(CommandError::InvalidArgument {
                     field: "path".into(),
-                    value: path2,
+                    value: path,
                     reason: "模板文件超过 1MB 上限".into(),
                 });
             }
@@ -878,7 +890,7 @@ pub async fn workflow_import(app: AppHandle, path: String) -> CommandResult<Work
         &r.workflow_id,
         &[
             ("imported", r.created.to_string()),
-            ("path", crate::bot::truncate_for_log(&path, 120)),
+            ("path", crate::bot::truncate_for_log(&path_for_audit, 120)),
         ],
     );
     {
@@ -1016,39 +1028,6 @@ mod tests {
 
     fn save(conn: &mut rusqlite::Connection, nodes: Vec<WorkflowNodeDraft>) -> WorkflowSaveResult {
         save_into(conn, None, nodes)
-    }
-
-    /// 最小任务卡构造（W4 文件模块测试用）
-    fn make_task(id: &str, dep: Option<&str>, order: f64) -> Task {
-        Task {
-            id: id.into(),
-            title: format!("任务{id}"),
-            due: None,
-            note: None,
-            tags: None,
-            files: None,
-            file_path: None,
-            file_is_dir: None,
-            column: TaskStatus::Todo,
-            subtasks: None,
-            completed_at: None,
-            archived: None,
-            deleted_at: None,
-            collapsed: None,
-            order: Some(order),
-            updated_at: Some(1),
-            schedule: None,
-            sched_last: None,
-            bot_assigned: None,
-            assignee: None,
-            budget: None,
-            result: None,
-            origin: Some(TASK_ORIGIN_WORKFLOW.into()),
-            workflow_id: Some("wf".into()),
-            depends_on: dep.map(|d| vec![d.to_string()]),
-            canvas_pos: None,
-            expected_updated_at: None,
-        }
     }
 
     fn save_into(
@@ -1377,13 +1356,13 @@ mod tests {
 
     #[test]
     fn topo_export_orders_upstream_first() {
-        let tasks = vec![
-            make_task("c", Some("b"), 3.0),
-            make_task("a", None, 1.0),
-            make_task("b", Some("a"), 2.0),
-            make_task("p", None, 4.0), // 独立分支
+        let items = vec![
+            ("c".to_string(), vec!["b".to_string()]),
+            ("a".to_string(), vec![]),
+            ("b".to_string(), vec!["a".to_string()]),
+            ("p".to_string(), vec![]), // 独立分支
         ];
-        let order = topo_export_order(&tasks);
+        let order = topo_export_order(&items);
         let pos = |id: &str| order.iter().position(|x| x == id).unwrap();
         assert!(pos("a") < pos("b"));
         assert!(pos("b") < pos("c"));
@@ -1399,8 +1378,12 @@ mod tests {
         );
         let wf = load_workflow(&conn, &r.workflow_id).unwrap().unwrap();
         let tasks = load_tasks_by_workflow(&conn, &r.workflow_id).unwrap();
-        // 打乱画布坐标以验证 pos 透传
         let file = workflow_file_from(&wf, &tasks);
+        assert_eq!(
+            file.nodes[0].pos,
+            Some(CanvasPos { x: 10.0, y: 20.0 }),
+            "pos 随文件透传"
+        );
         assert_eq!(file.version, WORKFLOW_FILE_VERSION);
         assert_eq!(file.nodes.len(), 2);
         assert!(file

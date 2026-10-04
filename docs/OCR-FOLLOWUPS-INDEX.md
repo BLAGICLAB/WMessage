@@ -129,3 +129,18 @@ grep 例：`grep 'C2b1' docs/OCR-FOLLOWUPS-INDEX.md`
 > 修复批 commit 见 git log `W3-RUNNER-r1`；r1 全量报告（本地）
 > `docs/OCR-CODE-REVIEW-2026-10-04-w3.json`（11 条，2H+5M+4L，全部随批修复，无缓期项；
 > activeId 仅喂 progress 三元的 deps 冗余随重构成自然消除）。
+
+## W4-TEMPLATE（模板导入导出，2026-10-04 OCR r1 修复批衍生债）
+
+> 修复批 commit 见 git log `W4-TEMPLATE-r1`；r1 全量报告（本地）
+> `docs/OCR-CODE-REVIEW-2026-10-04-w4.json`（17 条，1H+6M+10L）。
+> 1H+4M+4L 随批修复，以下为显式缓期项。
+
+| ID | 批次 | 严重度 | 根因一句话 | 触发条件 | 处置 |
+|---|---|---|---|---|---|
+| W4F-1 | W4-TEMPLATE-r1 | low | 成功提示用 alert()（与 App.tsx 导入导出成功提示同款先例） | 每次导入导出 | wontfix-by-now（统一 toast 属全应用反馈管线重构，独立批） |
+| W4F-2 | W4-TEMPLATE-r1 | low | 导出默认文件名与 createBlank 命名不同源 | 用户清空名字后导出 | wontfix（对话框自身有同名冲突处理，无数据风险） |
+| W4F-3 | W4-TEMPLATE-r1 | low | 导出按钮不反映 dirty | 未保存时导出 | wontfix-by-design（title 已声明"导出已保存版本"，属功能语义） |
+| W4F-4 | W4-TEMPLATE-r1 | low | description 死字段（导出恒 None） | — | wontfix-by-design（格式 v1 完整性保留；将来加列时启用，serde default 无害） |
+| W4F-5 | W4-TEMPLATE-r1 | medium | 空 goal/空 dependsOn 由下游校验链报错（非文件层） | 导入畸形文件 | wontfix（下游报错已带节点序号归属，文件层重复校验无增益） |
+| W4F-6 | W4-TEMPLATE-r1 | low | rfNodes deps 中 activeId 仅喂 progress 三元 | 每渲染 | wontfix（≤30 节点冗余重算无观察开销） |
