@@ -3,7 +3,7 @@ import type { DraggableSyntheticListeners } from "@dnd-kit/core";
 import type { Task } from "../types";
 import { taskFiles } from "../lib/taskFiles";
 import { basename, formatCompletedAt, formatDue, formatSchedule, scheduleToDatetime } from "../format";
-import { Bot, Clock, Folder, GripVertical, Paperclip, Puzzle, TriangleAlert } from "lucide-react";
+import { Bot, Clock, Folder, GripVertical, Paperclip, Puzzle, Timer, TriangleAlert } from "lucide-react";
 import { DoneCircle } from "./DoneCircle";
 import { FoldToggle } from "./FoldToggle";
 import { ActorAvatar } from "./ActorAvatar";
@@ -174,10 +174,11 @@ export function TaskCardContent({
               {task.budget && (
                 <div className="flex flex-wrap items-center gap-1.5 text-xs text-[var(--t4)]">
                   <span
-                    className="nm-inset px-2 py-0.5"
+                    className="nm-inset px-2 py-0.5 inline-flex items-center gap-1 whitespace-nowrap"
                     title={`预算：轮数 ${task.budget.maxTurns} / 工具调用 ${task.budget.maxToolCalls} / 墙钟 ${task.budget.maxWallSeconds}s`}
                   >
-                    ⏱ {task.budget.maxTurns}轮·{task.budget.maxWallSeconds}s
+                    <Timer size={10} aria-hidden />
+                    {task.budget.maxTurns}轮·{task.budget.maxWallSeconds}s
                   </span>
                 </div>
               )}

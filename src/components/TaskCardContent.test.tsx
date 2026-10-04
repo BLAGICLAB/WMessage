@@ -228,7 +228,7 @@ describe("TaskCardContent 子 agent 编排投影（SUBA-3）", () => {
   it("普通任务卡（无 budget/result）不渲染编排区", () => {
     render(<TaskCardContent task={task} />);
     expect(screen.queryByText("收尾结果")).toBeNull();
-    expect(screen.queryByText(/⏱/)).toBeNull();
+    expect(screen.queryByText(/30轮·600s/)).toBeNull();
   });
 
   it("budget 徽标展示轮数与墙钟，悬停含完整预算", () => {
@@ -240,7 +240,8 @@ describe("TaskCardContent 子 agent 编排投影（SUBA-3）", () => {
         }}
       />,
     );
-    const badge = screen.getByText(/⏱ 30轮·600s/);
+    // 图标 aria-hidden 后文本节点为「30轮·600s」（U20C 批 1 ⏱ → Timer）
+    const badge = screen.getByText(/30轮·600s/);
     expect(badge).toBeTruthy();
     expect(badge.getAttribute("title")).toContain("工具调用 100");
   });
