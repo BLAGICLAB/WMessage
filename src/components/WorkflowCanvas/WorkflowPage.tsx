@@ -33,10 +33,17 @@ const GOAL_ID = "__goal__";
 /** 拆解自动命名的截取长度（OCR r1 low：魔法数字提升为具名常量） */
 const NAME_AUTO_LEN = 12;
 
-/** 开始执行按钮的 title（OCR r1 high：拆掉嵌套三元） */
-function runButtonTitle(dirty: boolean, hasActive: boolean): string {
+/** 开始/继续执行按钮的 title（OCR r1 high：拆掉嵌套三元；W5 r1：dirty 优先级最高，
+ *  续跑提示不得吞掉"先保存"警告） */
+function runButtonTitle(
+  dirty: boolean,
+  hasActive: boolean,
+  doneCount: number
+): string {
   if (dirty) return "先保存再执行";
   if (!hasActive) return "先选择或保存一个工作流";
+  if (doneCount > 0)
+    return `继续执行：已完成 ${doneCount} 个节点将跳过（断点续跑），失败/未跑的重新执行`;
   return "执行整张图（已完成节点自动跳过 = 断点续跑）";
 }
 
@@ -574,6 +581,12 @@ function WorkflowPageInner({
 
   // ────────────── React Flow 数据派生 ──────────────
 
+  // 已完成节点数（W5：驱动「继续执行」按钮态 + 总目标卡进度，单一数据源）
+  const doneCount =
+    activeId !== null
+      ? tasks.filter((t) => t.workflowId === activeId && t.column === "done").length
+      : 0;
+
   const rfNodes = useMemo<Node<TaskNodeData | GoalNodeData>[]>(
     () => [
       {
@@ -587,14 +600,7 @@ function WorkflowPageInner({
           name,
           goal,
           saved: savedSnapshot !== null,
-          progress: running
-            ? {
-                done: tasks.filter(
-                  (t) => t.workflowId === activeId && t.column === "done"
-                ).length,
-                total: nodes.length,
-              }
-            : null,
+          progress: running ? { done: doneCount, total: nodes.length } : null,
           onRename: (v: string) => {
             setName(v);
             setNameAuto(false);
@@ -627,7 +633,7 @@ function WorkflowPageInner({
     ],
     // 依赖含全部 data 回调（deleteNode/toggle* 均为 useCallback 稳定引用，
     // 内部经 ref 读最新 tasks/props——此处完整列出是防过期闭包的兜底，OCR r1 high）
-    [nodes, tasks, name, goal, savedSnapshot, selectedIds, deleteNode, toggleDone, commitTitle, toggleSubtask, running, activeId]
+    [nodes, tasks, name, goal, savedSnapshot, selectedIds, deleteNode, toggleDone, commitTitle, toggleSubtask, running, activeId, doneCount]
   );
 
   const rfEdges = useMemo<Edge[]>(
@@ -647,12 +653,6 @@ function WorkflowPageInner({
   );
 
   // ────────────── 渲染 ──────────────
-
-  // 已完成节点数（驱动「继续执行」按钮态，与总目标卡进度同源）
-  const doneCount =
-    activeId !== null
-      ? tasks.filter((t) => t.workflowId === activeId && t.column === "done").length
-      : 0;
 
   const toolbarBtn =
     "flex h-8 items-center gap-1.5 whitespace-nowrap rounded-[var(--r-sm)] px-3 text-sm text-[var(--t3)] nm-outset disabled:cursor-not-allowed disabled:opacity-50";
@@ -738,11 +738,7 @@ function WorkflowPageInner({
             className={toolbarBtn}
             onClick={() => void startRun()}
             disabled={activeId === null || dirty || nodes.length === 0}
-            title={
-              doneCount > 0
-                ? `继续执行：已完成 ${doneCount} 个节点将跳过（断点续跑），失败/未跑的重新执行`
-                : runButtonTitle(dirty, activeId !== null)
-            }
+            title={runButtonTitle(dirty, activeId !== null, doneCount)}
           >
             <Play size={14} aria-hidden /> {doneCount > 0 ? "继续执行" : "开始执行"}
           </button>

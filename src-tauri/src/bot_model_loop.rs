@@ -314,6 +314,9 @@ pub(crate) fn resolve_max_rounds(skill_max_rounds: Option<usize>) -> usize {
 // 软警告阈值动态 = cap*7/10（保持 ~30% buffer），钳 [1, cap-1]。
 const MAX_FUNCTION_CALLS_PER_REQUEST: usize = 100;
 
+/// 熔断消息标记（runner 端识别熔断结果用同一常量，勿散落字符串字面量——W5 r1）
+pub(crate) const FUSE_MARKER: &str = "⏹ 已熔断";
+
 /// LLM 请求重试：429/5xx/网络错误重试一次（1.5s 退避）。
 /// 只在流式产出开始前重试——响应已开始流式产出后不重试（无重放风险：
 /// 重试发的是同一轮请求，已执行的工具在 msgs 里，不会因重发而重放）。
@@ -326,7 +329,8 @@ fn is_retryable_llm_status(status: u16) -> bool {
 }
 
 /// 熔断判定：第 n 次（1-based 累计）Function 调用是否超上限。
-/// cap 由会话派生（SUBA-2）：子 agent = 预算 max_tool_calls，其余 = 默认 50。
+/// cap 由会话派生（SUBA-2）：子 agent = 预算 max_tool_calls，其余 = 默认 100
+/// （W5-FUSE；bot-config `maxFunctionCalls` 可覆盖，钳 1..=500）。
 fn should_fuse(calls_so_far: usize, cap: usize) -> bool {
     calls_so_far > cap
 }
@@ -334,7 +338,7 @@ fn should_fuse(calls_so_far: usize, cap: usize) -> bool {
 /// 熔断返回消息（与主循环文案同源，单测直接断言）
 fn fuse_message(final_text: &str, hint: &str, cap: usize) -> String {
     format!(
-        "{final_text}\n\n⏹ 已熔断：本轮 Function 调用超过 {cap} 次上限（安全保护），已停止后续执行{hint}"
+        "{final_text}\n\n{FUSE_MARKER}：本轮 Function 调用超过 {cap} 次上限（安全保护），已停止后续执行{hint}"
     )
 }
 
@@ -538,10 +542,10 @@ pub async fn run_model_loop(
     > = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let tool_trace_for_exec = tool_trace.clone();
     let deps = ModelLoopDeps {
-        // 全域熔断上限（W5-FUSE）：config 有值用之（钳 ≥1），None = 默认 100
+        // 全域熔断上限（W5-FUSE）：config 有值用之（钳 1..=500），None = 默认 100
         fuse_cap_override: Some(
             cfg.max_function_calls
-                .map(|v| v.max(1) as usize)
+                .map(|v| (v.max(1).min(500)) as usize)
                 .unwrap_or(MAX_FUNCTION_CALLS_PER_REQUEST),
         ),
         emit: &emit,
@@ -682,15 +686,16 @@ where
     };
 
     // SUBA-2：熔断上限按会话派生——子 agent 预算 max_tool_calls（子会话注册表），
-    // 其余 50。软警阈值 = cap*7/10（cap=50 时即既有 35，行为字节级不变）。
-    // 派生链（W5-FUSE）：子 agent 预算 → bot-config maxFunctionCalls → 默认 100
+    // 其余 = bot-config maxFunctionCalls（缺省 100，W5-FUSE）。软警阈值 = cap*7/10。
+    // 派生链（W5-FUSE）：子 agent 预算 → bot-config maxFunctionCalls（钳 1..=500，
+    // 防巨值实质关闭熔断）→ 默认 100
     let fuse_cap = stop
         .session_id()
         .and_then(|sid| crate::tool_guard::subagent_ctx(Some(sid)))
         .map(|c| c.budget.max_tool_calls as usize)
         .or(deps.fuse_cap_override)
         .unwrap_or(MAX_FUNCTION_CALLS_PER_REQUEST)
-        .max(1);
+        .clamp(1, 500);
     // 小 cap 收敛：cap≤9 时 7/10 会塌到 0（提示「已调用 0 个」失真）——钳到
     // [1, cap-1]；cap=1 时软警本就无意义（下一次调用即熔断），钳到 1 即可
     let soft_warn_at = (fuse_cap * 7 / 10).clamp(1, fuse_cap.saturating_sub(1).max(1));
@@ -2084,7 +2089,7 @@ mod rounds_fuse_tests {
     }
 
     #[test]
-    fn fuse_trips_on_51st_function_call() {
+    fn fuse_trips_at_cap_boundary() {
         // MAX_FUNCTION_CALLS_PER_REQUEST = 50 实际生效：模拟主循环计数，
         // 构造 101 个 tool_calls → 第 101 次触发熔断（W5-FUSE：默认上限 50→100）
         assert_eq!(MAX_FUNCTION_CALLS_PER_REQUEST, 100);
@@ -2101,7 +2106,9 @@ mod rounds_fuse_tests {
         assert!(msg.contains("⏹ 已熔断"), "熔断消息应含「⏹ 已熔断」：{msg}");
         assert!(msg.contains("100 次上限"), "熔断消息应带上限值：{msg}");
         // 配置覆盖：maxFunctionCalls=30 → 第 31 次熔断（派生链第二级）
-        let mut calls = 0usize;
+        // 边界：默认 100 时第 100 次放行、第 101 次熔断
+        assert!(!should_fuse(100, MAX_FUNCTION_CALLS_PER_REQUEST));
+        assert!(should_fuse(101, MAX_FUNCTION_CALLS_PER_REQUEST));
         let fused = (1..=31).any(|n| should_fuse(n, 30));
         assert!(fused, "cap=30 时第 31 次必须熔断");
         // 边界：第 50 次放行，第 51 次熔断

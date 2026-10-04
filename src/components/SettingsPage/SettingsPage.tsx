@@ -2829,6 +2829,8 @@ function WorkflowSettingsCard({
   const [showTasks, setShowTasks] = useState(getShowWorkflowTasks);
   const [guidance, setGuidance] = useState(getDecomposeGuidance);
   const [guidanceSaved, setGuidanceSaved] = useState(false);
+  // 熔断上限本地草稿：blur 才提交（W5 r1：每击键 IPC+落盘不可接受）
+  const [fuseDraft, setFuseDraft] = useState(maxFunctionCalls);
   const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const guidanceRef = useRef(guidance);
   // 卸载时兜底持久化（OCR r1：焦点在 textarea 时切走/关窗，onBlur 可能不触发）
@@ -2901,11 +2903,11 @@ function WorkflowSettingsCard({
             aria-label="调用工具上限"
             className="h-8 w-28 rounded-[var(--r-sm)] nm-inset px-3 text-sm text-[var(--t1)] outline-none"
             inputMode="numeric"
+            maxLength={4}
             placeholder="100"
-            value={maxFunctionCalls}
-            onChange={(e) => {
-              onMaxFunctionCallsChange(e.target.value.replace(/[^0-9]/g, ""));
-            }}
+            value={fuseDraft}
+            onChange={(e) => setFuseDraft(e.target.value.replace(/[^0-9]/g, ""))}
+            onBlur={() => onMaxFunctionCallsChange(fuseDraft)}
           />
           <span className="text-xs text-[var(--t5)]">次（留空 = 默认 100）</span>
         </div>

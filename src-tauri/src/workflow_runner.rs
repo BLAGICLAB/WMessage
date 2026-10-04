@@ -343,7 +343,7 @@ async fn run_controller(
                 let _ticket = ticket; // RAII 占槽：任务结束自动释放
                 let result = run_task_in_chat(&app, &id, TaskExecOrigin::Workflow).await;
                 // 熔断识别（W5-FUSE）：循环优雅返回「⏹ 已熔断」消息且任务未完成
-                let fused = matches!(&result, Ok(r) if r.result.text.contains("已熔断"));
+                let fused = matches!(&result, Ok(r) if r.result.text.contains(crate::bot_model_loop::FUSE_MARKER));
                 let ok = match &result {
                     Ok(_) => crate::db::db_load(app.clone())
                         .await

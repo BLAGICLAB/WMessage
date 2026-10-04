@@ -235,3 +235,14 @@ grep 例：`grep 'C2b1' docs/OCR-FOLLOWUPS-INDEX.md`
 |---|---|---|---|---|---|
 | SEC-1 | Mimosa-1004 | high×6+medium×6（同一发现重复计数） | eval/config.rs:64 `load(path)` 接收本地 API 请求侧路径读文件，污点链未做白名单归一 | 本地 HTTP API 的 eval 配置加载被恶意路径调用 | 独立小批（eval family：路径白名单/固定到数据目录；既有代码，非本功能引入） |
 | SEC-2 | Mimosa-1004 | medium | "MongoDB 动态排序字段注入"——全项目无 MongoDB 依赖（Cargo.toml/package.json/源码零命中） | — | 误报（heuristic 误配），不改代码 |
+
+## W5-FUSE（熔断上限/归因/续跑，2026-10-04 OCR r1 衍生债）
+
+> 修复批 commit 见 git log `W5-FUSE-r1`；r1 报告（本地）`docs/OCR-CODE-REVIEW-2026-10-04-w5.json`
+> （20 条去重约 13 项：1H+6M+6L）。1H+4M+5L 随批修复，以下为缓期项。
+
+| ID | 批次 | 严重度 | 根因一句话 | 触发条件 | 处置 |
+|---|---|---|---|---|---|
+| W5F-1 | W5-FUSE-r1 | None/low | 全域熔断入口在工作流分区（文案已注明全域） | 用户不开工作流分区找不到 | wontfix-by-now（移入机器人分区属产品定位决策，老板拍板入口归属后 1 行迁移） |
+| W5F-2 | W5-FUSE-r1 | low | NodeOutcome 三布尔组合语义隐式（ok+cancelled 等非法组合靠约定） | 改控制器时 | W6+（改 enum NodeStatus，随调度器下一功能批顺带） |
+| W5F-3 | W5-FUSE-r1 | low | fuse_cap_override 生产恒 Some（unwrap_or 默认仅测试可达） | — | wontfix（保留给测试直驱 core 锚定任意 cap 的通道，注释已说明） |
