@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { emit, listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
@@ -11,6 +11,7 @@ import {
   Settings as SettingsIcon,
   SquareKanban,
   Trash2,
+  Workflow as WorkflowIcon,
 } from "lucide-react";
 import { KanbanBoard } from "./components/KanbanBoard";
 import { CommandPalette } from "./components/CommandPalette";
@@ -21,10 +22,16 @@ import { ArchivePage } from "./components/ArchivePage";
 import { TrashPage } from "./components/TrashPage";
 import { WorkspacePage } from "./components/WorkspacePage";
 import { SettingsPage } from "./components/SettingsPage";
+import { WorkflowPage } from "./components/WorkflowCanvas/WorkflowPage";
 import ConfirmMap from "./components/ConfirmMap";
 import { deleteTaskRows, diffTaskRows, loadTasksFromDb, taskEq, upsertTasks, exportTasksToFile, importTasksFromFile, exportWorkspaceToFile, importWorkspaceFromFile, STORAGE_KEY, sortByOrder, assignInsertOrder, upsertWorkspaceItems } from "./storage";
 import { handleCommandError } from "./lib/errorHandler";
 import { isBackendPersisted, KNOWN_SOURCES } from "./lib/mutationOrigin";
+import {
+  getShowWorkflowTasks,
+  isWorkflowTask,
+  WORKFLOW_VISIBILITY_EVENT,
+} from "./lib/workflowVisibility";
 
 import { applySetting, getSetting, subscribeSystem, subscribeTheme, toggleTheme } from "./theme";
 import { isDueToday } from "./format";
@@ -58,10 +65,12 @@ function localDateStr(): string {
   ).padStart(2, "0")}`;
 }
 
-// 左侧导航栏条目（U2）：视图切换职能自顶部工具条迁入；设置单独走底部入口
-type RailView = "board" | "archive" | "workspace" | "trash";
+// 左侧导航栏条目（U2）：视图切换职能自顶部工具条迁入；设置单独走底部入口。
+// W1-CANVAS：新增「工作流」栏目（设计 §2——唯一触碰主窗口的点）
+type RailView = "board" | "workflow" | "archive" | "workspace" | "trash";
 const NAV_ITEMS: { key: RailView; label: string; icon: typeof SquareKanban }[] = [
   { key: "board", label: "首页", icon: SquareKanban },
+  { key: "workflow", label: "工作流", icon: WorkflowIcon },
   { key: "archive", label: "归档", icon: Archive },
   { key: "workspace", label: "工作区", icon: FolderOpen },
   { key: "trash", label: "回收站", icon: Trash2 },
@@ -155,6 +164,20 @@ function App() {
   const [view, setView] = useState<RailView | "settings">("board");
   const [theme, setTheme] = useState<ThemeSetting>(getSetting);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  // W1-CANVAS：工作流卡可见性开关（默认隐藏，设置页「工作流」分区控制，事件即时同步）
+  const [showWorkflowTasks, setShowWorkflowTasks] = useState(getShowWorkflowTasks);
+  useEffect(() => {
+    const un = listen(WORKFLOW_VISIBILITY_EVENT, () => setShowWorkflowTasks(getShowWorkflowTasks()));
+    return () => {
+      un.then((f) => f());
+    };
+  }, []);
+  // 可见任务选择器：工作流卡只画在画布上，看板/归档/回收站/命令面板默认不混入（设计 §3.3）。
+  // tasks 已套今日/归档规则，这里只做归属过滤
+  const visibleTasks = useMemo(
+    () => (showWorkflowTasks ? tasks : tasks.filter((t) => !isWorkflowTask(t))),
+    [tasks, showWorkflowTasks]
+  );
 
   // 主题：启动时应用 + 监听其他窗口（挂件）切换 + 跟随系统模式监听系统外观变化
   useEffect(() => {
@@ -533,19 +556,23 @@ function App() {
       });
       if (typeof selected !== "string") return; // 用户取消
       const merged = await importTasksFromFile(selected);
-      // 重读全量数据（含合并结果）→ 套规则 → 排序 → 更新状态并广播挂件
-      const res = await loadTasksFromDb();
-      if (!res.ok) throw res.error;
-      const next = applyArchiveRule(applyTodayRule(sortByOrder(res.tasks)));
-      tasksRef.current = next;
-      setTasks(next);
-      emit("tasks-changed").catch(() => {});
+      await reloadTasks();
       alert(`导入完成：本次写入 ${merged} 条任务卡`);
     } catch (e) {
       handleCommandError(e, "tasks_import", {
         onRetry: () => void importTasks(),
       });
     }
+  };
+
+  // 重读全量任务（工作流保存/删除与任务导入共用）：套规则 → 排序 → 更新状态 → 广播挂件
+  const reloadTasks = async () => {
+    const res = await loadTasksFromDb();
+    if (!res.ok) throw res.error;
+    const next = applyArchiveRule(applyTodayRule(sortByOrder(res.tasks)));
+    tasksRef.current = next;
+    setTasks(next);
+    emit("tasks-changed").catch(() => {});
   };
 
   // 导出工作区链接：全量 WorkspaceItem 写 JSON 文件（与任务数据管理风格一致；workspace 数据独立存于 workspace_items 表）
@@ -708,7 +735,7 @@ function App() {
           {paletteOpen && (
             <CommandPalette
               onClose={() => setPaletteOpen(false)}
-              tasks={tasks}
+              tasks={visibleTasks}
               onJumpTask={jumpToTask}
               onJumpSession={jumpToSession}
             />
@@ -772,7 +799,7 @@ function App() {
         <main className="min-w-0 flex-1 overflow-y-auto p-6">
           {view === "board" ? (
             <KanbanBoard
-              tasks={tasks}
+              tasks={visibleTasks}
               editingId={editingId}
               onReorder={commitBoardOrder}
               onUpdate={updateTask}
@@ -780,9 +807,20 @@ function App() {
               onDelete={deleteTask}
               onOpenArchive={() => setView("archive")}
             />
+          ) : view === "workflow" ? (
+            <WorkflowPage
+              tasks={tasks}
+              onSetColumn={setTaskColumn}
+              onUpdate={updateTask}
+              onTasksReload={() => {
+                void reloadTasks().catch((e) =>
+                  handleCommandError(e, "重读任务", { silent: true })
+                );
+              }}
+            />
           ) : view === "archive" ? (
             <ArchivePage
-              tasks={tasks}
+              tasks={visibleTasks}
               editingId={editingId}
               onUpdate={updateTask}
               onDelete={deleteTask}
@@ -791,7 +829,7 @@ function App() {
             <WorkspacePage />
           ) : view === "trash" ? (
             <TrashPage
-              tasks={tasks}
+              tasks={visibleTasks}
               editingId={editingId}
               onUpdate={updateTask}
               onDelete={hardDeleteTask}
@@ -805,7 +843,7 @@ function App() {
         {paletteOpen && (
           <CommandPalette
             onClose={() => setPaletteOpen(false)}
-            tasks={tasks}
+            tasks={visibleTasks}
             onJumpTask={jumpToTask}
             onJumpSession={jumpToSession}
           />

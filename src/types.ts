@@ -55,6 +55,12 @@ interface Subtask {
   done: boolean;
 }
 
+/** 画布坐标（工作流卡专用，与 Rust db::CanvasPos 对应） */
+interface CanvasPos {
+  x: number;
+  y: number;
+}
+
 export interface Task {
   id: string;
   title: string;
@@ -109,4 +115,41 @@ export interface Task {
     blockers?: unknown[];
     confidence?: number;
   } | null;
+  /** 工作流画布归属（W1-CANVAS，设计 §3.1）：缺省 "user" = 看板任务；
+   *  "workflow" = 工作流节点卡（看板/挂件默认过滤，bot 工具不过滤） */
+  origin?: "user" | "workflow";
+  /** 所属工作流 id（origin="workflow" 时有值） */
+  workflowId?: string;
+  /** 上游任务 id 列表（DAG 依赖 = 画布连线；工作流卡专用） */
+  dependsOn?: string[];
+  /** 画布坐标（仅工作流卡使用） */
+  canvasPos?: CanvasPos;
+}
+
+/** 工作流元数据（与 Rust db::Workflow 对应，存 workflows 表；节点 = origin="workflow" 的任务卡） */
+export interface Workflow {
+  id: string;
+  name: string;
+  /** 用户原始自然语言总目标（总目标卡展示文本） */
+  goal: string;
+  createdAt?: number;
+  updatedAt?: number;
+}
+
+/** workflow_save 结果：本地节点 id → 真实任务 id 的绑定（画布据此挂接任务卡） */
+interface WorkflowSaveBinding {
+  /** 画布草稿节点本地 id */
+  localId: string;
+  /** 落库后的真实任务 id（保留的旧卡 = 原 id；新卡 = 新 uuid） */
+  taskId: string;
+  /** 是否新建（false = 指纹命中保留原卡） */
+  created: boolean;
+}
+
+export interface WorkflowSaveResult {
+  workflowId: string;
+  bindings: WorkflowSaveBinding[];
+  kept: number;
+  created: number;
+  deleted: number;
 }

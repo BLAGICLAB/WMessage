@@ -7,11 +7,12 @@
 
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { emit } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   ArrowLeft,
   BarChart3,
+  Workflow,
   Bot,
   Brain,
   Check,
@@ -35,6 +36,12 @@ import {
   Upload,
   type LucideIcon,
 } from "lucide-react";
+
+import {
+  getShowWorkflowTasks,
+  setShowWorkflowTasks,
+  WORKFLOW_VISIBILITY_EVENT,
+} from "../../lib/workflowVisibility";
 
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
 import {
@@ -189,6 +196,7 @@ type SectionKey =
   | "mcp"
   | "evolution"
   | "desk"
+  | "workflow"
   | "tokens";
 const SECTIONS: { key: SectionKey; label: string; icon: LucideIcon }[] = [
   { key: "general", label: "通用设置", icon: Settings2 },
@@ -197,6 +205,7 @@ const SECTIONS: { key: SectionKey; label: string; icon: LucideIcon }[] = [
   { key: "model", label: "模型设置", icon: Cpu },
   { key: "memory", label: "记忆", icon: Brain },
   { key: "skills", label: "技能", icon: Sparkles },
+  { key: "workflow", label: "工作流", icon: Workflow },
   { key: "mcp", label: "MCP 服务", icon: Plug },
   { key: "evolution", label: "自进化", icon: GitBranch },
   { key: "desk", label: "桌面整理", icon: FolderOutput },
@@ -2727,6 +2736,11 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
       <EvolutionPanel />
       </section>
       )}
+      {mountedSections.has("workflow") && (
+      <section hidden={activeSection !== "workflow"} className="space-y-4 pt-4">
+      <WorkflowSettingsCard />
+      </section>
+      )}
       {mountedSections.has("desk") && (
       <section hidden={activeSection !== "desk"} className="space-y-4 pt-4">
       <MigrationPanel />
@@ -2775,6 +2789,48 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/** 工作流设置卡（W1-CANVAS，设计 §10）：可见性开关。
+ *  W2 将在此分区追加「AI 拆解提示词（指引段）」与恢复默认。 */
+function WorkflowSettingsCard() {
+  const [showTasks, setShowTasks] = useState(getShowWorkflowTasks);
+  useEffect(() => {
+    const un = listen(WORKFLOW_VISIBILITY_EVENT, () =>
+      setShowTasks(getShowWorkflowTasks())
+    );
+    return () => {
+      un.then((f) => f());
+    };
+  }, []);
+  return (
+    <div className="nm-card p-5">
+      <h2 className="text-lg font-semibold text-[var(--t1)]">工作流任务</h2>
+      <p className="mt-1 text-xs text-[var(--t5)]">
+        工作流画布的节点卡默认只在「工作流」栏目显示。开启后它们也会出现在首页看板、归档与挂件清单里。
+      </p>
+      <div className="mt-4 flex items-center justify-between gap-4">
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-[var(--t2)]">在看板中显示工作流任务</p>
+          <p className="mt-1 text-xs text-[var(--t5)]">
+            关闭时工作流节点卡只在画布编辑、执行与查看结果；开关改完即时生效
+          </p>
+        </div>
+        <button
+          className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] ${
+            showTasks ? "nm-inset" : "nm-outset"
+          }`}
+          onClick={() => {
+            const next = !showTasks;
+            setShowTasks(next);
+            setShowWorkflowTasks(next);
+          }}
+        >
+          {showTasks ? "已开启" : "已关闭"}
+        </button>
+      </div>
     </div>
   );
 }

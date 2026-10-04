@@ -170,6 +170,10 @@ pub(crate) fn spawn_subagent_locked(
         assignee: None,
         budget: Some(budget.clone()),
         result: None,
+        origin: None,
+        workflow_id: None,
+        depends_on: None,
+        canvas_pos: None,
         expected_updated_at: None,
     };
     crate::db::upsert_tasks(conn, std::slice::from_ref(&card)).map_err(CommandError::DbError)?;
@@ -1790,15 +1794,7 @@ mod orchestrator_tests {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         // tasks 表内联最小 schema（列序与 open_db 一致，含 SUBA-1 新增三列）；
         // subagents 表与生产同源 DDL（单源真相）
-        conn.execute_batch(
-            "CREATE TABLE tasks (
-               id TEXT PRIMARY KEY, title TEXT NOT NULL, due TEXT, note TEXT, tags TEXT,
-               file_path TEXT, file_is_dir INTEGER, col TEXT NOT NULL, subtasks TEXT,
-               completed_at INTEGER, archived INTEGER, deleted_at INTEGER, collapsed INTEGER,
-               ord REAL, updated_at INTEGER, schedule TEXT, sched_last INTEGER,
-               bot_assigned INTEGER, files TEXT, assignee TEXT, budget TEXT, result TEXT );",
-        )
-        .unwrap();
+        conn.execute_batch(crate::db::tasks::TASKS_DDL).unwrap();
         conn.execute_batch(crate::db::SUBAGENTS_DDL).unwrap();
         conn
     }
@@ -1827,6 +1823,10 @@ mod orchestrator_tests {
             assignee: None,
             budget: None,
             result: None,
+            origin: None,
+            workflow_id: None,
+            depends_on: None,
+            canvas_pos: None,
             expected_updated_at: None,
         };
         crate::db::upsert_tasks(conn, std::slice::from_ref(&card)).unwrap();

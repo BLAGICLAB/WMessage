@@ -24,6 +24,38 @@ pub struct TaskFile {
 
 pub const MAX_TASK_FILES: usize = 10;
 
+/// tasks 表单源 DDL（W1-CANVAS 抽取）：open_db 建表与 db::workflow 测试共用。
+/// 含全部 27 列——老库缺列由 open_db 的幂等 ALTER 迁移补齐，此处即最新完整 schema。
+pub const TASKS_DDL: &str = "CREATE TABLE IF NOT EXISTS tasks (
+   id           TEXT PRIMARY KEY,
+   title        TEXT NOT NULL,
+   due          TEXT,
+   note         TEXT,
+   tags         TEXT,
+   file_path    TEXT,
+   file_is_dir  INTEGER,
+   col          TEXT NOT NULL,
+   subtasks     TEXT,
+   completed_at INTEGER,
+   archived     INTEGER,
+   deleted_at   INTEGER,
+   collapsed    INTEGER,
+   ord          REAL,
+   updated_at   INTEGER,
+   schedule     TEXT,
+   sched_last   INTEGER,
+   bot_assigned INTEGER,
+   files        TEXT,
+   assignee     TEXT,
+   budget       TEXT,
+   result       TEXT,
+   origin       TEXT,
+   workflow_id  TEXT,
+   depends_on   TEXT,
+   canvas_x     REAL,
+   canvas_y     REAL
+ );";
+
 /// 任务状态(三列看板：todo / doing / done)。
 ///
 /// **单一来源**:所有后端「状态列」比较 / 赋值 / 序列化都走此 enum。
@@ -85,6 +117,17 @@ impl<'de> serde::Deserialize<'de> for TaskStatus {
     }
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CanvasPos {
+    pub x: f64,
+    pub y: f64,
+}
+
+/// 工作流卡归属值（task_patch 白名单校验用）：缺省视作用户看板卡
+pub const TASK_ORIGIN_USER: &str = "user";
+pub const TASK_ORIGIN_WORKFLOW: &str = "workflow";
+
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Task {
@@ -121,6 +164,18 @@ pub struct Task {
     /// 收尾结构化结果（设计 §7 schema）；存 JSON TEXT，卡片折叠展示
     #[serde(default)]
     pub result: Option<serde_json::Value>,
+    /// 工作流画布归属（W1-CANVAS，设计 §3.1）：None/"user" = 看板任务，"workflow" = 工作流节点卡
+    #[serde(default)]
+    pub origin: Option<String>,
+    /// 所属工作流 id（origin="workflow" 时有值）
+    #[serde(default)]
+    pub workflow_id: Option<String>,
+    /// 上游任务 id 列表（DAG 依赖 = 画布连线）；存 JSON TEXT
+    #[serde(default)]
+    pub depends_on: Option<Vec<String>>,
+    /// 画布坐标（仅工作流卡使用）；DB 拆 canvas_x/canvas_y 两列
+    #[serde(default)]
+    pub canvas_pos: Option<CanvasPos>,
     #[serde(default, skip_serializing)]
     pub expected_updated_at: Option<i64>,
 }
@@ -191,8 +246,8 @@ pub fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), S
             "INSERT INTO tasks
                (id, title, due, note, tags, file_path, file_is_dir, col, subtasks,
                 completed_at, archived, deleted_at, collapsed, ord, updated_at, schedule, sched_last, bot_assigned, files,
-                assignee, budget, result)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)
+                assignee, budget, result, origin, workflow_id, depends_on, canvas_x, canvas_y)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27)
              ON CONFLICT(id) DO UPDATE SET
                title=excluded.title, due=excluded.due, note=excluded.note,
                tags=excluded.tags, file_path=excluded.file_path,
@@ -203,7 +258,10 @@ pub fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), S
                updated_at=excluded.updated_at,
                schedule=excluded.schedule, sched_last=excluded.sched_last,
                bot_assigned=excluded.bot_assigned, files=excluded.files,
-               assignee=excluded.assignee, budget=excluded.budget, result=excluded.result
+               assignee=excluded.assignee, budget=excluded.budget, result=excluded.result,
+               origin=excluded.origin, workflow_id=excluded.workflow_id,
+               depends_on=excluded.depends_on,
+               canvas_x=excluded.canvas_x, canvas_y=excluded.canvas_y
              WHERE tasks.updated_at IS NULL OR excluded.updated_at >= tasks.updated_at",
         )
         .map_err(|e| e.to_string())?;
@@ -256,6 +314,10 @@ pub fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), S
             Some(v) => Some(serde_json::to_string(v).map_err(|e| e.to_string())?),
             None => None,
         };
+        let depends_on = match &t.depends_on {
+            Some(v) => Some(serde_json::to_string(v).map_err(|e| e.to_string())?),
+            None => None,
+        };
         let affected = stmt
             .execute(rusqlite::params![
                 t.id,
@@ -280,6 +342,11 @@ pub fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), S
                 t.assignee,
                 budget,
                 result,
+                t.origin,
+                t.workflow_id,
+                depends_on,
+                t.canvas_pos.as_ref().map(|p| p.x),
+                t.canvas_pos.as_ref().map(|p| p.y),
             ])
             .map_err(|e| e.to_string())?;
         affected_total += affected;
@@ -333,6 +400,11 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<super::Task> {
     let assignee: Option<String> = row.get(19)?;
     let budget: Option<String> = row.get(20)?;
     let result: Option<String> = row.get(21)?;
+    let origin: Option<String> = row.get(22)?;
+    let workflow_id: Option<String> = row.get(23)?;
+    let depends_on: Option<String> = row.get(24)?;
+    let canvas_x: Option<f64> = row.get(25)?;
+    let canvas_y: Option<f64> = row.get(26)?;
     // col 从 DB 读出仍是 String(列类型 TEXT),parse 到 TaskStatus enum。
     // 与 subtasks/files JSON 损坏「warn + 按空读取」的契约对齐:
     // 单行 col 异常不应让整个读失败、把全部任务藏起来。
@@ -395,6 +467,22 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<super::Task> {
         },
         None => None,
     };
+    // W1-CANVAS：depends_on 存 JSON TEXT；损坏按空读取（同 subtasks/files 契约）
+    let depends_on = match &depends_on {
+        Some(s) => match serde_json::from_str(s) {
+            Ok(v) => Some(v),
+            Err(_) => {
+                eprintln!("[db] 任务 {id} 的 depends_on JSON 损坏，按空读取（原值未动）");
+                None
+            }
+        },
+        None => None,
+    };
+    // 画布坐标：x/y 任一缺失视为无坐标（半写入不构成合法位置）
+    let canvas_pos = match (canvas_x, canvas_y) {
+        (Some(x), Some(y)) => Some(CanvasPos { x, y }),
+        _ => None,
+    };
     Ok(super::Task {
         id,
         title,
@@ -418,6 +506,10 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<super::Task> {
         assignee,
         budget,
         result,
+        origin,
+        workflow_id,
+        depends_on,
+        canvas_pos,
         expected_updated_at: None,
     })
 }
@@ -425,7 +517,8 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<super::Task> {
 const TASK_SELECT_COLS: &str =
     "SELECT id, title, due, note, tags, file_path, file_is_dir, col, subtasks, \
      completed_at, archived, deleted_at, collapsed, ord, updated_at, schedule, sched_last, \
-     bot_assigned, files, assignee, budget, result FROM tasks";
+     bot_assigned, files, assignee, budget, result, origin, workflow_id, depends_on, \
+     canvas_x, canvas_y FROM tasks";
 
 pub fn load_all(conn: &rusqlite::Connection) -> Result<Vec<super::Task>, String> {
     let sql = format!("{TASK_SELECT_COLS} ORDER BY ord, rowid");
@@ -447,6 +540,24 @@ pub fn load_task(conn: &rusqlite::Connection, id: &str) -> Result<Option<super::
     conn.query_row(&sql, [id], task_from_row)
         .optional()
         .map_err(|e| e.to_string())
+}
+
+/// 工作流的节点卡定点读（W1-CANVAS：指纹 diff 保存用）。
+/// 只取未软删的行——回收站里的旧节点卡视为已消失，不参与指纹匹配。
+pub fn load_tasks_by_workflow(
+    conn: &rusqlite::Connection,
+    workflow_id: &str,
+) -> Result<Vec<super::Task>, String> {
+    let sql = format!("{TASK_SELECT_COLS} WHERE workflow_id = ?1 AND deleted_at IS NULL");
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([workflow_id], task_from_row)
+        .map_err(|e| e.to_string())?;
+    let mut tasks = Vec::new();
+    for r in rows {
+        tasks.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(tasks)
 }
 
 /// 行存在性定点查（SUBA-1：spawn 的 parent 卡校验用——OCR r2 采纳）。
@@ -658,6 +769,53 @@ pub(crate) fn apply_task_patch(
                 task.budget = task.budget.take().map(|b| b.clamped());
             }
             "result" => set_from(&mut task.result, v, k)?,
+            // W1-CANVAS（设计 §3.1）：工作流四字段走 task_patch 既有通道，null = 清空。
+            // origin 限枚举值；workflowId 拒空串（它和 workflows 表的 join 键，同 assignee 理由）
+            "origin" => {
+                set_from(&mut task.origin, v, k)?;
+                if let Some(o) = &task.origin {
+                    if o != TASK_ORIGIN_USER && o != TASK_ORIGIN_WORKFLOW {
+                        return Err(CommandError::InvalidArgument {
+                            field: k.into(),
+                            value: v.to_string(),
+                            reason: format!(
+                                "origin 只能是 {TASK_ORIGIN_USER}/{TASK_ORIGIN_WORKFLOW}"
+                            ),
+                        });
+                    }
+                    if o == TASK_ORIGIN_USER {
+                        // "user" 归一为 None（缺省语义），避免两种写法表示同一状态
+                        task.origin = None;
+                    }
+                }
+            }
+            "workflowId" => {
+                set_from(&mut task.workflow_id, v, k)?;
+                if task
+                    .workflow_id
+                    .as_deref()
+                    .is_some_and(|s| s.trim().is_empty())
+                {
+                    return Err(CommandError::InvalidArgument {
+                        field: k.into(),
+                        value: v.to_string(),
+                        reason: "workflowId 不能为空串（workflows 表 join 键）".into(),
+                    });
+                }
+            }
+            "dependsOn" => {
+                set_from(&mut task.depends_on, v, k)?;
+                if let Some(deps) = &task.depends_on {
+                    if deps.iter().any(|d| d.trim().is_empty()) {
+                        return Err(CommandError::InvalidArgument {
+                            field: k.into(),
+                            value: v.to_string(),
+                            reason: "dependsOn 元素不能为空串".into(),
+                        });
+                    }
+                }
+            }
+            "canvasPos" => set_from(&mut task.canvas_pos, v, k)?,
             "title" => {
                 let t: String = serde_json::from_value(v.clone()).map_err(|e| {
                     CommandError::InvalidArgument {
@@ -968,15 +1126,7 @@ mod task_set_column_tests {
 
     fn setup_conn() -> rusqlite::Connection {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE tasks (
-               id TEXT PRIMARY KEY, title TEXT NOT NULL, due TEXT, note TEXT, tags TEXT,
-               file_path TEXT, file_is_dir INTEGER, col TEXT NOT NULL, subtasks TEXT,
-               completed_at INTEGER, archived INTEGER, deleted_at INTEGER, collapsed INTEGER,
-               ord REAL, updated_at INTEGER, schedule TEXT, sched_last INTEGER,
-               bot_assigned INTEGER, files TEXT, assignee TEXT, budget TEXT, result TEXT );",
-        )
-        .unwrap();
+        conn.execute_batch(TASKS_DDL).unwrap();
         conn
     }
 
@@ -1040,15 +1190,7 @@ mod task_patch_tests {
 
     fn setup_conn() -> rusqlite::Connection {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE tasks (
-               id TEXT PRIMARY KEY, title TEXT NOT NULL, due TEXT, note TEXT, tags TEXT,
-               file_path TEXT, file_is_dir INTEGER, col TEXT NOT NULL, subtasks TEXT,
-               completed_at INTEGER, archived INTEGER, deleted_at INTEGER, collapsed INTEGER,
-               ord REAL, updated_at INTEGER, schedule TEXT, sched_last INTEGER,
-               bot_assigned INTEGER, files TEXT, assignee TEXT, budget TEXT, result TEXT );",
-        )
-        .unwrap();
+        conn.execute_batch(TASKS_DDL).unwrap();
         conn
     }
 
@@ -1241,15 +1383,7 @@ mod task_reorder_tests {
 
     fn setup_conn() -> rusqlite::Connection {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE tasks (
-               id TEXT PRIMARY KEY, title TEXT NOT NULL, due TEXT, note TEXT, tags TEXT,
-               file_path TEXT, file_is_dir INTEGER, col TEXT NOT NULL, subtasks TEXT,
-               completed_at INTEGER, archived INTEGER, deleted_at INTEGER, collapsed INTEGER,
-               ord REAL, updated_at INTEGER, schedule TEXT, sched_last INTEGER,
-               bot_assigned INTEGER, files TEXT, assignee TEXT, budget TEXT, result TEXT );",
-        )
-        .unwrap();
+        conn.execute_batch(TASKS_DDL).unwrap();
         conn
     }
 

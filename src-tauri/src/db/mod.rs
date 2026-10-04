@@ -13,6 +13,7 @@ pub use crate::db::paths::*;
 pub use crate::db::skill_out::*;
 pub use crate::db::subagents::*;
 pub use crate::db::tasks::*;
+pub use crate::db::workflow::*;
 pub use crate::db::workspace::*;
 use std::time::Duration;
 use tauri::Manager;
@@ -26,6 +27,7 @@ pub mod paths;
 pub mod skill_out;
 pub mod subagents;
 pub mod tasks;
+pub mod workflow;
 pub mod workspace;
 
 // ──────────────────── RMW helpers ────────────────────
@@ -102,28 +104,11 @@ pub fn open_db<R: tauri::Runtime>(
     conn.busy_timeout(Duration::from_secs(2))
         .map_err(|e| e.to_string())?;
     migrations::apply_conn_pragmas(&conn)?;
+    // tasks 表单源 DDL（W1-CANVAS 抽取）：完整 27 列 schema，老库缺列由下方幂等 ALTER 补齐
+    conn.execute_batch(crate::db::tasks::TASKS_DDL)
+        .map_err(|e| e.to_string())?;
     conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS tasks (
-           id           TEXT PRIMARY KEY,
-           title        TEXT NOT NULL,
-           due          TEXT,
-           note         TEXT,
-           tags         TEXT,
-           file_path    TEXT,
-           file_is_dir  INTEGER,
-           col          TEXT NOT NULL,
-           subtasks     TEXT,
-           completed_at INTEGER,
-           archived     INTEGER,
-           deleted_at   INTEGER,
-           collapsed    INTEGER,
-           ord          REAL,
-           updated_at   INTEGER,
-           schedule     TEXT,
-           sched_last   INTEGER,
-           bot_assigned INTEGER
-         );
-         CREATE TABLE IF NOT EXISTS workspace_items (
+        "CREATE TABLE IF NOT EXISTS workspace_items (
            id         TEXT PRIMARY KEY,
            title      TEXT NOT NULL,
            collapsed  INTEGER,
@@ -170,6 +155,10 @@ pub fn open_db<R: tauri::Runtime>(
     // subagents 表走单源 DDL（含 task_id UNIQUE + status/parent 索引），与测试建表共用
     conn.execute_batch(subagents::SUBAGENTS_DDL)
         .map_err(|e| e.to_string())?;
+    // workflows 表（W1-CANVAS，设计 §3.2）：工作流元数据 + 总目标文本；
+    // 节点卡存 tasks 表（origin='workflow' + workflow_id 外联），不在此表
+    conn.execute_batch(crate::db::workflow::WORKFLOWS_DDL)
+        .map_err(|e| e.to_string())?;
     // 模型元数据双表（meta_provider/meta_model，meta 模块的存储面），幂等
     migrations::ensure_meta_tables(&conn)?;
     // 迁移：定时任务卡
@@ -189,6 +178,27 @@ pub fn open_db<R: tauri::Runtime>(
     // 迁移：子 agent 编排三字段（SUBA-1，设计 §4.1——assignee/budget/result 走
     // task_patch 既有通道；budget/result 存 JSON TEXT）
     for (col, ty) in [("assignee", "TEXT"), ("budget", "TEXT"), ("result", "TEXT")] {
+        let has: bool = conn
+            .prepare("PRAGMA table_info(tasks)")
+            .and_then(|mut stmt| {
+                let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+                Ok(rows.filter_map(|n| n.ok()).any(|n| n == col))
+            })
+            .unwrap_or(false);
+        if !has {
+            conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"), [])
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    // 迁移（W1-CANVAS，设计 §3.1）：工作流四字段 + 画布坐标。
+    // origin 缺省 NULL 视作 "user"（读路径归一），不加 DEFAULT 避免 ALTER 语义分叉
+    for (col, ty) in [
+        ("origin", "TEXT"),
+        ("workflow_id", "TEXT"),
+        ("depends_on", "TEXT"),
+        ("canvas_x", "REAL"),
+        ("canvas_y", "REAL"),
+    ] {
         let has: bool = conn
             .prepare("PRAGMA table_info(tasks)")
             .and_then(|mut stmt| {
@@ -590,17 +600,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("wm-mig-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         let conn = rusqlite::Connection::open(dir.join("t.db")).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE tasks (
-               id TEXT PRIMARY KEY, title TEXT NOT NULL, due TEXT, note TEXT,
-               tags TEXT, file_path TEXT, file_is_dir INTEGER, col TEXT NOT NULL,
-               subtasks TEXT, completed_at INTEGER, archived INTEGER,
-               deleted_at INTEGER, collapsed INTEGER, ord REAL, updated_at INTEGER,
-               schedule TEXT, sched_last INTEGER, bot_assigned INTEGER, files TEXT,
-               assignee TEXT, budget TEXT, result TEXT
-             );",
-        )
-        .unwrap();
+        // 单源 DDL（W1-CANVAS）：migrate_data_json 走 upsert_tasks 写路径，需全列 schema
+        conn.execute_batch(TASKS_DDL).unwrap();
         (dir, conn)
     }
 
@@ -628,6 +629,10 @@ mod tests {
             assignee: None,
             budget: None,
             result: None,
+            origin: None,
+            workflow_id: None,
+            depends_on: None,
+            canvas_pos: None,
             expected_updated_at: None,
         }
     }
@@ -745,6 +750,19 @@ mod tests {
              );",
         )
         .unwrap();
+        // W1-CANVAS 起进程内共有 5 个新列（origin/workflow_id/depends_on/canvas_x/canvas_y）——
+        // 与 files 列同为 open_db 幂等 ALTER 的一部分；fixture 保持「仅缺 files 列」的
+        // 被测前提不变，把其余列补齐，否则迁移后 load_all 查新列会炸
+        for (col, ty) in [
+            ("origin", "TEXT"),
+            ("workflow_id", "TEXT"),
+            ("depends_on", "TEXT"),
+            ("canvas_x", "REAL"),
+            ("canvas_y", "REAL"),
+        ] {
+            conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"), [])
+                .unwrap();
+        }
         (dir, conn)
     }
 

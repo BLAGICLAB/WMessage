@@ -427,6 +427,10 @@ pub(crate) async fn tool_create_task(
         assignee: None,
         budget: None,
         result: None,
+        origin: None,
+        workflow_id: None,
+        depends_on: None,
+        canvas_pos: None,
         expected_updated_at: None, // 新建任务：无读快照基线
     };
     // 多文件绑定：files 参数 [{path,isDir}]，超 10 截断 + 警告
@@ -1600,6 +1604,10 @@ mod task_files_arg_tests {
             assignee: None,
             budget: None,
             result: None,
+            origin: None,
+            workflow_id: None,
+            depends_on: None,
+            canvas_pos: None,
             expected_updated_at: None,
         };
         apply_files_to_task(

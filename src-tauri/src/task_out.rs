@@ -54,6 +54,10 @@ mod tests {
             assignee: None,
             budget: None,
             result: None,
+            origin: None,
+            workflow_id: None,
+            depends_on: None,
+            canvas_pos: None,
             expected_updated_at: None,
         }
     }

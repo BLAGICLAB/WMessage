@@ -458,6 +458,7 @@ flowchart TD
 - `db/paths.rs`
 - `db/skill_out.rs`
 - `db/tasks.rs`
+- `db/workflow.rs`
 - `db/workspace.rs`
 
 ### `eval/`
