@@ -394,20 +394,29 @@ function WorkflowPageInner({
 
   const stopBusyRef = useRef(false);
   const stopRun = async () => {
-    if (!activeId || stopBusyRef.current) return;
+    const wf = activeId;
+    if (!wf || stopBusyRef.current) return;
     stopBusyRef.current = true;
     try {
-      await invoke("workflow_stop", { workflowId: activeId });
-      // 立即回查一次：控制台通常秒级注销，按钮及时复位（轮询兜底剩余窗口）
+      await invoke("workflow_stop", { workflowId: wf });
+      // 300ms 后回查复位（OCR r2）：闭包绑定被停的 wf；seq 快照保证用户已
+      // 切走时本回查不应用（切换路径各有自己的 running 取真/归零）
+      const seq = openSeqRef.current;
       setTimeout(() => {
-        invoke<boolean>("workflow_is_running", { workflowId: activeId })
-          .then((v) => setRunning(v))
+        if (seq !== openSeqRef.current) return;
+        invoke<boolean>("workflow_is_running", { workflowId: wf })
+          .then((v) => {
+            if (seq === openSeqRef.current) setRunning(v);
+          })
           .catch(() => {});
       }, 300);
     } catch (e) {
       handleCommandError(e, "停止工作流");
     } finally {
-      stopBusyRef.current = false;
+      // busy 推迟到回查窗口之后解除，防回查期间重复点击（OCR r2）
+      setTimeout(() => {
+        stopBusyRef.current = false;
+      }, 700);
     }
   };
 
