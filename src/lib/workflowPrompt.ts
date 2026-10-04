@@ -2,8 +2,10 @@
 // 用户可编辑的是「指引段」，随 workflow_decompose invoke 上行；
 // 「输出契约段」在 Rust workflow_decompose.rs 代码硬拼追加，用户不可见不可改。
 // 纯前端偏好，走 localStorage；DEFAULT 必须与 Rust DEFAULT_DECOMPOSE_GUIDANCE 保持一致。
-
 const GUIDANCE_KEY = "wm.workflow.decomposeGuidance";
+
+/** 指引段长度上限（与 Rust MAX_GUIDANCE_CHARS 同源对齐） */
+export const MAX_GUIDANCE_CHARS = 2000;
 
 const DEFAULT_DECOMPOSE_GUIDANCE = `你是工作流拆解专家。把用户的目标拆解为一组可执行的任务卡。
 拆解原则：
@@ -20,11 +22,14 @@ export function getDecomposeGuidance(): string {
   }
 }
 
-export function setDecomposeGuidance(v: string): void {
+/** @returns 是否成功持久化（false = 存储不可用，UI 不应显示"已保存"——OCR r1） */
+export function setDecomposeGuidance(v: string): boolean {
   try {
     localStorage.setItem(GUIDANCE_KEY, v);
+    return true;
   } catch {
-    // localStorage 不可用：仅本次会话内存生效
+    // localStorage 不可用：本次写入不持久化，下次读取仍返回旧值或默认值
+    return false;
   }
 }
 

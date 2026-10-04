@@ -44,6 +44,7 @@ import {
 } from "../../lib/workflowVisibility";
 import {
   getDecomposeGuidance,
+  MAX_GUIDANCE_CHARS,
   resetDecomposeGuidance,
   setDecomposeGuidance,
 } from "../../lib/workflowPrompt";
@@ -2805,6 +2806,19 @@ function WorkflowSettingsCard() {
   const [showTasks, setShowTasks] = useState(getShowWorkflowTasks);
   const [guidance, setGuidance] = useState(getDecomposeGuidance);
   const [guidanceSaved, setGuidanceSaved] = useState(false);
+  const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const guidanceRef = useRef(guidance);
+  // 卸载时兜底持久化（OCR r1：焦点在 textarea 时切走/关窗，onBlur 可能不触发）
+  useEffect(
+    () => () => {
+      setDecomposeGuidance(guidanceRef.current);
+      if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
+    },
+    []
+  );
+  useEffect(() => {
+    guidanceRef.current = guidance;
+  }, [guidance]);
   useEffect(() => {
     const un = listen(WORKFLOW_VISIBILITY_EVENT, () =>
       setShowTasks(getShowWorkflowTasks())
@@ -2813,6 +2827,15 @@ function WorkflowSettingsCard() {
       un.then((f) => f());
     };
   }, []);
+  const persistGuidance = (v: string) => {
+    const ok = setDecomposeGuidance(v);
+    setGuidanceSaved(ok);
+    if (ok) {
+      // 已保存提示 2.5s 自动隐藏（OCR r1：不能一旦保存过就常亮）
+      if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
+      savedTimerRef.current = setTimeout(() => setGuidanceSaved(false), 2500);
+    }
+  };
   return (
     <div className="space-y-4">
       <div className="nm-card p-5">
@@ -2854,14 +2877,12 @@ function WorkflowSettingsCard() {
           aria-label="AI 拆解提示词"
           className="mt-3 h-40 w-full resize-y rounded-[var(--r-sm)] nm-inset p-3 text-sm leading-6 text-[var(--t1)] outline-none"
           value={guidance}
+          maxLength={MAX_GUIDANCE_CHARS}
           onChange={(e) => {
             setGuidance(e.target.value);
             setGuidanceSaved(false);
           }}
-          onBlur={() => {
-            setDecomposeGuidance(guidance);
-            setGuidanceSaved(true);
-          }}
+          onBlur={() => persistGuidance(guidance)}
         />
         <div className="mt-3 flex items-center justify-end gap-2">
           {guidanceSaved && (
@@ -2870,8 +2891,9 @@ function WorkflowSettingsCard() {
           <button
             className="nm-outset rounded-[var(--r-sm)] px-3 py-1 text-xs text-[var(--t3)]"
             onClick={() => {
-              setGuidance(resetDecomposeGuidance());
-              setGuidanceSaved(false);
+              const d = resetDecomposeGuidance();
+              setGuidance(d);
+              persistGuidance(d);
             }}
           >
             恢复默认

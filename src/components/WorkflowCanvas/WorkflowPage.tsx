@@ -29,6 +29,8 @@ import { GoalNode, type GoalNodeData } from "./GoalNode";
 
 /** 总目标卡在画布上的固定节点 id（绑定 workflows 元数据，非任务卡） */
 const GOAL_ID = "__goal__";
+/** 拆解自动命名的截取长度（OCR r1 low：魔法数字提升为具名常量） */
+const NAME_AUTO_LEN = 12;
 
 const nodeTypes = { task: TaskNode, goal: GoalNode };
 
@@ -98,6 +100,8 @@ function WorkflowPageInner({
   /** AI 拆解进行中 + 竞态守卫（取消 = 递增序号丢弃在途响应） */
   const [decomposing, setDecomposing] = useState(false);
   const decomposeSeqRef = useRef(0);
+  /** 名称是否仍是自动名（true 时拆解成功用 goal 前缀重命名；用户改过名则尊重用户） */
+  const [nameAuto, setNameAuto] = useState(true);
   useEffect(
     () => () => {
       decomposeSeqRef.current++; // 卸载时使在途拆解响应失效
@@ -123,6 +127,7 @@ function WorkflowPageInner({
 
   const openWorkflow = async (id: string) => {
     const seq = ++openSeqRef.current;
+    decomposeSeqRef.current++; // 使在途拆解响应失效（OCR r1 critical）
     try {
       const detail = await invoke<Workflow & { tasks: Task[] }>("workflow_load", { id });
       if (seq !== openSeqRef.current) return; // 期间用户已切换：丢弃本次响应
@@ -137,6 +142,7 @@ function WorkflowPageInner({
       );
       setMode("edit");
       setDeleteArmed(false);
+      setRegenArmed(false);
     } catch (e) {
       handleCommandError(e, "打开工作流", { onRetry: () => void openWorkflow(id) });
     }
@@ -144,6 +150,8 @@ function WorkflowPageInner({
 
   const createBlank = () => {
     openSeqRef.current++; // 使在途的 workflow_load 失效
+    decomposeSeqRef.current++; // 同上（OCR r1 critical）
+    setRegenArmed(false);
     setActiveId(null);
     setName(`工作流 ${new Date().toLocaleDateString()}`);
     setGoal("");
@@ -172,7 +180,7 @@ function WorkflowPageInner({
       const fresh = draftFromDecompose(res.subtasks);
       setNodes(fresh);
       setSelectedIds([]);
-      setName((prev) => (prev && prev !== `工作流 ${new Date().toLocaleDateString()}` ? prev : goalText.slice(0, 12)));
+      if (nameAuto) setName(goalText.slice(0, NAME_AUTO_LEN));
       setSavedSnapshot(null); // 拆解结果 = 新草稿，保存才落库（设计 §7）
       setMode("edit");
     } catch (e) {
@@ -206,6 +214,7 @@ function WorkflowPageInner({
   // ────────────── 节点编辑 ──────────────
 
   const addNode = () => {
+    decomposeSeqRef.current++; // 手动加卡 = 放弃在途拆解结果（OCR r1 medium）
     // 视口中心落点（screenToFlowPosition 需画布 DOM 存在；空画布也有容器）
     const center = screenToFlowPosition({
       x: window.innerWidth / 2,
@@ -432,7 +441,16 @@ function WorkflowPageInner({
         draggable: false,
         selectable: false,
         deletable: false,
-        data: { name, goal, saved: savedSnapshot !== null, onRename: setName, onGoalChange: setGoal },
+        data: {
+          name,
+          goal,
+          saved: savedSnapshot !== null,
+          onRename: (v: string) => {
+            setName(v);
+            setNameAuto(false);
+          },
+          onGoalChange: setGoal,
+        },
       },
       ...nodes.map((n) => {
         const task = n.taskId ? tasks.find((t) => t.id === n.taskId) : undefined;
@@ -517,8 +535,9 @@ function WorkflowPageInner({
         </button>
         <button
           className={`${toolbarBtn} ${regenArmed ? "nm-inset text-[var(--t1)]" : ""}`}
+          aria-pressed={regenArmed}
           onClick={regenerate}
-          disabled={decomposing}
+          disabled={decomposing || nodes.length === 0}
           title={
             regenArmed
               ? "再点一次确认回到目标输入（当前画布在保存前保持不变）"
@@ -551,6 +570,7 @@ function WorkflowPageInner({
         {activeId && (
           <button
             className={`${toolbarBtn} ${deleteArmed ? "nm-inset text-[var(--danger,#ef4444)]" : ""}`}
+            aria-pressed={deleteArmed}
             onClick={() => void deleteWorkflow()}
             title={deleteArmed ? "再点一次确认删除（连带删除全部节点卡）" : "删除当前工作流"}
           >

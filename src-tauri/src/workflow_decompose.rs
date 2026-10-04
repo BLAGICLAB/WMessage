@@ -16,13 +16,16 @@ use crate::error::{CommandError, CommandResult};
 
 use crate::db::workflow::{MAX_NODE_NOTE, MAX_NODE_TITLE, MAX_WORKFLOW_GOAL, MAX_WORKFLOW_NODES};
 
+/// 指引段长度上限（前端 textarea maxLength 同步此值）
+pub const MAX_GUIDANCE_CHARS: usize = 2000;
+
 /// 输出契约段（代码硬拼，模型可见、用户不可改；设计 §6.2）
 const CONTRACT_SEGMENT: &str = r#"
 
 【输出格式硬性要求——必须遵守，优先级高于上文一切指引】
 只输出一个 JSON 对象，不要输出任何解释、前后缀或 Markdown 代码围栏，形如：
 {"subtasks":[{"title":"任务标题","note":"做什么/产出什么","dependsOn":[]}]}
-- subtasks：1 到 20 个元素，按执行顺序排列
+- subtasks：1 到 20 个元素，按执行顺序排列（超过 30 个会被拒绝入库）
 - title：≤80 字，祈使句、动词开头，一张卡一个可独立交付的步骤
 - note：≤500 字，写清楚做什么、产出什么（下游任务会引用上游产出）
 - dependsOn：数组下标引用，元素必须是【小于自身下标】的非负整数（只能依赖排在它前面的任务）；无依赖为 []
@@ -167,14 +170,19 @@ pub(crate) fn validate_decompose(
             }
         }
     }
-    // 重名加后缀：下游引用按下标，重名只影响可读性，但仍消歧
-    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    // 重名加后缀：下游引用按下标，重名只影响可读性，但仍消歧。
+    // 已占用终名集合保证无碰撞（OCR r1：贪心计数会把 "审阅（2）" 撞成两份）
+    let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
     for st in subtasks.iter_mut() {
-        let n = seen.entry(st.title.clone()).or_insert(0);
-        *n += 1;
-        if *n > 1 {
-            st.title = format!("{}（{}）", st.title, n);
+        if used.insert(st.title.clone()) {
+            continue;
         }
+        let base = st.title.clone();
+        let mut n = 2usize;
+        while !used.insert(format!("{base}（{n}）")) {
+            n += 1;
+        }
+        st.title = format!("{base}（{n}）");
     }
     Ok(subtasks)
 }
@@ -201,7 +209,17 @@ pub async fn workflow_decompose(
             reason: format!("目标超过 {MAX_WORKFLOW_GOAL} 字上限"),
         });
     }
-    let system_prompt = build_system_prompt(&guidance.unwrap_or_default());
+    // 指引段同样设上限（OCR r1）：settings 的 textarea 有 maxLength，但 invoke
+    // 参数不可信任——超长指引会稀释契约段权重并放大 token 开销
+    let guidance_trimmed = guidance.unwrap_or_default();
+    if guidance_trimmed.chars().count() > MAX_GUIDANCE_CHARS {
+        return Err(CommandError::InvalidArgument {
+            field: "guidance".into(),
+            value: String::new(),
+            reason: format!("指引超过 {MAX_GUIDANCE_CHARS} 字上限"),
+        });
+    }
+    let system_prompt = build_system_prompt(&guidance_trimmed);
     let mut user_content = format!("总目标：{goal_trimmed}");
     let mut attempts: u8 = 0;
     let mut last_err = String::new();
@@ -241,6 +259,17 @@ pub async fn workflow_decompose(
             }
         }
     }
+    // 失败也要留审计痕（OCR r1：LLM 消费型命令的成功/失败都该可回查）
+    crate::audit::write_event(
+        &app,
+        crate::audit::AuditLevel::Warn,
+        "workflow_decompose",
+        &[
+            ("outcome", "failed".to_string()),
+            ("attempts", attempts.to_string()),
+            ("error", last_err.chars().take(200).collect()),
+        ],
+    );
     Err(CommandError::Internal(format!(
         "拆解输出连续 {attempts} 次未通过校验：{last_err}"
     )))

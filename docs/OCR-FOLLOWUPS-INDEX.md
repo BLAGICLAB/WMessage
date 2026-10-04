@@ -109,3 +109,17 @@ grep 例：`grep 'C2b1' docs/OCR-FOLLOWUPS-INDEX.md`
 | W1F-8 | W1-CANVAS-r1 | low | edge id 以 "->" 拼接的格式耦合 | localId 含 "->" 时 | wontfix（localId 恒为 uuid/真实任务 id，不变量已注释在生成/解析两处） |
 | W1F-9 | W1-CANVAS-r1 | low | addNode 以窗口中心而非画布中心落点 | 画布被遮挡/滚动时 | W2（画布 DOM 中心换算，随 UX 小批） |
 | W1F-10 | W1-CANVAS-r1 | low | App reloadTasks 每渲染新引用 | 每渲染 | wontfix（仅在保存/删除后调用，无热路径） |
+
+## W2-DECOMPOSE（AI 拆解，2026-10-04 OCR r1 修复批衍生债）
+
+> 修复批 commit 见 git log `W2-DECOMPOSE-r1`；r1 全量报告（本地）
+> `docs/OCR-CODE-REVIEW-2026-10-04-w2.json`（26 条，2C+9M+13L，去重后约 20 独立项）。
+> 2 critical（拆解竞态）+ 8 medium + 4 low 已随批修复，以下为显式缓期项。
+
+| ID | 批次 | 严重度 | 根因一句话 | 触发条件 | 处置 |
+|---|---|---|---|---|---|
+| W2F-1 | W2-DECOMPOSE-r1 | medium | 拆解重试循环无整体 deadline（2×60s 上限） | 模型慢时 | wontfix-by-design（前端可取消=序号守卫，UI 不阻塞；服务端硬中断需 abort channel，随 W3 执行取消基建一并做） |
+| W2F-2 | W2-DECOMPOSE-r1 | low | workflow_decompose 命令级（重试/审计路径）无测试 | 改命令体时 | W3（需 summarize_messages mock 挂具，随执行引擎测试基建同批） |
+| W2F-3 | W2-DECOMPOSE-r1 | low | EmptyHero JSX 双层条件分支密度高 | 改空态 UI 时 | wontfix（纯结构重构，无行为面；随下次空态改版顺手拆） |
+| W2F-4 | W2-DECOMPOSE-r1 | low | 指引段仅 maxLength 无字数/token 反馈 | 粘贴长文本时 | wontfix（2000 上限已拦极端；token 估算属设置页全局议题） |
+| W2F-5 | W2-DECOMPOSE-r1 | low | guidance state 无跨组件订阅 | 未来出现第二个编辑入口时 | wontfix（当前全应用唯一编辑点在设置页卡片，读发生在 invoke 时） |
