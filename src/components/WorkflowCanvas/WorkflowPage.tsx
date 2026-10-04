@@ -140,6 +140,7 @@ function WorkflowPageInner({
       setSavedSnapshot(
         JSON.stringify({ name: detail.name, goal: detail.goal, nodes: fresh })
       );
+      setNameAuto(false); // 打开的是已保存工作流：名称是作者起的，拆解不得覆盖（OCR r2）
       setMode("edit");
       setDeleteArmed(false);
       setRegenArmed(false);
@@ -215,6 +216,7 @@ function WorkflowPageInner({
 
   const addNode = () => {
     decomposeSeqRef.current++; // 手动加卡 = 放弃在途拆解结果（OCR r1 medium）
+    setRegenArmed(false);
     // 视口中心落点（screenToFlowPosition 需画布 DOM 存在；空画布也有容器）
     const center = screenToFlowPosition({
       x: window.innerWidth / 2,

@@ -187,6 +187,19 @@ pub(crate) fn validate_decompose(
     Ok(subtasks)
 }
 
+/// 指引段校验（纯逻辑，单测锚点，OCR r2）：trim + 长度上限
+fn validate_guidance(g: &str) -> CommandResult<String> {
+    let t = g.trim().to_string();
+    if t.chars().count() > MAX_GUIDANCE_CHARS {
+        return Err(CommandError::InvalidArgument {
+            field: "guidance".into(),
+            value: t.chars().take(120).collect(),
+            reason: format!("指引超过 {MAX_GUIDANCE_CHARS} 字上限"),
+        });
+    }
+    Ok(t)
+}
+
 /// 一次性拆解调用（无会话、无工具、无流式；失败自动带错误反馈重试 1 次）
 #[tauri::command]
 pub async fn workflow_decompose(
@@ -211,21 +224,32 @@ pub async fn workflow_decompose(
     }
     // 指引段同样设上限（OCR r1）：settings 的 textarea 有 maxLength，但 invoke
     // 参数不可信任——超长指引会稀释契约段权重并放大 token 开销
-    let guidance_trimmed = guidance.unwrap_or_default();
-    if guidance_trimmed.chars().count() > MAX_GUIDANCE_CHARS {
-        return Err(CommandError::InvalidArgument {
-            field: "guidance".into(),
-            value: String::new(),
-            reason: format!("指引超过 {MAX_GUIDANCE_CHARS} 字上限"),
-        });
-    }
+    let guidance_trimmed = validate_guidance(&guidance.unwrap_or_default())?;
     let system_prompt = build_system_prompt(&guidance_trimmed);
     let mut user_content = format!("总目标：{goal_trimmed}");
     let mut attempts: u8 = 0;
     let mut last_err = String::new();
+    // 失败审计的收口（OCR r2：LLM 调用本身的失败经 `?` 直抛会绕过审计，
+    // 统一走 outcome=failed 出口；错误值走 escape_for_log 管道）
+    macro_rules! fail {
+        ($err:expr) => {{
+            last_err = $err.to_string();
+            crate::audit::write_event(
+                &app,
+                crate::audit::AuditLevel::Warn,
+                "workflow_decompose",
+                &[
+                    ("outcome", "failed".to_string()),
+                    ("attempts", attempts.to_string()),
+                    ("error", crate::audit::escape_for_log(&last_err, 200)),
+                ],
+            );
+            return Err($err);
+        }};
+    }
     loop {
         attempts += 1;
-        let raw = crate::bot_chat::summarize_messages(
+        let raw = match crate::bot_chat::summarize_messages(
             &app,
             &system_prompt,
             &[crate::bot_chat::ChatMsg {
@@ -233,7 +257,11 @@ pub async fn workflow_decompose(
                 content: user_content.clone(),
             }],
         )
-        .await?;
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => fail!(e),
+        };
         match parse_and_validate(&raw) {
             Ok(subtasks) => {
                 crate::audit::write_event(
@@ -259,18 +287,7 @@ pub async fn workflow_decompose(
             }
         }
     }
-    // 失败也要留审计痕（OCR r1：LLM 消费型命令的成功/失败都该可回查）
-    crate::audit::write_event(
-        &app,
-        crate::audit::AuditLevel::Warn,
-        "workflow_decompose",
-        &[
-            ("outcome", "failed".to_string()),
-            ("attempts", attempts.to_string()),
-            ("error", last_err.chars().take(200).collect()),
-        ],
-    );
-    Err(CommandError::Internal(format!(
+    fail!(CommandError::Internal(format!(
         "拆解输出连续 {attempts} 次未通过校验：{last_err}"
     )))
 }
@@ -421,5 +438,42 @@ mod tests {
         assert!(p.contains("请全部拆成一句话任务"));
         assert!(p.contains("输出格式硬性要求"));
         assert!(p.contains("小于自身下标"));
+    }
+
+    #[test]
+    fn guidance_boundary_locked() {
+        // 边界锁（OCR r2）：上限处拒绝、上限-1 通过、空白 trim
+        let ok = validate_guidance(&"指".repeat(MAX_GUIDANCE_CHARS - 1)).unwrap();
+        assert_eq!(ok.chars().count(), MAX_GUIDANCE_CHARS - 1);
+        let err = validate_guidance(&"指".repeat(MAX_GUIDANCE_CHARS + 1)).unwrap_err();
+        assert!(err.to_string().contains("上限"));
+        assert_eq!(validate_guidance("  ").unwrap(), "");
+    }
+
+    #[test]
+    fn dedupe_collision_safe_with_presuffixed_input() {
+        // 输入本身带 "（2）" 后缀时（OCR r2 边界）：终名仍必须两两不同
+        let ok = validate_decompose(vec![
+            DecomposeSubtask {
+                title: "审阅".into(),
+                note: None,
+                depends_on: vec![],
+            },
+            DecomposeSubtask {
+                title: "审阅".into(),
+                note: None,
+                depends_on: vec![0],
+            },
+            DecomposeSubtask {
+                title: "审阅（2）".into(),
+                note: None,
+                depends_on: vec![0],
+            },
+        ])
+        .unwrap();
+        let mut names: Vec<&str> = ok.iter().map(|s| s.title.as_str()).collect();
+        names.sort();
+        let unique: std::collections::BTreeSet<&str> = names.iter().copied().collect();
+        assert_eq!(unique.len(), names.len(), "终名不得重复：{names:?}");
     }
 }
