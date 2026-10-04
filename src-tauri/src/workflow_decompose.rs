@@ -28,7 +28,7 @@ const CONTRACT_SEGMENT: &str = r#"
 - subtasks：1 到 20 个元素，按执行顺序排列（超过 30 个会被拒绝入库）
 - title：≤80 字，祈使句、动词开头，一张卡一个可独立交付的步骤
 - note：≤500 字，写清楚做什么、产出什么（下游任务会引用上游产出）
-- dependsOn：数组下标引用，元素必须是【小于自身下标】的非负整数（只能依赖排在它前面的任务）；无依赖为 []
+- dependsOn：数组下标引用，尽量只引用排在它前面的任务；无依赖为 []（顺序写反系统会自动纠正，但引用的任务必须存在）
 - 无依赖关系的任务会并行执行，有依赖的按图顺序执行
 示例：
 {"subtasks":[{"title":"收集素材","note":"产出素材清单","dependsOn":[]},{"title":"写初稿","note":"引用素材清单起草","dependsOn":[0]}]}"#;
@@ -156,20 +156,91 @@ pub(crate) fn validate_decompose(
                 });
             }
         }
+    }
+    // 依赖归一（W7-TOPO）：去重 + 剥自环（自引用无语义——小模型高频手误，
+    // 用户实测案例 #4 -> [4] 两次重试不改，整包拒绝体验差）；越界仍拒绝；
+    // 环 → Kahn 检测后拒绝（报出环内任务名）；无环 → 拓扑重排 + 重映射，
+    // 模型给前向/乱序引用也能正确成图（原"下标 < 自身"硬约束废除）
+    let total = subtasks.len();
+    let mut normalized: Vec<Vec<usize>> = Vec::with_capacity(total);
+    for (i, st) in subtasks.iter().enumerate() {
+        let mut kept: Vec<usize> = Vec::with_capacity(st.depends_on.len());
         for &d in &st.depends_on {
-            // 前向引用硬约束：结构上杜绝环（设计 §6.2）
-            if d >= i {
+            if d >= total {
                 return Err(CommandError::InvalidArgument {
                     field: "subtasks".into(),
                     value: format!("#{i} -> {d}"),
                     reason: format!(
-                        "第 {} 个任务的 dependsOn 含非法下标 {d}（必须引用更靠前的任务，下标 < {i}）",
-                        i + 1
+                        "第 {} 个任务的 dependsOn 引用越界（{}，共 {} 个任务）",
+                        i + 1,
+                        d,
+                        total
                     ),
                 });
             }
+            if d != i && !kept.contains(&d) {
+                kept.push(d);
+            }
+        }
+        normalized.push(kept);
+    }
+    for (st, kept) in subtasks.iter_mut().zip(normalized) {
+        st.depends_on = kept;
+    }
+    let n = subtasks.len();
+    let mut indegree: Vec<usize> = vec![0; n];
+    let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (i, st) in subtasks.iter().enumerate() {
+        indegree[i] = st.depends_on.len();
+        for &d in &st.depends_on {
+            dependents[d].push(i);
         }
     }
+    let mut order: Vec<usize> = Vec::with_capacity(n);
+    let mut done_flags = vec![false; n];
+    loop {
+        let mut progressed = false;
+        for i in 0..n {
+            if indegree[i] == 0 && !done_flags[i] {
+                done_flags[i] = true;
+                order.push(i);
+                for &d in &dependents[i] {
+                    indegree[d] -= 1;
+                }
+                progressed = true;
+            }
+        }
+        if order.len() == n {
+            break;
+        }
+        if !progressed {
+            let stuck: Vec<&str> = (0..n)
+                .filter(|i| !done_flags[*i])
+                .map(|i| subtasks[i].title.as_str())
+                .collect();
+            return Err(CommandError::InvalidArgument {
+                field: "subtasks".into(),
+                value: stuck.join("→"),
+                reason: format!("任务存在循环依赖：{}", stuck.join("→")),
+            });
+        }
+    }
+    let old_to_new: std::collections::HashMap<usize, usize> = order
+        .iter()
+        .enumerate()
+        .map(|(new_idx, &old_i)| (old_i, new_idx))
+        .collect();
+    subtasks = order
+        .iter()
+        .map(|&old_i| {
+            let st = &subtasks[old_i];
+            DecomposeSubtask {
+                title: st.title.clone(),
+                note: st.note.clone(),
+                depends_on: st.depends_on.iter().map(|d| old_to_new[d]).collect(),
+            }
+        })
+        .collect();
     // 重名加后缀：下游引用按下标，重名只影响可读性，但仍消歧。
     // 已占用终名集合保证无碰撞（OCR r1：贪心计数会把 "审阅（2）" 撞成两份）
     let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -320,48 +391,6 @@ mod tests {
     }
 
     #[test]
-    fn validate_enforces_forward_reference_only() {
-        // 自环（下标等于自身）
-        let err = validate_decompose(vec![DecomposeSubtask {
-            title: "A".into(),
-            note: None,
-            depends_on: vec![0],
-        }])
-        .unwrap_err();
-        assert!(err.to_string().contains("非法下标"));
-        // 反向引用（依赖排在后面的任务）
-        let err = validate_decompose(vec![
-            DecomposeSubtask {
-                title: "A".into(),
-                note: None,
-                depends_on: vec![1],
-            },
-            DecomposeSubtask {
-                title: "B".into(),
-                note: None,
-                depends_on: vec![],
-            },
-        ])
-        .unwrap_err();
-        assert!(err.to_string().contains("非法下标"));
-        // 合法前向引用通过
-        let ok = validate_decompose(vec![
-            DecomposeSubtask {
-                title: "A".into(),
-                note: None,
-                depends_on: vec![],
-            },
-            DecomposeSubtask {
-                title: "B".into(),
-                note: None,
-                depends_on: vec![0],
-            },
-        ])
-        .unwrap();
-        assert_eq!(ok.len(), 2);
-    }
-
-    #[test]
     fn validate_trims_and_caps() {
         let long_title = "标".repeat(MAX_NODE_TITLE + 1);
         let err = validate_decompose(vec![DecomposeSubtask {
@@ -437,7 +466,7 @@ mod tests {
         let p = build_system_prompt("请全部拆成一句话任务");
         assert!(p.contains("请全部拆成一句话任务"));
         assert!(p.contains("输出格式硬性要求"));
-        assert!(p.contains("小于自身下标"));
+        assert!(p.contains("系统会自动纠正"));
     }
 
     #[test]
