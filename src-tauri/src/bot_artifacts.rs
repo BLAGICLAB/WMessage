@@ -95,7 +95,10 @@ pub async fn should_emit<R: tauri::Runtime>(
                 None
             }
         }
-        TaskExecOrigin::Scheduled | TaskExecOrigin::Batch => Some(finals),
+        // Workflow（W3-RUNNER）：工作流节点无人值守执行，产物登记语义同 Scheduled
+        TaskExecOrigin::Scheduled | TaskExecOrigin::Batch | TaskExecOrigin::Workflow => {
+            Some(finals)
+        }
     }
 }
 

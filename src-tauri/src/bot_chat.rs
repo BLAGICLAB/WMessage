@@ -1282,6 +1282,8 @@ pub enum TaskExecOrigin {
     Scheduled,
     /// 📦 聊天批量执行（每卡一个独立会话）
     Batch,
+    /// 🔀 工作流画布拓扑调度（W3-RUNNER；语义同 Scheduled 无人值守）
+    Workflow,
 }
 
 impl TaskExecOrigin {
@@ -1290,6 +1292,7 @@ impl TaskExecOrigin {
             TaskExecOrigin::Manual => "📋 任务：",
             TaskExecOrigin::Scheduled => "⏰ 定时：",
             TaskExecOrigin::Batch => "📦 批量：",
+            TaskExecOrigin::Workflow => "🔀 工作流：",
         }
     }
     pub fn as_str(self) -> &'static str {
@@ -1297,6 +1300,7 @@ impl TaskExecOrigin {
             TaskExecOrigin::Manual => "manual",
             TaskExecOrigin::Scheduled => "scheduled",
             TaskExecOrigin::Batch => "batch",
+            TaskExecOrigin::Workflow => "workflow",
         }
     }
 }
@@ -1567,6 +1571,7 @@ where
                     TaskExecOrigin::Manual => "manual",
                     TaskExecOrigin::Scheduled => "scheduled",
                     TaskExecOrigin::Batch => "batch",
+                    TaskExecOrigin::Workflow => "workflow",
                 },
                 "paths": artifacts.iter().map(|a| a.path.clone()).collect::<Vec<_>>(),
             }),

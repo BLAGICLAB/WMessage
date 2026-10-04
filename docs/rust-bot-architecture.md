@@ -412,6 +412,7 @@ flowchart TD
 - `task_out.rs`
 - `tool_guard.rs`
 - `workflow_decompose.rs`
+- `workflow_runner.rs`
 
 ### `api_handlers/`
 - `api_handlers/body.rs`

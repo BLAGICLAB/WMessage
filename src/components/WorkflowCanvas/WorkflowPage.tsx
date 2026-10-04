@@ -14,7 +14,7 @@ import {
   type NodeChange,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Download, Loader2, Play, Plus, RefreshCw, Save, Trash2, Upload } from "lucide-react";
+import { Download, Loader2, Play, Plus, RefreshCw, Save, Square, Trash2, Upload } from "lucide-react";
 import { handleCommandError } from "../../lib/errorHandler";
 import { getDecomposeGuidance } from "../../lib/workflowPrompt";
 import type { Task, Workflow, WorkflowSaveResult } from "../../types";
@@ -97,6 +97,8 @@ function WorkflowPageInner({
   const armedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** 重新生成两步确认 */
   const [regenArmed, setRegenArmed] = useState(false);
+  /** 工作流执行中（W3-RUNNER）：开始执行/停止按钮切换 + 进度显示 */
+  const [running, setRunning] = useState(false);
   /** AI 拆解进行中 + 竞态守卫（取消 = 递增序号丢弃在途响应） */
   const [decomposing, setDecomposing] = useState(false);
   const decomposeSeqRef = useRef(0);
@@ -141,6 +143,9 @@ function WorkflowPageInner({
         JSON.stringify({ name: detail.name, goal: detail.goal, nodes: fresh })
       );
       setNameAuto(false); // 打开的是已保存工作流：名称是作者起的，拆解不得覆盖（OCR r2）
+      invoke<boolean>("workflow_is_running_cmd", { workflowId: id })
+        .then(setRunning)
+        .catch(() => {});
       setMode("edit");
       setDeleteArmed(false);
       setRegenArmed(false);
@@ -353,6 +358,45 @@ function WorkflowPageInner({
     });
   }, []);
 
+  // ────────────── 执行（W3-RUNNER，设计 §8） ──────────────
+
+  const startRun = async () => {
+    if (!activeId || running) return;
+    // 未保存修改先拦下（保存键未点时节点卡不存在）
+    if (dirty) {
+      handleCommandError(new Error("先保存再执行：未保存的草稿还没有落库节点卡"), "开始执行");
+      return;
+    }
+    try {
+      setRunning(true);
+      await invoke("workflow_run", { workflowId: activeId });
+    } catch (e) {
+      setRunning(false);
+      handleCommandError(e, "开始执行", { onRetry: () => void startRun() });
+    }
+  };
+
+  const stopRun = async () => {
+    if (!activeId) return;
+    try {
+      await invoke("workflow_stop", { workflowId: activeId });
+      // running 置 false 交给轮询确认（控制台注销需要点时间），这里乐观保留 true
+    } catch (e) {
+      handleCommandError(e, "停止工作流");
+    }
+  };
+
+  // 执行态轮询：running 时每 5s 问一次后端（控制台注销即按钮复位）
+  useEffect(() => {
+    if (!running || !activeId) return;
+    const t = setInterval(() => {
+      invoke<boolean>("workflow_is_running_cmd", { workflowId: activeId })
+        .then((v) => setRunning(v))
+        .catch(() => {});
+    }, 5000);
+    return () => clearInterval(t);
+  }, [running, activeId]);
+
   // ────────────── 保存（指纹 diff 落库，设计 §7） ──────────────
 
   const save = async () => {
@@ -447,6 +491,14 @@ function WorkflowPageInner({
           name,
           goal,
           saved: savedSnapshot !== null,
+          progress: running
+            ? {
+                done: tasks.filter(
+                  (t) => t.workflowId === activeId && t.column === "done"
+                ).length,
+                total: nodes.length,
+              }
+            : null,
           onRename: (v: string) => {
             setName(v);
             setNameAuto(false);
@@ -479,7 +531,7 @@ function WorkflowPageInner({
     ],
     // 依赖含全部 data 回调（deleteNode/toggle* 均为 useCallback 稳定引用，
     // 内部经 ref 读最新 tasks/props——此处完整列出是防过期闭包的兜底，OCR r1 high）
-    [nodes, tasks, name, goal, savedSnapshot, selectedIds, deleteNode, toggleDone, commitTitle, toggleSubtask]
+    [nodes, tasks, name, goal, savedSnapshot, selectedIds, deleteNode, toggleDone, commitTitle, toggleSubtask, running, activeId]
   );
 
   const rfEdges = useMemo<Edge[]>(
@@ -562,13 +614,30 @@ function WorkflowPageInner({
         >
           <Save size={14} aria-hidden /> 保存{dirty ? " •" : ""}
         </button>
-        <button
-          className={toolbarBtn}
-          disabled
-          title="执行引擎将在 W3 批次上线（先保存，后执行）"
-        >
-          <Play size={14} aria-hidden /> 开始执行
-        </button>
+        {running ? (
+          <button
+            className={`${toolbarBtn} nm-inset text-[var(--danger,#ef4444)]`}
+            onClick={() => void stopRun()}
+            title="停止执行：未启动的节点将被跳过；运行中的会话请到挂件聊天区 ■ 停止"
+          >
+            <Square size={14} aria-hidden /> 停止
+          </button>
+        ) : (
+          <button
+            className={toolbarBtn}
+            onClick={() => void startRun()}
+            disabled={activeId === null || dirty || nodes.length === 0}
+            title={
+              dirty
+                ? "先保存再执行"
+                : activeId === null
+                  ? "先选择或保存一个工作流"
+                  : "执行整张图（已完成节点自动跳过 = 断点续跑）"
+            }
+          >
+            <Play size={14} aria-hidden /> 开始执行
+          </button>
+        )}
         {activeId && (
           <button
             className={`${toolbarBtn} ${deleteArmed ? "nm-inset text-[var(--danger,#ef4444)]" : ""}`}
