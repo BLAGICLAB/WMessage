@@ -123,3 +123,9 @@ grep 例：`grep 'C2b1' docs/OCR-FOLLOWUPS-INDEX.md`
 | W2F-3 | W2-DECOMPOSE-r1 | low | EmptyHero JSX 双层条件分支密度高 | 改空态 UI 时 | wontfix（纯结构重构，无行为面；随下次空态改版顺手拆） |
 | W2F-4 | W2-DECOMPOSE-r1 | low | 指引段仅 maxLength 无字数/token 反馈 | 粘贴长文本时 | wontfix（2000 上限已拦极端；token 估算属设置页全局议题） |
 | W2F-5 | W2-DECOMPOSE-r1 | low | guidance state 无跨组件订阅 | 未来出现第二个编辑入口时 | wontfix（当前全应用唯一编辑点在设置页卡片，读发生在 invoke 时） |
+
+## W3-RUNNER（执行引擎，2026-10-04 OCR r1 修复批衍生债）
+
+> 修复批 commit 见 git log `W3-RUNNER-r1`；r1 全量报告（本地）
+> `docs/OCR-CODE-REVIEW-2026-10-04-w3.json`（11 条，2H+5M+4L，全部随批修复，无缓期项；
+> activeId 仅喂 progress 三元的 deps 冗余随重构成自然消除）。

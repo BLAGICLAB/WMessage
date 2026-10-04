@@ -32,6 +32,13 @@ const GOAL_ID = "__goal__";
 /** 拆解自动命名的截取长度（OCR r1 low：魔法数字提升为具名常量） */
 const NAME_AUTO_LEN = 12;
 
+/** 开始执行按钮的 title（OCR r1 high：拆掉嵌套三元） */
+function runButtonTitle(dirty: boolean, hasActive: boolean): string {
+  if (dirty) return "先保存再执行";
+  if (!hasActive) return "先选择或保存一个工作流";
+  return "执行整张图（已完成节点自动跳过 = 断点续跑）";
+}
+
 const nodeTypes = { task: TaskNode, goal: GoalNode };
 
 export function WorkflowPage({
@@ -143,8 +150,12 @@ function WorkflowPageInner({
         JSON.stringify({ name: detail.name, goal: detail.goal, nodes: fresh })
       );
       setNameAuto(false); // 打开的是已保存工作流：名称是作者起的，拆解不得覆盖（OCR r2）
-      invoke<boolean>("workflow_is_running_cmd", { workflowId: id })
-        .then(setRunning)
+      const iseq = openSeqRef.current;
+      invoke<boolean>("workflow_is_running", { workflowId: id })
+        .then((v) => {
+          // 慢响应不得覆盖后续切换（OCR r1 high）
+          if (iseq === openSeqRef.current) setRunning(v);
+        })
         .catch(() => {});
       setMode("edit");
       setDeleteArmed(false);
@@ -360,39 +371,64 @@ function WorkflowPageInner({
 
   // ────────────── 执行（W3-RUNNER，设计 §8） ──────────────
 
+  const startBusyRef = useRef(false);
   const startRun = async () => {
-    if (!activeId || running) return;
+    if (!activeId || running || startBusyRef.current) return;
     // 未保存修改先拦下（保存键未点时节点卡不存在）
     if (dirty) {
       handleCommandError(new Error("先保存再执行：未保存的草稿还没有落库节点卡"), "开始执行");
       return;
     }
+    startBusyRef.current = true;
     try {
-      setRunning(true);
+      // running 置真放在成功后：避免后端尚未登记时轮询提前开跑（OCR r1 medium）
       await invoke("workflow_run", { workflowId: activeId });
+      setRunning(true);
     } catch (e) {
       setRunning(false);
       handleCommandError(e, "开始执行", { onRetry: () => void startRun() });
+    } finally {
+      startBusyRef.current = false;
     }
   };
 
+  const stopBusyRef = useRef(false);
   const stopRun = async () => {
-    if (!activeId) return;
+    if (!activeId || stopBusyRef.current) return;
+    stopBusyRef.current = true;
     try {
       await invoke("workflow_stop", { workflowId: activeId });
-      // running 置 false 交给轮询确认（控制台注销需要点时间），这里乐观保留 true
+      // 立即回查一次：控制台通常秒级注销，按钮及时复位（轮询兜底剩余窗口）
+      setTimeout(() => {
+        invoke<boolean>("workflow_is_running", { workflowId: activeId })
+          .then((v) => setRunning(v))
+          .catch(() => {});
+      }, 300);
     } catch (e) {
       handleCommandError(e, "停止工作流");
+    } finally {
+      stopBusyRef.current = false;
     }
   };
 
   // 执行态轮询：running 时每 5s 问一次后端（控制台注销即按钮复位）
   useEffect(() => {
     if (!running || !activeId) return;
+    let failures = 0;
     const t = setInterval(() => {
-      invoke<boolean>("workflow_is_running_cmd", { workflowId: activeId })
-        .then((v) => setRunning(v))
-        .catch(() => {});
+      invoke<boolean>("workflow_is_running", { workflowId: activeId })
+        .then((v) => {
+          failures = 0;
+          setRunning(v);
+        })
+        .catch((e) => {
+          // 连续 3 次查询失败 → 复位按钮（持续轮询无意义，OCR r1）
+          failures += 1;
+          if (failures >= 3) {
+            console.error("[workflow] 执行态查询连续失败，复位按钮", e);
+            setRunning(false);
+          }
+        });
     }, 5000);
     return () => clearInterval(t);
   }, [running, activeId]);
@@ -627,13 +663,7 @@ function WorkflowPageInner({
             className={toolbarBtn}
             onClick={() => void startRun()}
             disabled={activeId === null || dirty || nodes.length === 0}
-            title={
-              dirty
-                ? "先保存再执行"
-                : activeId === null
-                  ? "先选择或保存一个工作流"
-                  : "执行整张图（已完成节点自动跳过 = 断点续跑）"
-            }
+            title={runButtonTitle(dirty, activeId !== null)}
           >
             <Play size={14} aria-hidden /> 开始执行
           </button>

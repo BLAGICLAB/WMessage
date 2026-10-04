@@ -162,7 +162,7 @@ fn registry_poisoned() -> CommandError {
     CommandError::Internal("运行注册表中毒".into())
 }
 
-pub(crate) fn workflow_is_running(workflow_id: &str) -> bool {
+pub(crate) fn runner_is_running(workflow_id: &str) -> bool {
     runs()
         .lock()
         .map(|m| m.contains_key(workflow_id))
@@ -284,8 +284,8 @@ pub async fn workflow_stop(app: AppHandle, workflow_id: String) -> CommandResult
 
 /// 前端恢复执行态用（导航回来后按钮状态取真）
 #[tauri::command]
-pub async fn workflow_is_running_cmd(workflow_id: String) -> bool {
-    workflow_is_running(&workflow_id)
+pub async fn workflow_is_running(workflow_id: String) -> bool {
+    runner_is_running(&workflow_id)
 }
 
 // ────────────── 控制器 ──────────────

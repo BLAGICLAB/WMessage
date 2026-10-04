@@ -43,16 +43,18 @@ export const GoalNode = memo(function GoalNode({ data }: { data: GoalNodeData })
         placeholder="这个工作流要达成什么目标？"
         onChange={(e) => data.onGoalChange(e.target.value)}
       />
-      <div className="mt-1 flex items-center justify-between">
-        {data.progress && (
-          <span className="text-[10px] text-[var(--t5)]">
-            ✔ {data.progress.done}/{data.progress.total} 节点完成
-          </span>
-        )}
-        {!data.saved && (
-          <span className="text-[10px] text-[var(--t5)]">未保存——点工具栏「保存」落库</span>
-        )}
-      </div>
+      {(data.progress || !data.saved) && (
+        <div className="mt-1 flex items-center justify-between">
+          {data.progress && (
+            <span className="text-[10px] text-[var(--t5)]">
+              ✔ {data.progress.done}/{data.progress.total} 节点完成
+            </span>
+          )}
+          {!data.saved && (
+            <span className="text-[10px] text-[var(--t5)]">未保存——点工具栏「保存」落库</span>
+          )}
+        </div>
+      )}
     </div>
   );
 });
