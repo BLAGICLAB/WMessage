@@ -10,10 +10,13 @@ import { TaskCardContent } from "../TaskCardContent";
  *  索引签名：React Flow v12 要求 node data 满足 Record<string, unknown> */
 export interface TaskNodeData extends Record<string, unknown> {
   task: Task | undefined;
+  /** 模型库条目（W6-MODEL）：每卡执行模型下拉选项 */
+  models: Array<{ id: string; label: string }>;
   /** 草稿标题（未保存节点用） */
   draftTitle: string;
   onDraftTitleCommit: (localId: string, title: string) => void;
   onDelete: (localId: string) => void;
+  onModelChange?: (taskId: string, model: string | undefined) => void;
   onToggleDone?: (taskId: string) => void;
   onCommitTitle?: (taskId: string, title: string) => void;
   onToggleSubtask?: (taskId: string, subtaskId: string) => void;
@@ -58,12 +61,32 @@ export const TaskNode = memo(function TaskNode({
         <Trash2 size={12} aria-hidden />
       </button>
       {task ? (
-        <TaskCardContent
-          task={task}
-          onCommitTitle={(t) => data.onCommitTitle?.(task.id, t)}
-          onToggleDone={() => data.onToggleDone?.(task.id)}
-          onToggleSubtask={(sid) => data.onToggleSubtask?.(task.id, sid)}
-        />
+        <>
+          <TaskCardContent
+            task={task}
+            onCommitTitle={(t) => data.onCommitTitle?.(task.id, t)}
+            onToggleDone={() => data.onToggleDone?.(task.id)}
+            onToggleSubtask={(sid) => data.onToggleSubtask?.(task.id, sid)}
+          />
+          {data.models.length > 0 && (
+            <select
+              aria-label="执行模型"
+              title="本卡执行用大模型（不选 = 跟随全局）"
+              className="mx-1 mt-1 block w-[calc(100%-0.5rem)] rounded-[var(--r-sm)] bg-transparent px-1.5 py-0.5 text-[11px] text-[var(--t3)] nm-inset"
+              value={task.model ?? ""}
+              onChange={(e) =>
+                data.onModelChange?.(task.id, e.target.value || undefined)
+              }
+            >
+              <option value="">⚙️ 跟随全局模型</option>
+              {data.models.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+          )}
+        </>
       ) : (
         <input
           aria-label="新任务标题"

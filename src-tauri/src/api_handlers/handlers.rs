@@ -356,6 +356,7 @@ fn create_task(
             workflow_id: None,
             depends_on: None,
             canvas_pos: None,
+            model: None,
             expected_updated_at: None, // 新建任务：无读快照基线
         };
         if let Err(e) = store.upsert(vec![task.clone()]) {

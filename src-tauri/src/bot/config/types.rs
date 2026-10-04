@@ -433,3 +433,124 @@ pub fn check_len(value: &str, max: usize, what: &str) -> Result<(), String> {
 }
 
 // keyring entry 构造函数见 keyring.rs（与 secret-service 探测一起管理）
+
+// ────────────── 每卡模型覆盖解析（W6-MODEL） ──────────────
+
+/// 解析结果：执行链用这四元组整组替换全局 http 配置
+#[derive(Debug, Clone)]
+pub struct ResolvedModel {
+    pub base_url: String,
+    pub model: String,
+    pub api_provider: String,
+    pub api_key: String,
+}
+
+/// 按模型库条目 id 解析覆盖配置（纯查表 + key 读取，单测锚点）：
+/// 先 openai 后 anthropic 列表；条目不存在/禁用 → 响亮报错；
+/// key = 条目厂商 key（有则用）→ 全局 key 兜底（read_llm_key 同款回退）。
+pub fn resolve_model_override(
+    api_provider: Option<&str>,
+    active_model_id: Option<&ActiveModelId>,
+    models_by_provider: Option<&ModelsByProvider>,
+    entry_id: &str,
+) -> Result<ResolvedModel, String> {
+    let lists = models_by_provider;
+    fn find<'a>(items: &'a [ModelEntry], entry_id: &str) -> Option<&'a ModelEntry> {
+        items.iter().find(|e| e.id == entry_id)
+    }
+    let found = lists.and_then(|m| {
+        find(&m.openai, entry_id)
+            .map(|e| (e, "openai"))
+            .or_else(|| find(&m.anthropic, entry_id).map(|e| (e, "anthropic")))
+    });
+    let (entry, provider) = match found {
+        Some((e, p)) => (e, p),
+        None => {
+            return Err(format!(
+                "模型条目 {entry_id} 不存在：请到 设置→模型设置 确认（条目可能已删除）"
+            ));
+        }
+    };
+    if !entry.enabled {
+        return Err(format!(
+            "模型条目「{}」已停用：请到 设置→模型设置 启用后重试",
+            entry.label
+        ));
+    }
+    // key：厂商 key 优先，缺 → 全局 key 兜底（与 read_llm_key 回退语义一致）
+    let api_key = match &entry.vendor {
+        Some(v) if crate::bot::has_vendor_key(v).unwrap_or(false) => {
+            match crate::bot::read_vendor_key(v) {
+                Ok(k) if !k.trim().is_empty() => k,
+                _ => crate::bot::read_llm_key(api_provider, active_model_id, models_by_provider)?,
+            }
+        }
+        _ => crate::bot::read_llm_key(api_provider, active_model_id, models_by_provider)?,
+    };
+    Ok(ResolvedModel {
+        base_url: entry.base_url.clone(),
+        model: entry.model.clone(),
+        api_provider: provider.to_string(),
+        api_key,
+    })
+}
+
+#[cfg(test)]
+mod model_override_tests {
+    use super::*;
+
+    fn models() -> Option<ModelsByProvider> {
+        Some(ModelsByProvider {
+            openai: vec![
+                ModelEntry {
+                    id: "glm".into(),
+                    label: "GLM-4".into(),
+                    base_url: "https://open.bigmodel.cn/api/paas/v4".into(),
+                    model: "glm-4.6".into(),
+                    vendor: Some("zhipu".into()),
+                    enabled: true,
+                    context_k: None,
+                    capabilities: None,
+                    temperature: None,
+                    top_p: None,
+                    system_prompt: None,
+                    max_tokens: None,
+                },
+                ModelEntry {
+                    id: "disabled1".into(),
+                    label: "停用条目".into(),
+                    base_url: "https://x".into(),
+                    model: "m".into(),
+                    vendor: None,
+                    enabled: false,
+                    context_k: None,
+                    capabilities: None,
+                    temperature: None,
+                    top_p: None,
+                    system_prompt: None,
+                    max_tokens: None,
+                },
+            ],
+            anthropic: vec![],
+        })
+    }
+
+    #[test]
+    fn resolve_finds_entry_across_protocols() {
+        let r = resolve_model_override(None, None, models().as_ref(), "glm").unwrap();
+        assert_eq!(r.base_url, "https://open.bigmodel.cn/api/paas/v4");
+        assert_eq!(r.model, "glm-4.6");
+        assert_eq!(r.api_provider, "openai");
+        assert!(
+            !r.api_key.is_empty(),
+            "key 回退全局（default 配置有占位或空）"
+        );
+    }
+
+    #[test]
+    fn resolve_rejects_missing_and_disabled() {
+        assert!(resolve_model_override(None, None, models().as_ref(), "ghost").is_err());
+        let err = resolve_model_override(None, None, models().as_ref(), "disabled1").unwrap_err();
+        assert!(err.contains("停用"));
+    }
+}

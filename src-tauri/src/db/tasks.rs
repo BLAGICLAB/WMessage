@@ -53,7 +53,8 @@ pub const TASKS_DDL: &str = "CREATE TABLE IF NOT EXISTS tasks (
    workflow_id  TEXT,
    depends_on   TEXT,
    canvas_x     REAL,
-   canvas_y     REAL
+   canvas_y     REAL,
+   model        TEXT
  );";
 
 /// 任务状态(三列看板：todo / doing / done)。
@@ -129,12 +130,13 @@ pub const TASK_ORIGIN_USER: &str = "user";
 pub const TASK_ORIGIN_WORKFLOW: &str = "workflow";
 
 /// W1-CANVAS 新增列清单（open_db 幂等迁移与 legacy 迁移测试 fixture 共用，防两处漂移——OCR r1）
-pub(crate) const W1_TASK_COLUMNS: [(&str, &str); 5] = [
+pub(crate) const W1_TASK_COLUMNS: [(&str, &str); 6] = [
     ("origin", "TEXT"),
     ("workflow_id", "TEXT"),
     ("depends_on", "TEXT"),
     ("canvas_x", "REAL"),
     ("canvas_y", "REAL"),
+    ("model", "TEXT"),
 ];
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -185,6 +187,9 @@ pub struct Task {
     /// 画布坐标（仅工作流卡使用）；DB 拆 canvas_x/canvas_y 两列
     #[serde(default)]
     pub canvas_pos: Option<CanvasPos>,
+    /// 执行用大模型（W6-MODEL）：模型库条目 id；None = 跟随全局 active 模型
+    #[serde(default)]
+    pub model: Option<String>,
     #[serde(default, skip_serializing)]
     pub expected_updated_at: Option<i64>,
 }
@@ -255,8 +260,8 @@ pub fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), S
             "INSERT INTO tasks
                (id, title, due, note, tags, file_path, file_is_dir, col, subtasks,
                 completed_at, archived, deleted_at, collapsed, ord, updated_at, schedule, sched_last, bot_assigned, files,
-                assignee, budget, result, origin, workflow_id, depends_on, canvas_x, canvas_y)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27)
+                assignee, budget, result, origin, workflow_id, depends_on, canvas_x, canvas_y, model)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28)
              ON CONFLICT(id) DO UPDATE SET
                title=excluded.title, due=excluded.due, note=excluded.note,
                tags=excluded.tags, file_path=excluded.file_path,
@@ -270,7 +275,8 @@ pub fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), S
                assignee=excluded.assignee, budget=excluded.budget, result=excluded.result,
                origin=excluded.origin, workflow_id=excluded.workflow_id,
                depends_on=excluded.depends_on,
-               canvas_x=excluded.canvas_x, canvas_y=excluded.canvas_y
+               canvas_x=excluded.canvas_x, canvas_y=excluded.canvas_y,
+               model=excluded.model
              WHERE tasks.updated_at IS NULL OR excluded.updated_at >= tasks.updated_at",
         )
         .map_err(|e| e.to_string())?;
@@ -356,6 +362,7 @@ pub fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), S
                 depends_on,
                 t.canvas_pos.as_ref().map(|p| p.x),
                 t.canvas_pos.as_ref().map(|p| p.y),
+                t.model,
             ])
             .map_err(|e| e.to_string())?;
         affected_total += affected;
@@ -414,6 +421,7 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<super::Task> {
     let depends_on: Option<String> = row.get(24)?;
     let canvas_x: Option<f64> = row.get(25)?;
     let canvas_y: Option<f64> = row.get(26)?;
+    let model: Option<String> = row.get(27)?;
     // col 从 DB 读出仍是 String(列类型 TEXT),parse 到 TaskStatus enum。
     // 与 subtasks/files JSON 损坏「warn + 按空读取」的契约对齐:
     // 单行 col 异常不应让整个读失败、把全部任务藏起来。
@@ -519,6 +527,7 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<super::Task> {
         workflow_id,
         depends_on,
         canvas_pos,
+        model,
         expected_updated_at: None,
     })
 }
@@ -527,7 +536,7 @@ const TASK_SELECT_COLS: &str =
     "SELECT id, title, due, note, tags, file_path, file_is_dir, col, subtasks, \
      completed_at, archived, deleted_at, collapsed, ord, updated_at, schedule, sched_last, \
      bot_assigned, files, assignee, budget, result, origin, workflow_id, depends_on, \
-     canvas_x, canvas_y FROM tasks";
+     canvas_x, canvas_y, model FROM tasks";
 
 pub fn load_all(conn: &rusqlite::Connection) -> Result<Vec<super::Task>, String> {
     let sql = format!("{TASK_SELECT_COLS} ORDER BY ord, rowid");
@@ -825,6 +834,16 @@ pub(crate) fn apply_task_patch(
                 }
             }
             "canvasPos" => set_from(&mut task.canvas_pos, v, k)?,
+            "model" => {
+                set_from(&mut task.model, v, k)?;
+                if task.model.as_deref().is_some_and(|s| s.trim().is_empty()) {
+                    return Err(CommandError::InvalidArgument {
+                        field: k.into(),
+                        value: v.to_string(),
+                        reason: "model 不能为空串（清空用 null）".into(),
+                    });
+                }
+            }
             "title" => {
                 let t: String = serde_json::from_value(v.clone()).map_err(|e| {
                     CommandError::InvalidArgument {

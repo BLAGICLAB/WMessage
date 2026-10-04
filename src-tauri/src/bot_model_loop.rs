@@ -469,13 +469,29 @@ pub async fn run_model_loop(
     // None = 任务执行/定时等后台链路，回落 bot-config.json 的全局默认。
     // 抽象档位 → 线上参数的按模型映射在 bot/reasoning.rs。
     reasoning_override: Option<String>,
+    // 每卡模型覆盖（W6-MODEL）：模型库条目 id；None = 跟随全局 active 模型。
+    // 解析失败（条目不存在/禁用/key 缺失）→ 响亮报错，不静默回落
+    model_override: Option<String>,
 ) -> Result<(String, Vec<TaskRef>, LoopTrace), CommandError> {
     let cfg = crate::bot::bot_get_config(app.clone())?;
-    let api_key = crate::bot::read_llm_key(
-        cfg.api_provider.as_deref(),
-        cfg.active_model_id.as_ref(),
-        cfg.models_by_provider.as_ref(),
-    )?;
+    // 每卡模型覆盖优先（W6-MODEL）：命中模型库条目则整组替换 base_url/model/协议/key
+    let resolved = match model_override.as_deref() {
+        Some(id) => Some(crate::bot::resolve_model_override(
+            cfg.api_provider.as_deref(),
+            cfg.active_model_id.as_ref(),
+            cfg.models_by_provider.as_ref(),
+            id,
+        )?),
+        None => None,
+    };
+    let api_key = match &resolved {
+        Some(r) => r.api_key.clone(),
+        None => crate::bot::read_llm_key(
+            cfg.api_provider.as_deref(),
+            cfg.active_model_id.as_ref(),
+            cfg.models_by_provider.as_ref(),
+        )?,
+    };
     if api_key.trim().is_empty() {
         return Err(CommandError::ApiKeyMissing);
     }
@@ -494,10 +510,19 @@ pub async fn run_model_loop(
     );
     let http = LlmHttp {
         client,
-        base_url: cfg.base_url,
+        base_url: resolved
+            .as_ref()
+            .map(|r| r.base_url.clone())
+            .unwrap_or(cfg.base_url),
         api_key,
-        model: cfg.model,
-        provider,
+        model: resolved
+            .as_ref()
+            .map(|r| r.model.clone())
+            .unwrap_or(cfg.model),
+        provider: resolved
+            .as_ref()
+            .map(|r| crate::bot::ApiProvider::from_cfg(Some(r.api_provider.as_str())))
+            .unwrap_or(provider),
         max_tokens: inference.max_tokens,
         temperature: inference.temperature,
         top_p: inference.top_p,

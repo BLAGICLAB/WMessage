@@ -304,7 +304,7 @@ pub async fn chat_execute_tasks(
             title.as_str()
         };
         all_text.push_str(&format!("\n── [{}/{}] {} ──\n", idx + 1, total, label));
-        match run_task_in_chat(app, task_id, TaskExecOrigin::Batch).await {
+        match run_task_in_chat(app, task_id, TaskExecOrigin::Batch, None).await {
             Ok(r) => {
                 if !r.result.text.is_empty() {
                     all_text.push_str(&r.result.text);
@@ -942,6 +942,8 @@ pub async fn bot_chat(
         &stop,
         plan_state.as_mut(),
         reasoning_effort,
+        // 主聊天不挂每卡模型覆盖（W6-MODEL 仅工作流节点使用）
+        None,
     )
     .await
     {
@@ -1206,7 +1208,7 @@ pub async fn bot_execute_task(
             }
         }
     }
-    run_task_in_chat(&app, &task_id, TaskExecOrigin::Manual)
+    run_task_in_chat(&app, &task_id, TaskExecOrigin::Manual, None)
         .await
         .map(|r| r.result)
 }
@@ -1427,6 +1429,8 @@ pub async fn run_task_in_chat(
     app: &AppHandle,
     task_id: &str,
     origin: TaskExecOrigin,
+    // 每卡模型覆盖（W6-MODEL）：模型库条目 id；None = 跟随全局 active
+    model: Option<String>,
 ) -> CommandResult<TaskChatRun> {
     run_task_in_chat_with(app, task_id, origin, |app2, msgs, stop| async move {
         crate::bot_model_loop::run_model_loop(
@@ -1437,6 +1441,7 @@ pub async fn run_task_in_chat(
             None,
             // 任务执行链路不挂单次覆盖，按 bot-config.json 全局默认（RE-1）
             None,
+            model,
         )
         .await
         // LoopTrace 暂无消费方（子卡三字段已够用），此处剥掉保返回类型不变

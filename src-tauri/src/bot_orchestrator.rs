@@ -174,6 +174,7 @@ pub(crate) fn spawn_subagent_locked(
         workflow_id: None,
         depends_on: None,
         canvas_pos: None,
+        model: None,
         expected_updated_at: None,
     };
     crate::db::upsert_tasks(conn, std::slice::from_ref(&card)).map_err(CommandError::DbError)?;
@@ -1267,6 +1268,8 @@ async fn run_subagent(app: AppHandle, subagent_id: String) {
         &stop,
         None,
         None,
+        // 子 agent 模型走自身预算/派发通道（model_profile），不挂每卡覆盖（W6-MODEL）
+        None,
     );
     let wall = tokio::time::timeout(
         std::time::Duration::from_secs(budget.max_wall_seconds.max(1)),
@@ -1827,6 +1830,7 @@ mod orchestrator_tests {
             workflow_id: None,
             depends_on: None,
             canvas_pos: None,
+            model: None,
             expected_updated_at: None,
         };
         crate::db::upsert_tasks(conn, std::slice::from_ref(&card)).unwrap();

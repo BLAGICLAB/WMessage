@@ -50,16 +50,17 @@ pub use io::{
 };
 pub use keyring::{
     has_api_key, has_search_key, has_vendor_key, read_api_key, read_llm_key, read_search_key,
-    write_search_key,
+    read_vendor_key, write_search_key,
 };
 pub use schema::{
     active_model_entry, effective_inference, migrate_bot_config_schema, resolve_max_tokens,
     EffectiveInference, DEFAULT_MAX_TOKENS, MAX_MAX_TOKENS, MIN_MAX_TOKENS,
 };
 pub use types::{
-    check_len, ActiveModelId, ApiProvider, BotConfig, BotConfigView, KeySlot, ModelEntry,
-    ModelsByProvider, PermMode, BOT_CONFIG_SCHEMA_VERSION, KEYRING_SERVICE, KEYRING_USER, MAX_DUE,
-    MAX_KEYWORD, MAX_NOTE, MAX_SUBTASK_TEXT, MAX_TAGS, MAX_TAG_LEN, MAX_TITLE,
+    check_len, resolve_model_override, ActiveModelId, ApiProvider, BotConfig, BotConfigView,
+    KeySlot, ModelEntry, ModelsByProvider, PermMode, ResolvedModel, BOT_CONFIG_SCHEMA_VERSION,
+    KEYRING_SERVICE, KEYRING_USER, MAX_DUE, MAX_KEYWORD, MAX_NOTE, MAX_SUBTASK_TEXT, MAX_TAGS,
+    MAX_TAG_LEN, MAX_TITLE,
 };
 
 // pub(crate) 项：bot.rs 的 `pub(crate) use config::{...}` 块需要。

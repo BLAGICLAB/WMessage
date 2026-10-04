@@ -114,6 +114,8 @@ function WorkflowPageInner({
   const [regenArmed, setRegenArmed] = useState(false);
   /** 工作流执行中（W3-RUNNER）：开始执行/停止按钮切换 + 进度显示 */
   const [running, setRunning] = useState(false);
+  /** 模型库条目（W6-MODEL）：节点执行模型下拉选项 */
+  const [models, setModels] = useState<Array<{ id: string; label: string }>>([]);
   /** AI 拆解进行中 + 竞态守卫（取消 = 递增序号丢弃在途响应） */
   const [decomposing, setDecomposing] = useState(false);
   const decomposeSeqRef = useRef(0);
@@ -132,6 +134,24 @@ function WorkflowPageInner({
     invoke<Workflow[]>("workflow_list")
       .then(setWorkflows)
       .catch((e) => handleCommandError(e, "读取工作流列表", { silent: true }));
+  }, []);
+  // 模型库条目（W6-MODEL）：每卡执行模型下拉
+  useEffect(() => {
+    invoke<{
+      modelsByProvider?: {
+        openai?: Array<{ id: string; label: string }>;
+        anthropic?: Array<{ id: string; label: string }>;
+      } | null;
+    }>("bot_get_config")
+      .then((c) => {
+        const m = c.modelsByProvider;
+        const list = [
+          ...(m?.openai ?? []),
+          ...(m?.anthropic ?? []),
+        ].map((e) => ({ id: e.id, label: e.label }));
+        setModels(list);
+      })
+      .catch(() => {});
   }, []);
 
   const snapshot = useCallback(
@@ -612,6 +632,7 @@ function WorkflowPageInner({
         const task = n.taskId ? tasks.find((t) => t.id === n.taskId) : undefined;
         const data: TaskNodeData = {
           task,
+          models,
           draftTitle: n.title,
           onDraftTitleCommit: (localId, title) =>
             setNodes((prev) =>
@@ -621,6 +642,11 @@ function WorkflowPageInner({
           onToggleDone: task ? toggleDone : undefined,
           onCommitTitle: task ? commitTitle : undefined,
           onToggleSubtask: task ? toggleSubtask : undefined,
+          onModelChange: task
+            ? (taskId, model) => {
+                onUpdate(taskId, model ? { model } : { model: undefined });
+              }
+            : undefined,
         };
         return {
           id: n.localId,
@@ -633,7 +659,7 @@ function WorkflowPageInner({
     ],
     // 依赖含全部 data 回调（deleteNode/toggle* 均为 useCallback 稳定引用，
     // 内部经 ref 读最新 tasks/props——此处完整列出是防过期闭包的兜底，OCR r1 high）
-    [nodes, tasks, name, goal, savedSnapshot, selectedIds, deleteNode, toggleDone, commitTitle, toggleSubtask, running, activeId, doneCount]
+    [nodes, tasks, name, goal, savedSnapshot, selectedIds, deleteNode, toggleDone, commitTitle, toggleSubtask, running, activeId, doneCount, models]
   );
 
   const rfEdges = useMemo<Edge[]>(

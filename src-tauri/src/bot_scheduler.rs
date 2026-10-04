@@ -437,6 +437,7 @@ async fn run_scheduled(app: AppHandle, task: crate::db::Task) {
         &app,
         &task.id,
         crate::bot_chat::TaskExecOrigin::Scheduled,
+        None,
     )
     .await;
     let time_str = now.format("%m-%d %H:%M").to_string();

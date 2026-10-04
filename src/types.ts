@@ -124,6 +124,8 @@ export interface Task {
   dependsOn?: string[];
   /** 画布坐标（仅工作流卡使用） */
   canvasPos?: CanvasPos;
+  /** 执行用大模型（W6-MODEL）：模型库条目 id；缺省 = 跟随全局 active 模型 */
+  model?: string;
 }
 
 /** 工作流元数据（与 Rust db::Workflow 对应，存 workflows 表；节点 = origin="workflow" 的任务卡） */

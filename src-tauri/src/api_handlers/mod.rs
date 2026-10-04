@@ -92,6 +92,7 @@ mod tests {
             workflow_id: None,
             depends_on: None,
             canvas_pos: None,
+            model: None,
             expected_updated_at: None,
         }
     }

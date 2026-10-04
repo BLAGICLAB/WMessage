@@ -253,10 +253,15 @@ pub async fn workflow_run(app: AppHandle, workflow_id: String) -> CommandResult<
         .iter()
         .map(|t| (t.id.clone(), t.title.clone()))
         .collect();
+    // 每卡模型覆盖（W6-MODEL）：task.model = 模型库条目 id
+    let model_by_id: HashMap<String, Option<String>> = tasks
+        .iter()
+        .map(|t| (t.id.clone(), t.model.clone()))
+        .collect();
     let app2 = app.clone();
     let wf = workflow_id.clone();
     tauri::async_runtime::spawn(async move {
-        run_controller(app2, wf, dag, name_by_id, cancel).await;
+        run_controller(app2, wf, dag, name_by_id, model_by_id, cancel).await;
     });
     Ok(WorkflowRunStart {
         total: tasks.len(),
@@ -302,6 +307,7 @@ async fn run_controller(
     workflow_id: String,
     dag: Dag,
     name_by_id: HashMap<String, String>,
+    model_by_id: HashMap<String, Option<String>>,
     cancel: Arc<AtomicBool>,
 ) {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<NodeOutcome>();
@@ -316,11 +322,13 @@ async fn run_controller(
     let spawn_node = {
         let tx = tx.clone();
         let running = running.clone();
+        let model_by_id = model_by_id.clone();
         move |app: &AppHandle, cancel: &Arc<AtomicBool>, id: String| {
             let app = app.clone();
             let tx = tx.clone();
             let cancel = cancel.clone();
             let running = running.clone();
+            let model = model_by_id.get(&id).cloned().flatten();
             if let Ok(mut r) = running.lock() {
                 r.insert(id.clone());
             }
@@ -341,7 +349,7 @@ async fn run_controller(
                     return;
                 }
                 let _ticket = ticket; // RAII 占槽：任务结束自动释放
-                let result = run_task_in_chat(&app, &id, TaskExecOrigin::Workflow).await;
+                let result = run_task_in_chat(&app, &id, TaskExecOrigin::Workflow, model).await;
                 // 熔断识别（W5-FUSE）：循环优雅返回「⏹ 已熔断」消息且任务未完成
                 let fused = matches!(&result, Ok(r) if r.result.text.contains(crate::bot_model_loop::FUSE_MARKER));
                 let ok = match &result {
@@ -547,6 +555,7 @@ mod tests {
             workflow_id: Some("wf".into()),
             depends_on: Some(deps.iter().map(|s| s.to_string()).collect()),
             canvas_pos: Some(CanvasPos { x: 0.0, y: 0.0 }),
+            model: None,
             expected_updated_at: None,
         }
     }

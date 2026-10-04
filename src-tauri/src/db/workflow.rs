@@ -64,6 +64,9 @@ pub struct WorkflowNodeDraft {
     pub depends_on: Vec<String>,
     #[serde(default)]
     pub pos: Option<CanvasPos>,
+    /// 执行模型覆盖（W6-MODEL）：模型库条目 id；None = 跟随全局
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -482,6 +485,7 @@ pub(crate) fn workflow_save_locked(
                 workflow_id: Some(wf_id.clone()),
                 depends_on: Some(deps),
                 canvas_pos: node.pos.clone(),
+                model: node.model.clone(),
                 expected_updated_at: None,
             });
         }
@@ -606,6 +610,9 @@ pub struct WorkflowFileNode {
     pub depends_on: Vec<String>,
     #[serde(default)]
     pub pos: Option<CanvasPos>,
+    /// 执行模型覆盖（W6-MODEL）
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -706,6 +713,7 @@ pub(crate) fn workflow_file_from(wf: &Workflow, tasks: &[Task]) -> WorkflowFile 
                 .filter_map(|d| id_map.get(d).cloned())
                 .collect(),
             pos: t.canvas_pos.clone(),
+            model: t.model.clone(),
         })
         .collect();
     WorkflowFile {
@@ -791,6 +799,7 @@ pub(crate) fn parse_workflow_file(raw: &str) -> CommandResult<WorkflowSaveInput>
                 tags: n.tags,
                 depends_on,
                 pos: n.pos,
+                model: n.model,
             }
         })
         .collect();
@@ -1024,6 +1033,7 @@ mod tests {
             tags: None,
             depends_on: deps.iter().map(|s| s.to_string()).collect(),
             pos: Some(CanvasPos { x: 10.0, y: 20.0 }),
+            model: None,
         }
     }
 
