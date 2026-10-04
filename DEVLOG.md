@@ -2,6 +2,20 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-04（周六）U20C-ICON1A：图标按钮换行回归修复——icon+text 键统一 nowrap
+
+**需求**（老板截图反馈）：U20C-ICON1 后定时/导入/导出/选择图片/查看迁移日志/
+导入技能文件夹/打开技能目录等按钮图标与文字折行。根因：emoji 是单文本节点
+字符，lucide SVG + 空格 + 文本产生了可断行点。
+
+**修法**：图标+文字按钮统一补 `whitespace-nowrap`（缺 flex 的补
+`inline-flex items-center gap-1`，居中键带 `justify-center` 保 min-w 观感）
+——共 16 处（SettingsPage 9、TodoCard/TaskCardContent 4、MigrationPanel 3、
+SkillsPanel/ProfileRow/KanbanBoard/ErrorBoundary 各 1–2）。nowrap 后按钮
+min-content = 整行内容，挤压时不再折行，行为回到 emoji 时代单行形态。
+
+**验证**：vitest 401/401 全绿；tsc + test-fast.sh exit 0。
+
 ## 2026-10-04（周六）U20C-ICON1：emoji → lucide 图标迁移第一批——任务卡/聊天/设置页 45 处
 
 **需求**（方案 `docs/UI-ICON-PLAN-2026-10-04.md` 批 1–3 落地）：彩色 emoji 与

@@ -557,14 +557,14 @@ export function TodoCardView({
       ) : archived || trashed ? null : (
         <div className="mt-3 flex items-center gap-3">
           <button
-            className="nm-btn px-2 py-0.5 text-xs text-[var(--t4)] flex items-center gap-1"
+            className="nm-btn px-2 py-0.5 text-xs text-[var(--t4)] flex items-center gap-1 whitespace-nowrap"
             onPointerDown={stop}
             onClick={pickFile}
           >
             <span className="text-[11px] leading-none inline-flex"><Paperclip size={11} aria-hidden /></span> 绑定文件
           </button>
           <button
-            className="nm-btn px-2 py-0.5 text-xs text-[var(--t4)] flex items-center gap-1"
+            className="nm-btn px-2 py-0.5 text-xs text-[var(--t4)] flex items-center gap-1 whitespace-nowrap"
             onPointerDown={stop}
             onClick={pickFolder}
           >
@@ -622,7 +622,7 @@ export function TodoCardView({
       <>
       <div className="mt-2 flex items-center gap-1.5">
         <button
-          className="nm-btn px-2 py-0.5 text-[11px] leading-none text-[var(--t3)] flex items-center gap-1"
+          className="nm-btn px-2 py-0.5 text-[11px] leading-none text-[var(--t3)] flex items-center gap-1 whitespace-nowrap"
           onPointerDown={stop}
           onClick={runWithBot}
           title="交给机器人执行这张任务卡"
@@ -630,7 +630,7 @@ export function TodoCardView({
           <Bot size={11} aria-hidden /> 交给机器人
         </button>
         <button
-          className={`nm-btn px-2 py-0.5 text-[11px] leading-none ${
+          className={`nm-btn px-2 py-0.5 text-[11px] leading-none inline-flex items-center gap-1 whitespace-nowrap ${
             task.schedule ? "text-[var(--brand)]" : "text-[var(--t3)]"
           }`}
           onPointerDown={stop}

@@ -147,7 +147,7 @@ export function ProfileRow({
         </div>
         <div className="mt-1.5 flex items-center gap-2 pl-10">
           <button
-            className="nm-btn px-2.5 py-1 text-[11px] text-[var(--t3)]"
+            className="nm-btn px-2.5 py-1 text-[11px] text-[var(--t3)] inline-flex items-center gap-1 whitespace-nowrap"
             onClick={pick}
             disabled={busy}
           >

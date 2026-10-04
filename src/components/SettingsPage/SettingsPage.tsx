@@ -432,7 +432,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     <div className={cls}>
       <button
         aria-label="保存配置"
-        className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] ${
+        className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] inline-flex items-center justify-center gap-1.5 whitespace-nowrap ${
           configBusy ? "nm-inset" : "nm-outset"
         }`}
         onClick={() => saveConfig()}
@@ -1555,7 +1555,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
               ).map(({ value, label, icon: Icon }) => (
                 <button
                   key={value}
-                  className={`px-4 py-1.5 text-sm text-[var(--t3)] ${
+                  className={`px-4 py-1.5 text-sm text-[var(--t3)] inline-flex items-center justify-center gap-1.5 whitespace-nowrap ${
                     theme === value ? "nm-inset" : "nm-outset"
                   }`}
                   onClick={() => onThemeChange(value)}
@@ -1633,7 +1633,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
               </p>
             </div>
             <button
-              className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] ${
+              className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] inline-flex items-center justify-center gap-1.5 whitespace-nowrap ${
                 exporting ? "nm-inset" : "nm-outset"
               }`}
               onClick={runExport}
@@ -1650,7 +1650,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
               </p>
             </div>
             <button
-              className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] ${
+              className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] inline-flex items-center justify-center gap-1.5 whitespace-nowrap ${
                 importing ? "nm-inset" : "nm-outset"
               }`}
               onClick={runImport}
@@ -1677,7 +1677,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
               </p>
             </div>
             <button
-              className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] ${
+              className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] inline-flex items-center justify-center gap-1.5 whitespace-nowrap ${
                 exportingWs ? "nm-inset" : "nm-outset"
               }`}
               onClick={runExportWs}
@@ -1694,7 +1694,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
               </p>
             </div>
             <button
-              className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] ${
+              className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] inline-flex items-center justify-center gap-1.5 whitespace-nowrap ${
                 importingWs ? "nm-inset" : "nm-outset"
               }`}
               onClick={runImportWs}
@@ -2424,7 +2424,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
               )}
               <button
                 aria-label="保存配置"
-                className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] ${
+                className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] inline-flex items-center justify-center gap-1.5 whitespace-nowrap ${
                   configBusy || vendorTestBusy ? "nm-inset" : "nm-outset"
                 }`}
                 onClick={saveVendorPage}
@@ -2670,7 +2670,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
                   onFocus={(e) => e.currentTarget.select()}
                 />
                 <button
-                  className="nm-btn shrink-0 px-3 py-2 text-xs text-[var(--t3)]"
+                  className="nm-btn shrink-0 px-3 py-2 text-xs text-[var(--t3)] inline-flex items-center gap-1 whitespace-nowrap"
                   onClick={copyToken}
                 >
                   {copied ? (

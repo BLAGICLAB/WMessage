@@ -148,19 +148,19 @@ export function MigrationPanel() {
       {/* 规则表操作：下载模版 → 本地编辑 JSON → 导入 */}
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <button
-          className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)]"
+          className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)] inline-flex items-center gap-1 whitespace-nowrap"
           onClick={downloadTemplate}
         >
           <Download size={12} aria-hidden /> 下载表格模版
         </button>
         <button
-          className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)]"
+          className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)] inline-flex items-center gap-1 whitespace-nowrap"
           onClick={importRules}
         >
           <Upload size={12} aria-hidden /> 导入规则表
         </button>
         <button
-          className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)]"
+          className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)] inline-flex items-center gap-1 whitespace-nowrap"
           onClick={openLog}
           disabled={logBusy}
         >

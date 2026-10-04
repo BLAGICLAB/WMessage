@@ -116,7 +116,7 @@ export function SkillsPanel() {
         技能 = 一个文件夹（SKILL.md + 可选脚本）。机器人对话时自动看到技能清单，需要时读取完整文档执行
       </p>
       <div className="mt-3 flex items-center gap-2">
-        <button className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)]" onClick={importSkill} disabled={busy}>
+        <button className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)] inline-flex items-center gap-1 whitespace-nowrap" onClick={importSkill} disabled={busy}>
           {busy ? (
             "导入中…"
           ) : (
@@ -125,7 +125,7 @@ export function SkillsPanel() {
             </>
           )}
         </button>
-        <button className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)]" onClick={openDir}>
+        <button className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)] inline-flex items-center gap-1 whitespace-nowrap" onClick={openDir}>
           <FolderOpen size={12} aria-hidden /> 打开技能目录
         </button>
         {notice && <span className="text-xs text-[var(--success)]">{notice}</span>}

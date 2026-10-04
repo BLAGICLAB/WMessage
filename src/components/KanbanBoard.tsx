@@ -233,7 +233,7 @@ export function KanbanBoard({
             footer={
               c.id === "done" && archivedCount > 0 ? (
                 <button
-                  className="mt-2 text-xs text-[var(--t5)] hover:text-[var(--t2)]"
+                  className="mt-2 text-xs text-[var(--t5)] hover:text-[var(--t2)] whitespace-nowrap"
                   onClick={onOpenArchive}
                 >
                   <Archive size={11} aria-hidden className="inline-block align-[-2px]" /> 已归档 {archivedCount}

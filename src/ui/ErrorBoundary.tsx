@@ -35,7 +35,7 @@ export class ErrorBoundary extends Component<
               {stack}
             </pre>
             <button
-              className="nm-btn px-4 py-1.5 text-sm text-[var(--t2)]"
+              className="nm-btn px-4 py-1.5 text-sm text-[var(--t2)] inline-flex items-center gap-1.5 whitespace-nowrap"
               onClick={this.reset}
             >
               <RotateCcw size={13} aria-hidden className="inline-block align-[-2px]" /> 重试

@@ -338,7 +338,7 @@ export function TaskCardContent({
             <div className="mt-2 flex items-center gap-1.5">
               {onBotExecute && (
                 <button
-                  className="nm-btn px-2 py-0.5 text-[11px] leading-none text-[var(--t3)] flex items-center gap-1"
+                  className="nm-btn px-2 py-0.5 text-[11px] leading-none text-[var(--t3)] flex items-center gap-1 whitespace-nowrap"
                   onPointerDown={stop}
                   onClick={(e) => {
                     e.stopPropagation();
@@ -351,7 +351,7 @@ export function TaskCardContent({
               )}
               {onSetSchedule && (
                 <button
-                  className={`nm-btn px-2 py-0.5 text-[11px] leading-none ${
+                  className={`nm-btn px-2 py-0.5 text-[11px] leading-none inline-flex items-center gap-1 whitespace-nowrap ${
                     task.schedule ? "text-[var(--brand)]" : "text-[var(--t3)]"
                   }`}
                   onPointerDown={stop}
