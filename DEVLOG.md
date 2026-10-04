@@ -2,6 +2,24 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-04（周六）U20D-SUBA-STRUCT：🧩 子 agent 路由契约结构化（图标迁移批 5 收官）
+
+**需求**（方案批 5）：停止键/斜杠 /stop 的子 agent 分派依赖会话标题 `🧩` 前缀
+（标题即契约，emoji 永远去不掉）。本批把子 agent 身份落到
+`bot_sessions.is_subagent` 结构化字段，标题去 emoji（纯文字「子任务：X」）。
+
+**实现**：后端——bot_sessions 建表加列 + PRAGMA/ALTER 迁移（tasks 列迁移
+同款）；BotSession 加 is_subagent 随 load 带出；创建拆双变体（inner=普通 0 /
+subagent_inner=标记 1），orchestrator runner setup 同一事务内改走 subagent
+变体，runner 会话标题与 spawn 子卡标题去前缀。前端——`Session.isSubagent`
+路由优先，**旧标题 🧩 前缀保留为兜底**（迁移前建的旧会话行默认 0，路由零
+丢失）；聊天进度事件的「📋 任务：」标题为另一族展示文案不动。
+
+**验证**：后端新增 db 单测（变体写 1/默认 0/load 读回/标题无前缀）；源锁
+测试从「前缀 3 处计数」改为「subagent 变体接线 + 前缀清零」双断言
+（concat! 防自匹配）；nextest 全量 + vitest 406 + pytest 审计全绿
+（test-all 90s）；tsc + test-fast.sh exit 0。
+
 ## 2026-10-04（周六）U20C-ICON2：错误弹窗组件化——❌💡🔁 图标化（图标迁移批 4）
 
 **需求**（方案批 4）：errorHandler 的 ❌💡🔁 靠原生 alert/confirm 承载，原生

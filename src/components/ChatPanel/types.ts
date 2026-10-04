@@ -36,12 +36,15 @@ export type Msg = {
 };
 
 /** 会话（bot_sessions_load 载荷 = Rust BotSession camelCase）。
- *  时间戳可选：chat-open-session 前端补行的会话不带（按无时间渲染） */
+ *  时间戳可选：chat-open-session 前端补行的会话不带（按无时间渲染）。
+ *  isSubagent：子 agent 执行会话标记（U20D 批 5 结构化路由；旧会话无此字段
+ *  = undefined，按旧标题 🧩 前缀兜底判定） */
 export type Session = {
   id: string;
   title: string;
   createdAt?: number;
   updatedAt?: number;
+  isSubagent?: boolean;
 };
 
 /** 🧠 模型下拉条目（bot_get_config 的 modelsByProvider 当前协议子列表）。

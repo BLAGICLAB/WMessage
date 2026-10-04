@@ -144,7 +144,7 @@ pub(crate) fn spawn_subagent_locked(
     let card = Task {
         id: task_id.clone(),
         title: format!(
-            "🧩 子任务：{}",
+            "子任务：{}",
             crate::bot::truncate_for_log(req.objective.trim(), 30)
         ),
         due: None,
@@ -1083,9 +1083,11 @@ async fn run_subagent(app: AppHandle, subagent_id: String) {
         }
     }
 
-    // 开跑：建会话 + 包装落库 + session/assignee 回填（单次锁内完成）
+    // 开跑：建会话 + 包装落库 + session/assignee 回填（单次锁内完成）。
+    // 标题不带 emoji 前缀：子 agent 身份由 bot_sessions.is_subagent 结构化
+    // 字段承载（U20D 批 5），前端按 Session.isSubagent 路由停止键
     let title = format!(
-        "🧩 子任务：{}",
+        "子任务：{}",
         crate::bot::truncate_for_log(row.objective.trim(), 30)
     );
     let setup = {
@@ -1097,7 +1099,7 @@ async fn run_subagent(app: AppHandle, subagent_id: String) {
             let tx = conn
                 .transaction()
                 .map_err(|e| CommandError::DbError(e.to_string()))?;
-            let session = crate::db::bot_session_create_inner(&tx, Some(title.clone()))
+            let session = crate::db::bot_session_create_subagent_inner(&tx, Some(title.clone()))
                 .map_err(CommandError::DbError)?;
             let card = crate::db::load_task(&tx, &row.task_id)
                 .map_err(CommandError::DbError)?
@@ -1908,19 +1910,25 @@ mod orchestrator_tests {
         assert_eq!(SubagentGate::queue_position(Some("ps_q1")), None, "清场");
     }
 
-    /// OCR r3 high 处置：前端以「会话标题 🧩 前缀」判定子 agent 会话并分流停止键
-    /// （cancel_subagent / bot_stop，后者已作运行时兜底）。此处锁定两处标题生成
-    /// 都带前缀——子卡标题（spawn）与执行会话标题（runner setup）漂移即测试红。
+    /// U20D 批 5：前端以 `Session.isSubagent` 结构化字段判定子 agent 会话并
+    /// 分流停止键（cancel_subagent / bot_stop，后者已作运行时兜底）——路由
+    /// 契约从「标题 🧩 前缀」升级为 bot_sessions.is_subagent 字段。此处锁定：
+    /// ① runner setup 必须经 subagent 变体建会话（漂移即测试红）；
+    /// ② 标题已去 emoji 前缀（路由不再依赖标题）。
     #[test]
-    fn subagent_titles_keep_emoji_prefix_for_frontend_routing() {
+    fn subagent_sessions_flagged_structurally_not_by_title() {
         // concat! 拼接防本测试自匹配（dead_command_tests 同款手法）
-        let prefix = concat!("🧩 子", "任务：");
-        let src = include_str!("bot_orchestrator.rs");
-        let hits: Vec<usize> = src.match_indices(prefix).map(|(i, _)| i).collect();
-        assert_eq!(
-            hits.len(),
-            3,
-            "三处 = spawn 子卡标题 + runner 会话标题两处生成点 + SUBA-1 既有卡片标题断言；任一生成点丢前缀（前端停止键按标题分流 cancel_subagent/bot_stop）即路由失守"
+        let wiring = concat!(
+            "bot_session_create_",
+            "subagent_inner(&tx, Some(title.clone()))"
+        );
+        assert!(
+            include_str!("bot_orchestrator.rs").contains(wiring),
+            "runner 建会话必须走 subagent 变体（is_subagent=1 结构化标记）"
+        );
+        assert!(
+            !include_str!("bot_orchestrator.rs").contains(concat!("🧩 子", "任务：")),
+            "标题已去 emoji 前缀（路由不依赖标题；子 agent 身份由 is_subagent 字段承载）"
         );
     }
 
@@ -2066,7 +2074,7 @@ mod orchestrator_tests {
         assert_eq!(budget.max_turns, DEFAULT_MAX_TURNS);
         assert_eq!(budget.max_tool_calls, DEFAULT_MAX_TOOL_CALLS);
         assert_eq!(budget.max_wall_seconds, DEFAULT_MAX_WALL_SECONDS);
-        assert!(card.title.starts_with("🧩 子任务："));
+        assert!(card.title.starts_with("子任务："));
         assert_eq!(card.column, crate::db::TaskStatus::Doing);
         // 行侧 acceptance_json（机器侧双写）
         let criteria: Vec<String> =

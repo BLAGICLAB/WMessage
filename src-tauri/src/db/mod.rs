@@ -154,7 +154,8 @@ pub fn open_db<R: tauri::Runtime>(
            id         TEXT PRIMARY KEY,
            title      TEXT NOT NULL,
            created_at INTEGER NOT NULL,
-           updated_at INTEGER NOT NULL
+           updated_at INTEGER NOT NULL,
+           is_subagent INTEGER NOT NULL DEFAULT 0
          );
          CREATE TABLE IF NOT EXISTS skill_outcomes (
            skill_name         TEXT PRIMARY KEY,
@@ -198,6 +199,25 @@ pub fn open_db<R: tauri::Runtime>(
         if !has {
             conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"), [])
                 .map_err(|e| e.to_string())?;
+        }
+    }
+    // 迁移（U20D 批 5）：bot_sessions.is_subagent 结构化子 agent 标记——
+    // 会话路由从「标题 🧩 前缀」升级为字段（runner 建会话时置 1；
+    // 存量旧会话默认 0，前端按旧标题前缀兜底）
+    {
+        let has: bool = conn
+            .prepare("PRAGMA table_info(bot_sessions)")
+            .and_then(|mut stmt| {
+                let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+                Ok(rows.filter_map(|n| n.ok()).any(|n| n == "is_subagent"))
+            })
+            .unwrap_or(false);
+        if !has {
+            conn.execute(
+                "ALTER TABLE bot_sessions ADD COLUMN is_subagent INTEGER NOT NULL DEFAULT 0",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
         }
     }
     let has_ba: bool = conn
@@ -963,7 +983,8 @@ mod tests {
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
                 created_at INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL
+                updated_at INTEGER NOT NULL,
+                is_subagent INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE bot_messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -986,7 +1007,7 @@ mod tests {
     fn bot_history_save_rolls_back_on_insert_failure() {
         let (dir, mut conn) = setup_bhs_db();
         conn.execute(
-            "INSERT INTO bot_sessions VALUES ('s1', 'T', 1000, 1000)",
+            "INSERT INTO bot_sessions VALUES ('s1', 'T', 1000, 1000, 0)",
             [],
         )
         .unwrap();
@@ -1043,7 +1064,7 @@ mod tests {
     fn bot_history_save_inner_commits_in_tx() {
         let (dir, mut conn) = setup_bhs_db();
         conn.execute(
-            "INSERT INTO bot_sessions VALUES ('s1', 'T', 1000, 5000)",
+            "INSERT INTO bot_sessions VALUES ('s1', 'T', 1000, 5000, 0)",
             [],
         )
         .unwrap();
@@ -1096,7 +1117,7 @@ mod tests {
     fn bot_history_overwrite_restores_order_and_batch_created_at() {
         let (dir, mut conn) = setup_bhs_db();
         conn.execute(
-            "INSERT INTO bot_sessions VALUES ('s1', 'T', 1000, 5000)",
+            "INSERT INTO bot_sessions VALUES ('s1', 'T', 1000, 5000, 0)",
             [],
         )
         .unwrap();
@@ -1160,7 +1181,7 @@ mod tests {
     fn bot_session_delete_is_atomic() {
         let (dir, conn) = setup_bhs_db();
         conn.execute(
-            "INSERT INTO bot_sessions VALUES ('s1', 'T', 1000, 1000)",
+            "INSERT INTO bot_sessions VALUES ('s1', 'T', 1000, 1000, 0)",
             [],
         )
         .unwrap();
@@ -1192,7 +1213,7 @@ mod tests {
 
         // 原子性反向验证：第二条 DELETE（会话）注入失败 → 第一条（消息）也必须回滚
         conn.execute(
-            "INSERT INTO bot_sessions VALUES ('s2', 'T', 1000, 1000)",
+            "INSERT INTO bot_sessions VALUES ('s2', 'T', 1000, 1000, 0)",
             [],
         )
         .unwrap();

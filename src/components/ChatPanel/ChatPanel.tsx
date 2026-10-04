@@ -1163,11 +1163,14 @@ export function ChatPanel({
     invoke("focus_main_window").catch(() => {});
   }, []);
 
-  const currentTitle =
-    sessions.find((s) => s.id === sessionId)?.title ?? "新对话";
-  // SUBA-3：视图会话是子 agent 执行会话（🧩 前缀标题由 runner 建会话时写入）——
-  // 停止按钮/斜杠 /stop 走 cancel_subagent（与任务卡停止按钮同 API），而非 bot_stop
-  const isSubagentSession = currentTitle.startsWith("🧩");
+  const currentSession = sessions.find((s) => s.id === sessionId);
+  const currentTitle = currentSession?.title ?? "新对话";
+  // SUBA-3：视图会话是子 agent 执行会话——runner 建会话时写
+  // bot_sessions.is_subagent 结构化标记（U20D 批 5，标题不再带 emoji 前缀）；
+  // 停止按钮/斜杠 /stop 走 cancel_subagent（与任务卡停止按钮同 API），而非 bot_stop。
+  // 存量旧会话（迁移前置建的）无标记，按旧标题 🧩 前缀兜底判定
+  const isSubagentSession =
+    currentSession?.isSubagent === true || currentTitle.startsWith("🧩");
 
   // 停止键点击（发送/停止一体键的 busy 分支）：子 agent 会话走 cancel_subagent，
   // 普通会话走 bot_stop——与 /stop 斜杠命令同一套分派
