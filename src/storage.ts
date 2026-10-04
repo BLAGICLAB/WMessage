@@ -4,7 +4,7 @@ export const STORAGE_KEY = "***";
 // —— 方案B：任务数据存 SQLite，行级增量读写 ——
 import { invoke } from "@tauri-apps/api/core";
 import { handleCommandError } from "./lib/errorHandler";
-import type { Task } from "./types";
+import type { PeopleEntry, Task } from "./types";
 
 /** 结构相等（用于 diff 行级变更）。expectedUpdatedAt 是写前比对基线（传输元数据，
  *  非内容），不参与比较——否则 state 残留的脏基线会击穿纯排序豁免 / 制造假变更 */
@@ -62,6 +62,11 @@ export async function exportTasksToFile(path: string): Promise<number> {
 /** 从 JSON 文件导入任务卡数据：按 id 合并，同 id 保留最后修改更晚的。返回写入条数；失败 throw */
 export async function importTasksFromFile(path: string): Promise<number> {
   return await invoke<number>("tasks_import", { path });
+}
+
+/** 成员注册表（任务图谱设计 §1.2）：归属人 chips / 图例数据源；失败 throw */
+export async function loadPeople(): Promise<PeopleEntry[]> {
+  return await invoke<PeopleEntry[]>("people_list");
 }
 
 /** 按 order 稳定排序（旧数据无 order 时保持原相对顺序） */

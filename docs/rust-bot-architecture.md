@@ -29,8 +29,12 @@ src-tauri/src/
 │   ├── skill_out.rs      技能产物输出
 │   ├── subagents.rs      子 agent 编排持久化（SubagentRow / 六态状态机 transition_allowed /
 │   │                     SubagentBudget 预算三硬顶；spawn 插 queued 行，check 幂等轮询）
+│   ├── people.rs         成员注册表（多人任务汇总的归属人字典；people_list 命令 +
+│   │                     upsert 最新名覆盖 + 占位兜底，见 docs/TASK-GRAPH-DESIGN-2026-10-05.md §1）
 │   └── workspace.rs      workspace / bind_files
 ├── task_out.rs          对外 TaskOut（Task flatten + status），api/api_handlers 共享
+├── task_autotag.rs      归档自动打标（一次性 LLM ≤3 标签回写 tags；守卫链幂等 +
+│                        校验链截断不整包拒 + 失败静默审计，见任务图谱设计 §2）
 │
 │─ 模型元数据 meta/（原独立 Python 服务 model-meta-service 的内嵌版，127.0.0.1:8765 已退役）
 ├── meta/mod.rs          MetaProvider/MetaModel/MetaModelJoined + meta_provider/meta_model
@@ -409,6 +413,7 @@ flowchart TD
 - `paths.rs`
 - `profile.rs`
 - `prompt_builder.rs`
+- `task_autotag.rs`
 - `task_out.rs`
 - `tool_guard.rs`
 - `workflow_decompose.rs`
@@ -458,6 +463,7 @@ flowchart TD
 - `db/migrations.rs`
 - `db/mod.rs`
 - `db/paths.rs`
+- `db/people.rs`
 - `db/skill_out.rs`
 - `db/tasks.rs`
 - `db/workflow.rs`

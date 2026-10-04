@@ -59,6 +59,7 @@ mod tests {
             depends_on: None,
             canvas_pos: None,
             model: None,
+            owner_id: None,
             expected_updated_at: None,
         }
     }

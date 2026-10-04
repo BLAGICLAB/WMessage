@@ -11,6 +11,7 @@ import {
   Settings as SettingsIcon,
   SquareKanban,
   Trash2,
+  Waypoints,
   Workflow as WorkflowIcon,
 } from "lucide-react";
 import { KanbanBoard } from "./components/KanbanBoard";
@@ -23,6 +24,7 @@ import { TrashPage } from "./components/TrashPage";
 import { WorkspacePage } from "./components/WorkspacePage";
 import { SettingsPage } from "./components/SettingsPage";
 import { WorkflowPage } from "./components/WorkflowCanvas/WorkflowPage";
+import GraphPage from "./components/GraphPage/GraphPage";
 import ConfirmMap from "./components/ConfirmMap";
 import { deleteTaskRows, diffTaskRows, loadTasksFromDb, taskEq, upsertTasks, exportTasksToFile, importTasksFromFile, exportWorkspaceToFile, importWorkspaceFromFile, STORAGE_KEY, sortByOrder, assignInsertOrder, upsertWorkspaceItems } from "./storage";
 import { handleCommandError } from "./lib/errorHandler";
@@ -67,10 +69,12 @@ function localDateStr(): string {
 
 // 左侧导航栏条目（U2）：视图切换职能自顶部工具条迁入；设置单独走底部入口。
 // W1-CANVAS：新增「工作流」栏目（设计 §2——唯一触碰主窗口的点）
-type RailView = "board" | "workflow" | "archive" | "workspace" | "trash";
+// 任务图谱（设计 §3.4）：全量任务关系视图，位于工作流之后
+type RailView = "board" | "workflow" | "graph" | "archive" | "workspace" | "trash";
 const NAV_ITEMS: { key: RailView; label: string; icon: typeof SquareKanban }[] = [
   { key: "board", label: "首页", icon: SquareKanban },
   { key: "workflow", label: "工作流", icon: WorkflowIcon },
+  { key: "graph", label: "图谱", icon: Waypoints },
   { key: "archive", label: "归档", icon: Archive },
   { key: "workspace", label: "工作区", icon: FolderOpen },
   { key: "trash", label: "回收站", icon: Trash2 },
@@ -173,11 +177,36 @@ function App() {
     };
   }, []);
   // 可见任务选择器：工作流卡只画在画布上，看板/归档/回收站/命令面板默认不混入（设计 §3.3）。
-  // tasks 已套今日/归档规则，这里只做归属过滤
-  const visibleTasks = useMemo(
-    () => (showWorkflowTasks ? tasks : tasks.filter((t) => !isWorkflowTask(t))),
-    [tasks, showWorkflowTasks]
-  );
+  // tasks 已套今日/归档规则，这里只做归属过滤。
+  // 任务图谱（设计 §1.5）：ownerId 非空 = 导入的外来任务，默认同样不混入（只看自己的）；
+  // 图谱页拿全量 tasks 自行过滤
+  const visibleTasks = useMemo(() => {
+    let list = tasks.filter((t) => !t.ownerId);
+    if (!showWorkflowTasks) list = list.filter((t) => !isWorkflowTask(t));
+    return list;
+  }, [tasks, showWorkflowTasks]);
+
+  // 归档自动打标（任务图谱设计 §2）：观测「已加载任务从未归档 → 归档且无标签」
+  // 转变，fire-and-forget 调后端一次性 LLM 打标；失败仅留 console 痕迹。
+  // 首屏（prev 为 null）不触发——防启动时对历史归档卡批量调用；「prev 有该行」
+  // 同时挡住导入场景（导入的归档卡带着别人的标签体系进来，不代打）
+  const prevTasksForTagRef = useRef<Task[] | null>(null);
+  useEffect(() => {
+    const prev = prevTasksForTagRef.current;
+    prevTasksForTagRef.current = tasks;
+    if (!prev || prev.length === 0) return;
+    const prevMap = new Map(prev.map((t) => [t.id, t]));
+    for (const t of tasks) {
+      const p = prevMap.get(t.id);
+      if (!p) continue;
+      if (!t.archived || p.archived) continue;
+      if (t.column !== "done" || t.deletedAt || t.ownerId) continue;
+      if (t.tags && t.tags.length > 0) continue;
+      invoke("task_autotag", { id: t.id }).catch((e) =>
+        console.error("[task_autotag] failed", t.id, e)
+      );
+    }
+  }, [tasks]);
 
   // 主题：启动时应用 + 监听其他窗口（挂件）切换 + 跟随系统模式监听系统外观变化
   useEffect(() => {
@@ -816,6 +845,12 @@ function App() {
                 // 不 silent：保存/删除后重读失败必须让用户看到（errorHandler 默认弹窗）
                 void reloadTasks().catch((e) => handleCommandError(e, "重读任务"));
               }}
+            />
+          ) : view === "graph" ? (
+            <GraphPage
+              tasks={tasks}
+              onOpenTask={jumpToTask}
+              onOpenWorkflow={() => setView("workflow")}
             />
           ) : view === "archive" ? (
             <ArchivePage

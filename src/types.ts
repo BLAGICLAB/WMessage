@@ -126,6 +126,19 @@ export interface Task {
   canvasPos?: CanvasPos;
   /** 执行用大模型（W6-MODEL）：模型库条目 id；缺省 = 跟随全局 active 模型 */
   model?: string;
+  /**
+   * 归属人 personId（任务图谱设计 §1.1）：undefined = 本人。
+   * 导入多人数据后，外来任务带其原主人的 pid；看板/归档/回收站/⌘K 默认只显示
+   * undefined（本人）的卡，图谱/统计看全部。
+   */
+  ownerId?: string;
+}
+
+/** 成员条目（people 表视图，任务图谱设计 §1.2）：isSelf 行 name 由 profile 现值合并 */
+export interface PeopleEntry {
+  id: string;
+  name: string;
+  isSelf: boolean;
 }
 
 /** 工作流元数据（与 Rust db::Workflow 对应，存 workflows 表；节点 = origin="workflow" 的任务卡） */

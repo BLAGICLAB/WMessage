@@ -41,6 +41,7 @@ mod profile;
 pub mod prompt_builder;
 mod prompts;
 pub mod py;
+pub mod task_autotag;
 pub mod task_out;
 pub mod tool_guard;
 pub mod workflow_decompose;
@@ -479,6 +480,8 @@ pub fn run() {
             crate::db::tasks::task_reorder,
             crate::db::tasks::tasks_export,
             crate::db::tasks::tasks_import,
+            crate::db::people::people_list,
+            crate::task_autotag::task_autotag,
             crate::db::workflow::workflow_save,
             crate::db::workflow::workflow_load,
             crate::db::workflow::workflow_list,

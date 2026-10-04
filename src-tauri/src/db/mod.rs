@@ -10,6 +10,7 @@ pub use crate::db::bot_history::*;
 pub use crate::db::bot_sessions::*;
 pub use crate::db::migrations::*;
 pub use crate::db::paths::*;
+pub use crate::db::people::*;
 pub use crate::db::skill_out::*;
 pub use crate::db::subagents::*;
 pub use crate::db::tasks::*;
@@ -24,6 +25,7 @@ pub mod bot_history;
 pub mod bot_sessions;
 pub mod migrations;
 pub mod paths;
+pub mod people;
 pub mod skill_out;
 pub mod subagents;
 pub mod tasks;
@@ -159,6 +161,9 @@ pub fn open_db<R: tauri::Runtime>(
     // 节点卡存 tasks 表（origin='workflow' + workflow_id 外联），不在此表
     conn.execute_batch(crate::db::workflow::WORKFLOWS_DDL)
         .map_err(|e| e.to_string())?;
+    // 成员注册表（任务图谱设计 §1.2）：多人汇总的归属人字典，幂等
+    conn.execute_batch(people::PEOPLE_DDL)
+        .map_err(|e| e.to_string())?;
     // 模型元数据双表（meta_provider/meta_model，meta 模块的存储面），幂等
     migrations::ensure_meta_tables(&conn)?;
     // 迁移：定时任务卡
@@ -193,6 +198,20 @@ pub fn open_db<R: tauri::Runtime>(
     // 迁移（W1-CANVAS，设计 §3.1）：工作流四字段 + 画布坐标。
     // origin 缺省 NULL 视作 "user"（读路径归一），不加 DEFAULT 避免 ALTER 语义分叉
     for (col, ty) in crate::db::tasks::W1_TASK_COLUMNS {
+        let has: bool = conn
+            .prepare("PRAGMA table_info(tasks)")
+            .and_then(|mut stmt| {
+                let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+                Ok(rows.filter_map(|n| n.ok()).any(|n| n == col))
+            })
+            .unwrap_or(false);
+        if !has {
+            conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"), [])
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    // 迁移（任务图谱设计 §1.1）：任务归属人 owner_id，NULL = 本人
+    for (col, ty) in crate::db::tasks::OWNER_TASK_COLUMNS {
         let has: bool = conn
             .prepare("PRAGMA table_info(tasks)")
             .and_then(|mut stmt| {
@@ -628,6 +647,7 @@ mod tests {
             depends_on: None,
             canvas_pos: None,
             model: None,
+            owner_id: None,
             expected_updated_at: None,
         }
     }
@@ -748,8 +768,12 @@ mod tests {
         // W1-CANVAS 起进程内共有 5 个新列（origin/workflow_id/depends_on/canvas_x/canvas_y）——
         // 与 files 列同为 open_db 幂等 ALTER 的一部分；fixture 保持「仅缺 files 列」的
         // 被测前提不变，把其余列补齐，否则迁移后 load_all 查新列会炸。
-        // 列清单单源 = tasks::W1_TASK_COLUMNS（OCR r1 medium：勿手工镜像）
+        // 列清单单源 = tasks::W1_TASK_COLUMNS + tasks::OWNER_TASK_COLUMNS（勿手工镜像）
         for (col, ty) in crate::db::tasks::W1_TASK_COLUMNS {
+            conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"), [])
+                .unwrap();
+        }
+        for (col, ty) in crate::db::tasks::OWNER_TASK_COLUMNS {
             conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"), [])
                 .unwrap();
         }

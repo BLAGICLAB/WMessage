@@ -556,6 +556,7 @@ mod tests {
             depends_on: Some(deps.iter().map(|s| s.to_string()).collect()),
             canvas_pos: Some(CanvasPos { x: 0.0, y: 0.0 }),
             model: None,
+            owner_id: None,
             expected_updated_at: None,
         }
     }

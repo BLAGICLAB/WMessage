@@ -54,7 +54,8 @@ pub const TASKS_DDL: &str = "CREATE TABLE IF NOT EXISTS tasks (
    depends_on   TEXT,
    canvas_x     REAL,
    canvas_y     REAL,
-   model        TEXT
+   model        TEXT,
+   owner_id     TEXT
  );";
 
 /// 任务状态(三列看板：todo / doing / done)。
@@ -139,6 +140,10 @@ pub(crate) const W1_TASK_COLUMNS: [(&str, &str); 6] = [
     ("model", "TEXT"),
 ];
 
+/// 任务归属人列（任务图谱设计 §1.1）：NULL 恒等于本人；
+/// 外来任务存导入信封里的 personId，渲染层据 `ownerId == null` 过滤自己的任务。
+pub(crate) const OWNER_TASK_COLUMNS: [(&str, &str); 1] = [("owner_id", "TEXT")];
+
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Task {
@@ -190,6 +195,10 @@ pub struct Task {
     /// 执行用大模型（W6-MODEL）：模型库条目 id；None = 跟随全局 active 模型
     #[serde(default)]
     pub model: Option<String>,
+    /// 归属人 personId（任务图谱设计 §1.1）：None = 本人（库内统一 NULL 存储）；
+    /// 导入外来数据时由信封盖章。前端写入路径不感知（serde default），零改动兼容
+    #[serde(default)]
+    pub owner_id: Option<String>,
     #[serde(default, skip_serializing)]
     pub expected_updated_at: Option<i64>,
 }
@@ -260,8 +269,8 @@ pub fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), S
             "INSERT INTO tasks
                (id, title, due, note, tags, file_path, file_is_dir, col, subtasks,
                 completed_at, archived, deleted_at, collapsed, ord, updated_at, schedule, sched_last, bot_assigned, files,
-                assignee, budget, result, origin, workflow_id, depends_on, canvas_x, canvas_y, model)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28)
+                assignee, budget, result, origin, workflow_id, depends_on, canvas_x, canvas_y, model, owner_id)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29)
              ON CONFLICT(id) DO UPDATE SET
                title=excluded.title, due=excluded.due, note=excluded.note,
                tags=excluded.tags, file_path=excluded.file_path,
@@ -276,7 +285,7 @@ pub fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), S
                origin=excluded.origin, workflow_id=excluded.workflow_id,
                depends_on=excluded.depends_on,
                canvas_x=excluded.canvas_x, canvas_y=excluded.canvas_y,
-               model=excluded.model
+               model=excluded.model, owner_id=excluded.owner_id
              WHERE tasks.updated_at IS NULL OR excluded.updated_at >= tasks.updated_at",
         )
         .map_err(|e| e.to_string())?;
@@ -363,6 +372,7 @@ pub fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), S
                 t.canvas_pos.as_ref().map(|p| p.x),
                 t.canvas_pos.as_ref().map(|p| p.y),
                 t.model,
+                t.owner_id,
             ])
             .map_err(|e| e.to_string())?;
         affected_total += affected;
@@ -422,6 +432,7 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<super::Task> {
     let canvas_x: Option<f64> = row.get(25)?;
     let canvas_y: Option<f64> = row.get(26)?;
     let model: Option<String> = row.get(27)?;
+    let owner_id: Option<String> = row.get(28)?;
     // col 从 DB 读出仍是 String(列类型 TEXT),parse 到 TaskStatus enum。
     // 与 subtasks/files JSON 损坏「warn + 按空读取」的契约对齐:
     // 单行 col 异常不应让整个读失败、把全部任务藏起来。
@@ -528,6 +539,7 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<super::Task> {
         depends_on,
         canvas_pos,
         model,
+        owner_id,
         expected_updated_at: None,
     })
 }
@@ -536,7 +548,7 @@ const TASK_SELECT_COLS: &str =
     "SELECT id, title, due, note, tags, file_path, file_is_dir, col, subtasks, \
      completed_at, archived, deleted_at, collapsed, ord, updated_at, schedule, sched_last, \
      bot_assigned, files, assignee, budget, result, origin, workflow_id, depends_on, \
-     canvas_x, canvas_y, model FROM tasks";
+     canvas_x, canvas_y, model, owner_id FROM tasks";
 
 pub fn load_all(conn: &rusqlite::Connection) -> Result<Vec<super::Task>, String> {
     let sql = format!("{TASK_SELECT_COLS} ORDER BY ord, rowid");
@@ -1070,16 +1082,200 @@ pub fn check_export_path(path: &str) -> CommandResult<()> {
     Ok(())
 }
 
+/// 导出信封 v2（任务图谱设计 §1.4）：本人资料卡 + 已知成员 + 全量任务（owner 已盖章）
+/// 同时是导入信封的 profile 字段类型（往返同构）
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportProfileCard {
+    pub person_id: String,
+    pub name: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TasksExportFileV2 {
+    pub version: u8,
+    pub exported_at: i64,
+    pub profile: ExportProfileCard,
+    pub people: Vec<super::PeopleCard>,
+    pub tasks: Vec<Task>,
+}
+
+/// 导入载荷：untagged 按序尝试——对象 = v2 信封，数组 = v1 裸任务（旧版导出永久可导）
+#[derive(Deserialize)]
+#[serde(untagged)]
+pub enum TasksImportPayload {
+    V2(Box<TasksImportEnvelope>),
+    V1(Vec<Task>),
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TasksImportEnvelope {
+    #[serde(default)]
+    pub version: Option<u8>,
+    #[serde(default)]
+    pub profile: Option<ExportProfileCard>,
+    #[serde(default)]
+    pub people: Vec<super::PeopleCard>,
+    #[serde(default)]
+    pub tasks: Vec<Task>,
+}
+
+/// 组装 v2 导出 JSON（纯逻辑，单测锚点）：NULL owner 盖章为本人 pid；
+/// people = people 表已知成员（除本人）+ 任务里引用但未注册的占位成员
+pub fn export_tasks_json(
+    conn: &rusqlite::Connection,
+    self_pid: &str,
+    self_name: &str,
+) -> Result<(String, usize), String> {
+    let mut tasks = load_all(conn)?;
+    for t in tasks.iter_mut() {
+        if t.owner_id
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("")
+            .is_empty()
+        {
+            t.owner_id = Some(self_pid.to_string());
+        }
+    }
+    let mut people: Vec<super::PeopleCard> = super::people::people_load(conn)?
+        .into_iter()
+        .filter(|p| p.id != self_pid)
+        .map(|p| super::PeopleCard {
+            id: p.id,
+            name: p.name,
+        })
+        .collect();
+    let mut seen: std::collections::HashSet<String> = people.iter().map(|p| p.id.clone()).collect();
+    for t in &tasks {
+        if let Some(pid) = t
+            .owner_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            if pid != self_pid && seen.insert(pid.to_string()) {
+                people.push(super::PeopleCard {
+                    id: pid.to_string(),
+                    name: "未知成员".into(),
+                });
+            }
+        }
+    }
+    let count = tasks.len();
+    let file = TasksExportFileV2 {
+        version: 2,
+        exported_at: chrono::Utc::now().timestamp_millis(),
+        profile: ExportProfileCard {
+            person_id: self_pid.to_string(),
+            name: self_name.to_string(),
+        },
+        people,
+        tasks,
+    };
+    let json = serde_json::to_string_pretty(&file).map_err(|e| e.to_string())?;
+    Ok((json, count))
+}
+
+/// 归属归一（任务图谱设计 §1.3）：有效 pid = 任务自带 ownerId 非空者，
+/// 否则信封本人 pid；等于自己 → 库内 NULL，否则 Some(pid)
+fn normalize_owner(t: &Task, envelope_pid: Option<&str>, self_pid: &str) -> Option<String> {
+    let eff = t
+        .owner_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| envelope_pid.map(str::to_string))
+        .unwrap_or_else(|| self_pid.to_string());
+    if eff == self_pid {
+        None
+    } else {
+        Some(eff)
+    }
+}
+
+/// 导入核心（纯逻辑 + 事务，单测锚点）：people 与 tasks 同事务写入；
+/// 归并规则不变（按 id，同 id 取 updatedAt 更晚者）。调用方须持 DB_WRITE_LOCK。
+pub fn import_tasks_conn(
+    conn: &mut rusqlite::Connection,
+    raw: &str,
+    self_pid: &str,
+) -> Result<usize, String> {
+    let payload: TasksImportPayload =
+        serde_json::from_str(raw).map_err(|e| format!("不是有效的任务数据 JSON：{e}"))?;
+    let (tasks, envelope, people_cards) = match payload {
+        TasksImportPayload::V1(v) => (v, None, Vec::new()),
+        TasksImportPayload::V2(env) => {
+            if let Some(v) = env.version {
+                if v != 2 {
+                    return Err(format!("不支持的导出格式版本：{v}（本应用支持 1/2）"));
+                }
+            }
+            let profile = env.profile.ok_or_else(|| {
+                "信封缺少 profile 资料卡，无法确定任务归属（文件可能被手改损坏）".to_string()
+            })?;
+            let card = (profile.person_id, profile.name);
+            (env.tasks, Some(card), env.people)
+        }
+    };
+    // 本人 personId 若为空（防御）——信封 pid 也不该等于空串
+    if self_pid.trim().is_empty() {
+        return Err("本人 personId 未初始化".into());
+    }
+    let envelope_pid = envelope.as_ref().map(|(pid, _)| pid.clone());
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    // 成员注册表先行落库（任务图谱设计 §1.4）：信封本人卡（= 对方；若对方 pid 恰为
+    // 本人——导自己的旧信封——is_self 只升不降语义保住本人行）+ 信封成员卡
+    if let Some((pid, name)) = &envelope {
+        super::people::people_upsert_entry(&tx, pid, name, false)?;
+    }
+    super::people::people_upsert_cards(&tx, &people_cards)?;
+    // 任务引用但信封未携带资料的归属 → 占位行，图谱不出现悬空归属
+    for pid in tasks
+        .iter()
+        .filter_map(|t| normalize_owner(t, envelope_pid.as_deref(), self_pid))
+    {
+        super::people::people_ensure_placeholder(&tx, &pid)?;
+    }
+    let mut merged = 0usize;
+    for t in &tasks {
+        if t.id.trim().is_empty() {
+            continue;
+        }
+        let mut t2 = t.clone();
+        t2.owner_id = normalize_owner(t, envelope_pid.as_deref(), self_pid);
+        let cur: Option<Option<i64>> = tx
+            .query_row(
+                "SELECT updated_at FROM tasks WHERE id = ?1",
+                rusqlite::params![t.id],
+                |r| r.get::<_, Option<i64>>(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        let cur_ua = cur.flatten().unwrap_or(0);
+        let take = t.updated_at.unwrap_or(0) > cur_ua;
+        if take {
+            upsert_tasks(&tx, std::slice::from_ref(&t2))?;
+            merged += 1;
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(merged)
+}
+
 #[tauri::command]
 pub async fn tasks_export(app: AppHandle, path: String) -> CommandResult<usize> {
     check_export_path(&path)?;
     async_runtime::spawn_blocking(move || {
         let conn = super::open_db(&app)?;
-        let tasks = load_all(&conn)?;
-        let json = serde_json::to_string_pretty(&tasks).map_err(|e| e.to_string())?;
+        let (pid, name) = crate::profile::export_profile_card(&app);
+        let (json, count) = export_tasks_json(&conn, &pid, &name)?;
         super::paths::atomic_write(std::path::Path::new(&path), &json)
             .map_err(|e| format!("写入文件失败：{e}"))?;
-        Ok(tasks.len())
+        Ok(count)
     })
     .await
     .map_err(|e| CommandError::from(format!("任务导出线程 join 失败：{e}")))?
@@ -1092,7 +1288,6 @@ const MAX_IMPORT_BYTES: u64 = 64 * 1024 * 1024;
 pub async fn tasks_import(app: AppHandle, path: String) -> CommandResult<usize> {
     check_export_path(&path)?;
     async_runtime::spawn_blocking(move || {
-        use rusqlite::OptionalExtension;
         // 上限在读侧强制（bounded reader），不做 metadata 预检——check-then-act 之间
         // 文件可被换大（symlink swap），只有限制实际读入字节数才兜底。
         // 先读字节再转 String：Take 截断可能切断 UTF-8 码点边界，直接 read_to_string
@@ -1113,36 +1308,14 @@ pub async fn tasks_import(app: AppHandle, path: String) -> CommandResult<usize> 
             });
         }
         let raw = String::from_utf8(buf).map_err(|e| format!("不是有效的 UTF-8 文本：{e}"))?;
-        let ext: Vec<super::Task> =
-            serde_json::from_str(&raw).map_err(|e| format!("不是有效的任务数据 JSON：{e}"))?;
-        if ext.is_empty() {
+        if raw.trim().is_empty() {
             return Ok(0);
         }
+        // 本人 personId 先行（people 本人行落库 + 占位判定基准）
+        let (self_pid, _name) = crate::profile::ensure_person_id(&app);
         let _g = super::lock_db_write();
         let mut conn = super::open_db(&app)?;
-        let tx = conn.transaction().map_err(|e| e.to_string())?;
-        let mut merged = 0usize;
-        for t in &ext {
-            if t.id.trim().is_empty() {
-                continue;
-            }
-            let cur: Option<Option<i64>> = tx
-                .query_row(
-                    "SELECT updated_at FROM tasks WHERE id = ?1",
-                    rusqlite::params![t.id],
-                    |r| r.get::<_, Option<i64>>(0),
-                )
-                .optional()
-                .map_err(|e| e.to_string())?;
-            let cur_ua = cur.flatten().unwrap_or(0);
-            let take = t.updated_at.unwrap_or(0) > cur_ua;
-            if take {
-                upsert_tasks(&tx, std::slice::from_ref(t))?;
-                merged += 1;
-            }
-        }
-        tx.commit().map_err(|e| e.to_string())?;
-        Ok(merged)
+        import_tasks_conn(&mut conn, &raw, &self_pid).map_err(CommandError::from)
     })
     .await
     .map_err(|e| CommandError::from(format!("任务导入线程 join 失败：{e}")))?
@@ -1533,5 +1706,231 @@ mod task_status_tests {
             TaskStatus::ALL,
             &[TaskStatus::Todo, TaskStatus::Doing, TaskStatus::Done]
         );
+    }
+}
+
+// ──────────────── 任务图谱：归属与导入导出信封测试 ────────────────
+
+#[cfg(test)]
+mod owner_graph_tests {
+    use super::*;
+
+    fn setup_conn() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(TASKS_DDL).unwrap();
+        conn.execute_batch(super::super::people::PEOPLE_DDL)
+            .unwrap();
+        conn
+    }
+
+    const SELF: &str = "self-pid";
+
+    fn task_json(id: &str, owner: Option<&str>, updated: i64) -> String {
+        let owner_part = match owner {
+            Some(o) => format!(r#""ownerId":"{o}","#),
+            None => String::new(),
+        };
+        format!(
+            r#"{{"id":"{id}","title":"t-{id}","column":"todo",{owner_part}"updatedAt":{updated}}}"#
+        )
+    }
+
+    /// 最小合法 Task 构造（全 None 缺省）
+    fn min_task(owner: Option<&str>) -> Task {
+        Task {
+            id: "x".into(),
+            title: "t".into(),
+            due: None,
+            note: None,
+            tags: None,
+            files: None,
+            file_path: None,
+            file_is_dir: None,
+            column: TaskStatus::Todo,
+            subtasks: None,
+            completed_at: None,
+            archived: None,
+            deleted_at: None,
+            collapsed: None,
+            order: None,
+            updated_at: None,
+            schedule: None,
+            sched_last: None,
+            bot_assigned: None,
+            assignee: None,
+            budget: None,
+            result: None,
+            origin: None,
+            workflow_id: None,
+            depends_on: None,
+            canvas_pos: None,
+            model: None,
+            owner_id: owner.map(str::to_string),
+            expected_updated_at: None,
+        }
+    }
+
+    #[test]
+    fn normalize_owner_rules() {
+        // 显式外来 pid → Some
+        assert_eq!(
+            normalize_owner(&min_task(Some("p-a")), Some("env-pid"), SELF),
+            Some("p-a".into())
+        );
+        // 显式本人 pid → None（库内 NULL = 本人）
+        assert_eq!(
+            normalize_owner(&min_task(Some(SELF)), Some("env"), SELF),
+            None
+        );
+        // 空/空白 ownerId → 回退信封 pid
+        assert_eq!(
+            normalize_owner(&min_task(Some("  ")), Some("env"), SELF),
+            Some("env".into())
+        );
+        // 信封也是本人 → None
+        assert_eq!(normalize_owner(&min_task(Some("")), Some(SELF), SELF), None);
+        // 无 ownerId → 信封 pid；信封缺失 → 本人 → None
+        assert_eq!(
+            normalize_owner(&min_task(None), Some("env"), SELF),
+            Some("env".into())
+        );
+        assert_eq!(normalize_owner(&min_task(None), None, SELF), None);
+    }
+
+    #[test]
+    fn import_v1_bare_array_treated_as_self() {
+        let _g = crate::db::lock_db_write();
+        let mut conn = setup_conn();
+        let raw = format!(
+            "[{},{}]",
+            task_json("a", None, 100),
+            task_json("b", Some(SELF), 100)
+        );
+        let merged = import_tasks_conn(&mut conn, &raw, SELF).unwrap();
+        assert_eq!(merged, 2);
+        for t in load_all(&conn).unwrap() {
+            assert_eq!(t.owner_id, None, "v1 裸数组全部归属本人");
+        }
+    }
+
+    #[test]
+    fn import_v2_stamps_foreign_owner_and_upserts_people() {
+        let _g = crate::db::lock_db_write();
+        let mut conn = setup_conn();
+        let raw = format!(
+            r#"{{"version":2,"exportedAt":1,
+                "profile":{{"personId":"zhang","name":"张三"}},
+                "people":[{{"id":"li","name":"李四"}}],
+                "tasks":[{},{},{}]}}"#,
+            task_json("t1", None, 100),          // 张三的卡 → owner=zhang
+            task_json("t2", Some("li"), 100),    // 张三库里李四的卡 → owner=li
+            task_json("t3", Some("ghost"), 100), // 未注册归属 → 占位行
+        );
+        import_tasks_conn(&mut conn, &raw, SELF).unwrap();
+        let by_id: std::collections::HashMap<String, Task> = load_all(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|t| (t.id.clone(), t))
+            .collect();
+        assert_eq!(by_id["t1"].owner_id.as_deref(), Some("zhang"));
+        assert_eq!(by_id["t2"].owner_id.as_deref(), Some("li"));
+        assert_eq!(by_id["t3"].owner_id.as_deref(), Some("ghost"));
+        let names: std::collections::HashMap<String, String> =
+            super::super::people::people_load(&conn)
+                .unwrap()
+                .into_iter()
+                .map(|p| (p.id, p.name))
+                .collect();
+        assert_eq!(names["zhang"], "张三");
+        assert_eq!(names["li"], "李四");
+        assert_eq!(names["ghost"], "未知成员");
+    }
+
+    #[test]
+    fn import_v2_version_mismatch_and_missing_profile_rejected() {
+        let _g = crate::db::lock_db_write();
+        let mut conn = setup_conn();
+        let bad_ver = r#"{"version":3,"profile":{"personId":"p","name":"n"},"tasks":[]}"#;
+        assert!(import_tasks_conn(&mut conn, bad_ver, SELF).is_err());
+        let no_profile = r#"{"version":2,"tasks":[]}"#;
+        assert!(import_tasks_conn(&mut conn, no_profile, SELF).is_err());
+    }
+
+    #[test]
+    fn import_garbage_rejected_with_readable_error() {
+        let _g = crate::db::lock_db_write();
+        let mut conn = setup_conn();
+        let err = import_tasks_conn(&mut conn, "这不是 JSON", SELF).unwrap_err();
+        assert!(err.contains("不是有效的任务数据 JSON"), "{err}");
+    }
+
+    #[test]
+    fn export_stamps_self_owner_and_carries_people() {
+        let _g = crate::db::lock_db_write();
+        let mut conn = setup_conn();
+        // 本人的卡（NULL owner）+ 已知外来卡（people 表有注册）
+        let raw = format!(
+            r#"{{"version":2,"profile":{{"personId":"zhang","name":"张三"}},"tasks":[{}]}}"#,
+            task_json("foreign", None, 100),
+        );
+        import_tasks_conn(&mut conn, &raw, SELF).unwrap();
+        super::super::people::people_upsert_entry(&conn, "zhang", "张三", false).unwrap();
+        let mut mine = min_task(None);
+        mine.id = "mine".into();
+        mine.title = "我的卡".into();
+        mine.updated_at = Some(100);
+        upsert_tasks(&conn, &[mine]).unwrap();
+        let (json, count) = export_tasks_json(&conn, SELF, "我").unwrap();
+        assert_eq!(count, 2);
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["version"], 2);
+        assert_eq!(v["profile"]["personId"], SELF);
+        let tasks = v["tasks"].as_array().unwrap();
+        let mine = tasks.iter().find(|t| t["id"] == "mine").unwrap();
+        assert_eq!(mine["ownerId"], SELF, "NULL owner 导出时盖章为本人 pid");
+        let foreign = tasks.iter().find(|t| t["id"] == "foreign").unwrap();
+        assert_eq!(foreign["ownerId"], "zhang");
+        let people = v["people"].as_array().unwrap();
+        assert!(
+            people
+                .iter()
+                .any(|p| p["id"] == "zhang" && p["name"] == "张三"),
+            "people 应携带已知成员；实际 {people:?}"
+        );
+        assert!(
+            !people.iter().any(|p| p["id"] == SELF),
+            "people 不含本人（本人在 profile 里）"
+        );
+    }
+
+    #[test]
+    fn import_then_export_roundtrip_preserves_attribution() {
+        let _g = crate::db::lock_db_write();
+        let mut conn = setup_conn();
+        let raw = format!(
+            r#"{{"version":2,"profile":{{"personId":"zhang","name":"张三"}},"tasks":[{}]}}"#,
+            task_json("t1", None, 100),
+        );
+        import_tasks_conn(&mut conn, &raw, SELF).unwrap();
+        let (json, _) = export_tasks_json(&conn, SELF, "我").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["tasks"][0]["ownerId"], "zhang", "往返后归属不串档");
+    }
+
+    #[test]
+    fn import_same_id_takes_later_updated_at_with_owner() {
+        let _g = crate::db::lock_db_write();
+        let mut conn = setup_conn();
+        // 先导旧版（本人、ua=100），再导新版同 id（张三、ua=200）→ 更新胜出且换归属
+        let raw1 = format!("[{}]", task_json("dup", None, 100));
+        import_tasks_conn(&mut conn, &raw1, SELF).unwrap();
+        let raw2 = format!(
+            r#"{{"version":2,"profile":{{"personId":"zhang","name":"张三"}},"tasks":[{}]}}"#,
+            task_json("dup", None, 200),
+        );
+        import_tasks_conn(&mut conn, &raw2, SELF).unwrap();
+        let t = &load_all(&conn).unwrap()[0];
+        assert_eq!(t.owner_id.as_deref(), Some("zhang"));
+        assert_eq!(t.updated_at, Some(200));
     }
 }

@@ -357,6 +357,7 @@ fn create_task(
             depends_on: None,
             canvas_pos: None,
             model: None,
+            owner_id: None,            // API 建卡 = 本人（任务图谱设计 §1.1）
             expected_updated_at: None, // 新建任务：无读快照基线
         };
         if let Err(e) = store.upsert(vec![task.clone()]) {

@@ -70,7 +70,8 @@ fn build_system_prompt(guidance: &str) -> String {
 }
 
 /// 剥 Markdown 围栏：```json ... ``` / ``` ... ```（模型最常见的越界形态）
-fn strip_fences(raw: &str) -> &str {
+/// pub(crate)：task_autotag 的输出校验链复用同一契约（任务图谱设计 §2）
+pub(crate) fn strip_fences(raw: &str) -> &str {
     let t = raw.trim();
     if let Some(rest) = t.strip_prefix("```") {
         // 跳过语言标记行（json / JSON …）

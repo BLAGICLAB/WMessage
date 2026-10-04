@@ -21,6 +21,9 @@
     "entry": [
       "scripts/sync-lobe-icons.mjs"
     ],
+    "ignore": [
+      "gui-test-screenshots/**"
+    ],
     "ignoreDependencies": [
       "oxlint",
       "@lobehub/icons-static-svg"

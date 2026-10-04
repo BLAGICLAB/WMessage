@@ -489,6 +489,7 @@ pub(crate) fn workflow_save_locked(
                 depends_on: Some(deps),
                 canvas_pos: node.pos.clone(),
                 model: node.model.clone(),
+                owner_id: None, // 本机创建的工作流卡 = 本人
                 expected_updated_at: None,
             });
         }

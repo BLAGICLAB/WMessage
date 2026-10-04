@@ -35,6 +35,10 @@ pub struct ProfileData {
     pub user: ProfileEntry,
     #[serde(default)]
     pub bot: ProfileEntry,
+    /// 本人 personId（任务图谱设计 §1.2）：首次生成后固化。
+    /// 旧 profile.json 无此字段 → default None → ensure_person_id 补生成
+    #[serde(default)]
+    pub person_id: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -217,6 +221,64 @@ fn valid_kind(kind: &str) -> bool {
 fn broadcast<R: Runtime>(app: &AppHandle<R>) {
     let data = load_data(app);
     let _ = app.emit("profile-changed", build_view(app, &data));
+}
+
+/// 本人显示名（空名时用默认「我」；people_list 合并本人行用）
+pub fn self_display_name<R: Runtime>(app: &AppHandle<R>) -> Option<String> {
+    let data = load_data(app);
+    let name = data.user.name.trim();
+    Some(if name.is_empty() {
+        default_name("user")
+    } else {
+        name.to_string()
+    })
+}
+
+/// 本人 personId：缺失则生成 UUID v4 固化到 profile.json，并在 people 表
+/// 落 is_self=1 行（任务图谱设计 §1.2）。导出/导入/people_list 共用入口，
+/// 副作用只发生一次（生成后幂等返回）。返回 (personId, 显示名)。
+pub fn ensure_person_id<R: Runtime>(app: &AppHandle<R>) -> (String, String) {
+    let name = self_display_name(app).unwrap_or_else(|| default_name("user"));
+    let data = load_data(app);
+    if let Some(pid) = data.person_id.filter(|s| !s.trim().is_empty()) {
+        return (pid, name);
+    }
+    let pid = uuid::Uuid::new_v4().to_string();
+    {
+        let _g = PROFILE_WRITE_LOCK.lock().unwrap_or_else(|e| {
+            eprintln!("[mutex_poisoned] profile::PROFILE_WRITE_LOCK: {e:?}");
+            e.into_inner()
+        });
+        let mut data = load_data(app);
+        // 双检：并发调用下后来者发现已有值就不再覆盖
+        if data
+            .person_id
+            .as_deref()
+            .map(|s| s.trim().is_empty())
+            .unwrap_or(true)
+        {
+            data.person_id = Some(pid.clone());
+            if let Err(e) = save_data(app, &data) {
+                eprintln!("[profile] personId 持久化失败（本次内存生效）：{e}");
+            }
+        }
+    }
+    // people 表本人行（失败不致命：people_list 对 is_self 行会用 profile 名兜底；
+    // 但缺失会让本人行整个消失，尽力补建）。
+    // 注意不加 DB_WRITE_LOCK——调用方（导入/导出）可能已持锁，普通 Mutex 不可重入；
+    // 单条 UPSERT 自身原子，无需多语句事务保护
+    if let Ok(conn) = crate::db::open_db(app) {
+        if let Err(e) = crate::db::people::people_upsert_entry(&conn, &pid, &name, true) {
+            eprintln!("[profile] people 本人行写入失败：{e}");
+        }
+    }
+    (pid, name)
+}
+
+/// 导出信封的本人资料卡（设计 §1.4）：avatar 有意不携带（dataUrl 太肥，多人
+/// 交换滚雪球；people.avatar 列预留，图谱侧栏用名字 + 首字母色块）
+pub fn export_profile_card<R: Runtime>(app: &AppHandle<R>) -> (String, String) {
+    ensure_person_id(app)
 }
 
 #[tauri::command]

@@ -650,13 +650,25 @@ export default function WidgetApp() {
       un.then((f) => f());
     };
   }, []);
+  // 任务图谱（设计 §1.5）：ownerId 非空 = 导入的外来任务，挂件只显示本人的
+  const notMine = (t: Task) => Boolean(t.ownerId);
   const notWorkflow = (t: Task) => wfVisible || !isWorkflowTask(t);
   const visible = tasks.filter(
-    (t) => notWorkflow(t) && !t.archived && !t.deletedAt && t.column !== "done"
+    (t) =>
+      !notMine(t) &&
+      notWorkflow(t) &&
+      !t.archived &&
+      !t.deletedAt &&
+      t.column !== "done"
   );
   const doneList = tasks
     .filter(
-      (t) => notWorkflow(t) && !t.archived && !t.deletedAt && t.column === "done"
+      (t) =>
+        !notMine(t) &&
+        notWorkflow(t) &&
+        !t.archived &&
+        !t.deletedAt &&
+        t.column === "done"
     )
     .slice()
     .sort((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0));

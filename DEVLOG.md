@@ -2,6 +2,61 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-05（周日）G1/G2/G3：任务图谱模块——多人汇总归属 + 归档自动打标 + Obsidian 式关系图谱
+
+**需求**（老板拍板，方案讨论见会话）：单机个人助手要能看整个部门的任务关系与年终量。
+多人协作 = 各自导出任务 JSON 交给汇总人导入；看板默认只看自己的；归档纳入图谱
+（归档 = 完成的历史任务，是统计主体）；归档时大模型自动打标（≤3 个）；图谱按
+Obsidian 关系图谱做。设计文档：`docs/TASK-GRAPH-DESIGN-2026-10-05.md`（决策记录 §0）。
+
+**实现**（三批）：
+- **G1-OWNER 数据基座**：tasks 表加 `owner_id`（第 29 列，幂等 ALTER，NULL 恒等于
+  本人）；新 `db/people.rs` 成员注册表（upsert 最新名覆盖 + is_self 只升不降 + 占位
+  兜底防悬空归属）；profile.json 加 `personId`（首访生成 UUID 固化 + people 落
+  is_self 行）；导出升级 v2 信封 `{version, exportedAt, profile, people, tasks}`
+  （NULL owner 盖章本人 pid；头像有意不携带防 dataUrl 滚雪球），导入 untagged 双格式
+  ——v1 裸数组（视为本人，旧文件永久可导）/ v2 信封（归属归一：任务自带 ownerId 优先，
+  否则信封 pid，等于自己归 NULL），透明转发不串档；渲染层 owner 过滤——App
+  `visibleTasks` 与挂件任务选择器叠加 `!t.ownerId`（看板/归档/回收站/⌘K 一处改动
+  全覆盖）。`people_list` 命令注册 + 架构文档模块地图同步。
+- **G2-AUTOTAG 归档打标**：新 `task_autotag.rs`——守卫链（done ∧ archived ∧ 未软删 ∧
+  tags 空 ∧ owner_id NULL，不满足静默 skip）→ `summarize_messages` 一次性推理（同
+  workflow_decompose 样板，全局 active 模型——统一词表有意不用按卡覆盖）→ 校验链
+  （fences 剥离 → ≤3 个 × ≤12 字 → trim 去重，超限截断不整包拒）→ `apply_task_patch`
+  持久化 + tasks-changed/tasks-updated 广播 + 审计。前端在 App 观测「已加载行从未
+  归档 → 归档且无标签」转变 fire-and-forget 调用（覆盖规则 tick/reload/远端合并三
+  路径）；首屏 prev 空不触发——防启动对历史归档批量调用。
+- **G3-GRAPH 图谱**：新 `src/components/GraphPage/` 四件——`graph-build.ts`（tasks+
+  workflows → 节点/边：dependsOn 有向 dep 边 + 工作流 hub 节点（成员 member 边），
+  度数驱动半径，排除软删含归档，悬空引用丢边；过滤器：状态/成员（本人哨兵
+  `SELF_OWNER`）/标签/工作流白名单/年份（按 completedAt 归年——归档时间会把跨年
+  完成记错账）/孤立节点剪枝）；`physics.ts`（零新依赖手写 Obsidian/d3-force 等效
+  模型：网格分桶短程斥力 O(n·k) + 弹簧（dep 90/0.06、member 130/0.02）+ 向心 +
+  碰撞分离，速度 Verlet，alpha 0.02 冷却停循环、交互 0.5 暖启动）；`GraphCanvas.tsx`
+  （Canvas 2D + DPR + 指针锚缩放/平移/hover 邻接高亮其余淡出 0.12/点选/拖拽固定，
+  配色全读 CSS 变量 + MutationObserver 监听 html.dark，双主题自动适配）；`GraphPage.tsx`
+  （统计条/搜索描环/成员·标签·年份·工作流过滤器侧栏/详情面板——外来卡只读无
+  「在看板打开」）。导航 `RailView` 加 `"graph"`（Waypoints 图标）。
+
+**验证**：新增 Rust 18 测（owner 归一/v1 兼容/v2 盖章往返/版本拒收/占位兜底/people
+upsert 不降自我/autotag 校验链）+ 前端 35 测（graph-build 10/physics 7/GraphPage 冒烟
+5 等）——vitest 441 全绿；cargo test 全量 1334 通过 0 失败（1 例
+resolve_finds_entry_across_protocols 因 keychain 环境挂起 skip，与既有 dev 实例争锁
+相关，非本批引入；legacy files 迁移 fixture 因新增列同步补 OWNER_TASK_COLUMNS）；
+test-fast 门禁全绿（桥一致性：people_list/task_autotag 注册
+核对通过；模块地图对拍通过；knip 抓掉 GraphNodeKind/GraphLink 未用导出后清零）；
+`npm run build` 通过。GUI 冒烟用浏览器 mock 渲染真实 GraphPage/GraphCanvas
+（`gui-test-screenshots/graph-demo.html`，Tauri 面 shim + seed 同源数据）完成：
+状态/成员着色、hover 邻接高亮其余淡出、节点选中详情面板、搜索描环、暗色主题、
+hub 命名、空态——期间修掉四个真问题：①画布尺寸未就绪时向心引力指向原点
+（首帧布局跑偏）→ 建图后同步预稳定 150 tick + 首尺寸归中平移；②alpha 冷却阈值
+冻布局在半路 → 同上；③paintKey 缺内容签名，异步工作流名到达后画布不重绘 →
+graphVersion 计数；④节流/隐藏窗口下 rAF/RO 均不投递，图出不来 → 同步首绘 +
+每渲染提交重绘 + RO 回调直绘（顺带修复：合成指针 setPointerCapture 抛
+NotFoundError 中断 pointerdown → try/catch）。真机冒烟按
+`docs/MANUAL-SMOKE-ACCEPTANCE-TASK-GRAPH-2026-10-05.md`（隔离数据目录法），
+视觉验收截图见 gui-test-screenshots/graph-0*.png。
+
 ## 2026-10-04（周六）U20D-A：删 🧩 路由兜底——子 agent 识别纯走结构化字段（发布前数据清空裁剪）
 
 **需求**（老板拍板：测试期数据即将全部清空发布，无老数据问题）：批 5 特意
