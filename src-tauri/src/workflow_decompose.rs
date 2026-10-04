@@ -205,7 +205,11 @@ pub(crate) fn validate_decompose(
                 done_flags[i] = true;
                 order.push(i);
                 for &d in &dependents[i] {
-                    indegree[d] -= 1;
+                    // done 节点不在（Kahn 已序）不减；重复减由 done_flags 屏蔽
+                    // （W7 r1 low：改为显式队列实现时须保留该守卫）
+                    if !done_flags[d] {
+                        indegree[d] -= 1;
+                    }
                 }
                 progressed = true;
             }
@@ -220,6 +224,7 @@ pub(crate) fn validate_decompose(
                 .collect();
             return Err(CommandError::InvalidArgument {
                 field: "subtasks".into(),
+                // value = 机器可读定位（环内任务名），reason = 人类解释（本函数约定）
                 value: stuck.join("→"),
                 reason: format!("任务存在循环依赖：{}", stuck.join("→")),
             });
@@ -441,6 +446,63 @@ mod tests {
         assert_eq!(ok[0].title, "审阅");
         assert_eq!(ok[1].title, "审阅（2）");
         assert_eq!(ok[2].title, "审阅（3）");
+    }
+
+    #[test]
+    fn validate_normalizes_forward_refs_and_strips_self_loops() {
+        // W7-TOPO：前向引用接受并拓扑重排（被依赖的 A 排前）
+        let ok = validate_decompose(vec![
+            DecomposeSubtask {
+                title: "B".into(),
+                note: None,
+                depends_on: vec![1],
+            },
+            DecomposeSubtask {
+                title: "A".into(),
+                note: None,
+                depends_on: vec![],
+            },
+        ])
+        .unwrap();
+        assert_eq!(ok[0].title, "A");
+        assert!(ok[0].depends_on.is_empty());
+        assert_eq!(ok[1].title, "B");
+        assert_eq!(ok[1].depends_on, vec![0]);
+        // 自环剥离：B 依赖自己 → 无害剥离，合法依赖保留
+        let ok = validate_decompose(vec![
+            DecomposeSubtask {
+                title: "A".into(),
+                note: None,
+                depends_on: vec![],
+            },
+            DecomposeSubtask {
+                title: "B".into(),
+                note: None,
+                depends_on: vec![0, 1],
+            },
+        ])
+        .unwrap();
+        assert_eq!(ok[1].depends_on, vec![0]);
+    }
+
+    #[test]
+    fn validate_rejects_real_cycles_with_names() {
+        // 真环（非自环）：拒绝且报出环内任务名
+        let err = validate_decompose(vec![
+            DecomposeSubtask {
+                title: "甲".into(),
+                note: None,
+                depends_on: vec![1],
+            },
+            DecomposeSubtask {
+                title: "乙".into(),
+                note: None,
+                depends_on: vec![0],
+            },
+        ])
+        .unwrap_err();
+        assert!(err.to_string().contains("循环依赖"));
+        assert!(err.to_string().contains("甲") && err.to_string().contains("乙"));
     }
 
     #[test]
