@@ -429,7 +429,7 @@ pub(crate) fn workflow_save_locked(
         .transaction()
         .map_err(|e| CommandError::DbError(e.to_string()))?;
 
-    let mut upserts: Vec<Task> = Vec::new();
+    let mut upserts: Vec<Task> = Vec::with_capacity(input.nodes.len());
     for (i, node) in input.nodes.iter().enumerate() {
         if kept_flags[i] {
             // 保留卡：仅坐标变更（RMW 基线 = 锁内现读的 updated_at；
@@ -498,11 +498,13 @@ pub(crate) fn workflow_save_locked(
             real_id[*i].as_str()
         })
         .collect();
-    let deleted_ids: Vec<String> = existing
-        .iter()
-        .filter(|t| !kept_task_ids.contains(t.id.as_str()))
-        .map(|t| t.id.clone())
-        .collect();
+    let mut deleted_ids: Vec<String> = Vec::with_capacity(existing.len());
+    deleted_ids.extend(
+        existing
+            .iter()
+            .filter(|t| !kept_task_ids.contains(t.id.as_str()))
+            .map(|t| t.id.clone()),
+    );
     let deleted_n = deleted_ids.len();
     delete_tasks(&tx, &deleted_ids).map_err(CommandError::from)?;
     tx.commit()
@@ -843,25 +845,27 @@ mod tests {
                 1_000,
             )
         };
+
+        // 错误路径统一取 result（避免逐处 .map）
+        let r =
+            |run: &mut dyn FnMut(Vec<WorkflowNodeDraft>) -> CommandResult<WorkflowSaveOutcome>,
+             nodes: Vec<WorkflowNodeDraft>|
+             -> CommandResult<WorkflowSaveResult> { run(nodes).map(|o| o.result) };
         // 自环
-        let err = run(vec![node("n1", "A", &["n1"])])
-            .map(|o| o.result)
-            .unwrap_err();
+        let err = r(&mut run, vec![node("n1", "A", &["n1"])]).unwrap_err();
         assert!(err.to_string().contains("循环依赖"));
         // 间接环 A→B→A
-        let err = run(vec![node("n1", "A", &["n2"]), node("n2", "B", &["n1"])])
-            .map(|o| o.result)
-            .unwrap_err();
+        let err = r(
+            &mut run,
+            vec![node("n1", "A", &["n2"]), node("n2", "B", &["n1"])],
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("循环依赖"));
         // 悬空引用
-        let err = run(vec![node("n1", "A", &["不存在"])])
-            .map(|o| o.result)
-            .unwrap_err();
+        let err = r(&mut run, vec![node("n1", "A", &["不存在"])]).unwrap_err();
         assert!(err.to_string().contains("不在本画布内"));
         // localId 重复
-        let err = run(vec![node("n1", "A", &[]), node("n1", "B", &[])])
-            .map(|o| o.result)
-            .unwrap_err();
+        let err = r(&mut run, vec![node("n1", "A", &[]), node("n1", "B", &[])]).unwrap_err();
         assert!(err.to_string().contains("重复"));
     }
 
@@ -881,16 +885,20 @@ mod tests {
                 1_000,
             )
         };
+
+        // 错误路径统一取 result（避免逐处 .map）
+        let r =
+            |run: &mut dyn FnMut(Vec<WorkflowNodeDraft>) -> CommandResult<WorkflowSaveOutcome>,
+             nodes: Vec<WorkflowNodeDraft>|
+             -> CommandResult<WorkflowSaveResult> { run(nodes).map(|o| o.result) };
         // 节点数上限
         let nodes: Vec<WorkflowNodeDraft> = (0..MAX_WORKFLOW_NODES + 1)
             .map(|i| node(&format!("n{i}"), &format!("N{i}"), &[]))
             .collect();
-        let err = run(nodes).map(|o| o.result).unwrap_err();
+        let err = r(&mut run, nodes).unwrap_err();
         assert!(err.to_string().contains("上限"));
         // 空标题
-        let err = run(vec![node("n1", "   ", &[])])
-            .map(|o| o.result)
-            .unwrap_err();
+        let err = r(&mut run, vec![node("n1", "   ", &[])]).unwrap_err();
         assert!(err.to_string().contains("不能为空"));
         // 空名称
         let err = workflow_save_locked(

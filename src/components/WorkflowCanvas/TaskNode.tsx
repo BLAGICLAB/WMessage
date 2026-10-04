@@ -19,13 +19,17 @@ export interface TaskNodeData extends Record<string, unknown> {
   onToggleSubtask?: (taskId: string, subtaskId: string) => void;
 }
 
-/** 节点描边态：执行中（蓝）/ 完成（绿）/ 失败（红），三态互斥拆成独立分支（OCR r1） */
+/** 节点描边态：执行中（蓝）/ 完成（绿）/ 失败（红）。
+ *  done 无 result = 用户手动完成 → 绿（OCR r2：不得要求 result 才给绿环）；
+ *  done 且 result.status 明确非 success（超时/会话异常）→ 红 */
 function nodeBorder(task: Task | undefined): string {
-  if (task?.column === "doing" && task.botAssigned) return "ring-2 ring-[var(--info,#3b82f6)]";
+  if (task?.column === "doing" && task.botAssigned)
+    return "ring-2 ring-[var(--info,#3b82f6)]";
   if (task?.column !== "done") return "";
-  if (task.result?.status === "success") return "ring-2 ring-[var(--ok,#22c55e)]";
-  if (task.result?.status != null) return "ring-2 ring-[var(--danger,#ef4444)]";
-  return "";
+  const status = task.result?.status;
+  if (status === undefined || status === "success")
+    return "ring-2 ring-[var(--ok,#22c55e)]";
+  return "ring-2 ring-[var(--danger,#ef4444)]";
 }
 
 export const TaskNode = memo(function TaskNode({

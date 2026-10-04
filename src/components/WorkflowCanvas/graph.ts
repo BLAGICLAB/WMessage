@@ -98,7 +98,7 @@ export function draftFromTasks(
     pos: t.canvasPos ?? { x: 0, y: 0 },
   }));
   // 任一行缺坐标 → 全图重排；全有坐标（用户手拖过）则原样保留
-  const missingPos = tasks.some((t) => t.canvasPos == null);
+  const missingPos = tasks.some((t) => t.canvasPos === undefined);
   if (missingPos) {
     const laid = layoutGraph(base);
     for (const n of base) n.pos = laid[n.localId] ?? n.pos;
