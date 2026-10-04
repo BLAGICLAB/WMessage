@@ -37,8 +37,8 @@ export type Msg = {
 
 /** 会话（bot_sessions_load 载荷 = Rust BotSession camelCase）。
  *  时间戳可选：chat-open-session 前端补行的会话不带（按无时间渲染）。
- *  isSubagent：子 agent 执行会话标记（U20D 批 5 结构化路由；旧会话无此字段
- *  = undefined，按旧标题 🧩 前缀兜底判定） */
+ *  isSubagent：子 agent 执行会话标记（U20D 结构化路由的唯一依据，runner
+ *  建会话时写入；chat-open-session 补行的执行会话本就不是子 agent，不带） */
 export type Session = {
   id: string;
   title: string;

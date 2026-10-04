@@ -2,6 +2,21 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-04（周六）U20D-A：删 🧩 路由兜底——子 agent 识别纯走结构化字段（发布前数据清空裁剪）
+
+**需求**（老板拍板：测试期数据即将全部清空发布，无老数据问题）：批 5 特意
+保留的「标题 🧩 前缀路由兜底」失去服务对象，删除。
+
+**实现**：ChatPanel 路由收敛为 `Session.isSubagent === true` 单依据（安全
+论证：chat-open-session 补行只发生在 bot_chat 执行会话——manual/scheduled/
+batch 全部非子 agent，补行行恒不需要标记；子 agent 会话只经
+bot_sessions_load 整表进入前端，行行带字段）；subagent-finished 提示文案
+去 🧩（生产代码最后一块 🧩 装饰清零）。db 的 is_subagent ALTER 迁移保留
+（防个别未清空的测试机，无害防御）。
+
+**验证**：vitest 406/406 全绿（路由无既有测试断言，净删）；tsc +
+test-fast.sh exit 0。
+
 ## 2026-10-04（周六）U20C-ICON1B：终扫补漏——任务卡预算徽标 ⏱ → Timer（图标迁移收官复查）
 
 **需求**（老板要求复查残余 emoji）：全仓终扫（前端 DOM/字符串层 + 后端
