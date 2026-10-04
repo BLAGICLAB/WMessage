@@ -15,6 +15,7 @@ import {
 import { KanbanBoard } from "./components/KanbanBoard";
 import { CommandPalette } from "./components/CommandPalette";
 import { ErrorBoundary } from "./ui/ErrorBoundary";
+import { ErrorDialogHost } from "./ui/ErrorDialogHost";
 import mainLogo from "./assets/main-logo.png";
 import { ArchivePage } from "./components/ArchivePage";
 import { TrashPage } from "./components/TrashPage";
@@ -798,6 +799,8 @@ function App() {
           ) : null}
           {/* 全局确认弹窗（老板 14:45 拍板：confirm 走主窗口，不走 widget 挂件） */}
           <ConfirmMap />
+          {/* 应用内错误弹窗宿主（批 4：接管 errorHandler，替代原生 alert/confirm） */}
+          <ErrorDialogHost />
         </main>
         {paletteOpen && (
           <CommandPalette

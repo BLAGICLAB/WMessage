@@ -6,16 +6,18 @@
 // 本模块：识别 → 按 code 给出对应提示 → 兜底展示 message。
 //
 // 设计取舍：
-// - 不引入新依赖：项目无 toast 库，沿用项目现状（src/App.tsx 等）使用原生 alert()
+// - 不引入新依赖：应用内错误弹窗用事件桥（ERROR_DIALOG_EVENT → ErrorDialogHost
+//   渲染 nm 卡片，❌/💡/🔁 由 lucide 图标承载）；未挂 Host 的窗口回退原生
+//   alert/confirm 旧格式（原生弹窗无富文本能力，emoji 是兜底路径的视觉语言）
 // - silent 选项：调用方已有 inline 错误 UI（如 SettingsPage setError）时只 console
-//   不弹 alert，避免双重提示
+//   不弹窗，避免双重提示
 // - recoverable 驱动 UI：CommandError.recoverable === true 且调用方
-//   传了 onRetry 时改用原生 confirm() 提供「重试」选择；recoverable === false 时只 alert
+//   传了 onRetry 时弹「重试」选择；recoverable === false 时只提示
 //   并引导反馈日志（hint 文案与后端 error.rs is_recoverable() 保持一致，不再误导"可重试"）
 // - formatCommandError()：供调用方取出 user-friendly 文本（替代 `String(e)`，
 //   后者对结构化对象只得到 "[object Object]"）
 // - 空 message 兜底：CommandError.message 为空时回退 code，
-//   再空回退「未知错误」；非结构化空 msg 同样兜底——不弹空 alert、不静默跳过
+//   再空回退「未知错误」；非结构化空 msg 同样兜底——不弹空窗、不静默跳过
 
 /**
  * CommandError.code 的取值全集——与 Rust 侧 `src-tauri/src/error.rs::CommandErrorCode`
@@ -191,6 +193,39 @@ export interface HandleOptions {
   onRetry?: () => void;
 }
 
+/** 应用内错误弹窗的事件名（ErrorDialogHost 监听；window 按 webview 天然隔离） */
+export const ERROR_DIALOG_EVENT = "wmessage-error-dialog";
+
+/** 弹窗请求载荷：Host 收到事件后渲染 nm 卡片（图标由 Host 提供，不再用 emoji），
+ *  结束时必须调用恰好一次 resolve——retry=true 仅在 retryable 且用户点「重试」。 */
+export interface ErrorDialogRequest {
+  message: string;
+  hint: string | null;
+  retryable: boolean;
+  resolve: (retry: boolean) => void;
+}
+
+/**
+ * 请求应用内错误弹窗。返回值 = 是否已有 ErrorDialogHost 接管
+ * （Host 对事件 preventDefault 表示接管）：
+ * - true：走应用内弹窗（图标化 UI）
+ * - false：调用方走原生 alert/confirm 兜底（旧格式；未挂 Host 的窗口 /
+ *   非常规宿主——原生弹窗无法富文本，emoji 是兜底路径的视觉语言）
+ */
+function requestErrorDialog(req: ErrorDialogRequest): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    const ev = new CustomEvent(ERROR_DIALOG_EVENT, {
+      detail: req,
+      cancelable: true,
+    });
+    // dispatchEvent 返回 false 当且仅当有监听者调用了 preventDefault（= 接管）
+    return !window.dispatchEvent(ev);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * 非 Tauri 宿主（纯浏览器 / 自动化夹具）检测：invoke 全部不可用，
  * boot 期每个调用都会失败——弹窗只会洪水化（U1 登记的自动化挂死根因），
@@ -228,22 +263,38 @@ export function handleCommandError(
     // 空 message 不弹空 alert——fallback 到 code，code 也空再兜底「未知错误」
     const msg = e.message.trim() ? e.message : e.code || "未知错误";
     const hint = hintForCode(e.code);
-    const body = hint ? `${msg}\n\n💡 ${hint}` : msg;
-    // recoverable 驱动 UI：可恢复 + 调用方给了重试回调 → confirm 提供「重试」选择；
-    // 不可恢复（或无回调）→ alert + hint 引导（hint 已按 code 区分「去设置页」/「反馈日志」）
-    if (e.recoverable && options.onRetry) {
-      if (confirm(`❌ ${body}\n\n🔁 是否重试？`)) {
-        try {
-          options.onRetry();
-        } catch (retryErr) {
-          // 重试回调同步抛错不能逃出错误处理器本身——回收进同一入口
-          // （silent：confirm 刚弹过，不二次弹窗）
-          handleCommandError(retryErr, ctx, { silent: true });
-        }
+    const legacyBody = hint ? `${msg}\n\n💡 ${hint}` : msg;
+    // recoverable 驱动 UI：可恢复 + 调用方给了重试回调 → 弹「重试」选择；
+    // 不可恢复（或无回调）→ 提示 + hint 引导（hint 已按 code 区分「去设置页」/「反馈日志」）
+    const retry = () => {
+      try {
+        options.onRetry!();
+      } catch (retryErr) {
+        // 重试回调同步抛错不能逃出错误处理器本身——回收进同一入口
+        //（silent：弹窗刚关，不二次弹）
+        handleCommandError(retryErr, ctx, { silent: true });
       }
-    } else {
-      alert(`❌ ${body}`);
+    };
+    if (e.recoverable && options.onRetry) {
+      // 应用内弹窗优先（批 4：❌/💡/🔁 由 ErrorDialogHost 用 lucide 图标渲染）
+      if (
+        requestErrorDialog({
+          message: msg,
+          hint,
+          retryable: true,
+          resolve: (r) => r && retry(),
+        })
+      ) {
+        return;
+      }
+      // 兜底：无 Host 的窗口走原生 confirm（旧 emoji 格式——原生弹窗无富文本能力）
+      if (window.confirm(`❌ ${legacyBody}\n\n🔁 是否重试？`)) retry();
+      return;
     }
+    if (requestErrorDialog({ message: msg, hint, retryable: false, resolve: () => {} })) {
+      return;
+    }
+    window.alert(`❌ ${legacyBody}`);
     return;
   }
   // 非结构化错误（一般是同步抛出的 JS 异常，未被 Rust 端包装）
@@ -251,5 +302,8 @@ export function handleCommandError(
   console.error(`${prefix} ${msg || "(empty)"}`, e);
   if (options.silent) return;
   // msg 为空也兜底「未知错误」，不弹空 alert、也不静默跳过
-  alert(`❌ ${msg || "未知错误"}`);
+  if (requestErrorDialog({ message: msg || "未知错误", hint: null, retryable: false, resolve: () => {} })) {
+    return;
+  }
+  window.alert(`❌ ${msg || "未知错误"}`);
 }

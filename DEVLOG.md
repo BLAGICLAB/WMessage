@@ -2,6 +2,26 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-04（周六）U20C-ICON2：错误弹窗组件化——❌💡🔁 图标化（图标迁移批 4）
+
+**需求**（方案批 4）：errorHandler 的 ❌💡🔁 靠原生 alert/confirm 承载，原生
+弹窗无富文本能力。本批把错误提示迁到应用内 nm 卡片弹窗，三个 emoji 换成
+lucide CircleX/Lightbulb/RotateCcw。
+
+**实现**：事件桥设计——`handleCommandError` 签名不变（30+ 调用点零改动），
+内部发 `ERROR_DIALOG_EVENT`（cancelable CustomEvent），新组件
+`ErrorDialogHost` preventDefault 接管并渲染 nm 卡片（图标化标题/提示行/
+重试键），resolve 回调驱动重试；主窗与挂件各挂一个 Host（挂件挂在根节点
+常驻，首版误放 expanded 分支被测试抓出）。未挂 Host 的窗口回退原生
+alert/confirm 旧 emoji 格式——原生弹窗无富文本，兜底路径视觉语言保留，
+存量 errorHandler.test（全走兜底路径）零改动通过。onRetry 同步抛错回收
+语义不变。
+
+**验证**：vitest 406/406 全绿（新增 Host 5 用例：卡片形态/重试/取消/抛错
+回收/兜底；App.test 2 处、WidgetApp.test 2 处断言从原生 alert 适配为
+alertdialog——fake timers 下 act 包裹推进+同步查询，findByRole 的
+waitFor 真实计时器会死锁）；tsc + test-fast.sh exit 0。
+
 ## 2026-10-04（周六）U20C-ICON1A：图标按钮换行回归修复——icon+text 键统一 nowrap
 
 **需求**（老板截图反馈）：U20C-ICON1 后定时/导入/导出/选择图片/查看迁移日志/

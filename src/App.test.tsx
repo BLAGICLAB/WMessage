@@ -154,10 +154,9 @@ describe("App", () => {
       return defaultInvokeImpl(cmd);
     });
     render(<App />);
-    // 明确告警（沿用 alert 风格）
-    await waitFor(() => {
-      expect(alertMock).toHaveBeenCalled();
-    });
+    // 明确告警（批 4 起走应用内错误弹窗，ErrorDialogHost 随 App 挂载）
+    const errDialog = await screen.findByRole("alertdialog");
+    expect(errDialog.textContent).toContain("database is locked");
     // 不触发种子/迁移写入，也不删除任何行
     expect(
       mocks.invokeMock.mock.calls.filter((c) => c[0] === "db_upsert")
@@ -251,8 +250,8 @@ describe("App", () => {
       const { emit } = await import("@tauri-apps/api/event");
       (emit as ReturnType<typeof vi.fn>).mockClear();
       await user.click(screen.getByText("新建任务"));
-      // storage 层 alert 已弹（upsertTasks → handleCommandError）
-      await waitFor(() => expect(alertMock).toHaveBeenCalled());
+      // storage 层错误弹窗已弹（upsertTasks → handleCommandError → ErrorDialogHost）
+      await waitFor(() => expect(screen.getByRole("alertdialog")).toBeTruthy());
       // mutate 抛错（错误从 upsertTasks 一路抛到 call site 的 catch）
       await waitFor(() =>
         expect(errSpy).toHaveBeenCalledWith("[mutate] persist failed", dbErr)

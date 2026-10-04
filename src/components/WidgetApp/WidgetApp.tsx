@@ -38,6 +38,7 @@ import { taskFiles, filesPatch } from "../../lib/taskFiles";
 import { ChatPanel } from "../ChatPanel";
 import { FoldToggle } from "../FoldToggle";
 import { ArtifactBatchDialog } from "../ArtifactBatchDialog";
+import { ErrorDialogHost } from "../../ui/ErrorDialogHost";
 import widgetLogo from "../../assets/widget-logo.png";
 
 import {
@@ -658,6 +659,8 @@ export default function WidgetApp() {
   return (
     <ErrorBoundary>
       <div className="w-screen h-screen bg-transparent overflow-hidden">
+      {/* 应用内错误弹窗宿主：折叠/展开两态都常驻（错误不挑时机，批 4） */}
+      <ErrorDialogHost />
       {!expanded && (
         <div
           className={`${
