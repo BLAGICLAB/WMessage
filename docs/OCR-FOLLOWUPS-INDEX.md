@@ -246,3 +246,14 @@ grep 例：`grep 'C2b1' docs/OCR-FOLLOWUPS-INDEX.md`
 | W5F-1 | W5-FUSE-r1 | None/low | 全域熔断入口在工作流分区（文案已注明全域） | 用户不开工作流分区找不到 | wontfix-by-now（移入机器人分区属产品定位决策，老板拍板入口归属后 1 行迁移） |
 | W5F-2 | W5-FUSE-r1 | low | NodeOutcome 三布尔组合语义隐式（ok+cancelled 等非法组合靠约定） | 改控制器时 | W6+（改 enum NodeStatus，随调度器下一功能批顺带） |
 | W5F-3 | W5-FUSE-r1 | low | fuse_cap_override 生产恒 Some（unwrap_or 默认仅测试可达） | — | wontfix（保留给测试直驱 core 锚定任意 cap 的通道，注释已说明） |
+
+## W6-MODEL（每卡模型覆盖，2026-10-04 OCR r1 衍生债）
+
+> 修复批 commit 见 git log `W6-MODEL-r1`；r1 报告（本地）`docs/OCR-CODE-REVIEW-2026-10-04-w6.json`
+> （20 条去重约 16 项：1C+2H+7M+6L）。1C+2H+5M+2L 随批修复，以下为缓期项。
+
+| ID | 批次 | 严重度 | 根因一句话 | 触发条件 | 处置 |
+|---|---|---|---|---|---|
+| W6F-1 | W6-MODEL-r1 | low | resolve 的厂商 key 分支触发真实钥匙串（macOS 授权 UI 可无限等待），测试不覆盖 | 单测带 vendor 条目 | wontfix（测试仅走全局回退路径；vendor 分支由 GUI 冒烟覆盖） |
+| W6F-2 | W6-MODEL-r1 | low | model_by_id 无 with_capacity / patch model 无测试 / model trim 存储 | 改对应文件时 | 顺手修候选（纯 hygiene，随下次触碰同文件批处理） |
+| W6F-3 | W6-MODEL-r1 | medium | 跨条目类型混用（Seedance 等图像/视频 API 非 chat 协议，选入节点不会产生图像） | 用户给节点选非对话模型 | 产品层文档说明（设置页模型条目可指向任意 OpenAI 兼容网关；真原生图像生成属独立功能） |

@@ -443,6 +443,9 @@ pub struct ResolvedModel {
     pub model: String,
     pub api_provider: String,
     pub api_key: String,
+    /// 条目级推理参数（温度/top_p/system_prompt/max_tokens 钳制按覆盖条目，
+    /// 防跨协议钳制错位——W6 r1 medium）
+    pub inference: crate::bot::EffectiveInference,
 }
 
 /// 按模型库条目 id 解析覆盖配置（纯查表 + key 读取，单测锚点）：
@@ -453,6 +456,7 @@ pub fn resolve_model_override(
     active_model_id: Option<&ActiveModelId>,
     models_by_provider: Option<&ModelsByProvider>,
     entry_id: &str,
+    global_max_tokens: Option<u32>,
 ) -> Result<ResolvedModel, String> {
     let lists = models_by_provider;
     fn find<'a>(items: &'a [ModelEntry], entry_id: &str) -> Option<&'a ModelEntry> {
@@ -492,6 +496,11 @@ pub fn resolve_model_override(
         model: entry.model.clone(),
         api_provider: provider.to_string(),
         api_key,
+        inference: super::schema::inference_for_entry(
+            entry,
+            crate::bot::ApiProvider::from_cfg(Some(provider)),
+            global_max_tokens,
+        ),
     })
 }
 
@@ -507,7 +516,7 @@ mod model_override_tests {
                     label: "GLM-4".into(),
                     base_url: "https://open.bigmodel.cn/api/paas/v4".into(),
                     model: "glm-4.6".into(),
-                    vendor: Some("zhipu".into()),
+                    vendor: None,
                     enabled: true,
                     context_k: None,
                     capabilities: None,
@@ -537,7 +546,8 @@ mod model_override_tests {
 
     #[test]
     fn resolve_finds_entry_across_protocols() {
-        let r = resolve_model_override(None, None, models().as_ref(), "glm").unwrap();
+        let r = resolve_model_override(None, None, models().as_ref(), "glm", None).unwrap();
+        assert!(r.inference.max_tokens >= 256);
         assert_eq!(r.base_url, "https://open.bigmodel.cn/api/paas/v4");
         assert_eq!(r.model, "glm-4.6");
         assert_eq!(r.api_provider, "openai");
@@ -549,8 +559,9 @@ mod model_override_tests {
 
     #[test]
     fn resolve_rejects_missing_and_disabled() {
-        assert!(resolve_model_override(None, None, models().as_ref(), "ghost").is_err());
-        let err = resolve_model_override(None, None, models().as_ref(), "disabled1").unwrap_err();
+        assert!(resolve_model_override(None, None, models().as_ref(), "ghost", None).is_err());
+        let err =
+            resolve_model_override(None, None, models().as_ref(), "disabled1", None).unwrap_err();
         assert!(err.contains("停用"));
     }
 }

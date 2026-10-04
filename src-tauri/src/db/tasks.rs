@@ -25,7 +25,7 @@ pub struct TaskFile {
 pub const MAX_TASK_FILES: usize = 10;
 
 /// tasks 表单源 DDL（W1-CANVAS 抽取）：open_db 建表与 db::workflow 测试共用。
-/// 含全部 27 列——老库缺列由 open_db 的幂等 ALTER 迁移补齐，此处即最新完整 schema。
+/// 含全部 28 列——老库缺列由 open_db 的幂等 ALTER 迁移补齐，此处即最新完整 schema。
 pub const TASKS_DDL: &str = "CREATE TABLE IF NOT EXISTS tasks (
    id           TEXT PRIMARY KEY,
    title        TEXT NOT NULL,

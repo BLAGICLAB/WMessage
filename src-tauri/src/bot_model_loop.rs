@@ -481,6 +481,7 @@ pub async fn run_model_loop(
             cfg.active_model_id.as_ref(),
             cfg.models_by_provider.as_ref(),
             id,
+            cfg.max_tokens,
         )?),
         None => None,
     };

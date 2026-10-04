@@ -53,8 +53,8 @@ pub use keyring::{
     read_vendor_key, write_search_key,
 };
 pub use schema::{
-    active_model_entry, effective_inference, migrate_bot_config_schema, resolve_max_tokens,
-    EffectiveInference, DEFAULT_MAX_TOKENS, MAX_MAX_TOKENS, MIN_MAX_TOKENS,
+    active_model_entry, effective_inference, inference_for_entry, migrate_bot_config_schema,
+    resolve_max_tokens, EffectiveInference, DEFAULT_MAX_TOKENS, MAX_MAX_TOKENS, MIN_MAX_TOKENS,
 };
 pub use types::{
     check_len, resolve_model_override, ActiveModelId, ApiProvider, BotConfig, BotConfigView,

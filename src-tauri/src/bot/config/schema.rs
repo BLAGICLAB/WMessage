@@ -196,15 +196,14 @@ pub fn effective_inference(
 ) -> EffectiveInference {
     let provider = ApiProvider::from_cfg(api_provider);
     let entry = active_model_entry(api_provider, active_model_id, models_by_provider);
-    EffectiveInference {
-        max_tokens: resolve_max_tokens(entry.and_then(|e| e.max_tokens).or(max_tokens)),
-        temperature: resolve_temperature(entry.and_then(|e| e.temperature), provider),
-        top_p: resolve_top_p(entry.and_then(|e| e.top_p)),
-        system_prompt: entry
-            .and_then(|e| e.system_prompt.as_deref())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string),
+    match entry {
+        Some(e) => inference_for_entry(e, provider, max_tokens),
+        None => EffectiveInference {
+            max_tokens: resolve_max_tokens(max_tokens),
+            temperature: resolve_temperature(None, provider),
+            top_p: resolve_top_p(None),
+            system_prompt: None,
+        },
     }
 }
 
@@ -583,5 +582,25 @@ mod inference_tests {
             ),
             ReasoningWire::AnthropicBudget(6_144)
         );
+    }
+}
+
+/// 条目级推理参数（W6-MODEL）：每卡模型覆盖时按覆盖条目计算（原 effective_inference
+/// 只按 active 条目）。global_max_tokens = 全局 max_tokens 兜底。
+pub fn inference_for_entry(
+    entry: &ModelEntry,
+    provider: ApiProvider,
+    global_max_tokens: Option<u32>,
+) -> EffectiveInference {
+    EffectiveInference {
+        max_tokens: resolve_max_tokens(entry.max_tokens.or(global_max_tokens)),
+        temperature: resolve_temperature(entry.temperature, provider),
+        top_p: resolve_top_p(entry.top_p),
+        system_prompt: entry
+            .system_prompt
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
     }
 }

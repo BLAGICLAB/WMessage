@@ -120,8 +120,8 @@ pub use config::{
 // base_url_is_safe 不移出：它只在 config 模块内部（SSRF 校验的 base_url 检查）用，
 // 移出来 crate 内无人引用，编译器报 unused import。
 pub(crate) use config::{
-    add_allowed_dir, escape_for_log, load_config, resolve_model_override, truncate_for_log,
-    update_config_file,
+    add_allowed_dir, escape_for_log, inference_for_entry, load_config, resolve_model_override,
+    truncate_for_log, update_config_file,
 };
 pub(crate) use config::{has_vendor_key, read_vendor_key};
 

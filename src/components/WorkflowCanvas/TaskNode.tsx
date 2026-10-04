@@ -68,7 +68,7 @@ export const TaskNode = memo(function TaskNode({
             onToggleDone={() => data.onToggleDone?.(task.id)}
             onToggleSubtask={(sid) => data.onToggleSubtask?.(task.id, sid)}
           />
-          {data.models.length > 0 && (
+          {(data.models.length > 0 || task.model) && (
             <select
               aria-label="执行模型"
               title="本卡执行用大模型（不选 = 跟随全局）"
@@ -79,6 +79,9 @@ export const TaskNode = memo(function TaskNode({
               }
             >
               <option value="">⚙️ 跟随全局模型</option>
+              {task.model && !data.models.some((m) => m.id === task.model) && (
+                <option value={task.model}>{task.model}（条目已删除）</option>
+              )}
               {data.models.map((m) => (
                 <option key={m.id} value={m.id}>
                   {m.label}

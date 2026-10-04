@@ -139,19 +139,19 @@ function WorkflowPageInner({
   useEffect(() => {
     invoke<{
       modelsByProvider?: {
-        openai?: Array<{ id: string; label: string }>;
-        anthropic?: Array<{ id: string; label: string }>;
+        openai?: Array<{ id: string; label: string; enabled?: boolean }>;
+        anthropic?: Array<{ id: string; label: string; enabled?: boolean }>;
       } | null;
     }>("bot_get_config")
       .then((c) => {
         const m = c.modelsByProvider;
-        const list = [
-          ...(m?.openai ?? []),
-          ...(m?.anthropic ?? []),
-        ].map((e) => ({ id: e.id, label: e.label }));
+        // 停用条目不进下拉（与聊天面板 enabled 过滤同规则）
+        const list = [...(m?.openai ?? []), ...(m?.anthropic ?? [])]
+          .filter((e) => e.enabled !== false)
+          .map((e) => ({ id: e.id, label: e.label }));
         setModels(list);
       })
-      .catch(() => {});
+      .catch((e) => handleCommandError(e, "读取模型库", { silent: true }));
   }, []);
 
   const snapshot = useCallback(
@@ -421,6 +421,17 @@ function WorkflowPageInner({
   // 一律经 ref 读最新 props/tasks，避免闭包过期被 React Flow 的节点 data 缓存
   // （OCR r1 high：rfNodes useMemo 不依赖回调身份，回调必须自身稳定）
 
+  /** 模型切换：草稿与真实任务同写（W6 r1 high：只 patch 不写草稿会在保存时回退） */
+  const changeModel = useCallback(
+    (taskId: string, model: string | undefined) => {
+      setNodes((prev) =>
+        prev.map((n) => (n.taskId === taskId ? { ...n, model } : n))
+      );
+      propsRef.current.onUpdate(taskId, model ? { model } : { model: undefined });
+    },
+    []
+  );
+
   const commitTitle = useCallback((taskId: string, title: string) => {
     setNodes((prev) =>
       prev.map((n) => (n.taskId === taskId ? { ...n, title } : n))
@@ -543,6 +554,8 @@ function WorkflowPageInner({
             tags: n.tags ?? null,
             dependsOn: n.dependsOn,
             pos: n.pos,
+            // 保存链必须携带 model（W6 r1 critical：缺失会把下拉刚设的模型置空）
+            model: n.model ?? tasks.find((t) => t.id === n.taskId)?.model ?? null,
           })),
         },
       });
@@ -642,11 +655,7 @@ function WorkflowPageInner({
           onToggleDone: task ? toggleDone : undefined,
           onCommitTitle: task ? commitTitle : undefined,
           onToggleSubtask: task ? toggleSubtask : undefined,
-          onModelChange: task
-            ? (taskId, model) => {
-                onUpdate(taskId, model ? { model } : { model: undefined });
-              }
-            : undefined,
+          onModelChange: task ? changeModel : undefined,
         };
         return {
           id: n.localId,
@@ -659,7 +668,7 @@ function WorkflowPageInner({
     ],
     // 依赖含全部 data 回调（deleteNode/toggle* 均为 useCallback 稳定引用，
     // 内部经 ref 读最新 tasks/props——此处完整列出是防过期闭包的兜底，OCR r1 high）
-    [nodes, tasks, name, goal, savedSnapshot, selectedIds, deleteNode, toggleDone, commitTitle, toggleSubtask, running, activeId, doneCount, models]
+    [nodes, tasks, name, goal, savedSnapshot, selectedIds, deleteNode, toggleDone, commitTitle, toggleSubtask, running, activeId, doneCount, models, changeModel]
   );
 
   const rfEdges = useMemo<Edge[]>(

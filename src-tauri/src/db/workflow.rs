@@ -444,6 +444,9 @@ pub(crate) fn workflow_save_locked(
                 .expect("kept 节点必在 existing 中")
                 .clone();
             t.canvas_pos = node.pos.clone();
+            // model 同步以草稿为准（None = 跟随全局；保留卡也允许改模型——
+            // W6 r1 high/critical：只改模型不改标题的场景指纹命中，不同步则静默丢弃）
+            t.model = node.model.clone();
             t.expected_updated_at = t.updated_at;
             t.updated_at = Some(now);
             upserts.push(t);
@@ -784,7 +787,7 @@ pub(crate) fn parse_workflow_file(raw: &str) -> CommandResult<WorkflowSaveInput>
     let nodes = file
         .nodes
         .into_iter()
-        .map(|n| {
+        .map(|mut n| {
             let mut depends_on: Vec<String> = Vec::new();
             for d in n.depends_on {
                 if !depends_on.contains(&d) {
@@ -799,7 +802,7 @@ pub(crate) fn parse_workflow_file(raw: &str) -> CommandResult<WorkflowSaveInput>
                 tags: n.tags,
                 depends_on,
                 pos: n.pos,
-                model: n.model,
+                model: n.model.take().filter(|m| !m.trim().is_empty()),
             }
         })
         .collect();

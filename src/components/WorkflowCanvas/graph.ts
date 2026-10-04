@@ -12,6 +12,8 @@ export interface CanvasNode {
   tags?: string[];
   dependsOn: string[];
   pos: { x: number; y: number };
+  /** 执行模型覆盖（W6-MODEL）：模型库条目 id；undefined = 跟随全局 */
+  model?: string;
 }
 
 /** 画布上任务卡的固定逻辑尺寸（ dagre 布局 + 拖动命中用；实际渲染宽 ~340px） */
@@ -105,7 +107,7 @@ export function draftFromTasks(
   tasks: Array<
     Pick<
       import("../../types").Task,
-      "id" | "title" | "note" | "tags" | "dependsOn" | "canvasPos" | "workflowId"
+      "id" | "title" | "note" | "tags" | "dependsOn" | "canvasPos" | "workflowId" | "model"
     >
   >
 ): CanvasNode[] {
@@ -117,6 +119,7 @@ export function draftFromTasks(
     tags: t.tags,
     dependsOn: [...(t.dependsOn ?? [])],
     pos: t.canvasPos ?? { x: 0, y: 0 },
+    model: t.model,
   }));
   // 任一行缺坐标 → 全图重排；全有坐标（用户手拖过）则原样保留
   const missingPos = tasks.some((t) => t.canvasPos === undefined);
