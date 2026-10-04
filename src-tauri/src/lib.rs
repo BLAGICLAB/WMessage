@@ -485,6 +485,8 @@ pub fn run() {
             crate::db::workflow::workflow_rename,
             crate::db::workflow::workflow_delete,
             crate::workflow_decompose::workflow_decompose,
+            crate::db::workflow::workflow_export,
+            crate::db::workflow::workflow_import,
             crate::workflow_runner::workflow_run,
             crate::workflow_runner::workflow_stop,
             crate::workflow_runner::workflow_is_running,

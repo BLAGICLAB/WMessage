@@ -49,7 +49,7 @@ pub struct Workflow {
 
 /// workflow_save 的单个节点草稿。taskId = 已保存卡的绑定提示（服务端不信任，
 /// 保留与否由指纹裁决）；dependsOn 引用本列表内其他节点的 localId。
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowNodeDraft {
     pub local_id: String,
@@ -66,7 +66,7 @@ pub struct WorkflowNodeDraft {
     pub pos: Option<CanvasPos>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowSaveInput {
     /// None = 新建工作流；Some = 覆盖保存既有工作流
@@ -584,6 +584,319 @@ pub async fn workflow_save(
     Ok(outcome.result)
 }
 
+// ────────────── 文件格式 v1（W4-TEMPLATE，设计 §4）──────────────
+
+pub const WORKFLOW_FILE_VERSION: u32 = 1;
+
+/// 模板文件读取上限（30 节点文件 ≈ 10KB，1MB 已是百倍余量；
+/// bounded read 同 tasks_import 的 check-then-act 防御）
+const MAX_IMPORT_FILE_BYTES: u64 = 1024 * 1024;
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowFileNode {
+    pub id: String,
+    pub title: String,
+    #[serde(default)]
+    pub note: Option<String>,
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    #[serde(default)]
+    pub pos: Option<CanvasPos>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowFile {
+    pub version: u32,
+    #[serde(default)]
+    pub generator: Option<String>,
+    #[serde(default)]
+    pub exported_at: Option<String>,
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    /// 缺省回退 name（导入宽松项；其余违规整包拒绝）
+    #[serde(default)]
+    pub goal: Option<String>,
+    #[serde(default)]
+    pub nodes: Vec<WorkflowFileNode>,
+}
+
+/// 拓扑导出序（纯逻辑，单测锚点）：多轮扫描就绪节点（依赖已全放置即就绪），
+/// 同轮按输入序稳定输出；悬空/自环依赖不阻塞（导出端防御，导入端另有校验）；
+/// 环内节点按输入序追加在后（不影响本地 id 映射的唯一性）。
+pub(crate) fn topo_export_order(tasks: &[Task]) -> Vec<String> {
+    let ids: std::collections::HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+    let mut placed: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut out: Vec<String> = Vec::with_capacity(tasks.len());
+    loop {
+        let mut progressed = false;
+        for t in tasks {
+            if placed.contains(t.id.as_str()) {
+                continue;
+            }
+            let blocked = t.depends_on.iter().flatten().any(|d| {
+                ids.contains(d.as_str())
+                    && d.as_str() != t.id.as_str()
+                    && !placed.contains(d.as_str())
+            });
+            if !blocked {
+                placed.insert(t.id.as_str());
+                out.push(t.id.clone());
+                progressed = true;
+            }
+        }
+        if !progressed {
+            break;
+        }
+    }
+    for t in tasks {
+        if !placed.contains(t.id.as_str()) {
+            out.push(t.id.clone());
+        }
+    }
+    out
+}
+
+/// 工作流 + 节点卡 → 文件结构（纯逻辑，单测锚点）：按 (order,id) 稳定排序后
+/// 拓扑排列，真实任务 id 映射为 n1..nN 本地 id，dependsOn 同步重映射；
+/// 悬空依赖（指向图外/已删行）在映射时丢弃——导入端 save 链会对剩余引用做全量校验。
+pub(crate) fn workflow_file_from(wf: &Workflow, tasks: &[Task]) -> WorkflowFile {
+    let mut sorted: Vec<&Task> = tasks.iter().collect();
+    sorted.sort_by(|a, b| {
+        a.order
+            .unwrap_or(0.0)
+            .partial_cmp(&b.order.unwrap_or(0.0))
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.id.cmp(&b.id))
+    });
+    let topo = topo_export_order(&sorted.iter().copied().cloned().collect::<Vec<_>>());
+    let id_map: std::collections::HashMap<String, String> = topo
+        .iter()
+        .enumerate()
+        .map(|(i, id)| (id.clone(), format!("n{}", i + 1)))
+        .collect();
+    let by_id: std::collections::HashMap<&str, &Task> =
+        sorted.iter().map(|t| (t.id.as_str(), *t)).collect();
+    let nodes = topo
+        .iter()
+        .filter_map(|id| by_id.get(id.as_str()).map(|t| (id, *t)))
+        .map(|(id, t)| WorkflowFileNode {
+            id: id_map[id].clone(),
+            title: t.title.clone(),
+            note: t.note.clone(),
+            tags: t.tags.clone(),
+            depends_on: t
+                .depends_on
+                .iter()
+                .flatten()
+                .filter_map(|d| id_map.get(d).cloned())
+                .collect(),
+            pos: t.canvas_pos.clone(),
+        })
+        .collect();
+    WorkflowFile {
+        version: WORKFLOW_FILE_VERSION,
+        generator: Some(format!("wmessage {}", env!("CARGO_PKG_VERSION"))),
+        exported_at: Some(chrono::Utc::now().to_rfc3339()),
+        name: wf.name.clone(),
+        description: None,
+        goal: Some(wf.goal.clone()),
+        nodes,
+    }
+}
+
+/// 文件 → 保存草稿（纯逻辑，单测锚点）：文件级校验（version/name/goal/数量/id 唯一）
+/// + dependsOn 去重保序；图规则（环/悬空/长度/重名）交给 workflow_save_locked 既有链。
+pub(crate) fn parse_workflow_file(raw: &str) -> CommandResult<WorkflowSaveInput> {
+    let file: WorkflowFile =
+        serde_json::from_str(raw).map_err(|e| CommandError::InvalidArgument {
+            field: "file".into(),
+            value: raw.chars().take(120).collect(),
+            reason: format!("不是有效的 .wflow.json：{e}"),
+        })?;
+    if file.version != WORKFLOW_FILE_VERSION {
+        return Err(CommandError::InvalidArgument {
+            field: "version".into(),
+            value: file.version.to_string(),
+            reason: format!("文件版本不支持（需要 {WORKFLOW_FILE_VERSION}）"),
+        });
+    }
+    let name = check_len(&file.name, MAX_WORKFLOW_NAME, "工作流名称", "name")?;
+    let goal = check_len(
+        file.goal.as_deref().unwrap_or(&name),
+        MAX_WORKFLOW_GOAL,
+        "工作流目标",
+        "goal",
+    )?;
+    if file.nodes.is_empty() {
+        return Err(CommandError::InvalidArgument {
+            field: "nodes".into(),
+            value: "0".into(),
+            reason: "至少需要 1 个节点".into(),
+        });
+    }
+    if file.nodes.len() > MAX_WORKFLOW_NODES {
+        return Err(CommandError::InvalidArgument {
+            field: "nodes".into(),
+            value: file.nodes.len().to_string(),
+            reason: format!("节点数超过 {MAX_WORKFLOW_NODES} 上限"),
+        });
+    }
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for n in &file.nodes {
+        if n.id.trim().is_empty() {
+            return Err(CommandError::InvalidArgument {
+                field: "nodes".into(),
+                value: n.id.clone(),
+                reason: "节点 id 不能为空".into(),
+            });
+        }
+        if !seen.insert(n.id.as_str()) {
+            return Err(CommandError::InvalidArgument {
+                field: "nodes".into(),
+                value: n.id.clone(),
+                reason: format!("节点 id 重复：{}", n.id),
+            });
+        }
+    }
+    let nodes = file
+        .nodes
+        .into_iter()
+        .map(|n| {
+            let mut depends_on: Vec<String> = Vec::new();
+            for d in n.depends_on {
+                if !depends_on.contains(&d) {
+                    depends_on.push(d);
+                }
+            }
+            WorkflowNodeDraft {
+                local_id: n.id,
+                task_id: None,
+                title: n.title,
+                note: n.note,
+                tags: n.tags,
+                depends_on,
+                pos: n.pos,
+            }
+        })
+        .collect();
+    Ok(WorkflowSaveInput {
+        workflow_id: None,
+        name,
+        goal,
+        nodes,
+    })
+}
+
+/// 导出 .wflow.json（实例化语义的另一半：库内真实 id → 文件本地 id）
+#[tauri::command]
+pub async fn workflow_export(
+    app: AppHandle,
+    workflow_id: String,
+    path: String,
+) -> CommandResult<usize> {
+    crate::db::tasks::check_export_path(&path)?;
+    let file = {
+        let app = app.clone();
+        let wid = workflow_id.clone();
+        async_runtime::spawn_blocking(move || -> CommandResult<WorkflowFile> {
+            let conn = super::open_db(&app)?;
+            let wf = load_workflow(&conn, &wid)?
+                .ok_or_else(|| CommandError::TaskNotFound(wid.clone()))?;
+            let tasks = load_tasks_by_workflow(&conn, &wid).map_err(CommandError::from)?;
+            Ok(workflow_file_from(&wf, &tasks))
+        })
+        .await
+        .map_err(|e| CommandError::from(format!("工作流导出线程 join 失败：{e}")))??
+    };
+    let json =
+        serde_json::to_string_pretty(&file).map_err(|e| CommandError::from(e.to_string()))?;
+    {
+        let path2 = path.clone();
+        async_runtime::spawn_blocking(move || {
+            super::paths::atomic_write(std::path::Path::new(&path2), &json)
+                .map_err(|e| format!("写入文件失败：{e}"))
+        })
+        .await
+        .map_err(|e| CommandError::from(format!("工作流导出写入线程 join 失败：{e}")))?
+        .map_err(CommandError::from)?;
+    }
+    audit_event(
+        &app,
+        "workflow_export",
+        &workflow_id,
+        &[("nodes", file.nodes.len().to_string())],
+    );
+    Ok(file.nodes.len())
+}
+
+/// 导入 .wflow.json = **实例化**：全新 workflow 行 + 全新任务 id（设计 §4；
+/// 与 tasks_import 的按 id 合并刻意分离）。图规则全部由 workflow_save_locked 承接。
+#[tauri::command]
+pub async fn workflow_import(app: AppHandle, path: String) -> CommandResult<WorkflowSaveResult> {
+    crate::db::tasks::check_export_path(&path)?;
+    let input = {
+        let path2 = path.clone();
+        async_runtime::spawn_blocking(move || -> CommandResult<WorkflowSaveInput> {
+            let f = std::fs::File::open(&path2)
+                .map_err(|e| CommandError::from(format!("无法读取所选文件：{e}")))?;
+            let mut limited = std::io::Read::take(f, MAX_IMPORT_FILE_BYTES + 1);
+            let mut buf = Vec::new();
+            std::io::Read::read_to_end(&mut limited, &mut buf)
+                .map_err(|e| CommandError::from(format!("无法读取所选文件：{e}")))?;
+            if buf.len() as u64 > MAX_IMPORT_FILE_BYTES {
+                return Err(CommandError::InvalidArgument {
+                    field: "path".into(),
+                    value: path2,
+                    reason: "模板文件超过 1MB 上限".into(),
+                });
+            }
+            let raw = String::from_utf8(buf)
+                .map_err(|e| CommandError::from(format!("不是有效的 UTF-8 文本：{e}")))?;
+            parse_workflow_file(&raw)
+        })
+        .await
+        .map_err(|e| CommandError::from(format!("工作流导入解析线程 join 失败：{e}")))??
+    };
+    let app_emit = app.clone();
+    let outcome = async_runtime::spawn_blocking(move || {
+        let _g = super::lock_db_write();
+        let mut conn = super::open_db(&app)?;
+        let now = chrono::Utc::now().timestamp_millis();
+        workflow_save_locked(&mut conn, input, now)
+    })
+    .await
+    .map_err(|e| CommandError::from(format!("工作流导入线程 join 失败：{e}")))??;
+    let r = &outcome.result;
+    audit_event(
+        &app_emit,
+        "workflow_import",
+        &r.workflow_id,
+        &[
+            ("imported", r.created.to_string()),
+            ("path", crate::bot::truncate_for_log(&path, 120)),
+        ],
+    );
+    {
+        use tauri::Emitter;
+        let _ = app_emit.emit("tasks-changed", ());
+        let _ = app_emit.emit_to(
+            "main",
+            "tasks-updated",
+            serde_json::json!({
+                "source": crate::mutation::MutationOrigin::Main.as_str(),
+                "upserts": outcome.upserts,
+                "deletes": outcome.deleted_ids
+            }),
+        );
+    }
+    Ok(outcome.result)
+}
+
 #[tauri::command]
 pub async fn workflow_list(app: AppHandle) -> CommandResult<Vec<Workflow>> {
     async_runtime::spawn_blocking(move || {
@@ -703,6 +1016,39 @@ mod tests {
 
     fn save(conn: &mut rusqlite::Connection, nodes: Vec<WorkflowNodeDraft>) -> WorkflowSaveResult {
         save_into(conn, None, nodes)
+    }
+
+    /// 最小任务卡构造（W4 文件模块测试用）
+    fn make_task(id: &str, dep: Option<&str>, order: f64) -> Task {
+        Task {
+            id: id.into(),
+            title: format!("任务{id}"),
+            due: None,
+            note: None,
+            tags: None,
+            files: None,
+            file_path: None,
+            file_is_dir: None,
+            column: TaskStatus::Todo,
+            subtasks: None,
+            completed_at: None,
+            archived: None,
+            deleted_at: None,
+            collapsed: None,
+            order: Some(order),
+            updated_at: Some(1),
+            schedule: None,
+            sched_last: None,
+            bot_assigned: None,
+            assignee: None,
+            budget: None,
+            result: None,
+            origin: Some(TASK_ORIGIN_WORKFLOW.into()),
+            workflow_id: Some("wf".into()),
+            depends_on: dep.map(|d| vec![d.to_string()]),
+            canvas_pos: None,
+            expected_updated_at: None,
+        }
     }
 
     fn save_into(
@@ -964,5 +1310,123 @@ mod tests {
         assert!(load_tasks_by_workflow(&conn, &r.workflow_id)
             .unwrap()
             .is_empty());
+    }
+
+    // ────────────── W4-TEMPLATE：文件格式 v1 ──────────────
+
+    #[test]
+    fn parse_valid_v1_maps_and_dedupes_deps() {
+        let raw = r#"{
+            "version": 1, "name": "周报", "goal": "每周出周报",
+            "nodes": [
+                {"id": "n1", "title": "收集", "note": "产出清单", "dependsOn": []},
+                {"id": "n2", "title": "写稿", "dependsOn": ["n1", "n1"], "pos": [10, 20]}
+            ]
+        }"#;
+        let input = parse_workflow_file(raw).unwrap();
+        assert_eq!(input.name, "周报");
+        assert_eq!(input.nodes.len(), 2);
+        assert_eq!(input.nodes[0].local_id, "n1");
+        assert_eq!(
+            input.nodes[1].depends_on,
+            vec!["n1".to_string()],
+            "重复依赖去重"
+        );
+        assert_eq!(input.nodes[1].pos.as_ref().unwrap().x, 10.0);
+        assert!(input.nodes[0].pos.is_none(), "缺 pos 走 dagre 布局");
+    }
+
+    #[test]
+    fn parse_rejects_version_shapes_and_duplicates() {
+        // 版本不支持
+        let raw = r#"{"version": 2, "name": "x", "nodes": [{"id": "a", "title": "A"}]}"#;
+        let err = parse_workflow_file(raw).unwrap_err();
+        assert!(err.to_string().contains("版本不支持"));
+        // 坏 JSON
+        assert!(parse_workflow_file("不是 JSON").is_err());
+        // 空节点
+        let raw = r#"{"version": 1, "name": "x", "nodes": []}"#;
+        let err = parse_workflow_file(raw).unwrap_err();
+        assert!(err.to_string().contains("至少"));
+        // 超上限
+        let nodes: Vec<String> = (0..MAX_WORKFLOW_NODES + 1)
+            .map(|i| format!(r#"{{"id": "n{i}", "title": "T{i}"}}"#))
+            .collect();
+        let raw = format!(
+            r#"{{"version": 1, "name": "x", "nodes": [{}]}}"#,
+            nodes.join(",")
+        );
+        let err = parse_workflow_file(&raw).unwrap_err();
+        assert!(err.to_string().contains("上限"));
+        // id 重复 / 空 id
+        let raw = r#"{"version": 1, "name": "x", "nodes": [
+            {"id": "a", "title": "A"}, {"id": "a", "title": "B"}]}"#;
+        let err = parse_workflow_file(raw).unwrap_err();
+        assert!(err.to_string().contains("重复"));
+        let raw = r#"{"version": 1, "name": "x", "nodes": [{"id": "  ", "title": "A"}]}"#;
+        let err = parse_workflow_file(raw).unwrap_err();
+        assert!(err.to_string().contains("不能为空"));
+    }
+
+    #[test]
+    fn parse_goal_falls_back_to_name() {
+        let raw = r#"{"version": 1, "name": "我的流程", "nodes": [{"id": "a", "title": "A"}]}"#;
+        let input = parse_workflow_file(raw).unwrap();
+        assert_eq!(input.goal, "我的流程");
+    }
+
+    #[test]
+    fn topo_export_orders_upstream_first() {
+        let tasks = vec![
+            make_task("c", Some("b"), 3.0),
+            make_task("a", None, 1.0),
+            make_task("b", Some("a"), 2.0),
+            make_task("p", None, 4.0), // 独立分支
+        ];
+        let order = topo_export_order(&tasks);
+        let pos = |id: &str| order.iter().position(|x| x == id).unwrap();
+        assert!(pos("a") < pos("b"));
+        assert!(pos("b") < pos("c"));
+    }
+
+    #[test]
+    fn export_roundtrip_preserves_graph() {
+        let _g = super::super::lock_db_write();
+        let mut conn = setup_conn();
+        let r = save(
+            &mut conn,
+            vec![node("n1", "收集", &[]), node("n2", "汇总", &["n1"])],
+        );
+        let wf = load_workflow(&conn, &r.workflow_id).unwrap().unwrap();
+        let tasks = load_tasks_by_workflow(&conn, &r.workflow_id).unwrap();
+        // 打乱画布坐标以验证 pos 透传
+        let file = workflow_file_from(&wf, &tasks);
+        assert_eq!(file.version, WORKFLOW_FILE_VERSION);
+        assert_eq!(file.nodes.len(), 2);
+        assert!(file
+            .generator
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("wmessage"));
+        // 文件内本地 id：上游 n1 在前，下游 dependsOn = ["n1"]
+        assert_eq!(file.nodes[0].id, "n1");
+        assert_eq!(file.nodes[1].depends_on, vec!["n1".to_string()]);
+        // 序列化 → 解析回草稿 → 再落库为全新实例（实例化语义）
+        let json = serde_json::to_string_pretty(&file).unwrap();
+        let input = parse_workflow_file(&json).unwrap();
+        let r2 = workflow_save_locked(&mut conn, input, 2_000)
+            .unwrap()
+            .result;
+        assert_ne!(r2.workflow_id, r.workflow_id, "导入必须生成全新工作流");
+        assert_eq!(r2.created, 2);
+        let tasks2 = load_tasks_by_workflow(&conn, &r2.workflow_id).unwrap();
+        assert_eq!(tasks2.len(), 2);
+        let child = tasks2.iter().find(|t| t.title == "汇总").unwrap();
+        let parent = tasks2.iter().find(|t| t.title == "收集").unwrap();
+        assert_eq!(
+            child.depends_on.as_ref().unwrap(),
+            &vec![parent.id.clone()],
+            "实例化的依赖指向新实例内的任务"
+        );
     }
 }

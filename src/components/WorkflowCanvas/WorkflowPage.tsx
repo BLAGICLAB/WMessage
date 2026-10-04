@@ -14,6 +14,7 @@ import {
   type NodeChange,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
+import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { Download, Loader2, Play, Plus, RefreshCw, Save, Square, Trash2, Upload } from "lucide-react";
 import { handleCommandError } from "../../lib/errorHandler";
 import { getDecomposeGuidance } from "../../lib/workflowPrompt";
@@ -168,7 +169,6 @@ function WorkflowPageInner({
   const createBlank = () => {
     openSeqRef.current++; // 使在途的 workflow_load 失效
     decomposeSeqRef.current++; // 同上（OCR r1 critical）
-    setRegenArmed(false);
     setActiveId(null);
     setName(`工作流 ${new Date().toLocaleDateString()}`);
     setGoal("");
@@ -177,6 +177,47 @@ function WorkflowPageInner({
     setSavedSnapshot(null);
     setMode("edit");
     setDeleteArmed(false);
+    setRegenArmed(false);
+    setRunning(false);
+  };
+
+  // ────────────── 模板导入导出（W4-TEMPLATE，设计 §4） ──────────────
+
+  const doExport = async () => {
+    if (!activeId) return;
+    try {
+      const path = await saveDialog({
+        defaultPath: `${name.trim() || "工作流"}.wflow.json`,
+        filters: [{ name: "WMessage 工作流", extensions: ["json"] }],
+      });
+      if (!path) return; // 用户取消
+      const count = await invoke<number>("workflow_export", {
+        workflowId: activeId,
+        path,
+      });
+      alert(`导出完成：共 ${count} 个节点（导出的是已保存版本）`);
+    } catch (e) {
+      handleCommandError(e, "导出工作流模板", { onRetry: () => void doExport() });
+    }
+  };
+
+  const doImport = async () => {
+    try {
+      const selected = await open({
+        multiple: false,
+        directory: false,
+        filters: [{ name: "WMessage 工作流", extensions: ["json"] }],
+      });
+      if (typeof selected !== "string") return; // 用户取消
+      const res = await invoke<WorkflowSaveResult>("workflow_import", {
+        path: selected,
+      });
+      invoke<Workflow[]>("workflow_list").then(setWorkflows).catch(() => {});
+      alert(`导入完成：实例化 ${res.created} 个节点（全新副本，与原模板互不影响）`);
+      await openWorkflow(res.workflowId);
+    } catch (e) {
+      handleCommandError(e, "导入工作流模板", { onRetry: () => void doImport() });
+    }
   };
 
   // ────────────── AI 拆解（W2-DECOMPOSE，设计 §6） ──────────────
@@ -645,10 +686,19 @@ function WorkflowPageInner({
         >
           <RefreshCw size={14} aria-hidden /> {regenArmed ? "确认重生成？" : "重新生成"}
         </button>
-        <button className={toolbarBtn} disabled title="模板导入导出将在 W4 批次上线">
+        <button
+          className={toolbarBtn}
+          onClick={() => void doImport()}
+          title="从 .wflow.json 导入（实例化为全新工作流）"
+        >
           <Upload size={14} aria-hidden /> 导入
         </button>
-        <button className={toolbarBtn} disabled title="模板导入导出将在 W4 批次上线">
+        <button
+          className={toolbarBtn}
+          onClick={() => void doExport()}
+          disabled={activeId === null}
+          title={activeId === null ? "先选择一个工作流" : "导出已保存版本为 .wflow.json 模板"}
+        >
           <Download size={14} aria-hidden /> 导出
         </button>
         <button
