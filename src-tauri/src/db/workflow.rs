@@ -556,7 +556,8 @@ pub(crate) fn workflow_save_locked(
                 depends_on: Some(deps),
                 canvas_pos: node.pos.clone(),
                 model: node.model.clone(),
-                owner_id: None, // 本机创建的工作流卡 = 本人
+                owner_id: None,        // 本机创建的工作流卡 = 本人
+                created_at: Some(now), // 创建时间打戳（与 updated_at 同值；此后 UPDATE 不覆盖）
                 expected_updated_at: None,
             });
         }

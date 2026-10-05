@@ -17,6 +17,7 @@ import {
   resolveStatusColor,
   toGraphologyGraph,
   TAG_ANCHOR_PREFIX,
+  type GraphSizeMode,
   type SigmaNodeAttrs,
 } from "./graph-adapter";
 import type { BuiltGraph, GraphColorMode } from "./graph-build";
@@ -100,6 +101,8 @@ function resolveColor(
 export interface GraphCanvasProps {
   graph: BuiltGraph;
   colorMode: GraphColorMode;
+  /** 节点大小语义（连接度/耗时）：切换即重建（大小参与 FA2 质量/碰撞，需写回图属性） */
+  sizeMode: GraphSizeMode;
   /** 标签 → 同义组键（G6-SYNONYM；键缺失 = 独立组） */
   tagGroups?: Map<string, string>;
   /** owner 注入序（单一事实源，GraphPage 基于 chips 全序计算）：
@@ -133,7 +136,8 @@ export default function GraphCanvas(props: GraphCanvasProps) {
     const g: Graph<SigmaNodeAttrs> = toGraphologyGraph(
       props.graph,
       props.ownerOrder,
-      props.tagGroups
+      props.tagGroups,
+      props.sizeMode
     );
 
     // 初始相机适配在 Sigma 首帧后自动进行；先关标签渲染由 reducer 控制
@@ -473,9 +477,10 @@ export default function GraphCanvas(props: GraphCanvasProps) {
     // colorMode 变化经 reducer（每次 render 读取 propsRef）自动生效，无需重建。
     // tagGroups/ownerOrder 是建图输入（分扇区初值/锚点/ownerKey）且异步到达
     // （tag_similar_pairs 走嵌入推理，秒级）——必须进依赖，否则真机上扇区布局
-    // 永远拿不到同义组（图谱始终以无组圆盘初值运行，与设计不符）
+    // 永远拿不到同义组（图谱始终以无组圆盘初值运行，与设计不符）；
+    // sizeMode 同理（大小参与 FA2 质量/碰撞，切换需重建写回图属性）
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.graph, props.tagGroups, props.ownerOrder]);
+  }, [props.graph, props.tagGroups, props.ownerOrder, props.sizeMode]);
 
   // 「重新布局」信号：手动触发一轮 FA2 短跑（GraphCanvas 内部已自动停 + 终态适配）
   useEffect(() => {

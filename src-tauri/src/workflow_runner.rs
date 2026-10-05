@@ -557,6 +557,7 @@ mod tests {
             canvas_pos: Some(CanvasPos { x: 0.0, y: 0.0 }),
             model: None,
             owner_id: None,
+            created_at: None,
             expected_updated_at: None,
         }
     }

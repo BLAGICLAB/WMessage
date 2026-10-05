@@ -358,6 +358,7 @@ fn create_task(
             canvas_pos: None,
             model: None,
             owner_id: None,            // API 建卡 = 本人（任务图谱设计 §1.1）
+            created_at: Some(now),     // 创建时间打戳（与 updated_at 同值；此后 UPDATE 不覆盖）
             expected_updated_at: None, // 新建任务：无读快照基线
         };
         if let Err(e) = store.upsert(vec![task.clone()]) {

@@ -175,7 +175,8 @@ pub(crate) fn spawn_subagent_locked(
         depends_on: None,
         canvas_pos: None,
         model: None,
-        owner_id: None, // 子 agent 派发卡 = 本人（任务图谱设计 §1.1）
+        owner_id: None,        // 子 agent 派发卡 = 本人（任务图谱设计 §1.1）
+        created_at: Some(now), // 创建时间打戳（与 updated_at 同值；此后 UPDATE 不覆盖）
         expected_updated_at: None,
     };
     crate::db::upsert_tasks(conn, std::slice::from_ref(&card)).map_err(CommandError::DbError)?;
@@ -1833,6 +1834,7 @@ mod orchestrator_tests {
             canvas_pos: None,
             model: None,
             owner_id: None,
+            created_at: None,
             expected_updated_at: None,
         };
         crate::db::upsert_tasks(conn, std::slice::from_ref(&card)).unwrap();

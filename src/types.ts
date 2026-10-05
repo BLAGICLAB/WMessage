@@ -78,6 +78,8 @@ export interface Task {
   fileIsDir?: boolean;
   /** 完成时间（epoch ms） */
   completedAt?: number;
+  /** 创建时间（epoch ms）；老数据缺省 = 未知（图谱「耗时」口径的依赖字段） */
+  createdAt?: number;
   /** 已归档：从「完成」列隐藏，可在归档视图查看/恢复 */
   archived?: boolean;
   /** 已删除（软删除进回收站） */

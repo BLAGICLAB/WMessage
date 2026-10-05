@@ -59,6 +59,37 @@ const TAG_ANCHOR_MIN_CARDS = 2;
 /** 锚点节点 id 前缀（事件/渲染层隔离用） */
 export const TAG_ANCHOR_PREFIX = "taggrp:";
 
+/** 节点大小语义（图谱图例可切换）：degree = 连接度（√度数，Obsidian 经典隐喻）；
+ *  duration = 耗时（完成−创建天数；doing 用已进行天数——拖得越久越大，钉子户可视化） */
+export type GraphSizeMode = "degree" | "duration";
+
+const DAY_MS = 86_400_000;
+
+/** 任务耗时天数：done = 完成−创建；doing = 现在−创建；todo 或缺创建时间（老数据）= null */
+export function durationDaysOf(
+  n: Pick<GraphNode, "status" | "createdAt" | "completedAt">,
+  now: number
+): number | null {
+  if (!n.createdAt) return null;
+  if (n.status === "done")
+    return n.completedAt ? Math.max(0, (n.completedAt - n.createdAt) / DAY_MS) : null;
+  if (n.status === "doing") return Math.max(0, (now - n.createdAt) / DAY_MS);
+  return null;
+}
+
+/**
+ * 节点半径。duration 模式：3 + 1.5·√天数、15 封顶（平方根压缩——当天≈3、
+ * 3 天≈5.6、2 周≈8.6、1 月≈11.2、半年起封顶；天/月/年量纲差异大，线性会失控）。
+ * 封顶也护住 FA2 adjustSizes：size 参与质量/碰撞，巨点会把周围推开过远。
+ */
+export function nodeSize(n: GraphNode, mode: GraphSizeMode, now: number): number {
+  if (n.kind === "hub") return 7 + Math.sqrt(n.degree);
+  if (mode === "degree") return 3 + Math.sqrt(n.degree) * 2;
+  const days = durationDaysOf(n, now);
+  if (days === null) return 3;
+  return Math.min(15, 3 + 1.5 * Math.sqrt(days));
+}
+
 export interface ColorPalette {
   brand: string;
   t3: string;
@@ -107,7 +138,9 @@ export function resolveStatusColor(
 export function toGraphologyGraph(
   built: BuiltGraph,
   ownerOrder: Map<string, number>,
-  tagGroups?: Map<string, string>
+  tagGroups?: Map<string, string>,
+  sizeMode: GraphSizeMode = "degree",
+  now = Date.now()
 ): Graph<SigmaNodeAttrs> {
   const graph = new Graph<SigmaNodeAttrs>({ multi: false, type: "directed" });
 
@@ -178,7 +211,7 @@ export function toGraphologyGraph(
     graph.addNode(n.id, {
       ownerKey: ownerColorKey(n, ownerOrder),
       statusKey: n.kind === "hub" ? "hub" : (n.status ?? "todo"),
-      size: n.kind === "hub" ? 7 + Math.sqrt(n.degree) : 3 + Math.sqrt(n.degree) * 2,
+      size: nodeSize(n, sizeMode, now),
       label: n.label,
       kind: n.kind,
       status: n.status,

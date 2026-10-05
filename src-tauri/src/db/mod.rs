@@ -106,7 +106,7 @@ pub fn open_db<R: tauri::Runtime>(
     conn.busy_timeout(Duration::from_secs(2))
         .map_err(|e| e.to_string())?;
     migrations::apply_conn_pragmas(&conn)?;
-    // tasks 表单源 DDL（W1-CANVAS 抽取）：完整 27 列 schema，老库缺列由下方幂等 ALTER 补齐
+    // tasks 表单源 DDL（W1-CANVAS 抽取）：完整 29 列 schema，老库缺列由下方幂等 ALTER 补齐
     conn.execute_batch(crate::db::tasks::TASKS_DDL)
         .map_err(|e| e.to_string())?;
     conn.execute_batch(
@@ -214,6 +214,20 @@ pub fn open_db<R: tauri::Runtime>(
     }
     // 迁移（任务图谱设计 §1.1）：任务归属人 owner_id，NULL = 本人
     for (col, ty) in crate::db::tasks::OWNER_TASK_COLUMNS {
+        let has: bool = conn
+            .prepare("PRAGMA table_info(tasks)")
+            .and_then(|mut stmt| {
+                let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+                Ok(rows.filter_map(|n| n.ok()).any(|n| n == col))
+            })
+            .unwrap_or(false);
+        if !has {
+            conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"), [])
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    // 迁移：任务创建时间 created_at（epoch ms）。老数据 ALTER 后为 NULL（= 未知），不回填
+    for (col, ty) in crate::db::tasks::CREATED_AT_TASK_COLUMNS {
         let has: bool = conn
             .prepare("PRAGMA table_info(tasks)")
             .and_then(|mut stmt| {
@@ -650,6 +664,7 @@ mod tests {
             canvas_pos: None,
             model: None,
             owner_id: None,
+            created_at: None,
             expected_updated_at: None,
         }
     }
@@ -770,12 +785,17 @@ mod tests {
         // W1-CANVAS 起进程内共有 5 个新列（origin/workflow_id/depends_on/canvas_x/canvas_y）——
         // 与 files 列同为 open_db 幂等 ALTER 的一部分；fixture 保持「仅缺 files 列」的
         // 被测前提不变，把其余列补齐，否则迁移后 load_all 查新列会炸。
-        // 列清单单源 = tasks::W1_TASK_COLUMNS + tasks::OWNER_TASK_COLUMNS（勿手工镜像）
+        // 列清单单源 = tasks::W1_TASK_COLUMNS + tasks::OWNER_TASK_COLUMNS +
+        // tasks::CREATED_AT_TASK_COLUMNS（勿手工镜像）
         for (col, ty) in crate::db::tasks::W1_TASK_COLUMNS {
             conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"), [])
                 .unwrap();
         }
         for (col, ty) in crate::db::tasks::OWNER_TASK_COLUMNS {
+            conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"), [])
+                .unwrap();
+        }
+        for (col, ty) in crate::db::tasks::CREATED_AT_TASK_COLUMNS {
             conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"), [])
                 .unwrap();
         }
@@ -1423,6 +1443,56 @@ mod tests {
             title_of(&conn, "t1"),
             "keep-me",
             "场景 5: incoming NULL 不应覆盖 current 有值（数据不变量保留）"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// created_at 回归锁：INSERT 时落库；UPDATE（ON CONFLICT 分支）**不覆盖**已有值
+    /// （照 workflows.created_at 先例——UPDATE SET 刻意不含 created_at）。
+    /// 老行 NULL 也不被后续 upsert 回填。
+    #[test]
+    fn upsert_insert_stamps_created_at_update_never_overwrites() {
+        let _g = super::lock_db_write(); // C3-1 契约：upsert_tasks 调用方须持锁
+        let (dir, conn) = setup_tasks_db();
+        let created_at_of = |conn: &rusqlite::Connection, id: &str| -> Option<i64> {
+            conn.query_row("SELECT created_at FROM tasks WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .unwrap()
+        };
+
+        // 新行 INSERT：created_at 正确落库
+        let mut t = mk_task("t1", "新建");
+        t.updated_at = Some(1000);
+        t.created_at = Some(1000);
+        upsert_tasks(&conn, std::slice::from_ref(&t)).unwrap();
+        assert_eq!(
+            created_at_of(&conn, "t1"),
+            Some(1000),
+            "INSERT 应落 created_at"
+        );
+
+        // 同 id 再 upsert（created_at=2000）→ UPDATE 分支不得覆盖
+        t.created_at = Some(2000);
+        t.updated_at = Some(2000);
+        t.title = "更新".into();
+        upsert_tasks(&conn, std::slice::from_ref(&t)).unwrap();
+        assert_eq!(
+            created_at_of(&conn, "t1"),
+            Some(1000),
+            "UPDATE 不得覆盖已有 created_at"
+        );
+
+        // 老行（created_at IS NULL，模拟 ALTER 后未回填）：UPDATE 不回填、保持 NULL
+        let mut legacy = mk_task("legacy", "老行");
+        legacy.updated_at = Some(3000);
+        legacy.created_at = None;
+        upsert_tasks(&conn, std::slice::from_ref(&legacy)).unwrap();
+        assert_eq!(
+            created_at_of(&conn, "legacy"),
+            None,
+            "老行应保持 NULL 不回填"
         );
 
         fs::remove_dir_all(&dir).ok();

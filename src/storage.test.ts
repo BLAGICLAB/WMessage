@@ -164,6 +164,20 @@ describe("diffTaskRows 纯排序保留 updatedAt（P2-20）", () => {
     const { deletes: del2 } = diffTaskRows(next, base, 999999);
     expect(del2).toEqual(["t9"]);
   });
+
+  it("新增行兜底打 createdAt=now；已有 createdAt 保留；存量行变更不补戳", () => {
+    // 新行无 createdAt → 兜底 now（防未来新建入口忘打戳）
+    const next = [...base, { id: "t9", title: "新", column: "todo" as const }];
+    const { upserts } = diffTaskRows(base, next, 999999);
+    expect(upserts[0].createdAt).toBe(999999);
+    // 新行自带 createdAt（显式打戳入口）→ 以显式值为准
+    const next2 = [...base, { id: "t10", title: "新2", column: "todo" as const, createdAt: 12345 }];
+    expect(diffTaskRows(base, next2, 999999).upserts[0].createdAt).toBe(12345);
+    // 存量行内容变更 → 不补 createdAt（保持缺省/现值；后端 UPDATE 也不覆盖该列）
+    const prev: Task[] = [{ id: "t1", title: "旧", column: "todo" as const, createdAt: 111 }];
+    const changed: Task[] = [{ id: "t1", title: "旧-改", column: "todo" as const, createdAt: 111 }];
+    expect(diffTaskRows(prev, changed, 999999).upserts[0].createdAt).toBe(111);
+  });
 });
 
 // RMW 写回带基线 expectedUpdatedAt = 快照行 updatedAt——

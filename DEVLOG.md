@@ -2,6 +2,42 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-05（周日）G7-SIZEMODE：图谱节点大小双模式「连接度/耗时」+ tasks 补 created_at 全链路
+
+**需求**（老板拍板 C 方案）：节点大小可按「完成时间−创建时间」的天数设置，
+并与既有连接度口径可切换——耗时长的任务在图谱上一眼可辨（doing 用已进行
+天数 = 钉子户可视化）。后续并入「任务图谱设置」批次作为设置项（本批先落
+图例区切换 + localStorage 偏好键 `wm.graph.sizeMode`，设置页落地读同一键）。
+
+**实现**：
+- **数据基座（tasks 此前没有创建时间字段）**：tasks 表加 `created_at INTEGER`
+  （第 30 列；DDL + `CREATED_AT_TASK_COLUMNS` 幂等 ALTER，照 owner_id 先例）。
+  **只插入不更新**——upsert 的 UPDATE SET 刻意不含 created_at（照 workflows
+  表 created_at 先例），导入整行覆盖合并时本地行的创建时间不被改；
+  `apply_task_patch` 受保护字段加 `createdAt` 防 patch 篡改。四个新建入口打戳
+  （bot create_task 工具 / 本地 HTTP API / 子 agent spawn 子卡 / workflow_save
+  新建节点卡，均与 updated_at 同值）；前端 `diffTaskRows` 对无 prev 新行兜底
+  打戳（防未来新建入口遗漏）。导出/导入 v2 信封 serde 透传零改动
+  （`#[serde(default)]` 兼容旧信封）。老数据 ALTER 后 NULL = 未知。
+- **大小口径**（graph-adapter `nodeSize`/`durationDaysOf` 纯函数）：
+  degree = 3+√度×2（现状默认，不动）；duration = 3+1.5·√天数、15 封顶
+  （平方根压缩：当天≈3、3 天≈5.6、2 周≈8.6、1 月≈11.2、半年起封顶——
+  天/月/年量纲差异大线性会失控；封顶同时护住 FA2 adjustSizes 碰撞质量）。
+  done = 完成−创建；doing = 现在−创建；todo / 缺创建时间（老数据）= 最小 3；
+  hub 不受模式影响。切换即重建图（大小参与 FA2 质量/碰撞，需写回图属性）。
+- **UI**：图谱图例区加「大小：连接度｜耗时」切换（与「按状态/按成员」同款）；
+  demo harness 数据补 createdAt（含 old1 无创建时间 = 老数据最小尺寸的验证样本）。
+
+**验证**：Rust 新增回归锁 `upsert_insert_stamps_created_at_update_never_overwrites`
+（INSERT 落 1000 → 同 id upsert 带 2000 仍断言 1000）；db 模块 106 测全绿，
+lib 全量 1340 绿（resolve_finds_entry_across_protocols 为既有 keychain 环境性
+挂起，隔离复现与本改动无关）。前端：adapter +3 测（durationDaysOf 三分支+钳 0、
+√压缩/封顶/hub 不受影响、toGraphologyGraph 耗时尺寸写入+默认零变化），
+storage +1 测（新行兜底打戳/显式值优先/存量不补）；vitest 466 全绿；
+tsc 零错误；test-fast 通过；build 通过。浏览器 harness 实测耗时模式：
+4 天=6.0、16 天=9.0、30 天=11.2、45 天=13.1、无创建时间=3，切换后
+29/29 节点铺满视口、偏好持久化。
+
 ## 2026-10-05（周日）ARCH-DAYS：任务卡归档时间可配置——设置页数据管理新增天数设置（默认 7）
 
 **需求**：归档阈值原为硬编码 7 天（前端 `App.tsx ARCHIVE_AFTER_MS` + 后端

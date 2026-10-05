@@ -60,6 +60,7 @@ mod tests {
             canvas_pos: None,
             model: None,
             owner_id: None,
+            created_at: None,
             expected_updated_at: None,
         }
     }

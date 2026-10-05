@@ -25,7 +25,7 @@ pub struct TaskFile {
 pub const MAX_TASK_FILES: usize = 10;
 
 /// tasks 表单源 DDL（W1-CANVAS 抽取）：open_db 建表与 db::workflow 测试共用。
-/// 含全部 28 列——老库缺列由 open_db 的幂等 ALTER 迁移补齐，此处即最新完整 schema。
+/// 含全部 29 列——老库缺列由 open_db 的幂等 ALTER 迁移补齐，此处即最新完整 schema。
 pub const TASKS_DDL: &str = "CREATE TABLE IF NOT EXISTS tasks (
    id           TEXT PRIMARY KEY,
    title        TEXT NOT NULL,
@@ -55,7 +55,8 @@ pub const TASKS_DDL: &str = "CREATE TABLE IF NOT EXISTS tasks (
    canvas_x     REAL,
    canvas_y     REAL,
    model        TEXT,
-   owner_id     TEXT
+   owner_id     TEXT,
+   created_at   INTEGER
  );";
 
 /// 任务状态(三列看板：todo / doing / done)。
@@ -144,6 +145,10 @@ pub(crate) const W1_TASK_COLUMNS: [(&str, &str); 6] = [
 /// 外来任务存导入信封里的 personId，渲染层据 `ownerId == null` 过滤自己的任务。
 pub(crate) const OWNER_TASK_COLUMNS: [(&str, &str); 1] = [("owner_id", "TEXT")];
 
+/// 任务创建时间列（epoch ms）：新建时打戳，UPDATE 永不覆盖（照 workflows.created_at
+/// 先例）；老数据 ALTER 后该列为 NULL（= 未知），不回填。
+pub(crate) const CREATED_AT_TASK_COLUMNS: [(&str, &str); 1] = [("created_at", "INTEGER")];
+
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Task {
@@ -199,6 +204,10 @@ pub struct Task {
     /// 导入外来数据时由信封盖章。前端写入路径不感知（serde default），零改动兼容
     #[serde(default)]
     pub owner_id: Option<String>,
+    /// 任务创建时间（epoch ms）：新建时与 updated_at 同值打戳，此后 UPDATE 永不覆盖；
+    /// 老数据为 NULL（= 未知），不回填。序列化进导出信封，serde default 兼容旧信封。
+    #[serde(default)]
+    pub created_at: Option<i64>,
     #[serde(default, skip_serializing)]
     pub expected_updated_at: Option<i64>,
 }
@@ -269,8 +278,8 @@ pub fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), S
             "INSERT INTO tasks
                (id, title, due, note, tags, file_path, file_is_dir, col, subtasks,
                 completed_at, archived, deleted_at, collapsed, ord, updated_at, schedule, sched_last, bot_assigned, files,
-                assignee, budget, result, origin, workflow_id, depends_on, canvas_x, canvas_y, model, owner_id)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29)
+                assignee, budget, result, origin, workflow_id, depends_on, canvas_x, canvas_y, model, owner_id, created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30)
              ON CONFLICT(id) DO UPDATE SET
                title=excluded.title, due=excluded.due, note=excluded.note,
                tags=excluded.tags, file_path=excluded.file_path,
@@ -373,6 +382,7 @@ pub fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), S
                 t.canvas_pos.as_ref().map(|p| p.y),
                 t.model,
                 t.owner_id,
+                t.created_at,
             ])
             .map_err(|e| e.to_string())?;
         affected_total += affected;
@@ -433,6 +443,7 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<super::Task> {
     let canvas_y: Option<f64> = row.get(26)?;
     let model: Option<String> = row.get(27)?;
     let owner_id: Option<String> = row.get(28)?;
+    let created_at: Option<i64> = row.get(29)?;
     // col 从 DB 读出仍是 String(列类型 TEXT),parse 到 TaskStatus enum。
     // 与 subtasks/files JSON 损坏「warn + 按空读取」的契约对齐:
     // 单行 col 异常不应让整个读失败、把全部任务藏起来。
@@ -540,6 +551,7 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<super::Task> {
         canvas_pos,
         model,
         owner_id,
+        created_at,
         expected_updated_at: None,
     })
 }
@@ -548,7 +560,7 @@ const TASK_SELECT_COLS: &str =
     "SELECT id, title, due, note, tags, file_path, file_is_dir, col, subtasks, \
      completed_at, archived, deleted_at, collapsed, ord, updated_at, schedule, sched_last, \
      bot_assigned, files, assignee, budget, result, origin, workflow_id, depends_on, \
-     canvas_x, canvas_y, model, owner_id FROM tasks";
+     canvas_x, canvas_y, model, owner_id, created_at FROM tasks";
 
 pub fn load_all(conn: &rusqlite::Connection) -> Result<Vec<super::Task>, String> {
     let sql = format!("{TASK_SELECT_COLS} ORDER BY ord, rowid");
@@ -718,7 +730,8 @@ pub async fn task_set_column(
 
 /// TP-2：task_patch 的字段白名单应用器（纯逻辑，单测锚点）。
 /// **null = 清空**、缺键 = 不动；未知键/受保护键/空标题 → InvalidArgument 响亮失败。
-/// 受保护字段：id（主键）、updatedAt/expectedUpdatedAt（服务端统一打戳，前端快照不许带）。
+/// 受保护字段：id（主键）、updatedAt/expectedUpdatedAt（服务端统一打戳，前端快照不许带）、
+/// createdAt（创建时间不可篡改）。
 pub(crate) fn apply_task_patch(
     task: &mut super::Task,
     patch: &serde_json::Value,
@@ -873,11 +886,12 @@ pub(crate) fn apply_task_patch(
                 }
                 task.title = t;
             }
-            "id" | "updatedAt" | "expectedUpdatedAt" => {
+            "id" | "updatedAt" | "expectedUpdatedAt" | "createdAt" => {
                 return Err(CommandError::InvalidArgument {
                     field: k.into(),
                     value: v.to_string(),
-                    reason: "受保护字段：id/updated_at 由服务端管理，不可经 patch 修改".into(),
+                    reason: "受保护字段：id/updated_at/created_at 由服务端管理，不可经 patch 修改"
+                        .into(),
                 })
             }
             other => {
@@ -1766,6 +1780,7 @@ mod owner_graph_tests {
             canvas_pos: None,
             model: None,
             owner_id: owner.map(str::to_string),
+            created_at: None,
             expected_updated_at: None,
         }
     }

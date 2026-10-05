@@ -46,6 +46,8 @@ export interface GraphNode {
   tags?: string[];
   workflowId?: string;
   completedAt?: number;
+  /** 创建时间（epoch ms）：「耗时」大小口径的依赖（缺省 = 未知 → 最小尺寸） */
+  createdAt?: number;
   /** 任务节点的完整卡引用（详情面板/跳转用） */
   task?: Task;
   /** 连接度数（dep 边 + member 边），驱动半径 */
@@ -192,6 +194,7 @@ export function buildTaskGraph(
       tags: t.tags,
       workflowId: t.workflowId,
       completedAt: t.completedAt,
+      createdAt: t.createdAt,
       task: t,
       degree: 0,
     });

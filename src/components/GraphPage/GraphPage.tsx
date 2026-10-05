@@ -9,7 +9,7 @@ import { Waypoints } from "lucide-react";
 import type { PeopleEntry, Task, Workflow } from "../../types";
 import { loadPeople } from "../../storage";
 import GraphCanvas from "./GraphCanvas";
-import { OWNER_PALETTE } from "./graph-adapter";
+import { OWNER_PALETTE, type GraphSizeMode } from "./graph-adapter";
 import {
   DEFAULT_FILTERS,
   SELF_OWNER,
@@ -49,6 +49,23 @@ export default function GraphPage({
   const [people, setPeople] = useState<PeopleEntry[]>([]);
   const [filters, setFilters] = useState<GraphFilters>(DEFAULT_FILTERS);
   const [colorMode, setColorMode] = useState<GraphColorMode>("status");
+  // 节点大小语义（连接度/耗时）：localStorage 持久化偏好（任务图谱设置页落地后读同一键）
+  const SIZE_MODE_KEY = "wm.graph.sizeMode";
+  const [sizeMode, setSizeModeState] = useState<GraphSizeMode>(() => {
+    try {
+      return localStorage.getItem(SIZE_MODE_KEY) === "duration" ? "duration" : "degree";
+    } catch {
+      return "degree";
+    }
+  });
+  const setSizeMode = (m: GraphSizeMode) => {
+    setSizeModeState(m);
+    try {
+      localStorage.setItem(SIZE_MODE_KEY, m);
+    } catch {
+      // localStorage 不可用（隐私模式等）：会话内生效即可
+    }
+  };
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [hoverId, setHoverId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -318,6 +335,7 @@ export default function GraphPage({
           <GraphCanvas
             graph={graph}
             colorMode={colorMode}
+            sizeMode={sizeMode}
             ownerOrder={ownerOrder}
             tagGroups={tagGroups}
             relayoutSignal={relayoutSignal}
@@ -350,6 +368,24 @@ export default function GraphPage({
                 {m === "status" ? "按状态" : "按成员"}
               </button>
             ))}
+            {/* 节点大小语义切换：连接度（默认）/ 耗时（完成−创建天数，doing 用已进行天数） */}
+            <span className="flex items-center gap-1 border-l border-[var(--edge)] pl-2 text-[var(--t5)]">
+              大小
+              {(["degree", "duration"] as const).map((m) => (
+                <button
+                  key={m}
+                  onClick={() => setSizeMode(m)}
+                  aria-label={`节点大小按${m === "degree" ? "连接度" : "耗时"}`}
+                  className={
+                    sizeMode === m
+                      ? "rounded-[var(--r-sm)] bg-[var(--inset-bg)] px-1.5 py-0.5 font-medium text-[var(--t1)]"
+                      : "px-1.5 py-0.5 text-[var(--t5)] hover:text-[var(--t2)]"
+                  }
+                >
+                  {m === "degree" ? "连接度" : "耗时"}
+                </button>
+              ))}
+            </span>
             {colorMode === "status" && (
               <span className="flex items-center gap-2 pl-1 text-[var(--t5)]">
                 <i className="inline-block size-2 rounded-full bg-[var(--t5)]" />待办

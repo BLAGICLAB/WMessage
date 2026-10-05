@@ -5,12 +5,15 @@ import type { Task, Workflow } from "../../types";
 import { buildTaskGraph, DEFAULT_FILTERS } from "./graph-build";
 import {
   computeCameraFit,
+  durationDaysOf,
   fa2Settings,
   graphBBox,
+  nodeSize,
   ownerColorKey,
   resolveOwnerColor,
   toGraphologyGraph,
 } from "./graph-adapter";
+import type { GraphNode } from "./graph-build";
 
 const WFS: Workflow[] = [
   { id: "wf1", name: "周报流水线", goal: "出周报" },
@@ -120,6 +123,63 @@ describe("owner 着色解析（chips 与节点共用）", () => {
 
   it("键不匹配时安全兜底", () => {
     expect(resolveOwnerColor("bogus", palette)).toBe("#t5");
+  });
+});
+
+describe("节点大小双模式（degree/duration）", () => {
+  const NOW = 1_800_000_000_000; // 固定钟点，测试确定性
+  const DAY = 86_400_000;
+  const task = (p: Partial<GraphNode>): GraphNode => ({
+    id: "x", kind: "task", label: "x", degree: 0, ...p,
+  });
+
+  it("durationDaysOf：done 用完成−创建，doing 用现在−创建，todo/缺创建时间 = null", () => {
+    expect(
+      durationDaysOf(task({ status: "done", createdAt: NOW - 10 * DAY, completedAt: NOW - 3 * DAY }), NOW)
+    ).toBe(7);
+    expect(
+      durationDaysOf(task({ status: "doing", createdAt: NOW - 5 * DAY }), NOW)
+    ).toBe(5);
+    expect(durationDaysOf(task({ status: "todo", createdAt: NOW - 5 * DAY }), NOW)).toBeNull();
+    // 老数据无创建时间 = 未知
+    expect(durationDaysOf(task({ status: "done", completedAt: NOW }), NOW)).toBeNull();
+    // 数据异常（完成早于创建）钳 0
+    expect(
+      durationDaysOf(task({ status: "done", createdAt: NOW, completedAt: NOW - 5 * DAY }), NOW)
+    ).toBe(0);
+  });
+
+  it("nodeSize：duration 模式 √压缩 + 15 封顶，未知耗时 = 最小 3", () => {
+    expect(nodeSize(task({}), "duration", NOW)).toBe(3);
+    expect(nodeSize(task({ status: "done", createdAt: NOW - DAY, completedAt: NOW }), "duration", NOW))
+      .toBeCloseTo(3 + 1.5, 6);
+    expect(
+      nodeSize(task({ status: "done", createdAt: NOW - 14 * DAY, completedAt: NOW }), "duration", NOW)
+    ).toBeCloseTo(3 + 1.5 * Math.sqrt(14), 6);
+    // 一年 → 封顶 15（防巨点把 FA2 碰撞推开过远）
+    expect(
+      nodeSize(task({ status: "done", createdAt: NOW - 365 * DAY, completedAt: NOW }), "duration", NOW)
+    ).toBe(15);
+    // hub 不受模式影响
+    expect(nodeSize(task({ kind: "hub", degree: 25 }), "duration", NOW)).toBeCloseTo(12, 6);
+    // degree 模式保持原公式
+    expect(nodeSize(task({ degree: 9 }), "degree", NOW)).toBeCloseTo(3 + 3 * 2, 6);
+  });
+
+  it("toGraphologyGraph：duration 模式把耗时尺寸写进图属性", () => {
+    const tasks: Task[] = [
+      t({ id: "fast", column: "done", createdAt: NOW - DAY, completedAt: NOW }),
+      t({ id: "slow", column: "done", createdAt: NOW - 60 * DAY, completedAt: NOW }),
+    ];
+    const built = buildTaskGraph(tasks, WFS, DEFAULT_FILTERS);
+    const g = toGraphologyGraph(built, ORDER, undefined, "duration", NOW);
+    const fast = g.getNodeAttribute("fast", "size");
+    const slow = g.getNodeAttribute("slow", "size");
+    expect(slow).toBeGreaterThan(fast);
+    expect(slow).toBeLessThanOrEqual(15);
+    // 默认参数 = degree 模式（旧调用零变化）
+    const g2 = toGraphologyGraph(built, ORDER);
+    expect(g2.getNodeAttribute("fast", "size")).toBeCloseTo(g2.getNodeAttribute("slow", "size"), 6);
   });
 });
 

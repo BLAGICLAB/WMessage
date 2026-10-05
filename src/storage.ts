@@ -99,7 +99,14 @@ export function diffTaskRows(
     }
     // RMW 写回基线 = 快照行 updatedAt；新任务（无 prev）不带基线。
     // 基线字段不参与「是否变化」比较（taskEq 已剔除），否则纯排序豁免会被脏基线击穿。
-    upserts.push({ ...t, updatedAt: now, expectedUpdatedAt: p?.updatedAt });
+    // 新行兜底打创建时间（createdAt 只在创建时写一次，后端 UPDATE 不覆盖该列——
+    // 此处防「未来新增入口忘打戳」，已有显式 createdAt 的以显式值为准）
+    upserts.push({
+      ...t,
+      createdAt: t.createdAt ?? (p ? undefined : now),
+      updatedAt: now,
+      expectedUpdatedAt: p?.updatedAt,
+    });
   }
   const nextIds = new Set(next.map((t) => t.id));
   const deletes = prev.filter((t) => !nextIds.has(t.id)).map((t) => t.id);

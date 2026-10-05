@@ -401,6 +401,7 @@ pub(crate) async fn tool_create_task(
             return ToolResult::ok(e.to_string(), Vec::new());
         }
     }
+    let now = chrono::Utc::now().timestamp_millis();
     let mut task = crate::db::Task {
         id: uuid::Uuid::new_v4().simple().to_string(),
         title: title.to_string(),
@@ -420,7 +421,7 @@ pub(crate) async fn tool_create_task(
         deleted_at: None,
         collapsed: None,
         order: None,
-        updated_at: Some(chrono::Utc::now().timestamp_millis()),
+        updated_at: Some(now),
         schedule: None,
         sched_last: None,
         bot_assigned: None,
@@ -433,6 +434,7 @@ pub(crate) async fn tool_create_task(
         canvas_pos: None,
         model: None,
         owner_id: None,            // 机器人建卡 = 本人（任务图谱设计 §1.1）
+        created_at: Some(now),     // 创建时间打戳（与 updated_at 同值；此后 UPDATE 不覆盖）
         expected_updated_at: None, // 新建任务：无读快照基线
     };
     // 多文件绑定：files 参数 [{path,isDir}]，超 10 截断 + 警告
@@ -1612,6 +1614,7 @@ mod task_files_arg_tests {
             canvas_pos: None,
             model: None,
             owner_id: None,
+            created_at: None,
             expected_updated_at: None,
         };
         apply_files_to_task(
