@@ -24,7 +24,37 @@ interface Palette {
   edge: string;
   edgeStrong: string;
   danger: string;
+  /** 主题判定（html.dark），标签色阶按主题取专用值——文本 token 是给 UI 的，
+   *  画布标签需要自己的对比度策略（见 LABEL_COLORS 注释） */
+  dark: boolean;
 }
+
+/**
+ * 画布标签专用色阶（G3-SIGMA 视觉修订）：
+ * 旧版直接用 --t1/--t2（近黑/近白文本 token）——亮色下黑字压在彩点上生硬，
+ * 暗色下默认 labelColor #000 直接消失。
+ * 设计原则：
+ *  - 常态标签 = 中性灰阶（--t3 系），比正文浅一档——图谱里标签是"路牌"不是正文，
+ *    低对比才有"信息在背景里"的层次感（Obsidian 同款取向）
+ *  - hub 标签 = 品牌色系，权重高半档（导航锚点）
+ *  - 焦点态（hover/选中/搜索）= --t2 提亮一档，白底光晕（亮）/深色光晕（暗）保证
+ *    压在任意节点色上都可读
+ *  - labelColor 用 color-mode 探测而非硬编码，跟主题即时切换
+ */
+const LABEL_COLORS = {
+  light: {
+    normal: "#6b7690", // 亮底上的雾蓝灰（比 --t3 浅、比 --t5 深）
+    hub: "#4a5879", // --brand-strong
+    focus: "#2b3548", // --t2
+    halo: "rgba(255, 255, 255, 0.75)",
+  },
+  dark: {
+    normal: "#9aa5ba", // 暗底上的亮灰蓝（--t3/--t4 之间）
+    hub: "#c0cdea", // --brand-strong（暗色亮蓝）
+    focus: "#eef1f7", // --t1
+    halo: "rgba(20, 22, 29, 0.72)",
+  },
+} as const;
 
 function readPalette(): Palette {
   const s = getComputedStyle(document.documentElement);
@@ -42,6 +72,7 @@ function readPalette(): Palette {
     edge: v("--edge", "#e2e7ef"),
     edgeStrong: v("--edge-strong", "#cbd4e1"),
     danger: v("--danger", "#dc2626"),
+    dark: document.documentElement.classList.contains("dark"),
   };
 }
 
@@ -122,6 +153,67 @@ export default function GraphCanvas(props: GraphCanvasProps) {
       renderEdgeLabels: false,
       labelDensity: props.graph.nodes.length > 400 ? 0.35 : 1,
       labelGridCellSize: 60,
+      labelFont: '500 12px ui-sans-serif, system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif',
+      labelWeight: "500",
+      // 标签色由 reducer 写入节点属性（labelColor: { attribute: "labelColor" }）
+      // ——主题切换经 palette 重读即时生效，无需重建 sigma
+      labelColor: { attribute: "labelColor" as never },
+      // 自定义标签绘制：光晕底衬（主题感知）+ 右置文本。压在任意节点色上都可读，
+      // 取代 sigma 默认的纯色无衬底（亮底黑字生硬/暗底黑字不可读）
+      defaultDrawNodeLabel: (context, data, settings) => {
+        if (!data.label) return;
+        const palette = paletteRef.current;
+        const lc = palette.dark ? LABEL_COLORS.dark : LABEL_COLORS.light;
+        const size = settings.labelSize;
+        context.font = `${settings.labelWeight} ${size}px ${settings.labelFont}`;
+        context.textBaseline = "middle";
+        const textW = context.measureText(data.label).width;
+        const lx = data.x + data.size + 4;
+        // 光晕：与底色同色的半透明圆角衬底——把底下的点/线"抹掉"而不是盖住
+        context.fillStyle = lc.halo;
+        context.fillRect(lx - 2, data.y - size / 2 - 1, textW + 5, size + 2);
+        context.fillStyle =
+          (data as unknown as SigmaNodeAttrs).kind === "hub" ? lc.hub : lc.normal;
+        context.fillText(data.label, lx, data.y + 1);
+      },
+      // hover 底板：sigma 默认写死 #FFF 白底——暗色下突兀。几何照抄官方
+      // drawDiscNodeHover（圆角胶囊 + 阴影），底色/文字色按主题取。
+      defaultDrawNodeHover: (context, data, settings) => {
+        if (!data.label) return;
+        const palette = paletteRef.current;
+        const lc = palette.dark ? LABEL_COLORS.dark : LABEL_COLORS.light;
+        const size = settings.labelSize;
+        context.font = `${settings.labelWeight} ${size}px ${settings.labelFont}`;
+        const PADDING = 4;
+        const textW = context.measureText(data.label).width;
+        const boxW = Math.round(textW + 8);
+        const boxH = Math.round(size + 2 * PADDING);
+        const radius = Math.max(data.size, size / 2) + PADDING;
+        // 底板阴影（亮色浅影/暗色深影）
+        context.shadowOffsetX = 0;
+        context.shadowOffsetY = palette.dark ? 2 : 1;
+        context.shadowBlur = palette.dark ? 10 : 6;
+        context.shadowColor = palette.dark ? "rgba(0,0,0,0.55)" : "rgba(23,32,51,0.18)";
+        context.fillStyle = palette.dark ? "#232836" : "#ffffff";
+        context.beginPath();
+        // 从节点右侧展开的胶囊（与官方一致：含节点的圆头）
+        const angle = Math.asin(Math.min(1, boxH / 2 / radius));
+        const xDelta = Math.sqrt(Math.abs(radius * radius - (boxH / 2) ** 2));
+        context.moveTo(data.x + xDelta, data.y + boxH / 2);
+        context.lineTo(data.x + radius + boxW, data.y + boxH / 2);
+        context.lineTo(data.x + radius + boxW, data.y - boxH / 2);
+        context.lineTo(data.x + xDelta, data.y - boxH / 2);
+        context.arc(data.x, data.y, radius, angle, -angle);
+        context.closePath();
+        context.fill();
+        context.shadowOffsetX = 0;
+        context.shadowOffsetY = 0;
+        context.shadowBlur = 0;
+        // 文本（焦点色）
+        context.textBaseline = "middle";
+        context.fillStyle = lc.focus;
+        context.fillText(data.label, data.x + data.size + 6, data.y + 1);
+      },
       defaultEdgeType: "line",
       // reducer 在每次 render 时调用：着色/淡出/描环全部动态算
       nodeReducer: (node, data) => {
@@ -131,17 +223,22 @@ export default function GraphCanvas(props: GraphCanvasProps) {
         const attrs = data as SigmaNodeAttrs;
         const colorKey = attrs.colorKey ?? "todo";
         res.color = resolveColor(colorKey, palette, p.colorMode);
-        // 标签策略（万级数据的第一视觉问题）：默认关；只开
-        //   hub / 高连接度（≥6）——常态标签源；焦点邻域 / 搜索 / 选中必开。
-        // labelDensity 控制 sigma 的标签网格密度，这里 forceLabel 控制资格。
+        // ── 标签色（G3-SIGMA 视觉修订）：专用色阶 + 光晕，见 LABEL_COLORS 注释。
+        // hub 高亮半档、常态灰阶、焦点提亮——经自定义 label draw 函数绘制光晕
+        const lc = palette.dark ? LABEL_COLORS.dark : LABEL_COLORS.light;
         const degree = g.degree(node);
         const focusId = p.hoverId ?? p.selectedId;
+        const isFocusNode =
+          node === p.selectedId || node === p.hoverId ||
+          (p.searchMatchIds?.has(node) ?? false);
         const inFocusNeighborhood =
-          focusId !== null && (node === focusId || g.areNeighbors(node, focusId));
+          focusId !== null &&
+          (node === focusId || g.areNeighbors(node, focusId) || isFocusNode);
+        res.labelColor = isFocusNode || attrs.kind === "hub" ? lc.focus : lc.normal;
+        // 标签资格：hub / 高连接度 / 焦点邻域；done 常态压掉
+        const isDoneFade = p.colorMode === "status" && attrs.status === "done";
         let labelWorthy =
           attrs.kind === "hub" || degree >= 6 || inFocusNeighborhood;
-        // done 淡化（状态着色模式下）：完成态常压标签，聚焦时照常
-        const isDoneFade = p.colorMode === "status" && attrs.status === "done";
         if (isDoneFade && !inFocusNeighborhood) labelWorthy = false;
         res.forceLabel = labelWorthy;
         // hover/选中：邻接集合之外的淡出
@@ -157,8 +254,7 @@ export default function GraphCanvas(props: GraphCanvasProps) {
           }
         }
         res.zIndex = inFocus && focusId ? 1 : 0;
-        // 搜索命中 / 选中 / 悬停：强制标签 + highlighted（Sigma 内置描边）
-        if (p.searchMatchIds?.has(node) || node === p.selectedId || node === p.hoverId) {
+        if (isFocusNode) {
           res.highlighted = true;
           res.forceLabel = true;
         }
