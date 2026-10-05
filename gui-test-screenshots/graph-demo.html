@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>任务图谱 GUI 冒烟演示（浏览器 mock 渲染）</title>
+    <script>
+      // Tauri shim：让真实组件在浏览器里跑通数据面（与 vitest setup 同一手法）。
+      // 数据与隔离目录 GUI 冒烟的 seed.sql 同源。
+      window.__TAURI_INTERNALS__ = {
+        metadata: { currentWindow: { label: "main" }, currentWebview: {} },
+        transformCallback: (cb) => cb,
+        invoke: (cmd) => {
+          if (cmd === "workflow_list")
+            return Promise.resolve([
+              { id: "wf-demo-1", name: "周报流水线", goal: "自动汇总本周任务出周报" },
+              { id: "wf-demo-2", name: "官网部署", goal: "构建并部署官网" },
+            ]);
+          if (cmd === "people_list")
+            return Promise.resolve([
+              { id: "self-demo-0001", name: "任", isSelf: true },
+              { id: "p-zhang-demo", name: "张三", isSelf: false },
+              { id: "p-li-demo", name: "李四", isSelf: false },
+            ]);
+          return Promise.resolve([]);
+        },
+      };
+      window.addEventListener("unhandledrejection", (e) => e.preventDefault());
+      window.__errors = [];
+      window.addEventListener("error", (e) => window.__errors.push(String(e.message)));
+    </script>
+    <script type="module" src="./graph-demo-entry.tsx"></script>
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
