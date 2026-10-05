@@ -228,8 +228,10 @@ export function fa2Settings(nodeCount: number) {
     barnesHutOptimize: nodeCount > 1500,
     // 权重参与吸引：dep/member=1 不变，标签锚点强边(3)把同组卡压成团（G4-CLUSTER）
     edgeWeightInfluence: 1,
-    // LinLog 模式（Noack 能量模型）：团簇分离最大杠杆——连通团拉紧、团间推远
-    linLogMode: true,
+    // linLogMode **禁用**（r1 真机回归）：LinLog 对无连线孤点无引力约束、会被
+    // 斥力无限推远——真实数据大量孤点时「节点一闪而过」全飞出视野。团簇分离
+    // 已由确定性分扇区初值保证，不需要 linLog
+    linLogMode: false,
     outboundAttractionDistribution: false,
     adjustSizes: true, // 碰撞分离（等价旧实现的 collide）
     slowDown: 1 + Math.min(10, nodeCount / 500),
