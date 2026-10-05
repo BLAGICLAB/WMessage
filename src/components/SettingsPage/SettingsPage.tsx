@@ -50,6 +50,7 @@ import {
 } from "../../lib/workflowPrompt";
 
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
+import { DEFAULT_ARCHIVE_DAYS, MAX_ARCHIVE_DAYS } from "../../lib/archiveRule";
 import {
   fetchProviders,
   fetchModelsByProvider,
@@ -407,6 +408,9 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     pythonTimeoutSecs: "",
     // Function 调用熔断上限（空 = 100 默认；W5-FUSE 全域，含工作流节点执行）
     maxFunctionCalls: "",
+    // 任务卡归档天数（数据管理卡）：完成满 N 天自动归档；后端 migration 兜底归档同源
+    // 显示为字符串输入；"7" = 默认（后端 None 亦回 7）
+    archiveAfterDays: String(DEFAULT_ARCHIVE_DAYS),
     // 授权模式：strict=白名单外硬拒 / ask=白名单外弹授权（默认）/ yolo=全放行
     permMode: "ask" as "strict" | "ask" | "yolo",
     // max_tokens 兜底层（仅 Anthropic 模式发送）：无设置页 UI 入口（每模型编辑里
@@ -500,6 +504,8 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         braveEnabled?: boolean | null;
         pythonTimeoutSecs?: number | null;
         maxFunctionCalls?: number | null;
+        // 任务卡归档天数（None = 后端默认 7）
+        archiveAfterDays?: number | null;
         permMode?: string | null;
         apiProvider?: string | null;
         maxTokens?: number | null;
@@ -565,6 +571,9 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         braveEnabled: c.braveEnabled ?? (c.hasBraveKey ?? false),
         pythonTimeoutSecs: c.pythonTimeoutSecs != null ? String(c.pythonTimeoutSecs) : "",
         maxFunctionCalls: c.maxFunctionCalls != null ? String(c.maxFunctionCalls) : "",
+        // 归档天数：后端 None / 老版本没返 → 显示默认 7
+        archiveAfterDays:
+          c.archiveAfterDays != null ? String(c.archiveAfterDays) : String(DEFAULT_ARCHIVE_DAYS),
         // 老配置缺字段/非法值 → ask（与后端 PermMode::from_cfg 回退一致）
         permMode:
           c.permMode === "strict" || c.permMode === "yolo" ? c.permMode : "ask",
@@ -744,6 +753,13 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
           maxFunctionCalls: (() => {
             const n = parseInt(c.maxFunctionCalls.trim(), 10);
             return Number.isFinite(n) && n > 0 ? n : null;
+          })(),
+          // 任务卡归档天数：空/非法 = null（后端回默认 7）；钳 1..=MAX 与后端一致
+          archiveAfterDays: (() => {
+            const n = parseInt(c.archiveAfterDays.trim(), 10);
+            return Number.isFinite(n) && n > 0
+              ? Math.min(MAX_ARCHIVE_DAYS, n)
+              : null;
           })(),
           // 授权模式（strict/ask/yolo）
           permMode: c.permMode,
@@ -1683,7 +1699,30 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
               {importing ? "导入中…" : (<><Upload size={12} aria-hidden /> 导入</>)}
             </button>
           </div>
+          {/* 任务卡归档时间：完成满 N 天自动归档。前端看板规则与后端 migration
+              兜底归档（主窗口关闭时照常到期）同读 bot-config.json，改完阈值两侧一致 */}
+          <div className="pt-3 border-t border-[var(--edge)] flex items-center justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-[var(--t2)]">任务卡归档时间</p>
+              <p className="mt-1 text-xs text-[var(--t5)]">
+                任务完成超过该天数后自动归档，从「完成」列隐藏；默认 {DEFAULT_ARCHIVE_DAYS} 天，上限 {MAX_ARCHIVE_DAYS} 天
+              </p>
+            </div>
+            <div className="shrink-0 flex items-center gap-2">
+              <input
+                value={config.archiveAfterDays}
+                onChange={(e) => setConfig((c) => ({ ...c, archiveAfterDays: e.target.value }))}
+                placeholder={String(DEFAULT_ARCHIVE_DAYS)}
+                inputMode="numeric"
+                aria-label="任务卡归档天数"
+                className="nm-inset w-20 rounded-xl px-3 py-1.5 text-xs text-[var(--t3)] outline-none text-right"
+              />
+              <span className="text-xs text-[var(--t5)]">天</span>
+            </div>
+          </div>
         </div>
+        {/* 归档天数等 setConfig 字段靠本卡保存钮落盘（同机器人卡模式） */}
+        {renderSaveButton("mt-3 flex justify-end")}
       </div>
 
       {/* 工作区管理：与任务数据管理风格一致；workspace_items 数据独立于任务数据 */}

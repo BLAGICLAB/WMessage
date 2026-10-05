@@ -17,7 +17,6 @@
 //!
 //! 公开路径稳定（lib.rs / 其他模块引用）：
 //! - `migration::spawn_polling`    — 由本模块顶层 `pub use` 透传 run::spawn_polling
-//! - `migration::ARCHIVE_AFTER_MS` — run 公开常量
 //! - `migration::now_ms`           — ops 公开
 //! - `migration::filename_matches` — ops 公开
 //! - `migration::resolve_archive_dir` — ops 公开

@@ -170,6 +170,62 @@ describe("SettingsPage", () => {
     });
   });
 
+  it("任务卡归档时间（数据管理）：默认 7 天，改 30 保存 → bot_set_config 携带 archiveAfterDays=30", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_get_config")
+        return {
+          baseUrl: "",
+          model: "",
+          hasApiKey: false,
+          bypassLlmOnPreStepHit: true,
+          archiveAfterDays: 7,
+        };
+      if (cmd === "bot_set_config") return null;
+      if (cmd === "profile_get")
+        return {
+          user: { name: "我", avatarDataUrl: null },
+          bot: { name: "机器人", avatarDataUrl: null },
+        };
+      if (cmd === "bot_get_enabled") return false;
+      if (cmd === "py_get_enabled") return false;
+      if (cmd === "skills_list") return [];
+      if (cmd === "migration_rules_load") return { version: 1, rules: [] };
+      if (cmd === "migration_status") return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_log_read") return "";
+      return null;
+    });
+    render(<SettingsPage {...defaultProps} />);
+    await user.click(screen.getByRole("button", { name: "数据管理" }));
+    // 默认显示 7（后端返 7；后端 None 亦显示 7）
+    const input = await screen.findByLabelText("任务卡归档天数");
+    expect(input).toHaveValue("7");
+    await user.clear(input);
+    await user.type(input, "30");
+    // 本卡「保存配置」钮（aria-label 恒定，可见文本随状态变）
+    await user.click(screen.getByLabelText("保存配置"));
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith(
+        "bot_set_config",
+        expect.objectContaining({
+          config: expect.objectContaining({ archiveAfterDays: 30 }),
+        })
+      );
+    });
+    // 越界钳制：0 视为未配置（null → 后端回默认 7）；500 钳到 365
+    await user.clear(input);
+    await user.type(input, "500");
+    await user.click(screen.getByLabelText("保存配置"));
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith(
+        "bot_set_config",
+        expect.objectContaining({
+          config: expect.objectContaining({ archiveAfterDays: 365 }),
+        })
+      );
+    });
+  });
+
   it("主题三态：依次点击 → onThemeChange 收到 light / dark / system", async () => {
     const onThemeChange = vi.fn();
     const user = userEvent.setup();

@@ -27,6 +27,13 @@ pub fn perm_mode(app: &AppHandle) -> PermMode {
     PermMode::from_cfg(io::load_config(app).perm_mode.as_deref())
 }
 
+/// 当前任务卡归档天数（读 bot-config.json；None → 7 默认；钳 1..=365）。
+/// migration 兜底归档（run.rs 阶段一）与前端 applyArchiveRule 同源此值，
+/// 两侧阈值恒一致（前端经 BotConfigView.archiveAfterDays）。
+pub fn archive_after_days(app: &AppHandle) -> u32 {
+    super::types::resolve_archive_after_days(io::load_config(app).archive_after_days)
+}
+
 // ───────────────────────── bot_get_config ─────────────────────────
 
 #[tauri::command]
@@ -104,6 +111,7 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
         brave_enabled: cfg.brave_enabled,
         python_timeout_secs: cfg.python_timeout_secs,
         max_function_calls: cfg.max_function_calls,
+        archive_after_days: cfg.archive_after_days,
         perm_mode: cfg.perm_mode,
         api_provider: cfg.api_provider,
         max_tokens: cfg.max_tokens,
@@ -225,6 +233,10 @@ pub fn bot_set_config(
     // base_url/model/api_provider 三个派生字段——bot_model_loop 只看老字段。
     let mut config = config;
     schema::derive_legacy_fields_from_active(&mut config);
+    // 归档天数落盘前钳制（None 保留 = 默认 7；Some(0)/超界钳到 1..=365）
+    config.archive_after_days = config
+        .archive_after_days
+        .map(|n| n.clamp(1, super::types::MAX_ARCHIVE_DAYS));
     // P0-EV1：前端整体替换写不丢 evolution 块。读盘回填必须与写**同锁**
     //（评审 HIGH：无锁 load → 有锁 write 之间 persist_last_run 等并发写会被
     // 本写覆盖——丢更新窗口）；write_bot_config_file 自带加锁不可重入，走 _locked 变体

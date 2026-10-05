@@ -30,6 +30,11 @@ import { deleteTaskRows, diffTaskRows, loadTasksFromDb, taskEq, upsertTasks, exp
 import { handleCommandError } from "./lib/errorHandler";
 import { isBackendPersisted, KNOWN_SOURCES } from "./lib/mutationOrigin";
 import {
+  applyArchiveRule,
+  loadArchiveDaysFromConfig,
+  setArchiveAfterDays,
+} from "./lib/archiveRule";
+import {
   getShowWorkflowTasks,
   isWorkflowTask,
   WORKFLOW_VISIBILITY_EVENT,
@@ -147,19 +152,8 @@ function applyTodayRule(tasks: Task[]): Task[] {
   );
 }
 
-// 归档规则：完成超过 7 天的任务自动归档，从「完成」列隐藏
-const ARCHIVE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
-
-function applyArchiveRule(tasks: Task[]): Task[] {
-  const now = Date.now();
-  return tasks.map((t) => {
-    if (t.column !== "done" || t.archived || t.deletedAt) return t;
-    const completedAt = t.completedAt ?? now; // 老数据补完成时间
-    if (now - completedAt >= ARCHIVE_AFTER_MS)
-      return { ...t, completedAt, archived: true };
-    return t.completedAt === completedAt ? t : { ...t, completedAt };
-  });
-}
+// 归档规则（applyArchiveRule + 归档天数配置）在 lib/archiveRule.ts：
+// 天数存 bot-config.json，后端 migration 兜底归档同源读取（设置页数据管理可改）
 
 function App() {
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -223,7 +217,10 @@ function App() {
     (async () => {
       const applyFromConfig = async () => {
         try {
-          const c = await invoke<{ uiFontSize?: string | null }>("bot_get_config");
+          const c = await invoke<{
+            uiFontSize?: string | null;
+            archiveAfterDays?: number | null;
+          }>("bot_get_config");
           const v =
             c.uiFontSize === "standard" ||
             c.uiFontSize === "large" ||
@@ -231,6 +228,11 @@ function App() {
               ? c.uiFontSize
               : "small";
           document.documentElement.dataset.fontSize = v;
+          // 归档天数同步刷新（设置页数据管理保存后广播）；阈值变小 → 立即重套
+          // 规则把已到期任务归档落盘，不等下一分钟定时器。规则幂等 + mutate 链
+          // 串行，启动期并发多套一次无害（任务未加载时为空 no-op）。
+          setArchiveAfterDays(c.archiveAfterDays);
+          mutateFire((prev) => applyArchiveRule(applyTodayRule(prev)));
         } catch {
           // 拉取失败也套上默认值，避免界面还没应用就被卡
           document.documentElement.dataset.fontSize = "small";
@@ -272,6 +274,8 @@ function App() {
   useEffect(() => {
     (async () => {
       try {
+        // 归档天数先于首套规则到位：首屏就按配置阈值归档，而不是先按默认 7 打错标
+        await loadArchiveDaysFromConfig();
         const res = await loadTasksFromDb();
         if (!res.ok) {
           // 读失败 ≠ 空库：禁止走迁移/种子分支（避免覆盖真实数据），保持内存空数组并明确告警

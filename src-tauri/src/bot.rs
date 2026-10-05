@@ -61,8 +61,9 @@ pub use config::{
     __tauri_command_name_bot_log_read,
     __tauri_command_name_bot_set_active_model,
     __tauri_command_name_bot_set_config,
-    // ── 公开函数（15 个普通 pub）──
+    // ── 公开函数（16 个普通 pub）──
     active_model_entry,
+    archive_after_days,
     audit_log,
     audit_log_hook,
     bot_clear_api_key,
@@ -86,6 +87,7 @@ pub use config::{
     read_memory_control,
     read_memory_tuning,
     read_search_key,
+    resolve_archive_after_days,
     resolve_max_tokens,
     write_search_key,
 
@@ -101,10 +103,12 @@ pub use config::{
     ModelsByProvider,
     PermMode,
 
-    // ── 常量（12 个）──
+    // ── 常量（14 个）──
+    DEFAULT_ARCHIVE_DAYS,
     DEFAULT_MAX_TOKENS,
     KEYRING_SERVICE,
     KEYRING_USER,
+    MAX_ARCHIVE_DAYS,
     MAX_DUE,
     MAX_KEYWORD,
     MAX_MAX_TOKENS,

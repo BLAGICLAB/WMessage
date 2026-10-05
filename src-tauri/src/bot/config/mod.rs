@@ -41,8 +41,8 @@ pub mod types;
 pub use crate::memory::MemoryTuning;
 pub use audit::{audit_log, audit_log_hook, bot_log_read};
 pub use commands::{
-    apply_active_model_switch, bot_clear_api_key, bot_get_config, bot_set_active_model,
-    bot_set_config, perm_mode,
+    apply_active_model_switch, archive_after_days, bot_clear_api_key, bot_get_config,
+    bot_set_active_model, bot_set_config, perm_mode,
 };
 pub use io::{
     config_path, migrate_legacy_key, migrate_search_keys, read_bypass_llm_switch,
@@ -57,10 +57,11 @@ pub use schema::{
     resolve_max_tokens, EffectiveInference, DEFAULT_MAX_TOKENS, MAX_MAX_TOKENS, MIN_MAX_TOKENS,
 };
 pub use types::{
-    check_len, resolve_model_override, ActiveModelId, ApiProvider, BotConfig, BotConfigView,
-    KeySlot, ModelEntry, ModelsByProvider, PermMode, ResolvedModel, BOT_CONFIG_SCHEMA_VERSION,
-    KEYRING_SERVICE, KEYRING_USER, MAX_DUE, MAX_KEYWORD, MAX_NOTE, MAX_SUBTASK_TEXT, MAX_TAGS,
-    MAX_TAG_LEN, MAX_TITLE,
+    check_len, resolve_archive_after_days, resolve_model_override, ActiveModelId, ApiProvider,
+    BotConfig, BotConfigView, KeySlot, ModelEntry, ModelsByProvider, PermMode, ResolvedModel,
+    BOT_CONFIG_SCHEMA_VERSION, DEFAULT_ARCHIVE_DAYS, KEYRING_SERVICE, KEYRING_USER,
+    MAX_ARCHIVE_DAYS, MAX_DUE, MAX_KEYWORD, MAX_NOTE, MAX_SUBTASK_TEXT, MAX_TAGS, MAX_TAG_LEN,
+    MAX_TITLE,
 };
 
 // pub(crate) 项：bot.rs 的 `pub(crate) use config::{...}` 块需要。
@@ -398,6 +399,55 @@ mod tests {
             MAX_MAX_TOKENS,
             "高于上限钳 200000"
         );
+    }
+
+    // ── 任务卡归档天数（数据管理设置，前端 archiveRule.ts 同规则） ──
+
+    #[test]
+    fn archive_after_days_default_and_clamped() {
+        use crate::bot::config::types::{
+            resolve_archive_after_days, DEFAULT_ARCHIVE_DAYS, MAX_ARCHIVE_DAYS,
+        };
+        assert_eq!(
+            resolve_archive_after_days(None),
+            DEFAULT_ARCHIVE_DAYS,
+            "None = 默认 7 天"
+        );
+        assert_eq!(resolve_archive_after_days(Some(30)), 30);
+        assert_eq!(
+            resolve_archive_after_days(Some(0)),
+            1,
+            "0 钳到下限 1（防规则被打死）"
+        );
+        assert_eq!(
+            resolve_archive_after_days(Some(10_000)),
+            MAX_ARCHIVE_DAYS,
+            "超界钳 365"
+        );
+    }
+
+    #[test]
+    fn archive_after_days_roundtrip_and_legacy_compat() {
+        // 老配置 JSON 无 archiveAfterDays 字段 → None（不拒绝加载，行为=默认 7）
+        let legacy = r#"{"baseUrl":"https://api.example.com/v1","model":"m"}"#;
+        let old: BotConfig = serde_json::from_str(legacy).unwrap();
+        assert_eq!(old.archive_after_days, None);
+        // None 不写进序列化输出（保持配置文件干净）
+        assert!(
+            !serde_json::to_string(&old)
+                .unwrap()
+                .contains("archiveAfterDays"),
+            "None 不落盘"
+        );
+        // 写入 → 读回保真（camelCase 键名）
+        let cfg = BotConfig {
+            archive_after_days: Some(30),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(json.contains(r#""archiveAfterDays":30"#));
+        let back: BotConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.archive_after_days, Some(30));
     }
 
     // ── bot-config.json schema 迁移 ──

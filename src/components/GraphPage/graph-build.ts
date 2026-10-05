@@ -1,7 +1,7 @@
 // 任务图谱构建（任务图谱设计 §3.1）：tasks + workflows → 节点/边/过滤器。
 // 纯函数，无 React/Tauri 依赖（对齐 WorkflowCanvas/graph.ts 惯例，单测锚点）。
-// 统计口径：一切按 completedAt（完成时间）归年——归档只是完成 7 天后的存储状态，
-// 按归档时间会把跨年完成的任务记错年份（设计 §3.1）。
+// 统计口径：一切按 completedAt（完成时间）归年——归档只是完成满归档天数
+// （默认 7 天，设置页可改）后的存储状态，按归档时间会把跨年完成的任务记错年份（设计 §3.1）。
 
 import type { ColumnId, Task, Workflow } from "../../types";
 

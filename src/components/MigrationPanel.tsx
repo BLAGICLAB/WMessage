@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Check, ClipboardList, Download, TriangleAlert, Upload } from "lucide-react";
 import { handleCommandError, formatCommandError } from "../lib/errorHandler";
+import { getArchiveAfterDays } from "../lib/archiveRule";
 import type { MigrationRule, MigrationReport } from "../types";
 
 type MigrationStatus = {
@@ -102,7 +103,7 @@ export function MigrationPanel() {
     <div className="nm-card p-5">
       <h2 className="text-lg font-semibold text-[var(--t1)]">桌面清理</h2>
       <p className="mt-1 text-xs text-[var(--t5)]">
-        任务完成满 7 天进入归档后，按规则自动迁移其绑定的桌面文件（看板任务附件不受影响）
+        任务完成满 {getArchiveAfterDays()} 天进入归档后，按规则自动迁移其绑定的桌面文件（看板任务附件不受影响）
       </p>
       <p className="mt-1 text-[11px] text-[var(--t5)]">
         规则用表格管理：下载表格模版（CSV，Excel/WPS 可直接打开编辑），改完导入即生效。

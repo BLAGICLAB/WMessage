@@ -22,9 +22,6 @@ use super::recovery::{decide_src_missing, journal_replay_pending, SrcMissingActi
 use super::rules::load_rules;
 use super::types::MigrationReport;
 
-/// 完成满 7 天进入归档（与前端 applyArchiveRule 的 ARCHIVE_AFTER_MS 一致）
-pub const ARCHIVE_AFTER_MS: i64 = 7 * 24 * 60 * 60 * 1000;
-
 pub(crate) const POLL_INTERVAL_SECS: u64 = 600;
 
 /// 核心迁移：返回报告。silent 模式（轮询）不向 UI 抛错。
@@ -75,6 +72,9 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError>
     let rules = load_rules(app)?;
     let tasks = tauri::async_runtime::block_on(async { db::db_load(app.clone()).await })
         .map_err(|e| e.to_string())?;
+    // 归档阈值随设置走（数据管理 → 任务卡归档时间，默认 7 天钳 1..=365）：
+    // 本轮扫描开始时读一次，单轮内一致
+    let archive_after_ms = crate::bot::archive_after_days(app) as i64 * 24 * 60 * 60 * 1000;
     // NEW-B-2: 本轮所有 journal 读写复用同一条连接（原来每次 journal 调用各 open_db 一次，
     // 迁一个文件付 3 次全套 schema 检查）；journal 写由 journal_* 内部持 DB_WRITE_LOCK 串行。
     let jconn = db::open_db(app).map_err(|e| e.to_string())?;
@@ -84,7 +84,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError>
     // 避免「journal 已提交但解绑未落盘」对账空洞。
     let mut journals_commit_after_batch: Vec<i64> = vec![];
 
-    // 阶段一：完成满 7 天且未归档的任务 → 归档（兜底：主窗口关闭时也照常到期）
+    // 阶段一：完成满归档天数且未归档的任务 → 归档（兜底：主窗口关闭时也照常到期）
     let mut due: Vec<db::Task> = vec![];
     for t in tasks.iter() {
         if t.deleted_at.is_some()
@@ -94,7 +94,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError>
             continue;
         }
         if let Some(completed) = t.completed_at {
-            if completed > 0 && now - completed >= ARCHIVE_AFTER_MS {
+            if completed > 0 && now - completed >= archive_after_ms {
                 let mut nt = t.clone();
                 nt.expected_updated_at = t.updated_at; // T1-1：RMW 基线 = 快照 updated_at
                 nt.archived = Some(true);

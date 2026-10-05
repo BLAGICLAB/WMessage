@@ -145,6 +145,11 @@ pub struct BotConfig {
     /// 工作流节点等长链任务可调大；软警阈值 = cap*7/10 自动跟随。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_function_calls: Option<u32>,
+    /// 任务卡归档天数（可选）：任务完成满 N 天自动归档。前端看板规则
+    /// （applyArchiveRule）与 migration 兜底归档同源读取，两侧阈值恒一致。
+    /// None = 默认 7 天；读取侧 resolve_archive_after_days 钳制 1..=365。
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub archive_after_days: Option<u32>,
     /// 每协议下的大模型列表：双协议各自独立维护一个
     /// ModelEntry 列表。设置页协议切换时整体切换显示；新增的 ModelEntry 落在当前
     /// 协议下。None = 老配置未迁移过来（load_config 时会从 base_url/model 兜底迁移）；
@@ -289,6 +294,7 @@ impl Default for BotConfig {
             memory_tuning: None,        // 未配置 = 参数全默认（U17 前行为）
             mcp_servers: None,          // 未配置 = 无外部 MCP 服务器（老配置零影响）
             max_function_calls: None,   // 未配置 = 100 默认（W5-FUSE，全域熔断上限）
+            archive_after_days: None,   // 未配置 = 7 天默认（前端设置页数据管理可改）
             evolution: None,            // 未配置 = 无自进化块（evolution 模块自管读写）
             disabled_vendors: Vec::new(), // 未配置 = 无厂商被禁用
             verified_vendors: Vec::new(), // 未配置 = 无厂商通过连接测试
@@ -347,6 +353,18 @@ impl PermMode {
     }
 }
 
+// ───────────────────────── 归档天数解析 ─────────────────────────
+
+/// 任务卡归档天数默认/上限。设置页「数据管理」卡可改（1..=365 天）。
+pub const DEFAULT_ARCHIVE_DAYS: u32 = 7;
+pub const MAX_ARCHIVE_DAYS: u32 = 365;
+
+/// 归档天数解析：None → 7 默认；有值钳制 1..=365（防 0 把规则打死或超大值
+/// 形同关闭）。前端设置页同规则钳制（src/lib/archiveRule.ts clampArchiveDays）。
+pub fn resolve_archive_after_days(v: Option<u32>) -> u32 {
+    v.unwrap_or(DEFAULT_ARCHIVE_DAYS).clamp(1, MAX_ARCHIVE_DAYS)
+}
+
 // ───────────────────────── BotConfigView ─────────────────────────
 
 /// 返回给前端的配置视图：不含任何 key 本体，只有 has 标志
@@ -375,6 +393,8 @@ pub struct BotConfigView {
     /// 单次请求 Function 调用熔断上限（W5-FUSE 全域）：None = 默认 100；
     /// 子 agent 会话不受影响（走各自预算）
     pub max_function_calls: Option<u32>,
+    /// 任务卡归档天数原样透传（None = 7 默认；设置页「数据管理」卡编辑）
+    pub archive_after_days: Option<u32>,
     /// 授权模式原样透传给设置页（None = ask 默认；非法值前端按 ask 显示）
     pub perm_mode: Option<String>,
     /// API 协议原样透传给设置页（None = openai 旧行为，非法值前端按 openai 显示）

@@ -2,6 +2,34 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-05（周日）ARCH-DAYS：任务卡归档时间可配置——设置页数据管理新增天数设置（默认 7）
+
+**需求**：归档阈值原为硬编码 7 天（前端 `App.tsx ARCHIVE_AFTER_MS` + 后端
+`migration::ARCHIVE_AFTER_MS` 两处各写一份）。设置页「数据管理」新增
+「任务卡归档时间」，默认 7 天，可设天数。
+
+**实现**：
+- 配置存 `bot-config.json` 新字段 `archiveAfterDays`（`BotConfig`/
+  `BotConfigView` 各加 `Option<u32>`；落盘前钳 1..=365，`resolve_archive_after_days`
+  读取侧同规则钳制，None = 默认 7）。选 bot config 而非 localStorage 的原因：
+  后端 migration 兜底归档（主窗口关闭时照常到期）跑在 Rust 轮询线程，必须
+  读到同一份阈值——只改前端会出现「界面 30 天、后端 7 天照归」的分叉。
+- 后端 `bot_set_config` 落盘前钳制；`migration/run.rs` 阶段一归档阈值改为
+  每轮 `crate::bot::archive_after_days(app)` 现读（删掉两处硬编码常量，
+  mod 文档同步）。
+- 前端新建 `src/lib/archiveRule.ts`：`applyArchiveRule` + 天数内存缓存
+  （`getArchiveAfterDays/setArchiveAfterDays/clampArchiveDays`）从 App.tsx
+  迁入。App 启动在首套规则前 `loadArchiveDaysFromConfig()`（防首屏按默认值
+  打错标）；已有 `bot-config-changed` 监听里同步刷新缓存并立即重套规则
+  （阈值调小即刻归档，不等 60s 定时器）。设置页数据管理卡加输入框
+  （1–365，默认 7）+ 本卡「保存配置」钮（同机器人卡模式）。
+- 文案去硬编码：归档页空态 / 桌面清理说明改为显示当前配置天数。
+
+**验证**：`archiveRule.test.ts` 新 9 测（钳制/缓存/规则按配置阈值）、
+SettingsPage 新 1 测（默认 7 显示、改 30 保存载荷携带、500 钳 365）、
+config 模块新 2 测（resolve 钳制 + 老配置缺字段兼容往返）；前端全量 462 过，
+`cargo test bot::config` 70 过、`cargo test migration` 72 过。
+
 ## 2026-10-05（周日）G4-G6-r5：修真机「所有节点坍缩成一个微小点」——相机写错坐标系
 
 **需求**（老板真机验收）：30 个真实任务打开图谱，全部节点渲染在画布下方一个

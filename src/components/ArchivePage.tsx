@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Archive } from "lucide-react";
 import type { Task } from "../types";
 import { sortByOrder } from "../storage";
+import { getArchiveAfterDays } from "../lib/archiveRule";
 import { TodoCard } from "./TodoCard";
 import { EmptyState } from "./EmptyState";
 
@@ -93,7 +94,7 @@ export function ArchivePage({
         <EmptyState
           icon={<Archive size={18} aria-hidden />}
           title="暂无归档内容"
-          description="任务完成后超过 7 天会自动归档到这里"
+          description={`任务完成后满 ${getArchiveAfterDays()} 天会自动归档到这里`}
         />
       ) : filtered.length === 0 ? (
         <p className="py-10 text-center text-sm text-[var(--t5)]">没有匹配的归档</p>
