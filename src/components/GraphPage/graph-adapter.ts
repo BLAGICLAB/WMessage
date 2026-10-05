@@ -246,11 +246,10 @@ export function fa2Settings(nodeCount: number) {
     barnesHutOptimize: nodeCount > 1500,
     // 权重参与吸引：dep/member=1 不变，标签锚点强边(3)把同组卡压成团（G4-CLUSTER）
     edgeWeightInfluence: 1,
-    // LinLog 模式（Noack 能量模型）：团簇分离最大杠杆（连通团拉紧、团间推远）。
-    // r1 曾因「孤点飞散」回退，r2 定位真因是布局空间不随规模缩放（固定小画布
-    // 装不下万节点、密度爆炸互相挤出视野）——空间随 √N 自适应后孤点由 gravity
-    // 拉向中心，不再飞散
-    linLogMode: true,
+    // linLogMode **永久禁用**（两次真机回归定性）：LinLog 能量模型会把连通团
+    // 无限坍缩成一个点、无连线孤点推到无穷远——与「所有任务可见铺开」的验收
+    // 目标数学上不可调和。团簇由分扇区初值 + 锚点弱边保证，标准模式足够
+    linLogMode: false,
     outboundAttractionDistribution: false,
     adjustSizes: true, // 碰撞分离（等价旧实现的 collide）
     slowDown: 1 + Math.min(10, nodeCount / 500),
