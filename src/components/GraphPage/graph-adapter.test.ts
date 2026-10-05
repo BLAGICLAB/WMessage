@@ -4,7 +4,9 @@ import { describe, expect, it } from "vitest";
 import type { Task, Workflow } from "../../types";
 import { buildTaskGraph, DEFAULT_FILTERS } from "./graph-build";
 import {
+  computeCameraFit,
   fa2Settings,
+  graphBBox,
   ownerColorKey,
   resolveOwnerColor,
   toGraphologyGraph,
@@ -129,5 +131,66 @@ describe("fa2Settings", () => {
     expect(large.barnesHutOptimize).toBe(true);
     expect(large.slowDown).toBeGreaterThan(small.slowDown);
     expect(large.adjustSizes).toBe(true);
+  });
+});
+
+describe("computeCameraFit（归一化相机空间适配）", () => {
+  // 1024×811 视口 + 对称方形参考 bbox：内容=参考系时 ratio 应恰好铺满
+  const NORM = { x: [-100, 100] as [number, number], y: [-100, 100] as [number, number] };
+  const VIEW = { width: 1024, height: 811 };
+
+  it("内容充满参考系：相机居中 (0.5,0.5)，ratio 铺满留边距", () => {
+    const fit = computeCameraFit({ minX: -100, maxX: 100, minY: -100, maxY: 100 }, NORM, VIEW);
+    expect(fit).not.toBeNull();
+    expect(fit!.x).toBeCloseTo(0.5, 6);
+    expect(fit!.y).toBeCloseTo(0.5, 6);
+    // 手算：cr=1（graphRatio=1, viewportRatio<1 同向），smallest=811−60=751，
+    // ratio = max(1×751/1024, 1×751/811) × 1.12 = (751/811)×1.12
+    expect(fit!.ratio).toBeCloseTo((751 / 811) * 1.12, 6);
+  });
+
+  it("规模不变性（坍缩 bug 回归锁）：30 节点与 1227 节点的 ratio 同量级", () => {
+    // 旧实现 ratio = spanRaw/像素——规模越小 ratio 越小（过放大推出视口）。
+    // 归一化空间下内容相对参考系的占比与绝对规模无关：
+    const small = computeCameraFit(
+      { minX: -70, maxX: 65, minY: -68, maxY: 61 },
+      { x: [-70, 65], y: [-68, 61] },
+      VIEW
+    );
+    const large = computeCameraFit(
+      { minX: -1050, maxX: 1050, minY: -1050, maxY: 1050 },
+      { x: [-1050, 1050], y: [-1050, 1050] },
+      VIEW
+    );
+    expect(small!.ratio).toBeCloseTo(large!.ratio, 1);
+    expect(small!.x).toBeCloseTo(large!.x, 1);
+  });
+
+  it("内容偏离参考系中心：相机中心跟随（归一化平移）", () => {
+    const fit = computeCameraFit({ minX: 100, maxX: 300, minY: -100, maxY: 100 }, NORM, VIEW);
+    // 内容中心 (200, 0) → 归一化 0.5 + 200/200 = 1.5
+    expect(fit!.x).toBeCloseTo(1.5, 6);
+    expect(fit!.y).toBeCloseTo(0.5, 6);
+  });
+
+  it("视口退化/输入非有限 → null（调用方不得写相机）", () => {
+    const bbox = { minX: -100, maxX: 100, minY: -100, maxY: 100 };
+    expect(computeCameraFit(bbox, NORM, { width: 0, height: 0 })).toBeNull();
+    expect(computeCameraFit(bbox, NORM, { width: 50, height: 50 })).toBeNull();
+    expect(computeCameraFit({ ...bbox, minX: -Infinity }, NORM, VIEW)).toBeNull();
+    expect(computeCameraFit(bbox, { x: [3, 3], y: [3, 3] }, VIEW)).toBeNull();
+  });
+
+  it("graphBBox 与图坐标一致，空图/非有限兜底 [0,1]", () => {
+    const built = buildTaskGraph(SAMPLE, WFS, DEFAULT_FILTERS);
+    const g = toGraphologyGraph(built, ORDER);
+    const bb = graphBBox(g);
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    g.forEachNode((_, a) => {
+      minX = Math.min(minX, a.x); maxX = Math.max(maxX, a.x);
+      minY = Math.min(minY, a.y); maxY = Math.max(maxY, a.y);
+    });
+    expect(bb.x).toEqual([minX, maxX]);
+    expect(bb.y).toEqual([minY, maxY]);
   });
 });

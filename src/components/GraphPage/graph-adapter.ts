@@ -255,3 +255,90 @@ export function fa2Settings(nodeCount: number) {
     slowDown: 1 + Math.min(10, nodeCount / 500),
   };
 }
+
+// ── 视野适配（归一化相机空间） ──
+// Sigma v3 的相机不在图坐标系工作：节点坐标先经 normalizationFunction 映射到以
+// (0.5,0.5) 为中心的归一化空间（nx = 0.5 + (x−cX)/R，R = 参考 bbox 最大跨度），
+// 相机 x/y/ratio 都是该空间的值（matrixFromCamera：
+// clip = (p−cam)/ratio × 2·(min(w,h)−2·stagePadding)/dim × correctionRatio）。
+// 把原始图坐标直接写进相机会在小图上把内容推到视口外数万像素（画布全空）。
+// 参考 bbox 由调用方在建图时用 setCustomBBox 钉死（否则 FA2 每批坐标更新都会触发
+// sigma process() 用膨胀后的 bbox 重基归一化，参考系持续漂移）。
+
+/** Sigma 默认 stagePadding（autoRescale 下生效） */
+const SIGMA_STAGE_PADDING = 30;
+
+/** 归一化参考 bbox（sigma customBBox 的形状） */
+export interface NormExtent {
+  x: [number, number];
+  y: [number, number];
+}
+
+/** 图坐标包围盒 */
+export interface ContentBBox {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+}
+
+/** 图节点坐标 → 参考 bbox（与 sigma graphExtent 同口径：全节点、含锚点） */
+export function graphBBox(
+  graph: Pick<Graph<SigmaNodeAttrs>, "forEachNode">
+): NormExtent {
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  graph.forEachNode((_, a) => {
+    if (!Number.isFinite(a.x) || !Number.isFinite(a.y)) return;
+    if (a.x < minX) minX = a.x;
+    if (a.x > maxX) maxX = a.x;
+    if (a.y < minY) minY = a.y;
+    if (a.y > maxY) maxY = a.y;
+  });
+  if (!Number.isFinite(minX)) return { x: [0, 1], y: [0, 1] };
+  return { x: [minX, maxX], y: [minY, maxY] };
+}
+
+/**
+ * 计算「把内容包围盒铺满视口」的相机态（归一化空间）。
+ * 返回 null = 视口退化/输入非有限——调用方不得写相机（写 Infinity/NaN ratio
+ * 会把全部节点投影到同一屏幕点）。ratio 下限 0.05 防病态过放大。
+ */
+export function computeCameraFit(
+  bbox: ContentBBox,
+  norm: NormExtent,
+  viewport: { width: number; height: number },
+  margin = 1.12
+): { x: number; y: number; ratio: number } | null {
+  const { width, height } = viewport;
+  const smallest = Math.min(width, height) - 2 * SIGMA_STAGE_PADDING;
+  if (!Number.isFinite(width) || !Number.isFinite(height) || smallest <= 0) {
+    return null;
+  }
+  const normR = Math.max(norm.x[1] - norm.x[0], norm.y[1] - norm.y[0]);
+  const spanX = bbox.maxX - bbox.minX;
+  const spanY = bbox.maxY - bbox.minY;
+  const nums = [normR, spanX, spanY, bbox.minX, bbox.maxX, bbox.minY, bbox.maxY];
+  if (normR <= 0 || nums.some((v) => !Number.isFinite(v))) return null;
+  // correctionRatio：与 sigma getCorrectionRatio 同式，graphDims 取参考 bbox 维度
+  const gw = norm.x[1] - norm.x[0] || 1;
+  const gh = norm.y[1] - norm.y[0] || 1;
+  const viewportRatio = height / width;
+  const graphRatio = gh / gw;
+  const cr =
+    (viewportRatio < 1 && graphRatio > 1) || (viewportRatio > 1 && graphRatio < 1)
+      ? 1
+      : Math.min(
+          Math.max(graphRatio, 1 / graphRatio),
+          Math.max(1 / viewportRatio, viewportRatio)
+        );
+  const ratio = Math.max(
+    (spanX / normR) * (smallest / width) * cr,
+    (spanY / normR) * (smallest / height) * cr
+  );
+  if (!Number.isFinite(ratio)) return null;
+  return {
+    x: 0.5 + ((bbox.minX + bbox.maxX) / 2 - (norm.x[0] + norm.x[1]) / 2) / normR,
+    y: 0.5 + ((bbox.minY + bbox.maxY) / 2 - (norm.y[0] + norm.y[1]) / 2) / normR,
+    ratio: Math.max(0.05, ratio * margin),
+  };
+}

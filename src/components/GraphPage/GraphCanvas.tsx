@@ -10,7 +10,9 @@ import Sigma from "sigma";
 import type { Attributes } from "graphology-types";
 import FA2Layout from "graphology-layout-forceatlas2/worker";
 import {
+  computeCameraFit,
   fa2Settings,
+  graphBBox,
   resolveOwnerColor,
   resolveStatusColor,
   toGraphologyGraph,
@@ -279,6 +281,11 @@ export default function GraphCanvas(props: GraphCanvasProps) {
       },
     });
     sigmaRef.current = sigma;
+    // 钉死归一化参考系：sigma 默认在每次 process()（FA2 每批坐标更新都触发）用
+    // 当前 bbox 重基归一化——参考系持续漂移，相机适配无从计算。固定为初始布局
+    // bbox 后，归一化映射成为常量，computeCameraFit 才有意义。
+    const normExtent = graphBBox(g);
+    sigma.setCustomBBox(normExtent);
     // 压测/调试探针（gui 冒烟 harness 用；生产无害）
     (window as unknown as Record<string, unknown>).__graphProbe = {
       graph: g,
@@ -288,7 +295,12 @@ export default function GraphCanvas(props: GraphCanvasProps) {
 
     // ── 视野自适应（G4-CLUSTER）：把可见节点包围盒动画适配到视口 ──
     // duration=0 时瞬时就位（rAF 节流/隐藏窗口下动画会被冻结，终态必须直接 set）。
-    // 跳过非有限坐标——NaN 会把包围盒毒化成 NaN，相机状态随之报废（全屏空白）
+    // 跳过非有限坐标——NaN 会把包围盒毒化成 NaN，相机状态随之报废（全屏空白）。
+    // 相机态走归一化空间（computeCameraFit）：sigma 相机 x/y/ratio 不在图坐标系，
+    // 直写原始坐标会把内容推出视口（小图上全空——坍缩 bug 的根因）。
+    // needsFit：视口尺寸未就绪（computeCameraFit 返回 null）时挂起，settle tick
+    // 里持续重试——绝不把 Infinity/NaN ratio 写进相机（会把全部节点投影成一点）
+    let needsFit = true;
     const fitToContent = (duration = 0) => {
       if (g.order === 0) return;
       let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
@@ -299,16 +311,17 @@ export default function GraphCanvas(props: GraphCanvasProps) {
         if (attrs.y < minY) minY = attrs.y;
         if (attrs.y > maxY) maxY = attrs.y;
       });
-      const spanX = Math.max(maxX - minX, 1);
-      const spanY = Math.max(maxY - minY, 1);
       const size = sigma.getDimensions();
-      // sigma 相机 ratio：越大越缩小；铺满留 12% 边距
-      const ratio = Math.max(spanX / size.width, spanY / size.height) * 1.12;
-      const target = {
-        x: (minX + maxX) / 2,
-        y: (minY + maxY) / 2,
-        ratio: Math.max(0.05, ratio),
-      };
+      const target = computeCameraFit(
+        { minX, maxX, minY, maxY },
+        normExtent,
+        size
+      );
+      if (!target) {
+        needsFit = true;
+        return;
+      }
+      needsFit = false;
       if (duration > 0) {
         sigma.getCamera().animate(target, { duration });
       } else {
@@ -341,6 +354,9 @@ export default function GraphCanvas(props: GraphCanvasProps) {
     const LAYOUT_BOUND = 120 * Math.sqrt(Math.max(g.order, 1)) * 4;
     let lastSnapshot = 0;
     const settleTimer = window.setInterval(() => {
+      // 视口晚就绪（容器 0×0 起步）的补偿：挂起的 fit 在每个 tick 重试，
+      // 直到拿到合法相机态（早退之前检查，FA2 已停也要补）
+      if (needsFit) fitToContent();
       if (!fa2.isRunning()) return;
       let sum = 0;
       let i = 0;
@@ -375,6 +391,9 @@ export default function GraphCanvas(props: GraphCanvasProps) {
       if (lastSnapshot > 0 && Math.abs(sum - lastSnapshot) < 1.5) {
         fa2.stop();
         fitToContent();
+      } else {
+        // 布局期间视野跟随：包围盒膨胀时相机不拍原地（节点冲出视野 = 「一闪而过」）
+        fitToContent(400);
       }
       lastSnapshot = sum;
     }, 2500);
@@ -451,9 +470,12 @@ export default function GraphCanvas(props: GraphCanvasProps) {
       sigmaRef.current = null;
       fa2Ref.current = null;
     };
-    // colorMode 变化经 reducer（每次 render 读取 propsRef）自动生效，无需重建
+    // colorMode 变化经 reducer（每次 render 读取 propsRef）自动生效，无需重建。
+    // tagGroups/ownerOrder 是建图输入（分扇区初值/锚点/ownerKey）且异步到达
+    // （tag_similar_pairs 走嵌入推理，秒级）——必须进依赖，否则真机上扇区布局
+    // 永远拿不到同义组（图谱始终以无组圆盘初值运行，与设计不符）
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.graph]);
+  }, [props.graph, props.tagGroups, props.ownerOrder]);
 
   // 「重新布局」信号：手动触发一轮 FA2 短跑（GraphCanvas 内部已自动停 + 终态适配）
   useEffect(() => {

@@ -2,6 +2,51 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-05（周日）G4-G6-r5：修真机「所有节点坍缩成一个微小点」——相机写错坐标系
+
+**需求**（老板真机验收）：30 个真实任务打开图谱，全部节点渲染在画布下方一个
+微小点（多个标签完全重叠），画布其余空白，相机停在默认中心。同代码浏览器
+harness 1227 档「正常」——实际那只是巧合（见根因）。
+
+**根因链**（探针取证，浏览器 harness 27 档同现象复现：画布全空）：
+① 节点坐标始终健康（收敛后 span 282×296，方差正常）——不是坐标坍缩；
+② **fitToContent 把原始图坐标写进了 Sigma v3 的归一化相机空间**：sigma 的
+`normalizationFunction` 先把图 bbox 映射为 `nx = 0.5 + (x−cX)/R`（R = bbox
+最大跨度），相机 x/y/ratio 都是该空间的值。直写原始坐标（中心 ≈ (−18,−4)、
+ratio = span/像素 ≈ 0.42）→ 全部节点投影到视口右侧 ~35000px 外（实测
+`graphToViewport` 采样）。N=1227 时 span≈2100 与像素同量级，ratio≈2.57
+侥幸落回可见区——「harness 正常」是量纲错误的巧合形态，不是正确；
+③ **归一化参考系持续漂移**：FA2 每批坐标更新触发 sigma `process()`，用当前
+膨胀后的 bbox 重基归一化（实测 normRatio 从 126 漂到 296），相机适配失去
+不动参考系。另实锤两个接线缺陷：tagGroups/ownerOrder 异步到达但建图 effect
+只依赖 `props.graph`——真机上分扇区初值与锚点从未生效；r2 声称的「布局期间
+视野跟随」在后续改动中丢失。
+
+**实现**：
+- `graph-adapter.ts` 新增纯函数 `computeCameraFit` + `graphBBox`：按 sigma
+  `matrixFromCamera`/`getCorrectionRatio` 同式在归一化空间算相机态
+  （中心 = 0.5+(内容中心−参考中心)/R，ratio 含 smallestDim/stagePadding=30/
+  correctionRatio 校正 ×1.12 边距）；视口退化（0×0）或输入非有限返回
+  **null——绝不写相机**（Infinity/NaN ratio 会把全部节点投影成同一屏幕点）。
+- `GraphCanvas.tsx`：建图后 `sigma.setCustomBBox(初始 bbox)` 钉死归一化参考系；
+  fitToContent 改走 computeCameraFit，null 时置 needsFit 挂起、settle tick
+  持续重试（含 FA2 已停的分支）；settle tick 恢复布局期视野跟随
+  （FA2 运行中每 2.5s fitToContent(400)）；建图 effect 依赖补
+  `props.tagGroups`/`props.ownerOrder`（异步到达即重建，扇区初值真正生效）。
+- 布局框架零改动：FA2 worker 自动物理/收敛自动停机/重新布局按钮/
+  linLogMode=false/分扇区/R_MAX=30√N/双主题/全部交互原样保留。
+
+**验证**：graph-adapter 新增 computeCameraFit 5 测（铺满比例手算对拍、
+**规模不变性回归锁**——30 节点与 1227 节点同形态 bbox 输出同 ratio、
+偏心平移、退化输入 null、graphBBox 一致）；图谱模块 36 测全绿；
+vitest 462 全绿；tsc 零错误；test-fast.sh 通过（前置：对既有未提交脏工作区
+跑了 cargo fmt，纯机械格式化）；npm run build 通过。
+浏览器 harness（playwright + WebGL）：27/30/1227 三档节点全部在视口内
+（65/65、1264/1264）、相机居中 ratio≈2.05~2.18、FA2 6~11s 收敛自动停机、
+收敛 span ≤ 初始 2.1×（验收阈值 3×）；交互脚本 12 项全过（hover/点选详情/
+拖拽位移/搜索/状态过滤后仍铺满/重新布局重跑并自动停/全程零页面错误）。
+截图：gui-test-screenshots/graph-fix2-{27,30,1227,hover,search,filtered}.png。
+
 ## 2026-10-05（周日）G4-G6-r2：布局空间随任务量自适应——修真机「节点飞走/画布空白」
 
 **需求**（老板验收反馈，决策：linLog 与 FA2 自动物理都要保留，不降级）：
