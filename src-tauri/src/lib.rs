@@ -41,6 +41,7 @@ mod profile;
 pub mod prompt_builder;
 mod prompts;
 pub mod py;
+pub mod tag_similar;
 pub mod task_autotag;
 pub mod task_out;
 pub mod tool_guard;
@@ -481,6 +482,7 @@ pub fn run() {
             crate::db::tasks::tasks_export,
             crate::db::tasks::tasks_import,
             crate::db::people::people_list,
+            crate::tag_similar::tag_similar_pairs,
             crate::task_autotag::task_autotag,
             crate::db::workflow::workflow_save,
             crate::db::workflow::workflow_load,

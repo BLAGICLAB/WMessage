@@ -35,6 +35,8 @@ src-tauri/src/
 ├── task_out.rs          对外 TaskOut（Task flatten + status），api/api_handlers 共享
 ├── task_autotag.rs      归档自动打标（一次性 LLM ≤3 标签回写 tags；守卫链幂等 +
 │                        校验链截断不整包拒 + 失败静默审计，见任务图谱设计 §2）
+├── tag_similar.rs       标签近义（embed 引擎逐标签向量 + 余弦 ≥0.78 对返回；
+│                        进程级向量缓存 + 审计，图谱同义聚簇锚点用，任务图谱设计 §3）
 │
 │─ 模型元数据 meta/（原独立 Python 服务 model-meta-service 的内嵌版，127.0.0.1:8765 已退役）
 ├── meta/mod.rs          MetaProvider/MetaModel/MetaModelJoined + meta_provider/meta_model
@@ -414,6 +416,7 @@ flowchart TD
 - `profile.rs`
 - `prompt_builder.rs`
 - `task_autotag.rs`
+- `tag_similar.rs`
 - `task_out.rs`
 - `tool_guard.rs`
 - `workflow_decompose.rs`

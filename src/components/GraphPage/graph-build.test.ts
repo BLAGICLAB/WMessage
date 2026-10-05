@@ -9,6 +9,7 @@ import {
   collectTags,
   collectYears,
   DEFAULT_FILTERS,
+  wouldCreateDepCycle,
 } from "./graph-build";
 
 const WFS: Workflow[] = [
@@ -146,5 +147,34 @@ describe("collect 聚合", () => {
 
   it("collectYears 降序去重", () => {
     expect(collectYears(SAMPLE)).toEqual([2026, 2025]);
+  });
+});
+
+describe("wouldCreateDepCycle（G5-DEPEDIT）", () => {
+  const tasks = [
+    t({ id: "self", dependsOn: ["up1"] }),
+    t({ id: "up1", dependsOn: ["up2"] }),
+    t({ id: "up2" }),
+    t({ id: "down1", dependsOn: ["self"] }),
+    t({ id: "other" }),
+  ];
+
+  it("自环拒绝", () => {
+    expect(wouldCreateDepCycle(tasks, "self", "self")).toBe(true);
+  });
+
+  it("候选若（传递）依赖自身则拒绝（会闭环）", () => {
+    // down1 → self：若 self 再依赖 down1 → self → down1 → self 成环
+    expect(wouldCreateDepCycle(tasks, "self", "down1")).toBe(true);
+  });
+
+  it("上游方向放行（self → up1 → up2 无环）", () => {
+    expect(wouldCreateDepCycle(tasks, "self", "up1")).toBe(false);
+    expect(wouldCreateDepCycle(tasks, "self", "up2")).toBe(false);
+  });
+
+  it("无关联与悬空依赖放行", () => {
+    expect(wouldCreateDepCycle(tasks, "other", "self")).toBe(false);
+    expect(wouldCreateDepCycle(tasks, "self", "ghost")).toBe(false);
   });
 });

@@ -851,6 +851,7 @@ function App() {
               tasks={tasks}
               onOpenTask={jumpToTask}
               onOpenWorkflow={() => setView("workflow")}
+              onPatchTask={updateTask}
             />
           ) : view === "archive" ? (
             <ArchivePage

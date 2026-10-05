@@ -2,6 +2,40 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-05（周日）G4-CLUSTER / G5-DEPEDIT / G6-SYNONYM：标签聚簇 + 视野自适应 + 依赖编辑 + 标签近义
+
+**需求**（老板验收反馈，设计 docs/TASK-GRAPH-AFFINITY-DEPS-2026-10-05.md）：
+① 同标签节点相互聚拢、点标签过滤后子集散开铺满；② 普通任务卡支持连线
+（依赖编辑）；③ 标签近义合并聚簇。拖线建边不做。调研：FA2 权重/linLog
+（[FA2 原论文](https://pmc.ncbi.nlm.nih.gov/pmc/articles/PMC4243594/)、
+[graphology FA2 settings](https://github.com/graphology/graphology-layout-forceatlas2)）。
+
+**实现**：
+- **G4-CLUSTER**：`wouldCreateDepCycle`…不，本批是**确定性分扇区初值**——
+  同标签（同义组）节点建图时铺在专属扇区（组中心角 ± 摆动小螺旋），锚点
+  （隐藏大 size 质点）置于扇区中心维持凝聚；无标签节点全局螺旋环绕。**力学
+  聚簇（锚点弱边/权重 3/linLogMode）被压测证伪**——FA2 星型锚点的平衡态就是
+  成员环绕质心均匀分布（inAvg/outAvg ≈ 0.96~0.99，权重 0.35/3 与 linLog 均无
+  差异），确定性初值才是可控聚簇（压测收敛后 ratio 0.46 = 同组距离近 54%）。
+  **视野自适应**：重建图后粗适配 + 收敛停机时终态适配（bbox → camera，
+  duration 0 瞬时就位——rAF 节流/隐藏窗口下 animate 会被冻结）。
+- **G5-DEPEDIT**：`wouldCreateDepCycle` 纯函数（depId 沿 dependsOn 正向可达
+  selfId 即环）+ 详情面板「依赖」区（仅本人卡）：现有依赖列表/×移除/搜索添加
+  （候选过滤：本人 ∧ 非自身 ∧ 未删 ∧ 未重复 ∧ 不成环）；写 task_patch 既有通道，
+  零新后端。
+- **G6-SYNONYM**：新 `tag_similar.rs`——`tag_similar_pairs(tags)` 命令：
+  spawn_blocking 内逐标签走 `memory::embed::embed_text`（512 维 L2），进程级
+  向量缓存（上限 512 清空重建），两两点积 ≥0.78 判近义（上限 200 对），
+  审计 INFO `tag_synonyms` / WARN `tag_synonyms_unavailable`。前端并查集把
+  近义标签并入同组 → 共享聚簇锚点；引擎不可用降级为同标签聚簇。
+
+**验证**：graph-adapter 7 测（锚点构造/hidden/权重 3/无 groups 兼容）+
+graph-build 环检测 3 测（自环/传递闭环拒绝、上游放行、悬空放行）+ GraphPage 5
+= 图谱模块 31 全绿；Rust tag_similar 3 测（余弦/配对去重上限/缓存上限）；
+vitest 442 全绿；test-fast 门禁全绿（模块地图补 tag_similar.rs）；build 通过。
+浏览器压测 1227：聚簇度 0.46、收敛 ~25s 自动停机、视野自适应铺满
+（graph-cluster-1227.png）。
+
 ## 2026-10-05（周日）G3-SIGMA-r1：按成员着色图例与节点同色——双轨着色键 + owner 序单一事实源
 
 **需求**（老板验收反馈）：部门视图切「按成员」后，筛选栏成员 chips 的色点与

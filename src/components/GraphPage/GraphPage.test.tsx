@@ -45,9 +45,20 @@ beforeEach(() => {
   });
 });
 
+const renderPage = (overrides?: Partial<Parameters<typeof GraphPage>[0]>) =>
+  render(
+    <GraphPage
+      tasks={TASKS}
+      onOpenTask={() => {}}
+      onOpenWorkflow={() => {}}
+      onPatchTask={() => {}}
+      {...overrides}
+    />
+  );
+
 describe("GraphPage", () => {
   it("渲染统计条（任务/依赖/工作流/成员）", async () => {
-    render(<GraphPage tasks={TASKS} onOpenTask={() => {}} onOpenWorkflow={() => {}} />);
+    renderPage();
     const stats = await screen.findByTestId("graph-stats");
     expect(stats.textContent).toContain("4 任务");
     expect(stats.textContent).toContain("1 工作流");
@@ -55,17 +66,14 @@ describe("GraphPage", () => {
   });
 
   it("点选节点（模拟选中）后详情面板出现，外来卡无「在看板打开」", async () => {
-    const { container } = render(
-      <GraphPage tasks={TASKS} onOpenTask={() => {}} onOpenWorkflow={() => {}} />
-    );
+    renderPage();
     await screen.findByTestId("graph-stats");
     // 详情面板由画布点选驱动；这里直接验证面板容器初始不存在
     expect(screen.queryByTestId("graph-detail")).toBeNull();
-    expect(container).toBeTruthy();
   });
 
   it("状态过滤器交互后统计条联动", async () => {
-    render(<GraphPage tasks={TASKS} onOpenTask={() => {}} onOpenWorkflow={() => {}} />);
+    renderPage();
     const stats = await screen.findByTestId("graph-stats");
     fireEvent.click(screen.getByRole("button", { name: "已完成" }));
     await vi.waitFor(() => {
@@ -74,7 +82,7 @@ describe("GraphPage", () => {
   });
 
   it("搜索框可输入", async () => {
-    render(<GraphPage tasks={TASKS} onOpenTask={() => {}} onOpenWorkflow={() => {}} />);
+    renderPage();
     await screen.findByTestId("graph-stats");
     const input = screen.getByLabelText("搜索图谱节点");
     fireEvent.change(input, { target: { value: "张三" } });
@@ -82,7 +90,7 @@ describe("GraphPage", () => {
   });
 
   it("空任务显示引导空态", async () => {
-    render(<GraphPage tasks={[]} onOpenTask={() => {}} onOpenWorkflow={() => {}} />);
+    render(<GraphPage tasks={[]} onOpenTask={() => {}} onOpenWorkflow={() => {}} onPatchTask={() => {}} />);
     await screen.findByTestId("graph-stats");
     expect(await screen.findByText("暂无任务")).toBeTruthy();
   });

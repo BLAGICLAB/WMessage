@@ -17,6 +17,7 @@ import {
   collectOwners,
   collectTags,
   collectYears,
+  wouldCreateDepCycle,
   type GraphColorMode,
   type GraphFilters,
 } from "./graph-build";
@@ -34,9 +35,16 @@ interface GraphPageProps {
   onOpenTask: (t: Task) => void;
   /** 双击工作流 hub → 打开工作流画布 */
   onOpenWorkflow: () => void;
+  /** 依赖编辑写路径（G5-DEPEDIT）：App 的 updateTask → task_patch 通道 */
+  onPatchTask: (taskId: string, patch: Partial<Task>) => void;
 }
 
-export default function GraphPage({ tasks, onOpenTask, onOpenWorkflow }: GraphPageProps) {
+export default function GraphPage({
+  tasks,
+  onOpenTask,
+  onOpenWorkflow,
+  onPatchTask,
+}: GraphPageProps) {
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [people, setPeople] = useState<PeopleEntry[]>([]);
   const [filters, setFilters] = useState<GraphFilters>(DEFAULT_FILTERS);
@@ -87,6 +95,43 @@ export default function GraphPage({ tasks, onOpenTask, onOpenWorkflow }: GraphPa
       ? "var(--brand)"
       : OWNER_PALETTE[(ownerOrder.get(id) ?? 0) % OWNER_PALETTE.length];
 
+  // ── 标签近义（G6-SYNONYM）：词表变化 → Rust 嵌入近义对 → 并查集并组 ──
+  const [tagGroups, setTagGroups] = useState<Map<string, string>>(new Map());
+  useEffect(() => {
+    const tags = tagList.map((t) => t.tag);
+    if (tags.length === 0) {
+      setTagGroups(new Map());
+      return;
+    }
+    let cancelled = false;
+    invoke<Array<{ a: string; b: string }>>("tag_similar_pairs", { tags })
+      .then((pairs) => {
+        if (cancelled) return;
+        // 并查集：近义对合并成同义组（组键 = 组内最小标签，稳定）
+        const parent = new Map<string, string>();
+        const find = (x: string): string => {
+          const p = parent.get(x);
+          if (p === undefined || p === x) return x;
+          const root = find(p);
+          parent.set(x, root);
+          return root;
+        };
+        for (const { a, b } of pairs) {
+          parent.set(find(a) ?? a, find(b) ?? b);
+        }
+        const groups = new Map<string, string>();
+        for (const tag of tags) groups.set(tag, find(tag));
+        setTagGroups(groups);
+      })
+      .catch((e) => {
+        // 引擎不可用 → 无近义（同标签聚簇不受影响），不打扰
+        console.error("[tag_similar_pairs]", e);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tagList]);
+
   const searchMatchIds = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return null;
@@ -105,6 +150,107 @@ export default function GraphPage({ tasks, onOpenTask, onOpenWorkflow }: GraphPa
   const selectedNode = useMemo(
     () => graph.nodes.find((n) => n.id === selectedId) ?? null,
     [graph.nodes, selectedId]
+  );
+
+  // ── 依赖编辑（G5-DEPEDIT）：仅本人卡。环检测 + 候选过滤 + task_patch 通道 ──
+  const [depSearch, setDepSearch] = useState("");
+  const [depError, setDepError] = useState<string | null>(null);
+  const depsOfSelected = useMemo(() => {
+    const self = selectedNode?.task;
+    if (!self || self.ownerId) return [];
+    const byId = new Map(tasks.map((t) => [t.id, t]));
+    return (self.dependsOn ?? [])
+      .map((id) => byId.get(id))
+      .filter((t): t is Task => Boolean(t) && !t!.deletedAt)
+      .map((t) => ({ id: t.id, title: t.title }));
+  }, [selectedNode, tasks]);
+
+  const addDependency = (depId: string) => {
+    const self = selectedNode?.task;
+    if (!self) return;
+    if (wouldCreateDepCycle(tasks, self.id, depId)) {
+      setDepError("会造成循环依赖");
+      return;
+    }
+    setDepError(null);
+    setDepSearch("");
+    onPatchTask(self.id, { dependsOn: [...(self.dependsOn ?? []), depId] });
+  };
+
+
+  const removeDependency = (depId: string) => {
+    const self = selectedNode?.task;
+    if (!self) return;
+    onPatchTask(self.id, {
+      dependsOn: (self.dependsOn ?? []).filter((id) => id !== depId),
+    });
+  };
+
+  // 添加候选：本人卡 ∧ 非自身 ∧ 未删除 ∧ 未已是依赖 ∧ 不成环
+  const depCandidates = useMemo(() => {
+    const self = selectedNode?.task;
+    if (!self || self.ownerId) return [];
+    const existing = new Set(self.dependsOn ?? []);
+    return tasks
+      .filter(
+        (t) =>
+          !t.ownerId &&
+          !t.deletedAt &&
+          t.id !== self.id &&
+          !existing.has(t.id)
+      )
+      .filter((t) => !wouldCreateDepCycle(tasks, self.id, t.id))
+      .filter((t) =>
+        depSearch.trim() ? t.title.toLowerCase().includes(depSearch.trim().toLowerCase()) : true
+      )
+      .slice(0, 8);
+  }, [tasks, selectedNode, depSearch]);
+
+  const depsEditor = selectedNode?.task && !selectedNode.owner && (
+    <div className="mb-3 nm-card rounded-[var(--r-md)] p-2.5">
+      <h3 className="mb-1.5 text-xs font-medium text-[var(--t5)]">依赖（完成后才能开始）</h3>
+      {depsOfSelected.length > 0 && (
+        <ul className="mb-1.5 space-y-0.5">
+          {depsOfSelected.map((d) => (
+            <li key={d.id} className="flex items-center justify-between gap-1.5 text-xs">
+              <span className="truncate text-[var(--t3)]">{d.title}</span>
+              <button
+                className="shrink-0 rounded px-1 text-[var(--t5)] hover:text-[var(--danger)]"
+                onClick={() => removeDependency(d.id)}
+                aria-label={`移除依赖 ${d.title}`}
+              >
+                ×
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <input
+        value={depSearch}
+        onChange={(e) => {
+          setDepSearch(e.target.value);
+          setDepError(null);
+        }}
+        placeholder="搜索任务并添加为依赖…"
+        aria-label="搜索依赖任务"
+        className="nm-input h-7 w-full rounded-[var(--r-sm)] px-2 text-xs"
+      />
+      {depCandidates.length > 0 && (
+        <ul className="mt-1 space-y-0.5">
+          {depCandidates.map((c) => (
+            <li key={c.id}>
+              <button
+                className="w-full truncate rounded-[var(--r-sm)] px-1.5 py-0.5 text-left text-xs text-[var(--t3)] hover:bg-[var(--hover-bg)]"
+                onClick={() => addDependency(c.id)}
+              >
+                + {c.title}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {depError && <p className="mt-1 text-xs text-[var(--danger)]">{depError}</p>}
+    </div>
   );
 
   const toggleOwner = (id: string) => {
@@ -171,6 +317,7 @@ export default function GraphPage({ tasks, onOpenTask, onOpenWorkflow }: GraphPa
             graph={graph}
             colorMode={colorMode}
             ownerOrder={ownerOrder}
+            tagGroups={tagGroups}
             selectedId={selectedId}
             hoverId={hoverId}
             searchMatchIds={searchMatchIds}
@@ -290,9 +437,10 @@ export default function GraphPage({ tasks, onOpenTask, onOpenWorkflow }: GraphPa
                     </button>
                   )}
                 </div>
+                {/* 依赖编辑（G5-DEPEDIT）：仅本人卡；写 task_patch dependsOn */}
+                {!selectedNode.owner && depsEditor}
               </div>
             )}
-
             <FilterGroup title="状态">
               <div className="flex gap-1.5">
                 {(Object.keys(filters.status) as Array<keyof GraphFilters["status"]>).map(

@@ -20,9 +20,9 @@ function t(partial: Partial<Task> & { id: string }): Task {
 
 const SAMPLE: Task[] = [
   t({ id: "a", column: "doing" }),
-  t({ id: "b", column: "done", completedAt: Date.now() }),
-  t({ id: "w1", column: "doing", origin: "workflow", workflowId: "wf1", dependsOn: ["w2"] }),
-  t({ id: "w2", column: "done", origin: "workflow", workflowId: "wf1" }),
+  t({ id: "b", column: "done", completedAt: Date.now(), tags: ["周报"] }),
+  t({ id: "w1", column: "doing", origin: "workflow", workflowId: "wf1", dependsOn: ["w2"], tags: ["周报"] }),
+  t({ id: "w2", column: "done", origin: "workflow", workflowId: "wf1", tags: ["周报"] }),
   t({ id: "z", ownerId: "p-1" }),
   t({ id: "l", ownerId: "p-2" }),
 ];
@@ -64,6 +64,39 @@ describe("toGraphologyGraph", () => {
     const built = buildTaskGraph(SAMPLE, WFS, DEFAULT_FILTERS);
     const g = toGraphologyGraph(built, ORDER);
     expect(g.size).toBe(built.links.length);
+  });
+
+  it("标签锚点（G4-CLUSTER）：组内 ≥2 卡建锚点 + 弱边，锚点 hidden", () => {
+    const built = buildTaskGraph(SAMPLE, WFS, DEFAULT_FILTERS);
+    const groups = new Map([
+      ["周报", "周报"],
+      ["客户", "客户"],
+    ]);
+    const g = toGraphologyGraph(built, ORDER, groups);
+    const anchorId = "taggrp:周报";
+    expect(g.hasNode(anchorId)).toBe(true);
+    expect(g.getNodeAttribute(anchorId, "kind")).toBe("anchor");
+    expect(g.getNodeAttribute(anchorId, "hidden")).toBe(true);
+    // 带周报标签的成员卡连锚点，weight = TAG_EDGE_WEIGHT（3：强拉力聚簇）
+    let tagEdges = 0;
+    g.forEachEdge((_, attrs, s, t) => {
+      if (s === anchorId || t === anchorId) {
+        tagEdges++;
+        expect(attrs.weight).toBe(3);
+      }
+    });
+    expect(tagEdges).toBeGreaterThanOrEqual(2);
+    // 单卡标签（客户仅 z? z 无标签——demo 内客户的卡不在 SAMPLE）不建锚点
+    // 客户标签在 SAMPLE 中无带卡 → 无锚点
+    expect(g.hasNode("taggrp:客户")).toBe(false);
+  });
+
+  it("无 tagGroups 时不建锚点（兼容旧调用）", () => {
+    const built = buildTaskGraph(SAMPLE, WFS, DEFAULT_FILTERS);
+    const g = toGraphologyGraph(built, ORDER);
+    g.forEachNode((_, attrs) => {
+      expect(attrs.kind).not.toBe("anchor");
+    });
   });
 });
 

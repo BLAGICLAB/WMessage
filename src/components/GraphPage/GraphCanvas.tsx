@@ -14,6 +14,7 @@ import {
   resolveOwnerColor,
   resolveStatusColor,
   toGraphologyGraph,
+  TAG_ANCHOR_PREFIX,
   type SigmaNodeAttrs,
 } from "./graph-adapter";
 import type { BuiltGraph, GraphColorMode } from "./graph-build";
@@ -97,6 +98,8 @@ function resolveColor(
 export interface GraphCanvasProps {
   graph: BuiltGraph;
   colorMode: GraphColorMode;
+  /** 标签 → 同义组键（G6-SYNONYM；键缺失 = 独立组） */
+  tagGroups?: Map<string, string>;
   /** owner 注入序（单一事实源，GraphPage 基于 chips 全序计算）：
    *  建图写 ownerKey 与 chips 色点共用，保证图例与节点永远同色 */
   ownerOrder: Map<string, number>;
@@ -123,7 +126,8 @@ export default function GraphCanvas(props: GraphCanvasProps) {
     if (!container) return;
     const g: Graph<SigmaNodeAttrs> = toGraphologyGraph(
       props.graph,
-      props.ownerOrder
+      props.ownerOrder,
+      props.tagGroups
     );
 
     // 初始相机适配在 Sigma 首帧后自动进行；先关标签渲染由 reducer 控制
@@ -200,6 +204,11 @@ export default function GraphCanvas(props: GraphCanvasProps) {
         const palette = paletteRef.current;
         const res: Attributes = { ...data };
         const attrs = data as SigmaNodeAttrs;
+        // 标签锚点恒隐藏（G4-CLUSTER：布局用伪节点，不入视觉/交互）
+        if (attrs.kind === "anchor") {
+          res.hidden = true;
+          return res;
+        }
         // 着色双轨：建图时 ownerKey/statusKey 都已固化，按当前模式现场选——
         // 切「按成员/按状态」无需重建图
         res.color = resolveColor(
@@ -211,7 +220,8 @@ export default function GraphCanvas(props: GraphCanvasProps) {
         // ── 标签色（G3-SIGMA 视觉修订）：专用色阶 + 光晕，见 LABEL_COLORS 注释。
         // hub 高亮半档、常态灰阶、焦点提亮——经自定义 label draw 函数绘制光晕
         const lc = palette.dark ? LABEL_COLORS.dark : LABEL_COLORS.light;
-        const degree = g.degree(node);
+        // 度数用建图值（不含锚点边，锚点边会虚增）
+        const degree = attrs.degree ?? 0;
         const focusId = p.hoverId ?? p.selectedId;
         const isFocusNode =
           node === p.selectedId || node === p.hoverId ||
@@ -250,6 +260,11 @@ export default function GraphCanvas(props: GraphCanvasProps) {
         const palette = paletteRef.current;
         const res: Attributes = { ...data, color: palette.edgeStrong, size: 0.7 };
         const [source, target] = g.extremities(edge);
+        // 标签锚点边恒隐藏（G4-CLUSTER）
+        if (source.startsWith(TAG_ANCHOR_PREFIX) || target.startsWith(TAG_ANCHOR_PREFIX)) {
+          res.hidden = true;
+          return res;
+        }
         const isDep = (data as { kind?: string }).kind === "dep";
         if (isDep) res.color = palette.edgeStrong;
         const focusId = p.hoverId ?? p.selectedId;
@@ -260,11 +275,49 @@ export default function GraphCanvas(props: GraphCanvasProps) {
       },
     });
     sigmaRef.current = sigma;
+    // 压测/调试探针（gui 冒烟 harness 用；生产无害）
+    (window as unknown as Record<string, unknown>).__graphProbe = {
+      graph: g,
+      sigma,
+      fa2: () => fa2Ref.current,
+    };
+
+    // ── 视野自适应（G4-CLUSTER）：把可见节点包围盒动画适配到视口 ──
+    // duration=0 时瞬时就位（rAF 节流/隐藏窗口下动画会被冻结，终态必须直接 set）
+    const fitToContent = (duration = 0) => {
+      if (g.order === 0) return;
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      g.forEachNode((_, attrs) => {
+        if (attrs.x < minX) minX = attrs.x;
+        if (attrs.x > maxX) maxX = attrs.x;
+        if (attrs.y < minY) minY = attrs.y;
+        if (attrs.y > maxY) maxY = attrs.y;
+      });
+      const spanX = Math.max(maxX - minX, 1);
+      const spanY = Math.max(maxY - minY, 1);
+      const size = sigma.getDimensions();
+      // sigma 相机 ratio：越大越缩小；铺满留 12% 边距
+      const ratio = Math.max(spanX / size.width, spanY / size.height) * 1.12;
+      const target = {
+        x: (minX + maxX) / 2,
+        y: (minY + maxY) / 2,
+        ratio: Math.max(0.05, ratio),
+      };
+      if (duration > 0) {
+        sigma.getCamera().animate(target, { duration });
+      } else {
+        sigma.getCamera().setState(target);
+      }
+    };
 
     // FA2 worker：物理完全离开主线程
     const fa2 = new FA2Layout(g, { settings: fa2Settings(g.order) });
     fa2.start();
     fa2Ref.current = fa2;
+    const timers: number[] = [];
+    // 重建后粗适配一次（FA2 前几秒会整体漂移，先让内容进画面）；卸载清理定时器
+    const initialFit = window.setTimeout(() => fitToContent(600), 400);
+    timers.push(initialFit);
     // 收敛自动停：FA2 会低幅振荡不停机，白烧 CPU。检测量 = 采样节点的坐标
     // **逐点位移和**（不是总量差——总量对万级数据不敏感），阈值按规模缩放。
     // 停机后交互（拖拽）可重启。
@@ -280,16 +333,24 @@ export default function GraphCanvas(props: GraphCanvasProps) {
       // 位移小数部分和稳定 = 整体静止（坐标已冻结在亚像素级）
       if (lastSnapshot > 0 && Math.abs(sum - lastSnapshot) < 1.5) {
         fa2.stop();
+        fitToContent(); // 终态视野瞬时适配（G4-CLUSTER：过滤后集合铺满视口）
       }
       lastSnapshot = sum;
     }, 2500);
 
     // ── 交互 ──
-    sigma.on("enterNode", ({ node }) => propsRef.current.onHover(node));
+    const isBusinessNode = (node: string) =>
+      !node.startsWith(TAG_ANCHOR_PREFIX);
+    sigma.on("enterNode", ({ node }) => {
+      if (isBusinessNode(node)) propsRef.current.onHover(node);
+    });
     sigma.on("leaveNode", () => propsRef.current.onHover(null));
-    sigma.on("clickNode", ({ node }) => propsRef.current.onSelect(node));
+    sigma.on("clickNode", ({ node }) => {
+      if (isBusinessNode(node)) propsRef.current.onSelect(node);
+    });
     sigma.on("clickStage", () => propsRef.current.onSelect(null));
     sigma.on("doubleClickNode", ({ node }) => {
+      if (!isBusinessNode(node)) return;
       const attrs = g.getNodeAttributes(node) as SigmaNodeAttrs;
       if (attrs.kind === "hub" && node.startsWith("wf:")) {
         propsRef.current.onOpenHub(node.slice(3));
@@ -300,6 +361,7 @@ export default function GraphCanvas(props: GraphCanvasProps) {
     // 拖拽期间暂停 FA2（fixed 节点 FA2 也支持，但暂停更省）
     let draggedId: string | null = null;
     sigma.on("downNode", ({ node }) => {
+      if (!isBusinessNode(node)) return;
       draggedId = node;
       fa2.stop();
       g.setNodeAttribute(node, "fixed", true);
@@ -337,6 +399,7 @@ export default function GraphCanvas(props: GraphCanvasProps) {
       themeObs.disconnect();
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
+      timers.forEach((t) => window.clearTimeout(t));
       window.clearInterval(settleTimer);
       fa2.kill(); // terminate worker + 释放矩阵内存
       sigma.kill();
