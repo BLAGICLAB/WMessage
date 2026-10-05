@@ -2,6 +2,21 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-05（周日）XLSX-FORMULA：Excel 生成公式注入过滤落地——修空操作
+
+**背景**：Mimosa 深度扫描 12 条污点 advisory 人工复核为误报（模型可控路径
+均有 extract_path_check 授权闸 / gen_out_path 基名消毒），复核时发现
+`MAKE_XLSX_SCRIPT` 的公式过滤条件两边都是 `v`（空操作，引入时写错）——
+`=SUM`/`=WEBSERVICE` 等模型输出会被 openpyxl 存成活公式，用户打开生成的
+xlsx 即触发外链/执行提示（DDE 注入面）。
+
+**实现**：`ws.append` 后按行把 `data_type == 'f'` 的单元格翻回 `'s'`——
+原样显示为文本不执行，数字/空值不受影响（openpyxl 3.1.5 实测：重载
+type=s、原始 XML 无 `<f>` 节点）。文档/演示脚本无公式概念，不受影响。
+
+**验证**：openpyxl 3.1.5 本地实测（含原始 XML `<f>` 检查）；pre-commit
+快测 + pre-push 全量门禁通过。
+
 ## 2026-10-05（周日）G7-SIZEMODE：图谱节点大小双模式「连接度/耗时」+ tasks 补 created_at 全链路
 
 **需求**（老板拍板 C 方案）：节点大小可按「完成时间−创建时间」的天数设置，
