@@ -146,11 +146,14 @@ export function toGraphologyGraph(
   const total = Math.max(built.nodes.length, 1);
   const R_MAX = 30 * Math.sqrt(total); // 布局外径：1227→1050，10000→3000
   const GROUP_RING = R_MAX * 0.62; // 有组扇区外径（内圈 62%，外环留给孤点）
+  // 无组（孤点）数量与分布：面密度均匀圆盘填充（√ 序号铺半径，黄金角散角度）
+  // ——旧公式（固定 0.68~1.0 窄环带 + %400 循环）会把小任务量的节点全挤在一圈
+  const freeTotal = built.nodes.filter((n) => !groupOfNode.get(n.id)).length;
 
   const groupMemberIdx = new Map<string, number>();
   const golden = Math.PI * (3 - Math.sqrt(5));
   let freeIdx = 0;
-  built.nodes.forEach((n, i) => {
+  built.nodes.forEach((n) => {
     const group = groupOfNode.get(n.id);
     let x: number;
     let y: number;
@@ -165,9 +168,9 @@ export function toGraphologyGraph(
       x = Math.cos(angle) * r;
       y = Math.sin(angle) * r;
     } else {
-      // 无组节点：外环环绕（0.62~1.0 半径带，全域黄金角散布）
-      const angle = i * golden;
-      const r = GROUP_RING * (0.68 + 0.32 * Math.sqrt((freeIdx % 400 + 1) / 400));
+      // 无组节点：全域均匀圆盘（r ∝ √序号，黄金角散角度——铺满不挤环）
+      const angle = (freeIdx + 0.5) * golden;
+      const r = GROUP_RING * 0.72 * Math.sqrt((freeIdx + 0.6) / Math.max(freeTotal, 1));
       freeIdx++;
       x = Math.cos(angle) * r;
       y = Math.sin(angle) * r;

@@ -1,4 +1,4 @@
-# Batch Spec: G4-G6-AFFINITY-r1 linLog 回退 hotfix
+# Batch Spec: G4-G6-r1 分布公式修正（孤点窄环带挤死 → 面密度均匀圆盘）
 
 ```json
 {
@@ -9,9 +9,9 @@
     "src/components/GraphPage/graph-adapter.ts"
   ],
   "max_lines_added": 30,
-  "max_lines_removed": 10,
+  "max_lines_removed": 20,
   "findings": [
-    {"id": "G3-S1", "file": "src/components/GraphPage/graph-adapter.ts", "line": 1, "fix": "回退 linLogMode 实验——LinLog 对无连线孤点无引力约束被斥力炸飞（真机『节点一闪而过』根因）；分扇区初值已保证聚簇"}
+    {"id": "G3-S1", "file": "src/components/GraphPage/graph-adapter.ts", "line": 1, "fix": "无组节点分布公式：固定 0.68~1.0 窄环带（%400 循环）→ 面密度均匀圆盘（r ∝ √(i/n)，黄金角散角度）——修小任务量节点挤死一圈（方案四诊断）"}
   ],
   "assertions_min": {
     "src/components/GraphPage/graph-adapter.ts": 0
@@ -30,8 +30,8 @@
 
 ## 目的
 
-真机回归 hotfix：老板报告图谱打开后「节点一闪而过，画布就没有节点了」。
-根因 = r1 引入的 `linLogMode: true` 实验：LinLog 能量模型对无连线孤点无引力
-约束，FA2 起跑后真实数据里的大量孤点（无标签无依赖）被斥力无限推远飞出视野。
-1227 压测连通性好未复现。回退为 false——聚簇由分扇区确定性初值保证，
-不依赖 linLog。
+方案四（老板诊断）落地：30 个任务的图，节点全挤在半径 73~78px 的一圈细环带
+里——旧公式 `r = GROUP_RING × (0.68 + 0.32×√((freeIdx%400+1)/400))` 是固定
+窄环带且 %400 循环，与节点数量无关。修为面密度均匀圆盘：`r ∝ √((i+0.6)/n)`
+铺满半径、黄金角散角度；半径分位实测 p10=382 → p25=563 → p50=762 → p75=891
+→ p90=952 单调铺满，无环带聚集。
