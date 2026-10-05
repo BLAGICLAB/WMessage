@@ -287,11 +287,13 @@ export default function GraphCanvas(props: GraphCanvasProps) {
     };
 
     // ── 视野自适应（G4-CLUSTER）：把可见节点包围盒动画适配到视口 ──
-    // duration=0 时瞬时就位（rAF 节流/隐藏窗口下动画会被冻结，终态必须直接 set）
+    // duration=0 时瞬时就位（rAF 节流/隐藏窗口下动画会被冻结，终态必须直接 set）。
+    // 跳过非有限坐标——NaN 会把包围盒毒化成 NaN，相机状态随之报废（全屏空白）
     const fitToContent = (duration = 0) => {
       if (g.order === 0) return;
       let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
       g.forEachNode((_, attrs) => {
+        if (!Number.isFinite(attrs.x) || !Number.isFinite(attrs.y)) return;
         if (attrs.x < minX) minX = attrs.x;
         if (attrs.x > maxX) maxX = attrs.x;
         if (attrs.y < minY) minY = attrs.y;
@@ -332,21 +334,44 @@ export default function GraphCanvas(props: GraphCanvasProps) {
     };
     relayoutRef.current = () => startRelayout();
 
-    // 收敛自动停：位移小数部分和稳定 = 整体静止（冻结在亚像素级），停机即终态适配。
-    // 布局期间每 2s 跟随一次视野——FA2 前几秒节点会冲出初始包围盒，不跟随就是
-    // 「一闪而过」（视野还停在初值包围盒上，节点已经跑出去了）
+    // 收敛自动停 + 坐标消毒：FA2 数值发散（强吸引边 × 碰撞修正下速度爆炸）
+    // 会把节点坐标推成 NaN/Inf——WebGL 对含非有限顶点的图元**整体丢弃**，
+    // 一个坏节点就清空整帧画布（真机「一闪而过即空白」根因）。
+    // 消毒 = 巡检坐标，坏点重置回盘内 + 重启 worker 重读坐标；顺带做收敛检测。
+    const LAYOUT_BOUND = 120 * Math.sqrt(Math.max(g.order, 1)) * 4;
     let lastSnapshot = 0;
-    const followFit = window.setInterval(() => {
-      if (fa2.isRunning()) fitToContent(400);
-    }, 2000);
     const settleTimer = window.setInterval(() => {
       if (!fa2.isRunning()) return;
       let sum = 0;
       let i = 0;
-      g.forEachNode((_, attrs) => {
-        if (i++ % 5 !== 0) return; // 采样 1/5 节点
+      let repaired = 0;
+      const golden = 2.399963;
+      g.forEachNode((node, attrs) => {
+        const bad =
+          !Number.isFinite(attrs.x) ||
+          !Number.isFinite(attrs.y) ||
+          Math.abs(attrs.x) > LAYOUT_BOUND ||
+          Math.abs(attrs.y) > LAYOUT_BOUND;
+        if (bad) {
+          // 坏坐标重置回盘内（黄金角环带，确定性位置）
+          const idx = ++repaired;
+          const ang = idx * golden;
+          const r = 60 + (idx % 11) * 24;
+          g.setNodeAttribute(node, "x", Math.cos(ang) * r);
+          g.setNodeAttribute(node, "y", Math.sin(ang) * r);
+          g.setNodeAttribute(node, "vx", 0);
+          g.setNodeAttribute(node, "vy", 0);
+        }
+        if (i++ % 5 !== 0) return; // 采样 1/5 节点算动能
         sum += Math.abs(attrs.x - Math.round(attrs.x)) + Math.abs(attrs.y - Math.round(attrs.y));
       });
+      if (repaired > 0) {
+        // 坏点已重置：重启 worker 让矩阵与图坐标同步，再暖跑收敛
+        fa2.stop();
+        fa2.start();
+        fitToContent(400);
+        return;
+      }
       if (lastSnapshot > 0 && Math.abs(sum - lastSnapshot) < 1.5) {
         fa2.stop();
         fitToContent();
@@ -421,7 +446,6 @@ export default function GraphCanvas(props: GraphCanvasProps) {
       window.removeEventListener("pointerup", onUp);
       timers.forEach((t) => window.clearTimeout(t));
       window.clearInterval(settleTimer);
-      window.clearInterval(followFit);
       fa2.kill(); // terminate worker + 释放矩阵内存
       sigma.kill();
       sigmaRef.current = null;
