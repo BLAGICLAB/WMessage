@@ -10,6 +10,7 @@ import {
   LINK_MEMBER,
   REHEAT_ALPHA,
   initPositions,
+  preSettle,
   rebindPositions,
   taskRadius,
   tick,
@@ -132,14 +133,11 @@ export default function GraphCanvas(props: GraphCanvasProps) {
         strength: p.strength,
       });
     }
-    // 预稳定：建图/改过滤后先同步跑固定 tick，首帧即接近收敛——
-    // 否则弱引力还没把整团拉到中心 alpha 就冷却了，布局会冻在半路
+    // 预稳定：建图/改过滤后同步跑 tick 让首帧接近收敛——带毫秒预算，
+    // 节点越多自动砍 tick，过滤器点击的主线程阻塞钉死在预算量级
     const w0 = (w || 800) / 2;
     const h0 = (h || 600) / 2;
-    let a = 1;
-    for (let i = 0; i < 150; i++) {
-      a = tick(nodesRef.current, linksRef.current, DEFAULT_CONFIG, a, w0, h0);
-    }
+    const a = preSettle(nodesRef.current, linksRef.current, DEFAULT_CONFIG, w0, h0);
     alphaRef.current = Math.max(a, REHEAT_ALPHA);
     // 内容签名：节点数相同但标签/数据变了（如异步工作流名到达）也要重绘
     graphVersionRef.current += 1;
@@ -250,11 +248,11 @@ export default function GraphCanvas(props: GraphCanvasProps) {
         }
       }
 
-      // 脏检查：物理冷却且相机/交互/数据签名未变时跳过绘制（省 CPU，也避免
-      // 连续重绘让宿主截屏/合成器拿不到稳定帧）
+      // 脏检查：物理冷却且相机/交互/数据签名未变时跳过绘制（省 CPU）。
+      // 注意：这里**只 return，不自调度**——rAF 调度权只在 draw 外层，
+      // 否则跳过路径与外层各排一份回调，每帧翻倍指数爆炸（大图必崩的根因）
       const paintKey = `v${graphVersionRef.current}|${alphaRef.current.toFixed(3)}|${cam.x.toFixed(1)}|${cam.y.toFixed(1)}|${cam.scale.toFixed(3)}|${focusId ?? ""}|${searchMatchIds?.size ?? 0}|${propsRef.current.colorMode}|${graph.nodes.length}|${w}x${h}|${p.bg}`;
       if (paintKey === paintKeyRef.current) {
-        rafRef.current = requestAnimationFrame(draw);
         return;
       }
       paintKeyRef.current = paintKey;
@@ -266,13 +264,16 @@ export default function GraphCanvas(props: GraphCanvasProps) {
       ctx.translate(cam.x, cam.y);
       ctx.scale(cam.scale, cam.scale);
 
-      const toScreen = (n: PhysNode) => ({
-        x: n.x,
-        y: n.y,
-      });
-
-      // 连线（dep 带箭头；member 细淡）
-      for (const l of graph.links) {
+      // ── 批量绘制：所有线/点按 (样式 × 淡出) 分桶进 Path2D，每桶一次 stroke/fill
+      //    ——逐边逐节点独立 beginPath 在千节点级是主要卡顿源
+      const depLine = new Path2D();
+      const depDim = new Path2D();
+      const memLine = new Path2D();
+      const memDim = new Path2D();
+      const arrow = new Path2D();
+      const arrowDim = new Path2D();
+      for (let li = 0; li < graph.links.length; li++) {
+        const l = graph.links[li];
         const s = index.get(l.source);
         const t = index.get(l.target);
         if (s === undefined || t === undefined) continue;
@@ -282,94 +283,133 @@ export default function GraphCanvas(props: GraphCanvasProps) {
           neighbors !== null &&
           !neighbors.has(l.source) &&
           !neighbors.has(l.target);
-        ctx.globalAlpha = dimmed ? 0.06 : l.kind === "member" ? 0.35 : 0.55;
-        ctx.strokeStyle = l.kind === "dep" ? p.edgeStrong : p.edge;
-        ctx.lineWidth = (l.kind === "dep" ? 1.2 : 0.8) / cam.scale;
-        ctx.beginPath();
-        const pa = toScreen(a);
-        const pb = toScreen(b);
-        // 终点收进节点半径，给箭头留位
-        const dx = pb.x - pa.x;
-        const dy = pb.y - pa.y;
+        const isDep = l.kind === "dep";
+        const line = isDep ? (dimmed ? depDim : depLine) : dimmed ? memDim : memLine;
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
         const d = Math.sqrt(dx * dx + dy * dy) || 1;
-        const trim = b.r + (l.kind === "dep" ? 3 : 2);
-        const ex = pb.x - (dx / d) * trim;
-        const ey = pb.y - (dy / d) * trim;
-        ctx.moveTo(pa.x + (dx / d) * a.r, pa.y + (dy / d) * a.r);
-        ctx.lineTo(ex, ey);
-        ctx.stroke();
-        if (l.kind === "dep") {
-          // 箭头（指向下游）
+        const ux = dx / d;
+        const uy = dy / d;
+        // 起点收进源半径，终点收进目标半径给箭头留位
+        const trim = b.r + (isDep ? 3 : 2);
+        line.moveTo(a.x + ux * a.r, a.y + uy * a.r);
+        line.lineTo(b.x - ux * trim, b.y - uy * trim);
+        if (isDep) {
+          // 箭头三角（指向下游），作为子路径进同一 Path2D，最后单次 fill
           const ah = 4 / cam.scale + 2;
-          const ux = dx / d;
-          const uy = dy / d;
-          ctx.fillStyle = p.edgeStrong;
-          ctx.beginPath();
-          ctx.moveTo(ex, ey);
-          ctx.lineTo(ex - ux * ah - uy * ah * 0.5, ey - uy * ah + ux * ah * 0.5);
-          ctx.lineTo(ex - ux * ah + uy * ah * 0.5, ey - uy * ah - ux * ah * 0.5);
-          ctx.closePath();
-          ctx.fill();
+          const ar = dimmed ? arrowDim : arrow;
+          ar.moveTo(b.x - ux * trim, b.y - uy * trim);
+          ar.lineTo(
+            b.x - ux * trim - ux * ah - uy * ah * 0.5,
+            b.y - uy * trim - uy * ah + ux * ah * 0.5
+          );
+          ar.lineTo(
+            b.x - ux * trim - ux * ah + uy * ah * 0.5,
+            b.y - uy * trim - uy * ah - ux * ah * 0.5
+          );
+          ar.closePath();
         }
       }
+      ctx.lineCap = "round";
+      ctx.lineWidth = 0.8 / cam.scale;
+      ctx.strokeStyle = p.edge;
+      ctx.globalAlpha = 0.35;
+      ctx.stroke(memLine);
+      ctx.globalAlpha = 0.06;
+      ctx.stroke(memDim);
+      ctx.lineWidth = 1.2 / cam.scale;
+      ctx.strokeStyle = p.edgeStrong;
+      ctx.globalAlpha = 0.55;
+      ctx.stroke(depLine);
+      ctx.globalAlpha = 0.06;
+      ctx.stroke(depDim);
+      ctx.fillStyle = p.edgeStrong;
+      ctx.globalAlpha = 0.55;
+      ctx.fill(arrow);
+      ctx.globalAlpha = 0.06;
+      ctx.fill(arrowDim);
 
-      // 节点 + 标签
+      // ── 节点：按 (颜色 × 透明层) 分桶，每桶一次 fill ──
       const showAllLabels = cam.scale >= 0.9;
-      for (const n of graph.nodes) {
+      // 大图标签上限：focus/邻域/高连接度之外按缩放裁剪（文字是画布最贵的图元）
+      const labelCap = graph.nodes.length > 400;
+      const nodeBuckets = new Map<string, Path2D>();
+      const hubRings = new Path2D();
+      const hubRingsDim = new Path2D();
+      const labels: Array<{ x: number; y: number; text: string; hub: boolean; alpha: number }> = [];
+      for (let ni = 0; ni < graph.nodes.length; ni++) {
+        const n = graph.nodes[ni];
         const i = index.get(n.id);
         if (i === undefined) continue;
         const pn = nodes[i];
         const isFocus = focusId === n.id;
         const isNeighbor = neighbors?.has(n.id) ?? false;
         const dimmed = neighbors !== null && !isNeighbor;
-        const doneFade = n.kind === "task" && n.status === "done" && propsRef.current.colorMode === "status";
-        const baseAlpha = dimmed ? 0.12 : doneFade ? 0.55 : 1;
-        const sp = toScreen(pn);
-        const ringSearch = searchMatchIds?.has(n.id) ?? false;
-
-        if (isFocus) {
-          ctx.globalAlpha = 1;
-          ctx.strokeStyle = p.brandStrong;
-          ctx.lineWidth = 2 / cam.scale;
-          ctx.beginPath();
-          ctx.arc(sp.x, sp.y, pn.r + 4 / cam.scale, 0, Math.PI * 2);
-          ctx.stroke();
-        } else if (ringSearch) {
-          ctx.globalAlpha = 1;
-          ctx.strokeStyle = p.danger;
-          ctx.lineWidth = 1.6 / cam.scale;
-          ctx.beginPath();
-          ctx.arc(sp.x, sp.y, pn.r + 4 / cam.scale, 0, Math.PI * 2);
-          ctx.stroke();
+        const doneFade =
+          n.kind === "task" && n.status === "done" && propsRef.current.colorMode === "status";
+        const tier = dimmed ? "d" : doneFade ? "f" : "n";
+        const bucketKey = `${nodeColor(n)}§${tier}`;
+        let path = nodeBuckets.get(bucketKey);
+        if (!path) {
+          path = new Path2D();
+          nodeBuckets.set(bucketKey, path);
         }
-
-        ctx.globalAlpha = baseAlpha;
-        ctx.fillStyle = nodeColor(n);
-        ctx.beginPath();
-        ctx.arc(sp.x, sp.y, pn.r, 0, Math.PI * 2);
-        ctx.fill();
+        path.moveTo(pn.x + pn.r, pn.y);
+        path.arc(pn.x, pn.y, pn.r, 0, Math.PI * 2);
         if (n.kind === "hub") {
-          ctx.strokeStyle = p.edgeStrong;
-          ctx.lineWidth = 1.5 / cam.scale;
+          (dimmed ? hubRingsDim : hubRings).moveTo(pn.x + pn.r, pn.y);
+          (dimmed ? hubRingsDim : hubRings).arc(pn.x, pn.y, pn.r, 0, Math.PI * 2);
+        }
+        if (isFocus || searchMatchIds?.has(n.id)) {
+          // 焦点/搜索环数量少，保持独立绘制
+          ctx.globalAlpha = 1;
+          ctx.strokeStyle = isFocus ? p.brandStrong : p.danger;
+          ctx.lineWidth = (isFocus ? 2 : 1.6) / cam.scale;
+          ctx.beginPath();
+          ctx.arc(pn.x, pn.y, pn.r + 4 / cam.scale, 0, Math.PI * 2);
           ctx.stroke();
         }
-
-        // 标签：缩放足够 / 大节点 / 焦点邻域时显示
+        // 标签：焦点/邻域/大节点必显；其余需缩放足够，且大图只留高连接度
+        //（文字是画布最贵图元，千节点级全量标签本身就是卡顿源）
         const labelVisible =
-          showAllLabels ||
+          isNeighbor ||
+          isFocus ||
           pn.r * cam.scale > 9 ||
-          (isNeighbor && neighbors !== null);
+          (showAllLabels && (!labelCap || n.degree >= 4));
         if (labelVisible) {
-          ctx.globalAlpha = dimmed ? 0.1 : doneFade ? 0.6 : 0.95;
-          ctx.fillStyle = n.kind === "hub" ? p.t1 : p.t2;
-          const fontSize = Math.max(10, 11 / Math.sqrt(cam.scale));
-          ctx.font = `${n.kind === "hub" ? "600 " : ""}${fontSize}px ui-sans-serif, system-ui, -apple-system, "PingFang SC", sans-serif`;
-          ctx.textAlign = "center";
-          ctx.textBaseline = "top";
-          const label =
-            n.label.length > 24 ? `${n.label.slice(0, 24)}…` : n.label;
-          ctx.fillText(label, sp.x, sp.y + pn.r + 3);
+          labels.push({
+            x: pn.x,
+            y: pn.y + pn.r + 3,
+            text: n.label.length > 24 ? `${n.label.slice(0, 24)}…` : n.label,
+            hub: n.kind === "hub",
+            alpha: dimmed ? 0.1 : doneFade ? 0.6 : 0.95,
+          });
         }
+      }
+      const tierAlpha: Record<string, number> = { n: 1, f: 0.55, d: 0.12 };
+      for (const [key, path] of nodeBuckets) {
+        const [color, tier] = key.split("§");
+        ctx.globalAlpha = tierAlpha[tier] ?? 1;
+        ctx.fillStyle = color;
+        ctx.fill(path);
+      }
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = p.edgeStrong;
+      ctx.lineWidth = 1.5 / cam.scale;
+      ctx.stroke(hubRings);
+      ctx.globalAlpha = 0.12;
+      ctx.stroke(hubRingsDim);
+      ctx.globalAlpha = 1;
+      // 标签最后画（盖在点与边上）；按透明层分组减少状态切换
+      const fontSize = Math.max(10, 11 / Math.sqrt(cam.scale));
+      ctx.font = `${fontSize}px ui-sans-serif, system-ui, -apple-system, "PingFang SC", sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      for (const l of labels) {
+        ctx.globalAlpha = l.alpha;
+        ctx.fillStyle = l.hub ? p.t1 : p.t2;
+        if (l.hub) ctx.font = `600 ${fontSize}px ui-sans-serif, system-ui, -apple-system, "PingFang SC", sans-serif`;
+        ctx.fillText(l.text, l.x, l.y);
       }
       ctx.restore();
       ctx.globalAlpha = 1;

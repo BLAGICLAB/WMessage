@@ -5,6 +5,7 @@ import {
   LINK_DEP,
   REHEAT_ALPHA,
   initPositions,
+  preSettle,
   rebindPositions,
   taskRadius,
   tick,
@@ -119,5 +120,34 @@ describe("physics", () => {
   it("REHEAT_ALPHA 暖启动低于 1（避免全图爆开）", () => {
     expect(REHEAT_ALPHA).toBeLessThan(1);
     expect(REHEAT_ALPHA).toBeGreaterThan(DEFAULT_CONFIG.alphaMin);
+  });
+
+  it("preSettle 尊重 maxTicks（确定性衰减）", () => {
+    const { nodes, links } = twoNodes();
+    const alpha = preSettle(nodes, links, DEFAULT_CONFIG, 400, 300, 10_000, 10);
+    // 无预算中断时恰好跑 10 tick：alpha = (1-0.02)^10
+    expect(alpha).toBeCloseTo(Math.pow(0.98, 10), 5);
+  });
+
+  it("preSettle 大图在预算内返回（千节点性能护栏）", () => {
+    const specs = Array.from({ length: 1200 }, (_, i) => ({
+      id: `n${i}`,
+      r: 4,
+    }));
+    const nodes = initPositions(specs, 1200, 800);
+    const links: PhysLink[] = [];
+    for (let i = 1; i < nodes.length; i += 3) {
+      links.push({
+        source: i - 1,
+        target: i,
+        distance: 90,
+        strength: 0.06,
+      });
+    }
+    const t0 = Date.now();
+    preSettle(nodes, links, DEFAULT_CONFIG, 600, 400, 24, 150);
+    const elapsed = Date.now() - t0;
+    // 预算 24ms + 末次 tick 超跑余量；CI 慢机放宽到 120ms
+    expect(elapsed).toBeLessThan(120);
   });
 });

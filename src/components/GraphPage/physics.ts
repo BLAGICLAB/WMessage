@@ -2,6 +2,11 @@
 // 短程斥力 + 连线弹簧 + 向心弱引力 + 碰撞分离，速度 Verlet 积分 + alpha 冷却。
 // 纯函数模块（无 DOM/React 依赖），网格分桶让斥力从 O(n²) 降到 O(n·k)。
 // 斥力/弹簧常数集中在此处常量，调参不改逻辑。
+//
+// 性能纪律（真实数据千人节点级）：
+// - 空间网格**模块级复用**（桶数组清空重填），每 tick 只构建 1 次、斥力与碰撞共用
+//   ——旧实现每 tick 重建 3 次网格，过滤器点击时 ×150 tick 同步跑 = 主线程卡死
+// - preSettle 带**毫秒预算**，节点越多自动跑越少 tick，过滤器点击永不超预算
 
 /** 节点半径：任务 = 3 + √度数×2，hub = 7 + √度数（设计 §3.2） */
 export function taskRadius(degree: number): number {
@@ -45,8 +50,6 @@ export interface PhysConfig {
   maxStep: number;
   /** 碰撞分离的额外间距 */
   collidePadding: number;
-  /** 网格单帧重定位迭代次数 */
-  collideIterations: number;
 }
 
 export const DEFAULT_CONFIG: PhysConfig = {
@@ -58,7 +61,6 @@ export const DEFAULT_CONFIG: PhysConfig = {
   alphaMin: 0.02,
   maxStep: 24,
   collidePadding: 4,
-  collideIterations: 2,
 };
 
 /** 弹簧参数（设计 §3.2）：任务依赖紧、成员→hub 松（团簇松散可分） */
@@ -107,37 +109,51 @@ export function rebindPositions(
   });
 }
 
-interface Grid {
-  cell: number;
-  cols: number;
-  originX: number;
-  originY: number;
-  buckets: Map<number, number[]>;
+// ── 模块级复用空间网格：桶数组清空重填，零稳态分配 ──
+const grid = {
+  cell: 0,
+  cols: 0,
+  originX: 0,
+  originY: 0,
+  buckets: new Map<number, number[]>(),
+};
+
+function gridKey(gx: number, gy: number): number {
+  // 注入性键（|gy| 实际远小于 5e5）；哈希碰撞只是合并单元格，精确距离校验兜底正确性
+  return gx * 1000003 + gy;
 }
 
-function buildGrid(nodes: PhysNode[], cutoff: number): Grid {
+function buildGrid(nodes: PhysNode[], cell: number): void {
   let minX = Infinity;
   let minY = Infinity;
-  for (const n of nodes) {
+  for (let i = 0; i < nodes.length; i++) {
+    const n = nodes[i];
     if (n.x < minX) minX = n.x;
     if (n.y < minY) minY = n.y;
   }
-  const cols = Math.ceil(Math.sqrt(Math.max(nodes.length, 1))) + 1;
-  const buckets = new Map<number, number[]>();
+  grid.cell = cell;
+  grid.cols = Math.ceil(Math.sqrt(Math.max(nodes.length, 1))) + 1;
+  grid.originX = minX;
+  grid.originY = minY;
+  for (const arr of grid.buckets.values()) arr.length = 0;
   for (let i = 0; i < nodes.length; i++) {
-    const gx = Math.floor((nodes[i].x - minX) / cutoff);
-    const gy = Math.floor((nodes[i].y - minY) / cutoff);
-    const key = gx * cols + gy;
-    const list = buckets.get(key);
+    const key = gridKey(
+      Math.floor((nodes[i].x - minX) / cell),
+      Math.floor((nodes[i].y - minY) / cell)
+    );
+    const list = grid.buckets.get(key);
     if (list) list.push(i);
-    else buckets.set(key, [i]);
+    else grid.buckets.set(key, [i]);
   }
-  return { cell: cutoff, cols, originX: minX, originY: minY, buckets };
 }
 
+const now = (): number =>
+  typeof performance !== "undefined" ? performance.now() : Date.now();
+
 /**
- * 单步积分：斥力 + 弹簧 + 向心 → 速度衰减 → 位移；再跑碰撞分离。
- * 返回衰减后的 alpha（调用方据此判断是否停循环）。节点数为 0/1 时只衰 alpha。
+ * 单步积分：斥力 + 弹簧 + 向心 → 速度衰减 → 位移；碰撞分离（同网格近似，
+ * tick 内位移远小于 cutoff）。返回衰减后的 alpha（调用方据此判断是否停循环）。
+ * 节点数为 0/1 时只衰 alpha。
  */
 export function tick(
   nodes: PhysNode[],
@@ -149,18 +165,21 @@ export function tick(
 ): number {
   const nextAlpha = alpha * (1 - cfg.alphaDecay);
   if (nodes.length <= 1) return nextAlpha;
-  const grid = buildGrid(nodes, cfg.repulsionCutoff);
+  buildGrid(nodes, cfg.repulsionCutoff);
+  const { originX, originY, cell, buckets } = grid;
+  const cutoffSq = cfg.repulsionCutoff * cfg.repulsionCutoff;
 
   // 短程斥力（cutoff 内 1/d²，按半径加权）
   for (let i = 0; i < nodes.length; i++) {
     const a = nodes[i];
-    const gx = Math.floor((a.x - grid.originX) / grid.cell);
-    const gy = Math.floor((a.y - grid.originY) / grid.cell);
+    const gx = Math.floor((a.x - originX) / cell);
+    const gy = Math.floor((a.y - originY) / cell);
     for (let ox = -1; ox <= 1; ox++) {
       for (let oy = -1; oy <= 1; oy++) {
-        const bucket = grid.buckets.get((gx + ox) * grid.cols + (gy + oy));
+        const bucket = buckets.get(gridKey(gx + ox, gy + oy));
         if (!bucket) continue;
-        for (const j of bucket) {
+        for (let bi = 0; bi < bucket.length; bi++) {
+          const j = bucket[bi];
           if (j <= i) continue;
           const b = nodes[j];
           let dx = a.x - b.x;
@@ -172,23 +191,25 @@ export function tick(
             dy = 0.25;
             d2 = dx * dx + dy * dy;
           }
-          if (d2 > cfg.repulsionCutoff * cfg.repulsionCutoff) continue;
+          if (d2 > cutoffSq) continue;
           const d = Math.sqrt(d2);
-          const f =
-            (cfg.repulsion * alpha * ((a.r + b.r) * 2)) / d2;
+          const f = (cfg.repulsion * alpha * ((a.r + b.r) * 2)) / d2;
           const fx = (dx / d) * f;
           const fy = (dy / d) * f;
-          a.vx += Math.max(-cfg.maxStep, Math.min(cfg.maxStep, fx));
-          a.vy += Math.max(-cfg.maxStep, Math.min(cfg.maxStep, fy));
-          b.vx -= Math.max(-cfg.maxStep, Math.min(cfg.maxStep, fx));
-          b.vy -= Math.max(-cfg.maxStep, Math.min(cfg.maxStep, fy));
+          const fxcl = Math.max(-cfg.maxStep, Math.min(cfg.maxStep, fx));
+          const fycl = Math.max(-cfg.maxStep, Math.min(cfg.maxStep, fy));
+          a.vx += fxcl;
+          a.vy += fycl;
+          b.vx -= fxcl;
+          b.vy -= fycl;
         }
       }
     }
   }
 
   // 连线弹簧
-  for (const l of links) {
+  for (let li = 0; li < links.length; li++) {
+    const l = links[li];
     const a = nodes[l.source];
     const b = nodes[l.target];
     if (!a || !b) continue;
@@ -203,7 +224,8 @@ export function tick(
   }
 
   // 向心引力 + 积分（速度衰减；固定点锁位）
-  for (const n of nodes) {
+  for (let i = 0; i < nodes.length; i++) {
+    const n = nodes[i];
     n.vx += (centerX - n.x) * cfg.gravity * alpha;
     n.vy += (centerY - n.y) * cfg.gravity * alpha;
     if (n.fx !== null && n.fy !== null) {
@@ -219,46 +241,71 @@ export function tick(
     n.y += Math.max(-cfg.maxStep, Math.min(cfg.maxStep, n.vy));
   }
 
-  // 碰撞分离（位置修正式，半径和 + padding）
-  for (let iter = 0; iter < cfg.collideIterations; iter++) {
-    const g = buildGrid(nodes, cfg.repulsionCutoff);
-    for (let i = 0; i < nodes.length; i++) {
-      const a = nodes[i];
-      const gx = Math.floor((a.x - g.originX) / g.cell);
-      const gy = Math.floor((a.y - g.originY) / g.cell);
-      for (let ox = -1; ox <= 1; ox++) {
-        for (let oy = -1; oy <= 1; oy++) {
-          const bucket = g.buckets.get((gx + ox) * g.cols + (gy + oy));
-          if (!bucket) continue;
-          for (const j of bucket) {
-            if (j <= i) continue;
-            const b = nodes[j];
-            const min = a.r + b.r + cfg.collidePadding;
-            let dx = b.x - a.x;
-            let dy = b.y - a.y;
-            let d2 = dx * dx + dy * dy;
-            if (d2 >= min * min) continue;
-            if (d2 === 0) {
-              dx = 0.5;
-              dy = 0.25;
-              d2 = dx * dx + dy * dy;
-            }
-            const d = Math.sqrt(d2);
-            const push = ((min - d) / d) * 0.5;
-            const px = dx * push;
-            const py = dy * push;
-            if (a.fx === null) {
-              a.x -= px * 0.5;
-              a.y -= py * 0.5;
-            }
-            if (b.fx === null) {
-              b.x += px * 0.5;
-              b.y += py * 0.5;
-            }
+  // 碰撞分离（同网格近似；单次迭代——tick 内位移 ≪ cutoff，足够防重叠）
+  for (let i = 0; i < nodes.length; i++) {
+    const a = nodes[i];
+    const gx = Math.floor((a.x - originX) / cell);
+    const gy = Math.floor((a.y - originY) / cell);
+    for (let ox = -1; ox <= 1; ox++) {
+      for (let oy = -1; oy <= 1; oy++) {
+        const bucket = buckets.get(gridKey(gx + ox, gy + oy));
+        if (!bucket) continue;
+        for (let bi = 0; bi < bucket.length; bi++) {
+          const j = bucket[bi];
+          if (j <= i) continue;
+          const b = nodes[j];
+          const min = a.r + b.r + cfg.collidePadding;
+          let dx = b.x - a.x;
+          let dy = b.y - a.y;
+          let d2 = dx * dx + dy * dy;
+          if (d2 >= min * min) continue;
+          if (d2 === 0) {
+            dx = 0.5;
+            dy = 0.25;
+            d2 = dx * dx + dy * dy;
+          }
+          const d = Math.sqrt(d2);
+          const push = ((min - d) / d) * 0.5;
+          const px = dx * push;
+          const py = dy * push;
+          if (a.fx === null) {
+            a.x -= px * 0.5;
+            a.y -= py * 0.5;
+          }
+          if (b.fx === null) {
+            b.x += px * 0.5;
+            b.y += py * 0.5;
           }
         }
       }
     }
   }
   return nextAlpha;
+}
+
+/**
+ * 预稳定：建图/改过滤后同步跑 tick 让首帧接近收敛。
+ * **毫秒预算 + tick 上限双约束**——节点越多每 tick 越贵，预算自动砍 tick 数，
+ * 过滤器点击的主线程阻塞被钉死在 budgetMs 量级（旧实现固定 150 tick，大图卡死）。
+ * 返回剩余 alpha（调用方叠加暖启动余温）。
+ */
+export function preSettle(
+  nodes: PhysNode[],
+  links: PhysLink[],
+  cfg: PhysConfig,
+  centerX: number,
+  centerY: number,
+  budgetMs = 24,
+  maxTicks = 150
+): number {
+  const t0 = now();
+  let alpha = 1;
+  let ticks = 0;
+  while (ticks < maxTicks) {
+    alpha = tick(nodes, links, cfg, alpha, centerX, centerY);
+    ticks++;
+    // 每 8 tick 查一次表（performance.now 本身有开销）
+    if ((ticks & 7) === 0 && now() - t0 > budgetMs) break;
+  }
+  return alpha;
 }

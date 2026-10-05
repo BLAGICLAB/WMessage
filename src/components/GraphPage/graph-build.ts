@@ -167,16 +167,16 @@ export function buildTaskGraph(
 
   // hub：工作流卡 → wf:{id}（白名单生效时只建白名单内工作流的 hub）
   const allowedWorkflows = filters.workflowIds;
+  const wfById = new Map(workflows.map((w) => [w.id, w]));
   for (const t of kept) {
     if (!t.workflowId) continue;
     if (allowedWorkflows && !allowedWorkflows.includes(t.workflowId)) continue;
     const hubId = `wf:${t.workflowId}`;
     if (!nodes.has(hubId)) {
-      const wf = workflows.find((w) => w.id === t.workflowId);
       nodes.set(hubId, {
         id: hubId,
         kind: "hub",
-        label: wf?.name ?? "未命名工作流",
+        label: wfById.get(t.workflowId)?.name ?? "未命名工作流",
         workflowId: t.workflowId,
         degree: 0,
       });
