@@ -29,6 +29,7 @@ const CONTRACT_SEGMENT: &str = r#"
 - title：≤80 字，祈使句、动词开头，一张卡一个可独立交付的步骤
 - note：≤500 字，写清楚做什么、产出什么（下游任务会引用上游产出）
 - dependsOn：数组下标引用，尽量只引用排在它前面的任务；无依赖为 []（顺序写反系统会自动纠正，但引用的任务必须存在）
+- subtasks：可选，2~8 条子任务文本（每条 ≤60 字）；有前置材料的任务，把材料里对应的要点/数据拆进 subtasks
 - 无依赖关系的任务会并行执行，有依赖的按图顺序执行
 示例：
 {"subtasks":[{"title":"收集素材","note":"产出素材清单","dependsOn":[]},{"title":"写初稿","note":"引用素材清单起草","dependsOn":[0]}]}"#;
@@ -49,6 +50,9 @@ pub struct DecomposeSubtask {
     pub note: Option<String>,
     #[serde(default)]
     pub depends_on: Vec<usize>,
+    /// 子任务文本清单（W8-ATTACH）：附件内容拆进卡片子任务
+    #[serde(default)]
+    pub subtasks: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Clone)]
@@ -157,6 +161,30 @@ pub(crate) fn validate_decompose(
                 });
             }
         }
+        // 子任务清单校验（W8-ATTACH）：≤8 条 × ≤60 字，trim，空白条剔除
+        if let Some(list) = &mut st.subtasks {
+            if list.len() > 8 {
+                return Err(CommandError::InvalidArgument {
+                    field: "subtasks".into(),
+                    value: list.len().to_string(),
+                    reason: format!("第 {} 个任务子任务超过 8 条上限", i + 1),
+                });
+            }
+            for t in list.iter_mut() {
+                *t = t.trim().to_string();
+                if t.chars().count() > 60 {
+                    return Err(CommandError::InvalidArgument {
+                        field: "subtasks".into(),
+                        value: t.clone(),
+                        reason: format!("第 {} 个任务的子任务超过 60 字上限", i + 1),
+                    });
+                }
+            }
+            list.retain(|t| !t.is_empty());
+            if list.is_empty() {
+                st.subtasks = None;
+            }
+        }
     }
     // 依赖归一（W7-TOPO）：去重 + 剥自环（自引用无语义——小模型高频手误，
     // 用户实测案例 #4 -> [4] 两次重试不改，整包拒绝体验差）；越界仍拒绝；
@@ -244,6 +272,7 @@ pub(crate) fn validate_decompose(
                 title: st.title.clone(),
                 note: st.note.clone(),
                 depends_on: st.depends_on.iter().map(|d| old_to_new[d]).collect(),
+                subtasks: st.subtasks.clone(),
             }
         })
         .collect();
@@ -283,6 +312,7 @@ pub async fn workflow_decompose(
     app: AppHandle,
     goal: String,
     guidance: Option<String>,
+    attachments: Option<Vec<String>>,
 ) -> CommandResult<DecomposeResult> {
     let goal_trimmed = goal.trim().to_string();
     if goal_trimmed.is_empty() {
@@ -303,7 +333,73 @@ pub async fn workflow_decompose(
     // 参数不可信任——超长指引会稀释契约段权重并放大 token 开销
     let guidance_trimmed = validate_guidance(&guidance.unwrap_or_default())?;
     let system_prompt = build_system_prompt(&guidance_trimmed);
-    let mut user_content = format!("总目标：{goal_trimmed}");
+    // 附件抽取（W8-ATTACH）：用户在对话框亲手选的文件 = 明确授权，
+    // 直调 doc_extract 不走工具授权闸；抽取失败不炸整包（占位说明）。
+    // 单文件 12k 字符、总 48k 字符封顶（防上下文撑爆）。
+    let attachment_list = attachments.unwrap_or_default();
+    let mut attach_blocks = String::new();
+    let mut attached_ok = 0usize;
+    {
+        const PER_FILE_CAP: usize = 12_000;
+        const TOTAL_CAP: usize = 48_000;
+        let mut total_used = 0usize;
+        for (i, path) in attachment_list.iter().enumerate() {
+            if total_used >= TOTAL_CAP {
+                attach_blocks.push_str(&format!(
+                    "\n【附件 {}：{}】（超出总字符上限，未注入）",
+                    i + 1,
+                    path
+                ));
+                continue;
+            }
+            let file_name = path.rsplit('/').next().unwrap_or(path);
+            match crate::bot_py::doc_extract(app.clone(), Some(path.clone())).await {
+                Ok(res) => {
+                    let mut text: String = res.text.chars().take(PER_FILE_CAP).collect();
+                    total_used += text.chars().count();
+                    if total_used > TOTAL_CAP {
+                        let remain = TOTAL_CAP.saturating_sub(total_used - text.chars().count());
+                        text = res.text.chars().take(remain).collect();
+                    }
+                    attach_blocks.push_str(&format!(
+                        "\n【附件 {}：{}】\n{}\n",
+                        i + 1,
+                        file_name,
+                        text
+                    ));
+                    attached_ok += 1;
+                }
+                Err(e) => {
+                    attach_blocks.push_str(&format!(
+                        "\n【附件 {}：{}】（读取失败：{}）\n",
+                        i + 1,
+                        file_name,
+                        crate::bot::truncate_for_log(&e.message(), 120)
+                    ));
+                }
+            }
+        }
+        if !attachment_list.is_empty() {
+            let header = format!(
+                "\n用户提供了 {} 个附件（{} 个读取成功），请把与各任务相关的内容拆进对应任务的 note 或 subtasks：",
+                attachment_list.len(),
+                attached_ok
+            );
+            attach_blocks.insert_str(0, &header);
+        }
+    }
+    let mut user_content = format!("总目标：{goal_trimmed}{attach_blocks}");
+    if !attachment_list.is_empty() {
+        crate::audit::write_event(
+            &app,
+            crate::audit::AuditLevel::Info,
+            "workflow_decompose",
+            &[
+                ("attachments", attachment_list.len().to_string()),
+                ("attachedOk", attached_ok.to_string()),
+            ],
+        );
+    }
     let mut attempts: u8 = 0;
     let mut last_err = String::new();
     // 失败审计的收口（OCR r2：LLM 调用本身的失败经 `?` 直抛会绕过审计，
@@ -403,6 +499,7 @@ mod tests {
             title: long_title,
             note: None,
             depends_on: vec![],
+            subtasks: None,
         }])
         .unwrap_err();
         assert!(err.to_string().contains("上限"));
@@ -411,6 +508,7 @@ mod tests {
             title: "   ".into(),
             note: None,
             depends_on: vec![],
+            subtasks: None,
         }])
         .unwrap_err();
         assert!(err.to_string().contains("为空"));
@@ -419,6 +517,7 @@ mod tests {
             title: "  收集  ".into(),
             note: None,
             depends_on: vec![],
+            subtasks: None,
         }])
         .unwrap();
         assert_eq!(ok[0].title, "收集");
@@ -431,16 +530,19 @@ mod tests {
                 title: "审阅".into(),
                 note: None,
                 depends_on: vec![],
+                subtasks: None,
             },
             DecomposeSubtask {
                 title: "审阅".into(),
                 note: None,
                 depends_on: vec![0],
+                subtasks: None,
             },
             DecomposeSubtask {
                 title: "审阅".into(),
                 note: None,
                 depends_on: vec![1],
+                subtasks: None,
             },
         ])
         .unwrap();
@@ -457,11 +559,13 @@ mod tests {
                 title: "B".into(),
                 note: None,
                 depends_on: vec![1],
+                subtasks: None,
             },
             DecomposeSubtask {
                 title: "A".into(),
                 note: None,
                 depends_on: vec![],
+                subtasks: None,
             },
         ])
         .unwrap();
@@ -475,11 +579,13 @@ mod tests {
                 title: "A".into(),
                 note: None,
                 depends_on: vec![],
+                subtasks: None,
             },
             DecomposeSubtask {
                 title: "B".into(),
                 note: None,
                 depends_on: vec![0, 1],
+                subtasks: None,
             },
         ])
         .unwrap();
@@ -494,11 +600,13 @@ mod tests {
                 title: "甲".into(),
                 note: None,
                 depends_on: vec![1],
+                subtasks: None,
             },
             DecomposeSubtask {
                 title: "乙".into(),
                 note: None,
                 depends_on: vec![0],
+                subtasks: None,
             },
         ])
         .unwrap_err();
@@ -513,6 +621,7 @@ mod tests {
                 title: format!("T{i}"),
                 note: None,
                 depends_on: vec![],
+                subtasks: None,
             })
             .collect();
         let err = validate_decompose(items).unwrap_err();
@@ -550,16 +659,19 @@ mod tests {
                 title: "审阅".into(),
                 note: None,
                 depends_on: vec![],
+                subtasks: None,
             },
             DecomposeSubtask {
                 title: "审阅".into(),
                 note: None,
                 depends_on: vec![0],
+                subtasks: None,
             },
             DecomposeSubtask {
                 title: "审阅（2）".into(),
                 note: None,
                 depends_on: vec![0],
+                subtasks: None,
             },
         ])
         .unwrap();

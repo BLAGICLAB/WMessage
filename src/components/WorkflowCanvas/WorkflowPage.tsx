@@ -116,6 +116,8 @@ function WorkflowPageInner({
   const [running, setRunning] = useState(false);
   /** 模型库条目（W6-MODEL）：节点执行模型下拉选项 */
   const [models, setModels] = useState<Array<{ id: string; label: string }>>([]);
+  /** 拆解附件路径（W8-ATTACH）：随工作流持久化（重新生成可复用） */
+  const [attachPaths, setAttachPaths] = useState<string[]>([]);
   /** AI 拆解进行中 + 竞态守卫（取消 = 递增序号丢弃在途响应） */
   const [decomposing, setDecomposing] = useState(false);
   const decomposeSeqRef = useRef(0);
@@ -166,7 +168,10 @@ function WorkflowPageInner({
     const seq = ++openSeqRef.current;
     decomposeSeqRef.current++; // 使在途拆解响应失效（OCR r1 critical）
     try {
-      const detail = await invoke<Workflow & { tasks: Task[] }>("workflow_load", { id });
+      const detail = await invoke<
+        Workflow & { tasks: Task[]; attachments?: string[] | null }
+      >("workflow_load", { id });
+      setAttachPaths(detail.attachments ?? []);
       if (seq !== openSeqRef.current) return; // 期间用户已切换：丢弃本次响应
       const fresh = draftFromTasks(detail.tasks);
       setActiveId(id);
@@ -209,6 +214,7 @@ function WorkflowPageInner({
     // 一次点击即触发生成；running 残留会让新画布显示停止按钮）
     setRegenArmed(false);
     setRunning(false);
+    setAttachPaths([]);
   };
 
   // ────────────── 模板导入导出（W4-TEMPLATE，设计 §4） ──────────────
@@ -267,6 +273,7 @@ function WorkflowPageInner({
       }>("workflow_decompose", {
         goal: goalText,
         guidance: getDecomposeGuidance(),
+        attachments: attachPaths.length ? attachPaths : null,
       });
       if (seq !== decomposeSeqRef.current) return; // 已取消/已卸载：丢弃响应
       const fresh = draftFromDecompose(res.subtasks);
@@ -281,6 +288,20 @@ function WorkflowPageInner({
       }
     } finally {
       if (seq === decomposeSeqRef.current) setDecomposing(false);
+    }
+  };
+
+  const addAttachments = async () => {
+    try {
+      const picked = await open({
+        multiple: true,
+        directory: false,
+      });
+      const list = typeof picked === "string" ? [picked] : (picked ?? []);
+      if (!list.length) return;
+      setAttachPaths((prev) => [...prev, ...list.filter((p) => !prev.includes(p))]);
+    } catch (e) {
+      handleCommandError(e, "添加附件");
     }
   };
 
@@ -546,6 +567,7 @@ function WorkflowPageInner({
           workflowId: activeId,
           name: effectiveName,
           goal: effectiveGoal,
+          attachments: attachPaths.length ? attachPaths : null,
           nodes: nodes.map((n) => ({
             localId: n.localId,
             taskId: n.taskId ?? null,
@@ -556,6 +578,7 @@ function WorkflowPageInner({
             pos: n.pos,
             // 保存链必须携带 model（W6 r1 critical：缺失会把下拉刚设的模型置空）
             model: n.model ?? tasks.find((t) => t.id === n.taskId)?.model ?? null,
+            subtasks: n.subtasks ?? null,
           })),
         },
       });
@@ -795,13 +818,17 @@ function WorkflowPageInner({
           <EmptyHero
             goal={goal}
             onGoalChange={setGoal}
-            onCreateBlank={createBlank}
             workflows={workflows}
             onOpen={(id) => void openWorkflow(id)}
             decomposing={decomposing}
             onDecompose={() => void runDecompose(goal)}
             onCancelDecompose={cancelDecompose}
             isRegenerate={activeId !== null}
+            attachPaths={attachPaths}
+            onAddAttachments={() => void addAttachments()}
+            onRemoveAttachment={(p) =>
+              setAttachPaths((prev) => prev.filter((x) => x !== p))
+            }
           />
         ) : (
           <ReactFlow
@@ -830,17 +857,18 @@ function WorkflowPageInner({
 function EmptyHero({
   goal,
   onGoalChange,
-  onCreateBlank,
   workflows,
   onOpen,
   decomposing,
   onDecompose,
   onCancelDecompose,
   isRegenerate,
+  attachPaths,
+  onAddAttachments,
+  onRemoveAttachment,
 }: {
   goal: string;
   onGoalChange: (v: string) => void;
-  onCreateBlank: () => void;
   workflows: Workflow[];
   onOpen: (id: string) => void;
   decomposing: boolean;
@@ -848,6 +876,10 @@ function EmptyHero({
   onCancelDecompose: () => void;
   /** 重新生成流程中（activeId 已存在）——按钮文案区分 */
   isRegenerate: boolean;
+  /** 拆解附件路径（W8-ATTACH）：AI 先读附件内容再拆解 */
+  attachPaths: string[];
+  onAddAttachments: () => void;
+  onRemoveAttachment: (path: string) => void;
 }) {
   return (
     <div className="flex h-full items-center justify-center">
@@ -868,36 +900,56 @@ function EmptyHero({
           onChange={(e) => onGoalChange(e.target.value)}
           disabled={decomposing}
         />
-        <div className="mt-3 flex items-center justify-end gap-2">
-          {decomposing && (
-            <span className="mr-auto flex items-center gap-1.5 text-xs text-[var(--t5)]">
+        {attachPaths.length > 0 && (
+          <div className="mt-3 flex flex-wrap gap-1.5">
+            {attachPaths.map((p) => (
+              <span
+                key={p}
+                className="flex max-w-full items-center gap-1 rounded-full border border-[var(--edge)] px-2.5 py-0.5 text-[11px] text-[var(--t3)]"
+                title={p}
+              >
+                <span className="truncate">{p.split("/").pop()}</span>
+                <button
+                  aria-label={`移除附件 ${p.split("/").pop()}`}
+                  onClick={() => onRemoveAttachment(p)}
+                  className="text-[var(--t5)] hover:text-[var(--danger,#ef4444)]"
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+        <div className="mt-3 flex items-center justify-between gap-2">
+          <button
+            className="nm-outset flex items-center gap-1 rounded-[var(--r-sm)] px-3 py-1.5 text-xs text-[var(--t3)] disabled:opacity-50"
+            onClick={onAddAttachments}
+            disabled={decomposing}
+            title="添加参考文件（docx/pdf/txt 等）：AI 拆解前先读一遍，内容会拆进各任务卡的备注或子任务"
+          >
+            📎 添加附件
+          </button>
+          {decomposing ? (
+            <span className="flex items-center gap-1.5 text-xs text-[var(--t5)]">
               <Loader2 size={13} className="animate-spin" aria-hidden /> AI 拆解中…
             </span>
+          ) : (
+            <button
+              className="nm-inset rounded-[var(--r-sm)] px-4 py-1.5 text-sm text-[var(--t1)] disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={!goal.trim()}
+              title={goal.trim() ? "AI 拆解为任务卡并自动连线" : "先填写目标描述"}
+              onClick={onDecompose}
+            >
+              {isRegenerate ? "AI 重新生成" : "AI 生成"}
+            </button>
           )}
-          {decomposing ? (
+          {decomposing && (
             <button
               className="nm-outset rounded-[var(--r-sm)] px-4 py-1.5 text-sm text-[var(--t3)]"
               onClick={onCancelDecompose}
             >
               取消
             </button>
-          ) : (
-            <>
-              <button
-                className="nm-inset rounded-[var(--r-sm)] px-4 py-1.5 text-sm text-[var(--t1)] disabled:cursor-not-allowed disabled:opacity-50"
-                disabled={!goal.trim()}
-                title={goal.trim() ? "AI 拆解为任务卡并自动连线" : "先填写目标描述"}
-                onClick={onDecompose}
-              >
-                {isRegenerate ? "AI 重新生成" : "AI 生成"}
-              </button>
-              <button
-                className="nm-outset rounded-[var(--r-sm)] px-4 py-1.5 text-sm text-[var(--t3)]"
-                onClick={onCreateBlank}
-              >
-                创建空白工作流
-              </button>
-            </>
           )}
         </div>
         {workflows.length > 0 && (

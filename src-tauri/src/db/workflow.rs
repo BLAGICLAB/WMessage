@@ -30,12 +30,29 @@ pub const MAX_NODE_NOTE: usize = 500;
 
 /// 单源 DDL：open_db 与测试建表共用，防两处 schema 漂移
 pub const WORKFLOWS_DDL: &str = "CREATE TABLE IF NOT EXISTS workflows (
-   id         TEXT PRIMARY KEY,
-   name       TEXT NOT NULL,
-   goal       TEXT NOT NULL,
-   created_at INTEGER,
-   updated_at INTEGER
+   id          TEXT PRIMARY KEY,
+   name        TEXT NOT NULL,
+   goal        TEXT NOT NULL,
+   created_at  INTEGER,
+   updated_at  INTEGER,
+   attachments TEXT
  );";
+
+/// workflows.attachments 幂等 ALTER（W8-ATTACH：老库的 workflows 表无此列）
+pub fn ensure_workflows_attachments(conn: &rusqlite::Connection) -> Result<(), String> {
+    let has: bool = conn
+        .prepare("PRAGMA table_info(workflows)")
+        .and_then(|mut stmt| {
+            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+            Ok(rows.filter_map(|n| n.ok()).any(|n| n == "attachments"))
+        })
+        .unwrap_or(false);
+    if !has {
+        conn.execute("ALTER TABLE workflows ADD COLUMN attachments TEXT", [])
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -45,6 +62,8 @@ pub struct Workflow {
     pub goal: String,
     pub created_at: Option<i64>,
     pub updated_at: Option<i64>,
+    /// 拆解附件路径清单（W8-ATTACH，JSON 数组；仅本机语义，不进导出文件）
+    pub attachments: Option<Vec<String>>,
 }
 
 /// workflow_save 的单个节点草稿。taskId = 已保存卡的绑定提示（服务端不信任，
@@ -67,6 +86,9 @@ pub struct WorkflowNodeDraft {
     /// 执行模型覆盖（W6-MODEL）：模型库条目 id；None = 跟随全局
     #[serde(default)]
     pub model: Option<String>,
+    /// 子任务清单（W8-ATTACH）：仅新建卡构建（保留卡保护执行痕迹）
+    #[serde(default)]
+    pub subtasks: Option<Vec<String>>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -78,6 +100,9 @@ pub struct WorkflowSaveInput {
     pub name: String,
     pub goal: String,
     pub nodes: Vec<WorkflowNodeDraft>,
+    /// 拆解附件路径清单（W8-ATTACH）：随保存落 workflows 行（重新生成可复用）
+    #[serde(default)]
+    pub attachments: Option<Vec<String>>,
 }
 
 /// 保存结果：画布节点本地 id → 真实任务 id 绑定（前端据此重建连线与卡绑定）
@@ -111,16 +136,19 @@ pub struct WorkflowDetail {
 // ────────────── workflows 行 CRUD ──────────────
 
 fn workflow_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Workflow> {
+    let attachments: Option<String> = r.get(5)?;
     Ok(Workflow {
         id: r.get(0)?,
         name: r.get(1)?,
         goal: r.get(2)?,
         created_at: r.get(3)?,
         updated_at: r.get(4)?,
+        attachments: attachments.and_then(|s| serde_json::from_str(&s).ok()),
     })
 }
 
-const WORKFLOW_COLS: &str = "SELECT id, name, goal, created_at, updated_at FROM workflows";
+const WORKFLOW_COLS: &str =
+    "SELECT id, name, goal, created_at, updated_at, attachments FROM workflows";
 
 pub fn load_workflows(conn: &rusqlite::Connection) -> Result<Vec<Workflow>, String> {
     let mut stmt = conn
@@ -147,10 +175,14 @@ pub fn load_workflow(conn: &rusqlite::Connection, id: &str) -> Result<Option<Wor
 }
 
 fn upsert_workflow(conn: &rusqlite::Connection, w: &Workflow) -> Result<(), String> {
+    let attachments = w
+        .attachments
+        .as_ref()
+        .map(|a| serde_json::to_string(a).unwrap_or_default());
     conn.execute(
-        "INSERT INTO workflows (id, name, goal, created_at, updated_at) VALUES (?1,?2,?3,?4,?5)
-         ON CONFLICT(id) DO UPDATE SET name=excluded.name, goal=excluded.goal, updated_at=excluded.updated_at",
-        rusqlite::params![w.id, w.name, w.goal, w.created_at, w.updated_at],
+        "INSERT INTO workflows (id, name, goal, created_at, updated_at, attachments) VALUES (?1,?2,?3,?4,?5,?6)
+         ON CONFLICT(id) DO UPDATE SET name=excluded.name, goal=excluded.goal, updated_at=excluded.updated_at, attachments=excluded.attachments",
+        rusqlite::params![w.id, w.name, w.goal, w.created_at, w.updated_at, attachments],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -429,6 +461,7 @@ pub(crate) fn workflow_save_locked(
             goal,
             created_at,
             updated_at: Some(now),
+            attachments: input.attachments.clone(),
         },
     )
     .map_err(CommandError::from)?;
@@ -617,6 +650,9 @@ pub struct WorkflowFileNode {
     /// 执行模型覆盖（W6-MODEL）
     #[serde(default)]
     pub model: Option<String>,
+    /// 子任务文本清单（W8-ATTACH）
+    #[serde(default)]
+    pub subtasks: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -718,6 +754,10 @@ pub(crate) fn workflow_file_from(wf: &Workflow, tasks: &[Task]) -> WorkflowFile 
                 .collect(),
             pos: t.canvas_pos.clone(),
             model: t.model.clone(),
+            subtasks: t
+                .subtasks
+                .as_ref()
+                .map(|list| list.iter().map(|st| st.text.clone()).collect()),
         })
         .collect();
     WorkflowFile {
@@ -804,6 +844,8 @@ pub(crate) fn parse_workflow_file(raw: &str) -> CommandResult<WorkflowSaveInput>
                 depends_on,
                 pos: n.pos,
                 model: n.model.take().filter(|m| !m.trim().is_empty()),
+                // 空串/空白子任务在保存链构建 Subtask 时再过滤
+                subtasks: n.subtasks,
             }
         })
         .collect();
@@ -812,6 +854,7 @@ pub(crate) fn parse_workflow_file(raw: &str) -> CommandResult<WorkflowSaveInput>
         name,
         goal,
         nodes,
+        attachments: None,
     })
 }
 
@@ -1038,6 +1081,7 @@ mod tests {
             depends_on: deps.iter().map(|s| s.to_string()).collect(),
             pos: Some(CanvasPos { x: 10.0, y: 20.0 }),
             model: None,
+            subtasks: None,
         }
     }
 
@@ -1057,6 +1101,7 @@ mod tests {
                 name: "测试工作流".into(),
                 goal: "目标".into(),
                 nodes,
+                attachments: None,
             },
             1_000,
         )
@@ -1181,6 +1226,7 @@ mod tests {
                     name: "x".into(),
                     goal: "g".into(),
                     nodes,
+                    attachments: None,
                 },
                 1_000,
             )
@@ -1221,6 +1267,7 @@ mod tests {
                     name: "x".into(),
                     goal: "g".into(),
                     nodes,
+                    attachments: None,
                 },
                 1_000,
             )
@@ -1248,6 +1295,7 @@ mod tests {
                 name: "  ".into(),
                 goal: "g".into(),
                 nodes: vec![],
+                attachments: None,
             },
             1_000,
         )
@@ -1268,6 +1316,7 @@ mod tests {
                 name: "测试工作流".into(),
                 goal: "目标".into(),
                 nodes: vec![],
+                attachments: None,
             },
             2_000,
         )

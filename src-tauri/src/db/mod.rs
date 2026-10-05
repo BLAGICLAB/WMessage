@@ -161,6 +161,8 @@ pub fn open_db<R: tauri::Runtime>(
     // 节点卡存 tasks 表（origin='workflow' + workflow_id 外联），不在此表
     conn.execute_batch(crate::db::workflow::WORKFLOWS_DDL)
         .map_err(|e| e.to_string())?;
+    // W8-ATTACH：老库的 workflows 表补 attachments 列（拆解附件路径）
+    crate::db::workflow::ensure_workflows_attachments(&conn).map_err(|e| e.to_string())?;
     // 成员注册表（任务图谱设计 §1.2）：多人汇总的归属人字典，幂等
     conn.execute_batch(people::PEOPLE_DDL)
         .map_err(|e| e.to_string())?;

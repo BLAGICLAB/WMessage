@@ -14,6 +14,8 @@ export interface CanvasNode {
   pos: { x: number; y: number };
   /** 执行模型覆盖（W6-MODEL）：模型库条目 id；undefined = 跟随全局 */
   model?: string;
+  /** 子任务文本清单（W8-ATTACH）：保存时构建为卡片 Subtask（新建卡） */
+  subtasks?: string[];
 }
 
 /** 画布上任务卡的固定逻辑尺寸（ dagre 布局 + 拖动命中用；实际渲染宽 ~340px） */
@@ -84,7 +86,12 @@ export function layoutGraph(
  *  模型输出 dependsOn 是数组下标（且服务端已保证 < 自身下标），
  *  这里映射为本地节点 id 并跑 dagre 分层布局——坐标永远不来自 LLM */
 export function draftFromDecompose(
-  subtasks: Array<{ title: string; note?: string | null; dependsOn: number[] }>
+  subtasks: Array<{
+    title: string;
+    note?: string | null;
+    dependsOn: number[];
+    subtasks?: string[] | null;
+  }>
 ): CanvasNode[] {
   const nodes: CanvasNode[] = subtasks.map((s, i) => ({
     localId: `n${i}`,
@@ -92,6 +99,7 @@ export function draftFromDecompose(
     note: s.note ?? undefined,
     dependsOn: [],
     pos: { x: 0, y: 0 },
+    subtasks: s.subtasks ?? undefined,
   }));
   subtasks.forEach((s, i) => {
     nodes[i].dependsOn = s.dependsOn.map((d) => nodes[d].localId);
