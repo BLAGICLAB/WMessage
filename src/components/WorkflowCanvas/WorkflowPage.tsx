@@ -157,8 +157,8 @@ function WorkflowPageInner({
   }, []);
 
   const snapshot = useCallback(
-    () => JSON.stringify({ name, goal, nodes }),
-    [name, goal, nodes]
+    () => JSON.stringify({ name, goal, nodes, attachPaths }),
+    [name, goal, nodes, attachPaths]
   );
   const dirty = savedSnapshot !== snapshot();
 
@@ -171,8 +171,8 @@ function WorkflowPageInner({
       const detail = await invoke<
         Workflow & { tasks: Task[]; attachments?: string[] | null }
       >("workflow_load", { id });
-      setAttachPaths(detail.attachments ?? []);
       if (seq !== openSeqRef.current) return; // 期间用户已切换：丢弃本次响应
+      setAttachPaths(detail.attachments ?? []);
       const fresh = draftFromTasks(detail.tasks);
       setActiveId(id);
       setName(detail.name);
@@ -180,7 +180,12 @@ function WorkflowPageInner({
       setNodes(fresh);
       setSelectedIds([]);
       setSavedSnapshot(
-        JSON.stringify({ name: detail.name, goal: detail.goal, nodes: fresh })
+        JSON.stringify({
+          name: detail.name,
+          goal: detail.goal,
+          nodes: fresh,
+          attachPaths: detail.attachments ?? [],
+        })
       );
       setNameAuto(false); // 打开的是已保存工作流：名称是作者起的，拆解不得覆盖（OCR r2）
       setRunning(false); // 先复位：A 在跑时切到 B，停止按钮不得跨工作流残留（全量对照 high）
@@ -599,7 +604,12 @@ function WorkflowPageInner({
       setName(effectiveName);
       setGoal(effectiveGoal);
       setSavedSnapshot(
-        JSON.stringify({ name: effectiveName, goal: effectiveGoal, nodes: next })
+        JSON.stringify({
+          name: effectiveName,
+          goal: effectiveGoal,
+          nodes: next,
+          attachPaths,
+        })
       );
       setActiveId(res.workflowId);
       setSelectedIds([]);
@@ -890,7 +900,7 @@ function EmptyHero({
         <p className="mt-1 text-xs text-[var(--t5)]">
           {isRegenerate
             ? "修改目标描述后重新生成——点「保存」前原画布保持不变，保存时按内容指纹保留未变更节点的执行痕迹。"
-            : "描述你想让 AI 帮你完成的工作流程，AI 将拆解成任务卡并自动连线；也可以先创建空白画布手动编排。"}
+            : "描述你想让 AI 帮你完成的工作流程，可添加参考附件（docx/pdf/txt 等），AI 将先读附件再拆解成任务卡并自动连线。"}
         </p>
         <textarea
           aria-label="工作流目标描述"

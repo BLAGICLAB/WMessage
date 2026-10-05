@@ -257,3 +257,17 @@ grep 例：`grep 'C2b1' docs/OCR-FOLLOWUPS-INDEX.md`
 | W6F-1 | W6-MODEL-r1 | low | resolve 的厂商 key 分支触发真实钥匙串（macOS 授权 UI 可无限等待），测试不覆盖 | 单测带 vendor 条目 | wontfix（测试仅走全局回退路径；vendor 分支由 GUI 冒烟覆盖） |
 | W6F-2 | W6-MODEL-r1 | low | model_by_id 无 with_capacity / patch model 无测试 / model trim 存储 | 改对应文件时 | 顺手修候选（纯 hygiene，随下次触碰同文件批处理） |
 | W6F-3 | W6-MODEL-r1 | medium | 跨条目类型混用（Seedance 等图像/视频 API 非 chat 协议，选入节点不会产生图像） | 用户给节点选非对话模型 | 产品层文档说明（设置页模型条目可指向任意 OpenAI 兼容网关；真原生图像生成属独立功能） |
+
+## W8-ATTACH（附件拆解，2026-10-05 OCR r1 衍生债）
+
+> 修复批 commit 见 git log `W8-ATTACH-r1`；r1 报告（本地）
+> `docs/OCR-CODE-REVIEW-2026-10-05-w8.json`（21 条去重约 18 项：2C+1H+9M+6L）。
+> 2C+1H+7M+2L 随批修复，以下为缓期项。
+
+| ID | 批次 | 严重度 | 根因一句话 | 触发条件 | 处置 |
+|---|---|---|---|---|---|
+| W8F-1 | W8-ATTACH-r1 | low | 附件读取路径 JSON 损坏静默回 None | 手改 bot-config/workflows 行 | wontfix（与 tags/subtasks 同容错契约，eprintln 取证） |
+| W8F-2 | W8-ATTACH-r1 | medium | 模型下拉不反映 disabledVendors 供应商级停用 | 供应商被禁用后 | W6F-3 同批（设置页联动属模型库 UI 议题） |
+| W8F-3 | W8-ATTACH-r1 | low | 12k/48k 字符上限前端无反馈（截断静默） | 超大附件 | wontfix（上限防炸是硬语义；提示条属 UX 增强） |
+| W8F-4 | W8-ATTACH-r1 | low | >8 条子任务错误 value 存条数而非内容 | 校验失败时 | wontfix（reason 已带序号可定位） |
+| W8F-5 | W8-ATTACH-r1 | low | 附件/子任务新逻辑测试覆盖部分缺口（持久化往返） | 改保存链时 | 随下次触碰 workflow.rs 批补 |

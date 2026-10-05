@@ -170,13 +170,17 @@ pub(crate) fn validate_decompose(
                     reason: format!("第 {} 个任务子任务超过 8 条上限", i + 1),
                 });
             }
-            for t in list.iter_mut() {
+            for (si, t) in list.iter_mut().enumerate() {
                 *t = t.trim().to_string();
                 if t.chars().count() > 60 {
                     return Err(CommandError::InvalidArgument {
                         field: "subtasks".into(),
                         value: t.clone(),
-                        reason: format!("第 {} 个任务的子任务超过 60 字上限", i + 1),
+                        reason: format!(
+                            "第 {} 个任务的第 {} 条子任务超过 60 字上限",
+                            i + 1,
+                            si + 1
+                        ),
                     });
                 }
             }
@@ -337,6 +341,13 @@ pub async fn workflow_decompose(
     // 直调 doc_extract 不走工具授权闸；抽取失败不炸整包（占位说明）。
     // 单文件 12k 字符、总 48k 字符封顶（防上下文撑爆）。
     let attachment_list = attachments.unwrap_or_default();
+    if attachment_list.len() > 10 {
+        return Err(CommandError::InvalidArgument {
+            field: "attachments".into(),
+            value: attachment_list.len().to_string(),
+            reason: "附件最多 10 个".into(),
+        });
+    }
     let mut attach_blocks = String::new();
     let mut attached_ok = 0usize;
     {
@@ -352,7 +363,7 @@ pub async fn workflow_decompose(
                 ));
                 continue;
             }
-            let file_name = path.rsplit('/').next().unwrap_or(path);
+            let file_name = path.rsplit(['/', '\\']).next().unwrap_or(path);
             match crate::bot_py::doc_extract(app.clone(), Some(path.clone())).await {
                 Ok(res) => {
                     let mut text: String = res.text.chars().take(PER_FILE_CAP).collect();

@@ -46,7 +46,7 @@ pub fn ensure_workflows_attachments(conn: &rusqlite::Connection) -> Result<(), S
             let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
             Ok(rows.filter_map(|n| n.ok()).any(|n| n == "attachments"))
         })
-        .unwrap_or(false);
+        .map_err(|e| e.to_string())?;
     if !has {
         conn.execute("ALTER TABLE workflows ADD COLUMN attachments TEXT", [])
             .map_err(|e| e.to_string())?;
@@ -175,10 +175,10 @@ pub fn load_workflow(conn: &rusqlite::Connection, id: &str) -> Result<Option<Wor
 }
 
 fn upsert_workflow(conn: &rusqlite::Connection, w: &Workflow) -> Result<(), String> {
-    let attachments = w
-        .attachments
-        .as_ref()
-        .map(|a| serde_json::to_string(a).unwrap_or_default());
+    let attachments = match w.attachments.as_ref() {
+        Some(a) => Some(serde_json::to_string(a).map_err(|e| e.to_string())?),
+        None => None,
+    };
     conn.execute(
         "INSERT INTO workflows (id, name, goal, created_at, updated_at, attachments) VALUES (?1,?2,?3,?4,?5,?6)
          ON CONFLICT(id) DO UPDATE SET name=excluded.name, goal=excluded.goal, updated_at=excluded.updated_at, attachments=excluded.attachments",
@@ -249,6 +249,25 @@ fn validate_nodes(nodes: &[WorkflowNodeDraft]) -> CommandResult<()> {
                 value: serde_json::to_string(&n.depends_on).unwrap_or_default(),
                 reason: format!("第 {} 个节点存在空依赖引用", i + 1),
             });
+        }
+        // 子任务清单校验（W8-ATTACH，与拆解侧同规则）：≤8 条 × ≤60 字
+        if let Some(list) = &n.subtasks {
+            if list.len() > 8 {
+                return Err(CommandError::InvalidArgument {
+                    field: "nodes".into(),
+                    value: list.len().to_string(),
+                    reason: format!("第 {} 个节点子任务超过 8 条上限", i + 1),
+                });
+            }
+            for t in list {
+                if t.trim().chars().count() > 60 {
+                    return Err(CommandError::InvalidArgument {
+                        field: "nodes".into(),
+                        value: t.clone(),
+                        reason: format!("第 {} 个节点的子任务超过 60 字上限", i + 1),
+                    });
+                }
+            }
         }
     }
     let mut seen = std::collections::HashSet::new();
@@ -504,7 +523,22 @@ pub(crate) fn workflow_save_locked(
                 file_path: None,
                 file_is_dir: None,
                 column: TaskStatus::Todo,
-                subtasks: None,
+                // W8-ATTACH（OCR r1 critical）：草稿子任务清单 → 新卡 Subtask
+                //（uuid + 未勾选）；保留卡不覆盖（执行痕迹保护）
+                subtasks: node
+                    .subtasks
+                    .clone()
+                    .filter(|list| !list.is_empty())
+                    .map(|list| {
+                        list.iter()
+                            .filter(|t| !t.trim().is_empty())
+                            .map(|t| super::tasks::Subtask {
+                                id: uuid::Uuid::new_v4().simple().to_string(),
+                                text: t.trim().to_string(),
+                                done: false,
+                            })
+                            .collect()
+                    }),
                 completed_at: None,
                 archived: None,
                 deleted_at: None,
@@ -844,7 +878,6 @@ pub(crate) fn parse_workflow_file(raw: &str) -> CommandResult<WorkflowSaveInput>
                 depends_on,
                 pos: n.pos,
                 model: n.model.take().filter(|m| !m.trim().is_empty()),
-                // 空串/空白子任务在保存链构建 Subtask 时再过滤
                 subtasks: n.subtasks,
             }
         })
