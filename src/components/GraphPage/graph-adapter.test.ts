@@ -1,9 +1,14 @@
-// graph-adapter 单测（G3-SIGMA 迁移）：建图 → graphology 图的节点属性、
-// 边数守恒、着色键、FA2 设置推导。
+// graph-adapter 单测（G3-SIGMA 迁移 + r1 着色统一）：建图 → graphology 图的
+// 节点属性、边数守恒、owner 着色双轨键、重复边防御、FA2 设置推导。
 import { describe, expect, it } from "vitest";
 import type { Task, Workflow } from "../../types";
-import { buildTaskGraph, DEFAULT_FILTERS, SELF_OWNER } from "./graph-build";
-import { fa2Settings, ownerColorKey, toGraphologyGraph } from "./graph-adapter";
+import { buildTaskGraph, DEFAULT_FILTERS } from "./graph-build";
+import {
+  fa2Settings,
+  ownerColorKey,
+  resolveOwnerColor,
+  toGraphologyGraph,
+} from "./graph-adapter";
 
 const WFS: Workflow[] = [
   { id: "wf1", name: "周报流水线", goal: "出周报" },
@@ -19,53 +24,67 @@ const SAMPLE: Task[] = [
   t({ id: "w1", column: "doing", origin: "workflow", workflowId: "wf1", dependsOn: ["w2"] }),
   t({ id: "w2", column: "done", origin: "workflow", workflowId: "wf1" }),
   t({ id: "z", ownerId: "p-1" }),
+  t({ id: "l", ownerId: "p-2" }),
 ];
+
+// owner 注入序（GraphPage 单一事实源的等价物）：张三 0、李四 1
+const ORDER = new Map([
+  ["p-1", 0],
+  ["p-2", 1],
+]);
 
 describe("toGraphologyGraph", () => {
   it("节点/边数与建图结果守恒，属性齐备", () => {
     const built = buildTaskGraph(SAMPLE, WFS, DEFAULT_FILTERS);
-    const g = toGraphologyGraph(built, "status", [
-      { id: SELF_OWNER, name: "我", isSelf: true },
-      { id: "p-1", name: "张三", isSelf: false },
-    ]);
+    const g = toGraphologyGraph(built, ORDER);
     expect(g.order).toBe(built.nodes.length);
     expect(g.size).toBe(built.links.length);
     const w1 = g.getNodeAttributes("w1");
     expect(w1.kind).toBe("task");
-    expect(w1.colorKey).toBe("doing");
+    expect(w1.ownerKey).toBe("self");
+    expect(w1.statusKey).toBe("doing");
     expect(w1.size).toBeGreaterThan(0);
     expect(g.getNodeAttribute("wf:wf1", "kind")).toBe("hub");
+    expect(g.getNodeAttribute("wf:wf1", "statusKey")).toBe("hub");
     // dep 边方向：w2 → w1
     expect(g.hasEdge("w2", "w1")).toBe(true);
   });
 
-  it("owner 着色键：本人 self，外来按序号", () => {
+  it("owner 着色双轨键：外来按注入序，状态键独立", () => {
     const built = buildTaskGraph(SAMPLE, WFS, DEFAULT_FILTERS);
-    const zNode = built.nodes.find((n) => n.id === "z")!;
-    const aNode = built.nodes.find((n) => n.id === "a")!;
-    const order = new Map([
-      ["p-1", 2],
-      ["p-2", 3],
-    ]);
-    expect(ownerColorKey(zNode, order)).toBe("owner:2");
-    expect(ownerColorKey(aNode, order)).toBe("self");
-  });
-
-  it("owner 模式下 colorKey 带序号（reducer 按键取调色盘）", () => {
-    const built = buildTaskGraph(SAMPLE, WFS, DEFAULT_FILTERS);
-    const g = toGraphologyGraph(built, "owner", [
-      { id: SELF_OWNER, name: "我", isSelf: true },
-      { id: "p-1", name: "张三", isSelf: false },
-    ]);
-    expect(g.getNodeAttribute("z", "colorKey")).toBe("owner:1");
-    expect(g.getNodeAttribute("a", "colorKey")).toBe("self");
+    const g = toGraphologyGraph(built, ORDER);
+    // 双键共存：任一模式下另一维度的键不丢
+    expect(g.getNodeAttribute("z", "ownerKey")).toBe("owner:0");
+    expect(g.getNodeAttribute("z", "statusKey")).toBe("todo");
+    expect(g.getNodeAttribute("l", "ownerKey")).toBe("owner:1");
+    expect(g.getNodeAttribute("a", "ownerKey")).toBe("self");
   });
 
   it("重复边防御：同 source-target 只留一条", () => {
     const built = buildTaskGraph(SAMPLE, WFS, DEFAULT_FILTERS);
-    const g = toGraphologyGraph(built, "status", []);
-    // 建图结果本身无重复边；防御路径不抛错即可
+    const g = toGraphologyGraph(built, ORDER);
     expect(g.size).toBe(built.links.length);
+  });
+});
+
+describe("owner 着色解析（chips 与节点共用）", () => {
+  const palette = { brand: "#brand", t3: "#t3", t5: "#t5", success: "#success" };
+
+  it("ownerColorKey：本人 self，外来按注入序（缺失序号归 0）", () => {
+    const zNode = { id: "z", owner: "p-1", degree: 0, kind: "task" as const, label: "" };
+    const aNode = { id: "a", owner: undefined, degree: 0, kind: "task" as const, label: "" };
+    expect(ownerColorKey(zNode, ORDER)).toBe("owner:0");
+    expect(ownerColorKey(aNode, ORDER)).toBe("self");
+  });
+
+  it("resolveOwnerColor 与 chips 同源：序 N → PALETTE[N]，self → brand", () => {
+    expect(resolveOwnerColor("owner:0", palette)).toBe("#7c6bd6");
+    expect(resolveOwnerColor("owner:1", palette)).toBe("#c2711d");
+    expect(resolveOwnerColor("self", palette)).toBe("#brand");
+  });
+
+  it("键不匹配时安全兜底", () => {
+    expect(resolveOwnerColor("bogus", palette)).toBe("#t5");
   });
 });
 

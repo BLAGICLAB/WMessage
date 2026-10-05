@@ -9,7 +9,13 @@ import Graph from "graphology";
 import Sigma from "sigma";
 import type { Attributes } from "graphology-types";
 import FA2Layout from "graphology-layout-forceatlas2/worker";
-import { fa2Settings, toGraphologyGraph, type SigmaNodeAttrs } from "./graph-adapter";
+import {
+  fa2Settings,
+  resolveOwnerColor,
+  resolveStatusColor,
+  toGraphologyGraph,
+  type SigmaNodeAttrs,
+} from "./graph-adapter";
 import type { BuiltGraph, GraphColorMode } from "./graph-build";
 
 interface Palette {
@@ -76,45 +82,24 @@ function readPalette(): Palette {
   };
 }
 
-/** 语义色键 → 色值（owner 模式外来成员的固定低饱和调色盘，与旧版一致） */
-export const OWNER_PALETTE = [
-  "#7c6bd6",
-  "#c2711d",
-  "#0e7490",
-  "#b04a8f",
-  "#5a7a1f",
-  "#b8434a",
-  "#6b7dd6",
-  "#8a6d3b",
-];
-
 function resolveColor(
-  key: string,
+  ownerKey: string,
+  statusKey: string,
   palette: Palette,
   colorMode: GraphColorMode
 ): string {
-  if (colorMode === "owner") {
-    if (key === "self") return palette.brand;
-    if (key.startsWith("owner:")) {
-      const idx = Number(key.slice(6)) % OWNER_PALETTE.length;
-      return OWNER_PALETTE[idx];
-    }
-  }
-  switch (key) {
-    case "hub":
-      return palette.t3;
-    case "doing":
-      return palette.brand;
-    case "done":
-      return palette.success;
-    default:
-      return palette.t5; // todo
-  }
+  const cp = { brand: palette.brand, t3: palette.t3, t5: palette.t5, success: palette.success };
+  return colorMode === "owner"
+    ? resolveOwnerColor(ownerKey, cp)
+    : resolveStatusColor(statusKey, cp);
 }
 
 export interface GraphCanvasProps {
   graph: BuiltGraph;
   colorMode: GraphColorMode;
+  /** owner 注入序（单一事实源，GraphPage 基于 chips 全序计算）：
+   *  建图写 ownerKey 与 chips 色点共用，保证图例与节点永远同色 */
+  ownerOrder: Map<string, number>;
   selectedId: string | null;
   hoverId: string | null;
   searchMatchIds: Set<string> | null;
@@ -138,13 +123,7 @@ export default function GraphCanvas(props: GraphCanvasProps) {
     if (!container) return;
     const g: Graph<SigmaNodeAttrs> = toGraphologyGraph(
       props.graph,
-      props.colorMode,
-      // owner 序从当前图内实际出现的 owner 推导（与 useMemo ownerOrder 同规则）
-      [...new Set(props.graph.nodes.map((n) => n.owner ?? ""))].map((id) => ({
-        id,
-        name: id,
-        isSelf: id === "",
-      }))
+      props.ownerOrder
     );
 
     // 初始相机适配在 Sigma 首帧后自动进行；先关标签渲染由 reducer 控制
@@ -221,8 +200,14 @@ export default function GraphCanvas(props: GraphCanvasProps) {
         const palette = paletteRef.current;
         const res: Attributes = { ...data };
         const attrs = data as SigmaNodeAttrs;
-        const colorKey = attrs.colorKey ?? "todo";
-        res.color = resolveColor(colorKey, palette, p.colorMode);
+        // 着色双轨：建图时 ownerKey/statusKey 都已固化，按当前模式现场选——
+        // 切「按成员/按状态」无需重建图
+        res.color = resolveColor(
+          attrs.ownerKey,
+          attrs.statusKey,
+          palette,
+          p.colorMode
+        );
         // ── 标签色（G3-SIGMA 视觉修订）：专用色阶 + 光晕，见 LABEL_COLORS 注释。
         // hub 高亮半档、常态灰阶、焦点提亮——经自定义 label draw 函数绘制光晕
         const lc = palette.dark ? LABEL_COLORS.dark : LABEL_COLORS.light;

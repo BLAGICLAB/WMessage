@@ -2,6 +2,30 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-05（周日）G3-SIGMA-r1：按成员着色图例与节点同色——双轨着色键 + owner 序单一事实源
+
+**需求**（老板验收反馈）：部门视图切「按成员」后，筛选栏成员 chips 的色点与
+图谱节点颜色对不上。
+
+**根因**（两个叠加）：① 序偏移——chips 色点从调色盘 0 取色，graph-adapter 的
+owner 注入序却从 1 起（resolver 侧 self 独立键），张三/李四全错一位；② 更深——
+colorKey 在建图时按**当时**着色模式固化（单键），切「按成员」不重建图，reducer
+拿着 status 键走 owner 解析落到 default——外来节点全部灰蓝无法按人区分。
+
+**实现**：着色改**双轨键**——建图时 `ownerKey`（self/owner:N）与 `statusKey`
+（hub/doing/done/todo）同时写入节点，reducer 按 propsRef.colorMode 现场选键，
+切模式无需重建图；owner 注入序收为**单一事实源**（GraphPage 基于 chips 全序
+计算 `ownerOrder` 传入 GraphCanvas，chips 色点与节点色共用 graph-adapter 的
+`resolveOwnerColor`，图例永远同色且不随过滤器漂移）；chips 色点改 `chipColor()`
+同一解析。SigmaNodeAttrs 字段从 colorKey 拆为 ownerKey/statusKey。
+
+**验证**：graph-adapter 测试重写为双轨断言（双键共存/注入序/resolveOwnerColor
+与 chips 同源/兜底）共 5 测；图谱模块 25 测全绿；tsc/test-fast 全绿。浏览器
+reducer 插桩采样实证：s1（张三卡）→ owner:0 → #7c6bd6 与 chips 色点一致，
+l0（李四）→ owner:1 → #c2711d，s735（本人）→ self → brand。注：WebGL 画布
+preserveDrawingBuffer=false 时 getImageData 采样不可靠（首轮"无紫橙"为测量
+假象），reducer 输出才是行为真相。
+
 ## 2026-10-05（周日）G3-SIGMA：图谱渲染层迁移 Sigma.js + FA2 worker——一年近万条任务的渲染底盘
 
 **需求**（老板拍板）：一年将积累近万条任务，自研 Canvas2D 渲染舒适区 3~5k，

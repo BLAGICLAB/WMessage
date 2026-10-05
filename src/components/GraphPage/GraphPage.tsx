@@ -8,7 +8,8 @@ import { listen } from "@tauri-apps/api/event";
 import { Waypoints } from "lucide-react";
 import type { PeopleEntry, Task, Workflow } from "../../types";
 import { loadPeople } from "../../storage";
-import GraphCanvas, { OWNER_PALETTE } from "./GraphCanvas";
+import GraphCanvas from "./GraphCanvas";
+import { OWNER_PALETTE } from "./graph-adapter";
 import {
   DEFAULT_FILTERS,
   SELF_OWNER,
@@ -69,18 +70,22 @@ export default function GraphPage({ tasks, onOpenTask, onOpenWorkflow }: GraphPa
   const tagList = useMemo(() => collectTags(tasks), [tasks]);
   const years = useMemo(() => collectYears(tasks), [tasks]);
 
-  // owner 着色：本人 = brand（CSS 变量在 canvas 内解析），外来成员按序取固定色盘
-  const ownerColors = useMemo(() => {
-    const map = new Map<string, string>();
-    map.set(SELF_OWNER, "var(--brand)");
+  // owner 注入序 + chips 色点：与节点着色共用的单一事实源（graph-adapter 的
+  // ownerColorKey/resolveOwnerColor），保证图例色点与图内节点永远同色。
+  // 本人不在 ownerOrder（ownerKey="self"）；外来按 chips 全序取 0,1,2…
+  const ownerOrder = useMemo(() => {
+    const map = new Map<string, number>();
     let i = 0;
     for (const p of ownerChips) {
       if (p.isSelf) continue;
-      map.set(p.id, OWNER_PALETTE[i % OWNER_PALETTE.length]);
-      i += 1;
+      map.set(p.id, i++);
     }
     return map;
   }, [ownerChips]);
+  const chipColor = (id: string): string =>
+    id === SELF_OWNER
+      ? "var(--brand)"
+      : OWNER_PALETTE[(ownerOrder.get(id) ?? 0) % OWNER_PALETTE.length];
 
   const searchMatchIds = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -165,6 +170,7 @@ export default function GraphPage({ tasks, onOpenTask, onOpenWorkflow }: GraphPa
           <GraphCanvas
             graph={graph}
             colorMode={colorMode}
+            ownerOrder={ownerOrder}
             selectedId={selectedId}
             hoverId={hoverId}
             searchMatchIds={searchMatchIds}
@@ -323,7 +329,7 @@ export default function GraphPage({ tasks, onOpenTask, onOpenWorkflow }: GraphPa
                     {colorMode === "owner" && !o.isSelf && (
                       <i
                         className="inline-block size-2 rounded-full"
-                        style={{ background: ownerColors.get(o.id) }}
+                        style={{ background: chipColor(o.id) }}
                       />
                     )}
                     {o.name}
