@@ -98,11 +98,11 @@ export function resolveStatusColor(
 /**
  * 建图结果 → graphology 图（Sigma 直渲染）。
  *
- * 初始布局（G4-CLUSTER 确定性分扇区）：同标签（同义组）节点初始位置铺在
- * **专属扇区**内，FA2 从分团初值微调——力学聚簇（锚点弱边/权重/linLog）被
- * 压测证伪（FA2 星型锚点的平衡态就是成员环绕质心均匀分布，权重/linLog 都
- * 改不了），确定性初值才是可控聚簇。无标签节点走全局螺旋环绕团簇核心。
- * 锚点保留：扇区中心的隐藏质点（大 size 撑团间距 + 弱边维持团内凝聚）。
+ * 初始布局（G4-CLUSTER 分扇区 + G4-G6-r2 空间自适应）：布局外径随任务量
+ * **√N 缩放（面密度恒定）**——千级任务小画布、万级任务大画布，节点密度
+ * 不随规模变化，任何档位打开都是铺满视口的完整图。同标签（同义组）节点
+ * 铺在专属扇区内形成聚簇初值，FA2（linLog 模式）从分团初值继续分离强化。
+ * 无标签节点在扇区之间的外环环绕。锚点 = 扇区中心隐藏质点（弱边维持凝聚）。
  */
 export function toGraphologyGraph(
   built: BuiltGraph,
@@ -133,8 +133,21 @@ export function toGraphologyGraph(
       width: (Math.PI * 2) / groupKeys.length,
     });
   });
-  const groupMemberIdx = new Map<string, number>();
+  const groupMemberCount = new Map<string, number>();
+  for (const key of groupKeys) groupMemberCount.set(key, 0);
+  for (const n of built.nodes) {
+    const group = groupOfNode.get(n.id);
+    if (group) {
+      groupMemberCount.set(group, (groupMemberCount.get(group) ?? 0) + 1);
+    }
+  }
 
+  // ── 空间自适应：布局外径 ∝ √任务量（面密度恒定，万级=千级的等比放大） ──
+  const total = Math.max(built.nodes.length, 1);
+  const R_MAX = 30 * Math.sqrt(total); // 布局外径：1227→1050，10000→3000
+  const GROUP_RING = R_MAX * 0.62; // 有组扇区外径（内圈 62%，外环留给孤点）
+
+  const groupMemberIdx = new Map<string, number>();
   const golden = Math.PI * (3 - Math.sqrt(5));
   let freeIdx = 0;
   built.nodes.forEach((n, i) => {
@@ -142,18 +155,19 @@ export function toGraphologyGraph(
     let x: number;
     let y: number;
     if (group) {
-      // 扇区内小螺旋：组中心角 ± 摆动，半径随成员序缓增
+      // 扇区内均匀面密度铺开：半径 ∝ √(序/组员数) × 扇区外径
       const sector = sectorOf.get(group)!;
+      const size = groupMemberCount.get(group) ?? 1;
       const j = groupMemberIdx.get(group) ?? 0;
       groupMemberIdx.set(group, j + 1);
       const angle = sector.angle + ((j % 12) - 5.5) * (sector.width / 14);
-      const r = 40 + Math.sqrt(j) * 55;
+      const r = GROUP_RING * 0.28 * Math.sqrt((j + 0.6) / size);
       x = Math.cos(angle) * r;
       y = Math.sin(angle) * r;
     } else {
-      // 无组节点：全局螺旋放外围环绕
+      // 无组节点：外环环绕（0.62~1.0 半径带，全域黄金角散布）
       const angle = i * golden;
-      const r = 320 + 9 * Math.sqrt(freeIdx + 1);
+      const r = GROUP_RING * (0.68 + 0.32 * Math.sqrt((freeIdx % 400 + 1) / 400));
       freeIdx++;
       x = Math.cos(angle) * r;
       y = Math.sin(angle) * r;
@@ -176,7 +190,7 @@ export function toGraphologyGraph(
       graph.addEdge(l.source, l.target, { kind: l.kind, weight: 1 });
     }
   }
-  // ── 标签锚点：组中心隐藏质点 + 星型弱边（维持团内凝聚） ──
+  // ── 标签锚点：扇区中心隐藏质点 + 星型弱边（维持团内凝聚） ──
   if (tagGroups && tagGroups.size > 0) {
     const membersByGroup = new Map<string, string[]>();
     for (const n of built.nodes) {
@@ -193,6 +207,7 @@ export function toGraphologyGraph(
       if (members.length < TAG_ANCHOR_MIN_CARDS) continue;
       const anchorId = `${TAG_ANCHOR_PREFIX}${group}`;
       const sector = sectorOf.get(group);
+      const anchorR = GROUP_RING * 0.22;
       if (!graph.hasNode(anchorId)) {
         graph.addNode(anchorId, {
           ownerKey: "self",
@@ -203,8 +218,8 @@ export function toGraphologyGraph(
           kind: "anchor",
           degree: members.length,
           hidden: true,
-          x: Math.cos(sector?.angle ?? 0) * 120,
-          y: Math.sin(sector?.angle ?? 0) * 120,
+          x: Math.cos(sector?.angle ?? 0) * anchorR,
+          y: Math.sin(sector?.angle ?? 0) * anchorR,
         });
       }
       for (const memberId of members) {
@@ -228,10 +243,11 @@ export function fa2Settings(nodeCount: number) {
     barnesHutOptimize: nodeCount > 1500,
     // 权重参与吸引：dep/member=1 不变，标签锚点强边(3)把同组卡压成团（G4-CLUSTER）
     edgeWeightInfluence: 1,
-    // linLogMode **禁用**（r1 真机回归）：LinLog 对无连线孤点无引力约束、会被
-    // 斥力无限推远——真实数据大量孤点时「节点一闪而过」全飞出视野。团簇分离
-    // 已由确定性分扇区初值保证，不需要 linLog
-    linLogMode: false,
+    // LinLog 模式（Noack 能量模型）：团簇分离最大杠杆（连通团拉紧、团间推远）。
+    // r1 曾因「孤点飞散」回退，r2 定位真因是布局空间不随规模缩放（固定小画布
+    // 装不下万节点、密度爆炸互相挤出视野）——空间随 √N 自适应后孤点由 gravity
+    // 拉向中心，不再飞散
+    linLogMode: true,
     outboundAttractionDistribution: false,
     adjustSizes: true, // 碰撞分离（等价旧实现的 collide）
     slowDown: 1 + Math.min(10, nodeCount / 500),

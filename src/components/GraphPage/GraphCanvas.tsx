@@ -103,6 +103,9 @@ export interface GraphCanvasProps {
   /** owner 注入序（单一事实源，GraphPage 基于 chips 全序计算）：
    *  建图写 ownerKey 与 chips 色点共用，保证图例与节点永远同色 */
   ownerOrder: Map<string, number>;
+  /** 「重新布局」触发信号（G4-G6 r2）：+1 启动一轮 FA2 短跑并自动停。
+   *  默认静态确定性布局——物理动画只作为手动增强，杜绝大图飞散 */
+  relayoutSignal: number;
   selectedId: string | null;
   hoverId: string | null;
   searchMatchIds: Set<string> | null;
@@ -119,6 +122,7 @@ export default function GraphCanvas(props: GraphCanvasProps) {
   const propsRef = useRef(props);
   propsRef.current = props;
   const paletteRef = useRef<Palette>(readPalette());
+  const relayoutRef = useRef<() => void>(() => {});
 
   // ── 建图 → Sigma 实例 + FA2 worker（graph 变更时重建；旧实例 kill 释放内存） ──
   useEffect(() => {
@@ -310,18 +314,31 @@ export default function GraphCanvas(props: GraphCanvasProps) {
       }
     };
 
-    // FA2 worker：物理完全离开主线程
+    // ── 布局策略（r2 终版）：自动物理动画 + 空间随任务量自适应 ──
+    // 布局坐标 ∝ √N（面密度恒定）后，FA2 动力学在任何规模下都能在视野内收敛，
+    // 无需降级为静态。收敛自动停机（省 CPU），「重新布局」按钮可手动重跑。
     const fa2 = new FA2Layout(g, { settings: fa2Settings(g.order) });
     fa2.start();
     fa2Ref.current = fa2;
     const timers: number[] = [];
-    // 重建后粗适配一次（FA2 前几秒会整体漂移，先让内容进画面）；卸载清理定时器
-    const initialFit = window.setTimeout(() => fitToContent(600), 400);
-    timers.push(initialFit);
-    // 收敛自动停：FA2 会低幅振荡不停机，白烧 CPU。检测量 = 采样节点的坐标
-    // **逐点位移和**（不是总量差——总量对万级数据不敏感），阈值按规模缩放。
-    // 停机后交互（拖拽）可重启。
+
+    // 手动重新布局：重跑 FA2（默认 6s 自动停），跑完终态视野适配
+    const startRelayout = (runMs = 6000) => {
+      fa2.start();
+      window.setTimeout(() => {
+        if (fa2.isRunning()) fa2.stop();
+        fitToContent(400);
+      }, runMs);
+    };
+    relayoutRef.current = () => startRelayout();
+
+    // 收敛自动停：位移小数部分和稳定 = 整体静止（冻结在亚像素级），停机即终态适配。
+    // 布局期间每 2s 跟随一次视野——FA2 前几秒节点会冲出初始包围盒，不跟随就是
+    // 「一闪而过」（视野还停在初值包围盒上，节点已经跑出去了）
     let lastSnapshot = 0;
+    const followFit = window.setInterval(() => {
+      if (fa2.isRunning()) fitToContent(400);
+    }, 2000);
     const settleTimer = window.setInterval(() => {
       if (!fa2.isRunning()) return;
       let sum = 0;
@@ -330,13 +347,16 @@ export default function GraphCanvas(props: GraphCanvasProps) {
         if (i++ % 5 !== 0) return; // 采样 1/5 节点
         sum += Math.abs(attrs.x - Math.round(attrs.x)) + Math.abs(attrs.y - Math.round(attrs.y));
       });
-      // 位移小数部分和稳定 = 整体静止（坐标已冻结在亚像素级）
       if (lastSnapshot > 0 && Math.abs(sum - lastSnapshot) < 1.5) {
         fa2.stop();
-        fitToContent(); // 终态视野瞬时适配（G4-CLUSTER：过滤后集合铺满视口）
+        fitToContent();
       }
       lastSnapshot = sum;
     }, 2500);
+
+    // 初始视野适配（布局初值先就位，收敛后再精调）
+    const initialFit = window.setTimeout(() => fitToContent(400), 200);
+    timers.push(initialFit);
 
     // ── 交互 ──
     const isBusinessNode = (node: string) =>
@@ -358,7 +378,7 @@ export default function GraphCanvas(props: GraphCanvasProps) {
     });
 
     // 节点拖拽固定：down 锁定 → move 移动（graphology 坐标）→ up 释放；
-    // 拖拽期间暂停 FA2（fixed 节点 FA2 也支持，但暂停更省）
+    // 拖拽时暂停 FA2（松手续跑），fixed 节点不被物理推走
     let draggedId: string | null = null;
     sigma.on("downNode", ({ node }) => {
       if (!isBusinessNode(node)) return;
@@ -380,7 +400,7 @@ export default function GraphCanvas(props: GraphCanvasProps) {
       g.setNodeAttribute(draggedId, "fixed", false);
       draggedId = null;
       container.style.cursor = "default";
-      fa2.start(); // 暖启动续跑
+      fa2.start(); // 暖启动续跑（拖拽后的位置作为新平衡起点）
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
@@ -401,6 +421,7 @@ export default function GraphCanvas(props: GraphCanvasProps) {
       window.removeEventListener("pointerup", onUp);
       timers.forEach((t) => window.clearTimeout(t));
       window.clearInterval(settleTimer);
+      window.clearInterval(followFit);
       fa2.kill(); // terminate worker + 释放矩阵内存
       sigma.kill();
       sigmaRef.current = null;
@@ -409,6 +430,11 @@ export default function GraphCanvas(props: GraphCanvasProps) {
     // colorMode 变化经 reducer（每次 render 读取 propsRef）自动生效，无需重建
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.graph]);
+
+  // 「重新布局」信号：手动触发一轮 FA2 短跑（GraphCanvas 内部已自动停 + 终态适配）
+  useEffect(() => {
+    if (props.relayoutSignal > 0) relayoutRef.current();
+  }, [props.relayoutSignal]);
 
   // hover/选中/搜索/着色模式变化 → reducer 已读 propsRef，只需 refresh
   useEffect(() => {

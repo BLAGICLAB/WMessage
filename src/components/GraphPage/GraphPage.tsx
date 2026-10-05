@@ -155,6 +155,8 @@ export default function GraphPage({
   // ── 依赖编辑（G5-DEPEDIT）：仅本人卡。环检测 + 候选过滤 + task_patch 通道 ──
   const [depSearch, setDepSearch] = useState("");
   const [depError, setDepError] = useState<string | null>(null);
+  // 「重新布局」信号（G4-G6 r2：默认静态布局，物理动画手动触发）
+  const [relayoutSignal, setRelayoutSignal] = useState(0);
   const depsOfSelected = useMemo(() => {
     const self = selectedNode?.task;
     if (!self || self.ownerId) return [];
@@ -318,6 +320,7 @@ export default function GraphPage({
             colorMode={colorMode}
             ownerOrder={ownerOrder}
             tagGroups={tagGroups}
+            relayoutSignal={relayoutSignal}
             selectedId={selectedId}
             hoverId={hoverId}
             searchMatchIds={searchMatchIds}
@@ -325,8 +328,15 @@ export default function GraphPage({
             onSelect={setSelectedId}
             onOpenHub={() => onOpenWorkflow()}
           />
-          {/* 图例（着色模式切换内嵌） */}
+          {/* 图例 + 重新布局（G4-G6 r2：默认静态确定性布局，物理动画手动触发） */}
           <div className="nm-card absolute left-3 top-3 flex items-center gap-2 rounded-[var(--r-md)] px-2.5 py-1.5 text-xs">
+            <button
+              onClick={() => setRelayoutSignal((s) => s + 1)}
+              className="rounded-[var(--r-sm)] px-1.5 py-0.5 text-[var(--t3)] hover:text-[var(--t1)]"
+              title="跑一轮力导向布局（约 6 秒后自动停）"
+            >
+              重新布局
+            </button>
             {(["status", "owner"] as const).map((m) => (
               <button
                 key={m}
