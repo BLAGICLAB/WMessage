@@ -34,6 +34,7 @@ import {
   Sun,
   TriangleAlert,
   Upload,
+  Waypoints,
   type LucideIcon,
 } from "lucide-react";
 
@@ -74,6 +75,7 @@ import { SkillsPanel } from "./SkillsPanel";
 import { normalizeVendorName } from "./providerLogoMap";
 import { McpPanel } from "./McpPanel";
 import { MemoryPanel } from "./MemoryPanel";
+import GraphSettingsPanel from "./GraphSettingsPanel";
 import { EvolutionPanel } from "../EvolutionPanel";
 import { ProfileRow } from "./ProfileRow";
 import { ModelRow } from "./ModelRow";
@@ -204,6 +206,7 @@ type SectionKey =
   | "evolution"
   | "desk"
   | "workflow"
+  | "graph"
   | "tokens";
 const SECTIONS: { key: SectionKey; label: string; icon: LucideIcon }[] = [
   { key: "general", label: "通用设置", icon: Settings2 },
@@ -213,6 +216,7 @@ const SECTIONS: { key: SectionKey; label: string; icon: LucideIcon }[] = [
   { key: "memory", label: "记忆", icon: Brain },
   { key: "skills", label: "技能", icon: Sparkles },
   { key: "workflow", label: "工作流", icon: Workflow },
+  { key: "graph", label: "任务图谱", icon: Waypoints },
   { key: "mcp", label: "MCP 服务", icon: Plug },
   { key: "evolution", label: "自进化", icon: GitBranch },
   { key: "desk", label: "桌面整理", icon: FolderOutput },
@@ -2800,6 +2804,11 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
           })
         }
       />
+      </section>
+      )}
+      {mountedSections.has("graph") && (
+      <section hidden={activeSection !== "graph"} className="space-y-4 pt-4">
+      <GraphSettingsPanel />
       </section>
       )}
       {mountedSections.has("desk") && (

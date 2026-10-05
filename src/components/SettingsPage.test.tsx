@@ -157,6 +157,9 @@ describe("SettingsPage", () => {
     expect(screen.getByText("机器人技能")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "MCP 服务" }));
     expect(screen.getByText("MCP 服务器（外部工具）")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "任务图谱" }));
+    expect(screen.getByRole("switch", { name: "只看我的任务" })).toBeInTheDocument();
+    expect(screen.getByRole("radiogroup", { name: "布局松散度" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "自进化" }));
     expect(screen.getByText("自进化决策面板")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "桌面整理" }));

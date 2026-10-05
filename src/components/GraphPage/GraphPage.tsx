@@ -11,6 +11,18 @@ import { loadPeople } from "../../storage";
 import GraphCanvas from "./GraphCanvas";
 import { OWNER_PALETTE, type GraphSizeMode } from "./graph-adapter";
 import {
+  getGraphAutoLayout,
+  getGraphEdgeWidth,
+  getGraphLabelDensity,
+  getGraphLooseness,
+  getGraphOnlyMine,
+  getGraphRememberFilters,
+  getGraphSizeMode,
+  loadGraphFilters,
+  saveGraphFilters,
+  setGraphSizeMode,
+} from "../../lib/graphPrefs";
+import {
   DEFAULT_FILTERS,
   SELF_OWNER,
   buildTaskGraph,
@@ -47,24 +59,26 @@ export default function GraphPage({
 }: GraphPageProps) {
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [people, setPeople] = useState<PeopleEntry[]>([]);
-  const [filters, setFilters] = useState<GraphFilters>(DEFAULT_FILTERS);
-  const [colorMode, setColorMode] = useState<GraphColorMode>("status");
-  // 节点大小语义（连接度/耗时）：localStorage 持久化偏好（任务图谱设置页落地后读同一键）
-  const SIZE_MODE_KEY = "wm.graph.sizeMode";
-  const [sizeMode, setSizeModeState] = useState<GraphSizeMode>(() => {
-    try {
-      return localStorage.getItem(SIZE_MODE_KEY) === "duration" ? "duration" : "degree";
-    } catch {
-      return "degree";
+  // 过滤器初始化优先级（设置页偏好）：记住上次 > 只看我的 > 默认。
+  // 「只看我的」= 成员过滤默认只留本人（SELF_OWNER），chip 仍可手动加回他人
+  const [filters, setFilters] = useState<GraphFilters>(() => {
+    if (getGraphRememberFilters()) {
+      const saved = loadGraphFilters();
+      if (saved) return saved;
     }
+    if (getGraphOnlyMine()) return { ...DEFAULT_FILTERS, owners: [SELF_OWNER] };
+    return DEFAULT_FILTERS;
   });
+  // 「记住上次的过滤器」开启时：每次变更即持久化（关掉开关时 graphPrefs 已清除存档）
+  useEffect(() => {
+    if (getGraphRememberFilters()) saveGraphFilters(filters);
+  }, [filters]);
+  const [colorMode, setColorMode] = useState<GraphColorMode>("status");
+  // 节点大小语义（连接度/耗时）：graphPrefs 持久化（图谱图例与设置页共用同一键）
+  const [sizeMode, setSizeModeState] = useState<GraphSizeMode>(getGraphSizeMode);
   const setSizeMode = (m: GraphSizeMode) => {
     setSizeModeState(m);
-    try {
-      localStorage.setItem(SIZE_MODE_KEY, m);
-    } catch {
-      // localStorage 不可用（隐私模式等）：会话内生效即可
-    }
+    setGraphSizeMode(m);
   };
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [hoverId, setHoverId] = useState<string | null>(null);
@@ -336,6 +350,10 @@ export default function GraphPage({
             graph={graph}
             colorMode={colorMode}
             sizeMode={sizeMode}
+            labelDensity={getGraphLabelDensity()}
+            edgeWidth={getGraphEdgeWidth()}
+            autoLayout={getGraphAutoLayout()}
+            looseness={getGraphLooseness()}
             ownerOrder={ownerOrder}
             tagGroups={tagGroups}
             relayoutSignal={relayoutSignal}

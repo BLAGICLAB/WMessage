@@ -63,6 +63,14 @@ export const TAG_ANCHOR_PREFIX = "taggrp:";
  *  duration = 耗时（完成−创建天数；doing 用已进行天数——拖得越久越大，钉子户可视化） */
 export type GraphSizeMode = "degree" | "duration";
 
+/** 布局松散度（设置页可切）→ R_MAX 系数 k（面密度恒定公式 R_MAX = k·√N 的 k） */
+export type GraphLooseness = "compact" | "standard" | "loose";
+const LOOSENESS_R_MAX: Record<GraphLooseness, number> = {
+  compact: 20,
+  standard: 30,
+  loose: 45,
+};
+
 const DAY_MS = 86_400_000;
 
 /** 任务耗时天数：done = 完成−创建；doing = 现在−创建；todo 或缺创建时间（老数据）= null */
@@ -140,6 +148,7 @@ export function toGraphologyGraph(
   ownerOrder: Map<string, number>,
   tagGroups?: Map<string, string>,
   sizeMode: GraphSizeMode = "degree",
+  looseness: GraphLooseness = "standard",
   now = Date.now()
 ): Graph<SigmaNodeAttrs> {
   const graph = new Graph<SigmaNodeAttrs>({ multi: false, type: "directed" });
@@ -177,7 +186,7 @@ export function toGraphologyGraph(
 
   // ── 空间自适应：布局外径 ∝ √任务量（面密度恒定，万级=千级的等比放大） ──
   const total = Math.max(built.nodes.length, 1);
-  const R_MAX = 30 * Math.sqrt(total); // 布局外径：1227→1050，10000→3000
+  const R_MAX = LOOSENESS_R_MAX[looseness] * Math.sqrt(total); // 布局外径：1227→1050，10000→3000（标准档）
   const GROUP_RING = R_MAX * 0.62; // 有组扇区外径（内圈 62%，外环留给孤点）
   // 无组（孤点）数量与分布：面密度均匀圆盘填充（√ 序号铺半径，黄金角散角度）
   // ——旧公式（固定 0.68~1.0 窄环带 + %400 循环）会把小任务量的节点全挤在一圈

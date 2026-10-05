@@ -2,6 +2,39 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-05（周日）G7-SETTINGS：设置页「任务图谱」模块——七项图谱偏好
+
+**需求**（老板拍板清单）：设置页新增任务图谱分类，七项：①只看我的任务
+（开关，默认关）；②节点大小：连接度/耗时；③标签密度：少/标准/多；
+④连线粗细：细/标准/粗；⑤打开时自动播放布局动画（开关，默认开）；
+⑥布局松散度：紧凑/标准/松散；⑦记住上次的过滤器（开关，默认关）。
+
+**实现**：
+- **偏好单一事实源** `src/lib/graphPrefs.ts`：`wm.graph.*` localStorage 键 +
+  读侧非法值/损坏 JSON 回退默认。图谱页只在主窗口存在且设置页全屏接管时
+  图谱必卸载——打开现读即最新，无跨 webview 同步需求（workflowVisibility
+  的 Tauri emit 是为挂件窗，这里不需要）。G7-SIZEMODE 图例切换写入的
+  `wm.graph.sizeMode` 收编为同一读写入口（图例与设置页永远同值）。
+- **接线**：①过滤器初始化优先级 = 记住上次 > 只看我的（owners=[本人]）> 默认；
+  ⑦开启时 filters 每次变更即持久化，关掉开关即清除存档（语义诚实）；
+  ②③④⑥走 GraphCanvas props——③④是 reducer 级（propsRef 现读 + refresh，
+  不重建），②⑥是建图输入（切换即重建）；⑤autoLayout 门控 FA2 初次启动与
+  拖拽松手续跑（静态模式下拖拽不再触发物理），「重新布局」按钮不受影响。
+  ⑥松散度 = R_MAX 系数 20/30/45（LOOSENESS_R_MAX）。
+- **设置页**：SECTIONS 第十一分类「任务图谱」（Waypoints 图标，与主导航同文），
+  惰性挂载照旧；新 `GraphSettingsPanel`（SwitchRow/SegmentedRow 行组件，
+  开关即时生效无保存按钮——同工作流可见性开关先例）。
+
+**验证**：graphPrefs +4 测（默认值/往返/非法回退/过滤器形状校验+关开关清除）；
+GraphSettingsPanel +4 测（七项渲染/写入 localStorage/记住过滤器清除语义/
+回读渲染）；adapter +1（松散度半径 20:30:45 比例锁）；SettingsPage 初始渲染
+补「任务图谱」导航断言。vitest 475 全绿；tsc 零错误；test-fast 通过
+（knip 抓掉 LOOSENESS_R_MAX 多余 export）；build 通过。浏览器 harness 八项
+全过：只看我的 15/27、autoLayout=off 不自动跑且静态铺满 29/29、重新布局
+仍可手动跑、松散度半径 47/71/106 ≈ 20:30:45、记住过滤器恢复 done-only
+（15 任务）且变更写回 localStorage、dense 标签+粗连线渲染零错误。
+截图 graph-pref-{static,dense-thick}.png。
+
 ## 2026-10-05（周日）XLSX-FORMULA：Excel 生成公式注入过滤落地——修空操作
 
 **背景**：Mimosa 深度扫描 12 条污点 advisory 人工复核为误报（模型可控路径

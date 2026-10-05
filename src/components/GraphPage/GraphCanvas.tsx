@@ -17,9 +17,11 @@ import {
   resolveStatusColor,
   toGraphologyGraph,
   TAG_ANCHOR_PREFIX,
+  type GraphLooseness,
   type GraphSizeMode,
   type SigmaNodeAttrs,
 } from "./graph-adapter";
+import type { GraphEdgeWidth, GraphLabelDensity } from "../../lib/graphPrefs";
 import type { BuiltGraph, GraphColorMode } from "./graph-build";
 
 interface Palette {
@@ -66,8 +68,14 @@ const LABEL_COLORS = {
   },
 } as const;
 
-function readPalette(): Palette {
-  const s = getComputedStyle(document.documentElement);
+/** 连线粗细三档（设置页）：reducer 每次 render 现读，切换无需重建 */
+const EDGE_WIDTH_SIZE: Record<GraphEdgeWidth, number> = {
+  thin: 0.45,
+  standard: 0.7,
+  thick: 1.2,
+};
+
+function readPalette(): Palette {  const s = getComputedStyle(document.documentElement);
   const v = (name: string, fallback: string) =>
     s.getPropertyValue(name).trim() || fallback;
   return {
@@ -103,6 +111,14 @@ export interface GraphCanvasProps {
   colorMode: GraphColorMode;
   /** 节点大小语义（连接度/耗时）：切换即重建（大小参与 FA2 质量/碰撞，需写回图属性） */
   sizeMode: GraphSizeMode;
+  /** 标签密度（少=仅 hub+焦点 / 标准 / 多=全部）：reducer 级，切换只需 refresh */
+  labelDensity: GraphLabelDensity;
+  /** 连线粗细：reducer 级 */
+  edgeWidth: GraphEdgeWidth;
+  /** 打开时自动跑布局动画（关 = 静态分扇区布局，「重新布局」仍可手动跑） */
+  autoLayout: boolean;
+  /** 布局松散度（R_MAX 系数）：切换即重建 */
+  looseness: GraphLooseness;
   /** 标签 → 同义组键（G6-SYNONYM；键缺失 = 独立组） */
   tagGroups?: Map<string, string>;
   /** owner 注入序（单一事实源，GraphPage 基于 chips 全序计算）：
@@ -137,7 +153,8 @@ export default function GraphCanvas(props: GraphCanvasProps) {
       props.graph,
       props.ownerOrder,
       props.tagGroups,
-      props.sizeMode
+      props.sizeMode,
+      props.looseness
     );
 
     // 初始相机适配在 Sigma 首帧后自动进行；先关标签渲染由 reducer 控制
@@ -240,10 +257,15 @@ export default function GraphCanvas(props: GraphCanvasProps) {
           focusId !== null &&
           (node === focusId || g.areNeighbors(node, focusId) || isFocusNode);
         res.labelColor = isFocusNode || attrs.kind === "hub" ? lc.focus : lc.normal;
-        // 标签资格：hub / 高连接度 / 焦点邻域；done 常态压掉
+        // 标签资格：密度三档（设置页）——少 = 仅 hub/焦点邻域；标准 = hub/高连接度/焦点；
+        // 多 = 全部业务节点。done 在状态着色下常态压掉
         const isDoneFade = p.colorMode === "status" && attrs.status === "done";
         let labelWorthy =
-          attrs.kind === "hub" || degree >= 6 || inFocusNeighborhood;
+          p.labelDensity === "dense"
+            ? true
+            : p.labelDensity === "sparse"
+              ? attrs.kind === "hub" || inFocusNeighborhood
+              : attrs.kind === "hub" || degree >= 6 || inFocusNeighborhood;
         if (isDoneFade && !inFocusNeighborhood) labelWorthy = false;
         res.forceLabel = labelWorthy;
         // hover/选中：邻接集合之外的淡出
@@ -268,7 +290,11 @@ export default function GraphCanvas(props: GraphCanvasProps) {
       edgeReducer: (edge, data) => {
         const p = propsRef.current;
         const palette = paletteRef.current;
-        const res: Attributes = { ...data, color: palette.edgeStrong, size: 0.7 };
+        const res: Attributes = {
+          ...data,
+          color: palette.edgeStrong,
+          size: EDGE_WIDTH_SIZE[p.edgeWidth],
+        };
         const [source, target] = g.extremities(edge);
         // 标签锚点边恒隐藏（G4-CLUSTER）
         if (source.startsWith(TAG_ANCHOR_PREFIX) || target.startsWith(TAG_ANCHOR_PREFIX)) {
@@ -336,8 +362,9 @@ export default function GraphCanvas(props: GraphCanvasProps) {
     // ── 布局策略（r2 终版）：自动物理动画 + 空间随任务量自适应 ──
     // 布局坐标 ∝ √N（面密度恒定）后，FA2 动力学在任何规模下都能在视野内收敛，
     // 无需降级为静态。收敛自动停机（省 CPU），「重新布局」按钮可手动重跑。
+    // autoLayout=off（设置页）：打开即静态分扇区布局，不烧 CPU；手动重跑不受影响
     const fa2 = new FA2Layout(g, { settings: fa2Settings(g.order) });
-    fa2.start();
+    if (props.autoLayout) fa2.start();
     fa2Ref.current = fa2;
     const timers: number[] = [];
 
@@ -448,7 +475,8 @@ export default function GraphCanvas(props: GraphCanvasProps) {
       g.setNodeAttribute(draggedId, "fixed", false);
       draggedId = null;
       container.style.cursor = "default";
-      fa2.start(); // 暖启动续跑（拖拽后的位置作为新平衡起点）
+      // 暖启动续跑（拖拽后的位置作为新平衡起点）；静态模式（autoLayout=off）不续跑
+      if (propsRef.current.autoLayout) fa2.start();
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
@@ -478,19 +506,20 @@ export default function GraphCanvas(props: GraphCanvasProps) {
     // tagGroups/ownerOrder 是建图输入（分扇区初值/锚点/ownerKey）且异步到达
     // （tag_similar_pairs 走嵌入推理，秒级）——必须进依赖，否则真机上扇区布局
     // 永远拿不到同义组（图谱始终以无组圆盘初值运行，与设计不符）；
-    // sizeMode 同理（大小参与 FA2 质量/碰撞，切换需重建写回图属性）
+    // sizeMode 同理（大小参与 FA2 质量/碰撞，切换需重建写回图属性）；
+    // looseness（R_MAX 系数）也是建图输入
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.graph, props.tagGroups, props.ownerOrder, props.sizeMode]);
+  }, [props.graph, props.tagGroups, props.ownerOrder, props.sizeMode, props.looseness]);
 
   // 「重新布局」信号：手动触发一轮 FA2 短跑（GraphCanvas 内部已自动停 + 终态适配）
   useEffect(() => {
     if (props.relayoutSignal > 0) relayoutRef.current();
   }, [props.relayoutSignal]);
 
-  // hover/选中/搜索/着色模式变化 → reducer 已读 propsRef，只需 refresh
+  // hover/选中/搜索/着色模式/标签密度/连线粗细变化 → reducer 已读 propsRef，只需 refresh
   useEffect(() => {
     sigmaRef.current?.refresh();
-  }, [props.hoverId, props.selectedId, props.searchMatchIds, props.colorMode]);
+  }, [props.hoverId, props.selectedId, props.searchMatchIds, props.colorMode, props.labelDensity, props.edgeWidth]);
 
   return (
     <div

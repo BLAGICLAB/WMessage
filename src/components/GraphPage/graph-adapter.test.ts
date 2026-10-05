@@ -172,7 +172,7 @@ describe("节点大小双模式（degree/duration）", () => {
       t({ id: "slow", column: "done", createdAt: NOW - 60 * DAY, completedAt: NOW }),
     ];
     const built = buildTaskGraph(tasks, WFS, DEFAULT_FILTERS);
-    const g = toGraphologyGraph(built, ORDER, undefined, "duration", NOW);
+    const g = toGraphologyGraph(built, ORDER, undefined, "duration", "standard", NOW);
     const fast = g.getNodeAttribute("fast", "size");
     const slow = g.getNodeAttribute("slow", "size");
     expect(slow).toBeGreaterThan(fast);
@@ -191,6 +191,26 @@ describe("fa2Settings", () => {
     expect(large.barnesHutOptimize).toBe(true);
     expect(large.slowDown).toBeGreaterThan(small.slowDown);
     expect(large.adjustSizes).toBe(true);
+  });
+});
+
+describe("布局松散度（LOOSENESS_R_MAX）", () => {
+  it("紧凑/标准/松散 → 坐标半径按 20/30/45 同比例缩放", () => {
+    const tasks: Task[] = [t({ id: "a" }), t({ id: "b" }), t({ id: "c" })];
+    const built = buildTaskGraph(tasks, [], DEFAULT_FILTERS);
+    const radiusOf = (mode: "compact" | "standard" | "loose") => {
+      const g = toGraphologyGraph(built, ORDER, undefined, "degree", mode);
+      let r = 0;
+      g.forEachNode((_, a) => {
+        r = Math.max(r, Math.hypot(a.x, a.y));
+      });
+      return r;
+    };
+    const compact = radiusOf("compact");
+    const standard = radiusOf("standard");
+    const loose = radiusOf("loose");
+    expect(standard / compact).toBeCloseTo(30 / 20, 5);
+    expect(loose / standard).toBeCloseTo(45 / 30, 5);
   });
 });
 
