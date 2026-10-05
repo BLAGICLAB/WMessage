@@ -165,7 +165,6 @@ export default function GraphPage({ tasks, onOpenTask, onOpenWorkflow }: GraphPa
           <GraphCanvas
             graph={graph}
             colorMode={colorMode}
-            ownerColors={ownerColors}
             selectedId={selectedId}
             hoverId={hoverId}
             searchMatchIds={searchMatchIds}

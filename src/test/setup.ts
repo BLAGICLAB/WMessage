@@ -58,6 +58,18 @@ if (typeof globalThis.crypto.randomUUID !== "function") {
     `uuid-${Math.random().toString(36).slice(2)}-${Date.now()}`;
 }
 
+// sigma（图谱 WebGL 渲染器）在模块顶层探测 WebGL2 支持性（读构造函数存在性），
+// jsdom 无 WebGL → 补空构造函数存根让 import 通过；真正的渲染行为不进 jsdom
+// （GraphPage.test 里 GraphCanvas 已 mock，App.test 只经过导航路径）
+if (typeof globalThis.WebGL2RenderingContext === "undefined") {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (globalThis as any).WebGL2RenderingContext = function WebGL2RenderingContext() {};
+}
+if (typeof globalThis.WebGLRenderingContext === "undefined") {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (globalThis as any).WebGLRenderingContext = function WebGLRenderingContext() {};
+}
+
 // Node 26 自带 `localStorage` 全局，未传 `--localstorage-file` 时其值为 undefined，
 // 会在 jsdom 环境里遮蔽 jsdom 的实现；theme / WidgetApp 等测试依赖它
 // （beforeEach 里 `localStorage.clear()`）。这里按需补一个内存实现，

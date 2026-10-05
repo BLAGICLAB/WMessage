@@ -11,6 +11,12 @@ vi.mock("@tauri-apps/api/core", () => ({
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
 }));
+// Sigma/WebGL 渲染层 mock：jsdom 无 WebGL2 上下文；GraphCanvas 的行为契约
+// 由 graph-adapter 单测 + 浏览器压测 harness 覆盖，这里只测 GraphPage 壳
+vi.mock("./GraphCanvas", () => ({
+  default: () => <div data-testid="graph-canvas" />,
+  OWNER_PALETTE: ["#7c6bd6"],
+}));
 
 import GraphPage from "./GraphPage";
 

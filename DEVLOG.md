@@ -2,6 +2,43 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-05（周日）G3-SIGMA：图谱渲染层迁移 Sigma.js + FA2 worker——一年近万条任务的渲染底盘
+
+**需求**（老板拍板）：一年将积累近万条任务，自研 Canvas2D 渲染舒适区 3~5k，
+直接迁移到 WebGL 渲染器。决策：不保留旧渲染器、不做 worker 降级（设计讨论
+见会话——数据模型/graph-build/过滤器/详情面板零改动，只换渲染层）。
+
+**实现**：新依赖 sigma@3 + graphology + graphology-layout-forceatlas2（MIT）。
+- `graph-adapter.ts`（新，纯函数）：graph-build 结果 → graphology 图 +
+  Sigma 节点属性（colorKey 语义键/size 度数半径/kind）；FA2 设置按规模推导
+  （>1500 开 Barnes-Hut、slowDown 随规模增长、adjustSizes 碰撞）。
+- `GraphCanvas.tsx` 重写：Sigma v3 WebGL 渲染 + `FA2Layout` worker 监督器
+  （物理完全离开主线程，`graphology-layout-forceatlas2/worker` 的 Blob-URL
+  worker → CSP 补 `worker-src blob:` + `script-src blob:`，dev/prod 双配置）。
+  交互全保：hover 邻接高亮其余淡出（reducer 淡出用降 size/换色，边直接
+  hidden——万级边下比 alpha 快）、拖拽固定（downNode 锁位 + viewportToGraph
+  跟手 + up 恢复）、click/双击 hub、搜索/选中 highlighted、CSS 变量双主题
+  （MutationObserver → refresh）。标签策略：默认关，hub/度 ≥6/焦点邻域/
+  搜索命中才开（万级数据的标签洪水是第一视觉问题）；labelDensity 大图降档。
+  **收敛自动停**：FA2 supervisor 会低幅振荡不停机，定时采样节点坐标小数部分
+  和（逐点位移度量，总量差对万级不敏感），静定即 `fa2.stop()`——停止后连续
+  采样零变化；离开图谱页 `fa2.kill()` terminate worker + 释放 TypedArray 矩阵，
+  内存全回收。
+- 删除：`physics.ts`（自研力导向 300 行）、旧绘制层、`physics.test.ts`。
+- jsdom 测试环境补 `WebGL2RenderingContext` 空构造存根（sigma 顶层特性探测）；
+  GraphPage 测试 mock GraphCanvas（渲染行为由浏览器压测 harness 覆盖）。
+
+**验证**：graph-adapter 5 测（守恒/方向/着色键/重复边/FA2 设置）+ graph-build 13 +
+GraphPage 冒烟 5 = 23；vitest 439 全绿；test-fast 门禁全绿；`npm run build` 通过。
+浏览器压测（IAB mock harness，`gui-test-screenshots/graph-demo.html?stress=N`）：
+- **1227 任务/822 依赖**：过滤器点击 0~1.6ms，FA2 收敛约 15s 成球状星系、hub 清晰
+  （graph-sigma-1227.png）；
+- **10027 任务/6672 依赖**：过滤点击 0.5ms、主线程求值 93ms 往返（无阻塞），
+  坐标采样证实 worker 在跑（主线程 rAF 被节流时物理仍推进——真后台线程），
+  30s 收敛自动停机，万节点全量渲染可用（graph-sigma-10000.png；压测数据 1/3
+  done + 每 hub 200 成员属恶意密集，真实数据密度低得多）。
+- FPS 数值无法在 IAB 采样（面板非前台 rAF 节流），帧流畅度留真机验收。
+
 ## 2026-10-05（周日）G3-PERF：图谱大图卡死/崩溃修复——rAF 指数回调爆炸根因 + 四项性能改造
 
 **需求**（老板实测反馈）：多人汇总真实数据量（千节点级）下图谱很卡，点过滤器
