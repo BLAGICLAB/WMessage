@@ -378,7 +378,9 @@ export function ChatPanel({
           );
           // 授权模式只读展示（U3b）：非法/缺省回 ask（与后端 PermMode::from_cfg 一致）
           const pm = c.permMode;
-          setPermMode(pm === "strict" || pm === "yolo" ? pm : "ask");
+          setPermMode(
+            pm === "strict" || pm === "yolo" || pm === "auto" ? pm : "ask"
+          );
         })
         .catch(() => setModelLabel("未配置"));
     reload();

@@ -2,6 +2,39 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-06（周二）P3C-TOOLRULES：per-tool 权限规则表 + 授权模式第 4 档 auto（Agent 透明化 P3-c）
+
+**承接**：设计 §9.2-1/§9.2-2（Claude Code rules + acceptEdits 借鉴）；P3 参数透明的授权面收口。
+
+**改动**：
+- **ToolRule 类型**（types.rs）：`{tool, action: allow|ask|deny}`；BotConfig/View 增
+  `tool_rules: Option<Vec<ToolRule>>`（serde default 老配置零影响）；
+  `sanitize_tool_rules`（落盘清洗：空名/非法 action/重复 tool 剔除、trim、空表归一 None）
+- **PermMode 第 4 档 Auto**（acceptEdits 语义）：from_cfg("auto")；读/写两个 resolve 的
+  白名单外分支 `Ask | Auto` 合并（auto 白名单外降级 ask——弹窗/无人值守拒，与设计一致）；
+  **write_file 覆盖确认 auto 档跳过**（白名单内的覆盖写免人工确认——定时/工作流无人值守
+  写文件不再失败；yolo 档维持既有弹窗，默认行为零变更约束）
+- **规则评估入口**（dispatch.rs，tool.call 审计后 pre_execute 前）：deny 硬拒（early_return
+  配平 + `tool_rule.hit` Warn）→ ask 强制确认（拒绝同样配平）→ allow 到文件工具侧生效；
+  use_skill 豁免（规则只管模型可直接调用的工具）
+- **allow 规则**（bot_fs 两个 resolve，白名单判定之后全局档之前）：白名单外放行+审计
+  （`bot_fs.rule_allow`，等价单工具 yolo——与全局 yolo 同语义，穿越/软链同样落白名单外，
+  无新增逃逸面）；白名单内本来就放行无感
+- **前端**：授权卡四档按钮（新增「白名单内自动」）+ per-tool 规则表行编辑（工具名输入 +
+  allow/ask/deny 下拉 + 删除）；ChatPanel pill 标签/解析补 auto；三链透传 toolRules
+  （空表传 null）
+
+**安全边界（无新增逃逸面）**：allow 规则不绕过白名单判定（canonicalize+分量前缀照跑），
+只是白名单外的全局档判断按放行处理——与既有 yolo 档完全同级；deny/ask 在 dispatch 层
+对全部工具生效（文件工具之外也覆盖，如 deny run_python）。
+
+**测试**：bot_fs tool_rule_tests +3（首中即停/脏数据防御/auto from_cfg）、
+commands sanitize +2（过滤去重/空表归 None）；lib **1421** 全绿（+5）；
+vitest 501 全绿；tsc/桥审计绿。
+
+**验证备注**：deny run_python → 执行被拒 + `tool_rule.hit` 审计 + 模型收到可解释文案；
+auto 档定时任务写 AI_Gen_Files 全程无确认窗——两项并入设计 §14.2 P3 冒烟清单。
+
 ## 2026-10-06（周二）P3B-PARAMCARD：设置页 Agent 运行参数卡 + 词元统计实装（Agent 透明化 P3-b）
 
 **承接**：设计 §3.3；P3-a 参数表/字段的前端消费面（与 P3-a 同批入库——保存链必须同批透传，

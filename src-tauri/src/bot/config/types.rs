@@ -231,6 +231,10 @@ pub struct BotConfig {
     /// 本期仅入 bot_effective_params 参数表可见，行为接线留 P4（设计 §3.2）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tool_output_chars: Option<u32>,
+    /// per-tool 权限规则表（P3-c）：deny/ask/allow 首中即停，无命中走全局 perm_mode。
+    /// None/空 = 无规则（现状）；清洗见 commands::sanitize_tool_rules。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_rules: Option<Vec<ToolRule>>,
 }
 
 /// 单个模型条目：一个 (label, baseUrl, model) 三元组 + 稳定 id。
@@ -332,6 +336,7 @@ impl Default for BotConfig {
             subagent_max_wall_secs: None,
             search_max_results: None,
             max_tool_output_chars: None,
+            tool_rules: None,
         }
     }
 }
@@ -362,10 +367,15 @@ impl ApiProvider {
 }
 
 /// 授权模式枚举：配置字符串归一化，非法值回退 Ask（安全默认偏严一侧的可用形态）。
+/// P3-c 增第 4 档 **Auto**（Claude Code acceptEdits 语义）：白名单内的文件操作
+/// 自动放行（含 write_file 覆盖确认的跳过），白名单外降级 Ask（弹窗，后台无人
+/// 值守时照旧拒绝）——解法定时/工作流后台执行「写文件类任务因确认窗无人应答必失败」。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PermMode {
     Strict,
     Ask,
+    /// 白名单内自动（含覆盖写免确认）；白名单外 = Ask 行为
+    Auto,
     Yolo,
 }
 
@@ -373,6 +383,7 @@ impl PermMode {
     pub fn from_cfg(s: Option<&str>) -> Self {
         match s.map(|v| v.trim()) {
             Some("strict") => PermMode::Strict,
+            Some("auto") => PermMode::Auto,
             Some("yolo") => PermMode::Yolo,
             _ => PermMode::Ask,
         }
@@ -381,9 +392,25 @@ impl PermMode {
         match self {
             PermMode::Strict => "strict",
             PermMode::Ask => "ask",
+            PermMode::Auto => "auto",
             PermMode::Yolo => "yolo",
         }
     }
+}
+
+/// per-tool 权限规则（P3-c，Claude Code rules 借鉴，设计 §9.2-1）：
+/// 评估序 deny > ask > allow（同工具多规则首中即停），无命中走全局 perm_mode 兜底。
+/// 刻意**不做路径 glob**——路径维度已有白名单（canonicalize + 分量前缀），
+/// 规则表只管「工具级」确认行为，避免 Claude Code 文档自己承认的规则可绕过面。
+/// 非法 action / 空 tool 名在 bot_set_config 清洗时剔除（见 commands::sanitize_tool_rules）。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolRule {
+    pub tool: String,
+    /// allow = 单工具自动放行（白名单外也放行+审计，等价单工具 yolo）/
+    /// ask = 该工具执行前强制确认（即使白名单内）/
+    /// deny = 硬拒
+    pub action: String,
 }
 
 // ───────────────────────── 归档天数解析 ─────────────────────────
@@ -480,6 +507,9 @@ pub struct BotConfigView {
     pub search_max_results: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tool_output_chars: Option<u32>,
+    /// per-tool 权限规则表原样透传（设置页授权卡编辑）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_rules: Option<Vec<ToolRule>>,
 }
 
 // ───────────────────────── 字段上限 + check_len ─────────────────────────

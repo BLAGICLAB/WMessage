@@ -55,6 +55,7 @@ export const PROVIDER_LABELS: Record<ModelItem["provider"], string> = {
 export const PERM_LABELS: Record<PermMode, string> = {
   ask: "弹授权",
   strict: "硬拒",
+  auto: "自动",
   yolo: "全放行",
 };
 

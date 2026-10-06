@@ -91,5 +91,6 @@ export type ModelItem = ChatModelEntry & { provider: "openai" | "anthropic" };
 /** 推理强度抽象档位（RE-1）：与后端 EffortLevel::from_cfg 的合法值一一对应 */
 export type ReasoningLevel = "off" | "low" | "medium" | "high";
 
-/** 授权模式（只读展示）：与后端 PermMode::from_cfg 的合法值一一对应，None = ask */
-export type PermMode = "ask" | "strict" | "yolo";
+/** 授权模式（只读展示）：与后端 PermMode::from_cfg 的合法值一一对应，None = ask；
+ *  auto = 白名单内自动（含覆盖写免确认）、白名单外 ask（P3-c acceptEdits 语义） */
+export type PermMode = "ask" | "strict" | "auto" | "yolo";

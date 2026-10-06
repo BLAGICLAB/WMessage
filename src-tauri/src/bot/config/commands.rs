@@ -133,7 +133,38 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
         subagent_max_wall_secs: cfg.subagent_max_wall_secs,
         search_max_results: cfg.search_max_results,
         max_tool_output_chars: cfg.max_tool_output_chars,
+        tool_rules: cfg.tool_rules,
     })
+}
+
+/// tool_rules 落盘清洗（P3-c，纯函数单测直打）：tool 名 trim 后非空、action ∈
+/// {allow, ask, deny}、同 tool 首条保留（评估本就首中即停，存重复无意义）；
+/// 清洗后为空 → None（文件不留空数组）。
+pub(crate) fn sanitize_tool_rules(
+    rules: Option<Vec<super::types::ToolRule>>,
+) -> Option<Vec<super::types::ToolRule>> {
+    let rules = rules?;
+    let mut seen = std::collections::HashSet::new();
+    let mut out: Vec<super::types::ToolRule> = Vec::new();
+    for r in rules {
+        let tool = r.tool.trim().to_string();
+        // dedup 按 trim 后的 tool 名（与评估侧 r.tool != tool 的字面比较一致）
+        if tool.is_empty()
+            || !matches!(r.action.as_str(), "allow" | "ask" | "deny")
+            || !seen.insert(tool.clone())
+        {
+            continue;
+        }
+        out.push(super::types::ToolRule {
+            tool,
+            action: r.action,
+        });
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
 }
 
 // ───────────────────────── bot_set_config ─────────────────────────
@@ -260,6 +291,8 @@ pub fn bot_set_config(
     config.subagent_max_tool_calls = config.subagent_max_tool_calls.map(|n| n.clamp(1, 500));
     config.subagent_max_wall_secs = config.subagent_max_wall_secs.map(|n| n.clamp(30, 3600));
     config.search_max_results = config.search_max_results.map(|n| n.clamp(1, 10));
+    // P3-c：tool_rules 清洗——空 tool 名/非法 action/重复 tool 剔除；空表归一 None
+    config.tool_rules = sanitize_tool_rules(config.tool_rules.take());
     // P0-EV1：前端整体替换写不丢 evolution 块。读盘回填必须与写**同锁**
     //（评审 HIGH：无锁 load → 有锁 write 之间 persist_last_run 等并发写会被
     // 本写覆盖——丢更新窗口）；write_bot_config_file 自带加锁不可重入，走 _locked 变体
@@ -657,5 +690,43 @@ mod test_connection_tests {
         };
         let json = serde_json::to_string(&err).unwrap();
         assert_eq!(json, r#"{"ok":false,"error":"boom"}"#);
+    }
+}
+
+#[cfg(test)]
+mod tool_rule_sanitize_tests {
+    use super::super::types::ToolRule;
+    use super::sanitize_tool_rules;
+
+    fn rule(tool: &str, action: &str) -> ToolRule {
+        ToolRule {
+            tool: tool.into(),
+            action: action.into(),
+        }
+    }
+
+    /// 清洗：非法 action / 空 tool 剔除；同 tool 重复保留首条；tool 名 trim
+    #[test]
+    fn sanitize_filters_and_dedups() {
+        let out = sanitize_tool_rules(Some(vec![
+            rule(" edit_file ", "allow"),
+            rule("edit_file", "deny"),   // 重复 → 丢（首条已收）
+            rule("", "ask"),             // 空 tool → 丢
+            rule("run_python", "bogus"), // 非法 action → 丢
+            rule("web_search", "ask"),
+        ]))
+        .expect("有合法项不应归 None");
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].tool, "edit_file");
+        assert_eq!(out[0].action, "allow", "同 tool 首条保留");
+        assert_eq!(out[1].tool, "web_search");
+    }
+
+    /// 全非法 / None / 空表 → None（文件不留空数组）
+    #[test]
+    fn sanitize_none_when_empty_or_dirty() {
+        assert_eq!(sanitize_tool_rules(None), None);
+        assert_eq!(sanitize_tool_rules(Some(vec![])), None);
+        assert_eq!(sanitize_tool_rules(Some(vec![rule("x", "nope")])), None);
     }
 }

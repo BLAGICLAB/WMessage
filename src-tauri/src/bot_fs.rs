@@ -31,6 +31,95 @@ const EDIT_MAX_FILE_BYTES: usize = 1024 * 1024;
 /// N6：write_file 内容上限（对齐 GREP_MAX_FILE_BYTES 量级）
 const WRITE_MAX_BYTES: usize = 2 * 1024 * 1024;
 
+// ───────────────────── P3-c：per-tool 权限规则（Agent 透明化设计 §9.2-1） ─────────────────────
+
+/// 规则评估结果（纯函数可测；评估序 deny > ask > allow，同工具多规则**首中即停**）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolRuleAction {
+    Deny,
+    Ask,
+    Allow,
+}
+
+/// 查工具规则表：返回该 tool 的首条命中规则；None = 无命中（走全局 perm_mode 兜底）。
+/// 非法 action 的规则在落盘清洗时已剔除（commands::sanitize_tool_rules），
+/// 这里对脏数据防御性跳过（不 Err——观测/授权面不因配置脏值崩）。
+pub(crate) fn lookup_tool_rule(
+    rules: Option<&[crate::bot::config::types::ToolRule]>,
+    tool: &str,
+) -> Option<ToolRuleAction> {
+    let rules = rules?;
+    for r in rules {
+        if r.tool != tool {
+            continue;
+        }
+        return match r.action.as_str() {
+            "deny" => Some(ToolRuleAction::Deny),
+            "ask" => Some(ToolRuleAction::Ask),
+            "allow" => Some(ToolRuleAction::Allow),
+            _ => None, // 同工具首条非法 → 视为无命中（清洗层已防，双保险）
+        };
+    }
+    None
+}
+
+/// 读配置并查当前工具的规则（含审计 KV 用；无规则返回 None）
+pub(crate) fn tool_rule_for(app: &AppHandle, tool: &str) -> Option<ToolRuleAction> {
+    let cfg = crate::bot::load_config(app);
+    lookup_tool_rule(cfg.tool_rules.as_deref(), tool)
+}
+
+#[cfg(test)]
+mod tool_rule_tests {
+    use super::*;
+    use crate::bot::config::types::{PermMode, ToolRule};
+
+    fn rule(tool: &str, action: &str) -> ToolRule {
+        ToolRule {
+            tool: tool.into(),
+            action: action.into(),
+        }
+    }
+
+    /// 评估序：deny/ask/allow 各自命中；同工具多规则**首中即停**
+    #[test]
+    fn lookup_first_match_wins() {
+        let rules = vec![rule("edit_file", "allow"), rule("edit_file", "deny")];
+        assert_eq!(
+            lookup_tool_rule(Some(&rules), "edit_file"),
+            Some(ToolRuleAction::Allow),
+            "首中即停：allow 在前按 allow"
+        );
+        let rules = vec![rule("run_python", "deny"), rule("run_python", "allow")];
+        assert_eq!(
+            lookup_tool_rule(Some(&rules), "run_python"),
+            Some(ToolRuleAction::Deny)
+        );
+    }
+
+    /// 无命中/无表/非法 action → None（走全局 perm_mode 兜底）
+    #[test]
+    fn lookup_miss_and_dirty_data() {
+        assert_eq!(lookup_tool_rule(None, "edit_file"), None);
+        assert_eq!(lookup_tool_rule(Some(&[]), "edit_file"), None);
+        let rules = vec![rule("web_search", "ask")];
+        assert_eq!(lookup_tool_rule(Some(&rules), "edit_file"), None);
+        // 脏数据：同工具首条 action 非法 → 视为无命中（清洗层已防，双保险）
+        let rules = vec![rule("edit_file", "bogus")];
+        assert_eq!(lookup_tool_rule(Some(&rules), "edit_file"), None);
+    }
+
+    /// auto 档解析：显式 "auto" → Auto；非法/缺省回退 Ask（安全默认不变）
+    #[test]
+    fn perm_mode_auto_from_cfg() {
+        assert_eq!(PermMode::from_cfg(Some("auto")), PermMode::Auto);
+        assert_eq!(PermMode::from_cfg(Some(" auto ")), PermMode::Auto);
+        assert_eq!(PermMode::from_cfg(Some("bogus")), PermMode::Ask);
+        assert_eq!(PermMode::from_cfg(None), PermMode::Ask);
+        assert_eq!(PermMode::Auto.as_str(), "auto");
+    }
+}
+
 /// 跨平台用户主目录：优先 HOME；Windows GUI 程序（资源管理器双击启动）常无
 /// HOME 环境变量，回退 USERPROFILE，再退 HOMEDRIVE+HOMEPATH。
 ///（Windows 绿色版 HOME 缺失会让默认白名单为空 →
@@ -233,6 +322,18 @@ pub async fn resolve_with_perm(
     if is_within_allowlist(&canonical, &dirs) {
         return Ok(strip_verbatim(canonical));
     }
+    // P3-c：allow 规则 = 单工具 yolo（白名单外放行+审计；穿越/软链在 canonicalize
+    // 后同样落白名单外——与全局 yolo 档同语义，由规则显式授权兜底）
+    if crate::bot_fs::tool_rule_for(app, tool) == Some(crate::bot_fs::ToolRuleAction::Allow) {
+        crate::bot::audit_log(
+            app,
+            &format!(
+                "bot_fs.rule_allow | tool: {tool} | path: {}",
+                crate::bot::truncate_for_log(p, 200)
+            ),
+        );
+        return Ok(strip_verbatim(canonical));
+    }
     match crate::bot::perm_mode(app) {
         crate::bot::PermMode::Yolo => {
             crate::bot::audit_log(
@@ -244,7 +345,8 @@ pub async fn resolve_with_perm(
             );
             Ok(strip_verbatim(canonical))
         }
-        crate::bot::PermMode::Ask => {
+        // P3-c auto 档：白名单外降级 ask（弹窗/无人值守拒）——与 Ask 同分支
+        crate::bot::PermMode::Ask | crate::bot::PermMode::Auto => {
             match crate::bot_slash::ask_path_confirm(
                 app,
                 tool,
@@ -429,6 +531,17 @@ async fn resolve_writable(
     if is_within_allowlist(&parent_canon, &dirs) {
         return Ok(strip_verbatim(expanded));
     }
+    // P3-c：allow 规则 = 单工具 yolo（写白名单外放行+审计，与读侧同语义）
+    if crate::bot_fs::tool_rule_for(app, tool) == Some(crate::bot_fs::ToolRuleAction::Allow) {
+        crate::bot::audit_log(
+            app,
+            &format!(
+                "bot_fs.rule_allow_write | tool: {tool} | path: {}",
+                crate::bot::truncate_for_log(p, 200)
+            ),
+        );
+        return Ok(strip_verbatim(expanded));
+    }
     match crate::bot::perm_mode(app) {
         crate::bot::PermMode::Yolo => {
             crate::bot::audit_log(
@@ -440,7 +553,8 @@ async fn resolve_writable(
             );
             Ok(strip_verbatim(expanded))
         }
-        crate::bot::PermMode::Ask => {
+        // P3-c auto 档：白名单外降级 ask（写确认每次不持久化；无人值守拒）——与 Ask 同分支
+        crate::bot::PermMode::Ask | crate::bot::PermMode::Auto => {
             let approved = crate::bot_slash::ask_user_confirm(
                 app,
                 tool,
@@ -888,14 +1002,20 @@ pub async fn tool_write_file(
             .unwrap_or(false)
     };
     if existed {
-        let approved = crate::bot_slash::ask_user_confirm(
-            app,
-            "write_file",
-            &format!("覆盖已存在文件：{}", canonical.display()),
-            interactive,
-            session_id,
-        )
-        .await;
+        // P3-c：auto 档白名单内的覆盖写自动接受（resolve_writable 已过白名单闸；
+        // acceptEdits 核心语义——白名单内的「文件编辑类操作」不再人工确认）。
+        // yolo 档维持既有弹窗行为（默认行为零变更约束）；白名单外写入在
+        // resolve_writable 已按 ask 弹过窗，此处不重复确认。
+        let skip_confirm = crate::bot::perm_mode(app) == crate::bot::PermMode::Auto;
+        let approved = skip_confirm
+            || crate::bot_slash::ask_user_confirm(
+                app,
+                "write_file",
+                &format!("覆盖已存在文件：{}", canonical.display()),
+                interactive,
+                session_id,
+            )
+            .await;
         if !approved {
             // 非交互（子 agent）确认窗不可用自动拒——覆盖走 edit_file 精确修改
             return ToolResult::ok(

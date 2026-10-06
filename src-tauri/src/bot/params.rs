@@ -407,6 +407,7 @@ mod tests {
             schema_version: 1,
             max_rounds: None,
             history_budget_chars: None,
+            tool_rules: None,
             subagent_max_turns: None,
             subagent_max_tool_calls: None,
             subagent_max_wall_secs: None,

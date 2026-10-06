@@ -247,7 +247,7 @@ export function InputArea({
               与 🧠/⚡ 同排的静态 pill，不承载操作 */}
           <span
             className="shrink-0 inline-flex items-center gap-1 rounded-full border border-[var(--edge)] px-2 py-0.5 text-[10px] leading-4 text-[var(--t4)]"
-            title={`授权模式 ${permMode}（设置页维护）：ask=白名单外弹授权窗，strict=白名单外硬拒，yolo=全放行（仍记审计）`}
+            title={`授权模式 ${permMode}（设置页维护）：ask=白名单外弹授权窗，strict=白名单外硬拒，auto=白名单内全自动（含覆盖写）、白名单外弹授权窗，yolo=全放行（仍记审计）`}
           >
             <Shield size={10} aria-hidden /> {PERM_LABELS[permMode]}
           </span>

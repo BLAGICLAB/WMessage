@@ -416,7 +416,9 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     // 显示为字符串输入；"7" = 默认（后端 None 亦回 7）
     archiveAfterDays: String(DEFAULT_ARCHIVE_DAYS),
     // 授权模式：strict=白名单外硬拒 / ask=白名单外弹授权（默认）/ yolo=全放行
-    permMode: "ask" as "strict" | "ask" | "yolo",
+    permMode: "ask" as "strict" | "ask" | "auto" | "yolo",
+    // P3-c per-tool 权限规则表（deny/ask/allow 首中即停；空表 = 无规则）
+    toolRules: [] as Array<{ tool: string; action: "allow" | "ask" | "deny" }>,
     // max_tokens 兜底层（仅 Anthropic 模式发送）：无设置页 UI 入口（每模型编辑里
     // 都有 max_tokens，页底重复已删）；loadConfig 读到已存值原样透传保存，不丢
     maxTokens: "",
@@ -558,6 +560,8 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         subagentMaxWallSecs?: number | null;
         searchMaxResults?: number | null;
         maxToolOutputChars?: number | null;
+        // P3-c：规则表（老后端没返 → 空）
+        toolRules?: Array<{ tool: string; action: string }> | null;
       }>(
         "bot_get_config"
       );
@@ -596,7 +600,9 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
           c.archiveAfterDays != null ? String(c.archiveAfterDays) : String(DEFAULT_ARCHIVE_DAYS),
         // 老配置缺字段/非法值 → ask（与后端 PermMode::from_cfg 回退一致）
         permMode:
-          c.permMode === "strict" || c.permMode === "yolo" ? c.permMode : "ask",
+          c.permMode === "strict" || c.permMode === "yolo" || c.permMode === "auto"
+            ? c.permMode
+            : "ask",
         // 空 = 8192 默认（仅 Anthropic 模式用）
         maxTokens: c.maxTokens != null ? String(c.maxTokens) : "",
         // 推理强度：缺字段/非法值 → medium（与后端 EffortLevel::from_cfg 回退一致）
@@ -626,6 +632,14 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         },
         // U17 记忆参数原样回传
         memoryTuning: c.memoryTuning ?? null,
+        // P3-c：规则表透传（老后端没返 → 空；非法 action 由后端清洗兜底）
+        toolRules: Array.isArray(c.toolRules)
+          ? c.toolRules.filter(
+              (r): r is { tool: string; action: "allow" | "ask" | "deny" } =>
+                typeof r?.tool === "string" &&
+                (r.action === "allow" || r.action === "ask" || r.action === "deny")
+            )
+          : [],
         // P3-a Agent 运行参数：后端 None/老版本没返 → 空串（= 内置默认）
         maxRounds: c.maxRounds != null ? String(c.maxRounds) : "",
         historyBudgetChars: c.historyBudgetChars != null ? String(c.historyBudgetChars) : "",
@@ -830,6 +844,8 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
             const n = parseInt(c.maxToolOutputChars.trim(), 10);
             return Number.isFinite(n) && n > 0 ? n : null;
           })(),
+          // P3-c：规则表透传（空 tool 名/非法 action 由后端 sanitize 清洗）
+          toolRules: c.toolRules.length > 0 ? c.toolRules : null,
           // 定时记忆整理：原样透传（后端 serde default 兜底缺字段）
           memoryConsolidation: c.memoryConsolidation,
           // U15 记忆可控开关：原样透传
@@ -1344,7 +1360,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
   };
 
   /** 授权模式切换：点击即持久化（同 toggleTavily 模式） */
-  const setPermMode = async (mode: "strict" | "ask" | "yolo") => {
+  const setPermMode = async (mode: "strict" | "ask" | "auto" | "yolo") => {
     if (configBusy || config.permMode === mode) return;
     const next = { ...config, permMode: mode };
     setConfig(next);
@@ -2620,6 +2636,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
                   [
                     ["strict", "严格白名单"],
                     ["ask", "询问后放行"],
+                    ["auto", "白名单内自动"],
                     ["yolo", "yolo 全放行"],
                   ] as const
                 ).map(([mode, label]) => (
@@ -2640,9 +2657,85 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
                   "白名单外的文件访问一律拒绝。"}
                 {config.permMode === "ask" &&
                   "白名单内的文件直接读；白名单外弹窗请你授权（允许一次 / 始终允许该目录 / 拒绝）。"}
+                {config.permMode === "auto" &&
+                  "白名单内的文件操作全自动（含覆盖写免确认）——定时/工作流无人值守写文件不再失败；白名单外仍弹窗授权。"}
                 {config.permMode === "yolo" &&
                   "⚠️ 不弹任何授权：机器人可读本机任意文件，且 Python 编程免开关直接执行（以本机用户权限，可联网）。仅在你完全信任所用模型时开启。"}
               </p>
+            </div>
+            {/* P3-c：per-tool 权限规则表（deny/ask/allow 首中即停；无命中走授权模式） */}
+            <div className="space-y-1">
+              <div className="flex items-center justify-between">
+                <p className="text-[10px] text-[var(--t5)]">工具权限规则（按工具覆盖授权模式）</p>
+                <button
+                  className="nm-btn px-2 py-0.5 text-[10px] text-[var(--t3)]"
+                  onClick={() =>
+                    setConfig((c) => ({
+                      ...c,
+                      toolRules: [...c.toolRules, { tool: "", action: "deny" as const }],
+                    }))
+                  }
+                >
+                  + 添加规则
+                </button>
+              </div>
+              {config.toolRules.length === 0 ? (
+                <p className="text-[10px] text-[var(--t6)]">
+                  例：deny run_python 禁用编程工具；ask edit_file 每次编辑都确认。规则优先于上方授权模式。
+                </p>
+              ) : (
+                <div className="space-y-1">
+                  {config.toolRules.map((r, i) => (
+                    <div key={i} className="flex items-center gap-1.5">
+                      {/* oxlint-disable-next-line react/no-array-index-key */}
+                      <input
+                        value={r.tool}
+                        placeholder="工具名，如 run_python"
+                        onChange={(e) =>
+                          setConfig((c) => ({
+                            ...c,
+                            toolRules: c.toolRules.map((x, j) =>
+                              j === i ? { ...x, tool: e.target.value } : x
+                            ),
+                          }))
+                        }
+                        className="min-w-0 flex-1 rounded-lg nm-inset px-2 py-1 font-mono text-[11px] text-[var(--t2)] outline-none"
+                      />
+                      <select
+                        aria-label={`规则动作 ${r.tool || i + 1}`}
+                        value={r.action}
+                        onChange={(e) =>
+                          setConfig((c) => ({
+                            ...c,
+                            toolRules: c.toolRules.map((x, j) =>
+                              j === i
+                                ? { ...x, action: e.target.value as "allow" | "ask" | "deny" }
+                                : x
+                            ),
+                          }))
+                        }
+                        className="shrink-0 rounded-lg nm-inset px-1.5 py-1 text-[11px] text-[var(--t3)]"
+                      >
+                        <option value="allow">allow 放行</option>
+                        <option value="ask">ask 确认</option>
+                        <option value="deny">deny 禁用</option>
+                      </select>
+                      <button
+                        aria-label={`删除规则 ${r.tool || i + 1}`}
+                        className="shrink-0 px-1 text-sm text-[var(--t5)] hover:text-[var(--danger)]"
+                        onClick={() =>
+                          setConfig((c) => ({
+                            ...c,
+                            toolRules: c.toolRules.filter((_, j) => j !== i),
+                          }))
+                        }
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
             {/* 本地文件工具白名单（read_text_file/grep_files/list_files；
                 追加语义：在内置默认之上追加放行） */}
