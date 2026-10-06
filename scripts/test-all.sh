@@ -13,7 +13,9 @@ echo "[1/3] cargo nextest run (lib + integration tests，并行，比 cargo test
 cargo nextest run --manifest-path src-tauri/Cargo.toml --no-fail-fast -j num-cpus
 
 echo "[2/3] pytest tests-audit/（一致性检查，strict：XFAIL/XPASS 也算失败）"
-PYTEST_LOG=$(mktemp /tmp/pytest-audit.XXXXXX.log)
+# X 必须在模板末尾（BSD mktemp）：带 .log 后缀会 mkstemp 失败/残留字面量文件，
+# /tmp 残留同名文件后每次 push 必撞 "File exists"（实锤：2026-10-06 推送三连挂）
+PYTEST_LOG=$(mktemp /tmp/pytest-audit.XXXXXX)
 python3 -m pytest tests-audit/audit_pre_step_pre_execute.py tests-audit/audit_tauri_bridge.py tests-audit/audit_error_codes.py tests-audit/audit_module_map.py -v 2>&1 | tee "$PYTEST_LOG"
 PYTEST_EXIT=${PIPESTATUS[0]}
 if grep -qE '[1-9][0-9]* xfailed' "$PYTEST_LOG" || grep -qE '[1-9][0-9]* xpassed' "$PYTEST_LOG"; then
