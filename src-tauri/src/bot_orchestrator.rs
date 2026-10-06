@@ -142,6 +142,7 @@ pub(crate) fn spawn_subagent_locked(
     let trace_id = format!("trc_{}", uuid::Uuid::new_v4().simple());
     let task_id = uuid::Uuid::new_v4().simple().to_string();
     let card = Task {
+        acceptance: None,
         id: task_id.clone(),
         title: format!(
             "子任务：{}",
@@ -1814,6 +1815,7 @@ mod orchestrator_tests {
 
     fn parent_card(conn: &rusqlite::Connection) -> String {
         let card = Task {
+            acceptance: None,
             id: "parent-1".into(),
             title: "主编排卡".into(),
             due: None,

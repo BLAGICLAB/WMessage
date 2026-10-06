@@ -301,6 +301,7 @@ fn create_task(
         let max_order = all.iter().filter_map(|t| t.order).fold(0.0f64, f64::max);
         let now = now_ms();
         let task = db::Task {
+            acceptance: None,
             id: uuid::Uuid::new_v4().to_string(),
             title,
             // due 与 note 同规则：trim 后存储，首尾空白不进库

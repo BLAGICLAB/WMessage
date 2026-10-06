@@ -27,6 +27,8 @@ pub const MAX_WORKFLOW_NAME: usize = 80;
 pub const MAX_WORKFLOW_GOAL: usize = 500;
 pub const MAX_NODE_TITLE: usize = 80;
 pub const MAX_NODE_NOTE: usize = 500;
+/// 每卡验收标准上限（W-QA 卡即契约）：一行可验证的完成标准
+pub const MAX_NODE_ACCEPTANCE: usize = 120;
 
 /// 单源 DDL：open_db 与测试建表共用，防两处 schema 漂移
 pub const WORKFLOWS_DDL: &str = "CREATE TABLE IF NOT EXISTS workflows (
@@ -38,7 +40,9 @@ pub const WORKFLOWS_DDL: &str = "CREATE TABLE IF NOT EXISTS workflows (
    attachments TEXT,
    schedule    TEXT,
    sched_last  INTEGER,
-   enabled     INTEGER
+   enabled     INTEGER,
+   last_report TEXT,
+   last_report_at INTEGER
  );";
 
 /// workflows.attachments 幂等 ALTER（W8-ATTACH：老库的 workflows 表无此列）
@@ -80,6 +84,25 @@ pub fn ensure_workflows_schedule(conn: &rusqlite::Connection) -> Result<(), Stri
     Ok(())
 }
 
+/// workflows 收尾审校报告两列幂等 ALTER（W-QA：runner 结算后写入，
+/// 画布 GoalNode 展示；upsert_workflow 的 ON CONFLICT 不更新此二列）
+pub fn ensure_workflows_report(conn: &rusqlite::Connection) -> Result<(), String> {
+    for (col, ty) in [("last_report", "TEXT"), ("last_report_at", "INTEGER")] {
+        let has: bool = conn
+            .prepare("PRAGMA table_info(workflows)")
+            .and_then(|mut stmt| {
+                let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+                Ok(rows.filter_map(|n| n.ok()).any(|n| n == col))
+            })
+            .map_err(|e| e.to_string())?;
+        if !has {
+            conn.execute(&format!("ALTER TABLE workflows ADD COLUMN {col} {ty}"), [])
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Workflow {
@@ -100,6 +123,12 @@ pub struct Workflow {
     /// 定时启用开关：None/Some(true) = 启用，Some(false) = 暂停（保留配置）
     #[serde(default)]
     pub enabled: Option<bool>,
+    /// 上轮执行的收尾审校报告（W-QA，JSON：verdict/overall/issues）；None = 从未评审
+    #[serde(default)]
+    pub last_report: Option<String>,
+    /// 报告写入时间（epoch ms）
+    #[serde(default)]
+    pub last_report_at: Option<i64>,
 }
 
 /// workflow_save 的单个节点草稿。taskId = 已保存卡的绑定提示（服务端不信任，
@@ -125,6 +154,9 @@ pub struct WorkflowNodeDraft {
     /// 子任务清单（W8-ATTACH）：仅新建卡构建（保留卡保护执行痕迹）
     #[serde(default)]
     pub subtasks: Option<Vec<String>>,
+    /// 每卡验收标准（W-QA 卡即契约）：拆解生成的一行可验证完成标准
+    #[serde(default)]
+    pub acceptance: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -183,12 +215,14 @@ fn workflow_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Workflow> {
         schedule: r.get(6)?,
         sched_last: r.get(7)?,
         enabled: r.get::<_, Option<i64>>(8)?.map(|v| v != 0),
+        last_report: r.get(9)?,
+        last_report_at: r.get(10)?,
     })
 }
 
 const WORKFLOW_COLS: &str =
-    "SELECT id, name, goal, created_at, updated_at, attachments, schedule, sched_last, enabled \
-     FROM workflows";
+    "SELECT id, name, goal, created_at, updated_at, attachments, schedule, sched_last, enabled, \
+     last_report, last_report_at FROM workflows";
 
 pub fn load_workflows(conn: &rusqlite::Connection) -> Result<Vec<Workflow>, String> {
     let mut stmt = conn
@@ -234,6 +268,21 @@ fn upsert_workflow(conn: &rusqlite::Connection, w: &Workflow) -> Result<(), Stri
 fn delete_workflow_row(conn: &rusqlite::Connection, id: &str) -> Result<(), String> {
     conn.execute("DELETE FROM workflows WHERE id = ?1", [id])
         .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// 收尾审校报告定点写（W-QA）：upsert_workflow 不触碰此二列（画布保存不冲掉报告）
+pub(crate) fn workflow_set_report(
+    conn: &rusqlite::Connection,
+    id: &str,
+    report: &str,
+    at: i64,
+) -> Result<(), String> {
+    conn.execute(
+        "UPDATE workflows SET last_report = ?2, last_report_at = ?3 WHERE id = ?1",
+        rusqlite::params![id, report, at],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -286,6 +335,19 @@ fn validate_nodes(nodes: &[WorkflowNodeDraft]) -> CommandResult<()> {
                 });
             }
         }
+        // 验收标准校验（W-QA）：与拆解侧同规则 ≤120 字
+        if let Some(acc) = &n.acceptance {
+            if acc.chars().count() > MAX_NODE_ACCEPTANCE {
+                return Err(CommandError::InvalidArgument {
+                    field: "nodes".into(),
+                    value: acc.to_string(),
+                    reason: format!(
+                        "第 {} 个节点验收标准超过 {MAX_NODE_ACCEPTANCE} 字上限",
+                        i + 1
+                    ),
+                });
+            }
+        }
         if n.depends_on.iter().any(|d| d.trim().is_empty()) {
             return Err(CommandError::InvalidArgument {
                 field: "nodes".into(),
@@ -334,15 +396,18 @@ fn fingerprint_of(
     title: &str,
     note: &Option<String>,
     tags: &Option<Vec<String>>,
+    acceptance: &Option<String>,
     upstream: &[String],
 ) -> String {
     let mut tags_sorted: Vec<&str> = tags.iter().flatten().map(|s| s.as_str()).collect();
     tags_sorted.sort();
     format!(
-        "t:{t}{FP_SEP}n:{n}{FP_SEP}g:{g}{FP_SEP}d:[{d}]",
+        "t:{t}{FP_SEP}n:{n}{FP_SEP}g:{g}{FP_SEP}a:{a}{FP_SEP}d:[{d}]",
         t = title.trim(),
         n = note.as_deref().map(str::trim).unwrap_or(""),
         g = tags_sorted.join(","),
+        // W-QA：验收标准是卡内容的一部分——改验收 = 改字 = 删旧建新（与 note 同语义）
+        a = acceptance.as_deref().map(str::trim).unwrap_or(""),
         d = upstream.join(","),
     )
 }
@@ -393,7 +458,13 @@ fn draft_fp_at(
     }
     visiting[i] = false;
     upstream.sort();
-    let fp = fingerprint_of(&nodes[i].title, &nodes[i].note, &nodes[i].tags, &upstream);
+    let fp = fingerprint_of(
+        &nodes[i].title,
+        &nodes[i].note,
+        &nodes[i].tags,
+        &nodes[i].acceptance,
+        &upstream,
+    );
     memo[i] = Some(fp.clone());
     Ok(fp)
 }
@@ -439,7 +510,13 @@ fn task_fp_at(
     }
     visiting[i] = false;
     upstream.sort();
-    let fp = fingerprint_of(&tasks[i].title, &tasks[i].note, &tasks[i].tags, &upstream);
+    let fp = fingerprint_of(
+        &tasks[i].title,
+        &tasks[i].note,
+        &tasks[i].tags,
+        &tasks[i].acceptance,
+        &upstream,
+    );
     memo[i] = Some(fp.clone());
     fp
 }
@@ -527,6 +604,8 @@ pub(crate) fn workflow_save_locked(
             schedule: None, // 定时配置不随画布保存重置（ON CONFLICT 不更新此字段）
             sched_last: None,
             enabled: None,
+            last_report: None, // 报告由 runner 结算写入，画布保存不触碰
+            last_report_at: None,
         },
     )
     .map_err(CommandError::from)?;
@@ -602,6 +681,12 @@ pub(crate) fn workflow_save_locked(
                 depends_on: Some(deps),
                 canvas_pos: node.pos.clone(),
                 model: node.model.clone(),
+                acceptance: node
+                    .acceptance
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string()),
                 owner_id: None,        // 本机创建的工作流卡 = 本人
                 created_at: Some(now), // 创建时间打戳（与 updated_at 同值；此后 UPDATE 不覆盖）
                 enabled: None,         // 新建节点卡无定时配置
@@ -735,6 +820,9 @@ pub struct WorkflowFileNode {
     /// 子任务文本清单（W8-ATTACH）
     #[serde(default)]
     pub subtasks: Option<Vec<String>>,
+    /// 每卡验收标准（W-QA 卡即契约；旧模板缺省 = 无）
+    #[serde(default)]
+    pub acceptance: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -840,6 +928,7 @@ pub(crate) fn workflow_file_from(wf: &Workflow, tasks: &[Task]) -> WorkflowFile 
                 .subtasks
                 .as_ref()
                 .map(|list| list.iter().map(|st| st.text.clone()).collect()),
+            acceptance: t.acceptance.clone(),
         })
         .collect();
     WorkflowFile {
@@ -918,6 +1007,7 @@ pub(crate) fn parse_workflow_file(raw: &str) -> CommandResult<WorkflowSaveInput>
                 }
             }
             WorkflowNodeDraft {
+                acceptance: n.acceptance.take(),
                 local_id: n.id,
                 task_id: None,
                 title: n.title,
@@ -1204,6 +1294,7 @@ mod tests {
 
     fn node(local_id: &str, title: &str, deps: &[&str]) -> WorkflowNodeDraft {
         WorkflowNodeDraft {
+            acceptance: None,
             local_id: local_id.to_string(),
             task_id: None,
             title: title.to_string(),

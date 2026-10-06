@@ -24,21 +24,23 @@ const CONTRACT_SEGMENT: &str = r#"
 
 【输出格式硬性要求——必须遵守，优先级高于上文一切指引】
 只输出一个 JSON 对象，不要输出任何解释、前后缀或 Markdown 代码围栏，形如：
-{"subtasks":[{"title":"任务标题","note":"做什么/产出什么","dependsOn":[]}]}
+{"subtasks":[{"title":"任务标题","note":"做什么/产出什么","acceptance":"一行可验证的完成标准","dependsOn":[]}]}
 - subtasks：1 到 20 个元素，按执行顺序排列（超过 30 个会被拒绝入库）
 - title：≤80 字，祈使句、动词开头，一张卡一个可独立交付的步骤
-- note：≤500 字，写清楚做什么、产出什么（下游任务会引用上游产出）
+- note：≤500 字，写清楚做什么、产出什么；产出文件必须写具体文件名和格式（如「产出周报.docx」），下游任务按文件名引用上游产物，不写具体名字会导致下游拿不到上游结果
+- acceptance：≤120 字，一行可验证的完成标准——这张卡做到什么程度算完成（产出什么文件、包含哪些关键内容点），执行时会据此自检
 - dependsOn：数组下标引用，尽量只引用排在它前面的任务；无依赖为 []（顺序写反系统会自动纠正，但引用的任务必须存在）
 - subtasks：可选，2~8 条子任务文本（每条 ≤60 字）；有前置材料的任务，把材料里对应的要点/数据拆进 subtasks
 - 无依赖关系的任务会并行执行，有依赖的按图顺序执行
 示例：
-{"subtasks":[{"title":"收集素材","note":"产出素材清单","dependsOn":[]},{"title":"写初稿","note":"引用素材清单起草","dependsOn":[0]}]}"#;
+{"subtasks":[{"title":"收集素材","note":"产出素材清单.md","acceptance":"产出素材清单.md，含至少 5 条素材及其来源链接","dependsOn":[]},{"title":"写初稿","note":"引用素材清单.md 起草","acceptance":"产出初稿.docx，覆盖素材清单全部要点","dependsOn":[0]}]}"#;
 
 /// 默认指引段（用户可在设置页编辑；与前端 `src/lib/workflowPrompt.ts` 副本保持一致）
 pub const DEFAULT_DECOMPOSE_GUIDANCE: &str = r#"你是工作流拆解专家。把用户的目标拆解为一组可执行的任务卡。
 拆解原则：
 - 每张卡是一个明确的、可独立交付的步骤，粒度适中：不拆成太碎的分钟级动作，也不留"把所有事做完"的空泛大卡
-- 卡的 note 写清楚：做什么、产出什么（下游卡会引用上游产出）
+- 卡的 note 写清楚：做什么、产出什么；产物文件写具体文件名和格式，下游卡按文件名引用上游产出
+- 每张卡给一行可验证的验收标准（acceptance）：产出什么文件、包含什么关键内容点
 - 有顺序或数据依赖的卡用 dependsOn 表达先后，无依赖的卡并行
 - 日常目标通常 3~10 张卡即可覆盖"#;
 
@@ -48,6 +50,9 @@ pub struct DecomposeSubtask {
     pub title: String,
     #[serde(default)]
     pub note: Option<String>,
+    /// 一行可验证的完成标准（W-QA 卡即契约）；模型漏给不拒绝
+    #[serde(default)]
+    pub acceptance: Option<String>,
     #[serde(default)]
     pub depends_on: Vec<usize>,
     /// 子任务文本清单（W8-ATTACH）：附件内容拆进卡片子任务
@@ -158,6 +163,26 @@ pub(crate) fn validate_decompose(
                     field: "subtasks".into(),
                     value: note.clone(),
                     reason: format!("第 {} 个任务备注超过 {MAX_NODE_NOTE} 字上限", i + 1),
+                });
+            }
+        }
+        // 验收标准校验（W-QA 卡即契约）：trim + ≤120 字；缺失容忍（模型漏给不拒整包）
+        st.acceptance = st
+            .acceptance
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+        if let Some(acc) = &st.acceptance {
+            if acc.chars().count() > crate::db::workflow::MAX_NODE_ACCEPTANCE {
+                return Err(CommandError::InvalidArgument {
+                    field: "subtasks".into(),
+                    value: acc.clone(),
+                    reason: format!(
+                        "第 {} 个任务验收标准超过 {} 字上限",
+                        i + 1,
+                        crate::db::workflow::MAX_NODE_ACCEPTANCE
+                    ),
                 });
             }
         }
@@ -275,6 +300,7 @@ pub(crate) fn validate_decompose(
             DecomposeSubtask {
                 title: st.title.clone(),
                 note: st.note.clone(),
+                acceptance: st.acceptance.clone(),
                 depends_on: st.depends_on.iter().map(|d| old_to_new[d]).collect(),
                 subtasks: st.subtasks.clone(),
             }
@@ -507,6 +533,7 @@ mod tests {
     fn validate_trims_and_caps() {
         let long_title = "标".repeat(MAX_NODE_TITLE + 1);
         let err = validate_decompose(vec![DecomposeSubtask {
+            acceptance: None,
             title: long_title,
             note: None,
             depends_on: vec![],
@@ -516,6 +543,7 @@ mod tests {
         assert!(err.to_string().contains("上限"));
         // 空标题
         let err = validate_decompose(vec![DecomposeSubtask {
+            acceptance: None,
             title: "   ".into(),
             note: None,
             depends_on: vec![],
@@ -525,6 +553,7 @@ mod tests {
         assert!(err.to_string().contains("为空"));
         // trim 生效
         let ok = validate_decompose(vec![DecomposeSubtask {
+            acceptance: None,
             title: "  收集  ".into(),
             note: None,
             depends_on: vec![],
@@ -538,18 +567,21 @@ mod tests {
     fn validate_suffixes_duplicate_titles() {
         let ok = validate_decompose(vec![
             DecomposeSubtask {
+                acceptance: None,
                 title: "审阅".into(),
                 note: None,
                 depends_on: vec![],
                 subtasks: None,
             },
             DecomposeSubtask {
+                acceptance: None,
                 title: "审阅".into(),
                 note: None,
                 depends_on: vec![0],
                 subtasks: None,
             },
             DecomposeSubtask {
+                acceptance: None,
                 title: "审阅".into(),
                 note: None,
                 depends_on: vec![1],
@@ -567,12 +599,14 @@ mod tests {
         // W7-TOPO：前向引用接受并拓扑重排（被依赖的 A 排前）
         let ok = validate_decompose(vec![
             DecomposeSubtask {
+                acceptance: None,
                 title: "B".into(),
                 note: None,
                 depends_on: vec![1],
                 subtasks: None,
             },
             DecomposeSubtask {
+                acceptance: None,
                 title: "A".into(),
                 note: None,
                 depends_on: vec![],
@@ -587,12 +621,14 @@ mod tests {
         // 自环剥离：B 依赖自己 → 无害剥离，合法依赖保留
         let ok = validate_decompose(vec![
             DecomposeSubtask {
+                acceptance: None,
                 title: "A".into(),
                 note: None,
                 depends_on: vec![],
                 subtasks: None,
             },
             DecomposeSubtask {
+                acceptance: None,
                 title: "B".into(),
                 note: None,
                 depends_on: vec![0, 1],
@@ -608,12 +644,14 @@ mod tests {
         // 真环（非自环）：拒绝且报出环内任务名
         let err = validate_decompose(vec![
             DecomposeSubtask {
+                acceptance: None,
                 title: "甲".into(),
                 note: None,
                 depends_on: vec![1],
                 subtasks: None,
             },
             DecomposeSubtask {
+                acceptance: None,
                 title: "乙".into(),
                 note: None,
                 depends_on: vec![0],
@@ -629,6 +667,7 @@ mod tests {
     fn validate_caps_subtask_count() {
         let items: Vec<DecomposeSubtask> = (0..MAX_WORKFLOW_NODES + 1)
             .map(|i| DecomposeSubtask {
+                acceptance: None,
                 title: format!("T{i}"),
                 note: None,
                 depends_on: vec![],
@@ -667,18 +706,21 @@ mod tests {
         // 输入本身带 "（2）" 后缀时（OCR r2 边界）：终名仍必须两两不同
         let ok = validate_decompose(vec![
             DecomposeSubtask {
+                acceptance: None,
                 title: "审阅".into(),
                 note: None,
                 depends_on: vec![],
                 subtasks: None,
             },
             DecomposeSubtask {
+                acceptance: None,
                 title: "审阅".into(),
                 note: None,
                 depends_on: vec![0],
                 subtasks: None,
             },
             DecomposeSubtask {
+                acceptance: None,
                 title: "审阅（2）".into(),
                 note: None,
                 depends_on: vec![0],

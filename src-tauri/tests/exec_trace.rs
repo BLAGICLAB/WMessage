@@ -160,6 +160,7 @@ async fn trace_lifecycle_done_row_written() {
         &task_id,
         TaskExecOrigin::Manual,
         Some(hook),
+        None,
         runner,
     )
     .await
@@ -199,6 +200,7 @@ async fn trace_lifecycle_failed_row_records_error() {
         &task_id,
         TaskExecOrigin::Scheduled,
         Some(hook),
+        None,
         runner,
     )
     .await;

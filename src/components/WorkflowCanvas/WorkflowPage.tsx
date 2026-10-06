@@ -20,7 +20,7 @@ import { handleCommandError } from "../../lib/errorHandler";
 import { useTauriListen } from "../../lib/useTauriListen";
 import { TracePanel } from "../TracePanel";
 import { getDecomposeGuidance } from "../../lib/workflowPrompt";
-import type { Task, Workflow, WorkflowSaveResult } from "../../types";
+import type { Task, Workflow, WorkflowReport, WorkflowSaveResult } from "../../types";
 import {
   draftFromDecompose,
   draftFromTasks,
@@ -123,6 +123,11 @@ function WorkflowPageInner({
   /** AI 拆解进行中 + 竞态守卫（取消 = 递增序号丢弃在途响应） */
   const [decomposing, setDecomposing] = useState(false);
   const decomposeSeqRef = useRef(0);
+  /** activeId 镜像：workflow-report 事件订阅只注册一次，闭包里读 ref 防过期 */
+  const activeIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    activeIdRef.current = activeId;
+  });
   /** 名称是否仍是自动名（true 时拆解成功用 goal 前缀重命名；用户改过名则尊重用户） */
   const [nameAuto, setNameAuto] = useState(true);
   useEffect(
@@ -191,6 +196,8 @@ function WorkflowPageInner({
       );
       setNameAuto(false); // 打开的是已保存工作流：名称是作者起的，拆解不得覆盖（OCR r2）
       setRunning(false); // 先复位：A 在跑时切到 B，停止按钮不得跨工作流残留（全量对照 high）
+      // W-QA：报告从 workflows 行恢复（review 结算写入 lastReport 列）
+      setWfReport(detail.lastReport ? safeParseReport(detail.lastReport) : null);
       const iseq = openSeqRef.current;
       invoke<boolean>("workflow_is_running", { workflowId: id })
         .then((v) => {
@@ -222,7 +229,18 @@ function WorkflowPageInner({
     setRegenArmed(false);
     setRunning(false);
     setAttachPaths([]);
+    setWfReport(null);
   };
+
+  /** lastReport 列是 JSON 字符串；损坏/旧格式降级为 null（不炸画布） */
+  function safeParseReport(raw: string): WorkflowReport | null {
+    try {
+      const v = JSON.parse(raw) as WorkflowReport;
+      return typeof v?.verdict === "string" ? v : null;
+    } catch {
+      return null;
+    }
+  }
 
   // ────────────── 模板导入导出（W4-TEMPLATE，设计 §4） ──────────────
 
@@ -275,7 +293,12 @@ function WorkflowPageInner({
     setDecomposing(true);
     try {
       const res = await invoke<{
-        subtasks: Array<{ title: string; note: string | null; dependsOn: number[] }>;
+        subtasks: Array<{
+          title: string;
+          note: string | null;
+          acceptance?: string | null;
+          dependsOn: number[];
+        }>;
         attempts: number;
       }>("workflow_decompose", {
         goal: goalText,
@@ -286,6 +309,7 @@ function WorkflowPageInner({
       const fresh = draftFromDecompose(res.subtasks);
       setNodes(fresh);
       setSelectedIds([]);
+      setWfReport(null); // 新拆解 = 新草稿，旧报告不归属新卡
       if (nameAuto) setName(goalText.slice(0, NAME_AUTO_LEN));
       setSavedSnapshot(null); // 拆解结果 = 新草稿，保存才落库（设计 §7）
       setMode("edit");
@@ -583,6 +607,14 @@ function WorkflowPageInner({
   /** 节点「执行详情」弹层目标（任务卡 id；TracePanel 自带 portal） */
   const [traceTaskId, setTraceTaskId] = useState<string | null>(null);
 
+  // W-QA：收尾审校报告（workflow-report 事件实时更新；切工作流从 lastReport 恢复）
+  const [wfReport, setWfReport] = useState<WorkflowReport | null>(null);
+  useTauriListen<{ workflowId?: string; report?: WorkflowReport }>("workflow-report", (payload) => {
+    if (!payload.report) return;
+    if (payload.workflowId && payload.workflowId !== activeIdRef.current) return;
+    setWfReport(payload.report);
+  });
+
   // ────────────── 保存（指纹 diff 落库，设计 §7） ──────────────
 
   const save = async () => {
@@ -610,6 +642,9 @@ function WorkflowPageInner({
             // 保存链必须携带 model（W6 r1 critical：缺失会把下拉刚设的模型置空）
             model: n.model ?? tasks.find((t) => t.id === n.taskId)?.model ?? null,
             subtasks: n.subtasks ?? null,
+            // W-QA 卡即契约：保存链必须携带 acceptance（改验收 = 指纹变更 = 换新卡）
+            acceptance:
+              n.acceptance ?? tasks.find((t) => t.id === n.taskId)?.acceptance ?? null,
           })),
         },
       });
@@ -693,6 +728,7 @@ function WorkflowPageInner({
           goal,
           saved: savedSnapshot !== null,
           progress: running ? { done: doneCount, total: nodes.length } : null,
+          report: wfReport,
           onRename: (v: string) => {
             setName(v);
             setNameAuto(false);
@@ -730,7 +766,7 @@ function WorkflowPageInner({
     ],
     // 依赖含全部 data 回调（deleteNode/toggle* 均为 useCallback 稳定引用，
     // 内部经 ref 读最新 tasks/props——此处完整列出是防过期闭包的兜底，OCR r1 high）
-    [nodes, tasks, name, goal, savedSnapshot, selectedIds, deleteNode, toggleDone, commitTitle, toggleSubtask, running, activeId, doneCount, models, changeModel, nodeLive]
+    [nodes, tasks, name, goal, savedSnapshot, selectedIds, deleteNode, toggleDone, commitTitle, toggleSubtask, running, activeId, doneCount, models, changeModel, nodeLive, wfReport]
   );
 
   const rfEdges = useMemo<Edge[]>(

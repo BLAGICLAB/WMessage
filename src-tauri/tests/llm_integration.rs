@@ -1698,6 +1698,7 @@ fn t1_seed_task(
         depends_on: None,
         canvas_pos: None,
         model: None,
+        acceptance: None,
         owner_id: None,
         enabled: None,
         expected_updated_at: None,

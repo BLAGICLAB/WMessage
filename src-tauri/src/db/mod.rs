@@ -176,6 +176,7 @@ pub fn open_db<R: tauri::Runtime>(
     crate::db::workflow::ensure_workflows_attachments(&conn).map_err(|e| e.to_string())?;
     // 定时任务模块：老库的 workflows 表补定时三列（到点自动执行整张工作流）
     crate::db::workflow::ensure_workflows_schedule(&conn).map_err(|e| e.to_string())?;
+    crate::db::workflow::ensure_workflows_report(&conn).map_err(|e| e.to_string())?;
     // 成员注册表（任务图谱设计 §1.2）：多人汇总的归属人字典，幂等
     conn.execute_batch(people::PEOPLE_DDL)
         .map_err(|e| e.to_string())?;
@@ -200,6 +201,20 @@ pub fn open_db<R: tauri::Runtime>(
     }
     // 迁移：定时启用开关（定时任务模块；NULL = 启用，0 = 暂停不删配置）
     for (col, ty) in crate::db::tasks::SCHED_ENABLED_TASK_COLUMNS {
+        let has: bool = conn
+            .prepare("PRAGMA table_info(tasks)")
+            .and_then(|mut stmt| {
+                let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+                Ok(rows.filter_map(|n| n.ok()).any(|n| n == col))
+            })
+            .unwrap_or(false);
+        if !has {
+            conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"), [])
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    // 迁移（W-QA 卡即契约）：每卡验收标准 acceptance（AI 拆解生成，执行时注入自检）
+    for (col, ty) in crate::db::tasks::ACCEPTANCE_TASK_COLUMNS {
         let has: bool = conn
             .prepare("PRAGMA table_info(tasks)")
             .and_then(|mut stmt| {
@@ -678,6 +693,7 @@ mod tests {
 
     fn mk_task(id: &str, title: &str) -> Task {
         Task {
+            acceptance: None,
             id: id.into(),
             title: title.into(),
             due: None,
@@ -843,6 +859,10 @@ mod tests {
                 .unwrap();
         }
         for (col, ty) in crate::db::tasks::SCHED_ENABLED_TASK_COLUMNS {
+            conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"), [])
+                .unwrap();
+        }
+        for (col, ty) in crate::db::tasks::ACCEPTANCE_TASK_COLUMNS {
             conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"), [])
                 .unwrap();
         }

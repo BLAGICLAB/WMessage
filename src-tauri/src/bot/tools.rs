@@ -541,6 +541,7 @@ pub(crate) async fn tool_create_task(
     }
     let now = chrono::Utc::now().timestamp_millis();
     let mut task = crate::db::Task {
+        acceptance: None,
         id: uuid::Uuid::new_v4().simple().to_string(),
         title: title.to_string(),
         due: v["due"].as_str().map(|s| s.to_string()),
@@ -2044,6 +2045,7 @@ mod task_files_arg_tests {
     #[test]
     fn apply_files_to_task_dual_writes_legacy_fields() {
         let mut t = crate::db::Task {
+            acceptance: None,
             id: "t".to_string(),
             title: "x".to_string(),
             due: None,
@@ -2173,6 +2175,7 @@ mod query_tasks_tests {
         title: &str,
     ) -> crate::db::Task {
         crate::db::Task {
+            acceptance: None,
             id: format!("id-{title}"),
             title: title.to_string(),
             due: None,

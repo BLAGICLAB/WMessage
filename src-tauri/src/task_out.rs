@@ -32,6 +32,7 @@ mod tests {
 
     fn sample_task() -> db::Task {
         db::Task {
+            acceptance: None,
             id: "t1".into(),
             title: "测试任务".into(),
             due: None,

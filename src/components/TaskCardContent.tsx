@@ -146,6 +146,16 @@ export function TaskCardContent({
           {/* 标题下的小字备注 */}
           {task.note && <p className="mt-1.5 text-xs text-[var(--t4)]">{task.note}</p>}
 
+          {/* 每卡验收标准（W-QA 卡即契约）：AI 拆解生成的一行可验证完成标准 */}
+          {task.acceptance && (
+            <p
+              className="mt-1.5 text-xs text-[var(--t4)]"
+              title="验收标准：机器人执行时会对照此项自检"
+            >
+              <span aria-hidden>📌</span> 验收：{task.acceptance}
+            </p>
+          )}
+
           {/* 标签 */}
           {(task.tags ?? []).length > 0 && (
             <div className="mt-2 flex flex-wrap items-center gap-1.5">

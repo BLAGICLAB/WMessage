@@ -57,7 +57,8 @@ pub const TASKS_DDL: &str = "CREATE TABLE IF NOT EXISTS tasks (
    model        TEXT,
    owner_id     TEXT,
    created_at   INTEGER,
-   enabled      INTEGER
+   enabled      INTEGER,
+   acceptance   TEXT
  );";
 
 /// 任务状态(三列看板：todo / doing / done)。
@@ -153,6 +154,10 @@ pub(crate) const CREATED_AT_TASK_COLUMNS: [(&str, &str); 1] = [("created_at", "I
 /// 定时启用开关列（定时任务模块）：NULL 恒等于启用；0 = 暂停（保留 schedule 配置不删）
 pub(crate) const SCHED_ENABLED_TASK_COLUMNS: [(&str, &str); 1] = [("enabled", "INTEGER")];
 
+/// 每卡验收标准列（W-QA 卡即契约）：AI 拆解生成的一行可验证完成标准；
+/// 执行时注入提示词并要求对照自检。NULL = 无（旧卡/手动卡）。
+pub(crate) const ACCEPTANCE_TASK_COLUMNS: [(&str, &str); 1] = [("acceptance", "TEXT")];
+
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Task {
@@ -204,6 +209,10 @@ pub struct Task {
     /// 执行用大模型（W6-MODEL）：模型库条目 id；None = 跟随全局 active 模型
     #[serde(default)]
     pub model: Option<String>,
+    /// 每卡验收标准（W-QA 卡即契约）：AI 拆解生成的一行可验证完成标准（≤120 字）；
+    /// 执行时注入提示词并要求对照自检。None = 无（旧卡/手动卡）。
+    #[serde(default)]
+    pub acceptance: Option<String>,
     /// 归属人 personId（任务图谱设计 §1.1）：None = 本人（库内统一 NULL 存储）；
     /// 导入外来数据时由信封盖章。前端写入路径不感知（serde default），零改动兼容
     #[serde(default)]
@@ -286,8 +295,8 @@ pub fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), S
             "INSERT INTO tasks
                (id, title, due, note, tags, file_path, file_is_dir, col, subtasks,
                 completed_at, archived, deleted_at, collapsed, ord, updated_at, schedule, sched_last, bot_assigned, files,
-                assignee, budget, result, origin, workflow_id, depends_on, canvas_x, canvas_y, model, owner_id, created_at, enabled)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31)
+                assignee, budget, result, origin, workflow_id, depends_on, canvas_x, canvas_y, model, owner_id, created_at, enabled, acceptance)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32)
              ON CONFLICT(id) DO UPDATE SET
                title=excluded.title, due=excluded.due, note=excluded.note,
                tags=excluded.tags, file_path=excluded.file_path,
@@ -302,7 +311,8 @@ pub fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), S
                origin=excluded.origin, workflow_id=excluded.workflow_id,
                depends_on=excluded.depends_on,
                canvas_x=excluded.canvas_x, canvas_y=excluded.canvas_y,
-               model=excluded.model, owner_id=excluded.owner_id, enabled=excluded.enabled
+               model=excluded.model, owner_id=excluded.owner_id, enabled=excluded.enabled,
+               acceptance=excluded.acceptance
              WHERE tasks.updated_at IS NULL OR excluded.updated_at >= tasks.updated_at",
         )
         .map_err(|e| e.to_string())?;
@@ -392,6 +402,7 @@ pub fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), S
                 t.owner_id,
                 t.created_at,
                 t.enabled.map(|b| b as i64),
+                t.acceptance,
             ])
             .map_err(|e| e.to_string())?;
         affected_total += affected;
@@ -454,6 +465,7 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<super::Task> {
     let owner_id: Option<String> = row.get(28)?;
     let created_at: Option<i64> = row.get(29)?;
     let enabled: Option<i64> = row.get(30)?;
+    let acceptance: Option<String> = row.get(31)?;
     // col 从 DB 读出仍是 String(列类型 TEXT),parse 到 TaskStatus enum。
     // 与 subtasks/files JSON 损坏「warn + 按空读取」的契约对齐:
     // 单行 col 异常不应让整个读失败、把全部任务藏起来。
@@ -563,6 +575,7 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<super::Task> {
         owner_id,
         created_at,
         enabled: enabled.map(|v| v != 0),
+        acceptance,
         expected_updated_at: None,
     })
 }
@@ -571,7 +584,7 @@ const TASK_SELECT_COLS: &str =
     "SELECT id, title, due, note, tags, file_path, file_is_dir, col, subtasks, \
      completed_at, archived, deleted_at, collapsed, ord, updated_at, schedule, sched_last, \
      bot_assigned, files, assignee, budget, result, origin, workflow_id, depends_on, \
-     canvas_x, canvas_y, model, owner_id, created_at, enabled FROM tasks";
+     canvas_x, canvas_y, model, owner_id, created_at, enabled, acceptance FROM tasks";
 
 pub fn load_all(conn: &rusqlite::Connection) -> Result<Vec<super::Task>, String> {
     let sql = format!("{TASK_SELECT_COLS} ORDER BY ord, rowid");
@@ -1895,6 +1908,7 @@ mod owner_graph_tests {
     /// 最小合法 Task 构造（全 None 缺省）
     fn min_task(owner: Option<&str>) -> Task {
         Task {
+            acceptance: None,
             id: "x".into(),
             title: "t".into(),
             due: None,

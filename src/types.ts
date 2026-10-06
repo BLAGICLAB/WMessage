@@ -130,6 +130,8 @@ export interface Task {
   canvasPos?: CanvasPos;
   /** 执行用大模型（W6-MODEL）：模型库条目 id；缺省 = 跟随全局 active 模型 */
   model?: string;
+  /** 每卡验收标准（W-QA 卡即契约）：拆解生成的一行可验证完成标准；执行时注入并自检 */
+  acceptance?: string | null;
   /**
    * 归属人 personId（任务图谱设计 §1.1）：undefined = 本人。
    * 导入多人数据后，外来任务带其原主人的 pid；看板/归档/回收站/⌘K 默认只显示
@@ -159,6 +161,26 @@ export interface Workflow {
   schedLast?: number | null;
   /** 定时启用开关：undefined = 启用 */
   enabled?: boolean;
+  /** 上轮执行的收尾审校报告（W-QA，JSON 字符串：verdict/overall/issues）；null = 从未评审 */
+  lastReport?: string | null;
+  /** 报告写入时间（epoch ms） */
+  lastReportAt?: number | null;
+}
+
+/** 工作流收尾审校报告（W-QA，runner rubric 评审产出；workflow-report 事件与 lastReport 同构） */
+export interface WorkflowReport {
+  verdict: "pass" | "partial" | "fail" | "unknown" | string;
+  /** 两三句整体结论（降级时为评审原文） */
+  overall: string;
+  issues: Array<{
+    nodeTitle: string;
+    problem: string;
+    /** true = 评审判定需重做该节点（runner 已据此触发一轮有界返工） */
+    needsRework?: boolean;
+  }>;
+  /** true = 返工后的轻量终审（只覆盖返工节点） */
+  reworkRound?: boolean;
+  reworkedNodes?: string[];
 }
 
 /** schedule_overview 返回的条目（定时作业/工作流两源合并，字段与 Rust 侧 camelCase 对齐） */

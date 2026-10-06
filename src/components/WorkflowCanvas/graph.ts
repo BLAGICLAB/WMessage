@@ -16,6 +16,8 @@ export interface CanvasNode {
   model?: string;
   /** 子任务文本清单（W8-ATTACH）：保存时构建为卡片 Subtask（新建卡） */
   subtasks?: string[];
+  /** 每卡验收标准（W-QA 卡即契约）：拆解生成的一行可验证完成标准 */
+  acceptance?: string;
 }
 
 /** 画布上任务卡的固定逻辑尺寸（ dagre 布局 + 拖动命中用；实际渲染宽 ~340px） */
@@ -89,6 +91,7 @@ export function draftFromDecompose(
   subtasks: Array<{
     title: string;
     note?: string | null;
+    acceptance?: string | null;
     dependsOn: number[];
     subtasks?: string[] | null;
   }>
@@ -97,6 +100,7 @@ export function draftFromDecompose(
     localId: `n${i}`,
     title: s.title,
     note: s.note ?? undefined,
+    acceptance: s.acceptance ?? undefined,
     dependsOn: [],
     pos: { x: 0, y: 0 },
     subtasks: s.subtasks ?? undefined,
@@ -115,7 +119,15 @@ export function draftFromTasks(
   tasks: Array<
     Pick<
       import("../../types").Task,
-      "id" | "title" | "note" | "tags" | "dependsOn" | "canvasPos" | "workflowId" | "model"
+      | "id"
+      | "title"
+      | "note"
+      | "tags"
+      | "dependsOn"
+      | "canvasPos"
+      | "workflowId"
+      | "model"
+      | "acceptance"
     >
   >
 ): CanvasNode[] {
@@ -128,6 +140,7 @@ export function draftFromTasks(
     dependsOn: [...(t.dependsOn ?? [])],
     pos: t.canvasPos ?? { x: 0, y: 0 },
     model: t.model,
+    acceptance: t.acceptance ?? undefined,
   }));
   // 任一行缺坐标 → 全图重排；全有坐标（用户手拖过）则原样保留
   const missingPos = tasks.some((t) => t.canvasPos === undefined);

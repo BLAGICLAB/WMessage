@@ -183,9 +183,16 @@ async fn run_task_in_chat_full_chain_manual_origin() {
         }
     };
 
-    let run = run_task_in_chat_with(&handle, &task_id, TaskExecOrigin::Manual, None, runner)
-        .await
-        .expect("执行应成功");
+    let run = run_task_in_chat_with(
+        &handle,
+        &task_id,
+        TaskExecOrigin::Manual,
+        None,
+        None,
+        runner,
+    )
+    .await
+    .expect("执行应成功");
     let sid = run.session_id.clone();
     assert_eq!(run.result.text, "任务已完成，报告已生成");
     // runner 内记录的会话 id 与返回值一致
@@ -253,6 +260,7 @@ async fn duplicate_trigger_rejected_by_exec_guard() {
             &t1,
             TaskExecOrigin::Batch,
             None,
+            None,
             move |_app, _msgs, _stop| async move {
                 let _ = entered_tx.send(());
                 let _ = release_rx.await;
@@ -268,6 +276,7 @@ async fn duplicate_trigger_rejected_by_exec_guard() {
         &handle,
         &task_id,
         TaskExecOrigin::Scheduled,
+        None,
         None,
         move |_app, _msgs, _stop| async move { Ok(("不应执行到这里".to_string(), Vec::new())) },
     )
@@ -299,13 +308,19 @@ async fn failure_persists_error_reply_in_session() {
             "LLM 网关 500".into(),
         ))
     };
-    let err =
-        match run_task_in_chat_with(&handle, &task_id, TaskExecOrigin::Scheduled, None, runner)
-            .await
-        {
-            Err(e) => e,
-            Ok(_) => panic!("应失败"),
-        };
+    let err = match run_task_in_chat_with(
+        &handle,
+        &task_id,
+        TaskExecOrigin::Scheduled,
+        None,
+        None,
+        runner,
+    )
+    .await
+    {
+        Err(e) => e,
+        Ok(_) => panic!("应失败"),
+    };
     assert!(err.message().contains("LLM 网关 500"));
     // 失败也落库：assistant 行为 ⚠️ 失败行（会话即执行记录，留证可回看）
     let conn = wmessage_lib::db::open_db(&handle).unwrap();

@@ -806,6 +806,7 @@ async fn run_scheduled_job(app: AppHandle, job: crate::db::ScheduledJob) {
     // 根据内容新建任务卡（标题 = 内容首行截断，全文进 note 不丢语义）
     let (title, note) = job_card_title_note(&job.content);
     let mut card = crate::db::Task {
+        acceptance: None,
         id: uuid::Uuid::new_v4().simple().to_string(),
         title: title.clone(),
         due: None,

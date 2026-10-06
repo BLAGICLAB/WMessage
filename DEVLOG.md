@@ -2,6 +2,40 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-06（周二）W-QA：工作流质量优化——结构化交接 + 证据结果 + 有界重试/返工环
+
+**承接**：工作流引擎（W3/W4/W5）已有 DAG 调度、失败传播、断点续跑，但卡片执行是
+「信息孤岛」：总目标与上游产出不注入、完成全靠模型自律（无证据）、失败无重试、
+收尾无审校。本批吸收业界模式收口：typed-schema handoff（结构化交接 + 压缩摘要）、
+rubric 评审（LLM-as-Judge）、有界 Reflexion 返工环、有界重试 + 退避（durable execution）。
+
+**改动**：
+- **A 完成口径 + 证据落卡**：EXECUTE 提示词规则 4 补 🔀 工作流分支（必须调
+  complete_task——节点成功判定依赖 column=done，此前口径缺失会把做完的节点误判
+  失败并向下游传播跳过）；runner 每节点收尾 RMW 写结构化 `result`
+  （status=success|failed|incomplete + summary≤300 字 + error + artifacts + attempt，
+  `build_node_result` 纯函数），完成判定从「模型自律」升级为「引擎写证据」，
+  incomplete=循环正常但漏标完成（可归因）
+- **B 结构化交接 + 卡即契约**：新增 `TaskExecCtx{goal, upstream_brief}`——
+  执行 user 块追加【工作流总目标】【上游产出】注入段（`run_task_in_chat_ctx` 新入口，
+  手动/定时/批量零改动）；runner 由 depends_on 反转建直接上游表，spawn 前装配简报
+  （标题/状态/验收标准/result.summary/产物文件，单上游 ≤600 字总 ≤2400 字，
+  Anthropic 多 agent 压缩教训）；tasks 表新增 `acceptance` 列（幂等迁移 + 指纹纳入，
+  改验收=换新卡与 note 同语义）+ 模板导出/导入透传 + 画布/看板只读展示（📌 验收）；
+  拆解契约加 acceptance 字段（≤120 字，缺失容忍）+ 交接边界显式化（note 必须写
+  具体产物文件名，下游按名引用）；`build_task_block` 注入验收段，提示词要求对照自检
+- **C 韧性三件套**：失败自动重试一次（`should_retry` 纯函数；熔断除外——调上限才有
+  意义，3s 退避，attempt=2 留证据链）；结算 rubric 评审（`summarize_messages` 一次
+  调用输出 JSON verdict/overall/issues，解析失败降级纯文本不丢内容；报告落 workflows
+  新列 last_report/last_report_at + `workflow-report` 事件，GoalNode 折叠展示）；
+  有界返工环（issues 里 needsRework 的节点 + 传递下游返工一轮——Done 卡先重置回
+  Todo，返工集内按依赖序调度、失败闭包跳过，终审只覆盖返工节点并更新报告；
+  全程每节点至多返工 1 次、评审至多 2 次调用）
+
+**验证**：cargo test 全绿（lib 1436 + 集成全量；新增 node_result_statuses /
+retry_decision / upstream_brief 裁剪 / review_parse 降级用例）；npm build + vitest
+520 全绿。手工冒烟建议：3 卡链验证上游产出注入、人为造失败验证重试与评审报告。
+
 ## 2026-10-06（周二）TOKEN-STATS-REDESIGN：词元统计卡按「使用统计」参照图重排 + 按模型采数链路补全
 
 **承接**：P3-B 词元统计实装后的观感与信息密度重做；同时补齐此前未提交的

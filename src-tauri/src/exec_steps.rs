@@ -248,7 +248,7 @@ async fn run_step(
         crate::bot_chat::gen_dir_rule(app),
         crate::bot_skills::build_skill_block(app)
     );
-    let mut block = crate::bot_chat::build_task_block(&task);
+    let mut block = crate::bot_chat::build_task_block(&task, None);
     block.push_str(&format!(
         "\n\n【逐步执行】本轮只做子任务「{}」（进度 {}/{}）。做完后用一两句话汇报你做了什么、结果/产物在哪。",
         sub.text,

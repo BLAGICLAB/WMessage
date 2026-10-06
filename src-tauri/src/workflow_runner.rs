@@ -14,11 +14,11 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_notification::NotificationExt;
 
-use crate::bot_chat::{run_task_in_chat, TaskExecOrigin};
+use crate::bot_chat::{run_task_in_chat_ctx, TaskExecCtx, TaskExecOrigin};
 use crate::db::{Task, TaskStatus};
 use crate::error::{CommandError, CommandResult};
 
@@ -151,6 +151,163 @@ pub(crate) fn skip_closure(failed: &str, dependents: &HashMap<String, Vec<String
     out
 }
 
+// ────────────── W-QA：结构化交接 / 证据结果 / 重试决策（纯逻辑，单测锚点） ──────────────
+
+/// 上游简报单卡上限（Anthropic 多 agent 实战教训：交接只传压缩摘要，不传全文）
+const UPSTREAM_PER_CAP: usize = 600;
+/// 上游简报总上限
+const UPSTREAM_TOTAL_CAP: usize = 2400;
+
+/// 单个上游卡的简报行：标题/状态/验收标准/产出摘要/产物文件（typed-schema handoff）
+fn upstream_line(t: &Task) -> String {
+    let status = if node_is_success(t) {
+        "✅ 完成"
+    } else {
+        "⚠️ 未成功"
+    };
+    let mut line = format!("- 「{}」{status}", t.title);
+    if let Some(acc) = t.acceptance.as_deref().filter(|a| !a.trim().is_empty()) {
+        line.push_str(&format!("\n  验收标准：{acc}"));
+    }
+    if let Some(r) = &t.result {
+        if let Some(s) = r.get("summary").and_then(|v| v.as_str()) {
+            let summary: String = s.trim().chars().take(UPSTREAM_PER_CAP).collect();
+            if !summary.is_empty() {
+                line.push_str(&format!("\n  产出摘要：{summary}"));
+            }
+        }
+    }
+    let bound = t.effective_files();
+    if !bound.is_empty() {
+        line.push_str(&format!(
+            "\n  产物文件：{}",
+            bound
+                .iter()
+                .map(|f| f.path.as_str())
+                .collect::<Vec<_>>()
+                .join("；")
+        ));
+    }
+    line
+}
+
+/// 直接上游简报装配（纯逻辑，单测锚点）：总 ≤{UPSTREAM_TOTAL_CAP} 字，超出截断并标注
+pub(crate) fn upstream_brief(upstreams: &[&Task]) -> Option<String> {
+    if upstreams.is_empty() {
+        return None;
+    }
+    let mut out = String::new();
+    let mut used = 0usize;
+    for t in upstreams {
+        let remaining = UPSTREAM_TOTAL_CAP.saturating_sub(used);
+        if remaining == 0 {
+            out.push_str("\n- （上游过多，后续简报已截断）");
+            break;
+        }
+        let clipped: String = upstream_line(t).chars().take(remaining).collect();
+        used += clipped.chars().count();
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&clipped);
+    }
+    if out.trim().is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+/// 节点收尾结构化结果（纯逻辑，单测锚点，W-QA A2）：完成判定从「模型自律」升级为
+/// 「引擎写证据」。status：熔断→failed；循环错误→failed；卡片已标完成→success；
+/// 循环正常返回但未标完成→incomplete（模型漏调 complete_task，可归因）。
+pub(crate) fn build_node_result(
+    column_done: bool,
+    fused: bool,
+    reply_text: Option<&str>,
+    error: Option<&str>,
+    artifacts: &[String],
+    attempt: u32,
+) -> serde_json::Value {
+    let (status, err) = if fused {
+        ("failed", Some("⏹ 熔断：调用工具达上限被停止".to_string()))
+    } else if let Some(e) = error {
+        ("failed", Some(crate::bot::truncate_for_log(e, 200)))
+    } else if column_done {
+        ("success", None)
+    } else {
+        (
+            "incomplete",
+            Some("循环正常结束但模型未调用 complete_task 标记完成".to_string()),
+        )
+    };
+    let summary: String = reply_text.unwrap_or("").trim().chars().take(300).collect();
+    let mut v = serde_json::json!({
+        "status": status,
+        "summary": summary,
+        "attempt": attempt,
+        "engine": "runner",
+        "finishedAt": chrono::Utc::now().timestamp_millis(),
+    });
+    if let Some(e) = err {
+        v["error"] = serde_json::Value::String(e);
+    }
+    if !artifacts.is_empty() {
+        v["artifacts"] = serde_json::json!(artifacts);
+    }
+    v
+}
+
+/// 失败自动重试决策（纯逻辑，单测锚点，C1）：非取消、非熔断且还有余量才重试。
+/// 熔断不自动重试——工具上限没调，重试必然再熔断，留给人工调参后续跑（W5 语义）。
+pub(crate) fn should_retry(ok: bool, cancelled: bool, fused: bool, retries_left: u32) -> bool {
+    !ok && !cancelled && !fused && retries_left > 0
+}
+
+/// 评审报告（W-QA C2，rubric 结构化裁决 / LLM-as-Judge）
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ReviewReport {
+    #[serde(default)]
+    pub verdict: String,
+    #[serde(default)]
+    pub overall: String,
+    #[serde(default)]
+    pub issues: Vec<ReviewIssue>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ReviewIssue {
+    #[serde(default)]
+    pub node_title: String,
+    #[serde(default)]
+    pub problem: String,
+    #[serde(default)]
+    pub needs_rework: bool,
+}
+
+/// 评审输出解析（纯逻辑，单测锚点）：fences 剥离 → JSON；
+/// 解析失败降级为纯文本报告（评审内容不丢，返工环自然不触发）。
+pub(crate) fn parse_review_report(raw: &str) -> serde_json::Value {
+    let text = crate::workflow_decompose::strip_fences(raw);
+    match serde_json::from_str::<ReviewReport>(text) {
+        Ok(r) => serde_json::to_value(&r)
+            .unwrap_or_else(|_| serde_json::json!({"verdict": "unknown", "overall": raw})),
+        Err(_) => serde_json::json!({ "verdict": "unknown", "overall": raw.trim(), "issues": [] }),
+    }
+}
+
+/// 收尾评审提示词（W-QA C2）：对照总目标逐节点核查 + 整体一致性（子任务都对但
+/// 拼起来不成立是重点检查项）。输出契约硬约束在 system 侧，用户改不着。
+const REVIEW_SYSTEM_PROMPT: &str = "\
+你是工作流质量审校员。对照工作流总目标，逐节点核查产出：验收标准是否达成、各节点产出是否一致连贯。\
+重点检查「每个子任务单独看都对、拼在一起不成立」的整体性缺口。\
+只输出一个 JSON 对象，不要输出任何解释或 Markdown 围栏，形如：\
+{\"verdict\":\"pass|partial|fail\",\"overall\":\"两三句整体结论\",\"issues\":[{\"nodeTitle\":\"节点标题\",\"problem\":\"具体问题\",\"needsRework\":false}]}\
+verdict：pass=全部达标且整体连贯；partial=有小缺口但不影响整体；fail=整体未达成。\
+issues：只列有问题的节点，没有问题则为 []；needsRework=true 仅当该节点明确不达标需要重做（宁缺毋滥）。";
+
 // ────────────── 运行注册表 / 取消 ──────────────
 
 struct RunHandle {
@@ -258,10 +415,29 @@ pub async fn workflow_run(app: AppHandle, workflow_id: String) -> CommandResult<
         .iter()
         .map(|t| (t.id.clone(), t.model.clone()))
         .collect();
+    // W-QA B2：直接上游反表（depends_on 反转）——spawn 前据此装配上游产出简报
+    let mut upstream_of: HashMap<String, Vec<String>> = HashMap::new();
+    for t in &tasks {
+        for d in t.depends_on.iter().flatten() {
+            upstream_of.entry(d.clone()).or_default().push(t.id.clone());
+        }
+    }
+    // W-QA B1：工作流总目标（此前执行期根本不读，goal 只是画布元数据）
+    let goal = load_workflow_goal(&app, &workflow_id).await;
     let app2 = app.clone();
     let wf = workflow_id.clone();
     tauri::async_runtime::spawn(async move {
-        run_controller(app2, wf, dag, name_by_id, model_by_id, cancel).await;
+        run_controller(
+            app2,
+            wf,
+            dag,
+            name_by_id,
+            model_by_id,
+            upstream_of,
+            goal,
+            cancel,
+        )
+        .await;
     });
     Ok(WorkflowRunStart {
         total: tasks.len(),
@@ -308,6 +484,8 @@ async fn run_controller(
     dag: Dag,
     name_by_id: HashMap<String, String>,
     model_by_id: HashMap<String, Option<String>>,
+    upstream_of: HashMap<String, Vec<String>>,
+    goal: Option<String>,
     cancel: Arc<AtomicBool>,
 ) {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<NodeOutcome>();
@@ -315,7 +493,15 @@ async fn run_controller(
     let mut resolved: HashSet<String> = HashSet::new();
     // 在跑集合：跨闭包共享（Arc<Mutex>），取消收尾时区分「在跑」与「从未启动」
     let running: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
+    // C1：每节点剩余自动重试次数（初始 1；熔断除外——should_retry 裁决）
+    let mut retries_left: HashMap<String, u32> =
+        dag.nodes.iter().map(|id| (id.clone(), 1)).collect();
+    // A2/C1：attempt 计数（跨重试累计，写进 result 证据链）
+    let attempts: Arc<Mutex<HashMap<String, u32>>> = Arc::new(Mutex::new(HashMap::new()));
     let mut failed_names: Vec<String> = Vec::new();
+    // C2：评审需要失败/跳过名单（终态归因，凭卡面 note 前缀判断不可靠）
+    let mut failed_ids: HashSet<String> = HashSet::new();
+    let mut skipped_ids: HashSet<String> = HashSet::new();
     let mut done_count = 0usize;
     let total = dag.nodes.len();
 
@@ -323,12 +509,18 @@ async fn run_controller(
         let tx = tx.clone();
         let running = running.clone();
         let model_by_id = model_by_id.clone();
+        let upstream_of = upstream_of.clone();
+        let goal = goal.clone();
+        let attempts = attempts.clone();
         move |app: &AppHandle, cancel: &Arc<AtomicBool>, id: String| {
             let app = app.clone();
             let tx = tx.clone();
             let cancel = cancel.clone();
             let running = running.clone();
             let model = model_by_id.get(&id).cloned().flatten();
+            let ups = upstream_of.get(&id).cloned().unwrap_or_default();
+            let goal = goal.clone();
+            let attempts = attempts.clone();
             if let Ok(mut r) = running.lock() {
                 r.insert(id.clone());
             }
@@ -355,19 +547,50 @@ async fn run_controller(
                     return;
                 }
                 let _ticket = ticket; // RAII 占槽：任务结束自动释放
-                let result = run_task_in_chat(&app, &id, TaskExecOrigin::Workflow, model).await;
+                                      // W-QA B2：spawn 前装配上游产出简报——此时直接上游必已终态且成功
+                                      //（失败分支已被跳过传播拦截，轮到本节点的上游全部 ok）
+                let upstream_brief = load_upstream_brief(&app, &ups).await;
+                let ctx = TaskExecCtx {
+                    goal,
+                    upstream_brief,
+                };
+                // W-QA C1：attempt 计数（证据链：重试/返工后 attempt 递增）
+                let attempt = {
+                    let mut m = attempts.lock().unwrap_or_else(|e| e.into_inner());
+                    let n = m.entry(id.clone()).or_insert(0);
+                    *n += 1;
+                    *n
+                };
+                let result =
+                    run_task_in_chat_ctx(&app, &id, TaskExecOrigin::Workflow, model, ctx).await;
                 // 熔断识别（W5-FUSE）：循环优雅返回「⏹ 已熔断」消息且任务未完成
                 let fused = matches!(&result, Ok(r) if r.result.text.contains(crate::bot_model_loop::FUSE_MARKER));
-                let ok = match &result {
-                    Ok(_) => crate::db::db_load(app.clone())
-                        .await
-                        .unwrap_or_default()
-                        .into_iter()
-                        .find(|t| t.id == id)
-                        .map(|t| node_is_success(&t))
-                        .unwrap_or(false),
-                    Err(_) => false,
+                // W-QA A2：引擎写结构化结果（先落证据，再判成败）——
+                // 此前 result 只有子 agent 编排链在写，工作流卡基本恒空
+                let fresh = crate::db::db_load(app.clone())
+                    .await
+                    .ok()
+                    .and_then(|ts| ts.into_iter().find(|t| t.id == id));
+                let (column_done, artifacts) = match &fresh {
+                    Some(t) => (
+                        t.column == TaskStatus::Done,
+                        t.effective_files()
+                            .into_iter()
+                            .map(|f| f.path)
+                            .collect::<Vec<_>>(),
+                    ),
+                    None => (false, Vec::new()),
                 };
+                let node_result = build_node_result(
+                    column_done,
+                    fused,
+                    result.as_ref().ok().map(|r| r.result.text.as_str()),
+                    result.as_ref().err().map(|e| e.message()).as_deref(),
+                    &artifacts,
+                    attempt,
+                );
+                write_node_result(&app, &id, node_result).await;
+                let ok = column_done && !fused && result.is_ok();
                 // P1-d：节点收尾状态实时广播（画布描边 + 失败原因/trace 入口的数据源）
                 let _ = app.emit(
                     "workflow-node-status",
@@ -391,19 +614,44 @@ async fn run_controller(
         spawn_node(&app, &cancel, id.clone());
     }
 
+    let mut cancelled_early = false;
     while resolved.len() < total {
         if cancel.load(Ordering::SeqCst) {
+            cancelled_early = true;
             break;
         }
         let Some(outcome) = rx.recv().await else {
             break;
         };
+        if outcome.cancelled {
+            // 取消不计失败，但计 resolved（它不会再上报终态）
+            resolved.insert(outcome.id.clone());
+            if let Ok(mut r) = running.lock() {
+                r.remove(&outcome.id);
+            }
+            continue;
+        }
+        // C1：失败自动重试一次（熔断除外）——不入 resolved，等重试后的新 outcome
+        let retries = retries_left.get(&outcome.id).copied().unwrap_or(0);
+        if should_retry(outcome.ok, false, outcome.fused, retries) {
+            retries_left.insert(outcome.id.clone(), retries - 1);
+            if let Ok(mut r) = running.lock() {
+                r.remove(&outcome.id);
+            }
+            mark_note_prefix(&app, &outcome.id, "🔁 执行异常，自动重试").await;
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            if cancel.load(Ordering::SeqCst) {
+                // 退避期间被停止：按未启动归档，不再重试
+                mark_note_prefix(&app, &outcome.id, "⏭ 已停止，未执行").await;
+                resolved.insert(outcome.id.clone());
+                continue;
+            }
+            spawn_node(&app, &cancel, outcome.id);
+            continue;
+        }
         resolved.insert(outcome.id.clone());
         if let Ok(mut r) = running.lock() {
             r.remove(&outcome.id);
-        }
-        if outcome.cancelled {
-            continue;
         }
         if outcome.ok {
             done_count += 1;
@@ -426,6 +674,7 @@ async fn run_controller(
                 }
             }
         } else {
+            failed_ids.insert(outcome.id.clone());
             if outcome.fused {
                 // 熔断归因写卡（W5-FUSE）：卡片本身带 ⚠️ 说明，用户知道调上限后可续跑
                 mark_note_prefix(
@@ -449,6 +698,7 @@ async fn run_controller(
                     continue;
                 }
                 resolved.insert(skipped.clone());
+                skipped_ids.insert(skipped.clone());
                 // P1-d：传递下游被跳过 → 实时广播（画布灰显）
                 let _ = app.emit(
                     "workflow-node-status",
@@ -478,6 +728,24 @@ async fn run_controller(
         mark_note_prefix(&app, id, "⏭ 已停止，未执行").await;
     }
 
+    // W-QA C2/C3：结算评审 + 有界返工环（用户主动停止时不做——半途结果不构成评审对象）
+    if !cancelled_early && total > 0 {
+        review_and_rework(
+            &app,
+            &workflow_id,
+            &goal,
+            &dag,
+            &name_by_id,
+            &failed_ids,
+            &skipped_ids,
+            &spawn_node,
+            &cancel,
+            &running,
+            &mut rx,
+        )
+        .await;
+    }
+
     runs().lock().map(|mut m| m.remove(&workflow_id));
     let failed_n = failed_names.len();
     let skipped_n = total.saturating_sub(done_count + failed_n);
@@ -498,6 +766,407 @@ async fn run_controller(
         ],
     );
     notify_workflow_done(&app, total, done_count, failed_n);
+}
+
+// ────────────── W-QA：上下文装配 / 证据落卡 / 评审与返工 ──────────────
+
+/// 读工作流总目标（B1：此前 goal 只是画布元数据，执行期根本不读）
+async fn load_workflow_goal(app: &AppHandle, workflow_id: &str) -> Option<String> {
+    let app = app.clone();
+    let wid = workflow_id.to_string();
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = crate::db::open_db(&app).ok()?;
+        crate::db::workflow::load_workflow(&conn, &wid)
+            .ok()
+            .flatten()
+            .map(|w| w.goal)
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+/// 装配直接上游简报（B2）：spawn 前重读上游终态卡（A2 已写结构化 result）
+async fn load_upstream_brief(app: &AppHandle, upstream_ids: &[String]) -> Option<String> {
+    if upstream_ids.is_empty() {
+        return None;
+    }
+    let all = crate::db::db_load(app.clone()).await.ok()?;
+    let ups: Vec<&Task> = upstream_ids
+        .iter()
+        .filter_map(|id| all.iter().find(|t| &t.id == id))
+        .collect();
+    upstream_brief(&ups)
+}
+
+/// 节点结构化结果落卡（RMW 合并，与 mark_note_prefix 同款；best-effort 不阻断收尾）
+async fn write_node_result(app: &AppHandle, task_id: &str, result: serde_json::Value) {
+    if let Ok(cur) = crate::db::db_load(app.clone()).await {
+        if let Some(mut fresh) = cur.into_iter().find(|t| t.id == task_id) {
+            fresh.result = Some(result);
+            fresh.expected_updated_at = fresh.updated_at;
+            fresh.updated_at = Some(chrono::Utc::now().timestamp_millis());
+            if crate::db::db_upsert(app.clone(), vec![fresh.clone()])
+                .await
+                .is_ok()
+            {
+                crate::bot::broadcast_after_mutation(app, vec![fresh], vec![]);
+            }
+        }
+    }
+}
+
+/// 返工前置位（C3）：Done 卡 run_task_in_chat 会拒绝执行，先重置回 Todo；
+/// 上轮 result 保留（新执行会覆写，attempt 递增即证据链）
+async fn reset_node_for_rework(app: &AppHandle, task_id: &str) {
+    if let Ok(cur) = crate::db::db_load(app.clone()).await {
+        if let Some(mut fresh) = cur.into_iter().find(|t| t.id == task_id) {
+            if fresh.column != TaskStatus::Done {
+                return;
+            }
+            fresh.column = TaskStatus::Todo;
+            fresh.completed_at = None;
+            fresh.expected_updated_at = fresh.updated_at;
+            fresh.updated_at = Some(chrono::Utc::now().timestamp_millis());
+            if crate::db::db_upsert(app.clone(), vec![fresh.clone()])
+                .await
+                .is_ok()
+            {
+                crate::bot::broadcast_after_mutation(app, vec![fresh], vec![]);
+            }
+        }
+    }
+}
+
+/// 结算评审（C2，LLM-as-Judge）：goal + 各节点终态（含验收标准/产出摘要/失败归因）
+/// → rubric 结构化裁决。调用失败降级为 unknown 报告（不阻断收尾）。
+async fn run_review(
+    app: &AppHandle,
+    goal: &Option<String>,
+    tasks: &[Task],
+    failed_ids: &HashSet<String>,
+    skipped_ids: &HashSet<String>,
+) -> serde_json::Value {
+    let mut user = String::from("工作流总目标：\n");
+    user.push_str(
+        goal.as_deref()
+            .filter(|g| !g.trim().is_empty())
+            .unwrap_or("（未提供）"),
+    );
+    user.push_str("\n\n各节点执行结果：");
+    for t in tasks {
+        let status = if skipped_ids.contains(&t.id) {
+            "⏭ 跳过"
+        } else if failed_ids.contains(&t.id) {
+            "❌ 失败"
+        } else if node_is_success(t) {
+            "✅ 完成"
+        } else {
+            "⚠️ 未完成"
+        };
+        user.push_str(&format!("\n\n### {status}「{}」", t.title));
+        if let Some(acc) = t.acceptance.as_deref().filter(|a| !a.trim().is_empty()) {
+            user.push_str(&format!("\n验收标准：{acc}"));
+        }
+        if let Some(r) = &t.result {
+            if let Some(s) = r.get("summary").and_then(|v| v.as_str()) {
+                user.push_str(&format!("\n产出摘要：{}", s.trim()));
+            }
+            if let Some(e) = r.get("error").and_then(|v| v.as_str()) {
+                user.push_str(&format!("\n归因：{e}"));
+            }
+        }
+        let bound = t.effective_files();
+        if !bound.is_empty() {
+            user.push_str(&format!(
+                "\n产物文件：{}",
+                bound
+                    .iter()
+                    .map(|f| f.path.as_str())
+                    .collect::<Vec<_>>()
+                    .join("；")
+            ));
+        }
+    }
+    user.push_str("\n\n请按系统指令输出评审 JSON。");
+    match crate::bot_chat::summarize_messages(
+        app,
+        REVIEW_SYSTEM_PROMPT,
+        &[crate::bot_chat::ChatMsg {
+            role: "user".into(),
+            content: user,
+        }],
+    )
+    .await
+    {
+        Ok(raw) => parse_review_report(&raw),
+        Err(e) => {
+            crate::audit::write_event(
+                app,
+                crate::audit::AuditLevel::Warn,
+                "workflow_review",
+                &[
+                    ("outcome", "failed".to_string()),
+                    ("error", crate::audit::escape_for_log(&e.message(), 200)),
+                ],
+            );
+            serde_json::json!({
+                "verdict": "unknown",
+                "overall": format!("评审调用失败：{}", e.message()),
+                "issues": [],
+            })
+        }
+    }
+}
+
+/// 报告落库 + 广播（best-effort：写失败只记审计，不影响执行收尾）
+async fn persist_and_emit_report(app: &AppHandle, workflow_id: &str, report: &serde_json::Value) {
+    let json = serde_json::to_string(report).unwrap_or_default();
+    let at = chrono::Utc::now().timestamp_millis();
+    let app2 = app.clone();
+    let wid = workflow_id.to_string();
+    let stored = json.clone();
+    let r = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
+            eprintln!("[mutex_poisoned] workflow_runner::DB_WRITE_LOCK: {e:?}");
+            e.into_inner()
+        });
+        let conn = crate::db::open_db(&app2)?;
+        crate::db::workflow::workflow_set_report(&conn, &wid, &stored, at)
+    })
+    .await;
+    match r {
+        Ok(Ok(())) => {
+            let _ = app.emit(
+                "workflow-report",
+                serde_json::json!({ "workflowId": workflow_id, "report": report }),
+            );
+        }
+        Ok(Err(e)) => {
+            crate::audit::write_event(
+                app,
+                crate::audit::AuditLevel::Warn,
+                "workflow_review",
+                &[
+                    ("outcome", "persist_failed".to_string()),
+                    ("error", crate::audit::escape_for_log(&e, 200)),
+                ],
+            );
+        }
+        Err(e) => {
+            crate::audit::write_event(
+                app,
+                crate::audit::AuditLevel::Warn,
+                "workflow_review",
+                &[
+                    ("outcome", "persist_failed".to_string()),
+                    ("error", crate::audit::escape_for_log(&e.to_string(), 200)),
+                ],
+            );
+        }
+    }
+}
+
+/// 结算评审 + 有界返工环（C2/C3）：评审 → needsRework 节点（含传递下游）返工一轮
+/// → 仅返工节点轻量终审更新报告。全程每节点至多返工 1 次、评审调用至多 2 次
+///（Reflexion 环必须有界——无限返工既烧 token 又可能震荡）。
+#[allow(clippy::too_many_arguments)]
+async fn review_and_rework(
+    app: &AppHandle,
+    workflow_id: &str,
+    goal: &Option<String>,
+    dag: &Dag,
+    name_by_id: &HashMap<String, String>,
+    failed_ids: &HashSet<String>,
+    skipped_ids: &HashSet<String>,
+    spawn_node: &impl Fn(&AppHandle, &Arc<AtomicBool>, String),
+    cancel: &Arc<AtomicBool>,
+    running: &Arc<Mutex<HashSet<String>>>,
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<NodeOutcome>,
+) {
+    let tasks = load_workflow_tasks(app, workflow_id)
+        .await
+        .unwrap_or_default();
+    if tasks.is_empty() {
+        return;
+    }
+    // ① 全图评审
+    let report = run_review(app, goal, &tasks, failed_ids, skipped_ids).await;
+    persist_and_emit_report(app, workflow_id, &report).await;
+
+    // ② needsRework → 返工根节点（failed 已有重试语义，不再返工；
+    //    不在本次运行图内的节点——如 done+success 断点跳过——也可返工，卡即存在）
+    let title_to_id: HashMap<&str, &str> = tasks
+        .iter()
+        .map(|t| (t.title.as_str(), t.id.as_str()))
+        .collect();
+    let mut roots: Vec<String> = Vec::new();
+    let mut seen_root: HashSet<String> = HashSet::new();
+    for issue in report
+        .get("issues")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+    {
+        if !issue
+            .get("needsRework")
+            .and_then(|b| b.as_bool())
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let Some(title) = issue.get("nodeTitle").and_then(|t| t.as_str()) else {
+            continue;
+        };
+        let Some(&id) = title_to_id.get(title) else {
+            continue;
+        };
+        if failed_ids.contains(id) || !seen_root.insert(id.to_string()) {
+            continue;
+        }
+        roots.push(id.to_string());
+    }
+    if roots.is_empty() {
+        return;
+    }
+    // ③ 返工闭包 = 根 + 传递下游（下游建立在旧产出上，上游返工后必须联动重跑）
+    let mut rework_set: Vec<String> = Vec::new();
+    let mut in_set: HashSet<String> = HashSet::new();
+    for root in &roots {
+        for id in std::iter::once(root.clone()).chain(skip_closure(root, &dag.dependents)) {
+            if in_set.insert(id.clone()) {
+                rework_set.push(id);
+            }
+        }
+    }
+    for id in &rework_set {
+        let is_root = roots.contains(id);
+        let reason = if is_root {
+            let problem = report
+                .get("issues")
+                .and_then(|v| v.as_array())
+                .and_then(|arr| {
+                    arr.iter().find(|i| {
+                        i.get("nodeTitle").and_then(|t| t.as_str())
+                            == name_by_id.get(id).map(|s| s.as_str())
+                    })
+                })
+                .and_then(|i| i.get("problem"))
+                .and_then(|p| p.as_str())
+                .unwrap_or("产出未达验收标准");
+            format!("🔍 审校返工：{problem}")
+        } else {
+            "🔍 审校返工（上游返工，联动重跑）".to_string()
+        };
+        mark_note_prefix(app, id, &reason).await;
+        reset_node_for_rework(app, id).await;
+    }
+    // ④ 返工子图调度：入度只计返工集内的边（闭包保证祖先全在集内）
+    let mut indeg: HashMap<String, usize> = HashMap::new();
+    let mut dependents_in: HashMap<String, Vec<String>> = HashMap::new();
+    for id in &rework_set {
+        let deps: Vec<String> = tasks
+            .iter()
+            .find(|t| &t.id == id)
+            .and_then(|t| t.depends_on.clone())
+            .unwrap_or_default();
+        indeg.insert(
+            id.clone(),
+            deps.iter().filter(|d| in_set.contains(*d)).count(),
+        );
+        for d in deps {
+            if in_set.contains(&d) {
+                dependents_in.entry(d).or_default().push(id.clone());
+            }
+        }
+    }
+    let mut pending = rework_set.len();
+    for id in &rework_set {
+        if indeg.get(id).copied().unwrap_or(0) == 0 {
+            spawn_node(app, cancel, id.clone());
+        }
+    }
+    let mut reworked_ids: Vec<String> = Vec::new();
+    while pending > 0 {
+        if cancel.load(Ordering::SeqCst) {
+            return; // 停止：终审不做，报告保留首轮结论
+        }
+        let Some(outcome) = rx.recv().await else {
+            return;
+        };
+        if !in_set.contains(&outcome.id) {
+            continue; // 非返工节点的迟到消息（理论上主循环已结束）
+        }
+        pending -= 1;
+        if let Ok(mut r) = running.lock() {
+            r.remove(&outcome.id);
+        }
+        if outcome.cancelled {
+            continue;
+        }
+        if outcome.ok {
+            reworked_ids.push(outcome.id.clone());
+            let downstream: Vec<String> = dependents_in
+                .get(&outcome.id)
+                .into_iter()
+                .flatten()
+                .cloned()
+                .collect();
+            for d in downstream {
+                let deg = indeg.get_mut(&d).map(|v| {
+                    *v = v.saturating_sub(1);
+                    *v
+                });
+                let d_free = running.lock().map(|r| !r.contains(&d)).unwrap_or(true);
+                if deg == Some(0) && d_free {
+                    spawn_node(app, cancel, d);
+                }
+            }
+        } else {
+            // 返工后仍失败：集内下游不再重跑（上游产出依旧缺失），标注后消化其 outcome
+            let failed_name = name_by_id
+                .get(&outcome.id)
+                .cloned()
+                .unwrap_or_else(|| outcome.id.clone());
+            for skipped in skip_closure(&outcome.id, &dependents_in) {
+                if running
+                    .lock()
+                    .map(|r| r.contains(&skipped))
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+                pending = pending.saturating_sub(1);
+                mark_note_prefix(
+                    app,
+                    &skipped,
+                    &format!("⏭ 上游「{failed_name}」返工后仍失败，未重跑"),
+                )
+                .await;
+            }
+        }
+    }
+    // ⑤ 轻量终审：只覆盖返工节点，更新报告
+    if !reworked_ids.is_empty() {
+        let fresh = load_workflow_tasks(app, workflow_id)
+            .await
+            .unwrap_or_default();
+        let reworked_tasks: Vec<Task> = fresh
+            .into_iter()
+            .filter(|t| reworked_ids.contains(&t.id))
+            .collect();
+        if !reworked_tasks.is_empty() {
+            let final_report =
+                run_review(app, goal, &reworked_tasks, failed_ids, &HashSet::new()).await;
+            let mut final_report = final_report;
+            final_report["reworkRound"] = serde_json::json!(true);
+            final_report["reworkedNodes"] = serde_json::json!(reworked_ids
+                .iter()
+                .filter_map(|id| name_by_id.get(id))
+                .collect::<Vec<_>>());
+            persist_and_emit_report(app, workflow_id, &final_report).await;
+        }
+    }
 }
 
 /// note 前置标记（RMW 合并，与调度器 ⏰ 摘要前置同款；基于执行后最新数据合并）。
@@ -576,6 +1245,7 @@ mod tests {
             depends_on: Some(deps.iter().map(|s| s.to_string()).collect()),
             canvas_pos: Some(CanvasPos { x: 0.0, y: 0.0 }),
             model: None,
+            acceptance: None,
             owner_id: None,
             created_at: None,
             enabled: None,
@@ -691,5 +1361,89 @@ mod tests {
         assert_eq!(dag.ready.len(), 2);
         assert_eq!(dag.indegree["c"], 1);
         assert_eq!(dag.indegree["d"], 1);
+    }
+
+    // ────────────── W-QA：证据结果 / 重试决策 / 上游简报 / 评审解析 ──────────────
+
+    #[test]
+    fn node_result_statuses() {
+        // done + 正常 → success
+        let ok = build_node_result(true, false, Some("完成"), None, &[], 1);
+        assert_eq!(ok["status"], "success");
+        assert_eq!(ok["attempt"], 1);
+        assert_eq!(ok["engine"], "runner");
+        // 循环正常返回但未标完成 → incomplete（可归因：漏调 complete_task）
+        let inc = build_node_result(false, false, Some("做完了"), None, &[], 1);
+        assert_eq!(inc["status"], "incomplete");
+        // 熔断 → failed（即使卡片已标完成，熔断语义优先）
+        let fused = build_node_result(true, true, Some("⏹ 已熔断"), None, &[], 1);
+        assert_eq!(fused["status"], "failed");
+        // 循环错误 → failed，attempt 留证据链
+        let err = build_node_result(false, false, None, Some("对话轮数超限"), &[], 2);
+        assert_eq!(err["status"], "failed");
+        assert_eq!(err["attempt"], 2);
+        // 摘要截断 300 字 + 产物入 JSON
+        let long = "a".repeat(400);
+        let truncated = build_node_result(true, false, Some(&long), None, &["x.md".into()], 1);
+        assert_eq!(truncated["summary"].as_str().unwrap().chars().count(), 300);
+        assert_eq!(truncated["artifacts"][0], "x.md");
+    }
+
+    #[test]
+    fn retry_decision_excludes_fused_and_cancelled() {
+        assert!(should_retry(false, false, false, 1));
+        assert!(!should_retry(false, false, false, 0)); // 余量耗尽
+        assert!(!should_retry(false, true, false, 1)); // 取消不重试
+        assert!(!should_retry(false, false, true, 1)); // 熔断不自动重试（需人工调上限）
+        assert!(!should_retry(true, false, false, 1)); // 成功不重试
+    }
+
+    #[test]
+    fn upstream_brief_caps_and_formats() {
+        let mut a = task("a", &[]);
+        a.column = TaskStatus::Done; // node_is_success 要求 done+success
+        a.result = Some(serde_json::json!({"status": "success", "summary": "产出素材清单"}));
+        a.acceptance = Some("产出素材清单.md".into());
+        let b = task("b", &["a"]);
+        let brief = upstream_brief(&[&a, &b]).unwrap();
+        assert!(brief.contains("任务a"));
+        assert!(brief.contains("产出素材清单")); // result.summary 进入简报
+        assert!(brief.contains("产出素材清单.md")); // 验收标准进入简报
+        assert!(brief.contains("✅ 完成"));
+        // 空上游 → None（不注入空段）
+        assert!(upstream_brief(&[]).is_none());
+        // 单上游：per-cap 600 生效（2000 字摘要被裁到 600），总长受控
+        let mut big = task("c", &[]);
+        big.result = Some(serde_json::json!({"status": "success", "summary": "长".repeat(2000)}));
+        let one = upstream_brief(&[&big]).unwrap();
+        assert!(one.chars().count() < UPSTREAM_PER_CAP + 60);
+        assert!(!one.contains("已截断"));
+        // 多上游超总上限：截断标注出现
+        let many: Vec<Task> = (0..6)
+            .map(|i| {
+                let mut t = task(&i.to_string(), &[]);
+                t.result =
+                    Some(serde_json::json!({"status": "success", "summary": "长".repeat(600)}));
+                t
+            })
+            .collect();
+        let refs: Vec<&Task> = many.iter().collect();
+        let briefs = upstream_brief(&refs).unwrap();
+        assert!(briefs.chars().count() <= UPSTREAM_TOTAL_CAP + 40);
+        assert!(briefs.contains("已截断"));
+    }
+
+    #[test]
+    fn review_parse_json_and_fallback() {
+        let raw = "```json\n{\"verdict\":\"partial\",\"overall\":\"整体可用\",\"issues\":[{\"nodeTitle\":\"写初稿\",\"problem\":\"缺结论\",\"needsRework\":true}]}\n```";
+        let v = parse_review_report(raw);
+        assert_eq!(v["verdict"], "partial");
+        assert_eq!(v["issues"][0]["nodeTitle"], "写初稿");
+        assert_eq!(v["issues"][0]["needsRework"], true);
+        // 非 JSON → 降级纯文本（内容不丢，返工环不触发）
+        let v = parse_review_report("抱歉，我无法输出 JSON");
+        assert_eq!(v["verdict"], "unknown");
+        assert_eq!(v["issues"].as_array().unwrap().len(), 0);
+        assert!(v["overall"].as_str().unwrap().contains("抱歉"));
     }
 }
