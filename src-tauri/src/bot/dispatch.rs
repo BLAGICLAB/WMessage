@@ -159,6 +159,92 @@ async fn traced_impl(
     execute_tool_impl(app, name, args, stop, interactive, session_id, trace).await
 }
 
+/// P3-c per-tool 规则闸（execute_tool_impl 的 0.5 步，抽离保持入口薄壳——
+/// audit_pre_step 的结构锚点锁要求 run_pre_execute/skill_on_step 落在函数头窗口）：
+/// deny → 硬拒（配平 tool.return + tool_rule.hit 审计）；
+/// ask → 强制确认（拒绝同样配平）；allow/无命中 → None 放行。
+async fn tool_rule_gate(
+    app: &AppHandle,
+    name: &str,
+    interactive: bool,
+    session_id: Option<&str>,
+    trace: &ToolCallTrace,
+    start: &std::time::Instant,
+) -> Option<crate::bot::registry::ToolResult> {
+    match crate::bot_fs::tool_rule_for(app, name) {
+        Some(crate::bot_fs::ToolRuleAction::Deny) => {
+            for (level, event, kv) in early_return_events(
+                name,
+                "denied_by_rule",
+                start.elapsed().as_millis() as u64,
+                None,
+                session_id,
+                trace,
+            ) {
+                crate::audit::write_event(app, level, event, &kv);
+            }
+            crate::audit::write_event(
+                app,
+                crate::audit::AuditLevel::Warn,
+                "tool_rule.hit",
+                &[("tool", name.to_string()), ("action", "deny".to_string())],
+            );
+            Some(crate::bot::registry::ToolResult::warn(
+                format!(
+                    "工具「{name}」已被工具规则禁用（设置页授权卡可调整）。如任务确实需要，请向用户说明。"
+                ),
+                Vec::new(),
+            ))
+        }
+        Some(crate::bot_fs::ToolRuleAction::Ask) => {
+            let approved = crate::bot_slash::ask_user_confirm(
+                app,
+                name,
+                &format!("工具规则要求确认：{name}"),
+                interactive,
+                session_id,
+            )
+            .await;
+            crate::audit::write_event(
+                app,
+                crate::audit::AuditLevel::Info,
+                "tool_rule.hit",
+                &[
+                    ("tool", name.to_string()),
+                    (
+                        "action",
+                        if approved {
+                            "ask_approved"
+                        } else {
+                            "ask_denied"
+                        }
+                        .to_string(),
+                    ),
+                ],
+            );
+            if approved {
+                None
+            } else {
+                for (level, event, kv) in early_return_events(
+                    name,
+                    "denied_by_rule",
+                    start.elapsed().as_millis() as u64,
+                    None,
+                    session_id,
+                    trace,
+                ) {
+                    crate::audit::write_event(app, level, event, &kv);
+                }
+                Some(crate::bot::registry::ToolResult::warn(
+                    format!("工具「{name}」未获确认（用户拒绝或后台无人应答）。"),
+                    Vec::new(),
+                ))
+            }
+        }
+        _ => None,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn execute_tool_impl(
     app: &AppHandle,
@@ -177,78 +263,15 @@ async fn execute_tool_impl(
     ];
     call_kv.extend(trace_kv(trace, session_id));
     crate::audit::write_event(app, crate::audit::AuditLevel::Info, "tool.call", &call_kv);
-    // 0.5 P3-c per-tool 规则表（Agent 透明化设计 §9.2-1）：deny/ask/allow 首中即停，
-    // 无命中走后续全局档。deny 在最前硬拒（配平 tool.return）；ask 强制确认；
-    // allow 对文件工具 = 白名单外也放行+审计（等价单工具 yolo，白名单判定仍先行）。
-    // use_skill 自身不受规则约束（规则只管「模型可直接调用的工具」）。
+    // 0.5 P3-c per-tool 规则表（Agent 透明化设计 §9.2-1）：deny 硬拒 / ask 强制确认 /
+    // allow 到文件工具侧生效（bot_fs 两个 resolve 内接线）。Some = 已早退（配平完成），
+    // None = 放行走后续全局档。use_skill 豁免。函数体抽离保持 execute_tool_impl 入口薄壳
+    //（tests-audit 结构锚点锁 skill_on_step / run_pre_execute 在函数头窗口，audit_pre_step）。
     if name != "use_skill" {
-        match crate::bot_fs::tool_rule_for(app, name) {
-            Some(crate::bot_fs::ToolRuleAction::Deny) => {
-                for (level, event, kv) in early_return_events(
-                    name,
-                    "denied_by_rule",
-                    start.elapsed().as_millis() as u64,
-                    None,
-                    session_id,
-                    trace,
-                ) {
-                    crate::audit::write_event(app, level, event, &kv);
-                }
-                crate::audit::write_event(
-                    app,
-                    crate::audit::AuditLevel::Warn,
-                    "tool_rule.hit",
-                    &[("tool", name.to_string()), ("action", "deny".to_string())],
-                );
-                return crate::bot::registry::ToolResult::warn(
-                    format!("工具「{name}」已被工具规则禁用（设置页授权卡可调整）。如任务确实需要，请向用户说明。"),
-                    Vec::new(),
-                );
-            }
-            Some(crate::bot_fs::ToolRuleAction::Ask) => {
-                let approved = crate::bot_slash::ask_user_confirm(
-                    app,
-                    name,
-                    &format!("工具规则要求确认：{name}"),
-                    interactive,
-                    session_id,
-                )
-                .await;
-                crate::audit::write_event(
-                    app,
-                    crate::audit::AuditLevel::Info,
-                    "tool_rule.hit",
-                    &[
-                        ("tool", name.to_string()),
-                        (
-                            "action",
-                            if approved {
-                                "ask_approved"
-                            } else {
-                                "ask_denied"
-                            }
-                            .to_string(),
-                        ),
-                    ],
-                );
-                if !approved {
-                    for (level, event, kv) in early_return_events(
-                        name,
-                        "denied_by_rule",
-                        start.elapsed().as_millis() as u64,
-                        None,
-                        session_id,
-                        trace,
-                    ) {
-                        crate::audit::write_event(app, level, event, &kv);
-                    }
-                    return crate::bot::registry::ToolResult::warn(
-                        format!("工具「{name}」未获确认（用户拒绝或后台无人应答）。"),
-                        Vec::new(),
-                    );
-                }
-            }
-            _ => {}
+        if let Some(denied) =
+            tool_rule_gate(app, name, interactive, session_id, trace, &start).await
+        {
+            return denied;
         }
     }
     // 1. 后置拦截：原子黑名单（老板拍板）
