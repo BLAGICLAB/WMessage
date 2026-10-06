@@ -129,7 +129,6 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
         max_rounds: cfg.max_rounds,
         history_budget_chars: cfg.history_budget_chars,
         subagent_max_turns: cfg.subagent_max_turns,
-        subagent_max_tool_calls: cfg.subagent_max_tool_calls,
         subagent_max_wall_secs: cfg.subagent_max_wall_secs,
         search_max_results: cfg.search_max_results,
         max_tool_output_chars: cfg.max_tool_output_chars,
@@ -288,7 +287,6 @@ pub fn bot_set_config(
     config.subagent_max_turns = config
         .subagent_max_turns
         .map(|n| n.clamp(1, crate::db::MAX_TURNS_HARD_CAP));
-    config.subagent_max_tool_calls = config.subagent_max_tool_calls.map(|n| n.clamp(1, 500));
     config.subagent_max_wall_secs = config.subagent_max_wall_secs.map(|n| n.clamp(30, 3600));
     config.search_max_results = config.search_max_results.map(|n| n.clamp(1, 10));
     // P3-c：tool_rules 清洗——空 tool 名/非法 action/重复 tool 剔除；空表归一 None

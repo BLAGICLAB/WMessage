@@ -315,7 +315,7 @@ pub(crate) fn resolve_max_rounds(
 // 上限默认 100（W5-FUSE，老板拍板从 50 上调）：工作流节点等长链任务
 // 50 次不够用；更高上限的失控风险由幻觉守卫（claims_mutation）+ 软警告 +
 // /stop 兜底。可用 bot-config.json `maxFunctionCalls` 覆盖（None = 100）；
-// 子 agent 会话不受此值影响（走各自预算 max_tool_calls）。
+// 子 agent 默认预算同源此值（resolve_subagent_budget），LLM 显式给的预算仍可覆盖。
 // 软警告阈值动态 = cap*7/10（保持 ~30% buffer），钳 [1, cap-1]。
 const MAX_FUNCTION_CALLS_PER_REQUEST: usize = 100;
 
@@ -797,7 +797,8 @@ where
 
     // SUBA-2：熔断上限按会话派生——子 agent 预算 max_tool_calls（子会话注册表），
     // 其余 = bot-config maxFunctionCalls（缺省 100，W5-FUSE）。软警阈值 = cap*7/10。
-    // 派生链（W5-FUSE）：子 agent 预算 → bot-config maxFunctionCalls（钳 1..=500，
+    // 派生链（W5-FUSE）：子 agent 预算（默认与全域 maxFunctionCalls 同源，老板拍板
+    // 两条设置合一；LLM 显式给的仍可覆盖）→ bot-config maxFunctionCalls（钳 1..=500，
     // 防巨值实质关闭熔断）→ 默认 100
     let fuse_cap = stop
         .session_id()

@@ -24,7 +24,8 @@ pub const MAX_ROUNDS_CAP: u32 = 200;
 pub const DEFAULT_HISTORY_BUDGET_CHARS: u32 = 100_000;
 pub const HISTORY_BUDGET_MIN: u32 = 20_000;
 pub const HISTORY_BUDGET_MAX: u32 = 500_000;
-/// 子 agent 默认预算（原 db::subagents DEFAULT_* 同值）
+/// 子 agent 默认预算（原 db::subagents DEFAULT_* 同值）：
+/// max_tool_calls 仅是缺省兜底——配置了 max_function_calls 时子 agent 同源全域上限
 pub const DEFAULT_SUBAGENT_MAX_TURNS: u32 = 30;
 pub const DEFAULT_SUBAGENT_MAX_TOOL_CALLS: u32 = 100;
 pub const DEFAULT_SUBAGENT_MAX_WALL_SECS: u64 = 600;
@@ -51,8 +52,10 @@ pub fn resolve_subagent_budget(cfg: &BotConfig) -> crate::db::SubagentBudget {
             .subagent_max_turns
             .unwrap_or(DEFAULT_SUBAGENT_MAX_TURNS)
             .clamp(1, crate::db::MAX_TURNS_HARD_CAP),
+        // 工具调用上限全域统一（老板拍板合并两条设置）：子 agent 与主循环同源
+        // max_function_calls（缺省 100，钳 1..=500）；LLM 显式给的预算仍可覆盖
         max_tool_calls: cfg
-            .subagent_max_tool_calls
+            .max_function_calls
             .unwrap_or(DEFAULT_SUBAGENT_MAX_TOOL_CALLS)
             .clamp(1, 500),
         max_wall_seconds: cfg
@@ -119,7 +122,7 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         key: "loop.max_function_calls",
         label: "单次请求工具调用熔断",
         category: "loop",
-        hint: "全域工具调用熔断上限；工作流节点等长链任务可调大；软警告在 70% 处自动触发",
+        hint: "全域工具调用熔断上限（子 agent 预算同源此值）；工作流节点等长链任务可调大；软警告在 70% 处自动触发",
         default: "100",
         editable: true,
     },
@@ -138,14 +141,6 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         category: "subagent",
         hint: "LLM 派发子 agent 未显式给预算时的默认轮数；硬顶 50",
         default: "30",
-        editable: true,
-    },
-    ParamDef {
-        key: "subagent.max_tool_calls",
-        label: "子 agent 工具调用预算",
-        category: "subagent",
-        hint: "子 agent 累计工具调用上限；触顶后模型会收到指令收尾",
-        default: "100",
         editable: true,
     },
     ParamDef {
@@ -301,10 +296,6 @@ fn param_value(key: &str, cfg: &BotConfig) -> (String, &'static str) {
             Some(v) => (v.to_string(), "config"),
             None => (DEFAULT_SUBAGENT_MAX_TURNS.to_string(), "default"),
         },
-        "subagent.max_tool_calls" => match cfg.subagent_max_tool_calls {
-            Some(v) => (v.to_string(), "config"),
-            None => (DEFAULT_SUBAGENT_MAX_TOOL_CALLS.to_string(), "default"),
-        },
         "subagent.max_wall_secs" => match cfg.subagent_max_wall_secs {
             Some(v) => (v.to_string(), "config"),
             None => (DEFAULT_SUBAGENT_MAX_WALL_SECS.to_string(), "default"),
@@ -409,7 +400,6 @@ mod tests {
             history_budget_chars: None,
             tool_rules: None,
             subagent_max_turns: None,
-            subagent_max_tool_calls: None,
             subagent_max_wall_secs: None,
             search_max_results: None,
             max_tool_output_chars: None,
@@ -461,16 +451,23 @@ mod tests {
         assert_eq!(resolve_search_max_results(&cfg), 10, "钳到硬顶 10");
     }
 
-    /// resolve 链：子 agent 预算三项独立生效 + 各自钳制
+    /// resolve 链：子 agent 预算三项生效 + 各自钳制；工具调用全域同源 max_function_calls
     #[test]
     fn resolve_subagent_budget_independent_fields() {
         let mut cfg = empty_cfg();
-        cfg.subagent_max_tool_calls = Some(9999);
+        cfg.max_function_calls = Some(9999);
         cfg.subagent_max_wall_secs = Some(10);
         let b = resolve_subagent_budget(&cfg);
         assert_eq!(b.max_turns, DEFAULT_SUBAGENT_MAX_TURNS);
-        assert_eq!(b.max_tool_calls, 500, "钳 1..=500");
+        assert_eq!(b.max_tool_calls, 500, "全域同源，钳 1..=500");
         assert_eq!(b.max_wall_seconds, 30, "钳 30..=3600");
+    }
+
+    /// resolve 链：未配置 max_function_calls 时子 agent 工具调用落内置默认 100
+    #[test]
+    fn resolve_subagent_budget_tool_calls_default() {
+        let b = resolve_subagent_budget(&empty_cfg());
+        assert_eq!(b.max_tool_calls, DEFAULT_SUBAGENT_MAX_TOOL_CALLS);
     }
 
     /// resolve 链：历史预算钳 20K..=500K

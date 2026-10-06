@@ -447,7 +447,6 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     maxRounds: "",
     historyBudgetChars: "",
     subagentMaxTurns: "",
-    subagentMaxToolCalls: "",
     subagentMaxWallSecs: "",
     searchMaxResults: "",
     maxToolOutputChars: "",
@@ -605,7 +604,6 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         maxRounds?: number | null;
         historyBudgetChars?: number | null;
         subagentMaxTurns?: number | null;
-        subagentMaxToolCalls?: number | null;
         subagentMaxWallSecs?: number | null;
         searchMaxResults?: number | null;
         maxToolOutputChars?: number | null;
@@ -693,7 +691,6 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         maxRounds: c.maxRounds != null ? String(c.maxRounds) : "",
         historyBudgetChars: c.historyBudgetChars != null ? String(c.historyBudgetChars) : "",
         subagentMaxTurns: c.subagentMaxTurns != null ? String(c.subagentMaxTurns) : "",
-        subagentMaxToolCalls: c.subagentMaxToolCalls != null ? String(c.subagentMaxToolCalls) : "",
         subagentMaxWallSecs: c.subagentMaxWallSecs != null ? String(c.subagentMaxWallSecs) : "",
         searchMaxResults: c.searchMaxResults != null ? String(c.searchMaxResults) : "",
         maxToolOutputChars: c.maxToolOutputChars != null ? String(c.maxToolOutputChars) : "",
@@ -875,10 +872,6 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
           })(),
           subagentMaxTurns: (() => {
             const n = parseInt(c.subagentMaxTurns.trim(), 10);
-            return Number.isFinite(n) && n > 0 ? n : null;
-          })(),
-          subagentMaxToolCalls: (() => {
-            const n = parseInt(c.subagentMaxToolCalls.trim(), 10);
             return Number.isFinite(n) && n > 0 ? n : null;
           })(),
           subagentMaxWallSecs: (() => {
@@ -2101,7 +2094,6 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
                   pythonTimeoutSecs: "",
                   historyBudgetChars: "",
                   subagentMaxTurns: "",
-                  subagentMaxToolCalls: "",
                   subagentMaxWallSecs: "",
                   searchMaxResults: "",
                   maxToolOutputChars: "",
@@ -2135,10 +2127,9 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         {(
           [
             ["maxRounds", "模型循环最大轮数", "默认 50（钳 5–200）；Skill 自报轮数优先", "50"],
-            ["maxFunctionCalls", "调用工具上限（全域熔断）", "默认 100（钳 1–500）；单次执行累计调用达到即熔断（软警告在 70% 处）。原「工作流」设置卡迁移至此", "100"],
+            ["maxFunctionCalls", "调用工具上限（全域熔断）", "默认 100（钳 1–500）；单次执行累计调用达到即熔断（软警告在 70% 处）；子 agent 工具调用预算同源此值", "100"],
             ["historyBudgetChars", "会话历史字符预算", "默认 100000（钳 20000–500000）；超出后最旧消息先丢并生成摘要", "100000"],
             ["subagentMaxTurns", "子 agent 轮数预算", "默认 30（硬顶 50）；LLM 派发子 agent 未给预算时用", "30"],
-            ["subagentMaxToolCalls", "子 agent 工具调用预算", "默认 100（钳 1–500）；触顶后子 agent 收到收尾指令", "100"],
             ["subagentMaxWallSecs", "子 agent 墙钟预算（秒）", "默认 600（钳 30–3600）；从起跑计时，排队不算", "600"],
             ["searchMaxResults", "联网搜索默认条数", "默认 8（钳 1–10）；模型未指定 count 时用", "8"],
             ["maxToolOutputChars", "工具结果截断字符数", "默认不截断（填 0 或留空 = 不截断）；超大输出会挤占上下文，截断行为 P4 接线生效", "不截断"],

@@ -140,8 +140,8 @@ pub struct BotConfig {
     /// 映射表见 bot/reasoning.rs）。挂件聊天可按会话覆盖此值（不回写）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
-    /// 单次请求 Function 调用熔断上限（可选，全域）：None = 默认 100；
-    /// 子 agent 会话不受此字段影响（走各自预算 max_tool_calls）。
+    /// 单次请求 Function 调用熔断上限（可选，全域统一）：None = 默认 100；
+    /// 子 agent 默认预算同源此值（resolve_subagent_budget），LLM 显式给的预算仍可覆盖。
     /// 工作流节点等长链任务可调大；软警阈值 = cap*7/10 自动跟随。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_function_calls: Option<u32>,
@@ -218,9 +218,6 @@ pub struct BotConfig {
     /// 子 agent 默认轮数预算（LLM spawn 未显式给 budget 时）：None = 30；钳 1..=50（硬顶）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subagent_max_turns: Option<u32>,
-    /// 子 agent 默认工具调用预算：None = 100；钳 1..=500。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub subagent_max_tool_calls: Option<u32>,
     /// 子 agent 默认墙钟预算（秒）：None = 600；钳 30..=3600。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subagent_max_wall_secs: Option<u64>,
@@ -332,7 +329,6 @@ impl Default for BotConfig {
             max_rounds: None,
             history_budget_chars: None,
             subagent_max_turns: None,
-            subagent_max_tool_calls: None,
             subagent_max_wall_secs: None,
             search_max_results: None,
             max_tool_output_chars: None,
@@ -450,8 +446,8 @@ pub struct BotConfigView {
     pub brave_enabled: Option<bool>,
     /// run_python 默认超时秒数（None = 60s 默认；设置页可改，硬钳 300s）
     pub python_timeout_secs: Option<u64>,
-    /// 单次请求 Function 调用熔断上限（W5-FUSE 全域）：None = 默认 100；
-    /// 子 agent 会话不受影响（走各自预算）
+    /// 单次请求 Function 调用熔断上限（W5-FUSE 全域统一）：None = 默认 100；
+    /// 子 agent 默认预算同源此值
     pub max_function_calls: Option<u32>,
     /// 任务卡归档天数原样透传（None = 7 默认；设置页「数据管理」卡编辑）
     pub archive_after_days: Option<u32>,
@@ -499,8 +495,6 @@ pub struct BotConfigView {
     pub history_budget_chars: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subagent_max_turns: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub subagent_max_tool_calls: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subagent_max_wall_secs: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

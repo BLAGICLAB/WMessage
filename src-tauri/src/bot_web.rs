@@ -17,6 +17,19 @@ const SEARCH_OUTPUT_CAP: usize = 6000;
 /// count 参数硬上限（Tavily max_results 与 Brave count 的共同钳制）
 const SEARCH_COUNT_CAP: u32 = 10;
 
+/// reqwest 0.12+ 的错误 Display 只剩顶层一句（如「error sending request for url」），
+/// 真正原因（DNS/连接拒绝/TLS InvalidContentType）在 source 链里——逐层展开供
+/// 日志与工具结果诊断（fetch_url 全挂事故就是靠它定位的）
+pub(crate) fn err_chain(e: &(dyn std::error::Error + 'static)) -> String {
+    let mut msg = e.to_string();
+    let mut src = e.source();
+    while let Some(s) = src {
+        msg.push_str(&format!("（原因: {s}）"));
+        src = s.source();
+    }
+    msg
+}
+
 /// N3-5：web_search 过滤参数（工具层解析，三后端各自映射）
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct SearchOpts {
@@ -153,7 +166,8 @@ fn http_client_builder() -> reqwest::ClientBuilder {
 /// 钉住解析结果的 client（FIX-PLAN #7a DNS TOCTOU）：host 固定解析到
 /// check_public_url 校验过的地址，reqwest 不再二次 DNS——校验与请求之间
 /// 攻击者改 DNS 应答的窗口被关掉。TLS SNI/证书校验仍按原域名；
-/// 端口以 URL 为准（reqwest 用目标端口覆盖，addrs 里的端口仅占位）。
+/// addrs 端口必须是真实端口（check_public_url 已重写）——reqwest 0.13 的
+/// resolve_to_addrs 在 https 场景按 addr 自带端口连接，URL 端口不覆盖。
 fn http_client_pinned(
     url: &url::Url,
     addrs: &[std::net::SocketAddr],
@@ -897,7 +911,8 @@ async fn check_public_url(url: &url::Url) -> Result<Vec<std::net::SocketAddr>, C
     }
     // DNS 解析校验：域名解析出的每个 IP 都必须是公网（防解析到 127.0.0.1 的内网域名）
     let mut out: Vec<std::net::SocketAddr> = Vec::new();
-    // tokio::net::lookup_host 返回同步迭代器（解析已在 await 内完成）
+    // tokio::net::lookup_host 返回同步迭代器（解析已在 await 内完成）；端口
+    // 与解析无关，查完由 with_url_port 统一重写成 URL 真实端口
     let addrs = tokio::net::lookup_host((host.as_str(), 80))
         .await
         .map_err(|e| CommandError::DomainRule {
@@ -931,7 +946,22 @@ async fn check_public_url(url: &url::Url) -> Result<Vec<std::net::SocketAddr>, C
             reason: "域名没有解析到任何地址".to_string(),
         });
     }
-    Ok(out)
+    Ok(with_url_port(out, url))
+}
+
+/// 解析结果重写成 URL 真实端口（显式端口优先，否则 scheme 默认 443/80）。
+/// reqwest 0.13 的 resolve_to_addrs 在 https 场景按 addr 自带端口连接（URL 端口
+/// 不覆盖）——曾因 addr 端口用 80 占位导致所有 https 抓取 TLS 发去 80 端口被回
+/// InvalidContentType、fetch_url 全挂（2026-10-07 实测定位）。
+fn with_url_port(addrs: Vec<std::net::SocketAddr>, url: &url::Url) -> Vec<std::net::SocketAddr> {
+    let port = url.port_or_known_default().unwrap_or(80);
+    addrs
+        .into_iter()
+        .map(|mut a| {
+            a.set_port(port);
+            a
+        })
+        .collect()
 }
 
 /// 抓取网页正文：http/https、公网地址校验（含 DNS 解析与重定向逐跳）、HTML→纯文本、GBK 兜底解码
@@ -951,7 +981,7 @@ pub async fn fetch_text(raw_url: &str) -> Result<String, CommandError> {
             .header(reqwest::header::USER_AGENT, UA)
             .send()
             .await
-            .map_err(|e| format!("请求失败：{e}"))?;
+            .map_err(|e| format!("请求失败：{}", err_chain(&e)))?;
         let status = resp.status();
         if status.is_redirection() {
             if hops >= MAX_REDIRECTS {
@@ -1088,7 +1118,7 @@ async fn fetch_jina_reader(raw_url: &str) -> Result<String, String> {
         .header(reqwest::header::USER_AGENT, UA)
         .send()
         .await
-        .map_err(|e| format!("Jina 请求失败：{e}"))?;
+        .map_err(|e| format!("Jina 请求失败：{}", err_chain(&e)))?;
     if !resp.status().is_success() {
         return Err(format!("Jina 返回 HTTP {}", resp.status()));
     }
@@ -1103,7 +1133,7 @@ async fn read_body_capped(resp: reqwest::Response, max: usize) -> Result<Vec<u8>
     let mut buf = Vec::new();
     let mut stream = resp.bytes_stream();
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| format!("读取失败：{e}"))?;
+        let chunk = chunk.map_err(|e| format!("读取失败：{}", err_chain(&e)))?;
         if buf.len() + chunk.len() > max {
             return Err("页面过大（超过 2MB）已拒绝".into());
         }
@@ -1664,7 +1694,8 @@ mod tests {
     /// FIX-PLAN #7a（DNS TOCTOU）回归：钉住解析结果后请求必须走钉住的地址——
     /// 用 .invalid 域名（RFC 2606，真实 DNS 必解析失败）钉到本地回环服务器，
     /// 能连通即证明 reqwest 没有二次解析；Host 头必须仍是原域名。
-    /// 钉的 addr 端口故意给 80（与 URL 端口不同），顺带验证端口以 URL 为准。
+    /// （http 场景 URL 端口覆盖钉住的 80；https 场景相反、按 addr 端口连接——
+    /// 端口正确性由 check_public_url 的 with_url_port 重写保证，见下方单测）
     #[tokio::test]
     async fn pinned_client_uses_validated_addrs() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1701,6 +1732,30 @@ mod tests {
             got_host.lock().unwrap().as_str(),
             format!("pinned.invalid:{port}"),
             "钉 IP 不改 Host 头（TLS 场景 SNI/证书同理仍按原域名）"
+        );
+    }
+
+    /// with_url_port：https 默认端口 → 443；显式端口保留
+    #[test]
+    fn with_url_port_rewrites_to_real_port() {
+        let mk = |a: [u8; 4], p: u16| std::net::SocketAddr::from((a, p));
+        // https 无显式端口 → 443（曾因 80 占位导致 TLS 发去 80 端口全挂）
+        let https = url::Url::parse("https://example.com/").unwrap();
+        assert_eq!(
+            with_url_port(vec![mk([1, 2, 3, 4], 80)], &https),
+            vec![mk([1, 2, 3, 4], 443)]
+        );
+        // 显式端口保留
+        let explicit = url::Url::parse("https://example.com:8443/x").unwrap();
+        assert_eq!(
+            with_url_port(vec![mk([1, 2, 3, 4], 80), mk([5, 6, 7, 8], 80)], &explicit),
+            vec![mk([1, 2, 3, 4], 8443), mk([5, 6, 7, 8], 8443)]
+        );
+        // http 无显式端口 → 80（不变）
+        let http = url::Url::parse("http://example.com/").unwrap();
+        assert_eq!(
+            with_url_port(vec![mk([1, 2, 3, 4], 12345)], &http),
+            vec![mk([1, 2, 3, 4], 80)]
         );
     }
 }
