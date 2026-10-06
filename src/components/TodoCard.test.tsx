@@ -359,7 +359,7 @@ describe("TodoCardView 多文件绑定", () => {
   });
 });
 
-// —— 归属头像规则（2026-10-06 老板拍板简化）：执行中机器人头像；待办/执行完/有定时均用户头像 ——
+// —— 归属头像规则：定时设置后一直机器人头像；执行中机器人头像；执行完恢复用户头像 ——
 describe("TodoCardView 归属头像", () => {
   it("无定时未交机器人 → 用户头像（profile mock 无图时显示姓名首字）", () => {
     render(<TodoCardView task={baseTask} onUpdate={vi.fn()} onDelete={vi.fn()} />);
@@ -379,7 +379,7 @@ describe("TodoCardView 归属头像", () => {
     expect(screen.queryByTitle("Test")).not.toBeInTheDocument();
   });
 
-  it("设了定时（schedule）但未在执行 → 用户头像（定时不再常驻机器人头像）", () => {
+  it("设了定时（schedule）→ 一直显示机器人头像，即使 botAssigned 未置真", () => {
     render(
       <TodoCardView
         task={{ ...baseTask, schedule: "daily:09:00" }}
@@ -387,8 +387,7 @@ describe("TodoCardView 归属头像", () => {
         onDelete={vi.fn()}
       />
     );
-    expect(screen.queryByAltText("Bot")).not.toBeInTheDocument();
-    expect(screen.getByTitle("Test")).toBeInTheDocument();
+    expect(screen.getByAltText("Bot")).toBeInTheDocument();
   });
 
   it("机器人干完活（botAssigned 清除且无定时）→ 恢复用户头像", () => {
