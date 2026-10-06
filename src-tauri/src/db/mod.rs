@@ -11,9 +11,11 @@ pub use crate::db::bot_sessions::*;
 pub use crate::db::migrations::*;
 pub use crate::db::paths::*;
 pub use crate::db::people::*;
+pub use crate::db::schedule_jobs::*;
 pub use crate::db::skill_out::*;
 pub use crate::db::subagents::*;
 pub use crate::db::tasks::*;
+pub use crate::db::trace::*;
 pub use crate::db::workflow::*;
 pub use crate::db::workspace::*;
 use std::time::Duration;
@@ -26,9 +28,11 @@ pub mod bot_sessions;
 pub mod migrations;
 pub mod paths;
 pub mod people;
+pub mod schedule_jobs;
 pub mod skill_out;
 pub mod subagents;
 pub mod tasks;
+pub mod trace;
 pub mod workflow;
 pub mod workspace;
 
@@ -157,19 +161,45 @@ pub fn open_db<R: tauri::Runtime>(
     // subagents 表走单源 DDL（含 task_id UNIQUE + status/parent 索引），与测试建表共用
     conn.execute_batch(subagents::SUBAGENTS_DDL)
         .map_err(|e| e.to_string())?;
+    // 定时任务表（定时任务模块）：内容型定时作业，到点据此新建任务卡并执行
+    conn.execute_batch(crate::db::schedule_jobs::SCHEDULED_JOBS_DDL)
+        .map_err(|e| e.to_string())?;
+    // v1 老库补状态/重试列 + 执行历史表（XXL-JOB 调度日志借鉴）
+    crate::db::schedule_jobs::ensure_scheduled_jobs_columns(&conn).map_err(|e| e.to_string())?;
+    conn.execute_batch(crate::db::schedule_jobs::SCHEDULED_JOB_RUNS_DDL)
+        .map_err(|e| e.to_string())?;
     // workflows 表（W1-CANVAS，设计 §3.2）：工作流元数据 + 总目标文本；
     // 节点卡存 tasks 表（origin='workflow' + workflow_id 外联），不在此表
     conn.execute_batch(crate::db::workflow::WORKFLOWS_DDL)
         .map_err(|e| e.to_string())?;
     // W8-ATTACH：老库的 workflows 表补 attachments 列（拆解附件路径）
     crate::db::workflow::ensure_workflows_attachments(&conn).map_err(|e| e.to_string())?;
+    // 定时任务模块：老库的 workflows 表补定时三列（到点自动执行整张工作流）
+    crate::db::workflow::ensure_workflows_schedule(&conn).map_err(|e| e.to_string())?;
     // 成员注册表（任务图谱设计 §1.2）：多人汇总的归属人字典，幂等
     conn.execute_batch(people::PEOPLE_DDL)
         .map_err(|e| e.to_string())?;
     // 模型元数据双表（meta_provider/meta_model，meta 模块的存储面），幂等
     migrations::ensure_meta_tables(&conn)?;
+    // 执行痕迹三表（exec_traces/exec_spans/file_changes，Agent 透明化设计 §4.1），幂等
+    conn.execute_batch(crate::db::trace::EXEC_TRACE_DDL)
+        .map_err(|e| e.to_string())?;
     // 迁移：定时任务卡
     for (col, ty) in [("schedule", "TEXT"), ("sched_last", "INTEGER")] {
+        let has: bool = conn
+            .prepare("PRAGMA table_info(tasks)")
+            .and_then(|mut stmt| {
+                let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+                Ok(rows.filter_map(|n| n.ok()).any(|n| n == col))
+            })
+            .unwrap_or(false);
+        if !has {
+            conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"), [])
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    // 迁移：定时启用开关（定时任务模块；NULL = 启用，0 = 暂停不删配置）
+    for (col, ty) in crate::db::tasks::SCHED_ENABLED_TASK_COLUMNS {
         let has: bool = conn
             .prepare("PRAGMA table_info(tasks)")
             .and_then(|mut stmt| {
@@ -300,6 +330,18 @@ pub fn open_db<R: tauri::Runtime>(
             crate::audit::AuditLevel::Info,
             "task_files_migration",
             &[("migrated", migrated.to_string())],
+        );
+    }
+    // 老数据迁移（定时任务模块）：tasks.schedule「现有卡定时」→ scheduled_jobs
+    // 内容型作业（content = 卡标题），搬完清空任务卡调度字段，此后单源本表。
+    // 必须在 tasks.schedule 列迁移之后（上面 ALTER 循环已保证列存在）。
+    let sched_migrated = crate::db::schedule_jobs::migrate_legacy_task_schedules(&conn)?;
+    if sched_migrated > 0 {
+        crate::audit::write_event(
+            app,
+            crate::audit::AuditLevel::Info,
+            "scheduled_jobs_legacy_migration",
+            &[("migrated", sched_migrated.to_string())],
         );
     }
     let has_sid: bool = conn
@@ -665,6 +707,7 @@ mod tests {
             model: None,
             owner_id: None,
             created_at: None,
+            enabled: None,
             expected_updated_at: None,
         }
     }
@@ -786,7 +829,7 @@ mod tests {
         // 与 files 列同为 open_db 幂等 ALTER 的一部分；fixture 保持「仅缺 files 列」的
         // 被测前提不变，把其余列补齐，否则迁移后 load_all 查新列会炸。
         // 列清单单源 = tasks::W1_TASK_COLUMNS + tasks::OWNER_TASK_COLUMNS +
-        // tasks::CREATED_AT_TASK_COLUMNS（勿手工镜像）
+        // tasks::CREATED_AT_TASK_COLUMNS + tasks::SCHED_ENABLED_TASK_COLUMNS（勿手工镜像）
         for (col, ty) in crate::db::tasks::W1_TASK_COLUMNS {
             conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"), [])
                 .unwrap();
@@ -796,6 +839,10 @@ mod tests {
                 .unwrap();
         }
         for (col, ty) in crate::db::tasks::CREATED_AT_TASK_COLUMNS {
+            conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"), [])
+                .unwrap();
+        }
+        for (col, ty) in crate::db::tasks::SCHED_ENABLED_TASK_COLUMNS {
             conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"), [])
                 .unwrap();
         }

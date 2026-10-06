@@ -181,7 +181,7 @@ async fn run_task_in_chat_full_chain_manual_origin() {
         }
     };
 
-    let run = run_task_in_chat_with(&handle, &task_id, TaskExecOrigin::Manual, runner)
+    let run = run_task_in_chat_with(&handle, &task_id, TaskExecOrigin::Manual, None, runner)
         .await
         .expect("执行应成功");
     let sid = run.session_id.clone();
@@ -250,6 +250,7 @@ async fn duplicate_trigger_rejected_by_exec_guard() {
             &h1,
             &t1,
             TaskExecOrigin::Batch,
+            None,
             move |_app, _msgs, _stop| async move {
                 let _ = entered_tx.send(());
                 let _ = release_rx.await;
@@ -265,6 +266,7 @@ async fn duplicate_trigger_rejected_by_exec_guard() {
         &handle,
         &task_id,
         TaskExecOrigin::Scheduled,
+        None,
         move |_app, _msgs, _stop| async move { Ok(("不应执行到这里".to_string(), Vec::new())) },
     )
     .await;
@@ -296,7 +298,9 @@ async fn failure_persists_error_reply_in_session() {
         ))
     };
     let err =
-        match run_task_in_chat_with(&handle, &task_id, TaskExecOrigin::Scheduled, runner).await {
+        match run_task_in_chat_with(&handle, &task_id, TaskExecOrigin::Scheduled, None, runner)
+            .await
+        {
             Err(e) => e,
             Ok(_) => panic!("应失败"),
         };

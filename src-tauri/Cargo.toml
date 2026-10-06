@@ -44,6 +44,8 @@ serde_json = "1"
 tauri-plugin-dialog = "2"
 # 开机自启动：登录系统时自动拉起 wmessage（设置页「通用设置」里开关控制）
 tauri-plugin-autostart = "2"
+# 剪贴板写入（N4 clipboard_write 工具）：官方插件 v2，Rust 侧 ClipboardExt::write_text
+tauri-plugin-clipboard-manager = "2"
 
 rusqlite = { version = "0.37", features = ["bundled"] }
 chrono = "0.4"
@@ -64,6 +66,10 @@ url = "2"
 
 # 图片附件：base64 编码后作为多模态消息发给 MiniMax
 base64 = "0.22"
+
+# 执行透明化（Agent 透明化设计 §4.2 P1-b）：文件修改 diff 生成 + 回滚证据链哈希
+similar = "2"
+sha2 = "0.10"
 
 # 规则表 CSV 导入（Excel/WPS 表格模版）
 csv = "1"

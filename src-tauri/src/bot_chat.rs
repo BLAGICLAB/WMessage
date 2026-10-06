@@ -18,7 +18,7 @@
 //! - bot_model_loop.rs 负责「输出侧」（流式 SSE 解析、工具循环、停止检查）
 //! - 两者通过 run_model_loop(StopGuard, max_rounds, msgs) 这一签名解耦
 
-use crate::bot_skills::{build_skill_block, SkillMeta};
+use crate::bot_skills::{build_skill_block_for, SkillMeta};
 use crate::bot_slash::{bot_get_enabled, StopGuard};
 use crate::error::{CommandError, CommandResult};
 use crate::evolution::trace::{TraceContext, TraceOutcome};
@@ -437,6 +437,37 @@ fn attach_images_in(roots: &[std::path::PathBuf], content: &str) -> (serde_json:
     (v, skipped)
 }
 
+/// N5：单个图片文件 → OpenAI image_url content part（data URL）。
+/// 工具图片回传（screenshot）与附件链路共用同上限/同 mime 表；
+/// 不做白名单校验（调用方是工具自身产物，非用户不可信输入）。
+/// 文件缺失/超限/非图片扩展名返回 None（调用方跳过，不阻断）。
+pub(crate) fn image_part_from_file(p: &std::path::Path) -> Option<serde_json::Value> {
+    let ext = p
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase())
+        .unwrap_or_default();
+    if !IMAGE_EXTS.contains(&ext.as_str()) {
+        return None;
+    }
+    let bytes = std::fs::read(p).ok()?;
+    if bytes.is_empty() || bytes.len() > MAX_IMAGE_BYTES {
+        return None;
+    }
+    let mime = match ext.as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        "bmp" => "image/bmp",
+        _ => "image/png",
+    };
+    let b64 = B64.encode(&bytes);
+    Some(serde_json::json!({
+        "type": "image_url",
+        "image_url": {"url": format!("data:{mime};base64,{b64}")}
+    }))
+}
+
 /// 工具执行后带出的任务引用（前端渲染成可点击按钮，跳主窗口打开该任务）
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -558,7 +589,7 @@ fn start_skill_with_audit(
     skill_name: String,
     session_id: Option<&str>,
 ) -> Option<(SkillMeta, String)> {
-    match crate::bot_skills::start_skill(app, &skill_name, session_id) {
+    match crate::bot_skills::start_skill(app, &skill_name, serde_json::Value::Null, session_id) {
         Ok((meta, body)) => {
             crate::audit_event!(
                 app,
@@ -746,7 +777,15 @@ pub async fn bot_chat(
     prompt.push(PromptSlot::GenDir, format!("\n\n{}", gen_dir_rule(&app)));
     prompt.push(
         PromptSlot::SkillCatalog,
-        format!("\n\n{}", build_skill_block(&app)),
+        format!(
+            "\n\n{}",
+            // N7-②：按用户末条消息做语义化技能推荐排序（embed 不可用降级全清单）
+            crate::bot_skills::build_skill_block_for(
+                &app,
+                messages.last().map(|m| m.content.as_str()),
+            )
+            .await
+        ),
     );
 
     // 步骤 3：middleware::run_pre_step（pre-step 路由，F-2 抽象层短路求值）：
@@ -1432,21 +1471,37 @@ pub async fn run_task_in_chat(
     // 每卡模型覆盖（W6-MODEL）：模型库条目 id；None = 跟随全局 active
     model: Option<String>,
 ) -> CommandResult<TaskChatRun> {
-    run_task_in_chat_with(app, task_id, origin, |app2, msgs, stop| async move {
-        crate::bot_model_loop::run_model_loop(
-            app2,
-            msgs,
-            crate::bot_model_loop::DEFAULT_MAX_ROUNDS,
-            &stop,
-            None,
-            // 任务执行链路不挂单次覆盖，按 bot-config.json 全局默认（RE-1）
-            None,
-            model,
-        )
-        .await
-        // LoopTrace 暂无消费方（子卡三字段已够用），此处剥掉保返回类型不变
-        .map(|(text, refs, _trace)| (text, refs))
-    })
+    // P1-d（Agent 透明化设计 §4.2）：执行 trace 挂钩——壳造槽，闭包填 LoopTrace 统计，
+    // 内核（run_task_in_chat_with）填归属并收尾。
+    let hook: std::sync::Arc<std::sync::Mutex<crate::trace_sink::TraceCapture>> =
+        Default::default();
+    let hook_for_run = hook.clone();
+    run_task_in_chat_with(
+        app,
+        task_id,
+        origin,
+        Some(hook),
+        |app2, msgs, stop| async move {
+            crate::bot_model_loop::run_model_loop(
+                app2,
+                msgs,
+                crate::bot_model_loop::DEFAULT_MAX_ROUNDS,
+                &stop,
+                None,
+                // 任务执行链路不挂单次覆盖，按 bot-config.json 全局默认（RE-1）
+                None,
+                model,
+            )
+            .await
+            // LoopTrace 统计进 trace 汇总槽（轮数/工具数/tokens → exec_traces 行）
+            .map(|(text, refs, trace)| {
+                if let Ok(mut c) = hook_for_run.lock() {
+                    c.stats = Some(trace);
+                }
+                (text, refs)
+            })
+        },
+    )
     .await
 }
 
@@ -1459,6 +1514,9 @@ pub async fn run_task_in_chat_with<R: tauri::Runtime, Run, Fut>(
     app: &tauri::AppHandle<R>,
     task_id: &str,
     origin: TaskExecOrigin,
+    // P1-d：执行 trace 挂钩（None = 不采集，测试与遗留路径用）。
+    // 内核负责建 trace（begin）与收尾（end）——成对执行，中途无早退分支。
+    trace_hook: Option<std::sync::Arc<std::sync::Mutex<crate::trace_sink::TraceCapture>>>,
     run: Run,
 ) -> CommandResult<TaskChatRun>
 where
@@ -1525,10 +1583,26 @@ where
     // 末尾无论成败都要 unregister_exec_session 清理。守卫成功后再登记——
     // acquire 失败的早退分支不应泄漏登记（无人 unregister）。
     crate::tool_guard::register_exec_session(&sid, origin);
+    // P1-d：建执行 trace + 注册 session→trace 映射（span/file_change 采集开关）。
+    // 位置保证：此后到函数尾无早退分支，end_trace 必然成对执行。观测面失败降级 None。
+    if let Some(hook) = &trace_hook {
+        let trace_id = crate::trace_sink::begin_trace(
+            app,
+            &sid,
+            Some(task.id.clone()),
+            origin.as_str(),
+            Some(task.title.clone()),
+        )
+        .await;
+        if let Ok(mut c) = hook.lock() {
+            c.trace_id = trace_id;
+            c.session_id = Some(sid.clone());
+        }
+    }
     let stop = StopGuard::new_task_exec(app, true, Some(sid.clone()));
     let block = build_task_block(&task);
     let mut msgs = vec![
-        serde_json::json!({"role": "system", "content": format!("{}\n\n{}\n\n{}", EXECUTE_SYSTEM_PROMPT, gen_dir_rule(app), build_skill_block(app))}),
+        serde_json::json!({"role": "system", "content": format!("{}\n\n{}\n\n{}", EXECUTE_SYSTEM_PROMPT, gen_dir_rule(app), build_skill_block_for(app, Some(&task.title)).await)}),
         serde_json::json!({"role": "user", "content": block}),
     ];
     // 任务卡执行/定时调度也注入记忆块——助手执行任务时知道用户
@@ -1552,9 +1626,19 @@ where
         text,
         task_refs: refs,
     });
+    // P1-d：trace 收尾（无论成败；与 begin 成对）+ 注销 session→trace 映射
+    if let Some(hook) = &trace_hook {
+        crate::trace_sink::end_trace(
+            app,
+            hook,
+            outcome.is_ok(),
+            outcome.as_ref().err().map(|e| e.to_string()),
+        )
+        .await;
+    }
     // assistant 回复落库（失败也落 ⚠️ 行——会话即执行记录，留证可回看）
     persist_exec_reply(app, &task, &sid, &outcome).await;
-    // D4d 收尾：解除 session 注册（无论成败），按 TaskExecOrigin 分流触发汇总弹窗。
+    // D4d 收尾：解除 session 注册（无论成败），按 TaskExecOrigin 分流落绑定通知。
     crate::tool_guard::unregister_exec_session(&sid);
     let task_column = crate::db::db_load_for(app).await.ok().and_then(|tasks| {
         tasks
@@ -1566,21 +1650,42 @@ where
         crate::bot_artifacts::should_emit(app, task_id, origin, task_column.map(|s| s.as_str()))
             .await
     {
-        let _ = app.emit(
-            "artifact-batch-ready",
-            serde_json::json!({
-                "taskId": task_id,
-                "taskTitle": task.title,
-                "sessionId": sid,
-                "origin": match origin {
-                    TaskExecOrigin::Manual => "manual",
-                    TaskExecOrigin::Scheduled => "scheduled",
-                    TaskExecOrigin::Batch => "batch",
-                    TaskExecOrigin::Workflow => "workflow",
-                },
-                "paths": artifacts.iter().map(|a| a.path.clone()).collect::<Vec<_>>(),
-            }),
+        // 通知中心落一条持久化消息（原 D4d 挂件 artifact-batch-ready 弹窗已下线：
+        // 消息互不覆盖、重启不丢）。失败不阻断执行收尾，stderr 留痕。
+        let paths: Vec<String> = artifacts.iter().map(|a| a.path.clone()).collect();
+        let origin_label = match origin {
+            TaskExecOrigin::Manual => "手动执行",
+            TaskExecOrigin::Scheduled => "定时执行",
+            TaskExecOrigin::Batch => "批量执行",
+            TaskExecOrigin::Workflow => "工作流执行",
+        };
+        let payload = serde_json::json!({
+            "taskId": task_id,
+            "taskTitle": task.title,
+            "origin": origin_label,
+            "paths": paths,
+        });
+        let title = format!(
+            "任务「{}」完成，{} 个产物待绑定",
+            task.title,
+            payload["paths"].as_array().map(|a| a.len()).unwrap_or(0)
         );
+        let body = format!("{origin_label} · 勾选要绑定到任务卡的文件");
+        let insert = crate::db::open_db(app).and_then(|conn| {
+            crate::notifications::notif_insert(
+                &conn,
+                &format!("artifact:{task_id}:{sid}"),
+                crate::notifications::KIND_ARTIFACT,
+                &title,
+                &body,
+                &payload,
+            )
+        });
+        match insert {
+            Ok(true) => crate::notifications::emit_changed(app),
+            Ok(false) => {}
+            Err(e) => eprintln!("[notifications] 产物绑定通知落库失败：{e}"),
+        }
     }
     match outcome {
         Ok(result) => Ok(TaskChatRun {

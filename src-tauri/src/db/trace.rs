@@ -1,0 +1,950 @@
+//! 执行痕迹三表（Agent 透明化改造设计 §4.1，docs/AGENT-TRANSPARENCY-DESIGN-2026-10-06.md）：
+//! 一次执行 = 一条 `exec_traces`（run_task_in_chat / 主聊天 / 技能 run），
+//! 每次工具调用 = 一条 `exec_spans`，每次文件落盘修改 = 一条 `file_changes`。
+//!
+//! 定位：**append-only 观测面**——只增与收尾，不参与任何业务判定；写路径全部
+//! 经 `open_db` 幂等建表（`EXEC_TRACE_DDL`），采集侧（P1-b/c/d）按 span/change
+//! 逐条 insert，收尾由 `trace_finish` 一次 UPDATE 汇总。
+//!
+//! 钳制纪律（与审计 KV 500 字符同思路：本地库也防膨胀）：
+//! - `SPAN_TEXT_MAX`：args/result 单条 16KB（生成侧钳，本模块 `clamp_text` 单源）
+//! - `MAX_DIFF_LINES`：unified diff 行数上限（P1-b 生成侧引用）
+//! - `TRACE_RETENTION_DAYS`：保留期默认 30 天（`retire_traces_before` 由命令/定时触发）
+
+use serde::Serialize;
+
+use crate::error::CommandResult;
+
+/// args/result 单条文本钳制（16KB）
+pub const SPAN_TEXT_MAX: usize = 16 * 1024;
+/// unified diff 行数钳制（P1-b 生成侧引用）
+pub const MAX_DIFF_LINES: usize = 2000;
+/// 执行痕迹保留期（天）；对齐 Claude Code checkpointing 的 cleanupPeriodDays 默认
+pub const TRACE_RETENTION_DAYS: i64 = 30;
+
+/// trace 收尾状态值域（status 列；running 为起始态，其余四态只能由 trace_finish 写入）
+pub const TRACE_STATUS_RUNNING: &str = "running";
+pub const TRACE_STATUS_DONE: &str = "done";
+pub const TRACE_STATUS_FAILED: &str = "failed";
+pub const TRACE_STATUS_STOPPED: &str = "stopped";
+pub const TRACE_STATUS_TIMEOUT: &str = "timeout";
+
+pub const EXEC_TRACE_DDL: &str = "
+CREATE TABLE IF NOT EXISTS exec_traces (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id        TEXT    NOT NULL,
+  task_id           TEXT,
+  origin            TEXT    NOT NULL,
+  title             TEXT,
+  status            TEXT    NOT NULL DEFAULT 'running',
+  started_at        INTEGER NOT NULL,
+  finished_at       INTEGER,
+  turn_count        INTEGER NOT NULL DEFAULT 0,
+  tool_calls        INTEGER NOT NULL DEFAULT 0,
+  files_changed     INTEGER NOT NULL DEFAULT 0,
+  prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+  completion_tokens INTEGER NOT NULL DEFAULT 0,
+  error             TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_traces_task     ON exec_traces(task_id);
+CREATE INDEX IF NOT EXISTS idx_traces_session  ON exec_traces(session_id);
+-- 保留期清理主扫描列（retire_traces_before）
+CREATE INDEX IF NOT EXISTS idx_traces_finished ON exec_traces(finished_at);
+
+CREATE TABLE IF NOT EXISTS exec_spans (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  trace_id     INTEGER NOT NULL,
+  turn         INTEGER NOT NULL,
+  tool_call_id TEXT,
+  name         TEXT    NOT NULL,
+  args         TEXT,
+  result       TEXT,
+  ok           INTEGER NOT NULL DEFAULT 1,
+  error_class  TEXT,
+  duration_ms  INTEGER,
+  created_at   INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_spans_trace ON exec_spans(trace_id);
+
+CREATE TABLE IF NOT EXISTS file_changes (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  trace_id   INTEGER NOT NULL,
+  span_id    INTEGER,
+  path       TEXT    NOT NULL,
+  kind       TEXT    NOT NULL,
+  added      INTEGER NOT NULL DEFAULT 0,
+  deleted    INTEGER NOT NULL DEFAULT 0,
+  diff       TEXT,
+  truncated  INTEGER NOT NULL DEFAULT 0,
+  before_ref TEXT,
+  before_sha TEXT,
+  after_sha  TEXT,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_changes_trace ON file_changes(trace_id);";
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TraceRow {
+    pub id: i64,
+    pub session_id: String,
+    pub task_id: Option<String>,
+    pub origin: String,
+    pub title: Option<String>,
+    pub status: String,
+    pub started_at: i64,
+    pub finished_at: Option<i64>,
+    pub turn_count: i64,
+    pub tool_calls: i64,
+    pub files_changed: i64,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub error: Option<String>,
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SpanRow {
+    pub id: i64,
+    pub trace_id: i64,
+    pub turn: i64,
+    pub tool_call_id: Option<String>,
+    pub name: String,
+    pub args: Option<String>,
+    pub result: Option<String>,
+    pub ok: bool,
+    pub error_class: Option<String>,
+    pub duration_ms: Option<i64>,
+    pub created_at: i64,
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FileChangeRow {
+    pub id: i64,
+    pub trace_id: i64,
+    pub span_id: Option<i64>,
+    pub path: String,
+    pub kind: String,
+    pub added: i64,
+    pub deleted: i64,
+    pub diff: Option<String>,
+    pub truncated: bool,
+    pub before_ref: Option<String>,
+    pub before_sha: Option<String>,
+    pub after_sha: Option<String>,
+    pub created_at: i64,
+}
+
+/// trace_start 入参（started_at 由采集侧传——收尾要算耗时，别在本层偷换 now）
+pub struct NewTrace<'a> {
+    pub session_id: &'a str,
+    pub task_id: Option<&'a str>,
+    pub origin: &'a str,
+    pub title: Option<&'a str>,
+    pub started_at: i64,
+}
+
+/// span 落盘入参；args/result 由调用方经 `clamp_text` 钳后传入（钳没钳本层不拦，
+/// 超限审计 `trace.span_overflow` 在采集侧——DB 层只保底 `span_insert` 不再钳二次）。
+pub struct NewSpan<'a> {
+    pub trace_id: i64,
+    pub turn: i64,
+    pub tool_call_id: Option<&'a str>,
+    pub name: &'a str,
+    pub args: Option<&'a str>,
+    pub result: Option<&'a str>,
+    pub ok: bool,
+    pub error_class: Option<&'a str>,
+    pub duration_ms: Option<i64>,
+    pub created_at: i64,
+}
+
+/// file_change 落盘入参（P1-b 由 FileChangeReceipt 映射而来）
+pub struct NewFileChange<'a> {
+    pub trace_id: i64,
+    pub span_id: Option<i64>,
+    pub path: &'a str,
+    /// create / modify / delete（值域由生成侧保证）
+    pub kind: &'a str,
+    pub added: i64,
+    pub deleted: i64,
+    pub diff: Option<&'a str>,
+    pub truncated: bool,
+    /// before 全文快照文件名（uuid 发号，非 DB row id——row id 落库前不可知；
+    /// P2 回滚按此名取 `data_dir/checkpoints/<before_ref>`。设计 §9.2-3 据实现修正）
+    pub before_ref: Option<&'a str>,
+    pub before_sha: Option<&'a str>,
+    pub after_sha: Option<&'a str>,
+    pub created_at: i64,
+}
+
+/// trace_finish 入参；files_changed 不由调用方传——以 file_changes 表计数为准（单一事实源）
+pub struct TraceFinish<'a> {
+    pub status: &'a str,
+    pub finished_at: i64,
+    pub turn_count: i64,
+    pub tool_calls: i64,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub error: Option<&'a str>,
+}
+
+/// 文本按字节钳制，UTF-8 字符边界回退（多字节中文不能拦腰截断）。
+/// 生成侧统一走本函数，保证「钳后必是合法 String」只有一份实现。
+pub fn clamp_text(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s[..end].to_string()
+}
+
+fn trace_row_from(r: &rusqlite::Row) -> rusqlite::Result<TraceRow> {
+    Ok(TraceRow {
+        id: r.get(0)?,
+        session_id: r.get(1)?,
+        task_id: r.get(2)?,
+        origin: r.get(3)?,
+        title: r.get(4)?,
+        status: r.get(5)?,
+        started_at: r.get(6)?,
+        finished_at: r.get(7)?,
+        turn_count: r.get(8)?,
+        tool_calls: r.get(9)?,
+        files_changed: r.get(10)?,
+        prompt_tokens: r.get(11)?,
+        completion_tokens: r.get(12)?,
+        error: r.get(13)?,
+    })
+}
+
+const TRACE_COLS: &str =
+    "id, session_id, task_id, origin, title, status, started_at, finished_at, \
+     turn_count, tool_calls, files_changed, prompt_tokens, completion_tokens, error";
+
+/// 幂等建三表（open_db 接线；测试直接 execute_batch EXEC_TRACE_DDL 同款）
+pub fn ensure_trace_tables(conn: &rusqlite::Connection) -> Result<(), String> {
+    conn.execute_batch(EXEC_TRACE_DDL)
+        .map_err(|e| e.to_string())
+}
+
+pub fn trace_start(conn: &rusqlite::Connection, t: &NewTrace) -> Result<i64, String> {
+    conn.execute(
+        "INSERT INTO exec_traces (session_id, task_id, origin, title, status, started_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![
+            t.session_id,
+            t.task_id,
+            t.origin,
+            t.title,
+            TRACE_STATUS_RUNNING,
+            t.started_at
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// 收尾一次 UPDATE 汇总；files_changed 从 file_changes 表反计（防两头记账漂移）。
+/// 幂等性：重复 finish 只是覆盖同值（调用方保证只收一次），running 行误收不拦——观测面不设闸。
+pub fn trace_finish(
+    conn: &rusqlite::Connection,
+    trace_id: i64,
+    f: &TraceFinish,
+) -> Result<(), String> {
+    conn.execute(
+        "UPDATE exec_traces SET
+           status = ?2, finished_at = ?3,
+           turn_count = ?4, tool_calls = ?5,
+           prompt_tokens = ?6, completion_tokens = ?7,
+           error = ?8,
+           files_changed = (SELECT COUNT(*) FROM file_changes WHERE trace_id = ?1)
+         WHERE id = ?1",
+        rusqlite::params![
+            trace_id,
+            f.status,
+            f.finished_at,
+            f.turn_count,
+            f.tool_calls,
+            f.prompt_tokens,
+            f.completion_tokens,
+            f.error
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn span_insert(conn: &rusqlite::Connection, s: &NewSpan) -> Result<i64, String> {
+    conn.execute(
+        "INSERT INTO exec_spans
+           (trace_id, turn, tool_call_id, name, args, result, ok, error_class, duration_ms, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        rusqlite::params![
+            s.trace_id,
+            s.turn,
+            s.tool_call_id,
+            s.name,
+            s.args,
+            s.result,
+            s.ok as i64,
+            s.error_class,
+            s.duration_ms,
+            s.created_at
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn file_change_insert(conn: &rusqlite::Connection, c: &NewFileChange) -> Result<i64, String> {
+    conn.execute(
+        "INSERT INTO file_changes
+           (trace_id, span_id, path, kind, added, deleted, diff, truncated, before_ref, before_sha, after_sha, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        rusqlite::params![
+            c.trace_id,
+            c.span_id,
+            c.path,
+            c.kind,
+            c.added,
+            c.deleted,
+            c.diff,
+            c.truncated as i64,
+            c.before_ref,
+            c.before_sha,
+            c.after_sha,
+            c.created_at
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// 摘要列表（不含 span 正文）：可选过滤 task/session/origin，started_at 倒序。
+/// limit 钳 1..=500（防止前端一拉全表）。
+pub fn trace_query(
+    conn: &rusqlite::Connection,
+    task_id: Option<&str>,
+    session_id: Option<&str>,
+    origin: Option<&str>,
+    limit: i64,
+) -> Result<Vec<TraceRow>, String> {
+    let mut sql = format!("SELECT {TRACE_COLS} FROM exec_traces");
+    let mut vals: Vec<String> = Vec::new();
+    let mut conds: Vec<String> = Vec::new();
+    if let Some(t) = task_id {
+        conds.push("task_id = ?".into());
+        vals.push(t.to_string());
+    }
+    if let Some(s) = session_id {
+        conds.push("session_id = ?".into());
+        vals.push(s.to_string());
+    }
+    if let Some(o) = origin {
+        conds.push("origin = ?".into());
+        vals.push(o.to_string());
+    }
+    if !conds.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&conds.join(" AND "));
+    }
+    sql.push_str(" ORDER BY started_at DESC, id DESC LIMIT ?");
+    vals.push(limit.clamp(1, 500).to_string());
+
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(vals.iter()), trace_row_from)
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+pub fn trace_get_row(
+    conn: &rusqlite::Connection,
+    trace_id: i64,
+) -> Result<Option<TraceRow>, String> {
+    let sql = format!("SELECT {TRACE_COLS} FROM exec_traces WHERE id = ?1");
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let mut rows = stmt
+        .query_map([trace_id], trace_row_from)
+        .map_err(|e| e.to_string())?;
+    match rows.next() {
+        Some(r) => Ok(Some(r.map_err(|e| e.to_string())?)),
+        None => Ok(None),
+    }
+}
+
+pub fn spans_for_trace(conn: &rusqlite::Connection, trace_id: i64) -> Result<Vec<SpanRow>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, trace_id, turn, tool_call_id, name, args, result, ok, error_class, duration_ms, created_at
+             FROM exec_spans WHERE trace_id = ?1 ORDER BY id",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([trace_id], |r| {
+            Ok(SpanRow {
+                id: r.get(0)?,
+                trace_id: r.get(1)?,
+                turn: r.get(2)?,
+                tool_call_id: r.get(3)?,
+                name: r.get(4)?,
+                args: r.get(5)?,
+                result: r.get(6)?,
+                ok: r.get::<_, i64>(7)? != 0,
+                error_class: r.get(8)?,
+                duration_ms: r.get(9)?,
+                created_at: r.get(10)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+pub fn file_changes_for_trace(
+    conn: &rusqlite::Connection,
+    trace_id: i64,
+) -> Result<Vec<FileChangeRow>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, trace_id, span_id, path, kind, added, deleted, diff, truncated, before_ref, before_sha, after_sha, created_at
+             FROM file_changes WHERE trace_id = ?1 ORDER BY id",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([trace_id], |r| {
+            Ok(FileChangeRow {
+                id: r.get(0)?,
+                trace_id: r.get(1)?,
+                span_id: r.get(2)?,
+                path: r.get(3)?,
+                kind: r.get(4)?,
+                added: r.get(5)?,
+                deleted: r.get(6)?,
+                diff: r.get(7)?,
+                truncated: r.get::<_, i64>(8)? != 0,
+                before_ref: r.get(9)?,
+                before_sha: r.get(10)?,
+                after_sha: r.get(11)?,
+                created_at: r.get(12)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+/// 保留期清理：删除「已收尾且 finished_at 早于 before_ms」或「一直挂着 running 且
+/// started_at 早于 before_ms」（崩溃残留的僵尸 trace 永远等不到收尾）。
+/// 子表行按 trace_id 显式删除（无外键，事务内三删保原子）。返回删除的 trace 条数。
+pub fn retire_traces_before(conn: &rusqlite::Connection, before_ms: i64) -> Result<usize, String> {
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    let ids: Vec<i64> = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT id FROM exec_traces
+                 WHERE (finished_at IS NOT NULL AND finished_at < ?1)
+                    OR (finished_at IS NULL AND started_at < ?1)",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([before_ms], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| e.to_string())?);
+        }
+        out
+    };
+    for id in &ids {
+        tx.execute("DELETE FROM exec_spans WHERE trace_id = ?1", [id])
+            .map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM file_changes WHERE trace_id = ?1", [id])
+            .map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM exec_traces WHERE id = ?1", [id])
+            .map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(ids.len())
+}
+
+// ───────────────────────── 前端查询命令（P1-d） ─────────────────────────
+
+/// 单次执行的完整痕迹（trace 摘要 + 全部 span + 全部文件变更；diff 已按 MAX_DIFF_LINES 钳）
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct TraceDetail {
+    #[serde(flatten)]
+    pub trace: TraceRow,
+    pub spans: Vec<SpanRow>,
+    pub file_changes: Vec<FileChangeRow>,
+}
+
+/// 词元统计单日聚合（设置页「词元统计」卡数据源，P3 实装消费）
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageDay {
+    /// 本地日期 YYYY-MM-DD
+    pub day: String,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub runs: i64,
+    pub tool_calls: i64,
+}
+
+#[tauri::command]
+pub fn trace_list(
+    app: tauri::AppHandle,
+    task_id: Option<String>,
+    session_id: Option<String>,
+    origin: Option<String>,
+    limit: Option<i64>,
+) -> CommandResult<Vec<TraceRow>> {
+    let conn = super::open_db(&app)?;
+    Ok(trace_query(
+        &conn,
+        task_id.as_deref(),
+        session_id.as_deref(),
+        origin.as_deref(),
+        limit.unwrap_or(50),
+    )?)
+}
+
+#[tauri::command]
+pub fn trace_detail(app: tauri::AppHandle, trace_id: i64) -> CommandResult<Option<TraceDetail>> {
+    let conn = super::open_db(&app)?;
+    let Some(trace) = trace_get_row(&conn, trace_id)? else {
+        return Ok(None);
+    };
+    let spans = spans_for_trace(&conn, trace_id)?;
+    let file_changes = file_changes_for_trace(&conn, trace_id)?;
+    Ok(Some(TraceDetail {
+        trace,
+        spans,
+        file_changes,
+    }))
+}
+
+/// 保留期清理（数据管理入口，后续可挂定时器）：默认 TRACE_RETENTION_DAYS 天，钳 1..=365
+#[tauri::command]
+pub fn trace_clear_before(app: tauri::AppHandle, days: Option<i64>) -> CommandResult<usize> {
+    let conn = super::open_db(&app)?;
+    let days = days.unwrap_or(TRACE_RETENTION_DAYS).clamp(1, 365);
+    let before = chrono::Utc::now().timestamp_millis() - days * 86_400_000;
+    let removed = retire_traces_before(&conn, before)?;
+    if removed > 0 {
+        crate::audit::write_event(
+            &app,
+            crate::audit::AuditLevel::Info,
+            "trace.retired",
+            &[("removed", removed.to_string()), ("days", days.to_string())],
+        );
+    }
+    Ok(removed)
+}
+
+#[tauri::command]
+pub fn usage_stats_daily(app: tauri::AppHandle, days: Option<i64>) -> CommandResult<Vec<UsageDay>> {
+    let conn = super::open_db(&app)?;
+    let days = days.unwrap_or(30).clamp(1, 365);
+    let since = chrono::Utc::now().timestamp_millis() - days * 86_400_000;
+    let mut stmt = conn
+        .prepare(
+            "SELECT date(started_at / 1000, 'unixepoch', 'localtime') AS day,
+                    SUM(prompt_tokens), SUM(completion_tokens), COUNT(*), SUM(tool_calls)
+             FROM exec_traces WHERE started_at >= ?1
+             GROUP BY day ORDER BY day DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([since], |r| {
+            Ok(UsageDay {
+                day: r.get(0)?,
+                prompt_tokens: r.get::<_, Option<i64>>(1)?.unwrap_or(0),
+                completion_tokens: r.get::<_, Option<i64>>(2)?.unwrap_or(0),
+                runs: r.get(3)?,
+                tool_calls: r.get::<_, Option<i64>>(4)?.unwrap_or(0),
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn setup_conn() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(EXEC_TRACE_DDL).unwrap();
+        conn
+    }
+
+    fn mk_trace<'a>(
+        conn: &'a rusqlite::Connection,
+        session: &'a str,
+        task: Option<&'a str>,
+        origin: &'a str,
+        started_at: i64,
+    ) -> i64 {
+        trace_start(
+            conn,
+            &NewTrace {
+                session_id: session,
+                task_id: task,
+                origin,
+                title: Some("测试卡"),
+                started_at,
+            },
+        )
+        .unwrap()
+    }
+
+    /// 建表幂等：EXEC_TRACE_DDL 连跑两遍不炸（open_db 每次启动都跑）
+    #[test]
+    fn ddl_is_idempotent() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        ensure_trace_tables(&conn).unwrap();
+        ensure_trace_tables(&conn).unwrap();
+    }
+
+    /// 索引存在（保留期扫描列 + 三表查询列）
+    #[test]
+    fn indexes_exist() {
+        let conn = setup_conn();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name IN
+                 ('idx_traces_task','idx_traces_session','idx_traces_finished','idx_spans_trace','idx_changes_trace')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 5, "5 个索引必须全部建出");
+    }
+
+    /// start→finish 往返：files_changed 从 file_changes 反计，不由调用方传
+    #[test]
+    fn trace_start_finish_roundtrip_counts_files_from_table() {
+        let conn = setup_conn();
+        let id = mk_trace(&conn, "s1", Some("t1"), "Manual", 1000);
+        file_change_insert(
+            &conn,
+            &NewFileChange {
+                trace_id: id,
+                span_id: None,
+                path: "/a/x.py",
+                kind: "modify",
+                added: 3,
+                deleted: 1,
+                diff: None,
+                truncated: false,
+                before_ref: None,
+                before_sha: None,
+                after_sha: None,
+                created_at: 1001,
+            },
+        )
+        .unwrap();
+        trace_finish(
+            &conn,
+            id,
+            &TraceFinish {
+                status: TRACE_STATUS_DONE,
+                finished_at: 2000,
+                turn_count: 5,
+                tool_calls: 8,
+                prompt_tokens: 100,
+                completion_tokens: 200,
+                error: None,
+            },
+        )
+        .unwrap();
+        let t = trace_get_row(&conn, id).unwrap().unwrap();
+        assert_eq!(t.status, "done");
+        assert_eq!(t.finished_at, Some(2000));
+        assert_eq!(t.turn_count, 5);
+        assert_eq!(t.tool_calls, 8);
+        assert_eq!(
+            t.files_changed, 1,
+            "files_changed 必须从 file_changes 表反计"
+        );
+        assert_eq!(t.prompt_tokens, 100);
+        assert_eq!(t.error, None);
+    }
+
+    /// trace_get 查无此行 → None（不 Err，前端 404 语义留给命令层）
+    #[test]
+    fn trace_get_missing_returns_none() {
+        let conn = setup_conn();
+        assert!(trace_get_row(&conn, 999).unwrap().is_none());
+    }
+
+    /// span 往返：字段全量保真（ok/error_class/duration_ms）
+    #[test]
+    fn span_insert_roundtrip() {
+        let conn = setup_conn();
+        let id = mk_trace(&conn, "s1", None, "Scheduled", 1000);
+        let span_id = span_insert(
+            &conn,
+            &NewSpan {
+                trace_id: id,
+                turn: 2,
+                tool_call_id: Some("call_abc"),
+                name: "edit_file",
+                args: Some("{\"path\":\"/a/x.py\"}"),
+                result: Some("已修改"),
+                ok: false,
+                error_class: Some("fs_not_found"),
+                duration_ms: Some(123),
+                created_at: 1001,
+            },
+        )
+        .unwrap();
+        let spans = spans_for_trace(&conn, id).unwrap();
+        assert_eq!(spans.len(), 1);
+        let s = &spans[0];
+        assert_eq!(s.id, span_id);
+        assert_eq!(s.turn, 2);
+        assert_eq!(s.tool_call_id.as_deref(), Some("call_abc"));
+        assert_eq!(s.name, "edit_file");
+        assert!(!s.ok);
+        assert_eq!(s.error_class.as_deref(), Some("fs_not_found"));
+        assert_eq!(s.duration_ms, Some(123));
+        // 行序 = id 序（时间线渲染依赖）
+        span_insert(
+            &conn,
+            &NewSpan {
+                trace_id: id,
+                turn: 3,
+                tool_call_id: None,
+                name: "web_search",
+                args: None,
+                result: None,
+                ok: true,
+                error_class: None,
+                duration_ms: None,
+                created_at: 1002,
+            },
+        )
+        .unwrap();
+        let spans = spans_for_trace(&conn, id).unwrap();
+        assert!(spans[0].id < spans[1].id);
+    }
+
+    /// clamp_text：按字节钳 + UTF-8 边界回退（中文多字节不拦腰）
+    #[test]
+    fn clamp_text_respects_char_boundary() {
+        let short = "abc";
+        assert_eq!(clamp_text(short, 100), "abc", "未超限原样返回");
+        // 8 字节上限：三个 3 字节汉字只能装下两个
+        let zh = "一二三四";
+        let clamped = clamp_text(zh, 8);
+        assert_eq!(clamped, "一二");
+        assert!(clamped.len() <= 8);
+        // 全 ASCII 精确钳
+        assert_eq!(clamp_text("abcdefghij", 4), "abcd");
+    }
+
+    /// file_change 往返：before/after 证据链字段全量保真
+    #[test]
+    fn file_change_roundtrip_with_rollback_evidence() {
+        let conn = setup_conn();
+        let id = mk_trace(&conn, "s1", None, "Workflow", 1000);
+        file_change_insert(
+            &conn,
+            &NewFileChange {
+                trace_id: id,
+                span_id: Some(7),
+                path: "/a/x.py",
+                kind: "modify",
+                added: 12,
+                deleted: 4,
+                diff: Some("--- a/x.py\n+++ b/x.py\n@@ -1,3 +1,4 @@"),
+                truncated: true,
+                before_ref: Some("42"),
+                before_sha: Some("aaa"),
+                after_sha: Some("bbb"),
+                created_at: 1001,
+            },
+        )
+        .unwrap();
+        let changes = file_changes_for_trace(&conn, id).unwrap();
+        assert_eq!(changes.len(), 1);
+        let c = &changes[0];
+        assert_eq!(c.span_id, Some(7));
+        assert_eq!(c.kind, "modify");
+        assert_eq!(c.added, 12);
+        assert_eq!(c.deleted, 4);
+        assert_eq!(
+            c.diff.as_deref(),
+            Some("--- a/x.py\n+++ b/x.py\n@@ -1,3 +1,4 @@")
+        );
+        assert!(c.truncated);
+        assert_eq!(c.before_ref.as_deref(), Some("42"));
+        assert_eq!(c.before_sha.as_deref(), Some("aaa"));
+        assert_eq!(c.after_sha.as_deref(), Some("bbb"));
+    }
+
+    /// trace_list：过滤组合 + started_at 倒序 + limit 钳制
+    #[test]
+    fn trace_list_filters_order_and_limit() {
+        let conn = setup_conn();
+        mk_trace(&conn, "s1", Some("t1"), "Manual", 1000);
+        mk_trace(&conn, "s1", Some("t1"), "Manual", 3000);
+        mk_trace(&conn, "s2", Some("t1"), "Scheduled", 2000);
+        mk_trace(&conn, "s2", Some("t2"), "Workflow", 4000);
+
+        // started_at 倒序
+        let all = trace_query(&conn, None, None, None, 100).unwrap();
+        let starts: Vec<i64> = all.iter().map(|t| t.started_at).collect();
+        let mut sorted = starts.clone();
+        sorted.sort_unstable_by(|a, b| b.cmp(a));
+        assert_eq!(starts, sorted, "必须 started_at 倒序");
+
+        // origin 过滤
+        let sched = trace_query(&conn, None, None, Some("Scheduled"), 100).unwrap();
+        assert_eq!(sched.len(), 1);
+        assert_eq!(sched[0].session_id, "s2");
+        assert_eq!(sched[0].origin, "Scheduled");
+
+        // task + origin 组合过滤
+        let t2_wf = trace_query(&conn, Some("t2"), None, Some("Workflow"), 100).unwrap();
+        assert_eq!(t2_wf.len(), 1);
+        assert_eq!(t2_wf[0].task_id.as_deref(), Some("t2"));
+
+        // session 过滤
+        let s1 = trace_query(&conn, None, Some("s1"), None, 100).unwrap();
+        assert_eq!(s1.len(), 2);
+
+        // limit 钳制：请求 0 → 至少给 1；请求超量 → 全量
+        assert_eq!(trace_query(&conn, None, None, None, 0).unwrap().len(), 1);
+        assert_eq!(trace_query(&conn, None, None, None, 2).unwrap().len(), 2);
+        assert_eq!(trace_query(&conn, None, None, None, 9999).unwrap().len(), 4);
+    }
+
+    /// 保留期：只删「已收尾且过期」与「僵尸 running」，未过期/活跃行保留；子表级联删
+    #[test]
+    fn retire_traces_before_cascades_and_keeps_live_rows() {
+        let conn = setup_conn();
+        // ① 已收尾、过期（finished_at=100 < 5000）→ 删
+        let old = mk_trace(&conn, "s1", None, "Manual", 50);
+        span_insert(
+            &conn,
+            &NewSpan {
+                trace_id: old,
+                turn: 1,
+                tool_call_id: None,
+                name: "edit_file",
+                args: None,
+                result: None,
+                ok: true,
+                error_class: None,
+                duration_ms: None,
+                created_at: 60,
+            },
+        )
+        .unwrap();
+        file_change_insert(
+            &conn,
+            &NewFileChange {
+                trace_id: old,
+                span_id: None,
+                path: "/a",
+                kind: "create",
+                added: 1,
+                deleted: 0,
+                diff: None,
+                truncated: false,
+                before_ref: None,
+                before_sha: None,
+                after_sha: None,
+                created_at: 61,
+            },
+        )
+        .unwrap();
+        trace_finish(
+            &conn,
+            old,
+            &TraceFinish {
+                status: TRACE_STATUS_DONE,
+                finished_at: 100,
+                turn_count: 1,
+                tool_calls: 1,
+                prompt_tokens: 0,
+                completion_tokens: 0,
+                error: None,
+            },
+        )
+        .unwrap();
+        // ② 已收尾、未过期（finished_at=9000）→ 留
+        let fresh = mk_trace(&conn, "s2", None, "Manual", 8000);
+        trace_finish(
+            &conn,
+            fresh,
+            &TraceFinish {
+                status: TRACE_STATUS_DONE,
+                finished_at: 9000,
+                turn_count: 1,
+                tool_calls: 1,
+                prompt_tokens: 0,
+                completion_tokens: 0,
+                error: None,
+            },
+        )
+        .unwrap();
+        // ③ 僵尸 running（started_at=50 < 5000，永远等不到收尾）→ 删
+        mk_trace(&conn, "s3", None, "Batch", 50);
+        // ④ 活跃 running（started_at=8000）→ 留
+        mk_trace(&conn, "s4", None, "Batch", 8000);
+
+        let removed = retire_traces_before(&conn, 5000).unwrap();
+        assert_eq!(removed, 2, "过期收尾 + 僵尸 running 各删一条");
+
+        assert!(
+            trace_get_row(&conn, old).unwrap().is_none(),
+            "过期收尾必须删"
+        );
+        assert!(
+            spans_for_trace(&conn, old).unwrap().is_empty(),
+            "子表 spans 必须级联删"
+        );
+        assert!(
+            file_changes_for_trace(&conn, old).unwrap().is_empty(),
+            "子表 file_changes 必须级联删"
+        );
+        assert!(
+            trace_get_row(&conn, fresh).unwrap().is_some(),
+            "未过期必须留"
+        );
+        assert_eq!(trace_query(&conn, None, None, None, 100).unwrap().len(), 2);
+    }
+
+    /// 保留期空转：无可删行返回 0，不 Err（定时器空跑是常态路径）
+    #[test]
+    fn retire_traces_before_noop_returns_zero() {
+        let conn = setup_conn();
+        mk_trace(&conn, "s1", None, "Manual", 8000);
+        assert_eq!(retire_traces_before(&conn, 5000).unwrap(), 0);
+        assert_eq!(trace_query(&conn, None, None, None, 100).unwrap().len(), 1);
+    }
+}

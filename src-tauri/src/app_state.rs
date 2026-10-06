@@ -159,6 +159,10 @@ pub(crate) struct AppState {
     /// 子 agent 取消令牌表（SUBA-2：subagent_id → StopToken；
     /// cancel_subagent 持有的句柄，runner 注册 / 收尾删除）
     pub(crate) subagent_stops: Arc<Mutex<HashMap<String, crate::bot_slash::StopToken>>>,
+    /// 执行痕迹注册表（P1-c，Agent 透明化设计 §4.2）：session_id → 运行中 trace_id。
+    /// 生命周期：run_task_in_chat_with 建 trace 时注册、收尾注销（trace_sink::begin/end_trace）。
+    /// dispatch 据此判断「本会话在跑 trace」→ 决定 span/file_change 是否落库（无映射 = 零开销旁路）。
+    pub(crate) trace_registry: Arc<Mutex<HashMap<String, i64>>>,
 }
 
 /// 兜底实例：只在 `AppState` 未注入的路径上用（见上面的口径说明）
@@ -261,4 +265,20 @@ pub(crate) fn subagent_stops<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Arc<Mutex<HashMap<String, crate::bot_slash::StopToken>>> {
     ext(app).subagent_stops.clone()
+}
+
+/// 执行痕迹注册表访问器：Arc 克隆（begin/end_trace 分属执行首尾两处，跨 await 存活）。
+pub(crate) fn trace_registry<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Arc<Mutex<HashMap<String, i64>>> {
+    ext(app).trace_registry.clone()
+}
+
+/// 查会话当前运行中的 trace_id（无会话 / 无运行中 trace → None；dispatch 据此跳过采集）。
+pub(crate) fn trace_id_for_session<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    session_id: Option<&str>,
+) -> Option<i64> {
+    let sid = session_id?;
+    trace_registry(app).lock().ok()?.get(sid).copied()
 }

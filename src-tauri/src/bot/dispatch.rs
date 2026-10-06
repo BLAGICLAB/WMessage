@@ -6,7 +6,7 @@
 //! 调度主表（execute_tool_impl via TOOLS_TABLE lookup）分发 29 个 tool_* 函数到 bot::tools。
 //! TOOLS_TABLE / tools_json() / mutating_tools() 都在 bot::registry（阶段 2 单源真相）。
 
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 
 use crate::bot::registry::{tools_index, ToolCtx};
 use crate::bot::tools::{broadcast_after_mutation, files_audit_kv};
@@ -382,6 +382,41 @@ async fn execute_tool_impl(
     // tool_call_id 可整轮回放一次模型循环里的工具序列
     kv.extend(trace_kv(trace, session_id));
     crate::audit::write_event(app, level, "tool.return", &kv);
+    // P1-c 执行痕迹采集（Agent 透明化设计 §4.2）：会话在跑 trace 时逐调用落 span，
+    // 文件类工具附带的变更证据落 file_changes + emit `bot-file-changed`（全窗口）。
+    // fire-and-forget：sink 未初始化/满队列不阻断工具结果；registry 无映射（主聊天等）零开销跳过。
+    if let Some(trace_id) = crate::app_state::trace_id_for_session(app, session_id) {
+        let ok = !crate::audit::tool_call_failed(name, &result.text);
+        crate::trace_sink::record_span(crate::trace_sink::SpanRecord {
+            trace_id,
+            turn: trace.turn.unwrap_or(0) as i64,
+            tool_call_id: trace.tool_call_id.clone(),
+            name: name.to_string(),
+            args: crate::trace_sink::clamp_span_text(app, name, "args", args.to_string()),
+            result: crate::trace_sink::clamp_span_text(app, name, "result", result.text.clone()),
+            ok,
+            // P4：接 evolution error_kind 分类器（现占位 None）
+            error_class: None,
+            duration_ms: Some(dur_ms as i64),
+            created_at: chrono::Utc::now().timestamp_millis(),
+        });
+        for rc in &result.file_changes {
+            crate::trace_sink::record_file_change(crate::trace_sink::file_change_record(
+                trace_id, rc,
+            ));
+            let _ = app.emit(
+                "bot-file-changed",
+                serde_json::json!({
+                    "sessionId": session_id,
+                    "traceId": trace_id,
+                    "path": rc.path,
+                    "kind": rc.kind,
+                    "added": rc.added,
+                    "deleted": rc.deleted,
+                }),
+            );
+        }
+    }
     if name != "use_skill" {
         crate::bot_skills::skill_on_step_post(app, name, &result.text, dur_ms, level, session_id);
     }

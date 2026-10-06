@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Serialize;
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 use tauri_plugin_notification::NotificationExt;
 
 use crate::bot_chat::{run_task_in_chat, TaskExecOrigin};
@@ -333,6 +333,12 @@ async fn run_controller(
                 r.insert(id.clone());
             }
             tauri::async_runtime::spawn(async move {
+                // P1-d：节点进入执行即广播（Gate 排队视同 running；前端画布实时高亮）。
+                // 5s 轮询保留为兜底，事件只做低延迟增量。
+                let _ = app.emit(
+                    "workflow-node-status",
+                    serde_json::json!({ "taskId": id.clone(), "status": "running" }),
+                );
                 let ticket =
                     crate::bot_orchestrator::SubagentGate::wait_slot_cancellable(None, || {
                         cancel.load(Ordering::SeqCst)
@@ -362,6 +368,15 @@ async fn run_controller(
                         .unwrap_or(false),
                     Err(_) => false,
                 };
+                // P1-d：节点收尾状态实时广播（画布描边 + 失败原因/trace 入口的数据源）
+                let _ = app.emit(
+                    "workflow-node-status",
+                    serde_json::json!({
+                        "taskId": id.clone(),
+                        "status": if ok { "done" } else { "failed" },
+                        "sessionId": result.as_ref().ok().map(|r| r.session_id.clone()),
+                    }),
+                );
                 let _ = tx.send(NodeOutcome {
                     id,
                     ok,
@@ -434,6 +449,11 @@ async fn run_controller(
                     continue;
                 }
                 resolved.insert(skipped.clone());
+                // P1-d：传递下游被跳过 → 实时广播（画布灰显）
+                let _ = app.emit(
+                    "workflow-node-status",
+                    serde_json::json!({ "taskId": skipped.clone(), "status": "skipped" }),
+                );
                 mark_note_prefix(
                     &app,
                     &skipped,
@@ -558,6 +578,7 @@ mod tests {
             model: None,
             owner_id: None,
             created_at: None,
+            enabled: None,
             expected_updated_at: None,
         }
     }
