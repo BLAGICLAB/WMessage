@@ -103,6 +103,12 @@ fn recognize(bytes: &[u8]) -> Result<String, String> {
     }
 }
 
+/// N3-2：扫描版 PDF 兜底的内部入口（recognize 的 pub(crate) 壳，供
+/// tool_extract_document 的「转图 → 本地 OCR」编排调用；隐私红线不变：字节全本地）。
+pub(crate) fn recognize_bytes(bytes: &[u8]) -> Result<String, String> {
+    recognize(bytes)
+}
+
 // ───────────────────────── macOS：Apple Vision ─────────────────────────
 
 #[cfg(target_os = "macos")]

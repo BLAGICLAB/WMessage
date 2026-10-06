@@ -8,6 +8,7 @@ import {
   formatDue,
   basename,
   relativeTime,
+  untilTime,
 } from "./format";
 
 describe("isValidDateTimeLocal", () => {
@@ -118,5 +119,23 @@ describe("relativeTime（U5 会话栈）", () => {
     expect(relativeTime(ago(60 * 60_000), now)).toBe("1 小时前");
     expect(relativeTime(now + 5_000, now)).toBe("刚刚");
     expect(relativeTime(NaN, now)).toBe("刚刚");
+  });
+});
+
+describe("untilTime（定时任务模块「下次执行」倒计时）", () => {
+  const now = Date.parse("2026-10-01T12:00:00");
+  const later = (ms: number) => now + ms;
+
+  it("五档：刚刚 / 分钟后 / 小时后 / 天后 / 超 7 天落日期", () => {
+    expect(untilTime(later(30_000), now)).toBe("刚刚");
+    expect(untilTime(later(5 * 60_000), now)).toBe("5 分钟后");
+    expect(untilTime(later(3 * 3_600_000), now)).toBe("3 小时后");
+    expect(untilTime(later(2 * 86_400_000), now)).toBe("2 天后");
+    expect(untilTime(later(8 * 86_400_000), now)).toBe("2026-10-09");
+  });
+
+  it("已过期/非法时间戳回「刚刚」", () => {
+    expect(untilTime(now - 5_000, now)).toBe("刚刚");
+    expect(untilTime(NaN, now)).toBe("刚刚");
   });
 });

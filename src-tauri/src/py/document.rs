@@ -71,13 +71,15 @@ else:
     print('不支持的格式：' + ext); sys.exit(1)
 "#;
 
-pub const MAKE_DOCX_SCRIPT: &str = r#"import json, os
+pub const MAKE_DOCX_SCRIPT: &str = r#"import json, os, re
 import docx
-from docx.shared import Pt, Cm
+from docx.shared import Pt, Cm, Inches
+from docx.oxml.ns import qn
 p = json.load(open('params.json', encoding='utf-8'))
 title = p.get('title', '')
 paras = p.get('paragraphs', [])
 tables = p.get('tables', [])
+images = p.get('images', [])
 out = p['out']
 d = docx.Document()
 style = d.styles['Normal']
@@ -88,12 +90,25 @@ if title:
     r = h.add_run(title)
     r.font.name = '黑体'
     r.font.size = Pt(16)
+def add_heading_cjk(text, level):
+    h = d.add_heading('', level=level)
+    r = h.add_run(text)
+    r.font.name = '黑体'
+    # font.name 只写 w:rFonts 的 ascii/hAnsi，中文字形要显式补 eastAsia
+    rpr = r._element.get_or_add_rPr()
+    rpr.rFonts.set(qn('w:eastAsia'), '黑体')
 for para in paras:
-    if para == '':
+    m = re.match(r'^(#{1,3})\s+(.+)$', para)
+    if m:
+        add_heading_cjk(m.group(2), len(m.group(1)))
+    elif para == '':
         d.add_paragraph('')
     else:
         pr = d.add_paragraph(para)
         pr.paragraph_format.first_line_indent = Pt(24)
+for img in images:
+    if os.path.exists(img):
+        d.add_picture(img, width=Inches(5.8))
 for t in tables:
     rows = t.get('rows', [])
     if not rows:
@@ -534,34 +549,84 @@ print('已生成：' + out)
 "#;
 
 pub const MAKE_PDF_SCRIPT: &str = r#"import json
-from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle
+from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.lib import colors
+
+pdfmetrics.registerFont(UnicodeCIDFont('STSong-Light'))
 p = json.load(open('params.json', encoding='utf-8'))
 out = p['out']
 title = p.get('title', '')
 paras = p.get('paragraphs', [])
-pdfmetrics.registerFont(UnicodeCIDFont('STSong-Light'))
-c = canvas.Canvas(out, pagesize=A4)
-w, h = A4
-y = h - 60
+tables = p.get('tables', [])
+
+# platypus 流式排版（官方推荐表格路径）：Paragraph 自动换行 + Table 网格 + 自动分页；
+# CJK 断行要显式 wordWrap='CJK'，字体统一 STSong-Light CID（零字体文件依赖）
+style_title = ParagraphStyle('t', fontName='STSong-Light', fontSize=18, leading=24, spaceAfter=14, wordWrap='CJK')
+style_body = ParagraphStyle('b', fontName='STSong-Light', fontSize=11, leading=17, wordWrap='CJK')
+style_cell = ParagraphStyle('c', fontName='STSong-Light', fontSize=9.5, leading=13, wordWrap='CJK')
+style_tbl_title = ParagraphStyle('tt', fontName='STSong-Light', fontSize=11, leading=16, spaceBefore=10, spaceAfter=4, wordWrap='CJK')
+
+def esc(s):
+    return str(s).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+doc = SimpleDocTemplate(out, pagesize=A4, topMargin=20*mm, bottomMargin=18*mm, leftMargin=20*mm, rightMargin=20*mm)
+story = []
 if title:
-    c.setFont('STSong-Light', 18)
-    c.drawString(60, y, title)
-    y -= 40
-c.setFont('STSong-Light', 11)
+    story.append(Paragraph(esc(title), style_title))
 for para in paras:
-    for i in range(0, len(para), 42):
-        if y < 60:
-            c.showPage()
-            c.setFont('STSong-Light', 11)
-            y = h - 60
-        c.drawString(60, y, para[i:i+42])
-        y -= 18
-    y -= 8
-c.save()
+    if para == '':
+        story.append(Spacer(1, 8))
+    else:
+        story.append(Paragraph(esc(para), style_body))
+for t in tables:
+    rows = t.get('rows', [])
+    if not rows or not rows[0]:
+        continue
+    if t.get('title'):
+        story.append(Paragraph(esc(t['title']), style_tbl_title))
+    n_cols = max(len(r) for r in rows)
+    data = []
+    for r in rows:
+        cells = [esc(str(c)) for c in r] + [''] * (n_cols - len(r))
+        data.append([Paragraph(c, style_cell) for c in cells])
+    tb = Table(data, colWidths=[doc.width / n_cols] * n_cols, repeatRows=1)
+    tb.setStyle(TableStyle([
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#F2F4F7')),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#FAFBFC')]),
+        ('FONTSIZE', (0, 0), (-1, 0), 10),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+    ]))
+    story.append(tb)
+    story.append(Spacer(1, 10))
+doc.build(story)
 print('已生成：' + out)
+"#;
+
+/// N3-2：扫描版 PDF 页渲染——PyMuPDF（fitz）官方推荐渲染管线，2x zoom ≈144 DPI
+///（OCR 识别率与体积平衡）。exit 2 = 缺 pymupdf（Rust 侧给 pip 指引，优雅降级）；
+/// 页数钳在前 max_pages 页（防大文档渲染爆内存/超时）。
+pub const PDF_RENDER_SCRIPT: &str = r#"import json, os, sys
+p = json.load(open('params.json', encoding='utf-8'))
+try:
+    import fitz
+except ImportError:
+    print('missing pymupdf', file=sys.stderr)
+    sys.exit(2)
+doc = fitz.open(p['path'])
+max_pages = int(p.get('max_pages', 20))
+n = min(doc.page_count, max_pages)
+for i in range(n):
+    pix = doc[i].get_pixmap(matrix=fitz.Matrix(2, 2))
+    pix.save(os.path.join(p['out_dir'], 'page-%03d.png' % (i + 1)))
+print(n)
 "#;
 
 pub const MAKE_PPTX_SCRIPT: &str = r#"import json, datetime
@@ -845,6 +910,35 @@ pub fn resolve_doc_path(picked: Option<String>) -> CommandResult<String> {
     picked.ok_or_else(|| CommandError::Internal("用户取消了选择".into()))
 }
 
+/// N3-2：渲染扫描版 PDF 的前 max_pages 页为 PNG（供本地 OCR 逐页识别）。
+/// Err 前缀 `NEED_PYMUPDF` = 缺 pymupdf（调用方给 pip 指引，优雅降级）。
+pub async fn pdf_render_pages(
+    app: AppHandle,
+    path: String,
+    out_dir: String,
+    max_pages: usize,
+) -> Result<usize, String> {
+    let input = serde_json::json!({
+        "path": path,
+        "out_dir": out_dir,
+        "max_pages": max_pages
+    })
+    .to_string();
+    let r = run_doc_script(&app, "pdf_render_pages", PDF_RENDER_SCRIPT, input).await?;
+    if r.exit_code == Some(2) {
+        return Err(
+            "NEED_PYMUPDF: 需要 PyMuPDF 渲染扫描版 PDF：python3 -m pip install pymupdf".into(),
+        );
+    }
+    if r.exit_code != Some(0) {
+        return Err(format!("PDF 页面渲染失败：{}", r.stderr.trim()));
+    }
+    r.stdout
+        .trim()
+        .parse::<usize>()
+        .map_err(|e| format!("PDF 渲染输出异常（{e}）"))
+}
+
 pub fn script_fail_err(what: &str, stderr: &str) -> CommandError {
     CommandError::Internal(format!("{what}：{}", stderr.trim()))
 }
@@ -862,12 +956,14 @@ pub async fn doc_make_word(
     paragraphs: Vec<String>,
     filename: Option<String>,
     tables: Option<serde_json::Value>,
+    images: Vec<String>,
 ) -> CommandResult<String> {
     let out = gen_out_path(&app, filename.as_deref(), "docx")?;
     let input = serde_json::json!({
         "title": title,
         "paragraphs": paragraphs,
         "tables": tables.unwrap_or(serde_json::json!([])),
+        "images": images,
         "out": out,
     })
     .to_string();
@@ -954,11 +1050,17 @@ pub async fn doc_make_pdf(
     app: AppHandle,
     title: String,
     paragraphs: Vec<String>,
+    tables: Option<serde_json::Value>,
     filename: Option<String>,
 ) -> CommandResult<String> {
     let out = gen_out_path(&app, filename.as_deref(), "pdf")?;
-    let input =
-        serde_json::json!({ "title": title, "paragraphs": paragraphs, "out": out }).to_string();
+    let input = serde_json::json!({
+        "title": title,
+        "paragraphs": paragraphs,
+        "tables": tables.unwrap_or(serde_json::json!([])),
+        "out": out
+    })
+    .to_string();
     let r = run_doc_script(&app, "doc_make_pdf", MAKE_PDF_SCRIPT, input).await?;
     if r.exit_code != Some(0) {
         py_audit(

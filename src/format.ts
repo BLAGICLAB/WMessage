@@ -66,6 +66,22 @@ export function relativeTime(ms: number, now: number = Date.now()): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+/** 未来倒计时（定时任务模块「下次执行」）：刚刚 / N 分钟后 / N 小时后 / N 天后 / 超 7 天落日期。
+ *  relativeTime 对未来恒回「刚刚」，此处是反向档；已过期/非法时间戳回「刚刚」。 */
+export function untilTime(ms: number, now: number = Date.now()): string {
+  const d = new Date(ms);
+  if (isNaN(d.getTime()) || ms <= now) return "刚刚";
+  const diffMs = ms - now;
+  const minutes = Math.floor(diffMs / 60_000);
+  if (minutes < 1) return "刚刚";
+  if (minutes < 60) return `${minutes} 分钟后`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} 小时后`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days} 天后`;
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
 // datetime-local 值校验：格式完整 + 时分在界 + Date 往返一致
 // （防 2026-02-31 被 Date 静默进位、防 25:99、防不完整输入产生坏数据——
 // 沿用定时面板 NaN 事故教训：无效值一律不写库）
@@ -82,7 +98,7 @@ export function isValidDateTimeLocal(v: string): boolean {
   );
 }
 
-// 把已有 schedule 转成 datetime-local 输入框默认值（主窗口/挂件共用）
+// 把已有 schedule 转成 datetime-local 输入框默认值（定时任务模块 ScheduleEditorPanel 回填用）
 // 全程防御：任何分支算出无效日期都回退「今天 09:00」，防止 NaN 字符串扩散
 // （历史事故：Invalid Date → NaN 写进 schedule → 面板回填死循环卡死 App）
 export function scheduleToDatetime(s?: string | null): string {
@@ -136,7 +152,7 @@ export function scheduleToDatetime(s?: string | null): string {
   return fallback();
 }
 
-// 定时执行规则 → 可读文案（主窗口/挂件共用）
+// 定时执行规则 → 可读文案（定时任务模块列表/预览共用）
 export function formatSchedule(s: string): string {
   if (s.startsWith("daily:")) {
     const [h, m] = s.slice(6).split(":");

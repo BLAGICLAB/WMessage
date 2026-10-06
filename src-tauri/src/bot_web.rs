@@ -14,6 +14,109 @@ const UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/53
 const FETCH_MAX_BYTES: usize = 2 * 1024 * 1024;
 const SEARCH_MAX_RESULTS: usize = 8;
 const SEARCH_OUTPUT_CAP: usize = 6000;
+/// count 参数硬上限（Tavily max_results 与 Brave count 的共同钳制）
+const SEARCH_COUNT_CAP: u32 = 10;
+
+/// N3-5：web_search 过滤参数（工具层解析，三后端各自映射）
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct SearchOpts {
+    /// 结果条数（1..=10，默认 8）
+    pub count: u32,
+    /// 时间范围（Tavily/Brave 原生；Bing+百度抓取链路不支持，显式提示）
+    pub time_range: Option<TimeRange>,
+    /// 限定站点域名（已清洗：无 scheme/路径/空白）
+    pub site: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeRange {
+    Day,
+    Week,
+    Month,
+    Year,
+}
+
+impl TimeRange {
+    pub fn parse(s: Option<&str>) -> Option<Self> {
+        match s? {
+            "day" => Some(Self::Day),
+            "week" => Some(Self::Week),
+            "month" => Some(Self::Month),
+            "year" => Some(Self::Year),
+            _ => None,
+        }
+    }
+    /// Tavily `time_range` 原生值（官方 API：day/week/month/year）
+    pub fn tavily_value(self) -> &'static str {
+        match self {
+            Self::Day => "day",
+            Self::Week => "week",
+            Self::Month => "month",
+            Self::Year => "year",
+        }
+    }
+    /// Brave `freshness` 原生值（官方 API：pd=24h / pw=7天 / pm=31天 / py=一年）
+    pub fn brave_freshness(self) -> &'static str {
+        match self {
+            Self::Day => "pd",
+            Self::Week => "pw",
+            Self::Month => "pm",
+            Self::Year => "py",
+        }
+    }
+}
+
+/// site 参数清洗：剥 scheme 前缀与路径/查询，仅留 host 段；空串/含空白 → None
+/// （host 里的空白必然非法；路径段拼接 ` site:x/y` 对搜索引擎语义不明，直接剥掉）
+pub fn sanitize_site(s: &str) -> Option<String> {
+    let t = s.trim();
+    if t.is_empty() {
+        return None;
+    }
+    let no_scheme = t
+        .strip_prefix("https://")
+        .or_else(|| t.strip_prefix("http://"))
+        .unwrap_or(t);
+    let host = no_scheme.split(['/', '?', '#']).next().unwrap_or("");
+    let host = host.trim();
+    if host.is_empty() || host.split_whitespace().count() > 1 {
+        return None;
+    }
+    Some(host.to_string())
+}
+
+/// Tavily 请求体（纯函数，可测）：过滤参数按官方 API 形状映射
+fn tavily_payload(key: &str, query: &str, opts: &SearchOpts) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "api_key": key,
+        "query": query,
+        "max_results": opts.count,
+        "search_depth": "basic",
+        "include_answer": false
+    });
+    if let Some(tr) = opts.time_range {
+        body["time_range"] = serde_json::Value::String(tr.tavily_value().into());
+    }
+    if let Some(site) = &opts.site {
+        body["include_domains"] = serde_json::json!([site]);
+    }
+    body
+}
+
+/// Brave 查询串（纯函数，可测）：site 以 ` site:host` 追加（Brave Web Search
+/// 无 include_domains 参数，官方推荐用查询运算符）；freshness/count 走 query 参数
+fn brave_query_and_params(query: &str, opts: &SearchOpts) -> (String, String) {
+    let q = match &opts.site {
+        Some(site) => format!("{query} site:{site}"),
+        None => query.to_string(),
+    };
+    let encoded: String = url::form_urlencoded::byte_serialize(q.as_bytes()).collect();
+    let mut params = format!("count={}", opts.count);
+    if let Some(tr) = opts.time_range {
+        params.push_str(&format!("&freshness={}", tr.brave_freshness()));
+    }
+    (encoded, params)
+}
 
 /// 全局复用的 HTTP client（连接池复用，避免每请求新建）。
 /// 禁用自动重定向：默认 policy 自动跟随多跳会让公网 URL 302 到内网地址绕过
@@ -87,8 +190,18 @@ fn clean_snippet(s: &str) -> String {
     t
 }
 
-pub async fn web_search(query: &str) -> Result<String, CommandError> {
-    let (bing, baidu) = futures_util::future::join(search_bing(query), search_baidu(query)).await;
+pub async fn web_search(query: &str, opts: &SearchOpts) -> Result<String, CommandError> {
+    // site 走查询运算符（抓取链路无域名过滤参数）；time_range 无原生支持——
+    // 结果尾部显式提示（诚实降级，不静默丢弃让模型误以为已过滤）
+    let (q_bing, q_baidu) = match &opts.site {
+        Some(site) => (
+            format!("{query} site:{site}"),
+            format!("{query} site:{site}"),
+        ),
+        None => (query.to_string(), query.to_string()),
+    };
+    let (bing, baidu) =
+        futures_util::future::join(search_bing(&q_bing), search_baidu(&q_baidu)).await;
     // (引擎, 标题, 链接, 摘要)
     let mut merged: Vec<(&str, String, String, String)> = Vec::new();
     let mut seen: Vec<String> = Vec::new();
@@ -99,7 +212,7 @@ pub async fn web_search(query: &str) -> Result<String, CommandError> {
             Ok(list) => {
                 for (title, link, snip) in list {
                     let key = title.trim().to_string();
-                    if seen.contains(&key) || merged.len() >= SEARCH_MAX_RESULTS {
+                    if seen.contains(&key) || merged.len() >= opts.count as usize {
                         continue;
                     }
                     // 域名去重：同一站点最多 2 条（百度跳转链接除外，host 全是 baidu.com）
@@ -158,20 +271,19 @@ pub async fn web_search(query: &str) -> Result<String, CommandError> {
     if out.chars().count() > SEARCH_OUTPUT_CAP {
         out = out.chars().take(SEARCH_OUTPUT_CAP).collect();
     }
+    if opts.time_range.is_some() {
+        out.push_str(
+            "\n\n（提示：Bing/百度抓取模式暂不支持时间过滤，time_range 已忽略；需要时间过滤请在设置页配置 Tavily 或 Brave 搜索）",
+        );
+    }
     Ok(out)
 }
 
 /// Tavily 搜索 API（设置页「Tavily 搜索」开关开启后 web_search 走这里）
-async fn search_tavily(key: &str, query: &str) -> Result<String, String> {
+async fn search_tavily(key: &str, query: &str, opts: &SearchOpts) -> Result<String, String> {
     let resp = http_client()
         .post("https://api.tavily.com/search")
-        .json(&serde_json::json!({
-            "api_key": key,
-            "query": query,
-            "max_results": SEARCH_MAX_RESULTS,
-            "search_depth": "basic",
-            "include_answer": false
-        }))
+        .json(&tavily_payload(key, query, opts))
         .send()
         .await
         .map_err(|e| format!("Tavily 请求失败：{e}"))?;
@@ -208,10 +320,10 @@ async fn search_tavily(key: &str, query: &str) -> Result<String, String> {
 /// Brave Web Search API（设置页「Brave 搜索」开关开启后 web_search 走这里）：
 /// GET https://api.search.brave.com/res/v1/web/search，key 走 X-Subscription-Token 头。
 /// 与 Tavily 互斥（同时开启明确报错，见 resolve_search_route）。
-async fn search_brave(key: &str, query: &str) -> Result<String, String> {
+async fn search_brave(key: &str, query: &str, opts: &SearchOpts) -> Result<String, String> {
     // 查询串手工编码（同 search_bing 的 form_urlencoded 风格；reqwest 0.13 无 .query()）
-    let encoded: String = url::form_urlencoded::byte_serialize(query.as_bytes()).collect();
-    let target = format!("https://api.search.brave.com/res/v1/web/search?q={encoded}&count=8");
+    let (encoded, params) = brave_query_and_params(query, opts);
+    let target = format!("https://api.search.brave.com/res/v1/web/search?q={encoded}&{params}");
     let resp = http_client()
         .get(&target)
         .header(reqwest::header::ACCEPT, "application/json")
@@ -317,7 +429,11 @@ fn resolve_search_route(
 /// Tavily/Brave key 从系统凭据存储读（不落 bot-config.json）；
 /// keyring 真实故障按无 key 处理（走 MissingKey 报错文案引导用户去设置页），
 /// 不弄挂 web_search 工具本身。
-pub async fn web_search_with_config(app: &tauri::AppHandle, query: &str) -> Result<String, String> {
+pub async fn web_search_with_config(
+    app: &tauri::AppHandle,
+    query: &str,
+    opts: &SearchOpts,
+) -> Result<String, String> {
     let cfg = crate::bot::load_config(app);
     let tavily_key = crate::bot::read_search_key(crate::bot::KeySlot::Tavily).unwrap_or_default();
     let brave_key = crate::bot::read_search_key(crate::bot::KeySlot::Brave).unwrap_or_default();
@@ -327,7 +443,7 @@ pub async fn web_search_with_config(app: &tauri::AppHandle, query: &str) -> Resu
         cfg.brave_enabled,
         Some(brave_key.as_str()),
     ) {
-        SearchRoute::Dual => web_search(query).await.map_err(|e| e.to_string()),
+        SearchRoute::Dual => web_search(query, opts).await.map_err(|e| e.to_string()),
         SearchRoute::MissingKey => Err(
             "Tavily 搜索已开启，但设置页还没填 Tavily API Key。请到设置页「机器人设置」填写 key，或关闭「Tavily 搜索」开关改用 Bing+百度双引擎。"
                 .into(),
@@ -339,13 +455,13 @@ pub async fn web_search_with_config(app: &tauri::AppHandle, query: &str) -> Resu
         SearchRoute::Conflict => Err(
             "Tavily 与 Brave 搜索不能同时开启，请到设置页关闭其中一个".into(),
         ),
-        SearchRoute::Tavily(key) => search_tavily(&key, query).await.map_err(|e| {
+        SearchRoute::Tavily(key) => search_tavily(&key, query, opts).await.map_err(|e| {
             crate::bot::audit_log(app, &format!("web_search.tavily_failed | {e}"));
             format!(
                 "Tavily 搜索失败：{e}。请检查 key 是否有效/网络是否可达，或在设置页关闭「Tavily 搜索」开关回退 Bing+百度双引擎。"
             )
         }),
-        SearchRoute::Brave(key) => search_brave(&key, query).await.map_err(|e| {
+        SearchRoute::Brave(key) => search_brave(&key, query, opts).await.map_err(|e| {
             crate::bot::audit_log(app, &format!("web_search.brave_failed | {e}"));
             format!(
                 "Brave 搜索失败：{e}。请检查 key 是否有效/网络是否可达，或在设置页关闭「Brave 搜索」开关回退 Bing+百度双引擎。"
@@ -948,6 +1064,19 @@ fn jina_reader_url(raw_url: &str) -> String {
     format!("https://r.jina.ai/{}", raw_url.trim())
 }
 
+/// N4：open_url 工具的 URL 准入门——parse + 仅 http/https + 与 fetch 同一公网闸
+/// （DNS 解析后拒绝本机/内网/保留地址）。返回校验过的 URL 供打开与日志。
+pub(crate) async fn ensure_public_http_url(raw: &str) -> Result<url::Url, String> {
+    let trimmed = raw.trim();
+    let url = url::Url::parse(trimmed).map_err(|_| format!("无效网址：{trimmed}"))?;
+    let scheme = url.scheme().to_string();
+    if scheme != "http" && scheme != "https" {
+        return Err(format!("仅支持 http/https 网页地址，拒绝 {scheme}: 协议"));
+    }
+    check_public_url(&url).await?;
+    Ok(url)
+}
+
 /// Jina Reader 回退抓取：公共代理服务端渲染页面返回 markdown 文本。
 /// 失败（超时/限流/目标不可达）由调用方忽略，不影响主路径。
 async fn fetch_jina_reader(raw_url: &str) -> Result<String, String> {
@@ -1376,10 +1505,83 @@ mod tests {
         );
     }
 
+    // ───── N3-5：搜索过滤参数映射 ─────
+
+    #[test]
+    fn time_range_parse_and_mappings() {
+        assert_eq!(TimeRange::parse(Some("week")), Some(TimeRange::Week));
+        assert_eq!(TimeRange::parse(Some("bogus")), None);
+        assert_eq!(TimeRange::parse(None), None);
+        // Tavily 原生 day/week/month/year；Brave freshness pd/pw/pm/py（官方 API）
+        assert_eq!(TimeRange::Day.tavily_value(), "day");
+        assert_eq!(TimeRange::Year.tavily_value(), "year");
+        assert_eq!(TimeRange::Day.brave_freshness(), "pd");
+        assert_eq!(TimeRange::Week.brave_freshness(), "pw");
+        assert_eq!(TimeRange::Month.brave_freshness(), "pm");
+        assert_eq!(TimeRange::Year.brave_freshness(), "py");
+    }
+
+    #[test]
+    fn sanitize_site_strips_scheme_path_and_rejects_blank() {
+        assert_eq!(sanitize_site("github.com"), Some("github.com".into()));
+        assert_eq!(
+            sanitize_site("https://docs.rs/serde/latest/"),
+            Some("docs.rs".into()),
+            "剥 scheme 与路径"
+        );
+        assert_eq!(sanitize_site("  a.com  "), Some("a.com".into()));
+        assert_eq!(sanitize_site(""), None);
+        assert_eq!(sanitize_site("  "), None);
+        assert_eq!(sanitize_site("two words.com"), None, "含空白非法");
+    }
+
+    #[test]
+    fn tavily_payload_maps_opts() {
+        let mut opts = SearchOpts {
+            count: 5,
+            time_range: Some(TimeRange::Month),
+            site: Some("github.com".into()),
+        };
+        let body = tavily_payload("k", "rust 编译", &opts);
+        assert_eq!(body["max_results"], 5);
+        assert_eq!(body["time_range"], "month");
+        assert_eq!(body["include_domains"][0], "github.com");
+        // 缺省：无 time_range/include_domains 键（不送空值给 API）
+        opts.time_range = None;
+        opts.site = None;
+        let body = tavily_payload("k", "q", &opts);
+        assert!(body.get("time_range").is_none());
+        assert!(body.get("include_domains").is_none());
+    }
+
+    #[test]
+    fn brave_query_and_params_maps_opts() {
+        let opts = SearchOpts {
+            count: 3,
+            time_range: Some(TimeRange::Day),
+            site: Some("example.com".into()),
+        };
+        let (q, params) = brave_query_and_params("缓存 策略", &opts);
+        // 返回的是编码后的 q（与现有 form_urlencoded 风格一致），site 运算符同样被编码
+        assert!(q.contains("site%3Aexample.com"), "{q}");
+        assert!(params.contains("count=3"), "{params}");
+        assert!(params.contains("freshness=pd"), "{params}");
+        // 无 site：q 原样
+        let plain = SearchOpts {
+            count: 8,
+            ..Default::default()
+        };
+        let (q, params) = brave_query_and_params("hello", &plain);
+        assert_eq!(q, "hello");
+        assert!(params.contains("count=8"));
+        assert!(!params.contains("freshness"), "{params}");
+    }
+
     #[test]
     fn network_search_and_fetch() {
         // 真实网络测试：环境可达时验证（cn.bing.com 从 Mac 可达）
-        match tauri::async_runtime::block_on(web_search("北京今天天气")) {
+        match tauri::async_runtime::block_on(web_search("北京今天天气", &SearchOpts::default()))
+        {
             Ok(out) => {
                 assert!(out.contains("http"), "搜索结果应带链接");
                 eprintln!("SEARCH OK:\n{}", out.chars().take(200).collect::<String>());
