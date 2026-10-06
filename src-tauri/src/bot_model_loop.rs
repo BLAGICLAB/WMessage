@@ -593,21 +593,33 @@ pub async fn run_model_loop(
             if event == "llm.request" {
                 round_for_audit.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
-            // P1-c：llm.usage 累计（trace 汇总的 tokens 数据源）
+            // P1-c：llm.usage 累计（trace 汇总的 tokens 数据源）+ P4 水位条事件
+            //（仅交互实例推挂件；前端按会话累计配合 contextK 显示水位。
+            // OpenAI 兼容网关的流式 usage 需要 stream_options 参数（部分网关
+            // 不认识会 400），暂不启用——水位仅 Anthropic 协议有数据，前端注明）
             if event == "llm.usage" {
+                let mut input_opt: Option<u64> = None;
+                let mut output_opt: Option<u64> = None;
                 for (k, v) in &kv {
                     match *k {
-                        "input_tokens" => {
-                            if let Ok(n) = v.parse::<u64>() {
-                                usage_pt.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
-                            }
-                        }
-                        "output_tokens" => {
-                            if let Ok(n) = v.parse::<u64>() {
-                                usage_ct.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
-                            }
-                        }
+                        "input_tokens" => input_opt = v.parse::<u64>().ok(),
+                        "output_tokens" => output_opt = v.parse::<u64>().ok(),
                         _ => {}
+                    }
+                }
+                if let (Some(i), Some(o)) = (input_opt, output_opt) {
+                    usage_pt.fetch_add(i, std::sync::atomic::Ordering::Relaxed);
+                    usage_ct.fetch_add(o, std::sync::atomic::Ordering::Relaxed);
+                    if stream_to_widget {
+                        let _ = app.emit_to(
+                            "widget",
+                            "bot-usage-delta",
+                            serde_json::json!({
+                                "sessionId": session_id,
+                                "inputTokens": i,
+                                "outputTokens": o,
+                            }),
+                        );
                     }
                 }
             }

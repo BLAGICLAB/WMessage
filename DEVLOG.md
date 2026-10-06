@@ -2,6 +2,30 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-06（周二）P4B-ACTIVITY：Profiles 三预设 + 水位条 + 主窗活动页 + evolution 采样接线（Agent 透明化 P4 收尾批）
+
+**承接**：设计 §6 P4 剩余四项全部落地；透明化改造主线就此收官。
+
+**改动**：
+- **Profiles 三预设**（Codex profiles 借鉴）：参数卡顶部「保守/标准/放开」三按钮——
+  保守（strict + 默认轮数 + 默认超时）/ 标准（全套默认）/ 放开（auto + 200 轮 + 300 熔断 +
+  300s py 超时），一键整组 saveConfig 落盘；纯前端联动写，后端零改动
+- **上下文水位条**（/context 借鉴）：后端薄壳 audit 闭包拦截 `llm.usage` 时 emit
+  `bot-usage-delta`（sessionId+tokens，仅交互实例推挂件）→ ChatPanel 按会话累计 →
+  新组件 UsageMeter（输入栏上方细条：Σ tokens + contextK 百分比进度 + ≥80% 红色
+  「建议 /compact」）。**局限留档**：OpenAI 兼容网关的流式 usage 需 stream_options
+  参数（部分网关不认识会 400）暂不启用——水位仅 Anthropic 协议有数据，无数据时整条隐藏
+- **主窗口「执行活动」聚合页**（设计 §5.6）：左导航 Agent 能力组新增「活动」——
+  新组件 ActivityPage（最近 50 次执行列表：时间/标题/origin 徽标/状态/耗时/tokens；
+  running 行脉冲 + 10s 轻轮询；行点击 TracePanel **traceId 直查模式**新增；
+  顶部「唤起挂件」按钮围观流式会话）
+- **evolution 采样接线**（半成品基建最后一块）：run_task_in_chat 闭包喂 maybe_record_trace
+  （Success 带 LoopTrace.tool_calls / Failure 带 reason；session 标识用 task_id——
+  执行 sid 闭包内不可得）。此前只有主聊天 hook、任务/定时/工作流链路全空；采样判定
+  should_record_trace（Failure 恒记/长耗时/多工具）不变，audit 纪律不破坏
+
+**测试**：lib 1424 / vitest 501 全绿；tsc/knip/桥审计（bot-usage-delta 配对）/模块地图绿。
+
 ## 2026-10-06（周二）P4A-TRACETOOLS：截断落地 + error_class 分类器 + 痕迹清理/导出（Agent 透明化 P4 首批）
 
 **承接**：设计 §6 P4 列表四项（选高价值低成本件；Profiles/水位条/主窗活动页留后续按需）。

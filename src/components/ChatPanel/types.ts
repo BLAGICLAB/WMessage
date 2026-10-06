@@ -83,6 +83,8 @@ export type ChatModelEntry = {
   vendor?: string;
   /** 启用开关（设置页模型行）：false = 未启用，🧠 下拉不显示；缺省视为启用 */
   enabled?: boolean;
+  /** 上下文窗口（千 token，U11 徽标同源）：P4 水位条分母；缺省 = 不显示百分比 */
+  contextK?: number;
 };
 
 /** 模型下拉条目（MP-02 双协议同列）：在 ChatModelEntry 上带来源协议，供分组展示 */

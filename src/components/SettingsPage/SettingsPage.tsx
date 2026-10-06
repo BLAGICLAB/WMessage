@@ -2020,6 +2020,63 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         <p className="mt-1 text-xs text-[var(--t5)]">
           控制 agent 循环深度、子 agent 预算与搜索行为；留空 = 内置默认。调大 = 更强能力但更多 token 消耗
         </p>
+        {/* P4 Profiles 三预设：一键整组切换（写 config 字段 + 落盘；Python 开关是
+            独立 flag 文件不在预设内，保守预设的 py 语义 = 严格白名单下弹窗把关） */}
+        <div className="mt-3 flex gap-2">
+          {(
+            [
+              [
+                "保守",
+                "严格白名单 + 默认轮数，慎用自动化",
+                {
+                  permMode: "strict" as const,
+                  maxRounds: "50",
+                  maxFunctionCalls: "100",
+                  pythonTimeoutSecs: "60",
+                  toolRules: [] as Array<{ tool: string; action: "allow" | "ask" | "deny" }>,
+                },
+              ],
+              [
+                "标准",
+                "默认参数（推荐日常档）",
+                {
+                  permMode: "ask" as const,
+                  maxRounds: "",
+                  maxFunctionCalls: "",
+                  pythonTimeoutSecs: "",
+                  historyBudgetChars: "",
+                  subagentMaxTurns: "",
+                  subagentMaxToolCalls: "",
+                  subagentMaxWallSecs: "",
+                  searchMaxResults: "",
+                  maxToolOutputChars: "",
+                  toolRules: [] as Array<{ tool: string; action: "allow" | "ask" | "deny" }>,
+                },
+              ],
+              [
+                "放开",
+                "白名单内全自动 + 高轮数长预算（适合无人值守批量）",
+                {
+                  permMode: "auto" as const,
+                  maxRounds: "200",
+                  maxFunctionCalls: "300",
+                  pythonTimeoutSecs: "300",
+                  toolRules: [] as Array<{ tool: string; action: "allow" | "ask" | "deny" }>,
+                },
+              ],
+            ] as const
+          ).map(([label, hint, patch]) => (
+            <button
+              key={label}
+              className="flex-1 rounded-[var(--r-sm)] px-2 py-1.5 text-xs text-[var(--t3)] nm-outset hover:text-[var(--t1)] disabled:opacity-50"
+              title={hint}
+              disabled={configBusy}
+              onClick={() => void saveConfig((c) => ({ ...c, ...patch }))}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
         {(
           [
             ["maxRounds", "模型循环最大轮数", "默认 50（钳 5–200）；Skill 自报轮数优先", "50"],

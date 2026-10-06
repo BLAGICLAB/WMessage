@@ -38,6 +38,7 @@ import {
 import { useAutoGrow, useDropdownTop, useOutsideClose } from "./useChatUi";
 import { SessionList } from "./SessionList";
 import { MessageList } from "./MessageList";
+import { UsageMeter } from "./UsageMeter";
 import { InputArea } from "./InputArea";
 
 /** 模型下拉条目集合协议（MP-02）：types.ModelItem 的来源协议收窄用 */
@@ -144,6 +145,10 @@ export function ChatPanel({
   const effortDropdownRef = useRef<HTMLDivElement>(null);
   /** 🛡 授权模式（U3b 只读展示）：bot-config 的 permMode，设置页维护 */
   const [permMode, setPermMode] = useState<PermMode>("ask");
+  // P4 上下文水位条：bot-usage-delta 按会话累计（Anthropic 协议回合级 usage）
+  const [sessionUsage, setSessionUsage] = useState<
+    Record<string, { input: number; output: number }>
+  >({});
   // P2-b 执行过程详细度（verbose 三档）：localStorage 持久化，仅影响 ToolBadges 展示档位
   const [verboseLevel, setVerboseLevelState] = useState<VerboseLevel>(() => {
     const v = localStorage.getItem("chat-verbose-level");
@@ -343,6 +348,7 @@ export function ChatPanel({
         /** 授权模式（U3b 只读展示）：strict/ask/yolo，None = ask。
          *  ⚠️ BotConfigView 序列化为 camelCase（rename_all），线字段是 permMode */
         permMode?: string | null;
+        /** P4 水位条：模型条目 contextK（千 token）随 modelsByProvider 条目透传 */
       }>("bot_get_config")
         .then((c) => {
           setModelLabel(c.model || "未配置");
@@ -634,6 +640,24 @@ export function ChatPanel({
         return copy;
       });
     });
+    // P4 水位条数据源：Anthropic 回合级 usage 按会话累计（当前视图 + 在途会话，
+    // 与流式事件同过滤口径——切走的会话继续累计，切回可见）
+    const unUsage = listen<{
+      inputTokens?: number;
+      outputTokens?: number;
+      sessionId?: string | null;
+    }>("bot-usage-delta", (e) => {
+      const sid = e.payload?.sessionId ?? null;
+      if (sid === null) return;
+      if (sid !== sessionIdRef.current && !inflightRef.current.has(sid)) return;
+      const i = e.payload?.inputTokens ?? 0;
+      const o = e.payload?.outputTokens ?? 0;
+      if (i <= 0 && o <= 0) return;
+      setSessionUsage((prev) => {
+        const cur = prev[sid] ?? { input: 0, output: 0 };
+        return { ...prev, [sid]: { input: cur.input + i, output: cur.output + o } };
+      });
+    });
     return () => {
       if (frame !== null) {
         if (rafOk) cancelAnimationFrame(frame);
@@ -646,6 +670,7 @@ export function ChatPanel({
       unToolName.then((f) => f());
       unToolDone.then((f) => f());
       unFileChanged.then((f) => f());
+      unUsage.then((f) => f());
       unSkillFailed.then((f) => f());
     };
   }, []);
@@ -1380,6 +1405,12 @@ export function ChatPanel({
           ))}
         </div>
       )}
+      {/* P4 上下文水位条（Anthropic 协议回合级 usage 累计；contextK 来自 active 模型条目） */}
+      <UsageMeter
+        input={sessionUsage[sessionId ?? ""]?.input ?? 0}
+        output={sessionUsage[sessionId ?? ""]?.output ?? 0}
+        contextK={models.find((m) => m.id === activeModelId)?.contextK}
+      />
 
       <MessageList
         scrollRef={scrollRef}

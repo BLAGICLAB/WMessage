@@ -1476,6 +1476,10 @@ pub async fn run_task_in_chat(
     // 内核（run_task_in_chat_with）填归属并收尾。
     // P3-a：轮数走配置解析（config maxRounds，钳 5..=200；默认 50）
     let cfg_for_rounds = crate::bot::load_config(app);
+    // P4：evolution 采样接线——任务执行链路（手动/定时/批量/工作流）此前未接
+    // maybe_record_trace（只有主聊天 hook）；LoopTrace 统计在闭包里顺手喂采样判定。
+    let exec_started_at = chrono::Utc::now().timestamp_millis();
+    let origin_for_evo = origin;
     let hook: std::sync::Arc<std::sync::Mutex<crate::trace_sink::TraceCapture>> =
         Default::default();
     let hook_for_run = hook.clone();
@@ -1485,7 +1489,7 @@ pub async fn run_task_in_chat(
         origin,
         Some(hook),
         |app2, msgs, stop| async move {
-            crate::bot_model_loop::run_model_loop(
+            let outcome = crate::bot_model_loop::run_model_loop(
                 app2,
                 msgs,
                 crate::bot::params::resolve_max_rounds_cfg(&cfg_for_rounds) as usize,
@@ -1495,14 +1499,46 @@ pub async fn run_task_in_chat(
                 None,
                 model,
             )
-            .await
+            .await;
             // LoopTrace 统计进 trace 汇总槽（轮数/工具数/tokens → exec_traces 行）
-            .map(|(text, refs, trace)| {
-                if let Ok(mut c) = hook_for_run.lock() {
-                    c.stats = Some(trace);
+            match &outcome {
+                Ok((_, _, trace)) => {
+                    if let Ok(mut c) = hook_for_run.lock() {
+                        c.stats = Some(trace.clone());
+                    }
+                    // P4：采样上报（Failure/长耗时/多工具命中才落审计，见 should_record_trace）
+                    crate::evolution::trace::maybe_record_trace(
+                        crate::evolution::trace::TraceContext::new(
+                            // 闭包内拿不到执行 sid（内核生成）——用 task_id 作稳定标识
+                            task_id,
+                            match origin_for_evo {
+                                TaskExecOrigin::Manual
+                                | TaskExecOrigin::Scheduled
+                                | TaskExecOrigin::Batch
+                                | TaskExecOrigin::Workflow => crate::mutation::MutationOrigin::Bot,
+                            },
+                            exec_started_at,
+                        )
+                        .with_outcome(crate::evolution::trace::TraceOutcome::Success)
+                        .with_tool_calls(trace.tool_calls.clone()),
+                    );
                 }
-                (text, refs)
-            })
+                Err(e) => {
+                    crate::evolution::trace::maybe_record_trace(
+                        crate::evolution::trace::TraceContext::new(
+                            task_id,
+                            crate::mutation::MutationOrigin::Bot,
+                            exec_started_at,
+                        )
+                        .with_outcome(
+                            crate::evolution::trace::TraceOutcome::Failure {
+                                reason: crate::bot::truncate_for_log(&e.to_string(), 120),
+                            },
+                        ),
+                    );
+                }
+            }
+            outcome.map(|(text, refs, _)| (text, refs))
         },
     )
     .await

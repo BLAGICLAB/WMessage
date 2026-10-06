@@ -138,7 +138,13 @@ src-tauri/src/
 │                        spawn/check/cancel 生命周期状态机 + 子卡（🧩）创建 + acceptance
 │                        双写 + 预算钳制；与 bot_execute_task（单发子 agent）入口/存储/事件
 │                        各自独立；LLM 工具暴露/runner（SUBA-2）与预算强制/并发排队（SUBA-3）
-│                        按设计 §11 分批接入
+│                        按设计 §11 分批接入；P4：spawn 预算默认走 bot/params 配置 + evolution
+│                        采样接线（run_task_in_chat 闭包喂 maybe_record_trace）
+├── bot_model_loop.rs    LLM 流式调用+工具循环：run_model_loop(薄壳装配)/run_model_loop_core(可注入
+│                        mock)；SSE 解析、思考块拆分；单轮 Function 熔断；LlmHttp / ModelLoopDeps
+│                        依赖注入（TOOLS schema 已移出，见 bot/registry.rs）；P4：maxToolOutputChars
+│                        截断落地（tool.output.truncated 审计）+ llm.usage 薄壳累计 + bot-usage-delta
+│                        水位条事件（Anthropic 协议）
 ├── bot_artifacts.rs     产物登记：link_file_to_task → 收尾按 TaskExecOrigin 分流 →
 │                        落「通知中心」artifact_bind 消息（原 artifact-batch-ready 挂件弹窗已下线）→
 │                        通知页勾选 → confirm_artifact_batch 落库 + notif_resolve_artifact 回写

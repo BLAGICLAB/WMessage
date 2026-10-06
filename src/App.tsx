@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { isPermissionGranted, requestPermission } from "@tauri-apps/plugin-notification";
 import {
+  Activity as ActivityIcon,
   AlarmClock,
   Archive,
   Bell,
@@ -27,6 +28,7 @@ import { WorkspacePage } from "./components/WorkspacePage";
 import { SettingsPage } from "./components/SettingsPage";
 import { WorkflowPage } from "./components/WorkflowCanvas/WorkflowPage";
 import { SchedulePage } from "./components/SchedulePage/SchedulePage";
+import { ActivityPage } from "./components/ActivityPage";
 import GraphPage from "./components/GraphPage/GraphPage";
 import { NotificationsPage } from "./components/NotificationsPage/NotificationsPage";
 import {
@@ -86,6 +88,7 @@ type RailView =
   | "board"
   | "workflow"
   | "schedule"
+  | "activity"
   | "graph"
   | "archive"
   | "workspace"
@@ -107,6 +110,8 @@ const AGENT_ITEMS: {
   { key: "workflow", label: "工作流", icon: WorkflowIcon },
   // 定时任务模块：任务卡/工作流到点自动执行的集中管理（列表=状态面板）
   { key: "schedule", label: "定时任务", icon: AlarmClock },
+  // P4 执行活动聚合页：最近全部执行痕迹列表（Agent 透明化设计 §5.6）
+  { key: "activity", label: "活动", icon: ActivityIcon },
   // 通知中心（Agent 通知模块）：badge=true 渲染待处理数角标
   { key: "notifications", label: "通知", icon: Bell, badge: true },
 ];
@@ -924,6 +929,8 @@ function App() {
             />
           ) : view === "schedule" ? (
             <SchedulePage />
+          ) : view === "activity" ? (
+            <ActivityPage />
           ) : view === "graph" ? (
             <GraphPage
               tasks={tasks}

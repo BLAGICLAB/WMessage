@@ -131,10 +131,14 @@ function FileChangeItem({ c, onRolledBack }: { c: FileChangeRow; onRolledBack: (
 export function TracePanel({
   taskId,
   taskTitle,
+  traceId,
   onClose,
 }: {
-  taskId: string;
+  /** 按任务卡查（执行历史列表 → 选一条）；与 traceId 二选一 */
+  taskId?: string;
   taskTitle?: string;
+  /** P4 直查模式：活动页按 trace id 直接打开单条 */
+  traceId?: number;
   onClose: () => void;
 }) {
   const [traces, setTraces] = useState<TraceRow[]>([]);
@@ -146,13 +150,18 @@ export function TracePanel({
   const [exportBusy, setExportBusy] = useState(false);
   const [exportMsg, setExportMsg] = useState<string | null>(null);
 
-  const reload = (traceId: number | null) => {
+  const reload = (pickId: number | null) => {
     setLoading(true);
     setError(null);
-    traceListByTask(taskId)
+    // 直查模式（traceId）只拉单条；任务卡模式拉执行历史列表
+    const load =
+      traceId != null
+        ? traceDetail(traceId).then((d) => (d ? [d] : []))
+        : traceListByTask(taskId ?? "");
+    load
       .then(async (list) => {
         setTraces(list);
-        const pick = list.find((t) => t.id === traceId) ?? list[0] ?? null;
+        const pick = list.find((t) => t.id === pickId) ?? list[0] ?? null;
         setSelected(pick);
         setDetail(pick ? await traceDetail(pick.id) : null);
       })
@@ -161,9 +170,9 @@ export function TracePanel({
   };
 
   useEffect(() => {
-    reload(null);
-    // eslint-disable-next-line react/exhaustive-deps -- taskId 不变的挂载期一次性加载；回滚后手动 reload
-  }, [taskId]);
+    reload(traceId ?? null);
+    // eslint-disable-next-line react/exhaustive-deps -- taskId/traceId 挂载期一次性加载；回滚后手动 reload
+  }, [taskId, traceId]);
 
   const statusOf = (t: TraceRow | null) => (t ? STATUS_BADGE[t.status] ?? null : null);
   const duration = (t: TraceRow): string =>
