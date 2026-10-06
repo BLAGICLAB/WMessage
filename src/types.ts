@@ -105,6 +105,8 @@ export interface Task {
   schedule?: string | null;
   /** 上次定时执行时间（epoch ms） */
   schedLast?: number | null;
+  /** 定时启用开关：undefined = 启用（暂停保留配置不丢节奏） */
+  enabled?: boolean;
   /** 子 agent 编排（SUBA-3 投影）：串链键 = 子 agent 执行会话 id（不直接展示） */
   assignee?: string | null;
   /** 预算三硬顶（上卡可见）：轮数 / 工具调用 / 墙钟秒 */
@@ -151,6 +153,59 @@ export interface Workflow {
   goal: string;
   createdAt?: number;
   updatedAt?: number;
+  /** 定时执行规则（同 Task.schedule 格式）：null/undefined = 未设 */
+  schedule?: string | null;
+  /** 上次定时执行时间（epoch ms） */
+  schedLast?: number | null;
+  /** 定时启用开关：undefined = 启用 */
+  enabled?: boolean;
+}
+
+/** schedule_overview 返回的条目（定时作业/工作流两源合并，字段与 Rust 侧 camelCase 对齐） */
+export interface ScheduleEntry {
+  /** 目标类型：job = 定时作业（到点按内容新建任务卡交机器人）；workflow = 已有工作流模板 */
+  kind: "job" | "workflow";
+  /** 目标 id（作业 id / 工作流 id） */
+  targetId: string;
+  /** 作业内容（即「要做什么」）/ 工作流名 */
+  title: string;
+  /** 摘要（工作流 goal；作业恒为 null） */
+  detail: string | null;
+  /** 定时规则串（daily:/weekly:/monthly:/at:） */
+  schedule: string;
+  /** 上次定时执行时间（epoch ms），未跑过为 null */
+  schedLast: number | null;
+  /** 下次执行时间（epoch ms，Rust 端单源计算，前端不解析 schedule） */
+  nextRunAt: number | null;
+  /** 已错过（超 2h 补跑窗口被跳过，Rust 端判定） */
+  missed: boolean;
+  /** 启用开关：false = 已暂停（保留配置） */
+  enabled: boolean;
+  /** 最近一次执行结果（"ok"|"fail"，null=从未跑）；仅 job 条目有意义，workflow 恒 null */
+  lastStatus?: string | null;
+  /** 最近失败原因摘要（≤300 字）；仅 job 条目有意义 */
+  lastError?: string | null;
+  /** 失败重试次数上限（0=不重试；失败 5 分钟后自动重试，用尽才算最终失败） */
+  retryMax: number;
+  /** 重试用尽仍失败时自动暂停此任务并通知 */
+  pauseOnFailure: boolean;
+}
+
+/** scheduled_job_history 返回的单次执行记录（倒序，最新在前；与 Rust 侧 camelCase 对齐） */
+export interface ScheduledJobRun {
+  id: string;
+  /** 所属作业 id */
+  jobId: string;
+  /** 触发时间（epoch ms） */
+  firedAt: number;
+  /** 执行结果 */
+  status: "ok" | "fail";
+  /** 耗时（ms） */
+  durationMs: number;
+  /** 结果摘要（失败时为原因摘要） */
+  summary: string | null;
+  /** 本次执行新建的任务卡 id（前端可跳卡片，v1 先不接线） */
+  cardId: string | null;
 }
 
 /** workflow_save 结果：本地节点 id → 真实任务 id 的绑定（画布据此挂接任务卡） */

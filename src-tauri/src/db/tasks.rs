@@ -25,7 +25,7 @@ pub struct TaskFile {
 pub const MAX_TASK_FILES: usize = 10;
 
 /// tasks 表单源 DDL（W1-CANVAS 抽取）：open_db 建表与 db::workflow 测试共用。
-/// 含全部 29 列——老库缺列由 open_db 的幂等 ALTER 迁移补齐，此处即最新完整 schema。
+/// 含全部 30 列——老库缺列由 open_db 的幂等 ALTER 迁移补齐，此处即最新完整 schema。
 pub const TASKS_DDL: &str = "CREATE TABLE IF NOT EXISTS tasks (
    id           TEXT PRIMARY KEY,
    title        TEXT NOT NULL,
@@ -56,7 +56,8 @@ pub const TASKS_DDL: &str = "CREATE TABLE IF NOT EXISTS tasks (
    canvas_y     REAL,
    model        TEXT,
    owner_id     TEXT,
-   created_at   INTEGER
+   created_at   INTEGER,
+   enabled      INTEGER
  );";
 
 /// 任务状态(三列看板：todo / doing / done)。
@@ -149,6 +150,9 @@ pub(crate) const OWNER_TASK_COLUMNS: [(&str, &str); 1] = [("owner_id", "TEXT")];
 /// 先例）；老数据 ALTER 后该列为 NULL（= 未知），不回填。
 pub(crate) const CREATED_AT_TASK_COLUMNS: [(&str, &str); 1] = [("created_at", "INTEGER")];
 
+/// 定时启用开关列（定时任务模块）：NULL 恒等于启用；0 = 暂停（保留 schedule 配置不删）
+pub(crate) const SCHED_ENABLED_TASK_COLUMNS: [(&str, &str); 1] = [("enabled", "INTEGER")];
+
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Task {
@@ -208,6 +212,10 @@ pub struct Task {
     /// 老数据为 NULL（= 未知），不回填。序列化进导出信封，serde default 兼容旧信封。
     #[serde(default)]
     pub created_at: Option<i64>,
+    /// 定时启用开关（定时任务模块）：None/Some(true) = 启用，Some(false) = 暂停
+    /// （保留 schedule 配置不删）。读路径 None 视为启用。
+    #[serde(default)]
+    pub enabled: Option<bool>,
     #[serde(default, skip_serializing)]
     pub expected_updated_at: Option<i64>,
 }
@@ -278,8 +286,8 @@ pub fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), S
             "INSERT INTO tasks
                (id, title, due, note, tags, file_path, file_is_dir, col, subtasks,
                 completed_at, archived, deleted_at, collapsed, ord, updated_at, schedule, sched_last, bot_assigned, files,
-                assignee, budget, result, origin, workflow_id, depends_on, canvas_x, canvas_y, model, owner_id, created_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30)
+                assignee, budget, result, origin, workflow_id, depends_on, canvas_x, canvas_y, model, owner_id, created_at, enabled)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31)
              ON CONFLICT(id) DO UPDATE SET
                title=excluded.title, due=excluded.due, note=excluded.note,
                tags=excluded.tags, file_path=excluded.file_path,
@@ -294,7 +302,7 @@ pub fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), S
                origin=excluded.origin, workflow_id=excluded.workflow_id,
                depends_on=excluded.depends_on,
                canvas_x=excluded.canvas_x, canvas_y=excluded.canvas_y,
-               model=excluded.model, owner_id=excluded.owner_id
+               model=excluded.model, owner_id=excluded.owner_id, enabled=excluded.enabled
              WHERE tasks.updated_at IS NULL OR excluded.updated_at >= tasks.updated_at",
         )
         .map_err(|e| e.to_string())?;
@@ -383,6 +391,7 @@ pub fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), S
                 t.model,
                 t.owner_id,
                 t.created_at,
+                t.enabled.map(|b| b as i64),
             ])
             .map_err(|e| e.to_string())?;
         affected_total += affected;
@@ -444,6 +453,7 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<super::Task> {
     let model: Option<String> = row.get(27)?;
     let owner_id: Option<String> = row.get(28)?;
     let created_at: Option<i64> = row.get(29)?;
+    let enabled: Option<i64> = row.get(30)?;
     // col 从 DB 读出仍是 String(列类型 TEXT),parse 到 TaskStatus enum。
     // 与 subtasks/files JSON 损坏「warn + 按空读取」的契约对齐:
     // 单行 col 异常不应让整个读失败、把全部任务藏起来。
@@ -552,6 +562,7 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<super::Task> {
         model,
         owner_id,
         created_at,
+        enabled: enabled.map(|v| v != 0),
         expected_updated_at: None,
     })
 }
@@ -560,7 +571,7 @@ const TASK_SELECT_COLS: &str =
     "SELECT id, title, due, note, tags, file_path, file_is_dir, col, subtasks, \
      completed_at, archived, deleted_at, collapsed, ord, updated_at, schedule, sched_last, \
      bot_assigned, files, assignee, budget, result, origin, workflow_id, depends_on, \
-     canvas_x, canvas_y, model, owner_id, created_at FROM tasks";
+     canvas_x, canvas_y, model, owner_id, created_at, enabled FROM tasks";
 
 pub fn load_all(conn: &rusqlite::Connection) -> Result<Vec<super::Task>, String> {
     let sql = format!("{TASK_SELECT_COLS} ORDER BY ord, rowid");
@@ -788,6 +799,8 @@ pub(crate) fn apply_task_patch(
             "schedule" => set_from(&mut task.schedule, v, k)?,
             "schedLast" => set_from(&mut task.sched_last, v, k)?,
             "botAssigned" => set_from(&mut task.bot_assigned, v, k)?,
+            // 定时启用开关（定时任务模块）：null/缺省 = 启用
+            "enabled" => set_from(&mut task.enabled, v, k)?,
             // SUBA-1（设计 §4.1）：子 agent 编排三字段走 task_patch 既有通道；
             // null = 清空。assignee/budget/result 由服务端编排写，前端仅投影展示。
             // budget 落库前必须过 clamped()——硬顶契约在写口强制，防 task_patch
@@ -1781,6 +1794,7 @@ mod owner_graph_tests {
             model: None,
             owner_id: owner.map(str::to_string),
             created_at: None,
+            enabled: None,
             expected_updated_at: None,
         }
     }

@@ -1,5 +1,7 @@
 use super::parse::SkillMeta;
-use super::state::{load_skill_meta, now_ms, skill_runs, SkillRun, SkillState};
+use super::state::{
+    active_skill_run_for, load_skill_meta, now_ms, skill_runs, SkillRun, SkillState,
+};
 use crate::audit_event;
 use crate::bot::registry::ToolResult;
 use crate::error::CommandError;
@@ -40,20 +42,63 @@ fn skill_conflict_with_existing(existing: Option<&SkillRun>, session_id: Option<
         && r.session_id.as_deref() != session_id)
 }
 
-/// 启动 Skill：use_skill 工具调用即启动生命周期（预审 → Running），返回文档 + 运行约束提示。
+/// 启动 Skill：use_skill 工具调用即启动生命周期（预审 → 参数校验 → Running），
+/// 返回文档 + 运行约束提示。
 /// session_id：记录触发会话，活动判定/暂停/确认/推进按会话过滤（会话隔离）。
+/// params：use_skill 传入的参数对象（N7-③；缺失必填参数拒绝启动并教学化提示）。
 pub fn start_skill(
     app: &AppHandle,
     name: &str,
+    params: serde_json::Value,
     session_id: Option<&str>,
 ) -> Result<(SkillMeta, String), String> {
-    let (meta, body) = load_skill_meta(app, name)?;
+    let (meta, body, dir) = load_skill_meta(app, name)?;
     preflight(&meta)?;
+    // N7-③：参数契约校验——必填缺失拒绝启动（教模型带参重调）；非必填缺省回填 default
+    let mut params = params;
+    if !params.is_object() {
+        params = serde_json::Value::Null;
+    }
+    if let Some(obj) = params.as_object() {
+        // 空串参数视为未提供（模型常传空占位）——先收集再删，避免可变/不可变借用冲突
+        let empty_keys: Vec<String> = obj
+            .iter()
+            .filter(|(_, v)| v.as_str() == Some(""))
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in empty_keys {
+            params.as_object_mut().unwrap().remove(&k);
+        }
+    }
+    let mut missing: Vec<String> = Vec::new();
+    for p in &meta.params {
+        let provided = params
+            .get(&p.key)
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        if let Some(v) = provided {
+            params[&p.key] = serde_json::Value::String(v);
+        } else if let Some(d) = &p.default {
+            params[&p.key] = serde_json::Value::String(d.clone());
+        } else if p.required {
+            missing.push(format!("{}：{}", p.key, p.desc));
+        }
+    }
+    if !missing.is_empty() {
+        return Err(format!(
+            "技能「{}」缺少必填参数：{}。请带 params 重新调用 use_skill（params 为对象，键为参数名）",
+            meta.name,
+            missing.join("；")
+        ));
+    }
     // 预审已通过 → 直接进入 Running：步骤钩子按 Running/Paused 查找，
     // 停在 Loaded 会让计数/熔断/动作记录全部静默失效
     let mut run = SkillRun::new(&meta);
     run.state = SkillState::Running;
     run.session_id = session_id.map(|s| s.to_string());
+    run.params = params;
+    run.dir = Some(dir);
     let registry = skill_runs(app);
     let mut runs = registry.lock().unwrap_or_else(|e| {
         eprintln!("[mutex_poisoned] bot_skills::runtime::skill_runs: {e:?}");
@@ -110,17 +155,24 @@ pub fn start_skill(
 
 /// 工具 use_skill：读取技能文档全文返回给模型。
 /// session_id：透传给 start_skill 记录技能归属会话（会话隔离）。
+/// N7：新增 params 对象透传（参数契约）；返回头部兼容警告（未知工具）+
+/// 尾部第三层资料清单（references/*.md）。
 pub fn tool_use_skill(app: &AppHandle, args: &str, session_id: Option<&str>) -> ToolResult {
     let v: serde_json::Value = serde_json::from_str(args).unwrap_or(serde_json::Value::Null);
     let Some(name) = v["name"].as_str().map(|s| s.trim().to_string()) else {
         // 「use_skill 缺少 name」首字「u」非 error/warn 前缀 → ok
         return ToolResult::ok("use_skill 缺少 name".to_string(), Vec::new());
     };
-    match start_skill(app, &name, session_id) {
+    let params = v.get("params").cloned().unwrap_or(serde_json::Value::Null);
+    match start_skill(app, &name, params, session_id) {
         Ok((meta, body)) => {
             let hint = format!(
-                "【技能文档：{}】\n风险等级 {} · 运行模式 {} · 最多 {} 步 · 超时 {} 秒 · 回滚 {}",
+                "【技能文档：{}】{}\n风险等级 {} · 运行模式 {} · 最多 {} 步 · 超时 {} 秒 · 回滚 {}",
                 meta.name,
+                meta.version
+                    .as_deref()
+                    .map(|v| format!("v{v} "))
+                    .unwrap_or_default(),
                 meta.risk_level,
                 meta.mode,
                 meta.max_steps,
@@ -128,10 +180,66 @@ pub fn tool_use_skill(app: &AppHandle, args: &str, session_id: Option<&str>) -> 
                 meta.rollback
             );
             let mut out = hint + "\n\n" + &body;
+            // N7-①：兼容审计——DSL 步骤引用了未内置的工具 → 头部警告（MCP 工具可忽略）
+            if meta.mode == "auto" {
+                if let Ok((steps, rollback)) = crate::bot_skills::parse_skill_steps(&body) {
+                    let known: std::collections::HashSet<String> =
+                        crate::bot::registry::tools_index()
+                            .keys()
+                            .map(|s| s.to_string())
+                            .collect();
+                    let unknown =
+                        crate::bot_skills::parse::unknown_tool_names(&steps, &rollback, &known);
+                    if !unknown.is_empty() {
+                        out = format!(
+                            "⚠️ 兼容提醒：本技能引用了未内置的工具（{}）——若为 MCP 工具可正常调用，否则对应步骤会失败。\n\n{}",
+                            unknown.join("、"),
+                            out
+                        );
+                        crate::bot::audit_log_hook(
+                            app,
+                            &format!(
+                                "skill.compat_warn | name: {} | unknown: {}",
+                                meta.name,
+                                unknown.join(",")
+                            ),
+                        );
+                    }
+                }
+            }
             if meta.mode == "interactive" {
                 out.push_str(
                     "\n\n（运行约束：本技能为人机协同模式，中高危动作执行前会暂停等待用户确认）",
                 );
+            }
+            // N7-⑥：第三层渐进披露——技能目录附带资料按需读（会话级读白名单已放行）
+            if let Some(run) = active_skill_run_for(app, session_id) {
+                if run.name == meta.name {
+                    if let Some(dir) = &run.dir {
+                        let refs_dir = dir.join("references");
+                        if let Ok(rd) = std::fs::read_dir(&refs_dir) {
+                            let mut files: Vec<String> = rd
+                                .flatten()
+                                .filter(|e| {
+                                    e.path()
+                                        .extension()
+                                        .and_then(|x| x.to_str())
+                                        .map(|x| x == "md")
+                                        .unwrap_or(false)
+                                })
+                                .map(|e| e.path().display().to_string())
+                                .collect();
+                            if !files.is_empty() {
+                                files.sort();
+                                out.push_str(
+                                    "\n\n（本技能附带资料，需要时用 read_text_file 读取：\n- ",
+                                );
+                                out.push_str(&files.join("\n- "));
+                                out.push('）');
+                            }
+                        }
+                    }
+                }
             }
             // 技能文档全文，首字符任意 UTF-8 → ok
             ToolResult::ok(out, Vec::new())
@@ -174,7 +282,8 @@ fn step_check(run: &mut SkillRun, tool: &str, args: &str, now: i64) -> Result<()
         });
     }
     // 动作记录（回滚清单来源）：只记有副作用的工具，跳过只读查询
-    const READONLY: [&str; 4] = ["list_tasks", "search_tasks", "use_skill", "web_search"];
+    // （T1-QUERYTASKS：list_tasks/search_tasks 合并为 query_tasks）
+    const READONLY: [&str; 3] = ["query_tasks", "use_skill", "web_search"];
     if !READONLY.contains(&tool) {
         let brief = truncate_skill_args(args, 120);
         run.actions.push(format!("{tool} | {brief}"));
@@ -362,6 +471,45 @@ fn rollback_section(body: &str) -> String {
 
 /// 收尾钩子：模型循环结束时调用（成功/失败/用户停止）。
 /// 返回回滚建议文本（失败且 rollback=auto 且有动作记录时非空），调用方拼进回复让模型执行逆操作。
+/// N7-④：技能失败教训直沉淀（无 LLM）。仿 auto_lesson_on_task_failure：
+/// record_lesson_core（kind=lesson、source=system、scenario=skill:{name}）——
+/// lesson 自动进下轮 consolidate 候选池与聊天 lesson 槽，evolution 反思可见。
+/// DB 打开失败静默（教训丢失可接受，不打断收尾）。pub(crate)：调度器失败分支共用。
+pub(crate) fn sink_skill_failure_lesson<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    name: &str,
+    reason: &str,
+    actions: &[String],
+) {
+    let Ok(conn) = crate::db::open_db(app) else {
+        return;
+    };
+    let lesson = format!(
+        "技能「{name}」执行失败：{}。已执行动作：{}。建议：检查失败步骤的工具参数与依赖，必要时修正技能文档或改由人工处理。",
+        crate::bot::truncate_for_log(reason, 160),
+        if actions.is_empty() {
+            "无".to_string()
+        } else {
+            actions.join(" → ")
+        }
+    );
+    let msg = crate::memory::record_lesson_core(
+        &conn,
+        &lesson,
+        &format!("skill:{name}"),
+        "system",
+        None,
+        now_ms(),
+    );
+    crate::bot::audit_log_hook(
+        app,
+        &format!(
+            "skill.lesson_sunk | name: {name} | {}",
+            crate::bot::truncate_for_log(&msg, 120)
+        ),
+    );
+}
+
 /// 会话隔离：只收尾归属当前会话的 Running/Paused 技能，
 /// 别的会话的技能不受本会话结束影响。
 /// 泛型 Runtime：集成测试可用 MockRuntime 直调真收尾逻辑。
@@ -433,7 +581,7 @@ pub fn skill_finish<R: tauri::Runtime>(
                         .join("\n");
                     let rb_section = rollback_section(
                         &load_skill_meta(app, &name)
-                            .map(|(_, b)| b)
+                            .map(|(_, b, _)| b)
                             .unwrap_or_default(),
                     );
                     rollback_hint = format!(
@@ -447,6 +595,12 @@ pub fn skill_finish<R: tauri::Runtime>(
                     );
                 }
                 crate::bot::audit_log_hook(app, &log);
+                // N7-④：失败教训直沉淀（无 LLM，仿 auto_lesson_on_task_failure）——
+                // lesson 进 mem_items 后自动进下轮 consolidate 候选池与聊天 lesson 槽，
+                // evolution 反思可见「技能 X 失败模式」。有实际动作/步数才沉淀（防空转噪音）。
+                if !actions.is_empty() {
+                    sink_skill_failure_lesson(app, &name, reason, &actions);
+                }
             }
         }
     }
@@ -792,7 +946,8 @@ mod tests {
     fn step_check_counts_and_records_actions() {
         let mut r = test_run(8, 180);
         r.state = SkillState::Running;
-        assert!(step_check(&mut r, "list_tasks", "{}", 2000).is_ok());
+        // query_tasks 在 READONLY 豁免清单（T1 后），只读不记入回滚清单
+        assert!(step_check(&mut r, "query_tasks", "{}", 2000).is_ok());
         assert_eq!(r.step, 1);
         assert!(r.actions.is_empty()); // 只读不记
         assert!(step_check(&mut r, "create_task", "{\"title\":\"x\"}", 2000).is_ok());

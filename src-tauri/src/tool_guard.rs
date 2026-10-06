@@ -213,7 +213,7 @@ mod tests {
     #[test]
     fn single_point_tools_are_not_atomic() {
         for name in [
-            "list_tasks",
+            "query_tasks",
             "query_single_task",
             "create_task",
             "complete_task",
@@ -226,7 +226,6 @@ mod tests {
             "ocr_image",
             "grep_files",
             "list_files",
-            "search_tasks",
             "extract_document",
             "create_word",
             "create_word_revisions",
@@ -241,6 +240,12 @@ mod tests {
             "recall_facts",
             "record_lesson",
             "use_skill",
+            "reveal_path",
+            "open_url",
+            "clipboard_write",
+            "screenshot",
+            "edit_file",
+            "write_file",
             "link_file_to_task",
         ] {
             assert!(

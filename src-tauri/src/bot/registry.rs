@@ -17,9 +17,10 @@ use crate::bot::tools::{
     tool_add_subtask, tool_complete_task, tool_create_excel, tool_create_pdf, tool_create_ppt,
     tool_create_task, tool_create_word, tool_create_word_revisions, tool_delete_task,
     tool_edit_task, tool_extract_document, tool_fetch_url, tool_get_current_time,
-    tool_link_file_to_task, tool_list_tasks, tool_query_single_task, tool_remove_subtask,
-    tool_run_python, tool_search_tasks, tool_toggle_subtask, tool_web_search,
+    tool_link_file_to_task, tool_query_single_task, tool_query_tasks, tool_remove_subtask,
+    tool_run_python, tool_toggle_subtask, tool_web_search,
 };
+use crate::bot_desktop::{tool_clipboard_write, tool_open_url, tool_reveal_path, tool_screenshot};
 use crate::bot_skills::tool_use_skill;
 
 pub struct ToolCtx<'a> {
@@ -52,6 +53,16 @@ pub struct ToolResult {
     pub text: String,
     pub refs: Vec<crate::bot_chat::TaskRef>,
     pub status: ToolStatus,
+    /// N5：随结果附给模型的图片绝对路径（如 screenshot 产物）。
+    /// 模型循环把图作为紧随 tool 消息的 user 消息（image_url data-URL）注入——
+    /// OpenAI 协议 tool 消息只收文本，图走 user 消息（官方视觉示例同款）；
+    /// Anthropic 协议转换器自动把 [tool, user(图)] 合并成单条 user
+    /// [tool_result, image]（官方 tool_result 附图形态）。默认空 = 无图。
+    pub images: Vec<String>,
+    /// P1-b（Agent 透明化设计 §4.2）：文件类工具成功落盘后附的变更证据
+    /// （path/kind/±行/unified diff/回滚证据链）。dispatch 侧消费：
+    /// 落 `file_changes` 表 + emit `bot-file-changed`。默认空 = 本调用无文件修改。
+    pub file_changes: Vec<crate::bot_fs::FileChangeReceipt>,
 }
 
 impl ToolResult {
@@ -60,6 +71,23 @@ impl ToolResult {
             text: text.into(),
             refs,
             status: ToolStatus::Ok,
+            images: Vec::new(),
+            file_changes: Vec::new(),
+        }
+    }
+    /// 带图返回（N5）：images 为绝对路径，模型循环负责读文件转 data-URL 注入。
+    /// 读取失败/超限的图会被跳过（循环侧逐图校验），不阻断文本结果。
+    pub fn ok_with_images(
+        text: impl Into<String>,
+        refs: Vec<crate::bot_chat::TaskRef>,
+        images: Vec<String>,
+    ) -> Self {
+        Self {
+            text: text.into(),
+            refs,
+            status: ToolStatus::Ok,
+            images,
+            file_changes: Vec::new(),
         }
     }
     pub fn warn(text: impl Into<String>, refs: Vec<crate::bot_chat::TaskRef>) -> Self {
@@ -67,6 +95,8 @@ impl ToolResult {
             text: text.into(),
             refs,
             status: ToolStatus::Warn,
+            images: Vec::new(),
+            file_changes: Vec::new(),
         }
     }
     pub fn error(text: impl Into<String>, refs: Vec<crate::bot_chat::TaskRef>) -> Self {
@@ -74,7 +104,15 @@ impl ToolResult {
             text: text.into(),
             refs,
             status: ToolStatus::Error,
+            images: Vec::new(),
+            file_changes: Vec::new(),
         }
+    }
+    /// P1-b：附一条文件变更证据（edit_file/write_file 成功路径）。
+    /// 只加字段不改语义——既有 33 工具不受影响（默认空 Vec）。
+    pub fn with_file_change(mut self, c: crate::bot_fs::FileChangeReceipt) -> Self {
+        self.file_changes.push(c);
+        self
     }
 }
 
@@ -100,9 +138,14 @@ pub struct ToolDef {
     pub call: for<'a> fn(&'a ToolCtx<'a>, &'a str) -> ToolFuture<'a>,
 }
 
-// ─────────────────── 29 个 schema 常量（baseline 字节级一致）───────────────────
-pub const SCHEMA_LIST_TASKS: &str = r##"{"type":"function","function":{"name":"list_tasks","description":"列出未完成任务（含状态列）","parameters":{"type":"object","properties":{}}}}"##;
-pub const SCHEMA_QUERY_SINGLE_TASK: &str = r##"{"type":"function","function":{"name":"query_single_task","description":"按 id 查询单张任务卡完整详情（标题/列/截止/备注/子任务/标签/绑定文件 + 归档/删除状态指示；白名单单点，区别于 list_tasks 批量清单与 search_tasks 关键词检索）","parameters":{"type":"object","properties":{"id":{"type":"string","description":"任务卡 UUID"}},"required":["id"]}}}"##;
+// ─────────────────── schema 常量（baseline 前缀一致）───────────────────
+pub const SCHEMA_QUERY_TASKS: &str = r##"{"type":"function","function":{"name":"query_tasks","description":"查询任务卡：不传 query=列清单（view 默认 active 未完成）；传 query=按关键词检索（匹配标题/备注/标签/子任务，此时 view 默认 all 全库）。输出行带（工作流：名称）标记，工作流相关问题可按标记汇总回答；定位任务不确定时先调本工具确认","parameters":{"type":"object","properties":{
+    "query":{"type":"string","description":"关键词，可选；不传=列清单"},
+    "view":{"type":"string","enum":["active","done","archived","trash","all"],"description":"视图范围，可选：active=未完成 / done=已完成未归档 / archived=已归档 / trash=回收站 / all=除回收站外全部；默认随 query 自动定（无 query=active，有 query=all）"},
+    "tag":{"type":"string","description":"按标签过滤，可选"},
+    "limit":{"type":"integer","description":"最多返回条数，可选，默认 50，上限 200"}
+}}}}"##;
+pub const SCHEMA_QUERY_SINGLE_TASK: &str = r##"{"type":"function","function":{"name":"query_single_task","description":"按 id 查询单张任务卡完整详情（标题/列/截止/备注/子任务/标签/绑定文件 + 创建时间/定时/所属工作流/依赖 + 归档/删除状态指示；白名单单点，区别于 query_tasks 批量清单与关键词检索）","parameters":{"type":"object","properties":{"id":{"type":"string","description":"任务卡 UUID"}},"required":["id"]}}}"##;
 pub const SCHEMA_CREATE_TASK: &str = r##"{"type":"function","function":{"name":"create_task","description":"新建任务","parameters":{"type":"object","properties":{
     "title":{"type":"string","description":"任务标题"},
     "note":{"type":"string","description":"备注，可选"},
@@ -118,7 +161,7 @@ pub const SCHEMA_DELETE_TASK: &str = r##"{"type":"function","function":{"name":"
     "taskId":{"type":"string","description":"任务 id，可选，优先于 title"},
     "title":{"type":"string","description":"标题关键词，无 taskId 时使用"}
   },"required":[]}}}"##;
-pub const SCHEMA_EDIT_TASK: &str = r##"{"type":"function","function":{"name":"edit_task","description":"编辑任务（taskId 精确匹配优先；无 taskId 时按标题关键词匹配；改标题/备注/截止时间/标签/状态列，空串清字段）","parameters":{"type":"object","properties":{
+pub const SCHEMA_EDIT_TASK: &str = r##"{"type":"function","function":{"name":"edit_task","description":"编辑任务（taskId 精确匹配优先；无 taskId 时按标题关键词匹配；改标题/备注/截止时间/标签/状态列/执行模型/归属人，空串清字段）","parameters":{"type":"object","properties":{
     "taskId":{"type":"string","description":"任务 id，可选，优先于 title"},
     "title":{"type":"string","description":"标题关键词，无 taskId 时用于定位任务"},
     "newTitle":{"type":"string","description":"新标题，可选"},
@@ -126,23 +169,27 @@ pub const SCHEMA_EDIT_TASK: &str = r##"{"type":"function","function":{"name":"ed
     "due":{"type":"string","description":"新截止时间，可选；空串清除"},
     "column":{"type":"string","enum":["todo","doing","done"],"description":"新状态列，可选"},
     "tags":{"type":"array","items":{"type":"string"},"description":"新标签列表，可选；空数组清除"},
-    "files":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"isDir":{"type":"boolean"}}},"description":"新绑定文件列表（可选，整体替换，最多 10 个；空数组清除；安全约束：仅允许 AI_Gen_Files 目录内的已存在文件）"}
+    "files":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"isDir":{"type":"boolean"}}},"description":"新绑定文件列表（可选，整体替换，最多 10 个；空数组清除；安全约束：仅允许 AI_Gen_Files 目录内的已存在文件）"},
+    "model":{"type":"string","description":"每卡执行模型（执行这张卡时覆盖全局激活模型），可选；空串清除=恢复跟随全局"},
+    "owner":{"type":"string","description":"归属成员名或 personId（任务图谱按成员过滤用），可选；空串=归属本人；名字歧义时会返回候选名单，先向用户确认再重试"}
   },"required":[]}}}"##;
 pub const SCHEMA_ADD_SUBTASK: &str = r##"{"type":"function","function":{"name":"add_subtask","description":"给任务添加子任务（taskId 精确匹配优先；无 taskId 时按标题关键词匹配）","parameters":{"type":"object","properties":{
     "taskId":{"type":"string","description":"任务 id，可选，优先于 title"},
     "title":{"type":"string","description":"标题关键词，无 taskId 时使用"},
     "text":{"type":"string","description":"子任务内容"}
   },"required":["text"]}}}"##;
-pub const SCHEMA_TOGGLE_SUBTASK: &str = r##"{"type":"function","function":{"name":"toggle_subtask","description":"勾选/取消勾选子任务（任务用 taskId 优先；子任务按内容关键词匹配）","parameters":{"type":"object","properties":{
+pub const SCHEMA_TOGGLE_SUBTASK: &str = r##"{"type":"function","function":{"name":"toggle_subtask","description":"勾选/取消勾选子任务（任务用 taskId 优先；子任务用 subtaskId 精确优先，无 id 时按内容关键词匹配）","parameters":{"type":"object","properties":{
     "taskId":{"type":"string","description":"任务 id，可选，优先于 title"},
     "title":{"type":"string","description":"任务标题关键词，无 taskId 时使用"},
-    "text":{"type":"string","description":"子任务内容关键词"}
-  },"required":["text"]}}}"##;
-pub const SCHEMA_REMOVE_SUBTASK: &str = r##"{"type":"function","function":{"name":"remove_subtask","description":"删除单条子任务（彻底移除，区别于 toggle_subtask 的取消勾选；任务用 taskId 优先；子任务按内容关键词匹配）","parameters":{"type":"object","properties":{
+    "subtaskId":{"type":"string","description":"子任务 id（query_single_task 输出），可选，优先于 text"},
+    "text":{"type":"string","description":"子任务内容关键词，无 subtaskId 时必填"}
+  },"required":[]}}}"##;
+pub const SCHEMA_REMOVE_SUBTASK: &str = r##"{"type":"function","function":{"name":"remove_subtask","description":"删除单条子任务（彻底移除，区别于 toggle_subtask 的取消勾选；任务用 taskId 优先；子任务用 subtaskId 精确优先，无 id 时按内容关键词匹配）","parameters":{"type":"object","properties":{
     "taskId":{"type":"string","description":"任务 id，可选，优先于 title"},
     "title":{"type":"string","description":"任务标题关键词，无 taskId 时使用"},
-    "text":{"type":"string","description":"要删除的子任务内容关键词"}
-  },"required":["text"]}}}"##;
+    "subtaskId":{"type":"string","description":"要删除的子任务 id（query_single_task 输出），可选，优先于 text"},
+    "text":{"type":"string","description":"要删除的子任务内容关键词，无 subtaskId 时必填"}
+  },"required":[]}}}"##;
 pub const SCHEMA_READ_TEXT_FILE: &str = r##"{"type":"function","function":{"name":"read_text_file","description":"读取本地文本文件内容（白名单目录内直接读，白名单外自动弹窗请用户授权；大文件用 offset/limit 分页读；Office/PDF 用 extract_document，图片用户会直接发图）","parameters":{"type":"object","properties":{
     "path":{"type":"string","description":"文件绝对路径（支持 ~ 开头）"},
     "offset":{"type":"integer","description":"起始行号，从 1 开始，可选"},
@@ -155,22 +202,20 @@ pub const SCHEMA_GREP_FILES: &str = r##"{"type":"function","function":{"name":"g
     "pattern":{"type":"string","description":"正则表达式（非法正则自动按字面量搜）"},
     "dir":{"type":"string","description":"搜索目录，可选，缺省搜第一个白名单目录"},
     "glob":{"type":"string","description":"文件名过滤，如 *.rs，可选"},
-    "max":{"type":"integer","description":"最多返回条数，默认 50，可选"}
+    "max":{"type":"integer","description":"最多返回条数，默认 50，可选"},
+    "context":{"type":"integer","description":"命中行上下文行数，可选，0-5，默认 0（显示匹配行前后各 N 行，便于读懂语境）"}
   },"required":["pattern"]}}}"##;
 pub const SCHEMA_LIST_FILES: &str = r##"{"type":"function","function":{"name":"list_files","description":"列出本地目录内的文件/子目录（递归 ≤5 层，最多 200 条；可用 pattern 按文件名过滤；白名单目录内直接列，白名单外自动弹窗请用户授权）","parameters":{"type":"object","properties":{
     "dir":{"type":"string","description":"目录绝对路径（支持 ~ 开头）"},
     "pattern":{"type":"string","description":"文件名过滤，如 *.pdf 或 报告*，可选"}
   },"required":["dir"]}}}"##;
-pub const SCHEMA_LINK_FILE_TO_TASK: &str = r##"{"type":"function","function":{"name":"link_file_to_task","description":"登记产物到本任务卡执行流程的产物清单。文件必须在 AI_Gen_Files 目录内。流程结束、任务完成、有产物时弹汇总窗口让你勾选绑定（默认全选，每个文件绑一次）；任务未完成、中断、只有中间产物都不弹。普通对话场景调用此工具不报错也不绑（不反复尝试）。仅任务卡执行流程（🤖 按钮 / ⏰ 定时 / 📦 批量）内登记有效。","parameters":{"type":"object","properties":{
+pub const SCHEMA_LINK_FILE_TO_TASK: &str = r##"{"type":"function","function":{"name":"link_file_to_task","description":"登记产物到本任务卡执行流程的产物清单。文件必须在 AI_Gen_Files 目录内。流程结束、任务完成、有产物时系统会落一条「通知中心」消息让用户勾选绑定（默认全选，每个文件绑一次；不再弹窗）；任务未完成、中断、只有中间产物都不产生待绑定消息。普通对话场景调用此工具不报错也不绑（不反复尝试）。仅任务卡执行流程（🤖 按钮 / ⏰ 定时 / 📦 批量）内登记有效。","parameters":{"type":"object","properties":{
     "taskId":{"type":"string","description":"任务 id，可选，优先于 title"},
     "title":{"type":"string","description":"任务标题关键词，无 taskId 时使用"},
     "path":{"type":"string","description":"产物文件绝对路径，必须在 AI_Gen_Files 目录内且文件已存在"},
     "kind":{"type":"string","enum":["final","intermediate"],"default":"final","description":"final=最终产物，参与流程结束汇总弹窗；intermediate=中间产物，不参与弹窗。本会话在 AI_Gen_Files 目录没新建过的路径不参与绑定。"}
   },"required":["path"]}}}"##;
-pub const SCHEMA_SEARCH_TASKS: &str = r##"{"type":"function","function":{"name":"search_tasks","description":"按关键词搜索所有任务卡（待办/进行中/已完成/已归档；匹配标题/备注/标签/子任务）","parameters":{"type":"object","properties":{
-    "query":{"type":"string","description":"搜索关键词"}
-  },"required":["query"]}}}"##;
-pub const SCHEMA_EXTRACT_DOCUMENT: &str = r##"{"type":"function","function":{"name":"extract_document","description":"提取文档内容（不传 path 时弹系统选择框由用户选 Word/Excel/PPT/PDF；传 path 时直接读取该文件，如任务卡的绑定文件；长文档用 offset 参数续读后续部分）","parameters":{"type":"object","properties":{
+pub const SCHEMA_EXTRACT_DOCUMENT: &str = r##"{"type":"function","function":{"name":"extract_document","description":"提取文档内容（不传 path 时弹系统选择框由用户选 Word/Excel/PPT/PDF；传 path 时直接读取该文件，如任务卡的绑定文件；长文档用 offset 参数续读后续部分；扫描版/图片型 PDF 文本层为空时自动转图走本地 OCR 兜底，前 20 页）","parameters":{"type":"object","properties":{
     "path":{"type":"string","description":"文件绝对路径，可选"},
     "offset":{"type":"integer","description":"字符偏移（可选，默认 0；返回里带『已截断』提示时用提示的 offset 值续读）"},
     "limit":{"type":"integer","description":"本页字符数（可选，默认 30000，上限 60000）"}
@@ -182,7 +227,8 @@ pub const SCHEMA_CREATE_WORD: &str = r##"{"type":"function","function":{"name":"
       "title":{"type":"string","description":"表格标题，可选"},
       "rows":{"type":"array","items":{"type":"array","items":{"type":"string"}}}
     },"required":["rows"]}},
-    "filename":{"type":"string","description":"文件名（不含扩展名），可选"}
+    "filename":{"type":"string","description":"文件名（不含扩展名），可选"},
+    "images":{"type":"array","items":{"type":"string"},"description":"要插入的图片绝对路径列表，可选（仅 AI_Gen_Files 目录内的已存在图片，其余被丢弃并提示；按顺序插在正文之后、表格之前）"}
   },"required":["paragraphs"]}}}"##;
 pub const SCHEMA_CREATE_WORD_REVISIONS: &str = r##"{"type":"function","function":{"name":"create_word_revisions","description":"生成带修订标记（修订模式）的 Word 到 AI_Gen_Files：在原文档副本上就地对比原文与润色后的段落打 Word 原生 track changes（保留原文格式/字体），可在 Word 审阅中逐条接受/拒绝（引擎：.NET OpenXML 优先，Python 兜底）","parameters":{"type":"object","properties":{
     "originalPath":{"type":"string","description":"原文 Word 路径（extract_document 返回的 [文档路径]）"},
@@ -214,18 +260,28 @@ pub const SCHEMA_CREATE_PPT: &str = r##"{"type":"function","function":{"name":"c
     },"required":["type","title"]}},
     "filename":{"type":"string","description":"文件名（不含扩展名），可选"}
   },"required":["slides"]}}}"##;
-pub const SCHEMA_CREATE_PDF: &str = r##"{"type":"function","function":{"name":"create_pdf","description":"生成 PDF 到 AI_Gen_Files（中文支持）","parameters":{"type":"object","properties":{
+pub const SCHEMA_CREATE_PDF: &str = r##"{"type":"function","function":{"name":"create_pdf","description":"生成 PDF 到 AI_Gen_Files（中文支持，自动分页）","parameters":{"type":"object","properties":{
     "title":{"type":"string","description":"文档标题，可选"},
     "paragraphs":{"type":"array","items":{"type":"string"},"description":"正文段落列表"},
+    "tables":{"type":"array","description":"可选：表格列表，按顺序追加在段落之后；每个表 rows 二维数组、第一行当表头加粗","items":{"type":"object","properties":{
+      "title":{"type":"string","description":"表格标题，可选"},
+      "rows":{"type":"array","items":{"type":"array","items":{"type":"string"}}}
+    },"required":["rows"]}},
     "filename":{"type":"string","description":"文件名（不含扩展名），可选"}
   },"required":["paragraphs"]}}}"##;
 pub const SCHEMA_RUN_PYTHON: &str = r##"{"type":"function","function":{"name":"run_python","description":"执行 Python 代码（资源受限：CPU/内存/时长限额 + 独立临时目录，无文件系统隔离；默认超时 60s。默认需用户在设置页开启 Python 编程，授权模式为 yolo 时免开关）","parameters":{"type":"object","properties":{
     "code":{"type":"string","description":"要执行的 Python 代码，print 输出返回给用户"},
     "timeoutSecs":{"type":"integer","description":"超时秒数（可选，默认 60；大计算可调大，上限 300）"}
   },"required":["code"]}}}"##;
-pub const SCHEMA_WEB_SEARCH: &str = r##"{"type":"function","function":{"name":"web_search","description":"搜索互联网获取最新信息（配置 Tavily 或 Brave key 时走对应 API、双开报错，否则 Bing+百度网页抓取；返回标题/链接/摘要）","parameters":{"type":"object","properties":{"query":{"type":"string","description":"搜索关键词"}},"required":["query"]}}}"##;
-pub const SCHEMA_FETCH_URL: &str = r##"{"type":"function","function":{"name":"fetch_url","description":"抓取网页正文（仅 http/https 公网地址；返回纯文本，用于读链接/总结网页内容）","parameters":{"type":"object","properties":{
-    "url":{"type":"string","description":"要抓取的网页地址"}
+pub const SCHEMA_WEB_SEARCH: &str = r##"{"type":"function","function":{"name":"web_search","description":"搜索互联网获取最新信息（配置 Tavily 或 Brave key 时走对应 API、双开报错，否则 Bing+百度网页抓取；返回标题/链接/摘要）","parameters":{"type":"object","properties":{
+    "query":{"type":"string","description":"搜索关键词"},
+    "count":{"type":"integer","description":"结果条数，可选，1-10，默认 8"},
+    "timeRange":{"type":"string","enum":["day","week","month","year"],"description":"时间范围，可选：day=24小时内 / week=一周内 / month=一月内 / year=一年内（Tavily/Brave 原生支持；Bing+百度抓取模式不支持并会明确提示）"},
+    "site":{"type":"string","description":"限定站点域名，可选，如 github.com（不要带 https:// 前缀）"}
+  },"required":["query"]}}}"##;
+pub const SCHEMA_FETCH_URL: &str = r##"{"type":"function","function":{"name":"fetch_url","description":"抓取网页正文（仅 http/https 公网地址；返回纯文本，用于读链接/总结网页内容；长网页带「已截断」提示时用 offset 参数续读）","parameters":{"type":"object","properties":{
+    "url":{"type":"string","description":"要抓取的网页地址"},
+    "offset":{"type":"integer","description":"字符偏移（可选，默认 0；上一页返回的「已截断」提示里给了 offset 值，用它续读）"}
   },"required":["url"]}}}"##;
 pub const SCHEMA_GET_CURRENT_TIME: &str = r##"{"type":"function","function":{"name":"get_current_time","description":"获取当前日期时间和星期（涉及「今天/明天/昨天/周几/几点」类判断前必须先调，不要凭训练数据猜日期）","parameters":{"type":"object","properties":{}}}}"##;
 pub const SCHEMA_REMEMBER_FACT: &str = r##"{"type":"function","function":{"name":"remember_fact","description":"记住一条用户偏好/事实（跨会话长期记忆，重启不丢；key 简短规范名词 ≤50 字，value 内容 ≤500 字；同 key 覆盖更新；value 传空串删除该条；写入结果若提示相似已有记忆，优先用同 key 覆盖更新而非另开新 key 堆积）","parameters":{"type":"object","properties":{
@@ -243,7 +299,8 @@ pub const SCHEMA_RECORD_LESSON: &str = r##"{"type":"function","function":{"name"
     "scenario":{"type":"string","description":"场景标签（可选 ≤50 字），如工具名或任务类型：create_ppt、批量执行、文档修订"}
   },"required":["lesson"]}}}"##;
 pub const SCHEMA_USE_SKILL: &str = r##"{"type":"function","function":{"name":"use_skill","description":"读取已安装技能（skill）的完整文档并按文档步骤执行。任务涉及的每个相关技能都要读（可多次调用）：例如做 PPT 时，若清单里同时有编排、生成、配色、风格类技能，应逐个读取、取长补短综合运用，不要只读一个","parameters":{"type":"object","properties":{
-    "name":{"type":"string","description":"技能名（系统提示词「已安装技能」清单里的名称，一次一个，可多次调用）"}
+    "name":{"type":"string","description":"技能名（系统提示词「已安装技能」清单里的名称，一次一个，可多次调用）"},
+    "params":{"type":"object","description":"技能参数（可选；键=参数名，值=字符串）。技能声明了必填参数时必须提供（缺失会拒绝启动并列出缺什么），声明了默认值的参数可省略","additionalProperties":{"type":"string"}}
   },"required":["name"]}}}"##;
 // ─────────────────── SUBA-2：子 agent 编排三工具（主 agent 可见） ───────────────────
 pub const SCHEMA_SPAWN_SUBAGENT: &str = r##"{"type":"function","function":{"name":"spawn_subagent","description":"派发受管子 agent 执行单一目标长任务（非阻塞，立即返回 subagentId/taskId/status）。适用：预计超 5 轮工具调用、多来源调研、写代码跑脚本、用户要求后台/并行。objective 单一目标；acceptanceCriteria 必填且每条可检验（不要写「调研清楚」，要写「覆盖至少 5 个产品，每个含官网 URL，输出 report.md」）；contextSummary 只给必要背景，不要倒主对话全文。完成后用 check_subagent 轮询结果再汇总","parameters":{"type":"object","properties":{
@@ -271,11 +328,32 @@ pub const SCHEMA_WRITE_ARTIFACT_FILE: &str = r##"{"type":"function","function":{
     "content":{"type":"string","description":"完整文本内容"}
   },"required":["filename","content"]}}}"##;
 pub const SCHEMA_READ_OWN_CARD: &str = r##"{"type":"function","function":{"name":"read_own_card","description":"重读自己的任务卡（标题/验收标准 note/子任务清单/预算）：每轮开始建议先调，subtasks/note 有变更则调整计划；deletedAt 非空 = 卡片已被软删，立即停止新探索并收尾","parameters":{"type":"object","properties":{}}}}"##;
-// ─────────────────── 29 个适配器（统一签名，按需拆 ctx 字段）───────────────────
-// list_tasks 在原 bot.rs:155 收 (app) 不收 args——拆出来后已修正。
+// ─────────────────── N4：电脑辅助 Tier1（只「看」与「打开」，无鼠标键盘） ───────────────────
+pub const SCHEMA_REVEAL_PATH: &str = r##"{"type":"function","function":{"name":"reveal_path","description":"在访达（macOS）/资源管理器（Windows）中定位显示文件或文件夹（只定位，不打开文件本身；仅限白名单目录内路径，与读文件同一权限闸）","parameters":{"type":"object","properties":{
+    "path":{"type":"string","description":"文件或目录绝对路径（支持 ~ 开头）"}
+  },"required":["path"]}}}"##;
+pub const SCHEMA_OPEN_URL: &str = r##"{"type":"function","function":{"name":"open_url","description":"用系统默认浏览器打开网页（仅 http/https 公网地址；本机/内网地址会被拒绝）","parameters":{"type":"object","properties":{
+    "url":{"type":"string","description":"要打开的网页地址"}
+  },"required":["url"]}}}"##;
+pub const SCHEMA_CLIPBOARD_WRITE: &str = r##"{"type":"function","function":{"name":"clipboard_write","description":"把文本写入系统剪贴板，用户可直接粘贴（会覆盖剪贴板原内容；超长内容请分段）","parameters":{"type":"object","properties":{
+    "text":{"type":"string","description":"要复制的文本"}
+  },"required":["text"]}}}"##;
+pub const SCHEMA_SCREENSHOT: &str = r##"{"type":"function","function":{"name":"screenshot","description":"截取主显示器画面。截图会直接作为图片附在工具结果之后，用你的视觉能力读取内容（PNG 同时落 AI_Gen_Files 留档；需要系统屏幕录制权限，macOS 未授权时会得到壁纸/黑图）","parameters":{"type":"object","properties":{}}}}"##;
+// ─────────────────── N6：文件编辑（写白名单 ≠ 读白名单，白名单外逐次确认） ───────────────────
+pub const SCHEMA_EDIT_FILE: &str = r##"{"type":"function","function":{"name":"edit_file","description":"对文本文件做精确字符串替换（小步修改首选；先 read_text_file 确认原文再改）。oldString 必须与文件内容一致且唯一（多处命中报错；行尾空白/CRLF 差异自动容错）。改完建议 read_text_file 复核","parameters":{"type":"object","properties":{
+    "path":{"type":"string","description":"文件绝对路径（仅限可写目录：AI_Gen_Files + 任务卡绑定文件夹 + 设置页 allowedDirs；白名单外会弹确认）"},
+    "oldString":{"type":"string","description":"要替换的原文（精确匹配，须唯一；含足够上下文）"},
+    "newString":{"type":"string","description":"替换后的新文本（可为空串=删除该段）"}
+  },"required":["path","oldString","newString"]}}}"##;
+pub const SCHEMA_WRITE_FILE: &str = r##"{"type":"function","function":{"name":"write_file","description":"创建新文件或整体写入内容（仅限可写目录：AI_Gen_Files + 任务卡绑定文件夹 + 设置页 allowedDirs；覆盖已存在文件需要用户确认）。修改已有文件优先用 edit_file（精确替换更安全）","parameters":{"type":"object","properties":{
+    "path":{"type":"string","description":"目标文件绝对路径（父目录必须已存在）"},
+    "content":{"type":"string","description":"完整文件内容（UTF-8 文本；不能含 NUL 字节；上限 2MB）"}
+  },"required":["path","content"]}}}"##;
+// ─────────────────── 适配器（统一签名，按需拆 ctx 字段）───────────────────
 // link_file_to_task 是 async fn，必须 .await——拆出来后已修正。
-fn call_list_tasks<'a>(ctx: &'a ToolCtx<'a>, _args: &'a str) -> ToolFuture<'a> {
-    Box::pin(async move { tool_list_tasks(ctx.app).await })
+// list_tasks/search_tasks 合并为 query_tasks（T1-QUERYTASKS）：收 args。
+fn call_query_tasks<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    Box::pin(async move { tool_query_tasks(ctx.app, args).await })
 }
 
 fn call_query_single_task<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
@@ -347,10 +425,6 @@ fn call_list_files<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
 fn call_link_file_to_task<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
     let session_id = ctx.session_id;
     Box::pin(async move { tool_link_file_to_task(ctx.app, args, session_id).await })
-}
-
-fn call_search_tasks<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
-    Box::pin(async move { tool_search_tasks(ctx.app, args).await })
 }
 
 fn call_extract_document<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
@@ -457,6 +531,44 @@ fn call_read_own_card<'a>(ctx: &'a ToolCtx<'a>, _args: &'a str) -> ToolFuture<'a
     Box::pin(async move { crate::bot_orchestrator::tool_read_own_card(&app, session_id).await })
 }
 
+// ─────────────────── N4：电脑辅助 Tier1 适配器 ───────────────────
+fn call_reveal_path<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    let interactive = ctx.interactive;
+    let session_id = ctx.session_id;
+    Box::pin(async move {
+        crate::bot_desktop::tool_reveal_path(ctx.app, args, interactive, session_id).await
+    })
+}
+
+fn call_open_url<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    Box::pin(async move { crate::bot_desktop::tool_open_url(ctx.app, args).await })
+}
+
+fn call_clipboard_write<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    Box::pin(async move { crate::bot_desktop::tool_clipboard_write(ctx.app, args).await })
+}
+
+fn call_screenshot<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    Box::pin(async move { crate::bot_desktop::tool_screenshot(ctx.app, args).await })
+}
+
+// ─────────────────── N6：文件编辑适配器 ───────────────────
+fn call_edit_file<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    let interactive = ctx.interactive;
+    let session_id = ctx.session_id;
+    Box::pin(
+        async move { crate::bot_fs::tool_edit_file(ctx.app, args, interactive, session_id).await },
+    )
+}
+
+fn call_write_file<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    let interactive = ctx.interactive;
+    let session_id = ctx.session_id;
+    Box::pin(
+        async move { crate::bot_fs::tool_write_file(ctx.app, args, interactive, session_id).await },
+    )
+}
+
 /// T4：合并 TOOLS_TABLE 中所有 mutating 工具的 claims_patterns，
 /// 检查 text 是否含任一变更声称表述。
 ///
@@ -511,15 +623,15 @@ pub fn tools_index() -> &'static HashMap<&'static str, &'static ToolDef> {
     TOOLS_INDEX.get_or_init(|| TOOLS_TABLE.iter().map(|t| (t.name, t)).collect())
 }
 
-// ─────────────────── TOOLS_TABLE（29 工具单源真相）───────────────────
+// ─────────────────── TOOLS_TABLE（33 工具单源真相：31 主可见 + 2 子 agent 专属）───────────────────
 pub static TOOLS_TABLE: &[ToolDef] = &[
     ToolDef {
-        name: "list_tasks",
-        schema: SCHEMA_LIST_TASKS,
+        name: "query_tasks",
+        schema: SCHEMA_QUERY_TASKS,
         mutating: false,
         claims_patterns: &[],
         max_output_chars: 8192,
-        call: call_list_tasks,
+        call: call_query_tasks,
     },
     ToolDef {
         name: "query_single_task",
@@ -654,14 +766,6 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         ],
         max_output_chars: 8192,
         call: call_link_file_to_task,
-    },
-    ToolDef {
-        name: "search_tasks",
-        schema: SCHEMA_SEARCH_TASKS,
-        mutating: false,
-        claims_patterns: &[],
-        max_output_chars: 8192,
-        call: call_search_tasks,
     },
     ToolDef {
         name: "extract_document",
@@ -842,6 +946,56 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         max_output_chars: 8192,
         call: call_cancel_subagent,
     },
+    // ─────────────────── N4：电脑辅助 Tier1（只「看」与「打开」） ───────────────────
+    ToolDef {
+        name: "reveal_path",
+        schema: SCHEMA_REVEAL_PATH,
+        mutating: false,
+        claims_patterns: &[],
+        max_output_chars: 8192,
+        call: call_reveal_path,
+    },
+    ToolDef {
+        name: "open_url",
+        schema: SCHEMA_OPEN_URL,
+        mutating: false,
+        claims_patterns: &[],
+        max_output_chars: 8192,
+        call: call_open_url,
+    },
+    ToolDef {
+        name: "clipboard_write",
+        schema: SCHEMA_CLIPBOARD_WRITE,
+        mutating: false,
+        claims_patterns: &[],
+        max_output_chars: 8192,
+        call: call_clipboard_write,
+    },
+    ToolDef {
+        name: "screenshot",
+        schema: SCHEMA_SCREENSHOT,
+        mutating: false,
+        claims_patterns: &[],
+        max_output_chars: 8192,
+        call: call_screenshot,
+    },
+    // ─────────────────── N6：文件编辑（写白名单 ≠ 读白名单） ───────────────────
+    ToolDef {
+        name: "edit_file",
+        schema: SCHEMA_EDIT_FILE,
+        mutating: true,
+        claims_patterns: &["已修改", "已编辑"],
+        max_output_chars: 8192,
+        call: call_edit_file,
+    },
+    ToolDef {
+        name: "write_file",
+        schema: SCHEMA_WRITE_FILE,
+        mutating: true,
+        claims_patterns: &["已写入", "已创建文件"],
+        max_output_chars: 8192,
+        call: call_write_file,
+    },
     // ─────────────────── SUBA-2：子 agent 白名单工具（不进主 agent 默认 schema） ───────────────────
     ToolDef {
         name: "write_artifact_file",
@@ -865,7 +1019,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
 /// （合法性 + 与 baseline 的一致性由 registry_tests 锁死）。
 ///
 /// SUBA-2：仅子 agent 可见的工具（write_artifact_file / read_own_card）不出现在
-/// 主 agent 的默认清单里——主可见 = 29 既有 + 编排三工具。
+/// 主 agent 的默认清单里——主可见 = 28 核心 + 编排三 + 电脑辅助四（T1 后 31，N4 后 35）。
 pub fn tools_json() -> &'static str {
     static CACHE: OnceLock<String> = OnceLock::new();
     CACHE.get_or_init(|| {
@@ -904,6 +1058,8 @@ pub const CODER_TOOLS: &[&str] = &[
     "read_text_file",
     "list_files",
     "grep_files",
+    "edit_file",
+    "write_file",
     "run_python",
     "write_artifact_file",
     "read_own_card",
@@ -914,6 +1070,8 @@ pub const GENERAL_TOOLS: &[&str] = &[
     "read_text_file",
     "list_files",
     "grep_files",
+    "edit_file",
+    "write_file",
     "run_python",
     "write_artifact_file",
     "read_own_card",
@@ -940,7 +1098,7 @@ pub fn tools_json_for(session_id: Option<&str>) -> &'static str {
 }
 
 /// 主 agent 的完整工具清单（阶段 3 MCP 挂载点，拍板 2A 机制 A）：
-/// 内置静态 JSON 尾部追加外部 MCP 工具（增量挂载，内置 32 工具 schema 字节不动）。
+/// 内置静态 JSON 尾部追加外部 MCP 工具（增量挂载，内置 31 工具 schema 字节不动）。
 /// - 子 agent 会话：短路返回白名单（外部 MCP 工具不进子 agent，§5.1 边界不破）；
 /// - 无 MCP 连接：原样返回静态 &'static str（零分配，热路径不变）；
 /// - 有连接：Owned String = 静态 JSON 摘尾 + `mount::mcp_tools_json_body()` + 收尾。
@@ -1042,17 +1200,17 @@ mod registry_tests {
     use std::collections::HashSet;
 
     #[test]
-    fn tools_table_contains_32_main_visible_tools() {
+    fn tools_table_contains_37_main_visible_tools() {
         let v: serde_json::Value =
             serde_json::from_str(tools_json()).expect("tools_json() 必须是合法 JSON");
         let arr = v.as_array().expect("TOOLS 顶层必须是数组");
-        // SUBA-2：主可见 = 29 既有 + spawn/check/cancel 三编排工具；
+        // SUBA-2 + T1 + N4 + N6：主可见 = 28 核心 + 编排三 + 电脑辅助四 + 文件编辑两；
         // write_artifact_file / read_own_card 仅子 agent 白名单可见
-        assert_eq!(arr.len(), 32, "主 agent 可见工具必须为 32");
+        assert_eq!(arr.len(), 37, "主 agent 可见工具必须为 37");
         assert_eq!(
             TOOLS_TABLE.len(),
-            34,
-            "TOOLS_TABLE 全量 34（含 2 个 subagent-only）"
+            39,
+            "TOOLS_TABLE 全量 39（含 2 个 subagent-only）"
         );
 
         let mut seen: HashSet<String> = HashSet::new();
@@ -1079,7 +1237,7 @@ mod registry_tests {
             })
             .collect();
         let expected: HashSet<String> = [
-            "list_tasks",
+            "query_tasks",
             "query_single_task",
             "create_task",
             "complete_task",
@@ -1093,7 +1251,6 @@ mod registry_tests {
             "grep_files",
             "list_files",
             "link_file_to_task",
-            "search_tasks",
             "extract_document",
             "create_word",
             "create_word_revisions",
@@ -1111,6 +1268,12 @@ mod registry_tests {
             "spawn_subagent",
             "check_subagent",
             "cancel_subagent",
+            "reveal_path",
+            "open_url",
+            "clipboard_write",
+            "screenshot",
+            "edit_file",
+            "write_file",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -1128,7 +1291,7 @@ mod registry_tests {
             })
             .collect();
         let expected_order: Vec<String> = [
-            "list_tasks",
+            "query_tasks",
             "query_single_task",
             "create_task",
             "complete_task",
@@ -1142,7 +1305,6 @@ mod registry_tests {
             "grep_files",
             "list_files",
             "link_file_to_task",
-            "search_tasks",
             "extract_document",
             "create_word",
             "create_word_revisions",
@@ -1160,6 +1322,12 @@ mod registry_tests {
             "spawn_subagent",
             "check_subagent",
             "cancel_subagent",
+            "reveal_path",
+            "open_url",
+            "clipboard_write",
+            "screenshot",
+            "edit_file",
+            "write_file",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -1189,6 +1357,8 @@ mod registry_tests {
             "spawn_subagent",
             "cancel_subagent",
             "write_artifact_file",
+            "edit_file",
+            "write_file",
         ]
         .into_iter()
         .collect();
@@ -1203,8 +1373,10 @@ mod registry_tests {
     /// 不比字节：tools_json() 用统一的 `,\n  ` 缩进拼装，而原 const 的
     /// link_file_to_task 条目顶格写（无 2 空格），故两者只差这一处空白。
     ///
-    /// SUBA-2：主可见清单 = baseline 29 + 编排三工具——baseline 必须是 derived 的
-    /// **前缀**（新工具只追加表尾，既有 29 个 schema 字节不动）。
+    /// T1/N4：核心 28 工具基线（T1 重排为 query_tasks；N4 电脑辅助四工具追加在
+    /// 编排三工具之后、子 agent 专属之前——不进 baseline 前缀）。
+    /// baseline 必须是 derived 的**前缀**（核心 schema 变更走「显式更新本批 +
+    /// 重生成 fixture」流程）。
     #[test]
     fn tools_json_matches_baseline() {
         let fixture = include_str!("../../tests/fixtures/tools_baseline.json");
@@ -1219,9 +1391,9 @@ mod registry_tests {
         assert_eq!(
             &der_arr[..base_arr.len()],
             base_arr.as_slice(),
-            "tools_json() 前 29 项与 baseline 漂移（新工具必须只追加表尾）"
+            "tools_json() 前 28 项与 baseline 漂移（核心 schema 变更须显式重生成 fixture）"
         );
-        assert_eq!(der_arr.len(), base_arr.len() + 3, "主可见应为 29+3");
+        assert_eq!(der_arr.len(), base_arr.len() + 9, "主可见应为 28+3+4+2");
     }
 
     /// 单源真相的核心不变式：ToolDef.name 必须等于它自己 schema 里的 function.name。
@@ -1388,7 +1560,7 @@ mod registry_tests {
         }
     }
 
-    /// 白名单内容精确性：research 联网 + 读列；coder 本仓五件 + run_python；
+    /// 白名单内容精确性：research 联网 + 读列；coder 读列 + edit/write + run_python；
     /// general = research ∪ coder 去重。
     #[test]
     fn profile_whitelists_match_design_mapping() {
@@ -1409,6 +1581,8 @@ mod registry_tests {
                 "read_text_file",
                 "list_files",
                 "grep_files",
+                "edit_file",
+                "write_file",
                 "run_python",
                 "write_artifact_file",
                 "read_own_card",
@@ -1485,7 +1659,7 @@ mod registry_tests {
     }
 
     /// 动态拼装契约（纯格式）：拿 mount 的纯函数造一个假 body，
-    /// 拼装结果必须是合法 JSON 数组、内置 32 工具在前 + MCP 条目在后。
+    /// 拼装结果必须是合法 JSON 数组、内置 35 工具在前 + MCP 条目在后。
     /// （真实连接路径由 manager e2e 测试覆盖：连接后 with_mcp 含 mcp_echo_echo。）
     #[test]
     fn tools_json_with_mcp_assembly_contract() {
@@ -1501,10 +1675,10 @@ mod registry_tests {
         s.push_str("\n]");
         let v: serde_json::Value = serde_json::from_str(&s).expect("拼装结果必须合法");
         let arr = v.as_array().unwrap();
-        assert_eq!(arr.len(), 33, "32 内置 + 1 假 MCP");
-        assert_eq!(arr[32]["function"]["name"], "mcp_fake_x");
-        // 内置前 32 项顺序不变（增量挂载不漂移）
+        assert_eq!(arr.len(), 38, "37 内置 + 1 假 MCP");
+        assert_eq!(arr[37]["function"]["name"], "mcp_fake_x");
+        // 内置前 37 项顺序不变（增量挂载不漂移）
         let base_arr = serde_json::from_str::<serde_json::Value>(base).unwrap();
-        assert_eq!(&arr[..32], base_arr.as_array().unwrap().as_slice());
+        assert_eq!(&arr[..37], base_arr.as_array().unwrap().as_slice());
     }
 }

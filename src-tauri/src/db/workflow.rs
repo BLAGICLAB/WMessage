@@ -35,7 +35,10 @@ pub const WORKFLOWS_DDL: &str = "CREATE TABLE IF NOT EXISTS workflows (
    goal        TEXT NOT NULL,
    created_at  INTEGER,
    updated_at  INTEGER,
-   attachments TEXT
+   attachments TEXT,
+   schedule    TEXT,
+   sched_last  INTEGER,
+   enabled     INTEGER
  );";
 
 /// workflows.attachments 幂等 ALTER（W8-ATTACH：老库的 workflows 表无此列）
@@ -54,6 +57,29 @@ pub fn ensure_workflows_attachments(conn: &rusqlite::Connection) -> Result<(), S
     Ok(())
 }
 
+/// workflows 定时三列幂等 ALTER（定时任务模块：到点自动执行整张工作流）。
+/// enabled NULL 恒等于启用（与 tasks.enabled 同语义）。
+pub fn ensure_workflows_schedule(conn: &rusqlite::Connection) -> Result<(), String> {
+    for (col, ty) in [
+        ("schedule", "TEXT"),
+        ("sched_last", "INTEGER"),
+        ("enabled", "INTEGER"),
+    ] {
+        let has: bool = conn
+            .prepare("PRAGMA table_info(workflows)")
+            .and_then(|mut stmt| {
+                let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+                Ok(rows.filter_map(|n| n.ok()).any(|n| n == col))
+            })
+            .map_err(|e| e.to_string())?;
+        if !has {
+            conn.execute(&format!("ALTER TABLE workflows ADD COLUMN {col} {ty}"), [])
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Workflow {
@@ -64,6 +90,16 @@ pub struct Workflow {
     pub updated_at: Option<i64>,
     /// 拆解附件路径清单（W8-ATTACH，JSON 数组；仅本机语义，不进导出文件）
     pub attachments: Option<Vec<String>>,
+    /// 定时执行规则（定时任务模块）：daily:HH:MM / weekly:D:HH:MM / monthly:DD:HH:MM /
+    /// at:YYYY-MM-DDTHH:MM；None = 未定时。到点由 bot_scheduler 触发整张工作流。
+    #[serde(default)]
+    pub schedule: Option<String>,
+    /// 上次定时触发时间（epoch ms）
+    #[serde(default)]
+    pub sched_last: Option<i64>,
+    /// 定时启用开关：None/Some(true) = 启用，Some(false) = 暂停（保留配置）
+    #[serde(default)]
+    pub enabled: Option<bool>,
 }
 
 /// workflow_save 的单个节点草稿。taskId = 已保存卡的绑定提示（服务端不信任，
@@ -144,11 +180,15 @@ fn workflow_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Workflow> {
         created_at: r.get(3)?,
         updated_at: r.get(4)?,
         attachments: attachments.and_then(|s| serde_json::from_str(&s).ok()),
+        schedule: r.get(6)?,
+        sched_last: r.get(7)?,
+        enabled: r.get::<_, Option<i64>>(8)?.map(|v| v != 0),
     })
 }
 
 const WORKFLOW_COLS: &str =
-    "SELECT id, name, goal, created_at, updated_at, attachments FROM workflows";
+    "SELECT id, name, goal, created_at, updated_at, attachments, schedule, sched_last, enabled \
+     FROM workflows";
 
 pub fn load_workflows(conn: &rusqlite::Connection) -> Result<Vec<Workflow>, String> {
     let mut stmt = conn
@@ -180,9 +220,12 @@ fn upsert_workflow(conn: &rusqlite::Connection, w: &Workflow) -> Result<(), Stri
         None => None,
     };
     conn.execute(
-        "INSERT INTO workflows (id, name, goal, created_at, updated_at, attachments) VALUES (?1,?2,?3,?4,?5,?6)
+        "INSERT INTO workflows (id, name, goal, created_at, updated_at, attachments, schedule, sched_last, enabled) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
          ON CONFLICT(id) DO UPDATE SET name=excluded.name, goal=excluded.goal, updated_at=excluded.updated_at, attachments=excluded.attachments",
-        rusqlite::params![w.id, w.name, w.goal, w.created_at, w.updated_at, attachments],
+        rusqlite::params![
+            w.id, w.name, w.goal, w.created_at, w.updated_at, attachments,
+            w.schedule, w.sched_last, w.enabled.map(|b| b as i64)
+        ],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -481,6 +524,9 @@ pub(crate) fn workflow_save_locked(
             created_at,
             updated_at: Some(now),
             attachments: input.attachments.clone(),
+            schedule: None, // 定时配置不随画布保存重置（ON CONFLICT 不更新此字段）
+            sched_last: None,
+            enabled: None,
         },
     )
     .map_err(CommandError::from)?;
@@ -558,6 +604,7 @@ pub(crate) fn workflow_save_locked(
                 model: node.model.clone(),
                 owner_id: None,        // 本机创建的工作流卡 = 本人
                 created_at: Some(now), // 创建时间打戳（与 updated_at 同值；此后 UPDATE 不覆盖）
+                enabled: None,         // 新建节点卡无定时配置
                 expected_updated_at: None,
             });
         }
@@ -1038,6 +1085,56 @@ pub async fn workflow_rename(app: AppHandle, id: String, name: String) -> Comman
     .await
     .map_err(|e| CommandError::from(format!("工作流重命名线程 join 失败：{e}")))??;
     audit_event(&app_emit, "workflow_rename", &row.id, &[]);
+    Ok(row)
+}
+
+/// 设置/取消工作流定时（定时任务模块）。schedule=None = 取消；
+/// 非法格式（bot_scheduler::validate_schedule 不认）响亮拒绝。
+/// 只动 schedule 字段；sched_last 由调度器维护（与任务卡 task_patch 通道同语义）。
+#[tauri::command]
+pub async fn workflow_set_schedule(
+    app: AppHandle,
+    id: String,
+    schedule: Option<String>,
+) -> CommandResult<Workflow> {
+    if let Some(s) = &schedule {
+        let s = s.trim();
+        if s.is_empty() {
+            return Err(CommandError::InvalidArgument {
+                field: "schedule".into(),
+                value: s.to_string(),
+                reason: "schedule 不能为空串（取消定时请传 null）".into(),
+            });
+        }
+        crate::bot_scheduler::validate_schedule(s).map_err(|reason| {
+            CommandError::InvalidArgument {
+                field: "schedule".into(),
+                value: s.to_string(),
+                reason,
+            }
+        })?;
+    }
+    let app_emit = app.clone();
+    let row = async_runtime::spawn_blocking(move || -> CommandResult<Workflow> {
+        let _g = super::lock_db_write();
+        let conn = super::open_db(&app)?;
+        let mut wf = load_workflow(&conn, &id)?.ok_or(CommandError::TaskNotFound(id.clone()))?;
+        wf.schedule = schedule.map(|s| s.trim().to_string());
+        wf.updated_at = Some(chrono::Utc::now().timestamp_millis());
+        upsert_workflow(&conn, &wf).map_err(CommandError::from)?;
+        Ok(wf)
+    })
+    .await
+    .map_err(|e| CommandError::from(format!("工作流定时设置线程 join 失败：{e}")))??;
+    audit_event(
+        &app_emit,
+        "workflow_set_schedule",
+        &row.id,
+        &[(
+            "schedule",
+            row.schedule.clone().unwrap_or_else(|| "null".into()),
+        )],
+    );
     Ok(row)
 }
 

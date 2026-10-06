@@ -1,6 +1,11 @@
 const TOOLS: &str = r#"[
-  {"type":"function","function":{"name":"list_tasks","description":"列出未完成任务（含状态列）","parameters":{"type":"object","properties":{}}}},
-  {"type":"function","function":{"name":"query_single_task","description":"按 id 查询单张任务卡完整详情（标题/列/截止/备注/子任务/标签/绑定文件 + 归档/删除状态指示；白名单单点，区别于 list_tasks 批量清单与 search_tasks 关键词检索）","parameters":{"type":"object","properties":{"id":{"type":"string","description":"任务卡 UUID"}},"required":["id"]}}},
+  {"type":"function","function":{"name":"query_tasks","description":"查询任务卡：不传 query=列清单（view 默认 active 未完成）；传 query=按关键词检索（匹配标题/备注/标签/子任务，此时 view 默认 all 全库）。输出行带（工作流：名称）标记，工作流相关问题可按标记汇总回答；定位任务不确定时先调本工具确认","parameters":{"type":"object","properties":{
+    "query":{"type":"string","description":"关键词，可选；不传=列清单"},
+    "view":{"type":"string","enum":["active","done","archived","trash","all"],"description":"视图范围，可选：active=未完成 / done=已完成未归档 / archived=已归档 / trash=回收站 / all=除回收站外全部；默认随 query 自动定（无 query=active，有 query=all）"},
+    "tag":{"type":"string","description":"按标签过滤，可选"},
+    "limit":{"type":"integer","description":"最多返回条数，可选，默认 50，上限 200"}
+}}}},
+  {"type":"function","function":{"name":"query_single_task","description":"按 id 查询单张任务卡完整详情（标题/列/截止/备注/子任务/标签/绑定文件 + 创建时间/定时/所属工作流/依赖 + 归档/删除状态指示；白名单单点，区别于 query_tasks 批量清单与关键词检索）","parameters":{"type":"object","properties":{"id":{"type":"string","description":"任务卡 UUID"}},"required":["id"]}}},
   {"type":"function","function":{"name":"create_task","description":"新建任务","parameters":{"type":"object","properties":{
     "title":{"type":"string","description":"任务标题"},
     "note":{"type":"string","description":"备注，可选"},
@@ -16,7 +21,7 @@ const TOOLS: &str = r#"[
     "taskId":{"type":"string","description":"任务 id，可选，优先于 title"},
     "title":{"type":"string","description":"标题关键词，无 taskId 时使用"}
   },"required":[]}}},
-  {"type":"function","function":{"name":"edit_task","description":"编辑任务（taskId 精确匹配优先；无 taskId 时按标题关键词匹配；改标题/备注/截止时间/标签/状态列，空串清字段）","parameters":{"type":"object","properties":{
+  {"type":"function","function":{"name":"edit_task","description":"编辑任务（taskId 精确匹配优先；无 taskId 时按标题关键词匹配；改标题/备注/截止时间/标签/状态列/执行模型/归属人，空串清字段）","parameters":{"type":"object","properties":{
     "taskId":{"type":"string","description":"任务 id，可选，优先于 title"},
     "title":{"type":"string","description":"标题关键词，无 taskId 时用于定位任务"},
     "newTitle":{"type":"string","description":"新标题，可选"},
@@ -24,23 +29,27 @@ const TOOLS: &str = r#"[
     "due":{"type":"string","description":"新截止时间，可选；空串清除"},
     "column":{"type":"string","enum":["todo","doing","done"],"description":"新状态列，可选"},
     "tags":{"type":"array","items":{"type":"string"},"description":"新标签列表，可选；空数组清除"},
-    "files":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"isDir":{"type":"boolean"}}},"description":"新绑定文件列表（可选，整体替换，最多 10 个；空数组清除；安全约束：仅允许 AI_Gen_Files 目录内的已存在文件）"}
+    "files":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"isDir":{"type":"boolean"}}},"description":"新绑定文件列表（可选，整体替换，最多 10 个；空数组清除；安全约束：仅允许 AI_Gen_Files 目录内的已存在文件）"},
+    "model":{"type":"string","description":"每卡执行模型（执行这张卡时覆盖全局激活模型），可选；空串清除=恢复跟随全局"},
+    "owner":{"type":"string","description":"归属成员名或 personId（任务图谱按成员过滤用），可选；空串=归属本人；名字歧义时会返回候选名单，先向用户确认再重试"}
   },"required":[]}}},
   {"type":"function","function":{"name":"add_subtask","description":"给任务添加子任务（taskId 精确匹配优先；无 taskId 时按标题关键词匹配）","parameters":{"type":"object","properties":{
     "taskId":{"type":"string","description":"任务 id，可选，优先于 title"},
     "title":{"type":"string","description":"标题关键词，无 taskId 时使用"},
     "text":{"type":"string","description":"子任务内容"}
   },"required":["text"]}}},
-  {"type":"function","function":{"name":"toggle_subtask","description":"勾选/取消勾选子任务（任务用 taskId 优先；子任务按内容关键词匹配）","parameters":{"type":"object","properties":{
+  {"type":"function","function":{"name":"toggle_subtask","description":"勾选/取消勾选子任务（任务用 taskId 优先；子任务用 subtaskId 精确优先，无 id 时按内容关键词匹配）","parameters":{"type":"object","properties":{
     "taskId":{"type":"string","description":"任务 id，可选，优先于 title"},
     "title":{"type":"string","description":"任务标题关键词，无 taskId 时使用"},
-    "text":{"type":"string","description":"子任务内容关键词"}
-  },"required":["text"]}}},
-  {"type":"function","function":{"name":"remove_subtask","description":"删除单条子任务（彻底移除，区别于 toggle_subtask 的取消勾选；任务用 taskId 优先；子任务按内容关键词匹配）","parameters":{"type":"object","properties":{
+    "subtaskId":{"type":"string","description":"子任务 id（query_single_task 输出），可选，优先于 text"},
+    "text":{"type":"string","description":"子任务内容关键词，无 subtaskId 时必填"}
+  },"required":[]}}},
+  {"type":"function","function":{"name":"remove_subtask","description":"删除单条子任务（彻底移除，区别于 toggle_subtask 的取消勾选；任务用 taskId 优先；子任务用 subtaskId 精确优先，无 id 时按内容关键词匹配）","parameters":{"type":"object","properties":{
     "taskId":{"type":"string","description":"任务 id，可选，优先于 title"},
     "title":{"type":"string","description":"任务标题关键词，无 taskId 时使用"},
-    "text":{"type":"string","description":"要删除的子任务内容关键词"}
-  },"required":["text"]}}},
+    "subtaskId":{"type":"string","description":"要删除的子任务 id（query_single_task 输出），可选，优先于 text"},
+    "text":{"type":"string","description":"要删除的子任务内容关键词，无 subtaskId 时必填"}
+  },"required":[]}}},
   {"type":"function","function":{"name":"read_text_file","description":"读取本地文本文件内容（白名单目录内直接读，白名单外自动弹窗请用户授权；大文件用 offset/limit 分页读；Office/PDF 用 extract_document，图片用户会直接发图）","parameters":{"type":"object","properties":{
     "path":{"type":"string","description":"文件绝对路径（支持 ~ 开头）"},
     "offset":{"type":"integer","description":"起始行号，从 1 开始，可选"},
@@ -53,22 +62,20 @@ const TOOLS: &str = r#"[
     "pattern":{"type":"string","description":"正则表达式（非法正则自动按字面量搜）"},
     "dir":{"type":"string","description":"搜索目录，可选，缺省搜第一个白名单目录"},
     "glob":{"type":"string","description":"文件名过滤，如 *.rs，可选"},
-    "max":{"type":"integer","description":"最多返回条数，默认 50，可选"}
+    "max":{"type":"integer","description":"最多返回条数，默认 50，可选"},
+    "context":{"type":"integer","description":"命中行上下文行数，可选，0-5，默认 0（显示匹配行前后各 N 行，便于读懂语境）"}
   },"required":["pattern"]}}},
   {"type":"function","function":{"name":"list_files","description":"列出本地目录内的文件/子目录（递归 ≤5 层，最多 200 条；可用 pattern 按文件名过滤；白名单目录内直接列，白名单外自动弹窗请用户授权）","parameters":{"type":"object","properties":{
     "dir":{"type":"string","description":"目录绝对路径（支持 ~ 开头）"},
     "pattern":{"type":"string","description":"文件名过滤，如 *.pdf 或 报告*，可选"}
   },"required":["dir"]}}},
-{"type":"function","function":{"name":"link_file_to_task","description":"登记产物到本任务卡执行流程的产物清单。文件必须在 AI_Gen_Files 目录内。流程结束、任务完成、有产物时弹汇总窗口让你勾选绑定（默认全选，每个文件绑一次）；任务未完成、中断、只有中间产物都不弹。普通对话场景调用此工具不报错也不绑（不反复尝试）。仅任务卡执行流程（🤖 按钮 / ⏰ 定时 / 📦 批量）内登记有效。","parameters":{"type":"object","properties":{
+  {"type":"function","function":{"name":"link_file_to_task","description":"登记产物到本任务卡执行流程的产物清单。文件必须在 AI_Gen_Files 目录内。流程结束、任务完成、有产物时系统会落一条「通知中心」消息让用户勾选绑定（默认全选，每个文件绑一次；不再弹窗）；任务未完成、中断、只有中间产物都不产生待绑定消息。普通对话场景调用此工具不报错也不绑（不反复尝试）。仅任务卡执行流程（🤖 按钮 / ⏰ 定时 / 📦 批量）内登记有效。","parameters":{"type":"object","properties":{
     "taskId":{"type":"string","description":"任务 id，可选，优先于 title"},
     "title":{"type":"string","description":"任务标题关键词，无 taskId 时使用"},
     "path":{"type":"string","description":"产物文件绝对路径，必须在 AI_Gen_Files 目录内且文件已存在"},
     "kind":{"type":"string","enum":["final","intermediate"],"default":"final","description":"final=最终产物，参与流程结束汇总弹窗；intermediate=中间产物，不参与弹窗。本会话在 AI_Gen_Files 目录没新建过的路径不参与绑定。"}
   },"required":["path"]}}},
-  {"type":"function","function":{"name":"search_tasks","description":"按关键词搜索所有任务卡（待办/进行中/已完成/已归档；匹配标题/备注/标签/子任务）","parameters":{"type":"object","properties":{
-    "query":{"type":"string","description":"搜索关键词"}
-  },"required":["query"]}}},
-  {"type":"function","function":{"name":"extract_document","description":"提取文档内容（不传 path 时弹系统选择框由用户选 Word/Excel/PPT/PDF；传 path 时直接读取该文件，如任务卡的绑定文件；长文档用 offset 参数续读后续部分）","parameters":{"type":"object","properties":{
+  {"type":"function","function":{"name":"extract_document","description":"提取文档内容（不传 path 时弹系统选择框由用户选 Word/Excel/PPT/PDF；传 path 时直接读取该文件，如任务卡的绑定文件；长文档用 offset 参数续读后续部分；扫描版/图片型 PDF 文本层为空时自动转图走本地 OCR 兜底，前 20 页）","parameters":{"type":"object","properties":{
     "path":{"type":"string","description":"文件绝对路径，可选"},
     "offset":{"type":"integer","description":"字符偏移（可选，默认 0；返回里带『已截断』提示时用提示的 offset 值续读）"},
     "limit":{"type":"integer","description":"本页字符数（可选，默认 30000，上限 60000）"}
@@ -80,7 +87,8 @@ const TOOLS: &str = r#"[
       "title":{"type":"string","description":"表格标题，可选"},
       "rows":{"type":"array","items":{"type":"array","items":{"type":"string"}}}
     },"required":["rows"]}},
-    "filename":{"type":"string","description":"文件名（不含扩展名），可选"}
+    "filename":{"type":"string","description":"文件名（不含扩展名），可选"},
+    "images":{"type":"array","items":{"type":"string"},"description":"要插入的图片绝对路径列表，可选（仅 AI_Gen_Files 目录内的已存在图片，其余被丢弃并提示；按顺序插在正文之后、表格之前）"}
   },"required":["paragraphs"]}}},
   {"type":"function","function":{"name":"create_word_revisions","description":"生成带修订标记（修订模式）的 Word 到 AI_Gen_Files：在原文档副本上就地对比原文与润色后的段落打 Word 原生 track changes（保留原文格式/字体），可在 Word 审阅中逐条接受/拒绝（引擎：.NET OpenXML 优先，Python 兜底）","parameters":{"type":"object","properties":{
     "originalPath":{"type":"string","description":"原文 Word 路径（extract_document 返回的 [文档路径]）"},
@@ -112,18 +120,28 @@ const TOOLS: &str = r#"[
     },"required":["type","title"]}},
     "filename":{"type":"string","description":"文件名（不含扩展名），可选"}
   },"required":["slides"]}}},
-  {"type":"function","function":{"name":"create_pdf","description":"生成 PDF 到 AI_Gen_Files（中文支持）","parameters":{"type":"object","properties":{
+  {"type":"function","function":{"name":"create_pdf","description":"生成 PDF 到 AI_Gen_Files（中文支持，自动分页）","parameters":{"type":"object","properties":{
     "title":{"type":"string","description":"文档标题，可选"},
     "paragraphs":{"type":"array","items":{"type":"string"},"description":"正文段落列表"},
+    "tables":{"type":"array","description":"可选：表格列表，按顺序追加在段落之后；每个表 rows 二维数组、第一行当表头加粗","items":{"type":"object","properties":{
+      "title":{"type":"string","description":"表格标题，可选"},
+      "rows":{"type":"array","items":{"type":"array","items":{"type":"string"}}}
+    },"required":["rows"]}},
     "filename":{"type":"string","description":"文件名（不含扩展名），可选"}
   },"required":["paragraphs"]}}},
   {"type":"function","function":{"name":"run_python","description":"执行 Python 代码（资源受限：CPU/内存/时长限额 + 独立临时目录，无文件系统隔离；默认超时 60s。默认需用户在设置页开启 Python 编程，授权模式为 yolo 时免开关）","parameters":{"type":"object","properties":{
     "code":{"type":"string","description":"要执行的 Python 代码，print 输出返回给用户"},
     "timeoutSecs":{"type":"integer","description":"超时秒数（可选，默认 60；大计算可调大，上限 300）"}
   },"required":["code"]}}},
-  {"type":"function","function":{"name":"web_search","description":"搜索互联网获取最新信息（配置 Tavily 或 Brave key 时走对应 API、双开报错，否则 Bing+百度网页抓取；返回标题/链接/摘要）","parameters":{"type":"object","properties":{"query":{"type":"string","description":"搜索关键词"}},"required":["query"]}}},
-  {"type":"function","function":{"name":"fetch_url","description":"抓取网页正文（仅 http/https 公网地址；返回纯文本，用于读链接/总结网页内容）","parameters":{"type":"object","properties":{
-    "url":{"type":"string","description":"要抓取的网页地址"}
+  {"type":"function","function":{"name":"web_search","description":"搜索互联网获取最新信息（配置 Tavily 或 Brave key 时走对应 API、双开报错，否则 Bing+百度网页抓取；返回标题/链接/摘要）","parameters":{"type":"object","properties":{
+    "query":{"type":"string","description":"搜索关键词"},
+    "count":{"type":"integer","description":"结果条数，可选，1-10，默认 8"},
+    "timeRange":{"type":"string","enum":["day","week","month","year"],"description":"时间范围，可选：day=24小时内 / week=一周内 / month=一月内 / year=一年内（Tavily/Brave 原生支持；Bing+百度抓取模式不支持并会明确提示）"},
+    "site":{"type":"string","description":"限定站点域名，可选，如 github.com（不要带 https:// 前缀）"}
+  },"required":["query"]}}},
+  {"type":"function","function":{"name":"fetch_url","description":"抓取网页正文（仅 http/https 公网地址；返回纯文本，用于读链接/总结网页内容；长网页带「已截断」提示时用 offset 参数续读）","parameters":{"type":"object","properties":{
+    "url":{"type":"string","description":"要抓取的网页地址"},
+    "offset":{"type":"integer","description":"字符偏移（可选，默认 0；上一页返回的「已截断」提示里给了 offset 值，用它续读）"}
   },"required":["url"]}}},
   {"type":"function","function":{"name":"get_current_time","description":"获取当前日期时间和星期（涉及「今天/明天/昨天/周几/几点」类判断前必须先调，不要凭训练数据猜日期）","parameters":{"type":"object","properties":{}}}},
   {"type":"function","function":{"name":"remember_fact","description":"记住一条用户偏好/事实（跨会话长期记忆，重启不丢；key 简短规范名词 ≤50 字，value 内容 ≤500 字；同 key 覆盖更新；value 传空串删除该条；写入结果若提示相似已有记忆，优先用同 key 覆盖更新而非另开新 key 堆积）","parameters":{"type":"object","properties":{
@@ -141,6 +159,7 @@ const TOOLS: &str = r#"[
     "scenario":{"type":"string","description":"场景标签（可选 ≤50 字），如工具名或任务类型：create_ppt、批量执行、文档修订"}
   },"required":["lesson"]}}},
   {"type":"function","function":{"name":"use_skill","description":"读取已安装技能（skill）的完整文档并按文档步骤执行。任务涉及的每个相关技能都要读（可多次调用）：例如做 PPT 时，若清单里同时有编排、生成、配色、风格类技能，应逐个读取、取长补短综合运用，不要只读一个","parameters":{"type":"object","properties":{
-    "name":{"type":"string","description":"技能名（系统提示词「已安装技能」清单里的名称，一次一个，可多次调用）"}
+    "name":{"type":"string","description":"技能名（系统提示词「已安装技能」清单里的名称，一次一个，可多次调用）"},
+    "params":{"type":"object","description":"技能参数（可选；键=参数名，值=字符串）。技能声明了必填参数时必须提供（缺失会拒绝启动并列出缺什么），声明了默认值的参数可省略","additionalProperties":{"type":"string"}}
   },"required":["name"]}}}
 ]"#;

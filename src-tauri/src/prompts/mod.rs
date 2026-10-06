@@ -81,7 +81,7 @@ mod tests {
         assert!(SYSTEM_PROMPT.contains("规则："), "规则段缺失");
         for anchor in [
             "create_task",
-            "list_tasks",
+            "query_tasks",
             "complete_task",
             "link_file_to_task",
             "web_search",

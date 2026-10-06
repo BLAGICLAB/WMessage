@@ -95,6 +95,7 @@ mod tests {
             model: None,
             owner_id: None,
             created_at: None,
+            enabled: None,
             expected_updated_at: None,
         }
     }
