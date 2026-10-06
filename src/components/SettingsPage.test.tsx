@@ -140,8 +140,8 @@ describe("SettingsPage", () => {
     render(<SettingsPage {...defaultProps} />);
     // U8 十分类：逐分类导航断言各面板标题（惰性挂载，未激活不渲染）
     expect(screen.getByText("个人资料")).toBeInTheDocument();
-    // U8：侧栏分类名与面板标题同文（「通用设置」两处），取全量断言
-    expect(screen.getAllByText("通用设置").length).toBeGreaterThan(0);
+    // U8：侧栏分类名与面板标题同文（「基础设置」两处，2026-10-06 老板拍板由「通用设置」更名），取全量断言
+    expect(screen.getAllByText("基础设置").length).toBeGreaterThan(0);
     expect(screen.getByText("浅色")).toBeInTheDocument();
     expect(screen.getByText("深色")).toBeInTheDocument();
     expect(screen.getByText("跟随系统")).toBeInTheDocument();

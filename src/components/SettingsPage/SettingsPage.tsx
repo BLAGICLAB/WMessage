@@ -209,7 +209,7 @@ type SectionKey =
   | "graph"
   | "tokens";
 const SECTIONS: { key: SectionKey; label: string; icon: LucideIcon }[] = [
-  { key: "general", label: "通用设置", icon: Settings2 },
+  { key: "general", label: "基础设置", icon: Settings2 },
   { key: "data", label: "数据管理", icon: DatabaseBackup },
   { key: "bot", label: "机器人", icon: Bot },
   { key: "model", label: "模型设置", icon: Cpu },
@@ -1673,9 +1673,9 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         </div>
       </div>
 
-      {/* 通用设置：外观 + 开机自启动 wmessage */}
+      {/* 基础设置：外观 + 开机自启动 wmessage */}
       <div className="nm-card p-5">
-        <h2 className="text-lg font-semibold text-[var(--t1)]">通用设置</h2>
+        <h2 className="text-lg font-semibold text-[var(--t1)]">基础设置</h2>
         <div className="mt-4 space-y-3">
           {/* 外观（原「深浅色模式」改名：主题是外观的一部分，名字更准确） */}
           <div>
