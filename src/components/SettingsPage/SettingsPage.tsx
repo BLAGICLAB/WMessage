@@ -475,11 +475,11 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
       setTraceClearBusy(false);
     }
   };
-  // 删除非本人的任务卡（数据管理卡）：armed 两步确认 + dry_run 预检数量；
-  // 3s 未确认自动解除 armed（WorkflowPage deleteArmed 同模式）
+  // 删除非本人的任务卡（数据管理卡）：点删除直接硬删（这些卡是别人程序导出的
+  // 统计用数据，老板拍板无二次确认不放回收站）；结果在按钮文字上短暂反馈——
+  // 不新增提示行，避免布局抖动
   const [deleteNonSelfBusy, setDeleteNonSelfBusy] = useState(false);
-  const [deleteNonSelfArmed, setDeleteNonSelfArmed] = useState(false);
-  const [deleteNonSelfMsg, setDeleteNonSelfMsg] = useState("");
+  const [deleteNonSelfDone, setDeleteNonSelfDone] = useState<string | null>(null);
   const deleteNonSelfTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(
     () => () => {
@@ -489,41 +489,18 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
   );
   const runDeleteNonSelf = async () => {
     if (deleteNonSelfBusy) return;
-    setDeleteNonSelfMsg("");
-    // 第一步：预检数量 + 进入 armed
-    if (!deleteNonSelfArmed) {
-      setDeleteNonSelfBusy(true);
-      try {
-        const n = await invoke<number>("tasks_delete_non_self", { dryRun: true });
-        if (n === 0) {
-          setDeleteNonSelfMsg("没有需要删除的非本人任务卡");
-          setDeleteNonSelfBusy(false);
-          return;
-        }
-        setDeleteNonSelfMsg(`将把 ${n} 张非本人任务卡移入回收站，再点一次「确认删除」执行`);
-        setDeleteNonSelfArmed(true);
-        if (deleteNonSelfTimer.current) clearTimeout(deleteNonSelfTimer.current);
-        deleteNonSelfTimer.current = setTimeout(() => setDeleteNonSelfArmed(false), 3000);
-      } catch (e) {
-        handleCommandError(e, "统计非本人任务卡", { silent: true });
-        setDeleteNonSelfMsg(formatCommandError(e));
-      } finally {
-        setDeleteNonSelfBusy(false);
-      }
-      return;
-    }
-    // 第二步：确认执行
-    setDeleteNonSelfArmed(false);
     setDeleteNonSelfBusy(true);
     try {
-      const n = await invoke<number>("tasks_delete_non_self", { dryRun: false });
-      setDeleteNonSelfMsg(`已把 ${n} 张非本人任务卡移入回收站（可在回收站恢复或彻底删除）`);
+      const n = await invoke<number>("tasks_delete_non_self");
+      setDeleteNonSelfDone(n > 0 ? `已删 ${n} 张` : "无此类卡");
+      if (deleteNonSelfTimer.current) clearTimeout(deleteNonSelfTimer.current);
+      deleteNonSelfTimer.current = setTimeout(() => setDeleteNonSelfDone(null), 2500);
     } catch (e) {
-      handleCommandError(e, "删除非本人任务卡", { silent: true });
-      setDeleteNonSelfMsg(formatCommandError(e));
-    } finally {
+      handleCommandError(e, "删除非本人任务卡");
       setDeleteNonSelfBusy(false);
+      return;
     }
+    setDeleteNonSelfBusy(false);
   };
   const [keyInput, setKeyInput] = useState("");
   // Tavily/Brave key 输入框（与主 keyInput 同模式：不回填已存 key，
@@ -1844,33 +1821,30 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
               {importing ? "导入中…" : (<><Upload size={12} aria-hidden /> 导入</>)}
             </button>
           </div>
-          {/* 删除非本人的任务卡（2026-10-06 老板需求）：导入带来的归属人为他人的卡，
-              一键软删进回收站（本人 = 个人资料 personId；owner_id 为空的卡视为本人不动）。
-              两步确认：先 dry_run 查数量 → confirm → 执行；后端广播 tasks-updated 三端同步 */}
+          {/* 删除非本人的任务卡（2026-10-06 老板需求）：导入带来的归属人为他人的统计用卡，
+              一键直接硬删（含回收站中的；本人 = 个人资料 personId，owner_id 为空的卡视为本人不动）。
+              后端广播 tasks-updated 三端同步；结果在按钮文字上短暂反馈（不新增行防抖动） */}
           <div className="pt-3 border-t border-[var(--edge)] flex items-center justify-between gap-4">
             <div className="min-w-0">
               <p className="text-sm font-medium text-[var(--t2)]">删除非本人的任务卡</p>
               <p className="mt-1 text-xs text-[var(--t5)]">
-                把归属人为他人的任务卡移入回收站（可恢复、可彻底删除）；本人卡与未设归属人的卡不受影响
+                立即删除归属人为他人的全部任务卡（含回收站，不可恢复）；本人卡与未设归属人的卡不受影响
               </p>
             </div>
             <button
-              className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm inline-flex items-center justify-center gap-1.5 whitespace-nowrap ${
+              className={`shrink-0 min-w-[110px] px-4 py-1.5 text-sm inline-flex items-center justify-center gap-1.5 whitespace-nowrap ${
                 deleteNonSelfBusy ? "nm-inset" : "nm-outset"
-              } ${deleteNonSelfArmed ? "text-[var(--danger)]" : "text-[var(--t3)]"}`}
+              } ${deleteNonSelfDone ? "text-[var(--t4)]" : "text-[var(--danger)]"}`}
               onClick={() => void runDeleteNonSelf()}
               disabled={deleteNonSelfBusy}
             >
               {deleteNonSelfBusy
-                ? "处理中…"
-                : deleteNonSelfArmed
-                  ? "再点一次确认删除"
-                  : "删除"}
+                ? "删除中…"
+                : deleteNonSelfDone
+                  ? deleteNonSelfDone
+                  : "直接删除"}
             </button>
           </div>
-          {deleteNonSelfMsg && (
-            <p className="text-xs text-[var(--t4)]">{deleteNonSelfMsg}</p>
-          )}
           {/* 任务卡归档时间：完成满 N 天自动归档。前端看板规则与后端 migration
               兜底归档（主窗口关闭时照常到期）同读 bot-config.json，改完阈值两侧一致 */}
           <div className="pt-3 border-t border-[var(--edge)] flex items-center justify-between gap-4">

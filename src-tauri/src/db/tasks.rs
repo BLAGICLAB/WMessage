@@ -653,26 +653,25 @@ pub async fn db_upsert(app: AppHandle, tasks: Vec<super::Task>) -> CommandResult
     db_upsert_for(&app, tasks).await
 }
 
-/// 删除非本人的任务卡（2026-10-06 老板需求，数据管理卡入口）：
-/// 归属人 owner_id 非本人且非 NULL 的活跃卡（deleted_at IS NULL）**软删**进回收站
+/// 删除非本人的任务卡（2026-10-06 老板需求，数据管理卡入口；同日拍板简化——
+/// 这些卡是从别人程序导出的统计用数据，**点删除直接硬删**，不放回收站、无二次确认，
+/// 范围含回收站/归档中的非本人卡）：owner_id 非本人且非 NULL 即删
 /// （owner_id NULL = 本人——任务图谱设计 §1.1 读路径归一，NULL 永不命中）。
-/// dry_run=true 只统计不写，供前端确认弹窗展示数量。
-/// 锁内 读→筛→打新基线→写（RMW 契约同 task_set_column_locked），随后广播
-/// tasks-updated(source="api")——后端已落盘，主窗口只合并 UI 不回写（协议防回写循环）。
+/// 锁内单条 DELETE，随后广播 tasks-updated(source="api", deletes=[...])——
+/// 后端已落盘，主窗口只合并 UI 不回写（协议防回写循环）。
 #[tauri::command]
-pub async fn tasks_delete_non_self(app: AppHandle, dry_run: Option<bool>) -> CommandResult<usize> {
+pub async fn tasks_delete_non_self(app: AppHandle) -> CommandResult<usize> {
     let (self_pid, _) = crate::profile::ensure_person_id(&app);
     let app2 = app.clone();
-    let (count, removed) =
-        async_runtime::spawn_blocking(move || -> CommandResult<(usize, Vec<super::Task>)> {
+    let (count, deleted_ids) =
+        async_runtime::spawn_blocking(move || -> CommandResult<(usize, Vec<String>)> {
             let _g = super::lock_db_write();
-            let mut conn = super::open_db(&app2)?;
-            let now = chrono::Utc::now().timestamp_millis();
-            delete_non_self_locked(&mut conn, &self_pid, now, dry_run.unwrap_or(false))
+            let conn = super::open_db(&app2)?;
+            delete_non_self_locked(&conn, &self_pid)
         })
         .await
         .map_err(|e| CommandError::from(format!("删除线程 join 失败：{e}")))??;
-    if !removed.is_empty() {
+    if !deleted_ids.is_empty() {
         // 后端已落盘 → source="api"（App.tsx 只合并 UI 不回写）；tasks-changed 让挂件重读
         use tauri::Emitter;
         let _ = app.emit("tasks-changed", ());
@@ -680,8 +679,8 @@ pub async fn tasks_delete_non_self(app: AppHandle, dry_run: Option<bool>) -> Com
             "tasks-updated",
             serde_json::json!({
                 "source": crate::mutation::MutationOrigin::Api.as_str(),
-                "upserts": removed,
-                "deletes": [],
+                "upserts": [],
+                "deletes": deleted_ids,
             }),
         );
         crate::audit::write_event(
@@ -694,35 +693,35 @@ pub async fn tasks_delete_non_self(app: AppHandle, dry_run: Option<bool>) -> Com
     Ok(count)
 }
 
-/// 删除非本人的锁内段（纯 DB 逻辑，单测锚点）：读 → 筛非本人活跃卡 → 软删（打新基线）。
-/// 返回 (命中数, 实际软删的行)——dry_run 或无命中时 removed 为空、不写库。
+/// 删除非本人的锁内段（纯 DB 逻辑，单测锚点）：硬删全部 owner_id 非本人且非 NULL 的卡
+///（含回收站/归档——统计用数据一次清干净）。返回 (删除数, 被删 id 列表)。
 pub(crate) fn delete_non_self_locked(
-    conn: &mut rusqlite::Connection,
+    conn: &rusqlite::Connection,
     self_pid: &str,
-    now: i64,
-    dry_run: bool,
-) -> CommandResult<(usize, Vec<super::Task>)> {
-    let targets: Vec<super::Task> = load_all(conn)?
-        .into_iter()
-        .filter(|t| t.deleted_at.is_none() && matches!(&t.owner_id, Some(o) if o != self_pid))
-        .collect();
-    if dry_run || targets.is_empty() {
-        return Ok((targets.len(), Vec::new()));
+) -> CommandResult<(usize, Vec<String>)> {
+    let ids: Vec<String> = {
+        let mut stmt = conn
+            .prepare("SELECT id FROM tasks WHERE owner_id IS NOT NULL AND owner_id != ?1")
+            .map_err(|e| CommandError::DbError(e.to_string()))?;
+        let rows = stmt
+            .query_map([self_pid], |r| r.get::<_, String>(0))
+            .map_err(|e| CommandError::DbError(e.to_string()))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| CommandError::DbError(e.to_string()))?);
+        }
+        out
+    };
+    if ids.is_empty() {
+        return Ok((0, ids));
     }
-    let mut removed = Vec::with_capacity(targets.len());
-    let tx = conn
-        .transaction()
+    let n = conn
+        .execute(
+            "DELETE FROM tasks WHERE owner_id IS NOT NULL AND owner_id != ?1",
+            [self_pid],
+        )
         .map_err(|e| CommandError::DbError(e.to_string()))?;
-    for mut t in targets {
-        t.expected_updated_at = t.updated_at;
-        t.deleted_at = Some(now);
-        t.updated_at = Some(now);
-        upsert_tasks(&tx, std::slice::from_ref(&t)).map_err(CommandError::from)?;
-        removed.push(t);
-    }
-    tx.commit()
-        .map_err(|e| CommandError::DbError(e.to_string()))?;
-    Ok((removed.len(), removed))
+    Ok((n, ids))
 }
 
 /// task_set_column 的锁内段（纯 DB 逻辑，单测锚点）：**同一把写锁内**读现值 →
@@ -1446,59 +1445,42 @@ mod task_set_column_tests {
         .unwrap();
     }
 
-    // ── 删除非本人任务卡（数据管理卡入口，2026-10-06） ──
+    // ── 删除非本人任务卡（数据管理卡入口，2026-10-06；硬删含回收站） ──
 
-    /// 筛选口径：owner 非本人且非 NULL 的活跃卡软删；本人卡 / NULL 归属卡 /
-    /// 已在回收站的非本人卡一概不动
+    /// 筛选口径：owner 非本人且非 NULL 的卡全部硬删（含回收站/归档——统计用数据
+    /// 一次清干净）；本人卡与 NULL 归属卡一概不动
     #[test]
-    fn delete_non_self_filters_owner_and_trash() {
+    fn delete_non_self_filters_owner_hard_deletes() {
         let _g = crate::db::lock_db_write(); // upsert_tasks 锁持有断言要求
         let mut conn = setup_conn();
         insert_owned_task(&conn, "mine", Some("self-pid"));
         insert_owned_task(&conn, "null-owner", None); // NULL = 本人（图谱设计 §1.1）
         insert_owned_task(&conn, "other-1", Some("someone-else"));
         insert_owned_task(&conn, "other-2", Some("another"));
-        // 已在回收站的非本人卡：不重复软删
+        // 回收站里的非本人卡：统计用数据一次清干净，同样硬删
         conn.execute(
             "INSERT INTO tasks (id, title, col, updated_at, owner_id, deleted_at) VALUES ('other-trashed', 't', 'todo', 1000, 'someone-else', 900)",
             [],
         )
         .unwrap();
 
-        let (count, removed) = delete_non_self_locked(&mut conn, "self-pid", 5000, false).unwrap();
-        assert_eq!(count, 2, "只命中 other-1/other-2 两张活跃卡");
-        assert_eq!(removed.len(), 2);
+        let (count, ids) = delete_non_self_locked(&conn, "self-pid").unwrap();
+        assert_eq!(count, 3, "other-1/other-2/other-trashed 全删");
+        assert_eq!(ids.len(), 3);
 
-        let all = load_all(&conn).unwrap();
-        let by_id = |i: &str| all.iter().find(|t| t.id == i).unwrap();
-        assert_eq!(by_id("other-1").deleted_at, Some(5000), "软删进回收站");
-        assert_eq!(by_id("other-1").updated_at, Some(5000), "打新基线");
-        assert_eq!(by_id("mine").deleted_at, None, "本人卡不动");
-        assert_eq!(
-            by_id("null-owner").deleted_at,
-            None,
+        let remaining: Vec<String> = load_all(&conn)
+            .unwrap()
+            .iter()
+            .map(|t| t.id.clone())
+            .collect();
+        assert!(remaining.contains(&"mine".to_string()), "本人卡不动");
+        assert!(
+            remaining.contains(&"null-owner".to_string()),
             "NULL 归属 = 本人，不动"
         );
-        assert_eq!(
-            by_id("other-trashed").deleted_at,
-            Some(900),
-            "已在回收站的不重复动"
-        );
-    }
-
-    /// dry_run 只统计不写库
-    #[test]
-    fn delete_non_self_dry_run_counts_without_write() {
-        let _g = crate::db::lock_db_write();
-        let mut conn = setup_conn();
-        insert_owned_task(&conn, "other", Some("someone-else"));
-        let (count, removed) = delete_non_self_locked(&mut conn, "self-pid", 5000, true).unwrap();
-        assert_eq!(count, 1);
-        assert!(removed.is_empty());
-        assert_eq!(
-            load_all(&conn).unwrap()[0].deleted_at,
-            None,
-            "dry_run 不得写库"
+        assert!(
+            !remaining.iter().any(|i| i.starts_with("other")),
+            "非本人卡已硬删"
         );
     }
 
@@ -1508,8 +1490,10 @@ mod task_set_column_tests {
         let _g = crate::db::lock_db_write();
         let mut conn = setup_conn();
         insert_owned_task(&conn, "mine", Some("self-pid"));
-        let (count, removed) = delete_non_self_locked(&mut conn, "self-pid", 5000, false).unwrap();
-        assert_eq!((count, removed.len()), (0, 0));
+        insert_owned_task(&conn, "null-owner", None);
+        let (count, ids) = delete_non_self_locked(&conn, "self-pid").unwrap();
+        assert_eq!((count, ids.len()), (0, 0));
+        assert_eq!(load_all(&conn).unwrap().len(), 2);
     }
 
     #[test]
