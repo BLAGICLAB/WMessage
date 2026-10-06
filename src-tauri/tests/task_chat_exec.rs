@@ -78,7 +78,9 @@ fn cleanup(handle: &tauri::AppHandle<tauri::test::MockRuntime>, task_id: &str, s
         conn.execute("DELETE FROM bot_sessions WHERE id = ?1", [session_id])
             .ok();
     }
-    let _ = std::fs::remove_file(wmessage_lib::paths::flags_dir(handle).join("bot-enabled.flag"));
+    // bot-enabled.flag 刻意**不删**（nextest 下与 exec_trace 二进制并行共享 flag 文件，
+    // 一方 cleanup 删除会让对方 run_task_in_chat 撞 BotDisabled——推送门禁实锤）；
+    // setup 幂等重写，flag 常驻无害（需要关的测试自行删）。
 }
 
 fn core_http(server: &MockLlmServer) -> LlmHttp {
@@ -339,7 +341,7 @@ async fn failure_persists_error_reply_in_session() {
         .ok();
     conn.execute("DELETE FROM tasks WHERE id = ?1", [&task_id])
         .ok();
-    let _ = std::fs::remove_file(wmessage_lib::paths::flags_dir(&handle).join("bot-enabled.flag"));
+    // bot-enabled.flag 不删（跨二进制并行共享，见 cleanup 内注释）
 }
 
 /// 定时路径源码锁（设计 3.2）：bot_scheduler 调 run_task_in_chat、绕开 exec_steps、

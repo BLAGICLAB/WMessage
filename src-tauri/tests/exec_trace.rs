@@ -89,7 +89,10 @@ fn cleanup(handle: &tauri::AppHandle<tauri::test::MockRuntime>, task_id: &str, s
         )
         .ok();
     }
-    let _ = std::fs::remove_file(wmessage_lib::paths::flags_dir(handle).join("bot-enabled.flag"));
+    // bot-enabled.flag 刻意**不删**：nextest 下 exec_trace 与 task_chat_exec 两个二进制
+    // 并行进程共享 target/debug/deps/runtime/flags/——一方 cleanup 删 flag 会让另一方的
+    // run_task_in_chat 撞 BotDisabled（实锤：推送门禁两用例齐挂）。setup 幂等重写，
+    // flag 常驻只意味着后续测试默认机器人开（需要关的测试自行删）。
 }
 
 fn core_http(server: &MockLlmServer) -> LlmHttp {

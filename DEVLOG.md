@@ -2,6 +2,17 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-06（周二）T1F-FLAGRACE：测试基建——跨二进制 bot flag 并行竞态修复
+
+**根因**：nextest 下 exec_trace 与 task_chat_exec 两个二进制并行进程共享
+`target/debug/deps/runtime/flags/bot-enabled.flag`，一方 cleanup 删 flag 使另一方
+`run_task_in_chat` 撞 `BotDisabled`（推送门禁实锤：两用例齐挂）。
+
+**修复**（仅测试侧）：两二进制的 cleanup 不再删 flag，setup 幂等重写；flag 常驻无害
+（需要关的测试自行删；lib 侧无 flag 状态断言，grep 核定）。
+
+**验证**：双二进制 nextest 连跑 3× 27/27 全绿；全量 test-all 随推送门禁复跑。
+
 ## 2026-10-06（周二）T1F-SCHEDMIG：t1_db_roundtrip 红测修复——对齐定时单源契约
 
 **根因**：T1 批把定时执行单源迁到 `scheduled_jobs`（open_db 每次跑
@@ -5141,4 +5152,5 @@ apply.rs 无 policy 相关引用，**确认未 wire**。
 
 - 等 R7 在真数据上跑一段（>= 30 个完整生命周期 或 14 天 或 5 个 RolledBack）
 - R8：高层候选 Skill/Code（只生成候选走 PR）
+
 
