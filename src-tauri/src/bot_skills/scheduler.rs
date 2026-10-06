@@ -4,7 +4,7 @@ use super::state::{
     active_skill_run_for, clear_terminal_skill_runs, load_skill_meta, now_ms, skill_runs,
     SkillState,
 };
-use super::vars::{extract_task_id, substitute_vars, CompletedStep};
+use super::vars::{extract_task_id, substitute_vars, substitute_vars_with_params, CompletedStep};
 use tauri::AppHandle;
 
 /// persist DslOutcome to DB after run_skill_scheduler finishes (quiet failure)
@@ -228,9 +228,15 @@ pub async fn run_skill_scheduler(
     session_id: Option<&str>,
     stop: Option<&crate::bot_slash::StopGuard>,
 ) -> Result<DslOutcome, DslFailure> {
-    let (meta, body) = load_skill_meta(app, name).map_err(|e| DslFailure::Terminated {
+    let (meta, body, dir) = load_skill_meta(app, name).map_err(|e| DslFailure::Terminated {
         reason: e.to_string(),
     })?;
+    // N7：params 与 allowed-tools 从本会话活动 run 取（use_skill 启动时写入；
+    // pre-step 路由路径无 run → Null/空 = 不限制、无参数替换源）
+    let (params, allowed_tools) = active_skill_run_for(app, session_id)
+        .filter(|r| r.name == name)
+        .map(|r| (r.params, r.allowed_tools))
+        .unwrap_or((serde_json::Value::Null, Vec::new()));
     let execute_tool = |tool: String, args: String| async move {
         match stop {
             Some(s) => crate::bot::execute_tool_with_stop(app, &tool, &args, Some(s)).await,
@@ -250,6 +256,9 @@ pub async fn run_skill_scheduler(
         &meta,
         &body,
         session_id,
+        &params,
+        &allowed_tools,
+        Some(&dir),
         execute_tool,
         persist_outcome,
     )
@@ -271,6 +280,9 @@ pub async fn run_skill_scheduler_core<R: tauri::Runtime, X, XP, P>(
     meta: &super::parse::SkillMeta,
     body: &str,
     session_id: Option<&str>,
+    params: &serde_json::Value,
+    allowed_tools: &[String],
+    skill_dir: Option<&std::path::Path>,
     execute_tool: X,
     persist_outcome: P,
 ) -> Result<DslOutcome, DslFailure>
@@ -293,6 +305,32 @@ where
         return Err(DslFailure::Terminated {
             reason: format!("技能「{name}」无可执行步骤（DSL 解析为空）"),
         });
+    }
+    // N7-①：兼容审计——步骤/回滚引用了未内置的工具。全部未知 → 提前终止
+    // （几乎必然是工具改名后未同步的旧技能，逐步失败只会白烧回滚）；部分未知 →
+    // 警告继续（可能混用 MCP 工具，dispatch 兜底可执行）。
+    let known: std::collections::HashSet<String> = crate::bot::registry::tools_index()
+        .keys()
+        .map(|s| s.to_string())
+        .collect();
+    let unknown = super::parse::unknown_tool_names(&steps, &rollback, &known);
+    if !unknown.is_empty() {
+        crate::bot::audit_log_hook(
+            app,
+            &format!(
+                "skill.compat_warn | name: {name} | unknown: {} | steps: {}",
+                unknown.join(","),
+                steps.len()
+            ),
+        );
+        if unknown.len() >= steps.len() {
+            let reason = format!(
+                "技能「{name}」的所有步骤都引用了已不存在的工具（{}）——工具已更名或技能过旧，请更新 SKILL.md",
+                unknown.join("、")
+            );
+            persist_outcome(name, "terminated", Some(&reason), None, None);
+            return Err(DslFailure::Terminated { reason });
+        }
     }
     crate::bot::audit_log_hook(
         app,
@@ -390,8 +428,8 @@ where
                 ctx.len()
             ),
         );
-        // 变量替换：把上一步结果/UUID 拼进 args_json
-        let resolved_args = substitute_vars(&step.args_json, &ctx);
+        // 变量替换：把上一步结果/UUID 拼进 args_json（N7-③：params 静态参数一并替换）
+        let resolved_args = substitute_vars_with_params(&step.args_json, &ctx, params);
         if resolved_args != step.args_json {
             crate::bot::audit_log_hook(
                 app,
@@ -401,6 +439,52 @@ where
                     resolved_args.len()
                 ),
             );
+        }
+        // N7-⑤：allowed-tools 双闸——技能声明了允许工具集合时，步骤工具必须 ∈ 集合
+        //（作者主动限权；与系统兜底「tool ∈ 注册表」正交）。违规 = 步骤失败，
+        // 走既有回滚 + FailedButRecoverable 管道（LLM 兜底接管）。
+        if !meta.allowed_tools.is_empty() && !meta.allowed_tools.contains(&step.tool_name) {
+            let text = format!(
+                "失败：工具 {} 不在本技能 allowed-tools 声明内（允许：{}）。请修正 SKILL.md 或改由人工执行该步骤",
+                step.tool_name,
+                meta.allowed_tools.join(", ")
+            );
+            let rb_attempted = run_rollback_segment_core(
+                app,
+                name,
+                &rollback,
+                &ctx,
+                step.index,
+                &text,
+                session_id,
+                &execute_tool,
+            )
+            .await;
+            let final_reason = format!(
+                "技能「{name}」Step {} ({}) 失败：{}",
+                step.index, step.title, text
+            );
+            let summary = format_completed_summary(&ctx);
+            persist_outcome(
+                name,
+                "failed_recoverable",
+                Some(&final_reason),
+                Some(&summary),
+                Some(rb_attempted),
+            );
+            crate::bot::audit_log_hook(
+                app,
+                &format!(
+                    "skill.allowed_tools_violation | name: {name} | step: {} | tool: {}",
+                    step.index,
+                    crate::bot::truncate_for_log(&step.tool_name, 60)
+                ),
+            );
+            return Ok(DslOutcome::FailedButRecoverable {
+                reason: final_reason,
+                completed_summary: summary,
+                rollback_attempted: rb_attempted,
+            });
         }
         let tool_outcome = execute_tool(step.tool_name.clone(), resolved_args).await;
         let text = tool_outcome.text;
@@ -429,6 +513,17 @@ where
                 Some(&summary),
                 Some(rb_attempted),
             );
+            // N7-④：失败教训直沉淀（有已执行动作才记，防空转噪音）
+            if !ctx.is_empty() {
+                super::runtime::sink_skill_failure_lesson(
+                    app,
+                    name,
+                    &final_reason,
+                    &ctx.iter()
+                        .map(|c| format!("Step {}: {}", c.index, c.title))
+                        .collect::<Vec<_>>(),
+                );
+            }
             return Ok(DslOutcome::FailedButRecoverable {
                 reason: final_reason,
                 completed_summary: summary,

@@ -26,6 +26,10 @@ static VAR_NESTED_BY_INDEX: LazyLock<Regex> =
 static VAR_NESTED_PREV: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\$\{prev\.([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)*)\}").unwrap());
 
+/// N7-③：`${params.key}` 参数替换
+static VAR_PARAMS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\$\{params\.([a-zA-Z0-9_]+)\}").unwrap());
+
 /// 已完成步骤的快照（变量替换上下文，调度器维护）
 #[derive(Debug, Clone)]
 pub struct CompletedStep {
@@ -100,6 +104,29 @@ fn replace_ctx(
 /// - 替换值落在 JSON 字符串内时自动转义；
 ///   `${stepN.id}` 无 UUID 时保留占位符（原先替换为空串，下游拿到 `{"id": ""}` 无法诊断）
 pub fn substitute_vars(text: &str, ctx: &[CompletedStep]) -> String {
+    substitute_vars_with_params(text, ctx, &serde_json::Value::Null)
+}
+
+/// N7-③：带参数上下文的替换——`${params.key}` → use_skill 传入的参数值。
+/// params 非对象或键缺失 → 占位符保留（可诊断）；键存在但值为 null → "null"。
+pub fn substitute_vars_with_params(
+    text: &str,
+    ctx: &[CompletedStep],
+    params: &serde_json::Value,
+) -> String {
+    // params 静态值最先替换（步骤变量不会产生 ${params.*} 形态，互不干扰）
+    let r0 = replace_ctx(&VAR_PARAMS, text, |caps| {
+        let key = &caps[1];
+        params.get(key).map(|v| match v {
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        })
+    });
+    substitute_vars_inner(&r0, ctx)
+}
+
+/// 既有步骤变量替换链（原 substitute_vars 主体，保持原语义）
+fn substitute_vars_inner(text: &str, ctx: &[CompletedStep]) -> String {
     // 嵌套路径优先匹配
     // （`${stepN.task.id}` / `${prev.list.0.title}` / `${stepN.a.b.c.d}`）
     // 路径 ≥2 段才走嵌套 regex，单段 result/id 留给下方 VAR_BY_INDEX / VAR_PREV 处理
@@ -167,6 +194,38 @@ fn resolve_nested_path(parsed: Option<&serde_json::Value>, path: &str) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── N7-③：${params.key} ──
+
+    #[test]
+    fn substitute_params_resolves_keys_and_json_escapes() {
+        let params = serde_json::json!({"file": "/tmp/a.rs", "n": 42});
+        let ctx: Vec<CompletedStep> = Vec::new();
+        let args = r#"{"path": "${params.file}", "n": "${params.n}"}"#;
+        let out = substitute_vars_with_params(args, &ctx, &params);
+        let parsed: serde_json::Value = serde_json::from_str(&out).expect("替换后须为合法 JSON");
+        assert_eq!(parsed["path"], "/tmp/a.rs");
+        assert_eq!(parsed["n"], "42");
+    }
+
+    #[test]
+    fn substitute_params_missing_key_keeps_placeholder() {
+        let params = serde_json::json!({"a": "x"});
+        let ctx: Vec<CompletedStep> = Vec::new();
+        let out = substitute_vars_with_params("${params.b}", &ctx, &params);
+        assert_eq!(out, "${params.b}", "缺失键保留占位符（可诊断）");
+        // params 非对象（Null）= 旧签名行为，全部保留
+        assert_eq!(substitute_vars("${params.b}", &ctx), "${params.b}");
+    }
+
+    #[test]
+    fn substitute_params_coexists_with_step_vars() {
+        let params = serde_json::json!({"lang": "rust"});
+        let ctx = ctx_one_step("uuid-1", "result-text");
+        let args = r#"{"lang": "${params.lang}", "prev": "${step1.result}"}"#;
+        let out = substitute_vars_with_params(args, &ctx, &params);
+        assert_eq!(out, r#"{"lang": "rust", "prev": "result-text"}"#);
+    }
 
     // ── 变量替换 ──
 

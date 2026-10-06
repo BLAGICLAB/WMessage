@@ -64,7 +64,15 @@ export type SkillOutcome = {
   rollbackAttempted?: boolean;
   lastAtMs: number;
 };
-export type SkillInfo = { name: string; description: string; lastOutcome?: SkillOutcome | null };
+export type SkillInfo = {
+  name: string;
+  description: string;
+  lastOutcome?: SkillOutcome | null;
+  /** frontmatter version（N7-⑦，可选） */
+  version?: string | null;
+  /** 引用了未内置工具的清单（N7-①；空数组/缺省 = 全部兼容，设置页标红提示） */
+  unknownTools?: string[];
+};
 
 // ───────────────────────── MCP（外部工具服务器） ─────────────────────────
 

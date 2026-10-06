@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use super::manage::skill_search_paths;
 use super::parse::{parse_meta, SkillMeta, SKILL_NAME_CHARS_OK};
 use crate::error::CommandError;
@@ -50,6 +52,12 @@ pub struct SkillRun {
     /// 后台定时任务为 None。active_skill_run / 暂停 / 确认按此过滤，
     /// 防会话 A 暂停中的 Skill 被会话 B 的主循环推进或确认。
     pub session_id: Option<String>,
+    /// N7-③：use_skill 调用传入的参数（对象）；${params.key} 替换源
+    pub params: serde_json::Value,
+    /// N7-⑤：allowed-tools 镜像（声明了才限制步骤工具）
+    pub allowed_tools: Vec<String>,
+    /// N7-⑥：技能目录（第三层渐进披露——references 清单 + 会话级读白名单）
+    pub dir: Option<PathBuf>,
 }
 
 impl SkillRun {
@@ -67,6 +75,9 @@ impl SkillRun {
             resumable: meta.resumable,
             terminal_after_confirm: false,
             session_id: None,
+            params: serde_json::Value::Null,
+            allowed_tools: meta.allowed_tools.clone(),
+            dir: None,
         }
     }
 }
@@ -188,13 +199,14 @@ pub fn clear_terminal_skill_runs<R: tauri::Runtime>(app: &AppHandle<R>, session_
     });
 }
 
-/// 读取技能正文 + 完整元数据（多目录 fallback）
+/// 读取技能正文 + 完整元数据 + 技能目录（多目录 fallback）
 /// 遍历 `skill_search_paths(app)`：数据目录找不到 → dev 模式 fallback target/debug/skills。
 /// 数据目录优先（用户已修改的 Skill 优先于 dev mock 版本）。
+/// N7-⑥：返回目录供第三层渐进披露（references 清单）与会话级读白名单。
 pub(crate) fn load_skill_meta<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     name: &str,
-) -> Result<(SkillMeta, String), CommandError> {
+) -> Result<(SkillMeta, String, PathBuf), CommandError> {
     if name.is_empty() || !name.chars().all(SKILL_NAME_CHARS_OK) {
         return Err(CommandError::DomainRule {
             domain: "skill".to_string(),
@@ -210,7 +222,7 @@ pub(crate) fn load_skill_meta<R: tauri::Runtime>(
             .map_err(|_| format!("技能「{name}」存在但 SKILL.md 读取失败"))?;
         let meta = parse_meta(&text, name);
         let body: String = text.chars().take(MAX_SKILL_BODY).collect();
-        return Ok((meta, body));
+        return Ok((meta, body, dir.join(name)));
     }
     Err(CommandError::DomainRule {
         domain: "skill".to_string(),
@@ -281,6 +293,9 @@ pub(crate) fn test_insert_skill_run<R: tauri::Runtime>(
         resumable: true,
         terminal_after_confirm: false,
         session_id: None,
+        params: serde_json::Value::Null,
+        allowed_tools: Vec::new(),
+        dir: None,
     };
     let registry = skill_runs(app);
     registry
@@ -341,6 +356,9 @@ pub(crate) fn test_run(max_steps: usize, timeout_secs: u64) -> SkillRun {
         resumable: true,
         terminal_after_confirm: false,
         session_id: None,
+        params: serde_json::Value::Null,
+        allowed_tools: Vec::new(),
+        dir: None,
     }
 }
 

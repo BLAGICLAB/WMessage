@@ -19,6 +19,23 @@ pub struct SkillMeta {
     /// None → 运行时 fallback bot_model_loop::DEFAULT_MAX_ROUNDS（50）。
     /// 解析时 clamp 到 1..=60（现有 Skill 未声明该字段 → None，不受影响）。
     pub max_rounds: Option<usize>,
+    /// N7-⑤：allowed-tools 前置声明（agentskills.io 开放标准字段）。
+    /// 空 = 不限制（向后兼容）；非空 = 调度器步骤执行前校验 tool ∈ 声明集合
+    /// （作者主动限权，与系统兜底「tool ∈ 注册表」正交两层）。
+    pub allowed_tools: Vec<String>,
+    /// N7-⑦：可选版本号（导入重名提示对比 + 设置页展示）
+    pub version: Option<String>,
+    /// N7-③：参数契约（frontmatter params 多行列表）
+    pub params: Vec<SkillParam>,
+}
+
+/// N7-③：技能参数契约单条（frontmatter params 列表行）
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillParam {
+    pub key: String,
+    pub desc: String,
+    pub required: bool,
+    pub default: Option<String>,
 }
 
 impl Default for SkillMeta {
@@ -40,8 +57,67 @@ impl Default for SkillMeta {
             resumable: false,
             intents: Vec::new(),
             max_rounds: None,
+            allowed_tools: Vec::new(),
+            version: None,
+            params: Vec::new(),
         }
     }
+}
+
+/// N7-③：params 列表行解析（纯函数，可测）。
+/// 行格式：`- key: 说明文字（必填）` / `- key: 说明文字（默认 X）` / `- key: 说明文字`。
+/// required 标记 = 说明含「必填」；默认值 = 说明含「默认 X」时提取 X；两者互斥。
+fn parse_param_line(line: &str) -> Option<SkillParam> {
+    let t = line.trim().strip_prefix("- ")?.trim();
+    let (key, rest) = t.split_once(':')?;
+    let key = key.trim().to_string();
+    if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return None;
+    }
+    let rest = rest.trim();
+    let required = rest.contains("必填");
+    let default = extract_default(rest);
+    let desc = strip_annotations(rest);
+    Some(SkillParam {
+        key,
+        desc,
+        required,
+        default,
+    })
+}
+
+/// 提取「默认 X」标记里的 X（默认 X 外层括号全角/半角都认）；无默认 → None
+fn extract_default(rest: &str) -> Option<String> {
+    let pos = rest.find("默认")?;
+    let open = rest[..pos].rfind(['（', '('])?;
+    let close = rest[pos..].find(['）', ')'])? + pos;
+    let inner = rest[open + '（'.len_utf8()..close].trim();
+    let inner = inner.strip_prefix("默认").unwrap_or(inner).trim();
+    if inner.is_empty() {
+        None
+    } else {
+        Some(inner.to_string())
+    }
+}
+
+/// 剥掉「（必填）」与「（默认 X）」标记后的纯说明文字
+fn strip_annotations(rest: &str) -> String {
+    let mut s = rest.to_string();
+    for marker in ["（必填）", "(必填)"] {
+        s = s.replace(marker, "");
+    }
+    if let Some(pos) = s.find("默认") {
+        if let Some(open) = s[..pos].rfind(['（', '(']) {
+            if let Some(rel) = s[pos..].find(['）', ')']) {
+                let close = pos + rel + '）'.len_utf8();
+                s = format!("{}{}", &s[..open], &s[close..]);
+            }
+        }
+    }
+    s.trim()
+        .trim_end_matches('：')
+        .trim_end_matches(':')
+        .to_string()
 }
 
 pub(crate) fn parse_frontmatter(text: &str, dir_name: &str) -> (String, String) {
@@ -151,6 +227,55 @@ pub fn parse_meta(text: &str, dir_name: &str) -> SkillMeta {
                         .collect();
                 }
             }
+            // N7-⑤：allowed-tools（agentskills.io 开放标准字段）——单行逗号分隔或
+            // 多行 `- ` 列表；工具名与注册表命名同规范（ASCII 字母数字下划线）
+            "allowed-tools" | "allowed_tools" => {
+                let inner = v.trim();
+                if inner.is_empty() {
+                    while li < fm_lines.len() {
+                        let t = fm_lines[li].trim();
+                        let Some(item) = t.strip_prefix("- ") else {
+                            break;
+                        };
+                        let item = item.trim().trim_matches('"').trim_matches('\'');
+                        if !item.is_empty() {
+                            m.allowed_tools.push(item.to_string());
+                        }
+                        li += 1;
+                    }
+                } else {
+                    m.allowed_tools = inner
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                }
+            }
+            // N7-⑦：可选版本号
+            "version" => {
+                if !v.is_empty() {
+                    m.version = Some(v.to_string());
+                }
+            }
+            // N7-③：params 多行列表（每行 `- key: 说明（必填）/（默认 X）`）
+            "params" => {
+                let inner = v.trim();
+                if !inner.is_empty() {
+                    // 单行不支持（说明文字含冒号/括号），声明了单行当无参数处理
+                    continue;
+                }
+                while li < fm_lines.len() {
+                    let t = fm_lines[li];
+                    if t.trim().starts_with("- ") {
+                        if let Some(p) = parse_param_line(t) {
+                            m.params.push(p);
+                        }
+                        li += 1;
+                    } else {
+                        break;
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -188,7 +313,7 @@ pub struct SkillStep {
 }
 
 /// 剥离 YAML frontmatter（`---` ... `---`），返回正文部分。
-fn strip_frontmatter(text: &str) -> &str {
+pub(crate) fn strip_frontmatter(text: &str) -> &str {
     // 先剥 UTF-8 BOM，否则 frontmatter 探测整体失效
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     if !text.starts_with("---") {
@@ -335,6 +460,25 @@ pub fn parse_skill_steps(body: &str) -> Result<(Vec<SkillStep>, Vec<SkillStep>),
     Ok((steps, rollback))
 }
 
+/// N7-①：技能步骤/回滚引用的工具名 vs 内置注册表 → 未知工具清单（去重保序）。
+/// MCP 挂载的工具不在内置注册表内——调用方对未知项只警告不阻断（注明可能为 MCP 工具）。
+pub fn unknown_tool_names(
+    steps: &[SkillStep],
+    rollback: &[SkillStep],
+    known: &std::collections::HashSet<String>,
+) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for s in steps.iter().chain(rollback.iter()) {
+        if s.tool_name.is_empty() || known.contains(&s.tool_name) {
+            continue;
+        }
+        if !out.contains(&s.tool_name) {
+            out.push(s.tool_name.clone());
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -432,6 +576,55 @@ mod tests {
         let t2 = "---\nresumable: false\n---\n";
         assert!(!parse_meta(t2, "d").resumable);
         assert!(!parse_meta("无 frontmatter", "d").resumable); // 默认 false
+    }
+
+    // ── N7：allowed-tools / version / params 解析 ──
+
+    #[test]
+    fn meta_allowed_tools_single_line_and_multiline() {
+        let single = "---\nallowed-tools: read_text_file, grep_files\n---\n";
+        let m = parse_meta(single, "d");
+        assert_eq!(m.allowed_tools, vec!["read_text_file", "grep_files"]);
+        let multi = "---\nallowed-tools:\n  - read_text_file\n  - edit_file\n---\n";
+        let m2 = parse_meta(multi, "d");
+        assert_eq!(m2.allowed_tools, vec!["read_text_file", "edit_file"]);
+        // 未声明 = 空 = 不限制（向后兼容）
+        assert!(parse_meta("---\nname: x\n---\n", "x")
+            .allowed_tools
+            .is_empty());
+    }
+
+    #[test]
+    fn meta_version_optional() {
+        let m = parse_meta("---\nversion: 2.1.0\n---\n", "d");
+        assert_eq!(m.version.as_deref(), Some("2.1.0"));
+        assert!(parse_meta("---\nname: x\n---\n", "x").version.is_none());
+    }
+
+    #[test]
+    fn meta_params_multiline_with_required_and_default() {
+        let text = "---\nname: code-fix\nparams:\n  - file: 目标文件绝对路径（必填）\n  - lang: 语言（默认 rust）\n  - note: 备注\n---\nbody\n";
+        let m = parse_meta(text, "d");
+        assert_eq!(m.params.len(), 3);
+        assert_eq!(m.params[0].key, "file");
+        assert!(m.params[0].required, "file 应为必填");
+        assert_eq!(m.params[0].desc, "目标文件绝对路径");
+        assert_eq!(m.params[1].key, "lang");
+        assert!(!m.params[1].required);
+        assert_eq!(m.params[1].default.as_deref(), Some("rust"));
+        assert_eq!(m.params[1].desc, "语言");
+        assert_eq!(m.params[2].key, "note");
+        assert!(!m.params[2].required);
+        assert!(m.params[2].default.is_none());
+    }
+
+    #[test]
+    fn meta_params_invalid_key_line_skipped() {
+        // key 含非法字符的行跳过（不中断其余参数解析）
+        let text = "---\nparams:\n  - bad-key!: x\n  - ok_field: 正常（必填）\n---\n";
+        let m = parse_meta(text, "d");
+        assert_eq!(m.params.len(), 1);
+        assert_eq!(m.params[0].key, "ok_field");
     }
 
     #[test]

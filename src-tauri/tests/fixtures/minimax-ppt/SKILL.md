@@ -11,8 +11,8 @@ intents: ["PPT", "F-6 测试"]
 
 # F-6 测试 PPT Skill
 
-## Step 1: 列出当前任务
-list_tasks({})
+## Step 1: 查询当前任务
+query_tasks({})
 
 ## Step 2: 创建测试任务（演示变量替换）
 create_task({"title":"F-6 端到端测试任务 ${step1.result}"})

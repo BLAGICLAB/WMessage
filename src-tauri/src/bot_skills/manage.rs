@@ -1,4 +1,7 @@
-use super::parse::{parse_frontmatter, parse_meta, SkillMeta, SKILL_NAME_CHARS_OK};
+use super::parse::{
+    parse_frontmatter, parse_meta, parse_skill_steps, strip_frontmatter, unknown_tool_names,
+    SkillMeta, SKILL_NAME_CHARS_OK,
+};
 use crate::error::{CommandError, CommandResult};
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
@@ -13,6 +16,12 @@ pub struct SkillInfo {
     /// last run outcome (SettingsPage badge)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_outcome: Option<crate::db::PersistedSkillOutcome>,
+    /// N7-⑦：可选版本号（frontmatter version）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// N7-①：步骤/回滚引用了未内置工具的清单（设置页标红）
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unknown_tools: Vec<String>,
 }
 
 /// 用户安装的 skill 落盘目录。
@@ -130,7 +139,7 @@ fn validate_skill_name(name: &str) -> Result<(), String> {
 /// 单测场景：传临时目录数组验证去重逻辑，不依赖 AppHandle / db::data_dir。
 fn visit_skill_dirs<F, T>(dirs: &[std::path::PathBuf], extract: F) -> Vec<T>
 where
-    F: Fn(&SkillMeta, &str) -> Option<T>,
+    F: Fn(&SkillMeta, &str, &str) -> Option<T>,
 {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut out: Vec<T> = Vec::new();
@@ -152,7 +161,7 @@ where
                 continue;
             };
             let meta = parse_meta(&text, &dir_name);
-            if let Some(t) = extract(&meta, &dir_name) {
+            if let Some(t) = extract(&meta, &dir_name, &text) {
                 out.push(t);
             }
         }
@@ -171,7 +180,7 @@ where
 /// （合法）时，扫描器原本只查 name、会错误保留该项。
 /// 排序按 name 字典序，输出稳定。
 pub fn scan_skill_dirs(dirs: &[std::path::PathBuf]) -> Vec<SkillInfo> {
-    let mut out: Vec<SkillInfo> = visit_skill_dirs(dirs, |meta, dir_name| {
+    let mut out: Vec<SkillInfo> = visit_skill_dirs(dirs, |meta, dir_name, text| {
         // 双重校验：frontmatter name 与目录名都要通过 SKILL_NAME_CHARS_OK。
         // 两者最终都会成为路径的一部分（删 / 加载都用），一个非法就 reject。
         if validate_skill_name(&meta.name).is_err() {
@@ -180,15 +189,30 @@ pub fn scan_skill_dirs(dirs: &[std::path::PathBuf]) -> Vec<SkillInfo> {
         if validate_skill_name(dir_name).is_err() {
             return None;
         }
+        // N7-①：步骤/回滚引用的工具名 vs 内置注册表（MCP 挂载工具运行期可调，
+        // 这里按内置名单校验，未知项交设置页标红提示）
+        let unknown = parse_skill_steps(&strip_frontmatter(text))
+            .map(|(steps, rb)| unknown_tool_names(&steps, &rb, &registry_known_tools()))
+            .unwrap_or_default();
         Some(SkillInfo {
             name: meta.name.clone(),
             description: meta.description.clone(),
             enabled: meta.enabled,
+            version: meta.version.clone(),
+            unknown_tools: unknown,
             last_outcome: None,
         })
     });
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out
+}
+
+/// 内置注册表工具名集合（N7-① 兼容校验真相源）
+pub(crate) fn registry_known_tools() -> std::collections::HashSet<String> {
+    crate::bot::registry::tools_index()
+        .keys()
+        .map(|s| s.to_string())
+        .collect()
 }
 
 /// 全量技能路由规则扫描（未安装的技能不得有路由）：
@@ -197,7 +221,7 @@ pub fn scan_skill_dirs(dirs: &[std::path::PathBuf]) -> Vec<SkillInfo> {
 pub fn intent_rules_from_dirs(
     dirs: &[std::path::PathBuf],
 ) -> Vec<crate::intent_router::IntentRule> {
-    visit_skill_dirs(dirs, |meta, _dir_name| {
+    visit_skill_dirs(dirs, |meta, _dir_name, _text| {
         if !meta.enabled || meta.intents.is_empty() {
             return None;
         }
@@ -218,7 +242,45 @@ pub fn rebuild_intent_routes(app: &AppHandle) {
 /// （否则模型调 use_skill 才被 preflight 拒绝，与路由表口径不一致）。
 pub fn build_skill_block<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> String {
     let all = scan_skills(app);
-    let skills: Vec<&SkillInfo> = all.iter().filter(|s| s.enabled).collect();
+    let skills: Vec<SkillInfo> = all.into_iter().filter(|s| s.enabled).collect();
+    render_skill_block(skills, false)
+}
+
+/// N7-②：语义化变体——按 query↔描述嵌入余弦排序，截前 5 条展开描述，
+/// 其余合并为一行名称提及（progressive disclosure 纪律：清单不宜过长）。
+/// query 为空 / embed 引擎不可用 → 降级为原样全清单（与同步版行为一致）。
+/// embed_text 同步阻塞 ONNX → 本函数为 async，重活包 spawn_blocking。
+pub async fn build_skill_block_for<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    query: Option<&str>,
+) -> String {
+    let all = scan_skills(app);
+    let enabled: Vec<SkillInfo> = all.into_iter().filter(|s| s.enabled).collect();
+    if enabled.is_empty() {
+        return "已安装技能：无".into();
+    }
+    let q = query
+        .map(|q| q.trim().to_string())
+        .filter(|q| !q.is_empty());
+    let Some(q) = q else {
+        return render_skill_block(enabled, false);
+    };
+    let enabled_for_rank = enabled.clone();
+    let ranked = crate::py::document::spawn_blocking_map(move || {
+        Ok(super::recommend::rank_skills(&q, enabled_for_rank))
+    })
+    .await
+    .unwrap_or_else(|_| {
+        // join 失败兜底：按名称序全清单（不丢技能可见性）
+        let mut v = enabled;
+        v.sort_by(|a, b| a.name.cmp(&b.name));
+        v
+    });
+    render_skill_block(ranked, true)
+}
+
+/// 清单渲染（N7-② 拆分）：recommended=true 时前 5 条展开描述、其余合并一行提及
+fn render_skill_block(skills: Vec<SkillInfo>, recommended: bool) -> String {
     if skills.is_empty() {
         return "已安装技能：无".into();
     }
@@ -230,6 +292,25 @@ pub fn build_skill_block<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> String
         out.push_str(
             "注意：已安装技能较多。当用户指令与多个技能都可能相关、无法确定用哪个时，先列出候选技能（名称+一句话说明）向用户确认，用户选定后再 use_skill 读取执行；不要自行猜测。\n",
         );
+    }
+    if recommended && skills.len() > 5 {
+        let head = &skills[..5];
+        let rest: Vec<String> = skills[5..].iter().map(|s| s.name.clone()).collect();
+        out.push_str("（按与本任务的相关度排序，前 5 个最相关）\n");
+        for s in head {
+            let desc = if s.description.is_empty() {
+                "(无描述)".to_string()
+            } else {
+                s.description.chars().take(120).collect::<String>()
+            };
+            out.push_str(&format!("- {}: {}\n", s.name, desc));
+        }
+        out.push_str(&format!(
+            "另有 {} 个技能：{}（需要时可用 use_skill 读取）\n",
+            rest.len(),
+            rest.join("、")
+        ));
+        return out;
     }
     for s in &skills {
         let desc = if s.description.is_empty() {

@@ -142,7 +142,15 @@ export function SkillsPanel() {
           {skills.map((s) => (
             <div key={s.name} className="flex items-center gap-2">
               <span className="min-w-0 flex-1 truncate text-xs text-[var(--t3)]">
-                <span className="font-medium text-[var(--t2)]">{s.name}</span>
+                <span
+                  className={`font-medium ${
+                    s.unknownTools?.length ? "text-[var(--danger)]" : "text-[var(--t2)]"
+                  }`}
+                  title={s.unknownTools?.length ? `引用了未内置工具：${s.unknownTools.join("、")}` : undefined}
+                >
+                  {s.name}
+                </span>
+                {s.version && <span className="text-[var(--t5)]"> v{s.version}</span>}
                 {s.description && (
                   <span className="text-[var(--t5)]"> — {s.description}</span>
                 )}

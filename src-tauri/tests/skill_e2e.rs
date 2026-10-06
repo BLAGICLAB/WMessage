@@ -239,7 +239,7 @@ fn real_skill_fixture_loads_via_scan_skill_dirs() {
     // body 验证
     assert!(body.contains("## Step 1"), "body 应包含 DSL Step 1 段");
     assert!(body.contains("## Step 2"), "body 应包含 DSL Step 2 段");
-    assert!(body.contains("list_tasks({})"), "Step 1 应调 list_tasks");
+    assert!(body.contains("query_tasks({})"), "Step 1 应调 query_tasks");
     assert!(body.contains("create_task("), "Step 2 应调 create_task");
 
     // 验证 metadata 解析（frontmatter 字段 → SkillMeta）
@@ -288,6 +288,9 @@ fn make_run(name: &str, state: SkillState) -> SkillRun {
         actions: Vec::new(),
         end_reason: String::new(),
         resumable: true,
+        params: serde_json::Value::Null,
+        allowed_tools: Vec::new(),
+        dir: None,
         terminal_after_confirm: false,
         session_id: None,
     }
@@ -390,7 +393,7 @@ async fn scheduler_e2e_done_path_finishes_run_audits_and_persists() {
         async move {
             calls.lock().unwrap().push((tool.clone(), args));
             let text = match tool.as_str() {
-                "list_tasks" => {
+                "query_tasks" => {
                     r#"[{"id":"7c9e6679-7425-40de-944b-e07fc1f90ae7","title":"买牛奶"}]"#
                         .to_string()
                 }
@@ -405,9 +408,20 @@ async fn scheduler_e2e_done_path_finishes_run_audits_and_persists() {
         Arc::new(Mutex::new(Vec::new()));
     let persist = make_persist(&conn, persist_calls.clone());
 
-    let outcome = run_skill_scheduler_core(&app, "minimax-ppt", &meta, &body, None, exec, persist)
-        .await
-        .expect("fixture 两步全成功应 Done");
+    let outcome = run_skill_scheduler_core(
+        &app,
+        "minimax-ppt",
+        &meta,
+        &body,
+        None,
+        &serde_json::Value::Null,
+        &[],
+        None,
+        exec,
+        persist,
+    )
+    .await
+    .expect("fixture 两步全成功应 Done");
 
     // Done 收尾（P0-1 回归锁）：成功路径必须调真 skill_finish 把 Running → Completed
     assert_eq!(
@@ -418,7 +432,7 @@ async fn scheduler_e2e_done_path_finishes_run_audits_and_persists() {
     // 工具编排 + 变量替换：两步都执行，step2 的 ${step1.result} 被真替换
     let calls = calls.lock().unwrap();
     assert_eq!(calls.len(), 2, "应执行 2 步：{calls:?}");
-    assert_eq!(calls[0].0, "list_tasks");
+    assert_eq!(calls[0].0, "query_tasks");
     assert_eq!(calls[1].0, "create_task");
     assert!(
         !calls[1].1.contains("${") && calls[1].1.contains("7c9e6679"),
@@ -491,9 +505,20 @@ async fn scheduler_e2e_paused_run_returns_await_user() {
         Arc::new(Mutex::new(Vec::new()));
     let persist = make_persist(&conn, persist_calls.clone());
 
-    let outcome = run_skill_scheduler_core(&app, "minimax-ppt", &meta, &body, None, exec, persist)
-        .await
-        .expect("Paused 应走 AwaitUser 而非硬错误");
+    let outcome = run_skill_scheduler_core(
+        &app,
+        "minimax-ppt",
+        &meta,
+        &body,
+        None,
+        &serde_json::Value::Null,
+        &[],
+        None,
+        exec,
+        persist,
+    )
+    .await
+    .expect("Paused 应走 AwaitUser 而非硬错误");
 
     assert!(
         matches!(outcome, DslOutcome::AwaitUser),
@@ -546,7 +571,7 @@ async fn scheduler_e2e_failed_step_runs_rollback_window() {
         let app = app_for_exec.clone();
         async move {
             match tool.as_str() {
-                "list_tasks" => ToolResult::ok(r#"[]"#, Vec::new()),
+                "query_tasks" => ToolResult::ok(r#"[]"#, Vec::new()),
                 "create_task" => {
                     // 模拟生产 skill_on_step_post：工具失败后 run 被标 Failed
                     test_hook_insert_skill_run(&app, make_run("minimax-ppt", SkillState::Failed));
@@ -569,9 +594,20 @@ async fn scheduler_e2e_failed_step_runs_rollback_window() {
         Arc::new(Mutex::new(Vec::new()));
     let persist = make_persist(&conn, persist_calls.clone());
 
-    let outcome = run_skill_scheduler_core(&app, "minimax-ppt", &meta, &body, None, exec, persist)
-        .await
-        .expect("step 失败应走 FailedButRecoverable 而非硬错误");
+    let outcome = run_skill_scheduler_core(
+        &app,
+        "minimax-ppt",
+        &meta,
+        &body,
+        None,
+        &serde_json::Value::Null,
+        &[],
+        None,
+        exec,
+        persist,
+    )
+    .await
+    .expect("step 失败应走 FailedButRecoverable 而非硬错误");
 
     match &outcome {
         DslOutcome::FailedButRecoverable {
@@ -645,9 +681,20 @@ async fn scheduler_e2e_zombie_terminal_run_cleared_at_entry() {
         Arc::new(Mutex::new(Vec::new()));
     let persist = make_persist(&conn, persist_calls.clone());
 
-    let outcome = run_skill_scheduler_core(&app, "minimax-ppt", &meta, &body, None, exec, persist)
-        .await
-        .expect("僵尸终态清理后应正常跑完");
+    let outcome = run_skill_scheduler_core(
+        &app,
+        "minimax-ppt",
+        &meta,
+        &body,
+        None,
+        &serde_json::Value::Null,
+        &[],
+        None,
+        exec,
+        persist,
+    )
+    .await
+    .expect("僵尸终态清理后应正常跑完");
 
     assert!(
         matches!(outcome, DslOutcome::Done(_)),
@@ -655,7 +702,7 @@ async fn scheduler_e2e_zombie_terminal_run_cleared_at_entry() {
     );
     assert_eq!(
         calls.lock().unwrap().as_slice(),
-        &["list_tasks".to_string(), "create_task".to_string()],
+        &["query_tasks".to_string(), "create_task".to_string()],
         "两步都应执行（未被第 0 步短路）"
     );
 
