@@ -863,7 +863,7 @@ async fn run_scheduled_job(app: AppHandle, job: crate::db::ScheduledJob) {
     // P1-d：执行状态实时广播（SchedulePage 行内「执行中」；补齐「执行中不可见」缺口）
     let _ = app.emit(
         "sched-status",
-        serde_json::json!({ "taskId": card.id, "phase": "started" }),
+        serde_json::json!({ "taskId": card.id, "jobId": job.id, "phase": "started" }),
     );
     let fired_at = now.timestamp_millis();
     let started = std::time::Instant::now();
@@ -879,6 +879,7 @@ async fn run_scheduled_job(app: AppHandle, job: crate::db::ScheduledJob) {
         "sched-status",
         serde_json::json!({
             "taskId": card.id,
+            "jobId": job.id,
             "phase": if result.is_ok() { "done" } else { "failed" },
             "sessionId": result.as_ref().ok().map(|r| r.session_id.clone()),
         }),

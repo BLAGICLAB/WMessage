@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { emit } from "@tauri-apps/api/event";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { AlarmClock, Plus } from "lucide-react";
 import { useTauriListen } from "../../lib/useTauriListen";
 import { handleCommandError } from "../../lib/errorHandler";
 import { formatSchedule, relativeTime, untilTime } from "../../format";
 import { EmptyState } from "../EmptyState";
+import { TracePanel } from "../TracePanel";
 import { ScheduleEditorPanel } from "./ScheduleEditorPanel";
 import type { ScheduleEntry, ScheduledJobRun, Workflow } from "../../types";
 
@@ -54,6 +57,12 @@ export function SchedulePage() {
     targetId: string;
     draftSchedule: string | null;
   } | null>(null);
+  // P2-c 执行透明：sched-status 事件驱动的「执行中」作业（started 入集，done/failed 出集）
+  const [liveJobIds, setLiveJobIds] = useState<Set<string>>(new Set());
+  /** job id → 最近一次执行会话（sched-status 携带；「会话」按钮跳挂件围观） */
+  const [jobSessions, setJobSessions] = useState<Record<string, string>>({});
+  /** 执行痕迹弹层目标（本次执行新建的任务卡 id） */
+  const [traceCardId, setTraceCardId] = useState<string | null>(null);
 
   useEffect(
     () => () => {
@@ -96,6 +105,46 @@ export function SchedulePage() {
   useTauriListen("tasks-changed", () => {
     void reload();
   });
+
+  // P2-c 执行透明：sched-status 实时驱动「执行中」徽标 + 会话跳转锚点；
+  // done/failed 时刷新列表（lastStatus/sched_last 已在任务行更新）
+  useTauriListen<{
+    jobId?: string;
+    phase?: "started" | "done" | "failed" | "skipped";
+    sessionId?: string | null;
+  }>("sched-status", (payload) => {
+    const jobId = payload.jobId;
+    if (!jobId) return;
+    if (payload.phase === "started") {
+      // oxlint-disable-next-line react/set-state-in-effect
+      setLiveJobIds((prev) => new Set(prev).add(jobId));
+      return;
+    }
+    setLiveJobIds((prev) => {
+      const next = new Set(prev);
+      next.delete(jobId);
+      return next;
+    });
+    if (payload.sessionId) {
+      // oxlint-disable-next-line react/set-state-in-effect
+      setJobSessions((prev) => ({ ...prev, [jobId]: payload.sessionId! }));
+    }
+    void reload();
+  });
+
+  /** 「会话」跳转：发 chat-focus-session 给挂件聊天区并唤起挂件窗口 */
+  const jumpToSession = (sessionId: string) => {
+    emit("chat-focus-session", { sessionId }).catch(() => {});
+    WebviewWindow.getByLabel("widget")
+      .then((w) => {
+        if (w) {
+          w.show()
+            .then(() => w.setFocus())
+            .catch(() => {});
+        }
+      })
+      .catch(() => {});
+  };
 
   // ────────────── 行操作 ──────────────
 
@@ -268,6 +317,12 @@ export function SchedulePage() {
               执行中
             </span>
           )}
+          {/* P2-c：作业执行中（sched-status started → done/failed 移除） */}
+          {e.kind === "job" && liveJobIds.has(e.targetId) && (
+            <span className="nm-inset shrink-0 px-1.5 py-0.5 text-[10px] text-[var(--brand)]">
+              执行中…
+            </span>
+          )}
         </div>
         {e.detail && (
           <p className="mt-1 truncate text-[11px] text-[var(--t5)]" title={e.detail}>
@@ -395,6 +450,25 @@ export function SchedulePage() {
                       <span className="min-w-0 flex-1 truncate" title={r.summary}>
                         {r.summary}
                       </span>
+                    )}
+                    {/* P2-c：执行痕迹（本次执行新建的卡）+ 会话跳转（挂件围观 ⏰ 会话） */}
+                    {r.cardId && (
+                      <button
+                        className="nm-btn shrink-0 px-1.5 py-0.5 text-[10px] text-[var(--t3)]"
+                        title="查看本次执行痕迹（工具时间线 / 文件 diff / 回滚）"
+                        onClick={() => setTraceCardId(r.cardId!)}
+                      >
+                        痕迹
+                      </button>
+                    )}
+                    {jobSessions[e.targetId] && (
+                      <button
+                        className="nm-btn shrink-0 px-1.5 py-0.5 text-[10px] text-[var(--t3)]"
+                        title="跳转挂件，围观本次执行会话"
+                        onClick={() => jumpToSession(jobSessions[e.targetId])}
+                      >
+                        会话
+                      </button>
                     )}
                   </li>
                 ))}
@@ -542,6 +616,10 @@ export function SchedulePage() {
             </section>
           )}
         </>
+      )}
+      {/* P2-c：执行痕迹弹层（按本次执行新建的任务卡查 trace；TracePanel 自带 portal） */}
+      {traceCardId && (
+        <TracePanel taskId={traceCardId} onClose={() => setTraceCardId(null)} />
       )}
     </div>
   );

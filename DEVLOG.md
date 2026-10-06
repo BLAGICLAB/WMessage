@@ -20,6 +20,10 @@
 **测试**：vitest 498 全绿（+6 为 P2-a TracePanel）；lib 1411 全绿；tsc/knip/桥审计绿
 （sched-status 补字段 + workflow-node-status/sched-status 前端 listen 配对）。
 
+**验收备注（对齐设计 §14.2 P2 冒烟）**：工作流场景验收 = 3 节点含 1 故意失败节点 →
+running 节点蓝环脉冲实时可见、失败红环、下游 skipped 灰环、节点 🕘 看痕迹；定时场景 =
+`at:` +2min 作业 → 行内「执行中…」→ 历史行「痕迹/会话」双跳转；全程不翻 bot.log。
+
 ## 2026-10-06（周二）P2B-CHATENHANCE：聊天工具徽章结果/耗时/成败 + 结构化文件摘要 + verbose 三档（Agent 透明化 P2-b）
 
 **承接**：设计 §5.1；P1-c 的 `bot-tool-done` 扩展字段与 `bot-file-changed` 事件首个消费面。

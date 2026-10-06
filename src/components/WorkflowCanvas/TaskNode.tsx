@@ -1,6 +1,6 @@
 import { memo } from "react";
 import { Handle, Position } from "@xyflow/react";
-import { Trash2 } from "lucide-react";
+import { History, Trash2 } from "lucide-react";
 import type { Task } from "../../types";
 import { TaskCardContent } from "../TaskCardContent";
 
@@ -14,6 +14,10 @@ export interface TaskNodeData extends Record<string, unknown> {
   models: Array<{ id: string; label: string }>;
   /** 草稿标题（未保存节点用） */
   draftTitle: string;
+  /** P2-c：实时执行状态（workflow-node-status 事件驱动）——running 时高亮脉冲 */
+  liveStatus?: "running" | "done" | "failed" | "skipped";
+  /** P2-c：点「痕迹」按钮打开该节点的执行详情（TracePanel） */
+  onSelectTrace?: (taskId: string) => void;
   onDraftTitleCommit: (localId: string, title: string) => void;
   onDelete: (localId: string) => void;
   onModelChange?: (taskId: string, model: string | undefined) => void;
@@ -24,8 +28,12 @@ export interface TaskNodeData extends Record<string, unknown> {
 
 /** 节点描边态：执行中（蓝）/ 完成（绿）/ 失败（红）。
  *  done 无 result = 用户手动完成 → 绿（OCR r2：不得要求 result 才给绿环）；
- *  done 且 result.status 明确非 success（超时/会话异常）→ 红 */
-function nodeBorder(task: Task | undefined): string {
+ *  done 且 result.status 明确非 success（超时/会话异常）→ 红。
+ *  P2-c：liveStatus（事件驱动）优先于任务行派生——running 加脉冲、
+ *  skipped 灰环（红环 = 真失败，跳过是「上游失败未执行」，两者区分） */
+function nodeBorder(task: Task | undefined, liveStatus?: string): string {
+  if (liveStatus === "running") return "ring-2 ring-[var(--info,#3b82f6)] animate-pulse";
+  if (liveStatus === "skipped") return "ring-2 ring-[var(--edge)] opacity-70";
   if (task?.column === "doing" && task.botAssigned)
     return "ring-2 ring-[var(--info,#3b82f6)]";
   if (task?.column !== "done") return "";
@@ -42,9 +50,9 @@ export const TaskNode = memo(function TaskNode({
   id: string;
   data: TaskNodeData;
 }) {
-  const { task, draftTitle } = data;
+  const { task, draftTitle, liveStatus } = data;
   return (
-    <div className={`nm-card w-[340px] px-1 pt-1 pb-2 ${nodeBorder(task)}`}>
+    <div className={`nm-card w-[340px] px-1 pt-1 pb-2 ${nodeBorder(task, liveStatus)}`}>
       {/* 连线手柄：上=下游入（被依赖），下=上游出（依赖别人）——
           视觉上"从卡底拉到卡顶"与图流向（上→下）一致 */}
       <Handle type="target" position={Position.Top} />
@@ -60,6 +68,20 @@ export const TaskNode = memo(function TaskNode({
       >
         <Trash2 size={12} aria-hidden />
       </button>
+      {/* P2-c：执行痕迹入口（真实任务绑定才有）——时间线/diff/回滚 */}
+      {task && data.onSelectTrace && (
+        <button
+          aria-label="执行详情"
+          title="查看执行详情（工具时间线 / 文件 diff / 回滚）"
+          onClick={(e) => {
+            e.stopPropagation();
+            data.onSelectTrace?.(task.id);
+          }}
+          className="absolute -left-2 -top-2 z-10 rounded-full border border-[var(--edge)] bg-[var(--bg)] p-1 text-[var(--t5)] hover:text-[var(--info,#3b82f6)]"
+        >
+          <History size={12} aria-hidden />
+        </button>
+      )}
       {task ? (
         <>
           <TaskCardContent

@@ -17,6 +17,8 @@ import "@xyflow/react/dist/style.css";
 import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { Download, Loader2, Play, Plus, RefreshCw, Save, Square, Trash2, Upload } from "lucide-react";
 import { handleCommandError } from "../../lib/errorHandler";
+import { useTauriListen } from "../../lib/useTauriListen";
+import { TracePanel } from "../TracePanel";
 import { getDecomposeGuidance } from "../../lib/workflowPrompt";
 import type { Task, Workflow, WorkflowSaveResult } from "../../types";
 import {
@@ -557,6 +559,30 @@ function WorkflowPageInner({
     return () => clearInterval(t);
   }, [running, activeId]);
 
+  // P2-c 节点实时状态（Agent 透明化设计 §5.3）：workflow-node-status 事件
+  // （workflow_runner 节点起跑/收尾/跳过时广播）驱动画布实时高亮与跳转；
+  // 5s 轮询保留为兜底（running 布尔与节点级状态互补）
+  const [nodeLive, setNodeLive] = useState<
+    Record<string, { status: "running" | "done" | "failed" | "skipped"; sessionId?: string | null }>
+  >({});
+  useTauriListen<{
+    taskId?: string;
+    status?: "running" | "done" | "failed" | "skipped";
+    sessionId?: string | null;
+  }>("workflow-node-status", (payload) => {
+    if (!payload.taskId || !payload.status) return;
+    setNodeLive((prev) => {
+      const next = {
+        ...prev,
+        [payload.taskId!]: { status: payload.status!, sessionId: payload.sessionId },
+      };
+      // done/failed/skipped 后保留 sessionId 供跳转；纯 running 期间不膨胀即可
+      return next;
+    });
+  });
+  /** 节点「执行详情」弹层目标（任务卡 id；TracePanel 自带 portal） */
+  const [traceTaskId, setTraceTaskId] = useState<string | null>(null);
+
   // ────────────── 保存（指纹 diff 落库，设计 §7） ──────────────
 
   const save = async () => {
@@ -680,6 +706,9 @@ function WorkflowPageInner({
           task,
           models,
           draftTitle: n.title,
+          // P2-c：实时执行状态（事件驱动）——running 高亮 + 痕迹入口
+          liveStatus: n.taskId ? nodeLive[n.taskId]?.status : undefined,
+          onSelectTrace: n.taskId ? () => setTraceTaskId(n.taskId!) : undefined,
           onDraftTitleCommit: (localId, title) =>
             setNodes((prev) =>
               prev.map((m) => (m.localId === localId ? { ...m, title } : m))
@@ -701,7 +730,7 @@ function WorkflowPageInner({
     ],
     // 依赖含全部 data 回调（deleteNode/toggle* 均为 useCallback 稳定引用，
     // 内部经 ref 读最新 tasks/props——此处完整列出是防过期闭包的兜底，OCR r1 high）
-    [nodes, tasks, name, goal, savedSnapshot, selectedIds, deleteNode, toggleDone, commitTitle, toggleSubtask, running, activeId, doneCount, models, changeModel]
+    [nodes, tasks, name, goal, savedSnapshot, selectedIds, deleteNode, toggleDone, commitTitle, toggleSubtask, running, activeId, doneCount, models, changeModel, nodeLive]
   );
 
   const rfEdges = useMemo<Edge[]>(
@@ -858,6 +887,14 @@ function WorkflowPageInner({
           </ReactFlow>
         )}
       </div>
+      {/* P2-c：节点「执行详情」弹层（工作痕迹：工具时间线 + 文件 diff/回滚） */}
+      {traceTaskId && (
+        <TracePanel
+          taskId={traceTaskId}
+          taskTitle={tasks.find((t) => t.id === traceTaskId)?.title}
+          onClose={() => setTraceTaskId(null)}
+        />
+      )}
     </div>
   );
 }
