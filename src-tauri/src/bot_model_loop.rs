@@ -457,6 +457,9 @@ pub struct LoopTrace {
     pub turn_count: u32,
     /// 每次工具调用摘要（name + success + duration_ms）
     pub tool_calls: Vec<crate::evolution::trace::ToolCallSummary>,
+    /// P1-c：llm.usage 审计事件累计（Anthropic 协议现发；OpenAI usage 解析留 P4）
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
 }
 
 pub async fn run_model_loop(
@@ -563,6 +566,11 @@ pub async fn run_model_loop(
     // （声明在 deps 之前：deps 的 audit 闭包要引用轮数计数器）
     let round_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let round_for_audit = round_count.clone();
+    // P1-c：llm.usage 审计事件累计（trace token 统计数据源）
+    let prompt_tokens = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let completion_tokens = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let usage_pt = prompt_tokens.clone();
+    let usage_ct = completion_tokens.clone();
     let tool_trace: std::sync::Arc<
         std::sync::Mutex<Vec<crate::evolution::trace::ToolCallSummary>>,
     > = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -579,6 +587,24 @@ pub async fn run_model_loop(
             // B4-2：llm.request 事件计数 = 轮数（trace turn_count 的数据源）
             if event == "llm.request" {
                 round_for_audit.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            // P1-c：llm.usage 累计（trace 汇总的 tokens 数据源）
+            if event == "llm.usage" {
+                for (k, v) in &kv {
+                    match *k {
+                        "input_tokens" => {
+                            if let Ok(n) = v.parse::<u64>() {
+                                usage_pt.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+                            }
+                        }
+                        "output_tokens" => {
+                            if let Ok(n) = v.parse::<u64>() {
+                                usage_ct.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
             }
             crate::audit::write_event(&app, level, event, &kv)
         },
@@ -632,6 +658,8 @@ pub async fn run_model_loop(
         let loop_trace = LoopTrace {
             turn_count: round_count.load(std::sync::atomic::Ordering::Relaxed) as u32,
             tool_calls: tool_trace.lock().map(|m| m.clone()).unwrap_or_default(),
+            prompt_tokens: prompt_tokens.load(std::sync::atomic::Ordering::Relaxed),
+            completion_tokens: completion_tokens.load(std::sync::atomic::Ordering::Relaxed),
         };
         (text, refs, loop_trace)
     })
@@ -1330,6 +1358,7 @@ where
             }
             // 把 /stop 守卫透传给 execute_tool，run_python 在途可中断；
             // turn + tool_call_id 一并下传，工具审计可按轮回放（见 bot::ToolCallTrace）
+            let t_tool = std::time::Instant::now();
             let tool_outcome = execute_tool(
                 name.clone(),
                 args.clone(),
@@ -1339,6 +1368,7 @@ where
                 },
             )
             .await;
+            let tool_ms = t_tool.elapsed().as_millis() as u64;
             let result = &tool_outcome.text;
             let refs = &tool_outcome.refs;
             // 按执行结果置位——被门禁拦截/用户拒绝/执行失败的
@@ -1346,9 +1376,16 @@ where
             if mutation_succeeded(name, &result) {
                 mutation_done = true;
             }
+            // 成败口径与全链路统一（audit::tool_call_failed）——bot-tool-done 的 ok 字段同源
+            let failed = crate::audit::tool_call_failed(name, &result);
             emit(
                 "bot-tool-done",
-                serde_json::json!({ "id": id, "name": name, "args": args }),
+                serde_json::json!({
+                    "id": id, "name": name, "args": args,
+                    "result": result.chars().take(2000).collect::<String>(),
+                    "ms": tool_ms,
+                    "ok": !failed,
+                }),
             );
             audit_log(&format!(
                 "tool: {} | args: {} | result: {}",
@@ -1362,7 +1399,6 @@ where
             // （audit::tool_call_failed）——门禁拦截/熔断/暂停/拒绝都能识别；
             // 同工具连续失败才升级——单次失败先提示换策略。
             // 与 soft_warn 同理：提示推迟到本轮 tool 响应全部回填后注入（协议安全）
-            let failed = crate::audit::tool_call_failed(name, &result);
             if failed {
                 if last_failed_tool.as_deref() == Some(name.as_str()) {
                     consec_failures += 1;
@@ -1392,6 +1428,35 @@ where
                 "tool_call_id": id,
                 "content": result
             }));
+            // N5：工具随结果附图（screenshot）→ 图作为紧随 tool 消息的 user 消息注入。
+            // OpenAI 协议 tool 消息只收文本，「工具后追加带图 user 消息」是官方视觉
+            // 示例同款；Anthropic 转换器会把 [tool, user(图)] 合并成单条 user
+            // [tool_result, image]（官方 tool_result 附图形态，满足严格交替）。
+            // 图片消息在本轮 msgs 驻留后续轮次：单次截图场景 token 可控，不做
+            // 历史裁剪（循环内 msgs 生命周期只有一次运行，与 bot_chat 附件跨轮
+            // 「最后 3 条」裁剪不同源）。
+            if !tool_outcome.images.is_empty() {
+                let mut parts = vec![serde_json::json!({
+                    "type": "text",
+                    "text": "〔系统附图〕以上工具返回了截图，请直接用视觉能力读取图片内容。"
+                })];
+                let mut attached = 0usize;
+                for p in &tool_outcome.images {
+                    match crate::bot_chat::image_part_from_file(std::path::Path::new(p)) {
+                        Some(part) => {
+                            parts.push(part);
+                            attached += 1;
+                        }
+                        None => audit_log(&format!(
+                            "tool_image.skip | 读取失败/超限/非图片：{}",
+                            crate::bot::truncate_for_log(p, 200)
+                        )),
+                    }
+                }
+                if attached > 0 {
+                    msgs.push(serde_json::json!({ "role": "user", "content": parts }));
+                }
+            }
         }
         // PREVR 第 2 层：同工具连续失败 ≥2 且有计划 → Replan 一次
         // （重规划剩余步骤，替换计划文本；≤MAX_REPLANS 次硬上限，防重规划死循环）。
@@ -2073,7 +2138,7 @@ mod tools_schema_tests {
             .filter_map(|t| t["function"]["name"].as_str())
             .collect();
         for required in [
-            "list_tasks",
+            "query_tasks",
             "create_task",
             "complete_task",
             "delete_task",

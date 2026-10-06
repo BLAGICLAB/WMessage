@@ -561,6 +561,40 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// N5：工具附图序列 [assistant(tool_use), tool(文本), user(text+image_url)]
+    /// → Anthropic 侧必须合并成单条 user 消息 [tool_result, text, image]
+    ///（官方 tool_result 附图形态 + 严格交替约束）。
+    #[test]
+    fn tool_result_and_image_user_merge_into_one_user() {
+        let msgs = vec![
+            json!({"role":"assistant","content":"截屏中","tool_calls":[
+                {"id":"c1","type":"function","function":{"name":"screenshot","arguments":"{}"}}
+            ]}),
+            json!({"role":"tool","tool_call_id":"c1","content":"已截屏：/tmp/x.png"}),
+            json!({"role":"user","content":[
+                {"type":"text","text":"〔系统附图〕以上工具返回了截图，请直接用视觉能力读取图片内容。"},
+                {"type":"image_url","image_url":{"url":"data:image/png;base64,aGVsbG8"}}
+            ]}),
+        ];
+        let (_, out, skipped) = convert_all(&msgs);
+        assert_eq!(skipped, 0, "data URL 图片应转换而非跳过");
+        // out[0] = 首条 assistant 前自动补的 user 占位（「续前对话」）
+        assert_eq!(
+            out.len(),
+            3,
+            "占位 user + assistant(tool_use) + 合并后的单条 user：{out:?}"
+        );
+        assert_eq!(out[2]["role"], "user");
+        let blocks = out[2]["content"].as_array().unwrap();
+        assert_eq!(blocks[0]["type"], "tool_result");
+        assert_eq!(blocks[0]["tool_use_id"], "c1");
+        assert!(
+            blocks.iter().any(|b| b["type"] == "image"),
+            "tool_result 与 image 应在同一条 user 消息里：{blocks:?}"
+        );
+        assert!(blocks.iter().any(|b| b["type"] == "text"));
+    }
+
     fn sys(text: &str) -> serde_json::Value {
         json!({"role": "system", "content": text})
     }
