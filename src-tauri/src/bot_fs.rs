@@ -26,6 +26,10 @@ const LIST_MAX_ENTRIES: usize = 200;
 const WALK_MAX_DEPTH: usize = 5;
 /// 遍历时跳过的大而杂目录（另跳过所有 . 开头隐藏目录）
 const SKIP_DIRS: [&str; 4] = ["node_modules", "target", "dist", "build"];
+/// N6：edit_file 可编辑文件上限（对齐 read 的可处理量级，超出提示拆分）
+const EDIT_MAX_FILE_BYTES: usize = 1024 * 1024;
+/// N6：write_file 内容上限（对齐 GREP_MAX_FILE_BYTES 量级）
+const WRITE_MAX_BYTES: usize = 2 * 1024 * 1024;
 
 /// 跨平台用户主目录：优先 HOME；Windows GUI 程序（资源管理器双击启动）常无
 /// HOME 环境变量，回退 USERPROFILE，再退 HOMEDRIVE+HOMEPATH。
@@ -113,8 +117,11 @@ fn merge_raw_dirs(
     raw
 }
 
-/// 白名单目录集合（canonical 化，只保留真实存在的目录）
-async fn allowed_dirs(app: &AppHandle) -> Vec<PathBuf> {
+/// 白名单目录集合（canonical 化，只保留真实存在的目录）。
+/// N7-⑥：session 对应会话有活动技能时，该技能目录追加进读白名单
+///（第三层渐进披露——SKILL.md 附带资料 references/*.md 由模型按需 read_text_file；
+/// 仅读侧，写闸门 writable_dirs 不受影响）。
+async fn allowed_dirs(app: &AppHandle, session: Option<&str>) -> Vec<PathBuf> {
     let cfg = crate::bot::load_config(app);
     // 任务卡绑定的文件夹（用户显式绑过 = 显式授权过）
     let mut task_dirs: Vec<String> = Vec::new();
@@ -138,7 +145,7 @@ async fn allowed_dirs(app: &AppHandle) -> Vec<PathBuf> {
     // canonicalize 循环整体包 spawn_blocking：逐目录同步 syscall 在 async runtime
     // 上会阻塞全部 Tauri command / event（OCR C5-BT-04 performance）。
     // JoinError → unwrap_or_default 保「拿不到目录 → 空白名单」语义（fail-closed 不变）。
-    let out = spawn_blocking_io(move || {
+    let mut out = spawn_blocking_io(move || {
         let mut out: Vec<PathBuf> = Vec::new();
         for r in raw {
             let p = expand_tilde(r.trim());
@@ -156,6 +163,16 @@ async fn allowed_dirs(app: &AppHandle) -> Vec<PathBuf> {
         eprintln!("[bot_fs] 白名单 canonicalize 失败，回空白名单：{e}");
         Vec::new()
     });
+    // N7-⑥：活动技能目录（会话级，只加读白名单；无活动技能/无目录则无追加）
+    if let Some(run) = crate::bot_skills::active_skill_run_for(app, session) {
+        if let Some(dir) = &run.dir {
+            if let Ok(c) = std::fs::canonicalize(dir) {
+                if !out.contains(&c) {
+                    out.push(c);
+                }
+            }
+        }
+    }
     out
 }
 
@@ -212,7 +229,7 @@ pub async fn resolve_with_perm(
     let expanded_for_canonical = expanded.clone();
     let canonical =
         spawn_blocking_io(move || std::fs::canonicalize(expanded_for_canonical)).await?;
-    let dirs = allowed_dirs(app).await;
+    let dirs = allowed_dirs(app, session_id).await;
     if is_within_allowlist(&canonical, &dirs) {
         return Ok(strip_verbatim(canonical));
     }
@@ -310,6 +327,633 @@ pub async fn resolve_with_perm(
 /// `allowlist_rejects_symlink_escape` 用真实文件系统同时锁住这两步。
 fn is_within_allowlist(canonical: &Path, dirs: &[PathBuf]) -> bool {
     dirs.iter().any(|d| canonical.starts_with(d))
+}
+
+// ───────────────────────── N6：文件编辑（edit_file / write_file） ─────────────────────────
+//
+// 写白名单 ≠ 读白名单（设计决策，spec N6）：可写根 = AI_Gen_Files + 任务卡绑定文件夹
+// + 设置页 allowedDirs；桌面/下载/文档默认项**只读不可写**——用户没显式授权改家目录
+// 文件。白名单外走 perm_mode 三分支：strict 拒 / ask 弹 danger 确认（每次，不持久化）/
+// yolo 放行+审计。
+
+/// 可写根的原始集合（纯内核，可测）：gen + 任务卡绑定文件夹 + cfg.allowedDirs。
+/// 刻意不含 merge_raw_dirs 里的 home/Desktop/Downloads/Documents 默认读项。
+fn build_writable_raw(
+    gen: Option<String>,
+    task_dirs: Vec<String>,
+    cfg_dirs: &[String],
+) -> Vec<String> {
+    let mut raw: Vec<String> = Vec::new();
+    raw.extend(gen);
+    raw.extend(task_dirs);
+    raw.extend(cfg_dirs.iter().cloned());
+    raw
+}
+
+/// 可写目录集合（canonical 化，只保留真实存在的目录）。
+/// 与 allowed_dirs 同样的 canonicalize 包 spawn_blocking 防 runtime 阻塞。
+async fn writable_dirs(app: &AppHandle) -> Vec<PathBuf> {
+    let cfg = crate::bot::load_config(app);
+    let mut task_dirs: Vec<String> = Vec::new();
+    if let Ok(tasks) = crate::db::db_load(app.clone()).await {
+        for t in tasks {
+            // 回收站任务的绑定目录不进写白名单（防「删卡不解权」残留授权）
+            if t.deleted_at.is_some() {
+                continue;
+            }
+            for f in t.effective_files() {
+                if f.is_dir {
+                    task_dirs.push(f.path);
+                }
+            }
+        }
+    }
+    let gen = crate::db::gen_dir(app)
+        .ok()
+        .map(|p| p.to_string_lossy().to_string());
+    let raw = build_writable_raw(gen, task_dirs, &cfg.allowed_dirs);
+    spawn_blocking_io(move || {
+        let mut out: Vec<PathBuf> = Vec::new();
+        for r in raw {
+            let p = expand_tilde(r.trim());
+            if let Ok(c) = std::fs::canonicalize(&p) {
+                if c.is_dir() && !out.contains(&c) {
+                    out.push(c);
+                }
+            }
+        }
+        Ok(out)
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// 写路径守卫：resolve_with_perm 的写语义变体。
+/// 差异：目标文件可不存在（write_file 新建），改为校验**父目录**存在且落在
+/// 可写根内；白名单外 ask 分支用 ask_user_confirm（danger，每次确认，不持久化
+/// ——「始终允许」语义对写太宽）。成功返回展开后的目标路径（文件可能尚不存在，
+/// 不能 canonicalize；父目录已 canonical 校验，TOCTOU 窗口与读闸门同级留档）。
+async fn resolve_writable(
+    app: &AppHandle,
+    tool: &str,
+    path: &str,
+    interactive: bool,
+    session_id: Option<&str>,
+) -> Result<PathBuf, String> {
+    let p = path.trim();
+    if p.is_empty() {
+        return Err("路径不能为空".into());
+    }
+    let expanded = expand_tilde(p);
+    let expanded_for_parent = expanded.clone();
+    let parent_canon = spawn_blocking_io(move || {
+        let parent = expanded_for_parent
+            .parent()
+            .filter(|d| !d.as_os_str().is_empty())
+            .ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "路径没有父目录")
+            })?;
+        std::fs::canonicalize(parent)
+    })
+    .await
+    .map_err(|e| {
+        format!(
+            "父目录不存在或无法解析：{}（{e}）",
+            expanded
+                .parent()
+                .map(|d| d.display().to_string())
+                .unwrap_or_else(|| "?".into())
+        )
+    })?;
+    let dirs = writable_dirs(app).await;
+    if is_within_allowlist(&parent_canon, &dirs) {
+        return Ok(strip_verbatim(expanded));
+    }
+    match crate::bot::perm_mode(app) {
+        crate::bot::PermMode::Yolo => {
+            crate::bot::audit_log(
+                app,
+                &format!(
+                    "bot_fs.yolo_allow_write | tool: {tool} | path: {}",
+                    crate::bot::truncate_for_log(p, 200)
+                ),
+            );
+            Ok(strip_verbatim(expanded))
+        }
+        crate::bot::PermMode::Ask => {
+            let approved = crate::bot_slash::ask_user_confirm(
+                app,
+                tool,
+                &format!("写入白名单外路径：{p}"),
+                interactive,
+                session_id,
+            )
+            .await;
+            if approved {
+                crate::bot::audit_log(
+                    app,
+                    &format!(
+                        "bot_fs.ask_allow_write | tool: {tool} | path: {}",
+                        crate::bot::truncate_for_log(p, 200)
+                    ),
+                );
+                Ok(strip_verbatim(expanded))
+            } else {
+                crate::bot::audit_log(
+                    app,
+                    &format!(
+                        "bot_fs.ask_denied_write | tool: {tool} | path: {}",
+                        crate::bot::truncate_for_log(p, 200)
+                    ),
+                );
+                Err(format!(
+                    "用户未授权写入该路径：{p}（可在设置页把目录加入白名单；后台执行时确认窗不可用，一律拒绝）"
+                ))
+            }
+        }
+        crate::bot::PermMode::Strict => {
+            crate::bot::audit_log(
+                app,
+                &format!(
+                    "bot_fs.denied_write | path: {} | 不在可写目录内",
+                    crate::bot::truncate_for_log(p, 200)
+                ),
+            );
+            Err(format!(
+                "路径不在可写目录内：{p}（可写目录：AI_Gen_Files + 任务卡绑定文件夹 + 设置页 allowedDirs）"
+            ))
+        }
+    }
+}
+
+/// edit 匹配级别（审计与回执用）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EditMode {
+    Exact,
+    /// 空白容错（逐行 trim_end 比较）命中
+    WhitespaceTolerant,
+}
+
+/// edit 失败类型（进审计的结构化字段，供自进化反思统计）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EditErrorKind {
+    /// 精确与空白容错都未命中
+    NotFound,
+    /// 命中多处，无法唯一定位
+    MultiHit,
+}
+
+/// edit 三级匹配内核（纯函数，无 IO 可测）：
+/// 1. 精确唯一 → 应用
+/// 2. 精确多处 → MultiHit
+/// 3. 精确 0 处 → 空白容错（逐行 trim_end 比较，CRLF 经 lines() 天然免疫）：
+///    唯一 → 应用（重建时保留文件原本的主导换行符）；0 处 → NotFound（带
+///    reflection 提示：先 read_text_file、注意缩进）；多处 → MultiHit
+/// 返回 (替换后全文, 级别, 行数变化 new-old)。
+/// 不做 Levenshtein 模糊匹配（误替换风险 > 收益，spec N6 留档）。
+pub(crate) fn try_apply_edit(
+    content: &str,
+    old: &str,
+    new: &str,
+) -> Result<(String, EditMode, i64), (EditErrorKind, String)> {
+    let exact_hits = content.matches(old).count();
+    if exact_hits == 1 {
+        let applied = content.replacen(old, new, 1);
+        let delta = new.lines().count() as i64 - old.lines().count() as i64;
+        return Ok((applied, EditMode::Exact, delta));
+    }
+    if exact_hits > 1 {
+        return Err((
+            EditErrorKind::MultiHit,
+            format!(
+                "oldString 在文件中命中 {exact_hits} 处，无法唯一定位。请加入更多上下文（前后各 1-2 行）让匹配唯一。"
+            ),
+        ));
+    }
+    // 空白容错：逐行 trim_end 比较（尾部空白/CRLF 不敏感；缩进仍要求一致）
+    let old_lines: Vec<&str> = old.lines().map(|l| l.trim_end()).collect();
+    if old_lines.is_empty() {
+        return Err((
+            EditErrorKind::NotFound,
+            "oldString 为空白。请先 read_text_file 确认原文，再提供要替换的具体内容".into(),
+        ));
+    }
+    let content_lines: Vec<&str> = content.lines().map(|l| l.trim_end()).collect();
+    let n = old_lines.len();
+    let mut windows: Vec<usize> = Vec::new();
+    if content_lines.len() >= n {
+        for start in 0..=(content_lines.len() - n) {
+            if content_lines[start..start + n] == old_lines[..] {
+                windows.push(start);
+            }
+        }
+    }
+    match windows.len() {
+        1 => {
+            let start = windows[0];
+            let eol = if content.contains("\r\n") {
+                "\r\n"
+            } else {
+                "\n"
+            };
+            let mut out_lines: Vec<String> =
+                content.lines().take(start).map(|l| l.to_string()).collect();
+            out_lines.extend(new.lines().map(|l| l.to_string()));
+            out_lines.extend(content.lines().skip(start + n).map(|l| l.to_string()));
+            let mut applied = out_lines.join(eol);
+            if content.ends_with('\n') {
+                applied.push('\n');
+            }
+            let delta = new.lines().count() as i64 - n as i64;
+            Ok((applied, EditMode::WhitespaceTolerant, delta))
+        }
+        0 => {
+            let head: Vec<&str> = content.lines().take(3).collect();
+            let head_show = if head.is_empty() {
+                "（空文件）".to_string()
+            } else {
+                head.join("\n")
+            };
+            Err((
+                EditErrorKind::NotFound,
+                format!(
+                    "oldString 未在文件中找到（含空白容错）。建议：先 read_text_file 确认原文再复制精确内容；注意缩进与空白（容错只放宽行尾空白与 CRLF，不放宽缩进）。文件开头：\n{head_show}"
+                ),
+            ))
+        }
+        _ => Err((
+            EditErrorKind::MultiHit,
+            format!(
+                "oldString 在空白容错下仍命中 {} 处。请加入更多上下文（前后各 1-2 行）让匹配唯一。",
+                windows.len()
+            ),
+        )),
+    }
+}
+
+/// write 内容校验（纯函数，可测）：NUL 拒（文本工具不写二进制）、2MB 上限
+pub(crate) fn validate_write_content(content: &str) -> Result<(), String> {
+    if content.contains('\0') {
+        return Err("内容包含 NUL 字节：write_file 只写文本文件".into());
+    }
+    if content.len() > WRITE_MAX_BYTES {
+        return Err(format!(
+            "内容 {} 字节超过 write_file 上限 {WRITE_MAX_BYTES}，大文件请拆分或用其他方式",
+            content.len()
+        ));
+    }
+    Ok(())
+}
+
+// ───────────────────── P1-b：文件变更证据（Agent 透明化设计 §4.2） ─────────────────────
+
+/// 文件变更证据（P1-b）：文件类工具成功落盘后随 `ToolResult::file_changes` 回传，
+/// dispatch（P1-c）据此落 `file_changes` 表 + emit `bot-file-changed`。
+/// 纯数据结构——trace 归属字段（trace_id/span_id/created_at）由 dispatch 侧补。
+#[derive(Debug, Clone)]
+pub struct FileChangeReceipt {
+    pub path: String,
+    /// "create" | "modify"（现有文件工具不产 delete）
+    pub kind: &'static str,
+    pub added: i64,
+    pub deleted: i64,
+    pub diff: Option<String>,
+    pub truncated: bool,
+    /// before 全文快照文件名（`data_dir/checkpoints/<before_ref>`，uuid 发号）。
+    /// None = 新建（无旧文可存）或快照写盘失败（降级，`checkpoint.write_fail` 审计）。
+    pub before_ref: Option<String>,
+    pub before_sha: Option<String>,
+    pub after_sha: Option<String>,
+}
+
+/// unified diff 生成（纯函数可测）：similar 行级 diff → unified 文本 + ±行计数。
+/// ±行计数是事实（不随截断丢失），diff 文本超 `MAX_DIFF_LINES` 行截断置位。
+pub(crate) fn build_unified_diff(
+    before: &str,
+    after: &str,
+    path: &str,
+) -> (Option<String>, i64, i64, bool) {
+    let diff = similar::TextDiff::from_lines(before, after);
+    let mut added = 0i64;
+    let mut deleted = 0i64;
+    for change in diff.iter_all_changes() {
+        match change.tag() {
+            similar::ChangeTag::Insert => added += 1,
+            similar::ChangeTag::Delete => deleted += 1,
+            similar::ChangeTag::Equal => {}
+        }
+    }
+    if added == 0 && deleted == 0 {
+        return (None, 0, 0, false);
+    }
+    let full = diff
+        .unified_diff()
+        .context_radius(3)
+        .header(path, path)
+        .to_string();
+    let lines: Vec<&str> = full.lines().collect();
+    let truncated = lines.len() > crate::db::MAX_DIFF_LINES;
+    let mut text = lines
+        .iter()
+        .take(crate::db::MAX_DIFF_LINES)
+        .copied()
+        .collect::<Vec<&str>>()
+        .join("\n");
+    if truncated {
+        text.push_str(&format!(
+            "\n…（diff 超过 {} 行已截断）",
+            crate::db::MAX_DIFF_LINES
+        ));
+    }
+    (Some(text), added, deleted, truncated)
+}
+
+/// sha256 十六进制（回滚证据链：P2 回滚前比对 after_sha 防文件漂移）
+fn sha256_hex(s: &str) -> String {
+    use sha2::Digest;
+    let mut h = sha2::Sha256::new();
+    h.update(s.as_bytes());
+    format!("{:x}", h.finalize())
+}
+
+/// before 全文快照（`data_dir/checkpoints/<uuid>`，db::atomic_write 原子写）。
+/// 快照是回滚的 nice-to-have：失败降级 None + Error 审计，不阻断已成功的业务写盘
+/// ——工具结果不能因观测面失败而翻转。
+fn write_before_snapshot(app: &AppHandle, before: &str) -> Option<String> {
+    let dir = crate::db::paths::data_dir(app).join("checkpoints");
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        crate::audit::write_event(
+            app,
+            crate::audit::AuditLevel::Error,
+            "checkpoint.write_fail",
+            &[("err", e.to_string())],
+        );
+        return None;
+    }
+    let name = uuid::Uuid::new_v4().to_string();
+    match crate::db::atomic_write(&dir.join(&name), before) {
+        Ok(()) => Some(name),
+        Err(e) => {
+            crate::audit::write_event(
+                app,
+                crate::audit::AuditLevel::Error,
+                "checkpoint.write_fail",
+                &[("err", e)],
+            );
+            None
+        }
+    }
+}
+
+/// 变更证据构建（纯函数可测；快照写盘由调用方另接 write_before_snapshot 回填 before_ref）：
+/// create（before=None）→ 全 + 行 diff、无 before_sha；modify → before/after diff + before_sha。
+pub(crate) fn build_file_change_receipt(
+    path: &str,
+    kind: &'static str,
+    before: Option<&str>,
+    after: &str,
+) -> FileChangeReceipt {
+    let (diff, added, deleted, truncated) = match before {
+        Some(b) => build_unified_diff(b, after, path),
+        None => build_unified_diff("", after, path),
+    };
+    FileChangeReceipt {
+        path: path.to_string(),
+        kind,
+        added,
+        deleted,
+        diff,
+        truncated,
+        before_ref: None,
+        before_sha: before.map(sha256_hex),
+        after_sha: Some(sha256_hex(after)),
+    }
+}
+
+/// edit 同步内核（spawn_blocking 调用；独立函数便于单测）：
+/// 读文件（≤1MB、UTF-8）→ 三级匹配 → 返回替换结果。
+/// P1-b 起同时带回**修改前全文**（diff 与回滚快照的证据源，避免再读一次盘）。
+fn edit_file_sync(
+    canonical: PathBuf,
+    old: String,
+    new: String,
+) -> Result<(String, String, EditMode, i64), (EditErrorKind, String)> {
+    let content = std::fs::read_to_string(&canonical).map_err(|e| {
+        (
+            EditErrorKind::NotFound,
+            format!("读取失败（非 UTF-8 文本或不可读）：{e}"),
+        )
+    })?;
+    if content.len() > EDIT_MAX_FILE_BYTES {
+        return Err((
+            EditErrorKind::NotFound,
+            format!(
+                "文件 {} 字节超过 edit_file 上限 {EDIT_MAX_FILE_BYTES}",
+                content.len()
+            ),
+        ));
+    }
+    let (applied, mode, delta) = try_apply_edit(&content, &old, &new)?;
+    Ok((content, applied, mode, delta))
+}
+
+/// edit_file：对文本文件做精确字符串替换（三级匹配内核 + 写闸门 + 原子写回）
+pub async fn tool_edit_file(
+    app: &AppHandle,
+    args: &str,
+    interactive: bool,
+    session_id: Option<&str>,
+) -> crate::bot::registry::ToolResult {
+    let v = crate::bot::parse_args(args);
+    let Some(path) = v["path"].as_str().map(|s| s.trim().to_string()) else {
+        return ToolResult::ok("edit_file 缺少 path 参数".to_string(), Vec::new());
+    };
+    let Some(old) = v["oldString"].as_str().map(|s| s.to_string()) else {
+        return ToolResult::ok("edit_file 缺少 oldString 参数".to_string(), Vec::new());
+    };
+    let Some(new) = v["newString"].as_str().map(|s| s.to_string()) else {
+        return ToolResult::ok("edit_file 缺少 newString 参数".to_string(), Vec::new());
+    };
+    if path.is_empty() {
+        return ToolResult::ok("edit_file 的 path 不能为空".to_string(), Vec::new());
+    }
+    if old.trim().is_empty() {
+        return ToolResult::ok(
+            "oldString 不能为空（请提供要替换的原文）".to_string(),
+            Vec::new(),
+        );
+    }
+    if old == new {
+        return ToolResult::ok(
+            "oldString 与 newString 相同，没有可应用的变更".to_string(),
+            Vec::new(),
+        );
+    }
+    let canonical = match resolve_writable(app, "edit_file", &path, interactive, session_id).await {
+        Ok(p) => p,
+        // resolve_writable Err 返 String，首字不定 → ok
+        Err(e) => return ToolResult::ok(e, Vec::new()),
+    };
+    let log_path = crate::bot::truncate_for_log(&canonical.display().to_string(), 200);
+    let shown = canonical.display().to_string();
+    let write_target = canonical.clone();
+    let out =
+        crate::py::document::spawn_blocking_map(move || Ok(edit_file_sync(canonical, old, new)))
+            .await
+            .unwrap_or_else(|e| Err((EditErrorKind::NotFound, format!("编辑线程异常：{e}"))));
+    match out {
+        Ok((before, applied, mode, delta)) => {
+            if let Err(e) = crate::db::atomic_write(&write_target, &applied) {
+                // 「写回失败：」首字「写」非 error/warn 前缀 → ok
+                return ToolResult::ok(format!("写回失败：{e}"), Vec::new());
+            }
+            let mode_note = match mode {
+                EditMode::Exact => "",
+                EditMode::WhitespaceTolerant => "（经空白容错匹配：行尾空白/CRLF 有差异）",
+            };
+            let delta_note = if delta > 0 {
+                format!("+{delta} 行")
+            } else if delta < 0 {
+                format!("{delta} 行")
+            } else {
+                "行数不变".to_string()
+            };
+            crate::bot::audit_log(
+                app,
+                &format!(
+                    "bot_fs.edit_file | {} | {} | {delta_note}",
+                    log_path,
+                    match mode {
+                        EditMode::Exact => "exact",
+                        EditMode::WhitespaceTolerant => "ws",
+                    }
+                ),
+            );
+            // P1-b 变更证据（Agent 透明化设计 §4.2）：unified diff + before 快照。
+            // 快照失败降级 before_ref=None（checkpoint.write_fail 审计），不翻转业务结果。
+            let mut receipt = build_file_change_receipt(&shown, "modify", Some(&before), &applied);
+            receipt.before_ref = write_before_snapshot(app, &before);
+            // 「已修改」首字「已」非 error/warn 前缀 → ok
+            ToolResult::ok(
+                format!("已修改 {shown}（{delta_note}）{mode_note}"),
+                Vec::new(),
+            )
+            .with_file_change(receipt)
+        }
+        Err((kind, hint)) => {
+            // 失败带教学提示走 ok 通道（reflection 文案，自进化经 tool.call_failed 采集）
+            crate::bot::audit_log(
+                app,
+                &format!(
+                    "bot_fs.edit_file.fail | {} | kind: {:?} | {}",
+                    log_path,
+                    kind,
+                    crate::bot::truncate_for_log(&hint, 200)
+                ),
+            );
+            ToolResult::ok(hint, Vec::new())
+        }
+    }
+}
+
+/// write_file：创建新文件 / 整体写入（覆盖已有文件需用户确认；非交互自动拒）
+pub async fn tool_write_file(
+    app: &AppHandle,
+    args: &str,
+    interactive: bool,
+    session_id: Option<&str>,
+) -> crate::bot::registry::ToolResult {
+    let v = crate::bot::parse_args(args);
+    let Some(path) = v["path"].as_str().map(|s| s.trim().to_string()) else {
+        return ToolResult::ok("write_file 缺少 path 参数".to_string(), Vec::new());
+    };
+    let Some(content) = v["content"].as_str().map(|s| s.to_string()) else {
+        return ToolResult::ok("write_file 缺少 content 参数".to_string(), Vec::new());
+    };
+    if path.is_empty() {
+        return ToolResult::ok("write_file 的 path 不能为空".to_string(), Vec::new());
+    }
+    if let Err(e) = validate_write_content(&content) {
+        return ToolResult::ok(e, Vec::new());
+    }
+    let canonical = match resolve_writable(app, "write_file", &path, interactive, session_id).await
+    {
+        Ok(p) => p,
+        Err(e) => return ToolResult::ok(e, Vec::new()),
+    };
+    let existed = is_dir_async(&canonical).await || {
+        let c = canonical.clone();
+        spawn_blocking_io(move || Ok(c.is_file()))
+            .await
+            .unwrap_or(false)
+    };
+    if existed {
+        let approved = crate::bot_slash::ask_user_confirm(
+            app,
+            "write_file",
+            &format!("覆盖已存在文件：{}", canonical.display()),
+            interactive,
+            session_id,
+        )
+        .await;
+        if !approved {
+            // 非交互（子 agent）确认窗不可用自动拒——覆盖走 edit_file 精确修改
+            return ToolResult::ok(
+                "覆盖未获确认，文件未修改。修改已有文件请用 edit_file（精确替换，无需确认）；新建文件请换一个文件名".to_string(),
+                Vec::new(),
+            );
+        }
+    }
+    // P1-b 变更证据：modify 需在写盘前取旧文（读不出/超上限/二进制 → 无 diff 降级）。
+    // 这是观测面读取而非安全判定，不做 inode re-check（TOCTOU 与读闸门同级留档）。
+    let before_content: Option<String> = if existed {
+        let c = canonical.clone();
+        spawn_blocking_io(move || read_capped_file_sync(&c, EDIT_MAX_FILE_BYTES))
+            .await
+            .ok()
+            .filter(|(_, truncated)| !truncated)
+            .and_then(|(buf, _)| String::from_utf8(buf).ok())
+    } else {
+        None
+    };
+    let lines = content.lines().count() as i64;
+    let content_after = content.clone();
+    let out = crate::py::document::spawn_blocking_map(move || {
+        crate::db::atomic_write(&canonical, &content).map(|_| canonical)
+    })
+    .await;
+    match out {
+        Ok(written) => {
+            let action = if existed { "已覆盖" } else { "已创建" };
+            // P1-b 变更证据：create = 全 + 行 diff；modify = before/after diff + 回滚快照。
+            // 快照失败降级 before_ref=None（checkpoint.write_fail 审计），不翻转业务结果。
+            let kind: &'static str = if existed { "modify" } else { "create" };
+            let mut receipt = build_file_change_receipt(
+                &written.display().to_string(),
+                kind,
+                before_content.as_deref(),
+                &content_after,
+            );
+            if let Some(b) = before_content.as_deref() {
+                receipt.before_ref = write_before_snapshot(app, b);
+            }
+            crate::bot::audit_log(
+                app,
+                &format!(
+                    "bot_fs.write_file | {} | {lines} lines | {}",
+                    crate::bot::truncate_for_log(&written.display().to_string(), 200),
+                    action
+                ),
+            );
+            // 「已写入」首字「已」非 error/warn 前缀 → ok
+            ToolResult::ok(
+                format!("已写入 {}（{action}，{lines} 行）", written.display()),
+                Vec::new(),
+            )
+            .with_file_change(receipt)
+        }
+        Err(e) => ToolResult::ok(format!("写入失败：{e}"), Vec::new()),
+    }
 }
 
 /// 简化 glob 匹配（只支持 * 任意串、? 单字符；大小写敏感；匹配文件/目录名）
@@ -636,6 +1280,35 @@ pub async fn tool_read_text_file(
 }
 
 /// grep_files：白名单目录内正则搜文件内容，输出 path:line:内容（ripgrep 风格）
+/// N3-6：grep 上下文渲染（grep -C 风格，纯函数可测）。
+/// 命中行 `path:行号: 内容`、上下文行 `path-行号- 内容`；重叠/相邻窗口合并为一块，
+/// 块间 `--` 分隔；行宽截 200 字符。context=0 时退化为每命中一行的旧行为。
+fn render_context_hits(path: &str, lines: &[&str], hits: &[usize], context: usize) -> Vec<String> {
+    let trunc = |s: &str| s.chars().take(200).collect::<String>();
+    // 1) 命中行窗口（0-based，含端）合并：重叠或仅隔 1 行的相邻窗口并成一块
+    let mut windows: Vec<(usize, usize)> = Vec::new();
+    for &h in hits {
+        let s = h.saturating_sub(context);
+        let e = (h + context).min(lines.len().saturating_sub(1));
+        match windows.last_mut() {
+            Some((_, pe)) if s <= *pe + 1 => *pe = (*pe).max(e),
+            _ => windows.push((s, e)),
+        }
+    }
+    // 2) 输出
+    let mut out: Vec<String> = Vec::new();
+    for (wi, (s, e)) in windows.iter().enumerate() {
+        if wi > 0 {
+            out.push("--".to_string());
+        }
+        for i in *s..=*e {
+            let mark = if hits.contains(&i) { ':' } else { '-' };
+            out.push(format!("{path}{mark}{}{mark} {}", i + 1, trunc(lines[i])));
+        }
+    }
+    out
+}
+
 pub async fn tool_grep_files(
     app: &AppHandle,
     args: &str,
@@ -655,6 +1328,8 @@ pub async fn tool_grep_files(
     };
     let glob = v["glob"].as_str().unwrap_or("").trim().to_string();
     let max = (v["max"].as_u64().unwrap_or(GREP_MAX_HITS as u64) as usize).min(GREP_MAX_HITS);
+    // N3-6：上下文行数（0..=5，默认 0 = 旧行为）
+    let context = (v["context"].as_u64().unwrap_or(0) as usize).min(5);
     // dir 可选：缺省搜第一个白名单目录
     let dir = match v["dir"].as_str() {
         Some(d) if !d.trim().is_empty() => {
@@ -664,7 +1339,7 @@ pub async fn tool_grep_files(
                 Err(e) => return ToolResult::ok(e, Vec::new()),
             }
         }
-        _ => match allowed_dirs(app).await.first() {
+        _ => match allowed_dirs(app, session_id).await.first() {
             Some(d) => d.clone(),
             // 「没有可用的白名单目录」首字「没」非 error/warn 前缀 → ok
             None => return ToolResult::ok("没有可用的白名单目录".to_string(), Vec::new()),
@@ -679,12 +1354,15 @@ pub async fn tool_grep_files(
     // （OCR C1b performance critical）。
     // closure 内 is_binary_file_sync / read_to_string 仍 sync，但已在 spawn_blocking
     // 线程内 OK。流式优化留 follow-up。
+    // 返回（渲染行, 匹配数）二元组：max 按匹配数计、行数随 context 放大，
+    // 上限提示要看匹配数；spawn_blocking 'static 闭包只能带值回传。
     let dir_log = dir.display().to_string();
-    let hits: Vec<String> =
-        crate::py::document::spawn_blocking_map(move || -> Result<Vec<String>, String> {
+    let (hits, found) =
+        crate::py::document::spawn_blocking_map(move || -> Result<(Vec<String>, usize), String> {
             let mut hits: Vec<String> = Vec::new();
+            let mut found = 0usize;
             walk(&dir, &mut |path: &Path, is_dir: bool| {
-                if hits.len() >= max {
+                if found >= max {
                     return false;
                 }
                 if is_dir {
@@ -708,23 +1386,33 @@ pub async fn tool_grep_files(
                     return true;
                 }
                 if let Ok(text) = std::fs::read_to_string(path) {
-                    for (i, line) in text.lines().enumerate() {
-                        if re.is_match(line) {
-                            hits.push(format!(
-                                "{}:{}: {}",
-                                path.display(),
-                                i + 1,
-                                line.chars().take(200).collect::<String>()
-                            ));
-                            if hits.len() >= max {
-                                return false;
-                            }
-                        }
+                    let lines: Vec<&str> = text.lines().collect();
+                    let hit_idx: Vec<usize> = lines
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, line)| re.is_match(line))
+                        .map(|(i, _)| i)
+                        .collect();
+                    if hit_idx.is_empty() {
+                        return true;
+                    }
+                    // max 按匹配数计（渲染行数随 context 放大）；预算内才渲染
+                    let budget = max - found;
+                    let taken = budget.min(hit_idx.len());
+                    hits.extend(render_context_hits(
+                        &path.display().to_string(),
+                        &lines,
+                        &hit_idx[..taken],
+                        context,
+                    ));
+                    found += taken;
+                    if found >= max {
+                        return false;
                     }
                 }
                 true
             });
-            Ok(hits)
+            Ok((hits, found))
         })
         .await
         .unwrap_or_default();
@@ -734,7 +1422,7 @@ pub async fn tool_grep_files(
             "bot_fs.grep | dir: {} | pattern: {} | hits: {}",
             crate::bot::truncate_for_log(&dir_log, 200),
             crate::bot::truncate_for_log(pattern, 100),
-            hits.len()
+            found
         ),
     );
     if hits.is_empty() {
@@ -745,8 +1433,10 @@ pub async fn tool_grep_files(
         );
     }
     let mut out = hits.join("\n");
-    if hits.len() >= max {
-        out.push_str(&format!("\n…（已达 {max} 条上限，缩小范围或加 glob 过滤）"));
+    if found >= max {
+        out.push_str(&format!(
+            "\n…（已达 {max} 条匹配上限，缩小范围或加 glob 过滤）"
+        ));
     }
     // 匹配结果文本，首字符任意 UTF-8 → ok
     ToolResult::ok(out, Vec::new())
@@ -835,6 +1525,137 @@ pub async fn tool_list_files(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ───── N3-6：grep 上下文渲染 ─────
+
+    #[test]
+    fn render_context_zero_matches_old_format() {
+        let lines = ["alpha", "beta", "gamma"];
+        let out = render_context_hits("/tmp/a.txt", &lines, &[1], 0);
+        assert_eq!(
+            out,
+            vec!["/tmp/a.txt:2: beta"],
+            "context=0 应与旧格式逐字一致"
+        );
+    }
+
+    #[test]
+    fn render_context_windows_and_separator() {
+        let lines = ["l0", "l1", "l2", "l3", "l4", "l5", "l6", "l7", "l8", "l9"];
+        // 两个相距远的命中（1 与 8），context=1 → 两块，中间 --
+        let out = render_context_hits("/t/f.txt", &lines, &[1, 8], 1);
+        assert_eq!(
+            out,
+            vec![
+                "/t/f.txt-1- l0",
+                "/t/f.txt:2: l1",
+                "/t/f.txt-3- l2",
+                "--",
+                "/t/f.txt-8- l7",
+                "/t/f.txt:9: l8",
+                "/t/f.txt-10- l9",
+            ]
+        );
+    }
+
+    #[test]
+    fn render_context_merges_overlapping_windows() {
+        let lines = ["l0", "l1", "l2", "l3", "l4"];
+        // 命中 1 与 2，context=1：窗口 [0..2] 与 [1..3] 重叠 → 合并一块、无 --
+        let out = render_context_hits("/t/f.txt", &lines, &[1, 2], 1);
+        assert_eq!(
+            out,
+            vec![
+                "/t/f.txt-1- l0",
+                "/t/f.txt:2: l1",
+                "/t/f.txt:3: l2",
+                "/t/f.txt-4- l3",
+            ]
+        );
+        assert!(!out.contains(&"--".to_string()), "合并块不得有分隔符");
+    }
+
+    #[test]
+    fn render_context_clamps_at_file_edges() {
+        let lines = ["only"];
+        let out = render_context_hits("/t/f.txt", &lines, &[0], 5);
+        assert_eq!(out, vec!["/t/f.txt:1: only"], "窗口越界应夹到文件边界");
+    }
+
+    // ───── N6：edit 三级匹配 / write 校验 / 可写根集合 ─────
+
+    #[test]
+    fn apply_edit_exact_unique_and_multi_hit() {
+        let content = "fn a() {}\nfn b() {}\n";
+        let old = "fn b() {}";
+        let (out, mode, delta) = try_apply_edit(content, old, "fn b() -> i32 { 1 }").unwrap();
+        assert_eq!(mode, EditMode::Exact);
+        assert_eq!(delta, 0);
+        assert!(out.contains("fn b() -> i32 { 1 }"), "{out}");
+        // 多处命中：两个相同函数体
+        let dup = "x = 1;\nx = 1;\n";
+        let (kind, hint) = try_apply_edit(dup, "x = 1;", "x = 2;").unwrap_err();
+        assert_eq!(kind, EditErrorKind::MultiHit);
+        assert!(hint.contains("2 处"), "{hint}");
+    }
+
+    #[test]
+    fn apply_edit_whitespace_fallback_and_not_found() {
+        // 原文行尾有尾随空格 + CRLF：精确失败、空白容错命中
+        let content = "fn a() {\r\n    return 1;   \r\n}\r\n";
+        let old = "fn a() {\n    return 1;\n}";
+        let (out, mode, delta) =
+            try_apply_edit(content, old, "fn a() {\r\n    return 2;\r\n}").unwrap();
+        assert_eq!(mode, EditMode::WhitespaceTolerant);
+        assert_eq!(delta, 0);
+        assert!(out.contains("return 2;"), "{out}");
+        // 空白容错也多处 → MultiHit
+        let dup_ws = "x = 1;  \nx = 1;\n";
+        let (kind, _) = try_apply_edit(dup_ws, "x = 1;", "x = 2;").unwrap_err();
+        assert_eq!(kind, EditErrorKind::MultiHit);
+        // 全失败 → NotFound + reflection 提示带文件开头
+        let (kind, hint) = try_apply_edit("alpha\nbeta\n", "不存在的行", "x").unwrap_err();
+        assert_eq!(kind, EditErrorKind::NotFound);
+        assert!(hint.contains("read_text_file"), "{hint}");
+        assert!(hint.contains("alpha"), "提示应带文件开头：{hint}");
+    }
+
+    #[test]
+    fn apply_edit_preserves_crlf_and_trailing_newline() {
+        let content = "a\r\nold\r\nb\r\n";
+        let (out, _, _) = try_apply_edit(content, "old", "new").unwrap();
+        assert_eq!(out, "a\r\nnew\r\nb\r\n", "CRLF 文件替换后保持 CRLF");
+        // 无结尾换行的文件重建后不引入结尾换行
+        let content2 = "x\nold";
+        let (out2, _, _) = try_apply_edit(content2, "old", "new").unwrap();
+        assert_eq!(out2, "x\nnew");
+    }
+
+    #[test]
+    fn validate_write_content_rejects_nul_and_oversize() {
+        assert!(validate_write_content("# ok\n").is_ok());
+        assert!(
+            validate_write_content("").is_ok(),
+            "空文件合法（新建空文件）"
+        );
+        assert!(validate_write_content("a\0b").is_err(), "NUL 拒");
+        let big = "A".repeat(2 * 1024 * 1024 + 1);
+        assert!(validate_write_content(&big).is_err(), "超 2MB 拒");
+    }
+
+    #[test]
+    fn writable_raw_excludes_home_defaults() {
+        // 关键安全断言：可写根不含桌面/下载/文档默认项（读白名单有、写白名单刻意没有）
+        let raw = build_writable_raw(
+            Some("/data/AI_Gen_Files".into()),
+            vec!["/Users/me/project".into()],
+            &["/Users/me/工作".to_string()],
+        );
+        assert_eq!(raw.len(), 3, "{raw:?}");
+        assert!(!raw
+            .iter()
+            .any(|d| d.contains("Desktop") || d.contains("Downloads")));
+    }
 
     #[test]
     fn glob_match_basics() {
@@ -1149,5 +1970,121 @@ mod tests {
         );
         // 顺手验证二进制判定也不丢（这里是文本文件，应为 false）
         assert!(!is_binary, "文本文件的 is_binary 应为 false");
+    }
+}
+
+// ───────────────────── P1-b：文件变更证据（Agent 透明化设计 §4.2） ─────────────────────
+
+#[cfg(test)]
+mod file_change_tests {
+    use super::*;
+
+    #[test]
+    fn diff_modify_counts_and_unified_text() {
+        let before = "a\nb\nc\n";
+        let after = "a\nX\nc\nd\n";
+        let (diff, added, deleted, truncated) = build_unified_diff(before, after, "/x/f.txt");
+        assert_eq!(added, 2, "插入 X 行 + d 行");
+        assert_eq!(deleted, 1, "删除 b 行");
+        assert!(!truncated);
+        let d = diff.unwrap();
+        assert!(
+            d.starts_with("--- /x/f.txt"),
+            "unified header 用目标路径：{d}"
+        );
+        assert!(d.contains("+X"), "{d}");
+        assert!(d.contains("-b"), "{d}");
+    }
+
+    #[test]
+    fn diff_create_all_insertions() {
+        let (diff, added, deleted, truncated) = build_unified_diff("", "l1\nl2\n", "/x/new.txt");
+        assert_eq!(added, 2);
+        assert_eq!(deleted, 0);
+        assert!(!truncated);
+        assert!(diff.unwrap().contains("+l1"));
+    }
+
+    #[test]
+    fn diff_identical_content_yields_no_diff() {
+        let (diff, added, deleted, truncated) = build_unified_diff("same\n", "same\n", "/x");
+        assert!(diff.is_none(), "零变更不产 diff（write 同内容覆盖场景）");
+        assert_eq!((added, deleted, truncated), (0, 0, false));
+    }
+
+    #[test]
+    fn diff_truncates_text_but_keeps_counts() {
+        // MAX_DIFF_LINES=2000：2500 行新文件 → 文本截断置位，±计数不截（计数是事实）
+        let after: String = (0..2500).map(|i| format!("line{i}\n")).collect();
+        let (diff, added, deleted, truncated) = build_unified_diff("", &after, "/x/big.txt");
+        assert!(truncated);
+        assert_eq!(added, 2500);
+        assert_eq!(deleted, 0);
+        let d = diff.unwrap();
+        assert!(d.contains("已截断"), "截断标记必须可见：{d}");
+        assert_eq!(
+            d.lines().count(),
+            crate::db::MAX_DIFF_LINES + 1,
+            "正文 2000 行 + 截断提示行"
+        );
+    }
+
+    #[test]
+    fn diff_handles_crlf_content() {
+        let before = "a\r\nb\r\n";
+        let after = "a\r\nB\r\n";
+        let (diff, added, deleted, _) = build_unified_diff(before, after, "/x/crlf.txt");
+        assert_eq!((added, deleted), (1, 1));
+        let d = diff.unwrap();
+        assert!(d.contains("-b"), "{d:?}");
+    }
+
+    #[test]
+    fn receipt_create_has_no_before_evidence() {
+        let r = build_file_change_receipt("/x/new.txt", "create", None, "hello\n");
+        assert_eq!(r.kind, "create");
+        assert_eq!(r.path, "/x/new.txt");
+        assert_eq!(r.added, 1);
+        assert_eq!(r.deleted, 0);
+        assert!(r.before_sha.is_none(), "create 无 before 证据");
+        assert!(r.before_ref.is_none(), "快照由调用方回填，builder 恒 None");
+        assert_eq!(r.after_sha.as_deref(), Some(sha256_hex("hello\n").as_str()));
+        assert!(r.diff.unwrap().contains("+hello"));
+    }
+
+    #[test]
+    fn receipt_modify_carries_before_sha_and_diff() {
+        let r = build_file_change_receipt("/x/f.py", "modify", Some("old\n"), "new\n");
+        assert_eq!(r.kind, "modify");
+        assert_eq!(r.added, 1);
+        assert_eq!(r.deleted, 1);
+        assert_eq!(r.before_sha.as_deref(), Some(sha256_hex("old\n").as_str()));
+        assert_eq!(r.after_sha.as_deref(), Some(sha256_hex("new\n").as_str()));
+        assert!(r.diff.unwrap().contains("-old"));
+    }
+
+    #[test]
+    fn tool_result_carries_file_changes_and_defaults_empty() {
+        let r = ToolResult::ok("x", Vec::new())
+            .with_file_change(build_file_change_receipt("/a", "create", None, "b\n"));
+        assert_eq!(r.file_changes.len(), 1);
+        assert_eq!(r.file_changes[0].path, "/a");
+        // 其余构造器默认空——既有 33 工具零感知（加字段不改语义的兼容锁）
+        assert!(ToolResult::ok("o", Vec::new()).file_changes.is_empty());
+        assert!(ToolResult::warn("w", Vec::new()).file_changes.is_empty());
+        assert!(ToolResult::error("e", Vec::new()).file_changes.is_empty());
+    }
+
+    /// sha256 已知向量（回滚证据链的算法稳定性锁——换库/换编码当场炸）
+    #[test]
+    fn sha256_hex_known_vector() {
+        assert_eq!(
+            sha256_hex("abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(
+            sha256_hex(""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
     }
 }
