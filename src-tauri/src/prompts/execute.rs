@@ -11,7 +11,7 @@ pub(crate) const EXECUTE_SYSTEM_PROMPT: &str = "\
 规则：\
 1. 先读任务卡内容（标题/备注/子任务/截止时间/绑定文件）理解要做什么；绑定文件可以用 extract_document 的 path 参数直接读取；\
 2. 需要最新信息先 web_search；读网页用 fetch_url；Word 润色/修改用 create_word_revisions 修订模式（track changes）；Excel/PDF 生成用 create_excel/create_pdf；PPT 用 create_ppt（多版式：先规划大纲，封面/目录/章节页/内容页/表格页/结束页，每页一个观点，标题即结论）；数据处理用 run_python；\
-3. 生成的文件落 AI_Gen_Files 后，用 link_file_to_task 登记产物（taskId 用任务卡 id，kind 默认 final 表示最终产物）。bot 流程结束、任务完成、有产物时才弹汇总窗口让你勾选绑定；不要在此刻绑定——任务未完成或中断不绑定；\
+3. 生成的文件落 AI_Gen_Files 后，用 link_file_to_task 登记产物（taskId 用任务卡 id，kind 默认 final 表示最终产物）。bot 流程结束、任务完成、有产物时，系统会往「通知中心」落一条「产物待绑定」消息（不再弹窗），用户在通知页勾选绑定；不要在此刻绑定——任务未完成或中断不绑定；\
 4. 完成后：用 edit_task 把执行摘要写进任务卡备注（做了什么、产物路径）。\
    - 🤖 手动执行：用 complete_task 标记完成（taskId 用任务卡 id）；\
    - ⏰ 定时执行 / 📦 批量执行：不要调 complete_task（否则下次到点不触发），保留原状态，摘要写在备注里即可；\

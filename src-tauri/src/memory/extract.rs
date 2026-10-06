@@ -612,13 +612,26 @@ where
             // 配置读取在锁外；队列写入事务化（半批不留中间态）；同批时间基准统一
             let _ = crate::bot::read_memory_tuning(app);
             let now = super::now_ms();
-            let _g = super::store_lock();
-            let mut conn = crate::db::open_db(app).map_err(|e| e.to_string())?;
-            let tx = conn.transaction().map_err(|e| e.to_string())?;
-            for f in &facts {
-                pending_insert(&tx, &f.content, &f.kind, f.importance, session_id, now)?;
+            let mut notif_ids: Vec<i64> = Vec::new();
+            {
+                let _g = super::store_lock();
+                let mut conn = crate::db::open_db(app).map_err(|e| e.to_string())?;
+                let tx = conn.transaction().map_err(|e| e.to_string())?;
+                for f in &facts {
+                    pending_insert(&tx, &f.content, &f.kind, f.importance, session_id, now)?;
+                    notif_ids.push(tx.last_insert_rowid());
+                }
+                tx.commit().map_err(|e| e.to_string())?;
             }
-            tx.commit().map_err(|e| e.to_string())?;
+            // 通知中心落一条消息（事务已提交，id 集合已定）；失败只影响提醒不影响队列
+            if let Err(e) = notify_memory_proposals(app, session_id, now, &notif_ids, &facts) {
+                crate::audit_event!(
+                    app,
+                    crate::audit::AuditLevel::Warn,
+                    "memory.proposal_notify_failed",
+                    "error" => e
+                );
+            }
         }
         AutoExtract::Off => return Ok(()), // 入口已挡；防御臂显式返回防门禁被删后静默吞管线
     }
@@ -662,6 +675,41 @@ async fn load_recent_messages(
         .collect())
 }
 
+// ───────────────────────── 通知中心接入 ─────────────────────────
+
+/// confirm 档入队后向通知中心落一条持久化消息（幂等 id：memory:{session}:{ts}）。
+/// 失败只影响提醒，不影响队列本身——调用方 audit 留痕。
+fn notify_memory_proposals<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    session_id: &str,
+    batch_ts_ms: i64,
+    ids: &[i64],
+    facts: &[ExtractedFact],
+) -> Result<(), String> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let conn = crate::db::open_db(app).map_err(|e| e.to_string())?;
+    let title = format!("新记忆提案 · {} 条", ids.len());
+    let body: String = facts
+        .first()
+        .map(|f| f.content.chars().take(80).collect())
+        .unwrap_or_default();
+    let payload = serde_json::json!({ "ids": ids });
+    let inserted = crate::notifications::notif_insert(
+        &conn,
+        &format!("memory:{session_id}:{batch_ts_ms}"),
+        crate::notifications::KIND_MEMORY,
+        &title,
+        &body,
+        &payload,
+    )?;
+    if inserted {
+        crate::notifications::emit_changed(app);
+    }
+    Ok(())
+}
+
 // ───────────────────────── tauri 命令（待确认队列） ─────────────────────────
 
 /// 待确认队列列表（新→旧）
@@ -681,6 +729,7 @@ pub async fn mem_pending_list(app: AppHandle) -> CommandResult<Vec<MemPendingVie
 /// 三段式锁纪律：锁内取行 → 锁外预嵌入（ONNX 推理不持写锁）→ 锁内入库并删除。
 #[tauri::command]
 pub async fn mem_pending_approve(app: AppHandle, ids: Vec<i64>) -> CommandResult<MemImportReport> {
+    let app2 = app.clone();
     let r = tauri::async_runtime::spawn_blocking(move || -> Result<MemImportReport, String> {
         // 去重（保序）：防前端重发导致同条目双嵌入/双入库
         let mut unique_ids: Vec<i64> = Vec::new();
@@ -692,7 +741,7 @@ pub async fn mem_pending_approve(app: AppHandle, ids: Vec<i64>) -> CommandResult
         // 第一段（锁内）：取待确认行
         let rows: Vec<(i64, PendingRow)> = {
             let _g = super::store_lock();
-            let conn = crate::db::open_db(&app).map_err(|e| e.to_string())?;
+            let conn = crate::db::open_db(&app2).map_err(|e| e.to_string())?;
             let mut out = Vec::new();
             for id in &unique_ids {
                 if let Some(row) = pending_get(&conn, *id)? {
@@ -712,13 +761,13 @@ pub async fn mem_pending_approve(app: AppHandle, ids: Vec<i64>) -> CommandResult
                 (id, row, emb)
             })
             .collect();
-        let sp = store::StoreParams::of(&crate::bot::read_memory_tuning(&app));
+        let sp = store::StoreParams::of(&crate::bot::read_memory_tuning(&app2));
         // 第三段（锁内）：入库 + 删队列。
         // 入库 Err → 中止上抛且**不删队列行**（用户可重试，条目不丢）；
         // RejectedFull/RefusedForeignMerge → skipped 并删行（数据性拒收不可重试）
         let mut report = MemImportReport::default();
         let _g = super::store_lock();
-        let conn = crate::db::open_db(&app).map_err(|e| e.to_string())?;
+        let conn = crate::db::open_db(&app2).map_err(|e| e.to_string())?;
         for (id, row, emb) in &prepared {
             let item = NewItem {
                 kind: row.kind.clone(),
@@ -741,24 +790,36 @@ pub async fn mem_pending_approve(app: AppHandle, ids: Vec<i64>) -> CommandResult
             }
             pending_delete(&conn, &[*id])?;
         }
+        // 通知中心回写：队列已处理的提案从对应消息中剔除/整条解决（收下→done）
+        crate::notifications::notif_sync_memory(&conn, crate::notifications::STATUS_DONE)?;
         Ok(report)
     })
     .await;
-    r.map_err(|e| CommandError::from(format!("收下线程 join 失败：{e}")))?
-        .map_err(CommandError::from)
+    let report = r
+        .map_err(|e| CommandError::from(format!("收下线程 join 失败：{e}")))?
+        .map_err(CommandError::from)?;
+    crate::notifications::emit_changed(&app);
+    Ok(report)
 }
 
 /// 忽略待确认条目（直接删除），返回删到的条数
 #[tauri::command]
 pub async fn mem_pending_reject(app: AppHandle, ids: Vec<i64>) -> CommandResult<usize> {
-    let r = tauri::async_runtime::spawn_blocking(move || -> Result<usize, String> {
+    let app2 = app.clone();
+    let r = tauri::async_runtime::spawn_blocking(move || -> Result<(usize, ()), String> {
         let _g = super::store_lock();
-        let conn = crate::db::open_db(&app).map_err(|e| e.to_string())?;
-        pending_delete(&conn, &ids)
+        let conn = crate::db::open_db(&app2).map_err(|e| e.to_string())?;
+        let n = pending_delete(&conn, &ids)?;
+        // 通知中心回写：被忽略提案从对应消息中剔除/整条解决（忽略→dismissed）
+        crate::notifications::notif_sync_memory(&conn, crate::notifications::STATUS_DISMISSED)?;
+        Ok((n, ()))
     })
     .await;
-    r.map_err(|e| CommandError::from(format!("忽略线程 join 失败：{e}")))?
-        .map_err(CommandError::DbError)
+    let (n, ()) = r
+        .map_err(|e| CommandError::from(format!("忽略线程 join 失败：{e}")))?
+        .map_err(CommandError::DbError)?;
+    crate::notifications::emit_changed(&app);
+    Ok(n)
 }
 
 #[cfg(test)]

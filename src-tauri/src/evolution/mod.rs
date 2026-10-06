@@ -119,6 +119,37 @@ pub(crate) fn lock_evolution_store() -> std::sync::MutexGuard<'static, ()> {
     })
 }
 
+/// 提案入池后向通知中心逐条落持久化消息（幂等 id：evo:{proposal_id}）。
+/// 只对未被自动应用、需要用户决策的提案调用（post_consolidation 已过滤）。
+fn notify_evolution_proposals<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    entries: &[candidate::ProposalEntry],
+) -> Result<(), String> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+    let conn = crate::db::open_db(app).map_err(|e| e.to_string())?;
+    let mut inserted_any = false;
+    for e in entries {
+        let title: String = e.suggestion_text.chars().take(60).collect();
+        let body: String = e.summary.chars().take(120).collect();
+        let payload = serde_json::json!({ "proposalId": e.proposal_id });
+        let inserted = crate::notifications::notif_insert(
+            &conn,
+            &format!("evo:{}", e.proposal_id),
+            crate::notifications::KIND_EVOLUTION,
+            &title,
+            &body,
+            &payload,
+        )?;
+        inserted_any |= inserted;
+    }
+    if inserted_any {
+        crate::notifications::emit_changed(app);
+    }
+    Ok(())
+}
+
 /// 反思完成后的桥接入口（`memory::consolidate::run_consolidation` 末尾调用）。
 ///
 /// 签名严格按 spec：不接收 AppHandle / session_id / 任何反向依赖 memory 内部的状态。
@@ -146,12 +177,25 @@ pub fn post_consolidation(ops: &[ConsolidateOp], report: &ConsolidateReport) {
             candidate::write_proposals(app, &proposals)
         };
         match persist {
-            Ok(n) if n > 0 => crate::audit_event!(
-                app,
-                crate::audit::AuditLevel::Info,
-                "evolution.proposal.persisted",
-                "count" => n.to_string(),
-            ),
+            Ok(new_entries) if !new_entries.is_empty() => {
+                crate::audit_event!(
+                    app,
+                    crate::audit::AuditLevel::Info,
+                    "evolution.proposal.persisted",
+                    "count" => new_entries.len().to_string(),
+                );
+                // 通知中心逐条落消息；auto 档下达门槛、即将被自动应用的提案不打扰
+                let auto_allowed = policy::auto_apply_allowed(emit::app_handle());
+                let to_notify: Vec<_> = new_entries
+                    .into_iter()
+                    .filter(|e| {
+                        !(auto_allowed && gated.iter().any(|p| p.proposal_id == e.proposal_id))
+                    })
+                    .collect();
+                if let Err(e) = notify_evolution_proposals(app, &to_notify) {
+                    eprintln!("[evolution] 提案通知落库失败：{e}");
+                }
+            }
             Ok(_) => {}
             Err(e) => crate::audit_event!(
                 app,

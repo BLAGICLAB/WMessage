@@ -1,11 +1,12 @@
 //! 任务卡执行流程产物登记表（D1a 内存 HashMap）
 //!
 //! 链路：`tool_link_file_to_task` 登记 → `run_task_in_chat_with` 收尾
-//! 按 `TaskExecOrigin` 分流（D4d）→ emit `artifact-batch-ready` Tauri event
-//! → 前端 `ArtifactBatchDialog` 弹窗勾选 → 用户确认后调
-//! `confirm_artifact_batch` 落 db_upsert。
+//! 按 `TaskExecOrigin` 分流（D4d）→ `notifications` 表落 `artifact_bind`
+//! 持久化消息（原挂件 `artifact-batch-ready` 弹窗已下线）→ 通知中心卡片
+//! 勾选 → 用户确认后调 `confirm_artifact_batch` 落 db_upsert。
 //!
-//! 进程重启后未弹窗的产物清空（"没帮上"可接受，不持久化）。
+//! 进程重启后登记表清空，但通知消息持久化——paths 随 payload 落库，
+//! 重启后仍可从通知中心完成绑定。
 //! 设计权衡见 workspace 内部讨论 2026-09-11 D1a 拍板。
 
 use crate::bot_chat::TaskExecOrigin;
@@ -142,6 +143,15 @@ pub async fn confirm_artifact_batch(
         if !paths.iter().any(|p| p == &a.path) {
             register(&app, &task_id, a.path, a.kind).await;
         }
+    }
+    // 通知中心回写：该任务的绑定消息已处理（done）。失败不阻断绑定结果，
+    // stderr 留痕（下次通知页刷新仍会读到 pending 行，用户可重试勾选）。
+    let resolve = crate::db::open_db(&app)
+        .and_then(|conn| crate::notifications::notif_resolve_artifact(&conn, &task_id));
+    if let Err(e) = resolve {
+        eprintln!("[notifications] 产物绑定消息回写失败：{e}");
+    } else {
+        crate::notifications::emit_changed(&app);
     }
     Ok(paths.len())
 }

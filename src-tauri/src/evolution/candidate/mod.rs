@@ -38,7 +38,7 @@ pub use ttl::{compute_expires_at, evict_expired, is_expired, mark_expired, TTL_D
 /// 批量落盘 proposals 到 evolution-proposals.jsonl（dedup by proposal_id）
 ///
 /// 路径：`{data_dir}/evolution-proposals.jsonl`（沿用 panel/commands.rs:24 模式）
-/// 返回实际新写入的条数（被 dedup 跳过的不计）。
+/// 返回实际新写入的条目（被 dedup 跳过的不计）——通知中心按此逐条落消息。
 /// 调用方：evolution::post_consolidation。
 ///
 /// **重要性（老板 12:29 拍板修复）**：R6 A shadow 钩子依赖此文件。补上让整条
@@ -46,13 +46,13 @@ pub use ttl::{compute_expires_at, evict_expired, is_expired, mark_expired, TTL_D
 pub fn write_proposals<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     proposals: &[crate::evolution::proposal::EvolutionProposal],
-) -> Result<u32, String> {
+) -> Result<Vec<ProposalEntry>, String> {
     use std::collections::HashSet;
     let path = crate::db::paths::data_dir(app).join("evolution-proposals.jsonl");
     // read_all Err（首行结构级损坏）必须传播——dedup 基线不可得时盲写会重复追加
     let existing = entry::read_all(&path)?;
     let existing_ids: HashSet<String> = existing.iter().map(|e| e.proposal_id.clone()).collect();
-    let mut written = 0u32;
+    let mut written: Vec<ProposalEntry> = Vec::new();
     let now_ms = chrono::Utc::now().timestamp_millis();
     for p in proposals {
         if existing_ids.contains(&p.proposal_id) {
@@ -60,7 +60,7 @@ pub fn write_proposals<R: tauri::Runtime>(
         }
         let entry = derive::from_proposal(p, now_ms);
         entry::append(&path, &entry)?;
-        written += 1;
+        written.push(entry);
     }
     Ok(written)
 }

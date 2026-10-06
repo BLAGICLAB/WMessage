@@ -4,7 +4,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { isPermissionGranted, requestPermission } from "@tauri-apps/plugin-notification";
 import {
+  AlarmClock,
   Archive,
+  Bell,
   FolderOpen,
   Plus,
   Search,
@@ -24,7 +26,13 @@ import { TrashPage } from "./components/TrashPage";
 import { WorkspacePage } from "./components/WorkspacePage";
 import { SettingsPage } from "./components/SettingsPage";
 import { WorkflowPage } from "./components/WorkflowCanvas/WorkflowPage";
+import { SchedulePage } from "./components/SchedulePage/SchedulePage";
 import GraphPage from "./components/GraphPage/GraphPage";
+import { NotificationsPage } from "./components/NotificationsPage/NotificationsPage";
+import {
+  NOTIFICATIONS_CHANGED_EVENT,
+  pendingNotificationCount,
+} from "./lib/notifications";
 import ConfirmMap from "./components/ConfirmMap";
 import { deleteTaskRows, diffTaskRows, loadTasksFromDb, taskEq, upsertTasks, exportTasksToFile, importTasksFromFile, exportWorkspaceToFile, importWorkspaceFromFile, STORAGE_KEY, sortByOrder, assignInsertOrder, upsertWorkspaceItems } from "./storage";
 import { handleCommandError } from "./lib/errorHandler";
@@ -73,16 +81,34 @@ function localDateStr(): string {
 }
 
 // 左侧导航栏条目（U2）：视图切换职能自顶部工具条迁入；设置单独走底部入口。
-// W1-CANVAS：新增「工作流」栏目（设计 §2——唯一触碰主窗口的点）
-// 任务图谱（设计 §3.4）：全量任务关系视图，位于工作流之后
-type RailView = "board" | "workflow" | "graph" | "archive" | "workspace" | "trash";
+// 分区结构：「任务卡」组（首页/图谱/归档/工作区/回收站）+ 「Agent能力」组（工作流/定时任务/通知）
+type RailView =
+  | "board"
+  | "workflow"
+  | "schedule"
+  | "graph"
+  | "archive"
+  | "workspace"
+  | "trash"
+  | "notifications";
 const NAV_ITEMS: { key: RailView; label: string; icon: typeof SquareKanban }[] = [
   { key: "board", label: "首页", icon: SquareKanban },
-  { key: "workflow", label: "工作流", icon: WorkflowIcon },
   { key: "graph", label: "图谱", icon: Waypoints },
   { key: "archive", label: "归档", icon: Archive },
   { key: "workspace", label: "工作区", icon: FolderOpen },
   { key: "trash", label: "回收站", icon: Trash2 },
+];
+const AGENT_ITEMS: {
+  key: RailView;
+  label: string;
+  icon: typeof SquareKanban;
+  badge?: boolean;
+}[] = [
+  { key: "workflow", label: "工作流", icon: WorkflowIcon },
+  // 定时任务模块：任务卡/工作流到点自动执行的集中管理（列表=状态面板）
+  { key: "schedule", label: "定时任务", icon: AlarmClock },
+  // 通知中心（Agent 通知模块）：badge=true 渲染待处理数角标
+  { key: "notifications", label: "通知", icon: Bell, badge: true },
 ];
 
 /** 快捷键提示文案：mac ⌘ / 其他平台 Ctrl（纯前端 keydown，两平台同实现）。
@@ -108,6 +134,7 @@ function RailButton({
   active = false,
   onClick,
   variant = "item",
+  badge = 0,
 }: {
   icon: typeof SquareKanban;
   label: string;
@@ -115,6 +142,8 @@ function RailButton({
   active?: boolean;
   onClick: () => void;
   variant?: "action" | "item";
+  /** 待处理数角标（0 不显示；通知中心入口用） */
+  badge?: number;
 }) {
   const base =
     "flex h-8 w-full items-center gap-2 px-2.5 text-sm transition-colors duration-100";
@@ -134,12 +163,30 @@ function RailButton({
     >
       <Icon size={15} aria-hidden />
       <span className="flex-1 text-left">{label}</span>
+      {badge > 0 && (
+        <span
+          aria-label={`${badge} 条待处理`}
+          className="shrink-0 rounded-full bg-[var(--t1)] px-1.5 py-0.5 text-[10px] font-medium leading-none text-[var(--bg)]"
+        >
+          {badge > 99 ? "99+" : badge}
+        </span>
+      )}
       {kbd && (
         <kbd className="shrink-0 rounded border border-[var(--edge)] px-1 py-0.5 text-[10px] font-medium text-[var(--t5)]">
           {kbd}
         </kbd>
       )}
     </button>
+  );
+}
+
+/** 导航栏分区标题：小标题在上、横线在下，分隔栏目组（任务卡 / Agent能力） */
+function RailSection({ label }: { label: string }) {
+  return (
+    <div className="mt-3 mb-1 px-2.5">
+      <span className="text-[11px] font-medium text-[var(--t5)]">{label}</span>
+      <div role="separator" className="mt-1 border-t border-[var(--edge)]" />
+    </div>
   );
 }
 
@@ -160,6 +207,19 @@ function App() {
   const tasksRef = useRef<Task[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [view, setView] = useState<RailView | "settings">("board");
+  // Agent 通知中心待处理数（导航角标；notifications-changed 广播驱动刷新）
+  const [notifCount, setNotifCount] = useState(0);
+  useEffect(() => {
+    const refresh = () =>
+      pendingNotificationCount()
+        .then(setNotifCount)
+        .catch((e) => console.error("[notifications] 角标刷新失败:", e));
+    void refresh();
+    const un = listen(NOTIFICATIONS_CHANGED_EVENT, refresh);
+    return () => {
+      un.then((f) => f());
+    };
+  }, []);
   const [theme, setTheme] = useState<ThemeSetting>(getSetting);
   const [paletteOpen, setPaletteOpen] = useState(false);
   // W1-CANVAS：工作流卡可见性开关（默认隐藏，设置页「工作流」分区控制，事件即时同步）
@@ -784,7 +844,7 @@ function App() {
         {/* 左侧导航栏（U2）：新建(⌘N)/搜索(⌘K)/视图切换/底部设置——职能自顶部工具条迁入 */}
         <nav
           aria-label="主导航"
-          className="flex w-44 shrink-0 flex-col gap-1 border-r border-[var(--edge)] p-3"
+          className="flex w-52 shrink-0 flex-col gap-1 border-r border-[var(--edge)] p-3"
         >
           <div className="mb-2 flex items-center gap-2 px-1 pt-1">
             <img
@@ -812,7 +872,7 @@ function App() {
             kbd={KBD_SEARCH}
             onClick={() => setPaletteOpen(true)}
           />
-          <div role="separator" className="my-2 border-t border-[var(--edge)]" />
+          <RailSection label="任务卡" />
           {NAV_ITEMS.map((item) => (
             <RailButton
               key={item.key}
@@ -820,6 +880,18 @@ function App() {
               label={item.label}
               active={view === item.key}
               onClick={() => setView(item.key)}
+            />
+          ))}
+          <div aria-hidden className="h-[72px]" />
+          <RailSection label="Agent能力" />
+          {AGENT_ITEMS.map((item) => (
+            <RailButton
+              key={item.key}
+              icon={item.icon}
+              label={item.label}
+              active={view === item.key}
+              onClick={() => setView(item.key)}
+              badge={item.badge ? notifCount : 0}
             />
           ))}
           <div className="flex-1" />
@@ -850,6 +922,8 @@ function App() {
                 void reloadTasks().catch((e) => handleCommandError(e, "重读任务"));
               }}
             />
+          ) : view === "schedule" ? (
+            <SchedulePage />
           ) : view === "graph" ? (
             <GraphPage
               tasks={tasks}
@@ -873,6 +947,8 @@ function App() {
               onUpdate={updateTask}
               onDelete={hardDeleteTask}
             />
+          ) : view === "notifications" ? (
+            <NotificationsPage />
           ) : null}
           {/* 全局确认弹窗（老板 14:45 拍板：confirm 走主窗口，不走 widget 挂件） */}
           <ConfirmMap />

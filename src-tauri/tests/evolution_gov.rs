@@ -205,8 +205,10 @@ fn confirm_mode_e2e_toggle_applies_and_is_idempotent() {
     );
 
     // ── 段 3：候选池真写盘（write_proposals，post_consolidation 同一函数）──
+    // write_proposals 现返回新写入条目（通知中心逐条落消息用，T1 后 N1 批次）
     let written = candidate::write_proposals(&app, &proposals).unwrap();
-    assert_eq!(written, 1, "新提案应入池");
+    assert_eq!(written.len(), 1, "新提案应入池");
+    assert_eq!(written[0].proposal_id, pid, "返回条目即新写入的提案");
     let pooled = candidate::read_all(&proposals_path(&app)).unwrap();
     assert_eq!(pooled.len(), 1);
     assert_eq!(pooled[0].proposal_id, pid);

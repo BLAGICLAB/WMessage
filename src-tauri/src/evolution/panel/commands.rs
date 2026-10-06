@@ -451,11 +451,24 @@ pub async fn evolution_toggle_proposal(
     proposal_id: String,
     enabled: bool,
 ) -> Result<(), String> {
+    let app2 = app.clone();
+    let proposal_id2 = proposal_id.clone();
     // 阻塞 fs IO（jsonl load→mutate→rewrite）移出 async worker
     crate::py::document::spawn_blocking_map(move || {
-        toggle_inner(&app, &proposal_id, enabled).map(|_| ())
+        toggle_inner(&app2, &proposal_id2, enabled).map(|_| ())
     })
-    .await
+    .await?;
+    // 通知中心回写：提案已决策（ON→done / OFF→dismissed）
+    notify_resolved(
+        &app,
+        &proposal_id,
+        if enabled {
+            crate::notifications::STATUS_DONE
+        } else {
+            crate::notifications::STATUS_DISMISSED
+        },
+    );
+    Ok(())
 }
 
 /// Tauri command：彻底废案（delete emoji 入口）
@@ -470,11 +483,16 @@ pub async fn evolution_delete_proposal(
     proposal_id: String,
     cascade_source: bool,
 ) -> Result<(), String> {
+    let app2 = app.clone();
+    let proposal_id2 = proposal_id.clone();
     // 阻塞 fs IO + 级联 mem_items 删除（SQLite）移出 async worker
     crate::py::document::spawn_blocking_map(move || {
-        delete_inner(&app, &proposal_id, cascade_source)
+        delete_inner(&app2, &proposal_id2, cascade_source)
     })
-    .await
+    .await?;
+    // 通知中心回写：提案已删除 → 对应消息 dismissed
+    notify_resolved(&app, &proposal_id, crate::notifications::STATUS_DISMISSED);
+    Ok(())
 }
 
 // ───────────────────────── Commands ─────────────────────────
@@ -546,11 +564,16 @@ pub async fn evolution_promote_proposal(
     }
 
     // 段 B（阻塞 IO：持锁 RMW + rewrite）
-    crate::py::document::spawn_blocking_map(move || {
-        toggle_inner(&app, &proposal_id, true)?
+    let app2 = app.clone();
+    let proposal_id2 = proposal_id.clone();
+    let cr = crate::py::document::spawn_blocking_map(move || {
+        toggle_inner(&app2, &proposal_id2, true)?
             .ok_or_else(|| "toggle_inner ON 未返回 ChangeRecord（不变量破坏）".to_string())
     })
-    .await
+    .await?;
+    // 通知中心回写：提案已启用 → 对应消息 done
+    notify_resolved(&app, &proposal_id, crate::notifications::STATUS_DONE);
+    Ok(cr)
 }
 
 /// 老板 16:05 拍板：Reject 语义 = toggle OFF（兼容老 API）
@@ -596,10 +619,26 @@ pub async fn evolution_reject_proposal(
         return Err("用户取消停用操作".into());
     }
     // 段 B（阻塞 IO：持锁 RMW + rewrite）
+    let app2 = app.clone();
+    let proposal_id2 = proposal_id.clone();
     crate::py::document::spawn_blocking_map(move || {
-        toggle_inner(&app, &proposal_id, false).map(|_| ()) // OFF 恒 None
+        toggle_inner(&app2, &proposal_id2, false).map(|_| ()) // OFF 恒 None
     })
-    .await
+    .await?;
+    // 通知中心回写：提案已停用 → 对应消息 dismissed
+    notify_resolved(&app, &proposal_id, crate::notifications::STATUS_DISMISSED);
+    Ok(())
+}
+
+/// 通知中心回写：提案已被处理，把对应消息解决掉（失败不阻断主流程，stderr 留痕）
+fn notify_resolved<R: tauri::Runtime>(app: &AppHandle<R>, proposal_id: &str, status: &str) {
+    let result = crate::db::open_db(app).and_then(|conn| {
+        crate::notifications::notif_resolve(&conn, &format!("evo:{proposal_id}"), status)
+    });
+    match result {
+        Ok(()) => crate::notifications::emit_changed(app),
+        Err(e) => eprintln!("[notifications] evolution 提案消息回写失败：{e}"),
+    }
 }
 
 /// Keep Shadow：延长 shadow 期（重置 expires_at_ms = now + TTL）

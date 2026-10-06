@@ -42,7 +42,6 @@ import type { Task, WorkspaceItem } from "../../types";
 import { taskFiles, filesPatch } from "../../lib/taskFiles";
 import { ChatPanel } from "../ChatPanel";
 import { FoldToggle } from "../FoldToggle";
-import { ArtifactBatchDialog } from "../ArtifactBatchDialog";
 import { ErrorDialogHost } from "../../ui/ErrorDialogHost";
 import widgetLogo from "../../assets/widget-logo.png";
 
@@ -352,15 +351,14 @@ export default function WidgetApp() {
     setExpanded(false);
   };
 
-  // 产物绑定弹窗挂在挂件窗口：面板始终挂载（收起只是 display:none），事件监听不丢
+  // 产物绑定弹窗已迁移到主窗口通知中心（Agent 通知模块）：挂件不再弹窗、不再自动展开。
+  // expandedRef 仍服务 ⌘K 跨窗口跳会话：主窗口发 chat-focus-session，这里负责展开面板；
+  // 会话切换由 ChatPanel 自行监听同名事件。ref 写走 effect（render 期写 ref 会被 lint 拦）
   const expandedRef = useRef(expanded);
-  // render 期直写（镜像 ConfirmMap pendingRef 既有模式）：chat-focus-session /
-  // artifact-batch-ready 监听读「同帧最新」展开态，useEffect 写在事件与提交同
-  // tick 时有 stale 窗
+  // render 期直写（镜像 ConfirmMap pendingRef 既有模式）：chat-focus-session
+  // 监听读「同帧最新」展开态，useEffect 写在事件与提交同 tick 时有 stale 窗
   // oxlint-disable-next-line react/refs
   expandedRef.current = expanded;
-  // ⌘K 跨窗口跳会话（U2 命令面板）：主窗口发 chat-focus-session，这里负责展开面板；
-  // 会话切换由 ChatPanel 自行监听同名事件。ref 写走 effect（render 期写 ref 会被 lint 拦）
   const expandFnRef = useRef<() => Promise<void>>(async () => {});
   useEffect(() => {
     expandFnRef.current = expand;
@@ -373,15 +371,6 @@ export default function WidgetApp() {
       un.then((f) => f());
     };
   }, []);
-  useEffect(() => {
-    const un = listen("artifact-batch-ready", () => {
-      if (!expandedRef.current) expandFnRef.current().catch(() => {});
-    });
-    return () => {
-      un.then((f) => f());
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [botOn]);
 
   const startDrag = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
@@ -525,15 +514,6 @@ export default function WidgetApp() {
       );
     }
     setEditingId(null);
-  };
-
-  const setSchedule = (t: Task, schedule: string | undefined) => {
-    applyLocal((prev) =>
-      prev.map((x) => (x.id === t.id ? { ...x, schedule } : x))
-    );
-    invoke<Task>("task_patch", { id: t.id, patch: { schedule: schedule ?? null } }).catch(
-      (e) => handleCommandError(e, "更新任务")
-    );
   };
 
   const cancelTitle = () => setEditingId(null);
@@ -955,7 +935,6 @@ export default function WidgetApp() {
                               emit("execute-task", { id: t.id, title: t.title }).catch(() => {})
                           : undefined
                       }
-                      onSetSchedule={(sched) => setSchedule(t, sched)}
                     />
                   ))}
                 </SortableContext>
@@ -985,8 +964,6 @@ export default function WidgetApp() {
               onFinishSelection={finishSelection}
             />
           </div>
-
-          <ArtifactBatchDialog />
         </div>
       }
       </div>
