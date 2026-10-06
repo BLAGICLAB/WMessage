@@ -2080,6 +2080,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         {(
           [
             ["maxRounds", "模型循环最大轮数", "默认 50（钳 5–200）；Skill 自报轮数优先", "50"],
+            ["maxFunctionCalls", "调用工具上限（全域熔断）", "默认 100（钳 1–500）；单次执行累计调用达到即熔断（软警告在 70% 处）。原「工作流」设置卡迁移至此", "100"],
             ["historyBudgetChars", "会话历史字符预算", "默认 100000（钳 20000–500000）；超出后最旧消息先丢并生成摘要", "100000"],
             ["subagentMaxTurns", "子 agent 轮数预算", "默认 30（硬顶 50）；LLM 派发子 agent 未给预算时用", "30"],
             ["subagentMaxToolCalls", "子 agent 工具调用预算", "默认 100（钳 1–500）；触顶后子 agent 收到收尾指令", "100"],
@@ -3096,14 +3097,8 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
       )}
       {mountedSections.has("workflow") && (
       <section hidden={activeSection !== "workflow"} className="space-y-4 pt-4">
-      <WorkflowSettingsCard
-        maxFunctionCalls={config.maxFunctionCalls}
-        onMaxFunctionCallsChange={(v) =>
-          void saveConfig((c) => ({ ...c, maxFunctionCalls: v }), {
-            skipReload: true,
-          })
-        }
-      />
+      {/* P3-b 迁移：熔断上限已入「Agent 运行参数」卡，本卡只剩可见开关与拆解提示词 */}
+      <WorkflowSettingsCard />
       </section>
       )}
       {mountedSections.has("graph") && (
@@ -3161,19 +3156,10 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
 /** 工作流设置卡（W1-CANVAS §10 + W2-DECOMPOSE §6.3）：可见性开关 + 拆解提示词。
  *  提示词两段式：这里编辑的是「指引段」；「输出契约段」在后端代码硬拼，
  *  用户改指引段破坏不了 JSON 契约。 */
-function WorkflowSettingsCard({
-  maxFunctionCalls,
-  onMaxFunctionCallsChange,
-}: {
-  /** 熔断上限（字符串态，空 = 默认 100） */
-  maxFunctionCalls: string;
-  onMaxFunctionCallsChange: (v: string) => void;
-}) {
+function WorkflowSettingsCard() {
   const [showTasks, setShowTasks] = useState(getShowWorkflowTasks);
   const [guidance, setGuidance] = useState(getDecomposeGuidance);
   const [guidanceSaved, setGuidanceSaved] = useState(false);
-  // 熔断上限本地草稿：blur 才提交（W5 r1：每击键 IPC+落盘不可接受）
-  const [fuseDraft, setFuseDraft] = useState(maxFunctionCalls);
   const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const guidanceRef = useRef(guidance);
   // 卸载时兜底持久化（OCR r1：焦点在 textarea 时切走/关窗，onBlur 可能不触发）
@@ -3235,26 +3221,8 @@ function WorkflowSettingsCard({
           </button>
         </div>
       </div>
-      <div className="nm-card p-5">
-        <h2 className="text-lg font-semibold text-[var(--t1)]">调用工具上限（全域熔断）</h2>
-        <p className="mt-1 text-xs text-[var(--t5)]">
-          单次执行累计调用工具达到该次数即熔断停止（默认 100）。工作流节点等长链任务
-          被熔断时，调高后点「继续执行」可从断点接着跑。作用于所有机器人执行（含普通聊天）。
-        </p>
-        <div className="mt-3 flex items-center gap-2">
-          <input
-            aria-label="调用工具上限"
-            className="h-8 w-28 rounded-[var(--r-sm)] nm-inset px-3 text-sm text-[var(--t1)] outline-none"
-            inputMode="numeric"
-            maxLength={4}
-            placeholder="100"
-            value={fuseDraft}
-            onChange={(e) => setFuseDraft(e.target.value.replace(/[^0-9]/g, ""))}
-            onBlur={() => onMaxFunctionCallsChange(fuseDraft)}
-          />
-          <span className="text-xs text-[var(--t5)]">次（留空 = 默认 100）</span>
-        </div>
-      </div>
+      {/* P3-b 迁移：调用工具上限（全域熔断）已并入「Agent 运行参数」卡（机器人 section）——
+          它管的是全域所有 agent 执行（含普通聊天），挂在工作流 section 语义错位 */}
       <div className="nm-card p-5">
         <h2 className="text-lg font-semibold text-[var(--t1)]">AI 拆解提示词</h2>
         <p className="mt-1 text-xs text-[var(--t5)]">
