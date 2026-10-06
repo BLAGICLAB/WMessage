@@ -484,6 +484,7 @@ pub fn run() {
             crate::db::tasks::db_load,
             crate::db::tasks::db_upsert,
             crate::db::tasks::db_delete,
+            crate::db::tasks::tasks_delete_non_self,
             crate::db::tasks::task_set_column,
             crate::db::tasks::task_patch,
             crate::db::tasks::task_reorder,
