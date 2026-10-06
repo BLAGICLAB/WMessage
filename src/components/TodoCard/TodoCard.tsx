@@ -314,7 +314,7 @@ export function TodoCardView({
         />
       ) : task.note ? (
         <p
-          className={`mt-1.5 text-xs text-[var(--t4)] ${archived || trashed ? "" : "cursor-text"}`}
+          className={`mt-1.5 text-xs text-[var(--t4)] break-all ${archived || trashed ? "" : "cursor-text"}`}
           title={archived || trashed ? undefined : "点击编辑备注"}
           onPointerDown={stop}
           onClick={
@@ -572,13 +572,13 @@ export function TodoCardView({
 
       {archived && (
         <button
-          className="nm-btn mt-3 px-3 py-1 text-xs text-[var(--t3)]"
+          className="nm-btn mt-3 px-3 py-1 text-xs text-[var(--t3)] flex items-center gap-1 whitespace-nowrap"
           onPointerDown={stop}
           onClick={() =>
             onUpdate(task.id, { archived: false, completedAt: Date.now() })
           }
         >
-          <Undo2 size={11} aria-hidden className="mr-1" />
+          <Undo2 size={11} aria-hidden />
           恢复
         </button>
       )}
@@ -586,15 +586,15 @@ export function TodoCardView({
       {trashed && (
         <div className="mt-3 flex items-center gap-2">
           <button
-            className="nm-btn px-3 py-1 text-xs text-[var(--t3)]"
+            className="nm-btn px-3 py-1 text-xs text-[var(--t3)] flex items-center gap-1 whitespace-nowrap"
             onPointerDown={stop}
             onClick={() => onUpdate(task.id, { deletedAt: undefined })}
           >
-            <Undo2 size={11} aria-hidden className="mr-1" />
+            <Undo2 size={11} aria-hidden />
             恢复
           </button>
           <button
-            className="nm-btn px-3 py-1 text-xs text-red-400"
+            className="nm-btn px-3 py-1 text-xs text-red-400 flex items-center gap-1 whitespace-nowrap"
             onPointerDown={stop}
             onClick={() => {
               // 绑本地文件/文件夹时弹三选项（老板定的规则）：
@@ -608,7 +608,7 @@ export function TodoCardView({
               onDelete(task.id);
             }}
           >
-            <Trash2 size={11} aria-hidden className="mr-1 inline" />
+            <Trash2 size={11} aria-hidden />
             彻底删除
           </button>
         </div>

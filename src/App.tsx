@@ -89,7 +89,7 @@ function localDateStr(): string {
 }
 
 // 左侧导航栏条目（U2）：视图切换职能自顶部工具条迁入；设置单独走底部入口。
-// 分区结构：「任务卡」组（首页/图谱/归档/工作区/回收站）+ 「Agent能力」组（工作流/定时任务/通知）
+// 分区结构：「任务卡」组（首页/图谱/归档/工作区/回收站）+ 「Agent能力」组（工作流/定时/通知）
 type RailView =
   | "board"
   | "workflow"
@@ -115,7 +115,7 @@ const AGENT_ITEMS: {
 }[] = [
   { key: "workflow", label: "工作流", icon: WorkflowIcon },
   // 定时任务模块：任务卡/工作流到点自动执行的集中管理（列表=状态面板）
-  { key: "schedule", label: "定时任务", icon: AlarmClock },
+  { key: "schedule", label: "定时", icon: AlarmClock },
   // P4 执行活动聚合页：最近全部执行痕迹列表（Agent 透明化设计 §5.6）
   { key: "activity", label: "活动", icon: ActivityIcon },
   // 通知中心（Agent 通知模块）：badge=true 渲染待处理数角标
