@@ -20,6 +20,7 @@ import type { Task } from "../../types";
 
 import type {
   ChatModelEntry,
+  FileChangeLite,
   ModelItem,
   Msg,
   PermMode,
@@ -28,6 +29,7 @@ import type {
   SkillFailure,
   TaskRef,
   ToolCall,
+  VerboseLevel,
 } from "./types";
 import {
   DELTA_BATCH_MS,
@@ -142,6 +144,15 @@ export function ChatPanel({
   const effortDropdownRef = useRef<HTMLDivElement>(null);
   /** 🛡 授权模式（U3b 只读展示）：bot-config 的 permMode，设置页维护 */
   const [permMode, setPermMode] = useState<PermMode>("ask");
+  // P2-b 执行过程详细度（verbose 三档）：localStorage 持久化，仅影响 ToolBadges 展示档位
+  const [verboseLevel, setVerboseLevelState] = useState<VerboseLevel>(() => {
+    const v = localStorage.getItem("chat-verbose-level");
+    return v === "concise" || v === "debug" ? v : "detailed";
+  });
+  const setVerboseLevel = (l: VerboseLevel) => {
+    setVerboseLevelState(l);
+    localStorage.setItem("chat-verbose-level", l);
+  };
   // 顶部行引用 + 下拉 top 定位（紧贴 🤖 按钮底部，0 间距）
   const topBarRef = useRef<HTMLDivElement>(null);
   const dropdownTop = useDropdownTop(rootRef, menuRef);
@@ -158,7 +169,15 @@ export function ChatPanel({
   /** PAR-1：每会话流式元数据（thinking/tools/skillFailure 权威副本，按 sid 隔离；
    *  并行回复各自累积互不串台，收尾并入最终消息后删除条目） */
   const streamingMetaMapRef = useRef<
-    Map<string, { thinking?: string; tools?: ToolCall[]; skillFailure?: SkillFailure }>
+    Map<
+      string,
+      {
+        thinking?: string;
+        tools?: ToolCall[];
+        skillFailure?: SkillFailure;
+        fileChanges?: FileChangeLite[];
+      }
+    >
   >(new Map());
   const metaFor = (sid: string | null) => {
     if (!sid) return undefined;
@@ -516,17 +535,22 @@ export function ChatPanel({
       id?: string;
       name?: string;
       args?: string;
+      result?: string | null;
+      ms?: number | null;
+      ok?: boolean;
       sessionId?: string | null;
     }>("bot-tool-done", (e) => {
       const sid = e.payload?.sessionId ?? null;
       if (sid === null) return;
       if (sid !== sessionIdRef.current && !inflightRef.current.has(sid)) return;
-      const { id, name, args } = e.payload ?? {};
+      const { id, name, args, result, ms, ok } = e.payload ?? {};
       if (!id) return;
       const m = metaFor(sid);
       if (!m) return;
       const tools = (m.tools ?? []).map((x) =>
-        x.id === id ? { ...x, name: name ?? x.name, args, done: true } : x
+        x.id === id
+          ? { ...x, name: name ?? x.name, args, done: true, result: result ?? undefined, ms: ms ?? undefined, ok }
+          : x
       );
       m.tools = tools;
       if (sid !== sessionIdRef.current) return;
@@ -535,6 +559,42 @@ export function ChatPanel({
         if (!last || !last.streaming) return prev;
         const copy = [...prev];
         copy[copy.length - 1] = { ...last, tools };
+        return copy;
+      });
+    });
+    // P2-b 结构化文件变更：dispatch 在有 trace 的执行会话里 emit（全窗口）——
+    // 每次落盘修改一条，按会话累积进 meta，收尾并入最终消息给 FileSummary 用。
+    // 主聊天（无 trace）不产生事件 → FileSummary 走正则兜底，行为不变。
+    const unFileChanged = listen<{
+      path?: string;
+      kind?: "create" | "modify" | "delete";
+      added?: number;
+      deleted?: number;
+      sessionId?: string | null;
+    }>("bot-file-changed", (e) => {
+      const sid = e.payload?.sessionId ?? null;
+      if (sid === null) return;
+      if (sid !== sessionIdRef.current && !inflightRef.current.has(sid)) return;
+      const p = e.payload ?? {};
+      if (!p.path) return;
+      const m = metaFor(sid);
+      if (!m) return;
+      const changes = [
+        ...(m.fileChanges ?? []),
+        {
+          path: p.path,
+          kind: p.kind ?? "modify",
+          added: p.added ?? 0,
+          deleted: p.deleted ?? 0,
+        },
+      ];
+      m.fileChanges = changes;
+      if (sid !== sessionIdRef.current) return;
+      setMessages((prev) => {
+        const last = prev[prev.length - 1];
+        if (!last || !last.streaming) return prev;
+        const copy = [...prev];
+        copy[copy.length - 1] = { ...last, fileChanges: changes };
         return copy;
       });
     });
@@ -583,6 +643,7 @@ export function ChatPanel({
       unTool.then((f) => f());
       unToolName.then((f) => f());
       unToolDone.then((f) => f());
+      unFileChanged.then((f) => f());
       unSkillFailed.then((f) => f());
     };
   }, []);
@@ -886,6 +947,7 @@ export function ChatPanel({
           refs: full.taskRefs ?? [],
           thinking: meta.thinking,
           tools: meta.tools,
+          fileChanges: meta.fileChanges,
           skillFailure: meta.skillFailure,
         },
       ];
@@ -1322,12 +1384,14 @@ export function ChatPanel({
         messages={messages}
         viewedBusy={viewedBusy}
         copiedIdx={copiedIdx}
+        verboseLevel={verboseLevel}
         onCopy={copyMessage}
         onRemove={removeMessage}
         onOpenTask={openTaskInMain}
         onOpenExecSession={switchSession}
       />
       <InputArea
+        verbose={{ level: verboseLevel, setLevel: setVerboseLevel }}
         input={input}
         setInput={setInput}
         files={files}

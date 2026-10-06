@@ -12,7 +12,7 @@ import { MarkdownText } from "../MarkdownText";
 import { Fold } from "./Fold";
 import { RichText } from "./RichText";
 import { UserBubbleContent } from "./UserBubbleContent";
-import type { Msg, TaskRef, ToolCall } from "./types";
+import type { FileChangeLite, Msg, TaskRef, ToolCall, VerboseLevel } from "./types";
 
 /** 气泡回调（父级 useCallback 固定引用，memo 浅比较依赖这一点） */
 type BubbleCallbacks = {
@@ -33,9 +33,11 @@ type MsgBubbleProps = BubbleCallbacks & {
   isCopied: boolean;
   /** 视图会话是否有在途回复（驱动移除按钮禁用态） */
   busy: boolean;
+  /** P2-b 执行过程详细度：控制工具徽章展开级别（简洁/详细/调试） */
+  verboseLevel: VerboseLevel;
 };
 
-function MsgBubbleBase({ msg: m, idx, isCopied, busy, onCopy, onRemove, onOpenTask, onOpenExecSession }: MsgBubbleProps) {
+function MsgBubbleBase({ msg: m, idx, isCopied, busy, verboseLevel, onCopy, onRemove, onOpenTask, onOpenExecSession }: MsgBubbleProps) {
   // 一次性算文件路径 + 是否显示操作行（避免在渲染条件里 IIFE + mutation m._fps 的反模式）
   const fps = extractFilePaths(m.content);
   const hasContent = !!m.content.trim();
@@ -105,7 +107,9 @@ function MsgBubbleBase({ msg: m, idx, isCopied, busy, onCopy, onRemove, onOpenTa
           </Fold>
         )}
         {/* 工具调用（U3b 对齐截图）：mono pill 徽章行 + 可折叠「进程 N/M」详情 */}
-        {(m.tools?.length ?? 0) > 0 && <ToolBadges tools={m.tools!} />}
+        {(m.tools?.length ?? 0) > 0 && (
+          <ToolBadges tools={m.tools!} verboseLevel={verboseLevel} />
+        )}
         {bubbleBody(m)}
         {/* 「查看执行对话」跳转（任务执行聊天化：busy 时跳转排队，
             忙完 hint + 按钮切换到执行会话） */}
@@ -151,7 +155,7 @@ function MsgBubbleBase({ msg: m, idx, isCopied, busy, onCopy, onRemove, onOpenTa
               移除
             </button>
           )}
-          <FileSummary fps={fps} />
+          <FileSummary fps={fps} changes={m.fileChanges} />
           {(m.refs ?? []).map((r) => (
             <button
               key={r.id}
@@ -172,11 +176,37 @@ function MsgBubbleBase({ msg: m, idx, isCopied, busy, onCopy, onRemove, onOpenTa
 /** memo 边界：流式更新时历史气泡 props 全等 → 跳过重渲染（见文件头注释） */
 const MsgBubble = memo(MsgBubbleBase);
 
-/** 工具调用（U3b 对齐截图）：mono pill 徽章行（名称 + ✓/… 状态），
- *  折叠「进程 N/M」承载逐工具入参详情（默认收起）。
+/** 工具调用（U3b 对齐截图）：mono pill 徽章行（名称 + ✓/✗/… 状态 + 调试档耗时），
+ *  折叠「进程 N/M」承载逐工具入参/结果详情。
+ *  P2-b verbose 三档：简洁=隐藏详情折叠；详细=现状；调试=默认展开+耗时。
  *  memo：文本流式 tick 不改 tools 引用，跳过徽章行重渲染 */
-const ToolBadges = memo(function ToolBadges({ tools }: { tools: ToolCall[] }) {
+const ToolBadges = memo(function ToolBadges({
+  tools,
+  verboseLevel,
+}: {
+  tools: ToolCall[];
+  verboseLevel: VerboseLevel;
+}) {
   const done = tools.filter((t) => t.done).length;
+  const failed = tools.filter((t) => t.ok === false).length;
+  const totalMs = tools.reduce((acc, t) => acc + (t.ms ?? 0), 0);
+  if (verboseLevel === "concise") {
+    return (
+      <div className="mb-1 flex flex-wrap gap-1">
+        {tools.map((t) => (
+          <span
+            key={t.id}
+            className="inline-flex items-center gap-1 rounded-full border border-[var(--edge)] px-2 py-0.5 font-mono text-[10px] leading-4 text-[var(--t4)]"
+          >
+            {t.name || "tool"}
+            <span aria-hidden className={t.ok === false ? "text-[var(--danger,#ef4444)]" : t.done ? "text-[var(--success)]" : ""}>
+              {t.ok === false ? "✕" : t.done ? <Check size={10} strokeWidth={3} /> : "…"}
+            </span>
+          </span>
+        ))}
+      </div>
+    );
+  }
   return (
     <div className="mb-1 space-y-1">
       <div className="flex flex-wrap gap-1">
@@ -186,22 +216,37 @@ const ToolBadges = memo(function ToolBadges({ tools }: { tools: ToolCall[] }) {
             className="inline-flex items-center gap-1 rounded-full border border-[var(--edge)] px-2 py-0.5 font-mono text-[10px] leading-4 text-[var(--t4)]"
           >
             {t.name || "tool"}
-            <span aria-hidden className={t.done ? "text-[var(--success)]" : ""}>
-              {t.done ? <Check size={10} strokeWidth={3} /> : "…"}
+            <span aria-hidden className={t.ok === false ? "text-[var(--danger,#ef4444)]" : t.done ? "text-[var(--success)]" : ""}>
+              {t.ok === false ? "✕" : t.done ? <Check size={10} strokeWidth={3} /> : "…"}
             </span>
           </span>
         ))}
       </div>
-      <Fold title={<span className="font-mono">进程 {done}/{tools.length}</span>}>
+      <Fold
+        title={
+          <span className="font-mono">
+            进程 {done}/{tools.length}
+            {failed > 0 && <span className="text-[var(--danger,#ef4444)]"> · {failed} 失败</span>}
+            {verboseLevel === "debug" && totalMs > 0 && ` · Σ ${fmtMs(totalMs)}`}
+          </span>
+        }
+        defaultOpen={verboseLevel === "debug"}
+      >
         <div className="space-y-1">
           {tools.map((t) => (
             <div key={t.id}>
               <span className="font-mono text-[10px] text-[var(--t4)]">
                 {t.name || "tool"}
+                {t.ms != null && <span className="ml-1 text-[var(--t5)]">{fmtMs(t.ms)}</span>}
               </span>
               {t.args ? (
                 <pre className="opacity-80 whitespace-pre-wrap break-words font-mono text-[10px]">
                   {t.args.length > 500 ? t.args.slice(0, 500) + "…" : t.args}
+                </pre>
+              ) : null}
+              {t.result ? (
+                <pre className="whitespace-pre-wrap break-words font-mono text-[10px] text-[var(--t5)]">
+                  {t.result.length > 800 ? t.result.slice(0, 800) + "…" : t.result}
                 </pre>
               ) : null}
             </div>
@@ -212,11 +257,18 @@ const ToolBadges = memo(function ToolBadges({ tools }: { tools: ToolCall[] }) {
   );
 });
 
+function fmtMs(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
 /** 文件变更摘要条（U3b 对齐截图）：≤2 个文件平铺 pill，更多则折叠为
- *  「📄 N 个文件」摘要条（点击展开）。+/- 行级统计当前事件面无数据源，
- *  不接假数据（见 spec findings） */
-function FileSummary({ fps }: { fps: string[] }) {
+ *  「📄 N 个文件」摘要条（点击展开）。
+ *  P2-b：优先用结构化 fileChanges（bot-file-changed 事件，带 ±行统计）；
+ *  无结构化数据时回退正文正则抽取（主聊天无 trace，行为不变） */
+function FileSummary({ fps, changes }: { fps: string[]; changes?: FileChangeLite[] }) {
   const [open, setOpen] = useState(false);
+  const structured = changes ?? [];
   const pillOf = (f: string) => (
     <button
       key={f}
@@ -234,11 +286,30 @@ function FileSummary({ fps }: { fps: string[] }) {
       </span>
     </button>
   );
+  const structuredPillOf = (c: FileChangeLite) => (
+    <button
+      key={c.path}
+      type="button"
+      className="nm-btn inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t3)] max-w-full"
+      title={`打开文件：${c.path}`}
+      onClick={() => openTarget(c.path)}
+    >
+      <span className="truncate max-w-[240px]">
+        <FileText size={11} aria-hidden className="mr-1 inline text-[var(--t4)]" />
+        {basename(c.path)}
+      </span>
+      <span className="shrink-0 font-mono tabular-nums">
+        <span className="text-[var(--ok,#22c55e)]">+{c.added}</span>{" "}
+        <span className="text-[var(--danger,#ef4444)]">−{c.deleted}</span>
+      </span>
+    </button>
+  );
+  const items = structured.length > 0 ? structured.map(structuredPillOf) : fps.map(pillOf);
   // 统一 DOM 形状（w-full 容器），≤2 与 >2 只是容器内子元素不同
   return (
     <div className="w-full">
-      {fps.length <= 2 ? (
-        <div className="flex flex-wrap gap-1">{fps.map(pillOf)}</div>
+      {items.length <= 2 ? (
+        <div className="flex flex-wrap gap-1">{items}</div>
       ) : (
         <>
           <button
@@ -249,10 +320,10 @@ function FileSummary({ fps }: { fps: string[] }) {
             onClick={() => setOpen((v) => !v)}
           >
             <FileText size={11} aria-hidden />
-            {fps.length} 个文件
+            {items.length} 个文件
             <span aria-hidden>{open ? "▴" : "▾"}</span>
           </button>
-          {open && <div className="mt-1 flex flex-wrap gap-1">{fps.map(pillOf)}</div>}
+          {open && <div className="mt-1 flex flex-wrap gap-1">{items}</div>}
         </>
       )}
     </div>
@@ -267,11 +338,13 @@ type MessageListProps = BubbleCallbacks & {
   viewedBusy: boolean;
   /** 「已复制」反馈的消息下标 */
   copiedIdx: number | null;
+  /** P2-b 执行过程详细度（透传给 ToolBadges） */
+  verboseLevel: VerboseLevel;
 };
 
 /** 渲染体共享（memo / 非 memo 两个入口同一 JSX，性能测试做对照） */
 function renderMessageList(
-  { scrollRef, messages, viewedBusy, copiedIdx, onCopy, onRemove, onOpenTask, onOpenExecSession }: MessageListProps,
+  { scrollRef, messages, viewedBusy, copiedIdx, verboseLevel, onCopy, onRemove, onOpenTask, onOpenExecSession }: MessageListProps,
   Bubble: ComponentType<MsgBubbleProps>,
 ) {
   return (
@@ -292,6 +365,7 @@ function renderMessageList(
               idx={i}
               isCopied={copiedIdx === i}
               busy={viewedBusy}
+              verboseLevel={verboseLevel}
               onCopy={onCopy}
               onRemove={onRemove}
               onOpenTask={onOpenTask}

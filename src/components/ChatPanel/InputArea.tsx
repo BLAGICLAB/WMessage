@@ -5,10 +5,10 @@
 
 import type { Dispatch, RefObject, SetStateAction } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { Brain, Image as ImageIcon, Paperclip, Plus, Shield, Square, Zap } from "lucide-react";
+import { Brain, Image as ImageIcon, Paperclip, Plus, Search, Shield, Square, Zap } from "lucide-react";
 import { basename, isImagePath } from "../../format";
-import { EFFORT_LABELS, PERM_LABELS, PROVIDER_LABELS, SLASH_COMMANDS } from "./constants";
-import type { ModelItem, PermMode, ReasoningLevel } from "./types";
+import { EFFORT_LABELS, PERM_LABELS, PROVIDER_LABELS, SLASH_COMMANDS, VERBOSE_LABELS } from "./constants";
+import type { ModelItem, PermMode, ReasoningLevel, VerboseLevel } from "./types";
 
 /** 输入框占位文案：回复中 / 带附件 / 选任务 / 默认 四态（原嵌套三元提取） */
 function placeholderOf(viewedBusy: boolean, hasFiles: boolean, selecting: boolean): string {
@@ -43,6 +43,8 @@ type InputAreaProps = {
   isSubagentSession: boolean;
   /** 🛡 授权模式只读展示（U3b）：bot-config 的 permMode，设置页维护 */
   permMode: PermMode;
+  /** 🔍 执行过程详细度（P2-b verbose 三档）：localStorage 持久化，控制工具徽章展开档位 */
+  verbose: { level: VerboseLevel; setLevel: (l: VerboseLevel) => void };
   // 🧠/⚡ 的按钮与下拉 ref 顶层传（与滚动容器同模式）：ref 与普通值混嵌同一
   // prop 对象会触发 react/refs 的全对象标记
   modelBtnRef: RefObject<HTMLButtonElement | null>;
@@ -85,6 +87,7 @@ export function InputArea({
   selecting,
   isSubagentSession,
   permMode,
+  verbose,
   modelBtnRef,
   modelDropdownRef,
   effortBtnRef,
@@ -248,6 +251,24 @@ export function InputArea({
           >
             <Shield size={10} aria-hidden /> {PERM_LABELS[permMode]}
           </span>
+          {/* 🔍 执行过程详细度（P2-b verbose 三档）：点击循环 简洁→详细→调试，
+              localStorage 持久化；控制工具徽章默认展开级别与耗时/结果列示 */}
+          <button
+            type="button"
+            className="shrink-0 inline-flex items-center gap-1 rounded-full border border-[var(--edge)] px-2 py-0.5 text-[10px] leading-4 text-[var(--t4)] hover:text-[var(--t2)]"
+            title={`执行过程详细度：${verbose.level}（点击切换 简洁→详细→调试）`}
+            onClick={() =>
+              verbose.setLevel(
+                verbose.level === "concise"
+                  ? "detailed"
+                  : verbose.level === "detailed"
+                    ? "debug"
+                    : "concise"
+              )
+            }
+          >
+            <Search size={10} aria-hidden /> {VERBOSE_LABELS[verbose.level]}
+          </button>
           {/* 🧠 模型下拉（UI-1 从顶栏移入输入卡底栏；按钮/列表/切换逻辑不变，
               相对按钮向上弹出，免 JS 测量定位） */}
           <div className="relative shrink-0">

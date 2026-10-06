@@ -2,8 +2,30 @@
 
 export type TaskRef = { id: string; title: string };
 
-/** 工具调用行：折叠显示，展开可看入参 */
-export type ToolCall = { id: string; name: string; args?: string; done?: boolean };
+/** 工具调用行：折叠显示，展开可看入参；P2-b 起 bot-tool-done 携带
+ *  result（截 2000 字）/ms/ok（成败口径同后端 tool_call_failed） */
+export type ToolCall = {
+  id: string;
+  name: string;
+  args?: string;
+  done?: boolean;
+  result?: string;
+  ms?: number;
+  ok?: boolean;
+};
+
+/** 结构化文件变更（P2-b）：bot-file-changed 事件载荷的会话内累积条目，
+ *  替代原先从正文正则抽路径的近似（正则保留为兜底） */
+export type FileChangeLite = {
+  path: string;
+  kind: "create" | "modify" | "delete";
+  added: number;
+  deleted: number;
+};
+
+/** 执行过程详细度（P2-b verbose 三档）：简洁=只看工具名；详细=可展开入参/结果；
+ *  调试=默认展开+耗时+轮次。localStorage 持久化，仅影响展示不改数据流 */
+export type VerboseLevel = "concise" | "detailed" | "debug";
 
 /** Skill 失败半成品上下文（仅本会话内存；FailedButRecoverable 兜底）。
  *  后端 run_skill_scheduler 返回 DslOutcome::FailedButRecoverable { reason, completed_summary, rollback_attempted }
@@ -28,6 +50,9 @@ export type Msg = {
   thinking?: string;
   /** 本轮工具调用行（折叠显示） */
   tools?: ToolCall[];
+  /** 本轮结构化文件变更（bot-file-changed 累积；FileSummary 优先用，
+   *  空时回退正文正则抽取） */
+  fileChanges?: FileChangeLite[];
   /** Skill 失败半成品上下文（折叠显示 ⚠️ 行；见 SkillFailure 说明） */
   skillFailure?: SkillFailure;
   /** 「查看执行对话」跳转按钮（任务执行聊天化：busy 时执行跳转排队，

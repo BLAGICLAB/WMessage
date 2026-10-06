@@ -47,6 +47,7 @@ function bench(Comp: typeof MessageList): number[] {
     scrollRef: { current: null },
     viewedBusy: false,
     copiedIdx: null,
+    verboseLevel: "detailed" as const,
     ...stableCallbacks,
   };
   const { rerender } = render(

@@ -6,11 +6,14 @@ import { useId, useState, type ReactNode } from "react";
 export function Fold({
   title,
   children,
+  /** P2-b verbose=debug 档：工具详情默认展开（Ctrl+O「临时全展开」语义落在档位上） */
+  defaultOpen = false,
 }: {
   title: ReactNode;
   children?: ReactNode;
+  defaultOpen?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
   const panelId = useId();
   return (
     <div>

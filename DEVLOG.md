@@ -2,6 +2,43 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-06（周二）P2C-LIVEPAGES：工作流画布实时高亮 + 定时任务执行透明（Agent 透明化 P2-c）
+
+**承接**：设计 §5.3/§5.4；P1 的 `workflow-node-status`/`sched-status` 事件首个消费面。
+
+**改动**：
+- `workflow_runner.rs`：sched-status 补 jobId（前端行级定位用）
+- `WorkflowPage.tsx`：监听 `workflow-node-status`（事件驱动 nodeLive 映射，5s 轮询保留兜底）；
+  节点 data 增 liveStatus/onSelectTrace；画布尾部挂 TracePanel 弹层（节点级痕迹）
+- `TaskNode.tsx`：描边态升级——liveStatus 优先（running 蓝环+脉冲动画 / skipped 灰环降透明，
+  与「真失败」红环区分）；节点左上角 🕘 痕迹入口（真实任务绑定才有）
+- `SchedulePage.tsx`：监听 `sched-status`——started 入 liveJobIds、done/failed 出集并刷新列表
+  （lastStatus 顺带更新）；行内「执行中…」徽标；jobSessions 记 sessionId；执行历史行加
+  「痕迹」（cardId → TracePanel）与「会话」（chat-focus-session + 唤起挂件）双跳转
+- `lib/trace.ts`：曾加 traceListByOrigin 后删（无消费方，knip 防线拦下——YAGNI）
+
+**测试**：vitest 498 全绿（+6 为 P2-a TracePanel）；lib 1411 全绿；tsc/knip/桥审计绿
+（sched-status 补字段 + workflow-node-status/sched-status 前端 listen 配对）。
+
+## 2026-10-06（周二）P2B-CHATENHANCE：聊天工具徽章结果/耗时/成败 + 结构化文件摘要 + verbose 三档（Agent 透明化 P2-b）
+
+**承接**：设计 §5.1；P1-c 的 `bot-tool-done` 扩展字段与 `bot-file-changed` 事件首个消费面。
+
+**改动**：
+- `ChatPanel/types.ts`：ToolCall +result/ms/ok；FileChangeLite；VerboseLevel；Msg.fileChanges
+- `ChatPanel.tsx`：bot-tool-done 消费 result/ms/ok（成败色 ✕/✓）；新监听 bot-file-changed
+  （按会话累积进 streamingMeta，收尾并入最终消息——与 thinking/tools 同管线）；
+  verboseLevel state（localStorage `chat-verbose-level`，默认 detailed）
+- `MessageList.tsx`：ToolBadges 三档——简洁（纯 pill）/详细（+可展开入参/结果）/调试
+  （默认展开 + 逐工具/总耗时 + 失败计数）；FileSummary 优先结构化 fileChanges（带 ±行统计），
+  空时回退正文正则抽取（主聊天无 trace 行为不变——MessageList:215「无数据源不接假数据」就此闭环）
+- `InputArea.tsx`：🔍 详细度 pill（Shield 旁，点击循环三档）；Fold +defaultOpen（调试档默认展开）
+- `MessageList.perf.test.tsx`：props 补 verboseLevel（memo 性能锁照常）
+
+**测试**：ChatPanel 套件 28 全绿（含 perf memo 对照）；tsc/knip 绿。
+
+**验收备注**：三档持久化只影响展示层，消息数据流零改动（拆分红线遵守）。
+
 ## 2026-10-06（周二）P2A-TRACEPANEL：执行详情面板 + 文件级回滚（Agent 透明化 P2-a）
 
 **承接**：设计 §5.2 / §10 批次卡 P2-a；P1 三表就位后的第一个消费面。
