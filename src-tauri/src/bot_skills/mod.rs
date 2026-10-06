@@ -8,6 +8,7 @@
 mod files;
 mod manage;
 mod parse;
+mod recommend;
 mod runtime;
 mod scheduler;
 mod state;
