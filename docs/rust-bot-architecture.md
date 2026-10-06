@@ -31,8 +31,14 @@ src-tauri/src/
 │   │                     SubagentBudget 预算三硬顶；spawn 插 queued 行，check 幂等轮询）
 │   ├── people.rs         成员注册表（多人任务汇总的归属人字典；people_list 命令 +
 │   │                     upsert 最新名覆盖 + 占位兜底，见 docs/TASK-GRAPH-DESIGN-2026-10-05.md §1）
+│   ├── trace.rs          执行痕迹三表 exec_traces/exec_spans/file_changes（Agent 透明化
+│   │                     设计 §4.1）：append-only 观测面 + 钳制单源（SPAN_TEXT_MAX 16KB /
+│   │                     MAX_DIFF_LINES）+ 保留期清理 retire_traces_before（僵尸 running 同删）
 │   └── workspace.rs      workspace / bind_files
 ├── task_out.rs          对外 TaskOut（Task flatten + status），api/api_handlers 共享
+├── trace_sink.rs        执行痕迹采集管道（Agent 透明化设计 §4.2）：dispatch 工具调用 →
+│                        mpsc 后台攒批落库（writer 长连接 + DB_WRITE_LOCK）；trace 生命周期
+│                        begin/end_trace（run_task_in_chat_with 首尾）+ TraceCapture 挂钩
 ├── task_autotag.rs      归档自动打标（一次性 LLM ≤3 标签回写 tags；守卫链幂等 +
 │                        校验链截断不整包拒 + 失败静默审计，见任务图谱设计 §2）
 ├── tag_similar.rs       标签近义（embed 引擎逐标签向量 + 余弦 ≥0.78 对返回；
@@ -81,9 +87,9 @@ src-tauri/src/
 │                        （TOOLS schema 已移出，见 bot/registry.rs）
 ├── bot.rs (116)         门面：跨模块 re-export（BotChatResult/TaskRef/model_loop/StopGuard/AuditLevel/db::*）
 │                        + 子模块声明；旧 `crate::bot::<item>` 路径 1:1 保持
-├── bot/registry.rs (716)  **工具单源真相（阶段 2）**：29 个 schema 常量 + `TOOLS_TABLE`
-│                        （name/schema/mutating/call）→ TOOLS JSON（tools_json:514）/
-│                        MUTATING_TOOLS（mutating_tools:529）/ dispatch 查表三处全派生
+├── bot/registry.rs (716)  **工具单源真相（阶段 2）**：33 个 schema 常量 + `TOOLS_TABLE`
+│                        （name/schema/mutating/call，33 工具=31 主可见+2 子 agent 专属）→
+│                        TOOLS JSON（tools_json）/ MUTATING_TOOLS / dispatch 查表三处全派生
 ├── bot/dispatch.rs (237)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+
 │                        pre_execute 洋葱入口 + skill_on_step 钩子 + tool.return 结构化审计
 ├── bot/mcp/             外部 MCP 服务器接入（stdio/HTTP，设置页 McpPanel 管理）：
@@ -128,10 +134,27 @@ src-tauri/src/
 │                        各自独立；LLM 工具暴露/runner（SUBA-2）与预算强制/并发排队（SUBA-3）
 │                        按设计 §11 分批接入
 ├── bot_artifacts.rs     产物登记：link_file_to_task → 收尾按 TaskExecOrigin 分流 →
-│                        emit artifact-batch-ready → 前端勾选 → confirm_artifact_batch 落库
+│                        落「通知中心」artifact_bind 消息（原 artifact-batch-ready 挂件弹窗已下线）→
+│                        通知页勾选 → confirm_artifact_batch 落库 + notif_resolve_artifact 回写
+├── notifications.rs (465) Agent 通知中心：notifications 表持久化消息（INSERT OR IGNORE 幂等，
+│                        memory_proposal / evolution_proposal / artifact_bind 三类）+
+│                        notifications_list/pending_count/resolve/clear_done 四命令 +
+│                        notifications-changed 广播；双向同步（mem approve/reject、evo 面板、
+│                        confirm_artifact_batch 尾部回写消息状态）
+├── bot_desktop.rs (295) 电脑辅助 Tier1（N4，只「看」与「打开」）：reveal_path（opener 定位，
+│                        白名单闸）/ open_url（公网闸 ensure_public_http_url）/
+│                        clipboard_write（官方 clipboard-manager v2）/ screenshot
+│                        （macOS screencapture -x / Windows PowerShell，落 AI_Gen_Files）；
+│                        原生鼠标键盘 Computer Use 不做（spec N4 出界说明）
+├── bot_skills/recommend.rs 语义化技能推荐（N7-②）：技能描述 embed（bge-small-zh 复用
+│                        memory/embed）+ 余弦排序截断 top5，embed 不可用降级全清单；
+│                        只影响 SkillCatalog 呈现顺序，不接管 IntentRule 路由
 │
 │─ Bot 工具实现（被 bot.rs 分发调用）
-├── bot_fs.rs            只读文件工具 read_text_file/grep_files/list_files；
+├── bot_fs.rs            只读工具 read_text_file/grep_files/list_files + 文件编辑
+│                        edit_file/write_file（N6，Aider 式三级匹配：精确→空白容错→
+│                        reflection；写白名单≠读白名单：可写根=AI_Gen_Files+任务卡
+│                        绑定文件夹+allowedDirs；白名单外 perm_mode 三分支/覆盖确认）；
 │                        路径白名单 + perm_mode(strict/ask/yolo) 授权闸
 ├── bot_web.rs           web_search（Bing）+ fetch_url（HTML→文本、GBK、SSRF 防护、钉 IP）
 ├── bot_py.rs (3682)     Python 子进程执行：runtime/flags/py-enabled.flag 开关、独立临时目录、超时/内存/CPU 限额
@@ -418,6 +441,7 @@ flowchart TD
 - `task_autotag.rs`
 - `tag_similar.rs`
 - `task_out.rs`
+- `trace_sink.rs`
 - `tool_guard.rs`
 - `workflow_decompose.rs`
 - `workflow_runner.rs`
@@ -469,6 +493,7 @@ flowchart TD
 - `db/people.rs`
 - `db/skill_out.rs`
 - `db/tasks.rs`
+- `db/trace.rs`
 - `db/workflow.rs`
 - `db/workspace.rs`
 

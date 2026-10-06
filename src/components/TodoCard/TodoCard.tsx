@@ -7,7 +7,7 @@
 
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { Bot, Clock, FileText, Folder, FolderOpen, GripVertical, Paperclip, Trash2, Undo2 } from "lucide-react";
+import { Bot, FileText, Folder, FolderOpen, GripVertical, Paperclip, Trash2, Undo2 } from "lucide-react";
 import { useDraggable } from "@dnd-kit/core";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -21,10 +21,8 @@ import {
   basename,
   formatCompletedAt,
   formatDue,
-  formatSchedule,
   isDueToday,
   isValidDateTimeLocal,
-  scheduleToDatetime,
 } from "../../format";
 import { DoneCircle } from "../DoneCircle";
 import { FoldToggle } from "../FoldToggle";
@@ -209,10 +207,6 @@ export function TodoCardView({
       handleCommandError(e, "copy_file_with_title", { silent: true })
     );
   };
-
-  // 定时执行面板
-  const [schedOpen, setSchedOpen] = useState(false);
-  const [schedOnce, setSchedOnce] = useState("");
 
   // 交给机器人执行：发事件给挂件聊天区（ChatPanel 监听），并唤起挂件窗口
   const runWithBot = () => {
@@ -617,9 +611,9 @@ export function TodoCardView({
         </div>
       )}
 
-      {/* 🤖 交给机器人执行 + ⏰ 定时执行（与挂件一致）；归档卡只读不显示 */}
+      {/* 🤖 交给机器人执行（与挂件一致）；归档卡只读不显示。
+          定时设置已迁出卡片 → 「定时任务」模块（SchedulePage）统一管理 */}
       {!archived && !trashed && (
-      <>
       <div className="mt-2 flex items-center gap-1.5">
         <button
           className="nm-btn px-2 py-0.5 text-[11px] leading-none text-[var(--t3)] flex items-center gap-1 whitespace-nowrap"
@@ -629,93 +623,7 @@ export function TodoCardView({
         >
           <Bot size={11} aria-hidden /> 交给机器人
         </button>
-        <button
-          className={`nm-btn px-2 py-0.5 text-[11px] leading-none inline-flex items-center gap-1 whitespace-nowrap ${
-            task.schedule ? "text-[var(--brand)]" : "text-[var(--t3)]"
-          }`}
-          onPointerDown={stop}
-          onClick={() => {
-            // 仅展开且草稿为空时初始化：收起不动草稿（与 TaskCardContent 同形态）
-            if (!schedOpen && !schedOnce) {
-              setSchedOnce(scheduleToDatetime(task.schedule));
-            }
-            setSchedOpen((v) => !v);
-          }}
-          title={
-            task.schedule
-              ? `定时：${formatSchedule(task.schedule)}（点击修改/取消）`
-              : "定时执行：到点自动交给机器人跑"
-          }
-        >
-          <Clock size={11} aria-hidden /> {task.schedule ? formatSchedule(task.schedule) : "定时"}
-        </button>
       </div>
-      {schedOpen && (
-        <div className="mt-1.5 nm-inset rounded-lg p-2 space-y-1.5">
-          <p className="text-[10px] text-[var(--t5)]">
-            到点自动执行这张任务卡（结果写进备注）
-          </p>
-          <input
-            type="datetime-local"
-            value={schedOnce}
-            onChange={(e) => setSchedOnce(e.target.value)}
-            onPointerDown={stop}
-            className="nm-inset w-full rounded-lg px-2 py-1 text-xs text-[var(--t3)] outline-none"
-          />
-          <div className="flex flex-wrap gap-1">
-            {(
-              [
-                ["一次", "once"],
-                ["每天", "daily"],
-                ["每周", "weekly"],
-                ["每月", "monthly"],
-              ] as [string, string][]
-            ).map(([label, kind]) => (
-              <button
-                key={kind}
-                className="nm-btn px-2 py-0.5 text-[10px] text-[var(--t3)]"
-                onPointerDown={stop}
-                onClick={() => {
-                  if (!schedOnce) return;
-                  const dt = schedOnce.slice(0, 16);
-                  // 防御：无效日期（手动输入不完整等）不写库，防 NaN 进 schedule
-                  // （历史事故：NaN 星期 → weekly:NaN:... → 回填死循环卡死 App）
-                  if (isNaN(new Date(dt).getTime())) return;
-                  const hm = dt.slice(11, 16);
-                  if (kind === "once") {
-                    onUpdate(task.id, { schedule: `at:${dt}` });
-                  } else if (kind === "daily") {
-                    onUpdate(task.id, { schedule: `daily:${hm}` });
-                  } else if (kind === "weekly") {
-                    // 取所选日期的星期几（1=周一 ... 7=周日）
-                    const wd = ((new Date(dt).getDay() + 6) % 7) + 1;
-                    onUpdate(task.id, { schedule: `weekly:${wd}:${hm}` });
-                  } else {
-                    onUpdate(task.id, { schedule: `monthly:${dt.slice(8, 10)}:${hm}` });
-                  }
-                  setSchedOpen(false);
-                }}
-              >
-                {label}
-              </button>
-            ))}
-            {task.schedule && (
-              <button
-                className="nm-btn px-2 py-0.5 text-[10px] text-[var(--danger)]"
-                onPointerDown={stop}
-                onClick={() => {
-                  onUpdate(task.id, { schedule: undefined });
-                  setSchedOnce(""); // 取消定时清草稿，下次 ⏰ 展开自然重新初始化
-                  setSchedOpen(false);
-                }}
-              >
-                取消
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-      </>
       )}
 
       {/* 截止时间 + 状态行（两行布局统一，老板拍板）：

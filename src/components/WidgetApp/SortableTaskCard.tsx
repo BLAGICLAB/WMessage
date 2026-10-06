@@ -26,7 +26,6 @@ export function SortableTaskCard({
   onCopyFilePath,
   onRemoveFile,
   onBotExecute,
-  onSetSchedule,
 }: {
   task: Task;
   editingTitle: boolean;
@@ -44,7 +43,6 @@ export function SortableTaskCard({
   onCopyFilePath: (path: string) => void;
   onRemoveFile: (path: string) => void;
   onBotExecute?: () => void;
-  onSetSchedule?: (schedule: string | undefined) => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: task.id });
@@ -98,7 +96,6 @@ export function SortableTaskCard({
         onCopyFilePath={onCopyFilePath}
         onRemoveFile={onRemoveFile}
         onBotExecute={onBotExecute}
-        onSetSchedule={onSetSchedule}
       />
     </div>
   );

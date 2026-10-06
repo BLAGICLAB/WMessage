@@ -113,3 +113,6 @@ __pycache__/
 
 # U18 抽取产物人工标注采样（评估器从真实用户库导出，含隐私内容，不入库）
 fixtures/memory_extract_sample.jsonl
+
+# ZCode 本地工作区配置（会话级，不入库）
+.zcode/

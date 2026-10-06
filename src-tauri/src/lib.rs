@@ -13,6 +13,7 @@ pub mod bot;
 mod bot_anthropic;
 pub mod bot_artifacts;
 pub mod bot_chat;
+mod bot_desktop;
 mod bot_fs;
 mod bot_model_loop;
 pub mod bot_orchestrator;
@@ -34,6 +35,7 @@ pub mod meta;
 pub mod middleware;
 mod migration;
 mod mutation;
+mod notifications;
 mod ocr;
 pub mod paths;
 mod platform;
@@ -45,6 +47,7 @@ pub mod tag_similar;
 pub mod task_autotag;
 pub mod task_out;
 pub mod tool_guard;
+pub mod trace_sink;
 pub mod workflow_decompose;
 pub mod workflow_runner;
 use tauri::{Emitter, Manager};
@@ -196,6 +199,8 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        // 剪贴板写入（N4 clipboard_write 工具，Rust 侧 ClipboardExt）
+        .plugin(tauri_plugin_clipboard_manager::init())
         // 开机自启动：登录系统时自动拉起 wmessage。macOS 走 LaunchAgent，
         // 不传额外 args（保持纯净启动，不带任何隐藏 flag）
         .plugin(tauri_plugin_autostart::init(
@@ -275,6 +280,9 @@ pub fn run() {
 
             // 定时任务卡调度器：每 30s 扫一次到点任务并自动执行
             bot_scheduler::start_scheduler(app.handle().clone());
+
+            // 执行痕迹采集管道（Agent 透明化设计 §4.2）：mpsc 后台攒批落库
+            trace_sink::init(app.handle().clone());
 
             // 截止通知：每 30s 扫一次活跃任务卡，截止前 1 小时 / 截止时刻发系统通知
             due_notify::start_due_notifier(app.handle().clone());
@@ -489,6 +497,18 @@ pub fn run() {
             crate::db::workflow::workflow_list,
             crate::db::workflow::workflow_rename,
             crate::db::workflow::workflow_delete,
+            crate::db::workflow::workflow_set_schedule,
+            crate::bot_scheduler::schedule_overview,
+            crate::bot_scheduler::schedule_set_enabled,
+            crate::bot_scheduler::scheduled_job_fire,
+            crate::db::schedule_jobs::scheduled_job_create,
+            crate::db::trace::trace_list,
+            crate::db::trace::trace_detail,
+            crate::db::trace::trace_clear_before,
+            crate::db::trace::usage_stats_daily,
+            crate::db::schedule_jobs::scheduled_job_update,
+            crate::db::schedule_jobs::scheduled_job_delete,
+            crate::db::schedule_jobs::scheduled_job_history,
             crate::workflow_decompose::workflow_decompose,
             crate::db::workflow::workflow_export,
             crate::db::workflow::workflow_import,
@@ -580,6 +600,10 @@ pub fn run() {
             meta::meta_upsert_provider,
             meta::meta_upsert_model,
             meta::meta_sync_models_dev,
+            notifications::notifications_list,
+            notifications::notifications_pending_count,
+            notifications::notifications_resolve,
+            notifications::notifications_clear_done,
         ])
         .build(tauri::generate_context!())
         // 启动期 panic 可接受（进程起不来就退）：Tauri builder 编译失败 = 环境/配置损坏，

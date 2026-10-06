@@ -2,8 +2,8 @@ import { useState } from "react";
 import type { DraggableSyntheticListeners } from "@dnd-kit/core";
 import type { Task } from "../types";
 import { taskFiles } from "../lib/taskFiles";
-import { basename, formatCompletedAt, formatDue, formatSchedule, scheduleToDatetime } from "../format";
-import { Bot, Clock, Folder, GripVertical, Paperclip, Puzzle, Timer, TriangleAlert } from "lucide-react";
+import { basename, formatCompletedAt, formatDue } from "../format";
+import { Bot, Folder, GripVertical, Paperclip, Puzzle, Timer, TriangleAlert } from "lucide-react";
 import { DoneCircle } from "./DoneCircle";
 import { FoldToggle } from "./FoldToggle";
 import { ActorAvatar } from "./ActorAvatar";
@@ -13,8 +13,9 @@ import { useInlineEdit } from "./useInlineEdit";
  * 任务卡展示内容 —— 供挂件（WidgetApp）使用。
  *
  * ⚠️ 字段与顺序必须与 TodoCard 一致（老板要求挂件与主窗口显示一致）：
- * 标题行（标题 + 折叠开关 + 打勾圆圈；折叠时标题单行截断） → 备注 → 标签 → 子任务 → 文件 → 🤖/⏰ → 截止时间 → 完成时间（截止永远最底，完成时间在截止时间下一行，老板拍板）。
+ * 标题行（标题 + 折叠开关 + 打勾圆圈；折叠时标题单行截断） → 备注 → 标签 → 子任务 → 文件 → 🤖 → 截止时间 → 完成时间（截止永远最底，完成时间在截止时间下一行，老板拍板）。
  * 标题以下内容可折叠。改动 TodoCard 展示时记得同步这里。
+ * 定时设置已迁出卡片 → 「定时任务」模块（SchedulePage）统一管理。
  */
 export function TaskCardContent({
   task,
@@ -29,7 +30,6 @@ export function TaskCardContent({
   onCopyFilePath,
   onRemoveFile,
   onBotExecute,
-  onSetSchedule,
   /** 拖拽排序手柄的 dnd listeners（挂件排序；不传则手柄仅展示） */
   handleListeners,
 }: {
@@ -56,17 +56,12 @@ export function TaskCardContent({
   onRemoveFile?: (path: string) => void;
   /** 提供时显示 🤖 交给机器人按钮 */
   onBotExecute?: () => void;
-  /** 提供时显示 ⏰ 定时执行按钮 */
-  onSetSchedule?: (schedule: string | undefined) => void;
   /** 拖拽排序手柄的 dnd listeners（挂件排序；不传则手柄仅展示） */
   handleListeners?: DraggableSyntheticListeners | undefined;
 }) {
   const stop = (e: React.PointerEvent) => e.stopPropagation();
   const subtasks = task.subtasks ?? [];
   const doneCount = subtasks.filter((s) => s.done).length;
-  // 定时执行面板
-  const [schedOpen, setSchedOpen] = useState(false);
-  const [schedOnce, setSchedOnce] = useState("");
   // 绑定文件：点名直开，不再有 📂 多选列表；超过 5 个折叠「还有 N 个」
   const boundFiles = taskFiles(task);
   const [filesExpanded, setFilesExpanded] = useState(false);
@@ -79,7 +74,7 @@ export function TaskCardContent({
     onCancel: () => onCancelTitle?.(),
   });
   // 挂件任务卡永远显示折叠键（老板指令：复用现有 FoldToggle，
-  // 不重新设计折叠窗口）：折叠态只露标题（单行截断），展开态显示标题完整 + 🤖 + ⏰ + 其他内容
+  // 不重新设计折叠窗口）：折叠态只露标题（单行截断），展开态显示标题完整 + 🤖 + 其他内容
 
   return (
     <>
@@ -332,114 +327,22 @@ export function TaskCardContent({
             </div>
           )}
 
-          {/* 🤖 交给机器人 + ⏰ 定时：在折叠段内，复用现有 FoldToggle
+          {/* 🤖 交给机器人：在折叠段内，复用现有 FoldToggle
               （老板指令：不重新设计折叠窗口，折叠态只露标题，
-               展开态显示标题完整 + 🤖 + ⏰ + 其他内容） */}
-          {(onBotExecute || onSetSchedule) && (
+               展开态显示标题完整 + 🤖 + 其他内容） */}
+          {onBotExecute && (
             <div className="mt-2 flex items-center gap-1.5">
-              {onBotExecute && (
-                <button
-                  className="nm-btn px-2 py-0.5 text-[11px] leading-none text-[var(--t3)] flex items-center gap-1 whitespace-nowrap"
-                  onPointerDown={stop}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onBotExecute();
-                  }}
-                  title="交给机器人执行这张任务卡"
-                >
-                  <Bot size={11} aria-hidden /> 交给机器人
-                </button>
-              )}
-              {onSetSchedule && (
-                <button
-                  className={`nm-btn px-2 py-0.5 text-[11px] leading-none inline-flex items-center gap-1 whitespace-nowrap ${
-                    task.schedule ? "text-[var(--brand)]" : "text-[var(--t3)]"
-                  }`}
-                  onPointerDown={stop}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    // 仅展开且草稿为空时初始化：收起不动草稿——
-                    // 误触 ⏰ 不丢正在输入的值（取消定时清空后重开自然重置）
-                    if (!schedOpen && !schedOnce) {
-                      setSchedOnce(scheduleToDatetime(task.schedule));
-                    }
-                    setSchedOpen((v) => !v);
-                  }}
-                  title={
-                    task.schedule
-                      ? `定时：${formatSchedule(task.schedule)}（点击修改/取消）`
-                      : "定时执行：到点自动交给机器人跑"
-                  }
-                >
-                  <Clock size={11} aria-hidden /> {task.schedule ? formatSchedule(task.schedule) : "定时"}
-                </button>
-              )}
-            </div>
-          )}
-          {schedOpen && onSetSchedule && (
-            <div className="mt-1.5 nm-inset rounded-lg p-2 space-y-1.5">
-              <p className="text-[10px] text-[var(--t5)]">
-                到点自动执行这张任务卡（结果写进备注）
-              </p>
-              <input
-                type="datetime-local"
-                value={schedOnce}
-                onChange={(e) => setSchedOnce(e.target.value)}
+              <button
+                className="nm-btn px-2 py-0.5 text-[11px] leading-none text-[var(--t3)] flex items-center gap-1 whitespace-nowrap"
                 onPointerDown={stop}
-                className="nm-inset w-full rounded-lg px-2 py-1 text-xs text-[var(--t3)] outline-none"
-              />
-              <div className="flex flex-wrap gap-1">
-                {(
-                  [
-                    ["一次", "once"],
-                    ["每天", "daily"],
-                    ["每周", "weekly"],
-                    ["每月", "monthly"],
-                  ] as [string, string][]
-                ).map(([label, kind]) => (
-                  <button
-                    key={kind}
-                    className="nm-btn px-2 py-0.5 text-[10px] text-[var(--t3)]"
-                    onPointerDown={stop}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (!schedOnce) return;
-                      const dt = schedOnce.slice(0, 16);
-                      // 防御：无效日期（手动输入不完整等）不写库，防 NaN 进 schedule
-                      if (isNaN(new Date(dt).getTime())) return;
-                      const hm = dt.slice(11, 16);
-                      if (kind === "once") {
-                        onSetSchedule(`at:${dt}`);
-                      } else if (kind === "daily") {
-                        onSetSchedule(`daily:${hm}`);
-                      } else if (kind === "weekly") {
-                        // 取所选日期的星期几（1=周一 ... 7=周日）
-                        const wd = ((new Date(dt).getDay() + 6) % 7) + 1;
-                        onSetSchedule(`weekly:${wd}:${hm}`);
-                      } else {
-                        onSetSchedule(`monthly:${dt.slice(8, 10)}:${hm}`);
-                      }
-                      setSchedOpen(false);
-                    }}
-                  >
-                    {label}
-                  </button>
-                ))}
-                {task.schedule && (
-                  <button
-                    className="nm-btn px-2 py-0.5 text-[10px] text-[var(--danger)]"
-                    onPointerDown={stop}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onSetSchedule(undefined);
-                      setSchedOnce(""); // 清草稿：下次 ⏰ 展开自然重新初始化
-                      setSchedOpen(false);
-                    }}
-                  >
-                    取消
-                  </button>
-                )}
-              </div>
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onBotExecute();
+                }}
+                title="交给机器人执行这张任务卡"
+              >
+                <Bot size={11} aria-hidden /> 交给机器人
+              </button>
             </div>
           )}
 

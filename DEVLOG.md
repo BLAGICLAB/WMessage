@@ -2,6 +2,437 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-06（周二）P1-b/c/d 执行透明·diff 证据与采集闭环（Agent 透明化）
+
+**承接**：P1-a（同日，见下条）；`docs/AGENT-TRANSPARENCY-DESIGN-2026-10-06.md` §10 批次卡。
+P1-b/c/d 三小批代码咬合紧（receipt→管道→收尾），合并实现、合并验证，分批记账于此。
+
+### 改动清单
+
+**P1-b diff 生成 + bot_fs 接线**
+- `Cargo.toml`：+`similar 2`（unified diff）、`sha2 0.10`（回滚证据链哈希）；machete 绿
+- `bot_fs.rs`：`FileChangeReceipt`（path/kind/±行/diff/truncated/before_ref/before_sha/after_sha）+
+  `build_unified_diff`（±行计数是事实不随截断丢失；diff 文本超 MAX_DIFF_LINES=2000 截断置位）+
+  `build_file_change_receipt`（纯函数）+ `write_before_snapshot`（`data_dir/checkpoints/<uuid>`，
+  db::atomic_write 原子写；失败降级 None + `checkpoint.write_fail` Error 审计，不翻转业务结果）+
+  `sha256_hex`；`edit_file_sync` 增回修改前全文；tool_edit_file/tool_write_file 成功路径附 receipt
+  （modify 先读旧文，超限/二进制/读不出 → 无 diff 降级）
+- `bot/registry.rs`：`ToolResult` 增 `file_changes: Vec<FileChangeReceipt>`（四构造器默认空 +
+  with_file_change builder）——既有 33 工具零感知，`tools_baseline.json` 锁测不动
+
+**P1-c dispatch 采集接线**
+- `bot/dispatch.rs`：tool.return 审计后采集——registry 命中会话 → span（args/result 钳
+  SPAN_TEXT_MAX=16KB，超限 `trace.span_overflow` Warn；ok 走全链路统一口径 tool_call_failed；
+  error_class P1 恒 None 留 P4）+ file_changes 逐条进管道 + emit `bot-file-changed`（全窗口）
+- `bot_model_loop.rs`：`bot-tool-done` payload 扩展 {result(截2000字), ms, ok}（加字段不改名）；
+  LoopTrace 增 prompt_tokens/completion_tokens（llm.usage 审计累计——Anthropic 现发，OpenAI 留 P4）
+- `app_state.rs`：trace_registry（session_id→运行中 trace_id）+ trace_id_for_session
+- 新模块 `trace_sink.rs`：mpsc 采集管道——record fire-and-forget；writer 长连接攒批
+  （≤64 条/事务）+ DB_WRITE_LOCK 纪律；失败丢半批重开连接（open_db 幂等）
+
+**P1-d 收尾闭环 + 查询命令**
+- `bot_chat.rs`：`run_task_in_chat_with` 增 trace_hook 参数（None 兼容既有测试）——
+  begin_trace（建行+注册+`trace.start` 审计）置于最后一个 `?` 早退之后，end_trace（注销+
+  trace_finish 汇总+`trace.complete` 审计）与 begin 成对；run_task_in_chat 壳造 TraceCapture 槽、
+  闭包填 stats——原「LoopTrace 暂无消费方」（:1486）的半成品基建就此闭环
+- `db/trace.rs`：命令层 trace_list / trace_detail / trace_clear_before / usage_stats_daily +
+  TraceDetail/UsageDay；db 层 trace_list→trace_query、trace_get→trace_get_row 改名让位命令名
+- `bot_scheduler.rs`：`sched-status` 事件（started/done|failed + sessionId 跳转锚点）
+- `workflow_runner.rs`：`workflow-node-status` 事件（running/done|failed/skipped）
+- `lib.rs`：pub mod trace_sink + setup init + 4 命令注册
+
+### 关键设计点
+
+1. **receipt 随 ToolResult 走**：不改 TOOLS_TABLE schema / 工具签名，文件证据经 dispatch 咽喉统一采集。
+2. **registry 判采集**：dispatch 先查 trace_registry，无映射（主聊天/DSL 遗留路径）零开销旁路。
+3. **begin/end 成对性由代码结构保证**：begin 后到函数尾无早退分支。
+4. **writer 攒批 + best-effort**：观测面写不阻塞工具；半批失败丢弃 + 重连。
+5. **before_ref = uuid 发号**（非 DB row id，落库前不可知）；设计文档 §9.2-3 已按实现对齐。
+
+### 单测/集成清单
+
+- bot_fs::file_change_tests +9：diff 计数与 unified 文本 / create 全+ / 零变更无 diff /
+  截断（计数不截）/ CRLF / create 无 before 证据 / modify 带 before_sha / ToolResult 携带与默认空锁 / sha256 向量
+- 集成 `tests/exec_trace.rs` +3：done 行生命周期 / failed 行 error 留痕 / sink 管道落库
+  （span/file_change 经 record→writer→三表）
+- `cargo test --lib`：**1411 / 1411**（+9 vs P1-a 后 1402）；task_chat_exec 14 / exec_trace 13 /
+  skill_e2e 13 / memory_v2_degraded 1 全绿
+- **存量失败 1 例（非本批引入）**：llm_integration::t1_db_roundtrip_new_columns_and_rmw_edit——
+  工作区在途 T1 改动（tasks.rs enabled 列）自带的新测试失败；HEAD worktree 基线无此用例，
+  与 trace 管道无交集，移交 T1 批处置
+
+### 硬约束遵守
+
+1. ✅ 不改 TOOLS schema（锁测绿）/ prompt / 错误码；bot-tool-done 为加字段兼容
+2. ✅ 新增事件 bot-file-changed / sched-status / workflow-node-status；新增审计 trace.start /
+   trace.complete / trace.span_overflow / checkpoint.write_fail——audit_tauri_bridge 绿
+   （P1 后端先行，注册未调用 = warn 预期，P2 前端接入后配对）
+3. ✅ 默认行为零变更：无 trace 注册的会话零采集；receipt/snapshot 失败不翻转工具结果；工具结果回灌 msgs 未动
+4. ✅ 架构文档：trace_sink.rs 树 + §6.4 登记；module_map / error_codes / pre_step 四审计全绿
+
+### OCR 复审
+
+待批内合并前跑（et2，产物 `docs/OCR-CODE-REVIEW-2026-10-06-et2.json`）
+
+### 验收（对照设计 §14.1 P1 清单）
+
+- ✅ 自动化面：三表幂等 / CRUD / diff 矩阵 / done+failed 生命周期 / sink 管道全覆盖
+- ⏳ 真机冒烟（sqlite 抽查 / trace_detail diff 人工比对 / 挂件 devtools 抓 bot-tool-done 扩展字段 /
+  bot.log 四事件）——待 P2 前端接入后整链路走查
+
+### 待办
+
+- P2：TracePanel / 聊天 ToolBadges+FileSummary+diff 视图 / 画布实时 / 定时执行历史（含 file_rollback）
+- P4：OpenAI usage 解析（补 llm.usage）→ tokens 统计全覆盖；error_class 接 evolution 分类器
+
+## 2026-10-06（周二）P1-a 执行痕迹数据层 db/trace.rs（Agent 透明化首批）
+
+**承接**：`docs/AGENT-TRANSPARENCY-DESIGN-2026-10-06.md` §10 批次卡 P1-a；老板拍板「开工」。
+
+### 改动清单
+
+- 新增 `src-tauri/src/db/trace.rs`：执行痕迹三表单源——
+  - `exec_traces`（一次执行：session/task/origin/title/status/轮数/工具数/文件数/tokens）
+  - `exec_spans`（每次工具调用：turn/tool_call_id/name/args/result/ok/error_class/duration_ms）
+  - `file_changes`（每次文件落盘修改：path/kind/±行/diff/truncated + 回滚证据链
+    before_ref/before_sha/after_sha，为 P2 回滚预留）
+  - 钳制常量单源：`SPAN_TEXT_MAX=16KB` / `MAX_DIFF_LINES=2000` / `TRACE_RETENTION_DAYS=30 天`；
+    状态值域五常量（running/done/failed/stopped/timeout）
+  - CRUD：`trace_start` / `trace_finish`（files_changed 从 file_changes 表反计）/
+    `span_insert` / `file_change_insert` / `trace_list`（task|session|origin 组合过滤 +
+    limit 钳 1..=500）/ `trace_get` / `spans_for_trace` / `file_changes_for_trace` /
+    `retire_traces_before`（过期收尾 + 僵尸 running 双口径，事务内级联三删）/
+    `clamp_text`（UTF-8 字符边界回退）
+- `db/mod.rs`：`pub mod trace` + re-export；`open_db` 在 ensure_meta_tables 后幂等建三表（含 5 索引）
+- `docs/rust-bot-architecture.md`：db/ 树 + §6.4 清单登记（audit_module_map 强制项）
+
+### 关键设计点
+
+1. **task_id 用 TEXT 非 INTEGER**——tasks.id 本就是 TEXT；设计文档 §4.1 草案写 INTEGER 属笔误，按真实主键类型对齐。
+2. **append-only 观测面**：本模块不参与业务判定、不设收尾幂等闸（重复 finish 覆盖同值），
+   「只收一次」由调用方保证——闸门放业务层，DB 层不做隐式决策。
+3. **files_changed 反计**：trace_finish 从 file_changes 表 COUNT 反计，防「调用方计数 vs 表内容」两头记账漂移。
+4. **僵尸 trace 清理**：retire 口径 = `finished_at < before OR (running 且 started_at < before)`——
+   崩溃残留的 running 行永远等不到收尾，只按 finished_at 扫会永久滞留。
+5. **unchecked_transaction**：清理走事务但连接是 `&Connection`（非 mut），用 rusqlite 的
+   unchecked_transaction 保三删原子（本模块全部接口与既有表模块同款收 `&Connection`）。
+
+### 单测清单（cargo test --lib db::trace，新增 10 例）
+
+ddl_is_idempotent / indexes_exist（5 索引断言）/ trace_start_finish_roundtrip_counts_files_from_table /
+trace_get_missing_returns_none / span_insert_roundtrip（含行序=id 序）/ clamp_text_respects_char_boundary /
+file_change_roundtrip_with_rollback_evidence / trace_list_filters_order_and_limit（过滤组合+倒序+limit 钳）/
+retire_traces_before_cascades_and_keeps_live_rows（过期收尾删/未过期留/僵尸 running 删/活跃 running 留）/
+retire_traces_before_noop_returns_zero
+
+### 集成测试
+
+- `cargo test --lib` 全量：**1402 / 1402 通过**（3 ignored 存量；+10 vs 批前 1392）
+- 新增告警：0（grep trace 无新增 warning）
+
+### 硬约束遵守
+
+1. ✅ 不改 prompt / TOOLS schema / 命令名 / 既有事件名（本批无命令无事件）
+2. ✅ 新增表：exec_traces / exec_spans / file_changes——open_db 幂等 `CREATE IF NOT EXISTS`，老库零迁移风险
+3. ✅ 默认行为零变更：纯观测面落库，无任何调用方接线（P1-c/d 才接）
+4. ✅ audit_module_map：架构文档 db/ 树 + §6.4 当批登记
+
+### OCR 复审
+
+待批内合并前跑（et1，产物 `docs/OCR-CODE-REVIEW-2026-10-06-et1.json`）
+
+### 验收
+
+- ✅ P1-a 验收门：三表建表幂等 + CRUD 往返 + 保留期级联 + 索引存在（单测覆盖）
+- 待 P1 全链路联调后按设计文档 §14.1 P1 清单整体冒烟
+
+### 待办
+
+- P1-b：similar 引入 + bot_fs FileChangeReceipt（消费本模块 MAX_DIFF_LINES/clamp_text）
+- P1-c：dispatch span 落库（span_insert/clamp_text 消费方）
+- P1-d：trace_* 查询命令（trace_list/trace_get 消费方）+ retire 接线（命令/定时器）
+
+## 2026-10-06（周一）N7-SKILL-UPGRADE：技能系统四点升级 + Agent Skills 开放标准对齐
+
+**需求**（老板拍板升级 use_skill）：调研 2026 技能系统形态（Anthropic Agent Skills
+开放标准 agentskills.io / Cursor / Claude Code / Voyager 自进化库 / EVOMAL 投毒
+研究）后定四点升级 + 开放标准四项对齐。
+
+**实现**：
+- **① 兼容审计**：unknown_tool_names 纯函数（steps+rollback vs 注册表）；三接入点
+  ——skills_import 结果消息 / SkillInfo.unknown_tools（设置页标红，前端小改）/
+  调度器启动检查（全部未知→提前 Terminated 教学化 reason；部分未知→
+  skill.compat_warn 审计 + use_skill 头部警告注明 MCP 场景）。**上线即抓真问题**：
+  minimax-ppt fixture 的 list_tasks 是 T1 合并遗留失效，当场修复并同步 e2e 断言。
+- **② 语义化推荐**：新 recommend.rs——rank_skills（embed_text + cosine 排序截断
+  top5，embed 注入式可测，引擎不可用降级全清单）；build_skill_block_for(app,
+  query) async 化（embed 走 spawn_blocking），bot_chat 主聊天传用户末条消息、
+  任务卡执行传任务标题；只排序呈现，不接管 IntentRule 路由。
+- **③ 参数契约**：params frontmatter 多行列表（`- key: 说明（必填）/（默认 X）`
+  → SkillParam）；use_skill schema +params 对象；start_skill 必填缺失拒绝
+  （教学化列出）+ 默认回填 + 空串视为未提供；vars ${params.key} 替换
+  （substitute_vars_with_params，缺键保留占位符可诊断）。
+- **④ 失败回流**：sink_skill_failure_lesson（record_lesson_core 直沉淀
+  kind=lesson、scenario=skill:{name}、source=system）——runtime skill_finish
+  Failed（有 actions 才记，防空转噪音）与 scheduler failed_recoverable 双接入；
+  自动进 consolidate 候选池与聊天 lesson 槽，不建新表不改 post_consolidation。
+- **⑤ allowed-tools**（开放标准）：frontmatter 解析 → SkillRun 镜像 → 调度器
+  步骤双闸（tool ∈ 注册表① ∩ tool ∈ allowed-tools⑤，声明了才限制；违规走
+  回滚+FailedButRecoverable+专项审计）。未声明 = 不限制（向后兼容）。
+- **⑥ 第三层披露**：use_skill 返回尾部列技能目录 references/*.md 绝对路径；
+  load_skill_meta 返回三元组（+dir）→ SkillRun.dir → allowed_dirs 会话级放行
+  活动技能目录（只加读白名单，写闸门不受影响）。
+- **⑦ version 字段**：frontmatter 可选 → SkillInfo / 设置页 / use_skill 头部。
+- **⑧ description 规范**：SKILL 模板与后续导入提示要求 description 含「何时使用」
+  语义（服务语义推荐质量）。
+
+**附带修复**：minimax-ppt fixture list_tasks 遗留失效（兼容审计首战告警）；钥匙串
+守卫（N4 批）连带修好 pre_step 审计内部超时。
+
+**验证**：lib 全量 **1388 通过 0 失败**（新增 parse 4/vars 3/recommend 3 等技能
+测组）；skill_e2e 13/13（fixture 更新后）；集成 7 目标全绿；audits 5/5；
+clippy/fmt 干净；前端 vitest 通过（SkillsPanel/types 小改）。
+
+## 2026-10-06（周一）N6-FILE-EDIT：agent 文件编辑工具 edit_file/write_file——Aider 式三级匹配 + 三大系统结合
+
+**需求**（老板：「这个一定要做，而且要做好」）：agent 文件工具全只读，缺 coding
+agent 的编辑原语。调研业界四种编辑格式（Claude Code str_replace / Aider 多级回退 /
+Codex V4A / Cursor fast apply）后采用 **str_replace + Aider 三级匹配回退**；
+并按老板要求分析与自进化/skills/MCP 三大系统的结合。
+
+**实现**（37→39 工具）：
+- **可写根 ≠ 读白名单**（关键安全决策）：可写根 = AI_Gen_Files + 任务卡绑定
+  文件夹 + cfg.allowedDirs；桌面/下载/文档默认项只读不可写（读可以、写必须
+  显式授权）。`writable_dirs` + `resolve_writable`（resolve_with_perm 写语义
+  变体：父目录 canonical 校验、目标可不存在；白名单外 perm_mode 三分支，ask
+  用 ask_user_confirm danger 每次确认不持久化）。
+- **edit_file 三级匹配**（纯内核 `try_apply_edit`）：精确唯一 → 应用；多处 →
+  MultiHit（加上下文）；0 处 → 空白容错（逐行 trim_end，CRLF 经 lines() 免疫，
+  重建保留主导换行符）唯一 → 应用并注明级别；全失败 → NotFound + reflection
+  提示（先 read_text_file、注意缩进、附文件前 3 行）。不做 Levenshtein（误
+  替换风险 > 收益，留档）。原子写回（db::atomic_write）+ 变更行数摘要。
+- **write_file**：新建直接写；覆盖已存在 ask_user_confirm(danger)——非交互
+  自动拒（子 agent 只能新建不能覆盖；edit_file 无此限，精准替换风险低，留档）；
+  validate_write_content（NUL/2MB 拒）；父目录必须已存在。
+- **自进化结合**：EditErrorKind（not_found/multi_hit）+ reflection 文案进
+  tool.call_failed 审计 → 既有 PREVR/record_lesson/evolution 链路自动采集
+  「哪类文件编辑常失败」——错误文案即自进化接口，零新机制。
+- **Skills 结合**：`docs/skills/file-edit-best-practice/SKILL.md` 可安装模板
+  （先读后改/唯一性锚点/大改拆小步/改完验证），规则 19 指向 use_skill——
+  知识型，系统零改动。
+- **MCP 边界**：文件编辑必须原生（写闸门在宿主侧不可被外部 MCP 绕过），
+  MCP-COMPUTER-USE-SETUP.md 补节。
+- **子 agent**：CODER/GENERAL 档加 edit_file/write_file（RESEARCH 不加），
+  子 agent 提示词同步；baseline 前 28 前缀不变。
+
+**验证**：lib 全量 **1376 通过 0 失败**（新增 5 测：三级匹配矩阵/CRLF 与结尾
+换行保持/write 校验/可写根不含桌面默认项断言）；集成 7 目标全绿；pytest
+audits 5/5；clippy/fmt 干净。
+
+## 2026-10-06（周一）N5-SCREENSHOT-VISION：screenshot 直达模型视觉——打通工具图片回传链路
+
+**需求**（老板指出）：现在模型都有视觉，screenshot 不该走 OCR 中转。成立——
+OCR 链路是权宜之计，根因是「OpenAI 协议 tool 消息只收文本」没打通图片回传。
+
+**实现**（ToolResult 图片通道，协议双栈打通）：
+- **ToolResult 加 `images: Vec<String>`**（绝对路径，默认空）+ `ok_with_images`
+  构造器；其余 36 工具零影响。
+- **模型循环回填**：tool 消息照推后，images 非空 → 追加 user 消息
+  `[〔系统附图〕text + image_url data-URL parts]`——OpenAI 协议「工具后追加
+  带图 user 消息」官方视觉示例同款（tool 消息只收文本是不变量，图走 user 消息
+  合法且不要求严格交替）；读取失败逐图跳过并审计，不阻断文本结果。
+- **编码共享**：bot_chat 抽 `pub(crate) image_part_from_file`（同 3MB 上限/
+  同 mime 表；无白名单——调用方是工具自身产物非用户输入）。
+- **Anthropic 零改动**（调研验证后确认）：convert_content_blocks 已把
+  data-URL 转 image 块，flush/push_or_merge 把 [tool, user(图)] 合并成单条
+  user [tool_result, image]——官方 tool_result 附图形态 + 严格交替天然满足；
+  本批加合并断言测试锁死该行为。
+- **screenshot**：改 ok_with_images（图随结果直达视觉）；schema/规则 23 同步
+  「截图直接附给模型」，去掉 OCR 中转描述（ocr_image 工具保留：磁盘任意图片
+  文字提取仍是合法能力）。
+
+**验证**：lib 全量 1371 通过 0 失败；llm_integration 47/47（新增 N5 端到端：
+mock LLM 两轮请求体断言——tool 消息文本在前、紧跟 user〔系统附图〕+
+data:image/png;base64 图，图在 tool 消息之后）；bot_anthropic 27/27（新增
+合并断言：[assistant(tool_use), tool, user(图)] → 占位 user + assistant +
+**单条 user [tool_result, text, image]**）；集成 7 目标全绿；audits 5/5；
+clippy/fmt 干净。
+
+## 2026-10-06（周一）N4-DESKTOP-TIER1：电脑辅助 Tier1 原生四件 + 操控 MCP 接入指南
+
+**需求**（老板拍板「只做 Tier1 原生四件 + playwright mcp」）：电脑操控方向第一批。
+调研先行（Peekaboo/mcp-macos-cua/windows-mcp 系/Playwright MCP + Anthropic/OpenAI
+官方安全指引），分层定案：第 0 层接现成 MCP 验证需求、Tier1 原生低风险四件、
+白名单脚本制第 2 层缓做、原生鼠标键盘第 3 层不做（官方不建议主机裸跑 + 产品
+信任模型剧变）。
+
+**实现**（33→37 工具，+4 全部 mutating=false，只「看」与「打开」）：
+- **reveal_path**：访达/资源管理器定位文件。opener 插件 reveal_item_in_dir
+  （bot_skills/files.rs 先例同款）；白名单闸 resolve_with_perm 与读文件一致。
+- **open_url**：默认浏览器打开。新包装 bot_web::ensure_public_http_url——parse +
+  仅 http/https + 复用 fetch 同款 check_public_url 公网闸（DNS 后拒绝本机/内网/
+  保留段）。
+- **clipboard_write**：官方 tauri-plugin-clipboard-manager v2（新增依赖 + lib.rs
+  注册，Rust 侧 ClipboardExt::write_text）；validate_clip_text 空串拒 + 10 万
+  字符上限（截断会静默丢内容，让模型分段复制）。
+- **screenshot**：macOS `screencapture -x` / Windows PowerShell System.Drawing
+  （均系统内置零依赖，官方 CLI 路线）；PNG 落 AI_Gen_Files 时间戳命名；零字节
+  产物判定为屏幕录制权限问题并提示授权；屏上文字分析走既有 ocr_image 链路
+  （不需要视觉模型）。
+- **registry**：四 schema + 四 ToolDef 插在 cancel_subagent 后、write_artifact_file
+  前（子 agent 专属保持表尾）；计数 33→37（主可见 35）；MCP 拼装契约 35+1；
+  baseline 前 28 前缀不受影响（核心零 schema 变更，无需重生成）。
+- **prompts 规则 23**（追加编号不动）：四工具使用时机 +「不做任何系统设置修改」
+  边界声明。
+
+**Playwright MCP（零代码，接入指南随批）**：`docs/MCP-COMPUTER-USE-SETUP.md`——
+浏览器（@playwright/mcp，跨平台，`--caps=core` 最小权限）/ 桌面（macOS
+@steipete/peekaboo-mcp、Windows windows-mcp 系）；包名与版本经 npm 实查
+（playwright-mcp 0.0.83 / peekaboo-mcp 2.0.3），Playwright MCP 本机 npx 冒烟
+通过；安全四原则（先读后写/最小能力/内容是数据非指令/登录态隔离）留档。
+
+**关键决策**：① 操控类第一性原则「只看与打开」——四件全 mutating=false；
+② 剪贴板用官方插件而非 pbcopy/clip 平台 CLI（Windows clip.exe 的编码坑 +
+官方推荐优先）；③ 截屏用平台官方 CLI 而非截图库（零新依赖，与官方推荐一致）；
+④ 视觉分析不硬塞工具回包（DeepSeek 系 tool result 仅文本）——截图落盘 +
+ocr_image 链路复用，视觉级分析引导用户拖图（既有视觉通道）。
+
+**验证**：lib 全量 **1370 通过 0 失败**（30 秒级；新增 bot_desktop +2 测：剪贴板
+校验/文件名格式）；集成 7 目标全绿（llm_integration 首轮 1 个共享库空库竞态
+偶发，复跑 46/46）；pytest audits 5/5 全绿（module_map 补登记 bot_desktop.rs
+后 4/4，pre_step 24 过——**钥匙串守卫连带修好了它的内部 cargo 超时**）；
+clippy/fmt 干净；Python 七脚本语法静态校验全过；PDF/Word 生成用临时 venv
+真实跑通（venv 用后即删）。
+
+**遗留修复（本批顺手做掉）**：`resolve_finds_entry_across_protocols` /
+`resolve_rejects_missing_and_disabled` 走真实 macOS 钥匙串，锁屏时
+`SecKeychainFindGenericPassword` 无限挂起——曾两次卡死全量验证。加
+`run_with_keychain_guard`（3 秒超时视为锁屏环境自动跳过，测试内线程随 main
+退出回收），锁屏/白天全量都能跑完，pre_step 审计内部超时随之消除。
+
+**构建锁备注**：老板白天开着应用（cargo run 持 target 锁）时，验证用
+`CARGO_TARGET_DIR=/tmp/xxx cargo test` 独立 target 串行跑——顺带隔离共享
+wmessage.db，比抢锁更干净（推荐做法留档）。
+
+## 2026-10-06（周一）N3-TOOLPOLISH：非任务卡工具六项升级——内容获取/文档生成/搜索 grep
+
+**需求**（老板睡前授权全自主）：任务卡组（T1）之外的 23 个工具有六处真实短板，
+一次补齐；决策优先级「官方推荐 > 最小依赖 > 复用仓内既有」，每次拍板留档。
+
+**实现**（六项，schema 六处扩参，全部向后兼容——缺省参数 = 旧行为逐字不变）：
+- **N3-1 fetch_url offset 续读**：正文 30K 截断带 `offset=N` 提示（照抄
+  extract_document 模式）；带 offset 时输出加 `[位置]` 头行；无 offset 且不超限
+  输出与旧版零差异。每次调用重抓整页再切片（无缓存失效问题， trade-off 留档）。
+- **N3-2 扫描版 PDF 兜底 OCR**：pypdf 文本层近空（去掉 `=== 第N页 ===` 页标记后
+  全空白）→ 新 PDF_RENDER_SCRIPT 用 **PyMuPDF 2x zoom（≈144DPI）渲染前 20 页**
+  为 PNG → 逐页走既有 `ocr::recognize`（macOS Vision / PP-OCRv6，字节全本地）→
+  带页标记拼接；缺 pymupdf 优雅降级给 `pip install pymupdf` 指引；临时目录用后即删。
+- **N3-3 create_pdf tables**：MAKE_PDF_SCRIPT 从 canvas 手绘重写为 **reportlab
+  platypus**（官方推荐表格路径）：Paragraph（CJK wordWrap）+ Table（网格+表头底色
+  +斑马纹+repeatRows 跨页表头）+ 自动分页；tables 与 create_word 同形状。
+- **N3-4 create_word 标题/图片**：段落 `#/##/###` 前缀 → Heading 1/2/3（黑体 +
+  显式 w:eastAsia）；images 仅放行 AI_Gen_Files 内已存在图片（Rust 侧 canonicalize
+  校验，被拒条目审计），5.8 英寸宽插在正文后表格前。
+- **N3-5 web_search count/timeRange/site**：Tavily → max_results + time_range
+  （day/week/month/year 原生）+ include_domains；Brave → count + freshness
+  （pd/pw/pm/py）+ `site:` 查询运算符；Bing/百度抓取 → site: 追加、time_range
+  显式提示不支持（诚实降级）。参数映射全部纯函数（tavily_payload /
+  brave_query_and_params / sanitize_site / TimeRange）。
+- **N3-6 grep_files context**（0..=5）：命中行 `path:行号:`、上下文行
+  `path-行号-`、块间 `--`；窗口重叠合并；max 改按匹配数计（渲染行数随 context
+  放大），渲染纯函数 render_context_hits。
+
+**关键决策**（官方推荐 > 最小依赖 > 复用仓内）：
+1. PDF 页转图 = PyMuPDF（业界事实标准、全平台 pip 轮子）；否决 pdfium-render
+   （需随包分发 pdfium 动态库）与 macOS sips（仅首页）。
+2. PDF 表格 = reportlab platypus Table（官方推荐；顺带解决长文自动分页）。
+3. 时间过滤映射 = 两家 API 官方参数直查（2026-10 核对：Tavily time_range、Brave
+   freshness pd/pw/pm/py）。
+4. OCR = 复用既有双引擎，仅加 pub(crate) recognize_bytes 入口，隐私红线不变。
+
+**验证**：lib 全量 1367 通过 0 失败（新增 15 测：fetch 切片 4 / PDF 判定 2 /
+images 清洗 1 / 搜索映射 4 / grep 渲染 4）；集成 8 目标全绿；pytest audits
+4/5 全绿 + pre_step 23 过（其内部 cargo test --lib 超时系锁屏下钥匙串测试
+`resolve_finds_entry_across_protocols` 挂起等授权——**环境因素非代码**，白天
+解锁复跑即绿，建议后续给该测试加 keyring 失败快速跳过）；fmt/clippy 干净；
+Python 七脚本语法静态校验全过；PDF/Word 生成用临时 venv 装依赖真实跑通
+（表格文字/标题层级/分页全在，venv 用后即删）。
+
+## 2026-10-05（周日）N1-NOTIFCENTER：Agent 通知中心——三类决策事件持久化消息化 + 验收修复
+
+**需求**：原挂件 ArtifactBatchDialog 弹窗一次只显示一批、新事件覆盖旧弹窗且重启即丢；
+记忆提案/自进化提案/产物绑定三类「需要用户决策」的 Agent 事件统一改为持久化消息
+（SQLite notifications 表，按条排列互不覆盖、重启不丢），主窗口新增「通知」页统一呈现。
+
+**实现**：
+- **新模块** `src-tauri/src/notifications.rs`：notifications 表（幂等
+  `INSERT OR IGNORE`，id 由各来源生成 `memory:{session}:{ts}` / `evo:{proposal_id}` /
+  `artifact:{task_id}:{sid}`，已处理消息不被同源事件复活）+ 四命令
+  （list/pending_count/resolve/clear_done，全 ?N 参数绑定）+ 每次变更广播
+  `notifications-changed`；附 5 单测（幂等/仅 pending 可 resolve/全量收下/局部收缩
+  payload/按 taskId 回写）。
+- **三产生源**：memory::extract confirm 档入队落「新记忆提案 · N 条」；
+  evolution 提案入池逐条落消息（`write_proposals` 改返回新写入条目 Vec，auto 档下
+  即将被自动应用的提案不打扰，mod.rs:187-192 分流）；bot_chat 执行收尾落
+  「任务「X」完成，N 个产物待绑定」（payload 随 paths 落库，重启可补绑定）。
+- **双向同步**：mem_pending_approve/reject → notif_sync_memory（局部收下 payload
+  收缩、清空整条解决）；evolution_toggle/delete/promote/reject → notif_resolve；
+  confirm_artifact_batch → notif_resolve_artifact（按 taskId 清 pending）。
+- **前端**：NotificationsPage（待处理/全部两页签，三类消息卡各带操作，产物卡内嵌
+  勾选列表默认全选）+ 左侧导航「Agent能力」分区「通知」入口（Bell + 待处理数角标，
+  99+ 封顶）；ArtifactBatchDialog 组件与挂件弹窗链路整体删除。
+
+**验收修复**（按测试审计标准复检出的三处）：
+- `tests/evolution_gov.rs:209` 断言没跟 `write_proposals` 新签名（Vec vs 整数），
+  `cargo test` 全量在编译期中止——改 `written.len()` + 返回条目 proposal_id 校验；
+- 三处模型可见文案仍承诺已删除的「弹汇总窗口」（system.rs 规则 6 / execute.rs
+  规则 3 / registry.rs SCHEMA_LINK_FILE_TO_TASK 描述 / tools.rs link 成功文案 +
+  模块注释共五处）——统一改「通知中心」措辞，baseline 前缀重生成；
+- notifications.rs 未登记 `docs/rust-bot-architecture.md` 模块树（audit_module_map
+  红）——已登记，bot_artifacts 条目同步更新为通知流（原 artifact-batch-ready 流程
+  描述过时）；registry 条目工具数 29→33 顺带修正。
+
+**验证**：cargo test 全量单命令通过（evolution_gov 修复后）；lib 1354；pytest
+tests-audit 五个脚本全绿；前端 vitest 477/477（首轮 1 个 database locked 偶发，
+共享库并行占用，复跑全绿）；tsc + vite build 过；fmt 干净。人工冒烟
+（三类消息卡操作 / 设置页双入口同步 / 重启补绑定）待配 key 真机跑。
+
+## 2026-10-05（周日）T1-QUERYTASKS：agent 工具面对齐任务卡数据模型——list/search 合并 + 新字段暴露
+
+**需求**（老板拍板）：agent 工具落后于任务卡/数据库多版本演进（30 列），升级工具面。
+范围经三轮收敛：全套→裁掉归档/恢复/成员/工作流枚举工具→保留零新工具方案；
+schedule 定时不做在任务卡（将来做定时触发工作流：模板/实例化分离 + workflows 补列
++ scheduler 分支）；dependsOn 不做编辑入口（工作流卡自动依赖、普通卡手动维护）。
+
+**实现**（34→33 工具，零新增）：
+- **list_tasks + search_tasks 合并为 query_tasks**（唯一真冗余——list 就是空关键词的
+  search + active 过滤）：query?/view(active|done|archived|trash|all)/tag/limit 四参；
+  无 query=清单（默认 active，原 list_tasks 口径）、有 query=检索（默认 all 全库，
+  原 search_tasks 口径）；纯函数族 TaskView/parse_view/view_keep/keyword_hit/
+  tag_keep/parse_limit 可单测。输出行带（工作流：名称）标记——模型按标记分组即可
+  回答「有哪些工作流/进展如何」（零工具的工作流感知方案）。
+- **edit_task 扩 model/owner**：model 空串=清除恢复跟随全局；owner 经 people 表解析
+  （id→名精确→「我」→唯一包含，歧义报候选名单让模型向用户消歧），空串=归属本人。
+- **子任务 subtaskId 精确定位**：toggle/remove 优先 subtaskId（query_single_task
+  早已输出子任务 id 却无工具可消费），回落文本关键词；id 未命中不静默回落（防误伤）。
+- **query_single_task 补四类只读行**：createdAt/定时（humanize_schedule 四格式
+  人性化）/所属工作流名/依赖标题——模型可感知新字段但无写入口。
+- **提示词**：规则 2/3/4/5 与安全红线换 query_tasks（规则 4 教 view 用法与工作流
+  标记问答），新增规则 22（model/owner 编辑 + schedule/dependsOn 明示无入口）；
+  编号不打乱（锚点锁照常）。bot_skills/runtime.rs Skill 回滚豁免 READONLY 4→3。
+
+**验证**：registry_tests 33 表/31 主可见/基线前 28 项（tools_baseline.json 经
+`tests-audit/regen_tools_baseline.py` 重生成——T1 起常备工具，抽 SCHEMA_* 原文
+字节保真拼装）；tools.rs +8 纯函数测；llm_integration +2 端到端（A. 模型循环把
+query_tasks/edit_task 的 name+args 原样送达注入 executor 并以 role:tool 回填——
+真 dispatch 的 AppHandle<Wry> 链路 mock runtime 下不可调（task_chat_exec.rs:156
+既有结论），故走 skill_e2e 同款注入接缝；B. DB 往返：model/owner_id/schedule/
+depends_on/subtasks/created_at 经真 open_db+upsert_tasks+load_all 落库读出 +
+RMW 编辑模式）；`tests-audit/audit_bot_tools_alignment.py` 新增 6 项跨文件对拍
+（提示词工具名⊆注册表、退役名零残留、Skill READONLY 只含注册名、schema↔ToolDef
+名字配对、mutating 必有 claims_patterns）。全量 cargo test + pytest tests-audit 通过。
+人工冒烟清单 `docs/MANUAL-SMOKE-ACCEPTANCE-BOT-TOOLS-2026-10-05.md`（⭐子集约 20 分钟）。
+
 ## 2026-10-05（周日）G7-SETTINGS：设置页「任务图谱」模块——七项图谱偏好
 
 **需求**（老板拍板清单）：设置页新增任务图谱分类，七项：①只看我的任务
