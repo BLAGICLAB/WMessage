@@ -963,9 +963,16 @@ pub async fn bot_chat(
             "user"
         };
         if img_indices.contains(&i) {
-            msgs.push(
-                serde_json::json!({"role": role, "content": attach_images(&app, &m.content)}),
-            );
+            // attach_images 全程同步 FS（canonicalize 白名单判定 + 整图读入转 base64，
+            // 单图至多数 MB）——包 spawn_blocking，防多图/并发会话把 async runtime
+            // 的 worker 钉住（同 create_exec_session 先例）；阻塞任务崩溃时降级为纯文本
+            let app_img = app.clone();
+            let content_img = m.content.clone();
+            let img_content =
+                tauri::async_runtime::spawn_blocking(move || attach_images(&app_img, &content_img))
+                    .await
+                    .unwrap_or_else(|_| serde_json::json!(m.content));
+            msgs.push(serde_json::json!({"role": role, "content": img_content}));
         } else {
             msgs.push(serde_json::json!({"role": role, "content": m.content}));
         }

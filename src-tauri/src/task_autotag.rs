@@ -196,8 +196,15 @@ pub async fn task_autotag(app: AppHandle, id: String) -> CommandResult<Option<Ve
             let Some(mut t) = crate::db::load_task(&conn, &id)? else {
                 return Err("任务已不存在".into());
             };
-            if t.tags.as_ref().is_some_and(|v| !v.is_empty()) {
-                // 并发窗口内别人先写了标签：以先写者为准，不覆盖
+            // 锁内重做完整守卫链（前置读只用于快速失败）：前置读到拿锁之间
+            // 任务可能被取消归档/认领/改状态，只复查 tags 会漏掉这些变化
+            let skip = t.column != TaskStatus::Done
+                || t.archived != Some(true)
+                || t.deleted_at.is_some()
+                || t.owner_id.is_some() // 只给自己的卡打标（外来卡只读）
+                || t.tags.as_ref().is_some_and(|v| !v.is_empty());
+            if skip {
+                // 并发窗口内守卫被打破或别人先写了标签：以先到者为准，不覆盖
                 return Ok(t);
             }
             crate::db::apply_task_patch(&mut t, &serde_json::json!({ "tags": tags }))

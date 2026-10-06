@@ -258,6 +258,11 @@ pub fn drain_sse_lines(buf: &mut Vec<u8>) -> Vec<String> {
 /// index 来自服务端，畸形/恶意 index（如 10000000）会让累积循环无脑 push 撑爆内存
 pub const MAX_TOOL_CALL_INDEX: usize = 64;
 
+/// 单条 tool_call arguments 的累积字节上限：index 上限只管条数，管不住单条大小——
+/// 畸形/恶意上游可流式发送任意大的 arguments 增量把单条撑到 OOM。
+/// 超限的增量一律丢弃（返回 false，与 index 超限同语义，调用方走同一审计）。
+pub const MAX_TOOL_CALL_ARGUMENTS_BYTES: usize = 1024 * 1024;
+
 /// 把一个 tool_call delta 按 index 归位累积进 (id, name, arguments) 列表：
 /// id 只置首次（迟到的 id 能补上）、name/arguments 跨 delta 追加。
 /// 返回 false = index 超上限，该 delta 被丢弃（调用方记审计）。
@@ -285,6 +290,9 @@ pub fn accumulate_tool_call_delta(
         }
     }
     if let Some(args) = &delta.arguments_chunk {
+        if t.2.len() + args.len() > MAX_TOOL_CALL_ARGUMENTS_BYTES {
+            return false;
+        }
         t.2.push_str(args);
     }
     true

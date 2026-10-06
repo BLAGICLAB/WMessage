@@ -96,12 +96,14 @@ fn bot_session_create_with_kind_inner(
 
 #[tauri::command]
 pub fn bot_session_create(app: AppHandle, title: Option<String>) -> CommandResult<BotSession> {
+    // open_db（建连 + PRAGMA + 幂等 DDL）是同步磁盘 I/O，放在写锁外——
+    // 临界区只覆盖 SQL 写，别让建连耗时串行化其他写者（同 evolution::apply 先例）
+    let conn = super::open_db(&app)?;
     let _g = super::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
         eprintln!("[mutex_poisoned] db::bot_sessions DB_WRITE_LOCK: {e:?}");
 
         e.into_inner()
     });
-    let conn = super::open_db(&app)?;
     bot_session_create_inner(&conn, title).map_err(CommandError::DbError)
 }
 
@@ -142,12 +144,13 @@ pub fn bot_session_rename(app: AppHandle, id: String, title: String) -> CommandR
             reason: "会话标题不能为空（或全为空白字符）".into(),
         });
     }
+    // 同 bot_session_create：open_db 在写锁外，临界区只覆盖 UPDATE
+    let conn = super::open_db(&app)?;
     let _g = super::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
         eprintln!("[mutex_poisoned] db::bot_sessions DB_WRITE_LOCK: {e:?}");
 
         e.into_inner()
     });
-    let conn = super::open_db(&app)?;
     let now = chrono::Utc::now().timestamp_millis();
     let rows = conn
         .execute(

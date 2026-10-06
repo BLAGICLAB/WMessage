@@ -80,13 +80,14 @@ impl ReasoningWire {
 }
 
 /// GLM 版本号解析：`glm-5.3-flash` → (5, 3)；解析失败 → None。
-/// 容忍 `-flash/-air/-plus` 等后缀与 `glm5.3` 无连字符写法。
+/// 容忍 `-flash/-air/-plus` 等后缀与 `glm5.3` 无连字符写法；
+/// minor 分隔符同时接受 `.` 与 `-`（`glm-5-3-flash` 连字符写法不算 5.0）。
 fn glm_version(model_lower: &str) -> Option<(u32, u32)> {
     let rest = model_lower.strip_prefix("glm")?;
     let rest = rest.trim_start_matches(['-', 'v']);
     let (major, rest) = take_digits(rest);
     let major = major?;
-    let minor = match rest.strip_prefix('.') {
+    let minor = match rest.strip_prefix(['.', '-']) {
         Some(r) => take_digits(r).0.unwrap_or(0),
         None => 0,
     };
@@ -259,6 +260,21 @@ mod tests {
         );
         assert_eq!(
             resolve(p, "glm-4.5-air", EffortLevel::High, MT),
+            ReasoningWire::GlmThinking(true)
+        );
+    }
+
+    /// 连字符 minor 写法（glm-5-3-flash）按 (5,3) 解析，不落到旧版 thinking 开关分支
+    #[test]
+    fn glm_hyphen_minor_version_parses() {
+        let p = ApiProvider::Openai;
+        assert_eq!(
+            resolve(p, "glm-5-3-flash", EffortLevel::Low, MT),
+            ReasoningWire::OpenAiEffort("low".into())
+        );
+        // 无 minor 段的后缀（-flash / -air）仍是 minor=0
+        assert_eq!(
+            resolve(p, "glm-4-flash", EffortLevel::High, MT),
             ReasoningWire::GlmThinking(true)
         );
     }

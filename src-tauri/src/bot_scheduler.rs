@@ -848,12 +848,28 @@ async fn run_scheduled_job(app: AppHandle, job: crate::db::ScheduledJob) {
         card.order = Some(if min.is_finite() { min - 1.0 } else { 0.0 });
     }
     if let Err(e) = crate::db::db_upsert(app.clone(), vec![card.clone()]).await {
+        // 建卡失败：回滚本次 sched_last 前推（RMW 基线 = 上一步写入的 updated_at）。
+        // 不回滚的话 at: 一次性作业本次触发永久丢失（既不再到期也不算过期），
+        // 周期作业也要白等一整个周期；回滚后下个扫描周期自动重试建卡。
+        let reverted = update_job_sched_fields(
+            &app,
+            &job.id,
+            Some(now.timestamp_millis()),
+            job.sched_last,
+            now.timestamp_millis(),
+        )
+        .await;
         crate::bot::audit_log(
             &app,
             &format!(
-                "sched_job_err | id: {} | 建卡失败：{}",
+                "sched_job_err | id: {} | 建卡失败：{}；sched_last 回滚{}",
                 job.id,
-                crate::bot::truncate_for_log(&e.to_string(), 160)
+                crate::bot::truncate_for_log(&e.to_string(), 160),
+                if reverted {
+                    "成功，下个扫描周期重试"
+                } else {
+                    "失败，本次触发仍会丢弃"
+                }
             ),
         );
         return;

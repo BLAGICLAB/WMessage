@@ -135,6 +135,10 @@ pub fn pollution_survival_days(
 /// 行为偏差：对每个 case 的 expected_behavior 列表，统计命中率；
 /// deviation = 1 - avg(hit_fraction)。
 /// `actual_hits`: case_id → 实际命中的 expected_behavior 子集
+///
+/// 契约：`hit_fractions` 必须覆盖全部 case（当前唯一调用方 aggregate_feedback
+/// 每个 case 恰好产出一条，缺反馈按 1.0 计）；`case_total` 只做零守卫，
+/// 不参与加权——长度小于 case_total 的切片会把缺失 case 静默剔除出均值。
 pub fn behavior_deviation(case_total: usize, hit_fractions: &[(String, f64)]) -> f64 {
     if case_total == 0 {
         return 0.0;

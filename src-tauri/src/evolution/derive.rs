@@ -77,7 +77,14 @@ fn derive_one(op: &ConsolidateOp, now_ms: i64) -> Option<EvolutionProposal> {
             let target = ProposalTarget::MemoryPolicy {
                 policy: "merge_threshold".into(),
             };
-            let id = proposal_id(category, &target, &summary);
+            // 与 contradiction 分支同问题：base_id 对同长度 merge 全同（summary
+            // 固定串 + normalize_for_hash 把数字位归一，UUID hex 记忆 id 仅数字
+            // 不同也坍缩），一轮多个同规模分组会共享同 id 被 dedup 坍缩。
+            // 把排序后的原始 refs 拼进二次 hash 作判别位（绕开归一化）。
+            let base_id = proposal_id(category, &target, &summary);
+            let mut refs = ids.clone();
+            refs.sort();
+            let id = short_hash(&format!("{base_id}|{}", refs.join("|")));
             Some(EvolutionProposal {
                 proposal_id: id,
                 created_at_ms: now_ms,
@@ -145,7 +152,12 @@ fn derive_one(op: &ConsolidateOp, now_ms: i64) -> Option<EvolutionProposal> {
             let target = ProposalTarget::MemoryPolicy {
                 policy: "distill_threshold".into(),
             };
-            let id = proposal_id(category, &target, &summary);
+            // 与 merge 分支同理：把排序后的原始 refs 拼进二次 hash，
+            // 防同长度不同分组的 distill 共享同 id 被 dedup 坍缩
+            let base_id = proposal_id(category, &target, &summary);
+            let mut refs = ids.clone();
+            refs.sort();
+            let id = short_hash(&format!("{base_id}|{}", refs.join("|")));
             Some(EvolutionProposal {
                 proposal_id: id,
                 created_at_ms: now_ms,
@@ -327,6 +339,31 @@ mod tests {
         assert_eq!(proposals.len(), 1);
         assert_eq!(proposals[0].impact, ImpactLevel::Low);
         assert_eq!(proposals[0].evidence.occurrence_count, 5);
+    }
+
+    #[test]
+    fn merge_and_distill_proposals_have_distinct_ids_per_group() {
+        // 与 contradiction 的判别位同思路：同长度不同分组的 merge/distill
+        // 必须各自成案，dedup 不把一轮里多个同规模分组坍缩成 1 条。
+        // 用仅数字不同的 id（UUID hex 的真实形态）回归数字归一化坍缩。
+        let merges = vec![
+            merge_op(&["ab12cd", "ef12ab", "12abcd"], "m1"),
+            merge_op(&["ab34cd", "ef34ab", "34abcd"], "m2"),
+        ];
+        let p = derive_proposals(&merges, &empty_report());
+        assert_eq!(p.len(), 2);
+        assert_ne!(p[0].proposal_id, p[1].proposal_id);
+        let distills = vec![
+            distill_op(&["a1", "a2", "a3", "a4", "a5"], "d1"),
+            distill_op(&["b1", "b2", "b3", "b4", "b5"], "d2"),
+        ];
+        let pd = derive_proposals(&distills, &empty_report());
+        assert_eq!(pd.len(), 2);
+        assert_ne!(pd[0].proposal_id, pd[1].proposal_id);
+        // 16 hex 形态保持；同输入仍同 id（dedup 前提的确定性不破）
+        assert_eq!(p[0].proposal_id.len(), 16);
+        let again = derive_proposals(&merges, &empty_report());
+        assert_eq!(p[0].proposal_id, again[0].proposal_id);
     }
 
     // ─── 6. 上限 ───

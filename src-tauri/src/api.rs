@@ -61,7 +61,9 @@ impl TaskStore for MemStore {
     }
     fn upsert(&self, tasks: Vec<db::Task>) -> Result<(), String> {
         let mut g = self.tasks.lock().unwrap();
-        for t in tasks {
+        // 先整批比对基线、全部通过后再统一写回：同批混有冲突行时不得
+        // 把前面几行先落库（部分提交），批量写必须原子成败
+        for t in &tasks {
             // 与 db.rs upsert 的基线比对对齐——忽略
             // expected_updated_at 会让 API 层 409 冲突路径在 MemStore 下不可测（测试基建空洞）
             if let Some(expected) = t.expected_updated_at {
@@ -80,6 +82,8 @@ impl TaskStore for MemStore {
                     ));
                 }
             }
+        }
+        for t in tasks {
             if let Some(i) = g.iter().position(|x| x.id == t.id) {
                 g[i] = t;
             } else {

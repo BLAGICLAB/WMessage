@@ -3,6 +3,7 @@
 import { createRoot } from "react-dom/client";
 import { createElement } from "react";
 import GraphPage from "../src/components/GraphPage/GraphPage";
+import type { Task } from "../src/types";
 import "../src/ui/main.css";
 
 const t = (
@@ -52,7 +53,9 @@ const tasks = [
   t("old1", "2025 年度总结", "done", { completedAt: 1749945600000, archived: true }),
 ];
 
-const root = createRoot(document.getElementById("root")!);
+const rootEl = document.getElementById("root");
+if (!rootEl) throw new Error("[graph-demo-entry] graph-demo.html 缺 #root 容器（宿主页被改坏？）");
+const root = createRoot(rootEl);
 
 // ?stress=N：生成 N 个合成任务（含 hub/依赖链/多人），压测过滤点击与绘制
 function stressTasks(n: number): Task[] {

@@ -59,14 +59,16 @@ def main() -> None:
     missing = [n for n in CORE_ORDER if n not in schemas]
     assert not missing, f"registry.rs 缺常量 SCHEMA_{missing}"
 
-    body = ",\n  ".join(schemas[n] for n in CORE_ORDER)
-    FIXTURE.write_text(f'const TOOLS: &str = r#"[\n  {body}\n]"#;\n')
-    print(f"OK: {FIXTURE.relative_to(ROOT)} 重生成（{len(CORE_ORDER)} 项）")
-    # 抽取的 schema 必须都能 parse（防 raw string 截断）
+    # 抽取的 schema 必须都能 parse（防 raw string 截断）——必须先验证再覆写
+    # fixture，解析失败时旧基线原样保留，不会被坏数据覆盖
     import json
 
     for n in CORE_ORDER:
         json.loads(schemas[n])
+
+    body = ",\n  ".join(schemas[n] for n in CORE_ORDER)
+    FIXTURE.write_text(f'const TOOLS: &str = r#"[\n  {body}\n]"#;\n')
+    print(f"OK: {FIXTURE.relative_to(ROOT)} 重生成（{len(CORE_ORDER)} 项）")
     print("OK: 28 项 schema 均为合法 JSON")
 
 

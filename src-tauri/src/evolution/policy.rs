@@ -88,6 +88,8 @@ pub fn read_apply_policy_at(path: &Path) -> ApplyPolicy {
 
 /// 写互斥：RMW（读→改→写）全程持锁，防并发两次点档后写覆盖先写。
 /// 与 activation::SAVE_STATE_LOCK 同形态（跨写者统一锁 = 既有已登记 follow-up）。
+/// 持锁跨阻塞文件 IO 是有意取舍：这是低频设置写入路径，拆锁会破坏
+/// 「读到的基线在写回时仍有效」的 RMW 不变式。
 static APPLY_POLICY_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// 便捷写入（自动定位 bot-config.json）。

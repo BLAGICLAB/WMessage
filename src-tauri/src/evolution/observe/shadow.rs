@@ -288,6 +288,13 @@ pub async fn shadow_apply_for_batch_with_reversibility<S: ShadowSink>(
             }
         }
     }
+    // 与 shadow_apply_for_batch 同一收尾口径：失败率超阈值必须发告警，
+    // 否则走本变体的调用方会静默吞掉失败突增（两处语义不得漂移）
+    let total = TOTAL_WRITES.load(Ordering::Relaxed);
+    let failed_count = FAILED_WRITES.load(Ordering::Relaxed);
+    if total > 0 && (failed_count as f64 / total as f64) > FAILURE_THRESHOLD {
+        sink.audit_warning(failed_count as f64 / total as f64, failed_count, total);
+    }
     ShadowReport {
         total: gated.len(),
         written,

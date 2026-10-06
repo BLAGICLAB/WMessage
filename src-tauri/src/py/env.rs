@@ -84,15 +84,27 @@ pub static PY_CACHE: std::sync::Mutex<Option<Option<String>>> = std::sync::Mutex
 pub static PY_PROBE_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 pub fn cached_python() -> Option<String> {
+    {
+        let g = PY_CACHE.lock().unwrap_or_else(|e| {
+            eprintln!("[mutex_poisoned] py::env::PY_CACHE: {e:?}");
+            e.into_inner()
+        });
+        if let Some(cached) = &*g {
+            return cached.clone();
+        }
+    }
+    // 探测前先放锁：探测要 spawn 最多 4-5 个子进程（每个 3s 超时上限），
+    // 持锁探测会让这段时间内所有 cached_python 调用方白等一轮
+    PY_PROBE_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let detected = detect_python();
     let mut g = PY_CACHE.lock().unwrap_or_else(|e| {
         eprintln!("[mutex_poisoned] py::env::PY_CACHE: {e:?}");
         e.into_inner()
     });
+    // 竞态兜底：别的线程可能已在我们探测期间填好缓存，直接复用其结果
     if let Some(cached) = &*g {
         return cached.clone();
     }
-    PY_PROBE_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let detected = detect_python();
     *g = Some(detected.clone());
     detected
 }
@@ -127,6 +139,17 @@ pub fn detect_dotnet() -> Option<String> {
 pub static DOTNET_CACHE: std::sync::Mutex<Option<Option<String>>> = std::sync::Mutex::new(None);
 
 pub fn cached_dotnet() -> Option<String> {
+    {
+        let g = DOTNET_CACHE.lock().unwrap_or_else(|e| {
+            eprintln!("[mutex_poisoned] py::env::DOTNET_CACHE: {e:?}");
+            e.into_inner()
+        });
+        if let Some(cached) = &*g {
+            return cached.clone();
+        }
+    }
+    // 同 cached_python：探测不持锁，填缓存前复查竞态
+    let detected = detect_dotnet();
     let mut g = DOTNET_CACHE.lock().unwrap_or_else(|e| {
         eprintln!("[mutex_poisoned] py::env::DOTNET_CACHE: {e:?}");
         e.into_inner()
@@ -134,7 +157,6 @@ pub fn cached_dotnet() -> Option<String> {
     if let Some(cached) = &*g {
         return cached.clone();
     }
-    let detected = detect_dotnet();
     *g = Some(detected.clone());
     detected
 }
@@ -214,6 +236,47 @@ pub struct PyEnv {
     pub libs: Vec<String>,
 }
 
+/// 带超时且捕获 stdout 的探测（py_env_check_blocking 专用，3s 上限同 probe_version_ok）：
+/// 坏 shim 会把无超时的 `.output()` 永久挂死，把整个检测后台线程卡住。
+/// 输出量有界（版本串 / 5 行模块探测，远小于管道缓冲），子进程退出后一次性读完即可。
+fn probe_output_with_timeout(program: &str, args: &[&str]) -> Option<String> {
+    let mut child = crate::py::runtime::silent_cmd(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            // 仅成功退出才取输出（与原 `.output()` + status.success() 语义一致）
+            Ok(Some(status)) if status.success() => {
+                let mut out = String::new();
+                use std::io::Read;
+                if let Some(mut s) = child.stdout.take() {
+                    let _ = s.read_to_string(&mut out);
+                }
+                return Some(out);
+            }
+            Ok(Some(_)) => return None,
+            Ok(None) => {
+                if start.elapsed() > Duration::from_secs(3) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
 /// 同步检测核心（后台线程运行）
 pub fn py_env_check_blocking() -> PyEnv {
     let Some(py) = detect_python() else {
@@ -224,10 +287,8 @@ pub fn py_env_check_blocking() -> PyEnv {
             libs: Vec::new(),
         };
     };
-    let version = crate::py::runtime::silent_cmd(&py)
-        .arg("--version")
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    let version = probe_output_with_timeout(&py, &["--version"])
+        .map(|o| o.trim().to_string())
         .unwrap_or_default();
     let probe = r#"import importlib
 for m in ["openpyxl", "docx", "pptx", "pypdf", "reportlab"]:
@@ -238,15 +299,10 @@ for m in ["openpyxl", "docx", "pptx", "pypdf", "reportlab"]:
         print(f"{m}:缺")
 "#;
     let mut libs = Vec::new();
-    if let Ok(out) = crate::py::runtime::silent_cmd(&py)
-        .args(["-c", probe])
-        .output()
-    {
-        if out.status.success() {
-            for line in String::from_utf8_lossy(&out.stdout).lines() {
-                if line.contains(':') {
-                    libs.push(line.to_string());
-                }
+    if let Some(out) = probe_output_with_timeout(&py, &["-c", probe]) {
+        for line in out.lines() {
+            if line.contains(':') {
+                libs.push(line.to_string());
             }
         }
     }

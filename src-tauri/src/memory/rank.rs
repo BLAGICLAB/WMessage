@@ -146,11 +146,14 @@ pub fn hybrid_score_with(
     let age_days = ((now_ms - base) as f64 / 86_400_000.0).max(0.0);
     let imp = (item.importance.clamp(1, 5) as f64) / 5.0;
     let rec = (-age_days / decay_days).exp();
-    if query_emb.is_some() {
-        0.55 * semantic + 0.20 * kw + 0.15 * imp + 0.10 * rec
-    } else {
+    // 归一化分支以「语义项是否可用」为准：查询或条目任一侧缺向量都算降级，
+    // 剩余权重 ÷0.45。只看查询侧的话，混合库里条目缺向量会被未归一公式
+    // 系统性压到 0.45 封顶，与模块头「条目缺 embedding 也归一」的契约相悖
+    if query_emb.is_none() || item.embedding.is_none() {
         // 降级模式：语义项为 0，剩余权重归一（0.20+0.15+0.10=0.45）
         (0.20 * kw + 0.15 * imp + 0.10 * rec) / 0.45
+    } else {
+        0.55 * semantic + 0.20 * kw + 0.15 * imp + 0.10 * rec
     }
 }
 

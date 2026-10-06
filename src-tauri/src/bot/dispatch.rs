@@ -657,6 +657,21 @@ pub(crate) async fn commit_and_report<R: tauri::Runtime>(
             broadcast_after_mutation(app, vec![task.clone()], Vec::new());
             crate::bot::registry::ToolResult::ok(success_msg(), refs())
         }
-        Err(e) => crate::bot::registry::ToolResult::ok(format!("{fail_prefix}：{e}"), Vec::new()),
+        Err(e) => {
+            // 对模型仍按原设计返回 ok 文案（防 severity classifier 误判 fatal），
+            // 但落一条 Error 审计：否则「模型以为写成功、库里其实没写进去」
+            // 的静默丢失在 bot.log 里完全不可见
+            crate::audit::write_event(
+                app,
+                crate::audit::AuditLevel::Error,
+                "task.commit_failed",
+                &[
+                    ("tool_prefix", fail_prefix.to_string()),
+                    ("task_id", task.id.clone()),
+                    ("err", e.to_string()),
+                ],
+            );
+            crate::bot::registry::ToolResult::ok(format!("{fail_prefix}：{e}"), Vec::new())
+        }
     }
 }

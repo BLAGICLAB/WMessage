@@ -20,9 +20,11 @@ export function useDropdownTop(
       setTop(br.bottom - rr.top);
     };
     update();
-    if (typeof ResizeObserver !== "undefined" && rootRef.current) {
+    if (typeof ResizeObserver !== "undefined" && (rootRef.current || btnRef.current)) {
       const ro = new ResizeObserver(update);
-      ro.observe(rootRef.current);
+      // 按钮自身尺寸变化（换图标/异步字体/宽度抖动）也要重算，只看根节点会拿到过期 top
+      if (rootRef.current) ro.observe(rootRef.current);
+      if (btnRef.current) ro.observe(btnRef.current);
       return () => ro.disconnect();
     }
     window.addEventListener("resize", update);

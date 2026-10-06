@@ -101,7 +101,11 @@ def test_skill_readonly_list_only_registered():
 
 
 def test_prompt_toolish_identifiers_are_registered():
-    """提示词中所有「动词_名词」形状标识符 ⊆ 注册表 ∪ 已知非工具白名单"""
+    """提示词中「*_task / *_subtask / *_tasks」形状标识符 ⊆ 注册表 ∪ 已知非工具白名单。
+
+    门禁只锁任务工具形状（合并/改名的重灾区，后缀漂移即残留信号）；
+    其余形状的下划线词不在本测试职责内——退役名的零残留由
+    test_prompts_never_mention_retired_tools 按清单逐名锁。"""
     registered = set(registered_tools())
     # 提示词里合法出现的非工具下划线词（目录名/字段名/中文语境词等）
     non_tool = {

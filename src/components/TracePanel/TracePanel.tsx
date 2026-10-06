@@ -8,7 +8,7 @@
 // 弹层用 createPortal 渲染到 body——TodoCard 容器的 hover transform 会创建 CSS
 // 包含块，position:fixed 子元素会被裁缩到卡片内（同 purge 弹窗的既有教训）。
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Download, FileText, History, TriangleAlert, X } from "lucide-react";
 import { basename } from "../../format";
@@ -150,15 +150,28 @@ export function TracePanel({
   const [exportBusy, setExportBusy] = useState(false);
   const [exportMsg, setExportMsg] = useState<string | null>(null);
 
+  // 竞态令牌：快速连点历史条目时，慢的旧 traceDetail 响应不得覆盖新选中的详情
+  const detailSeqRef = useRef(0);
+
   const reload = (pickId: number | null) => {
     setLoading(true);
     setError(null);
-    // 直查模式（traceId）只拉单条；任务卡模式拉执行历史列表
-    const load =
-      traceId != null
-        ? traceDetail(traceId).then((d) => (d ? [d] : []))
-        : traceListByTask(taskId ?? "");
-    load
+    // 直查模式（traceId）：单条结果即完整 detail，直接复用不再重复查询；
+    // 任务卡模式拉执行历史列表后按选中项再取详情
+    if (traceId != null) {
+      traceDetail(traceId)
+        .then((d) => {
+          const list = d ? [d] : [];
+          setTraces(list);
+          const pick = list.find((t) => t.id === pickId) ?? list[0] ?? null;
+          setSelected(pick);
+          setDetail(d);
+        })
+        .catch((e) => setError(String(e)))
+        .finally(() => setLoading(false));
+      return;
+    }
+    traceListByTask(taskId ?? "")
       .then(async (list) => {
         setTraces(list);
         const pick = list.find((t) => t.id === pickId) ?? list[0] ?? null;
@@ -238,9 +251,16 @@ export function TracePanel({
                   onClick={() => {
                     setSelected(t);
                     setDetail(null);
+                    const seq = ++detailSeqRef.current;
                     traceDetail(t.id)
-                      .then(setDetail)
-                      .catch((e) => setError(String(e)));
+                      .then((d) => {
+                        if (seq !== detailSeqRef.current) return;
+                        setDetail(d);
+                      })
+                      .catch((e) => {
+                        if (seq !== detailSeqRef.current) return;
+                        setError(String(e));
+                      });
                   }}
                 >
                   {fmtTs(t.startedAt)}

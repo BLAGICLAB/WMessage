@@ -32,14 +32,13 @@ pub struct TagPair {
 }
 
 fn cache_get_or_embed(tag: &str) -> Option<Vec<f32>> {
-    {
-        let cache = VECTOR_CACHE.lock().ok()?;
-        if let Some(v) = cache.as_ref().and_then(|m| m.get(tag)) {
-            return Some(v.clone());
-        }
+    // 查询与回填全程持同一把锁：查后放锁会让并发未命中的调用各自重跑一遍
+    // ONNX 嵌入（缓存形同虚设）。本命令词表小、调用频率低，串行代价可忽略
+    let mut cache = VECTOR_CACHE.lock().ok()?;
+    if let Some(v) = cache.as_ref().and_then(|m| m.get(tag)) {
+        return Some(v.clone());
     }
     let v = crate::memory::embed::embed_text(tag)?;
-    let mut cache = VECTOR_CACHE.lock().ok()?;
     let map = cache.get_or_insert_with(HashMap::new);
     if map.len() >= CACHE_LIMIT {
         map.clear();

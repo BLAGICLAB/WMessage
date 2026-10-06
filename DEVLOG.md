@@ -2,6 +2,24 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-07（周三）OCR 全仓审计：OpenCodeReview 337 条 critical/high 逐条核查 + 约 130 处修复
+
+OpenCodeReview（`ocr scan`，MiniMax-M3）全文件扫 328 个生产代码文件出 1501 条评论
+（原始报告 `docs/ocr-scan-report-2026-10-07.md`）；337 条 critical/high 全部逐条对照
+真实代码核查（8 并行评审代理 + 主控逐文件复核 diff），判定与修复全程留档
+`docs/OCR-SCAN-TRIAGE-2026-10-07.md`。要点：
+
+- **两条 security critical**：bot_fs 写工具软链闸（edit_file 读穿透绕过读白名单 +
+  rename 毁链）；workflow_decompose 附件 invoke 边界校验（canonicalize + 常规文件 +
+  docx/xlsx/pptx/pdf 扩展集，防被攻破 WebView 借 doc_extract 读任意文件）。
+- 约 130 处确认为真并修复（含 10 个新回归测试）：SSE 注册空窗泄漏、keyring 原子写、
+  工具参数 1MiB 上限、调度回滚、workflow 上游表方向、CAS 迁移、consolidate 点查、
+  挂件乐观更新回滚、C# docx 回退路径口径统一等；约 55 条误报、15 条已有防线、
+  110 条 WONTFIX（均有据）、13 条 NEEDS-HUMAN（附修复思路，待拍板）。
+- 主控复核拦下代理 patch 的 3 处编译错 + 1 处测试回归（harvest 未来 mtime 语义与
+  既有测试冲突，回退）+ 1 处死 import。
+- 验证：nextest 1573 全绿、tests-audit 4 项全绿、vitest 全绿、fmt/clippy 无 error。
+
 ## 2026-10-06（周二）W-QA：工作流质量优化——结构化交接 + 证据结果 + 有界重试/返工环
 
 **承接**：工作流引擎（W3/W4/W5）已有 DAG 调度、失败传播、断点续跑，但卡片执行是

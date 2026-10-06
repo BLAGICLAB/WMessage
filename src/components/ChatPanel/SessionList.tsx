@@ -91,7 +91,8 @@ export function SessionList({
         </button>
       </div>
       {/* 会话栈（U3b）：作为 rootRef 直接子元素，absolute 横跨整个 panel 宽度；
-          行 = 活动圆点 + 标题，悬停浮出删除；Esc 经触发钮（含冒泡）关闭 */}
+          行 = 活动圆点 + 标题，悬停浮出删除；Esc 关闭挂触发钮 + 下拉容器
+          （焦点在 menuitem 上时事件冒泡到容器而非触发钮，两处都得接） */}
       {sessionMenuOpen && (
         <div
           ref={dropdownRef}
@@ -99,6 +100,14 @@ export function SessionList({
           aria-label="会话列表"
           className="absolute left-0 right-0 nm-card p-1 rounded-xl z-50 max-h-40 overflow-y-auto"
           style={{ top: dropdownTop > 0 ? `${dropdownTop}px` : undefined }}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              e.preventDefault();
+              onToggleMenu();
+              // 焦点送回触发钮：下拉随即卸载，键盘用户不丢焦点位置
+              menuRef.current?.focus();
+            }
+          }}
         >
           {sessions.map((s) => (
             <div key={s.id} className="flex items-center gap-1">

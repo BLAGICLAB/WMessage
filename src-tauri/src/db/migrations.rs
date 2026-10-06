@@ -25,8 +25,13 @@ pub fn ensure_files_column(conn: &rusqlite::Connection) -> Result<(), String> {
         })
         .unwrap_or(false);
     if !has {
-        conn.execute("ALTER TABLE tasks ADD COLUMN files TEXT", [])
-            .map_err(|e| e.to_string())?;
+        return match conn.execute("ALTER TABLE tasks ADD COLUMN files TEXT", []) {
+            Ok(_) => Ok(()),
+            // 探测与 ALTER 之间没有库级锁，并发连接可能已把列加上：
+            // 「列已存在」即目的已达成，不算错误
+            Err(e) if e.to_string().contains("duplicate column") => Ok(()),
+            Err(e) => Err(e.to_string()),
+        };
     }
     Ok(())
 }
@@ -104,15 +109,21 @@ pub fn reset_bot_assigned_with<F: FnOnce() -> Result<(), String>>(
     exec: F,
 ) -> Result<(), String> {
     use std::sync::atomic::Ordering;
-    if done.load(Ordering::SeqCst) {
+    // CAS 抢占执行权：load/exec/store 三步分离时，两个并发调用可能都观察到
+    // false 而双双执行。compare_exchange 保证只有一个调用 false→true 成功；
+    // exec 失败要回滚标记——保留「失败可重试」语义（成功才消耗执行权）
+    if done
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
         return Ok(());
     }
     match exec() {
-        Ok(()) => {
-            done.store(true, Ordering::SeqCst);
-            Ok(())
+        Ok(()) => Ok(()),
+        Err(e) => {
+            done.store(false, Ordering::SeqCst);
+            Err(e)
         }
-        Err(e) => Err(e),
     }
 }
 

@@ -215,6 +215,18 @@ pub(crate) fn parse_rules_csv(text: &str) -> Result<RulesFile, crate::error::Com
             archive_dir: if action == "move" {
                 get(ci_dir)
             } else {
+                // 删除动作的归档目录列必须留空：静默丢弃用户填的值最坑人
+                //（模板混用时毫无反馈），这里显式报错并给出行号
+                let stray = get(ci_dir);
+                if !stray.is_empty() {
+                    return Err(crate::error::CommandError::DomainRule {
+                        domain: "migration".to_string(),
+                        reason: format!(
+                            "第 {} 行动作是「删除文件」，归档目录列必须留空（当前值：「{stray}」）；请清空该列后重新导入",
+                            ri + 2
+                        ),
+                    });
+                }
                 String::new()
             },
         });

@@ -264,12 +264,15 @@ fn probe_dir_cached_in(
 // ───────────────────────── 内部：判定辅助 ─────────────────────────
 
 /// exe 目录是否在系统临时目录下（zip 直跑场景）：canonicalize 后比较，
-/// macOS /var ↔ /private/var 软链由 canonicalize 归一
+/// macOS /var ↔ /private/var 软链由 canonicalize 归一。
+/// 任一侧 canonicalize 失败时退回**双侧原始路径**前缀比对——只归一一边会出现
+/// 「/var/… 不在 /private/var/… 下」的错配，把 temp 里的 exe 误判成非 temp，
+/// 数据目录会错误落进易失的 temp。兜底比对宁可多判「在 temp」（走 app_data，安全侧）。
 fn is_under_system_temp(dir: &std::path::Path) -> bool {
     let tmp = std::env::temp_dir();
-    let tmp = std::fs::canonicalize(&tmp).unwrap_or(tmp);
-    let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
-    dir.starts_with(&tmp)
+    let tmp_canon = std::fs::canonicalize(&tmp).unwrap_or_else(|_| tmp.clone());
+    let dir_canon = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    dir_canon.starts_with(&tmp_canon) || dir.starts_with(&tmp)
 }
 
 /// macOS .app 包内 MacOS 目录判定：…/Xxx.app/Contents/MacOS

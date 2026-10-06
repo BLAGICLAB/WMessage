@@ -43,6 +43,9 @@ export default function ConfirmMap() {
     // busyRef 在途时旧请求已有响应在飞，不补刀；fire-and-forget 不阻塞新 confirm
     // 上屏（失败仅留痕，60s 兜底仍在）。
     const stale = pendingRef.current;
+    // 同步推进 ref：同批连发两条 bot-confirm 时 render 还没跑，两条都会读到
+    // 同一个旧值——先写后一条，后一条事件才能把前一条判成 stale 补发拒收
+    pendingRef.current = p;
     if (stale && stale.id !== p.id && !busyRef.current) {
       invoke("bot_confirm_response", {
         requestId: stale.id,

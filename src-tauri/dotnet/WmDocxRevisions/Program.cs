@@ -460,7 +460,15 @@ static void ReviseParagraph(Paragraph para, string oldText, string newText, Func
 static Paragraph InsertRevisedParagraph(Body body, OpenXmlElement? anchor, string text, Func<int> nextId)
 {
     var para = new Paragraph();
-    var anchorPara = anchor as Paragraph ?? anchor?.Ancestors<Paragraph>().FirstOrDefault();
+    var anchorPara = anchor as Paragraph;
+    // 表格锚点：Ancestors 找不到段落，pPr/rPr 改取表内末行末格的末段，表后插入沿用表格内容样式
+    if (anchorPara == null && anchor is Table tbl)
+    {
+        anchorPara = tbl.Elements<TableRow>().LastOrDefault()?
+            .Elements<TableCell>().LastOrDefault()?
+            .Elements<Paragraph>().LastOrDefault();
+    }
+    anchorPara ??= anchor?.Ancestors<Paragraph>().FirstOrDefault();
     if (anchorPara?.ParagraphProperties != null)
         para.Append(anchorPara.ParagraphProperties.CloneNode(true));
     var rpr = anchorPara?.Elements<Run>()
@@ -579,31 +587,22 @@ static List<string> ReadStringList(JsonElement p, string name)
     return list;
 }
 
-// 回读原文 docx：段落文本 + 表格行（与 Python 提取脚本同一口径）
+// 回读原文 docx：段落文本 + 表格行（与 Python 提取脚本同一口径：段落在前、表格行在后；
+// 行文本复用 RowText，与在地修订的 origLines 序列严格一致）
 static List<string> ReadDocxLines(string path)
 {
     var lines = new List<string>();
     using var d = WordprocessingDocument.Open(path, false);
     var body = d.MainDocumentPart?.Document?.Body;
     if (body == null) return lines;
-    foreach (var el in body.ChildElements)
+    foreach (var para in body.Elements<Paragraph>())
     {
-        if (el is Paragraph para)
-        {
-            var text = ParaText(para);
-            if (!string.IsNullOrWhiteSpace(text)) lines.Add(text);
-        }
-        else if (el is Table tbl)
-        {
-            foreach (var row in tbl.Elements<TableRow>())
-            {
-                var cells = row.Elements<TableCell>()
-                    .Select(c => c.InnerText.Trim())
-                    .ToList();
-                lines.Add(string.Join(" | ", cells));
-            }
-        }
+        var text = ParaText(para);
+        if (!string.IsNullOrWhiteSpace(text)) lines.Add(text);
     }
+    foreach (var tbl in body.Elements<Table>())
+        foreach (var row in tbl.Elements<TableRow>())
+            lines.Add(RowText(row));
     return lines;
 }
 

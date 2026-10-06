@@ -65,7 +65,11 @@ pub fn check_stop_condition(
     let in_window = |c: &ChangeRecord| c.created_at_ms >= start_ms && c.created_at_ms <= now_ms;
 
     // 走完 Proposed → 终态 的 change 数（**窗口内**）
-    // 终态 = Active | Rejected | RolledBack | Expired（pending/shadowing 等不算）
+    // 终态 = Active | Rejected | RolledBack | Expired（pending/shadowing 等不算）。
+    // 注意这是**另一个业务概念**，与 ChangeStatus::is_terminal()（严格终态 =
+    // Rejected|RolledBack|Expired，Active 可回滚/过期故不算）口径不同：
+    // 停止条件关心「已脱离 Proposed 进入后续流转」，Active 也算走完；
+    // 调用方若要严格终态过滤请用 is_terminal()，两者不可混用。
     let completed = changes
         .iter()
         .filter(|c| {

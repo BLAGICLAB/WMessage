@@ -20,8 +20,10 @@ import argparse, json, re, subprocess, sys
 from pathlib import Path
 
 
-def run(cmd):
-    p = subprocess.run(cmd, capture_output=True, text=True)
+def run(cmd, timeout=60):
+    # 全部是本地 git 读侧命令（diff/show/status），正常毫秒级；
+    # timeout 防异常环境挂死 commit gate（超时抛 TimeoutExpired→非零退出，fail-closed）
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     return p.returncode, p.stdout, p.stderr
 
 

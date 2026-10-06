@@ -28,6 +28,12 @@ export function SubtaskRow({
     value: sub.text,
     editing,
     onCommit: (d) => {
+      // 只读翻转触发的退编辑态会让 input 卸载并补发一次 blur（提交草稿）；
+      // 只读契约：在飞编辑必须随退出丢弃，不得把部分草稿提交出去
+      if (readOnly) {
+        setEditing(false);
+        return;
+      }
       const text = d.trim();
       if (text && text !== sub.text) onCommit(text);
       setEditing(false);

@@ -133,6 +133,34 @@ fn normalize_source(s: String) -> String {
     }
 }
 
+/// 行 → MemItem（load_all / find_by_id 共用的列映射）
+fn item_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<MemItem> {
+    Ok(MemItem {
+        id: r.get(0)?,
+        kind: r.get(1)?,
+        content: r.get(2)?,
+        tags: {
+            let t: String = r.get(3)?;
+            t.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        },
+        importance: r.get(4)?,
+        source: normalize_source(r.get(5)?),
+        created_at_ms: ts_to_ms(&r.get::<_, String>(6)?),
+        updated_at_ms: ts_to_ms(&r.get::<_, String>(7)?),
+        access_count: r.get(8)?,
+        last_accessed_at_ms: r
+            .get::<_, Option<String>>(9)?
+            .map(|s| ts_to_ms(&s))
+            .filter(|ms| *ms > 0),
+        embedding: r
+            .get::<_, Option<Vec<u8>>>(10)?
+            .and_then(|b| blob_to_embedding(&b)),
+    })
+}
+
 /// 全表读取（≤500 条 × ~2KB 向量，微秒级；不引 sqlite-vec 扩展）
 pub fn load_all(conn: &rusqlite::Connection) -> Result<Vec<MemItem>, String> {
     let mut stmt = conn
@@ -142,35 +170,27 @@ pub fn load_all(conn: &rusqlite::Connection) -> Result<Vec<MemItem>, String> {
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map([], |r| {
-            Ok(MemItem {
-                id: r.get(0)?,
-                kind: r.get(1)?,
-                content: r.get(2)?,
-                tags: {
-                    let t: String = r.get(3)?;
-                    t.split(',')
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect()
-                },
-                importance: r.get(4)?,
-                source: normalize_source(r.get(5)?),
-                created_at_ms: ts_to_ms(&r.get::<_, String>(6)?),
-                updated_at_ms: ts_to_ms(&r.get::<_, String>(7)?),
-                access_count: r.get(8)?,
-                last_accessed_at_ms: r
-                    .get::<_, Option<String>>(9)?
-                    .map(|s| ts_to_ms(&s))
-                    .filter(|ms| *ms > 0),
-                embedding: r
-                    .get::<_, Option<Vec<u8>>>(10)?
-                    .and_then(|b| blob_to_embedding(&b)),
-            })
-        })
+        .query_map([], item_from_row)
         .map_err(|e| e.to_string())?;
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())
+}
+
+/// 按 id 主键点查（整理事务内逐指令定位用，避免每条指令都全表扫描；无则 None）
+pub fn find_by_id(conn: &rusqlite::Connection, id: &str) -> Result<Option<MemItem>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, kind, content, tags, importance, source, created_at, updated_at,
+                    access_count, last_accessed_at, embedding FROM mem_items WHERE id = ?1",
+        )
+        .map_err(|e| e.to_string())?;
+    let mut rows = stmt
+        .query_map([id], item_from_row)
+        .map_err(|e| e.to_string())?;
+    match rows.next() {
+        Some(row) => row.map(Some).map_err(|e| e.to_string()),
+        None => Ok(None),
+    }
 }
 
 /// 余弦相似度（向量均假定已 L2 归一化；维度不齐/缺失 → None）
@@ -290,6 +310,12 @@ pub fn insert_item_with(
     now_ms: i64,
     p: &StoreParams,
 ) -> Result<(InsertOutcome, Vec<String>), String> {
+    // 标签落盘按逗号拼接、读取按逗号切分：带逗号的标签会在读取时被劈成两条，
+    // tags[0] 的 key 语义（同 key 覆盖 / evo 幂等查重）随之漂移，这里拒写并由
+    // 调用方把报错带回去（去掉逗号即可重试）
+    if item.tags.iter().any(|t| t.contains(',')) {
+        return Err("记忆标签不能包含逗号「,」（存储层按逗号分隔标签），请去掉逗号后重试".into());
+    }
     ensure_table(conn)?;
     let all = load_all(conn)?;
     // 语义去重（仅有向量时；降级模式无余弦可算，跳过）
@@ -446,6 +472,8 @@ pub fn update_by_id(
     now_ms: i64,
 ) -> Result<(), String> {
     conn.execute(
+        // CASE 里的 content 读到的是更新前的旧值，?1 是新 content——同一参数
+        // 身兼两职是刻意的：内容真变了才换向量。动 SQL 时别拆 ?1，拆了就比错对象。
         "UPDATE mem_items SET content = ?1, importance = ?2, source = ?3, kind = ?4,
                 updated_at = ?5,
                 embedding = CASE WHEN content <> ?1 THEN ?6 ELSE COALESCE(?6, embedding) END

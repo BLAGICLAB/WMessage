@@ -174,6 +174,8 @@ function WorkflowPageInner({
   const openWorkflow = async (id: string) => {
     const seq = ++openSeqRef.current;
     decomposeSeqRef.current++; // 使在途拆解响应失效（OCR r1 critical）
+    // seq 已作废 → 在途 finally 不会复位旗标，这里同步复位，否则 decomposing 卡死
+    setDecomposing(false);
     try {
       const detail = await invoke<
         Workflow & { tasks: Task[]; attachments?: string[] | null }
@@ -216,6 +218,7 @@ function WorkflowPageInner({
   const createBlank = () => {
     openSeqRef.current++; // 使在途的 workflow_load 失效
     decomposeSeqRef.current++; // 同上（OCR r1 critical）
+    setDecomposing(false); // 同 openWorkflow：seq 作废后旗标须就地复位
     setActiveId(null);
     setName(`工作流 ${new Date().toLocaleDateString()}`);
     setGoal("");

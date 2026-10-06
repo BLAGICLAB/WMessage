@@ -45,7 +45,8 @@ export function SchedulePage() {
   /** 执行历史展开目标（job id；展开时拉一次，不自动刷新——历史是排障视角，不是监控大盘） */
   const [historyOpenId, setHistoryOpenId] = useState<string | null>(null);
   const [history, setHistory] = useState<Record<string, ScheduledJobRun[]>>({});
-  const [historyLoading, setHistoryLoading] = useState(false);
+  /** 加载中的作业 id（按 job 记：连开两个作业的历史时，先完成的不得清掉后一个的加载态） */
+  const [historyLoadingId, setHistoryLoadingId] = useState<string | null>(null);
   /** 取消定时两步确认：armed 的 key，第二次点击才真清（3s 复位，WorkflowPage 同模式） */
   const [cancelArmed, setCancelArmed] = useState<string | null>(null);
   const armedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -71,9 +72,14 @@ export function SchedulePage() {
     []
   );
 
+  // 竞态令牌：reload 由挂载/tasks-changed/sched-status 并发触发，慢的旧响应
+  // 不得覆盖新响应（NotificationsPage reloadSeqRef 同款模式）
+  const reloadSeqRef = useRef(0);
   const reload = useCallback(async () => {
+    const seq = ++reloadSeqRef.current;
     try {
       const list = await invoke<ScheduleEntry[]>("schedule_overview");
+      if (seq !== reloadSeqRef.current) return;
       setEntries(list);
       setLoaded(true);
       // 工作流执行态逐个回查（数量少，逐个问比后端加聚合接口简单）
@@ -86,13 +92,17 @@ export function SchedulePage() {
           }).catch(() => false);
         })
       );
+      if (seq !== reloadSeqRef.current) return;
       setWfRunning(running);
     } catch (e) {
+      if (seq !== reloadSeqRef.current) return;
       handleCommandError(e, "读取定时任务列表", { silent: true });
       setLoaded(true);
     }
     invoke<Workflow[]>("workflow_list")
-      .then(setWorkflows)
+      .then((w) => {
+        if (seq === reloadSeqRef.current) setWorkflows(w);
+      })
       .catch((e) => handleCommandError(e, "读取工作流列表", { silent: true }));
   }, []);
 
@@ -141,6 +151,12 @@ export function SchedulePage() {
           w.show()
             .then(() => w.setFocus())
             .catch(() => {});
+        } else {
+          // 挂件窗口不存在（重启后未再开启）：必须给可见反馈，不能点了没反应
+          handleCommandError(
+            new Error("挂件窗口未开启，请先打开挂件窗口"),
+            "跳转执行会话"
+          );
         }
       })
       .catch(() => {});
@@ -200,7 +216,7 @@ export function SchedulePage() {
     }
     setHistoryOpenId(jobId);
     if (history[jobId]) return; // 已拉过：直接展示缓存
-    setHistoryLoading(true);
+    setHistoryLoadingId(jobId);
     try {
       const runs = await invoke<ScheduledJobRun[]>("scheduled_job_history", {
         id: jobId,
@@ -209,7 +225,8 @@ export function SchedulePage() {
     } catch (e) {
       handleCommandError(e, "读取执行历史", { silent: true });
     } finally {
-      setHistoryLoading(false);
+      // 只清「自己这条」：期间又点了别的作业时，其加载态不能被顺手清掉
+      setHistoryLoadingId((cur) => (cur === jobId ? null : cur));
     }
   };
 
@@ -426,7 +443,7 @@ export function SchedulePage() {
         {e.kind === "job" && historyOpenId === e.targetId && (
           <div className="mt-2 nm-inset rounded-lg p-2">
             <p className="text-[10px] text-[var(--t5)]">执行历史（最近 20 条）</p>
-            {historyLoading && !history[e.targetId] ? (
+            {historyLoadingId === e.targetId && !history[e.targetId] ? (
               <p className="mt-1 text-[11px] text-[var(--t5)]">加载中…</p>
             ) : (history[e.targetId] ?? []).length === 0 ? (
               <p className="mt-1 text-[11px] text-[var(--t5)]">还没有执行记录</p>

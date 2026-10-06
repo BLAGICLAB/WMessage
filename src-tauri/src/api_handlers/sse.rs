@@ -42,6 +42,9 @@ pub(crate) static API_HUB_KEY: AtomicU64 = AtomicU64::new(0);
 /// writer 退出通知的兜底 join 超时：超时仍不退出的 detach + ERROR 审计
 pub(crate) const SSE_STOP_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// 测试专用注册入口：生产路径 sse_connect 已改为持锁内联注册
+///（消除 spawn→注册之间的空窗，见该函数内注释），本函数不再有生产调用方。
+#[cfg(test)]
 pub(crate) fn register_sse_writer(
     hub_key: u64,
     stop: Arc<AtomicBool>,
@@ -145,6 +148,16 @@ pub(crate) fn sse_connect(req: Request, store: &Arc<dyn TaskStore>, query: &str)
     let hub_key = hub.hub_id();
     let stop = Arc::new(AtomicBool::new(false));
     let stop_w = stop.clone();
+    // 持注册表锁跨 spawn：若先 spawn 后注册，两步之间的空窗里 api_stop 可能
+    // 扫空注册表——该 writer 的 stop 永远不会被置位、handle 永远不被 join
+    // （线程随 hub 存活而泄漏）。writer 线程自身不碰 SSE_WRITERS，
+    // 持锁跨 spawn 无重入风险。
+    let mut writers_reg = SSE_WRITERS.lock().unwrap_or_else(|e| {
+        eprintln!("[mutex_poisoned] api_handlers::sse::SSE_WRITERS: {e:?}");
+        e.into_inner()
+    });
+    // 注册前顺手收割已退出（客户端断开）的 writer，防注册表无界增长
+    writers_reg.retain(|w| !w.handle.is_finished());
     let handle = std::thread::spawn(move || {
         // 存活令牌随 writer 线程存活，线程退出（客户端断开/服务停止）即失效
         let _alive = alive;
@@ -245,5 +258,11 @@ pub(crate) fn sse_connect(req: Request, store: &Arc<dyn TaskStore>, query: &str)
             }
         }
     });
-    register_sse_writer(hub_key, stop, handle);
+    // 锁内完成注册（与上面的收割/spawn 同一临界区，消除 spawn→注册空窗）
+    writers_reg.push(SseWriterReg {
+        hub_key,
+        stop,
+        handle,
+    });
+    drop(writers_reg);
 }

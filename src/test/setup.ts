@@ -5,11 +5,16 @@ import { cleanup } from "@testing-library/react";
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  // errorHandler 的降级分支用例会显式 delete __TAURI_INTERNALS__（模拟纯浏览器），
+  // 删除会残留到同文件后续用例——这里复位基线，保证每个用例都从 Tauri 宿主起步
+  if (typeof window !== "undefined") {
+    (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};
+  }
 });
 
 // 模拟 Tauri 宿主（U5）：产品运行环境是 Tauri webview（__TAURI_INTERNALS__ 恒在），
 // errorHandler 的弹窗降级只应在纯浏览器触发——测试环境统一按宿主模拟，
-// 降级分支由 errorHandler.test 显式 delete 后单测
+// 降级分支由 errorHandler.test 显式 delete 后单测（afterEach 统一复位，见上）
 if (typeof window !== "undefined") {
   (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};
 }

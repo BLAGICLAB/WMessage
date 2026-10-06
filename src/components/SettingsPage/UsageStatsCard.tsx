@@ -397,10 +397,19 @@ export function UsageStatsCard() {
       .finally(() => setLoading(false));
   }, []);
 
+  // 竞态令牌：快速切 7↔30（或连点刷新）时，慢的旧档位响应不得覆盖新档位数据
+  const modelDaysSeqRef = useRef(0);
   const loadModelDays = useCallback(() => {
+    const seq = ++modelDaysSeqRef.current;
     invoke<UsageDayModelRow[]>("usage_stats_daily_by_model", { days: range })
-      .then((r) => setModelDays(Array.isArray(r) ? r : []))
-      .catch((e) => setError(String(e)));
+      .then((r) => {
+        if (seq !== modelDaysSeqRef.current) return;
+        setModelDays(Array.isArray(r) ? r : []);
+      })
+      .catch((e) => {
+        if (seq !== modelDaysSeqRef.current) return;
+        setError(String(e));
+      });
   }, [range]);
 
   // 挂载期拉一次；range 变化只重拉按模型序列（setState 在 await 后，lint 显式豁免——项目既有模式）

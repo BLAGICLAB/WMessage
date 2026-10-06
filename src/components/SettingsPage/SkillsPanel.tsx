@@ -102,7 +102,11 @@ export function SkillsPanel() {
   const openDir = async () => {
     try {
       const dir = await invoke<string>("skills_open_dir");
-      openPath(dir).catch(() => {});
+      // 打开目录失败（无文件管理器/权限/路径失效）同样可见，不静默吞掉
+      await openPath(dir).catch((e) => {
+        handleCommandError(e, "skills_open_dir", { silent: true });
+        setError(formatCommandError(e));
+      });
     } catch (e) {
       handleCommandError(e, "skills_open_dir", { silent: true });
       setError(formatCommandError(e));

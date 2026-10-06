@@ -33,7 +33,8 @@ export function ProviderLogo({
       className={`shrink-0 inline-flex items-center justify-center rounded-full text-white ${className}`}
       style={{ background: fallbackColor ?? "#666666", fontSize: "10px", lineHeight: 1 }}
     >
-      {fallbackChar ?? (name.slice(0, 1) || "?")}
+      {/* || 而非 ??：调用方可能传空串（数据缺 fallback_char），空串同样回退首字 */}
+      {fallbackChar || name.slice(0, 1) || "?"}
     </span>
   );
 }

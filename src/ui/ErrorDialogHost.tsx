@@ -8,7 +8,7 @@
 // 主窗口与挂件窗口各挂一个（App.tsx / WidgetApp.tsx）；window 事件天然按
 // webview 隔离，互不串扰。
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { CircleX, Lightbulb, RotateCcw } from "lucide-react";
 import {
   ERROR_DIALOG_EVENT,
@@ -17,12 +17,19 @@ import {
 
 export function ErrorDialogHost() {
   const [req, setReq] = useState<ErrorDialogRequest | null>(null);
+  // 当前请求的同步镜像：新请求顶掉旧请求前先把旧的 resolve(false)，
+  // 否则旧调用方的 await 永久悬挂（resolve 不依赖 React 提交时机）
+  const reqRef = useRef<ErrorDialogRequest | null>(null);
 
   useEffect(() => {
     const handler = (ev: Event) => {
       // preventDefault = 声明接管（errorHandler 据此决定是否走原生兜底）
       ev.preventDefault();
-      setReq((ev as CustomEvent<ErrorDialogRequest>).detail);
+      const next = (ev as CustomEvent<ErrorDialogRequest>).detail;
+      const prev = reqRef.current;
+      reqRef.current = next;
+      prev?.resolve(false);
+      setReq(next);
     };
     window.addEventListener(ERROR_DIALOG_EVENT, handler);
     return () => window.removeEventListener(ERROR_DIALOG_EVENT, handler);
@@ -34,6 +41,7 @@ export function ErrorDialogHost() {
     try {
       req.resolve(retry);
     } finally {
+      reqRef.current = null;
       setReq(null);
     }
   };

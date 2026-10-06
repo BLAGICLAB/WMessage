@@ -65,7 +65,8 @@ pub fn sessions_to_cases(sessions: &[SessionRow]) -> Vec<EvalCase> {
         .iter()
         .enumerate()
         .map(|(i, s)| EvalCase {
-            case_id: format!("sess-{}-{:04}", &s.id[..8.min(s.id.len())], i),
+            // 按 char 截前 8 字：字节切片在多字节字符中间会 panic（id 来自 DB，非可信）
+            case_id: format!("sess-{}-{:04}", s.id.chars().take(8).collect::<String>(), i),
             source_session_id: Some(s.id.clone()),
             source_test: None,
             input: s.title.clone(),

@@ -53,7 +53,7 @@ fn emitted_map() -> &'static Mutex<HashMap<String, i64>> {
     EMITTED.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// 注册 AppHandle（仅 Tauri 启动时调一次，后续重复 set 静默失败）。
+/// 注册 AppHandle（仅 Tauri 启动时调一次；重复注册 eprintln 留痕并保留首次句柄）。
 ///
 /// 调用方：`lib.rs::run()` 的 `.setup` 回调，紧跟其它 `app.manage(...)` 之后。
 /// 必须在 `memory::consolidate::start_consolidation_scheduler` 之前调，
@@ -63,7 +63,10 @@ fn emitted_map() -> &'static Mutex<HashMap<String, i64>> {
 /// 类型固定 `AppHandle<tauri::Wry>`：Tauri 默认 runtime 是 Wry，
 /// production 全局只有这一个。测试路径不调本函数（见 `emit_proposals` 解耦说明）。
 pub fn register_app_handle(app: AppHandle<tauri::Wry>) {
-    let _ = APP_HANDLE.set(app);
+    if APP_HANDLE.set(app).is_err() {
+        // 槽位已被占：启动顺序错误 / 重复初始化——新句柄被丢弃，响亮留痕
+        eprintln!("[evolution] AppHandle 重复注册被忽略（保留首次注册的句柄）");
+    }
 }
 
 /// 读取已注册的 AppHandle（供同模块的 `trace::maybe_record_trace` 等其他需要

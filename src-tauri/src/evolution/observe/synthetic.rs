@@ -210,7 +210,9 @@ pub fn generate(cfg: &SyntheticConfig, now_ms: i64) -> SyntheticData {
             human_approver: None,
             created_at_ms,
             rolled_back_at: if status == ChangeStatus::RolledBack {
-                Some(now_ms - rng.next_int(15) as i64 * MS_PER_DAY)
+                // 时间线单调：rollback 不得早于该 CR 的创建时刻（否则合成数据自带
+                // R6 本该检出的「不可能时间线」，指标验证被假阳性污染）
+                Some((now_ms - rng.next_int(15) as i64 * MS_PER_DAY).max(created_at_ms))
             } else {
                 None
             },
@@ -218,9 +220,10 @@ pub fn generate(cfg: &SyntheticConfig, now_ms: i64) -> SyntheticData {
         };
         // 只为 Active 生成 AppliedRecord
         if status == ChangeStatus::Active {
-            // applied_at 距 now 0-30 天随机
+            // applied_at 距 now 0-30 天随机；下限钳到创建时刻，
+            // 防 applied_at 早于 proposal 产生（不可能时间线）
             let applied_days_ago = rng.next_int(cfg.window_days as u32) as i64;
-            let applied_at_ms = now_ms - applied_days_ago * MS_PER_DAY;
+            let applied_at_ms = (now_ms - applied_days_ago * MS_PER_DAY).max(created_at_ms);
             applied.push(AppliedRecord {
                 proposal_id: id.clone(),
                 mem_key: format!("evo:{id}"),

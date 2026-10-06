@@ -67,31 +67,38 @@ export function getProfileCache(): ProfileView | null {
   return cache;
 }
 
-/** 改名 */
-export async function setProfileName(kind: "user" | "bot", name: string): Promise<ProfileView> {
-  return invoke<ProfileView>("profile_set_name", { kind, name }).then((v) => {
+/** 写路径通用收尾：递增代际使在飞 force 加载的旧快照失效（不得覆盖刚写入的值），
+ *  仅当代际仍是自己时才写缓存/广播（并发两次写时后写者赢，与 loadGen 约定一致） */
+function adoptProfile(gen: number, v: ProfileView): ProfileView {
+  if (gen === loadGen) {
     cache = v;
     notify();
-    return v;
-  });
+  }
+  return v;
+}
+
+/** 改名 */
+export async function setProfileName(kind: "user" | "bot", name: string): Promise<ProfileView> {
+  const gen = ++loadGen;
+  return invoke<ProfileView>("profile_set_name", { kind, name }).then((v) =>
+    adoptProfile(gen, v)
+  );
 }
 
 /** 上传头像（本地图片路径，Rust 拷贝进数据目录） */
 export async function setProfileAvatar(kind: "user" | "bot", path: string): Promise<ProfileView> {
-  return invoke<ProfileView>("profile_set_avatar", { kind, path }).then((v) => {
-    cache = v;
-    notify();
-    return v;
-  });
+  const gen = ++loadGen;
+  return invoke<ProfileView>("profile_set_avatar", { kind, path }).then((v) =>
+    adoptProfile(gen, v)
+  );
 }
 
 /** 移除头像（恢复默认占位） */
 export async function removeProfileAvatar(kind: "user" | "bot"): Promise<ProfileView> {
-  return invoke<ProfileView>("profile_remove_avatar", { kind }).then((v) => {
-    cache = v;
-    notify();
-    return v;
-  });
+  const gen = ++loadGen;
+  return invoke<ProfileView>("profile_remove_avatar", { kind }).then((v) =>
+    adoptProfile(gen, v)
+  );
 }
 
 // Rust 广播的资料变更（换头像/改名后）→ 刷新缓存

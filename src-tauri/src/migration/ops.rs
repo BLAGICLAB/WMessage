@@ -47,7 +47,9 @@ pub fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+        // 时钟被拨到 1970 前：回退 chrono 现值（可为负），不伪造 ts=0——
+        // 0 哨兵会跟合法 epoch-zero 记录撞时间戳、搅乱 journal 排序
+        .unwrap_or_else(|_| chrono::Utc::now().timestamp_millis())
 }
 
 pub(crate) fn now_str() -> String {

@@ -77,6 +77,13 @@ def test_frontend_all_codes_const_matches_union():
         f"  数组独有: {sorted(set(ts_all) - set(ts_union))}"
     )
     assert len(ts_all) == len(set(ts_all)), "ALL_COMMAND_ERROR_CODES 存在重复项"
+    # 顺序契约：ts_all_codes_const 的 docstring 承诺「顺序与 Rust ALL 同源」，
+    # 这里升级成硬断言（只锁集合时改名重排会静默溜过）
+    assert rust_codes() == ts_all, (
+        "ALL_COMMAND_ERROR_CODES 与 Rust 枚举声明顺序不一致：\n"
+        f"  Rust: {rust_codes()}\n"
+        f"  ALL : {ts_all}"
+    )
 
 
 def test_declaration_order_matches():

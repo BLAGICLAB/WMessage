@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Bell, BrainCircuit, FolderInput, Sparkles } from "lucide-react";
 import type { ReactNode } from "react";
 import { EmptyState } from "../EmptyState";
@@ -232,13 +232,18 @@ export function NotificationsPage() {
   const [tab, setTab] = useState<"pending" | "all">("pending");
   const [loadError, setLoadError] = useState("");
 
+  // 竞态令牌：挂载 + 事件风暴并发 reload 时，慢的旧响应不得覆盖新响应
+  const reloadSeqRef = useRef(0);
   const reload = useCallback(() => {
+    const seq = ++reloadSeqRef.current;
     listNotifications()
       .then((list) => {
+        if (seq !== reloadSeqRef.current) return;
         setItems(list);
         setLoadError("");
       })
       .catch((e) => {
+        if (seq !== reloadSeqRef.current) return;
         setLoadError(String(e));
         console.error("[notifications] 列表加载失败:", e);
       });

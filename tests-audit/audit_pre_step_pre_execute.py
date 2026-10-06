@@ -162,15 +162,16 @@ class TestPreStepRouting:
 
     def test_old_free_form_intent_route_removed(self):
         """旧的 intent_route free-form 事件应被替换（不再有新的）"""
-        # 查仍在调用旧 intent_route 字符串的 audit_log / audit_event!
-        old_pattern = re.search(r'audit_(log|event)[^"]*"intent_route', BOT)
+        # 查仍在调用旧 intent_route 字符串的 audit_log / audit_event!；
+        # 编排已搬去 bot_chat.rs / bot_model_loop.rs，按惯例对合并文本 BOT_ALL 扫
+        old_pattern = re.search(r'audit_(log|event)[^"]*"intent_route', BOT_ALL)
         assert old_pattern is None, (
             f"仍有旧 intent_route 事件残留：{old_pattern.group(0)[:100]}"
         )
 
     def test_old_tool_blocked_atomic_removed(self):
         """旧的 tool_blocked_atomic free-form 事件应被替换"""
-        old_pattern = re.search(r'audit_(log|event)[^"]*"tool_blocked_atomic', BOT)
+        old_pattern = re.search(r'audit_(log|event)[^"]*"tool_blocked_atomic', BOT_ALL)
         assert old_pattern is None, (
             f"仍有旧 tool_blocked_atomic 事件残留：{old_pattern.group(0)[:100]}"
         )

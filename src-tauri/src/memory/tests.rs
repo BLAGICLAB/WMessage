@@ -569,6 +569,32 @@ fn lesson_insert_refused_foreign_merge_on_high_cosine() {
 }
 
 #[test]
+fn lesson_insert_refused_foreign_merge_near_threshold() {
+    // 近阈值（cos≈0.95，模拟改写式劫持的真实形态）也要命中拒写闸——
+    // 只测 cos=1.0 的精确撞车，挡不住把闸收紧到 0.99 的回归
+    let conn = mem_db();
+    let now = 1_000_000;
+    let mut u = item("fact", "用户偏好简短回答");
+    u.tags = vec!["偏好".into()];
+    store::insert_item(&conn, &u, Some(&onehot(0)), now).unwrap();
+    let lesson = NewItem {
+        kind: "lesson".into(),
+        content: "lesson: 回答保持简短".into(),
+        tags: vec!["evo:abc123".into(), "evolution".into()],
+        importance: 4,
+        source: "system".into(),
+    };
+    let (out, _) = store::insert_item(&conn, &lesson, Some(&tilted(0.95)), now + 1).unwrap();
+    match out {
+        InsertOutcome::RefusedForeignMerge { target_key } => {
+            assert_eq!(target_key, "偏好");
+        }
+        other => panic!("近阈值高相似也必须拒写防劫持，实得 {other:?}"),
+    }
+    assert_eq!(store::load_all(&conn).unwrap().len(), 1, "拒写不落库");
+}
+
+#[test]
 fn lesson_same_key_replay_still_merges() {
     // 同 key（本链路自己的重放）放行 merge，不受防劫持闸影响
     let conn = mem_db();

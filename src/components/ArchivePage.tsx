@@ -51,12 +51,17 @@ export function ArchivePage({
   }, [archived, query, activeTag]);
 
   /** 归档卡片默认折叠（collapsed 为 false 时说明用户已展开，保持展开）；
-   *  编辑态命中（机器人 📌 跳转）时展开，否则折叠卡片里看不到跳转效果。
-   *  仅真正翻转（collapsed 未定义）才产副本——已折叠的复用引用，保 memo/引用相等 */
+   *  编辑态命中（机器人 📌 跳转）时展开——此前手动折叠过（collapsed === true）
+   *  的跳转目标也要翻开，否则卡片折叠着看不到跳转效果；
+   *  仅真正翻转（未定义 → 折叠、折叠 → 跳转展开）才产副本——其余复用引用，保 memo/引用相等 */
   const displayTask = (t: Task): Task =>
-    t.collapsed !== undefined || t.id === editingId
-      ? t
-      : { ...t, collapsed: true };
+    t.id === editingId
+      ? t.collapsed === true
+        ? { ...t, collapsed: false }
+        : t
+      : t.collapsed !== undefined
+        ? t
+        : { ...t, collapsed: true };
 
   return (
     <div>

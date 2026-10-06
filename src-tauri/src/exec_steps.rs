@@ -221,6 +221,16 @@ async fn mark_subtask_done(app: &AppHandle, task_id: &str, subtask_id: &str) {
             ),
         );
         crate::bot::broadcast_after_mutation(app, vec![t], vec![]);
+    } else {
+        // 落库失败响亮留痕：勾选未生效，下一步读到的仍是未勾状态——
+        // 不留日志的话「Continue 已消耗、勾选丢失」完全不可观测
+        crate::bot::audit_log(
+            app,
+            &format!(
+                "exec_steps.subtask_done_failed | task: {task_id} | subtask: {subtask_id} | 「{}」落库失败（未勾选）",
+                crate::bot::truncate_for_log(&text, 60)
+            ),
+        );
     }
 }
 

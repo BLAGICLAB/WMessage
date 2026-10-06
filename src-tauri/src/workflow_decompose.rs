@@ -336,6 +336,30 @@ fn validate_guidance(g: &str) -> CommandResult<String> {
     Ok(t)
 }
 
+/// 附件路径边界校验（同步阻塞，调用方须放 spawn_blocking）：
+/// canonicalize（存在性 + 软链解析到真实目标）→ 必须是常规文件 → 扩展名在
+/// 抽取脚本支持集内（脚本对其余扩展名本就报错退出）。返回 canonical 路径。
+fn validate_attach_path(path: &str) -> Result<std::path::PathBuf, String> {
+    const SUPPORTED: [&str; 4] = ["docx", "xlsx", "pptx", "pdf"];
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("路径为空".into());
+    }
+    let canon = std::fs::canonicalize(trimmed).map_err(|e| format!("路径无法解析：{e}"))?;
+    if !canon.is_file() {
+        return Err("不是常规文件".into());
+    }
+    let ext = canon
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    if !SUPPORTED.contains(&ext.as_str()) {
+        return Err("仅支持 docx/xlsx/pptx/pdf".into());
+    }
+    Ok(canon)
+}
+
 /// 一次性拆解调用（无会话、无工具、无流式；失败自动带错误反馈重试 1 次）
 #[tauri::command]
 pub async fn workflow_decompose(
@@ -390,6 +414,22 @@ pub async fn workflow_decompose(
                 continue;
             }
             let file_name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+            // 附件路径先过边界校验再进抽取：canonicalize 确认存在并解析软链到
+            // 真实目标、必须是常规文件、扩展名落在抽取脚本支持集内。attachments
+            // 直达自 invoke 参数，不能沿用「对话框亲手选 = 明确授权」假设；不合规
+            // 条目走占位说明，与读取失败同口径，不炸整包。
+            let probe = path.clone();
+            let checked =
+                crate::py::document::spawn_blocking_map(move || validate_attach_path(&probe)).await;
+            if let Err(reason) = checked {
+                attach_blocks.push_str(&format!(
+                    "\n【附件 {}：{}】（校验未通过：{}）\n",
+                    i + 1,
+                    file_name,
+                    reason
+                ));
+                continue;
+            }
             match crate::bot_py::doc_extract(app.clone(), Some(path.clone())).await {
                 Ok(res) => {
                     let mut text: String = res.text.chars().take(PER_FILE_CAP).collect();
@@ -443,7 +483,9 @@ pub async fn workflow_decompose(
     // 统一走 outcome=failed 出口；错误值走 escape_for_log 管道）
     macro_rules! fail {
         ($err:expr) => {{
-            last_err = $err.to_string();
+            // 表达式只求值一次：调用方传 format! 时避免拼两遍、只留一份
+            let err = $err;
+            last_err = err.to_string();
             crate::audit::write_event(
                 &app,
                 crate::audit::AuditLevel::Warn,
@@ -454,7 +496,7 @@ pub async fn workflow_decompose(
                     ("error", crate::audit::escape_for_log(&last_err, 200)),
                 ],
             );
-            return Err($err);
+            return Err(err);
         }};
     }
     loop {
@@ -490,9 +532,10 @@ pub async fn workflow_decompose(
                 if attempts >= 2 {
                     break;
                 }
-                // 重试：附校验错误让模型自修（设计 §6.1）
+                // 重试：保留原始目标与附件段，仅追加校验错误让模型自修（设计 §6.1）；
+                // 丢掉附件会让第二次尝试拿到的上下文比第一次更少，抽取成本白付
                 user_content = format!(
-                    "总目标：{goal_trimmed}\n\n你上一次的输出未通过校验：{last_err}\n请严格按照输出格式要求重新输出 JSON。"
+                    "总目标：{goal_trimmed}{attach_blocks}\n\n你上一次的输出未通过校验：{last_err}\n请严格按照输出格式要求重新输出 JSON。"
                 );
             }
         }
@@ -514,6 +557,57 @@ mod tests {
         let out = parse_and_validate(raw).unwrap();
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].title, "收集");
+    }
+
+    #[test]
+    fn attach_path_rejects_missing_unsupported_and_accepts_doc() {
+        let dir = std::env::temp_dir().join(format!("wfdecompose-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let doc = dir.join("a.docx");
+        std::fs::write(&doc, b"placeholder").unwrap();
+        let txt = dir.join("b.txt");
+        std::fs::write(&txt, b"secret").unwrap();
+
+        let ok = validate_attach_path(doc.to_str().unwrap()).unwrap();
+        assert_eq!(ok, doc.canonicalize().unwrap());
+        assert!(validate_attach_path(txt.to_str().unwrap())
+            .unwrap_err()
+            .contains("docx"));
+        assert!(
+            validate_attach_path(dir.join("gone.docx").to_str().unwrap())
+                .unwrap_err()
+                .contains("无法解析")
+        );
+        assert!(validate_attach_path("").unwrap_err().contains("路径为空"));
+        assert!(validate_attach_path(dir.to_str().unwrap())
+            .unwrap_err()
+            .contains("常规文件"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn attach_path_resolves_symlink_to_real_target_extension() {
+        let dir = std::env::temp_dir().join(format!("wfdecompose-link-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let real = dir.join("real.docx");
+        std::fs::write(&real, b"placeholder").unwrap();
+        let link_txt = dir.join("link.txt");
+        std::os::unix::fs::symlink(&real, &link_txt).unwrap();
+        // 软链文件名是 .txt：按链接名校验会误拒、按真实目标校验应放行
+        assert!(validate_attach_path(link_txt.to_str().unwrap()).is_ok());
+
+        let secret = dir.join("secret");
+        std::fs::write(&secret, b"secret").unwrap();
+        let link_doc = dir.join("evil.docx");
+        std::os::unix::fs::symlink(&secret, &link_doc).unwrap();
+        // .docx 软链指向非文档文件：解析到真实目标后按扩展名拒绝
+        assert!(validate_attach_path(link_doc.to_str().unwrap())
+            .unwrap_err()
+            .contains("docx"));
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

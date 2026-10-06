@@ -67,6 +67,15 @@ pub fn copy_legacy_db(
     legacy_db: &std::path::Path,
     db_path: &std::path::Path,
 ) -> Result<Vec<String>, CommandError> {
+    // 契约守卫（此前只 trust caller 的 `if !db_path.exists()` 前置）：目标库已存在
+    // 时，下面 Phase 2a/2b 的 rename 会覆盖既有 -wal/-shm，任一步失败后的回滚还会
+    // 把被覆盖的边车删掉——等于销毁现有库的 WAL 状态。这里 fail-closed 直接拒绝。
+    if db_path.exists() {
+        return Err(CommandError::IoError(format!(
+            "目标库已存在（{}），拒绝拷贝老库以保护现有数据；如需重新导入请先手动移走现有库文件",
+            db_path.display()
+        )));
+    }
     let mut warns = Vec::new();
 
     // checkpoint section（不变）

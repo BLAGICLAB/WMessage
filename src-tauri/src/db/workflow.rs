@@ -618,7 +618,14 @@ pub(crate) fn workflow_save_locked(
             let mut t = existing
                 .iter()
                 .find(|t| t.id == real_id[i])
-                .expect("kept 节点必在 existing 中")
+                .ok_or_else(|| {
+                    // 指纹配对后保留卡必在 existing 中；状态漂移（脏数据/未来回归）
+                    // 不该 panic 炸掉整个保存命令，回结构化错误让上层可见
+                    CommandError::DbError(format!(
+                        "保留节点 {} 不在现有节点卡列表中（指纹匹配状态漂移）",
+                        real_id[i]
+                    ))
+                })?
                 .clone();
             t.canvas_pos = node.pos.clone();
             // model 同步以草稿为准（None = 跟随全局；保留卡也允许改模型——
@@ -1211,7 +1218,14 @@ pub async fn workflow_set_schedule(
         let mut wf = load_workflow(&conn, &id)?.ok_or(CommandError::TaskNotFound(id.clone()))?;
         wf.schedule = schedule.map(|s| s.trim().to_string());
         wf.updated_at = Some(chrono::Utc::now().timestamp_millis());
-        upsert_workflow(&conn, &wf).map_err(CommandError::from)?;
+        // 定点更新 schedule：upsert_workflow 的 ON CONFLICT 故意不更新 schedule 列
+        //（画布保存传 None 时不能冲掉已有定时配置），直接走 upsert 会把本次
+        // 设置静默丢掉、库里的旧值原封不动——审计却记的是新值
+        conn.execute(
+            "UPDATE workflows SET schedule = ?2, updated_at = ?3 WHERE id = ?1",
+            rusqlite::params![id, wf.schedule, wf.updated_at],
+        )
+        .map_err(CommandError::from)?;
         Ok(wf)
     })
     .await

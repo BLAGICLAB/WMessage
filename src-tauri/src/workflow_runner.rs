@@ -343,6 +343,28 @@ struct NodeOutcome {
     fused: bool,
 }
 
+/// 节点任务的兜底上报守卫：任务体在发出终态前提前退栈（如 panic）时，
+/// Drop 补发一条失败终态，防止控制器按「还有节点未终态」永久等待。
+struct OutcomeFallback {
+    tx: tokio::sync::mpsc::UnboundedSender<NodeOutcome>,
+    id: String,
+    /// 正常路径发完终态后置 true，Drop 即成 no-op
+    sent: bool,
+}
+
+impl Drop for OutcomeFallback {
+    fn drop(&mut self) {
+        if !self.sent {
+            let _ = self.tx.send(NodeOutcome {
+                id: std::mem::take(&mut self.id),
+                ok: false,
+                cancelled: false,
+                fused: false,
+            });
+        }
+    }
+}
+
 // ────────────── 命令 ──────────────
 
 #[derive(Serialize)]
@@ -415,11 +437,15 @@ pub async fn workflow_run(app: AppHandle, workflow_id: String) -> CommandResult<
         .iter()
         .map(|t| (t.id.clone(), t.model.clone()))
         .collect();
-    // W-QA B2：直接上游反表（depends_on 反转）——spawn 前据此装配上游产出简报
+    // 直接上游表（任务 id → 它自己的依赖列表）——spawn 前据此装配上游产出简报；
+    // 注意方向不能反：查「本节点的上游」必须以本节点 id 为 key
     let mut upstream_of: HashMap<String, Vec<String>> = HashMap::new();
     for t in &tasks {
-        for d in t.depends_on.iter().flatten() {
-            upstream_of.entry(d.clone()).or_default().push(t.id.clone());
+        if let Some(deps) = &t.depends_on {
+            upstream_of
+                .entry(t.id.clone())
+                .or_default()
+                .extend(deps.iter().cloned());
         }
     }
     // W-QA B1：工作流总目标（此前执行期根本不读，goal 只是画布元数据）
@@ -525,6 +551,12 @@ async fn run_controller(
                 r.insert(id.clone());
             }
             tauri::async_runtime::spawn(async move {
+                // 崩溃兜底：正常发完终态置 sent，panic 提前退栈时由 Drop 补发失败终态
+                let mut fallback = OutcomeFallback {
+                    tx: tx.clone(),
+                    id: id.clone(),
+                    sent: false,
+                };
                 // P1-d：节点进入执行即广播（Gate 排队视同 running；前端画布实时高亮）。
                 // 5s 轮询保留为兜底，事件只做低延迟增量。
                 let _ = app.emit(
@@ -544,6 +576,7 @@ async fn run_controller(
                         cancelled: true,
                         fused: false,
                     });
+                    fallback.sent = true;
                     return;
                 }
                 let _ticket = ticket; // RAII 占槽：任务结束自动释放
@@ -606,6 +639,7 @@ async fn run_controller(
                     cancelled: false,
                     fused,
                 });
+                fallback.sent = true;
             });
         }
     };

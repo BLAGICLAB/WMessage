@@ -94,30 +94,44 @@ export function setGraphRememberFilters(v: boolean): void {
 export function loadGraphFilters(): GraphFilters | null {
   const raw = read(K.filters);
   if (!raw) return null;
-  try {
-    const f = JSON.parse(raw) as Partial<GraphFilters>;
-    if (
-      !f ||
-      typeof f !== "object" ||
-      !f.status ||
-      typeof f.status.todo !== "boolean" ||
-      typeof f.status.doing !== "boolean" ||
-      typeof f.status.done !== "boolean" ||
-      typeof f.includeOrphans !== "boolean"
-    ) {
-      return null;
+  // 形状损坏即自愈：清掉坏键，避免每次打开图谱都重复解析同一份脏数据
+  const invalidate = () => {
+    try {
+      localStorage.removeItem(K.filters);
+    } catch {
+      // 同上：忽略
     }
-    return {
-      status: f.status as GraphFilters["status"],
-      owners: Array.isArray(f.owners) ? (f.owners as string[]) : null,
-      tags: Array.isArray(f.tags) ? (f.tags as string[]) : null,
-      workflowIds: Array.isArray(f.workflowIds) ? (f.workflowIds as string[]) : null,
-      year: typeof f.year === "number" ? f.year : null,
-      includeOrphans: f.includeOrphans,
-    };
+  };
+  let f: Partial<GraphFilters>;
+  try {
+    f = JSON.parse(raw) as Partial<GraphFilters>;
   } catch {
+    invalidate();
     return null; // JSON 损坏 → 回退默认
   }
+  if (
+    !f ||
+    typeof f !== "object" ||
+    !f.status ||
+    typeof f.status.todo !== "boolean" ||
+    typeof f.status.doing !== "boolean" ||
+    typeof f.status.done !== "boolean" ||
+    typeof f.includeOrphans !== "boolean"
+  ) {
+    invalidate();
+    return null;
+  }
+  // 元素级校验：数组元素必须全是 string，脏值降级为 null 不外溢给调用方
+  const isStringArray = (x: unknown): x is string[] =>
+    Array.isArray(x) && x.every((s) => typeof s === "string");
+  return {
+    status: f.status as GraphFilters["status"],
+    owners: isStringArray(f.owners) ? f.owners : null,
+    tags: isStringArray(f.tags) ? f.tags : null,
+    workflowIds: isStringArray(f.workflowIds) ? f.workflowIds : null,
+    year: typeof f.year === "number" && Number.isFinite(f.year) ? f.year : null,
+    includeOrphans: f.includeOrphans,
+  };
 }
 
 export function saveGraphFilters(f: GraphFilters): void {

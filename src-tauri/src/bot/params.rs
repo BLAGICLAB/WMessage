@@ -279,39 +279,72 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
 
 /// 生效值解析：可编辑项查 cfg 字段（None → 默认 / Some → 值），只读项出硬编码常量
 fn param_value(key: &str, cfg: &BotConfig) -> (String, &'static str) {
+    // 可编辑区一律过 resolve_* 取生效值：面板展示的就是运行时真值，避免
+    // 「看到 999、实际钳到 200」的脱节；来源仍按「是否配置了该字段」标注
     match key {
-        "loop.max_rounds" => match cfg.max_rounds {
-            Some(v) => (v.to_string(), "config"),
-            None => (DEFAULT_MAX_ROUNDS.to_string(), "default"),
-        },
-        "loop.max_function_calls" => match cfg.max_function_calls {
-            Some(v) => (v.to_string(), "config"),
-            None => ("100".into(), "default"),
-        },
-        "loop.history_budget_chars" => match cfg.history_budget_chars {
-            Some(v) => (v.to_string(), "config"),
-            None => (DEFAULT_HISTORY_BUDGET_CHARS.to_string(), "default"),
-        },
-        "subagent.max_turns" => match cfg.subagent_max_turns {
-            Some(v) => (v.to_string(), "config"),
-            None => (DEFAULT_SUBAGENT_MAX_TURNS.to_string(), "default"),
-        },
-        "subagent.max_wall_secs" => match cfg.subagent_max_wall_secs {
-            Some(v) => (v.to_string(), "config"),
-            None => (DEFAULT_SUBAGENT_MAX_WALL_SECS.to_string(), "default"),
-        },
-        "search.max_results" => match cfg.search_max_results {
-            Some(v) => (v.to_string(), "config"),
-            None => (DEFAULT_SEARCH_MAX_RESULTS.to_string(), "default"),
-        },
+        "loop.max_rounds" => (
+            resolve_max_rounds_cfg(cfg).to_string(),
+            if cfg.max_rounds.is_some() {
+                "config"
+            } else {
+                "default"
+            },
+        ),
+        "loop.max_function_calls" => (
+            resolve_subagent_budget(cfg).max_tool_calls.to_string(),
+            if cfg.max_function_calls.is_some() {
+                "config"
+            } else {
+                "default"
+            },
+        ),
+        "loop.history_budget_chars" => (
+            resolve_history_budget_chars(cfg).to_string(),
+            if cfg.history_budget_chars.is_some() {
+                "config"
+            } else {
+                "default"
+            },
+        ),
+        "subagent.max_turns" => (
+            resolve_subagent_budget(cfg).max_turns.to_string(),
+            if cfg.subagent_max_turns.is_some() {
+                "config"
+            } else {
+                "default"
+            },
+        ),
+        "subagent.max_wall_secs" => (
+            resolve_subagent_budget(cfg).max_wall_seconds.to_string(),
+            if cfg.subagent_max_wall_secs.is_some() {
+                "config"
+            } else {
+                "default"
+            },
+        ),
+        "search.max_results" => (
+            resolve_search_max_results(cfg).to_string(),
+            if cfg.search_max_results.is_some() {
+                "config"
+            } else {
+                "default"
+            },
+        ),
         "model.max_tokens" => match cfg.max_tokens {
             Some(v) => (v.to_string(), "config"),
             None => ("8192".into(), "default"),
         },
-        "model.reasoning_effort" => match cfg.reasoning_effort.as_deref() {
-            Some(v) => (v.to_string(), "config"),
-            None => ("medium".into(), "default"),
-        },
+        // 推理强度无钳制但有静默回退：非法值下游一律按 medium 生效，展示同步取回退结果
+        "model.reasoning_effort" => (
+            crate::bot::reasoning::EffortLevel::from_cfg(cfg.reasoning_effort.as_deref())
+                .as_str()
+                .to_string(),
+            if cfg.reasoning_effort.is_some() {
+                "config"
+            } else {
+                "default"
+            },
+        ),
         "tools.python_timeout_secs" => match cfg.python_timeout_secs {
             Some(v) => (v.to_string(), "config"),
             None => ("60".into(), "default"),
@@ -443,12 +476,30 @@ mod tests {
         cfg.search_max_results = Some(99);
         let views = effective_params(&cfg);
         let by_key = |k: &str| views.iter().find(|v| v.key == k).unwrap();
-        assert_eq!(by_key("loop.max_rounds").value, "999", "表展示原始配置值");
+        assert_eq!(
+            by_key("loop.max_rounds").value,
+            "200",
+            "表展示生效值：999 已被 resolve 钳到硬顶 200"
+        );
         assert_eq!(by_key("loop.max_rounds").source, "config");
         // resolve_* 才是行为入口：钳 5..=200
         assert_eq!(resolve_max_rounds_cfg(&cfg), 200);
         assert_eq!(resolve_subagent_budget(&cfg).max_turns, 1);
+        assert_eq!(
+            by_key("search.max_results").value,
+            "10",
+            "表展示生效值：99 已钳到硬顶 10"
+        );
         assert_eq!(resolve_search_max_results(&cfg), 10, "钳到硬顶 10");
+        // 非法推理强度：下游静默回退 medium，展示同步
+        cfg.reasoning_effort = Some("foobar".into());
+        let views = effective_params(&cfg);
+        let by_key = |k: &str| views.iter().find(|v| v.key == k).unwrap();
+        assert_eq!(
+            by_key("model.reasoning_effort").value,
+            "medium",
+            "非法档位展示回退后的生效值"
+        );
     }
 
     /// resolve 链：子 agent 预算三项生效 + 各自钳制；工具调用全域同源 max_function_calls

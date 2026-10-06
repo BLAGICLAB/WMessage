@@ -18,6 +18,9 @@ use std::path::PathBuf;
 use wmessage_lib::eval::metrics;
 use wmessage_lib::evolution::candidate;
 use wmessage_lib::evolution::change;
+use wmessage_lib::evolution::observe::stop::{
+    STOP_COMPLETED_CHANGES, STOP_MAX_DAYS, STOP_MIN_ROLLED_BACK,
+};
 use wmessage_lib::evolution::observe::{
     check_stop_condition, compute_metrics, generate_synthetic, write_to_files, SyntheticConfig,
 };
@@ -117,20 +120,22 @@ fn main() {
         let changes = change::read_all(&changes_path).expect("读 evolution-changes 失败");
         let status = check_stop_condition(&changes, start, now_ms);
         println!("=== R6 A 停止条件检查 ===");
+        // 阈值直接取检测函数同源常量，展示与 pass/fail 判定永不漂移
         println!(
             "changes_completed: {}/{}  {}",
             status.changes_completed,
-            30,
-            if status.changes_completed >= 30 {
+            STOP_COMPLETED_CHANGES,
+            if status.changes_completed >= STOP_COMPLETED_CHANGES {
                 "✓ 触发"
             } else {
                 "✗"
             }
         );
         println!(
-            "days_elapsed:     {:.1}/14.0  {}",
+            "days_elapsed:     {:.1}/{}  {}",
             status.days_elapsed,
-            if status.days_elapsed >= 14.0 {
+            STOP_MAX_DAYS,
+            if status.days_elapsed >= STOP_MAX_DAYS {
                 "✓ 触发"
             } else {
                 "✗"
@@ -139,8 +144,8 @@ fn main() {
         println!(
             "rolled_back:      {}/{}  {}",
             status.rolled_back_count,
-            5,
-            if status.rolled_back_count >= 5 {
+            STOP_MIN_ROLLED_BACK,
+            if status.rolled_back_count >= STOP_MIN_ROLLED_BACK {
                 "✓ 触发"
             } else {
                 "✗"

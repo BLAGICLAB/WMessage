@@ -61,7 +61,8 @@ export const GoalNode = memo(function GoalNode({ data }: { data: GoalNodeData })
         placeholder="这个工作流要达成什么目标？"
         onChange={(e) => data.onGoalChange(e.target.value)}
       />
-      {(data.progress || !data.saved || data.report) && (
+      {/* 只有进度/未保存才有这一行——report 独占时不渲染空行（会顶出一段空白） */}
+      {(data.progress || !data.saved) && (
         <div className="mt-1 flex items-center justify-between">
           {data.progress && (
             <span className="text-[10px] text-[var(--t5)]">

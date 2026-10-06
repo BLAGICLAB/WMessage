@@ -168,18 +168,20 @@ pub const MAX_TEMPERATURE_OPENAI: f64 = 2.0;
 pub const MAX_TEMPERATURE_ANTHROPIC: f64 = 1.0;
 pub const MAX_TOP_P: f64 = 1.0;
 
-/// 条目 temperature 解析：按协议钳制 0..=max；None = 不写请求体
+/// 条目 temperature 解析：按协议钳制 0..=max；None = 不写请求体；
+/// 非有限值（NaN/±∞）→ None 不发，防毒请求体（clamp 对 NaN 原样透传）
 pub fn resolve_temperature(v: Option<f64>, provider: ApiProvider) -> Option<f64> {
     let max = match provider {
         ApiProvider::Openai => MAX_TEMPERATURE_OPENAI,
         ApiProvider::Anthropic => MAX_TEMPERATURE_ANTHROPIC,
     };
-    v.map(|t| t.clamp(0.0, max))
+    v.filter(|t| t.is_finite()).map(|t| t.clamp(0.0, max))
 }
 
-/// 条目 top_p 解析：钳制 0..=1；None = 不写请求体
+/// 条目 top_p 解析：钳制 0..=1；None = 不写请求体；
+/// 非有限值（NaN/±∞）→ None 不发（同 resolve_temperature）
 pub fn resolve_top_p(v: Option<f64>) -> Option<f64> {
-    v.map(|p| p.clamp(0.0, MAX_TOP_P))
+    v.filter(|p| p.is_finite()).map(|p| p.clamp(0.0, MAX_TOP_P))
 }
 
 /// 条目级推理参数解析：优先级 条目值 > 全局值 > 内置默认。

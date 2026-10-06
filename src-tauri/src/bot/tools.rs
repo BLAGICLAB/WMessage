@@ -1167,7 +1167,20 @@ pub(crate) async fn tool_link_file_to_task(
         // 「路径不存在」首字「路」非 error/warn 前缀 → ok
         return ToolResult::ok(format!("路径不存在，拒绝登记：{path}"), Vec::new());
     }
-    let canon = std::fs::canonicalize(&path).unwrap_or_else(|_| std::path::PathBuf::from(&path));
+    // canonicalize 失败不回退原路径（fail-closed）：白名单比对必须基于
+    // 规范化后的真实落点，拿原始路径比 lexical starts_with 会给软链/竞态窗口留绕过面
+    let canon = match std::fs::canonicalize(&path) {
+        Ok(c) => c,
+        Err(_) => {
+            // 「路径校验失败」首字「路」非 error/warn 前缀 → ok
+            return ToolResult::ok(
+                format!(
+                    "路径校验失败，拒绝登记：{path}（无法解析真实路径，请确认文件仍然存在后重试）"
+                ),
+                Vec::new(),
+            );
+        }
+    };
     let in_gen = crate::db::gen_dir(app)
         .ok()
         .and_then(|d| std::fs::canonicalize(d).ok())

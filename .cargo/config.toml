@@ -4,7 +4,9 @@
 #
 # 改动（2026-08-19, Kimi Code P0-8B 修复）：
 # 1. rustc-wrapper 改走 PATH（不再硬编码 /Users/renshi/.cargo/bin/sccache）
-#    - 无 sccache 机器静默回退到无 wrapper，build 正常
+#    - 注意：cargo 不会静默回退——本机没装 sccache 时 cargo 会直接报错
+#      （could not find executable for rustc-wrapper "sccache"）并中止构建。
+#      sccache 是硬前置：请 cargo install sccache，或临时注释掉下方 rustc-wrapper
 # 2. 补 [target.x86_64-pc-windows-gnu] mingw-w64 linker 配置
 #    - Mac 上需 brew install mingw-w64 才能用，但配置就绪
 [build]

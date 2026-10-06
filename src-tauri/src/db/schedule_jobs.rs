@@ -369,7 +369,9 @@ pub fn migrate_legacy_task_schedules(conn: &rusqlite::Connection) -> Result<usiz
     let mut moved = 0usize;
     for (task_id, title, schedule, sched_last) in legacy {
         if title.is_empty() {
-            continue; // 无内容可搬（理论不可达：title NOT NULL），保守跳过
+            continue; // 无内容可搬（理论不可达：title NOT NULL），保守跳过。
+                      // 末尾的清空 UPDATE 带同样的 title 谓词，这类行的
+                      // schedule 原样保留，不会被无记录地抹掉
         }
         conn.execute(
             "INSERT INTO scheduled_jobs (id, content, schedule, sched_last, enabled, created_at, updated_at)
@@ -382,7 +384,8 @@ pub fn migrate_legacy_task_schedules(conn: &rusqlite::Connection) -> Result<usiz
     }
     conn.execute(
         "UPDATE tasks SET schedule = NULL, sched_last = NULL, enabled = NULL \
-         WHERE deleted_at IS NULL AND TRIM(COALESCE(schedule,'')) <> ''",
+         WHERE deleted_at IS NULL AND TRIM(COALESCE(schedule,'')) <> '' \
+         AND TRIM(COALESCE(title,'')) <> ''",
         [],
     )
     .map_err(|e| e.to_string())?;

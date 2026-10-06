@@ -1122,6 +1122,22 @@ async fn fetch_jina_reader(raw_url: &str) -> Result<String, String> {
     if !resp.status().is_success() {
         return Err(format!("Jina 返回 HTTP {}", resp.status()));
     }
+    // 与 fetch_text 同一道 Content-Type 白名单：代理异常时返回的错误 JSON/
+    // 二进制不得原样混进正文（r.jina.ai 正常返回 text/plain 走 "text" 分支）
+    let ctype = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_lowercase();
+    if !ctype.is_empty()
+        && !ctype.contains("text")
+        && !ctype.contains("markdown")
+        && !ctype.contains("html")
+        && !ctype.contains("xml")
+    {
+        return Err(format!("Jina 返回非文本内容（Content-Type: {ctype}）"));
+    }
     let bytes = read_body_capped(resp, FETCH_MAX_BYTES).await?;
     Ok(String::from_utf8_lossy(&bytes).trim().to_string())
 }

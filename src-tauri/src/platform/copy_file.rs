@@ -38,9 +38,14 @@ pub(crate) fn copy_file_macos(path: &str, title: &str) -> Result<(), String> {
     // 2) 老式文件列表类型（NSFilenamesPboardType）：Electron 系应用（飞书等）读这个
     let path_str = NSString::from_str(path);
     let paths = NSArray::from_retained_slice(&[path_str]);
-    // SAFETY: &NSString 由 NSString::from_str 创建存于本栈帧，调用期间不释放；&paths 是 CFArray 借用视图（paths 已 validate 非空），调用方保证生命周期。
+    // SAFETY: path_str 由 NSString::from_str 创建、Retained 存于本栈帧，调用期间不释放；
+    // paths 是持 Retained 元素的 NSArray 借用视图（单元素字面量切片，恒非空）；
+    // 尾随的 NSString::from_str 临时值存活到本表达式结束，借用覆盖整个调用。
     if !unsafe { pb.setPropertyList_forType(&paths, &NSString::from_str("NSFilenamesPboardType")) }
     {
+        // 第 1 类已提交：失败必须清板，否则「复制失败」报错下粘贴仍拿到文件
+        //（与 Windows 侧 post-commit 失败 EmptyClipboard 的语义对齐）
+        let _ = pb.clearContents();
         return Err("写入文件列表类型失败".to_string());
     }
 
@@ -48,6 +53,8 @@ pub(crate) fn copy_file_macos(path: &str, title: &str) -> Result<(), String> {
     let text = NSString::from_str(title);
     // SAFETY: NSPasteboardTypeString 是 Foundation 公开常量，值稳定不释放、全局唯一无别名风险；unsafe 仅用于将 *const NSString 转为 &NSString。
     if !pb.setString_forType(&text, unsafe { NSPasteboardTypeString }) {
+        // 前两类已提交：失败必须清板（理由同上）
+        let _ = pb.clearContents();
         return Err("写入标题文本失败".to_string());
     }
     Ok(())
@@ -70,6 +77,14 @@ pub(crate) fn copy_file_windows(path: &str, title: &str) -> Result<(), crate::er
     use windows::Win32::System::Ole::{CF_HDROP, CF_UNICODETEXT};
     use windows::Win32::UI::Shell::DROPFILES;
 
+    // SAFETY（整段剪贴板序列的不变式清单，逐调用对应）：
+    // - OpenClipboard：本线程取得剪贴板独占权；失败/提前返回路径都必须 CloseClipboard
+    //   （失败分支见下方各 return，提交前失败只 Close，提交后失败还要 Empty）。
+    // - GlobalAlloc/GlobalLock：h 为 GMEM_MOVEABLE 句柄；GlobalLock 返回值判空后才解引用，
+    //   GlobalUnlock 之后不再触碰该指针；SetClipboardData 成功即所有权移交系统，
+    //   此后不得 GlobalFree（失败分支仍归我们所有，须 GlobalFree 防泄漏）。
+    // - DROPFILES 布局：pFiles 指向结构体之后的宽字符数组，双 NUL 结尾；
+    //   ptr::copy_nonoverlapping 保证源/目标无别名。
     unsafe {
         if OpenClipboard(None).is_err() {
             return Err(crate::error::CommandError::DomainRule {

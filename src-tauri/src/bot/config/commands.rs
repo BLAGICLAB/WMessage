@@ -369,6 +369,9 @@ pub fn bot_clear_api_key() -> CommandResult<()> {
 /// 清除指定厂商的 API Key（keyring 条目按厂商名分存）；
 /// 先把厂商移出已验证名单（配置落盘成功）再删 key——顺序保证失败时
 /// fail-closed（宁可用不了，不留「key 没了但还显示已验证」的假绿）。
+/// 残余中间态（第二步删 key 失败）：名单已移除但 key 还在，用户会看到报错，
+/// 下次 test_connection 会凭仍可读的 key 重新验证回绿——失败方向与
+/// fail-closed 一致且可重试恢复，不改先移名单后删 key 的次序。
 #[tauri::command]
 pub fn bot_clear_vendor_key(app: AppHandle, vendor: String) -> CommandResult<()> {
     let vendor = vendor.trim();

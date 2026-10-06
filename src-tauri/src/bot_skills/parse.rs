@@ -86,13 +86,18 @@ fn parse_param_line(line: &str) -> Option<SkillParam> {
     })
 }
 
-/// 提取「默认 X」标记里的 X（默认 X 外层括号全角/半角都认）；无默认 → None
+/// 提取「默认 X」标记里的 X（默认 X 外层括号全角/半角都认）；无默认 → None。
+/// 只认「(默认 X)」形态——括号内以「默认」开头才算标记，
+/// 说明文字里恰好含「默认」二字的普通括号注释不当默认值。
 fn extract_default(rest: &str) -> Option<String> {
     let pos = rest.find("默认")?;
     let open = rest[..pos].rfind(['（', '('])?;
     let close = rest[pos..].find(['）', ')'])? + pos;
-    let inner = rest[open + '（'.len_utf8()..close].trim();
-    let inner = inner.strip_prefix("默认").unwrap_or(inner).trim();
+    // 全角/半角括号字节宽不同（3/1），按命中字符的实际宽度推进切片边界，
+    // 硬编码全角宽度会把边界踩进多字节字符中间直接 panic
+    let open_w = rest[open..].chars().next()?.len_utf8();
+    let inner = rest[open + open_w..close].trim();
+    let inner = inner.strip_prefix("默认")?.trim();
     if inner.is_empty() {
         None
     } else {
@@ -100,7 +105,8 @@ fn extract_default(rest: &str) -> Option<String> {
     }
 }
 
-/// 剥掉「（必填）」与「（默认 X）」标记后的纯说明文字
+/// 剥掉「（必填）」与「（默认 X）」标记后的纯说明文字。
+/// 「(默认 X)」的识别口径与 extract_default 一致：括号内以「默认」开头才剥。
 fn strip_annotations(rest: &str) -> String {
     let mut s = rest.to_string();
     for marker in ["（必填）", "(必填)"] {
@@ -109,8 +115,18 @@ fn strip_annotations(rest: &str) -> String {
     if let Some(pos) = s.find("默认") {
         if let Some(open) = s[..pos].rfind(['（', '(']) {
             if let Some(rel) = s[pos..].find(['）', ')']) {
-                let close = pos + rel + '）'.len_utf8();
-                s = format!("{}{}", &s[..open], &s[close..]);
+                // 括号字节宽全角/半角不同，切片边界按命中字符实际宽度推进（越界会 panic）
+                let open_w = s[open..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+                let close_pos = pos + rel;
+                let close_w = s[close_pos..]
+                    .chars()
+                    .next()
+                    .map(|c| c.len_utf8())
+                    .unwrap_or(1);
+                // 只剥「(默认 X)」形态：括号内不以「默认」开头的是普通括号注释，不动
+                if s[open + open_w..close_pos].trim().starts_with("默认") {
+                    s = format!("{}{}", &s[..open], &s[close_pos + close_w..]);
+                }
             }
         }
     }
@@ -625,6 +641,27 @@ mod tests {
         let m = parse_meta(text, "d");
         assert_eq!(m.params.len(), 1);
         assert_eq!(m.params[0].key, "ok_field");
+    }
+
+    #[test]
+    fn meta_params_half_width_parens_no_panic() {
+        // 半角括号字节宽与全角不同（1 vs 3）：切片边界必须按命中字符实际宽度推进，
+        // 之前硬编码全角宽度会把边界踩进多字节字符中间直接 panic
+        let text = "---\nparams:\n  - lang: 语言 (默认 rust)\n---\n";
+        let m = parse_meta(text, "d");
+        assert_eq!(m.params.len(), 1);
+        assert_eq!(m.params[0].default.as_deref(), Some("rust"));
+        assert_eq!(m.params[0].desc, "语言");
+    }
+
+    #[test]
+    fn meta_params_plain_paren_with_moji_not_default() {
+        // 说明文字里恰好含「默认」二字的普通括号注释不是默认值标记，不提取也不剥
+        let text = "---\nparams:\n  - mode: 选择模式（本 skill 默认行为）\n---\n";
+        let m = parse_meta(text, "d");
+        assert_eq!(m.params.len(), 1);
+        assert!(m.params[0].default.is_none());
+        assert_eq!(m.params[0].desc, "选择模式（本 skill 默认行为）");
     }
 
     #[test]

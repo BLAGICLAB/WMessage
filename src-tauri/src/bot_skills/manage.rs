@@ -370,15 +370,19 @@ pub fn skills_import(app: AppHandle, path: String) -> CommandResult<String> {
     let dir = skills_dir(&app);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let dest = dir.join(&name);
-    if dest.exists() {
-        return Err(CommandError::SkillLoadFailed {
-            name: name.clone(),
-            reason: "同名技能已存在：请先在设置页删除".into(),
-        }
-        .into());
+    // 原子排他占位（替代 exists 检查）：并发双导入（双击/两窗口）同抢一个 dest
+    // 时只有一个 create_dir 能成功，败者在此被拒——双双闯过 exists 检查会拷出
+    // 互相覆盖的半份目录。dest 是文件（非目录）时同样在此被拒。
+    std::fs::create_dir(&dest).map_err(|_| CommandError::SkillLoadFailed {
+        name: name.clone(),
+        reason: "同名技能已存在：请先在设置页删除".into(),
+    })?;
+    // 递归拷贝（技能可能带 scripts/ 等资源）；拷贝失败移除占位目录，
+    // 不留半拷贝残骸堵死重试
+    if let Err(e) = copy_dir_all(&src, &dest) {
+        let _ = std::fs::remove_dir_all(&dest);
+        return Err(e.into());
     }
-    // 递归拷贝（技能可能带 scripts/ 等资源）
-    copy_dir_all(&src, &dest)?;
     // 安装成功即按 frontmatter intents 生成该技能的路由条目
     rebuild_intent_routes(&app);
     Ok(name)

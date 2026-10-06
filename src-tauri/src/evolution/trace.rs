@@ -182,7 +182,9 @@ pub fn should_record_trace(
 /// 不造成状态污染）。
 pub fn maybe_record_trace(ctx: TraceContext<'_>) {
     let ended_at_ms = chrono::Utc::now().timestamp_millis();
-    let duration_ms = ended_at_ms - ctx.started_at_ms;
+    // 饱和减法：NTP 回拨/手动改时会让墙钟差为负——负值会把正常长轨迹
+    // 从「>60s」采样规则里静默漏掉，钳到 0 保采样口径稳定
+    let duration_ms = ended_at_ms.saturating_sub(ctx.started_at_ms);
     if !should_record_trace(&ctx.outcome, ctx.tool_calls.len() as u32, duration_ms) {
         return;
     }

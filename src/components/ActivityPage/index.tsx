@@ -3,11 +3,12 @@
 // 行点击看单次 trace（TracePanel traceId 直查模式）；顶部「唤起挂件」围观执行会话。
 // 数据源 = exec_traces（trace_list 命令）；10s 轻轮询兜底（有 running 行时才转）。
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { Activity, Bot, ExternalLink } from "lucide-react";
 import { TracePanel } from "../TracePanel";
+import { formatCommandError } from "../../lib/errorHandler";
 import type { TraceRow } from "../../lib/trace";
 
 const ORIGIN_LABEL: Record<string, string> = {
@@ -40,13 +41,30 @@ function fmtDur(ms: number): string {
 export function ActivityPage() {
   const [traces, setTraces] = useState<TraceRow[]>([]);
   const [loaded, setLoaded] = useState(false);
+  /** 列表加载失败提示：非空时不渲染「还没有执行痕迹」空态（失败 ≠ 无数据） */
+  const [loadError, setLoadError] = useState("");
+  /** 唤起挂件失败提示（按钮操作的结果反馈，与列表加载失败分开） */
+  const [widgetError, setWidgetError] = useState("");
   const [openTraceId, setOpenTraceId] = useState<number | null>(null);
 
+  // 竞态令牌：10s 轮询 + 事件重入时，慢的旧 trace_list 响应不得覆盖新响应
+  const reqIdRef = useRef(0);
   const reload = useCallback(() => {
+    const reqId = ++reqIdRef.current;
     invoke<TraceRow[]>("trace_list", { limit: 50 })
-      .then(setTraces)
-      .catch(() => {})
-      .finally(() => setLoaded(true));
+      .then((rows) => {
+        if (reqId !== reqIdRef.current) return;
+        setTraces(rows);
+        setLoadError("");
+      })
+      .catch((e) => {
+        if (reqId !== reqIdRef.current) return;
+        // 失败必须可见：静默吞掉会让首屏落进「还没有执行痕迹」空态误导用户
+        setLoadError(formatCommandError(e));
+      })
+      .finally(() => {
+        if (reqId === reqIdRef.current) setLoaded(true);
+      });
   }, []);
 
   useEffect(() => {
@@ -61,16 +79,19 @@ export function ActivityPage() {
     return () => clearInterval(t);
   }, [hasRunning, reload]);
 
-  const showWidget = () => {
-    WebviewWindow.getByLabel("widget")
-      .then((w) => {
-        if (w) {
-          w.show()
-            .then(() => w.setFocus())
-            .catch(() => {});
-        }
-      })
-      .catch(() => {});
+  const showWidget = async () => {
+    try {
+      const w = await WebviewWindow.getByLabel("widget");
+      if (!w) {
+        setWidgetError("挂件窗口尚未创建，无法唤起");
+        return;
+      }
+      await w.show();
+      await w.setFocus();
+      setWidgetError("");
+    } catch (e) {
+      setWidgetError(`唤起挂件失败：${formatCommandError(e)}`);
+    }
   };
 
   return (
@@ -86,14 +107,20 @@ export function ActivityPage() {
           <button
             className="shrink-0 nm-btn px-3 py-1.5 text-xs text-[var(--t3)] inline-flex items-center gap-1"
             title="唤起挂件窗口围观执行会话（流式输出）"
-            onClick={showWidget}
+            onClick={() => void showWidget()}
           >
             <ExternalLink size={12} aria-hidden /> 唤起挂件
           </button>
         </div>
+        {widgetError && <p className="mt-2 text-xs text-[var(--danger)]">{widgetError}</p>}
 
         {!loaded && <p className="mt-6 text-center text-xs text-[var(--t5)]">加载中…</p>}
-        {loaded && traces.length === 0 && (
+        {loaded && loadError && (
+          <p className="mt-6 text-center text-xs text-[var(--danger)]">
+            执行痕迹加载失败：{loadError}
+          </p>
+        )}
+        {loaded && !loadError && traces.length === 0 && (
           <p className="mt-6 text-center text-xs text-[var(--t5)]">
             还没有执行痕迹——跑一次对话或交给机器人执行任务卡后，这里会出现执行记录。
           </p>

@@ -11,6 +11,8 @@
 //! 操作面：通知页按钮 + 设置页面板（MemoryPanel / EvolutionPanel）双入口，
 //! 既有命令尾部挂 resolution 回写，保证任一处操作后消息状态一致；
 //! 每次变更广播 `notifications-changed`，前端刷新列表与导航角标。
+//! 注意：广播由各落库/回写调用方在成功后自行触发（见 emit_changed 调用点），
+//! 本模块的 notif_insert / notif_resolve 等纯 DB 内核不发事件。
 
 use crate::error::{CommandError, CommandResult};
 use serde::Serialize;
@@ -91,14 +93,26 @@ pub fn notif_insert(
 
 fn row_to_view(r: &rusqlite::Row) -> rusqlite::Result<NotificationView> {
     let payload_raw: String = r.get(4)?;
+    // 单行损坏降级不炸整个列表，但 stderr 留痕——schema/数据损坏要可诊断，
+    // 不能让前端把 1970 时间戳/空 payload 当成正常数据
+    let id: String = r.get(0)?;
+    let payload = serde_json::from_str(&payload_raw).unwrap_or_else(|e| {
+        eprintln!("[notifications] payload JSON 损坏（id={id}）：{e}");
+        Value::Null
+    });
+    let created_at_raw: String = r.get(6)?;
+    let created_at = created_at_raw.parse::<i64>().unwrap_or_else(|e| {
+        eprintln!("[notifications] created_at 非时间戳（id={id}，原值={created_at_raw}）：{e}");
+        0
+    });
     Ok(NotificationView {
-        id: r.get(0)?,
+        id,
         kind: r.get(1)?,
         title: r.get(2)?,
         body: r.get(3)?,
-        payload: serde_json::from_str(&payload_raw).unwrap_or(Value::Null),
+        payload,
         status: r.get(5)?,
-        created_at: r.get::<_, String>(6)?.parse::<i64>().unwrap_or_default(),
+        created_at,
         resolved_at: r
             .get::<_, Option<String>>(7)?
             .and_then(|s| s.parse::<i64>().ok()),
@@ -113,13 +127,15 @@ fn notif_list(
     ensure_table(conn)?;
     let (sql, param): (&str, Vec<&str>) = match status {
         Some(s) => (
+            // created_at 存的是 TEXT 时间戳，排序按数值 CAST 后比较——
+            // 纯字典序在位数不一致（时钟回拨到 2001 前等）时会排错
             "SELECT id, kind, title, body, payload, status, created_at, resolved_at
-             FROM notifications WHERE status = ?1 ORDER BY created_at DESC, rowid DESC",
+             FROM notifications WHERE status = ?1 ORDER BY CAST(created_at AS INTEGER) DESC, rowid DESC",
             vec![s],
         ),
         None => (
             "SELECT id, kind, title, body, payload, status, created_at, resolved_at
-             FROM notifications ORDER BY created_at DESC, rowid DESC",
+             FROM notifications ORDER BY CAST(created_at AS INTEGER) DESC, rowid DESC",
             vec![],
         ),
     };

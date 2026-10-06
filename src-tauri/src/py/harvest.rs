@@ -20,8 +20,27 @@ pub fn harvest_run_outputs(dir: &Path, gen_dir: &Path, audit: &mut dyn FnMut(&st
         }
         let src = e.path();
         let dest = dedup_dest(gen_dir, &name);
-        let ok = std::fs::rename(&src, &dest).is_ok()
-            || (copy_rec(&src, &dest).is_ok() && remove_rec(&src));
+        // rename 失败（跨盘等）走 copy+remove；remove 失败必须把刚拷出的副本
+        // 删掉回滚——否则源/目标双份留存且不计数、不出审计，用户毫无感知
+        let ok = match std::fs::rename(&src, &dest) {
+            Ok(()) => true,
+            Err(_) => {
+                if copy_rec(&src, &dest).is_ok() {
+                    if remove_rec(&src) {
+                        true
+                    } else {
+                        // 源删不掉：撤销副本回到原状，并响亮留痕
+                        let _ = remove_rec(&dest);
+                        audit(&format!(
+                            "run_python | harvest 回滚：{src:?} 删除失败（拷贝副本已撤销），文件保留在原处"
+                        ));
+                        false
+                    }
+                } else {
+                    false
+                }
+            }
+        };
         if ok {
             moved += 1;
         }
@@ -88,6 +107,9 @@ pub fn sweep_stale_py_runs_in(root: &Path, max_age: Duration, now: SystemTime) -
         if !p.is_dir() {
             continue;
         }
+        // 未来 mtime（时钟回拨/NTP 校正、或刚重建的目录晚于调用方采集的 now）
+        // 会让 duration_since 得 None——按「刚创建」保留（age=0），等真实时间
+        // 越过歪掉的 mtime 后自然恢复常规清扫；按过期删会误删新鲜目录
         let stale = e
             .metadata()
             .ok()

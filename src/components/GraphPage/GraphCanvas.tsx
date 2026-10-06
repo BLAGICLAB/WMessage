@@ -371,10 +371,13 @@ export default function GraphCanvas(props: GraphCanvasProps) {
     // 手动重新布局：重跑 FA2（默认 6s 自动停），跑完终态视野适配
     const startRelayout = (runMs = 6000) => {
       fa2.start();
-      window.setTimeout(() => {
+      // 句柄必须入 timers：组件卸载/重建时随 cleanup 清掉，
+      // 否则回调仍会触碰已 kill 的 fa2/sigma 实例
+      const t = window.setTimeout(() => {
         if (fa2.isRunning()) fa2.stop();
         fitToContent(400);
       }, runMs);
+      timers.push(t);
     };
     relayoutRef.current = () => startRelayout();
 

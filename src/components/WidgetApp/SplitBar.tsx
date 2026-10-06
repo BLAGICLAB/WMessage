@@ -22,6 +22,8 @@ export function SplitBar({
     e.preventDefault();
     e.stopPropagation();
     const sy = e.clientY;
+    // pointerId 整个拖动会话不变：卸载兜底路径（cleanup 无事件参数）也要能释放 capture
+    const pointerId = e.pointerId;
     let acc = 0;
     const el = e.currentTarget as HTMLElement;
     try { el.setPointerCapture(e.pointerId); } catch { /* ignore */ }
@@ -32,10 +34,8 @@ export function SplitBar({
       acc = dy;
       onSplit(inc);
     };
-    const cleanup = (ev?: PointerEvent) => {
-      if (ev) {
-        try { el.releasePointerCapture(ev.pointerId); } catch { /* ignore */ }
-      }
+    const cleanup = () => {
+      try { el.releasePointerCapture(pointerId); } catch { /* ignore */ }
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", cleanup);
       window.removeEventListener("pointercancel", cleanup);

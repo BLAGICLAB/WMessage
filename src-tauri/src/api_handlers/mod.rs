@@ -142,24 +142,26 @@ mod tests {
             hub: EventHub::new(),
         });
         let token = "test-token-123".to_string();
-        let mut running = start_api(48821, token.clone(), store.clone(), None, None, None).unwrap();
+        let port = free_port();
+        let running =
+            ApiGuard(start_api(port, token.clone(), store.clone(), None, None, None).unwrap());
 
         // 健康检查：免鉴权
-        let (st, body) = http(48821, "GET", "/api/health", None, None);
+        let (st, body) = http(port, "GET", "/api/health", None, None);
         assert_eq!(st, 200);
         assert!(body.contains("wmessage-api"));
 
         // 无 token / 错 token → 401
-        assert_eq!(http(48821, "GET", "/api/tasks", None, None).0, 401);
-        assert_eq!(http(48821, "GET", "/api/tasks", Some("wrong"), None).0, 401);
+        assert_eq!(http(port, "GET", "/api/tasks", None, None).0, 401);
+        assert_eq!(http(port, "GET", "/api/tasks", Some("wrong"), None).0, 401);
 
         // 空列表
-        let (st, body) = http(48821, "GET", "/api/tasks", Some(&token), None);
+        let (st, body) = http(port, "GET", "/api/tasks", Some(&token), None);
         assert_eq!(st, 200);
         assert_eq!(body.trim(), "[]");
 
         let (st, body) = http(
-            48821,
+            port,
             "POST",
             "/api/tasks",
             Some(&token),
@@ -173,18 +175,12 @@ mod tests {
         assert_eq!(v["column"], "doing");
 
         // 单条
-        let (st, _) = http(
-            48821,
-            "GET",
-            &format!("/api/tasks/{id}"),
-            Some(&token),
-            None,
-        );
+        let (st, _) = http(port, "GET", &format!("/api/tasks/{id}"), Some(&token), None);
         assert_eq!(st, 200);
 
         // 更新：title + status done → 记完成时间
         let (st, body) = http(
-            48821,
+            port,
             "PUT",
             &format!("/api/tasks/{id}"),
             Some(&token),
@@ -198,7 +194,7 @@ mod tests {
 
         // 非法 status → 400
         let (st, _) = http(
-            48821,
+            port,
             "PUT",
             &format!("/api/tasks/{id}"),
             Some(&token),
@@ -208,7 +204,7 @@ mod tests {
 
         // 更新：due + tags
         let (st, body) = http(
-            48821,
+            port,
             "PUT",
             &format!("/api/tasks/{id}"),
             Some(&token),
@@ -221,7 +217,7 @@ mod tests {
 
         // 更新：归档 / 恢复
         let (st, body) = http(
-            48821,
+            port,
             "PUT",
             &format!("/api/tasks/{id}"),
             Some(&token),
@@ -233,7 +229,7 @@ mod tests {
             true
         );
         let (st, _) = http(
-            48821,
+            port,
             "PUT",
             &format!("/api/tasks/{id}"),
             Some(&token),
@@ -243,21 +239,21 @@ mod tests {
 
         // DELETE 软删 → 默认列表排除，?trash=1 可见，重复删幂等
         let (st, _) = http(
-            48821,
+            port,
             "DELETE",
             &format!("/api/tasks/{id}"),
             Some(&token),
             None,
         );
         assert_eq!(st, 200);
-        let (st, body) = http(48821, "GET", "/api/tasks", Some(&token), None);
+        let (st, body) = http(port, "GET", "/api/tasks", Some(&token), None);
         assert_eq!(st, 200);
         assert!(!body.contains(&id), "默认列表应排除回收站任务");
-        let (st, body) = http(48821, "GET", "/api/tasks?trash=1", Some(&token), None);
+        let (st, body) = http(port, "GET", "/api/tasks?trash=1", Some(&token), None);
         assert_eq!(st, 200);
         assert!(body.contains(&id), "trash=1 应包含回收站任务");
         let (st, _) = http(
-            48821,
+            port,
             "DELETE",
             &format!("/api/tasks/{id}"),
             Some(&token),
@@ -267,7 +263,7 @@ mod tests {
 
         // 恢复：deleted=false
         let (st, _) = http(
-            48821,
+            port,
             "PUT",
             &format!("/api/tasks/{id}"),
             Some(&token),
@@ -276,22 +272,17 @@ mod tests {
         assert_eq!(st, 200);
 
         // 列表过滤：非法 status → 400
-        let (st, _) = http(48821, "GET", "/api/tasks?status=bad", Some(&token), None);
+        let (st, _) = http(port, "GET", "/api/tasks?status=bad", Some(&token), None);
         assert_eq!(st, 400);
 
         // ?status=done 只含恢复后的完成态任务（该任务之前被改到 done）
-        let (st, body) = http(48821, "GET", "/api/tasks?status=done", Some(&token), None);
+        let (st, body) = http(port, "GET", "/api/tasks?status=done", Some(&token), None);
         assert_eq!(st, 200);
         assert!(body.contains(&id));
 
         // 不存在 → 404
-        let (st, _) = http(48821, "GET", "/api/tasks/nope", Some(&token), None);
+        let (st, _) = http(port, "GET", "/api/tasks/nope", Some(&token), None);
         assert_eq!(st, 404);
-
-        running.shutdown.store(true, Ordering::SeqCst);
-        if let Some(h) = running.handle.take() {
-            let _ = h.join();
-        }
     }
 
     #[test]
@@ -301,10 +292,12 @@ mod tests {
             hub: EventHub::new(),
         });
         let token = "test-token-123".to_string();
-        let mut running = start_api(48822, token.clone(), store.clone(), None, None, None).unwrap();
+        let port = free_port();
+        let running =
+            ApiGuard(start_api(port, token.clone(), store.clone(), None, None, None).unwrap());
 
         // 建立 SSE 连接
-        let mut s = std::net::TcpStream::connect(("127.0.0.1", 48822)).unwrap();
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
         s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         write!(
             s,
@@ -330,7 +323,7 @@ mod tests {
 
         // 另一连接 POST → SSE 应收到 tasks-changed
         http(
-            48822,
+            port,
             "POST",
             "/api/tasks",
             Some(&token),
@@ -351,11 +344,6 @@ mod tests {
             }
         }
         assert!(ok, "SSE 未收到任务变更事件，实际内容：{acc}");
-
-        running.shutdown.store(true, Ordering::SeqCst);
-        if let Some(h) = running.handle.take() {
-            let _ = h.join();
-        }
     }
 
     // ── SSE writer 生命周期（stop 通知 + 带超时 join + 泄漏审计）──
@@ -429,6 +417,26 @@ mod tests {
         }
     }
 
+    /// RAII 兜底：断言失败 panic 时也保证关停 API——否则端口与服务线程泄漏，
+    /// 同一二进制内的后续用例和快速复跑会撞 EADDRINUSE
+    struct ApiGuard(RunningApi);
+    impl Drop for ApiGuard {
+        fn drop(&mut self) {
+            shutdown_server(&mut self.0);
+        }
+    }
+
+    /// 取 OS 自动分配的空闲端口（绑 :0 拿到端口即释放），替代硬编码端口：
+    /// 并行测试/快速复跑不会因端口被占而假失败。释放与 start_api 重绑之间
+    /// 存在极小的抢占窗口，测试场景可接受。
+    fn free_port() -> u16 {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    }
+
     /// 显式传 trim 后为空的 title 按 400 拒绝（与 create 语义一致）
     #[test]
     fn update_blank_title_returns_400() {
@@ -437,10 +445,12 @@ mod tests {
             hub: EventHub::new(),
         });
         let token = "test-token-123".to_string();
-        let mut running = start_api(48823, token.clone(), store.clone(), None, None, None).unwrap();
+        let port = free_port();
+        let running =
+            ApiGuard(start_api(port, token.clone(), store.clone(), None, None, None).unwrap());
 
         let (st, body) = http(
-            48823,
+            port,
             "POST",
             "/api/tasks",
             Some(&token),
@@ -452,7 +462,7 @@ mod tests {
 
         // 空白 title → 400（不是静默忽略）；不传 title → 200 不动标题
         let (st, _) = http(
-            48823,
+            port,
             "PUT",
             &format!("/api/tasks/{id}"),
             Some(&token),
@@ -460,7 +470,7 @@ mod tests {
         );
         assert_eq!(st, 400, "空白 title 应 400");
         let (st, body) = http(
-            48823,
+            port,
             "PUT",
             &format!("/api/tasks/{id}"),
             Some(&token),
@@ -469,8 +479,6 @@ mod tests {
         assert_eq!(st, 200);
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["title"], "正常任务", "不传 title 不应动标题");
-
-        shutdown_server(&mut running);
     }
 
     /// create 的 note / filePath 首尾空白不得进库（trim 后存储）
@@ -481,10 +489,12 @@ mod tests {
             hub: EventHub::new(),
         });
         let token = "test-token-123".to_string();
-        let mut running = start_api(48824, token.clone(), store.clone(), None, None, None).unwrap();
+        let port = free_port();
+        let running =
+            ApiGuard(start_api(port, token.clone(), store.clone(), None, None, None).unwrap());
 
         let (st, body) = http(
-            48824,
+            port,
             "POST",
             "/api/tasks",
             Some(&token),
@@ -497,8 +507,6 @@ mod tests {
             v["filePath"], "/tmp/x.pdf",
             "filePath 应 trim 后存储: {body}"
         );
-
-        shutdown_server(&mut running);
     }
 
     /// clients 里塞满死连接尸体（writer 已退出 = Weak 失效）时，
@@ -520,10 +528,12 @@ mod tests {
             }
             assert_eq!(clients.len(), MAX_SSE_CLIENTS);
         }
-        let mut running = start_api(48825, token.clone(), store.clone(), None, None, None).unwrap();
+        let port = free_port();
+        let running =
+            ApiGuard(start_api(port, token.clone(), store.clone(), None, None, None).unwrap());
 
         // 新连接：尸体被收割后应正常接入（200 + connected 首事件），而非 503
-        let mut s = std::net::TcpStream::connect(("127.0.0.1", 48825)).unwrap();
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
         s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         write!(
             s,
@@ -550,7 +560,6 @@ mod tests {
         assert_eq!(alive_count, 1, "尸体应被收割，仅剩新连接: {alive_count}");
 
         drop(s);
-        shutdown_server(&mut running);
     }
 
     /// 测试基建：MemStore 已按 db.rs 语义比对 RMW 基线；本 store 在 upsert 内
@@ -564,6 +573,12 @@ mod tests {
             self.inner.load()
         }
         fn upsert(&self, tasks: Vec<db::Task>) -> Result<(), String> {
+            // 「并发写模拟」靠顺序性而非真竞态：在同一线程、于 inner.upsert 的
+            // 基线比对*之前*改写目标行 updated_at（程序序保证），使 handler
+            // load→upsert 窗口里读到的基线必然过期、409 路径必然走到。
+            // 该前提对 MemStore 实现敏感：其 upsert 必须在锁内拿「当前行」
+            // 比对基线；若将来改成持锁整表替换之类语义，这里的断言会空转，
+            // 需换显式 sleep + 改时间戳的版本。
             for t in &tasks {
                 let mut g = self.inner.tasks.lock().unwrap();
                 if let Some(x) = g.iter_mut().find(|x| x.id == t.id) {
@@ -591,11 +606,13 @@ mod tests {
         };
         let store: Arc<dyn TaskStore> = Arc::new(SabotageStore { inner });
         let token = "test-token-123".to_string();
-        let mut running = start_api(48826, token.clone(), store.clone(), None, None, None).unwrap();
+        let port = free_port();
+        let running =
+            ApiGuard(start_api(port, token.clone(), store.clone(), None, None, None).unwrap());
 
         // NULL 老行：行存在性基线 + 插队写 → 409
         let (st, body) = http(
-            48826,
+            port,
             "PUT",
             "/api/tasks/t1",
             Some(&token),
@@ -607,7 +624,7 @@ mod tests {
 
         // 正常行（API 创建，updated_at 有值）：时间戳基线 + 插队写 → 409
         let (st, body) = http(
-            48826,
+            port,
             "POST",
             "/api/tasks",
             Some(&token),
@@ -617,7 +634,7 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         let id = v["id"].as_str().unwrap().to_string();
         let (st, body) = http(
-            48826,
+            port,
             "PUT",
             &format!("/api/tasks/{id}"),
             Some(&token),
@@ -627,8 +644,6 @@ mod tests {
         let tasks = store.load().unwrap();
         let cur = tasks.iter().find(|t| t.id == id).unwrap();
         assert_eq!(cur.title, "正常任务", "被拒写不得覆盖现行行");
-
-        shutdown_server(&mut running);
     }
 
     /// NULL 老行在无并发写时可正常更新——
@@ -640,10 +655,12 @@ mod tests {
             hub: EventHub::new(),
         });
         let token = "test-token-123".to_string();
-        let mut running = start_api(48827, token.clone(), store.clone(), None, None, None).unwrap();
+        let port = free_port();
+        let running =
+            ApiGuard(start_api(port, token.clone(), store.clone(), None, None, None).unwrap());
 
         let (st, body) = http(
-            48827,
+            port,
             "PUT",
             "/api/tasks/t1",
             Some(&token),
@@ -652,8 +669,6 @@ mod tests {
         assert_eq!(st, 200, "无并发写时 NULL 老行更新应放行: {body}");
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["title"], "改好了");
-
-        shutdown_server(&mut running);
     }
 
     /// `?since=abc` 解析失败必须回 400——不静默按全新连接处理
@@ -665,14 +680,14 @@ mod tests {
             hub: EventHub::new(),
         });
         let token = "test-token-123".to_string();
-        let mut running = start_api(48828, token.clone(), store.clone(), None, None, None).unwrap();
+        let port = free_port();
+        let running =
+            ApiGuard(start_api(port, token.clone(), store.clone(), None, None, None).unwrap());
 
-        let (st, _) = http(48828, "GET", "/api/events?since=abc", Some(&token), None);
+        let (st, _) = http(port, "GET", "/api/events?since=abc", Some(&token), None);
         assert_eq!(st, 400, "非法 since 应 400");
-        let (st, _) = http(48828, "GET", "/api/events?since=-1", Some(&token), None);
+        let (st, _) = http(port, "GET", "/api/events?since=-1", Some(&token), None);
         assert_eq!(st, 400, "负数 since 应 400（u64 解析失败）");
-
-        shutdown_server(&mut running);
     }
 
     /// filePath 超上限（1024 字）回 400，create / update 同规则
@@ -683,11 +698,13 @@ mod tests {
             hub: EventHub::new(),
         });
         let token = "test-token-123".to_string();
-        let mut running = start_api(48829, token.clone(), store.clone(), None, None, None).unwrap();
+        let port = free_port();
+        let running =
+            ApiGuard(start_api(port, token.clone(), store.clone(), None, None, None).unwrap());
 
         let long_path = "x".repeat(API_MAX_FILE_PATH + 1);
         let (st, _) = http(
-            48829,
+            port,
             "POST",
             "/api/tasks",
             Some(&token),
@@ -696,7 +713,7 @@ mod tests {
         assert_eq!(st, 400, "create 超限 filePath 应 400");
 
         let (st, body) = http(
-            48829,
+            port,
             "POST",
             "/api/tasks",
             Some(&token),
@@ -706,15 +723,13 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         let id = v["id"].as_str().unwrap().to_string();
         let (st, _) = http(
-            48829,
+            port,
             "PUT",
             &format!("/api/tasks/{id}"),
             Some(&token),
             Some(&format!(r#"{{"filePath":"{long_path}"}}"#)),
         );
         assert_eq!(st, 400, "update 超限 filePath 应 400");
-
-        shutdown_server(&mut running);
     }
 
     /// Content-Length 声明超 1MB → 立即 413，
@@ -727,9 +742,11 @@ mod tests {
             hub: EventHub::new(),
         });
         let token = "test-token-123".to_string();
-        let mut running = start_api(48830, token.clone(), store.clone(), None, None, None).unwrap();
+        let port = free_port();
+        let running =
+            ApiGuard(start_api(port, token.clone(), store.clone(), None, None, None).unwrap());
 
-        let mut s = std::net::TcpStream::connect(("127.0.0.1", 48830)).unwrap();
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
         s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         write!(
             s,
@@ -744,8 +761,6 @@ mod tests {
             "声明超限的 body 应立即 413: {}",
             resp.lines().next().unwrap_or("")
         );
-
-        shutdown_server(&mut running);
     }
 
     // ── 共享测试基建：手写 HTTP 客户端 ──

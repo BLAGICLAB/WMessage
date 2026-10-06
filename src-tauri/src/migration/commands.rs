@@ -68,7 +68,15 @@ pub async fn migration_rules_import(app: AppHandle) -> CommandResult<usize> {
         match String::from_utf8(bytes.clone()) {
             Ok(s) => s,
             Err(_) => {
-                let (s, _, _) = encoding_rs::GBK.decode(&bytes);
+                // GBK 是兜底链最后一环：带解码错误的输入（Shift_JIS/Big5/损坏字节）
+                // 会被静默替换成 U+FFFD，破坏性规则可能基于乱码内容执行。
+                // 这里必须响亮失败，引导用户转存 UTF-8。
+                let (s, _, had_errors) = encoding_rs::GBK.decode(&bytes);
+                if had_errors {
+                    return Err(CommandError::IoError(
+                        "文件不是有效的 UTF-8 / UTF-16 / GBK 编码（含无法解码的字节），请用 UTF-8 保存后重试".into(),
+                    ));
+                }
                 s.into_owned()
             }
         }

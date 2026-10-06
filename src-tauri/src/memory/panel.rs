@@ -163,7 +163,7 @@ pub(crate) fn update_core(
     let updated = store::load_all(conn)?
         .into_iter()
         .find(|m| m.id == id)
-        .ok_or_else(|| "更新后读取失败".to_string())?;
+        .ok_or_else(|| "更新后读取失败（该记忆可能刚被并发删除，请刷新列表后重试）".to_string())?;
     Ok(MemItemView::from(&updated))
 }
 
@@ -408,7 +408,8 @@ fn prepare_import_items(
 /// 导入内核（&Connection 可单测）：合法条目逐条走 insert_item 既有语义去重。
 /// 只增不删。skipped 口径：容量满拒写、evo: 异 key 冲突拒写（输入级校验已在
 /// prepare 完成）；**存储故障（Err）不算 skipped——直接中止并上抛**，
-/// 不把真实故障伪装成「输入被跳过」。
+/// 不把真实故障伪装成「输入被跳过」。整批包在一个事务里：中途存储故障
+/// 一并回滚，不留下「一半已入库、一半丢失」的半截导入。
 pub(crate) fn import_items(
     conn: &rusqlite::Connection,
     prepared: &[(MemExportItem, Option<Vec<f32>>)],
@@ -416,6 +417,10 @@ pub(crate) fn import_items(
     sp: &store::StoreParams,
 ) -> Result<MemImportReport, String> {
     store::ensure_table(conn)?;
+    // &Connection 拿不到 &mut，用 unchecked_transaction（同 trace_sink / db::trace 先例）
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("导入事务开启失败：{e}"))?;
     let mut report = MemImportReport::default();
     for (item, emb) in prepared {
         let draft = store::NewItem {
@@ -425,19 +430,20 @@ pub(crate) fn import_items(
             importance: item.importance,
             source: item.source.clone(),
         };
-        match store::insert_item_with(conn, &draft, emb.as_deref(), now_ms, sp) {
+        match store::insert_item_with(&tx, &draft, emb.as_deref(), now_ms, sp) {
             Ok((store::InsertOutcome::Inserted(_), _)) => report.inserted += 1,
             Ok((store::InsertOutcome::Merged { .. }, _)) => report.merged += 1,
             Ok((store::InsertOutcome::RejectedFull(_), _)) => report.skipped += 1,
             Ok((store::InsertOutcome::RefusedForeignMerge { .. }, _)) => report.skipped += 1,
             Err(e) => {
+                // tx drop 即回滚：报错文案不再声称「已完成 N 条」（实际一条都没落）
                 return Err(format!(
-                    "导入中止（存储故障，已完成 {} 条）：{e}",
-                    report.inserted + report.merged
-                ))
+                    "导入中止（存储故障，本次导入已整体回滚，未写入任何条目）：{e}"
+                ));
             }
         }
     }
+    tx.commit().map_err(|e| format!("导入事务提交失败：{e}"))?;
     Ok(report)
 }
 
@@ -515,14 +521,36 @@ pub async fn mem_export(app: AppHandle, path: String) -> CommandResult<MemExport
         .map_err(CommandError::from)
 }
 
+/// 导入文件体积上限（防误选/恶意超大 JSON 把 worker 内存打爆：read_to_string
+/// 是全量进内存，50MB 已远超正常导出量级——500 条 ≈ 1MB）
+const MEM_IMPORT_MAX_FILE_BYTES: u64 = 50 * 1024 * 1024;
+/// 导入条目数上限（防超长循环长时间占住 DB 写锁）
+const MEM_IMPORT_MAX_ITEMS: usize = 50_000;
+
 /// 从 JSON 文件导入记忆（只增不删，走既有语义去重合并；容量满按 skipped 计）。
 /// 解析、输入校验与预嵌入在锁外（文件 IO + ONNX 推理不占 DB 写锁临界区）。
 #[tauri::command]
 pub async fn mem_import(app: AppHandle, path: String) -> CommandResult<MemImportReport> {
     ensure_json_path(&path)?;
     let r = tauri::async_runtime::spawn_blocking(move || -> Result<MemImportReport, String> {
+        let len = std::fs::metadata(&path)
+            .map_err(|e| format!("读取导入文件失败：{e}"))?
+            .len();
+        if len > MEM_IMPORT_MAX_FILE_BYTES {
+            return Err(format!(
+                "导入文件过大（{} MB，上限 {} MB），请确认选对了文件",
+                len / 1024 / 1024,
+                MEM_IMPORT_MAX_FILE_BYTES / 1024 / 1024
+            ));
+        }
         let json = std::fs::read_to_string(&path).map_err(|e| format!("读取导入文件失败：{e}"))?;
         let file = parse_import(&json)?;
+        if file.items.len() > MEM_IMPORT_MAX_ITEMS {
+            return Err(format!(
+                "导入条目过多（{} 条，上限 {MEM_IMPORT_MAX_ITEMS} 条）",
+                file.items.len()
+            ));
+        }
         let (prepared, skipped) = prepare_import_items(&file.items, &|t| embed::embed_text(t));
         let sp = store::StoreParams::of(&crate::bot::read_memory_tuning(&app));
         let _g = lock_db();

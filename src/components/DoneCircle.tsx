@@ -18,6 +18,8 @@ export function DoneCircle({
         done ? "text-[var(--success)]" : "text-transparent hover:text-[var(--t5)]"
       }`}
       title={title ?? (done ? "取消完成" : "标记完成")}
+      aria-label={title ?? (done ? "取消完成" : "标记完成")}
+      aria-pressed={done}
       onPointerDown={stop}
       onClick={(e) => {
         e.stopPropagation();

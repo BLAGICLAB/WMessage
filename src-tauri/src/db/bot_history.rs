@@ -41,6 +41,12 @@ pub fn bot_history_save_inner(
 ) -> Result<(), String> {
     const MAX_HISTORY_MSGS: usize = 2000;
     let messages = if messages.len() > MAX_HISTORY_MSGS {
+        // 超限截断留痕：让日志能区分「干净保存」与「丢了最旧 N 条」
+        eprintln!(
+            "[bot_history_save] 会话 {session_id} 消息数 {} 超上限 {MAX_HISTORY_MSGS}，截断丢弃最旧 {} 条",
+            messages.len(),
+            messages.len() - MAX_HISTORY_MSGS
+        );
         &messages[messages.len() - MAX_HISTORY_MSGS..]
     } else {
         messages

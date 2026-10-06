@@ -20,7 +20,8 @@ export function Fold({
       <button
         type="button"
         aria-expanded={open}
-        aria-controls={panelId}
+        // 面板未渲染（收起或无内容）时不能引用不存在的 id（a11y：aria-controls 指向必须存在）
+        aria-controls={open && children ? panelId : undefined}
         className="inline-flex items-center gap-1 max-w-full text-[10px] text-[var(--t5)] hover:text-[var(--t3)]"
         onClick={() => setOpen((v) => !v)}
       >

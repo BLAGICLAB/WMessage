@@ -76,15 +76,31 @@ export function MarkdownText({ text }: { text: string }) {
             const isUrl = isHttpUrl(url);
             const isPath = isAbsPath(url);
             if (!isUrl && !isPath) return <span>{children}</span>;
+            // 与行内 code 渲染同款 href 策略：路径链接不设 href
+            //（中键/复制链接会把 /Users/x 之类当 URL 解析出 bogus 地址）；
+            // 无 href 的 <a> 不可聚焦，补 role="link" + tabIndex + Enter 触发
+            const activate = () => openTarget(url);
             return (
               <a
-                href={url}
+                href={isUrl ? url : undefined}
+                role={isUrl ? undefined : "link"}
+                tabIndex={isUrl ? undefined : 0}
                 title={isUrl ? "在浏览器打开" : "打开文件/文件夹"}
                 className="text-[var(--brand)] underline decoration-dotted underline-offset-2 cursor-pointer break-all"
                 onClick={(e) => {
                   e.preventDefault();
-                  openTarget(url);
+                  activate();
                 }}
+                onKeyDown={
+                  isUrl
+                    ? undefined
+                    : (e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          activate();
+                        }
+                      }
+                }
               >
                 {children}
               </a>

@@ -157,6 +157,12 @@ impl RunLimits {
 
 #[cfg(unix)]
 pub fn is_live_group_leader(pid: u32) -> bool {
+    // 超过 i32::MAX 的 pid 转换会回绕成负数（极端情况 -1），getpgid 的错误返回
+    // 值恰好也是 -1，等值比较会误判「存活 leader」→ 后续 kill -9 --1 误伤全系统。
+    // 真实内核 pid 远到不了这个值，纯防御；拒判即可。
+    if pid > i32::MAX as u32 {
+        return false;
+    }
     // SAFETY: pid 由调用方传入（subprocess 子进程 PID），本函数语义：若 getpgid(pid) == pid 则该 pid 是进程组 leader。
     // POSIX getpgid(0) 返回调用方 PGID 是无害的（这里 pid 是入参，不会传 0）。返回值仅用于 == 比较，无 wrapper 误用风险。
     unsafe { libc::getpgid(pid as i32) == pid as i32 }

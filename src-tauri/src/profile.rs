@@ -388,30 +388,36 @@ pub fn profile_set_avatar<R: Runtime>(
                 }
             }
         }
-        std::fs::copy(&src, &dest)?;
+        // 先拷到临时文件、save 成功后再 rename 落位：直接 copy 到 dest 的话，
+        // 同扩展名覆盖一旦 save 失败，在役头像的字节已被新图覆盖而磁盘 json
+        // 仍指向它——原始头像静默损坏且无从恢复
+        let dest_tmp = dir.join(format!("avatar-{kind}.{ext}.tmp"));
+        std::fs::copy(&src, &dest_tmp)?;
         let mut data = load_data(&app);
         let entry = if kind == "bot" {
             &mut data.bot
         } else {
             &mut data.user
         };
-        let Some(fname) = dest.file_name() else {
+        let Some(fname) = dest.file_name().and_then(|n| n.to_str()) else {
+            let _ = std::fs::remove_file(&dest_tmp);
             return Err(CommandError::InvalidArgument {
                 field: "path".into(),
                 value: dest.to_string_lossy().into_owned(),
                 reason: "头像目标路径无效".into(),
             });
         };
-        // NEW-D-2：覆盖前先记在役头像名，save 失败回滚时区分「在役文件」与「新文件」
+        // 覆盖前先记在役头像名，save 失败回滚时区分「在役文件」与「新文件」
         let old_avatar = entry.avatar.clone();
-        entry.avatar = Some(fname.to_string_lossy().into_owned());
-        // 原子性：保存失败时回滚刚拷贝的头像文件，不留孤儿（二次审计 P3）。
-        // NEW-D-2：同扩展名覆盖场景 dest 就是在役头像本身（copy 已覆盖内容），
-        // 误删会让磁盘 json 悬挂引用、在役头像静默丢失——只在 dest 是「新文件」时才删。
+        entry.avatar = Some(fname.to_string());
+        // 原子性：save 失败只清临时文件，在役头像字节与磁盘 json 都保持原状；
+        // cleanup 内「在役文件不可删」守卫继续兜底（临时文件名永远不是在役名）
         if let Err(e) = save_data(&app, &data) {
-            cleanup_set_avatar_failure(old_avatar.as_deref(), &dest);
+            cleanup_set_avatar_failure(old_avatar.as_deref(), &dest_tmp);
             return Err(CommandError::IoError(e));
         }
+        // save 成功才落位：rename 原子替换在役文件（同扩展名）或新建（换扩展名）
+        std::fs::rename(&dest_tmp, &dest)?;
         data
     };
     broadcast(&app);

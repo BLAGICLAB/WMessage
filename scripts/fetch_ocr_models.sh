@@ -66,8 +66,16 @@ HF_BASE="https://huggingface.co/RapidAI/RapidOCR/resolve/main"
 curl_fetch() {
   local rel="$1" out="$2"
   if [ -s "$DEST/$out" ]; then
-    echo "已存在，跳过：$out"
-    return 0
+    # 已存在也要过 SHA256 pinning：上次崩溃留下的半截 mv、手工放置的错文件
+    # 不能靠「非空」就当已就绪永久跳过（pinning 只在全新下载时生效等于没锁）
+    local want_existing got_existing
+    want_existing=$(expected_sha256 "$out")
+    got_existing=$($SHA256_BIN "$DEST/$out" | awk '{print $1}')
+    if [ -n "$want_existing" ] && [ "$got_existing" = "$want_existing" ]; then
+      echo "已存在，校验通过，跳过：$out"
+      return 0
+    fi
+    echo "✗ $out 已存在但 SHA256 不匹配/不在清单内，重新下载" >&2
   fi
   local tmp="$DEST/$out.partial"
   rm -f "$tmp"

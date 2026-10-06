@@ -69,7 +69,9 @@ export function TodoCardView({
     if (autoEdit && !archived && !trashed) {
       // oxlint-disable-next-line react/set-state-in-effect
       setEditing(true);
-    } else if (!autoEdit) {
+    } else {
+      // autoEdit 撤销，或卡片转入归档/回收站（只读）：一律退出编辑态，
+      // 留在编辑态会绕过归档/回收站的只读交互继续提交改动
       // oxlint-disable-next-line react/set-state-in-effect
       setEditing(false);
     }

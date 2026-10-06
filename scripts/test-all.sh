@@ -16,8 +16,13 @@ echo "[2/3] pytest tests-audit/（一致性检查，strict：XFAIL/XPASS 也算�
 # X 必须在模板末尾（BSD mktemp）：带 .log 后缀会 mkstemp 失败/残留字面量文件，
 # /tmp 残留同名文件后每次 push 必撞 "File exists"（实锤：2026-10-06 推送三连挂）
 PYTEST_LOG=$(mktemp /tmp/pytest-audit.XXXXXX)
-python3 -m pytest tests-audit/audit_pre_step_pre_execute.py tests-audit/audit_tauri_bridge.py tests-audit/audit_error_codes.py tests-audit/audit_module_map.py -v 2>&1 | tee "$PYTEST_LOG"
-PYTEST_EXIT=${PIPESTATUS[0]}
+# EXIT trap 兜底清理：pytest 失败时 errexit 会在下一行管道处直接退出，
+# 没有 trap 就会漏删（/tmp 残留同名文件正是「推送三连挂」的根因）
+trap 'rm -f "$PYTEST_LOG"' EXIT
+# pytest 退出码收进管道组末尾的赋值：pytest 失败时管道组整体仍以 0 退出，
+# errexit 不会在 xfail 扫描与 PYTEST_EXIT 透传前中断（否则那两段是死代码）
+PYTEST_EXIT=0
+{ python3 -m pytest tests-audit/audit_pre_step_pre_execute.py tests-audit/audit_tauri_bridge.py tests-audit/audit_error_codes.py tests-audit/audit_module_map.py -v 2>&1; PYTEST_EXIT=$?; } | tee "$PYTEST_LOG"
 if grep -qE '[1-9][0-9]* xfailed' "$PYTEST_LOG" || grep -qE '[1-9][0-9]* xpassed' "$PYTEST_LOG"; then
     echo "✗ tests-audit 存在 xfail/xpass（Phase 6 政策：0 xfail 门禁）" >&2
     rm -f "$PYTEST_LOG"

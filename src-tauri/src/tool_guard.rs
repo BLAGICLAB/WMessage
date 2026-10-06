@@ -49,16 +49,21 @@ fn session_origins() -> &'static std::sync::Mutex<HashMap<String, TaskExecOrigin
     SESSION_ORIGINS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
 }
 
+/// 毒锁按全仓口径处理：into_inner 取回数据继续跑 + eprintln 留痕。
+/// 静默吞掉会让 unregister 变 no-op，注册条目永久泄漏（is_task_execution_flow 常真）。
+fn lock_session_origins() -> std::sync::MutexGuard<'static, HashMap<String, TaskExecOrigin>> {
+    session_origins().lock().unwrap_or_else(|e| {
+        eprintln!("[mutex_poisoned] tool_guard::SESSION_ORIGINS: {e:?}");
+        e.into_inner()
+    })
+}
+
 pub fn register_exec_session(session_id: &str, origin: TaskExecOrigin) {
-    if let Ok(mut m) = session_origins().lock() {
-        m.insert(session_id.to_string(), origin);
-    }
+    lock_session_origins().insert(session_id.to_string(), origin);
 }
 
 pub fn unregister_exec_session(session_id: &str) {
-    if let Ok(mut m) = session_origins().lock() {
-        m.remove(session_id);
-    }
+    lock_session_origins().remove(session_id);
 }
 
 /// 当前 session 是否在任务卡执行流程内（🤖 按钮 / ⏰ 定时 / 📦 批量）
@@ -66,11 +71,7 @@ pub fn is_task_execution_flow(session_id: Option<&str>) -> bool {
     let Some(sid) = session_id else {
         return false;
     };
-    session_origins()
-        .lock()
-        .ok()
-        .map(|m| m.contains_key(sid))
-        .unwrap_or(false)
+    lock_session_origins().contains_key(sid)
 }
 
 // ───────────────────────── 子 agent 会话注册表（SUBA-2） ─────────────────────────
@@ -156,12 +157,14 @@ impl SubagentSessionGuard {
 
 impl Drop for SubagentSessionGuard {
     fn drop(&mut self) {
-        let still_ours = lock_subagent_sessions()
-            .get(&self.session_id)
+        // 归属判定与删除必须在同一临界区：分两次取锁的话，窗口内后来者用
+        // 同一 session_id 重新注册的新条目会被本守卫误删
+        let mut m = lock_subagent_sessions();
+        if m.get(&self.session_id)
             .map(|c| c.subagent_id == self.subagent_id)
-            .unwrap_or(false);
-        if still_ours {
-            unregister_subagent_session(&self.session_id);
+            .unwrap_or(false)
+        {
+            m.remove(&self.session_id);
         }
     }
 }
@@ -317,6 +320,27 @@ mod tests {
         assert!(!is_subagent_session(None));
         assert!(subagent_ctx(None).is_none());
         assert!(!is_subagent_session(Some("never_registered_subagent")));
+    }
+
+    /// 守卫 Drop 不得误删同 sid 后来者的注册：归属判定与删除必须同一临界区
+    #[test]
+    fn guard_drop_keeps_newer_registration_same_sid() {
+        let sid = "test_guard_drop_overwrite";
+        let g = SubagentSessionGuard::new(sid, sample_ctx("sa_old"));
+        // 同 sid 覆盖注册（后来的 runner 接管）
+        register_subagent_session(sid, sample_ctx("sa_new"));
+        drop(g);
+        assert!(
+            is_subagent_session(Some(sid)),
+            "旧守卫 Drop 不得删除后来者条目"
+        );
+        assert_eq!(
+            subagent_ctx(Some(sid)).unwrap().subagent_id,
+            "sa_new",
+            "存留的必须是后来者的 ctx"
+        );
+        unregister_subagent_session(sid);
+        assert!(!is_subagent_session(Some(sid)));
     }
 
     #[test]

@@ -95,9 +95,12 @@ pub fn is_skill_active_for<R: tauri::Runtime>(
     session_id: Option<&str>,
 ) -> bool {
     let registry = skill_runs(app);
-    let Ok(guard) = registry.lock() else {
-        return false;
-    };
+    // 锁中毒按全仓口径 into_inner 取回数据：这里返回 false = 「无活动 Skill」，
+    // 对调用方是放宽方向，不能因中毒就静默放宽，取回注册表照常判定
+    let guard = registry.lock().unwrap_or_else(|e| {
+        eprintln!("[mutex_poisoned] bot_skills::state::skill_runs: {e:?}");
+        e.into_inner()
+    });
     guard
         .values()
         .any(|r| matches!(r.state, SkillState::Running) && r.session_id.as_deref() == session_id)

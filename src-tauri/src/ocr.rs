@@ -453,10 +453,16 @@ mod win {
             let (shape, logits) =
                 run_first(&eng.rec, [1, 3, REC_H as usize, rec_w as usize], rec_in)?;
             if shape.len() != 3 {
+                // 静默丢块会让「整页识别为空」无从排查，至少 dev 日志留痕
+                eprintln!("[ocr] rec 输出形状异常（{shape:?}），丢弃该文本块");
                 continue;
             }
             let (t, classes) = (shape[1].max(0) as usize, shape[2].max(0) as usize);
             if t == 0 || classes == 0 || logits.len() < t * classes {
+                eprintln!(
+                    "[ocr] rec 输出尺寸异常（t={t} classes={classes} len={}），丢弃该文本块",
+                    logits.len()
+                );
                 continue;
             }
             // CTC greedy：逐时间步 argmax

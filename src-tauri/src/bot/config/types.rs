@@ -573,15 +573,16 @@ pub fn resolve_model_override(
             entry.label
         ));
     }
-    // key：厂商 key 优先，缺 → 全局 key 兜底（与 read_llm_key 回退语义一致）
+    // key：厂商 key 优先，缺 → 全局 key 兜底（与 read_llm_key 回退语义一致）。
+    // 单次 read_vendor_key 的 Result 直接决策，不做 has 预检——预检+读取两段
+    // keyring I/O 之间条目可被改删（check-then-act），且预检失败映射成 false 会吞掉
+    // 可行动的错误上下文；读取失败（含不存在）统一走全局兜底，行为与原先等价
     let api_key = match &entry.vendor {
-        Some(v) if crate::bot::has_vendor_key(v).unwrap_or(false) => {
-            match crate::bot::read_vendor_key(v) {
-                Ok(k) if !k.trim().is_empty() => k,
-                _ => crate::bot::read_llm_key(api_provider, active_model_id, models_by_provider)?,
-            }
-        }
-        _ => crate::bot::read_llm_key(api_provider, active_model_id, models_by_provider)?,
+        Some(v) => match crate::bot::read_vendor_key(v) {
+            Ok(k) if !k.trim().is_empty() => k,
+            _ => crate::bot::read_llm_key(api_provider, active_model_id, models_by_provider)?,
+        },
+        None => crate::bot::read_llm_key(api_provider, active_model_id, models_by_provider)?,
     };
     Ok(ResolvedModel {
         base_url: entry.base_url.clone(),

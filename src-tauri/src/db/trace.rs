@@ -819,10 +819,39 @@ pub fn file_rollback(app: tauri::AppHandle, change_id: i64) -> CommandResult<Str
             "该变更无 before 快照（写盘时快照失败降级），无法回滚".into(),
         ));
     };
+    // 快照名由写入侧 uuid 发号（bot_fs）；带目录分隔符/父目录引用/绝对路径的
+    // 一律视为被篡改的 DB 行，拒绝——防快照读取越界到任意文件
+    let snap_path = std::path::Path::new(&before_ref);
+    if before_ref.is_empty() || snap_path.file_name() != Some(snap_path.as_os_str()) {
+        return Err(CommandError::Internal(format!(
+            "快照名非法（应为纯文件名），拒绝回滚：{before_ref}"
+        )));
+    }
+    // 纵深防御：c.path 同样来自 DB 行，不直接信。回滚是覆盖写，目标若是
+    // 符号链接会顺着链接打到任意文件，先拒绝；再给全文读取设硬上限防 OOM。
+    // （残余窗口：检查与读写之间目标被换成符号链接，单机桌面场景可接受。）
+    // 与用户白名单工作区的归一化比对涉及 bot_fs 策略口径，另行走闸口方案。
     let path = std::path::PathBuf::from(&c.path);
-    if !path.is_file() {
+    let meta = std::fs::symlink_metadata(&path)
+        .map_err(|_| CommandError::Internal(format!("目标文件已不存在：{}", c.path)))?;
+    if meta.file_type().is_symlink() {
+        return Err(CommandError::Internal(format!(
+            "目标是符号链接，拒绝回滚（防止写到链接指向的路径）：{}",
+            c.path
+        )));
+    }
+    if !meta.is_file() {
         return Err(CommandError::Internal(format!(
             "目标文件已不存在：{}",
+            c.path
+        )));
+    }
+    // 与 SPAN_TEXT_MAX 同思路：文本快照读写给个硬上限，防被指向超大文件拖爆内存
+    const FILE_ROLLBACK_MAX_BYTES: u64 = 64 * 1024 * 1024;
+    if meta.len() > FILE_ROLLBACK_MAX_BYTES {
+        return Err(CommandError::Internal(format!(
+            "目标文件过大（{} 字节 > 上限 {FILE_ROLLBACK_MAX_BYTES}），拒绝回滚；请人工核对：{}",
+            meta.len(),
             c.path
         )));
     }

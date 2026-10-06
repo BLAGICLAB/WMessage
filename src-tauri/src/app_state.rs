@@ -280,5 +280,12 @@ pub(crate) fn trace_id_for_session<R: tauri::Runtime>(
     session_id: Option<&str>,
 ) -> Option<i64> {
     let sid = session_id?;
-    trace_registry(app).lock().ok()?.get(sid).copied()
+    // 锁毒化必须留痕：静默 .ok()? 会让后续 trace 查询全部落空且无线索可查
+    match trace_registry(app).lock() {
+        Ok(g) => g.get(sid).copied(),
+        Err(e) => {
+            eprintln!("[mutex_poisoned] app_state::trace_registry: {e:?}");
+            e.into_inner().get(sid).copied()
+        }
+    }
 }

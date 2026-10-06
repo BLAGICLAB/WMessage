@@ -169,17 +169,27 @@ fn write_key_file_to(p: &std::path::Path, key: &str) -> CommandResult<()> {
             CommandError::KeyringError(format!("保存 API Key 失败（降级文件存储）：{e}"))
         })?;
     }
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600); // 创建时即 0600，无「先 0644 后 chmod」窗口
+    // 先写同目录临时文件、刷盘后原子 rename 覆盖：若直接 truncate 原文件，
+    // 中途断电/磁盘满会把 key 文件截成空或半截，下次读出「未配置」或坏 key
+    let tmp = p.with_extension("tmp");
+    let write_result = (|| -> std::io::Result<()> {
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600); // 创建时即 0600，无「先 0644 后 chmod」窗口
+        }
+        let mut f = opts.open(&tmp)?;
+        f.write_all(key.as_bytes())?;
+        f.sync_all()?; // 内容落盘后再 rename，防换名后数据仍在页缓存里
+        std::fs::rename(&tmp, p)?;
+        Ok(())
+    })();
+    if write_result.is_err() {
+        let _ = std::fs::remove_file(&tmp); // 失败清掉半截临时文件，原文件未被触碰
     }
-    let mut f = opts.open(p).map_err(|e| {
-        CommandError::KeyringError(format!("保存 API Key 失败（降级文件存储）：{e}"))
-    })?;
-    f.write_all(key.as_bytes()).map_err(|e| {
+    write_result.map_err(|e| {
         CommandError::KeyringError(format!("保存 API Key 失败（降级文件存储）：{e}"))
     })?;
     #[cfg(unix)]
@@ -632,12 +642,13 @@ pub fn read_llm_key(
     models_by_provider: Option<&ModelsByProvider>,
 ) -> CommandResult<String> {
     if let Some(vendor) = active_vendor_of(api_provider, active_model_id, models_by_provider) {
-        // has 先行：Ok(false)=未配置（回落全局）；Err=真实故障（上抛）
+        // has 先行：Ok(false)=未配置（回落全局）；Err=真实故障（上抛）。
+        // 随后的 read 同理必须透传 Err：has 与 read 是两次独立 keychain 访问，
+        // 中途真实故障若被吞掉就会静默回落全局 key，请求带错 key 出门换 401
         if has_vendor_key(&vendor)? {
-            if let Ok(k) = read_vendor_key(&vendor) {
-                if !k.trim().is_empty() {
-                    return Ok(k);
-                }
+            let k = read_vendor_key(&vendor)?;
+            if !k.trim().is_empty() {
+                return Ok(k);
             }
         }
     }

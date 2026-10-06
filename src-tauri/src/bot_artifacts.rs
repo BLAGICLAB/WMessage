@@ -122,13 +122,33 @@ pub async fn confirm_artifact_batch(
         .find(|t| t.id == task_id)
         .ok_or_else(|| format!("任务卡不存在：{task_id}"))?;
     let mut next = task.clone();
-    let files: Vec<_> = paths
-        .iter()
-        .map(|p| crate::db::TaskFile {
-            path: p.clone(),
-            is_dir: false,
-        })
-        .collect();
+    // 纵深防御：dialog payload 是 renderer → IPC 的独立信任边界（前端半可信），
+    // 不因登记链路（tool_link_file_to_task）已校验就豁免。这里重走
+    // 「canonicalize + 必须落在 AI_Gen_Files 内」同一道闸，不合规路径剔除不落库。
+    let gen = crate::db::gen_dir(&app)
+        .ok()
+        .and_then(|d| std::fs::canonicalize(d).ok());
+    let mut files: Vec<crate::db::TaskFile> = Vec::new();
+    for p in &paths {
+        let Ok(canon) = std::fs::canonicalize(p) else {
+            eprintln!("[bot_artifacts] 绑定路径校验失败（不存在或无法解析），已跳过：{p}");
+            continue;
+        };
+        if gen.as_ref().is_some_and(|g| canon.starts_with(g)) {
+            files.push(crate::db::TaskFile {
+                path: p.clone(),
+                is_dir: false,
+            });
+        } else {
+            eprintln!("[bot_artifacts] 绑定路径不在 AI_Gen_Files 内，已拒绝：{p}");
+        }
+    }
+    if files.is_empty() {
+        return Err(
+            "没有可绑定的文件：所选路径均校验失败或不在产物目录 AI_Gen_Files 内".to_string(),
+        );
+    }
+    let bound = files.len();
     crate::bot::apply_files_to_task(&mut next, files);
     next.expected_updated_at = next.updated_at;
     next.updated_at = Some(chrono::Utc::now().timestamp_millis());
@@ -146,14 +166,23 @@ pub async fn confirm_artifact_batch(
     }
     // 通知中心回写：该任务的绑定消息已处理（done）。失败不阻断绑定结果，
     // stderr 留痕（下次通知页刷新仍会读到 pending 行，用户可重试勾选）。
-    let resolve = crate::db::open_db(&app)
-        .and_then(|conn| crate::notifications::notif_resolve_artifact(&conn, &task_id));
+    // open_db 是同步磁盘 I/O（建连 + PRAGMA + 幂等 DDL），按仓库纪律下放
+    // spawn_blocking，不占 async runtime 线程。
+    let app_resolve = app.clone();
+    let task_id_resolve = task_id.clone();
+    let resolve = tauri::async_runtime::spawn_blocking(move || {
+        crate::db::open_db(&app_resolve)
+            .and_then(|conn| crate::notifications::notif_resolve_artifact(&conn, &task_id_resolve))
+    })
+    .await
+    .map_err(|e| format!("通知回写线程 join 失败：{e}"))
+    .and_then(|r| r);
     if let Err(e) = resolve {
         eprintln!("[notifications] 产物绑定消息回写失败：{e}");
     } else {
         crate::notifications::emit_changed(&app);
     }
-    Ok(paths.len())
+    Ok(bound)
 }
 
 #[cfg(test)]

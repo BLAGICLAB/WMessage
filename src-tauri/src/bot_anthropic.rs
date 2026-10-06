@@ -58,6 +58,10 @@ fn convert_all(
     // 待回填的 tool_result 块：连续 role=tool 消息攒在一起，遇到下一条非 tool
     // 消息时合并进一条 user 消息（严格交替约束）
     let mut pending_tools: Vec<serde_json::Value> = Vec::new();
+    // 已发出的 tool_use id：无名/无 id 的 tool_call 被跳过后，配对的 tool_result
+    // 若照发会成为孤儿引用（上游 400 "tool_use_id not found"），必须一并丢弃
+    let mut emitted_tool_use_ids: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
     let mut skipped_images = 0usize;
 
     for m in msgs {
@@ -75,8 +79,11 @@ fn convert_all(
                 if let Some(tcs) = m.get("tool_calls").and_then(|t| t.as_array()) {
                     for tc in tcs {
                         let name = tc["function"]["name"].as_str().unwrap_or("");
-                        if name.is_empty() {
-                            continue; // 防御：无名 tool_call 转出去必被 400，跳过
+                        let id = tc["id"].as_str().unwrap_or("");
+                        // 防御：无名/无 id 的 tool_call 转出去必被 400，跳过；
+                        // 配对的 tool_result 由 emitted 集合一并跳过，不产生孤儿引用
+                        if name.is_empty() || id.is_empty() {
+                            continue;
                         }
                         // arguments 是 JSON 字符串 → Anthropic input 必须是对象；
                         // 坏 JSON 兜底空对象（不阻断整轮对话）
@@ -85,9 +92,10 @@ fn convert_all(
                             .ok()
                             .filter(|v| v.is_object())
                             .unwrap_or_else(|| serde_json::json!({}));
+                        emitted_tool_use_ids.insert(id.to_string());
                         blocks.push(serde_json::json!({
                             "type": "tool_use",
-                            "id": tc["id"].as_str().unwrap_or(""),
+                            "id": id,
                             "name": name,
                             "input": input,
                         }));
@@ -97,9 +105,15 @@ fn convert_all(
             }
             "tool" => {
                 let text = tool_result_text(m.get("content"));
+                let tool_use_id = m.get("tool_call_id").and_then(|i| i.as_str()).unwrap_or("");
+                // 防御：无 id 或引用的 tool_use 未发出（配对被跳过/历史截断）的
+                // tool_result 发出去必被上游 400，直接丢弃不产出该块
+                if tool_use_id.is_empty() || !emitted_tool_use_ids.contains(tool_use_id) {
+                    continue;
+                }
                 let mut block = serde_json::json!({
                     "type": "tool_result",
-                    "tool_use_id": m.get("tool_call_id").and_then(|i| i.as_str()).unwrap_or(""),
+                    "tool_use_id": tool_use_id,
                     "content": if text.trim().is_empty() { " " } else { text.as_str() },
                 });
                 // 失败口径复用全链路统一的 audit::tool_call_failed（同一判定）
@@ -593,6 +607,46 @@ mod tests {
             "tool_result 与 image 应在同一条 user 消息里：{blocks:?}"
         );
         assert!(blocks.iter().any(|b| b["type"] == "text"));
+    }
+
+    #[test]
+    fn orphan_tool_result_of_skipped_tool_call_dropped() {
+        // 无名 tool_call 被跳过后，配对的 tool_result 若照发会成为孤儿引用
+        //（上游 400 "tool_use_id not found"）——必须一并丢弃
+        let msgs = vec![
+            user("x"),
+            json!({
+                "role": "assistant", "content": null,
+                "tool_calls": [{"id": "c9", "type": "function",
+                    "function": {"name": "", "arguments": "{}"}}]
+            }),
+            json!({"role": "tool", "tool_call_id": "c9", "content": "结果"}),
+        ];
+        let (_, messages) = openai_msgs_to_anthropic(&msgs).unwrap();
+        assert_eq!(
+            messages.len(),
+            2,
+            "孤儿 tool_result 不产出消息：{messages:?}"
+        );
+        assert_eq!(messages[1]["role"], "assistant");
+        assert!(!messages[1]["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|b| b["type"] == "tool_use"));
+    }
+
+    #[test]
+    fn tool_result_without_call_id_dropped() {
+        // 缺 tool_call_id 的 tool 消息：发空 tool_use_id 必被上游 400，直接丢弃
+        let msgs = vec![user("x"), json!({"role": "tool", "content": "结果"})];
+        let (_, messages) = openai_msgs_to_anthropic(&msgs).unwrap();
+        assert_eq!(
+            messages.len(),
+            1,
+            "无 id 的 tool_result 不产出：{messages:?}"
+        );
+        assert_eq!(messages[0]["role"], "user");
     }
 
     fn sys(text: &str) -> serde_json::Value {

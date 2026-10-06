@@ -39,8 +39,12 @@
   --brand-strong: #4a5879;
   --success: #16a34a;
   --danger: #dc2626;
-  /* 键盘焦点环（:focus-visible 统一配方） */
-  --focus-ring: 0 0 0 3px color-mix(in srgb, var(--brand) 28%, transparent);
+  /* 键盘焦点环（:focus-visible 统一配方）：静态 rgba 兜底（老 WebView 不识别
+     color-mix 时整条声明失效会丢环），支持时再覆盖为 color-mix 精确混色 */
+  --focus-ring: 0 0 0 3px rgba(95, 111, 148, 0.28);
+  @supports (color: color-mix(in srgb, red, blue)) {
+    --focus-ring: 0 0 0 3px color-mix(in srgb, var(--brand) 28%, transparent);
+  }
   /* 圆角梯度与字号阶梯（新组件取 var；存量 Tailwind 圆角与字号类不动） */
   --r-sm: 8px;
   --r-md: 12px;
@@ -75,8 +79,11 @@
   --brand-strong: #c0cdea;
   --success: #4ade80;
   --danger: #f87171;
-  /* 键盘焦点环（:focus-visible 统一配方） */
-  --focus-ring: 0 0 0 3px color-mix(in srgb, var(--brand) 28%, transparent);
+  /* 键盘焦点环（:focus-visible 统一配方）：深色主题的静态 rgba 兜底同上 */
+  --focus-ring: 0 0 0 3px rgba(163, 182, 221, 0.28);
+  @supports (color: color-mix(in srgb, red, blue)) {
+    --focus-ring: 0 0 0 3px color-mix(in srgb, var(--brand) 28%, transparent);
+  }
 }
 
 @layer base {

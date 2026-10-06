@@ -110,11 +110,13 @@ async fn collect_openable_paths(
 
 /// canonicalize → 字符串（Windows 剥 `\\?\` 前缀，复用 `bot_fs::strip_verbatim`）。
 /// 绑集构建 / 查找 / 返回 canonical 三处统一走它，保证规范化一致（OCR C2b #3 + M2）。
+/// 非 UTF-8 路径返 None（fail-closed）：lossy 替换会把不同路径撞成同一个
+/// 集合键，绕过精确匹配白名单。
 fn canonical_string(p: &std::path::Path) -> Option<String> {
     std::fs::canonicalize(p)
         .ok()
         .map(crate::bot_fs::strip_verbatim)
-        .map(|pb| pb.to_string_lossy().to_string())
+        .and_then(|pb| pb.into_os_string().into_string().ok())
 }
 
 /// 二次 race-window 校验（fail-closed）：紧邻副作用前重新 canonicalize + 确认仍在

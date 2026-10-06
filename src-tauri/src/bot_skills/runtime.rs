@@ -310,12 +310,17 @@ pub fn skill_on_step(
         return Ok(()); // 无活动 Skill（模型自由调用工具），不干预
     };
     let res = step_check(run, tool, args, now_ms());
-    if let Err(e) = &res {
-        let reason = run.end_reason.clone();
-        crate::bot::audit_log_hook(
-            app,
-            &format!("skill_failed | name: {} | {reason} | {e}", run.name),
-        );
+    // 锁内只做状态迁移 + 拼审计载荷；audit_log_hook（写盘 IO）移到锁外发，
+    // 持锁跨外部调用 = 慢 IO 串行化全部写者 + 钩子重入 registry 即死锁
+    let fail_line = res.as_ref().err().map(|e| {
+        format!(
+            "skill_failed | name: {} | {} | {e}",
+            run.name, run.end_reason
+        )
+    });
+    drop(runs);
+    if let Some(line) = fail_line {
+        crate::bot::audit_log_hook(app, &line);
     }
     res
 }
@@ -349,24 +354,22 @@ pub fn skill_on_step_post(
     };
     let name = run.name.clone();
     let is_fail = crate::audit::tool_call_failed(tool, result);
-    if is_fail {
+    // 锁内只做状态迁移 + 拼审计载荷；audit_log_hook（写盘 IO）移到锁外发，
+    // 理由同 start_skill：持锁跨外部调用会串行化全部写者且钩子重入即死锁
+    let log_line = if is_fail {
         run.state = SkillState::Failed;
         run.end_reason = format!("工具 {tool} 执行失败");
         let preview: String = result.chars().take(120).collect();
-        crate::bot::audit_log_hook(
-            app,
-            // preview 是工具结果原文，换行/管道符会撕裂日志行，必须转义
-            &format!(
-                "skill_step_fail | name: {name} | tool: {tool} | {}",
-                crate::bot::truncate_for_log(&preview, 120)
-            ),
-        );
+        // preview 是工具结果原文，换行/管道符会撕裂日志行，必须转义
+        format!(
+            "skill_step_fail | name: {name} | tool: {tool} | {}",
+            crate::bot::truncate_for_log(&preview, 120)
+        )
     } else {
-        crate::bot::audit_log_hook(
-            app,
-            &format!("skill_step_ok | name: {name} | tool: {tool} | {dur_ms}ms"),
-        );
-    }
+        format!("skill_step_ok | name: {name} | tool: {tool} | {dur_ms}ms")
+    };
+    drop(runs);
+    crate::bot::audit_log_hook(app, &log_line);
 }
 
 /// 参数摘要（动作记录用）
@@ -408,18 +411,22 @@ pub fn skill_mark_paused(app: &AppHandle, tool: &str, session_id: Option<&str>) 
         eprintln!("[mutex_poisoned] bot_skills::runtime::skill_runs: {e:?}");
         e.into_inner()
     });
+    let mut log_line: Option<String> = None;
     if let Some(run) = runs
         .values_mut()
         .find(|r| r.state == SkillState::Running && r.session_id.as_deref() == session_id)
     {
         pause_state(run);
-        crate::bot::audit_log_hook(
-            app,
-            &format!(
-                "skill_paused | name: {} | at: {tool} | resumable: {}",
-                run.name, run.resumable
-            ),
-        );
+        log_line = Some(format!(
+            "skill_paused | name: {} | at: {tool} | resumable: {}",
+            run.name, run.resumable
+        ));
+    }
+    // audit_log_hook（写盘 IO）移到锁外发：持锁跨外部调用会串行化全部写者
+    // 且钩子重入 registry 即死锁，理由同 start_skill
+    drop(runs);
+    if let Some(line) = log_line {
+        crate::bot::audit_log_hook(app, &line);
     }
 }
 
@@ -431,6 +438,7 @@ pub fn skill_confirm_result(app: &AppHandle, approved: bool, session_id: Option<
         eprintln!("[mutex_poisoned] bot_skills::runtime::skill_runs: {e:?}");
         e.into_inner()
     });
+    let mut log_line: Option<String> = None;
     if let Some(run) = runs
         .values_mut()
         .find(|r| r.state == SkillState::Paused && r.session_id.as_deref() == session_id)
@@ -439,10 +447,15 @@ pub fn skill_confirm_result(app: &AppHandle, approved: bool, session_id: Option<
         let name = run.name.clone();
         let state = format!("{:?}", run.state);
         let reason = run.end_reason.clone();
-        crate::bot::audit_log_hook(
-            app,
-            &format!("skill_confirm | name: {name} | approved: {approved} | -> {state} {reason}"),
-        );
+        log_line = Some(format!(
+            "skill_confirm | name: {name} | approved: {approved} | -> {state} {reason}"
+        ));
+    }
+    // audit_log_hook（写盘 IO）移到锁外发：持锁跨外部调用会串行化全部写者
+    // 且钩子重入 registry 即死锁，理由同 start_skill
+    drop(runs);
+    if let Some(line) = log_line {
+        crate::bot::audit_log_hook(app, &line);
     }
 }
 

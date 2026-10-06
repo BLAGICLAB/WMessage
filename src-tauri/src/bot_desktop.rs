@@ -182,8 +182,10 @@ fn platform_capture(out: &std::path::Path) -> Result<(), String> {
 
 #[cfg(target_os = "windows")]
 fn platform_capture(out: &std::path::Path) -> Result<(), String> {
-    // .NET 内置（零依赖）：VirtualScreen 全虚拟屏 → CopyFromScreen → PNG
-    let out_s = out.display().to_string().replace('\'', "");
+    // .NET 内置（零依赖）：VirtualScreen 全虚拟屏 → CopyFromScreen → PNG。
+    // 路径插进单引号字符串：PowerShell 转义单引号靠双写（''），不能靠删除——
+    // 删除会破坏含引号的合法路径，其他元字符也依旧裸奔。
+    let out_s = out.display().to_string().replace('\'', "''");
     let script = format!(
         "Add-Type -AssemblyName System.Windows.Forms,System.Drawing; \
          $b=[System.Windows.Forms.SystemInformation]::VirtualScreen; \

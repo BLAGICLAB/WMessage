@@ -22,12 +22,24 @@
               { id: "p-zhang-demo", name: "张三", isSelf: false },
               { id: "p-li-demo", name: "李四", isSelf: false },
             ]);
-          return Promise.resolve([]);
+          // 标签近义对：demo 无嵌入引擎，空数组 = 无近义组（GraphPage 合法入参）
+          if (cmd === "tag_similar_pairs") return Promise.resolve([]);
+          // 事件 API（GraphPage 监听 tasks-changed）：注册成功、无事件派发
+          if (cmd === "plugin:event|listen") return Promise.resolve(1);
+          if (cmd === "plugin:event|unlisten") return Promise.resolve(null);
+          // 未 mock 的命令必须显式失败：静默空数据会把组件契约回归
+          // 掩盖成「截图正常、测试通过」
+          console.warn("[tauri-shim] unmocked command:", cmd);
+          return Promise.reject(new Error(`tauri-shim: unmocked command "${cmd}"`));
         },
       };
-      window.addEventListener("unhandledrejection", (e) => e.preventDefault());
       window.__errors = [];
       window.addEventListener("error", (e) => window.__errors.push(String(e.message)));
+      // 异步失败对称捕获：未处理 rejection 同样进 __errors（不 preventDefault，
+      // 让浏览器控制台也能看到）
+      window.addEventListener("unhandledrejection", (e) => {
+        window.__errors.push(String(e.reason && e.reason.message ? e.reason.message : e.reason));
+      });
     </script>
     <script type="module" src="./graph-demo-entry.tsx"></script>
   </head>

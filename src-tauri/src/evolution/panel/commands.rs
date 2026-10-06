@@ -283,10 +283,16 @@ pub fn toggle_inner<R: tauri::Runtime>(
             let _g = lock_evolution_store();
             mark_human_applied(&mut cr)?;
             let mut changes = load_changes(app)?;
-            if let Some(pos) = changes.iter().position(|c| c.change_id == cr.change_id) {
-                changes[pos] = cr.clone();
-                rewrite_jsonl(&changes_path(app), &changes)?;
-            }
+            let pos = changes.iter().position(|c| c.change_id == cr.change_id).ok_or_else(|| {
+                // 落库已生效但 CR 行没了（段 ② 期间被并发删除）：fail-closed 响亮报错，
+                // 不静默返回 Active 成功——否则审计轨迹与现实脱节
+                format!(
+                    "CR {} 落库后找不到对应行（可能已被并发删除），本次批准的记忆已生效但没有变更记录，请刷新面板核实",
+                    cr.change_id
+                )
+            })?;
+            changes[pos] = cr.clone();
+            rewrite_jsonl(&changes_path(app), &changes)?;
         }
     }
     Ok(Some(cr))

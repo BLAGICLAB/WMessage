@@ -74,7 +74,10 @@ pub fn load(path: &std::path::Path) -> Result<EvolutionEvalConfig, String> {
 
 /// 默认路径解析（开发模式：项目树 bot-config.json）
 pub fn default_config_path() -> PathBuf {
-    // 项目根相对 exe 的位置（CLI binary 跑在 src-tauri/ 下，向上两级到项目根）
+    // 裸相对路径 = 相对**进程当前工作目录**解析（不是相对 exe）。
+    // CLI 需在项目根目录启动才能找到 bot-config.json；在 src-tauri/ 下跑会找错。
+    // 当前仓内无调用方（预留入口）；如需 exe 相对定位，注意 target/debug 与
+    // target/debug/deps 层级不同，不能写死回退级数。
     PathBuf::from("bot-config.json")
 }
 

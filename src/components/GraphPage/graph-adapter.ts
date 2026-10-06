@@ -252,6 +252,9 @@ export function toGraphologyGraph(
       if (members.length < TAG_ANCHOR_MIN_CARDS) continue;
       const anchorId = `${TAG_ANCHOR_PREFIX}${group}`;
       const sector = sectorOf.get(group);
+      // 扇区键来自 groupOfNode（首-match 组）；组若只经次标签入组（不是任何节点
+      // 的首-match 组）就没有扇区——锚点落到 angle 0 会叠进第 0 扇区，这类组不建锚点
+      if (!sector) continue;
       const anchorR = GROUP_RING * 0.22;
       if (!graph.hasNode(anchorId)) {
         graph.addNode(anchorId, {
@@ -263,8 +266,8 @@ export function toGraphologyGraph(
           kind: "anchor",
           degree: members.length,
           hidden: true,
-          x: Math.cos(sector?.angle ?? 0) * anchorR,
-          y: Math.sin(sector?.angle ?? 0) * anchorR,
+          x: Math.cos(sector.angle) * anchorR,
+          y: Math.sin(sector.angle) * anchorR,
         });
       }
       for (const memberId of members) {

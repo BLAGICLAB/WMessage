@@ -207,8 +207,14 @@ export function InputArea({
               setSlashIdx((slashIdx - 1 + matches.length) % matches.length);
               return;
             }
-            if (pickerOpen && (e.key === "Tab" || e.key === "Enter") && matches.length) {
-              // Tab 总是补全；Enter 在 picker 开着时也补全（避免输入半截命令误发送）
+            if (
+              pickerOpen &&
+              (e.key === "Tab" || e.key === "Enter") &&
+              !e.nativeEvent.isComposing &&
+              matches.length
+            ) {
+              // Tab 总是补全；Enter 在 picker 开着时也补全（避免输入半截命令误发送）；
+              // isComposing 与下方发送分支同理：IME 组合态的按键不劫持
               e.preventDefault();
               setInput(matches[slashIdx].cmd + " ");
               setSlashIdx(0);

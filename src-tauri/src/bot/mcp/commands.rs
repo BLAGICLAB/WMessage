@@ -81,6 +81,12 @@ pub fn mcp_server_save(
     let server_id = server.id.clone();
     let app_for_blob = app.clone();
     let (list, saved) = with_locked_config(&app, |cfg| {
+        // 新建（id 原先不在配置里）还是编辑：upsert 失败时的补偿清理只对新建安全
+        // ——编辑场景老配置仍指向同一 id 的 keyring 槽位，清掉会把既有服务器弄坏
+        let pre_existing = cfg
+            .mcp_servers
+            .as_ref()
+            .is_some_and(|l| l.iter().any(|s| s.id == server_id));
         // B4-6：机密落 keyring/降级文件——**锁内、迁移之后**（评审 CRITICAL②：
         // 若在锁外先写，紧随其后的迁移会读文件里的旧明文同 id 覆盖刚写的新值）。
         // 写败 → f 返 Err → 配置不动（先 keyring 后配置的次序仍成立）
@@ -91,7 +97,24 @@ pub fn mcp_server_save(
             &server.headers,
         )
         .map_err(CommandError::KeyringError)?;
-        upsert_in_config(cfg, server.clone())?;
+        if let Err(e) = upsert_in_config(cfg, server.clone()) {
+            // 补偿：新建的 id 校验没过（重名/超上限等）时清掉刚写的机密 blob，
+            // 不留 keyring 孤儿（用户改个名字重试会换新 id，旧 blob 再也无人认领）。
+            // 清理失败只留痕不改变原错误（配置仍是权威失败原因）。
+            if !pre_existing {
+                if let Err(pe) =
+                    crate::bot::mcp::secrets::purge_server_secrets(&app_for_blob, &server_id)
+                {
+                    crate::audit::write_event(
+                        &app_for_blob,
+                        crate::audit::AuditLevel::Warn,
+                        "mcp.secret_orphan_purge_failed",
+                        &[("id", server_id.clone()), ("err", pe)],
+                    );
+                }
+            }
+            return Err(e);
+        }
         let saved = cfg
             .mcp_servers
             .as_ref()

@@ -493,8 +493,10 @@ async fn writable_dirs(app: &AppHandle) -> Vec<PathBuf> {
 /// 写路径守卫：resolve_with_perm 的写语义变体。
 /// 差异：目标文件可不存在（write_file 新建），改为校验**父目录**存在且落在
 /// 可写根内；白名单外 ask 分支用 ask_user_confirm（danger，每次确认，不持久化
-/// ——「始终允许」语义对写太宽）。成功返回展开后的目标路径（文件可能尚不存在，
-/// 不能 canonicalize；父目录已 canonical 校验，TOCTOU 窗口与读闸门同级留档）。
+/// ——「始终允许」语义对写太宽）。目标末段是符号链接时直接拒绝（防 edit 的读
+/// 穿过软链绕过读闸、防 rename 把链接整体替换）。成功返回展开后的目标路径
+/// （文件可能尚不存在，不能 canonicalize；父目录已 canonical 校验，TOCTOU 窗口
+/// 与读闸门同级留档）。
 async fn resolve_writable(
     app: &AppHandle,
     tool: &str,
@@ -507,6 +509,23 @@ async fn resolve_writable(
         return Err("路径不能为空".into());
     }
     let expanded = expand_tilde(p);
+    // 目标末段若是符号链接则拒绝：edit_file 的读取会穿过软链绕过读白名单闸，
+    // atomic_write 的 rename 会把软链整体替换成普通文件（链外的真实文件不动但链接被毁）。
+    // 父目录软链不受影响（父目录已 canonicalize 校验）；检查与写入之间的竞态残余窗口
+    // 与读闸门同级留档。
+    let link_probe = expanded.clone();
+    let is_symlink = spawn_blocking_io(move || {
+        Ok(std::fs::symlink_metadata(&link_probe)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false))
+    })
+    .await
+    .unwrap_or(false);
+    if is_symlink {
+        return Err(format!(
+            "目标路径是符号链接，拒绝写入：{p}（请直接对真实文件操作，或删除软链后重试）"
+        ));
+    }
     let expanded_for_parent = expanded.clone();
     let parent_canon = spawn_blocking_io(move || {
         let parent = expanded_for_parent

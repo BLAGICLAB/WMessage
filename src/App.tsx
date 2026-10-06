@@ -743,9 +743,11 @@ function App() {
     for (const t of withOrder) {
       const p = prevMap.get(t.id);
       if (p && p.column !== t.column) {
-        invoke<Task>("task_set_column", { id: t.id, col: t.column }).catch((e) =>
-          handleCommandError(e, "移动任务")
-        );
+        invoke<Task>("task_set_column", { id: t.id, col: t.column }).catch((e) => {
+          handleCommandError(e, "移动任务");
+          // 乐观写被后端拒绝：重读 DB 收敛 UI，避免看板与库长期分叉
+          reloadTasks().catch(() => {});
+        });
       }
     }
     const items = withOrder
@@ -755,9 +757,10 @@ function App() {
       })
       .map((t) => ({ id: t.id, order: t.order ?? 0 }));
     if (items.length) {
-      invoke<Task[]>("task_reorder", { items }).catch((e) =>
-        handleCommandError(e, "移动任务")
-      );
+      invoke<Task[]>("task_reorder", { items }).catch((e) => {
+        handleCommandError(e, "移动任务");
+        reloadTasks().catch(() => {});
+      });
     }
   };
 

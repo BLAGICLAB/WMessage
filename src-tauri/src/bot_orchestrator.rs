@@ -1070,10 +1070,35 @@ async fn run_subagent(app: AppHandle, subagent_id: String) {
     let started = std::time::Instant::now();
 
     // 产物目录（设计 §6 隔离）：gen_dir/subagents/{subagent_id}/
+    // gen_dir 解析失败必须 fail-closed：此前退到 "__gen_dir__" 相对路径兜底，
+    // 会把产物目录钉到进程 CWD（打包应用 CWD 可能是 /），产物越过配置的隔离根
     #[allow(unused_mut)]
-    let mut artifact_dir = crate::db::gen_dir(&app)
-        .map(|g| artifact_dir_of(&g, &row.id))
-        .unwrap_or_else(|_| artifact_dir_of(std::path::Path::new("__gen_dir__"), &row.id));
+    let mut artifact_dir = match crate::db::gen_dir(&app) {
+        Ok(g) => artifact_dir_of(&g, &row.id),
+        Err(e) => {
+            let msg = format!("产物目录不可用（{e}），子任务中止");
+            let sid_failed = row.id.clone();
+            let _ = db_locked(&app, move |conn| {
+                crate::db::update_subagent_status(
+                    conn,
+                    &sid_failed,
+                    SubagentStatus::Failed,
+                    now_ms(),
+                    Some(&msg),
+                )
+                .map_err(CommandError::DbError)
+            })
+            .await;
+            crate::bot::audit_log(
+                &app,
+                &format!(
+                    "subagent_runner_abort | id: {} | err: gen_dir_failed | {e}",
+                    row.id
+                ),
+            );
+            return;
+        }
+    };
     // create + canonicalize（OCR r2 high 采纳：写路径钉死规范化目录）。失败仅审计：
     // write_artifact_file 每次调用会再校验，目录坏了只影响产物不影响状态机
     let mk_dir = artifact_dir.clone();

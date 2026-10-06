@@ -102,6 +102,9 @@ export function MemoryPanel() {
   const [pending, setPending] = useState<MemPendingView[]>([]);
   const [pendingBusy, setPendingBusy] = useState(false);
   const ioMsgTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** 对话框期互斥：plugin-dialog 弹原生框期间 busy 仍为 false，state 挡不住
+   *  连点/串台开框——用 ref 在 await save/open 之前同步占住（导出/导入共用） */
+  const dialogGateRef = useRef(false);
   /** 设置提示并重置自动清除计时器（重设前清旧，卸载时清尾） */
   const showIoMsg = (msg: string) => {
     if (ioMsgTimer.current) clearTimeout(ioMsgTimer.current);
@@ -118,7 +121,8 @@ export function MemoryPanel() {
   /** 导出记忆：plugin-dialog save 取路径 → 后端写 JSON（含向量，跨机不丢语义检索）。
    *  对话框取消不清上一条提示（清提示时机在拿到 path 之后） */
   const exportMemories = async () => {
-    if (busy) return;
+    if (busy || dialogGateRef.current) return;
+    dialogGateRef.current = true;
     try {
       const path = await save({
         defaultPath: `wmessage-memories-${new Date()
@@ -134,13 +138,15 @@ export function MemoryPanel() {
     } catch (e) {
       showIoMsg(`导出失败：${formatCommandError(e)}`);
     } finally {
+      dialogGateRef.current = false;
       setBusy(false);
     }
   };
 
   /** 导入记忆：plugin-dialog open 取路径 → 后端走既有语义去重只增不删 → 刷新列表 */
   const importMemories = async () => {
-    if (busy) return;
+    if (busy || dialogGateRef.current) return;
+    dialogGateRef.current = true;
     try {
       // open(multiple:false) 返回 string | null
       const path = await open({
@@ -158,6 +164,7 @@ export function MemoryPanel() {
     } catch (e) {
       showIoMsg(`导入失败：${formatCommandError(e)}`);
     } finally {
+      dialogGateRef.current = false;
       setBusy(false);
     }
   };

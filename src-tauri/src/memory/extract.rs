@@ -767,7 +767,10 @@ pub async fn mem_pending_approve(app: AppHandle, ids: Vec<i64>) -> CommandResult
         // RejectedFull/RefusedForeignMerge → skipped 并删行（数据性拒收不可重试）
         let mut report = MemImportReport::default();
         let _g = super::store_lock();
-        let conn = crate::db::open_db(&app2).map_err(|e| e.to_string())?;
+        let mut conn = crate::db::open_db(&app2).map_err(|e| e.to_string())?;
+        // 整批包同一事务：入库与删队列行必须同成败——半途失败整体回滚，
+        // 不会出现「已入库但队列行还在」的重影（重收下会永远 Merging 清不掉）
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
         for (id, row, emb) in &prepared {
             let item = NewItem {
                 kind: row.kind.clone(),
@@ -776,22 +779,22 @@ pub async fn mem_pending_approve(app: AppHandle, ids: Vec<i64>) -> CommandResult
                 importance: row.importance,
                 source: "model_inferred".to_string(),
             };
-            match store::insert_item_with(&conn, &item, emb.as_deref(), super::now_ms(), &sp) {
+            match store::insert_item_with(&tx, &item, emb.as_deref(), super::now_ms(), &sp) {
                 Ok((store::InsertOutcome::Inserted(_), _)) => report.inserted += 1,
                 Ok((store::InsertOutcome::Merged { .. }, _)) => report.merged += 1,
                 Ok((store::InsertOutcome::RejectedFull(_), _))
                 | Ok((store::InsertOutcome::RefusedForeignMerge { .. }, _)) => report.skipped += 1,
                 Err(e) => {
                     return Err(format!(
-                        "收下中止（存储故障，已入库 {} 条，未处理条目仍在列表）：{e}",
-                        report.inserted + report.merged
+                        "收下中止（存储故障，本批未提交任何变更，全部条目仍在列表）：{e}"
                     ))
                 }
             }
-            pending_delete(&conn, &[*id])?;
+            pending_delete(&tx, &[*id])?;
         }
         // 通知中心回写：队列已处理的提案从对应消息中剔除/整条解决（收下→done）
-        crate::notifications::notif_sync_memory(&conn, crate::notifications::STATUS_DONE)?;
+        crate::notifications::notif_sync_memory(&tx, crate::notifications::STATUS_DONE)?;
+        tx.commit().map_err(|e| e.to_string())?;
         Ok(report)
     })
     .await;

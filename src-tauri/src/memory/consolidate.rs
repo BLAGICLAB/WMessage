@@ -276,21 +276,27 @@ pub fn apply_ops_with(
         let emb = embs.get(i).and_then(|e| e.as_deref());
         match op {
             ConsolidateOp::Merge { ids, content } => {
-                // B2-1（P1-EV3）：evolution lesson（evo: key tag）不参与 merge——
-                // merge 把来源行整行删掉、内容并进目标行，lesson 被吸收 = evo key
-                // 消失 = apply 幂等查重失效（实证同提案 apply 3 次）。引用里含
-                // lesson 时把 lesson 排除，剩余不足 2 条则整条跳过。
-                let items: Vec<MemItem> = store::load_all(&tx)?
-                    .into_iter()
-                    .filter(|m| {
-                        ids.contains(&m.id)
-                            && !m
-                                .tags
-                                .first()
-                                .map(|t| t.starts_with("evo:"))
-                                .unwrap_or(false)
-                    })
-                    .collect();
+                // evolution lesson（evo: key tag）不参与 merge——merge 把来源行整行
+                // 删掉、内容并进目标行，lesson 被吸收 = evo key 消失 = apply 幂等查重
+                // 失效。引用里含 lesson 时把 lesson 排除，剩余不足 2 条则整条跳过。
+                // 逐 id 主键点查（指令只引用少数几行，不再每条指令全表扫描）
+                let mut items: Vec<MemItem> = Vec::new();
+                for id in ids {
+                    // ids 可能含重复项，去重防同一行被计入两次凑够 len>=2
+                    if items.iter().any(|m| &m.id == id) {
+                        continue;
+                    }
+                    if let Some(m) = store::find_by_id(&tx, id)? {
+                        let is_lesson = m
+                            .tags
+                            .first()
+                            .map(|t| t.starts_with("evo:"))
+                            .unwrap_or(false);
+                        if !is_lesson {
+                            items.push(m);
+                        }
+                    }
+                }
                 if items.len() < 2 {
                     continue;
                 }
@@ -325,14 +331,14 @@ pub fn apply_ops_with(
                 drop_id,
                 content,
             } => {
-                let all = store::load_all(&tx)?;
-                let Some(keep_item) = all.iter().find(|m| &m.id == keep) else {
+                // keep/drop 各一次主键点查，不再为两条记录做全表扫描
+                let (Some(keep_item), Some(drop_item)) = (
+                    store::find_by_id(&tx, keep)?,
+                    store::find_by_id(&tx, drop_id)?,
+                ) else {
                     continue;
                 };
-                if !all.iter().any(|m| &m.id == drop_id) {
-                    continue;
-                }
-                // B2-1：contradiction 不碰 evolution lesson——drop 行会被删、
+                // contradiction 不碰 evolution lesson——drop 行会被删、
                 // keep 行内容会被 update_by_id 覆盖，任一侧是 lesson 都跳过整条
                 let is_lesson_row = |m: &MemItem| {
                     m.tags
@@ -340,10 +346,7 @@ pub fn apply_ops_with(
                         .map(|t| t.starts_with("evo:"))
                         .unwrap_or(false)
                 };
-                if all
-                    .iter()
-                    .any(|m| (&m.id == drop_id || &m.id == keep) && is_lesson_row(m))
-                {
+                if is_lesson_row(&keep_item) || is_lesson_row(&drop_item) {
                     continue;
                 }
                 store::update_by_id(
@@ -359,9 +362,17 @@ pub fn apply_ops_with(
                 report.contradictions += store::delete_by_ids(&tx, &[drop_id.clone()])?;
             }
             ConsolidateOp::Distill { ids, content } => {
-                let all = store::load_all(&tx)?;
-                if !ids.iter().any(|id| all.iter().any(|m| &m.id == id)) {
-                    continue; // 引用的条目全不存在 → 跳过（防 LLM 幻觉 id 凭空造规律）
+                // 引用的条目全不存在 → 跳过（防 LLM 幻觉 id 凭空造规律）；
+                // 任一引用存在即放行，逐 id 主键点查即可，不再全表扫描
+                let mut any_exists = false;
+                for id in ids {
+                    if store::find_by_id(&tx, id)?.is_some() {
+                        any_exists = true;
+                        break;
+                    }
+                }
+                if !any_exists {
+                    continue;
                 }
                 let item = NewItem {
                     kind: "reflection".to_string(),

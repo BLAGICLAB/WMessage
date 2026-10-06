@@ -22,7 +22,10 @@ if [[ -f "$HOOK" ]] && ! grep -qF "$MARK_BEGIN" "$HOOK"; then
 fi
 
 # --- 全量生成 ---
-cat > "$HOOK" <<'HOOK_TEMPLATE'
+# 原子替换：先写同目录临时文件再 mv，防 Ctrl-C/磁盘满中途截断，
+# 留半截 pre-commit 会卡死仓库里所有后续 commit
+TMP_HOOK="$HOOK.tmp.$$"
+cat > "$TMP_HOOK" <<'HOOK_TEMPLATE'
 #!/usr/bin/env bash
 cd "$(git rev-parse --show-toplevel)" || { echo "[pre-commit] 无法定位 repo root"; exit 1; }
 
@@ -47,6 +50,13 @@ if [[ "$_needs_gate" -eq 1 ]]; then
         echo "" >&2
         exit 1
     fi
+    case "$BATCH_SPEC" in
+        *docs/batches/*.spec.md) ;;
+        *)
+            echo "[pre-commit] BATCH_SPEC 必须指向 docs/batches/ 下的 .spec.md: $BATCH_SPEC" >&2
+            exit 1
+            ;;
+    esac
     if [[ -d "$BATCH_SPEC" ]]; then
         echo "[pre-commit] BATCH_SPEC 是目录（不是 spec 文件）: $BATCH_SPEC" >&2
         exit 1
@@ -73,6 +83,7 @@ fi
 # versioned pre-commit → scripts/test-fast.sh
 exec "$(dirname "$0")/../scripts/test-fast.sh"
 HOOK_TEMPLATE
+mv -f "$TMP_HOOK" "$HOOK"
 
 chmod +x "$HOOK"
 echo "[install-hook] 生成 $HOOK"

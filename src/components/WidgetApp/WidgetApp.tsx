@@ -456,6 +456,15 @@ export default function WidgetApp() {
     }
   };
 
+  // 乐观更新回滚：定向命令失败时回收本地改动，不等下一次 tasks-changed/轮询
+  // 静默翻回库值。仅当本地态仍是这次的乐观结果（未被收敛逻辑改写过）才回滚，
+  // 避免拿失败前快照覆盖更新的库态。
+  const rollbackOptimistic = (prev: Task[], optimistic: Task[]) => {
+    if (tasksRef.current !== optimistic) return;
+    tasksRef.current = prev;
+    setTasks(prev);
+  };
+
   // TP-1：✅ 切换走服务端定向命令（同锁内读现值打基线写库）——不再 emit
   // tasks-updated 整行回写（免快照竞态）；本地乐观更新 + tasks-changed 广播收敛
   const toggleDone = (t: Task) => {
@@ -467,7 +476,8 @@ export default function WidgetApp() {
     // 事件回调内取时间戳（补 completedAt），非 render 路径
     // oxlint-disable-next-line react/purity
     const now = Date.now();
-    const next = tasksRef.current.map((x): Task =>
+    const prevTasks = tasksRef.current;
+    const next = prevTasks.map((x): Task =>
       x.id !== t.id
         ? x
         : target === "done"
@@ -476,9 +486,10 @@ export default function WidgetApp() {
     );
     tasksRef.current = next;
     setTasks(next);
-    invoke<Task>("task_set_column", { id: t.id, col: target }).catch((e) =>
-      handleCommandError(e, "切换任务状态")
-    );
+    invoke<Task>("task_set_column", { id: t.id, col: target }).catch((e) => {
+      handleCommandError(e, "切换任务状态");
+      rollbackOptimistic(prevTasks, next);
+    });
   };
 
   // TP-3：本地乐观更新（不 emit tasks-updated 整行回写）——配合各定向命令的
@@ -489,11 +500,16 @@ export default function WidgetApp() {
   };
 
   const toggleCollapsed = (t: Task) => {
+    const prevTasks = tasksRef.current;
     applyLocal((prev) =>
       prev.map((x) => (x.id === t.id ? { ...x, collapsed: !x.collapsed } : x))
     );
+    const optimistic = tasksRef.current;
     invoke<Task>("task_patch", { id: t.id, patch: { collapsed: !t.collapsed } }).catch(
-      (e) => handleCommandError(e, "切换任务状态")
+      (e) => {
+        handleCommandError(e, "切换任务状态");
+        rollbackOptimistic(prevTasks, optimistic);
+      }
     );
   };
 
@@ -517,13 +533,16 @@ export default function WidgetApp() {
 
   const commitTitle = (t: Task, title: string) => {
     const next = title.trim() || t.title;
+    const prevTasks = tasksRef.current;
     applyLocal((prev) =>
       prev.map((x) => (x.id === t.id ? { ...x, title: next } : x))
     );
     if (next !== t.title) {
-      invoke<Task>("task_patch", { id: t.id, patch: { title: next } }).catch((e) =>
-        handleCommandError(e, "更新任务")
-      );
+      const optimistic = tasksRef.current;
+      invoke<Task>("task_patch", { id: t.id, patch: { title: next } }).catch((e) => {
+        handleCommandError(e, "更新任务");
+        rollbackOptimistic(prevTasks, optimistic);
+      });
     }
     setEditingId(null);
   };
@@ -556,6 +575,7 @@ export default function WidgetApp() {
   }, [editingId]);
 
   const toggleSubtask = (t: Task, subtaskId: string) => {
+    const prevTasks = tasksRef.current;
     applyLocal((prev) =>
       prev.map((x) =>
         x.id !== t.id
@@ -570,8 +590,12 @@ export default function WidgetApp() {
     );
     const cur = tasksRef.current.find((x) => x.id === t.id);
     if (cur) {
+      const optimistic = tasksRef.current;
       invoke<Task>("task_patch", { id: t.id, patch: { subtasks: cur.subtasks ?? [] } }).catch(
-        (e) => handleCommandError(e, "更新任务")
+        (e) => {
+          handleCommandError(e, "更新任务");
+          rollbackOptimistic(prevTasks, optimistic);
+        }
       );
     }
   };
@@ -588,12 +612,15 @@ export default function WidgetApp() {
 
   const removeFile = (t: Task, path: string) => {
     const patch = filesPatch(taskFiles(t).filter((f) => f.path !== path));
+    const prevTasks = tasksRef.current;
     applyLocal((prev) =>
       prev.map((x) => (x.id !== t.id ? x : { ...x, ...patch }))
     );
-    invoke<Task>("task_patch", { id: t.id, patch }).catch((e) =>
-      handleCommandError(e, "更新任务")
-    );
+    const optimistic = tasksRef.current;
+    invoke<Task>("task_patch", { id: t.id, patch }).catch((e) => {
+      handleCommandError(e, "更新任务");
+      rollbackOptimistic(prevTasks, optimistic);
+    });
   };
 
   // 挂件可见列表排序结束：本地重排 + task_reorder（ord-only 定向写，免快照竞态）
@@ -605,7 +632,8 @@ export default function WidgetApp() {
     const to = ids.indexOf(String(over.id));
     if (from < 0 || to < 0) return;
     const newIds = arrayMove(ids, from, to);
-    const prevMap = new Map(tasksRef.current.map((t) => [t.id, t]));
+    const prevTasks = tasksRef.current;
+    const prevMap = new Map(prevTasks.map((t) => [t.id, t]));
     applyLocal((prev) => {
       const visibleSet = new Set(ids);
       const byId = new Map(prev.map((t) => [t.id, t]));
@@ -617,7 +645,8 @@ export default function WidgetApp() {
       }
       return assignInsertOrder(arr, String(active.id));
     });
-    const items = tasksRef.current
+    const optimistic = tasksRef.current;
+    const items = optimistic
       .filter((t) => {
         const p = prevMap.get(t.id);
         return !p || p.order !== t.order;
@@ -625,9 +654,10 @@ export default function WidgetApp() {
       .map((t) => ({ id: t.id, order: t.order ?? 0 }));
     if (items.length) {
       // 本地已乐观更新；服务端广播 tasks-changed → 挂件既有监听 db_load 收敛
-      invoke<Task[]>("task_reorder", { items }).catch((e) =>
-        handleCommandError(e, "排序任务")
-      );
+      invoke<Task[]>("task_reorder", { items }).catch((e) => {
+        handleCommandError(e, "排序任务");
+        rollbackOptimistic(prevTasks, optimistic);
+      });
     }
   };
 

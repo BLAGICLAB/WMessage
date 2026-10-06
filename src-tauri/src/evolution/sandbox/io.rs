@@ -77,10 +77,13 @@ pub fn append_shadow(path: &Path, record: &ShadowOutcome) -> Result<(), String> 
 
 pub fn read_shadow(path: &Path) -> Result<Vec<ShadowOutcome>, String> {
     use std::io::BufRead;
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let f = std::fs::File::open(path).map_err(|e| format!("打开 {path:?} 失败：{e}"))?;
+    // 直接 open、NotFound 按空清单处理：先 exists 再 open 之间文件可能出现/消失，
+    // 两步拆开有竞态窗口（缺失文件本就是合法的「还没有记录」状态）
+    let f = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("打开 {path:?} 失败：{e}")),
+    };
     let reader = std::io::BufReader::new(f);
     let mut out = Vec::new();
     for (i, line) in reader.lines().enumerate() {
@@ -104,10 +107,12 @@ pub fn append_ab(path: &Path, record: &AbRecord) -> Result<(), String> {
 
 pub fn read_ab(path: &Path) -> Result<Vec<AbRecord>, String> {
     use std::io::BufRead;
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let f = std::fs::File::open(path).map_err(|e| format!("打开 {path:?} 失败：{e}"))?;
+    // 与 read_shadow 同：open 一步到位，NotFound 按空清单处理，消除竞态窗口
+    let f = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("打开 {path:?} 失败：{e}")),
+    };
     let reader = std::io::BufReader::new(f);
     let mut out = Vec::new();
     for (i, line) in reader.lines().enumerate() {

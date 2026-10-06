@@ -135,7 +135,9 @@ impl MiddlewareRegistry {
         if self.pre_execute.is_empty() {
             crate::audit::write_error_audit(app, "pre_execute_not_registered", &[("tool", name)]);
             // 闸门缺席对原子工具 fail-closed——与「registry 缺失」
-            // 口径一致（run_pre_execute helper 同款语义），不「有声放行」
+            // 口径一致（run_pre_execute helper 同款语义），不「有声放行」。
+            // 黑名单 D4d 清空后 is_atomic_tool 恒 false，本分支实际不可达；
+            // 保留作防御骨架——名单一旦回填即恢复集中拦截
             if is_atomic_tool(name) && !active_skill {
                 return ExecutionDecision::Deny {
                     reason: format!(
@@ -290,6 +292,12 @@ impl Middleware for IntentRouterMiddleware {
 }
 
 /// 内置：原子黑名单中间件（包装 tool_guard::is_atomic_tool + is_skill_active）
+///
+/// 注意：黑名单已在 D4d 清空（见 tool_guard.rs 顶部说明），`is_atomic_tool`
+/// 恒返回 false，本中间件当前不产生任何拒绝，仅作集中拦截骨架保留。
+/// 拦截职责由各工具内部的 `is_task_execution_flow` 按会话上下文自行承担；
+/// 后续若新增需要裸调拦截的工具，须把工具名加回 `ATOMIC_TOOLS`，
+/// 否则只有工具内自拦、没有集中拦截点。
 pub struct AtomicGuardMiddleware;
 impl Middleware for AtomicGuardMiddleware {
     fn name(&self) -> &str {

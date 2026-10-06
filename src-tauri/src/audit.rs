@@ -332,6 +332,9 @@ pub fn format_event_line(level: AuditLevel, event: &str, kv: &[(&str, &str)]) ->
 /// bot.log 全局写锁：`write_event` 与 `bot::audit_log` 共用，
 /// 防多线程并发 append 交错（并发 execute_task 写日志会出现错行混排）。
 /// rotate + open + write 必须在同一把锁内，否则检查大小与写入之间存在竞态。
+/// 同步专用契约：持锁跨越整段阻塞文件 IO（rotate + open + chmod + write），
+/// 不得在 tokio worker / 延迟敏感路径上直接调用；这类调用方应先投递到
+/// 普通 std::thread 再写。
 pub static BOT_LOG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// 日志文件打开：创建即 0600 + 已有文件补 chmod——
@@ -348,9 +351,12 @@ pub(crate) fn open_log_append(path: &std::path::Path) -> std::io::Result<std::fs
     let f = opts.open(path)?;
     #[cfg(unix)]
     {
-        // 已存在文件 mode() 不生效，补 chmod（幂等）
+        // 已存在文件 mode() 不生效，补 chmod（幂等）。失败不能静默：
+        // bot.log 含用户指令/路径/工具输出，权限没收紧等于敏感数据裸奔
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+            eprintln!("[audit] chmod 0o600 failed: {} path={}", e, path.display());
+        }
     }
     Ok(f)
 }

@@ -246,7 +246,13 @@ pub fn apply_from_consolidation(proposals: Vec<EvolutionProposal>) {
                 match outcome {
                     ApplyOutcome::Applied => {
                         report.applied += 1;
-                        append_applied_record(&ledger, p, now)?;
+                        // applied ledger 追加走 store 锁：两次 consolidate 并发 apply
+                        // 时，writeln! 是「行内容 + 换行」两次 write，锁外并发追加
+                        // 可在行中间撕裂（同 changes.jsonl 收敛单写者锁的理由）
+                        {
+                            let _store = super::lock_evolution_store();
+                            append_applied_record(&ledger, p, now)?;
+                        }
                         // B1-3（P0-EV2 另半）：补写 ChangeRecord（Active + AutoApplied）
                         // 到 evolution-changes.jsonl——面板回滚只读这个文件，此前自动
                         // 应用只落 applied.jsonl（面板不读它），回滚对自动应用不可达。

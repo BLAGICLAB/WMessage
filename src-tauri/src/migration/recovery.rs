@@ -23,6 +23,13 @@ pub(crate) fn file_path_untouched(current: Option<&str>, expected_src: &str) -> 
     current == Some(expected_src)
 }
 
+/// replay 失败是否永久性（任务卡已删，修复永远没有对象）：
+/// 永久失败要清掉 journal 行终结对账环，否则每次启动都重试同一条、
+/// 永远失败刷屏；瞬时失败（db 读写抖动）则保留 pending 下次启动再试。
+fn is_permanent_replay_error(e: &str) -> bool {
+    e.contains("不存在")
+}
+
 /// NEW-B-1: 「源已消失」时的处置决策（纯函数，可单测）。
 /// pending = 该 (task, src) 最新 pending journal；dst_exists 仅对 move 有意义。
 pub(crate) enum SrcMissingAction {
@@ -130,6 +137,11 @@ pub fn journal_replay_pending(app: &AppHandle) -> Result<(usize, usize), String>
                         }
                         Err(e) => {
                             errors += 1;
+                            // 永久性失败（任务卡已删）→ 清行终结对账环；
+                            // 瞬时失败 → 保留 pending，下次启动重试
+                            if is_permanent_replay_error(&e) {
+                                journal_cleared_inner(&conn, entry.id).ok();
+                            }
                             log_line(
                                 app,
                                 &format!("journal replay: 修复 {} 失败：{}", entry.src, e),
@@ -167,6 +179,11 @@ pub fn journal_replay_pending(app: &AppHandle) -> Result<(usize, usize), String>
                         }
                         Err(e) => {
                             errors += 1;
+                            // 永久性失败（任务卡已删）→ 清行终结对账环；
+                            // 瞬时失败 → 保留 pending，下次启动重试
+                            if is_permanent_replay_error(&e) {
+                                journal_cleared_inner(&conn, entry.id).ok();
+                            }
                             log_line(
                                 app,
                                 &format!("journal replay: 清除 {} 失败：{}", entry.src, e),
