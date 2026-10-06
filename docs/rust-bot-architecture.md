@@ -90,6 +90,9 @@ src-tauri/src/
 │                        （TOOLS schema 已移出，见 bot/registry.rs）
 ├── bot.rs (116)         门面：跨模块 re-export（BotChatResult/TaskRef/model_loop/StopGuard/AuditLevel/db::*）
 │                        + 子模块声明；旧 `crate::bot::<item>` 路径 1:1 保持
+├── bot/params.rs        Agent 运行参数注册表（P3-a）：PARAMS_TABLE 单源（可编辑 config 驱动 +
+│                        硬编码只读两区）+ resolve_* 读取口唯一（max_rounds/history_budget/
+│                        subagent 预算/search 条数）+ bot_effective_params 命令；settings 页参数卡同源
 ├── bot/registry.rs (716)  **工具单源真相（阶段 2）**：33 个 schema 常量 + `TOOLS_TABLE`
 │                        （name/schema/mutating/call，33 工具=31 主可见+2 子 agent 专属）→
 │                        TOOLS JSON（tools_json）/ MUTATING_TOOLS / dispatch 查表三处全派生
@@ -474,6 +477,7 @@ flowchart TD
 - `bot/config/types.rs`
 - `bot/dispatch.rs`
 - `bot/format.rs`
+- `bot/params.rs`
 - `bot/registry.rs`
 - `bot/tools.rs`
 

@@ -291,17 +291,22 @@ pub fn accumulate_tool_call_delta(
 }
 
 /// 默认对话轮数（聊天 / 任务执行 / 逐步执行统一为 50）；
-/// 多步 Skill 可在 SKILL.md frontmatter 自报 max_rounds 覆盖（见 resolve_max_rounds）。
-pub(crate) const DEFAULT_MAX_ROUNDS: usize = 50;
+/// 多步 Skill 可在 SKILL.md frontmatter 自报 max_rounds 覆盖（见 resolve_max_rounds）；
+/// P3-a 起配置 `maxRounds` 亦可覆盖默认（Skill 仍最优先），常量单源 bot/params.rs。
+pub(crate) const DEFAULT_MAX_ROUNDS: usize = crate::bot::params::DEFAULT_MAX_ROUNDS as usize;
 
 /// T6：单轮 msgs 总字符软上限（仅 audit，不截断）。
 /// 默认 200K 字符（中文 ≈ 1 token/字符 ≈ 200K token 上下文）。
 /// 超出走 `loop.msgs.over_budget` 事件供事后分析；不主动压缩、不截断、不触发摘要。
 pub(crate) const MSGS_BUDGET_CHARS: usize = 200_000;
 
-/// 本轮工具循环的轮数上限：Skill 自报 max_rounds 优先，未声明 → DEFAULT_MAX_ROUNDS。
-pub(crate) fn resolve_max_rounds(skill_max_rounds: Option<usize>) -> usize {
-    skill_max_rounds.unwrap_or(DEFAULT_MAX_ROUNDS)
+/// 本轮工具循环的轮数上限：Skill 自报 max_rounds 最优先，其次配置 maxRounds，
+/// 都没有 → DEFAULT_MAX_ROUNDS（P3-a 单源 bot/params.rs）。
+pub(crate) fn resolve_max_rounds(
+    skill_max_rounds: Option<usize>,
+    config_max_rounds: usize,
+) -> usize {
+    skill_max_rounds.unwrap_or(config_max_rounds)
 }
 
 // Harness 第 5 层：单轮对话 Function 总调用上限（每轮可并行多个 tool_calls，
@@ -2167,15 +2172,18 @@ mod rounds_fuse_tests {
             "minimax-docx",
         );
         assert_eq!(meta.max_rounds, Some(25));
-        assert_eq!(resolve_max_rounds(meta.max_rounds), 25);
+        assert_eq!(resolve_max_rounds(meta.max_rounds, 50), 25);
     }
 
     #[test]
     fn skill_without_max_rounds_falls_back_to_default_50() {
-        // 现有 Skill 未声明 max_rounds → None → fallback 默认 50（兼容不崩）
+        // 现有 Skill 未声明 max_rounds → None → fallback（P3-a：fallback = 配置解析值，测试传默认 50）
         let meta = crate::bot_skills::parse_meta("---\nname: x\ndescription: d\n---\nbody\n", "x");
         assert_eq!(meta.max_rounds, None);
-        assert_eq!(resolve_max_rounds(meta.max_rounds), DEFAULT_MAX_ROUNDS);
+        assert_eq!(
+            resolve_max_rounds(meta.max_rounds, DEFAULT_MAX_ROUNDS),
+            DEFAULT_MAX_ROUNDS
+        );
         assert_eq!(DEFAULT_MAX_ROUNDS, 50);
     }
 

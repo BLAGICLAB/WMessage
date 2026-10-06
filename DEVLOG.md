@@ -2,6 +2,46 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-06（周二）P3B-PARAMCARD：设置页 Agent 运行参数卡 + 词元统计实装（Agent 透明化 P3-b）
+
+**承接**：设计 §3.3；P3-a 参数表/字段的前端消费面（与 P3-a 同批入库——保存链必须同批透传，
+否则设置页任一次保存会把新参数抹回 None）。
+
+**改动**（均在 SettingsPage / 新组件）：
+- config state + loadConfig + saveConfig 三链透传 7 个新参数（空串 = None = 内置默认；
+  数值合法即落盘，越界由后端 bot_set_config 钳制——与 archiveAfterDays 同款）
+- 「机器人」section 新增**「Agent 运行参数」卡**：7 行可调输入（模型循环轮数/历史预算/
+  子 agent 三预算/搜索条数/工具截断），placeholder 显默认值，hint 写明调参代价与钳制区间
+- 「词元统计」section 从「规划中」占位**实装**：新组件 UsageStatsCard——
+  usage_stats_daily 按日聚合（exec_traces 数据源），汇总四格（输入/输出 tokens、执行次数、
+  工具调用）+ 按日双色条形（浅=输入 深=输出，纯 div 不引图表库）+ 刷新按钮；纯本地无上报
+
+**测试**：UsageStatsCard.test.tsx +3（汇总聚合/空态/刷新重拉）；SettingsPage 84 全绿；
+vitest 全量 501；tsc/knip/桥审计（bot_effective_params+usage_stats_daily 配对）绿。
+
+## 2026-10-06（周二）P3A-PARAMSTABLE：Agent 运行参数注册表 + 配置化接线（Agent 透明化 P3-a）
+
+**承接**：设计 §3.1/§3.2；PARAMS_TABLE 仿 TOOLS_TABLE 单源哲学，agent 参数从硬编码走向可查可调。
+
+**改动**：
+- 新模块 `bot/params.rs`：PARAMS_TABLE 21 项（可编辑 10 + 硬编码只读 11）+ `resolve_*`
+  读取口唯一（max_rounds 钳 5..=200 / history_budget 钳 20K..=500K / subagent 三预算 /
+  search 条数钳 1..=10）+ `bot_effective_params` 命令（生效值/默认值/来源三态：config|default|hardcoded）
+- BotConfig + BotConfigView 增 7 个 Option 字段（全 serde default——老配置零影响、无需 schemaVersion bump）；
+  bot_set_config 落盘前钳制（archive_after_days 同款）
+- resolve 链接线（读点不再各写 `unwrap_or(默认)`）：
+  ① `resolve_max_rounds` 增 config 参数——bot_chat 主聊天（Skill 自报 > 配置 > 默认三层）
+     与 run_task_in_chat 壳两处；
+  ② bot_chat 历史截断预算（audit budget 字段同步真实值）；
+  ③ orchestrator spawn_subagent：LLM 未给预算时读配置默认（显式给的仍走硬顶钳制；
+     Gate 并发 max_running 保持常量——Gate 轮询路径不做 IO，留档）；
+  ④ tool_web_search count 缺省值（模型传参仍优先）
+- `bot_model_loop::DEFAULT_MAX_ROUNDS` 常量单源改指 params（值不变 50）
+
+**测试**：params.rs +5（表 key 唯一与行数下限 / 默认来源 / config 覆盖与钳制 /
+子 agent 预算独立生效 / 历史预算钳制）；lib 1416 全绿（+5）。
+`tools.max_output_chars` 仅入表展示，截断行为 P4 接线（默认不截断=现状零变更）。
+
 ## 2026-10-06（周二）P2C-LIVEPAGES：工作流画布实时高亮 + 定时任务执行透明（Agent 透明化 P2-c）
 
 **承接**：设计 §5.3/§5.4；P1 的 `workflow-node-status`/`sched-status` 事件首个消费面。

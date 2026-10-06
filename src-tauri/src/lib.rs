@@ -502,6 +502,7 @@ pub fn run() {
             crate::bot_scheduler::schedule_set_enabled,
             crate::bot_scheduler::scheduled_job_fire,
             crate::db::schedule_jobs::scheduled_job_create,
+            crate::bot::params::bot_effective_params,
             crate::db::trace::trace_list,
             crate::db::trace::trace_detail,
             crate::db::trace::trace_clear_before,

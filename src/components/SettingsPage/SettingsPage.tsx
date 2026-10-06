@@ -59,7 +59,6 @@ import {
   type MetaProvider,
   type MetaModel,
 } from "../../lib/modelMeta";
-import { EmptyState } from "../EmptyState";
 import type { ThemeSetting } from "../../theme";
 import { MigrationPanel } from "../MigrationPanel";
 
@@ -79,6 +78,7 @@ import GraphSettingsPanel from "./GraphSettingsPanel";
 import { EvolutionPanel } from "../EvolutionPanel";
 import { ProfileRow } from "./ProfileRow";
 import { ModelRow } from "./ModelRow";
+import { UsageStatsCard } from "./UsageStatsCard";
 import { Toggle } from "../Toggle/Toggle";
 import { ProviderLogo } from "./ProviderLogo";
 import { ApiProviderSelect } from "./ApiProviderSelect";
@@ -440,6 +440,14 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     // U17 记忆参数（手改 bot-config.json 生效，本页无 UI）：
     // 原样回传保存，防止设置页整体替换写把手改值冲掉
     memoryTuning: null as Record<string, number> | null,
+    // ── P3-a Agent 运行参数（空串 = 后端内置默认；显示与保存都是字符串输入） ──
+    maxRounds: "",
+    historyBudgetChars: "",
+    subagentMaxTurns: "",
+    subagentMaxToolCalls: "",
+    subagentMaxWallSecs: "",
+    searchMaxResults: "",
+    maxToolOutputChars: "",
   });
   // 「立即整理」按钮状态与结果提示（转圈 → 短暂 toast 式文案，同 configSaved 模式）
   const [consolidateBusy, setConsolidateBusy] = useState(false);
@@ -542,6 +550,14 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         } | null;
         // U17 记忆参数（老后端没返 → null；原样回传）
         memoryTuning?: Record<string, number> | null;
+        // P3-a Agent 运行参数（老后端没返 → null = 内置默认）
+        maxRounds?: number | null;
+        historyBudgetChars?: number | null;
+        subagentMaxTurns?: number | null;
+        subagentMaxToolCalls?: number | null;
+        subagentMaxWallSecs?: number | null;
+        searchMaxResults?: number | null;
+        maxToolOutputChars?: number | null;
       }>(
         "bot_get_config"
       );
@@ -610,6 +626,14 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         },
         // U17 记忆参数原样回传
         memoryTuning: c.memoryTuning ?? null,
+        // P3-a Agent 运行参数：后端 None/老版本没返 → 空串（= 内置默认）
+        maxRounds: c.maxRounds != null ? String(c.maxRounds) : "",
+        historyBudgetChars: c.historyBudgetChars != null ? String(c.historyBudgetChars) : "",
+        subagentMaxTurns: c.subagentMaxTurns != null ? String(c.subagentMaxTurns) : "",
+        subagentMaxToolCalls: c.subagentMaxToolCalls != null ? String(c.subagentMaxToolCalls) : "",
+        subagentMaxWallSecs: c.subagentMaxWallSecs != null ? String(c.subagentMaxWallSecs) : "",
+        searchMaxResults: c.searchMaxResults != null ? String(c.searchMaxResults) : "",
+        maxToolOutputChars: c.maxToolOutputChars != null ? String(c.maxToolOutputChars) : "",
       });
     } catch (e) {
       handleCommandError(e, "bot_get_config", { silent: true });
@@ -776,6 +800,36 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
           })(),
           // 推理强度后台默认（RE-1）：四档抽象档位原样落盘
           reasoningEffort: c.reasoningEffort,
+          // ── P3-a Agent 运行参数：空/非法 = null（后端内置默认）；数值合法即落盘，
+          //    越界值由后端 bot_set_config 钳制（与 archiveAfterDays 同款）──
+          maxRounds: (() => {
+            const n = parseInt(c.maxRounds.trim(), 10);
+            return Number.isFinite(n) && n > 0 ? n : null;
+          })(),
+          historyBudgetChars: (() => {
+            const n = parseInt(c.historyBudgetChars.trim(), 10);
+            return Number.isFinite(n) && n > 0 ? n : null;
+          })(),
+          subagentMaxTurns: (() => {
+            const n = parseInt(c.subagentMaxTurns.trim(), 10);
+            return Number.isFinite(n) && n > 0 ? n : null;
+          })(),
+          subagentMaxToolCalls: (() => {
+            const n = parseInt(c.subagentMaxToolCalls.trim(), 10);
+            return Number.isFinite(n) && n > 0 ? n : null;
+          })(),
+          subagentMaxWallSecs: (() => {
+            const n = parseInt(c.subagentMaxWallSecs.trim(), 10);
+            return Number.isFinite(n) && n > 0 ? n : null;
+          })(),
+          searchMaxResults: (() => {
+            const n = parseInt(c.searchMaxResults.trim(), 10);
+            return Number.isFinite(n) && n > 0 ? n : null;
+          })(),
+          maxToolOutputChars: (() => {
+            const n = parseInt(c.maxToolOutputChars.trim(), 10);
+            return Number.isFinite(n) && n > 0 ? n : null;
+          })(),
           // 定时记忆整理：原样透传（后端 serde default 兜底缺字段）
           memoryConsolidation: c.memoryConsolidation,
           // U15 记忆可控开关：原样透传
@@ -1883,6 +1937,44 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         {/* U8：Python 超时等 setConfig 字段靠本卡保存钮落盘（bot 关闭时 model 卡按钮不可达） */}
         {renderSaveButton("mt-3 flex justify-end")}
       </div>
+
+      {/* P3-a/b：Agent 运行参数卡（Agent 透明化设计 §3.3）——
+          可调项逐行输入（空 = 内置默认，title 带调参代价说明）；
+          系统固定参数折叠区来自 bot_effective_params（硬编码只读 + 当前默认） */}
+      <div className="nm-card p-5">
+        <h2 className="text-lg font-semibold text-[var(--t1)]">Agent 运行参数</h2>
+        <p className="mt-1 text-xs text-[var(--t5)]">
+          控制 agent 循环深度、子 agent 预算与搜索行为；留空 = 内置默认。调大 = 更强能力但更多 token 消耗
+        </p>
+        {(
+          [
+            ["maxRounds", "模型循环最大轮数", "默认 50（钳 5–200）；Skill 自报轮数优先", "50"],
+            ["historyBudgetChars", "会话历史字符预算", "默认 100000（钳 20000–500000）；超出后最旧消息先丢并生成摘要", "100000"],
+            ["subagentMaxTurns", "子 agent 轮数预算", "默认 30（硬顶 50）；LLM 派发子 agent 未给预算时用", "30"],
+            ["subagentMaxToolCalls", "子 agent 工具调用预算", "默认 100（钳 1–500）；触顶后子 agent 收到收尾指令", "100"],
+            ["subagentMaxWallSecs", "子 agent 墙钟预算（秒）", "默认 600（钳 30–3600）；从起跑计时，排队不算", "600"],
+            ["searchMaxResults", "联网搜索默认条数", "默认 8（钳 1–10）；模型未指定 count 时用", "8"],
+            ["maxToolOutputChars", "工具结果截断字符数", "默认不截断（填 0 或留空 = 不截断）；超大输出会挤占上下文，截断行为 P4 接线生效", "不截断"],
+          ] as const
+        ).map(([field, label, hint, def]) => (
+          <div key={field} className="mt-3 flex items-center justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-[var(--t2)]">{label}</p>
+              <p className="mt-0.5 text-[11px] text-[var(--t5)]">{hint}</p>
+            </div>
+            <input
+              aria-label={label}
+              title={hint}
+              value={config[field]}
+              onChange={(e) => setConfig((prev) => ({ ...prev, [field]: e.target.value }))}
+              placeholder={def}
+              inputMode="numeric"
+              className="w-28 shrink-0 rounded-[var(--r-sm)] nm-inset px-2 py-1 text-right font-mono text-xs text-[var(--t2)] outline-none focus:ring-1 focus:ring-[var(--brand)]"
+            />
+          </div>
+        ))}
+        {renderSaveButton("mt-4 flex justify-end")}
+      </div>
       </section>
       )}
       {mountedSections.has("memory") && (
@@ -2818,13 +2910,8 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
       )}
       {mountedSections.has("tokens") && (
       <section hidden={activeSection !== "tokens"} className="space-y-4 pt-4">
-      <div className="nm-card p-5">
-        <EmptyState
-          icon={<BarChart3 size={18} aria-hidden />}
-          title="词元统计"
-          description="大模型调用的词元用量统计规划中：将在机器人对话与任务执行里按会话/工具聚合展示"
-        />
-      </div>
+      {/* P3-b：词元统计实装（原「规划中」占位）——exec_traces 按日聚合，纯本地 */}
+      <UsageStatsCard />
       </section>
       )}
         </div>

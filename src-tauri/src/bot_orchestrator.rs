@@ -326,6 +326,13 @@ pub(crate) fn cancel_subagent_locked(
 /// spawn 异步包装：持锁执行核心 → 审计 subagent_spawned → 广播子卡。
 /// SUBA-1 不启动执行（runner 在 SUBA-2 接入）；行停在 queued 由后续批推进。
 pub async fn spawn_subagent(app: &AppHandle, req: SpawnRequest) -> CommandResult<SpawnAck> {
+    // P3-a：LLM 未显式给预算时用配置默认（config subagentMax* 三项，resolve 内钳制）；
+    // 显式给了的仍走 clamp_budget 硬顶。Gate 并发数（max_running）保持常量不在本路径。
+    let mut req = req;
+    if req.budget.is_none() {
+        let cfg = crate::bot::load_config(app);
+        req.budget = Some(crate::bot::params::resolve_subagent_budget(&cfg));
+    }
     // 审计字段先拷出（闭包要 move req 进 spawn_blocking）；校验只走 locked 核心
     //（wrapper 侧重复调用已删——OCR r2 采纳）
     let audit_parent_session = req.parent_session_id.clone();

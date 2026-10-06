@@ -45,6 +45,7 @@ pub mod config;
 pub mod dispatch;
 pub mod format;
 pub mod mcp;
+pub mod params;
 pub mod reasoning;
 pub mod registry;
 pub mod tools;

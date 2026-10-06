@@ -1748,12 +1748,14 @@ pub(crate) async fn tool_web_search(
         app,
         &format!("web_search | query: {}", escape_for_log(&query, 100)),
     );
-    // N3-5：过滤参数（count/timeRange/site），缺省 = 旧行为
+    // N3-5：过滤参数（count/timeRange/site），缺省 = 旧行为；
+    // P3-a：count 缺省值走配置解析（config searchMaxResults，钳 1..=10；默认 8）
+    let cfg_search = crate::bot::load_config(app);
     let opts = crate::bot_web::SearchOpts {
         count: v["count"]
             .as_u64()
             .map(|n| n.clamp(1, 10) as u32)
-            .unwrap_or(8),
+            .unwrap_or(crate::bot::params::resolve_search_max_results(&cfg_search)),
         time_range: crate::bot_web::TimeRange::parse(v["timeRange"].as_str()),
         site: v["site"].as_str().and_then(crate::bot_web::sanitize_site),
     };

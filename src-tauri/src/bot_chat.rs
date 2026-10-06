@@ -877,11 +877,13 @@ pub async fn bot_chat(
             }
         }
     }
-    // 多步 Skill 自报 max_rounds（frontmatter）优先，未声明 → 默认 DEFAULT_MAX_ROUNDS（50）
+    // 轮数三层优先级（P3-a）：Skill frontmatter 自报 > 配置 maxRounds > 默认 50
+    let cfg_for_rounds = crate::bot::load_config(&app);
     let max_rounds = crate::bot_model_loop::resolve_max_rounds(
         pre_routed_skill
             .as_ref()
             .and_then(|(meta, _)| meta.max_rounds),
+        crate::bot::params::resolve_max_rounds_cfg(&cfg_for_rounds) as usize,
     );
     let pre_routed_active_skill = pre_routed_skill.map(|(_, body)| body);
     // interactive 模式的技能正文拼入 system prompt（无分隔符接 SkillCatalog）
@@ -926,13 +928,12 @@ pub async fn bot_chat(
     // 生成摘要；摘要单独以 system 消息放在截断后历史开头（不进 messages——下方
     // role 白名单会把非 assistant 降级为 user，防注入语义不动）；
     // LLM 失败静默退回直接丢弃
-    let (messages, summary, dropped) = truncate_chat_history_with_summary(
-        &app,
-        session_id.as_deref(),
-        messages,
-        HISTORY_BUDGET_CHARS,
-    )
-    .await;
+    // P3-a：历史预算走配置解析（config historyBudgetChars，钳 20K..=500K；默认 100K）
+    let budget_used =
+        crate::bot::params::resolve_history_budget_chars(&crate::bot::load_config(&app)) as usize;
+    let (messages, summary, dropped) =
+        truncate_chat_history_with_summary(&app, session_id.as_deref(), messages, budget_used)
+            .await;
     if let Some(summary) = summary {
         msgs.push(serde_json::json!({"role": "system", "content": summary}));
     }
@@ -949,7 +950,7 @@ pub async fn bot_chat(
     }
     if dropped > 0 {
         crate::audit_event!(&app, crate::audit::AuditLevel::Info, "chat.history_truncated",
-            "dropped" => dropped, "budget" => HISTORY_BUDGET_CHARS);
+            "dropped" => dropped, "budget" => budget_used);
     }
     // 最后 3 条消息内 user 消息的图片附件转多模态消息（更早的历史降级为路径文本）
     let img_indices = image_attach_indices(&messages);
@@ -1473,6 +1474,8 @@ pub async fn run_task_in_chat(
 ) -> CommandResult<TaskChatRun> {
     // P1-d（Agent 透明化设计 §4.2）：执行 trace 挂钩——壳造槽，闭包填 LoopTrace 统计，
     // 内核（run_task_in_chat_with）填归属并收尾。
+    // P3-a：轮数走配置解析（config maxRounds，钳 5..=200；默认 50）
+    let cfg_for_rounds = crate::bot::load_config(app);
     let hook: std::sync::Arc<std::sync::Mutex<crate::trace_sink::TraceCapture>> =
         Default::default();
     let hook_for_run = hook.clone();
@@ -1485,7 +1488,7 @@ pub async fn run_task_in_chat(
             crate::bot_model_loop::run_model_loop(
                 app2,
                 msgs,
-                crate::bot_model_loop::DEFAULT_MAX_ROUNDS,
+                crate::bot::params::resolve_max_rounds_cfg(&cfg_for_rounds) as usize,
                 &stop,
                 None,
                 // 任务执行链路不挂单次覆盖，按 bot-config.json 全局默认（RE-1）

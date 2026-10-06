@@ -126,6 +126,13 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
         disabled_vendors: cfg.disabled_vendors,
         vendor_keys,
         verified_vendors: cfg.verified_vendors,
+        max_rounds: cfg.max_rounds,
+        history_budget_chars: cfg.history_budget_chars,
+        subagent_max_turns: cfg.subagent_max_turns,
+        subagent_max_tool_calls: cfg.subagent_max_tool_calls,
+        subagent_max_wall_secs: cfg.subagent_max_wall_secs,
+        search_max_results: cfg.search_max_results,
+        max_tool_output_chars: cfg.max_tool_output_chars,
     })
 }
 
@@ -237,6 +244,22 @@ pub fn bot_set_config(
     config.archive_after_days = config
         .archive_after_days
         .map(|n| n.clamp(1, super::types::MAX_ARCHIVE_DAYS));
+    // P3-a：Agent 运行参数落盘前钳制（None = 内置默认不动；与 archive 同款）
+    config.max_rounds = config
+        .max_rounds
+        .map(|n| n.clamp(5, crate::bot::params::MAX_ROUNDS_CAP));
+    config.history_budget_chars = config.history_budget_chars.map(|n| {
+        n.clamp(
+            crate::bot::params::HISTORY_BUDGET_MIN,
+            crate::bot::params::HISTORY_BUDGET_MAX,
+        )
+    });
+    config.subagent_max_turns = config
+        .subagent_max_turns
+        .map(|n| n.clamp(1, crate::db::MAX_TURNS_HARD_CAP));
+    config.subagent_max_tool_calls = config.subagent_max_tool_calls.map(|n| n.clamp(1, 500));
+    config.subagent_max_wall_secs = config.subagent_max_wall_secs.map(|n| n.clamp(30, 3600));
+    config.search_max_results = config.search_max_results.map(|n| n.clamp(1, 10));
     // P0-EV1：前端整体替换写不丢 evolution 块。读盘回填必须与写**同锁**
     //（评审 HIGH：无锁 load → 有锁 write 之间 persist_last_run 等并发写会被
     // 本写覆盖——丢更新窗口）；write_bot_config_file 自带加锁不可重入，走 _locked 变体

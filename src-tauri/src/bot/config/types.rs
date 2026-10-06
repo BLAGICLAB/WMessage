@@ -206,6 +206,31 @@ pub struct BotConfig {
     /// key」的判定走 raw JSON（见 migrate_config_value），不靠反序列化结果。
     #[serde(default = "default_schema_version")]
     pub schema_version: u32,
+    // ────── Agent 运行参数（P3-a，Agent 透明化设计 §3）：全 Option = 老配置零影响，
+    //      None = 内置默认；生效值/来源经 bot_effective_params 可查 ──────
+    /// 模型循环最大轮数：None = 50（DEFAULT_MAX_ROUNDS）；钳 5..=200。
+    /// Skill frontmatter 自报 max_rounds 仍优先于本值。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_rounds: Option<u32>,
+    /// 会话历史字符预算（超出最旧先丢 + 摘要）：None = 100_000；钳 20_000..=500_000。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_budget_chars: Option<u32>,
+    /// 子 agent 默认轮数预算（LLM spawn 未显式给 budget 时）：None = 30；钳 1..=50（硬顶）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_max_turns: Option<u32>,
+    /// 子 agent 默认工具调用预算：None = 100；钳 1..=500。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_max_tool_calls: Option<u32>,
+    /// 子 agent 默认墙钟预算（秒）：None = 600；钳 30..=3600。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_max_wall_secs: Option<u64>,
+    /// web_search 默认结果条数（模型未传 count 时）：None = 8；钳 1..=10（后端硬顶）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_max_results: Option<u32>,
+    /// 单条工具结果回填消息栈的截断字符数（P4 落行为）：None/0 = 不截断（现状）。
+    /// 本期仅入 bot_effective_params 参数表可见，行为接线留 P4（设计 §3.2）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tool_output_chars: Option<u32>,
 }
 
 /// 单个模型条目：一个 (label, baseUrl, model) 三元组 + 稳定 id。
@@ -299,6 +324,14 @@ impl Default for BotConfig {
             disabled_vendors: Vec::new(), // 未配置 = 无厂商被禁用
             verified_vendors: Vec::new(), // 未配置 = 无厂商通过连接测试
             schema_version: BOT_CONFIG_SCHEMA_VERSION, // 新建配置即当前版本
+            // P3-a：Agent 运行参数全默认（None = 各 resolve_* 的内置默认）
+            max_rounds: None,
+            history_budget_chars: None,
+            subagent_max_turns: None,
+            subagent_max_tool_calls: None,
+            subagent_max_wall_secs: None,
+            search_max_results: None,
+            max_tool_output_chars: None,
         }
     }
 }
@@ -432,6 +465,21 @@ pub struct BotConfigView {
     pub vendor_keys: Vec<String>,
     /// 连接测试通过的厂商名单原样透传（空 = 都未验证；聊天下拉过滤用）
     pub verified_vendors: Vec<String>,
+    // ────── Agent 运行参数（P3-a）：原样透传给设置页参数卡 ──────
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_rounds: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_budget_chars: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_max_turns: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_max_tool_calls: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_max_wall_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_max_results: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tool_output_chars: Option<u32>,
 }
 
 // ───────────────────────── 字段上限 + check_len ─────────────────────────
