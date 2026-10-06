@@ -10,12 +10,13 @@
 
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { FileText, History, TriangleAlert, X } from "lucide-react";
+import { Download, FileText, History, TriangleAlert, X } from "lucide-react";
 import { basename } from "../../format";
 import { DiffView } from "./DiffView";
 import {
   fileRollback,
   traceDetail,
+  traceExport,
   traceListByTask,
   type FileChangeRow,
   type SpanRow,
@@ -141,6 +142,9 @@ export function TracePanel({
   const [detail, setDetail] = useState<Awaited<ReturnType<typeof traceDetail>>>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // P4：JSONL 导出（按钮态 + 结果路径/错误展示）
+  const [exportBusy, setExportBusy] = useState(false);
+  const [exportMsg, setExportMsg] = useState<string | null>(null);
 
   const reload = (traceId: number | null) => {
     setLoading(true);
@@ -174,12 +178,33 @@ export function TracePanel({
         className="nm-card flex max-h-[80vh] w-full max-w-2xl flex-col p-4"
         onPointerDown={(e) => e.stopPropagation()}
       >
-        {/* 头部：标题 + 关闭 */}
+        {/* 头部：标题 + 导出 + 关闭 */}
         <div className="flex items-center gap-2">
           <History size={14} aria-hidden className="text-[var(--t4)]" />
           <h2 className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--t1)]">
             执行详情{taskTitle ? ` · ${taskTitle}` : ""}
           </h2>
+          {detail && (
+            <button
+              className="nm-btn rounded-lg px-2 py-1 text-[10px] text-[var(--t4)] hover:text-[var(--t2)] disabled:opacity-50"
+              disabled={exportBusy}
+              title="导出为 JSONL 文件（数据目录 exports/）"
+              onClick={async () => {
+                setExportBusy(true);
+                setExportMsg(null);
+                try {
+                  setExportMsg(await traceExport(detail.id));
+                } catch (e) {
+                  setExportMsg(String(e));
+                } finally {
+                  setExportBusy(false);
+                }
+              }}
+            >
+              <Download size={11} aria-hidden className="mr-1 inline" />
+              {exportBusy ? "导出中…" : "导出"}
+            </button>
+          )}
           <button
             className="nm-btn rounded-lg p-1 text-[var(--t4)] hover:text-[var(--t2)]"
             aria-label="关闭执行详情"
@@ -188,6 +213,7 @@ export function TracePanel({
             <X size={14} aria-hidden />
           </button>
         </div>
+        {exportMsg && <p className="mt-1 break-all text-[10px] text-[var(--t4)]">{exportMsg}</p>}
 
         {/* 执行历史切换（同卡多次执行） */}
         {traces.length > 1 && (

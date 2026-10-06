@@ -623,6 +623,13 @@ pub async fn run_model_loop(
     // 上轮遗留的 Completed/Failed/Terminated run 会在第 0 轮被 advance 短路（agent 假死根因）。
     // 位置与原核心内调用等价——都发生在进入轮循环之前。
     crate::bot_skills::clear_terminal_skill_runs(&app, session_id);
+    // P4：配置化工具结果截断（设计 §3.2 maxToolOutputChars）——默认 None = 不截断
+    //（现状零变更）；Some(n>0) 时单条工具结果钳 n 字符再回灌消息栈，防上下文膨胀。
+    // 截断只影响回灌文本；trace span（dispatch 内采集）仍存原文。审计留痕。
+    let tool_output_cap: Option<usize> = cfg
+        .max_tool_output_chars
+        .filter(|c| *c > 0)
+        .map(|c| (c as usize).min(200_000));
     let execute_tool = |name: String, args: String, trace: crate::bot::ToolCallTrace| {
         let app = app.clone();
         let sink = tool_trace_for_exec.clone();
@@ -630,17 +637,46 @@ pub async fn run_model_loop(
             let t0 = std::time::Instant::now();
             let out = crate::bot::execute_tool_traced(&app, &name, &args, Some(stop), &trace).await;
             // 成败口径与全链路统一（audit::tool_call_failed：门禁拦截/熔断/
-            // 用户拒绝/执行失败都算失败）；error_kind 分类器为后续接线（先通管道）
+            // 用户拒绝/执行失败都算失败）；error_class 分类器 P4 接线（同源口径）
             let failed = crate::audit::tool_call_failed(&name, &out.text);
+            let error_class = crate::audit::classify_error_class(&out.text);
+            // P4：配置化截断（截断后文本进回灌/事件；span 存原文，审计留痕）
+            let mut text = out.text;
+            if let Some(cap) = tool_output_cap {
+                let char_count = text.chars().count();
+                if char_count > cap {
+                    text = text.chars().take(cap).collect::<String>()
+                        + &format!(
+                            "\n…（已按 maxToolOutputChars={cap} 截断，原文 {char_count} 字符）"
+                        );
+                    crate::audit::write_event(
+                        &app,
+                        crate::audit::AuditLevel::Info,
+                        "tool.output.truncated",
+                        &[
+                            ("tool", name.to_string()),
+                            ("cap", cap.to_string()),
+                            ("original", char_count.to_string()),
+                        ],
+                    );
+                }
+            }
             if let Ok(mut sink) = sink.lock() {
                 sink.push(crate::evolution::trace::ToolCallSummary {
                     name,
                     success: !failed,
                     duration_ms: t0.elapsed().as_millis() as u64,
-                    error_kind: None,
+                    error_kind: error_class.map(str::to_string),
                 });
             }
-            out
+            // 截断只换 text，其余字段（refs/status/images/file_changes）原样透传
+            crate::bot::registry::ToolResult {
+                text,
+                refs: out.refs,
+                status: out.status,
+                images: out.images,
+                file_changes: out.file_changes,
+            }
         }
     };
     let replan = |plan: crate::bot_plan::PlanState, reason: String| {

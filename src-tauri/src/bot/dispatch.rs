@@ -492,8 +492,8 @@ async fn execute_tool_impl(
             args: crate::trace_sink::clamp_span_text(app, name, "args", args.to_string()),
             result: crate::trace_sink::clamp_span_text(app, name, "result", result.text.clone()),
             ok,
-            // P4：接 evolution error_kind 分类器（现占位 None）
-            error_class: None,
+            // P4：error_class 分类器（与 evolution ToolCallSummary 同源口径）
+            error_class: crate::audit::classify_error_class(&result.text).map(str::to_string),
             duration_ms: Some(dur_ms as i64),
             created_at: chrono::Utc::now().timestamp_millis(),
         });

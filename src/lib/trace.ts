@@ -73,3 +73,8 @@ export function traceDetail(traceId: number): Promise<TraceDetail | null> {
 export function fileRollback(changeId: number): Promise<string> {
   return invoke<string>("file_rollback", { changeId });
 }
+
+/** P4：导出单次执行痕迹为 JSONL（落 data_dir/exports/，返回绝对路径） */
+export function traceExport(traceId: number): Promise<string> {
+  return invoke<string>("trace_export", { traceId });
+}

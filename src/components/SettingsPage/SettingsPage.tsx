@@ -454,6 +454,27 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
   // 「立即整理」按钮状态与结果提示（转圈 → 短暂 toast 式文案，同 configSaved 模式）
   const [consolidateBusy, setConsolidateBusy] = useState(false);
   const [consolidateMsg, setConsolidateMsg] = useState("");
+  // P4：执行痕迹清理（数据管理卡）
+  const [traceRetainDays, setTraceRetainDays] = useState("30");
+  const [traceClearBusy, setTraceClearBusy] = useState(false);
+  const [traceClearMsg, setTraceClearMsg] = useState("");
+  const clearTraces = async () => {
+    if (traceClearBusy) return;
+    setTraceClearBusy(true);
+    setTraceClearMsg("");
+    try {
+      const days = parseInt(traceRetainDays, 10);
+      const removed = await invoke<number>("trace_clear_before", {
+        days: Number.isFinite(days) && days > 0 ? days : 30,
+      });
+      setTraceClearMsg(removed > 0 ? `已清理 ${removed} 条执行痕迹` : "没有需要清理的痕迹");
+    } catch (e) {
+      handleCommandError(e, "清理执行痕迹", { silent: true });
+      setTraceClearMsg(formatCommandError(e));
+    } finally {
+      setTraceClearBusy(false);
+    }
+  };
   const [keyInput, setKeyInput] = useState("");
   // Tavily/Brave key 输入框（与主 keyInput 同模式：不回填已存 key，
   // 非空保存时覆盖写入系统凭据存储；空 = 不动已存 key）
@@ -1797,6 +1818,43 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         </div>
         {/* 归档天数等 setConfig 字段靠本卡保存钮落盘（同机器人卡模式） */}
         {renderSaveButton("mt-3 flex justify-end")}
+      </div>
+
+      {/* P4：执行痕迹清理（trace 三表 + 回滚快照保留期；trace_clear_before 命令） */}
+      <div className="nm-card p-5">
+        <h2 className="text-lg font-semibold text-[var(--t1)]">执行痕迹</h2>
+        <p className="mt-1 text-xs text-[var(--t5)]">
+          任务卡/定时/工作流执行的痕迹（工具调用时间线、文件 diff、回滚快照）落本地库，默认保留 30 天
+        </p>
+        <div className="mt-4 flex items-center justify-between gap-4">
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-[var(--t2)]">清理执行痕迹</p>
+            <p className="mt-1 text-xs text-[var(--t5)]">
+              删除「已收尾超过指定天数」与「挂起超过指定天数」的痕迹（含子表与过期回滚快照引用）；不影响任务数据
+            </p>
+          </div>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <input
+              aria-label="保留天数"
+              value={traceRetainDays}
+              onChange={(e) => setTraceRetainDays(e.target.value.replace(/\D/g, ""))}
+              inputMode="numeric"
+              className="w-16 rounded-[var(--r-sm)] nm-inset px-2 py-1 text-right font-mono text-xs text-[var(--t2)] outline-none"
+              title="保留天数（1–365，默认 30）"
+            />
+            <span className="text-[11px] text-[var(--t5)]">天前</span>
+            <button
+              className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] inline-flex items-center justify-center gap-1.5 whitespace-nowrap ${
+                traceClearBusy ? "nm-inset" : "nm-outset"
+              }`}
+              onClick={clearTraces}
+              disabled={traceClearBusy}
+            >
+              {traceClearBusy ? "清理中…" : "清理"}
+            </button>
+          </div>
+        </div>
+        {traceClearMsg && <p className="mt-2 text-xs text-[var(--t4)]">{traceClearMsg}</p>}
       </div>
 
       {/* 工作区管理：与任务数据管理风格一致；workspace_items 数据独立于任务数据 */}

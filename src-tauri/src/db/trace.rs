@@ -677,6 +677,96 @@ pub fn file_rollback(app: tauri::AppHandle, change_id: i64) -> CommandResult<Str
     Ok(format!("已回滚 {}（恢复到本次修改前）", c.path))
 }
 
+/// P4：单次执行痕迹导出 JSONL（Codex rollout 本地文件化思想）——
+/// 第 1 行 trace 摘要，随后 span 行（`{"type":"span",...}`）与文件变更行
+/// （`{"type":"file_change",...}`）按 id 序混排。落 `data_dir/exports/`，
+/// 返回绝对路径供前端打开/分享。只读导出，不改动痕迹数据。
+#[tauri::command]
+pub fn trace_export(app: tauri::AppHandle, trace_id: i64) -> CommandResult<String> {
+    let conn = super::open_db(&app)?;
+    let Some(trace) = trace_get_row(&conn, trace_id)? else {
+        return Err(CommandError::Internal(format!(
+            "执行痕迹 {trace_id} 不存在（可能已被保留期清理）"
+        )));
+    };
+    let spans = spans_for_trace(&conn, trace_id)?;
+    let changes = file_changes_for_trace(&conn, trace_id)?;
+
+    let dir = crate::db::paths::data_dir(&app).join("exports");
+    std::fs::create_dir_all(&dir).map_err(|e| CommandError::Internal(e.to_string()))?;
+    let path = dir.join(format!("trace-{trace_id}.jsonl"));
+    let mut body = serde_json::to_string(&TraceExportRow::trace(&trace))
+        .map_err(|e| CommandError::Internal(e.to_string()))?;
+    body.push('\n');
+    for s in &spans {
+        body.push_str(
+            &serde_json::to_string(&TraceExportRow::span(s))
+                .map_err(|e| CommandError::Internal(e.to_string()))?,
+        );
+        body.push('\n');
+    }
+    for c in &changes {
+        body.push_str(
+            &serde_json::to_string(&TraceExportRow::file_change(c))
+                .map_err(|e| CommandError::Internal(e.to_string()))?,
+        );
+        body.push('\n');
+    }
+    crate::db::atomic_write(&path, &body).map_err(CommandError::Internal)?;
+    crate::audit::write_event(
+        &app,
+        crate::audit::AuditLevel::Info,
+        "trace.export",
+        &[
+            ("trace_id", trace_id.to_string()),
+            ("spans", spans.len().to_string()),
+            ("files", changes.len().to_string()),
+        ],
+    );
+    Ok(path.display().to_string())
+}
+
+/// 导出行包装（type 字段区分 trace/span/file_change，消费方按行解析）
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TraceExportRow<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    #[serde(flatten)]
+    trace: Option<&'a TraceRow>,
+    #[serde(flatten)]
+    span: Option<&'a SpanRow>,
+    #[serde(flatten)]
+    file_change: Option<&'a FileChangeRow>,
+}
+
+impl<'a> TraceExportRow<'a> {
+    fn trace(t: &'a TraceRow) -> Self {
+        Self {
+            kind: "trace",
+            trace: Some(t),
+            span: None,
+            file_change: None,
+        }
+    }
+    fn span(s: &'a SpanRow) -> Self {
+        Self {
+            kind: "span",
+            trace: None,
+            span: Some(s),
+            file_change: None,
+        }
+    }
+    fn file_change(c: &'a FileChangeRow) -> Self {
+        Self {
+            kind: "file_change",
+            trace: None,
+            span: None,
+            file_change: Some(c),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

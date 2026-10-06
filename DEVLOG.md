@@ -2,6 +2,28 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-06（周二）P4A-TRACETOOLS：截断落地 + error_class 分类器 + 痕迹清理/导出（Agent 透明化 P4 首批）
+
+**承接**：设计 §6 P4 列表四项（选高价值低成本件；Profiles/水位条/主窗活动页留后续按需）。
+
+**改动**：
+- **maxToolOutputChars 截断落地**（P3-a 只入表的承诺兑现）：薄壳 execute_tool 闭包——
+  config Some(n>0) 时单条工具结果钳 n 字符（上限 200K）再回灌消息栈，
+  `tool.output.truncated` 审计（tool/cap/original）；默认 None = 不截断（现状零变更）。
+  截断只换回灌文本：trace span（dispatch 内采集）仍存原文、refs/status/images/file_changes 原样透传
+- **error_class 分类器**（audit.rs `classify_error_class`，纯函数）：与 tool_call_failed
+  **同源口径**（成功 → None，不私自扩失败面——「任务卡不存在」类换策略文本测试留档）；
+  两处消费：薄壳 ToolCallSummary.error_kind（evolution 管道，占位 None 就此闭环）+
+  dispatch span error_class（TracePanel 时间线可显示错误类别）
+- **trace_clear_before UI**：数据管理 section 新增「执行痕迹」卡——保留天数输入（1–365
+  默认 30）+ 清理按钮（返回清理条数），P1 就绪的命令首个前端入口
+- **trace_export JSONL**：单次执行导出 `data_dir/exports/trace-<id>.jsonl`
+  （首行 trace 摘要 + span/file_change 行，type 字段区分）；TracePanel 头部「导出」按钮
+  （结果路径展示）；`trace.export` 审计
+
+**测试**：classify_error_class +3（成功 None/可识别模式归类/未识别兜底）；lib **1424**
+全绿（+3）；tsc/vitest 93（相关套件）/桥审计（trace_export 配对）绿。
+
 ## 2026-10-06（周二）P3C-TOOLRULES：per-tool 权限规则表 + 授权模式第 4 档 auto（Agent 透明化 P3-c）
 
 **承接**：设计 §9.2-1/§9.2-2（Claude Code rules + acceptEdits 借鉴）；P3 参数透明的授权面收口。

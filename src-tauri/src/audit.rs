@@ -140,6 +140,91 @@ pub fn tool_call_failed(name: &str, text: &str) -> bool {
         || text.starts_with("ERROR:")
 }
 
+/// P4：错误分类器（与 tool_call_failed 同源口径，供 trace span error_class /
+/// evolution ToolCallSummary.error_kind，两处不再各写一份口径）。
+/// 成功文本返回 None；失败按可识别模式归类，未识别失败统一 "exec_error"。
+pub fn classify_error_class(text: &str) -> Option<&'static str> {
+    if !tool_call_failed("", text) {
+        return None;
+    }
+    if text.starts_with("未知工具") {
+        Some("unknown_tool")
+    } else if text.starts_with("⚠️") {
+        Some("gate_denied")
+    } else if text.starts_with("用户拒绝") {
+        Some("user_denied")
+    } else if text.starts_with("技能已暂停") {
+        Some("skill_paused")
+    } else if text.contains("已强制终止") {
+        Some("fused")
+    } else if text.contains("超时") || text.contains("timeout") || text.contains("Timeout") {
+        Some("timeout")
+    } else if text.contains("不存在") || text.contains("没有找到") || text.contains("not found")
+    {
+        Some("not_found")
+    } else if text.contains("权限") || text.contains("白名单") || text.contains("未授权") {
+        Some("permission")
+    } else {
+        Some("exec_error")
+    }
+}
+
+#[cfg(test)]
+mod error_class_tests {
+    use super::classify_error_class;
+
+    /// 成功文本 → None（与 tool_call_failed 同源口径）
+    #[test]
+    fn success_text_is_none() {
+        assert_eq!(classify_error_class("已标记完成"), None);
+        assert_eq!(classify_error_class("已修改 /a/x.py（+3 行）"), None);
+        assert_eq!(classify_error_class(""), None);
+    }
+
+    /// 可识别失败模式各归其类
+    #[test]
+    fn recognized_patterns_classified() {
+        assert_eq!(
+            classify_error_class("未知工具 nope，可用工具见列表"),
+            Some("unknown_tool")
+        );
+        assert_eq!(
+            classify_error_class("⚠️ 原子工具裸调被拦截"),
+            Some("gate_denied")
+        );
+        assert_eq!(
+            classify_error_class("用户拒绝写入该路径"),
+            Some("user_denied")
+        );
+        assert_eq!(
+            classify_error_class("技能已暂停，step_check 拒绝"),
+            Some("skill_paused")
+        );
+        assert_eq!(
+            classify_error_class("已强制终止（步数超限）"),
+            Some("fused")
+        );
+        assert_eq!(classify_error_class("读取失败：连接超时"), Some("timeout"));
+        // 「任务卡不存在」在既有 tool_call_failed 口径下不算失败（模型换策略即可）
+        // → 分类器同口径返回 None，不私自扩失败面
+        assert_eq!(classify_error_class("任务卡不存在或已在回收站"), None);
+        assert_eq!(
+            classify_error_class("读取失败：权限不足"),
+            Some("permission")
+        );
+    }
+
+    /// 未识别失败 → exec_error 兜底
+    #[test]
+    fn unrecognized_failure_falls_back() {
+        assert_eq!(
+            classify_error_class("生成失败, exit code 1"),
+            Some("exec_error")
+        );
+        assert_eq!(classify_error_class("Error: 500"), Some("exec_error"));
+    }
+}
+
 /// 失败/错误关键词后置分隔符判定：仅在首行 ≤120 **字符**、markdown 前缀开头
 /// 或无前缀、关键词后紧跟分隔符（：：，、；； 空格 ()）时判失败。
 ///
