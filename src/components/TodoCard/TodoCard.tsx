@@ -285,10 +285,10 @@ export function TodoCardView({
         {!archived && !trashed && (
           <DoneCircle done={task.column === "done"} onToggle={toggleDone} />
         )}
-        {/* 归属头像规则：设了定时 → 一直机器人头像；
-            🤖 交给机器人执行中 → 机器人头像；执行完（botAssigned 清除且无定时）→ 用户头像。
+        {/* 归属头像规则（2026-10-06 老板拍板简化）：
+            🤖 交给机器人执行中 → 机器人头像；待办或执行完 → 用户头像（设了定时不再常驻机器人头像）。
             悬停显示姓名。 */}
-        <ActorAvatar bot={!!task.botAssigned || !!task.schedule} />
+        <ActorAvatar bot={!!task.botAssigned} />
       </div>
 
       {/* 标题以下内容（可折叠） */}
