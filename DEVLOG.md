@@ -2,6 +2,21 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-06（周二）T1F-SCHEDMIG：t1_db_roundtrip 红测修复——对齐定时单源契约
+
+**根因**：T1 批把定时执行单源迁到 `scheduled_jobs`（open_db 每次跑
+`migrate_legacy_task_schedules`：tasks.schedule 非空的卡 → 迁 `job-<task_id>` 行 → 清空任务卡侧，
+「此后单源本表」）。`t1_db_roundtrip_new_columns_and_rmw_edit` 种下的 schedule 在第二次 open_db
+即被迁走，旧断言「schedule 原样回读」测的是迁移前迭代的行为，与单源契约相悖。
+
+**修复**（仅测试侧，产品零改动）：
+- 首轮往返：schedule 断言改为「被单源迁移清空」（None）+ `scheduled_jobs` 出现
+  `job-t1e2e-active` 行（schedule/content 原样保留 = 迁移保真断言）
+- RMW 段：「缺键=不动」改为「RMW 不复活任务卡 schedule、不动 scheduled_jobs 单源」
+- t1_cleanup 补 scheduled_jobs / scheduled_job_runs 清理（迁移产物跨运行残留）
+
+**验证**：`cargo test --test llm_integration` **47 / 47**（修复前 46/47）；产品代码零改动。
+
 ## 2026-10-06（周二）P1-b/c/d 执行透明·diff 证据与采集闭环（Agent 透明化）
 
 **承接**：P1-a（同日，见下条）；`docs/AGENT-TRANSPARENCY-DESIGN-2026-10-06.md` §10 批次卡。

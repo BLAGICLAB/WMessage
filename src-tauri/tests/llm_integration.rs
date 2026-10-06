@@ -1711,6 +1711,19 @@ fn t1_cleanup(app: &tauri::AppHandle<tauri::test::MockRuntime>) {
             eprintln!("[t1e2e] 清理任务 {id} 失败：{e}");
         }
     }
+    // 定时单源清理：迁移产物 job 行 + 执行历史（t1e2e-active 种 schedule 会触发迁移）
+    if let Err(e) = conn.execute(
+        "DELETE FROM scheduled_jobs WHERE id = ?1",
+        ["job-t1e2e-active"],
+    ) {
+        eprintln!("[t1e2e] 清理定时作业失败：{e}");
+    }
+    if let Err(e) = conn.execute(
+        "DELETE FROM scheduled_job_runs WHERE job_id = ?1",
+        ["job-t1e2e-active"],
+    ) {
+        eprintln!("[t1e2e] 清理定时作业历史失败：{e}");
+    }
     if let Err(e) = conn.execute("DELETE FROM people WHERE id = ?1", [T1_OWNER_ID]) {
         eprintln!("[t1e2e] 清理成员失败：{e}");
     }
@@ -1786,6 +1799,8 @@ async fn t1_model_loop_delivers_query_and_edit_tool_calls() {
 /// 在 SQLite 的落库与读出；edit_task 的「load → 改 → 自戳 → upsert」模式验证。
 /// （db_upsert/db_load 命令是 AppHandle<Wry> 类型，mock runtime 下走 conn 层同函数：
 /// open_db + lock_db_write + upsert_tasks + load_all，与生产读写同一代码路径。）
+/// schedule 列按 T1 定时单源契约断言：open_db 迁移把非空 tasks.schedule 迁往
+/// scheduled_jobs（job-<task_id>）并清空任务卡侧——任务卡 schedule 不再是写路径。
 #[tokio::test]
 async fn t1_db_roundtrip_new_columns_and_rmw_edit() {
     let app = mock_handle();
@@ -1820,13 +1835,31 @@ async fn t1_db_roundtrip_new_columns_and_rmw_edit() {
     let loaded = tasks.iter().find(|t| t.id == "t1e2e-active").unwrap();
     assert_eq!(loaded.model.as_deref(), Some("mock-model-t1"));
     assert_eq!(loaded.owner_id.as_deref(), Some(T1_OWNER_ID));
-    assert_eq!(loaded.schedule.as_deref(), Some("daily:09:30"));
+    // T1 单源契约：种下的 schedule 在本次 open_db 迁移中迁往 scheduled_jobs 并清空任务卡侧
+    assert_eq!(
+        loaded.schedule, None,
+        "tasks.schedule 应被单源迁移清空（定时单源 = scheduled_jobs）"
+    );
     assert_eq!(
         loaded.depends_on.as_deref(),
         Some(&["t1e2e-dep".to_string()][..])
     );
     assert_eq!(loaded.created_at, Some(1_000));
     assert_eq!(loaded.subtasks.as_ref().unwrap()[0].id, "t1e2e-sub-1");
+
+    // 迁移产物：scheduled_jobs 出现 job-<task_id> 行，schedule/content 原样保留
+    {
+        let conn = wmessage_lib::db::open_db(&app).unwrap();
+        let job: (String, String) = conn
+            .query_row(
+                "SELECT schedule, content FROM scheduled_jobs WHERE id = 'job-t1e2e-active'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("种下的 schedule 应迁移为 scheduled_jobs 行（单源）");
+        assert_eq!(job.0, "daily:09:30", "迁移应保留 schedule 表达式");
+        assert_eq!(job.1, T1_TITLE_ACTIVE, "迁移 content = 任务卡标题");
+    }
 
     // RMW 编辑模式（tool_edit_task 同款）：基线 = 快照 updated_at，改 model/owner + 勾子任务
     let mut next = loaded.clone();
@@ -1849,7 +1882,21 @@ async fn t1_db_roundtrip_new_columns_and_rmw_edit() {
     assert_eq!(after.model, None, "清除后应落 NULL");
     assert_eq!(after.owner_id, None);
     assert!(after.subtasks.as_ref().unwrap()[0].done, "勾选应落库");
-    assert_eq!(after.schedule.as_deref(), Some("daily:09:30"), "缺键=不动");
+    // 单源契约：RMW 编辑不复活任务卡 schedule，也不动 scheduled_jobs 单源
+    assert_eq!(
+        after.schedule, None,
+        "RMW 不复活任务卡 schedule（定时单源 = scheduled_jobs）"
+    );
+    let job_schedule: String = {
+        let conn = wmessage_lib::db::open_db(&app).unwrap();
+        conn.query_row(
+            "SELECT schedule FROM scheduled_jobs WHERE id = 'job-t1e2e-active'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("RMW 不应影响 scheduled_jobs 单源行")
+    };
+    assert_eq!(job_schedule, "daily:09:30", "RMW 后定时表达式不变");
 
     t1_cleanup(&app);
 }
