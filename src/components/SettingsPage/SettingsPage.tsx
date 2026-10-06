@@ -71,6 +71,7 @@ import {
 } from "./types";
 import { UI_FONT_SIZE_OPTIONS, type ApiProvider, type UiFontSize } from "./constants";
 import { SkillsPanel } from "./SkillsPanel";
+import { BubbleStyleCard } from "./BubbleStyleCard";
 import { normalizeVendorName } from "./providerLogoMap";
 import { McpPanel } from "./McpPanel";
 import { MemoryPanel } from "./MemoryPanel";
@@ -1778,6 +1779,9 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
           </div>
         </div>
       </div>
+
+      {/* 聊天气泡外观：用户气泡颜色 + 机器人气泡材质（纯前端偏好，即点即生效） */}
+      <BubbleStyleCard />
 
       </section>
           )}

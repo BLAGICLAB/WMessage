@@ -975,7 +975,22 @@ pub async fn bot_chat(
     // reason 用粗分类，不带原始错误消息（含路径/参数，不入 trace/audit 明细）
     // U16：收尾自动记忆抽取要用的句柄（run_model_loop 按值消费 app，提前克隆）
     let extract_app = app.clone();
-    let (text, refs, loop_trace) = match crate::bot_model_loop::run_model_loop(
+    // 词元统计（P4+）：主聊天也落 exec_traces——此前只有任务执行链落 trace，
+    // 设置页「词元统计」对纯聊天用户恒为空（卡片副标题与事实不符的根因）。
+    // begin 降级 None 不阻断；end 无论成败成对调用（loop_result 先落捕获再分流）。
+    // origin="chat" 与 manual/scheduled/batch/workflow 同列展示。
+    let trace_app = app.clone();
+    let trace_capture = std::sync::Arc::new(std::sync::Mutex::new(
+        crate::trace_sink::TraceCapture::default(),
+    ));
+    if let Some(sid) = session_id.as_ref() {
+        let trace_id = crate::trace_sink::begin_trace(&trace_app, sid, None, "chat", None).await;
+        if let Ok(mut c) = trace_capture.lock() {
+            c.trace_id = trace_id;
+            c.session_id = Some(sid.clone());
+        }
+    }
+    let loop_result = crate::bot_model_loop::run_model_loop(
         app,
         msgs,
         max_rounds,
@@ -985,8 +1000,21 @@ pub async fn bot_chat(
         // 主聊天不挂每卡模型覆盖（W6-MODEL 仅工作流节点使用）
         None,
     )
-    .await
-    {
+    .await;
+    // LoopTrace 统计（tokens/轮数/模型名）塞进捕获，end_trace 汇总落库
+    if let Ok((_, _, lt)) = &loop_result {
+        if let Ok(mut c) = trace_capture.lock() {
+            c.stats = Some(lt.clone());
+        }
+    }
+    crate::trace_sink::end_trace(
+        &trace_app,
+        &trace_capture,
+        loop_result.is_ok(),
+        loop_result.as_ref().err().map(|e| e.to_string()),
+    )
+    .await;
+    let (text, refs, loop_trace) = match loop_result {
         Ok(v) => v,
         Err(e) => {
             crate::evolution::trace::maybe_record_trace(

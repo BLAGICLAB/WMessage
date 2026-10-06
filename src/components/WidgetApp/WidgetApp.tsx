@@ -37,6 +37,12 @@ import { handleCommandError } from "../../lib/errorHandler";
 import { isDueToday } from "../../format";
 import { loadTasksFromDb, loadWorkspaceFromDb, sortByOrder, assignInsertOrder, diffTaskRows } from "../../storage";
 import { applySetting, getSetting, subscribeSystem, subscribeTheme } from "../../theme";
+import {
+  applyBubbleStyle,
+  applyBubbleStyleDom,
+  getBubbleStyle,
+  subscribeBubbleStyle,
+} from "../../bubbleStyle";
 import type { ThemeSetting } from "../../theme";
 import type { Task, WorkspaceItem } from "../../types";
 import { taskFiles, filesPatch } from "../../lib/taskFiles";
@@ -152,6 +158,12 @@ export default function WidgetApp() {
   }, [theme]);
   useEffect(() => subscribeTheme(setTheme), []);
   useEffect(() => subscribeSystem(setTheme), []);
+
+  // 聊天气泡外观：启动应用 + 监听设置页所在主窗口的 storage 变更同步
+  useEffect(() => {
+    applyBubbleStyle(getBubbleStyle());
+  }, []);
+  useEffect(() => subscribeBubbleStyle(applyBubbleStyleDom), []);
   const anchorRef = useRef<Anchor>({ x: 0, y: TOP_Y, edge: "right" });
   const listRef = useRef<HTMLDivElement>(null);
   const chatAreaRef = useRef<HTMLDivElement>(null);

@@ -2,6 +2,28 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-06（周二）TOKEN-STATS-REDESIGN：词元统计卡按「使用统计」参照图重排 + 按模型采数链路补全
+
+**承接**：P3-B 词元统计实装后的观感与信息密度重做；同时补齐此前未提交的
+主聊天落 trace 与 exec_traces model 列后端链路（与卡片按模型分线互为依赖）。
+
+**改动**：
+- **卡片重排**（参照「使用统计」页）：汇总指标行（5 项竖线分隔，新增当前/最长
+  连续天数，由活跃日游程前端计算）→ Token 活动年宽热力图（GitHub contributions
+  式 7×N 周格，每日/每周/累计三档取色 + 底部月份标签）→ 时间范围行（卡外）+
+  每日趋势按模型分线（图例=模型名彩点，取窗口 tokens 前 5，NULL 并入「未知模型」）
+  → 模型用量独立卡；仍零图表库（手绘 SVG Catmull-Rom + div 网格）
+- **按模型采数**：新增 `usage_stats_daily_by_model` 命令（day×model 聚合，day 升序，
+  NULL model 保留）；主聊天也落 exec_traces（此前仅任务执行链落 trace，纯聊天用户
+  统计恒空）；exec_traces 增 model 列（pragma 探测 + ALTER 迁移），trace_sink 收尾
+  传入 LoopTrace.model
+- **修复**：`open_db` 漏接 `ensure_trace_tables`（只跑裸 DDL）——旧库缺 model 列时
+  `trace_finish` 报 no such column，集成测试 exec_trace 两条生命周期用例红
+
+**验证**：cargo test 全绿（lib 1431 + exec_trace 16）；vitest 520 全绿
+（UsageStatsCard 7 用例：连续天数游程/热力图三态/范围切换重拉/按模型图例）；
+tests-audit 38 passed；气泡样式自定义（BubbleStyleCard）为同批遗留前端工作一并入库。
+
 ## 2026-10-06（周二）P4B-ACTIVITY：Profiles 三预设 + 水位条 + 主窗活动页 + evolution 采样接线（Agent 透明化 P4 收尾批）
 
 **承接**：设计 §6 P4 剩余四项全部落地；透明化改造主线就此收官。

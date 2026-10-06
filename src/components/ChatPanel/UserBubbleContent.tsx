@@ -25,7 +25,7 @@ export function UserBubbleContent({ content }: { content: string }) {
           {files.map((f) => (
             <span
               key={f}
-              className="nm-inset inline-flex items-center gap-1 rounded-lg px-1.5 py-0.5 text-[10px] text-[var(--t4)] max-w-full"
+              className="user-chip inline-flex items-center gap-1 rounded-lg px-1.5 py-0.5 text-[10px] max-w-full"
               title={f}
             >
               <span className="truncate max-w-[220px]">

@@ -145,9 +145,11 @@ export function ChatPanel({
   const effortDropdownRef = useRef<HTMLDivElement>(null);
   /** 🛡 授权模式（U3b 只读展示）：bot-config 的 permMode，设置页维护 */
   const [permMode, setPermMode] = useState<PermMode>("ask");
-  // P4 上下文水位条：bot-usage-delta 按会话累计（Anthropic 协议回合级 usage）
+  // P4 上下文水位条：bot-usage-delta 按会话累计（Anthropic 协议回合级 usage）。
+  // lastInput = 最近一轮请求的 input（即当前上下文 prompt 体量）——每轮 input 是
+  // 完整重发的 prompt，跨轮累加会随轮数近似平方膨胀，水位百分比必须用最近一轮。
   const [sessionUsage, setSessionUsage] = useState<
-    Record<string, { input: number; output: number }>
+    Record<string, { input: number; output: number; lastInput: number }>
   >({});
   // P2-b 执行过程详细度（verbose 三档）：localStorage 持久化，仅影响 ToolBadges 展示档位
   const [verboseLevel, setVerboseLevelState] = useState<VerboseLevel>(() => {
@@ -654,8 +656,11 @@ export function ChatPanel({
       const o = e.payload?.outputTokens ?? 0;
       if (i <= 0 && o <= 0) return;
       setSessionUsage((prev) => {
-        const cur = prev[sid] ?? { input: 0, output: 0 };
-        return { ...prev, [sid]: { input: cur.input + i, output: cur.output + o } };
+        const cur = prev[sid] ?? { input: 0, output: 0, lastInput: 0 };
+        return {
+          ...prev,
+          [sid]: { input: cur.input + i, output: cur.output + o, lastInput: i },
+        };
       });
     });
     return () => {
@@ -1409,6 +1414,7 @@ export function ChatPanel({
       <UsageMeter
         input={sessionUsage[sessionId ?? ""]?.input ?? 0}
         output={sessionUsage[sessionId ?? ""]?.output ?? 0}
+        lastInput={sessionUsage[sessionId ?? ""]?.lastInput ?? 0}
         contextK={models.find((m) => m.id === activeModelId)?.contextK}
       />
 

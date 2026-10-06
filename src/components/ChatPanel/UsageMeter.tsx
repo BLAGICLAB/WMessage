@@ -2,22 +2,28 @@
 // 可选的 contextK 百分比。数据源 = bot-usage-delta 事件（Anthropic 协议回合级
 // usage；OpenAI 兼容网关的流式 usage 需要 stream_options 参数暂未启用——
 // 没有数据时本条隐藏，不显示假数据）。
-// ≥80% 时提示 /compact（对话场景）/ 结束后重开（执行场景）。
+// 水位语义（2026-10-06 修正）：每轮 input 是完整重发的 prompt，跨轮 Σ 会随轮数
+// 平方膨胀——百分比必须用「最近一轮 input」（即当前上下文体量）对窗口，Σ 只作
+// 累计展示。≥80% 时提示 /compact（对话场景）/ 结束后重开（执行场景）。
 
 export function UsageMeter({
   input,
   output,
+  lastInput,
   contextK,
 }: {
   input: number;
   output: number;
+  /** 最近一轮请求的 input tokens（当前上下文体量的近似） */
+  lastInput: number;
   contextK?: number;
 }) {
   const total = input + output;
   if (total <= 0) return null;
   const fmt = (n: number) =>
     n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n);
-  const ratio = contextK && contextK > 0 ? total / (contextK * 1000) : null;
+  const ratio =
+    contextK && contextK > 0 && lastInput > 0 ? lastInput / (contextK * 1000) : null;
   const high = ratio != null && ratio >= 0.8;
   return (
     <div
@@ -26,7 +32,7 @@ export function UsageMeter({
       }`}
       title={`本会话累计：输入 ${input} + 输出 ${output} tokens${
         ratio != null
-          ? `；约上下文窗口 ${(ratio * 100).toFixed(0)}%（模型条目 contextK=${contextK}）`
+          ? `；最近一轮输入 ${lastInput} ≈ 上下文窗口 ${(ratio * 100).toFixed(0)}%（模型条目 contextK=${contextK}）`
           : "（当前模型条目未设 contextK，不显示百分比）"
       }`}
     >

@@ -283,6 +283,57 @@
     font-weight: 500;
   }
 
+  /* === 聊天气泡（2026-10-06 气泡美化：双边气泡材质，深浅色走 token） ===
+     机器人 = 悬浮卡材质（raised 底 + 1px 边线 + 轻投影），与输入卡同语言；
+     用户 = 品牌色实底（浅色白字 / 深色暗字，对比 ≥4.5:1）。
+     圆角统一 16px，靠发送者一侧的尾巴角收小到 6px（iMessage 式指向感）。
+     用户气泡颜色可在基础设置自定义（src/bubbleStyle.ts 写 CSS 变量，
+     无变量时回退品牌色，深浅色各自选默认文字色）。 */
+  .chat-bubble {
+    padding: 9px 13px;
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow-sm);
+  }
+  .chat-bubble-bot {
+    background-color: var(--surface-raised);
+    border: 1px solid var(--edge);
+    color: var(--t2);
+    border-bottom-left-radius: 6px;
+  }
+  /* 机器人气泡材质（html[data-bubble-bot]，设置页基础设置切换）：卡片=上面默认 */
+  [data-bubble-bot="flat"] .chat-bubble-bot {
+    background: none;
+    border: none;
+    box-shadow: none;
+    border-radius: 0;
+    padding: 9px 2px;
+  }
+  [data-bubble-bot="inset"] .chat-bubble-bot {
+    background-color: var(--inset-bg);
+    border: 1px solid var(--edge);
+    box-shadow: none;
+  }
+  .chat-bubble-user {
+    background-color: var(--bubble-user-bg, var(--brand));
+    color: var(--bubble-user-fg, #fff);
+    border-bottom-right-radius: 6px;
+  }
+  .dark .chat-bubble-user {
+    color: var(--bubble-user-fg, #171d2b);
+  }
+  /* 用户气泡内附件芯片：on-brand 半透明配色（深色模式品牌色变浅，换暗透；
+     自定义底色时 JS 按文字色写死芯片三变量，两模式同值） */
+  .chat-bubble-user .user-chip {
+    background-color: var(--bubble-chip-bg, rgba(255, 255, 255, 0.16));
+    border: 1px solid var(--bubble-chip-border, rgba(255, 255, 255, 0.3));
+    color: var(--bubble-chip-fg, rgba(255, 255, 255, 0.95));
+  }
+  .dark .chat-bubble-user .user-chip {
+    background-color: var(--bubble-chip-bg, rgba(23, 32, 51, 0.1));
+    border-color: var(--bubble-chip-border, rgba(23, 32, 51, 0.2));
+    color: var(--bubble-chip-fg, #26304a);
+  }
+
   /* === 挂件分栏面板：分缝处 1px 接缝线 === */
   .nm-sidebar-panel {
     @apply p-4;

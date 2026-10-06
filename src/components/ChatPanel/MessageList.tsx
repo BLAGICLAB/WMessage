@@ -56,10 +56,8 @@ function MsgBubbleBase({ msg: m, idx, isCopied, busy, verboseLevel, onCopy, onRe
   return (
     <div className={m.role === "user" ? "max-w-[85%] ml-auto" : "max-w-full mr-auto"}>
       <div
-        className={`text-xs leading-relaxed whitespace-pre-wrap break-words ${
-          m.role === "user"
-            ? "rounded-2xl bg-[var(--inset-bg)] px-3 py-2 text-[var(--t2)]"
-            : "px-0.5 py-1 text-[var(--t2)]"
+        className={`chat-bubble text-xs leading-relaxed whitespace-pre-wrap break-words ${
+          m.role === "user" ? "chat-bubble-user" : "chat-bubble-bot"
         }`}
       >
         {m.role === "assistant" && (m.thinking?.length ?? 0) > 0 && (
@@ -125,7 +123,7 @@ function MsgBubbleBase({ msg: m, idx, isCopied, busy, verboseLevel, onCopy, onRe
       </div>
       {/* 回复完成后的操作行：复制按钮 + 任务引用按钮（点击去主窗口打开该任务） */}
       {showActions && (
-        <div className="mt-1 flex flex-wrap items-center gap-1">
+        <div className="mt-1.5 flex flex-wrap items-center gap-1">
           {hasContent && (
             <button
               className="nm-btn inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t3)]"
@@ -348,7 +346,7 @@ function renderMessageList(
   Bubble: ComponentType<MsgBubbleProps>,
 ) {
   return (
-    <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto space-y-1.5 pr-0.5">
+    <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto space-y-2.5 pr-0.5">
       {messages.length === 0 ? (
         <p className="text-xs text-[var(--t5)] text-center mt-6">
           跟我说：新建任务、列出任务、完成某任务…（输入 / 看可用命令）

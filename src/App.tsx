@@ -51,6 +51,12 @@ import {
 } from "./lib/workflowVisibility";
 
 import { applySetting, getSetting, subscribeSystem, subscribeTheme, toggleTheme } from "./theme";
+import {
+  applyBubbleStyle,
+  applyBubbleStyleDom,
+  getBubbleStyle,
+  subscribeBubbleStyle,
+} from "./bubbleStyle";
 import { isDueToday } from "./format";
 import type { ThemeSetting } from "./theme";
 import type { Task, ColumnId, WorkspaceItem } from "./types";
@@ -273,6 +279,12 @@ function App() {
   }, [theme]);
   useEffect(() => subscribeTheme(setTheme), []);
   useEffect(() => subscribeSystem(setTheme), []);
+
+  // 聊天气泡外观：启动应用 + 监听设置页（本窗口）或其他窗口的 storage 变更同步
+  useEffect(() => {
+    applyBubbleStyle(getBubbleStyle());
+  }, []);
+  useEffect(() => subscribeBubbleStyle(applyBubbleStyleDom), []);
 
   // 字体大小：启动从 bot config 拉值，套到
   // documentElement[data-font-size]；设置页保存后会发 bot-config-changed，

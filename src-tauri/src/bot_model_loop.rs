@@ -465,6 +465,8 @@ pub struct LoopTrace {
     /// P1-c：llm.usage 审计事件累计（Anthropic 协议现发；OpenAI usage 解析留 P4）
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
+    /// 本轮实际使用的模型名（词元统计按模型聚合用；未发请求即失败时为 None）
+    pub model: Option<String>,
 }
 
 pub async fn run_model_loop(
@@ -713,6 +715,7 @@ pub async fn run_model_loop(
             tool_calls: tool_trace.lock().map(|m| m.clone()).unwrap_or_default(),
             prompt_tokens: prompt_tokens.load(std::sync::atomic::Ordering::Relaxed),
             completion_tokens: completion_tokens.load(std::sync::atomic::Ordering::Relaxed),
+            model: Some(http.model.clone()),
         };
         (text, refs, loop_trace)
     })

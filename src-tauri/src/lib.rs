@@ -508,6 +508,8 @@ pub fn run() {
             crate::db::trace::trace_detail,
             crate::db::trace::trace_clear_before,
             crate::db::trace::usage_stats_daily,
+            crate::db::trace::usage_stats_by_model,
+            crate::db::trace::usage_stats_daily_by_model,
             crate::db::trace::file_rollback,
             crate::db::trace::trace_export,
             crate::db::schedule_jobs::scheduled_job_update,

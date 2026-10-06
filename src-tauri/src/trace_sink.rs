@@ -242,6 +242,7 @@ pub(crate) async fn end_trace<R: tauri::Runtime>(
                 prompt_tokens,
                 completion_tokens,
                 error: err.as_deref(),
+                model: stats.as_ref().and_then(|t| t.model.as_deref()),
             },
         )?;
         Ok(crate::db::trace_get_row(&conn, trace_id)?.expect("刚 finish 的 trace 行必在"))

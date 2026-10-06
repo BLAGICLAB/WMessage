@@ -45,7 +45,8 @@ CREATE TABLE IF NOT EXISTS exec_traces (
   files_changed     INTEGER NOT NULL DEFAULT 0,
   prompt_tokens     INTEGER NOT NULL DEFAULT 0,
   completion_tokens INTEGER NOT NULL DEFAULT 0,
-  error             TEXT
+  error             TEXT,
+  model             TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_traces_task     ON exec_traces(task_id);
 CREATE INDEX IF NOT EXISTS idx_traces_session  ON exec_traces(session_id);
@@ -101,6 +102,8 @@ pub struct TraceRow {
     pub prompt_tokens: i64,
     pub completion_tokens: i64,
     pub error: Option<String>,
+    /// 本轮实际模型名（trace_finish 时写入；旧行/未发请求为 NULL）
+    pub model: Option<String>,
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -180,7 +183,8 @@ pub struct NewFileChange<'a> {
     pub created_at: i64,
 }
 
-/// trace_finish 入参；files_changed 不由调用方传——以 file_changes 表计数为准（单一事实源）
+/// trace_finish 入参；files_changed 不由调用方传——以 file_changes 表计数为准（单一事实源）。
+/// model 可空：None 保留原值（COALESCE），失败在发请求前时行内维持 NULL。
 pub struct TraceFinish<'a> {
     pub status: &'a str,
     pub finished_at: i64,
@@ -189,6 +193,7 @@ pub struct TraceFinish<'a> {
     pub prompt_tokens: i64,
     pub completion_tokens: i64,
     pub error: Option<&'a str>,
+    pub model: Option<&'a str>,
 }
 
 /// 文本按字节钳制，UTF-8 字符边界回退（多字节中文不能拦腰截断）。
@@ -220,17 +225,31 @@ fn trace_row_from(r: &rusqlite::Row) -> rusqlite::Result<TraceRow> {
         prompt_tokens: r.get(11)?,
         completion_tokens: r.get(12)?,
         error: r.get(13)?,
+        model: r.get(14)?,
     })
 }
 
 const TRACE_COLS: &str =
     "id, session_id, task_id, origin, title, status, started_at, finished_at, \
-     turn_count, tool_calls, files_changed, prompt_tokens, completion_tokens, error";
+     turn_count, tool_calls, files_changed, prompt_tokens, completion_tokens, error, model";
 
-/// 幂等建三表（open_db 接线；测试直接 execute_batch EXEC_TRACE_DDL 同款）
+/// 幂等建三表（open_db 接线；测试直接 execute_batch EXEC_TRACE_DDL 同款）。
+/// 旧库迁移：model 列（2026-10 词元统计按模型聚合）用 pragma 探测后 ALTER 补齐。
 pub fn ensure_trace_tables(conn: &rusqlite::Connection) -> Result<(), String> {
     conn.execute_batch(EXEC_TRACE_DDL)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    let has_model: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('exec_traces') WHERE name = 'model'",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if has_model == 0 {
+        conn.execute_batch("ALTER TABLE exec_traces ADD COLUMN model TEXT")
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 pub fn trace_start(conn: &rusqlite::Connection, t: &NewTrace) -> Result<i64, String> {
@@ -263,6 +282,7 @@ pub fn trace_finish(
            turn_count = ?4, tool_calls = ?5,
            prompt_tokens = ?6, completion_tokens = ?7,
            error = ?8,
+           model = COALESCE(?9, model),
            files_changed = (SELECT COUNT(*) FROM file_changes WHERE trace_id = ?1)
          WHERE id = ?1",
         rusqlite::params![
@@ -273,7 +293,8 @@ pub fn trace_finish(
             f.tool_calls,
             f.prompt_tokens,
             f.completion_tokens,
-            f.error
+            f.error,
+            f.model,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -514,7 +535,9 @@ pub struct TraceDetail {
     pub file_changes: Vec<FileChangeRow>,
 }
 
-/// 词元统计单日聚合（设置页「词元统计」卡数据源，P3 实装消费）
+/// 词元统计单日聚合（设置页「词元统计」卡数据源，P3 实装消费）。
+/// 升序返回、窗口内缺日补零（趋势图/热力图 x 轴必须连续）；
+/// 执行次数只计已收尾行（running 僵尸不算一次执行，token 仍计入）。
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageDay {
@@ -524,6 +547,175 @@ pub struct UsageDay {
     pub completion_tokens: i64,
     pub runs: i64,
     pub tool_calls: i64,
+}
+
+/// 聚合核心（conn + today 注入，测试可定时）：窗口 = today 往前 days 天（含两端）。
+pub fn usage_stats_daily_conn(
+    conn: &rusqlite::Connection,
+    days: i64,
+    today_local: chrono::NaiveDate,
+) -> Result<Vec<UsageDay>, String> {
+    let start_date = today_local - chrono::Duration::days(days - 1);
+    let since_ms = start_date
+        .and_hms_opt(0, 0, 0)
+        .and_then(|t| t.and_local_timezone(chrono::Local).earliest())
+        .map(|t| t.timestamp_millis())
+        .unwrap_or(0);
+    let mut stmt = conn
+        .prepare(
+            "SELECT date(started_at / 1000, 'unixepoch', 'localtime') AS day,
+                    SUM(prompt_tokens), SUM(completion_tokens),
+                    SUM(CASE WHEN finished_at IS NOT NULL THEN 1 ELSE 0 END),
+                    SUM(tool_calls)
+             FROM exec_traces WHERE started_at >= ?1
+             GROUP BY day",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([since_ms], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<i64>>(1)?.unwrap_or(0),
+                r.get::<_, Option<i64>>(2)?.unwrap_or(0),
+                r.get::<_, Option<i64>>(3)?.unwrap_or(0),
+                r.get::<_, Option<i64>>(4)?.unwrap_or(0),
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut by_day: std::collections::BTreeMap<String, [i64; 4]> =
+        std::collections::BTreeMap::new();
+    for r in rows {
+        let (day, p, c, runs, tools) = r.map_err(|e| e.to_string())?;
+        by_day.insert(day, [p, c, runs, tools]);
+    }
+    let mut out = Vec::with_capacity(days as usize);
+    let mut d = start_date;
+    while d <= today_local {
+        let key = d.format("%Y-%m-%d").to_string();
+        let v = by_day.remove(&key).unwrap_or([0; 4]);
+        out.push(UsageDay {
+            day: key,
+            prompt_tokens: v[0],
+            completion_tokens: v[1],
+            runs: v[2],
+            tool_calls: v[3],
+        });
+        d += chrono::Duration::days(1);
+    }
+    Ok(out)
+}
+
+/// 词元统计按模型聚合（「模型用量」榜数据源）：只计已收尾行（与 daily 口径一致），
+/// 按总 tokens 降序；旧行/未发请求 model 为 NULL，由前端显示「未知模型」。
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageByModel {
+    pub model: Option<String>,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub runs: i64,
+}
+
+/// 聚合核心（conn + today 注入，测试可定时）
+pub fn usage_stats_by_model_conn(
+    conn: &rusqlite::Connection,
+    days: i64,
+    today_local: chrono::NaiveDate,
+) -> Result<Vec<UsageByModel>, String> {
+    let start_date = today_local - chrono::Duration::days(days - 1);
+    let since_ms = start_date
+        .and_hms_opt(0, 0, 0)
+        .and_then(|t| t.and_local_timezone(chrono::Local).earliest())
+        .map(|t| t.timestamp_millis())
+        .unwrap_or(0);
+    let mut stmt = conn
+        .prepare(
+            "SELECT model, SUM(prompt_tokens), SUM(completion_tokens),
+                    SUM(CASE WHEN finished_at IS NOT NULL THEN 1 ELSE 0 END)
+             FROM exec_traces WHERE started_at >= ?1
+             GROUP BY model
+             ORDER BY SUM(prompt_tokens + completion_tokens) DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([since_ms], |r| {
+            Ok(UsageByModel {
+                model: r.get(0)?,
+                prompt_tokens: r.get::<_, Option<i64>>(1)?.unwrap_or(0),
+                completion_tokens: r.get::<_, Option<i64>>(2)?.unwrap_or(0),
+                runs: r.get::<_, Option<i64>>(3)?.unwrap_or(0),
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+/// 词元统计按模型×按日聚合（「每日 Token 趋势图」按模型分线数据源）：
+/// 只返回有数据的 (day, model) 组合（缺日由前端以 0 补齐），day 升序。
+/// 只计已收尾行口径与 daily/by_model 一致；model NULL 保留（前端显示「未知模型」）。
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageDayModel {
+    /// 本地日期 YYYY-MM-DD
+    pub day: String,
+    pub model: Option<String>,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+}
+
+/// 聚合核心（conn + today 注入，测试可定时）
+pub fn usage_stats_daily_by_model_conn(
+    conn: &rusqlite::Connection,
+    days: i64,
+    today_local: chrono::NaiveDate,
+) -> Result<Vec<UsageDayModel>, String> {
+    let start_date = today_local - chrono::Duration::days(days - 1);
+    let since_ms = start_date
+        .and_hms_opt(0, 0, 0)
+        .and_then(|t| t.and_local_timezone(chrono::Local).earliest())
+        .map(|t| t.timestamp_millis())
+        .unwrap_or(0);
+    let mut stmt = conn
+        .prepare(
+            "SELECT date(started_at / 1000, 'unixepoch', 'localtime') AS day, model,
+                    SUM(prompt_tokens), SUM(completion_tokens)
+             FROM exec_traces WHERE started_at >= ?1
+             GROUP BY day, model ORDER BY day ASC, model ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([since_ms], |r| {
+            Ok(UsageDayModel {
+                day: r.get(0)?,
+                model: r.get(1)?,
+                prompt_tokens: r.get::<_, Option<i64>>(2)?.unwrap_or(0),
+                completion_tokens: r.get::<_, Option<i64>>(3)?.unwrap_or(0),
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn usage_stats_daily_by_model(
+    app: tauri::AppHandle,
+    days: Option<i64>,
+) -> CommandResult<Vec<UsageDayModel>> {
+    let conn = super::open_db(&app)?;
+    let days = days.unwrap_or(30).clamp(1, 365);
+    Ok(usage_stats_daily_by_model_conn(
+        &conn,
+        days,
+        chrono::Local::now().date_naive(),
+    )?)
 }
 
 #[tauri::command]
@@ -581,31 +773,25 @@ pub fn trace_clear_before(app: tauri::AppHandle, days: Option<i64>) -> CommandRe
 pub fn usage_stats_daily(app: tauri::AppHandle, days: Option<i64>) -> CommandResult<Vec<UsageDay>> {
     let conn = super::open_db(&app)?;
     let days = days.unwrap_or(30).clamp(1, 365);
-    let since = chrono::Utc::now().timestamp_millis() - days * 86_400_000;
-    let mut stmt = conn
-        .prepare(
-            "SELECT date(started_at / 1000, 'unixepoch', 'localtime') AS day,
-                    SUM(prompt_tokens), SUM(completion_tokens), COUNT(*), SUM(tool_calls)
-             FROM exec_traces WHERE started_at >= ?1
-             GROUP BY day ORDER BY day DESC",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([since], |r| {
-            Ok(UsageDay {
-                day: r.get(0)?,
-                prompt_tokens: r.get::<_, Option<i64>>(1)?.unwrap_or(0),
-                completion_tokens: r.get::<_, Option<i64>>(2)?.unwrap_or(0),
-                runs: r.get(3)?,
-                tool_calls: r.get::<_, Option<i64>>(4)?.unwrap_or(0),
-            })
-        })
-        .map_err(|e| e.to_string())?;
-    let mut out = Vec::new();
-    for r in rows {
-        out.push(r.map_err(|e| e.to_string())?);
-    }
-    Ok(out)
+    Ok(usage_stats_daily_conn(
+        &conn,
+        days,
+        chrono::Local::now().date_naive(),
+    )?)
+}
+
+#[tauri::command]
+pub fn usage_stats_by_model(
+    app: tauri::AppHandle,
+    days: Option<i64>,
+) -> CommandResult<Vec<UsageByModel>> {
+    let conn = super::open_db(&app)?;
+    let days = days.unwrap_or(30).clamp(1, 365);
+    Ok(usage_stats_by_model_conn(
+        &conn,
+        days,
+        chrono::Local::now().date_naive(),
+    )?)
 }
 
 /// 文件级回滚（P2-a，设计 §9.2-3）：把一次 AI 修改恢复到修改前快照。
@@ -854,6 +1040,7 @@ mod tests {
                 prompt_tokens: 100,
                 completion_tokens: 200,
                 error: None,
+                model: None,
             },
         )
         .unwrap();
@@ -1071,6 +1258,7 @@ mod tests {
                 prompt_tokens: 0,
                 completion_tokens: 0,
                 error: None,
+                model: None,
             },
         )
         .unwrap();
@@ -1087,6 +1275,7 @@ mod tests {
                 prompt_tokens: 0,
                 completion_tokens: 0,
                 error: None,
+                model: None,
             },
         )
         .unwrap();
@@ -1124,5 +1313,301 @@ mod tests {
         mk_trace(&conn, "s1", None, "Manual", 8000);
         assert_eq!(retire_traces_before(&conn, 5000).unwrap(), 0);
         assert_eq!(trace_query(&conn, None, None, None, 100).unwrap().len(), 1);
+    }
+
+    /// 旧库迁移：无 model 列的 exec_traces（升级前建的库）经 ensure_trace_tables
+    /// 补齐 model 列；新库（DDL 已含列）跑第二遍不重复加（幂等）
+    #[test]
+    fn ensure_trace_tables_migrates_model_column_idempotent() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        // 旧 schema：手工建不含 model 的表（模拟升级前的库）
+        conn.execute_batch(
+            "CREATE TABLE exec_traces (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               session_id TEXT NOT NULL, task_id TEXT, origin TEXT NOT NULL, title TEXT,
+               status TEXT NOT NULL DEFAULT 'running', started_at INTEGER NOT NULL,
+               finished_at INTEGER, turn_count INTEGER NOT NULL DEFAULT 0,
+               tool_calls INTEGER NOT NULL DEFAULT 0, files_changed INTEGER NOT NULL DEFAULT 0,
+               prompt_tokens INTEGER NOT NULL DEFAULT 0, completion_tokens INTEGER NOT NULL DEFAULT 0,
+               error TEXT);",
+        )
+        .unwrap();
+        ensure_trace_tables(&conn).unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('exec_traces') WHERE name = 'model'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "旧库必须补出 model 列");
+        ensure_trace_tables(&conn).unwrap(); // 幂等：再跑一遍不炸不加
+                                             // 迁移后可正常写入读取
+        let id = mk_trace(&conn, "s1", None, "chat", 1000);
+        trace_finish(
+            &conn,
+            id,
+            &TraceFinish {
+                status: TRACE_STATUS_DONE,
+                finished_at: 2000,
+                turn_count: 1,
+                tool_calls: 0,
+                prompt_tokens: 10,
+                completion_tokens: 20,
+                error: None,
+                model: Some("glm-5.3"),
+            },
+        )
+        .unwrap();
+        let t = trace_get_row(&conn, id).unwrap().unwrap();
+        assert_eq!(t.model.as_deref(), Some("glm-5.3"), "finish 必须写入模型名");
+    }
+
+    /// model COALESCE 语义：None 收尾保留原值（无→NULL），Some 覆盖
+    #[test]
+    fn trace_finish_model_coalesce() {
+        let conn = setup_conn();
+        let id = mk_trace(&conn, "s1", None, "chat", 1000);
+        trace_finish(
+            &conn,
+            id,
+            &TraceFinish {
+                status: TRACE_STATUS_FAILED,
+                finished_at: 1100,
+                turn_count: 0,
+                tool_calls: 0,
+                prompt_tokens: 0,
+                completion_tokens: 0,
+                error: Some("boom"),
+                model: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            trace_get_row(&conn, id).unwrap().unwrap().model,
+            None,
+            "None 收尾不写模型"
+        );
+    }
+
+    /// 词元按日聚合：缺日补零 + 升序 + 僵尸 running 不计执行次数（token 计入）
+    #[test]
+    fn usage_stats_daily_zero_fills_and_counts_finished_only() {
+        let conn = setup_conn();
+        // 今天：一次完整执行（done）+ 一次僵尸 running——runs 只应算 1
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 6).unwrap();
+        let today_ms = today
+            .and_hms_opt(4, 0, 0)
+            .unwrap()
+            .and_local_timezone(chrono::Local)
+            .earliest()
+            .unwrap()
+            .timestamp_millis();
+        let id = mk_trace(&conn, "s1", None, "chat", today_ms);
+        trace_finish(
+            &conn,
+            id,
+            &TraceFinish {
+                status: TRACE_STATUS_DONE,
+                finished_at: today_ms + 100,
+                turn_count: 2,
+                tool_calls: 3,
+                prompt_tokens: 1000,
+                completion_tokens: 500,
+                error: None,
+                model: Some("glm-5.3"),
+            },
+        )
+        .unwrap();
+        // 僵尸：不 finish，手工点 prompt_tokens 模拟半路用量
+        let zombie = mk_trace(&conn, "s2", None, "chat", today_ms + 200);
+        conn.execute(
+            "UPDATE exec_traces SET prompt_tokens = 100 WHERE id = ?1",
+            [zombie],
+        )
+        .unwrap();
+        // 昨天：一次 stopped 执行
+        let y_ms = today_ms - 86_400_000;
+        let yid = mk_trace(&conn, "s1", None, "manual", y_ms);
+        trace_finish(
+            &conn,
+            yid,
+            &TraceFinish {
+                status: TRACE_STATUS_STOPPED,
+                finished_at: y_ms + 50,
+                turn_count: 1,
+                tool_calls: 1,
+                prompt_tokens: 200,
+                completion_tokens: 300,
+                error: None,
+                model: None,
+            },
+        )
+        .unwrap();
+
+        let days = usage_stats_daily_conn(&conn, 7, today).unwrap();
+        assert_eq!(days.len(), 7, "窗口 7 天必须逐日补零返回");
+        assert_eq!(days.last().unwrap().day, "2026-10-06");
+        assert_eq!(days[0].prompt_tokens, 0, "窗口外沿必须补零");
+        let today_row = days.last().unwrap();
+        assert_eq!(today_row.prompt_tokens, 1100, "token 含僵尸行");
+        assert_eq!(today_row.completion_tokens, 500);
+        assert_eq!(today_row.runs, 1, "僵尸 running 不算执行次数");
+        let y_row = &days[days.len() - 2];
+        assert_eq!((y_row.prompt_tokens, y_row.completion_tokens), (200, 300));
+        assert_eq!(y_row.runs, 1, "stopped 也算已收尾");
+    }
+
+    /// 按模型聚合：分组求和 + 总 tokens 降序 + NULL model 参与分组（前端显示未知）
+    #[test]
+    fn usage_stats_by_model_groups_orders_and_keeps_null() {
+        let conn = setup_conn();
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 6).unwrap();
+        let t0 = today
+            .and_hms_opt(4, 0, 0)
+            .unwrap()
+            .and_local_timezone(chrono::Local)
+            .earliest()
+            .unwrap()
+            .timestamp_millis();
+        let finish = |conn: &rusqlite::Connection, id: i64, p: i64, c: i64, model: Option<&str>| {
+            trace_finish(
+                conn,
+                id,
+                &TraceFinish {
+                    status: TRACE_STATUS_DONE,
+                    finished_at: t0 + 100,
+                    turn_count: 1,
+                    tool_calls: 0,
+                    prompt_tokens: p,
+                    completion_tokens: c,
+                    error: None,
+                    model,
+                },
+            )
+            .unwrap();
+        };
+        finish(
+            &conn,
+            mk_trace(&conn, "s1", None, "chat", t0),
+            100,
+            100,
+            Some("glm-5.3"),
+        );
+        finish(
+            &conn,
+            mk_trace(&conn, "s1", None, "chat", t0 + 1),
+            400,
+            400,
+            Some("glm-5.3"),
+        );
+        finish(
+            &conn,
+            mk_trace(&conn, "s2", None, "manual", t0 + 2),
+            300,
+            100,
+            Some("kimi-k3"),
+        );
+        finish(
+            &conn,
+            mk_trace(&conn, "s3", None, "manual", t0 + 3),
+            50,
+            50,
+            None,
+        );
+
+        let rows = usage_stats_by_model_conn(&conn, 7, today).unwrap();
+        assert_eq!(rows.len(), 3, "glm-5.3 / kimi-k3 / NULL 三组");
+        assert_eq!(rows[0].model.as_deref(), Some("glm-5.3"));
+        assert_eq!(
+            (rows[0].prompt_tokens, rows[0].completion_tokens),
+            (500, 500)
+        );
+        assert_eq!(rows[1].model.as_deref(), Some("kimi-k3"));
+        assert_eq!(rows[2].model, None, "NULL 模型保留（前端显示未知）");
+        assert!(
+            rows[0].prompt_tokens + rows[0].completion_tokens
+                >= rows[1].prompt_tokens + rows[1].completion_tokens,
+            "必须按总 tokens 降序"
+        );
+    }
+
+    /// 按模型×按日聚合：day 升序、(day, model) 分组、NULL model 保留、缺日不返回（前端补零）
+    #[test]
+    fn usage_stats_daily_by_model_groups_and_orders() {
+        let conn = setup_conn();
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 6).unwrap();
+        let t0 = today
+            .and_hms_opt(4, 0, 0)
+            .unwrap()
+            .and_local_timezone(chrono::Local)
+            .earliest()
+            .unwrap()
+            .timestamp_millis();
+        let finish =
+            |conn: &rusqlite::Connection, id: i64, at: i64, p: i64, model: Option<&str>| {
+                trace_finish(
+                    conn,
+                    id,
+                    &TraceFinish {
+                        status: TRACE_STATUS_DONE,
+                        finished_at: at + 100,
+                        turn_count: 1,
+                        tool_calls: 0,
+                        prompt_tokens: p,
+                        completion_tokens: p,
+                        error: None,
+                        model,
+                    },
+                )
+                .unwrap();
+            };
+        // 今天：glm-5.3 两行 + kimi 一行；昨天：NULL 模型一行
+        finish(
+            &conn,
+            mk_trace(&conn, "s1", None, "chat", t0),
+            t0,
+            100,
+            Some("glm-5.3"),
+        );
+        finish(
+            &conn,
+            mk_trace(&conn, "s1", None, "chat", t0 + 1),
+            t0 + 1,
+            200,
+            Some("glm-5.3"),
+        );
+        finish(
+            &conn,
+            mk_trace(&conn, "s2", None, "chat", t0 + 2),
+            t0 + 2,
+            50,
+            Some("kimi-k3"),
+        );
+        finish(
+            &conn,
+            mk_trace(&conn, "s3", None, "manual", t0 - 86_400_000),
+            t0 - 86_400_000,
+            30,
+            None,
+        );
+
+        let rows = usage_stats_daily_by_model_conn(&conn, 7, today).unwrap();
+        assert_eq!(
+            rows.len(),
+            3,
+            "10-05 NULL + 10-06 两模型 = 3 行；缺日不补零"
+        );
+        let days: Vec<&str> = rows.iter().map(|r| r.day.as_str()).collect();
+        assert_eq!(days, ["2026-10-05", "2026-10-06", "2026-10-06"], "day 升序");
+        assert_eq!(rows[0].model, None, "NULL 模型排在同日最前（NULLs first）");
+        assert_eq!((rows[0].prompt_tokens, rows[0].completion_tokens), (30, 30));
+        assert_eq!(rows[1].model.as_deref(), Some("glm-5.3"));
+        assert_eq!(
+            (rows[1].prompt_tokens, rows[1].completion_tokens),
+            (300, 300),
+            "同日同模型求和"
+        );
+        assert_eq!(rows[2].model.as_deref(), Some("kimi-k3"));
     }
 }
