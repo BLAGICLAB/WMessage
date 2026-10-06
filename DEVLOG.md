@@ -2,6 +2,28 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-06（周二）P2A-TRACEPANEL：执行详情面板 + 文件级回滚（Agent 透明化 P2-a）
+
+**承接**：设计 §5.2 / §10 批次卡 P2-a；P1 三表就位后的第一个消费面。
+
+**改动**：
+- 后端 `file_rollback` 命令（db/trace.rs）：change_id → file_change 行 → 双闸（漂移闸：
+  当前文件 sha == after_sha，不符拒——防吞掉 AI 修改之后的人工改动；快照闸：before_sha 校验）
+  → `data_dir/checkpoints/<before_ref>` 快照经 db::atomic_write 原子回写 → `file.rollback` 审计。
+  仅 modify（create 撤销=删文件，危险动作待立项）；bot_fs::sha256_hex 提升 pub(crate) 复用
+- 前端 `src/lib/trace.ts`：TraceRow/SpanRow/FileChangeRow/TraceDetail 类型（serde camelCase 镜像）
+  + traceListByTask/traceDetail/fileRollback 封装
+- 新组件 `src/components/TracePanel/`：TracePanel（createPortal 弹层——同 purge 弹窗包含块教训；
+  摘要头=状态/耗时/轮数/工具数/文件数/tokens + 同卡多次执行切换 pills；文件修改区=±行+diff 着色展开
+  +回滚按钮，漂移拒绝原文展示；工具时间线=每调用一行成败点+轮次+耗时，<details> 展开入参/结果）
+  + DiffView（unified diff 行着色，~30 行解析器不引库）+ index.ts
+- TodoCard：「执行详情」按钮（交给机器人旁）→ TracePanel 弹层；无痕迹空态文案
+
+**测试**：TracePanel.test.tsx +6（DiffView 着色矩阵/截断提示；摘要头/时间线失败标记/
+回滚成功重载/漂移拒绝原文/空态）。lib 1411 全绿；tsc/knip 绿。
+
+**验收**：设计 §14.2 P2 场景一「任务卡执行详情」界面侧就位（真机冒烟待 P2-c 齐后统一走查）。
+
 ## 2026-10-06（周二）T1F-FLAGRACE：测试基建——跨二进制 bot flag 并行竞态修复
 
 **根因**：nextest 下 exec_trace 与 task_chat_exec 两个二进制并行进程共享

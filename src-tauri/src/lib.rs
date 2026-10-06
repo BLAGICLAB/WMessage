@@ -506,6 +506,7 @@ pub fn run() {
             crate::db::trace::trace_detail,
             crate::db::trace::trace_clear_before,
             crate::db::trace::usage_stats_daily,
+            crate::db::trace::file_rollback,
             crate::db::schedule_jobs::scheduled_job_update,
             crate::db::schedule_jobs::scheduled_job_delete,
             crate::db::schedule_jobs::scheduled_job_history,

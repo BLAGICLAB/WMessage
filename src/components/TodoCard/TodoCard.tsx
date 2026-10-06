@@ -7,7 +7,7 @@
 
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { Bot, FileText, Folder, FolderOpen, GripVertical, Paperclip, Trash2, Undo2 } from "lucide-react";
+import { Bot, FileText, Folder, FolderOpen, GripVertical, History, Paperclip, Trash2, Undo2 } from "lucide-react";
 import { useDraggable } from "@dnd-kit/core";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -27,6 +27,7 @@ import {
 import { DoneCircle } from "../DoneCircle";
 import { FoldToggle } from "../FoldToggle";
 import { ActorAvatar } from "../ActorAvatar";
+import { TracePanel } from "../TracePanel";
 import { useInlineEdit } from "../useInlineEdit";
 
 import type { CardDrag, TodoCardViewProps } from "./types";
@@ -49,6 +50,8 @@ export function TodoCardView({
 
   const [editing, setEditing] = useState(autoEdit && !archived && !trashed);
   const [dueEditing, setDueEditing] = useState(false);
+  // P2-a：执行痕迹弹层（TracePanel 自带 portal，任务卡内点击「执行详情」打开）
+  const [traceOpen, setTraceOpen] = useState(false);
   const [noteEditing, setNoteEditing] = useState(false);
   const [noteDraft, setNoteDraft] = useState("");
   const [tagEditing, setTagEditing] = useState(false);
@@ -623,6 +626,15 @@ export function TodoCardView({
         >
           <Bot size={11} aria-hidden /> 交给机器人
         </button>
+        {/* P2-a：执行痕迹入口——时间线看每次工具调用（入参/结果/耗时/成败）+ 文件 diff/回滚 */}
+        <button
+          className="nm-btn px-2 py-0.5 text-[11px] leading-none text-[var(--t3)] flex items-center gap-1 whitespace-nowrap"
+          onPointerDown={stop}
+          onClick={() => setTraceOpen(true)}
+          title="查看执行痕迹（工具调用时间线 / 文件 diff / 回滚）"
+        >
+          <History size={11} aria-hidden /> 执行详情
+        </button>
       </div>
       )}
 
@@ -811,6 +823,12 @@ export function TodoCardView({
           </div>
         </div>,
         document.body
+      )}
+
+      {/* 执行痕迹弹层（P2-a）：TracePanel 自带 portal 到 body——同 purge 弹窗的
+          包含块裁缩问题，必须 portal 渲染 */}
+      {traceOpen && (
+        <TracePanel taskId={task.id} taskTitle={task.title} onClose={() => setTraceOpen(false)} />
       )}
     </div>
   );

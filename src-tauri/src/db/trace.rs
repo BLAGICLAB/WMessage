@@ -11,9 +11,10 @@
 //! - `MAX_DIFF_LINES`：unified diff 行数上限（P1-b 生成侧引用）
 //! - `TRACE_RETENTION_DAYS`：保留期默认 30 天（`retire_traces_before` 由命令/定时触发）
 
+use rusqlite::OptionalExtension;
 use serde::Serialize;
 
-use crate::error::CommandResult;
+use crate::error::{CommandError, CommandResult};
 
 /// args/result 单条文本钳制（16KB）
 pub const SPAN_TEXT_MAX: usize = 16 * 1024;
@@ -424,29 +425,47 @@ pub fn file_changes_for_trace(
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map([trace_id], |r| {
-            Ok(FileChangeRow {
-                id: r.get(0)?,
-                trace_id: r.get(1)?,
-                span_id: r.get(2)?,
-                path: r.get(3)?,
-                kind: r.get(4)?,
-                added: r.get(5)?,
-                deleted: r.get(6)?,
-                diff: r.get(7)?,
-                truncated: r.get::<_, i64>(8)? != 0,
-                before_ref: r.get(9)?,
-                before_sha: r.get(10)?,
-                after_sha: r.get(11)?,
-                created_at: r.get(12)?,
-            })
-        })
+        .query_map([trace_id], file_change_from_row)
         .map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for r in rows {
         out.push(r.map_err(|e| e.to_string())?);
     }
     Ok(out)
+}
+
+/// 单条文件变更定点读（file_rollback 入口用）
+pub fn file_change_get(
+    conn: &rusqlite::Connection,
+    id: i64,
+) -> Result<Option<FileChangeRow>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, trace_id, span_id, path, kind, added, deleted, diff, truncated, before_ref, before_sha, after_sha, created_at
+             FROM file_changes WHERE id = ?1",
+        )
+        .map_err(|e| e.to_string())?;
+    stmt.query_row([id], file_change_from_row)
+        .optional()
+        .map_err(|e| e.to_string())
+}
+
+fn file_change_from_row(r: &rusqlite::Row) -> rusqlite::Result<FileChangeRow> {
+    Ok(FileChangeRow {
+        id: r.get(0)?,
+        trace_id: r.get(1)?,
+        span_id: r.get(2)?,
+        path: r.get(3)?,
+        kind: r.get(4)?,
+        added: r.get(5)?,
+        deleted: r.get(6)?,
+        diff: r.get(7)?,
+        truncated: r.get::<_, i64>(8)? != 0,
+        before_ref: r.get(9)?,
+        before_sha: r.get(10)?,
+        after_sha: r.get(11)?,
+        created_at: r.get(12)?,
+    })
 }
 
 /// 保留期清理：删除「已收尾且 finished_at 早于 before_ms」或「一直挂着 running 且
@@ -587,6 +606,75 @@ pub fn usage_stats_daily(app: tauri::AppHandle, days: Option<i64>) -> CommandRes
         out.push(r.map_err(|e| e.to_string())?);
     }
     Ok(out)
+}
+
+/// 文件级回滚（P2-a，设计 §9.2-3）：把一次 AI 修改恢复到修改前快照。
+/// 双闸防吞改：
+/// 1. **漂移闸**——当前文件内容 sha 必须等于本变更落盘时的 after_sha，文件被
+///    （人/其他流程）动过即拒绝（覆盖会吞掉后续修改）；
+/// 2. **快照闸**——快照内容 sha 必须等于 before_sha（快照文件损坏/被换即拒绝）。
+/// 仅支持 modify：create 的撤销=删文件，属危险动作待立项（界面隐藏按钮兜底）。
+#[tauri::command]
+pub fn file_rollback(app: tauri::AppHandle, change_id: i64) -> CommandResult<String> {
+    let conn = super::open_db(&app)?;
+    let Some(c) = file_change_get(&conn, change_id)? else {
+        return Err(CommandError::Internal(format!(
+            "变更记录 {change_id} 不存在（可能已被保留期清理）"
+        )));
+    };
+    if c.kind != "modify" {
+        return Err(CommandError::Internal(format!(
+            "暂不支持 {} 类型的回滚（仅 modify；新建文件的撤销=删文件，属危险动作待立项）",
+            c.kind
+        )));
+    }
+    let Some(before_ref) = c.before_ref.clone() else {
+        return Err(CommandError::Internal(
+            "该变更无 before 快照（写盘时快照失败降级），无法回滚".into(),
+        ));
+    };
+    let path = std::path::PathBuf::from(&c.path);
+    if !path.is_file() {
+        return Err(CommandError::Internal(format!(
+            "目标文件已不存在：{}",
+            c.path
+        )));
+    }
+    let current = std::fs::read_to_string(&path)
+        .map_err(|e| CommandError::Internal(format!("当前文件不可读（{}）：{e}", c.path)))?;
+    if c.after_sha
+        .as_deref()
+        .is_none_or(|a| a != crate::bot_fs::sha256_hex(&current))
+    {
+        return Err(CommandError::Internal(format!(
+            "文件自本次修改后已被改动（指纹不符），拒绝回滚以免吞掉后续修改；请人工核对：{}",
+            c.path
+        )));
+    }
+    let snapshot = crate::db::paths::data_dir(&app)
+        .join("checkpoints")
+        .join(&before_ref);
+    let before = std::fs::read_to_string(&snapshot)
+        .map_err(|e| CommandError::Internal(format!("快照不可读（{before_ref}）：{e}")))?;
+    if c.before_sha
+        .as_deref()
+        .is_none_or(|b| b != crate::bot_fs::sha256_hex(&before))
+    {
+        return Err(CommandError::Internal(
+            "快照校验不符（before_sha），拒绝回滚".into(),
+        ));
+    }
+    crate::db::atomic_write(&path, &before).map_err(CommandError::Internal)?;
+    crate::audit::write_event(
+        &app,
+        crate::audit::AuditLevel::Warn,
+        "file.rollback",
+        &[
+            ("change_id", change_id.to_string()),
+            ("path", crate::bot::truncate_for_log(&c.path, 200)),
+        ],
+    );
+    Ok(format!("已回滚 {}（恢复到本次修改前）", c.path))
 }
 
 #[cfg(test)]

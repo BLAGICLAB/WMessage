@@ -669,7 +669,7 @@ pub(crate) fn build_unified_diff(
 }
 
 /// sha256 十六进制（回滚证据链：P2 回滚前比对 after_sha 防文件漂移）
-fn sha256_hex(s: &str) -> String {
+pub(crate) fn sha256_hex(s: &str) -> String {
     use sha2::Digest;
     let mut h = sha2::Sha256::new();
     h.update(s.as_bytes());
