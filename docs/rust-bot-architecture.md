@@ -31,7 +31,10 @@ src-tauri/src/
 │   │                     SubagentBudget 预算三硬顶；spawn 插 queued 行，check 幂等轮询）
 │   ├── people.rs         成员注册表（多人任务汇总的归属人字典；people_list 命令 +
 │   │                     upsert 最新名覆盖 + 占位兜底，见 docs/TASK-GRAPH-DESIGN-2026-10-05.md §1）
-│   ├── trace.rs          执行痕迹三表 exec_traces/exec_spans/file_changes（Agent 透明化
+│   ├── schedule_jobs.rs  内容型定时作业（T1）：XXL-JOB 式调度日志——重试/自动暂停/
+│   │                     错过消费 + scheduled_job_runs 执行历史；定时单源本表
+│   │                     （open_db 迁移把旧 tasks.schedule 迁入并清空任务卡侧）
+│   ├── db/trace.rs        执行痕迹三表 exec_traces/exec_spans/file_changes（Agent 透明化
 │   │                     设计 §4.1）：append-only 观测面 + 钳制单源（SPAN_TEXT_MAX 16KB /
 │   │                     MAX_DIFF_LINES）+ 保留期清理 retire_traces_before（僵尸 running 同删）
 │   └── workspace.rs      workspace / bind_files
@@ -491,6 +494,7 @@ flowchart TD
 - `db/mod.rs`
 - `db/paths.rs`
 - `db/people.rs`
+- `db/schedule_jobs.rs`
 - `db/skill_out.rs`
 - `db/tasks.rs`
 - `db/trace.rs`
