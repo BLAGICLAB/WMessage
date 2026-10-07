@@ -23,7 +23,8 @@ trap 'rm -f "$PYTEST_LOG"' EXIT
 # errexit 不会在 xfail 扫描与 PYTEST_EXIT 透传前中断（否则那两段是死代码）
 PYTEST_EXIT=0
 { python3 -m pytest tests-audit/audit_pre_step_pre_execute.py tests-audit/audit_tauri_bridge.py tests-audit/audit_error_codes.py tests-audit/audit_module_map.py -v 2>&1; PYTEST_EXIT=$?; } | tee "$PYTEST_LOG"
-if grep -qE '[1-9][0-9]* xfailed' "$PYTEST_LOG" || grep -qE '[1-9][0-9]* xpassed' "$PYTEST_LOG"; then
+# 锚定 pytest 总结行（行首 = 填充）：-v 转录正文出现「N xfailed」字样（docstring/参数化 id）不再误触发
+if grep -qE '^=+ .*[1-9][0-9]* xfailed' "$PYTEST_LOG" || grep -qE '^=+ .*[1-9][0-9]* xpassed' "$PYTEST_LOG"; then
     echo "✗ tests-audit 存在 xfail/xpass（Phase 6 政策：0 xfail 门禁）" >&2
     rm -f "$PYTEST_LOG"
     exit 1

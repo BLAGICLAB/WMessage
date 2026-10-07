@@ -10,9 +10,10 @@ PROJECT="src-tauri/dotnet/WmDocxRevisions/WmDocxRevisions.csproj"
 RID="win-x64"
 PUBLISH_DIR="src-tauri/dotnet/WmDocxRevisions/bin/Release/net8.0/${RID}/publish"
 OUT_ROOT="${1:-wmessage-portable-$(date +%F)}"
-# OUT_ROOT 校验（fail-closed）：拒空 / 绝对路径 / 含 .. / 以 - 开头——rm -rf "$OUT_DIR" 不可被路径注入
+# OUT_ROOT 校验（fail-closed）：拒空 / 绝对路径（含 Windows 盘符 :X 与 UNC \\\\ 开头）/ 含 .. / 以 - 开头
+# ——rm -rf "$OUT_DIR" 不可被路径注入；?:* 覆盖 C:/… C:\… C:… 三种盘符形态
 case "$OUT_ROOT" in
-  ""|/*|*..*|-*)
+  ""|/*|*..*|-*|?:*|'\\'*)
     echo "✗ OUT_ROOT 非法：'$OUT_ROOT'（须为相对路径，不含 ..，不以 - 开头）" >&2
     echo "  用法：scripts/publish-docx-dotnet.sh [输出根目录]" >&2
     exit 1
@@ -29,7 +30,8 @@ echo "[2/3] 归位 publish 产物 → ${OUT_DIR}/（剔除 .pdb，幂等重建�
 rm -rf -- "$OUT_DIR"
 mkdir -p -- "$OUT_DIR"
 # 手工包核对结论：dotnet/ 与 publish 目录文件清单一致，唯一差别是不带 wm-docx-revisions.pdb
-find "$PUBLISH_DIR" -maxdepth 1 -type f ! -name '*.pdb' -exec cp {} "$OUT_DIR/" \;
+# cp -- ：产物名若以 - 开头也不会被当成 flag 解析
+find "$PUBLISH_DIR" -maxdepth 1 -type f ! -name '*.pdb' -exec cp -- {} "$OUT_DIR/" \;
 
 echo "[3/3] 校验产物完整性"
 COUNT=$(find "$OUT_DIR" -maxdepth 1 -type f | wc -l | tr -d ' ')

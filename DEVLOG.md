@@ -19,6 +19,12 @@ OpenCodeReview（`ocr scan`，MiniMax-M3）全文件扫 328 个生产代码文�
 - 主控复核拦下代理 patch 的 3 处编译错 + 1 处测试回归（harvest 未来 mtime 语义与
   既有测试冲突，回退）+ 1 处死 import。
 - 验证：nextest 1573 全绿、tests-audit 4 项全绿、vitest 全绿、fmt/clippy 无 error。
+- **同日补做 medium 层**（bug/security/performance 397 条，maintainability/style/doc
+  等建议性条目仍留原始报告）：约 63 处确认为真并修复（keyring 初始化次序、secrets
+  读写对称限长、拖拽热路径 PK 点查、harvest 软链加固、C# MarkParagraphDeleted
+  原位标删等），详见证下文 triage 文档追记章节；主控拦下 2 处：medium 守卫的
+  ref 时序缺陷（ChatPanel 过期响应守卫依赖渲染后 ref，快响应被误丢，改切换点
+  同步落镜像）与测试夹具短假向量（M188 维度校验后 apply 防劫持测试需 512 维夹具）。
 
 ## 2026-10-06（周二）W-QA：工作流质量优化——结构化交接 + 证据结果 + 有界重试/返工环
 

@@ -50,12 +50,15 @@ if [ -f "$PROPOSALS" ]; then
   MTIME=$(stat -f "%Sm" -t "%Y-%m-%d %H:%M:%S" "$PROPOSALS" 2>/dev/null || stat -c "%y" "$PROPOSALS" 2>/dev/null | cut -d. -f1)
   if [ "$LINES" -gt 0 ]; then
     ok "proposals.jsonl 存在，$LINES 行，mtime $MTIME"
-    # 检查 timestamp/session 字段
-    LAST=$(tail -1 "$PROPOSALS" | grep -oE '"created_at_ms":[0-9]+|"session_id":"[^"]+"' | head -2)
-    if [ -n "$LAST" ]; then
-      ok "  最近一条带 timestamp/session: $LAST"
+    # 检查 timestamp/session 字段：两者都必须在（session_id 是回链会话的完整性关键字段，
+    # 只要有其一就放行会漏掉「有 ts 没 sid」的半截 proposal）
+    LAST_LINE=$(tail -1 "$PROPOSALS")
+    HAS_TS=$(echo "$LAST_LINE" | grep -oE '"created_at_ms":[0-9]+' | head -1)
+    HAS_SID=$(echo "$LAST_LINE" | grep -oE '"session_id":"[^"]+"' | head -1)
+    if [ -n "$HAS_TS" ] && [ -n "$HAS_SID" ]; then
+      ok "  最近一条带 timestamp/session: $HAS_TS $HAS_SID"
     else
-      fail "  最近一条缺 timestamp/session（提取器没填？）"
+      fail "  最近一条缺 timestamp 或 session（ts=$HAS_TS sid=$HAS_SID）"
     fi
   else
     fail "proposals.jsonl 存在但 0 行（提取器没触发？）"
@@ -138,6 +141,7 @@ echo ""
 echo "=== ⑥ 主记忆 mtime（应不变，§12.2 硬约束） ==="
 # wmessage 主记忆数据库位置
 DB_CANDIDATES=(
+  "$EVOLUTION_DIR/wmessage.db"   # 便携模式：真库就是上面探到的 data dir，否则 §12.2 查错文件
   "$HOME/Library/Application Support/wmessage/wmessage.db"
   "$HOME/.wmessage/memories.json"
 )

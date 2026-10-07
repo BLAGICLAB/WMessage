@@ -251,6 +251,9 @@ export function TracePanel({
                   onClick={() => {
                     setSelected(t);
                     setDetail(null);
+                    // 切换即清上次加载错误并进加载态：避免旧错误残留 + 空态文案闪现
+                    setError(null);
+                    setLoading(true);
                     const seq = ++detailSeqRef.current;
                     traceDetail(t.id)
                       .then((d) => {
@@ -260,6 +263,9 @@ export function TracePanel({
                       .catch((e) => {
                         if (seq !== detailSeqRef.current) return;
                         setError(String(e));
+                      })
+                      .finally(() => {
+                        if (seq === detailSeqRef.current) setLoading(false);
                       });
                   }}
                 >

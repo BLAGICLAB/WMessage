@@ -221,6 +221,9 @@ function WorkflowPageInner({
     setDecomposing(false); // 同 openWorkflow：seq 作废后旗标须就地复位
     setActiveId(null);
     setName(`工作流 ${new Date().toLocaleDateString()}`);
+    // 空白画布的名称是占位：nameAuto 复位为 true，AI 拆解后才能按目标自动改名
+    //（否则从已保存工作流切「新建」会残留 false，拆解后名字一直是默认日期名）
+    setNameAuto(true);
     setGoal("");
     setNodes([]);
     setSelectedIds([]);
@@ -822,7 +825,16 @@ function WorkflowPageInner({
           <Plus size={14} aria-hidden /> 新建
         </button>
         <div className="flex-1" />
-        <button className={toolbarBtn} onClick={addNode}>
+        <button
+          className={toolbarBtn}
+          onClick={addNode}
+          disabled={mode !== "edit"}
+          title={
+            mode !== "edit"
+              ? "先新建或打开一个工作流进入编辑态后才能加卡"
+              : "向画布添加节点"
+          }
+        >
           <Plus size={14} aria-hidden /> 加卡
         </button>
         <button

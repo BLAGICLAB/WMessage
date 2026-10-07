@@ -580,9 +580,12 @@ mod tests {
 
     #[test]
     fn apply_one_refuses_foreign_merge_and_preserves_target() {
-        // 同向量的既有用户记忆（异 key）：cos=1.0 命中 merge → 防劫持闸拒写
+        // 同向量的既有用户记忆（异 key）：cos=1.0 命中 merge → 防劫持闸拒写。
+        // 向量须合 embed 契约（512 维）——store 读取侧拒收异形 blob，
+        // 短假向量会在 load 时被降级成「无嵌入」，相似度闸根本不会命中
         let conn = mem_conn();
-        let emb = vec![1.0f32, 0.0, 0.0];
+        let mut emb = vec![0.0f32; crate::memory::embed::EMBED_DIM];
+        emb[0] = 1.0;
         let user = store::NewItem {
             kind: "fact".into(),
             content: "用户既有记忆".into(),

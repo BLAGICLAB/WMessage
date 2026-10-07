@@ -176,22 +176,35 @@ pub fn enabled_flag_path<R: tauri::Runtime>(app: &AppHandle<R>) -> PathBuf {
     crate::paths::flags_dir(app).join(ENABLED_FLAG_FILE)
 }
 
-/// 上次退出时 API 是否处于开启状态（仅做 flag 文件存在判断；供启动自动恢复）。
+/// 上次退出时 API 是否处于开启状态（校验 flag 内容而非仅凭存在：
+/// 半截/空文件不应触发自动恢复；供启动自动恢复）。
 pub fn should_autostart<R: tauri::Runtime>(app: &AppHandle<R>) -> bool {
-    enabled_flag_path(app).exists()
+    std::fs::read(enabled_flag_path(app))
+        .map(|b| b == b"1")
+        .unwrap_or(false)
 }
 
 /// 写开关标志（`api_start` 成功后调用）。
 pub fn write_enabled_flag<R: tauri::Runtime>(app: &AppHandle<R>) {
     let dir = crate::paths::flags_dir(app);
-    if std::fs::create_dir_all(&dir).is_ok() {
-        let _ = std::fs::write(dir.join(ENABLED_FLAG_FILE), b"1");
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        // flag 是「上次退出时 API 开启」的盘上事实源，写失败必须留痕
+        eprintln!("[api_auth] 建标志目录失败（下次启动不会自动恢复 API）：{e}");
+        return;
+    }
+    if let Err(e) = std::fs::write(dir.join(ENABLED_FLAG_FILE), b"1") {
+        eprintln!("[api_auth] 写开关标志失败（下次启动不会自动恢复 API）：{e}");
     }
 }
 
 /// 清开关标志（`api_stop` 后调用）。
 pub fn clear_enabled_flag<R: tauri::Runtime>(app: &AppHandle<R>) {
-    let _ = std::fs::remove_file(enabled_flag_path(app));
+    if let Err(e) = std::fs::remove_file(enabled_flag_path(app)) {
+        // NotFound = 本来就没开，正常；其余失败留痕——残留 flag 会让下次启动意外自动恢复
+        if e.kind() != std::io::ErrorKind::NotFound {
+            eprintln!("[api_auth] 清开关标志失败（下次启动可能意外自动恢复 API）：{e}");
+        }
+    }
 }
 
 #[cfg(test)]

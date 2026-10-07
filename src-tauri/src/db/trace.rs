@@ -556,11 +556,15 @@ pub fn usage_stats_daily_conn(
     today_local: chrono::NaiveDate,
 ) -> Result<Vec<UsageDay>, String> {
     let start_date = today_local - chrono::Duration::days(days - 1);
+    // 本地午夜落在 DST 空洞/时区数据缺失时响亮报错——静默回退 0 会扫全表
+    // 且把窗口外总量错画进图表
     let since_ms = start_date
         .and_hms_opt(0, 0, 0)
         .and_then(|t| t.and_local_timezone(chrono::Local).earliest())
         .map(|t| t.timestamp_millis())
-        .unwrap_or(0);
+        .ok_or_else(|| {
+            format!("无法把起始日期 {start_date} 解析为本地时间（时区数据缺失或 DST 空洞）")
+        })?;
     let mut stmt = conn
         .prepare(
             "SELECT date(started_at / 1000, 'unixepoch', 'localtime') AS day,
@@ -623,11 +627,15 @@ pub fn usage_stats_by_model_conn(
     today_local: chrono::NaiveDate,
 ) -> Result<Vec<UsageByModel>, String> {
     let start_date = today_local - chrono::Duration::days(days - 1);
+    // 本地午夜落在 DST 空洞/时区数据缺失时响亮报错——静默回退 0 会扫全表
+    // 且把窗口外总量错画进图表
     let since_ms = start_date
         .and_hms_opt(0, 0, 0)
         .and_then(|t| t.and_local_timezone(chrono::Local).earliest())
         .map(|t| t.timestamp_millis())
-        .unwrap_or(0);
+        .ok_or_else(|| {
+            format!("无法把起始日期 {start_date} 解析为本地时间（时区数据缺失或 DST 空洞）")
+        })?;
     let mut stmt = conn
         .prepare(
             "SELECT model, SUM(prompt_tokens), SUM(completion_tokens),
@@ -674,11 +682,15 @@ pub fn usage_stats_daily_by_model_conn(
     today_local: chrono::NaiveDate,
 ) -> Result<Vec<UsageDayModel>, String> {
     let start_date = today_local - chrono::Duration::days(days - 1);
+    // 本地午夜落在 DST 空洞/时区数据缺失时响亮报错——静默回退 0 会扫全表
+    // 且把窗口外总量错画进图表
     let since_ms = start_date
         .and_hms_opt(0, 0, 0)
         .and_then(|t| t.and_local_timezone(chrono::Local).earliest())
         .map(|t| t.timestamp_millis())
-        .unwrap_or(0);
+        .ok_or_else(|| {
+            format!("无法把起始日期 {start_date} 解析为本地时间（时区数据缺失或 DST 空洞）")
+        })?;
     let mut stmt = conn
         .prepare(
             "SELECT date(started_at / 1000, 'unixepoch', 'localtime') AS day, model,

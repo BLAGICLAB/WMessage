@@ -522,7 +522,19 @@ async fn execute_tool_impl(
 }
 
 pub(crate) fn parse_args(args: &str) -> serde_json::Value {
-    serde_json::from_str(args).unwrap_or(serde_json::Value::Null)
+    match serde_json::from_str(args) {
+        Ok(v) => v,
+        // 空/空白入参是「无参工具」常态，按 Null 静默放行；非空但坏 JSON 才留痕
+        //（模型侧 schema 故障可诊断），下游仍按 Null 走缺参报错，行为不变
+        Err(_) if args.trim().is_empty() => serde_json::Value::Null,
+        Err(e) => {
+            eprintln!(
+                "[bot] 工具参数 JSON 解析失败（按 Null 处理）：{e} | args: {}",
+                crate::audit::escape_for_log(args, 200)
+            );
+            serde_json::Value::Null
+        }
+    }
 }
 
 #[cfg(test)]

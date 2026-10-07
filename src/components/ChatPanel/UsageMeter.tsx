@@ -25,14 +25,16 @@ export function UsageMeter({
   const ratio =
     contextK && contextK > 0 && lastInput > 0 ? lastInput / (contextK * 1000) : null;
   const high = ratio != null && ratio >= 0.8;
+  // 显示口径与水位条一致：条已钳到 100% 封顶，标签/悬浮提示同样钳位（不出现 137%）
+  const pct = ratio != null ? Math.min(100, ratio * 100).toFixed(0) : null;
   return (
     <div
       className={`flex items-center gap-1.5 px-3 pb-0.5 text-[10px] tabular-nums ${
         high ? "text-[var(--danger,#ef4444)]" : "text-[var(--t5)]"
       }`}
       title={`本会话累计：输入 ${input} + 输出 ${output} tokens${
-        ratio != null
-          ? `；最近一轮输入 ${lastInput} ≈ 上下文窗口 ${(ratio * 100).toFixed(0)}%（模型条目 contextK=${contextK}）`
+        pct != null
+          ? `；最近一轮输入 ${lastInput} ≈ 上下文窗口 ${pct}%（模型条目 contextK=${contextK}）`
           : "（当前模型条目未设 contextK，不显示百分比）"
       }`}
     >
@@ -42,10 +44,10 @@ export function UsageMeter({
           <span className="h-1 w-16 overflow-hidden rounded-full bg-[var(--inset-bg)]">
             <span
               className={`block h-full ${high ? "bg-[var(--danger,#ef4444)]" : "bg-[var(--brand)]"}`}
-              style={{ width: `${Math.min(100, ratio * 100)}%` }}
+              style={{ width: `${pct}%` }}
             />
           </span>
-          <span>{(ratio * 100).toFixed(0)}%</span>
+          <span>{pct}%</span>
           {high && <span>· 上下文将满，建议 /compact</span>}
         </>
       )}

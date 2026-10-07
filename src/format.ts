@@ -159,8 +159,10 @@ export function formatSchedule(s: string): string {
     return `每天 ${h}:${m}`;
   }
   if (s.startsWith("weekly:")) {
-    // weekly:D:HH:MM —— 直接三段解构（此前两段拆分 t 只拿到小时，分钟丢成 undefined）
-    const [d, h, m] = s.slice(7).split(":");
+    // weekly:D:HH:MM —— 直接三段解构；段数不足（截断/损坏数据）原样显示
+    const parts = s.slice(7).split(":");
+    if (parts.length < 3) return s;
+    const [d, h, m] = parts;
     const names = ["一", "二", "三", "四", "五", "六", "日"];
     const n = names[Number(d) - 1] ?? "?";
     return `每周${n} ${h}:${m}`;
@@ -176,6 +178,8 @@ export function formatSchedule(s: string): string {
   if (s.startsWith("at:")) {
     const t = s.slice(3, 19); // YYYY-MM-DDTHH:mm（此前 slice(3,16) 把分钟切没了）
     const [d, hm] = t.split("T");
+    // 截断/损坏数据（无 T 或缺时间部分）原样显示，不渲染 undefined
+    if (!d || !hm) return s;
     return `${d.slice(5)} ${hm} 一次`;
   }
   return s;

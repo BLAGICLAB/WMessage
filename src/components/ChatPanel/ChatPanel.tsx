@@ -686,6 +686,9 @@ export function ChatPanel({
   const openExecSession = async (sid: string) => {
     setSessionMenuOpen(false);
     setSessionId(sid);
+    // 镜像同步落（effect 渲染后才补）：await 期间守卫读到的必须已是新会话，
+    // 否则快响应会被「过期」守卫误丢
+    sessionIdRef.current = sid;
     streamingMetaMapRef.current.set(sid, {});
     // 围观守卫（拍板 #22=B）：记录当前围观的执行会话——执行期间拦 Send
     //（防用户输入与执行响应交错 + 被收尾 history_load 冲掉）；切换会话自由
@@ -695,6 +698,8 @@ export function ChatPanel({
         "bot_history_load",
         { sessionId: sid }
       );
+      // 围观期间用户已切走：丢弃过期历史，防旧会话消息刷进当前视图
+      if (sessionIdRef.current !== sid) return;
       setMessages([
         ...rowsToMsgs(rows),
         { role: "assistant", content: "", streaming: true },
@@ -842,6 +847,8 @@ export function ChatPanel({
       return;
     }
     setSessionId(sid);
+    // 镜像同步落（同 openExecSession）：守卫在 await 之后读 ref，不能等渲染
+    sessionIdRef.current = sid;
     setSessionMenuOpen(false);
     setMessages([]);
     try {
@@ -854,6 +861,8 @@ export function ChatPanel({
           toolsJson?: string | null;
         }[]
       >("bot_history_load", { sessionId: sid });
+      // 等待期间用户已切到别的会话：丢弃过期响应（后到的慢响应不得盖掉新会话的加载结果）
+      if (sessionIdRef.current !== sid) return;
       let msgs = rowsToMsgs(rows);
       // 切回正在回复的会话：补一个流式占位气泡承接后续增量（已错过的增量段
       // 由收尾 full.text 整体校正，不会串进其他会话）

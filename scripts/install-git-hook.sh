@@ -27,6 +27,8 @@ fi
 TMP_HOOK="$HOOK.tmp.$$"
 cat > "$TMP_HOOK" <<'HOOK_TEMPLATE'
 #!/usr/bin/env bash
+# 仅当 core.hooksPath 指向 .githooks（scripts/install-hooks.sh 配置）时 git 才会调起本 hook；
+# 未配置（fresh clone / 全局 hooksPath / 临时 -c 覆盖）时本 hook 静默不生效
 cd "$(git rev-parse --show-toplevel)" || { echo "[pre-commit] 无法定位 repo root"; exit 1; }
 
 # >>> batch-verify gate (managed) >>>
@@ -81,10 +83,21 @@ fi
 # <<< batch-verify gate (managed) <<<
 
 # versioned pre-commit → scripts/test-fast.sh
-exec "$(dirname "$0")/../scripts/test-fast.sh"
+_test_fast="$(dirname "$0")/../scripts/test-fast.sh"
+if [[ ! -x "$_test_fast" ]]; then
+    echo "[pre-commit] scripts/test-fast.sh 缺失或不可执行: $_test_fast" >&2
+    echo "[pre-commit]   重跑 scripts/install-hooks.sh 修复权限，或恢复该文件" >&2
+    exit 1
+fi
+exec "$_test_fast"
 HOOK_TEMPLATE
 mv -f "$TMP_HOOK" "$HOOK"
 
 chmod +x "$HOOK"
 echo "[install-hook] 生成 $HOOK"
 bash -n "$HOOK" && echo "[install-hook] 语法 OK"
+# hook 只有 core.hooksPath 指向 .githooks 才会被 git 调起；激活归 install-hooks.sh 管，这里只提示
+if [ "$(git config --get core.hooksPath 2>/dev/null || true)" != ".githooks" ]; then
+    echo "[install-hook] 注意: core.hooksPath 未指向 .githooks，本 hook 尚不会被 git 调起"
+    echo "[install-hook]   执行 scripts/install-hooks.sh 激活（幂等）"
+fi

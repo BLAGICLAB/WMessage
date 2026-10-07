@@ -41,6 +41,8 @@ pub(crate) struct Dag {
 /// done+success 节点的边不计入入度——它们启动即视为已解析（断点续跑）。
 pub(crate) fn build_dag(tasks: &[Task], is_success: &dyn Fn(&Task) -> bool) -> Result<Dag, String> {
     let ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+    // 入度统计要按 id 取节点判成功态，先建索引避免每条依赖线性扫全表
+    let by_id: HashMap<&str, &Task> = tasks.iter().map(|t| (t.id.as_str(), t)).collect();
     let mut indegree: HashMap<String, usize> = HashMap::new();
     let mut dependents: HashMap<String, Vec<String>> = HashMap::new();
     let mut ready: Vec<String> = Vec::new();
@@ -69,13 +71,7 @@ pub(crate) fn build_dag(tasks: &[Task], is_success: &dyn Fn(&Task) -> bool) -> R
         }
         let deg = deps
             .iter()
-            .filter(|d| {
-                tasks
-                    .iter()
-                    .find(|x| x.id == **d)
-                    .map(|up| !is_success(up))
-                    .unwrap_or(false)
-            })
+            .filter(|d| by_id.get(*d).map(|up| !is_success(up)).unwrap_or(false))
             .count();
         indegree.insert(t.id.clone(), deg);
         if deg == 0 {

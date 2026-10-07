@@ -591,10 +591,14 @@ impl CoreHarness {
             }),
             audit_log: Box::new(|_| {}),
             skill_finish: Box::new(|_, _| String::new()),
-            // 用真 accessor（走兜底实例，与生产语义一致）；本组用例不插 run → 恒 None
-            active_skill_run: Box::new(|sid| {
-                wmessage_lib::bot_skills::active_skill_run_for(&mock_handle(), sid)
-            }),
+            // 用真 accessor（走兜底实例，与生产语义一致）；本组用例不插 run → 恒 None。
+            // handle 构造时捕获一次：闭包里每次调 mock_handle() 会 Box::leak 一个新
+            // mock_app，多轮用例下泄漏随调用次数增长；兜底注册表是全局 OnceLock，
+            // 复用同一 handle 语义不变
+            active_skill_run: {
+                let h = mock_handle();
+                Box::new(move |sid| wmessage_lib::bot_skills::active_skill_run_for(&h, sid))
+            },
             audit_events: events,
         }
     }

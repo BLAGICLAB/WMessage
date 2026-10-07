@@ -2,9 +2,9 @@
 //
 // 手柄 ☰ 在 TaskCardContent 内部；selectMode 时整卡单击切换选中。
 
-import { useRef } from "react";
+import { useCallback, useMemo, useRef } from "react";
 import { CSS } from "@dnd-kit/utilities";
-import { useDndMonitor } from "@dnd-kit/core";
+import { useDndMonitor, type DndMonitorListener } from "@dnd-kit/core";
 import { useSortable } from "@dnd-kit/sortable";
 
 import { TaskCardContent } from "../TaskCardContent";
@@ -49,20 +49,29 @@ export function SortableTaskCard({
   // 拖拽守卫：拖拽结束后浏览器会在同一元素派发 click——selectMode 下不能误切选中。
   // end/cancel 用 setTimeout(0) 复位：click 在 pointerup 后、timeout 前派发，时序上守卫有效。
   const wasDragging = useRef(false);
-  const resetIfSelf = (id: string | number) => {
-    if (id === task.id) setTimeout(() => { wasDragging.current = false; }, 0);
-  };
-  useDndMonitor({
-    onDragStart(e) {
-      if (e.active.id === task.id) wasDragging.current = true;
+  const resetIfSelf = useCallback(
+    (id: string | number) => {
+      if (id === task.id) setTimeout(() => { wasDragging.current = false; }, 0);
     },
-    onDragEnd(e) {
-      resetIfSelf(e.active.id);
-    },
-    onDragCancel(e) {
-      resetIfSelf(e.active.id);
-    },
-  });
+    [task.id],
+  );
+  // handler 对象 memo 化：useDndMonitor 以 listener 引用为 dep 重订阅，字面量
+  // 每次渲染都退订+重订（N 卡 × 每帧一次的订阅抖动）；memo 后仅 task.id 变化时重挂
+  const dndHandlers = useMemo<DndMonitorListener>(
+    () => ({
+      onDragStart(e) {
+        if (e.active.id === task.id) wasDragging.current = true;
+      },
+      onDragEnd(e) {
+        resetIfSelf(e.active.id);
+      },
+      onDragCancel(e) {
+        resetIfSelf(e.active.id);
+      },
+    }),
+    [task.id, resetIfSelf],
+  );
+  useDndMonitor(dndHandlers);
   const style = { transform: CSS.Transform.toString(transform), transition };
   return (
     <div

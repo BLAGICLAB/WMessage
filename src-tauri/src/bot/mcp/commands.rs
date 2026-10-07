@@ -156,7 +156,10 @@ pub fn mcp_server_delete(app: AppHandle, id: String) -> CommandResult<Vec<McpSer
             );
         }
     }
-    trigger_reload(&app);
+    // 幂等 no-op（id 已不存在，如陈旧标签页重试）不触发重载：免得白拆白建全部连接
+    if removed.is_some() {
+        trigger_reload(&app);
+    }
     Ok(list)
 }
 

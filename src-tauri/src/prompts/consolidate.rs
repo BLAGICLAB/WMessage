@@ -9,7 +9,8 @@ pub(crate) const CONSOLIDATE_PROMPT: &str = "\
 {\"action\":\"merge\",\"ids\":[\"id1\",\"id2\"],\"content\":\"合并后的内容\"},\
 {\"action\":\"contradiction\",\"keep\":\"保留的id\",\"drop\":\"删除的id\",\"content\":\"裁决后保留条目的新内容\"},\
 {\"action\":\"distill\",\"ids\":[\"id1\",\"id2\"],\"content\":\"从这些条目提炼出的规律或反思\"}]}。\
-规则：merge 用于内容重复或互补的条目；contradiction 用于互相矛盾的条目（按重要度和新旧裁决，\
-保留更可靠的那条并把它的内容更新准确）；distill 用于从多条相关记忆提炼一般规律。\
+规则：merge 用于内容重复或互补的条目；contradiction 用于互相矛盾的条目（按重要度和新旧裁决,\
+保留更可靠的那条并把它的内容更新准确；drop 是不可逆删除，两段内容矛盾不明显或拿不准时\
+宁可不裁决、输出 {\"ops\":[]} 留给下一轮）；distill 用于从多条相关记忆提炼一般规律。\
 没有值得做的就输出 {\"ops\":[]}。所有 content 用中文、各不超过 500 字。ids 必须原样引用上面的 id，\
 且每个 id 在整张 ops 数组中至多出现一次（不允许既 keep 又 drop，也不允许两个 op 同时引用它）。";

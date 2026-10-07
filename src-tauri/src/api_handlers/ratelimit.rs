@@ -7,7 +7,9 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-/// 每分钟请求上限（仅回环，防失控脚本）
+/// 每分钟请求上限（仅回环，防失控脚本）。
+/// 固定窗口语义：窗口拼接处最坏可突发 2 倍（2s 内 240 次）——对手是失控脚本
+/// 而非定向攻击，可接受；需严格 ≤N/60s 时再改滑动窗口。
 pub(crate) const RATE_LIMIT_PER_MIN: u32 = 120;
 
 static RATE: Mutex<(u64, u32)> = Mutex::new((0, 0));
@@ -26,7 +28,9 @@ pub(crate) fn rate_check() -> bool {
         eprintln!("[mutex_poisoned] api_handlers::ratelimit::RATE: {e:?}");
         e.into_inner()
     });
-    if now.saturating_sub(g.0) > 60_000 {
+    // 时钟回拨（NTP 步进/手动改时）时 now < g.0，saturating_sub 得 0 会把窗口
+    // 冻死（计数只增不清，回环 API 全被拒直到时钟追回）；回拨视同窗口过期直接重开
+    if now.checked_sub(g.0).map_or(true, |d| d > 60_000) {
         *g = (now, 0);
     }
     if g.1 >= RATE_LIMIT_PER_MIN {

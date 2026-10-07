@@ -51,6 +51,14 @@ impl McpSecrets {
         Ok(s)
     }
     pub fn from_blob(s: &str) -> Result<Self, String> {
+        // 读写同口径：超限 blob 读入即拒（与 to_blob 上限对称）——否则超限值
+        // 解析成功照常水合，下次原样重存时才在 to_blob 处爆雷
+        if s.len() > MCP_SECRET_BLOB_MAX_BYTES {
+            return Err(format!(
+                "机密 blob 过大（{} 字节 > 上限 {MCP_SECRET_BLOB_MAX_BYTES}）；请缩短 token 或拆分 env 条目",
+                s.len()
+            ));
+        }
         serde_json::from_str(s).map_err(|e| format!("机密 blob 解析失败：{e}"))
     }
 }
@@ -162,7 +170,14 @@ fn read_backend_at(
             }
         }
         KeyBackend::PlaintextFile => {
-            let raw = std::fs::read_to_string(file).unwrap_or_default();
+            // 读失败不静默吞：NotFound = 未落盘即无值；其余 I/O 错误传播
+            //（hydrate 层转空 + WARN）——权限/磁盘故障若当「无机密」会被缓存
+            // 固化成永久丢机密，与写路径的 NotFound 口径保持一致
+            let raw = match std::fs::read_to_string(file) {
+                Ok(s) => s,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(e) => return Err(format!("读取降级机密文件失败：{e}")),
+            };
             if raw.trim().is_empty() {
                 return Ok(None);
             }
@@ -258,10 +273,14 @@ fn delete_backend_at(backend: KeyBackend, file: &std::path::Path, id: &str) -> R
             Err(e) => Err(e),
         },
         KeyBackend::PlaintextFile => {
-            // 评审 HIGH 采纳：读失败不静默吞（与读路径口径一致——损坏文件
-            // 不能按「已清」误判）
-            let raw =
-                std::fs::read_to_string(file).map_err(|e| format!("读取降级机密文件失败：{e}"))?;
+            // NotFound = 文件从未落盘，按「已清」返回（幂等：purge 未写过的 id
+            // 不应报错，与 System 后端 NoEntry = Ok 口径一致）；其余 I/O 错误仍
+            // 传播——损坏文件不能按「已清」误判
+            let raw = match std::fs::read_to_string(file) {
+                Ok(s) => s,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(e) => return Err(format!("读取降级机密文件失败：{e}")),
+            };
             let mut map: std::collections::HashMap<String, McpSecrets> =
                 serde_json::from_str(&raw).map_err(|e| format!("降级机密文件解析失败：{e}"))?;
             if map.remove(id).is_none() {
@@ -323,11 +342,14 @@ pub(crate) fn hydrate_mcp_servers(app: &tauri::AppHandle, cfg: &mut crate::bot::
                     Ok(Some(secrets)) if !secrets.is_empty() => {
                         s.env = secrets.env.clone();
                         s.headers = secrets.headers.clone();
-                        // 双检（评审 M 采纳）：put 前重查缓存——期间另一线程
-                        // store 可能已写入新值，不能拿本线程读到的旧值覆盖
-                        if cache_get(&s.id).is_none() {
-                            cache_put(&s.id, Some(secrets));
-                        }
+                        // 查重与写入在同一把锁内完成（check-then-act 原子化）：
+                        // 键已存在（含并发 store 刚写入的新值）则不覆盖，
+                        // 杜绝本线程读到的旧值把新值冲掉
+                        let mut g = cache().lock().unwrap_or_else(|e| {
+                            eprintln!("[mutex_poisoned] mcp::secrets cache: {e:?}");
+                            e.into_inner()
+                        });
+                        g.entry(s.id.clone()).or_insert(Some(secrets));
                     }
                     Ok(_) => cache_put(&s.id, None),
                     Err(e) => {

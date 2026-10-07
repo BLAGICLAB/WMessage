@@ -54,9 +54,11 @@ pub(crate) fn over_limit(v: &str, max: usize, what: &str) -> Option<String> {
 pub(crate) fn change_log_line(op: &str, task: &db::Task) -> String {
     format!(
         "change op={} id={} status={} title={}",
-        op,
+        // op/column 与 title 同策略转义：op 由调用方传入、column 现为 TaskStatus
+        // 枚举 Display，任一处将来引入自由文本都不重演日志行伪造
+        crate::audit::escape_for_log(op, 32),
         task.id,
-        task.column,
+        crate::audit::escape_for_log(&task.column.to_string(), 32),
         crate::audit::escape_for_log(&task.title, 2 * API_MAX_TITLE)
     )
 }

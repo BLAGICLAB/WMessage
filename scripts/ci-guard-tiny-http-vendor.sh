@@ -34,8 +34,12 @@ fi
 if ! command -v jq >/dev/null 2>&1; then
     fail "需要 jq 解析 cargo metadata，请安装 jq 后重跑"
 fi
+if ! command -v cargo >/dev/null 2>&1; then
+    fail "需要 cargo 运行 cargo metadata，请安装 Rust toolchain 后重跑"
+fi
 
-SOURCE=$(cd src-tauri && cargo metadata --format-version 1 --no-deps 2>/dev/null \
+# 不吞 cargo 的 stderr：工具链/manifest 报错直接可见，避免被误读成「patch 已误删」
+SOURCE=$(cd src-tauri && cargo metadata --format-version 1 --no-deps \
     | jq -r '.packages[] | select(.name == "tiny_http") | .source' | head -1)
 
 if [ -z "$SOURCE" ] || [ "$SOURCE" = "null" ]; then

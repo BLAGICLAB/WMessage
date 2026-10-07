@@ -111,5 +111,9 @@ function ensureProfileListen() {
       cache = e.payload;
       notify();
     }
-  }).catch(() => {});
+  }).catch((e) => {
+    // 注册失败必须复位标志：否则下次 loadProfile 直接早退，profile-changed 永远接不上
+    listening = false;
+    console.warn("[profile] profile-changed 监听注册失败，待下次重试：", e);
+  });
 }

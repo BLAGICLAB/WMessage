@@ -484,10 +484,13 @@ fn migrate_legacy_keyring_entry(slot: KeySlot) {
 }
 
 /// System 后端读取前的准备工作（两步都幂等）：
-/// 降级明文文件回迁 keychain + v0 service 条目迁进带版本后缀的新条目。
+/// v0 service 条目迁进带版本后缀的新条目 + 降级明文文件回迁 keychain。
+/// 顺序有讲究：legacy 迁移在前——若先回迁明文，v1 有了值会让 legacy 迁移
+/// 早退（新条目非空即 no-op），v0 旧条目从此无人清理；先 legacy 后明文，
+/// 明文（降级窗口里更新的 key）最后落 v1，覆盖顺序天然正确。
 fn prepare_system_backend(slot: KeySlot) {
-    migrate_plaintext_key_if_system(slot);
     migrate_legacy_keyring_entry(slot);
+    migrate_plaintext_key_if_system(slot);
 }
 
 // ───────────────────────── 厂商级 LLM key（按厂商名分条目）─────────────────────────

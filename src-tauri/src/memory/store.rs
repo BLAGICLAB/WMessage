@@ -111,14 +111,21 @@ fn embedding_to_blob(v: &[f32]) -> Vec<u8> {
 }
 
 fn blob_to_embedding(b: &[u8]) -> Option<Vec<f32>> {
-    if b.len() % 4 != 0 || b.is_empty() {
+    // 维度按 embed 契约收紧（bge 512 维）：非 512 维 blob（换模型/导入脏数据）
+    // 原样解出会得到异形向量——与正规向量互算 cosine 恒 None（良性），
+    // 但两条同维脏向量会互相命中、污染去重与召回。判 None 走降级模式
+    // （关键词检索仍可用）。NaN/Inf 分量同理拒绝（会毒化排序比较）。
+    if b.len() != crate::memory::embed::EMBED_DIM * 4 {
         return None;
     }
-    Some(
-        b.chunks_exact(4)
-            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-            .collect(),
-    )
+    let v: Vec<f32> = b
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+    if v.iter().any(|f| !f.is_finite()) {
+        return None;
+    }
+    Some(v)
 }
 
 /// source 契约归一（读取侧）：历史数据存在 'user' 脏值（三值契约

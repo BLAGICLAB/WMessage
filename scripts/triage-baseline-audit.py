@@ -21,8 +21,15 @@ if not FILE.exists():
 
 data = json.loads(FILE.read_text())
 all_high = [c for c in data["comments"] if c.get("severity") == "high"]
-non_vendor = [c for c in all_high if "vendor" not in c["path"]]
-vendor = [c for c in all_high if "vendor" in c["path"]]
+
+
+def is_vendor_path(p):
+    # 按路径组件匹配：子串匹配会把 non_vendor 之类含 "vendor" 字样的路径误分类
+    return "vendor" in Path(p).parts
+
+
+non_vendor = [c for c in all_high if not is_vendor_path(c["path"])]
+vendor = [c for c in all_high if is_vendor_path(c["path"])]
 
 # 全局
 nv_raw = len(non_vendor)
@@ -108,11 +115,13 @@ print(f"other raw    = {other_raw}")
 print(f"other unique = {other_uniq}")
 print()
 
-# 断言 1
-if sum_unique + other_uniq != nv_unique:
-    print(f"ASSERT FAIL: {sum_unique} + {other_uniq} = {sum_unique + other_uniq} != {nv_unique}", file=sys.stderr)
+# 断言 1：未 triage 桶必须为空。原「sum + other == total」是构造上恒真的恒等式，
+# 检不出 get_domain 漏配 domain（新路径静默落 other）；此处改为硬性要求 other 为空
+if other_raw != 0 or other_uniq != 0:
+    print(f"ASSERT FAIL: {other_raw} 条（unique {other_uniq}）comment 落入 other，"
+          f"get_domain 疑漏配 domain", file=sys.stderr)
     sys.exit(1)
-print(f"✓ 断言 1：已 triage unique ({sum_unique}) + 其他 unique ({other_uniq}) == {nv_unique}")
+print(f"✓ 断言 1：全部 {nv_unique} 条 unique comment 均已 triage（other 为空）")
 
 # 断言 2：总 dups（vendor + non-vendor）= ?
 total_dups = (v_raw - v_unique) + (nv_raw - nv_unique)

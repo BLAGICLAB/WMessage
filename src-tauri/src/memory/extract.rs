@@ -453,18 +453,15 @@ fn apply_adjudications(
     sp: &store::StoreParams,
 ) -> Result<AdjudicationCounts, String> {
     let mut counts = AdjudicationCounts::default();
-    // Update 目标存在性复查：裁决在锁外做，落库前按当前表校验（防间隙删除）。
+    // Update 目标存在性复查：裁决在锁外做，落库前按当前表定向点查（防间隙删除；
+    // 不再 load_all 反序列化整表 ~1MB 向量，同 update_core/stats_core 注释口径）。
     // 表 existence 由调用方（快照段 ensure_table）保证；insert_item_with 内部
     // 还会再 ensure 一次（幂等）。
-    let current: std::collections::HashMap<String, store::MemItem> = store::load_all(conn)?
-        .into_iter()
-        .map(|m| (m.id.clone(), m))
-        .collect();
     for ((f, emb), adj) in facts.iter().zip(fact_embs).zip(adjs) {
         match adj {
             Adjudication::Skip => counts.skipped += 1,
             Adjudication::New => apply_insert(conn, f, emb.as_deref(), now_ms, sp, &mut counts),
-            Adjudication::Update(id) => match current.get(id) {
+            Adjudication::Update(id) => match store::find_by_id(conn, id)? {
                 Some(orig) => {
                     match store::update_by_id(
                         conn,

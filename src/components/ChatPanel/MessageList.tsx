@@ -4,7 +4,7 @@
 // RichText 的 markdown 解析是重活，N 条消息 × 每帧一次的全列表重渲染是
 // 长会话掉帧主因）。回调句柄由父级 useCallback 固定，memo 浅比较即可命中。
 
-import { memo, useState, type ComponentType } from "react";
+import { memo, useMemo, useState, type ComponentType } from "react";
 import { Check, Copy, FileText, MessageCircle, MessagesSquare, Pin, Trash2, TriangleAlert } from "lucide-react";
 import { basename } from "../../format";
 import { extractFilePaths, openTarget } from "../../lib/openTarget";
@@ -38,8 +38,9 @@ type MsgBubbleProps = BubbleCallbacks & {
 };
 
 function MsgBubbleBase({ msg: m, idx, isCopied, busy, verboseLevel, onCopy, onRemove, onOpenTask, onOpenExecSession }: MsgBubbleProps) {
-  // 一次性算文件路径 + 是否显示操作行（避免在渲染条件里 IIFE + mutation m._fps 的反模式）
-  const fps = extractFilePaths(m.content);
+  // 一次性算文件路径 + 是否显示操作行（避免在渲染条件里 IIFE + mutation m._fps 的反模式）；
+  // 流式末条气泡每帧重渲染，useMemo 让路径正则只在内容变化时重跑
+  const fps = useMemo(() => extractFilePaths(m.content), [m.content]);
   const hasContent = !!m.content.trim();
   const showActions =
     m.role === "assistant" &&

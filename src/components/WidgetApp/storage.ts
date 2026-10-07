@@ -47,11 +47,20 @@ export function loadSize(): WidgetSize | null {
   try {
     const raw = localStorage.getItem(SIZE_KEY);
     if (raw) {
-      const s = JSON.parse(raw) as WidgetSize;
-      if (
-        s.w >= PANEL_W_MIN && s.w <= PANEL_W_MAX &&
-        s.h >= PANEL_H_MIN && s.h <= PANEL_H_MAX
-      ) return s;
+      // 形状校验（对齐 loadAnchor 策略）：w/h 必须为有限数值——
+      // 直接 as 断言会让污染存储里的 "500"（字符串）靠隐式转换混过边界比较
+      const p: unknown = JSON.parse(raw);
+      if (p !== null && typeof p === "object" && !Array.isArray(p)) {
+        const s = p as Record<string, unknown>;
+        if (
+          typeof s.w === "number" && Number.isFinite(s.w) &&
+          typeof s.h === "number" && Number.isFinite(s.h) &&
+          s.w >= PANEL_W_MIN && s.w <= PANEL_W_MAX &&
+          s.h >= PANEL_H_MIN && s.h <= PANEL_H_MAX
+        ) {
+          return { w: s.w, h: s.h };
+        }
+      }
     }
   } catch {
     /* ignore */

@@ -38,10 +38,13 @@ pub(crate) fn read_jsonl<T: serde::de::DeserializeOwned>(
     label: &str,
 ) -> Result<Vec<T>, String> {
     use std::io::BufRead;
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let f = std::fs::File::open(path).map_err(|e| format!("打开 {path:?} 失败：{e}"))?;
+    // 打开即判存在：NotFound = 无文件返回空——消除「exists 通过后、open 前被删」
+    // 间隙里的伪 Err（并发 append 场景下 jsonl 只增不删，此竞态仅剩换名/重建触发）
+    let f = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("打开 {path:?} 失败：{e}")),
+    };
     let reader = std::io::BufReader::new(f);
     let mut out = Vec::new();
     let mut corrupt_backed_up = false;
@@ -157,6 +160,9 @@ fn notify_evolution_proposals<R: tauri::Runtime>(
 /// 本函数通过全局 OnceLock 取出——consolidate 侧 caller 无需关心。
 pub fn post_consolidation(ops: &[ConsolidateOp], report: &ConsolidateReport) {
     let proposals = derive::derive_proposals(ops, report);
+    // 治理开关只读一次：下方「通知过滤」与「apply 闸」两处决策共用同一值——
+    // 两次独立读盘在并发改档（设置页 toggle）时可能不一致，通知与落库口径分裂
+    let auto_allowed = policy::auto_apply_allowed(emit::app_handle());
     // Phase 2：emit（audit）之前先把达门槛的子集挑出来交给 apply——
     // emit 的 24h dedup 会吞掉重复提案，apply 侧靠 evo:<proposal_id> 持久幂等，
     // 两条去重链路互不影响。
@@ -185,7 +191,7 @@ pub fn post_consolidation(ops: &[ConsolidateOp], report: &ConsolidateReport) {
                     "count" => new_entries.len().to_string(),
                 );
                 // 通知中心逐条落消息；auto 档下达门槛、即将被自动应用的提案不打扰
-                let auto_allowed = policy::auto_apply_allowed(emit::app_handle());
+                //（auto_allowed 为函数头单次读取，见上）
                 let to_notify: Vec<_> = new_entries
                     .into_iter()
                     .filter(|e| {
@@ -217,7 +223,7 @@ pub fn post_consolidation(ops: &[ConsolidateOp], report: &ConsolidateReport) {
     // U20 治理归一：applyPolicy=confirm 档不再自动落库，达门槛提案全留候选池
     // 等决策板人工批准（W1 执行器在 toggle ON 时落库）。缺字段/非法值/无句柄
     //（测试环境）= auto = 改前行为（默认档零变化）；confirm 分流留 Info 审计。
-    if policy::auto_apply_allowed(emit::app_handle()) {
+    if auto_allowed {
         apply::apply_from_consolidation(gated);
     } else if let Some(app) = emit::app_handle() {
         crate::audit_event!(

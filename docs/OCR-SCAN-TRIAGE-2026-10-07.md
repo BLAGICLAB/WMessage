@@ -138,3 +138,59 @@
   可按 `grep '\[bug · medium\]'` 之类按类别捞）。
 - 测试代码（约 90 个 `*.test.*`）不在本次扫描范围；需要时可 `ocr scan --path` 单独扫。
 - clippy 137 条存量 warning 可作独立清理批。
+
+---
+
+# 追记：medium 层核查（bug / security / performance 共 397 条，2026-10-07 上午补做）
+
+critical/high 落地后，把「有真实危害可能」的 medium 层（bug 294 + security 34 +
+performance 69 = 397 条）按同一协议补查：8 个并行评审代理 + 主控复核 + C# 4 条主控
+亲核。maintainability / style / documentation / test / other 的 medium（约 320 条）
+与全部 low（约 390 条）仍属建议性/低价值，未机械过——留在原始报告。
+
+## 判定统计（397 条）
+
+| 判定 | 数量（约） | 说明 |
+|------|-----------|------|
+| 确认为真、已修复 | ≈63 | 主控亲核 C# 4 条中 2 修 2 加留痕 |
+| 别处已有防线 / 本轮他代理先修 | ≈30 | 分块重复覆盖所致的第二遍核查，全部与首判吻合 |
+| 误报（FALSE_POSITIVE） | ≈60 | 典型：假设不存在的 `Result` 返回（lib.rs 三条同型）；RMW 基线「取自初始快照」前提与代码相反（实取写前 fresh 重载） |
+| WONTFIX（有据） | ≈244 | 建议性重构、性能微优化不抵回归风险、既有拍板取舍 |
+
+## 本轮重点修复（择要）
+
+- **secrets**：`read_backend_at` 读故障不再静默当「无机密」（防权限故障被缓存固化成
+  永久丢机密）；`delete_backend_at` NotFound 幂等；`from_blob` 与 `to_blob` 读写对称
+  限长；hydrate 缓存 check-then-act 原子化。
+- **keyring 初始化次序**：legacy 明文迁移先于后端写入（防明文先入新档致 v0 条目孤儿）。
+- **API**：Content-Length 与实读字节截断校验（不等回 408）；限流器时钟回拨视同窗口
+  过期（防回环 API 被冻死）；`Authorization` 头 op/column 过 escape_for_log。
+- **机器人链路**：工具附图读取、剪贴板写入移入 spawn_blocking；doc_extract 对话框
+  线程异常不再伪装「用户取消」（记审计）；UTF-16 BOM 奇数字节响亮失败；memory
+  `blob_to_embedding` 校验维度+有限性（防脏向量互配污染去重）。
+- **任务/工作流**：`task_set_column`/`task_patch` 全表扫改 PK 点查（拖拽热路径）；
+  build_dag 建索引消 O(n²)；MCP 服务器删除幂等（no-op 不再重建全部连接）；
+  `tasks_export` 补写锁拿一致快照。
+- **harvest 加固**：入口跳过符号链接、copy_rec 不跟随软链（与 critical 软链闸同口径）。
+- **前端**：formatSchedule 截断数据原样显示不渲染 undefined；ChatPanel 会话切换过期
+  响应守卫；TracePanel 切换清错+loading 态；WorkspacePage removeItem 补写闸；
+  SortableTaskCard useDndMonitor 回调稳定化；ProviderLogo 按 CodePoint 取首字。
+- **脚本/治具**：health-check 对准便携模式真库；install-hooks 解析软链 + 防误写
+  ~/.gitconfig；sync-version 节内匹配 + semver 形状校验；triage-baseline 断言改
+  实效断言；pbtest 失败 exit(1)；pre-commit 模板与 live hook 同步 `-x` 预检。
+- **C#（主控亲核）**：`MarkParagraphDeleted` 删除标记原位替换（原实现追加段尾，
+  「文本+图片+文本」段修订视图图片漂移）；File.Copy 半截产物回退前清理（OpenXML
+  Create 对已存在路径抛 IOException，不清会双重失败）；行拆列不符与字符级 diff
+  超限两处结构降级补 stderr 留痕。
+
+## 验证证据（本轮）
+
+- `cargo check` 0 error、`cargo fmt` 过、`tsc --noEmit` 干净、批次号红线干净。
+- 全量 `scripts/test-all.sh`（nextest + tests-audit + vitest）通过后提交。
+
+## 遗留（更新）
+
+- maintainability/style/documentation/test/other 的 medium（约 320 条）与全部 low
+  （约 390 条）未机械核查：均为建议性重构或微优化，逐条修的 churn 风险大于收益；
+  原始报告可按 `grep '\[maintainability · medium\]'` 等捞取。
+- 测试代码（约 90 个 `*.test.*`）与 clippy 137 条存量 warning 同前。

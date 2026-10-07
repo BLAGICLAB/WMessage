@@ -301,7 +301,9 @@ for m in ["openpyxl", "docx", "pptx", "pypdf", "reportlab"]:
     let mut libs = Vec::new();
     if let Some(out) = probe_output_with_timeout(&py, &["-c", probe]) {
         for line in out.lines() {
-            if line.contains(':') {
+            // 只收探针格式的 `name:OK` / `name:缺` 行——sitecustomize 等额外
+            // stdout 混入时不得伪装成库条目
+            if line.ends_with(":OK") || line.ends_with(":缺") {
                 libs.push(line.to_string());
             }
         }

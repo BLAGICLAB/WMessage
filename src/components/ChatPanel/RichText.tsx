@@ -17,7 +17,9 @@ export function RichText({ text }: { text: string }) {
     const token = m[0];
     if (idx > last) parts.push(<span key={key++}>{text.slice(last, idx)}</span>);
     const isUrl = isHttpUrl(token);
-    const clean = isUrl ? token.replace(/[.,;:!?]+$/, "") : token;
+    // 尾随 ASCII 标点 URL/路径统一剥离（与 extractFilePaths 同口径）：
+    // 无扩展名路径分支（PATH_CHAR 含「.」）会把句末「…/app.」的句号带进路径
+    const clean = token.replace(/[.,;:!?]+$/, "");
     parts.push(
       // URL 给真 href；路径不设 href（防中键/复制链接把文件路径当 URL），
       // 补 role/tabIndex/Enter 保持键盘可达（与 MarkdownText 行内代码链接同形态）

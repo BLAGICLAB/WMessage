@@ -136,9 +136,16 @@ pub async fn tool_clipboard_write(app: &AppHandle, args: &str) -> ToolResult {
         Err(e) => return ToolResult::ok(e, Vec::new()),
     };
     let n = text.chars().count();
-    use tauri_plugin_clipboard_manager::ClipboardExt;
-    match app.clipboard().write_text(text) {
-        Ok(()) => {
+    // 模块约定「同步平台调用全部 spawn_blocking」：剪贴板写入触系统 pasteboard
+    // （macOS 走 IPC），粘贴板慢/卡时不占 async worker——与截图路径同策略
+    let app2 = app.clone();
+    let written = tauri::async_runtime::spawn_blocking(move || {
+        use tauri_plugin_clipboard_manager::ClipboardExt;
+        app2.clipboard().write_text(text)
+    })
+    .await;
+    match written {
+        Ok(Ok(())) => {
             crate::bot::audit_log(app, &format!("desktop.clipboard_write | {} chars", n));
             // 「已复制」首字「已」非 error/warn 前缀 → ok
             ToolResult::ok(
@@ -147,7 +154,9 @@ pub async fn tool_clipboard_write(app: &AppHandle, args: &str) -> ToolResult {
             )
         }
         // 「写入剪贴板失败：」首字「写」非 error/warn 前缀 → ok
-        Err(e) => ToolResult::ok(format!("写入剪贴板失败：{e}"), Vec::new()),
+        Ok(Err(e)) => ToolResult::ok(format!("写入剪贴板失败：{e}"), Vec::new()),
+        // 「失败：剪贴板线程异常」以「失败」开头 → error（同截图线程异常口径）
+        Err(e) => ToolResult::error(format!("失败：剪贴板线程异常：{e}"), Vec::new()),
     }
 }
 

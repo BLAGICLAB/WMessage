@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# 仅当 core.hooksPath 指向 .githooks（scripts/install-hooks.sh 配置）时 git 才会调起本 hook；
+# 未配置（fresh clone / 全局 hooksPath / 临时 -c 覆盖）时本 hook 静默不生效
 cd "$(git rev-parse --show-toplevel)" || { echo "[pre-commit] 无法定位 repo root"; exit 1; }
 
 # >>> batch-verify gate (managed) >>>
@@ -53,4 +55,10 @@ fi
 # <<< batch-verify gate (managed) <<<
 
 # versioned pre-commit → scripts/test-fast.sh
-exec "$(dirname "$0")/../scripts/test-fast.sh"
+_test_fast="$(dirname "$0")/../scripts/test-fast.sh"
+if [[ ! -x "$_test_fast" ]]; then
+    echo "[pre-commit] scripts/test-fast.sh 缺失或不可执行: $_test_fast" >&2
+    echo "[pre-commit]   重跑 scripts/install-hooks.sh 修复权限，或恢复该文件" >&2
+    exit 1
+fi
+exec "$_test_fast"

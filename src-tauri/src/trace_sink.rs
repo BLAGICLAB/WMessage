@@ -245,7 +245,9 @@ pub(crate) async fn end_trace<R: tauri::Runtime>(
                 model: stats.as_ref().and_then(|t| t.model.as_deref()),
             },
         )?;
-        Ok(crate::db::trace_get_row(&conn, trace_id)?.expect("刚 finish 的 trace 行必在"))
+        // 行理论上必在；并发清理/异常缺行时降级为 Err（走「收尾失败」降级日志），不 panic
+        crate::db::trace_get_row(&conn, trace_id)?
+            .ok_or_else(|| format!("trace_finish 后 trace {trace_id} 行缺失"))
     })
     .await;
     match r {
@@ -346,7 +348,15 @@ async fn writer<R: tauri::Runtime>(app: AppHandle<R>, mut rx: mpsc::Receiver<Tra
         match result {
             Ok(()) => conn = Some(c),
             Err(e) => {
-                // 半批丢弃 + 连接重开（下轮 open_db 幂等重建）；观测面 best-effort
+                // 半批丢弃 + 连接重开（下轮 open_db 幂等重建）；观测面 best-effort。
+                // 丢弃必须落审计留痕（同 trace.span_overflow 口径），否则观测面可能
+                // 静默降级为零覆盖而无任何外部信号
+                crate::audit::write_event(
+                    &app,
+                    crate::audit::AuditLevel::Warn,
+                    "trace.batch_dropped",
+                    &[("batch_len", batch_len.to_string()), ("err", e.clone())],
+                );
                 eprintln!("[trace_sink] 批量落库失败（{batch_len} 条丢弃，重连）：{e}");
             }
         }

@@ -19,6 +19,18 @@ pub fn harvest_run_outputs(dir: &Path, gen_dir: &Path, audit: &mut dyn FnMut(&st
             continue;
         }
         let src = e.path();
+        // 符号链接不搬运不跟随：rename 会把链接本体搬进 AI_Gen_Files（目标仍在
+        // run 目录外），顺着拷会把白名单外目标的内容带进产物目录——留痕跳过
+        let is_symlink = std::fs::symlink_metadata(&src)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false);
+        if is_symlink {
+            audit(&format!(
+                "run_python | harvest 跳过符号链接：{}",
+                src.display()
+            ));
+            continue;
+        }
         let dest = dedup_dest(gen_dir, &name);
         // rename 失败（跨盘等）走 copy+remove；remove 失败必须把刚拷出的副本
         // 删掉回滚——否则源/目标双份留存且不计数、不出审计，用户毫无感知
@@ -69,7 +81,13 @@ pub fn dedup_dest(dir: &Path, name: &std::ffi::OsStr) -> std::path::PathBuf {
 }
 
 pub fn copy_rec(src: &Path, dest: &Path) -> std::io::Result<()> {
-    if src.is_dir() {
+    // symlink_metadata 看条目本身：嵌在子目录里的符号链接同样跳过不跟随，
+    // 防止把 run 目录外的目标内容拷进 AI_Gen_Files
+    let meta = std::fs::symlink_metadata(src)?;
+    if meta.file_type().is_symlink() {
+        return Ok(());
+    }
+    if meta.is_dir() {
         std::fs::create_dir_all(dest)?;
         for e in std::fs::read_dir(src)? {
             let e = e?;

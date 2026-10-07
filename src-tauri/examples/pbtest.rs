@@ -33,6 +33,10 @@ fn main() {
     let ok3 = pb.setString_forType(&text, unsafe { NSPasteboardTypeString });
 
     println!("writeObjects={ok1} filenames={ok2} setString={ok3}");
+    // 任一写板失败以非零退出：包一层脚本/手工调用时才能感知失败
+    if !(ok1 && ok2 && ok3) {
+        std::process::exit(1);
+    }
 }
 
 #[cfg(not(target_os = "macos"))]

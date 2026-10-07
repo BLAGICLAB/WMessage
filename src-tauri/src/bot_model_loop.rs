@@ -1505,9 +1505,20 @@ where
                     "type": "text",
                     "text": "〔系统附图〕以上工具返回了截图，请直接用视觉能力读取图片内容。"
                 })];
+                // 单图至多 3MB（读文件 + base64）：与 bot_chat 附件链路同款包
+                // spawn_blocking，防多图/并发会话把 async runtime 线程占死
+                let images = tool_outcome.images.clone();
+                let read = tauri::async_runtime::spawn_blocking(move || {
+                    images
+                        .iter()
+                        .map(|p| crate::bot_chat::image_part_from_file(std::path::Path::new(p)))
+                        .collect::<Vec<_>>()
+                })
+                .await
+                .unwrap_or_default();
                 let mut attached = 0usize;
-                for p in &tool_outcome.images {
-                    match crate::bot_chat::image_part_from_file(std::path::Path::new(p)) {
+                for (p, part) in tool_outcome.images.iter().zip(read) {
+                    match part {
                         Some(part) => {
                             parts.push(part);
                             attached += 1;

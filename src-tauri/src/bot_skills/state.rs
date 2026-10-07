@@ -218,11 +218,22 @@ pub(crate) fn load_skill_meta<R: tauri::Runtime>(
     }
     for dir in &skill_search_paths(app) {
         let path = dir.join(name).join("SKILL.md");
-        if !path.exists() {
+        // is_file 预检：不存在/目录直接换下一个 fallback 目录
+        if !path.is_file() {
             continue;
         }
-        let text = std::fs::read_to_string(&path)
-            .map_err(|_| format!("技能「{name}」存在但 SKILL.md 读取失败"))?;
+        // 直接读并按 NotFound 继续 fallback——消除「预检通过后、读取前被删」
+        // 间隙误报「读取失败」；其余 I/O 错误带原因报错（不再吞掉错误详情）
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                return Err(CommandError::DomainRule {
+                    domain: "skill".to_string(),
+                    reason: format!("技能「{name}」的 SKILL.md 读取失败：{e}"),
+                });
+            }
+        };
         let meta = parse_meta(&text, name);
         let body: String = text.chars().take(MAX_SKILL_BODY).collect();
         return Ok((meta, body, dir.join(name)));

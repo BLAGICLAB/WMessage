@@ -214,6 +214,8 @@ export default function GraphPage({
   const removeDependency = (depId: string) => {
     const self = selectedNode?.task;
     if (!self) return;
+    // 镜像 addDependency：移除前清掉上次「循环依赖」报错，防旧错误挂到下一次添加上
+    setDepError(null);
     onPatchTask(self.id, {
       dependsOn: (self.dependsOn ?? []).filter((id) => id !== depId),
     });

@@ -180,7 +180,9 @@ export function assignInsertOrder<T extends { id: string; order?: number }>(
   let order: number | null = null;
   if (lo !== undefined && hi !== undefined) {
     if (hi - lo > 1e-9) order = (lo + hi) / 2;
-    else return arr.map((t, i) => ({ ...t, order: i }));
+    // 浮点耗尽全量整数重排：order 未变的条目保留原引用（对齐上方 docstring），
+    // 内容未变的行 React 引用稳定、taskEq 内容相等直接豁免，不产生多余落盘
+    else return arr.map((t, i) => (t.order === i ? t : { ...t, order: i }));
   } else if (lo !== undefined) {
     order = lo + 1;
   } else if (hi !== undefined) {

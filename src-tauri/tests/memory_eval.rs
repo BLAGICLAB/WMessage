@@ -259,8 +259,11 @@ fn eval_extract_sample() {
         })
         .collect();
     let out_path = repo_root().join("fixtures/memory_extract_sample.jsonl");
-    std::fs::write(&out_path, format!("{}\n", lines.join("\n")))
-        .unwrap_or_else(|e| panic!("写采样文件失败：{e}"));
+    // 原子写：先写 .tmp 再 rename，中断不留含 PII 片段的半截采样文件
+    let tmp_path = out_path.with_extension("jsonl.tmp");
+    std::fs::write(&tmp_path, format!("{}\n", lines.join("\n")))
+        .unwrap_or_else(|e| panic!("写采样临时文件失败：{e}"));
+    std::fs::rename(&tmp_path, &out_path).unwrap_or_else(|e| panic!("rename 采样文件失败：{e}"));
     println!(
         "已导出 {} 条抽取产物 → {}（human_label 留空，标注口径：good/bad/fix）",
         lines.len(),

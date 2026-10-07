@@ -64,6 +64,9 @@ if (canInPlace)
     catch (Exception ex)
     {
         Console.Error.WriteLine($"复制原文失败（回退新建模式）：{ex.Message}");
+        // 拷贝半途失败会留下截断的 outPath，而 OpenXML Create 对已存在路径直接抛异常，
+        // 不清掉的话回退新建模式也会失败
+        try { if (File.Exists(outPath)) File.Delete(outPath); } catch { /* 尽力清理 */ }
         canInPlace = false;
     }
 }
@@ -363,28 +366,26 @@ static OpenXmlElement ReplaceUnit(Body body, Unit unit, string newText, Func<int
         }
         return tbl;
     }
+    // 列数对不上（典型：单元格文本自身含 " | " 分隔符）→ 整行删 + 平文段落重写。
+    // 结构降级保留为既有行为，但必须响亮留痕，用户才知道这行丢了表格结构
+    Console.Error.WriteLine(
+        $"warn: 行拆列不符（{cells.Count} 列 vs {parts.Length} 段），该行按「整行删除+整段插入」降级处理");
     DeleteUnit(ru, nextId);
     return InsertRevisedParagraph(body, tbl, newText, nextId);
 }
 
-// 整段标删：每个含文本的 run 转 DeletedRun（克隆 rPr，w:t → w:delText），
-// 无文本的 run（图片/对象等）保持原样不动；hyperlink 先解包（run 保留 rPr 外观）
+// 整段标删：每个含文本的 run 原位转 DeletedRun（克隆 rPr，w:t → w:delText），
+// 无文本的 run（图片/对象等）保持原位不动——若把删除标记统一追加到段尾，
+// 「文本+图片+文本」段会变成「图片+删标+删标」，修订视图里图片相对文本移位；
+// hyperlink 先解包（run 保留 rPr 外观）
 static void MarkParagraphDeleted(Paragraph para, Func<int> nextId)
 {
     UnwrapHyperlinks(para);
-    var runs = para.Elements<Run>().ToList();
-    var dels = new List<DeletedRun>();
-    foreach (var r in runs)
+    foreach (var child in para.ChildElements.ToList())
     {
-        var text = RunText(r);
-        if (text.Length == 0) continue;
-        dels.Add(MakeDel(text, r.RunProperties, nextId));
+        if (child is Run r && RunText(r).Length > 0)
+            para.ReplaceChild(MakeDel(RunText(r), r.RunProperties, nextId), r);
     }
-    foreach (var r in runs)
-    {
-        if (RunText(r).Length > 0) r.Remove();
-    }
-    foreach (var d in dels) para.Append(d);
 }
 
 // 行内字符级 diff：equal 片段沿用原 run（克隆 rPr 拆段），del/ins 克隆锚点 rPr。
@@ -666,7 +667,11 @@ static List<Opcode> DiffText(string a, string b)
 {
     const int MaxCells = 4_000_000; // 4M int ≈ 16MB，超出则整段 replace
     if ((long)a.Length * b.Length > MaxCells)
+    {
+        // 退化必须有痕：否则用户只看到「整段删+整段增」，不知道为什么没有字符级修订
+        Console.Error.WriteLine($"warn: 段落过长（{a.Length}×{b.Length} 字符），字符级 diff 退化为整段替换");
         return new List<Opcode> { new Opcode("replace", 0, a.Length, 0, b.Length) };
+    }
     return DiffList(a.ToCharArray(), b.ToCharArray());
 }
 

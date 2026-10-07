@@ -83,16 +83,12 @@ pub fn format_recovery_hint(
 /// 按 id 去重 TaskRef 列表，保留首次出现的标题（run_model_loop 工具循环完成后用）。
 /// 剥出便于单测：dedup 顺序敏感（首次保留）有 spec 含义，不能漂移。
 pub fn merge_task_refs_dedup(refs: Vec<TaskRef>) -> Vec<TaskRef> {
-    let mut seen: Vec<String> = Vec::new();
+    // HashSet 判重（O(1) 查找）：批量大卡累积 refs 时 Vec::contains 是 O(n²)；
+    // insert 返回「是否新插入」，首次保留语义不变
+    let mut seen: std::collections::HashSet<String> =
+        std::collections::HashSet::with_capacity(refs.len());
     refs.into_iter()
-        .filter(|r| {
-            if seen.contains(&r.id) {
-                false
-            } else {
-                seen.push(r.id.clone());
-                true
-            }
-        })
+        .filter(|r| seen.insert(r.id.clone()))
         .collect()
 }
 
@@ -275,7 +271,10 @@ impl Default for BatchPolicy {
 
 /// 聊天模式批量执行：每张卡调一次 run_task_in_chat（每卡独立新会话，
 /// EXECUTE_SYSTEM_PROMPT + 50 轮工具循环），单卡失败不污染其他卡的执行记录。
-/// 顺序执行（避免文件写冲突）；一卡失败继续（任一卡失败不阻断后续）；共用 StopGuard（/stop 一次清空）。
+/// 顺序执行（避免文件写冲突）；一卡失败继续（任一卡失败不阻断后续）。
+/// /stop 语义：外层 stop 只在**卡片之间**判定——每卡内部用自己新建的
+/// StopGuard（新会话 id，/stop 按会话匹配不到它），故 /stop 只阻止下一张卡
+/// 启动，不中断正在执行的卡。
 /// 汇总报告：每张卡的开头 + 执行结果 + 总数 + 失败清单；task_refs 跨卡去重（merge_task_refs_dedup）。
 ///
 /// T5：接受 `policy` 参数控制失败是否继续。默认 `BatchPolicy::default()`（ContinueOnError）。
@@ -843,9 +842,10 @@ pub async fn bot_chat(
     };
     // 选择任务卡批量执行（路由终态，不是前置短路：步骤 1-3 已按序完成）：
     // B 方案（1=宽松 / 2=继续 / 3=共用 stop）：每张卡复用
-    // run_task_in_chat（EXECUTE_SYSTEM_PROMPT + 50 轮工具循环）；共用同一 StopGuard：
-    // 聊天里 /stop 一次能中断整个批量执行。定时任务模式（bot_scheduler，interactive=false）
-    // 同样只走 run_task_in_chat，不经本聊天流程，互不干扰。
+    // run_task_in_chat（EXECUTE_SYSTEM_PROMPT + 50 轮工具循环）；外层 stop 在
+    // 卡片之间判定：聊天里 /stop 一次能阻止后续所有卡启动（正在执行的卡有
+    // 自己新会话的 StopGuard，不受影响，跑到本卡结束）。定时任务模式
+    // （bot_scheduler，interactive=false）同样只走 run_task_in_chat，不经本聊天流程，互不干扰。
     if let Some(task_ids) = batch_execute_tasks {
         crate::audit_event!(
             &app,

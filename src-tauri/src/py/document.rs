@@ -877,7 +877,17 @@ pub async fn doc_extract(app: AppHandle, path: Option<String>) -> CommandResult<
                 handle.dialog().file().blocking_pick_file()
             })
             .await
-            .unwrap_or(None);
+            .unwrap_or_else(|e| {
+                // 对话框线程异常不能伪装成「用户取消」——记审计后按未选择处理
+                py_audit(
+                    &app,
+                    &format!(
+                        "doc_extract dialog join err | {}",
+                        crate::audit::escape_for_log(&e.to_string(), 200)
+                    ),
+                );
+                None
+            });
             resolve_doc_path(picked.and_then(file_path_to_string))?
         }
     };

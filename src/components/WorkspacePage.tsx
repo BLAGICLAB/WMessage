@@ -118,6 +118,8 @@ export function WorkspacePage() {
       await upsertWorkspaceItems(next);
       // emit 放在 endWrite 之前：listener 看到写在飞会排队，由 endWrite 统一补发 reload
       emit("workspace-changed").catch(() => {});
+    } catch {
+      // 失败提示已由 storage 层 alert 弹出；这里吞掉 rejection（调用方均不 await）
     } finally {
       endWrite();
     }
@@ -191,9 +193,19 @@ export function WorkspacePage() {
 
   const removeItem = async (id: string) => {
     if (!window.confirm("删除这个工作区？其中的链接也会被移除。")) return;
-    await deleteWorkspaceRows([id]);
-    setItems((prev) => prev.filter((it) => it.id !== id));
-    emit("workspace-changed").catch(() => {});
+    // 与 persist 同一道写闸：删除在飞时 workspace-changed 触发的 reload 会排队，
+    // 避免「重读旧库 → setItems 盖掉乐观过滤 → 已删项闪回」的窗口
+    beginWrite();
+    try {
+      await deleteWorkspaceRows([id]);
+      setItems((prev) => prev.filter((it) => it.id !== id));
+      // emit 放在 endWrite 之前：listener 看到写在飞会排队，由 endWrite 统一补发 reload
+      emit("workspace-changed").catch(() => {});
+    } catch {
+      // 失败提示已由 storage 层 alert 弹出；这里吞掉 rejection
+    } finally {
+      endWrite();
+    }
   };
 
   const toggleCollapsed = (id: string) => {

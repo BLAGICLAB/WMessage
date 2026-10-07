@@ -10,7 +10,9 @@
 //! std::collections::hash_map::DefaultHasher 用随机种（Rust 1.x 后），所以不能用；
 //! 用 FNV-1a 64-bit 是确定性的、便宜的、跨平台一致。
 
-/// FNV-1a 64-bit hash（确定性、跨进程稳定）
+/// FNV-1a 64-bit hash（确定性、跨进程稳定）。
+/// **非加密哈希**：可逆、易碰撞，仅限分桶/路由/指纹这类非对抗场景，
+/// 禁止用于完整性校验、防篡改、token 比较等安全用途
 pub fn fnv1a(s: &str) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325; // FNV offset basis
     for byte in s.bytes() {

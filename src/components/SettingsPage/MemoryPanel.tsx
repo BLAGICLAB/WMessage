@@ -105,6 +105,11 @@ export function MemoryPanel() {
   /** 对话框期互斥：plugin-dialog 弹原生框期间 busy 仍为 false，state 挡不住
    *  连点/串台开框——用 ref 在 await save/open 之前同步占住（导出/导入共用） */
   const dialogGateRef = useRef(false);
+  /** 同帧双击闸：state（busy/pendingBusy）要等重渲染提交才生效，同一渲染帧内
+   *  的两次点击都能穿过 disabled 检查——编辑/删除、待确认操作用 ref 在函数入口
+   *  同步占住（导出/导入已由 dialogGateRef 全程覆盖，不重复加） */
+  const busyRef = useRef(false);
+  const pendingBusyRef = useRef(false);
   /** 设置提示并重置自动清除计时器（重设前清旧，卸载时清尾） */
   const showIoMsg = (msg: string) => {
     if (ioMsgTimer.current) clearTimeout(ioMsgTimer.current);
@@ -207,12 +212,18 @@ export function MemoryPanel() {
     reload(debouncedQuery, kindFilter);
   }, [debouncedQuery, kindFilter, reload]);
 
-  /** U16 待确认队列：加载（静默失败 = 无队列，不打扰） */
+  /** U16 待确认队列：加载（静默失败 = 无队列，不打扰）。
+   *  竞态令牌同 reload：approve 在途时的 reloadPending 与挂载期加载并发时，
+   *  先发的慢响应不得用变更前的旧队列盖掉新结果 */
+  const pendingReqIdRef = useRef(0);
   const reloadPending = useCallback(async () => {
+    const reqId = ++pendingReqIdRef.current;
     try {
       const list = await invoke<MemPendingView[]>("mem_pending_list");
+      if (reqId !== pendingReqIdRef.current) return; // 已有更新请求，丢弃过期结果
       setPending(Array.isArray(list) ? list : []);
     } catch (e) {
+      if (reqId !== pendingReqIdRef.current) return;
       // 静默降级为空队列，但留 console 痕迹（命令消失/DB 锁死等回归可查）
       console.warn("[MemoryPanel] mem_pending_list 失败，按空队列处理：", e);
       setPending([]);
@@ -227,7 +238,8 @@ export function MemoryPanel() {
    *  reject 只动队列（不进库）→ 不刷主列表；approve 才双刷 */
   const actOnPending = useCallback(
     async (ids: number[], action: "approve" | "reject") => {
-      if (ids.length === 0) return;
+      if (ids.length === 0 || pendingBusyRef.current) return;
+      pendingBusyRef.current = true;
       setPendingBusy(true);
       try {
         if (action === "approve") {
@@ -245,10 +257,11 @@ export function MemoryPanel() {
       } catch (e) {
         showIoMsg(`操作失败：${formatCommandError(e)}`);
       } finally {
+        pendingBusyRef.current = false;
         setPendingBusy(false);
       }
     },
-    [pendingBusy, debouncedQuery, kindFilter, reload, reloadPending, showIoMsg],
+    [debouncedQuery, kindFilter, reload, reloadPending, showIoMsg],
   );
 
   const startEdit = (m: MemItemView) => {
@@ -260,12 +273,13 @@ export function MemoryPanel() {
   };
 
   const saveEdit = async () => {
-    if (!editingId) return;
+    if (!editingId || busyRef.current) return;
     // 预检：空内容免一次后端往返（后端同样校验，双保险）
     if (!editContent.trim()) {
       setRowError("记忆内容不能为空（要删除请用删除按钮）");
       return;
     }
+    busyRef.current = true;
     setBusy(true);
     setRowError("");
     try {
@@ -280,11 +294,13 @@ export function MemoryPanel() {
     } catch (e) {
       setRowError(formatCommandError(e));
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   };
 
   const removeItem = async (m: MemItemView) => {
+    if (busyRef.current) return;
     // evo: 前缀条目来自自进化链路（提案回滚的教训），删除影响回滚后注入——确认文案点名
     const fromEvolution = (m.tags?.[0] ?? "").startsWith("evo:");
     const ok = window.confirm(
@@ -293,6 +309,7 @@ export function MemoryPanel() {
         : `删除这条记忆？\n\n${m.content.slice(0, 80)}`,
     );
     if (!ok) return;
+    busyRef.current = true;
     setBusy(true);
     setRowError("");
     try {
@@ -301,6 +318,7 @@ export function MemoryPanel() {
     } catch (e) {
       setRowError(formatCommandError(e));
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   };

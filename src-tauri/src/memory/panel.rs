@@ -146,10 +146,9 @@ pub(crate) fn update_core(
     if !EDITABLE_KINDS.contains(&kind) {
         return Err(format!("未知记忆类型：{kind}"));
     }
-    let existing = store::load_all(conn)?
-        .into_iter()
-        .find(|m| m.id == id)
-        .ok_or_else(|| "记忆不存在或已被删除".to_string())?;
+    // 定向单查：不在写路径反序列化整表（~1MB 向量），同 stats_core 注释口径
+    let existing =
+        store::find_by_id(conn, id)?.ok_or_else(|| "记忆不存在或已被删除".to_string())?;
     store::update_by_id(
         conn,
         id,
@@ -160,9 +159,7 @@ pub(crate) fn update_core(
         embedding,
         now_ms,
     )?;
-    let updated = store::load_all(conn)?
-        .into_iter()
-        .find(|m| m.id == id)
+    let updated = store::find_by_id(conn, id)?
         .ok_or_else(|| "更新后读取失败（该记忆可能刚被并发删除，请刷新列表后重试）".to_string())?;
     Ok(MemItemView::from(&updated))
 }

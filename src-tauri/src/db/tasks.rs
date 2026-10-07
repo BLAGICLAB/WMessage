@@ -749,10 +749,9 @@ pub(crate) fn task_set_column_locked(
     status: TaskStatus,
     now: i64,
 ) -> CommandResult<super::Task> {
-    let mut task = load_all(conn)?
-        .into_iter()
-        .find(|t| t.id == id)
-        .ok_or_else(|| CommandError::TaskNotFound(id.to_string()))?;
+    // 单卡定点读（PK 索引），不走 load_all 全表扫——每次拖拽/完成都在写锁内
+    let mut task =
+        load_task(conn, id)?.ok_or_else(|| CommandError::TaskNotFound(id.to_string()))?;
     task.expected_updated_at = task.updated_at;
     task.updated_at = Some(now);
     match status {
@@ -1011,10 +1010,9 @@ pub(crate) fn task_patch_locked(
     patch: &serde_json::Value,
     now: i64,
 ) -> CommandResult<super::Task> {
-    let mut task = load_all(conn)?
-        .into_iter()
-        .find(|t| t.id == id)
-        .ok_or_else(|| CommandError::TaskNotFound(id.to_string()))?;
+    // 单卡定点读（PK 索引），不走 load_all 全表扫——每次软删/归档/编辑/折叠都在写锁内
+    let mut task =
+        load_task(conn, id)?.ok_or_else(|| CommandError::TaskNotFound(id.to_string()))?;
     apply_task_patch(&mut task, patch)?;
     task.expected_updated_at = task.updated_at;
     task.updated_at = Some(now);
@@ -1381,6 +1379,9 @@ pub fn import_tasks_conn(
 pub async fn tasks_export(app: AppHandle, path: String) -> CommandResult<usize> {
     check_export_path(&path)?;
     async_runtime::spawn_blocking(move || {
+        // 导出读全表 + people 表，拿写锁保证快照一致——避免与 task_patch /
+        // 调度器并发写产生「半新半旧」的撕裂信封（导出低频，锁竞争可接受）
+        let _g = super::lock_db_write();
         let conn = super::open_db(&app)?;
         let (pid, name) = crate::profile::export_profile_card(&app);
         let (json, count) = export_tasks_json(&conn, &pid, &name)?;

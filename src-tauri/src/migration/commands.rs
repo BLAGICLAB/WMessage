@@ -50,16 +50,33 @@ pub async fn migration_rules_import(app: AppHandle) -> CommandResult<usize> {
         .map_err(|e| CommandError::IoError(format!("对话框路径转换失败：{e}")))?;
     let bytes = fs::read(&path).map_err(|e| CommandError::IoError(format!("读取失败：{e}")))?;
     // 编码兜底链：UTF-8 → UTF-16 LE/BE（Excel「Unicode 文本」导出）→ GBK（Excel 默认导出）
+    // UTF-16 分支要求 BOM 后字节数为偶数：奇数 = 文件被截断/损坏，chunks_exact
+    // 会静默丢掉最后一个半码元——破坏性 move/delete 规则不能建立在损坏解码上，
+    // 响亮失败（与下方 GBK 的 had_errors 拒绝同口径）
     let text = if bytes.starts_with(&[0xFF, 0xFE]) {
+        let payload = &bytes[2..];
+        if payload.len() % 2 != 0 {
+            return Err(CommandError::IoError(
+                "UTF-16 LE 文件字节数为奇数（BOM 后），文件可能已损坏，请用 UTF-8 保存后重试"
+                    .into(),
+            ));
+        }
         String::from_utf16_lossy(
-            &bytes[2..]
+            &payload
                 .chunks_exact(2)
                 .map(|c| u16::from_le_bytes([c[0], c[1]]))
                 .collect::<Vec<_>>(),
         )
     } else if bytes.starts_with(&[0xFE, 0xFF]) {
+        let payload = &bytes[2..];
+        if payload.len() % 2 != 0 {
+            return Err(CommandError::IoError(
+                "UTF-16 BE 文件字节数为奇数（BOM 后），文件可能已损坏，请用 UTF-8 保存后重试"
+                    .into(),
+            ));
+        }
         String::from_utf16_lossy(
-            &bytes[2..]
+            &payload
                 .chunks_exact(2)
                 .map(|c| u16::from_be_bytes([c[0], c[1]]))
                 .collect::<Vec<_>>(),

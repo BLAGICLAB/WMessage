@@ -49,6 +49,7 @@ pub(crate) fn read_body_limited(req: &mut Request) -> BodyRead {
             return BodyRead::Malformed;
         }
     }
+    let mut declared_len: Option<u64> = None;
     if let Some(raw) = content_length_headers.first() {
         let declared = match raw.parse::<u64>() {
             Ok(n) => n,
@@ -57,16 +58,21 @@ pub(crate) fn read_body_limited(req: &mut Request) -> BodyRead {
         if declared > MAX_BODY_BYTES {
             return BodyRead::TooLarge;
         }
+        // 声明长度留给读完后的截断校验：提前 EOF = 请求不完整，
+        // 不得把截断 body 当成功回给 handler（JSON 会被静默切半）
+        declared_len = Some(declared);
     }
     let deadline = Instant::now() + BODY_READ_DEADLINE;
     let mut buf = Vec::new();
     let mut reader = req.as_reader().take(MAX_BODY_BYTES + 1);
     let mut chunk = [0u8; 8192];
+    let mut total_read: u64 = 0;
     loop {
         match reader.read(&mut chunk) {
             Ok(0) => break,
             Ok(n) => {
                 buf.extend_from_slice(&chunk[..n]);
+                total_read += n as u64;
                 if buf.len() as u64 > MAX_BODY_BYTES {
                     return BodyRead::TooLarge;
                 }
@@ -77,6 +83,12 @@ pub(crate) fn read_body_limited(req: &mut Request) -> BodyRead {
                 }
             }
             Err(_) => return BodyRead::IoFailed,
+        }
+    }
+    // 实读字节数 ≠ 声明值（声明少发 = 截断）→ 按连接中断语义回 408
+    if let Some(exp) = declared_len {
+        if total_read != exp {
+            return BodyRead::IoFailed;
         }
     }
     BodyRead::Ok(String::from_utf8_lossy(&buf).into_owned())

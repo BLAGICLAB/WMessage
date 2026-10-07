@@ -57,7 +57,9 @@ def main() -> None:
     src = REGISTRY.read_text()
     schemas = dict(re.findall(r'pub const SCHEMA_(\w+): &str = r##"(.*?)"##;', src, re.S))
     missing = [n for n in CORE_ORDER if n not in schemas]
-    assert not missing, f"registry.rs 缺常量 SCHEMA_{missing}"
+    # 用异常而非 assert：python -O 会剥掉 assert，漏常量会静默产出坏基线
+    if missing:
+        raise RuntimeError(f"registry.rs 缺常量 SCHEMA_{missing}")
 
     # 抽取的 schema 必须都能 parse（防 raw string 截断）——必须先验证再覆写
     # fixture，解析失败时旧基线原样保留，不会被坏数据覆盖

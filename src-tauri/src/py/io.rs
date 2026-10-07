@@ -9,7 +9,11 @@ use crate::py::runtime::OUTPUT_CAP;
 pub fn read_capped_drain<R: Read>(src: R, cap: usize) -> (Vec<u8>, bool) {
     let mut probe = src.take(cap as u64 + 1);
     let mut buf = Vec::new();
-    let _ = probe.read_to_end(&mut buf);
+    // 读中断（子进程被杀/管道断裂）时 buf 可能不满且 truncated 探测不到——
+    // 留痕不静默，避免「假完整」输出
+    if let Err(e) = probe.read_to_end(&mut buf) {
+        eprintln!("[py::io] read_capped_drain 读取中断（输出可能不完整）：{e}");
+    }
     let truncated = buf.len() > cap;
     if truncated {
         buf.truncate(cap);

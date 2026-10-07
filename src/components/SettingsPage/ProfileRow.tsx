@@ -122,6 +122,7 @@ export function ProfileRow({
           <input
             value={name}
             disabled={busy}
+            maxLength={64}
             onChange={(e) => {
               setName(e.target.value);
               setDirty(true);
