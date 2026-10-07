@@ -126,7 +126,17 @@ pub fn generate(cfg: &SyntheticConfig, now_ms: i64) -> SyntheticData {
     cfg.validate()
         .unwrap_or_else(|e| panic!("SyntheticConfig 非法: {e}"));
     let mut rng = SimpleRng::new(cfg.seed);
-    let window_start_ms = now_ms - cfg.window_days * MS_PER_DAY;
+    // now_ms 无下限校验会静默产出负 window_start_ms（污染 created_at/expires/
+    // 各处 clamp），i64::MIN 等极端值更直接减法溢出（debug panic/release 回绕）
+    // ——与入口 validate 同风格的 fail-fast
+    let window_start_ms = now_ms
+        .checked_sub(cfg.window_days * MS_PER_DAY)
+        .unwrap_or_else(|| {
+            panic!(
+                "now_ms 非法：{now_ms} 必须不小于 window_days({})×一天的毫秒数",
+                cfg.window_days
+            )
+        });
 
     // 1. 生成 ProposalEntry
     let mut proposals = Vec::with_capacity(cfg.proposal_total);

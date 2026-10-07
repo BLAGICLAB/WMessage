@@ -57,14 +57,16 @@ RULES = [
         "策略层纯度",
         [STRATEGY_FILE],
         [
+            # \b 左锚定：只认完整路径段，不吃 pre_evolution::panel / xtauri::
+            # 这类后缀同形标识符（crate:: 前缀等真实路径不受影响）
             (r"\bstd::fs\b", "std::fs（文件 IO）"),
             (r"\bfs::", "fs::（文件 IO）"),
-            (r"chrono::Utc::now", "时钟直读"),
+            (r"\bchrono::Utc::now", "时钟直读"),
             (r"\brand\b", "rand（随机源）"),
             (r"\bMutex\b", "Mutex（持锁）"),
-            (r"tauri::", "tauri（运行时依赖）"),
-            (r"evolution::panel", "panel（消费端）"),
-            (r"evolution::policy", "policy（上下文层）"),
+            (r"\btauri::", "tauri（运行时依赖）"),
+            (r"\bevolution::panel", "panel（消费端）"),
+            (r"\bevolution::policy", "policy（上下文层）"),
         ],
     ),
     (

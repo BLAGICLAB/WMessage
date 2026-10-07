@@ -5669,3 +5669,62 @@ apply.rs 无 policy 相关引用，**确认未 wire**。
 - R8：高层候选 Skill/Code（只生成候选走 PR）
 
 
+
+## 2026-10-08（周四）出包：Windows 绿色版 `wmessage-portable-2026-10-08.zip`（109 MB）
+
+**背景**：老板要一份最新绿色包。按 `docs/PACKAGING-WINDOWS-PORTABLE.md` 全流程跑完，
+无 Windows 机器参与，全程 macOS 交叉编译（mingw-w64 + x86_64-pc-windows-gnu）。
+
+**产物**：
+- 路径：`/Users/renshi/Projects/wmessage/wmessage-portable-2026-10-08.zip`
+- 大小：109,100,330 B（≈104 MB）；含 205 个条目（与 09-28 上版结构完全一致）
+- `wmessage.exe`：73,703,845 B（70.3 MiB / 73.7 MB，release 编译 2m08s，基于 main @ b4130ad）
+- `onnxruntime.dll`：15.8 MB；`WebView2Loader.dll`：160 KB；`dotnet/`：含 189 文件（重 publish）
+- `bge-small-zh-v1.5/`（语义模型）+ `pp-ocr-v6/`（OCR 模型）
+
+**exe 体积变化（需留档）**：09-28 上版 57,127,631 B（54.5 MB）→ 本版 73,703,845 B（70.3 MB），
++16.6 MB / +29%。10 天内的主要变化：
+- W10-QA-AUDIT：新增 `db/workflow_audit.rs` 模块、`db/workflow_settings.rs` 模块、审计/验收相关命令与查询
+- W10-ASK：拆解前澄清/执行提问/双层档案/通知问答
+- W11-REVIEW-HARDEN：`summarize_messages` 重构为带 model 参数版本、设置键 `review_model`
+- W11-OCR：路径闸门进阻塞线程、评审模型下拉守卫
+- EVO Phase 2（B1/B2/B4/C 批）：`evolution/strategy` trait / `EvalContext` / `ApplyPolicy` /
+  deprecated 委托入口删除
+- 自带 tauri 插件新增：`tauri-plugin-single-instance`、`tauri-plugin-global-shortcut`、
+  `tauri-plugin-clipboard-manager`、`tauri-plugin-autostart`、`tauri-plugin-fs` 等
+- 推断：体积膨胀主要来自 evolution 层（多个 trait + Apply 策略层 + EvalContext 模板）+ 新增
+  tauri 插件的链接体量。功能增量合理、未触发异常。
+
+**校验**：
+- `python3 zipfile.testzip()` 通过；顶层 9 类条目齐全
+- `dotnet/wm-docx-revisions.exe` / `bge-small-zh-v1.5/onnx/model_quantized.onnx` +
+  `tokenizer.json` / `pp-ocr-v6/{det,rec,cls}.onnx` + `keys.txt` 全部在位
+- `x86_64-w64-mingw32-objdump -p wmessage.exe | grep -i onnxruntime` 无输出 → ort 走 `load-dynamic`
+- `cd src-tauri && cargo check` exit 0（macOS dev profile，5.17s 缓存命中）
+
+**本批提交要点（自 09-28 上版至 b4130ad，13 个 commit）**：
+- 流程工作流 W10（b8b53a0）：节点级验收 + run 级结构化审计（新增 audit/settings 模块，
+  11 种审计 kind，按 `(workflow_id, run_started_at)` 分组，TracePanel 新增「运行审计」页签）
+- 流程工作流 W10-ASK（5578591）：拆解前澄清/执行提问/双层档案/通知问答
+- 流程工作流 W11-REVIEW-HARDEN（86f981c）：轻量评审模型设置项 + `summarize_messages`
+  接收 `model_id` 参数 + 导出路径统一加固（`check_export_path` 单点强化，五调用方受益）
+- 流程工作流 W11-OCR（ee75c23）：路径闸门进阻塞线程 + 评审模型下拉 busy in-flight 守卫
+  + 弃用乐观更新改服务端回填
+- 安全 PR12-CSP-FLIP（198e19c）：生产 CSP 移除 `'unsafe-eval'`（F10 落地）
+- 自进化 Phase 2 批次 A 接口文档（3ad7139）：分层线/EvalContext 归属/迁移映射/不变式/回滚
+- 批次 A 文档修订（28ed513）：四项代码确认 + 约束写死 + 拍板记录
+- 自进化 B1-STRATEGY-TRAIT（e731868）：策略 trait 首落地 + 零逻辑委托 + 分层守卫
+- 自进化 B1 收尾 spec（9944f07）：spec 重写为最终批内容 + strategy 辅助函数可见性注释
+- 自进化 B2-APPLY-GATE（4729cf3）：apply 域 gate/importance 迁入策略层 trait
+- 自进化 B4-CTX-CONSOLIDATE（2e78925）：EvalContext 落地 + ApplyPolicy 迁入策略层
+- 自进化 EVO-OCR-FIX（c43cb35）：OCR 聚焦审计 critical/high 分诊修复（8 处真实修复）
+- 自进化 C-DEPRECATE-DELETE（b4130ad）：删除全部 deprecated 委托入口（批次 C，破坏性窗口）
+
+**踩坑**：无新增（流程按 SOP 全跑通）。前次（09-28）出包触发的 `impl SetrlimitSupport` 漏
+`#[cfg(unix)]` 修复已在更早的 commit 中补齐（当前 runtime.rs 158/173/259/295/427 行的
+`#[cfg(unix)]` 标记齐全）。
+
+**Windows 实机验收**（人工）：解压双击 wmessage.exe；确认 exe 同目录生成 wmessage.db 与
+AI_Gen_Files（便携锚定）；重点验证机器人记忆语义检索（模型/引擎异常会自动降级关键词模式，
+需肉眼确认），并用一张带文字的本地图片让机器人跑 `ocr_image`（缺 pp-ocr-v6/ 时工具会报
+「请运行 scripts/fetch_ocr_models.sh…」）。

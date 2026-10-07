@@ -137,7 +137,10 @@ pub fn normalize_for_hash(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut prev_space = false;
     for c in s.chars() {
-        let mapped = if c.is_ascii_digit() {
+        // is_numeric 覆盖 Nd/Nl/No 全部 Unicode 数字位（含 ASCII）——原用
+        // is_ascii_digit 时全角０-９ / 阿拉伯-印度 ٠-٩ 等漏归 'N'，
+        // 「所有数字 → N」契约对非 ASCII 摘要失效（同义摘要 id 不同、去重落空）
+        let mapped = if c.is_numeric() {
             'N'
         } else if c.is_alphanumeric() {
             c.to_ascii_lowercase()
@@ -223,6 +226,14 @@ mod tests {
             "error NNN N times"
         );
         assert_eq!(normalize_for_hash("a1b22c333"), "aNbNNcNNN");
+    }
+
+    #[test]
+    fn normalize_maps_non_ascii_digits_to_n() {
+        // 非 ASCII 数字位（全角／阿拉伯-印度）同归 'N'——「所有数字 → N」
+        // 契约不分文字系统，否则同义摘要 id 不同、dedup 落空
+        assert_eq!(normalize_for_hash("error ３ times"), "error N times");
+        assert_eq!(normalize_for_hash("error ٣ times"), "error N times");
     }
 
     #[test]
