@@ -658,6 +658,7 @@ pub fn record_lesson_core(
     source: &str,
     embedding: Option<&[f32]>,
     now_ms: i64,
+    sp: &store::StoreParams,
 ) -> String {
     let lesson = lesson.trim();
     let scenario = scenario.trim();
@@ -675,7 +676,7 @@ pub fn record_lesson_core(
         importance: 4,
         source: source.to_string(),
     };
-    match store::insert_item(conn, &item, embedding, now_ms) {
+    match store::insert_item_with(conn, &item, embedding, now_ms, sp) {
         Ok((InsertOutcome::Inserted(_), hints)) => {
             let msg = format!("已记录教训：{}", truncate_chars(lesson, 60));
             if hints.is_empty() {
@@ -742,6 +743,7 @@ pub async fn tool_record_lesson<R: tauri::Runtime>(
             "model_inferred",
             emb.as_deref(),
             now_ms(),
+            &store::StoreParams::of(&crate::bot::read_memory_tuning(&app2)),
         )
     })
     .await;
@@ -797,6 +799,7 @@ pub async fn auto_lesson_on_task_failure<R: tauri::Runtime>(
             "system",
             emb.as_deref(),
             now_ms(),
+            &store::StoreParams::of(&crate::bot::read_memory_tuning(&app2)),
         );
         if msg.starts_with("失败") {
             return Err(msg);

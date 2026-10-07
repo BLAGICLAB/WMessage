@@ -457,6 +457,7 @@ fn record_lesson_writes_with_defaults() {
         "model_inferred",
         None,
         now,
+        &store::StoreParams::default(),
     );
     assert!(msg.starts_with("已记录教训"), "{msg}");
     let items = store::load_all(&conn).unwrap();
@@ -469,10 +470,34 @@ fn record_lesson_writes_with_defaults() {
 }
 
 #[test]
+fn record_lesson_core_respects_tuning_capacity() {
+    let conn = mem_db();
+    // capacity=1：第二条教训应挤掉第一条（tuning 真正传到存储层）；
+    // 默认容量下两条都会留下（无向量=降级插入，内容不同不合并）
+    let sp = store::StoreParams {
+        capacity: 1,
+        ..store::StoreParams::default()
+    };
+    super::record_lesson_core(&conn, "教训一", "场景", "system", None, 1_000, &sp);
+    super::record_lesson_core(&conn, "教训二", "场景", "system", None, 2_000, &sp);
+    let all = store::load_all(&conn).unwrap();
+    assert_eq!(all.len(), 1, "capacity=1 时第二条应挤掉第一条");
+    assert_eq!(all[0].content, "教训二");
+}
+
+#[test]
 fn record_lesson_semantic_dedup_merges() {
     let conn = mem_db();
     let now = 1_000_000;
-    super::record_lesson_core(&conn, "教训A", "场景", "system", Some(&onehot(0)), now);
+    super::record_lesson_core(
+        &conn,
+        "教训A",
+        "场景",
+        "system",
+        Some(&onehot(0)),
+        now,
+        &store::StoreParams::default(),
+    );
     // 同向量（cos=1）→ 合并更新不新增
     let msg = super::record_lesson_core(
         &conn,
@@ -481,6 +506,7 @@ fn record_lesson_semantic_dedup_merges() {
         "system",
         Some(&onehot(0)),
         now + 1,
+        &store::StoreParams::default(),
     );
     assert!(msg.contains("合并"), "{msg}");
     let items = store::load_all(&conn).unwrap();
@@ -491,19 +517,59 @@ fn record_lesson_semantic_dedup_merges() {
 #[test]
 fn record_lesson_validation() {
     let conn = mem_db();
-    assert!(super::record_lesson_core(&conn, "", "s", "system", None, 0).contains("不能为空"));
+    assert!(super::record_lesson_core(
+        &conn,
+        "",
+        "s",
+        "system",
+        None,
+        0,
+        &store::StoreParams::default()
+    )
+    .contains("不能为空"));
     let long = "x".repeat(801);
-    assert!(super::record_lesson_core(&conn, &long, "s", "system", None, 0).contains("太长"));
+    assert!(super::record_lesson_core(
+        &conn,
+        &long,
+        "s",
+        "system",
+        None,
+        0,
+        &store::StoreParams::default()
+    )
+    .contains("太长"));
     let long_s = "s".repeat(51);
-    assert!(
-        super::record_lesson_core(&conn, "ok", &long_s, "system", None, 0).contains("scenario")
-    );
+    assert!(super::record_lesson_core(
+        &conn,
+        "ok",
+        &long_s,
+        "system",
+        None,
+        0,
+        &store::StoreParams::default()
+    )
+    .contains("scenario"));
     // scenario 含英文逗号被拒（tags 逗号分隔存储）；中文逗号不受影响
-    assert!(super::record_lesson_core(&conn, "ok", "a,b", "system", None, 0).contains("逗号"));
-    assert!(
-        super::record_lesson_core(&conn, "ok", "文档，修订", "system", None, 0)
-            .starts_with("已记录教训")
-    );
+    assert!(super::record_lesson_core(
+        &conn,
+        "ok",
+        "a,b",
+        "system",
+        None,
+        0,
+        &store::StoreParams::default()
+    )
+    .contains("逗号"));
+    assert!(super::record_lesson_core(
+        &conn,
+        "ok",
+        "文档，修订",
+        "system",
+        None,
+        0,
+        &store::StoreParams::default()
+    )
+    .starts_with("已记录教训"));
 }
 
 #[test]
@@ -525,7 +591,15 @@ fn lesson_injected_in_fourth_section() {
     let conn = mem_db();
     let now = 1_000_000_000;
     // 一条 lesson + 一条普通 fact + 一条 summary
-    super::record_lesson_core(&conn, "修订文档前先备份", "文档修订", "system", None, now);
+    super::record_lesson_core(
+        &conn,
+        "修订文档前先备份",
+        "文档修订",
+        "system",
+        None,
+        now,
+        &store::StoreParams::default(),
+    );
     let mut f = item("fact", "关键词普通记忆");
     f.importance = 3;
     store::insert_item(&conn, &f, None, now).unwrap();

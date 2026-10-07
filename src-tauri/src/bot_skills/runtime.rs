@@ -513,6 +513,7 @@ pub(crate) fn sink_skill_failure_lesson<R: tauri::Runtime>(
         "system",
         None,
         now_ms(),
+        &crate::memory::store::StoreParams::of(&crate::bot::read_memory_tuning(app)),
     );
     crate::bot::audit_log_hook(
         app,
