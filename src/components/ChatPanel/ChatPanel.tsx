@@ -34,6 +34,7 @@ import type {
 import {
   DELTA_BATCH_MS,
   execTaskDedup,
+  finishedExecTasks,
 } from "./constants";
 import { useAutoGrow, useDropdownTop, useOutsideClose } from "./useChatUi";
 import { SessionList } from "./SessionList";
@@ -682,8 +683,9 @@ export function ChatPanel({
 
   // 围观中的执行会话 sid；执行收尾（execute-task 的 history_load 完成）后清除
   const execWatchRef = useRef<string | null>(null);
-  /** 切到执行会话围观：加载已落库历史 + 末尾 streaming 占位气泡承接后续流式增量 */
-  const openExecSession = async (sid: string) => {
+  /** 切到执行会话围观：加载已落库历史 + 末尾 streaming 占位气泡承接后续流式增量。
+   * watch=false（收尾后迟到的跳转）：只读查看不挂围观守卫，输入立即可用 */
+  const openExecSession = async (sid: string, watch = true) => {
     setSessionMenuOpen(false);
     setSessionId(sid);
     // 镜像同步落（effect 渲染后才补）：await 期间守卫读到的必须已是新会话，
@@ -691,8 +693,9 @@ export function ChatPanel({
     sessionIdRef.current = sid;
     streamingMetaMapRef.current.set(sid, {});
     // 围观守卫（拍板 #22=B）：记录当前围观的执行会话——执行期间拦 Send
-    //（防用户输入与执行响应交错 + 被收尾 history_load 冲掉）；切换会话自由
-    execWatchRef.current = sid;
+    //（防用户输入与执行响应交错 + 被收尾 history_load 冲掉）；切换会话自由。
+    // watch=false 的迟到查看不挂守卫：执行已结束，没有需要隔离的响应流
+    if (watch) execWatchRef.current = sid;
     try {
       const rows = await invoke<Parameters<typeof rowsToMsgs>[0]>(
         "bot_history_load",
@@ -709,12 +712,12 @@ export function ChatPanel({
     }
   };
   // openExecSession 经 ref 暴露给事件监听（避免闭包旧状态）
-  const openExecSessionRef = useRef<(sid: string) => void>(() => {});
+  const openExecSessionRef = useRef<(sid: string, watch?: boolean) => void>(() => {});
   // latest-ref 模式：事件监听闭包要调到最新一帧实现（React 官方推荐转发法；
   // render 期写 ref 为既有语义，拆分批不改时机）
   // oxlint-disable-next-line react/refs
-  openExecSessionRef.current = (sid) => {
-    openExecSession(sid);
+  openExecSessionRef.current = (sid, watch) => {
+    openExecSession(sid, watch);
   };
 
   // 任务卡交给机器人执行（execute-task 事件：主窗口/挂件卡片 🤖 按钮触发）
@@ -729,6 +732,8 @@ export function ChatPanel({
       if (execTaskDedup.shouldSkip(id, Date.now())) return;
       invoke("bot_execute_task", { taskId: id, sessionId: null })
         .then(() => {
+          // 收尾登记（迟到 chat-open-session 防复活用）
+          finishedExecTasks.set(id, "success");
           // 执行收尾：刷新会话列表（新会话入列）；若正围观该执行会话，
           // 重载历史替换流式占位气泡为最终落库内容
           const sid = execSessionByTaskRef.current.get(id);
@@ -755,6 +760,8 @@ export function ChatPanel({
           }
         })
         .catch((err) => {
+          // 收尾登记（含失败/业务拒）：失败任务的迟到跳转不自动切，停下让用户决定
+          finishedExecTasks.set(id, "failed");
           // TASK_INVALID_STATE（执行中重复触发/已完成/已归档）按业务状态提示而非错误
           addHint(
             `${isCommandError(err) && err.code === "TASK_INVALID_STATE" ? "⏳" : "⚠️"} ${formatCommandError(err)}`
@@ -790,6 +797,14 @@ export function ChatPanel({
           ? prev
           : [{ id: sid, title: title ?? "执行" }, ...prev]
       );
+      // 迟到防复活：execute-task 已收尾的任务不再以围观模式重开（重挂守卫会把
+      // 已结束的会话永久拦输入）。拍板：成功 → 切过去只读查看；失败 → 不自动
+      // 跳转，停下来让用户决定是否重试/查看（从会话列表点入不受拦）
+      const outcome = taskId ? finishedExecTasks.get(taskId) : undefined;
+      if (outcome) {
+        if (outcome === "success") openExecSessionRef.current(sid, false);
+        return;
+      }
       if (inflightRef.current.has(sessionIdRef.current ?? "")) {
         pendingExecRef.current = { sid, title: title ?? "" };
         return;

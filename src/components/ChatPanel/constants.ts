@@ -13,6 +13,11 @@ const EXEC_TASK_DEDUP_MS = 2000;
  *  去重表必须放模块级：放 useEffect 闭包里则每个泄漏监听器各持一份，去重失效。
  *  表本体不导出——只暴露 shouldSkip 单入口，调用顺带 prune 超窗条目防无界增长 */
 const dedupTable = new Map<string, number>();
+/** 任务执行收尾表（chat-open-session 迟到防复活）：taskId → 执行结果。
+ * 进程内存活不清理（任务 id 是 UUID 无碰撞，量级百字节级）；拍板：失败任务
+ * 的迟到跳转不自动切，停下来让用户决定是否重试/查看 */
+export const finishedExecTasks = new Map<string, "success" | "failed">();
+
 export const execTaskDedup = {
   /** 同一 id 在 EXEC_TASK_DEDUP_MS 窗口内重复触发 → true（调用方应 return） */
   shouldSkip(id: string, now: number): boolean {

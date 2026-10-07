@@ -557,6 +557,57 @@ describe("ChatPanel", () => {
     expect(screen.getByText(/📋 任务：写报告/)).toBeInTheDocument();
   });
 
+  it("chat-open-session 迟到（execute-task 已收尾）：失败任务不自动跳转让用户决定；成功任务切过去只读查看", async () => {
+    mocks.listenMock.mockImplementation(
+      async (event: string, cb: (e: { payload: Record<string, unknown> }) => void) => {
+        (mocks.listeners[event] ??= []).push(cb);
+        return () => {};
+      }
+    );
+    mocks.invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === "bot_sessions_load") return [{ id: "s1", title: "默认会话" }];
+      if (cmd === "bot_execute_task") {
+        if (args?.taskId === "t-fail")
+          throw { code: "TASK_INVALID_STATE", message: "任务失败" } as unknown;
+        return null;
+      }
+      if (cmd === "bot_history_load")
+        return args?.sessionId === "s-done"
+          ? [{ role: "user", content: "[任务卡执行]\nid=t-done\n标题：已完成", refsJson: null, thinking: null, toolsJson: null }]
+          : [];
+      return null;
+    });
+    render(<ChatPanel {...defaultProps} />);
+    expect(await screen.findByText("默认会话")).toBeInTheDocument();
+    // 两张卡都收尾（一成一败）——收尾顺序在迟到事件之前
+    await act(async () => {
+      for (const cb of mocks.listeners["execute-task"] ?? []) {
+        cb({ payload: { id: "t-done", title: "成功任务" } });
+        cb({ payload: { id: "t-fail", title: "失败任务" } });
+      }
+    });
+    await act(async () => {});
+    // 迟到的失败任务 open-session：不自动切（历史不加载，用户自行决定是否重试/查看）
+    await act(async () => {
+      for (const cb of mocks.listeners["chat-open-session"] ?? []) {
+        cb({ payload: { sessionId: "s-fail", taskId: "t-fail", title: "失败任务" } });
+      }
+    });
+    expect(mocks.invokeMock).not.toHaveBeenCalledWith("bot_history_load", {
+      sessionId: "s-fail",
+    });
+    // 迟到的成功任务 open-session：切过去查看最终历史
+    await act(async () => {
+      for (const cb of mocks.listeners["chat-open-session"] ?? []) {
+        cb({ payload: { sessionId: "s-done", taskId: "t-done", title: "成功任务" } });
+      }
+    });
+    await waitFor(() =>
+      expect(mocks.invokeMock).toHaveBeenCalledWith("bot_history_load", { sessionId: "s-done" })
+    );
+    expect(await screen.findByText(/\[任务卡执行\]/)).toBeInTheDocument();
+  });
+
   it("chat-open-session busy：跳转排队，当前轮结束后出现「查看执行对话」按钮，点击切换", async () => {
     mocks.listenMock.mockImplementation(
       async (event: string, cb: (e: { payload: Record<string, unknown> }) => void) => {
