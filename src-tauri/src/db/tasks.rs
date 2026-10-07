@@ -1184,17 +1184,63 @@ pub async fn db_delete(app: AppHandle, ids: Vec<String>) -> CommandResult<()> {
     .map_err(|e| CommandError::from(format!("数据库删除线程 join 失败：{e}")))?
 }
 
+/// 导出/导入路径统一闸门（W11 加固，五调用方共用：workspace/tasks/workflow 导出导入 +
+/// 审计导出）。path 直达自 invoke 参数，不能沿用「save dialog 亲手选 = 明确授权」假设
+/// （同 W8 附件边界校验口径）。检查链：
+/// ① 非空 → ② 词法拒 `..` 组件 → ③ 扩展名 .json（大小写不敏感）→ ④ 文件名合法
+/// → ⑤ 父目录必须存在且为目录（canonicalize 解析软链）→ ⑥ 目标已存在时拒符号链
+/// （symlink_metadata fail-closed，同 bot_fs resolve_writable 口径）。
 pub fn check_export_path(path: &str) -> CommandResult<()> {
-    let ok = std::path::Path::new(path)
+    use std::path::Path;
+    let trimmed = path.trim();
+    let reject = |reason: &str| CommandError::InvalidArgument {
+        field: "path".into(),
+        value: path.chars().take(120).collect(),
+        reason: reason.into(),
+    };
+    if trimmed.is_empty() {
+        return Err(reject("路径为空"));
+    }
+    let p = Path::new(trimmed);
+    // 词法拒绝 .. 组件（canonicalize 前置闸——逃逸写法根本不进后续检查）
+    if p.components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(reject("路径不允许包含 .."));
+    }
+    let ok = p
         .extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| e.eq_ignore_ascii_case("json"));
     if !ok {
-        return Err(CommandError::InvalidArgument {
-            field: "path".into(),
-            value: path.to_string(),
-            reason: "必须是 .json 文件".into(),
-        });
+        return Err(reject("必须是 .json 文件"));
+    }
+    // 文件名合法（/tmp/dir/ 这类以目录收尾的写法 extension 为空已被上一步拒绝，
+    // 这里兜底 "."/".." 形态的 file_name）
+    let Some(name) = p.file_name().and_then(|n| n.to_str()) else {
+        return Err(reject("路径必须以文件名结尾"));
+    };
+    if name == "." || name == ".." {
+        return Err(reject("路径必须以文件名结尾"));
+    }
+    // 父目录必须存在且为目录（canonicalize 解析软链到真实目标，悬空父目录拒绝）
+    let Some(parent) = p.parent().filter(|d| !d.as_os_str().is_empty()) else {
+        return Err(reject("缺少父目录"));
+    };
+    let parent_canon = std::fs::canonicalize(parent)
+        .map_err(|e| reject(&format!("父目录不存在或无法解析：{e}")))?;
+    if !parent_canon.is_dir() {
+        return Err(reject("父目录不是目录"));
+    }
+    // 目标已存在时拒符号链（写穿透风险，fail-closed；导入侧同样过闸——
+    // 符号链 .json 罕见，报错可解释）
+    if let Ok(meta) = std::fs::symlink_metadata(trimmed) {
+        if meta.file_type().is_symlink() {
+            return Err(reject("目标路径是符号链接，已拒绝"));
+        }
+        if !meta.is_file() {
+            return Err(reject("目标路径已存在且不是常规文件"));
+        }
     }
     Ok(())
 }

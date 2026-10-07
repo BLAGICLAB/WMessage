@@ -2256,4 +2256,44 @@ mod atomic_write_tests {
         assert!(tasks::check_export_path("/tmp/a").is_err());
         assert!(tasks::check_export_path("/tmp/dir/").is_err());
     }
+
+    // ── W11：check_export_path 加固（..词法/父目录/符号链） ──
+
+    #[test]
+    fn check_export_path_rejects_traversal_and_missing_parent() {
+        // 词法 .. 组件：任何位置都拒
+        assert!(tasks::check_export_path("/tmp/../etc/a.json").is_err());
+        assert!(tasks::check_export_path("a/../../b.json").is_err());
+        // 父目录不存在
+        assert!(tasks::check_export_path("/nonexistent-dir-xyz/a.json").is_err());
+        // 空路径
+        assert!(tasks::check_export_path("   ").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn check_export_path_rejects_symlink_target_and_accepts_new_file() {
+        let dir = std::env::temp_dir().join(format!("w11-export-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // 已存在的符号链目标：拒（写穿透 fail-closed）
+        let secret = dir.join("secret.json");
+        std::fs::write(&secret, b"{}").unwrap();
+        let link = dir.join("link.json");
+        std::os::unix::fs::symlink(&secret, &link).unwrap();
+        let err = tasks::check_export_path(link.to_str().unwrap()).expect_err("符号链应拒绝");
+        assert!(err.to_string().contains("符号链"), "{err}");
+        // 父目录经软链解析到真实目录：放行（软链目录是合法的存放位置）
+        let real_dir = std::env::temp_dir().join(format!("w11-real-{}", std::process::id()));
+        std::fs::create_dir_all(&real_dir).unwrap();
+        let link_dir = dir.join("link-dir");
+        std::os::unix::fs::symlink(&real_dir, &link_dir).unwrap();
+        assert!(
+            tasks::check_export_path(link_dir.join("out.json").to_str().unwrap()).is_ok(),
+            "软链父目录应放行"
+        );
+        // 不存在的新文件 + 真实父目录：放行（save dialog 主路径不受影响）
+        assert!(tasks::check_export_path(dir.join("new-out.json").to_str().unwrap()).is_ok());
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&real_dir).ok();
+    }
 }

@@ -2,6 +2,27 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-07（周三）W11-REVIEW-HARDEN：轻量评审模型 + 导出路径统一加固
+
+W10 后两项收尾（spec `docs/batches/W11-REVIEW-HARDEN.spec.md`）：
+
+- **轻量评审模型**（设计 §3.6 后置项兑现）：`summarize_messages` 重构为
+  `summarize_messages_with_model(model_id)`——覆盖条目按 id 在 models_by_provider 双列表查
+  （ModelEntry 自足：base_url/model 随条目走），key 走 read_llm_key 合成 ActiveModelId
+  （厂商级 key 优先回落全局，既有口径），推理参数 effective_inference 同解析；
+  **条目不存在/已停用/base_url 空 → 静默降级跟随全局**（评审是增强，配置错误不挡主流程）。
+  设置键 `workflow_settings.review_model`（空串/缺=跟随全局；条目存在性不校验——可后删）；
+  clarify 与节点验收核查各自经 `load_review_model` 读一次（不穿参数层）；W-QA 收尾评审与
+  主拆解维持全局 active 不动（设计口径）。设置页「验收与审计」段加模型下拉
+  （bot_get_config 同源、停用条目不进列表、条目已删显示占位、失败静默只剩跟随全局）。
+- **导出路径统一加固**（W10 OCR high ⑧ 的共性面收敛）：`check_export_path` 单点强化，
+  五调用方（workspace/tasks/workflow 导出导入 + 审计导出）自动受益——①非空 → ②词法拒
+  `..` 组件 → ③扩展名 .json（既有）→ ④文件名合法 → ⑤父目录必须存在（canonicalize 解析
+  软链）→ ⑥目标已存在拒符号链（symlink_metadata fail-closed，同 bot_fs resolve_writable
+  口径）。**软链父目录放行**（合法存放位置）；save dialog 主流程（选新文件）零感知。
+  +2 单测（..词法/悬空父目录/符号链目标拒/软链父目录放行/新文件放行）。
+- 验证：cargo test **1479** + vitest **521** 全绿；cargo fmt / tsc 过。
+
 ## 2026-10-07（周三）W10 OCR 复审：58 条评论——9 条 high 全处理，7 修 2 判不修
 
 `ocr review`（workspace diff 模式，session `5b43182c`，14 文件 +1096/-33，耗时 ~13min）

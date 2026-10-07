@@ -258,13 +258,16 @@ async fn check_acceptance(
     if !artifacts.is_empty() {
         user.push_str(&format!("\n产物文件：{}", artifacts.join("；")));
     }
-    match crate::bot_chat::summarize_messages(
+    // W11：轻量评审模型覆盖（设置键 review_model；条目缺失运行期降级跟随全局）
+    let review_model = crate::db::workflow_settings::load_review_model(app).await;
+    match crate::bot_chat::summarize_messages_with_model(
         app,
         ACCEPTANCE_SYSTEM_PROMPT,
         &[crate::bot_chat::ChatMsg {
             role: "user".into(),
             content: user,
         }],
+        review_model.as_deref(),
     )
     .await
     {

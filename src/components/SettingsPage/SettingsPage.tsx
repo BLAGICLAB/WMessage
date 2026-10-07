@@ -3219,14 +3219,34 @@ function WorkflowSettingsCard() {
   const [retention, setRetention] = useState<number | null>(null);
   const [retentionDraft, setRetentionDraft] = useState("");
   const [auditMsg, setAuditMsg] = useState<string | null>(null);
+  // W11：轻量评审模型（模型库条目 id；空 = 跟随全局）
+  const [reviewModel, setReviewModel] = useState("");
+  const [modelOptions, setModelOptions] = useState<Array<{ id: string; label: string }>>([]);
   useEffect(() => {
     getWorkflowSettings()
       .then((s) => {
         setNodeAcceptance(s.nodeAcceptance);
         setRetention(s.auditRetentionRuns);
         setRetentionDraft(String(s.auditRetentionRuns));
+        setReviewModel(s.reviewModel ?? "");
       })
       .catch((e) => setAuditMsg(String(e)));
+    // 模型库下拉（与画布每卡模型同源：bot_get_config，停用条目不进列表）
+    invoke<{
+      modelsByProvider?: {
+        openai?: Array<{ id: string; label: string; enabled?: boolean }>;
+        anthropic?: Array<{ id: string; label: string; enabled?: boolean }>;
+      } | null;
+    }>("bot_get_config")
+      .then((c) => {
+        const m = c.modelsByProvider;
+        setModelOptions(
+          [...(m?.openai ?? []), ...(m?.anthropic ?? [])]
+            .filter((e) => e.enabled !== false)
+            .map((e) => ({ id: e.id, label: e.label }))
+        );
+      })
+      .catch(() => {}); // 模型库读取失败：下拉只剩"跟随全局"，不挡设置页
   }, []);
   // 卸载时兜底持久化（OCR r1：焦点在 textarea 时切走/关窗，onBlur 可能不触发）
   useEffect(
@@ -3326,6 +3346,38 @@ function WorkflowSettingsCard() {
           >
             {nodeAcceptance ? "已开启" : "已关闭"}
           </button>
+        </div>
+        <div className="mt-4 flex items-center justify-between gap-4">
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-[var(--t2)]">轻量评审模型</p>
+            <p className="mt-1 text-xs text-[var(--t5)]">
+              拆解前澄清与节点级验收核查用（这两步只是判断，不需要最强模型）；条目删除后自动回落全局模型
+            </p>
+          </div>
+          <select
+            aria-label="轻量评审模型"
+            className="shrink-0 max-w-[180px] rounded-[var(--r-sm)] bg-transparent px-2 py-1 text-xs nm-inset text-[var(--t3)]"
+            value={reviewModel}
+            onChange={async (e) => {
+              const v = e.target.value;
+              setReviewModel(v); // 乐观更新（失败回滚由 catch 提示）
+              try {
+                await setWorkflowSettings({ reviewModel: v });
+              } catch (err) {
+                setAuditMsg(String(err));
+              }
+            }}
+          >
+            <option value="">⚙️ 跟随全局模型</option>
+            {reviewModel && !modelOptions.some((m) => m.id === reviewModel) && (
+              <option value={reviewModel}>{reviewModel}（条目已删除）</option>
+            )}
+            {modelOptions.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.label}
+              </option>
+            ))}
+          </select>
         </div>
         <div className="mt-4 flex items-center justify-between gap-4">
           <div className="min-w-0">

@@ -21,6 +21,8 @@ pub fn ensure_workflow_settings(conn: &rusqlite::Connection) -> Result<(), Strin
 
 pub const KEY_NODE_ACCEPTANCE: &str = "node_acceptance";
 pub const KEY_AUDIT_RETENTION: &str = "audit_retention_runs";
+/// 轻量评审模型（W11）：模型库条目 id；空串/缺行 = 跟随全局 active
+pub const KEY_REVIEW_MODEL: &str = "review_model";
 
 /// 节点级验收默认开（拍板 10）；审计保留默认 20 次 run
 pub const DEFAULT_NODE_ACCEPTANCE: bool = true;
@@ -65,11 +67,35 @@ pub fn audit_retention_runs(conn: &rusqlite::Connection) -> u32 {
     }
 }
 
+/// 轻量评审模型条目 id（异步壳：clarify / runner 验收直接调用，读失败降级 None）
+pub async fn load_review_model(app: &AppHandle) -> Option<String> {
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::db::open_db(&app)
+            .ok()
+            .and_then(|conn| review_model_id(&conn))
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+/// 轻量评审模型条目 id（W11：clarify 与节点验收核查共用）；空/缺 = None（跟随全局）
+pub fn review_model_id(conn: &rusqlite::Connection) -> Option<String> {
+    get(conn, KEY_REVIEW_MODEL)
+        .ok()
+        .flatten()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowSettingsView {
     pub node_acceptance: bool,
     pub audit_retention_runs: u32,
+    /// 模型库条目 id；空串 = 跟随全局 active
+    pub review_model: String,
 }
 
 /// 读全量设置（设置页打开时）
@@ -77,6 +103,7 @@ pub fn settings_view(conn: &rusqlite::Connection) -> WorkflowSettingsView {
     WorkflowSettingsView {
         node_acceptance: node_acceptance_enabled(conn),
         audit_retention_runs: audit_retention_runs(conn),
+        review_model: review_model_id(conn).unwrap_or_default(),
     }
 }
 
@@ -85,6 +112,7 @@ pub fn settings_set(
     conn: &rusqlite::Connection,
     node_acceptance: Option<bool>,
     audit_retention_runs: Option<u32>,
+    review_model: Option<String>,
 ) -> CommandResult<WorkflowSettingsView> {
     if let Some(v) = node_acceptance {
         set(conn, KEY_NODE_ACCEPTANCE, if v { "1" } else { "0" }).map_err(CommandError::DbError)?;
@@ -92,6 +120,10 @@ pub fn settings_set(
     if let Some(v) = audit_retention_runs {
         let v = v.clamp(RETENTION_MIN, RETENTION_MAX);
         set(conn, KEY_AUDIT_RETENTION, &v.to_string()).map_err(CommandError::DbError)?;
+    }
+    if let Some(v) = review_model.clone() {
+        // 条目存在性不校验：条目可后删，运行期 summarize 侧降级兜底（spec 红线）
+        set(conn, KEY_REVIEW_MODEL, v.trim()).map_err(CommandError::DbError)?;
     }
     Ok(settings_view(conn))
 }
@@ -115,11 +147,19 @@ pub async fn workflow_settings_set(
     app: AppHandle,
     node_acceptance: Option<bool>,
     audit_retention_runs: Option<u32>,
+    review_model: Option<String>,
 ) -> CommandResult<WorkflowSettingsView> {
     let app2 = app.clone();
+    // review_model 要在闭包外（审计事件）再用——闭包 move 捕获前先克隆一份
+    let review_model_for_db = review_model.clone();
     let r = tauri::async_runtime::spawn_blocking(move || -> CommandResult<WorkflowSettingsView> {
         let conn = crate::db::open_db(&app2)?;
-        let view = settings_set(&conn, node_acceptance, audit_retention_runs)?;
+        let view = settings_set(
+            &conn,
+            node_acceptance,
+            audit_retention_runs,
+            review_model_for_db,
+        )?;
         // 保留次数变更立即生效：超期 run 就地清理（尽力而为）
         if audit_retention_runs.is_some() {
             if let Err(e) = super::workflow_audit::wa_prune(&conn, view.audit_retention_runs) {
@@ -146,6 +186,15 @@ pub async fn workflow_settings_set(
                 audit_retention_runs
                     .map(|v| v.to_string())
                     .unwrap_or_else(|| "-".into()),
+            ),
+            (
+                "reviewModel",
+                review_model
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    .unwrap_or("-")
+                    .to_string(),
             ),
         ],
     );

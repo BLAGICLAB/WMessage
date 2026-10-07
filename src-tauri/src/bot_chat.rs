@@ -1205,10 +1205,63 @@ pub(crate) async fn summarize_messages(
     system_prompt: &str,
     messages: &[ChatMsg],
 ) -> CommandResult<String> {
+    summarize_messages_with_model(app, system_prompt, messages, None).await
+}
+
+/// 轻量评审模型覆盖（W11：澄清/节点验收共用）：model_id = 模型库条目 id。
+/// 条目不存在/已停用/base_url 空 → **静默降级跟随全局**（评审是增强，
+/// 模型配置错误不挡 clarify/验收主流程）。
+pub(crate) async fn summarize_messages_with_model(
+    app: &AppHandle,
+    system_prompt: &str,
+    messages: &[ChatMsg],
+    model_id: Option<&str>,
+) -> CommandResult<String> {
     let cfg = crate::bot::bot_get_config(app.clone())?;
+    // 覆盖条目解析：双列表按 id 查（ModelEntry 自足——base_url/model 随条目）
+    let override_entry = model_id
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .and_then(|id| {
+            let mbp = cfg.models_by_provider.as_ref()?;
+            let in_openai = mbp
+                .openai
+                .iter()
+                .find(|e| e.id == id && e.enabled)
+                .map(|e| (crate::bot::ApiProvider::Openai, e));
+            let in_anthropic = mbp
+                .anthropic
+                .iter()
+                .find(|e| e.id == id && e.enabled)
+                .map(|e| (crate::bot::ApiProvider::Anthropic, e));
+            in_openai.or(in_anthropic)
+        })
+        .filter(|(_, e)| !e.base_url.trim().is_empty() && !e.model.trim().is_empty());
+    let (provider, active_id, base_url, model) = match &override_entry {
+        Some((provider, e)) => {
+            // 合成 ActiveModelId：key/推理参数按覆盖条目解析（厂商级 key 优先回落全局）
+            let active_id = crate::bot::config::types::ActiveModelId {
+                openai: (*provider == crate::bot::ApiProvider::Openai).then(|| e.id.clone()),
+                anthropic: (*provider == crate::bot::ApiProvider::Anthropic).then(|| e.id.clone()),
+            };
+            (
+                *provider,
+                Some(active_id),
+                e.base_url.clone(),
+                e.model.clone(),
+            )
+        }
+        None => (
+            crate::bot::ApiProvider::from_cfg(cfg.api_provider.as_deref()),
+            cfg.active_model_id.clone(),
+            cfg.base_url.clone(),
+            cfg.model.clone(),
+        ),
+    };
+    let provider_str = provider.as_str();
     let api_key = crate::bot::read_llm_key(
-        cfg.api_provider.as_deref(),
-        cfg.active_model_id.as_ref(),
+        Some(provider_str),
+        active_id.as_ref(),
         cfg.models_by_provider.as_ref(),
     )?;
     require_api_key(&api_key)?;
@@ -1217,21 +1270,19 @@ pub(crate) async fn summarize_messages(
     // 条目级推理参数（U13）：max_tokens 条目值覆盖全局（再钳制）；temperature/top_p
     // 条目有值才发。摘要不追加条目 system_prompt（这里的 system_prompt 是固定任务提示词）
     let inference = crate::bot::effective_inference(
-        cfg.api_provider.as_deref(),
+        Some(provider_str),
         cfg.max_tokens,
-        cfg.active_model_id.as_ref(),
+        active_id.as_ref(),
         cfg.models_by_provider.as_ref(),
     );
     summarize_http(
         &client,
-        &cfg.base_url,
+        &base_url,
         &api_key,
-        &cfg.model,
+        &model,
         system_prompt,
         messages,
-        // Anthropic 兼容模式：协议与 max_tokens 从配置解析
-        //（None/非法值 → Openai，老配置零影响）
-        crate::bot::ApiProvider::from_cfg(cfg.api_provider.as_deref()),
+        provider,
         inference.max_tokens,
         inference.temperature,
         inference.top_p,

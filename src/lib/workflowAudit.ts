@@ -16,6 +16,8 @@ export interface WorkflowAuditEntry {
 export interface WorkflowSettings {
   nodeAcceptance: boolean;
   auditRetentionRuns: number;
+  /** 轻量评审模型（模型库条目 id）；空串 = 跟随全局 active */
+  reviewModel: string;
 }
 
 /** 审计列表（新→旧，limit 缺省 200 上限 500） */
@@ -49,10 +51,15 @@ export function getWorkflowSettings(): Promise<WorkflowSettings> {
 
 /** 写工作流设置（两参均可选 = 只改传了的）；返回写后全量 */
 export function setWorkflowSettings(
-  patch: { nodeAcceptance?: boolean; auditRetentionRuns?: number }
+  patch: {
+    nodeAcceptance?: boolean;
+    auditRetentionRuns?: number;
+    reviewModel?: string;
+  }
 ): Promise<WorkflowSettings> {
   return invoke<WorkflowSettings>("workflow_settings_set", {
     nodeAcceptance: patch.nodeAcceptance ?? null,
     auditRetentionRuns: patch.auditRetentionRuns ?? null,
+    reviewModel: patch.reviewModel ?? null,
   });
 }
