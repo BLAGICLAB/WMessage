@@ -20,11 +20,22 @@
 use rusqlite::Connection;
 
 use super::proposal::{EvolutionProposal, ImpactLevel, ProposalCategory};
+use crate::evolution::strategy::EvolutionPolicy;
 use crate::memory::store::{self, NewItem};
 
 /// 自动应用门槛（纯函数）：仅 MemoryHint + High/Medium。
+///
+/// 迁移委托（批次 B-2）：判定逻辑已迁 `strategy::DefaultEvolutionPolicy::gate`
+///（白名单形式，与本函数迁移前语义逐输入等价——strategy.rs 12 例等价穷举钉死），
+/// 此处零逻辑委托。生产调用方为 evolution/mod.rs 的 gated 过滤。
+#[deprecated(
+    note = "批次 B-2 迁移：改用 strategy::EvolutionPolicy::gate（GateDecision::Approved 即本函数 true）"
+)]
 pub(crate) fn auto_apply_gate(p: &EvolutionProposal) -> bool {
-    p.category == ProposalCategory::MemoryHint && p.impact != ImpactLevel::Low
+    matches!(
+        crate::evolution::strategy::DefaultEvolutionPolicy.gate(p),
+        crate::evolution::strategy::GateDecision::Approved
+    )
 }
 
 /// 提案对应的记忆幂等 key（tags[0]）。
@@ -83,10 +94,10 @@ pub fn apply_one(
         kind: "lesson".to_string(),
         content: p.suggestion.text.clone(),
         tags: vec![key, "evolution".to_string()],
-        importance: match p.impact {
-            ImpactLevel::High => 4,
-            _ => 3,
-        },
+        // importance 映射已收拢进策略层 trait（批次 B-2，High=4 / 其余=3 原样）
+        importance: i64::from(
+            crate::evolution::strategy::DefaultEvolutionPolicy.importance(p.impact),
+        ),
         source: "system".to_string(),
     };
     let (outcome, _merged_ids) = store::insert_item(conn, &item, embedding, now_ms)?;

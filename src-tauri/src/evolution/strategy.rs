@@ -44,6 +44,10 @@ pub trait EvolutionPolicy: Send + Sync {
 
     /// 跨层排序：layer 优先级升序 → impact 降序 → created_at 升序
     fn order_entries(&self, entries: &mut [ProposalEntry]);
+
+    /// importance 映射（写 lesson 记忆时落 mem_items.importance）。
+    /// 数值契约 1..=5：默认实现输出恒在界内；越界防御由 store 层 clamp 兜底。
+    fn importance(&self, impact: ImpactLevel) -> u8;
 }
 
 /// 默认实现：迁移前行为逐函数搬运，一行逻辑不改（等价对照测试钉死）。
@@ -120,6 +124,14 @@ impl EvolutionPolicy for DefaultEvolutionPolicy {
                 .then(impact_ord(b.impact).cmp(&impact_ord(a.impact)))
                 .then(a.created_at_ms.cmp(&b.created_at_ms))
         });
+    }
+
+    fn importance(&self, impact: ImpactLevel) -> u8 {
+        // 迁移前 apply_one 内联映射原样：High=4，其余=3
+        match impact {
+            ImpactLevel::High => 4,
+            _ => 3,
+        }
     }
 }
 
@@ -229,6 +241,16 @@ mod tests {
             GateDecision::Rejected { reason } => assert!(reason.contains("MemoryHint"), "{reason}"),
             GateDecision::Approved => panic!("非 MemoryHint 应拒"),
         }
+    }
+
+    #[test]
+    fn importance_maps_high_to_4_others_to_3() {
+        // 迁移前 apply_one 内联映射（High=4 / 其余=3）原样收拢进 trait；
+        // 数值契约 1..=5 由 store 层 clamp 兜底（批次 A §4.3）
+        let policy = DefaultEvolutionPolicy;
+        assert_eq!(policy.importance(ImpactLevel::High), 4);
+        assert_eq!(policy.importance(ImpactLevel::Medium), 3);
+        assert_eq!(policy.importance(ImpactLevel::Low), 3);
     }
 
     // ─── 消解/排序：新旧路径快照对照（serde_json 字符串相等 + 字面量预期）───

@@ -169,11 +169,21 @@ pub fn post_consolidation(ops: &[ConsolidateOp], report: &ConsolidateReport) {
     // Phase 2：emit（audit）之前先把达门槛的子集挑出来交给 apply——
     // emit 的 24h dedup 会吞掉重复提案，apply 侧靠 evo:<proposal_id> 持久幂等，
     // 两条去重链路互不影响。
-    let gated: Vec<_> = proposals
-        .iter()
-        .filter(|p| apply::auto_apply_gate(p))
-        .cloned()
-        .collect();
+    // gate 判定走策略层 trait（批次 B-2 迁移；Deprecated 委托保留给旧测试）
+    let gated: Vec<_> = {
+        use crate::evolution::strategy::{DefaultEvolutionPolicy, EvolutionPolicy};
+        let policy = DefaultEvolutionPolicy;
+        proposals
+            .iter()
+            .filter(|p| {
+                matches!(
+                    policy.gate(p),
+                    crate::evolution::strategy::GateDecision::Approved
+                )
+            })
+            .cloned()
+            .collect()
+    };
 
     // 补 R6 A 漏的连线（老板 12:29 拍板）：落盘候选池，让 shadow 钩子能读到。
     // dedup by proposal_id：跳过 24h 内已存在的。
