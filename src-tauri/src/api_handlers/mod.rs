@@ -61,7 +61,7 @@ mod tests {
         register_sse_writer, stop_sse_writers, MAX_SSE_CLIENTS, SSE_STOP_JOIN_TIMEOUT,
     };
     use crate::api_handlers::util::{change_log_line, API_MAX_FILE_PATH};
-    use crate::api_server::{start_api, EventHub, RunningApi};
+    use crate::api_server::{start_api, ApiState, EventHub, RunningApi};
     use crate::db;
 
     fn bare_task(title: &str) -> db::Task {
@@ -764,6 +764,79 @@ mod tests {
     }
 
     // ── 共享测试基建：手写 HTTP 客户端 ──
+
+    /// 慢 store：load() 进入置位 entered、自限时 300ms 后置 released 再返回——
+    /// 构造「退出时有在途 handler」场景且不与 stop 互相等待（stop 等 handler
+    /// 收尾，handler 的收尾不依赖 stop）
+    struct SlowStore {
+        inner: MemStore,
+        entered: Arc<AtomicBool>,
+        released: Arc<AtomicBool>,
+    }
+    impl TaskStore for SlowStore {
+        fn load(&self) -> Result<Vec<db::Task>, String> {
+            self.entered.store(true, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(300));
+            self.released.store(true, Ordering::SeqCst);
+            self.inner.load()
+        }
+        fn upsert(&self, tasks: Vec<db::Task>) -> Result<(), String> {
+            self.inner.upsert(tasks)
+        }
+        fn event_hub(&self) -> &Arc<EventHub> {
+            self.inner.event_hub()
+        }
+    }
+
+    /// 退出排空（拍板：30s 超时后强退）：已进入的 handler 必须完成后才返回，
+    /// 且退出中新连接被拒（accept 线程已停、监听已关）
+    #[test]
+    fn exit_drains_in_flight_handler_then_refuses_new() {
+        let entered = Arc::new(AtomicBool::new(false));
+        let released = Arc::new(AtomicBool::new(false));
+        let store: Arc<dyn TaskStore> = Arc::new(SlowStore {
+            inner: MemStore {
+                tasks: Mutex::new(vec![]),
+                hub: EventHub::new(),
+            },
+            entered: entered.clone(),
+            released: released.clone(),
+        });
+        let token = "exit-drain-token".to_string();
+        let port = free_port();
+        let running = start_api(port, token.clone(), store, None, None, None).unwrap();
+        let state = ApiState(std::sync::Mutex::new(Some(running)));
+
+        let worker =
+            std::thread::spawn(move || http(port, "GET", "/api/tasks", Some(&token), None));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !entered.load(Ordering::SeqCst) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(entered.load(Ordering::SeqCst), "前置：慢 handler 已进入");
+
+        let app = Box::leak(Box::new(tauri::test::mock_app()))
+            .handle()
+            .clone();
+        let stop_started = Instant::now();
+        api_stop_for_exit(&app, &state).expect("退出停止应成功");
+        // 在途 handler 完成后 stop 才返回：released 必已置位且 stop 等到了它
+        assert!(
+            released.load(Ordering::SeqCst),
+            "退出必须等在途 handler 完成（store 自限时 300ms 后置位，stop 返回前必已发生）"
+        );
+        assert!(
+            stop_started.elapsed() >= Duration::from_millis(250),
+            "stop 应真实等待过在途 handler（≥ 慢 handler 剩余时长）"
+        );
+        let _resp = worker.join().unwrap();
+
+        // 退出后新连接被拒（监听已关）
+        assert!(
+            std::net::TcpStream::connect(("127.0.0.1", port)).is_err(),
+            "退出后新请求应被拒绝（连接失败）"
+        );
+    }
 
     fn http(
         port: u16,

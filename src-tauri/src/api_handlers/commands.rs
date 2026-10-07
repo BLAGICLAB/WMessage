@@ -10,6 +10,8 @@
 //! api_stop_for_exit 不是命令——是 lib.rs 退出路径专用(保留 runtime/flags/api-enabled.flag,
 //! 下次启动按 flag 自动恢复)。通过 mod.rs 顶层 `pub use` 透传给 lib.rs。
 
+use std::sync::atomic::AtomicUsize;
+use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
 use crate::api::{TaskStore, TauriStore, API_PORT};
@@ -150,19 +152,56 @@ fn api_start_locked(
 #[tauri::command]
 pub fn api_stop(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandResult<()> {
     // 用户显式关闭:清 api-enabled.flag,否则下次启动会按 flag 自动恢复
-    api_stop_impl(&app, &state, true)
+    api_stop_impl(&app, &state, true).map(|_| ())
 }
 
 /// 应用退出路径(ExitRequested)的 API 停止——与 api_stop 同一清理
 /// (accept 线程 + SSE writer 全部通知并 join),但保留 runtime/flags/api-enabled.flag:
 /// 退出不是用户关开关,下次启动应按 flag 自动恢复服务。
 /// 泛型 Runtime:cleanup_on_exit 的 mock runtime 测试可直调。
+/// 退出排空(拍板):拒新请求后等在飞 handler 归零,默认 30s(环境变量
+/// WM_API_EXIT_DRAIN_SECS 覆盖),超时记 WARN 后强退。
 pub fn api_stop_for_exit<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     state: &ApiState,
 ) -> CommandResult<()> {
     // 退出不是用户关开关:保留 flag 供下次启动恢复
-    api_stop_impl(app, state, false)
+    let active = api_stop_impl(app, state, false)?;
+    if let Some(active) = active {
+        let timeout = exit_drain_timeout();
+        let started = std::time::Instant::now();
+        loop {
+            let n = active.load(Ordering::SeqCst);
+            if n == 0 {
+                break;
+            }
+            if started.elapsed() >= timeout {
+                audit_event!(
+                    app,
+                    AuditLevel::Warn,
+                    "api_exit_drain_timeout",
+                    "in_flight" => n.to_string(),
+                    "timeout_secs" => timeout.as_secs().to_string()
+                );
+                eprintln!(
+                    "[api exit] 在途请求 {n} 个超过 {timeout:?} 未完成，强制退出（超时留痕见审计）"
+                );
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+    Ok(())
+}
+
+/// 退出排空超时：30s 保守默认；WM_API_EXIT_DRAIN_SECS 环境变量可覆盖
+///（解析失败按默认，非故障）
+fn exit_drain_timeout() -> Duration {
+    std::env::var("WM_API_EXIT_DRAIN_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(API_EXIT_DRAIN_TIMEOUT)
 }
 
 /// `clear_enabled` 由调用方语义决定:`api_stop`(用户显式关闭)→ true,
@@ -172,31 +211,37 @@ fn api_stop_impl<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     state: &ApiState,
     clear_enabled: bool,
-) -> CommandResult<()> {
+) -> CommandResult<Option<Arc<AtomicUsize>>> {
     // 锁 poisoning 审计:同 ab74025 惯例
     let mut g = state.0.lock().map_err(|e| {
         eprintln!("[mutex_poisoned] api_handlers::commands::state.0: {e:?}");
         e.to_string()
     })?;
-    api_stop_locked(app, &mut g)?;
+    let drained = api_stop_locked(app, &mut g)?;
     drop(g);
     if clear_enabled {
         clear_enabled_flag(app);
     }
-    Ok(())
+    Ok(drained)
 }
+
+/// 退出排空超时上限（拍板：30s 保守默认，超时后强退并留 WARN 审计）
+pub const API_EXIT_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// api_stop_impl 的持锁实现:供 api_rotate_token
 /// 在全程持 `state.0` 锁前提下复用,消除「检查→stop→start」之间的抢锁窗口。
+/// 返回在飞 worker 计数器（服务未在跑返回 None）——api_stop_for_exit 据此
+/// 等待在途 handler 收尾（F163）；api_stop（用户关）/rotate 不等待，行为不变。
 ///
 /// 不做 enabled flag 清理——由调用方在锁释放后决定
 /// (api_stop 清;api_stop_for_exit 保留给下次启动;api_rotate_token 走 start 路径覆盖)。
 fn api_stop_locked<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     g: &mut Option<RunningApi>,
-) -> CommandResult<()> {
+) -> CommandResult<Option<Arc<AtomicUsize>>> {
     if let Some(mut r) = g.take() {
         r.shutdown.store(true, Ordering::SeqCst);
+        let active = r.active.clone();
         if let Some(h) = r.handle.take() {
             let _ = h.join();
         }
@@ -208,8 +253,9 @@ fn api_stop_locked<R: tauri::Runtime>(
         stop_sse_writers(key, SSE_STOP_JOIN_TIMEOUT, &mut |line: &str| {
             audit_event!(&audit_app, AuditLevel::Error, "sse_writer_leaked", "error" => line);
         });
+        return Ok(Some(active));
     }
-    Ok(())
+    Ok(None)
 }
 
 // ───────────────────────── api_status ─────────────────────────

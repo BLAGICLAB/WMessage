@@ -46,6 +46,9 @@ pub struct RunningApi {
     /// 调用方 Phase 1 从磁盘读到的 token 与此刻内存服务绑定的可能不同
     /// （中间插入过 api_rotate_token），返回旧值会让调用方拿到对不上活服务的凭证。
     pub token: String,
+    /// 在飞 worker 计数（A6 并发上限的同一个计数器）：退出路径排空等待用——
+    /// api_stop_for_exit 拒新请求后等它归零再放进程退出（F163）
+    pub active: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 /// SSE 事件中枢：客户端列表（bounded 256） + 自增事件 id + 历史环形缓冲（断线重放）
@@ -222,6 +225,8 @@ pub fn start_api(
     // panic 消息带回 accept 线程记日志。
     let on_error: Option<Arc<dyn Fn(AuditLevel, &str, &str) + Send + Sync>> =
         on_error.map(|b| -> Arc<dyn Fn(AuditLevel, &str, &str) + Send + Sync> { b.into() });
+    // RunningApi 需持同一计数器供退出排空等待（accept 闭包会 move 原值，先克隆）
+    let active_for_api = active.clone();
     let handle = std::thread::spawn(move || loop {
         if sd.load(Ordering::SeqCst) {
             break;
@@ -292,6 +297,7 @@ pub fn start_api(
         shutdown,
         handle: Some(handle),
         token,
+        active: active_for_api,
     })
 }
 
