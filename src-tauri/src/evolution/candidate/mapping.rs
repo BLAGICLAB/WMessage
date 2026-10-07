@@ -34,9 +34,20 @@ pub fn to_change_record(entry: &ProposalEntry, hard_constraint_compliance: bool)
     };
     // approval_source 与 status 一起派生：不合规/被拒 → SystemRejected，
     // 其余 → Pending（不合规时 status 已被压成 Rejected，走同一分支）。
+    // 显式穷举全部变体：未来新增 ChangeStatus 变体在此编译报错，
+    // 逼出显式映射决策（而非被通配臂静默标成 Pending）。
     let approval_source = match status {
         ChangeStatus::Rejected => ApprovalSource::SystemRejected,
-        _ => ApprovalSource::Pending,
+        // Expired 保持 Pending：ApprovalSource 无 Expired 对应变体
+        //（从未批准也未被拒），见本函数 doc
+        ChangeStatus::Pending
+        | ChangeStatus::Shadowing
+        | ChangeStatus::ShadowPassed
+        | ChangeStatus::Approved
+        | ChangeStatus::Canary
+        | ChangeStatus::Active
+        | ChangeStatus::Expired
+        | ChangeStatus::RolledBack => ApprovalSource::Pending,
     };
     ChangeRecord {
         change_id: entry.change_id.clone(),

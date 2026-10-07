@@ -346,8 +346,9 @@ fn precompute_human_apply_embedding<R: tauri::Runtime>(
 }
 
 /// W1 人工批准执行器内核：apply_one 写 lesson（幂等由 evo:<pid> key 查重承担）。
-/// 锁序同 delete_inner 先例：外层已持 EVOLUTION_STORE_LOCK，内取 DB_WRITE_LOCK
-///（apply 轨是先放 DB 锁再取 store 锁、两向不嵌套，无环）。
+/// 本函数只取 DB_WRITE_LOCK，**不持** EVOLUTION_STORE_LOCK（唯一调用方
+/// toggle_inner 段② = 锁外落库段）；store 锁与 DB 锁不同时嵌套持有
+///（apply 轨先放 DB 锁再取 store 锁，两向无环），死锁面为零。
 fn human_apply_one<R: tauri::Runtime>(
     app: &AppHandle<R>,
     p: &EvolutionProposal,
@@ -365,15 +366,33 @@ fn human_apply_one<R: tauri::Runtime>(
 /// W1：人工批准落库成功后 CR 合法流转到 Active——瞬时走完
 /// Pending→Shadowing→ShadowPassed→Approved→Active（同 auto_applied_from_proposal；
 /// Pending→Active 直跳被 status.rs 硬约束②拦截，不裸写）。已 Active（重复批）
-/// 幂等跳过。approval_source 保持 HumanApproved 不变（自动/人工来源显式区分）。
+/// 幂等跳过。CR 可能被 shadow 观察推进到中途态（Shadowing/ShadowPassed，段①
+/// dedup 会复用既有行）——从当前态续走余下流转，同态重走会被 status.rs 判
+/// 「状态未变」报错。approval_source 保持 HumanApproved 不变（自动/人工来源显式区分）。
 fn mark_human_applied(cr: &mut ChangeRecord) -> Result<(), String> {
     use ChangeStatus::{Active, Approved, ShadowPassed, Shadowing};
     if cr.status == Active {
-        return Ok(());
+        return Ok(()); // 幂等：重复批不 Err 不回退
     }
-    for step in [Shadowing, ShadowPassed, Approved, Active] {
-        change::transition(cr.status, step)?;
-        cr.status = step;
+    let path = [Shadowing, ShadowPassed, Approved, Active];
+    // 起点解析：Pending 走全路径；已在路径上的状态从**下一站**续走
+    //（含当前态会触发 status.rs 的「状态未变」拒绝）；
+    // 路径外的非终态（Rejected 等终态/异常态）给可操作中文报错，fail-closed。
+    let begin = match cr.status {
+        ChangeStatus::Pending => 0,
+        other => path
+            .iter()
+            .position(|s| *s == other)
+            .map(|i| i + 1)
+            .ok_or_else(|| {
+                format!(
+                    "CR 状态 {other:?} 不在 Pending→Active 路径上，无法流转到 Active（请刷新面板核实状态）"
+                )
+            })?,
+    };
+    for step in &path[begin..] {
+        change::transition(cr.status, *step)?;
+        cr.status = *step;
     }
     Ok(())
 }
@@ -1141,5 +1160,22 @@ mod tests {
         // 已 Active（重复批）幂等跳过——再走一遍不 Err 也不回退
         mark_human_applied(&mut cr).unwrap();
         assert_eq!(cr.status, ChangeStatus::Active);
+    }
+
+    /// 中途态 CR（shadow 观察推进到 Shadowing/ShadowPassed，段① dedup 复用）
+    /// 从当前状态续走到 Active，不因同态流转报「状态未变」
+    #[test]
+    fn w1_mark_human_applied_resumes_from_midflow_status() {
+        for start in [
+            ChangeStatus::Shadowing,
+            ChangeStatus::ShadowPassed,
+            ChangeStatus::Approved,
+        ] {
+            let mut cr = mk_change("chg-mid", start);
+            cr.approval_source = ApprovalSource::HumanApproved;
+            mark_human_applied(&mut cr)
+                .unwrap_or_else(|e| panic!("{start:?} 应能续走到 Active：{e}"));
+            assert_eq!(cr.status, ChangeStatus::Active, "{start:?} 终点应为 Active");
+        }
     }
 }

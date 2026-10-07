@@ -67,7 +67,13 @@ pub fn derive_layer(category: ProposalCategory) -> EvolutionLayer {
 /// - compliance=true  → Pending（待沙箱或批准）
 /// - compliance=false → Rejected（SystemRejected）
 pub fn from_proposal(p: &EvolutionProposal, now_ms: i64) -> ChangeRecord {
-    let compliance = passes_auto_apply_gate(p);
+    // 判定直连策略层 trait：passes_auto_apply_gate 已标 #[deprecated]，
+    // 生产构造再经它会每次构建报 deprecation warning——旧委托壳仅留给
+    // 存量测试，等其全部改道后删除
+    let compliance = matches!(
+        crate::evolution::strategy::DefaultEvolutionPolicy.gate(p),
+        crate::evolution::strategy::GateDecision::Approved
+    );
     let (status, approval_source) = if compliance {
         (ChangeStatus::Pending, ApprovalSource::Pending)
     } else {

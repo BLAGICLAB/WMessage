@@ -145,9 +145,19 @@ def strip_comments_and_strings(text: str) -> str:
                 out.append(" ")
                 i += 1
             elif c == "'":
-                in_char = True
-                out.append(" ")
-                i += 1
+                nxt = text[i + 1] if i + 1 < n else ""
+                nxt2 = text[i + 2] if i + 2 < n else ""
+                if nxt == "\\" or nxt2 == "'":
+                    # char 字面量 'x' / '\n' 等——进入 char 模式
+                    in_char = True
+                    out.append(" ")
+                    i += 1
+                else:
+                    # 生命周期 'a / 'static / '_——普通源码放行；若按 char 模式
+                    # 处理会吞掉到下一个单引号前的全部源码（含字符串与换行），
+                    # 既漏报违例又破坏行号稳定性
+                    out.append(" ")
+                    i += 1
             else:
                 out.append(c)
                 i += 1
@@ -156,7 +166,8 @@ def strip_comments_and_strings(text: str) -> str:
 
 def strip_cfg_test_modules(text: str) -> str:
     """删掉 #[cfg(test)] 开头的 mod 块（花括号配对计数；测试内关键词不算违例）。"""
-    pattern = re.compile(r"#\[cfg\(test\)\]\s*\nmod\s+(\w+)\s*\{")
+    # \s*（而非强制 \n）：兼容单行形态 `#[cfg(test)] mod tests {`
+    pattern = re.compile(r"#\[cfg\(test\)\]\s*mod\s+(\w+)\s*\{")
     while True:
         m = pattern.search(text)
         if not m:
@@ -212,6 +223,8 @@ use crate::evolution::proposal::ImpactLevel;
 pub struct DefaultEvolutionPolicy;
 // 注释里的 thread_rng 和 std::fs 不算违例
 const HINT: &str = "字符串里的 rand / Mutex / tauri:: 也不算";
+fn with_lifetime<'a>(x: &'a str) -> &'static str { "static" }
+#[cfg(test)] mod single_line { use rand::thread_rng; }
 #[cfg(test)]
 mod tests {
     use std::fs; // 测试模块内的 std::fs 豁免

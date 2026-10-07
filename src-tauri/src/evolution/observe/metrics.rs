@@ -57,12 +57,19 @@ pub fn compute(
 ) -> ObserveMetrics {
     let proposal_total = proposals.len();
 
-    // 窗口内候选数（created_at_ms >= window_start_ms && < now_ms）
+    // 窗口内候选数（created_at_ms >= window_start_ms && <= now_ms，闭区间上界：
+    // 评估时刻恰戳 now 的候选计入）
     let proposals_in_window: usize = proposals
         .iter()
         .filter(|p| p.created_at_ms >= window_start_ms && p.created_at_ms <= now_ms)
         .count();
 
+    // now < window_start 属调用方 bug / 时钟回拨：debug 构建直接暴露，
+    // release 仍按下方 max(1.0) 折算避免除零 / 负天数
+    debug_assert!(
+        now_ms >= window_start_ms,
+        "metrics::compute: now_ms ({now_ms}) < window_start_ms ({window_start_ms})"
+    );
     let window_days = ((now_ms - window_start_ms) as f64 / 86_400_000.0).max(1.0);
 
     // 通过：proposal.status == Promoted
