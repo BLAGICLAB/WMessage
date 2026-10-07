@@ -12,44 +12,15 @@
 //! 文件缺失从空对象起（设置页首次点档不要求先存过配置）；解析失败拒绝写
 //!（防整库覆盖——坏文件上 RMW = 丢用户配置）。
 
-use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tauri::AppHandle;
 
+/// 应用策略二档——类型定义已迁策略层（批次 B-4，决策词汇归 strategy 所有），
+/// 此处转发保持既有导入路径稳定；配置读写函数仍在上下文层本文件。
+pub use crate::evolution::strategy::ApplyPolicy;
+
 /// bot-config.json 里的配置键（evolution 块内）。
 pub(crate) const APPLY_POLICY_KEY: &str = "applyPolicy";
-
-/// 应用策略二档。
-///
-/// serde 小写序列化（"auto"/"confirm"）与 as_str()/配置键口径一致——
-/// `evolution_get_apply_policy` 直接把本枚举过 Tauri 边界（OCR R1 采纳：
-/// 比裸 String 类型化），前端拿到的就是这两个小写字面量。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ApplyPolicy {
-    /// 自动生效（默认；缺字段/非法值同此档）
-    Auto,
-    /// 需确认：达门槛提案只进候选池，等决策板人工批准
-    Confirm,
-}
-
-impl ApplyPolicy {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Auto => "auto",
-            Self::Confirm => "confirm",
-        }
-    }
-
-    /// 配置字符串解析：仅认 "auto" / "confirm"，其余（含缺字段）按 Auto。
-    pub fn from_config_str(s: &str) -> Option<Self> {
-        match s {
-            "auto" => Some(Self::Auto),
-            "confirm" => Some(Self::Confirm),
-            _ => None,
-        }
-    }
-}
 
 /// post_consolidation 分流谓词：auto（或缺省/读不到句柄）= 允许自动落库。
 /// `None`（emit 句柄未注册，测试环境）按 auto——治理开关缺位时绝不改变既有行为。

@@ -13,6 +13,56 @@
 use crate::evolution::candidate::entry::ProposalEntry;
 use crate::evolution::change::record::EvolutionLayer;
 use crate::evolution::proposal::{EvolutionProposal, ImpactLevel, ProposalCategory};
+use crate::evolution::sandbox::kill_switch::KillSwitch;
+use serde::{Deserialize, Serialize};
+
+/// 应用策略二档（决策词汇归策略层所有；policy.rs 负责配置 IO 与转发）。
+///
+/// serde 小写序列化（"auto"/"confirm"）与 as_str()/配置键口径一致——
+/// `evolution_get_apply_policy` 直接把本枚举过 Tauri 边界（OCR R1 采纳：
+/// 比裸 String 类型化），前端拿到的就是这两个小写字面量。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApplyPolicy {
+    /// 自动生效（默认；缺字段/非法值同此档）
+    Auto,
+    /// 需确认：达门槛提案只进候选池，等决策板人工批准
+    Confirm,
+}
+
+impl ApplyPolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Confirm => "confirm",
+        }
+    }
+
+    /// 配置字符串解析：仅认 "auto" / "confirm"，其余（含缺字段）按 Auto。
+    pub fn from_config_str(s: &str) -> Option<Self> {
+        match s {
+            "auto" => Some(Self::Auto),
+            "confirm" => Some(Self::Confirm),
+            _ => None,
+        }
+    }
+}
+
+/// 运行时上下文只读快照（批次 A §1.2）：每个 evolution 周期在**决策点**构造
+/// 一次，构造后不可变；策略层不消费本结构（gate/resolve/order 均为纯参数），
+/// 它供编排侧做分流判定（applyPolicy 分流 / kill 中断 / shadow 观察）。
+/// 不含随机源——全域禁随机（不变式 7），未来引入必须加字段由调用方注入。
+#[derive(Debug, Clone)]
+pub struct EvalContext {
+    /// applyPolicy 档位快照（缺省/读失败 = Auto，与现状一致）
+    pub apply_policy: ApplyPolicy,
+    /// kill_switch 只读快照（读取失败 = 全关默认，与现状一致）
+    pub kill_switch: KillSwitch,
+    /// shadow 观察是否开启
+    pub shadow_enabled: bool,
+    /// 本周期基准时间
+    pub now_ms: i64,
+}
 
 /// gate 判定结果。Reject 是正常业务结果，不进 Err 通道。
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -181,7 +181,8 @@ pub fn apply_from_consolidation(proposals: Vec<EvolutionProposal>) {
 
     // [R6 A] shadow 钩子（仅当 evolution.shadow.enabled=true 时）
     // 克隆 proposals 供 shadow spawn（主 apply 仍用原 proposals）
-    let shadow_proposals = if crate::evolution::observe::shadow::is_enabled(&app) {
+    let shadow_enabled = crate::evolution::observe::shadow::is_enabled(&app);
+    let shadow_proposals = if shadow_enabled {
         Some(proposals.clone())
     } else {
         None
@@ -192,7 +193,15 @@ pub fn apply_from_consolidation(proposals: Vec<EvolutionProposal>) {
     tauri::async_runtime::spawn(async move {
         let app2 = app.clone();
         let r = tauri::async_runtime::spawn_blocking(move || -> Result<ApplyReport, String> {
-            // kill 现读现判（spawn_blocking 内，不占 async worker）
+            // 批次 B-4：决策输入收拢进 EvalContext，本轮 apply 一次构造——
+            // kill 现读现判（spawn_blocking 内，不占 async worker）；
+            // applyPolicy 与 kill 同源 bot-config.json 一并读出，频率与现状一致。
+            // - shadow_only / all_auto_apply=true → 主 apply 空转返回（lesson 不落库）；
+            //   shadow 钩子照常（kill 只停「写」不强制开「观察」，shadow 仍受
+            //   evolution.shadow.enabled 独立控制）
+            // - disable_notification → apply 完成的 bot.log 摘要行静默
+            // - 读取失败显式 WARN 后按全关默认（评审 HIGH 采纳：不再静默吞）
+            // 配置缺 evolution.kill_switch 块 = Err → 全关默认（行为与无开关一致）
             let kill = match crate::evolution::sandbox::kill_switch::load_from_file(&kill_cfg_path)
             {
                 Ok(k) => k,
@@ -201,18 +210,24 @@ pub fn apply_from_consolidation(proposals: Vec<EvolutionProposal>) {
                     crate::evolution::sandbox::kill_switch::default_off()
                 }
             };
-            if kill.should_shadow_only() {
+            let ctx = crate::evolution::strategy::EvalContext {
+                apply_policy: crate::evolution::policy::read_apply_policy_at(&kill_cfg_path),
+                kill_switch: kill,
+                shadow_enabled,
+                now_ms: chrono::Utc::now().timestamp_millis(),
+            };
+            if ctx.kill_switch.should_shadow_only() {
                 crate::audit_event!(
                     &app2,
                     crate::audit::AuditLevel::Warn,
                     "evolution.apply_killed",
-                    "switch" => if kill.all_auto_apply { "all_auto_apply" } else { "shadow_only" },
-                    "notify_disabled" => kill.should_disable_notification().to_string(),
+                    "switch" => if ctx.kill_switch.all_auto_apply { "all_auto_apply" } else { "shadow_only" },
+                    "notify_disabled" => ctx.kill_switch.should_disable_notification().to_string(),
                     "effect" => "main_apply_skipped",
                 );
                 return Ok(ApplyReport::default());
             }
-            let notify_disabled = kill.should_disable_notification();
+            let notify_disabled = ctx.kill_switch.should_disable_notification();
             // 嵌入在持锁前批量算好（ONNX 推理数十 ms，不占 DB 写锁临界区）
             let embs: Vec<Option<Vec<f32>>> = proposals
                 .iter()
