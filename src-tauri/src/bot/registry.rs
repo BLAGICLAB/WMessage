@@ -145,7 +145,7 @@ pub const SCHEMA_QUERY_TASKS: &str = r##"{"type":"function","function":{"name":"
     "tag":{"type":"string","description":"按标签过滤，可选"},
     "limit":{"type":"integer","description":"最多返回条数，可选，默认 50，上限 200"}
 }}}}"##;
-pub const SCHEMA_QUERY_SINGLE_TASK: &str = r##"{"type":"function","function":{"name":"query_single_task","description":"按 id 查询单张任务卡完整详情（标题/列/截止/备注/子任务/标签/绑定文件 + 创建时间/定时/所属工作流/依赖 + 归档/删除状态指示；白名单单点，区别于 query_tasks 批量清单与关键词检索）","parameters":{"type":"object","properties":{"id":{"type":"string","description":"任务卡 UUID"}},"required":["id"]}}}"##;
+pub const SCHEMA_QUERY_SINGLE_TASK: &str = r##"{"type":"function","function":{"name":"query_single_task","description":"按 id 查询单张任务卡完整详情（标题/列/截止/备注/子任务/标签/绑定文件 + 创建时间/定时/所属工作流/依赖 + 归档/删除状态指示；白名单单点，区别于 query_tasks 批量清单与关键词检索；不要为凑清单循环调用本工具，批量场景一律用 query_tasks）","parameters":{"type":"object","properties":{"id":{"type":"string","description":"任务卡 UUID"}},"required":["id"]}}}"##;
 pub const SCHEMA_CREATE_TASK: &str = r##"{"type":"function","function":{"name":"create_task","description":"新建任务","parameters":{"type":"object","properties":{
     "title":{"type":"string","description":"任务标题"},
     "note":{"type":"string","description":"备注，可选"},
@@ -153,7 +153,7 @@ pub const SCHEMA_CREATE_TASK: &str = r##"{"type":"function","function":{"name":"
     "column":{"type":"string","enum":["todo","doing"],"description":"状态列，默认 todo"},
     "files":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"isDir":{"type":"boolean"}}},"description":"绑定文件列表（可选，最多 10 个；安全约束：仅允许 AI_Gen_Files 目录内的已存在文件，其余会被丢弃；要绑其它文件请引导用户用 bind_file 手选）"}
   },"required":["title"]}}}"##;
-pub const SCHEMA_COMPLETE_TASK: &str = r##"{"type":"function","function":{"name":"complete_task","description":"完成任务（taskId 精确匹配优先；无 taskId 时按标题关键词匹配）","parameters":{"type":"object","properties":{
+pub const SCHEMA_COMPLETE_TASK: &str = r##"{"type":"function","function":{"name":"complete_task","description":"完成任务（taskId 精确匹配优先；无 taskId 时按标题关键词匹配；任务卡带【验收标准】且未逐条达标时不要调用）","parameters":{"type":"object","properties":{
     "taskId":{"type":"string","description":"任务 id（来自用户消息的 [已选任务] 引用块或 list_tasks 输出），可选，优先于 title"},
     "title":{"type":"string","description":"标题关键词，无 taskId 时使用"}
   },"required":[]}}}"##;
@@ -273,7 +273,7 @@ pub const SCHEMA_RUN_PYTHON: &str = r##"{"type":"function","function":{"name":"r
     "code":{"type":"string","description":"要执行的 Python 代码，print 输出返回给用户"},
     "timeoutSecs":{"type":"integer","description":"超时秒数（可选，默认 60；大计算可调大，上限 300）"}
   },"required":["code"]}}}"##;
-pub const SCHEMA_WEB_SEARCH: &str = r##"{"type":"function","function":{"name":"web_search","description":"搜索互联网获取最新信息（配置 Tavily 或 Brave key 时走对应 API、双开报错，否则 Bing+百度网页抓取；返回标题/链接/摘要）","parameters":{"type":"object","properties":{
+pub const SCHEMA_WEB_SEARCH: &str = r##"{"type":"function","function":{"name":"web_search","description":"搜索互联网获取最新信息（配置 Tavily 或 Brave key 时走对应 API、双开报错，否则 Bing+百度网页抓取；返回标题/链接/摘要；润色/翻译/改写用户已给的文本不需要搜索）","parameters":{"type":"object","properties":{
     "query":{"type":"string","description":"搜索关键词"},
     "count":{"type":"integer","description":"结果条数，可选，1-10，默认 8"},
     "timeRange":{"type":"string","enum":["day","week","month","year"],"description":"时间范围，可选：day=24小时内 / week=一周内 / month=一月内 / year=一年内（Tavily/Brave 原生支持；Bing+百度抓取模式不支持并会明确提示）"},
