@@ -231,6 +231,35 @@ pub fn has_inline_secrets(s: &McpServerConfig) -> bool {
 }
 
 /// 规范化：trim 各字符串字段 + 丢弃空 env 键 + 超时钳制。保存前调用。
+/// trim 重名键查重（normalize 的前置闸）：不同原始键 trim 后同键时，normalize
+/// 的 map collect 会静默合并（BTreeMap 迭代序决定谁活谁死，丢配置无感知）。
+/// 冲突即拒绝整个保存，错误同时列出原始键与规范化键；不落库、不写 keyring。
+/// normalize 本身无失败路径（纯 trim/retain/collect），无需改签名。
+pub fn find_trim_collisions(s: &McpServerConfig) -> Result<(), String> {
+    for (what, map) in [("env", &s.env), ("headers", &s.headers)] {
+        let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for raw in map.keys() {
+            grouped
+                .entry(raw.trim().to_string())
+                .or_default()
+                .push(raw.clone());
+        }
+        let conflicts: Vec<String> = grouped
+            .into_iter()
+            .filter_map(|(norm, raws)| {
+                (raws.len() > 1).then(|| format!("[{}] → {}", raws.join("]、["), norm))
+            })
+            .collect();
+        if !conflicts.is_empty() {
+            return Err(format!(
+                "{what} 存在 trim 后重名的键（保存会被静默合并丢配置），请去重后重试：{}",
+                conflicts.join("；")
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub fn normalize_server(mut s: McpServerConfig) -> McpServerConfig {
     // id 一并 trim（B0 评审：带空白 id 会被原样入库，后续按 id 定位全歪）
     s.id = s.id.trim().to_string();
@@ -727,6 +756,37 @@ mod tests {
         assert_eq!(s.env.len(), 1, "只应剩 HOME 一条");
         assert_eq!(s.env.get("HOME").map(String::as_str), Some("/tmp"));
         assert_eq!(s.timeout_secs, Some(MCP_TIMEOUT_MAX_SECS));
+    }
+
+    // ── trim 重名键查重（normalize 前置闸，防 map collect 静默合并）──
+
+    #[test]
+    fn trim_colliding_raw_keys_are_rejected_with_both_keys_listed() {
+        let mut s = stdio_server("fs");
+        // 纯空白差异（normalize 只 trim、不折叠大小写，大小写不同不算重名）
+        s.env.insert("token ".into(), "a".into());
+        s.env.insert("\ttoken".into(), "b".into());
+        let err = find_trim_collisions(&s).unwrap_err();
+        // 错误同时列出原始键与规范化键，用户能对上自己填的内容
+        assert!(err.contains("token "), "应含原始键[token ]：{err}");
+        assert!(err.contains("token"), "应含规范化键 token：{err}");
+        assert!(err.contains("env"), "应标明冲突在 env：{err}");
+
+        // headers 同口径
+        let mut h = stdio_server("fs");
+        h.headers.insert("x-auth ".into(), "1".into());
+        h.headers.insert("\tx-auth".into(), "2".into());
+        let err = find_trim_collisions(&h).unwrap_err();
+        assert!(err.contains("headers"), "应标明冲突在 headers：{err}");
+
+        // 大小写不同（trim 后仍不同的键）不冲突，放行
+        let mut ok = stdio_server("fs");
+        ok.env.insert("Token".into(), "a".into());
+        ok.env.insert("TOKEN".into(), "b".into());
+        assert!(find_trim_collisions(&ok).is_ok(), "大小写不同的键不是重名");
+
+        // 无冲突常规配置放行
+        assert!(find_trim_collisions(&stdio_server("fs")).is_ok());
     }
 
     #[test]

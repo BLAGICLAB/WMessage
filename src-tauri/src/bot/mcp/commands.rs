@@ -74,6 +74,14 @@ pub fn mcp_server_save(
     app: AppHandle,
     server: McpServerConfig,
 ) -> CommandResult<Vec<McpServerConfig>> {
+    // trim 重名键闸在 normalize 之前：原始键一旦被 normalize 合并，冲突就看不见了
+    crate::bot::mcp::config::find_trim_collisions(&server).map_err(|reason| {
+        CommandError::InvalidArgument {
+            field: "env/headers".into(),
+            value: String::new(),
+            reason,
+        }
+    })?;
     let mut server = normalize_server(server);
     if server.id.trim().is_empty() {
         server.id = uuid::Uuid::new_v4().simple().to_string();
