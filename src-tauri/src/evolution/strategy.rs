@@ -258,8 +258,7 @@ mod tests {
             3000,
         );
 
-        // 旧路径（conflict.rs 委托前的原始语义经由委托即新路径——此处对照的
-        // 是「委托后公开入口」与「trait 直接调用」两路输出一致）
+        // 旧路径（conflict.rs 公开入口，零逻辑委托——委托目标即本 trait 实现）
         let mut old_sorted = vec![b.clone(), c.clone(), a.clone()];
         super::super::candidate::conflict::sort_entries_cross_layer(&mut old_sorted);
         let old_pair = super::super::candidate::conflict::resolve_conflict(&a, &b);
