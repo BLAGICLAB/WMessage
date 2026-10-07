@@ -3221,6 +3221,7 @@ function WorkflowSettingsCard() {
   const [auditMsg, setAuditMsg] = useState<string | null>(null);
   // W11：轻量评审模型（模型库条目 id；空 = 跟随全局）
   const [reviewModel, setReviewModel] = useState("");
+  const [modelBusy, setModelBusy] = useState(false);
   const [modelOptions, setModelOptions] = useState<Array<{ id: string; label: string }>>([]);
   useEffect(() => {
     getWorkflowSettings()
@@ -3356,15 +3357,21 @@ function WorkflowSettingsCard() {
           </div>
           <select
             aria-label="轻量评审模型"
-            className="shrink-0 max-w-[180px] rounded-[var(--r-sm)] bg-transparent px-2 py-1 text-xs nm-inset text-[var(--t3)]"
+            className="shrink-0 max-w-[180px] rounded-[var(--r-sm)] bg-transparent px-2 py-1 text-xs nm-inset text-[var(--t3)] disabled:opacity-50"
+            disabled={modelBusy}
             value={reviewModel}
             onChange={async (e) => {
+              if (modelBusy) return; // in-flight 守卫：连改下拉不并发落盘（OCR r1 high）
+              setModelBusy(true);
               const v = e.target.value;
-              setReviewModel(v); // 乐观更新（失败回滚由 catch 提示）
               try {
-                await setWorkflowSettings({ reviewModel: v });
+                // 以服务端返回值为准（不用乐观更新——落盘失败时 UI 不展示未持久化值）
+                const st = await setWorkflowSettings({ reviewModel: v });
+                setReviewModel(st.reviewModel ?? "");
               } catch (err) {
                 setAuditMsg(String(err));
+              } finally {
+                setModelBusy(false);
               }
             }}
           >

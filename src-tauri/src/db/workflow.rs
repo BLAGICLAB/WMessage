@@ -1071,7 +1071,13 @@ pub async fn workflow_export(
     workflow_id: String,
     path: String,
 ) -> CommandResult<usize> {
-    crate::db::tasks::check_export_path(&path)?;
+    // W11 OCR r1 high：路径闸门的 fs 调用进阻塞线程（不占 Tokio worker）
+    let path_gate = path.clone();
+    crate::py::document::spawn_blocking_map(move || {
+        crate::db::tasks::check_export_path(&path_gate).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(CommandError::from)?;
     let file = {
         let app = app.clone();
         let wid = workflow_id.clone();
@@ -1113,7 +1119,13 @@ pub async fn workflow_export(
 /// 与 tasks_import 的按 id 合并刻意分离）。图规则全部由 workflow_save_locked 承接。
 #[tauri::command]
 pub async fn workflow_import(app: AppHandle, path: String) -> CommandResult<WorkflowSaveResult> {
-    crate::db::tasks::check_export_path(&path)?;
+    // W11 OCR r1 high：路径闸门的 fs 调用进阻塞线程（不占 Tokio worker）
+    let path_gate = path.clone();
+    crate::py::document::spawn_blocking_map(move || {
+        crate::db::tasks::check_export_path(&path_gate).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(CommandError::from)?;
     let path_for_audit = path.clone(); // 审计用；本体 move 进读文件闭包
     let input = {
         async_runtime::spawn_blocking(move || -> CommandResult<WorkflowSaveInput> {

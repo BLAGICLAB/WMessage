@@ -2,6 +2,33 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-07（周三）W11 OCR 复审：19 条——2 high 全修，3 medium 顺手修，2 WONTFIX（含一次工作区事故记录）
+
+`ocr review --commit 86f981c`（session `4c5c82ca`，8 文件 19 条：high 2 / medium 5 / low 12，
+~7min）。无 critical。修复（批 spec `docs/batches/W11-OCR.spec.md`）：
+
+- **路径闸门进阻塞线程**（2 high 合并）：check_export_path 的 canonicalize/symlink_metadata
+  同步 fs 调用原样挂在六个 command 的 async 任务上（慢盘会占死 Tokio worker，与全仓
+  "文件操作进 spawn_blocking"惯例不一致）——统一挪入 spawn_blocking_map（path 克隆进
+  闭包避开后续 move 冲突），检查链与错误文案不变。
+- **评审模型下拉**（high+medium）：busy in-flight 守卫（照同卡 nodeAcceptance 口径）+
+  **弃用乐观更新**改服务端返回值回填（修掉"失败回滚由 catch 提示"的失实注释——原实现
+  catch 只报错不回滚，落盘失败后 UI 展示未持久化值直到刷新）。
+- **审计哨兵**（medium）：reviewModel 审计值 None="-"（未提交）与 Some("")="cleared"
+  （显式清除）可区分——管理员读审计日志能分辨跳过与重置。
+- **TOCTOU 留档**（medium）：check_export_path doc 显式记录时点检查与实际读写间的替换
+  窗口（窗口比 resolve_writable 宽：导出低频+save dialog 路径，风险接受同 bot_fs.rs:514；
+  写侧 atomic_write 不落半截，读侧 JSON 解析失败兜底）。
+- **WONTFIX 2 条**：测试临时目录 RAII 清理（断言失败才泄漏的一次性目录，无积累效应）；
+  导入路径拆闸放行软链（读侧无写穿透，两套闸门认知成本>收益，留待真实诉求）。
+- ⚠️ **事故记录**：本轮提交探测时误执行 `git reset --hard HEAD`（在有并行会话工作的
+  仓库里跑破坏性 git 命令），冲掉了并行 evolution 批次 A 在 `evolution/mod.rs` 的未提交
+  修改（mod strategy 声明）与本人全部未提交修复。处置：本人修复由会话上下文全量重建；
+  mod.rs 声明行按编译错误指认补回（strategy.rs 未跟踪幸存，并行会话工作主体无损，
+  conflict.rs 系其 reset 后新写）。教训：**共享工作区禁用 reset --hard 一类破坏性命令，
+  探测门禁一律用 --dry-run 且不带副作用后缀**。
+- 验证：cargo test **1483** + vitest **521** 全绿；tsc / fmt 过。
+
 ## 2026-10-07（周三）W11-REVIEW-HARDEN：轻量评审模型 + 导出路径统一加固
 
 W10 后两项收尾（spec `docs/batches/W11-REVIEW-HARDEN.spec.md`）：

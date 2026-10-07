@@ -189,12 +189,12 @@ pub async fn workflow_settings_set(
             ),
             (
                 "reviewModel",
-                review_model
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|v| !v.is_empty())
-                    .unwrap_or("-")
-                    .to_string(),
+                // None=未提交此字段（"-"）；Some("")=显式清除（"cleared"）——审计可区分
+                match review_model.as_deref().map(str::trim) {
+                    None => "-".to_string(),
+                    Some("") => "cleared".to_string(),
+                    Some(v) => v.to_string(),
+                },
             ),
         ],
     );

@@ -200,7 +200,13 @@ pub async fn workspace_delete(app: AppHandle, ids: Vec<String>) -> CommandResult
 
 #[tauri::command]
 pub async fn workspace_export(app: AppHandle, path: String) -> CommandResult<usize> {
-    super::tasks::check_export_path(&path)?;
+    // W11 OCR r1 high：路径闸门的 fs 调用进阻塞线程（不占 Tokio worker）
+    let path_gate = path.clone();
+    crate::py::document::spawn_blocking_map(move || {
+        crate::db::tasks::check_export_path(&path_gate).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(CommandError::from)?;
     async_runtime::spawn_blocking(move || {
         let conn = super::open_db(&app)?;
         let items = load_workspace(&conn)?;

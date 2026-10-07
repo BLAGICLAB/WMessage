@@ -239,7 +239,13 @@ pub async fn workflow_audit_export(
     path: String,
 ) -> CommandResult<usize> {
     use crate::error::CommandResult;
-    crate::db::tasks::check_export_path(&path)?;
+    // W11 OCR r1 high：路径闸门的 fs 调用进阻塞线程（不占 Tokio worker）
+    let path_gate = path.clone();
+    crate::py::document::spawn_blocking_map(move || {
+        crate::db::tasks::check_export_path(&path_gate).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| crate::error::CommandError::from(format!("审计路径校验线程 join 失败：{e}")))?;
     let app2 = app.clone();
     let wid2 = workflow_id.clone();
     let r = tauri::async_runtime::spawn_blocking(move || -> CommandResult<(usize, String)> {
