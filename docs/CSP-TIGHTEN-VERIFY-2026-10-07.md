@@ -77,14 +77,14 @@ src-tauri/tauri.csp-verify.json（临时构建覆盖，已提交）:
 
 ### 5.1 基线存档（wmessage-csp-baseline）
 
-1. 打开产物，右键 → Inspect 打开 DevTools，Console 粘贴（**实测修正**：Tauri 2
-   在 macOS 经自定义协议**响应头**下发 CSP，不用 meta 标签——meta 查询恒
-   undefined，已从手册移除）：
-   ```js
-   fetch(location.href).then(r => r.headers.get('content-security-policy') || '(null，走备用)')
-   ```
-   备用方法：Web Inspector → **Network** 标签 → 刷新页面 → 点第一个 document
-   请求 → Response Headers → `Content-Security-Policy`。
+1. 打开产物，右键 → Inspect 打开 DevTools → **Network（网络）** 标签 →
+   点面板左上角 ⟳ 重新加载（或应用窗口 ⌘R）→ 点请求列表**第一行**（document，
+   `tauri://localhost/`）→ 详情选 **头部（Headers）** → 滚到 **响应头部
+   （Response Headers）** → 复制 **`Content-Security-Policy`** 的完整值。
+   （**实测二次修正**：CSP 经自定义协议响应头下发，meta 不存在；而页面内
+   `fetch(location.href)` 会被 connect-src 自身拦截——`Refused to connect to
+   tauri://localhost`——该报错本身即 CSP 强制生效的旁证，属预期，不计违规。
+   检查器读 Network 头不受页面 CSP 管辖，是唯一可靠抓法。）
 2. 把输出**原文**粘贴到 §6 的「基线实际 CSP」槽位。检查它含 `unsafe-eval`。
 
 ### 5.2 收紧版冒烟（wmessage-csp-tightened）
@@ -107,8 +107,9 @@ src-tauri/tauri.csp-verify.json（临时构建覆盖，已提交）:
 （我们故意注入的内联脚本）。计到 = 采集器与 CSP 强制都工作，`window.__csp = []` 清零，
 进入步骤 2。**计不到 = 停，记录，本报告作废。**
 
-**步骤 2：抓收紧版实际 CSP**：粘贴 5.1 修正后的 fetch 片段（或 Network 备用法），
-输出贴进 §6 槽位，确认**不含 `unsafe-eval`**（nonce 由 Tauri 注入属预期，不算差异）。
+**步骤 2：抓收紧版实际 CSP**：用 5.1 的 **Network 面板方法**（页面内 fetch 会被
+connect-src 拦，不可用），输出贴进 §6 槽位，确认**不含 `unsafe-eval`**
+（nonce 由 Tauri 注入属预期，不算差异）。
 
 **步骤 3：主视图逐个**（每开一个扫一眼 Console 无红色 CSP 报错）：
 首页 → 图谱（sigma/graphology 画布必须真渲染出画布，不是空白）→ 归档 → 工作区 →
