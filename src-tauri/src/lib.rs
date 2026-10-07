@@ -289,6 +289,30 @@ pub fn run() {
             // 截止通知：每 30s 扫一次活跃任务卡，截止前 1 小时 / 截止时刻发系统通知
             due_notify::start_due_notifier(app.handle().clone());
 
+            // W10：启动时审计保留清理（设置项，默认最近 20 个 run；尽力而为）
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    match db::open_db(&handle)
+                        .map_err(|e| e.to_string())
+                        .and_then(|conn| {
+                            let keep = db::workflow_settings::audit_retention_runs(&conn);
+                            db::workflow_audit::wa_prune(&conn, keep)
+                        }) {
+                        Ok(n) if n > 0 => {
+                            crate::audit::write_event(
+                                &handle,
+                                crate::audit::AuditLevel::Info,
+                                "workflow_audit_pruned",
+                                &[("rows", n.to_string()), ("phase", "startup".into())],
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(e) => eprintln!("[workflow_audit] 启动清理失败（不阻断）：{e}"),
+                    }
+                });
+            }
+
             // 开关持久化：上次退出前 API 开启过，则自动恢复（写 api-enabled.flag）
             {
                 let handle = app.handle().clone();
@@ -520,6 +544,12 @@ pub fn run() {
             crate::workflow_clarify::workflow_clarify,
             crate::workflow_decompose::workflow_decompose,
             crate::workflow_questions::workflow_question_respond,
+            crate::db::workflow_audit::workflow_audit_list,
+            crate::db::workflow_audit::workflow_audit_clear,
+            crate::db::workflow_audit::workflow_audit_clear_all,
+            crate::db::workflow_audit::workflow_audit_export,
+            crate::db::workflow_settings::workflow_settings_get,
+            crate::db::workflow_settings::workflow_settings_set,
             crate::db::workflow::workflow_export,
             crate::db::workflow::workflow_import,
             crate::workflow_runner::workflow_run,

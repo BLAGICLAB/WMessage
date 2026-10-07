@@ -2,6 +2,56 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-07（周三）W10 OCR 复审：58 条评论——9 条 high 全处理，7 修 2 判不修
+
+`ocr review`（workspace diff 模式，session `5b43182c`，14 文件 +1096/-33，耗时 ~13min）
+产出 58 条：high 9 / medium 21 / low 23 / 未分级 5（本轮无 critical）。high 逐条核查：
+
+- **7 条修复**：①清空审计加 `window.confirm`（对齐本文件删除模型/清 Key 等破坏性操作惯例）；
+  ②验收 toggle 加 in-flight busy 保护（连点不并发落盘）；③**TracePanel 审计视图门控**
+  （`(!workflowId || tab==="audit")` 在看板任务上恒真 → auditRows 恒 null 卡"加载中"还挤压
+  trace 布局——改为与页签按钮同条件 `workflowId && tab==="audit"`）；④审计数据每次进页签
+  都刷新（去掉 null 守卫，防跨工作流残留）；⑤审计摘要补 node_start/stop 的 attempt/by 与
+  rework 的 reason/reworkUsed、question 的 assumption/action；⑥⑦questions 两处审计写入
+  嵌套 Result 吞错（`if let Err` 只接 JoinError，open_db/写库失败静默）——改全 match。
+- **2 条判不修**：⑧export 路径校验弱——与既有 `workflow_export` 同口径（`check_export_path`
+  查扩展名 + 路径来自前端 save dialog 用户手选，"对话框亲手选=明确授权"同 W8 口径）；
+  `.json` 任意写是 save-dialog 系命令的共性面，后续可统一加固，不单点修。⑨验收调用无
+  显式超时——`summarize_messages` 底层 `summarize_http` 请求级 `.timeout(60s)` 已兜
+  （上次全仓 triage 的 ALREADY_HANDLED 结论）；返工的完整模型循环与正常节点执行同风险面。
+- 验证：cargo test **1477** + vitest **521** 全绿；cargo fmt / tsc 过。medium/low 44 条留
+  session 存档（`ocr session comments 5b43182c`）按需排查。
+
+## 2026-10-07（周三）W10-QA-AUDIT：节点级验收 + run 级结构化审计（设计 §4 落地）
+
+- **节点级验收**（workflow_runner.rs）：节点首轮成功且 acceptance 非空且开关开且未取消 →
+  轻量评审单发调用（`check_acceptance`，契约 `{"verdict":"pass|partial|fail","evidence":"≤100字"}`；
+  调用失败降级 Unknown 不阻断）；`acceptance_rework_decision` 纯函数裁决：fail 带证据返工
+  （TaskExecCtx +`rework_evidence`，render 注入【验收返工】段"产物文件还在，可读取核对"），
+  **独立预算 ≤2 不占失败重试额度**；用尽仍 fail → result.status 覆写 failed + ok=false
+  （下游照现语义跳过，拍板 4：partial/unknown/pass 一律 status 不变）。verdict/evidence/
+  attempt/ms 并入 node result；TaskNode 徽标（pass ✓/partial △，fail 走既有红环）+
+  TracePanel 验收行。豁免口径：用户停止/取消不进验收环（同收尾评审）。
+- **run 级审计**（db/workflow_audit.rs 新模块）：`workflow_audit` 表按
+  `(workflow_id, run_started_at)` 分组（**不建 runs 实体表**），11 种 kind
+  （run_start/node_start/node_result/acceptance_check/rework/review/rework_round/run_done/
+  stop/question_asked/question_answered）；`wa_log` helper spawn_blocking + 失败 eprintln
+  不阻断执行；bot.log 双写不变。`RunHandle` +run_started_at（stop 凭它归组）；
+  `workflow_run` +trigger 参数（scheduler 传 "schedule"）；保留清理 = run_done 后 +
+  启动时（lib.rs setup）+ 设置变更即刷；问答日志在 ask/respond 两端双写审计表
+  （payload +runStartedAt 透传归组）。
+- **设置**（db/workflow_settings.rs 新模块）：`workflow_settings` 键值表——
+  `node_acceptance`（默认开，runner 每次 run 读一次）/`audit_retention_runs`（默认 20，
+  钳 5..=100，写时即刷清理）；设置页工作流卡新增「验收与审计」段（开关+保留次数+清空全部）。
+- **查询/导出**：`workflow_audit_list/clear/clear_all/export` 四命令；TracePanel 新增
+  「运行审计」页签（按 run 分组时间线，kind 中文标签+payload 关键字段摘要，按需懒加载，
+  非工作流卡不显示页签）；画布工具栏「🧾 审计」按钮导出 JSON（save dialog）。
+- spec 收尾对齐：+bot_scheduler.rs（trigger 参数连带）；deviation 记录：设计说"设置页清空审计"，
+  实现为全局清空（审计按工作流存但设置页无工作流上下文，按工作流清空走画布导出/详情页）。
+- 验证：cargo test **1477**（+audit 4/验收纯函数 2/现存适配）+ vitest **521** 全绿；
+  cargo fmt 已过；tsc 0 错误。**轻量评审模型设置项后置**（v1 验收跟随全局 active 模型，
+  设计 §3.6 允许过渡期口径）；report 逐节点 stats 注入后置（审计页已覆盖）。
+
 ## 2026-10-07（周三）W9-ASK OCR 复审：60 条评论核查——8 条 critical/high 全处理，7 修 1 半
 
 `ocr review`（workspace diff 模式，MiniMax-M3，session `bcac6958`，19 文件 +877/-110，

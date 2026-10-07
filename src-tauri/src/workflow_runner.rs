@@ -154,6 +154,181 @@ const UPSTREAM_PER_CAP: usize = 600;
 /// 上游简报总上限
 const UPSTREAM_TOTAL_CAP: usize = 2400;
 
+// ────────────── W10：节点级验收（设计 §4.1，纯逻辑单测锚点） ──────────────
+
+/// 验收返工独立预算（不与失败重试 C1 混用；拍板 4：status 与 verdict 分离）
+pub(crate) const ACCEPTANCE_REWORK_BUDGET: u32 = 2;
+
+/// 验收裁决四值；unknown = 评审调用/解析失败降级（不阻断、不返工）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AcceptanceVerdict {
+    Pass,
+    Partial,
+    Fail,
+    Unknown,
+}
+
+impl AcceptanceVerdict {
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            AcceptanceVerdict::Pass => "pass",
+            AcceptanceVerdict::Partial => "partial",
+            AcceptanceVerdict::Fail => "fail",
+            AcceptanceVerdict::Unknown => "unknown",
+        }
+    }
+}
+
+/// 验收输出解析（纯逻辑，单测锚点）：剥 fences → JSON verdict 归一；
+/// 契约外字符串/坏 JSON → Unknown（照 parse_review_report 降级口径）。
+pub(crate) fn parse_acceptance_verdict(raw: &str) -> AcceptanceVerdict {
+    let text = crate::workflow_decompose::strip_fences(raw);
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else {
+        return AcceptanceVerdict::Unknown;
+    };
+    match v.get("verdict").and_then(serde_json::Value::as_str) {
+        Some("pass") => AcceptanceVerdict::Pass,
+        Some("partial") => AcceptanceVerdict::Partial,
+        Some("fail") => AcceptanceVerdict::Fail,
+        _ => AcceptanceVerdict::Unknown,
+    }
+}
+
+/// 验收证据提取（纯逻辑）：evidence ≤100 字截断；缺失/非串 → 空串
+pub(crate) fn parse_acceptance_evidence(raw: &str) -> String {
+    let text = crate::workflow_decompose::strip_fences(raw);
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else {
+        return String::new();
+    };
+    v.get("evidence")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .map(|s| s.chars().take(100).collect())
+        .unwrap_or_default()
+}
+
+/// 返工决策（纯逻辑，单测锚点）：fail 且还有余量 → 返工；
+/// fail 余量用尽 → 终态 failed（下游跳过）；partial/unknown/pass → 带结果继续（status 不变）。
+pub(crate) fn acceptance_rework_decision(
+    verdict: AcceptanceVerdict,
+    rework_left: u32,
+) -> AcceptanceAction {
+    match verdict {
+        AcceptanceVerdict::Fail if rework_left > 0 => AcceptanceAction::Rework,
+        AcceptanceVerdict::Fail => AcceptanceAction::Fail,
+        _ => AcceptanceAction::Accept,
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) enum AcceptanceAction {
+    /// 验收通过/部分通过/降级未知：status 保持 success，带徽标继续
+    Accept,
+    /// 带 evidence 重跑本卡（attempt 递增，独立预算）
+    Rework,
+    /// 预算用尽仍 fail：终态改 failed（下游照现语义跳过）+ 审计 Warn
+    Fail,
+}
+
+/// 验收评审提示词（契约硬约束在 system 侧）：宁缺毋滥——
+/// partial 留给"有缺口但不影响下游使用"，明确不达标才 fail。
+const ACCEPTANCE_SYSTEM_PROMPT: &str = "\
+你是工作流节点验收员。对照该任务的验收标准，判断产出摘要与产物文件是否达标。\
+只输出一个 JSON 对象，不要输出任何解释或 Markdown 围栏，形如：\
+{\"verdict\":\"pass|partial|fail\",\"evidence\":\"≤100字依据\"}\
+verdict：pass=达标；partial=有缺口但不影响下游使用；fail=明确不达标。\
+判定从紧：只有产出与验收标准明确冲突时才 fail；无法判断时用 partial，不要臆测。";
+
+/// 验收核查单发调用（无会话无工具；照 clarify/收尾评审同款样板）。
+/// 返回 (verdict, evidence)；调用失败 → (Unknown, "")，不阻断。
+async fn check_acceptance(
+    app: &AppHandle,
+    title: &str,
+    acceptance: &str,
+    summary: &str,
+    artifacts: &[String],
+) -> (AcceptanceVerdict, String) {
+    let mut user = format!("任务：{title}\n验收标准：{acceptance}");
+    if !summary.trim().is_empty() {
+        user.push_str(&format!(
+            "\n产出摘要：{}",
+            summary.chars().take(300).collect::<String>()
+        ));
+    }
+    if !artifacts.is_empty() {
+        user.push_str(&format!("\n产物文件：{}", artifacts.join("；")));
+    }
+    match crate::bot_chat::summarize_messages(
+        app,
+        ACCEPTANCE_SYSTEM_PROMPT,
+        &[crate::bot_chat::ChatMsg {
+            role: "user".into(),
+            content: user,
+        }],
+    )
+    .await
+    {
+        Ok(raw) => (
+            parse_acceptance_verdict(&raw),
+            parse_acceptance_evidence(&raw),
+        ),
+        Err(e) => {
+            crate::audit::write_event(
+                app,
+                crate::audit::AuditLevel::Warn,
+                "workflow_acceptance",
+                &[
+                    ("outcome", "call_failed".into()),
+                    ("error", crate::audit::escape_for_log(&e.message(), 120)),
+                ],
+            );
+            (AcceptanceVerdict::Unknown, String::new())
+        }
+    }
+}
+
+// ────────────── W10：run 级审计落库（尽力而为，尽力而为——写失败不阻断执行） ──────────────
+
+/// 审计表写入 helper（spawn_blocking + 失败 eprintln；bot.log 双写由调用方自行决定）
+async fn wa_log(
+    app: &AppHandle,
+    workflow_id: &str,
+    run_started_at: i64,
+    node_task_id: Option<&str>,
+    kind: &str,
+    level: crate::audit::AuditLevel,
+    payload: serde_json::Value,
+) {
+    let app2 = app.clone();
+    let wid = workflow_id.to_string();
+    let nid = node_task_id.map(|s| s.to_string());
+    let kind = kind.to_string();
+    let level_str = match level {
+        crate::audit::AuditLevel::Info => "info",
+        crate::audit::AuditLevel::Warn => "warn",
+        crate::audit::AuditLevel::Error => "error",
+    };
+    let r = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let conn = crate::db::open_db(&app2).map_err(|e| e.to_string())?;
+        crate::db::workflow_audit::wa_insert(
+            &conn,
+            &wid,
+            run_started_at,
+            nid.as_deref(),
+            &kind,
+            level_str,
+            &payload,
+        )
+        .map(|_| ())
+    })
+    .await;
+    match r {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => eprintln!("[workflow_audit] 写入失败（不阻断）：{e}"),
+        Err(e) => eprintln!("[workflow_audit] 审计线程 join 失败（不阻断）：{e}"),
+    }
+}
+
 /// 单个上游卡的简报行：标题/状态/验收标准/产出摘要/产物文件（typed-schema handoff）
 fn upstream_line(t: &Task) -> String {
     let status = if node_is_success(t) {
@@ -308,6 +483,9 @@ issues：只列有问题的节点，没有问题则为 []；needsRework=true 仅
 
 struct RunHandle {
     cancel: Arc<AtomicBool>,
+    /// W10：run 分组键的一半（审计表按 (workflow_id, run_started_at) 聚合；
+    /// stop 事件凭它定位自己属于哪次 run）
+    run_started_at: i64,
 }
 
 /// 工作流 → 在跑实例（workflow_run 防重入 + workflow_stop 取消源）
@@ -385,8 +563,17 @@ async fn load_workflow_tasks(app: &AppHandle, workflow_id: &str) -> CommandResul
 }
 
 /// 开始执行整张工作流（断点续跑语义；已在跑 → 拒绝）
+/// 触发一次工作流执行（前端按钮 / 定时调度器；trigger 只进审计，不影响执行语义）
 #[tauri::command]
-pub async fn workflow_run(app: AppHandle, workflow_id: String) -> CommandResult<WorkflowRunStart> {
+pub async fn workflow_run(
+    app: AppHandle,
+    workflow_id: String,
+    trigger: Option<String>,
+) -> CommandResult<WorkflowRunStart> {
+    let trigger = match trigger.as_deref() {
+        Some("schedule") => "schedule",
+        _ => "manual",
+    };
     {
         let m = runs().lock().map_err(|_| registry_poisoned())?;
         if m.contains_key(&workflow_id) {
@@ -406,10 +593,13 @@ pub async fn workflow_run(app: AppHandle, workflow_id: String) -> CommandResult<
     let to_run = tasks.len() - already_done;
 
     let cancel = Arc::new(AtomicBool::new(false));
+    // W10：run 分组键（审计表 + RunHandle 共享同一时刻戳）
+    let run_started_at = chrono::Utc::now().timestamp_millis();
     runs().lock().map_err(|_| registry_poisoned())?.insert(
         workflow_id.clone(),
         Arc::new(RunHandle {
             cancel: cancel.clone(),
+            run_started_at,
         }),
     );
     crate::audit::write_event(
@@ -448,6 +638,34 @@ pub async fn workflow_run(app: AppHandle, workflow_id: String) -> CommandResult<
     let goal = load_workflow_goal(&app, &workflow_id).await;
     // W9-ASK：执行提问开关（clarify_meta.askMode，默认开）——run 开始时读一次
     let asks_enabled = load_asks_enabled(&app, &workflow_id).await;
+    // W10：节点级验收开关（workflow_settings，默认开）——run 开始时读一次
+    let acceptance_enabled = {
+        let app2 = app.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            crate::db::open_db(&app2)
+                .map(|conn| crate::db::workflow_settings::node_acceptance_enabled(&conn))
+                .unwrap_or(crate::db::workflow_settings::DEFAULT_NODE_ACCEPTANCE)
+        })
+        .await
+        .unwrap_or(crate::db::workflow_settings::DEFAULT_NODE_ACCEPTANCE)
+    };
+    // W10：run_start 审计行（goal 摘要 ≤80 字/节点数/trigger）
+    wa_log(
+        &app,
+        &workflow_id,
+        run_started_at,
+        None,
+        crate::db::workflow_audit::KIND_RUN_START,
+        crate::audit::AuditLevel::Info,
+        serde_json::json!({
+            "trigger": trigger,
+            "total": tasks.len(),
+            "alreadyDone": already_done,
+            "goal": goal.as_deref().map(|g| g.chars().take(80).collect::<String>()),
+
+        }),
+    )
+    .await;
     let app2 = app.clone();
     let wf = workflow_id.clone();
     tauri::async_runtime::spawn(async move {
@@ -460,6 +678,8 @@ pub async fn workflow_run(app: AppHandle, workflow_id: String) -> CommandResult<
             upstream_of,
             goal,
             asks_enabled,
+            acceptance_enabled,
+            run_started_at,
             cancel,
         )
         .await;
@@ -487,8 +707,19 @@ pub async fn workflow_stop(app: AppHandle, workflow_id: String) -> CommandResult
                 &app,
                 crate::audit::AuditLevel::Info,
                 "workflow_stop",
-                &[("workflowId", workflow_id)],
+                &[("workflowId", workflow_id.clone())],
             );
+            // W10：stop 审计行（凭 RunHandle.run_started_at 归组到本次 run）
+            wa_log(
+                &app,
+                &workflow_id,
+                h.run_started_at,
+                None,
+                crate::db::workflow_audit::KIND_STOP,
+                crate::audit::AuditLevel::Info,
+                serde_json::json!({ "by": "user" }),
+            )
+            .await;
             Ok(true)
         }
         None => Ok(false),
@@ -513,6 +744,10 @@ async fn run_controller(
     goal: Option<String>,
     // W9-ASK：执行提问开关（workflow_run 开始时按 clarify_meta.askMode 读出）
     asks_enabled: bool,
+    // W10：节点级验收开关（workflow_settings，默认开）
+    acceptance_enabled: bool,
+    // W10：run 分组键（审计表）
+    run_started_at: i64,
     cancel: Arc<AtomicBool>,
 ) {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<NodeOutcome>();
@@ -606,7 +841,7 @@ async fn run_controller(
                     .flatten()
                 };
                 let ctx = TaskExecCtx {
-                    goal,
+                    goal: goal.clone(),
                     upstream_brief,
                     brief,
                     // 执行提问授权（W9-ASK：clarify_meta.askMode，run 开始时读一次；
@@ -614,7 +849,9 @@ async fn run_controller(
                     ask: Some(crate::bot_chat::AskExecContext {
                         workflow_id: workflow_id.clone(),
                         asks_enabled,
+                        run_started_at,
                     }),
+                    rework_evidence: None,
                 };
                 // W-QA C1：attempt 计数（证据链：重试/返工后 attempt 递增）
                 let attempt = {
@@ -623,8 +860,133 @@ async fn run_controller(
                     *n += 1;
                     *n
                 };
-                let result =
-                    run_task_in_chat_ctx(&app, &id, TaskExecOrigin::Workflow, model, ctx).await;
+                wa_log(
+                    &app,
+                    &workflow_id,
+                    run_started_at,
+                    Some(&id),
+                    crate::db::workflow_audit::KIND_NODE_START,
+                    crate::audit::AuditLevel::Info,
+                    serde_json::json!({ "attempt": attempt }),
+                )
+                .await;
+                let node_started_ms = chrono::Utc::now().timestamp_millis();
+                let mut attempt_n = attempt;
+                let mut result =
+                    run_task_in_chat_ctx(&app, &id, TaskExecOrigin::Workflow, model.clone(), ctx)
+                        .await;
+                // W10：验收核查环（设计 §4.1）——首轮成功且 acceptance 非空且开关开
+                // 且未被取消才进；fail 带证据返工（独立预算 ≤2），用尽仍 fail 终态 failed。
+                // partial/unknown → status 保持 success 带徽标继续（拍板 4）。
+                let mut acceptance_final: Option<(AcceptanceVerdict, String)> = None;
+                let mut rework_used = 0u32;
+                loop {
+                    if cancel.load(Ordering::SeqCst) {
+                        break; // 用户停止：不做验收（豁免口径同收尾评审）
+                    }
+                    // 熔断识别（W5-FUSE）：循环优雅返回「⏹ 已熔断」消息且任务未完成
+                    let fused_now = matches!(&result, Ok(r) if r.result.text.contains(crate::bot_model_loop::FUSE_MARKER));
+                    let fresh = crate::db::db_load(app.clone())
+                        .await
+                        .ok()
+                        .and_then(|ts| ts.into_iter().find(|t| t.id == id));
+                    let Some(t) = &fresh else { break };
+                    let column_done = t.column == TaskStatus::Done;
+                    let ok_now = column_done && !fused_now && result.is_ok();
+                    if !ok_now {
+                        break; // 执行本身没成：不进验收（失败走 C1 重试链）
+                    }
+                    let Some(acc) = t
+                        .acceptance
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|a| !a.is_empty())
+                    else {
+                        break; // 没有验收标准：无从核查（W-QA 卡即契约缺失=豁免）
+                    };
+                    if !acceptance_enabled {
+                        break;
+                    }
+                    let summary = t
+                        .result
+                        .as_ref()
+                        .and_then(|r| r.get("summary"))
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    let artifacts: Vec<String> =
+                        t.effective_files().into_iter().map(|f| f.path).collect();
+                    let (verdict, evidence) =
+                        check_acceptance(&app, &t.title, acc, &summary, &artifacts).await;
+                    match acceptance_rework_decision(
+                        verdict,
+                        ACCEPTANCE_REWORK_BUDGET - rework_used,
+                    ) {
+                        AcceptanceAction::Accept => {
+                            acceptance_final = Some((verdict, evidence));
+                            break;
+                        }
+                        AcceptanceAction::Fail => {
+                            acceptance_final = Some((verdict, evidence));
+                            break;
+                        }
+                        AcceptanceAction::Rework => {
+                            rework_used += 1;
+                            attempt_n += 1;
+                            {
+                                let mut m = attempts.lock().unwrap_or_else(|e| e.into_inner());
+                                m.insert(id.clone(), attempt_n);
+                            }
+                            wa_log(
+                                &app,
+                                &workflow_id,
+                                run_started_at,
+                                Some(&id),
+                                crate::db::workflow_audit::KIND_REWORK,
+                                crate::audit::AuditLevel::Warn,
+                                serde_json::json!({
+                                    "reason": "acceptance_fail",
+                                    "evidence": evidence,
+                                    "reworkUsed": rework_used,
+                                    "attempt": attempt_n,
+                                }),
+                            )
+                            .await;
+                            crate::audit::write_event(
+                                &app,
+                                crate::audit::AuditLevel::Warn,
+                                "workflow_acceptance",
+                                &[
+                                    ("taskId", id.clone()),
+                                    ("verdict", "fail".into()),
+                                    ("rework", rework_used.to_string()),
+                                ],
+                            );
+                            let ctx = TaskExecCtx {
+                                goal: goal.clone(),
+                                upstream_brief: load_upstream_brief(&app, &ups).await,
+                                brief: None, // 首轮注入过；返工重在证据，档案层不重复灌
+                                ask: Some(crate::bot_chat::AskExecContext {
+                                    workflow_id: workflow_id.clone(),
+                                    asks_enabled,
+                                    run_started_at,
+                                }),
+                                rework_evidence: Some(format!(
+                                    "上一轮产出未通过验收核查：{evidence}"
+                                )),
+                            };
+                            result = run_task_in_chat_ctx(
+                                &app,
+                                &id,
+                                TaskExecOrigin::Workflow,
+                                model.clone(),
+                                ctx,
+                            )
+                            .await;
+                            // 继续循环：下一轮对新产出再验收
+                        }
+                    }
+                }
                 // 熔断识别（W5-FUSE）：循环优雅返回「⏹ 已熔断」消息且任务未完成
                 let fused = matches!(&result, Ok(r) if r.result.text.contains(crate::bot_model_loop::FUSE_MARKER));
                 // W-QA A2：引擎写结构化结果（先落证据，再判成败）——
@@ -649,10 +1011,79 @@ async fn run_controller(
                     result.as_ref().ok().map(|r| r.result.text.as_str()),
                     result.as_ref().err().map(|e| e.message()).as_deref(),
                     &artifacts,
-                    attempt,
+                    attempt_n,
                 );
-                write_node_result(&app, &id, node_result).await;
-                let ok = column_done && !fused && result.is_ok();
+                let mut node_result = node_result;
+                let mut acceptance_failed = false;
+                if let Some((verdict, evidence)) = &acceptance_final {
+                    node_result["acceptanceVerdict"] = serde_json::json!(verdict.as_str());
+                    node_result["acceptanceEvidence"] = serde_json::json!(evidence);
+                    if *verdict == AcceptanceVerdict::Fail {
+                        acceptance_failed = true;
+                        // 终态改 failed（拍板 4 下游照现语义跳过）：status/error 覆写
+                        node_result["status"] = serde_json::json!("failed");
+                        node_result["error"] = serde_json::json!(format!(
+                            "验收未通过（返工 {rework_used} 次后仍不达标）：{evidence}"
+                        ));
+                    }
+                }
+                let elapsed_ms = (chrono::Utc::now().timestamp_millis() - node_started_ms).max(0);
+                node_result["ms"] = serde_json::json!(elapsed_ms);
+                write_node_result(&app, &id, node_result.clone()).await;
+                wa_log(
+                    &app,
+                    &workflow_id,
+                    run_started_at,
+                    Some(&id),
+                    crate::db::workflow_audit::KIND_NODE_RESULT,
+                    if acceptance_failed {
+                        crate::audit::AuditLevel::Warn
+                    } else {
+                        crate::audit::AuditLevel::Info
+                    },
+                    serde_json::json!({
+                        "status": node_result["status"],
+                        "attempt": attempt_n,
+                        "ms": elapsed_ms,
+                        "acceptanceVerdict": node_result.get("acceptanceVerdict"),
+                    }),
+                )
+                .await;
+                if let Some((verdict, evidence)) = &acceptance_final {
+                    wa_log(
+                        &app,
+                        &workflow_id,
+                        run_started_at,
+                        Some(&id),
+                        crate::db::workflow_audit::KIND_ACCEPTANCE_CHECK,
+                        if acceptance_failed {
+                            crate::audit::AuditLevel::Warn
+                        } else {
+                            crate::audit::AuditLevel::Info
+                        },
+                        serde_json::json!({
+                            "verdict": verdict.as_str(),
+                            "evidence": evidence,
+                            "reworkUsed": rework_used,
+                        }),
+                    )
+                    .await;
+                    crate::audit::write_event(
+                        &app,
+                        if acceptance_failed {
+                            crate::audit::AuditLevel::Warn
+                        } else {
+                            crate::audit::AuditLevel::Info
+                        },
+                        "workflow_acceptance",
+                        &[
+                            ("taskId", id.clone()),
+                            ("verdict", verdict.as_str().into()),
+                            ("reworked", rework_used.to_string()),
+                        ],
+                    );
+                }
+                let ok = column_done && !fused && result.is_ok() && !acceptance_failed;
                 // P1-d：节点收尾状态实时广播（画布描边 + 失败原因/trace 入口的数据源）
                 let _ = app.emit(
                     "workflow-node-status",
@@ -805,6 +1236,7 @@ async fn run_controller(
             &cancel,
             &running,
             &mut rx,
+            run_started_at,
         )
         .await;
     }
@@ -839,13 +1271,54 @@ async fn run_controller(
         },
         "workflow_run_done",
         &[
-            ("workflowId", workflow_id),
+            ("workflowId", workflow_id.clone()),
             ("total", total.to_string()),
             ("done", done_count.to_string()),
             ("failed", failed_n.to_string()),
             ("skipped", skipped_n.to_string()),
         ],
     );
+    // W10：run_done 审计行 + 保留清理（设置项，默认最近 20 个 run）
+    wa_log(
+        &app,
+        &workflow_id,
+        run_started_at,
+        None,
+        crate::db::workflow_audit::KIND_RUN_DONE,
+        if failed_n > 0 {
+            crate::audit::AuditLevel::Warn
+        } else {
+            crate::audit::AuditLevel::Info
+        },
+        serde_json::json!({
+            "total": total,
+            "done": done_count,
+            "failed": failed_n,
+            "skipped": skipped_n,
+        }),
+    )
+    .await;
+    {
+        let app2 = app.clone();
+        let r = tauri::async_runtime::spawn_blocking(move || -> Result<usize, String> {
+            let conn = crate::db::open_db(&app2).map_err(|e| e.to_string())?;
+            let keep = crate::db::workflow_settings::audit_retention_runs(&conn);
+            crate::db::workflow_audit::wa_prune(&conn, keep)
+        })
+        .await;
+        match r {
+            Ok(Ok(n)) if n > 0 => {
+                crate::audit::write_event(
+                    &app,
+                    crate::audit::AuditLevel::Info,
+                    "workflow_audit_pruned",
+                    &[("rows", n.to_string())],
+                );
+            }
+            Ok(Err(e)) => eprintln!("[workflow_audit] 保留清理失败（不阻断）：{e}"),
+            _ => {}
+        }
+    }
     notify_workflow_done(&app, total, done_count, failed_n);
 }
 
@@ -1090,6 +1563,8 @@ async fn review_and_rework(
     cancel: &Arc<AtomicBool>,
     running: &Arc<Mutex<HashSet<String>>>,
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<NodeOutcome>,
+    // W10：run 分组键（review/rework_round 审计行归组）
+    run_started_at: i64,
 ) {
     let tasks = load_workflow_tasks(app, workflow_id)
         .await
@@ -1099,6 +1574,20 @@ async fn review_and_rework(
     }
     // ① 全图评审
     let report = run_review(app, goal, &tasks, failed_ids, skipped_ids).await;
+    // W10：review 审计行（verdict + issues 数）
+    wa_log(
+        app,
+        workflow_id,
+        run_started_at,
+        None,
+        crate::db::workflow_audit::KIND_REVIEW,
+        crate::audit::AuditLevel::Info,
+        serde_json::json!({
+            "verdict": report.get("verdict"),
+            "issues": report.get("issues").and_then(serde_json::Value::as_array).map(|a| a.len()).unwrap_or(0),
+        }),
+    )
+    .await;
     persist_and_emit_report(app, workflow_id, &report).await;
 
     // ② needsRework → 返工根节点（failed 已有重试语义，不再返工；
@@ -1271,6 +1760,20 @@ async fn review_and_rework(
                 .iter()
                 .filter_map(|id| name_by_id.get(id))
                 .collect::<Vec<_>>());
+            // W10：rework_round 审计行
+            wa_log(
+                app,
+                workflow_id,
+                run_started_at,
+                None,
+                crate::db::workflow_audit::KIND_REWORK_ROUND,
+                crate::audit::AuditLevel::Info,
+                serde_json::json!({
+                    "reworked": reworked_ids.len(),
+                    "verdict": final_report.get("verdict"),
+                }),
+            )
+            .await;
             persist_and_emit_report(app, workflow_id, &final_report).await;
         }
     }
@@ -1503,6 +2006,59 @@ mod tests {
         assert!(!should_retry(false, true, false, 1)); // 取消不重试
         assert!(!should_retry(false, false, true, 1)); // 熔断不自动重试（需人工调上限）
         assert!(!should_retry(true, false, false, 1)); // 成功不重试
+    }
+
+    // ────────────── W10：验收解析/返工决策（纯逻辑单测锚点） ──────────────
+
+    #[test]
+    fn acceptance_verdict_parses_and_degrades() {
+        use AcceptanceVerdict::{Fail, Partial, Pass, Unknown};
+        assert_eq!(
+            parse_acceptance_verdict(
+                "```json\n{\"verdict\":\"pass\",\"evidence\":\"产出齐全\"}\n```"
+            ),
+            Pass
+        );
+        assert_eq!(
+            parse_acceptance_verdict(r#"{"verdict":"partial","evidence":"缺一节"}"#),
+            Partial
+        );
+        assert_eq!(
+            parse_acceptance_verdict(r#"{"verdict":"fail","evidence":"文件不存在"}"#),
+            Fail
+        );
+        // 契约外字符串/坏 JSON/缺 verdict → Unknown 降级（不阻断不返工）
+        assert_eq!(parse_acceptance_verdict("抱歉，我无法输出 JSON"), Unknown);
+        assert_eq!(parse_acceptance_verdict(r#"{"foo":1}"#), Unknown);
+        assert_eq!(
+            parse_acceptance_verdict(r#"{"verdict":"unknown"}"#),
+            Unknown
+        );
+        // evidence 非串 → 空
+        let ev = parse_acceptance_evidence(r#"{"verdict":"fail","evidence":[{"x":1}]}"#);
+        assert!(ev.is_empty());
+        let long = parse_acceptance_evidence(&format!(
+            r#"{{"verdict":"fail","evidence":"{}"}}"#,
+            "长".repeat(150)
+        ));
+        assert_eq!(long.chars().count(), 100);
+    }
+
+    #[test]
+    fn acceptance_rework_decision_matches_budget() {
+        use AcceptanceAction::{Accept, Fail as AFail, Rework};
+        use AcceptanceVerdict::{Fail, Partial, Pass, Unknown};
+        // fail + 余量 → 返工；用尽 → 终态 failed
+        assert_eq!(
+            acceptance_rework_decision(Fail, ACCEPTANCE_REWORK_BUDGET),
+            Rework
+        );
+        assert_eq!(acceptance_rework_decision(Fail, 1), Rework);
+        assert_eq!(acceptance_rework_decision(Fail, 0), AFail);
+        // partial/unknown/pass → 带结果继续（status 不变，拍板 4）
+        assert_eq!(acceptance_rework_decision(Partial, 2), Accept);
+        assert_eq!(acceptance_rework_decision(Unknown, 2), Accept);
+        assert_eq!(acceptance_rework_decision(Pass, 0), Accept);
     }
 
     #[test]

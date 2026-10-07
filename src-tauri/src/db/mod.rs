@@ -35,6 +35,8 @@ pub mod subagents;
 pub mod tasks;
 pub mod trace;
 pub mod workflow;
+pub mod workflow_audit;
+pub mod workflow_settings;
 pub mod workspace;
 
 // ──────────────────── RMW helpers ────────────────────
@@ -179,6 +181,9 @@ pub fn open_db<R: tauri::Runtime>(
     crate::db::workflow::ensure_workflows_clarify_meta(&conn).map_err(|e| e.to_string())?;
     // W9-ASK：双层档案表（工作流决策摘要 + 卡片档案，跑偏防护）
     crate::db::brief::ensure_brief_entries(&conn).map_err(|e| e.to_string())?;
+    // W10：run 级结构化审计 + 工作流偏好设置（验收开关/保留次数），幂等
+    crate::db::workflow_audit::ensure_workflow_audit(&conn).map_err(|e| e.to_string())?;
+    crate::db::workflow_settings::ensure_workflow_settings(&conn).map_err(|e| e.to_string())?;
     // 定时任务模块：老库的 workflows 表补定时三列（到点自动执行整张工作流）
     crate::db::workflow::ensure_workflows_schedule(&conn).map_err(|e| e.to_string())?;
     crate::db::workflow::ensure_workflows_report(&conn).map_err(|e| e.to_string())?;

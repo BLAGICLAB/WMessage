@@ -90,6 +90,26 @@ export const TaskNode = memo(function TaskNode({
             onToggleDone={() => data.onToggleDone?.(task.id)}
             onToggleSubtask={(sid) => data.onToggleSubtask?.(task.id, sid)}
           />
+          {/* W10：节点级验收徽标（task.acceptance 展示位）——pass ✓ 绿 / partial △ 黄；
+              fail 已把 status 改 failed（红环），不重复出徽标 */}
+          {task.acceptance &&
+            (task.result?.acceptanceVerdict === "pass" ||
+              task.result?.acceptanceVerdict === "partial") && (
+              <div className="mx-1 mt-1 text-[10px]">
+                {task.result?.acceptanceVerdict === "pass" ? (
+                  <span className="text-[var(--ok,#22c55e)]" title="验收通过">
+                    ✓ 验收通过
+                  </span>
+                ) : (
+                  <span
+                    className="text-[var(--warn,#eab308)]"
+                    title={`验收部分达标：${task.result?.acceptanceEvidence ?? ""}`}
+                  >
+                    △ 验收部分达标
+                  </span>
+                )}
+              </div>
+            )}
           {(data.models.length > 0 || task.model) && (
             <select
               aria-label="执行模型"

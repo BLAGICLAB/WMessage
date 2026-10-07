@@ -10,8 +10,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Download, FileText, History, TriangleAlert, X } from "lucide-react";
+import { Download, FileText, History, ListChecks, TriangleAlert, X } from "lucide-react";
 import { basename } from "../../format";
+import { listWorkflowAudit, type WorkflowAuditEntry } from "../../lib/workflowAudit";
 import { DiffView } from "./DiffView";
 import {
   fileRollback,
@@ -128,10 +129,90 @@ function FileChangeItem({ c, onRolledBack }: { c: FileChangeRow; onRolledBack: (
   );
 }
 
+/** W10：审计 kind → 展示标签（契约外值原样显示，不炸渲染） */
+const AUDIT_KIND_LABEL: Record<string, string> = {
+  run_start: "▶ 开始",
+  node_start: "· 节点开始",
+  node_result: "✓ 节点结果",
+  acceptance_check: "🔎 验收",
+  rework: "↻ 验收返工",
+  review: "📋 收尾评审",
+  rework_round: "↻ 评审返工轮",
+  run_done: "■ 结束",
+  stop: "⏹ 停止",
+  question_asked: "❓ 提问",
+  question_answered: "💬 回答",
+};
+
+/** 审计 payload → 一行摘要（各 kind 取关键字段；缺失静默省略） */
+function auditPayloadSummary(r: WorkflowAuditEntry): string {
+  const p = r.payload ?? {};
+  const parts: string[] = [];
+  const push = (label: string, v: unknown) => {
+    if (typeof v === "string" && v) parts.push(`${label} ${v}`);
+    else if (typeof v === "number") parts.push(`${label} ${v}`);
+  };
+  switch (r.kind) {
+    case "run_start":
+      push("触发", p.trigger);
+      push("节点", p.total);
+      break;
+    case "node_result":
+      push("状态", p.status);
+      push("attempt", p.attempt);
+      push("耗时", typeof p.ms === "number" ? `${p.ms}ms` : undefined);
+      break;
+    case "acceptance_check":
+      push("裁决", p.verdict);
+      push("返工", p.reworkUsed);
+      if (typeof p.evidence === "string" && p.evidence) parts.push(p.evidence);
+      break;
+    case "node_start":
+      push("attempt", p.attempt);
+      break;
+    case "stop":
+      push("by", p.by);
+      break;
+    case "rework":
+      push("原因", p.reason);
+      push("第", p.reworkUsed);
+      push("attempt", p.attempt);
+      if (typeof p.evidence === "string" && p.evidence) parts.push(p.evidence);
+      break;
+    case "review":
+      push("verdict", p.verdict);
+      push("issues", p.issues);
+      break;
+    case "rework_round":
+      push("返工节点", p.reworked);
+      push("verdict", p.verdict);
+      break;
+    case "run_done":
+      push("完成", p.done);
+      push("失败", p.failed);
+      push("跳过", p.skipped);
+      break;
+    case "question_asked":
+      if (typeof p.question === "string") parts.push(p.question);
+      if (typeof p.assumption === "string" && p.assumption) parts.push(`假设 ${p.assumption}`);
+      break;
+    case "question_answered":
+      if (typeof p.question === "string") parts.push(p.question);
+      if (typeof p.answer === "string") parts.push(`→ ${p.answer}`);
+      push("动作", p.action);
+      break;
+    default:
+      break;
+  }
+  return parts.join(" · ");
+}
+
 export function TracePanel({
   taskId,
   taskTitle,
   traceId,
+  workflowId,
+  acceptanceInfo,
   onClose,
 }: {
   /** 按任务卡查（执行历史列表 → 选一条）；与 traceId 二选一 */
@@ -139,6 +220,10 @@ export function TracePanel({
   taskTitle?: string;
   /** P4 直查模式：活动页按 trace id 直接打开单条 */
   traceId?: number;
+  /** W10：所属工作流（有值才显示「运行审计」页签；看板任务无审计） */
+  workflowId?: string;
+  /** W10：本卡验收结论（节点级验收写入 result；有值显示验收行） */
+  acceptanceInfo?: { verdict: string; evidence: string } | null;
   onClose: () => void;
 }) {
   const [traces, setTraces] = useState<TraceRow[]>([]);
@@ -149,6 +234,10 @@ export function TracePanel({
   // P4：JSONL 导出（按钮态 + 结果路径/错误展示）
   const [exportBusy, setExportBusy] = useState(false);
   const [exportMsg, setExportMsg] = useState<string | null>(null);
+  // W10：页签（trace=执行痕迹 / audit=运行审计）+ 审计数据
+  const [tab, setTab] = useState<"trace" | "audit">("trace");
+  const [auditRows, setAuditRows] = useState<WorkflowAuditEntry[] | null>(null);
+  const [auditErr, setAuditErr] = useState<string | null>(null);
 
   // 竞态令牌：快速连点历史条目时，慢的旧 traceDetail 响应不得覆盖新选中的详情
   const detailSeqRef = useRef(0);
@@ -186,6 +275,15 @@ export function TracePanel({
     reload(traceId ?? null);
     // eslint-disable-next-line react/exhaustive-deps -- taskId/traceId 挂载期一次性加载；回滚后手动 reload
   }, [taskId, traceId]);
+
+  // W10：运行审计按需加载（切到审计页签才拉，非工作流卡不拉）
+  const loadAudit = () => {
+    if (!workflowId) return;
+    setAuditErr(null);
+    listWorkflowAudit(workflowId, 300)
+      .then(setAuditRows)
+      .catch((e) => setAuditErr(String(e)));
+  };
 
   const statusOf = (t: TraceRow | null) => (t ? STATUS_BADGE[t.status] ?? null : null);
   const duration = (t: TraceRow): string =>
@@ -237,6 +335,32 @@ export function TracePanel({
         </div>
         {exportMsg && <p className="mt-1 break-all text-[10px] text-[var(--t4)]">{exportMsg}</p>}
 
+        {/* W10：页签（工作流卡才有运行审计） */}
+        {workflowId && (
+          <div className="mt-2 flex gap-1">
+            <button
+              className={`nm-btn rounded-lg px-3 py-1 text-[11px] ${
+                tab === "trace" ? "text-[var(--t1)] nm-inset" : "text-[var(--t4)]"
+              }`}
+              onClick={() => setTab("trace")}
+            >
+              执行痕迹
+            </button>
+            <button
+              className={`nm-btn rounded-lg px-3 py-1 text-[11px] ${
+                tab === "audit" ? "text-[var(--t1)] nm-inset" : "text-[var(--t4)]"
+              }`}
+              onClick={() => {
+                setTab("audit");
+                loadAudit(); // 每次进入页签都刷新（不设 null 守卫——防跨工作流残留旧数据）
+              }}
+            >
+              <ListChecks size={11} aria-hidden className="mr-1 inline" />
+              运行审计
+            </button>
+          </div>
+        )}
+
         {/* 执行历史切换（同卡多次执行） */}
         {traces.length > 1 && (
           <div className="mt-2 flex flex-wrap gap-1">
@@ -285,13 +409,60 @@ export function TracePanel({
           </p>
         )}
 
-        {!loading && !error && !detail && (
+        {!loading && (!workflowId || tab === "trace") && !error && !detail && (
           <p className="mt-6 text-center text-xs text-[var(--t5)]">
             这张卡还没有执行痕迹——交给机器人跑一次后，这里会展示每次工具调用与文件修改。
           </p>
         )}
 
-        {!loading && detail && (
+        {/* W10：运行审计视图（仅工作流卡 + audit 页签——无 workflowId 时
+            auditRows 恒 null 会卡在"加载中"，必须与页签按钮同条件门控） */}
+        {workflowId && tab === "audit" && (
+          <div className="mt-3 min-h-0 flex-1 overflow-y-auto">
+            {auditErr && (
+              <p className="text-xs text-[var(--danger,#ef4444)]">
+                <TriangleAlert size={11} aria-hidden className="mr-1 inline" />
+                {auditErr}
+              </p>
+            )}
+            {!auditErr && auditRows === null && (
+              <p className="mt-2 text-center text-xs text-[var(--t5)]">加载中…</p>
+            )}
+            {auditRows?.length === 0 && (
+              <p className="mt-2 text-center text-xs text-[var(--t5)]">
+                还没有运行审计记录——执行一次工作流后这里会按 run 展示调度/验收/评审时间线。
+              </p>
+            )}
+            {auditRows && auditRows.length > 0 && (
+              <ol className="mt-1 space-y-1">
+                {auditRows.map((r) => (
+                  <li
+                    key={r.id}
+                    className="flex items-start gap-2 rounded-[var(--r-sm)] px-2 py-1 text-[11px] nm-inset"
+                  >
+                    <span className="shrink-0 tabular-nums text-[var(--t5)]">
+                      {new Date(r.createdAt).toLocaleTimeString()}
+                    </span>
+                    <span
+                      className={`shrink-0 ${
+                        r.level === "warn"
+                          ? "text-[var(--warn,#eab308)]"
+                          : "text-[var(--t3)]"
+                      }`}
+                    >
+                      {AUDIT_KIND_LABEL[r.kind] ?? r.kind}
+                    </span>
+                    <span className="min-w-0 flex-1 break-all text-[var(--t4)]">
+                      {auditPayloadSummary(r)}
+                    </span>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </div>
+        )}
+
+        {!loading && (!workflowId || tab === "trace") && detail && (
           <>
             {/* 摘要头 */}
             <div className="mt-3 flex flex-wrap items-center gap-1.5 text-[10px] text-[var(--t4)]">
@@ -314,6 +485,25 @@ export function TracePanel({
                 <span className="nm-inset px-2 py-0.5">{detail.origin}</span>
               )}
             </div>
+            {/* W10：节点级验收结论（引擎写 result，这里只读展示） */}
+            {acceptanceInfo && (
+              <p className="mt-2 rounded-[var(--r-sm)] px-2 py-1 text-[11px] nm-inset">
+                <span
+                  className={
+                    acceptanceInfo.verdict === "pass"
+                      ? "text-[var(--ok,#22c55e)]"
+                      : acceptanceInfo.verdict === "partial"
+                        ? "text-[var(--warn,#eab308)]"
+                        : "text-[var(--danger,#ef4444)]"
+                  }
+                >
+                  验收：{acceptanceInfo.verdict}
+                </span>
+                {acceptanceInfo.evidence && (
+                  <span className="ml-2 text-[var(--t4)]">{acceptanceInfo.evidence}</span>
+                )}
+              </p>
+            )}
             {detail.error && (
               <p className="mt-2 text-xs text-[var(--danger,#ef4444)]">
                 <TriangleAlert size={11} aria-hidden className="mr-1 inline" />

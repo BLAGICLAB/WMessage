@@ -49,6 +49,11 @@ import {
   resetDecomposeGuidance,
   setDecomposeGuidance,
 } from "../../lib/workflowPrompt";
+import {
+  clearAllWorkflowAudit,
+  getWorkflowSettings,
+  setWorkflowSettings,
+} from "../../lib/workflowAudit";
 
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
 import { DEFAULT_ARCHIVE_DAYS, MAX_ARCHIVE_DAYS } from "../../lib/archiveRule";
@@ -3208,6 +3213,21 @@ function WorkflowSettingsCard() {
   const [guidanceSaved, setGuidanceSaved] = useState(false);
   const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const guidanceRef = useRef(guidance);
+  // W10：验收与审计设置（后端 workflow_settings 表，运行期读取）
+  const [nodeAcceptance, setNodeAcceptance] = useState<boolean | null>(null);
+  const [acceptBusy, setAcceptBusy] = useState(false);
+  const [retention, setRetention] = useState<number | null>(null);
+  const [retentionDraft, setRetentionDraft] = useState("");
+  const [auditMsg, setAuditMsg] = useState<string | null>(null);
+  useEffect(() => {
+    getWorkflowSettings()
+      .then((s) => {
+        setNodeAcceptance(s.nodeAcceptance);
+        setRetention(s.auditRetentionRuns);
+        setRetentionDraft(String(s.auditRetentionRuns));
+      })
+      .catch((e) => setAuditMsg(String(e)));
+  }, []);
   // 卸载时兜底持久化（OCR r1：焦点在 textarea 时切走/关窗，onBlur 可能不触发）
   useEffect(
     () => () => {
@@ -3269,6 +3289,97 @@ function WorkflowSettingsCard() {
       </div>
       {/* P3-b 迁移：调用工具上限（全域熔断）已并入「Agent 运行参数」卡（机器人 section）——
           它管的是全域所有 agent 执行（含普通聊天），挂在工作流 section 语义错位 */}
+      <div className="nm-card p-5">
+        <h2 className="text-lg font-semibold text-[var(--t1)]">验收与审计（W10）</h2>
+        <p className="mt-1 text-xs text-[var(--t5)]">
+          节点级验收：执行成功的卡对照验收标准做轻量核查，不达标带证据自动返工（每卡最多
+          2 次，仍不达标标记失败）。审计：每次运行按 run 记录调度/验收/评审时间线，可在执行详情的「运行审计」页签查看。
+        </p>
+        <div className="mt-4 flex items-center justify-between gap-4">
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-[var(--t2)]">节点级验收</p>
+            <p className="mt-1 text-xs text-[var(--t5)]">
+              关闭后节点执行成功即完成，不做质量核查（验收调用会消耗额外 token）
+            </p>
+          </div>
+          <button
+            role="switch"
+            aria-checked={nodeAcceptance === true}
+            aria-label="节点级验收"
+            disabled={nodeAcceptance === null || acceptBusy}
+            className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] disabled:opacity-50 ${
+              nodeAcceptance ? "nm-inset" : "nm-outset"
+            }`}
+            onClick={async () => {
+              if (acceptBusy) return; // in-flight 保护：连点不并发落盘（OCR r1 high）
+              setAcceptBusy(true);
+              const next = !(nodeAcceptance === true);
+              try {
+                const s = await setWorkflowSettings({ nodeAcceptance: next });
+                setNodeAcceptance(s.nodeAcceptance);
+              } catch (e) {
+                setAuditMsg(String(e));
+              } finally {
+                setAcceptBusy(false);
+              }
+            }}
+          >
+            {nodeAcceptance ? "已开启" : "已关闭"}
+          </button>
+        </div>
+        <div className="mt-4 flex items-center justify-between gap-4">
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-[var(--t2)]">审计保留次数</p>
+            <p className="mt-1 text-xs text-[var(--t5)]">
+              每个工作流保留最近 N 次运行的审计记录（5–100，超出自动清理）
+            </p>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <input
+              aria-label="审计保留次数"
+              className="w-16 rounded-[var(--r-sm)] px-2 py-1 text-right text-sm nm-inset text-[var(--t1)] outline-none"
+              inputMode="numeric"
+              value={retentionDraft}
+              onChange={(e) => setRetentionDraft(e.target.value.replace(/\D/g, ""))}
+              onBlur={async () => {
+                const v = parseInt(retentionDraft, 10);
+                if (!Number.isFinite(v) || v === retention) return;
+                try {
+                  const s = await setWorkflowSettings({ auditRetentionRuns: v });
+                  setRetention(s.auditRetentionRuns);
+                  setRetentionDraft(String(s.auditRetentionRuns));
+                } catch (e) {
+                  setAuditMsg(String(e));
+                }
+              }}
+            />
+            <span className="text-xs text-[var(--t5)]">次 run</span>
+          </div>
+        </div>
+        <div className="mt-4 flex items-center justify-between gap-4">
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-[var(--t2)]">清空审计</p>
+            <p className="mt-1 text-xs text-[var(--t5)]">
+              删除所有工作流的审计记录（不影响任务卡与执行结果本身）
+            </p>
+          </div>
+          <button
+            className="shrink-0 nm-outset rounded-[var(--r-sm)] px-3 py-1.5 text-xs text-[var(--t3)]"
+            onClick={async () => {
+              if (!window.confirm("确定清空所有工作流的审计记录？此操作不可撤销。")) return;
+              try {
+                const n = await clearAllWorkflowAudit();
+                setAuditMsg(`已清空 ${n} 条审计记录`);
+              } catch (e) {
+                setAuditMsg(String(e));
+              }
+            }}
+          >
+            清空全部
+          </button>
+        </div>
+        {auditMsg && <p className="mt-2 text-xs text-[var(--t4)]">{auditMsg}</p>}
+      </div>
       <div className="nm-card p-5">
         <h2 className="text-lg font-semibold text-[var(--t1)]">AI 拆解提示词</h2>
         <p className="mt-1 text-xs text-[var(--t5)]">

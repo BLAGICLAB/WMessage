@@ -557,7 +557,9 @@ async fn run_scheduled_workflow(app: AppHandle, wf: crate::db::workflow::Workflo
         );
         return;
     }
-    let result = crate::workflow_runner::workflow_run(app.clone(), wf.id.clone()).await;
+    let result =
+        crate::workflow_runner::workflow_run(app.clone(), wf.id.clone(), Some("schedule".into()))
+            .await;
     match &result {
         Ok(start) => {
             crate::bot::audit_log(

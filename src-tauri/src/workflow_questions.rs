@@ -32,12 +32,23 @@ pub const ACTION_DISMISS: &str = "dismiss";
 /// 应答核心（纯 DB 逻辑，与 AppHandle 解耦——单测锚点；command 包壳做唤醒/审计/广播）：
 /// ①resolve 通知 ②落档案条目（answer 原文，或"未答按假设"）。
 /// 返回要发给 waiter 的文本（answer 原文 / assumption）；通知不存在 → Ok(None)（幂等，什么都不做）。
+/// 应答结果：给 waiter 的文本 + 审计上下文（W10：answered 行归组用）
+#[derive(Debug)]
+pub(crate) struct RespondOutcome {
+    pub text: String,
+    pub workflow_id: String,
+    pub task_id: Option<String>,
+    pub run_started_at: i64,
+    pub question: String,
+    pub action: String,
+}
+
 pub(crate) fn respond_core(
     conn: &rusqlite::Connection,
     question_id: &str,
     action: &str,
     answer: Option<&str>,
-) -> Result<Option<String>, String> {
+) -> Result<Option<RespondOutcome>, String> {
     let notif_id = question_notif_id(question_id);
     let Some(view) = crate::notifications::notif_get(conn, &notif_id)? else {
         return Ok(None);
@@ -112,7 +123,17 @@ pub(crate) fn respond_core(
             Some(question),
         )?;
     }
-    Ok(Some(brief_text))
+    Ok(Some(RespondOutcome {
+        text: brief_text,
+        workflow_id,
+        task_id: task_id.map(|s| s.to_string()),
+        run_started_at: payload
+            .get("runStartedAt")
+            .and_then(Value::as_i64)
+            .unwrap_or(0),
+        question: question.to_string(),
+        action: action.to_string(),
+    }))
 }
 
 /// run 收尾/停止/工作流删除时：本工作流的 pending 问题批量失效（dismissed）。
@@ -183,17 +204,47 @@ pub async fn workflow_question_respond(
     let action_clone = action.clone();
     let answer_clone = answer.clone();
     let app2 = app.clone();
-    let text = tauri::async_runtime::spawn_blocking(move || -> Result<Option<String>, String> {
-        let conn = crate::db::open_db(&app2).map_err(|e| e.to_string())?;
-        respond_core(&conn, &qid, &action_clone, answer_clone.as_deref())
-    })
-    .await
-    .map_err(|e| CommandError::from(format!("问答应答线程 join 失败：{e}")))?
-    .map_err(CommandError::DbError)?;
+    let outcome =
+        tauri::async_runtime::spawn_blocking(move || -> Result<Option<RespondOutcome>, String> {
+            let conn = crate::db::open_db(&app2).map_err(|e| e.to_string())?;
+            respond_core(&conn, &qid, &action_clone, answer_clone.as_deref())
+        })
+        .await
+        .map_err(|e| CommandError::from(format!("问答应答线程 join 失败：{e}")))?
+        .map_err(CommandError::DbError)?;
     // 通知不存在 = 已被超时回收/重复应答——幂等成功，不重复落档案不重复唤醒
-    let Some(text) = text else {
+    let Some(outcome) = outcome else {
         return Ok(());
     };
+    // W10：问答日志入审计表（尽力而为）
+    {
+        let app2 = app.clone();
+        let wf2 = outcome.workflow_id.clone();
+        let tid2 = outcome.task_id.clone();
+        let rsa = outcome.run_started_at;
+        let q2 = outcome.question.clone();
+        let a2 = outcome.text.clone();
+        let act2 = outcome.action.clone();
+        let r = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+            let conn = crate::db::open_db(&app2).map_err(|e| e.to_string())?;
+            crate::db::workflow_audit::wa_insert(
+                &conn,
+                &wf2,
+                rsa,
+                tid2.as_deref(),
+                crate::db::workflow_audit::KIND_QUESTION_ANSWERED,
+                "info",
+                &serde_json::json!({ "question": q2, "answer": a2, "action": act2 }),
+            )
+            .map(|_| ())
+        })
+        .await;
+        match r {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => eprintln!("[workflow_audit] question_answered 写入失败（不阻断）：{e}"),
+            Err(e) => eprintln!("[workflow_audit] question_answered 线程失败（不阻断）：{e}"),
+        }
+    }
     // 唤醒 waiter（run 存活才有；run 已死 → 档案已落，重跑生效，此处静默跳过）
     if let Some(tx) = crate::app_state::question_waiters(&app)
         .lock()
@@ -203,7 +254,7 @@ pub async fn workflow_question_respond(
         })
         .remove(&question_id)
     {
-        let _ = tx.send(text);
+        let _ = tx.send(outcome.text);
     }
     crate::audit::write_event(
         &app,
@@ -230,6 +281,8 @@ pub struct AskRegistration {
     pub node_title: String,
     /// 提问模式开关（拍板 5；false = 从不提问，工具直接返回假设）
     pub asks_enabled: bool,
+    /// W10：run 分组键（审计行归组 + 问题 payload 透传给应答端）
+    pub run_started_at: i64,
     pub asks_left: std::sync::atomic::AtomicU8,
 }
 
@@ -254,6 +307,7 @@ pub(crate) fn register_ask_context<R: tauri::Runtime>(
                 task_id: task_id.to_string(),
                 node_title: node_title.to_string(),
                 asks_enabled: ask.asks_enabled,
+                run_started_at: ask.run_started_at,
                 asks_left: std::sync::atomic::AtomicU8::new(MAX_ASKS_PER_NODE),
             },
         );
@@ -361,7 +415,7 @@ pub(crate) async fn engine_ask_user(
         parsed.assumption
     );
     // 锁内一次取全量 owned 数据（含模式检查与预算扣减）——引用不出锁作用域
-    let (wf_id, task_id, node_title, budget_left) = {
+    let (wf_id, task_id, node_title, run_started_at, budget_left) = {
         let mut map = crate::app_state::ask_contexts(app)
             .lock()
             .unwrap_or_else(|e| {
@@ -386,6 +440,7 @@ pub(crate) async fn engine_ask_user(
             reg.workflow_id.clone(),
             reg.task_id.clone(),
             reg.node_title.clone(),
+            reg.run_started_at,
             left,
         )
     };
@@ -398,13 +453,15 @@ pub(crate) async fn engine_ask_user(
     let qid = uuid::Uuid::new_v4().simple().to_string();
     let payload = serde_json::json!({
         "questionId": qid,
-        "workflowId": wf_id,
-        "taskId": task_id,
-        "nodeTitle": node_title,
+        "workflowId": wf_id.clone(),
+        "taskId": task_id.clone(),
+        "nodeTitle": node_title.clone(),
         "question": parsed.question,
         "why": parsed.why,
         "options": parsed.options,
         "assumption": parsed.assumption,
+        // W10：run 分组键透传——应答端写审计行凭它归到正确的 run
+        "runStartedAt": run_started_at,
         "createdAt": chrono::Utc::now().timestamp_millis(),
     });
     let title = format!("🔀 工作流任务「{node_title}」提问");
@@ -461,10 +518,39 @@ pub(crate) async fn engine_ask_user(
         crate::audit::AuditLevel::Info,
         "workflow_question_asked",
         &[
-            ("taskId", task_id),
+            ("taskId", task_id.clone()),
             ("hasOptions", (!parsed.options.is_empty()).to_string()),
         ],
     );
+    // W10：问答日志入审计表（设计 §4.2 kinds 含 question_asked/answered）
+    {
+        let app2 = app.clone();
+        let wf2 = wf_id.clone();
+        let tid2 = task_id.clone();
+        let q2 = parsed.question.clone();
+        let a2 = parsed.assumption.clone();
+        let r = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+            let conn = crate::db::open_db(&app2).map_err(|e| e.to_string())?;
+            crate::db::workflow_audit::wa_insert(
+                &conn,
+                &wf2,
+                run_started_at,
+                Some(&tid2),
+                crate::db::workflow_audit::KIND_QUESTION_ASKED,
+                "info",
+                &serde_json::json!({ "question": q2, "assumption": a2 }),
+            )
+            .map(|_| ())
+        })
+        .await;
+        // 内外两层都要接：JoinError 与 DB 错误都打日志（OCR r1 high——
+        // 只 match 外层会把 open_db/写库失败静默吞掉）
+        match r {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => eprintln!("[workflow_audit] question_asked 写入失败（不阻断）：{e}"),
+            Err(e) => eprintln!("[workflow_audit] question_asked 线程失败（不阻断）：{e}"),
+        }
+    }
     crate::notifications::emit_changed(app);
     // 系统通知门铃（OS 通知放不下富回答，点击进应用通知页）
     let _ = app
@@ -565,7 +651,8 @@ mod tests {
         let qid = seed_question(&conn, "wf1", "t1");
         let text = respond_core(&conn, &qid, ACTION_ANSWER, Some("  知乎，重点发长文  "))
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .text;
         assert_eq!(text, "知乎，重点发长文");
         // 通知已 resolve
         let notif = crate::notifications::notif_get(&conn, &question_notif_id(&qid))
@@ -586,7 +673,8 @@ mod tests {
         let qid = seed_question(&conn, "wf1", "t1");
         let text = respond_core(&conn, &qid, ACTION_ASSUME, None)
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .text;
         assert!(text.contains("公众号"), "assume 应返回问题自带假设：{text}");
         assert!(text.contains("未回答"));
         let notif = crate::notifications::notif_get(&conn, &question_notif_id(&qid))
@@ -597,7 +685,8 @@ mod tests {
         let qid2 = seed_question(&conn, "wf2", "t2");
         let text = respond_core(&conn, &qid2, ACTION_DISMISS, None)
             .unwrap()
-            .unwrap();
+            .unwrap()
+            .text;
         assert!(text.contains("公众号"));
         let notif = crate::notifications::notif_get(&conn, &question_notif_id(&qid2))
             .unwrap()

@@ -1403,6 +1403,8 @@ pub struct TaskExecCtx {
     pub brief: Option<crate::db::brief::BriefContext>,
     /// 执行提问授权（W9-ASK）：Some = 本节点可调 ask_user（workflow_id 关联档案与通知）
     pub ask: Option<AskExecContext>,
+    /// 验收返工证据（W10）：验收 fail 后重跑时带上轮 evidence，注入【验收返工】段
+    pub rework_evidence: Option<String>,
 }
 
 /// 执行提问授权上下文（W9-ASK）：bot_chat 在会话建立时凭它注册 ask_contexts，
@@ -1412,6 +1414,8 @@ pub struct AskExecContext {
     pub workflow_id: String,
     /// 提问模式开关（拍板 5：false = 从不提问，工具直接返回假设）
     pub asks_enabled: bool,
+    /// W10：run 分组键——问题 payload 带上它，应答端写审计行能归到正确的 run
+    pub run_started_at: i64,
 }
 
 impl TaskExecCtx {
@@ -1438,6 +1442,17 @@ impl TaskExecCtx {
             if let Some(c) = &br.card {
                 s.push_str(&format!("\n\n{c}"));
             }
+        }
+        // 验收返工（W10）：放档案之后（最末端）——返工原因是对本轮最有指向性的指令
+        if let Some(ev) = self
+            .rework_evidence
+            .as_deref()
+            .filter(|e| !e.trim().is_empty())
+        {
+            s.push_str(&format!(
+                "\n\n【验收返工】{ev}。这是同一张卡的重新执行：先看上轮产出为什么没达标\
+（产物文件还在，可读取核对），针对性修正后重新完成本卡，不要重做无关步骤。"
+            ));
         }
         if s.is_empty() {
             None

@@ -120,6 +120,14 @@ export interface Task {
     artifacts?: Array<{ path?: string; description?: string }>;
     blockers?: unknown[];
     confidence?: number;
+    /** W10：节点级验收裁决（pass/partial/fail/unknown；fail 已终态 failed，不会以 success 出现） */
+    acceptanceVerdict?: string;
+    /** W10：验收依据（≤100 字，TracePanel 展示） */
+    acceptanceEvidence?: string;
+    /** W10：含返工的累计执行次数（引擎写） */
+    attempt?: number;
+    /** W10：本卡耗时（墙钟 ms，引擎写） */
+    ms?: number;
   } | null;
   /** 工作流画布归属（W1-CANVAS，设计 §3.1）：缺省 "user" = 看板任务；
    *  "workflow" = 工作流节点卡（看板/挂件默认过滤，bot 工具不过滤） */

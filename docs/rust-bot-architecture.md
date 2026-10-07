@@ -503,6 +503,8 @@ flowchart TD
 - `db/bot_history.rs`
 - `db/bot_sessions.rs`
 - `db/brief.rs`
+- `db/workflow_audit.rs`
+- `db/workflow_settings.rs`
 - `db/migrations.rs`
 - `db/mod.rs`
 - `db/paths.rs`

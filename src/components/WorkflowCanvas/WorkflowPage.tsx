@@ -20,6 +20,7 @@ import { handleCommandError } from "../../lib/errorHandler";
 import { useTauriListen } from "../../lib/useTauriListen";
 import { TracePanel } from "../TracePanel";
 import { getDecomposeGuidance } from "../../lib/workflowPrompt";
+import { exportWorkflowAudit } from "../../lib/workflowAudit";
 import type { Task, Workflow, WorkflowReport, WorkflowSaveResult, ReviewVerdict } from "../../types";
 import {
   draftFromDecompose,
@@ -326,6 +327,22 @@ function WorkflowPageInner({
       alert(`导出完成：共 ${count} 个节点（导出的是已保存版本）`);
     } catch (e) {
       handleCommandError(e, "导出工作流模板", { onRetry: () => void doExport() });
+    }
+  };
+
+  /** W10：运行审计导出 JSON（save dialog；审计表按 run 分组的全部条目） */
+  const doAuditExport = async () => {
+    if (!activeId) return;
+    try {
+      const path = await saveDialog({
+        defaultPath: `${name.trim() || "工作流"}-审计.json`,
+        filters: [{ name: "WMessage 工作流审计", extensions: ["json"] }],
+      });
+      if (!path) return;
+      const count = await exportWorkflowAudit(activeId, path);
+      alert(`审计导出完成：共 ${count} 条记录`);
+    } catch (e) {
+      handleCommandError(e, "导出运行审计", { onRetry: () => void doAuditExport() });
     }
   };
 
@@ -1001,6 +1018,14 @@ function WorkflowPageInner({
         </button>
         <button
           className={toolbarBtn}
+          onClick={() => void doAuditExport()}
+          disabled={activeId === null}
+          title={activeId === null ? "先选择一个工作流" : "导出运行审计 JSON（按 run 分组的调度/验收/评审时间线）"}
+        >
+          🧾 审计
+        </button>
+        <button
+          className={toolbarBtn}
           onClick={() => void save()}
           disabled={saving || !dirty}
           title={dirty ? "保存工作流（指纹 diff，保留未变更节点的执行痕迹）" : "没有未保存的修改"}
@@ -1085,11 +1110,17 @@ function WorkflowPageInner({
           </ReactFlow>
         )}
       </div>
-      {/* P2-c：节点「执行详情」弹层（工作痕迹：工具时间线 + 文件 diff/回滚） */}
+      {/* P2-c：节点「执行详情」弹层（工作痕迹：工具时间线 + 文件 diff/回滚；W10：+运行审计页签/验收行） */}
       {traceTaskId && (
         <TracePanel
           taskId={traceTaskId}
           taskTitle={tasks.find((t) => t.id === traceTaskId)?.title}
+          workflowId={activeId ?? undefined}
+          acceptanceInfo={(() => {
+            const t = tasks.find((x) => x.id === traceTaskId);
+            const v = t?.result?.acceptanceVerdict;
+            return v ? { verdict: v, evidence: t?.result?.acceptanceEvidence ?? "" } : null;
+          })()}
           onClose={() => setTraceTaskId(null)}
         />
       )}
