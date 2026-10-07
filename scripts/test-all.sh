@@ -34,6 +34,12 @@ if [[ $PYTEST_EXIT -ne 0 ]]; then
     exit "$PYTEST_EXIT"
 fi
 
+echo "[2.5/3] evolution 分层依赖方向守卫（策略纯度/上下文边界/数据层方向）"
+if ! python3 tests-audit/audit_evolution_layering.py; then
+    echo "✗ evolution 分层守卫失败（分层契约见 docs/EVOLUTION-LAYERING-BATCH-A.md §8）" >&2
+    exit 1
+fi
+
 echo "[3/3] npm test (vitest run, 前端 unit 测试)"
 npm test
 

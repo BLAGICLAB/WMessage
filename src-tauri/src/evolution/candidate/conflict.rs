@@ -11,32 +11,24 @@
 use super::entry::ProposalEntry;
 use crate::evolution::change::EvolutionLayer;
 use crate::evolution::proposal::ImpactLevel;
+use crate::evolution::strategy::EvolutionPolicy;
 
-/// 跨层优先级（数字越小优先级越高）
+/// 跨层优先级（数字越小优先级越高）。
+/// 迁移委托（批次 B-1）：逻辑已迁 `strategy` 层默认实现，此处保持零逻辑
+/// 委托（批次 A §5 迁移映射 / 不变式 10：函数体超过一行委托即 CI fail）。
+#[deprecated(
+    note = "批次 B-1 迁移：改用 strategy::DefaultEvolutionPolicy（order_entries/layer 优先级随其内部实现）"
+)]
 pub fn layer_priority(layer: EvolutionLayer) -> u32 {
-    match layer {
-        // Parameter 是运行时行为参数（温度、top_p 等），影响最大，先排
-        EvolutionLayer::Parameter => 0,
-        // Policy 是记忆策略，重要性高
-        EvolutionLayer::Policy => 1,
-        // ToolSchema 影响工具行为
-        EvolutionLayer::ToolSchema => 2,
-        // Skill 影响技能调度
-        EvolutionLayer::Skill => 3,
-        // PromptHint 影响提示词
-        EvolutionLayer::PromptHint => 4,
-        // Code R8 才引入，未实现
-        EvolutionLayer::Code => 5,
-    }
+    crate::evolution::strategy::layer_priority(layer)
 }
 
-/// impact 数值化（用于排序）
+/// impact 数值化（用于排序）。迁移委托（批次 B-1）：同上，零逻辑。
+#[deprecated(
+    note = "批次 B-1 迁移：改用 strategy::DefaultEvolutionPolicy（impact 数值化随其内部实现）"
+)]
 pub fn impact_ord(impact: ImpactLevel) -> u32 {
-    match impact {
-        ImpactLevel::High => 2,
-        ImpactLevel::Medium => 1,
-        ImpactLevel::Low => 0,
-    }
+    crate::evolution::strategy::impact_ord(impact)
 }
 
 /// 是否冲突（同 proposal_id 不算自比冲突；同层 + 同 target）
@@ -63,34 +55,29 @@ pub fn find_conflict<'a>(
 /// - impact 不同：higher impact 胜
 /// - impact 相同：older (created_at_ms 更小) 胜
 /// - 返回 (winner, loser)
+///
+/// 迁移委托（批次 B-1）：逻辑已迁 `strategy::DefaultEvolutionPolicy::resolve`，
+/// 此处零逻辑转换返回元组形态（兼容既有调用方/测试）。
+#[deprecated(
+    note = "批次 B-1 迁移：改用 strategy::EvolutionPolicy::resolve（默认实现 DefaultEvolutionPolicy）"
+)]
 pub fn resolve_conflict<'a>(
     a: &'a ProposalEntry,
     b: &'a ProposalEntry,
 ) -> (&'a ProposalEntry, &'a ProposalEntry) {
-    if impact_ord(a.impact) != impact_ord(b.impact) {
-        if impact_ord(a.impact) > impact_ord(b.impact) {
-            (a, b)
-        } else {
-            (b, a)
-        }
-    } else {
-        // impact 相同 → older 胜
-        if a.created_at_ms <= b.created_at_ms {
-            (a, b)
-        } else {
-            (b, a)
-        }
-    }
+    let r = crate::evolution::strategy::DefaultEvolutionPolicy.resolve(a, b);
+    (r.winner, r.loser)
 }
 
 /// 跨层排序：先按 layer_priority 升序，再按 impact 降序，最后按 created_at 升序
+///
+/// 迁移委托（批次 B-1）：逻辑已迁 `strategy::DefaultEvolutionPolicy::order_entries`，
+/// 此处零逻辑委托。
+#[deprecated(
+    note = "批次 B-1 迁移：改用 strategy::EvolutionPolicy::order_entries（默认实现 DefaultEvolutionPolicy）"
+)]
 pub fn sort_entries_cross_layer(entries: &mut Vec<ProposalEntry>) {
-    entries.sort_by(|a, b| {
-        layer_priority(a.layer)
-            .cmp(&layer_priority(b.layer))
-            .then(impact_ord(b.impact).cmp(&impact_ord(a.impact)))
-            .then(a.created_at_ms.cmp(&b.created_at_ms))
-    });
+    crate::evolution::strategy::DefaultEvolutionPolicy.order_entries(entries);
 }
 
 #[cfg(test)]

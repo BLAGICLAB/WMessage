@@ -25,6 +25,9 @@ pub mod apply;
 pub mod candidate;
 pub mod change;
 pub mod policy;
+// W11-OCR 事故恢复：本行原属并行 evolution 批次 A 的未提交修改，
+// 被误执行的 git reset --hard 冲掉——strategy.rs（未跟踪）幸存，补回登记
+pub mod strategy;
 
 /// jsonl 读取共享内核（OCR r2 medium 采纳：record/entry 两处 30 行 read_all 收敛
 /// 单点防漂移）。语义（B4-3 自愈化，原拍板 #17=C 的 fail-closed 已按审计修正）：

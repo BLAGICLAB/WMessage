@@ -547,6 +547,7 @@ flowchart TD
 - `evolution/observe/stop.rs`
 - `evolution/observe/synthetic.rs`
 - `evolution/policy.rs`
+- `evolution/strategy.rs`
 - `evolution/panel/commands.rs`
 - `evolution/panel/mod.rs`
 - `evolution/proposal.rs`

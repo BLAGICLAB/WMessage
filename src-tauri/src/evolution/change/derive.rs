@@ -12,7 +12,8 @@
 //! rolled_back_at, rollback_reason, approval_source, human_approver
 
 use super::record::{ApprovalSource, ChangeRecord, ChangeStatus, EvolutionLayer};
-use crate::evolution::proposal::{EvolutionProposal, ImpactLevel, ProposalCategory};
+use crate::evolution::proposal::{EvolutionProposal, ProposalCategory};
+use crate::evolution::strategy::EvolutionPolicy;
 
 /// change_id 派生函数（DERIVABILITY.md 字段 2）
 pub fn derive_change_id(proposal_id: &str) -> String {
@@ -33,9 +34,18 @@ pub const DEFAULT_SCHEMA_VERSION: u32 = 1;
 /// 由 apply 入口校验，本函数**不代表 9 条全合规**——这正是改名的原因
 ///（旧名让调用方按名字推断成全合规，可能跳过下游复核）。
 /// impact 用显式白名单（High | Medium）：未来新增变体必须显式 opt-in。
+///
+/// 迁移委托（批次 B-1）：判定逻辑已迁 `strategy::DefaultEvolutionPolicy::gate`
+///（白名单形式，与本函数迁移前语义在当前 3 impact 变体下逐输入等价——等价
+/// 对照测试钉死），此处零逻辑委托。
+#[deprecated(
+    note = "批次 B-1 迁移：改用 strategy::EvolutionPolicy::gate（GateDecision::Approved 即本函数 true）"
+)]
 pub fn passes_auto_apply_gate(p: &EvolutionProposal) -> bool {
-    matches!(p.category, ProposalCategory::MemoryHint)
-        && matches!(p.impact, ImpactLevel::High | ImpactLevel::Medium)
+    matches!(
+        crate::evolution::strategy::DefaultEvolutionPolicy.gate(p),
+        crate::evolution::strategy::GateDecision::Approved
+    )
 }
 
 /// layer 从 category 派生（DERIVABILITY.md 字段 1，部分覆盖）
