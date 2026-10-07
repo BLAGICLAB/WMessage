@@ -72,10 +72,12 @@ export interface Task {
   tags?: string[];
   /** 绑定文件列表（上限 10；isDir=true 为文件夹，文件夹仍单选独占） */
   files?: Array<{ path: string; isDir: boolean }>;
-  /** 旧单绑定字段：迁移过渡保留（启动时若 files 为空自动迁入 files） */
-  filePath?: string;
-  /** 绑定的是否为文件夹（旧字段，见 filePath） */
-  fileIsDir?: boolean;
+  /** 旧单绑定字段：迁移过渡保留（启动时若 files 为空自动迁入 files）。
+   * null = 显式清空（task_patch 语义：null 落库清值，缺键 = 未提供保留旧值）；
+   * 直连 invoke 构造清空 patch 时必须传 null，不要传 undefined（会被 JSON 丢弃） */
+  filePath?: string | null;
+  /** 绑定的是否为文件夹（旧字段，见 filePath；null 语义同上） */
+  fileIsDir?: boolean | null;
   /** 完成时间（epoch ms） */
   completedAt?: number;
   /** 创建时间（epoch ms）；老数据缺省 = 未知（图谱「耗时」口径的依赖字段） */
@@ -167,9 +169,14 @@ export interface Workflow {
   lastReportAt?: number | null;
 }
 
+/** 评审裁决四值（Rust 契约）：pass/partial/fail = rubric 裁决；unknown = 评审
+ * 调用/解析失败降级。注意后端 ReviewReport.verdict 是 String 直传（模型输出
+ * 契约外字符串现实可达），前端在解析边界归一成这四值后才落入本类型 */
+export type ReviewVerdict = "pass" | "partial" | "fail" | "unknown";
+
 /** 工作流收尾审校报告（W-QA，runner rubric 评审产出；workflow-report 事件与 lastReport 同构） */
 export interface WorkflowReport {
-  verdict: "pass" | "partial" | "fail" | "unknown" | string;
+  verdict: ReviewVerdict;
   /** 两三句整体结论（降级时为评审原文） */
   overall: string;
   issues: Array<{

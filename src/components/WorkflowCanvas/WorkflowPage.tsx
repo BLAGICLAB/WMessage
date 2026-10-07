@@ -20,7 +20,7 @@ import { handleCommandError } from "../../lib/errorHandler";
 import { useTauriListen } from "../../lib/useTauriListen";
 import { TracePanel } from "../TracePanel";
 import { getDecomposeGuidance } from "../../lib/workflowPrompt";
-import type { Task, Workflow, WorkflowReport, WorkflowSaveResult } from "../../types";
+import type { Task, Workflow, WorkflowReport, WorkflowSaveResult, ReviewVerdict } from "../../types";
 import {
   draftFromDecompose,
   draftFromTasks,
@@ -34,6 +34,17 @@ import { GoalNode, type GoalNodeData } from "./GoalNode";
 const GOAL_ID = "__goal__";
 /** 拆解自动命名的截取长度（OCR r1 low：魔法数字提升为具名常量） */
 const NAME_AUTO_LEN = 12;
+
+const KNOWN_VERDICTS: readonly ReviewVerdict[] = ["pass", "partial", "fail", "unknown"];
+
+/** verdict 边界归一：后端 ReviewReport.verdict 是 String 直传，模型输出契约外
+ * 字符串现实可达——非四值一律落 unknown（与后端降级语义一致），类型层才能
+ * 收紧成字面量 union 供穷尽检查 */
+function normalizeReport(r: WorkflowReport): WorkflowReport {
+  return (KNOWN_VERDICTS as readonly string[]).includes(r.verdict)
+    ? r
+    : { ...r, verdict: "unknown" };
+}
 
 /** 开始/继续执行按钮的 title（OCR r1 high：拆掉嵌套三元；W5 r1：dirty 优先级最高，
  *  续跑提示不得吞掉"先保存"警告） */
@@ -242,7 +253,8 @@ function WorkflowPageInner({
   function safeParseReport(raw: string): WorkflowReport | null {
     try {
       const v = JSON.parse(raw) as WorkflowReport;
-      return typeof v?.verdict === "string" ? v : null;
+      if (typeof v?.verdict !== "string") return null;
+      return normalizeReport(v);
     } catch {
       return null;
     }
@@ -618,7 +630,7 @@ function WorkflowPageInner({
   useTauriListen<{ workflowId?: string; report?: WorkflowReport }>("workflow-report", (payload) => {
     if (!payload.report) return;
     if (payload.workflowId && payload.workflowId !== activeIdRef.current) return;
-    setWfReport(payload.report);
+    setWfReport(normalizeReport(payload.report));
   });
 
   // ────────────── 保存（指纹 diff 落库，设计 §7） ──────────────

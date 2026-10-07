@@ -42,8 +42,13 @@ describe("filesPatch 双写", () => {
 
     const empty = filesPatch([]);
     expect(empty.files).toEqual([]);
-    expect(empty.filePath).toBeUndefined();
-    expect(empty.fileIsDir).toBeUndefined();
+    // 清空必须显式 null：undefined 键会被 JSON 序列化丢弃，后端按「未提供」
+    // 保留旧值 → 已解绑的旧路径复活。后端契约：显式 null = 清空，缺键 = 保留
+    expect(empty.filePath).toBeNull();
+    expect(empty.fileIsDir).toBeNull();
+    const wire = JSON.parse(JSON.stringify(empty));
+    expect(wire).toHaveProperty("filePath", null);
+    expect(wire).toHaveProperty("fileIsDir", null);
   });
 });
 

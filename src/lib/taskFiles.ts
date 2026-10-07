@@ -21,13 +21,15 @@ export function taskFiles(t: Task): TaskFile[] {
 
 /**
  * 绑定变更的统一 patch：写 files 的同时双写旧 filePath/fileIsDir 首条
- * （过渡期旧版本/旧调用方仍读老字段）；空列表三字段全清。
+ * （过渡期旧版本/旧调用方仍读老字段）；空列表三字段全清——清空必须显式
+ * null（undefined 键被 JSON 序列化丢弃，后端按「未提供」保留旧值，旧路径复活；
+ * 后端契约：显式 null = 清空，缺键 = 保留）。
  */
 export function filesPatch(files: TaskFile[]): Partial<Task> {
   return {
     files,
-    filePath: files[0]?.path,
-    fileIsDir: files[0]?.isDir,
+    filePath: files[0]?.path ?? null,
+    fileIsDir: files[0]?.isDir ?? null,
   };
 }
 
