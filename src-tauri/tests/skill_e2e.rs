@@ -58,6 +58,18 @@ fn mock_handle() -> tauri::AppHandle<tauri::test::MockRuntime> {
 // 1. pre-step 路由：关键词 → Skill 命中
 // ────────────────────────────────────────────────────────────────────
 
+/// 全局路由表 Drop 守卫：fixture 路由用毕还原空表。还原语句放在断言前只能保
+/// happy path——assert panic 会跳过还原，全局表残留 fixture 路由污染同进程
+/// 后续测试（cargo test 单进程跑全套时真实存在；nextest 每测试一进程不受影响）。
+/// drop 兜底后两条路径都还原。
+struct RoutesResetGuard;
+
+impl Drop for RoutesResetGuard {
+    fn drop(&mut self) {
+        intent_router::rebuild_routes(vec![]);
+    }
+}
+
 #[test]
 fn pre_step_routes_installed_skill_intent_to_skill() {
     // 2026-08-19 动态路由：路由表 = 已安装技能的 intents 声明。
@@ -65,10 +77,10 @@ fn pre_step_routes_installed_skill_intent_to_skill() {
     intent_router::rebuild_routes(bot_skills::intent_rules_from_dirs(
         &[fixtures_parent_path()],
     ));
+    let _routes_guard = RoutesResetGuard;
     let registry = middleware::build_default_registry();
     let route = registry.run_pre_step(&mock_handle(), "帮我做一份 XX 主题的 PPT");
-    // 还原空表，避免污染同进程其他测试
-    intent_router::rebuild_routes(vec![]);
+    // 还原由 guard drop 兜底（panic 路径同样生效）
     match route {
         Some(RouteAction::Skill(s)) => {
             assert_eq!(s, "minimax-ppt", "期望命中 fixture Skill（intents 含 PPT）");

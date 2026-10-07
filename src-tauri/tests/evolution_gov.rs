@@ -82,6 +82,30 @@ fn restore_cfg(original_cfg: Option<String>, cfg: &std::path::Path) {
     }
 }
 
+/// Drop 守卫：本用例触碰共享 deps 目录的 evolution 三 jsonl + 库内标记行 +
+/// bot-config.json。中途 assert 失败（栈展开）时段尾显式清场会被跳过，残留
+/// 会污染**下一轮运行**（nextest 每测试一进程，但数据目录跨轮共享）——drop
+/// 兜底执行同样的清理；清理幂等（文件/行不存在均忽略），段中已清过也无副作用。
+struct GovGuard {
+    app: tauri::AppHandle<tauri::test::MockRuntime>,
+    ids: std::cell::RefCell<Vec<String>>,
+    original_cfg: Option<String>,
+    cfg: std::path::PathBuf,
+}
+
+impl GovGuard {
+    fn add_id(&self, id: &str) {
+        self.ids.borrow_mut().push(id.to_string());
+    }
+}
+
+impl Drop for GovGuard {
+    fn drop(&mut self) {
+        cleanup(&self.app, &self.ids.borrow());
+        restore_cfg(self.original_cfg.clone(), &self.cfg);
+    }
+}
+
 fn mk_proposal(
     id: &str,
     category: ProposalCategory,
@@ -119,6 +143,13 @@ fn confirm_mode_e2e_toggle_applies_and_is_idempotent() {
     let conflict_id = "u20-gov-conflict";
     let cfg = paths::data_dir(&app).join("bot-config.json");
     let original_cfg = std::fs::read_to_string(&cfg).ok();
+    // 清场守卫先立（panic 展开也清）；pid 段 0 派生后再补进 ids
+    let guard = GovGuard {
+        app: app.clone(),
+        ids: std::cell::RefCell::new(vec![nonpolicy_id.into(), conflict_id.into()]),
+        original_cfg: original_cfg.clone(),
+        cfg: cfg.clone(),
+    };
 
     // ── 段 0：真 ops → 真启发式派生（post_consolidation 前半；先派生拿稳定
     // pid——derive 对同 ops 确定性，跨次运行同 id，清理才能对准上一轮残留）──
@@ -145,6 +176,7 @@ fn confirm_mode_e2e_toggle_applies_and_is_idempotent() {
         "门槛内（auto 档会被自动轨吃掉的那类）"
     );
     let pid = proposals[0].proposal_id.clone();
+    guard.add_id(&pid);
 
     cleanup(
         &app,
@@ -356,7 +388,6 @@ fn confirm_mode_e2e_toggle_applies_and_is_idempotent() {
         "auto 档放行自动落库"
     );
 
-    // ── 清场 ──
+    // ── 清场：段中显式清一次 + guard drop 兜底（幂等，panic 路径也生效）──
     cleanup(&app, &[pid, nonpolicy_id.into(), conflict_id.into()]);
-    restore_cfg(original_cfg, &cfg);
 }

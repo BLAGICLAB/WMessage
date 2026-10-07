@@ -73,6 +73,9 @@ fn cleanup(handle: &tauri::AppHandle<tauri::test::MockRuntime>, task_id: &str, s
         .ok();
         conn.execute("DELETE FROM bot_sessions WHERE id = ?1", [session_id])
             .ok();
+        // trace 家族双路删除：成功路径按 session_id、失败路径按 task_id——
+        // 失败收尾拿不到 TaskChatRun.session_id，trace 行落的是运行期生成的
+        // 会话 id（实测残留实锤：deps 库里堆积 et-* failed 行），按 '-' 清不到
         conn.execute(
             "DELETE FROM exec_spans WHERE trace_id IN (SELECT id FROM exec_traces WHERE session_id = ?1)",
             [session_id],
@@ -88,11 +91,45 @@ fn cleanup(handle: &tauri::AppHandle<tauri::test::MockRuntime>, task_id: &str, s
             [session_id],
         )
         .ok();
+        conn.execute(
+            "DELETE FROM exec_spans WHERE trace_id IN (SELECT id FROM exec_traces WHERE task_id = ?1)",
+            [task_id],
+        )
+        .ok();
+        conn.execute(
+            "DELETE FROM file_changes WHERE trace_id IN (SELECT id FROM exec_traces WHERE task_id = ?1)",
+            [task_id],
+        )
+        .ok();
+        conn.execute("DELETE FROM exec_traces WHERE task_id = ?1", [task_id])
+            .ok();
     }
     // bot-enabled.flag 刻意**不删**：nextest 下 exec_trace 与 task_chat_exec 两个二进制
     // 并行进程共享 target/debug/deps/runtime/flags/——一方 cleanup 删 flag 会让另一方的
     // run_task_in_chat 撞 BotDisabled（实锤：推送门禁两用例齐挂）。setup 幂等重写，
     // flag 常驻只意味着后续测试默认机器人开（需要关的测试自行删）。
+}
+
+/// Drop 守卫：assert panic（栈展开）也执行 cleanup，失败路径不再向共享 deps
+/// 库残留 trace 行。声明于 task_id 已知之后、首个可能 panic 的断言之前；
+/// session_id 在运行收尾拿到后 set_session 补录（此前 drop 只按 task_id 清，
+/// 覆盖 tasks + trace 家族，已足够堵失败路径）。
+struct TraceCleanupGuard {
+    handle: tauri::AppHandle<tauri::test::MockRuntime>,
+    task_id: String,
+    session_id: std::cell::RefCell<String>,
+}
+
+impl TraceCleanupGuard {
+    fn set_session(&self, sid: &str) {
+        *self.session_id.borrow_mut() = sid.to_string();
+    }
+}
+
+impl Drop for TraceCleanupGuard {
+    fn drop(&mut self) {
+        cleanup(&self.handle, &self.task_id, &self.session_id.borrow());
+    }
 }
 
 fn core_http(server: &MockLlmServer) -> LlmHttp {
@@ -128,6 +165,11 @@ async fn exec_never(
 async fn trace_lifecycle_done_row_written() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let (handle, task_id, _dir) = setup_task("trace 验收任务");
+    let guard = TraceCleanupGuard {
+        handle: handle.clone(),
+        task_id: task_id.clone(),
+        session_id: std::cell::RefCell::new(String::new()),
+    };
     let server = MockLlmServer::start();
     let http = core_http(&server);
     let hook: std::sync::Arc<std::sync::Mutex<TraceCapture>> = Default::default();
@@ -166,6 +208,7 @@ async fn trace_lifecycle_done_row_written() {
     .await
     .expect("执行应成功");
     let sid = run.session_id.clone();
+    guard.set_session(&sid);
 
     let conn = wmessage_lib::db::open_db(&handle).unwrap();
     let row: (String, String, Option<String>, Option<i64>) = conn
@@ -179,7 +222,7 @@ async fn trace_lifecycle_done_row_written() {
     assert_eq!(row.1, "done", "成功执行应收尾为 done");
     assert_eq!(row.2.as_deref(), Some(task_id.as_str()));
     assert!(row.3.is_some(), "finished_at 必须收尾");
-    cleanup(&handle, &task_id, &sid);
+    // 清场由 guard drop 兜底（panic 路径同样清理）
 }
 
 /// 失败执行 → failed 行 + error 留痕（会话即执行记录的 trace 版）
@@ -187,6 +230,13 @@ async fn trace_lifecycle_done_row_written() {
 async fn trace_lifecycle_failed_row_records_error() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let (handle, task_id, _dir) = setup_task("trace 失败任务");
+    // 失败路径拿不到真实 session_id（trace 行落的是运行期生成的会话 id），
+    // guard 的 session 位留空即可——task_id 双路删除负责清 trace 家族
+    let guard = TraceCleanupGuard {
+        handle: handle.clone(),
+        task_id: task_id.clone(),
+        session_id: std::cell::RefCell::new(String::new()),
+    };
     let hook: std::sync::Arc<std::sync::Mutex<TraceCapture>> = Default::default();
     let runner = |_app: tauri::AppHandle<tauri::test::MockRuntime>,
                   _msgs: Vec<serde_json::Value>,
@@ -220,7 +270,7 @@ async fn trace_lifecycle_failed_row_records_error() {
         "error 应带失败原因：{:?}",
         row.1
     );
-    cleanup(&handle, &task_id, "-");
+    // 清场由 guard drop 兜底（按 task_id 清 trace 家族；panic 路径同样生效）
 }
 
 /// 采集管道：record_span / record_file_change → 后台 writer 攒批落库
