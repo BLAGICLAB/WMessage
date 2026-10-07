@@ -34,12 +34,12 @@
 
 ## 1. 类型定义草案（字段 / 所有权 / 生命周期）
 
-### 1.1 数据层输出：`TopologyView<'a>`（对齐现实的「只读账本视图」）
+### 1.1 数据层输出：`LedgerView<'a>`（对齐现实的「只读账本视图」；拍板：由原拟 `TopologyView` 改名——域内已实证无拓扑）
 
 ```rust
 /// 数据层 → 策略层的只读视图。借引用，不拥有数据；构造廉价（纯切片包装）。
 /// 生命周期 'a 绑定调用方持有的账本缓冲，策略层不得存储引用离开本调用。
-pub struct TopologyView<'a> {
+pub struct LedgerView<'a> {
     /// 本轮派生的提案（derive.rs 产出，尚未入池）
     pub proposals: &'a [EvolutionProposal],
     /// 候选池现存条目（candidate jsonl 反序列化结果）
@@ -136,6 +136,8 @@ pub enum PolicyError {
 
 ```rust
 // 均已存在、已纯，批次 B 不动逻辑：
+// （纯度实测修正：derive_proposals 含唯一一次 chrono::Utc::now 时钟读——
+//  无 IO 无锁无 env；批次 B-4 收拢进 EvalContext.now_ms，随上下文注入）
 derive_proposals(ops: &[ConsolidateOp], report: &ConsolidateReport) -> Vec<EvolutionProposal>
 read_all / write_proposals / append_applied_record（账本 IO，锁纪律同现状）
 status::transition(...) -> Result<ChangeStatus, String>
@@ -146,7 +148,7 @@ status::transition(...) -> Result<ChangeStatus, String>
 ```rust
 /// 策略层 trait。Send + Sync（拍板项 §9-P1 建议=要，见该节论证）。
 /// 实现**必须纯**：不得读文件、不得读时钟、不得持锁——一切环境输入经
-/// TopologyView / EvalContext 注入（可测性不变式 §7-6）。
+/// LedgerView / EvalContext 注入（可测性不变式 §7-6）。
 pub trait EvolutionPolicy: Send + Sync {
     /// gate：proposal 是否够格自动轨。Reject 是正常值。
     fn gate(&self, p: &EvolutionProposal) -> GateDecision;
@@ -171,6 +173,15 @@ pub struct DefaultEvolutionPolicy;
 `&DefaultEvolutionPolicy` 静态实例 + 当轮 `EvalContext`；**不进 Tauri State**
 （拍板遗留 §9-P1）。
 
+### 2.4 上下文层禁止事项（拍板条件，写死）
+
+- 上下文层（`policy.rs` / `mod.rs` 编排 / `kill_switch` 配置 IO）**禁止**包含业务
+  判定逻辑：gate / 评分 / 消解 / 排序一律不得落在上下文层文件。
+- 上下文层只做四件事：读配置、构造 EvalContext、拿锁、按序调用。
+- 上下文层**不实现** `EvolutionPolicy` trait。
+- CI 检查补充（§8）：上下文层文件禁止 `impl EvolutionPolicy`——防止「gate 通过后
+  走自动轨还是候选池」这类分流逻辑被塞进来变成第四层策略。
+
 ### 2.3 上下文分流谓词（保留自由函数形态，收进上下文层）
 
 ```rust
@@ -183,7 +194,7 @@ pub struct DefaultEvolutionPolicy;
 
 ## 3. 性能与所有权约定（写死，不留实现期）
 
-1. `TopologyView<'a>` **只借不有**；策略方法签名一律 `&self` + 借用入参。
+1. `LedgerView<'a>` **只借不有**；策略方法签名一律 `&self` + 借用入参。
 2. 数据层纯函数不整图拷贝：账本读取维持现有「整文件读 → 反序列化一次」
    （jsonl 体量 ≤ 数百行、百 KB 级，现状即此，批次 B 不改读法）。
 3. 策略层输出全部小对象（枚举/引用对），零分配热点。`Rejected.reason`
@@ -201,7 +212,7 @@ consolidate ops ──► derive_proposals（数据层·纯）──► Vec<Evol
                                                             │
                     ┌───────────────────────────────────────┘
                     ▼
-        TopologyView<'a>（只读视图：proposals + 候选池条目 + 变更账本）
+        LedgerView<'a>（只读视图：proposals + 候选池条目 + 变更账本）
                     │
                     ▼
    EvalContext（每周期一次：apply_policy / kill_switch / shadow / now_ms）
@@ -221,7 +232,7 @@ consolidate ops ──► derive_proposals（数据层·纯）──► Vec<Evol
         SelectionResult{winner, loser} → 败者丢弃（数据层）
 ```
 
-只读：TopologyView / EvalContext 消费；产生新快照/新行：仅经数据层写函数
+只读：LedgerView / EvalContext 消费；产生新快照/新行：仅经数据层写函数
 （jsonl append / DB insert），策略层永不直接落盘。
 
 ---
@@ -268,8 +279,8 @@ consolidate ops ──► derive_proposals（数据层·纯）──► Vec<Evol
 | `change/derive.rs::tests` gate 相关 | 同上（旧→新双覆盖） |
 | `candidate/conflict.rs::tests` 全部 | 同上 |
 | `apply.rs::tests::auto_applied_cr_rejects_non_gate_proposal` | 保留；补 trait 入口等价用例 |
-| 新增**快照对照**（必须有，任务书 1.7-1） | 同一输入集：旧自由函数输出 vs trait 路径输出，序列化逐字节相等（gate 结果 / importance / 消解胜负 / 排序序） |
-| 新增**新旧等价对照** | 至少一组：`auto_apply_gate(p) == matches!(policy.gate(p), Approved)` 全 impact×category 笛卡尔覆盖（3×4=12 例，穷举） |
+| 新增**快照对照**（必须有，任务书 1.7-1） | 同一输入集：旧自由函数输出 vs trait 路径输出，`serde_json::to_string` 后 **String 相等**；测试内写死预期 JSON 字符串字面量（不依赖运行时生成）；gate 结果 / importance / 消解胜负 / 排序序四类各一组。serde_json 默认按结构体字段序输出，本域无浮点/时间字段进对照面（时间戳由注入的 now_ms 定值） |
+| 新增**新旧等价对照** | 全 impact×category 笛卡尔穷举（3×4=12 例）。覆盖性已核：gate 仅两个谓词（category==MemoryHint、impact∈{High,Medium}），不读 is_reversible/source；ImpactLevel 恰 3 变体、ProposalCategory 恰 4 变体（proposal.rs:88/46）→ 12 例为 2×2 真值表超集，全分支覆盖 |
 | 属性测试 / 回放对照（1.7-2/3） | **不做**：全域无随机、无事件回放，无从随机化也无回放序列可比；不造假需求 |
 | 影子模式（1.7 条件项） | **不做**：`evolution.shadow.enabled` 默认关、无常态运行时流量（kill_switch 默认全关），不满足「真实运行时流量」前提 |
 
@@ -280,12 +291,13 @@ consolidate ops ──► derive_proposals（数据层·纯）──► Vec<Evol
 1. 账本 append-only：proposals/changes/applied jsonl 只追加/整文件 RMW（现状），策略层零直写。
 2. change 状态机转移合法（status.rs 既有校验），非法转移 = DataError。
 3. 提案 id 确定性：同输入同 id（normalize_for_hash + 排序 refs 二次 hash，现状）。
-4. 同一 TopologyView + 同一 EvalContext → 策略层输出恒等（纯度）。
+4. 同一 LedgerView + 同一 EvalContext → 策略层输出恒等（纯度）。
 5. 旧入口与新入口输出等价（等价对照测试钉死）。
 6. 策略层零环境读取：无文件 IO、无时钟、无锁、无 thread_rng（CI 检查 §8）。
 7. 全域无随机源；引入随机必须经 EvalContext 注入。
 8. 写路径锁纪律不变：EVOLUTION_STORE_LOCK 单写者、apply 不进该锁（panel 三段式纪律，现状）。
 9. kill_switch「现读现判」语义不变（每周期构造 ctx 时读一次，周期内不重读——与现状每轮一次读一致）。
+10. **迁移期旧入口与新入口共用同一 trait 默认实现，不得两套逻辑漂移**——CI 检查：旧函数体必须只有一行委托调用，超过一行 fail（§8）。
 
 ---
 
@@ -296,6 +308,10 @@ grep 级断言（同 audit_module_map.py 风格）：
 - 数据层文件（`derive.rs`、`proposal.rs`、`change/`、`candidate/`）**禁止** `use crate::evolution::policy`、`use crate::bot::`（配置读）、`tauri::AppHandle`。
 - 策略文件/实现（`DefaultEvolutionPolicy` 所在文件）**禁止** `std::fs`、`chrono::Utc::now`、`rand`、`Mutex`、`use crate::evolution::panel`。
 - 全域禁止 `thread_rng`（不变式 7 的机器化）。
+- **误报处理**（拍板条件）：排除注释行（`//`、`///`、块注释）、`#[cfg(test)]`
+  模块体、字符串字面量内的关键词——Python 脚本轻量解析，不做完整 tokenizer。
+- **脚本自测**：内置 `--selftest`——临时 fixture 含违例行必须 fail、移除后 pass；
+  自测用例本身进 tests-audit CI，不跳过。
 - 违例 exit 1，进 pre-commit/test-all 的 tests-audit 环节。
 
 ---
@@ -346,6 +362,49 @@ grep 级断言（同 audit_module_map.py 风格）：
 - [x] 错误分层写清（§1.4，DataError/PolicyError 分型）
 - [x] gate 拒绝语义写清（§1.3：Reject 是正常值；Err 仅限无法执行）
 - [x] 拍板遗留项列出选项（§9 八项，全部带默认建议与影响面）
+
+### 11.1 补充签收项（批复 §十三，已核）
+
+- [x] **事实修正三点已核实**：无 DAG（0 命中）；「回放」唯一命中为 trace.rs:72
+  文档注释（id 确定性，非机制）；derive_proposals **无 IO 无锁无 env，
+  含唯一一次时钟读（derive.rs:57）**——按批复如实修正：纯函数 + 单次时钟读，
+  批次 B-4 收拢进 EvalContext.now_ms。
+- [x] **gate 与 applyPolicy 分工已代码确认**：两 gate 函数体纯字段判定零
+  applyPolicy；分流现状在调用方（mod.rs:165 单次读 auto_allowed，:194/198
+  通知过滤与 :226 apply 闸共用）→ 批次 B 为纯重构。
+- [x] **两 gate 函数等价性已确认（P3 前置）**：ImpactLevel 恰 3 变体 →
+  `impact != Low` ≡ `impact ∈ {High,Medium}`，当前全输入等价；**收敛取白名单
+  形式**（change/derive.rs:37 注释明示的显式 opt-in 设计），未来新增变体须
+  显式 opt-in，trait 文档写明。
+- [x] **kill/notify「现读现判」已确认**：kill 每轮 apply 读一次（apply.rs:185，
+  notify_disabled 同读派生）、applyPolicy 每周期读一次（mod.rs:165）——
+  「每周期构造 ctx 读一次」频率与现状一致，零行为变更；「周期中途改 kill
+  立即生效」的现状不存在。
+
+### 11.2 拍板记录（批复 §十）
+
+P1=A 不进 State；P2=A 带 &'static str；P3=A 收敛（条件已满足，取白名单形式）；
+P4=A u8（契约 1..=5，clamp 为 store 层代码级——store.rs 371/382/439，无 CHECK
+约束，越界输入进测试）；P5=A 不做影子；P6=A 观察期定义见 §12；P7=A 要求
+Send+Sync；P8=A 不版本化（未来若现跨版本 replay 需求重新评估）。
+
+### 11.3 批次 B 硬约束（批复补充，逐条进各步 PR）
+
+1. B-1→B-5 每步独立 PR、独立可 revert，PR 描述写 revert 方式与验证命令；
+   每步全量测试通过后才进下一步，不允许多步合并。
+2. 上下文层禁止事项（§2.4）随依赖方向 CI 一并落地。
+3. 快照对照格式按 §6 定死执行（serde_json::to_string + String 相等 + 字面量预期）。
+4. now_ms 迁移逐调用点确认语义（批复 §4.2）：同周期多次取时现状为毫秒级不同值，
+   ctx 快照化后统一——属修复性质的行为变化，逐点写进 PR。
+
+## 12. P6 观察期定义（批复 §十一，按建议拍板）
+
+- **全量测试日** = 批次 B 合入后，主干全量门禁（nextest + tests-audit + vitest）
+  **连续 3 次通过无 flake**（3 次独立的 run，非 24 小时挂机——本仓无长驻 CI）。
+- **push 门禁** = 观察期内每次 push 均跑全量（pre-push 既有行为，不放松）。
+- **发现问题** → 回滚批次 B 对应 PR（B 的纯增量保证单步 revert 可行），
+  修完重新走该步。
+- **负责人** = 用户（老板）；agent 在每次 push 后报告门禁结果。
 
 **范围外（独立批次，本文档不覆盖）**：`observe/`（shadow/synthetic/metrics/stop
 观察面）、`activation.rs`（实验态）、`sandbox/shadow+io`（沙箱管线）。
