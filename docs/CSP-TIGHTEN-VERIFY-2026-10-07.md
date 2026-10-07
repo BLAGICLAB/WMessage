@@ -150,7 +150,10 @@ connect-src 拦，不可用），输出贴进 §6 槽位，确认**不含 `unsaf
 
 ## 6. 证据槽位（执行人填写）
 
-- 基线实际 CSP（含 `unsafe-eval`）：＿＿＿＿
+- 基线实际 CSP（含 `unsafe-eval`，Network 面板实测采集，2026-10-07）：
+  `default-src 'self'; font-src 'self'; script-src 'self' 'unsafe-eval' blob: 'sha256-1f43Y9BoXoqMZaWAyW5m/cSEwwjHqHV3VSnzEv8a5zY=' 'sha256-paTFGwQz+RRdPH3SHoBNQdSD8DYyXa/3PWwRpZHnKcM='; img-src 'self' asset: http://asset.localhost blob: data:; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost; worker-src 'self' blob:`
+  与配置串对照：Tauri 加工仅两处——script-src 追加 2 个 sha256 哈希（其注入的
+  内联启动脚本放行）+ 指令顺序重排（CSP 语义与顺序无关）；无其他改动。
 - 收紧版实际 CSP：＿＿＿＿
 - 两份 diff（应仅 `unsafe-eval` 一处）：＿＿＿＿
 - 采集器自证结果（应计到 1 条 script-src 违规）：＿＿＿＿
