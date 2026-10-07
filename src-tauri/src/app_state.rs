@@ -110,6 +110,12 @@ type ConfirmMap = Mutex<
 
 // CONFIRMS 已迁入 `AppState.confirm_requests`（访问器 `confirms(app)` 见文件尾）。
 
+/// 工作流提问等待表（W9-ASK）：questionId → oneshot 通道。
+/// ask 端（runner）注册、应答端（`workflow_question_respond`）take 后发送。
+/// 与 CONFIRMS 的区别：无 60s 超时默认拒——等待上限由 ask 端按提问超时配置兜底，
+/// 通道关闭/超时一律回落到问题自带的假设值（红线：忽略问题工作流也能走）。
+type QuestionWaiters = Mutex<HashMap<String, tokio::sync::oneshot::Sender<String>>>;
+
 // ───────────────────────── 执行期 · 会话/任务防重入 ─────────────────────────
 
 // CHAT_RUNNING / EXEC_RUNNING / SCHED_RUNNING 三张防重入表均已迁入 `AppState`
@@ -156,6 +162,11 @@ pub(crate) struct AppState {
     pub(crate) pending: Mutex<HashMap<String, crate::exec_steps::PendingExec>>,
     /// 待确认请求（`ConfirmMap`：id → (oneshot 通道, 归属会话 id)）
     pub(crate) confirm_requests: ConfirmMap,
+    /// 工作流提问等待表（W9-ASK：`QuestionWaiters`：questionId → oneshot 通道）
+    pub(crate) question_waiters: QuestionWaiters,
+    /// 工作流提问上下文表（W9-ASK：sessionId → AskRegistration；bot_chat 会话建立时
+    /// 注册/收尾注销，ask_user 工具按 session_id 查表，预算在条目上）
+    pub(crate) ask_contexts: Mutex<HashMap<String, crate::workflow_questions::AskRegistration>>,
     /// 子 agent 取消令牌表（SUBA-2：subagent_id → StopToken；
     /// cancel_subagent 持有的句柄，runner 注册 / 收尾删除）
     pub(crate) subagent_stops: Arc<Mutex<HashMap<String, crate::bot_slash::StopToken>>>,
@@ -214,6 +225,20 @@ pub(crate) fn artifact_registry<'a, R: tauri::Runtime>(
 /// 无 RAII 守卫（锁只在 insert/remove 期间持有）→ 借用引用，同 `artifact_registry`。
 pub(crate) fn confirms<'a, R: tauri::Runtime>(app: &'a tauri::AppHandle<R>) -> &'a ConfirmMap {
     &ext(app).confirm_requests
+}
+
+/// 工作流提问等待表访问器（W9-ASK：ask 端注册 / 应答端 take 走；无 RAII 守卫，同 confirms 口径）。
+pub(crate) fn question_waiters<'a, R: tauri::Runtime>(
+    app: &'a tauri::AppHandle<R>,
+) -> &'a QuestionWaiters {
+    &ext(app).question_waiters
+}
+
+/// 工作流提问上下文表访问器（W9-ASK：注册/注销/ask_user 查表共用一把锁）。
+pub(crate) fn ask_contexts<'a, R: tauri::Runtime>(
+    app: &'a tauri::AppHandle<R>,
+) -> &'a Mutex<HashMap<String, crate::workflow_questions::AskRegistration>> {
+    &ext(app).ask_contexts
 }
 
 /// 定时调度防重入表访问器：返回 **Arc 克隆**。

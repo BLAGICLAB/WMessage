@@ -32,8 +32,9 @@ const CONTRACT_SEGMENT: &str = r#"
 - dependsOn：数组下标引用，尽量只引用排在它前面的任务；无依赖为 []（顺序写反系统会自动纠正，但引用的任务必须存在）
 - subtasks：可选，2~8 条子任务文本（每条 ≤60 字）；有前置材料的任务，把材料里对应的要点/数据拆进 subtasks
 - 无依赖关系的任务会并行执行，有依赖的按图顺序执行
+- assumptions：可选，拆解时你做出的关键假设（≤5 条、每条 ≤60 字），如「默认面向微信公众号排版」——会展示给用户核对，用户没回答的澄清问题按你给的假设处理
 示例：
-{"subtasks":[{"title":"收集素材","note":"产出素材清单.md","acceptance":"产出素材清单.md，含至少 5 条素材及其来源链接","dependsOn":[]},{"title":"写初稿","note":"引用素材清单.md 起草","acceptance":"产出初稿.docx，覆盖素材清单全部要点","dependsOn":[0]}]}"#;
+{"subtasks":[{"title":"收集素材","note":"产出素材清单.md","acceptance":"产出素材清单.md，含至少 5 条素材及其来源链接","dependsOn":[]},{"title":"写初稿","note":"引用素材清单.md 起草","acceptance":"产出初稿.docx，覆盖素材清单全部要点","dependsOn":[0]}],"assumptions":["默认面向微信公众号排版"]}"#;
 
 /// 默认指引段（用户可在设置页编辑；与前端 `src/lib/workflowPrompt.ts` 副本保持一致）
 pub const DEFAULT_DECOMPOSE_GUIDANCE: &str = r#"你是工作流拆解专家。把用户的目标拆解为一组可执行的任务卡。
@@ -64,8 +65,74 @@ pub struct DecomposeSubtask {
 #[serde(rename_all = "camelCase")]
 pub struct DecomposeResult {
     pub subtasks: Vec<DecomposeSubtask>,
+    /// 拆解时模型做出的关键假设（W9-ASK：拆解后展示给用户核对；缺失=空）
+    pub assumptions: Vec<String>,
     /// 实际模型调用次数（1 = 一次成功；2 = 重试后成功）——审计与前端提示用
     pub attempts: u8,
+}
+
+/// 澄清问答对（W9-ASK：clarify 环收集的用户回答，随拆解请求回传注入 prompt）
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Clarification {
+    pub question: String,
+    pub answer: String,
+}
+
+/// 上限：澄清记录条数与单条长度（invoke 参数不可信任，与指引段同口径）
+pub const MAX_CLARIFICATIONS: usize = 6;
+pub const MAX_CLARIFICATION_CHARS: usize = 300;
+/// assumptions 上限（契约写 ≤5×60，校验链再兜一道）
+pub const MAX_ASSUMPTIONS: usize = 5;
+pub const MAX_ASSUMPTION_CHARS: usize = 60;
+
+/// 澄清记录校验（纯逻辑，单测锚点）：条数/单条超限截断，空白条丢弃。
+pub(crate) fn validate_clarifications(clarifications: Vec<Clarification>) -> Vec<Clarification> {
+    clarifications
+        .into_iter()
+        .take(MAX_CLARIFICATIONS)
+        .filter_map(|mut c| {
+            let q = c.question.trim().to_string();
+            let a = c.answer.trim().to_string();
+            if q.is_empty() || a.is_empty() {
+                return None;
+            }
+            c.question = q.chars().take(100).collect();
+            c.answer = a.chars().take(MAX_CLARIFICATION_CHARS).collect();
+            Some(c)
+        })
+        .collect()
+}
+
+/// 澄清记录 → prompt 段（拍板 5：用户回答是方向性约定，标注优先级）
+fn clarifications_segment(clarifications: &[Clarification]) -> String {
+    if clarifications.is_empty() {
+        return String::new();
+    }
+    let mut seg = String::from("\n\n【用户已确认的澄清回答——拆解方向以此为准】");
+    for c in clarifications {
+        seg.push_str(&format!("\n- 问：{} 答：{}", c.question, c.answer));
+    }
+    seg
+}
+
+/// assumptions 提取（纯逻辑，单测锚点）：顶层对象的 assumptions 数组，≤5 条 × ≤60 字截断；
+/// 缺失/非数组/裸数组输出 → 空（assumptions 是增强，缺失不拒整包）。
+pub(crate) fn parse_assumptions(raw: &str) -> Vec<String> {
+    let text = strip_fences(raw);
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return Vec::new();
+    };
+    let Some(arr) = value.get("assumptions").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    arr.iter()
+        .filter_map(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .take(MAX_ASSUMPTIONS)
+        .map(|s| s.chars().take(MAX_ASSUMPTION_CHARS).collect::<String>())
+        .collect()
 }
 
 /// 指引段为空 → 用默认（OCR 防御：settings 里清空 textarea 不至于掏空契约前的角色设定）
@@ -360,6 +427,77 @@ fn validate_attach_path(path: &str) -> Result<std::path::PathBuf, String> {
     Ok(canon)
 }
 
+/// 附件抽取块（W8-ATTACH；W9-ASK 起共享给 workflow_clarify，同一封顶与占位口径）：
+/// 用户在对话框亲手选的文件 = 明确授权，直调 doc_extract 不走工具授权闸；
+/// 抽取失败不炸整包（占位说明）；单文件 12k 字符、总 48k 字符封顶（防上下文撑爆）。
+/// 返回（注入块, 读取成功数）。
+pub(crate) async fn build_attachment_blocks(
+    app: &AppHandle,
+    attachment_list: &[String],
+) -> (String, usize) {
+    let mut attach_blocks = String::new();
+    let mut attached_ok = 0usize;
+    const PER_FILE_CAP: usize = 12_000;
+    const TOTAL_CAP: usize = 48_000;
+    let mut total_used = 0usize;
+    for (i, path) in attachment_list.iter().enumerate() {
+        if total_used >= TOTAL_CAP {
+            attach_blocks.push_str(&format!(
+                "\n【附件 {}：{}】（超出总字符上限，未注入）",
+                i + 1,
+                path
+            ));
+            continue;
+        }
+        let file_name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+        // 附件路径先过边界校验再进抽取：canonicalize 确认存在并解析软链到
+        // 真实目标、必须是常规文件、扩展名落在抽取脚本支持集内。attachments
+        // 直达自 invoke 参数，不能沿用「对话框亲手选 = 明确授权」假设；不合规
+        // 条目走占位说明，与读取失败同口径，不炸整包。
+        let probe = path.clone();
+        let checked =
+            crate::py::document::spawn_blocking_map(move || validate_attach_path(&probe)).await;
+        if let Err(reason) = checked {
+            attach_blocks.push_str(&format!(
+                "\n【附件 {}：{}】（校验未通过：{}）\n",
+                i + 1,
+                file_name,
+                reason
+            ));
+            continue;
+        }
+        match crate::bot_py::doc_extract(app.clone(), Some(path.clone())).await {
+            Ok(res) => {
+                let mut text: String = res.text.chars().take(PER_FILE_CAP).collect();
+                total_used += text.chars().count();
+                if total_used > TOTAL_CAP {
+                    let remain = TOTAL_CAP.saturating_sub(total_used - text.chars().count());
+                    text = res.text.chars().take(remain).collect();
+                }
+                attach_blocks.push_str(&format!("\n【附件 {}：{}】\n{}\n", i + 1, file_name, text));
+                attached_ok += 1;
+            }
+            Err(e) => {
+                attach_blocks.push_str(&format!(
+                    "\n【附件 {}：{}】（读取失败：{}）\n",
+                    i + 1,
+                    file_name,
+                    crate::bot::truncate_for_log(&e.message(), 120)
+                ));
+            }
+        }
+    }
+    if !attachment_list.is_empty() {
+        let header = format!(
+            "\n用户提供了 {} 个附件（{} 个读取成功），请把与各任务相关的内容拆进对应任务的 note 或 subtasks：",
+            attachment_list.len(),
+            attached_ok
+        );
+        attach_blocks.insert_str(0, &header);
+    }
+    (attach_blocks, attached_ok)
+}
+
 /// 一次性拆解调用（无会话、无工具、无流式；失败自动带错误反馈重试 1 次）
 #[tauri::command]
 pub async fn workflow_decompose(
@@ -367,6 +505,7 @@ pub async fn workflow_decompose(
     goal: String,
     guidance: Option<String>,
     attachments: Option<Vec<String>>,
+    clarifications: Option<Vec<Clarification>>,
 ) -> CommandResult<DecomposeResult> {
     let goal_trimmed = goal.trim().to_string();
     if goal_trimmed.is_empty() {
@@ -398,74 +537,19 @@ pub async fn workflow_decompose(
             reason: "附件最多 10 个".into(),
         });
     }
-    let mut attach_blocks = String::new();
-    let mut attached_ok = 0usize;
-    {
-        const PER_FILE_CAP: usize = 12_000;
-        const TOTAL_CAP: usize = 48_000;
-        let mut total_used = 0usize;
-        for (i, path) in attachment_list.iter().enumerate() {
-            if total_used >= TOTAL_CAP {
-                attach_blocks.push_str(&format!(
-                    "\n【附件 {}：{}】（超出总字符上限，未注入）",
-                    i + 1,
-                    path
-                ));
-                continue;
-            }
-            let file_name = path.rsplit(['/', '\\']).next().unwrap_or(path);
-            // 附件路径先过边界校验再进抽取：canonicalize 确认存在并解析软链到
-            // 真实目标、必须是常规文件、扩展名落在抽取脚本支持集内。attachments
-            // 直达自 invoke 参数，不能沿用「对话框亲手选 = 明确授权」假设；不合规
-            // 条目走占位说明，与读取失败同口径，不炸整包。
-            let probe = path.clone();
-            let checked =
-                crate::py::document::spawn_blocking_map(move || validate_attach_path(&probe)).await;
-            if let Err(reason) = checked {
-                attach_blocks.push_str(&format!(
-                    "\n【附件 {}：{}】（校验未通过：{}）\n",
-                    i + 1,
-                    file_name,
-                    reason
-                ));
-                continue;
-            }
-            match crate::bot_py::doc_extract(app.clone(), Some(path.clone())).await {
-                Ok(res) => {
-                    let mut text: String = res.text.chars().take(PER_FILE_CAP).collect();
-                    total_used += text.chars().count();
-                    if total_used > TOTAL_CAP {
-                        let remain = TOTAL_CAP.saturating_sub(total_used - text.chars().count());
-                        text = res.text.chars().take(remain).collect();
-                    }
-                    attach_blocks.push_str(&format!(
-                        "\n【附件 {}：{}】\n{}\n",
-                        i + 1,
-                        file_name,
-                        text
-                    ));
-                    attached_ok += 1;
-                }
-                Err(e) => {
-                    attach_blocks.push_str(&format!(
-                        "\n【附件 {}：{}】（读取失败：{}）\n",
-                        i + 1,
-                        file_name,
-                        crate::bot::truncate_for_log(&e.message(), 120)
-                    ));
-                }
-            }
-        }
-        if !attachment_list.is_empty() {
-            let header = format!(
-                "\n用户提供了 {} 个附件（{} 个读取成功），请把与各任务相关的内容拆进对应任务的 note 或 subtasks：",
-                attachment_list.len(),
-                attached_ok
-            );
-            attach_blocks.insert_str(0, &header);
-        }
+    let (attach_blocks, attached_ok) = build_attachment_blocks(&app, &attachment_list).await;
+    // 澄清记录（W9-ASK）：clarify 环收集的用户回答，方向性约定拼进两次尝试的 user 消息
+    let clarifications = validate_clarifications(clarifications.unwrap_or_default());
+    let clar_seg = clarifications_segment(&clarifications);
+    let mut user_content = format!("总目标：{goal_trimmed}{attach_blocks}{clar_seg}");
+    if !clarifications.is_empty() {
+        crate::audit::write_event(
+            &app,
+            crate::audit::AuditLevel::Info,
+            "workflow_decompose",
+            &[("clarifications", clarifications.len().to_string())],
+        );
     }
-    let mut user_content = format!("总目标：{goal_trimmed}{attach_blocks}");
     if !attachment_list.is_empty() {
         crate::audit::write_event(
             &app,
@@ -516,6 +600,7 @@ pub async fn workflow_decompose(
         };
         match parse_and_validate(&raw) {
             Ok(subtasks) => {
+                let assumptions = parse_assumptions(&raw);
                 crate::audit::write_event(
                     &app,
                     crate::audit::AuditLevel::Info,
@@ -523,9 +608,14 @@ pub async fn workflow_decompose(
                     &[
                         ("subtasks", subtasks.len().to_string()),
                         ("attempts", attempts.to_string()),
+                        ("assumptions", assumptions.len().to_string()),
                     ],
                 );
-                return Ok(DecomposeResult { subtasks, attempts });
+                return Ok(DecomposeResult {
+                    subtasks,
+                    assumptions,
+                    attempts,
+                });
             }
             Err(e) => {
                 last_err = e.to_string();
@@ -535,7 +625,7 @@ pub async fn workflow_decompose(
                 // 重试：保留原始目标与附件段，仅追加校验错误让模型自修（设计 §6.1）；
                 // 丢掉附件会让第二次尝试拿到的上下文比第一次更少，抽取成本白付
                 user_content = format!(
-                    "总目标：{goal_trimmed}{attach_blocks}\n\n你上一次的输出未通过校验：{last_err}\n请严格按照输出格式要求重新输出 JSON。"
+                    "总目标：{goal_trimmed}{attach_blocks}{clar_seg}\n\n你上一次的输出未通过校验：{last_err}\n请严格按照输出格式要求重新输出 JSON。"
                 );
             }
         }
@@ -770,6 +860,68 @@ mod tests {
             .collect();
         let err = validate_decompose(items).unwrap_err();
         assert!(err.to_string().contains("上限"));
+    }
+
+    #[test]
+    fn clarifications_capped_and_blank_dropped() {
+        let mut items: Vec<Clarification> = (0..8)
+            .map(|i| Clarification {
+                question: format!("问题{i}"),
+                answer: format!("回答{i}"),
+            })
+            .collect();
+        items.push(Clarification {
+            question: "  ".into(),
+            answer: "空问题".into(),
+        });
+        items.push(Clarification {
+            question: "空回答".into(),
+            answer: "  ".into(),
+        });
+        let out = validate_clarifications(items);
+        assert_eq!(out.len(), MAX_CLARIFICATIONS);
+        // 单条超长截断
+        let out = validate_clarifications(vec![Clarification {
+            question: "问".repeat(120),
+            answer: "答".repeat(MAX_CLARIFICATION_CHARS + 10),
+        }]);
+        assert_eq!(out[0].question.chars().count(), 100);
+        assert_eq!(out[0].answer.chars().count(), MAX_CLARIFICATION_CHARS);
+    }
+
+    #[test]
+    fn clarifications_segment_only_when_present() {
+        assert!(clarifications_segment(&[]).is_empty());
+        let seg = clarifications_segment(&[Clarification {
+            question: "平台？".into(),
+            answer: "知乎".into(),
+        }]);
+        assert!(seg.contains("用户已确认的澄清回答"));
+        assert!(seg.contains("问：平台？ 答：知乎"));
+    }
+
+    #[test]
+    fn assumptions_extracted_capped_and_tolerant() {
+        let raw = r#"{"subtasks":[],"assumptions":["  默认面向公众号  ","假设二"]}"#;
+        let out = parse_assumptions(raw);
+        assert_eq!(out, vec!["默认面向公众号", "假设二"]);
+        // 缺失/坏 JSON/裸数组 → 空，不拒整包
+        assert!(parse_assumptions(r#"{"subtasks":[]}"#).is_empty());
+        assert!(parse_assumptions("不是 JSON").is_empty());
+        assert!(parse_assumptions(r#"[{"title":"A"}]"#).is_empty());
+        // 超 5 条裁剪 + 单条 60 字截断
+        let many: Vec<String> = (0..7).map(|i| format!("假{}", i)).collect();
+        let raw = format!(
+            r#"{{"assumptions":{}}}"#,
+            serde_json::to_string(&many).unwrap()
+        );
+        let out = parse_assumptions(&raw);
+        assert_eq!(out.len(), MAX_ASSUMPTIONS);
+        let long = parse_assumptions(&format!(
+            r#"{{"assumptions":["{}"]}}"#,
+            "长".repeat(MAX_ASSUMPTION_CHARS + 5)
+        ));
+        assert_eq!(long[0].chars().count(), MAX_ASSUMPTION_CHARS);
     }
 
     #[test]

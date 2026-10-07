@@ -302,6 +302,13 @@ pub const SCHEMA_USE_SKILL: &str = r##"{"type":"function","function":{"name":"us
     "name":{"type":"string","description":"技能名（系统提示词「已安装技能」清单里的名称，一次一个，可多次调用）"},
     "params":{"type":"object","description":"技能参数（可选；键=参数名，值=字符串）。技能声明了必填参数时必须提供（缺失会拒绝启动并列出缺什么），声明了默认值的参数可省略","additionalProperties":{"type":"string"}}
   },"required":["name"]}}}"##;
+// ─────────────────── W9-ASK：工作流执行提问（主可见） ───────────────────
+pub const SCHEMA_ASK_USER: &str = r##"{"type":"function","function":{"name":"ask_user","description":"向用户提一个问题并等待回答（仅工作流节点执行可用；提问会进通知中心，用户可能几小时后才回答）。必须携带 assumption=你的推荐假设：用户不回答时工作流按假设继续，给不出假设的问题不许问。仅当缺关键信息且无法从任务卡/上游产出/附件推断时才用；每张卡最多问 2 次，超预算会被直接按假设继续","parameters":{"type":"object","properties":{
+    "question":{"type":"string","description":"要问的问题，≤200 字，具体明确"},
+    "why":{"type":"string","description":"一句话说明为什么要问，可选"},
+    "options":{"type":"array","items":{"type":"string"},"description":"候选项（可选，≤4 个、每个 ≤40 字），用户可点选也可自由回答"},
+    "assumption":{"type":"string","description":"你的推荐假设，必填——用户未回答时按它继续执行"}
+  },"required":["question","assumption"]}}}"##;
 // ─────────────────── SUBA-2：子 agent 编排三工具（主 agent 可见） ───────────────────
 pub const SCHEMA_SPAWN_SUBAGENT: &str = r##"{"type":"function","function":{"name":"spawn_subagent","description":"派发受管子 agent 执行单一目标长任务（非阻塞，立即返回 subagentId/taskId/status）。适用：预计超 5 轮工具调用、多来源调研、写代码跑脚本、用户要求后台/并行。objective 单一目标；acceptanceCriteria 必填且每条可检验（不要写「调研清楚」，要写「覆盖至少 5 个产品，每个含官网 URL，输出 report.md」）；contextSummary 只给必要背景，不要倒主对话全文。完成后用 check_subagent 轮询结果再汇总","parameters":{"type":"object","properties":{
     "objective":{"type":"string","description":"单一目标（一句话说清做什么）"},
@@ -484,6 +491,25 @@ fn call_recall_facts<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> 
 
 fn call_record_lesson<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
     Box::pin(async move { crate::memory::tool_record_lesson(ctx.app, args).await })
+}
+
+/// W9-ASK：工作流执行提问——引擎在 workflow_questions（oneshot 等待 + 假设兜底），
+/// 超时口径 ASK_TIMEOUT_SECS（默认 24h），测试可传短超时直打引擎。
+/// ctx.stop 透传（OCR r1 high：/stop 必须能打断 24h 等待，不能挂死模型循环）。
+fn call_ask_user<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    let app = ctx.app;
+    let session_id = ctx.session_id;
+    let stop = ctx.stop;
+    Box::pin(async move {
+        crate::workflow_questions::engine_ask_user(
+            app,
+            session_id,
+            args,
+            std::time::Duration::from_secs(crate::workflow_questions::ASK_TIMEOUT_SECS),
+            stop,
+        )
+        .await
+    })
 }
 
 fn call_use_skill<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
@@ -1013,6 +1039,14 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         max_output_chars: 8192,
         call: call_read_own_card,
     },
+    ToolDef {
+        name: "ask_user",
+        schema: SCHEMA_ASK_USER,
+        mutating: false,
+        claims_patterns: &[],
+        max_output_chars: 8192,
+        call: call_ask_user,
+    },
 ];
 /// TOOLS JSON 由 TOOLS_TABLE 顺序拼装（schema 常量原文直拼，不做 parse + re-serialize）。
 /// 少一次运行期解析，也不给「schema 非法 → expect panic 杀聊天」留路径
@@ -1200,17 +1234,17 @@ mod registry_tests {
     use std::collections::HashSet;
 
     #[test]
-    fn tools_table_contains_37_main_visible_tools() {
+    fn tools_table_contains_38_main_visible_tools() {
         let v: serde_json::Value =
             serde_json::from_str(tools_json()).expect("tools_json() 必须是合法 JSON");
         let arr = v.as_array().expect("TOOLS 顶层必须是数组");
-        // SUBA-2 + T1 + N4 + N6：主可见 = 28 核心 + 编排三 + 电脑辅助四 + 文件编辑两；
+        // SUBA-2 + T1 + N4 + N6 + W9-ASK：主可见 = 28 核心 + 编排三 + 电脑辅助四 + 文件编辑两 + ask_user；
         // write_artifact_file / read_own_card 仅子 agent 白名单可见
-        assert_eq!(arr.len(), 37, "主 agent 可见工具必须为 37");
+        assert_eq!(arr.len(), 38, "主 agent 可见工具必须为 38");
         assert_eq!(
             TOOLS_TABLE.len(),
-            39,
-            "TOOLS_TABLE 全量 39（含 2 个 subagent-only）"
+            40,
+            "TOOLS_TABLE 全量 40（含 2 个 subagent-only）"
         );
 
         let mut seen: HashSet<String> = HashSet::new();
@@ -1274,6 +1308,7 @@ mod registry_tests {
             "screenshot",
             "edit_file",
             "write_file",
+            "ask_user",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -1328,6 +1363,7 @@ mod registry_tests {
             "screenshot",
             "edit_file",
             "write_file",
+            "ask_user",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -1393,7 +1429,11 @@ mod registry_tests {
             base_arr.as_slice(),
             "tools_json() 前 28 项与 baseline 漂移（核心 schema 变更须显式重生成 fixture）"
         );
-        assert_eq!(der_arr.len(), base_arr.len() + 9, "主可见应为 28+3+4+2");
+        assert_eq!(
+            der_arr.len(),
+            base_arr.len() + 10,
+            "主可见应为 28+3+4+2+1（W9-ASK ask_user）"
+        );
     }
 
     /// 单源真相的核心不变式：ToolDef.name 必须等于它自己 schema 里的 function.name。
@@ -1675,10 +1715,10 @@ mod registry_tests {
         s.push_str("\n]");
         let v: serde_json::Value = serde_json::from_str(&s).expect("拼装结果必须合法");
         let arr = v.as_array().unwrap();
-        assert_eq!(arr.len(), 38, "37 内置 + 1 假 MCP");
-        assert_eq!(arr[37]["function"]["name"], "mcp_fake_x");
-        // 内置前 37 项顺序不变（增量挂载不漂移）
+        assert_eq!(arr.len(), 39, "38 内置（W9-ASK 起含 ask_user）+ 1 假 MCP");
+        assert_eq!(arr[38]["function"]["name"], "mcp_fake_x");
+        // 内置前 38 项顺序不变（增量挂载不漂移）
         let base_arr = serde_json::from_str::<serde_json::Value>(base).unwrap();
-        assert_eq!(&arr[..37], base_arr.as_array().unwrap().as_slice());
+        assert_eq!(&arr[..38], base_arr.as_array().unwrap().as_slice());
     }
 }

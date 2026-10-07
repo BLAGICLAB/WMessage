@@ -48,7 +48,9 @@ pub mod task_autotag;
 pub mod task_out;
 pub mod tool_guard;
 pub mod trace_sink;
+pub mod workflow_clarify;
 pub mod workflow_decompose;
+pub mod workflow_questions;
 pub mod workflow_runner;
 use tauri::{Emitter, Manager};
 use tauri_plugin_autostart::MacosLauncher;
@@ -515,7 +517,9 @@ pub fn run() {
             crate::db::schedule_jobs::scheduled_job_update,
             crate::db::schedule_jobs::scheduled_job_delete,
             crate::db::schedule_jobs::scheduled_job_history,
+            crate::workflow_clarify::workflow_clarify,
             crate::workflow_decompose::workflow_decompose,
+            crate::workflow_questions::workflow_question_respond,
             crate::db::workflow::workflow_export,
             crate::db::workflow::workflow_import,
             crate::workflow_runner::workflow_run,

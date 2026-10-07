@@ -427,6 +427,14 @@ pub fn delete_tasks(conn: &rusqlite::Connection, ids: &[String]) -> Result<(), S
     let params: Vec<&dyn rusqlite::ToSql> = ids.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
     conn.execute(&sql, rusqlite::params_from_iter(params.iter()))
         .map_err(|e| e.to_string())?;
+    // W9-ASK：卡片档案级联（OCR r1 critical——原实现泄漏 brief_entries 卡层行）。
+    // 工作流级条目（task_id NULL）不受影响；非工作流卡本就无档案，DELETE 0 行无害。
+    // 尽力而为：测试内建表等无 brief_entries 的连接上不炸主删除（与审计写失败同口径）
+    for id in ids {
+        if let Err(e) = crate::db::brief::brief_delete_task(conn, id) {
+            eprintln!("[brief] 卡片档案清理失败（不阻断删除）：{e}");
+        }
+    }
     Ok(())
 }
 

@@ -455,7 +455,9 @@ flowchart TD
 - `task_out.rs`
 - `trace_sink.rs`
 - `tool_guard.rs`
+- `workflow_clarify.rs`
 - `workflow_decompose.rs`
+- `workflow_questions.rs`
 - `workflow_runner.rs`
 
 ### `api_handlers/`
@@ -500,6 +502,7 @@ flowchart TD
 ### `db/`
 - `db/bot_history.rs`
 - `db/bot_sessions.rs`
+- `db/brief.rs`
 - `db/migrations.rs`
 - `db/mod.rs`
 - `db/paths.rs`

@@ -29,6 +29,9 @@ pub const STATUS_DISMISSED: &str = "dismissed";
 pub const KIND_MEMORY: &str = "memory_proposal";
 pub const KIND_EVOLUTION: &str = "evolution_proposal";
 pub const KIND_ARTIFACT: &str = "artifact_bind";
+/// 工作流执行提问（W9-ASK）：ask 端落队列、应答端 `workflow_question_respond` 处理；
+/// payload = {questionId, workflowId, workflowName, taskId, nodeTitle, question, why, options, assumption, createdAt}
+pub const KIND_WORKFLOW_QUESTION: &str = "workflow_question";
 
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -117,6 +120,24 @@ fn row_to_view(r: &rusqlite::Row) -> rusqlite::Result<NotificationView> {
             .get::<_, Option<String>>(7)?
             .and_then(|s| s.parse::<i64>().ok()),
     })
+}
+
+/// 按 id 取单条（W9-ASK：应答端读问题 payload；不存在 → None）
+pub fn notif_get(
+    conn: &rusqlite::Connection,
+    id: &str,
+) -> Result<Option<NotificationView>, String> {
+    ensure_table(conn)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, kind, title, body, payload, status, created_at, resolved_at
+             FROM notifications WHERE id = ?1",
+        )
+        .map_err(|e| e.to_string())?;
+    let mut rows = stmt
+        .query_map([id], row_to_view)
+        .map_err(|e| e.to_string())?;
+    rows.next().transpose().map_err(|e| e.to_string())
 }
 
 /// 列表（新→旧）；status=None 全量

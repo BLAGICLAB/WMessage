@@ -25,6 +25,7 @@ use crate::error::CommandError;
 
 pub mod bot_history;
 pub mod bot_sessions;
+pub mod brief;
 pub mod migrations;
 pub mod paths;
 pub mod people;
@@ -174,6 +175,10 @@ pub fn open_db<R: tauri::Runtime>(
         .map_err(|e| e.to_string())?;
     // W8-ATTACH：老库的 workflows 表补 attachments 列（拆解附件路径）
     crate::db::workflow::ensure_workflows_attachments(&conn).map_err(|e| e.to_string())?;
+    // W9-ASK：老库的 workflows 表补 clarify_meta 列（澄清答案/粒度，重拆预填）
+    crate::db::workflow::ensure_workflows_clarify_meta(&conn).map_err(|e| e.to_string())?;
+    // W9-ASK：双层档案表（工作流决策摘要 + 卡片档案，跑偏防护）
+    crate::db::brief::ensure_brief_entries(&conn).map_err(|e| e.to_string())?;
     // 定时任务模块：老库的 workflows 表补定时三列（到点自动执行整张工作流）
     crate::db::workflow::ensure_workflows_schedule(&conn).map_err(|e| e.to_string())?;
     crate::db::workflow::ensure_workflows_report(&conn).map_err(|e| e.to_string())?;

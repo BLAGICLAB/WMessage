@@ -15,6 +15,8 @@ export interface GoalNodeData extends Record<string, unknown> {
   progress: { done: number; total: number } | null;
   /** W-QA：上轮执行的收尾审校报告（rubric 评审；workflow-report 事件 / lastReport 列） */
   report: WorkflowReport | null;
+  /** W9-ASK：本次拆解的模型假设（decompose 返回；null/空 = 不显示） */
+  assumptions: string[] | null;
   onRename: (name: string) => void;
   onGoalChange: (goal: string) => void;
 }
@@ -73,6 +75,22 @@ export const GoalNode = memo(function GoalNode({ data }: { data: GoalNodeData })
             <span className="text-[10px] text-[var(--t5)]">未保存——点工具栏「保存」落库</span>
           )}
         </div>
+      )}
+      {/* W9-ASK：拆解假设（折叠展示——模型拆解时"想当然"的部分摆上台面，
+          用户看到错误假设就知道该改哪张卡或用澄清回答重新生成） */}
+      {data.assumptions && data.assumptions.length > 0 && (
+        <details className="nm-card mt-2 rounded-xl px-2 py-1.5 text-xs">
+          <summary className="cursor-pointer select-none text-[var(--t4)]">
+            🤖 拆解假设（{data.assumptions.length}）
+          </summary>
+          <ul className="mt-1 list-inside list-disc text-[var(--t4)]">
+            {data.assumptions.map((a) => (
+              <li key={a} className="break-words">
+                {a}
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
       {/* W-QA：收尾审校报告（折叠展示；返工终审会覆盖更新） */}
       {data.report && badge && (

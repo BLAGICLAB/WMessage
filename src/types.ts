@@ -167,6 +167,8 @@ export interface Workflow {
   lastReport?: string | null;
   /** 报告写入时间（epoch ms） */
   lastReportAt?: number | null;
+  /** 澄清元数据（W9-ASK，JSON 串：{answers:[{question,answer}], askMode}）；null = 从未澄清 */
+  clarifyMeta?: string | null;
 }
 
 /** 评审裁决四值（Rust 契约）：pass/partial/fail = rubric 裁决；unknown = 评审

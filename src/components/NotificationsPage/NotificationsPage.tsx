@@ -1,8 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Bell, BrainCircuit, FolderInput, Sparkles } from "lucide-react";
+import { Bell, BrainCircuit, FolderInput, HelpCircle, Sparkles } from "lucide-react";
 import type { ReactNode } from "react";
 import { EmptyState } from "../EmptyState";
 import { handleCommandError } from "../../lib/errorHandler";
+import {
+  respondWorkflowQuestion,
+  type WorkflowQuestionPayload,
+} from "../../lib/workflowAsk";
 import {
   NOTIFICATIONS_CHANGED_EVENT,
   approveMemoryProposals,
@@ -35,6 +39,10 @@ const KIND_META: Record<NotificationItem["kind"], { icon: ReactNode; label: stri
   artifact_bind: {
     icon: <FolderInput size={15} aria-hidden />,
     label: "产物绑定",
+  },
+  workflow_question: {
+    icon: <HelpCircle size={15} aria-hidden />,
+    label: "工作流提问",
   },
 };
 
@@ -226,6 +234,100 @@ function ArtifactCard({ item }: { item: NotificationItem }) {
   );
 }
 
+/** 工作流提问 payload（payload.questionId 必有，缺失 = 数据不完整可忽略） */
+function workflowQuestion(n: NotificationItem): WorkflowQuestionPayload | null {
+  const p = n.payload;
+  if (!p || typeof p.questionId !== "string") return null;
+  return p as unknown as WorkflowQuestionPayload;
+}
+
+/** 工作流提问卡（W9-ASK）：选项 chips + 自由输入 + 按假设继续——
+ *  红线：忽略问题工作流也能走（assume 返回问题自带假设） */
+function WorkflowQuestionCard({ item }: { item: NotificationItem }) {
+  const q = workflowQuestion(item);
+  const [picked, setPicked] = useState<string | null>(null);
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  if (!q) return <p className="mt-2 text-xs text-[var(--t4)]">消息数据不完整，可忽略</p>;
+  const options = Array.isArray(q.options) ? q.options : [];
+  const answerText = text.trim() || picked;
+  const respond = async (action: "answer" | "assume") => {
+    setBusy(true);
+    try {
+      await respondWorkflowQuestion(
+        q.questionId,
+        action,
+        action === "answer" ? answerText || undefined : undefined
+      );
+    } catch (e) {
+      handleCommandError(e, "回答工作流提问");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      {q.why && <p className="mt-2 text-[11px] text-[var(--t5)]">问这个：{q.why}</p>}
+      {q.nodeTitle && (
+        <p className="mt-1 text-[11px] text-[var(--t5)]">提问节点：{q.nodeTitle}</p>
+      )}
+      {options.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {options.map((opt) => (
+            <button
+              key={opt}
+              aria-pressed={picked === opt}
+              className={`rounded-full px-3 py-1 text-xs ${
+                picked === opt
+                  ? "nm-outset text-[var(--t1)]"
+                  : "nm-inset text-[var(--t3)]"
+              }`}
+              disabled={busy}
+              onClick={() => {
+                setPicked(opt);
+                setText("");
+              }}
+            >
+              {opt}
+            </button>
+          ))}
+        </div>
+      )}
+      <input
+        aria-label="自定义回答"
+        className="mt-2 w-full rounded-[var(--r-sm)] px-3 py-1.5 text-xs nm-inset text-[var(--t1)] outline-none placeholder:text-[var(--t5)]"
+        maxLength={200}
+        placeholder={options.length ? "或输入其他回答" : "输入你的回答"}
+        value={text}
+        disabled={busy}
+        onChange={(e) => {
+          setText(e.target.value);
+          setPicked(null);
+        }}
+      />
+      <CardActions>
+        <button
+          type="button"
+          className={btnGhost}
+          disabled={busy}
+          title={q.assumption ? `不回答，按 AI 假设继续：${q.assumption}` : "不回答，按继续处理"}
+          onClick={() => void respond("assume")}
+        >
+          按假设继续
+        </button>
+        <button
+          type="button"
+          className={btnPrimary}
+          disabled={busy || !answerText}
+          onClick={() => void respond("answer")}
+        >
+          {busy ? "提交中…" : "回答并继续"}
+        </button>
+      </CardActions>
+    </>
+  );
+}
+
 /** Agent 通知中心：三类决策消息（记忆提案 / 自进化提案 / 产物绑定）的持久化收件箱 */
 export function NotificationsPage() {
   const [items, setItems] = useState<NotificationItem[]>([]);
@@ -334,6 +436,8 @@ export function NotificationsPage() {
                     <MemoryCard item={n} />
                   ) : n.kind === "evolution_proposal" ? (
                     <EvolutionCard item={n} />
+                  ) : n.kind === "workflow_question" ? (
+                    <WorkflowQuestionCard item={n} />
                   ) : (
                     <ArtifactCard item={n} />
                   ))}

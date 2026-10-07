@@ -29,6 +29,12 @@ import {
 } from "./graph";
 import { TaskNode, type TaskNodeData } from "./TaskNode";
 import { GoalNode, type GoalNodeData } from "./GoalNode";
+import { ClarifyCard } from "./ClarifyCard";
+import {
+  clarifyWorkflow,
+  type Clarification,
+  type ClarifyQuestion,
+} from "../../lib/workflowAsk";
 
 /** 总目标卡在画布上的固定节点 id（绑定 workflows 元数据，非任务卡） */
 const GOAL_ID = "__goal__";
@@ -134,6 +140,15 @@ function WorkflowPageInner({
   /** AI 拆解进行中 + 竞态守卫（取消 = 递增序号丢弃在途响应） */
   const [decomposing, setDecomposing] = useState(false);
   const decomposeSeqRef = useRef(0);
+  /** 拆解前澄清（W9-ASK）：clarify 调用进行中 + 返回的问题卡组（null = 未在澄清态） */
+  const [clarifying, setClarifying] = useState(false);
+  const [clarifyState, setClarifyState] = useState<ClarifyQuestion[] | null>(null);
+  /** 上次澄清回答（按问题文本匹配，重拆预填——拍板 3 的内存态部分） */
+  const [lastAnswers, setLastAnswers] = useState<Record<string, string>>({});
+  /** 拆解假设（W9-ASK：decompose 返回，GoalNode 折叠条展示） */
+  const [assumptions, setAssumptions] = useState<string[]>([]);
+  /** 执行提问开关（W9-ASK 拍板 10：默认"关键决策才问"=开；随 clarify_meta 落库） */
+  const [asksEnabled, setAsksEnabled] = useState(true);
   /** activeId 镜像：workflow-report 事件订阅只注册一次，闭包里读 ref 防过期 */
   const activeIdRef = useRef<string | null>(null);
   useEffect(() => {
@@ -211,6 +226,13 @@ function WorkflowPageInner({
       setRunning(false); // 先复位：A 在跑时切到 B，停止按钮不得跨工作流残留（全量对照 high）
       // W-QA：报告从 workflows 行恢复（review 结算写入 lastReport 列）
       setWfReport(detail.lastReport ? safeParseReport(detail.lastReport) : null);
+      // W9-ASK：澄清元数据恢复（重拆预填上次回答 + 执行提问开关）
+      {
+        const meta = detail.clarifyMeta ? safeParseClarifyMeta(detail.clarifyMeta) : null;
+        setLastAnswers(meta?.answers ?? {});
+        setAsksEnabled(meta?.askMode !== "never");
+      }
+      setAssumptions([]); // 假设属于拆解现场，重开画布不恢复（v1 口径）
       const iseq = openSeqRef.current;
       invoke<boolean>("workflow_is_running", { workflowId: id })
         .then((v) => {
@@ -247,6 +269,10 @@ function WorkflowPageInner({
     setRunning(false);
     setAttachPaths([]);
     setWfReport(null);
+    // W9-ASK：新画布澄清态复位（重拆预填回答保留——lastAnswers 跨工作流无语义也应清）
+    setLastAnswers({});
+    setAssumptions([]);
+    setAsksEnabled(true);
   };
 
   /** lastReport 列是 JSON 字符串；损坏/旧格式降级为 null（不炸画布） */
@@ -255,6 +281,29 @@ function WorkflowPageInner({
       const v = JSON.parse(raw) as WorkflowReport;
       if (typeof v?.verdict !== "string") return null;
       return normalizeReport(v);
+    } catch {
+      return null;
+    }
+  }
+
+  /** 澄清元数据解析（W9-ASK）：结构坏 → null（当从未澄清，不炸打开链路） */
+  function safeParseClarifyMeta(raw: string): {
+    answers: Record<string, string>;
+    askMode?: string;
+  } | null {
+    try {
+      const v = JSON.parse(raw) as {
+        answers?: Array<{ question: string; answer: string }>;
+        askMode?: string;
+      };
+      if (!v || typeof v !== "object") return null;
+      const answers: Record<string, string> = {};
+      for (const a of Array.isArray(v.answers) ? v.answers : []) {
+        if (a && typeof a.question === "string" && typeof a.answer === "string") {
+          answers[a.question] = a.answer;
+        }
+      }
+      return { answers, askMode: v.askMode };
     } catch {
       return null;
     }
@@ -303,11 +352,53 @@ function WorkflowPageInner({
     }
   };
 
-  // ────────────── AI 拆解（W2-DECOMPOSE，设计 §6） ──────────────
+  // ────────────── AI 拆解（W2-DECOMPOSE，设计 §6；W9-ASK 澄清前置） ──────────────
 
-  const runDecompose = async (goalText: string) => {
+  /** 点「AI 生成」→ 先澄清（快调用，≤3 问）；无问题无缝直拆，有问题出澄清卡组 */
+  const startAi = async () => {
+    if (decomposing || clarifying) return;
+    const seq = ++decomposeSeqRef.current;
+    setClarifying(true);
+    setClarifyState(null);
+    try {
+      const res = await clarifyWorkflow(goal, attachPaths);
+      if (seq !== decomposeSeqRef.current) return; // 已取消/已卸载：丢弃响应
+      if (res.questions.length > 0) {
+        setClarifyState(res.questions);
+      } else {
+        // 信息足够：无缝进入拆解（clarifying 由 runDecompose 顶部复位）
+        await runDecompose(goal, []);
+      }
+    } catch (e) {
+      if (seq === decomposeSeqRef.current) {
+        handleCommandError(e, "AI 阅读目标", { onRetry: () => void startAi() });
+      }
+    } finally {
+      if (seq === decomposeSeqRef.current) setClarifying(false);
+    }
+  };
+
+  const submitClarify = (clarifications: Clarification[]) => {
+    setClarifyState(null);
+    setClarifying(false);
+    setLastAnswers((prev) => {
+      const next = { ...prev };
+      for (const c of clarifications) next[c.question] = c.answer;
+      return next;
+    });
+    void runDecompose(goal, clarifications);
+  };
+
+  const cancelClarify = () => {
+    decomposeSeqRef.current++;
+    setClarifying(false);
+    setClarifyState(null);
+  };
+
+  const runDecompose = async (goalText: string, clarifications: Clarification[] = []) => {
     if (decomposing) return;
     const seq = ++decomposeSeqRef.current;
+    setClarifying(false);
     setDecomposing(true);
     try {
       const res = await invoke<{
@@ -317,13 +408,16 @@ function WorkflowPageInner({
           acceptance?: string | null;
           dependsOn: number[];
         }>;
+        assumptions?: string[];
         attempts: number;
       }>("workflow_decompose", {
         goal: goalText,
         guidance: getDecomposeGuidance(),
         attachments: attachPaths.length ? attachPaths : null,
+        clarifications: clarifications.length ? clarifications : null,
       });
       if (seq !== decomposeSeqRef.current) return; // 已取消/已卸载：丢弃响应
+      setAssumptions(res.assumptions ?? []);
       const fresh = draftFromDecompose(res.subtasks);
       setNodes(fresh);
       setSelectedIds([]);
@@ -333,7 +427,9 @@ function WorkflowPageInner({
       setMode("edit");
     } catch (e) {
       if (seq === decomposeSeqRef.current) {
-        handleCommandError(e, "AI 拆解", { onRetry: () => void runDecompose(goalText) });
+        handleCommandError(e, "AI 拆解", {
+          onRetry: () => void runDecompose(goalText, clarifications),
+        });
       }
     } finally {
       if (seq === decomposeSeqRef.current) setDecomposing(false);
@@ -369,6 +465,9 @@ function WorkflowPageInner({
     }
     if (armedTimerRef.current) clearTimeout(armedTimerRef.current);
     setRegenArmed(false);
+    decomposeSeqRef.current++; // 丢弃在途 clarify/decompose 响应（同 cancelClarify/cancelDecompose 语义）
+    setClarifyState(null);
+    setClarifying(false);
     // 回输入框预填原目标（设计 §5.3）；activeId 保留——再次保存时按指纹 diff 替换
     setMode("hero");
   };
@@ -649,6 +748,14 @@ function WorkflowPageInner({
           name: effectiveName,
           goal: effectiveGoal,
           attachments: attachPaths.length ? attachPaths : null,
+          // W9-ASK：澄清元数据随保存落库（重拆预填 + 执行提问开关）
+          clarifyMeta: JSON.stringify({
+            answers: Object.entries(lastAnswers).map(([question, answer]) => ({
+              question,
+              answer,
+            })),
+            askMode: asksEnabled ? "key" : "never",
+          }),
           nodes: nodes.map((n) => ({
             localId: n.localId,
             taskId: n.taskId ?? null,
@@ -747,6 +854,7 @@ function WorkflowPageInner({
           saved: savedSnapshot !== null,
           progress: running ? { done: doneCount, total: nodes.length } : null,
           report: wfReport,
+          assumptions: assumptions.length ? assumptions : null,
           onRename: (v: string) => {
             setName(v);
             setNameAuto(false);
@@ -784,7 +892,7 @@ function WorkflowPageInner({
     ],
     // 依赖含全部 data 回调（deleteNode/toggle* 均为 useCallback 稳定引用，
     // 内部经 ref 读最新 tasks/props——此处完整列出是防过期闭包的兜底，OCR r1 high）
-    [nodes, tasks, name, goal, savedSnapshot, selectedIds, deleteNode, toggleDone, commitTitle, toggleSubtask, running, activeId, doneCount, models, changeModel, nodeLive, wfReport]
+    [nodes, tasks, name, goal, savedSnapshot, selectedIds, deleteNode, toggleDone, commitTitle, toggleSubtask, running, activeId, doneCount, models, changeModel, nodeLive, wfReport, assumptions]
   );
 
   const rfEdges = useMemo<Edge[]>(
@@ -835,6 +943,20 @@ function WorkflowPageInner({
           title="新建工作流（空白画布或 AI 生成）"
         >
           <Plus size={14} aria-hidden /> 新建
+        </button>
+        {/* W9-ASK：执行提问开关（拍板 10，默认开）——节点缺关键信息时可向用户提问
+            （走通知中心，未答按 AI 假设继续）；随保存落 clarify_meta.askMode */}
+        <button
+          className={toolbarBtn}
+          aria-pressed={asksEnabled}
+          onClick={() => setAsksEnabled((v) => !v)}
+          title={
+            asksEnabled
+              ? "执行提问：开——节点缺关键信息时会进通知中心提问（未答按 AI 假设继续）。点击关闭"
+              : "执行提问：关——节点遇缺一律按 AI 假设继续，不提问。点击开启"
+          }
+        >
+          ❓ {asksEnabled ? "提问 开" : "提问 关"}
         </button>
         <div className="flex-1" />
         <button
@@ -917,21 +1039,34 @@ function WorkflowPageInner({
       {/* 画布（编辑态）；hero 态显示引导（设计 §5.1） */}
       <div className="min-h-0 flex-1">
         {mode === "hero" ? (
-          <EmptyHero
-            goal={goal}
-            onGoalChange={setGoal}
-            workflows={workflows}
-            onOpen={(id) => void openWorkflow(id)}
-            decomposing={decomposing}
-            onDecompose={() => void runDecompose(goal)}
-            onCancelDecompose={cancelDecompose}
-            isRegenerate={activeId !== null}
-            attachPaths={attachPaths}
-            onAddAttachments={() => void addAttachments()}
-            onRemoveAttachment={(p) =>
-              setAttachPaths((prev) => prev.filter((x) => x !== p))
-            }
-          />
+          clarifyState ? (
+            <ClarifyCard
+              goal={goal}
+              questions={clarifyState}
+              previousAnswers={lastAnswers}
+              busy={decomposing}
+              onSubmit={submitClarify}
+              onCancel={cancelClarify}
+            />
+          ) : (
+            <EmptyHero
+              goal={goal}
+              onGoalChange={setGoal}
+              workflows={workflows}
+              onOpen={(id) => void openWorkflow(id)}
+              decomposing={decomposing}
+              clarifying={clarifying}
+              onDecompose={() => void startAi()}
+              onCancelDecompose={cancelDecompose}
+              onCancelClarify={cancelClarify}
+              isRegenerate={activeId !== null}
+              attachPaths={attachPaths}
+              onAddAttachments={() => void addAttachments()}
+              onRemoveAttachment={(p) =>
+                setAttachPaths((prev) => prev.filter((x) => x !== p))
+              }
+            />
+          )
         ) : (
           <ReactFlow
             nodes={rfNodes}
@@ -970,8 +1105,10 @@ function EmptyHero({
   workflows,
   onOpen,
   decomposing,
+  clarifying,
   onDecompose,
   onCancelDecompose,
+  onCancelClarify,
   isRegenerate,
   attachPaths,
   onAddAttachments,
@@ -982,8 +1119,11 @@ function EmptyHero({
   workflows: Workflow[];
   onOpen: (id: string) => void;
   decomposing: boolean;
+  /** 澄清调用进行中（W9-ASK：AI 阅读目标 → 出澄清卡组或直拆） */
+  clarifying: boolean;
   onDecompose: () => void;
   onCancelDecompose: () => void;
+  onCancelClarify: () => void;
   /** 重新生成流程中（activeId 已存在）——按钮文案区分 */
   isRegenerate: boolean;
   /** 拆解附件路径（W8-ATTACH）：AI 先读附件内容再拆解 */
@@ -991,6 +1131,7 @@ function EmptyHero({
   onAddAttachments: () => void;
   onRemoveAttachment: (path: string) => void;
 }) {
+  const phaseBusy = decomposing || clarifying;
   return (
     <div className="flex h-full items-center justify-center">
       <div className="nm-card w-full max-w-xl p-6">
@@ -1008,7 +1149,7 @@ function EmptyHero({
           placeholder="例：每周五收集本周完成的任务，汇总成一份周报文档并绑定到任务卡"
           value={goal}
           onChange={(e) => onGoalChange(e.target.value)}
-          disabled={decomposing}
+          disabled={phaseBusy}
         />
         {attachPaths.length > 0 && (
           <div className="mt-3 flex flex-wrap gap-1.5">
@@ -1034,7 +1175,7 @@ function EmptyHero({
           <button
             className="nm-outset flex items-center gap-1 rounded-[var(--r-sm)] px-3 py-1.5 text-xs text-[var(--t3)] disabled:opacity-50"
             onClick={onAddAttachments}
-            disabled={decomposing}
+            disabled={phaseBusy}
             title="添加参考文件（docx/pdf/txt 等）：AI 拆解前先读一遍，内容会拆进各任务卡的备注或子任务"
           >
             📎 添加附件
@@ -1042,6 +1183,10 @@ function EmptyHero({
           {decomposing ? (
             <span className="flex items-center gap-1.5 text-xs text-[var(--t5)]">
               <Loader2 size={13} className="animate-spin" aria-hidden /> AI 拆解中…
+            </span>
+          ) : clarifying ? (
+            <span className="flex items-center gap-1.5 text-xs text-[var(--t5)]">
+              <Loader2 size={13} className="animate-spin" aria-hidden /> AI 阅读目标…
             </span>
           ) : (
             <button
@@ -1057,6 +1202,14 @@ function EmptyHero({
             <button
               className="nm-outset rounded-[var(--r-sm)] px-4 py-1.5 text-sm text-[var(--t3)]"
               onClick={onCancelDecompose}
+            >
+              取消
+            </button>
+          )}
+          {clarifying && (
+            <button
+              className="nm-outset rounded-[var(--r-sm)] px-4 py-1.5 text-sm text-[var(--t3)]"
+              onClick={onCancelClarify}
             >
               取消
             </button>

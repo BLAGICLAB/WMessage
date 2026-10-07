@@ -38,6 +38,7 @@ pub const WORKFLOWS_DDL: &str = "CREATE TABLE IF NOT EXISTS workflows (
    created_at  INTEGER,
    updated_at  INTEGER,
    attachments TEXT,
+   clarify_meta TEXT,
    schedule    TEXT,
    sched_last  INTEGER,
    enabled     INTEGER,
@@ -56,6 +57,22 @@ pub fn ensure_workflows_attachments(conn: &rusqlite::Connection) -> Result<(), S
         .map_err(|e| e.to_string())?;
     if !has {
         conn.execute("ALTER TABLE workflows ADD COLUMN attachments TEXT", [])
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// workflows.clarify_meta 幂等 ALTER（W9-ASK：澄清答案/粒度，JSON——重拆预填上次回答）
+pub fn ensure_workflows_clarify_meta(conn: &rusqlite::Connection) -> Result<(), String> {
+    let has: bool = conn
+        .prepare("PRAGMA table_info(workflows)")
+        .and_then(|mut stmt| {
+            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+            Ok(rows.filter_map(|n| n.ok()).any(|n| n == "clarify_meta"))
+        })
+        .map_err(|e| e.to_string())?;
+    if !has {
+        conn.execute("ALTER TABLE workflows ADD COLUMN clarify_meta TEXT", [])
             .map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -113,6 +130,10 @@ pub struct Workflow {
     pub updated_at: Option<i64>,
     /// 拆解附件路径清单（W8-ATTACH，JSON 数组；仅本机语义，不进导出文件）
     pub attachments: Option<Vec<String>>,
+    /// 澄清元数据（W9-ASK，JSON 串：{answers:[{question,answer}], askMode}；原样存取，
+    /// 结构由前端定义——重拆预填上次回答 + 执行提问模式；不进导出文件）
+    #[serde(default)]
+    pub clarify_meta: Option<String>,
     /// 定时执行规则（定时任务模块）：daily:HH:MM / weekly:D:HH:MM / monthly:DD:HH:MM /
     /// at:YYYY-MM-DDTHH:MM；None = 未定时。到点由 bot_scheduler 触发整张工作流。
     #[serde(default)]
@@ -171,6 +192,9 @@ pub struct WorkflowSaveInput {
     /// 拆解附件路径清单（W8-ATTACH）：随保存落 workflows 行（重新生成可复用）
     #[serde(default)]
     pub attachments: Option<Vec<String>>,
+    /// 澄清元数据原样串（W9-ASK）：前端组装的 JSON（answers + askMode），重拆预填用
+    #[serde(default)]
+    pub clarify_meta: Option<String>,
 }
 
 /// 保存结果：画布节点本地 id → 真实任务 id 绑定（前端据此重建连线与卡绑定）
@@ -212,6 +236,8 @@ fn workflow_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Workflow> {
         created_at: r.get(3)?,
         updated_at: r.get(4)?,
         attachments: attachments.and_then(|s| serde_json::from_str(&s).ok()),
+        // clarify_meta 列在 SELECT 尾列（index 11），老库经幂等 ALTER 保证存在
+        clarify_meta: r.get(11)?,
         schedule: r.get(6)?,
         sched_last: r.get(7)?,
         enabled: r.get::<_, Option<i64>>(8)?.map(|v| v != 0),
@@ -222,7 +248,7 @@ fn workflow_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Workflow> {
 
 const WORKFLOW_COLS: &str =
     "SELECT id, name, goal, created_at, updated_at, attachments, schedule, sched_last, enabled, \
-     last_report, last_report_at FROM workflows";
+     last_report, last_report_at, clarify_meta FROM workflows";
 
 pub fn load_workflows(conn: &rusqlite::Connection) -> Result<Vec<Workflow>, String> {
     let mut stmt = conn
@@ -254,11 +280,11 @@ fn upsert_workflow(conn: &rusqlite::Connection, w: &Workflow) -> Result<(), Stri
         None => None,
     };
     conn.execute(
-        "INSERT INTO workflows (id, name, goal, created_at, updated_at, attachments, schedule, sched_last, enabled) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
-         ON CONFLICT(id) DO UPDATE SET name=excluded.name, goal=excluded.goal, updated_at=excluded.updated_at, attachments=excluded.attachments",
+        "INSERT INTO workflows (id, name, goal, created_at, updated_at, attachments, schedule, sched_last, enabled, clarify_meta) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
+         ON CONFLICT(id) DO UPDATE SET name=excluded.name, goal=excluded.goal, updated_at=excluded.updated_at, attachments=excluded.attachments, clarify_meta=excluded.clarify_meta",
         rusqlite::params![
             w.id, w.name, w.goal, w.created_at, w.updated_at, attachments,
-            w.schedule, w.sched_last, w.enabled.map(|b| b as i64)
+            w.schedule, w.sched_last, w.enabled.map(|b| b as i64), w.clarify_meta
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -601,6 +627,7 @@ pub(crate) fn workflow_save_locked(
             created_at,
             updated_at: Some(now),
             attachments: input.attachments.clone(),
+            clarify_meta: input.clarify_meta.clone(),
             schedule: None, // 定时配置不随画布保存重置（ON CONFLICT 不更新此字段）
             sched_last: None,
             enabled: None,
@@ -1033,6 +1060,7 @@ pub(crate) fn parse_workflow_file(raw: &str) -> CommandResult<WorkflowSaveInput>
         goal,
         nodes,
         attachments: None,
+        clarify_meta: None,
     })
 }
 
@@ -1264,6 +1292,9 @@ pub async fn workflow_delete(app: AppHandle, id: String) -> CommandResult<usize>
                 .map(|t| t.id.clone())
                 .collect();
             delete_tasks(&tx, &ids).map_err(CommandError::from)?;
+            // W9-ASK：工作流档案级联（OCR r1 critical——全局层条目随工作流删除；
+            // 卡层已由 delete_tasks 清过，此处兜底两层）
+            crate::db::brief::brief_delete_workflow(&tx, &id).map_err(CommandError::from)?;
             delete_workflow_row(&tx, &id).map_err(CommandError::from)?;
             tx.commit()
                 .map_err(|e| CommandError::DbError(e.to_string()))?;
@@ -1338,6 +1369,7 @@ mod tests {
                 goal: "目标".into(),
                 nodes,
                 attachments: None,
+                clarify_meta: None,
             },
             1_000,
         )
@@ -1463,6 +1495,7 @@ mod tests {
                     goal: "g".into(),
                     nodes,
                     attachments: None,
+                    clarify_meta: None,
                 },
                 1_000,
             )
@@ -1504,6 +1537,7 @@ mod tests {
                     goal: "g".into(),
                     nodes,
                     attachments: None,
+                    clarify_meta: None,
                 },
                 1_000,
             )
@@ -1532,6 +1566,7 @@ mod tests {
                 goal: "g".into(),
                 nodes: vec![],
                 attachments: None,
+                clarify_meta: None,
             },
             1_000,
         )
@@ -1553,6 +1588,7 @@ mod tests {
                 goal: "目标".into(),
                 nodes: vec![],
                 attachments: None,
+                clarify_meta: None,
             },
             2_000,
         )

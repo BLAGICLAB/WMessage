@@ -1390,17 +1390,32 @@ pub struct TaskChatRun {
 }
 
 /// 工作流执行上下文（W-QA 结构化交接，handoff = typed-schema 策略）：
-/// 总目标 + 直接上游卡的实际产出简报。仅工作流链路传入；手动/定时/批量 = None。
+/// 总目标 + 直接上游卡的实际产出简报 + 双层档案注入 + 执行提问授权（W9-ASK）。
+/// 仅工作流链路传入；手动/定时/批量 = None。
 #[derive(Debug, Clone, Default)]
 pub struct TaskExecCtx {
     /// 工作流总目标（workflows.goal）
     pub goal: Option<String>,
     /// 直接上游产出简报（runner 装配：标题/状态/summary/验收标准/绑定文件，已裁剪）
     pub upstream_brief: Option<String>,
+    /// 双层档案（W9-ASK，拍板 6）：工作流决策摘要 + 本卡历史记录（runner 装配
+    /// brief_for_injection，段头已含在内；防跑偏——用户在其他卡的纠偏这里看得见）
+    pub brief: Option<crate::db::brief::BriefContext>,
+    /// 执行提问授权（W9-ASK）：Some = 本节点可调 ask_user（workflow_id 关联档案与通知）
+    pub ask: Option<AskExecContext>,
+}
+
+/// 执行提问授权上下文（W9-ASK）：bot_chat 在会话建立时凭它注册 ask_contexts，
+/// ask_user 工具按 session_id 查表；预算与开关在注册表条目上（AppState）。
+#[derive(Debug, Clone)]
+pub struct AskExecContext {
+    pub workflow_id: String,
+    /// 提问模式开关（拍板 5：false = 从不提问，工具直接返回假设）
+    pub asks_enabled: bool,
 }
 
 impl TaskExecCtx {
-    /// 追加到任务块末尾的注入段；两段皆空 → None（不注入）
+    /// 追加到任务块末尾的注入段；全空 → None（不注入）
     pub fn render(&self) -> Option<String> {
         let mut s = String::new();
         if let Some(g) = self.goal.as_deref().filter(|g| !g.trim().is_empty()) {
@@ -1414,6 +1429,15 @@ impl TaskExecCtx {
             s.push_str(&format!(
                 "\n\n【上游产出】（以下是你直接上游任务卡的实际产出，直接引用，不要重做）：\n{b}"
             ));
+        }
+        // 双层档案放最后——离对话末端最近，决策摘要的权重靠位置表达
+        if let Some(br) = &self.brief {
+            if let Some(g) = &br.global {
+                s.push_str(&format!("\n\n{g}"));
+            }
+            if let Some(c) = &br.card {
+                s.push_str(&format!("\n\n{c}"));
+            }
         }
         if s.is_empty() {
             None
@@ -1719,6 +1743,15 @@ where
     // 末尾无论成败都要 unregister_exec_session 清理。守卫成功后再登记——
     // acquire 失败的早退分支不应泄漏登记（无人 unregister）。
     crate::tool_guard::register_exec_session(&sid, origin);
+    // W9-ASK：工作流节点执行 → 注册提问上下文（ask_user 按 session_id 查表）。
+    // 与 D4d 同生命周期：此后到函数尾无早退分支，unregister 成对执行不泄漏。
+    let ask_registered = match ctx.and_then(|c| c.ask.as_ref()) {
+        Some(ask) if origin == TaskExecOrigin::Workflow => {
+            crate::workflow_questions::register_ask_context(app, &sid, ask, &task.id, &task.title);
+            true
+        }
+        _ => false,
+    };
     // P1-d：建执行 trace + 注册 session→trace 映射（span/file_change 采集开关）。
     // 位置保证：此后到函数尾无早退分支，end_trace 必然成对执行。观测面失败降级 None。
     if let Some(hook) = &trace_hook {
@@ -1776,6 +1809,10 @@ where
     persist_exec_reply(app, &task, &sid, &outcome, ctx).await;
     // D4d 收尾：解除 session 注册（无论成败），按 TaskExecOrigin 分流落绑定通知。
     crate::tool_guard::unregister_exec_session(&sid);
+    // W9-ASK：提问上下文成对注销（同 D4d 生命周期）
+    if ask_registered {
+        crate::workflow_questions::unregister_ask_context(app, &sid);
+    }
     let task_column = crate::db::db_load_for(app).await.ok().and_then(|tasks| {
         tasks
             .into_iter()

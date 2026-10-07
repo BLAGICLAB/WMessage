@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 /** Agent 通知中心消息（与 Rust notifications::NotificationView 对应） */
 export interface NotificationItem {
   id: string;
-  kind: "memory_proposal" | "evolution_proposal" | "artifact_bind";
+  kind: "memory_proposal" | "evolution_proposal" | "artifact_bind" | "workflow_question";
   title: string;
   body: string;
   payload: Record<string, unknown> | null;

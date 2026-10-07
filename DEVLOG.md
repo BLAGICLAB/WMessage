@@ -2,6 +2,138 @@
 
 > 面向开发者的里程碑记录。产品规格见 `SPEC.md`，项目说明见 `README.md`。
 
+## 2026-10-07（周三）W9-ASK OCR 复审：60 条评论核查——8 条 critical/high 全处理，7 修 1 半
+
+`ocr review`（workspace diff 模式，MiniMax-M3，session `bcac6958`，19 文件 +877/-110，
+495 请求 1 次重试恢复，耗时 ~20min）产出 60 条：critical 1 / high 7 / medium 19 / low 30 / 未分级 3。
+critical/high 逐条核查，判定与处置：
+
+- **brief 级联删除缺失（critical，真）**：`brief_delete_workflow/task` 是死代码——工作流/卡删除
+  后档案行永久泄漏，违反"档案属于工作流"契约。修：`delete_tasks` 尾部接卡层级联（尽力而为，
+  失败 eprintln 不炸主删除——与审计写失败同口径，兼容测试内建表）；`workflow_delete` 事务内接
+  两层兜底。
+- **ask_user 不可被 /stop 打断（high，真）**：24h oneshot 等待期间模型循环挂死到超时。修：
+  `engine_ask_user` +`stop: Option<&StopGuard>`，`tokio::select!` 超时分支 vs 500ms 轮询
+  `stopped()`，命中同超时口径回落假设并摘 waiter；`call_ask_user` 透传 ctx.stop。
+- **提问竞态窗口（high×2，真，合并修）**：notif_insert→audit/emit/OS 门铃→waiter insert 的
+  顺序让早到应答找不到通道（档案落了回答、引擎按假设继续，两层不一致）。修：waiter insert
+  提前到 notif_insert 成功后、audit/emit/OS 门铃之前——广播时通道必已就位，窗口闭合。
+- **ClarifyCard 开放题输入恒空（high，真）**：`value={customOpen ? answer : ""}` 在
+  options 为空时永远渲染空串（受控组件），打字不可见。修：`value={answer}`。
+- **regenerate 不作废在途响应（high，真）**：重新生成后 startAi 的在途 clarify 响应仍会
+  过 seq 守卫把澄清卡弹回来。修：regenerate 里 `decomposeSeqRef.current++`（同 cancel 语义）。
+- **lastAnswers 按问题文本键（high，半真半误）**：改用 c.id 的建议判 **WONTFIX**——clarify
+  每轮重编 id（q1..qn），跨拆解不稳定，文本才是重拆预填的正确键（拍板 3 有意为之）；"同文本
+  互相覆盖"这半点属实，修在服务端：`validate_clarify` 同文本去重保留第一条（+1 单测）。
+- **call_use_skill 格式破坏（high/style，真）**：插入 call_ask_user 时吞了函数体换行，恢复。
+
+误伤记录：初次接卡层级联用 `?` 硬传播，3 个自建表的 db 测试（无 brief_entries）全炸——
+改尽力而为后恢复，这也是选"级联降级"而非"硬约束"的实证理由。
+验证：cargo test **1471**（+同文本去重单测）+ vitest **521** 全绿；tsc 0 错误。
+medium/low 49 条按制度未逐条核查，留 session 存档（`ocr session comments bcac6958`）按需排查；
+分布：workflow_runner 4 / workflow_questions 3 / workflow_clarify 3 / 其余各 1-2。
+**W9-ASK 至此含复审闭环完毕。**
+
+## 2026-10-07（周三）W9-ASK 第四片：clarify_meta 落库 + 提问开关 + 拆解假设折叠条（收尾）
+
+- **clarify_meta 持久化**（db/workflow.rs）：`Workflow`/`WorkflowSaveInput` +`clarify_meta`
+  （原样 JSON 串，结构由前端定义：`{answers:[{question,answer}], askMode}`）；WORKFLOW_COLS 尾列
+  （index 11，避开既有下标）+ upsert ON CONFLICT 更新 + 5 处测试字面量补字段；
+  **不进 .wflow.json 导出**（WorkflowFile 独立结构，与 attachments 同口径）。
+- **提问模式设置**（拍板 10）：画布工具栏「❓ 提问 开/关」按钮（aria-pressed，随保存落
+  askMode）；runner `load_asks_enabled` 在 workflow_run 时读一次（"never"=关，缺列/坏 JSON
+  默认开），经 run_controller 新参 `asks_enabled` 传入 spawn 闭包——AskExecContext 不再写死 true。
+- **前端持久化链**：openWorkflow 解析 clarifyMeta（safeParseClarifyMeta，坏数据当从未澄清）预填
+  lastAnswers + asksEnabled；save 链组装 JSON 落库；createBlank 三态复位；assumptions 归属拆解
+  现场（重开不恢复，v1 口径）。重拆预填闭环补全：内存态（第二片）+ 持久化（本片）。
+- **GoalNode 假设折叠条**：`🤖 拆解假设（N）` details 折叠（nm-card，同 report 条样式）——模型
+  "想当然"的部分摆上台面，看到错误假设就知道改哪张卡或重新生成。
+- 验证：cargo test **1470** + vitest **521** 全绿；tsc 0 错误；oxlint 无新增告警
+  （key={i} → key={a} 自纠；余 3 条为 HEAD 既有）。**W9-ASK 四片至此全部落地**：
+  拆解前澄清（前端卡组+降级直拆）、执行提问（ask_user+通知+oneshot+假设兜底）、双层档案
+  （brief_entries+注入）、重拆预填（内存+持久化）、拆解假设展示——拍板 1-10 兑现完毕。
+  后续：W10-QA-AUDIT（节点级验收 + run 级审计表）、OCR 复审、提问等待时长设置项。
+
+## 2026-10-07（周三）W9-ASK 第三片：ask_user 工具接入 runner——执行提问闭环（后端）
+
+- **工具注册**（bot/registry.rs）：`SCHEMA_ASK_USER`（assumption 必填写进 schema required；
+  description 硬约束"给不出假设的问题不许问/每卡最多 2 次/仅工作流可用"）+ TOOLS_TABLE 尾部条目
+  （mutating=false）+ `call_ask_user` 包装。**baseline fixture 零改动**——前 28 项前缀断言未触碰，
+  只更新三处计数/顺序断言（37→38 主可见、TABLE 39→40、MCP 拼装下标）。
+- **引擎**（workflow_questions.rs）：`parse_ask_args`（question/assumption 必填——无假设的问题在
+  解析层就拒绝；question≤200/why≤100/options≤4×40 截断）；`engine_ask_user`——未注册上下文
+  （非工作流链路）→ warn 引导自行继续；提问模式关闭/预算用尽/写库失败 → **不落队列直接回落假设**
+  （红线：忽略问题工作流也能走）；正常路径 = 通知队列（wfq:{qid}）+ 审计 + notifications-changed +
+  系统通知门铃（NotificationExt）→ oneshot 等待（默认 24h）→ 回答作为工具结果 / 超时回落假设；
+  waiter 无论成败摘除（超时路径防泄漏）。
+- **会话生命周期**（bot_chat.rs）：`TaskExecCtx` +`brief`（双层档案注入段，render 追加在
+  上游简报之后——决策摘要靠位置表达权重）+`ask`（AskExecContext{workflow_id, asks_enabled}）；
+  `run_task_in_chat_with` 在 register_exec_session 后注册 `ask_contexts[session_id]`
+  （AskRegistration 含 AtomicU8 预算，同锁内检查+扣减），与 unregister_exec_session 成对注销
+  ——沿用"此后到函数尾无早退分支"成对模式。
+- **runner**：spawn_node 装配 `brief_for_injection`（spawn_blocking 读库，失败降级 None）+
+  ask 授权（asks_enabled=true=默认"关键决策才问"，设置项接入后由此读）；
+  **workflow_id 必须在闭包体顶部先 clone**——async move 块按 move 捕获会把外层 Fn 闭包
+  退化成 FnOnce（review_and_rework 的 Fn 约束拒绝，编译报 E0525，定位费了一番周折）。
+  run 收尾（remove 注册表前）`invalidate_workflow_questions` 批量失效本 run pending 问题。
+- 验证：cargo test **1470** 单测 0 失败（+parse_ask_args）；registry 三处计数断言与
+  baseline 前缀不变式全绿。执行提问闭环到此贯通：节点 ask_user → 通知中心/系统通知 →
+  用户回答 → waiter 唤醒续跑 → 双层档案沉淀；run 死→落档案重跑生效；停止/收尾→批量失效。
+- 剩余小件：GoalNode 拆解假设折叠条（assumptions 已随结果返回）、clarify_meta 随保存链落库
+  （重拆预填的持久化部分）、提问模式设置项。
+
+## 2026-10-07（周三）W9-ASK 第二片：decompose 澄清回注 + assumptions + 前端澄清流（后端+前端）
+
+- **decompose 扩展**：+`clarifications` 参数（`validate_clarifications` 纯函数：≤6 条/单条 answer≤300
+  截断/空白丢弃；prompt 三段=指引+【用户已确认的澄清回答】段+契约段，两次尝试都带）；
+  输出契约 +`assumptions`（≤5×≤60 截断，`parse_assumptions` 缺失/裸数组/坏 JSON 容忍为空不拒整包），
+  `DecomposeResult.assumptions` 随结果返回（GoalNode 折叠条下一片渲染）。
+- **前端澄清流**（新 `lib/workflowAsk.ts` + `ClarifyCard.tsx` + WorkflowPage 状态机）：
+  点「AI 生成」→ `startAi` 先调 `workflow_clarify`（spinner「AI 阅读目标…」）→ 有问题出澄清卡组
+  （四件套：问题/why/选项 chips+其他/「用 AI 的假设」；已答折叠摘要 ✎ 重开；未答自动落 default——
+  **「开始拆解」永远可点**）→ `submitClarify` 组装 clarifications 回传 decompose；无问题无缝直拆。
+  重拆预填：`lastAnswers` state 按问题文本匹配上次回答（拍板 3 内存态部分；clarify_meta 落库随保存链下一片）。
+  EmptyHero 双阶段忙碌态（拆解中/阅读目标各自 spinner+取消）；regenerate 复位澄清态。
+- **通知页问题卡**（NotificationsPage）：`workflow_question` kind 进 KIND_META；问题卡 = 选项 chips +
+  自由输入 + [回答并继续]/[按假设继续]（assume 返还问题自带假设——忽略也能走红线），
+  走 `workflow_question_respond`；payload.questionId 缺失降级"数据不完整可忽略"。
+- 验证：cargo test **1469** 单测 0 失败（+3：clarifications/segment/assumptions）；
+  vitest **521** 0 失败；tsc 0 错误；oxlint 与 HEAD 基线持平（2 条既有告警）。
+- 下一片（ask 端，需要按 registry 制度走）：`ask_user` 工具 = registry.rs 加 SCHEMA_ASK_USER +
+  TOOLS_TABLE 条目（mutating=false）+ bot/tools.rs handler（调 workflow_questions 引擎函数，
+  预算 ≤2 问/节点静态表计数、提问模式开关、oneshot 等待默认 24h 超时回落假设、
+  run 收尾 `invalidate_workflow_questions`）+ **tools_baseline.json 按显式流程重生成** +
+  runner 装配 brief_for_injection 进 TaskExecCtx。
+
+## 2026-10-07（周三）W9-ASK 第一片：双层档案 + 澄清命令 + 问答应答端（后端）
+
+工作流跑偏防护改造开工（设计定稿 `docs/WORKFLOW-CLARIFY-AUDIT-DESIGN-2026-10-07.md` v2，拍板 1-8；
+批 spec `docs/batches/W9-ASK.spec.md`）。执行架构拍板维持 A（纯代码拓扑调度、无主 agent），
+节点允许阻塞提问但红线=**每问必带假设、忽略问题工作流也能走**。本片落地：
+
+- **双层档案**（新 `db/brief.rs`）：`brief_entries` 表（task_id NULL=工作流决策摘要层 / 非空=卡片档案层，
+  kind qa|rework|manual|clarify），条目入库 trim 截断（text≤200/reason≤80）；
+  注入装配 `brief_for_injection`（全局最近 6 条≤1200 字、卡最近 8 条≤800 字，超限省略提示、至少保一条）；
+  工作流删除级联两层、卡删除只清卡层。写入口全部代码路径，agent 无自由写档案工具（拍板 6）。
+- **澄清命令**（新 `workflow_clarify.rs`）：`workflow_clarify(goal, attachments)` 一次性调用，
+  契约硬拼（≤3 问/每问必带 default/why 一句/不问 goal 已写明/只问一轮）；校验纯函数
+  `parse_and_validate_clarify` 超限**截断**不拒整包、default 缺失取 options[0]、双缺丢弃该问（红线兜底）、
+  重编 id；失败重试 1 次再失败**降级空 questions**（outcome=degraded 审计）——澄清是增强非闸门。
+- **问答应答端**（新 `workflow_questions.rs`）：`workflow_question_respond(question_id, action, answer?)`
+  （answer/assume/dismiss）——resolve 通知 → 双层落档案（卡级+全局级，用户回答全工作流可见，治跨卡跑偏）
+  → 唤醒存活 waiter（oneshot take+send）→ 审计+`notifications-changed`；通知已消失=幂等成功；
+  `invalidate_workflow_questions` 供 run 收尾/停止批量失效。问题队列**复用 notifications 表**
+  （新 kind `workflow_question`，id=wfq:{qid}）+ `notif_get` 按 id 读 payload。
+- **AppState**：+`question_waiters`（questionId → oneshot::Sender<String>，照 confirm_requests 形态；
+  区别=无 60s 默认拒，等待上限由 ask 端超时兜底，超时回落假设值）。
+- **decompose 重构**：附件抽取块提为 `pub(crate) build_attachment_blocks`（clarify 共用同一 12k/48k
+  封顶与占位口径），行为不变，13 个既有单测全绿。
+- **迁移**：`workflows` +`clarify_meta TEXT`（幂等 ALTER，重拆预填澄清答案用；save/load 结构透传
+  随前端片接）+ `brief_entries` 建表挂入 open_db 迁移链。
+- 验证：cargo test **1466 单测 0 失败**（新增 brief 6 + clarify 5 + questions 4）。
+- 下一片：ask_user 工具接入 runner（预算≤2/超时按假设/提问模式开关/收尾失效）+ decompose
+  clarifications/assumptions 参数 + 前端（hero 澄清卡组、通知页问题卡、types）。
+
 ## 2026-10-07（周三）提示词对齐（二）：主聊天吸收 Codex 分寸纪律——意外即停/反倾倒/体量适配/计划对账
 
 对照 Codex CLI（openai/codex GPT-5 版系统提示词）比差后落地（详单 `docs/batches/CODEX-ALIGN.spec.md`）：

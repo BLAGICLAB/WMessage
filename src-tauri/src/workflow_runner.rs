@@ -446,6 +446,8 @@ pub async fn workflow_run(app: AppHandle, workflow_id: String) -> CommandResult<
     }
     // W-QA B1：工作流总目标（此前执行期根本不读，goal 只是画布元数据）
     let goal = load_workflow_goal(&app, &workflow_id).await;
+    // W9-ASK：执行提问开关（clarify_meta.askMode，默认开）——run 开始时读一次
+    let asks_enabled = load_asks_enabled(&app, &workflow_id).await;
     let app2 = app.clone();
     let wf = workflow_id.clone();
     tauri::async_runtime::spawn(async move {
@@ -457,6 +459,7 @@ pub async fn workflow_run(app: AppHandle, workflow_id: String) -> CommandResult<
             model_by_id,
             upstream_of,
             goal,
+            asks_enabled,
             cancel,
         )
         .await;
@@ -508,6 +511,8 @@ async fn run_controller(
     model_by_id: HashMap<String, Option<String>>,
     upstream_of: HashMap<String, Vec<String>>,
     goal: Option<String>,
+    // W9-ASK：执行提问开关（workflow_run 开始时按 clarify_meta.askMode 读出）
+    asks_enabled: bool,
     cancel: Arc<AtomicBool>,
 ) {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<NodeOutcome>();
@@ -534,6 +539,7 @@ async fn run_controller(
         let upstream_of = upstream_of.clone();
         let goal = goal.clone();
         let attempts = attempts.clone();
+        let workflow_id = workflow_id.clone();
         move |app: &AppHandle, cancel: &Arc<AtomicBool>, id: String| {
             let app = app.clone();
             let tx = tx.clone();
@@ -542,6 +548,9 @@ async fn run_controller(
             let model = model_by_id.get(&id).cloned().flatten();
             let ups = upstream_of.get(&id).cloned().unwrap_or_default();
             let goal = goal.clone();
+            // W9-ASK：ask 授权与档案注入需要 workflow_id——async move 块按 move
+            // 捕获会吞掉闭包捕获的原本体（Fn 退化 FnOnce），同 goal 先克隆一份
+            let workflow_id = workflow_id.clone();
             let attempts = attempts.clone();
             if let Ok(mut r) = running.lock() {
                 r.insert(id.clone());
@@ -579,9 +588,33 @@ async fn run_controller(
                                       // W-QA B2：spawn 前装配上游产出简报——此时直接上游必已终态且成功
                                       //（失败分支已被跳过传播拦截，轮到本节点的上游全部 ok）
                 let upstream_brief = load_upstream_brief(&app, &ups).await;
+                // W9-ASK：双层档案注入（工作流决策摘要 + 本卡历史）——防跑偏，
+                // 用户在其他卡的纠偏这里看得见；读库失败降级 None 不阻断执行
+                let brief = {
+                    let app2 = app.clone();
+                    let wid = workflow_id.clone();
+                    let tid = id.clone();
+                    tauri::async_runtime::spawn_blocking(move || {
+                        crate::db::open_db(&app2).ok().and_then(|conn| {
+                            crate::db::brief::brief_for_injection(&conn, &wid, Some(&tid))
+                                .ok()
+                                .flatten()
+                        })
+                    })
+                    .await
+                    .ok()
+                    .flatten()
+                };
                 let ctx = TaskExecCtx {
                     goal,
                     upstream_brief,
+                    brief,
+                    // 执行提问授权（W9-ASK：clarify_meta.askMode，run 开始时读一次；
+                    // 拍板 5 默认"关键决策才问"=开）
+                    ask: Some(crate::bot_chat::AskExecContext {
+                        workflow_id: workflow_id.clone(),
+                        asks_enabled,
+                    }),
                 };
                 // W-QA C1：attempt 计数（证据链：重试/返工后 attempt 递增）
                 let attempt = {
@@ -776,6 +809,24 @@ async fn run_controller(
         .await;
     }
 
+    // W9-ASK：run 收尾——本 run 的 pending 问题批量失效（半途结果不构成提问对象，
+    // 重跑会重新注册提问上下文）；有失效才广播，省一次通知页刷新
+    {
+        let app2 = app.clone();
+        let wid = workflow_id.clone();
+        let invalidated = tauri::async_runtime::spawn_blocking(move || {
+            crate::db::open_db(&app2).ok().and_then(|conn| {
+                crate::workflow_questions::invalidate_workflow_questions(&conn, &wid).ok()
+            })
+        })
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(0);
+        if invalidated > 0 {
+            crate::notifications::emit_changed(&app);
+        }
+    }
     runs().lock().map(|mut m| m.remove(&workflow_id));
     let failed_n = failed_names.len();
     let skipped_n = total.saturating_sub(done_count + failed_n);
@@ -814,6 +865,32 @@ async fn load_workflow_goal(app: &AppHandle, workflow_id: &str) -> Option<String
     .await
     .ok()
     .flatten()
+}
+
+/// 执行提问开关（W9-ASK 拍板 10）：读 workflows.clarify_meta.askMode，
+/// "never" = 从不提问；缺列/缺字段/解析失败一律默认开（关键决策才问）。
+async fn load_asks_enabled(app: &AppHandle, workflow_id: &str) -> bool {
+    let app = app.clone();
+    let wid = workflow_id.to_string();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::db::open_db(&app).ok().and_then(|conn| {
+            crate::db::workflow::load_workflow(&conn, &wid)
+                .ok()
+                .flatten()
+                .and_then(|w| w.clarify_meta)
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                .and_then(|v| {
+                    v.get("askMode")
+                        .and_then(serde_json::Value::as_str)
+                        .map(String::from)
+                })
+                .map(|mode| mode != "never")
+        })
+    })
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or(true)
 }
 
 /// 装配直接上游简报（B2）：spawn 前重读上游终态卡（A2 已写结构化 result）
