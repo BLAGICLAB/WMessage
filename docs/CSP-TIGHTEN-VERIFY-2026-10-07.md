@@ -169,6 +169,19 @@ src-tauri/tauri.csp-verify.json（临时构建覆盖，已提交）:
   未来引入使用 `new Function`/eval 的依赖即失效。
 - 不覆盖恶意注入场景的 XSS 面分析（收紧减小的是攻击面，不是修复某个漏洞）。
 - 未配 CSP 违规上报端点，线上违规不可感知。
+
+### 8.1 Windows 侧说明（不需单独 CSP 冒烟，理由留档）
+
+- **CSP 字符串平台无关**：全仓唯一 `tauri.conf.json`，无平台覆盖配置；
+  前端 bundle 为同一份 Vite 产物；Tauri 的 CSP 注入（meta + nonce）是跨平台
+  同一份 Rust 代码（tauri-2.11.5 `manager/mod.rs`）。
+- **平台差异只在执行引擎**：macOS = WKWebView (WebKit)，Windows = WebView2
+  (Chromium)。「无 `unsafe-eval` 则禁 eval」是 CSP 核心行为，两引擎均为标准
+  实现；macOS 通过 ⇒ Windows 同样通过，不存在反向失败路径。
+- **Windows 特有点**（WebView2 运行时版本、`http://ipc.localhost` 自定义协议）
+  全部位于本轮一字未动的 `connect-src`/`img-src` 指令内，与本轮唯一变量无关。
+- **覆盖方式**：Windows 打包发版时按既有发版回归顺带确认应用可正常运行即可；
+  如需直接证据，§2 两条构建命令在 Windows 原样可复现（产物 `wmessage.exe`）。
 - 后续建议：`report-uri`/`report-to` 上报、CI 静态禁 eval 检查（可挂进
   tests-audit）、宽目标收紧另开 PR。
 
