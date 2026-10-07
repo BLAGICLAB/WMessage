@@ -132,21 +132,24 @@ connect-src 拦，不可用），输出贴进 §6 槽位，确认**不含 `unsaf
 ### 5.3 通过标准（硬 checklist）
 
 - [x] 应用挂载成功，无白屏
-- [ ] 9 主视图逐个打开，无 CSP 违规
-- [ ] sigma/graphology 图谱画布渲染成功
-- [ ] xyflow 工作流画布渲染成功
-- [ ] 8 设置子页逐个打开，无违规
-- [ ] 任务卡输入链路走通
-- [ ] 挂件在真实 Tauri 窗口尝试过
-- [ ] WebView 采集链路自证可用（故意违规计到数）
-- [ ] 实际生效 CSP 不含 `unsafe-eval`
-- [ ] `securitypolicyviolation` 计数 = 0
-- [ ] CSP 相关 console error = 0
-- [ ] 两份实际 CSP 文本已记录（§6）
-- [ ] 两份 diff 只含 `unsafe-eval` 一处
-- [ ] `devCsp` 未修改、未参与（本文档 §0 技术依据）
-- [ ] 静态扫描六类已补扫（§3）
-- [ ] 回滚方式写明（§7）
+- [x] 9 主视图逐个打开，无 CSP 违规（人工走查，违规计数 0）
+- [x] sigma/graphology 图谱画布渲染成功（执行人贴证：`sigma-mouse` canvas 元素带实际尺寸 1350×542，非空白）
+- [x] xyflow 工作流画布渲染成功（人工走查工作流视图无异常）
+- [x] 8 设置子页逐个打开，无违规（人工走查）
+- [x] 任务卡输入链路走通（人工走查建卡）
+- [x] 挂件在真实 Tauri 窗口尝试过（人工走查；注：挂件窗口与主窗口各自独立的
+  JS 上下文，主窗采集器不覆盖挂件窗——挂件代码与主窗同一 bundle 文件，
+  静态扫描已覆盖其全部代码路径）
+- [x] WebView 采集链路自证可用（故意违规计到数）
+- [x] 实际生效 CSP 不含 `unsafe-eval`
+- [x] `securitypolicyviolation` 计数 = 0
+- [x] CSP 相关 console error = 0（人工走查未报告 CSP 类红错；仅见与 CSP 无关的
+  unregisterListener 观察项，见 §6）
+- [x] 两份实际 CSP 文本已记录（§6）
+- [x] 两份 diff 只含 `unsafe-eval` 一处
+- [x] `devCsp` 未修改、未参与（本文档 §0 技术依据）
+- [x] 静态扫描六类已补扫（§3）
+- [x] 回滚方式写明（§7）
 
 ## 6. 证据槽位（执行人填写）
 
@@ -158,11 +161,15 @@ connect-src 拦，不可用），输出贴进 §6 槽位，确认**不含 `unsaf
   `default-src 'self'; script-src 'self' blob: 'sha256-1f43Y9BoXoqMZaWAyW5m/cSEwwjHqHV3VSnzEv8a5zY=' 'sha256-paTFGwQz+RRdPH3SHoBNQdSD8DYyXa/3PWwRpZHnKcM='; font-src 'self'; worker-src 'self' blob:; connect-src ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost blob: data:`
 - 两份 diff（实测对照）：**仅 `'unsafe-eval'` 一处移除**；两个 sha256 哈希与基线
   逐字符相同（Tauri 注入的内联启动脚本未变），其余指令与顺序重排一致（语义无关）。
-- 两份 diff（应仅 `unsafe-eval` 一处）：见上方实测对照 ✓
-- 采集器自证结果（应计到 1 条 script-src 违规）：＿＿＿＿
-- 冒烟后 `securitypolicyviolation` 计数：＿＿＿＿
-- console CSP error 计数：＿＿＿＿
-- 截图/录屏路径：＿＿＿＿
+- 采集器自证结果：✓ 计到 1 条 `["script-src-elem @ :3 sample="]`，且 WebView 同时
+  弹出 `Refused to execute a script...` 强制拦截报错——采集与强制双确认。
+- 冒烟后 `securitypolicyviolation` 计数：**0**（`window.__csp.length` = 0，
+  `JSON.stringify(window.__csp)` = `"[]"`；清零→人工走查全部视图→读数）
+- console CSP error 计数：0（执行人走查未报告 CSP 类红错）
+- 截图/录屏路径：无（文本证据完备：两份 CSP 原文 + 计数器输出 + canvas 元素贴证）
+- 附带实证（Console 特权旁证，供参考）：在收紧版 Console 中 `eval('1')` 可执行——
+  WebKit 检查器 Console 是特权环境、不受页面 CSP 管辖，**不构成失败证据**；
+  页面上下文的封禁由自证步骤（内联脚本被拦）与走查零违规证明。
 - 失败点（若有：视图 + 违规指令 + 库名 + 调用栈）：＿＿＿＿
 - 非 CSP 观察项（不计入通过标准，另查）：冒烟首日实见一条
   `Unhandled Promise Rejection: TypeError: undefined is not an object
