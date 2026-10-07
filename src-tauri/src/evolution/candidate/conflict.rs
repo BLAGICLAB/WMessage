@@ -2,6 +2,10 @@
 //! **实验态（B4-5 登记）**：S0 观察态设计（OBSERVATION_STATUS §2/§3）——当前无生产调用
 //!（候选池暂不做冲突淘汰），等真数据后接线；接口按 spec 冻结。
 //!
+//! 批次 C（2026-10-08）：消解/排序/数值化的旧委托入口已按计划删除，逻辑唯
+//! 一存活于 `crate::evolution::strategy`（trait 默认实现）；本文件保留冲突
+//! 谓词（is_conflict/find_conflict，数据层语义）与回归测试（走 trait 路径）。
+//!
 //! spec R4：
 //! - 冲突解决：同层同 target 按 impact 排序；跨层按优先级
 //!
@@ -12,24 +16,6 @@ use super::entry::ProposalEntry;
 use crate::evolution::change::EvolutionLayer;
 use crate::evolution::proposal::ImpactLevel;
 use crate::evolution::strategy::EvolutionPolicy;
-
-/// 跨层优先级（数字越小优先级越高）。
-/// 迁移委托（批次 B-1）：逻辑已迁 `strategy` 层默认实现，此处保持零逻辑
-/// 委托（批次 A §5 迁移映射 / 不变式 10：函数体超过一行委托即 CI fail）。
-#[deprecated(
-    note = "批次 B-1 迁移：改用 strategy::DefaultEvolutionPolicy（order_entries/layer 优先级随其内部实现）"
-)]
-pub fn layer_priority(layer: EvolutionLayer) -> u32 {
-    crate::evolution::strategy::layer_priority(layer)
-}
-
-/// impact 数值化（用于排序）。迁移委托（批次 B-1）：同上，零逻辑。
-#[deprecated(
-    note = "批次 B-1 迁移：改用 strategy::DefaultEvolutionPolicy（impact 数值化随其内部实现）"
-)]
-pub fn impact_ord(impact: ImpactLevel) -> u32 {
-    crate::evolution::strategy::impact_ord(impact)
-}
 
 /// 是否冲突（同 proposal_id 不算自比冲突；同层 + 同 target）
 pub fn is_conflict(a: &ProposalEntry, b: &ProposalEntry) -> bool {
@@ -49,41 +35,15 @@ pub fn find_conflict<'a>(
         .find(|e| is_conflict(e, new) && e.proposal_id != new.proposal_id)
 }
 
-/// 冲突解决：保留胜者，丢弃败者
-///
-/// 规则：
-/// - impact 不同：higher impact 胜
-/// - impact 相同：older (created_at_ms 更小) 胜
-/// - 返回 (winner, loser)
-///
-/// 迁移委托（批次 B-1）：逻辑已迁 `strategy::DefaultEvolutionPolicy::resolve`，
-/// 此处零逻辑转换返回元组形态（兼容既有调用方/测试）。
-#[deprecated(
-    note = "批次 B-1 迁移：改用 strategy::EvolutionPolicy::resolve（默认实现 DefaultEvolutionPolicy）"
-)]
-pub fn resolve_conflict<'a>(
-    a: &'a ProposalEntry,
-    b: &'a ProposalEntry,
-) -> (&'a ProposalEntry, &'a ProposalEntry) {
-    let r = crate::evolution::strategy::DefaultEvolutionPolicy.resolve(a, b);
-    (r.winner, r.loser)
-}
-
-/// 跨层排序：先按 layer_priority 升序，再按 impact 降序，最后按 created_at 升序
-///
-/// 迁移委托（批次 B-1）：逻辑已迁 `strategy::DefaultEvolutionPolicy::order_entries`，
-/// 此处零逻辑委托。
-#[deprecated(
-    note = "批次 B-1 迁移：改用 strategy::EvolutionPolicy::order_entries（默认实现 DefaultEvolutionPolicy）"
-)]
-pub fn sort_entries_cross_layer(entries: &mut Vec<ProposalEntry>) {
-    crate::evolution::strategy::DefaultEvolutionPolicy.order_entries(entries);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::evolution::proposal::{ProposalOrigin, ProposalTarget};
+    use crate::evolution::strategy::{DefaultEvolutionPolicy, EvolutionPolicy};
+
+    fn policy() -> DefaultEvolutionPolicy {
+        DefaultEvolutionPolicy
+    }
 
     fn mk(
         id: &str,
@@ -237,9 +197,9 @@ mod tests {
             "p1".into(),
             2000,
         );
-        let (winner, loser) = resolve_conflict(&a, &b);
-        assert_eq!(winner.proposal_id, "b"); // High 胜
-        assert_eq!(loser.proposal_id, "a");
+        let r = policy().resolve(&a, &b);
+        assert_eq!(r.winner.proposal_id, "b"); // High 胜
+        assert_eq!(r.loser.proposal_id, "a");
     }
 
     #[test]
@@ -258,9 +218,9 @@ mod tests {
             "p1".into(),
             2000,
         );
-        let (winner, loser) = resolve_conflict(&older, &newer);
-        assert_eq!(winner.proposal_id, "old");
-        assert_eq!(loser.proposal_id, "new");
+        let r = policy().resolve(&older, &newer);
+        assert_eq!(r.winner.proposal_id, "old");
+        assert_eq!(r.loser.proposal_id, "new");
     }
 
     // ─── 跨层排序 ───
@@ -297,7 +257,7 @@ mod tests {
                 1000,
             ),
         ];
-        sort_entries_cross_layer(&mut entries);
+        policy().order_entries(&mut entries);
         // 期望顺序：Policy 优先（priority=1），按 impact 降序，age 升序
         //   c (Policy, High, 500)
         //   b (Policy, Low, 1000)
@@ -313,18 +273,39 @@ mod tests {
 
     #[test]
     fn layer_priority_locked() {
-        assert_eq!(layer_priority(EvolutionLayer::Parameter), 0);
-        assert_eq!(layer_priority(EvolutionLayer::Policy), 1);
-        assert_eq!(layer_priority(EvolutionLayer::ToolSchema), 2);
-        assert_eq!(layer_priority(EvolutionLayer::Skill), 3);
-        assert_eq!(layer_priority(EvolutionLayer::PromptHint), 4);
-        assert_eq!(layer_priority(EvolutionLayer::Code), 5);
+        assert_eq!(
+            crate::evolution::strategy::layer_priority(EvolutionLayer::Parameter),
+            0
+        );
+        assert_eq!(
+            crate::evolution::strategy::layer_priority(EvolutionLayer::Policy),
+            1
+        );
+        assert_eq!(
+            crate::evolution::strategy::layer_priority(EvolutionLayer::ToolSchema),
+            2
+        );
+        assert_eq!(
+            crate::evolution::strategy::layer_priority(EvolutionLayer::Skill),
+            3
+        );
+        assert_eq!(
+            crate::evolution::strategy::layer_priority(EvolutionLayer::PromptHint),
+            4
+        );
+        assert_eq!(
+            crate::evolution::strategy::layer_priority(EvolutionLayer::Code),
+            5
+        );
     }
 
     #[test]
     fn impact_ord_locked() {
-        assert_eq!(impact_ord(ImpactLevel::High), 2);
-        assert_eq!(impact_ord(ImpactLevel::Medium), 1);
-        assert_eq!(impact_ord(ImpactLevel::Low), 0);
+        assert_eq!(crate::evolution::strategy::impact_ord(ImpactLevel::High), 2);
+        assert_eq!(
+            crate::evolution::strategy::impact_ord(ImpactLevel::Medium),
+            1
+        );
+        assert_eq!(crate::evolution::strategy::impact_ord(ImpactLevel::Low), 0);
     }
 }

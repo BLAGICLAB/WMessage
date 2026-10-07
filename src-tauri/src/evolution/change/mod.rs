@@ -12,8 +12,8 @@ pub mod record;
 pub mod status;
 
 pub use derive::{
-    derive_change_id, derive_layer, derive_mem_key, from_proposal, passes_auto_apply_gate,
-    unique_change_id_for, DEFAULT_SCHEMA_VERSION,
+    derive_change_id, derive_layer, derive_mem_key, from_proposal, unique_change_id_for,
+    DEFAULT_SCHEMA_VERSION,
 };
 pub use record::{
     append as append_change, find_by_id, find_children, find_roots, read_all, ApprovalSource,

@@ -129,7 +129,7 @@ impl ChangeStatus {
 pub enum ApprovalSource {
     /// 还没批准（Pending 状态时）
     Pending,
-    /// 系统自动应用（满足 auto_apply_gate 后走 apply 路径）
+    /// 系统自动应用（满足策略层 gate 后走 apply 路径）
     AutoApplied,
     /// 人工批准（R5 决策面板批准后走 apply 路径）
     HumanApproved,

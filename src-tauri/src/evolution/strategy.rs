@@ -303,10 +303,12 @@ mod tests {
         assert_eq!(policy.importance(ImpactLevel::Low), 3);
     }
 
-    // ─── 消解/排序：新旧路径快照对照（serde_json 字符串相等 + 字面量预期）───
+    // ─── 消解/排序回归：fixture 定值快照（serde_json 字符串相等 + 字面量预期）───
+    // 批次 C 注：旧委托入口已删除，本测试即消解/排序的唯一回归锚
+    //（等价对照在批次 B-1 的 12 例穷举中完成过，随旧入口一并退役）
 
     #[test]
-    fn snapshot_resolve_and_order_old_new_paths_identical() {
+    fn snapshot_resolve_and_order_regression() {
         let policy = DefaultEvolutionPolicy;
         let a = mk(
             "a",
@@ -330,36 +332,20 @@ mod tests {
             3000,
         );
 
-        // 旧路径（conflict.rs 公开入口，零逻辑委托——委托目标即本 trait 实现）
-        let mut old_sorted = vec![b.clone(), c.clone(), a.clone()];
-        super::super::candidate::conflict::sort_entries_cross_layer(&mut old_sorted);
-        let old_pair = super::super::candidate::conflict::resolve_conflict(&a, &b);
+        let mut sorted = vec![b.clone(), c.clone(), a.clone()];
+        policy.order_entries(&mut sorted);
+        let pair = policy.resolve(&a, &b);
 
-        // 新路径（trait 直调）
-        let mut new_sorted = vec![b.clone(), c.clone(), a.clone()];
-        policy.order_entries(&mut new_sorted);
-        let new_pair = policy.resolve(&a, &b);
-
-        let old_json = serde_json::to_string(&serde_json::json!({
-            "order": old_sorted.iter().map(|e| e.proposal_id.clone()).collect::<Vec<_>>(),
-            "winner": old_pair.0.proposal_id,
-            "loser": old_pair.1.proposal_id,
+        let json = serde_json::to_string(&serde_json::json!({
+            "order": sorted.iter().map(|e| e.proposal_id.clone()).collect::<Vec<_>>(),
+            "winner": pair.winner.proposal_id,
+            "loser": pair.loser.proposal_id,
         }))
         .unwrap();
-        let new_json = serde_json::to_string(&serde_json::json!({
-            "order": new_sorted.iter().map(|e| e.proposal_id.clone()).collect::<Vec<_>>(),
-            "winner": new_pair.winner.proposal_id,
-            "loser": new_pair.loser.proposal_id,
-        }))
-        .unwrap();
-        assert_eq!(old_json, new_json);
 
         // 字面量预期（fixture 定值）：c(Parameter/Low) 先、b(High) 次、a(Medium)
         // 后；b impact 高于 a → b 胜 a 败
-        assert_eq!(
-            old_json,
-            r#"{"loser":"a","order":["c","b","a"],"winner":"b"}"#
-        );
+        assert_eq!(json, r#"{"loser":"a","order":["c","b","a"],"winner":"b"}"#);
     }
 
     #[test]

@@ -23,21 +23,6 @@ use super::proposal::{EvolutionProposal, ImpactLevel, ProposalCategory};
 use crate::evolution::strategy::EvolutionPolicy;
 use crate::memory::store::{self, NewItem};
 
-/// 自动应用门槛（纯函数）：仅 MemoryHint + High/Medium。
-///
-/// 迁移委托（批次 B-2）：判定逻辑已迁 `strategy::DefaultEvolutionPolicy::gate`
-///（白名单形式，与本函数迁移前语义逐输入等价——strategy.rs 12 例等价穷举钉死），
-/// 此处零逻辑委托。生产调用方为 evolution/mod.rs 的 gated 过滤。
-#[deprecated(
-    note = "批次 B-2 迁移：改用 strategy::EvolutionPolicy::gate（GateDecision::Approved 即本函数 true）"
-)]
-pub(crate) fn auto_apply_gate(p: &EvolutionProposal) -> bool {
-    matches!(
-        crate::evolution::strategy::DefaultEvolutionPolicy.gate(p),
-        crate::evolution::strategy::GateDecision::Approved
-    )
-}
-
 /// 提案对应的记忆幂等 key（tags[0]）。
 pub fn evolution_key(proposal_id: &str) -> String {
     format!("evo:{proposal_id}")
@@ -67,7 +52,7 @@ pub struct ApplyReport {
 /// 应用单条提案（纯函数内核，注入连接与向量，内存库可单测）：
 /// 幂等查重 → 写 lesson 记忆。语义去重由 `insert_item` 承担（≥0.92 合并更新）。
 ///
-/// 调用前先过 `auto_apply_gate`；本函数不再重复判定类别/门槛。
+/// 调用前先过策略层 gate（strategy::EvolutionPolicyPolicy 见 strategy.rs）；本函数不再重复判定类别/门槛。
 /// B2-1（P1-EV3）幂等双保险：`find_by_key_tag` 只认 tags[0]，lesson 被 merge
 /// 吸收/挪位后 key 查不到会重复应用——补两层残留复查：
 /// ① key tag 出现在**任意** tag 位（挪位不丢）；② 同 kind=lesson 且内容逐字相同
@@ -152,7 +137,7 @@ pub fn append_applied_record(
 
 /// 门面：consolidate 反思后的应用入口（`post_consolidation` 调用）。
 ///
-/// 入参应已过 `auto_apply_gate`。内部派生独立阻塞任务（嵌入在持锁前算，
+/// 入参应已过策略层 gate。内部派生独立阻塞任务（嵌入在持锁前算，
 /// 与 memory 门面层同纪律），fire-and-forget：失败只进 audit / eprintln，
 /// 不影响 consolidate 主链路。
 pub fn apply_from_consolidation(proposals: Vec<EvolutionProposal>) {
@@ -395,6 +380,7 @@ pub fn apply_from_consolidation(proposals: Vec<EvolutionProposal>) {
 mod tests {
     use super::*;
     use crate::evolution::proposal::{Evidence, ProposalOrigin, ProposalTarget, Suggestion};
+    use crate::evolution::strategy::DefaultEvolutionPolicy;
 
     fn mem_conn() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
@@ -426,27 +412,34 @@ mod tests {
     }
 
     // ─── 门槛 ───
+    // （批次 C：auto_apply_gate 委托入口已删除，回归断言直走策略层 trait；
+    //   与 strategy.rs 的 12 例等价穷举互为镜像）
+
+    fn gate_approved(p: &EvolutionProposal) -> bool {
+        use crate::evolution::strategy::GateDecision;
+        matches!(DefaultEvolutionPolicy.gate(p), GateDecision::Approved)
+    }
 
     #[test]
     fn gate_passes_high_and_medium_memory_hint() {
-        assert!(auto_apply_gate(&make_proposal("h", ImpactLevel::High)));
-        assert!(auto_apply_gate(&make_proposal("m", ImpactLevel::Medium)));
+        assert!(gate_approved(&make_proposal("h", ImpactLevel::High)));
+        assert!(gate_approved(&make_proposal("m", ImpactLevel::Medium)));
     }
 
     #[test]
     fn gate_rejects_low() {
-        assert!(!auto_apply_gate(&make_proposal("l", ImpactLevel::Low)));
+        assert!(!gate_approved(&make_proposal("l", ImpactLevel::Low)));
     }
 
     #[test]
     fn gate_rejects_non_memory_hint() {
         let mut p = make_proposal("p", ImpactLevel::High);
         p.category = ProposalCategory::PromptHint;
-        assert!(!auto_apply_gate(&p));
+        assert!(!gate_approved(&p));
         p.category = ProposalCategory::ToolSchemaHint;
-        assert!(!auto_apply_gate(&p));
+        assert!(!gate_approved(&p));
         p.category = ProposalCategory::SkillHint;
-        assert!(!auto_apply_gate(&p));
+        assert!(!gate_approved(&p));
     }
 
     // ─── 应用与幂等 ───
@@ -563,7 +556,7 @@ mod tests {
         let p = make_proposal("low1", ImpactLevel::Low);
         assert!(
             super::super::change::derive::auto_applied_from_proposal(&p, 1000).is_err(),
-            "Low 不过 auto_apply_gate，CR 构造应拒绝"
+            "Low 不过策略层 gate，CR 构造应拒绝"
         );
     }
 

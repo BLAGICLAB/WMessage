@@ -25,7 +25,15 @@ use tauri::AppHandle;
 use crate::audit::AuditLevel;
 use crate::db::paths;
 use crate::evolution::activation::ActivationState;
-use crate::evolution::apply::auto_apply_gate;
+use crate::evolution::strategy::{DefaultEvolutionPolicy, EvolutionPolicy};
+
+/// gate 谓词（批次 C：auto_apply_gate 委托入口已删除，直连策略层 trait）
+fn gate_approved(p: &crate::evolution::proposal::EvolutionProposal) -> bool {
+    matches!(
+        DefaultEvolutionPolicy.gate(p),
+        crate::evolution::strategy::GateDecision::Approved
+    )
+}
 use crate::evolution::change::{self, ChangeRecord, ChangeStatus};
 use crate::evolution::proposal::{is_reversible, EvolutionProposal};
 
@@ -196,10 +204,8 @@ pub async fn shadow_apply_for_batch<S: ShadowSink>(
     proposals: Vec<EvolutionProposal>,
     sink: &S,
 ) -> ShadowReport {
-    let gated: Vec<EvolutionProposal> = proposals
-        .into_iter()
-        .filter(|p| auto_apply_gate(p))
-        .collect();
+    let gated: Vec<EvolutionProposal> =
+        proposals.into_iter().filter(|p| gate_approved(p)).collect();
 
     let mut written = 0usize;
     let mut failed = 0usize;
@@ -250,7 +256,7 @@ pub async fn shadow_apply_for_batch<S: ShadowSink>(
 /// Generic 版本（R7→A）：可注入 reversibility 检查（供测试）
 ///
 /// 流程：
-/// 1. 过 auto_apply_gate（合规性）
+/// 1. 过策略层 gate（合规性）
 /// 2. 过 is_reversible_check（可逆性）
 /// 3. 写 evolution-changes.jsonl
 ///
@@ -265,7 +271,7 @@ pub async fn shadow_apply_for_batch_with_reversibility<S: ShadowSink>(
 ) -> ShadowReport {
     let gated: Vec<EvolutionProposal> = proposals
         .into_iter()
-        .filter(|p| auto_apply_gate(p))
+        .filter(|p| gate_approved(p))
         .filter(|p| is_reversible_check(p))
         .collect();
 
@@ -306,7 +312,7 @@ pub async fn shadow_apply_for_batch_with_reversibility<S: ShadowSink>(
 /// 便捷包装（apply.rs 调用入口；R7→A→B 后唯一对外入口）
 ///
 /// 流程（B 阶段，v4.1 §12.7 + B 校准前置）：
-/// 1. 过 auto_apply_gate（合规性）
+/// 1. 过策略层 gate（合规性）
 /// 2. 过 is_reversible（可逆性）
 /// 3. 读 activation_state（bot-config.json）
 /// 4. 按状态路由：
@@ -319,10 +325,8 @@ pub async fn shadow_apply_for_batch_with_app(
 ) -> ShadowReport {
     use crate::evolution::activation::{evaluate_s2, S2Decision};
 
-    let gated: Vec<EvolutionProposal> = proposals
-        .into_iter()
-        .filter(|p| auto_apply_gate(p))
-        .collect();
+    let gated: Vec<EvolutionProposal> =
+        proposals.into_iter().filter(|p| gate_approved(p)).collect();
     let config_path = paths::data_dir(app).join("bot-config.json");
     let state = crate::evolution::activation::load_state_from_file(&config_path);
     let path = paths::data_dir(app).join("evolution-changes.jsonl");
@@ -492,7 +496,7 @@ pub async fn shadow_apply_for_batch_with_app(
 /// 这是一个纯函数（不依赖 AppHandle/Tauri runtime）让 apply.rs 的
 /// 集成路径可测试：
 /// - flag = false → 空（不火 shadow）
-/// - flag = true → 过 auto_apply_gate 的 proposal（与 shadow_apply 内部过滤一致）
+/// - flag = true → 过策略层 gate 的 proposal（与 shadow_apply 内部过滤一致）
 ///
 /// 注意：apply.rs 里调用时同时依赖本函数的返回 + `is_enabled(&app)`，
 /// 测试两者全覆即等于「apply_from_consolidation 集成路径」测试。
@@ -505,7 +509,7 @@ pub fn shadow_eligible_proposals(
     }
     proposals
         .iter()
-        .filter(|p| auto_apply_gate(p))
+        .filter(|p| gate_approved(p))
         .cloned()
         .collect()
 }
@@ -777,8 +781,8 @@ mod tests {
             })
             .collect();
 
-        // apply 理论应写数 = 过 auto_apply_gate 的 proposal 数
-        let apply_expected_count = proposals.iter().filter(|p| auto_apply_gate(p)).count();
+        // apply 理论应写数 = 过策略层 gate 的 proposal 数
+        let apply_expected_count = proposals.iter().filter(|p| gate_approved(p)).count();
         assert!(apply_expected_count > 0, "至少要有 1 条合规 proposal");
 
         // shadow 跑同一批 proposal
@@ -1005,11 +1009,11 @@ mod tests {
     }
 
     #[test]
-    fn auto_apply_gate_filter_works() {
+    fn gate_filter_works() {
         let compliant = mk_proposal("c1", ProposalCategory::MemoryHint, ImpactLevel::High);
         let non_compliant = mk_proposal("nc1", ProposalCategory::PromptHint, ImpactLevel::High);
-        assert!(auto_apply_gate(&compliant));
-        assert!(!auto_apply_gate(&non_compliant));
+        assert!(gate_approved(&compliant));
+        assert!(!gate_approved(&non_compliant));
     }
 
     // ─── shadow_eligible_proposals 集成决策测试（老板 13:30 拍板）───

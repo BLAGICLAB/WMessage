@@ -23,10 +23,7 @@ pub mod entry;
 pub mod mapping;
 pub mod ttl;
 
-pub use conflict::{
-    find_conflict, impact_ord, is_conflict, layer_priority, resolve_conflict,
-    sort_entries_cross_layer,
-};
+pub use conflict::{find_conflict, is_conflict};
 pub use derive::{
     derive_change_id as derive_change_id_in_candidate, derive_layer as derive_layer_in_candidate,
     derive_mem_key, from_proposal,

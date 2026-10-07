@@ -4,7 +4,7 @@
 //! - `change_id`           = `"chg-" + proposal_id`
 //! - `schema_version`      = 1（默认；R2+ bump）
 //! - `hard_constraint_compliance` = category+impact 判定（仅约束 5/6，
-//!   见 passes_auto_apply_gate 文档；ChangeRecord 字段名=jsonl schema 不动）
+//!   见 strategy::gate 文档；ChangeRecord 字段名=jsonl schema 不动）
 //! - `layer`               = 从 category 派生（4/6 层覆盖；Parameter/Code 不在当前 category）
 //! - `mem_key`             = `"evo:" + proposal_id`
 //!
@@ -33,21 +33,6 @@ pub const DEFAULT_SCHEMA_VERSION: u32 = 1;
 /// **只检硬约束 5/6**（仅 MemoryHint + High/Medium 可自动应用）——其余约束
 /// 由 apply 入口校验，本函数**不代表 9 条全合规**——这正是改名的原因
 ///（旧名让调用方按名字推断成全合规，可能跳过下游复核）。
-/// impact 用显式白名单（High | Medium）：未来新增变体必须显式 opt-in。
-///
-/// 迁移委托（批次 B-1）：判定逻辑已迁 `strategy::DefaultEvolutionPolicy::gate`
-///（白名单形式，与本函数迁移前语义在当前 3 impact 变体下逐输入等价——等价
-/// 对照测试钉死），此处零逻辑委托。
-#[deprecated(
-    note = "批次 B-1 迁移：改用 strategy::EvolutionPolicy::gate（GateDecision::Approved 即本函数 true）"
-)]
-pub fn passes_auto_apply_gate(p: &EvolutionProposal) -> bool {
-    matches!(
-        crate::evolution::strategy::DefaultEvolutionPolicy.gate(p),
-        crate::evolution::strategy::GateDecision::Approved
-    )
-}
-
 /// layer 从 category 派生（DERIVABILITY.md 字段 1，部分覆盖）
 ///
 /// 4/6 层映射；Parameter / Code 两层当前无 category 对应，
@@ -67,7 +52,7 @@ pub fn derive_layer(category: ProposalCategory) -> EvolutionLayer {
 /// - compliance=true  → Pending（待沙箱或批准）
 /// - compliance=false → Rejected（SystemRejected）
 pub fn from_proposal(p: &EvolutionProposal, now_ms: i64) -> ChangeRecord {
-    // 判定直连策略层 trait：passes_auto_apply_gate 已标 #[deprecated]，
+    // 判定直连策略层 trait（批次 C：旧委托入口已删除），
     // 生产构造再经它会每次构建报 deprecation warning——旧委托壳仅留给
     // 存量测试，等其全部改道后删除
     let compliance = matches!(
@@ -129,7 +114,7 @@ pub fn unique_change_id_for(rows: &[ChangeRecord], proposal_id: &str) -> String 
 /// 门，不是 lesson 路径的门——但 CR 形态仍走满合法流转
 ///（Pending → Shadowing → ShadowPassed → Approved → Active，中间态瞬时通过），
 /// 不裸写 status 绕状态机（Pending → Active 直跳被 status.rs 硬约束②显式拦截，
-/// 评审 HIGH）。入口提案须已过 auto_apply_gate（compliance=false 的
+/// 评审 HIGH）。入口提案须已过策略层 gate（compliance=false 的
 /// from_proposal 是终态 Rejected，流转即 Err）。
 pub fn auto_applied_from_proposal(
     p: &EvolutionProposal,
@@ -152,6 +137,7 @@ mod tests {
     use crate::evolution::proposal::{
         Evidence, ImpactLevel, ProposalCategory, ProposalOrigin, ProposalTarget, Suggestion,
     };
+    use crate::evolution::strategy::DefaultEvolutionPolicy;
 
     fn mk_proposal(id: &str, cat: ProposalCategory, impact: ImpactLevel) -> EvolutionProposal {
         EvolutionProposal {
@@ -190,19 +176,28 @@ mod tests {
     #[test]
     fn gate_true_for_memory_high() {
         let p = mk_proposal("p1", ProposalCategory::MemoryHint, ImpactLevel::High);
-        assert!(passes_auto_apply_gate(&p));
+        assert!(matches!(
+            DefaultEvolutionPolicy.gate(&p),
+            crate::evolution::strategy::GateDecision::Approved
+        ));
     }
 
     #[test]
     fn gate_true_for_memory_medium() {
         let p = mk_proposal("p1", ProposalCategory::MemoryHint, ImpactLevel::Medium);
-        assert!(passes_auto_apply_gate(&p));
+        assert!(matches!(
+            DefaultEvolutionPolicy.gate(&p),
+            crate::evolution::strategy::GateDecision::Approved
+        ));
     }
 
     #[test]
     fn gate_false_for_memory_low() {
         let p = mk_proposal("p1", ProposalCategory::MemoryHint, ImpactLevel::Low);
-        assert!(!passes_auto_apply_gate(&p));
+        assert!(!matches!(
+            DefaultEvolutionPolicy.gate(&p),
+            crate::evolution::strategy::GateDecision::Approved
+        ));
     }
 
     #[test]
@@ -213,7 +208,13 @@ mod tests {
             ProposalCategory::SkillHint,
         ] {
             let p = mk_proposal("p1", cat, ImpactLevel::High);
-            assert!(!passes_auto_apply_gate(&p), "{cat:?} 不应合规");
+            assert!(
+                !matches!(
+                    DefaultEvolutionPolicy.gate(&p),
+                    crate::evolution::strategy::GateDecision::Approved
+                ),
+                "{cat:?} 不应合规"
+            );
         }
     }
 
