@@ -355,6 +355,31 @@ fn recall_key_tag_update_and_delete() {
 }
 
 #[test]
+fn update_by_id_returns_affected_rows() {
+    let conn = mem_db();
+    let now = 1_000_000;
+    // 不存在的 id：Ok(0)——调用方（panel/consolidate/extract）据此判「未命中」，
+    // 不得假成功（0 行被忽略时并发删除窗口内的改写会静默丢失）
+    let rows = store::update_by_id(
+        &conn,
+        "no-such-id",
+        "x",
+        3,
+        "user_stated",
+        "fact",
+        None,
+        now,
+    )
+    .unwrap();
+    assert_eq!(rows, 0, "未命中返回 0 行");
+    store::insert_item(&conn, &item("fact", "上海"), None, now).unwrap();
+    let id = store::load_all(&conn).unwrap()[0].id.clone();
+    let rows =
+        store::update_by_id(&conn, &id, "北京", 3, "user_stated", "fact", None, now + 1).unwrap();
+    assert_eq!(rows, 1, "命中返回 1 行");
+}
+
+#[test]
 fn degraded_update_clears_stale_embedding() {
     let conn = mem_db();
     let now = 1_000_000;

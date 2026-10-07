@@ -309,7 +309,7 @@ pub fn apply_ops_with(
                     })
                     .expect("len>=2 已判定")
                     .clone();
-                store::update_by_id(
+                let rows = store::update_by_id(
                     &tx,
                     &target.id,
                     &truncate_chars(content, MAX_CONTENT_CHARS),
@@ -319,6 +319,11 @@ pub fn apply_ops_with(
                     emb,
                     now_ms,
                 )?;
+                // 目标行在快照后被并发删除（0 行）：跳过整条 op——拿着幻影
+                // target 继续删 drop_ids 会基于不成立的合并丢真数据
+                if rows == 0 {
+                    continue;
+                }
                 let drop_ids: Vec<String> = items
                     .into_iter()
                     .filter(|m| m.id != target.id)
@@ -349,7 +354,7 @@ pub fn apply_ops_with(
                 if is_lesson_row(&keep_item) || is_lesson_row(&drop_item) {
                     continue;
                 }
-                store::update_by_id(
+                let rows = store::update_by_id(
                     &tx,
                     &keep_item.id,
                     &truncate_chars(content, MAX_CONTENT_CHARS),
@@ -359,6 +364,10 @@ pub fn apply_ops_with(
                     emb,
                     now_ms,
                 )?;
+                // keep 行被并发删除（0 行）：跳过整条 op，drop 行保住不误删
+                if rows == 0 {
+                    continue;
+                }
                 report.contradictions += store::delete_by_ids(&tx, &[drop_id.clone()])?;
             }
             ConsolidateOp::Distill { ids, content } => {

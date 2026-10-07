@@ -477,7 +477,7 @@ pub fn update_by_id(
     kind: &str,
     embedding: Option<&[f32]>,
     now_ms: i64,
-) -> Result<(), String> {
+) -> Result<usize, String> {
     conn.execute(
         // CASE 里的 content 读到的是更新前的旧值，?1 是新 content——同一参数
         // 身兼两职是刻意的：内容真变了才换向量。动 SQL 时别拆 ?1，拆了就比错对象。
@@ -495,8 +495,9 @@ pub fn update_by_id(
             id,
         ],
     )
-    .map_err(|e| e.to_string())?;
-    Ok(())
+    .map_err(|e| e.to_string())
+    // 影响行数必须上浮：0 行 = id 未命中（查改之间被并发删除），调用方忽略
+    // 会把改写假成功——panel 报不存在、consolidate 跳过该 op 防幻影合并
 }
 
 /// 删除（remember_fact 空 value = 遗忘语义）：返回是否真删到

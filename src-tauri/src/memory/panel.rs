@@ -149,7 +149,7 @@ pub(crate) fn update_core(
     // 定向单查：不在写路径反序列化整表（~1MB 向量），同 stats_core 注释口径
     let existing =
         store::find_by_id(conn, id)?.ok_or_else(|| "记忆不存在或已被删除".to_string())?;
-    store::update_by_id(
+    let rows = store::update_by_id(
         conn,
         id,
         content,
@@ -159,6 +159,10 @@ pub(crate) fn update_core(
         embedding,
         now_ms,
     )?;
+    // 查改之间被并发删除：0 行不能当成功（假成功会让 UI 显示已保存的旧内容）
+    if rows == 0 {
+        return Err("记忆不存在或已被删除".into());
+    }
     let updated = store::find_by_id(conn, id)?
         .ok_or_else(|| "更新后读取失败（该记忆可能刚被并发删除，请刷新列表后重试）".to_string())?;
     Ok(MemItemView::from(&updated))

@@ -473,7 +473,13 @@ fn apply_adjudications(
                         emb.as_deref(),
                         now_ms,
                     ) {
-                        Ok(()) => counts.updated += 1,
+                        // 0 行 = 原条目在查改之间被并发删除：与存储故障同口径
+                        //（原条目已不在，无「覆盖」可言），计 failed 留待下轮
+                        Ok(0) => {
+                            eprintln!("[memory] 裁决改写未命中（已并发删除，跳过）：{id}");
+                            counts.failed += 1;
+                        }
+                        Ok(_) => counts.updated += 1,
                         Err(e) => {
                             // 改写存储故障：原条目未动，计 failed 留待下轮抽取重试
                             //（不插入兜底——空 tags 新条目若 merge 到原行会覆盖掉 key）
