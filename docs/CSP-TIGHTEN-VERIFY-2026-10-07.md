@@ -77,10 +77,14 @@ src-tauri/tauri.csp-verify.json（临时构建覆盖，已提交）:
 
 ### 5.1 基线存档（wmessage-csp-baseline）
 
-1. 打开产物，右键 → Inspect 打开 DevTools，Console 粘贴：
+1. 打开产物，右键 → Inspect 打开 DevTools，Console 粘贴（**实测修正**：Tauri 2
+   在 macOS 经自定义协议**响应头**下发 CSP，不用 meta 标签——meta 查询恒
+   undefined，已从手册移除）：
    ```js
-   document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.content
+   fetch(location.href).then(r => r.headers.get('content-security-policy') || '(null，走备用)')
    ```
+   备用方法：Web Inspector → **Network** 标签 → 刷新页面 → 点第一个 document
+   请求 → Response Headers → `Content-Security-Policy`。
 2. 把输出**原文**粘贴到 §6 的「基线实际 CSP」槽位。检查它含 `unsafe-eval`。
 
 ### 5.2 收紧版冒烟（wmessage-csp-tightened）
@@ -103,8 +107,8 @@ src-tauri/tauri.csp-verify.json（临时构建覆盖，已提交）:
 （我们故意注入的内联脚本）。计到 = 采集器与 CSP 强制都工作，`window.__csp = []` 清零，
 进入步骤 2。**计不到 = 停，记录，本报告作废。**
 
-**步骤 2：抓收紧版实际 CSP**：粘贴 5.1 的查询片段，输出贴进 §6 槽位，
-确认**不含 `unsafe-eval`**（nonce 由 Tauri 注入属预期，不算差异）。
+**步骤 2：抓收紧版实际 CSP**：粘贴 5.1 修正后的 fetch 片段（或 Network 备用法），
+输出贴进 §6 槽位，确认**不含 `unsafe-eval`**（nonce 由 Tauri 注入属预期，不算差异）。
 
 **步骤 3：主视图逐个**（每开一个扫一眼 Console 无红色 CSP 报错）：
 首页 → 图谱（sigma/graphology 画布必须真渲染出画布，不是空白）→ 归档 → 工作区 →
@@ -126,7 +130,7 @@ src-tauri/tauri.csp-verify.json（临时构建覆盖，已提交）:
 
 ### 5.3 通过标准（硬 checklist）
 
-- [ ] 应用挂载成功，无白屏
+- [x] 应用挂载成功，无白屏
 - [ ] 9 主视图逐个打开，无 CSP 违规
 - [ ] sigma/graphology 图谱画布渲染成功
 - [ ] xyflow 工作流画布渲染成功
@@ -153,6 +157,13 @@ src-tauri/tauri.csp-verify.json（临时构建覆盖，已提交）:
 - console CSP error 计数：＿＿＿＿
 - 截图/录屏路径：＿＿＿＿
 - 失败点（若有：视图 + 违规指令 + 库名 + 调用栈）：＿＿＿＿
+- 非 CSP 观察项（不计入通过标准，另查）：冒烟首日实见一条
+  `Unhandled Promise Rejection: TypeError: undefined is not an object
+  (evaluating 'listeners[eventId].handlerId')`——Tauri 注入 user-script 的
+  `unregisterListener` 反注册竞态（同 eventId 被二次 unlisten 或反注册已
+  移除的监听；调用链 `user-script:10` ← bundle `_unlisten`）。与 CSP 无关
+  （形态非 securitypolicyviolation，且 user-script 不受页面 CSP 约束），
+  不影响本验证判定；double-unlisten 源头待另批排查。
 - 执行人 / 日期：＿＿＿＿
 
 ## 7. 通过后的配置改动（单独 commit，复核确认后执行）
