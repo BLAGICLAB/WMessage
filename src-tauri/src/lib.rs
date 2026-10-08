@@ -503,6 +503,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             copy_file_with_title,
             focus_main_window,
+            audit::frontend_event_report,
             bot_skills::open_file_path,
             bot_skills::pick_files_dialog,
             bot_skills::delete_bound_file,

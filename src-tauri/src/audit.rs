@@ -434,6 +434,43 @@ pub fn write_event<R: tauri::Runtime>(
     write_at(&p, level, event, &kv_refs);
 }
 
+/// 前端上报去重闸：同签名（event+detail 指纹）只记首条，签名集上限 32——
+/// 防 WebView 内违规风暴刷爆审计日志（重复违规对排查无增量价值）。
+/// Vec 而非 HashSet：static 初始化需 const（HashSet::new 非 const），
+/// 容量 32 内线性查找代价可忽略。
+static FRONTEND_REPORT_SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+const FRONTEND_REPORT_MAX_SIGNATURES: usize = 32;
+
+/// 前端事件上报 → 审计日志（批次 W1）。
+/// 目前唯一来源：WebView 的 securitypolicyviolation（CSP 违规，生产 csp 已
+/// 收紧，运行时违规必须可感知）。签名去重防风暴；容量满后新签名静默丢弃
+///（最早的重复依然会被去重，丢弃的是「全新违例」，可接受——审计非计量）。
+#[tauri::command]
+pub fn frontend_event_report(app: AppHandle, event: String, detail: String) -> Result<(), String> {
+    const MAX_DETAIL: usize = 200;
+    // 指纹按字符截断（40 字符）：detail 常含中文，按字节切会切在多字节字符
+    // 中间直接 panic——审计路径禁 panic
+    let fingerprint = format!("{event}|{}", detail.chars().take(40).collect::<String>());
+    {
+        let mut seen = FRONTEND_REPORT_SEEN
+            .lock()
+            .map_err(|e| format!("前端上报去重表锁失败：{e}"))?;
+        if seen.len() >= FRONTEND_REPORT_MAX_SIGNATURES && !seen.contains(&fingerprint) {
+            return Ok(()); // 签名集满：静默丢弃全新违例（防风暴，审计非计量）
+        }
+        if !seen.contains(&fingerprint) {
+            seen.push(fingerprint);
+        }
+    }
+    write_event(
+        &app,
+        AuditLevel::Warn,
+        &format!("frontend.{event}"),
+        &[("detail", escape_for_log(&detail, MAX_DETAIL))],
+    );
+    Ok(())
+}
+
 /// 泛型 Runtime 的 ERROR 审计（profile/middleware 病态路径用）：
 /// 目录解析走 paths::probe_log_dir，写入走 write_at——与 write_event 同格式。
 pub(crate) fn write_error_audit<R: tauri::Runtime>(

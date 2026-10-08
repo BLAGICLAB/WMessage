@@ -40,6 +40,12 @@ if ! python3 tests-audit/audit_evolution_layering.py; then
     exit 1
 fi
 
+echo "[2.6/3] 前端禁动态求值静态守卫（CSP 收紧配套）"
+if ! python3 tests-audit/audit_no_eval.py; then
+    echo "✗ 前端禁 eval 守卫失败（评估见 docs/CSP-TIGHTEN-VERIFY-2026-10-07.md §8）" >&2
+    exit 1
+fi
+
 echo "[3/3] npm test (vitest run, 前端 unit 测试)"
 npm test
 
