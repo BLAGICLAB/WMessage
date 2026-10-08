@@ -47,12 +47,12 @@ fn trace_kv(trace: &ToolCallTrace, session_id: Option<&str>) -> Vec<(&'static st
     kv
 }
 
-/// 早退路径（pre_execute 拦截 / skill_on_step 熔断）的审计事件序列。
+/// 早退路径（per-tool 规则闸拦截 / skill_on_step 熔断）的审计事件序列。
 /// `tool.call` 已在入口发出，这里按写入顺序补齐后续事件并以 `tool.return` 配平，
 /// 否则统计面板出现「悬挂调用」（call > return）。
-/// 抽成纯函数：事件名 + kv + 顺序可单测（execute_tool 走泛型 Runtime + 注入（见 skill_e2e.rs 的 mock executor），
-/// 已可 mock；但具体工具执行仍需真实 FS / subprocess / 网络）；调用点只负责逐条 emit。
-/// - 拦截路径（err=None）：pre_execute.deny + tool.return(reason=denied)
+/// 抽成纯函数：事件名 + kv + 顺序可单测；调用点只负责逐条 emit。
+/// - 规则闸路径（err=None）：pre_execute.deny + tool.return(reason=denied_by_rule)
+///   （主事件名沿用 pre-execute 时代的 pre_execute.deny，日志消费方口径不变）
 /// - 熔断路径（err=Some）：skill_on_step_error（补 Warn 可见性）+ tool.return(reason=skill_step_failed)
 /// 两条路径都带 trace（session_id / turn / tool_call_id），与正常路径同口径。
 fn early_return_events(
@@ -84,7 +84,7 @@ fn early_return_events(
             "pre_execute.deny",
             with_ctx(vec![("tool", name.to_string())]),
         )),
-    }
+    };
     events.push((
         crate::audit::AuditLevel::Warn,
         "tool.return",
@@ -99,8 +99,8 @@ fn early_return_events(
 }
 
 /// 进程内执行工具，返回 (给模型的文本结果, 涉及的任务引用)
-/// `pub` 让 `bot_skills::run_skill_scheduler`（DSL 调度器）可调用，
-/// 不暴露给前端 — 通过 `is_atomic_tool` 黑名单 + pre-execute 校验保护。
+/// `pub` 让 `bot_skills::run_skill_scheduler`（DSL 调度器）可调用，不暴露给前端。
+/// 调用侧防护：per-tool 规则表闸 + subagent 白名单兜底 + skill 步骤钩子（本函数内）。
 /// 会话隔离：session_id 随调用链透传（DSL 调度器从 bot_chat 带下来），
 /// 无 StopGuard 时按交互执行处理（DSL 调度器只在聊天上下文里跑）。
 pub async fn execute_tool(
@@ -160,7 +160,7 @@ async fn traced_impl(
 }
 
 /// P3-c per-tool 规则闸（execute_tool_impl 的 0.5 步，抽离保持入口薄壳——
-/// audit_pre_step 的结构锚点锁要求 run_pre_execute/skill_on_step 落在函数头窗口）：
+/// 审计结构约束：skill_on_step 熔断检查紧跟工具调用入口）：
 /// deny → 硬拒（配平 tool.return + tool_rule.hit 审计）；
 /// ask → 强制确认（拒绝同样配平）；allow/无命中 → None 放行。
 async fn tool_rule_gate(
@@ -266,42 +266,13 @@ async fn execute_tool_impl(
     crate::audit::write_event(app, crate::audit::AuditLevel::Info, "tool.call", &call_kv);
     // 0.5 P3-c per-tool 规则表（Agent 透明化设计 §9.2-1）：deny 硬拒 / ask 强制确认 /
     // allow 到文件工具侧生效（bot_fs 两个 resolve 内接线）。Some = 已早退（配平完成），
-    // None = 放行走后续全局档。use_skill 豁免。函数体抽离保持 execute_tool_impl 入口薄壳
-    //（tests-audit 结构锚点锁 skill_on_step / run_pre_execute 在函数头窗口，audit_pre_step）。
+    // None = 放行走后续全局档。use_skill 豁免。函数体抽离保持 execute_tool_impl 入口薄壳。
     if name != "use_skill" {
         if let Some(denied) =
             tool_rule_gate(app, name, interactive, session_id, trace, &start).await
         {
             return denied;
         }
-    }
-    // 1. 后置拦截：原子黑名单（老板拍板）
-    //    仅作为 Skill 内部子步骤、不允许裸调的底层原子 Function → 硬锁阻断
-    //    只有 Skill 在 Running 状态时才放行；其他时候直接返回错误 + 提示走对应 Skill
-    // 抽象层：execute_tool 通过 middleware::run_pre_execute 调 pre-execute
-    // 任务卡执行流程（StopGuard.allow_atomic）视同 Skill 上下文放行——
-    // EXECUTE_SYSTEM_PROMPT 把 link_file_to_task 列为收尾动作，该流程没有 SkillRun，
-    // 不放行则 prompt 要求的核心动作必被自家网关否决。
-    // （create_word_revisions 不在原子黑名单，聊天/执行均可直调）
-    let active = crate::tool_guard::is_skill_active(app, session_id)
-        || stop.is_some_and(|s| s.allow_atomic());
-    if let crate::middleware::ExecutionDecision::Deny { reason } =
-        crate::middleware::run_pre_execute(app, name, active)
-    {
-        // tool.call 已发出，早退前必须配平 tool.return（reason=denied），
-        // 否则统计面板出现「悬挂调用」（call > return）
-        for (level, event, kv) in early_return_events(
-            name,
-            "denied",
-            start.elapsed().as_millis() as u64,
-            None,
-            session_id,
-            trace,
-        ) {
-            crate::audit::write_event(app, level, event, &kv);
-        }
-        // B1：denied 路径返回 Warn，与原 classify_text + tool_call_failed（⚠️ 检测）结果一致。
-        return crate::bot::registry::ToolResult::warn(reason, Vec::new());
     }
     // 2. Skill 调度器步骤钩子：活动技能时计数/熔断/动作记录（use_skill 自身跳过）
     if name != "use_skill" {
@@ -321,16 +292,15 @@ async fn execute_tool_impl(
             return crate::bot::registry::ToolResult::warn(e.to_string(), Vec::new());
         }
     }
-    // 1.6 SUBA-2（置于 skill 钩子后：tests-audit 结构锚点锁 skill_on_step 在函数头部窗口）：子 agent 会话白名单闸（设计 §5.1/§10 服务端强制）。
+    // 1.6（置于 skill 钩子后）：子 agent 会话白名单闸（设计 §5.1/§10 服务端强制）。
     // schema 层已按 profile 过滤（tools_json_for，递归双保险①），此处兜底：
     // 白名单外工具一律拒——含 spawn/check/cancel（递归禁用②的 dispatch 侧）与
     // 任务卡主状态写（主状态只读）。早退事件配平 tool.return。
     if let Some(ctx) = crate::tool_guard::subagent_ctx(session_id) {
         if !crate::bot::registry::profile_whitelist(ctx.profile).contains(&name) {
-            // OCR r2 high 采纳：不复用 early_return_events（那会发误导性的
-            // pre_execute.deny——本处 pre-execute 实际是通过的）。事件顺序：
-            // 先 subagent_whitelist_deny（真实原因，带 trace），再 tool.return
-            // 配平（reason=subagent_whitelist_deny，与 call 可按会话整轮对齐）。
+            // 事件顺序：先 subagent_whitelist_deny（真实原因，带 trace），再
+            // tool.return 配平（reason=subagent_whitelist_deny，与 call 可按会话整轮对齐）。
+            // 不复用 early_return_events（那是 skill_on_step 熔断专用形态）。
             let mut deny_kv: Vec<(&str, String)> = vec![
                 ("subagent_id", ctx.subagent_id.clone()),
                 ("profile", ctx.profile.as_str().to_string()),
@@ -607,35 +577,47 @@ mod early_return_events_tests {
     }
 
     #[test]
-    fn deny_path_emits_deny_then_balanced_tool_return() {
-        // 拦截路径：pre_execute.deny → tool.return（顺序敏感），含 reason=denied / exit_code=none / duration_ms
+    fn rule_gate_deny_path_emits_deny_then_balanced_tool_return() {
+        // 规则闸拦截路径：pre_execute.deny → tool.return（顺序敏感），
+        // reason=denied_by_rule / exit_code=none / duration_ms，事件带 trace 可整轮回放
         let trace = ToolCallTrace {
             turn: Some(2),
             tool_call_id: Some("call_abc".into()),
         };
         let evs = early_return_events(
             "create_word_revisions",
-            "denied",
+            "denied_by_rule",
             3,
             None,
             Some("sess-1"),
             &trace,
         );
-        assert_eq!(event_names(&evs), ["pre_execute.deny", "tool.return"]);
+        let names: Vec<&str> = evs.iter().map(|(_, e, _)| *e).collect();
+        assert_eq!(names, ["pre_execute.deny", "tool.return"]);
         assert!(evs
             .iter()
             .all(|(l, _, _)| *l == crate::audit::AuditLevel::Warn));
-        assert_eq!(kv_get(&evs[0].2, "tool"), Some("create_word_revisions"));
-        let ret = &evs[1].2;
-        assert_eq!(kv_get(ret, "tool"), Some("create_word_revisions"));
-        assert_eq!(kv_get(ret, "reason"), Some("denied"));
-        assert_eq!(kv_get(ret, "exit_code"), Some("none"));
-        assert_eq!(kv_get(ret, "duration_ms"), Some("3"));
-        // 两条事件都带 trace，可整轮回放
+        assert_eq!(
+            evs.iter()
+                .find(|(_, e, _)| *e == "pre_execute.deny")
+                .and_then(|(_, _, kv)| kv.iter().find(|(k, _)| *k == "tool"))
+                .map(|(_, v)| v.as_str()),
+            Some("create_word_revisions")
+        );
         for ev in &evs {
-            assert_eq!(kv_get(&ev.2, "session_id"), Some("sess-1"));
-            assert_eq!(kv_get(&ev.2, "turn"), Some("2"));
-            assert_eq!(kv_get(&ev.2, "tool_call_id"), Some("call_abc"));
+            let kv = &ev.2;
+            assert_eq!(
+                kv.iter()
+                    .find(|(k, _)| *k == "session_id")
+                    .map(|(_, v)| v.as_str()),
+                Some("sess-1")
+            );
+            assert_eq!(
+                kv.iter()
+                    .find(|(k, _)| *k == "turn")
+                    .map(|(_, v)| v.as_str()),
+                Some("2")
+            );
         }
     }
 

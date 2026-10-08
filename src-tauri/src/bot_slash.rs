@@ -31,11 +31,6 @@ pub struct StopGuard {
     flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
     interactive: bool,
     session_id: Option<String>,
-    /// 任务卡执行流程（run_task_in_chat / exec_steps）标记：
-    /// 该流程是「内置编排流」，与 Skill 同级——EXECUTE_SYSTEM_PROMPT 要求调
-    /// link_file_to_task 原子工具收尾，没有活动 SkillRun
-    /// 开门会被 AtomicGuard 硬拦（prompt 要求的核心动作被自家网关否决）。
-    allow_atomic: bool,
     /// 注册表句柄（阶段 3.3）：与构造时取的注入实例是同一个 `Mutex`，
     /// Drop 里拿不到 `app`，靠这份 Arc 注销
     registry: std::sync::Arc<crate::app_state::StopMap>,
@@ -46,24 +41,6 @@ impl StopGuard {
         app: &tauri::AppHandle<R>,
         interactive: bool,
         session_id: Option<String>,
-    ) -> Self {
-        Self::with_atomic(app, interactive, session_id, false)
-    }
-
-    /// 任务卡执行流程专用：放行原子工具（视为内置编排流，等价于 Skill Running 上下文）
-    pub fn new_task_exec<R: tauri::Runtime>(
-        app: &tauri::AppHandle<R>,
-        interactive: bool,
-        session_id: Option<String>,
-    ) -> Self {
-        Self::with_atomic(app, interactive, session_id, true)
-    }
-
-    fn with_atomic<R: tauri::Runtime>(
-        app: &tauri::AppHandle<R>,
-        interactive: bool,
-        session_id: Option<String>,
-        allow_atomic: bool,
     ) -> Self {
         let id = NEXT_STOP_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
         let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -76,14 +53,8 @@ impl StopGuard {
             flag,
             interactive,
             session_id,
-            allow_atomic,
             registry,
         }
-    }
-
-    /// 是否放行原子工具（仅任务卡执行流程为 true）
-    pub(crate) fn allow_atomic(&self) -> bool {
-        self.allow_atomic
     }
 
     pub fn stopped(&self) -> bool {

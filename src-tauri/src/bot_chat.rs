@@ -6,7 +6,7 @@
 //! - 参数校验 + 五步主流程编排（严格按序，禁止任何步骤抢跑 / 前置 return）：
 //!   1. exec_steps::resume（如有挂起子任务）
 //!   2. bypass_llm_on_pre_step_hit 开关读取
-//!   3. middleware::run_pre_step（pre-step 路由：选择任务卡批量执行 / Skill / PassThrough）
+//!   3. pre-step 路由（intent_router：选择任务卡批量执行 / Skill / PassThrough）
 //!   4. start_skill（Skill 调度：auto → 调度器 / interactive → body 注入）
 //!   5. run_model_loop（LLM 决策 + 工具循环）
 //! - 组装 system prompt + 多模态图片附件 + 技能清单注入
@@ -500,7 +500,7 @@ enum PreStepRoute {
 /// 主流程（五步严格按序、禁止抢跑/前置 return）：
 /// 1. exec_steps::resume（有挂起子任务时本条消息是执行流程的应答，优先于一切聊天路由）
 /// 2. bypass_llm_on_pre_step_hit 开关读取（F-1，任何路由判定之前）
-/// 3. middleware::run_pre_step（pre-step 路由：ExecuteTasks 批量执行 / Skill / PassThrough）
+/// 3. pre-step 路由（intent_router：ExecuteTasks 批量执行 / Skill / PassThrough）
 /// 4. start_skill（Skill 调度：auto → 调度器执行；interactive → body 注入 system prompt）
 /// 5. run_model_loop（LLM 决策 + 工具循环）
 /// 聊天防重入守卫：同一会话同时只允许一个 bot_chat 在执行——
@@ -782,20 +782,23 @@ pub async fn bot_chat(
         ),
     );
 
-    // 步骤 3：middleware::run_pre_step（pre-step 路由，F-2 抽象层短路求值）：
-    // - RouteAction::ExecuteTasks（选择任务卡模式，ChatExecuteMiddleware）→ 批量执行选中任务卡
-    // - RouteAction::Skill（IntentRouter 关键词 L1 硬锁命中复合业务）→ start_skill
-    // - RouteAction::PassThrough / None → 放行进 LLM
+    // 步骤 3：pre-step 路由（固定两步直调：先选任务卡批量执行，再意图路由）：
+    // - is_chat_execute_trigger 命中（「完成/执行」+ [已选任务] 引用块）→ 批量执行选中任务卡
+    // - route_user_input 关键词 L1 硬锁命中复合业务 → start_skill
+    // - PassThrough → 放行进 LLM
     // 仅处理用户最新一条消息（后续轮次走原 LLM 路径）。
     // 路由命中的处理全部发生在本步骤之后，任何步骤不得抢跑、不得前置 return。
     let pre_routed_skill: Option<PreStepRoute> = if let Some(last) = messages.last() {
-        match crate::middleware::run_pre_step(&app, &last.content) {
-            Some(RouteAction::ExecuteTasks(task_ids)) => Some(PreStepRoute::ExecuteTasks(task_ids)),
-            Some(RouteAction::Skill(skill_name)) => {
-                start_skill_with_audit(&app, skill_name, stop.session_id())
-                    .map(|(meta, body)| PreStepRoute::Skill(meta, body))
+        if let Some(task_ids) = crate::intent_router::is_chat_execute_trigger(&last.content) {
+            Some(PreStepRoute::ExecuteTasks(task_ids))
+        } else {
+            match crate::intent_router::route_user_input(&last.content) {
+                RouteAction::Skill(skill_name) => {
+                    start_skill_with_audit(&app, skill_name, stop.session_id())
+                        .map(|(meta, body)| PreStepRoute::Skill(meta, body))
+                }
+                RouteAction::ExecuteTasks(_) | RouteAction::PassThrough => None,
             }
-            Some(RouteAction::PassThrough) | None => None,
         }
     } else {
         None
@@ -1829,7 +1832,7 @@ where
             c.session_id = Some(sid.clone());
         }
     }
-    let stop = StopGuard::new_task_exec(app, true, Some(sid.clone()));
+    let stop = StopGuard::new(app, true, Some(sid.clone()));
     let block = build_task_block(&task, ctx);
     let mut msgs = vec![
         serde_json::json!({"role": "system", "content": format!("{}\n\n{}\n\n{}", EXECUTE_SYSTEM_PROMPT, gen_dir_rule(app), build_skill_block_for(app, Some(&task.title)).await)}),

@@ -9,7 +9,7 @@
 //! ## 运行语义
 //! - **L1 正则硬锁**：用户首条消息命中某技能的 intent 模式 → 直接加载该 Skill，LLM **不参与选择 Skill**
 //! - **选择任务卡批量执行**：`is_chat_execute_trigger`（「完成/执行」关键词 + [已选任务] 引用块）
-//!   由 middleware 的 ChatExecuteMiddleware 包装为 `RouteAction::ExecuteTasks`，是 bot_chat 主流程
+//!   由 bot_chat 主流程 pre-step 路由的第一步消费（`RouteAction::ExecuteTasks`），是 bot_chat 主流程
 //!   pre-step 路由的一个分支
 //! - 未命中 / 路由表为空（未初始化、无已安装技能声明 intents）→ 放行进 LLM（现有路径）
 //! - 模式按正则匹配用户消息全文（含 [附件文件] 块内嵌的附件路径——附件上下文规则直接写进模式，
@@ -148,7 +148,7 @@ fn match_compiled(text: &str, rules: &[CompiledRule]) -> RouteAction {
     RouteAction::PassThrough
 }
 
-/// 进程级路由表：启动时为空（空表 = 全量 PassThrough，fail-open 与 middleware 业务路由语义一致），
+/// 进程级路由表：启动时为空（空表 = 全量 PassThrough，fail-open 与原中间件业务路由语义一致），
 /// 由 `bot_skills::rebuild_intent_routes` 在启动 / 导入 / 删除技能后重建。
 static ROUTES: LazyLock<RwLock<Vec<CompiledRule>>> = LazyLock::new(|| RwLock::new(Vec::new()));
 

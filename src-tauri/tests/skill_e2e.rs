@@ -9,14 +9,12 @@
 //! - **不依赖 Tauri runtime**（macOS EventLoop 主线程限制 + mock_runtime state lookup 失效）
 //! - **不污染 target/debug/skills/**（避免触发 lib smoke_all_real_skills 回归）
 //! - 真 Skill fixture 走 `tests/fixtures/` + `scan_skill_dirs` 直接加载
-//! - middleware 测试走 `MiddlewareRegistry` 直接 API（不走 Tauri state 间接层）
 //!
 //! 覆盖范围：
-//! 1. pre-step 路由（middleware::MiddlewareRegistry）
-//! 2. pre-execute 放行（D4d 后原子黑名单已清空，拦截职责在工具内部，同上）
-//! 3. 真 Skill fixture 解析（scan_skill_dirs + parse_meta）
-//! 4. 原子黑名单已清空 + 白名单不误判（tool_guard 纯函数）
-//! 5. 意图路由动态规则（intent_router 纯函数 + fixture 扫描，2026-08-19 起路由来自已安装技能 intents）
+//! 1. pre-step 路由（intent_router 直调；原 MiddlewareRegistry 链已于 2026-10-08 拆除为固定直调）
+//! 2. 真 Skill fixture 解析（scan_skill_dirs + parse_meta）
+//! 3. 任务卡执行流程识别（tool_guard 纯函数）
+//! 4. 意图路由动态规则（intent_router 纯函数 + fixture 扫描，路由来自已安装技能 intents）
 //!
 //! 2026-09-03 T1-2 已完成：run_skill_scheduler_core（调度器本体，重构后泛型 Runtime +
 //! 注入 executor/persist）真路径 e2e 见本文件 scheduler_e2e_* 用例；run_model_loop_core
@@ -26,7 +24,7 @@ use std::path::PathBuf;
 use wmessage_lib::bot::registry::ToolResult;
 use wmessage_lib::bot_skills::{self, scan_skill_dirs};
 use wmessage_lib::intent_router::{self, RouteAction};
-use wmessage_lib::{middleware, tool_guard};
+use wmessage_lib::tool_guard;
 
 // ────────────────────────────────────────────────────────────────────
 // helpers
@@ -46,8 +44,7 @@ fn fixtures_parent_path() -> PathBuf {
         .join("fixtures")
 }
 
-/// 中间件 API 的 AppHandle 首参占位（P2-13/14 签名扩展后测试适配，2026-08-19）。
-/// 这些用例只命中路由/闸门判定，不触发 audit 落盘路径；App 泄漏给测试进程，退出即回收。
+/// scheduler e2e 各节用的 AppState 注入句柄。App 泄漏给测试进程，退出即回收。
 fn mock_handle() -> tauri::AppHandle<tauri::test::MockRuntime> {
     Box::leak(Box::new(tauri::test::mock_app()))
         .handle()
@@ -72,17 +69,16 @@ impl Drop for RoutesResetGuard {
 
 #[test]
 fn pre_step_routes_installed_skill_intent_to_skill() {
-    // 2026-08-19 动态路由：路由表 = 已安装技能的 intents 声明。
-    // 先按 fixture（已安装技能的替身）重建全局表，再走 middleware 全链路验证命中。
+    // 动态路由：路由表 = 已安装技能的 intents 声明。
+    // 先按 fixture（已安装技能的替身）重建全局表，再走路由函数验证命中。
     intent_router::rebuild_routes(bot_skills::intent_rules_from_dirs(
         &[fixtures_parent_path()],
     ));
     let _routes_guard = RoutesResetGuard;
-    let registry = middleware::build_default_registry();
-    let route = registry.run_pre_step(&mock_handle(), "帮我做一份 XX 主题的 PPT");
     // 还原由 guard drop 兜底（panic 路径同样生效）
+    let route = intent_router::route_user_input("帮我做一份 XX 主题的 PPT");
     match route {
-        Some(RouteAction::Skill(s)) => {
+        RouteAction::Skill(s) => {
             assert_eq!(s, "minimax-ppt", "期望命中 fixture Skill（intents 含 PPT）");
         }
         other => panic!("期望命中 Skill, got {other:?}"),
@@ -91,99 +87,21 @@ fn pre_step_routes_installed_skill_intent_to_skill() {
 
 #[test]
 fn pre_step_pass_through_for_normal_query() {
-    let registry = middleware::build_default_registry();
-    let pass = registry.run_pre_step(&mock_handle(), "你好世界");
-    assert!(
-        matches!(pass, Some(RouteAction::PassThrough)),
-        "普通消息应 PassThrough；got {pass:?}"
-    );
+    assert!(intent_router::is_chat_execute_trigger("你好世界").is_none());
+    assert!(matches!(
+        intent_router::route_user_input("你好世界"),
+        RouteAction::PassThrough
+    ));
 }
 
 // ────────────────────────────────────────────────────────────────────
-// 2. pre-execute 放行（D4d：ATOMIC_TOOLS 清空，拦截职责移到工具内部）
+// 3. 任务卡执行流程识别（tool_guard 纯函数；原原子黑名单/中间件放行组已随框架拆除）
 // ────────────────────────────────────────────────────────────────────
 
-/// D4d（docs/BOT-ARTIFACT-BIND-DESIGN.md）：原子黑名单已清空，
-/// link_file_to_task 的合法性改由工具内部 `is_task_execution_flow(session_id)` 判定，
-/// 中间件层对任何工具都不再阻断（含非 Skill 状态）。
-/// 回归锁：中间件不得把这个工具拦回「不允许裸调」——普通对话场景的既定口径是
-/// 「调用无效果（不报错也不绑）」，见 TOOLS 里 link_file_to_task 的 schema 描述。
+/// 配套契约：无 session 上下文 → 工具内部判为非任务执行流程（据此返回「无效果、不报错」）
 #[test]
-fn pre_execute_passes_link_file_to_task_when_no_skill() {
-    let registry = middleware::build_default_registry();
-    let blocked = registry.run_pre_execute(&mock_handle(), "link_file_to_task", false);
-    assert!(
-        matches!(blocked, middleware::ExecutionDecision::Allow),
-        "黑名单已清空：middleware 不应再阻断 link_file_to_task；实际：{blocked:?}"
-    );
-    // 配套契约：无 session 上下文 → 工具内部判为非任务执行流程（据此返回「无效果、不报错」）
-    assert!(
-        !tool_guard::is_task_execution_flow(None),
-        "普通对话（无 session）应判为非任务执行流程"
-    );
-}
-
-#[test]
-fn pre_execute_allows_atomic_tool_when_skill_active() {
-    let registry = middleware::build_default_registry();
-    let blocked = registry.run_pre_execute(&mock_handle(), "link_file_to_task", true);
-    assert!(
-        matches!(blocked, middleware::ExecutionDecision::Allow),
-        "link_file_to_task + Skill Running 状态应放行；实际：{blocked:?}"
-    );
-}
-
-/// 2026-09-02 老板拍板：create_word_revisions 去 Skill 化（移出黑名单，聊天直调放行）
-#[test]
-fn pre_execute_allows_create_word_revisions_without_skill() {
-    let registry = middleware::build_default_registry();
-    let blocked = registry.run_pre_execute(&mock_handle(), "create_word_revisions", false);
-    assert!(
-        matches!(blocked, middleware::ExecutionDecision::Allow),
-        "create_word_revisions 已移出黑名单，聊天直调应放行；实际：{blocked:?}"
-    );
-}
-
-#[test]
-fn pre_execute_allows_whitelist_tool() {
-    let registry = middleware::build_default_registry();
-    let blocked = registry.run_pre_execute(&mock_handle(), "run_python", false);
-    assert!(
-        matches!(blocked, middleware::ExecutionDecision::Allow),
-        "白名单 run_python 不应被阻断；实际：{blocked:?}"
-    );
-}
-
-// ────────────────────────────────────────────────────────────────────
-// 3. 原子黑名单已清空（tool_guard 纯函数）
-// ────────────────────────────────────────────────────────────────────
-
-/// D4d：ATOMIC_TOOLS 已清空（见 tool_guard.rs 顶部说明 + docs/BOT-ARTIFACT-BIND-DESIGN.md），
-/// is_atomic_tool 恒 false；拦截改由工具内部 is_task_execution_flow 按 session 上下文判定。
-#[test]
-fn atomic_guard_blacklist_is_empty() {
-    // 原黑名单成员（link_file_to_task）与已去 Skill 化的 create_word_revisions 都不得被判为原子
-    assert!(!tool_guard::is_atomic_tool("create_word_revisions"));
-    assert!(!tool_guard::is_atomic_tool("link_file_to_task"));
-
-    // 已知白名单必须不被误判为黑名单
-    for name in [
-        "list_tasks",
-        "query_single_task",
-        "create_task",
-        "complete_task",
-        "delete_task",
-        "edit_task",
-        "run_python",
-        "web_search",
-        "fetch_url",
-        "use_skill",
-    ] {
-        assert!(
-            !tool_guard::is_atomic_tool(name),
-            "{name} 是白名单工具，不应被判为原子黑名单"
-        );
-    }
+fn task_exec_flow_requires_session_context() {
+    assert!(!tool_guard::is_task_execution_flow(None));
 }
 
 // ────────────────────────────────────────────────────────────────────

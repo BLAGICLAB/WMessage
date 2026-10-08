@@ -39,9 +39,6 @@
 //!   两条附带事实（留给未来的 D 方案）：
 //!   - **值从未被读取**：容器只有 `insert`/`remove`/`contains_key`（`tool_guard.rs:53/59/69`），
 //!     无 `.get(sid)` 或遍历 → 真实语义等价 `HashSet<String>`，`TaskExecOrigin` 是冗余记录；
-//!   - **与 `StopGuard.allow_atomic` 功能重叠**：`bot/dispatch.rs:115` 的
-//!     `stop.is_some_and(|s| s.allow_atomic())` 表达的正是「任务卡执行流程内」，
-//!     而它随执行对象传递、Drop 即失效——那才是「元数据随 session 走」的正确形态。
 //!   → 未来若要删这张表（方案 D）：需把执行上下文透进工具层（`execute_tool` 签名链）
 //!     并触碰停止守卫语义，属独立立项 + 需批准。
 //!   （「搬进 `BotSession`」目前无落点：`db.rs:544 pub struct BotSession` 是磁盘行且

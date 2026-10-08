@@ -85,27 +85,6 @@ impl SkillRun {
 // SKILL_RUNS 已迁入 `AppState.skill_runs`（再导出见文件头 use）。
 
 /// 当前会话是否有 Skill 处于 Running 状态（按会话过滤，别的会话的 Skill 不算本会话活动）
-///
-/// - Running：LLM 正在 Skill 内部循环中，原子工具是 Skill 的子步骤 → 放行
-/// - Loaded / Finished / Terminated / Failed / Paused：原子工具应被阻断
-///
-/// 供 `tool_guard::is_skill_active` 调用（穿透 private Mutex 访问）
-pub fn is_skill_active_for<R: tauri::Runtime>(
-    app: &AppHandle<R>,
-    session_id: Option<&str>,
-) -> bool {
-    let registry = skill_runs(app);
-    // 锁中毒按全仓口径 into_inner 取回数据：这里返回 false = 「无活动 Skill」，
-    // 对调用方是放宽方向，不能因中毒就静默放宽，取回注册表照常判定
-    let guard = registry.lock().unwrap_or_else(|e| {
-        eprintln!("[mutex_poisoned] bot_skills::state::skill_runs: {e:?}");
-        e.into_inner()
-    });
-    guard
-        .values()
-        .any(|r| matches!(r.state, SkillState::Running) && r.session_id.as_deref() == session_id)
-}
-
 pub(crate) fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
@@ -388,7 +367,7 @@ mod tests {
     }
 
     /// 僵尸终态清理：入口清理后本会话终态 run 不再被当"活动"，
-    /// Running/Paused 不受影响（测试用 Paused：is_skill_active 只认 Running，避免与并行测试竞争）；
+    /// Running/Paused 不受影响（测试用 Paused：活动判定只认 Running，避免与并行测试竞争）；
     /// 跨会话隔离：其他会话的终态 run 不得被本会话入口清理误删（拍板 #11=A）
     #[test]
     fn clear_terminal_removes_only_terminal_states() {

@@ -1,39 +1,3 @@
-//! 工具调用守卫
-//!
-//! ## 后置拦截（原子黑名单）
-//! - 凡是「仅作为某个 Skill 内部子步骤、不允许用户直接独立调用」的底层原子 Function
-//!   → 命中即阻断、返回提示走对应 Skill，**不交给模型**（硬锁）
-//! - 黑名单内 Function 仅在 Skill 运行时（state == Running）放行
-//!
-//! ## 前置预路由
-//! 已实现于 intent_router.rs（L1 正则硬锁：命中技能 intents 直接加载，LLM 不参与选择 Skill）
-
-/// 已废弃：原子黑名单 D4d 后清空。
-///
-/// 保留空数组 + 函数签名仅为兼容 lib.rs dead_command_tests 与既有调用方；
-/// `is_atomic_tool` 现在永远返回 false，新工具不再走黑名单拦截，改由
-/// `is_task_execution_flow` 在工具内部按 session 上下文判定合法性。
-pub const ATOMIC_TOOLS: &[&str] = &[];
-
-/// 是否在原子黑名单（永远 false，保留为死函数以防编译错误）
-pub fn is_atomic_tool(name: &str) -> bool {
-    ATOMIC_TOOLS.contains(&name)
-}
-
-/// 阻断时的错误消息（仅占位，调用方不应再走到这里）
-pub fn atomic_block_message(name: &str) -> String {
-    format!("⚠️ {name} 不允许裸调（黑名单已废弃，但保留该消息以兼容调用方）")
-}
-
-/// 当前会话是否有 Skill 在 Running 状态
-///（保留供 bot_skills 内部使用；D4d 后 link_file_to_task 等不再依赖此判定）
-pub fn is_skill_active<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    session_id: Option<&str>,
-) -> bool {
-    crate::bot_skills::is_skill_active_for(app, session_id)
-}
-
 // ───────────────────────── 任务卡执行流程识别（D4d） ─────────────────────────
 
 use crate::bot_chat::TaskExecOrigin;
@@ -178,19 +142,6 @@ pub fn subagent_ctx(session_id: Option<&str>) -> Option<SubagentSessionCtx> {
 mod tests {
     use super::*;
 
-    /// 回归锁：create_word_revisions 不在黑名单（聊天直调）
-    #[test]
-    fn create_word_revisions_is_not_atomic_anymore() {
-        assert!(!is_atomic_tool("create_word_revisions"));
-    }
-
-    /// D4d 黑名单清空后：所有工具都不再判为原子
-    #[test]
-    fn atomic_blacklist_is_empty() {
-        assert!(ATOMIC_TOOLS.is_empty());
-        assert!(!is_atomic_tool("link_file_to_task"));
-    }
-
     /// 死命令 bind_file 已下线（前端用 bind_files 复数形）—— 锁防回退
     ///（匹配串用 concat! 拼接：本测试自身就在 tool_guard.rs 里，
     /// 裸写字面量会自匹配误判）
@@ -211,68 +162,6 @@ mod tests {
             !model_loop.contains(concat!("\"bind", "_file\"")),
             "bind_file 工具名不应出现在 bot_model_loop.rs（schema / tools list 都不应有）"
         );
-    }
-
-    #[test]
-    fn single_point_tools_are_not_atomic() {
-        for name in [
-            "query_tasks",
-            "query_single_task",
-            "create_task",
-            "complete_task",
-            "delete_task",
-            "edit_task",
-            "add_subtask",
-            "toggle_subtask",
-            "remove_subtask",
-            "read_text_file",
-            "ocr_image",
-            "grep_files",
-            "list_files",
-            "extract_document",
-            "create_word",
-            "create_word_revisions",
-            "create_excel",
-            "create_ppt",
-            "create_pdf",
-            "run_python",
-            "web_search",
-            "fetch_url",
-            "get_current_time",
-            "remember_fact",
-            "recall_facts",
-            "record_lesson",
-            "use_skill",
-            "reveal_path",
-            "open_url",
-            "clipboard_write",
-            "screenshot",
-            "edit_file",
-            "write_file",
-            "link_file_to_task",
-        ] {
-            assert!(
-                !is_atomic_tool(name),
-                "{name} 应该是单点（白名单），不应被判为原子"
-            );
-        }
-    }
-
-    /// 死函数 atomic_block_message 仍兼容未知工具名 fallback
-    #[test]
-    fn atomic_block_message_unknown_tool_fallback() {
-        let msg = atomic_block_message("not_a_real_tool");
-        assert!(msg.contains("not_a_real_tool"));
-    }
-
-    #[test]
-    fn is_skill_active_false_with_no_skills() {
-        // SKILL_RUNS 随 AppState；本用例注入独立实例（空表 → 未运行任何 Skill）
-        let app = tauri::test::mock_app();
-        tauri::Manager::manage(&app, crate::app_state::AppState::default());
-        let handle = app.handle().clone();
-        assert!(!is_skill_active(&handle, None));
-        assert!(!is_skill_active(&handle, Some("s1")));
     }
 
     // ── is_task_execution_flow 注册/反注册 ──

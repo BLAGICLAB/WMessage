@@ -186,12 +186,11 @@ src-tauri/src/
 ├── bot_skills/manage.rs         技能安装/列表/删除，路由表重建触发点
 ├── bot_skills/files.rs          open_file_path/delete_bound_file 路径白名单校验（防 XSS→RCE）
 │
-│─ 路由/中间件
-├── middleware.rs        trait Middleware + MiddlewareRegistry（Koa 洋葱，短路求值）；
-│                        内置 3 个：ChatExecute / IntentRouter / AtomicGuard；helper run_pre_step / run_pre_execute
+│─ 路由/守卫
 ├── intent_router.rs     前置意图路由 RouteAction（Skill/ExecuteTasks/PassThrough）；
-│                        L1 正则硬锁（技能 frontmatter intents 驱动，LLM 不参与选 Skill）
-├── tool_guard.rs        原子工具黑名单后置拦截（现黑名单已清空，留壳）
+│                        L1 正则硬锁（技能 frontmatter intents 驱动，LLM 不参与选 Skill）；
+│                        bot_chat pre-step 直调（原 MiddlewareRegistry 洋葱链 2026-10-08 拆除）
+├── tool_guard.rs        会话上下文注册表：任务卡执行流程识别 + 子 agent 白名单数据源
 │
 └─ 记忆系统 memory/（v2，语义嵌入）
 ├── memory/mod.rs            门面：injection_block 聊天注入记忆块（U15 注入总闸）、
@@ -219,7 +218,6 @@ src-tauri/src/
 
 | 类型 | 位置 |
 |---|---|
-| `Middleware` trait / `MiddlewareRegistry` / 3 个内置中间件 | middleware.rs:27 / :39 / :235 / :252 / :269 |
 | `RouteAction` / `IntentRule` | intent_router.rs:23 / :100 |
 | `TaskStore` trait / `MemStore` / `TauriStore` | api.rs:30 / :48 / :95 |
 | `Task` / `Subtask` / `TaskFile` / `BotSession` | db.rs:32 / :13 / :22 / :544 |
@@ -265,10 +263,10 @@ src-tauri/src/
  → require_bot_enabled + ChatGuard 会话防重入
  → ① exec_steps::resume（有挂起子任务则本条是执行应答，优先返回）
  → ② bot::read_bypass_llm_switch（旧链路降级开关）
- → ③ middleware::run_pre_step（洋葱短路）                [middleware.rs]
-     ChatExecuteMiddleware → RouteAction::ExecuteTasks → chat_execute_tasks
+ → ③ pre-step 路由（intent_router 固定两步直调）      [intent_router.rs]
+     is_chat_execute_trigger → RouteAction::ExecuteTasks → chat_execute_tasks
          （每卡走 run_task_in_chat → run_model_loop，50 轮工具循环）
-     IntentRouterMiddleware → intent_router 正则命中 → bot_skills::start_skill
+     route_user_input 正则命中 → bot_skills::start_skill
          ├─ mode=auto → run_skill_scheduler（DSL 逐步执行，
          │   FailedButRecoverable 时带 recovery_hint 落入 ⑤ 让 LLM 兜底）
          └─ mode=interactive → 技能正文拼进 system prompt，继续 ⑤
@@ -280,8 +278,8 @@ src-tauri/src/
          模型返回 tool_calls → bot::execute_tool_traced → execute_tool_impl   [bot/dispatch.rs]
              （turn + tool_call_id 随调用下传：tool.call / tool.return / 早退事件都带
                session_id / turn / tool_call_id，可按轮或按 id 整轮回放）
-             前置 middleware::run_pre_execute（原子黑名单已清空，拦截改由工具内部按
-                 session 上下文判：is_task_execution_flow / is_skill_active）+ skill_on_step 钩子
+             per-tool 规则闸（deny/ask）+ skill_on_step 钩子（拦截职责在
+                 工具内部与规则表，原原子黑名单/pre-execute 链已拆除）
              **TOOLS_TABLE 查表**分发 29 个工具（bot/registry.rs 单一来源）：
                  bot/tools.rs 内部 tool_* / bot_fs / bot_web / bot_py / ocr / memory / bot_skills::use_skill
              后置结构化审计 tool.return + skill_on_step_post
@@ -305,7 +303,6 @@ src-tauri/src/
 ```
 bot_chat(编排) → bot_model_loop(决策) → bot::execute_tool(分发；表在 bot/registry.rs)
     → bot/tools.rs 内部 tool_* / bot_fs / bot_web / bot_py / ocr / memory / bot_skills(实现)
-middleware → intent_router / tool_guard   提供前置/后置闸
 bot_anthropic  只被 bot_model_loop 边界调用
 app_state  运行期表容器（lib.rs 注入；各层 try_state 取）
 db / audit / paths / error   全员共享底座
@@ -341,11 +338,11 @@ flowchart TD
     D -- 有 --> D1[本条作为执行应答<br/>继续/重做/停] --> Z
     D -- 无 --> E{② bypass_llm 开关?}
     E -- 开 --> E1[旧链路降级处理] --> Z
-    E -- 关 --> F[③ middleware::run_pre_step<br/>洋葱模型, 短路求值]
+    E -- 关 --> F[③ pre-step 路由<br/>intent_router 固定两步直调]
 
-    F --> G{ChatExecuteMiddleware<br/>命中任务卡?}
+    F --> G{is_chat_execute_trigger<br/>命中任务卡?}
     G -- ExecuteTasks --> G1[chat_execute_tasks<br/>每卡 run_task_in_chat<br/>interactive=true] --> L
-    G -- 通过 --> H{IntentRouterMiddleware<br/>L1 正则硬锁}
+    G -- 通过 --> H{route_user_input<br/>L1 正则硬锁}
     H -- 命中技能 --> I{技能 mode?}
     I -- auto --> J[run_skill_scheduler<br/>DSL 逐步执行]
     J --> J1{DslOutcome}
@@ -409,7 +406,7 @@ flowchart TD
     编排[bot_chat 编排层] --> 决策[bot_model_loop 决策层<br/>+ bot_anthropic 协议适配]
     决策 --> 分发[bot/dispatch.rs execute_tool 分发层<br/>表在 bot/registry.rs]
     分发 --> 工具[工具实现层<br/>bot_fs / bot_web / bot_py / ocr / memory / bot_skills]
-    闸[middleware → intent_router / tool_guard<br/>前置/后置闸] -.切入.-> 编排
+    闸[intent_router / tool_guard<br/>前置路由 / 会话闸] -.切入.-> 编排
     闸 -.切入.-> 分发
     底座[共享底座 db / audit / paths / error] -.被全员依赖.-> 编排
     底座 -.-> 决策
@@ -444,7 +441,6 @@ flowchart TD
 - `intent_router.rs`
 - `lib.rs`
 - `main.rs`
-- `middleware.rs`
 - `mutation.rs`
 - `ocr.rs`
 - `paths.rs`

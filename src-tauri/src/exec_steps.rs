@@ -376,7 +376,7 @@ pub async fn start(
             });
         }
     };
-    let stop = StopGuard::new_task_exec(app, true, session_id.map(|s| s.to_string()));
+    let stop = StopGuard::new(app, true, session_id.map(|s| s.to_string()));
     // ExecGuard 随 run_step 传入并 park 进挂起态，确认等待期仍持防重入
     let r = run_step(app, &task.id, &first, None, &stop, exec_guard).await;
     if r.is_err() {
@@ -464,7 +464,7 @@ pub async fn resume(
                 ),
             );
             mark_subtask_done(app, &task_id, &subtask_id).await;
-            let stop = StopGuard::new_task_exec(app, true, session_id.map(|s| s.to_string()));
+            let stop = StopGuard::new(app, true, session_id.map(|s| s.to_string()));
             let r = advance_or_finish(app, &task_id, &stop, exec_guard).await;
             if cleanup_on_err(app, &task_id, &r) {
                 crate::bot_chat::set_bot_assigned(app, &task_id, false).await;
@@ -480,7 +480,7 @@ pub async fn resume(
                     crate::bot::truncate_for_log(&feedback, 100)
                 ),
             );
-            let stop = StopGuard::new_task_exec(app, true, session_id.map(|s| s.to_string()));
+            let stop = StopGuard::new(app, true, session_id.map(|s| s.to_string()));
             let r = run_step(
                 app,
                 &task_id,

@@ -32,7 +32,6 @@ mod exec_steps;
 pub mod intent_router;
 pub mod memory;
 pub mod meta;
-pub mod middleware;
 mod migration;
 mod mutation;
 mod notifications;
@@ -248,8 +247,6 @@ pub fn run() {
         .setup(move |app| {
             // 本地 HTTP API 状态（默认关闭，设置页开关控制）
             app.manage(api_server::ApiState::default());
-            // F-2 中间件注册表（Plugin/Extension 抽象层 P2）：注册 2 个内置中间件
-            app.manage(middleware::build_default_registry());
             // 全局可变状态容器（单一入口）；产物登记表已迁入，其余表逐张迁移
             app.manage(app_state::AppState::default());
             // MCP 宿主（拍板 1B，阶段 2）：进程级连接管理器 + 启动即连启用的服务器
