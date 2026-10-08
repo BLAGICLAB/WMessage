@@ -140,7 +140,6 @@ pub fn set_derive_thresholds_at(
     path: &Path,
     t: crate::evolution::derive::DeriveThresholds,
 ) -> Result<(), String> {
-    use crate::evolution::derive::DeriveThresholds;
     let _g = DERIVE_THRESHOLDS_WRITE_LOCK.lock().unwrap_or_else(|e| {
         eprintln!("[mutex_poisoned] evolution::policy::DERIVE_THRESHOLDS_WRITE_LOCK: {e:?}");
         e.into_inner()

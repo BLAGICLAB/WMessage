@@ -98,9 +98,10 @@ pub fn derive_proposals(
 }
 
 /// 带派生门槛的版本（post_consolidation 从设置项读入）。
+/// `report` 保留入参位（spec 1.4 的接口设计：未来按报告统计量派生时启用）。
 pub fn derive_proposals_with(
     ops: &[ConsolidateOp],
-    report: &ConsolidateReport,
+    _report: &ConsolidateReport,
     t: &DeriveThresholds,
 ) -> Vec<EvolutionProposal> {
     let mut out: Vec<EvolutionProposal> = Vec::new();
