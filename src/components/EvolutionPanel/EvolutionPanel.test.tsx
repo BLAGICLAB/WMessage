@@ -7,7 +7,7 @@
 // - HumanApproved / AutoApplied 区分（硬约束 ②）
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 const invokeMock = vi.fn();
@@ -538,6 +538,36 @@ describe("EvolutionPanel U20 governance", () => {
     render(<EvolutionPanel />);
     await screen.findByText("text-p-noev");
     expect(screen.queryByTestId("shadow-judgment-p-noev")).toBeNull();
+  });
+
+  it("派生门槛卡：回填当前值 + 建议值分档 + 保存调用", async () => {
+    const user = userEvent.setup();
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "evolution_list_proposals") return [];
+      if (cmd === "evolution_list_changes") return [];
+      if (cmd === "evolution_proposal_evidence") return [];
+      if (cmd === "evolution_get_thresholds")
+        return { mergeMinIds: 2, distillMinIds: 2, contradictionMinIds: 1 };
+      if (cmd === "mem_stats") return { total: 320, capacity: 500, withEmbedding: 0 };
+      return null;
+    });
+    render(<EvolutionPanel />);
+    // 建议值：320 条落在 100–500 档 → 3/3/1
+    expect(await screen.findByTestId("thresholds-suggestion")).toHaveTextContent(
+      /记忆 320 条（100–500 档）→ 建议 合并 3 \/ 提炼 3 \/ 矛盾 1/
+    );
+    // 改合并门槛并保存
+    const merge = screen.getByTestId("thresholds-mergeMinIds");
+    await user.clear(merge);
+    await user.type(merge, "3");
+    await user.click(screen.getByTestId("btn-thresholds-save"));
+    await act(async () => {});
+    const call = invokeMock.mock.calls.find((c) => c[0] === "evolution_set_thresholds");
+    expect(call?.[1]?.thresholds).toEqual({
+      mergeMinIds: 3,
+      distillMinIds: 2,
+      contradictionMinIds: 1,
+    });
   });
 
   it("rollback warning: 回滚达阈值显示预警，低于阈值隐藏", async () => {

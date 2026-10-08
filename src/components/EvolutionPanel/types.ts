@@ -187,3 +187,54 @@ export const SHADOW_VERDICT_LABEL: Record<ShadowVerdict, string> = {
 
 /** 回滚预警阈值：观察窗口内回滚达到此数建议切手动档（沿袭 14 天观察期停止条件口径） */
 export const ROLLBACK_WARN_THRESHOLD = 5;
+// ───────────────────────── 提案派生门槛（镜像后端 derive.rs，camelCase） ─────────────────────────
+
+export interface DeriveThresholds {
+  mergeMinIds: number;
+  distillMinIds: number;
+  contradictionMinIds: number;
+}
+
+export const DERIVE_THRESHOLD_META: {
+  key: keyof DeriveThresholds;
+  label: string;
+  hint: string;
+  min: number;
+  max: number;
+}[] = [
+  {
+    key: "mergeMinIds",
+    label: "合并提案门槛",
+    hint: "一次合并至少涉及几条记忆，才生成「合并类提案」",
+    min: 2,
+    max: 20,
+  },
+  {
+    key: "distillMinIds",
+    label: "提炼提案门槛",
+    hint: "一次提炼至少汇总几条记忆，才生成「规律类提案」（Low 档，进池不自动生效）",
+    min: 2,
+    max: 20,
+  },
+  {
+    key: "contradictionMinIds",
+    label: "矛盾提案门槛",
+    hint: "矛盾裁决恒涉及 2 条（留一删一）；默认 1 = 任何矛盾都产提案，调到 3 以上 ≈ 关闭",
+    min: 1,
+    max: 99,
+  },
+];
+
+/** 按记忆总量给建议值（4 档）：小库操作天然小、大库单轮整理涉及面广。
+ *  矛盾门槛恒 1——矛盾天然只涉及 2 条且都是真教训，抬门槛 ≈ 关闭。 */
+export function suggestedThresholds(total: number): {
+  merge: number;
+  distill: number;
+  contradiction: number;
+  tier: string;
+} {
+  if (total < 100) return { merge: 2, distill: 2, contradiction: 1, tier: "0–100" };
+  if (total < 500) return { merge: 3, distill: 3, contradiction: 1, tier: "100–500" };
+  if (total < 2000) return { merge: 3, distill: 4, contradiction: 1, tier: "500–2000" };
+  return { merge: 4, distill: 5, contradiction: 1, tier: "2000+" };
+}

@@ -25,18 +25,21 @@ import { DeleteConfirmDialog } from "./DeleteConfirmDialog";
 import {
   type ApplyPolicy,
   type ChangeRecord,
+  type DeriveThresholds,
   type ObserveMetrics,
   type ProposalEntry,
   type ProposalEvidence,
   type ProposalStatus,
   type ProposalTarget,
   APPLY_POLICY_LABELS,
+  DERIVE_THRESHOLD_META,
   IMPACT_LABEL,
   LAYER_LABEL,
   ROLLBACK_WARN_THRESHOLD,
   SHADOW_VERDICT_LABEL,
   STATUS_LABEL,
   formatTs,
+  suggestedThresholds,
 } from "./types";
 
 type StatusFilter = ProposalStatus | null;
@@ -96,8 +99,17 @@ export function EvolutionPanel() {
   const [metrics, setMetrics] = useState<ObserveMetrics | null>(null);
   // 决策证据（影子判定 + 冲突标注；读失败 = 空表，面板照常工作）
   const [evidence, setEvidence] = useState<Record<string, ProposalEvidence>>({});
-  //  W3 立即反思进行中（LLM 调用秒级，与列表 busy 分开避免整板禁用）
+  // 立即反思进行中（LLM 调用秒级，与列表 busy 分开避免整板禁用）
   const [reflecting, setReflecting] = useState(false);
+  // 提案派生门槛（读失败 = 默认 2/2/1）；memTotal 用于建议值分档
+  const [thresholds, setThresholds] = useState<DeriveThresholds>({
+    mergeMinIds: 2,
+    distillMinIds: 2,
+    contradictionMinIds: 1,
+  });
+  const [thresholdsBusy, setThresholdsBusy] = useState(false);
+  const [thresholdsMsg, setThresholdsMsg] = useState("");
+  const [memTotal, setMemTotal] = useState<number | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -140,8 +152,35 @@ export function EvolutionPanel() {
       } catch {
         setMetrics(null);
       }
+      try {
+        const t = await invoke<DeriveThresholds>("evolution_get_thresholds");
+        if (t) setThresholds(t);
+      } catch {
+        /* 读失败保持默认 2/2/1（后端同口径） */
+      }
+      try {
+        const st = await invoke<{ total: number } | null>("mem_stats");
+        if (st) setMemTotal(st.total);
+      } catch {
+        setMemTotal(null);
+      }
     })();
   }, []);
+
+  // 提案派生门槛保存（服务端 clamped 兜底；同点档先例先改 state 再落盘）
+  const onSaveThresholds = async () => {
+    setThresholdsBusy(true);
+    setThresholdsMsg("");
+    try {
+      await invoke("evolution_set_thresholds", { thresholds });
+      setThresholdsMsg("已保存");
+    } catch (e) {
+      setThresholdsMsg(String(e));
+    } finally {
+      setThresholdsBusy(false);
+      setTimeout(() => setThresholdsMsg(""), 4000);
+    }
+  };
 
   //  W2：点档即时落盘（同记忆三档先例：先改 state 再落盘，失败回滚+报错；
   // in-flight 期间忽略并发点档，防乱序回滚）
@@ -375,6 +414,57 @@ export function EvolutionPanel() {
             建议把应用策略切到「需我确认」档
           </p>
         )}
+      </div>
+
+      {/* 提案派生门槛（可设置项；按记忆总量给建议值） */}
+      <div className="nm-inset p-4 space-y-2" data-testid="evolution-thresholds-card">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <p className="text-[11px] text-[var(--t3)]">提案派生门槛</p>
+          {memTotal != null && (
+            <p className="text-[11px] text-[var(--t5)]" data-testid="thresholds-suggestion">
+              记忆 {memTotal} 条（{suggestedThresholds(memTotal).tier} 档）→
+              建议 合并 {suggestedThresholds(memTotal).merge} / 提炼{" "}
+              {suggestedThresholds(memTotal).distill} / 矛盾{" "}
+              {suggestedThresholds(memTotal).contradiction}
+            </p>
+          )}
+        </div>
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+          {DERIVE_THRESHOLD_META.map((f) => (
+            <label key={f.key} className="block">
+              <span className="text-[11px] text-[var(--t5)]">{f.label}</span>
+              <input
+                type="number"
+                min={f.min}
+                max={f.max}
+                value={thresholds[f.key]}
+                onChange={(e) => {
+                  const n = Number(e.target.value);
+                  if (Number.isFinite(n))
+                    setThresholds((t) => ({ ...t, [f.key]: n }));
+                }}
+                data-testid={`thresholds-${f.key}`}
+                className="nm-inset mt-0.5 w-full px-2 py-1 text-xs text-[var(--t2)]"
+              />
+              <span className="block mt-0.5 text-[10px] leading-snug text-[var(--t6)]">
+                {f.hint}
+              </span>
+            </label>
+          ))}
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)] disabled:opacity-50"
+            onClick={() => void onSaveThresholds()}
+            disabled={busy || thresholdsBusy}
+            data-testid="btn-thresholds-save"
+          >
+            保存门槛
+          </button>
+          {thresholdsMsg && (
+            <span className="text-[11px] text-[var(--t5)]">{thresholdsMsg}</span>
+          )}
+        </div>
       </div>
 
       {/* 候选池列表 */}

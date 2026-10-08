@@ -32,12 +32,49 @@
 //! - 启发式只挑符合阈值条件的 ops，其余静默忽略；
 //! - 纯函数，输入相同 → 输出相同（proposal_id 稳定，dedup 前提）。
 
+use serde::{Deserialize, Serialize};
+
 use crate::memory::consolidate::{ConsolidateOp, ConsolidateReport};
 
 use super::proposal::{
     proposal_id, short_hash, Evidence, EvolutionProposal, ImpactLevel, ProposalCategory,
     ProposalOrigin, ProposalTarget, Suggestion,
 };
+
+/// 派生门槛（可设置项：设置页自进化区「提案派生门槛」卡）。
+/// 语义：一次整理操作涉及的**条目数**达到门槛，才派生对应提案。
+/// 存 bot-config.json `evolution.deriveThresholds`；读取/落盘经 `clamped`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DeriveThresholds {
+    /// Merge 提案门槛：一次合并 ≥N 条同源记忆才产提案
+    pub merge_min_ids: usize,
+    /// Distill 提案门槛：一次提炼汇总 ≥N 条记忆才产提案
+    pub distill_min_ids: usize,
+    /// Contradiction 提案门槛：矛盾裁决恒涉及 2 条（keep/drop），
+    /// 默认 1 = 任何矛盾都产提案；设 3 及以上 ≈ 关闭矛盾提案（2 到不了 3）
+    pub contradiction_min_ids: usize,
+}
+
+impl Default for DeriveThresholds {
+    fn default() -> Self {
+        Self {
+            merge_min_ids: 2,
+            distill_min_ids: 2,
+            contradiction_min_ids: 1,
+        }
+    }
+}
+
+impl DeriveThresholds {
+    /// 读取/落盘前统一钳制（防手改配置塞 0 或天文数字）
+    pub fn clamped(mut self) -> Self {
+        self.merge_min_ids = self.merge_min_ids.clamp(2, 20);
+        self.distill_min_ids = self.distill_min_ids.clamp(2, 20);
+        self.contradiction_min_ids = self.contradiction_min_ids.clamp(1, 99);
+        self
+    }
+}
 
 /// 单次反思最多产出 proposal 数（spec 1.3 上限）。
 const MAX_PROPOSALS_PER_ROUND: usize = 5;
@@ -55,7 +92,16 @@ const SUGGESTION_MAX_CHARS: usize = 400;
 /// 当前阶段不必预先耦合。
 pub fn derive_proposals(
     ops: &[ConsolidateOp],
-    _report: &ConsolidateReport,
+    report: &ConsolidateReport,
+) -> Vec<EvolutionProposal> {
+    derive_proposals_with(ops, report, &DeriveThresholds::default())
+}
+
+/// 带派生门槛的版本（post_consolidation 从设置项读入）。
+pub fn derive_proposals_with(
+    ops: &[ConsolidateOp],
+    report: &ConsolidateReport,
+    t: &DeriveThresholds,
 ) -> Vec<EvolutionProposal> {
     let mut out: Vec<EvolutionProposal> = Vec::new();
     let now_ms = chrono::Utc::now().timestamp_millis();
@@ -64,7 +110,7 @@ pub fn derive_proposals(
         if out.len() >= MAX_PROPOSALS_PER_ROUND {
             break;
         }
-        if let Some(p) = derive_one(op, now_ms) {
+        if let Some(p) = derive_one(op, now_ms, t) {
             out.push(p);
         }
     }
@@ -72,10 +118,10 @@ pub fn derive_proposals(
     out
 }
 
-/// 单 op → 0 或 1 条 proposal。不符合阈值返回 `None`。
-fn derive_one(op: &ConsolidateOp, now_ms: i64) -> Option<EvolutionProposal> {
+/// 单 op → 0 或 1 条 proposal。不符合门槛返回 `None`。
+fn derive_one(op: &ConsolidateOp, now_ms: i64, t: &DeriveThresholds) -> Option<EvolutionProposal> {
     match op {
-        ConsolidateOp::Merge { ids, content } if ids.len() >= 2 => {
+        ConsolidateOp::Merge { ids, content } if ids.len() >= t.merge_min_ids => {
             let summary = format!("merge of {} similar memory entries", ids.len());
             let category = ProposalCategory::MemoryHint;
             let target = ProposalTarget::MemoryPolicy {
@@ -116,7 +162,7 @@ fn derive_one(op: &ConsolidateOp, now_ms: i64) -> Option<EvolutionProposal> {
             keep,
             drop_id,
             content,
-        } => {
+        } if 2 >= t.contradiction_min_ids => {
             let summary = "contradiction ruled between two memories".to_string();
             let category = ProposalCategory::MemoryHint;
             let target = ProposalTarget::MemoryPolicy {
@@ -150,7 +196,7 @@ fn derive_one(op: &ConsolidateOp, now_ms: i64) -> Option<EvolutionProposal> {
                 },
             })
         }
-        ConsolidateOp::Distill { ids, content } if ids.len() >= 2 => {
+        ConsolidateOp::Distill { ids, content } if ids.len() >= t.distill_min_ids => {
             let summary = format!("distillation of {} entries into a pattern", ids.len());
             let category = ProposalCategory::MemoryHint;
             let target = ProposalTarget::MemoryPolicy {
@@ -185,7 +231,7 @@ fn derive_one(op: &ConsolidateOp, now_ms: i64) -> Option<EvolutionProposal> {
                 },
             })
         }
-        // 阈值不达标的 op（单条 ids 的 merge/distill）静默忽略
+        // 门槛不达标的 op（单条 ids 的 merge/distill）静默忽略
         _ => None,
     }
 }
@@ -282,6 +328,39 @@ mod tests {
     }
 
     // 5. 检测规则
+
+    #[test]
+    fn derive_proposals_with_honors_custom_thresholds() {
+        // 门槛调高：merge 3 条在默认门槛（2）下产提案、门槛 3 时也产、门槛 4 时不产
+        let ops = vec![merge_op(&["a", "b", "c"], "three sources")];
+        let report = empty_report();
+        assert_eq!(
+            derive_proposals_with(&ops, &report, &DeriveThresholds::default()).len(),
+            1
+        );
+        let t3 = DeriveThresholds {
+            merge_min_ids: 3,
+            ..DeriveThresholds::default()
+        };
+        assert_eq!(derive_proposals_with(&ops, &report, &t3).len(), 1);
+        let t4 = DeriveThresholds {
+            merge_min_ids: 4,
+            ..DeriveThresholds::default()
+        };
+        assert_eq!(derive_proposals_with(&ops, &report, &t4).len(), 0);
+
+        // contradiction_min_ids=3 ≈ 关闭矛盾提案（矛盾恒涉及 2 条，2 到不了 3）
+        let c_ops = vec![contradiction_op("keep-1", "drop-1", "these contradict")];
+        let t_off = DeriveThresholds {
+            contradiction_min_ids: 3,
+            ..DeriveThresholds::default()
+        };
+        assert_eq!(derive_proposals_with(&c_ops, &report, &t_off).len(), 0);
+        assert_eq!(
+            derive_proposals_with(&c_ops, &report, &DeriveThresholds::default()).len(),
+            1
+        );
+    }
 
     #[test]
     fn derive_detects_repeated_merge_pattern() {

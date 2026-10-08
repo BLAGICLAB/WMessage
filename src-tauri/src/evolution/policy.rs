@@ -104,8 +104,142 @@ pub fn set_apply_policy_at(path: &Path, policy: ApplyPolicy) -> Result<(), Strin
     )
 }
 
+/// 派生门槛（evolution.deriveThresholds；设置页自进化区「提案派生门槛」卡）。
+pub(crate) const DERIVE_THRESHOLDS_KEY: &str = "deriveThresholds";
+
+/// 便捷读取（缺文件/缺块/缺字段/非法值 = 默认 2/2/1；读取即钳制）。
+pub fn read_derive_thresholds<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+) -> crate::evolution::derive::DeriveThresholds {
+    read_derive_thresholds_at(&crate::db::paths::data_dir(app).join("bot-config.json"))
+}
+
+/// 可测内核：lenient 读取 + clamped。
+pub fn read_derive_thresholds_at(path: &Path) -> crate::evolution::derive::DeriveThresholds {
+    use crate::evolution::derive::DeriveThresholds;
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return DeriveThresholds::default();
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        eprintln!("[evolution] {path:?} JSON 解析失败，派生门槛按默认");
+        return DeriveThresholds::default();
+    };
+    v.get("evolution")
+        .and_then(|e| e.get(DERIVE_THRESHOLDS_KEY))
+        .and_then(|t| serde_json::from_value::<DeriveThresholds>(t.clone()).ok())
+        .map(DeriveThresholds::clamped)
+        .unwrap_or_default()
+}
+
+/// 写互斥：与 applyPolicy 写锁同款（RMW 全程持锁，低频设置写）。
+static DERIVE_THRESHOLDS_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// 定向写回：只改 evolution.deriveThresholds，其余字段原样保留；
+/// 落盘前 clamped；坏文件拒绝写（fail-closed）。
+pub fn set_derive_thresholds_at(
+    path: &Path,
+    t: crate::evolution::derive::DeriveThresholds,
+) -> Result<(), String> {
+    use crate::evolution::derive::DeriveThresholds;
+    let _g = DERIVE_THRESHOLDS_WRITE_LOCK.lock().unwrap_or_else(|e| {
+        eprintln!("[mutex_poisoned] evolution::policy::DERIVE_THRESHOLDS_WRITE_LOCK: {e:?}");
+        e.into_inner()
+    });
+    let mut v = match std::fs::read_to_string(path) {
+        Ok(raw) => serde_json::from_str::<serde_json::Value>(&raw)
+            .map_err(|e| format!("{path:?} JSON 解析失败，拒绝写（防覆盖既有配置）：{e}"))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
+        Err(e) => return Err(format!("读 {path:?} 失败：{e}")),
+    };
+    let obj = v
+        .as_object_mut()
+        .ok_or_else(|| format!("{path:?} 顶层非 object，拒绝写"))?;
+    let evo = obj
+        .entry("evolution".to_string())
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .ok_or_else(|| "evolution 块非 object，拒绝写".to_string())?;
+    let clamped = t.clamped();
+    evo.insert(
+        DERIVE_THRESHOLDS_KEY.to_string(),
+        serde_json::to_value(&clamped).map_err(|e| format!("序列化：{e}"))?,
+    );
+    crate::db::paths::atomic_write(
+        path,
+        &serde_json::to_string_pretty(&v).map_err(|e| format!("序列化：{e}"))?,
+    )
+}
+
+/// 便捷写入。
+pub fn set_derive_thresholds<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    t: crate::evolution::derive::DeriveThresholds,
+) -> Result<(), String> {
+    set_derive_thresholds_at(&crate::db::paths::data_dir(app).join("bot-config.json"), t)
+}
+
 #[cfg(test)]
 mod tests {
+
+    // ── 派生门槛 IO ──
+
+    fn tmp_cfg(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "wm-evo-thr-{tag}-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("bot-config.json")
+    }
+
+    #[test]
+    fn derive_thresholds_missing_file_reads_default() {
+        use crate::evolution::derive::DeriveThresholds;
+        assert_eq!(
+            read_derive_thresholds_at(Path::new("/tmp/no-such-thr-xyz.json")),
+            DeriveThresholds::default()
+        );
+    }
+
+    #[test]
+    fn derive_thresholds_roundtrip_and_clamp() {
+        use crate::evolution::derive::DeriveThresholds;
+        let p = tmp_cfg("rt");
+        // 超界值落盘前钳制
+        set_derive_thresholds_at(
+            &p,
+            DeriveThresholds {
+                merge_min_ids: 99,
+                distill_min_ids: 0,
+                contradiction_min_ids: 1,
+            },
+        )
+        .unwrap();
+        let got = read_derive_thresholds_at(&p);
+        assert_eq!(got.merge_min_ids, 20, "merge 钳到上限 20");
+        assert_eq!(got.distill_min_ids, 2, "distill 钳到下限 2");
+        // 兄弟字段保留
+        std::fs::write(
+            &p,
+            r#"{"baseUrl":"https://x/v1","evolution":{"applyPolicy":"confirm"}}"#,
+        )
+        .unwrap();
+        set_derive_thresholds_at(
+            &p,
+            DeriveThresholds {
+                merge_min_ids: 3,
+                distill_min_ids: 3,
+                contradiction_min_ids: 1,
+            },
+        )
+        .unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v["evolution"]["deriveThresholds"]["mergeMinIds"], 3);
+        assert_eq!(v["evolution"]["applyPolicy"], "confirm", "兄弟字段保留");
+        assert_eq!(v["baseUrl"], "https://x/v1", "顶层字段保留");
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
+    }
     use super::*;
 
     fn tmp_path(tag: &str) -> std::path::PathBuf {

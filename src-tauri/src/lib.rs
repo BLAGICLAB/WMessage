@@ -634,6 +634,8 @@ pub fn run() {
             evolution::panel::commands::evolution_proposal_evidence,
             evolution::panel::commands::evolution_get_apply_policy,
             evolution::panel::commands::evolution_set_apply_policy,
+            evolution::panel::commands::evolution_get_thresholds,
+            evolution::panel::commands::evolution_set_thresholds,
             meta::meta_list_providers,
             meta::meta_get_provider,
             meta::meta_list_models,

@@ -162,7 +162,11 @@ fn notify_evolution_proposals<R: tauri::Runtime>(
 /// emit 所需的 AppHandle 由 `emit::register_app_handle` 在 App 启动时注册一次，
 /// 本函数通过全局 OnceLock 取出——consolidate 侧 caller 无需关心。
 pub fn post_consolidation(ops: &[ConsolidateOp], report: &ConsolidateReport) {
-    let proposals = derive::derive_proposals(ops, report);
+    // 派生门槛：设置页可调（默认 2/2/1）；读失败/缺配置 = 默认
+    let thresholds = emit::app_handle()
+        .map(crate::evolution::policy::read_derive_thresholds)
+        .unwrap_or_default();
+    let proposals = derive::derive_proposals_with(ops, report, &thresholds);
     // 治理开关只读一次：下方「通知过滤」与「apply 闸」两处决策共用同一值——
     // 两次独立读盘在并发改档（设置页 toggle）时可能不一致，通知与落库口径分裂
     let auto_allowed = policy::auto_apply_allowed(emit::app_handle());
