@@ -684,63 +684,52 @@ mod f2_copy_file_tests {
 
 #[cfg(test)]
 mod capability_tests {
-    /// opener:allow-open-path **严格限定为 `$APPDATA/**`**（app-scoped，非整个 app data 根）。
+    /// opener 路径 scope **必须整体不存在**（2026-10-08 口径）。
     ///
-    /// 历史：dcb9275（2026-08-19）把裸 `**` 收敛为 `$APPDATA/** + $HOME/**`——当时主窗
-    /// openPath 还用于打开任务绑定文件（任意用户路径），故保留 `$HOME/**`。
-    /// 5eb0a27（2026-09-04）把任务卡/工作区打开绑定文件改走 Rust `open_file_path`，
-    /// 主窗 openPath 不再是任务绑定文件通路。
-    /// OCR C2a finding #3：`$HOME/**` 使 XSS 后可打开 `~/.ssh` 等敏感文件。
-    /// 现摘除 `$HOME/**`——全仓唯一前端 `openPath()` 调用点（SkillsPanel:91）只打开
-    /// `$APPDATA/skills`，零功能成本。
+    /// 历史三段：dcb9275（2026-08-19）裸 `**` → `$APPDATA/** + $HOME/**`（当时主窗
+    /// openPath 打开任务绑定文件）；5eb0a27（2026-09-04）任务绑定文件改走 Rust
+    /// `open_file_path`；OCR C2a finding #3 摘除 `$HOME/**`（XSS 后可开 ~/.ssh）。
+    /// 2026-10-08 终态：全仓最后一个前端 `openPath()` 调用点（SkillsPanel 打开技能
+    /// 目录）也因便携模式（技能目录锚定 exe 旁，不在 $APPDATA 内）被 scope 拒绝，
+    /// 改走 Rust 侧 opener 直接打开（`skills_open_dir`，路径由 skills_dir() 决定）。
+    /// 前端不再有任何「开本地路径」的通路——scope 整条移除（收紧）。
     ///
-    /// 关键语义（依据 Tauri 2.11.5 path/mod.rs:141-143）：`$APPDATA` **不是**整个 app data
-    /// 根，而是 `Data/{bundle_identifier}` = 本 app 专属子目录（macOS =
-    /// `~/Library/Application Support/com.renshi.wmessage`）——所以 `$APPDATA/**` 已是窄范围，
-    /// 无需再收窄（OCR finding #2 因此判定为误报）。
-    ///
-    /// 本测试锁死 capabilities/default.json 防回退。
+    /// 本测试锁死 capabilities/default.json 防回退：
+    /// - `opener:allow-open-path` 必须不存在（前端开路径一律走 Rust 命令）
+    /// - `opener:default` 必须存在（聊天链接 openUrl 依赖）
+    /// 若未来确需恢复前端开路径，先在此说明理由并重建窄 scope（禁 $HOME/裸通配）。
     #[test]
-    fn opener_path_scope_is_appdata_only() {
+    fn opener_path_scope_must_stay_absent() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/capabilities/default.json");
         let text = std::fs::read_to_string(path).expect("capabilities/default.json 必须可读");
         let json: serde_json::Value = serde_json::from_str(&text).expect("必须是合法 JSON");
         let perms = json["permissions"]
             .as_array()
             .expect("permissions 必须是数组");
-        let open_path = perms
+        // permissions 数组混有两种形态：裸权限名字符串（"opener:default"）与
+        // 带 scope 的对象（{identifier, allow}）——分开取标识符再断言
+        let idents: Vec<&str> = perms
             .iter()
-            .find(|p| p["identifier"] == "opener:allow-open-path")
-            .expect("必须配置 opener:allow-open-path");
-        let allow = open_path["allow"]
-            .as_array()
-            .expect("allow 必须是数组")
-            .iter()
-            .filter_map(|e| e["path"].as_str())
-            .collect::<Vec<_>>();
+            .filter_map(|p| p.as_str())
+            .chain(
+                perms
+                    .iter()
+                    .filter_map(|p| p.get("identifier").and_then(|v| v.as_str())),
+            )
+            .collect();
 
-        // 1. 严格等同 `[$APPDATA/**]`——多一条少一条都失败
-        assert_eq!(
-            allow,
-            vec!["$APPDATA/**"],
-            "opener:allow-open-path scope 必须严格等于 [$APPDATA/**]（app-scoped，防 XSS 后打开 ~/.ssh 等敏感路径）。如需新加安全 prefix，先在测试 doc + plan 里说明理由再改。"
-        );
-
-        // 2. 显式断言 $HOME 不在 scope 内（防未来有人加回）
+        // 1. allow-open-path 必须不存在（前端开本地路径一律走 Rust 命令）
         assert!(
-            !allow.iter().any(|p| p.starts_with("$HOME")),
-            "$HOME/** 不得出现（OCR C2a finding #3：XSS 后可打开 ~/.ssh）: {allow:?}"
+            !idents.contains(&"opener:allow-open-path"),
+            "opener:allow-open-path 必须不存在：前端开路径已全部收口到 Rust 命令\
+             （open_file_path / skills_open_dir），恢复 scope 前先说明理由"
         );
 
-        // 3. 禁裸通配 / 根目录——单条 scope 项 == "**"/"/"|"/*" 即违规
-        //    （注意 $APPDATA/** 包含 ** 字串但不是整条 == "**"，所以不误伤）
+        // 2. opener:default 必须存在（聊天链接 openUrl 依赖）
         assert!(
-            !allow.iter().any(|p| *p == "**" || *p == "/" || *p == "/*"),
-            "禁止裸通配/根目录全量放行: {allow:?}"
+            idents.contains(&"opener:default"),
+            "opener:default 必须存在（openUrl 依赖）"
         );
-        // 注：早期版本有一段 "/etc/passwd 与 ~/.ssh 不被覆盖" 的循环
-        // (lib.rs:582，OCR re-review low #1)——用 scope 变量符号比对已解析路径，
-        // 永远返回 false，断言恒过，等同 noop。删掉不写，避免"假安全感测试"。
     }
 }
 

@@ -5899,3 +5899,9 @@ openPath，capability 白名单 $APPDATA/** 盖不住 → 绿色版上点按钮�
 
 验证：bot_skills 119 测试 + SkillsPanel vitest 2 + tsc + clippy 0（除
 vendor）+ scripts/test-all.sh 全绿。
+
+补记（同日）：AUDIT-PHASE1A-SKILLDIR 首推被 pre-push 拦下——capability_tests
+的锁死型测试 `opener_path_scope_is_appdata_only`（OCR C2a 防线）钉的是旧口径
+（scope 严格等于 $APPDATA/**）。scope 移除后该测试翻新为
+`opener_path_scope_must_stay_absent`：钉「allow-open-path 必须不存在 +
+opener:default 必须存在」，防回退语义保留（恢复前端开路径需先改此测试说明理由）。
