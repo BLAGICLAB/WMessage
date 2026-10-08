@@ -498,4 +498,84 @@ describe("EvolutionPanel U20 governance", () => {
     await screen.findByText(/自进化提案（0）/);
     expect(screen.queryByTestId("evolution-metrics")).toBeNull();
   });
+
+  it("evidence: 影子判定行 + 冲突徽标按后端数据渲染", async () => {
+    const p = mkProposal("p-ev");
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "evolution_list_proposals") return [p];
+      if (cmd === "evolution_list_changes") return [];
+      if (cmd === "evolution_proposal_evidence")
+        return [
+          {
+            proposalId: "p-ev",
+            shadow: { verdict: "pass", note: "would_enter_top3" },
+            conflicts: [
+              { with: "pool:p-other", kind: "pooled" },
+              { with: "active:chg-1", kind: "active" },
+            ],
+          },
+        ];
+      return null;
+    });
+    render(<EvolutionPanel />);
+    await screen.findByText("text-p-ev");
+    expect(
+      screen.getByTestId("shadow-judgment-p-ev")
+    ).toHaveTextContent(/采纳后会进 lesson 槽位 top-3/);
+    const badge = screen.getByTestId("conflict-badge-p-ev");
+    expect(badge).toHaveTextContent(/同目标冲突 ×2/);
+    expect(badge).toHaveAttribute("title", expect.stringContaining("pool:p-other"));
+  });
+
+  it("evidence: 证据缺失时不渲染判定行（后端不可用降级）", async () => {
+    const p = mkProposal("p-noev");
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "evolution_list_proposals") return [p];
+      if (cmd === "evolution_list_changes") return [];
+      if (cmd === "evolution_proposal_evidence") return [];
+      return null;
+    });
+    render(<EvolutionPanel />);
+    await screen.findByText("text-p-noev");
+    expect(screen.queryByTestId("shadow-judgment-p-noev")).toBeNull();
+  });
+
+  it("rollback warning: 回滚达阈值显示预警，低于阈值隐藏", async () => {
+    const baseMetrics = {
+      candidate_generation_rate: 0.5,
+      approval_rate: 0.6,
+      rollback_rate: 0.5,
+      pollution_survival_days: 5,
+      proposal_total: 10,
+      promoted_count: 6,
+      active_lessons: 5,
+      observation_window_days: 30,
+      observation_window_start_ms: 0,
+      observation_window_end_ms: 1,
+      evaluated_at_ms: 1,
+    };
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "evolution_list_proposals") return [];
+      if (cmd === "evolution_list_changes") return [];
+      if (cmd === "evolution_metrics")
+        return { ...baseMetrics, rolled_back_count: 5 };
+      return null;
+    });
+    const { unmount } = render(<EvolutionPanel />);
+    const warn = await screen.findByTestId("evolution-rollback-warning");
+    expect(warn).toHaveTextContent(/回滚 5 条（≥5）/);
+    expect(warn).toHaveTextContent(/建议把应用策略切到「需我确认」档/);
+    unmount();
+
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "evolution_list_proposals") return [];
+      if (cmd === "evolution_list_changes") return [];
+      if (cmd === "evolution_metrics")
+        return { ...baseMetrics, rolled_back_count: 2 };
+      return null;
+    });
+    render(<EvolutionPanel />);
+    await screen.findByTestId("evolution-metrics");
+    expect(screen.queryByTestId("evolution-rollback-warning")).toBeNull();
+  });
 });

@@ -25,7 +25,6 @@
       "gui-test-screenshots/**"
     ],
     "ignoreDependencies": [
-      "oxlint",
       "@lobehub/icons-static-svg"
     ]
   },

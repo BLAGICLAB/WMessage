@@ -153,3 +153,37 @@ export interface ObserveMetrics {
   observation_window_end_ms: number;
   evaluated_at_ms: number;
 }
+
+// ───────────────────────── 决策证据（镜像后端 panel/evidence.rs，camelCase） ─────────────────────────
+
+export type ShadowVerdict = "pass" | "fail" | "skipped";
+
+interface ShadowJudgment {
+  verdict: ShadowVerdict;
+  /** no_baseline / would_enter_top3 / below_top3_threshold / top3_diff_but_candidate_absent */
+  note: string;
+}
+
+type ConflictKind = "pooled" | "active";
+
+interface ConflictRef {
+  /** `pool:<proposal_id>` / `active:<change_id>` */
+  with: string;
+  kind: ConflictKind;
+}
+
+export interface ProposalEvidence {
+  proposalId: string;
+  shadow: ShadowJudgment;
+  conflicts: ConflictRef[];
+}
+
+/** 影子判定中文标签（决策参考：静态近似，真实注入随 query 混合打分变化） */
+export const SHADOW_VERDICT_LABEL: Record<ShadowVerdict, string> = {
+  pass: "采纳后会进 lesson 槽位 top-3",
+  fail: "采纳后进不了 top-3（重要性不够或被现有记忆覆盖）",
+  skipped: "记忆库还没有 lesson，无对比基准",
+};
+
+/** 回滚预警阈值：观察窗口内回滚达到此数建议切手动档（沿袭 14 天观察期停止条件口径） */
+export const ROLLBACK_WARN_THRESHOLD = 5;

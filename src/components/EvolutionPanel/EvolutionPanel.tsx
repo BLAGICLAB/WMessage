@@ -17,7 +17,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { RefreshCw, Trash2 } from "lucide-react";
+import { AlertTriangle, RefreshCw, Trash2 } from "lucide-react";
 import { handleCommandError } from "../../lib/errorHandler";
 import { Toggle } from "../Toggle";
 import { IconButton } from "../../ui/IconButton";
@@ -27,11 +27,14 @@ import {
   type ChangeRecord,
   type ObserveMetrics,
   type ProposalEntry,
+  type ProposalEvidence,
   type ProposalStatus,
   type ProposalTarget,
   APPLY_POLICY_LABELS,
   IMPACT_LABEL,
   LAYER_LABEL,
+  ROLLBACK_WARN_THRESHOLD,
+  SHADOW_VERDICT_LABEL,
   STATUS_LABEL,
   formatTs,
 } from "./types";
@@ -91,6 +94,8 @@ export function EvolutionPanel() {
   const [policyBusy, setPolicyBusy] = useState(false);
   // U20 W3 四指标（读失败 = 不显示，不阻塞面板）
   const [metrics, setMetrics] = useState<ObserveMetrics | null>(null);
+  // 决策证据（影子判定 + 冲突标注；读失败 = 空表，面板照常工作）
+  const [evidence, setEvidence] = useState<Record<string, ProposalEvidence>>({});
   // U20 W3 立即反思进行中（LLM 调用秒级，与列表 busy 分开避免整板禁用）
   const [reflecting, setReflecting] = useState(false);
 
@@ -103,6 +108,10 @@ export function EvolutionPanel() {
       setProposals(p ?? []);
       const c = await invoke<ChangeRecord[]>("evolution_list_changes");
       setChanges(c ?? []);
+      const ev = await invoke<ProposalEvidence[]>("evolution_proposal_evidence");
+      setEvidence(
+        Object.fromEntries((ev ?? []).map((e) => [e.proposalId, e]))
+      );
       setError("");
     } catch (e) {
       handleCommandError(e, "evolution-panel", { silent: true });
@@ -354,6 +363,18 @@ export function EvolutionPanel() {
             {metrics.pollution_survival_days.toFixed(1)} 天
           </p>
         )}
+        {/* 回滚预警：观察窗口内回滚过阈值 → 建议切手动档 */}
+        {metrics && metrics.rolled_back_count >= ROLLBACK_WARN_THRESHOLD && (
+          <p
+            className="inline-flex items-center gap-1 text-[11px] text-[var(--danger)]"
+            data-testid="evolution-rollback-warning"
+          >
+            <AlertTriangle size={11} aria-hidden />
+            近{Math.round(metrics.observation_window_days)}天回滚{" "}
+            {metrics.rolled_back_count} 条（≥{ROLLBACK_WARN_THRESHOLD}）：
+            建议把应用策略切到「需我确认」档
+          </p>
+        )}
       </div>
 
       {/* 候选池列表（老板 16:05：去掉独立分区，单列表所有提案） */}
@@ -410,6 +431,7 @@ export function EvolutionPanel() {
                 busy={busy}
                 toggleOn={isToggleOn(p.proposal_id)}
                 decision={decisionBadge(p, changes)}
+                evidence={evidence[p.proposal_id]}
                 onToggle={onToggle}
                 onDelete={onDeleteClick}
                 onPromote={onPromote}
@@ -479,6 +501,7 @@ function ProposalCard({
   busy,
   toggleOn,
   decision,
+  evidence,
   onToggle,
   onDelete,
   onPromote,
@@ -490,6 +513,8 @@ function ProposalCard({
   toggleOn: boolean;
   /** U20 W3 行内决策徽标（null = 不显示） */
   decision: string | null;
+  /** 决策证据（影子判定 + 冲突标注；undefined = 后端不可用，不渲染） */
+  evidence?: ProposalEvidence;
   onToggle: (id: string, enabled: boolean) => void;
   onDelete: (p: ProposalEntry) => void;
   onPromote: (id: string) => void;
@@ -527,6 +552,16 @@ function ProposalCard({
               {decision}
             </span>
           )}
+          {evidence && evidence.conflicts.length > 0 && (
+            <span
+              className="nm-tag inline-flex items-center gap-1 text-xs text-[var(--danger)]"
+              data-testid={`conflict-badge-${proposal.proposal_id}`}
+              title={`同目标对象：${evidence.conflicts.map((c) => c.with).join("、")}`}
+            >
+              <AlertTriangle size={11} aria-hidden />
+              同目标冲突 ×{evidence.conflicts.length}
+            </span>
+          )}
           <span
             className="nm-tag text-xs"
             data-testid={`status-badge-${proposal.proposal_id}`}
@@ -562,6 +597,12 @@ function ProposalCard({
           <div>
             <span className="font-semibold">refs：</span>
             {proposal.related_refs.join(", ")}
+          </div>
+        )}
+        {evidence && (
+          <div data-testid={`shadow-judgment-${proposal.proposal_id}`}>
+            <span className="font-semibold">影子判定：</span>
+            {SHADOW_VERDICT_LABEL[evidence.shadow.verdict]}
           </div>
         )}
       </div>
