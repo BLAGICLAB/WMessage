@@ -5819,3 +5819,19 @@ scripts/test-all.sh 全绿；批次号红线干净。
 
 验证：cargo test 4 个相关 test 文件 90 用例全过；audit_module_map 4 passed；
 layering/no_eval selftest + 全仓实跑 0 命中；scripts/test-all.sh 全绿。
+
+## 2026-10-08（周四）OCR-TESTS-FIX 尾巴批 — 工单第 16 条 + 两条建议项带走
+
+- skill_e2e DDL 单源化（工单 #16，此前按低优先跳过）：skill_outcomes 建表抽成
+  `db::skill_out::SKILL_OUTCOMES_DDL`（pub，随 db::skill_out::* 自动导出），
+  生产 ensure 与集成测试 open_temp_db 共用同一常量——手抄漂移面清零。
+  连带：exec_trace 两个测试的 RAII guard 未用警告顺手消掉（`_guard` 改名，
+  Drop 语义不变；其中一处 guard 后文有 set_session 引用，保留原名）。
+- mock_llm 9 处 50ms sleep 删除（工单 #46 同模式收尾）：request_count 在响应
+  写回前自增，客户端 read_to_string EOF 返回时计数必然已到位，sleep 纯属
+  累积垫时（全套 ≥450ms）。
+- memory_eval recall@5 与 top_n 隐性耦合锁死（#84）：RankParams 显式
+  top_n:5 + debug_assert，防默认值漂移后指标名悄悄变 recall@top_n。
+
+验证：exec_trace/skill_e2e/mock_llm 36 用例全过；clippy --all-targets 0
+（除 vendor）；scripts/test-all.sh 全绿。

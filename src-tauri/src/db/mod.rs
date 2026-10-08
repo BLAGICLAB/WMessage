@@ -151,17 +151,12 @@ pub fn open_db<R: tauri::Runtime>(
            created_at INTEGER NOT NULL,
            updated_at INTEGER NOT NULL,
            is_subagent INTEGER NOT NULL DEFAULT 0
-         );
-         CREATE TABLE IF NOT EXISTS skill_outcomes (
-           skill_name         TEXT PRIMARY KEY,
-           kind               TEXT NOT NULL,
-           reason             TEXT,
-           completed_summary  TEXT,
-           rollback_attempted INTEGER,
-           last_at_ms         INTEGER NOT NULL
          );",
     )
     .map_err(|e| e.to_string())?;
+    // skill_outcomes 表走单源 DDL（skill_out 模块），与集成测试建表共用
+    conn.execute_batch(SKILL_OUTCOMES_DDL)
+        .map_err(|e| e.to_string())?;
     // subagents 表走单源 DDL（含 task_id UNIQUE + status/parent 索引），与测试建表共用
     conn.execute_batch(subagents::SUBAGENTS_DDL)
         .map_err(|e| e.to_string())?;

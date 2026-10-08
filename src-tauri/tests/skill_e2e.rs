@@ -337,8 +337,8 @@ fn bot_log_len() -> u64 {
         .unwrap_or(0)
 }
 
-/// 持久化校验用临时库：schema 镜像 db.rs 的 skill_outcomes DDL（集成测试够不到
-/// 私有 db 模块的 open_db；upsert/load 本身走生产函数，防漂移面只剩这段 DDL）
+/// 持久化校验用临时库：schema 走单源 DDL（db::SKILL_OUTCOMES_DDL；集成测试够不到
+/// 私有 db 模块的 open_db；upsert/load 本身走生产函数，DDL 已无漂移面）
 fn open_temp_db(tag: &str) -> (rusqlite::Connection, PathBuf) {
     let path = std::env::temp_dir().join(format!(
         "wmessage-skill-e2e-{}-{tag}.db",
@@ -346,17 +346,8 @@ fn open_temp_db(tag: &str) -> (rusqlite::Connection, PathBuf) {
     ));
     let _ = std::fs::remove_file(&path);
     let conn = rusqlite::Connection::open(&path).expect("open temp db");
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS skill_outcomes (
-           skill_name         TEXT PRIMARY KEY,
-           kind               TEXT NOT NULL,
-           reason             TEXT,
-           completed_summary  TEXT,
-           rollback_attempted INTEGER,
-           last_at_ms         INTEGER NOT NULL
-         );",
-    )
-    .expect("create skill_outcomes");
+    conn.execute_batch(wmessage_lib::db::SKILL_OUTCOMES_DDL)
+        .expect("create skill_outcomes");
     (conn, path)
 }
 

@@ -296,7 +296,8 @@ async fn trace_sink_writes_spans_and_file_changes() {
     let task_id = format!("et-sink-task-{run}");
     let tool_call_id = format!("call_et_1-{run}");
     let file_path = format!("/a/x-{run}.py");
-    let guard = TraceCleanupGuard {
+    // RAII 清场 guard：不读取，靠 Drop 兜底（下划线前缀消 unused 警告，Drop 语义不变）
+    let _guard = TraceCleanupGuard {
         handle: handle.clone(),
         task_id: task_id.clone(),
         session_id: std::cell::RefCell::new(session_id.clone()),

@@ -588,8 +588,6 @@ fn mock_llm_server_returns_valid_sse_text_reply() {
         "末尾 chunk 应有 finish_reason=stop"
     );
 
-    // 验证 server 计数
-    std::thread::sleep(Duration::from_millis(50));
     assert_eq!(server.request_count(), 1, "应处理 1 个请求");
 }
 
@@ -615,7 +613,6 @@ fn mock_llm_server_handles_multiple_sequential_requests_chat_loop() {
         );
     }
 
-    std::thread::sleep(Duration::from_millis(50));
     assert_eq!(server.request_count(), 5, "应处理 5 个 chat loop 请求");
 }
 
@@ -658,7 +655,6 @@ fn mock_llm_server_serves_tool_call_response_for_interactive_skill() {
         "tool_call 应有 id 字段"
     );
 
-    std::thread::sleep(Duration::from_millis(50));
     assert_eq!(server.request_count(), 1);
 }
 
@@ -713,7 +709,6 @@ fn mock_llm_server_consumes_behavior_queue_sequentially() {
         "队列空时应回退默认 mock reply"
     );
 
-    std::thread::sleep(Duration::from_millis(50));
     assert_eq!(server.request_count(), 4);
 }
 
@@ -738,7 +733,6 @@ fn mock_llm_server_returns_http_error_for_401() {
         "error body 应包含错误详情；got: {body}"
     );
 
-    std::thread::sleep(Duration::from_millis(50));
     assert_eq!(server.request_count(), 1);
 }
 
@@ -769,7 +763,6 @@ fn mock_llm_server_returns_in_stream_error_payload() {
         "流内错误后仍应以 [DONE] 收尾"
     );
 
-    std::thread::sleep(Duration::from_millis(50));
     assert_eq!(server.request_count(), 1);
 }
 
@@ -802,7 +795,6 @@ fn mock_llm_server_anthropic_text_reply_format() {
     );
     assert!(body.contains("event: message_start"), "应有 event 行");
 
-    std::thread::sleep(Duration::from_millis(50));
     assert_eq!(server.request_count(), 1);
     // 请求行记录（协议路径断言用）
     assert!(
@@ -844,7 +836,6 @@ fn mock_llm_server_anthropic_tool_call_and_json_reply() {
     assert!(body.contains(r#""type":"message""#));
     assert!(body.contains("摘要文本"));
 
-    std::thread::sleep(Duration::from_millis(50));
     assert_eq!(server.request_count(), 2);
 }
 
@@ -872,6 +863,5 @@ fn mock_llm_server_fragmented_multibyte_reply_intact() {
         "多字节字符跨片不应产生 U+FFFD 替换符；got: {body}"
     );
 
-    std::thread::sleep(Duration::from_millis(50));
     assert_eq!(server.request_count(), 1);
 }

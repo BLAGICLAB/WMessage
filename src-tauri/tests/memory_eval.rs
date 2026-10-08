@@ -108,7 +108,13 @@ fn eval_recall_report_impl() {
         "播种条数与种子数不一致（存在合并/淘汰）"
     );
 
-    let params = rank::RankParams::of(&MemoryTuning::default());
+    // recall@5 的「5」与实际 top_n 必须一致：显式锁死，防 MemoryTuning 默认值
+    // 漂移后指标名悄悄变成 recall@top_n（debug_assert 兜底）
+    let params = rank::RankParams {
+        top_n: 5,
+        ..rank::RankParams::of(&MemoryTuning::default())
+    };
+    debug_assert_eq!(params.top_n, 5);
     let mut per_cat: std::collections::BTreeMap<String, (usize, usize, usize)> = Default::default();
     let mut misses: Vec<String> = Vec::new();
     for q in &golden.queries {

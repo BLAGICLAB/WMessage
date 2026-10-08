@@ -2,6 +2,16 @@
 
 use serde::{Deserialize, Serialize};
 
+/// skill_outcomes 表单源 DDL：生产建表（db::ensure）与集成测试建表共用，防手抄漂移
+pub const SKILL_OUTCOMES_DDL: &str = "CREATE TABLE IF NOT EXISTS skill_outcomes (
+   skill_name         TEXT PRIMARY KEY,
+   kind               TEXT NOT NULL,
+   reason             TEXT,
+   completed_summary  TEXT,
+   rollback_attempted INTEGER,
+   last_at_ms         INTEGER NOT NULL
+ );";
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct PersistedSkillOutcome {
