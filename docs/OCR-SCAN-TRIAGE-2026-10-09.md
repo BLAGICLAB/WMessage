@@ -445,6 +445,24 @@
 | high | `.zcodeignore:56` | Coverage gaps for the stated "defensive, do-not-commit" intent. Common credential/secret formats are missing: `.envrc` (direnv), `.npmrc` / `.yarnrc` / `.pypirc` (auth tokens), `service-account*.json` |
 | high | `.githooks/pre-commit:7` | This target is derived from the hook's invocation path, not from the repository root that was just selected. That can execute the wrong worktree: with linked worktrees, a shared absolute `core.hooksPa |
 
+## 补扫（2026-10-09 上午，覆盖缺口闭环）
+
+未覆盖的 97 个文件构成：vendor/文档/资产/夹具约 90 个（无需扫）+ 测试文件约 60 个（低价值）
++ **两个最大源文件已定向补扫**：`bot_model_loop.rs`（2.3k 行）与 `SettingsPage.tsx`（3.5k 行）。
+
+补扫结果：**0 critical / 0 high**，4 medium + 1 low，全部集中在 bot_model_loop.rs
+（原始件：`OCR-SCAN-SUPPLEMENT-2026-10-09.json`）：
+
+| 严重度 | 行 | 内容 |
+|---|---|---|
+| medium | L1134/L290 | accumulate_tool_call_delta 双失败原因合一个 bool（溢出与越界不可分），且 id/name 先应用再查 args 溢出 |
+| medium | L1348 | finish_reason 硬编码匹配 "length"/"content_filter" 字面量（OpenAI 规范值，非 OpenAI 协议供应商可能给别值） |
+| medium | L962 | 重试循环每次迭代顶部无 stop.stopped() 检查（首轮请求挂满超时后才响应停止） |
+| low | L243 | drain_sse_lines 在 SSE 热路径每 chunk 无条件分配 from_utf8_lossy into_owned |
+
+medium 档按基线攒批处理，不紧急。
+
+## 覆盖缺口与会话说明（原始记录，已被上方补扫闭环）
 ## 覆盖缺口与会话说明
 
 - 会话 aborted（307/370 文件后子任务错误累积），主进程继续完成落盘；约 60 个文件
