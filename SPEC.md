@@ -1,11 +1,115 @@
+# WMessage — SPEC v2（现行产品规格）
+
+> **活文档**：本文件记录产品**现行**形态，功能进/改/删随同一提交更新
+> 「功能规格」一节（开发基线有此约定）。v1 原始需求快照（2026-08-13 ~
+> 08-18）原文保留于文末附录 A，不再修改。架构细节以
+> `docs/rust-bot-architecture.md` 为准。
+
+## 开发基线（单人口径，2026-10-08 收敛，同日按 vibe coding 通行要素进化）
+
+本项目是单人 vibe-code，不跑团队流程。约定如下：
+
+- **门禁只留一条**：pre-push `scripts/test-all.sh`（cargo nextest + vitest）；
+  pre-commit `scripts/test-fast.sh`（fmt/check/tsc/knip/oxlint/vitest 智能跳过）。
+  批次 spec 门禁（BATCH_SPEC / batch-verify.py / docs/batches/）已废除。
+- **注释纪律**：工单号（W8-ATTACH、OCR C5、B0-1、AUDIT-*…）、日期决策记录、
+  「拍板」过程**只进 DEVLOG，不进源码**；注释只写代码本身说不出的约束，
+  不画横幅分隔线。test-fast 第 0 步机械拦截（误伤时行内加 `audit-ok`）。
+- **DEVLOG 降级**：git log 是事实记录；DEVLOG 只写 git log 写不下的
+  「为什么换方向」，一事一段，不写小作文。
+- **SPEC 活文档**：功能进/改/删随同一提交更新「功能规格」一节；
+  附录 A（v1 快照）冻结不动。
+- **docs/ 口径**：顶层只放长期设计文档与手册；一次性审计/交接/冒烟/工单文档
+  直接进 `docs/archive/` 或不落盘。
+- **代码卫生（anti-slop）**：死代码随发现随删，自己孤儿化的一切随同一提交删除；
+  不为「以后可能」预留抽象（trait/config/中间件）——第二个调用方出现时再抽象；
+  不吞错误（空 catch / unwrap 绕错 / as any 逃逸）；密钥只走 keyring/环境变量。
+- **提交纪律**：动手前工作区保持干净 commit（checkpoint）；小步提交，
+  一个逻辑变更一个 commit；行为变更换测试，修 bug 先写复现测试；
+  新增依赖给一行「stdlib/现有依赖为何不行」；提交前人眼看一遍 diff——
+  门禁只懂规则，不懂意图。
+- **代理协作**：AI 代理入口是根目录 `AGENTS.md`（一屏内，只放代理推不出的
+  信息：命令、禁令、地图）；它落后于本节时以本节为准并同步修正它。
+
+## 产品定位
+
+单机个人 AI 任务助手：Todo 看板为骨架（主窗口 + 侧边磁吸挂件，Windows 10/11 +
+macOS），内置大模型机器人管理任务，向上长出工作流编排、子 Agent、任务图谱、
+自进化观察态。无账号体系；多人协作 = 任务 JSON 导出汇总导入。
+
+## 功能规格（现行，2026-10-08）
+
+### 1. 看板与任务卡
+
+- 三列看板（待办/今日/完成），dnd-kit 拖拽；截止日=当天的待办自动进今日
+- 任务卡：标题/备注/标签/子任务进度/文件绑定（多文件）/截止时间/折叠/归属头像（人完成→用户头像，交给机器人→机器人头像）
+- 自动归档（天数可配置，默认 7 天）：归档页搜索+标签筛选+三列网格、只读可恢复；归档时大模型自动打标（≤3 个）
+- 回收站：软删除；绑文件任务彻底删除时三选项弹窗（文件移废纸篓 / 只删卡 / 取消）
+- 多人汇总：任务导出 JSON 按 id 并集合并（updated_at 新者胜）；`owner_id` 归属字段；看板/挂件默认只看自己的任务，图谱与统计看全部
+- 定时任务卡 ⏰：一次/每天/每周/每月四档，到点自动交给机器人执行，结果前置「⏰ 自动执行」写备注；一次性执行完自动清除，错过补跑 2h 时效窗口
+- 主窗口：左导航多视图（看板/日程/归档/工作区/回收站/工作流/任务图谱/活动/通知）+ ⌘K 命令面板；主窗关闭=隐藏，托盘常驻
+
+### 2. 挂件
+
+- 屏幕任意边缘磁吸（右/左竖条，贴顶自动横条）；悬停滑出 / 📌 锁定常驻；自由拖动+贴边吸附+位置记忆
+- 任务/工作区/聊天三视图：打勾、勾子任务、开文件、新建任务、双击标题唤起主窗口进入编辑态；聊天区支持拖文件附件
+
+### 3. 机器人聊天与模型
+
+- 多会话聊天：流式回复、思考/工具调用折叠、Markdown 渲染、斜杠命令 /stop /compact /retry /clean、删除确认（60s 超时自动拒）、审计日志 bot.log
+- **一次执行 = 一个新会话**：任务卡 🤖、定时任务、工作流节点执行统一走聊天会话
+- 双协议：OpenAI 兼容 + Anthropic 兼容；模型中心：厂商分类、内置模型库、厂商级 key（系统 keyring）、每模型推理参数与推理强度、可用性门禁、聊天内快切模型
+- 工具 30+：任务 CRUD/子任务/绑定、文档生成（Word 修订模式：.NET OpenXML 优先 + Python 兜底；Excel 公式注入过滤；PPT；PDF）、文件编辑（edit_file/write_file，Aider 式三级匹配）、文件读写+grep、本机 Python 沙箱（run_python，独立临时目录+60s 超时+产物回收）、联网（web_search：Tavily/Brave key 可配，未配置降级 Bing+百度抓取；fetch_url 公网白名单）、图片识字 ocr_image、截图直达模型视觉、电脑辅助 Tier1（reveal_path 等原生四件）、时间、记忆工具、use_skill、ask_user（执行中提问）
+- **语义记忆体 v2**：bge-small-zh 本地嵌入+混合打分；事实+教训两类；自动抽取、参数可调、总开关、管理面板、导入导出、写入冲突裁决（改口即更新）、定时整理（consolidation）、黄金集评估器（recall@5 锁死）
+- **MCP 外部服务器**：stdio/HTTP 接入，env/headers 机密走系统钥匙串
+- **技能系统**：Markdown+YAML frontmatter DSL（对齐 Agent Skills 开放标准），步骤推进状态机 + LLM 兜底，设置页运行结果徽章
+- 产物统一落 `AI_Gen_Files`（启动预建、同名加 `(n)` 永不覆盖），流程结束产物登记表弹窗汇总
+
+### 4. 编排与执行
+
+- **工作流画布**：一句话总目标 → AI 拆解任务卡 DAG → 画布手调（加删卡/连线）→ 保存落库 → 一键拓扑执行；JSON 导入导出=可复用 SOP 模板（导入=全新 id 实例化）；工作流任务默认不在看板/挂件显示
+- 工作流质量件：拆解前澄清（双层档案 + 澄清回注 + assumptions 折叠条）、执行中 ask_user 提问闭环、节点级验收 + run 级结构化审计、轻量评审模型、有界重试/返工环、导出路径闸门
+- **子 Agent 编排**：生命周期/并发闸/预算上限/状态机/runner，结构化字段路由
+- **任务图谱**：Sigma.js + FA2 worker 力导向（Obsidian 式交互：hover 邻接高亮、度数定大小、过滤器、局部放大）；多人归属着色/聚簇、依赖编辑、标签近义合并、视野自适应、节点大小双模式（连接度/耗时）、设置页七项图谱偏好
+- **Agent 透明化**：执行详情面板（工具/耗时/成败/文件 diff 证据、error_class 分类、痕迹清理与导出）、画布实时高亮、定时执行透明、通知中心（三类决策事件消息化）、Agent 参数注册表 + 词元统计卡、主窗活动页
+
+### 5. 治理与自进化（观察态）
+
+- 设置页决策板：候选提案 Promote/Reject（即开关语义）、应用策略二档、影子观察（shadow）、执行痕迹与 lesson 落库
+- 文件治理：授权模式四档 strict 白名单硬拒 / ask 弹授权（默认）/ auto / yolo 全放行 + per-tool 权限规则表；绑定集合精确命中才放行（`..`/软链/前缀相似目录全拒）
+- 密钥纪律：API key、搜索 key、MCP 机密全走系统凭据存储，不落明文配置
+
+### 6. 数据、集成与平台
+
+- SQLite（WAL + busy_timeout 2s）单写者行级增量读写；主窗 `mutate()` diff 落盘广播 `tasks-changed`，挂件 diff 上报 + 5s 兜底轮询；迁移链自动导入 data.json/localStorage 旧数据
+- **本地 HTTP API**（tiny_http + SSE + token 鉴权）：启停/状态/换 token，供外部集成
+- 便携模式：数据库随 exe 走（exe 目录锚定，不可写兜底 app_data_dir）；Windows 绿色 zip + macOS dmg（Intel/Apple Silicon）
+- 桌面清理：CSV 规则表（模版下载/导入），`{year}` 占位，move/delete 两动作，10 分钟后台轮询，migration.log；看板/回收站附件绝不触碰
+- 全局快捷键：唤起/隐藏主窗口（macOS `Cmd+Ctrl+W` / Win `Ctrl+Alt+W`）、快速新建任务（`Cmd/Ctrl+Alt+N`，唤起并进入标题编辑）、切换深浅色（`Cmd/Ctrl+Alt+T`）；注册失败只记日志不影响启动
+- UI 体系：新拟态 nm 组件类 + 设计 token + 左导航壳 + lucide 图标 + a11y 基线 + 深浅色三态主题
+
+## 技术栈（现行）
+
+- Tauri 2 + React 19 + TypeScript + Vite 7 + Tailwind v3（nm 组件类）
+- rusqlite（bundled）；reqwest 流式；keyring；ort + tokenizers（bge-small-zh 本地嵌入）；rmcp（MCP）；tiny_http（本地 API）
+- 前端图形：sigma.js + graphology + FA2（任务图谱）、dagre（工作流画布布局）、@dnd-kit/core
+- 工具链：cargo nextest / clippy / machete、vitest / oxlint / knip / tsc；门禁见 `docs/testing.md`
+
+---
+
+# 附录 A：v1 原始需求快照（2026-08-13 ~ 2026-08-18）
+
+> 项目起点的原始需求记录（含原始 UI 规范与逐条追加功能），停止更新；
+> 现行形态以本文件前半部分为准。
+
 # WMessage — SPEC v1
 
 > 唯一依据。来源：老板 2026-08-13 发来的最终 OpenClaw 完整 Prompt（含样式说明）。
 >
-> **历史存档声明（B6，2026-09-29）**：本 SPEC 是项目起点的原始需求快照。此后
+> **历史存档声明（2026-09-29）**：本 SPEC 是项目起点的原始需求快照。此后
 > 功能已大幅演进（子 Agent 编排、自进化观察态、MCP 宿主、双协议等），现行
-> 架构以 `docs/rust-bot-architecture.md` 为准，迭代记录见 `DEVLOG.md` 与
-> `docs/batches/`；本文件不再随功能更新。
+> 架构以 `docs/rust-bot-architecture.md` 为准，迭代记录见 `DEVLOG.md`；
+> 本文件不再随功能更新。
 
 ## 项目定位
 

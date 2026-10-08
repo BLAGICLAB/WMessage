@@ -1,0 +1,601 @@
+{
+  "status": "complete",
+  "llm": {
+    "provider": "minimax-cn",
+    "model": "MiniMax-M3"
+  },
+  "message": "Review complete: 20 finding(s) across 19 selected item(s).",
+  "summary": {
+    "files_reviewed": 19,
+    "comments": 20,
+    "total_tokens": 12757904,
+    "input_tokens": 12596736,
+    "output_tokens": 161168,
+    "cache_read_tokens": 11852533,
+    "elapsed": "11m20s"
+  },
+  "tool_calls": {
+    "total": 493,
+    "by_tool": {
+      "code_comment": 12,
+      "code_search": 199,
+      "file_find": 8,
+      "file_read": 225,
+      "file_read_diff": 49
+    },
+    "failure": 1,
+    "failure_by_tool": {
+      "file_read": 1
+    },
+    "failure_details": [
+      {
+        "tool_call_number": 14,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/bot_chat.rs",
+        "arguments": "{\"end_line\":460,\"file_path\":\"src-tauri/src/bot_chat.rs\",\"start_line\":1400}",
+        "error": "invalid line range: start_line 1400 is greater than end_line 460"
+      }
+    ]
+  },
+  "comments": [
+    {
+      "path": "src-tauri/src/bot_model_loop.rs",
+      "content": "`reasoning::resolve` here uses the original global `provider` and `cfg.model` (via `model_for_reasoning`), not the override's resolved values. When `model_override` is `Some(id)`, the actual HTTP request goes to the override's model/protocol (e.g., glm-4.6 on OpenAI), but the reasoning-effort wire is still computed against the global active model/protocol (e.g., deepseek-v4-flash). This silently drops reasoning control for the override model: e.g., global=deepseek (→ `ReasoningWire::None` as unknown family) + override=glm-4.6 → no `reasoning_effort` field is sent even when the user set Medium. Pass the resolved model and provider instead.",
+      "suggestion_code": "        // 推理强度：覆盖优先于后台默认；抽象档位按模型族映射到线上参数。\n        // 覆盖生效时（resolved != None），model 与 provider 都按条目派生，\n        // 否则套用原 cfg 值（旧路径行为零变化）。budget \u003c max_tokens 夹紧\n        // 用的就是 effective_inference 的条目级 max_tokens（U13）。\n        reasoning: crate::bot::reasoning::resolve(\n            resolved.as_ref().map_or(provider, |r| {\n                crate::bot::ApiProvider::from_cfg(Some(r.api_provider.as_str()))\n            }),\n            resolved.as_ref().map_or(\u0026cfg.model, |r| \u0026r.model),",
+      "existing_code": "        // 推理强度：覆盖优先于后台默认；抽象档位按模型族映射到线上参数。\n        // budget \u003c max_tokens 夹紧用的就是条目覆盖后的 max_tokens（U13）\n        reasoning: crate::bot::reasoning::resolve(\n            provider,\n            \u0026model_for_reasoning,",
+      "start_line": 530,
+      "end_line": 534,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "src-tauri/src/db/workflow.rs",
+      "content": "保留卡（kept）分支只回写 `canvas_pos`，未同步 `node.model`。在「仅改 model 不改标题/备注/标签」的场景下，指纹命中保留现有任务 id，但草稿里的新 model 值被静默丢弃——用户改 model 后整画布保存会看起来没生效（实际生效必须改 title 触整卡重建）。建议参照 `canvas_pos` 一并赋值 `t.model = node.model.clone();`（为空允许清空），并补一条「同内容仅 model 变更被回写」的单测覆盖保留路径。",
+      "suggestion_code": "if kept_flags[i] {\n                // 保留卡：仅坐标与模型覆盖变更（RMW 基线 = 锁内现读的 updated_at；\n                // column/result/budget/子任务等执行痕迹原样保留）\n                let mut t = existing\n                    .iter()\n                    .find(|t| t.id == real_id[i])\n                    .expect(\"kept 节点必在 existing 中\")\n                    .clone();\n                t.canvas_pos = node.pos.clone();\n                t.model = node.model.clone();\n                t.expected_updated_at = t.updated_at;\n                t.updated_at = Some(now);\n                upserts.push(t);",
+      "existing_code": "if kept_flags[i] {\n                // 保留卡：仅坐标变更（RMW 基线 = 锁内现读的 updated_at；\n                // column/result/budget/子任务等执行痕迹原样保留）\n                let mut t = existing\n                    .iter()\n                    .find(|t| t.id == real_id[i])\n                    .expect(\"kept 节点必在 existing 中\")\n                    .clone();\n                t.canvas_pos = node.pos.clone();\n                t.expected_updated_at = t.updated_at;\n                t.updated_at = Some(now);\n                upserts.push(t);",
+      "start_line": 438,
+      "end_line": 449,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "src-tauri/src/db/workflow.rs",
+      "content": "文件解析与 `task_patch` 白名单契约不一致：`task_patch` 显式拒绝 `model: \"\"`（见 db/tasks.rs apply_task_patch 新增分支），但 `parse_workflow_file` 把 `model` 原样透传，`.wflow.json` 写 `\"model\": \"\"` 会落入 DB 形成空串。建议在 `parse_workflow_file` 对 `n.model` 做去空白 + 空串归一化为 `None`（和 `note` 处理方式对齐），或在 `workflow_save_locked` 入参校验时再加一次 `model` 非空守卫（与 `check_len` 同样的早期拒绝风格），避免文件导入绕过白名单。",
+      "suggestion_code": "let model = n\n                .model\n                .as_deref()\n                .map(str::trim)\n                .filter(|s| !s.is_empty())\n                .map(|s| s.to_string());\n            WorkflowNodeDraft {\n                local_id: n.id,\n                task_id: None,\n                title: n.title,\n                note: n.note,\n                tags: n.tags,\n                depends_on,\n                pos: n.pos,\n                model,\n            }",
+      "existing_code": "WorkflowNodeDraft {\n                local_id: n.id,\n                task_id: None,\n                title: n.title,\n                note: n.note,\n                tags: n.tags,\n                depends_on,\n                pos: n.pos,\n                model: n.model,\n            }",
+      "start_line": 794,
+      "end_line": 803,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/db/workflow.rs",
+      "content": "新增 `WorkflowFileNode.model` 字段与现有契约紧绑 W6-MODEL 特性，但单测 `parse_valid_v1_maps_and_dedupes_deps`、`export_roundtrip_preserves_graph` 等文件格式单测没有断言 `model` 的透传。建议补一条「含 model 的文件解析 + 导出 roundtrip 后再导入」的单测（如 `model: \"gpt-x\"` 写穿到草稿并最终落库），与 pos 的现有断言对称，否则后续重构切断透传不会被测试发现。",
+      "suggestion_code": "#[test]\n    fn parse_roundtrip_preserves_model_override() {\n        let raw = r#\"{\n            \"version\": 1, \"name\": \"周报\", \"goal\": \"目标\",\n            \"nodes\": [\n                {\"id\": \"n1\", \"title\": \"编程\", \"model\": \"gpt-coding-1\"},\n                {\"id\": \"n2\", \"title\": \"绘图\", \"model\": \"dalle-pro\"}\n            ]\n        }\"#;\n        let input = parse_workflow_file(raw).unwrap();\n        assert_eq!(input.nodes[0].model.as_deref(), Some(\"gpt-coding-1\"));\n        assert_eq!(input.nodes[1].model.as_deref(), Some(\"dalle-pro\"));\n    }\n\n    fn parse_valid_v1_maps_and_dedupes_deps() {",
+      "existing_code": "fn parse_valid_v1_maps_and_dedupes_deps() {",
+      "start_line": 1308,
+      "end_line": 1308,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/workflow_runner.rs",
+      "content": "The `model_by_id` HashMap is built without explicit capacity; for consistency and a small allocation win when the workflow has many nodes, consider `HashMap::with_capacity(tasks.len())` (the same applies to the existing `name_by_id` above). Not a correctness issue.",
+      "existing_code": "let model_by_id: HashMap\u003cString, Option\u003cString\u003e\u003e = tasks\n        .iter()\n        .map(|t| (t.id.clone(), t.model.clone()))\n        .collect();",
+      "start_line": 257,
+      "end_line": 260,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/db/tasks.rs",
+      "content": "The `model` arm rejects an all-whitespace string but does not strip surrounding whitespace before storing. Same pattern is used for `workflowId`/`dependsOn`, so this is consistent project-wide. If you want strictness at write-time rather than just validation, trim `task.model` after `set_from`. Not blocking.",
+      "existing_code": "            \"model\" =\u003e {\n                set_from(\u0026mut task.model, v, k)?;\n                if task.model.as_deref().is_some_and(|s| s.trim().is_empty()) {\n                    return Err(CommandError::InvalidArgument {\n                        field: k.into(),\n                        value: v.to_string(),\n                        reason: \"model 不能为空串（清空用 null）\".into(),\n                    });\n                }\n            }",
+      "start_line": 837,
+      "end_line": 846,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/TaskNode.tsx",
+      "content": "The model entry shape `Array\u003c{ id: string; label: string }\u003e` is duplicated across `WorkflowPage.tsx` (the `models` useState and the `modelsByProvider` mapping) and `TaskNode.tsx` (the `TaskNodeData.models` field). Consider extracting a `ModelEntry` type alias into `src/types.ts` so the contract is defined once and reused; this also documents the wire shape between the Rust `modelsByProvider` payload and the React tree.",
+      "existing_code": "  /** 模型库条目（W6-MODEL）：每卡执行模型下拉选项 */\n  models: Array\u003c{ id: string; label: string }\u003e;",
+      "start_line": 13,
+      "end_line": 14,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "Silent `.catch(() =\u003e {})` is inconsistent with the established error-handling pattern in this file (e.g., the sibling `list_workflows` effect uses `handleCommandError(e, \"读取工作流列表\", { silent: true })`). If `bot_get_config` regresses (no `modelsByProvider`, or schema change), the model dropdown will silently appear empty with no signal to the user/developer. Use `handleCommandError` for parity, or at minimum log the error.",
+      "suggestion_code": ".catch((e) =\u003e\n        handleCommandError(e, \"读取模型库\", { silent: true })\n      );\n  }, []);",
+      "existing_code": ".catch(() =\u003e {});\n  }, []);\n\n  const snapshot = useCallback(",
+      "start_line": 154,
+      "end_line": 157,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "The inline `(taskId, model) =\u003e onUpdate(...)` closure is inconsistent with every other handler in this file (`toggleDone`, `commitTitle`, `toggleSubtask`) which are defined as `useCallback([])` at the top and read `propsRef.current.onUpdate` to dodge stale-closure. As written, `onModelChange` captures the `onUpdate` prop at the moment the `useMemo` last ran, so if the parent passes a new `onUpdate` reference without the memo's deps changing, the node still calls the stale one. Either define it as a stable `useCallback` (reading `propsRef.current.onUpdate` like the others), or add `onUpdate` to the memo deps.",
+      "suggestion_code": "onModelChange: task ? onModelChange : undefined,",
+      "existing_code": "onModelChange: task\n            ? (taskId, model) =\u003e {\n                onUpdate(taskId, model ? { model } : { model: undefined });\n              }\n            : undefined,",
+      "start_line": 645,
+      "end_line": 649,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "The inline `Array\u003c{ id: string; label: string }\u003e` shape is repeated three times in this useEffect (state initializer + openai + anthropic). Promoting it to a single named alias (or sharing the backend's `ModelEntry` type if one exists) avoids drift if the model entry gains fields like `provider`/`deprecated`.",
+      "suggestion_code": "type ModelEntry = { id: string; label: string };\n  const [models, setModels] = useState\u003cModelEntry[]\u003e([]);\n  // 模型库条目（W6-MODEL）：每卡执行模型下拉\n  useEffect(() =\u003e {\n    invoke\u003c{\n      modelsByProvider?: {\n        openai?: ModelEntry[];\n        anthropic?: ModelEntry[];\n      } | null;\n    }\u003e(\"bot_get_config\")",
+      "existing_code": "const [models, setModels] = useState\u003cArray\u003c{ id: string; label: string }\u003e\u003e([]);\n  // 模型库条目（W6-MODEL）：每卡执行模型下拉\n  useEffect(() =\u003e {\n    invoke\u003c{\n      modelsByProvider?: {\n        openai?: Array\u003c{ id: string; label: string }\u003e;\n        anthropic?: Array\u003c{ id: string; label: string }\u003e;\n      } | null;\n    }\u003e(\"bot_get_config\")",
+      "start_line": 0,
+      "end_line": 0,
+      "category": "style",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/TaskNode.tsx",
+      "content": "Stale-model state/UI inconsistency: when task.model is set to an id no longer present in data.models (e.g., the library entry was removed or disabled after the task was saved), the controlled select falls back to displaying \"跟随全局模型\" (the first option) while task.model still holds the stale value. Until the user manually re-selects, the card UI misrepresents the actual model used at execution time — the only safety net is the backend's loud-error path. Consider either always rendering a fallback option that reflects task.model when it isn't in the list, or reconciling stale values to undefined upstream when models are loaded.",
+      "existing_code": "{data.models.length \u003e 0 \u0026\u0026 (\n            \u003cselect\n              aria-label=\"执行模型\"\n              title=\"本卡执行用大模型（不选 = 跟随全局）\"\n              className=\"mx-1 mt-1 block w-[calc(100%-0.5rem)] rounded-[var(--r-sm)] bg-transparent px-1.5 py-0.5 text-[11px] text-[var(--t3)] nm-inset\"\n              value={task.model ?? \"\"}\n              onChange={(e) =\u003e\n                data.onModelChange?.(task.id, e.target.value || undefined)\n              }\n            \u003e\n              \u003coption value=\"\"\u003e⚙️ 跟随全局模型\u003c/option\u003e\n              {data.models.map((m) =\u003e (\n                \u003coption key={m.id} value={m.id}\u003e\n                  {m.label}\n                \u003c/option\u003e\n              ))}\n            \u003c/select\u003e\n          )}",
+      "start_line": 71,
+      "end_line": 88,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/db/tasks.rs",
+      "content": "The doc comment above says \"含全部 27 列\", but the DDL now contains 28 columns (the new `model` TEXT column was added). This drift will mislead future readers about the actual column count and make the same mistake again next time someone adds a column.",
+      "suggestion_code": "/// 含全部 28 列——老库缺列由 open_db 的幂等 ALTER 迁移补齐，此处即最新完整 schema。",
+      "existing_code": "/// 含全部 27 列——老库缺列由 open_db 的幂等 ALTER 迁移补齐，此处即最新完整 schema。",
+      "start_line": 28,
+      "end_line": 28,
+      "category": "documentation",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/db/tasks.rs",
+      "content": "The new `model` patch arm is added but no test covers it. Following the established pattern in `task_patch_orchestration_fields_set_and_null_clears` (covers assignee/budget/result) and the `model` empty-string rejection at tasks.rs:839, a parallel test verifying (a) setting a valid model id, (b) `null` clears it, and (c) whitespace-only rejection would lock the wire contract and prevent regressions like the future 'model' patch arm silently accepting JSON-typed wrong values or losing the empty-rejection check.",
+      "existing_code": "\"model\" =\u003e {\n                set_from(\u0026mut task.model, v, k)?;\n                if task.model.as_deref().is_some_and(|s| s.trim().is_empty()) {\n                    return Err(CommandError::InvalidArgument {\n                        field: k.into(),\n                        value: v.to_string(),\n                        reason: \"model 不能为空串（清空用 null）\".into(),\n                    });\n                }\n            }",
+      "start_line": 837,
+      "end_line": 846,
+      "category": "test",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/workflow_runner.rs",
+      "content": "The `model_by_id.clone()` inside the `spawn_node` closure deep-clones the entire HashMap on every node spawn. For large workflows this becomes O(n²) (n spawned nodes × n map entries). Wrap the map in `Arc\u003cHashMap\u003c...\u003e\u003e` once in `workflow_run` and clone the `Arc` (cheap refcount bump) instead — matches the `running: Arc\u003cMutex\u003cHashSet\u003cString\u003e\u003e\u003e` pattern already used right next to it for the same reason.",
+      "suggestion_code": "let model_by_id = model_by_id.clone(); // cheap Arc clone",
+      "existing_code": "let model_by_id = model_by_id.clone();",
+      "start_line": 325,
+      "end_line": 325,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/bot_model_loop.rs",
+      "content": "跨协议温度钳制不一致：`effective_inference` 用的是 `cfg.api_provider`（全局协议）调用 `resolve_temperature`，temperature 按全局协议上限钳制（OpenAI 0..=2 / Anthropic 0..=1）。但当 `resolved` 命中且改了协议时，`LlmHttp.provider` 走的是 override 的协议（line 522-525），`temperature` 仍带着全局协议范围的钳制值。若全局是 OpenAI 且某条目 temperature=1.5，override 到 Anthropic 时 1.5 会随请求体发出，超 Anthropic 的 0..=1 上限被上游 400 拒；用户面对的失败信号无法直接归因到「覆盖条目协议变了，温度档位不兼容」。建议在 LlmHttp 装配前，按最终 `provider`（override 命中时即 `resolved.api_provider`）再过一次 `resolve_temperature`/`resolve_top_p`，与协议上限对齐。",
+      "suggestion_code": "        provider: resolved\n            .as_ref()\n            .map(|r| crate::bot::ApiProvider::from_cfg(Some(r.api_provider.as_str())))\n            .unwrap_or(provider),\n        max_tokens: inference.max_tokens,\n        // W6-MODEL：override 命中后协议可能与全局不同，temperature/top_p\n        // 必须按最终 provider 重钳（effective_inference 用的是 cfg.api_provider）\n        temperature: crate::bot::resolve_temperature(inference.temperature, /* final provider */),\n        top_p: crate::bot::resolve_top_p(inference.top_p),",
+      "existing_code": "        provider: resolved\n            .as_ref()\n            .map(|r| crate::bot::ApiProvider::from_cfg(Some(r.api_provider.as_str())))\n            .unwrap_or(provider),\n        max_tokens: inference.max_tokens,\n        temperature: inference.temperature,\n        top_p: inference.top_p,",
+      "start_line": 522,
+      "end_line": 528,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/bot_model_loop.rs",
+      "content": "跨协议 temperature/top_p 钳制不一致：`effective_inference` 用 `cfg.api_provider`（全局协议）调 `resolve_temperature`（OpenAI 0..=2 / Anthropic 0..=1）。override 命中且改了协议时，`LlmHttp.provider` 走 override 协议（line 522-525），但 `temperature` / `top_p` 仍带全局协议范围的钳制值。若全局 OpenAI 且某 active 条目 temperature=1.5，override 到 Anthropic 后 1.5 会被随请求体发出，超 Anthropic 0..=1 上限被上游 400 拒；用户无法直接归因到「覆盖条目协议变了，温度档位不兼容」。建议在 LlmHttp 装配前按最终 provider（override 命中时即 `resolved.api_provider`）再过一次 `resolve_temperature`/`resolve_top_p`，让出口值与最终协议对齐。",
+      "suggestion_code": "        // W6-MODEL：override 命中后协议可能与全局不同，\n        // temperature/top_p 必须按最终 provider 重钳\n        // （effective_inference 用的是 cfg.api_provider）\n        provider: resolved\n            .as_ref()\n            .map(|r| crate::bot::ApiProvider::from_cfg(Some(r.api_provider.as_str())))\n            .unwrap_or(provider),\n        max_tokens: inference.max_tokens,\n        temperature: resolved\n            .as_ref()\n            .map(|r| crate::bot::config::schema::resolve_temperature(\n                inference.temperature,\n                crate::bot::ApiProvider::from_cfg(Some(r.api_provider.as_str())),\n            ))\n            .unwrap_or_else(|| crate::bot::config::schema::resolve_temperature(\n                inference.temperature, provider,\n            )),\n        top_p: inference.top_p,",
+      "existing_code": "        provider: resolved\n            .as_ref()\n            .map(|r| crate::bot::ApiProvider::from_cfg(Some(r.api_provider.as_str())))\n            .unwrap_or(provider),\n        max_tokens: inference.max_tokens,\n        temperature: inference.temperature,\n        top_p: inference.top_p,",
+      "start_line": 522,
+      "end_line": 528,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "The save() payload omits `model` from the `WorkflowNodeDraft` mapping, so clicking 保存 wipes out the model that was just set on the node via the dropdown. Concretely:\n\n1. User picks \"GLM-4\" on a card → `onModelChange` → `task_patch` writes `model=\"glm\"` to DB\n2. User clicks 保存 → `workflow_save` runs with `n.model === undefined`, backend `WorkflowNodeDraft.model` defaults to `None`, `upsert_tasks` overwrites `model = NULL`\n3. Next page reload / re-open shows the model as unset\n\nThe spec explicitly calls out `WorkflowNodeDraft.model` as one of the four sync points (\"Task.model 四同步点：TS/Rust/DB 列（幂等 ALTER）/task_patch 白名单（拒空串）\") and says the save/draft should carry `model` (\"保存/文件透传：WorkflowNodeDraft.model + .wflow.json 节点可选 model 字段\"). Two issues conspire to drop the field:\n- `CanvasNode` in `src/components/WorkflowCanvas/graph.ts` has no `model` member, so `n.model` is always undefined in `save()`\n- `draftFromTasks` (`graph.ts:104`) doesn't pick `model` from the loaded `Task`, so reopening a workflow also loses it from the canvas\n\nSuggested fix: add `model?: string` to `CanvasNode`, include it in `draftFromTasks`'s Pick + mapping, have `save()` forward `model: n.model ?? null`, and have `onModelChange` also `setNodes((prev) =\u003e prev.map(...))` to keep canvas in sync (mirroring the `commitTitle` pattern that updates both canvas and tasks). Without this, every 保存 is a destructive operation on the just-set model.",
+      "suggestion_code": "const res = await invoke\u003cWorkflowSaveResult\u003e(\"workflow_save\", {\n        input: {\n          workflowId: activeId,\n          name: effectiveName,\n          goal: effectiveGoal,\n          nodes: nodes.map((n) =\u003e ({\n            localId: n.localId,\n            taskId: n.taskId ?? null,\n            title: n.title,\n            note: n.note ?? null,\n            tags: n.tags ?? null,\n            dependsOn: n.dependsOn,\n            pos: n.pos,\n            model: n.model ?? null,\n          })),\n        },\n      });",
+      "existing_code": "const res = await invoke\u003cWorkflowSaveResult\u003e(\"workflow_save\", {\n        input: {\n          workflowId: activeId,\n          name: effectiveName,\n          goal: effectiveGoal,\n          nodes: nodes.map((n) =\u003e ({\n            localId: n.localId,\n            taskId: n.taskId ?? null,\n            title: n.title,\n            note: n.note ?? null,\n            tags: n.tags ?? null,\n            dependsOn: n.dependsOn,\n            pos: n.pos,\n          })),\n        },\n      });",
+      "start_line": 533,
+      "end_line": 548,
+      "category": "bug",
+      "severity": "critical"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "`onModelChange` only calls `onUpdate` (which patches `Task.model` on the global tasks list) but never `setNodes`. Other handlers in this component follow the 「commitTitle × updateCanvas + updateTask」 two-track contract so the canvas never goes stale. Here, the canvas `nodes[i].model` stays `undefined` for the lifetime of the canvas session — even if you fix the save payload above, the canvas will only ever rehydrate `model` via `draftFromTasks` on next open. While a card is mounted, any code path that reads `n.model` on the canvas (e.g. the save payload itself, future snapshot/dirty diffs) sees `undefined`. Mirror the `commitTitle` pattern: `setNodes((prev) =\u003e prev.map((m) =\u003e (m.taskId === taskId ? { ...m, model } : m)))` before/alongside the `onUpdate` call.",
+      "suggestion_code": "onModelChange: task\n            ? (taskId, model) =\u003e {\n                setNodes((prev) =\u003e\n                  prev.map((m) =\u003e\n                    m.taskId === taskId ? { ...m, model } : m\n                  )\n                );\n                onUpdate(taskId, model ? { model } : { model: undefined });\n              }\n            : undefined,",
+      "existing_code": "onModelChange: task\n            ? (taskId, model) =\u003e {\n                onUpdate(taskId, model ? { model } : { model: undefined });\n              }\n            : undefined,",
+      "start_line": 645,
+      "end_line": 649,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/TaskNode.tsx",
+      "content": "The model dropdown in `TaskNode.tsx` (`{data.models.length \u003e 0 \u0026\u0026 \u003cselect ...\u003e}`) is hidden whenever the in-memory `models` list is empty, even on cards that already have a `task.model` set. Two concrete breakages:\n1. While `bot_get_config` is still in flight on initial mount, every saved card with a model shows nothing — user has no way to inspect or change it until the invoke resolves.\n2. If the user removes all models from 设置→模型设置 after a card has a model assigned, reopening the workflow (or adding new cards) shows no dropdown — there's then no path to clear the stale `model` via the UI (only `task_patch` with `model: null` from somewhere else could clear it).\n\nShow the dropdown unconditionally when `task !== undefined` and a model is set (or always when `task !== undefined`); the option list naturally degrades to just \"跟随全局模型\" if `models` is empty.",
+      "suggestion_code": "\u003cselect\n            aria-label=\"执行模型\"\n            title=\"本卡执行用大模型（不选 = 跟随全局）\"\n            className=\"mx-1 mt-1 block w-[calc(100%-0.5rem)] rounded-[var(--r-sm)] bg-transparent px-1.5 py-0.5 text-[11px] text-[var(--t3)] nm-inset\"\n            value={task.model ?? \"\"}\n            onChange={(e) =\u003e\n              data.onModelChange?.(task.id, e.target.value || undefined)\n            }\n          \u003e\n            \u003coption value=\"\"\u003e⚙️ 跟随全局模型\u003c/option\u003e\n            {data.models.map((m) =\u003e (\n              \u003coption key={m.id} value={m.id}\u003e\n                {m.label}\n              \u003c/option\u003e\n            ))}\n          \u003c/select\u003e",
+      "existing_code": "{data.models.length \u003e 0 \u0026\u0026 (\n            \u003cselect\n              aria-label=\"执行模型\"\n              title=\"本卡执行用大模型（不选 = 跟随全局）\"\n              className=\"mx-1 mt-1 block w-[calc(100%-0.5rem)] rounded-[var(--r-sm)] bg-transparent px-1.5 py-0.5 text-[11px] text-[var(--t3)] nm-inset\"\n              value={task.model ?? \"\"}\n              onChange={(e) =\u003e\n                data.onModelChange?.(task.id, e.target.value || undefined)\n              }\n            \u003e\n              \u003coption value=\"\"\u003e⚙️ 跟随全局模型\u003c/option\u003e\n              {data.models.map((m) =\u003e (\n                \u003coption key={m.id} value={m.id}\u003e\n                  {m.label}\n                \u003c/option\u003e\n              ))}\n            \u003c/select\u003e\n          )}",
+      "start_line": 71,
+      "end_line": 88,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "The workflow canvas dropdown shows disabled models in the library, but the chat panel (`ChatPanel.tsx:337-348`) filters by `m.enabled !== false` and by `disabledVendors` / `verifiedVendors`. So a user can pick a disabled model here → `task_patch` happily persists it → at execution time `resolve_model_override` returns `Err(\"模型条目「...」已停用：...\")`. The selection model is correct *for chat* but not for the workflow canvas, so the user sees a confusing failure mode. Two options, pick one: either\n(a) align with ChatPanel and filter `enabled !== false` (and arguably `disabledVendors` / `verifiedVendors` if exposed via `bot_get_config` view) before mapping to `setModels`, or\n(b) keep the dropdown permissive but add a `⚠ 已停用` suffix in the `\u003coption\u003e` text so the user sees the disabled state at selection time.\nOption (a) matches the chat panel exactly; option (b) preserves the spec wording \"模型库全条目\". Either way, the silent-on-select / loud-on-execute mismatch is the real bug.",
+      "suggestion_code": "const m = c.modelsByProvider;\n        // 与 ChatPanel 模型下拉保持一致：enabled=false 不进下拉（resolve_model_override\n        // 会在执行时响亮报错「模型条目「...」已停用」，此处静默展示会让用户无感地选到坏选项）\n        const list = [\n          ...(m?.openai ?? []),\n          ...(m?.anthropic ?? []),\n        ]\n          .filter((e) =\u003e e.enabled !== false)\n          .map((e) =\u003e ({ id: e.id, label: e.label }));\n        setModels(list);",
+      "existing_code": "const m = c.modelsByProvider;\n        const list = [\n          ...(m?.openai ?? []),\n          ...(m?.anthropic ?? []),\n        ].map((e) =\u003e ({ id: e.id, label: e.label }));\n        setModels(list);",
+      "start_line": 147,
+      "end_line": 152,
+      "category": "bug",
+      "severity": "medium"
+    }
+  ],
+  "groups": [
+    {
+      "label": "src-tauri/src/api_handlers/handlers.rs",
+      "files": [
+        "src-tauri/src/api_handlers/handlers.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/api_handlers/mod.rs",
+      "files": [
+        "src-tauri/src/api_handlers/mod.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/bot.rs",
+      "files": [
+        "src-tauri/src/bot.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/bot/config/mod.rs",
+      "files": [
+        "src-tauri/src/bot/config/mod.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/bot/config/types.rs",
+      "files": [
+        "src-tauri/src/bot/config/types.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/bot/tools.rs",
+      "files": [
+        "src-tauri/src/bot/tools.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/bot_chat.rs",
+      "files": [
+        "src-tauri/src/bot_chat.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/bot_model_loop.rs",
+      "files": [
+        "src-tauri/src/bot_model_loop.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/bot_orchestrator.rs",
+      "files": [
+        "src-tauri/src/bot_orchestrator.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/bot_scheduler.rs",
+      "files": [
+        "src-tauri/src/bot_scheduler.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/db/mod.rs",
+      "files": [
+        "src-tauri/src/db/mod.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/db/tasks.rs",
+      "files": [
+        "src-tauri/src/db/tasks.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/db/workflow.rs",
+      "files": [
+        "src-tauri/src/db/workflow.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/exec_steps.rs",
+      "files": [
+        "src-tauri/src/exec_steps.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/task_out.rs",
+      "files": [
+        "src-tauri/src/task_out.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/workflow_runner.rs",
+      "files": [
+        "src-tauri/src/workflow_runner.rs"
+      ]
+    },
+    {
+      "label": "src/components/WorkflowCanvas/TaskNode.tsx",
+      "files": [
+        "src/components/WorkflowCanvas/TaskNode.tsx"
+      ]
+    },
+    {
+      "label": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "files": [
+        "src/components/WorkflowCanvas/WorkflowPage.tsx"
+      ]
+    },
+    {
+      "label": "src/types.ts",
+      "files": [
+        "src/types.ts"
+      ]
+    }
+  ],
+  "warnings": [
+    {
+      "file": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "message": "comment filed against workspace/src/components/WorkflowCanvas/WorkflowPage.tsx describes code in src/components/WorkflowCanvas/WorkflowPage.tsx; re-filed",
+      "type": "comment_refiled"
+    },
+    {
+      "file": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "message": "comment filed against workspace/src/components/WorkflowCanvas/WorkflowPage.tsx describes code in src/components/WorkflowCanvas/WorkflowPage.tsx; re-filed",
+      "type": "comment_refiled"
+    },
+    {
+      "file": "src/components/WorkflowCanvas/TaskNode.tsx",
+      "message": "comment filed against workspace/src/components/WorkflowCanvas/TaskNode.tsx describes code in src/components/WorkflowCanvas/TaskNode.tsx; re-filed",
+      "type": "comment_refiled"
+    },
+    {
+      "file": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "message": "comment filed against workspace/src/components/WorkflowCanvas/WorkflowPage.tsx describes code in src/components/WorkflowCanvas/WorkflowPage.tsx; re-filed",
+      "type": "comment_refiled"
+    }
+  ],
+  "session_id": "ead2e9e2-7fcb-4691-a6fb-642074cf765e",
+  "manifest": {
+    "schema_version": "ocr.run-manifest/v1",
+    "run_id": "ead2e9e2-7fcb-4691-a6fb-642074cf765e",
+    "operation": "review",
+    "terminal_state": "complete",
+    "repository": {
+      "identity_sha256": "7aebc670c3c38e64ae52ffaf12cfa8ba078a29af906f8ef856132cd790dbe48b"
+    },
+    "input": {
+      "mode": "commit",
+      "requested_head": "bc72074",
+      "resolved_base": "aa59fee63f971d5196ab365cef9e607a6047d05e",
+      "resolved_head": "bc720744a46cc7763bbabf17a00fb61493c8b89a",
+      "exact_range": "aa59fee63f971d5196ab365cef9e607a6047d05e..bc720744a46cc7763bbabf17a00fb61493c8b89a",
+      "source_artifact_sha256": "c7bdb0f41292516b94057d12122ec59a66e64f16f69ac74f1fd8d9aae172b186"
+    },
+    "execution": {
+      "ocr_version": "v1.12.11",
+      "provider": "minimax-cn",
+      "model": "MiniMax-M3",
+      "configured_concurrency": 8,
+      "rule_config_sha256": "d5e28d02ed5cdf85b533907db24b47f1be02847db764a4ded208dbaf54380ae1",
+      "runtime_config_sha256": "f3ac1cdd2a45285ba614e32ab9bd03b86d9911c8deb3bec22fccf7b7bd4e6913"
+    },
+    "coverage": {
+      "selected": [
+        {
+          "item_id": "15e26ed532cfce338fb09692f7c702ea06535b43a667337a066c99fa93236252",
+          "path": "src-tauri/src/bot/tools.rs",
+          "fingerprint": "5318cb3951e4fd168e9fc40ab4450853355b8488b2d7524018bbac1a5cc82ee8"
+        },
+        {
+          "item_id": "3b94d2a07277bedebe05f31ab023a69a6355ec8b028a911917cfb151363cdf5a",
+          "path": "src-tauri/src/bot_scheduler.rs",
+          "fingerprint": "c3dd05e6fe036d38a344d2b2eb2f36d63f006d0e24266f9f1204b599174bb818"
+        },
+        {
+          "item_id": "4208d7aa54f8f1f05252a5fe12baceaef91a0ffa0c5c0b633373a6971d7db06b",
+          "path": "src-tauri/src/bot_orchestrator.rs",
+          "fingerprint": "263ce9d2395c19a729cf13c6ddfb07aee853592d2bc518055004bf71608038ff"
+        },
+        {
+          "item_id": "6170dc9745b20148b2a07d024f93e929e2ee2c26a2ac4ae51b20f767daafef0e",
+          "path": "src-tauri/src/task_out.rs",
+          "fingerprint": "07750d9a305b43f0aadf833eba22f5a4a2e987e4e8514af38ff025adb5b66d71"
+        },
+        {
+          "item_id": "639a2a4a2f542d70d597567993628a03fcc6081de42ab7858ae0938db241293d",
+          "path": "src-tauri/src/api_handlers/handlers.rs",
+          "fingerprint": "5174c511aac41b903b0f6e3cf623757462e4bf52ab469b0d409a1c1b3302d4c9"
+        },
+        {
+          "item_id": "793b77ce1f663a05fbc8281f8da22844f090ee4bc12652a5f65ef6bd35a2b9a0",
+          "path": "src/types.ts",
+          "fingerprint": "8e727140546ce9d8d79a172bacc4d2b3fbc35094ccf6abdb0eb61aa6b22d17ed"
+        },
+        {
+          "item_id": "7db247f2329d097ea748b5299ed5cb9fcf2c76b4992e4b398daedbdfb323f69e",
+          "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+          "fingerprint": "eb2553e59cd784e47227ed235e1be51c920086801f3377a5db66ecb13a29d142"
+        },
+        {
+          "item_id": "925ef683587d086d4239fcf8f85183bc2147b2c56bec600d81cd199e8ee3e84c",
+          "path": "src-tauri/src/exec_steps.rs",
+          "fingerprint": "19a3b61d537a577aae5ae092d3a93e514b526c45d8ea5e72c50b40ea10a2dfc4"
+        },
+        {
+          "item_id": "a663adaeb79df20a4a7696ae046ae073a284c0626cdcd645dca3db833feccdea",
+          "path": "src-tauri/src/workflow_runner.rs",
+          "fingerprint": "214a2b0c62571e3d7b4060a93ca011b2cff454b040993119299dff64f884961d"
+        },
+        {
+          "item_id": "a9da44634beac7635d981b2b1ab69ed9982abf2946a86b85aeb11be9e0f03e67",
+          "path": "src-tauri/src/api_handlers/mod.rs",
+          "fingerprint": "3250c3598557291bfd3900c1443613ef2a79e21fc61681609979d23bf988d2e6"
+        },
+        {
+          "item_id": "bcd112f57b25e97deee711a01d198544dff0b19e1df154bb071b76becd5773df",
+          "path": "src-tauri/src/bot/config/mod.rs",
+          "fingerprint": "e443976cab7f45cd474f281437d2872b44b8d061f76fcf0030b220ba9455e371"
+        },
+        {
+          "item_id": "c9187d5f8066262ab6d2b63e41739cb75f9e5a2a683f5db2efe641e334fd6942",
+          "path": "src/components/WorkflowCanvas/TaskNode.tsx",
+          "fingerprint": "9ef5b6d76a5880dbe97fd8a858ac84bcf330d395f89889b759f282ff755e4773"
+        },
+        {
+          "item_id": "cf72496b1afa77090aa524c47988e6dd7965080910cafc9fb1f0bb5103b9e6b5",
+          "path": "src-tauri/src/bot_chat.rs",
+          "fingerprint": "d809d5807718a5d179a25a7a70d04d549a5693f3f65592426f7cac1496dd5e88"
+        },
+        {
+          "item_id": "cfd0704ec7e04fc5716df93ea6d86a2ea0fe8c8f3fde280fd4b99d48c8dcb982",
+          "path": "src-tauri/src/bot_model_loop.rs",
+          "fingerprint": "8fd36ad346c553a0734eac346d1578b0e97f9a8d5b0b427f964b89d4505273b9"
+        },
+        {
+          "item_id": "d011602ff3857419697d5acce022aa29b329d547d924a9383a2f5c224e6f4b76",
+          "path": "src-tauri/src/db/workflow.rs",
+          "fingerprint": "8f235a68bb5aded4c7577941bf5e73927d29498dd01d00b241d7502761fbe60e"
+        },
+        {
+          "item_id": "d7d7fe268eb8c68e0eb72fa6943d52e6af1395212f373bfbd9cebf16cb8e99bd",
+          "path": "src-tauri/src/bot/config/types.rs",
+          "fingerprint": "021a37f6d35834a5f1234eedfe7a1d88b7c0ece7ed7654fef8aabac8617c6381"
+        },
+        {
+          "item_id": "d930530781f7b8b4293a4b11b0942f117ddfa36e39f8ff1a3394c2eff5d7d315",
+          "path": "src-tauri/src/bot.rs",
+          "fingerprint": "6478dab6633cd8976343c41afc4ea9958178f41e7c381c54b39ba0b75049bdce"
+        },
+        {
+          "item_id": "e08f56bef25fa6a39c346153800615f7ac48c32e8b0c5879d975661b3001de8d",
+          "path": "src-tauri/src/db/mod.rs",
+          "fingerprint": "20d119d6b1ded533e3c6004bf93c3e9d5fc4d76d8e4ff31dae224dcad622e932"
+        },
+        {
+          "item_id": "f8aa6edf3c055fb0fa47f97efb605c126ac503293c14432a609949c482498337",
+          "path": "src-tauri/src/db/tasks.rs",
+          "fingerprint": "bc58dbbf265d2dafc710ab715a16d5d4e8f05f73d01b9e729b9d84c1b045a163"
+        }
+      ],
+      "completed": [
+        {
+          "item_id": "15e26ed532cfce338fb09692f7c702ea06535b43a667337a066c99fa93236252",
+          "path": "src-tauri/src/bot/tools.rs",
+          "fingerprint": "5318cb3951e4fd168e9fc40ab4450853355b8488b2d7524018bbac1a5cc82ee8"
+        },
+        {
+          "item_id": "3b94d2a07277bedebe05f31ab023a69a6355ec8b028a911917cfb151363cdf5a",
+          "path": "src-tauri/src/bot_scheduler.rs",
+          "fingerprint": "c3dd05e6fe036d38a344d2b2eb2f36d63f006d0e24266f9f1204b599174bb818"
+        },
+        {
+          "item_id": "4208d7aa54f8f1f05252a5fe12baceaef91a0ffa0c5c0b633373a6971d7db06b",
+          "path": "src-tauri/src/bot_orchestrator.rs",
+          "fingerprint": "263ce9d2395c19a729cf13c6ddfb07aee853592d2bc518055004bf71608038ff"
+        },
+        {
+          "item_id": "6170dc9745b20148b2a07d024f93e929e2ee2c26a2ac4ae51b20f767daafef0e",
+          "path": "src-tauri/src/task_out.rs",
+          "fingerprint": "07750d9a305b43f0aadf833eba22f5a4a2e987e4e8514af38ff025adb5b66d71"
+        },
+        {
+          "item_id": "639a2a4a2f542d70d597567993628a03fcc6081de42ab7858ae0938db241293d",
+          "path": "src-tauri/src/api_handlers/handlers.rs",
+          "fingerprint": "5174c511aac41b903b0f6e3cf623757462e4bf52ab469b0d409a1c1b3302d4c9"
+        },
+        {
+          "item_id": "793b77ce1f663a05fbc8281f8da22844f090ee4bc12652a5f65ef6bd35a2b9a0",
+          "path": "src/types.ts",
+          "fingerprint": "8e727140546ce9d8d79a172bacc4d2b3fbc35094ccf6abdb0eb61aa6b22d17ed"
+        },
+        {
+          "item_id": "7db247f2329d097ea748b5299ed5cb9fcf2c76b4992e4b398daedbdfb323f69e",
+          "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+          "fingerprint": "eb2553e59cd784e47227ed235e1be51c920086801f3377a5db66ecb13a29d142"
+        },
+        {
+          "item_id": "925ef683587d086d4239fcf8f85183bc2147b2c56bec600d81cd199e8ee3e84c",
+          "path": "src-tauri/src/exec_steps.rs",
+          "fingerprint": "19a3b61d537a577aae5ae092d3a93e514b526c45d8ea5e72c50b40ea10a2dfc4"
+        },
+        {
+          "item_id": "a663adaeb79df20a4a7696ae046ae073a284c0626cdcd645dca3db833feccdea",
+          "path": "src-tauri/src/workflow_runner.rs",
+          "fingerprint": "214a2b0c62571e3d7b4060a93ca011b2cff454b040993119299dff64f884961d"
+        },
+        {
+          "item_id": "a9da44634beac7635d981b2b1ab69ed9982abf2946a86b85aeb11be9e0f03e67",
+          "path": "src-tauri/src/api_handlers/mod.rs",
+          "fingerprint": "3250c3598557291bfd3900c1443613ef2a79e21fc61681609979d23bf988d2e6"
+        },
+        {
+          "item_id": "bcd112f57b25e97deee711a01d198544dff0b19e1df154bb071b76becd5773df",
+          "path": "src-tauri/src/bot/config/mod.rs",
+          "fingerprint": "e443976cab7f45cd474f281437d2872b44b8d061f76fcf0030b220ba9455e371"
+        },
+        {
+          "item_id": "c9187d5f8066262ab6d2b63e41739cb75f9e5a2a683f5db2efe641e334fd6942",
+          "path": "src/components/WorkflowCanvas/TaskNode.tsx",
+          "fingerprint": "9ef5b6d76a5880dbe97fd8a858ac84bcf330d395f89889b759f282ff755e4773"
+        },
+        {
+          "item_id": "cf72496b1afa77090aa524c47988e6dd7965080910cafc9fb1f0bb5103b9e6b5",
+          "path": "src-tauri/src/bot_chat.rs",
+          "fingerprint": "d809d5807718a5d179a25a7a70d04d549a5693f3f65592426f7cac1496dd5e88"
+        },
+        {
+          "item_id": "cfd0704ec7e04fc5716df93ea6d86a2ea0fe8c8f3fde280fd4b99d48c8dcb982",
+          "path": "src-tauri/src/bot_model_loop.rs",
+          "fingerprint": "8fd36ad346c553a0734eac346d1578b0e97f9a8d5b0b427f964b89d4505273b9"
+        },
+        {
+          "item_id": "d011602ff3857419697d5acce022aa29b329d547d924a9383a2f5c224e6f4b76",
+          "path": "src-tauri/src/db/workflow.rs",
+          "fingerprint": "8f235a68bb5aded4c7577941bf5e73927d29498dd01d00b241d7502761fbe60e"
+        },
+        {
+          "item_id": "d7d7fe268eb8c68e0eb72fa6943d52e6af1395212f373bfbd9cebf16cb8e99bd",
+          "path": "src-tauri/src/bot/config/types.rs",
+          "fingerprint": "021a37f6d35834a5f1234eedfe7a1d88b7c0ece7ed7654fef8aabac8617c6381"
+        },
+        {
+          "item_id": "d930530781f7b8b4293a4b11b0942f117ddfa36e39f8ff1a3394c2eff5d7d315",
+          "path": "src-tauri/src/bot.rs",
+          "fingerprint": "6478dab6633cd8976343c41afc4ea9958178f41e7c381c54b39ba0b75049bdce"
+        },
+        {
+          "item_id": "e08f56bef25fa6a39c346153800615f7ac48c32e8b0c5879d975661b3001de8d",
+          "path": "src-tauri/src/db/mod.rs",
+          "fingerprint": "20d119d6b1ded533e3c6004bf93c3e9d5fc4d76d8e4ff31dae224dcad622e932"
+        },
+        {
+          "item_id": "f8aa6edf3c055fb0fa47f97efb605c126ac503293c14432a609949c482498337",
+          "path": "src-tauri/src/db/tasks.rs",
+          "fingerprint": "bc58dbbf265d2dafc710ab715a16d5d4e8f05f73d01b9e729b9d84c1b045a163"
+        }
+      ],
+      "reused": [],
+      "failed": [],
+      "waived": []
+    },
+    "elapsed_ms": 679749
+  }
+}

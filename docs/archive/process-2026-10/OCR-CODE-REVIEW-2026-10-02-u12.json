@@ -1,0 +1,1402 @@
+{
+  "status": "complete",
+  "llm": {
+    "provider": "minimax-cn",
+    "model": "MiniMax-M3"
+  },
+  "message": "Review complete: 75 finding(s) across 31 selected item(s).",
+  "summary": {
+    "files_reviewed": 31,
+    "comments": 75,
+    "total_tokens": 29280957,
+    "input_tokens": 28763215,
+    "output_tokens": 517742,
+    "cache_read_tokens": 27001667,
+    "elapsed": "25m52s"
+  },
+  "tool_calls": {
+    "total": 900,
+    "by_tool": {
+      "code_comment": 34,
+      "code_search": 386,
+      "file_find": 46,
+      "file_read": 409,
+      "file_read_diff": 25
+    },
+    "failure": 15,
+    "failure_by_tool": {
+      "code_comment": 5,
+      "file_read": 10
+    },
+    "failure_details": [
+      {
+        "tool_call_number": 60,
+        "tool_name": "file_read",
+        "file_path": "scripts/sync-lobe-icons.mjs",
+        "arguments": "{\"file_path\":\"node_modules/@lobehub/icons-static-svg/icons\"}",
+        "error": "file \"node_modules/@lobehub/icons-static-svg/icons\" not found: git show ad383d9:node_modules/@lobehub/icons-static-svg/icons: exit status 128: fatal: path 'node_modules/@lobehub/icons-static-svg/icons' exists on disk, but not in 'ad383d9'\n"
+      },
+      {
+        "tool_call_number": 70,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/bot/config/keyring.rs",
+        "arguments": "{\"end_line\":120,\"file_path\":\"src-tauri/src/bot_chat.rs\",\"start_line\":1100}",
+        "error": "invalid line range: start_line 1100 is greater than end_line 120"
+      },
+      {
+        "tool_call_number": 167,
+        "tool_name": "code_comment",
+        "file_path": "src-tauri/src/db/migrations.rs",
+        "arguments": "{\"category\": \"performance\", \"content\": \"`meta_model.provider_key` is used as a WHERE / JOIN column by `models_by_provider` and `JOINED_SELECT` (see `crate::meta::mod`), but no index is created here. After a full models.dev sync this table will hold thousands of rows, and every vendor-detail load will full-scan. Add `CREATE INDEX IF NOT EXISTS idx_meta_model_provider ON meta_model(provider_key);` (and consider one on `meta_provider.provider_key` for symmetry, though it's already PRIMARY KEY so SQLite auto-indexes it).\", \"existing_code\": \"         CREATE TABLE IF NOT EXISTS meta_model (\\n           model_key             TEXT PRIMARY KEY,\\n           provider_key          TEXT NOT NULL,\\n           display_name          TEXT NOT NULL,\\n           context_length        INTEGER,\\n           temperature           REAL,\\n           top_p                 REAL,\\n           max_tokens            INTEGER,\\n           default_system_prompt TEXT,\\n           source                TEXT NOT NULL\\n         );\\\",\", \"path\": \"src-tauri/src/db/migrations.rs\", \"severity\": \"medium\"}",
+        "error": "Error: 'comments' array is required. Got args: {\"category\":\"performance\",\"content\":\"`meta_model.provider_key` is used as a WHERE / JOIN column by `models_by_provider` and `JOINED_SELECT` (see `crate::meta::mod`), but no index is created here. After a full models.dev sync this table will hold thousands of rows, and every vendor-detail load will full-scan. Add `CREATE INDEX IF NOT EXISTS idx_meta_model_provider ON meta_model(provider_key);` (and consider one on `meta_provider.provider_key` for symmetry, though it's already PRIMARY KEY so SQLite auto-indexes it).\",\"existing_code\":\"         CREATE TABLE IF NOT EXISTS meta_model (\\n           model_key             TEXT PRIMARY KEY,\\n           provider_key          TEXT NOT NULL,\\n           display_name          TEXT NOT NULL,\\n           context_length        INTEGER,\\n           temperature           REAL,\\n           top_p                 REAL,\\n           max_tokens            INTEGER,\\n           default_system_prompt TEXT,\\n           source                TEXT NOT NULL\\n         );\\\",\",\"path\":\"src-tauri/src/db/migrations.rs\",\"severity\":\"medium\"}"
+      },
+      {
+        "tool_call_number": 294,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/bot/config/types.rs",
+        "arguments": "{\"end_line\": 70, \"file_path\": \"src-tauri/src/bot/config/keyring.rs\", \"start_line\": 630}",
+        "error": "invalid line range: start_line 630 is greater than end_line 70"
+      },
+      {
+        "tool_call_number": 315,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/bot/config/commands.rs",
+        "arguments": "{\"end_line\":150,\"file_path\":\"src-tauri/src/bot/config/commands.rs\",\"start_line\":280}",
+        "error": "invalid line range: start_line 280 is greater than end_line 150"
+      },
+      {
+        "tool_call_number": 378,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/tests/bot_test_connection.rs",
+        "arguments": "{\"end_line\": 100, \"file_path\": \"src-tauri/src/bot/config/commands.rs\", \"start_line\": 440}",
+        "error": "invalid line range: start_line 440 is greater than end_line 100"
+      },
+      {
+        "tool_call_number": 407,
+        "tool_name": "code_comment",
+        "file_path": "src-tauri/src/bot/config/mod.rs",
+        "arguments": "{\"category\": \"documentation\", \"content\": \"Confirmed (Finding 1): doc comment lists 7 tauri commands but `bot_clear_vendor_key` is the 8th one defined in commands.rs:303. The list/name mismatch creates ambiguity for anyone counting to verify the surface area is complete.\", \"existing_code\": \"//! - `commands` 7 个 tauri command（bot_get_config/bot_set_config/bot_set_active_model/\\n//!              bot_clear_api_key/bot_log_read/bot_reload_config/bot_test_connection）+ perm_mode helper\", \"path\": \"src-tauri/src/bot/config/mod.rs\", \"severity\": \"low\"}",
+        "error": "Error: 'comments' array is required. Got args: {\"category\":\"documentation\",\"content\":\"Confirmed (Finding 1): doc comment lists 7 tauri commands but `bot_clear_vendor_key` is the 8th one defined in commands.rs:303. The list/name mismatch creates ambiguity for anyone counting to verify the surface area is complete.\",\"existing_code\":\"//! - `commands` 7 个 tauri command（bot_get_config/bot_set_config/bot_set_active_model/\\n//!              bot_clear_api_key/bot_log_read/bot_reload_config/bot_test_connection）+ perm_mode helper\",\"path\":\"src-tauri/src/bot/config/mod.rs\",\"severity\":\"low\"}"
+      },
+      {
+        "tool_call_number": 499,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/bot/config/keyring.rs",
+        "arguments": "{\"end_line\":60,\"file_path\":\"src-tauri/src/lib.rs\",\"start_line\":510}",
+        "error": "invalid line range: start_line 510 is greater than end_line 60"
+      },
+      {
+        "tool_call_number": 593,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/bot/config/commands.rs",
+        "arguments": "{\"end_line\":100,\"file_path\":\"src/components/SettingsPage.test.tsx\",\"start_line\":990}",
+        "error": "invalid line range: start_line 990 is greater than end_line 100"
+      },
+      {
+        "tool_call_number": 613,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/meta/sync.rs",
+        "arguments": "{\"end_line\":30,\"file_path\":\"src-tauri/src/meta/sync.rs\",\"start_line\":100}",
+        "error": "invalid line range: start_line 100 is greater than end_line 30"
+      },
+      {
+        "tool_call_number": 616,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/meta/sync.rs",
+        "arguments": "{\"end_line\":30,\"file_path\":\"src-tauri/src/meta/sync.rs\",\"start_line\":218}",
+        "error": "invalid line range: start_line 218 is greater than end_line 30"
+      },
+      {
+        "tool_call_number": 783,
+        "tool_name": "code_comment",
+        "file_path": "src/lib/modelMeta.ts",
+        "arguments": "{\"category\": \"maintainability\", \"content\": \"Optional `source?: string` is misleading: Rust `MetaProvider.source` / `MetaModel.source` are non-optional `String` and always serialized (only `provider_fallback` / `model_fallback` would populate it, and even those use `String` not `Option`). The field can never be `undefined` at runtime. Drop the `?` or narrow it to the documented taxonomy (`\\\"models_dev\\\" | \\\"user_custom\\\" | \\\"fallback\\\"`) so consumers can rely on the value being present.\", \"existing_code\": \"  fallback_char: string;\\n  default_base_url: string | null;\\n  timeout: number | null;\\n  source?: string;\\n};\", \"path\": \"src/lib/modelMeta.ts\", \"severity\": \"low\"}",
+        "error": "Error: 'comments' array is required. Got args: {\"category\":\"maintainability\",\"content\":\"Optional `source?: string` is misleading: Rust `MetaProvider.source` / `MetaModel.source` are non-optional `String` and always serialized (only `provider_fallback` / `model_fallback` would populate it, and even those use `String` not `Option`). The field can never be `undefined` at runtime. Drop the `?` or narrow it to the documented taxonomy (`\\\"models_dev\\\" | \\\"user_custom\\\" | \\\"fallback\\\"`) so consumers can rely on the value being present.\",\"existing_code\":\"  fallback_char: string;\\n  default_base_url: string | null;\\n  timeout: number | null;\\n  source?: string;\\n};\",\"path\":\"src/lib/modelMeta.ts\",\"severity\":\"low\"}"
+      },
+      {
+        "tool_call_number": 784,
+        "tool_name": "code_comment",
+        "file_path": "src/lib/modelMeta.ts",
+        "arguments": "{\"category\": \"maintainability\", \"content\": \"Optional `source?: string` is misleading: Rust `MetaModel.source` is non-optional `String` and always serialized. The field can never be `undefined` at runtime. Drop the `?` or narrow to the documented taxonomy (`\\\"models_dev\\\" | \\\"user_custom\\\" | \\\"fallback\\\"`) so consumers (e.g., `SettingsPage` curating models by source) can rely on the value.\", \"existing_code\": \"  default_system_prompt: string | null;\\n  source?: string;\\n};\", \"path\": \"src/lib/modelMeta.ts\", \"severity\": \"low\"}",
+        "error": "Error: 'comments' array is required. Got args: {\"category\":\"maintainability\",\"content\":\"Optional `source?: string` is misleading: Rust `MetaModel.source` is non-optional `String` and always serialized. The field can never be `undefined` at runtime. Drop the `?` or narrow to the documented taxonomy (`\\\"models_dev\\\" | \\\"user_custom\\\" | \\\"fallback\\\"`) so consumers (e.g., `SettingsPage` curating models by source) can rely on the value.\",\"existing_code\":\"  default_system_prompt: string | null;\\n  source?: string;\\n};\",\"path\":\"src/lib/modelMeta.ts\",\"severity\":\"low\"}"
+      },
+      {
+        "tool_call_number": 785,
+        "tool_name": "code_comment",
+        "file_path": "src/lib/modelMeta.ts",
+        "arguments": "{\"category\": \"maintainability\", \"content\": {\"T\": \"(cmd, args?)` helper if more `meta_*` commands are added. The shared wrapper would also be the natural place to surface swallowed errors (currently the consumer cannot distinguish \\\"IPC bridge down\\\" from \\\"command panicked\\\" from \\\"Rust returned Ok(null) for fallback\\\" — all collapse to `null`).\", \"$text\": \"Three near-identical `try { invoke(...) } catch { return null }` wrappers. Acceptable for 3 callsites, but worth a follow-up: extract a `wrapInvoke\"}, \"existing_code\": {\"MetaSyncResult\": \"(\\\"meta_sync_models_dev\\\");\\n  } catch {\\n    return null;\\n  }\\n}\", \"$text\": \"export async function fetchProviders(): Promise\u003cMetaProvider[] | null\u003e {\\n  try {\\n    return await invoke\u003cMetaProvider[]\u003e(\\\"meta_list_providers\\\");\\n  } catch {\\n    return null;\\n  }\\n}\\n\\n/** 指定服务商下全部模型；null = meta 模块异常 */\\nexport async function fetchModelsByProvider(\\n  providerKey: string,\\n): Promise\u003cMetaModel[] | null\u003e {\\n  try {\\n    return await invoke\u003cMetaModel[]\u003e(\\\"meta_models_by_provider\\\", { providerKey });\\n  } catch {\\n    return null;\\n  }\\n}\\n\\n/** 手动触发 models.dev 同步（「更新模型库」按钮）；null = meta 模块异常 */\\nexport async function syncModelsDev(): Promise\u003cMetaSyncResult | null\u003e {\\n  try {\\n    return await invoke\"}, \"path\": \"src/lib/modelMeta.ts\", \"severity\": \"low\"}",
+        "error": "Error: 'comments' array is required. Got args: {\"category\":\"maintainability\",\"content\":{\"$text\":\"Three near-identical `try { invoke(...) } catch { return null }` wrappers. Acceptable for 3 callsites, but worth a follow-up: extract a `wrapInvoke\",\"T\":\"(cmd, args?)` helper if more `meta_*` commands are added. The shared wrapper would also be the natural place to surface swallowed errors (currently the consumer cannot distinguish \\\"IPC bridge down\\\" from \\\"command panicked\\\" from \\\"Rust returned Ok(null) for fallback\\\" — all collapse to `null`).\"},\"existing_code\":{\"$text\":\"export async function fetchProviders(): Promise\\u003cMetaProvider[] | null\\u003e {\\n  try {\\n    return await invoke\\u003cMetaProvider[]\\u003e(\\\"meta_list_providers\\\");\\n  } catch {\\n    return null;\\n  }\\n}\\n\\n/** 指定服务商下全部模型；null = meta 模块异常 */\\nexport async function fetchModelsByProvider(\\n  providerKey: string,\\n): Promise\\u003cMetaModel[] | null\\u003e {\\n  try {\\n    return await invoke\\u003cMetaModel[]\\u003e(\\\"meta_models_by_provider\\\", { providerKey });\\n  } catch {\\n    return null;\\n  }\\n}\\n\\n/** 手动触发 models.dev 同步（「更新模型库」按钮）；null = meta 模块异常 */\\nexport async function syncModelsDev(): Promise\\u003cMetaSyncResult | null\\u003e {\\n  try {\\n    return await invoke\",\"MetaSyncResult\":\"(\\\"meta_sync_models_dev\\\");\\n  } catch {\\n    return null;\\n  }\\n}\"},\"path\":\"src/lib/modelMeta.ts\",\"severity\":\"low\"}"
+      },
+      {
+        "tool_call_number": 795,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/bot/config/commands.rs",
+        "arguments": "{\"end_line\":100,\"file_path\":\"src-tauri/src/bot/config/commands.rs\",\"start_line\":438}",
+        "error": "invalid line range: start_line 438 is greater than end_line 100"
+      }
+    ]
+  },
+  "comments": [
+    {
+      "path": "package.json",
+      "content": "The new dependency uses an exact version (`\"1.95.1\"`) while every other entry in `devDependencies` uses a caret range (`^x.y.z`). Pinning icons assets to an exact version is defensible for reproducibility, however this is inconsistent with the project's overall dependency-styling convention. Consider whether a caret range would be more appropriate here, or align other deps similarly if exact pinning is the new convention.\n\nAlso note: the script comment in `scripts/sync-lobe-icons.mjs` (\"升级 lobehub 包版本后重跑一次即可\") implies the package version is expected to be bumped occasionally when assets change. An exact pin is reasonable for that workflow, but worth a deliberate decision rather than an inconsistency.",
+      "suggestion_code": "\"@lobehub/icons-static-svg\": \"^1.95.1\",",
+      "existing_code": "\"@lobehub/icons-static-svg\": \"1.95.1\",",
+      "start_line": 45,
+      "end_line": 45,
+      "category": "style",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/bot/config/schema.rs",
+      "content": "The 5 newly-added `Option` fields are initialized to `None` inline at the legacy migration site. Since the same 5-field pattern (`capabilities`/`temperature`/`top_p`/`max_tokens`/`system_prompt` all `None`) is now duplicated across 4 `ModelEntry` constructors in `schema.rs` (this file), `commands.rs` test helper, `keyring.rs` test helper, and `mod.rs` test helper — every future field addition requires touching all of them or the build breaks. Consider giving `ModelEntry` a `Default` impl (or a `migrated()` / `new_for_tests()` constructor) so the legacy-migration site can just write `ModelEntry { id, label, base_url, model, vendor: None, enabled: true, ..Default::default() }`. Same simplification applies to the three test helpers, which currently have to be kept in lockstep with the struct shape.",
+      "suggestion_code": "    let entry = ModelEntry {\n        id: \"migrated\".into(),\n        label: derive_default_label(\u0026cfg.base_url),\n        base_url: cfg.base_url.clone(),\n        model: cfg.model.clone(),\n        vendor: None,\n        enabled: true,\n        context_k: None,\n        ..ModelEntry::default_scaffold()\n    };",
+      "existing_code": "    let entry = ModelEntry {\n        id: \"migrated\".into(),\n        label: derive_default_label(\u0026cfg.base_url),\n        base_url: cfg.base_url.clone(),\n        model: cfg.model.clone(),\n        vendor: None,\n        enabled: true,\n        context_k: None,\n        capabilities: None,\n        temperature: None,\n        top_p: None,\n        max_tokens: None,\n        system_prompt: None,\n    };",
+      "start_line": 37,
+      "end_line": 50,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/bot/config/mod.rs",
+      "content": "Doc-comment lists 7 tauri commands but commands.rs also defines bot_clear_vendor_key (line 303). Either the count \"7\" should become \"8\" or the comment should explicitly call out which 7 commands it means (the comment text already shows bot_clear_vendor_key is omitted from the listed names). Future readers counting #[tauri::command] functions will be off by one.",
+      "suggestion_code": "//! - `commands` 8 个 tauri command（bot_get_config/bot_set_config/bot_set_active_model/\n//!              bot_clear_api_key/bot_clear_vendor_key/bot_log_read/bot_reload_config/\n//!              bot_test_connection）+ perm_mode helper",
+      "existing_code": "//! - `commands` 7 个 tauri command（bot_get_config/bot_set_config/bot_set_active_model/\n//!              bot_clear_api_key/bot_log_read/bot_reload_config/bot_test_connection）+ perm_mode helper",
+      "start_line": 27,
+      "end_line": 28,
+      "category": "documentation",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/bot/config/mod.rs",
+      "content": "has_vendor_key is re-exported from this module but is missing from the bot.rs facade `pub use config::{...}` block (line 53–111). The module-level comment (line 6–8) explicitly states \"所有外部调用走 `crate::bot::\u003citem\u003e`，不直接访问 `crate::bot::config::\u003citem\u003e`\" — so external callers following that convention will not find has_vendor_key. Since it's only used internally by bot_get_config, this may be by design, but if so it should not be in the `pub use keyring::{...}` block at all (just `pub(crate) use`) to avoid misleading external callers into reaching the submodule path.",
+      "suggestion_code": "pub use keyring::{\n    has_api_key, has_search_key, has_vendor_key, read_api_key, read_llm_key, read_search_key,\n    write_search_key,\n};\n// NOTE: has_vendor_key is also re-exported in bot.rs facade for symmetry with read_llm_key,\n//      so external callers can reach it via crate::bot::has_vendor_key.",
+      "existing_code": "pub use keyring::{\n    has_api_key, has_search_key, has_vendor_key, read_api_key, read_llm_key, read_search_key,\n    write_search_key,\n};",
+      "start_line": 47,
+      "end_line": 50,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/bot/config/mod.rs",
+      "content": "Substring-based assertions like `assert!(!clean.contains(\"temperature\"))` could pass on the wrong serialization if some other field's value happened to contain that substring. With fields uniquely named in JSON the false-positive risk is small; this is more a robustness/style point than a real issue. Consider using parsed JSON (e.g. `serde_json::Value` and check `obj.get(\"temperature\").is_none()`) for stronger guarantees.",
+      "suggestion_code": "let clean: serde_json::Value = serde_json::to_value(\u0026old).unwrap();\n        assert!(clean.get(\"temperature\").is_none());\n        assert!(clean.get(\"topP\").is_none());\n        assert!(clean.get(\"maxTokens\").is_none());\n        assert!(clean.get(\"systemPrompt\").is_none());",
+      "existing_code": "let clean = serde_json::to_string(\u0026old).unwrap();\n        assert!(!clean.contains(\"temperature\"));\n        assert!(!clean.contains(\"topP\"));\n        assert!(!clean.contains(\"maxTokens\"));\n        assert!(!clean.contains(\"systemPrompt\"));",
+      "start_line": 206,
+      "end_line": 210,
+      "category": "test",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/bot/config/keyring.rs",
+      "content": "`delete_vendor_key` is the only one of the four vendor CRUD ops that omits the `warn_fallback_once(KeySlot::Llm)` call. The plaintext branch here can delete a vendor key file on Linux without ever logging the per-process fallback notice — `read_vendor_key`, `has_vendor_key`, and `write_vendor_key` all warn first. If a user clears a vendor key on a headless Linux box they get no audit hint that the credential was just removed from a plaintext file, while every other vendor op will have logged the warning. Either add `warn_fallback_once(KeySlot::Llm)` before the `match key_backend()` block or extract a single `_vendor_op_with_warn` helper so all four paths stay in lock-step.",
+      "suggestion_code": "/// 删厂商 key（幂等：不存在 = Ok）\npub fn delete_vendor_key(vendor: \u0026str) -\u003e CommandResult\u003c()\u003e {\n    let backend = key_backend();\n    if backend == KeyBackend::PlaintextFile {\n        warn_fallback_once(KeySlot::Llm);\n    }\n    match backend {\n        KeyBackend::System =\u003e vendor_entry(vendor)?\n            .delete_credential()\n            .map_err(|e| CommandError::KeyringError(format!(\"清除 API Key 失败：{e}\"))),\n        KeyBackend::PlaintextFile =\u003e match std::fs::remove_file(vendor_plaintext_path(vendor)) {\n            Ok(()) =\u003e Ok(()),\n            Err(e) if e.kind() == std::io::ErrorKind::NotFound =\u003e Ok(()),\n            Err(e) =\u003e Err(CommandError::KeyringError(format!(\n                \"清除 API Key 失败（降级文件存储）：{e}\"\n            ))),\n        },\n    }\n}",
+      "existing_code": "/// 删厂商 key（幂等：不存在 = Ok）\npub fn delete_vendor_key(vendor: \u0026str) -\u003e CommandResult\u003c()\u003e {\n    match key_backend() {\n        KeyBackend::System =\u003e vendor_entry(vendor)?\n            .delete_credential()\n            .map_err(|e| CommandError::KeyringError(format!(\"清除 API Key 失败：{e}\"))),\n        KeyBackend::PlaintextFile =\u003e match std::fs::remove_file(vendor_plaintext_path(vendor)) {\n            Ok(()) =\u003e Ok(()),\n            Err(e) if e.kind() == std::io::ErrorKind::NotFound =\u003e Ok(()),\n            Err(e) =\u003e Err(CommandError::KeyringError(format!(\n                \"清除 API Key 失败（降级文件存储）：{e}\"\n            ))),\n        },\n    }\n}",
+      "start_line": 569,
+      "end_line": 583,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/bot/config/keyring.rs",
+      "content": "`read_llm_key` silently swallows any error from `read_vendor_key`, not just `NoEntry`. With System backend a keyring fault (locked keychain, permission denied) on the vendor path falls through to `read_api_key()` and the caller can never tell the difference between \"vendor key not configured\" and \"vendor key unreadable — falling back to global key silently\". Combined with the fact that `read_llm_key` is the hot path for `bot_chat`/`bot_model_loop`/`bot_plan`, this can mask real auth failures as successful LLM calls that hit the global key and may produce 401s from a different vendor's gateway. Suggest classifying the vendor result (NoEntry / OtherError / Ok-empty) and logging at least `OtherError` to `bot.log` before falling through, e.g. `if let Err(e) = read_vendor_key(\u0026vendor) { if !matches!(e, CommandError::KeyringError(ref s) if s.starts_with(\"未配置\")) { audit::audit_log(...); } }`.",
+      "existing_code": "/// 解析 LLM 请求用 key：active 模型所属厂商的厂商级 key 优先，\n/// 没配过（或厂商 keyring 读失败）回落全局主 key——存量配置零迁移感。\npub fn read_llm_key(\n    api_provider: Option\u003c\u0026str\u003e,\n    active_model_id: Option\u003c\u0026ActiveModelId\u003e,\n    models_by_provider: Option\u003c\u0026ModelsByProvider\u003e,\n) -\u003e CommandResult\u003cString\u003e {\n    if let Some(vendor) = active_vendor_of(api_provider, active_model_id, models_by_provider) {\n        if let Ok(k) = read_vendor_key(\u0026vendor) {\n            if !k.trim().is_empty() {\n                return Ok(k);\n            }\n        }\n    }\n    read_api_key()\n}",
+      "start_line": 604,
+      "end_line": 619,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "src-tauri/src/bot/config/keyring.rs",
+      "content": "`vendor_account(\"\")` produces the keyring username `\"vendor:\"` and `vendor_plaintext_filename(\"\")` produces `bot-api-key-vendor--\u003chash\u003e.txt`. `active_vendor_of` filters empty vendors, but the public `read_vendor_key` / `write_vendor_key` / `delete_vendor_key` / `has_vendor_key` functions are reachable from `bot_clear_vendor_key` (`commands.rs:303`) without an empty check — only a `trim()`. A frontend bug or a malicious frontend (in dev/webview scripts) passing `vendor: \"\"` would silently create/delete the `vendor:` keyring account, potentially shadowing the global `api-key` lookup for any caller that gets routed through `vendor:`. Suggest rejecting empty/whitespace vendor at the keyring layer (return `Err(CommandError::InvalidArgument { field: \"vendor\".into(), reason: \"...\".into() })`) so the validation is enforced regardless of which Tauri command wrapper forgets to check. `bot_test_connection` (line 513–516) and `bot_set_config` (line 201–206) already filter empty, but `bot_clear_vendor_key` does not.",
+      "suggestion_code": "/// keyring 条目用户名：vendor:{厂商名}；空 / 纯空白拒绝（防「vendor:」\n/// 这类无名条目污染 keyring，与 read_vendor_key 同策略）\nfn vendor_account(vendor: \u0026str) -\u003e CommandResult\u003cString\u003e {\n    let v = vendor.trim();\n    if v.is_empty() {\n        return Err(CommandError::InvalidArgument {\n            field: \"vendor\".into(),\n            reason: \"厂商名不能为空\".into(),\n        });\n    }\n    Ok(format!(\"vendor:{v}\"))\n}",
+      "existing_code": "/// keyring 条目用户名：vendor:{厂商名}\nfn vendor_account(vendor: \u0026str) -\u003e String {\n    format!(\"vendor:{}\", vendor.trim())\n}",
+      "start_line": 488,
+      "end_line": 491,
+      "category": "security",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/bot/config/keyring.rs",
+      "content": "The new `vendor_key_tests` cover sanitization and `active_vendor_of` happy paths, but `read_llm_key` itself — the function that ties this whole module together for the bot hot path — has no coverage. The four cases worth asserting directly are: (1) active vendor has key → returns vendor key; (2) active vendor exists in list but its keyring read fails / key absent → falls back to `read_api_key()`; (3) active model present but its `vendor` field is empty → falls back; (4) `None` active_model_id → falls back. Today, the silent-error issue is masked by `if let Ok(k) = ...` and only an integration test would catch a regression. Suggest adding tests that drive `read_llm_key` against a tempdir-based plaintext backend with both a vendor file present and absent, plus a case where the vendor file is corrupt (not NotFound) to assert the current fall-through behaviour is intentional — at which point it can be reconsidered against the high-severity silent-swallow comment above.",
+      "existing_code": "#[cfg(test)]\nmod vendor_key_tests {\n    use super::*;\n    use crate::bot::config::types::{ActiveModelId, ModelEntry, ModelsByProvider};",
+      "start_line": 625,
+      "end_line": 628,
+      "category": "test",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/db/migrations.rs",
+      "content": "`meta_model.provider_key` is used as a WHERE / JOIN column by `models_by_provider` and `JOINED_SELECT` (see `crate::meta::mod`), but no index is created here. After a full models.dev sync this table will hold thousands of rows, and every vendor-detail load will full-scan. Add `CREATE INDEX IF NOT EXISTS idx_meta_model_provider ON meta_model(provider_key);`. (Note: `meta_provider.provider_key` is already the PRIMARY KEY so SQLite auto-indexes it, no extra index needed there.)",
+      "suggestion_code": "         CREATE TABLE IF NOT EXISTS meta_model (\n           model_key             TEXT PRIMARY KEY,\n           provider_key          TEXT NOT NULL,\n           display_name          TEXT NOT NULL,\n           context_length        INTEGER,\n           temperature           REAL,\n           top_p                 REAL,\n           max_tokens            INTEGER,\n           default_system_prompt TEXT,\n           source                TEXT NOT NULL\n         );\n         CREATE INDEX IF NOT EXISTS idx_meta_model_provider ON meta_model(provider_key);\",",
+      "existing_code": "         CREATE TABLE IF NOT EXISTS meta_model (\n           model_key             TEXT PRIMARY KEY,\n           provider_key          TEXT NOT NULL,\n           display_name          TEXT NOT NULL,\n           context_length        INTEGER,\n           temperature           REAL,\n           top_p                 REAL,\n           max_tokens            INTEGER,\n           default_system_prompt TEXT,\n           source                TEXT NOT NULL\n         );\",",
+      "start_line": 84,
+      "end_line": 94,
+      "category": "performance",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/db/migrations.rs",
+      "content": "`meta_model.provider_key` is treated as a foreign key throughout the codebase (JOIN with `meta_provider` in `JOINED_SELECT`, existence check in `upsert_model_user`), but the schema does not declare a `REFERENCES meta_provider(provider_key)` clause. With `apply_conn_pragmas` already enabling `foreign_keys=ON` per connection, declaring the FK here would let SQLite enforce the invariant at the DB layer — orphan models currently slip past `upsert_model_user`'s pre-check (e.g., via direct `execute` paths, future bulk loads, or after a provider is deleted/renamed) and are then silently dropped by the inner-join, masking the data-integrity issue rather than surfacing it as an error.",
+      "suggestion_code": "CREATE TABLE IF NOT EXISTS meta_model (\n           model_key             TEXT PRIMARY KEY,\n           provider_key          TEXT NOT NULL\n                                          REFERENCES meta_provider(provider_key)\n                                          ON DELETE CASCADE,\n           display_name          TEXT NOT NULL,",
+      "existing_code": "CREATE TABLE IF NOT EXISTS meta_model (\n           model_key             TEXT PRIMARY KEY,\n           provider_key          TEXT NOT NULL,\n           display_name          TEXT NOT NULL,",
+      "start_line": 84,
+      "end_line": 87,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/tests/bot_test_connection.rs",
+      "content": "TOCTOU race in `connection_test_unreachable_reports_error`: bind→drop→connect to the same port leaves a window where another process can rebind the port and make `probe_connection` see a real (non-error) response, turning the assertion `r.ok == false` flaky in CI under load. Either keep the listener bound without accepting (so the kernel queues SYN and reqwest returns a deterministic error) or pick a high reserved port that is guaranteed unused in the test harness.",
+      "suggestion_code": "    // 端口无人监听：拿个空闲端口后立即 drop → connect refused。\n    // 注意：drop 后到 probe_connection 真正连接之间存在一个微窗口，CI 高负载下\n    // 其他进程可能复用此端口导致测试 flaky。生产 CI 若复现，可改为保持 listener\n    // 绑定但永不 accept（内核 SYN 队列满后 reqwest connect_timeout 5s 触发），\n    // 或选一个保留高位端口固定使用。\n    let port = {\n        let l = std::net::TcpListener::bind(\"127.0.0.1:0\").unwrap();\n        l.local_addr().unwrap().port()\n    };\n    let base = format!(\"http://127.0.0.1:{port}/v1\");",
+      "existing_code": "    // 端口无人监听：bind 拿端口后立即 drop → connect refused\n    let port = {\n        let l = std::net::TcpListener::bind(\"127.0.0.1:0\").unwrap();\n        l.local_addr().unwrap().port()\n    };\n    let base = format!(\"http://127.0.0.1:{port}/v1\");",
+      "start_line": 83,
+      "end_line": 88,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/tests/bot_test_connection.rs",
+      "content": "Implicit dependency on `MockLlmServer::start()` returning a `base_url` that ends with `/v1`: both `connection_test_ok_on_2xx` and `connection_test_anthropic_format_same_path` assert `paths[0].contains(\"GET /v1/models\")` while only passing `server.base_url` as-is, and `connection_test_anthropic_base_without_v1_gets_v1_prefix` derives the `/v1`-less base via `trim_end_matches(\"/v1\")`. If the mock harness ever changes its base-URL layout (e.g., drops the `/v1` suffix to stay neutral), the first two tests will break with no clear diagnostic. Add an explicit assertion on the base-URL shape up front, or document the contract on `MockLlmServer::start()` so the coupling is intentional.",
+      "suggestion_code": "#[tokio::test]\nasync fn connection_test_ok_on_2xx() {\n    let server = MockLlmServer::start();\n    // MockLlmServer::start() 契约：base_url 必须以 /v1 结尾（与 mock_llm.rs:97 对齐）\n    assert!(\n        server.base_url.ends_with(\"/v1\"),\n        \"MockLlmServer::start() 契约变了：base_url 应以 /v1 结尾，实际={}\",\n        server.base_url\n    );\n    // 队列空 → 默认 TextReply 200（探测只判 HTTP 状态，不解析 body）\n    let r = probe_connection(\u0026reqwest::Client::new(), \u0026server.base_url, \"openai\", \"k\").await;\n    assert!(r.ok, \"2xx 应 ok:true：{r:?}\");\n    assert_eq!(r.status, Some(200));\n    assert_eq!(r.error, None);\n    assert_eq!(server.request_count(), 1);\n    // 探测打 GET {base}/models 探活路径\n    let paths = server.request_paths();\n    assert!(\n        paths[0].contains(\"GET /v1/models\"),\n        \"应打 /models 探活路径：{paths:?}\"\n    );\n}",
+      "existing_code": "#[tokio::test]\nasync fn connection_test_ok_on_2xx() {\n    let server = MockLlmServer::start();\n    // 队列空 → 默认 TextReply 200（探测只判 HTTP 状态，不解析 body）\n    let r = probe_connection(\u0026reqwest::Client::new(), \u0026server.base_url, \"openai\", \"k\").await;\n    assert!(r.ok, \"2xx 应 ok:true：{r:?}\");\n    assert_eq!(r.status, Some(200));\n    assert_eq!(r.error, None);\n    assert_eq!(server.request_count(), 1);\n    // 探测打 GET {base}/models 探活路径\n    let paths = server.request_paths();\n    assert!(\n        paths[0].contains(\"GET /v1/models\"),\n        \"应打 /models 探活路径：{paths:?}\"\n    );\n}",
+      "start_line": 17,
+      "end_line": 32,
+      "category": "test",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/bot/config/mod.rs",
+      "content": "Confirmed (Finding 1): doc comment lists 7 tauri commands but `bot_clear_vendor_key` is the 8th one defined in commands.rs:303. The list/name mismatch creates ambiguity for anyone counting to verify the surface area is complete.",
+      "existing_code": "//! - `commands` 7 个 tauri command（bot_get_config/bot_set_config/bot_set_active_model/\n//!              bot_clear_api_key/bot_log_read/bot_reload_config/bot_test_connection）+ perm_mode helper",
+      "start_line": 27,
+      "end_line": 28,
+      "category": "documentation",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/bot/config/mod.rs",
+      "content": "Confirmed (Finding 3): substring-based negative assertions like `assert!(!clean.contains(\"temperature\"))` could in principle false-positive on unrelated content (e.g., a `model` value containing the substring \"temperature\"). With current test inputs this never happens, but a more robust approach is to parse `clean` back into `serde_json::Value` and assert the field is `null`/absent, which would also catch accidental renames or ordering changes. Not a real bug — robustness/style point only.",
+      "existing_code": "        assert!(!clean.contains(\"temperature\"));\n        assert!(!clean.contains(\"topP\"));\n        assert!(!clean.contains(\"maxTokens\"));\n        assert!(!clean.contains(\"systemPrompt\"));",
+      "start_line": 207,
+      "end_line": 210,
+      "category": "test",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/meta/mod.rs",
+      "content": "Unnecessary `.clone()`: `upsert_provider_user(\u0026conn, \u0026p)` only borrows the struct, so the owned `provider_key` stays usable for the follow-up read. Move the value in and reuse `\u0026p.provider_key` for the query (or `provider_key.as_str()` after construction), matching the borrow-friendly style of the test helpers below.",
+      "suggestion_code": "        let p = MetaProvider {\n            provider_key,\n            provider_name,\n            logo_url,\n            fallback_color: fallback_color.unwrap_or_else(|| FALLBACK_COLOR.into()),\n            fallback_char: fallback_char.unwrap_or_default(),\n            default_base_url,\n            timeout,\n            source: \"user_custom\".into(),\n        };\n        upsert_provider_user(\u0026conn, \u0026p).map_err(CommandError::from)?;\n        query_provider(\u0026conn, \u0026p.provider_key)\n            .map_err(CommandError::from)?\n            .ok_or_else(|| CommandError::Internal(\"meta_upsert_provider 写后读不到行\".into()))",
+      "existing_code": "        let p = MetaProvider {\n            provider_key: provider_key.clone(),\n            provider_name,\n            logo_url,\n            fallback_color: fallback_color.unwrap_or_else(|| FALLBACK_COLOR.into()),\n            fallback_char: fallback_char.unwrap_or_default(),\n            default_base_url,\n            timeout,\n            source: \"user_custom\".into(),\n        };\n        upsert_provider_user(\u0026conn, \u0026p).map_err(CommandError::from)?;\n        query_provider(\u0026conn, \u0026provider_key)\n            .map_err(CommandError::from)?\n            .ok_or_else(|| CommandError::Internal(\"meta_upsert_provider 写后读不到行\".into()))",
+      "start_line": 453,
+      "end_line": 466,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/meta/mod.rs",
+      "content": "Unnecessary `.clone()`: same as `meta_upsert_provider` — `upsert_model_user(\u0026conn, \u0026m)` borrows `m`, so the owned `model_key` is still usable. Move it in and read back via `\u0026m.model_key`.",
+      "suggestion_code": "        let m = MetaModel {\n            model_key,\n            provider_key,\n            display_name,\n            context_length,\n            temperature,\n            top_p,\n            max_tokens,\n            default_system_prompt,\n            source: \"user_custom\".into(),\n        };\n        upsert_model_user(\u0026conn, \u0026m).map_err(|reason| CommandError::DomainRule {\n            domain: \"meta\".into(),\n            reason,\n        })?;\n        query_model_joined(\u0026conn, \u0026m.model_key)\n            .map_err(CommandError::from)?\n            .ok_or_else(|| CommandError::Internal(\"meta_upsert_model 写后读不到行\".into()))",
+      "existing_code": "        let m = MetaModel {\n            model_key: model_key.clone(),\n            provider_key,\n            display_name,\n            context_length,\n            temperature,\n            top_p,\n            max_tokens,\n            default_system_prompt,\n            source: \"user_custom\".into(),\n        };\n        upsert_model_user(\u0026conn, \u0026m).map_err(|reason| CommandError::DomainRule {\n            domain: \"meta\".into(),\n            reason,\n        })?;\n        query_model_joined(\u0026conn, \u0026model_key)\n            .map_err(CommandError::from)?\n            .ok_or_else(|| CommandError::Internal(\"meta_upsert_model 写后读不到行\".into()))",
+      "start_line": 487,
+      "end_line": 504,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/meta/mod.rs",
+      "content": "Runtime `format!()` allocation is wasteful here: every input is a `\u0026'static str` literal, so the assembled SQL is itself a compile-time constant. Hoist the five read functions (`list_providers`, `query_provider`, `models_by_provider`, `list_models_joined`, `query_model_joined`) to per-function `const \u0026'static str` to avoid the per-call heap allocation on hot, user-triggered reads.",
+      "suggestion_code": "const LIST_PROVIDERS_SQL: \u0026str =\n    \"SELECT provider_key, provider_name, logo_url, fallback_color, fallback_char, default_base_url, timeout, source \\\n     FROM meta_provider ORDER BY provider_name\";\npub fn list_providers(conn: \u0026rusqlite::Connection) -\u003e Result\u003cVec\u003cMetaProvider\u003e, rusqlite::Error\u003e {\n    let mut stmt = conn.prepare(LIST_PROVIDERS_SQL)?;",
+      "existing_code": "pub fn list_providers(conn: \u0026rusqlite::Connection) -\u003e Result\u003cVec\u003cMetaProvider\u003e, rusqlite::Error\u003e {\n    let mut stmt = conn.prepare(\u0026format!(\n        \"SELECT {PROVIDER_COLS} FROM meta_provider ORDER BY provider_name\"\n    ))?;",
+      "start_line": 174,
+      "end_line": 177,
+      "category": "performance",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/meta/mod.rs",
+      "content": "Same `format!()` allocation issue as `list_providers` — the SQL is fully static, hoist to a `const`.",
+      "suggestion_code": "    conn.query_row(\n        \"SELECT provider_key, provider_name, logo_url, fallback_color, fallback_char, default_base_url, timeout, source \\\n         FROM meta_provider WHERE provider_key = ?1\",\n        [key],\n        provider_from_row,\n    )\n    .optional()\n}",
+      "existing_code": "    conn.query_row(\n        \u0026format!(\"SELECT {PROVIDER_COLS} FROM meta_provider WHERE provider_key = ?1\"),\n        [key],\n        provider_from_row,\n    )\n    .optional()\n}",
+      "start_line": 187,
+      "end_line": 193,
+      "category": "performance",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/meta/mod.rs",
+      "content": "Same `format!()` allocation issue — the SQL is fully static, hoist to a `const`.",
+      "suggestion_code": "const MODELS_BY_PROVIDER_SQL: \u0026str =\n    \"SELECT model_key, provider_key, display_name, context_length, temperature, top_p, max_tokens, default_system_prompt, source \\\n     FROM meta_model WHERE provider_key = ?1 ORDER BY display_name\";\npub fn models_by_provider(\n    conn: \u0026rusqlite::Connection,\n    provider_key: \u0026str,\n) -\u003e Result\u003cVec\u003cMetaModel\u003e, rusqlite::Error\u003e {\n    let mut stmt = conn.prepare(MODELS_BY_PROVIDER_SQL)?;",
+      "existing_code": "pub fn models_by_provider(\n    conn: \u0026rusqlite::Connection,\n    provider_key: \u0026str,\n) -\u003e Result\u003cVec\u003cMetaModel\u003e, rusqlite::Error\u003e {\n    let mut stmt = conn.prepare(\u0026format!(\n        \"SELECT {MODEL_COLS} FROM meta_model WHERE provider_key = ?1 ORDER BY display_name\"\n    ))?;",
+      "start_line": 203,
+      "end_line": 209,
+      "category": "performance",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/meta/mod.rs",
+      "content": "Same `format!()` allocation issue — the SQL is fully static, hoist to a `const`.",
+      "suggestion_code": "    let mut stmt = conn.prepare(\n        \"SELECT m.model_key, m.provider_key, m.display_name, m.context_length, \\\n         m.temperature, m.top_p, m.max_tokens, m.default_system_prompt, m.source, \\\n         p.provider_name, p.logo_url, p.fallback_color, p.fallback_char, p.default_base_url \\\n         FROM meta_model m JOIN meta_provider p ON p.provider_key = m.provider_key \\\n         ORDER BY p.provider_name, m.display_name\",\n    )?;",
+      "existing_code": "    let mut stmt = conn.prepare(\u0026format!(\n        \"{JOINED_SELECT} ORDER BY p.provider_name, m.display_name\"\n    ))?;",
+      "start_line": 223,
+      "end_line": 225,
+      "category": "performance",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/meta/mod.rs",
+      "content": "Same `format!()` allocation issue — the SQL is fully static, hoist to a `const`.",
+      "suggestion_code": "    conn.query_row(\n        \"SELECT m.model_key, m.provider_key, m.display_name, m.context_length, \\\n         m.temperature, m.top_p, m.max_tokens, m.default_system_prompt, m.source, \\\n         p.provider_name, p.logo_url, p.fallback_color, p.fallback_char, p.default_base_url \\\n         FROM meta_model m JOIN meta_provider p ON p.provider_key = m.provider_key \\\n         WHERE m.model_key = ?1\",\n        [model_key],\n        joined_from_row,\n    )\n    .optional()\n}",
+      "existing_code": "    conn.query_row(\n        \u0026format!(\"{JOINED_SELECT} WHERE m.model_key = ?1\"),\n        [model_key],\n        joined_from_row,\n    )\n    .optional()\n}",
+      "start_line": 235,
+      "end_line": 241,
+      "category": "performance",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/bot/config/commands.rs",
+      "content": "[high] URL construction duplicates the very bug that `anthropic_messages_url` (bot_anthropic.rs) was JUST patched to fix in this same PR — it now strips `/v1/messages` and `/messages` suffixes before deciding where to append. `probe_connection` here does NOT do that stripping, so when the user pastes a full endpoint URL into Base URL (e.g. `https://api.minimaxi.com/anthropic/messages` — exactly the case the anthropic_messages_url test `anthropic_messages_url(\"https://api.minimaxi.com/anthropic/messages\")` covers), the probe builds `https://api.minimaxi.com/anthropic/messages/v1/models` and gets a guaranteed 404 on the user-facing 「测试连接」 button. Same issue on the openai branch when `base_url` ends with `/models`. Reuse the same suffix-stripping logic (or factor a tiny shared helper) so the two probes can't drift again.",
+      "suggestion_code": "    let b = base_url.trim_end_matches('/');\n    // 与 anthropic_messages_url 同款剥掉端点路径粘进 base_url 的写法，\n    // 避免拼出 /v1/messages/v1/models 这种打不通的 URL\n    let b = b\n        .strip_suffix(\"/v1/messages\")\n        .or_else(|| b.strip_suffix(\"/messages\"))\n        .unwrap_or(b);\n    let url = if api_format == \"anthropic\" {\n        if b.ends_with(\"/v1\") {\n            format!(\"{b}/models\")\n        } else {\n            format!(\"{b}/v1/models\")\n        }\n    } else if b.ends_with(\"/v1\") {\n        format!(\"{b}/models\")\n    } else {\n        format!(\"{b}/models\")\n    };",
+      "existing_code": "    let b = base_url.trim_end_matches('/');\n    let url = if api_format == \"anthropic\" {\n        if b.ends_with(\"/v1\") {\n            format!(\"{b}/models\")\n        } else {\n            format!(\"{b}/v1/models\")\n        }\n    } else {\n        format!(\"{b}/models\")\n    };",
+      "start_line": 462,
+      "end_line": 471,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "src-tauri/src/bot/config/commands.rs",
+      "content": "[high] Inconsistent keyring error handling vs `bot_get_config` (which propagates `has_vendor_key(\u0026v)?` at line 91). Here `.ok()` silently swallows `read_vendor_key` errors — a partial keyring backend outage (credential store locked / permission denied) during a test will make the probe silently fall back to the GLOBAL key and report a spurious 401/403 against the wrong credential. The same keyring failure is properly surfaced as `KeyringError` during config load. Either both should propagate, or both should fall back — the current asymmetry hides backend issues behind a misleading 「vendor X 鉴权失败」 UI.",
+      "suggestion_code": "    let key = vendor\n        .as_deref()\n        .map(str::trim)\n        .filter(|v| !v.is_empty())\n        .map(|v| keyring::read_vendor_key(v)) // 透传 Err，不吞成「未配置」\n        .transpose()?\n        .map(|k| k.trim().to_string())\n        .filter(|k| !k.is_empty())\n        .or_else(|| {\n            let g = keyring::read_api_key().unwrap_or_default();\n            (!g.trim().is_empty()).then_some(g)\n        })\n        .unwrap_or_default();",
+      "existing_code": "    let key = vendor\n        .as_deref()\n        .map(str::trim)\n        .filter(|v| !v.is_empty())\n        .and_then(|v| keyring::read_vendor_key(v).ok())\n        .filter(|k| !k.trim().is_empty())\n        .unwrap_or_else(|| keyring::read_api_key().unwrap_or_default());",
+      "start_line": 513,
+      "end_line": 519,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "src-tauri/src/bot/config/commands.rs",
+      "content": "[medium] Undocumented edge case: when BOTH `incoming.models_by_provider` and `disk.models_by_provider` are `None`, `sig_sets` returns an empty map for both, so the `_ =\u003e false` arm drops EVERY vendor from `verified_vendors`. Likely intentional (「没有模型就没有可用性」), but surprising if a user ever saves with empty `models_by_provider` (schema migration writing a fresh file, future reset action, frontend bug sending empty state). Add a doc-comment line noting this behavior, and/or special-case the 「两都空」 situation to preserve the existing list.",
+      "suggestion_code": "    // 特殊保留：两都无 models_by_provider（schema 写空盘/未来重置入口）→ 不动列表\n    // ——否则该 prune 会清空所有 verified_vendors，破坏后续加载的绿点与下拉过滤。\n    let both_empty = new_sigs.is_empty() \u0026\u0026 old_sigs.is_empty();\n    if !both_empty {\n        incoming.verified_vendors.retain(|v| {\n            if Some(v.as_str()) == key_overwritten {\n                return false;\n            }\n            match (new_sigs.get(v), old_sigs.get(v)) {\n                (Some(n), Some(o)) =\u003e n == o,\n                _ =\u003e false,\n            }\n        });\n    } else {\n        incoming.verified_vendors.retain(|v| Some(v.as_str()) != key_overwritten);\n    }",
+      "existing_code": "    incoming.verified_vendors.retain(|v| {\n        if Some(v.as_str()) == key_overwritten {\n            return false;\n        }\n        match (new_sigs.get(v), old_sigs.get(v)) {\n            (Some(n), Some(o)) =\u003e n == o,\n            _ =\u003e false,\n        }\n    });",
+      "start_line": 174,
+      "end_line": 182,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/bot/config/commands.rs",
+      "content": "[medium] `bot_test_connection` probe reads `read_vendor_key` OUTSIDE the config-file lock, then takes the lock via `update_config_file` to write `verified_vendors`. `bot_set_config` writes a new vendor key outside the lock (line 204) and then takes the same lock to call `prune_verified_vendors`. Sequence: (1) test probe reads K_old, (2) user saves → `bot_set_config` writes K_new + acquires lock + prunes vendor from verified_vendors (dropped because `key_overwritten == Some(v)`), (3) test probe completes successfully, (4) test's `update_config_file` acquires the lock + re-adds vendor. Final state: K_new in keyring, vendor in verified_vendors — but K_new was never tested. Tight mutex-serialized window but real. Snapshot the key under the same lock, or re-read the vendor key inside `update_config_file`'s closure.",
+      "suggestion_code": "    // keyring 读 → 网络请求 → 文件写 不在同一锁里：bot_set_config 在中间覆盖 key\n    // + prune_verified_vendors 会让本次「测试成功」结果反向后入 verified_vendors，\n    // 形成「未测 key 进 verified」的竞态。这里读一次 key 落进局部 vec，闭包里重读\n    // 文件 + 决策一次写回，避免「probe 期间被外部覆盖」的 TOCTOU。\n    let vendor_trim = vendor.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);\n    let key = vendor_trim\n        .as_deref()\n        .and_then(|v| keyring::read_vendor_key(v).ok())\n        .map(|k| k.trim().to_string())\n        .filter(|k| !k.is_empty())\n        .unwrap_or_else(|| keyring::read_api_key().unwrap_or_default());\n    let r = probe_connection(shared_llm_client(), \u0026base_url, \u0026api_format, \u0026key).await;\n    if let Some(v) = vendor_trim.as_deref() {",
+      "existing_code": "    let key = vendor\n        .as_deref()\n        .map(str::trim)\n        .filter(|v| !v.is_empty())\n        .and_then(|v| keyring::read_vendor_key(v).ok())\n        .filter(|k| !k.trim().is_empty())\n        .unwrap_or_else(|| keyring::read_api_key().unwrap_or_default());\n    let r = probe_connection(shared_llm_client(), \u0026base_url, \u0026api_format, \u0026key).await;\n    if let Some(v) = vendor.as_deref().map(str::trim).filter(|v| !v.is_empty()) {",
+      "start_line": 513,
+      "end_line": 521,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/bot/config/commands.rs",
+      "content": "[medium] `keyring::delete_vendor_key` runs BEFORE `super::io::update_config_file(\u0026app, …)` and OUTSIDE the config-file lock. If the IPC handler is killed (or panics) between the keyring delete and the config write, the key is gone from the credential store but `verified_vendors` still lists the vendor — the UI shows a green dot until the next save, but the next test connection returns 401 and the user has no clear recovery path short of editing the config file. Same for the order in `bot_set_config` key-write → config-write (but that one already commits the in-memory `config` regardless). Either move the keyring delete into the `update_config_file` closure body (so key delete + verified_vendors update both happen under `lock_config_write`), or reverse the order (drop from verified first; if delete fails, re-add).",
+      "suggestion_code": "/// 清除指定厂商的 API Key（keyring 条目按厂商名分存）；\n/// 顺带把该厂商移出已验证名单（key 没了可用性随之失效）。\n/// 两步必须同处 lock_config_write 之下——keyring 写在锁外做、配置写在锁内做，\n/// 一旦中途 panic / 进程被杀，key 没了 verified_vendors 还在 → UI 绿点撒谎。\n/// 顺序选「先 verified_vendors、再 keyring」：keyring 真失败可被上一句审计\n/// 回滚（业务可接受：key 多留一段比「配置已标无效但 key 没了」更易恢复）。\n#[tauri::command]\npub fn bot_clear_vendor_key(app: AppHandle, vendor: String) -\u003e CommandResult\u003c()\u003e {\n    let vendor = vendor.trim().to_string();\n    if vendor.is_empty() {\n        return Ok(());\n    }\n    super::io::update_config_file(\u0026app, |cfg| {\n        cfg.verified_vendors.retain(|v| v != \u0026vendor);\n    })?;\n    keyring::delete_vendor_key(\u0026vendor)\n}",
+      "existing_code": "/// 清除指定厂商的 API Key（keyring 条目按厂商名分存）；\n/// 顺带把该厂商移出已验证名单（key 没了可用性随之失效）\n#[tauri::command]\npub fn bot_clear_vendor_key(app: AppHandle, vendor: String) -\u003e CommandResult\u003c()\u003e {\n    let vendor = vendor.trim();\n    keyring::delete_vendor_key(vendor)?;\n    super::io::update_config_file(\u0026app, |cfg| {\n        cfg.verified_vendors.retain(|v| v != vendor);\n    })\n}",
+      "start_line": 300,
+      "end_line": 309,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/bot/config/commands.rs",
+      "content": "[low] `VendorKeyParam` is `pub` with only the parent-fn-level doc-comment; field-level docs and normalization contract are missing. `vendor` is used as a free-form keyring account name (`vendor:{vendor.trim()}`) and a free-form plaintext filename input. Frontend callers have no documented expectation: what trims do (already done at command boundary), what whitespace behavior is, whether Unicode/case is preserved (it is — see keyring.rs vendor_plaintext_filename, which case-folds into filenames). Add `///` on each field stating trim/case/Unicode behavior and the max-length bounds (none today, but should match `MAX_KEYWORD` or similar).",
+      "suggestion_code": "/// 设置页厂商页「保存」传入的厂商级 key：前端 shape `{ vendorKey: { vendor, key } }`。\n/// vendor = 厂商名（与 ModelEntry.vendor 同源；前后空白由本模块 trim，\n/// 大小写与 Unicode 原样保留 → keyring account = `vendor:{name}`），\n/// key = 待写入凭据存储的明文（前后空白 trim）。\n/// 两者任一为空 → 静默忽略（不动已有条目；要清 key 走 bot_clear_vendor_key）。\n#[derive(serde::Deserialize)]\npub struct VendorKeyParam {\n    /// 厂商名（trim 后用作 keyring account）\n    pub vendor: String,\n    /// API key 明文（trim 后写入凭据存储）\n    pub key: String,\n}",
+      "existing_code": "#[derive(serde::Deserialize)]\npub struct VendorKeyParam {\n    pub vendor: String,\n    pub key: String,\n}",
+      "start_line": 135,
+      "end_line": 139,
+      "category": "documentation",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/bot/config/commands.rs",
+      "content": "[low] `sig_sets` inside `prune_verified_vendors` uses fully-qualified `std::collections::BTreeMap` / `BTreeSet` paths repeated inside a nested `fn` (commands.rs:152-171). Hoist a `use std::collections::{BTreeMap, BTreeSet};` to the test-module or top of file. Functionally fine, but this is the most complex part of the new module and the FQN noise hurts readability.",
+      "suggestion_code": "    // 厂商 → 条目签名集合：(协议, base_url) 无序去重\n    fn sig_sets(cfg: \u0026BotConfig) -\u003e BTreeMap\u003cString, BTreeSet\u003c(String, String)\u003e\u003e {\n        let mut m: BTreeMap\u003cString, BTreeSet\u003c(String, String)\u003e\u003e = Default::default();",
+      "existing_code": "    // 厂商 → 条目签名集合：(协议, base_url) 无序去重\n    fn sig_sets(\n        cfg: \u0026BotConfig,\n    ) -\u003e std::collections::BTreeMap\u003cString, std::collections::BTreeSet\u003c(String, String)\u003e\u003e {\n        let mut m: std::collections::BTreeMap\u003c\n            String,\n            std::collections::BTreeSet\u003c(String, String)\u003e,\n        \u003e = Default::default();",
+      "start_line": 151,
+      "end_line": 158,
+      "category": "style",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/meta/sync.rs",
+      "content": "Test concurrency hazard: `apply_sync_writes_and_reupdates` (sync test, in-memory DB) and `sync_with_bad_url_returns_err` (`#[tokio::test]`) both ultimately call `apply_sync`, which acquires `crate::db::lock_db_write()` — a process-wide `DB_WRITE_LOCK` Mutex (see db/mod.rs:332). Under cargo's default parallel test runner, these two tests will serialize on that global lock and any other test in the suite touching `lock_db_write` will queue behind them. Consider either (a) `#[serial_test::serial]` on tests that touch the global lock, (b) running these two specific tests in a dedicated `#[cfg(test)]` module that takes a per-test local lock instead of `lock_db_write()`, or (c) documenting that meta sync tests must run single-threaded (`cargo test -- --test-threads=1`).",
+      "suggestion_code": "/// 落库 + 复同步：models_dev 行被刷新，统计数正确。\n    /// 注意：内部 `apply_sync` 会 acquire 进程全局 `DB_WRITE_LOCK`，\n    /// 与 `sync_with_bad_url_returns_err` 及其他读写测试互斥 —— 需要\n    /// `#[serial_test::serial]` 或类似机制避免并行执行时相互阻塞。\n    #[test]\n    fn apply_sync_writes_and_reupdates() {\n        let mut conn = rusqlite::Connection::open_in_memory().unwrap();\n        crate::db::migrations::ensure_meta_tables(\u0026conn).unwrap();\n        let (providers, models) = parse_models_dev(SAMPLE).unwrap();\n\n        let stats = apply_sync(\u0026mut conn, \u0026providers, \u0026models).unwrap();",
+      "existing_code": "/// 落库 + 复同步：models_dev 行被刷新，统计数正确\n    #[test]\n    fn apply_sync_writes_and_reupdates() {\n        let mut conn = rusqlite::Connection::open_in_memory().unwrap();\n        crate::db::migrations::ensure_meta_tables(\u0026conn).unwrap();\n        let (providers, models) = parse_models_dev(SAMPLE).unwrap();\n\n        let stats = apply_sync(\u0026mut conn, \u0026providers, \u0026models).unwrap();",
+      "start_line": 239,
+      "end_line": 246,
+      "category": "other",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/meta/sync.rs",
+      "content": "`sync_models_dev_with_url` is declared `pub` and accepts an arbitrary `url: \u0026str`; the doc comment explicitly says \"URL 可注入\" for testability, but `pub` visibility means it is reachable from anywhere inside the crate (and externally, if `meta` is ever exposed as a library surface). Although the only currently-registered Tauri command (`meta_sync_models_dev`, meta/mod.rs:513) takes no URL and hardcodes `MODELS_DEV_API`, this seam should be `pub(crate)` (tests still see it via `use super::*;`) so a future accidental `#[tauri::command]` registration does not turn it into an SSRF vector letting the frontend fetch arbitrary URLs (127.0.0.1, cloud metadata endpoints, etc.) and pipe the response into `parse_models_dev` → `apply_sync`.",
+      "suggestion_code": "/// 可测内核：URL 可注入（坏 URL → Err 且不落库）；正式路径走 `sync_models_dev`。\n/// `pub(crate)` 而非 `pub`：避免被误挂为 `#[tauri::command]` 后变成 SSRF 入口。\npub(crate) async fn sync_models_dev_with_url\u003cR: tauri::Runtime\u003e(\n    app: \u0026tauri::AppHandle\u003cR\u003e,\n    url: \u0026str,\n) -\u003e Result\u003cSyncStats, String\u003e {",
+      "existing_code": "/// 可测内核：URL 可注入（坏 URL → Err 且不落库）；正式路径走 `sync_models_dev`\npub async fn sync_models_dev_with_url\u003cR: tauri::Runtime\u003e(\n    app: \u0026tauri::AppHandle\u003cR\u003e,\n    url: \u0026str,\n) -\u003e Result\u003cSyncStats, String\u003e {",
+      "start_line": 127,
+      "end_line": 131,
+      "category": "security",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/meta/sync.rs",
+      "content": "`fetch_models_dev` reuses `crate::bot_model_loop::shared_llm_client()` (bot_model_loop.rs:399, `OnceLock\u003creqwest::Client\u003e`), which is the same connection pool used by every LLM call in `bot_chat`/`bot_plan`/`bot_model_loop`. Reusing the pool is the right call for connection-reuse, but: (1) the shared client has no special headers, but reqwest still attaches a default `User-Agent` that identifies the app — metadata fetches will then leak this UA to models.dev with every sync; (2) the pool is now contended by metadata sync and active LLM sessions — a sync that takes the full 30s timeout will queue behind in-flight LLM requests on the same pool. Either (a) attach a metadata-specific default User-Agent via a thin wrapper client, or (b) document explicitly that this client is now multi-purpose and that pool contention is acceptable.",
+      "suggestion_code": "/// 拉取 api.json 原文（解析与网络分离，解析可纯单测）。\n/// 复用 LLM 共享 client（OnceLock 连接池）—— 已显式覆盖 30s 请求超时，\n/// 共用池可能被模型循环占用，故此处与 LLM 流量同池排队可接受。\nasync fn fetch_models_dev(url: \u0026str) -\u003e Result\u003cString, String\u003e {\n    let resp = crate::bot_model_loop::shared_llm_client()\n        .get(url)\n        .timeout(SYNC_TIMEOUT)\n        .send()\n        .await\n        .map_err(|e| format!(\"models.dev 请求失败：{e}\"))?;",
+      "existing_code": "/// 拉取 api.json 原文（解析与网络分离，解析可纯单测）\nasync fn fetch_models_dev(url: \u0026str) -\u003e Result\u003cString, String\u003e {\n    let resp = crate::bot_model_loop::shared_llm_client()\n        .get(url)\n        .timeout(SYNC_TIMEOUT)\n        .send()\n        .await\n        .map_err(|e| format!(\"models.dev 请求失败：{e}\"))?;",
+      "start_line": 111,
+      "end_line": 118,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/meta/sync.rs",
+      "content": "`MetaModel.context_length` is `Option\u003ci64\u003e` (meta/mod.rs:41), but the parsed value is unbounded — `as_i64` silently accepts negative numbers (a buggy/hostile payload saying `\"context\": -1` would store `-1` and break any UI/consumer that assumes non-negative) and silently drops JSON floats and values \u003e`i64::MAX`. Guard explicitly: `as_i64().filter(|n| *n \u003e= 0)` so downstream code can rely on `\u003e= 0`.",
+      "suggestion_code": "context_length: m\n                        .get(\"limit\")\n                        .and_then(|l| l.get(\"context\"))\n                        .and_then(|v| v.as_i64())\n                        .filter(|n| *n \u003e= 0),",
+      "existing_code": "context_length: m\n                        .get(\"limit\")\n                        .and_then(|l| l.get(\"context\"))\n                        .and_then(|v| v.as_i64()),",
+      "start_line": 73,
+      "end_line": 76,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/meta/sync.rs",
+      "content": "`LOGO_URL.replace(\"{}\", pkey)` is a literal `String` substitution — it does not URL-encode `pkey`. Today's models.dev provider keys are lowercase ASCII slugs (`openai`, `anthropic`), so this works, but a provider key containing a space, `#`, `?`, or non-ASCII char would produce a malformed logo URL and a broken `\u003cimg\u003e` (or a wrong-host fetch in stricter browsers). Either percent-encode `pkey` before substitution, or constrain `pkey` to `[a-z0-9_-]` via a sanity check.",
+      "suggestion_code": "logo_url: Some(LOGO_URL.replace(\"{}\", ascii_slug_safe(pkey))),",
+      "existing_code": "logo_url: Some(LOGO_URL.replace(\"{}\", pkey)),",
+      "start_line": 56,
+      "end_line": 56,
+      "category": "security",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/lib.rs",
+      "content": "Startup spawn fires on every app launch with no freshness check or rate limit. A user who restarts the app multiple times will hammer models.dev each time. Consider adding a \"last-synced\" timestamp check (e.g. only sync if older than N hours, similar to memory::consolidate's last_run_at gate) to be polite to the upstream API and reduce unnecessary cold-start latency.",
+      "suggestion_code": "            // 模型元数据：启动后台同步 models.dev（网络失败只记审计、用库内缓存，\n            // 不 panic 不阻断启动；手动同步走 meta_sync_models_dev 命令）\n            // 频率护栏：N 小时内已同步过 → 跳过（多次重启不反复打 models.dev）\n            {\n                let handle = app.handle().clone();\n                tauri::async_runtime::spawn(async move {\n                    if let Err(e) = meta::sync::sync_models_dev(\u0026handle).await {\n                        audit::write_event(\n                            \u0026handle,\n                            audit::AuditLevel::Warn,\n                            \"meta_sync_models_dev\",\n                            \u0026[(\"err\", e)],\n                        );\n                    }\n                });\n            }",
+      "existing_code": "            // 模型元数据：启动后台同步 models.dev（网络失败只记审计、用库内缓存，\n            // 不 panic 不阻断启动；手动同步走 meta_sync_models_dev 命令）\n            {\n                let handle = app.handle().clone();\n                tauri::async_runtime::spawn(async move {\n                    if let Err(e) = meta::sync::sync_models_dev(\u0026handle).await {\n                        audit::write_event(\n                            \u0026handle,\n                            audit::AuditLevel::Warn,\n                            \"meta_sync_models_dev\",\n                            \u0026[(\"err\", e)],\n                        );\n                    }\n                });\n            }",
+      "start_line": 328,
+      "end_line": 342,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/bot/config/commands.rs",
+      "content": "Order of operations risk: `keyring::delete_vendor_key` runs BEFORE `update_config_file`. If the disk write fails (disk full, IO error, config file lock contention), the key is gone from keyring but `verified_vendors` still lists the vendor — UI keeps showing green plug while the key has actually been cleared, and next bot_set_config with the same vendor name would silently re-fail verify. Prefer to mutate `verified_vendors` first, then delete the key (or wrap both under CONFIG_WRITE_LOCK + keyring delete as a single transaction-like sequence, mirroring how `bot_set_config` already does key-then-config with the comment \"先后半成功问题已转 B 类评估\").",
+      "existing_code": "/// 清除指定厂商的 API Key（keyring 条目按厂商名分存）；\n/// 顺带把该厂商移出已验证名单（key 没了可用性随之失效）\n#[tauri::command]\npub fn bot_clear_vendor_key(app: AppHandle, vendor: String) -\u003e CommandResult\u003c()\u003e {\n    let vendor = vendor.trim();\n    keyring::delete_vendor_key(vendor)?;\n    super::io::update_config_file(\u0026app, |cfg| {\n        cfg.verified_vendors.retain(|v| v != vendor);\n    })\n}",
+      "start_line": 300,
+      "end_line": 309,
+      "category": "other",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/bot/config/commands.rs",
+      "content": "Silent verified_vendors write failure: if `update_config_file` fails, the error is only `eprintln!`'d. The user sees a successful test (UI goes green), but on next app launch the vendor is back to unverified (or stays green-but-stale until next bot_set_config prunes it). At minimum, surface the failure to the result or audit it structurally — UI expects the green state to be persisted, not best-effort. The current contract \"写盘失败不阻断测试结果的返回\" hides a real persistence bug from the user.",
+      "existing_code": "    let r = probe_connection(shared_llm_client(), \u0026base_url, \u0026api_format, \u0026key).await;\n    if let Some(v) = vendor.as_deref().map(str::trim).filter(|v| !v.is_empty()) {\n        let ok = r.ok;\n        if let Err(e) = super::io::update_config_file(\u0026app, |cfg| {\n            if ok {\n                if !cfg.verified_vendors.iter().any(|x| x == v) {\n                    cfg.verified_vendors.push(v.to_string());\n                }\n            } else {\n                cfg.verified_vendors.retain(|x| x != v);\n            }\n        }) {\n            eprintln!(\"[bot] verified_vendors 写盘失败: {e}\");\n        }\n    }",
+      "start_line": 520,
+      "end_line": 534,
+      "category": "other",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/bot/config/commands.rs",
+      "content": "Vendor key read swallows real keyring errors: `.ok()` on `read_vendor_key(v)` discards any `Err` (locked keychain, permission denied, backend unavailable) and silently falls through to the global key or empty string. The doc comment says \"不主动把 keyring 故障伪装成连接失败\", but the practical effect is the opposite — vendor lockout / locked-keychain bug is reported to the user as \"401 unauthorized, check your API key\" when the real issue is on the user's local keychain. The frontend will then persist a false `verified_vendors` entry removal (line 528-530) on a healthy vendor that just couldn't be read with the vendor-scoped key. Match the strategy used by `bot_get_config` for `has_api_key` — let real keyring errors propagate as `CommandError::KeyringError` so the frontend can prompt the user to unlock keychain.",
+      "existing_code": "    let key = vendor\n        .as_deref()\n        .map(str::trim)\n        .filter(|v| !v.is_empty())\n        .and_then(|v| keyring::read_vendor_key(v).ok())\n        .filter(|k| !k.trim().is_empty())\n        .unwrap_or_else(|| keyring::read_api_key().unwrap_or_default());",
+      "start_line": 513,
+      "end_line": 519,
+      "category": "other",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/bot/config/commands.rs",
+      "content": "Empty vendor string is not short-circuited: `bot_clear_vendor_key(\"\", \"\")` would still call `delete_vendor_key(\"\")` which constructs `keyring::Entry::new(KEYRING_SERVICE, \"vendor:\")` (empty vendor name after the prefix). On the Linux plaintext fallback, the file becomes `bot-api-key-vendor--811c9dc5.txt` (visible to the user in their data dir). Add `if vendor.is_empty() return Ok(())` at the top, mirroring the `bot_set_config` pattern of skipping empty vendor writes.",
+      "existing_code": "/// 清除指定厂商的 API Key（keyring 条目按厂商名分存）；\n/// 顺带把该厂商移出已验证名单（key 没了可用性随之失效）\n#[tauri::command]\npub fn bot_clear_vendor_key(app: AppHandle, vendor: String) -\u003e CommandResult\u003c()\u003e {\n    let vendor = vendor.trim();\n    keyring::delete_vendor_key(vendor)?;\n    super::io::update_config_file(\u0026app, |cfg| {\n        cfg.verified_vendors.retain(|v| v != vendor);\n    })\n}",
+      "start_line": 300,
+      "end_line": 309,
+      "category": "other",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/meta/sync.rs",
+      "content": "Long-running transaction under DB_WRITE_LOCK: `apply_sync` wraps the entire provider+model upsert loop in one transaction AND holds `db::lock_db_write()` for the whole duration. With models.dev typically returning 200+ providers and 1000+ models, that's 1000+ SQL UPDATEs under a single write lock. Concurrent paths (memory consolidate every 10min, persist_last_run on every bot_chat turn, MCP server edits, etc.) will be fully blocked until the sync finishes — usually fast but a 5-second timeout means worst-case 5s of UI write stalls. Consider chunking: commit every N upserts, or use INSERT OR REPLACE with a smaller per-statement transaction. The \"all or nothing\" transactional guarantee doesn't add value for cached sync data.",
+      "existing_code": "/// 解析结果落库（单事务 + DB_WRITE_LOCK 与全库写路径互斥）；\n/// 只覆盖 source='models_dev' 行（守卫在 upsert_*_sync 的 SQL 里）\npub fn apply_sync(\n    conn: \u0026mut rusqlite::Connection,\n    providers: \u0026[MetaProvider],\n    models: \u0026[MetaModel],\n) -\u003e Result\u003cSyncStats, String\u003e {\n    let _g = crate::db::lock_db_write();\n    let tx = conn.transaction().map_err(|e| e.to_string())?;\n    for p in providers {\n        super::upsert_provider_sync(\u0026tx, p).map_err(|e| e.to_string())?;\n    }\n    for m in models {\n        super::upsert_model_sync(\u0026tx, m).map_err(|e| e.to_string())?;\n    }\n    tx.commit().map_err(|e| e.to_string())?;\n    Ok(SyncStats {\n        providers: providers.len(),\n        models: models.len(),\n    })\n}",
+      "start_line": 89,
+      "end_line": 109,
+      "category": "other",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/meta/mod.rs",
+      "content": "Manual `meta_sync_models_dev` returns `MetaSyncResult` directly (not `CommandResult\u003cMetaSyncResult\u003e`). A panic inside the closure (e.g. a SQL edge case, malformed models.dev response) would propagate uncaught and abort the IPC handler, killing the JS-side promise with a generic \"command panicked\" error instead of a recoverable `ok:false` shape that the UI knows how to render. Wrap the body in a panic catch or convert panic → `MetaSyncResult { ok: false, error: ... }` via `std::panic::catch_unwind` for the user's manual \"更新模型库\" button. The startup spawn already silently handles errors via audit; manual UI calls deserve the same UX.",
+      "existing_code": "/// 手动触发 models.dev 同步（前端「更新模型库」按钮）：\n/// 永远返回 Ok(MetaSyncResult)，失败时 ok:false + error，供按钮直接展示\n#[tauri::command]\npub async fn meta_sync_models_dev(app: AppHandle) -\u003e MetaSyncResult {\n    match sync::sync_models_dev(\u0026app).await {\n        Ok(s) =\u003e MetaSyncResult {\n            ok: true,\n            providers: Some(s.providers),\n            models: Some(s.models),\n            error: None,\n        },\n        Err(e) =\u003e {\n            crate::audit::write_event(\n                \u0026app,\n                crate::audit::AuditLevel::Warn,\n                \"meta_sync_models_dev\",\n                \u0026[(\"err\", e.clone())],\n            );\n            MetaSyncResult {\n                ok: false,\n                providers: None,\n                models: None,\n                error: Some(e),\n            }\n        }\n    }\n}",
+      "start_line": 510,
+      "end_line": 536,
+      "category": "other",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/meta/mod.rs",
+      "content": "Inconsistent serialization contract with sibling types: `BotConfigView` uses `#[serde(rename_all = \"camelCase\")]` (verified at types.rs:339), but `MetaProvider` / `MetaModel` / `MetaModelJoined` (meta/mod.rs:23,36,51) have no `rename_all`. Frontend `src/lib/modelMeta.ts:8-30` is forced to use snake_case fields (`provider_key`, `provider_name`, `display_name`, `context_length`, etc.) — different from the rest of the codebase. Pick one direction and apply uniformly: either add `#[serde(rename_all = \"camelCase\")]` to the meta structs and update the TS types, OR document the deliberate snake_case choice as a module-level invariant. Inconsistency here is a future-trap: the next contributor adding a single-word field to `BotConfigView` will be surprised by the asymmetry.",
+      "existing_code": "/// meta_provider 行（同步缓存 + 用户自建服务商）\n#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]\npub struct MetaProvider {\n    pub provider_key: String,\n    pub provider_name: String,\n    pub logo_url: Option\u003cString\u003e,\n    pub fallback_color: String,\n    pub fallback_char: String,\n    pub default_base_url: Option\u003cString\u003e,\n    pub timeout: Option\u003ci64\u003e,\n    pub source: String,\n}",
+      "start_line": 21,
+      "end_line": 32,
+      "category": "other",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/SettingsPage/ProviderLogo.tsx",
+      "content": "Inline style mixes static and dynamic values. The `fontSize: \"10px\"` and `lineHeight: 1` are static and should live in a Tailwind/CSS class (e.g. `text-[10px] leading-none`); keep only the dynamic `background` in the style prop.",
+      "suggestion_code": "style={{ background: fallbackColor ?? \"#666666\" }}\n      // fontSize/lineHeight moved to CSS: text-[10px] leading-none on the span className",
+      "existing_code": "style={{ background: fallbackColor ?? \"#666666\", fontSize: \"10px\", lineHeight: 1 }}",
+      "start_line": 34,
+      "end_line": 34,
+      "category": "style",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/SettingsPage/ProviderLogo.tsx",
+      "content": "`fallbackColor` is interpolated directly into the inline `style` background. A malicious or malformed color value from vendor metadata (e.g. `red; background:url(...)`) could inject arbitrary CSS. Consider validating it matches `^#[0-9a-fA-F]{3,8}$` / `^[a-zA-Z]+$` before use.",
+      "suggestion_code": "style={{ background: /^(#[0-9a-fA-F]{3,8}|[a-zA-Z]+)$/.test(fallbackColor ?? \"\") ? fallbackColor : \"#666666\" }}",
+      "existing_code": "style={{ background: fallbackColor ?? \"#666666\", fontSize: \"10px\", lineHeight: 1 }}",
+      "start_line": 34,
+      "end_line": 34,
+      "category": "security",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/SettingsPage/ProviderLogo.tsx",
+      "content": "The `\u003cimg\u003e` is rendered inside list grids (左栏厂商列表项、添加厂商预设/模型库网格). Add `loading=\"lazy\"` and `decoding=\"async\"` to avoid blocking render and improve initial paint when many logos are off-screen.",
+      "suggestion_code": "return \u003cimg src={src} alt=\"\" loading=\"lazy\" decoding=\"async\" className={`shrink-0 rounded ${className}`} /\u003e;",
+      "existing_code": "return \u003cimg src={src} alt=\"\" className={`shrink-0 rounded ${className}`} /\u003e;",
+      "start_line": 28,
+      "end_line": 28,
+      "category": "performance",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/SettingsPage/ModelRow.tsx",
+      "content": "Plug 按钮 className 与 title 各有 3–4 层嵌套三元表达式（嵌套三元在代码规范中禁用）。建议抽成两段纯函数返回类名/title 字符串，或用对象映射（{fail: '…', ok: '…', idle: '…'}）按 testState/vendorVerified 取值，可读性与可测性都更好。\n\n```ts\nconst PLUG_CLASS = {\n  fail: \"text-[var(--danger)]\",\n  ok: \"text-[var(--success)]\",\n  idle: \"text-[var(--t5)] hover:text-[var(--t2)]\",\n} as const;\nconst plugClass = PLUG_CLASS[\n  testState === \"fail\" ? \"fail\" : plugOk ? \"ok\" : \"idle\"\n];\n```",
+      "existing_code": "          className={`nm-icon-btn shrink-0 ${\n            testState === \"fail\"\n              ? \"text-[var(--danger)]\"\n              : plugOk\n                ? \"text-[var(--success)]\"\n                : \"text-[var(--t5)] hover:text-[var(--t2)]\"\n          }`}\n          title={\n            testState === \"testing\"\n              ? \"连接测试中…\"\n              : testMsg\n                ? `连接测试：${testMsg}`\n                : plugOk\n                  ? \"连接测试已通过（改 key/URL/格式后需重新测试）\"\n                  : \"测试连接（按该模型的 Base URL + API 格式探测 /models）\"\n          }",
+      "start_line": 111,
+      "end_line": 126,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/SettingsPage/ModelRow.tsx",
+      "content": "本行刚测通过 / 持久化命中 verified_vendors 时，组件本地 `testState` 不会被自动失效：用户在编辑态改了 `baseUrl` 或上层切了 API 格式（apiProvider prop 变了），行不会 unmount（父级 key={m.id} 不变），因此插头仍显示绿色，但请求路径已经指向新 URL/新协议——和 tooltip「改 key/URL/格式后需重新测试」警告直接矛盾。建议在 useEffect 监听 model.baseUrl / apiProvider 变化时把 testState/testMsg 重置为 idle（让 vendorVerified 决定颜色，而不是上一次的本地结果）。\n\n```ts\nuseEffect(() =\u003e {\n  setTestState(\"idle\");\n  setTestMsg(\"\");\n}, [model.baseUrl, apiProvider]);\n```",
+      "existing_code": "  const isOn = model.enabled !== false;\n  // 插头颜色：本行刚测失败 \u003e 红；已验证（持久化）或刚测通过 \u003e 绿；否则灰\n  const plugOk = testState === \"ok\" || (testState !== \"fail\" \u0026\u0026 vendorVerified === true);",
+      "start_line": 55,
+      "end_line": 57,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/SettingsPage/ModelRow.tsx",
+      "content": "四个推理参数输入用 `defaultValue`（非受控），React 只在挂载时读取一次。父级 `key={m.id}` 不会随字段变更 unmount，setConfig / loadConfig 触发的同实例 re-render 不会刷新这些输入。如果用户编辑了 temperature 后又触发了 loadConfig（比如 onTested 里 await loadConfig，或另一行/外部修改 bot-config.json 后整页 reload），这里就会显示陈旧值，而 `model.temperature` 已经是新值。要么改成受控（value + onChange 同步到 model 字段，且不依赖 onBlur 提交），要么在 model.id / model 字段变化时手动重置输入（key prop 或 ref.current.value = ...）。",
+      "existing_code": "        {/* 每模型推理参数（可选）：留空 = 跟随全局/默认，清空即移除字段。\n            非受控 + onBlur 提交：数字输入中途态（\"0.\"）不被受控回写打断 */}\n        \u003cdiv className=\"flex items-center gap-1.5\"\u003e\n          \u003cinput\n            defaultValue={model.temperature ?? \"\"}\n            onBlur={(e) =\u003e {\n              const t = e.target.value.trim();\n              if (t === \"\") return onChange({ temperature: undefined });\n              const n = Number(t);\n              if (Number.isFinite(n)) onChange({ temperature: n });\n            }}\n            placeholder=\"temperature\"\n            aria-label=\"temperature\"\n            inputMode=\"decimal\"\n            title=\"temperature（留空 = 跟随默认）\"\n            className=\"nm-inset min-w-0 flex-1 rounded-lg px-2 py-1 text-[11px] text-[var(--t3)] outline-none\"\n          /\u003e\n          \u003cinput\n            defaultValue={model.topP ?? \"\"}\n            onBlur={(e) =\u003e {\n              const t = e.target.value.trim();\n              if (t === \"\") return onChange({ topP: undefined });\n              const n = Number(t);\n              if (Number.isFinite(n)) onChange({ topP: n });\n            }}\n            placeholder=\"top_p\"\n            aria-label=\"top_p\"\n            inputMode=\"decimal\"\n            title=\"top_p（留空 = 跟随默认）\"\n            className=\"nm-inset min-w-0 flex-1 rounded-lg px-2 py-1 text-[11px] text-[var(--t3)] outline-none\"\n          /\u003e\n          \u003cinput\n            defaultValue={model.maxTokens ?? \"\"}\n            onBlur={(e) =\u003e {\n              const t = e.target.value.trim();\n              if (t === \"\") return onChange({ maxTokens: undefined });\n              const n = parseInt(t, 10);\n              if (Number.isFinite(n)) onChange({ maxTokens: n });\n            }}\n            placeholder=\"max_tokens\"\n            aria-label=\"max_tokens\"\n            inputMode=\"numeric\"\n            title=\"max_tokens（留空 = 跟随默认）\"\n            className=\"nm-inset min-w-0 flex-1 rounded-lg px-2 py-1 text-[11px] text-[var(--t3)] outline-none\"\n          /\u003e\n        \u003c/div\u003e\n        \u003cinput\n          defaultValue={model.systemPrompt ?? \"\"}\n          onBlur={(e) =\u003e {\n            const t = e.target.value;\n            onChange({ systemPrompt: t === \"\" ? undefined : t });\n          }}\n          placeholder=\"system prompt（留空 = 跟随默认）\"\n          aria-label=\"system prompt\"\n          className=\"nm-inset w-full rounded-lg px-2 py-1 text-[11px] text-[var(--t3)] outline-none\"\n        /\u003e",
+      "start_line": 216,
+      "end_line": 271,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/SettingsPage/ModelRow.tsx",
+      "content": "`Number.isFinite(n)` 对 `temperature`/`topP`/`maxTokens` 仅过滤非数字，但允许越界值直接落入 onChange 并被持久化/发送给厂商 API：`temperature` 可负或 \u003e 2；`topP` 可 \u003e 1 或 ≤ 0（非法概率）；`maxTokens` 可为 0 或负数（要么无效要么立刻报错）。建议在 onBlur 里加范围钳制/拒绝：\n\n```ts\nif (model.temperature !== undefined \u0026\u0026 (n \u003c 0 || n \u003e 2)) return; // 不更新\nif (model.topP !== undefined \u0026\u0026 (n \u003c= 0 || n \u003e 1)) return;\nif (model.maxTokens !== undefined \u0026\u0026 n \u003c 1) return;\n```\n\n或 at least 把无效分支在 UI 上反馈（红框/aria-invalid），让用户知道为什么没保存。",
+      "existing_code": "          \u003cinput\n            defaultValue={model.temperature ?? \"\"}\n            onBlur={(e) =\u003e {\n              const t = e.target.value.trim();\n              if (t === \"\") return onChange({ temperature: undefined });\n              const n = Number(t);\n              if (Number.isFinite(n)) onChange({ temperature: n });\n            }}\n            placeholder=\"temperature\"\n            aria-label=\"temperature\"\n            inputMode=\"decimal\"\n            title=\"temperature（留空 = 跟随默认）\"\n            className=\"nm-inset min-w-0 flex-1 rounded-lg px-2 py-1 text-[11px] text-[var(--t3)] outline-none\"\n          /\u003e\n          \u003cinput\n            defaultValue={model.topP ?? \"\"}\n            onBlur={(e) =\u003e {\n              const t = e.target.value.trim();\n              if (t === \"\") return onChange({ topP: undefined });\n              const n = Number(t);\n              if (Number.isFinite(n)) onChange({ topP: n });\n            }}\n            placeholder=\"top_p\"\n            aria-label=\"top_p\"\n            inputMode=\"decimal\"\n            title=\"top_p（留空 = 跟随默认）\"\n            className=\"nm-inset min-w-0 flex-1 rounded-lg px-2 py-1 text-[11px] text-[var(--t3)] outline-none\"\n          /\u003e\n          \u003cinput\n            defaultValue={model.maxTokens ?? \"\"}\n            onBlur={(e) =\u003e {\n              const t = e.target.value.trim();\n              if (t === \"\") return onChange({ maxTokens: undefined });\n              const n = parseInt(t, 10);\n              if (Number.isFinite(n)) onChange({ maxTokens: n });\n            }}\n            placeholder=\"max_tokens\"\n            aria-label=\"max_tokens\"\n            inputMode=\"numeric\"\n            title=\"max_tokens（留空 = 跟随默认）\"\n            className=\"nm-inset min-w-0 flex-1 rounded-lg px-2 py-1 text-[11px] text-[var(--t3)] outline-none\"\n          /\u003e",
+      "start_line": 219,
+      "end_line": 260,
+      "category": "bug",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/SettingsPage/ModelRow.tsx",
+      "content": "Tauri 命令 `bot_test_connection` 已确认在 `src-tauri/src/bot/config/commands.rs:505` 上是 `#[tauri::command]`（默认 camelCase 映射），JS 端 `baseUrl`/`apiFormat`/`vendor` 三个 key 与 Rust 端 `base_url`/`api_format`/`vendor: Option\u003cString\u003e` 对齐——`vendor: model.vendor ?? null` 在 JS 侧把 undefined 转成 null，Rust 端 Option\u003cString\u003e 的 None 会以 `null` 序列化。这条契约成立，但 `apiFormat` 在前端是 ApiProvider 字面量（\"openai\" | \"anthropic\"），与 probe_connection 里的 `api_format == \"anthropic\"` 强耦合——一旦新增协议（如 gemini）需要前后端同时改。建议加一道常量/类型断言，避免静默漂移：\n\n```ts\n// 协议字面量是 Rust 端 probe_connection if api_format == \"anthropic\" 分支的真值表\nconst apiFormat: ApiProvider = apiProvider;\n```\n\n或直接通过共享常量导出。",
+      "existing_code": "      const r = await invoke\u003c{ ok: boolean; status?: number; error?: string }\u003e(\n        \"bot_test_connection\",\n        { baseUrl: model.baseUrl, apiFormat: apiProvider, vendor: model.vendor ?? null },\n      );",
+      "start_line": 65,
+      "end_line": 68,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/meta/sync.rs",
+      "content": "Vec::new() lacks a capacity hint while sibling `providers` is preallocated with `obj.len()`. With ~1000 models from models.dev, the Vec will reallocate multiple times. Consider counting models in a first pass (or just preallocate conservatively, e.g. `Vec::with_capacity(obj.len() * 4)`) to avoid repeated growth.",
+      "suggestion_code": "    let mut providers = Vec::with_capacity(obj.len());\n    let mut models = Vec::new(); // capacity unknown; first-pass count would need 2 iterations",
+      "existing_code": "    let mut providers = Vec::with_capacity(obj.len());\n    let mut models = Vec::new();",
+      "start_line": 45,
+      "end_line": 46,
+      "category": "performance",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/meta/sync.rs",
+      "content": "`resp.text()` is unbounded — the shared reqwest client (bot_model_loop.rs:399) has no `max_body_size()` or similar cap. A malicious, hijacked, or simply misconfigured models.dev response (or DNS-hijacked `models.dev` CDN) could allocate gigabytes and OOM the Tauri process before any parsing runs. Combine the per-request timeout with a body-size ceiling (reqwest-middleware/reqwest itself, or a manual `take()`-bounded `read_to_end`), or at minimum cap via `.max_body_size(...)` if available on the reqwest version in use.",
+      "suggestion_code": "    // Cap read to a sensible upper bound (models.dev realistic payload \u003c 10 MB)\n    const MAX_BODY: u64 = 16 * 1024 * 1024;\n    resp.bytes()\n        .await\n        .map_err(|e| format!(\"models.dev 读取响应失败：{e}\"))\n        .and_then(|b| {\n            if b.len() as u64 \u003e MAX_BODY {\n                Err(format!(\"models.dev 响应体过大：{} 字节\", b.len()))\n            } else {\n                Ok(String::from_utf8(b.to_vec())\n                    .map_err(|e| format!(\"models.dev 响应不是合法 UTF-8：{e}\")))\n            }\n        })?\n        .tap(|s| ...) // 然后是原本的逻辑",
+      "existing_code": "    resp.text()\n        .await\n        .map_err(|e| format!(\"models.dev 读取响应失败：{e}\"))",
+      "start_line": 122,
+      "end_line": 124,
+      "category": "security",
+      "severity": "high"
+    },
+    {
+      "path": "src-tauri/src/meta/sync.rs",
+      "content": "`apply_sync` is declared `pub` but its only call sites are `sync_models_dev_with_url` (same module) and the in-module test. The `pub` makes it part of the crate's external surface alongside `sync_models_dev`/`sync_models_dev_with_url`, increasing the API surface without a real need. Narrow to `pub(super)` (or private) so future maintainers don't accidentally rely on it from other modules — the only intended external entry points are the two `sync_*` wrappers.",
+      "suggestion_code": "/// 解析结果落库（单事务 + DB_WRITE_LOCK 与全库写路径互斥）；\n/// 只覆盖 source='models_dev' 行（守卫在 upsert_*_sync 的 SQL 里）\npub(super) fn apply_sync(",
+      "existing_code": "/// 解析结果落库（单事务 + DB_WRITE_LOCK 与全库写路径互斥）；\n/// 只覆盖 source='models_dev' 行（守卫在 upsert_*_sync 的 SQL 里）\npub fn apply_sync(",
+      "start_line": 89,
+      "end_line": 91,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/meta/sync.rs",
+      "content": "The second assertion is tautological: `c1 = PALETTE[stable_hash(\"openai\") % PALETTE.len()]` is by construction always an element of `PALETTE`, so `PALETTE.contains(\u0026c1)` cannot fail. Either drop it or strengthen it (e.g. assert `stable_hash(\"openai\")` equals a pinned FNV-1a value, or assert the picked color stays stable across the entire provider-key corpus the parser is expected to handle). Right now the test only proves \"calling the hash twice gives the same answer\", not \"hash output is in range\".",
+      "suggestion_code": "        let c1 = PALETTE[stable_hash(\"openai\") % PALETTE.len()];\n        let c2 = PALETTE[stable_hash(\"openai\") % PALETTE.len()];\n        assert_eq!(c1, c2);\n        // 锁定 FNV-1a 32bit 结果，避免有人手贱把常数改了导致 UI 取色全跳\n        assert_eq!(stable_hash(\"openai\"), 0x6e6f_8e36);\n        assert!(stable_hash(\"openai\") % PALETTE.len() \u003c PALETTE.len());",
+      "existing_code": "        let c1 = PALETTE[stable_hash(\"openai\") % PALETTE.len()];\n        let c2 = PALETTE[stable_hash(\"openai\") % PALETTE.len()];\n        assert_eq!(c1, c2);\n        assert!(PALETTE.contains(\u0026c1));",
+      "start_line": 233,
+      "end_line": 236,
+      "category": "test",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/bot/config/commands.rs",
+      "content": "`probe_connection` anthropic URL 归一化与 `anthropic_messages_url` 不一致：`anthropic_messages_url` 会剥掉末尾 `/v1/messages` 和 `/messages`（base_url 误粘端点路径时仍能用），`probe_connection` 不剥。如果用户在厂商页把 Anthropic baseUrl 误填成 `https://api.anthropic.com/v1/messages`，探测会打 `/v1/messages/v1/models` → 永远 404 → 该厂商永远进不了 verified_vendors。docstring 第 451-452 行的「与 anthropic_messages_url 同款「两种填法都可用」」与实现不符。需要复用同样的 strip_suffix 逻辑，或直接调 anthropic_messages_url 然后把末段 `/messages` 改成 `/models`。同时 `bot_test_connection.rs` 应补这条 baseUrl 的集成用例。",
+      "suggestion_code": "/// 同样的 /v1/messages、/messages 末尾剥掉，再点 model 列表 → `GET /v1/models`",
+      "existing_code": "/// 可测内核（注入 client + key，不碰 AppHandle/keyring，集成测试直打）：\n/// 探活路径按协议归一化——openai → GET {base}/models；anthropic →\n/// GET {base}/v1/models（base 已含 /v1 结尾则直接拼 /models，与\n/// anthropic_messages_url 同款「两种填法都可用」）。",
+      "start_line": 449,
+      "end_line": 452,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "src-tauri/src/lib.rs",
+      "content": "启动后台同步和手动命令 `meta_sync_models_dev` 都用同一个审计事件名 `\"meta_sync_models_dev\"`，且都只打一条 `(err, e)`——日志里无法区分这条 WARN 是启动后台触发的还是用户在设置页点了「⟳ 更新模型库」触发的。诊断「为什么启动后没拉到模型」时会很难定位。审计事件名追加触发来源（`(\"trigger\", \"startup\")` / `(\"trigger\", \"manual\")`）更便于过滤；或者干脆改成两个事件名（`meta_sync_startup` / `meta_sync_manual`）以保持事件语义精确。",
+      "existing_code": "            // 模型元数据：启动后台同步 models.dev（网络失败只记审计、用库内缓存，\n            // 不 panic 不阻断启动；手动同步走 meta_sync_models_dev 命令）\n            {\n                let handle = app.handle().clone();\n                tauri::async_runtime::spawn(async move {\n                    if let Err(e) = meta::sync::sync_models_dev(\u0026handle).await {\n                        audit::write_event(\n                            \u0026handle,\n                            audit::AuditLevel::Warn,\n                            \"meta_sync_models_dev\",\n                            \u0026[(\"err\", e)],\n                        );\n                    }\n                });\n            }",
+      "start_line": 328,
+      "end_line": 342,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/bot/config/commands.rs",
+      "content": "`bot_test_connection` docstring 说「读不到（未配置 / keyring 故障）按无 key 探活——无 key 时厂商会回 401」，但代码链 `.and_then(read_vendor_key(v).ok()).filter(|k| !k.trim().is_empty()).unwrap_or_else(read_api_key)` 在 vendor key Err 时实际回落 `read_api_key()`（全局主 key），不是无 key 探活——以 DeepSeek/Coinbase 这类与 Kimi 共用 OpenAI 兼容协议时，全局 key 是其他厂商的，会假阳进 verified_vendors。两者口径不一致——要么代码改成空串探活（贴 doc），要么 doc 改成「回落全局主 key（pre-spec 已有注释，联系人和厂商用同协议网关时也走全 key）」，并补 `bot_test_connection.rs` 集成用例验证 vendor key 未配时实际用的是哪把 key。",
+      "existing_code": "/// 厂商详情页模型行「测试连接」（参照 open-webui POST /verify）：\n/// key 从系统凭据存储读：传了 vendor 时该厂商的厂商级 key 优先，否则全局主 key；\n/// 读不到（未配置 / keyring 故障）按无 key 探活——\n/// 无 key 时厂商会回 401，状态如实返回，不在此处把 keyring 故障伪装成连接失败。",
+      "start_line": 498,
+      "end_line": 501,
+      "category": "documentation",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/bot/config/commands.rs",
+      "content": "`prune_verified_vendors_drops_overwritten_missing_and_url_changed` 放在 `mod evolution_preserve_tests` 里（第 332 行），模块名与测试内容名实不符（这个是验证 evolute 不是 evolute_preserve），看起来是原 `evolution_preserve_disk_value_is_authoritative` 测试同模块顺手添上的。这个单独加 + 改名（`mod verified_vendor_prune_tests`）更可读。",
+      "existing_code": "#[cfg(test)]\nmod evolution_preserve_tests {\n    use super::*;\n\n    #[test]\n    fn prune_verified_vendors_drops_overwritten_missing_and_url_changed() {",
+      "start_line": 327,
+      "end_line": 332,
+      "category": "style",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/bot/config/commands.rs",
+      "content": "`prune_verified_vendors` 用 `Some(v.as_str()) == key_overwritten` 全等比较（keyring.rs keyring.rs 末尾，`incoming.verified_vendors.retain` 体内）：前端以「Kimi」连测过、过了然后手动 curl 之后以「  Kimi  」发 vendor_key（某些场景下 vendor 字段未 trim），`key_overwritten=Some(\"Kimi\")`、`verified_vendors=[\"Kimi\"]` 一致，能跑；但 vendor 字段带前后空格、键名大写小不一致（「Kimi」vs「kimi」）时都能错多。所以 `prune_verified_vendors` 里面两个名字都应该先 `trim()` 再比较，或者要求上游默认对齐（仅限 doc 补一条强约）。`bot_clear_vendor_key` 那个 `.trim()` 仅处理 trim，不动 case：`verified_vendors.retain(|v| v != vendor)` 的 `vendor` 已经 trim 过但 `v` 是 set 里原始串，case 差异还是会漏除。本项 + `bot_clear_vendor_key` 同踩同一块错，加上 `active_vendor_of` 的 filter 只看 trim().is_empty() 不动 case，设计上是隐含要求「厂商名字必须规范」，需要抬头写 doc。",
+      "existing_code": "incoming.verified_vendors.retain(|v| {\n        if Some(v.as_str()) == key_overwritten {\n            return false;\n        }",
+      "start_line": 174,
+      "end_line": 177,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/SettingsPage/providerLogoMap.ts",
+      "content": "Placeholder leak: `\"minimax-cn\"`, `\"minimax-coding-plan\"`, `\"minimax-cn-coding-plan\"` are not real models.dev provider_keys, and `\"minimax\"` is not a lobehub icon slug — it's the system/company placeholder string. None of the other ~70 entries in this table follow this pattern; every other entry maps to a concrete lobehub slug (kimi, zhipu, bailian, hunyuan, etc.), and the sync script at scripts/sync-lobe-icons.mjs only copies assets that physically exist in node_modules/@lobehub/icons-static-svg/icons/, so no minimax.svg/minimax-color.svg is generated. Result: any real provider whose models.dev key happens to normalize to one of these three keys will be looked up as `LOBE_ICONS[\"minimax-color\"]` / `LOBE_ICONS[\"minimax\"]`, both miss, and `slugIcon` returns null — falling through to the colored-letter fallback in ProviderLogo.tsx instead of showing the brand icon. Companion test cases at SettingsPage.test.tsx:1717 and :1720 (`MiniMax (minimax.cn)`, `MiniMax Token Plan (minimax.cn)`) are clearly using the same placeholder string for a real provider — the file header comment at line 108 even refers to `MiniMax (minimax.cn)` as a models.dev pattern. These three keys and the two test inputs must be replaced with the real provider name before merge.",
+      "suggestion_code": "// TODO(replace \"minimax\"/\"minimax-*\" with the real provider_key/lobe-slug before merge)\n  \"anthropic-cn\": \"anthropic\",\n  \"anthropic-coding-plan\": \"anthropic\",\n  \"anthropic-cn-coding-plan\": \"anthropic\",",
+      "existing_code": "\"minimax-cn\": \"minimax\",\n  \"minimax-coding-plan\": \"minimax\",\n  \"minimax-cn-coding-plan\": \"minimax\",",
+      "start_line": 49,
+      "end_line": 51,
+      "category": "bug",
+      "severity": "critical"
+    },
+    {
+      "path": "src/components/SettingsPage/providerLogoMap.ts",
+      "content": "Non-null assertion on `path.split(\"/\").pop()` is safe today because `import.meta.glob(\"../../assets/providers/lobe/*.svg\", ...)` always yields paths containing `/`, but the assertion silently masks a future regression (different glob base, base path rewrite, or an asset path that loses its directory prefix). If it ever evaluates `undefined`, the entire SettingsPage render fails because module-load throws — no graceful degradation. Prefer a defensive guard that skips the entry.",
+      "suggestion_code": "const fileName = path.split(\"/\").pop();\n  if (fileName) LOBE_ICONS[fileName.replace(/\\.svg$/, \"\")] = url;",
+      "existing_code": "LOBE_ICONS[path.split(\"/\").pop()!.replace(/\\.svg$/, \"\")] = url;",
+      "start_line": 15,
+      "end_line": 15,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/SettingsPage/providerLogoMap.ts",
+      "content": "The plan-suffix regex `\\s+(token plan|coding plan|step plan)$` is ASCII-only. The header comment claims this normalizes Chinese suffixes too (`models.dev 的 \"MiniMax Token Plan\"/\"ZhipuAI Coding Plan\" 命名规约`), and the alias table explicitly handles CJK display names (阿里云百炼, 智谱, 豆包, 文心一言, etc.). If models.dev ever emits a Chinese suffix variant such as `百炼 套餐` or `智谱 编程套餐`, this normalizer will leave the suffix attached, the alias lookup misses, and the icon falls back to the letter avatar. Either extend the regex to include the Chinese plan-suffix set you actually want to support, or document that only ASCII suffixes are stripped.",
+      "suggestion_code": ".replace(/\\s+(token plan|coding plan|step plan|套餐|编程套餐|编码套餐)$/, \"\");",
+      "existing_code": ".replace(/\\s+(token plan|coding plan|step plan)$/, \"\");",
+      "start_line": 114,
+      "end_line": 114,
+      "category": "bug",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/SettingsPage/ProviderLogo.tsx",
+      "content": "`String.prototype.slice` operates on UTF-16 code units, not Unicode code points. If a vendor name starts with a surrogate pair (e.g. an emoji like \"🌟Acme\"), `name.slice(0, 1)` returns only the high surrogate and the fallback glyph renders as a stray UTF-16 half-character. Use `Array.from(name)[0]` or `[...name][0]` so the first full code point is used.",
+      "suggestion_code": "{fallbackChar ?? ([...name][0] || \"?\")}",
+      "existing_code": "{fallbackChar ?? (name.slice(0, 1) || \"?\")}",
+      "start_line": 36,
+      "end_line": 36,
+      "category": "bug",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/meta/mod.rs",
+      "content": "四个 mutating 函数（`upsert_provider_sync`、`upsert_model_sync`、`upsert_provider_user`、`upsert_model_user`）都是 `pub` 但缺少与 `db::tasks::upsert_tasks` 一致的锁契约守护：`debug_assert!(crate::db::holding_db_write(), \"...\")`。当前唯一调用方（`meta_upsert_provider`/`meta_upsert_model`/`sync::apply_sync`）都正确持锁，但未来若有人新增锁调用点，缺断言会让忘锁的写操作默默穿过去（与全局写路径不再互斥），建议与 `tasks.rs:182-185` 对齐加 `debug_assert!`。",
+      "suggestion_code": "/// 同步写入（source='models_dev'）：ON CONFLICT 只更新 models_dev 行，user_custom 不动。\n/// 与原 Python 服务一致：UPDATE 只刷 name/logo/base_url（兜底色/字符入库后保持稳定）。\n/// 写前必须持 DB_WRITE_LOCK（与 db::tasks::upsert_tasks 一致断言）\npub fn upsert_provider_sync(\n    conn: \u0026rusqlite::Connection,\n    p: \u0026MetaProvider,\n) -\u003e Result\u003c(), rusqlite::Error\u003e {\n    debug_assert!(crate::db::holding_db_write(), \"upsert_provider_sync 必须在持有 DB_WRITE_LOCK 时调用\");",
+      "existing_code": "/// 同步写入（source='models_dev'）：ON CONFLICT 只更新 models_dev 行，user_custom 不动。\n/// 与原 Python 服务一致：UPDATE 只刷 name/logo/base_url（兜底色/字符入库后保持稳定）\npub fn upsert_provider_sync(",
+      "start_line": 251,
+      "end_line": 253,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src/lib/modelMeta.ts",
+      "content": "Optional `source?: string` is misleading: Rust `MetaProvider.source` is non-optional `String` and always serialized. The field can never be `undefined` at runtime. Drop the `?` or narrow to the documented taxonomy (`\"models_dev\" | \"user_custom\" | \"fallback\"`) so consumers can rely on the value.",
+      "existing_code": "  fallback_char: string;\n  default_base_url: string | null;\n  timeout: number | null;\n  source?: string;\n};",
+      "start_line": 13,
+      "end_line": 17,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/lib/modelMeta.ts",
+      "content": "Optional `source?: string` is misleading: Rust `MetaModel.source` is non-optional `String` and always serialized. The field can never be `undefined` at runtime. Drop the `?` or narrow to the documented taxonomy (`\"models_dev\" | \"user_custom\" | \"fallback\"`) so consumers (e.g., `SettingsPage` curating models by source) can rely on the value.",
+      "existing_code": "  default_system_prompt: string | null;\n  source?: string;\n};",
+      "start_line": 29,
+      "end_line": 31,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/SettingsPage/ModelRow.tsx",
+      "content": "Plug color doesn't reflect `testing` state: when `testState === \"testing\"` and the vendor was previously verified (`vendorVerified === true`), the second branch (`testState !== \"fail\" \u0026\u0026 vendorVerified === true`) still resolves to `true`, so the icon remains green while the title says \"连接测试中…\". This is misleading — the user sees a green plug that's currently in-flight, and there's no visual loading cue (Plug icon doesn't change). The `plugOk` calculation should also exclude `\"testing\"`, e.g.: `(testState === \"ok\" || (testState === \"idle\" \u0026\u0026 vendorVerified === true))`. Alternatively, swap in a `text-[var(--accent)]` / animate the icon when `testState === \"testing\"`.",
+      "suggestion_code": "// 插头颜色：本行刚测失败 \u003e 红；刚测通过 \u003e 绿；空闲且已验证（持久化）\u003e 绿；测试中（独立提示色）；否则灰\n  const plugOk = testState === \"ok\" || (testState === \"idle\" \u0026\u0026 vendorVerified === true);",
+      "existing_code": "// 插头颜色：本行刚测失败 \u003e 红；已验证（持久化）或刚测通过 \u003e 绿；否则灰\n  const plugOk = testState === \"ok\" || (testState !== \"fail\" \u0026\u0026 vendorVerified === true);",
+      "start_line": 56,
+      "end_line": 57,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/SettingsPage/ModelRow.tsx",
+      "content": "视觉能力 checkbox 的 onChange 两个分支共享同一个 `filter((c) =\u003e c !== \"视觉\")`，去重逻辑虽然正确但显得啰嗦，可改为：\\n\\n```ts\\nconst cur = model.capabilities ?? [];\\nconst next = e.target.checked\\n  ? Array.from(new Set([...cur, \"视觉\"]))\\n  : cur.filter((c) =\u003e c !== \"视觉\");\\nonChange({ capabilities: next });\\n```\\n\\n两条分支共用一个 `filter` 容易让人误以为 on/off 对称出错。",
+      "suggestion_code": "onChange={(e) =\u003e {\n              const cur = model.capabilities ?? [];\n              const next = e.target.checked\n                ? Array.from(new Set([...cur, \"视觉\"]))\n                : cur.filter((c) =\u003e c !== \"视觉\");\n              onChange({ capabilities: next });\n            }}",
+      "existing_code": "onChange={(e) =\u003e {\n              const cur = model.capabilities ?? [];\n              onChange({\n                capabilities: e.target.checked\n                  ? [...cur.filter((c) =\u003e c !== \"视觉\"), \"视觉\"]\n                  : cur.filter((c) =\u003e c !== \"视觉\"),\n              });\n            }}",
+      "start_line": 195,
+      "end_line": 202,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/SettingsPage/ModelRow.tsx",
+      "content": "`onTested?.()` 在 invoke 抛异常分支也被调用。后端只有 `if let Some(v) = vendor` 的两个分支（push/retain）真正修改盘上的 `verified_vendors`；invoke 异常时（panic / Tauri runtime 错误）这两个分支都没跑，parent 又走一次 `loadConfig()` 反而会把内存里的 `verified_vendors` 用未变化的盘上值重写一遍（虽然多数情况下两者一致），徒增 IO 与抖动。建议只在 try 块正常结束（含 ok=false 的受控失败）时调 `onTested?.()`，catch 分支仅保留错误展示、不通知父级（或延迟到下一次 `bot-config-changed`）。",
+      "suggestion_code": "} catch (e) {\n      setTestState(\"fail\");\n      setTestMsg(formatCommandError(e));\n      // invoke 抛异常（如 Tauri runtime 错误）时后端没有写 verified_vendors，\n      // 不必强制 loadConfig；保留父级原状避免无谓抖动\n      return;\n    }\n    // 后端已把可用性落盘（ok 进 verified_vendors / 失败移出）：通知父级刷新\n    onTested?.();\n  };",
+      "existing_code": "} catch (e) {\n      setTestState(\"fail\");\n      setTestMsg(formatCommandError(e));\n    }\n    // 后端已把可用性落盘（ok 进 verified_vendors / 失败移出）：通知父级刷新\n    onTested?.();\n  };",
+      "start_line": 76,
+      "end_line": 82,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/SettingsPage/ModelRow.tsx",
+      "content": "数字 input 的 onBlur 在 `Number.isFinite(n)` 失败时（用户输入非数字如 `abc`）静默无操作，DOM 仍保留 `abc` 字符串，state 也没改。提示与 temperature/topP/maxTokens 的约束（已在 confirmed #4 中提及）属于「前端基本校验」，建议至少在解析失败时给本地 testMsg 之类的反馈（或者保持焦点、不让用户离开），否则用户以为已落盘但实际没有。",
+      "suggestion_code": "onBlur={(e) =\u003e {\n              const t = e.target.value.trim();\n              if (t === \"\") return onChange({ temperature: undefined });\n              const n = Number(t);\n              if (!Number.isFinite(n)) {\n                e.target.value = model.temperature != null ? String(model.temperature) : \"\";\n                return;\n              }\n              onChange({ temperature: n });\n            }}",
+      "existing_code": "onBlur={(e) =\u003e {\n              const t = e.target.value.trim();\n              if (t === \"\") return onChange({ temperature: undefined });\n              const n = Number(t);\n              if (Number.isFinite(n)) onChange({ temperature: n });\n            }}",
+      "start_line": 221,
+      "end_line": 226,
+      "category": "test",
+      "severity": "low"
+    },
+    {
+      "path": "src/lib/modelMeta.ts",
+      "content": "MetaSyncResult uses a loose boolean flag plus optional members, which permits payloads such as { ok: true, providers: undefined, models: undefined } or { ok: false, providers: 5, error: '...' } at the type level. Consumers (SettingsPage) will then hit runtime undefineds when reading providers/models on success. Use a discriminated union keyed on ok so TypeScript narrows the shape and the call site is forced to handle success/failure correctly.",
+      "suggestion_code": "export type MetaSyncResult =\n  | { ok: true; providers: number; models: number }\n  | { ok: false; error: string };",
+      "existing_code": "export type MetaSyncResult = {\n  ok: boolean;\n  providers?: number;\n  models?: number;\n  error?: string;\n};",
+      "start_line": 33,
+      "end_line": 38,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src/lib/modelMeta.ts",
+      "content": "All three catch arms swallow the underlying error without any logging (no console.error, no telemetry hook). When meta_list_providers/meta_models_by_provider/meta_sync_models_dev start failing in production there will be no signal to debug from. Since the design intent is to downgrade silently on the UX side, at minimum mirror the error to console so it can still be observed in DevTools without changing the return contract.",
+      "suggestion_code": "export async function fetchProviders(): Promise\u003cMetaProvider[] | null\u003e {\n  try {\n    return await invoke\u003cMetaProvider[]\u003e(\"meta_list_providers\");\n  } catch (err) {\n    console.error(\"meta_list_providers failed:\", err);\n    return null;\n  }\n}",
+      "existing_code": "export async function fetchProviders(): Promise\u003cMetaProvider[] | null\u003e {\n  try {\n    return await invoke\u003cMetaProvider[]\u003e(\"meta_list_providers\");\n  } catch {\n    return null;\n  }\n}",
+      "start_line": 41,
+      "end_line": 47,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "vitest.config.ts",
+      "content": "`build.assetsInlineLimit` is a build-time Vite option that controls the output of `vite build` (and `vitest build`), not Vite's dev server / module graph that Vitest uses during test runs (`vitest run`, `vitest`, `vitest --ui`, `vitest run --coverage` in package.json). Since none of the test scripts invoke `vitest build`, this entire `build` block is effectively dead config and the comment's claim that \"测试里也走文件路径\" is misleading.\n\nTwo things actually already ensure the test sees URL paths, not data URIs:\n1. `import.meta.glob(\"../../assets/providers/lobe/*.svg\", { query: \"?url\", import: \"default\" })` in `providerLogoMap.ts` forces URL handling for every SVG at the module level, independent of size — so `assetsInlineLimit` is a no-op for this code path even in a real build.\n2. The test helper `expectLogoSlug` (SettingsPage.test.tsx:10) explicitly handles both `data:` URIs and `lobe/\u003cslug\u003e` paths.\n\nEither drop this `build` block from `vitest.config.ts` (keep it only in `vite.config.ts` where it actually applies to the production bundle), or rewrite the comment to reflect what it really does (nothing observable in tests).",
+      "suggestion_code": "  // build 选项保留在 vite.config.ts（影响产物 chunk）。\n  // Vitest 测试运行走 Vite dev server / 模块图，build.assetsInlineLimit 在此无效；\n  // providerLogoMap.ts 已用 `import.meta.glob(..., { query: \"?url\" })` 强制走 URL 路径，\n  // 无需在测试配置里重复声明。\n",
+      "existing_code": "  // 同 vite.config.ts：lobehub 图标 SVG 在测试里也走文件路径（不内联 data URI），\n  // 让 logo 断言能稳定匹配 lobe/\u003cslug\u003e 路径\n  build: {\n    assetsInlineLimit: (filePath) =\u003e\n      filePath.endsWith(\".svg\") ? false : undefined,\n  },",
+      "start_line": 7,
+      "end_line": 12,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/bot/config/commands.rs",
+      "content": "Confirmed #6 (low): `VendorKeyParam` has no field-level docs. The struct's two fields are used in three different roles — as a keyring account name (`vendor:{vendor.trim()}`), as a free-form plaintext filename input (sanitized via FNV-1a hash suffix in keyring.rs), and as a free-form verified-vendors identifier. Trim is performed at the call site before write/delete, but readers (`bot_get_config`, `bot_test_connection`) also defensively re-trim before using. Add a short comment documenting: (a) trim semantics (caller-responsible), (b) the relationship between `vendor` here and `ModelEntry.vendor` (must match exactly to be valid), (c) the empty-vendor behavior (silently ignored).",
+      "existing_code": "#[derive(serde::Deserialize)]\npub struct VendorKeyParam {\n    pub vendor: String,\n    pub key: String,\n}",
+      "start_line": 135,
+      "end_line": 139,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/SettingsPage/providerLogoMap.ts",
+      "content": "Compound-suffix normalization is order-dependent and incomplete: the paren regex `/\\s*[（(][^)）]*[)）]\\s*$/` is anchored to `$`, so it only matches when a parenthetical group is the LAST thing in the string. If a models.dev display name has a parenthetical BEFORE a plan suffix — e.g., `\"Alibaba (China) Token Plan\"` — the paren regex does not match (string ends with `plan`), then the plan-suffix regex strips ` token plan`, leaving `\"alibaba (china)\"`. The remaining paren then causes `resolveLobeIcon` alias lookup to miss, AND in SettingsPage.tsx (lines 899-908) the preset / meta match `normalizeVendorName(p.provider_name) === norm` fails, so the provider cannot be located even when the user-typed vendor name normalizes correctly. Suggested fix: apply the two replaces in a loop until stable, or use a single regex like `/(\\s*[（(][^)）]*[)）]\\s*|\\s+(token plan|coding plan|step plan))+$/` to consume any combination of trailing paren groups and plan suffixes in one pass.",
+      "suggestion_code": "  s = s.trim().toLowerCase();\n  let prev: string;\n  do {\n    prev = s;\n    s = s\n      .replace(/\\s*[（(][^)）]*[)）]\\s*$/, \"\")\n      .replace(/\\s+(token plan|coding plan|step plan)$/, \"\");\n  } while (s !== prev);\n  return s;\n}",
+      "existing_code": "  return s\n    .trim()\n    .toLowerCase()\n    .replace(/\\s*[（(][^)）]*[)）]\\s*$/, \"\")\n    .replace(/\\s+(token plan|coding plan|step plan)$/, \"\");\n}",
+      "start_line": 110,
+      "end_line": 115,
+      "category": "bug",
+      "severity": "high"
+    }
+  ],
+  "groups": [
+    {
+      "label": "package.json",
+      "files": [
+        "package.json"
+      ]
+    },
+    {
+      "label": "scripts/sync-lobe-icons.mjs",
+      "files": [
+        "scripts/sync-lobe-icons.mjs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/bot.rs",
+      "files": [
+        "src-tauri/src/bot.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/bot/config/commands.rs",
+      "files": [
+        "src-tauri/src/bot/config/commands.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/bot/config/keyring.rs",
+      "files": [
+        "src-tauri/src/bot/config/keyring.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/bot/config/mod.rs",
+      "files": [
+        "src-tauri/src/bot/config/mod.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/bot/config/schema.rs",
+      "files": [
+        "src-tauri/src/bot/config/schema.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/bot/config/types.rs",
+      "files": [
+        "src-tauri/src/bot/config/types.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/bot_anthropic.rs",
+      "files": [
+        "src-tauri/src/bot_anthropic.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/bot_chat.rs",
+      "files": [
+        "src-tauri/src/bot_chat.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/bot_model_loop.rs",
+      "files": [
+        "src-tauri/src/bot_model_loop.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/bot_plan.rs",
+      "files": [
+        "src-tauri/src/bot_plan.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/db/migrations.rs",
+      "files": [
+        "src-tauri/src/db/migrations.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/db/mod.rs",
+      "files": [
+        "src-tauri/src/db/mod.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/lib.rs",
+      "files": [
+        "src-tauri/src/lib.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/meta/mod.rs",
+      "files": [
+        "src-tauri/src/meta/mod.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/meta/sync.rs",
+      "files": [
+        "src-tauri/src/meta/sync.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/tests/bot_test_connection.rs",
+      "files": [
+        "src-tauri/tests/bot_test_connection.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/tests/mock_llm.rs",
+      "files": [
+        "src-tauri/tests/mock_llm.rs"
+      ]
+    },
+    {
+      "label": "src/components/ChatPanel/ChatPanel.tsx",
+      "files": [
+        "src/components/ChatPanel/ChatPanel.tsx"
+      ]
+    },
+    {
+      "label": "src/components/ChatPanel/types.ts",
+      "files": [
+        "src/components/ChatPanel/types.ts"
+      ]
+    },
+    {
+      "label": "src/components/SettingsPage/ApiProviderSelect.tsx",
+      "files": [
+        "src/components/SettingsPage/ApiProviderSelect.tsx"
+      ]
+    },
+    {
+      "label": "src/components/SettingsPage/ModelRow.tsx",
+      "files": [
+        "src/components/SettingsPage/ModelRow.tsx"
+      ]
+    },
+    {
+      "label": "src/components/SettingsPage/ProviderLogo.tsx",
+      "files": [
+        "src/components/SettingsPage/ProviderLogo.tsx"
+      ]
+    },
+    {
+      "label": "src/components/SettingsPage/SettingsPage.tsx",
+      "files": [
+        "src/components/SettingsPage/SettingsPage.tsx"
+      ]
+    },
+    {
+      "label": "src/components/SettingsPage/providerLogoMap.ts",
+      "files": [
+        "src/components/SettingsPage/providerLogoMap.ts"
+      ]
+    },
+    {
+      "label": "src/components/SettingsPage/types.ts",
+      "files": [
+        "src/components/SettingsPage/types.ts"
+      ]
+    },
+    {
+      "label": "src/lib/modelMeta.ts",
+      "files": [
+        "src/lib/modelMeta.ts"
+      ]
+    },
+    {
+      "label": "src/ui/main.css",
+      "files": [
+        "src/ui/main.css"
+      ]
+    },
+    {
+      "label": "vite.config.ts",
+      "files": [
+        "vite.config.ts"
+      ]
+    },
+    {
+      "label": "vitest.config.ts",
+      "files": [
+        "vitest.config.ts"
+      ]
+    }
+  ],
+  "session_id": "25eda749-19c4-4cbf-bd69-404f9e908e71",
+  "manifest": {
+    "schema_version": "ocr.run-manifest/v1",
+    "run_id": "25eda749-19c4-4cbf-bd69-404f9e908e71",
+    "operation": "review",
+    "terminal_state": "complete",
+    "repository": {
+      "identity_sha256": "7aebc670c3c38e64ae52ffaf12cfa8ba078a29af906f8ef856132cd790dbe48b"
+    },
+    "input": {
+      "mode": "commit",
+      "requested_head": "ad383d9",
+      "resolved_base": "61d3dd82fcb9d181a9704894b2e9067131d8da3c",
+      "resolved_head": "ad383d9e516db92bc4c88d9c6f986596646ed322",
+      "exact_range": "61d3dd82fcb9d181a9704894b2e9067131d8da3c..ad383d9e516db92bc4c88d9c6f986596646ed322",
+      "source_artifact_sha256": "a696396b1a75a7a9f78d747a2ed7048113013335499580b1500c134fb43b1b86"
+    },
+    "execution": {
+      "ocr_version": "v1.12.11",
+      "provider": "minimax-cn",
+      "model": "MiniMax-M3",
+      "configured_concurrency": 8,
+      "rule_config_sha256": "8779d0d046b15151518200e75283f8c72cb6815f8e9b6de313d85d8f880d7dde",
+      "runtime_config_sha256": "f3ac1cdd2a45285ba614e32ab9bd03b86d9911c8deb3bec22fccf7b7bd4e6913"
+    },
+    "coverage": {
+      "selected": [
+        {
+          "item_id": "1957004d29e25b40fcd98223c2fac9fb395c41e70bad3566e17ee6a401220636",
+          "path": "vite.config.ts",
+          "fingerprint": "94a92503fc98f43692e1001dae8ca05dbf126a7bed39f6d11a75c2e9ddf531fd"
+        },
+        {
+          "item_id": "1acc30f8a41355701314044fd6cf51fd8d786fb919bb3a35a5a5ad33d986b6c2",
+          "path": "src-tauri/tests/mock_llm.rs",
+          "fingerprint": "dcd50ec172bf3dc672a212e32a8817fd805282baae4cd6ce63b18987e768f3a6"
+        },
+        {
+          "item_id": "1dff1e84524d59a4b2d6719977d50141317ed7b366c8b016e19856cd1b2b3e5f",
+          "path": "src-tauri/src/bot_anthropic.rs",
+          "fingerprint": "14698fbbbee7561d3e71cd42ca0b1bb7c5e68b33f0c223a35cb520d99dfea031"
+        },
+        {
+          "item_id": "20853b30f5bceb414ced80c0a5a77a402a886bef56d1b7afa7d316ef7259efc2",
+          "path": "src-tauri/src/db/migrations.rs",
+          "fingerprint": "b635407d2f222988d41ac847263b28215c5cddc2965365280dd419fb9fb37727"
+        },
+        {
+          "item_id": "20cb00116b398899e8d51c8fdeb256c282b5d8c4f37ce6cedbbc9083f20af98d",
+          "path": "scripts/sync-lobe-icons.mjs",
+          "fingerprint": "2d50c47e69aa860e821312180b00c028eaf8f06940ed3d3a6b38f2382b22be63"
+        },
+        {
+          "item_id": "2ec11bca85291fa41f5bea8722e90902c1a8a0b89173104f4afd223da0944f24",
+          "path": "src-tauri/tests/bot_test_connection.rs",
+          "fingerprint": "fd11e87bc5230ec6d1dbb281bdddc06d61958c9a536e2973355a7dbffe1880fa"
+        },
+        {
+          "item_id": "5b553fedbe59d498298a54be24d6e815dba502addab6f59fbc76b25c9c56082e",
+          "path": "src-tauri/src/lib.rs",
+          "fingerprint": "c639020e6c8a171baef54bf79c9531f66b8740b8f6c1ccbca7d90cf5f6411f14"
+        },
+        {
+          "item_id": "67fe97984f7ca548ce9d59bf675b4b5fc42edd389b91c76e4b960df90cf986f7",
+          "path": "src-tauri/src/meta/sync.rs",
+          "fingerprint": "a1137bf76c59af405a37c6ac62e99083bb313756cb6a00262b8c096b383e024c"
+        },
+        {
+          "item_id": "68883d012bfcecaff97c2afc6996c50e945cf8b3f513e37c5a8653ee6530e865",
+          "path": "src-tauri/src/bot/config/schema.rs",
+          "fingerprint": "7a396bf02d0fc2baad79ab3d35e3b3f3f6784a29259cf61a174cef04afef51ef"
+        },
+        {
+          "item_id": "703ef84f8bf326571c4fe5bb501f432c37d784c3f4a8c97ead358a6653793418",
+          "path": "src/components/SettingsPage/types.ts",
+          "fingerprint": "cb4e62280a7fba842194a028b1b5c49f81b39992bbfdee5106e0d9d564d6a6ec"
+        },
+        {
+          "item_id": "8940cf17cbd9d02b3e002c37486dd6f503b5053df1c3f0f4d5575fdad74ed2ab",
+          "path": "src/components/SettingsPage/ApiProviderSelect.tsx",
+          "fingerprint": "05edeb57b38bb1278d351535c4249cb2de9a526b1ed89494c3e0519579b33eb0"
+        },
+        {
+          "item_id": "95974ea5bb00997c4719b3271b2fcbdc956bfe603748f8e4c99c538fc3cdbb8f",
+          "path": "src/components/SettingsPage/ModelRow.tsx",
+          "fingerprint": "d590b2c66314a361a7bf9e9de812211dd31c258e3ba4d8601fdba7598eada659"
+        },
+        {
+          "item_id": "ab42422ae91623b65b7838934850b1b8e83eb9e4e0a742b9c6f8b4a8a24fbc3d",
+          "path": "src-tauri/src/bot/config/commands.rs",
+          "fingerprint": "eca8e61c114a17c67254fb92d7e0d9965f1d3330b69bfc18d8752fad6ccedcfd"
+        },
+        {
+          "item_id": "ae58c846e8c2a8e32a3c572679d7e9743b25c42b97c4c372889b381ee2e854cf",
+          "path": "src/components/SettingsPage/providerLogoMap.ts",
+          "fingerprint": "f6738b84977486d8669fd161408bd90e2b7a628df75c4b6c3563abba4fcd4cad"
+        },
+        {
+          "item_id": "b007724b84500432decd1cd282a873e4418d318f7c0f6c7b618d55512ffff0ee",
+          "path": "src/components/ChatPanel/ChatPanel.tsx",
+          "fingerprint": "341c9760186a8f4efa9f96851ff56ac8cae135fccb40dc10102c90e6d16cbc55"
+        },
+        {
+          "item_id": "bcd112f57b25e97deee711a01d198544dff0b19e1df154bb071b76becd5773df",
+          "path": "src-tauri/src/bot/config/mod.rs",
+          "fingerprint": "cbb84e9ce38e702e94c48769bd59906af8ca19c03c63e6fce09ff49bbe4ae4d7"
+        },
+        {
+          "item_id": "bce0e671db1e7c1f222c969fd169796e20ff49fcb1e073639ac46f75da570269",
+          "path": "src/lib/modelMeta.ts",
+          "fingerprint": "8d2a543bd2b8c4f468405936ac32e78a2392bc421b876fdbd01341720bfd30cf"
+        },
+        {
+          "item_id": "be72aa9ada317641f420a9830a8bfa8125a510785b8ce6cff17913aaf7a3b71c",
+          "path": "src/ui/main.css",
+          "fingerprint": "888fd8d2a260f83f4141edaf3ba54496eaf5fbdacaf1785c707bef2998525a42"
+        },
+        {
+          "item_id": "cb7bf5ca1de36eb915bfba1ad2b5015d0ab83f0c80af9abe73151746e895c2ca",
+          "path": "src/components/SettingsPage/SettingsPage.tsx",
+          "fingerprint": "d95247260da7c7712995f48511215fa242684f973a4e7cf4fe1ce8e0b44c3774"
+        },
+        {
+          "item_id": "cf72496b1afa77090aa524c47988e6dd7965080910cafc9fb1f0bb5103b9e6b5",
+          "path": "src-tauri/src/bot_chat.rs",
+          "fingerprint": "1ed1ff1d3c7a8742451820968ee4165d68f4f62f106568e17ae24885fdee2b4c"
+        },
+        {
+          "item_id": "cfd0704ec7e04fc5716df93ea6d86a2ea0fe8c8f3fde280fd4b99d48c8dcb982",
+          "path": "src-tauri/src/bot_model_loop.rs",
+          "fingerprint": "3301dcdde4414cd5d914dda8febb6b79c0affe4168590dc0b0ec38e643091b4d"
+        },
+        {
+          "item_id": "d7d7fe268eb8c68e0eb72fa6943d52e6af1395212f373bfbd9cebf16cb8e99bd",
+          "path": "src-tauri/src/bot/config/types.rs",
+          "fingerprint": "c8e2608306e8d69c08f51533cee3b84ae82b9a0ea2d9c80fccdcf86903d8b479"
+        },
+        {
+          "item_id": "d930530781f7b8b4293a4b11b0942f117ddfa36e39f8ff1a3394c2eff5d7d315",
+          "path": "src-tauri/src/bot.rs",
+          "fingerprint": "83dda7cbdbdd112824f4ace63c0e26f209e45d6f14c758559187182410cbfde4"
+        },
+        {
+          "item_id": "de566e6284a31c2314451a985c1f7d6df2743b4e564b2caa20d17560bbad6f03",
+          "path": "package.json",
+          "fingerprint": "abba443342d26b6a3dc4af3a3691fe91d518837ae297256fc007db6d8f3de564"
+        },
+        {
+          "item_id": "e08f56bef25fa6a39c346153800615f7ac48c32e8b0c5879d975661b3001de8d",
+          "path": "src-tauri/src/db/mod.rs",
+          "fingerprint": "307edd066ce8f48d6d8ddeb5bb75006bfedb17f72e91737c027c4f964d5d622e"
+        },
+        {
+          "item_id": "e49e9063eaeaa087ca255dcb08b6ffa68d14c399e371363897222c4767637da9",
+          "path": "src/components/ChatPanel/types.ts",
+          "fingerprint": "cab84202a9f57be0f47ac6e28c4571978a881df96d5c2224e4a37ecc58988ca1"
+        },
+        {
+          "item_id": "e6cf12b8fa3e15c547c981f7c8cea7f4ba8eaa8bfa8c2fff1b35bd390ee16b88",
+          "path": "src-tauri/src/bot/config/keyring.rs",
+          "fingerprint": "875da94f9a93dca23287ab75d8aefc98b6413aef9bf47a04edaee93f2ef6ca9f"
+        },
+        {
+          "item_id": "f4105ac5a765a9f56e16e6920b4ebc2ae33e2dae86f184e5701e5bf1346e3899",
+          "path": "vitest.config.ts",
+          "fingerprint": "0051430165ac0f6c9301623d6f60f476cc27e2c674455c332a2cc6d6499edd93"
+        },
+        {
+          "item_id": "f4e5d099b1da8a90175063c0b43e13f4f0d91a12c3d9927498f46f3a7f16f872",
+          "path": "src/components/SettingsPage/ProviderLogo.tsx",
+          "fingerprint": "2ae38baf14b889f55d3f584e3c3069d9010ef0afaaf2b353206c3b20fc1208bb"
+        },
+        {
+          "item_id": "fd9f2ed577fcca8681b495652f69d9fb30dafa0f653e2fcd387d82caf338bd47",
+          "path": "src-tauri/src/bot_plan.rs",
+          "fingerprint": "257436545d4265e7601fa17061088c1c592873dc70db7cbc3d1aeeef7514c37f"
+        },
+        {
+          "item_id": "fe8868d83877f7fe7fb1692f28f712dbf6d9d6ed237b7cc5d583653943ad1578",
+          "path": "src-tauri/src/meta/mod.rs",
+          "fingerprint": "d8d242b4c6d29e5961359cc60aa82f77b972dcd90cec0af7087fe2f96265aae9"
+        }
+      ],
+      "completed": [
+        {
+          "item_id": "1957004d29e25b40fcd98223c2fac9fb395c41e70bad3566e17ee6a401220636",
+          "path": "vite.config.ts",
+          "fingerprint": "94a92503fc98f43692e1001dae8ca05dbf126a7bed39f6d11a75c2e9ddf531fd"
+        },
+        {
+          "item_id": "1acc30f8a41355701314044fd6cf51fd8d786fb919bb3a35a5a5ad33d986b6c2",
+          "path": "src-tauri/tests/mock_llm.rs",
+          "fingerprint": "dcd50ec172bf3dc672a212e32a8817fd805282baae4cd6ce63b18987e768f3a6"
+        },
+        {
+          "item_id": "1dff1e84524d59a4b2d6719977d50141317ed7b366c8b016e19856cd1b2b3e5f",
+          "path": "src-tauri/src/bot_anthropic.rs",
+          "fingerprint": "14698fbbbee7561d3e71cd42ca0b1bb7c5e68b33f0c223a35cb520d99dfea031"
+        },
+        {
+          "item_id": "20853b30f5bceb414ced80c0a5a77a402a886bef56d1b7afa7d316ef7259efc2",
+          "path": "src-tauri/src/db/migrations.rs",
+          "fingerprint": "b635407d2f222988d41ac847263b28215c5cddc2965365280dd419fb9fb37727"
+        },
+        {
+          "item_id": "20cb00116b398899e8d51c8fdeb256c282b5d8c4f37ce6cedbbc9083f20af98d",
+          "path": "scripts/sync-lobe-icons.mjs",
+          "fingerprint": "2d50c47e69aa860e821312180b00c028eaf8f06940ed3d3a6b38f2382b22be63"
+        },
+        {
+          "item_id": "2ec11bca85291fa41f5bea8722e90902c1a8a0b89173104f4afd223da0944f24",
+          "path": "src-tauri/tests/bot_test_connection.rs",
+          "fingerprint": "fd11e87bc5230ec6d1dbb281bdddc06d61958c9a536e2973355a7dbffe1880fa"
+        },
+        {
+          "item_id": "5b553fedbe59d498298a54be24d6e815dba502addab6f59fbc76b25c9c56082e",
+          "path": "src-tauri/src/lib.rs",
+          "fingerprint": "c639020e6c8a171baef54bf79c9531f66b8740b8f6c1ccbca7d90cf5f6411f14"
+        },
+        {
+          "item_id": "67fe97984f7ca548ce9d59bf675b4b5fc42edd389b91c76e4b960df90cf986f7",
+          "path": "src-tauri/src/meta/sync.rs",
+          "fingerprint": "a1137bf76c59af405a37c6ac62e99083bb313756cb6a00262b8c096b383e024c"
+        },
+        {
+          "item_id": "68883d012bfcecaff97c2afc6996c50e945cf8b3f513e37c5a8653ee6530e865",
+          "path": "src-tauri/src/bot/config/schema.rs",
+          "fingerprint": "7a396bf02d0fc2baad79ab3d35e3b3f3f6784a29259cf61a174cef04afef51ef"
+        },
+        {
+          "item_id": "703ef84f8bf326571c4fe5bb501f432c37d784c3f4a8c97ead358a6653793418",
+          "path": "src/components/SettingsPage/types.ts",
+          "fingerprint": "cb4e62280a7fba842194a028b1b5c49f81b39992bbfdee5106e0d9d564d6a6ec"
+        },
+        {
+          "item_id": "8940cf17cbd9d02b3e002c37486dd6f503b5053df1c3f0f4d5575fdad74ed2ab",
+          "path": "src/components/SettingsPage/ApiProviderSelect.tsx",
+          "fingerprint": "05edeb57b38bb1278d351535c4249cb2de9a526b1ed89494c3e0519579b33eb0"
+        },
+        {
+          "item_id": "95974ea5bb00997c4719b3271b2fcbdc956bfe603748f8e4c99c538fc3cdbb8f",
+          "path": "src/components/SettingsPage/ModelRow.tsx",
+          "fingerprint": "d590b2c66314a361a7bf9e9de812211dd31c258e3ba4d8601fdba7598eada659"
+        },
+        {
+          "item_id": "ab42422ae91623b65b7838934850b1b8e83eb9e4e0a742b9c6f8b4a8a24fbc3d",
+          "path": "src-tauri/src/bot/config/commands.rs",
+          "fingerprint": "eca8e61c114a17c67254fb92d7e0d9965f1d3330b69bfc18d8752fad6ccedcfd"
+        },
+        {
+          "item_id": "ae58c846e8c2a8e32a3c572679d7e9743b25c42b97c4c372889b381ee2e854cf",
+          "path": "src/components/SettingsPage/providerLogoMap.ts",
+          "fingerprint": "f6738b84977486d8669fd161408bd90e2b7a628df75c4b6c3563abba4fcd4cad"
+        },
+        {
+          "item_id": "b007724b84500432decd1cd282a873e4418d318f7c0f6c7b618d55512ffff0ee",
+          "path": "src/components/ChatPanel/ChatPanel.tsx",
+          "fingerprint": "341c9760186a8f4efa9f96851ff56ac8cae135fccb40dc10102c90e6d16cbc55"
+        },
+        {
+          "item_id": "bcd112f57b25e97deee711a01d198544dff0b19e1df154bb071b76becd5773df",
+          "path": "src-tauri/src/bot/config/mod.rs",
+          "fingerprint": "cbb84e9ce38e702e94c48769bd59906af8ca19c03c63e6fce09ff49bbe4ae4d7"
+        },
+        {
+          "item_id": "bce0e671db1e7c1f222c969fd169796e20ff49fcb1e073639ac46f75da570269",
+          "path": "src/lib/modelMeta.ts",
+          "fingerprint": "8d2a543bd2b8c4f468405936ac32e78a2392bc421b876fdbd01341720bfd30cf"
+        },
+        {
+          "item_id": "be72aa9ada317641f420a9830a8bfa8125a510785b8ce6cff17913aaf7a3b71c",
+          "path": "src/ui/main.css",
+          "fingerprint": "888fd8d2a260f83f4141edaf3ba54496eaf5fbdacaf1785c707bef2998525a42"
+        },
+        {
+          "item_id": "cb7bf5ca1de36eb915bfba1ad2b5015d0ab83f0c80af9abe73151746e895c2ca",
+          "path": "src/components/SettingsPage/SettingsPage.tsx",
+          "fingerprint": "d95247260da7c7712995f48511215fa242684f973a4e7cf4fe1ce8e0b44c3774"
+        },
+        {
+          "item_id": "cf72496b1afa77090aa524c47988e6dd7965080910cafc9fb1f0bb5103b9e6b5",
+          "path": "src-tauri/src/bot_chat.rs",
+          "fingerprint": "1ed1ff1d3c7a8742451820968ee4165d68f4f62f106568e17ae24885fdee2b4c"
+        },
+        {
+          "item_id": "cfd0704ec7e04fc5716df93ea6d86a2ea0fe8c8f3fde280fd4b99d48c8dcb982",
+          "path": "src-tauri/src/bot_model_loop.rs",
+          "fingerprint": "3301dcdde4414cd5d914dda8febb6b79c0affe4168590dc0b0ec38e643091b4d"
+        },
+        {
+          "item_id": "d7d7fe268eb8c68e0eb72fa6943d52e6af1395212f373bfbd9cebf16cb8e99bd",
+          "path": "src-tauri/src/bot/config/types.rs",
+          "fingerprint": "c8e2608306e8d69c08f51533cee3b84ae82b9a0ea2d9c80fccdcf86903d8b479"
+        },
+        {
+          "item_id": "d930530781f7b8b4293a4b11b0942f117ddfa36e39f8ff1a3394c2eff5d7d315",
+          "path": "src-tauri/src/bot.rs",
+          "fingerprint": "83dda7cbdbdd112824f4ace63c0e26f209e45d6f14c758559187182410cbfde4"
+        },
+        {
+          "item_id": "de566e6284a31c2314451a985c1f7d6df2743b4e564b2caa20d17560bbad6f03",
+          "path": "package.json",
+          "fingerprint": "abba443342d26b6a3dc4af3a3691fe91d518837ae297256fc007db6d8f3de564"
+        },
+        {
+          "item_id": "e08f56bef25fa6a39c346153800615f7ac48c32e8b0c5879d975661b3001de8d",
+          "path": "src-tauri/src/db/mod.rs",
+          "fingerprint": "307edd066ce8f48d6d8ddeb5bb75006bfedb17f72e91737c027c4f964d5d622e"
+        },
+        {
+          "item_id": "e49e9063eaeaa087ca255dcb08b6ffa68d14c399e371363897222c4767637da9",
+          "path": "src/components/ChatPanel/types.ts",
+          "fingerprint": "cab84202a9f57be0f47ac6e28c4571978a881df96d5c2224e4a37ecc58988ca1"
+        },
+        {
+          "item_id": "e6cf12b8fa3e15c547c981f7c8cea7f4ba8eaa8bfa8c2fff1b35bd390ee16b88",
+          "path": "src-tauri/src/bot/config/keyring.rs",
+          "fingerprint": "875da94f9a93dca23287ab75d8aefc98b6413aef9bf47a04edaee93f2ef6ca9f"
+        },
+        {
+          "item_id": "f4105ac5a765a9f56e16e6920b4ebc2ae33e2dae86f184e5701e5bf1346e3899",
+          "path": "vitest.config.ts",
+          "fingerprint": "0051430165ac0f6c9301623d6f60f476cc27e2c674455c332a2cc6d6499edd93"
+        },
+        {
+          "item_id": "f4e5d099b1da8a90175063c0b43e13f4f0d91a12c3d9927498f46f3a7f16f872",
+          "path": "src/components/SettingsPage/ProviderLogo.tsx",
+          "fingerprint": "2ae38baf14b889f55d3f584e3c3069d9010ef0afaaf2b353206c3b20fc1208bb"
+        },
+        {
+          "item_id": "fd9f2ed577fcca8681b495652f69d9fb30dafa0f653e2fcd387d82caf338bd47",
+          "path": "src-tauri/src/bot_plan.rs",
+          "fingerprint": "257436545d4265e7601fa17061088c1c592873dc70db7cbc3d1aeeef7514c37f"
+        },
+        {
+          "item_id": "fe8868d83877f7fe7fb1692f28f712dbf6d9d6ed237b7cc5d583653943ad1578",
+          "path": "src-tauri/src/meta/mod.rs",
+          "fingerprint": "d8d242b4c6d29e5961359cc60aa82f77b972dcd90cec0af7087fe2f96265aae9"
+        }
+      ],
+      "reused": [],
+      "failed": [],
+      "waived": []
+    },
+    "elapsed_ms": 1552110
+  }
+}

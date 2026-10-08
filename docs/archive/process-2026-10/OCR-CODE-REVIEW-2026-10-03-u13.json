@@ -1,0 +1,472 @@
+{
+  "status": "complete",
+  "llm": {
+    "provider": "minimax-cn",
+    "model": "MiniMax-M3"
+  },
+  "message": "Review complete: 16 finding(s) across 13 selected item(s).",
+  "summary": {
+    "files_reviewed": 13,
+    "comments": 16,
+    "total_tokens": 10573193,
+    "input_tokens": 10398420,
+    "output_tokens": 174773,
+    "cache_read_tokens": 9694615,
+    "elapsed": "15m26s"
+  },
+  "tool_calls": {
+    "total": 334,
+    "by_tool": {
+      "code_comment": 9,
+      "code_search": 147,
+      "file_find": 7,
+      "file_read": 156,
+      "file_read_diff": 15
+    },
+    "failure": 6,
+    "failure_by_tool": {
+      "code_comment": 1,
+      "file_read": 5
+    },
+    "failure_details": [
+      {
+        "tool_call_number": 43,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/bot/config/mod.rs",
+        "arguments": "{\"end_line\":30,\"file_path\":\"src-tauri/src/bot/config/schema.rs\",\"start_line\":315}",
+        "error": "invalid line range: start_line 315 is greater than end_line 30"
+      },
+      {
+        "tool_call_number": 123,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/bot/config/schema.rs",
+        "arguments": "{\"end_line\": 90, \"file_path\": \"src-tauri/src/bot/config/commands.rs\", \"start_line\": 330}",
+        "error": "invalid line range: start_line 330 is greater than end_line 90"
+      },
+      {
+        "tool_call_number": 126,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/bot/config/schema.rs",
+        "arguments": "{\"end_line\": 100, \"file_path\": \"src-tauri/src/bot/config/commands.rs\", \"start_line\": 330}",
+        "error": "invalid line range: start_line 330 is greater than end_line 100"
+      },
+      {
+        "tool_call_number": 131,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/bot/config/schema.rs",
+        "arguments": "{\"end_line\": 80, \"file_path\": \"src/components/SettingsPage/ModelRow.tsx\", \"start_line\": 220}",
+        "error": "invalid line range: start_line 220 is greater than end_line 80"
+      },
+      {
+        "tool_call_number": 199,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/bot/config/schema.rs",
+        "arguments": "{\"end_line\":130,\"file_path\":\"src-tauri/src/bot_chat.rs\",\"start_line\":1100}",
+        "error": "invalid line range: start_line 1100 is greater than end_line 130"
+      },
+      {
+        "tool_call_number": 239,
+        "tool_name": "code_comment",
+        "file_path": "src/components/SettingsPage/SettingsPage.tsx",
+        "arguments": "{\"category\": \"documentation\", \"content\": \"In `applyVendorModels`, the legacy-vendor fallback differs between this function and `vendorNameOf`: here it falls back to `__legacy__${protocol}` while `vendorNameOf` (used for vendor-grouping on the UI) falls back to `\\\"OpenAI 兼容\\\"` / `\\\"Anthropic 兼容\\\"`. In practice `applyVendorModels` is only invoked with real preset/meta names so this isn't a correctness bug, but the two helpers are conceptually checking the \\\"same vendor\\\" relation with different keys. A short comment near the fallback would help the next reader map the two.\", \"existing_code\": \"    const list = config.modelsByProvider[protocol] ?? [];\\n    const norm = normalizeVendorName(name);\\n    // 厂商制语义：同协议下其他厂商条目保留，仅替换同名（归一化后）厂商旧条目（若有）\\n    const kept = list.filter(\\n      (m) =\u003e normalizeVendorName(m.vendor ?? `__legacy__${protocol}`) !== norm,\\n    );\", \"path\": \"src/components/SettingsPage/SettingsPage.tsx\", \"severity\": \"low\"}",
+        "error": "Error: 'comments' array is required. Got args: {\"category\":\"documentation\",\"content\":\"In `applyVendorModels`, the legacy-vendor fallback differs between this function and `vendorNameOf`: here it falls back to `__legacy__${protocol}` while `vendorNameOf` (used for vendor-grouping on the UI) falls back to `\\\"OpenAI 兼容\\\"` / `\\\"Anthropic 兼容\\\"`. In practice `applyVendorModels` is only invoked with real preset/meta names so this isn't a correctness bug, but the two helpers are conceptually checking the \\\"same vendor\\\" relation with different keys. A short comment near the fallback would help the next reader map the two.\",\"existing_code\":\"    const list = config.modelsByProvider[protocol] ?? [];\\n    const norm = normalizeVendorName(name);\\n    // 厂商制语义：同协议下其他厂商条目保留，仅替换同名（归一化后）厂商旧条目（若有）\\n    const kept = list.filter(\\n      (m) =\\u003e normalizeVendorName(m.vendor ?? `__legacy__${protocol}`) !== norm,\\n    );\",\"path\":\"src/components/SettingsPage/SettingsPage.tsx\",\"severity\":\"low\"}"
+      }
+    ]
+  },
+  "comments": [
+    {
+      "path": "src-tauri/src/bot_model_loop.rs",
+      "content": "`apply_inference_params` takes three positional `Option\u003cf64\u003e`s. As more inference knobs get added (frequency_penalty, presence_penalty, seed, stop, response_format...) the call sites in `bot_chat::summarize_http`, `bot_plan::call_planner`, and the main loop will accumulate positional args silently. The codebase already has the `ReasoningWire` precedent — a small `InferenceParams` struct passed by reference/clone would be self-documenting and evolve safely. Even just bundling `(temperature, top_p)` into a 2-field struct would prevent argument-order swap bugs (e.g. `apply_inference_params(\u0026mut body, top_p, temperature)`).",
+      "suggestion_code": "#[derive(Debug, Clone, Copy, Default)]\npub struct InferenceParams {\n    pub temperature: Option\u003cf64\u003e,\n    pub top_p: Option\u003cf64\u003e,\n}\n\n/// 条目级采样参数注入（U13）：有值才写请求体（不打扰不识别这些字段或用服务端默认的模型）。\n/// OpenAI /chat/completions 与 Anthropic /v1/messages 的顶层字段同名，\n/// 一处实现两协议共用；摘要（summarize_http）与 Planner（call_planner）也走这里。\npub fn apply_inference_params(body: \u0026mut serde_json::Value, p: InferenceParams) {",
+      "existing_code": "/// 条目级采样参数注入（U13）：temperature/top_p 有值才写请求体（有值才写 =\n/// 不打扰不认识这些字段或用服务端默认的模型）。OpenAI /chat/completions 与\n/// Anthropic /v1/messages 的顶层字段同名，一处实现两协议共用；\n/// 摘要（summarize_http）与 Planner（call_planner）也走这里。\npub fn apply_inference_params(\n    body: \u0026mut serde_json::Value,\n    temperature: Option\u003cf64\u003e,\n    top_p: Option\u003cf64\u003e,\n) {",
+      "start_line": 377,
+      "end_line": 385,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/bot_model_loop.rs",
+      "content": "`system_prompt` is pushed AFTER `msgs` is finalised but BEFORE the round loop, so it persists across all rounds — including rounds that follow a tool_calls/tool exchange. For OpenAI, a `role:system` message at the tail (after `assistant(tool_calls)` and `tool` responses) is tolerated by some providers but ignored by others, and any future code that assumes `msgs.last().role == \"assistant\" | \"user\" | \"tool\"` will silently break. The convention in this codebase (see `soft_warn_queued` comment around line 1275-1280) is to push protocol hints at carefully chosen positions to avoid breaking strict tool/tool_calls alternation; a `system` role at the tail violates that discipline. Consider prepending at index 0 (the standard OpenAI convention) and trusting the Anthropic converter to merge all of them — verified against `bot_anthropic::convert_all` (lines 64-70) which collects every `role:system` regardless of position.",
+      "suggestion_code": "// 条目级 system prompt（U13）：OpenAI 习惯 system 在最前；Anthropic 分支\n    // openai_msgs_to_anthropic 会把全部 role=system（不论位置）归并进顶层 system 块，\n    // 所以前置在两协议都对——前置也避免 system 出现在 tool/assistant(tool_calls)\n    // 之后污染后续轮次（soft_warn_queued 同样的「不能打乱 tool_calls 紧跟 tool\n    // 响应的严格交替」纪律）。\n    if let Some(sp) = \u0026http.system_prompt {\n        msgs.insert(0, serde_json::json!({ \"role\": \"system\", \"content\": sp }));\n    }",
+      "existing_code": "// 条目级 system prompt（U13）：追加到消息栈末尾——OpenAI 直接多一条 system\n    // 消息；Anthropic 分支 openai_msgs_to_anthropic 会把它归并进顶层 system 块。\n    if let Some(sp) = \u0026http.system_prompt {\n        msgs.push(serde_json::json!({ \"role\": \"system\", \"content\": sp }));\n    }",
+      "start_line": 685,
+      "end_line": 689,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/bot_model_loop.rs",
+      "content": "No range validation on `temperature` / `top_p`: an entry-level value of e.g. `temperature = 2.5` is written verbatim to both the OpenAI and Anthropic request bodies (Anthropic rejects `\u003e 1.0` with HTTP 400). `effective_inference` in `schema.rs` does NOT clamp these (only `max_tokens` is passed through `resolve_max_tokens`). The audit log will record a successful request that the upstream provider then rejects, surfacing as a confusing user-facing error. Either clamp at `effective_inference` (Anthropic: `[0.0, 1.0]`, OpenAI: `[0.0, 2.0]`) or, at minimum, add a debug-level note here that out-of-range values are the user's responsibility.",
+      "suggestion_code": "pub fn apply_inference_params(\n    body: \u0026mut serde_json::Value,\n    temperature: Option\u003cf64\u003e,\n    top_p: Option\u003cf64\u003e,\n) {\n    if let Some(t) = temperature {\n        // Anthropic 限制 [0, 1]，OpenAI 允许到 2.0；条目覆盖来自 ModelEntry.temperature，\n        // schema::effective_inference 未做范围钳制——这里在写入前断言合法区间，\n        // 否则上游 provider 会以 400 拒掉整轮请求、审计日志与用户报错口径不一致。\n        debug_assert!((0.0..=2.0).contains(\u0026t), \"temperature {t} 超出合法区间\");\n        body[\"temperature\"] = serde_json::json!(t);\n    }\n    if let Some(p) = top_p {\n        debug_assert!((0.0..=1.0).contains(\u0026p), \"top_p {p} 超出合法区间\");\n        body[\"top_p\"] = serde_json::json!(p);\n    }\n}",
+      "existing_code": "pub fn apply_inference_params(\n    body: \u0026mut serde_json::Value,\n    temperature: Option\u003cf64\u003e,\n    top_p: Option\u003cf64\u003e,\n) {\n    if let Some(t) = temperature {\n        body[\"temperature\"] = serde_json::json!(t);\n    }\n    if let Some(p) = top_p {\n        body[\"top_p\"] = serde_json::json!(p);\n    }\n}",
+      "start_line": 381,
+      "end_line": 392,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/bot_model_loop.rs",
+      "content": "The test asserts `body[\"max_tokens\"] == 8_192` after `apply_inference_params`, but `apply_inference_params` never touches `max_tokens`. This is a tautology that doesn't verify ordering — `build_anthropic_body` writes `max_tokens` once and nothing later mutates it, so the assertion passes regardless of whether `apply_inference_params` runs before or after `build_anthropic_body`. The real cross-protocol invariant worth asserting here is that `temperature`/`top_p` are written at the body TOP level (not nested under any other key) and don't get clobbered by `apply_anthropic_thinking` which also writes to the top level.",
+      "suggestion_code": "apply_inference_params(\u0026mut body, Some(0.2), Some(1.0));\n        // 顶层字段（不嵌套）——下游 apply_anthropic_thinking 也写顶层，必须不踩\n        assert!(body.get(\"temperature\").map(|v| v.is_number()).unwrap_or(false));\n        assert!(body.get(\"top_p\").map(|v| v.is_number()).unwrap_or(false));\n        assert_eq!(body[\"temperature\"], 0.2);\n        assert_eq!(body[\"top_p\"], 1.0);\n        // 顺序无关：apply_inference_params 跑在 build_anthropic_body 之后，\n        // max_tokens 等 build 阶段写下的字段不应被污染\n        assert_eq!(body[\"max_tokens\"], 8_192);",
+      "existing_code": "apply_inference_params(\u0026mut body, Some(0.2), Some(1.0));\n        assert_eq!(body[\"temperature\"], 0.2);\n        assert_eq!(body[\"top_p\"], 1.0);\n        assert_eq!(body[\"max_tokens\"], 8_192);",
+      "start_line": 1471,
+      "end_line": 1474,
+      "category": "test",
+      "severity": "low"
+    },
+    {
+      "path": "model-meta-service/main.py",
+      "content": "In `sync_models_dev`, `name[0].upper()` will raise `IndexError` when both `p.get(\"name\")` is falsy and the dict key `pkey` is itself an empty string. Sister code in `provider_upsert` already guards the same hazard (`body.provider_name[0].upper() if body.provider_name else FALLBACK_CHAR`); mirror that fallback here. Although `sync_models_dev` is wrapped in the lifespan's `except Exception`, raising inside `executescript`'s loop would also leave partial inserts committed before the abort, so guarding up front is preferable to relying on the outer exception handler.",
+      "suggestion_code": "            (pkey, name, LOGO_URL.format(pkey), PALETTE[hash(pkey) % len(PALETTE)], (name[:1] or FALLBACK_CHAR).upper(), p.get(\"api\")),",
+      "existing_code": "            (pkey, name, LOGO_URL.format(pkey), PALETTE[hash(pkey) % len(PALETTE)], name[0].upper(), p.get(\"api\")),",
+      "start_line": 68,
+      "end_line": 68,
+      "category": "bug",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/bot/config/schema.rs",
+      "content": "`EffectiveInference` lacks the `Debug` derive that sibling config structs (`ModelEntry`, `ModelsByProvider`, `ActiveModelId` in `bot/config/types.rs`) all carry. The struct is consumed by three request-assembly sites (chat main loop, summary, Planner) and is a natural fit for tracing/audit dumps; without `Debug` any `dbg!`/`tracing` site loses structure. Add `#[derive(Debug)]` (and consider `Clone` for cheap tests/log capture) to keep the local convention.",
+      "existing_code": "pub struct EffectiveInference {\n    pub max_tokens: u32,\n    /// Some = 写入请求体（OpenAI / Anthropic 顶层字段同名）；None = 不发\n    pub temperature: Option\u003cf64\u003e,\n    pub top_p: Option\u003cf64\u003e,\n    /// active 条目的 system prompt（空白滤为 None）：聊天主循环追加到消息栈末尾；\n    /// 摘要 / Planner 有各自的固定任务提示词，不追加\n    pub system_prompt: Option\u003cString\u003e,\n}",
+      "start_line": 151,
+      "end_line": 159,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/bot/config/schema.rs",
+      "content": "`system_prompt` is cloned before the whitespace filter, allocating a `String` even when the entry ends up dropped for being blank. Restructure to trim-as-`str` first (e.g., `entry.and_then(|e| e.system_prompt.as_deref()).map(str::trim).filter(|s| !s.is_empty()).map(str::to_string)`) so the heap copy only happens when the prompt is actually used.",
+      "existing_code": "        system_prompt: entry\n            .and_then(|e| e.system_prompt.clone())\n            .filter(|s| !s.trim().is_empty()),",
+      "start_line": 177,
+      "end_line": 179,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/bot/config/schema.rs",
+      "content": "`temperature`/`top_p` are forwarded to the upstream request body without any range or sanity validation. The frontend `ModelRow.tsx:236,250` only filters `Number.isFinite(n)`, so values like `temperature=100`, `top_p=2.0`, or NaN slipping through float coercion propagate straight through `effective_inference` → `apply_inference_params` (`bot_model_loop.rs:386-391`, unconditional `serde_json::json!(t)`) → outbound HTTP. OpenAI caps temperature at 2.0 and top_p at 1.0; Anthropic caps temperature at 1.0 — out-of-range values yield 400 errors at the gateway with no early feedback. Add a `resolve_temperature` / `resolve_top_p` helper (mirror `resolve_max_tokens` style) that clamps to spec ranges or rejects/clamps NaN/Inf, so all three consumers share one guard.",
+      "existing_code": "        temperature: entry.and_then(|e| e.temperature),\n        top_p: entry.and_then(|e| e.top_p),",
+      "start_line": 175,
+      "end_line": 176,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/SettingsPage/SettingsPage.tsx",
+      "content": "In `applyVendorModels`, the legacy-vendor fallback differs between this function and `vendorNameOf`: here it falls back to `__legacy__${protocol}` while `vendorNameOf` (used for vendor-grouping on the UI) falls back to `\"OpenAI 兼容\"` / `\"Anthropic 兼容\"`. In practice `applyVendorModels` is only invoked with real preset/meta names so this isn't a correctness bug, but the two helpers are conceptually checking the \"same vendor\" relation with different keys. A short comment near the fallback would help the next reader map the two.",
+      "existing_code": "    const list = config.modelsByProvider[protocol] ?? [];\n    const norm = normalizeVendorName(name);\n    // 厂商制语义：同协议下其他厂商条目保留，仅替换同名（归一化后）厂商旧条目（若有）\n    const kept = list.filter(\n      (m) =\u003e normalizeVendorName(m.vendor ?? `__legacy__${protocol}`) !== norm,\n    );",
+      "start_line": 231,
+      "end_line": 236,
+      "category": "documentation",
+      "severity": "low"
+    },
+    {
+      "path": "model-meta-service/main.py",
+      "content": "`provider_fallback(\"?\")` produces `{\"provider_key\": \"?\", ...}`, so the spread `**provider_fallback(\"?\")` silently overwrites the explicit `\"provider_key\": None` placed just before it. Any client checking `provider_key === null` (or `is None`) to detect an unknown model will see the string \"?\" instead. The intent of \"no real provider attached to this fallback model\" is lost. Either drop the redundant literal entry, reorder so the spread runs first and the `None` wins, or stop calling `provider_fallback(\"?\")` and inline a provider-less fallback that omits `provider_key` / `provider_name`.",
+      "suggestion_code": "fb = provider_fallback(\"?\")\n    fb[\"provider_key\"] = None  # override the placeholder so consumers can detect \"no provider\"\n    return {\"model_key\": model_key, \"display_name\": FALLBACK_CHAR,\n            \"context_length\": None, \"temperature\": None, \"top_p\": None, \"max_tokens\": None,\n            \"default_system_prompt\": None, \"source\": \"fallback\", **fb}",
+      "existing_code": "return {\"model_key\": model_key, \"provider_key\": None, \"display_name\": FALLBACK_CHAR,\n            \"context_length\": None, \"temperature\": None, \"top_p\": None, \"max_tokens\": None,\n            \"default_system_prompt\": None, \"source\": \"fallback\", **provider_fallback(\"?\")}",
+      "start_line": 171,
+      "end_line": 173,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "model-meta-service/main.py",
+      "content": "The comment above `PALETTE` claims \"按 key 散列取色，稳定且可区分\" (stable and distinguishable), but Python's built-in `hash()` is randomized per-process via `PYTHONHASHSEED`. While the DB persists the color once written (so existing rows stay stable), any newly-discovered provider inserted after a server restart may receive a different one than it would in another process — contradicting the documented contract and producing inconsistent coloring across deployments. Use a deterministic digest (e.g. `hashlib.md5(pkey.encode()).digest()[0] % len(PALETTE)`) to honor the \"稳定\" claim.",
+      "suggestion_code": "(pkey, name, LOGO_URL.format(pkey), PALETTE[hashlib.md5(pkey.encode()).digest()[0] % len(PALETTE)], name[0].upper(), p.get(\"api\")),",
+      "existing_code": "(pkey, name, LOGO_URL.format(pkey), PALETTE[hash(pkey) % len(PALETTE)], name[0].upper(), p.get(\"api\")),",
+      "start_line": 68,
+      "end_line": 68,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/bot/config/schema.rs",
+      "content": "`active_model_entry` does not consider `ModelEntry.enabled`: if the user disables (enabled=false) an entry that was the active one, or if the active id is None/stale and the first entry is enabled=false, the disabled entry's parameters are still forwarded to `effective_inference` and onto the LLM request body. The doc says enabled=false means \"聊天 🧠 下拉不显示该模型\" — backend should arguably be consistent with the UI contract. Either filter by `e.enabled` here (matching the UI surface) or document explicitly that enabled is a UI-only flag and the backend still honors disabled active entries when they're explicitly selected.",
+      "existing_code": "active_id\n        .and_then(|id| list.iter().find(|e| \u0026e.id == id))\n        .or_else(|| list.first())\n}",
+      "start_line": 143,
+      "end_line": 146,
+      "category": "bug",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/bot/config/schema.rs",
+      "content": "The `entry` test helper hardcodes `enabled: true`, so the test suite never exercises the case where the active entry (or the first fallback entry) has `enabled: false`. Add at least one case covering the disabled-active path once the contract is decided.",
+      "existing_code": "fn entry(id: \u0026str, model: \u0026str) -\u003e ModelEntry {\n        ModelEntry {\n            id: id.into(),\n            label: id.into(),\n            base_url: \"https://api.example.com/v1\".into(),\n            model: model.into(),\n            vendor: None,\n            enabled: true,\n            context_k: None,\n            capabilities: None,\n            temperature: None,\n            top_p: None,\n            max_tokens: None,\n            system_prompt: None,\n        }\n    }",
+      "start_line": 335,
+      "end_line": 350,
+      "category": "test",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/bot/config/schema.rs",
+      "content": "Doc on `system_prompt` says \"空白滤为 None\" (whitespace filtered to None) but actual filter is `!s.trim().is_empty()` — only fully-whitespace strings are dropped, partial whitespace like \"  hello  \" passes through unchanged. Either update the doc to \"全空白滤为 None\" or actually trim before testing. Affects the message sent to the LLM (leading/trailing whitespace in the appended system message).",
+      "existing_code": "/// active 条目的 system prompt（空白滤为 None）：聊天主循环追加到消息栈末尾；\n        /// 摘要 / Planner 有各自的固定任务提示词，不追加\n        pub system_prompt: Option\u003cString\u003e,",
+      "start_line": 156,
+      "end_line": 158,
+      "category": "documentation",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/bot/config/schema.rs",
+      "content": "The `active` and `mbp` names in `active_model_entry` shadow the parameter names implicitly via `?` early-returns; not a bug but the bindings add no value since both `Option`s are immediately unwrapped. Could be inlined as `let Some(active) = active_model_id else { return None }; let Some(mbp) = models_by_provider else { return None };` or kept as-is for clarity — minor stylistic choice.",
+      "existing_code": "pub fn active_model_entry\u003c'a\u003e(\n    api_provider: Option\u003c\u0026str\u003e,\n    active_model_id: Option\u003c\u0026ActiveModelId\u003e,\n    models_by_provider: Option\u003c\u0026'a ModelsByProvider\u003e,\n) -\u003e Option\u003c\u0026'a ModelEntry\u003e {\n    let active = active_model_id?;\n    let mbp = models_by_provider?;",
+      "start_line": 132,
+      "end_line": 138,
+      "category": "style",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/bot_model_loop.rs",
+      "content": "The `llm.request` audit event logs `reasoning` (via `describe()`) but does not include the newly wired entry-level params (temperature, top_p, system_prompt). This asymmetry makes it harder to diagnose \"why is the model responding with this sampling behavior / why did the entry system_prompt not take effect\" from audit logs alone — the model family / effort level is observable, but the U13 entry-level knobs are silent. Adding e.g. `temperature`/`top_p` (Option\u003c\u0026str\u003e via `as_ref().map(f64_to_string)`) and `system_prompt_len` would restore symmetry without leaking secrets.",
+      "existing_code": "        // LLM 请求前记录\n        audit(\n            crate::audit::AuditLevel::Info,\n            \"llm.request\",\n            vec![\n                (\"model\", http.model.clone()),\n                (\"msgs_count\", msgs.len().to_string()),\n                (\"provider\", http.provider.as_str().to_string()),\n                (\"reasoning\", http.reasoning.describe()),\n            ],\n        );",
+      "start_line": 827,
+      "end_line": 837,
+      "category": "maintainability",
+      "severity": "low"
+    }
+  ],
+  "groups": [
+    {
+      "label": "src-tauri/src/bot.rs",
+      "files": [
+        "src-tauri/src/bot.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/bot/config/commands.rs",
+      "files": [
+        "src-tauri/src/bot/config/commands.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/bot/config/mod.rs",
+      "files": [
+        "src-tauri/src/bot/config/mod.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/bot/config/schema.rs",
+      "files": [
+        "src-tauri/src/bot/config/schema.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/bot_chat.rs",
+      "files": [
+        "src-tauri/src/bot_chat.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/bot_model_loop.rs",
+      "files": [
+        "src-tauri/src/bot_model_loop.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/bot_plan.rs",
+      "files": [
+        "src-tauri/src/bot_plan.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/tests/llm_integration.rs",
+      "files": [
+        "src-tauri/tests/llm_integration.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/tests/mock_llm.rs",
+      "files": [
+        "src-tauri/tests/mock_llm.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/tests/task_chat_exec.rs",
+      "files": [
+        "src-tauri/tests/task_chat_exec.rs"
+      ]
+    },
+    {
+      "label": "src/components/SettingsPage/ModelRow.tsx",
+      "files": [
+        "src/components/SettingsPage/ModelRow.tsx"
+      ]
+    },
+    {
+      "label": "src/components/SettingsPage/SettingsPage.tsx",
+      "files": [
+        "src/components/SettingsPage/SettingsPage.tsx"
+      ]
+    },
+    {
+      "label": "model-meta-service/main.py",
+      "files": [
+        "model-meta-service/main.py"
+      ]
+    }
+  ],
+  "session_id": "be0613c4-ff0d-4388-be8b-de76fb496f68",
+  "manifest": {
+    "schema_version": "ocr.run-manifest/v1",
+    "run_id": "be0613c4-ff0d-4388-be8b-de76fb496f68",
+    "operation": "review",
+    "terminal_state": "complete",
+    "repository": {
+      "identity_sha256": "7aebc670c3c38e64ae52ffaf12cfa8ba078a29af906f8ef856132cd790dbe48b"
+    },
+    "input": {
+      "mode": "workspace",
+      "resolved_base": "1c0cd314f25138f8cbf5cb64817f1b935779f0b6",
+      "source_artifact_sha256": "d19747424350c61522c16be3d284e5f14329f3ce9fd1cbfe7656afadb1b1c740"
+    },
+    "execution": {
+      "ocr_version": "v1.12.11",
+      "provider": "minimax-cn",
+      "model": "MiniMax-M3",
+      "configured_concurrency": 8,
+      "rule_config_sha256": "8779d0d046b15151518200e75283f8c72cb6815f8e9b6de313d85d8f880d7dde",
+      "runtime_config_sha256": "f3ac1cdd2a45285ba614e32ab9bd03b86d9911c8deb3bec22fccf7b7bd4e6913"
+    },
+    "coverage": {
+      "selected": [
+        {
+          "item_id": "00eb4e30db4966628ee748321012761a7da33723b29b007f5b67f1c3902baee8",
+          "path": "src-tauri/tests/task_chat_exec.rs",
+          "fingerprint": "3ad6a784f775f72366e453a0e757844d011806de0f80b175158806dfac3342ec"
+        },
+        {
+          "item_id": "1c884e12713b6b07fc44851926ae4e553c3f592716187520402dc4ce4f4599ac",
+          "path": "src-tauri/src/bot.rs",
+          "fingerprint": "e579a90fdfd8050927d6fdfb0d5504746706f49c7640b934a3ee5b551cf73da5"
+        },
+        {
+          "item_id": "1f70c2efcbe9b6d1ef7c3209d6c49a4d310480c8b3cb683571632ca180c8da1d",
+          "path": "src-tauri/src/bot/config/schema.rs",
+          "fingerprint": "b8fa9f8933c0bcdb28390f301948bf53df6f6f2e548f438c43daa50104fc29c5"
+        },
+        {
+          "item_id": "40784d75a4f244097c3261f465a659826ebd84c056c270a2e5e6292602cfe3e5",
+          "path": "src/components/SettingsPage/ModelRow.tsx",
+          "fingerprint": "0332436ad94f5908590b6e938689d86eefbb84016faaa3ca7570f6d986540674"
+        },
+        {
+          "item_id": "41ea030471dd63d24bcd2f2224782af82b85b1b0ce6ceb318e212a6ef072e6fb",
+          "path": "src-tauri/src/bot_plan.rs",
+          "fingerprint": "7090794d2565b3f681a791448bbaa266989da30063d399cd1105b4ce330ff7b3"
+        },
+        {
+          "item_id": "689453de12a119951a99d13c9cf3f002de855e1f9973d1b33371acdfc53bbc0b",
+          "path": "src-tauri/tests/mock_llm.rs",
+          "fingerprint": "86abdd088997f41cb3e678a27703c9f098b19ab32034cbb700ea2ac8369ea050"
+        },
+        {
+          "item_id": "70779da7b6b3c7b01fd6ef65604b94235524e8c1f9afd7561face091502435d0",
+          "path": "src/components/SettingsPage/SettingsPage.tsx",
+          "fingerprint": "a6c050ca7bd0de5cb0ef95b8424c1e04affd37ef4ab15fef8b575f59fdfee448"
+        },
+        {
+          "item_id": "7b95a9d86cba016f109120bb5130e7e937f00778cb5bb437ea6d67044fc18099",
+          "path": "src-tauri/src/bot_model_loop.rs",
+          "fingerprint": "a2d5c8698e4bf3701cff1432ae35929c1747f64e9ae5d8492ce369d4bf73ca96"
+        },
+        {
+          "item_id": "9d588a2c7701bc40e1ad41264000c66302fc673faf13fdf8c7cda6836993e2b2",
+          "path": "src-tauri/tests/llm_integration.rs",
+          "fingerprint": "c9eb0c41165f1fa4d7f97513ea7392480d20d4924a839026a6697cde0efc054a"
+        },
+        {
+          "item_id": "ad8f8381ed551acda797fbb5e3b55a4dcbab7799d42a5754dbe2a882a5165560",
+          "path": "model-meta-service/main.py",
+          "fingerprint": "2e5563d904a7dcb6154ba8050f1a1c42be14a9d2f26d1a09ab2596be8c44e4db"
+        },
+        {
+          "item_id": "b5b45c1b14300d44ee4aba6a30e49480b604e25fce2dda66bedbb9240f31f911",
+          "path": "src-tauri/src/bot_chat.rs",
+          "fingerprint": "182083aeba8d1eded2469b3dccc7ace64dea1098c73f95285e137618522ad6f1"
+        },
+        {
+          "item_id": "e6822cd5d142548d582e2b38c7b9f2dc92b49bb83116705ee89427d7571b8b9f",
+          "path": "src-tauri/src/bot/config/commands.rs",
+          "fingerprint": "ebca147b05fe1d94b8a2d6942d33d13c097decc268e2863a546aa32e287be315"
+        },
+        {
+          "item_id": "fb88d62af4862899ca456a85e4b3ff20d8678c7cb925e7ceb3b0f37e85bd73a6",
+          "path": "src-tauri/src/bot/config/mod.rs",
+          "fingerprint": "7a39cfbd66a5938d80f91204dbf92f027f4f15cd57a8451c59a17b84c80c469a"
+        }
+      ],
+      "completed": [
+        {
+          "item_id": "00eb4e30db4966628ee748321012761a7da33723b29b007f5b67f1c3902baee8",
+          "path": "src-tauri/tests/task_chat_exec.rs",
+          "fingerprint": "3ad6a784f775f72366e453a0e757844d011806de0f80b175158806dfac3342ec"
+        },
+        {
+          "item_id": "1c884e12713b6b07fc44851926ae4e553c3f592716187520402dc4ce4f4599ac",
+          "path": "src-tauri/src/bot.rs",
+          "fingerprint": "e579a90fdfd8050927d6fdfb0d5504746706f49c7640b934a3ee5b551cf73da5"
+        },
+        {
+          "item_id": "1f70c2efcbe9b6d1ef7c3209d6c49a4d310480c8b3cb683571632ca180c8da1d",
+          "path": "src-tauri/src/bot/config/schema.rs",
+          "fingerprint": "b8fa9f8933c0bcdb28390f301948bf53df6f6f2e548f438c43daa50104fc29c5"
+        },
+        {
+          "item_id": "40784d75a4f244097c3261f465a659826ebd84c056c270a2e5e6292602cfe3e5",
+          "path": "src/components/SettingsPage/ModelRow.tsx",
+          "fingerprint": "0332436ad94f5908590b6e938689d86eefbb84016faaa3ca7570f6d986540674"
+        },
+        {
+          "item_id": "41ea030471dd63d24bcd2f2224782af82b85b1b0ce6ceb318e212a6ef072e6fb",
+          "path": "src-tauri/src/bot_plan.rs",
+          "fingerprint": "7090794d2565b3f681a791448bbaa266989da30063d399cd1105b4ce330ff7b3"
+        },
+        {
+          "item_id": "689453de12a119951a99d13c9cf3f002de855e1f9973d1b33371acdfc53bbc0b",
+          "path": "src-tauri/tests/mock_llm.rs",
+          "fingerprint": "86abdd088997f41cb3e678a27703c9f098b19ab32034cbb700ea2ac8369ea050"
+        },
+        {
+          "item_id": "70779da7b6b3c7b01fd6ef65604b94235524e8c1f9afd7561face091502435d0",
+          "path": "src/components/SettingsPage/SettingsPage.tsx",
+          "fingerprint": "a6c050ca7bd0de5cb0ef95b8424c1e04affd37ef4ab15fef8b575f59fdfee448"
+        },
+        {
+          "item_id": "7b95a9d86cba016f109120bb5130e7e937f00778cb5bb437ea6d67044fc18099",
+          "path": "src-tauri/src/bot_model_loop.rs",
+          "fingerprint": "a2d5c8698e4bf3701cff1432ae35929c1747f64e9ae5d8492ce369d4bf73ca96"
+        },
+        {
+          "item_id": "9d588a2c7701bc40e1ad41264000c66302fc673faf13fdf8c7cda6836993e2b2",
+          "path": "src-tauri/tests/llm_integration.rs",
+          "fingerprint": "c9eb0c41165f1fa4d7f97513ea7392480d20d4924a839026a6697cde0efc054a"
+        },
+        {
+          "item_id": "ad8f8381ed551acda797fbb5e3b55a4dcbab7799d42a5754dbe2a882a5165560",
+          "path": "model-meta-service/main.py",
+          "fingerprint": "2e5563d904a7dcb6154ba8050f1a1c42be14a9d2f26d1a09ab2596be8c44e4db"
+        },
+        {
+          "item_id": "b5b45c1b14300d44ee4aba6a30e49480b604e25fce2dda66bedbb9240f31f911",
+          "path": "src-tauri/src/bot_chat.rs",
+          "fingerprint": "182083aeba8d1eded2469b3dccc7ace64dea1098c73f95285e137618522ad6f1"
+        },
+        {
+          "item_id": "e6822cd5d142548d582e2b38c7b9f2dc92b49bb83116705ee89427d7571b8b9f",
+          "path": "src-tauri/src/bot/config/commands.rs",
+          "fingerprint": "ebca147b05fe1d94b8a2d6942d33d13c097decc268e2863a546aa32e287be315"
+        },
+        {
+          "item_id": "fb88d62af4862899ca456a85e4b3ff20d8678c7cb925e7ceb3b0f37e85bd73a6",
+          "path": "src-tauri/src/bot/config/mod.rs",
+          "fingerprint": "7a39cfbd66a5938d80f91204dbf92f027f4f15cd57a8451c59a17b84c80c469a"
+        }
+      ],
+      "reused": [],
+      "failed": [],
+      "waived": []
+    },
+    "elapsed_ms": 926323
+  }
+}

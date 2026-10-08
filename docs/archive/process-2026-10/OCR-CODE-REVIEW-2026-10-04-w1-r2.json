@@ -1,0 +1,328 @@
+{
+  "status": "complete",
+  "llm": {
+    "provider": "minimax-cn",
+    "model": "MiniMax-M3"
+  },
+  "message": "Review complete: 8 finding(s) across 10 selected item(s).",
+  "summary": {
+    "files_reviewed": 10,
+    "comments": 8,
+    "total_tokens": 2831184,
+    "input_tokens": 2714567,
+    "output_tokens": 116617,
+    "cache_read_tokens": 2380054,
+    "elapsed": "14m8s"
+  },
+  "tool_calls": {
+    "total": 121,
+    "by_tool": {
+      "code_comment": 6,
+      "code_search": 49,
+      "file_find": 6,
+      "file_read": 52,
+      "file_read_diff": 8
+    },
+    "failure": 2,
+    "failure_by_tool": {
+      "file_read": 2
+    },
+    "failure_details": [
+      {
+        "tool_call_number": 69,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/db/workflow.rs",
+        "arguments": "{\"end_line\":320,\"file_path\":\"src/App.tsx\",\"start_line\":360}",
+        "error": "invalid line range: start_line 360 is greater than end_line 320"
+      },
+      {
+        "tool_call_number": 92,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/db/workflow.rs",
+        "arguments": "{\"end_line\":100,\"file_path\":\"src-tauri/src/db/workflow.rs\",\"start_line\":340}",
+        "error": "invalid line range: start_line 340 is greater than end_line 100"
+      }
+    ]
+  },
+  "comments": [
+    {
+      "path": "src-tauri/src/db/tasks.rs",
+      "content": "The constant is declared `pub` but is only referenced via `crate::db::tasks::W1_TASK_COLUMNS` within this crate (db/mod.rs open_db migration and legacy fixture). Tightening to `pub(crate)` would reflect its actual scope and prevent accidental external reliance on the column list shape.",
+      "suggestion_code": "pub(crate) const W1_TASK_COLUMNS: [(\u0026str, \u0026str); 5] = [",
+      "existing_code": "pub const W1_TASK_COLUMNS: [(\u0026str, \u0026str); 5] = [",
+      "start_line": 132,
+      "end_line": 132,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/TaskNode.tsx",
+      "content": "Use strict equality `!==` instead of `!=`. The codebase prohibits loose equality operators per the code style checklist.",
+      "suggestion_code": "if (task.result?.status !== undefined \u0026\u0026 task.result?.status !== null) return \"ring-2 ring-[var(--danger,#ef4444)]\";",
+      "existing_code": "if (task.result?.status != null) return \"ring-2 ring-[var(--danger,#ef4444)]\";",
+      "start_line": 27,
+      "end_line": 27,
+      "category": "style",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/graph.ts",
+      "content": "Use strict equality `=== null` (or `=== undefined`) instead of loose `==`. The project's coding standards prohibit `==`/`!=`. Note: this also makes the intent explicit — `canvasPos` is typed as optional (`CanvasPos | undefined`), so `=== undefined` matches the type more accurately than `== null`.",
+      "suggestion_code": "  const missingPos = tasks.some((t) =\u003e t.canvasPos === undefined);",
+      "existing_code": "  const missingPos = tasks.some((t) =\u003e t.canvasPos == null);",
+      "start_line": 101,
+      "end_line": 101,
+      "category": "style",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/graph.ts",
+      "content": "The use of loose equality `== null` matches both `null` and `undefined`. Per the project standards, strict equality is required. Since `canvasPos` is typed as `CanvasPos | undefined`, `=== undefined` is the precise check and matches the type signature.",
+      "suggestion_code": "const missingPos = tasks.some((t) =\u003e t.canvasPos === undefined);",
+      "existing_code": "const missingPos = tasks.some((t) =\u003e t.canvasPos == null);",
+      "start_line": 101,
+      "end_line": 101,
+      "category": "style",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/TaskNode.tsx",
+      "content": "Behavior regression for `column === \"done\"` with no result (e.g., a task the user manually completes before any bot run). Original code returned green (treating any \"done\" task as success by default; red only when `result.status` is explicitly set to a non-success value). New code falls through to `return \"\"`, dropping the green ring entirely. The function's own JSDoc says \"完成（绿）\" and the workflow canvas design doc says \"done 绿+✔ / 失败红（result.status）\" — i.e. green is the default for the \"done\" column and red is only the failure override. Restore that default.\n\nSuggested fix: after the `!== \"done\"` early-return, only flip to red when `result.status` is explicitly set to a non-success value, otherwise return green. Also replace `!=` (already flagged) with `!==`.",
+      "suggestion_code": "function nodeBorder(task: Task | undefined): string {\n  if (task?.column === \"doing\" \u0026\u0026 task.botAssigned) return \"ring-2 ring-[var(--info,#3b82f6)]\";\n  if (task?.column !== \"done\") return \"\";\n  // done 列默认绿（设计意图：\"done 绿+✔\"）；仅当 result.status 明确非 success 时变红\n  if (task.result?.status !== undefined \u0026\u0026 task.result.status !== \"success\") return \"ring-2 ring-[var(--danger,#ef4444)]\";\n  return \"ring-2 ring-[var(--ok,#22c55e)]\";\n}",
+      "existing_code": "function nodeBorder(task: Task | undefined): string {\n  if (task?.column === \"doing\" \u0026\u0026 task.botAssigned) return \"ring-2 ring-[var(--info,#3b82f6)]\";\n  if (task?.column !== \"done\") return \"\";\n  if (task.result?.status === \"success\") return \"ring-2 ring-[var(--ok,#22c55e)]\";\n  if (task.result?.status != null) return \"ring-2 ring-[var(--danger,#ef4444)]\";\n  return \"\";\n}",
+      "start_line": 23,
+      "end_line": 29,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/db/workflow.rs",
+      "content": "`.map(|o| o.result)` is repeated across 5+ error test sites (`save_rejects_cycle_self_dep_and_dangling_ref` ×4, `save_rejects_over_limits` ×3). Consider a small helper closure (e.g. `let r = run(...); r.map(|o| o.result).unwrap_err()` already used in places) or extracting `map_result` so the noise doesn't obscure the actual assertion. Since the helpers `save`/`save_into` already wrap with `.result`, the inline `workflow_save_locked(...)` calls could route through a thin wrapper too — keeps tests focused on the failure cases they're meant to assert.",
+      "suggestion_code": "        let map_result = |r: Result\u003c_, _\u003e| r.map(|o| o.result);\n        // 自环\n        let err = map_result(run(vec![node(\"n1\", \"A\", \u0026[\"n1\"])])).unwrap_err();\n        assert!(err.to_string().contains(\"循环依赖\"));",
+      "existing_code": "        // 自环\n        let err = run(vec![node(\"n1\", \"A\", \u0026[\"n1\"])])\n            .map(|o| o.result)\n            .unwrap_err();\n        assert!(err.to_string().contains(\"循环依赖\"));",
+      "start_line": 846,
+      "end_line": 850,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/db/workflow.rs",
+      "content": "`upserts` is built by pushing one entry per input node — the upper bound `input.nodes.len()` is known at the start of the loop. Use `Vec::with_capacity(input.nodes.len())` to avoid the doubling/reallocation as the loop grows the vector. (The sibling `real_id`/`kept_flags` already do this on lines 417-418.)",
+      "suggestion_code": "    let mut upserts: Vec\u003cTask\u003e = Vec::with_capacity(input.nodes.len());\n    for (i, node) in input.nodes.iter().enumerate() {",
+      "existing_code": "    let mut upserts: Vec\u003cTask\u003e = Vec::new();\n    for (i, node) in input.nodes.iter().enumerate() {",
+      "start_line": 432,
+      "end_line": 433,
+      "category": "performance",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/db/workflow.rs",
+      "content": "Same as above for `deleted_ids`: the upper bound is `existing.len()`, known right before the collect. Use `Vec::with_capacity(existing.len())` to avoid reallocation as the filter chain pushes IDs.",
+      "suggestion_code": "    let deleted_ids: Vec\u003cString\u003e = Vec::with_capacity(existing.len());\n    existing\n        .iter()\n        .filter(|t| !kept_task_ids.contains(t.id.as_str()))\n        .for_each(|t| deleted_ids.push(t.id.clone()));",
+      "existing_code": "    let deleted_ids: Vec\u003cString\u003e = existing\n        .iter()\n        .filter(|t| !kept_task_ids.contains(t.id.as_str()))\n        .map(|t| t.id.clone())\n        .collect();",
+      "start_line": 501,
+      "end_line": 505,
+      "category": "performance",
+      "severity": "low"
+    }
+  ],
+  "groups": [
+    {
+      "label": "src-tauri/src/db/mod.rs",
+      "files": [
+        "src-tauri/src/db/mod.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/db/tasks.rs",
+      "files": [
+        "src-tauri/src/db/tasks.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/db/workflow.rs",
+      "files": [
+        "src-tauri/src/db/workflow.rs"
+      ]
+    },
+    {
+      "label": "src/App.tsx",
+      "files": [
+        "src/App.tsx"
+      ]
+    },
+    {
+      "label": "src/components/SettingsPage/SettingsPage.tsx",
+      "files": [
+        "src/components/SettingsPage/SettingsPage.tsx"
+      ]
+    },
+    {
+      "label": "src/components/WidgetApp/WidgetApp.tsx",
+      "files": [
+        "src/components/WidgetApp/WidgetApp.tsx"
+      ]
+    },
+    {
+      "label": "src/components/WorkflowCanvas/TaskNode.tsx",
+      "files": [
+        "src/components/WorkflowCanvas/TaskNode.tsx"
+      ]
+    },
+    {
+      "label": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "files": [
+        "src/components/WorkflowCanvas/WorkflowPage.tsx"
+      ]
+    },
+    {
+      "label": "src/components/WorkflowCanvas/graph.ts",
+      "files": [
+        "src/components/WorkflowCanvas/graph.ts"
+      ]
+    },
+    {
+      "label": "src/lib/workflowVisibility.ts",
+      "files": [
+        "src/lib/workflowVisibility.ts"
+      ]
+    }
+  ],
+  "session_id": "3f561ad7-e783-4386-9f0d-192d51089577",
+  "manifest": {
+    "schema_version": "ocr.run-manifest/v1",
+    "run_id": "3f561ad7-e783-4386-9f0d-192d51089577",
+    "operation": "review",
+    "terminal_state": "complete",
+    "repository": {
+      "identity_sha256": "7aebc670c3c38e64ae52ffaf12cfa8ba078a29af906f8ef856132cd790dbe48b"
+    },
+    "input": {
+      "mode": "range",
+      "requested_from": "1259af1",
+      "requested_head": "62ff334",
+      "resolved_base": "1259af14c845ff101d66a00c8bb18d19b98984f4",
+      "resolved_head": "62ff33439ea156473389ac890474b1515c0055ac",
+      "exact_range": "1259af14c845ff101d66a00c8bb18d19b98984f4..62ff33439ea156473389ac890474b1515c0055ac",
+      "source_artifact_sha256": "dfdac8bd3d65d2d831141eb91ff555d2bbde760194a1f1184e1d7bdf7ba1e45d"
+    },
+    "execution": {
+      "ocr_version": "v1.12.11",
+      "provider": "minimax-cn",
+      "model": "MiniMax-M3",
+      "configured_concurrency": 8,
+      "rule_config_sha256": "d5e28d02ed5cdf85b533907db24b47f1be02847db764a4ded208dbaf54380ae1",
+      "runtime_config_sha256": "f3ac1cdd2a45285ba614e32ab9bd03b86d9911c8deb3bec22fccf7b7bd4e6913"
+    },
+    "coverage": {
+      "selected": [
+        {
+          "item_id": "3033636541a6b0b8d12064e1761524a957f6fbe0168cab311529ab9529123fb6",
+          "path": "src/App.tsx",
+          "fingerprint": "bd15526f53e69e579942c75999b63eee7df2f28394a630d71d6cfe51f1f88cd1"
+        },
+        {
+          "item_id": "3b4269a69aa4b482ae78c2395220a50d8f0cda17ff1a73df4edd1e2073ac276d",
+          "path": "src/components/WorkflowCanvas/graph.ts",
+          "fingerprint": "96162bc530336853cf424791d99b5fa48ddd5b5ffc2e0c21c5a5d257fb61a4d3"
+        },
+        {
+          "item_id": "41075b43848bf23052bbff4a77129b7cea24bed4f158c9ec4be57146016284b9",
+          "path": "src-tauri/src/db/tasks.rs",
+          "fingerprint": "1c6492aa62157262b8a0759ae40cfbf865ce2497f71d806b0b40f849ef862f1d"
+        },
+        {
+          "item_id": "474aaa9156481255a8adca974b48feeb5fdb116026b03b1b33d80a4a89cd1946",
+          "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+          "fingerprint": "8050083ee8a2b85ea234b0558934915ee6c69752a5d9eb70edcff64670f0d624"
+        },
+        {
+          "item_id": "5398ffe56dc5760d8ee6af9607c18247effe107c974209c1b2010973cd44bd8b",
+          "path": "src-tauri/src/db/workflow.rs",
+          "fingerprint": "fcd943202880994d6d20db51f0d7593b8ff0a5848531bfd43488906a6d7df209"
+        },
+        {
+          "item_id": "76e1574443fdacf60d9679c44d943c21e4cdca5edea3ed146214dac936166ddc",
+          "path": "src-tauri/src/db/mod.rs",
+          "fingerprint": "5508997ce2401e6743083a20895e4e0f6c8595594c3ee0350464ec2f62ead695"
+        },
+        {
+          "item_id": "8533464fa245b541c8581f91d1eda96220cfee39ad8d674c14067dbe19aa05fe",
+          "path": "src/components/WorkflowCanvas/TaskNode.tsx",
+          "fingerprint": "3fb37203fd63656475f0e95e0b1c65f66506fc6761d372308b687835594d399a"
+        },
+        {
+          "item_id": "8dec73b8aee6286063876475c7a484ace527bcce4434a3c6860f5e8e667be733",
+          "path": "src/lib/workflowVisibility.ts",
+          "fingerprint": "d0a6e0c51b8117d14b99fe66f94f6b950a9b066a5ad5bc578265f380dc180316"
+        },
+        {
+          "item_id": "efe7cfb773da7b543597f274c218d721164184224a4917b79bf60d41dfdd0ee4",
+          "path": "src/components/SettingsPage/SettingsPage.tsx",
+          "fingerprint": "2abc9d6d444ca6e319fbd5d49ec203ded14f46452d70b6ca4e84e3bca0c7183e"
+        },
+        {
+          "item_id": "f37d644e250c569bd0838f8e87738de697030f87c391b793a495fe020cc53c72",
+          "path": "src/components/WidgetApp/WidgetApp.tsx",
+          "fingerprint": "e8eee4b5f07f47b533e30491434eecb167d3cbefab93684617f520d17401fee4"
+        }
+      ],
+      "completed": [
+        {
+          "item_id": "3033636541a6b0b8d12064e1761524a957f6fbe0168cab311529ab9529123fb6",
+          "path": "src/App.tsx",
+          "fingerprint": "bd15526f53e69e579942c75999b63eee7df2f28394a630d71d6cfe51f1f88cd1"
+        },
+        {
+          "item_id": "3b4269a69aa4b482ae78c2395220a50d8f0cda17ff1a73df4edd1e2073ac276d",
+          "path": "src/components/WorkflowCanvas/graph.ts",
+          "fingerprint": "96162bc530336853cf424791d99b5fa48ddd5b5ffc2e0c21c5a5d257fb61a4d3"
+        },
+        {
+          "item_id": "41075b43848bf23052bbff4a77129b7cea24bed4f158c9ec4be57146016284b9",
+          "path": "src-tauri/src/db/tasks.rs",
+          "fingerprint": "1c6492aa62157262b8a0759ae40cfbf865ce2497f71d806b0b40f849ef862f1d"
+        },
+        {
+          "item_id": "474aaa9156481255a8adca974b48feeb5fdb116026b03b1b33d80a4a89cd1946",
+          "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+          "fingerprint": "8050083ee8a2b85ea234b0558934915ee6c69752a5d9eb70edcff64670f0d624"
+        },
+        {
+          "item_id": "5398ffe56dc5760d8ee6af9607c18247effe107c974209c1b2010973cd44bd8b",
+          "path": "src-tauri/src/db/workflow.rs",
+          "fingerprint": "fcd943202880994d6d20db51f0d7593b8ff0a5848531bfd43488906a6d7df209"
+        },
+        {
+          "item_id": "76e1574443fdacf60d9679c44d943c21e4cdca5edea3ed146214dac936166ddc",
+          "path": "src-tauri/src/db/mod.rs",
+          "fingerprint": "5508997ce2401e6743083a20895e4e0f6c8595594c3ee0350464ec2f62ead695"
+        },
+        {
+          "item_id": "8533464fa245b541c8581f91d1eda96220cfee39ad8d674c14067dbe19aa05fe",
+          "path": "src/components/WorkflowCanvas/TaskNode.tsx",
+          "fingerprint": "3fb37203fd63656475f0e95e0b1c65f66506fc6761d372308b687835594d399a"
+        },
+        {
+          "item_id": "8dec73b8aee6286063876475c7a484ace527bcce4434a3c6860f5e8e667be733",
+          "path": "src/lib/workflowVisibility.ts",
+          "fingerprint": "d0a6e0c51b8117d14b99fe66f94f6b950a9b066a5ad5bc578265f380dc180316"
+        },
+        {
+          "item_id": "efe7cfb773da7b543597f274c218d721164184224a4917b79bf60d41dfdd0ee4",
+          "path": "src/components/SettingsPage/SettingsPage.tsx",
+          "fingerprint": "2abc9d6d444ca6e319fbd5d49ec203ded14f46452d70b6ca4e84e3bca0c7183e"
+        },
+        {
+          "item_id": "f37d644e250c569bd0838f8e87738de697030f87c391b793a495fe020cc53c72",
+          "path": "src/components/WidgetApp/WidgetApp.tsx",
+          "fingerprint": "e8eee4b5f07f47b533e30491434eecb167d3cbefab93684617f520d17401fee4"
+        }
+      ],
+      "reused": [],
+      "failed": [],
+      "waived": []
+    },
+    "elapsed_ms": 848175
+  }
+}

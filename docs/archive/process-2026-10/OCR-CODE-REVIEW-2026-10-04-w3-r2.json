@@ -1,0 +1,170 @@
+{
+  "status": "complete",
+  "llm": {
+    "provider": "minimax-cn",
+    "model": "MiniMax-M3"
+  },
+  "message": "Review complete: 2 finding(s) across 5 selected item(s).",
+  "summary": {
+    "files_reviewed": 5,
+    "comments": 2,
+    "total_tokens": 236240,
+    "input_tokens": 214371,
+    "output_tokens": 21869,
+    "cache_read_tokens": 148839,
+    "elapsed": "4m53s"
+  },
+  "tool_calls": {
+    "total": 28,
+    "by_tool": {
+      "code_comment": 1,
+      "code_search": 14,
+      "file_read": 8,
+      "file_read_diff": 5
+    },
+    "failure": 0,
+    "failure_by_tool": {},
+    "failure_details": []
+  },
+  "comments": [
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "In `stopRun`, `stopBusyRef.current` is reset to `false` in the `finally` block immediately after `await invoke(\"workflow_stop\", ...)` resolves, but the 300ms reconciliation runs via `setTimeout` afterwards. During that 300ms window a fast double-click will re-enter `stopRun` (the guard is already released) and fire a second `workflow_stop` invoke before `running` is reconciled — the original \"busy\" intent only protects the in-flight call, not the post-stop reconciliation.",
+      "suggestion_code": "+    stopBusyRef.current = true;\n+    let cancelled = false;\n+    try {\n+      await invoke(\"workflow_stop\", { workflowId: activeId });\n+      // 立即回查一次：控制台通常秒级注销，按钮及时复位（轮询兜底剩余窗口）\n+      setTimeout(() =\u003e {\n+        if (cancelled) return;\n+        invoke\u003cboolean\u003e(\"workflow_is_running\", { workflowId: activeId })\n+          .then((v) =\u003e { if (!cancelled) setRunning(v); })\n+          .catch(() =\u003e {});\n+      }, 300);\n+    } catch (e) {\n+      handleCommandError(e, \"停止工作流\");\n+    } finally {\n+      stopBusyRef.current = false;\n+    }",
+      "existing_code": "+    stopBusyRef.current = true;\n+    try {\n+      await invoke(\"workflow_stop\", { workflowId: activeId });\n+      // 立即回查一次：控制台通常秒级注销，按钮及时复位（轮询兜底剩余窗口）\n+      setTimeout(() =\u003e {\n+        invoke\u003cboolean\u003e(\"workflow_is_running\", { workflowId: activeId })\n+          .then((v) =\u003e setRunning(v))\n+          .catch(() =\u003e {});\n+      }, 300);\n+    } catch (e) {\n+      handleCommandError(e, \"停止工作流\");\n+    } finally {\n+      stopBusyRef.current = false;\n+    }",
+      "start_line": 398,
+      "end_line": 411,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "The 300ms re-check inside `stopRun` closes over `activeId` from the surrounding render. `activeId` is reassigned in several paths (`openWorkflow` line 144, `createBlank` line 172, save success line 481) — if the user switches the active workflow within those 300ms, the re-check will query the previous workflow's status and call `setRunning(false)`, which then disables the start button for the newly active workflow even though it may have never been running.",
+      "suggestion_code": "+      await invoke(\"workflow_stop\", { workflowId: activeId });\n+      const stoppedId = activeId;\n+      const seq = openSeqRef.current;\n+      // 立即回查一次：控制台通常秒级注销，按钮及时复位（轮询兜底剩余窗口）\n+      setTimeout(() =\u003e {\n+        if (seq !== openSeqRef.current) return; // 用户已切换工作流，丢弃\n+        invoke\u003cboolean\u003e(\"workflow_is_running\", { workflowId: stoppedId })\n+          .then((v) =\u003e { if (seq === openSeqRef.current) setRunning(v); })\n+          .catch(() =\u003e {});\n+      }, 300);",
+      "existing_code": "+      await invoke(\"workflow_stop\", { workflowId: activeId });\n+      // 立即回查一次：控制台通常秒级注销，按钮及时复位（轮询兜底剩余窗口）\n+      setTimeout(() =\u003e {\n+        invoke\u003cboolean\u003e(\"workflow_is_running\", { workflowId: activeId })\n+          .then((v) =\u003e setRunning(v))\n+          .catch(() =\u003e {});\n+      }, 300);",
+      "start_line": 400,
+      "end_line": 406,
+      "category": "bug",
+      "severity": "medium"
+    }
+  ],
+  "groups": [
+    {
+      "label": "src-tauri/src/bot_artifacts.rs",
+      "files": [
+        "src-tauri/src/bot_artifacts.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/lib.rs",
+      "files": [
+        "src-tauri/src/lib.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/workflow_runner.rs",
+      "files": [
+        "src-tauri/src/workflow_runner.rs"
+      ]
+    },
+    {
+      "label": "src/components/WorkflowCanvas/GoalNode.tsx",
+      "files": [
+        "src/components/WorkflowCanvas/GoalNode.tsx"
+      ]
+    },
+    {
+      "label": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "files": [
+        "src/components/WorkflowCanvas/WorkflowPage.tsx"
+      ]
+    }
+  ],
+  "session_id": "3b0fdae3-aeec-4b89-a8de-ddc6a42c950d",
+  "manifest": {
+    "schema_version": "ocr.run-manifest/v1",
+    "run_id": "3b0fdae3-aeec-4b89-a8de-ddc6a42c950d",
+    "operation": "review",
+    "terminal_state": "complete",
+    "repository": {
+      "identity_sha256": "7aebc670c3c38e64ae52ffaf12cfa8ba078a29af906f8ef856132cd790dbe48b"
+    },
+    "input": {
+      "mode": "range",
+      "requested_from": "f7febcf",
+      "requested_head": "f97aaab",
+      "resolved_base": "f7febcf1d01743ac2ee6fcbc8c5d5302c1c04a63",
+      "resolved_head": "f97aaab12b0d55097f5589e14fd5cfca248aba7a",
+      "exact_range": "f7febcf1d01743ac2ee6fcbc8c5d5302c1c04a63..f97aaab12b0d55097f5589e14fd5cfca248aba7a",
+      "source_artifact_sha256": "d2a02392fec6b8f3c08f2ffe04c54be21146a00a3f4d8d6d19e2030431e147db"
+    },
+    "execution": {
+      "ocr_version": "v1.12.11",
+      "provider": "minimax-cn",
+      "model": "MiniMax-M3",
+      "configured_concurrency": 8,
+      "rule_config_sha256": "d5e28d02ed5cdf85b533907db24b47f1be02847db764a4ded208dbaf54380ae1",
+      "runtime_config_sha256": "f3ac1cdd2a45285ba614e32ab9bd03b86d9911c8deb3bec22fccf7b7bd4e6913"
+    },
+    "coverage": {
+      "selected": [
+        {
+          "item_id": "1c5998aec79bbbf70045a48319f5b9dea30bc903c4d39440edb9249db8b150b8",
+          "path": "src-tauri/src/bot_artifacts.rs",
+          "fingerprint": "472a82fc91a32bd685806f0cff4e1d13ec0eb66b12f3c9d4bce81fb9d0683424"
+        },
+        {
+          "item_id": "474aaa9156481255a8adca974b48feeb5fdb116026b03b1b33d80a4a89cd1946",
+          "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+          "fingerprint": "4f06000cb92288c4a123b21ee8b4b86dee5662fcfa479b26fac089e8d7fc6e19"
+        },
+        {
+          "item_id": "4d55cb6d6956eb62950e9e7e475d6043ccac9a2e84f3b35ef81841f67f43b289",
+          "path": "src-tauri/src/workflow_runner.rs",
+          "fingerprint": "8ff0383594861b049cc88c92801028c49883e149398627794d4e263a9e79a842"
+        },
+        {
+          "item_id": "528ad10f021908aaf18bda0679702eefa6327f4a47d683d8a6a74ddc439488c1",
+          "path": "src/components/WorkflowCanvas/GoalNode.tsx",
+          "fingerprint": "e200abfb62c272605cca304f46d6332aa00c7b6539f558ab0610e9cc91af20d4"
+        },
+        {
+          "item_id": "ea968c5e93541c9ee2b1d0e41dd95724435e23bef03242ed2ea15d14bc549633",
+          "path": "src-tauri/src/lib.rs",
+          "fingerprint": "53f6dd65bd44f808f6d639a819a0003396935325e8fe0c2314b3f75608d604c6"
+        }
+      ],
+      "completed": [
+        {
+          "item_id": "1c5998aec79bbbf70045a48319f5b9dea30bc903c4d39440edb9249db8b150b8",
+          "path": "src-tauri/src/bot_artifacts.rs",
+          "fingerprint": "472a82fc91a32bd685806f0cff4e1d13ec0eb66b12f3c9d4bce81fb9d0683424"
+        },
+        {
+          "item_id": "474aaa9156481255a8adca974b48feeb5fdb116026b03b1b33d80a4a89cd1946",
+          "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+          "fingerprint": "4f06000cb92288c4a123b21ee8b4b86dee5662fcfa479b26fac089e8d7fc6e19"
+        },
+        {
+          "item_id": "4d55cb6d6956eb62950e9e7e475d6043ccac9a2e84f3b35ef81841f67f43b289",
+          "path": "src-tauri/src/workflow_runner.rs",
+          "fingerprint": "8ff0383594861b049cc88c92801028c49883e149398627794d4e263a9e79a842"
+        },
+        {
+          "item_id": "528ad10f021908aaf18bda0679702eefa6327f4a47d683d8a6a74ddc439488c1",
+          "path": "src/components/WorkflowCanvas/GoalNode.tsx",
+          "fingerprint": "e200abfb62c272605cca304f46d6332aa00c7b6539f558ab0610e9cc91af20d4"
+        },
+        {
+          "item_id": "ea968c5e93541c9ee2b1d0e41dd95724435e23bef03242ed2ea15d14bc549633",
+          "path": "src-tauri/src/lib.rs",
+          "fingerprint": "53f6dd65bd44f808f6d639a819a0003396935325e8fe0c2314b3f75608d604c6"
+        }
+      ],
+      "reused": [],
+      "failed": [],
+      "waived": []
+    },
+    "elapsed_ms": 293177
+  }
+}

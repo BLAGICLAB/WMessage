@@ -1,0 +1,239 @@
+{
+  "status": "complete",
+  "llm": {
+    "provider": "minimax-cn",
+    "model": "MiniMax-M3"
+  },
+  "message": "Review complete: 9 finding(s) across 5 selected item(s).",
+  "summary": {
+    "files_reviewed": 5,
+    "comments": 9,
+    "total_tokens": 1244334,
+    "input_tokens": 1141590,
+    "output_tokens": 102744,
+    "cache_read_tokens": 916364,
+    "elapsed": "10m20s"
+  },
+  "tool_calls": {
+    "total": 61,
+    "by_tool": {
+      "code_comment": 5,
+      "code_search": 33,
+      "file_find": 2,
+      "file_read": 19,
+      "file_read_diff": 2
+    },
+    "failure": 1,
+    "failure_by_tool": {
+      "file_read": 1
+    },
+    "failure_details": [
+      {
+        "tool_call_number": 42,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/tests/memory_conflict.rs",
+        "arguments": "{\"end_line\":100,\"file_path\":\"src-tauri/src/memory/extract.rs\",\"start_line\":530}",
+        "error": "invalid line range: start_line 530 is greater than end_line 100"
+      }
+    ]
+  },
+  "comments": [
+    {
+      "path": "src-tauri/tests/memory_conflict.rs",
+      "content": "JSON built via `format!` with direct interpolation of `new` content. If any corpus content contained `\"`, `\\`, `{`, or `}`, the resulting JSON would be malformed. Currently safe for the hardcoded corpus, but fragile to future test data additions or copy-paste edits. Consider building a structured value (e.g. `serde_json::json!`) and stringifying it for stronger guarantees.",
+      "existing_code": "let extract_json = format!(r#\"[{{\"content\":\"{new}\",\"kind\":\"fact\",\"importance\":3}}]\"#);\n        server.push_behavior(openai_reply(extract_json));",
+      "start_line": 152,
+      "end_line": 153,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/tests/memory_conflict.rs",
+      "content": "The assertion loop calls `store::load_all(\u0026conn)` once per corpus item (10 times total), full-scanning the shared test database each iteration. Since every pipeline run finishes before the assertion loop starts, a single `load_all` outside the loop plus an in-memory `filter` would cut this from O(n×m) to O(n+m). Not a correctness bug, but the shared test DB already accumulates rows from sibling tests, so the cost compounds.",
+      "existing_code": "let stale: Vec\u003cstore::MemItem\u003e = store::load_all(\u0026conn)\n            .unwrap()\n            .into_iter()\n            .filter(|m| m.content == *old)\n            .collect();",
+      "start_line": 229,
+      "end_line": 233,
+      "category": "performance",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/tests/memory_conflict.rs",
+      "content": "`client` and `base_url` are cloned twice per iteration: once in the loop body to feed the outer `move`, then again inside the closure's `async move` block. The outer clones are sufficient — the inner ones are redundant. Hoist the `base_url` clone and pass `client` / `base_url` straight into the `async move` to simplify the closure.",
+      "existing_code": "let base_url = server.base_url.clone();\n        let client = client.clone();\n        let llm = move |prompt: \u0026'static str, msgs: Vec\u003cChatMsg\u003e| {\n            let client = client.clone();\n            let base_url = base_url.clone();\n            async move {",
+      "start_line": 172,
+      "end_line": 177,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "model-meta-service/main.py",
+      "content": "In the not-found branch of `model_get`, the literal sets `provider_key: None` explicitly, but the immediately following `**provider_fallback(\"?\")` spread carries `provider_key: \"?\"` and silently overrides it (Python keeps the last value when keys collide in a literal/spread). The explicit `None` is dead code — the actual returned value is `\"?\"`. This is semantically misleading: any consumer that distinguishes \"model missing\" via `response.provider_key is None` will mis-classify the fallback as \"model associated with a provider named '?'\", while another consumer inspecting the `source` field will reach the opposite conclusion. The intent of the fallback (placeholder `\"?\"` vs `None`) is now ambiguous. Decide which semantics is intended and make the literal match — e.g. drop the `provider_key: None` line if `\"?\"` is the intended placeholder, or drop the `provider_fallback(\"?\")` spread (and inline only the genuinely-needed provider fields) if `None` is the intended sentinel.",
+      "existing_code": "    return {\"model_key\": model_key, \"provider_key\": None, \"display_name\": FALLBACK_CHAR,\n            \"context_length\": None, \"temperature\": None, \"top_p\": None, \"max_tokens\": None,\n            \"default_system_prompt\": None, \"source\": \"fallback\", **provider_fallback(\"?\")}",
+      "start_line": 171,
+      "end_line": 173,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "model-meta-service/main.py",
+      "content": "`model_upsert` returns `{\"ok\": False, \"error\": \"...\"}` with HTTP 200 status when the referenced `provider_key` does not exist, instead of raising `HTTPException(status_code=..., detail=...)`. This deviates from FastAPI conventions: clients must inspect the response body for an `ok` flag rather than relying on the HTTP status code. The same non-idiomatic shape is also used in `sync_now` (success and failure both return 200 with `{\"ok\": ...}`), reinforcing the asymmetry vs. all the read endpoints which use the standard FastAPI return-shape. Prefer raising `HTTPException(status_code=404, detail=f\"provider 不存在: {body.provider_key}，请先 POST /api/provider\")` so the error is visible in the status code and tooling (Swagger, logs, proxies) handles it correctly.",
+      "existing_code": "        if not conn.execute(\"SELECT 1 FROM provider WHERE provider_key=?\", (body.provider_key,)).fetchone():\n            return {\"ok\": False, \"error\": f\"provider 不存在: {body.provider_key}，请先 POST /api/provider\"}",
+      "start_line": 196,
+      "end_line": 197,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "model-meta-service/main.py",
+      "content": "`httpx.get(MODELS_DEV_API, timeout=10)` in `sync_models_dev` does not use a response context manager, so the underlying connection is only released on garbage collection. For the one-shot lifespan call this is harmless, but `/api/sync-models-dev` re-invokes `sync_models_dev` on demand and can be triggered repeatedly; over time the default client's connection pool may accumulate idle connections that are not cleanly returned. Prefer `with httpx.Client(timeout=10) as client: data = client.get(MODELS_DEV_API).json()` so the response is closed deterministically.",
+      "existing_code": "    data = httpx.get(MODELS_DEV_API, timeout=10).json()",
+      "start_line": 56,
+      "end_line": 56,
+      "category": "performance",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/tests/memory_conflict.rs",
+      "content": "断言「裁决请求里应含候选记忆清单」实现为对 `bodies` 全量 `any`，未限定为裁决请求。若抽取 prompt 后续误增类似文本（如扩写「已有记忆」示例），该 sanity 会假阳性通过、掩盖 build_adjudication_msgs 实际断线。建议按调用顺序只检查裁决请求（bodies[1], bodies[3], …）——也是「Confirm 档 now 统一」之后定位「哪一档 prompt 缺候选清单」唯一可靠的索引。",
+      "existing_code": "    let bodies = server.request_bodies();\n    assert!(\n        bodies.iter().any(|b| b.contains(\"已有记忆 id=\")),\n        \"裁决请求应含候选记忆清单\"\n    );",
+      "start_line": 206,
+      "end_line": 210,
+      "category": "test",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/tests/memory_conflict.rs",
+      "content": "「抽取+裁决 各一次 = 2×corpus.len()」硬编码与 `Confirm 档 now 统一` 的方向冲突——一旦确认档合并入抽取 prompt、或裁决前增一次重排/校验 LLM 调用，本测试会立刻红，但实际语义并未退化；断言信息「实得 N」只报数字、不区分是「多了 1 抽」还是「多了 1 确认」。建议拆成两步：① 断言「至少每组 ≥2 次」+ `request_bodies()` 中裁决请求数 ≥corpus.len()，把「每组恰好 2 次」的脆弱性下沉到 pipeline 自己的单测。",
+      "existing_code": "    assert_eq!(\n        server.request_count(),\n        corpus.len() * 2,\n        \"每组应恰好调用两次 LLM（抽取+裁决），实得 {}\",\n        server.request_count()\n    );",
+      "start_line": 199,
+      "end_line": 204,
+      "category": "test",
+      "severity": "low"
+    },
+    {
+      "path": "model-meta-service/main.py",
+      "content": "The PALETTE color assignment via `hash(pkey)` does not match the \"稳定\" (stable) claim in the comment above the PALETTE list. Python's `hash()` for strings uses SipHash with a per-process random seed (PYTHONHASHSEED), so the same provider_key would receive different fallback colors on different process restarts and on any fresh database — i.e. across deployments of this metadata service. Since this assignment runs only inside `sync_models_dev` and the column is written on INSERT (the ON CONFLICT branch does not re-write `fallback_color`), this means each fresh DB / first-time sync ends up with a different palette mapping, contradicting the stated intent. Use a deterministic hash such as `zlib.crc32(pkey.encode()) % len(PALETTE)` or `int.from_bytes(hashlib.blake2b(pkey.encode(), digest_size=4).digest(), 'big') % len(PALETTE)` to get true cross-deployment stability.",
+      "suggestion_code": "                (pkey, name, LOGO_URL.format(pkey), PALETTE[zlib.crc32(pkey.encode()) % len(PALETTE)], name[0].upper(), p.get(\"api\")),",
+      "existing_code": "                (pkey, name, LOGO_URL.format(pkey), PALETTE[hash(pkey) % len(PALETTE)], name[0].upper(), p.get(\"api\")),",
+      "start_line": 68,
+      "end_line": 68,
+      "category": "bug",
+      "severity": "medium"
+    }
+  ],
+  "groups": [
+    {
+      "label": "src-tauri/src/memory/extract.rs",
+      "files": [
+        "src-tauri/src/memory/extract.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/prompts/extract.rs",
+      "files": [
+        "src-tauri/src/prompts/extract.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/prompts/mod.rs",
+      "files": [
+        "src-tauri/src/prompts/mod.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/tests/memory_conflict.rs",
+      "files": [
+        "src-tauri/tests/memory_conflict.rs"
+      ]
+    },
+    {
+      "label": "model-meta-service/main.py",
+      "files": [
+        "model-meta-service/main.py"
+      ]
+    }
+  ],
+  "session_id": "bb6d037b-3bde-4e95-8f89-85307059c21b",
+  "manifest": {
+    "schema_version": "ocr.run-manifest/v1",
+    "run_id": "bb6d037b-3bde-4e95-8f89-85307059c21b",
+    "operation": "review",
+    "terminal_state": "complete",
+    "repository": {
+      "identity_sha256": "7aebc670c3c38e64ae52ffaf12cfa8ba078a29af906f8ef856132cd790dbe48b"
+    },
+    "input": {
+      "mode": "workspace",
+      "resolved_base": "d4514afca678d5dc5d4e494f4f506a74d8fa3bdb",
+      "source_artifact_sha256": "86647e9674d3ca3116b6d4f203271982bcebde98a140c5530e70dd57d67069ce"
+    },
+    "execution": {
+      "ocr_version": "v1.12.11",
+      "provider": "minimax-cn",
+      "model": "MiniMax-M3",
+      "configured_concurrency": 8,
+      "rule_config_sha256": "8779d0d046b15151518200e75283f8c72cb6815f8e9b6de313d85d8f880d7dde",
+      "runtime_config_sha256": "f3ac1cdd2a45285ba614e32ab9bd03b86d9911c8deb3bec22fccf7b7bd4e6913"
+    },
+    "coverage": {
+      "selected": [
+        {
+          "item_id": "14e22db72ccf5602c1acf9d43e4afa311adb3f1d18478d8eb0cc3098021fe44c",
+          "path": "src-tauri/tests/memory_conflict.rs",
+          "fingerprint": "4e41f271401b9fa9fbe540787f34779b331ab02d8494fc6bfabe3c260b1cd7bb"
+        },
+        {
+          "item_id": "2712fa77b6c49016590ed010f321f2b5a42b623b0a587a37e1743abd195e3490",
+          "path": "src-tauri/src/prompts/extract.rs",
+          "fingerprint": "37d5576370c7bd67f439ccd6593e58099e1c2ef230d9418281963d1a1025f47b"
+        },
+        {
+          "item_id": "3251734d24945b2c6d78dd04d49ae5f65baafd99618a1676659fdcdd51005490",
+          "path": "src-tauri/src/prompts/mod.rs",
+          "fingerprint": "305e8177a7a2efdd17ab95e70eae934eca81b6a4de0461bdaacd6623cbdfbd3a"
+        },
+        {
+          "item_id": "ad8f8381ed551acda797fbb5e3b55a4dcbab7799d42a5754dbe2a882a5165560",
+          "path": "model-meta-service/main.py",
+          "fingerprint": "2e5563d904a7dcb6154ba8050f1a1c42be14a9d2f26d1a09ab2596be8c44e4db"
+        },
+        {
+          "item_id": "f8daa7d30d64c4471481185be9f80d269c0f7659c34798f7b66e769f38ed658d",
+          "path": "src-tauri/src/memory/extract.rs",
+          "fingerprint": "5733d5041a012e5e566e795d74e5cc5bd244eef824187e7ba48c8689b74dd59f"
+        }
+      ],
+      "completed": [
+        {
+          "item_id": "14e22db72ccf5602c1acf9d43e4afa311adb3f1d18478d8eb0cc3098021fe44c",
+          "path": "src-tauri/tests/memory_conflict.rs",
+          "fingerprint": "4e41f271401b9fa9fbe540787f34779b331ab02d8494fc6bfabe3c260b1cd7bb"
+        },
+        {
+          "item_id": "2712fa77b6c49016590ed010f321f2b5a42b623b0a587a37e1743abd195e3490",
+          "path": "src-tauri/src/prompts/extract.rs",
+          "fingerprint": "37d5576370c7bd67f439ccd6593e58099e1c2ef230d9418281963d1a1025f47b"
+        },
+        {
+          "item_id": "3251734d24945b2c6d78dd04d49ae5f65baafd99618a1676659fdcdd51005490",
+          "path": "src-tauri/src/prompts/mod.rs",
+          "fingerprint": "305e8177a7a2efdd17ab95e70eae934eca81b6a4de0461bdaacd6623cbdfbd3a"
+        },
+        {
+          "item_id": "ad8f8381ed551acda797fbb5e3b55a4dcbab7799d42a5754dbe2a882a5165560",
+          "path": "model-meta-service/main.py",
+          "fingerprint": "2e5563d904a7dcb6154ba8050f1a1c42be14a9d2f26d1a09ab2596be8c44e4db"
+        },
+        {
+          "item_id": "f8daa7d30d64c4471481185be9f80d269c0f7659c34798f7b66e769f38ed658d",
+          "path": "src-tauri/src/memory/extract.rs",
+          "fingerprint": "5733d5041a012e5e566e795d74e5cc5bd244eef824187e7ba48c8689b74dd59f"
+        }
+      ],
+      "reused": [],
+      "failed": [],
+      "waived": []
+    },
+    "elapsed_ms": 620145
+  }
+}

@@ -1,0 +1,144 @@
+{
+  "status": "complete",
+  "llm": {
+    "provider": "minimax-cn",
+    "model": "MiniMax-M3"
+  },
+  "message": "Review complete: 3 finding(s) across 3 selected item(s).",
+  "summary": {
+    "files_reviewed": 3,
+    "comments": 3,
+    "total_tokens": 670970,
+    "input_tokens": 629882,
+    "output_tokens": 41088,
+    "cache_read_tokens": 529495,
+    "elapsed": "6m59s"
+  },
+  "tool_calls": {
+    "total": 49,
+    "by_tool": {
+      "code_comment": 1,
+      "code_search": 26,
+      "file_find": 3,
+      "file_read": 18,
+      "file_read_diff": 1
+    },
+    "failure": 0,
+    "failure_by_tool": {},
+    "failure_details": []
+  },
+  "comments": [
+    {
+      "path": "model-meta-service/main.py",
+      "content": "`PALETTE[hash(pkey) % len(PALETTE)]` relies on Python's built-in `hash()`, which for `str` is randomized per process (PYTHONHASHSEED, default since 3.3). The color assigned to a given `provider_key` will therefore change on every service restart, contradicting the inline comment \"稳定且可区分\" and causing user-visible color flicker for the logo fallback. Use a stable hash (e.g., `hashlib.blake2b(pkey.encode(), digest_size=4).digest()` folded into an int, or `zlib.crc32(pkey.encode())`).",
+      "suggestion_code": "                (pkey, name, LOGO_URL.format(pkey), PALETTE[zlib.crc32(pkey.encode()) % len(PALETTE)], (name[:1] or FALLBACK_CHAR).upper(), p.get(\"api\")),",
+      "existing_code": "                (pkey, name, LOGO_URL.format(pkey), PALETTE[hash(pkey) % len(PALETTE)], name[0].upper(), p.get(\"api\")),",
+      "start_line": 68,
+      "end_line": 68,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "model-meta-service/main.py",
+      "content": "`model_get` fallback response is internally inconsistent: the literal sets `provider_key=None` first, but `**provider_fallback(\"?\")` is spread after it, so the spread's `provider_key: \"?\"` overwrites the `None`. The caller sees `provider_key=\"?\"` and `provider_name=\"?\"` rather than the `None`/clear-fallback shape the literal tries to express. Either drop the duplicate keys from the literal or use a single source of truth for the fallback fields.",
+      "suggestion_code": "    return {\"model_key\": model_key, \"provider_key\": None, \"display_name\": FALLBACK_CHAR,\n            \"context_length\": None, \"temperature\": None, \"top_p\": None, \"max_tokens\": None,\n            \"default_system_prompt\": None, \"source\": \"fallback\"}",
+      "existing_code": "    return {\"model_key\": model_key, \"provider_key\": None, \"display_name\": FALLBACK_CHAR,\n            \"context_length\": None, \"temperature\": None, \"top_p\": None, \"max_tokens\": None,\n            \"default_system_prompt\": None, \"source\": \"fallback\", **provider_fallback(\"?\")}",
+      "start_line": 171,
+      "end_line": 173,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "model-meta-service/main.py",
+      "content": "`n_prov`/`n_model` are incremented unconditionally on every iteration, so the returned counts include rows that were unchanged (ON CONFLICT WHERE clause skipped the UPDATE). The names imply \"changed\" but the values reflect \"attempted\". Either rename to clarify intent or track actual mutations via `cursor.rowcount`/a `changed` flag.",
+      "existing_code": "            n_prov += 1\n            for mkey, m in (p.get(\"models\") or {}).items():\n                conn.execute(\n                    \"\"\"INSERT INTO model (model_key, provider_key, display_name, context_length, source)\n                       VALUES (?, ?, ?, ?, 'models_dev')\n                       ON CONFLICT(model_key) DO UPDATE SET\n                           provider_key=excluded.provider_key, display_name=excluded.display_name,\n                           context_length=excluded.context_length\n                       WHERE model.source='models_dev'\"\"\",\n                    (f\"{pkey}/{mkey}\", pkey, m.get(\"name\") or mkey, (m.get(\"limit\") or {}).get(\"context\")),\n                )\n                n_model += 1\n    return {\"providers\": n_prov, \"models\": n_model}",
+      "start_line": 70,
+      "end_line": 82,
+      "category": "maintainability",
+      "severity": "low"
+    }
+  ],
+  "groups": [
+    {
+      "label": ".gitignore",
+      "files": [
+        ".gitignore"
+      ]
+    },
+    {
+      "label": "src-tauri/tests/memory_eval.rs",
+      "files": [
+        "src-tauri/tests/memory_eval.rs"
+      ]
+    },
+    {
+      "label": "model-meta-service/main.py",
+      "files": [
+        "model-meta-service/main.py"
+      ]
+    }
+  ],
+  "session_id": "1e0df7db-fe6d-4552-a32b-0cb5b52b34e6",
+  "manifest": {
+    "schema_version": "ocr.run-manifest/v1",
+    "run_id": "1e0df7db-fe6d-4552-a32b-0cb5b52b34e6",
+    "operation": "review",
+    "terminal_state": "complete",
+    "repository": {
+      "identity_sha256": "7aebc670c3c38e64ae52ffaf12cfa8ba078a29af906f8ef856132cd790dbe48b"
+    },
+    "input": {
+      "mode": "workspace",
+      "resolved_base": "2a79f2ac2d2c79ff21597cc850a9fb5180933ab7",
+      "source_artifact_sha256": "a28a242877f66c1dc4597a95fc4a92fde2e9c5a8dc09803628d58a955af81b0a"
+    },
+    "execution": {
+      "ocr_version": "v1.12.11",
+      "provider": "minimax-cn",
+      "model": "MiniMax-M3",
+      "configured_concurrency": 8,
+      "rule_config_sha256": "8779d0d046b15151518200e75283f8c72cb6815f8e9b6de313d85d8f880d7dde",
+      "runtime_config_sha256": "f3ac1cdd2a45285ba614e32ab9bd03b86d9911c8deb3bec22fccf7b7bd4e6913"
+    },
+    "coverage": {
+      "selected": [
+        {
+          "item_id": "560c0f15567192872afa04f7cdd54fed6095848f92bec422964bb52bd655722d",
+          "path": ".gitignore",
+          "fingerprint": "66fca156c30716c99cb2883a29d166df15baa0975a00b21620ccd70bc9787e5d"
+        },
+        {
+          "item_id": "ad8f8381ed551acda797fbb5e3b55a4dcbab7799d42a5754dbe2a882a5165560",
+          "path": "model-meta-service/main.py",
+          "fingerprint": "2e5563d904a7dcb6154ba8050f1a1c42be14a9d2f26d1a09ab2596be8c44e4db"
+        },
+        {
+          "item_id": "f36d132f5fa7bc67edcc8a7daac230205e1a34d5ad4d400d8324070bdc88e6fd",
+          "path": "src-tauri/tests/memory_eval.rs",
+          "fingerprint": "da7abd6854b0d74806b6233b4da2a06f887f141e41da2be26538b4f99df96c44"
+        }
+      ],
+      "completed": [
+        {
+          "item_id": "560c0f15567192872afa04f7cdd54fed6095848f92bec422964bb52bd655722d",
+          "path": ".gitignore",
+          "fingerprint": "66fca156c30716c99cb2883a29d166df15baa0975a00b21620ccd70bc9787e5d"
+        },
+        {
+          "item_id": "ad8f8381ed551acda797fbb5e3b55a4dcbab7799d42a5754dbe2a882a5165560",
+          "path": "model-meta-service/main.py",
+          "fingerprint": "2e5563d904a7dcb6154ba8050f1a1c42be14a9d2f26d1a09ab2596be8c44e4db"
+        },
+        {
+          "item_id": "f36d132f5fa7bc67edcc8a7daac230205e1a34d5ad4d400d8324070bdc88e6fd",
+          "path": "src-tauri/tests/memory_eval.rs",
+          "fingerprint": "da7abd6854b0d74806b6233b4da2a06f887f141e41da2be26538b4f99df96c44"
+        }
+      ],
+      "reused": [],
+      "failed": [],
+      "waived": []
+    },
+    "elapsed_ms": 418670
+  }
+}

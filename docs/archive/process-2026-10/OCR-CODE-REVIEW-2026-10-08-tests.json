@@ -1,0 +1,846 @@
+{
+  "status": "success",
+  "llm": {
+    "provider": "minimax-cn",
+    "model": "MiniMax-M3"
+  },
+  "summary": {
+    "files_reviewed": 18,
+    "comments": 87,
+    "total_tokens": 2273227,
+    "input_tokens": 2006949,
+    "output_tokens": 266278,
+    "cache_read_tokens": 1357001,
+    "elapsed": "20m20s"
+  },
+  "tool_calls": {
+    "total": 86,
+    "by_tool": {
+      "code_comment": 18,
+      "code_search": 28,
+      "file_read": 40
+    },
+    "failure": 0,
+    "failure_by_tool": {},
+    "failure_details": []
+  },
+  "comments": [
+    {
+      "path": "tests-audit/regen_tools_baseline.py",
+      "content": "Error message renders the missing list with `SCHEMA_['QUERY_TASKS', ...]` because `missing` is a `list`. The diagnostic is grammatically broken Chinese and unreadable when more than one constant is missing; it also leaves the operator guessing which literal names to look for. Build the message with an explicit join or prefix each name: `f\"registry.rs 缺常量: {', '.join(f'SCHEMA_{n}' for n in missing)}\"`.",
+      "suggestion_code": "    if missing:\n        names = \", \".join(f\"SCHEMA_{n}\" for n in missing)\n        raise RuntimeError(f\"registry.rs 缺常量: {names}\")",
+      "existing_code": "    if missing:\n        raise RuntimeError(f\"registry.rs 缺常量 SCHEMA_{missing}\")",
+      "start_line": 61,
+      "end_line": 62,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "tests-audit/regen_tools_baseline.py",
+      "content": "The JSON-validity gate does not name the offending entry. When `json.loads` raises `JSONDecodeError` inside the loop, the traceback points at the `for` line with no schema name, forcing the operator to bisect all 28 raw strings to find the malformed one — directly undermining the script's stated '解析失败时旧基线原样保留' invariant by being hard to act on. Wrap each parse and re-raise with the constant name and the offending snippet.",
+      "suggestion_code": "    for n in CORE_ORDER:\n        try:\n            json.loads(schemas[n])\n        except json.JSONDecodeError as err:\n            raise RuntimeError(\n                f\"SCHEMA_{n} 不是合法 JSON: {err.msg} (line {err.lineno}, col {err.colno})\"\n            ) from err",
+      "existing_code": "    for n in CORE_ORDER:\n        json.loads(schemas[n])",
+      "start_line": 68,
+      "end_line": 69,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "tests-audit/regen_tools_baseline.py",
+      "content": "The extractor hard-codes the 2-hash delimiter `r##\"...\"##`. If any schema legitimately needs more hashes (e.g. `r###\"...\"###` to embed a `\"##` literal in its description), the regex silently mis-parses: the half-line is captured as one entry and the trailing half becomes the next, and the only signal is the spurious 'missing constant' error from `CORE_ORDER`. Detect the actual delimiter from the source (e.g. match `r(#+)\"` for the opening and require the same hash count on the closer), or assert that all hashes match before continuing.",
+      "suggestion_code": "    # 匹配任意数量的 # 作为 raw-string 分隔符，避免硬编码 2 个 #\n    schemas = dict(re.findall(\n        r'pub const SCHEMA_(\\w+): \u0026str = (r(#+))\"(.*?)\\3\";', src, re.S\n    ))\n    schemas = {name: body for name, _, _, body in schemas.items()}\n    # 注：re.findall 返回的元组取最后一个重复组作为分隔符；如需更稳的结构可分两步匹配",
+      "existing_code": "    schemas = dict(re.findall(r'pub const SCHEMA_(\\w+): \u0026str = r##\"(.*?)\"##;', src, re.S))",
+      "start_line": 58,
+      "end_line": 58,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "tests-audit/audit_module_map.py",
+      "content": "`test_every_source_file_is_mentioned` lets a source file pass the audit if just its bare basename appears anywhere in the doc, so a new `bot/registry.rs` is not flagged when `registry.rs` is already mentioned in the doc for an unrelated file (e.g., `prompts/registry.rs`). The basename fallback should be removed or tightened (e.g., only count basename hits that also share the directory prefix) so the audit cannot silently miss newly added modules with colliding names.",
+      "existing_code": "unlisted = [\n        str(f) for f in source_files() if str(f) not in doc and f.name not in doc\n    ]",
+      "start_line": 119,
+      "end_line": 121,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "tests-audit/audit_module_map.py",
+      "content": "`declared_modules()` only scans a hardcoded list of mod.rs paths. Any new subdirectory that adds its own `mod.rs` (e.g., a future `config/mod.rs`) will be silently ignored, breaking `test_declared_modules_have_doc_entry`'s coverage guarantee. Discover mod.rs files dynamically (e.g., walk the tree for any `mod.rs`, derive the directory as the module prefix) instead of hardcoding.",
+      "existing_code": "for rel in [\"lib.rs\", \"bot/mod.rs\", \"bot_skills/mod.rs\", \"memory/mod.rs\", \"prompts/mod.rs\"]:",
+      "start_line": 88,
+      "end_line": 88,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "tests-audit/audit_module_map.py",
+      "content": "`resolve_entry` computes `candidates = sorted(SRC.rglob(name))` unconditionally, even on the fast path where `direct.exists()` is True — this rescans the whole source tree on every direct hit. Compute `candidates` only inside the `else` (or short-circuit the `direct` check first). Additionally, `Path.rglob` is documented for single-segment patterns; when `name` is multi-segment like `config/types.rs`, behavior depends on glob's path-separator semantics rather than the documented rglob contract — use an explicit `Path.rglob(Path(name).name)` plus a multi-segment suffix check, or restrict tree entries to basenames.",
+      "existing_code": "candidates = sorted(SRC.rglob(name))\n    direct = SRC / name\n    if direct.exists():\n        return direct.relative_to(SRC)",
+      "start_line": 58,
+      "end_line": 61,
+      "category": "performance",
+      "severity": "medium"
+    },
+    {
+      "path": "tests-audit/audit_module_map.py",
+      "content": "`MOD_DECL_RE` requires a literal space between `pub(crate)` and `mod`, so `pub(crate)mod foo;` (no space) is silently dropped from `declared_modules()`, allowing `test_declared_modules_have_doc_entry` to pass without a doc entry for that module. The regex also doesn't recognize `#[path = \"...\"]` or `#[cfg(...)]` attribute-decorated `mod` declarations, which is a known idiom for module layout. Make the whitespace optional (`pub(?:\\(crate\\))?\\s+mod ...`) and strip `#[...]` attributes from the line before matching.",
+      "existing_code": "# lib.rs / 子模块 mod.rs 的模块声明\nMOD_DECL_RE = re.compile(r\"^\\s*(?:pub(?:\\(crate\\))? )?mod ([a-z_0-9]+);\", re.M)",
+      "start_line": 27,
+      "end_line": 28,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "tests-audit/audit_pre_step_pre_execute.py",
+      "content": "Dead code: `find_line` and `grep_count` are defined at module level but never called by any test in this file (verified — no `find_line(` or `grep_count(` references anywhere). They should either be removed or actually used by tests that need line-precise location hints / occurrence counts.",
+      "existing_code": "def find_line(text, pattern):\n    \"\"\"返回首个匹配 pattern 的行号（1-indexed）；无匹配返回 -1\"\"\"\n    for i, line in enumerate(text.splitlines(), 1):\n        if re.search(pattern, line):\n            return i\n    return -1\n\n\ndef grep_count(text, pattern):\n    \"\"\"统计匹配次数\"\"\"\n    return sum(1 for _ in re.finditer(pattern, text))",
+      "start_line": 47,
+      "end_line": 57,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "tests-audit/audit_pre_step_pre_execute.py",
+      "content": "The regex `skill_name:\\s*\"([^\"]+)\"` matches *any* literal containing the pattern in intent_router.rs — doc comments (`// example: skill_name: \"x\"`), test fixtures, YAML snippets inside string literals, or unrelated struct fields — not only routing-table entries. The test will fail for innocent mentions as easily as for a real hardcoded route, and the failure message will misdirect debugging toward \"someone added a route\" when the actual cause is an unrelated comment. Tighten to the routing structure (e.g. match inside a specific enum arm / HashMap literal) or strip comments/strings before scanning.",
+      "existing_code": "        hardcoded = re.findall(r'skill_name:\\s*\"([^\"]+)\"', INTENT_ROUTER)\n        assert not hardcoded, f\"路由表不得硬编码技能名（路由来自已安装技能 intents）: {hardcoded}\"",
+      "start_line": 99,
+      "end_line": 100,
+      "category": "test",
+      "severity": "medium"
+    },
+    {
+      "path": "tests-audit/audit_pre_step_pre_execute.py",
+      "content": "Hardcoded 9000-char window after `fn_match.end()` will silently stop covering the tail of `execute_tool_impl` once the function body grows past 9000 chars. The assertion specifically looks for `tool.return`, which the surrounding comment describes as emitted \"末尾\" (at the end of the function) — a future refactor that pushes the emission past the 9000-char boundary will produce a false-negative: the test fails even though the event is still emitted, and the error message blames the wrong place. Anchor the assertion on a structural sentinel (e.g. inside a dedicated `tool_return`/`early_return_events` block) or slice to the full function body via a balanced-brace scanner instead of an arbitrary character window.",
+      "existing_code": "        fn_body = BOT[fn_match.end():fn_match.end() + 9000]\n        assert 'audit_event!' in fn_body or \"write_event\" in fn_body\n        assert '\"tool.return\"' in fn_body, \"execute_tool 末尾应发 tool.return 事件（2026-08-18 F-3 改名）\"\n        # 同步验证入口应有 tool.call（拆分自原 tool_done）\n        assert '\"tool.call\"' in fn_body, \"execute_tool 入口应发 tool.call 事件\"",
+      "start_line": 330,
+      "end_line": 334,
+      "category": "test",
+      "severity": "low"
+    },
+    {
+      "path": "tests-audit/audit_error_codes.py",
+      "content": "End marker `index(\"\\n}\", start)` matches the FIRST `\\n}` after the enum header. A `\\n}` inside a docstring, line comment, or variant body (e.g. a future comment `// ends with \\n}`) would silently truncate the parsed region and yield a wrong/short code list — the test would still run and pass with wrong data. A missing terminator raises a bare `ValueError: substring not found` instead of a clean `pytest.fail`, which undermines the role of this script as a commit-gate. For a parse that survives cosmetic edits, prefer brace-counting from the opening `{` (matching the `}` at depth=0) or anchor on the next top-level `pub` keyword, and wrap the parse in `try/except` to emit a clear `pytest.fail(..., pytrace=False)` with the file path.",
+      "existing_code": "    start = ERROR_RS.index(ENUM_HEADER) + len(ENUM_HEADER)\n    end = ERROR_RS.index(\"\\n}\", start)\n    body = ERROR_RS[start:end]",
+      "start_line": 31,
+      "end_line": 33,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "tests-audit/audit_error_codes.py",
+      "content": "End marker `index(\"]\", start)` matches the FIRST `]` after the array's `[`. A `]` in a JSDoc, line comment, or unrelated array between here and the real close would silently truncate the parsed region and yield wrong code lists. A missing terminator raises `ValueError` rather than failing the test cleanly. For a commit-gate script, prefer bracket-counting from the opening `[` (depth-based) or anchor on the next top-level `export`/`const` statement, and wrap in `try/except` to convert `ValueError` into a named `pytest.fail(...)`.",
+      "existing_code": "    start = ERROR_HANDLER_TS.index(\"= [\", start) + 2\n    end = ERROR_HANDLER_TS.index(\"]\", start)\n    return re.findall(r'\"([A-Z_]+)\"', ERROR_HANDLER_TS[start:end])",
+      "start_line": 51,
+      "end_line": 53,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "tests-audit/audit_error_codes.py",
+      "content": "Source files are read at module import time. If either file is missing (transient CI checkout, path typo, submodule not initialized) or has an encoding error, pytest aborts this entire module with `FileNotFoundError`/`UnicodeDecodeError` before any test runs — the user sees a stack trace and assumes the audit script itself is broken, when the real cause is the source. Wrap the reads in `try/except` and `pytest.skip(..., allow_module_level=True)` with a clear reason, or load them in a module-scoped fixture so the failure is localized to one named test case.",
+      "existing_code": "ROOT = Path(__file__).resolve().parent.parent\nERROR_RS = (ROOT / \"src-tauri/src/error.rs\").read_text()\nERROR_HANDLER_TS = (ROOT / \"src/lib/errorHandler.ts\").read_text()",
+      "start_line": 21,
+      "end_line": 23,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "tests-audit/audit_error_codes.py",
+      "content": "`+ 2` should be `+ 3` (or, more clearly, `+ len(\"= [\")`) to fully skip past the `= [` sentinel. As written, `start` lands on the `[` itself, so the slice begins with `[`. This happens to be harmless today only because the regex is anchored to quoted strings — but it is a latent footgun: any future edit that introduces a non-string element, a trailing comma after the last code, or a `]` inside a comment will be parsed incorrectly because the bracket-counting logic isn't actually counting. Tighten the offset now while the change is cheap.",
+      "suggestion_code": "    start = ERROR_HANDLER_TS.index(\"= [\", start) + len(\"= [\")",
+      "existing_code": "    start = ERROR_HANDLER_TS.index(\"= [\", start) + 2",
+      "start_line": 51,
+      "end_line": 51,
+      "category": "bug",
+      "severity": "low"
+    },
+    {
+      "path": "tests-audit/audit_error_codes.py",
+      "content": "`rust_codes()` is invoked three times in this test body (twice in the assert expression, once in the f-string), and each call re-parses the entire Rust source from scratch. The same is true of `ts_codes()` across the other tests, and `rust_codes()`/`ts_codes()` are also called at the top of every test. File contents never change during a single pytest session — cache the result in a local (e.g. `rust = rust_codes()`) or hoist all three parsers into a module-scoped `pytest.fixture` (or top-of-module constants computed once). This both speeds up the suite and removes the risk of inconsistent parses if the file content were ever to mutate between calls.",
+      "existing_code": "    assert rust_codes() == ts_all, (\n        \"ALL_COMMAND_ERROR_CODES 与 Rust 枚举声明顺序不一致：\\n\"\n        f\"  Rust: {rust_codes()}\\n\"\n        f\"  ALL : {ts_all}\"\n    )",
+      "start_line": 82,
+      "end_line": 86,
+      "category": "performance",
+      "severity": "low"
+    },
+    {
+      "path": "tests-audit/audit_tauri_bridge.py",
+      "content": "`registered_commands` splits the macro body on every `,` without parsing Rust syntax, then takes `rsplit(\"::\", 1)[-1]`. This will mis-register any commented-out handler such as `// crate::commands::cmd3,` (the entry becomes `// crate::commands::cmd3` → last `::` segment → `cmd3`, a fabricated command name), or any entry that itself contains a comma (e.g. a multi-argument init inside the macro). Fabricated names pollute `registered`, causing `test_frontend_invokes_all_registered` to silently miss a real unregistered command and `test_registered_but_uncalled_warn_only` to emit spurious warnings. Recommend stripping line comments and string literals from the captured body before splitting, or tokenizing entries by matching identifier paths instead of raw commas.",
+      "existing_code": "    for entry in m.group(1).split(\",\"):\n        entry = entry.strip()\n        if entry:\n            cmds.add(entry.rsplit(\"::\", 1)[-1])",
+      "start_line": 37,
+      "end_line": 40,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "tests-audit/audit_tauri_bridge.py",
+      "content": "`Path('src').glob('**/*')` walks the entire frontend tree — including `node_modules/`, `dist/`, `.next/`, `.turbo/`, `.git/` — at module-import time. The `if p.suffix in (\".ts\", \".tsx\")` filter only prunes files after traversal, so directory enumeration cost is paid unconditionally. On a real Tauri+frontend project this can add several seconds to test collection. Restrict the glob with explicit allow-list directories (e.g. `src/**/*.{ts,tsx}` via rglob) or skip well-known heavy directories.",
+      "existing_code": "TS_SRC = {\n    str(p.relative_to(ROOT)): p.read_text()\n    for p in (ROOT / \"src\").glob(\"**/*\")\n    if p.suffix in (\".ts\", \".tsx\")\n}",
+      "start_line": 25,
+      "end_line": 29,
+      "category": "performance",
+      "severity": "low"
+    },
+    {
+      "path": "tests-audit/audit_tauri_bridge.py",
+      "content": "`test_extractors_nonempty` hardcodes `\u003e= 50` with the comment “当前 55 个注册”, tightly coupling the self-check to today's command count. Any legitimate refactor that shrinks the handler set (or temporarily renames commands) trips this guard and hides a real extractor regression behind a brittle numeric floor. Derive the floor from a soft baseline plus a tolerance, or simply assert `nonzero` for each extractor rather than a magic number.",
+      "existing_code": "def test_extractors_nonempty():\n    assert len(registered_commands()) \u003e= 50, \"命令提取异常（当前 55 个注册）\"\n    assert len(frontend_invokes()) \u003e= 50, \"前端 invoke 提取异常\"",
+      "start_line": 165,
+      "end_line": 167,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "tests-audit/audit_bot_tools_alignment.py",
+      "content": "SCHEMA_CONST_RE only matches raw strings with exactly two `#` delimiters. Any schema declared with `r#\"...\"#` (single hash) or `r\"...\"` (regular string) is silently skipped, causing `schema_consts()` to return an incomplete dict and `test_schema_function_name_matches_tooldef_name` to fail with a confusing \"body is None\" message for every affected tool rather than a targeted diagnostic. Consider a non-greedy match that accepts any number of `#` (e.g., `r#+\"(.*?)\"#*;`) or falling back gracefully.",
+      "existing_code": "SCHEMA_CONST_RE = re.compile(r'pub const (SCHEMA_\\w+): \u0026str = r##\"(.*?)\"##;', re.S)",
+      "start_line": 33,
+      "end_line": 33,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "tests-audit/audit_bot_tools_alignment.py",
+      "content": "ENTRY_RE claims capture `\u0026\\[([^\\]]*)\\]` stops at the first `]`. If any claims_patterns string literal contains `]` (e.g., a regex character class like `r\"[\\\\]]\"`), the captured text is truncated, potentially making `test_mutating_tools_have_claims_patterns` misjudge emptiness. Consider a more robust extraction (e.g., parse the full ToolDef block first, then extract claims_patterns from it).",
+      "existing_code": "ENTRY_RE = re.compile(\n    r'ToolDef \\{\\s*name:\\s*\"(\\w+)\",\\s*schema:\\s*(SCHEMA_\\w+),\\s*'\n    r\"mutating:\\s*(true|false),\\s*claims_patterns:\\s*\u0026\\[([^\\]]*)\\]\",\n    re.S,\n)",
+      "start_line": 37,
+      "end_line": 41,
+      "category": "bug",
+      "severity": "low"
+    },
+    {
+      "path": "tests-audit/audit_bot_tools_alignment.py",
+      "content": "test_prompts_never_mention_retired_tools uses substring matching (`name not in text`). A legitimate identifier containing the retired name as a substring (e.g., `my_list_tasks_helper`, `search_tasks_old`, or a documentation sentence \"不再调用 list_tasks\") would trigger a false FAIL. Consider matching whole-word boundaries (e.g., `re.search(r'\\b' + name + r'\\b', text)`) to avoid matching substrings of unrelated identifiers.",
+      "existing_code": "for name in RETIRED_TOOLS:\n            assert name not in text, f\"{f.name} 残留退役工具名 {name}\"",
+      "start_line": 87,
+      "end_line": 88,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "tests-audit/audit_bot_tools_alignment.py",
+      "content": "Helper functions (`registry_text`, `registered_tools`, `prompt_files`) use `assert` for preconditions validating external file content. Under `PYTHONOPTIMIZE=1` or `python -O`, these assertions are stripped, causing confusing `AttributeError`/`KeyError` (e.g., `'NoneType' object has no attribute 'group'`) instead of clear precondition messages like \"缺 bot/registry.rs\". Consider explicit raises (`if not REGISTRY.exists(): raise FileNotFoundError(\"缺 bot/registry.rs\")`) to ensure preconditions hold regardless of optimization flags.",
+      "existing_code": "def registry_text() -\u003e str:\n    assert REGISTRY.exists(), \"缺 bot/registry.rs\"\n    return REGISTRY.read_text()\n\n\ndef registered_tools() -\u003e dict:\n    \"\"\"解析 TOOLS_TABLE → {name: {\"schema_const\": str, \"mutating\": bool, \"claims\": str}}\"\"\"\n    text = registry_text()\n    block = TABLE_BLOCK_RE.search(text)\n    assert block, \"registry.rs 缺 TOOLS_TABLE 静态表\"\n    tools = {}\n    for name, schema_const, mutating, claims in ENTRY_RE.findall(block.group(1)):\n        assert name not in tools, f\"TOOLS_TABLE 重复注册：{name}\"",
+      "start_line": 46,
+      "end_line": 58,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "tests-audit/audit_bot_tools_alignment.py",
+      "content": "test_table_is_wellformed hardcodes `len(tools) == 39`. Any addition or removal of tools (even an intentional cleanup) requires a manual update here, and the assertion message doesn't hint at what changed. Consider deriving the expected count from a constant at the top of the file with a clear comment explaining the N6 milestone, so future maintainers know to update it.",
+      "existing_code": "assert len(tools) == 39, f\"TOOLS_TABLE 应为 39 条（N6 后 37 主可见 + 2 子 agent），实际 {len(tools)}\"",
+      "start_line": 79,
+      "end_line": 79,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "tests-audit/audit_no_eval.py",
+      "content": "ALIAS_RE 模式 `[:=]\\s*Function\\b\\s*(?!\\()` 会误匹配 TypeScript 类型注解：`x: Function`、`x: Function[]`、`callback: Function = () =\u003e {}` 等都会被报为违例。`:` 在字符类内、负向先行仅排除 `(`，未排除 `[`/`;`/`,`/空格/换行。任何使用 `Function` 内置类型的 TS 文件都会触发误报，告警噪音会掩盖真正的违例并诱导开发者改写守卫。",
+      "suggestion_code": "ALIAS_RE = r\"\\b\\w+\\s*=\\s*Function\\b\\s*(?!\\()\")",
+      "existing_code": "ALIAS_RE = r\"[:=]\\s*Function\\b\\s*(?!\\()\"",
+      "start_line": 39,
+      "end_line": 39,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "tests-audit/audit_no_eval.py",
+      "content": "INDIRECT_RE 中 `window\\.eval|globalThis\\.eval|self\\.eval` 三个分支缺少 `\\b` 词边界——会作为子串匹配合法标识符 `window.evaluation`、`globalThis.evaluator`、`self.evaluate` 等，造成高频误报。建议在三个分支末尾追加 `\\b`。",
+      "suggestion_code": "INDIRECT_RE = r\"\\(0,\\s*\" + EVAL + r\"\\)|window\\.\" + EVAL + r\"\\b|globalThis\\.\" + EVAL + r\"\\b|self\\.\" + EVAL + r\"\\b\"",
+      "existing_code": "INDIRECT_RE = r\"\\(0,\\s*\" + EVAL + r\"\\)|window\\.\" + EVAL + r\"|globalThis\\.\" + EVAL + r\"|self\\.\" + EVAL",
+      "start_line": 38,
+      "end_line": 38,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "tests-audit/audit_no_eval.py",
+      "content": "INDIRECT_RE 第一分支 `\\(0,\\s*eval\\)` 仅要求逗号表达式本体闭合，未要求紧跟调用——单独的 `(0, eval)` 引用（无 `()` 调用）也会被误判为违例。建议改为 `\\(0,\\s*eval\\)\\s*\\(`，只匹配真正执行的间接调用形态。",
+      "suggestion_code": "INDIRECT_RE = r\"\\(0,\\s*\" + EVAL + r\"\\)\\s*\\(|window\\.\" + EVAL + r\"|globalThis\\.\" + EVAL + r\"|self\\.\" + EVAL",
+      "existing_code": "INDIRECT_RE = r\"\\(0,\\s*\" + EVAL + r\"\\)|window\\.\" + EVAL + r\"|globalThis\\.\" + EVAL + r\"|self\\.\" + EVAL",
+      "start_line": 38,
+      "end_line": 38,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "tests-audit/audit_evolution_layering.py",
+      "content": "strip_cfg_test_modules 把匹配区段（含换行）整体替换为 ' ' * n，丢掉测试模块体内部的换行符。对原始文件中位于 #[[cfg(test)] mod 块之后的所有违例，cleaned.count(\"\\n\", 0, m.start()) 计算出的行号将整体偏低（等于被吃掉的新行数）。例如一个跨 40 行的 test 模块被吃掉后，原本 line=80 的违例会被报告为 line=40。修复方法：strip_cfg_test_modules 只把模块体字符替换为 ' '，但保留其中的 '\\n'——可直接借用 strip_comments_and_strings 的 \"换行保号、空格占位\" 规则（例如在 text[:m.start()+len(\"#[cfg(test)]\")] 后逐字符复制 cleaned 段，对 '\\n' 透传）。",
+      "existing_code": "text = text[:m.start()] + \" \" * (i - m.start()) + text[i:]",
+      "start_line": 185,
+      "end_line": 185,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "tests-audit/audit_evolution_layering.py",
+      "content": "strip_cfg_test_modules 的正则 `#\\[cfg\\(test\\)\\]\\s*mod\\s+(\\w+)\\s*\\{` 强制 `mod` 与 `#[cfg(test)]` 之间只允许空白。两种 Rust 常见写法都漏掉：(a) `pub mod tests {`——`#[cfg(test)]\\npub mod tests {` 不会命中；(b) `#[cfg(test)]` 与 `mod` 之间夹了别的属性，如 `#[cfg(test)]\\n#[derive(Debug)]\\nmod tests {`。结果：测试模块未被屏蔽，模块内合法使用的 std::fs / Mutex / tauri / rand 等都会被误报。修复建议：放宽为 `#\\[cfg\\(test\\)\\][^{}]*?mod\\s+(\\w+)[^{}]*?\\{` 之类。",
+      "existing_code": "pattern = re.compile(r\"#\\[cfg\\(test\\)\\]\\s*mod\\s+(\\w+)\\s*\\{\")",
+      "start_line": 172,
+      "end_line": 172,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "tests-audit/audit_evolution_layering.py",
+      "content": "规则 3 的模式 `evolution::strategy` 漏掉 Rust 的 group use 形态：`use crate::evolution::{strategy};` / `use crate::evolution::{strategy, DefaultEvolutionPolicy};` / `use evolution::{strategy as s};`——这些写法中子串 `evolution::strategy` 不会相邻出现（中间隔了 `{`）。可改为同时匹配 `evolution::\\{[^}]*\\bstrategy\\b` 或 `evolution::\\{strategy` / `as\\s+strategy`。审计脚本要捕捉“意图跨层依赖”，而不是只匹配一种具体的 import 写法。",
+      "existing_code": "(r\"evolution::strategy\", \"use evolution::strategy（数据层→策略层）\"),",
+      "start_line": 83,
+      "end_line": 83,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "tests-audit/audit_evolution_layering.py",
+      "content": "规则 2 的 `impl\\s+EvolutionPolicy` 要求 `impl` 与 `EvolutionPolicy` 之间必须有空白。带泛型参数的 impl 形如 `impl\u003cT\u003e EvolutionPolicy for Foo\u003cT\u003e { ... }` / `impl\u003c'a\u003e EvolutionPolicy for X\u003c'a\u003e { ... }` / `impl EvolutionPolicy for \u0026'_ Foo` 在 `impl` 与 `EvolutionPolicy` 之间是 `\u003cT\u003e` / `\u003c'_\u003e` 这种 token 而不是空白，整条不会被抓到。修复：模式放宽为 `impl\\b[^;{]*?\\bEvolutionPolicy\\b` 之类，或者更精确的 `impl(\u003c[^\u003e]*\u003e)?\\s+EvolutionPolicy`。",
+      "existing_code": "(r\"impl\\s+EvolutionPolicy\", \"impl EvolutionPolicy（业务判定进上下文层）\"),",
+      "start_line": 76,
+      "end_line": 76,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "tests-audit/audit_evolution_layering.py",
+      "content": "委托壳行级豁免用 `DELEGATE_ALLOW.search(line)`，任何一行只要包含任一允许的子串就整行放行——攻击面：把 `use crate::evolution::strategy::EvolutionPolicy;` 与 `use crate::evolution::strategy::SomeForbiddenType;` 写在同一行（Rust 允许同一行多条 use，以 `;` 分隔），后者将被漏抓。应改成“仅当整行唯一一处 use 的路径完全落在 DELEGATE_ALLOW 之内”时才放行，例如分别解析每条 `use ...;` 子句再校验，或要求 line 去除被允许的子串后不再出现 `evolution::strategy`。",
+      "existing_code": "if DELEGATE_ALLOW.search(line):\n                        continue  # 登记的委托调用形式，行级豁免",
+      "start_line": 202,
+      "end_line": 203,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "tests-audit/audit_evolution_layering.py",
+      "content": "`chrono::Utc::now` 只覆盖一种 chrono 时钟入口；`chrono::Local::now()` / `chrono::NaiveDate::from_timestamp_opt(now, 0)` / `chrono::TimeZone::now()` / `chrono::Utc.timestamp(...)` / `use chrono::{Utc}; Utc::now()` 等都会漏抓（分组 import 还要靠 impl path 才能被 `chrono::Utc::now` 命中，但纯函数调用 `Utc::now()` 不命中）。规则意图是“chrono 时钟”——应改为捕获任何 chrono 顶级条目下形如 `\u003cType\u003e::now` / `timestamp(` / `timestamp_opt(` 的调用，或至少同时列出 `chrono::(?:Utc|Local|TimeZone)\\b` + `::now` / `timestamp(_opt)?\\(`。",
+      "existing_code": "(r\"\\bchrono::Utc::now\", \"时钟直读\"),",
+      "start_line": 64,
+      "end_line": 64,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/tests/memory_v2_degraded.rs",
+      "content": "On Rust 1.74+ (current toolchain), `std::env::set_var` is `unsafe fn` because of data-race risk with concurrent readers of the process environment. This call site does not wrap it in `unsafe { ... }`, so the file will fail to compile against any modern toolchain. Wrap it in `unsafe { std::env::set_var(...) }` and add a `// SAFETY:` comment explaining that this test must run on a single thread (or be the only test touching that env var) before this OnceLock-based embed cache is consulted — ideally paired with a `serial_test` or explicit `--test-threads=1` so the single-threaded invariant is real.",
+      "suggestion_code": "    // 模型目录指向不存在路径 → 引擎加载失败并缓存，embed 一律 None\n    // SAFETY: 此测试必须串行运行（process isolated 且 test-threads=1），无其他线程读取该环境变量。\n    unsafe {\n        std::env::set_var(embed::MODEL_DIR_ENV, \"/nonexistent-wm-bge-model-dir\");\n    }",
+      "existing_code": "    // 模型目录指向不存在路径 → 引擎加载失败并缓存，embed 一律 None\n    std::env::set_var(embed::MODEL_DIR_ENV, \"/nonexistent-wm-bge-model-dir\");",
+      "start_line": 23,
+      "end_line": 24,
+      "category": "bug",
+      "severity": "critical"
+    },
+    {
+      "path": "src-tauri/tests/memory_v2_degraded.rs",
+      "content": "The env var is set inside the test body, but `use wmessage_lib::memory::embed;` at module top level runs at binary startup. If anything in the `embed` crate — including a transitive `lazy_static!` / `OnceLock::get_or_init` triggered by Rust's lazy statics or by another `#[test]` in the same binary — touches `MODEL_DIR_ENV` before this `set_var` runs, the OnceLock is already populated and the `embed_text(...).is_none()` assertion becomes meaningless. Either (a) set the env var via a `#[ctor]` / `static_init` hook that runs before any `embed` symbol is referenced, or (b) move the env mutation behind a process-level guard that re-reads on every call (i.e. don't cache load failure across calls). The current code only works if the OnceLock has truly never been touched — which the doc-comment hand-waves but the source does not enforce.",
+      "suggestion_code": "// 必须在任何 embed::* 调用之前设置环境变量；推荐通过构建脚本注入\n// 或在测试 main 入口处统一处理。\nuse wmessage_lib::memory::{embed, format_memory_block};",
+      "existing_code": "use wmessage_lib::memory::{embed, format_memory_block};",
+      "start_line": 9,
+      "end_line": 9,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "src-tauri/tests/memory_v2_degraded.rs",
+      "content": "The doc-comment promises this must run as a \"独立集成测试二进制（独立进程）\" because the OnceLock caches failure state, but nothing in this file enforces that. If `Cargo.toml` lists this as a plain `[[test]]` it will be linked together with sibling integration tests (or even other `#[test]` items in this binary) that may have initialised `embed` first, in which case the `is_none()` assertion is checking a state the test did not set up. Move the env mutation to a `ctor`-style init that runs before the embed crate is referenced, or add a leading `assert!(embed::embed_text(\"__probe__\").is_none(), \"...\")` at the very top of the test that fails loudly when the OnceLock has already been populated — and document the required `Cargo.toml` `[[test]] harness = false` configuration alongside this file.",
+      "suggestion_code": "//! 独立集成测试二进制（独立进程）：WMESSAGE_BGE_MODEL_DIR 指向不存在目录，\n//! 嵌入引擎 OnceLock 在本进程首次加载即失败并缓存 —— 之后所有 embed 调用返回 None。\n//!\n//! 必须配置：src-tauri/Cargo.toml `[[test]] name = \"memory_v2_degraded\" harness = false`，\n//! 且不与其它 integration test 链接同一 binary，否则 OnceLock 已被初始化，本测试失效。",
+      "existing_code": "//! 独立集成测试二进制（独立进程）：WMESSAGE_BGE_MODEL_DIR 指向不存在目录，\n//! 嵌入引擎 OnceLock 在本进程首次加载即失败并缓存 —— 之后所有 embed 调用返回 None。",
+      "start_line": 4,
+      "end_line": 5,
+      "category": "test",
+      "severity": "high"
+    },
+    {
+      "path": "src-tauri/tests/memory_v2_degraded.rs",
+      "content": "Assertions hard-code the renderer's exact output (`\"## 记忆\"`, `\"口味：不吃辣\"`, `\"### 近期摘要\"`). These couple the test to display formatting rather than degraded-mode behaviour, so any cosmetic change to `format_memory_block` (full-width vs half-width colon, section reordering, punctuation) breaks the test even though the semantic contract — \"pinned 段存在且包含条目原文\" — is intact. Prefer asserting on the structured `inj` payload (e.g. `inj.pinned.iter().any(|m| m.content == \"不吃辣\")`) and reserve one or two substring checks for the section markers, or extract expected substrings into named constants so a copy change surfaces in one place.",
+      "suggestion_code": "    // 语义断言：pinned 段存在并包含原文；结构断言而非字符串字面量。\n    assert!(inj.pinned.iter().any(|m| m.content == \"不吃辣\"));\n    assert!(inj.fallback_summary.is_some(), \"零命中兜底段应存在\");",
+      "existing_code": "    assert!(block.starts_with(\"## 记忆\"));\n    assert!(block.contains(\"口味：不吃辣\"), \"pinned 画像段应在：{block}\");\n    assert!(block.contains(\"### 近期摘要\"), \"零命中兜底段应在：{block}\");",
+      "start_line": 56,
+      "end_line": 58,
+      "category": "test",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/tests/llm_integration.rs",
+      "content": "std::thread::sleep(50ms) used as racy synchronization against the mock server's request counter. After every `.send().await`/`.bytes().await` chain and after `run_model_loop_core` returns, the test sleeps a flat 50ms before asserting `server.request_count()`. If the server is slow or the test runner is under load, the counter may not yet have been incremented when the assertion runs (false negative flake). More fundamentally, if the counter is genuinely lagging the await chain, that's a real ordering bug being papered over; if not, the sleep is dead weight. Replace with a deterministic barrier: either have `MockLlmServer` expose a `wait_for_requests(n)` that polls the counter with a short deadline, or rely on the fact that the await chain already serialized request completion (drop the sleep entirely and add a comment explaining why no barrier is needed).",
+      "existing_code": "std::thread::sleep(std::time::Duration::from_millis(50));\n    assert_eq!(server.request_count(), 5, \"应处理 5 个请求\");\n}",
+      "start_line": 180,
+      "end_line": 182,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "src-tauri/tests/llm_integration.rs",
+      "content": "Second instance of the same `std::thread::sleep`/`request_count` race for the 401 case. After `run_model_loop_core` returns `Err(LlmApiError{..})` the 401 request has been fully processed (status + body + parse), so `request_count()` is by then already settled; the 50ms sleep is either unnecessary or hiding a real ordering bug. This is a real flake vector in CI under load.",
+      "existing_code": "std::thread::sleep(std::time::Duration::from_millis(50));\n    assert_eq!(server.request_count(), 1, \"401 不可重试，只发 1 次请求\");\n}",
+      "start_line": 835,
+      "end_line": 837,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "src-tauri/tests/llm_integration.rs",
+      "content": "`mock_handle()` leaks a fresh `tauri::App` on every call. `CoreHarness::new` caches one capture inside `active_skill_run` (good, documented), but the four middleware tests (`llm_create_word_revisions_allowed_without_skill`, `llm_tool_call_link_file_to_task_passes_middleware_when_no_skill`, `llm_blacklist_tool_call_allowed_when_skill_running`, `llm_whitelist_tool_call_run_python_always_allowed`, `llm_mixed_sequence_task_tool_then_readonly_both_pass`), `memory_gate_scenarios_injection_and_auto_write`, `t1_db_roundtrip_new_columns_and_rmw_edit`, and `n5_tool_image_appended_as_user_message` (indirectly via `seed_memory`/`injection_block` plumbing that ultimately re-uses the captured handle) all call `mock_handle()` afresh. The leak per call is not documented at the function site — only the `CoreHarness::new` site notes it. Add a doc comment on `mock_handle()` itself stating the per-call leak, or refactor it to a `OnceLock\u003ctauri::AppHandle\u003c...\u003e\u003e` so all tests share a single leaked App.",
+      "existing_code": "fn mock_handle() -\u003e tauri::AppHandle\u003ctauri::test::MockRuntime\u003e {\n    Box::leak(Box::new(tauri::test::mock_app()))\n        .handle()\n        .clone()\n}",
+      "start_line": 30,
+      "end_line": 34,
+      "category": "performance",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/tests/llm_integration.rs",
+      "content": "Cleanup of the shared `target/debug/deps/wmessage.db` is best-effort with `eprintln` instead of panic. When a test panics mid-way (e.g. an assertion fails before reaching `t1_cleanup(\u0026app)` or `clean_gate_leftovers(\u0026app)`), the seeded rows/config remain and may corrupt the next run's assertions. The comment says the next-run cleanup \"begins with\" a sweep that should self-heal — but `t1_cleanup` only deletes specific hard-coded ids (`t1e2e-active`, `t1e2e-done`, `job-t1e2e-active`, `T1_OWNER_ID`), so any rows inserted by partially-completed tests with different ids will leak across runs. At minimum, log a hard warning at startup if unexpected rows exist; ideally use a per-test unique namespace (UUID) so leakage can't cross tests.",
+      "existing_code": "/// 清理失败只 eprintln 不 panic——共享目录的清理是尽力而为，失败信息留诊断。\nfn clean_gate_leftovers(app: \u0026tauri::AppHandle\u003ctauri::test::MockRuntime\u003e) {\n    if let Err(e) = std::fs::remove_file(wmessage_lib::bot::config_path(app)) {\n        if e.kind() != std::io::ErrorKind::NotFound {\n            eprintln!(\"[memory_gate] 清理共享 bot-config.json 失败：{e}\");\n        }\n    }",
+      "start_line": 1633,
+      "end_line": 1639,
+      "category": "other",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/tests/llm_integration.rs",
+      "content": "`exec_never` panics with a generic message on any unexpected tool dispatch. It is correctly used as a negative assertion in 401/truncated-stream/in-stream-error paths, but the panic message (`\"此路径不应执行工具：{name} {args}\"`) makes debugging harder when the wrong code path dispatches a tool. More importantly, the closure-bodied `exec` for positive paths captures `Arc\u003cMutex\u003c...\u003e\u003e` (`calls2.clone()` inside the `move`); if `exec_never` ever panics after `calls.lock().unwrap().push(...)` (or if the captured mutex is poisoned by a panic on a different path), the test outcome is `Mutex` poisoning rather than the intended assertion. Consider returning `ToolResult::err(\"此路径不应执行工具\")` from a helper that tests assert via the surrounding error, or guard `exec_never` behind a feature flag so CI distinguishes intentional from accidental invocations.",
+      "existing_code": "async fn exec_never(name: String, args: String, _trace: ToolCallTrace) -\u003e ToolResult {\n    panic!(\"此路径不应执行工具：{name} {args}\");\n}",
+      "start_line": 627,
+      "end_line": 629,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/tests/mock_llm.rs",
+      "content": "Single-threaded sequential server: `for stream in listener.incoming()` accepts and handles connections one-at-a-time inside the spawned thread. Any test that issues concurrent requests (e.g. parallel chat-loop workers, or tests that fire two `http_post_raw` calls from different threads) will have the second connection queue at the kernel until the first fully writes+closes — this can mask genuine concurrency bugs in the client under test, produce deadlocks in tests that try to run a parallel client + server message, and silently serialize what the production code believes to be parallel traffic. Spawn a worker thread per connection (or use a thread pool) instead.",
+      "suggestion_code": "let handle = thread::spawn(move || {\n            // 每个连接独立线程处理，避免把客户端的并发请求串行化（chat loop 并发 / 异步 fetcher 等场景）\n            for stream in listener.incoming() {\n                let Ok(mut stream) = stream else { break };\n                let req_count = req_count_clone.clone();\n                let consumed = consumed_clone.clone();\n                let behaviors = behaviors_clone.clone();\n                let bodies_clone = bodies_clone.clone();\n                let paths_clone = paths_clone.clone();\n                thread::spawn(move || {\n                    handle_conn(stream, req_count, consumed, behaviors, bodies_clone, paths_clone);\n                });\n            }",
+      "existing_code": "let handle = thread::spawn(move || {\n            // 每个连接独立处理（一线程一连接，简化测试并发）\n            for stream in listener.incoming() {",
+      "start_line": 113,
+      "end_line": 115,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "src-tauri/tests/mock_llm.rs",
+      "content": "Body read can be silently truncated by the 5s read_timeout. The inner `while buf.len() \u003c body_start + content_length` loop breaks on `Err(_)` and falls through; whatever bytes (possibly zero) were collected are then pushed into `request_bodies()`. Downstream memory-regression assertions will see corrupted/short payloads with no signal that the mock failed — and `request_count` was already incremented before the body read, so `request_count() == N` is not a sufficient sanity check. Either propagate the read error (drop the recorded body), or, if you must be permissive, log a marker when Content-Length bytes were not fully received.",
+      "existing_code": "if let Some(body_start) = find_body_start(\u0026buf) {\n                                    if let Some(content_length) = parse_content_length(\u0026buf) {\n                                        while buf.len() \u003c body_start + content_length {\n                                            match stream.read(\u0026mut tmp) {\n                                                Ok(0) =\u003e break,\n                                                Ok(n) =\u003e buf.extend_from_slice(\u0026tmp[..n]),\n                                                Err(_) =\u003e break,\n                                            }\n                                        }\n                                    }\n                                }\n                                break;",
+      "start_line": 137,
+      "end_line": 148,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "src-tauri/tests/mock_llm.rs",
+      "content": "Case-sensitive `Content-Length` header lookup violates RFC 7230 §3.2 (header field names are case-insensitive). Any client that emits `Content-length` (mixed case) — which some HTTP libraries do — will produce an empty `request_bodies()` entry and the request will be treated as body-less, breaking memory/contents assertions and the FragmentedTextReply path (which sends a `Content-Length` header that must match). Use a case-insensitive scan (e.g. lowercase the line before `strip_prefix`, or scan with `eq_ignore_ascii_case`).",
+      "suggestion_code": "fn parse_content_length(buf: \u0026[u8]) -\u003e Option\u003cusize\u003e {\n    let text = String::from_utf8_lossy(buf);\n    for line in text.lines() {\n        // HTTP header names are case-insensitive (RFC 7230 §3.2)\n        let (name, value) = line.split_once(':')?;\n        if name.trim().eq_ignore_ascii_case(\"content-length\") {\n            return value.trim().parse().ok();\n        }\n    }\n    None\n}",
+      "existing_code": "fn parse_content_length(buf: \u0026[u8]) -\u003e Option\u003cusize\u003e {\n    let text = String::from_utf8_lossy(buf);\n    for line in text.lines() {\n        if let Some(rest) = line.strip_prefix(\"Content-Length:\") {\n            return rest.trim().parse().ok();\n        }\n        if let Some(rest) = line.strip_prefix(\"content-length:\") {\n            return rest.trim().parse().ok();\n        }\n    }\n    None\n}",
+      "start_line": 249,
+      "end_line": 260,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/tests/mock_llm.rs",
+      "content": "`_handle: Option\u003cthread::JoinHandle\u003c()\u003e\u003e` is always `Some` (constructed in `start()` and never mutated), and the leading underscore plus `#[allow(dead_code)]` mean it is never used. The misleading `Option` wrapper hides the fact that the worker thread is never `join()`ed: if a test panics mid-request, or the `MockLlmServer` is dropped with a connection still open, the worker thread outlives the test (and the ephemeral port is not released until the kernel reaps it). Use plain `thread::JoinHandle\u003c()\u003e` and add a `Drop` impl that joins (or, given the sequential-accept note above, switches to per-connection threads and joins on drop with a timeout).",
+      "existing_code": "paths: Arc\u003cMutex\u003cVec\u003cString\u003e\u003e\u003e,\n    _handle: Option\u003cthread::JoinHandle\u003c()\u003e\u003e,\n}",
+      "start_line": 90,
+      "end_line": 92,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/tests/mock_llm.rs",
+      "content": "`consumed: Arc\u003cAtomicUsize\u003e` is a single-thread counter — it is only ever read/written inside the spawned accept thread — so the `Arc` + atomic RMW + `SeqCst` fencing is pure overhead. A `Cell\u003cusize\u003e` (or plain `usize` mutated under the existing `Mutex\u003cVec\u003cMockBehavior\u003e\u003e`) suffices. `request_count` does need `Arc\u003cAtomicUsize\u003e` because it is observed from the test thread, but `consumed` does not.",
+      "suggestion_code": "request_count: Arc\u003cAtomicUsize\u003e,\n    // consumed 仅在 accept 线程里读写，无需 Arc + atomic\n    consumed: Cell\u003cusize\u003e,\n    behaviors: Arc\u003cMutex\u003cVec\u003cMockBehavior\u003e\u003e\u003e,",
+      "existing_code": "request_count: Arc\u003cAtomicUsize\u003e,\n    #[allow(dead_code)] // 仅内部线程闭包通过 Arc 访问；Rust 静态分析看不到闭包内读\n    consumed: Arc\u003cAtomicUsize\u003e,\n    behaviors: Arc\u003cMutex\u003cVec\u003cMockBehavior\u003e\u003e\u003e,",
+      "start_line": 80,
+      "end_line": 83,
+      "category": "performance",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/tests/mock_llm.rs",
+      "content": "Every test ends with `thread::sleep(Duration::from_millis(50))` before asserting `request_count()`. This sleep is unnecessary: `request_count` is incremented at the top of the request handler *before* the response is written, and `http_post_raw` only returns after `read_to_string` reads EOF on the closed connection — so by the time the client returns, the server has already incremented the counter. The 50ms padding is cumulative (≥450 ms across the suite, more if CI is loaded) and provides no correctness guarantee. Either drop it entirely or replace with a bounded polling loop waiting on `request_count()` to reach the expected value (useful only if you change to per-connection threads, where the increment may race ahead).",
+      "existing_code": "std::thread::sleep(Duration::from_millis(50));\n    assert_eq!(server.request_count(), 1, \"应处理 1 个请求\");",
+      "start_line": 592,
+      "end_line": 593,
+      "category": "test",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/tests/memory_conflict.rs",
+      "content": "Cleanup failures are silently discarded via `.ok()` in both `delete_by_content` (line 71) and `cleanup_corpus` (line 78). If cleanup fails for a real reason (lock contention, schema drift, I/O error) rather than 'row not found', the start-of-test cleanup silently cannot recover, and state pollution persists across runs. The 'cleanup on panic → next run self-heals' guarantee relies on these calls actually succeeding. Consider returning `Result` and logging/propagating at least at the boundary, or wrapping cleanup in a transaction with explicit error handling.",
+      "suggestion_code": "fn delete_by_content(conn: \u0026rusqlite::Connection, content: \u0026str) -\u003e rusqlite::Result\u003cusize\u003e {\n    conn.execute(\n        \"DELETE FROM mem_items WHERE content = ?1\",\n        rusqlite::params![content],\n    )\n}\n\nfn cleanup_corpus(conn: \u0026rusqlite::Connection, corpus: \u0026[(\u0026str, \u0026str, \u0026str)]) -\u003e rusqlite::Result\u003c()\u003e {\n    for (key, old, new) in corpus {\n        store::delete_by_key_tag(conn, key)?;\n        delete_by_content(conn, old)?;\n        delete_by_content(conn, new)?;\n    }\n    Ok(())\n}",
+      "existing_code": "fn delete_by_content(conn: \u0026rusqlite::Connection, content: \u0026str) {\n    conn.execute(\n        \"DELETE FROM mem_items WHERE content = ?1\",\n        rusqlite::params![content],\n    )\n    .ok();\n}\n\nfn cleanup_corpus(conn: \u0026rusqlite::Connection, corpus: \u0026[(\u0026str, \u0026str, \u0026str)]) {\n    for (key, old, new) in corpus {\n        store::delete_by_key_tag(conn, key).ok();\n        delete_by_content(conn, old);\n        delete_by_content(conn, new);\n    }\n}",
+      "start_line": 0,
+      "end_line": 0,
+      "category": "maintainability",
+      "severity": "high"
+    },
+    {
+      "path": "src-tauri/tests/memory_conflict.rs",
+      "content": "The assertion `b.contains(\"已有记忆 id=\")` couples the test to a localized Chinese substring of an internal prompt template. Any wording change, refactor, or i18n of the adjudication prompt turns this into a vacuous pass while real candidate-list wiring could still be broken. Prefer asserting on structural content (e.g., that the candidate IDs from `orig_ids` actually appear in some request body) so the test stays valid regardless of prompt phrasing.",
+      "suggestion_code": "assert!(\n        bodies.iter().any(|b| orig_ids.iter().any(|id| b.contains(id))),\n        \"裁决请求应含候选记忆清单（至少出现一个原条目 id）\"\n    );",
+      "existing_code": "assert!(\n        bodies.iter().any(|b| b.contains(\"已有记忆 id=\")),\n        \"裁决请求应含候选记忆清单\"\n    );",
+      "start_line": 207,
+      "end_line": 210,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/tests/memory_conflict.rs",
+      "content": "The `corpus.len() * 2` LLM-call assertion combined with the pre-pushed FIFO pairing (extract → adjudicate per corpus item) tightly couples the test to an internal pipeline contract (exactly two LLM calls per item in that order). If `run_extract_with` adds, removes, or reorders a step (e.g., a clarification call), the assertion fails with confusing attribution, and a partial break (one item out of ten) only lowers the `updated \u003e= 9` count, masking the regression. Consider asserting per-item on what each call must produce (e.g., pair extract/adjudicate bodies) rather than the aggregate call count.",
+      "suggestion_code": "for ((_, _, new), orig_id) in corpus.iter().zip(\u0026orig_ids) {\n        // 用一次性标签配对两段响应，便于事后按组定位\n        let extract_json = format!(r#\"[{{\"content\":\"{new}\",\"kind\":\"fact\",\"importance\":3}}]\"#);\n        let adjudicate_json =\n            format!(r#\"[{{\"index\":0,\"action\":\"update\",\"existing_id\":\"{orig_id}\"}}]\"#);\n        server.push_behavior_pair(key, openai_reply(extract_json), openai_reply(adjudicate_json));\n    }",
+      "existing_code": "for ((_, _, new), orig_id) in corpus.iter().zip(\u0026orig_ids) {\n        let extract_json = format!(r#\"[{{\"content\":\"{new}\",\"kind\":\"fact\",\"importance\":3}}]\"#);\n        server.push_behavior(openai_reply(extract_json));\n        let adjudicate_json =\n            format!(r#\"[{{\"index\":0,\"action\":\"update\",\"existing_id\":\"{orig_id}\"}}]\"#);\n        server.push_behavior(openai_reply(adjudicate_json));\n    }",
+      "start_line": 151,
+      "end_line": 157,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/tests/memory_conflict.rs",
+      "content": "`mock_handle` leaks a full `tauri::App` per invocation via `Box::leak`. Acceptable for a single test run, but if this helper is ever invoked many times (loop harness, `test-case` parametrization, or shared across other tests) the leaked apps accumulate along with stale handles that all point at the shared on-disk test DB — which can exacerbate the shared-target-dir hazard flagged in the doc comment. Consider caching a single leaked app behind a `OnceLock`/`OnceCell` (or returning a clone from a test-scoped fixture) to bound the leak.",
+      "suggestion_code": "fn mock_handle() -\u003e tauri::AppHandle\u003ctauri::test::MockRuntime\u003e {\n    use std::sync::OnceLock;\n    static APP: OnceLock\u003cBox\u003ctauri::App\u003ctauri::test::MockRuntime\u003e\u003e\u003e = OnceLock::new();\n    APP.get_or_init(|| Box::new(tauri::test::mock_app()))\n        .handle()\n        .clone()\n}",
+      "existing_code": "fn mock_handle() -\u003e tauri::AppHandle\u003ctauri::test::MockRuntime\u003e {\n    Box::leak(Box::new(tauri::test::mock_app()))\n        .handle()\n        .clone()\n}",
+      "start_line": 26,
+      "end_line": 30,
+      "category": "performance",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/tests/memory_conflict.rs",
+      "content": "The `extract_json` and `adjudicate_json` are built via `format!` with the corpus content/`orig_id` interpolated directly into a JSON string literal. The current corpus is well-formed so this works, but if a future corpus entry contains a quote, backslash, or control character, the mock will emit a parse-broken response and the pipeline failure will be attributed to the wrong layer. Prefer `serde_json::json!` or `serde_json::to_string` so the mock fixtures are always well-formed JSON.",
+      "suggestion_code": "for ((_, _, new), orig_id) in corpus.iter().zip(\u0026orig_ids) {\n        let extract_json = serde_json::to_string(\u0026vec![serde_json::json!({\n            \"content\": new, \"kind\": \"fact\", \"importance\": 3\n        })]).unwrap();\n        let adjudicate_json = serde_json::to_string(\u0026vec![serde_json::json!({\n            \"index\": 0, \"action\": \"update\", \"existing_id\": orig_id\n        })]).unwrap();\n        server.push_behavior(openai_reply(extract_json));\n        server.push_behavior(openai_reply(adjudicate_json));\n    }",
+      "existing_code": "for ((_, _, new), orig_id) in corpus.iter().zip(\u0026orig_ids) {\n        let extract_json = format!(r#\"[{{\"content\":\"{new}\",\"kind\":\"fact\",\"importance\":3}}]\"#);\n        let adjudicate_json =\n            format!(r#\"[{{\"index\":0,\"action\":\"update\",\"existing_id\":\"{orig_id}\"}}]\"#);\n        server.push_behavior(openai_reply(extract_json));\n        server.push_behavior(openai_reply(adjudicate_json));\n    }",
+      "start_line": 0,
+      "end_line": 0,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/tests/bot_test_connection.rs",
+      "content": "TOCTOU port race in `connection_test_unreachable_reports_error`: binding `127.0.0.1:0`, capturing the port, and then immediately dropping the listener is inherently racy — another process can claim the port in the window between `drop` and the `reqwest` connect. On Linux, depending on `SO_REUSEADDR` semantics and TIME_WAIT state, the connect may also succeed against a stale socket from a previous test, making the \"connect refused\" assertion flaky in CI. Prefer binding a `tokio` listener (e.g. `tokio::net::TcpListener::bind(\"127.0.0.1:0\")`) and using its real bound address, or pointing the probe at `http://127.0.0.1:1/` (a port reserved by IANA as `tcpmux` and almost never bound) so the unreachable precondition is guaranteed by the address itself, not by a transient race.",
+      "suggestion_code": "#[tokio::test]\nasync fn connection_test_unreachable_reports_error() {\n    // 端口 1 (tcpmux) 不会被普通进程占用；用固定不可达端口比 bind/drop 赛跑更稳\n    let base = \"http://127.0.0.1:1/v1\".to_string();\n    let r = probe_connection(\u0026reqwest::Client::new(), \u0026base, \"openai\", \"k\").await;",
+      "existing_code": "async fn connection_test_unreachable_reports_error() {\n    // 端口无人监听：bind 拿端口后立即 drop → connect refused\n    let port = {\n        let l = std::net::TcpListener::bind(\"127.0.0.1:0\").unwrap();\n        l.local_addr().unwrap().port()\n    };\n    let base = format!(\"http://127.0.0.1:{port}/v1\");\n    let r = probe_connection(\u0026reqwest::Client::new(), \u0026base, \"openai\", \"k\").await;",
+      "start_line": 111,
+      "end_line": 118,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "src-tauri/tests/bot_test_connection.rs",
+      "content": "Asymmetric coverage: the audit-P0 regression test below specifically guards the anthropic \"base without /v1\" case, but there is no symmetric test for the openai provider even though the same normalization logic is exercised. A future regression where the openai branch stops prepending `/v1` would slip through this suite. Add a `connection_test_openai_base_without_v1_gets_v1_prefix` mirroring the anthropic test to enforce the invariant on both providers.",
+      "existing_code": "async fn connection_test_anthropic_base_without_v1_gets_v1_prefix() {\n    // 回归（审计 P0）：anthropic base 不带 /v1（预设 https://api.anthropic.com）\n    // 时探测必须补 /v1，否则打 /models → 404 → 厂商永远进不了 verified_vendors\n    let server = MockLlmServer::start();\n    let base = server.base_url.trim_end_matches(\"/v1\").to_string();\n    let r = probe_connection(\u0026reqwest::Client::new(), \u0026base, \"anthropic\", \"k\").await;\n    assert!(r.ok, \"默认 200 应 ok:true：{r:?}\");\n    let paths = server.request_paths();\n    assert!(\n        paths[0].contains(\"GET /v1/models\"),\n        \"base 不带 /v1 应补前缀：{paths:?}\"\n    );\n}",
+      "start_line": 67,
+      "end_line": 79,
+      "category": "test",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/tests/bot_test_connection.rs",
+      "content": "Base-URL normalization coverage is too narrow: `trim_end_matches(\"/v1\")` only exercises the exact `…/v1` suffix. Realistic vendor URLs frequently come with trailing slashes (`…/v1/`), versioned aliases (`…/v1beta`), nested prefixes (`…/api/v1`), or query/fragment components — none of which are tested. A regression in the production normalizer (e.g. switching to a stricter prefix check) could break `verified_vendors` for users who paste the canonical `https://api.anthropic.com` (no `/v1`) plus a trailing slash, and the suite would not catch it. Extend the regression test to cover at least the trailing-slash and nested-prefix shapes, or assert the property on the production normalizer directly.",
+      "existing_code": "    // 回归（审计 P0）：anthropic base 不带 /v1（预设 https://api.anthropic.com）\n    // 时探测必须补 /v1，否则打 /models → 404 → 厂商永远进不了 verified_vendors\n    let server = MockLlmServer::start();\n    let base = server.base_url.trim_end_matches(\"/v1\").to_string();\n    let r = probe_connection(\u0026reqwest::Client::new(), \u0026base, \"anthropic\", \"k\").await;",
+      "start_line": 68,
+      "end_line": 72,
+      "category": "test",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/tests/bot_test_connection.rs",
+      "content": "Endpoint-suffix stripping coverage is too narrow: only `/messages` (anthropic) and `/chat/completions` (openai) are exercised. Other common provider suffixes that a user might paste into Base URL — `/embeddings`, `/completions`, `/audio/speech`, `/responses`, `/images/generations` — are not tested, nor is the negative case where the suffix is NOT recognized (does the probe still reach `/v1/models`?). Also note both probe calls here share the default 200 reply; if stripping regressed for one provider and the resulting path was simply 404-able, the `r.ok` assertion would still pass against the mock. Make the second call push a non-200 behavior and assert on the recorded path explicitly per call to actually distinguish \"stripped correctly\" from \"stripped but landed elsewhere\".",
+      "existing_code": "async fn connection_test_endpoint_suffix_stripped() {\n    // 回归（ocr high）：误把完整端点粘进 Base URL 时先剥尾段再拼探测路径——\n    // anthropic …/v1/messages 不得叠成 /v1/messages/v1/models，\n    // openai …/chat/completions 不得叠成 /chat/completions/models\n    let server = MockLlmServer::start();\n    let r = probe_connection(\n        \u0026reqwest::Client::new(),\n        \u0026format!(\"{}/messages\", server.base_url),\n        \"anthropic\",\n        \"k\",\n    )\n    .await;\n    assert!(r.ok, \"{r:?}\");\n    let r = probe_connection(\n        \u0026reqwest::Client::new(),\n        \u0026format!(\"{}/chat/completions\", server.base_url),\n        \"openai\",\n        \"k\",\n    )\n    .await;\n    assert!(r.ok, \"{r:?}\");",
+      "start_line": 82,
+      "end_line": 102,
+      "category": "test",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/tests/exec_trace.rs",
+      "content": "Third test's cleanup is panic-unsafe and silent. The first two tests use `TraceCleanupGuard` (Drop-based) so assertion panics still trigger cleanup, but this test only runs manual `DELETE`s at function tail with `.ok()` swallowing failures. Any panic in the polling loop, `expect(\"trace.row...\")`, or `assert!` before the cleanup block leaks rows into the shared `target/debug/deps/wmessage.db` — exactly the residue the file's own header warns about. Lift the three DELETE statements into a small `Drop` guard (or a RAII helper) that closes over `trace_id` and `handle`, mirroring the existing `TraceCleanupGuard` pattern; keep the `if let Ok(conn)` guard but also surface the first `Err` so silent DB failures don't masquerade as \"nothing to clean\".",
+      "suggestion_code": "// cleanup handled by guard (panic-safe; mirrors TraceCleanupGuard pattern)\n}\n\n// test body ends with: let _guard = TraceSinkCleanupGuard { handle: handle.clone(), trace_id };",
+      "existing_code": "// 清理\n    if let Ok(conn) = wmessage_lib::db::open_db(\u0026handle) {\n        conn.execute(\"DELETE FROM exec_spans WHERE trace_id = ?1\", [trace_id])\n            .ok();\n        conn.execute(\"DELETE FROM file_changes WHERE trace_id = ?1\", [trace_id])\n            .ok();\n        conn.execute(\"DELETE FROM exec_traces WHERE id = ?1\", [trace_id])\n            .ok();\n    }\n}",
+      "start_line": 357,
+      "end_line": 366,
+      "category": "maintainability",
+      "severity": "high"
+    },
+    {
+      "path": "src-tauri/tests/exec_trace.rs",
+      "content": "`cleanup` runs nine DELETEs sequentially with no transaction and every error swallowed via `.ok()`. If `open_db` succeeds but a child-table DELETE fails (locked DB, schema drift), the parent `exec_traces` row survives and the next test inherits it through the shared `target/debug/deps/wmessage.db`. Wrap the DELETEs in `conn.transaction()` so the cascade is atomic, and at minimum log the first non-`OK` rusqlite error instead of `.ok()` so a real cleanup regression is observable rather than silent.",
+      "suggestion_code": "fn cleanup(handle: \u0026tauri::AppHandle\u003ctauri::test::MockRuntime\u003e, task_id: \u0026str, session_id: \u0026str) {\n    let conn = match wmessage_lib::db::open_db(handle) {\n        Ok(c) =\u003e c,\n        Err(e) =\u003e { eprintln!(\"cleanup: open_db failed: {e:?}\"); return; }\n    };\n    let tx = match conn.unchecked_transaction() {\n        Ok(t) =\u003e t,\n        Err(e) =\u003e { eprintln!(\"cleanup: transaction begin failed: {e:?}\"); return; }\n    };\n    // ... DELETE statements using tx.execute(...) ...\n    if let Err(e) = tx.commit() {\n        eprintln!(\"cleanup: commit failed: {e:?}\");\n    }\n}",
+      "existing_code": "fn cleanup(handle: \u0026tauri::AppHandle\u003ctauri::test::MockRuntime\u003e, task_id: \u0026str, session_id: \u0026str) {\n    if let Ok(conn) = wmessage_lib::db::open_db(handle) {\n        conn.execute(\"DELETE FROM tasks WHERE id = ?1\", [task_id])\n            .ok();\n        conn.execute(\n            \"DELETE FROM bot_messages WHERE session_id = ?1\",\n            [session_id],\n        )\n        .ok();\n        conn.execute(\"DELETE FROM bot_sessions WHERE id = ?1\", [session_id])\n            .ok();\n        // trace 家族双路删除：成功路径按 session_id、失败路径按 task_id——\n        // 失败收尾拿不到 TaskChatRun.session_id，trace 行落的是运行期生成的\n        // 会话 id（实测残留实锤：deps 库里堆积 et-* failed 行），按 '-' 清不到\n        conn.execute(\n            \"DELETE FROM exec_spans WHERE trace_id IN (SELECT id FROM exec_traces WHERE session_id = ?1)\",\n            [session_id],\n        )\n        .ok();",
+      "start_line": 65,
+      "end_line": 83,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "src-tauri/tests/exec_trace.rs",
+      "content": "Polling-based synchronization for the async writer has zero diagnostics on exhaustion. If the 100×50ms loop times out under CI load, the `span_ok`/`change_ok` booleans flip to false with no record of what was observed on the last iteration, making CI flakes silent and undebuggable. Either drop a `oneshot`/notify from the writer's batch flush so the test awaits a real completion signal, or at minimum capture the last-seen `s`/`c` counts into the assertion message (`assert!(span_ok, \"span missing after 5s; last s={s} c={c}\")`) so a CI failure shows what the writer actually wrote (or didn't).",
+      "suggestion_code": "let mut s = 0i64;\n    let mut c = 0i64;\n    for _ in 0..100 {\n        if let Ok(conn) = wmessage_lib::db::open_db(\u0026handle) {\n            s = conn.query_row(\"SELECT COUNT(*) FROM exec_spans WHERE tool_call_id = 'call_et_1' AND ok = 1\", [], |r| r.get(0)).unwrap_or(0);\n            c = conn.query_row(\"SELECT COUNT(*) FROM file_changes WHERE path = '/a/x.py' AND added = 3\", [], |r| r.get(0)).unwrap_or(0);\n            if s \u003e 0 \u0026\u0026 c \u003e 0 { break; }\n        }\n        tokio::time::sleep(std::time::Duration::from_millis(50)).await;\n    }\n    assert!(s \u003e 0 \u0026\u0026 c \u003e 0, \"writer did not flush in 5s; last s={s} c={c}\");",
+      "existing_code": "// 轮询等待后台 writer 落库（最多 ~5s）\n    let mut span_ok = false;\n    let mut change_ok = false;\n    for _ in 0..100 {\n        if let Ok(conn) = wmessage_lib::db::open_db(\u0026handle) {\n            let s: i64 = conn\n                .query_row(\n                    \"SELECT COUNT(*) FROM exec_spans WHERE tool_call_id = 'call_et_1' AND ok = 1\",\n                    [],\n                    |r| r.get(0),\n                )\n                .unwrap_or(0);\n            let c: i64 = conn\n                .query_row(\n                    \"SELECT COUNT(*) FROM file_changes WHERE path = '/a/x.py' AND added = 3\",\n                    [],\n                    |r| r.get(0),\n                )\n                .unwrap_or(0);\n            span_ok = s \u003e 0;\n            change_ok = c \u003e 0;\n            if span_ok \u0026\u0026 change_ok {\n                break;\n            }\n        }\n        tokio::time::sleep(std::time::Duration::from_millis(50)).await;\n    }\n    assert!(span_ok, \"span 应经管道落库\");\n    assert!(change_ok, \"file_change 应经管道落库\");",
+      "start_line": 327,
+      "end_line": 355,
+      "category": "test",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/tests/exec_trace.rs",
+      "content": "`Box::leak(Box::new(tauri::test::mock_app()))` is used twice (in `setup_task` and at the top of the third test) to obtain a `'static` AppHandle. Each invocation permanently leaks a `MockRuntime` and its DB handle until the test binary exits. Over a long nextest run with many tests this accumulates and can mask OS resource limits (fd / mmap) that would otherwise surface as test failures. Wrap the leaked app in a small `Drop` that performs no-op teardown and use `Box::leak` only when the lifetime must truly be `'static`; or, more practically, switch the test harness to construct the handle inside the guard so the lifetime is bounded to the guard's `Drop` (the `TraceCleanupGuard` already owns the handle — extend it to own the leaked app too).",
+      "suggestion_code": "fn setup_task(\n    title: \u0026str,\n) -\u003e (\n    tauri::AppHandle\u003ctauri::test::MockRuntime\u003e,\n    String,\n    std::path::PathBuf,\n) {\n    // MockRuntime requires 'static; bound lifetime to a guard owned by the test.\n    let _app_guard = Box::leak(Box::new(tauri::test::mock_app()));\n    let handle = _app_guard.handle().clone();\n    let dir = wmessage_lib::db::data_dir(\u0026handle);",
+      "existing_code": "fn setup_task(\n    title: \u0026str,\n) -\u003e (\n    tauri::AppHandle\u003ctauri::test::MockRuntime\u003e,\n    String,\n    std::path::PathBuf,\n) {\n    let app = Box::leak(Box::new(tauri::test::mock_app()));\n    let handle = app.handle().clone();\n    let dir = wmessage_lib::db::data_dir(\u0026handle);",
+      "start_line": 41,
+      "end_line": 50,
+      "category": "performance",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/tests/exec_trace.rs",
+      "content": "`SERIAL` recovers from a poisoned mutex via `unwrap_or_else(|e| e.into_inner())`. That's intentional for tests, but it also means a panic inside one test's body (while SERIAL is held, or before its `Drop` runs cleanup) will be ignored on the next test entry and the next test will silently run against a poisoned lock — masking real concurrency regressions. Prefer `_serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner())` with a `let` so the recovered state is at least observable, or log on poisoning so a flaky test run is visible in CI logs.",
+      "suggestion_code": "static SERIAL: std::sync::Mutex\u003c()\u003e = std::sync::Mutex::new(());\n\nfn now_ms() -\u003e i64 {\n    std::time::SystemTime::now()\n        .duration_since(std::time::UNIX_EPOCH)\n        .unwrap()\n        .as_millis() as i64\n}\n\n// Acquisition helper: log poisoning rather than silently recovering.\nfn lock_serial() -\u003e std::sync::MutexGuard\u003c'static, ()\u003e {\n    match SERIAL.lock() {\n        Ok(g) =\u003e g,\n        Err(p) =\u003e {\n            eprintln!(\"SERIAL mutex poisoned — recovering; previous test panicked mid-run\");\n            p.into_inner()\n        }\n    }\n}",
+      "existing_code": "static SERIAL: std::sync::Mutex\u003c()\u003e = std::sync::Mutex::new(());\n\nfn now_ms() -\u003e i64 {\n    std::time::SystemTime::now()\n        .duration_since(std::time::UNIX_EPOCH)\n        .unwrap()\n        .as_millis() as i64\n}",
+      "start_line": 27,
+      "end_line": 34,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/tests/evolution_gov.rs",
+      "content": "Segment 2 retry loop has no backoff, jitter, or logging. Tight 3-iteration spin against the very contention it tries to paper over — if `llm_integration` U15 is also racing, a busy-spin here amplifies load on `bot-config.json` instead of absorbing it. Consider `std::thread::sleep` with monotonic escalation, and at least surface a warning when the 3rd attempt still fails so silent regression is visible.",
+      "existing_code": "let mut gated_ok = false;\n    for _ in 0..3 {\n        policy::set_apply_policy(\u0026app, ApplyPolicy::Confirm).unwrap();\n        if !policy::auto_apply_allowed(Some(\u0026app)) {\n            gated_ok = true;\n            break;\n        }\n    }",
+      "start_line": 226,
+      "end_line": 233,
+      "category": "other",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/tests/evolution_gov.rs",
+      "content": "Segment 7 silently `eprintln!`-skips the entire hijack-prevention assertion when `embed_text` returns None. The test name advertises coverage of the security-critical 防劫持闸, yet in CI without an embed model the assertion never runs at all. Either inject a deterministic mock embedder (cos = 1.0) so the path is unconditionally exercised, or fail the test (`return`/panic) when the model is missing so the security gap is not invisible.",
+      "existing_code": "let conflict_text = format!(\"u20-gov 防劫持语料 {conflict_id}\");\n    if let Some(emb) = embed::embed_text(\u0026conflict_text) {",
+      "start_line": 327,
+      "end_line": 328,
+      "category": "security",
+      "severity": "high"
+    },
+    {
+      "path": "src-tauri/tests/evolution_gov.rs",
+      "content": "Fragile substring check `err.contains(\"拒绝\")` couples the test to the exact wording of the upstream error. If the library message is reworded (or localized), the assertion silently degrades to a meaningless `contains` that passes against any error string. Prefer matching on a stable error type (e.g., `ConflictRefused` variant) or an explicit error code in the library's typed error, so the security assertion does not silently regress on cosmetic edits.",
+      "existing_code": "let err = wmessage_lib::evolution::panel::commands::toggle_inner(\u0026app, conflict_id, true)\n            .expect_err(\"防劫持闸应拒绝落库\");\n        assert!(err.contains(\"拒绝\"), \"错误应说明防劫持拒绝：{err}\");",
+      "start_line": 357,
+      "end_line": 359,
+      "category": "test",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/tests/evolution_gov.rs",
+      "content": "`mk_proposal` hardcodes `target = ProposalTarget::MemoryPolicy` regardless of `category`. The non-policy assertion (Segment 6) therefore tests PromptHint+MemoryPolicy — only the category dimension varies; if the lib's gating ever consults `target` in addition to category (e.g. \"non-memory targets always pending\"), this test will silently mis-cover that branch. Add a `target` parameter (or a sibling helper) so a PromptHint/non-memory-target proposal can be constructed and the gating logic's full decision surface is exercised.",
+      "existing_code": "fn mk_proposal(\n    id: \u0026str,\n    category: ProposalCategory,\n    impact: ImpactLevel,\n    text: \u0026str,\n) -\u003e EvolutionProposal {\n    EvolutionProposal {\n        proposal_id: id.into(),\n        created_at_ms: 1_700_000_000_000,\n        origin: ProposalOrigin::ConsolidationReflection,\n        category,\n        target: ProposalTarget::MemoryPolicy {\n            policy: \"u20-gov\".into(),\n        },",
+      "start_line": 109,
+      "end_line": 122,
+      "category": "test",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/tests/task_chat_exec.rs",
+      "content": "Spawned task can hang forever on early panic: between `entered_rx.await` (line 272) and `release_tx.send(())` (line 294) there are several `.await` and `.expect()` calls; if any of them panic, `release_tx` is never sent and the spawned task waits indefinitely on `release_rx`. `first.await` then hangs and the test process never exits cleanly. Use a Drop guard (e.g. `scopeguard::guard(release_tx, |tx| let _ = tx.send(()))`) or `tokio::select!` over the second-call future and a small timeout so the runner is always released.",
+      "suggestion_code": "    entered_rx.await.expect(\"第一个执行应已进入模型循环\");\n    // 任一断言/await panic 也要确保 spawned runner 退出\n    let _release_guard = scopeguard::guard(release_tx, |tx| { let _ = tx.send(()); });\n    // 同卡并发第二次触发 → ExecGuard 拒绝\n    let second = run_task_in_chat_with(\n        \u0026handle,\n        \u0026task_id,\n        TaskExecOrigin::Scheduled,\n        None,\n        None,\n        move |_app, _msgs, _stop| async move { Ok((\"不应执行到这里\".to_string(), Vec::new())) },\n    )\n    .await;\n    let err = match second {\n        Err(e) =\u003e e,\n        Ok(_) =\u003e panic!(\"并发触发应被拒绝\"),\n    };\n    assert!(\n        err.message().contains(\"正在执行中\"),\n        \"应为防重入拒绝：{}\",\n        err.message()\n    );\n    scopeguard::ScopeGuard::into_inner(_release_guard); // 显式释放，或保留 guard 直至 r1\n    let r1 = first.await.expect(\"第一个执行线程 join\");",
+      "existing_code": "    entered_rx.await.expect(\"第一个执行应已进入模型循环\");\n    // 同卡并发第二次触发 → ExecGuard 拒绝\n    let sid_holder = std::sync::Mutex::new(String::new());\n    let second = run_task_in_chat_with(\n        \u0026handle,\n        \u0026task_id,\n        TaskExecOrigin::Scheduled,\n        None,\n        None,\n        move |_app, _msgs, _stop| async move { Ok((\"不应执行到这里\".to_string(), Vec::new())) },\n    )\n    .await;\n    let err = match second {\n        Err(e) =\u003e e,\n        Ok(_) =\u003e panic!(\"并发触发应被拒绝\"),\n    };\n    assert!(\n        err.message().contains(\"正在执行中\"),\n        \"应为防重入拒绝：{}\",\n        err.message()\n    );\n    let _ = sid_holder;\n    let _ = release_tx.send(());\n    let r1 = first.await.expect(\"第一个执行线程 join\");",
+      "start_line": 272,
+      "end_line": 295,
+      "category": "test",
+      "severity": "high"
+    },
+    {
+      "path": "src-tauri/tests/task_chat_exec.rs",
+      "content": "Dead variable `sid_holder`: declared at line 274, never written to, only `let _ = sid_holder;` at line 293. Remove it — it's misleading noise that suggests a coordination role that never existed.",
+      "suggestion_code": "    // 同卡并发第二次触发 → ExecGuard 拒绝\n    let second = run_task_in_chat_with(",
+      "existing_code": "    let sid_holder = std::sync::Mutex::new(String::new());\n    let second = run_task_in_chat_with(",
+      "start_line": 274,
+      "end_line": 275,
+      "category": "test",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/tests/task_chat_exec.rs",
+      "content": "Cross-test data collision: `LIKE '⏰ 定时：%' ORDER BY created_at DESC LIMIT 1` reads from the shared `target/debug/deps/wmessage.db`. If a prior failed run (or a parallel test binary) left a stale `⏰ 定时：xxx` session, this test either passes spuriously or asserts on the wrong row. The query should be scoped to the `task_id` we just inserted (e.g. JOIN `tasks t ON ... WHERE t.id = ?1` or store the session id before querying), the same way the other two tests do.",
+      "suggestion_code": "    // 先按 task_id 拿到本测试自己的 sid，再用 sid 过滤消息，避开其他并行用例的标题前缀碰撞\n    let conn = wmessage_lib::db::open_db(\u0026handle).unwrap();\n    let sid: String = conn\n        .query_row(\n            \"SELECT s.id FROM bot_sessions s WHERE s.title LIKE '⏰ 定时：%' AND EXISTS (SELECT 1 FROM tasks t WHERE t.id = ?1) ORDER BY s.created_at DESC LIMIT 1\",\n            [\u0026task_id],\n            |r| r.get(0),\n        )\n        .expect(\"本测试会话应存在\");\n    let row: Option\u003c(String, String)\u003e = conn\n        .prepare(\n            \"SELECT role, content FROM bot_messages\n             WHERE session_id = ?1 AND role = 'assistant'\n             ORDER BY id DESC LIMIT 1\",\n        )\n        .unwrap()\n        .query_map([\u0026sid], |r| Ok((r.get(0)?, r.get(1)?)))\n        .unwrap()\n        .filter_map(|r| r.ok())\n        .next();",
+      "existing_code": "    let conn = wmessage_lib::db::open_db(\u0026handle).unwrap();\n    let row: Option\u003c(String, String)\u003e = conn\n        .prepare(\n            \"SELECT m.role, m.content FROM bot_messages m\n             JOIN bot_sessions s ON s.id = m.session_id\n             WHERE s.title LIKE '⏰ 定时：%' AND m.role = 'assistant'\n             ORDER BY m.id DESC LIMIT 1\",\n        )",
+      "start_line": 326,
+      "end_line": 333,
+      "category": "test",
+      "severity": "high"
+    },
+    {
+      "path": "src-tauri/tests/task_chat_exec.rs",
+      "content": "Same LIKE-prefix fragility on the title query at line 345-351 and the cleanup at lines 354-358: `LIKE '⏰ 定时：%' ORDER BY created_at DESC LIMIT 1` will match the wrong row if any other session with the same prefix exists in the shared DB, and the cleanup `DELETE ... WHERE title = ?1` with `title = '⏰ 定时：注定失败的任务'` is non-atomic with respect to a hypothetical concurrent insert. Scope both queries and the cleanup to `sid` (or `task_id`) for correctness.",
+      "suggestion_code": "    // 用 sid 精确定位本测试自己的会话\n    let title: String = conn\n        .query_row(\"SELECT title FROM bot_sessions WHERE id = ?1\", [\u0026sid], |r| r.get(0))\n        .unwrap();\n    assert_eq!(title, \"⏰ 定时：注定失败的任务\");",
+      "existing_code": "    // 定时来源标题前缀\n    let title: String = conn\n        .query_row(\n            \"SELECT title FROM bot_sessions WHERE title LIKE '⏰ 定时：%' ORDER BY created_at DESC LIMIT 1\",\n            [],\n            |r| r.get(0),\n        )\n        .unwrap();\n    assert_eq!(title, \"⏰ 定时：注定失败的任务\");",
+      "start_line": 344,
+      "end_line": 352,
+      "category": "test",
+      "severity": "high"
+    },
+    {
+      "path": "src-tauri/tests/task_chat_exec.rs",
+      "content": "Brittle substring source-file check: `src.contains(\"run_task_in_chat\")` matches any identifier that starts with `run_task_in_chat` (incl. `run_task_in_chat_with`, `run_task_in_chat_test`, doc comments mentioning the symbol) and `!src.contains(\"exec_steps::start\")` is fooled by commented-out code (`// exec_steps::start`), strings, or doc comments. These are \"design locks\" that should be AST-based (e.g. parse with `syn`/`ra_ap_syntax` and check call expressions) or at minimum use identifier regexes. As written, the check passes even if the scheduler calls a *different* `run_task_in_chat*` function than the one intended.",
+      "suggestion_code": "    let src = std::fs::read_to_string(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/src/bot_scheduler.rs\"))\n        .expect(\"bot_scheduler.rs 可读\");\n    // 用 syn 解析 AST，检查函数体内是否调用精确符号\n    let parsed = syn::parse_file(\u0026src).expect(\"parse bot_scheduler.rs\");\n    let calls_run_task_in_chat = walk_contains_call(\u0026parsed, \"run_task_in_chat\");\n    let calls_run_task_in_chat_with = walk_contains_call(\u0026parsed, \"run_task_in_chat_with\");\n    assert!(calls_run_task_in_chat_with, \"定时路径必须显式调 run_task_in_chat_with\");\n    assert!(walk_contains_path(\u0026parsed, \"TaskExecOrigin\", \"Scheduled\"), \"定时来源标记\");\n    assert!(\n        !walk_contains_call(\u0026parsed, \"exec_steps::start\") \u0026\u0026 !walk_contains_call(\u0026parsed, \"exec_steps::resume\"),\n        \"定时路径不得调逐步执行（无人在场）\"\n    );\n    assert!(walk_contains_macro(\u0026parsed, \"notification\"), \"完成/失败应发系统通知\");\n    let bot_chat = std::fs::read_to_string(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/src/bot_chat.rs\"))\n        .expect(\"bot_chat.rs 可读\");\n    let bot_chat_ast = syn::parse_file(\u0026bot_chat).expect(\"parse bot_chat.rs\");\n    assert!(\n        !walk_contains_fn(\u0026bot_chat_ast, \"execute_task_core\"),\n        \"execute_task_core 应已被 run_task_in_chat 取代\"\n    );\n}",
+      "existing_code": "    let src = std::fs::read_to_string(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/src/bot_scheduler.rs\"))\n        .expect(\"bot_scheduler.rs 可读\");\n    assert!(\n        src.contains(\"run_task_in_chat\"),\n        \"定时路径应走 run_task_in_chat\"\n    );\n    assert!(src.contains(\"TaskExecOrigin::Scheduled\"), \"定时来源标记\");\n    assert!(\n        !src.contains(\"exec_steps::start\") \u0026\u0026 !src.contains(\"exec_steps::resume\"),\n        \"定时路径不得调逐步执行（无人在场）\"\n    );\n    assert!(src.contains(\"notification()\"), \"完成/失败应发系统通知\");\n    // execute_task_core 已被 run_task_in_chat 取代（全仓库无残留调用）\n    let bot_chat = std::fs::read_to_string(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/src/bot_chat.rs\"))\n        .expect(\"bot_chat.rs 可读\");\n    assert!(\n        !bot_chat.contains(\"fn execute_task_core\"),\n        \"execute_task_core 应已被 run_task_in_chat 取代\"\n    );\n}",
+      "start_line": 366,
+      "end_line": 385,
+      "category": "test",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/tests/task_chat_exec.rs",
+      "content": "`Box::leak(Box::new(tauri::test::mock_app()))` (line 50) leaks the mock app per test to get a `'static` AppHandle. With three tests (and any future additions) this accumulates per-test leaked memory in long-running test processes (especially nextest reuse). Consider wrapping in a `OnceCell`/`OnceLock` per-handle or having `tauri::test::mock_app` return a cheap-to-clone, non-`'static` handle if available; otherwise document the leak budget explicitly.",
+      "suggestion_code": "fn setup_task(\n    title: \u0026str,\n) -\u003e (\n    tauri::AppHandle\u003ctauri::test::MockRuntime\u003e,\n    String,\n    std::path::PathBuf,\n) {\n    // 故意 leak：mock_app 内部的 Tauri 状态机要求 'static；累积量 = 测试数 × ~1 个 mock app\n    let app = Box::leak(Box::new(tauri::test::mock_app()));",
+      "existing_code": "fn setup_task(\n    title: \u0026str,\n) -\u003e (\n    tauri::AppHandle\u003ctauri::test::MockRuntime\u003e,\n    String,\n    std::path::PathBuf,\n) {\n    let app = Box::leak(Box::new(tauri::test::mock_app()));",
+      "start_line": 44,
+      "end_line": 51,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/tests/skill_e2e.rs",
+      "content": "Header disables `await_holding_lock`, and four `#[tokio::test]` cases acquire `SKILL_SCHED_TEST_LOCK` (a `std::sync::Mutex\u003c()\u003e`) and hold the guard across `run_skill_scheduler_core(...).await`. The `std::sync::MutexGuard` is `!Send`; the safety rationale hinges entirely on `#[tokio::test]`'s default current-thread runtime. If anyone flips the test to `#[tokio::test(flavor = \"multi_thread\")]` or the scheduler ever spawns a sub-task that captures the future, the future becomes `Send`-required and this turns into a soundness bug with no compile-time signal. Prefer `tokio::sync::Mutex` (Send) or scope the guard to a synchronous setup step before the `.await`.",
+      "existing_code": "#![allow(clippy::await_holding_lock)]",
+      "start_line": 5,
+      "end_line": 5,
+      "category": "other",
+      "severity": "high"
+    },
+    {
+      "path": "src-tauri/tests/skill_e2e.rs",
+      "content": "DDL is hand-mirrored from `db.rs` because the integration test crate can't reach the private `open_db`. If production schema gains a column, changes a type, or adds a constraint, `upsert_skill_outcome` / `load_all_skill_outcomes` will silently mismatch this DDL — assertions like `row.kind == \"done\"` and `summary.contains(\"Step 1\")` may pass on stale columns while real persistence drifts with no test failure. Recommend exposing a `pub(crate) fn open_db_in_memory()` (or sharing the DDL via `include_str!` of a single schema file used by both prod and tests) so this DDL can never diverge from production.",
+      "existing_code": "fn open_temp_db(tag: \u0026str) -\u003e (rusqlite::Connection, PathBuf) {\n    let path = std::env::temp_dir().join(format!(\n        \"wmessage-skill-e2e-{}-{tag}.db\",\n        std::process::id()\n    ));\n    let _ = std::fs::remove_file(\u0026path);\n    let conn = rusqlite::Connection::open(\u0026path).expect(\"open temp db\");\n    conn.execute_batch(\n        \"CREATE TABLE IF NOT EXISTS skill_outcomes (\n           skill_name         TEXT PRIMARY KEY,\n           kind               TEXT NOT NULL,\n           reason             TEXT,\n           completed_summary  TEXT,\n           rollback_attempted INTEGER,\n           last_at_ms         INTEGER NOT NULL\n         );\",\n    )\n    .expect(\"create skill_outcomes\");\n    (conn, path)\n}",
+      "start_line": 342,
+      "end_line": 361,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "src-tauri/tests/skill_e2e.rs",
+      "content": "Global `intent_router::rebuild_routes(...)` mutation happens before `RoutesResetGuard` is constructed. If `rebuild_routes` or `intent_rules_from_dirs` panics, the global route table is left polluted for subsequent tests in the same binary. `pre_step_pass_through_for_normal_query` does not reset routes and only works because cargo test serializes same-binary tests in a single process by default. Either reset on panic via `std::panic::catch_unwind` wrapping the body, or reset routes in a process-level fixture so the global starts empty for every test regardless of prior-test panic.",
+      "existing_code": "struct RoutesResetGuard;\n\nimpl Drop for RoutesResetGuard {\n    fn drop(\u0026mut self) {\n        intent_router::rebuild_routes(vec![]);\n    }\n}\n\n#[test]\nfn pre_step_routes_installed_skill_intent_to_skill() {\n    // 2026-08-19 动态路由：路由表 = 已安装技能的 intents 声明。\n    // 先按 fixture（已安装技能的替身）重建全局表，再走 middleware 全链路验证命中。\n    intent_router::rebuild_routes(bot_skills::intent_rules_from_dirs(\n        \u0026[fixtures_parent_path()],\n    ));\n    let _routes_guard = RoutesResetGuard;",
+      "start_line": 65,
+      "end_line": 80,
+      "category": "other",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/tests/skill_e2e.rs",
+      "content": "The mock executor mutates scheduler-visible `SKILL_RUNS` state mid-flight via `test_hook_insert_skill_run`. The rollback-window assertion (`rollback_states == \u0026[Some(SkillState::Running)]`) therefore depends on the precise internal ordering inside `run_skill_scheduler_core` between (a) step-failure detection, (b) state re-open from Failed→Running, and (c) rollback invocation. Any refactor that caches the state snapshot earlier, or that polls the state on a different cadence, silently breaks this assertion. Prefer a dedicated `test_hook` that records the scheduler's *intent* (a callback fired on re-open/restore) rather than inferring it from external state mutated indirectly by the executor.",
+      "existing_code": "                \"create_task\" =\u003e {\n                    // 模拟生产 skill_on_step_post：工具失败后 run 被标 Failed\n                    test_hook_insert_skill_run(\u0026app, make_run(\"minimax-ppt\", SkillState::Failed));\n                    ToolResult::ok(\"失败：模拟工具异常\", Vec::new())\n                }",
+      "start_line": 587,
+      "end_line": 591,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/tests/skill_e2e.rs",
+      "content": "`mock_handle()` intentionally leaks a `MockRuntime` per call via `Box::leak`. With ~10 scheduler/middleware tests this leaks ~10 AppHandles reclaimed only at process exit. The scheduler tests do pair `test_hook_insert_skill_run` / `test_hook_remove_skill_run` on `SKILL_RUNS`, which is the obvious candidate to verify. Confirm no other resources ride on the leaked AppHandle (FS handles, channels, spawned threads, or background tasks) that could accumulate or interfere between tests in the same binary — leaked AppHandles with overlapping identifiers could mask or collide in any other `test_hook_*` state keyed off the handle.",
+      "existing_code": "fn mock_handle() -\u003e tauri::AppHandle\u003ctauri::test::MockRuntime\u003e {\n    Box::leak(Box::new(tauri::test::mock_app()))\n        .handle()\n        .clone()\n}",
+      "start_line": 51,
+      "end_line": 55,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/tests/task_chat_exec.rs",
+      "content": "Concurrency hazard: `_serial = SERIAL.lock()` is held by the main test task across the entire `duplicate_trigger_rejected_by_exec_guard` test, including while the spawned task (which owns `release_rx`) is alive. The comment block at the top asserts this is safe because `#[tokio::test]` uses a current_thread runtime, but if `run_task_in_chat_with` ever internally `tokio::spawn`s or tries to acquire another `std::sync::Mutex` (e.g. the in-process `ExecGuard` registry) on a worker thread, the spawned task can deadlock waiting for a lock held by the test thread that can never make progress. Either (a) audit that `run_task_in_chat_with` is purely async-without-internal-spawn and uses no std sync mutexes on the ExecGuard path, or (b) use a `tokio::sync::Mutex` and drop the guard between awaits.",
+      "suggestion_code": "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]\nasync fn duplicate_trigger_rejected_by_exec_guard() {\n    // SERIAL 只保护跨二进制 flag 写入；本测试内由 oneshot 控制节奏，避免 std Mutex 跨 await\n    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());\n    let (handle, task_id, _dir) = setup_task(\"并发防护任务\");\n    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel::\u003c()\u003e();\n    let (release_tx, release_rx) = tokio::sync::oneshot::channel::\u003c()\u003e();\n    // ... 立即 drop _serial，由 oneshot 串行化本测试",
+      "existing_code": "#[tokio::test]\nasync fn duplicate_trigger_rejected_by_exec_guard() {\n    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());\n    let (handle, task_id, _dir) = setup_task(\"并发防护任务\");\n    // 第一个执行的 runner 卡住直到放行\n    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel::\u003c()\u003e();\n    let (release_tx, release_rx) = tokio::sync::oneshot::channel::\u003c();",
+      "start_line": 0,
+      "end_line": 0,
+      "category": "other",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/tests/memory_eval.rs",
+      "content": "PII file written with default umask. std::fs::write creates memory_extract_sample.jsonl using mode 0o666 \u0026 ~umask, typically 0o644 on Unix, inside the project tree. The file holds real user memory content, so it is reachable by any process running as the user and by cloud-sync / shared folders. Recommend explicit restrictive mode (e.g. OpenOptions::new().write(true).create_new(true).truncate(true).mode(0o600).custom_flags(libc::O_NOFOLLOW) on Unix) or write to a user-only dir (e.g. std::env::temp_dir() with restrictive mode, or $XDG_DATA_HOME/wmessage/eval/).",
+      "existing_code": "    let out_path = repo_root().join(\"fixtures/memory_extract_sample.jsonl\");\n    // 原子写：先写 .tmp 再 rename，中断不留含 PII 片段的半截采样文件\n    let tmp_path = out_path.with_extension(\"jsonl.tmp\");\n    std::fs::write(\u0026tmp_path, format!(\"{}\\n\", lines.join(\"\\n\")))\n        .unwrap_or_else(|e| panic!(\"写采样临时文件失败：{e}\"));\n    std::fs::rename(\u0026tmp_path, \u0026out_path).unwrap_or_else(|e| panic!(\"rename 采样文件失败：{e}\"));",
+      "start_line": 261,
+      "end_line": 266,
+      "category": "security",
+      "severity": "high"
+    },
+    {
+      "path": "src-tauri/tests/memory_eval.rs",
+      "content": "std::fs::rename does not atomically replace an existing destination on Windows (it returns an error if dst exists), so re-running the test on Windows panics the second time. It also does not preserve the source file's mode on Unix when replacing across the project tree. Use a portable replace helper: remove the destination first (best-effort) and then rename, or use the `atomicwrites` / `tempfile::persist` crate which provides cross-platform atomic replace.",
+      "existing_code": "    std::fs::write(\u0026tmp_path, format!(\"{}\\n\", lines.join(\"\\n\")))\n        .unwrap_or_else(|e| panic!(\"写采样临时文件失败：{e}\"));\n    std::fs::rename(\u0026tmp_path, \u0026out_path).unwrap_or_else(|e| panic!(\"rename 采样文件失败：{e}\"));",
+      "start_line": 264,
+      "end_line": 266,
+      "category": "other",
+      "severity": "high"
+    },
+    {
+      "path": "src-tauri/tests/memory_eval.rs",
+      "content": "The temp .tmp file is not covered by .gitignore (only fixtures/memory_extract_sample.jsonl is). If the rename fails or the process is killed before rename, the .tmp file containing real user memory content stays in the working tree and can leak through git status / cloud sync / backup tools. Either add `fixtures/memory_extract_sample.jsonl.tmp` (or `*.jsonl.tmp`) to .gitignore, or scope the temp file under a sibling dir already ignored, and clean it up on failure via a defer/guard.",
+      "existing_code": "    let out_path = repo_root().join(\"fixtures/memory_extract_sample.jsonl\");\n    // 原子写：先写 .tmp 再 rename，中断不留含 PII 片段的半截采样文件\n    let tmp_path = out_path.with_extension(\"jsonl.tmp\");",
+      "start_line": 261,
+      "end_line": 263,
+      "category": "security",
+      "severity": "high"
+    },
+    {
+      "path": "src-tauri/tests/memory_eval.rs",
+      "content": "The self-check assert!(r5 \u003e 0.0) does not actually prove the embedding→seed→search chain is alive. hybrid_search_with always includes the 0.20 keyword-overlap term, and the early-return guard in hybrid_score_with only fires when kw == 0.0 AND one side lacks an embedding. As long as the query has any keyword overlap with item content/tags, results can score \u003e 0 even with zero-norm / constant embeddings. Strengthen the assertion by also asserting (a) the top hit's score minus its keyword+importance+recency contribution \u003e some epsilon (proves semantic weight landed), or (b) at least one item.embedding is a finite, non-zero L2 vector, or (c) embed_text returns Some and l2-normalised norm \u003e 0 for a probe string.",
+      "existing_code": "    // 评估器自检（非质量门槛）：总体 recall@5 \u003e 0 说明嵌入→播种→检索链路活着\n    assert!(r5 \u003e 0.0, \"总体 recall@5 = {r5}，评估链路自身疑似坏掉\");",
+      "start_line": 174,
+      "end_line": 175,
+      "category": "other",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/tests/memory_eval.rs",
+      "content": "Setting dedup_merge = 1.0 does not strictly disable semantic merging. insert_item_with uses `if c \u003e= p.dedup_merge`, so two seed vectors with cosine exactly 1.0 (or ≥ 1.0 due to FP rounding of identical L2-normalised embeddings) still trigger the merge branch. The comment claims \"关闭语义合并\". Either add a dedicated `dedup_disabled: bool` to StoreParams, or use a sentinel like f64::INFINITY (or NaN-checked) so no embedding can ever satisfy the threshold, and short-circuit before the cosine scan.",
+      "existing_code": "    // 内存库播种：dedup_merge=1.0 关闭语义合并——黄金集要一条一行、id 稳定\n    //（检索评估不评写入路径，种子间偶发高相似不该吞行）\n    let conn = rusqlite::Connection::open_in_memory().unwrap();\n    store::ensure_table(\u0026conn).unwrap();\n    let sp = StoreParams {\n        dedup_merge: 1.0,\n        ..StoreParams::default()\n    };",
+      "start_line": 77,
+      "end_line": 84,
+      "category": "other",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/tests/memory_eval.rs",
+      "content": "Aggregate denominator ignores queries outside the fixed CATEGORY_ORDER. per_cat accumulates counts for any q.category string, but the total alln is summed only across the hard-coded CATEGORY_ORDER. If the fixture adds a new or misspelled category, those queries appear in per_cat but are silently dropped from alln, biasing the reported overall recall@1/@5. Either sum across the whole per_cat (BTreeMap values) for alln/all1/all5, or fail loud if any per_cat key is not in CATEGORY_ORDER.",
+      "existing_code": "    let (mut all1, mut all5, mut alln) = (0usize, 0usize, 0usize);\n    for cat in CATEGORY_ORDER {\n        let (h1, h5, n) = per_cat.get(cat).copied().unwrap_or((0, 0, 0));\n        let label = CATEGORY_LABELS\n            .iter()\n            .find(|(c, _)| *c == cat)\n            .map(|(_, l)| *l)\n            .unwrap_or(cat);\n        println!(\n            \"[{label}] recall@1 = {:.2}（{h1}/{n}）  recall@5 = {:.2}（{h5}/{n}）\",\n            h1 as f64 / n.max(1) as f64,\n            h5 as f64 / n.max(1) as f64,\n        );\n        all1 += h1;\n        all5 += h5;\n        alln += n;\n    }",
+      "start_line": 145,
+      "end_line": 161,
+      "category": "other",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/tests/memory_eval.rs",
+      "content": "Tied scores can break determinism. hybrid_search_with uses stable sort_by on the score; when two items have identical scores (common here because now, importance and recency are uniform across all seeds, and several seed pairs share only keyword overlap), tie-break order is the iteration order of items. items comes from store::load_all with no ORDER BY, and MemItem.id is a generated UUID, so tie ordering depends on SQLite row enumeration. Either ORDER BY id ASC in load_all (or pass an explicit item order), or add a deterministic secondary sort key (id) in hybrid_search_with.",
+      "existing_code": "    let items = store::load_all(\u0026conn).unwrap();\n    assert_eq!(\n        items.len(),\n        golden.seeds.len(),\n        \"播种条数与种子数不一致（存在合并/淘汰）\"\n    );\n\n    let params = rank::RankParams::of(\u0026MemoryTuning::default());",
+      "start_line": 104,
+      "end_line": 111,
+      "category": "other",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/tests/memory_eval.rs",
+      "content": "recall@5 metric name is implicitly coupled to MemoryTuning::default().top_n == 5. If that default ever changes, the test still computes hits.first() correctly, but `recall@5` silently becomes `recall@top_n`. Pass an explicit RankParams { top_n: 5, ..RankParams::of(\u0026MemoryTuning::default()) } so the metric label matches the actual k, and add a debug_assert_eq!(params.top_n, 5) at the top.",
+      "existing_code": "    let params = rank::RankParams::of(\u0026MemoryTuning::default());",
+      "start_line": 111,
+      "end_line": 111,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/tests/memory_eval.rs",
+      "content": "eval_db_path hardcodes the macOS user data path and reads HOME, which is unset by default on Windows. Without WMESSAGE_EVAL_DB the test always panics on Linux/Windows, and the panic message (\"确认 macOS 默认用户库存在\") is misleading for those platforms. Either consult platform-specific data dirs (directories crate) or return an error pointing the user to set WMESSAGE_EVAL_DB on any non-macOS host.",
+      "existing_code": "/// 评估库路径：WMESSAGE_EVAL_DB 显式指定优先，否则 macOS 默认用户库\n///（手动评估工具读真实库；其他平台请用 env 指定）\nfn eval_db_path() -\u003e Option\u003cstd::path::PathBuf\u003e {\n    if let Ok(p) = std::env::var(\"WMESSAGE_EVAL_DB\") {\n        let p = p.trim().to_string();\n        if !p.is_empty() {\n            return Some(std::path::PathBuf::from(p));\n        }\n    }\n    let home = std::env::var(\"HOME\").ok()?;\n    let p = std::path::PathBuf::from(home)\n        .join(\"Library/Application Support/com.renshi.wmessage/wmessage.db\");\n    p.is_file().then_some(p)\n}",
+      "start_line": 199,
+      "end_line": 212,
+      "category": "other",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/tests/memory_eval.rs",
+      "content": "PII surfaces in diagnostics: misses prints each query text and expect_ids to stdout; the panic on read failure prints the absolute DB path. Both are acceptable for a manual #[ignore] test but worth noting — if eval output is ever captured to CI logs / bug reports / chat, query text (which can itself contain user PII) leaks. Consider routing through a redaction helper or limiting miss formatting to id + counts only.",
+      "existing_code": "        if !hit5 {\n            misses.push(format!(\n                \"  {}「{}」expect={:?} top5种子={hit_seed_ids:?}\",\n                q.id, q.query, q.expect_ids\n            ));\n        }",
+      "start_line": 132,
+      "end_line": 137,
+      "category": "other",
+      "severity": "low"
+    }
+  ],
+  "project_summary": "Let me analyze the 87 comments across 18 files to identify cross-cutting patterns and the most important findings.\n\nLet me group by directory:\n- `tests-audit/` (audit scripts): 9 files\n  - `regen_tools_baseline.py`: 3 comments\n  - `audit_module_map.py`: 4 comments\n  - `audit_pre_step_pre_execute.py`: 3 comments\n  - `audit_error_codes.py`: 5 comments\n  - `audit_tauri_bridge.py`: 3 comments\n  - `audit_bot_tools_alignment.py`: 5 comments\n  - `audit_no_eval.py`: 3 comments\n  - `audit_evolution_layering.py`: 6 comments\n\n- `src-tauri/tests/`: 10 files\n  - `memory_v2_degraded.rs`: 4 comments\n  - `llm_integration.rs`: 5 comments\n  - `mock_llm.rs`: 5 comments\n  - `memory_conflict.rs`: 4 comments\n  - `bot_test_connection.rs`: 4 comments\n  - `exec_trace.rs`: 5 comments\n  - `evolution_gov.rs`: 4 comments\n  - `task_chat_exec.rs`: 6 comments\n  - `skill_e2e.rs`: 5 comments\n  - `memory_eval.rs`: 9 comments\n\nKey patterns:\n\n1. **Regex/AST fragility in audit scripts**: Many audit scripts use brittle regex patterns that:\n   - Hardcode hash counts (`r##\"...\"##`, `r#\"...\"#`)\n   - Don't handle `pub(crate)mod` without space\n   - Match substrings/comments instead of actual code\n   - Fail on group use (`use foo::{bar}`)\n   - Match first `]` or `\\n}` without parsing context\n   - Miss generics like `impl\u003cT\u003e Foo`\n\n2. **`std::thread::sleep` as synchronization**: Multiple test files use `thread::sleep(50ms)` as racy sync:\n   - `llm_integration.rs` (2x)\n   - `mock_llm.rs` (every test)\n   - `evolution_gov.rs` (Segment 2)\n\n3. **`Box::leak` for `'static` AppHandle**: Multiple test files use `Box::leak(Box::new(tauri::test::mock_app()))`:\n   - `llm_integration.rs`\n   - `memory_conflict.rs`\n   - `exec_trace.rs`\n   - `task_chat_exec.rs`\n   - `skill_e2e.rs`\n\n4. **Silently-swallowed errors via `.ok()` / `eprintln`**:\n   - `memory_conflict.rs`\n   - `exec_trace.rs`\n   - `mock_llm.rs`\n   - `evolution_gov.rs` (eprintln-skip on security assertion)\n   - `llm_integration.rs`\n\n5. **Cleanup is panic-unsafe**:\n   - `exec_trace.rs` (third test)\n   - `llm_integration.rs` (panics mid-way)\n   - `memory_conflict.rs` (silent via .ok())\n\n6. **Hardcoded magic numbers coupled to current state**:\n   - `audit_tauri_bridge.py` (`\u003e= 50`)\n   - `audit_bot_tools_alignment.py` (`len(tools) == 39`)\n   - `audit_pre_step_pre_execute.py` (9000-char window)\n   - `memory_conflict.rs` (`corpus.len() * 2`)\n\n7. **Shared `target/debug/deps/wmessage.db` between tests**:\n   - `llm_integration.rs`\n   - `task_chat_exec.rs` (LIKE '⏰ 定时：%')\n\n8. **Cross-test data collision via LIKE prefix**:\n   - `task_chat_exec.rs` (multiple)\n\n9. **Hardcoded substring/format coupling**:\n   - `memory_v2_degraded.rs` (renderer's exact output)\n   - `memory_conflict.rs` (Chinese substring)\n   - `evolution_gov.rs` (`contains(\"拒绝\")`)\n\n10. **`assert` for preconditions in audit scripts** (stripped under -O):\n    - `audit_bot_tools_alignment.py`\n\n11. **TOCTOU / port race**:\n    - `bot_test_connection.rs`\n\n12. **PII leakage in test files**:\n    - `memory_eval.rs` (writes with default umask, .tmp not gitignored, diagnostics print query text)\n\n13. **Dead code / unused helpers**:\n    - `audit_pre_step_pre_execute.py` (`find_line`, `grep_count`)\n    - `task_chat_exec.rs` (`sid_holder`)\n    - `mock_llm.rs` (`_handle`)\n\n14. **Module-import-time side effects**:\n    - `audit_tauri_bridge.py` (walks entire frontend tree)\n    - `audit_error_codes.py` (reads source files at import)\n\n15. **`std::env::set_var` not in unsafe block** (Rust 1.74+):\n    - `memory_v2_degraded.rs`\n\nNow let me organize this into a tight summary.\n\nTop Issues:\n1. Regex fragility across audit scripts (8+ files affected)\n3. Silent error swallowing in tests (`.ok()`, `eprintln`)\n4. `Box::leak` accumulating leaks\n5. Hardcoded magic numbers brittle to legitimate refactors\n6. Shared test DB causes cross-test contamination\n7. `std::thread::sleep(50ms)` race in mock LLM harness\n8. Panic-unsafe cleanup in integration tests\n9. PII leak via memory_eval test fixtures\n10. `std::env::set_var` missing unsafe block (compile break)\n\nModule Hotspots:\n- `src-tauri/tests/memory_eval.rs` (9 comments)\n- `src-tauri/tests/task_chat_exec.rs` (6 comments)\n- `tests-audit/audit_evolution_layering.py` (6 comments)\n- `src-tauri/tests/mock_llm.rs` (5 comments)\n- `src-tauri/tests/llm_integration.rs` (5 comments)\n- `src-tauri/tests/exec_trace.rs` (5 comments)\n- `src-tauri/tests/skill_e2e.rs` (5 comments)\n- `tests-audit/audit_error_codes.py` (5 comments)\n- `tests-audit/audit_bot_tools_alignment.py` (5 comments)\n\nCross-Cutting Concerns:\n- Regex parsing instead of AST/AST-aware parsers in audit scripts\n- Racy synchronization via `std::thread::sleep`\n- `Box::leak` for `'static` AppHandle\n- `.ok()` / `eprintln` swallowing cleanup failures\n- Shared DB / cross-test contamination\n- Hardcoded substrings (Chinese error messages, identifier fragments)\n- Audit scripts using `assert` for preconditions (PYTHONOPTIMIZE)\n\nQuick Wins:\n- Remove `find_line`/`grep_count` dead code in audit_pre_step_pre_execute.py\n- Remove dead `sid_holder` in task_chat_exec.rs\n- Remove unnecessary `thread::sleep(50ms)` after request_count check (mock_llm.rs)\n- Replace `Box::leak` with a per-binary `static` lazy-init\n- Add `.tmp` to `.gitignore` for memory_eval.rs\n- Wrap `std::env::set_var` in unsafe block (memory_v2_degraded.rs)\n- Add `\\b` to word-boundary checks in audit_no_eval.py\n- Make SCHEMA_CONST_RE accept single hash variant\n\nLet me write the final markdown.\n\n### Top Issues\n\n1. **Regex-based audit scripts break on legitimate Rust/TS syntax.** Across `tests-audit/` most parsers assume a single canonical form: `SCHEMA_CONST_RE` only matches `r##\"...\"##`, `MOD_DECL_RE` rejects `pub(crate)mod` (no space), `strip_cfg_test_modules` misses `#[cfg(test)]\\npub mod tests`, the `impl\\s+EvolutionPolicy` rule fails for `impl\u003cT\u003e EvolutionPolicy`, rule 3 misses `use crate::evolution::{strategy}`, and `audit_error_codes.py`'s `index(\"\\n}\", start)` / `index(\"]\", start)` match the first delimiter anywhere. Result: any real-world Rust addition silently slips past the audit. (`audit_bot_tools_alignment.py`, `audit_module_map.py`, `audit_error_codes.py`, `audit_evolution_layering.py`).\n\n2. **`std::thread::sleep(50ms)` used as racy synchronization in the mock LLM harness.** `src-tauri/tests/mock_llm.rs` ends every test with the sleep before asserting `request_count()`, even though the counter is incremented *before* the response is written and `http_post_raw` only returns after `read_to_string`. `llm_integration.rs` repeats the same pattern twice (incl. the 401 case where the request is already settled). These sleeps hide CI flakes under load. (`mock_llm.rs`, `llm_integration.rs`).\n\n3. **`Box::leak(Box::new(tauri::test::mock_app()))` accumulates per-test `MockRuntime` leaks.** Used in 5+ test files (`mock_handle` / `setup_task` / ad-hoc at top of test). Over a `nextest` run with dozens of cases this leaks dozens of `AppHandle`s until the process exits, and any future loop/parametrization will multiply the leak. (`llm_integration.rs`, `memory_conflict.rs`, `exec_trace.rs`, `task_chat_exec.rs`, `skill_e2e.rs`).\n\n4. **Hardcoded counts/string literals couple tests to today's code shape.** `\u003e= 50` in `test_extractors_nonempty`, `len(tools) == 39` in `test_table_is_wellformed`, 9000-char window after `fn_match.end()` in `audit_pre_step_pre_execute.py`, `corpus.len() * 2` LLM-call count in `memory_conflict.rs`, `recall@5` silently tracking `top_n` in `memory_eval.rs`, `mk_proposal` always returning `MemoryPolicy` regardless of `category` in `evolution_gov.rs`. Legitimate refactors trip these guards and hide real regressions. (`audit_tauri_bridge.py`, `audit_bot_tools_alignment.py`, `audit_pre_step_pre_execute.py`, `memory_conflict.rs`, `memory_eval.rs`, `evolution_gov.rs`).\n\n5. **Panic-unsafe cleanup using `.ok()` / `eprintln` masks real failure.** When assertions panic mid-test, the seeded rows/config in the shared `target/debug/deps/wmessage.db` survive and corrupt the next run. `exec_trace.rs` third test has manual DELETEs at function tail (no `TraceCleanupGuard`), `memory_conflict.rs` swallows cleanup errors as `.ok()`, `llm_integration.rs` uses `eprintln`, and `evolution_gov.rs` Segment 7 silently skips the entire hijack-prevention assertion when `embed_text` returns None — the most security-critical assertion in the file becomes a no-op. (`exec_trace.rs`, `memory_conflict.rs`, `llm_integration.rs`, `evolution_gov.rs`).\n\n6. **PII handling in `memory_eval.rs`.** `std::fs::write` creates `memory_extract_sample.jsonl` with default umask (typically 0o644), the temp `.tmp` file is not covered by `.gitignore`, the panic on DB failure prints the absolute DB path, and `misses` prints raw query text + `expect_ids`. Acceptable for a manual `#[ignore]` test, but the data leaks through git status / cloud sync / bug reports. (`memory_eval.rs`).\n\n7. **`std::env::set_var` without `unsafe { ... }` will not build on Rust 1.74+.** The current toolchain marks it `unsafe fn`; `memory_v2_degraded.rs` calls it bare. This file will fail to compile against the current toolchain until wrapped. (`memory_v2_degraded.rs`).\n\n8. **Module-import-time side effects in audit scripts.** `audit_tauri_bridge.py` walks the *entire* frontend tree (incl. `node_modules/`, `dist/`, `.git/`) at import time before filtering by suffix. `audit_error_codes.py` reads source files at module top — a transient CI checkout or encoding error aborts the whole module before any test runs. (`audit_tauri_bridge.py`, `audit_error_codes.py`).\n\n### Module Hotspots\n\n- `src-tauri/tests/memory_eval.rs` — 9 comments. PII leak, platform-paths hardcoded to `$HOME`, atomicity on Windows, aggregate denominator ignoring categories outside `CATEGORY_ORDER`, fragile tied-score sort, `recall@5` coupled to default `top_n`.\n- `src-tauri/tests/task_chat_exec.rs` — 6 comments. Spawned task hangs on early panic (no `release_tx`), dead `sid_holder`, cross-test contamination via `LIKE '⏰ 定时：%'` against the shared DB, brittle `run_task_in_chat` substring, `_serial` mutex held across `await`.\n- `tests-audit/audit_evolution_layering.py` — 6 comments. `strip_cfg_test_modules` eats newlines and skews line numbers; regex misses `pub mod` form and group-`use`; per-line `DELEGATE_ALLOW.search` lets `use …; use …forbidden;` on one line pass; only one chrono clock entry covered.\n- `src-tauri/tests/mock_llm.rs` — 5 comments. Single-thread sequential accept loop, 5s read timeout can silently truncate bodies, case-sensitive `Content-Length` lookup (RFC 7230 violation), `_handle: Option` with `#[allow(dead_code)]` never joined, `Arc\u003cAtomicUsize\u003e` overkill for single-thread counter.\n- `src-tauri/tests/llm_integration.rs` — 5 comments. Two `thread::sleep`/request_count races, `mock_handle` leaks a fresh App per call, `eprintln`-swallowed cleanup.\n- `src-tauri/tests/exec_trace.rs` — 5 comments. Third test bypasses `TraceCleanupGuard`, sequential DELETEs with no transaction + `.ok()`, polling loop has zero diagnostics on exhaustion, two `Box::leak` sites, `SERIAL` mutex recovers from poisoning silently.\n- `src-tauri/tests/skill_e2e.rs` — 5 comments. `await_holding_lock` disabled with `std::sync::MutexGuard` held across `.await` (safety rests entirely on `#[tokio::test(flavor = \"current_thread\")]`), DDL hand-mirrored from `db.rs`, global `rebuild_routes` happens before `RoutesResetGuard` is constructed, mock executor mutates scheduler state mid-flight, ~10 leaked AppHandles.\n- `tests-audit/audit_error_codes.py` — 5 comments. First-`]` / first-`\\n}` delimiter fragility, source files read at import time, `+ 2` off-by-one against the `[` sentinel, `rust_codes()` / `ts_codes()` re-parsed on every assertion.\n- `tests-audit/audit_bot_tools_alignment.py` — 5 comments. `SCHEMA_CONST_RE` only matches `r##\"...\"##`, `\u0026\\[([^\\]]*)\\]` truncated by `]` in regex char classes, substring match on retired tool names (`my_list_tasks_helper` false-positive), `assert` preconditions stripped under `python -O`, `len(tools) == 39` hardcoded.\n\n### Cross-Cutting Concerns\n\n- **Regex parsers that don't survive alternative Rust syntax.** Group-`use`, generics on `impl`, `pub mod` form, `pub(crate)mod` without space, `r#\"...\"#` single-hash raw strings. Representative: `audit_evolution_layering.py`, `audit_module_map.py`, `audit_bot_tools_alignment.py`, `audit_error_codes.py`.\n- **Hardcoded localized Chinese substrings as test fixtures.** `\"## 记忆\"`, `\"口味：不吃辣\"`, `b.contains(\"已有记忆 id=\")`, `err.contains(\"拒绝\")`, the doc comment `\"末尾\"`. Any wording/i18n change turns these into vacuous passes while real wiring could break. Representative: `memory_v2_degraded.rs`, `memory_conflict.rs`, `evolution_gov.rs`.\n- **Silent error swallowing via `.ok()` / `eprintln!`.** Cleanup failures disappear, security-critical assertions silently skip, and CI flakes leave no breadcrumb. `memory_conflict.rs`, `exec_trace.rs`, `mock_llm.rs`, `evolution_gov.rs`, `llm_integration.rs`.\n- **Shared mutable state at `target/debug/deps/wmessage.db`.** Cross-test contamination via `LIKE '⏰ 定时：%'` (also matches stale rows from other prefixes), pre-pushed FIFO coupling in `memory_conflict.rs`, panic-unsafe cleanup leaving seeded rows. Representative: `task_chat_exec.rs`, `memory_conflict.rs`, `llm_integration.rs`.\n- **`Box::leak(Box::new(tauri::test::mock_app()))` to obtain `'static` AppHandle.** Repeated across 5 files; no shared helper. `llm_integration.rs`, `memory_conflict.rs`, `exec_trace.rs`, `task_chat_exec.rs`, `skill_e2e.rs`.\n- **Audit scripts using `assert` for preconditions on external content.** Stripped under `PYTHONOPTIMIZE=1` / `python -O`, leading to confusing downstream `AttributeError`/`KeyError`. `audit_bot_tools_alignment.py` is the worst offender; `audit_module_map.py` has similar `sorted(SRC.rglob(name))` repeated on every direct hit.\n- **Module-import-time side effects.** Walking large directory trees, reading external files, mutating global state (`rebuild_routes`) before a guard is constructed. `audit_tauri_bridge.py`, `audit_error_codes.py`, `skill_e2e.rs`.\n\n### Quick Wins\n\n- Wrap `std::env::set_var` in `unsafe { ... }` in `memory_v2_degraded.rs` so the file compiles on Rust 1.74+.\n- Delete dead code: `find_line`/`grep_count` in `audit_pre_step_pre_execute.py`, `sid_holder` in `task_chat_exec.rs`, the `_handle: Option\u003c…\u003e = Some(…)` placeholder in `mock_llm.rs`.\n- Drop every trailing `thread::sleep(Duration::from_millis(50))` before `request_count()` assertions in `mock_llm.rs` (and the two in `llm_integration.rs`) — the counter is already settled.\n- Add `**/memory_extract_sample*.tmp` to `.gitignore` and chmod the sample fixture to 0o600 in `memory_eval.rs`; gate diagnostics behind a `--verbose` flag.\n- Add `\\b` to the three `INDIRECT_RE` branches in `audit_no_eval.py`; tighten `\\(0,\\s*eval\\)` to require `()` after.\n- Generalize `SCHEMA_CONST_RE` to accept `r#\"...\"#` and `r\"...\"` (regex `r#*\"(.*?)\"#*\"`), and add `]` to `audit_error_codes.py`'s terminator search to skip braces inside strings/comments.\n- Replace `Box::leak(tauri::test::mock_app())` with a `once_cell::sync::Lazy\u003cAppHandle\u003e` helper shared across the integration tests.\n- Convert the cleanup-by-`.ok()` sites in `exec_trace.rs` and `memory_conflict.rs` to a single `Drop` guard that runs the DELETE inside a transaction and `eprintln!`s (or panics on) failure.\n- In `audit_error_codes.py`, change `+ 2` to `+ len(\"= [\")` and only call `rust_codes()`/`ts_codes()` once per test (e.g. assign to a local).\n- Make `mk_proposal` in `evolution_gov.rs` parameterize on `category → ProposalTarget`, so Segment 6 actually exercises the gating it claims to.",
+  "session_id": "9bebb6b5-fd96-484a-bc27-3ae9d4982778"
+}

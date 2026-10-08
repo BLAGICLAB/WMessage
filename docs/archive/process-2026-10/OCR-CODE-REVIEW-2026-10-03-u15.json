@@ -1,0 +1,727 @@
+{
+  "status": "complete",
+  "llm": {
+    "provider": "minimax-cn",
+    "model": "MiniMax-M3"
+  },
+  "message": "Review complete: 47 finding(s) across 11 selected item(s).",
+  "summary": {
+    "files_reviewed": 11,
+    "comments": 47,
+    "total_tokens": 8540885,
+    "input_tokens": 8378247,
+    "output_tokens": 162638,
+    "cache_read_tokens": 7748260,
+    "elapsed": "8m14s"
+  },
+  "tool_calls": {
+    "total": 331,
+    "by_tool": {
+      "code_comment": 19,
+      "code_search": 155,
+      "file_find": 5,
+      "file_read": 135,
+      "file_read_diff": 17
+    },
+    "failure": 5,
+    "failure_by_tool": {
+      "file_read": 5
+    },
+    "failure_details": [
+      {
+        "tool_call_number": 28,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/bot/config/io.rs",
+        "arguments": "{\"end_line\":20,\"file_path\":\"src-tauri/src/bot.rs\",\"start_line\":70}",
+        "error": "invalid line range: start_line 70 is greater than end_line 20"
+      },
+      {
+        "tool_call_number": 105,
+        "tool_name": "file_read",
+        "file_path": "src/components/SettingsPage/SettingsPage.tsx",
+        "arguments": "{\"end_line\":30,\"file_path\":\"src/components/SettingsPage.test.tsx\",\"start_line\":965}",
+        "error": "invalid line range: start_line 965 is greater than end_line 30"
+      },
+      {
+        "tool_call_number": 202,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/tests/llm_integration.rs",
+        "arguments": "{\"end_line\":50,\"file_path\":\"src-tauri/tests/llm_integration.rs\",\"start_line\":1480}",
+        "error": "invalid line range: start_line 1480 is greater than end_line 50"
+      },
+      {
+        "tool_call_number": 207,
+        "tool_name": "file_read",
+        "file_path": "src/components/SettingsPage/SettingsPage.tsx",
+        "arguments": "{\"end_line\":60,\"file_path\":\"src/components/SettingsPage/SettingsPage.tsx\",\"start_line\":380}",
+        "error": "invalid line range: start_line 380 is greater than end_line 60"
+      },
+      {
+        "tool_call_number": 287,
+        "tool_name": "file_read",
+        "file_path": "src/components/SettingsPage/SettingsPage.tsx",
+        "arguments": "{\"end_line\":100,\"file_path\":\"src/components/SettingsPage/SettingsPage.tsx\",\"start_line\":250}",
+        "error": "invalid line range: start_line 250 is greater than end_line 100"
+      }
+    ]
+  },
+  "comments": [
+    {
+      "path": "src-tauri/src/bot/config/io.rs",
+      "content": "Module-level doc comment (lines 1-7) is stale: it lists the public surface of io.rs but omits the newly added `read_memory_control` helper. Add it alongside `read_bypass_llm_switch` so the file header accurately reflects the exported API.",
+      "suggestion_code": "//! - `read_bypass_llm_switch` 轻量开关读取（bot_chat 入口用）\n//! - `read_memory_control` 记忆可控开关轻量读取（U15 门禁用）",
+      "existing_code": "//! - `read_bypass_llm_switch` 轻量开关读取（bot_chat 入口用）",
+      "start_line": 5,
+      "end_line": 5,
+      "category": "documentation",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/bot/config/io.rs",
+      "content": "`config_path` was widened from concrete `\u0026AppHandle` to generic `\u003cR: tauri::Runtime\u003e`. This is consistent with `db::data_dir`, but it is a **potentially source-breaking change** for any external caller who typed `config_path` as a function pointer (`fn(\u0026AppHandle) -\u003e PathBuf`) or matched its signature with a non-generic alias. Internal callers all infer `R = tauri::Wry` and compile fine. If downstream crates depend on the old concrete signature, this change is a breaking API change — worth a CHANGELOG note. Also note the inconsistency: most other public helpers in this file (`load_config`, `read_bypass_llm_switch`, `migrate_legacy_key`, `add_allowed_dir`, `update_config_file`) still take the concrete `\u0026AppHandle`. Only `read_memory_control` was made generic. Either both should be generic (for parity with the requirement that injection runs on a generic-runtime task executor) or both should remain concrete — pick one and stay consistent.",
+      "existing_code": "pub fn config_path\u003cR: tauri::Runtime\u003e(app: \u0026tauri::AppHandle\u003cR\u003e) -\u003e PathBuf {\n    db::data_dir(app).join(\"bot-config.json\")\n}",
+      "start_line": 118,
+      "end_line": 120,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/bot/config/io.rs",
+      "content": "`read_memory_control` is `pub` but is not re-exported via `pub use io::{...}` in `bot/config/mod.rs:46`, nor added to the `bot.rs` facade re-export list (lines 64-114). The doc comment at `mod.rs:7` states all external callers must use the `crate::bot::\u003citem\u003e` facade and not access `crate::bot::config::\u003citem\u003e` directly. The current caller (`memory::mod.rs:73`) does exactly that — accesses `crate::bot::config::io::read_memory_control` directly, breaking the facade contract. Add it to both re-export lists (or downgrade it to `pub(crate)` and update the comment if it's intentionally internal-only).",
+      "existing_code": "pub fn read_memory_control\u003cR: tauri::Runtime\u003e(\n    app: \u0026tauri::AppHandle\u003cR\u003e,\n) -\u003e Option\u003ccrate::memory::MemoryControl\u003e {\n    read_memory_control_at(\u0026config_path(app))\n}",
+      "start_line": 131,
+      "end_line": 135,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/bot/config/io.rs",
+      "content": "The new test `read_memory_control_defaults_none_and_honors_explicit_block` (mod.rs:502) does not exercise partial-field deserialization — e.g. `{\"memoryControl\":{\"injectionEnabled\":false}}` where `autoWriteEnabled` is absent. Since `MemoryControl` derives `#[serde(default)]`, the missing field should default to `true`. Without this case, the \"missing field defaults to open\" guarantee is asserted only implicitly; an explicit case protects against future serde-attribute drift.",
+      "existing_code": "/// 可测内核（纯路径参数）：None = 无控制（全开）\npub(crate) fn read_memory_control_at(path: \u0026Path) -\u003e Option\u003ccrate::memory::MemoryControl\u003e {\n    let raw = std::fs::read_to_string(path).ok()?;\n    serde_json::from_str::\u003cBotConfig\u003e(\u0026raw).ok()?.memory_control\n}",
+      "start_line": 137,
+      "end_line": 141,
+      "category": "test",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/bot/config/io.rs",
+      "content": "`read_memory_control_at` parses the entire `BotConfig` (baseUrl, model, key slots, MCP servers, evolution, etc.) on every gate check just to extract `memory_control`. This runs on every chat turn (`injection_block` at the start of every message) and on every model tool call to `remember_fact`/`record_lesson`. For a toggle that's read far more often than written, consider either: (a) parsing as `serde_json::Value` and plucking only `memoryControl`, (b) caching the parsed control in a `OnceLock\u003cMutex\u003cOption\u003cMemoryControl\u003e\u003e\u003e` with file mtime invalidation, or (c) at minimum documenting that the existing pattern mirrors `read_bypass_llm_switch` which has the same trade-off.",
+      "suggestion_code": "pub(crate) fn read_memory_control_at(path: \u0026Path) -\u003e Option\u003ccrate::memory::MemoryControl\u003e {\n    let raw = std::fs::read_to_string(path).ok()?;\n    // 只 pluck memoryControl 一个字段，跳过 BotConfig 其余字段（key slots / MCP / evolution ...）\n    // 的反序列化开销。gate 路径每轮聊天 + 每次模型记忆工具调用都会走，全表 parse 是浪费。\n    let val: serde_json::Value = serde_json::from_str(\u0026raw).ok()?;\n    val.get(\"memoryControl\")\n        .and_then(|v| serde_json::from_value(v.clone()).ok())\n}",
+      "existing_code": "pub fn read_memory_control\u003cR: tauri::Runtime\u003e(\n    app: \u0026tauri::AppHandle\u003cR\u003e,\n) -\u003e Option\u003ccrate::memory::MemoryControl\u003e {\n    read_memory_control_at(\u0026config_path(app))\n}\n\n/// 可测内核（纯路径参数）：None = 无控制（全开）\npub(crate) fn read_memory_control_at(path: \u0026Path) -\u003e Option\u003ccrate::memory::MemoryControl\u003e {\n    let raw = std::fs::read_to_string(path).ok()?;\n    serde_json::from_str::\u003cBotConfig\u003e(\u0026raw).ok()?.memory_control\n}",
+      "start_line": 131,
+      "end_line": 141,
+      "category": "performance",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/bot/config/io.rs",
+      "content": "Within the same module, `read_bypass_llm_switch(app: \u0026AppHandle)` uses the concrete `AppHandle` alias while `read_memory_control(app: \u0026tauri::AppHandle\u003cR\u003e)` is generic over `R`. Same trade-off (generic lets the test in `llm_integration.rs` pass `tauri::AppHandle\u003ctauri::test::MockRuntime\u003e`), but the asymmetry will confuse future readers. Either make `read_bypass_llm_switch` generic too, or add a one-line comment here noting the deliberate divergence.",
+      "existing_code": "pub fn read_memory_control\u003cR: tauri::Runtime\u003e(\n    app: \u0026tauri::AppHandle\u003cR\u003e,\n) -\u003e Option\u003ccrate::memory::MemoryControl\u003e {\n    read_memory_control_at(\u0026config_path(app))\n}",
+      "start_line": 131,
+      "end_line": 135,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/memory/mod.rs",
+      "content": "Comment claims \"纯函数，可测\" for `injection_enabled`/`auto_write_enabled`, which is true for these two predicates. But the gate wrappers `injection_allowed`/`auto_write_allowed` (defined at lines 52-58 below) are private and take `tauri::AppHandle\u003cR\u003e`, so they cannot be unit-tested without a mock runtime — only exercised via the integration test in `llm_integration.rs::memory_gate_scenarios_injection_and_auto_write`. Consider clarifying the comment to distinguish the pure predicates from the I/O wrappers, or making the wrappers `pub(crate)` and accepting `Option\u003c\u0026MemoryControl\u003e` so the file-read part is fully testable in isolation.",
+      "existing_code": "/// 注入门禁判定（纯函数，可测）：None = 老配置全开\npub fn injection_enabled(ctrl: Option\u003c\u0026MemoryControl\u003e) -\u003e bool {\n    ctrl.map(|c| c.injection_enabled).unwrap_or(true)\n}\n\n/// 写入门禁判定（纯函数，可测）\npub fn auto_write_enabled(ctrl: Option\u003c\u0026MemoryControl\u003e) -\u003e bool {\n    ctrl.map(|c| c.auto_write_enabled).unwrap_or(true)\n}",
+      "start_line": 59,
+      "end_line": 67,
+      "category": "documentation",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/memory/mod.rs",
+      "content": "`control_of_view` maps every config-read failure (I/O error, permission error, parse error) to `None` = \"all on\" with zero logging. If the user's toggle silently doesn't take effect because of a permission denied / JSON corruption, they have no way to diagnose it. The `memory_control` field is a user-visible privacy-relevant setting — at minimum, distinguish \"field missing (legit default)\" from \"config present but unreadable\" and emit a one-line `eprintln!` or `audit_event!` warn when the file exists but reading/parsing fails. The `read_memory_control_at` test at `confirms the same behavior; a log there would surface real issues without breaking the \"门禁绝不能弄挂聊天\" guarantee.",
+      "existing_code": "/// 配置读取薄壳（视图级，两个门禁共用）：文件缺失/解析失败 → None = 全开——\n/// 与注入路径失败静默降级的总纪律一致，门禁绝不能把聊天弄挂。\n/// 走 io::read_memory_control 轻量读取（运行时泛型：注入路径被泛型任务执行复用）。\nfn control_of_view\u003cR: tauri::Runtime\u003e(app: \u0026tauri::AppHandle\u003cR\u003e) -\u003e Option\u003cMemoryControl\u003e {\n    crate::bot::config::io::read_memory_control(app)\n}",
+      "start_line": 69,
+      "end_line": 74,
+      "category": "security",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/tests/llm_integration.rs",
+      "content": "[high] Race condition on shared DB between baseline capture and final count. Scenario 3 reads `load_all(\u0026conn).len()` twice with two tool calls in between, but the test comment itself notes that `target/debug/deps/`'s `wmessage.db` is shared by all parallel test processes. Any sibling worker that writes/deletes rows between these two reads will change the count and produce a spurious \"门禁关闭时不得写入\" failure even though the gate logic is correct. Mitigation: instead of `assert_eq!(final_len, baseline)`, snapshot the IDs seen at baseline and assert that none of those IDs disappear and no new IDs (with the test's distinguishing attributes) appear — or wrap both reads in a `BEGIN IMMEDIATE`/rollback transaction on a dedicated connection so the comparison is isolated from concurrent writers.",
+      "existing_code": "    let baseline = wmessage_lib::memory::store::load_all(\u0026conn).unwrap().len();\n    let r = wmessage_lib::memory::tool_remember_fact(\u0026app, r#\"{\"key\":\"测试键\",\"value\":\"测试值\"}\"#)\n        .await;\n    assert!(r.text.contains(\"无需记录\"), \"{}\", r.text);\n    let r = wmessage_lib::memory::tool_record_lesson(\u0026app, r#\"{\"lesson\":\"某教训\"}\"#).await;\n    assert!(r.text.contains(\"无需记录\"), \"{}\", r.text);\n    assert_eq!(\n        wmessage_lib::memory::store::load_all(\u0026conn).unwrap().len(),\n        baseline,\n        \"门禁关闭时不得写入\"\n    );",
+      "start_line": 1598,
+      "end_line": 1608,
+      "category": "test",
+      "severity": "high"
+    },
+    {
+      "path": "src-tauri/tests/llm_integration.rs",
+      "content": "[medium] Cleanup is best-effort and skipped on any panic/early-exit, defeating the purpose of merging scenarios to avoid shared-state pollution. The trailing `remove_file`, `delete_by_ids`, and `delete_by_key_tag` only run on the success path; if any assertion above panics, the shared `bot-config.json` (with `memoryControl: {injectionEnabled, autoWriteEnabled}` values) and the seeded rows are left in place for every parallel nextest worker, re-introducing the exact contamination this test is trying to mitigate. Wrap the test body in a Drop guard or RAII helper that runs cleanup unconditionally (e.g., `let _guard = MemoryControlCleanup { app: \u0026app, seed: SEED_CONTENT, key: \"测试键\" };`), or use `scopeguard` / a manual `struct ... { conn, ... } impl Drop` so cleanup runs on the unwind path.",
+      "existing_code": "    // 恢复共享现场：删本测试写的配置文件 + 全部种子条目（含历史轮次残留）\n    // + 历史失败轮次漏写的「测试键」\n    let _ = std::fs::remove_file(wmessage_lib::bot::config_path(\u0026app));\n    let junk: Vec\u003cString\u003e = wmessage_lib::memory::store::load_all(\u0026conn)\n        .unwrap()\n        .into_iter()\n        .filter(|m| m.content == SEED_CONTENT)\n        .map(|m| m.id)\n        .collect();\n    wmessage_lib::memory::store::delete_by_ids(\u0026conn, \u0026junk).unwrap();\n    let _ = wmessage_lib::memory::store::delete_by_key_tag(\u0026conn, \"测试键\");\n}",
+      "start_line": 1610,
+      "end_line": 1621,
+      "category": "test",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/tests/llm_integration.rs",
+      "content": "[medium] Silent error swallowing in cleanup hides real I/O / SQLite failures and can leak shared state. `let _ = std::fs::remove_file(...)` and `let _ = wmessage_lib::memory::store::delete_by_key_tag(\u0026conn, \"测试键\")` discard every error class (NotFound vs PermissionDenied vs DbBusy vs DB locked); a real error during teardown will silently leave the shared DB polluted for every parallel worker, while the test still reports green. At minimum `eprintln!` (or `tracing::warn!` if the crate has it) on `Err`, and ideally propagate non-NotFound variants so a permission/lock failure is observable.",
+      "existing_code": "    let _ = std::fs::remove_file(wmessage_lib::bot::config_path(\u0026app));",
+      "start_line": 1612,
+      "end_line": 1612,
+      "category": "test",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/tests/llm_integration.rs",
+      "content": "[low] The literal `1_000` passed as `now_ms` to `insert_item` is unexplained at this call site. Future readers cannot tell whether this is a TTL, importance, dedup window, or just a placeholder timestamp; silently changing the production default (or `insert_item`'s clocking semantics) could shift `created_at`/`updated_at` and break assumptions elsewhere. Replace with a named constant (e.g. `const SEED_NOW_MS: i64 = 1_000;`) or a one-line comment naming the role (\"placeholder created/updated_at; ranking tests use a separate clock\").",
+      "existing_code": "    match wmessage_lib::memory::store::insert_item(\u0026conn, \u0026item, None, 1_000).unwrap() {",
+      "start_line": 1563,
+      "end_line": 1563,
+      "category": "test",
+      "severity": "low"
+    },
+    {
+      "path": "model-meta-service/main.py",
+      "content": "`sqlite3.Connection`'s context manager only commits or rolls back the transaction — it does NOT close the connection. Every `with get_db() as conn:` in this file (9 places) leaks a file descriptor and a SQLite connection for the lifetime of the request handler. In a long-running service this can exhaust FDs or hit SQLite's per-process lock limit. Use an explicit factory that yields a connection inside a `try/finally`, or wrap with `closing(sqlite3.connect(DB_PATH))`.",
+      "suggestion_code": "from contextlib import contextmanager\n\n@contextmanager\ndef get_db():\n    conn = sqlite3.connect(DB_PATH)\n    conn.row_factory = sqlite3.Row\n    try:\n        yield conn\n    finally:\n        conn.close()",
+      "existing_code": "def get_db() -\u003e sqlite3.Connection:\n    conn = sqlite3.connect(DB_PATH)\n    conn.row_factory = sqlite3.Row\n    return conn",
+      "start_line": 48,
+      "end_line": 51,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "model-meta-service/main.py",
+      "content": "`hash(pkey)` is not stable across restarts — Python seeds `str.__hash__` per process (PYTHONHASHSEED randomization), so the comment \"稳定且可区分\" is wrong: the fallback color for every provider will change on each restart, causing visible UI flicker. Use a deterministic hash (e.g., `hashlib.blake2b(pkey.encode(), digest_size=4).hexdigest()[:8]`) or pin `PYTHONHASHSEED`.",
+      "suggestion_code": "(pkey, name, LOGO_URL.format(pkey),\n                 PALETTE[zlib.crc32(pkey.encode()) % len(PALETTE)],\n                 name[0].upper(), p.get(\"api\")),",
+      "existing_code": "(pkey, name, LOGO_URL.format(pkey), PALETTE[hash(pkey) % len(PALETTE)], name[0].upper(), p.get(\"api\")),",
+      "start_line": 68,
+      "end_line": 68,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "model-meta-service/main.py",
+      "content": "`httpx.get` is a blocking synchronous call invoked from `async def lifespan`. Synchronous HTTP inside an async context stalls the event loop for up to 10 seconds during startup, delaying any concurrent awaits. Use `httpx.AsyncClient` and `await client.get(...)`, or run the sync call in `asyncio.to_thread(...)`.",
+      "suggestion_code": "async with httpx.AsyncClient(timeout=10) as client:\n        data = (await client.get(MODELS_DEV_API)).json()",
+      "existing_code": "data = httpx.get(MODELS_DEV_API, timeout=10).json()",
+      "start_line": 56,
+      "end_line": 56,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "model-meta-service/main.py",
+      "content": "Catching and printing only `str(e)` discards the traceback. A recurring sync failure will be hard to diagnose because the stack frame is lost. Use `logging.exception(...)` (or `print(..., exc_info=True)`) so the full chain is preserved, and consider routing through a structured logger rather than `print`.",
+      "suggestion_code": "except Exception:\n        logging.exception(\"[model-meta] models.dev 同步失败，使用本地缓存\")",
+      "existing_code": "except Exception as e:\n        print(f\"[model-meta] models.dev 同步失败，使用本地缓存: {e}\")",
+      "start_line": 91,
+      "end_line": 92,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "model-meta-service/main.py",
+      "content": "`name[0].upper()` will raise `IndexError` if the provider's `name` from models.dev is an empty string and `pkey` is also empty (the `or` short-circuit does not save you once `name` is `\"\"`). The schema declares `provider_name TEXT NOT NULL` but SQLite does not enforce that here without `CHECK`. Add a safe fallback like `(name[:1] or \"?\").upper()` or skip the row.",
+      "suggestion_code": "(pkey, name, LOGO_URL.format(pkey),\n                 PALETTE[zlib.crc32(pkey.encode()) % len(PALETTE)],\n                 (name[:1] or \"?\").upper(), p.get(\"api\")),",
+      "existing_code": "(pkey, name, LOGO_URL.format(pkey), PALETTE[hash(pkey) % len(PALETTE)], name[0].upper(), p.get(\"api\")),",
+      "start_line": 68,
+      "end_line": 68,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "model-meta-service/main.py",
+      "content": "`body.provider_name[0].upper()` will raise `IndexError` if the user POSTs `provider_name=\"\"`. `ProviderIn.provider_name` is required (no min_length constraint), so an empty string passes Pydantic validation. The `or` only triggers when `fallback_char` is falsy, which can hand an empty string straight to this branch. Guard with `(body.provider_name[:1] or FALLBACK_CHAR).upper()`.",
+      "suggestion_code": "char = body.fallback_char or (body.provider_name[:1] or FALLBACK_CHAR).upper()",
+      "existing_code": "char = body.fallback_char or (body.provider_name[0].upper() if body.provider_name else FALLBACK_CHAR)",
+      "start_line": 178,
+      "end_line": 178,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "model-meta-service/main.py",
+      "content": "CORS is fully permissive (`allow_origins=[\"*\"]`, `allow_methods=[\"*\"]`, `allow_headers=[\"*\"]`). Even though the service binds to `127.0.0.1`, any browser running on the same host can hit the mutation endpoints (`/api/provider`, `/api/model`, `/api/sync-models-dev`) and write arbitrary rows with no auth. Either lock origins to the Tauri webview origin, drop `*` methods/headers, or require an auth header on mutating routes.",
+      "suggestion_code": "app.add_middleware(\n    CORSMiddleware,\n    allow_origins=[\"http://tauri.localhost\", \"http://localhost\"],\n    allow_methods=[\"GET\", \"POST\"],\n    allow_headers=[\"Content-Type\"],\n)",
+      "existing_code": "app.add_middleware(CORSMiddleware, allow_origins=[\"*\"], allow_methods=[\"*\"], allow_headers=[\"*\"])",
+      "start_line": 97,
+      "end_line": 97,
+      "category": "security",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/SettingsPage/MemoryPanel.tsx",
+      "content": "ioMsg 注释自称「同 consolidateMsg 模式」，但缺少 `consolidateMsg` 在 SettingsPage.tsx:1259 中的 `setTimeout(() =\u003e setConsolidateMsg(\"\"), 4000)` 自动清除。结果会一直挂在面板上，违反注释承诺的 toast 行为。本仓库已多次返工 setTimeout 句柄（FE-05 / FE-07 批：ProfileRow / SkillsPanel / McpPanel 均用 ref 存句柄 + 重设前 clear + 卸载清理），且本文件第 142 行的搜索防抖已示范了同样的清理写法。建议补一个 `ioMsgTimer = useRef\u003c...\u003e(null)` + useEffect 卸载清理 + 每次 setIoMsg 之前 clear 旧计时器，再在 success/fail 分支末尾 `setTimeout(() =\u003e setIoMsg(\"\"), 4000)`。",
+      "suggestion_code": "  /** 导出/导入结果提示：短暂 toast（4s 自动消退，同 consolidateMsg 模式，句柄 + 卸载清理复用本文件 142 行的写法） */\n  const [ioMsg, setIoMsg] = useState(\"\");\n  const ioMsgTimer = useRef\u003cReturnType\u003ctypeof setTimeout\u003e | null\u003e(null);\n  useEffect(\n    () =\u003e () =\u003e {\n      if (ioMsgTimer.current) clearTimeout(ioMsgTimer.current);\n    },\n    [],\n  );\n  const flashIoMsg = (m: string) =\u003e {\n    setIoMsg(m);\n    if (ioMsgTimer.current) clearTimeout(ioMsgTimer.current);\n    ioMsgTimer.current = setTimeout(() =\u003e setIoMsg(\"\"), 4000);\n  };",
+      "existing_code": "  /** 导出/导入结果提示（短暂 toast 式文案，同 consolidateMsg 模式） */\n  const [ioMsg, setIoMsg] = useState(\"\");",
+      "start_line": 89,
+      "end_line": 90,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/SettingsPage/MemoryPanel.tsx",
+      "content": "importMemories 内的 `sel?.[0]` 是死分支：`multiple: false` 时 `open()` 返回 `string | null`，不可能为数组。可读性优先可收紧。",
+      "suggestion_code": "      const path = sel ?? \"\";",
+      "existing_code": "      const path = typeof sel === \"string\" ? sel : sel?.[0];",
+      "start_line": 124,
+      "end_line": 124,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/SettingsPage/MemoryPanel.tsx",
+      "content": "按钮顺序为「导入 / 导出 / 刷新」，常规 UX 把低风险动作（导出 / 刷新）放左、高风险动作（导入）放最右，刷新紧贴列表；当前顺序用户导入成功后想点刷新需要跨过 Export，落点偏移。",
+      "suggestion_code": "          \u003cdiv className=\"flex shrink-0 items-center gap-1\"\u003e\n            \u003cIconButton\n              aria-label=\"刷新记忆列表\"\n              title=\"刷新记忆列表\"\n              className=\"text-[var(--t5)] hover:text-[var(--t2)]\"\n              onClick={() =\u003e reload(debouncedQuery, kindFilter)}\n              disabled={busy}\n            \u003e\n              \u003cRefreshCw size={13} aria-hidden /\u003e\n            \u003c/IconButton\u003e\n            \u003cIconButton\n              aria-label=\"导出记忆\"\n              title=\"导出全部记忆到 JSON 文件（含语义向量）\"\n              className=\"text-[var(--t5)] hover:text-[var(--t2)]\"\n              onClick={exportMemories}\n              disabled={busy}\n            \u003e\n              \u003cDownload size={13} aria-hidden /\u003e\n            \u003c/IconButton\u003e\n            \u003cIconButton\n              aria-label=\"导入记忆\"\n              title=\"从 JSON 文件导入记忆（与现有记忆语义重复的会自动合并）\"\n              className=\"text-[var(--t5)] hover:text-[var(--t2)]\"\n              onClick={importMemories}\n              disabled={busy}\n            \u003e\n              \u003cUpload size={13} aria-hidden /\u003e\n            \u003c/IconButton\u003e\n          \u003c/div\u003e",
+      "existing_code": "          \u003cdiv className=\"flex shrink-0 items-center gap-1\"\u003e\n            {/* 导出/导入（U15）：向量随 JSON 带出，导入走语义去重只增不删 */}\n            \u003cIconButton\n              aria-label=\"导入记忆\"\n              title=\"从 JSON 文件导入记忆（与现有记忆语义重复的会自动合并）\"\n              className=\"text-[var(--t5)] hover:text-[var(--t2)]\"\n              onClick={importMemories}\n              disabled={busy}\n            \u003e\n              \u003cUpload size={13} aria-hidden /\u003e\n            \u003c/IconButton\u003e\n            \u003cIconButton\n              aria-label=\"导出记忆\"\n              title=\"导出全部记忆到 JSON 文件（含语义向量）\"\n              className=\"text-[var(--t5)] hover:text-[var(--t2)]\"\n              onClick={exportMemories}\n              disabled={busy}\n            \u003e\n              \u003cDownload size={13} aria-hidden /\u003e\n            \u003c/IconButton\u003e\n            \u003cIconButton\n              aria-label=\"刷新记忆列表\"\n              title=\"刷新记忆列表\"\n              className=\"text-[var(--t5)] hover:text-[var(--t2)]\"\n              onClick={() =\u003e reload(debouncedQuery, kindFilter)}\n              disabled={busy}\n            \u003e\n              \u003cRefreshCw size={13} aria-hidden /\u003e\n            \u003c/IconButton\u003e\n          \u003c/div\u003e",
+      "start_line": 245,
+      "end_line": 274,
+      "category": "style",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/memory/panel.rs",
+      "content": "`Err(_) =\u003e report.skipped += 1` lumps every `rusqlite::Error` / store failure (schema drift, I/O failure, locked DB, corruption) into the same \"skipped\" bucket as the legitimate `RejectedFull` / `RefusedForeignMerge` outcomes. A user importing a file that triggers a real storage error would see only `skipped: N` with no diagnostic — indistinguishable from normal input rejection. Either propagate the first error out of `import_core` (so the Tauri command surfaces it), or split the report into `skipped` and a separate `errors` channel, and at minimum `eprintln!(\"[mem_import] insert_item failed: {e}\")` before counting.\n\nVerify: `store::insert_item` (store.rs:247) returns `Result\u003c(InsertOutcome, Vec\u003cString\u003e), String\u003e` — the `String` carries actionable context that is being thrown away here, while every other caller in this crate preserves it (memory/mod.rs record_lesson_core → `format!(\"失败：{e}\")`, remember_fact → same).",
+      "existing_code": "Ok((store::InsertOutcome::RefusedForeignMerge { .. }, _)) =\u003e report.skipped += 1,\n            Err(_) =\u003e report.skipped += 1,\n        }",
+      "start_line": 380,
+      "end_line": 382,
+      "category": "maintainability",
+      "severity": "high"
+    },
+    {
+      "path": "src/components/SettingsPage/SettingsPage.tsx",
+      "content": "Missing ARIA switch semantics: this toggle button uses `aria-label` but lacks `role=\"switch\"` and `aria-checked={...}`. The project's accessibility standard — enforced by `SettingsPage.test.tsx` (which asserts `getByRole(\"switch\", ...)` + `toHaveAttribute(\"aria-checked\", ...)` for the vendor toggle) and implemented in `src/components/Toggle/Toggle.tsx` (lines 40-42) — expects binary on/off controls to expose both attributes so screen readers announce them as toggles and convey the current state. For a privacy-sensitive control, this is especially worth getting right.",
+      "suggestion_code": "            \u003cbutton\n              type=\"button\"\n              role=\"switch\"\n              aria-checked={config.memoryControl.injectionEnabled}\n              aria-label=\"聊天注入记忆\"\n              className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] ${\n                config.memoryControl.injectionEnabled ? \"nm-inset\" : \"nm-outset\"\n              }`}",
+      "existing_code": "+            \u003cbutton\n+              aria-label=\"聊天注入记忆\"\n+              className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] ${\n+                config.memoryControl.injectionEnabled ? \"nm-inset\" : \"nm-outset\"\n+              }`}",
+      "start_line": 1837,
+      "end_line": 1841,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/SettingsPage/SettingsPage.tsx",
+      "content": "Structural duplication: this second toggle row is a near-verbatim copy of the first (same wrapper, title/description classes, button shape, `nm-inset`/`nm-outset` toggle, \"已开启/已关闭\" label, `configBusy` disable gate). Only the field name, title, description, and aria-label differ. Extracting a small local helper (e.g., a `MemoryPermissionToggle` component or `renderMemoryPermissionToggle` function taking `{ field, title, description }`) would eliminate the duplication and ensure any future change (such as adding `role=\"switch\"`/`aria-checked`, a tooltip, or a third permission) only needs to be made in one place.",
+      "suggestion_code": "// e.g. extracted helper, called twice from the card body:\nfunction renderMemoryPermissionToggle({\n  field, title, description, ariaLabel, value, onToggle,\n}: {\n  field: \"injectionEnabled\" | \"autoWriteEnabled\";\n  title: string;\n  description: string;\n  ariaLabel: string;\n  value: boolean;\n  onToggle: () =\u003e void;\n}) {\n  return (\n    \u003cdiv className=\"flex items-center justify-between gap-4\"\u003e\n      \u003cdiv className=\"min-w-0\"\u003e\n        \u003cp className=\"text-[11px] text-[var(--t3)]\"\u003e{title}\u003c/p\u003e\n        \u003cp className=\"mt-0.5 text-[11px] text-[var(--t5)]\"\u003e{description}\u003c/p\u003e\n      \u003c/div\u003e\n      \u003cbutton\n        type=\"button\"\n        role=\"switch\"\n        aria-checked={value}\n        aria-label={ariaLabel}\n        className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] ${\n          value ? \"nm-inset\" : \"nm-outset\"\n        }`}\n        onClick={onToggle}\n        disabled={configBusy}\n      \u003e\n        {value ? \"已开启\" : \"已关闭\"}\n      \u003c/button\u003e\n    \u003c/div\u003e\n  );\n}",
+      "existing_code": "+            \u003cbutton\n+              aria-label=\"模型自动记忆\"",
+      "start_line": 1859,
+      "end_line": 1860,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/SettingsPage/SettingsPage.tsx",
+      "content": "Optimistic update without rollback: `setConfig(next)` runs before `await saveConfig(next)`, but the boolean return value of `saveConfig` is discarded. `saveConfig` (line 644) catches backend failures (network error, schema rejection, write conflict) and returns `false` without calling `loadConfig()`, so the local React state keeps the toggled value while the backend keeps the old one — silent UI/backend divergence. This is the same pattern as the pre-existing `setConsolidation`/`toggleTavily`/`toggleBrave`/`setPermMode`, but for a privacy-sensitive control (`autoWriteEnabled` directly affects whether the model is allowed to write memories, `injectionEnabled` is the privacy master switch) silent divergence is more concerning. Capture the original `config` reference and roll back when `saveConfig` returns `false`.",
+      "suggestion_code": "  const setMemoryControl = async (\n    patch: Partial\u003c{ injectionEnabled: boolean; autoWriteEnabled: boolean }\u003e,\n  ) =\u003e {\n    if (configBusy) return;\n    const next = {\n      ...config,\n      memoryControl: { ...config.memoryControl, ...patch },\n    };\n    setConfig(next);\n    const ok = await saveConfig(next);\n    // saveConfig 在后端拒绝/网络错误时返回 false 但不触发 loadConfig()，\n    // 单纯 await 会让乐观更新与后端真值长期不一致（隐私开关尤其危险）。\n    if (!ok) {\n      setConfig(config);\n    }\n  };",
+      "existing_code": "+  const setMemoryControl = async (\n+    patch: Partial\u003c{ injectionEnabled: boolean; autoWriteEnabled: boolean }\u003e,\n+  ) =\u003e {\n+    if (configBusy) return;\n+    const next = {\n+      ...config,\n+      memoryControl: { ...config.memoryControl, ...patch },\n+    };\n+    setConfig(next);\n+    await saveConfig(next);\n+  };",
+      "start_line": 1229,
+      "end_line": 1239,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/bot/config/io.rs",
+      "content": "Synchronous file I/O on the async runtime: `read_memory_control` runs `std::fs::read_to_string` directly. `injection_allowed` invokes it from `injection_block` (async) BEFORE `spawn_blocking`, so the file read happens on the async executor thread, not in a blocking pool. On a slow disk or contended FS, this can stall chat turns. Consider wrapping the read inside the existing `spawn_blocking` closure (e.g. pass `MemoryControl` lookup into the same blocking task) or adding `tokio::fs::read_to_string` if the project ever moves to tokio, to keep the async runtime responsive.",
+      "suggestion_code": "// 注入路径在 async 上下文调用，文件读取应走 spawn_blocking\n// 当前实现把 std::fs::read_to_string 留在 async 线程上执行，\n// 慢盘/被操纵时会拖住聊天主循环。",
+      "existing_code": "pub fn read_memory_control\u003cR: tauri::Runtime\u003e(\n    app: \u0026tauri::AppHandle\u003cR\u003e,\n) -\u003e Option\u003ccrate::memory::MemoryControl\u003e {\n    read_memory_control_at(\u0026config_path(app))\n}",
+      "start_line": 131,
+      "end_line": 135,
+      "category": "maintainability",
+      "severity": "high"
+    },
+    {
+      "path": "src-tauri/src/bot/config/mod.rs",
+      "content": "Test coverage gap (distinct from confirmed finding #4): the test only verifies `Some(MemoryControl { injection_enabled: false, auto_write_enabled: true })`. It does not cover: (a) `{\"memoryControl\":{\"autoWriteEnabled\":false}}` alone (auto_write gate flip), (b) `{\"memoryControl\":{}}` (empty object — with struct-level `#[serde(default)]` this should deserialize to `Some(MemoryControl::default())`, distinct from `memoryControl: null` → None), (c) `{\"memoryControl\":null}` (explicit null, must be None). Add these cases to lock the merge-with-default semantics so future refactors of `MemoryControl` don't change observable behavior.",
+      "suggestion_code": "// autoWriteEnabled:false alone（独立翻转写入门禁）\n        std::fs::write(\u0026p, r#\"{\"memoryControl\":{\"autoWriteEnabled\":false}}\"#).unwrap();\n        assert_eq!(\n            read_memory_control_at(\u0026p),\n            Some(MemoryControl {\n                injection_enabled: true, // struct-level default 填位\n                auto_write_enabled: false,\n            }),\n            \"autoWriteEnabled 单字段缺失应回退默认\"\n        );\n        // 空对象 {} → MemoryControl::default()，与 null/缺失不同语义\n        std::fs::write(\u0026p, r#\"{\"memoryControl\":{}}\"#).unwrap();\n        assert_eq!(\n            read_memory_control_at(\u0026p),\n            Some(MemoryControl::default()),\n            \"空对象应解析为默认全开，不能 None\"\n        );\n        // 显式 null → None\n        std::fs::write(\u0026p, r#\"{\"memoryControl\":null}\"#).unwrap();\n        assert_eq!(read_memory_control_at(\u0026p), None);",
+      "existing_code": "std::fs::write(\n            \u0026p,\n            r#\"{\"memoryControl\":{\"injectionEnabled\":false,\"autoWriteEnabled\":true}}\"#,\n        )\n        .unwrap();\n        assert_eq!(\n            read_memory_control_at(\u0026p),\n            Some(MemoryControl {\n                injection_enabled: false,\n                auto_write_enabled: true,\n            })\n        );",
+      "start_line": 512,
+      "end_line": 523,
+      "category": "test",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/memory/panel.rs",
+      "content": "Pattern violation: `mem_import` calls `embed::embed_text(text)` from inside the `lock_db()` critical section (the reembed closure is invoked inside `import_core` while the lock is held on line 434). Embedding is blocking ONNX inference — `embed::embed_text` is synchronous (memory/embed.rs:162) and lazy-loads the model on first call. For a large import with many items lacking vectors this holds the single-writer `DB_WRITE_LOCK` for the entire model-inference duration, blocking every other write path (chat-time `remember_fact` / `record_lesson` / `mem_update` / `mem_delete`).\n\nThe module doc at line 11 explicitly states the discipline is \"嵌入在持锁前算\" and `tool_record_lesson` in memory/mod.rs:596-601 follows it (line 597: `let emb = embed::embed_text(\u0026lesson);` runs BEFORE line 598's lock acquisition). `mem_list` (panel.rs:223-227) and `mem_update` (panel.rs:245-246) also follow it.\n\nFix shape: pre-compute embeddings for items lacking vectors BEFORE acquiring `lock_db()` (collect items needing reembed, compute all vectors in one pass while unlocked, then acquire the lock and call a `import_core` variant that takes pre-computed embeddings). Keep the `\u0026dyn Fn(...)` reembed hook for tests, but in the production path never call it inside the lock.",
+      "existing_code": "let json = std::fs::read_to_string(\u0026path).map_err(|e| format!(\"读取导入文件失败：{e}\"))?;\n        let _g = lock_db();\n        let conn = crate::db::open_db(\u0026app).map_err(|e| e.to_string())?;\n        import_core(\u0026conn, \u0026json, \u0026|text| embed::embed_text(text), now_ms())",
+      "start_line": 433,
+      "end_line": 436,
+      "category": "performance",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/memory/panel.rs",
+      "content": "Lock held during full-dump JSON serialization. `export_core` builds the entire `MemExportFile` and runs `serde_json::to_string_pretty` over every item (including 512-dim embedding vectors) INSIDE the `lock_db()` block (line 413-418). For a large memory dump this serializes the full corpus (~1MB+ once you include embeddings) to a `String` inside the critical section, blocking all other writers. Only `load_all` strictly needs the lock; serialization and `std::fs::write` (which is already correctly placed after the lock drops on line 419) can move outside.\n\nFix shape: change the locked block to just return `Vec\u003cMemItem\u003e`, then call `export_core` and `std::fs::write` after `_g` drops. This naturally fixes issue 4 below as a side effect (no need to round-trip through JSON just to recover the count).",
+      "existing_code": "let file = {\n            let _g = lock_db();\n            let conn = crate::db::open_db(\u0026app).map_err(|e| e.to_string())?;\n            store::ensure_table(\u0026conn)?;\n            let items = store::load_all(\u0026conn)?;\n            export_core(\u0026items, now_ms())?\n        };\n        std::fs::write(\u0026path, \u0026file).map_err(|e| format!(\"写入导出文件失败：{e}\"))?;\n        // 回读解析拿报告（count 与文件一致；避免再持锁查一次库）\n        serde_json::from_str::\u003cMemExportFile\u003e(\u0026file)\n            .map_err(|e| format!(\"导出文件回读校验失败：{e}\"))",
+      "start_line": 412,
+      "end_line": 422,
+      "category": "performance",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/memory/panel.rs",
+      "content": "Unnecessary round-trip serialization. `export_core` returns a JSON `String`; that string is written to disk on line 419; then the same string is re-parsed via `serde_json::from_str::\u003cMemExportFile\u003e` on line 421 to recover the value to return to the caller. The justification in the comment (\"避免再持锁查一次库\") is moot — `export_core` already has the `MemExportFile` in hand before serializing.\n\nFix shape: change `export_core` to return `Result\u003c(MemExportFile, String), String\u003e` (or split into `build_export_file` + a thin serialize helper), then write the `String` and return the `MemExportFile` directly. Eliminates a redundant allocation, an extra full-corpus parse, and removes the \"向本文字列回读校验\" check which only catches serde_json bugs.",
+      "existing_code": "// 回读解析拿报告（count 与文件一致；避免再持锁查一次库）\n        serde_json::from_str::\u003cMemExportFile\u003e(\u0026file)\n            .map_err(|e| format!(\"导出文件回读校验失败：{e}\"))",
+      "start_line": 420,
+      "end_line": 422,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/memory/panel.rs",
+      "content": "Cross-crate error category leak. The outer `.map_err(CommandError::DbError)` (line 426) is applied to the inner `Result\u003cMemExportFile, String\u003e`, but the inner `String` can carry file-write failures (\"写入导出文件失败：...\") and round-trip parse failures, not just DB errors. `CommandError` presumably has more specific variants for IO / parse failures. Same applies to `mem_import` at line 440 (file-read failure mapped to `DbError`) and the `mem_export` / `mem_import` \"线程 join 失败\" already correctly mapped to generic `CommandError::from`. Map file-system / serialization failures to the appropriate variants so the frontend can present them with the right category.",
+      "existing_code": "r.map_err(|e| CommandError::from(format!(\"记忆导出线程 join 失败：{e}\")))?\n        .map_err(CommandError::DbError)",
+      "start_line": 425,
+      "end_line": 426,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/memory/panel.rs",
+      "content": "Test coverage gap: no test asserts that a *system* error from `insert_item` (i.e. the `Err(_)` arm on line 381) is NOT lumped into `skipped`. Given the high-severity issue above, pin down the intended behaviour with a test that simulates an `insert_item` failure (e.g. by closing the connection, or by exercising a path that produces a `rusqlite::Error`) and asserts the function returns `Err` rather than silently incrementing `skipped`. Also worth adding: a test that the version guard rejects `version: 0` if the intent is \"≥ 1 only\" (currently `0 \u003e 1` is false so `version: 0` is accepted — see line 354), or relax the docstring to confirm `0..=MEM_EXPORT_VERSION` is intentional.",
+      "existing_code": "#[test]\n    fn import_rejects_future_version() {",
+      "start_line": 812,
+      "end_line": 813,
+      "category": "test",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/memory/panel.rs",
+      "content": "All `insert_item` `Err` errors are already converted to `String` upstream (every site that calls it in `memory/mod.rs` and `memory/store.rs` uses `.map_err(|e| e.to_string())?` before returning). This means `import_core`'s `Err(_) =\u003e report.skipped += 1` discards a fully-formed Chinese error message produced for exactly this purpose. Bind it:\n\n```\nErr(e) =\u003e {\n    eprintln!(\"[mem_import] item skipped due to storage error: {e}\");\n    report.skipped += 1;\n}\n```\n\nso future storage regressions leave a breadcrumb in logs instead of silently inflating `skipped`. (Do not regress to `Err(_) =\u003e report.skipped += 1` without logging.)",
+      "existing_code": "Err(_) =\u003e report.skipped += 1,",
+      "start_line": 381,
+      "end_line": 381,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/bot/config/io.rs",
+      "content": "Synchronous file I/O on the async runtime: `read_memory_control` performs `std::fs::read_to_string` directly. `injection_allowed` (memory/mod.rs:77) invokes it from the async `injection_block` BEFORE `spawn_blocking`, so the file read happens on the async executor thread, not in a blocking pool. On a slow disk or FS contention, this can stall chat turns. Consider folding the memory-control lookup into the existing `spawn_blocking` closure (pass a oneshot/channel into the blocking task, or read into a precomputed value there), so the file I/O never runs on the async executor.",
+      "suggestion_code": "// 注入路径在 async 上下文调用，文件读取应走 spawn_blocking。\n// 当前实现把 std::fs::read_to_string 留在 async 线程上执行，\n// 慢盘/被操纵时会拖住聊天主循环。建议把 read_memory_control_at\n// 折入 injection_block 的阻塞闭包内，或通过 channel 把读取结果\n// 传回 async 侧。",
+      "existing_code": "pub fn read_memory_control\u003cR: tauri::Runtime\u003e(\n    app: \u0026tauri::AppHandle\u003cR\u003e,\n) -\u003e Option\u003ccrate::memory::MemoryControl\u003e {\n    read_memory_control_at(\u0026config_path(app))\n}",
+      "start_line": 131,
+      "end_line": 135,
+      "category": "maintainability",
+      "severity": "high"
+    },
+    {
+      "path": "src-tauri/tests/llm_integration.rs",
+      "content": "Test's `seed_memory` calls `ensure_table` redundantly — `insert_item` already calls `ensure_table` internally. Minor, but the explicit call can mislead readers into thinking `insert_item` doesn't ensure the table.",
+      "existing_code": "fn seed_memory(handle: \u0026tauri::AppHandle\u003ctauri::test::MockRuntime\u003e, content: \u0026str) {\n    let conn = wmessage_lib::db::open_db(handle).unwrap();\n    wmessage_lib::memory::store::ensure_table(\u0026conn).unwrap();",
+      "start_line": 1553,
+      "end_line": 1555,
+      "category": "bug",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/tests/llm_integration.rs",
+      "content": "Scenario 2's assertion `block.contains(\"## 记忆\") \u0026\u0026 block.contains(SEED_CONTENT)` is necessary because the shared DB may have unrelated memories, but it only checks substring presence. The block might still be considered correct even if seed memory was added to the WRONG section (e.g., pinned vs. related), or if the ranking has a bug that affects content inclusion. Consider asserting on block structure (e.g., `block.contains(\"- [fact]\")` or `block.matches(SEED_CONTENT).count() \u003e= 1`) to narrow the regression surface.",
+      "existing_code": "let block = wmessage_lib::memory::injection_block(\u0026app, \"测试记忆\")\n        .await\n        .expect(\"注入开启 + 库有记忆应产出记忆块\");\n    assert!(\n        block.contains(\"## 记忆\") \u0026\u0026 block.contains(SEED_CONTENT),\n        \"{block}\"\n    );",
+      "start_line": 1586,
+      "end_line": 1592,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "model-meta-service/main.py",
+      "content": "Error response is returned with HTTP 200. Per REST conventions, error responses should use 4xx/5xx status codes so clients (and intermediaries like proxies, monitoring) can distinguish failures via `response.status_code` alone. Raise `HTTPException(status_code=400, detail=...)` or return `JSONResponse(..., status_code=400)` instead.",
+      "suggestion_code": "raise HTTPException(status_code=400, detail=f\"provider 不存在: {body.provider_key}，请先 POST /api/provider\")",
+      "existing_code": "return {\"ok\": False, \"error\": f\"provider 不存在: {body.provider_key}，请先 POST /api/provider\"}",
+      "start_line": 197,
+      "end_line": 197,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "model-meta-service/main.py",
+      "content": "Error response is returned with HTTP 200 even when the upstream sync fails. A failure here is an upstream/dependency issue and should return 5xx (e.g. 502 Bad Gateway) so clients can react via status code. Currently the only way to detect failure is to inspect the body, which `response.ok` won't catch.",
+      "suggestion_code": "return JSONResponse(content={\"ok\": False, \"error\": str(e)}, status_code=502)",
+      "existing_code": "return {\"ok\": False, \"error\": str(e)}",
+      "start_line": 217,
+      "end_line": 217,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "model-meta-service/main.py",
+      "content": "`httpx.get(...).json()` does not check the HTTP status code. If models.dev returns 4xx/5xx with an HTML error page (common for 502/503 from gateways), `.json()` raises `JSONDecodeError` and the sync fails with a confusing stack. If the upstream returns a JSON error payload (e.g. `{\"error\": \"...\"}`), the code will iterate it as a dict of providers and either produce nonsense rows or crash deeper in the loop. Call `response.raise_for_status()` before `.json()`.",
+      "suggestion_code": "response = httpx.get(MODELS_DEV_API, timeout=10)\n    response.raise_for_status()\n    data = response.json()",
+      "existing_code": "data = httpx.get(MODELS_DEV_API, timeout=10).json()",
+      "start_line": 56,
+      "end_line": 56,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/SettingsPage/MemoryPanel.tsx",
+      "content": "在对话框弹出前就 setIoMsg(\"\")，会导致用户取消 save/open 时静默清掉之前已经显示的成功/失败提示（例如「已导出 3 条记忆」点导入后取消就消失了）。清除时机应推迟到确认拿到 path 之后再做，避免误吞前一条状态。建议把 setIoMsg(\"\") 移到 `if (!path) return;` 之后。",
+      "suggestion_code": "  const exportMemories = async () =\u003e {\n    if (busy) return;\n    try {\n      const path = await save({\n        defaultPath: `wmessage-memories-${new Date()\n          .toISOString()\n          .slice(0, 10)\n          .replace(/-/g, \"\")}.json`,\n        filters: [{ name: \"JSON\", extensions: [\"json\"] }],\n      });\n      if (!path) return;\n      setIoMsg(\"\");\n      setBusy(true);",
+      "existing_code": "  const exportMemories = async () =\u003e {\n    if (busy) return;\n    setIoMsg(\"\");\n    try {\n      const path = await save({\n        defaultPath: `wmessage-memories-${new Date()\n          .toISOString()\n          .slice(0, 10)\n          .replace(/-/g, \"\")}.json`,\n        filters: [{ name: \"JSON\", extensions: [\"json\"] }],\n      });\n      if (!path) return;\n      setBusy(true);",
+      "start_line": 93,
+      "end_line": 105,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/SettingsPage/MemoryPanel.tsx",
+      "content": "同上：importMemories 在对话框弹出前 setIoMsg(\"\")，用户取消 open 时也会静默清掉前一条状态。建议把 setIoMsg(\"\") 移到 `if (!path) return;` 之后，与 exportMemories 行为一致。",
+      "suggestion_code": "  const importMemories = async () =\u003e {\n    if (busy) return;\n    try {\n      const sel = await open({\n        multiple: false,\n        filters: [{ name: \"JSON\", extensions: [\"json\"] }],\n      });\n      const path = typeof sel === \"string\" ? sel : null;\n      if (!path) return;\n      setIoMsg(\"\");\n      setBusy(true);",
+      "existing_code": "  const importMemories = async () =\u003e {\n    if (busy) return;\n    setIoMsg(\"\");\n    try {\n      const sel = await open({\n        multiple: false,\n        filters: [{ name: \"JSON\", extensions: [\"json\"] }],\n      });\n      const path = typeof sel === \"string\" ? sel : sel?.[0];\n      if (!path) return;\n      setBusy(true);",
+      "start_line": 116,
+      "end_line": 126,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/memory/panel.rs",
+      "content": "`mem_import` 没有限制 `path` 的范围/形态。`path: String` 由前端 `plugin-dialog` 取值（用户选的本地路径），但前端任何代码都能 invoke 任意路径——读 `/etc/passwd` / `%APPDATA%/Microsoft/...` 等敏感文件都不会被 Rust 侧任何检查挡住。`mem_export` 同理：可写任意路径覆盖系统/用户关键文件。建议至少做以下任一：(a) `std::path::Path::new(\u0026path).canonicalize()` 后验证是用户可写目录（家目录/桌面/下载等白名单）；(b) 校验扩展名（`.json`）+ 文件大小上限防 OOM（同 `PayloadTooLarge` 1MB 上限同款）。`workspace_import` 也是裸 `String` 路径，本批可一起拍板。",
+      "existing_code": "/// 从 JSON 文件导入记忆（只增不删，走既有语义去重合并；容量满按 skipped 计）\n#[tauri::command]\npub async fn mem_import(app: AppHandle, path: String) -\u003e CommandResult\u003cMemImportReport\u003e {\n    let r = tauri::async_runtime::spawn_blocking(move || -\u003e Result\u003cMemImportReport, String\u003e {\n        let json = std::fs::read_to_string(\u0026path).map_err(|e| format!(\"读取导入文件失败：{e}\"))?;",
+      "start_line": 429,
+      "end_line": 433,
+      "category": "security",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/memory/panel.rs",
+      "content": "`import_core` 不校验 `kind` / `source` 字段：恶意/手工编辑过的 JSON 可以塞 `kind: \"magic\"` 或 `source: \"garbage\"` 入库，直接破坏数据完整性契约（`EDITABLE_KINDS` 白名单 / `is_protected` 的 `source == \"user_stated\"`）。`update_core` 对两个字段都做了白名单/语义校验，导入路径却绕过——同一数据契约两套口径。建议：(a) `kind` 走 `EDITABLE_KINDS` 白名单，未知值计入 `skipped`；(b) `source` 走 `{\"user_stated\",\"model_inferred\",\"system\"}` 三值契约 + 历史脏值 `\"user\"` → `\"user_stated\"` 归一（与 `store::normalize_source` 同口径），其余值 skipped。注释里「跨机保语义」是诉求，但语义的前提就是字段必须落契约。",
+      "existing_code": "let draft = store::NewItem {\n            kind: item.kind.clone(),\n            content: content.to_string(),\n            tags: item.tags.clone(),\n            importance: item.importance,\n            source: item.source.clone(),\n        };",
+      "start_line": 369,
+      "end_line": 375,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/memory/panel.rs",
+      "content": "`mem_export` 返回类型 `MemExportFile` 携带了完整的 `items: Vec\u003cMemExportItem\u003e`（每条 512 维 embedding × 500 条 ≈ 1MB），但前端 `MemoryPanel.tsx:106` 只读 `count`。等于把刚写盘的 JSON 又序列化一份走 IPC 回前端，再丢掉 items。配合 confirmed finding #4 的「回读解析拿报告」双重浪费。修法：函数返回 `MemImportReport` 那种轻量结构（`{ count: usize, exported_at: i64 }`），删除 confirmed finding #4 的回读解析；前端类型签名同步收紧（已是 `{ count: number }`）。",
+      "existing_code": "/// 导出全量记忆到 JSON 文件（路径经前端 plugin-dialog save 获取，Rust 侧写文件）。\n/// 向量随行带出——导入机即使引擎降级也不丢语义检索。\n#[tauri::command]\npub async fn mem_export(app: AppHandle, path: String) -\u003e CommandResult\u003cMemExportFile\u003e {",
+      "start_line": 407,
+      "end_line": 410,
+      "category": "performance",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/memory/panel.rs",
+      "content": "`mem_export` 的 `std::fs::write(\u0026path, \u0026file)` 是非原子写——磁盘满/进程被杀在中途会留下半截 JSON 文件，下次用户误以为导入正常。同 `api_auth.rs` token 持久化先例应该用「写临时文件 → fsync → rename 原子替换」模式（`tempfile::NamedTempFile::new_in(parent).persist(\u0026path)`，或手写 `write + fsync + rename`）。500 条 ≈1MB 的写入通常 \u003c100ms，但用户机器千差万别（网盘同步/磁盘加密/防病毒扫描挂起等场景都能造成 \u003e100ms 卡顿），中途断电很现实。",
+      "existing_code": "std::fs::write(\u0026path, \u0026file).map_err(|e| format!(\"写入导出文件失败：{e}\"))?;\n        // 回读解析拿报告（count 与文件一致；避免再持锁查一次库）\n        serde_json::from_str::\u003cMemExportFile\u003e(\u0026file)\n            .map_err(|e| format!(\"导出文件回读校验失败：{e}\"))",
+      "start_line": 419,
+      "end_line": 422,
+      "category": "security",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/SettingsPage/SettingsPage.tsx",
+      "content": "Orphaned / misplaced comment: this U14 \"记忆库管理面板\" comment now precedes the new U15 `记忆权限` card, but the actual `\u003cMemoryPanel /\u003e` it describes is rendered 50 lines below (line 1876). Stale comment placement — move it to sit directly above `\u003cMemoryPanel /\u003e` (or delete it, since `\u003cMemoryPanel /\u003e` is self-describing).",
+      "existing_code": "{/* 记忆库管理面板（U14）：列表/搜索/编辑/删除 + 统计与嵌入引擎状态 */}\n      {/* U15 记忆可控开关：注入总闸 + 模型主动记忆门禁（点档即时落盘） */}\n      \u003cdiv className=\"nm-card p-5\"\u003e\n        \u003cdiv className=\"space-y-3\"\u003e\n          \u003cp className=\"text-xs font-medium text-[var(--t4)]\"\u003e记忆权限\u003c/p\u003e",
+      "start_line": 1825,
+      "end_line": 1829,
+      "category": "maintainability",
+      "severity": "low"
+    }
+  ],
+  "groups": [
+    {
+      "label": "src-tauri/src/bot/config/commands.rs",
+      "files": [
+        "src-tauri/src/bot/config/commands.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/bot/config/io.rs",
+      "files": [
+        "src-tauri/src/bot/config/io.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/bot/config/mod.rs",
+      "files": [
+        "src-tauri/src/bot/config/mod.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/bot/config/types.rs",
+      "files": [
+        "src-tauri/src/bot/config/types.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/lib.rs",
+      "files": [
+        "src-tauri/src/lib.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/memory/mod.rs",
+      "files": [
+        "src-tauri/src/memory/mod.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/memory/panel.rs",
+      "files": [
+        "src-tauri/src/memory/panel.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/tests/llm_integration.rs",
+      "files": [
+        "src-tauri/tests/llm_integration.rs"
+      ]
+    },
+    {
+      "label": "src/components/SettingsPage/MemoryPanel.tsx",
+      "files": [
+        "src/components/SettingsPage/MemoryPanel.tsx"
+      ]
+    },
+    {
+      "label": "src/components/SettingsPage/SettingsPage.tsx",
+      "files": [
+        "src/components/SettingsPage/SettingsPage.tsx"
+      ]
+    },
+    {
+      "label": "model-meta-service/main.py",
+      "files": [
+        "model-meta-service/main.py"
+      ]
+    }
+  ],
+  "session_id": "7ceb5864-dabf-4e51-9e9f-9b7b1f645940",
+  "manifest": {
+    "schema_version": "ocr.run-manifest/v1",
+    "run_id": "7ceb5864-dabf-4e51-9e9f-9b7b1f645940",
+    "operation": "review",
+    "terminal_state": "complete",
+    "repository": {
+      "identity_sha256": "7aebc670c3c38e64ae52ffaf12cfa8ba078a29af906f8ef856132cd790dbe48b"
+    },
+    "input": {
+      "mode": "workspace",
+      "resolved_base": "a2ea81eff7138fd4f9b560b906e9c59bcf71ae7a",
+      "source_artifact_sha256": "afb20db511ef44989e60292bb1f3eea57872f4f356d3a97e9697b5bfcb21c963"
+    },
+    "execution": {
+      "ocr_version": "v1.12.11",
+      "provider": "minimax-cn",
+      "model": "MiniMax-M3",
+      "configured_concurrency": 8,
+      "rule_config_sha256": "8779d0d046b15151518200e75283f8c72cb6815f8e9b6de313d85d8f880d7dde",
+      "runtime_config_sha256": "f3ac1cdd2a45285ba614e32ab9bd03b86d9911c8deb3bec22fccf7b7bd4e6913"
+    },
+    "coverage": {
+      "selected": [
+        {
+          "item_id": "1c8b17eb5b94a8ff6490651e78cb37945dc17d0866bc8496fcc83f1b673e58b9",
+          "path": "src/components/SettingsPage/MemoryPanel.tsx",
+          "fingerprint": "24671958a27a34dffd03be32900a3ac31686c5768767b2a16c921003185e412f"
+        },
+        {
+          "item_id": "265cb776cacd21f7e21e55abcfc867e5f6b4c58a8b8a4b2665cdc9937f883f2f",
+          "path": "src-tauri/src/memory/mod.rs",
+          "fingerprint": "0bfa7f83819598ef4f0731d8ab6945d82ac78acd8d82d3d3e12492367b1299d6"
+        },
+        {
+          "item_id": "70779da7b6b3c7b01fd6ef65604b94235524e8c1f9afd7561face091502435d0",
+          "path": "src/components/SettingsPage/SettingsPage.tsx",
+          "fingerprint": "ae1fd1e399164802458cbe46d171e453417279cf832ae41c04ed0ac859b59e49"
+        },
+        {
+          "item_id": "9d588a2c7701bc40e1ad41264000c66302fc673faf13fdf8c7cda6836993e2b2",
+          "path": "src-tauri/tests/llm_integration.rs",
+          "fingerprint": "e694eb456508e1ddd1d8039fa092846ca9ac1ce21ddd73244bc8cde432b966cd"
+        },
+        {
+          "item_id": "a7e379852278b4dee9fec88891f3b590c97d7b31523f6a615066fea4c49ba99f",
+          "path": "src-tauri/src/lib.rs",
+          "fingerprint": "1869a1bf014294d92ea2883da410560254f5f1c040375f257c21bcea8f4ee1b3"
+        },
+        {
+          "item_id": "abfb750e7cc702d77b2a9d86c369f1e88be11f3090df40fe3cfd9385d46101c2",
+          "path": "src-tauri/src/bot/config/io.rs",
+          "fingerprint": "33cff4e80852567739f11c50c5009f33f181d3dbeafcdfd98cbb5f3054d4f6f1"
+        },
+        {
+          "item_id": "ad8f8381ed551acda797fbb5e3b55a4dcbab7799d42a5754dbe2a882a5165560",
+          "path": "model-meta-service/main.py",
+          "fingerprint": "2e5563d904a7dcb6154ba8050f1a1c42be14a9d2f26d1a09ab2596be8c44e4db"
+        },
+        {
+          "item_id": "b0c420498e6a5020460097d1183406e85c34fd421df0d63affb0026d0bef7d23",
+          "path": "src-tauri/src/memory/panel.rs",
+          "fingerprint": "c66d85f04904922b7c05fc1ad4ca3e3ea7060f433fda527117dcfe7947702062"
+        },
+        {
+          "item_id": "e29b63da77f4c7cbdd279ffe76625b4544cce4259423b82535f7182effc1cb82",
+          "path": "src-tauri/src/bot/config/types.rs",
+          "fingerprint": "17e4502e391060cb5abc26b84792a98bf04f4584418016f7eee8bc7cec30fa59"
+        },
+        {
+          "item_id": "e6822cd5d142548d582e2b38c7b9f2dc92b49bb83116705ee89427d7571b8b9f",
+          "path": "src-tauri/src/bot/config/commands.rs",
+          "fingerprint": "27149142862f7f1011d80f43660f636787d8451eccf43a2d74055dd4cd4462d4"
+        },
+        {
+          "item_id": "fb88d62af4862899ca456a85e4b3ff20d8678c7cb925e7ceb3b0f37e85bd73a6",
+          "path": "src-tauri/src/bot/config/mod.rs",
+          "fingerprint": "d57b2d9edb76e9dd3f6e221c71031fcc232a06cfd21d392b6184f59fc2263e16"
+        }
+      ],
+      "completed": [
+        {
+          "item_id": "1c8b17eb5b94a8ff6490651e78cb37945dc17d0866bc8496fcc83f1b673e58b9",
+          "path": "src/components/SettingsPage/MemoryPanel.tsx",
+          "fingerprint": "24671958a27a34dffd03be32900a3ac31686c5768767b2a16c921003185e412f"
+        },
+        {
+          "item_id": "265cb776cacd21f7e21e55abcfc867e5f6b4c58a8b8a4b2665cdc9937f883f2f",
+          "path": "src-tauri/src/memory/mod.rs",
+          "fingerprint": "0bfa7f83819598ef4f0731d8ab6945d82ac78acd8d82d3d3e12492367b1299d6"
+        },
+        {
+          "item_id": "70779da7b6b3c7b01fd6ef65604b94235524e8c1f9afd7561face091502435d0",
+          "path": "src/components/SettingsPage/SettingsPage.tsx",
+          "fingerprint": "ae1fd1e399164802458cbe46d171e453417279cf832ae41c04ed0ac859b59e49"
+        },
+        {
+          "item_id": "9d588a2c7701bc40e1ad41264000c66302fc673faf13fdf8c7cda6836993e2b2",
+          "path": "src-tauri/tests/llm_integration.rs",
+          "fingerprint": "e694eb456508e1ddd1d8039fa092846ca9ac1ce21ddd73244bc8cde432b966cd"
+        },
+        {
+          "item_id": "a7e379852278b4dee9fec88891f3b590c97d7b31523f6a615066fea4c49ba99f",
+          "path": "src-tauri/src/lib.rs",
+          "fingerprint": "1869a1bf014294d92ea2883da410560254f5f1c040375f257c21bcea8f4ee1b3"
+        },
+        {
+          "item_id": "abfb750e7cc702d77b2a9d86c369f1e88be11f3090df40fe3cfd9385d46101c2",
+          "path": "src-tauri/src/bot/config/io.rs",
+          "fingerprint": "33cff4e80852567739f11c50c5009f33f181d3dbeafcdfd98cbb5f3054d4f6f1"
+        },
+        {
+          "item_id": "ad8f8381ed551acda797fbb5e3b55a4dcbab7799d42a5754dbe2a882a5165560",
+          "path": "model-meta-service/main.py",
+          "fingerprint": "2e5563d904a7dcb6154ba8050f1a1c42be14a9d2f26d1a09ab2596be8c44e4db"
+        },
+        {
+          "item_id": "b0c420498e6a5020460097d1183406e85c34fd421df0d63affb0026d0bef7d23",
+          "path": "src-tauri/src/memory/panel.rs",
+          "fingerprint": "c66d85f04904922b7c05fc1ad4ca3e3ea7060f433fda527117dcfe7947702062"
+        },
+        {
+          "item_id": "e29b63da77f4c7cbdd279ffe76625b4544cce4259423b82535f7182effc1cb82",
+          "path": "src-tauri/src/bot/config/types.rs",
+          "fingerprint": "17e4502e391060cb5abc26b84792a98bf04f4584418016f7eee8bc7cec30fa59"
+        },
+        {
+          "item_id": "e6822cd5d142548d582e2b38c7b9f2dc92b49bb83116705ee89427d7571b8b9f",
+          "path": "src-tauri/src/bot/config/commands.rs",
+          "fingerprint": "27149142862f7f1011d80f43660f636787d8451eccf43a2d74055dd4cd4462d4"
+        },
+        {
+          "item_id": "fb88d62af4862899ca456a85e4b3ff20d8678c7cb925e7ceb3b0f37e85bd73a6",
+          "path": "src-tauri/src/bot/config/mod.rs",
+          "fingerprint": "d57b2d9edb76e9dd3f6e221c71031fcc232a06cfd21d392b6184f59fc2263e16"
+        }
+      ],
+      "reused": [],
+      "failed": [],
+      "waived": []
+    },
+    "elapsed_ms": 494019
+  }
+}

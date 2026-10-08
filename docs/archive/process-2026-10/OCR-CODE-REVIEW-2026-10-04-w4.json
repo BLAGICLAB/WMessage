@@ -1,0 +1,301 @@
+{
+  "status": "complete",
+  "llm": {
+    "provider": "minimax-cn",
+    "model": "MiniMax-M3"
+  },
+  "message": "Review complete: 17 finding(s) across 3 selected item(s).",
+  "summary": {
+    "files_reviewed": 3,
+    "comments": 17,
+    "total_tokens": 4818439,
+    "input_tokens": 4735986,
+    "output_tokens": 82453,
+    "cache_read_tokens": 4474326,
+    "elapsed": "12m10s"
+  },
+  "tool_calls": {
+    "total": 141,
+    "by_tool": {
+      "code_comment": 7,
+      "code_search": 70,
+      "file_find": 6,
+      "file_read": 53,
+      "file_read_diff": 5
+    },
+    "failure": 2,
+    "failure_by_tool": {
+      "file_read": 2
+    },
+    "failure_details": [
+      {
+        "tool_call_number": 76,
+        "tool_name": "file_read",
+        "file_path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+        "arguments": "{\"end_line\":50,\"file_path\":\"src/components/WorkflowCanvas/WorkflowPage.tsx\",\"start_line\":412}",
+        "error": "invalid line range: start_line 412 is greater than end_line 50"
+      },
+      {
+        "tool_call_number": 81,
+        "tool_name": "file_read",
+        "file_path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+        "arguments": "{\"end_line\":60,\"file_path\":\"src-tauri/src/db/tasks.rs\",\"start_line\":1020}",
+        "error": "invalid line range: start_line 1020 is greater than end_line 60"
+      }
+    ]
+  },
+  "comments": [
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "Success notification uses `alert()` which blocks the event loop and bypasses the app's standard error/feedback pipeline (see `errorHandler.ts`'s `ErrorDialogHost` / toast pattern in `MemoryPanel.tsx`). Existing call sites for success feedback (e.g. `SettingsPage` configSaved, `MemoryPanel` import/export) use inline message banners routed through the host, not `alert()`. Replace with a consistent success toast / inline message.",
+      "suggestion_code": "      // 走应用内成功提示（与 SettingsPage.configSaved / MemoryPanel 导入导出同模式）\n      notifySuccess(`导出完成：共 ${count} 个节点（导出的是已保存版本）`);",
+      "existing_code": "      alert(`导出完成：共 ${count} 个节点（导出的是已保存版本）`);",
+      "start_line": 198,
+      "end_line": 198,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "Success notification uses `alert()` — same concern as in `doExport`. The `alert()` pattern is inconsistent with the rest of the app's success-feedback path (inline banners / toast) and bypasses i18n + styling. Replace with a success message routed through the same channel as `MemoryPanel`'s import/export result.",
+      "suggestion_code": "      notifySuccess(`导入完成：实例化 ${res.created} 个节点（全新副本，与原模板互不影响）`);",
+      "existing_code": "      alert(`导入完成：实例化 ${res.created} 个节点（全新副本，与原模板互不影响）`);",
+      "start_line": 216,
+      "end_line": 216,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "Error handling for the post-import list refresh is silently swallowed (`.catch(() =\u003e {})`), which is inconsistent with the established pattern at line 127 (`handleCommandError(e, \"读取工作流列表\", { silent: true })`). If the refresh fails, the sidebar will not show the newly imported workflow even though `openWorkflow` opened it — a confusing UI state with no diagnostic trail. Use `handleCommandError` with `silent: true` to keep parity with the initial-load call.",
+      "suggestion_code": "      invoke\u003cWorkflow[]\u003e(\"workflow_list\")\n        .then(setWorkflows)\n        .catch((e) =\u003e handleCommandError(e, \"读取工作流列表\", { silent: true }));",
+      "existing_code": "      invoke\u003cWorkflow[]\u003e(\"workflow_list\").then(setWorkflows).catch(() =\u003e {});",
+      "start_line": 215,
+      "end_line": 215,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "Default export filename pattern (`${name.trim() || \"工作流\"}.wflow.json`) diverges from the `createBlank` default `工作流 ${date}`. Right after `createBlank` (or if the user clears the name), exports collide on `工作流.wflow.json` if done twice in a session. Reuse the same naming convention so each exported file has a unique default name.",
+      "suggestion_code": "      const path = await saveDialog({\n        defaultPath: `${name.trim() || `工作流 ${new Date().toLocaleDateString()}`}.wflow.json`,",
+      "existing_code": "      const path = await saveDialog({\n        defaultPath: `${name.trim() || \"工作流\"}.wflow.json`,",
+      "start_line": 189,
+      "end_line": 190,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "Reordering `setRegenArmed(false)` to the end of `createBlank` (and adding `setRunning(false)`) is described as a regression fix but the rationale is not recorded. Future readers will not know why the position matters (interaction with in-flight regen/decompose refs). Add a one-line comment explaining the placement to prevent it from being moved back.",
+      "suggestion_code": "    setDeleteArmed(false);\n    // 必须放到最后：armedTimerRef 的清理由 setRegenArmed(false) 触发，\n    // 若在 setNodes([]) 之前可能让在途 reset 抢先覆盖空白画布。\n    // setRunning(false) 是 OCR r1 回归修复：新建时不能残留旧工作流的运行态。\n    setRegenArmed(false);\n    setRunning(false);\n  };",
+      "existing_code": "    setDeleteArmed(false);\n    setRegenArmed(false);\n    setRunning(false);\n  };",
+      "start_line": 179,
+      "end_line": 182,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/db/workflow.rs",
+      "content": "`workflow_file_from` deep-clones every Task into a fresh `Vec\u003cTask\u003e` just to satisfy `topo_export_order`'s `\u0026[Task]` signature, even though `sorted` already holds `Vec\u003c\u0026Task\u003e` and `topo_export_order` is `pub(crate)` and only reads `id`/`depends_on`. Make `topo_export_order` generic over `\u0026[T]` (or accept `\u0026[\u0026Task]`) and pass `sorted.iter().copied().collect::\u003cVec\u003c_\u003e\u003e()` (or directly the slice of refs) to drop the full allocation.",
+      "suggestion_code": "let topo = topo_export_order(sorted.iter().copied());",
+      "existing_code": "let topo = topo_export_order(\u0026sorted.iter().copied().cloned().collect::\u003cVec\u003c_\u003e\u003e());",
+      "start_line": 676,
+      "end_line": 676,
+      "category": "performance",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/db/workflow.rs",
+      "content": "`parse_workflow_file` does not validate empty `goal` strings or empty `depends_on` entries at the file layer — both reach downstream (`check_len` / `validate_nodes`) which do reject them, but the surface errors are misleading for a `.wflow.json` user. Reject `file.goal.as_deref().is_some_and(str::is_empty)` here with a file-specific message, and skip empty strings inside the depends-on dedup loop.",
+      "suggestion_code": "let goal_src = file.goal.as_deref().unwrap_or(\u0026name);\n    if file.goal.as_deref().is_some_and(str::is_empty) {\n        return Err(CommandError::InvalidArgument {\n            field: \"goal\".into(),\n            value: String::new(),\n            reason: \"工作流目标不能为空字符串\".into(),\n        });\n    }\n    let goal = check_len(goal_src, MAX_WORKFLOW_GOAL, \"工作流目标\", \"goal\")?;",
+      "existing_code": "let goal = check_len(\n        file.goal.as_deref().unwrap_or(\u0026name),\n        MAX_WORKFLOW_GOAL,\n        \"工作流目标\",\n        \"goal\",\n    )?;",
+      "start_line": 729,
+      "end_line": 734,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/db/workflow.rs",
+      "content": "`topo_export_order` is O(n²) in the worst case (outer loop iterates until quiescence, each iteration rescans all tasks). For the documented 30-node budget this is ~ 900 ops (acceptable), but the helper is `pub(crate)` and the doc comment advertises stability without mentioning complexity. Consider Kahn's algorithm with in-degree counting for O(n+e), or at minimum note the complexity in the doc comment.",
+      "suggestion_code": "/// O(n²) 拓扑导出序（纯逻辑，单测锚点）。文档化复杂度：30 节点内 \u003c 1000 ops。",
+      "existing_code": "pub(crate) fn topo_export_order(tasks: \u0026[Task]) -\u003e Vec\u003cString\u003e {\n    let ids: std::collections::HashSet\u003c\u0026str\u003e = tasks.iter().map(|t| t.id.as_str()).collect();\n    let mut placed: std::collections::HashSet\u003c\u0026str\u003e = std::collections::HashSet::new();\n    let mut out: Vec\u003cString\u003e = Vec::with_capacity(tasks.len());\n    loop {",
+      "start_line": 631,
+      "end_line": 635,
+      "category": "performance",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/db/workflow.rs",
+      "content": "`let path2 = path.clone();` is unnecessary — `path` is never referenced again in the outer function after the `spawn_blocking` call, so the original `path` can be moved into the closure directly. (`compare_to` `workflow_import`'s `path2 = path.clone()` is justified because `path` is reused later in the audit event.)",
+      "suggestion_code": "{\n        async_runtime::spawn_blocking(move || {\n            super::paths::atomic_write(std::path::Path::new(\u0026path), \u0026json)\n                .map_err(|e| format!(\"写入文件失败：{e}\"))\n        })",
+      "existing_code": "{\n        let path2 = path.clone();\n        async_runtime::spawn_blocking(move || {\n            super::paths::atomic_write(std::path::Path::new(\u0026path2), \u0026json)\n                .map_err(|e| format!(\"写入文件失败：{e}\"))\n        })",
+      "start_line": 818,
+      "end_line": 823,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/db/workflow.rs",
+      "content": "`workflow_export` audit event omits the destination path; `workflow_import` logs `(\"path\", crate::bot::truncate_for_log(\u0026path, 120))` for traceability parity. Add the same truncated path here so an export is locatable from the audit log.",
+      "suggestion_code": "audit_event(\n        \u0026app,\n        \"workflow_export\",\n        \u0026workflow_id,\n        \u0026[\n            (\"nodes\", file.nodes.len().to_string()),\n            (\"path\", crate::bot::truncate_for_log(\u0026path, 120)),\n        ],\n    );",
+      "existing_code": "audit_event(\n        \u0026app,\n        \"workflow_export\",\n        \u0026workflow_id,\n        \u0026[(\"nodes\", file.nodes.len().to_string())],\n    );",
+      "start_line": 828,
+      "end_line": 833,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "`alert(...)` is shown BEFORE `await openWorkflow(res.workflowId)`. If `openWorkflow` fails (DB / workflow_load error), the user sees a success message followed by an error dialog with retry — and retrying will run `doImport` again, which calls `workflow_import` again, producing a DUPLICATE workflow (import is \"实例化\" semantics, not idempotent merge like `mem_import`). Move the success message after `openWorkflow` resolves, or split into two try/catch blocks so the \"import\" retry callback only fires when the import itself failed.",
+      "existing_code": "invoke\u003cWorkflow[]\u003e(\"workflow_list\").then(setWorkflows).catch(() =\u003e {});\n      alert(`导入完成：实例化 ${res.created} 个节点（全新副本，与原模板互不影响）`);\n      await openWorkflow(res.workflowId);\n    } catch (e) {\n      handleCommandError(e, \"导入工作流模板\", { onRetry: () =\u003e void doImport() });\n    }",
+      "start_line": 215,
+      "end_line": 220,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "The new `setRunning(false)` is not guarded by a busy ref. If `startRun` is in-flight (its `await invoke(\"workflow_run\", ...)` has not resolved yet) and the user clicks 新建 → `createBlank` runs, the late `setRunning(true)` from `startRun`'s resolve will overwrite `setRunning(false)`, leaving `running=true, activeId=null`. The polling `useEffect` won't run (it short-circuits on `!activeId`), but the goal node will still show progress (`done: 0, total: nodes.length`) with `running=true`, and a later `openWorkflow` won't clear it. Either move `setRunning(false)` behind a `runningBusyRef` similar to `startBusyRef`/`stopBusyRef`, or invalidate the in-flight `workflow_run` via a seq ref (mirroring the `openSeqRef.current++` pattern).",
+      "existing_code": "setDeleteArmed(false);\n    setRegenArmed(false);\n    setRunning(false);\n  };",
+      "start_line": 179,
+      "end_line": 182,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "Export button does not reflect `dirty` state. When the canvas has unsaved edits (`dirty === true`), the export is still enabled and exports the previously-saved version. The button `title` mentions \"已保存版本\" but there is no inline visual cue (unlike the Save button which shows `保存 •`). Users editing the canvas may be surprised that their edits are absent from the exported template. Consider adding a visual indicator (e.g., dim/warn style when `dirty \u0026\u0026 activeId !== null`) or a confirm step reminding the user to save first.",
+      "existing_code": "\u003cbutton\n          className={toolbarBtn}\n          onClick={() =\u003e void doExport()}\n          disabled={activeId === null}\n          title={activeId === null ? \"先选择一个工作流\" : \"导出已保存版本为 .wflow.json 模板\"}\n        \u003e\n          \u003cDownload size={14} aria-hidden /\u003e 导出\n        \u003c/button\u003e",
+      "start_line": 696,
+      "end_line": 703,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "While modifying `createBlank`, the pre-existing missing `setNameAuto(true)` was not addressed: after `createBlank` runs the name is auto-generated (`工作流 ${date}`), but `nameAuto` keeps its stale value from the previously opened workflow. If the user had `nameAuto=false` (manually renamed a prior workflow), the subsequent `runDecompose`'s `if (nameAuto) setName(goalText.slice(0, NAME_AUTO_LEN))` will NOT update the name to the goal prefix, so the user has to manually rename. Add `setNameAuto(true)` to the new tail block (alongside `setRegenArmed(false)` / `setRunning(false)`).",
+      "existing_code": "setDeleteArmed(false);\n    setRegenArmed(false);\n    setRunning(false);\n  };",
+      "start_line": 179,
+      "end_line": 182,
+      "category": "bug",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/db/workflow.rs",
+      "content": "`workflow_export` 与已记录的 `workflow_import` 同款：line 819 `let path2 = path.clone();` 是冗余 clone。`path` 在 `check_export_path(\u0026path)?` 之后本函数不再使用（audit_event 也无 path 字段，见同 diff 的另一 finding），`path` 可直接 move 进 spawn_blocking 闭包。",
+      "suggestion_code": "    {\n        async_runtime::spawn_blocking(move || {\n            super::paths::atomic_write(std::path::Path::new(\u0026path), \u0026json)\n                .map_err(|e| format!(\"写入文件失败：{e}\"))\n        })",
+      "existing_code": "    {\n        let path2 = path.clone();\n        async_runtime::spawn_blocking(move || {\n            super::paths::atomic_write(std::path::Path::new(\u0026path2), \u0026json)\n                .map_err(|e| format!(\"写入文件失败：{e}\"))\n        })",
+      "start_line": 818,
+      "end_line": 823,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/db/workflow.rs",
+      "content": "`WorkflowFile.description` 是死字段：导出端硬编码 `None`（line 706），导入端 `serde(default)` 接受但 `WorkflowSaveInput` 无对应字段，整条解析/校验链都不读它。`Workflow` 结构体也没有 description 列（DDL 只 5 列），所以「永远 None」的硬编码是必然——保留字段只能让人误以为它在往返。设计 §4 示例里有该字段，但当前实现既不持久化也不暴露 UI。要么删字段（v1 不交付 forward-compat 占位），要么补 Workflow.description + DDL 列 + workflow_save_locked 写路径。",
+      "suggestion_code": "    pub name: String,\n    #[serde(default)]\n    pub goal: Option\u003cString\u003e,",
+      "existing_code": "    pub name: String,\n    #[serde(default)]\n    pub description: Option\u003cString\u003e,\n    /// 缺省回退 name（导入宽松项；其余违规整包拒绝）\n    #[serde(default)]\n    pub goal: Option\u003cString\u003e,",
+      "start_line": 618,
+      "end_line": 623,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/db/workflow.rs",
+      "content": "测试注释与实际行为不符：line 1402 写「打乱画布坐标以验证 pos 透传」，但本测试两个节点都是 `node()` 默认构造（`pos: Some(CanvasPos { x: 10.0, y: 20.0 })`），坐标完全一致，无任何打乱。要么把其中一个节点改成不同 pos（例如 `CanvasPos { x: 240.0, y: 80.0 }`，对齐设计 §4 示例），要么删掉这句注释。",
+      "suggestion_code": "    let tasks = load_tasks_by_workflow(\u0026conn, \u0026r.workflow_id).unwrap();\n    // 节点 n1/n2 坐标不同，验证 pos 透传（文件侧 = 草稿侧）\n    let file = workflow_file_from(\u0026wf, \u0026tasks);",
+      "existing_code": "    let tasks = load_tasks_by_workflow(\u0026conn, \u0026r.workflow_id).unwrap();\n    // 打乱画布坐标以验证 pos 透传\n    let file = workflow_file_from(\u0026wf, \u0026tasks);",
+      "start_line": 1401,
+      "end_line": 1403,
+      "category": "test",
+      "severity": "low"
+    }
+  ],
+  "groups": [
+    {
+      "label": "src-tauri/src/db/workflow.rs",
+      "files": [
+        "src-tauri/src/db/workflow.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/lib.rs",
+      "files": [
+        "src-tauri/src/lib.rs"
+      ]
+    },
+    {
+      "label": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "files": [
+        "src/components/WorkflowCanvas/WorkflowPage.tsx"
+      ]
+    }
+  ],
+  "session_id": "7357f5e6-c7e3-47e6-b609-8b56e4cc306a",
+  "manifest": {
+    "schema_version": "ocr.run-manifest/v1",
+    "run_id": "7357f5e6-c7e3-47e6-b609-8b56e4cc306a",
+    "operation": "review",
+    "terminal_state": "complete",
+    "repository": {
+      "identity_sha256": "7aebc670c3c38e64ae52ffaf12cfa8ba078a29af906f8ef856132cd790dbe48b"
+    },
+    "input": {
+      "mode": "commit",
+      "requested_head": "e9c1abb",
+      "resolved_base": "0929f37f6f9d66b1984e9b172d84941494ef410d",
+      "resolved_head": "e9c1abb075b2252c36360698ca960e84ee02bd9e",
+      "exact_range": "0929f37f6f9d66b1984e9b172d84941494ef410d..e9c1abb075b2252c36360698ca960e84ee02bd9e",
+      "source_artifact_sha256": "c8e7dec53623b96e8d04c200d096f5fe053298968ea81361ebb4348bb057d4d9"
+    },
+    "execution": {
+      "ocr_version": "v1.12.11",
+      "provider": "minimax-cn",
+      "model": "MiniMax-M3",
+      "configured_concurrency": 8,
+      "rule_config_sha256": "d5e28d02ed5cdf85b533907db24b47f1be02847db764a4ded208dbaf54380ae1",
+      "runtime_config_sha256": "f3ac1cdd2a45285ba614e32ab9bd03b86d9911c8deb3bec22fccf7b7bd4e6913"
+    },
+    "coverage": {
+      "selected": [
+        {
+          "item_id": "5b553fedbe59d498298a54be24d6e815dba502addab6f59fbc76b25c9c56082e",
+          "path": "src-tauri/src/lib.rs",
+          "fingerprint": "686eb153e363109b03810752bff0a077b41962eeb250ea771d6c49d0dc5a6546"
+        },
+        {
+          "item_id": "7db247f2329d097ea748b5299ed5cb9fcf2c76b4992e4b398daedbdfb323f69e",
+          "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+          "fingerprint": "f7220ee71d0587ba9b4ae3c14343110f7559cfdeb1e96790b75a6f4c483be441"
+        },
+        {
+          "item_id": "d011602ff3857419697d5acce022aa29b329d547d924a9383a2f5c224e6f4b76",
+          "path": "src-tauri/src/db/workflow.rs",
+          "fingerprint": "e81f062d4c1ab3b352f5b9245209af5596a996760b6f74d86607ffb8d853bcf4"
+        }
+      ],
+      "completed": [
+        {
+          "item_id": "5b553fedbe59d498298a54be24d6e815dba502addab6f59fbc76b25c9c56082e",
+          "path": "src-tauri/src/lib.rs",
+          "fingerprint": "686eb153e363109b03810752bff0a077b41962eeb250ea771d6c49d0dc5a6546"
+        },
+        {
+          "item_id": "7db247f2329d097ea748b5299ed5cb9fcf2c76b4992e4b398daedbdfb323f69e",
+          "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+          "fingerprint": "f7220ee71d0587ba9b4ae3c14343110f7559cfdeb1e96790b75a6f4c483be441"
+        },
+        {
+          "item_id": "d011602ff3857419697d5acce022aa29b329d547d924a9383a2f5c224e6f4b76",
+          "path": "src-tauri/src/db/workflow.rs",
+          "fingerprint": "e81f062d4c1ab3b352f5b9245209af5596a996760b6f74d86607ffb8d853bcf4"
+        }
+      ],
+      "reused": [],
+      "failed": [],
+      "waived": []
+    },
+    "elapsed_ms": 730219
+  }
+}

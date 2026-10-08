@@ -1,0 +1,450 @@
+{
+  "status": "complete",
+  "llm": {
+    "provider": "minimax-cn",
+    "model": "MiniMax-M3"
+  },
+  "message": "Review complete: 20 finding(s) across 10 selected item(s).",
+  "summary": {
+    "files_reviewed": 10,
+    "comments": 20,
+    "total_tokens": 8499759,
+    "input_tokens": 8343408,
+    "output_tokens": 156351,
+    "cache_read_tokens": 7721148,
+    "elapsed": "16m1s"
+  },
+  "tool_calls": {
+    "total": 238,
+    "by_tool": {
+      "code_comment": 8,
+      "code_search": 98,
+      "file_find": 4,
+      "file_read": 120,
+      "file_read_diff": 8
+    },
+    "failure": 4,
+    "failure_by_tool": {
+      "file_read": 4
+    },
+    "failure_details": [
+      {
+        "tool_call_number": 123,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/memory/extract.rs",
+        "arguments": "{\"end_line\":50,\"file_path\":\"src-tauri/src/memory/extract.rs\",\"start_line\":230}",
+        "error": "invalid line range: start_line 230 is greater than end_line 50"
+      },
+      {
+        "tool_call_number": 194,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/memory/extract.rs",
+        "arguments": "{\"end_line\": 120, \"file_path\": \"src-tauri/src/bot/dispatch.rs\", \"start_line\": 140}",
+        "error": "invalid line range: start_line 140 is greater than end_line 120"
+      },
+      {
+        "tool_call_number": 204,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/memory/extract.rs",
+        "arguments": "{\"end_line\": 50, \"file_path\": \"src-tauri/src/lib.rs\", \"start_line\": 505}",
+        "error": "invalid line range: start_line 505 is greater than end_line 50"
+      },
+      {
+        "tool_call_number": 223,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/memory/extract.rs",
+        "arguments": "{\"end_line\": 355, \"file_path\": \"src/components/SettingsPage.test.tsx\", \"start_line\": 1960}",
+        "error": "invalid line range: start_line 1960 is greater than end_line 355"
+      }
+    ]
+  },
+  "comments": [
+    {
+      "path": "src-tauri/src/bot_chat.rs",
+      "content": "`session_id` is not used after this call in `bot_chat`, so `.clone()` is unnecessary — pass by move. The function owns an `Option\u003cString\u003e` and the last use here is the transfer.",
+      "suggestion_code": "    crate::memory::extract::maybe_extract_from_session(\n        extract_app,\n        session_id,\n        stop.is_interactive(),\n    );",
+      "existing_code": "    crate::memory::extract::maybe_extract_from_session(\n        extract_app,\n        session_id.clone(),\n        stop.is_interactive(),\n    );",
+      "start_line": 986,
+      "end_line": 990,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/SettingsPage/SettingsPage.tsx",
+      "content": "autoExtract UI does not reflect its dependency on autoWriteEnabled: the backend (extract.rs) returns early when auto_write_enabled is false, so saving \"auto\"/\"confirm\" here becomes a silent no-op. Either disable the three buttons (and optionally surface a hint) when config.memoryControl.autoWriteEnabled is false, or coerce to \"off\" inside setMemoryControl and inform the user.",
+      "existing_code": "+          {/* U16 自动记忆抽取三档：会话收尾低频触发；总闸（模型自动记忆）关闭时不跑 */}\n+          \u003cdiv className=\"space-y-1.5\"\u003e\n+            \u003cp className=\"text-[11px] text-[var(--t3)]\"\u003e自动记忆抽取\u003c/p\u003e\n+            \u003cp className=\"text-[11px] text-[var(--t5)]\"\u003e\n+              每次聊天结束后低频（≥30 分钟一次）用大模型从对话里提取值得长期记住的偏好与事实；\n+              需「模型自动记忆」开启；「需确认」档会先存入下方待确认列表\n+            \u003c/p\u003e\n+            \u003cdiv className=\"flex gap-2\"\u003e\n+              {(\n+                [\n+                  [\"off\", \"关闭\", \"自动记忆抽取：关闭\"],\n+                  [\"auto\", \"自动入库\", \"自动记忆抽取：自动入库\"],\n+                  [\"confirm\", \"需确认\", \"自动记忆抽取：需确认\"],\n+                ] as const\n+              ).map(([mode, label, aria]) =\u003e (\n+                \u003cbutton\n+                  key={mode}\n+                  type=\"button\"\n+                  aria-label={aria}\n+                  className={`flex-1 px-2 py-1.5 text-xs text-[var(--t3)] ${\n+                    config.memoryControl.autoExtract === mode ? \"nm-inset\" : \"nm-outset\"\n+                  }`}\n+                  onClick={() =\u003e setMemoryControl({ autoExtract: mode })}\n+                  disabled={configBusy}\n+                \u003e\n+                  {label}\n+                \u003c/button\u003e\n+              ))}\n+            \u003c/div\u003e\n+          \u003c/div\u003e",
+      "start_line": 1880,
+      "end_line": 1909,
+      "category": "maintainability"
+    },
+    {
+      "path": "src/components/SettingsPage/SettingsPage.tsx",
+      "content": "Mutually-exclusive single-choice group rendered as plain buttons has no radio semantics — screen readers can't tell which option is selected, and arrow-key navigation is unsupported. Add role=\"radiogroup\" to the container and role=\"radio\" + aria-checked on each button to match the renderMemoryToggle pattern (role=\"switch\" + aria-checked) used right above.",
+      "existing_code": "              ).map(([mode, label, aria]) =\u003e (\n                \u003cbutton\n                  key={mode}\n                  type=\"button\"\n                  aria-label={aria}\n                  className={`flex-1 px-2 py-1.5 text-xs text-[var(--t3)] ${\n                    config.memoryControl.autoExtract === mode ? \"nm-inset\" : \"nm-outset\"\n                  }`}\n                  onClick={() =\u003e setMemoryControl({ autoExtract: mode })}\n                  disabled={configBusy}\n                \u003e\n                  {label}\n                ",
+      "start_line": 1894,
+      "end_line": 1905,
+      "category": "documentation"
+    },
+    {
+      "path": "src/components/SettingsPage/SettingsPage.tsx",
+      "content": "Wire-shape uses loose `string | null` while the validator immediately narrows to a literal union via two `as` casts. If the backend introduces a new mode, TypeScript won't catch the missing case here. Tighten the type to \"off\" | \"auto\" | \"confirm\" | null and the validator can drop the casts.",
+      "suggestion_code": "        // U15 记忆可控开关（老后端没返 → 全开）；U16 抽取档位（缺字段/非法值 → off）\n        memoryControl?: {\n          injectionEnabled?: boolean;\n          autoWriteEnabled?: boolean;\n          autoExtract?: \"off\" | \"auto\" | \"confirm\" | null;\n        } | null;",
+      "existing_code": "        // U15 记忆可控开关（老后端没返 → 全开）；U16 抽取档位（缺字段/非法值 → off）\n        memoryControl?: {\n          injectionEnabled?: boolean;\n          autoWriteEnabled?: boolean;\n          autoExtract?: string | null;\n        } | null;",
+      "start_line": 482,
+      "end_line": 487,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/SettingsPage/SettingsPage.tsx",
+      "content": "The autoExtract enum literal [\"off\", \"auto\", \"confirm\"] appears here and again in the button mapping below. Hoist to a module-level `const AUTO_EXTRACT_MODES = [...] as const` plus derived `type AutoExtractMode = (typeof AUTO_EXTRACT_MODES)[number]` so the patch signature (line 1241), validator, default, and button mapping all reference one source of truth.",
+      "suggestion_code": "        // U15 记忆可控开关：缺字段/老后端 → 全开；U16 抽取档位缺字段/非法 → off\n        memoryControl: {\n          injectionEnabled: c.memoryControl?.injectionEnabled ?? true,\n          autoWriteEnabled: c.memoryControl?.autoWriteEnabled ?? true,\n          autoExtract: AUTO_EXTRACT_MODES.includes(\n            c.memoryControl?.autoExtract as AutoExtractMode,\n          )\n            ? (c.memoryControl?.autoExtract as AutoExtractMode)\n            : \"off\",\n        },",
+      "existing_code": "        // U15 记忆可控开关：缺字段/老后端 → 全开；U16 抽取档位缺字段/非法 → off\n        memoryControl: {\n          injectionEnabled: c.memoryControl?.injectionEnabled ?? true,\n          autoWriteEnabled: c.memoryControl?.autoWriteEnabled ?? true,\n          autoExtract: ([\"off\", \"auto\", \"confirm\"] as const).includes(\n            c.memoryControl?.autoExtract as \"off\" | \"auto\" | \"confirm\",\n          )\n            ? (c.memoryControl?.autoExtract as \"off\" | \"auto\" | \"confirm\")\n            : \"off\",\n        },",
+      "start_line": 542,
+      "end_line": 551,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/SettingsPage/SettingsPage.tsx",
+      "content": "setMemoryControl will happily save autoExtract=\"auto\"/\"confirm\" even when autoWriteEnabled is false — the backend silently drops it. Either coerce to \"off\" here when the master is off, or reject the patch; otherwise the user gets a saved setting that does nothing.",
+      "suggestion_code": "  /** U15/U16 记忆可控开关（含抽取档位）：点档即时落盘（同 setConsolidation 模式） */\n  const setMemoryControl = async (\n    patch: Partial\u003c{\n      injectionEnabled: boolean;\n      autoWriteEnabled: boolean;\n      autoExtract: \"off\" | \"auto\" | \"confirm\";\n    }\u003e,\n  ) =\u003e {\n    if (configBusy) return;\n    // 总闸关闭时强制把抽取档位拨回 off，避免后端静默丢弃产生「以为开了实际没跑」的错觉\n    const sanitizedPatch: typeof patch = config.memoryControl.autoWriteEnabled\n      ? patch\n      : { ...patch, autoExtract: \"off\" };\n    const next = {\n      ...config,\n      memoryControl: { ...config.memoryControl, ...sanitizedPatch },\n    };\n    setConfig(next);\n    await saveConfig(next);\n  };",
+      "existing_code": "  /** U15/U16 记忆可控开关（含抽取档位）：点档即时落盘（同 setConsolidation 模式） */\n  const setMemoryControl = async (\n    patch: Partial\u003c{\n      injectionEnabled: boolean;\n      autoWriteEnabled: boolean;\n      autoExtract: \"off\" | \"auto\" | \"confirm\";\n    }\u003e,\n  ) =\u003e {\n    if (configBusy) return;\n    const next = {\n      ...config,\n      memoryControl: { ...config.memoryControl, ...patch },\n    };\n    setConfig(next);\n    await saveConfig(next);\n  };",
+      "start_line": 1236,
+      "end_line": 1251,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/memory/mod.rs",
+      "content": "The `auto_extract` field is stored as `String` while a parallel `AutoExtract` enum (with identical variants: `Off`/`Auto`/`Confirm`) is declared right below. The two types are kept in sync only via `auto_extract_mode()` — adding a new variant requires editing both places, and downstream code must remember to call `auto_extract_mode()` instead of reading the field directly. Consider storing the field as `AutoExtract` directly with `#[serde(rename_all = \"lowercase\", default)]`. Lenient parsing of garbage values can be preserved by either (a) tolerating deserialization errors at the config layer (so a bad value falls back to `None` = \"all on\", matching the existing `损坏配置应全开而非 panic` semantics in bot/config tests), or (b) keeping a small `FromStr`/string-form helper for the few places that genuinely need to read raw strings (the frontend already sends only the three known literals). The `AutoExtract` enum's unused `Serialize, Deserialize` derives would then become load-bearing.",
+      "existing_code": "    /// U16 自动记忆抽取档位：off（默认）/ auto（抽取直接入库）/ confirm（进待确认队列）\n    /// 缺字段/非法值 = off\n    pub auto_extract: String,",
+      "start_line": 49,
+      "end_line": 51,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/memory/mod.rs",
+      "content": "The function name `store_lock()` is slightly misleading — it locks the global `DB_WRITE_LOCK` (shared across the whole DB module), not a memory-store-specific lock. A name like `db_write_lock()` or `db_lock()` better reflects that the guard protects arbitrary DB writes (memory store, panel, evolution, etc.). The doc comment correctly says \"DB 写闸获取\", but the function name should match the documented scope so future call sites in non-memory modules don't get the wrong mental model.",
+      "existing_code": "/// DB 写闸获取（毒锁回 Inner；memory 子模块共用——连接在闸内现开）\npub(crate) fn store_lock() -\u003e std::sync::MutexGuard\u003c'static, ()\u003e {\n    crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {\n        eprintln!(\"[mutex_poisoned] memory DB_WRITE_LOCK: {e:?}\");\n        e.into_inner()\n    })\n}",
+      "start_line": 116,
+      "end_line": 122,
+      "category": "style",
+      "severity": "low"
+    },
+    {
+      "path": "model-meta-service/main.py",
+      "content": "`hash(pkey)` for strings is randomized per-process via `PYTHONHASHSEED`, contradicting the comment \"稳定且可区分\". In the current code the bug is masked because `ON CONFLICT ... DO UPDATE SET` only updates `provider_name`/`logo_url`/`default_base_url` and never touches `fallback_color`, so colors are effectively pinned to whatever hash value was active on the row's first INSERT. However, any future change that adds `fallback_color=excluded.fallback_color` to the SET clause (or a fresh-DB recreate) will start reshuffling colors on every restart. Use a stable digest like `hashlib.sha1(pkey.encode()).hexdigest()` to make the mapping process-stable by construction.",
+      "existing_code": "                (pkey, name, LOGO_URL.format(pkey), PALETTE[hash(pkey) % len(PALETTE)], name[0].upper(), p.get(\"api\")),",
+      "start_line": 68,
+      "end_line": 68,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "model-meta-service/main.py",
+      "content": "`sync_models_dev()` is invoked synchronously inside the async `lifespan` before `yield`, so a slow/hanging `https://models.dev/api.json` (up to the 10 s `httpx` timeout) blocks the FastAPI event loop on startup and prevents the service from binding/accepting requests. Either call it via `asyncio.to_thread(sync_models_dev)` or schedule it as a fire-and-forget task after `yield` so the listener comes up immediately and the cache refresh happens in the background.",
+      "existing_code": "        sync_models_dev()  # 网络失败不阻断启动，直接用库内缓存",
+      "start_line": 90,
+      "end_line": 90,
+      "category": "performance",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/memory/extract.rs",
+      "content": "`store_lock()` is actually `crate::db::DB_WRITE_LOCK` (a process-wide write lock shared by every DB writer in the app). Acquiring it before `crate::db::open_db(\u0026app2)` is risky: `open_db` can do directory creation, legacy-copy I/O, and `apply_conn_pragmas`. Doing that work while the entire app's writers are serialized is a concurrency anti-pattern — open the connection first, then take the lock. Also fragile against future changes: if `open_db` ever grows a path that requires `DB_WRITE_LOCK`, this becomes a self-deadlock (re-entrant std::sync::Mutex would panic, not deadlock — but that turns a serialization bug into a panic).",
+      "suggestion_code": "            AutoExtract::Auto =\u003e {\n                // 持锁前算（ONNX 推理不持写锁，同全模块纪律）；insert_item 去重兜底\n                let embs: Vec\u003cOption\u003cVec\u003cf32\u003e\u003e\u003e = facts\n                    .iter()\n                    .map(|f| super::embed::embed_text(\u0026f.content))\n                    .collect();\n                // 锁外开连接（开连接可能触磁盘 I/O + 迁移，不要塞进 DB_WRITE_LOCK）\n                let conn = crate::db::open_db(\u0026app2).map_err(|e| e.to_string())?;\n                let _g = super::store_lock();",
+      "existing_code": "            AutoExtract::Auto =\u003e {\n                // 有向量的先嵌（持锁前算，同全模块纪律）；insert_item 去重兜底\n                let embs: Vec\u003cOption\u003cVec\u003cf32\u003e\u003e\u003e = facts\n                    .iter()\n                    .map(|f| super::embed::embed_text(\u0026f.content))\n                    .collect();\n                let _g = super::store_lock();\n                let conn = crate::db::open_db(\u0026app2).map_err(|e| e.to_string())?;",
+      "start_line": 318,
+      "end_line": 325,
+      "category": "other",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/memory/extract.rs",
+      "content": "Per-item `insert_item` failures in `Auto` mode are swallowed via `eprintln!` only — no `audit_event!`, no per-failure count. Because the loop continues and `run_extract` still returns `Ok(())`, the outer spawn's error branch (which DOES emit `memory.extract_failed` audit) never fires. A systematic failure (DB stuck, all-dedup-rejected, etc.) becomes invisible to operators and the user, contradicting the design note \"失败只记 WARN 审计\". Use `audit_event!` at warn level per failure and/or aggregate a counter into the error path.",
+      "suggestion_code": "                let mut skipped = 0usize;\n                for (f, emb) in facts.iter().zip(embs) {\n                    let item = NewItem {\n                        kind: f.kind.clone(),\n                        content: f.content.clone(),\n                        tags: Vec::new(),\n                        importance: f.importance,\n                        source: \"model_inferred\".to_string(),\n                    };\n                    if let Err(e) = store::insert_item(\u0026conn, \u0026item, emb.as_deref(), now) {\n                        skipped += 1;\n                        eprintln!(\"[memory] 抽取条目入库失败（跳过）：{e}\");\n                        crate::audit::write_event(\n                            \u0026app2,\n                            crate::audit::AuditLevel::Warn,\n                            \"memory.extract_insert_failed\",\n                            \u0026[\n                                (\"kind\", f.kind.clone()),\n                                (\"error\", e.clone()),\n                            ],\n                        );\n                    }\n                }\n                if skipped == facts.len() {\n                    return Err(format!(\"抽取 {} 条全部入库失败\", facts.len()));\n                }",
+      "existing_code": "                for (f, emb) in facts.iter().zip(embs) {\n                    let item = NewItem {\n                        kind: f.kind.clone(),\n                        content: f.content.clone(),\n                        tags: Vec::new(),\n                        importance: f.importance,\n                        source: \"model_inferred\".to_string(),\n                    };\n                    if let Err(e) = store::insert_item(\u0026conn, \u0026item, emb.as_deref(), now) {\n                        eprintln!(\"[memory] 抽取条目入库失败（跳过）：{e}\");\n                    }\n                }",
+      "start_line": 326,
+      "end_line": 337,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/memory/extract.rs",
+      "content": "`pending_delete` issues one `DELETE` per id inside a `for` loop. SQLite supports `DELETE ... WHERE id IN (?,?,...)`. At `PENDING_CAP=50` it's harmless today, but this loop also runs once per row inside the `mem_pending_approve` second stage (so up to ~50 separate transactions-worth of work inside `DB_WRITE_LOCK`). Replace with a single parameterized batch.",
+      "suggestion_code": "/// 按 id 集合删除，返回删到的条数（单条 IN(...) 语句，减少持锁时间）\nfn pending_delete(conn: \u0026rusqlite::Connection, ids: \u0026[i64]) -\u003e Result\u003cusize, String\u003e {\n    ensure_pending_table(conn)?;\n    if ids.is_empty() {\n        return Ok(0);\n    }\n    let placeholders = std::iter::repeat(\"?\")\n        .take(ids.len())\n        .collect::\u003cVec\u003c_\u003e\u003e()\n        .join(\",\");\n    let sql = format!(\"DELETE FROM mem_pending WHERE id IN ({placeholders})\");\n    let params = rusqlite::params_from_iter(ids.iter());\n    conn.execute(\u0026sql, params)\n        .map_err(|e| e.to_string())\n}",
+      "existing_code": "/// 按 id 集合删除，返回删到的条数\nfn pending_delete(conn: \u0026rusqlite::Connection, ids: \u0026[i64]) -\u003e Result\u003cusize, String\u003e {\n    ensure_pending_table(conn)?;\n    let mut n = 0;\n    for id in ids {\n        n += conn\n            .execute(\"DELETE FROM mem_pending WHERE id = ?1\", [id])\n            .map_err(|e| e.to_string())?;\n    }\n    Ok(n)\n}",
+      "start_line": 137,
+      "end_line": 147,
+      "category": "performance",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/memory/extract.rs",
+      "content": "When `parse_extract` returns an empty Vec (LLM emitted prose without JSON, malformed JSON, or `[]`), `run_extract` returns `Ok(())` with no audit trail. Combined with the 30-minute throttle occupying the window even on parse failure (by design, to prevent failure storms), a recurring model-output regression can go unnoticed for hours. At minimum log an Info-level audit event so operators can spot it, or aggregate the zero-fact count up to the outer error branch.",
+      "suggestion_code": "    let facts = parse_extract(\u0026text);\n    if facts.is_empty() {\n        // 解析空：模型未识别到任何值得记的（或输出非 JSON），\n        // 节流已占窗，本会话 30 分钟内不再触发——这条 Info 留痕方便排查回归\n        crate::audit::write_event(\n            \u0026app,\n            crate::audit::AuditLevel::Info,\n            \"memory.extract_empty\",\n            \u0026[(\"session_id\", session_id.clone())],\n        );\n        return Ok(());\n    }",
+      "existing_code": "    let facts = parse_extract(\u0026text);\n    if facts.is_empty() {\n        return Ok(());\n    }",
+      "start_line": 310,
+      "end_line": 313,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/memory/mod.rs",
+      "content": "The `AutoExtract` enum derives `Serialize`, `Deserialize`, and `Default`, but none of these are exercised anywhere — the enum never crosses a serde boundary (the `MemoryControl.auto_extract` field is a `String` parsed by `auto_extract_mode`), and `AutoExtract::default()` is never called (the parser explicitly returns `AutoExtract::Off`). The derives imply a usage pattern (e.g. typed config field, Tauri command arg) that isn't actually supported: without `#[serde(rename_all = \"...\")]`, the variants round-trip as PascalCase (`\"Off\"`, `\"Auto\"`, `\"Confirm\"`), which would mismatch the lowercase config strings (`\"off\"`, `\"auto\"`, `\"confirm\"`). Either drop the unused derives, or — combined with making this the canonical field representation — add `#[serde(rename_all = \"lowercase\")]` so the JSON form matches the `MemoryControl.auto_extract: String` contract.",
+      "suggestion_code": "/// 自动抽取档位（auto_extract 配置字符串的解析结果）\n#[derive(Clone, Copy, Debug, PartialEq, Eq)]\npub enum AutoExtract {",
+      "existing_code": "/// 自动抽取档位（auto_extract 配置字符串的解析结果）\n#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]\npub enum AutoExtract {",
+      "start_line": 64,
+      "end_line": 66,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "model-meta-service/main.py",
+      "content": "Missing-provider error path returns `{\"ok\": False, \"error\": \"...\"}` with HTTP 200, while the success path returns the full model dict. Consumers cannot distinguish success/failure by status code alone, and the response shape diverges from the success contract. Raise `HTTPException(status_code=400, detail=...)` so the endpoint returns a proper 4xx and a consistent response body.",
+      "suggestion_code": "from fastapi import HTTPException\n\n@app.post(\"/api/model\")\ndef model_upsert(body: ModelIn):\n    with get_db() as conn:\n        if not conn.execute(\"SELECT 1 FROM provider WHERE provider_key=?\", (body.provider_key,)).fetchone():\n            raise HTTPException(status_code=400, detail=f\"provider 不存在: {body.provider_key}，请先 POST /api/provider\")",
+      "existing_code": "@app.post(\"/api/model\")\ndef model_upsert(body: ModelIn):\n    with get_db() as conn:\n        if not conn.execute(\"SELECT 1 FROM provider WHERE provider_key=?\", (body.provider_key,)).fetchone():\n            return {\"ok\": False, \"error\": f\"provider 不存在: {body.provider_key}，请先 POST /api/provider\"}",
+      "start_line": 193,
+      "end_line": 197,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "model-meta-service/main.py",
+      "content": "Sync failure returns `{\"ok\": False, \"error\": \"...\"}` with HTTP 200, masking a server-side error as success. Callers that only check status code will treat a failed sync as successful. Raise `HTTPException(status_code=500, detail=...)` (or a similar 5xx) to surface the failure via HTTP status.",
+      "suggestion_code": "from fastapi import HTTPException\n\n@app.post(\"/api/sync-models-dev\")\ndef sync_now():\n    try:\n        return {\"ok\": True, **sync_models_dev()}\n    except Exception as e:\n        raise HTTPException(status_code=500, detail=str(e))",
+      "existing_code": "@app.post(\"/api/sync-models-dev\")\ndef sync_now():\n    try:\n        return {\"ok\": True, **sync_models_dev()}\n    except Exception as e:\n        return {\"ok\": False, \"error\": str(e)}",
+      "start_line": 212,
+      "end_line": 217,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "model-meta-service/main.py",
+      "content": "The fallback dict explicitly sets `provider_key=None` to signal \"no provider\", but the trailing `**provider_fallback(\"?\")` overrides it with `provider_key=\"?\"`. Any consumer that branches on `provider_key is None` for the not-found case will see `\"?\"` instead and mis-classify the response as a real provider. Either drop the dead `provider_key=None` entry, or place the spread first and the explicit override last, so the final value matches the intent of the literal.",
+      "suggestion_code": "return {**provider_fallback(\"?\"), \"model_key\": model_key, \"provider_key\": None,\n            \"display_name\": FALLBACK_CHAR, \"context_length\": None, \"temperature\": None,\n            \"top_p\": None, \"max_tokens\": None, \"default_system_prompt\": None,\n            \"source\": \"fallback\"}",
+      "existing_code": "return {\"model_key\": model_key, \"provider_key\": None, \"display_name\": FALLBACK_CHAR,\n            \"context_length\": None, \"temperature\": None, \"top_p\": None, \"max_tokens\": None,\n            \"default_system_prompt\": None, \"source\": \"fallback\", **provider_fallback(\"?\")}",
+      "start_line": 171,
+      "end_line": 173,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/memory/extract.rs",
+      "content": "The `pending_insert` per-fact loop in the `Confirm` branch fires `SELECT COUNT(*)` + maybe `DELETE` + `INSERT` once per fact (no transaction wrapping). For a 5-fact extraction, that's 15–20 round trips while holding `DB_WRITE_LOCK`, and a panic mid-loop leaves the queue in a partial state with no atomicity. Either wrap the loop in a single `conn.transaction()`, or hoist the count + batch eviction outside the loop (collect once, evict once if needed, then insert all facts).",
+      "suggestion_code": "                let mut pending: Vec\u003c\u0026ExtractedFact\u003e = facts.iter().collect();\n                pending.sort_by_key(|f| std::cmp::Reverse(f.importance)); // 重要度高的先进\n                let _ = pending; // 占位示意：实际应先一次性批量预检查 + 一次性淘汰最旧 N 行，再批量 INSERT\n                for f in \u0026facts {\n                    pending_insert(\u0026conn, \u0026f.content, \u0026f.kind, f.importance, \u0026session_id, now)?;\n                }",
+      "existing_code": "                for f in \u0026facts {\n                    pending_insert(\u0026conn, \u0026f.content, \u0026f.kind, f.importance, \u0026session_id, now)?;\n                }",
+      "start_line": 342,
+      "end_line": 344,
+      "category": "performance",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/memory/extract.rs",
+      "content": "Inside `maybe_extract_from_session` the synchronous `crate::bot::read_memory_control(\u0026app)` (full `bot-config.json` read + JSON parse) runs on every interactive bot_chat completion, even when `autoExtract` is the default `off` — i.e. the hot path pays the file IO + parse cost and then immediately returns at line 280-281. For an idle user with the default off setting this is wasted work on every turn. Consider a lightweight probe (e.g. read just the `autoExtract` field, or a separate sentinel file) so the default-off path doesn't pay the full BotConfig parse cost.",
+      "suggestion_code": "    // 轻量预检：默认 off 路径不要付 BotConfig 全量解析\n    // （待确认设计：读独立的 autoExtract 哨兵 / 或增量解析）\n    let ctrl = crate::bot::read_memory_control(\u0026app);\n    if !auto_write_enabled(ctrl.as_ref()) {\n        return; // U15 总闸优先：模型主动记忆关 = 抽取也不跑\n    }\n    let mode = auto_extract_mode(ctrl.as_ref());\n    if mode == AutoExtract::Off {\n        return;\n    }",
+      "existing_code": "    let ctrl = crate::bot::read_memory_control(\u0026app);\n    if !auto_write_enabled(ctrl.as_ref()) {\n        return; // U15 总闸优先：模型主动记忆关 = 抽取也不跑\n    }\n    let mode = auto_extract_mode(ctrl.as_ref());\n    if mode == AutoExtract::Off {\n        return;\n    }",
+      "start_line": 275,
+      "end_line": 282,
+      "category": "performance",
+      "severity": "low"
+    }
+  ],
+  "groups": [
+    {
+      "label": "src-tauri/src/bot/config/mod.rs",
+      "files": [
+        "src-tauri/src/bot/config/mod.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/bot_chat.rs",
+      "files": [
+        "src-tauri/src/bot_chat.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/lib.rs",
+      "files": [
+        "src-tauri/src/lib.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/memory/mod.rs",
+      "files": [
+        "src-tauri/src/memory/mod.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/prompts/mod.rs",
+      "files": [
+        "src-tauri/src/prompts/mod.rs"
+      ]
+    },
+    {
+      "label": "src/components/SettingsPage/MemoryPanel.tsx",
+      "files": [
+        "src/components/SettingsPage/MemoryPanel.tsx"
+      ]
+    },
+    {
+      "label": "src/components/SettingsPage/SettingsPage.tsx",
+      "files": [
+        "src/components/SettingsPage/SettingsPage.tsx"
+      ]
+    },
+    {
+      "label": "model-meta-service/main.py",
+      "files": [
+        "model-meta-service/main.py"
+      ]
+    },
+    {
+      "label": "src-tauri/src/memory/extract.rs",
+      "files": [
+        "src-tauri/src/memory/extract.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/prompts/extract.rs",
+      "files": [
+        "src-tauri/src/prompts/extract.rs"
+      ]
+    }
+  ],
+  "session_id": "e21c881b-dd51-4767-b47a-def28b2e9b74",
+  "manifest": {
+    "schema_version": "ocr.run-manifest/v1",
+    "run_id": "e21c881b-dd51-4767-b47a-def28b2e9b74",
+    "operation": "review",
+    "terminal_state": "complete",
+    "repository": {
+      "identity_sha256": "7aebc670c3c38e64ae52ffaf12cfa8ba078a29af906f8ef856132cd790dbe48b"
+    },
+    "input": {
+      "mode": "workspace",
+      "resolved_base": "559b58ffad464948e80d977f067bf03cbf26a2e9",
+      "source_artifact_sha256": "12e61a3cfc32cfc130420f0c1aa1a47d5ab46c00a3bd87dcae02413eadff4dd0"
+    },
+    "execution": {
+      "ocr_version": "v1.12.11",
+      "provider": "minimax-cn",
+      "model": "MiniMax-M3",
+      "configured_concurrency": 8,
+      "rule_config_sha256": "8779d0d046b15151518200e75283f8c72cb6815f8e9b6de313d85d8f880d7dde",
+      "runtime_config_sha256": "f3ac1cdd2a45285ba614e32ab9bd03b86d9911c8deb3bec22fccf7b7bd4e6913"
+    },
+    "coverage": {
+      "selected": [
+        {
+          "item_id": "1c8b17eb5b94a8ff6490651e78cb37945dc17d0866bc8496fcc83f1b673e58b9",
+          "path": "src/components/SettingsPage/MemoryPanel.tsx",
+          "fingerprint": "3f8de9bd6157181104b021494b92440fb7eddb5e17e78adae21c6e8370076753"
+        },
+        {
+          "item_id": "265cb776cacd21f7e21e55abcfc867e5f6b4c58a8b8a4b2665cdc9937f883f2f",
+          "path": "src-tauri/src/memory/mod.rs",
+          "fingerprint": "2cea6025945ef3c749e0da2a5000bc661a3793666d48fc5e94b0551945b750cd"
+        },
+        {
+          "item_id": "2712fa77b6c49016590ed010f321f2b5a42b623b0a587a37e1743abd195e3490",
+          "path": "src-tauri/src/prompts/extract.rs",
+          "fingerprint": "5a30146bd8c6825c59af1920cb5288c2fa03b5830e281fa678897ee258000522"
+        },
+        {
+          "item_id": "3251734d24945b2c6d78dd04d49ae5f65baafd99618a1676659fdcdd51005490",
+          "path": "src-tauri/src/prompts/mod.rs",
+          "fingerprint": "f01eed9ca0aeefd68acb1c9c71a8b41cabc27571a5df9f9bca1e3fe7b06d70c9"
+        },
+        {
+          "item_id": "70779da7b6b3c7b01fd6ef65604b94235524e8c1f9afd7561face091502435d0",
+          "path": "src/components/SettingsPage/SettingsPage.tsx",
+          "fingerprint": "9616649e94d2f764db27c351772b1ce9a164996043c70fbc50c694a8501be9cd"
+        },
+        {
+          "item_id": "a7e379852278b4dee9fec88891f3b590c97d7b31523f6a615066fea4c49ba99f",
+          "path": "src-tauri/src/lib.rs",
+          "fingerprint": "5df77d7a64a8260365c1e6a7ab7597dda65c4a12350c4860097d610e52526631"
+        },
+        {
+          "item_id": "ad8f8381ed551acda797fbb5e3b55a4dcbab7799d42a5754dbe2a882a5165560",
+          "path": "model-meta-service/main.py",
+          "fingerprint": "2e5563d904a7dcb6154ba8050f1a1c42be14a9d2f26d1a09ab2596be8c44e4db"
+        },
+        {
+          "item_id": "b5b45c1b14300d44ee4aba6a30e49480b604e25fce2dda66bedbb9240f31f911",
+          "path": "src-tauri/src/bot_chat.rs",
+          "fingerprint": "e7f68f8e50fa6bd491bdd59e65d27047a97eb41ccabdbf67f6669ecf5f9808f3"
+        },
+        {
+          "item_id": "f8daa7d30d64c4471481185be9f80d269c0f7659c34798f7b66e769f38ed658d",
+          "path": "src-tauri/src/memory/extract.rs",
+          "fingerprint": "cf334a292e0cef32d25b6938bed61856f8b37419cdf9a5f12beabdef94b3b532"
+        },
+        {
+          "item_id": "fb88d62af4862899ca456a85e4b3ff20d8678c7cb925e7ceb3b0f37e85bd73a6",
+          "path": "src-tauri/src/bot/config/mod.rs",
+          "fingerprint": "760bdf69fb5090ef1ae6b342093848c21dce1cba2fa2e8647071736231a13be1"
+        }
+      ],
+      "completed": [
+        {
+          "item_id": "1c8b17eb5b94a8ff6490651e78cb37945dc17d0866bc8496fcc83f1b673e58b9",
+          "path": "src/components/SettingsPage/MemoryPanel.tsx",
+          "fingerprint": "3f8de9bd6157181104b021494b92440fb7eddb5e17e78adae21c6e8370076753"
+        },
+        {
+          "item_id": "265cb776cacd21f7e21e55abcfc867e5f6b4c58a8b8a4b2665cdc9937f883f2f",
+          "path": "src-tauri/src/memory/mod.rs",
+          "fingerprint": "2cea6025945ef3c749e0da2a5000bc661a3793666d48fc5e94b0551945b750cd"
+        },
+        {
+          "item_id": "2712fa77b6c49016590ed010f321f2b5a42b623b0a587a37e1743abd195e3490",
+          "path": "src-tauri/src/prompts/extract.rs",
+          "fingerprint": "5a30146bd8c6825c59af1920cb5288c2fa03b5830e281fa678897ee258000522"
+        },
+        {
+          "item_id": "3251734d24945b2c6d78dd04d49ae5f65baafd99618a1676659fdcdd51005490",
+          "path": "src-tauri/src/prompts/mod.rs",
+          "fingerprint": "f01eed9ca0aeefd68acb1c9c71a8b41cabc27571a5df9f9bca1e3fe7b06d70c9"
+        },
+        {
+          "item_id": "70779da7b6b3c7b01fd6ef65604b94235524e8c1f9afd7561face091502435d0",
+          "path": "src/components/SettingsPage/SettingsPage.tsx",
+          "fingerprint": "9616649e94d2f764db27c351772b1ce9a164996043c70fbc50c694a8501be9cd"
+        },
+        {
+          "item_id": "a7e379852278b4dee9fec88891f3b590c97d7b31523f6a615066fea4c49ba99f",
+          "path": "src-tauri/src/lib.rs",
+          "fingerprint": "5df77d7a64a8260365c1e6a7ab7597dda65c4a12350c4860097d610e52526631"
+        },
+        {
+          "item_id": "ad8f8381ed551acda797fbb5e3b55a4dcbab7799d42a5754dbe2a882a5165560",
+          "path": "model-meta-service/main.py",
+          "fingerprint": "2e5563d904a7dcb6154ba8050f1a1c42be14a9d2f26d1a09ab2596be8c44e4db"
+        },
+        {
+          "item_id": "b5b45c1b14300d44ee4aba6a30e49480b604e25fce2dda66bedbb9240f31f911",
+          "path": "src-tauri/src/bot_chat.rs",
+          "fingerprint": "e7f68f8e50fa6bd491bdd59e65d27047a97eb41ccabdbf67f6669ecf5f9808f3"
+        },
+        {
+          "item_id": "f8daa7d30d64c4471481185be9f80d269c0f7659c34798f7b66e769f38ed658d",
+          "path": "src-tauri/src/memory/extract.rs",
+          "fingerprint": "cf334a292e0cef32d25b6938bed61856f8b37419cdf9a5f12beabdef94b3b532"
+        },
+        {
+          "item_id": "fb88d62af4862899ca456a85e4b3ff20d8678c7cb925e7ceb3b0f37e85bd73a6",
+          "path": "src-tauri/src/bot/config/mod.rs",
+          "fingerprint": "760bdf69fb5090ef1ae6b342093848c21dce1cba2fa2e8647071736231a13be1"
+        }
+      ],
+      "reused": [],
+      "failed": [],
+      "waived": []
+    },
+    "elapsed_ms": 960985
+  }
+}

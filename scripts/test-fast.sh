@@ -4,26 +4,21 @@
 # 设计意图：每次 commit 不该卡 1-3 分钟；fmt + 编译 + 收集能挡掉 90% 误操作。
 #
 # 步骤总览（详见 docs/testing.md；编号即运行时输出里的 [N/N]）：
-#   [0/N]   审计批次号防线：staged/unstaged 新增行 + untracked 全文的
-#           .rs/.ts/.tsx 含批次号模式拒提交
-#           （防注释考古回潮；audit-ok 行内豁免）——纯文本检查，<1s
+#   [0/N]   工单号防线：staged/unstaged 新增行 + untracked 全文的 .rs/.ts/.tsx
+#           含工单号/拍板记录模式拒提交（这些只进 DEVLOG，不进源码；
+#           audit-ok 行内豁免）——纯文本检查，<1s
 #   [1/N]   cargo fmt --check：格式漂移
 #   [2/N]   cargo check：编译错误（增量缓存）
 #   [2.5/N] cargo machete src-tauri：未使用 Rust 依赖（未安装则 skip 并提示）
-#   [3/N]   pytest collect-only：tests-audit/ 脚本语法自检
-#   [3.5/N] Tauri 桥一致性（tests-audit/audit_tauri_bridge.py）：前端 invoke ↔
-#           命令注册、listen ↔ emit 双向核对——运行时才炸的桥接坑提前到提交时
-#   [3.6/N] 错误码一致性（tests-audit/audit_error_codes.py）：Rust CommandErrorCode
-#           枚举 ↔ 前端 CommandErrorCode 联合类型集合/顺序比对
-#   [3.7/N] 模块地图对拍（tests-audit/audit_module_map.py）：模块树条目 ↔ 真实文件、
-#           源码模块 ↔ 架构文档条目（模块拆分/新增漏更文档即拒）
-#   [4/N]   tsc --noEmit：前端类型检查（incremental）
-#   [4.5/N] knip --no-progress：前端死文件/死 export/未使用 npm 依赖
+#   [3/N]   tsc --noEmit：前端类型检查（incremental）
+#   [3.5/N] knip --no-progress：前端死文件/死 export/未使用 npm 依赖
 #           （knip 在 devDependencies，npx --no-install 走本地安装）
-#   [5/N]   vitest --changed：前端单测（只跑改动相关）
+#   [3.6/N] oxlint（前端 linter，error 级门禁）
+#   [4/N]   vitest --changed：前端单测（只跑改动相关）
 #
 # 性能设计：git diff 智能跳过（只跑改动相关的链路）；tsc/vitest 各有增量机制；
-# 全量测试（cargo nextest + tests-audit + vitest）在 pre-push 的 test-all.sh。
+# 全量测试（cargo nextest + vitest）在 pre-push 的 test-all.sh。
+# tests-audit/ 一致性对拍脚本（tauri 桥/错误码/模块地图/分层）已降级为按需手跑。
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -50,10 +45,10 @@ if [[ -n "$UNTRACKED" ]]; then
 $UNTRACKED"
 fi
 
-# ─── 步骤 0: 审计批次号防线（防注释考古回潮） ─────────────────────────
+# ─── 步骤 0: 工单号防线（工单号/拍板记录只进 DEVLOG，不进源码） ───────────────
 # 扫描口径 = diff 新增行（staged，无 staged 时看 unstaged）+ untracked 新文件全文：
 # untracked 不进任何 diff，不扫则新写文件不 add 即可绕过（下游 NEED_* 判定本就含 untracked）。
-# 禁入模式：批次N审计 / P0-12 / T1-3 / NEW-C-6 等（批次号是审计过程产物，入注释即化石）；
+# 禁入模式：批次N审计 / P0-12 / T1-3 / NEW-C-6 / W8-ATTACH / OCR C5 / B0-1 / AUDIT-* / 「拍板」；
 # 确需引用历史口径时行内加 audit-ok 放行。
 DIFF_SRC=$(git diff --cached -U0 -- '*.rs' '*.ts' '*.tsx' 2>/dev/null || true)
 if [[ -z "$DIFF_SRC" ]]; then
@@ -69,13 +64,13 @@ $(cat "$f")"
 done < <(git ls-files -z --others --exclude-standard -- '*.rs' '*.ts' '*.tsx' 2>/dev/null)
 BAD_LINES=$(echo "$NEW_LINES" \
     | grep -v 'audit-ok' \
-    | grep -E '批次[0-9]+审计|\bP[012]-[0-9]+\b|\bT[0-9]-[0-9]+\b|\bNEW-[A-Z]-[0-9]+\b' || true)
+    | grep -E '批次[0-9]+审计|\bP[012]-[0-9]+\b|\bT[0-9]-[0-9]+\b|\bNEW-[A-Z]-[0-9]+\b|\bW[0-9]+-[A-Z0-9]+|\bB[0-9]+-[0-9A-Z]|\bOCR[ -][CcRr][0-9]|\bAUDIT-[A-Z0-9]+|\bSUBA-[0-9]+|拍板' || true)
 if [[ -n "$BAD_LINES" ]]; then
-    echo "✗ [0/N] 审计批次号防线：diff 新增行 / untracked 文件含审计批次号（阶段5起禁止入注释；确需引用加 audit-ok）："
+    echo "✗ [0/N] 工单号防线：diff 新增行 / untracked 文件含工单号或拍板记录（只进 DEVLOG，不进源码；确需引用加 audit-ok）："
     echo "$BAD_LINES" | head -10 | sed 's/^/    /'
     exit 1
 fi
-echo "  ✓ [0/N] 审计批次号防线通过"
+echo "  ✓ [0/N] 工单号防线通过"
 
 # ── 是否需要跑 cargo 链路（fmt + check + test） ──
 NEED_CARGO=false
@@ -89,22 +84,10 @@ if echo "$CHANGED" | grep -qE '^(src/|tsconfig.*\.json|vite\.config\.ts|vitest\.
     NEED_TS=true
 fi
 
-# ── 是否需要跑 pytest ──
-NEED_PYTEST=false
-if echo "$CHANGED" | grep -qE '^tests-audit/'; then
-    NEED_PYTEST=true
-fi
-
-# ── 是否需要跑模块地图对拍（模块声明变了 或 架构文档改了）──
-NEED_MODMAP=false
-if echo "$CHANGED" | grep -qE '^(src-tauri/src/|docs/rust-bot-architecture\.md)'; then
-    NEED_MODMAP=true
-fi
-
 # 全跳过：返回 0
-if [[ "$NEED_CARGO" == false && "$NEED_TS" == false && "$NEED_PYTEST" == false && "$NEED_MODMAP" == false ]]; then
+if [[ "$NEED_CARGO" == false && "$NEED_TS" == false ]]; then
     TOTAL_END=$(date +%s)
-    echo "⏭ nothing to test（本次改动不在 src-tauri/ / src/ / tests-audit/ / 架构文档）"
+    echo "⏭ nothing to test（本次改动不在 src-tauri/ / src/）"
     echo "=== pre-commit 总耗时: $((TOTAL_END - TOTAL_START))s ==="
     exit 0
 fi
@@ -114,8 +97,6 @@ echo "$CHANGED" | sort -u | head -40 | sed 's/^/  /'
 echo ""
 echo "  cargo:  $NEED_CARGO"
 echo "  ts:     $NEED_TS"
-echo "  pytest: $NEED_PYTEST"
-echo "  modmap: $NEED_MODMAP"
 echo ""
 
 # ── 步骤计时 helper ──
@@ -148,12 +129,6 @@ if [[ "$NEED_CARGO" == true ]]; then
         cargo check --manifest-path src-tauri/Cargo.toml --quiet
 fi
 
-# ─── 步骤 3: pytest collect-only ──────────────────────────
-if [[ "$NEED_PYTEST" == true ]]; then
-    step "[3/N] pytest collect-only" \
-        python3 -m pytest tests-audit/audit_pre_step_pre_execute.py tests-audit/audit_tauri_bridge.py tests-audit/audit_error_codes.py tests-audit/audit_module_map.py --collect-only -q
-fi
-
 # ─── 步骤 2.5: cargo machete（未使用 Rust 依赖门禁，未安装则 skip） ──
 if [[ "$NEED_CARGO" == true ]]; then
     if command -v cargo-machete >/dev/null 2>&1; then
@@ -164,58 +139,37 @@ if [[ "$NEED_CARGO" == true ]]; then
     fi
 fi
 
-# ─── 步骤 3.5: Tauri 桥一致性（命令注册 ↔ 前端 invoke / emit ↔ listen） ──
-# 纯文本扫描，<1s；src/ 或 src-tauri/ 有改动就跑（桥两头都在这两个目录）
-if [[ "$NEED_CARGO" == true || "$NEED_TS" == true ]]; then
-    step "[3.5/N] tauri bridge 一致性（invoke/emit ↔ listen）" \
-        python3 -m pytest tests-audit/audit_tauri_bridge.py -q
-fi
-
-# ─── 步骤 3.6: 错误码跨语言一致性（Rust enum ↔ 前端联合类型） ───
-# 纯文本扫描，<1s；两侧任一改动都可能漂移，故 cargo / ts 有改动都跑
-if [[ "$NEED_CARGO" == true || "$NEED_TS" == true ]]; then
-    step "[3.6/N] 错误码一致性（CommandErrorCode ↔ 前端）" \
-        python3 -m pytest tests-audit/audit_error_codes.py -q
-fi
-
-# ─── 步骤 3.7: 模块地图对拍（架构文档 ↔ 实际模块，防文档漂移） ───
-if [[ "$NEED_MODMAP" == true ]]; then
-    step "[3.7/N] 模块地图对拍（docs/rust-bot-architecture.md）" \
-        python3 -m pytest tests-audit/audit_module_map.py -q
-fi
-
-# ─── 步骤 4: tsc --noEmit（类型检查） ─────────────────────
+# ─── 步骤 3: tsc --noEmit（类型检查） ─────────────────────
 if [[ "$NEED_TS" == true ]]; then
-    step "[4/N] tsc --noEmit (类型检查，incremental 缓存)" \
+    step "[3/N] tsc --noEmit (类型检查，incremental 缓存)" \
         npx --no-install tsc --noEmit -p tsconfig.json
 fi
 
-# ─── 步骤 4.5: knip（前端死代码/未使用依赖门禁） ──
+# ─── 步骤 3.5: knip（前端死代码/未使用依赖门禁） ──
 # knip 已收进 devDependencies，npx 走本地安装（无网络依赖）
 if [[ "$NEED_TS" == true ]]; then
-    step "[4.5/N] knip（unused files/exports/deps）" \
+    step "[3.5/N] knip（unused files/exports/deps）" \
         npx --no-install knip --no-progress
 fi
 
-# ─── 步骤 4.6: oxlint（前端 linter，B5-1） ──
-# 规则配置见 .oxlintrc.json（react-hooks 让既有 eslint-disable 注释重新生效）。
-# 门禁口径：默认退出码——error 拦（rules-of-hooks 等），warning 放行（存量 32
-# 条 warn 随 ChatPanel 批清理）
+# ─── 步骤 3.6: oxlint（前端 linter） ──
+# 规则配置见 .oxlintrc.json。
+# 门禁口径：默认退出码——error 拦（rules-of-hooks 等），warning 放行。
 if [[ "$NEED_TS" == true ]]; then
-    step "[4.6/N] oxlint（error 级门禁）" \
+    step "[3.6/N] oxlint（error 级门禁）" \
         npx --no-install oxlint src
 fi
 
-# ─── 步骤 5: vitest run（前端 unit） ──────────────────────
+# ─── 步骤 4: vitest run（前端 unit） ──────────────────────
 # vitest --changed 只跑与改动文件相关的测试（基于 git diff）
 # 全部未改 → 跳过整个 vitest
 if [[ "$NEED_TS" == true ]]; then
     # vitest --changed 在没改 src/ 时仍会跑（基线扫描）。我们再加一层门：
     if echo "$CHANGED" | grep -qE '^(src/|src/components/.*\.test\.tsx?)'; then
-        step "[5/N] vitest --changed (只跑改动的测试)" \
+        step "[4/N] vitest --changed (只跑改动的测试)" \
             npx --no-install vitest --run --changed
     else
-        step "[5/N] vitest run (default)" \
+        step "[4/N] vitest run (default)" \
             npx --no-install vitest --run --reporter=default
     fi
 fi

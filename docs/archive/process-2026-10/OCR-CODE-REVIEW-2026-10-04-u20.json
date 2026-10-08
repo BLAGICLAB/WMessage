@@ -1,0 +1,468 @@
+{
+  "status": "complete",
+  "llm": {
+    "provider": "minimax-cn",
+    "model": "MiniMax-M3"
+  },
+  "message": "Review complete: 25 finding(s) across 8 selected item(s).",
+  "summary": {
+    "files_reviewed": 8,
+    "comments": 25,
+    "total_tokens": 14341388,
+    "input_tokens": 14155860,
+    "output_tokens": 185528,
+    "cache_read_tokens": 13457411,
+    "elapsed": "14m0s"
+  },
+  "tool_calls": {
+    "total": 359,
+    "by_tool": {
+      "code_comment": 7,
+      "code_search": 158,
+      "file_find": 24,
+      "file_read": 162,
+      "file_read_diff": 8
+    },
+    "failure": 4,
+    "failure_by_tool": {
+      "file_read": 4
+    },
+    "failure_details": [
+      {
+        "tool_call_number": 21,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/lib.rs",
+        "arguments": "{\"end_line\":15,\"file_path\":\"src-tauri/src/evolution/panel/commands.rs\",\"start_line\":625}",
+        "error": "invalid line range: start_line 625 is greater than end_line 15"
+      },
+      {
+        "tool_call_number": 64,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/evolution/panel/commands.rs",
+        "arguments": "{\"end_line\":280,\"file_path\":\"src-tauri/src/evolution/panel/commands.rs\",\"start_line\":320}",
+        "error": "invalid line range: start_line 320 is greater than end_line 280"
+      },
+      {
+        "tool_call_number": 96,
+        "tool_name": "file_read",
+        "file_path": "src/components/EvolutionPanel/EvolutionPanel.tsx",
+        "arguments": "{\"end_line\":200,\"file_path\":\"src/components/EvolutionPanel/EvolutionPanel.test.tsx\",\"start_line\":400}",
+        "error": "invalid line range: start_line 400 is greater than end_line 200"
+      },
+      {
+        "tool_call_number": 332,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/evolution/panel/commands.rs",
+        "arguments": "{\"end_line\": 100, \"file_path\": \"src-tauri/src/evolution/change/record.rs\", \"start_line\": 170}",
+        "error": "invalid line range: start_line 170 is greater than end_line 100"
+      }
+    ]
+  },
+  "comments": [
+    {
+      "path": "model-meta-service/main.py",
+      "content": "**Palette color is not stable across restarts.** The inline comment promises \"按 key 散列取色，稳定且可区分\", but Python's built-in `hash()` for strings is randomized by `PYTHONHASHSEED` on every process start (default behavior since 3.3). The same `provider_key` will be assigned a different `fallback_color` (and therefore a different badge color in the UI) after every restart, contradicting the documented stability. Use a deterministic digest such as `int(hashlib.sha1(pkey.encode()).hexdigest(), 16) % len(PALETTE)` or `zlib.crc32(pkey.encode()) % len(PALETTE)` so colors persist across restarts.",
+      "suggestion_code": "(pkey, name, LOGO_URL.format(pkey),\n                 PALETTE[zlib.crc32(pkey.encode()) % len(PALETTE)],\n                 name[0].upper(), p.get(\"api\")),",
+      "existing_code": "(pkey, name, LOGO_URL.format(pkey), PALETTE[hash(pkey) % len(PALETTE)], name[0].upper(), p.get(\"api\")),",
+      "start_line": 68,
+      "end_line": 68,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "model-meta-service/main.py",
+      "content": "**`model_upsert` returns 200 OK with an `{\"ok\": False, \"error\": ...}` body when the provider does not exist, which is the only endpoint in this file that does so.** Every other endpoint either returns data or a fallback object — none signal failure via body field. Callers cannot distinguish validation failure from success without inspecting the body and the FastAPI default behavior will hide the error in tools like Swagger / `httpx.get(...).raise_for_status()`. Raise `HTTPException(status_code=400, detail=...)` (importing from `fastapi`) and return the created model, matching the conventional REST contract.",
+      "suggestion_code": "if not conn.execute(\"SELECT 1 FROM provider WHERE provider_key=?\", (body.provider_key,)).fetchone():\n            raise HTTPException(\n                status_code=400,\n                detail=f\"provider 不存在: {body.provider_key}，请先 POST /api/provider\",\n            )",
+      "existing_code": "if not conn.execute(\"SELECT 1 FROM provider WHERE provider_key=?\", (body.provider_key,)).fetchone():\n            return {\"ok\": False, \"error\": f\"provider 不存在: {body.provider_key}，请先 POST /api/provider\"}",
+      "start_line": 196,
+      "end_line": 197,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "model-meta-service/main.py",
+      "content": "**Fallback in `model_get` overwrites the explicitly-set `provider_key=None` via dict spread.** This returns `{\"provider_key\": \"?\", ...}` even though the literal `None` a few lines above was clearly intended to convey \"no provider attached\". The synthetic \"?\" key then leaks into the frontend, where the `ModelMeta` type (`src/components/EvolutionPanel/types.ts` consumer analog) declares `provider_key: string`, so downstream code may treat \"?\" as a real provider and attempt to look it up. Either omit the spread and explicitly spell out the fallback fields, or return a sentinel like `provider_key: \"unknown\"` in one place instead of leaving a hidden override.",
+      "suggestion_code": "return {\"model_key\": model_key, \"provider_key\": None, \"display_name\": FALLBACK_CHAR,\n            \"context_length\": None, \"temperature\": None, \"top_p\": None, \"max_tokens\": None,\n            \"default_system_prompt\": None, \"source\": \"fallback\",\n            \"provider_name\": FALLBACK_CHAR, \"logo_url\": None,\n            \"fallback_color\": FALLBACK_COLOR, \"fallback_char\": FALLBACK_CHAR,\n            \"default_base_url\": None}",
+      "existing_code": "return {\"model_key\": model_key, \"provider_key\": None, \"display_name\": FALLBACK_CHAR,\n            \"context_length\": None, \"temperature\": None, \"top_p\": None, \"max_tokens\": None,\n            \"default_system_prompt\": None, \"source\": \"fallback\", **provider_fallback(\"?\")}",
+      "start_line": 171,
+      "end_line": 173,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/evolution/panel/commands.rs",
+      "content": "ConflictRefused / apply_err recovery path leaves the entry in a logically inconsistent state and the documented \"可重试\" message is misleading. `entry.status = ProposalStatus::Promoted` and `rewrite_jsonl(\u0026p_path, \u0026proposals)?` run BEFORE `human_apply_one`. When `human_apply_one` returns `Err` (including `ConflictRefused`), the on-disk proposals.jsonl already says `Promoted`, but no lesson was applied and the CR stays Pending. Re-toggling ON will hit the dedup branch (`existing` matches the Pending CR) and re-run `human_apply_one` — which can deterministically fail again with the same ConflictRefused (no chance to clear the foreign-merge target without removing it). The error message says \"可重试、停用或删除\", but \"重试\" doesn't recover; only OFF (removes Pending CR, sets status=Rejected) actually closes the loop. Either set `entry.status` only after successful apply (cleanest: move the `entry.status = Promoted; proposals[idx] = entry.clone(); rewrite_jsonl(...)` block to after the `mark_human_applied` success path), or restore `Pooled` on the error path. The user comment \"Promoted on disk\" is a hard contract — should not precede a fallible operation.",
+      "suggestion_code": "        // 顺序：先落 lesson（幂等）+ 状态机合法流转到 Active，最后才把 entry 标 Promoted 并\n        // 整体 rewrite——这样 apply 失败时 entry 仍为 Pooled/原状态，可干净重试（不是每次都撞同一个\n        // ConflictRefused 目标）。锁内已重读的 entry 权威。\n        if entry.layer == EvolutionLayer::Policy {",
+      "existing_code": "        entry.status = ProposalStatus::Promoted;\n        proposals[idx] = entry.clone();\n        rewrite_jsonl(\u0026p_path, \u0026proposals)?;\n\n        // U20 W1：人工批准执行器——只有 policy 层（MemoryHint）落 lesson 记忆。\n        // 失败语义：Err 向上抛（CR 保持 pending 可重试/停用）；成功则 CR 流转到\n        // Active，面板回滚区立即可见（rollback 删 lesson 的通路由此打通）。\n        if entry.layer == EvolutionLayer::Policy {",
+      "start_line": 199,
+      "end_line": 206,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "src-tauri/src/evolution/panel/commands.rs",
+      "content": "Critical section under `EVOLUTION_STORE_LOCK` is now significantly longer. `human_apply_one` opens DB, takes `DB_WRITE_LOCK`, and calls `apply_one` which performs `store::load_all(conn)?` — a full SQLite scan of the memory table — plus a write/lookup, all while still holding `EVOLUTION_STORE_LOCK`. The auto-apply track (`apply_from_consolidation`, apply.rs:181-340) intentionally narrows its critical sections: it pre-computes embeddings outside the store lock and releases `DB_WRITE_LOCK` between iterations, only re-acquiring `EVOLUTION_STORE_LOCK` briefly for the per-CR append. The new toggle path holds the store lock across the heavy DB scan, which can starve concurrent `evolution_*` panel commands and the auto-apply track. Consider: pre-compute the embedding (already done) AND pre-fetch the foreign-merge target check outside the store lock, then narrow the locked section to a brief RMW of `proposals.jsonl` + `changes.jsonl`. Alternatively, do the apply under `DB_WRITE_LOCK` first, then take `EVOLUTION_STORE_LOCK` for the final jsonl rewrite only (same lock-order discipline as the auto-apply track: DB → store, never the reverse).",
+      "suggestion_code": "/// W1 人工批准执行器内核：apply_one 写 lesson（幂等由 evo:\u003cpid\u003e key 查重承担）。\n/// 锁序同 apply_from_consolidation 先例：先放 DB 锁再取 store 锁，**此处反过来取\n/// 是错的——见 review 批注**。改：锁外做 apply（pre_emb 已在锁外算好），锁内只\n/// rewrite 两份 jsonl + mark_human_applied。\nfn human_apply_one\u003cR: tauri::Runtime\u003e(\n    app: \u0026AppHandle\u003cR\u003e,\n    p: \u0026EvolutionProposal,\n    embedding: Option\u003c\u0026[f32]\u003e,\n) -\u003e Result\u003cApplyOutcome, String\u003e {\n    // 调用方持 EVOLUTION_STORE_LOCK；这里不重入 DB_WRITE_LOCK — store→DB 反向嵌套会与\n    // apply 轨的 DB→store 顺序冲突制造死锁风险。把 DB 写推回锁外（precompute 已经先做），\n    // 仅在最后 store 锁内做 jsonl RMW。\n    let conn = crate::db::open_db(app)?;\n    crate::memory::store::ensure_table(\u0026conn)?;\n    apply::apply_one(\u0026conn, p, embedding, crate::memory::now_ms())\n}",
+      "existing_code": "/// W1 人工批准执行器内核：apply_one 写 lesson（幂等由 evo:\u003cpid\u003e key 查重承担）。\n/// 锁序同 delete_inner 先例：外层已持 EVOLUTION_STORE_LOCK，内取 DB_WRITE_LOCK\n///（apply 轨是先放 DB 锁再取 store 锁、两向不嵌套，无环）。\nfn human_apply_one\u003cR: tauri::Runtime\u003e(\n    app: \u0026AppHandle\u003cR\u003e,\n    p: \u0026EvolutionProposal,\n    embedding: Option\u003c\u0026[f32]\u003e,\n) -\u003e Result\u003cApplyOutcome, String\u003e {\n    let conn = crate::db::open_db(app)?;\n    let _db_write = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {\n        eprintln!(\"[mutex_poisoned] evolution::panel DB_WRITE_LOCK (human_apply): {e:?}\");\n        e.into_inner()\n    });\n    crate::memory::store::ensure_table(\u0026conn)?;\n    apply::apply_one(\u0026conn, p, embedding, crate::memory::now_ms())\n}",
+      "start_line": 320,
+      "end_line": 335,
+      "category": "performance",
+      "severity": "high"
+    },
+    {
+      "path": "src-tauri/src/evolution/panel/commands.rs",
+      "content": "Pre-computed embedding from an unlocked read can be stale. `precompute_human_apply_embedding` (line 308) reads proposals.jsonl *before* `lock_evolution_store()` and embeds `entry.suggestion_text`. `human_apply_one` then rebuilds the authoritative `EvolutionProposal` from the entry re-read *under* the lock, and passes the pre-lock embedding into `apply_one`. `apply_one` (apply.rs:64-99) uses the embedding as-is and uses `p.suggestion.text` as the lesson content — it never cross-checks the embedding against the current text. If `suggestion_text` was mutated between pre-read and lock acquisition (concurrent edit path; rare but possible if a proposal rewrite path exists), the stored vector will correspond to the obsolete text. Either (a) re-read the entry under the lock and re-embed if the text differs (costs the ONNX round-trip again on mismatch), or (b) drop the pre-compute optimization and compute the embedding inside the lock using authoritative text — at the cost of a few ms under the store mutex but eliminates the staleness window. Note: `derive` writes proposals.jsonl only at consolidate cadence, so concurrent writes during a user toggle are vanishingly rare in practice; the optimization is mostly defending against pathological cases.",
+      "suggestion_code": "/// W1：toggle ON 落库前的嵌入预计算（锁外调用）。只对 policy 层提案算\n///（非 policy 不落库，白算几十 ms ONNX）；读失败/找不到条目返 None 不阻塞。\n/// **前提**：`apply_one` 拿到 embedding 不再 re-check 与当前 suggestion_text 的一致性\n///（apply.rs:64-99 直接透传 embedding），所以这里必须用锁内权威文本——见\n/// `human_apply_one_locked` 改写：嵌入在 EVOLUTION_STORE_LOCK 持锁后用权威 entry 重算，\n/// 失去 ~tens ms 的 ONNX 优化但消除 stale 向量风险（review 批注采纳）。\nfn precompute_human_apply_embedding\u003cR: tauri::Runtime\u003e(\n    app: \u0026AppHandle\u003cR\u003e,\n    proposal_id: \u0026str,\n) -\u003e Option\u003cVec\u003cf32\u003e\u003e {\n    let entries = candidate::read_all(\u0026proposals_path(app)).ok()?;\n    let entry = entries.iter().find(|e| e.proposal_id == proposal_id)?;\n    if entry.layer != EvolutionLayer::Policy {\n        return None;\n    }\n    crate::memory::embed::embed_text(\u0026entry.suggestion_text)\n}",
+      "existing_code": "/// W1：toggle ON 落库前的嵌入预计算（锁外调用）。只对 policy 层提案算\n///（非 policy 不落库，白算几十 ms ONNX）；读失败/找不到条目返 None 不阻塞。\nfn precompute_human_apply_embedding\u003cR: tauri::Runtime\u003e(\n    app: \u0026AppHandle\u003cR\u003e,\n    proposal_id: \u0026str,\n) -\u003e Option\u003cVec\u003cf32\u003e\u003e {\n    let entries = candidate::read_all(\u0026proposals_path(app)).ok()?;\n    let entry = entries.iter().find(|e| e.proposal_id == proposal_id)?;\n    if entry.layer != EvolutionLayer::Policy {\n        return None;\n    }\n    crate::memory::embed::embed_text(\u0026entry.suggestion_text)\n}",
+      "start_line": 306,
+      "end_line": 318,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/evolution/panel/commands.rs",
+      "content": "`evolution_get_apply_policy` returns `Result\u003cString, String\u003e` (untyped wire format) while `evolution_set_apply_policy` already validates the input through the typed `ApplyPolicy::from_config_str`. Returning `ApplyPolicy` directly across the Tauri boundary would (a) make the contract symmetric with the setter, (b) eliminate the frontend's need to know the string convention, and (c) let `serde` reject malformed values at the deserialization boundary instead of treating them as \"auto = 现状\". `ApplyPolicy` already derives `Serialize, Deserialize` (policy.rs:30), so this is a one-line change. Note: the frontend's `EvolutionPanel/types.ts` is updated (+25 lines) for this UI; the typed return would simplify the TS counterpart.",
+      "suggestion_code": "/// U20 W2：读应用策略档位（typed return，与 set 对称；缺字段/读失败 = Auto = 现状）。\n#[tauri::command]\npub async fn evolution_get_apply_policy(app: AppHandle) -\u003e Result\u003cApplyPolicy, String\u003e {\n    crate::py::document::spawn_blocking_map(move || Ok(read_apply_policy(\u0026app))).await\n}",
+      "existing_code": "/// U20 W2：读应用策略档位（\"auto\" | \"confirm\"；缺字段/读失败 = auto = 现状）。\n#[tauri::command]\npub async fn evolution_get_apply_policy(app: AppHandle) -\u003e Result\u003cString, String\u003e {\n    crate::py::document::spawn_blocking_map(move || {\n        Ok(read_apply_policy(\u0026app).as_str().to_string())\n    })\n    .await\n}",
+      "start_line": 648,
+      "end_line": 655,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/evolution/panel/commands.rs",
+      "content": "`toggle_inner` is exposed as `pub` solely so the integration test file (`tests/evolution_gov.rs`) can call it. The `#[doc(hidden)]` attribute documents intent but doesn't actually constrain the public API surface — anyone importing the `evolution::panel` module can still call it. Compare with the cleaner sibling kernel `cascade_delete_mem_items` which is `pub(crate)` (line 406). The pattern to use here: `pub(crate) fn toggle_inner` plus a `#[cfg(any(test, feature = \"integration-tests\"))]` re-export, or simply have the integration test go through the `evolution_toggle_proposal` Tauri command (which is a thin wrapper) so the kernel can be `pub(crate)`. As written, `toggle_inner` is part of the crate's published surface and will appear in rustdoc.",
+      "suggestion_code": "pub(crate) fn toggle_inner\u003cR: tauri::Runtime\u003e(",
+      "existing_code": "#[doc(hidden)] // 内部内核，pub 仅为集成测试可见（run_extract_with 先例）\npub fn toggle_inner\u003cR: tauri::Runtime\u003e(",
+      "start_line": 106,
+      "end_line": 107,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/evolution/panel/commands.rs",
+      "content": "Three sequential `cr.clone()` calls in the toggle ON branch: `c.clone()` when matching the existing CR (line 167), `changes.push(cr.clone())` after append_change (line 188), and `changes[pos] = cr.clone()` after `mark_human_applied` (line 245). The clones are O(field_size) — not catastrophic — but they make the borrow flow harder to follow and mask the fact that `cr` is only ever used to drive mutations into `changes`. Cleanest restructure: build an owned `cr` in the `None` branch (no clone), and in the `Some(c)` branch find the index once (`Some(pos)`) and mutate `changes[pos]` in place via `\u0026mut changes[pos]` — avoids both clones and the post-hoc `position()` lookup.",
+      "suggestion_code": "        // 返回 (cr_index_in_changes, applied_yet)：\n        // - 新建分支：append 后位置 = changes.len() - 1\n        // - 复用分支：position() 一次性拿到；后续 mark_human_applied 就地改 changes[idx]\n        let mut cr_idx = match existing {\n            Some(c) =\u003e {\n                crate::audit_event!(\n                    app,\n                    AuditLevel::Info,\n                    \"evolution.toggle_on_dedup\",\n                    \"proposal_id\" =\u003e proposal_id.to_string(),\n                );\n                changes.iter().position(|x| std::ptr::eq(x, c))\n                    .expect(\"existing CR came from changes.iter()\")\n            }\n            None =\u003e {\n                let mut cr = candidate::to_change_record(\u0026entry, true);\n                cr.approval_source = ApprovalSource::HumanApproved;\n                cr.human_approver = Some(\"boss\".into());\n                cr.status = ChangeStatus::Pending;\n                cr.change_id = change::unique_change_id_for(\u0026changes, proposal_id);\n                cr.parent_id = changes\n                    .iter()\n                    .filter(|c| c.proposal_id == proposal_id)\n                    .last()\n                    .map(|c| c.change_id.clone());\n                change::append_change(\u0026c_path, \u0026cr)?;\n                // U20 W1：内存视图与盘同步——后续 policy 块把 CR 流转到 Active 后\n                // 整体重写本文件，漏 push 会把刚落的 CR 整行清掉（实测抓过）。\n                changes.push(cr);\n                crate::audit_event!(\n                    app,\n                    AuditLevel::Info,\n                    \"evolution.toggle_on\",\n                    \"proposal_id\" =\u003e proposal_id.to_string(),\n                    \"change_id\" =\u003e changes.last().unwrap().change_id.clone(),\n                );\n                changes.len() - 1\n            }\n        };",
+      "existing_code": "        let mut cr = match existing {\n            Some(c) =\u003e {\n                crate::audit_event!(\n                    app,\n                    AuditLevel::Info,\n                    \"evolution.toggle_on_dedup\",\n                    \"proposal_id\" =\u003e proposal_id.to_string(),\n                );\n                c.clone()\n            }\n            None =\u003e {\n                let mut cr = candidate::to_change_record(\u0026entry, true);\n                cr.approval_source = ApprovalSource::HumanApproved;\n                cr.human_approver = Some(\"boss\".into());\n                cr.status = ChangeStatus::Pending;\n                // B2-4（P1-EV5）：复用 toggle（重启用）场景下基础 change_id 已被\n                // 旧行占用——旧实现直接同 id 再 append，rollback 的 position() 首\n                // 匹配永远命中旧行（二次回滚永久卡死）。改派生行级唯一 id：\n                // chg-\u003cpid\u003e / chg-\u003cpid\u003e-2 / chg-\u003cpid\u003e-3 …（change::unique_change_id_for，\n                // shadow/apply 同款）；并挂 parent_id 血缘指向前一条 CR。\n                cr.change_id = change::unique_change_id_for(\u0026changes, proposal_id);\n                cr.parent_id = changes\n                    .iter()\n                    .filter(|c| c.proposal_id == proposal_id)\n                    .last()\n                    .map(|c| c.change_id.clone());\n                change::append_change(\u0026c_path, \u0026cr)?;\n                // U20 W1：内存视图与盘同步——后续 policy 块把 CR 流转到 Active 后\n                // 整体重写本文件，漏 push 会把刚落的 CR 整行清掉（实测抓过）。\n                changes.push(cr.clone());\n                crate::audit_event!(\n                    app,\n                    AuditLevel::Info,\n                    \"evolution.toggle_on\",\n                    \"proposal_id\" =\u003e proposal_id.to_string(),\n                    \"change_id\" =\u003e cr.change_id.clone(),\n                );\n                cr\n            }\n        };",
+      "start_line": 159,
+      "end_line": 198,
+      "category": "performance",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/evolution/panel/commands.rs",
+      "content": "`human_apply_one` ignores the `entry_to_proposal` return-None case for Parameter/Code layers in a way that can never trigger here (the caller already gated on `entry.layer == EvolutionLayer::Policy`), but the helper itself doesn't reflect that. If the layer guard is ever loosened (e.g., to also apply SkillHint lessons in future), the helper currently silently falls back to `Err(\"无对应提案类别...\")` from `toggle_inner` rather than its own error, and the change_id lineage / CR status behavior under that error path is undefined. Two cleaner alternatives: (a) make `entry_to_proposal` return `Result\u003cEvolutionProposal, ...\u003e` with the unsupported-layer error included, so the caller's `?` propagates a typed reason; or (b) split the helper into `policy_entry_to_proposal` and a more general `entry_to_proposal` so each call site has a single clear contract. The current shape works but is mildly confusing.",
+      "suggestion_code": "        // U20 W1：人工批准执行器——只有 policy 层（MemoryHint）落 lesson 记忆。\n        // 失败语义：Err 向上抛（CR 保持 pending 可重试/停用）；成功则 CR 流转到\n        // Active，面板回滚区立即可见（rollback 删 lesson 的通路由此打通）。\n        // entry_to_proposal 对 Policy 之外的层返 Err（不再 Some-undefined）—— 调用方\n        // 已在 if 守门内，但保留 typed 错误以便未来扩层时不留口子。\n        if entry.layer == EvolutionLayer::Policy {\n            let p = entry_to_proposal(\u0026entry)?;",
+      "existing_code": "        // U20 W1：人工批准执行器——只有 policy 层（MemoryHint）落 lesson 记忆。\n        // 失败语义：Err 向上抛（CR 保持 pending 可重试/停用）；成功则 CR 流转到\n        // Active，面板回滚区立即可见（rollback 删 lesson 的通路由此打通）。\n        if entry.layer == EvolutionLayer::Policy {\n            let p = entry_to_proposal(\u0026entry).ok_or_else(|| {\n                format!(\n                    \"proposal {proposal_id} layer={:?} 无对应提案类别，无法落库\",\n                    entry.layer\n                )\n            })?;",
+      "start_line": 203,
+      "end_line": 212,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/EvolutionPanel/EvolutionPanel.tsx",
+      "content": "Race condition: `onApplyPolicyChange` lacks an in-flight guard, unlike the established `setMemoryControl` pattern in `SettingsPage.tsx` which uses `if (configBusy) return;`. With rapid clicks (auto → confirm → auto within the network round-trip), each click captures its own `prev` from current state; if two `evolution_set_apply_policy` invocations interleave, the second one's failure could roll back to a stale `prev` and desync the UI from the backend (e.g. confirm-fails → setState(prev=\"auto\") while the in-flight auto call later succeeds and writes auto anyway, but the rollback already moved state to confirm).\n\nWorse, the radiogroup only disables on `busy` (which is set by `runCmd` for the *other* operations), not during a save in flight — so the user can re-click while a write is pending. Recommend either (a) a `savingPolicyRef` / in-flight flag guarding the function entry, or (b) making the buttons `disabled={busy || savingPolicy}` with a dedicated `savingPolicy` state mirroring `reflecting`.",
+      "suggestion_code": "  // U20 W2：点档即时落盘（同记忆三档先例：先改 state 再落盘，失败回滚+报错）\n  // W2 增 in-flight 守卫：避免 auto/confirm 快速切换时两次写入竞态，导致回滚\n  // 落到陈旧的 prev 把 UI 拉到与后端不一致的档位（SettingsPage setMemoryControl\n  // 的 if (configBusy) return 同形态）。\n  const [savingPolicy, setSavingPolicy] = useState(false);\n  const onApplyPolicyChange = async (next: ApplyPolicy) =\u003e {\n    if (next === applyPolicy || savingPolicy) return;\n    const prev = applyPolicy;\n    setApplyPolicy(next);\n    setSavingPolicy(true);\n    try {\n      await invoke(\"evolution_set_apply_policy\", { policy: next });\n    } catch (e) {\n      setApplyPolicy(prev);\n      handleCommandError(e, \"evolution-panel\", { silent: true });\n      setError(String(e));\n    } finally {\n      setSavingPolicy(false);\n    }\n  };",
+      "existing_code": "  // U20 W2：点档即时落盘（同记忆三档先例：先改 state 再落盘，失败回滚+报错）\n  const onApplyPolicyChange = (next: ApplyPolicy) =\u003e {\n    if (next === applyPolicy) return;\n    const prev = applyPolicy;\n    setApplyPolicy(next);\n    void (async () =\u003e {\n      try {\n        await invoke(\"evolution_set_apply_policy\", { policy: next });\n      } catch (e) {\n        setApplyPolicy(prev);\n        handleCommandError(e, \"evolution-panel\", { silent: true });\n        setError(String(e));\n      }\n    })();\n  };",
+      "start_line": 133,
+      "end_line": 147,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "src/components/EvolutionPanel/EvolutionPanel.tsx",
+      "content": "`decisionBadge` is called inline inside `proposals.map(...)` and walks `changes.filter(...)` for every card — O(proposals × changes) per render. Combined with re-renders on every `busy` toggle and every reflect-now round trip, this can become noticeable once the pool grows (the panel can already have dozens of proposals and a hundred+ changes). Consider memoizing with `useMemo` keyed on `(proposals, changes)` so the badge list is built once per data change, not once per parent render. The priority semantics are pure derivations and benefit from referential stability if downstream components are added later.",
+      "suggestion_code": "            {proposals.map((p) =\u003e (\n              \u003cProposalCard\n                key={p.proposal_id}\n                proposal={p}\n                busy={busy}\n                toggleOn={isToggleOn(p.proposal_id)}\n                decision={decisionByProposal.get(p.proposal_id) ?? null}\n                onToggle={onToggle}\n                onDelete={onDeleteClick}\n                onPromote={onPromote}\n                onReject={onReject}\n                onKeepShadow={onKeepShadow}\n              /\u003e\n            ))}",
+      "existing_code": "            {proposals.map((p) =\u003e (\n              \u003cProposalCard\n                key={p.proposal_id}\n                proposal={p}\n                busy={busy}\n                toggleOn={isToggleOn(p.proposal_id)}\n                decision={decisionBadge(p, changes)}\n                onToggle={onToggle}\n                onDelete={onDeleteClick}\n                onPromote={onPromote}\n                onReject={onReject}\n                onKeepShadow={onKeepShadow}\n              /\u003e\n            ))}",
+      "start_line": 392,
+      "end_line": 405,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/EvolutionPanel/EvolutionPanel.tsx",
+      "content": "The mount-time useEffect issues `evolution_get_apply_policy` and `evolution_metrics` sequentially even though they have no data dependency on each other; running them in `Promise.all` would shave one network round-trip off the first paint of the radiogroup + metrics strip. The two `try/catch` blocks can be merged into one `Promise.allSettled` while still letting each catch swallow its own error (read failures are intentionally silent and independent — policy fails → state stays \"auto\", metrics fail → strip hidden).",
+      "suggestion_code": "  useEffect(() =\u003e {\n    // U20：挂载时并行拉治理开关与四指标（互不依赖，并行省一个 RTT；\n    // 各自读失败独立静默——policy 失败按 auto 显示，metrics 失败隐藏条）。\n    void Promise.allSettled([\n      invoke\u003cstring\u003e(\"evolution_get_apply_policy\").then(\n        (p) =\u003e p === \"auto\" || p === \"confirm\" ? setApplyPolicy(p) : undefined,\n        () =\u003e undefined,\n      ),\n      invoke\u003cObserveMetrics\u003e(\"evolution_metrics\").then(\n        (m) =\u003e setMetrics(m ?? null),\n        () =\u003e setMetrics(null),\n      ),\n    ]);\n  }, []);",
+      "existing_code": "  useEffect(() =\u003e {\n    // U20：挂载时拉一次治理开关与四指标（读失败静默降级，开关按 auto 显示）\n    void (async () =\u003e {\n      try {\n        const p = await invoke\u003cstring\u003e(\"evolution_get_apply_policy\");\n        if (p === \"auto\" || p === \"confirm\") setApplyPolicy(p);\n      } catch {\n        /* 读失败按 auto 显示（后端同口径），不打断面板 */\n      }\n      try {\n        const m = await invoke\u003cObserveMetrics\u003e(\"evolution_metrics\");\n        setMetrics(m ?? null);\n      } catch {\n        setMetrics(null);\n      }\n    })();\n  }, []);",
+      "start_line": 115,
+      "end_line": 131,
+      "category": "performance",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/EvolutionPanel/EvolutionPanel.tsx",
+      "content": "The `APPLY_POLICY_MODES` constant inlines the aria-prefix strings (`应用策略：自动生效`, `应用策略：需我确认`) while the visible label comes from the `APPLY_POLICY_LABEL` map imported from `types.ts`. If either label ever changes, the aria text will silently drift. The sibling pattern in `SettingsPage.tsx` (`AUTO_EXTRACT_MODES`) has the same structure, so this is consistent with the codebase convention — but the convention itself is a small hardcoding smell; consider deriving the aria prefix from a single source (e.g. `\"应用策略：\" + label`) so the two stay in lockstep.",
+      "suggestion_code": "/** U20 W2 应用策略二档（同记忆三档 radiogroup 先例；档位唯一事实源） */\nconst APPLY_POLICY_MODES = [\n  { value: \"auto\", label: APPLY_POLICY_LABEL.auto },\n  { value: \"confirm\", label: APPLY_POLICY_LABEL.confirm },\n] as const satisfies ReadonlyArray\u003c{ value: ApplyPolicy; label: string }\u003e;",
+      "existing_code": "/** U20 W2 应用策略二档（同记忆三档 radiogroup 先例；档位唯一事实源） */\nconst APPLY_POLICY_MODES = [\n  { value: \"auto\", label: APPLY_POLICY_LABEL.auto, aria: \"应用策略：自动生效\" },\n  { value: \"confirm\", label: APPLY_POLICY_LABEL.confirm, aria: \"应用策略：需我确认\" },\n] as const;",
+      "start_line": 52,
+      "end_line": 56,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/tests/evolution_gov.rs",
+      "content": "Segment 2's `for _ in 0..3` retry loop acknowledges a real TOCTOU between `policy::set_apply_policy` (which holds `APPLY_POLICY_WRITE_LOCK` + uses `atomic_write`) and `policy::auto_apply_allowed` (which calls `read_apply_policy_at` with NO lock acquisition — see policy.rs lines 51-70). Two problems with this:\n1. The test's retry tolerance (per the comment, \"共享目录互踩的既有容忍口径\") papers over a production race: another process (U15 llm_integration) writing bot-config.json between this test's set and read can cause `auto_apply_allowed` to return the wrong value. Production callers cannot retry.\n2. The retry window is unbounded on failure — each loop iteration reads `bot-config.json` again, so a third writer can keep stomping indefinitely. Suggest `policy::read_apply_policy_at` either (a) acquire a shared lock so concurrent writers are blocked, or (b) read inside the same RMW critical section via a `read_under_rmw_lock()` that takes the write lock to drain in-flight RMW. Either way, the test should not need 3 retries.",
+      "existing_code": "let mut gated_ok = false;\n    for _ in 0..3 {\n        policy::set_apply_policy(\u0026app, ApplyPolicy::Confirm).unwrap();\n        if !policy::auto_apply_allowed(Some(\u0026app)) {\n            gated_ok = true;\n            break;\n        }\n    }\n    assert!(\n        gated_ok,\n        \"confirm 档：post_consolidation 分流谓词必须拒绝自动落库\"\n    );",
+      "start_line": 184,
+      "end_line": 195,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/tests/evolution_gov.rs",
+      "content": "`cleanup()` is only invoked at the start (clearing prior-run residue) and at the very end of `confirm_mode_e2e_toggle_applies_and_is_idempotent`. If any assertion in segments 2–7 panics, the trailing `cleanup(\u0026app, ...)` and `restore_cfg(original_cfg, \u0026cfg)` calls are skipped, leaving:\n- `bot-config.json` pinned at `ApplyPolicy::Auto` (segment 8's last mutation), which `restore_cfg` would otherwise undo — this permanently leaks the Confirm→Auto test residue into the next run;\n- three jsonl files written to the shared deps dir;\n- `evo:\u003cpid\u003e` and `u20-gov-target-\u003cid\u003e` rows in `mem_items` (only the `u20-gov` prefix bounds the cross-run blast radius). No other integration test in this crate uses a Drop guard (verified by `impl Drop` search), but the test's coupling to shared bot-config.json + jsonl files makes this one the prime candidate for `scopeguard::defer!` or a small local `struct CleanupOnDrop\u003c'a\u003e(\u0026'a AppHandle\u003c...\u003e, \u0026'a [String], Option\u003cString\u003e, \u0026'a Path)` Drop impl that runs the existing teardown unconditionally.",
+      "existing_code": "// ── 清场 ──\n    cleanup(\u0026app, \u0026[pid, nonpolicy_id.into(), conflict_id.into()]);\n    restore_cfg(original_cfg, \u0026cfg);\n}",
+      "start_line": 347,
+      "end_line": 350,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/tests/evolution_gov.rs",
+      "content": "`db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner())` is the codebase's established convention, BUT the convention is paired with a diagnostic `eprintln!(\"[mutex_poisoned] db::DB_WRITE_LOCK: {e:?}\")` per C3-1 / EVNB-02 (see `src-tauri/src/db/mod.rs:333-334`, `src-tauri/src/db/bot_history.rs:92-93`, `src-tauri/src/bot_chat.rs:1327-1328`, etc. — all 10+ sites follow this pattern). This test's `cleanup` and the conflict-target insertion block (line ~268) both omit the eprintln and silently recover from poisoning. If `DB_WRITE_LOCK` ever becomes poisoned during this test's lifecycle, subsequent assertions will run against potentially inconsistent state (e.g., half-applied applied.jsonl, partial lesson write) without any diagnostic trail in stderr. Add the eprintln to match the convention:\n```rust\nlet _db = db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {\n    eprintln!(\"[mutex_poisoned] db::DB_WRITE_LOCK (evolution_gov cleanup/insert): {e:?}\");\n    e.into_inner()\n});\n```\nThis test is especially important to surface poisoning because it is the one that exercises the human-approval executor and the anti-hijack gate — exactly the paths where a half-applied state would matter.",
+      "existing_code": "if let Ok(conn) = db::open_db(app) {\n        let _db = db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());\n        for id in ids {\n            let _ = store::delete_by_key_tag(\u0026conn, \u0026format!(\"evo:{id}\"));\n            let _ = store::delete_by_key_tag(\u0026conn, \u0026format!(\"u20-gov-target-{id}\"));\n        }\n    }",
+      "start_line": 53,
+      "end_line": 59,
+      "category": "other",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/tests/evolution_gov.rs",
+      "content": "Segment 7 (the `ConflictRefused` anti-hijack gate — the critical guard ensuring no auto-approved proposal overwrites an existing user memory) silently skips with `eprintln!` whenever `embed::embed_text` returns `None` (engine unavailable / model file missing — see `src-tauri/src/memory/embed.rs:162-196`, which returns `None` on every failure mode). In CI environments without the embedding model, this entire safety branch is untested, so a regression in the `ConflictRefused` path (e.g., a logic error in the cos=1.0 collision detection) would pass CI silently. Suggest one of:\n1. Mark this segment `#[ignore = \"requires embedding model\"]` with an explicit skip signal that CI surfaces (e.g., a test-name-based marker);\n2. At the start of the test, assert `embed::engine_status().is_ok()` and `#[ignore]` the whole `confirm_mode_e2e_toggle_applies_and_is_idempotent` if the engine is unavailable, so CI logs explicitly say \"ignored (needs embed model)\" instead of silently passing;\n3. At minimum, emit a `tracing::warn!` (not just `eprintln!`) so the skip is grep-able in CI logs and won't be confused with a passing run.",
+      "existing_code": "// 依赖真实嵌入引擎构造 cos=1.0 撞车；引擎不可用时跳过本段（不阻塞无模型环境）。\n    let conflict_text = format!(\"u20-gov 防劫持语料 {conflict_id}\");\n    if let Some(emb) = embed::embed_text(\u0026conflict_text) {",
+      "start_line": 282,
+      "end_line": 284,
+      "category": "test",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/tests/evolution_gov.rs",
+      "content": "`mock_handle()` does `Box::leak(Box::new(tauri::test::mock_app()))` to obtain an `AppHandle\u003cMockRuntime\u003e` with `'static` lifetime, but provides no comment explaining the deliberate leak. Verified that this idiom IS the established pattern across 5 integration test files in this crate (`llm_integration.rs:31`, `memory_conflict.rs:27`, `skill_e2e.rs:52`, `task_chat_exec.rs:51`, and now `evolution_gov.rs:31`), so it is acceptable — but the missing comment makes it a trap for future readers who may \"fix\" the leak and break the `'static` bound. Add a one-line doc comment:\n```rust\n/// `mock_app()` returns `\u0026mut` so wrap in `Box::leak` to get a `'static` handle\n/// (same idiom as llm_integration / memory_conflict / skill_e2e / task_chat_exec).\n```\nThis is a maintainability nit, not a bug.",
+      "existing_code": "fn mock_handle() -\u003e tauri::AppHandle\u003ctauri::test::MockRuntime\u003e {\n    Box::leak(Box::new(tauri::test::mock_app()))\n        .handle()\n        .clone()\n}",
+      "start_line": 30,
+      "end_line": 34,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/EvolutionPanel/EvolutionPanel.tsx",
+      "content": "`onApplyPolicyChange` 不像同文件 `runCmd` / `onReflectNow` 那样在开始时清掉旧 error/info——成功落盘后，前一次操作的错误 banner 仍然挂在新选中的档位上。补充 `setError(\"\"); setInfo(\"\")` 在 `setApplyPolicy(next)` 之前即可，与文件内同类 handler 对齐。",
+      "suggestion_code": "const onApplyPolicyChange = (next: ApplyPolicy) =\u003e {\n    if (next === applyPolicy) return;\n    const prev = applyPolicy;\n    setError(\"\");\n    setInfo(\"\");\n    setApplyPolicy(next);\n    void (async () =\u003e {",
+      "existing_code": "const onApplyPolicyChange = (next: ApplyPolicy) =\u003e {\n    if (next === applyPolicy) return;\n    const prev = applyPolicy;\n    setApplyPolicy(next);\n    void (async () =\u003e {",
+      "start_line": 134,
+      "end_line": 138,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/EvolutionPanel/EvolutionPanel.tsx",
+      "content": "硬编码 \"近30天\" 与后端指标中的 `observation_window_days` 解耦——观察窗口未来如果调整（如 observe 侧支持季度/年度窗口），标签会与实际数据不符。建议改为 `metrics.observation_window_days` 拼装。",
+      "suggestion_code": "近{metrics.observation_window_days}天：候选 {metrics.candidate_generation_rate.toFixed(1)} 条/天 · 通过{\" \"}",
+      "existing_code": "近30天：候选 {metrics.candidate_generation_rate.toFixed(1)} 条/天 · 通过{\" \"}",
+      "start_line": 337,
+      "end_line": 337,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/EvolutionPanel/EvolutionPanel.tsx",
+      "content": "`onReflectNow` 成功路径里 `setInfo(...)` 之后 `await refresh()`；若 `refresh()` 内部 catch 触发 `setError`，错误 banner 会立刻覆盖刚刚展示的成功 info banner（同帧两个 banner 互相覆盖的 UX 不一致）。建议在调 `refresh()` 之前临时保留 info，或在成功末尾把 error 也清一次。",
+      "suggestion_code": "const msg = `反思完成：合并 ${r.merged} · 提炼 ${r.distilled} · 裁决 ${r.contradictions}`;\n      await refresh();\n      setInfo(msg);\n      setError(\"\");",
+      "existing_code": "setInfo(`反思完成：合并 ${r.merged} · 提炼 ${r.distilled} · 裁决 ${r.contradictions}`);\n      await refresh();",
+      "start_line": 160,
+      "end_line": 161,
+      "category": "bug",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/tests/evolution_gov.rs",
+      "content": "Segment 6 line 260 defines `let now_ms = chrono::Utc::now().timestamp_millis();` which is then reused in segment 7 (line 309) to insert the target memory. While this is logically correct (the operations don't depend on the exact value), the variable name suggests it's local to segment 6's purpose (`from_proposal` uses it only for `expires_at_ms`). Consider either: (a) declaring `now_ms` close to its first use in segment 6, and capturing a fresh `target_now_ms` in segment 7, or (b) renaming to clarify scope (e.g., `seg6_now_ms` and `seg7_now_ms`). The current cross-segment reuse works but is mildly opaque about time semantics across the boundary.",
+      "existing_code": "    // ── 段 6：非 policy 层（PromptHint）toggle ON 维持旧口径 ──\n    let nonpolicy = mk_proposal(\n        nonpolicy_id,\n        ProposalCategory::PromptHint,\n        ImpactLevel::High,\n        \u0026format!(\"prompt 建议文本 {nonpolicy_id}\"),\n    );\n    let now_ms = chrono::Utc::now().timestamp_millis();\n    candidate::append(\n        \u0026proposals_path(\u0026app),\n        \u0026candidate::from_proposal(\u0026nonpolicy, now_ms),\n    )\n    .unwrap();",
+      "start_line": 253,
+      "end_line": 265,
+      "category": "test",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/tests/evolution_gov.rs",
+      "content": "Segment 4 line 229 asserts `lesson.content == proposals[0].suggestion.text`. The test relies on `derive_proposals`'s deterministic `proposal_id` for the `pid` cleanup target, but does NOT assert the exact `suggestion.text` value. If `derive_proposals` changes the contradiction text format (e.g., adds a prefix), this assertion still passes (comparing the changed text against itself), but downstream consumers of the lesson may break. Consider pinning the expected text in an assertion (e.g., `assert!(proposals[0].suggestion.text.starts_with(\"LLM resolved contradiction\"))`) to lock the contract on what gets persisted.",
+      "existing_code": "    assert_eq!(lesson.content, proposals[0].suggestion.text);",
+      "start_line": 229,
+      "end_line": 229,
+      "category": "test",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/evolution/panel/commands.rs",
+      "content": "Redundant work on dedup-Active path: when dedup matches an existing Active CR and human_apply_one returns AlreadyPresent (the most common case for re-toggling an already-active proposal), this block does changes[pos] = cr.clone() + rewrite_jsonl for no actual state change (mark_human_applied is a no-op on Active). Additionally, the entire policy branch above is wasted I/O — human_apply_one performs a full SQLite scan (store::load_all) and opens a DB connection for a guaranteed AlreadyPresent outcome. Consider short-circuiting after dedup match when existing CR is already Active (with optional recovery path if lesson was lost from DB). This wastes I/O on every re-toggle after the first one.",
+      "existing_code": "            // pending → Active 合法流转（重复批已 Active 时幂等跳过），\n            // 同步回写 changes.jsonl——回滚区由此展示已生效变更。\n            mark_human_applied(\u0026mut cr)?;\n            if let Some(pos) = changes.iter().position(|c| c.change_id == cr.change_id) {\n                changes[pos] = cr.clone();\n            }\n            rewrite_jsonl(\u0026c_path, \u0026changes)?;",
+      "start_line": 241,
+      "end_line": 247,
+      "category": "performance",
+      "severity": "low"
+    }
+  ],
+  "groups": [
+    {
+      "label": "src-tauri/src/evolution/mod.rs",
+      "files": [
+        "src-tauri/src/evolution/mod.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/evolution/panel/commands.rs",
+      "files": [
+        "src-tauri/src/evolution/panel/commands.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/evolution/policy.rs",
+      "files": [
+        "src-tauri/src/evolution/policy.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/lib.rs",
+      "files": [
+        "src-tauri/src/lib.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/tests/evolution_gov.rs",
+      "files": [
+        "src-tauri/tests/evolution_gov.rs"
+      ]
+    },
+    {
+      "label": "src/components/EvolutionPanel/EvolutionPanel.tsx",
+      "files": [
+        "src/components/EvolutionPanel/EvolutionPanel.tsx"
+      ]
+    },
+    {
+      "label": "src/components/EvolutionPanel/types.ts",
+      "files": [
+        "src/components/EvolutionPanel/types.ts"
+      ]
+    },
+    {
+      "label": "model-meta-service/main.py",
+      "files": [
+        "model-meta-service/main.py"
+      ]
+    }
+  ],
+  "session_id": "6bac1dce-5129-48e4-888f-2a580dde7b56",
+  "manifest": {
+    "schema_version": "ocr.run-manifest/v1",
+    "run_id": "6bac1dce-5129-48e4-888f-2a580dde7b56",
+    "operation": "review",
+    "terminal_state": "complete",
+    "repository": {
+      "identity_sha256": "7aebc670c3c38e64ae52ffaf12cfa8ba078a29af906f8ef856132cd790dbe48b"
+    },
+    "input": {
+      "mode": "workspace",
+      "resolved_base": "216e567ade0002631a4b791989f3b851610f84d1",
+      "source_artifact_sha256": "44abea49f1928925f819c4152bfafdac4fd4e20b223180c355651ede3e8958a9"
+    },
+    "execution": {
+      "ocr_version": "v1.12.11",
+      "provider": "minimax-cn",
+      "model": "MiniMax-M3",
+      "configured_concurrency": 8,
+      "rule_config_sha256": "8779d0d046b15151518200e75283f8c72cb6815f8e9b6de313d85d8f880d7dde",
+      "runtime_config_sha256": "f3ac1cdd2a45285ba614e32ab9bd03b86d9911c8deb3bec22fccf7b7bd4e6913"
+    },
+    "coverage": {
+      "selected": [
+        {
+          "item_id": "0881d6f89bd74de12815838bbf2fa7a82f5b9b5e90bf33723a3b36c116292bc2",
+          "path": "src/components/EvolutionPanel/types.ts",
+          "fingerprint": "38708142b567a80140af9a3884f74267deca29df0e6a3a6f2573f95ae2377b8f"
+        },
+        {
+          "item_id": "16a4b17fa5df227666e5ab6c3871e93da1569ba1fd88dd17be9e8018feaf4c82",
+          "path": "src-tauri/src/evolution/mod.rs",
+          "fingerprint": "0194b6f5b74dd11e9721e13ec85a68cb8c7e42c8e29977a9afc5cab1fadf6342"
+        },
+        {
+          "item_id": "3f5108204cfec14b8cc5b76e5624ec5e6b62b1f663af40fbb201e9fe9327fe36",
+          "path": "src/components/EvolutionPanel/EvolutionPanel.tsx",
+          "fingerprint": "095558117129addf12c33ddf8ec51235ef00e16f19ebbe1c45c205ca1253bb7c"
+        },
+        {
+          "item_id": "91b9314c2a7d60b8fcabedce8d134c99db49b2a5fcd644dd249b979333f23768",
+          "path": "src-tauri/tests/evolution_gov.rs",
+          "fingerprint": "9eabdf3b4dd4e1d764ddc74ec8946be647ee9110c7c17433e4a5fc7c831de8ab"
+        },
+        {
+          "item_id": "a7e379852278b4dee9fec88891f3b590c97d7b31523f6a615066fea4c49ba99f",
+          "path": "src-tauri/src/lib.rs",
+          "fingerprint": "cfed94dc3e653899838f771dde3ebc0a06a2f8312d986fc6347def6521bfca64"
+        },
+        {
+          "item_id": "ad8f8381ed551acda797fbb5e3b55a4dcbab7799d42a5754dbe2a882a5165560",
+          "path": "model-meta-service/main.py",
+          "fingerprint": "2e5563d904a7dcb6154ba8050f1a1c42be14a9d2f26d1a09ab2596be8c44e4db"
+        },
+        {
+          "item_id": "ae1e513cc1d8a7db5cd90f08e2af35910a76b5c4d012ced359542d62f7b7c56d",
+          "path": "src-tauri/src/evolution/policy.rs",
+          "fingerprint": "245fafdfd8f1b1608037dd3f5c647584ac71c05ecf6ac0d1e7b7900f0a4b4566"
+        },
+        {
+          "item_id": "fc712ac6e2dbb10fb042f9419d8702e4f93689a8b9e44fc4c89f1e784c46df44",
+          "path": "src-tauri/src/evolution/panel/commands.rs",
+          "fingerprint": "7be0529b2096c075aa8c8fd55089dae2208e8bd50194fb9359b489d3fed2702b"
+        }
+      ],
+      "completed": [
+        {
+          "item_id": "0881d6f89bd74de12815838bbf2fa7a82f5b9b5e90bf33723a3b36c116292bc2",
+          "path": "src/components/EvolutionPanel/types.ts",
+          "fingerprint": "38708142b567a80140af9a3884f74267deca29df0e6a3a6f2573f95ae2377b8f"
+        },
+        {
+          "item_id": "16a4b17fa5df227666e5ab6c3871e93da1569ba1fd88dd17be9e8018feaf4c82",
+          "path": "src-tauri/src/evolution/mod.rs",
+          "fingerprint": "0194b6f5b74dd11e9721e13ec85a68cb8c7e42c8e29977a9afc5cab1fadf6342"
+        },
+        {
+          "item_id": "3f5108204cfec14b8cc5b76e5624ec5e6b62b1f663af40fbb201e9fe9327fe36",
+          "path": "src/components/EvolutionPanel/EvolutionPanel.tsx",
+          "fingerprint": "095558117129addf12c33ddf8ec51235ef00e16f19ebbe1c45c205ca1253bb7c"
+        },
+        {
+          "item_id": "91b9314c2a7d60b8fcabedce8d134c99db49b2a5fcd644dd249b979333f23768",
+          "path": "src-tauri/tests/evolution_gov.rs",
+          "fingerprint": "9eabdf3b4dd4e1d764ddc74ec8946be647ee9110c7c17433e4a5fc7c831de8ab"
+        },
+        {
+          "item_id": "a7e379852278b4dee9fec88891f3b590c97d7b31523f6a615066fea4c49ba99f",
+          "path": "src-tauri/src/lib.rs",
+          "fingerprint": "cfed94dc3e653899838f771dde3ebc0a06a2f8312d986fc6347def6521bfca64"
+        },
+        {
+          "item_id": "ad8f8381ed551acda797fbb5e3b55a4dcbab7799d42a5754dbe2a882a5165560",
+          "path": "model-meta-service/main.py",
+          "fingerprint": "2e5563d904a7dcb6154ba8050f1a1c42be14a9d2f26d1a09ab2596be8c44e4db"
+        },
+        {
+          "item_id": "ae1e513cc1d8a7db5cd90f08e2af35910a76b5c4d012ced359542d62f7b7c56d",
+          "path": "src-tauri/src/evolution/policy.rs",
+          "fingerprint": "245fafdfd8f1b1608037dd3f5c647584ac71c05ecf6ac0d1e7b7900f0a4b4566"
+        },
+        {
+          "item_id": "fc712ac6e2dbb10fb042f9419d8702e4f93689a8b9e44fc4c89f1e784c46df44",
+          "path": "src-tauri/src/evolution/panel/commands.rs",
+          "fingerprint": "7be0529b2096c075aa8c8fd55089dae2208e8bd50194fb9359b489d3fed2702b"
+        }
+      ],
+      "reused": [],
+      "failed": [],
+      "waived": []
+    },
+    "elapsed_ms": 840219
+  }
+}

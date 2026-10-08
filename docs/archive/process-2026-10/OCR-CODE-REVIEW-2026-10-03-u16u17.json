@@ -1,0 +1,917 @@
+{
+  "status": "complete",
+  "llm": {
+    "provider": "minimax-cn",
+    "model": "MiniMax-M3"
+  },
+  "message": "Review complete: 42 finding(s) across 20 selected item(s).",
+  "summary": {
+    "files_reviewed": 20,
+    "comments": 42,
+    "total_tokens": 10928930,
+    "input_tokens": 10628081,
+    "output_tokens": 300849,
+    "cache_read_tokens": 9683002,
+    "elapsed": "15m54s"
+  },
+  "tool_calls": {
+    "total": 450,
+    "by_tool": {
+      "code_comment": 15,
+      "code_search": 163,
+      "file_find": 7,
+      "file_read": 232,
+      "file_read_diff": 33
+    },
+    "failure": 17,
+    "failure_by_tool": {
+      "file_read": 17
+    },
+    "failure_details": [
+      {
+        "tool_call_number": 27,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/bot/config/io.rs",
+        "arguments": "{\"end_line\":60,\"file_path\":\"src-tauri/src/bot/config/types.rs\",\"start_line\":160}",
+        "error": "invalid line range: start_line 160 is greater than end_line 60"
+      },
+      {
+        "tool_call_number": 93,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/memory/consolidate.rs",
+        "arguments": "{\"end_line\": 100, \"file_path\": \"src-tauri/src/memory/store.rs\", \"start_line\": 260}",
+        "error": "invalid line range: start_line 260 is greater than end_line 100"
+      },
+      {
+        "tool_call_number": 122,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/bot/config/io.rs",
+        "arguments": "{\"end_line\": 130, \"file_path\": \"src-tauri/src/bot/config/types.rs\", \"start_line\": 160}",
+        "error": "invalid line range: start_line 160 is greater than end_line 130"
+      },
+      {
+        "tool_call_number": 169,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/bot/config/io.rs",
+        "arguments": "{\"end_line\": 10, \"file_path\": \"src-tauri/src/memory/mod.rs\", \"start_line\": 348}",
+        "error": "invalid line range: start_line 348 is greater than end_line 10"
+      },
+      {
+        "tool_call_number": 172,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/bot/config/io.rs",
+        "arguments": "{\"end_line\": 15, \"file_path\": \"src-tauri/src/memory/extract.rs\", \"start_line\": 435}",
+        "error": "invalid line range: start_line 435 is greater than end_line 15"
+      },
+      {
+        "tool_call_number": 198,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/memory/consolidate.rs",
+        "arguments": "{\"end_line\": 50, \"file_path\": \"src-tauri/src/memory/extract.rs\", \"start_line\": 460}",
+        "error": "invalid line range: start_line 460 is greater than end_line 50"
+      },
+      {
+        "tool_call_number": 200,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/memory/store.rs",
+        "arguments": "{\"end_line\": 100, \"file_path\": \"src-tauri/src/memory/mod.rs\", \"start_line\": 480}",
+        "error": "invalid line range: start_line 480 is greater than end_line 100"
+      },
+      {
+        "tool_call_number": 220,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/memory/consolidate.rs",
+        "arguments": "{\"end_line\": 10, \"file_path\": \"src-tauri/src/memory/consolidate.rs\", \"start_line\": 425}",
+        "error": "invalid line range: start_line 425 is greater than end_line 10"
+      },
+      {
+        "tool_call_number": 234,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/memory/consolidate.rs",
+        "arguments": "{\"end_line\": 100, \"file_path\": \"src-tauri/src/bot/config/mod.rs\", \"start_line\": 540}",
+        "error": "invalid line range: start_line 540 is greater than end_line 100"
+      },
+      {
+        "tool_call_number": 249,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/memory/consolidate.rs",
+        "arguments": "{\"end_line\": 100, \"file_path\": \"src-tauri/src/bot_chat.rs\", \"start_line\": 925}",
+        "error": "invalid line range: start_line 925 is greater than end_line 100"
+      },
+      {
+        "tool_call_number": 317,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/memory/consolidate.rs",
+        "arguments": "{\"end_line\": 50, \"file_path\": \"src-tauri/src/memory/consolidate.rs\", \"start_line\": 490}",
+        "error": "invalid line range: start_line 490 is greater than end_line 50"
+      },
+      {
+        "tool_call_number": 346,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/memory/consolidate.rs",
+        "arguments": "{\"end_line\": 100, \"file_path\": \"src-tauri/src/memory/consolidate.rs\", \"start_line\": 505}",
+        "error": "invalid line range: start_line 505 is greater than end_line 100"
+      },
+      {
+        "tool_call_number": 354,
+        "tool_name": "file_read",
+        "file_path": "src/components/SettingsPage/SettingsPage.tsx",
+        "arguments": "{\"end_line\":50,\"file_path\":\"src/components/SettingsPage.test.tsx\",\"start_line\":1960}",
+        "error": "invalid line range: start_line 1960 is greater than end_line 50"
+      },
+      {
+        "tool_call_number": 368,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/memory/tests.rs",
+        "arguments": "{\"end_line\":100,\"file_path\":\"src-tauri/src/memory/extract.rs\",\"start_line\":470}",
+        "error": "invalid line range: start_line 470 is greater than end_line 100"
+      },
+      {
+        "tool_call_number": 416,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/memory/extract.rs",
+        "arguments": "{\"end_line\":120,\"file_path\":\"src-tauri/src/bot_chat.rs\",\"start_line\":1115}",
+        "error": "invalid line range: start_line 1115 is greater than end_line 120"
+      },
+      {
+        "tool_call_number": 419,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/memory/extract.rs",
+        "arguments": "{\"end_line\":50,\"file_path\":\"src-tauri/src/bot_chat.rs\",\"start_line\":1120}",
+        "error": "invalid line range: start_line 1120 is greater than end_line 50"
+      },
+      {
+        "tool_call_number": 448,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/memory/extract.rs",
+        "arguments": "{\"end_line\":120,\"file_path\":\"src-tauri/src/bot_chat.rs\",\"start_line\":1120}",
+        "error": "invalid line range: start_line 1120 is greater than end_line 120"
+      }
+    ]
+  },
+  "comments": [
+    {
+      "path": "src-tauri/src/bot/config/io.rs",
+      "content": "JSON 解析失败被 `.ok()` 静默吞掉，与同文件 `read_memory_control_at`（L141-150）行为不一致——后者在解析失败时 stderr 打 `[memory] bot-config.json 解析失败，记忆开关按全开放行：{e}`，且显式注释「隐私开关静默失效要可诊断」。记忆参数同理：用户手工改坏 JSON 后所有调参静默回默认（覆盖钳制前 U17 之前的常量），无任何线索可查。读取侧统一钳制虽兜底了「值」，但兜不了「字段被丢弃」的诊断。建议补 stderr 告警，与 `read_memory_control_at` 保持对称。",
+      "suggestion_code": "pub(crate) fn read_memory_tuning_at(path: \u0026Path) -\u003e crate::memory::MemoryTuning {\n    let Ok(raw) = std::fs::read_to_string(path) else {\n        return crate::memory::MemoryTuning::default();\n    };\n    match serde_json::from_str::\u003cBotConfig\u003e(\u0026raw) {\n        Ok(c) =\u003e c.memory_tuning.unwrap_or_default().clamped(),\n        Err(e) =\u003e {\n            eprintln!(\"[memory] bot-config.json 解析失败，记忆参数按默认执行：{e}\");\n            crate::memory::MemoryTuning::default()\n        }\n    }\n}",
+      "existing_code": "pub(crate) fn read_memory_tuning_at(path: \u0026Path) -\u003e crate::memory::MemoryTuning {\n    let Some(raw) = std::fs::read_to_string(path).ok() else {\n        return crate::memory::MemoryTuning::default();\n    };\n    serde_json::from_str::\u003cBotConfig\u003e(\u0026raw)\n        .ok()\n        .and_then(|c| c.memory_tuning)\n        .unwrap_or_default()\n        .clamped()\n}",
+      "start_line": 161,
+      "end_line": 170,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/bot/config/io.rs",
+      "content": "可测内核的契约文档比 `read_memory_control_at` 弱很多：后者明确写出「None = 无控制（全开）。文件存在但解析失败 → stderr 一行告警…」，新内核仅「可测内核（纯路径参数）」一行。`read_memory_tuning_at` 是测试入口（mod.rs L92），单测要明白它的回落语义；至少补一条「文件缺失/读失败/JSON 损坏/缺字段 → 默认」与 `read_bypass_llm_switch_at`（L172-174）同款。",
+      "suggestion_code": "/// 可测内核（纯路径参数）：文件缺失 / 读失败 / JSON 损坏 / 缺字段 → 默认；\n/// 读取侧统一过 [`MemoryTuning::clamped`]，下游只见合法值。\npub(crate) fn read_memory_tuning_at(path: \u0026Path) -\u003e crate::memory::MemoryTuning {",
+      "existing_code": "/// 可测内核（纯路径参数）\npub(crate) fn read_memory_tuning_at(path: \u0026Path) -\u003e crate::memory::MemoryTuning {",
+      "start_line": 160,
+      "end_line": 161,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/bot_chat.rs",
+      "content": "`session_id.clone()` is unnecessary here: the function takes `session_id: Option\u003cString\u003e` by value, the prior trace block only borrowed via `.as_deref()` (lines 970/972), and `session_id` is unused after this point in `bot_chat`. Pass by value to avoid the allocation + cloner round-trip on the hot chat-completion path.\n\n```rust\ncrate::memory::extract::maybe_extract_from_session(\n    extract_app,\n    session_id,                 // pass by value, no clone\n    stop.is_interactive(),\n);\n```",
+      "suggestion_code": "// U16 自动记忆抽取（fire-and-forget）：交互式会话收尾触发，抽取失败静默\n    // 降级不冒泡；非交互（任务执行/定时）与非 off 档的判定在入口内完成。\n    crate::memory::extract::maybe_extract_from_session(\n        extract_app,\n        session_id,\n        stop.is_interactive(),\n    );",
+      "existing_code": "// U16 自动记忆抽取（fire-and-forget）：交互式会话收尾触发，抽取失败静默\n    // 降级不冒泡；非交互（任务执行/定时）与非 off 档的判定在入口内完成。\n    crate::memory::extract::maybe_extract_from_session(\n        extract_app,\n        session_id.clone(),\n        stop.is_interactive(),\n    );",
+      "start_line": 984,
+      "end_line": 990,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/bot_chat.rs",
+      "content": "Hook fires unconditionally even when the conversation was aborted by `/stop` (`aborted = stop.stopped()`). Trace module treats Aborted as a distinct outcome that suppresses recording in several rules, but extract has no symmetric gating. A user who issues `/stop` mid-conversation will still get their partial chat mined for facts ~30min later. If that's not intended, gate the call with `if !aborted { ... }` or pass `aborted` into `maybe_extract_from_session` so it can early-return alongside the existing gates. Worth confirming against the U16 spec — currently the asymmetry is silent.",
+      "existing_code": "let aborted = stop.stopped();\n    crate::evolution::trace::maybe_record_trace(\n        TraceContext::new(\n            session_id.as_deref().unwrap_or(\"none\"),\n            MutationOrigin::Main,\n            started_at_ms,\n        )\n        .with_outcome(if aborted {\n            TraceOutcome::Aborted\n        } else {\n            TraceOutcome::Success\n        })\n        .with_task_refs(refs.iter().map(|t| t.id.clone()).collect())\n        // B4-2：turn 数 + 工具明细接真实数据（此前恒 0/空，trace.rs 既定计划）\n        .with_turn_count(loop_trace.turn_count)\n        .with_tool_calls(loop_trace.tool_calls),\n    );\n    // U16 自动记忆抽取（fire-and-forget）：交互式会话收尾触发，抽取失败静默\n    // 降级不冒泡；非交互（任务执行/定时）与非 off 档的判定在入口内完成。\n    crate::memory::extract::maybe_extract_from_session(\n        extract_app,\n        session_id.clone(),\n        stop.is_interactive(),\n    );",
+      "start_line": 967,
+      "end_line": 990,
+      "category": "other",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/memory/consolidate/tests.rs",
+      "content": "`apply_ops` breaks the U17 \"旧签名委托默认值\" contract. The spec mandates a `_with` variant where the old signature still compiles and delegates to defaults; `store::insert_item` and `panel::import_items` follow this pattern (old fn calls `*_with(..., \u0026StoreParams::default())`), but `apply_ops` was directly modified to take `sp: \u0026store::StoreParams` with no default-delegating wrapper. As a direct consequence, every call site — including all 8 tests in this file plus the production `run_consolidation` site — had to be edited to thread `\u0026StoreParams::default()` through. Consider adding an `apply_ops_with` that takes the params and an `apply_ops(conn, ops, embs, now_ms)` wrapper that delegates to `apply_ops_with(..., \u0026StoreParams::default())`, then keep these test bodies on the bare signature.",
+      "suggestion_code": "let report = apply_ops(\u0026mut conn, \u0026ops, \u0026fake_embs(\u0026ops), now + 9).unwrap();\n    assert_eq!(report.merged, 2, \"3 合 1 = 删 2 条来源\");",
+      "existing_code": "let report = apply_ops(\n        \u0026mut conn,\n        \u0026ops,\n        \u0026fake_embs(\u0026ops),\n        now + 9,\n        \u0026store::StoreParams::default(),\n    )\n    .unwrap();\n    assert_eq!(report.merged, 2, \"3 合 1 = 删 2 条来源\");",
+      "start_line": 110,
+      "end_line": 118,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/memory/consolidate/tests.rs",
+      "content": "No test here exercises non-default `StoreParams` — the whole file uses `StoreParams::default()`, so the consolidation paths (`merge`, `contradiction`, `distill`) are never verified under, say, a tightened `dedup_merge` (the `distill` branch calls `insert_item_with` which respects `p.dedup_merge` / `p.dedup_hint` / `p.capacity`). The new top-level `memory/tests.rs` does cover `capacity` and `dedup_merge` overrides, but only on the `insert_item_with` entry — the `apply_ops` Distill branch that funnels through it is uncovered for those overrides. Consider adding at least one assertion like `distill` with `StoreParams { capacity: 0, ..default() }` to confirm the RejectedFull branch is reached and `report.distilled` stays at 0.",
+      "suggestion_code": "let report = apply_ops(\n        \u0026mut conn,\n        \u0026ops,\n        \u0026fake_embs(\u0026ops),\n        now,\n        \u0026store::StoreParams::default(),\n    )\n    .unwrap();\n    assert_eq!(report.distilled, 1);\n    // capacity=0 → insert_item_with 走 RejectedFull 分支，distill 计数应为 0\n    let full_sp = store::StoreParams { capacity: 0, ..store::StoreParams::default() };\n    let report_full = apply_ops(\u0026mut conn, \u0026ops, \u0026fake_embs(\u0026ops), now + 1, \u0026full_sp).unwrap();\n    assert_eq!(report_full.distilled, 0);",
+      "existing_code": "let report = apply_ops(\n        \u0026mut conn,\n        \u0026ops,\n        \u0026fake_embs(\u0026ops),\n        now,\n        \u0026store::StoreParams::default(),\n    )\n    .unwrap();\n    assert_eq!(report.distilled, 1);",
+      "start_line": 300,
+      "end_line": 308,
+      "category": "test",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/memory/consolidate/tests.rs",
+      "content": "Mechanical `\u0026store::StoreParams::default()` repeated across 8 call sites is brittle: a future PR that shifts a default in `StoreParams::default()` (e.g., capacity, dedup thresholds) will silently change what these assertions mean without any test failing. There is a `memory_tuning_default_matches_pre_u17_constants` regression test at the `MemoryTuning` level, but no analogous guard at the `apply_ops` output level. Worth adding an explicit \"with default StoreParams, these counts still equal their pre-U17 values\" anchor — or at minimum, referencing `MAX_MEM_ITEMS` / `DEDUP_MERGE_COSINE` constants in the assertions so a default shift surfaces as a failing test rather than a passing-but-meaning-changed one.",
+      "existing_code": "let report = apply_ops(\u0026mut conn, \u0026[], \u0026[], now, \u0026store::StoreParams::default()).unwrap();",
+      "start_line": 345,
+      "end_line": 345,
+      "category": "test",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/bot_chat.rs",
+      "content": "Confirmed finding #1 still applies: `session_id` is `Option\u003cString\u003e` and is unused after this point (the only prior usage on lines 970/972 borrows via `as_deref()`). Pass by value with `session_id` directly to avoid the clone allocation on the hot path — every chat turn pays this cost, even though `maybe_extract_from_session` already filters out `None`/empty values internally.",
+      "suggestion_code": "crate::memory::extract::maybe_extract_from_session(\n        extract_app,\n        session_id,\n        stop.is_interactive(),\n    );",
+      "existing_code": "crate::memory::extract::maybe_extract_from_session(\n        extract_app,\n        session_id.clone(),\n        stop.is_interactive(),\n    );",
+      "start_line": 986,
+      "end_line": 990,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/bot_chat.rs",
+      "content": "Confirmed finding #2 still applies: the U16 extract hook fires unconditionally on every interactive turn, including when the conversation was aborted via `/stop` (`aborted = stop.stopped()` is already computed on line 967). Trace distinguishes `Aborted` from `Success` and suppresses sampling for Aborted in several rules, but extract has no symmetric gating. A `/stop` mid-conversation still triggers an LLM extraction call against the partial transcript — wasted tokens and a non-insert memory candidate that the user explicitly walked away from. Either short-circuit here with `if aborted { return; }` before the call, or push the `aborted` flag through to `maybe_extract_from_session` so the gate sits next to the existing throttle / mode / control gates (which is more in line with the spec's 「失败静默」contract: a user-aborted turn is logically a failed turn for extraction purposes).",
+      "suggestion_code": "let aborted = stop.stopped();\n    crate::evolution::trace::maybe_record_trace(\n        TraceContext::new(\n            session_id.as_deref().unwrap_or(\"none\"),\n            MutationOrigin::Main,\n            started_at_ms,\n        )\n        .with_outcome(if aborted {\n            TraceOutcome::Aborted\n        } else {\n            TraceOutcome::Success\n        })\n        .with_task_refs(refs.iter().map(|t| t.id.clone()).collect())\n        // B4-2：turn 数 + 工具明细接真实数据（此前恒 0/空，trace.rs 既定计划）\n        .with_turn_count(loop_trace.turn_count)\n        .with_tool_calls(loop_trace.tool_calls),\n    );\n    // U16 自动记忆抽取（fire-and-forget）：交互式会话收尾触发，抽取失败静默\n    // 降级不冒泡；非交互（任务执行/定时）、非 off 档、被 /stop 中断的判定在入口内完成。\n    if !aborted {\n        crate::memory::extract::maybe_extract_from_session(\n            extract_app,\n            session_id,\n            stop.is_interactive(),\n        );\n    }",
+      "existing_code": "let aborted = stop.stopped();\n    crate::evolution::trace::maybe_record_trace(\n        TraceContext::new(\n            session_id.as_deref().unwrap_or(\"none\"),\n            MutationOrigin::Main,\n            started_at_ms,\n        )\n        .with_outcome(if aborted {\n            TraceOutcome::Aborted\n        } else {\n            TraceOutcome::Success\n        })\n        .with_task_refs(refs.iter().map(|t| t.id.clone()).collect())\n        // B4-2：turn 数 + 工具明细接真实数据（此前恒 0/空，trace.rs 既定计划）\n        .with_turn_count(loop_trace.turn_count)\n        .with_tool_calls(loop_trace.tool_calls),\n    );\n    // U16 自动记忆抽取（fire-and-forget）：交互式会话收尾触发，抽取失败静默\n    // 降级不冒泡；非交互（任务执行/定时）与非 off 档的判定在入口内完成。\n    crate::memory::extract::maybe_extract_from_session(\n        extract_app,\n        session_id.clone(),\n        stop.is_interactive(),\n    );",
+      "start_line": 967,
+      "end_line": 990,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "src-tauri/src/memory/rank.rs",
+      "content": "API inconsistency: `hybrid_search_with` takes `top_n: usize` and `decay_days: f64` as separate positional arguments, while its sibling `injection_snapshot_with`\u0000 (lines 175-182) accepts the whole `\u0026RankParams` struct. The same module now has two divergent parameterization patterns for the same kind of tuning. Consider taking `\u0026RankParams`\u0000 here as well so callers can do `RankParams::of(\u0026tuning)` uniformly and `top_n`/`decay_days` stay encapsulated; the body would simply use `p.top_n` and `p.decay_days`. As-is, callers have to manually destructure tuning and pass two scalar args to `hybrid_search_with`, which defeats the\u0000 point of having\u0000 `RankParams` in the first place.",
+      "suggestion_code": "/// 带参数变体（U17）\npub fn hybrid_search_with(\n    items: \u0026[MemItem],\n    query: \u0026str,\n    query_emb: Option\u003c\u0026[f32]\u003e,\n    now_ms: i64,\n    p: \u0026RankParams,\n) -\u003e Vec\u003cMemItem\u003e {",
+      "existing_code": "/// 带衰减参数变体（U17）\npub fn hybrid_search_with(\n    items: \u0026[MemItem],\n    query: \u0026str,\n    query_emb: Option\u003c\u0026[f32]\u003e,\n    now_ms: i64,\n    top_n: usize,\n    decay_days: f64,\n) -\u003e Vec\u003cMemItem\u003e {",
+      "start_line": 251,
+      "end_line": 259,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/memory/rank.rs",
+      "content": "Dead/incomplete parameterization: `hybrid_search_with` is `pub` but has no external caller. The only consumer of `hybrid_search` (e.g. `tool_recall_facts` in memory/mod.rs:586, `panel.rs:104`, tests) still goes through the legacy wrapper which hard-codes `30.0` for `decay_days`.\u0000\u0000 That means the new `memoryTuning.decayDays` setting is silently ignored on the recall path even though the U17 design calls for it to thread through `recall_facts`. Either update every external caller to use `hybrid_search_with` (\u0000 ideally with the `\u0026RankParams` signature proposed above) or mark this `pub(crate)` until\u0000\u0000\u0000it is wired up.",
+      "existing_code": "pub fn hybrid_search(\n    items: \u0026[MemItem],\n    query: \u0026str,\n    query_emb: Option\u003c\u0026[f32]\u003e,\n    now_ms: i64,\n    top_n: usize,\n) -\u003e Vec\u003cMemItem\u003e {\n    hybrid_search_with(items, query, query_emb, now_ms, top_n, 30.0)\n}",
+      "start_line": 241,
+      "end_line": 249,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/memory/rank.rs",
+      "content": "Magic number `30.0`: the three `usize` defaults reuse the existing `MEMORY_TOP_N` / `MEMORY_RECENT_N` / `MEMORY_LESSON_N` constants but `decay_days` is hard-coded inline. If anyone grep-references \"the 30-day decay\" after this change (e.g. docs, store.rs, panel.rs) there is nothing for them to find. Add a sibling constant such as `pub const MEMORY_DECAY_DAYS: f64 = 30.0;` and reference it from both `Default::default()` and the legacy `hybrid_score` / `hybrid_search` wrappers so the default lives in exactly one place.",
+      "suggestion_code": "pub const MEMORY_DECAY_DAYS: f64 = 30.0;\n\nimpl Default for RankParams {\n    fn default() -\u003e Self {\n        Self {\n            top_n: MEMORY_TOP_N,\n            recent_n: MEMORY_RECENT_N,\n            lesson_n: MEMORY_LESSON_N,\n            decay_days: MEMORY_DECAY_DAYS,\n        }\n    }\n}",
+      "existing_code": "impl Default for RankParams {\n    fn default() -\u003e Self {\n        Self {\n            top_n: MEMORY_TOP_N,\n            recent_n: MEMORY_RECENT_N,\n            lesson_n: MEMORY_LESSON_N,\n            decay_days: 30.0,\n        }\n    }\n}",
+      "start_line": 33,
+      "end_line": 42,
+      "category": "style",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/memory/rank.rs",
+      "content": "`RankParams` is a public type whose fields are referenced across `injection_snapshot_with`, `hybrid_search_with`, and (once\u0000 wired up) `hybrid_score_with`. None\u0000 of the four fields carry a doc comment explaining the units / semantics. At a minimum `decay_days` (the time constant of `exp(-age/decay)`), `top_n`/`recent_n`/`lesson_n` (per-section item counts; truncation is `take(n)`, so 0 yields empty sections) deserve a one-liner each. Without it future callers have to read memory/mod.rs's `MemoryTuning::clamped` and\u0000 the score formula\u0000\u0000 to reverse-engineer meaning.",
+      "existing_code": "#[derive(Clone, Copy, Debug)]\npub struct RankParams {\n    pub top_n: usize,\n    pub recent_n: usize,\n    pub lesson_n: usize,\n    pub decay_days: f64,\n}",
+      "start_line": 25,
+      "end_line": 31,
+      "category": "documentation",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/memory/panel.rs",
+      "content": "`lock_db()` 与新加入的 `memory::store_lock()` 重复实现，逻辑都是「`DB_WRITE_LOCK` + 毒锁回 Inner」。U16/U17 期间 extract.rs/mod.rs 都收敛到 `store_lock`，panel.rs 这里保留旧写法是历史原因；建议顺手收敛到 `super::store_lock()`，避免锁语义分叉（mutex_poisoned 日志前缀不同步不利于排障）。",
+      "suggestion_code": "/// 写闸获取（DB_WRITE_LOCK 是 Mutex\u003c()\u003e 写入闸，连接在闸内现开——同 memory/mod.rs 口径）\nfn lock_db() -\u003e std::sync::MutexGuard\u003c'static, ()\u003e {\n    super::store_lock()\n}",
+      "existing_code": "/// 写闸获取（DB_WRITE_LOCK 是 Mutex\u003c()\u003e 写入闸，连接在闸内现开——同 memory/mod.rs 口径）\nfn lock_db() -\u003e std::sync::MutexGuard\u003c'static, ()\u003e {\n    crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {\n        eprintln!(\"[mutex_poisoned] memory::panel DB_WRITE_LOCK: {e:?}\");\n        e.into_inner()\n    })\n}",
+      "start_line": 207,
+      "end_line": 213,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/memory/panel.rs",
+      "content": "`mem_stats` 中 `stats_core` 先把 `capacity` 初始化为 `MAX_MEM_ITEMS`，紧接着又用 `tuning.capacity` 覆盖。`stats_core` 这次返回的 `capacity` 字段对调用方完全无用，是白做工；可考虑给 `stats_core` 加 `capacity` 入参（或去掉该字段在 stats_core 的默认填充、由命令层独享初始化），避免误导读者。",
+      "existing_code": "stats.capacity = crate::bot::read_memory_tuning(\u0026app).capacity;",
+      "start_line": 463,
+      "end_line": 463,
+      "category": "performance",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/memory/panel.rs",
+      "content": "跨文件一致性提示：`mem_import`/`mem_stats` 都是「持锁前算 tuning」，新 `extract.rs::run_extract`（line ~326）却把 `read_memory_tuning` 调到 `store_lock()` 持锁后执行；同模块内两套纪律不一，建议对齐 panel.rs 的「读配置在持锁前」口径（仅作为观察记录，本次 review 只覆盖 panel.rs）。",
+      "existing_code": "let sp = store::StoreParams::of(\u0026crate::bot::read_memory_tuning(\u0026app));\n        let _g = lock_db();",
+      "start_line": 522,
+      "end_line": 523,
+      "category": "other",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/memory/panel.rs",
+      "content": "`lock_db()` 与新加入的 `memory::store_lock()` 重复实现，逻辑都是「`DB_WRITE_LOCK` + 毒锁回 Inner」。U16/U17 期间 extract.rs/mod.rs 都收敛到 `store_lock`，panel.rs 这里保留旧写法是历史原因；建议顺手收敛到 `super::store_lock()`，避免锁语义分叉（mutex_poisoned 日志前缀不同步不利于排障）。",
+      "suggestion_code": "/// 写闸获取（DB_WRITE_LOCK 是 Mutex\u003c()\u003e 写入闸，连接在闸内现开——同 memory/mod.rs 口径）\nfn lock_db() -\u003e std::sync::MutexGuard\u003c'static, ()\u003e {\n    super::store_lock()\n}",
+      "existing_code": "/// 写闸获取（DB_WRITE_LOCK 是 Mutex\u003c()\u003e 写入闸，连接在闸内现开——同 memory/mod.rs 口径）\nfn lock_db() -\u003e std::sync::MutexGuard\u003c'static, ()\u003e {\n    crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {\n        eprintln!(\"[mutex_poisoned] memory::panel DB_WRITE_LOCK: {e:?}\");\n        e.into_inner()\n    })\n}",
+      "start_line": 207,
+      "end_line": 213,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/memory/panel.rs",
+      "content": "`mem_stats` 中 `stats_core` 先把 `capacity` 初始化为 `MAX_MEM_ITEMS`，紧接着又用 `tuning.capacity` 覆盖。`stats_core` 这次返回的 `capacity` 字段对命令层完全无用，是白做工；可考虑给 `stats_core` 加 `capacity` 入参（或去掉该字段在 stats_core 的默认填充、由命令层独享初始化），避免误导读者。",
+      "existing_code": "stats.capacity = crate::bot::read_memory_tuning(\u0026app).capacity;",
+      "start_line": 463,
+      "end_line": 463,
+      "category": "performance",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/memory/rank.rs",
+      "content": "`hybrid_score_with` does not validate `decay_days`. The expression `(-age_days / decay_days).exp()` produces `NaN` if `decay_days` is `0.0` / negative / `NaN`, and produces `inf` if the magnitude exceeds `f64` range. `NaN` then silently breaks `scored.sort_by(... b.0.partial_cmp(\u0026a.0).unwrap_or(Ordering::Equal))` in both `injection_snapshot_with` and `hybrid_search_with` — `partial_cmp` returns `None` for `NaN`, falling back to `Equal`, so `NaN`-scored items land in non-deterministic positions. `RankParams::default()` and `MemoryTuning::clamped()` happen to enforce a positive value, but `RankParams` is a `pub` struct with `pub decay_days: f64` — any external caller can hand-craft a pathological value. Either guard at the top of `hybrid_score_with` (e.g. `debug_assert!(decay_days.is_finite() \u0026\u0026 decay_days \u003e 0.0, \"decay_days must be finite and positive\")`) or normalize via `.max(f64::MIN_POSITIVE)` before use.",
+      "suggestion_code": "debug_assert!(\n        decay_days.is_finite() \u0026\u0026 decay_days \u003e 0.0,\n        \"hybrid_score_with: decay_days must be finite and positive, got {decay_days}\"\n    );\n    let decay_days = if decay_days.is_finite() \u0026\u0026 decay_days \u003e 0.0 {\n        decay_days\n    } else {\n        // 退化为默认衰减，避免 NaN/inf 污染后续 partial_cmp 排序\n        30.0\n    };\n    let rec = (-age_days / decay_days).exp();",
+      "existing_code": "let rec = (-age_days / decay_days).exp();",
+      "start_line": 143,
+      "end_line": 143,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "src-tauri/src/memory/rank.rs",
+      "content": "Same validation gap as `hybrid_score_with`: `hybrid_search_with` also takes a raw `decay_days: f64` with no guard. The downstream `scored.sort_by(b.0.partial_cmp(\u0026a.0).unwrap_or(Ordering::Equal))` is non-deterministic for `NaN` scores. Centralize the fix in `hybrid_score_with` (which is the only producer of these scores), or duplicate the guard here.",
+      "suggestion_code": "pub fn hybrid_search_with(\n    items: \u0026[MemItem],\n    query: \u0026str,\n    query_emb: Option\u003c\u0026[f32]\u003e,\n    now_ms: i64,\n    top_n: usize,\n    decay_days: f64,\n) -\u003e Vec\u003cMemItem\u003e {\n    debug_assert!(\n        decay_days.is_finite() \u0026\u0026 decay_days \u003e 0.0,\n        \"hybrid_search_with: decay_days must be finite and positive, got {decay_days}\"\n    );",
+      "existing_code": "pub fn hybrid_search_with(\n    items: \u0026[MemItem],\n    query: \u0026str,\n    query_emb: Option\u003c\u0026[f32]\u003e,\n    now_ms: i64,\n    top_n: usize,\n    decay_days: f64,\n) -\u003e Vec\u003cMemItem\u003e {",
+      "start_line": 252,
+      "end_line": 259,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/memory/tests.rs",
+      "content": "`MemoryControl` is imported on line 611 but never referenced in any test in the file (verified: only one match for `MemoryControl` in tests.rs, on the import line itself). This will produce an `unused_imports` compiler warning. Either drop `MemoryControl` from the `use` clause, or — if U16 tests for `MemoryControl` are planned to live in this file — add a TODO comment so the next reviewer doesn't strip it later.",
+      "suggestion_code": "use crate::memory::MemoryTuning;",
+      "existing_code": "use crate::memory::{MemoryControl, MemoryTuning};",
+      "start_line": 611,
+      "end_line": 611,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/memory/tests.rs",
+      "content": "The test message `\"非正衰减回默认\"` (\"non-positive decay reverts to default\") is misleading. The actual clamp logic in `MemoryTuning::clamped()` uses `decay_days \u003c 7.0` rather than `\u003c= 0.0`, so a value like `5.0` also reverts to default 30.0 — not just non-positive values. Either change the assertion message to match the real guard condition (`\u003c 7.0`), or add a second test case (e.g., `decay_days: 5.0 → 30.0`) to lock in the current behavior.",
+      "suggestion_code": "assert_eq!(t.decay_days, 30.0, \"\u003c7.0 视为非法，回退默认 30.0\");",
+      "existing_code": "assert_eq!(t.decay_days, 30.0, \"非正衰减回默认\");",
+      "start_line": 631,
+      "end_line": 631,
+      "category": "documentation",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/memory/tests.rs",
+      "content": "The capacity test only exercises `embedding: None` (which skips dedup entirely per the comment in `insert_item_with`). The `len() == 1` assertion therefore does not distinguish \"eviction succeeded\" from \"dedup accidentally merged the two items\" — only happens to pass because `None` bypasses dedup. Consider also asserting `all[0].content == \"第二条\"` is checked AND adding a third item with a fresh embedding to confirm capacity continues to evict past dedup. (The content assertion at line 665 already provides this protection in part; no change required, but worth flagging for the next reviewer if `None` semantics ever change.)",
+      "existing_code": "let first = item(\"fact\", \"第一条\");\n    let second = item(\"fact\", \"第二条\");\n    store::insert_item_with(\u0026conn, \u0026first, None, 1_000, \u0026sp).unwrap();\n    store::insert_item_with(\u0026conn, \u0026second, None, 2_000, \u0026sp).unwrap();\n    let all = store::load_all(\u0026conn).unwrap();\n    assert_eq!(all.len(), 1, \"容量=1 时第二条应挤掉第一条\");\n    assert_eq!(all[0].content, \"第二条\");",
+      "start_line": 659,
+      "end_line": 665,
+      "category": "test",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/memory/tests.rs",
+      "content": "The dedup threshold test relies on the implicit arithmetic fact that `cosine(onehot(0), tilted(0.99))` is exactly `0.99` (because `tilted` constructs `v[0]=w, v[1]=sqrt(1-w²)` and both vectors are L2-normalized). This is correct but not documented at the test site — if a future refactor changes `tilted`'s construction, the test silently passes/fails for the wrong reason. Recommend a one-line comment near the helper or test recording the expected cosine so future readers don't have to redo the math.",
+      "suggestion_code": "// dedup_merge=1.0：只有完全同向才合并；默认 0.92 下 onehot(0) 与 tilted(0.99) 会合并\n    // （cos(onehot(0), tilted(0.99)) = 0.99，因 tilted 把第一维拆成 (w, √(1-w²))，L2 归一化后内积恰好是 w）\n    let sp = store::StoreParams {",
+      "existing_code": "// dedup_merge=1.0：只有完全同向才合并；默认 0.92 下 onehot(0) 与 tilted(0.99) 会合并\n    let sp = store::StoreParams {",
+      "start_line": 671,
+      "end_line": 672,
+      "category": "test",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/SettingsPage/MemoryPanel.tsx",
+      "content": "After a \"reject\" action, `actOnPending` re-issues `reload(debouncedQuery, kindFilter)` alongside `reloadPending()`. A reject only removes rows from the pending queue — it never inserts or merges into the main memory store (see `src-tauri/src/memory/extract.rs::mem_pending_reject`, which calls `pending_delete` and nothing else). Reloading the main list + stats on every ignore click is wasted backend traffic, and the stats call also re-acquires `store_lock`. Split the refresh: call `reload(...)` only on approve, `reloadPending()` on both branches.",
+      "existing_code": "      await Promise.all([reloadPending(), reload(debouncedQuery, kindFilter)]);",
+      "start_line": 232,
+      "end_line": 232,
+      "category": "performance",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/SettingsPage/MemoryPanel.tsx",
+      "content": "`reloadPending` swallows every error with `setPending([])` and no toast/log. The comment justifies this as \"无队列，不打扰\", but it also masks persistent backend failures (command removed, panic, DB locked) — the panel just permanently shows no pending items with zero indication. Other reload callbacks in this component (`reload`) at least surface errors via `setLoadError`. Consider at minimum a `console.warn` so a regression of `mem_pending_list` doesn't go invisible.",
+      "suggestion_code": "    try {\n      const list = await invoke\u003cMemPendingView[]\u003e(\"mem_pending_list\");\n      setPending(Array.isArray(list) ? list : []);\n    } catch (e) {\n      console.warn(\"[MemoryPanel] mem_pending_list failed:\", formatCommandError(e));\n      setPending([]);\n    }",
+      "existing_code": "    try {\n      const list = await invoke\u003cMemPendingView[]\u003e(\"mem_pending_list\");\n      setPending(Array.isArray(list) ? list : []);\n    } catch {\n      setPending([]);\n    }",
+      "start_line": 205,
+      "end_line": 210,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/SettingsPage/MemoryPanel.tsx",
+      "content": "`actOnPending` is recreated on every render and isn't wrapped in `useCallback`, unlike `reloadPending`. Today this is harmless because the buttons are inline JSX, but the function closes over `pendingBusy`, `debouncedQuery`, `kindFilter`, `reload`, `reloadPending`, `showIoMsg`, and `formatCommandError`. Wrap it in `useCallback` with the right deps to match the file's existing pattern (`reload` is `useCallback`, `reloadPending` is `useCallback`) so a future change that memoizes the row components doesn't introduce subtle re-render churn.",
+      "suggestion_code": "  /** 收下 / 忽略待确认条目（支持单条与全批） */\n  const actOnPending = useCallback(async (ids: number[], action: \"approve\" | \"reject\") =\u003e {",
+      "existing_code": "  /** 收下 / 忽略待确认条目（支持单条与全批） */\n  const actOnPending = async (ids: number[], action: \"approve\" | \"reject\") =\u003e {",
+      "start_line": 217,
+      "end_line": 218,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/SettingsPage/MemoryPanel.tsx",
+      "content": "Accessibility labels on per-row buttons truncate `p.content` to 20 chars (`aria-label={`收下：${p.content.slice(0, 20)}`}`). Pending content is short by design (parser caps at 500 chars and trims aggressively), so the visible content often exceeds 20 chars, making the screen-reader label misleading. Either drop the prefix and use the full content as `aria-label`, or set the label to the action verb only (e.g. \"收下此条记忆\") and rely on the surrounding context.",
+      "suggestion_code": "                    aria-label={`收下此条：${p.content}`}",
+      "existing_code": "                    aria-label={`收下：${p.content.slice(0, 20)}`}",
+      "start_line": 384,
+      "end_line": 384,
+      "category": "documentation",
+      "severity": "low"
+    },
+    {
+      "path": "model-meta-service/main.py",
+      "content": "The inline comment claims \"稳定且可区分\" (stable and distinguishable), but Python's built-in `hash()` for str uses SipHash with a per-process seed (`PYTHONHASHSEED`), so the chosen palette index changes on every service restart — same provider_key yields a different fallback color after each reboot. Replace with a stable hash, e.g. `int(hashlib.md5(pkey.encode()).hexdigest(), 16) % len(PALETTE)` (or `int(hashlib.sha256(pkey.encode()).hexdigest()[:8], 16) % len(PALETTE)`). The frontend (`src/lib/modelMeta.ts` → MetaProvider.fallback_color, used as the colored avatar background in `ModelPicker`) renders this value directly, so the instability is user-visible.",
+      "suggestion_code": "            (pkey, name, LOGO_URL.format(pkey), PALETTE[int(hashlib.md5(pkey.encode()).hexdigest(), 16) % len(PALETTE)], (name[:1] or FALLBACK_CHAR).upper(), p.get(\"api\")),",
+      "existing_code": "            (pkey, name, LOGO_URL.format(pkey), PALETTE[hash(pkey) % len(PALETTE)], name[0].upper(), p.get(\"api\")),",
+      "start_line": 68,
+      "end_line": 68,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "model-meta-service/main.py",
+      "content": "`name[0].upper()` raises `IndexError` when both `p.get(\"name\")` and `pkey` are empty strings — `name = p.get(\"name\") or pkey` resolves to \"\" in that pathological case and the indexing crashes before the row is written. In the lifespan startup this is swallowed (logged) and the sync silently drops that provider/model; in `POST /api/sync-models-dev` it propagates and aborts the whole sync, leaving the DB half-updated. Guard with slicing, e.g. `(name[:1] or FALLBACK_CHAR).upper()`.",
+      "suggestion_code": "                    (f\"{pkey}/{mkey}\", pkey, (m.get(\"name\") or mkey or FALLBACK_CHAR), (m.get(\"limit\") or {}).get(\"context\")),",
+      "existing_code": "                    (f\"{pkey}/{mkey}\", pkey, m.get(\"name\") or mkey, (m.get(\"limit\") or {}).get(\"context\")),",
+      "start_line": 79,
+      "end_line": 79,
+      "category": "bug",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/SettingsPage/SettingsPage.tsx",
+      "content": "[medium] Server interface uses `autoExtract?: string | null` while state is `\"off\" | \"auto\" | \"confirm\"`. The validator at lines 549–555 then needs a double `as` cast to satisfy `Array.includes`, which bypasses TS narrowing and silently accepts any cast value. Tighten the interface (or extract an `isAutoExtract` guard) so the cast disappears.\n\nAlso: the expression `c.memoryControl?.autoExtract as \"off\" | \"auto\" | \"confirm\"` is repeated twice. Hoist it to a `const raw = c.memoryControl?.autoExtract;` and use one boolean guard for clarity.",
+      "suggestion_code": "        memoryControl: (() =\u003e {\n          const raw = c.memoryControl?.autoExtract;\n          const autoExtract: \"off\" | \"auto\" | \"confirm\" =\n            raw === \"off\" || raw === \"auto\" || raw === \"confirm\" ? raw : \"off\";\n          return {\n            injectionEnabled: c.memoryControl?.injectionEnabled ?? true,\n            autoWriteEnabled: c.memoryControl?.autoWriteEnabled ?? true,\n            autoExtract,\n          };\n        })(),",
+      "existing_code": "        memoryControl: {\n          injectionEnabled: c.memoryControl?.injectionEnabled ?? true,\n          autoWriteEnabled: c.memoryControl?.autoWriteEnabled ?? true,\n          autoExtract: ([\"off\", \"auto\", \"confirm\"] as const).includes(\n            c.memoryControl?.autoExtract as \"off\" | \"auto\" | \"confirm\",\n          )\n            ? (c.memoryControl?.autoExtract as \"off\" | \"auto\" | \"confirm\")\n            : \"off\",\n        },",
+      "start_line": 548,
+      "end_line": 556,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/SettingsPage/SettingsPage.tsx",
+      "content": "[low] The mode set `[\"off\", \"auto\", \"confirm\"]` and the labels (`关闭 / 自动入库 / 需确认`) are duplicated here (initial state default at line 397, validator at line 551, UI `.map([…])`). Extract a single `const AUTO_EXTRACT_MODES = [{ value: \"off\", label: \"关闭\", aria: \"自动记忆抽取：关闭\" }, …] as const` at module scope and derive the union with `typeof AUTO_EXTRACT_MODES[number][\"value\"]`; the validator and UI both consume it.",
+      "suggestion_code": "            {AUTO_EXTRACT_MODES.map(({ value: mode, label, aria }) =\u003e (\n              \u003cbutton\n                key={mode}\n                type=\"button\"\n                aria-label={aria}\n                className={`flex-1 px-2 py-1.5 text-xs text-[var(--t3)] ${\n                  config.memoryControl.autoExtract === mode ? \"nm-inset\" : \"nm-outset\"\n                }`}\n                onClick={() =\u003e setMemoryControl({ autoExtract: mode })}\n                disabled={configBusy}\n              \u003e\n                {label}\n              \u003c/button\u003e\n            ))}",
+      "existing_code": "            {(\n                [\n                  [\"off\", \"关闭\", \"自动记忆抽取：关闭\"],\n                  [\"auto\", \"自动入库\", \"自动记忆抽取：自动入库\"],\n                  [\"confirm\", \"需确认\", \"自动记忆抽取：需确认\"],\n                ] as const\n              ).map(([mode, label, aria]) =\u003e (\n                \u003cbutton\n                  key={mode}\n                  type=\"button\"\n                  aria-label={aria}\n                  className={`flex-1 px-2 py-1.5 text-xs text-[var(--t3)] ${\n                    config.memoryControl.autoExtract === mode ? \"nm-inset\" : \"nm-outset\"\n                  }`}\n                  onClick={() =\u003e setMemoryControl({ autoExtract: mode })}\n                  disabled={configBusy}\n                \u003e\n                  {label}\n                \u003c/button\u003e\n              ))}",
+      "start_line": 1897,
+      "end_line": 1916,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/SettingsPage/SettingsPage.tsx",
+      "content": "[low] Redundant `as` cast on a `null` literal into a union that already includes `null` — the cast on `lastRunAt` two lines above is equally redundant. TypeScript will accept `memoryTuning: null,` and `lastRunAt: null,` here without the explicit annotation, since the useState generic already declares the union type.",
+      "suggestion_code": "    // U17 记忆参数（手改 bot-config.json 生效，本页无 UI）：\n    // 原样回传保存，防止设置页整体替换写把手改值冲掉\n    memoryTuning: null,",
+      "existing_code": "    // U17 记忆参数（手改 bot-config.json 生效，本页无 UI）：\n    // 原样回传保存，防止设置页整体替换写把手改值冲掉\n    memoryTuning: null as Record\u003cstring, number\u003e | null,",
+      "start_line": 399,
+      "end_line": 401,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/memory/extract.rs",
+      "content": "In `mem_pending_approve`, `pending_delete(\u0026conn, \u0026[*id])?` runs unconditionally after the `match`, including when `insert_item_with` returned `Err` (the `_ =\u003e report.skipped += 1` arm catches `Err(_)` alongside the `Ok((RejectedFull/ReusedForeignMerge, _))` outcomes). A transient DB error during insert therefore silently drops the pending row the user just approved — the UI reports \"skipped\" but the entry is gone, so the user can't retry. `pending_delete` should only run when the insert actually wrote (Inserted or Merged); on insert error, leave the pending row in place so the user can retry.\n\nNote: `InsertOutcome` (see `memory/store.rs`) has variants `Inserted`, `Merged`, `RejectedFull`, `RefusedForeignMerge` — all returned as `Ok(...)`. Only `Result::Err(_)` is the actual transient failure that should preserve pending.",
+      "suggestion_code": "match store::insert_item_with(\u0026conn, \u0026item, emb.as_deref(), super::now_ms(), \u0026sp) {\n                Ok((store::InsertOutcome::Inserted(_), _)) =\u003e {\n                    report.inserted += 1;\n                    pending_delete(\u0026conn, \u0026[*id])?;\n                }\n                Ok((store::InsertOutcome::Merged { .. }, _)) =\u003e {\n                    report.merged += 1;\n                    pending_delete(\u0026conn, \u0026[*id])?;\n                }\n                Ok(_) =\u003e report.skipped += 1, // RejectedFull / RefusedForeignMerge：用户已批准，不留待重审\n                Err(e) =\u003e {\n                    report.skipped += 1;\n                    eprintln!(\"[memory] 收下入库失败（保留待确认待重试）：{e}\");\n                    continue; // 保留 pending 行，让用户可以再次批准\n                }\n            }",
+      "existing_code": "match store::insert_item_with(\u0026conn, \u0026item, emb.as_deref(), super::now_ms(), \u0026sp) {\n                Ok((store::InsertOutcome::Inserted(_), _)) =\u003e report.inserted += 1,\n                Ok((store::InsertOutcome::Merged { .. }, _)) =\u003e report.merged += 1,\n                _ =\u003e report.skipped += 1,\n            }\n            pending_delete(\u0026conn, \u0026[*id])?;",
+      "start_line": 449,
+      "end_line": 454,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/memory/extract.rs",
+      "content": "The `AutoExtract::Off =\u003e {}` arm in `run_extract` is unreachable: `maybe_extract_from_session` early-returns at line 280 when `mode == AutoExtract::Off` and never spawns the task with `Off`. Keeping a no-op arm risks silently masking a future refactor that removes the early-return gate (e.g., if someone deletes the early-return, `Off` would silently swallow the entire extract pipeline without producing any feedback). Either remove the arm (and rely on the caller-side check) or make it `unreachable!()` with a comment so a regression is loud.",
+      "suggestion_code": "AutoExtract::Confirm =\u003e {\n                let _g = super::store_lock();\n                let conn = crate::db::open_db(\u0026app2).map_err(|e| e.to_string())?;\n                for f in \u0026facts {\n                    pending_insert(\u0026conn, \u0026f.content, \u0026f.kind, f.importance, \u0026session_id, now)?;\n                }\n            }\n            AutoExtract::Off =\u003e unreachable!(\"maybe_extract_from_session 已早返 Off，不会 spawn\"),\n        }",
+      "existing_code": "AutoExtract::Confirm =\u003e {\n                let _g = super::store_lock();\n                let conn = crate::db::open_db(\u0026app2).map_err(|e| e.to_string())?;\n                for f in \u0026facts {\n                    pending_insert(\u0026conn, \u0026f.content, \u0026f.kind, f.importance, \u0026session_id, now)?;\n                }\n            }\n            AutoExtract::Off =\u003e {}\n        }",
+      "start_line": 341,
+      "end_line": 349,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/memory/extract.rs",
+      "content": "`LAST_EXTRACT_MS` is a purely process-local `OnceLock\u003cMutex\u003cHashMap\u003cString, i64\u003e\u003e\u003e`. An app restart resets every session's throttle window, so the first session-end after launch will always trigger extraction regardless of how recently it ran in the previous process. For users who restart frequently this effectively doubles LLM spend for the auto-extract path. The module doc claims the 30-minute throttle is the \"LLM cost first gate\" — the gate is bypassed on every restart. Consider either persisting last-extract-ms to the DB (cheap write at extraction completion) or noting this explicitly in the doc comment so reviewers/users aren't surprised by the gap.",
+      "suggestion_code": "/// 限频：每会话 [`EXTRACT_MIN_INTERVAL_SECS`] 内最多抽取一次（进程内\n/// check-and-set，gate 通过即占窗口——抽取失败也等下一窗口，防失败风暴）。\n///\n/// 注意：状态在进程内，每次重启会清空——重启后首个会话收尾将不受节流，\n/// LLM 成本窗口在该次重启边界处不连续。若对成本敏感，需把 last_ms 持久化到 DB。",
+      "existing_code": "/// 限频：每会话 [`EXTRACT_MIN_INTERVAL_SECS`] 内最多抽取一次（进程内\n/// check-and-set，gate 通过即占窗口——抽取失败也等下一窗口，防失败风暴）",
+      "start_line": 0,
+      "end_line": 0,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/SettingsPage/MemoryPanel.tsx",
+      "content": "\"全部忽略\" is a bulk destructive action (up to PENDING_CAP=50 items deleted) with no confirmation. An accidental click on this button silently discards pending extractions the user may have wanted to review individually. Add a confirm dialog (similar to removeItem's window.confirm) or at minimum require a deliberate two-step interaction (e.g., a \"再次点击确认忽略\" second press) before bulk-rejecting.",
+      "suggestion_code": "              \u003cbutton\n                type=\"button\"\n                className=\"nm-btn shrink-0 px-2 py-1 text-[10px] text-[var(--t5)]\"\n                onClick={() =\u003e {\n                  if (window.confirm(`确定忽略全部 ${pending.length} 条待确认记忆？此操作不可撤销。`)) {\n                    actOnPending(pending.map((p) =\u003e p.id), \"reject\");\n                  }\n                }}\n                disabled={pendingBusy}\n              \u003e\n                全部忽略\n              \u003c/button\u003e",
+      "existing_code": "              \u003cbutton\n                type=\"button\"\n                className=\"nm-btn shrink-0 px-2 py-1 text-[10px] text-[var(--t5)]\"\n                onClick={() =\u003e actOnPending(pending.map((p) =\u003e p.id), \"reject\")}\n                disabled={pendingBusy}\n              \u003e\n                全部忽略\n              \u003c/button\u003e",
+      "start_line": 358,
+      "end_line": 365,
+      "category": "maintainability",
+      "severity": "high"
+    },
+    {
+      "path": "src/components/SettingsPage/MemoryPanel.tsx",
+      "content": "The `\u003cp\u003e` element has an `aria-label` that is SHORTER than its visible text content (\"待确认记忆\" vs \"待确认记忆（N）——来自自动抽取，收下后进入记忆库\"). Screen readers announce the aria-label and ignore the visible text, so users get LESS context than sighted users — including the queue size and the source/explanation. Either drop the aria-label entirely (let the visible text be read) or expand it to include the full sentence and the count.",
+      "suggestion_code": "              \u003cp\n                className=\"min-w-0 flex-1 text-[11px] font-medium text-[var(--t3)]\"\n                aria-label={`待确认记忆 ${pending.length} 条，来自自动抽取，收下后进入记忆库`}\n              \u003e\n                待确认记忆（{pending.length}）——来自自动抽取，收下后进入记忆库\n              \u003c/p\u003e",
+      "existing_code": "              \u003cp\n                className=\"min-w-0 flex-1 text-[11px] font-medium text-[var(--t3)]\"\n                aria-label=\"待确认记忆\"\n              \u003e\n                待确认记忆（{pending.length}）——来自自动抽取，收下后进入记忆库\n              \u003c/p\u003e",
+      "start_line": 344,
+      "end_line": 349,
+      "category": "documentation",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/SettingsPage/MemoryPanel.tsx",
+      "content": "The pending list container has no `max-height` / `overflow-y-auto`. With `PENDING_CAP = 50` on the backend, a full queue renders 50 flex rows, which can push the search input, filter chips, and main memory list far down the page and break the panel's scroll affordance. Add `max-h-60 overflow-y-auto` (or similar) to the inner list container so long queues scroll within their own region instead of expanding the entire panel.",
+      "suggestion_code": "            \u003cdiv className=\"mt-1.5 max-h-60 space-y-1 overflow-y-auto pr-1\"\u003e\n              {pending.map((p) =\u003e (\n                \u003cdiv key={p.id} className=\"flex items-center gap-2\"\u003e\n                  \u003cspan className=\"nm-tag shrink-0 text-[10px]\"\u003e\n                    {KIND_LABELS[p.kind] ?? p.kind}\n                  \u003c/span\u003e\n                  \u003cspan className=\"min-w-0 flex-1 truncate text-[11px] text-[var(--t2)]\" title={p.content}\u003e\n                    {p.content}\n                  \u003c/span\u003e",
+      "existing_code": "            \u003cdiv className=\"mt-1.5 space-y-1\"\u003e\n              {pending.map((p) =\u003e (\n                \u003cdiv key={p.id} className=\"flex items-center gap-2\"\u003e\n                  \u003cspan className=\"nm-tag shrink-0 text-[10px]\"\u003e\n                    {KIND_LABELS[p.kind] ?? p.kind}\n                  \u003c/span\u003e\n                  \u003cspan className=\"min-w-0 flex-1 truncate text-[11px] text-[var(--t2)]\" title={p.content}\u003e\n                    {p.content}\n                  \u003c/span\u003e",
+      "start_line": 367,
+      "end_line": 375,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/memory/extract.rs",
+      "content": "`pending_insert` accepts any `kind`/`content`/empty strings without validating against the same contract `parse_extract` enforces (whitelist + non-empty). Currently the only caller (`run_extract`) feeds `parse_extract`-filtered data, but the function is private only by convention (no compile-time `any` enforcement) and the contract drifts the moment a future caller is added. Recommend an explicit check here: `if !EXTRACT_KINDS.contains(\u0026kind) || content.trim().is_empty() { return Err(...); }`. Mirrors the table contract and matches the existing `importance.clamp(1,5)` discipline a few lines below.",
+      "existing_code": "/// 入队（容量满丢最旧）：now_ms 供 created_at\nfn pending_insert(\n    conn: \u0026rusqlite::Connection,\n    content: \u0026str,\n    kind: \u0026str,\n    importance: i64,\n    session_id: \u0026str,\n    now_ms: i64,\n) -\u003e Result\u003c(), String\u003e {\n    ensure_pending_table(conn)?;\n    let count: i64 = conn\n        .query_row(\"SELECT COUNT(*) FROM mem_pending\", [], |r| r.get(0))\n        .map_err(|e| e.to_string())?;",
+      "start_line": 78,
+      "end_line": 90,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/memory/extract.rs",
+      "content": "`mem_pending_approve` doesn't deduplicate `ids` before phase 1. If the frontend ever passes a duplicate (e.g., a multi-select UI bug or a stale row that was re-sent), `pending_get` returns `Some` for each occurrence and the same row is pushed into `rows` twice. Phase 2 then computes an embedding twice (wasted ONNX inference), phase 3 runs `insert_item_with` twice (the second becomes `Merged` via the existing dedup), and the report ends up over-counting (`merged += 2` for what is actually 1 merge). Add a `let mut seen = HashSet::new(); ids.iter().filter(|id| seen.insert(**id))` step up front, or `ids.sort_unstable(); ids.dedup()` before the loop.",
+      "existing_code": "// 第一段（锁内）：取待确认行\n        let rows: Vec\u003c(i64, PendingRow)\u003e = {\n            let _g = super::store_lock();\n            let conn = crate::db::open_db(\u0026app).map_err(|e| e.to_string())?;\n            let mut out = Vec::new();\n            for id in \u0026ids {\n                if let Some(row) = pending_get(\u0026conn, *id)? {\n                    out.push((*id, row));\n                }\n            }\n            out\n        };",
+      "start_line": 413,
+      "end_line": 424,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/memory/extract.rs",
+      "content": "`pending_delete(\u0026conn, \u0026[*id])?` propagates Err mid-loop, so a transient DB error on iteration k leaves iterations k+1..N unprocessed (their pending rows still present, no `insert_item_with` ever called) and the assembled `report` is lost (the function returns Err instead). Earlier iterations k' \u003c k have already done `insert_item_with` + `pending_delete` and are committed. The caller-side self-heal is real (re-running approve re-fetches the remaining pending rows), but the partial commit is a code smell: prefer either wrapping the loop in a `conn.transaction()` so insert+delete are atomic per row, or collecting (success_count, errors) and returning Err only after the loop completes. Right now this is a different shape of the same partial-commit pathology already flagged just above the loop.",
+      "existing_code": "for (id, row, emb) in \u0026prepared {\n            let item = NewItem {\n                kind: row.kind.clone(),\n                content: row.content.clone(),\n                tags: Vec::new(),\n                importance: row.importance,\n                source: \"model_inferred\".to_string(),\n            };\n            match store::insert_item_with(\u0026conn, \u0026item, emb.as_deref(), super::now_ms(), \u0026sp) {\n                Ok((store::InsertOutcome::Inserted(_), _)) =\u003e report.inserted += 1,\n                Ok((store::InsertOutcome::Merged { .. }, _)) =\u003e report.merged += 1,\n                _ =\u003e report.skipped += 1,\n            }\n            pending_delete(\u0026conn, \u0026[*id])?;\n        }",
+      "start_line": 441,
+      "end_line": 455,
+      "category": "maintainability",
+      "severity": "medium"
+    }
+  ],
+  "groups": [
+    {
+      "label": "src-tauri/src/bot.rs",
+      "files": [
+        "src-tauri/src/bot.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/bot/config/commands.rs",
+      "files": [
+        "src-tauri/src/bot/config/commands.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/bot/config/io.rs",
+      "files": [
+        "src-tauri/src/bot/config/io.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/bot/config/mod.rs",
+      "files": [
+        "src-tauri/src/bot/config/mod.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/bot/config/types.rs",
+      "files": [
+        "src-tauri/src/bot/config/types.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/bot_chat.rs",
+      "files": [
+        "src-tauri/src/bot_chat.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/lib.rs",
+      "files": [
+        "src-tauri/src/lib.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/memory/consolidate.rs",
+      "files": [
+        "src-tauri/src/memory/consolidate.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/memory/consolidate/tests.rs",
+      "files": [
+        "src-tauri/src/memory/consolidate/tests.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/memory/mod.rs",
+      "files": [
+        "src-tauri/src/memory/mod.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/memory/panel.rs",
+      "files": [
+        "src-tauri/src/memory/panel.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/memory/rank.rs",
+      "files": [
+        "src-tauri/src/memory/rank.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/memory/store.rs",
+      "files": [
+        "src-tauri/src/memory/store.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/memory/tests.rs",
+      "files": [
+        "src-tauri/src/memory/tests.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/prompts/mod.rs",
+      "files": [
+        "src-tauri/src/prompts/mod.rs"
+      ]
+    },
+    {
+      "label": "src/components/SettingsPage/MemoryPanel.tsx",
+      "files": [
+        "src/components/SettingsPage/MemoryPanel.tsx"
+      ]
+    },
+    {
+      "label": "src/components/SettingsPage/SettingsPage.tsx",
+      "files": [
+        "src/components/SettingsPage/SettingsPage.tsx"
+      ]
+    },
+    {
+      "label": "model-meta-service/main.py",
+      "files": [
+        "model-meta-service/main.py"
+      ]
+    },
+    {
+      "label": "src-tauri/src/memory/extract.rs",
+      "files": [
+        "src-tauri/src/memory/extract.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/prompts/extract.rs",
+      "files": [
+        "src-tauri/src/prompts/extract.rs"
+      ]
+    }
+  ],
+  "session_id": "6bd265f4-10eb-4cd8-9ba6-7625444a5348",
+  "manifest": {
+    "schema_version": "ocr.run-manifest/v1",
+    "run_id": "6bd265f4-10eb-4cd8-9ba6-7625444a5348",
+    "operation": "review",
+    "terminal_state": "complete",
+    "repository": {
+      "identity_sha256": "7aebc670c3c38e64ae52ffaf12cfa8ba078a29af906f8ef856132cd790dbe48b"
+    },
+    "input": {
+      "mode": "workspace",
+      "resolved_base": "559b58ffad464948e80d977f067bf03cbf26a2e9",
+      "source_artifact_sha256": "4fd2d13cfdd83582279ef7d4673243278dbb758b21c5c26b650bef66946896e3"
+    },
+    "execution": {
+      "ocr_version": "v1.12.11",
+      "provider": "minimax-cn",
+      "model": "MiniMax-M3",
+      "configured_concurrency": 8,
+      "rule_config_sha256": "8779d0d046b15151518200e75283f8c72cb6815f8e9b6de313d85d8f880d7dde",
+      "runtime_config_sha256": "f3ac1cdd2a45285ba614e32ab9bd03b86d9911c8deb3bec22fccf7b7bd4e6913"
+    },
+    "coverage": {
+      "selected": [
+        {
+          "item_id": "1c884e12713b6b07fc44851926ae4e553c3f592716187520402dc4ce4f4599ac",
+          "path": "src-tauri/src/bot.rs",
+          "fingerprint": "cc34edd7e5f7c4531ce9d6dbd777df8df4771fe880f38b9f733c1f977e6588fd"
+        },
+        {
+          "item_id": "1c8b17eb5b94a8ff6490651e78cb37945dc17d0866bc8496fcc83f1b673e58b9",
+          "path": "src/components/SettingsPage/MemoryPanel.tsx",
+          "fingerprint": "3f8de9bd6157181104b021494b92440fb7eddb5e17e78adae21c6e8370076753"
+        },
+        {
+          "item_id": "26420714701dc0d71c93f86d460580357d7b9821bee7a23d5006b4f75e9ad73c",
+          "path": "src-tauri/src/memory/consolidate/tests.rs",
+          "fingerprint": "acc189befc6c807c26fb34e493b188a858d8e0f583d85807042264479bf91e57"
+        },
+        {
+          "item_id": "265cb776cacd21f7e21e55abcfc867e5f6b4c58a8b8a4b2665cdc9937f883f2f",
+          "path": "src-tauri/src/memory/mod.rs",
+          "fingerprint": "775c8b3e3f340af6078f0f57ee58c2540fd8dbd64805ecdeb4813834f797d3d5"
+        },
+        {
+          "item_id": "2712fa77b6c49016590ed010f321f2b5a42b623b0a587a37e1743abd195e3490",
+          "path": "src-tauri/src/prompts/extract.rs",
+          "fingerprint": "5a30146bd8c6825c59af1920cb5288c2fa03b5830e281fa678897ee258000522"
+        },
+        {
+          "item_id": "3251734d24945b2c6d78dd04d49ae5f65baafd99618a1676659fdcdd51005490",
+          "path": "src-tauri/src/prompts/mod.rs",
+          "fingerprint": "f01eed9ca0aeefd68acb1c9c71a8b41cabc27571a5df9f9bca1e3fe7b06d70c9"
+        },
+        {
+          "item_id": "70779da7b6b3c7b01fd6ef65604b94235524e8c1f9afd7561face091502435d0",
+          "path": "src/components/SettingsPage/SettingsPage.tsx",
+          "fingerprint": "468aec273ec07bc064f0fa001e857c7dc3ce4a3d9529ac2c05b93ccc9a010470"
+        },
+        {
+          "item_id": "7991455305c81e839f47f53b6cad666a33ce5afcd08ba18885e3b38a2c559679",
+          "path": "src-tauri/src/memory/rank.rs",
+          "fingerprint": "079b14274cc95f10c6de17b681ac965759e43760a63b7e02eb0cfccdfe768e31"
+        },
+        {
+          "item_id": "8fbc5b686319f69af546e431d1d95ff414d07cd589fd1fb6acf5b501e56837d3",
+          "path": "src-tauri/src/memory/tests.rs",
+          "fingerprint": "1f781a8601165a92d146973142648c89e628412583adbaa749f88834b85d47e7"
+        },
+        {
+          "item_id": "a7e379852278b4dee9fec88891f3b590c97d7b31523f6a615066fea4c49ba99f",
+          "path": "src-tauri/src/lib.rs",
+          "fingerprint": "5df77d7a64a8260365c1e6a7ab7597dda65c4a12350c4860097d610e52526631"
+        },
+        {
+          "item_id": "abfb750e7cc702d77b2a9d86c369f1e88be11f3090df40fe3cfd9385d46101c2",
+          "path": "src-tauri/src/bot/config/io.rs",
+          "fingerprint": "333b0d79599ee897bbd78e5325a62b08a4cd9f6d24648b8e53ea52340dc37cff"
+        },
+        {
+          "item_id": "ad8f8381ed551acda797fbb5e3b55a4dcbab7799d42a5754dbe2a882a5165560",
+          "path": "model-meta-service/main.py",
+          "fingerprint": "2e5563d904a7dcb6154ba8050f1a1c42be14a9d2f26d1a09ab2596be8c44e4db"
+        },
+        {
+          "item_id": "b0c420498e6a5020460097d1183406e85c34fd421df0d63affb0026d0bef7d23",
+          "path": "src-tauri/src/memory/panel.rs",
+          "fingerprint": "3270ab55b2726ae75fbd795c36fe89ad11200f403f7e87f0c58a0882cf7fe3ba"
+        },
+        {
+          "item_id": "b5b45c1b14300d44ee4aba6a30e49480b604e25fce2dda66bedbb9240f31f911",
+          "path": "src-tauri/src/bot_chat.rs",
+          "fingerprint": "e7f68f8e50fa6bd491bdd59e65d27047a97eb41ccabdbf67f6669ecf5f9808f3"
+        },
+        {
+          "item_id": "b88810de83c919139e74c68b2410401afb05fb95242e1c4fe564008983608486",
+          "path": "src-tauri/src/memory/consolidate.rs",
+          "fingerprint": "0acfcb2902b795b95124ef33ba818283581cdfff6c308e91ec27cdd936230a6e"
+        },
+        {
+          "item_id": "e29b63da77f4c7cbdd279ffe76625b4544cce4259423b82535f7182effc1cb82",
+          "path": "src-tauri/src/bot/config/types.rs",
+          "fingerprint": "829c9353f9305a59c61bfe93ce3215def1c64050b83daa63fcc7cec81785b912"
+        },
+        {
+          "item_id": "e6822cd5d142548d582e2b38c7b9f2dc92b49bb83116705ee89427d7571b8b9f",
+          "path": "src-tauri/src/bot/config/commands.rs",
+          "fingerprint": "860f4abd99adaaa154cc7adbfff1f1c1e9b8603b052766c67403775d91d8c556"
+        },
+        {
+          "item_id": "e6e5eabc869c75bd48f9c2afbbf9b5a86b358c6dbffec7f3b7fcf29fc65d6e1c",
+          "path": "src-tauri/src/memory/store.rs",
+          "fingerprint": "a389c82c32651710fa24d532d39b37e5f02e4172020dcfe3daa583af5448f17e"
+        },
+        {
+          "item_id": "f8daa7d30d64c4471481185be9f80d269c0f7659c34798f7b66e769f38ed658d",
+          "path": "src-tauri/src/memory/extract.rs",
+          "fingerprint": "0f1d25137c38c4f9bb389693789f8bc143c1648d89b9074c528fd8a6f6ef1814"
+        },
+        {
+          "item_id": "fb88d62af4862899ca456a85e4b3ff20d8678c7cb925e7ceb3b0f37e85bd73a6",
+          "path": "src-tauri/src/bot/config/mod.rs",
+          "fingerprint": "cc97e2e7352680cc0a9b80f73ad94a694e6861960e397ace4d167aa8984fbf6a"
+        }
+      ],
+      "completed": [
+        {
+          "item_id": "1c884e12713b6b07fc44851926ae4e553c3f592716187520402dc4ce4f4599ac",
+          "path": "src-tauri/src/bot.rs",
+          "fingerprint": "cc34edd7e5f7c4531ce9d6dbd777df8df4771fe880f38b9f733c1f977e6588fd"
+        },
+        {
+          "item_id": "1c8b17eb5b94a8ff6490651e78cb37945dc17d0866bc8496fcc83f1b673e58b9",
+          "path": "src/components/SettingsPage/MemoryPanel.tsx",
+          "fingerprint": "3f8de9bd6157181104b021494b92440fb7eddb5e17e78adae21c6e8370076753"
+        },
+        {
+          "item_id": "26420714701dc0d71c93f86d460580357d7b9821bee7a23d5006b4f75e9ad73c",
+          "path": "src-tauri/src/memory/consolidate/tests.rs",
+          "fingerprint": "acc189befc6c807c26fb34e493b188a858d8e0f583d85807042264479bf91e57"
+        },
+        {
+          "item_id": "265cb776cacd21f7e21e55abcfc867e5f6b4c58a8b8a4b2665cdc9937f883f2f",
+          "path": "src-tauri/src/memory/mod.rs",
+          "fingerprint": "775c8b3e3f340af6078f0f57ee58c2540fd8dbd64805ecdeb4813834f797d3d5"
+        },
+        {
+          "item_id": "2712fa77b6c49016590ed010f321f2b5a42b623b0a587a37e1743abd195e3490",
+          "path": "src-tauri/src/prompts/extract.rs",
+          "fingerprint": "5a30146bd8c6825c59af1920cb5288c2fa03b5830e281fa678897ee258000522"
+        },
+        {
+          "item_id": "3251734d24945b2c6d78dd04d49ae5f65baafd99618a1676659fdcdd51005490",
+          "path": "src-tauri/src/prompts/mod.rs",
+          "fingerprint": "f01eed9ca0aeefd68acb1c9c71a8b41cabc27571a5df9f9bca1e3fe7b06d70c9"
+        },
+        {
+          "item_id": "70779da7b6b3c7b01fd6ef65604b94235524e8c1f9afd7561face091502435d0",
+          "path": "src/components/SettingsPage/SettingsPage.tsx",
+          "fingerprint": "468aec273ec07bc064f0fa001e857c7dc3ce4a3d9529ac2c05b93ccc9a010470"
+        },
+        {
+          "item_id": "7991455305c81e839f47f53b6cad666a33ce5afcd08ba18885e3b38a2c559679",
+          "path": "src-tauri/src/memory/rank.rs",
+          "fingerprint": "079b14274cc95f10c6de17b681ac965759e43760a63b7e02eb0cfccdfe768e31"
+        },
+        {
+          "item_id": "8fbc5b686319f69af546e431d1d95ff414d07cd589fd1fb6acf5b501e56837d3",
+          "path": "src-tauri/src/memory/tests.rs",
+          "fingerprint": "1f781a8601165a92d146973142648c89e628412583adbaa749f88834b85d47e7"
+        },
+        {
+          "item_id": "a7e379852278b4dee9fec88891f3b590c97d7b31523f6a615066fea4c49ba99f",
+          "path": "src-tauri/src/lib.rs",
+          "fingerprint": "5df77d7a64a8260365c1e6a7ab7597dda65c4a12350c4860097d610e52526631"
+        },
+        {
+          "item_id": "abfb750e7cc702d77b2a9d86c369f1e88be11f3090df40fe3cfd9385d46101c2",
+          "path": "src-tauri/src/bot/config/io.rs",
+          "fingerprint": "333b0d79599ee897bbd78e5325a62b08a4cd9f6d24648b8e53ea52340dc37cff"
+        },
+        {
+          "item_id": "ad8f8381ed551acda797fbb5e3b55a4dcbab7799d42a5754dbe2a882a5165560",
+          "path": "model-meta-service/main.py",
+          "fingerprint": "2e5563d904a7dcb6154ba8050f1a1c42be14a9d2f26d1a09ab2596be8c44e4db"
+        },
+        {
+          "item_id": "b0c420498e6a5020460097d1183406e85c34fd421df0d63affb0026d0bef7d23",
+          "path": "src-tauri/src/memory/panel.rs",
+          "fingerprint": "3270ab55b2726ae75fbd795c36fe89ad11200f403f7e87f0c58a0882cf7fe3ba"
+        },
+        {
+          "item_id": "b5b45c1b14300d44ee4aba6a30e49480b604e25fce2dda66bedbb9240f31f911",
+          "path": "src-tauri/src/bot_chat.rs",
+          "fingerprint": "e7f68f8e50fa6bd491bdd59e65d27047a97eb41ccabdbf67f6669ecf5f9808f3"
+        },
+        {
+          "item_id": "b88810de83c919139e74c68b2410401afb05fb95242e1c4fe564008983608486",
+          "path": "src-tauri/src/memory/consolidate.rs",
+          "fingerprint": "0acfcb2902b795b95124ef33ba818283581cdfff6c308e91ec27cdd936230a6e"
+        },
+        {
+          "item_id": "e29b63da77f4c7cbdd279ffe76625b4544cce4259423b82535f7182effc1cb82",
+          "path": "src-tauri/src/bot/config/types.rs",
+          "fingerprint": "829c9353f9305a59c61bfe93ce3215def1c64050b83daa63fcc7cec81785b912"
+        },
+        {
+          "item_id": "e6822cd5d142548d582e2b38c7b9f2dc92b49bb83116705ee89427d7571b8b9f",
+          "path": "src-tauri/src/bot/config/commands.rs",
+          "fingerprint": "860f4abd99adaaa154cc7adbfff1f1c1e9b8603b052766c67403775d91d8c556"
+        },
+        {
+          "item_id": "e6e5eabc869c75bd48f9c2afbbf9b5a86b358c6dbffec7f3b7fcf29fc65d6e1c",
+          "path": "src-tauri/src/memory/store.rs",
+          "fingerprint": "a389c82c32651710fa24d532d39b37e5f02e4172020dcfe3daa583af5448f17e"
+        },
+        {
+          "item_id": "f8daa7d30d64c4471481185be9f80d269c0f7659c34798f7b66e769f38ed658d",
+          "path": "src-tauri/src/memory/extract.rs",
+          "fingerprint": "0f1d25137c38c4f9bb389693789f8bc143c1648d89b9074c528fd8a6f6ef1814"
+        },
+        {
+          "item_id": "fb88d62af4862899ca456a85e4b3ff20d8678c7cb925e7ceb3b0f37e85bd73a6",
+          "path": "src-tauri/src/bot/config/mod.rs",
+          "fingerprint": "cc97e2e7352680cc0a9b80f73ad94a694e6861960e397ace4d167aa8984fbf6a"
+        }
+      ],
+      "reused": [],
+      "failed": [],
+      "waived": []
+    },
+    "elapsed_ms": 954036
+  }
+}

@@ -1,0 +1,408 @@
+{
+  "status": "complete",
+  "llm": {
+    "provider": "minimax-cn",
+    "model": "MiniMax-M3"
+  },
+  "message": "Review complete: 21 finding(s) across 8 selected item(s).",
+  "summary": {
+    "files_reviewed": 8,
+    "comments": 21,
+    "total_tokens": 1523234,
+    "input_tokens": 1408322,
+    "output_tokens": 114912,
+    "cache_read_tokens": 1057074,
+    "elapsed": "10m4s"
+  },
+  "tool_calls": {
+    "total": 85,
+    "by_tool": {
+      "code_comment": 7,
+      "code_search": 32,
+      "file_find": 4,
+      "file_read": 39,
+      "file_read_diff": 3
+    },
+    "failure": 1,
+    "failure_by_tool": {
+      "file_read": 1
+    },
+    "failure_details": [
+      {
+        "tool_call_number": 71,
+        "tool_name": "file_read",
+        "file_path": "src/components/SettingsPage/MemoryPanel.tsx",
+        "arguments": "{\"end_line\": 80, \"file_path\": \"src/components/SettingsPage/MemoryPanel.tsx\", \"start_line\": 90}",
+        "error": "invalid line range: start_line 90 is greater than end_line 80"
+      }
+    ]
+  },
+  "comments": [
+    {
+      "path": "src-tauri/src/memory/store.rs",
+      "content": "The implementation is correct and efficient: ownership of `String` is taken and moved back without cloning for the common (non-\"user\") case. The function appropriately handles the legacy \"user\" → \"user_stated\" normalization at the read-side, which is the right place per the comment's rationale (avoids touching on-disk data, edits will persist the normalized value).\n\nMinor consideration (not a bug): the contract string `\"user_stated\"` is duplicated as a magic string in `is_protected` (line 168) and now here. Extracting a `const SOURCE_USER_STATED: \u0026str = \"user_stated\"` (and possibly `SOURCE_USER_LEGACY: \u0026str = \"user\"`) would centralize the contract, but this would be a refactor across the file and is out of scope for this change.",
+      "existing_code": "/// source 契约归一（读取侧）：历史数据存在 'user' 脏值（三值契约\n/// user_stated/model_inferred/system 定型前写入），不归一则 importance=5 的\n/// 口述条目进不了 is_protected、会被容量淘汰误删。只改读取结果，不动盘上\n/// 历史数据；编辑保存时自然落契约值。\nfn normalize_source(s: String) -\u003e String {\n    if s == \"user\" {\n        \"user_stated\".into()\n    } else {\n        s\n    }\n}",
+      "start_line": 95,
+      "end_line": 105,
+      "category": "style",
+      "severity": "low"
+    },
+    {
+      "path": "model-meta-service/main.py",
+      "content": "Non-deterministic fallback_color: `hash(pkey)` is salted per-process by PYTHONHASHSEED (random since Python 3.3), so the same provider_key maps to a different palette slot on every fresh install / replica / test reset. The color is only set on initial INSERT (the `ON CONFLICT DO UPDATE SET` clause deliberately omits `fallback_color`/`fallback_char`), so the assignment is sticky after first sync — but two developers or two user machines get inconsistent colors for the same provider, breaking screenshots, docs, and any cross-instance UI comparison. Use a stable hash (e.g. `hashlib.blake2b(pkey.encode(), digest_size=4).digest()` interpreted as int, or `zlib.crc32(pkey)`) so the mapping is reproducible.",
+      "suggestion_code": "(pkey, name, LOGO_URL.format(pkey), PALETTE[zlib.crc32(pkey.encode()) % len(PALETTE)], name[0].upper(), p.get(\"api\")),",
+      "existing_code": "(pkey, name, LOGO_URL.format(pkey), PALETTE[hash(pkey) % len(PALETTE)], name[0].upper(), p.get(\"api\")),",
+      "start_line": 68,
+      "end_line": 68,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "model-meta-service/main.py",
+      "content": "SQLite connections are never closed. `with get_db() as conn:` only handles transaction commit/rollback — `sqlite3.Connection.__exit__` does NOT call `.close()`. Every request handler opens a fresh connection that is never explicitly closed; CPython refcounting will eventually collect it, but the underlying file descriptor and any prepared statements linger. For a local-only service this is not critical, but it is a real resource-management bug that will surface if this file is ever copy-pasted into a busier service. Wrap the connection in `contextlib.closing` (or add `conn.close()` in a `finally`).",
+      "suggestion_code": "def get_db() -\u003e sqlite3.Connection:\n    conn = sqlite3.connect(DB_PATH)\n    conn.row_factory = sqlite3.Row\n    conn.close  # expose close so callers can use closing(get_db()) if they want\n    return conn",
+      "existing_code": "def get_db() -\u003e sqlite3.Connection:\n    conn = sqlite3.connect(DB_PATH)\n    conn.row_factory = sqlite3.Row\n    return conn",
+      "start_line": 48,
+      "end_line": 51,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/memory/panel.rs",
+      "content": "Silent embedding loss when embed::embed_text returns None: the SQL CASE `embedding = CASE WHEN content \u003c\u003e ?1 THEN ?6 ELSE COALESCE(?6, embedding) END` in store::update_by_id overwrites the embedding column with NULL whenever the engine fails (engine uninitialized, tokenizer error, ONNX session fail, dimension mismatch). The panel user sees `hasEmbedding: false` on success with no error code — they cannot tell whether the entry just lost semantic recall or was always embedding-less. Either fail closed at the command layer (return a typed error so the UI can toast \"编辑已保存，但语义检索已失效\" or refuse the save) or pre-check `embed::engine_status()` before issuing the update.",
+      "suggestion_code": "/// 编辑保存（content/importance/kind；tags 与 source 不可改）。\n/// content 变更时重算嵌入（持锁前算）。嵌入引擎不可用时拒绝保存（防语义静默丢失）。\n#[tauri::command]\npub async fn mem_update(\n    app: AppHandle,\n    id: String,\n    content: String,\n    importance: i64,\n    kind: String,\n) -\u003e CommandResult\u003cMemItemView\u003e {\n    let r = tauri::async_runtime::spawn_blocking(move || -\u003e Result\u003cMemItemView, String\u003e {\n        let trimmed = content.trim();\n        if trimmed.is_empty() {\n            return Err(\"记忆内容不能为空（要删除请用删除按钮）\".into());\n        }\n        let emb = embed::embed_text(trimmed);\n        // 引擎不可用 → 拒写，避免编辑后语义检索静默失效（store::update_by_id\n        // 的 CASE 会把 embedding 置 NULL，前端无从感知）\n        if emb.is_none() \u0026\u0026 embed::engine_status().is_err() {\n            match embed::engine_status() {\n                Err(e) =\u003e return Err(format!(\"嵌入引擎不可用，编辑未保存：{e}\")),\n                Ok(()) =\u003e {} // 引擎 OK 但本条内容（截断/空/超长等）确实无向量 → 走旧路径\n            }\n        }\n        let _g = lock_db();\n        let conn = crate::db::open_db(\u0026app).map_err(|e| e.to_string())?;\n        update_core(\n            \u0026conn,\n            \u0026id,\n            \u0026content,\n            importance,\n            \u0026kind,\n            emb.as_deref(),\n            now_ms(),\n        )\n    })",
+      "existing_code": "/// 编辑保存（content/importance/kind；tags 与 source 不可改）。\n/// content 变更时重算嵌入（持锁前算）。\n#[tauri::command]\npub async fn mem_update(\n    app: AppHandle,\n    id: String,\n    content: String,\n    importance: i64,\n    kind: String,\n) -\u003e CommandResult\u003cMemItemView\u003e {\n    let r = tauri::async_runtime::spawn_blocking(move || -\u003e Result\u003cMemItemView, String\u003e {\n        let emb = embed::embed_text(\u0026content);\n        let _g = lock_db();\n        let conn = crate::db::open_db(\u0026app).map_err(|e| e.to_string())?;\n        update_core(\n            \u0026conn,\n            \u0026id,\n            \u0026content,\n            importance,\n            \u0026kind,\n            emb.as_deref(),\n            now_ms(),\n        )\n    })",
+      "start_line": 218,
+      "end_line": 241,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/memory/panel.rs",
+      "content": "`update_core` reads the full table twice per edit: once to find `existing` (used only for `existing.source`) and once to read back the post-update row. Each `load_all` also deserializes the 512-dim `Vec\u003cf32\u003e` for every row in the table. With `MAX_MEM_ITEMS=500` this is acceptable; cleaner solution is a `store::find_by_id` (or `get_source`) helper plus returning the updated row from `update_by_id`.",
+      "suggestion_code": "// 取 source（仅用于面板不可改的字段），不再做全表二次 load_all\n    let existing_source = store::get_source(conn, id)?\n        .ok_or_else(|| \"记忆不存在或已被删除\".to_string())?;\n    store::update_by_id(\n        conn,\n        id,\n        content,\n        importance,\n        \u0026existing_source,\n        kind,\n        embedding,\n        now_ms,\n    )?;\n    let updated = store::find_by_id(conn, id)?\n        .ok_or_else(|| \"更新后读取失败\".to_string())?;\n    Ok(MemItemView::from(\u0026updated))",
+      "existing_code": "let existing = store::load_all(conn)?\n        .into_iter()\n        .find(|m| m.id == id)\n        .ok_or_else(|| \"记忆不存在或已被删除\".to_string())?;\n    store::update_by_id(\n        conn,\n        id,\n        content,\n        importance,\n        \u0026existing.source,\n        kind,\n        embedding,\n        now_ms,\n    )?;\n    let updated = store::load_all(conn)?\n        .into_iter()\n        .find(|m| m.id == id)\n        .ok_or_else(|| \"更新后读取失败\".to_string())?;\n    Ok(MemItemView::from(\u0026updated))",
+      "start_line": 137,
+      "end_line": 155,
+      "category": "performance",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/memory/panel.rs",
+      "content": "All backend errors are flattened to `String` at the `\u0026Connection`-pure core layer, then wrapped as `CommandError::DbError(String)`. The frontend toast cannot distinguish \"not found\" (the `update_core` / `delete_core` \"记忆不存在\" path) from a real DB failure, and `mem_delete`'s `false` (id missing) and an `Err(...)` look identical after wrapping. Use typed errors: `TaskNotFound(id)` / `InvalidArgument { field, value, reason }` from `error.rs`.",
+      "suggestion_code": "use crate::error::CommandError;\n\npub(crate) fn update_core(\n    conn: \u0026rusqlite::Connection,\n    id: \u0026str,\n    content: \u0026str,\n    importance: i64,\n    kind: \u0026str,\n    embedding: Option\u003c\u0026[f32]\u003e,\n    now_ms: i64,\n) -\u003e Result\u003cMemItemView, CommandError\u003e {\n    store::ensure_table(conn)?;\n    let content = content.trim();\n    if content.is_empty() {\n        return Err(CommandError::InvalidArgument {\n            field: \"content\".into(),\n            value: content.to_string(),\n            reason: \"内容不能为空（要删除请用删除按钮）\".into(),\n        });\n    }\n    if content.chars().count() \u003e MAX_CONTENT_CHARS {\n        return Err(CommandError::InvalidArgument {\n            field: \"content\".into(),\n            value: format!(\"{} chars\", content.chars().count()),\n            reason: format!(\"记忆内容太长（≤{MAX_CONTENT_CHARS} 字）\"),\n        });\n    }\n    if !EDITABLE_KINDS.contains(\u0026kind) {\n        return Err(CommandError::InvalidArgument {\n            field: \"kind\".into(),\n            value: kind.into(),\n            reason: \"未知记忆类型\".into(),\n        });\n    }\n    let existing = store::find_by_id(conn, id)?\n        .ok_or_else(|| CommandError::TaskNotFound(id.to_string()))?;",
+      "existing_code": "pub(crate) fn update_core(\n    conn: \u0026rusqlite::Connection,\n    id: \u0026str,\n    content: \u0026str,\n    importance: i64,\n    kind: \u0026str,\n    embedding: Option\u003c\u0026[f32]\u003e,\n    now_ms: i64,\n) -\u003e Result\u003cMemItemView, String\u003e {\n    store::ensure_table(conn)?;\n    let content = content.trim();\n    if content.is_empty() {\n        return Err(\"记忆内容不能为空（要删除请用删除按钮）\".into());\n    }\n    if content.chars().count() \u003e MAX_CONTENT_CHARS {\n        return Err(format!(\"记忆内容太长（≤{MAX_CONTENT_CHARS} 字）\"));\n    }\n    if !EDITABLE_KINDS.contains(\u0026kind) {\n        return Err(format!(\"未知记忆类型：{kind}\"));\n    }\n    let existing = store::load_all(conn)?\n        .into_iter()\n        .find(|m| m.id == id)\n        .ok_or_else(|| \"记忆不存在或已被删除\".to_string())?;",
+      "start_line": 117,
+      "end_line": 140,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/memory/panel.rs",
+      "content": "`delete_core` does not check `store::is_protected` and has no audit trail. The file comment justifies this (\"前端 confirm 文案负责提示影响\"), but a frontend bug, a stale UI, or a replayed IPC can drop a protected `importance=5 user_stated` entry (or any `evo:` self-evolved lesson) with no log line. Either refuse + require an explicit `force` flag for protected rows, or return the `MemItemView` of the row being deleted so the command layer can log kind/source/importance before dropping it.",
+      "suggestion_code": "/// 删除单条（显式用户操作允许删任何条目，含 evo: 前缀的自进化教训——\n/// 前端 confirm 文案负责提示影响）。返回是否真删到。\n/// 若条目受保护（is_protected=true），强制删除须经 `force=true`；\n/// 受保护条目的删除须记录审计日志（kind/source/importance/now）。\npub(crate) fn delete_core(\n    conn: \u0026rusqlite::Connection,\n    id: \u0026str,\n    force: bool,\n) -\u003e Result\u003cbool, CommandError\u003e {\n    store::ensure_table(conn)?;\n    let victim = store::find_by_id(conn, id)?\n        .ok_or_else(|| CommandError::TaskNotFound(id.to_string()))?;\n    if store::is_protected(\u0026victim) \u0026\u0026 !force {\n        return Err(CommandError::DomainRule {\n            domain: \"memory.delete_protected\".into(),\n            reason: format!(\"条目受保护（importance=5, source={}），需 force=true\", victim.source),\n        });\n    }\n    let deleted = store::delete_by_ids(conn, \u0026[id.to_string()])? \u003e 0;\n    if deleted {\n        eprintln!(\n            \"[audit] memory_panel_delete id={id} kind={} source={} importance={} protected={}\",\n            victim.kind, victim.source, victim.importance, !force\n        );\n    }\n    Ok(deleted)\n}",
+      "existing_code": "/// 删除单条（显式用户操作允许删任何条目，含 evo: 前缀的自进化教训——\n/// 前端 confirm 文案负责提示影响）。返回是否真删到。\npub(crate) fn delete_core(conn: \u0026rusqlite::Connection, id: \u0026str) -\u003e Result\u003cbool, String\u003e {\n    store::ensure_table(conn)?;\n    Ok(store::delete_by_ids(conn, \u0026[id.to_string()])? \u003e 0)\n}",
+      "start_line": 158,
+      "end_line": 163,
+      "category": "security",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/memory/panel.rs",
+      "content": "`list_core`'s kind filter does exact-string match without checking `EDITABLE_KINDS`, so a typo or stray whitespace (e.g., `\"FACT \"`) returns empty silently instead of erroring. Inconsistent with `update_core` which enforces the whitelist. Either validate the same way on read, or document that the read path is permissive.",
+      "suggestion_code": "// kind 白名单：未知 kind（含前后空白/大小写错误）直接 400，避免静默返回空集\n    if let Some(k) = kind.filter(|k| !k.is_empty() \u0026\u0026 *k != \"all\") {\n        if !EDITABLE_KINDS.contains(\u0026k) {\n            return Err(format!(\"未知记忆类型：{k}\"));\n        }\n    }\n    let filtered: Vec\u003cMemItem\u003e = match kind {\n        Some(k) if !k.is_empty() \u0026\u0026 k != \"all\" =\u003e {\n            items.into_iter().filter(|m| m.kind == k).collect()\n        }\n        _ =\u003e items,\n    };",
+      "existing_code": "let filtered: Vec\u003cMemItem\u003e = match kind {\n        Some(k) if !k.is_empty() \u0026\u0026 k != \"all\" =\u003e {\n            items.into_iter().filter(|m| m.kind == k).collect()\n        }\n        _ =\u003e items,\n    };",
+      "start_line": 96,
+      "end_line": 101,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/memory/panel.rs",
+      "content": "`update_core` re-derives `existing.source` from `load_all` (which goes through `normalize_source`) and writes it back verbatim via `update_by_id` (which writes raw). So a row whose on-disk source is the legacy `'user'` value gets re-saved as `'user'` — not normalized. The panel cannot be used to migrate legacy dirty values; the read-side normalization in `store.rs` is load-bearing here. Either accept this and document it, or normalize once on the way through the panel.",
+      "suggestion_code": "// 取 source（已读侧归一）；update_by_id 直写盘源，因此历史脏值 'user' 经一次面板编辑\n    // 即可落契约值 'user_stated'——读路径归一是兜底，写路径才是真正的迁移触发点。\n    let existing = store::find_by_id(conn, id)?\n        .ok_or_else(|| CommandError::TaskNotFound(id.to_string()))?;\n    let source = if existing.source == \"user\" { \"user_stated\" } else { \u0026existing.source };\n    store::update_by_id(\n        conn,\n        id,\n        content,\n        importance,\n        source,\n        kind,\n        embedding,\n        now_ms,\n    )?;",
+      "existing_code": "let existing = store::load_all(conn)?\n        .into_iter()\n        .find(|m| m.id == id)\n        .ok_or_else(|| \"记忆不存在或已被删除\".to_string())?;\n    store::update_by_id(\n        conn,\n        id,\n        content,\n        importance,\n        \u0026existing.source,\n        kind,\n        embedding,\n        now_ms,\n    )?;",
+      "start_line": 137,
+      "end_line": 150,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/memory/panel.rs",
+      "content": "Test `legacy_user_source_normalized_and_protected` inserts via raw SQL and a hardcoded RFC3339 string (`'2026-01-01T00:00:00+00:00'`), bypassing `store::ts_to_text` / `ts_to_ms`. If the storage format ever changes (precision, timezone normalization), the test silently breaks. Use the store helpers to construct timestamps.",
+      "suggestion_code": "let ts = store::ts_to_text(1_000);\n        conn.execute(\n            \"INSERT INTO mem_items (id, kind, content, tags, importance, source, created_at, updated_at)\n             VALUES ('legacy', 'preference', '历史口述偏好', 'k', 5, 'user', ?1, ?1)\",\n            rusqlite::params![ts],\n        )\n        .unwrap();",
+      "existing_code": "conn.execute(\n            \"INSERT INTO mem_items (id, kind, content, tags, importance, source, created_at, updated_at)\n             VALUES ('legacy', 'preference', '历史口述偏好', 'k', 5, 'user', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')\",\n            [],\n        )\n        .unwrap();",
+      "start_line": 516,
+      "end_line": 521,
+      "category": "test",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/memory/panel.rs",
+      "content": "`mem_list`'s kind filter is matched against the magic string `\"all\"`, which is a UI sentinel leaking into the API contract. Consider a typed `Option\u003cMemKind\u003e` newtype or documenting the sentinel so future maintainers don't have to grep for the literal.",
+      "existing_code": "let filtered: Vec\u003cMemItem\u003e = match kind {\n    Some(k) if !k.is_empty() \u0026\u0026 k != \"all\" =\u003e {\n        items.into_iter().filter(|m| m.kind == k).collect()\n    }\n    _ =\u003e items,\n};",
+      "start_line": 96,
+      "end_line": 101,
+      "category": "maintainability"
+    },
+    {
+      "path": "src/components/SettingsPage/MemoryPanel.tsx",
+      "content": "`Promise.all` couples the two invocations: if `mem_stats` fails (e.g., transient open_db error in `panel.rs:266`), `setItems` never runs and the user sees a load error with a stale list. Stats is informational (banner + counts), not load-bearing for rendering — use `Promise.allSettled` or sequential `await`s so a stats failure doesn't block the list refresh.\n\n```suggestion\n      const [listRes, stRes] = await Promise.allSettled([\n        invoke\u003cMemItemView[]\u003e(\"mem_list\", {\n          query: q || null,\n          kind: kind === \"all\" ? null : kind,\n        }),\n        invoke\u003cMemStats | null\u003e(\"mem_stats\"),\n      ]);\n      if (listRes.status === \"fulfilled\") {\n        setItems(Array.isArray(listRes.value) ? listRes.value : []);\n        setLoadError(\"\");\n      } else {\n        setLoadError(formatCommandError(listRes.reason));\n      }\n      if (stRes.status === \"fulfilled\") {\n        const st = stRes.value;\n        if (st \u0026\u0026 typeof st === \"object\" \u0026\u0026 \"total\" in st) setStats(st);\n      }\n      // stats failure is silent — banner simply stays in last known state\n```\n\n```",
+      "suggestion_code": "      const [listRes, stRes] = await Promise.allSettled([\n        invoke\u003cMemItemView[]\u003e(\"mem_list\", {\n          query: q || null,\n          kind: kind === \"all\" ? null : kind,\n        }),\n        invoke\u003cMemStats | null\u003e(\"mem_stats\"),\n      ]);\n      if (listRes.status === \"fulfilled\") {\n        setItems(Array.isArray(listRes.value) ? listRes.value : []);\n        setLoadError(\"\");\n      } else {\n        setLoadError(formatCommandError(listRes.reason));\n      }\n      if (stRes.status === \"fulfilled\") {\n        const st = stRes.value;\n        if (st \u0026\u0026 typeof st === \"object\" \u0026\u0026 \"total\" in st) setStats(st);\n      }",
+      "existing_code": "      const [list, st] = await Promise.all([\n        invoke\u003cMemItemView[]\u003e(\"mem_list\", {\n          query: q || null,\n          kind: kind === \"all\" ? null : kind,\n        }),\n        invoke\u003cMemStats | null\u003e(\"mem_stats\"),\n      ]);\n      setItems(Array.isArray(list) ? list : []);\n      if (st \u0026\u0026 typeof st === \"object\" \u0026\u0026 \"total\" in st) setStats(st);\n      setLoadError(\"\");",
+      "start_line": 97,
+      "end_line": 106,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/SettingsPage/MemoryPanel.tsx",
+      "content": "Debounced search has a race: if `mem_list` for query A is still in flight when query B's debounce fires, A's response can resolve after B's and overwrite the fresher list. Track an in-flight token (a ref incremented each call) and discard stale resolutions.\n\n```suggestion\n  const reqIdRef = useRef(0);\n  const reload = useCallback(async (q: string, kind: string) =\u003e {\n    const reqId = ++reqIdRef.current;\n    try {\n      const [listRes, stRes] = await Promise.allSettled([\n        invoke\u003cMemItemView[]\u003e(\"mem_list\", {\n          query: q || null,\n          kind: kind === \"all\" ? null : kind,\n        }),\n        invoke\u003cMemStats | null\u003e(\"mem_stats\"),\n      ]);\n      if (reqId !== reqIdRef.current) return; // stale, newer request superseded\n      if (listRes.status === \"fulfilled\") {\n        setItems(Array.isArray(listRes.value) ? listRes.value : []);\n        setLoadError(\"\");\n      } else {\n        setLoadError(formatCommandError(listRes.reason));\n      }\n      if (stRes.status === \"fulfilled\") {\n        const st = stRes.value;\n        if (st \u0026\u0026 typeof st === \"object\" \u0026\u0026 \"total\" in st) setStats(st);\n      }\n    } catch (e) {\n      if (reqId !== reqIdRef.current) return;\n      setLoadError(formatCommandError(e));\n    }\n  }, []);\n```\n\n```",
+      "suggestion_code": "  const reqIdRef = useRef(0);\n  const reload = useCallback(async (q: string, kind: string) =\u003e {\n    const reqId = ++reqIdRef.current;\n    try {\n      const [listRes, stRes] = await Promise.allSettled([\n        invoke\u003cMemItemView[]\u003e(\"mem_list\", {\n          query: q || null,\n          kind: kind === \"all\" ? null : kind,\n        }),\n        invoke\u003cMemStats | null\u003e(\"mem_stats\"),\n      ]);\n      if (reqId !== reqIdRef.current) return; // stale\n      if (listRes.status === \"fulfilled\") {\n        setItems(Array.isArray(listRes.value) ? listRes.value : []);\n        setLoadError(\"\");\n      } else {\n        setLoadError(formatCommandError(listRes.reason));\n      }\n      if (stRes.status === \"fulfilled\") {\n        const st = stRes.value;\n        if (st \u0026\u0026 typeof st === \"object\" \u0026\u0026 \"total\" in st) setStats(st);\n      }\n    } catch (e) {\n      if (reqId !== reqIdRef.current) return;\n      setLoadError(formatCommandError(e));\n    }\n  }, []);",
+      "existing_code": "  const reload = useCallback(async (q: string, kind: string) =\u003e {\n    try {\n      const [list, st] = await Promise.all([\n        invoke\u003cMemItemView[]\u003e(\"mem_list\", {\n          query: q || null,\n          kind: kind === \"all\" ? null : kind,\n        }),\n        invoke\u003cMemStats | null\u003e(\"mem_stats\"),\n      ]);\n      setItems(Array.isArray(list) ? list : []);\n      if (st \u0026\u0026 typeof st === \"object\" \u0026\u0026 \"total\" in st) setStats(st);\n      setLoadError(\"\");\n    } catch (e) {\n      setLoadError(formatCommandError(e));\n    }\n  }, []);",
+      "start_line": 95,
+      "end_line": 110,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/SettingsPage/MemoryPanel.tsx",
+      "content": "The pencil (edit) IconButton is not gated by `busy`, but the trash icon is. During an in-flight `mem_update` or `mem_delete`, the user can click edit on another row — `startEdit` overwrites the local `editContent`/`editKind`/`editImportance` state, then the in-flight save's `setEditingId(null)` fires, and the user sees the row they just clicked edit on snap back to display mode with no explanation. Add `disabled={busy}` to the edit button to mirror the delete button.\n\n```suggestion\n                \u003cIconButton\n                  aria-label=\"编辑记忆\"\n                  title=\"编辑记忆\"\n                  className=\"shrink-0 text-[var(--t5)] hover:text-[var(--t2)]\"\n                  onClick={() =\u003e startEdit(m)}\n                  disabled={busy}\n                \u003e\n                  \u003cPencil size={13} aria-hidden /\u003e\n                ",
+      "existing_code": "\u003cIconButton\n                  aria-label=\"编辑记忆\"\n                  title=\"编辑记忆\"\n                  className=\"shrink-0 text-[var(--t5)] hover:text-[var(--t2)]\"\n                  onClick={() =\u003e startEdit(m)}\n                \u003e\n                  \u003cPencil size={13} aria-hidden /\u003e\n                \u003c/IconButton\u003e",
+      "start_line": 325,
+      "end_line": 332,
+      "category": "bug"
+    },
+    {
+      "path": "src/components/SettingsPage/MemoryPanel.tsx",
+      "content": "`saveEdit` sends `editContent` to the backend unconditionally. The backend (`panel.rs:127-130`) rejects empty/whitespace-only content, but the user sees a generic error toast (e.g., \"记忆内容不能为空…\") after a round trip. Add a pre-flight trim check and surface a friendly inline error before invoking.\n\n```suggestion\n  const saveEdit = async () =\u003e {\n    if (!editingId) return;\n    const trimmed = editContent.trim();\n    if (!trimmed) {\n      setRowError(\"记忆内容不能为空（要删除请用删除按钮）\");\n      return;\n    }\n    setBusy(true);\n    setRowError(\"\");\n    try {\n      await invoke(\"mem_update\", {\n        id: editingId,\n        content: trimmed,\n        importance: editImportance,\n        kind: editKind,\n      });\n      setEditingId(null);\n      await reload(debouncedQuery, kindFilter);\n    } catch (e) {\n      setRowError(formatCommandError(e));\n    } finally {\n      setBusy(false);\n    }\n  };\n```\n\n```",
+      "suggestion_code": "  const saveEdit = async () =\u003e {\n    if (!editingId) return;\n    const trimmed = editContent.trim();\n    if (!trimmed) {\n      setRowError(\"记忆内容不能为空（要删除请用删除按钮）\");\n      return;\n    }\n    setBusy(true);\n    setRowError(\"\");\n    try {\n      await invoke(\"mem_update\", {\n        id: editingId,\n        content: trimmed,\n        importance: editImportance,\n        kind: editKind,\n      });\n      setEditingId(null);\n      await reload(debouncedQuery, kindFilter);\n    } catch (e) {\n      setRowError(formatCommandError(e));\n    } finally {\n      setBusy(false);\n    }\n  };",
+      "existing_code": "  const saveEdit = async () =\u003e {\n    if (!editingId) return;\n    setBusy(true);\n    setRowError(\"\");\n    try {\n      await invoke(\"mem_update\", {\n        id: editingId,\n        content: editContent,\n        importance: editImportance,\n        kind: editKind,\n      });\n      setEditingId(null);\n      await reload(debouncedQuery, kindFilter);\n    } catch (e) {\n      setRowError(formatCommandError(e));\n    } finally {\n      setBusy(false);\n    }\n  };",
+      "start_line": 124,
+      "end_line": 142,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/SettingsPage/MemoryPanel.tsx",
+      "content": "The Cancel button is not disabled while `busy`. Cancelling mid-save leaves `editingId=null` while the in-flight `mem_update` resolves; if the user re-clicks edit on a different row first, the in-flight save's `setEditingId(null)` then yanks the new edit form back to display mode. Also, the edit state (`editContent`/`editImportance`/`editKind`) is not reset on cancel or after a successful save — values from a prior edit persist until the next `startEdit`. Reset state on both paths and disable Cancel during busy.\n\n```suggestion\n                  \u003cbutton\n                    type=\"button\"\n                    className=\"nm-btn shrink-0 px-2.5 py-1 text-xs text-[var(--t5)]\"\n                    onClick={() =\u003e {\n                      setEditingId(null);\n                      setEditContent(\"\");\n                      setEditImportance(3);\n                      setEditKind(\"fact\");\n                      setRowError(\"\");\n                    }}\n                    disabled={busy}\n                  \u003e\n                    取消\n                  ",
+      "existing_code": "\u003cbutton\n                    type=\"button\"\n                    className=\"nm-btn shrink-0 px-2.5 py-1 text-xs text-[var(--t5)]\"\n                    onClick={() =\u003e setEditingId(null)}\n                  \u003e\n                    取消\n                  \u003c/button\u003e",
+      "start_line": 284,
+      "end_line": 290,
+      "category": "maintainability"
+    },
+    {
+      "path": "src-tauri/src/memory/panel.rs",
+      "content": "`stats_core` calls `store::load_all(conn)`, which deserializes the entire table including the 512-dim `Vec\u003cf32\u003e` embedding for every row (500 × 512 × 4B ≈ 1MB at capacity). The function then only consumes `items.len()`, `m.kind`, `m.source`, and `m.embedding.is_some()` — none of which need the embedding bytes. The deserialization also runs inside `lock_db()` in `mem_stats` (single-writer gate), so every concurrent write is blocked for the duration of the embedding allocation/copy that the stats query never reads. Replace with SQL aggregates (e.g. `SELECT COUNT(*) FROM mem_items`, `SELECT COUNT(*) FROM mem_items WHERE embedding IS NOT NULL`, plus `GROUP BY kind` / `GROUP BY source` `COUNT(*)`) and skip `load_all` entirely.",
+      "suggestion_code": "pub(crate) fn stats_core(conn: \u0026rusqlite::Connection) -\u003e Result\u003cMemStats, String\u003e {\n    store::ensure_table(conn)?;\n    let total: i64 = conn.query_row(\"SELECT COUNT(*) FROM mem_items\", [], |r| r.get(0))?;\n    let with_embedding: i64 = conn.query_row(\n        \"SELECT COUNT(*) FROM mem_items WHERE embedding IS NOT NULL\",\n        [],\n        |r| r.get(0),\n    )?;\n    let by_kind = aggregate_count(conn, \"kind\")?;\n    let by_source = aggregate_count(conn, \"source\")?;\n    Ok(MemStats {\n        total,\n        capacity: store::MAX_MEM_ITEMS,\n        with_embedding,\n        by_kind,\n        by_source,\n        embed_ok: false,\n        embed_error: None,\n    })\n}",
+      "existing_code": "pub(crate) fn stats_core(conn: \u0026rusqlite::Connection) -\u003e Result\u003cMemStats, String\u003e {\n    store::ensure_table(conn)?;\n    let items = store::load_all(conn)?;\n    let mut stats = MemStats {\n        total: items.len() as i64,\n        capacity: store::MAX_MEM_ITEMS,\n        ..Default::default()\n    };\n    let mut by_kind: std::collections::BTreeMap\u003cString, i64\u003e = Default::default();\n    let mut by_source: std::collections::BTreeMap\u003cString, i64\u003e = Default::default();",
+      "start_line": 166,
+      "end_line": 175,
+      "category": "performance",
+      "severity": "medium"
+    },
+    {
+      "path": "model-meta-service/main.py",
+      "content": "Dead key / shadowed intent in fallback response: the explicit `\"provider_key\": None` is immediately overridden by `**provider_fallback(\"?\")` (dict spread applies after the explicit key in Python literals), so `provider_key` in the response is always the string `\"?\"` rather than `None`. The other model-side fields stay `None`, which is inconsistent and likely not what was intended. Either drop the `\"provider_key\": None` line if `\"?\"` is the desired sentinel, or build the provider block without `provider_key` (e.g. `{k: v for k, v in provider_fallback(\"?\").items() if k != \"provider_key\"}`) so the `None` actually takes effect.",
+      "suggestion_code": "    fb = {k: v for k, v in provider_fallback(\"?\").items() if k != \"provider_key\"}\n    return {\"model_key\": model_key, \"provider_key\": None, \"display_name\": FALLBACK_CHAR,\n            \"context_length\": None, \"temperature\": None, \"top_p\": None, \"max_tokens\": None,\n            \"default_system_prompt\": None, \"source\": \"fallback\", **fb}",
+      "existing_code": "    return {\"model_key\": model_key, \"provider_key\": None, \"display_name\": FALLBACK_CHAR,\n            \"context_length\": None, \"temperature\": None, \"top_p\": None, \"max_tokens\": None,\n            \"default_system_prompt\": None, \"source\": \"fallback\", **provider_fallback(\"?\")}",
+      "start_line": 171,
+      "end_line": 173,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/SettingsPage/MemoryPanel.tsx",
+      "content": "Defensive null check: TypeScript's `tags: string[]` is a compile-time guarantee only. If the backend ever returns `tags: null` / `tags: undefined` (e.g., older row shape, partial migration), `m.tags[0]` throws `TypeError: Cannot read properties of null (0)`, taking down the whole delete-confirm flow. Use optional chaining so the `evo:` detection degrades gracefully.",
+      "suggestion_code": "    const fromEvolution = (m.tags?.[0] ?? \"\").startsWith(\"evo:\");",
+      "existing_code": "    const fromEvolution = (m.tags[0] ?? \"\").startsWith(\"evo:\");",
+      "start_line": 146,
+      "end_line": 146,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/SettingsPage/MemoryPanel.tsx",
+      "content": "`reload`'s success branch resets `loadError` but leaves `rowError` untouched. A stale row-level error from a previous failed `mem_update` / `mem_delete` will keep rendering in red after the user types into the search box or switches the kind filter, even though the latest reload succeeded. The two error states have different scopes (initial load vs. row operation) but they're presented as one stacked block — the user can't tell which is current. Either clear `rowError` here too, or scope the row error to the specific row (keyed by `editingId` / last-acted id) so the message doesn't bleed into unrelated interactions.",
+      "suggestion_code": "      setItems(Array.isArray(list) ? list : []);\n      if (st \u0026\u0026 typeof st === \"object\" \u0026\u0026 \"total\" in st) setStats(st);\n      setLoadError(\"\");\n      setRowError(\"\");",
+      "existing_code": "      setItems(Array.isArray(list) ? list : []);\n      if (st \u0026\u0026 typeof st === \"object\" \u0026\u0026 \"total\" in st) setStats(st);\n      setLoadError(\"\");",
+      "start_line": 104,
+      "end_line": 106,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/SettingsPage/MemoryPanel.tsx",
+      "content": "The in-flight token (reqIdRef) recommended by Finding 2 handles stale results, but does not cover unmount-during-fetch. If the Settings page is closed (or this panel unmounted) while a `reload` is mid-flight, the resolved `setItems` / `setStats` / `setLoadError` calls will fire on an unmounted component and trigger React's \"Can't perform a React state update on an unmounted component\" warning. Add a mounted ref alongside the reqIdRef check, or fold the unmount check into the same `if (stale) return;` guard. Same applies to `saveEdit` and `removeItem` — they don't guard against unmount either.",
+      "suggestion_code": "  const mountedRef = useRef(true);\n  useEffect(() =\u003e () =\u003e { mountedRef.current = false; }, []);\n\n  const reload = useCallback(async (q: string, kind: string) =\u003e {\n    const myReq = ++reqIdRef.current;\n    try {\n      const [list, st] = await Promise.all([",
+      "existing_code": "  const reload = useCallback(async (q: string, kind: string) =\u003e {\n    try {\n      const [list, st] = await Promise.all([",
+      "start_line": 95,
+      "end_line": 97,
+      "category": "maintainability",
+      "severity": "low"
+    }
+  ],
+  "groups": [
+    {
+      "label": "src-tauri/src/lib.rs",
+      "files": [
+        "src-tauri/src/lib.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/memory/embed.rs",
+      "files": [
+        "src-tauri/src/memory/embed.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/memory/mod.rs",
+      "files": [
+        "src-tauri/src/memory/mod.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/memory/store.rs",
+      "files": [
+        "src-tauri/src/memory/store.rs"
+      ]
+    },
+    {
+      "label": "src/components/SettingsPage/SettingsPage.tsx",
+      "files": [
+        "src/components/SettingsPage/SettingsPage.tsx"
+      ]
+    },
+    {
+      "label": "model-meta-service/main.py",
+      "files": [
+        "model-meta-service/main.py"
+      ]
+    },
+    {
+      "label": "src-tauri/src/memory/panel.rs",
+      "files": [
+        "src-tauri/src/memory/panel.rs"
+      ]
+    },
+    {
+      "label": "src/components/SettingsPage/MemoryPanel.tsx",
+      "files": [
+        "src/components/SettingsPage/MemoryPanel.tsx"
+      ]
+    }
+  ],
+  "session_id": "e36b8d90-2db3-458e-983b-671309905986",
+  "manifest": {
+    "schema_version": "ocr.run-manifest/v1",
+    "run_id": "e36b8d90-2db3-458e-983b-671309905986",
+    "operation": "review",
+    "terminal_state": "complete",
+    "repository": {
+      "identity_sha256": "7aebc670c3c38e64ae52ffaf12cfa8ba078a29af906f8ef856132cd790dbe48b"
+    },
+    "input": {
+      "mode": "workspace",
+      "resolved_base": "2ee84942197a0d97d92e37712984aded1d5a5159",
+      "source_artifact_sha256": "a16e4c27f49df59f095626aca1a56e70b8b4fac6962eeef453c8ec169edf9ed4"
+    },
+    "execution": {
+      "ocr_version": "v1.12.11",
+      "provider": "minimax-cn",
+      "model": "MiniMax-M3",
+      "configured_concurrency": 8,
+      "rule_config_sha256": "8779d0d046b15151518200e75283f8c72cb6815f8e9b6de313d85d8f880d7dde",
+      "runtime_config_sha256": "f3ac1cdd2a45285ba614e32ab9bd03b86d9911c8deb3bec22fccf7b7bd4e6913"
+    },
+    "coverage": {
+      "selected": [
+        {
+          "item_id": "1c8b17eb5b94a8ff6490651e78cb37945dc17d0866bc8496fcc83f1b673e58b9",
+          "path": "src/components/SettingsPage/MemoryPanel.tsx",
+          "fingerprint": "bde751ad32c02bb59ce2f57412f84e072597ac8f15b1895cd27c27d297fb472c"
+        },
+        {
+          "item_id": "21827732437f2e26b97b5ec5c92d72d39076ea4638384d03e3eb6b19d926b3b7",
+          "path": "src-tauri/src/memory/embed.rs",
+          "fingerprint": "f763bc5050547fdfd306bd34b9c5ed012c7d49d1dea2653893ef184952294f89"
+        },
+        {
+          "item_id": "265cb776cacd21f7e21e55abcfc867e5f6b4c58a8b8a4b2665cdc9937f883f2f",
+          "path": "src-tauri/src/memory/mod.rs",
+          "fingerprint": "7075eebad270530c5c3c829569b2da51a64f18e50efa221bb941a211e3101e20"
+        },
+        {
+          "item_id": "70779da7b6b3c7b01fd6ef65604b94235524e8c1f9afd7561face091502435d0",
+          "path": "src/components/SettingsPage/SettingsPage.tsx",
+          "fingerprint": "09fd9aa27a5cfe4bfd2deb063e86a29fa6d2c800b44dad3a117be19190dbf3ca"
+        },
+        {
+          "item_id": "a7e379852278b4dee9fec88891f3b590c97d7b31523f6a615066fea4c49ba99f",
+          "path": "src-tauri/src/lib.rs",
+          "fingerprint": "77303c6be834d248eb8b5d86efa72f166144abb1d86c59f200e85059c43f9343"
+        },
+        {
+          "item_id": "ad8f8381ed551acda797fbb5e3b55a4dcbab7799d42a5754dbe2a882a5165560",
+          "path": "model-meta-service/main.py",
+          "fingerprint": "2e5563d904a7dcb6154ba8050f1a1c42be14a9d2f26d1a09ab2596be8c44e4db"
+        },
+        {
+          "item_id": "b0c420498e6a5020460097d1183406e85c34fd421df0d63affb0026d0bef7d23",
+          "path": "src-tauri/src/memory/panel.rs",
+          "fingerprint": "29fd1e0662da08365b5ca936cb226fb8a4d638dd67ed8544cc328bf668ff9dfb"
+        },
+        {
+          "item_id": "e6e5eabc869c75bd48f9c2afbbf9b5a86b358c6dbffec7f3b7fcf29fc65d6e1c",
+          "path": "src-tauri/src/memory/store.rs",
+          "fingerprint": "7fc99bfa29848d2a6fd205b46e14720b314b9f4fa8559f8c5f50ef8afd6314cb"
+        }
+      ],
+      "completed": [
+        {
+          "item_id": "1c8b17eb5b94a8ff6490651e78cb37945dc17d0866bc8496fcc83f1b673e58b9",
+          "path": "src/components/SettingsPage/MemoryPanel.tsx",
+          "fingerprint": "bde751ad32c02bb59ce2f57412f84e072597ac8f15b1895cd27c27d297fb472c"
+        },
+        {
+          "item_id": "21827732437f2e26b97b5ec5c92d72d39076ea4638384d03e3eb6b19d926b3b7",
+          "path": "src-tauri/src/memory/embed.rs",
+          "fingerprint": "f763bc5050547fdfd306bd34b9c5ed012c7d49d1dea2653893ef184952294f89"
+        },
+        {
+          "item_id": "265cb776cacd21f7e21e55abcfc867e5f6b4c58a8b8a4b2665cdc9937f883f2f",
+          "path": "src-tauri/src/memory/mod.rs",
+          "fingerprint": "7075eebad270530c5c3c829569b2da51a64f18e50efa221bb941a211e3101e20"
+        },
+        {
+          "item_id": "70779da7b6b3c7b01fd6ef65604b94235524e8c1f9afd7561face091502435d0",
+          "path": "src/components/SettingsPage/SettingsPage.tsx",
+          "fingerprint": "09fd9aa27a5cfe4bfd2deb063e86a29fa6d2c800b44dad3a117be19190dbf3ca"
+        },
+        {
+          "item_id": "a7e379852278b4dee9fec88891f3b590c97d7b31523f6a615066fea4c49ba99f",
+          "path": "src-tauri/src/lib.rs",
+          "fingerprint": "77303c6be834d248eb8b5d86efa72f166144abb1d86c59f200e85059c43f9343"
+        },
+        {
+          "item_id": "ad8f8381ed551acda797fbb5e3b55a4dcbab7799d42a5754dbe2a882a5165560",
+          "path": "model-meta-service/main.py",
+          "fingerprint": "2e5563d904a7dcb6154ba8050f1a1c42be14a9d2f26d1a09ab2596be8c44e4db"
+        },
+        {
+          "item_id": "b0c420498e6a5020460097d1183406e85c34fd421df0d63affb0026d0bef7d23",
+          "path": "src-tauri/src/memory/panel.rs",
+          "fingerprint": "29fd1e0662da08365b5ca936cb226fb8a4d638dd67ed8544cc328bf668ff9dfb"
+        },
+        {
+          "item_id": "e6e5eabc869c75bd48f9c2afbbf9b5a86b358c6dbffec7f3b7fcf29fc65d6e1c",
+          "path": "src-tauri/src/memory/store.rs",
+          "fingerprint": "7fc99bfa29848d2a6fd205b46e14720b314b9f4fa8559f8c5f50ef8afd6314cb"
+        }
+      ],
+      "reused": [],
+      "failed": [],
+      "waived": []
+    },
+    "elapsed_ms": 603970
+  }
+}

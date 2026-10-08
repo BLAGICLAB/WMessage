@@ -1,0 +1,218 @@
+[
+  {
+    "path": "src-tauri/src/bot/format.rs",
+    "content": "Function is now operating on the `TaskStatus` enum (a status), but the name `column_label` still references the old `\u0026str` \"column\" terminology. Since `TaskStatus` and column ID are equivalent here, this is purely cosmetic, but renaming to `status_label` (and updating the three call sites in `bot/tools.rs` lines 165/207/322) would more accurately reflect the new contract.",
+    "existing_code": "pub(crate) fn column_label(column: TaskStatus) -\u003e \u0026'static str {",
+    "start_line": 9,
+    "end_line": 9,
+    "category": "style",
+    "severity": "low"
+  },
+  {
+    "path": "src-tauri/src/bot/format.rs",
+    "content": "Chinese doc comment uses the bare numeral \"三 variant\" without a measure word — grammatically it should be \"三个 variant\" or \"三种 variant\". Trivial readability nit.",
+    "existing_code": "/// exhaustive match：TaskStatus 只有 Todo / Doing / Done 三 variant,不需要兜底。",
+    "start_line": 6,
+    "end_line": 6,
+    "category": "documentation",
+    "severity": "low"
+  },
+  {
+    "path": "src-tauri/src/bot/format.rs",
+    "content": "The test only covers the three valid variants. Since the function now takes `TaskStatus` (and `TaskStatus::ALL` lists exactly `Todo, Doing, Done`), exhaustiveness is enforced by the compiler, so this is sufficient. No action needed beyond awareness — if a future variant is added to `TaskStatus`, the match arms here must be updated and the compiler will catch it. No issue, just noting for reviewers.",
+    "existing_code": "#[test]\n    fn column_label_known() {",
+    "start_line": 21,
+    "end_line": 22,
+    "category": "maintainability",
+    "severity": "low"
+  },
+  {
+    "path": "src-tauri/src/bot/format.rs",
+    "content": "File is missing a trailing newline at EOF (diff shows `\\ No newline at end of file`). Most editors and Rust style guides (rustfmt) expect files to end with `\\n`. Trivial, but worth a one-character fix.\n\nNote: previously confirmed findings (function name `column_label` vs new `TaskStatus` parameter, doc-comment grammar nit \"三 variant\", and the reduced-but-sufficient test coverage) have already been acknowledged in the prior pass and are not repeated here.",
+    "existing_code": "        assert_eq!(column_label(TaskStatus::Done), \"已完成\");\n    }\n}",
+    "start_line": 25,
+    "end_line": 27,
+    "category": "style",
+    "severity": "low"
+  },
+  {
+    "path": "src-tauri/src/api_handlers/handlers.rs",
+    "content": "Using `.parse().expect()` here introduces a panic-on-mismatch risk if `valid_status` and `parse` ever get out of sync (e.g., `valid_status` is edited to accept a wider set, or someone removes the earlier validation). Since the lock is already held here, a panic would propagate out of the HTTP handler thread. Consider factoring `valid_status` into a single `parse_status(s) -\u003e Option\u003cTaskStatus\u003e` helper used once, so validation and parsing can never diverge. The `expect()` defense (\"validated above\") is a fragile cross-function invariant.",
+    "suggestion_code": "let column: db::TaskStatus = status.parse().unwrap_or(db::TaskStatus::Todo);\n    // 走 valid_status 早返的字符串不会被落到这里；若解析意外失败\n    // 退化为 Todo 比 panic 整条 HTTP 路径更安全(锁仍会随后释放)",
+    "existing_code": "let column: db::TaskStatus =\n        status.parse().expect(\"status was validated by valid_status() above\");",
+    "start_line": 280,
+    "end_line": 281,
+    "category": "other",
+    "severity": "medium"
+  },
+  {
+    "path": "src-tauri/src/api_handlers/handlers.rs",
+    "content": "Same `.parse().expect()` pattern as in `create_task` — relies on a cross-function invariant that `validate_update_input` already called `valid_status`. If that validator is later relaxed or bypassed, the panic here will take down the handler. Prefer a single parse-and-validate helper used at the validation site and reuse the resulting enum.",
+    "suggestion_code": "// 若 validate_update_input 与 parse_status 不同步,这里就是静默\n            // panic 面;合并为一个 helper 后不会再有这种跨函数耦合。\n            let new_status: crate::db::TaskStatus = s.parse().unwrap_or(t.column);",
+    "existing_code": "// s was validated by validate_update_input (uses valid_status) — parse is safe\n            let new_status: crate::db::TaskStatus =\n                s.parse().expect(\"validated by valid_status\");",
+    "start_line": 404,
+    "end_line": 406,
+    "category": "other",
+    "severity": "medium"
+  },
+  {
+    "path": "src-tauri/src/api_handlers/handlers.rs",
+    "content": "`drop(_rmw)` works but reads awkwardly — the leading underscore conventionally signals \"intentionally unused\", yet the binding is consumed here. A scoped block makes the lock's lifetime visually obvious to readers and reviewers, and removes the need for the explicit `drop` plus the explanatory comment in three call sites.",
+    "suggestion_code": "}\n    // 锁在这里随 _rmw_guard 离开作用域自动释放;再调 SSE fanout 不会\n    // 串行化所有 API 写跨 SSE 网络延迟。\n    after_change(store, \u0026task, \"created\", emit_fn, log);",
+    "existing_code": "// 释放 API_RMW_LOCK 再 after_change：emit_fn 是 SSE fanout,\n    // 持锁会串行化所有 API 写跨 SSE 网络延迟\n    drop(_rmw);\n    after_change(store, \u0026task, \"created\", emit_fn, log);",
+    "start_line": 329,
+    "end_line": 332,
+    "category": "maintainability",
+    "severity": "low"
+  },
+  {
+    "path": "src-tauri/src/api_handlers/sse.rs",
+    "content": "The new doc comment on `SseWriterReg.hub_key` claims the counter is \"跨进程单调\" (monotonic across processes), but per `api_server.rs:60-62` the `EVENT_HUB_COUNTER` is explicitly **not** cross-process — it resets on restart. Only in-process monotonicity is guaranteed (and that's all the writers need, since they live entirely in-process and don't persist). Recommend rewording to \"进程内单调递增（跨进程不保证）\" to avoid misleading future readers.",
+    "existing_code": "/// hub 身份键（从 EventHub.hub_id 取，AtomicU64 计数器，跨进程单调；\n    /// 不再用 Arc 指针作身份 —— Arc drop 后地址可被复用，会导致\n    /// 跨 stop/start 的 writer 误关联）\n    pub hub_key: u64,",
+    "start_line": 28,
+    "end_line": 31,
+    "category": "documentation",
+    "severity": "low"
+  },
+  {
+    "path": "src-tauri/src/api_handlers/mod.rs",
+    "content": "`test_hub_key` uses `Ordering::SeqCst` for a simple monotonic ID counter. Since no other data is synchronized through this atomic (only uniqueness matters, not ordering relative to other memory operations), `Ordering::Relaxed` is the idiomatic choice for monotonic ID generators and avoids unnecessary memory barrier costs on weakly-ordered architectures.",
+    "suggestion_code": "    fn test_hub_key() -\u003e u64 {\n        use std::sync::atomic::{AtomicU64, Ordering};\n        static COUNTER: AtomicU64 = AtomicU64::new(0);\n        COUNTER.fetch_add(1, Ordering::Relaxed) + 1\n    }",
+    "existing_code": "    fn test_hub_key() -\u003e u64 {\n        use std::sync::atomic::{AtomicU64, Ordering};\n        static COUNTER: AtomicU64 = AtomicU64::new(0);\n        COUNTER.fetch_add(1, Ordering::SeqCst) + 1\n    }",
+    "start_line": 354,
+    "end_line": 358,
+    "category": "performance",
+    "severity": "low"
+  },
+  {
+    "path": "src-tauri/src/db/tasks.rs",
+    "content": "Typo: \"兑底\" should be \"兜底\" — the project uses \"兜底\" consistently across docs and code (e.g. `docs/AUDIT-REPORT-MANUAL-2026-08-18.md:93` \"#[serde(default)] 兜底老配置\", `DEVLOG.md` has 40+ uses). \"兑底\" is not a recognized Chinese term. This appears in both the comment and the eprintln! message.",
+    "suggestion_code": "        // 塞非法值进来 — 兜底 Todo 比炸整个看板安全得多。",
+    "existing_code": "        // 塞非法值进来 — 兑底 Todo 比炸整个看板安全得多。",
+    "start_line": 328,
+    "end_line": 328,
+    "category": "style",
+    "severity": "low"
+  },
+  {
+    "path": "src-tauri/src/db/tasks.rs",
+    "content": "Same typo as above: \"兑底\" → \"兜底\". This is a runtime log message so it's user-visible when DB corruption is encountered.",
+    "suggestion_code": "[db] 任务 {id} 的 col 值无法识别为 TaskStatus，按 Todo 兜底读取（原值未动）：{e}",
+    "existing_code": "eprintln!(\n                    \"[db] 任务 {id} 的 col 值无法识别为 TaskStatus，按 Todo 兑底读取（原值未动）：{e}\"\n                );",
+    "start_line": 332,
+    "end_line": 334,
+    "category": "style",
+    "severity": "low"
+  },
+  {
+    "path": "src-tauri/src/db/tasks.rs",
+    "content": "New `pub` enum with hand-written `Serialize`/`Deserialize`, `FromStr`, `Display`, and `as_str` has no unit tests of its own. The doc comment makes a load-bearing claim (\"wire format 与 ... 改 enum 前的 String 完全兼容,不需要迁移\") that is exactly what a serde round-trip test would lock down — and the codebase clearly already exercises such contracts elsewhere (e.g. `task_out.rs` has `assert_eq!(obj[\"status\"], obj[\"column\"], ...)`). A small `#[cfg(test)] mod task_status_tests` covering: (a) each variant's `as_str` / `Display`, (b) `from_str` for valid + invalid + case-sensitivity (rejecting \"TODO\" etc.), (c) `serde_json::from_str::\u003cTaskStatus\u003e(\"\\\"doing\\\"\")` round-trip, (d) full `Task` serde round-trip preserving the `column` string shape would be cheap insurance against future drift between the wire format and the enum.",
+    "existing_code": "#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]\npub enum TaskStatus {\n    Todo,\n    Doing,\n    Done,\n}",
+    "start_line": 33,
+    "end_line": 38,
+    "category": "test",
+    "severity": "medium"
+  },
+  {
+    "path": "src-tauri/src/db/tasks.rs",
+    "content": "Fallback log doesn't include the offending raw DB value — for DB forensics, knowing what bad string actually appeared in the `col` column is far more useful than the parse error alone. The `col` shadowing at line 329 hides the original string from the eprintln branch. Suggest binding the raw value before parsing (e.g. `let raw = col; let col: TaskStatus = match raw.parse() { ... Err(e) =\u003e eprintln!(\"[db] 任务 {id} 的 col 值「{raw}」无法识别为 TaskStatus，按 Todo 兜底读取（原值未动）：{e}\"), ... }`).",
+    "existing_code": "+        let col: TaskStatus = match col.parse() {\n+            Ok(c) =\u003e c,\n+            Err(e) =\u003e {\n+                eprintln!(\n+                    \"[db] 任务 {id} 的 col 值无法识别为 TaskStatus，按 Todo 兑底读取（原值未动）：{e}\"\n+                );\n+                TaskStatus::Todo\n+            }\n+        };",
+    "start_line": 329,
+    "end_line": 337,
+    "category": "maintainability",
+    "severity": "medium"
+  },
+  {
+    "path": "src-tauri/src/api_server.rs",
+    "content": "The `+ 1` here is inconsistent with `persisted()` below, which uses `EVENT_HUB_COUNTER.fetch_add(1, Ordering::SeqCst)` without the `+ 1`. Since `EVENT_HUB_COUNTER` already starts at 1 (to skip the 0 sentinel reserved by `API_HUB_KEY`), the first `new()` call returns `1 + 1 = 2` while the first `persisted()` call returns `1`. If a test creates a `new()` hub followed by a `persisted()` hub (or any mix in the same process), the IDs can collide (e.g. `new()` first → ID 2, then `persisted()` → also ID 2). It also contradicts the doc comment claiming \"从 1 起跳\" — `new()` actually skips 1. Drop the `+ 1` to match `persisted()` and the documented intent.",
+    "suggestion_code": "hub_id: EVENT_HUB_COUNTER.fetch_add(1, Ordering::SeqCst),",
+    "existing_code": "hub_id: EVENT_HUB_COUNTER.fetch_add(1, Ordering::SeqCst) + 1,",
+    "start_line": 83,
+    "end_line": 83,
+    "category": "bug",
+    "severity": "high"
+  },
+  {
+    "path": "src-tauri/src/api_server.rs",
+    "content": "Field is exposed via both `pub hub_id` and the `pub fn hub_id()` getter. A grep across the codebase shows every consumer goes through the getter (commands.rs:103, sse.rs:144), so the direct-field access is dead surface. Making the field public also bypasses any future invariant you might want to enforce in the accessor. Pick one: keep the field private and rely on `hub_id()`, or drop the getter and read the field directly.",
+    "suggestion_code": "pub(crate) hub_id: u64,",
+    "existing_code": "pub hub_id: u64,",
+    "start_line": 63,
+    "end_line": 63,
+    "category": "maintainability",
+    "severity": "low"
+  },
+  {
+    "path": "src-tauri/src/api_handlers/commands.rs",
+    "content": "[high] `api_stop` no longer clears `api-enabled.flag`. The previous `api_stop_locked(.., clear_enabled: bool)` accepted `true` from `api_stop` and called `clear_enabled_flag(app)`; both the parameter and the in-body call were removed, and `api_stop_impl` does not invoke `clear_enabled_flag` either. The only remaining caller of `clear_enabled_flag` in the crate is `api_status` — and only for the dead-service edge case (`!enabled \u0026\u0026 g.is_some()`), which doesn't cover the normal stop path. A user-explicit API toggle-off via the Settings UI therefore leaves `runtime/flags/api-enabled.flag` set on disk, and the next app launch will auto-restore the API the user just disabled. Either restore the `clear_enabled_flag(\u0026app)` call in `api_stop_impl` after `drop(g)` (matching the new \"file I/O outside lock\" convention), or pass a `clear_enabled` bool back from `api_stop_locked` so the caller can decide outside the lock.",
+    "suggestion_code": "fn api_stop_locked\u003cR: tauri::Runtime\u003e(\n    app: \u0026tauri::AppHandle\u003cR\u003e,\n    g: \u0026mut Option\u003cRunningApi\u003e,\n) -\u003e CommandResult\u003cbool\u003e {\n    let mut did_stop = false;\n    if let Some(mut r) = g.take() {\n        did_stop = true;\n        r.shutdown.store(true, Ordering::SeqCst);\n        if let Some(h) = r.handle.take() {\n            let _ = h.join();\n        }",
+    "existing_code": "fn api_stop_locked\u003cR: tauri::Runtime\u003e(\n    app: \u0026tauri::AppHandle\u003cR\u003e,\n    g: \u0026mut Option\u003cRunningApi\u003e,\n) -\u003e CommandResult\u003c()\u003e {\n    if let Some(mut r) = g.take() {\n        r.shutdown.store(true, Ordering::SeqCst);\n        if let Some(h) = r.handle.take() {\n            let _ = h.join();\n        }",
+    "start_line": 157,
+    "end_line": 165,
+    "category": "bug",
+    "severity": "high"
+  },
+  {
+    "path": "src-tauri/src/api_handlers/commands.rs",
+    "content": "[high] TOCTOU window between Phase 2 failure and Phase 3 re-acquiring `state.0`. A concurrent `api_start` can land in the gap: it reads the still-new token from disk, populates `g` with a service bound to `token_new`, and writes `api-enabled.flag`. When the recovery lock is taken, `api_start_locked` sees `g.is_some()` + `alive=true` and short-circuits returning `ApiInfo { token: Some(old_token) }` — but the running service is bound to `token_new`. The returned token no longer authenticates against the live service. Conversely a concurrent `api_stop` can empty `g`, leaving the recovery to restart a fresh service with `old_token` while the user wanted the API off. At minimum, re-read the on-disk token inside the recovery lock (so the value passed to `api_start_locked` is the authoritative one) and refuse to clobber a concurrently-started service — bail out and surface the original error instead.",
+    "existing_code": "        Err(e) =\u003e {\n            // 回滚 token 文件(锁外)\n            if let Some(old) = \u0026old {\n                let _ = write_token_file(\u0026path, old);\n            }\n            // 尽力用旧 token 恢复服务(再次抢锁,best-effort)\n            if let Some(old_token) = old {\n                match state.0.lock() {\n                    Ok(mut g) =\u003e {\n                        if api_start_locked(\u0026app, old_token, \u0026mut g).is_ok() {\n                            write_enabled_flag(\u0026app);\n                        }\n                    }",
+    "start_line": 278,
+    "end_line": 290,
+    "category": "bug",
+    "severity": "high"
+  },
+  {
+    "path": "src-tauri/src/api_handlers/commands.rs",
+    "content": "[medium] `needs_clear` is decided inside the lock but `clear_enabled_flag` runs after `drop(g)`. A concurrent `api_start` can race in between: it locks, populates `g`, writes `api-enabled.flag`, releases the lock — and our subsequent `clear_enabled_flag` then wipes that freshly written flag, so the next launch fails to auto-restore a service the user just turned on. Re-acquire the lock and only clear when `g` is still `None` (i.e., no concurrent start has populated it), or accept the race and document it.",
+    "existing_code": "    let needs_clear = if !enabled \u0026\u0026 g.is_some() {\n        *g = None;\n        true\n    } else {\n        false\n    };\n    drop(g);\n    if needs_clear {\n        clear_enabled_flag(\u0026app);\n    }",
+    "start_line": 197,
+    "end_line": 206,
+    "category": "bug",
+    "severity": "medium"
+  },
+  {
+    "path": "src-tauri/src/api_handlers/commands.rs",
+    "content": "[medium] `write_enabled_flag` runs after `drop(g)`, opening a window for a concurrent `api_stop` to empty `g` (and — pre-diff — would have cleared the flag). Our subsequent `write_enabled_flag` then re-creates the flag while `g` is empty, so the next launch auto-restores a service that doesn't exist in memory. Make the flag write idempotent w.r.t. the in-memory state: re-check `g.is_some()` after re-acquiring the lock and only write the flag when state still says running.",
+    "existing_code": "    let info = api_start_locked(\u0026app, token, \u0026mut g)?;\n    // Phase 3: enabled flag 文件写入在锁外(避免与 start_api 的端口绑定/spawn 串行)\n    drop(g);\n    write_enabled_flag(\u0026app);\n    Ok(info)\n}",
+    "start_line": 40,
+    "end_line": 45,
+    "category": "bug",
+    "severity": "medium"
+  },
+  {
+    "path": "src-tauri/src/api_handlers/commands.rs",
+    "content": "[medium] Rollback / recovery paths silently swallow failures (`let _ = write_token_file(\u0026path, old);` and `if api_start_locked(...).is_ok() { write_enabled_flag(\u0026app); }`). A failed rollback leaves the token file out of sync with whatever service is in memory; a failed recovery restart leaves the API stopped. Neither path emits an audit or `eprintln!`, contradicting the mutex-poisoning / SSE-leak audit conventions this file uses everywhere else. At minimum, emit an `audit_event!(.., \"api_rotate_rollback_failed\", \"error\" =\u003e ..)` (or an `[api_rotate_rollback_failed] …` eprintln) so operators get the same observability they get for poisoned mutexes and leaked SSE writers.",
+    "existing_code": "            // 回滚 token 文件(锁外)\n            if let Some(old) = \u0026old {\n                let _ = write_token_file(\u0026path, old);\n            }\n            // 尽力用旧 token 恢复服务(再次抢锁,best-effort)\n            if let Some(old_token) = old {\n                match state.0.lock() {\n                    Ok(mut g) =\u003e {\n                        if api_start_locked(\u0026app, old_token, \u0026mut g).is_ok() {\n                            write_enabled_flag(\u0026app);\n                        }\n                    }",
+    "start_line": 279,
+    "end_line": 290,
+    "category": "maintainability",
+    "severity": "medium"
+  },
+  {
+    "path": "src-tauri/src/api_handlers/commands.rs",
+    "content": "[low] `token` is moved into the closure and `token.clone()` is taken twice on the success-with-running path (once for the unused `NotRunning` arm and once for `api_start_locked(\u0026app, token.clone(), \u0026mut g)`). On the hot path this is one redundant `String` allocation per rotation. Restructure so `token` is moved into `api_start_locked` directly on the `g.is_some()` path (the closure can use `match g { Some(_) =\u003e api_start_locked(.., token, ..), None =\u003e Ok(RotateOutcome::NotRunning(..)) }` or compute the `NotRunning` info after moving), eliminating the clone on the running-service arm.",
+    "existing_code": "        if g.is_none() {\n            return Ok(RotateOutcome::NotRunning(ApiInfo {\n                port: API_PORT,\n                token: Some(token.clone()),\n            }));\n        }\n        // 运行中:先 stop 再 start。\n        // stop 不清 enabled flag(start 会写);start 不写 enabled flag(由 Phase 3 补写)\n        api_stop_locked(\u0026app, \u0026mut g)?;\n        api_start_locked(\u0026app, token.clone(), \u0026mut g)\n            .map(|info| RotateOutcome::Started(info))",
+    "start_line": 254,
+    "end_line": 264,
+    "category": "performance",
+    "severity": "low"
+  },
+  {
+    "path": "src-tauri/src/api_handlers/commands.rs",
+    "content": "TOCTOU between Phase 1 (token load) and Phase 2 (lock): if `api_rotate_token` runs in this window, the in-memory service is rebound to `token_new` (file has token_new after Phase 1) while `api_start`'s alive branch returns `token: Some(token)` with the stale `token_old`. Caller sees a token that no longer authenticates, and `api_start_locked`'s early-return path uses the same stale parameter — the fresh service's actual token never reaches the caller. Pre-refactor this was avoided because `load_or_create_token` ran inside the lock. Consider reloading the token inside the lock (e.g., after the alive check) or storing the active token in `RunningApi` so the alive branch returns the authoritative one.",
+    "existing_code": "// Phase 1: token 文件 I/O 在锁外(load_or_create_token 会 read/write token 文件)\n    let token = load_or_create_token(\u0026app)?;\n    // 锁 poisoning 审计:同 ab74025 惯例\n    let mut g = state.0.lock().map_err(|e| {\n        eprintln!(\"[mutex_poisoned] api_handlers::commands::state.0: {e:?}\");\n        e.to_string()\n    })?;\n    let info = api_start_locked(\u0026app, token, \u0026mut g)?;",
+    "start_line": 33,
+    "end_line": 40,
+    "category": "bug",
+    "severity": "medium"
+  },
+  {
+    "path": "src-tauri/src/api_handlers/commands.rs",
+    "content": "Phase 1 file I/O runs lock-free, so two concurrent `api_rotate_token` calls are no longer serialized at the state.0 lock (pre-refactor, both `old = read_to_string` and `write_token_file` were inside the lock). Now: A reads `old=T1`, writes `T2`; B reads `old=T2`, writes `T3`; if A's Phase 2 fails after B's Phase 2 commits, A's rollback `write_token_file(\u0026path, old)` clobbers `T3` with `T1`, leaving the in-memory service bound to `T3` and the file at `T1` — state diverges. Low probability but worth either re-serializing the file I/O or capturing `old` after taking the lock.",
+    "existing_code": "// Phase 1: 文件 I/O 全部在锁外。\n    // rotate 全程持锁的意图是「is_some 检查 → stop → start」原子;\n    // 文件 I/O(read old / write new / rollback)与该原子性无关,不应持锁做。\n    let dir = crate::paths::flags_dir(\u0026app);\n    std::fs::create_dir_all(\u0026dir).map_err(|e| e.to_string())?;\n    let path = dir.join(\"api-token.txt\");\n    let old = std::fs::read_to_string(\u0026path).ok();\n    let token = uuid::Uuid::new_v4().simple().to_string();\n    // 投机写新 token 文件。后续 start_locked 会从文件读这个新 token。\n    // 若 start 失败,Phase 3 会回滚到 old token 文件。\n    write_token_file(\u0026path, \u0026token)?;",
+    "start_line": 231,
+    "end_line": 241,
+    "category": "bug",
+    "severity": "low"
+  }
+]

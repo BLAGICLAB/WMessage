@@ -1,0 +1,382 @@
+{
+  "status": "complete",
+  "llm": {
+    "provider": "minimax-cn",
+    "model": "MiniMax-M3"
+  },
+  "message": "Review complete: 21 finding(s) across 5 selected item(s).",
+  "summary": {
+    "files_reviewed": 5,
+    "comments": 21,
+    "total_tokens": 4977892,
+    "input_tokens": 4884894,
+    "output_tokens": 92998,
+    "cache_read_tokens": 4501593,
+    "elapsed": "9m53s"
+  },
+  "tool_calls": {
+    "total": 167,
+    "by_tool": {
+      "code_comment": 9,
+      "code_search": 56,
+      "file_find": 5,
+      "file_read": 88,
+      "file_read_diff": 9
+    },
+    "failure": 4,
+    "failure_by_tool": {
+      "file_read": 4
+    },
+    "failure_details": [
+      {
+        "tool_call_number": 17,
+        "tool_name": "file_read",
+        "file_path": "src/components/WorkflowCanvas/graph.ts",
+        "arguments": "{\"end_line\":300,\"file_path\":\"src-tauri/src/db/tasks.rs\",\"start_line\":320}",
+        "error": "invalid line range: start_line 320 is greater than end_line 300"
+      },
+      {
+        "tool_call_number": 52,
+        "tool_name": "file_read",
+        "file_path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+        "arguments": "{\"end_line\":200,\"file_path\":\"src-tauri/src/workflow_decompose.rs\",\"start_line\":350}",
+        "error": "invalid line range: start_line 350 is greater than end_line 200"
+      },
+      {
+        "tool_call_number": 103,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/workflow_decompose.rs",
+        "arguments": "{\"end_line\": 25, \"file_path\": \"src-tauri/src/bot_py.rs\", \"start_line\": 1175}",
+        "error": "invalid line range: start_line 1175 is greater than end_line 25"
+      },
+      {
+        "tool_call_number": 153,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/db/workflow.rs",
+        "arguments": "{\"end_line\":50,\"file_path\":\"src-tauri/src/db/workflow.rs\",\"start_line\":80}",
+        "error": "invalid line range: start_line 80 is greater than end_line 50"
+      }
+    ]
+  },
+  "comments": [
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "Stale `attachPaths` can leak across rapid workflow switches — `setAttachPaths(detail.attachments ?? [])` is called immediately after the `await` but **before** the `seq !== openSeqRef.current` guard on the next line. Every other field (activeId, name, goal, nodes, etc.) is correctly assigned after the seq check. If a user opens workflow A then quickly switches to B, A's attachment chips will briefly render on B's empty hero before being overwritten. Move `setAttachPaths(detail.attachments ?? [])` below the seq guard (e.g. right before `setMode(\"edit\")`) to match the established race-guard convention used by every other state setter in this function.",
+      "suggestion_code": "      const detail = await invoke\u003c\n        Workflow \u0026 { tasks: Task[]; attachments?: string[] | null }\n      \u003e(\"workflow_load\", { id });\n      if (seq !== openSeqRef.current) return; // 期间用户已切换：丢弃本次响应\n      setAttachPaths(detail.attachments ?? []);",
+      "existing_code": "      const detail = await invoke\u003c\n        Workflow \u0026 { tasks: Task[]; attachments?: string[] | null }\n      \u003e(\"workflow_load\", { id });\n      setAttachPaths(detail.attachments ?? []);\n      if (seq !== openSeqRef.current) return; // 期间用户已切换：丢弃本次响应",
+      "start_line": 171,
+      "end_line": 175,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "Cross-platform basename mismatch — the chip displays `p.split(\"/\").pop()` and the `aria-label` does the same. The Tauri dialog plugin returns OS-native paths, so on Windows this will render the full absolute path (e.g. `C:\\Users\\foo\\doc.pdf`) instead of just the filename, hurting chip readability and producing awkward screen-reader announcements. Use a separator-agnostic basename (split on `/` or `\\`, take the last segment, or use `path`/`@tauri-apps/api/path` which already normalizes). Consider extracting a small helper since the same pattern is duplicated twice in this block.",
+      "existing_code": "\u003cspan className=\"truncate\"\u003e{p.split(\"/\").pop()}\u003c/span\u003e",
+      "start_line": 911,
+      "end_line": 911,
+      "category": "maintainability"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "Frontend doesn't reflect backend attachment limits — `workflow_decompose` caps at 12k chars/file and 48k chars total (see `PER_FILE_CAP` / `TOTAL_CAP` in `src-tauri/src/workflow_decompose.rs`). Users can currently pile on unlimited chips via repeated `addAttachments` calls, and the backend will silently truncate or drop files, producing surprising \"missing context\" results from the AI. Either surface a soft cap (e.g. disable \"添加附件\" after N chips, or show a `{count}/N` counter in the chip area) or at minimum add a `title` hint reflecting the limits. Pure UX issue — the backend is the source of truth, but the UI gives no signal.",
+      "existing_code": "          \u003cbutton\n            className=\"nm-outset flex items-center gap-1 rounded-[var(--r-sm)] px-3 py-1.5 text-xs text-[var(--t3)] disabled:opacity-50\"\n            onClick={onAddAttachments}\n            disabled={decomposing}\n            title=\"添加参考文件（docx/pdf/txt 等）：AI 拆解前先读一遍，内容会拆进各任务卡的备注或子任务\"\n          \u003e\n            📎 添加附件\n          ",
+      "start_line": 924,
+      "end_line": 930,
+      "category": "maintainability"
+    },
+    {
+      "path": "src-tauri/src/db/workflow.rs",
+      "content": "[critical] New-card subtasks are silently dropped. `workflow_save_locked` builds `Task { subtasks: None, .. }` here even though `node.subtasks: Option\u003cVec\u003cString\u003e\u003e` was just parsed, validated (well, sort-of — see the comment at line 847), and threaded through. The companion export path (`workflow_file_from`, ~line 757) reads `t.subtasks.as_ref().map(|list| list.iter().map(|st| st.text.clone()).collect())`, which proves the contract is `Vec\u003cString\u003e` draft → `Vec\u003cSubtask\u003e` DB row → `Vec\u003cString\u003e` file. Nothing performs the `Vec\u003cString\u003e` → `Vec\u003cSubtask\u003e` conversion. Build `Subtask { id: uuid::Uuid::new_v4().simple().to_string(), text: trimmed.to_string(), done: false }` for each entry here, applying the trim + empty-drop the inline comment at line 847 advertises. Add a round-trip test that supplies subtasks via `WorkflowNodeDraft` and asserts `tasks[0].subtasks` carries the texts.",
+      "suggestion_code": "            // 新卡构建：从草稿的 subtasks: Option\u003cVec\u003cString\u003e\u003e 转为 Subtask 列表\n            // （保留卡不进入此分支，已有 t.subtasks 由原卡保留——执行痕迹保护）。\n            // 空串/空白在此 trim+剔除，与 parse_workflow_file 内联注释契约一致。\n            let subtasks = node.subtasks.as_deref().map(|list| {\n                list.iter()\n                    .filter_map(|t| {\n                        let trimmed = t.trim();\n                        if trimmed.is_empty() { None } else { Some(Subtask {\n                            id: uuid::Uuid::new_v4().simple().to_string(),\n                            text: trimmed.to_string(),\n                            done: false,\n                        }) }\n                    })\n                    .collect::\u003cVec\u003c_\u003e\u003e()\n            }).filter(|v: \u0026Vec\u003cSubtask\u003e| !v.is_empty());\n            upserts.push(Task {\n                id: real_id[i].clone(),\n                title: node.title.trim().to_string(),\n                due: None,\n                note: node\n                    .note\n                    .as_deref()\n                    .map(str::trim)\n                    .filter(|s| !s.is_empty())\n                    .map(|s| s.to_string()),\n                tags: node.tags.clone(),\n                files: None,\n                file_path: None,\n                file_is_dir: None,\n                column: TaskStatus::Todo,\n                subtasks,",
+      "existing_code": "            upserts.push(Task {\n                id: real_id[i].clone(),\n                title: node.title.trim().to_string(),\n                due: None,\n                note: node\n                    .note\n                    .as_deref()\n                    .map(str::trim)\n                    .filter(|s| !s.is_empty())\n                    .map(|s| s.to_string()),\n                tags: node.tags.clone(),\n                files: None,\n                file_path: None,\n                file_is_dir: None,\n                column: TaskStatus::Todo,\n                subtasks: None,",
+      "start_line": 492,
+      "end_line": 507,
+      "category": "bug",
+      "severity": "critical"
+    },
+    {
+      "path": "src-tauri/src/db/workflow.rs",
+      "content": "[medium] Silent data loss on JSON serialization failure. `serde_json::to_string(a).unwrap_or_default()` collapses any error into `\"\"`, which is stored as a non-null empty string. The matching read path (`workflow_from_row`, line 146) parses `\"\"` via `serde_json::from_str(...).ok()`, yielding `Ok(None)`, so a serialization hiccup silently wipes the user's attachment list on the next upsert with no audit/log. Propagate the error so the save fails loud rather than truncating to `Some(vec![])` on the next load.",
+      "suggestion_code": "    let attachments = match w.attachments.as_ref() {\n        Some(a) =\u003e Some(\n            serde_json::to_string(a)\n                .map_err(|e| format!(\"序列化 attachments 失败：{e}\"))?,\n        ),\n        None =\u003e None,\n    };",
+      "existing_code": "    let attachments = w\n        .attachments\n        .as_ref()\n        .map(|a| serde_json::to_string(a).unwrap_or_default());",
+      "start_line": 178,
+      "end_line": 181,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/db/workflow.rs",
+      "content": "[medium] `ensure_workflows_attachments` swallows prepare/query errors via `.unwrap_or(false)`. Any failure from `conn.prepare(...)` or `stmt.query_map(...)` is collapsed to \"column missing\"; the subsequent `ALTER TABLE` then surfaces an unrelated \"duplicate column name\" or \"no such table\" error, hiding the real diagnostic (corrupted connection, locked DB, schema drift). Also non-atomic check-then-act: would race if `open_db` were invoked from multiple threads on first launch. Match on the concrete error and let unrelated errors propagate.",
+      "suggestion_code": "pub fn ensure_workflows_attachments(conn: \u0026rusqlite::Connection) -\u003e Result\u003c(), String\u003e {\n    // PRAGMA 失败 = 真正的 DB 问题，必须把原始错误透传给 open_db，\n    // 不能吞掉后用 ALTER 的副作用错误误导排障。\n    let mut stmt = conn\n        .prepare(\"PRAGMA table_info(workflows)\")\n        .map_err(|e| e.to_string())?;\n    let rows = stmt\n        .query_map([], |r| r.get::\u003c_, String\u003e(1))\n        .map_err(|e| e.to_string())?;\n    let has = rows.filter_map(|n| n.ok()).any(|n| n == \"attachments\");\n    if !has {\n        conn.execute(\"ALTER TABLE workflows ADD COLUMN attachments TEXT\", [])\n            .map_err(|e| e.to_string())?;\n    }\n    Ok(())\n}",
+      "existing_code": "pub fn ensure_workflows_attachments(conn: \u0026rusqlite::Connection) -\u003e Result\u003c(), String\u003e {\n    let has: bool = conn\n        .prepare(\"PRAGMA table_info(workflows)\")\n        .and_then(|mut stmt| {\n            let rows = stmt.query_map([], |r| r.get::\u003c_, String\u003e(1))?;\n            Ok(rows.filter_map(|n| n.ok()).any(|n| n == \"attachments\"))\n        })\n        .unwrap_or(false);\n    if !has {\n        conn.execute(\"ALTER TABLE workflows ADD COLUMN attachments TEXT\", [])\n            .map_err(|e| e.to_string())?;\n    }\n    Ok(())\n}",
+      "start_line": 42,
+      "end_line": 55,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/db/workflow.rs",
+      "content": "[medium] `attachments` and `subtasks` accept arbitrary strings with no cap, path validation, or per-item length check. `bot_py::doc_extract` is the only safety net for paths, and `node.subtasks` is not validated at all at this layer (the cap in `workflow_decompose::validate_decompose` is bypassed by direct `workflow_save` calls). Cap `attachments.len()` (e.g. 10), drop empty/whitespace entries, reject paths containing `..` or absolute-prefix anomalies, and apply the same trim+length+count policy to `node.subtasks` here so the file-parser comment at line 847 actually holds.",
+      "suggestion_code": "fn validate_nodes(nodes: \u0026[WorkflowNodeDraft]) -\u003e CommandResult\u003c()\u003e {\n    if nodes.len() \u003e MAX_WORKFLOW_NODES {\n        return Err(CommandError::InvalidArgument {\n            field: \"nodes\".into(),\n            value: nodes.len().to_string(),\n            reason: format!(\"节点数超过 {MAX_WORKFLOW_NODES} 上限\"),\n        });\n    }\n    for (i, n) in nodes.iter().enumerate() {\n        if let Some(list) = \u0026n.subtasks {\n            if list.len() \u003e MAX_NODE_SUBTASKS {\n                return Err(CommandError::InvalidArgument {\n                    field: \"subtasks\".into(),\n                    value: list.len().to_string(),\n                    reason: format!(\"第 {} 个节点子任务超过 {MAX_NODE_SUBTASKS} 条上限\", i + 1),\n                });\n            }\n            for t in list {\n                if t.chars().count() \u003e MAX_NODE_SUBTASK_CHARS {\n                    return Err(CommandError::InvalidArgument {\n                        field: \"subtasks\".into(),\n                        value: t.clone(),\n                        reason: format!(\"第 {} 个节点子任务超过 {MAX_NODE_SUBTASK_CHARS} 字上限\", i + 1),\n                    });\n                }\n            }\n        }",
+      "existing_code": "fn validate_nodes(nodes: \u0026[WorkflowNodeDraft]) -\u003e CommandResult\u003c()\u003e {\n    if nodes.len() \u003e MAX_WORKFLOW_NODES {\n        return Err(CommandError::InvalidArgument {\n            field: \"nodes\".into(),\n            value: nodes.len().to_string(),\n            reason: format!(\"节点数超过 {MAX_WORKFLOW_NODES} 上限\"),\n        });\n    }\n    for (i, n) in nodes.iter().enumerate() {",
+      "start_line": 220,
+      "end_line": 228,
+      "category": "security",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/db/workflow.rs",
+      "content": "[low] Silent JSON deserialization failure on the read path hides corruption. `serde_json::from_str(\u0026s).ok()` maps malformed JSON (partial write, manual edit, upgrade bug) to `None` with no log. Combined with the silent serialization failure in `upsert_workflow`, persistent corruption is invisible. For consistency with the analogous `task_from_row` (which `eprintln!`s a warning on `subtasks`/`files`/`budget` JSON failure), emit at least a stderr warning here.",
+      "suggestion_code": "fn workflow_from_row(r: \u0026rusqlite::Row\u003c'_\u003e) -\u003e rusqlite::Result\u003cWorkflow\u003e {\n    let id: String = r.get(0)?;\n    let attachments: Option\u003cString\u003e = r.get(5)?;\n    let attachments = attachments.and_then(|s| match serde_json::from_str(\u0026s) {\n        Ok(v) =\u003e Some(v),\n        Err(e) =\u003e {\n            eprintln!(\n                \"[db] 工作流 {id} 的 attachments JSON 无法解析，已按 None 读取（原值：{s}）：{e}\"\n            );\n            None\n        }\n    });\n    Ok(Workflow {\n        id,\n        name: r.get(1)?,\n        goal: r.get(2)?,\n        created_at: r.get(3)?,\n        updated_at: r.get(4)?,\n        attachments,\n    })\n}",
+      "existing_code": "fn workflow_from_row(r: \u0026rusqlite::Row\u003c'_\u003e) -\u003e rusqlite::Result\u003cWorkflow\u003e {\n    let attachments: Option\u003cString\u003e = r.get(5)?;\n    Ok(Workflow {\n        id: r.get(0)?,\n        name: r.get(1)?,\n        goal: r.get(2)?,\n        created_at: r.get(3)?,\n        updated_at: r.get(4)?,\n        attachments: attachments.and_then(|s| serde_json::from_str(\u0026s).ok()),\n    })\n}",
+      "start_line": 138,
+      "end_line": 148,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "`dirty` snapshot doesn't include `attachPaths` — adding/removing attachments never marks the workflow as dirty, so the toolbar's Save button (disabled when `!dirty`, line 781) stays disabled and users cannot persist attachment changes via the UI even though `save()` (line 570) correctly forwards `attachPaths` to the backend. Both `snapshot` (line 159-162) and the three `setSavedSnapshot` call sites (lines 182-184, 601-603) need to include the current `attachPaths` in the JSON payload. Otherwise `openWorkflow` → add attachment → Save stays greyed out → backend never receives the new paths.",
+      "suggestion_code": "const snapshot = useCallback(\n    () =\u003e JSON.stringify({ name, goal, nodes, attachments: attachPaths }),\n    [name, goal, nodes, attachPaths]\n  );\n  const dirty = savedSnapshot !== snapshot();",
+      "existing_code": "const snapshot = useCallback(\n    () =\u003e JSON.stringify({ name, goal, nodes }),\n    [name, goal, nodes]\n  );\n  const dirty = savedSnapshot !== snapshot();",
+      "start_line": 159,
+      "end_line": 163,
+      "category": "bug",
+      "severity": "critical"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "EmptyHero description still mentions the removed \"创建空白画布\" entry point: the non-regenerate branch text (line 893) advertises a manual blank-canvas path that no longer exists in this component (per W8-ATTACH spec — `onCreateBlank` was removed from EmptyHero's props). Users reading the description will look for the button and won't find one; the only remaining route to a blank canvas is the toolbar 「新建」 button, which isn't called out here.",
+      "suggestion_code": "\u003cp className=\"mt-1 text-xs text-[var(--t5)]\"\u003e\n            {isRegenerate\n              ? \"修改目标描述后重新生成——点「保存」前原画布保持不变，保存时按内容指纹保留未变更节点的执行痕迹。\"\n              : \"描述你想让 AI 帮你完成的工作流程，AI 将拆解成任务卡并自动连线。\"}\n          \u003c/p\u003e",
+      "existing_code": "\u003cp className=\"mt-1 text-xs text-[var(--t5)]\"\u003e\n            {isRegenerate\n              ? \"修改目标描述后重新生成——点「保存」前原画布保持不变，保存时按内容指纹保留未变更节点的执行痕迹。\"\n              : \"描述你想让 AI 帮你完成的工作流程，AI 将拆解成任务卡并自动连线；也可以先创建空白画布手动编排。\"}\n          \u003c/p\u003e",
+      "start_line": 890,
+      "end_line": 894,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/workflow_decompose.rs",
+      "content": "Windows path separator not handled: `path.rsplit('/').next().unwrap_or(path)` only splits on POSIX `/`. On Windows the LLM prompt would see the full path as the filename (e.g. `C:\\Users\\foo\\report.docx`), confusing the LLM's content routing and degrading prompt quality. The frontend already has a cross-platform `basename` helper in `src/format.ts` that splits on `/[\\\\/]/`. On the Rust side, prefer `std::path::Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or(path)` for an idiomatic cross-platform basename.",
+      "suggestion_code": "            let file_name = std::path::Path::new(path)\n                .file_name()\n                .and_then(|n| n.to_str())\n                .unwrap_or(path);",
+      "existing_code": "            let file_name = path.rsplit('/').next().unwrap_or(path);",
+      "start_line": 355,
+      "end_line": 355,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/workflow_decompose.rs",
+      "content": "Cap bookkeeping bug: after truncating `text` to fit `TOTAL_CAP`, `total_used` is not updated — it remains at `previous_total_used + text.chars().count()` (the pre-truncation size). With the current values (`PER_FILE_CAP=12000`, `TOTAL_CAP=48000`) the upfront `total_used \u003e= TOTAL_CAP` guard at the start of each iteration masks the bug for file inclusion (the next iteration is correctly skipped), but the inflated `total_used` is a latent defect: if `PER_FILE_CAP` or `TOTAL_CAP` are tweaked (e.g. `PER_FILE_CAP` raised or `TOTAL_CAP` lowered), files that should fit would be wrongly skipped. Fix by assigning `total_used = TOTAL_CAP` (or `previous_total_used + remain`) after truncation.",
+      "suggestion_code": "                    let mut text: String = res.text.chars().take(PER_FILE_CAP).collect();\n                    let this_chars = text.chars().count();\n                    if total_used + this_chars \u003e TOTAL_CAP {\n                        let remain = TOTAL_CAP.saturating_sub(total_used);\n                        text = res.text.chars().take(remain).collect();\n                        total_used = TOTAL_CAP;\n                    } else {\n                        total_used += this_chars;\n                    }",
+      "existing_code": "                    let mut text: String = res.text.chars().take(PER_FILE_CAP).collect();\n                    total_used += text.chars().count();\n                    if total_used \u003e TOTAL_CAP {\n                        let remain = TOTAL_CAP.saturating_sub(total_used - text.chars().count());\n                        text = res.text.chars().take(remain).collect();\n                    }",
+      "start_line": 358,
+      "end_line": 363,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/workflow_decompose.rs",
+      "content": "Missing test coverage for new subtasks validation: the new logic (≤8 entries, ≤60 chars per entry, trim, empty-strip → None) has no dedicated test. The diff only added `subtasks: None` to existing test struct literals to satisfy the new field. Add at least one positive case (≤8 entries × ≤60 chars accepted with trim) and one negative case (\u003e8 entries rejected; \u003e60 chars rejected; all-empty list → None) to prevent regression.",
+      "existing_code": "// 子任务清单校验（W8-ATTACH）：≤8 条 × ≤60 字，trim，空白条剔除\n        if let Some(list) = \u0026mut st.subtasks {\n            if list.len() \u003e 8 {\n                return Err(CommandError::InvalidArgument {\n                    field: \"subtasks\".into(),\n                    value: list.len().to_string(),\n                    reason: format!(\"第 {} 个任务子任务超过 8 条上限\", i + 1),\n                });\n            }\n            for t in list.iter_mut() {\n                *t = t.trim().to_string();\n                if t.chars().count() \u003e 60 {\n                    return Err(CommandError::InvalidArgument {\n                        field: \"subtasks\".into(),\n                        value: t.clone(),\n                        reason: format!(\"第 {} 个任务的子任务超过 60 字上限\", i + 1),\n                    });\n                }\n            }\n            list.retain(|t| !t.is_empty());\n            if list.is_empty() {\n                st.subtasks = None;\n            }\n        }",
+      "start_line": 164,
+      "end_line": 187,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/workflow_decompose.rs",
+      "content": "Contract/code mismatch: the contract segment says \"subtasks：可选，2~8 条子任务文本\" but the validator only enforces the upper bound (≤8). After empty-strip, a list with 1 entry passes validation, contradicting the \"2~8\" contract. Either tighten the contract text to \"1~8\" (or \"≤8\") to match the lenient validator, or tighten the validator to reject single-entry lists so the contract and code agree.",
+      "suggestion_code": "- subtasks：可选，≤8 条子任务文本（每条 ≤60 字）；有前置材料的任务，把材料里对应的要点/数据拆进 subtasks",
+      "existing_code": "- subtasks：可选，2~8 条子任务文本（每条 ≤60 字）；有前置材料的任务，把材料里对应的要点/数据拆进 subtasks",
+      "start_line": 32,
+      "end_line": 32,
+      "category": "documentation",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/db/workflow.rs",
+      "content": "The comment at line 847 (\"空串/空白子任务在保存链构建 Subtask 时再过滤\") promises a `Subtask` construction step that is nowhere defined. Even when confirmed finding #1 (silent drop in workflow_save_locked) is fixed, the fix must include the actual transformation `Vec\u003cString\u003e → Vec\u003cSubtask\u003e` — each entry needs a uuid `id`, the trimmed `text`, and `done: false`. Right now no code path builds a `Subtask { id, text, done }` from `node.subtasks: Option\u003cVec\u003cString\u003e\u003e`. The export side at workflow_file_from (line 757) extracts `Subtask::text` correctly, but the reverse mapping is missing — when bug #1 is fixed, this transformation (uuid allocation, defaults, trim, empty-strip) must land alongside it.",
+      "suggestion_code": "// 保存链（workflow_save_locked 新建卡分支）必须把 n.subtasks 拆成\n                // Vec\u003cSubtask { id: uuid, text: trimmed, done: false }\u003e；trim + 空白剔除\n                // 也应在该处完成；空串已过滤的 n.subtasks 在此透传\n                subtasks: n.subtasks,",
+      "existing_code": "// 空串/空白子任务在保存链构建 Subtask 时再过滤\n                subtasks: n.subtasks,",
+      "start_line": 847,
+      "end_line": 848,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/db/workflow.rs",
+      "content": "`validate_nodes` does not enforce the same ≤8 subtasks × ≤60 chars limit + whitespace trim/empty-strip rules that `validate_decompose` (workflow_decompose.rs:165-187) applies to LLM output. The decompose-path validation is unreachable from `workflow_save` (which only calls `validate_nodes`), so a frontend-submitted `node.subtasks` with 1000 entries or 10k-char strings will silently bypass the contract that limits the AI output. Confirmed finding #4 notes \"node.subtasks is not validated at all at this layer\" but does not specify that the validator exists in a sibling module and is unreachable from this path — moving the validator or sharing it via `pub(crate)` would close this gap.",
+      "suggestion_code": "/// 节点级校验：数量上限、标题/备注/子任务长度、依赖引用非空 + localId 唯一。\n/// 子任务（≤8 条 × ≤60 字 + trim/空白剔除）的校验函数定义在\n/// `crate::workflow_decompose::validate_decompose`，此处必须复用同一规则，\n/// 否则前端直传 workflow_save 可绕过拆解路径的子任务硬顶。\n/// 环/悬空引用在指纹阶段判（draft_fingerprints）。\nfn validate_nodes(nodes: \u0026[WorkflowNodeDraft]) -\u003e CommandResult\u003c()\u003e {",
+      "existing_code": "/// 节点级校验：数量上限、标题/备注长度、依赖引用非空 + localId 唯一。\n/// 环/悬空引用在指纹阶段判（draft_fingerprints）。\nfn validate_nodes(nodes: \u0026[WorkflowNodeDraft]) -\u003e CommandResult\u003c()\u003e {",
+      "start_line": 218,
+      "end_line": 220,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/db/workflow.rs",
+      "content": "The tests in this module uniformly set `attachments: None` on every `WorkflowSaveInput` and `subtasks: None` on every `WorkflowNodeDraft`, exercising neither the new persistence path nor the new-card `Subtask` construction. Round-trip coverage is missing for: (a) saving a workflow with `attachments: Some(vec![\"/tmp/x.pdf\"])` and reading it back via `load_workflow`; (b) submitting `node.subtasks: Some(vec![\"子任务 1\", \"子任务 2\"])` through `workflow_save_locked` and reading the resulting `Task.subtasks` back as `Vec\u003cSubtask\u003e`. These tests would have caught confirmed findings #1 (silent drop) and #2/#5 (silent JSON ser/de) at the unit level — a single test per gap is sufficient.",
+      "suggestion_code": "#[test]\n    fn save_persists_attachments_roundtrip() {\n        // 用 Some(vec![\"/tmp/a.pdf\", \"/tmp/b.docx\"]) 落库 → load_workflow\n        // 读回 → 断言 attachments 字段值一致\n    }\n\n    #[test]\n    fn save_builds_subtasks_for_new_cards() {\n        // node.subtasks = Some(vec![\"子任务 1\", \"子任务 2\"]) 走 workflow_save_locked\n        // → load_tasks_by_workflow → 断言 Task.subtasks 为 [Subtask{text:\"子任务 1\", done:false}, ...]\n    }\n\n    #[test]\n    fn save_strips_empty_subtasks_for_new_cards() {\n        // node.subtasks = Some(vec![\"\", \"  \", \"有效\"]) → 仅 [\"有效\"] 入库\n    }\n\n    #[test]\n    fn save_new_creates_workflow_and_task_rows() {",
+      "existing_code": "#[test]\n    fn save_new_creates_workflow_and_task_rows() {",
+      "start_line": 1112,
+      "end_line": 1113,
+      "category": "test",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/workflow_decompose.rs",
+      "content": "`attached_ok` overcounts when extraction returns empty content: an `Ok(res)` whose `res.text` is empty (or whose `PER_FILE_CAP` slice is empty) still increments `attached_ok`, so the audit and the prompt header claim \"X 个读取成功\" for files that produced no usable text. The prompt then carries a `【附件 N：filename】` block with an empty body, wasting tokens and confusing the LLM. Only count `attached_ok += 1` when `!text.is_empty()` (or fold empty successes into the total-cap / failure branch).",
+      "existing_code": "Ok(res) =\u003e {\n                    let mut text: String = res.text.chars().take(PER_FILE_CAP).collect();\n                    total_used += text.chars().count();\n                    if total_used \u003e TOTAL_CAP {\n                        let remain = TOTAL_CAP.saturating_sub(total_used - text.chars().count());\n                        text = res.text.chars().take(remain).collect();\n                    }\n                    attach_blocks.push_str(\u0026format!(\n                        \"\\n【附件 {}：{}】\\n{}\\n\",\n                        i + 1,\n                        file_name,\n                        text\n                    ));\n                    attached_ok += 1;\n                }",
+      "start_line": 357,
+      "end_line": 371,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/workflow_decompose.rs",
+      "content": "Subtask 60-char error message does not identify which entry failed: with up to 8 subtasks per task the user (and the LLM retried after `fail!`) sees \"第 2 个任务的子任务超过 60 字上限\" but has no idea which of the up to 8 entries is the offender. The `value` field holds the offending text but `reason` should also include the entry index and a short preview (e.g. `第 2 个任务的第 5 条子任务超过 60 字上限（前缀：\"...\"`)) so the error is actionable when surfaced to the user.",
+      "existing_code": "for t in list.iter_mut() {\n                *t = t.trim().to_string();\n                if t.chars().count() \u003e 60 {\n                    return Err(CommandError::InvalidArgument {\n                        field: \"subtasks\".into(),\n                        value: t.clone(),\n                        reason: format!(\"第 {} 个任务的子任务超过 60 字上限\", i + 1),\n                    });\n                }\n            }",
+      "start_line": 173,
+      "end_line": 182,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/workflow_decompose.rs",
+      "content": "No upper bound on number of attachments: the loop iterates the full `attachment_list` and calls `doc_extract` per entry (each may be a multi-second subprocess + Python docx/xlsx/pptx/pdf load). With `PER_FILE_CAP=12_000` and `TOTAL_CAP=48_000` a malicious or buggy caller passing thousands of paths would burn wall-clock time and per-attachment audit overhead before the character cap ever stops the loop. Add a hard count cap (e.g. 8–16) at the top of the loop with the same skip-with-placeholder pattern as the character-cap branch.",
+      "existing_code": "let attachment_list = attachments.unwrap_or_default();\n        let mut attach_blocks = String::new();\n        let mut attached_ok = 0usize;\n        {\n            const PER_FILE_CAP: usize = 12_000;\n            const TOTAL_CAP: usize = 48_000;\n            let mut total_used = 0usize;\n            for (i, path) in attachment_list.iter().enumerate() {\n                if total_used \u003e= TOTAL_CAP {",
+      "start_line": 339,
+      "end_line": 347,
+      "category": "maintainability",
+      "severity": "high"
+    },
+    {
+      "path": "src-tauri/src/workflow_decompose.rs",
+      "content": "`value` field for the \u003e8 entries error holds `list.len().to_string()` — the count, not the offending content — inconsistent with the title/note validators that put the actual offending string in `value`. For machine-readable error location, dump the joined list (truncated) or at minimum the count plus first entry; otherwise grep-style consumers can't pinpoint which list blew past the cap.",
+      "existing_code": "// 子任务清单校验（W8-ATTACH）：≤8 条 × ≤60 字，trim，空白条剔除\n        if let Some(list) = \u0026mut st.subtasks {\n            if list.len() \u003e 8 {\n                return Err(CommandError::InvalidArgument {\n                    field: \"subtasks\".into(),\n                    value: list.len().to_string(),\n                    reason: format!(\"第 {} 个任务子任务超过 8 条上限\", i + 1),\n                });\n            }",
+      "start_line": 164,
+      "end_line": 172,
+      "category": "maintainability",
+      "severity": "low"
+    }
+  ],
+  "groups": [
+    {
+      "label": "src-tauri/src/db/mod.rs",
+      "files": [
+        "src-tauri/src/db/mod.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/db/workflow.rs",
+      "files": [
+        "src-tauri/src/db/workflow.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/workflow_decompose.rs",
+      "files": [
+        "src-tauri/src/workflow_decompose.rs"
+      ]
+    },
+    {
+      "label": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "files": [
+        "src/components/WorkflowCanvas/WorkflowPage.tsx"
+      ]
+    },
+    {
+      "label": "src/components/WorkflowCanvas/graph.ts",
+      "files": [
+        "src/components/WorkflowCanvas/graph.ts"
+      ]
+    }
+  ],
+  "session_id": "8545e7ec-ac03-454c-8a0b-efb825c627d4",
+  "manifest": {
+    "schema_version": "ocr.run-manifest/v1",
+    "run_id": "8545e7ec-ac03-454c-8a0b-efb825c627d4",
+    "operation": "review",
+    "terminal_state": "complete",
+    "repository": {
+      "identity_sha256": "7aebc670c3c38e64ae52ffaf12cfa8ba078a29af906f8ef856132cd790dbe48b"
+    },
+    "input": {
+      "mode": "commit",
+      "requested_head": "7489701",
+      "resolved_base": "7dacdd91ac7989b0df47411141438338382e7ae2",
+      "resolved_head": "74897011d98cd79ac77acda3465d452185337d0e",
+      "exact_range": "7dacdd91ac7989b0df47411141438338382e7ae2..74897011d98cd79ac77acda3465d452185337d0e",
+      "source_artifact_sha256": "403b5a3b0073319d309e3123f8bd96d66ba4cac5175a2f13abdafd7ecfc38131"
+    },
+    "execution": {
+      "ocr_version": "v1.12.11",
+      "provider": "minimax-cn",
+      "model": "MiniMax-M3",
+      "configured_concurrency": 8,
+      "rule_config_sha256": "d5e28d02ed5cdf85b533907db24b47f1be02847db764a4ded208dbaf54380ae1",
+      "runtime_config_sha256": "f3ac1cdd2a45285ba614e32ab9bd03b86d9911c8deb3bec22fccf7b7bd4e6913"
+    },
+    "coverage": {
+      "selected": [
+        {
+          "item_id": "1dbd971cc2fd4f433b08b8c3267c1c890488a94ac49d38f03da48bc67469fb67",
+          "path": "src-tauri/src/workflow_decompose.rs",
+          "fingerprint": "f779fc8a7a730e68663f736098f9e45ac3d03b69801d9a88cdfa8aab2341ddda"
+        },
+        {
+          "item_id": "7db247f2329d097ea748b5299ed5cb9fcf2c76b4992e4b398daedbdfb323f69e",
+          "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+          "fingerprint": "2d2e38a3ad3932bf9a498c78f88eedbec3fab964c77d3ea09fb6dc08adf4ad24"
+        },
+        {
+          "item_id": "85de96e42b83374ff3dacd6b2c8c4a67dd7c42e732331c6b248e1b74734da25f",
+          "path": "src/components/WorkflowCanvas/graph.ts",
+          "fingerprint": "ad063e46fd2cfddf60cec8f22ad00f7800dd51c5db151bb41a002e98eaa88747"
+        },
+        {
+          "item_id": "d011602ff3857419697d5acce022aa29b329d547d924a9383a2f5c224e6f4b76",
+          "path": "src-tauri/src/db/workflow.rs",
+          "fingerprint": "51e112aca6b0a4b1c6f7e08ffad399bd0b2e8abe33d55422e261b5afb28f6737"
+        },
+        {
+          "item_id": "e08f56bef25fa6a39c346153800615f7ac48c32e8b0c5879d975661b3001de8d",
+          "path": "src-tauri/src/db/mod.rs",
+          "fingerprint": "9402fec50f5e7ef96ff679be354faeaa28616940bbf1778c77d094cd278f360e"
+        }
+      ],
+      "completed": [
+        {
+          "item_id": "1dbd971cc2fd4f433b08b8c3267c1c890488a94ac49d38f03da48bc67469fb67",
+          "path": "src-tauri/src/workflow_decompose.rs",
+          "fingerprint": "f779fc8a7a730e68663f736098f9e45ac3d03b69801d9a88cdfa8aab2341ddda"
+        },
+        {
+          "item_id": "7db247f2329d097ea748b5299ed5cb9fcf2c76b4992e4b398daedbdfb323f69e",
+          "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+          "fingerprint": "2d2e38a3ad3932bf9a498c78f88eedbec3fab964c77d3ea09fb6dc08adf4ad24"
+        },
+        {
+          "item_id": "85de96e42b83374ff3dacd6b2c8c4a67dd7c42e732331c6b248e1b74734da25f",
+          "path": "src/components/WorkflowCanvas/graph.ts",
+          "fingerprint": "ad063e46fd2cfddf60cec8f22ad00f7800dd51c5db151bb41a002e98eaa88747"
+        },
+        {
+          "item_id": "d011602ff3857419697d5acce022aa29b329d547d924a9383a2f5c224e6f4b76",
+          "path": "src-tauri/src/db/workflow.rs",
+          "fingerprint": "51e112aca6b0a4b1c6f7e08ffad399bd0b2e8abe33d55422e261b5afb28f6737"
+        },
+        {
+          "item_id": "e08f56bef25fa6a39c346153800615f7ac48c32e8b0c5879d975661b3001de8d",
+          "path": "src-tauri/src/db/mod.rs",
+          "fingerprint": "9402fec50f5e7ef96ff679be354faeaa28616940bbf1778c77d094cd278f360e"
+        }
+      ],
+      "reused": [],
+      "failed": [],
+      "waived": []
+    },
+    "elapsed_ms": 592888
+  }
+}

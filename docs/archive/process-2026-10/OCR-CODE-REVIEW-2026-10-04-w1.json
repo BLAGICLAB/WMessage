@@ -1,0 +1,849 @@
+{
+  "status": "complete",
+  "llm": {
+    "provider": "minimax-cn",
+    "model": "MiniMax-M3"
+  },
+  "message": "Review complete: 41 finding(s) across 19 selected item(s).",
+  "summary": {
+    "files_reviewed": 19,
+    "comments": 41,
+    "total_tokens": 9154735,
+    "input_tokens": 8904338,
+    "output_tokens": 250397,
+    "cache_read_tokens": 8026299,
+    "elapsed": "10m43s"
+  },
+  "tool_calls": {
+    "total": 441,
+    "by_tool": {
+      "code_comment": 21,
+      "code_search": 198,
+      "file_find": 17,
+      "file_read": 194,
+      "file_read_diff": 11
+    },
+    "failure": 10,
+    "failure_by_tool": {
+      "code_comment": 1,
+      "file_read": 9
+    },
+    "failure_details": [
+      {
+        "tool_call_number": 113,
+        "tool_name": "file_read",
+        "file_path": "src/App.tsx",
+        "arguments": "{\"end_line\":60,\"file_path\":\"src/App.tsx\",\"start_line\":160}",
+        "error": "invalid line range: start_line 160 is greater than end_line 60"
+      },
+      {
+        "tool_call_number": 120,
+        "tool_name": "file_read",
+        "file_path": "src/App.tsx",
+        "arguments": "{\"end_line\":200,\"file_path\":\"src/App.tsx\",\"start_line\":700}",
+        "error": "invalid line range: start_line 700 is greater than end_line 200"
+      },
+      {
+        "tool_call_number": 133,
+        "tool_name": "file_read",
+        "file_path": "src/App.tsx",
+        "arguments": "{\"end_line\":200,\"file_path\":\"src/App.tsx\",\"start_line\":700}",
+        "error": "invalid line range: start_line 700 is greater than end_line 200"
+      },
+      {
+        "tool_call_number": 147,
+        "tool_name": "file_read",
+        "file_path": "src/App.tsx",
+        "arguments": "{\"end_line\":200,\"file_path\":\"src/App.tsx\",\"start_line\":540}",
+        "error": "invalid line range: start_line 540 is greater than end_line 200"
+      },
+      {
+        "tool_call_number": 241,
+        "tool_name": "file_read",
+        "file_path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+        "arguments": "{\"end_line\":30,\"file_path\":\"src/components/WidgetApp/WidgetApp.tsx\",\"start_line\":115}",
+        "error": "invalid line range: start_line 115 is greater than end_line 30"
+      },
+      {
+        "tool_call_number": 296,
+        "tool_name": "file_read",
+        "file_path": "src/components/SettingsPage/SettingsPage.tsx",
+        "arguments": "{\"end_line\":50,\"file_path\":\"src/components/SettingsPage/SettingsPage.tsx\",\"start_line\":880}",
+        "error": "invalid line range: start_line 880 is greater than end_line 50"
+      },
+      {
+        "tool_call_number": 374,
+        "tool_name": "file_read",
+        "file_path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+        "arguments": "{\"end_line\": 100, \"file_path\": \"src-tauri/src/db/workflow.rs\", \"start_line\": 340}",
+        "error": "invalid line range: start_line 340 is greater than end_line 100"
+      },
+      {
+        "tool_call_number": 377,
+        "tool_name": "file_read",
+        "file_path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+        "arguments": "{\"end_line\": 100, \"file_path\": \"src/components/WorkflowCanvas/WorkflowPage.tsx\", \"start_line\": 263}",
+        "error": "invalid line range: start_line 263 is greater than end_line 100"
+      },
+      {
+        "tool_call_number": 386,
+        "tool_name": "code_comment",
+        "file_path": "src/types.ts",
+        "arguments": "{\"category\": \"maintainability\", \"content\": \"The new interfaces `CanvasPos` and `WorkflowSaveBinding` are used in exported types (`Task.canvasPos`, `WorkflowSaveResult.bindings`) but are themselves not exported. While this matches the existing `Subtask` pattern in the file, external modules that need to construct or annotate these values (e.g., for tests, mocks, or type-safe transformation utilities) won't be able to import them by name and would have to either inline the shape or use type assertions. Consider exporting them alongside `Workflow` and `WorkflowSaveResult` for a more idiomatic public contract surface — the cost is zero since they're pure structural types.\", \"existing_code\": \"/** 画布坐标（工作流卡专用，与 Rust db::CanvasPos 对应） */\\ninterface CanvasPos {\\n  x: number;\\n  y: number;\\n}\", \"path\": \"src/types.ts\", \"severity\": \"low\"}",
+        "error": "Error: 'comments' array is required. Got args: {\"category\":\"maintainability\",\"content\":\"The new interfaces `CanvasPos` and `WorkflowSaveBinding` are used in exported types (`Task.canvasPos`, `WorkflowSaveResult.bindings`) but are themselves not exported. While this matches the existing `Subtask` pattern in the file, external modules that need to construct or annotate these values (e.g., for tests, mocks, or type-safe transformation utilities) won't be able to import them by name and would have to either inline the shape or use type assertions. Consider exporting them alongside `Workflow` and `WorkflowSaveResult` for a more idiomatic public contract surface — the cost is zero since they're pure structural types.\",\"existing_code\":\"/** 画布坐标（工作流卡专用，与 Rust db::CanvasPos 对应） */\\ninterface CanvasPos {\\n  x: number;\\n  y: number;\\n}\",\"path\":\"src/types.ts\",\"severity\":\"low\"}"
+      },
+      {
+        "tool_call_number": 431,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/db/workflow.rs",
+        "arguments": "{\"end_line\":120,\"file_path\":\"src-tauri/src/db/workflow.rs\",\"start_line\":280}",
+        "error": "invalid line range: start_line 280 is greater than end_line 120"
+      }
+    ]
+  },
+  "comments": [
+    {
+      "path": "src/components/WidgetApp/WidgetApp.tsx",
+      "content": "The codebase already provides `isWorkflowTask(t)` in `lib/workflowVisibility.ts` for filter selectors, with an explicit directive \"勿散落内联判断\". The new inline `t.origin !== \"workflow\"` checks in both `visible` and `doneList` violate this pattern and duplicate logic that is guaranteed to drift from the canonical definition (e.g., if `origin` is ever extended with new values, every inline check has to be updated). Additionally, the predicate `(wfVisible || t.origin !== \"workflow\") \u0026\u0026 !t.archived \u0026\u0026 !t.deletedAt` is duplicated across the two filters — extract a shared `shouldShowInWidget(t, wfVisible)` helper (or just reuse `isWorkflowTask`) so the W1-CANVAS rule lives in one place.",
+      "suggestion_code": "const showIfOn = (t: Task) =\u003e\n    (wfVisible || !isWorkflowTask(t)) \u0026\u0026 !t.archived \u0026\u0026 !t.deletedAt;\n  const visible = tasks.filter(\n    (t) =\u003e showIfOn(t) \u0026\u0026 t.column !== \"done\"\n  );\n  const doneList = tasks\n    .filter((t) =\u003e showIfOn(t) \u0026\u0026 t.column === \"done\")",
+      "existing_code": "const visible = tasks.filter(\n    (t) =\u003e\n      (wfVisible || t.origin !== \"workflow\") \u0026\u0026\n      !t.archived \u0026\u0026\n      !t.deletedAt \u0026\u0026\n      t.column !== \"done\"\n  );\n  const doneList = tasks\n    .filter(\n      (t) =\u003e\n        (wfVisible || t.origin !== \"workflow\") \u0026\u0026\n        !t.archived \u0026\u0026\n        !t.deletedAt \u0026\u0026\n        t.column === \"done\"\n    )",
+      "start_line": 652,
+      "end_line": 666,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/WidgetApp/WidgetApp.tsx",
+      "content": "The `un.then((f) =\u003e f())` pattern is awkward and silently swallows promise rejections from the unsubscribe path. A small async IIFE keeps the intent obvious and lets you handle a cleanup rejection if needed; alternatively, `void un;` plus tracking the unlisten via state is also acceptable.",
+      "suggestion_code": "useEffect(() =\u003e {\n    let unlisten: (() =\u003e void) | undefined;\n    listen(WORKFLOW_VISIBILITY_EVENT, () =\u003e\n      setWfVisible(getShowWorkflowTasks())\n    ).then((f) =\u003e {\n      unlisten = f;\n    });\n    return () =\u003e {\n      unlisten?.();\n    };\n  }, []);",
+      "existing_code": "useEffect(() =\u003e {\n    const un = listen(WORKFLOW_VISIBILITY_EVENT, () =\u003e\n      setWfVisible(getShowWorkflowTasks())\n    );\n    return () =\u003e {\n      un.then((f) =\u003e f());\n    };\n  }, []);",
+      "start_line": 644,
+      "end_line": 651,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/db/mod.rs",
+      "content": "Test fixture manually mirrors the production migration column list — the inline comment already flags this as fragile. The 5-column list (`origin/workflow_id/depends_on/canvas_x/canvas_y`) is duplicated almost verbatim from `open_db`'s migration loop above; any future column addition to the production migration must also be added here, or `load_all` will silently break this fixture's tests. Consider exposing the list as a `pub const TASKS_LEGACY_MIGRATIONS: \u0026[(\u0026str, \u0026str)]` in `db::tasks` so both call sites share one source of truth (the fixture would do `for (col, ty) in TASKS_LEGACY_MIGRATIONS { conn.execute(...) }`).",
+      "suggestion_code": "        // 与 open_db 共用同一份列清单——新增列只需改一处，杜绝 fixture 漂移\n        for (col, ty) in crate::db::tasks::TASKS_LEGACY_MIGRATIONS {\n            conn.execute(\u0026format!(\"ALTER TABLE tasks ADD COLUMN {col} {ty}\"), [])\n                .unwrap();\n        }",
+      "existing_code": "        // W1-CANVAS 起进程内共有 5 个新列（origin/workflow_id/depends_on/canvas_x/canvas_y）——\n        // 与 files 列同为 open_db 幂等 ALTER 的一部分；fixture 保持「仅缺 files 列」的\n        // 被测前提不变，把其余列补齐，否则迁移后 load_all 查新列会炸\n        for (col, ty) in [\n            (\"origin\", \"TEXT\"),\n            (\"workflow_id\", \"TEXT\"),\n            (\"depends_on\", \"TEXT\"),\n            (\"canvas_x\", \"REAL\"),\n            (\"canvas_y\", \"REAL\"),\n        ] {\n            conn.execute(\u0026format!(\"ALTER TABLE tasks ADD COLUMN {col} {ty}\"), [])\n                .unwrap();\n        }",
+      "start_line": 753,
+      "end_line": 765,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/WidgetApp/WidgetApp.tsx",
+      "content": "WORKFLOW_VISIBILITY_EVENT 永远不会被触发：`workflowVisibility.ts` 实际是 `window.dispatchEvent(new CustomEvent(WORKFLOW_VISIBILITY_EVENT))`（DOM CustomEvent），而这里用的是 `listen()` from `@tauri-apps/api/event`（Tauri IPC 监听器）。两者通道不同，挂件只能在下一次 mount/重载时通过 `useState(getShowWorkflowTasks)` 重新读取 localStorage 才生效，开关不会即时同步。同样的错配在 App.tsx、SettingsPage.tsx 也存在，需要把分发换成 `emit()` 或把订阅换成 `window.addEventListener`。",
+      "existing_code": "useEffect(() =\u003e {\n    const un = listen(WORKFLOW_VISIBILITY_EVENT, () =\u003e\n      setWfVisible(getShowWorkflowTasks())\n    );\n    return () =\u003e {\n      un.then((f) =\u003e f());\n    };\n  }, []);",
+      "start_line": 644,
+      "end_line": 651,
+      "category": "bug",
+      "severity": "critical"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/TaskNode.tsx",
+      "content": "Nested ternary expression violates the \"no nested ternary\" rule. The `border` calculation mixes three orthogonal states (isDoing / isDone / failed) in a triple-nested ternary that hurts readability and obscures which condition owns the `\"\"` fallback. Refactor to an explicit branch (early return / switch / if-else inside an IIFE) or extract a small helper such as `borderClassFor(task)` that returns one of the four mutually-exclusive classes.",
+      "suggestion_code": "  // 节点状态色（todo 灰 / doing 蓝 / done 绿 / 失败红；设计 §5.2）\n  let border = \"\";\n  if (isDoing) border = \"ring-2 ring-[var(--info,#3b82f6)]\";\n  else if (failed) border = \"ring-2 ring-[var(--danger,#ef4444)]\";\n  else if (isDone) border = \"ring-2 ring-[var(--ok,#22c55e)]\";",
+      "existing_code": "  const border = isDoing\n    ? \"ring-2 ring-[var(--info,#3b82f6)]\"\n    : isDone\n      ? failed\n        ? \"ring-2 ring-[var(--danger,#ef4444)]\"\n        : \"ring-2 ring-[var(--ok,#22c55e)]\"\n      : \"\";",
+      "start_line": 36,
+      "end_line": 42,
+      "category": "style",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/TaskNode.tsx",
+      "content": "Loose inequality `!=` is prohibited by the project's strict-equality rule (checklist: \"Using `==` and `!=` is prohibited; use strict equality `===` and `!==`\"). The same line already uses `!== \"success\"`, so the inconsistency stands out. Replace with an explicit `typeof status === \"string\"` (matches the pattern used in `TaskCardContent.tsx` line 189: `typeof task.result.status === \"string\"`) or `status !== undefined \u0026\u0026 status !== null`.",
+      "suggestion_code": "  const resultStatus = task?.result?.status;\n  const failed =\n    task?.column === \"done\" \u0026\u0026\n    typeof resultStatus === \"string\" \u0026\u0026\n    resultStatus !== \"success\";",
+      "existing_code": "  const failed =\n    task?.column === \"done\" \u0026\u0026\n    task?.result?.status != null \u0026\u0026\n    task.result.status !== \"success\";",
+      "start_line": 32,
+      "end_line": 35,
+      "category": "style",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/TaskNode.tsx",
+      "content": "Empty no-op handlers (`onTitleClick={() =\u003e {}}`, `onCancelTitle={() =\u003e {}}`) passed to `TaskCardContent` are functionally equivalent to omitting them — `TaskCardContent` already gates its edit-mode UI on truthy callbacks (`onTitleClick ? ... : undefined` at lines 109-129). Passing empty arrows is a maintenance trap: a future contributor may assume inline editing is enabled and forget that the cancel path silently no-ops, leading to a confusing UX bug. Drop them entirely; if the intent is \"disable inline editing in canvas\", just don't pass them.",
+      "suggestion_code": "        \u003cTaskCardContent\n          task={task}\n          onCommitTitle={(t) =\u003e data.onCommitTitle?.(task.id, t)}",
+      "existing_code": "        \u003cTaskCardContent\n          task={task}\n          onTitleClick={() =\u003e {}}\n          onCommitTitle={(t) =\u003e data.onCommitTitle?.(task.id, t)}\n          onCancelTitle={() =\u003e {}}",
+      "start_line": 61,
+      "end_line": 65,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/App.tsx",
+      "content": "The cleanup uses `un.then((f) =\u003e f())` without a `.catch`. If the `listen()` promise ever rejects (e.g., during rapid mount/unmount or in test environments), the cleanup will throw synchronously and React will surface it as an effect error, breaking strict-mode double-invocation. Wrap with `.catch(() =\u003e {})` (matching the pattern in `tasksRef` elsewhere) so the unlisten failure is swallowed instead of propagated.\n\n```tsx\nuseEffect(() =\u003e {\n  const un = listen(WORKFLOW_VISIBILITY_EVENT, () =\u003e setShowWorkflowTasks(getShowWorkflowTasks()));\n  return () =\u003e {\n    un.then((f) =\u003e f()).catch(() =\u003e {});\n  };\n}, []);\n```",
+      "suggestion_code": "  useEffect(() =\u003e {\n    const un = listen(WORKFLOW_VISIBILITY_EVENT, () =\u003e setShowWorkflowTasks(getShowWorkflowTasks()));\n    return () =\u003e {\n      un.then((f) =\u003e f()).catch(() =\u003e {});\n    };\n  }, []);",
+      "existing_code": "  useEffect(() =\u003e {\n    const un = listen(WORKFLOW_VISIBILITY_EVENT, () =\u003e setShowWorkflowTasks(getShowWorkflowTasks()));\n    return () =\u003e {\n      un.then((f) =\u003e f());\n    };\n  }, []);",
+      "start_line": 169,
+      "end_line": 174,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/App.tsx",
+      "content": "The `onTasksReload` callback wraps reload failures in `handleCommandError(..., { silent: true })`. By the `errorHandler` contract (src/lib/errorHandler.ts L262, L303), `silent: true` suppresses ALL user-visible UI (no alert, no error dialog) and only writes to `console.error`. After `workflow_save`/`workflow_delete` succeeds, a subsequent reload failure will leave the canvas/board stale with respect to disk state — the user will see no warning that their view no longer matches persisted state. Drop the `silent` flag (or pass `onRetry`) so the failure is surfaced the same way `importTasks` does on line 562.",
+      "suggestion_code": "          ) : view === \"workflow\" ? (\n            \u003cWorkflowPage\n              tasks={tasks}\n              onSetColumn={setTaskColumn}\n              onUpdate={updateTask}\n              onTasksReload={() =\u003e {\n                reloadTasks().catch((e) =\u003e handleCommandError(e, \"重读任务\"));\n              }}\n            /\u003e",
+      "existing_code": "          ) : view === \"workflow\" ? (\n            \u003cWorkflowPage\n              tasks={tasks}\n              onSetColumn={setTaskColumn}\n              onUpdate={updateTask}\n              onTasksReload={() =\u003e {\n                void reloadTasks().catch((e) =\u003e\n                  handleCommandError(e, \"重读任务\", { silent: true })\n                );\n              }}\n            /\u003e",
+      "start_line": 810,
+      "end_line": 820,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src/App.tsx",
+      "content": "`WorkflowPage` deliberately receives the unfiltered `tasks` while every other view consumes `visibleTasks`. The contract is documented inside `WorkflowPage.tsx` (\"App 全量任务（含 origin=workflow——节点状态渲染源）\"), but the call site here gives no hint that this is intentional — a future reader refactoring the prop wiring for consistency could silently break the canvas (workflow nodes would lose their backing task lookups). Add a one-line comment here calling out that `WorkflowPage` requires the unfiltered list.\n\n```tsx\n{/* WorkflowPage 必须拿全量 tasks（origin=workflow 在节点状态查表），不能用 visibleTasks */}\n\u003cWorkflowPage\n  tasks={tasks}\n  onSetColumn={setTaskColumn}\n  onUpdate={updateTask}\n  onTasksReload={...}\n/\u003e\n```",
+      "suggestion_code": "          ) : view === \"workflow\" ? (\n            // WorkflowPage 必须拿全量 tasks（节点状态按 id 查表，含 origin=workflow），\n            // 不可改 visibleTasks，否则画布节点丢底\n            \u003cWorkflowPage\n              tasks={tasks}\n              onSetColumn={setTaskColumn}\n              onUpdate={updateTask}\n              onTasksReload={() =\u003e {\n                reloadTasks().catch((e) =\u003e handleCommandError(e, \"重读任务\"));\n              }}\n            /\u003e",
+      "existing_code": "          ) : view === \"workflow\" ? (\n            \u003cWorkflowPage\n              tasks={tasks}\n              onSetColumn={setTaskColumn}\n              onUpdate={updateTask}\n              onTasksReload={() =\u003e {\n                void reloadTasks().catch((e) =\u003e\n                  handleCommandError(e, \"重读任务\", { silent: true })\n                );\n              }}\n            /\u003e",
+      "start_line": 810,
+      "end_line": 820,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/lib/workflowVisibility.ts",
+      "content": "When `localStorage.setItem` throws (privacy mode etc.), the catch block swallows the error but the event is still dispatched. Subscribers receiving `WORKFLOW_VISIBILITY_EVENT` will call `getShowWorkflowTasks()`, which returns `false` because the write never persisted — so the UI flips to the opposite of what the user just toggled. Either (a) cache the value in a module-level variable so reads return the in-memory value when localStorage is unavailable, or (b) pass the new value in the event detail (`new CustomEvent(..., { detail: { value: v } })`) and only dispatch on successful writes.",
+      "suggestion_code": "let _inMemoryShowWorkflowTasks: boolean | null = null;\n\nexport function setShowWorkflowTasks(v: boolean): void {\n  try {\n    localStorage.setItem(SHOW_WORKFLOW_TASKS_KEY, v ? \"1\" : \"0\");\n    _inMemoryShowWorkflowTasks = null; // 持久化成功，清空内存回退\n  } catch {\n    // localStorage 不可用（隐私模式等）：仅本次会话生效\n    _inMemoryShowWorkflowTasks = v;\n  }\n  window.dispatchEvent(new CustomEvent(WORKFLOW_VISIBILITY_EVENT, { detail: { value: v } }));\n}",
+      "existing_code": "export function setShowWorkflowTasks(v: boolean): void {\n  try {\n    localStorage.setItem(SHOW_WORKFLOW_TASKS_KEY, v ? \"1\" : \"0\");\n  } catch {\n    // localStorage 不可用（隐私模式等）：仅本次会话生效\n  }\n  window.dispatchEvent(new CustomEvent(WORKFLOW_VISIBILITY_EVENT));\n}",
+      "start_line": 16,
+      "end_line": 23,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src/lib/workflowVisibility.ts",
+      "content": "`isWorkflowTask` is documented as \"过滤选择器共用\" and will be used in `arr.filter(isWorkflowTask)` style calls. Making it a TypeScript type predicate lets TS narrow the array element type automatically (avoiding `arr.filter(isWorkflowTask).map(t =\u003e t.workflowId /* still possibly undefined? */)` issues). Return `t is { origin: \"workflow\" }` instead of plain `boolean`.",
+      "suggestion_code": "/** 工作流卡判定（过滤选择器共用，勿散落内联判断） */\nexport const isWorkflowTask = (\n  t: { origin?: string },\n): t is { origin: \"workflow\" } =\u003e t.origin === \"workflow\";",
+      "existing_code": "/** 工作流卡判定（过滤选择器共用，勿散落内联判断） */\nexport const isWorkflowTask = (t: { origin?: string }): boolean =\u003e\n  t.origin === \"workflow\";",
+      "start_line": 25,
+      "end_line": 27,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/graph.ts",
+      "content": "Dead code: the `adj` Map is populated in an O(n) pass over `nodes` but never read anywhere in `wouldCreateCycle` (confirmed by code_search across the WorkflowCanvas module). Only the reverse `down` map drives the DFS. Remove the `adj` block — keeping it makes the algorithm look like it needs both an upstream and a downstream adjacency, which is misleading.",
+      "suggestion_code": "  if (from === to) return true;\n  // DFS：从 to 沿边（下游方向 = dependsOn 的反向）能到 from 则成环。\n  // dependsOn[k] = k 的上游；因此 k 的下游是所有 dependsOn 包含 k 的节点\n  const down = new Map\u003cstring, string[]\u003e();",
+      "existing_code": "  if (from === to) return true;\n  const adj = new Map\u003cstring, string[]\u003e();\n  for (const n of nodes) adj.set(n.localId, n.dependsOn);\n  // DFS：从 to 沿边（下游方向 = dependsOn 的反向）能到 from 则成环。\n  // dependsOn[k] = k 的上游；因此 k 的下游是所有 dependsOn 包含 k 的节点\n  const down = new Map\u003cstring, string[]\u003e();",
+      "start_line": 30,
+      "end_line": 35,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/graph.ts",
+      "content": "O(n²) redundant lookup: `base` is produced directly from `tasks.map(t =\u003e …)`, so for every `n` in `base`, `tasks.find(t =\u003e t.id === n.localId)` is guaranteed to find a match — the `?.` on `canvasPos` is misleading (it implies a possibly-missing task, but the type and call sites guarantee presence). Replace with the direct O(n) predicate `tasks.some(t =\u003e !t.canvasPos)`; the semantics are identical and the intent is clearer.",
+      "suggestion_code": "  const missing = tasks.some((t) =\u003e !t.canvasPos);",
+      "existing_code": "  const missing = base.some(\n    (n) =\u003e !tasks.find((t) =\u003e t.id === n.localId)?.canvasPos\n  );",
+      "start_line": 102,
+      "end_line": 104,
+      "category": "performance",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/db/mod.rs",
+      "content": "Production migration loop is now the third copy of the same `PRAGMA table_info(tasks)` + `ALTER TABLE` boilerplate (alongside `schedule/sched_last` at lines 165–177 and `assignee/budget/result` at lines 180–192). The confirmed finding already flagged the test fixture mirroring this pattern; extracting a single `add_columns_if_missing(conn, table, \u0026[(\"col\", \"TYPE\"), ...])` helper would eliminate both the production duplication and the test fixture fragility in one shot. As written, adding a future column means updating the production loop AND the test fixture loop AND keeping them in sync — three places for one piece of schema.",
+      "existing_code": "    // 迁移（W1-CANVAS，设计 §3.1）：工作流四字段 + 画布坐标。\n    // origin 缺省 NULL 视作 \"user\"（读路径归一），不加 DEFAULT 避免 ALTER 语义分叉\n    for (col, ty) in [\n        (\"origin\", \"TEXT\"),\n        (\"workflow_id\", \"TEXT\"),\n        (\"depends_on\", \"TEXT\"),\n        (\"canvas_x\", \"REAL\"),\n        (\"canvas_y\", \"REAL\"),\n    ] {\n        let has: bool = conn\n            .prepare(\"PRAGMA table_info(tasks)\")\n            .and_then(|mut stmt| {\n                let rows = stmt.query_map([], |r| r.get::\u003c_, String\u003e(1))?;\n                Ok(rows.filter_map(|n| n.ok()).any(|n| n == col))\n            })\n            .unwrap_or(false);\n        if !has {\n            conn.execute(\u0026format!(\"ALTER TABLE tasks ADD COLUMN {col} {ty}\"), [])\n                .map_err(|e| e.to_string())?;\n        }\n    }",
+      "start_line": 193,
+      "end_line": 213,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/db/workflow.rs",
+      "content": "Stale-read TOCTOU outside the DB write lock. The `_g` guard from `super::lock_db_write()` was dropped when the `spawn_blocking` closure returned, so the subsequent `super::open_db(\u0026app_emit)` + `super::tasks::load_all(\u0026conn)` runs without holding `DB_WRITE_LOCK` — concurrent writers can interleave and the broadcast will carry a snapshot inconsistent with the save that just committed. The established pattern in `db/tasks.rs` (task_set_column, task_patch, task_reorder) captures the affected rows inside the locked function and emits them directly without re-opening the DB. Consider returning the relevant task slice from `workflow_save_locked` (or letting it take over broadcast responsibility) so the payload is computed inside the lock.",
+      "existing_code": "        // 广播：挂件/主窗收敛（与 task_patch 同款协议；批量保存载荷走全量重读）\n        {\n            use tauri::Emitter;\n            let _ = app_emit.emit(\"tasks-changed\", ());\n            let conn = match super::open_db(\u0026app_emit) {\n                Ok(c) =\u003e c,\n                Err(_) =\u003e return result,\n            };\n            let all = super::tasks::load_all(\u0026conn).unwrap_or_default();\n            let _ = app_emit.emit_to(\n                \"main\",\n                \"tasks-updated\",\n                serde_json::json!({\n                    \"source\": crate::mutation::MutationOrigin::Main.as_str(),\n                    \"upserts\": all,\n                    \"deletes\": []\n                }),\n            );\n        }",
+      "start_line": 556,
+      "end_line": 574,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "src-tauri/src/db/workflow.rs",
+      "content": "Inconsistent broadcast on `open_db` failure: `tasks-changed` is fired unconditionally before the second `super::open_db(\u0026app_emit)` call, and the early `return result` on `Err` causes the structured `tasks-updated` event to be skipped — widget listeners subscribed to one signal but not the other will end up with mismatched task state. The sibling handlers (`task_set_column`, `task_patch`, `task_reorder`) avoid this by computing the payload inside the locked function and emitting it without a second DB open, so there's no failure path that splits the two signals. Either move the payload computation inside the lock (preferred — fixes both the stale read and this split) or at minimum emit `tasks-updated` before `tasks-changed`, or skip `tasks-changed` if the second open fails, so the two signals stay consistent.",
+      "existing_code": "        let _ = app_emit.emit(\"tasks-changed\", ());\n        let conn = match super::open_db(\u0026app_emit) {\n            Ok(c) =\u003e c,\n            Err(_) =\u003e return result,\n        };",
+      "start_line": 559,
+      "end_line": 563,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/db/workflow.rs",
+      "content": "`workflow_rename` mutates the `workflows` row (changes `name` and bumps `updated_at`, which is the sort key for `load_workflows`) but emits no broadcast — no `tasks-changed`, no `workflows-updated`, no event to the main window. The sidebar/workflow list will show a stale name and stale order until the next full reload. This contrasts with `workflow_save` and `workflow_delete` in the same module, both of which broadcast. The `result` row is also not forwarded into the broadcast payload, so even if a listener reloads via a future event it has to do a full list fetch. Recommend emitting at least `tasks-changed` and ideally a structured workflow list update.",
+      "existing_code": "#[tauri::command]\npub async fn workflow_rename(app: AppHandle, id: String, name: String) -\u003e CommandResult\u003cWorkflow\u003e {\n    let app_emit = app.clone();\n    let row = async_runtime::spawn_blocking(move || -\u003e CommandResult\u003cWorkflow\u003e {\n        let _g = super::lock_db_write();\n        let conn = super::open_db(\u0026app)?;\n        let mut wf = load_workflow(\u0026conn, \u0026id)?.ok_or(CommandError::TaskNotFound(id.clone()))?;\n        let name = check_len(\u0026name, MAX_WORKFLOW_NAME, \"工作流名称\", \"name\")?;\n        wf.name = name;\n        wf.updated_at = Some(chrono::Utc::now().timestamp_millis());\n        upsert_workflow(\u0026conn, \u0026wf).map_err(CommandError::from)?;\n        Ok(wf)\n    })\n    .await\n    .map_err(|e| CommandError::from(format!(\"工作流重命名线程 join 失败：{e}\")))??;\n    audit_event(\u0026app_emit, \"workflow_rename\", \u0026row.id, \u0026[]);\n    Ok(row)\n}",
+      "start_line": 601,
+      "end_line": 618,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "Stale closure risk in `rfNodes` memo: the dependency array `[nodes, tasks, name, goal, savedSnapshot, selectedIds]` excludes every callback captured inside `data` (`onDraftTitleCommit`, `onDelete`, `onToggleDone`, `onCommitTitle`, `onToggleSubtask`, plus the prop callbacks `onUpdate`/`onSetColumn`). In `App.tsx` `updateTask`/`setTaskColumn` are plain (non-`useCallback`) functions, so they get a fresh identity on every parent render. If App re-renders for an unrelated reason (no change in `tasks`/`name`/`goal`/`savedSnapshot`/`selectedIds`), the memo is reused and `TaskNode.data.onUpdate` / `onSetColumn` / `onCommitTitle` / etc. continue to reference the **previous** render's closures. The stale `onUpdate` reads `tasksRef.current` (so it works most of the time), but `onSetColumn` captures `tasks` directly via closure and the in-flight node's `task` prop can be stale too. Either widen the dep array (recommended: include the callback refs, since they're cheap to track and make the staleness contract explicit) or memoize `updateTask`/`setTaskColumn` in App.tsx with `useCallback`.",
+      "suggestion_code": "// deps intentionally track callbacks too: TaskNode.data.on{Update,SetColumn,CommitTitle,ToggleDone,...}\n    //   are recreated every render by callers (App.tsx updateTask/setTaskColumn are plain fns) — omitting\n    //   them would let a parent re-render with unchanged `tasks` reuse stale closures. State setters are\n    //   stable so the cost is just the prop refs.\n    [nodes, tasks, name, goal, savedSnapshot, selectedIds, onUpdate, onSetColumn]",
+      "existing_code": "// eslint-disable-next-line react-hooks/exhaustive-deps\n    [nodes, tasks, name, goal, savedSnapshot, selectedIds]",
+      "start_line": 367,
+      "end_line": 368,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "`setTimeout` for `deleteArmed` has no cleanup on unmount, on re-arming, or on `activeId` change — a pending 3 s timer can fire after the workflow is switched or the component is torn down and call `setDeleteArmed` on an unrelated state, or trigger React's \"setState on unmounted component\" warning. Repo convention is `useRef\u003cReturnType\u003ctypeof setTimeout\u003e | null\u003e` + clear-before-set + unmount cleanup (see `ProfileRow.tsx:29/93`, `SkillsPanel.tsx:41/76`, `McpPanel.tsx:208/219`). Apply the same pattern here.",
+      "suggestion_code": "if (!deleteArmed) {\n      setDeleteArmed(true);\n      if (deleteArmTimer.current) window.clearTimeout(deleteArmTimer.current);\n      deleteArmTimer.current = window.setTimeout(() =\u003e setDeleteArmed(false), 3000);\n      return;\n    }",
+      "existing_code": "if (!deleteArmed) {\n      setDeleteArmed(true);\n      setTimeout(() =\u003e setDeleteArmed(false), 3000);\n      return;\n    }",
+      "start_line": 316,
+      "end_line": 320,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "`openWorkflow` has no race / last-write-wins guard: a slow earlier `workflow_load` can resolve after the user has switched to (or edited) a different workflow, clobbering the newer state. Combined with the unsaved-edits gap (no `dirty` check before reset) this can also silently overwrite a freshly-edited draft. Repo convention is the `cancelled` flag pattern (see `SettingsPage.tsx:1156-1162`, `useTauriListen.ts`). Add a `cancelledRef` (or per-request token) and guard each `setState` so a stale resolve is a no-op.",
+      "suggestion_code": "const openWorkflow = async (id: string) =\u003e {\n    loadTokenRef.current += 1;\n    const token = loadTokenRef.current;\n    try {\n      const detail = await invoke\u003cWorkflow \u0026 { tasks: Task[] }\u003e(\"workflow_load\", { id });\n      if (token !== loadTokenRef.current) return; // a newer open/new call superseded us\n      setActiveId(id);",
+      "existing_code": "const openWorkflow = async (id: string) =\u003e {\n    try {\n      const detail = await invoke\u003cWorkflow \u0026 { tasks: Task[] }\u003e(\"workflow_load\", { id });\n      setActiveId(id);\n      setName(detail.name);\n      setGoal(detail.goal);\n      setNodes(draftFromTasks(detail.tasks));",
+      "start_line": 98,
+      "end_line": 104,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "`addNode` anchors new cards at `screenToFlowPosition({x: window.innerWidth / 2, y: window.innerHeight / 2})`, which is the viewport center, not the canvas center. The toolbar is `flex flex-wrap` and can grow to multiple rows on narrow widths; the vertical offset between the toolbar's bottom and the canvas's visual center is therefore variable and ignored. Anchor to the canvas DOM rect (e.g., `canvasRef.current?.getBoundingClientRect()`) or compute via `useReactFlow().getViewport()` for a stable canvas-centered drop.",
+      "suggestion_code": "const addNode = () =\u003e {\n    // 取画布 DOM 中心（toolbar flex-wrap 会把视口中心顶到工具栏区，不可靠）\n    const r = canvasWrapRef.current?.getBoundingClientRect();\n    const center = screenToFlowPosition({\n      x: (r?.left ?? 0) + (r?.width ?? window.innerWidth) / 2,\n      y: (r?.top ?? 0) + (r?.height ?? window.innerHeight) / 2,\n    });",
+      "existing_code": "const addNode = () =\u003e {\n    // 视口中心落点（screenToFlowPosition 需画布 DOM 存在；空画布也有容器）\n    const center = screenToFlowPosition({\n      x: window.innerWidth / 2,\n      y: window.innerHeight / 2,\n    });",
+      "start_line": 133,
+      "end_line": 138,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "Bare `// eslint-disable-next-line react-hooks/exhaustive-deps` without rationale — repo convention is to comment *why* the deps are intentionally restricted (see `WidgetApp.tsx:119-121` \"挂进 deps 会与用户拖动互相覆盖\", `ConfirmMap.tsx:66`). This memo actually **does** suffer from the omission (issue #1), so the suppression is hiding a real bug rather than documenting an intentional trade-off. Either widen the deps to cover the callbacks, or add an inline comment explaining what the omission is and why.",
+      "suggestion_code": "// 故意只挂 state：onUpdate/onSetColumn 是父组件普通 fn，每次 render 新身份；纳入会让 rfNodes\n    //   每次父 render 都重建 → 画布闪。回调内只用稳定 setTasks/applyRemoteRows，引用闭环安全。\n    // eslint-disable-next-line react-hooks/exhaustive-deps\n    [nodes, tasks, name, goal, savedSnapshot, selectedIds]",
+      "existing_code": "// eslint-disable-next-line react-hooks/exhaustive-deps\n    [nodes, tasks, name, goal, savedSnapshot, selectedIds]",
+      "start_line": 367,
+      "end_line": 368,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "`createBlank` and `openWorkflow` silently discard unsaved edits. The toolbar's \"新建\" button switches mode to `hero` without warning; once in `EmptyHero`, clicking \"创建空白工作流\" (→ `createBlank`) or any existing workflow chip (→ `openWorkflow`) resets `nodes` / `name` / `goal` / `savedSnapshot` even when `dirty === true`. Add a `dirty` guard (e.g., require confirmation via the existing `ConfirmMap` host) before resetting state.",
+      "suggestion_code": "const createBlank = () =\u003e {\n    if (dirty \u0026\u0026 !window.confirm(\"当前工作流有未保存修改，确定丢弃？\")) return;\n    setActiveId(null);\n    setName(`工作流 ${new Date().toLocaleDateString()}`);",
+      "existing_code": "const createBlank = () =\u003e {\n    setActiveId(null);\n    setName(`工作流 ${new Date().toLocaleDateString()}`);\n    setGoal(\"\");\n    setNodes([]);\n    setSelectedIds([]);\n    setSavedSnapshot(null);\n    setMode(\"edit\");\n    setDeleteArmed(false);\n  };",
+      "start_line": 120,
+      "end_line": 129,
+      "category": "bug",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "`split(\"-\u003e\")` on edge IDs couples edge-id format to node-id format — both `const [, target] = c.id.split(\"-\u003e\")` (line 221) and the inverse filter re-encoding `${d}-\u003e${n.localId}` (line 227) silently assume localIds/taskIds never contain `-\u003e`. Today they're UUIDs/backend IDs so it's safe, but the contract is undocumented and a single migration that introduces a `-\u003e` in an id (or a future URL-style id) would corrupt the dependsOn rewrite. Lift the edge-id construction/destruction into `graph.ts` (next to `draftFromTasks` / `wouldCreateCycle`) so it's a single source of truth.",
+      "suggestion_code": "for (const c of changes) {\n        if (c.type === \"remove\") {\n          // 删边 = 下游 dependsOn 移除上游；edge id 构造/解析统一从 graph.ts 导入\n          const target = parseEdgeTarget(c.id); // see graph.ts: edgeId / parseEdgeTarget",
+      "existing_code": "for (const c of changes) {\n        if (c.type === \"remove\") {\n          // edge id = `${source}-\u003e${target}`；删边 = 下游 dependsOn 移除上游\n          const [, target] = c.id.split(\"-\u003e\");",
+      "start_line": 218,
+      "end_line": 221,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/SettingsPage/SettingsPage.tsx",
+      "content": "事件系统不匹配：WORKFLOW_VISIBILITY_EVENT 由 workflowVisibility.ts 的 setShowWorkflowTasks 用 window.dispatchEvent(new CustomEvent(...)) 派发（DOM 事件），但这里用 @tauri-apps/api/event 的 listen 监听（Tauri 事件总线），两者不连通——监听永远不会触发。看板/归档/挂件与设置页之间的可见性同步失效。注释明确写出「用 window 事件即时同步」，应改用 window.addEventListener（同 errorHandler.ts / ErrorDialogHost.tsx 的 ERROR_DIALOG_EVENT 既有形态）。同 bug 在 App.tsx:170 与 WidgetApp.tsx:645，本 PR 三处都需修。",
+      "suggestion_code": "  useEffect(() =\u003e {\n    const handler = () =\u003e setShowTasks(getShowWorkflowTasks());\n    window.addEventListener(WORKFLOW_VISIBILITY_EVENT, handler);\n    return () =\u003e {\n      window.removeEventListener(WORKFLOW_VISIBILITY_EVENT, handler);\n    };\n  }, []);",
+      "existing_code": "  useEffect(() =\u003e {\n    const un = listen(WORKFLOW_VISIBILITY_EVENT, () =\u003e\n      setShowTasks(getShowWorkflowTasks())\n    );\n    return () =\u003e {\n      un.then((f) =\u003e f());\n    };\n  }, []);",
+      "start_line": 2800,
+      "end_line": 2807,
+      "category": "bug",
+      "severity": "critical"
+    },
+    {
+      "path": "src/components/SettingsPage/SettingsPage.tsx",
+      "content": "清理函数返回未处理的 Promise：un.then((f) =\u003e f()) 若 listen 抛错（事件名非法、卸载早于 resolve）会变成 unhandled rejection，且 cleanup 时机早于 listen resolve 会导致监听悬挂泄漏。本仓已有 useTauriListen hook（src/lib/useTauriListen.ts）专门处理「cancelled flag + .catch」此族 race，建议沿用；不过鉴于本事件实为 DOM 事件，按上一条修正改用 window.addEventListener 后此问题自然消失（同步注册/卸载）。",
+      "suggestion_code": "    return () =\u003e {\n      window.removeEventListener(WORKFLOW_VISIBILITY_EVENT, handler);\n    };",
+      "existing_code": "    return () =\u003e {\n      un.then((f) =\u003e f());\n    };",
+      "start_line": 2804,
+      "end_line": 2806,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/SettingsPage/SettingsPage.tsx",
+      "content": "开关按钮缺 ARIA：与同文件 renderMemoryToggle（line 1306-1317）已确立的「role=switch + aria-checked + aria-label」形态不一致，屏幕阅读器无法感知这是可切换控件。aria-label 建议复用 label 文案（例「在看板中显示工作流任务」）。",
+      "suggestion_code": "        \u003cbutton\n          role=\"switch\"\n          aria-checked={showTasks}\n          aria-label=\"在看板中显示工作流任务\"\n          className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] ${\n            showTasks ? \"nm-inset\" : \"nm-outset\"\n          }`}\n          onClick={() =\u003e {\n            const next = !showTasks;\n            setShowTasks(next);\n            setShowWorkflowTasks(next);\n          }}\n        \u003e",
+      "existing_code": "        \u003cbutton\n          className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] ${\n            showTasks ? \"nm-inset\" : \"nm-outset\"\n          }`}\n          onClick={() =\u003e {\n            const next = !showTasks;\n            setShowTasks(next);\n            setShowWorkflowTasks(next);\n          }}\n        \u003e",
+      "start_line": 2821,
+      "end_line": 2830,
+      "category": "other",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/TaskNode.tsx",
+      "content": "`memo` is ineffective here: `data` is freshly constructed inside `WorkflowPageInner`'s `rfNodes` `useMemo`, with all function fields (`onDraftTitleCommit`, `onDelete`, `onToggleDone`, `onCommitTitle`, `onToggleSubtask`) being inline arrows or non-`useCallback`d references. Whenever `nodes`/`tasks`/`name`/`goal`/`savedSnapshot`/`selectedIds` change (the `useMemo` deps), every `TaskNodeData` becomes a brand-new object, so the default shallow comparison inside `memo` always sees a prop change and re-renders the node. The wrapper adds the `===` overhead without preventing any re-renders. Either (a) drop the `memo` and accept that every parent render re-renders the node, or (b) make it pay off by stabilizing `data` — wrap each function with `useCallback`, cache the `data` object per `localId` (e.g. a `useMemo` keyed by `localId`/`task`/`draftTitle`), or pass the unstable functions via a stable context/ref instead of props. Worth flagging because dropping one keystroke in a draft node triggers a full `setNodes` → `rfNodes` rebuild → re-render of every task node on the canvas.",
+      "suggestion_code": "// Drop the ineffective memo, OR stabilize `data` upstream with useCallback.\n// Option A (simplest — accept that TaskNode re-renders with parent):\nexport function TaskNode({ id, data }: { id: string; data: TaskNodeData }) {",
+      "existing_code": "export const TaskNode = memo(function TaskNode({\n  id,\n  data,\n}: {\n  id: string;\n  data: TaskNodeData;\n}) {",
+      "start_line": 22,
+      "end_line": 28,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/graph.ts",
+      "content": "Performance: `nodes.some((m) =\u003e m.localId === d)` is O(V) and is invoked V×E times inside the nested loop, giving overall O(V²·E) just for the dangling-reference check. Build a `Set\u003cstring\u003e` of localIds once before the loop and use `nodeIds.has(d)` for O(1) lookup, bringing the check down to O(V+E).",
+      "suggestion_code": "  const nodeIds = new Set(nodes.map((n) =\u003e n.localId));\n  for (const n of nodes)\n    for (const d of n.dependsOn) {\n      // 悬空引用防御：布局只画画布内存在的边\n      if (nodeIds.has(d)) g.setEdge(d, n.localId);\n    }",
+      "existing_code": "  for (const n of nodes)\n    for (const d of n.dependsOn) {\n      // 悬空引用防御：布局只画画布内存在的边\n      if (nodes.some((m) =\u003e m.localId === d)) g.setEdge(d, n.localId);\n    }",
+      "start_line": 65,
+      "end_line": 69,
+      "category": "performance",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/SettingsPage/SettingsPage.tsx",
+      "content": "Forward-looking cleanup tied to confirmed finding #1: after fixing the event system mismatch (Tauri listen → window.addEventListener), this `listen` import becomes dead code and `knip` would flag it as unused. Per the spec's \"tsc/oxlint/knip/clippy 零新增\" gate, remove the `listen` identifier from this import line in the same PR that fixes finding #1. Note also that `WORKFLOW_VISIBILITY_EVENT` (line 43) remains needed since the DOM event still uses it as the event name.",
+      "existing_code": "import { emit, listen } from \"@tauri-apps/api/event\";",
+      "start_line": 10,
+      "end_line": 10,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/types.ts",
+      "content": "The new interfaces `CanvasPos` and `WorkflowSaveBinding` are used in exported types (`Task.canvasPos`, `WorkflowSaveResult.bindings`) but are themselves not exported. While this matches the existing `Subtask` pattern in the file, external modules that need to construct or annotate these values (e.g., for tests, mocks, or type-safe transformation utilities) won't be able to import them by name and would have to either inline the shape or use type assertions. Consider exporting them alongside `Workflow` and `WorkflowSaveResult` for a more idiomatic public contract surface — the cost is zero since they're pure structural types.",
+      "existing_code": "/** 画布坐标（工作流卡专用，与 Rust db::CanvasPos 对应） */\ninterface CanvasPos {\n  x: number;\n  y: number;\n}",
+      "start_line": 58,
+      "end_line": 62,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/App.tsx",
+      "content": "`onTasksReload` is wrapped in an inline arrow while `onSetColumn` and `onUpdate` are passed as direct function references. This inconsistency means every parent render creates a new `onTasksReload` reference. While `WorkflowPage` isn't currently memoized (so no immediate perf impact), this pattern would defeat any future `React.memo` wrapping. Consider extracting this to a `useCallback` for consistency with the other handler props.",
+      "suggestion_code": "onTasksReload={handleWorkflowReload}",
+      "existing_code": "onTasksReload={() =\u003e {\n                void reloadTasks().catch((e) =\u003e\n                  handleCommandError(e, \"重读任务\", { silent: true })\n                );\n              }}",
+      "start_line": 815,
+      "end_line": 819,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/App.tsx",
+      "content": "`reloadTasks` is declared as a regular `const` inside the component, so it gets a new function reference on every render. Combined with the inline `onTasksReload` arrow above, both references churn on every render. Wrapping `reloadTasks` in `useCallback` would let the caller pass it directly (without the inline wrap), removing one layer of churn and making the prop stable for any downstream `useEffect`/`useMemo` that lists `onTasksReload` as a dep.",
+      "suggestion_code": "// 重读全量任务（工作流保存/删除与任务导入共用）：套规则 → 排序 → 更新状态 → 广播挂件\n  const reloadTasks = useCallback(async () =\u003e {\n    const res = await loadTasksFromDb();\n    if (!res.ok) throw res.error;\n    const next = applyArchiveRule(applyTodayRule(sortByOrder(res.tasks)));\n    tasksRef.current = next;\n    setTasks(next);\n    emit(\"tasks-changed\").catch(() =\u003e {});\n  }, []);",
+      "existing_code": "// 重读全量任务（工作流保存/删除与任务导入共用）：套规则 → 排序 → 更新状态 → 广播挂件\n  const reloadTasks = async () =\u003e {\n    const res = await loadTasksFromDb();\n    if (!res.ok) throw res.error;\n    const next = applyArchiveRule(applyTodayRule(sortByOrder(res.tasks)));\n    tasksRef.current = next;\n    setTasks(next);\n    emit(\"tasks-changed\").catch(() =\u003e {});\n  };",
+      "start_line": 568,
+      "end_line": 576,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/App.tsx",
+      "content": "Race condition with concurrent `reloadTasks` calls. The function reads DB → sets state. If called concurrently (e.g., user clicks Save in WorkflowPage twice rapidly, or import + workflow save overlap), the `setTasks` calls happen in completion order, NOT call order. A slower first call could overwrite a faster second call's state. Consider tracking an \"epoch\" / version counter and discarding stale results:\n\n```tsx\nconst reloadEpochRef = useRef(0);\nconst reloadTasks = async () =\u003e {\n  const epoch = ++reloadEpochRef.current;\n  const res = await loadTasksFromDb();\n  if (!res.ok) throw res.error;\n  if (epoch !== reloadEpochRef.current) return; // stale\n  const next = applyArchiveRule(applyTodayRule(sortByOrder(res.tasks)));\n  tasksRef.current = next;\n  setTasks(next);\n  emit(\"tasks-changed\").catch(() =\u003e {});\n};\n```\n\nNote: WorkflowPage's `save()` has a `saving` guard preventing concurrent calls from that side, but `importTasks` + workflow save overlap is still possible (user imports while on workflow page; or widget fires `tasks-updated` between the DB read and `setTasks`).",
+      "existing_code": "// 重读全量任务（工作流保存/删除与任务导入共用）：套规则 → 排序 → 更新状态 → 广播挂件\n  const reloadTasks = async () =\u003e {\n    const res = await loadTasksFromDb();\n    if (!res.ok) throw res.error;\n    const next = applyArchiveRule(applyTodayRule(sortByOrder(res.tasks)));\n    tasksRef.current = next;\n    setTasks(next);\n    emit(\"tasks-changed\").catch(() =\u003e {});\n  };",
+      "start_line": 568,
+      "end_line": 576,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src/App.tsx",
+      "content": "Pre-existing code-comment typo carried into the new helper: `applyArchiveRule` is invoked AFTER `applyTodayRule` in `reloadTasks` (consistent with the initial-load effect at line 280). Verify this ordering is intentional and documented. If it is, no action needed. If not, the archived/today order matters for correctness: a task archived today should not be \"promoted to today\" first then archived again.",
+      "existing_code": "const next = applyArchiveRule(applyTodayRule(sortByOrder(res.tasks)));",
+      "start_line": 572,
+      "end_line": 572,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "Selected IDs are not pruned when a node is removed via React Flow (e.g. Backspace/Delete keys, or programmatic removal). This leaves stale IDs in `selectedIds` that no longer match any node. Inconsistent with the `deleteNode` helper at lines 148–156 which does clean `selectedIds`. Suggest mirroring that logic here so `selectedIds` only ever references existing nodes.\n\nSuggested fix: extend the `c.type === \"remove\"` branch to also prune `selectedIds`, e.g. via a third setState pass or by folding the cleanup into the existing select-change pass using a Set.\n\n```tsx\n} else if (c.type === \"remove\") {\n  setSelectedIds((prev) =\u003e prev.filter((s) =\u003e s !== c.id));\n  next = next\n    .filter((n) =\u003e n.localId !== c.id)\n    .map((n) =\u003e ({\n      ...n,\n      dependsOn: n.dependsOn.filter((d) =\u003e d !== c.id),\n    }));\n}\n```",
+      "suggestion_code": "      } else if (c.type === \"remove\") {\n          setSelectedIds((prev) =\u003e prev.filter((s) =\u003e s !== c.id));\n          next = next\n            .filter((n) =\u003e n.localId !== c.id)\n            .map((n) =\u003e ({\n              ...n,\n              dependsOn: n.dependsOn.filter((d) =\u003e d !== c.id),\n            }));\n        }\n      }\n      return next;\n    });",
+      "existing_code": "      } else if (c.type === \"remove\") {\n          next = next\n            .filter((n) =\u003e n.localId !== c.id)\n            .map((n) =\u003e ({\n              ...n,\n              dependsOn: n.dependsOn.filter((d) =\u003e d !== c.id),\n            }));\n        }\n      }\n      return next;\n    });\n    setSelectedIds((prev) =\u003e {",
+      "start_line": 166,
+      "end_line": 177,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "`save()` sends a fallback goal (`goal.trim() || name.trim() || \"未命名工作流\"`) to the backend but never updates the local `goal` state, so the next `snapshot()` call (line 91) still uses the original (possibly empty) `goal`. As a result `savedSnapshot` at line 299 records the unsaved `goal` and the toolbar's `dirty` indicator stays on even right after a successful save whenever the user had an empty goal. Same applies to `name` if it falls back to `\"未命名工作流\"`.\n\nSuggested fix: compute the actually-saved values once and reuse them for both the payload and the state snapshot, e.g.:\n\n```tsx\nconst trimmedName = name.trim() || \"未命名工作流\";\nconst trimmedGoal = goal.trim() || name.trim() || \"未命名工作流\";\n// ... send trimmedName / trimmedGoal ...\nsetName(trimmedName);\nsetGoal(trimmedGoal);\nsetSavedSnapshot(JSON.stringify({ name: trimmedName, goal: trimmedGoal, nodes: next }));\n```",
+      "suggestion_code": "      } catch (e) {\n      handleCommandError(e, \"保存工作流\", { onRetry: () =\u003e void save() });\n    } finally {\n      setSaving(false);\n    }\n  };\n\n  const deleteWorkflow = async () =\u003e {",
+      "existing_code": "    } catch (e) {\n      handleCommandError(e, \"保存工作流\", { onRetry: () =\u003e void save() });\n    } finally {\n      setSaving(false);\n    }\n  };\n\n  const deleteWorkflow = async () =\u003e {",
+      "start_line": 307,
+      "end_line": 314,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src/lib/workflowVisibility.ts",
+      "content": "The dispatcher uses a DOM CustomEvent (`window.dispatchEvent`), but all three subscribers (`App.tsx`, `SettingsPage.tsx`, `WidgetApp.tsx`) listen via Tauri's IPC `listen` from `@tauri-apps/api/event` — these are two completely separate event systems, so the callback never fires. Cross-window sync was the explicit intent (\"跨组件（主窗/挂件/设置页）用 window 事件即时同步\"), but window DOM events are scoped to a single webview (compare `ErrorDialogHost` pattern in `errorHandler.ts`/`ErrorDialogHost.tsx` which uses `window.addEventListener` because same-webview cross-component is the goal). To reach the widget webview you must go through Tauri IPC — either dispatch via `emit(WORKFLOW_VISIBILITY_EVENT)` (and keep `listen` subscribers), or replace subscribers with `window.addEventListener` and accept same-webview only (which would silently break sync between 主窗 and 挂件, contradicting the design §3.3/§10 goal).",
+      "suggestion_code": "  import { emit } from \"@tauri-apps/api/event\";\n  // ...\n    emit(WORKFLOW_VISIBILITY_EVENT).catch((e) =\u003e console.error(\"workflow visibility emit failed:\", e));",
+      "existing_code": "  window.dispatchEvent(new CustomEvent(WORKFLOW_VISIBILITY_EVENT));",
+      "start_line": 22,
+      "end_line": 22,
+      "category": "bug",
+      "severity": "critical"
+    },
+    {
+      "path": "src/lib/workflowVisibility.ts",
+      "content": "Parameter type is more permissive than necessary: `Task.origin` is constrained to `\"user\" | \"workflow\"`, but this accepts any `string`. Tightening to `Task[\"origin\"]` would (a) make the function self-documenting about its intended input shape, and (b) compose naturally with the type-predicate signature — e.g. `(t: { origin?: Task[\"origin\"] }): t is { origin: \"workflow\" }`. The current loose type means callers could pass `{ origin: \"wrokflow\" }` (typo) and TS wouldn't complain at the call site, only the runtime comparison would silently return false.",
+      "suggestion_code": "import type { Task } from \"../types\";\n\nexport const isWorkflowTask = (t: { origin?: Task[\"origin\"] }): t is { origin: \"workflow\" } =\u003e\n  t.origin === \"workflow\";",
+      "existing_code": "export const isWorkflowTask = (t: { origin?: string }): boolean =\u003e\n  t.origin === \"workflow\";",
+      "start_line": 26,
+      "end_line": 27,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/db/workflow.rs",
+      "content": "Wasteful redundant DB lookup + unused tuple element. The wf_id resolution performs `load_workflow` twice in the `Some` branch (once to check existence, once again below to fetch `created_at`), and the `None` branch calls `load_workflow` against a freshly-minted UUID that provably doesn't exist. Also, the `let (created_at, _) = match … { … prev.name, … name.clone() }` tuple destructuring binds `prev.name` and computes `name.clone()` only to discard both — `name.clone()` allocates a `String` per new workflow for nothing, and `prev.name` triggers an unused-variable warning. Collapse into a single `load_workflow` whose result drives both existence-check and `created_at`:\n\n```rust\nlet wf_id = match \u0026input.workflow_id {\n    Some(id) =\u003e id.clone(),\n    None =\u003e uuid::Uuid::new_v4().simple().to_string(),\n};\nlet prev = load_workflow(conn, \u0026wf_id)?;\nif input.workflow_id.is_some() \u0026\u0026 prev.is_none() {\n    return Err(CommandError::TaskNotFound(input.workflow_id.clone().unwrap()));\n}\nlet created_at = prev.map(|p| p.created_at).unwrap_or(Some(now));\n```",
+      "suggestion_code": "let wf_id = match \u0026input.workflow_id {\n        Some(id) =\u003e id.clone(),\n        None =\u003e uuid::Uuid::new_v4().simple().to_string(),\n    };\n    let prev = load_workflow(conn, \u0026wf_id)?;\n    if input.workflow_id.is_some() \u0026\u0026 prev.is_none() {\n        return Err(CommandError::TaskNotFound(\n            input.workflow_id.clone().unwrap(),\n        ));\n    }\n    let created_at = prev.map(|p| p.created_at).unwrap_or(Some(now));",
+      "existing_code": "let wf_id = match \u0026input.workflow_id {\n        Some(id) =\u003e {\n            if load_workflow(conn, id)?.is_none() {\n                return Err(CommandError::TaskNotFound(id.clone()));\n            }\n            id.clone()\n        }\n        None =\u003e uuid::Uuid::new_v4().simple().to_string(),\n    };\n    let (created_at, _) = match load_workflow(\u0026conn, \u0026wf_id)? {\n        Some(prev) =\u003e (prev.created_at, prev.name),\n        None =\u003e (Some(now), name.clone()),\n    };",
+      "start_line": 0,
+      "end_line": 0,
+      "category": "maintainability",
+      "severity": "low"
+    }
+  ],
+  "groups": [
+    {
+      "label": "package.json",
+      "files": [
+        "package.json"
+      ]
+    },
+    {
+      "label": "src-tauri/src/api_handlers/handlers.rs",
+      "files": [
+        "src-tauri/src/api_handlers/handlers.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/api_handlers/mod.rs",
+      "files": [
+        "src-tauri/src/api_handlers/mod.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/bot/tools.rs",
+      "files": [
+        "src-tauri/src/bot/tools.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/bot_orchestrator.rs",
+      "files": [
+        "src-tauri/src/bot_orchestrator.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/db/mod.rs",
+      "files": [
+        "src-tauri/src/db/mod.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/db/tasks.rs",
+      "files": [
+        "src-tauri/src/db/tasks.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/db/workflow.rs",
+      "files": [
+        "src-tauri/src/db/workflow.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/lib.rs",
+      "files": [
+        "src-tauri/src/lib.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/task_out.rs",
+      "files": [
+        "src-tauri/src/task_out.rs"
+      ]
+    },
+    {
+      "label": "src/App.tsx",
+      "files": [
+        "src/App.tsx"
+      ]
+    },
+    {
+      "label": "src/components/SettingsPage/SettingsPage.tsx",
+      "files": [
+        "src/components/SettingsPage/SettingsPage.tsx"
+      ]
+    },
+    {
+      "label": "src/components/WidgetApp/WidgetApp.tsx",
+      "files": [
+        "src/components/WidgetApp/WidgetApp.tsx"
+      ]
+    },
+    {
+      "label": "src/components/WorkflowCanvas/GoalNode.tsx",
+      "files": [
+        "src/components/WorkflowCanvas/GoalNode.tsx"
+      ]
+    },
+    {
+      "label": "src/components/WorkflowCanvas/TaskNode.tsx",
+      "files": [
+        "src/components/WorkflowCanvas/TaskNode.tsx"
+      ]
+    },
+    {
+      "label": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "files": [
+        "src/components/WorkflowCanvas/WorkflowPage.tsx"
+      ]
+    },
+    {
+      "label": "src/components/WorkflowCanvas/graph.ts",
+      "files": [
+        "src/components/WorkflowCanvas/graph.ts"
+      ]
+    },
+    {
+      "label": "src/lib/workflowVisibility.ts",
+      "files": [
+        "src/lib/workflowVisibility.ts"
+      ]
+    },
+    {
+      "label": "src/types.ts",
+      "files": [
+        "src/types.ts"
+      ]
+    }
+  ],
+  "session_id": "695b693f-1fa2-4043-b352-5659d14c898b",
+  "manifest": {
+    "schema_version": "ocr.run-manifest/v1",
+    "run_id": "695b693f-1fa2-4043-b352-5659d14c898b",
+    "operation": "review",
+    "terminal_state": "complete",
+    "repository": {
+      "identity_sha256": "7aebc670c3c38e64ae52ffaf12cfa8ba078a29af906f8ef856132cd790dbe48b"
+    },
+    "input": {
+      "mode": "commit",
+      "requested_head": "1259af1",
+      "resolved_base": "4f371cdd9a71a8855605ec621d1b2b2d218ef4f3",
+      "resolved_head": "1259af14c845ff101d66a00c8bb18d19b98984f4",
+      "exact_range": "4f371cdd9a71a8855605ec621d1b2b2d218ef4f3..1259af14c845ff101d66a00c8bb18d19b98984f4",
+      "source_artifact_sha256": "8f97a54a5a452bb8a180bc1ea49789ccebda33325ba6e26a727e2a6d27305eb7"
+    },
+    "execution": {
+      "ocr_version": "v1.12.11",
+      "provider": "minimax-cn",
+      "model": "MiniMax-M3",
+      "configured_concurrency": 8,
+      "rule_config_sha256": "d5e28d02ed5cdf85b533907db24b47f1be02847db764a4ded208dbaf54380ae1",
+      "runtime_config_sha256": "f3ac1cdd2a45285ba614e32ab9bd03b86d9911c8deb3bec22fccf7b7bd4e6913"
+    },
+    "coverage": {
+      "selected": [
+        {
+          "item_id": "15e26ed532cfce338fb09692f7c702ea06535b43a667337a066c99fa93236252",
+          "path": "src-tauri/src/bot/tools.rs",
+          "fingerprint": "b2f8634b2c778e0279f219816e05c90e6556cda823ce13a7c4a285ff468ed899"
+        },
+        {
+          "item_id": "18811f7e2ef2d3770cd2e209e2fb73b4f7160a7aa2752a35a461ce51bae7a986",
+          "path": "src/components/WidgetApp/WidgetApp.tsx",
+          "fingerprint": "22cda85b06ea7462e5d1fdba1e23ecb7df3c5421fbe78f951c1fc3560e2ca114"
+        },
+        {
+          "item_id": "4208d7aa54f8f1f05252a5fe12baceaef91a0ffa0c5c0b633373a6971d7db06b",
+          "path": "src-tauri/src/bot_orchestrator.rs",
+          "fingerprint": "51f4607bd84b133125f0abbaf8496c882e38de34e6d479077fb61a926a296f01"
+        },
+        {
+          "item_id": "4306d4241f959dd4ca9c18fee7308b27626e57aef52ca69f00910f24402c3bc1",
+          "path": "src/App.tsx",
+          "fingerprint": "e866545fdd950f8162205c979b52e01e617603b5bd3555fe385f850ecff70681"
+        },
+        {
+          "item_id": "5b553fedbe59d498298a54be24d6e815dba502addab6f59fbc76b25c9c56082e",
+          "path": "src-tauri/src/lib.rs",
+          "fingerprint": "2ad68449c3adc5cf673a4d4095e9d5fe6f854408d641287b99c2eeca31304748"
+        },
+        {
+          "item_id": "6170dc9745b20148b2a07d024f93e929e2ee2c26a2ac4ae51b20f767daafef0e",
+          "path": "src-tauri/src/task_out.rs",
+          "fingerprint": "cf97800fad1e6515491c5b57bddc8503c210bc0cd888c7c972ef5d25c1cb6203"
+        },
+        {
+          "item_id": "639a2a4a2f542d70d597567993628a03fcc6081de42ab7858ae0938db241293d",
+          "path": "src-tauri/src/api_handlers/handlers.rs",
+          "fingerprint": "8dcae2d64562b2a3452022be05eaef673ab8396f6a088fe3ccfc0e8339db1f81"
+        },
+        {
+          "item_id": "793b77ce1f663a05fbc8281f8da22844f090ee4bc12652a5f65ef6bd35a2b9a0",
+          "path": "src/types.ts",
+          "fingerprint": "695d287de746b6ad4b18a9583913565ecad8b7f0e51b1655310dbd66e82cae55"
+        },
+        {
+          "item_id": "7db247f2329d097ea748b5299ed5cb9fcf2c76b4992e4b398daedbdfb323f69e",
+          "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+          "fingerprint": "636522fb1fa64d91fded61648f27409e4ccf404094f5e59b41322a0583051e6b"
+        },
+        {
+          "item_id": "85de96e42b83374ff3dacd6b2c8c4a67dd7c42e732331c6b248e1b74734da25f",
+          "path": "src/components/WorkflowCanvas/graph.ts",
+          "fingerprint": "bf5b4527dd623365d7a2e2b69e5b65ad5e343b984d82e401e2a42a6e081ece37"
+        },
+        {
+          "item_id": "a9da44634beac7635d981b2b1ab69ed9982abf2946a86b85aeb11be9e0f03e67",
+          "path": "src-tauri/src/api_handlers/mod.rs",
+          "fingerprint": "75a34f51ca914af36164e2e77f27b6e7faaf2c48b787d7840f7b14e8460c8f6a"
+        },
+        {
+          "item_id": "c9187d5f8066262ab6d2b63e41739cb75f9e5a2a683f5db2efe641e334fd6942",
+          "path": "src/components/WorkflowCanvas/TaskNode.tsx",
+          "fingerprint": "f1eea9fb4631a14a76906ad75798bd672f196fe3e3e33b6029762a3500f09080"
+        },
+        {
+          "item_id": "cb7bf5ca1de36eb915bfba1ad2b5015d0ab83f0c80af9abe73151746e895c2ca",
+          "path": "src/components/SettingsPage/SettingsPage.tsx",
+          "fingerprint": "411714a4d511979d617c9223ac15539a8b4465cf119cf3a928569a1ed2eb8f67"
+        },
+        {
+          "item_id": "d011602ff3857419697d5acce022aa29b329d547d924a9383a2f5c224e6f4b76",
+          "path": "src-tauri/src/db/workflow.rs",
+          "fingerprint": "d8235506edefc2f04b6903e1cf64faba735986692109c73cc5d03a62248586d6"
+        },
+        {
+          "item_id": "d5d79e028c63f2b217a2aced364f96f07968b9feb69aa979162cddf1a3f1e287",
+          "path": "src/components/WorkflowCanvas/GoalNode.tsx",
+          "fingerprint": "957f8738bba2748dcf7ab915b2302a75c8128fc2062af7c509d4c1d2dde165b8"
+        },
+        {
+          "item_id": "de566e6284a31c2314451a985c1f7d6df2743b4e564b2caa20d17560bbad6f03",
+          "path": "package.json",
+          "fingerprint": "e87cfeb2c4513e552d76a681644725ffd06f1551e86f1f968e9868f7a6b52f8c"
+        },
+        {
+          "item_id": "e08f56bef25fa6a39c346153800615f7ac48c32e8b0c5879d975661b3001de8d",
+          "path": "src-tauri/src/db/mod.rs",
+          "fingerprint": "262749158cf20dc6389f1fb95dc36c908880bad6a431c65ed49269b12b90cdc2"
+        },
+        {
+          "item_id": "f5dd410e6e415a29539690a55790c6b34ee257a05e69efd64a49957efb805fe7",
+          "path": "src/lib/workflowVisibility.ts",
+          "fingerprint": "ea6564f910a7f2f4b7d73ddc7a60c83433821721eb517e1eac6f26aee6c54028"
+        },
+        {
+          "item_id": "f8aa6edf3c055fb0fa47f97efb605c126ac503293c14432a609949c482498337",
+          "path": "src-tauri/src/db/tasks.rs",
+          "fingerprint": "e581a02b5a8e69307ca94f41c0bf3a22e5b28d2252eaa402900629cf50e5db74"
+        }
+      ],
+      "completed": [
+        {
+          "item_id": "15e26ed532cfce338fb09692f7c702ea06535b43a667337a066c99fa93236252",
+          "path": "src-tauri/src/bot/tools.rs",
+          "fingerprint": "b2f8634b2c778e0279f219816e05c90e6556cda823ce13a7c4a285ff468ed899"
+        },
+        {
+          "item_id": "18811f7e2ef2d3770cd2e209e2fb73b4f7160a7aa2752a35a461ce51bae7a986",
+          "path": "src/components/WidgetApp/WidgetApp.tsx",
+          "fingerprint": "22cda85b06ea7462e5d1fdba1e23ecb7df3c5421fbe78f951c1fc3560e2ca114"
+        },
+        {
+          "item_id": "4208d7aa54f8f1f05252a5fe12baceaef91a0ffa0c5c0b633373a6971d7db06b",
+          "path": "src-tauri/src/bot_orchestrator.rs",
+          "fingerprint": "51f4607bd84b133125f0abbaf8496c882e38de34e6d479077fb61a926a296f01"
+        },
+        {
+          "item_id": "4306d4241f959dd4ca9c18fee7308b27626e57aef52ca69f00910f24402c3bc1",
+          "path": "src/App.tsx",
+          "fingerprint": "e866545fdd950f8162205c979b52e01e617603b5bd3555fe385f850ecff70681"
+        },
+        {
+          "item_id": "5b553fedbe59d498298a54be24d6e815dba502addab6f59fbc76b25c9c56082e",
+          "path": "src-tauri/src/lib.rs",
+          "fingerprint": "2ad68449c3adc5cf673a4d4095e9d5fe6f854408d641287b99c2eeca31304748"
+        },
+        {
+          "item_id": "6170dc9745b20148b2a07d024f93e929e2ee2c26a2ac4ae51b20f767daafef0e",
+          "path": "src-tauri/src/task_out.rs",
+          "fingerprint": "cf97800fad1e6515491c5b57bddc8503c210bc0cd888c7c972ef5d25c1cb6203"
+        },
+        {
+          "item_id": "639a2a4a2f542d70d597567993628a03fcc6081de42ab7858ae0938db241293d",
+          "path": "src-tauri/src/api_handlers/handlers.rs",
+          "fingerprint": "8dcae2d64562b2a3452022be05eaef673ab8396f6a088fe3ccfc0e8339db1f81"
+        },
+        {
+          "item_id": "793b77ce1f663a05fbc8281f8da22844f090ee4bc12652a5f65ef6bd35a2b9a0",
+          "path": "src/types.ts",
+          "fingerprint": "695d287de746b6ad4b18a9583913565ecad8b7f0e51b1655310dbd66e82cae55"
+        },
+        {
+          "item_id": "7db247f2329d097ea748b5299ed5cb9fcf2c76b4992e4b398daedbdfb323f69e",
+          "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+          "fingerprint": "636522fb1fa64d91fded61648f27409e4ccf404094f5e59b41322a0583051e6b"
+        },
+        {
+          "item_id": "85de96e42b83374ff3dacd6b2c8c4a67dd7c42e732331c6b248e1b74734da25f",
+          "path": "src/components/WorkflowCanvas/graph.ts",
+          "fingerprint": "bf5b4527dd623365d7a2e2b69e5b65ad5e343b984d82e401e2a42a6e081ece37"
+        },
+        {
+          "item_id": "a9da44634beac7635d981b2b1ab69ed9982abf2946a86b85aeb11be9e0f03e67",
+          "path": "src-tauri/src/api_handlers/mod.rs",
+          "fingerprint": "75a34f51ca914af36164e2e77f27b6e7faaf2c48b787d7840f7b14e8460c8f6a"
+        },
+        {
+          "item_id": "c9187d5f8066262ab6d2b63e41739cb75f9e5a2a683f5db2efe641e334fd6942",
+          "path": "src/components/WorkflowCanvas/TaskNode.tsx",
+          "fingerprint": "f1eea9fb4631a14a76906ad75798bd672f196fe3e3e33b6029762a3500f09080"
+        },
+        {
+          "item_id": "cb7bf5ca1de36eb915bfba1ad2b5015d0ab83f0c80af9abe73151746e895c2ca",
+          "path": "src/components/SettingsPage/SettingsPage.tsx",
+          "fingerprint": "411714a4d511979d617c9223ac15539a8b4465cf119cf3a928569a1ed2eb8f67"
+        },
+        {
+          "item_id": "d011602ff3857419697d5acce022aa29b329d547d924a9383a2f5c224e6f4b76",
+          "path": "src-tauri/src/db/workflow.rs",
+          "fingerprint": "d8235506edefc2f04b6903e1cf64faba735986692109c73cc5d03a62248586d6"
+        },
+        {
+          "item_id": "d5d79e028c63f2b217a2aced364f96f07968b9feb69aa979162cddf1a3f1e287",
+          "path": "src/components/WorkflowCanvas/GoalNode.tsx",
+          "fingerprint": "957f8738bba2748dcf7ab915b2302a75c8128fc2062af7c509d4c1d2dde165b8"
+        },
+        {
+          "item_id": "de566e6284a31c2314451a985c1f7d6df2743b4e564b2caa20d17560bbad6f03",
+          "path": "package.json",
+          "fingerprint": "e87cfeb2c4513e552d76a681644725ffd06f1551e86f1f968e9868f7a6b52f8c"
+        },
+        {
+          "item_id": "e08f56bef25fa6a39c346153800615f7ac48c32e8b0c5879d975661b3001de8d",
+          "path": "src-tauri/src/db/mod.rs",
+          "fingerprint": "262749158cf20dc6389f1fb95dc36c908880bad6a431c65ed49269b12b90cdc2"
+        },
+        {
+          "item_id": "f5dd410e6e415a29539690a55790c6b34ee257a05e69efd64a49957efb805fe7",
+          "path": "src/lib/workflowVisibility.ts",
+          "fingerprint": "ea6564f910a7f2f4b7d73ddc7a60c83433821721eb517e1eac6f26aee6c54028"
+        },
+        {
+          "item_id": "f8aa6edf3c055fb0fa47f97efb605c126ac503293c14432a609949c482498337",
+          "path": "src-tauri/src/db/tasks.rs",
+          "fingerprint": "e581a02b5a8e69307ca94f41c0bf3a22e5b28d2252eaa402900629cf50e5db74"
+        }
+      ],
+      "reused": [],
+      "failed": [],
+      "waived": []
+    },
+    "elapsed_ms": 643002
+  }
+}

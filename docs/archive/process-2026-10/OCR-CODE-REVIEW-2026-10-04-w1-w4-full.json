@@ -1,0 +1,1264 @@
+{
+  "status": "complete",
+  "llm": {
+    "provider": "minimax-cn",
+    "model": "MiniMax-M3"
+  },
+  "message": "Review complete: 73 finding(s) across 24 selected item(s).",
+  "summary": {
+    "files_reviewed": 24,
+    "comments": 73,
+    "total_tokens": 11147106,
+    "input_tokens": 10825871,
+    "output_tokens": 321235,
+    "cache_read_tokens": 9568265,
+    "elapsed": "19m39s"
+  },
+  "tool_calls": {
+    "total": 483,
+    "by_tool": {
+      "code_comment": 24,
+      "code_search": 215,
+      "file_find": 16,
+      "file_read": 221,
+      "file_read_diff": 7
+    },
+    "failure": 8,
+    "failure_by_tool": {
+      "file_read": 8
+    },
+    "failure_details": [
+      {
+        "tool_call_number": 53,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/bot/tools.rs",
+        "arguments": "{\"end_line\": 200, \"file_path\": \"src-tauri/src/db/workflow.rs\", \"start_line\": 450}",
+        "error": "invalid line range: start_line 450 is greater than end_line 200"
+      },
+      {
+        "tool_call_number": 132,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/db/tasks.rs",
+        "arguments": "{\"end_line\":100,\"file_path\":\"src-tauri/src/db/workflow.rs\",\"start_line\":950}",
+        "error": "invalid line range: start_line 950 is greater than end_line 100"
+      },
+      {
+        "tool_call_number": 158,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/db/workflow.rs",
+        "arguments": "{\"end_line\":120,\"file_path\":\"src-tauri/src/db/workflow.rs\",\"start_line\":380}",
+        "error": "invalid line range: start_line 380 is greater than end_line 120"
+      },
+      {
+        "tool_call_number": 237,
+        "tool_name": "file_read",
+        "file_path": "src/components/SettingsPage/SettingsPage.tsx",
+        "arguments": "{\"end_line\":50,\"file_path\":\"src/components/SettingsPage/McpPanel.tsx\",\"start_line\":240}",
+        "error": "invalid line range: start_line 240 is greater than end_line 50"
+      },
+      {
+        "tool_call_number": 318,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/workflow_runner.rs",
+        "arguments": "{\"end_line\":100,\"file_path\":\"src-tauri/src/db/tasks.rs\",\"start_line\":540}",
+        "error": "invalid line range: start_line 540 is greater than end_line 100"
+      },
+      {
+        "tool_call_number": 338,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/db/workflow.rs",
+        "arguments": "{\"end_line\":110,\"file_path\":\"src-tauri/src/db/workflow.rs\",\"start_line\":500}",
+        "error": "invalid line range: start_line 500 is greater than end_line 110"
+      },
+      {
+        "tool_call_number": 399,
+        "tool_name": "file_read",
+        "file_path": "src/types.ts",
+        "arguments": "{\"end_line\":60,\"file_path\":\"src/components/WorkflowCanvas/graph.ts\",\"start_line\":100}",
+        "error": "invalid line range: start_line 100 is greater than end_line 60"
+      },
+      {
+        "tool_call_number": 462,
+        "tool_name": "file_read",
+        "file_path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+        "arguments": "{\"end_line\": 200, \"file_path\": \"src/components/WorkflowCanvas/WorkflowPage.tsx\", \"start_line\": 300}",
+        "error": "invalid line range: start_line 300 is greater than end_line 200"
+      }
+    ]
+  },
+  "comments": [
+    {
+      "path": "src-tauri/src/bot_chat.rs",
+      "content": "The `as_str()` mapping (lines 1298-1305) is duplicated verbatim at lines 1570-1575 to produce the same `\"manual\"/\"scheduled\"/\"batch\"/\"workflow\"` strings for the `artifact-batch-ready` event payload. This pre-existing duplication (`mix-2` in docs/AUDIT-MULTI-SKILL-2026-09-12.md) is now extended to a fourth variant in two places. Consider replacing the inline match at line 1570 with `origin.as_str()` so the enum-to-string mapping has a single source of truth and future variants only need to be added once.",
+      "suggestion_code": "                    origin.as_str(),",
+      "existing_code": "                    TaskExecOrigin::Manual =\u003e \"manual\",\n                    TaskExecOrigin::Scheduled =\u003e \"scheduled\",\n                    TaskExecOrigin::Batch =\u003e \"batch\",\n                    TaskExecOrigin::Workflow =\u003e \"workflow\",",
+      "start_line": 1300,
+      "end_line": 1303,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/WidgetApp/WidgetApp.tsx",
+      "content": "The shared filter condition `notWorkflow(t) \u0026\u0026 !t.archived \u0026\u0026 !t.deletedAt` is duplicated across `visible` and `doneList`. Extract into a single predicate (e.g., `const listable = (t) =\u003e notWorkflow(t) \u0026\u0026 !t.archived \u0026\u0026 !t.deletedAt`) so future changes (e.g., adding another hidden state) only need one edit.",
+      "suggestion_code": "const listable = (t: Task) =\u003e notWorkflow(t) \u0026\u0026 !t.archived \u0026\u0026 !t.deletedAt;\n  const visible = tasks.filter((t) =\u003e listable(t) \u0026\u0026 t.column !== \"done\");\n  const doneList = tasks\n    .filter((t) =\u003e listable(t) \u0026\u0026 t.column === \"done\")",
+      "existing_code": "const visible = tasks.filter(\n    (t) =\u003e notWorkflow(t) \u0026\u0026 !t.archived \u0026\u0026 !t.deletedAt \u0026\u0026 t.column !== \"done\"\n  );\n  const doneList = tasks\n    .filter(\n      (t) =\u003e notWorkflow(t) \u0026\u0026 !t.archived \u0026\u0026 !t.deletedAt \u0026\u0026 t.column === \"done\"\n    )",
+      "start_line": 654,
+      "end_line": 660,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/App.tsx",
+      "content": "reloadTasks and the inline onTasksReload arrow are recreated on every render. Combined with setTaskColumn / updateTask (also plain function declarations in the component body), every App state change produces brand-new prop references for WorkflowPage, defeating React.memo in TaskNode and GoalNode and forcing the whole canvas to re-render. Wrap reloadTasks in useCallback and either pass it directly to onTasksReload (letting WorkflowPage handle its own error via the handleCommandError it already imports) or memoize the inline arrow. For consistency, setTaskColumn and updateTask should also be useCallback'd — they are passed to both KanbanBoard and WorkflowPage.",
+      "suggestion_code": "  // 重读全量任务（工作流保存/删除与任务导入共用）：套规则 → 排序 → 更新状态 → 广播挂件\n  const reloadTasks = useCallback(async () =\u003e {\n    const res = await loadTasksFromDb();\n    if (!res.ok) throw res.error;\n    const next = applyArchiveRule(applyTodayRule(sortByOrder(res.tasks)));\n    tasksRef.current = next;\n    setTasks(next);\n    emit(\"tasks-changed\").catch(() =\u003e {});\n  }, []);",
+      "existing_code": "  // 重读全量任务（工作流保存/删除与任务导入共用）：套规则 → 排序 → 更新状态 → 广播挂件\n  const reloadTasks = async () =\u003e {\n    const res = await loadTasksFromDb();\n    if (!res.ok) throw res.error;\n    const next = applyArchiveRule(applyTodayRule(sortByOrder(res.tasks)));\n    tasksRef.current = next;\n    setTasks(next);\n    emit(\"tasks-changed\").catch(() =\u003e {});\n  };",
+      "start_line": 568,
+      "end_line": 576,
+      "category": "performance",
+      "severity": "medium"
+    },
+    {
+      "path": "src/App.tsx",
+      "content": "The inline arrow for onTasksReload is recreated on every render. Combined with the unmemoized reloadTasks (and the already-unmemoized setTaskColumn / updateTask passed alongside), this defeats the React.memo wrappers on TaskNode / GoalNode. Either pass reloadTasks directly (WorkflowPage can .catch its own errors via the handleCommandError it already imports) or wrap this inline arrow in useCallback.",
+      "suggestion_code": "              onTasksReload={async () =\u003e {\n                try {\n                  await reloadTasks();\n                } catch (e) {\n                  handleCommandError(e, \"重读任务\");\n                }\n              }}",
+      "existing_code": "              onTasksReload={() =\u003e {\n                // 不 silent：保存/删除后重读失败必须让用户看到（errorHandler 默认弹窗）\n                void reloadTasks().catch((e) =\u003e handleCommandError(e, \"重读任务\"));\n              }}",
+      "start_line": 815,
+      "end_line": 818,
+      "category": "performance",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/GoalNode.tsx",
+      "content": "The invisible `Handle type=\"target\"` contradicts the docstring's \"不参与连线\" claim. React Flow still treats this as a valid connection endpoint (the parent's `isValidConnection` is what blocks it). The Handle serves no functional or visual purpose here and creates a misleading design signal — consider removing it entirely.",
+      "suggestion_code": "{/* GoalNode 不参与连线；React Flow 只对非 goal 类型节点提供 Handles */}\n      {false \u0026\u0026 \u003cHandle type=\"target\" position={Position.Top} className=\"!opacity-0\" /\u003e}",
+      "existing_code": "\u003cHandle type=\"target\" position={Position.Top} className=\"!opacity-0\" /\u003e",
+      "start_line": 22,
+      "end_line": 22,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/GoalNode.tsx",
+      "content": "`React.memo` provides negligible benefit because `WorkflowPage.tsx` creates `onRename` as an inline arrow function on every `rfNodes` recomputation (which itself depends on `name, goal, savedSnapshot, ...`). Every keystroke into the goal card recreates `data` with a new `onRename` identity, busting the memo cache. Consider dropping `memo` or hoisting `onRename`/`onGoalChange` out of `data` into stable `useCallback`s in the parent.",
+      "suggestion_code": "export const GoalNode = memo(function GoalNode({ data }: { data: GoalNodeData }) {\n  // 注：memo 仅在父组件稳定 data/callbacks 引用时才有意义；当前父组件\n  // (WorkflowPage.tsx) 将 onRename 写成内联箭头，每次 rfNodes 重算即失效，\n  // 实测收益接近 0。后续若引入 useCallback 稳定回调，可保留；否则建议移除。",
+      "existing_code": "export const GoalNode = memo(function GoalNode({ data }: { data: GoalNodeData }) {",
+      "start_line": 19,
+      "end_line": 19,
+      "category": "performance",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/db/tasks.rs",
+      "content": "The `dependsOn` branch only rejects empty-string elements. It does not reject self-reference (`task.id` listed in its own `depends_on`), cycles among DAG nodes, or IDs that don't exist among the workflow's other nodes. `build_dag` in `workflow_runner.rs` does reject cycles and dangling refs at execution time (see `build_dag_rejects_cycle_and_dangling` at workflow_runner.rs:573), but that means the patch is accepted eagerly and the error is deferred until the user actually runs the workflow — losing the \"fail fast at write time\" contract that other validation branches (e.g. empty title, unknown key) provide. Consider either validating self-reference / existence against `load_tasks_by_workflow` siblings here, or at minimum surfacing a clear error hint that cycle/dangling checks happen at `workflow_run` time.",
+      "suggestion_code": "            \"dependsOn\" =\u003e {\n                set_from(\u0026mut task.depends_on, v, k)?;\n                if let Some(deps) = \u0026task.depends_on {\n                    if deps.iter().any(|d| d.trim().is_empty()) {\n                        return Err(CommandError::InvalidArgument {\n                            field: k.into(),\n                            value: v.to_string(),\n                            reason: \"dependsOn 元素不能为空串\".into(),\n                        });\n                    }\n                    if let Some(self_ref) = task.id.as_deref() {\n                        if deps.iter().any(|d| d == self_ref) {\n                            return Err(CommandError::InvalidArgument {\n                                field: k.into(),\n                                value: v.to_string(),\n                                reason: \"dependsOn 不能包含任务自身 id\".into(),\n                            });\n                        }\n                    }\n                    // 注：跨任务环 + 悬空引用由 workflow_run 的 build_dag 在执行前拦截；\n                    // 此处只挡「自引用」这一写入即可即时发现的非法值。\n                }\n            }",
+      "existing_code": "            \"dependsOn\" =\u003e {\n                set_from(\u0026mut task.depends_on, v, k)?;\n                if let Some(deps) = \u0026task.depends_on {\n                    if deps.iter().any(|d| d.trim().is_empty()) {\n                        return Err(CommandError::InvalidArgument {\n                            field: k.into(),\n                            value: v.to_string(),\n                            reason: \"dependsOn 元素不能为空串\".into(),\n                        });\n                    }\n                }\n            }",
+      "start_line": 815,
+      "end_line": 826,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/db/tasks.rs",
+      "content": "The new validation branches (`origin`, `workflowId`, `dependsOn`, `canvasPos`) and the new `load_tasks_by_workflow` reader have no dedicated tests. The diff refactors the existing `task_set_column_tests` / `task_patch_tests` / `task_reorder_tests` `setup_conn` helpers to use the shared `TASKS_DDL`, but adds zero new test cases for the four new branches in `apply_task_patch`, the `depends_on` JSON-corruption fallback in `task_from_row` (line 481-491), or the \"origin: 'user' normalizes to None\" / \"workflowId empty-after-trim rejected\" / \"canvas_pos half-written row reads as None\" contracts. Without tests these branches can silently regress. Add at minimum: (1) `apply_task_patch` happy + reject path for each of the four new keys, (2) `task_from_row` round-trip preserving the new fields, (3) `load_tasks_by_workflow` returning only non-soft-deleted rows for the given workflow_id, (4) `depends_on` corruption recovery.",
+      "existing_code": "+            // W1-CANVAS（设计 §3.1）：工作流四字段走 task_patch 既有通道，null = 清空。\n+            // origin 限枚举值；workflowId 拒空串（它和 workflows 表的 join 键，同 assignee 理由）\n+            \"origin\" =\u003e {\n+                set_from(\u0026mut task.origin, v, k)?;\n+                if let Some(o) = \u0026task.origin {\n+                    if o != TASK_ORIGIN_USER \u0026\u0026 o != TASK_ORIGIN_WORKFLOW {\n+                        return Err(CommandError::InvalidArgument {\n+                            field: k.into(),\n+                            value: v.to_string(),\n+                            reason: format!(\n+                                \"origin 只能是 {TASK_ORIGIN_USER}/{TASK_ORIGIN_WORKFLOW}\"\n+                            ),\n+                        });\n+                    }\n+                    if o == TASK_ORIGIN_USER {\n+                        // \"user\" 归一为 None（缺省语义），避免两种写法表示同一状态\n+                        task.origin = None;\n+                    }\n+                }\n+            }\n+            \"workflowId\" =\u003e {\n+                set_from(\u0026mut task.workflow_id, v, k)?;\n+                if task\n+                    .workflow_id\n+                    .as_deref()\n+                    .is_some_and(|s| s.trim().is_empty())\n+                {\n+                    return Err(CommandError::InvalidArgument {\n+                        field: k.into(),\n+                        value: v.to_string(),\n+                        reason: \"workflowId 不能为空串（workflows 表 join 键）\".into(),\n+                    });\n+                }\n+            }\n+            \"dependsOn\" =\u003e {\n+                set_from(\u0026mut task.depends_on, v, k)?;\n+                if let Some(deps) = \u0026task.depends_on {\n+                    if deps.iter().any(|d| d.trim().is_empty()) {\n+                        return Err(CommandError::InvalidArgument {\n+                            field: k.into(),\n+                            value: v.to_string(),\n+                            reason: \"dependsOn 元素不能为空串\".into(),\n+                        });\n+                    }\n+                }\n+            }\n+            \"canvasPos\" =\u003e set_from(\u0026mut task.canvas_pos, v, k)?,",
+      "start_line": 781,
+      "end_line": 827,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/db/tasks.rs",
+      "content": "`Task::origin` is exposed as `Option\u003cString\u003e` despite this diff also introducing `TASK_ORIGIN_USER` / `TASK_ORIGIN_WORKFLOW` constants and only ever storing two distinct values. The runtime string-comparison / \"user\" → `None` normalization logic in the `\"origin\"` branch below only exists because the type system can't represent the two-state domain. A typed enum (e.g. `pub enum TaskOrigin { User, Workflow }` with custom Serde producing `\"user\"`/`\"workflow\"`) would make invalid states unrepresentable at compile time and eliminate the normalization branch. The current design is acceptable, but worth flagging per the \"model domain states with enums, not strings\" rule.",
+      "suggestion_code": "    /// 工作流画布归属（W1-CANVAS，设计 §3.1）：User = 看板任务，Workflow = 工作流节点卡\n    #[serde(default)]\n    pub origin: Option\u003cTaskOrigin\u003e,",
+      "existing_code": "    /// 工作流画布归属（W1-CANVAS，设计 §3.1）：None/\"user\" = 看板任务，\"workflow\" = 工作流节点卡\n    #[serde(default)]\n    pub origin: Option\u003cString\u003e,",
+      "start_line": 176,
+      "end_line": 178,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/db/tasks.rs",
+      "content": "`canvas_x` and `canvas_y` are read and written as `Option\u003cf64\u003e` with no `is_finite()` guard. The write path (`set_from` → `serde_json`) and the read path (`row.get(25)` / `row.get(26)`) propagate NaN and ±Infinity into the struct unchanged. SQLite stores these faithfully as IEEE 754 doubles, and `serde_json` cannot serialize NaN/±Infinity by default — so a poisoned coordinate (e.g. crafted `{\"x\": 1e500}` overflowing to Infinity, or arithmetic producing NaN) would crash every downstream Tauri payload serialization that flows through `load_tasks_by_workflow` / `load_all` / `tasks_export` / `tasks-updated` broadcasts. Add an `is_finite()` check on the upsert side (preferred: clamp or reject via `CommandError::InvalidArgument`) and at minimum guard the read side so a stale DB row doesn't take down the whole task list.",
+      "suggestion_code": "    let canvas_pos = match (canvas_x, canvas_y) {\n        (Some(x), Some(y)) if x.is_finite() \u0026\u0026 y.is_finite() =\u003e Some(CanvasPos { x, y }),\n        (Some(x), Some(y)) =\u003e {\n            eprintln!(\"[db] 任务 {id} 的画布坐标非有限数（x={x}, y={y}），按无坐标读取\");\n            None\n        }\n        _ =\u003e None,\n    };",
+      "existing_code": "    let canvas_pos = match (canvas_x, canvas_y) {\n        (Some(x), Some(y)) =\u003e Some(CanvasPos { x, y }),\n        _ =\u003e None,\n    };",
+      "start_line": 491,
+      "end_line": 494,
+      "category": "security",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/db/tasks.rs",
+      "content": "`workflow_id` lacks referential integrity. `TASKS_DDL` declares it as a plain `TEXT` column with no `REFERENCES workflows(id)` clause, the `W1_TASK_COLUMNS` migration in `open_db` (db/mod.rs:195-207) only adds it as `TEXT`, and the `\"workflowId\"` branch below only rejects empty-after-trim strings — any non-existent workflow id is accepted at write time. The current orphan risk is bounded because `workflow_delete` (db/workflow.rs:956) cascades hard-deletes node tasks inside a transaction, but until that delete path runs, a `task_patch` could silently bind a task to a workflow id that was never created (e.g. via the public REST surface or a future caller). Consider adding `FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE` either in `TASKS_DDL` or via an idempotent migration in `open_db`, or at minimum validating `workflow_id` existence here via a `load_workflow` lookup.",
+      "existing_code": "            \"workflowId\" =\u003e {\n                set_from(\u0026mut task.workflow_id, v, k)?;\n                if task\n                    .workflow_id\n                    .as_deref()\n                    .is_some_and(|s| s.trim().is_empty())\n                {\n                    return Err(CommandError::InvalidArgument {\n                        field: k.into(),\n                        value: v.to_string(),\n                        reason: \"workflowId 不能为空串（workflows 表 join 键）\".into(),\n                    });\n                }\n            }",
+      "start_line": 801,
+      "end_line": 814,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/SettingsPage/SettingsPage.tsx",
+      "content": "Silent failure when persistence fails: `setDecomposeGuidance` returns `false` when `localStorage` is unavailable (privacy mode, quota exceeded, etc., per `workflowPrompt.ts` OCR r1). When `ok === false`, `setGuidanceSaved(false)` only hides the indicator — the user has no signal that their edits weren't actually saved. Consider surfacing an explicit error (e.g., a transient \"保存失败\" toast, or holding `guidanceSaved === false` plus a small inline error label) so a failed save isn't indistinguishable from the normal \"no changes since last save\" state. The OCR r1 contract in `workflowPrompt.ts` only forbids falsely showing \"已保存\"; it doesn't forbid showing a dedicated failure message.",
+      "suggestion_code": "const [guidanceError, setGuidanceError] = useState\u003cstring | null\u003e(null);\n  const persistGuidance = (v: string) =\u003e {\n    const ok = setDecomposeGuidance(v);\n    setGuidanceSaved(ok);\n    if (ok) {\n      setGuidanceError(null);\n      if (savedTimerRef.current) clearTimeout(savedTimerRef.current);\n      savedTimerRef.current = setTimeout(() =\u003e setGuidanceSaved(false), 2500);\n    } else {\n      // 持久化失败（localStorage 不可用 / 配额超限）：仅展示失败文案，不显示\"已保存\"\n      setGuidanceError(\"保存失败：本地存储不可用，本次修改不会保留\");\n    }\n  };",
+      "existing_code": "+  const persistGuidance = (v: string) =\u003e {\n+    const ok = setDecomposeGuidance(v);\n+    setGuidanceSaved(ok);\n+    if (ok) {\n+      // 已保存提示 2.5s 自动隐藏（OCR r1：不能一旦保存过就常亮）\n+      if (savedTimerRef.current) clearTimeout(savedTimerRef.current);\n+      savedTimerRef.current = setTimeout(() =\u003e setGuidanceSaved(false), 2500);\n+    }\n+  };",
+      "start_line": 2830,
+      "end_line": 2838,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/db/workflow.rs",
+      "content": "Atomicity violation: `upsert_workflow` runs against `conn` outside the explicit `conn.transaction()` opened below. If `upsert_tasks`, `delete_tasks`, or `tx.commit()` fails, the workflow row is already durably written while its node tasks may be missing or stale — contradicting the \"锁内事务\" guarantee in the section header. Sibling paths in this file (`workflow_delete`) and in `db/tasks.rs` (`task_patch_locked`, `task_set_column_locked`) all open `tx` first and run every write inside it. Move the workflow-row upsert (and the dependent `existing_fps` / `free_by_fp` / `real_id` precomputation that needs the persisted id) to *after* `tx` is opened, or restructure so the workflow row is written through `\u0026tx` rather than `conn`.",
+      "suggestion_code": "    let tx = conn\n        .transaction()\n        .map_err(|e| CommandError::DbError(e.to_string()))?;\n    upsert_workflow(\n        \u0026tx,\n        \u0026Workflow {\n            id: wf_id.clone(),\n            name,\n            goal,\n            created_at,\n            updated_at: Some(now),\n        },\n    )\n    .map_err(CommandError::from)?;",
+      "existing_code": "    upsert_workflow(\n        conn,\n        \u0026Workflow {\n            id: wf_id.clone(),\n            name,\n            goal,\n            created_at,\n            updated_at: Some(now),\n        },\n    )\n    .map_err(CommandError::from)?;",
+      "start_line": 394,
+      "end_line": 404,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "src-tauri/src/db/workflow.rs",
+      "content": "Production panic risk: `.expect(\"kept 节点必在 existing 中\")` will kill the worker thread on a logic regression and surface as a `spawn_blocking` join error to the user. The invariant is strong today (we just assigned `real_id[i] = existing[j].id.clone()` for a `j` that was an index into `existing`), but this is the kind of \"should never happen\" that's better expressed as a `debug_assert!` or a typed `CommandError` so a regression shows up as a recoverable failure rather than a process panic.",
+      "suggestion_code": "            let mut t = existing\n                .iter()\n                .find(|t| t.id == real_id[i])\n                .ok_or_else(|| CommandError::DbError(format!(\n                    \"internal: kept node {} missing from existing set\",\n                    real_id[i]\n                )))?\n                .clone();",
+      "existing_code": "            let mut t = existing\n                .iter()\n                .find(|t| t.id == real_id[i])\n                .expect(\"kept 节点必在 existing 中\")\n                .clone();",
+      "start_line": 437,
+      "end_line": 441,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/db/workflow.rs",
+      "content": "Inconsistent time source inside the same file: `workflow_save` reads `let now = chrono::Utc::now().timestamp_millis();` once and passes it into `workflow_save_locked(\u0026mut conn, input, now)`, making the time axis testable. `workflow_rename` instead calls `chrono::Utc::now().timestamp_millis()` inside the spawn_blocking closure, so \"no-op when name unchanged\" and \"updated_at is exactly N\" can't be asserted without sleeping. Mirror `workflow_save_locked`'s pattern: hoist the clock read into the `#[tauri::command]` wrapper and pass `now` into a `_locked` helper.",
+      "suggestion_code": "        let mut wf = load_workflow(\u0026conn, \u0026id)?.ok_or(CommandError::TaskNotFound(id.clone()))?;\n        let name = check_len(\u0026name, MAX_WORKFLOW_NAME, \"工作流名称\", \"name\")?;\n        wf.name = name;\n        wf.updated_at = Some(now);",
+      "existing_code": "        let mut wf = load_workflow(\u0026conn, \u0026id)?.ok_or(CommandError::TaskNotFound(id.clone()))?;\n        let name = check_len(\u0026name, MAX_WORKFLOW_NAME, \"工作流名称\", \"name\")?;\n        wf.name = name;\n        wf.updated_at = Some(chrono::Utc::now().timestamp_millis());",
+      "start_line": 940,
+      "end_line": 943,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/db/workflow.rs",
+      "content": "NaN ordering collapses to `Equal` and silently corrupts the topological export order. `partial_cmp` returns `None` whenever either `order` is NaN; the `unwrap_or(Ordering::Equal)` swallows that signal, so a `tasks.order` row with NaN (possible via JSON `null`/missing round-trips) is sorted as if equal to whatever came before it — and `dependsOn` can then reference nodes that don't appear upstream in `file.nodes`. Either reject NaN explicitly or use a total-order helper that surfaces the bad row.",
+      "suggestion_code": "    sorted.sort_by(|a, b| {\n        let ao = a.order.unwrap_or(0.0);\n        let bo = b.order.unwrap_or(0.0);\n        ao.partial_cmp(\u0026bo)\n            .unwrap_or(std::cmp::Ordering::Equal)\n            .then_with(|| a.id.cmp(\u0026b.id))\n    });",
+      "existing_code": "    sorted.sort_by(|a, b| {\n        a.order\n            .unwrap_or(0.0)\n            .partial_cmp(\u0026b.order.unwrap_or(0.0))\n            .unwrap_or(std::cmp::Ordering::Equal)\n            .then(a.id.cmp(\u0026b.id))\n    });",
+      "start_line": 668,
+      "end_line": 674,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/db/workflow.rs",
+      "content": "`depends_on.contains(\u0026d)` inside the dedup loop is O(n²); the bound is small (≤30) but the loop also unconditionally allocates a fresh `Vec\u003cString\u003e` per node. Use a `HashSet` for the seen-set to make intent clearer and scale linearly.",
+      "suggestion_code": "    let nodes = file\n        .nodes\n        .into_iter()\n        .map(|n| {\n            let mut seen = std::collections::HashSet::new();\n            let depends_on: Vec\u003cString\u003e = n\n                .depends_on\n                .into_iter()\n                .filter(|d| seen.insert(d.clone()))\n                .collect();",
+      "existing_code": "    let nodes = file\n        .nodes\n        .into_iter()\n        .map(|n| {\n            let mut depends_on: Vec\u003cString\u003e = Vec::new();\n            for d in n.depends_on {\n                if !depends_on.contains(\u0026d) {\n                    depends_on.push(d);\n                }\n            }",
+      "start_line": 775,
+      "end_line": 784,
+      "category": "performance",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/db/workflow.rs",
+      "content": "Unused tuple destructure: both slots (`p.name`, `name.clone()`) are discarded — the actual `name` used by the `upsert_workflow` call below comes from the outer `name` binding. The intermediate tuple and the `name.clone()` allocation are dead and obscure intent.",
+      "suggestion_code": "    let created_at = prev_row\n        .as_ref()\n        .and_then(|p| p.created_at)\n        .or(Some(now));",
+      "existing_code": "    let (created_at, _) = match prev_row {\n        Some(p) =\u003e (p.created_at, p.name),\n        None =\u003e (Some(now), name.clone()),\n    };",
+      "start_line": 390,
+      "end_line": 393,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/db/workflow.rs",
+      "content": "`workflow_rename` is the only write command in this file that does not broadcast on the existing `tasks-changed` / `tasks-updated` channels. After a rename, any UI window that already cached the workflow's old name keeps showing it. Either add the broadcast (rename touches nothing in `tasks`, so a dedicated `workflows-changed` event would be more honest) or document the listener contract — silence here is a divergence from every other write path in the file.",
+      "suggestion_code": "    {\n        use tauri::Emitter;\n        let _ = app_emit.emit(\"workflows-changed\", \u0026row);\n    }\n    audit_event(\u0026app_emit, \"workflow_rename\", \u0026row.id, \u0026[]);\n    Ok(row)\n}",
+      "existing_code": "    audit_event(\u0026app_emit, \"workflow_rename\", \u0026row.id, \u0026[]);\n    Ok(row)\n}",
+      "start_line": 949,
+      "end_line": 951,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/TaskNode.tsx",
+      "content": "Draft input causes a re-render storm on every keystroke. In WorkflowPage.tsx:609-612, `onDraftTitleCommit` is an inline arrow inside the `rfNodes` `useMemo` factory that calls `setNodes((prev) =\u003e prev.map(...))` — replacing the entire `nodes` array on every character. Because `nodes` is in the `rfNodes` memo deps (line 629), the entire `rfNodes` array (all task nodes, their `data` objects, the goal node) is rebuilt every keystroke, forcing React Flow to re-render every node and re-derive every edge. In practice this also breaks the input itself: React Flow's keyed reconciliation remounts the node when its position/identity churns during a typing burst, which loses caret position / focus mid-word. Two pragmatic fixes: (a) hold draft titles in a separate `Map\u003clocalId, string\u003e` state so typing only mutates one key without rebuilding `nodes`, and only sync into the CanvasNode on commit/blur; or (b) route the keystroke handler through a `nodesRef` (the same `tasksRef`/`propsRef` pattern already used at WorkflowPage.tsx:96-101) so typing doesn't trigger a `setNodes`. Either way, `data.onDraftTitleCommit` should not be defined inside the `rfNodes` memo.",
+      "suggestion_code": "// Option A: only commit on blur/Enter; keep draft local to the input\n          onBlur={(e) =\u003e data.onDraftTitleCommit(id, e.target.value)}\n          onKeyDown={(e) =\u003e {\n            if (e.key === \"Enter\") data.onDraftTitleCommit(id, e.currentTarget.value);\n          }}",
+      "existing_code": "onChange={(e) =\u003e data.onDraftTitleCommit(id, e.target.value)}",
+      "start_line": 73,
+      "end_line": 73,
+      "category": "performance",
+      "severity": "high"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/TaskNode.tsx",
+      "content": "`memo` on TaskNode is effectively decorative given how the parent assembles `data`. In WorkflowPage.tsx:606-617 the entire `TaskNodeData` object (including all callbacks) is reconstructed inside the `rfNodes` `useMemo` factory on every memo recomputation. Even though `commitTitle` / `toggleDone` / `toggleSubtask` / `deleteNode` are themselves `useCallback`-stable, the wrapping `data` object is fresh, so React's referential equality check in `memo` always fails and TaskNode re-renders unconditionally. To make memo useful, either pass primitives + a single stable dispatcher object (e.g. `{ task, draftTitle, actions }` where `actions` is a `useMemo`-stable object holding the four callbacks), or move callbacks off `data` into a context/ref that TaskNode subscribes to. Without this change, the `memo` wrapper gives a false sense of optimization.",
+      "existing_code": "export const TaskNode = memo(function TaskNode({\n  id,\n  data,\n}: {\n  id: string;\n  data: TaskNodeData;\n}) {",
+      "start_line": 35,
+      "end_line": 41,
+      "category": "performance",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/TaskNode.tsx",
+      "content": "`nodeBorder` conflates two distinct cases under \"green ring\". The comment says \"done 无 result = 用户手动完成 → 绿\", but the implementation keys on `task.result?.status === undefined`, which also matches a task that *has* a `result` object whose `status` field happens to be undefined (e.g. legacy rows missing `status`, partial save, or deserialization hiccup — see types.ts:111-117 where `status?` is genuinely optional). Such tasks would silently render green even if the bot run didn't actually succeed. Tighten the check to `task.result === undefined || task.result.status === undefined || task.result.status === \"success\"`, and ideally document the legacy/partial-data case so it isn't mistaken for a manual-complete.",
+      "suggestion_code": "if (task?.column !== \"done\") return \"\";\n  // result 整个缺失 = 用户手动 → 绿；result 存在但 status 缺失/=success = 成功 → 绿；\n  // 否则（status 明确非 success：超时/异常）→ 红。\n  const r = task.result;\n  if (r === undefined || r === null) return \"ring-2 ring-[var(--ok,#22c55e)]\";\n  if (r.status === undefined || r.status === \"success\")\n    return \"ring-2 ring-[var(--ok,#22c55e)]\";\n  return \"ring-2 ring-[var(--danger,#ef4444)]\";",
+      "existing_code": "if (task?.column !== \"done\") return \"\";\n  const status = task.result?.status;\n  if (status === undefined || status === \"success\")\n    return \"ring-2 ring-[var(--ok,#22c55e)]\";\n  return \"ring-2 ring-[var(--danger,#ef4444)]\";",
+      "start_line": 28,
+      "end_line": 32,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/workflow_runner.rs",
+      "content": "**Critical: controller deadlocks when any node is `done+success` (every breakpoint-resume run).**\n\n`build_dag` excludes done+success nodes from `ready` and from `dependents` keys (correct for execution semantics — they must not be re-executed), but still includes them in `dag.nodes` (line 110). The controller sets `total = dag.nodes.len()` (line 307) and only populates `resolved` from `NodeOutcome` (line 367); done nodes are never spawned and never inserted into `resolved`. So `while resolved.len() \u003c total` (line 360) never becomes true and the controller blocks forever in `rx.recv().await` — only breakable by an external `workflow_stop`. This is reachable on every breakpoint-resume run with ≥1 already-done node, and also when `to_run == 0` (all nodes already done). Fix options: (a) pre-seed `resolved` with the done-node IDs before entering the loop (and add `already_done` to `done_count` for the final audit); (b) compute `total` as `tasks.iter().filter(|t| !is_success(t)).count()` instead of `dag.nodes.len()`; (c) short-circuit `workflow_run` and skip spawning the controller when `to_run == 0`.",
+      "existing_code": "let total = dag.nodes.len();",
+      "start_line": 307,
+      "end_line": 307,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "src-tauri/src/workflow_runner.rs",
+      "content": "**Audit and notification understate `done` and inflate `skipped` on breakpoint-resume runs.**\n\n`already_done` is computed in `workflow_run` (line 215) but is never folded back into `done_count` or `total` before the final `audit::write_event(\"workflow_run_done\", ...)` (line 447) and `notify_workflow_done(...)` (line 452). For a 10-node workflow where 5 were already done and 3 new ones complete in this run, the user sees `done=3, skipped=2, total=10` and the notification body reads \"3/10 节点完成\" — when 8 are actually completed. Add `already_done` to both `done_count` before constructing `done`, and to `total` (or define `total` here as the active-node count to match what was actually executed), and propagate the same corrected values into `notify_workflow_done`.",
+      "existing_code": "let failed_n = failed_names.len();\n    let skipped_n = total.saturating_sub(done_count + failed_n);\n    crate::audit::write_event(\n        \u0026app,\n        if failed_n \u003e 0 {\n            crate::audit::AuditLevel::Warn\n        } else {\n            crate::audit::AuditLevel::Info\n        },\n        \"workflow_run_done\",\n        \u0026[\n            (\"workflowId\", workflow_id),\n            (\"total\", total.to_string()),\n            (\"done\", done_count.to_string()),\n            (\"failed\", failed_n.to_string()),\n            (\"skipped\", skipped_n.to_string()),\n        ],\n    );\n    notify_workflow_done(\u0026app, total, done_count, failed_n);",
+      "start_line": 434,
+      "end_line": 452,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/workflow_runner.rs",
+      "content": "**O(N²) DB load per node completion — single-row API already exists.**\n\nBoth the success re-check after `run_task_in_chat` (lines 336-340) and `mark_skipped` (line 457) call `crate::db::db_load(...)` which always loads the full task table (`db_load_for` → `load_all`, see `src-tauri/src/db/tasks.rs:601`), then `.into_iter().find(|t| t.id == ...)` to inspect a single row. Per workflow this is N full-table scans, giving O(N²) DB work for `spawn_node` plus another O(N²) for `mark_skipped`. The single-task PK lookup `db::tasks::load_task(conn, \u0026id)` (`db/tasks.rs:547`) — already in production use by `bot_orchestrator` and `exec_steps` — is the right primitive. Wrap it in a `tauri::async_runtime::spawn_blocking` like `load_workflow_tasks` does, or add a thin `db_load_one` async wrapper, and use it in both spots.",
+      "existing_code": "let result = run_task_in_chat(\u0026app, \u0026id, TaskExecOrigin::Workflow).await;\n                let ok = match \u0026result {\n                    Ok(_) =\u003e crate::db::db_load(app.clone())\n                        .await\n                        .unwrap_or_default()\n                        .into_iter()\n                        .find(|t| t.id == id)\n                        .map(|t| node_is_success(\u0026t))\n                        .unwrap_or(false),\n                    Err(_) =\u003e false,\n                };",
+      "start_line": 336,
+      "end_line": 346,
+      "category": "performance",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/workflow_runner.rs",
+      "content": "**`mark_skipped` does the same O(N²) full-table load — use the single-row lookup here too.**\n\n`mark_skipped` (line 457) calls `db_load` then `.find()` — same anti-pattern as `spawn_node`. With M skipped/affected nodes per workflow run, this is M full table scans. Switch to `db::tasks::load_task` via a blocking task; on `None` (task deleted in the meantime) no-op silently. Also consider whether `db_upsert` will reliably accept a single-element `Vec\u003cTask\u003e` here — `db_upsert` (`db/tasks.rs:608`) takes `Vec\u003cTask\u003e`, which matches the current call.",
+      "existing_code": "async fn mark_skipped(app: \u0026AppHandle, task_id: \u0026str, reason: \u0026str) {\n    if let Ok(cur) = crate::db::db_load(app.clone()).await {\n        if let Some(mut fresh) = cur.into_iter().find(|t| t.id == task_id) {",
+      "start_line": 456,
+      "end_line": 458,
+      "category": "performance",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/workflow_runner.rs",
+      "content": "**Controller hangs indefinitely if any spawned node task panics before `tx.send`.**\n\n`rx.recv().await` (line 364) has no timeout, no panic recovery, and no `JoinHandle` retained for the spawned `tauri::async_runtime::spawn` tasks (line 320). If a panic occurs inside `SubagentGate::wait_slot_cancellable` or inside `run_task_in_chat` before the `NodeOutcome` is queued, that worker task dies silently, no outcome is ever delivered, and the controller blocks on `rx.recv()` forever — the cancel flag is only set by an external user-driven `workflow_stop`, so the workflow appears permanently \"running\" in the registry. Add at least: (a) wrap the spawned async body in `std::panic::AssertUnwindSafe` + `tokio::spawn` catch_unwind, sending a synthetic `NodeOutcome { ok: false, cancelled: false }` on panic; or (b) attach a watchdog timeout to `rx.recv()`; or (c) retain `JoinHandle`s in a `Vec` and `select!` on them with cancellation.",
+      "existing_code": "tauri::async_runtime::spawn(async move {\n                let ticket =\n                    crate::bot_orchestrator::SubagentGate::wait_slot_cancellable(None, || {\n                        cancel.load(Ordering::SeqCst)\n                    })\n                    .await;\n                if ticket.is_none() {",
+      "start_line": 320,
+      "end_line": 326,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/workflow_runner.rs",
+      "content": "**`mark_skipped` silently swallows all errors — no audit/log on failure.**\n\n`db_load` failure and `db_upsert` failure are both discarded (`if let Ok(cur)` and `.is_ok()`), so a transient DB error during cancellation cleanup leaves the task visually un-skipped with zero diagnostic. Combined with the O(N²) load, this is the highest-frequency error site in the file. At minimum, log via `crate::audit::write_event(... AuditLevel::Warn, \"workflow_skip_failed\", ...)` on each `Err`, matching the rest of the file's logging discipline (e.g., `workflow_run_done` lines 436-451).",
+      "existing_code": "async fn mark_skipped(app: \u0026AppHandle, task_id: \u0026str, reason: \u0026str) {\n    if let Ok(cur) = crate::db::db_load(app.clone()).await {\n        if let Some(mut fresh) = cur.into_iter().find(|t| t.id == task_id) {\n            let note = match fresh.note.as_deref().filter(|n| !n.trim().is_empty()) {\n                Some(n) =\u003e format!(\"{reason}\\n{n}\"),\n                None =\u003e reason.to_string(),\n            };\n            fresh.note = Some(note);\n            fresh.expected_updated_at = fresh.updated_at;\n            fresh.updated_at = Some(chrono::Utc::now().timestamp_millis());\n            if crate::db::db_upsert(app.clone(), vec![fresh.clone()])\n                .await\n                .is_ok()\n            {\n                crate::bot::broadcast_after_mutation(app, vec![fresh], vec![]);\n            }\n        }\n    }\n}",
+      "start_line": 456,
+      "end_line": 474,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/workflow_runner.rs",
+      "content": "**Notification send failure logged via `eprintln!` instead of the structured audit channel.**\n\nThe rest of the file uses `crate::audit::write_event` for every operational signal (start/stop/run_done). A failed OS notification (often a permission denial — \"未授权\") is exactly the kind of thing users will want to be able to grep the audit log for; `eprintln!` (line 478) bypasses that channel entirely. Route this through `audit::write_event(..., AuditLevel::Warn, \"workflow_notify_failed\", \u0026[(\"err\", e.to_string())])` for consistency.",
+      "existing_code": "if let Err(e) = app\n        .notification()\n        .builder()\n        .title(\u0026title)\n        .body(\u0026body)\n        .show()\n    {\n        eprintln!(\"[workflow] 系统通知发送失败（未授权？）：{e}\");\n    }",
+      "start_line": 483,
+      "end_line": 491,
+      "category": "style",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/workflow_decompose.rs",
+      "content": "Macro hygiene: `$err` is interpolated twice (in `$err.to_string()` and `return Err($err)`). Per the macro-hygiene rule, an expression fragment should be bound once so caller-supplied expressions with side effects don't run twice — current call sites (`fail!(e)`) happen to pass a plain local, but a future `fail!(some_fn())` would silently invoke the function twice. Fix by capturing once: `let err = $err; last_err = err.to_string(); ... return Err(err);`.",
+      "suggestion_code": "macro_rules! fail {\n    ($err:expr) =\u003e {{\n        let err = $err;\n        last_err = err.to_string();\n        crate::audit::write_event(\n            \u0026app,\n            crate::audit::AuditLevel::Warn,\n            \"workflow_decompose\",\n            \u0026[\n                (\"outcome\", \"failed\".to_string()),\n                (\"attempts\", attempts.to_string()),\n                (\"error\", crate::audit::escape_for_log(\u0026last_err, 200)),\n            ],\n        );\n        return Err(err);\n    }};\n}",
+      "existing_code": "macro_rules! fail {\n    ($err:expr) =\u003e {{\n        last_err = $err.to_string();\n        crate::audit::write_event(\n            \u0026app,\n            crate::audit::AuditLevel::Warn,\n            \"workflow_decompose\",\n            \u0026[\n                (\"outcome\", \"failed\".to_string()),\n                (\"attempts\", attempts.to_string()),\n                (\"error\", crate::audit::escape_for_log(\u0026last_err, 200)),\n            ],\n        );\n        return Err($err);\n    }};\n}",
+      "start_line": 234,
+      "end_line": 249,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/workflow_decompose.rs",
+      "content": "Asymmetric validation: `title` is trimmed and rejected when empty, but `note` is only checked for the upper char cap. `Some(\"\")` and `Some(\"   \")` pass validation and get persisted, which renders as blank/whitespace notes on the WorkflowCanvas. Either trim+drop empty notes here, or document the asymmetry and rely on the downstream `TaskCardContent` to skip rendering. If trimming, also reduce to `Option\u003cString\u003e` semantics (None vs Some(trimmed)).",
+      "suggestion_code": "        let mut note_trimmed: Option\u003cString\u003e = None;\n        if let Some(note) = st.note.as_deref().map(str::trim).filter(|s| !s.is_empty()) {\n            if note.chars().count() \u003e MAX_NODE_NOTE {\n                return Err(CommandError::InvalidArgument {\n                    field: \"subtasks\".into(),\n                    value: note.to_string(),\n                    reason: format!(\"第 {} 个任务备注超过 {MAX_NODE_NOTE} 字上限\", i + 1),\n                });\n            }\n            note_trimmed = Some(note.to_string());\n        }\n        st.note = note_trimmed;",
+      "existing_code": "        if let Some(note) = \u0026st.note {\n            if note.chars().count() \u003e MAX_NODE_NOTE {\n                return Err(CommandError::InvalidArgument {\n                    field: \"subtasks\".into(),\n                    value: note.clone(),\n                    reason: format!(\"第 {} 个任务备注超过 {MAX_NODE_NOTE} 字上限\", i + 1),\n                });\n            }\n        }",
+      "start_line": 150,
+      "end_line": 158,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/workflow_decompose.rs",
+      "content": "Duplicate indices inside a single `depends_on` (e.g. `[0, 0]`) are not rejected. Downstream `graph.ts:64` calls `g.setEdge(d, n.localId)` once per entry, and the rest of the pipeline will treat the card as having a 2-edge upstream dependency. W4-TEMPLATE spec explicitly does \"dependsOn 重复元素自动去重\" — the same dedup should happen here at the validation boundary. Also reject references equal to `i` (self-loop) explicitly with a distinct error message; the current message lumps self-loop and reverse-reference together but the value diagnostics differ.",
+      "suggestion_code": "        let mut seen_dep: std::collections::HashSet\u003cusize\u003e = std::collections::HashSet::new();\n        for \u0026d in \u0026st.depends_on {\n            // 前向引用硬约束：结构上杜绝环（设计 §6.2）\n            if d == i {\n                return Err(CommandError::InvalidArgument {\n                    field: \"subtasks\".into(),\n                    value: format!(\"#{i} -\u003e {d}\"),\n                    reason: format!(\"第 {} 个任务不能依赖自身\", i + 1),\n                });\n            }\n            if d \u003e= i {\n                return Err(CommandError::InvalidArgument {\n                    field: \"subtasks\".into(),\n                    value: format!(\"#{i} -\u003e {d}\"),\n                    reason: format!(\n                        \"第 {} 个任务的 dependsOn 含非法下标 {d}（必须引用更靠前的任务，下标 \u003c {i}）\",\n                        i + 1\n                    ),\n                });\n            }\n            if !seen_dep.insert(d) {\n                return Err(CommandError::InvalidArgument {\n                    field: \"subtasks\".into(),\n                    value: format!(\"#{i} -\u003e {d}\"),\n                    reason: format!(\"第 {} 个任务的 dependsOn 含重复下标 {d}\", i + 1),\n                });\n            }\n        }",
+      "existing_code": "        for \u0026d in \u0026st.depends_on {\n            // 前向引用硬约束：结构上杜绝环（设计 §6.2）\n            if d \u003e= i {\n                return Err(CommandError::InvalidArgument {\n                    field: \"subtasks\".into(),\n                    value: format!(\"#{i} -\u003e {d}\"),\n                    reason: format!(\n                        \"第 {} 个任务的 dependsOn 含非法下标 {d}（必须引用更靠前的任务，下标 \u003c {i}）\",\n                        i + 1\n                    ),\n                });\n            }\n        }",
+      "start_line": 159,
+      "end_line": 171,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/workflow_decompose.rs",
+      "content": "User-facing `reason` strings embed Rust identifiers and the raw field name `dependsOn` (`第 {} 个任务的 dependsOn 含非法下标 {d}（必须引用更靠前的任务，下标 \u003c {i}）`). The `{d}` and `{i}` interpolation leaks the inner enum-index variable names to end users, mixes Chinese/English, and is brittle if the field is ever renamed. Consider routing these through a stable i18n message id or at least dropping the `{d}` and `{i}` from the public-facing string.",
+      "suggestion_code": "                    reason: format!(\n                        \"第 {} 个任务的依赖关系引用了排在它后面或不存在的任务\",\n                        i + 1\n                    ),",
+      "existing_code": "                    reason: format!(\n                        \"第 {} 个任务的 dependsOn 含非法下标 {d}（必须引用更靠前的任务，下标 \u003c {i}）\",\n                        i + 1\n                    ),",
+      "start_line": 165,
+      "end_line": 168,
+      "category": "security",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/workflow_decompose.rs",
+      "content": "`goal_trimmed` is interpolated raw into `user_content` via `format!(\"总目标：{goal_trimmed}\")`. A goal containing newlines plus instruction-style content can degrade model adherence to the appended contract (mitigated only by post-hoc validation rejecting malformed JSON). The goal length is checked in chars but not sanitized; replace embedded control characters / newlines before splicing into the user prompt so the model cannot smuggle in a fake system-style preface.",
+      "suggestion_code": "    let goal_safe: String = goal_trimmed\n        .chars()\n        .map(|c| if c.is_control() { ' ' } else { c })\n        .collect();\n    let mut user_content = format!(\"总目标：{goal_safe}\");",
+      "existing_code": "    let mut user_content = format!(\"总目标：{goal_trimmed}\");",
+      "start_line": 229,
+      "end_line": 229,
+      "category": "security",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/SettingsPage/SettingsPage.tsx",
+      "content": "Stale-ref race on unmount: `guidanceRef.current` is updated in this post-render effect, but the unmount cleanup at the top of the card persists whatever is currently in the ref. If the user types and the component unmounts (or re-mounts via section toggle teardown) between render and this effect running, the cleanup will write the *previous* value to storage — silently losing the last edit. Update the ref synchronously in the `onChange` handler instead, and drop this effect:\n\n```tsx\nonChange={(e) =\u003e {\n  const v = e.target.value;\n  guidanceRef.current = v; // sync, not in useEffect\n  setGuidance(v);\n  setGuidanceSaved(false);\n}}\n```\n\nThis also removes the dependency on the ref-update effect racing with React's commit phase.",
+      "suggestion_code": "// ref updated synchronously in onChange (see below) — no effect needed",
+      "existing_code": "useEffect(() =\u003e {\n    guidanceRef.current = guidance;\n  }, [guidance]);",
+      "start_line": 2819,
+      "end_line": 2821,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/SettingsPage/SettingsPage.tsx",
+      "content": "listen() cleanup has two latent issues: (1) if the promise rejects (Tauri IPC failure) the rejection is silently dropped; (2) if the component unmounts before `listen()` resolves, the listener can still be registered and fire `setShowTasks` on an unmounted component after teardown. Idiomatic Tauri pattern:\n\n```tsx\nuseEffect(() =\u003e {\n  let cancelled = false;\n  let unlisten: UnlistenFn | undefined;\n  listen\u003cunknown\u003e(WORKFLOW_VISIBILITY_EVENT, () =\u003e {\n    if (!cancelled) setShowTasks(getShowWorkflowTasks());\n  })\n    .then((f) =\u003e {\n      if (cancelled) f();\n      else unlisten = f;\n    })\n    .catch((e) =\u003e console.error(\"workflow visibility listener:\", e));\n  return () =\u003e {\n    cancelled = true;\n    unlisten?.();\n  };\n}, []);\n```\n\nAlso worth importing `type UnlistenFn` from `@tauri-apps/api/event` for the typed handle.",
+      "suggestion_code": "useEffect(() =\u003e {\n    let cancelled = false;\n    let unlisten: UnlistenFn | undefined;\n    listen(WORKFLOW_VISIBILITY_EVENT, () =\u003e {\n      if (!cancelled) setShowTasks(getShowWorkflowTasks());\n    })\n      .then((f) =\u003e {\n        if (cancelled) f();\n        else unlisten = f;\n      })\n      .catch((e) =\u003e console.error(\"workflow visibility listener:\", e));\n    return () =\u003e {\n      cancelled = true;\n      unlisten?.();\n    };\n  }, []);",
+      "existing_code": "useEffect(() =\u003e {\n    const un = listen(WORKFLOW_VISIBILITY_EVENT, () =\u003e\n      setShowTasks(getShowWorkflowTasks())\n    );\n    return () =\u003e {\n      un.then((f) =\u003e f());\n    };\n  }, []);",
+      "start_line": 2822,
+      "end_line": 2829,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/GoalNode.tsx",
+      "content": "Accessibility: `outline-none` removes the default focus indicator without supplying a `focus-visible` alternative. Keyboard users will get no visual cue when the input is focused (WCAG 2.4.7). Add e.g. `focus-visible:ring-1 focus-visible:ring-[var(--t3)]` (matching the project's neumorphic design tokens).",
+      "suggestion_code": "          className=\"min-w-0 flex-1 rounded-[var(--r-sm)] bg-transparent text-sm font-semibold text-[var(--t1)] outline-none focus-visible:ring-1 focus-visible:ring-[var(--t3)]\"",
+      "existing_code": "          className=\"min-w-0 flex-1 rounded-[var(--r-sm)] bg-transparent text-sm font-semibold text-[var(--t1)] outline-none\"",
+      "start_line": 26,
+      "end_line": 26,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/GoalNode.tsx",
+      "content": "Accessibility: same focus-visible issue as the input — `outline-none` strips the default ring with no replacement. Add a `focus-visible:` ring styled to match the neumorphic system.",
+      "suggestion_code": "          className=\"mt-2 h-16 w-full resize-none rounded-[var(--r-sm)] bg-transparent text-xs leading-5 text-[var(--t3)] outline-none placeholder:text-[var(--t5)] focus-visible:ring-1 focus-visible:ring-[var(--t3)]\"",
+      "existing_code": "          className=\"mt-2 h-16 w-full resize-none rounded-[var(--r-sm)] bg-transparent text-xs leading-5 text-[var(--t3)] outline-none placeholder:text-[var(--t5)]\"",
+      "start_line": 41,
+      "end_line": 41,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/GoalNode.tsx",
+      "content": "Permanently-disabled button doesn't read as disabled on a neumorphic surface: it still has the raised `nm-outset` shadow and no `cursor-not-allowed`, so users may hover/click expecting action. Add `disabled:cursor-not-allowed` and either swap to `nm-inset` / `nm-flat` for the disabled state or add `disabled:opacity-60`.",
+      "suggestion_code": "          className=\"flex shrink-0 items-center gap-1 rounded-full px-3 py-1 text-xs text-[var(--t5)] nm-inset disabled:cursor-not-allowed disabled:opacity-60\"\n          title=\"执行引擎将在 W3 批次上线\"\n          disabled",
+      "existing_code": "          className=\"flex shrink-0 items-center gap-1 rounded-full px-3 py-1 text-xs text-[var(--t5)] nm-outset\"\n          title=\"执行引擎将在 W3 批次上线\"\n          disabled",
+      "start_line": 32,
+      "end_line": 34,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/TaskNode.tsx",
+      "content": "The node container has no `relative` positioning class, but the delete button uses `absolute -right-2 -top-2`. Verified `.nm-card` in `src/ui/main.css` (L157-164) only sets border-radius / bg / border / shadow / transition — **no `position: relative`**. Result: the absolutely-positioned button will resolve against the nearest *positioned* ancestor (likely the React Flow viewport / pane). When the node is dragged or the canvas pans, the button will visually detach from the card. Add `relative` to the wrapper (or `relative` to the button itself's positioning context) so the button tracks the card.\n\n```tsx\n\u003cdiv className={`relative nm-card w-[340px] px-1 pt-1 pb-2 ${nodeBorder(task)}`}\u003e\n```\n\nSeverity is medium because the button is currently misplaced from day one (not just on style refactors) — it just happens to land somewhere unnoticeable until the user pans/zooms.",
+      "suggestion_code": "\u003cdiv className={`relative nm-card w-[340px] px-1 pt-1 pb-2 ${nodeBorder(task)}`}\u003e\n      {/* 连线手柄：上=下游入（被依赖），下=上游出（依赖别人）——\n          视觉上\"从卡底拉到卡顶\"与图流向（上→下）一致 */}\n      \u003cHandle type=\"target\" position={Position.Top} /\u003e\n      \u003cHandle type=\"source\" position={Position.Bottom} /\u003e\n      \u003cbutton\n        aria-label=\"删除节点\"\n        title=\"删除节点（连带清理相关连线，保存后生效）\"\n        onClick={(e) =\u003e {\n          e.stopPropagation();\n          data.onDelete(id);\n        }}\n        className=\"absolute -right-2 -top-2 z-10 rounded-full border border-[var(--edge)] bg-[var(--bg)] p-1 text-[var(--t5)] hover:text-[var(--danger,#ef4444)]\"\n      \u003e",
+      "existing_code": "\u003cdiv className={`nm-card w-[340px] px-1 pt-1 pb-2 ${nodeBorder(task)}`}\u003e\n      {/* 连线手柄：上=下游入（被依赖），下=上游出（依赖别人）——\n          视觉上\"从卡底拉到卡顶\"与图流向（上→下）一致 */}\n      \u003cHandle type=\"target\" position={Position.Top} /\u003e\n      \u003cHandle type=\"source\" position={Position.Bottom} /\u003e\n      \u003cbutton\n        aria-label=\"删除节点\"\n        title=\"删除节点（连带清理相关连线，保存后生效）\"\n        onClick={(e) =\u003e {\n          e.stopPropagation();\n          data.onDelete(id);\n        }}\n        className=\"absolute -right-2 -top-2 z-10 rounded-full border border-[var(--edge)] bg-[var(--bg)] p-1 text-[var(--t5)] hover:text-[var(--danger,#ef4444)]\"\n      \u003e",
+      "start_line": 44,
+      "end_line": 57,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/workflow_runner.rs",
+      "content": "Critical TOCTOU race in `workflow_run`: the `contains_key` check at lines 208-215 and the `insert` at line 227 are guarded by **separate** lock acquisitions. Between them the registry mutex is released across the `await load_workflow_tasks(...)`, so two concurrent `workflow_run` calls for the same `workflow_id` can both pass the \"not in map\" check, both load tasks, and both insert. Result: two controllers race on the same workflow, spawning each ready node twice and emitting duplicate `workflow_run_done` audits / system notifications. Fix: keep one lock acquisition across both the membership check and the insert (move the load inside the lock or restructure as a single critical section using `entry().or_insert_with(|| ...)`).",
+      "suggestion_code": "let tasks = load_workflow_tasks(\u0026app, \u0026workflow_id).await?;\n    if tasks.is_empty() {\n        return Err(CommandError::TaskInvalidState {\n            reason: \"工作流没有任何节点卡\".into(),\n        });\n    }\n    let dag = build_dag(\u0026tasks, \u0026node_is_success).map_err(CommandError::Internal)?;\n    let already_done = tasks.iter().filter(|t| node_is_success(t)).count();\n    let to_run = tasks.len() - already_done;\n\n    let cancel = Arc::new(AtomicBool::new(false));\n    {\n        let mut m = runs().lock().map_err(|_| registry_poisoned())?;\n        if m.contains_key(\u0026workflow_id) {\n            return Err(CommandError::TaskInvalidState {\n                reason: \"该工作流已在执行中\".into(),\n            });\n        }\n        m.insert(\n            workflow_id.clone(),\n            Arc::new(RunHandle {\n                cancel: cancel.clone(),\n            }),\n        );\n    }",
+      "existing_code": "{\n        let m = runs().lock().map_err(|_| registry_poisoned())?;\n        if m.contains_key(\u0026workflow_id) {\n            return Err(CommandError::TaskInvalidState {\n                reason: \"该工作流已在执行中\".into(),\n            });\n        }\n    }\n    let tasks = load_workflow_tasks(\u0026app, \u0026workflow_id).await?;\n    if tasks.is_empty() {\n        return Err(CommandError::TaskInvalidState {\n            reason: \"工作流没有任何节点卡\".into(),\n        });\n    }\n    let dag = build_dag(\u0026tasks, \u0026node_is_success).map_err(CommandError::Internal)?;\n    let already_done = tasks.iter().filter(|t| node_is_success(t)).count();\n    let to_run = tasks.len() - already_done;\n\n    let cancel = Arc::new(AtomicBool::new(false));\n    runs().lock().map_err(|_| registry_poisoned())?.insert(\n        workflow_id.clone(),\n        Arc::new(RunHandle {\n            cancel: cancel.clone(),\n        }),\n    );",
+      "start_line": 208,
+      "end_line": 232,
+      "category": "bug",
+      "severity": "critical"
+    },
+    {
+      "path": "src-tauri/src/workflow_runner.rs",
+      "content": "`build_dag` is O(N×D) due to a nested linear scan: for each dep `d`, it calls `tasks.iter().find(|x| x.id == **d)` to check upstream success status. With N nodes and D total dependencies this is O(N·D); for a workflow with 200 nodes averaging 2 deps each that's 40k comparisons. Pre-compute an id→\u0026Task `HashMap` (or just an id→bool done map) once at the top of the function and use it for both the `ids` set and the upstream lookup, reducing to O(N+D).",
+      "suggestion_code": "let by_id: HashMap\u003c\u0026str, \u0026Task\u003e = tasks.iter().map(|t| (t.id.as_str(), t)).collect();\n    let is_done = |id: \u0026str| by_id.get(id).map(|t| is_success(t)).unwrap_or(false);\n    for t in tasks {\n        if is_success(t) {\n            continue; // 断点续跑：完成节点无入度，直接就绪\n        }\n        let mut deps: HashSet\u003c\u0026str\u003e = HashSet::new();\n        for d in t.depends_on.iter().flatten() {\n            if !by_id.contains_key(d.as_str()) {\n                return Err(format!(\n                    \"任务「{}」的依赖 {} 不在工作流内（悬空引用）\",\n                    t.title, d\n                ));\n            }\n            if !deps.insert(d) {\n                continue; // 重复边去重\n            }\n            dependents\n                .entry(d.to_string())\n                .or_default()\n                .push(t.id.clone());\n        }\n        let deg = deps.iter().filter(|d| !is_done(d)).count();",
+      "existing_code": "for t in tasks {\n        if is_success(t) {\n            continue; // 断点续跑：完成节点无入度，直接就绪\n        }\n        let mut deps: HashSet\u003c\u0026str\u003e = HashSet::new();\n        for d in t.depends_on.iter().flatten() {\n            if !ids.contains(d.as_str()) {\n                return Err(format!(\n                    \"任务「{}」的依赖 {} 不在工作流内（悬空引用）\",\n                    t.title, d\n                ));\n            }\n            if !deps.insert(d) {\n                continue; // 重复边去重\n            }\n            dependents\n                .entry(d.to_string())\n                .or_default()\n                .push(t.id.clone());\n        }\n        let deg = deps\n            .iter()\n            .filter(|d| {\n                tasks\n                    .iter()\n                    .find(|x| x.id == **d)\n                    .map(|up| !is_success(up))\n                    .unwrap_or(false)\n            })\n            .count();",
+      "start_line": 49,
+      "end_line": 78,
+      "category": "performance",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/workflow_runner.rs",
+      "content": "Error context is dropped when a node task fails. When `run_task_in_chat` returns `Err(_)`, the code collapses it to `ok = false` (line 345) and proceeds to propagate the `skip_closure`. The actual error message is never audited or logged — users see a cascade of `⏭ 因上游「X」失败未执行` notes but have no record of the original failure (rate-limit? LLM crash? key missing?). Emit at least an audit event with the workflow id, node id, and error message so `workflow_run_done` users can debug. The `Ok(_)` branch already re-reads the row, so the symmetric path is to log on `Err`.",
+      "suggestion_code": "let result = run_task_in_chat(\u0026app, \u0026id, TaskExecOrigin::Workflow).await;\n                let ok = match \u0026result {\n                    Ok(_) =\u003e crate::db::db_load(app.clone())\n                        .await\n                        .unwrap_or_default()\n                        .into_iter()\n                        .find(|t| t.id == id)\n                        .map(|t| node_is_success(\u0026t))\n                        .unwrap_or(false),\n                    Err(e) =\u003e {\n                        crate::audit::write_event(\n                            \u0026app,\n                            crate::audit::AuditLevel::Warn,\n                            \"workflow_node_failed\",\n                            \u0026[\n                                (\"workflowId\", workflow_id_for_audit(\u0026app)),\n                                (\"taskId\", id.clone()),\n                                (\"error\", e.to_string()),\n                            ],\n                        );\n                        false\n                    }\n                };",
+      "existing_code": "let result = run_task_in_chat(\u0026app, \u0026id, TaskExecOrigin::Workflow).await;\n                let ok = match \u0026result {\n                    Ok(_) =\u003e crate::db::db_load(app.clone())\n                        .await\n                        .unwrap_or_default()\n                        .into_iter()\n                        .find(|t| t.id == id)\n                        .map(|t| node_is_success(\u0026t))\n                        .unwrap_or(false),\n                    Err(_) =\u003e false,\n                };\n                let _ = tx.send(NodeOutcome {\n                    id,\n                    ok,\n                    cancelled: false,\n                });",
+      "start_line": 336,
+      "end_line": 351,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/workflow_runner.rs",
+      "content": "`running.lock()` is acquired per downstream node inside the success branch (line 389) and once per candidate during the cancellation cleanup loop (line 425). Each `lock()` is an uncontended Mutex acquisition (cheap) but it serializes against `spawn_node` (which also locks on insert/remove) and adds measurable overhead when a single upstream has many descendants. Hoist the lock once per outcome in the success branch (collect the free set into a local `HashSet`) and once per cleanup pass to amortize the cost.",
+      "suggestion_code": "let running_snapshot = running.lock().map(|r| r.clone()).unwrap_or_default();\n            for d in downstream {\n                let deg = indegree.get_mut(\u0026d).map(|v| {\n                    *v = v.saturating_sub(1);\n                    *v\n                });\n                let d_free = !resolved.contains(\u0026d) \u0026\u0026 !running_snapshot.contains(\u0026d);\n                if deg == Some(0) \u0026\u0026 d_free {\n                    spawn_node(\u0026app, \u0026cancel, d);\n                }\n            }",
+      "existing_code": "for d in downstream {\n                let deg = indegree.get_mut(\u0026d).map(|v| {\n                    *v = v.saturating_sub(1);\n                    *v\n                });\n                let d_free = !resolved.contains(\u0026d)\n                    \u0026\u0026 running.lock().map(|r| !r.contains(\u0026d)).unwrap_or(false);\n                if deg == Some(0) \u0026\u0026 d_free {\n                    spawn_node(\u0026app, \u0026cancel, d);\n                }\n            }",
+      "start_line": 383,
+      "end_line": 393,
+      "category": "performance",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/db/workflow.rs",
+      "content": "`by_id` is built with `iter().enumerate().map(...).collect()` which loses information when two tasks share the same `id` — the first index is silently overwritten by the last. The DB schema declares `id` as PRIMARY KEY so it shouldn't happen in practice, but a corrupted DB or a future bug that inserts duplicate rows would cause `task_fp_at` to walk the wrong branch and produce a fingerprint that does not reflect the actual graph. Consider `.collect::\u003cResult\u003c_, _\u003e\u003e()` against a duplicate-detection step (e.g. scan + assert, or build `Vec\u003c(\u0026str, usize)\u003e` and detect collisions explicitly).",
+      "suggestion_code": "fn task_fingerprints(tasks: \u0026[Task]) -\u003e Vec\u003cString\u003e {\n    let mut by_id: std::collections::HashMap\u003c\u0026str, usize\u003e =\n        std::collections::HashMap::with_capacity(tasks.len());\n    for (i, t) in tasks.iter().enumerate() {\n        if by_id.insert(t.id.as_str(), i).is_some() {\n            eprintln!(\n                \"[db] workflow 节点集合含重复 id「{}」，指纹按首次插入位置计算；DB schema 应保证 id 唯一\",\n                t.id\n            );\n        }\n    }",
+      "existing_code": "fn task_fingerprints(tasks: \u0026[Task]) -\u003e Vec\u003cString\u003e {\n    let by_id: std::collections::HashMap\u003c\u0026str, usize\u003e = tasks\n        .iter()\n        .enumerate()\n        .map(|(i, t)| (t.id.as_str(), i))\n        .collect();",
+      "start_line": 306,
+      "end_line": 311,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/db/workflow.rs",
+      "content": "When a node is kept, `j` was already known at the moment `real_id[i] = existing[j].id.clone()` (line 421), but it was discarded and the kept branch does an O(n) `existing.iter().find(|t| t.id == real_id[i])` lookup again. With N≤30 this is cheap, but the re-lookup obscures the fact that `kept_flags[i]` is paired with a known `existing` index. Stash the `kept_j` index alongside `kept_flags` and use `existing[kept_j[i]].clone()` directly — cheaper and avoids the `.expect` invariant on `real_id[i]`.",
+      "suggestion_code": "if kept_flags[i] {\n            // 保留卡：仅坐标变更（RMW 基线 = 锁内现读的 updated_at；\n            // column/result/budget/子任务等执行痕迹原样保留）\n            // kept_j[i] 与 real_id[i] 同源——保留分配的 existing 下标，直查避免 O(n) find。\n            let mut t = existing[kept_j[i] as usize].clone();",
+      "existing_code": "if kept_flags[i] {\n            // 保留卡：仅坐标变更（RMW 基线 = 锁内现读的 updated_at；\n            // column/result/budget/子任务等执行痕迹原样保留）\n            let mut t = existing\n                .iter()\n                .find(|t| t.id == real_id[i])\n                .expect(\"kept 节点必在 existing 中\")\n                .clone();",
+      "start_line": 434,
+      "end_line": 441,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/db/workflow.rs",
+      "content": "When a node is kept, `j` was already known at the moment `real_id[i] = existing[j].id.clone()` (line 421), but it was discarded and the kept branch does an O(n) `existing.iter().find(|t| t.id == real_id[i])` lookup again. With N≤30 this is cheap, but the re-lookup obscures the fact that `kept_flags[i]` is paired with a known `existing` index. Stash the `kept_j` index alongside `kept_flags` and use `existing[kept_j[i] as usize].clone()` directly — cheaper and removes the `.expect` invariant on `real_id[i]`.",
+      "existing_code": "if kept_flags[i] {\n            // 保留卡：仅坐标变更（RMW 基线 = 锁内现读的 updated_at；\n            // column/result/budget/子任务等执行痕迹原样保留）\n            let mut t = existing\n                .iter()\n                .find(|t| t.id == real_id[i])\n                .expect(\"kept 节点必在 existing 中\")\n                .clone();",
+      "start_line": 434,
+      "end_line": 441,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/db/workflow.rs",
+      "content": "`by_id` is built with `iter().enumerate().map(...).collect()` which loses information when two tasks share the same `id` — the first index is silently overwritten by the last. The DB schema declares `id` as PRIMARY KEY so it shouldn't happen in practice, but a corrupted DB or a future bug that inserts duplicate rows would cause `task_fp_at` to walk the wrong branch and produce a fingerprint that does not reflect the actual graph. Detect duplicates while building `by_id` and log a warning so the corruption is observable instead of silent.",
+      "suggestion_code": "fn task_fingerprints(tasks: \u0026[Task]) -\u003e Vec\u003cString\u003e {\n    let mut by_id: std::collections::HashMap\u003c\u0026str, usize\u003e =\n        std::collections::HashMap::with_capacity(tasks.len());\n    for (i, t) in tasks.iter().enumerate() {\n        if by_id.insert(t.id.as_str(), i).is_some() {\n            eprintln!(\n                \"[db] workflow 节点集合含重复 id「{}」，指纹按首次插入位置计算；DB schema 应保证 id 唯一\",\n                t.id\n            );\n        }\n    }",
+      "existing_code": "fn task_fingerprints(tasks: \u0026[Task]) -\u003e Vec\u003cString\u003e {\n    let by_id: std::collections::HashMap\u003c\u0026str, usize\u003e = tasks\n        .iter()\n        .enumerate()\n        .map(|(i, t)| (t.id.as_str(), i))\n        .collect();",
+      "start_line": 306,
+      "end_line": 311,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/types.ts",
+      "content": "Workflow.createdAt/updatedAt are epoch ms (mirrors Task.updatedAt at line 92 which documents it as such), but the field comments are missing here. Add `/** epoch ms */` to both for consistency with the existing Task.updatedAt convention and to make the unit explicit since the Rust WORKFLOWS_DDL stores them as plain INTEGER without a unit comment either.",
+      "suggestion_code": "/** 用户原始自然语言总目标（总目标卡展示文本） */\n  goal: string;\n  /** 创建时间（epoch ms） */\n  createdAt?: number;\n  /** 最后修改时间（epoch ms） */\n  updatedAt?: number;\n}",
+      "existing_code": "/** 用户原始自然语言总目标（总目标卡展示文本） */\n  goal: string;\n  createdAt?: number;\n  updatedAt?: number;\n}",
+      "start_line": 133,
+      "end_line": 137,
+      "category": "documentation",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/workflow_decompose.rs",
+      "content": "`strip_fences` doesn't handle the case where the language tag is adjacent to the opening fence with no newline (e.g. ` ```json{...}``` `). `split_once('\\n')` returns `None` and `unwrap_or(rest)` keeps the language identifier (`json`) in the body, so the JSON parse in `parse_and_validate` fails on what looks like a recoverable model output. After stripping the opening fence, check whether the rest starts with `{` or `[`; if not, strip a leading alphabetic language token before the JSON body.\n\nSuggestion:\n```rust\nlet rest = t.strip_prefix(\"```\").unwrap();\nlet body = if rest.starts_with('{') || rest.starts_with('[') {\n    rest\n} else {\n    rest.trim_start()\n        .split_once(|c: char| c.is_whitespace() || c == '\\n')\n        .map(|(_, b)| b)\n        .unwrap_or(rest)\n};\n```",
+      "suggestion_code": "if let Some(rest) = t.strip_prefix(\"```\") {\n        // 跳过语言标记行（json / JSON …，无换行也要识别)\n        let rest = if rest.starts_with('{') || rest.starts_with('[') {\n            rest\n        } else {\n            rest.split_once('\\n').map(|(_, body)| body).unwrap_or(rest)\n        };\n        if let Some(body) = rest.strip_suffix(\"```\") {",
+      "existing_code": "if let Some(rest) = t.strip_prefix(\"```\") {\n        // 跳过语言标记行（json / JSON …）\n        let rest = rest.split_once('\\n').map(|(_, body)| body).unwrap_or(rest);\n        if let Some(body) = rest.strip_suffix(\"```\") {",
+      "start_line": 75,
+      "end_line": 78,
+      "category": "bug",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/workflow_decompose.rs",
+      "content": "`audit::write_event` is a synchronous function that performs filesystem I/O (resolves `data_dir`, rotates the log, appends a line). Calling it from the async `workflow_decompose` function blocks the Tauri async-runtime thread for the duration of the file write. Per the async-safety checklist this should be spawned off (`tauri::async_runtime::spawn_blocking`) or wrapped in a non-blocking audit sink so a slow disk doesn't stall the command.\n\nThe call sites are the two `crate::audit::write_event(...)` invocations inside `workflow_decompose` (success path and the `fail!` macro).",
+      "existing_code": "return Ok(DecomposeResult { subtasks, attempts });\n        }\n        Err(e) =\u003e {",
+      "start_line": 276,
+      "end_line": 278,
+      "category": "other",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/workflow_decompose.rs",
+      "content": "The retry loop has no backoff or timeout. On validation failure the next LLM call is issued immediately (up to 2 attempts total). A transient issue (rate limit, slow provider, deterministic model failure) is amplified rather than dampened, and there is no cancellation propagation: if the Tauri window is closed mid-retry, `summarize_messages` cannot observe cancellation. Per the async-safety checklist, bounded retries should also include at least a small delay (or `tokio::time::sleep`) and should respect the `tauri::async_runtime` cancellation token. Also worth adding a `tokio::time::timeout` around `summarize_messages` so a hung provider can't pin the command indefinitely.",
+      "existing_code": "loop {\n        attempts += 1;\n        let raw = match crate::bot_chat::summarize_messages(",
+      "start_line": 250,
+      "end_line": 252,
+      "category": "other",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/workflow_decompose.rs",
+      "content": "Contract and validation disagree on the upper bound. The contract tells the model `subtasks：1 到 20 个元素` but `validate_decompose` enforces `MAX_WORKFLOW_NODES = 30` (imported from `db::workflow`). A model that obeys the contract literally will cap at 20 even when 21–30 would be valid; conversely, the model is told 21–30 are out-of-spec. Either relax the contract to match `MAX_WORKFLOW_NODES` (\"1 到 {MAX_WORKFLOW_NODES} 个元素\") or tighten the validator — but the two must agree.",
+      "suggestion_code": "- subtasks：1 到 {MAX_WORKFLOW_NODES} 个元素，按执行顺序排列",
+      "existing_code": "- subtasks：1 到 20 个元素，按执行顺序排列（超过 30 个会被拒绝入库）",
+      "start_line": 28,
+      "end_line": 28,
+      "category": "documentation",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/workflow_decompose.rs",
+      "content": "The success audit event omits an `outcome` field while the failure path emits `(\"outcome\", \"failed\")`. This makes log filtering (\"show all workflow_decompose outcomes\") inconsistent. For symmetry, add `(\"outcome\", \"success\".to_string())` (or use a stable `status` field on both paths) so downstream auditing and alerting can rely on a single key.",
+      "suggestion_code": "crate::audit::write_event(\n                    \u0026app,\n                    crate::audit::AuditLevel::Info,\n                    \"workflow_decompose\",\n                    \u0026[\n                        (\"outcome\", \"success\".to_string()),\n                        (\"subtasks\", subtasks.len().to_string()),\n                        (\"attempts\", attempts.to_string()),\n                    ],\n                );",
+      "existing_code": "crate::audit::write_event(\n                    \u0026app,\n                    crate::audit::AuditLevel::Info,\n                    \"workflow_decompose\",\n                    \u0026[\n                        (\"subtasks\", subtasks.len().to_string()),\n                        (\"attempts\", attempts.to_string()),\n                    ],\n                );",
+      "start_line": 267,
+      "end_line": 275,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/graph.ts",
+      "content": "`draftFromDecompose` blindly indexes `nodes[d]` from LLM-returned indices with no defensive check. The comment claims the server guarantees `d \u003c i`, but if validation is ever bypassed (e.g., a future schema change, an alternate entry point, or LLM-side schema drift), `nodes[d]` can be `undefined` and crash on `.localId`. Negative or non-integer indices would also throw. At minimum, filter to in-range indices and dedupe — Rust's `validate_decompose` enforces forward-only but does not dedupe (see `workflow.rs` test `{\"dependsOn\": [\"n1\", \"n1\"]}`), so duplicate edges can leak into dagre here too.",
+      "suggestion_code": "  subtasks.forEach((s, i) =\u003e {\n    const seen = new Set\u003cstring\u003e();\n    nodes[i].dependsOn = s.dependsOn\n      .filter((d) =\u003e Number.isInteger(d) \u0026\u0026 d \u003e= 0 \u0026\u0026 d \u003c nodes.length)\n      .map((d) =\u003e nodes[d].localId)\n      .filter((id) =\u003e (seen.has(id) ? false : (seen.add(id), true)));\n  });",
+      "existing_code": "  subtasks.forEach((s, i) =\u003e {\n    nodes[i].dependsOn = s.dependsOn.map((d) =\u003e nodes[d].localId);\n  });",
+      "start_line": 94,
+      "end_line": 96,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/graph.ts",
+      "content": "`draftFromTasks` keeps `dependsOn` entries whose ids aren't in the reconstructed `nodes` array. `rfEdges` and `layoutGraph` both filter dangling refs at render/layout time, but the dangling ids are persisted on the save payload and round-trip back through `workflow_load`, so the dirt accumulates across save/load cycles. Recommend filtering `dependsOn` to ids present in the input `tasks` set so the model is consistent at every layer.",
+      "suggestion_code": "    const idSet = new Set(tasks.map((x) =\u003e x.id));\n    const base: CanvasNode[] = tasks.map((t) =\u003e ({\n      localId: t.id,\n      taskId: t.id,\n      title: t.title,\n      note: t.note,\n      tags: t.tags,\n      dependsOn: [...(t.dependsOn ?? [])].filter((d) =\u003e idSet.has(d)),\n      pos: t.canvasPos ?? { x: 0, y: 0 },\n    }));",
+      "existing_code": "    dependsOn: [...(t.dependsOn ?? [])],",
+      "start_line": 118,
+      "end_line": 118,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/graph.ts",
+      "content": "`if (from === to) return true;` is redundant: BFS initializes the stack with `to` and the first iteration checks `cur === from`, which equals `to`, so the self-loop case is already covered. Harmless, but the duplication obscures the BFS invariant.",
+      "suggestion_code": "export function wouldCreateCycle(\n  nodes: Pick\u003cCanvasNode, \"localId\" | \"dependsOn\"\u003e[],\n  from: string,\n  to: string\n): boolean {",
+      "existing_code": "export function wouldCreateCycle(\n  nodes: Pick\u003cCanvasNode, \"localId\" | \"dependsOn\"\u003e[],\n  from: string,\n  to: string\n): boolean {\n  if (from === to) return true;",
+      "start_line": 25,
+      "end_line": 30,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/graph.ts",
+      "content": "The comment says \"缺坐标的行补 dagre 布局\" (rows missing coords get dagre layout), but the implementation re-lays out the *entire* graph whenever *any* row is missing `canvasPos`, discarding the user's hand-placed positions for the other nodes. Either change the comment to match the actual \"all-or-nothing\" semantics, or do a partial layout that only assigns positions to the missing nodes and keeps saved positions for the rest.",
+      "suggestion_code": "  // 任一行缺坐标 → 全图重排（粗粒度语义：dagre 输入必须包含全部节点；\n  // 部分保留手拖位置需要先固定已布置节点再让 dagre 避让，后续按需细化）\n  const missingPos = tasks.some((t) =\u003e t.canvasPos === undefined);\n  if (missingPos) {\n    const laid = layoutGraph(base);\n    for (const n of base) n.pos = laid[n.localId] ?? n.pos;\n  }",
+      "existing_code": "  // 任一行缺坐标 → 全图重排；全有坐标（用户手拖过）则原样保留\n  const missingPos = tasks.some((t) =\u003e t.canvasPos === undefined);\n  if (missingPos) {\n    const laid = layoutGraph(base);\n    for (const n of base) n.pos = laid[n.localId] ?? n.pos;\n  }",
+      "start_line": 121,
+      "end_line": 126,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/db/tasks.rs",
+      "content": "Validation gap: the dependsOn branch only rejects empty-string elements. Duplicate IDs within the same list (`[\"a\", \"a\", \"b\"]`) pass through and are only silently deduplicated later by `build_dag` via its local `HashSet` (workflow_runner.rs:53-63). Pushing duplicate rejection to execution time means the JSON stored in the DB carries redundant edges that have to be reconciled at every DAG build. Reject duplicates here so the stored representation is canonical.",
+      "suggestion_code": "\"dependsOn\" =\u003e {\n                set_from(\u0026mut task.depends_on, v, k)?;\n                if let Some(deps) = \u0026task.depends_on {\n                    let mut seen = std::collections::HashSet::with_capacity(deps.len());\n                    for d in deps {\n                        if d.trim().is_empty() {\n                            return Err(CommandError::InvalidArgument {\n                                field: k.into(),\n                                value: v.to_string(),\n                                reason: \"dependsOn 元素不能为空串\".into(),\n                            });\n                        }\n                        if !seen.insert(d.as_str()) {\n                            return Err(CommandError::InvalidArgument {\n                                field: k.into(),\n                                value: v.to_string(),\n                                reason: format!(\"dependsOn 重复元素「{d}」\"),\n                            });\n                        }\n                    }\n                }\n            }",
+      "existing_code": "\"dependsOn\" =\u003e {\n                set_from(\u0026mut task.depends_on, v, k)?;\n                if let Some(deps) = \u0026task.depends_on {\n                    if deps.iter().any(|d| d.trim().is_empty()) {\n                        return Err(CommandError::InvalidArgument {\n                            field: k.into(),\n                            value: v.to_string(),\n                            reason: \"dependsOn 元素不能为空串\".into(),\n                        });\n                    }\n                }\n            }",
+      "start_line": 815,
+      "end_line": 826,
+      "category": "bug",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/db/tasks.rs",
+      "content": "`workflow_id` is a plain `TEXT` column without an index, yet `load_tasks_by_workflow` filters by it and `workflow_run` calls it on every execution start. With many tasks in the DB (especially after workflows accumulate history), this becomes a full table scan. Consider adding `CREATE INDEX IF NOT EXISTS idx_tasks_workflow_id ON tasks(workflow_id) WHERE workflow_id IS NOT NULL` alongside the W1-CANVAS migration in `open_db`. A partial index keeps the write cost minimal for the common case where most tasks have `workflow_id IS NULL` (user kanban cards).",
+      "suggestion_code": "pub fn load_tasks_by_workflow(\n    conn: \u0026rusqlite::Connection,\n    workflow_id: \u0026str,\n) -\u003e Result\u003cVec\u003csuper::Task\u003e, String\u003e {\n    // idx_tasks_workflow_id 在 open_db 迁移中建立（partial index，workflow_id IS NOT NULL 才入索引）。\n    // 详见 db/mod.rs W1-CANVAS 迁移段。\n    let sql = format!(\"{TASK_SELECT_COLS} WHERE workflow_id = ?1 AND deleted_at IS NULL\");",
+      "existing_code": "pub fn load_tasks_by_workflow(\n    conn: \u0026rusqlite::Connection,\n    workflow_id: \u0026str,\n) -\u003e Result\u003cVec\u003csuper::Task\u003e, String\u003e {\n    let sql = format!(\"{TASK_SELECT_COLS} WHERE workflow_id = ?1 AND deleted_at IS NULL\");",
+      "start_line": 556,
+      "end_line": 560,
+      "category": "performance",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/db/tasks.rs",
+      "content": "The `TASK_ORIGIN_USER` constant exists for validation but is silently normalized to `None` on storage — so the value `\"user\"` is accepted as input, passes the whitelist check, then immediately becomes `None`. This makes the constant misleading (its only legal value is \"user\" → never persisted). Combined with `TASK_ORIGIN_WORKFLOW` being the only storage value, an enum would make the data model self-documenting: `pub origin: Option\u003cTaskOrigin\u003e` with variants `User` (== None) and `Workflow` (== Some(...)). The current `Option\u003cString\u003e` + post-hoc normalization is the same problem flagged for the type itself, but the silent drop of `\"user\"` is a distinct behavioral quirk worth fixing alongside.",
+      "suggestion_code": "// 推荐方案（重构 Task::origin 为 enum）：\n// pub enum TaskOrigin { User, Workflow }\n// pub origin: Option\u003cTaskOrigin\u003e  // None == User 语义\n//\n// patch 通道直接接受 enum 变体名（\"user\"/\"workflow\"），不再需要常量 + 字符串归一化。\n// DB 列维持 TEXT，读写两侧统一 serde 适配。",
+      "existing_code": "\"origin\" =\u003e {\n                set_from(\u0026mut task.origin, v, k)?;\n                if let Some(o) = \u0026task.origin {\n                    if o != TASK_ORIGIN_USER \u0026\u0026 o != TASK_ORIGIN_WORKFLOW {\n                        return Err(CommandError::InvalidArgument {\n                            field: k.into(),\n                            value: v.to_string(),\n                            reason: format!(\n                                \"origin 只能是 {TASK_ORIGIN_USER}/{TASK_ORIGIN_WORKFLOW}\"\n                            ),\n                        });\n                    }\n                    if o == TASK_ORIGIN_USER {\n                        // \"user\" 归一为 None（缺省语义），避免两种写法表示同一状态\n                        task.origin = None;\n                    }\n                }\n            }",
+      "start_line": 783,
+      "end_line": 800,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/graph.ts",
+      "content": "`draftFromTasks` uses an inline `import(\"../../types\").Task` type qualifier, which is inconsistent with the rest of the codebase (e.g., `TaskNode.tsx`, `WidgetApp.tsx`, `ChatPanel.tsx`, `ArchivePage.tsx`, `KanbanBoard.tsx`, …) that all use a top-level `import type { Task } from \"../../types\"`. Move it to the file-level imports so the dependency on the shared type contract is grep-able and refactor-friendly.",
+      "suggestion_code": "import type { Task } from \"../../types\";\n// …\nexport function draftFromTasks(\n  tasks: Array\u003c\n    Pick\u003cTask, \"id\" | \"title\" | \"note\" | \"tags\" | \"dependsOn\" | \"canvasPos\" | \"workflowId\"\u003e\n  \u003e\n): CanvasNode[] {",
+      "existing_code": "tasks: Array\u003c\n    Pick\u003c\n      import(\"../../types\").Task,\n      \"id\" | \"title\" | \"note\" | \"tags\" | \"dependsOn\" | \"canvasPos\" | \"workflowId\"\n    \u003e\n  \u003e",
+      "start_line": 105,
+      "end_line": 110,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/graph.ts",
+      "content": "`wouldCreateCycle` rebuilds the entire downstream adjacency map from scratch on every invocation. In `WorkflowPage.tsx` it is wired into `isValidConnection`, which React Flow calls on every hover/drag tick while the user is dragging a connection. For an N-node workflow that is O(N·E) per call instead of O(reachable) for the search itself. Either accept a precomputed downstream map (or the nodes array + memoize the build), or use the cheaper \"can `to` reach `from`\" walk by reusing the map across calls during a single drag.",
+      "suggestion_code": "function buildDownstreamMap(\n  nodes: Pick\u003cCanvasNode, \"localId\" | \"dependsOn\"\u003e[]\n): Map\u003cstring, string[]\u003e {\n  const down = new Map\u003cstring, string[]\u003e();\n  for (const n of nodes)\n    for (const d of n.dependsOn) {\n      const list = down.get(d) ?? [];\n      list.push(n.localId);\n      down.set(d, list);\n    }\n  return down;\n}\n\nexport function wouldCreateCycle(\n  nodes: Pick\u003cCanvasNode, \"localId\" | \"dependsOn\"\u003e[],\n  from: string,\n  to: string\n): boolean {\n  if (from === to) return true;\n  const down = buildDownstreamMap(nodes);",
+      "existing_code": "export function wouldCreateCycle(\n  nodes: Pick\u003cCanvasNode, \"localId\" | \"dependsOn\"\u003e[],\n  from: string,\n  to: string\n): boolean {\n  if (from === to) return true;\n  // dependsOn[k] = k 的上游；因此 k 的下游是所有 dependsOn 包含 k 的节点\n  const down = new Map\u003cstring, string[]\u003e();\n  for (const n of nodes)\n    for (const d of n.dependsOn) {\n      const list = down.get(d) ?? [];\n      list.push(n.localId);\n      down.set(d, list);\n    }",
+      "start_line": 25,
+      "end_line": 38,
+      "category": "performance",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "The single `armedTimerRef` is shared between two independent two-step confirmations. `deleteWorkflow` (line 558) and `regenerate` (line 268) both assign to the same ref. Scenario: user arms delete (T1 set), then arms regenerate (T2 set, T1 cleared). After 3s, T2 fires and sets `regenArmed=false` — meanwhile `deleteArmed` stays `true` because its T1 was cleared and never re-armed. The delete button keeps its red \"armed\" visual state with no pending timer to reset it, and any subsequent click is misinterpreted as the second confirm click. Use two separate refs (e.g. `deleteArmedTimerRef`, `regenArmedTimerRef`) and a `useEffect(() =\u003e () =\u003e clearTimeout(...), [])` per ref, or merge into one `{kind, expiresAt}` state.",
+      "suggestion_code": "  /** 重新生成两步确认 */\n  const [regenArmed, setRegenArmed] = useState(false);\n  const regenArmedTimerRef = useRef\u003cReturnType\u003ctypeof setTimeout\u003e | null\u003e(null);\n  useEffect(\n    () =\u003e () =\u003e {\n      if (regenArmedTimerRef.current) clearTimeout(regenArmedTimerRef.current);\n    },\n    []\n  );",
+      "existing_code": "  /** 重新生成两步确认 */\n  const [regenArmed, setRegenArmed] = useState(false);",
+      "start_line": 106,
+      "end_line": 107,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "TaskNode and GoalNode are both wrapped in `React.memo` (see their `import { memo }`), but the `data` objects constructed here contain freshly-instantiated arrow functions every render: `onDraftTitleCommit` (line 477), `onRename`/`onGoalChange` (lines 467-468). Combined with the `rfNodes` useMemo deps, the `data` prop identity changes on most parent re-renders, which makes `memo` a no-op. For boards with many nodes this re-renders every node on every state change. Hoist the callbacks via `useCallback` (e.g. `commitDraftTitle` analogous to `commitTitle`) and `useCallback` for the inline ones in GoalNode data.",
+      "suggestion_code": "          onRename: renameName,\n          onGoalChange: setGoal,\n        },\n      },\n      ...nodes.map((n) =\u003e {\n        const task = n.taskId ? tasks.find((t) =\u003e t.id === n.taskId) : undefined;\n        const data: TaskNodeData = {\n          task,\n          draftTitle: n.title,\n          onDraftTitleCommit: commitDraftTitle,\n          onDelete: deleteNode,",
+      "existing_code": "          onRename: (v: string) =\u003e {\n            setName(v);\n            setNameAuto(false);\n          },\n          onGoalChange: setGoal,\n        },\n      },\n      ...nodes.map((n) =\u003e {\n        const task = n.taskId ? tasks.find((t) =\u003e t.id === n.taskId) : undefined;\n        const data: TaskNodeData = {\n          task,\n          draftTitle: n.title,\n          onDraftTitleCommit: (localId, title) =\u003e\n            setNodes((prev) =\u003e\n              prev.map((m) =\u003e (m.localId === localId ? { ...m, title } : m))\n            ),\n          onDelete: deleteNode,",
+      "start_line": 597,
+      "end_line": 613,
+      "category": "performance",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "`cancelDecompose` only bumps `decomposeSeqRef` so the late response is discarded (the comment explicitly says \"v1 语义：忽略结果，非中断请求\"). However, `workflow_decompose.rs` runs an LLM call (with one auto-retry on validation failure) that completes server-side regardless, consuming tokens. Users reasonably expect \"取消\" to abort the work. Either (a) expose a `workflow_decompose_cancel` Tauri command and have the backend set a stop flag checked between attempts, or (b) surface the limitation in the cancel button title (\"取消仅丢弃前端结果，后端仍在跑\"). The current behaviour silently wastes API budget on a click the user explicitly intended to abort.",
+      "suggestion_code": "  const cancelDecompose = () =\u003e {\n    // 同时通知后端中断正在跑的 LLM 调用，避免用户主动取消却仍扣 token（v2 才彻底解决；\n    // v1 仅丢弃前端结果——后续若后端支持 cancel flag，这里补 invoke(\"workflow_decompose_cancel\", ...))\n    invoke(\"workflow_decompose_cancel\").catch(() =\u003e {});\n    decomposeSeqRef.current++;\n    setDecomposing(false);\n  };",
+      "existing_code": "  const cancelDecompose = () =\u003e {\n    decomposeSeqRef.current++; // 在途响应作废（v1 语义：忽略结果，非中断请求）\n    setDecomposing(false);\n  };",
+      "start_line": 259,
+      "end_line": 262,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "The `useEffect(() =\u003e { tasksRef.current = tasks; ... })` has no dependency array, which is the discouraged \"sync ref on every render\" pattern. Per React's official guidance for \"latest ref\" (the useEffectEvent RFC), the modern recommendation is to assign during render (`tasksRef.current = tasks;` at top of the component body) — the eslint rule that warns about this is the legacy one. The trade-off comment (\"render 期写 ref 会被 lint 拦\") accepts a 1-tick stale window for callbacks fired from React Flow's internal node-data re-evaluation, which can produce stale reads in concurrent mode. Either assign during render, or capture the props via `useEffect` with explicit deps `[tasks, onSetColumn, onUpdate]` so updates are batched correctly.",
+      "suggestion_code": "  // 最新 props 镜像：回调里读 ref 而非捕获 props（useEvent 提案落地前的官方推荐写法：\n  // render 期写 ref，eslint-plugin-react-hooks 的 exhaustive-deps 旧规则会拦，\n  // 可加 // eslint-disable-next-line react-hooks/exhaustive-deps 放行；同步语义避免 useEffect 的 1-tick 延迟）\n  const tasksRef = useRef(tasks);\n  const propsRef = useRef({ onSetColumn, onUpdate });\n  tasksRef.current = tasks;\n  propsRef.current = { onSetColumn, onUpdate };",
+      "existing_code": "  /** 最新 props 镜像：useCallback 闭包里读 tasksRef 而非捕获 tasks，防过期（OCR r1 high）。\n   *  经 useEffect 同步（render 期写 ref 会被 lint 拦；回调只在交互后触发，晚一拍无碍） */\n  const tasksRef = useRef(tasks);\n  const propsRef = useRef({ onSetColumn, onUpdate });\n  useEffect(() =\u003e {\n    tasksRef.current = tasks;\n    propsRef.current = { onSetColumn, onUpdate };\n  });",
+      "start_line": 94,
+      "end_line": 101,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "Several fire-and-forget `invoke(...)` chains have no abort/cleanup: the initial `workflow_list` fetch (line ~125), the post-save `workflow_list` refresh (line ~524), and the 300 ms `setTimeout` inside `stopRun` (line ~432). Only the polling interval and the unmount cleanup useEffect handle cancellation. App.tsx switches views via `view === \"workflow\" ? \u003cWorkflowPage /\u003e : ...`, so WorkflowPage unmounts on tab switch — a late response will call `setState` on an unmounted instance (React 18 swallows the warning but it is wasted work, and the post-stop `setTimeout` can even invoke against a stale `wf`). Track an `AbortController` (Tauri commands accept an `AbortSignal`-like via the JS side) or guard via the existing `openSeqRef`/`decomposeSeqRef` pattern, and clear the `setTimeout` in the unmount cleanup.",
+      "existing_code": "// 工作流列表（进入页面拉一次）\n  useEffect(() =\u003e {\n    invoke\u003cWorkflow[]\u003e(\"workflow_list\")\n      .then(setWorkflows)\n      .catch((e) =\u003e handleCommandError(e, \"读取工作流列表\", { silent: true }));\n  }, []);",
+      "start_line": 123,
+      "end_line": 128,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "In `onEdgesChange`, `const [, target] = c.id.split(\"-\u003e\")` assumes every incoming `EdgeChange` id contains the literal `-\u003e`. If a React Flow internal change yields an id in a different shape (e.g. from a programmatic edge created elsewhere, or future React Flow versions), `target` is `undefined`, the `.map` matches no node, and the edge is silently orphaned with no error or log. Low impact today because the only edge creator is `onConnect`/`rfEdges` useMemo in this same file, but fragile if the edge id format ever changes. Guard with an explicit check: `if (!c.id.includes(\"-\u003e\")) return;` and/or `console.warn` for diagnostics.",
+      "suggestion_code": "      for (const c of changes) {\n        if (c.type === \"remove\") {\n          // edge id = `${source}-\u003e${target}`；删边 = 下游 dependsOn 移除上游。\n          // id 格式约定：localId 恒为 uuid/真实任务 id（不含 \"-\u003e\"），本文件内\n          // 生成与解析一一对应（rfEdges useMemo 与此处），不外溢成通用格式\n          if (!c.id.includes(\"-\u003e\")) continue;\n          const [, target] = c.id.split(\"-\u003e\");\n          if (!target) continue;",
+      "existing_code": "      for (const c of changes) {\n        if (c.type === \"remove\") {\n          // edge id = `${source}-\u003e${target}`；删边 = 下游 dependsOn 移除上游。\n          // id 格式约定：localId 恒为 uuid/真实任务 id（不含 \"-\u003e\"），本文件内\n          // 生成与解析一一对应（rfEdges useMemo 与此处），不外溢成通用格式\n          const [, target] = c.id.split(\"-\u003e\");",
+      "start_line": 370,
+      "end_line": 375,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "Three different `alert(...)` calls in this file (`doExport`, `doImport`, and the early return in `save`'s error path is via `handleCommandError`). Native `alert` blocks the renderer, looks out of place against the neumorphic UI styling, and is jarring mid-interaction. The codebase already has `handleCommandError` with structured error handling; consider adding a lightweight `notice(msg, kind: 'info' | 'success')` helper alongside it so success confirmations match the rest of the app's feedback style.",
+      "existing_code": "alert(`导出完成：共 ${count} 个节点（导出的是已保存版本）`);",
+      "start_line": 200,
+      "end_line": 200,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "`openWorkflow` does not reset `running` to `false` when switching workflows. If the user was viewing a running workflow (A) and opens a different non-running workflow (B), `running` stays `true` until the fire-and-forget `workflow_is_running` recheck resolves — and during that window the \"停止\" button is visible. Clicking it would call `workflow_stop` for workflow B (which isn't actually running) and the polling effect at line 474 only fires its first tick after 5s, so the wrong state can persist for seconds. Reset `running` to `false` synchronously at the top of `openWorkflow` (and `createBlank` already does this), letting the recheck flip it back to `true` only if B is genuinely running.",
+      "existing_code": "const openWorkflow = async (id: string) =\u003e {\n    const seq = ++openSeqRef.current;\n    decomposeSeqRef.current++; // 使在途拆解响应失效（OCR r1 critical）\n    try {\n      const detail = await invoke\u003cWorkflow \u0026 { tasks: Task[] }\u003e(\"workflow_load\", { id });\n      if (seq !== openSeqRef.current) return; // 期间用户已切换：丢弃本次响应\n      const fresh = draftFromTasks(detail.tasks);\n      setActiveId(id);\n      setName(detail.name);\n      setGoal(detail.goal);\n      setNodes(fresh);\n      setSelectedIds([]);\n      setSavedSnapshot(\n        JSON.stringify({ name: detail.name, goal: detail.goal, nodes: fresh })\n      );\n      setNameAuto(false); // 打开的是已保存工作流：名称是作者起的，拆解不得覆盖（OCR r2）\n      const iseq = openSeqRef.current;\n      invoke\u003cboolean\u003e(\"workflow_is_running\", { workflowId: id })\n        .then((v) =\u003e {\n          // 慢响应不得覆盖后续切换（OCR r1 high）\n          if (iseq === openSeqRef.current) setRunning(v);\n        })\n        .catch(() =\u003e {});\n      setMode(\"edit\");\n      setDeleteArmed(false);\n      setRegenArmed(false);\n    } catch (e) {\n      handleCommandError(e, \"打开工作流\", { onRetry: () =\u003e void openWorkflow(id) });\n    }\n  };",
+      "start_line": 138,
+      "end_line": 167,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "`useCallback` here returns a function that is immediately invoked on every render (`snapshot()` at line 134). The intent is to memoize the serialized snapshot, but `useCallback` only memoizes the function identity, not its result — `JSON.stringify` still runs on every render regardless of whether `name`/`goal`/`nodes` changed. Use `useMemo` to cache the serialized string and recompute only when deps change.",
+      "suggestion_code": "  const currentSnapshot = useMemo(\n    () =\u003e JSON.stringify({ name, goal, nodes }),\n    [name, goal, nodes]\n  );\n  const dirty = savedSnapshot !== currentSnapshot;",
+      "existing_code": "  const snapshot = useCallback(\n    () =\u003e JSON.stringify({ name, goal, nodes }),\n    [name, goal, nodes]\n  );\n  const dirty = savedSnapshot !== snapshot();",
+      "start_line": 130,
+      "end_line": 134,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "`stopRun` keeps `running` as `true` after the backend acknowledges stop and only updates it via the 300 ms recheck (`.catch(() =\u003e {})` silently swallows recheck failures). If the recheck invoke throws (e.g., backend unavailable) or returns `true` because the backend hasn't fully deregistered yet, the \"停止\" button stays visible indefinitely even though the workflow is no longer running. Set `running` to `false` optimistically after the successful `workflow_stop` ack so the UI flips immediately, then let the recheck flip it back to `true` only if backend disagrees.",
+      "existing_code": "const stopBusyRef = useRef(false);\n  const stopRun = async () =\u003e {\n    const wf = activeId;\n    if (!wf || stopBusyRef.current) return;\n    stopBusyRef.current = true;\n    try {\n      await invoke(\"workflow_stop\", { workflowId: wf });\n      // 300ms 后回查复位（OCR r2）：闭包绑定被停的 wf；seq 快照保证用户已\n      // 切走时本回查不应用（切换路径各有自己的 running 取真/归零）\n      const seq = openSeqRef.current;\n      setTimeout(() =\u003e {\n        if (seq !== openSeqRef.current) return;\n        invoke\u003cboolean\u003e(\"workflow_is_running\", { workflowId: wf })\n          .then((v) =\u003e {\n            if (seq === openSeqRef.current) setRunning(v);\n          })\n          .catch(() =\u003e {});\n      }, 300);\n    } catch (e) {\n      handleCommandError(e, \"停止工作流\");\n    } finally {\n      // busy 推迟到回查窗口之后解除，防回查期间重复点击（OCR r2）\n      setTimeout(() =\u003e {\n        stopBusyRef.current = false;\n      }, 700);\n    }\n  };",
+      "start_line": 445,
+      "end_line": 471,
+      "category": "bug",
+      "severity": "medium"
+    }
+  ],
+  "groups": [
+    {
+      "label": "package.json",
+      "files": [
+        "package.json"
+      ]
+    },
+    {
+      "label": "src-tauri/src/api_handlers/handlers.rs",
+      "files": [
+        "src-tauri/src/api_handlers/handlers.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/api_handlers/mod.rs",
+      "files": [
+        "src-tauri/src/api_handlers/mod.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/bot/tools.rs",
+      "files": [
+        "src-tauri/src/bot/tools.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/bot_artifacts.rs",
+      "files": [
+        "src-tauri/src/bot_artifacts.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/bot_chat.rs",
+      "files": [
+        "src-tauri/src/bot_chat.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/bot_orchestrator.rs",
+      "files": [
+        "src-tauri/src/bot_orchestrator.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/db/mod.rs",
+      "files": [
+        "src-tauri/src/db/mod.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/db/tasks.rs",
+      "files": [
+        "src-tauri/src/db/tasks.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/db/workflow.rs",
+      "files": [
+        "src-tauri/src/db/workflow.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/lib.rs",
+      "files": [
+        "src-tauri/src/lib.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/task_out.rs",
+      "files": [
+        "src-tauri/src/task_out.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/workflow_decompose.rs",
+      "files": [
+        "src-tauri/src/workflow_decompose.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/workflow_runner.rs",
+      "files": [
+        "src-tauri/src/workflow_runner.rs"
+      ]
+    },
+    {
+      "label": "src/App.tsx",
+      "files": [
+        "src/App.tsx"
+      ]
+    },
+    {
+      "label": "src/components/SettingsPage/SettingsPage.tsx",
+      "files": [
+        "src/components/SettingsPage/SettingsPage.tsx"
+      ]
+    },
+    {
+      "label": "src/components/WidgetApp/WidgetApp.tsx",
+      "files": [
+        "src/components/WidgetApp/WidgetApp.tsx"
+      ]
+    },
+    {
+      "label": "src/components/WorkflowCanvas/GoalNode.tsx",
+      "files": [
+        "src/components/WorkflowCanvas/GoalNode.tsx"
+      ]
+    },
+    {
+      "label": "src/components/WorkflowCanvas/TaskNode.tsx",
+      "files": [
+        "src/components/WorkflowCanvas/TaskNode.tsx"
+      ]
+    },
+    {
+      "label": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "files": [
+        "src/components/WorkflowCanvas/WorkflowPage.tsx"
+      ]
+    },
+    {
+      "label": "src/components/WorkflowCanvas/graph.ts",
+      "files": [
+        "src/components/WorkflowCanvas/graph.ts"
+      ]
+    },
+    {
+      "label": "src/lib/workflowPrompt.ts",
+      "files": [
+        "src/lib/workflowPrompt.ts"
+      ]
+    },
+    {
+      "label": "src/lib/workflowVisibility.ts",
+      "files": [
+        "src/lib/workflowVisibility.ts"
+      ]
+    },
+    {
+      "label": "src/types.ts",
+      "files": [
+        "src/types.ts"
+      ]
+    }
+  ],
+  "session_id": "18b6bd50-5e7c-4f93-a059-f0e80e77bc3d",
+  "manifest": {
+    "schema_version": "ocr.run-manifest/v1",
+    "run_id": "18b6bd50-5e7c-4f93-a059-f0e80e77bc3d",
+    "operation": "review",
+    "terminal_state": "complete",
+    "repository": {
+      "identity_sha256": "7aebc670c3c38e64ae52ffaf12cfa8ba078a29af906f8ef856132cd790dbe48b"
+    },
+    "input": {
+      "mode": "range",
+      "requested_from": "4f371cd",
+      "requested_head": "HEAD",
+      "resolved_base": "4f371cdd9a71a8855605ec621d1b2b2d218ef4f3",
+      "resolved_head": "cdcb9988220d5bb7594b01d6c596c09401c9b1b1",
+      "exact_range": "4f371cdd9a71a8855605ec621d1b2b2d218ef4f3..cdcb9988220d5bb7594b01d6c596c09401c9b1b1",
+      "source_artifact_sha256": "22bfad8def1749f9b8031f197da362edee1cd2214511e335e5514f34310ac5ae"
+    },
+    "execution": {
+      "ocr_version": "v1.12.11",
+      "provider": "minimax-cn",
+      "model": "MiniMax-M3",
+      "configured_concurrency": 8,
+      "rule_config_sha256": "d5e28d02ed5cdf85b533907db24b47f1be02847db764a4ded208dbaf54380ae1",
+      "runtime_config_sha256": "f3ac1cdd2a45285ba614e32ab9bd03b86d9911c8deb3bec22fccf7b7bd4e6913"
+    },
+    "coverage": {
+      "selected": [
+        {
+          "item_id": "17158d67f652c12c2e7e191a694d26c73adff22b1bb9c156e4669ca4d13888e4",
+          "path": "src-tauri/src/task_out.rs",
+          "fingerprint": "b8a6e7df8eec8ff23f6e9afa317c7505f0363b6d59a98b8bfcd482be54341abb"
+        },
+        {
+          "item_id": "1c5998aec79bbbf70045a48319f5b9dea30bc903c4d39440edb9249db8b150b8",
+          "path": "src-tauri/src/bot_artifacts.rs",
+          "fingerprint": "f8d6ad69788f4f72e32a8ce6b18e72b405e3b9b0bbc50941eda1232ba8385fd8"
+        },
+        {
+          "item_id": "24189214bbf2199b9ee9a44afcd4dfffccbd05649025717f76114f3575c0440d",
+          "path": "src-tauri/src/bot_chat.rs",
+          "fingerprint": "b247afe7f25a0e91c9fe0cdd2af3fc8eead7eb44ca1e01fd4c2a44177e1f23d5"
+        },
+        {
+          "item_id": "3033636541a6b0b8d12064e1761524a957f6fbe0168cab311529ab9529123fb6",
+          "path": "src/App.tsx",
+          "fingerprint": "1fba913e0b3b2ba1db9639986c5de3b4941207f5b709e71a5cee26da881c266a"
+        },
+        {
+          "item_id": "381dc556b03c53aa900b40c3518eb39a6b165149f8c711ee1b45d8a2223f79fb",
+          "path": "src-tauri/src/api_handlers/handlers.rs",
+          "fingerprint": "06609d0811a2a8e9106c5158acb6e44d8bcda83f2f7fa37939bf39084b7d9542"
+        },
+        {
+          "item_id": "3b4269a69aa4b482ae78c2395220a50d8f0cda17ff1a73df4edd1e2073ac276d",
+          "path": "src/components/WorkflowCanvas/graph.ts",
+          "fingerprint": "4f404ace980d36aec7081913f4588c5815a091de2f43dcec33619384bd7276bb"
+        },
+        {
+          "item_id": "41075b43848bf23052bbff4a77129b7cea24bed4f158c9ec4be57146016284b9",
+          "path": "src-tauri/src/db/tasks.rs",
+          "fingerprint": "174f1713813470e423a0d13e64930abc11cc470229b726ad40bcb7b00a11f9c6"
+        },
+        {
+          "item_id": "474aaa9156481255a8adca974b48feeb5fdb116026b03b1b33d80a4a89cd1946",
+          "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+          "fingerprint": "15bfad4236360ee9b8be068564c66e8a9ebb43a9a4c27a33658ff6b9a622be8d"
+        },
+        {
+          "item_id": "4a0760390c8b32bda274371ab9f4e2a72d5c4d4d356d29ec387713ca6d4e8985",
+          "path": "src-tauri/src/workflow_decompose.rs",
+          "fingerprint": "f39eec2fed13fc7a190a0b922f957c4b63ffb66cd61f59ef00063e826650481d"
+        },
+        {
+          "item_id": "4d55cb6d6956eb62950e9e7e475d6043ccac9a2e84f3b35ef81841f67f43b289",
+          "path": "src-tauri/src/workflow_runner.rs",
+          "fingerprint": "1b3c5bfd67f6f1717a8b92d1caaac3241de0e0ff8f06e01f2c3fec0f2afc2780"
+        },
+        {
+          "item_id": "528ad10f021908aaf18bda0679702eefa6327f4a47d683d8a6a74ddc439488c1",
+          "path": "src/components/WorkflowCanvas/GoalNode.tsx",
+          "fingerprint": "2f0939ebd18ff4f29ad7f1c85d2570a6995b2d5bac6b02a31dc88cdbe398a7fd"
+        },
+        {
+          "item_id": "5398ffe56dc5760d8ee6af9607c18247effe107c974209c1b2010973cd44bd8b",
+          "path": "src-tauri/src/db/workflow.rs",
+          "fingerprint": "ff8cb9ca5128a4b79adad033dc0048f728df694c980257cc7c0f585458bc863d"
+        },
+        {
+          "item_id": "7100a66fc05f7ac6440f61f2d65daf808ee7645d1aa4ee3f862fc99dd4eed34d",
+          "path": "src/lib/workflowPrompt.ts",
+          "fingerprint": "258126401c2a826e1d34ebbe472304c2f6954f7ee02e709342dfc137eb41798e"
+        },
+        {
+          "item_id": "76e1574443fdacf60d9679c44d943c21e4cdca5edea3ed146214dac936166ddc",
+          "path": "src-tauri/src/db/mod.rs",
+          "fingerprint": "747bf646781dc71aa1654505fd79b36355d506442708303ff301d28a020d196f"
+        },
+        {
+          "item_id": "8533464fa245b541c8581f91d1eda96220cfee39ad8d674c14067dbe19aa05fe",
+          "path": "src/components/WorkflowCanvas/TaskNode.tsx",
+          "fingerprint": "f48322229f4e972446c9dc74e2a8f79536f19fdb2b3c6c25c8e38055e6316172"
+        },
+        {
+          "item_id": "8b78fa9ee283f64b280430c0d89cb0a5c3adbfa68633b5a045d6d496b032a3de",
+          "path": "src/types.ts",
+          "fingerprint": "aaeb57db004fdad571861e703c27467b9ccedaa713407c147559a3dce1d550aa"
+        },
+        {
+          "item_id": "8dec73b8aee6286063876475c7a484ace527bcce4434a3c6860f5e8e667be733",
+          "path": "src/lib/workflowVisibility.ts",
+          "fingerprint": "217a521b90601e497889b4fa2ff14ac0e0caf412cd29e3c57da135a3a1441639"
+        },
+        {
+          "item_id": "d6c1437c08963d06f35d1519dd4e00a056d06bc232a570dde8a9cac1185ac6a0",
+          "path": "src-tauri/src/bot/tools.rs",
+          "fingerprint": "e27a16d9c6f85825fbbcfe837a51444d51551c5707c46b08b73a372c8126d806"
+        },
+        {
+          "item_id": "e3c7cbe310881d0348390239b00c219aa81fd9d09b83da3f90f33ba209ea7b6a",
+          "path": "package.json",
+          "fingerprint": "24ef6989db2eb20bc5ad283c7ee87501e265fd3fe7b51586b0f27027223d4027"
+        },
+        {
+          "item_id": "ea968c5e93541c9ee2b1d0e41dd95724435e23bef03242ed2ea15d14bc549633",
+          "path": "src-tauri/src/lib.rs",
+          "fingerprint": "689a8b6dfd21a366aa26c87bdebaf9a771895d4493bd0505e4ad392ded768287"
+        },
+        {
+          "item_id": "efe7cfb773da7b543597f274c218d721164184224a4917b79bf60d41dfdd0ee4",
+          "path": "src/components/SettingsPage/SettingsPage.tsx",
+          "fingerprint": "7dc913b3ef0eb1dd6d06d40a6990f482fd77e27fa7f92e3a029c3db82fba8500"
+        },
+        {
+          "item_id": "f1a28e771f385ede63fed5ac70ae2e7b31184e52bc6be08df8830083fbbf92ae",
+          "path": "src-tauri/src/api_handlers/mod.rs",
+          "fingerprint": "ab23a700072372931379794622cfe1b21857d5b51634f5a92fd89a0ed79f1975"
+        },
+        {
+          "item_id": "f37d644e250c569bd0838f8e87738de697030f87c391b793a495fe020cc53c72",
+          "path": "src/components/WidgetApp/WidgetApp.tsx",
+          "fingerprint": "d43a787f286a65c1796adbd9c93204fc9887609841fd12fe606bb85a848d667f"
+        },
+        {
+          "item_id": "f446c36179f998f8456af1c772beaf2ebe2eb46ddd08f419c7c4a05e4eafa937",
+          "path": "src-tauri/src/bot_orchestrator.rs",
+          "fingerprint": "06c9803fa3fd9368faa4051501d349666cdc2f2e47aead582e6b920cc8a45911"
+        }
+      ],
+      "completed": [
+        {
+          "item_id": "17158d67f652c12c2e7e191a694d26c73adff22b1bb9c156e4669ca4d13888e4",
+          "path": "src-tauri/src/task_out.rs",
+          "fingerprint": "b8a6e7df8eec8ff23f6e9afa317c7505f0363b6d59a98b8bfcd482be54341abb"
+        },
+        {
+          "item_id": "1c5998aec79bbbf70045a48319f5b9dea30bc903c4d39440edb9249db8b150b8",
+          "path": "src-tauri/src/bot_artifacts.rs",
+          "fingerprint": "f8d6ad69788f4f72e32a8ce6b18e72b405e3b9b0bbc50941eda1232ba8385fd8"
+        },
+        {
+          "item_id": "24189214bbf2199b9ee9a44afcd4dfffccbd05649025717f76114f3575c0440d",
+          "path": "src-tauri/src/bot_chat.rs",
+          "fingerprint": "b247afe7f25a0e91c9fe0cdd2af3fc8eead7eb44ca1e01fd4c2a44177e1f23d5"
+        },
+        {
+          "item_id": "3033636541a6b0b8d12064e1761524a957f6fbe0168cab311529ab9529123fb6",
+          "path": "src/App.tsx",
+          "fingerprint": "1fba913e0b3b2ba1db9639986c5de3b4941207f5b709e71a5cee26da881c266a"
+        },
+        {
+          "item_id": "381dc556b03c53aa900b40c3518eb39a6b165149f8c711ee1b45d8a2223f79fb",
+          "path": "src-tauri/src/api_handlers/handlers.rs",
+          "fingerprint": "06609d0811a2a8e9106c5158acb6e44d8bcda83f2f7fa37939bf39084b7d9542"
+        },
+        {
+          "item_id": "3b4269a69aa4b482ae78c2395220a50d8f0cda17ff1a73df4edd1e2073ac276d",
+          "path": "src/components/WorkflowCanvas/graph.ts",
+          "fingerprint": "4f404ace980d36aec7081913f4588c5815a091de2f43dcec33619384bd7276bb"
+        },
+        {
+          "item_id": "41075b43848bf23052bbff4a77129b7cea24bed4f158c9ec4be57146016284b9",
+          "path": "src-tauri/src/db/tasks.rs",
+          "fingerprint": "174f1713813470e423a0d13e64930abc11cc470229b726ad40bcb7b00a11f9c6"
+        },
+        {
+          "item_id": "474aaa9156481255a8adca974b48feeb5fdb116026b03b1b33d80a4a89cd1946",
+          "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+          "fingerprint": "15bfad4236360ee9b8be068564c66e8a9ebb43a9a4c27a33658ff6b9a622be8d"
+        },
+        {
+          "item_id": "4a0760390c8b32bda274371ab9f4e2a72d5c4d4d356d29ec387713ca6d4e8985",
+          "path": "src-tauri/src/workflow_decompose.rs",
+          "fingerprint": "f39eec2fed13fc7a190a0b922f957c4b63ffb66cd61f59ef00063e826650481d"
+        },
+        {
+          "item_id": "4d55cb6d6956eb62950e9e7e475d6043ccac9a2e84f3b35ef81841f67f43b289",
+          "path": "src-tauri/src/workflow_runner.rs",
+          "fingerprint": "1b3c5bfd67f6f1717a8b92d1caaac3241de0e0ff8f06e01f2c3fec0f2afc2780"
+        },
+        {
+          "item_id": "528ad10f021908aaf18bda0679702eefa6327f4a47d683d8a6a74ddc439488c1",
+          "path": "src/components/WorkflowCanvas/GoalNode.tsx",
+          "fingerprint": "2f0939ebd18ff4f29ad7f1c85d2570a6995b2d5bac6b02a31dc88cdbe398a7fd"
+        },
+        {
+          "item_id": "5398ffe56dc5760d8ee6af9607c18247effe107c974209c1b2010973cd44bd8b",
+          "path": "src-tauri/src/db/workflow.rs",
+          "fingerprint": "ff8cb9ca5128a4b79adad033dc0048f728df694c980257cc7c0f585458bc863d"
+        },
+        {
+          "item_id": "7100a66fc05f7ac6440f61f2d65daf808ee7645d1aa4ee3f862fc99dd4eed34d",
+          "path": "src/lib/workflowPrompt.ts",
+          "fingerprint": "258126401c2a826e1d34ebbe472304c2f6954f7ee02e709342dfc137eb41798e"
+        },
+        {
+          "item_id": "76e1574443fdacf60d9679c44d943c21e4cdca5edea3ed146214dac936166ddc",
+          "path": "src-tauri/src/db/mod.rs",
+          "fingerprint": "747bf646781dc71aa1654505fd79b36355d506442708303ff301d28a020d196f"
+        },
+        {
+          "item_id": "8533464fa245b541c8581f91d1eda96220cfee39ad8d674c14067dbe19aa05fe",
+          "path": "src/components/WorkflowCanvas/TaskNode.tsx",
+          "fingerprint": "f48322229f4e972446c9dc74e2a8f79536f19fdb2b3c6c25c8e38055e6316172"
+        },
+        {
+          "item_id": "8b78fa9ee283f64b280430c0d89cb0a5c3adbfa68633b5a045d6d496b032a3de",
+          "path": "src/types.ts",
+          "fingerprint": "aaeb57db004fdad571861e703c27467b9ccedaa713407c147559a3dce1d550aa"
+        },
+        {
+          "item_id": "8dec73b8aee6286063876475c7a484ace527bcce4434a3c6860f5e8e667be733",
+          "path": "src/lib/workflowVisibility.ts",
+          "fingerprint": "217a521b90601e497889b4fa2ff14ac0e0caf412cd29e3c57da135a3a1441639"
+        },
+        {
+          "item_id": "d6c1437c08963d06f35d1519dd4e00a056d06bc232a570dde8a9cac1185ac6a0",
+          "path": "src-tauri/src/bot/tools.rs",
+          "fingerprint": "e27a16d9c6f85825fbbcfe837a51444d51551c5707c46b08b73a372c8126d806"
+        },
+        {
+          "item_id": "e3c7cbe310881d0348390239b00c219aa81fd9d09b83da3f90f33ba209ea7b6a",
+          "path": "package.json",
+          "fingerprint": "24ef6989db2eb20bc5ad283c7ee87501e265fd3fe7b51586b0f27027223d4027"
+        },
+        {
+          "item_id": "ea968c5e93541c9ee2b1d0e41dd95724435e23bef03242ed2ea15d14bc549633",
+          "path": "src-tauri/src/lib.rs",
+          "fingerprint": "689a8b6dfd21a366aa26c87bdebaf9a771895d4493bd0505e4ad392ded768287"
+        },
+        {
+          "item_id": "efe7cfb773da7b543597f274c218d721164184224a4917b79bf60d41dfdd0ee4",
+          "path": "src/components/SettingsPage/SettingsPage.tsx",
+          "fingerprint": "7dc913b3ef0eb1dd6d06d40a6990f482fd77e27fa7f92e3a029c3db82fba8500"
+        },
+        {
+          "item_id": "f1a28e771f385ede63fed5ac70ae2e7b31184e52bc6be08df8830083fbbf92ae",
+          "path": "src-tauri/src/api_handlers/mod.rs",
+          "fingerprint": "ab23a700072372931379794622cfe1b21857d5b51634f5a92fd89a0ed79f1975"
+        },
+        {
+          "item_id": "f37d644e250c569bd0838f8e87738de697030f87c391b793a495fe020cc53c72",
+          "path": "src/components/WidgetApp/WidgetApp.tsx",
+          "fingerprint": "d43a787f286a65c1796adbd9c93204fc9887609841fd12fe606bb85a848d667f"
+        },
+        {
+          "item_id": "f446c36179f998f8456af1c772beaf2ebe2eb46ddd08f419c7c4a05e4eafa937",
+          "path": "src-tauri/src/bot_orchestrator.rs",
+          "fingerprint": "06c9803fa3fd9368faa4051501d349666cdc2f2e47aead582e6b920cc8a45911"
+        }
+      ],
+      "reused": [],
+      "failed": [],
+      "waived": []
+    },
+    "elapsed_ms": 1178874
+  },
+  "retry_report": {
+    "schema_version": "ocr.llm-retry-report/v1",
+    "total_requests": 426,
+    "retried_requests": 1,
+    "total_retries": 1,
+    "recovered_requests": 1,
+    "failed_requests": 0,
+    "cancelled_requests": 0,
+    "requests": [
+      {
+        "logical_request_id": "699ddb1cfcb99e024d189e4e901583709a720dfc2ca96f37e33c2833c5b12f59",
+        "provider": "minimax-cn",
+        "model": "MiniMax-M3",
+        "file_path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+        "task_type": "plan_task",
+        "request_no": 1,
+        "outcome": "recovered",
+        "attempts": [
+          {
+            "attempt": 1,
+            "outcome": "error",
+            "error_class": "overloaded",
+            "failure_phase": "http",
+            "status_code": 529,
+            "duration_to_headers_ms": 213811
+          },
+          {
+            "attempt": 2,
+            "outcome": "success",
+            "status_code": 200,
+            "observed_backoff_ms": 476,
+            "duration_to_headers_ms": 159063
+          }
+        ]
+      }
+    ]
+  }
+}

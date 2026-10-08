@@ -1,0 +1,104 @@
+{
+  "status": "complete",
+  "llm": {
+    "provider": "minimax-cn",
+    "model": "MiniMax-M3"
+  },
+  "message": "Review complete: 0 finding(s) across 2 selected item(s).",
+  "summary": {
+    "files_reviewed": 2,
+    "comments": 0,
+    "total_tokens": 192411,
+    "input_tokens": 181031,
+    "output_tokens": 11380,
+    "cache_read_tokens": 148578,
+    "elapsed": "2m33s"
+  },
+  "tool_calls": {
+    "total": 13,
+    "by_tool": {
+      "code_search": 7,
+      "file_read": 6
+    },
+    "failure": 1,
+    "failure_by_tool": {
+      "file_read": 1
+    },
+    "failure_details": [
+      {
+        "tool_call_number": 10,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/db/workflow.rs,src/components/WorkflowCanvas/WorkflowPage.tsx",
+        "arguments": "{\"end_line\":700,\"file_path\":\"src-tauri/src/db/workflow.rs\",\"start_line\":820}",
+        "error": "invalid line range: start_line 820 is greater than end_line 700"
+      }
+    ]
+  },
+  "comments": [],
+  "groups": [
+    {
+      "label": "small change set",
+      "files": [
+        "src-tauri/src/db/workflow.rs",
+        "src/components/WorkflowCanvas/WorkflowPage.tsx"
+      ]
+    }
+  ],
+  "session_id": "f407b537-2ceb-4134-8b80-c14d63de6eea",
+  "manifest": {
+    "schema_version": "ocr.run-manifest/v1",
+    "run_id": "f407b537-2ceb-4134-8b80-c14d63de6eea",
+    "operation": "review",
+    "terminal_state": "complete",
+    "repository": {
+      "identity_sha256": "7aebc670c3c38e64ae52ffaf12cfa8ba078a29af906f8ef856132cd790dbe48b"
+    },
+    "input": {
+      "mode": "range",
+      "requested_from": "e9c1abb",
+      "requested_head": "cdcb998",
+      "resolved_base": "e9c1abb075b2252c36360698ca960e84ee02bd9e",
+      "resolved_head": "cdcb9988220d5bb7594b01d6c596c09401c9b1b1",
+      "exact_range": "e9c1abb075b2252c36360698ca960e84ee02bd9e..cdcb9988220d5bb7594b01d6c596c09401c9b1b1",
+      "source_artifact_sha256": "c20c34fbd04b53b260077ce2c30cf4447bb88e604bdea1ff7fb5e65233caff3e"
+    },
+    "execution": {
+      "ocr_version": "v1.12.11",
+      "provider": "minimax-cn",
+      "model": "MiniMax-M3",
+      "configured_concurrency": 8,
+      "rule_config_sha256": "d5e28d02ed5cdf85b533907db24b47f1be02847db764a4ded208dbaf54380ae1",
+      "runtime_config_sha256": "f3ac1cdd2a45285ba614e32ab9bd03b86d9911c8deb3bec22fccf7b7bd4e6913"
+    },
+    "coverage": {
+      "selected": [
+        {
+          "item_id": "474aaa9156481255a8adca974b48feeb5fdb116026b03b1b33d80a4a89cd1946",
+          "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+          "fingerprint": "c4bee2203855ccfb3b7a8d615a5a2e90db1c4ed97eeb3db8cb4e08cb651e57a8"
+        },
+        {
+          "item_id": "5398ffe56dc5760d8ee6af9607c18247effe107c974209c1b2010973cd44bd8b",
+          "path": "src-tauri/src/db/workflow.rs",
+          "fingerprint": "3c750e875fcd2cedb88497694f860df0c4584a176b7943f5e46156aafc445ac4"
+        }
+      ],
+      "completed": [
+        {
+          "item_id": "474aaa9156481255a8adca974b48feeb5fdb116026b03b1b33d80a4a89cd1946",
+          "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+          "fingerprint": "c4bee2203855ccfb3b7a8d615a5a2e90db1c4ed97eeb3db8cb4e08cb651e57a8"
+        },
+        {
+          "item_id": "5398ffe56dc5760d8ee6af9607c18247effe107c974209c1b2010973cd44bd8b",
+          "path": "src-tauri/src/db/workflow.rs",
+          "fingerprint": "3c750e875fcd2cedb88497694f860df0c4584a176b7943f5e46156aafc445ac4"
+        }
+      ],
+      "reused": [],
+      "failed": [],
+      "waived": []
+    },
+    "elapsed_ms": 152580
+  }
+}

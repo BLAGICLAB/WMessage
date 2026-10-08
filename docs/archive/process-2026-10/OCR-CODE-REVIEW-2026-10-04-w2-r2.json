@@ -1,0 +1,219 @@
+{
+  "status": "complete",
+  "llm": {
+    "provider": "minimax-cn",
+    "model": "MiniMax-M3"
+  },
+  "message": "Review complete: 7 finding(s) across 4 selected item(s).",
+  "summary": {
+    "files_reviewed": 4,
+    "comments": 7,
+    "total_tokens": 3445283,
+    "input_tokens": 3366515,
+    "output_tokens": 78768,
+    "cache_read_tokens": 3113702,
+    "elapsed": "8m47s"
+  },
+  "tool_calls": {
+    "total": 80,
+    "by_tool": {
+      "code_comment": 4,
+      "code_search": 32,
+      "file_find": 1,
+      "file_read": 37,
+      "file_read_diff": 6
+    },
+    "failure": 2,
+    "failure_by_tool": {
+      "file_read": 2
+    },
+    "failure_details": [
+      {
+        "tool_call_number": 25,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/workflow_decompose.rs",
+        "arguments": "{\"end_line\":200,\"file_path\":\"src-tauri/src/workflow_decompose.rs\",\"start_line\":375}",
+        "error": "invalid line range: start_line 375 is greater than end_line 200"
+      },
+      {
+        "tool_call_number": 60,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/workflow_decompose.rs",
+        "arguments": "{\"end_line\":10,\"file_path\":\"src-tauri/src/lib.rs\",\"start_line\":480}",
+        "error": "invalid line range: start_line 480 is greater than end_line 10"
+      }
+    ]
+  },
+  "comments": [
+    {
+      "path": "src-tauri/src/workflow_decompose.rs",
+      "content": "New HashSet-based dedup logic is not exercised by this test — three identical titles are handled identically by both the old greedy-counter code and the new code. The new logic specifically defends against adversarial input where existing titles already contain \"（N）\" suffixes (per the comment \"贪心计数会把 '审阅（2）' 撞成两份\"). Add a regression test like `[\"审阅\", \"审阅\", \"审阅（2）\"]` to actually exercise the collision-avoidance path.",
+      "existing_code": "#[test]\n    fn validate_suffixes_duplicate_titles() {\n        let ok = validate_decompose(vec![\n            DecomposeSubtask {\n                title: \"审阅\".into(),\n                note: None,\n                depends_on: vec![],\n            },\n            DecomposeSubtask {\n                title: \"审阅\".into(),\n                note: None,\n                depends_on: vec![0],\n            },\n            DecomposeSubtask {\n                title: \"审阅\".into(),\n                note: None,\n                depends_on: vec![1],\n            },\n        ])\n        .unwrap();\n        assert_eq!(ok[0].title, \"审阅\");\n        assert_eq!(ok[1].title, \"审阅（2）\");\n        assert_eq!(ok[2].title, \"审阅（3）\");\n    }",
+      "start_line": 375,
+      "end_line": 398,
+      "category": "test",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/workflow_decompose.rs",
+      "content": "The new `MAX_GUIDANCE_CHARS` server-side check is untested. Add a boundary test (e.g., `MAX_GUIDANCE_CHARS` chars rejected, `MAX_GUIDANCE_CHARS - 1` accepted) to lock the limit and catch regressions if the constant is bumped.",
+      "existing_code": "if guidance_trimmed.chars().count() \u003e MAX_GUIDANCE_CHARS {\n        return Err(CommandError::InvalidArgument {\n            field: \"guidance\".into(),\n            value: String::new(),\n            reason: format!(\"指引超过 {MAX_GUIDANCE_CHARS} 字上限\"),\n        });\n    }",
+      "start_line": 215,
+      "end_line": 221,
+      "category": "test",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/workflow_decompose.rs",
+      "content": "The `chars().take(200).collect()` here bypasses the canonical `escape_for_log(v, KV_VALUE_MAX)` pipeline that the rest of `audit::write_event` callers rely on — values are re-escaped and truncated inside `append_kv_escaped`, so this pre-truncation is both redundant (wasteful — string is clipped twice) and inconsistent (no `…` ellipsis, magic literal `200` vs the shared `KV_VALUE_MAX = 500`). Pass `last_err` directly and let the audit layer handle escaping + truncation uniformly.",
+      "existing_code": "crate::audit::write_event(\n        \u0026app,\n        crate::audit::AuditLevel::Warn,\n        \"workflow_decompose\",\n        \u0026[\n            (\"outcome\", \"failed\".to_string()),\n            (\"attempts\", attempts.to_string()),\n            (\"error\", last_err.chars().take(200).collect()),\n        ],\n    );",
+      "start_line": 263,
+      "end_line": 272,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "`nameAuto` is a component-level flag tracking whether the current workflow's name is still the auto-generated default. It's set to `false` only when the user types into the GoalNode input (via `onRename`). However, neither `createBlank` nor `openWorkflow` resets it, so the flag leaks across workflow contexts.\n\nRepro:\n1. Hero state → type goal → click AI 生成 → name set to goal prefix, `nameAuto=true`\n2. User renames via input → `nameAuto=false`\n3. User clicks 新建 (or deletes) → `createBlank` → name becomes \"工作流 ${today}\", but `nameAuto` is still `false`\n4. User types a new goal, clicks AI 生成 → decompose succeeds, but the `if (nameAuto)` guard skips `setName`, so the new blank workflow keeps the stale default name instead of being auto-named from the goal\n\nSame issue applies when switching between workflows: after renaming workflow A and opening workflow B from the dropdown, `nameAuto` carries over as `false`, so a subsequent AI 重新生成 won't update B's loaded name from DB based on the new goal prefix.\n\nFix: add `setNameAuto(true)` after the `setRegenArmed(false)` in `createBlank` (and consider the same in `openWorkflow`, where the loaded name from DB is conceptually \"user's saved choice\" — pick one semantics and reset consistently at every workflow-context transition).",
+      "suggestion_code": "  const createBlank = () =\u003e {\n    openSeqRef.current++; // 使在途的 workflow_load 失效\n    decomposeSeqRef.current++; // 同上（OCR r1 critical）\n    setRegenArmed(false);\n    setNameAuto(true); // 重置自动名标记：新空白工作流的 name 仍是默认值\n    setActiveId(null);\n    setName(`工作流 ${new Date().toLocaleDateString()}`);\n    setGoal(\"\");",
+      "existing_code": "  const createBlank = () =\u003e {\n    openSeqRef.current++; // 使在途的 workflow_load 失效\n    decomposeSeqRef.current++; // 同上（OCR r1 critical）\n    setRegenArmed(false);\n    setActiveId(null);\n    setName(`工作流 ${new Date().toLocaleDateString()}`);\n    setGoal(\"\");",
+      "start_line": 151,
+      "end_line": 157,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "Inconsistent state cleanup: `openWorkflow` (line 145) and `createBlank` (line 154) both call `setRegenArmed(false)` when switching workflows, but `addNode` does not. If a user has clicked the regenerate button once (`regenArmed=true`, 3s timer running) and then clicks addNode, the armed state persists — a subsequent click on the regenerate button within the 3s window will trigger the confirmation step and switch to hero mode, abandoning the user's just-added node and any other pending edits. `addNode` should reset `regenArmed` for the same reason it cancels in-flight decompose: the user is choosing to edit manually, which contradicts the regenerate intent.",
+      "suggestion_code": "const addNode = () =\u003e {\n    decomposeSeqRef.current++; // 手动加卡 = 放弃在途拆解结果（OCR r1 medium）\n    setRegenArmed(false); // 手动加卡 = 放弃当前已 arm 的重新生成意图（与 openWorkflow/createBlank 一致）",
+      "existing_code": "const addNode = () =\u003e {\n    decomposeSeqRef.current++; // 手动加卡 = 放弃在途拆解结果（OCR r1 medium）",
+      "start_line": 216,
+      "end_line": 217,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/workflow_decompose.rs",
+      "content": "重名加后缀的循环用了已被前一轮 `st.title = format!(\"{base}（{n}）\")` 改写过的 `st.title` 当 base，导致「连续三次相同 title」的实际结果不是测试期望的 `[\"审阅\", \"审阅（2）\", \"审阅（3）\"]` 而是 `[\"审阅\", \"审阅（2）\", \"审阅（2）（2）\"]`（第三次迭代 `used.insert(\"审阅（2）\")` 返回 false，`base = \"审阅（2）\"`，于是撞出 `审阅（2）（2）`）。这同时是 confirmed-finding #1 提到的「未覆盖连续重复」的实际成因：原作者期望 `[\"审阅\",\"审阅\",\"审阅\"]` 产出递增后缀，但 `iter_mut()` 把 `st.title` 写进去后下一轮就读到的是改写后的值。修复方向：循环外先 `let originals: Vec\u003cString\u003e = subtasks.iter().map(|s| s.title.clone()).collect();`，循环里用 `originals[i]` 而不是 `st.title` 做 base（同时 base 也得是 `originals[i]`），这样第三次会得到 `审阅（3）`，且原 adversarial 输入 `[\"审阅\",\"审阅\",\"审阅（2）\"]` 走到的还是「第一/二个 `审阅`/`审阅（2）`、第三个 `审阅（2）` 在 used 里、再撞 `审阅（2）（2）`」这条路径不被回退。",
+      "suggestion_code": "    // 先快照原始 title，循环里 base 必须用原值（iter_mut 改写 st.title 后下\n    // 一轮读到的就是带后缀的值，会让 \"审阅\"/\"审阅\"/\"审阅\" 撞出 \"审阅（2）（2）\"\n    // 而不是期望的 \"审阅（3）\"，并使 validate_suffixes_duplicate_titles 红）\n    let originals: Vec\u003cString\u003e = subtasks.iter().map(|s| s.title.clone()).collect();\n    let mut used: std::collections::HashSet\u003cString\u003e = std::collections::HashSet::new();\n    for (i, st) in subtasks.iter_mut().enumerate() {\n        if used.insert(originals[i].clone()) {\n            continue;\n        }\n        let base = originals[i].clone();\n        let mut n = 2usize;\n        while !used.insert(format!(\"{base}（{n}）\")) {\n            n += 1;\n        }\n        st.title = format!(\"{base}（{n}）\");\n    }",
+      "existing_code": "    let mut used: std::collections::HashSet\u003cString\u003e = std::collections::HashSet::new();\n    for st in subtasks.iter_mut() {\n        if used.insert(st.title.clone()) {\n            continue;\n        }\n        let base = st.title.clone();\n        let mut n = 2usize;\n        while !used.insert(format!(\"{base}（{n}）\")) {\n            n += 1;\n        }\n        st.title = format!(\"{base}（{n}）\");\n    }",
+      "start_line": 175,
+      "end_line": 186,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "src-tauri/src/workflow_decompose.rs",
+      "content": "失败审计只覆盖「校验链兜不住」这一种失败模式：注释声称「成功/失败都该可回查」，但 `summarize_messages(...).await?`（本行上方）把 LLM 调用本身的失败（`LlmRequestFailed` / `LlmApiError` / `ApiKeyMissing` / `BotDisabled` 等）用 `?` 直接外抛，整段函数 early-return 出去，下面的 `crate::audit::write_event(... \"outcome=failed\")` 根本走不到——比如此时 bot.log 里只会看到前端 toast，看不到任何 `workflow_decompose` 审计事件，排障「拆解为什么失败」会两眼一抹黑。建议改写成 `match summarize_messages(...).await { Ok(raw) =\u003e ..., Err(e) =\u003e { 记失败审计; return Err(e); } }`，或在外面套一层 `let raw = ...;` 之后再处理。",
+      "suggestion_code": "    // 失败也要留审计痕（OCR r1：LLM 消费型命令的成功/失败都该可回查）\n    crate::audit::write_event(\n        \u0026app,\n        crate::audit::AuditLevel::Warn,\n        \"workflow_decompose\",\n        \u0026[\n            (\"outcome\", \"failed\".to_string()),\n            (\"attempts\", attempts.to_string()),\n            (\"error\", last_err.chars().take(200).collect()),\n        ],\n    );\n    // 注：上方 ? 提前返回路径（LLM 调用本身失败）不在此审计覆盖——见上方 loop。",
+      "existing_code": "    // 失败也要留审计痕（OCR r1：LLM 消费型命令的成功/失败都该可回查）\n    crate::audit::write_event(\n        \u0026app,\n        crate::audit::AuditLevel::Warn,\n        \"workflow_decompose\",\n        \u0026[\n            (\"outcome\", \"failed\".to_string()),\n            (\"attempts\", attempts.to_string()),\n            (\"error\", last_err.chars().take(200).collect()),\n        ],\n    );",
+      "start_line": 262,
+      "end_line": 272,
+      "category": "bug",
+      "severity": "medium"
+    }
+  ],
+  "groups": [
+    {
+      "label": "src-tauri/src/workflow_decompose.rs",
+      "files": [
+        "src-tauri/src/workflow_decompose.rs"
+      ]
+    },
+    {
+      "label": "src/components/SettingsPage/SettingsPage.tsx",
+      "files": [
+        "src/components/SettingsPage/SettingsPage.tsx"
+      ]
+    },
+    {
+      "label": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "files": [
+        "src/components/WorkflowCanvas/WorkflowPage.tsx"
+      ]
+    },
+    {
+      "label": "src/lib/workflowPrompt.ts",
+      "files": [
+        "src/lib/workflowPrompt.ts"
+      ]
+    }
+  ],
+  "session_id": "e40be26a-07be-46a1-bad4-d0a713128c1f",
+  "manifest": {
+    "schema_version": "ocr.run-manifest/v1",
+    "run_id": "e40be26a-07be-46a1-bad4-d0a713128c1f",
+    "operation": "review",
+    "terminal_state": "complete",
+    "repository": {
+      "identity_sha256": "7aebc670c3c38e64ae52ffaf12cfa8ba078a29af906f8ef856132cd790dbe48b"
+    },
+    "input": {
+      "mode": "range",
+      "requested_from": "abe31c5",
+      "requested_head": "04b2072",
+      "resolved_base": "abe31c50aea19cbadcb500dcaa47de7137f1ce2d",
+      "resolved_head": "04b207245de50eefba33c3bf18642f8af71390af",
+      "exact_range": "abe31c50aea19cbadcb500dcaa47de7137f1ce2d..04b207245de50eefba33c3bf18642f8af71390af",
+      "source_artifact_sha256": "181385900f35344b62bc1ad0333c20fc413ac11fd848b8cc0e3521688cb4f369"
+    },
+    "execution": {
+      "ocr_version": "v1.12.11",
+      "provider": "minimax-cn",
+      "model": "MiniMax-M3",
+      "configured_concurrency": 8,
+      "rule_config_sha256": "d5e28d02ed5cdf85b533907db24b47f1be02847db764a4ded208dbaf54380ae1",
+      "runtime_config_sha256": "f3ac1cdd2a45285ba614e32ab9bd03b86d9911c8deb3bec22fccf7b7bd4e6913"
+    },
+    "coverage": {
+      "selected": [
+        {
+          "item_id": "474aaa9156481255a8adca974b48feeb5fdb116026b03b1b33d80a4a89cd1946",
+          "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+          "fingerprint": "f781b7f18ef8df8dee18bae386ffc44fa422d134282dcef5ba236f07f04bd573"
+        },
+        {
+          "item_id": "4a0760390c8b32bda274371ab9f4e2a72d5c4d4d356d29ec387713ca6d4e8985",
+          "path": "src-tauri/src/workflow_decompose.rs",
+          "fingerprint": "299549be66eb0bc564140d355a3b6dfa305e09ade0609c0c1c7cc3218fe09177"
+        },
+        {
+          "item_id": "7100a66fc05f7ac6440f61f2d65daf808ee7645d1aa4ee3f862fc99dd4eed34d",
+          "path": "src/lib/workflowPrompt.ts",
+          "fingerprint": "9859417c5c1b2b622a4e139091f49e0bb4ec52958a18b4db17bb5316595dc687"
+        },
+        {
+          "item_id": "efe7cfb773da7b543597f274c218d721164184224a4917b79bf60d41dfdd0ee4",
+          "path": "src/components/SettingsPage/SettingsPage.tsx",
+          "fingerprint": "aafc9f8a2b736a16d75ab6db58ba6ebe29891ac0210ac39c01f0b6ebb02ae6ec"
+        }
+      ],
+      "completed": [
+        {
+          "item_id": "474aaa9156481255a8adca974b48feeb5fdb116026b03b1b33d80a4a89cd1946",
+          "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+          "fingerprint": "f781b7f18ef8df8dee18bae386ffc44fa422d134282dcef5ba236f07f04bd573"
+        },
+        {
+          "item_id": "4a0760390c8b32bda274371ab9f4e2a72d5c4d4d356d29ec387713ca6d4e8985",
+          "path": "src-tauri/src/workflow_decompose.rs",
+          "fingerprint": "299549be66eb0bc564140d355a3b6dfa305e09ade0609c0c1c7cc3218fe09177"
+        },
+        {
+          "item_id": "7100a66fc05f7ac6440f61f2d65daf808ee7645d1aa4ee3f862fc99dd4eed34d",
+          "path": "src/lib/workflowPrompt.ts",
+          "fingerprint": "9859417c5c1b2b622a4e139091f49e0bb4ec52958a18b4db17bb5316595dc687"
+        },
+        {
+          "item_id": "efe7cfb773da7b543597f274c218d721164184224a4917b79bf60d41dfdd0ee4",
+          "path": "src/components/SettingsPage/SettingsPage.tsx",
+          "fingerprint": "aafc9f8a2b736a16d75ab6db58ba6ebe29891ac0210ac39c01f0b6ebb02ae6ec"
+        }
+      ],
+      "reused": [],
+      "failed": [],
+      "waived": []
+    },
+    "elapsed_ms": 526712
+  }
+}

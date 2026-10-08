@@ -1,0 +1,157 @@
+{
+  "status": "complete",
+  "llm": {
+    "provider": "minimax-cn",
+    "model": "MiniMax-M3"
+  },
+  "message": "Review complete: 7 finding(s) across 1 selected item(s).",
+  "summary": {
+    "files_reviewed": 1,
+    "comments": 7,
+    "total_tokens": 612082,
+    "input_tokens": 558352,
+    "output_tokens": 53730,
+    "cache_read_tokens": 465981,
+    "elapsed": "10m30s"
+  },
+  "tool_calls": {
+    "total": 25,
+    "by_tool": {
+      "code_comment": 2,
+      "code_search": 14,
+      "file_read": 9
+    },
+    "failure": 1,
+    "failure_by_tool": {
+      "file_read": 1
+    },
+    "failure_details": [
+      {
+        "tool_call_number": 11,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/workflow_decompose.rs",
+        "arguments": "{\"end_line\":210,\"file_path\":\"src-tauri/src/error.rs\",\"start_line\":300}",
+        "error": "invalid line range: start_line 300 is greater than end_line 210"
+      }
+    ]
+  },
+  "comments": [
+    {
+      "path": "src-tauri/src/workflow_decompose.rs",
+      "content": "[high] 新引入的归一/拓扑重排整段没有任何测试。spec 写「测试重写：前向引用接受+重排、自环剥离、真环报名」，但本 diff 仅删除 `validate_enforces_forward_reference_only`，未在任何 hunk 中新增 `#[test]`。`code_search` 验证 `#decompose.rs` 内无 cycle / 拓扑 / 重排 / 自环 相关测试：自环剥离、前向引用接受 + 重排后下标重映射、真环拒绝且 `reason` 包含环内任务名、Kahn 在链式/汇合/多根 DAG 上的正确性——这些新路径在重构 `done_flags` / `dependents` / `old_to_new` HashMap 时不会被任何用例触发。建议补 ≥4 个用例（自环剥离、前向引用重排、汇合点 indegree 正确归零、3 节点真环）后再合入。",
+      "existing_code": "    // 依赖归一（W7-TOPO）：去重 + 剥自环（自引用无语义——小模型高频手误，\n    // 用户实测案例 #4 -\u003e [4] 两次重试不改，整包拒绝体验差）；越界仍拒绝；\n    // 环 → Kahn 检测后拒绝（报出环内任务名）；无环 → 拓扑重排 + 重映射，\n    // 模型给前向/乱序引用也能正确成图（原\"下标 \u003c 自身\"硬约束废除）",
+      "start_line": 160,
+      "end_line": 163,
+      "category": "test",
+      "severity": "high"
+    },
+    {
+      "path": "src-tauri/src/workflow_decompose.rs",
+      "content": "[medium] 循环依赖分支同时把 `stuck.join(\"→\")` 塞进 `value` 和 `reason`，与本函数其余分支的约定不一致：其它分支 `value` 都是「机器可读、定位到出错输入」（如 `\"#{i} -\u003e {d}\"`、`\"#{i}\"`、截断后的原始字符串），`reason` 才是人类解释。`CommandError::message()`（error.rs:319）会拼出 `参数校验失败：subtasks=A→B（任务存在循环依赖：A→B）`——`value` 和 `reason` 内容重复，且若环内某个 title 自身含 `=` / `（` / `→`，渲染出来的 `field=value（reason）` 串会被截断或误读。建议 `value` 改成紧凑的机器标识（如环内下标 `\"0,2\"` 或任务数 `stuck.len().to_string()`），`reason` 保留人话描述并包含标题。",
+      "existing_code": "            return Err(CommandError::InvalidArgument {\n                field: \"subtasks\".into(),\n                value: stuck.join(\"→\"),\n                reason: format!(\"任务存在循环依赖：{}\", stuck.join(\"→\")),\n            });",
+      "start_line": 221,
+      "end_line": 225,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/workflow_decompose.rs",
+      "content": "[low] `indegree[d] -= 1` 对所有 `d ∈ dependents[i]` 都会执行，包括已经 `done_flags[d] == true` 的节点。当前无害是因为 `done_flags` 屏蔽了重入，但如果未来有人为优化去掉 `done_flags` 改用 `VecDeque` 队列、或把 `indegree` 改成 `i32`/`isize`，已 done 节点的 indegree 会被继续减至负值，而下面 `if order.len() == n { break; }` 不会捕获——`indegree[d] == 0` 检查会先通过但 done 节点仍被推进过一次。建议改成 `if !done_flags[d] { indegree[d] -= 1; }`，让 `done_flags` 与 `indegree` 的耦合显式化；或在该处加一行注释说明「依赖 `done_flags` 屏蔽重入」。",
+      "existing_code": "                for \u0026d in \u0026dependents[i] {\n                    indegree[d] -= 1;\n                }",
+      "start_line": 207,
+      "end_line": 209,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/workflow_decompose.rs",
+      "content": "[high] 新引入的归一/拓扑重排整段没有任何测试覆盖。spec 写「测试重写：前向引用接受+重排、自环剥离、真环报名」，但本 diff 仅删除 `validate_enforces_forward_reference_only`，未在任何 hunk 中新增 `#[test]`。需要补：(a) 自环 `[0]` 剥离；(b) 反向引用 `[1,0]` 接受 + 重排为正序且 `depends_on` 下标重映射正确；(c) 真环 `[0,1] \u0026 [1,0]` 拒绝且 `reason` 含环内 title；(d) 真环 `[0,2,3] \u0026 [2,3,0]` 部分环 + 独立节点混合时仅报环内；(e) 重名加后缀发生在重排之后，下游 `depends_on` 引用的下标指向的是新下标而非旧下标。",
+      "existing_code": "// 依赖归一（W7-TOPO）：去重 + 剥自环（自引用无语义——小模型高频手误，\n    // 用户实测案例 #4 -\u003e [4] 两次重试不改，整包拒绝体验差）；越界仍拒绝；\n    // 环 → Kahn 检测后拒绝（报出环内任务名）；无环 → 拓扑重排 + 重映射，\n    // 模型给前向/乱序引用也能正确成图（原\"下标 \u003c 自身\"硬约束废除）\n    let total = subtasks.len();",
+      "start_line": 160,
+      "end_line": 164,
+      "category": "test",
+      "severity": "high"
+    },
+    {
+      "path": "src-tauri/src/workflow_decompose.rs",
+      "content": "[medium] 循环依赖分支同时把 `stuck.join(\"→\")` 塞进 `value` 和 `reason`，与本函数其余分支的约定不一致：其它分支 `value` 都是「机器可读、定位到出错输入」（如 `\"#{i} -\u003e {d}\"`、`\"#{i}\"`、截断后的原始字符串），`reason` 才是人类解释。`CommandError::message()`（error.rs:319）会拼出 `参数校验失败：subtasks=A→B（任务存在循环依赖：A→B）`——`value` 和 `reason` 内容重复，且若环内某个 title 自身含 `=` / `（` / `→`，渲染会出现嵌套歧义。建议 `value` 改为环内任务下标简写（如 `\"#0,#2,#3\"`），`reason` 保留 title 路径。",
+      "existing_code": "return Err(CommandError::InvalidArgument {\n                field: \"subtasks\".into(),\n                value: stuck.join(\"→\"),\n                reason: format!(\"任务存在循环依赖：{}\", stuck.join(\"→\")),\n            });",
+      "start_line": 221,
+      "end_line": 225,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/workflow_decompose.rs",
+      "content": "[low] `total` 与 `n` 都是 `subtasks.len()`，但在不同处分别定义。两者之间没有对 `subtasks` 做修改，值必然相等。统一为一个变量（如 `n`）可读性更好。",
+      "existing_code": "let total = subtasks.len();\n    let mut normalized: Vec\u003cVec\u003cusize\u003e\u003e = Vec::with_capacity(total);",
+      "start_line": 164,
+      "end_line": 165,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/workflow_decompose.rs",
+      "content": "[low] `old_to_new` 用 `HashMap\u003cusize, usize\u003e` 索引 `d ∈ 0..n`，但 `Vec\u003cOption\u003cusize\u003e\u003e` 长度为 n 可以直接 `old_to_new[d]` 索引且零哈希开销；同理 `dependents[d].push(i)` 的 `Vec\u003cVec\u003cusize\u003e\u003e` 也可以用 `Vec\u003cSmallVec\u003c[usize; 4]\u003e\u003e`（typical depends_on 长度都很小）。n ≤ 20 时性能差异可忽略，但 `Vec\u003cOption\u003cusize\u003e\u003e` 更直接表达「旧下标映射到新下标」的语义。",
+      "existing_code": "let old_to_new: std::collections::HashMap\u003cusize, usize\u003e = order\n        .iter()\n        .enumerate()\n        .map(|(new_idx, \u0026old_i)| (old_i, new_idx))\n        .collect();",
+      "start_line": 228,
+      "end_line": 232,
+      "category": "performance",
+      "severity": "low"
+    }
+  ],
+  "groups": [
+    {
+      "label": "src-tauri/src/workflow_decompose.rs",
+      "files": [
+        "src-tauri/src/workflow_decompose.rs"
+      ]
+    }
+  ],
+  "session_id": "67081977-e9ab-4a62-843e-9218a5fa999c",
+  "manifest": {
+    "schema_version": "ocr.run-manifest/v1",
+    "run_id": "67081977-e9ab-4a62-843e-9218a5fa999c",
+    "operation": "review",
+    "terminal_state": "complete",
+    "repository": {
+      "identity_sha256": "7aebc670c3c38e64ae52ffaf12cfa8ba078a29af906f8ef856132cd790dbe48b"
+    },
+    "input": {
+      "mode": "commit",
+      "requested_head": "113cb54",
+      "resolved_base": "a47ecfc0d1a564965bcf3244528b437a3b016f7d",
+      "resolved_head": "113cb54b51ff86ed3a7bb8bc12d23e5604a186f8",
+      "exact_range": "a47ecfc0d1a564965bcf3244528b437a3b016f7d..113cb54b51ff86ed3a7bb8bc12d23e5604a186f8",
+      "source_artifact_sha256": "e4b0e590fc4af77d8cf12e13f91bcc11f470a84df57ea9fb6fd13a54f176893c"
+    },
+    "execution": {
+      "ocr_version": "v1.12.11",
+      "provider": "minimax-cn",
+      "model": "MiniMax-M3",
+      "configured_concurrency": 8,
+      "rule_config_sha256": "d5e28d02ed5cdf85b533907db24b47f1be02847db764a4ded208dbaf54380ae1",
+      "runtime_config_sha256": "f3ac1cdd2a45285ba614e32ab9bd03b86d9911c8deb3bec22fccf7b7bd4e6913"
+    },
+    "coverage": {
+      "selected": [
+        {
+          "item_id": "1dbd971cc2fd4f433b08b8c3267c1c890488a94ac49d38f03da48bc67469fb67",
+          "path": "src-tauri/src/workflow_decompose.rs",
+          "fingerprint": "fb2358fa44a0d53bfe0b66969faaff440eedbf5b781fae4eb502092db2224d90"
+        }
+      ],
+      "completed": [
+        {
+          "item_id": "1dbd971cc2fd4f433b08b8c3267c1c890488a94ac49d38f03da48bc67469fb67",
+          "path": "src-tauri/src/workflow_decompose.rs",
+          "fingerprint": "fb2358fa44a0d53bfe0b66969faaff440eedbf5b781fae4eb502092db2224d90"
+        }
+      ],
+      "reused": [],
+      "failed": [],
+      "waived": []
+    },
+    "elapsed_ms": 629835
+  }
+}

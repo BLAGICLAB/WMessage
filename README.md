@@ -117,10 +117,10 @@ npm run tauri build                   # macOS 打包
 
 ### 测试与门禁
 
-- **提交时自动跑** pre-commit（`scripts/install-hooks.sh` 装一次）→ `scripts/test-fast.sh`：按改动文件智能跳过，`cargo fmt --check` / `cargo check` / `tsc` / `vitest --changed`，外加四道防回潮门禁（详见 `docs/testing.md`）：审计批次号防线、cargo machete（未使用 Rust 依赖）、Tauri 桥一致性（命令注册↔前端 invoke、emit↔listen）、knip（前端死代码/依赖）
+- **提交时自动跑** pre-commit（`scripts/install-hooks.sh` 装一次）→ `scripts/test-fast.sh`：按改动文件智能跳过——工单号防线（工单号/拍板记录只进 DEVLOG，不进源码）、`cargo fmt --check` / `cargo check` / cargo machete（未使用 Rust 依赖）/ `tsc` / knip（前端死代码/依赖）/ oxlint / `vitest --changed`（详见 `docs/testing.md`）
 - **手动快速验证**：`cargo test --lib`（Rust lib 637 例）、`npm test`（前端 209 例）、`bash scripts/test-fast.sh`
-- **全量验证**（push 前）：`bash scripts/test-all.sh`（cargo nextest 全量 + tests-audit 一致性检查 + vitest）；集成测试 `cargo test --test llm_integration` 等；bge 模型真实推理冒烟 `cargo test --lib memory::embed -- --ignored`
-- 维护手册：`docs/testing.md`（各门禁防什么、失败了怎么修、误伤豁免方式）
+- **全量验证**（push 前）：`bash scripts/test-all.sh`（cargo nextest 全量 + vitest）；集成测试 `cargo test --test llm_integration` 等；bge 模型真实推理冒烟 `cargo test --lib memory::embed -- --ignored`；tests-audit/ 一致性对拍脚本按需手跑（`python3 -m pytest tests-audit/<脚本>.py`）
+- 维护手册：`docs/testing.md`（各门禁防什么、失败了怎么修、误伤豁免方式）；开发基线约定见 `SPEC.md`「开发基线」
 
 ### Windows 交叉编译（macOS → exe，mingw-w64 链路）
 
@@ -162,7 +162,8 @@ npx tauri build --target x86_64-pc-windows-gnu --no-bundle
 
 ## 文档
 
-- `SPEC.md` — 产品规格（原始需求快照，功能演进见架构文档与 DEVLOG）
+- `AGENTS.md` — AI 代理工作约定入口（一屏：地图 / 命令 / 硬性禁令 / 工作方式）
+- `SPEC.md` — 现行产品规格（功能规格全景 + 开发基线；v1 原始快照存文末附录 A）
 - `docs/rust-bot-architecture.md` — Rust 侧架构与模块树（现行架构以此为准）
 - `DEVLOG.md` — 开发日志（里程碑 + 踩坑记录）
 - `docs/testing.md` — 测试与门禁手册（日常提交流程 / 各门禁防什么 / 全量验证 / 豁免方式）

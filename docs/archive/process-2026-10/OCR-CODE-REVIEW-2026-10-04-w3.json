@@ -1,0 +1,271 @@
+{
+  "status": "complete",
+  "llm": {
+    "provider": "minimax-cn",
+    "model": "MiniMax-M3"
+  },
+  "message": "Review complete: 11 finding(s) across 6 selected item(s).",
+  "summary": {
+    "files_reviewed": 6,
+    "comments": 11,
+    "total_tokens": 1600840,
+    "input_tokens": 1530550,
+    "output_tokens": 70290,
+    "cache_read_tokens": 1296551,
+    "elapsed": "7m51s"
+  },
+  "tool_calls": {
+    "total": 97,
+    "by_tool": {
+      "code_comment": 10,
+      "code_search": 42,
+      "file_find": 2,
+      "file_read": 37,
+      "file_read_diff": 6
+    },
+    "failure": 0,
+    "failure_by_tool": {},
+    "failure_details": []
+  },
+  "comments": [
+    {
+      "path": "src-tauri/src/lib.rs",
+      "content": "The name `workflow_is_running_cmd` deviates from the project's naming convention for Tauri commands. Adjacent workflow commands (`workflow_run`, `workflow_stop`, `workflow_decompose`, `workflow_save`, `workflow_load`, etc.) and the vast majority of commands in this `invoke_handler` block do not use the `_cmd` suffix. Consider renaming to `workflow_is_running` (or `workflow_run_status`) to match the established convention; the frontend can still invoke it via the renamed string.",
+      "existing_code": "crate::workflow_runner::workflow_is_running_cmd,",
+      "start_line": 490,
+      "end_line": 490,
+      "category": "style",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/bot_artifacts.rs",
+      "content": "The `should_emit` doc comment (lines 67–75) lists three variants (Manual / Scheduled / Batch) but the match arm now also handles `Workflow`. Add a Workflow bullet to the doc so the public contract stays in sync with the implementation and future readers don't miss the fourth unattended-execution case.",
+      "existing_code": "/// D4d 收尾分流：判定是否触发汇总弹窗，返回要弹的最终产物列表。\n///\n/// - Manual（🤖 按钮）：必须任务卡 column=done 才弹（用户主动点完成）\n/// - Scheduled（⏰ 定时）：不论 column 都弹（不能让 LLM 误切 status 杀定时）\n/// - Batch（📦 批量）：不论 column 都弹（同 Scheduled）\n///",
+      "start_line": 67,
+      "end_line": 72,
+      "category": "documentation",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/GoalNode.tsx",
+      "content": "Layout regression: the wrapping div with mt-1 always renders, so the bottom margin is now applied even when both progress is null and data.saved is true (i.e., a saved workflow with no execution in progress). In the original code, mt-1 lived on the conditionally rendered p tag, so the margin only appeared when the unsaved hint was shown.",
+      "suggestion_code": "      {(data.progress || !data.saved) \u0026\u0026 (\n        \u003cdiv className=\"mt-1 flex items-center justify-between\"\u003e\n          {data.progress \u0026\u0026 (\n            \u003cspan className=\"text-[10px] text-[var(--t5)]\"\u003e\n              ✔ {data.progress.done}/{data.progress.total} 节点完成",
+      "existing_code": "      \u003cdiv className=\"mt-1 flex items-center justify-between\"\u003e\n        {data.progress \u0026\u0026 (\n          \u003cspan className=\"text-[10px] text-[var(--t5)]\"\u003e\n            ✔ {data.progress.done}/{data.progress.total} 节点完成",
+      "start_line": 46,
+      "end_line": 49,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/bot_artifacts.rs",
+      "content": "`TaskExecOrigin::Workflow` is the only newly added variant in this match arm, but `tests` covers only `Manual` and `Scheduled` paths of `should_emit`. A future refactor that drops Workflow from this arm (or changes its column gating) would slip through CI. Mirror `should_emit_scheduled_ignores_status` with `TaskExecOrigin::Workflow` (assert `Some` for `todo`/`doing`/`done`/`None` columns) so the unattended-execution contract is regression-protected alongside the existing Scheduled case.",
+      "suggestion_code": "        TaskExecOrigin::Scheduled | TaskExecOrigin::Batch | TaskExecOrigin::Workflow =\u003e {\n            Some(finals)\n        }\n    }\n}\n\n#[cfg(test)]\nmod tests {\n    ...\n\n    #[tokio::test]\n    async fn should_emit_workflow_ignores_status() {\n        let app = test_handle();\n        register(\u0026app, \"t_wf\", \"/a/w.txt\".into(), ArtifactKind::Final).await;\n        for col in [Some(\"todo\"), Some(\"doing\"), Some(\"done\"), None] {\n            assert!(\n                should_emit(\u0026app, \"t_wf\", TaskExecOrigin::Workflow, col)\n                    .await\n                    .is_some(),\n                \"Workflow 无人值守执行应不论 column 都弹（col={col:?}）\"\n            );\n        }\n        take_all(\u0026app, \"t_wf\").await;\n    }\n",
+      "existing_code": "        TaskExecOrigin::Scheduled | TaskExecOrigin::Batch | TaskExecOrigin::Workflow =\u003e {\n            Some(finals)\n        }",
+      "start_line": 99,
+      "end_line": 101,
+      "category": "test",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "Nested ternary in the `title` attribute violates the project rule \"Nested ternary expressions are not allowed\", and three-branch logic in a tooltip is harder to maintain than a lookup. Extract a small helper or a const map.",
+      "suggestion_code": "\u003cbutton\n            className={toolbarBtn}\n            onClick={() =\u003e void startRun()}\n            disabled={activeId === null || dirty || nodes.length === 0}\n            title={runTooltip(dirty, activeId, nodes.length)}\n          \u003e",
+      "existing_code": "\u003cbutton\n            className={toolbarBtn}\n            onClick={() =\u003e void startRun()}\n            disabled={activeId === null || dirty || nodes.length === 0}\n            title={\n              dirty\n                ? \"先保存再执行\"\n                : activeId === null\n                  ? \"先选择或保存一个工作流\"\n                  : \"执行整张图（已完成节点自动跳过 = 断点续跑）\"\n            }\n          \u003e",
+      "start_line": 626,
+      "end_line": 637,
+      "category": "style",
+      "severity": "high"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "`stopRun` is not guarded against re-entrancy and does not flip `running` to `false` after the invoke resolves, so the Stop button stays clickable (and the title still reads \"停止…\") until the next 5 s poll reconciles state. During that window rapid clicks fire `workflow_stop` repeatedly. Add a local \"stopping\" pending guard and/or optimistically clear `running` (the backend is meant to be idempotent, but the button should still settle immediately for the operator).",
+      "suggestion_code": "const stopRun = async () =\u003e {\n    if (!activeId || stopping) return;\n    setStopping(true);\n    try {\n      await invoke(\"workflow_stop\", { workflowId: activeId });\n      // 乐观复位：避免 5s 轮询延迟让按钮卡在「停止」\n      setRunning(false);\n    } catch (e) {\n      handleCommandError(e, \"停止工作流\");\n    } finally {\n      setStopping(false);\n    }\n  };",
+      "existing_code": "const stopRun = async () =\u003e {\n    if (!activeId) return;\n    try {\n      await invoke(\"workflow_stop\", { workflowId: activeId });\n      // running 置 false 交给轮询确认（控制台注销需要点时间），这里乐观保留 true\n    } catch (e) {\n      handleCommandError(e, \"停止工作流\");\n    }\n  };",
+      "start_line": 379,
+      "end_line": 387,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "`running` is not reset when the user switches workflows (`openWorkflow`) or starts a new blank canvas (`createBlank`). Side effects: (1) the Stop button keeps rendering against an `activeId` that no longer refers to the running workflow, and `stopRun()` then issues `workflow_stop` on the wrong workflow id; (2) in `createBlank` the button stays visible with no `activeId` to act on. Either reset `running` (and rely on the next poll to re-set it for the new workflow) or — better — key `running` to `activeId` so it cannot leak across selections.",
+      "suggestion_code": "const createBlank = () =\u003e {\n    openSeqRef.current++; // 使在途的 workflow_load 失效\n    decomposeSeqRef.current++; // 同上（OCR r1 critical）\n    setRegenArmed(false);\n    setActiveId(null);\n    setRunning(false); // 不绑 activeId：切到新画布前必须显式复位，避免按钮误指向旧工作流\n    setName(`工作流 ${new Date().toLocaleDateString()}`);",
+      "existing_code": "const createBlank = () =\u003e {\n    openSeqRef.current++; // 使在途的 workflow_load 失效\n    decomposeSeqRef.current++; // 同上（OCR r1 critical）\n    setRegenArmed(false);\n    setActiveId(null);\n    setName(`工作流 ${new Date().toLocaleDateString()}`);",
+      "start_line": 157,
+      "end_line": 162,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "`workflow_is_running_cmd` is fired after `workflow_load` completes without an `openSeqRef` race guard, so if the user switches workflows mid-flight, an older workflow's `is_running` response can overwrite the newer one (the `else` clauses on `workflow_load` are guarded, but the chained `is_running_cmd` is not). Capture the `seq` (or stash `activeId` at call time) and only call `setRunning` if the open sequence still matches.",
+      "suggestion_code": "setNameAuto(false); // 打开的是已保存工作流：名称是作者起的，拆解不得覆盖（OCR r2）\n      invoke\u003cboolean\u003e(\"workflow_is_running_cmd\", { workflowId: id })\n        .then((v) =\u003e { if (seq === openSeqRef.current) setRunning(v); })\n        .catch(() =\u003e {});\n      setMode(\"edit\");",
+      "existing_code": "setNameAuto(false); // 打开的是已保存工作流：名称是作者起的，拆解不得覆盖（OCR r2）\n      invoke\u003cboolean\u003e(\"workflow_is_running_cmd\", { workflowId: id })\n        .then(setRunning)\n        .catch(() =\u003e {});\n      setMode(\"edit\");",
+      "start_line": 145,
+      "end_line": 149,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "Race condition: `setRunning(true)` is set optimistically before `await invoke(\"workflow_run\", ...)` resolves. The polling effect starts as soon as `running` becomes `true`, but the backend only registers the runner inside `workflow_run` (after the registry-lock release and DAG build). If the invoke takes longer than the 5 s poll interval, `workflow_is_running_cmd` can return `false` while the original `workflow_run` is still pending, causing `setRunning(false)` to overwrite the optimistic `true`. The UI then flips back to \"开始执行\" and the user can click again — producing a duplicate `workflow_run` (backend's RUNS registry will reject it, but only after a wasteful round-trip and UI flicker). Gate the polling's state write until the in-flight invoke settles, e.g. via an `invokeInFlightRef` checked inside the `.then` before calling `setRunning(v)`, or skip starting the interval until after `await invoke` resolves.",
+      "existing_code": "  const startRun = async () =\u003e {\n    if (!activeId || running) return;\n    // 未保存修改先拦下（保存键未点时节点卡不存在）\n    if (dirty) {\n      handleCommandError(new Error(\"先保存再执行：未保存的草稿还没有落库节点卡\"), \"开始执行\");\n      return;\n    }\n    try {\n      setRunning(true);\n      await invoke(\"workflow_run\", { workflowId: activeId });\n    } catch (e) {\n      setRunning(false);\n      handleCommandError(e, \"开始执行\", { onRetry: () =\u003e void startRun() });\n    }\n  };",
+      "start_line": 363,
+      "end_line": 377,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "Polling swallows backend errors silently via `.catch(() =\u003e {})`. If `workflow_is_running_cmd` fails persistently (network down, command panic, registry poison), the interval keeps firing forever and the user sees a permanently \"执行中\" button that can never reset because the polling chain keeps erroring out. At minimum log the error (`console.warn`) so it surfaces in dev tools; ideally surface a single transient failure notice so the user knows the displayed state may be stale.",
+      "existing_code": "  // 执行态轮询：running 时每 5s 问一次后端（控制台注销即按钮复位）\n  useEffect(() =\u003e {\n    if (!running || !activeId) return;\n    const t = setInterval(() =\u003e {\n      invoke\u003cboolean\u003e(\"workflow_is_running_cmd\", { workflowId: activeId })\n        .then((v) =\u003e setRunning(v))\n        .catch(() =\u003e {});\n    }, 5000);\n    return () =\u003e clearInterval(t);\n  }, [running, activeId]);",
+      "start_line": 389,
+      "end_line": 398,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "`activeId` is now in the `rfNodes` deps but only feeds the `progress` ternary, which short-circuits to `null` when `running` is `false`. Switching the workflow while not running (`createBlank` → another `openWorkflow`) still rebuilds the entire `rfNodes` array (and re-renders every TaskNode) even though the output is byte-identical. Splitting the goal node's data into its own `useMemo` keyed on `[name, goal, savedSnapshot, running, activeId, tasks]` would keep `rfNodes` independent of the rarely-changing progress fields, and lets the existing `nodes.map` memo drop `running`/`activeId` from its deps.",
+      "existing_code": "    [nodes, tasks, name, goal, savedSnapshot, selectedIds, deleteNode, toggleDone, commitTitle, toggleSubtask, running, activeId]\n  );",
+      "start_line": 534,
+      "end_line": 535,
+      "category": "performance",
+      "severity": "low"
+    }
+  ],
+  "groups": [
+    {
+      "label": "src-tauri/src/bot_artifacts.rs",
+      "files": [
+        "src-tauri/src/bot_artifacts.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/bot_chat.rs",
+      "files": [
+        "src-tauri/src/bot_chat.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/lib.rs",
+      "files": [
+        "src-tauri/src/lib.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/workflow_runner.rs",
+      "files": [
+        "src-tauri/src/workflow_runner.rs"
+      ]
+    },
+    {
+      "label": "src/components/WorkflowCanvas/GoalNode.tsx",
+      "files": [
+        "src/components/WorkflowCanvas/GoalNode.tsx"
+      ]
+    },
+    {
+      "label": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "files": [
+        "src/components/WorkflowCanvas/WorkflowPage.tsx"
+      ]
+    }
+  ],
+  "session_id": "832682cb-bf17-4fdf-8ec9-393fe499aaec",
+  "manifest": {
+    "schema_version": "ocr.run-manifest/v1",
+    "run_id": "832682cb-bf17-4fdf-8ec9-393fe499aaec",
+    "operation": "review",
+    "terminal_state": "complete",
+    "repository": {
+      "identity_sha256": "7aebc670c3c38e64ae52ffaf12cfa8ba078a29af906f8ef856132cd790dbe48b"
+    },
+    "input": {
+      "mode": "commit",
+      "requested_head": "f7febcf",
+      "resolved_base": "20e7db8804cb47b37da8573b4e6cdf8814da8036",
+      "resolved_head": "f7febcf1d01743ac2ee6fcbc8c5d5302c1c04a63",
+      "exact_range": "20e7db8804cb47b37da8573b4e6cdf8814da8036..f7febcf1d01743ac2ee6fcbc8c5d5302c1c04a63",
+      "source_artifact_sha256": "57419c972987ccc6dce39bcad5d1a358de8a489a29bd9903a14de641d0aee1cb"
+    },
+    "execution": {
+      "ocr_version": "v1.12.11",
+      "provider": "minimax-cn",
+      "model": "MiniMax-M3",
+      "configured_concurrency": 8,
+      "rule_config_sha256": "d5e28d02ed5cdf85b533907db24b47f1be02847db764a4ded208dbaf54380ae1",
+      "runtime_config_sha256": "f3ac1cdd2a45285ba614e32ab9bd03b86d9911c8deb3bec22fccf7b7bd4e6913"
+    },
+    "coverage": {
+      "selected": [
+        {
+          "item_id": "5b553fedbe59d498298a54be24d6e815dba502addab6f59fbc76b25c9c56082e",
+          "path": "src-tauri/src/lib.rs",
+          "fingerprint": "5171de9a42d942330dd88bb35105543021396130a6d8507373c3e831d3486275"
+        },
+        {
+          "item_id": "7a73e84754e52179bed706a72f69772b558e95b14ddf458841767a5252631fc9",
+          "path": "src-tauri/src/bot_artifacts.rs",
+          "fingerprint": "e7c2614d7de0dbdde172c6718a49df5ef6e1c20b1e33fc324e1641d256569d4a"
+        },
+        {
+          "item_id": "7db247f2329d097ea748b5299ed5cb9fcf2c76b4992e4b398daedbdfb323f69e",
+          "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+          "fingerprint": "5d94bd18b2de591782631c25e62aef1df50e73349d7fd6bee8ca5bd7c4a497eb"
+        },
+        {
+          "item_id": "a663adaeb79df20a4a7696ae046ae073a284c0626cdcd645dca3db833feccdea",
+          "path": "src-tauri/src/workflow_runner.rs",
+          "fingerprint": "8f71db9bf75c0218d574fcb421836cef7c3b0b4675532a7e1316a797abe2bd07"
+        },
+        {
+          "item_id": "cf72496b1afa77090aa524c47988e6dd7965080910cafc9fb1f0bb5103b9e6b5",
+          "path": "src-tauri/src/bot_chat.rs",
+          "fingerprint": "c5f0de8d3820202f9fef41ffc6aea0d3f6f0a769bb1aa8a983d30f746e07ec3d"
+        },
+        {
+          "item_id": "d5d79e028c63f2b217a2aced364f96f07968b9feb69aa979162cddf1a3f1e287",
+          "path": "src/components/WorkflowCanvas/GoalNode.tsx",
+          "fingerprint": "788f8fe7ea94584bf80884959c98ead0b6cf37d6a77eedc4febc32af17acee09"
+        }
+      ],
+      "completed": [
+        {
+          "item_id": "5b553fedbe59d498298a54be24d6e815dba502addab6f59fbc76b25c9c56082e",
+          "path": "src-tauri/src/lib.rs",
+          "fingerprint": "5171de9a42d942330dd88bb35105543021396130a6d8507373c3e831d3486275"
+        },
+        {
+          "item_id": "7a73e84754e52179bed706a72f69772b558e95b14ddf458841767a5252631fc9",
+          "path": "src-tauri/src/bot_artifacts.rs",
+          "fingerprint": "e7c2614d7de0dbdde172c6718a49df5ef6e1c20b1e33fc324e1641d256569d4a"
+        },
+        {
+          "item_id": "7db247f2329d097ea748b5299ed5cb9fcf2c76b4992e4b398daedbdfb323f69e",
+          "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+          "fingerprint": "5d94bd18b2de591782631c25e62aef1df50e73349d7fd6bee8ca5bd7c4a497eb"
+        },
+        {
+          "item_id": "a663adaeb79df20a4a7696ae046ae073a284c0626cdcd645dca3db833feccdea",
+          "path": "src-tauri/src/workflow_runner.rs",
+          "fingerprint": "8f71db9bf75c0218d574fcb421836cef7c3b0b4675532a7e1316a797abe2bd07"
+        },
+        {
+          "item_id": "cf72496b1afa77090aa524c47988e6dd7965080910cafc9fb1f0bb5103b9e6b5",
+          "path": "src-tauri/src/bot_chat.rs",
+          "fingerprint": "c5f0de8d3820202f9fef41ffc6aea0d3f6f0a769bb1aa8a983d30f746e07ec3d"
+        },
+        {
+          "item_id": "d5d79e028c63f2b217a2aced364f96f07968b9feb69aa979162cddf1a3f1e287",
+          "path": "src/components/WorkflowCanvas/GoalNode.tsx",
+          "fingerprint": "788f8fe7ea94584bf80884959c98ead0b6cf37d6a77eedc4febc32af17acee09"
+        }
+      ],
+      "reused": [],
+      "failed": [],
+      "waived": []
+    },
+    "elapsed_ms": 471067
+  }
+}

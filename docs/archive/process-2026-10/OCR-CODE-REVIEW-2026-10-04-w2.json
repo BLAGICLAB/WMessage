@@ -1,0 +1,431 @@
+{
+  "status": "complete",
+  "llm": {
+    "provider": "minimax-cn",
+    "model": "MiniMax-M3"
+  },
+  "message": "Review complete: 26 finding(s) across 6 selected item(s).",
+  "summary": {
+    "files_reviewed": 6,
+    "comments": 26,
+    "total_tokens": 1732582,
+    "input_tokens": 1638845,
+    "output_tokens": 93737,
+    "cache_read_tokens": 1371927,
+    "elapsed": "8m53s"
+  },
+  "tool_calls": {
+    "total": 96,
+    "by_tool": {
+      "code_comment": 16,
+      "code_search": 38,
+      "file_find": 3,
+      "file_read": 33,
+      "file_read_diff": 6
+    },
+    "failure": 1,
+    "failure_by_tool": {
+      "code_comment": 1
+    },
+    "failure_details": [
+      {
+        "tool_call_number": 34,
+        "tool_name": "code_comment",
+        "file_path": "src/lib/workflowPrompt.ts",
+        "arguments": "{\"category\": \"documentation\", \"content\": \"The catch comment \\\"localStorage 不可用：仅本次会话内存生效\\\" is misleading: the value isn't kept in any memory either — it's silently discarded. Consider rewording to something like \\\"localStorage 不可用：本次写入不持久化，下次读取仍返回旧值或默认值\\\" to match actual behavior.\", \"existing_code\": \"export function setDecomposeGuidance(v: string): void {\\n  try {\\n    localStorage.setItem(GUIDANCE_KEY, v);\\n  } catch {\\n    // localStorage 不可用：仅本次会话内存生效\\n  }\\n}\", \"path\": \"src/lib/workflowPrompt.ts\", \"severity\": \"low\"}",
+        "error": "Error: 'comments' array is required. Got args: {\"category\":\"documentation\",\"content\":\"The catch comment \\\"localStorage 不可用：仅本次会话内存生效\\\" is misleading: the value isn't kept in any memory either — it's silently discarded. Consider rewording to something like \\\"localStorage 不可用：本次写入不持久化，下次读取仍返回旧值或默认值\\\" to match actual behavior.\",\"existing_code\":\"export function setDecomposeGuidance(v: string): void {\\n  try {\\n    localStorage.setItem(GUIDANCE_KEY, v);\\n  } catch {\\n    // localStorage 不可用：仅本次会话内存生效\\n  }\\n}\",\"path\":\"src/lib/workflowPrompt.ts\",\"severity\":\"low\"}"
+      }
+    ]
+  },
+  "comments": [
+    {
+      "path": "src/components/SettingsPage/SettingsPage.tsx",
+      "content": "The `guidance` state has no subscription to refresh itself when the stored value changes from elsewhere. The analogous `showTasks` state in this same component pairs with `WORKFLOW_VISIBILITY_EVENT` (defined in `workflowVisibility.ts`, emitted inside `setShowWorkflowTasks()`) precisely for cross-webview / cross-component sync, and is also re-read in `App.tsx` and `WidgetApp.tsx`. `workflowPrompt.ts` (added in this batch) does NOT emit any equivalent event after `setDecomposeGuidance()` or `resetDecomposeGuidance()` — both silently write to localStorage. If any other call site ever writes to that key (a future \"import preset\" button, devtools reset, test setup, the widget window, or a second SettingsPage instance), this textarea will display stale content until the component remounts, and the user will happily edit on top of a value they cannot see. Mirror the `workflowVisibility` contract — add an event constant exported from `workflowPrompt.ts`, `emit()` it from `setDecomposeGuidance()` / `resetDecomposeGuidance()`, and `listen()` here to call `setGuidance(getDecomposeGuidance())`.",
+      "suggestion_code": "const [guidance, setGuidance] = useState(getDecomposeGuidance);\n  const [guidanceSaved, setGuidanceSaved] = useState(false);\n  useEffect(() =\u003e {\n    const un = listen(WORKFLOW_VISIBILITY_EVENT, () =\u003e\n      setShowTasks(getShowWorkflowTasks())\n    );\n    return () =\u003e {\n      un.then((f) =\u003e f());\n    };\n  }, []);\n  useEffect(() =\u003e {\n    const un = listen(DECOMPOSE_GUIDANCE_EVENT, () =\u003e\n      setGuidance(getDecomposeGuidance())\n    );\n    return () =\u003e {\n      un.then((f) =\u003e f());\n    };\n  }, []);",
+      "existing_code": "const [guidance, setGuidance] = useState(getDecomposeGuidance);\n  const [guidanceSaved, setGuidanceSaved] = useState(false);\n  useEffect(() =\u003e {\n    const un = listen(WORKFLOW_VISIBILITY_EVENT, () =\u003e\n      setShowTasks(getShowWorkflowTasks())\n    );\n    return () =\u003e {\n      un.then((f) =\u003e f());\n    };\n  }, []);",
+      "start_line": 2806,
+      "end_line": 2815,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/SettingsPage/SettingsPage.tsx",
+      "content": "Persistence is wired exclusively to the textarea's `onBlur`. If the textarea is unmounted (route change, panel collapse, widget window close) or the page is reloaded while focus still sits in the field, the in-memory `guidance` is silently dropped — no `useEffect` cleanup flushes the value, no explicit save button exists, and no app-wide `beforeunload` guard fires (confirmed: zero `beforeunload` references in the repo). Compared with the visibility toggle right above (which writes synchronously on click), the new control has a noticeably weaker durability story for the same card. Either add a small `useEffect(() =\u003e () =\u003e { if (!guidanceSaved) setDecomposeGuidance(guidance); }, [guidance, guidanceSaved])` cleanup to flush on unmount, or switch to a debounced auto-save on change so the save indicator stops being load-bearing for data integrity.",
+      "suggestion_code": "onBlur={() =\u003e {\n            setDecomposeGuidance(guidance);\n            setGuidanceSaved(true);\n          }}\n        /\u003e\n        {/* 兜底：组件卸载/路由切换时若用户没失焦，把最新内容刷盘，避免静默丢改动 */}",
+      "existing_code": "onBlur={() =\u003e {\n            setDecomposeGuidance(guidance);\n            setGuidanceSaved(true);\n          }}",
+      "start_line": 2861,
+      "end_line": 2864,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/SettingsPage/SettingsPage.tsx",
+      "content": "The prompt textarea has no length cap and shows no character / token feedback, yet its value is forwarded verbatim to the LLM in `workflow_decompose.rs` (added in this batch). A user pasting a multi-thousand-character guide will see no warning before \"AI 生成\"; any downstream failure (context overflow, fence/JSON validation failure that the validation chain reports back as a retry) surfaces later with no obvious cause pointing at prompt size. `setDecomposeGuidance()` in `workflowPrompt.ts` accepts any string with no upper bound. Consider at minimum a soft `maxLength` (e.g., ~2000 chars to keep it well under typical 8K-context budget after the contract segment is appended) plus a small `length / maxLength` counter under the textarea; the existing `nm-inset` text style already used for the textarea will match the rest of the card.",
+      "suggestion_code": "\u003ctextarea\n          aria-label=\"AI 拆解提示词\"\n          maxLength={2000}\n          className=\"mt-3 h-40 w-full resize-y rounded-[var(--r-sm)] nm-inset p-3 text-sm leading-6 text-[var(--t1)] outline-none\"\n          value={guidance}\n          onChange={(e) =\u003e {\n            setGuidance(e.target.value);\n            setGuidanceSaved(false);\n          }}",
+      "existing_code": "\u003ctextarea\n          aria-label=\"AI 拆解提示词\"\n          className=\"mt-3 h-40 w-full resize-y rounded-[var(--r-sm)] nm-inset p-3 text-sm leading-6 text-[var(--t1)] outline-none\"\n          value={guidance}\n          onChange={(e) =\u003e {\n            setGuidance(e.target.value);\n            setGuidanceSaved(false);\n          }}",
+      "start_line": 2853,
+      "end_line": 2860,
+      "category": "performance",
+      "severity": "low"
+    },
+    {
+      "path": "src/lib/workflowPrompt.ts",
+      "content": "The catch comment \"localStorage 不可用：仅本次会话内存生效\" is misleading: the value isn't kept in any memory either — it's silently discarded. Consider rewording to something like \"localStorage 不可用：本次写入不持久化，下次读取仍返回旧值或默认值\" to match actual behavior.",
+      "existing_code": "export function setDecomposeGuidance(v: string): void {\n  try {\n    localStorage.setItem(GUIDANCE_KEY, v);\n  } catch {\n    // localStorage 不可用：仅本次会话内存生效\n  }\n}",
+      "start_line": 23,
+      "end_line": 29,
+      "category": "documentation",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "The toolbar \"重新生成\" button (and its `regenerate()` handler) is not gated by `activeId !== null`, but the button's title and the `EmptyHero` regenerate copy both promise \"当前画布在保存前保持不变\" / \"重新生成工作流\". A user who just hit \"创建空白工作流\" (`createBlank` sets `activeId = null`, line 147) can still click 重新生成 twice and end up in `mode === \"hero\"`, where `isRegenerate={activeId !== null}` (line 573) is false → `EmptyHero` renders the \"新建工作流\" variant, not the \"重新生成工作流\" variant, contradicting the button's promise. Either hide the button (mirroring the `{activeId \u0026\u0026 \u003cdelete/\u003e}` pattern at line 551) or gate `regenerate()` on `activeId !== null`.",
+      "existing_code": "const regenerate = () =\u003e {\n    if (decomposing) return;\n    if (!regenArmed) {\n      setRegenArmed(true);\n      if (armedTimerRef.current) clearTimeout(armedTimerRef.current);\n      armedTimerRef.current = setTimeout(() =\u003e setRegenArmed(false), 3000);\n      return;\n    }\n    if (armedTimerRef.current) clearTimeout(armedTimerRef.current);\n    setRegenArmed(false);\n    // 回输入框预填原目标（设计 §5.3）；activeId 保留——再次保存时按指纹 diff 替换\n    setMode(\"hero\");\n  };",
+      "start_line": 192,
+      "end_line": 204,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "Default-name detection by string-comparing `prev` against `\\`工作流 ${new Date().toLocaleDateString()}\\`` is fragile: the same format is produced by `createBlank` (line 148) at a different wall-clock instant, so any regeneration that crosses midnight / DST / a timezone shift will mismatch and the stale default name is kept (defeating the intent to refresh). Store an explicit `isNameDefault` flag (or compute the default lazily inside the updater against `savedSnapshot`) instead of reverse-engineering it from a date string.",
+      "existing_code": "setName((prev) =\u003e (prev \u0026\u0026 prev !== `工作流 ${new Date().toLocaleDateString()}` ? prev : goalText.slice(0, 12)));",
+      "start_line": 175,
+      "end_line": 175,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "Magic number `12` truncates the goal-derived workflow name; CJK characters are counted the same as ASCII, so `goalText.slice(0, 12)` silently cuts \"汇总并邮件通知本周完成的任务\" to \"汇总并邮件通知本周完\". Hoist the limit to a named constant (e.g. `NAME_FROM_GOAL_MAX_CHARS`) — preferably with `.chars().count()` — so it is consistent with the `MAX_NODE_TITLE` cap used in the backend validator and any future locale change is a single-line edit.",
+      "existing_code": "setName((prev) =\u003e (prev \u0026\u0026 prev !== `工作流 ${new Date().toLocaleDateString()}` ? prev : goalText.slice(0, 12)));",
+      "start_line": 175,
+      "end_line": 175,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "The bottom of `EmptyHero` now nests two state-dependent branches (`decomposing ? \u003ccancel/\u003e : \u003c\u003e...two buttons\u003c/\u003e`) inside an already-multi-prop component; this is the densest JSX block in the file. Extracting a small `EmptyHeroActions` subcomponent (or a `renderActions()` helper that takes `decomposing / onDecompose / onCancelDecompose / isRegenerate / goal`) would make the conditional structure flat and easier to test in isolation.",
+      "existing_code": "{decomposing ? (\n            \u003cbutton\n              className=\"nm-outset rounded-[var(--r-sm)] px-4 py-1.5 text-sm text-[var(--t3)]\"\n              onClick={onCancelDecompose}\n            \u003e\n              取消\n            \u003c/button\u003e\n          ) : (\n            \u003c\u003e\n              \u003cbutton\n                className=\"nm-inset rounded-[var(--r-sm)] px-4 py-1.5 text-sm text-[var(--t1)] disabled:cursor-not-allowed disabled:opacity-50\"\n                disabled={!goal.trim()}\n                title={goal.trim() ? \"AI 拆解为任务卡并自动连线\" : \"先填写目标描述\"}\n                onClick={onDecompose}\n              \u003e\n                {isRegenerate ? \"AI 重新生成\" : \"AI 生成\"}\n              \u003c/button\u003e\n              \u003cbutton\n                className=\"nm-outset rounded-[var(--r-sm)] px-4 py-1.5 text-sm text-[var(--t3)]\"\n                onClick={onCreateBlank}\n              \u003e\n                创建空白工作流\n              \u003c/button\u003e\n            \u003c/\u003e\n          )}",
+      "start_line": 646,
+      "end_line": 670,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/SettingsPage/SettingsPage.tsx",
+      "content": "The \"已保存\" indicator has no auto-hide mechanism. `guidanceSaved` flips to `true` on `onBlur` and only resets to `false` on the next keystroke or when the reset button is clicked. Once a user has saved once, the label stays visible permanently for the rest of the session even though it is meant to be a transient confirmation — readers will perceive it as static chrome rather than feedback. Add a short timer (or clear it on a subsequent interaction) so the indicator fades after a few seconds, mirroring the affordance users expect from save-toasts.",
+      "suggestion_code": "          onBlur={() =\u003e {\n            setDecomposeGuidance(guidance);\n            setGuidanceSaved(true);\n          }}\n        /\u003e\n        \u003cdiv className=\"mt-3 flex items-center justify-end gap-2\"\u003e\n          {guidanceSaved \u0026\u0026 (\n            \u003cspan\n              className=\"text-xs text-[var(--t5)] transition-opacity duration-700\"\n              ref={savedHintRef}\n            \u003e\n              已保存\n            \u003c/span\u003e\n          )}",
+      "existing_code": "          onBlur={() =\u003e {\n            setDecomposeGuidance(guidance);\n            setGuidanceSaved(true);\n          }}\n        /\u003e\n        \u003cdiv className=\"mt-3 flex items-center justify-end gap-2\"\u003e\n          {guidanceSaved \u0026\u0026 (\n            \u003cspan className=\"text-xs text-[var(--t5)]\"\u003e已保存\u003c/span\u003e\n          )}",
+      "start_line": 2861,
+      "end_line": 2869,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/SettingsPage/SettingsPage.tsx",
+      "content": "No trim/empty guard before persisting. The user can clear the textarea (or fill it with whitespace only) and tab away; the empty/whitespace string is written to localStorage and subsequently forwarded verbatim to the LLM by `workflow_decompose.rs`. Trim the value and fall back to the default before writing, or at minimum block the save when the trimmed value is empty so a stale default can't be silently replaced with garbage.",
+      "suggestion_code": "          onBlur={() =\u003e {\n            const trimmed = guidance.trim();\n            const next = trimmed.length \u003e 0 ? guidance : resetDecomposeGuidance();\n            if (next !== guidance) setGuidance(next);\n            setDecomposeGuidance(next);\n            setGuidanceSaved(true);\n          }}",
+      "existing_code": "          onBlur={() =\u003e {\n            setDecomposeGuidance(guidance);\n            setGuidanceSaved(true);\n          }}",
+      "start_line": 2861,
+      "end_line": 2864,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/SettingsPage/SettingsPage.tsx",
+      "content": "`setDecomposeGuidance` swallows localStorage errors silently (see `workflowPrompt.ts` try/catch), but the UI unconditionally flips `guidanceSaved` to `true` and shows \"已保存\". When storage is unavailable (private mode quota exceeded, storage disabled, etc.) the user gets a false confirmation and the next \"AI 生成\" call will still use the prior value. Either have `setDecomposeGuidance` return a success boolean and surface a failure message here, or drop the misleading indicator when storage is unavailable.",
+      "suggestion_code": "          onBlur={() =\u003e {\n            setGuidanceSaved(false);\n            setSaveError(null);\n            const ok = setDecomposeGuidance(guidance);\n            if (ok) setGuidanceSaved(true);\n            else setSaveError(\"保存失败：本地存储不可用\");\n          }}",
+      "existing_code": "          onBlur={() =\u003e {\n            setDecomposeGuidance(guidance);\n            setGuidanceSaved(true);\n          }}",
+      "start_line": 2861,
+      "end_line": 2864,
+      "category": "bug",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/workflow_decompose.rs",
+      "content": "The `guidance` parameter is not length-capped before being concatenated into `system_prompt`. Compare with `goal`, which is bounded by `MAX_WORKFLOW_GOAL` (500) earlier in this function: a user (or a SettingsPage.tsx textarea with no `maxLength` attribute) can paste an arbitrarily large prompt, which is then billed on every LLM call and may blow past the model's context window. Add a symmetric `MAX_DECOMPOSE_GUIDANCE` constant in `db/workflow.rs` (e.g. a few KB) and reject longer input with `CommandError::InvalidArgument` just like `goal` does.",
+      "suggestion_code": "    if goal_trimmed.chars().count() \u003e MAX_WORKFLOW_GOAL {\n        return Err(CommandError::InvalidArgument {\n            field: \"goal\".into(),\n            value: goal_trimmed,\n            reason: format!(\"目标超过 {MAX_WORKFLOW_GOAL} 字上限\"),\n        });\n    }\n    let guidance_raw = guidance.unwrap_or_default();\n    if guidance_raw.chars().count() \u003e MAX_DECOMPOSE_GUIDANCE {\n        return Err(CommandError::InvalidArgument {\n            field: \"guidance\".into(),\n            value: guidance_raw.chars().take(120).collect(),\n            reason: format!(\"指引段超过 {MAX_DECOMPOSE_GUIDANCE} 字上限\"),\n        });\n    }\n    let system_prompt = build_system_prompt(\u0026guidance_raw);",
+      "existing_code": "    if goal_trimmed.chars().count() \u003e MAX_WORKFLOW_GOAL {\n        return Err(CommandError::InvalidArgument {\n            field: \"goal\".into(),\n            value: goal_trimmed,\n            reason: format!(\"目标超过 {MAX_WORKFLOW_GOAL} 字上限\"),\n        });\n    }\n    let system_prompt = build_system_prompt(\u0026guidance.unwrap_or_default());",
+      "start_line": 197,
+      "end_line": 204,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/workflow_decompose.rs",
+      "content": "The retry loop has no overall deadline. `summarize_http` (bot_chat.rs) sets a per-request 60s timeout, but this loop runs up to 2 attempts back-to-back, so the command can block for ~120s before returning. Combined with no cancellation propagation — the frontend `cancelDecompose` only increments `decomposeSeqRef` (WorkflowPage.tsx), it does not abort the in-flight Tauri command — a user who clicks \"取消\" still pays for the second attempt. Either bound the loop with a wall-clock deadline (e.g. `tokio::time::timeout` around the whole loop) or skip the retry if `summarize_messages` returns a transient/infra error vs. a validation error.",
+      "suggestion_code": "    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);\n    let mut user_content = format!(\"总目标：{goal_trimmed}\");\n    let mut attempts: u8 = 0;\n    let mut last_err = String::new();\n    loop {\n        if std::time::Instant::now() \u003e= deadline {\n            break;\n        }\n        attempts += 1;\n        let raw = crate::bot_chat::summarize_messages(\n            \u0026app,\n            \u0026system_prompt,\n            \u0026[crate::bot_chat::ChatMsg {\n                role: \"user\".into(),\n                content: user_content.clone(),\n            }],\n        )\n        .await?;",
+      "existing_code": "    let mut user_content = format!(\"总目标：{goal_trimmed}\");\n    let mut attempts: u8 = 0;\n    let mut last_err = String::new();\n    loop {\n        attempts += 1;\n        let raw = crate::bot_chat::summarize_messages(\n            \u0026app,\n            \u0026system_prompt,\n            \u0026[crate::bot_chat::ChatMsg {\n                role: \"user\".into(),\n                content: user_content.clone(),\n            }],\n        )\n        .await?;",
+      "start_line": 205,
+      "end_line": 218,
+      "category": "performance",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/workflow_decompose.rs",
+      "content": "The duplicate-title suffix scheme is greedy and not collision-safe. `seen` is keyed on the *current* (possibly already-suffixed) title, so input `[\"审阅\", \"审阅\", \"审阅（2）\"]` produces `[\"审阅\", \"审阅（2）\", \"审阅（2）\"]` — two tasks with the same display name. The unit test `validate_suffixes_duplicate_titles` only covers the all-identical-input case. Either key `seen` on the *original* (pre-suffix) title, or normalize input titles by stripping an existing `（n）` suffix before counting.",
+      "suggestion_code": "    // 重名加后缀：以下标 i+1 作为稳定键，与「是否带（n）字面量」解耦\n    let mut title_counts: std::collections::HashMap\u003cString, usize\u003e = std::collections::HashMap::new();\n    for st in subtasks.iter_mut() {\n        *title_counts.entry(st.title.clone()).or_insert(0) += 1;\n    }\n    let mut seen: std::collections::HashMap\u003cString, usize\u003e = std::collections::HashMap::new();\n    for st in subtasks.iter_mut() {\n        let key = st.title.clone();\n        let n = seen.entry(key).or_insert(0);\n        *n += 1;\n        if *n \u003e 1 {\n            st.title = format!(\"{}（{}）\", st.title, n);\n        }\n    }",
+      "existing_code": "    // 重名加后缀：下游引用按下标，重名只影响可读性，但仍消歧\n    let mut seen: std::collections::HashMap\u003cString, usize\u003e = std::collections::HashMap::new();\n    for st in subtasks.iter_mut() {\n        let n = seen.entry(st.title.clone()).or_insert(0);\n        *n += 1;\n        if *n \u003e 1 {\n            st.title = format!(\"{}（{}）\", st.title, n);\n        }\n    }",
+      "start_line": 170,
+      "end_line": 178,
+      "category": "bug",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/workflow_decompose.rs",
+      "content": "The Tauri command `workflow_decompose` itself has no test coverage. All 8 new unit tests target only the helper functions (`parse_and_validate`, `validate_decompose`, `build_system_prompt`); the retry-and-feedback path, the error-feedback string format (`你上一次的输出未通过校验：…请严格按照输出格式要求重新输出 JSON。`), and the audit event payload (`(\"subtasks\", n)`, `(\"attempts\", n)`) are exercised only by hand. `summarize_http` already exposes a `pub` seam for tests (bot_chat.rs:1022) — consider wiring an integration test that drives the full command with a mock client so the retry/audit contract is locked down.",
+      "existing_code": "#[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn parse_tolerates_markdown_fences() {",
+      "start_line": 251,
+      "end_line": 256,
+      "category": "test",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/workflow_decompose.rs",
+      "content": "The hardcoded contract tells the model \"subtasks：1 到 20 个元素\" but the validator caps at `MAX_WORKFLOW_NODES = 30`. Either tighten the contract to match the validator (preferred — `MAX_WORKFLOW_NODES` is the source of truth from `db/workflow.rs`) or document the deliberate looseness. Right now the contract overpromises for up to 10 extra elements that the model could emit and the validator would still accept.",
+      "suggestion_code": "- subtasks：1 到 {MAX_WORKFLOW_NODES} 个元素，按执行顺序排列",
+      "existing_code": "- subtasks：1 到 20 个元素，按执行顺序排列",
+      "start_line": 25,
+      "end_line": 25,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/workflow_decompose.rs",
+      "content": "Audit event is only emitted on success. After both retries fail (the `break` path on line 235), the function returns `CommandError::Internal(...)` without ever calling `audit::write_event`. For an LLM-driven command that consumes API quota and runs over user-supplied `goal`, failed attempts should be audited at least at Warn/Error level (event name `workflow_decompose_failed`, with `attempts`/`reason` kv) so the bot.log shows whether a user keeps hitting validation errors, vs. transient LLM flakiness. The success path on line 221 is the only audit call.",
+      "existing_code": "Err(e) =\u003e {\n                last_err = e.to_string();\n                if attempts \u003e= 2 {\n                    break;\n                }\n                // 重试：附校验错误让模型自修（设计 §6.1）\n                user_content = format!(\n                    \"总目标：{goal_trimmed}\\n\\n你上一次的输出未通过校验：{last_err}\\n请严格按照输出格式要求重新输出 JSON。\"\n                );\n            }\n        }\n    }\n    Err(CommandError::Internal(format!(\n        \"拆解输出连续 {attempts} 次未通过校验：{last_err}\"\n    )))",
+      "start_line": 232,
+      "end_line": 246,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/workflow_decompose.rs",
+      "content": "Audit event is only emitted on success. After both retries fail (the `break` path on line 235), the function returns `CommandError::Internal(...)` without ever calling `audit::write_event`. For an LLM-driven command that consumes API quota and runs over user-supplied `goal`, failed attempts should be audited at least at Warn/Error level (e.g. event `workflow_decompose_failed`, with `attempts`/`reason` kv) so bot.log distinguishes persistent validation errors from transient LLM flakiness. The success branch on line 221 is the only audit call in this command.",
+      "existing_code": "Err(e) =\u003e {\n                last_err = e.to_string();\n                if attempts \u003e= 2 {\n                    break;\n                }\n                // 重试：附校验错误让模型自修（设计 §6.1）\n                user_content = format!(\n                    \"总目标：{goal_trimmed}\\n\\n你上一次的输出未通过校验：{last_err}\\n请严格按照输出格式要求重新输出 JSON。\"\n                );\n            }\n        }\n    }\n    Err(CommandError::Internal(format!(\n        \"拆解输出连续 {attempts} 次未通过校验：{last_err}\"\n    )))",
+      "start_line": 232,
+      "end_line": 246,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "Race: in-flight AI decompose response can overwrite later state changes. `openWorkflow` (line 124), `createBlank` (line 145), and `addNode` (line 208) don't bump `decomposeSeqRef.current`, so the guard `if (seq !== decomposeSeqRef.current) return;` in `runDecompose` (line 171) still passes after the user navigates away. Concrete data-loss path: user is on `EmptyHero`, clicks \"AI 生成\" → LLM in flight → user clicks a \"已有工作流\" chip → `openWorkflow` sets nodes from the loaded workflow and `setMode(\"edit\")` → LLM returns and `setNodes(fresh)` silently overwrites the loaded workflow's nodes (with `setSavedSnapshot(null)` marking it dirty) → next save overwrites the loaded workflow on the server. `openWorkflow`/`createBlank`/`addNode` should all increment `decomposeSeqRef.current` (mirroring how they already bump `openSeqRef.current`) before kicking off their own async/state work.",
+      "suggestion_code": "  const openWorkflow = async (id: string) =\u003e {\n    const seq = ++openSeqRef.current;\n    decomposeSeqRef.current++; // cancel any in-flight decompose so it can't overwrite this open\n    try {\n      const detail = await invoke\u003cWorkflow \u0026 { tasks: Task[] }\u003e(\"workflow_load\", { id });",
+      "existing_code": "  const openWorkflow = async (id: string) =\u003e {\n    const seq = ++openSeqRef.current;\n    try {\n      const detail = await invoke\u003cWorkflow \u0026 { tasks: Task[] }\u003e(\"workflow_load\", { id });",
+      "start_line": 124,
+      "end_line": 127,
+      "category": "bug",
+      "severity": "critical"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "`createBlank` must also bump `decomposeSeqRef.current` for the same reason as `openWorkflow` — otherwise a slow LLM response that arrives after `createBlank` finishes will replace the brand-new blank canvas with AI-generated nodes (and the user just saw the \"create blank\" confirmation). The pattern is already established here for `openSeqRef`; just add the decompose counter too.",
+      "suggestion_code": "  const createBlank = () =\u003e {\n    openSeqRef.current++; // 使在途的 workflow_load 失效\n    decomposeSeqRef.current++; // 同样丢弃在途的 AI 拆解响应\n    setActiveId(null);",
+      "existing_code": "  const createBlank = () =\u003e {\n    openSeqRef.current++; // 使在途的 workflow_load 失效\n    setActiveId(null);",
+      "start_line": 145,
+      "end_line": 147,
+      "category": "bug",
+      "severity": "critical"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "`addNode` should also cancel an in-flight decompose. From `EmptyHero`, while `decomposing` is true the textarea is disabled and the user has no path forward — but the toolbar \"加卡\" button is still enabled in hero mode, so a user can click it, then watch their single node get silently replaced when the LLM response arrives. Either disable \"加卡\" while `decomposing`, or bump `decomposeSeqRef.current` inside `addNode` so the arriving response is discarded like other navigation paths.",
+      "suggestion_code": "  const addNode = () =\u003e {\n    if (mode === \"hero\" \u0026\u0026 decomposing) return; // hero 等待 AI 时不允许手动加卡\n    // 视口中心落点（screenToFlowPosition 需画布 DOM 存在；空画布也有容器）\n    const center = screenToFlowPosition({\n      x: window.innerWidth / 2,\n      y: window.innerHeight / 2,\n    });",
+      "existing_code": "  const addNode = () =\u003e {\n    // 视口中心落点（screenToFlowPosition 需画布 DOM 存在；空画布也有容器）\n    const center = screenToFlowPosition({\n      x: window.innerWidth / 2,\n      y: window.innerHeight / 2,\n    });",
+      "start_line": 208,
+      "end_line": 213,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "Tooltips/aria on the armed toolbar button: the visual state flips between \"重新生成\" and \"确认重生成？\" but the button has no `aria-pressed` to communicate the armed state to assistive tech (the `title` is read on hover, not on focus-announce). While touching the file, add `aria-pressed={regenArmed}` so screen-reader users get the same cue sighted users do.",
+      "existing_code": "        \u003cbutton\n          className={`${toolbarBtn} ${regenArmed ? \"nm-inset text-[var(--t1)]\" : \"\"}`}\n          onClick={regenerate}\n          disabled={decomposing}\n          title={\n            regenArmed\n              ? \"再点一次确认回到目标输入（当前画布在保存前保持不变）\"\n              : \"修改目标后重新拆解（当前画布在保存前保持不变）\"\n          }\n        \u003e\n          \u003cRefreshCw size={14} aria-hidden /\u003e {regenArmed ? \"确认重生成？\" : \"重新生成\"}\n        ",
+      "start_line": 518,
+      "end_line": 528,
+      "category": "maintainability"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "`regenArmed` and its 3 s timer leak across navigation. The `新建` button on line 509 just calls `setMode(\"hero\")` and the workflow dropdown's `onChange` calls `openWorkflow`/`createBlank` — none of them clear `regenArmed` or `armedTimerRef`. After a user clicks 重新生成 once (arming), if they then click 新建 or switch the dropdown, the toolbar still shows \"确认重生成？\" until the original timer fires. Either gate `regenArmed` on the same condition as the second click (active workflow present), or have those navigation paths reset it. The 重新生成 button itself is `disabled={decomposing}` only, so the armed visual also lingers across mode changes.",
+      "suggestion_code": "        \u003cbutton\n          className={`${toolbarBtn} ${regenArmed ? \"nm-inset text-[var(--t1)]\" : \"\"}`}\n          onClick={regenerate}\n          disabled={decomposing || !activeId}\n          title={\n            regenArmed\n              ? \"再点一次确认回到目标输入（当前画布在保存前保持不变）\"\n              : \"修改目标后重新拆解（当前画布在保存前保持不变）\"\n          }\n        \u003e\n          \u003cRefreshCw size={14} aria-hidden /\u003e {regenArmed ? \"确认重生成？\" : \"重新生成\"}\n        ",
+      "existing_code": "        \u003cbutton\n          className={`${toolbarBtn} ${regenArmed ? \"nm-inset text-[var(--t1)]\" : \"\"}`}\n          onClick={regenerate}\n          disabled={decomposing}\n          title={\n            regenArmed\n              ? \"再点一次确认回到目标输入（当前画布在保存前保持不变）\"\n              : \"修改目标后重新拆解（当前画布在保存前保持不变）\"\n          }\n        \u003e\n          \u003cRefreshCw size={14} aria-hidden /\u003e {regenArmed ? \"确认重生成？\" : \"重新生成\"}\n        ",
+      "start_line": 518,
+      "end_line": 528,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "Tooltips/aria on the armed toolbar button: the visual state flips between \"重新生成\" and \"确认重生成？\" but the button has no `aria-pressed` to communicate the armed state to assistive tech (the `title` is read on hover, not on focus-announce). While touching the file, add `aria-pressed={regenArmed}` so screen-reader users get the same cue sighted users do.",
+      "suggestion_code": "        \u003cbutton\n          className={`${toolbarBtn} ${regenArmed ? \"nm-inset text-[var(--t1)]\" : \"\"}`}\n          onClick={regenerate}\n          disabled={decomposing || !activeId}\n          aria-pressed={regenArmed}\n          title={\n            regenArmed\n              ? \"再点一次确认回到目标输入（当前画布在保存前保持不变）\"\n              : \"修改目标后重新拆解（当前画布在保存前保持不变）\"\n          }\n        \u003e\n          \u003cRefreshCw size={14} aria-hidden /\u003e {regenArmed ? \"确认重生成？\" : \"重新生成\"}\n        ",
+      "existing_code": "        \u003cbutton\n          className={`${toolbarBtn} ${regenArmed ? \"nm-inset text-[var(--t1)]\" : \"\"}`}\n          onClick={regenerate}\n          disabled={decomposing}\n          title={\n            regenArmed\n              ? \"再点一次确认回到目标输入（当前画布在保存前保持不变）\"\n              : \"修改目标后重新拆解（当前画布在保存前保持不变）\"\n          }\n        \u003e\n          \u003cRefreshCw size={14} aria-hidden /\u003e {regenArmed ? \"确认重生成？\" : \"重新生成\"}\n        ",
+      "start_line": 518,
+      "end_line": 528,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "`regenArmed` and its 3 s timer leak across navigation. The `新建` button on line 509 just calls `setMode(\"hero\")`, and the workflow `select` on line 490's `onChange` calls `openWorkflow`/`createBlank` — none of them clear `regenArmed` or `armedTimerRef`. So if the user arms 重新生成 (first click → \"确认重生成？\" armed), then clicks 新建 or picks a different workflow in the dropdown, the toolbar still shows \"确认重生成？\" with the original 3 s timer running until it fires. Suggested fix: extract a small `resetRegenArmed()` helper (clears timer + `setRegenArmed(false)`) and call it from `openWorkflow`, `createBlank`, and the `setMode(\"hero\")` click — i.e., every path that leaves the regenerate flow.",
+      "existing_code": "        \u003cbutton\n          className={`${toolbarBtn} ${regenArmed ? \"nm-inset text-[var(--t1)]\" : \"\"}`}\n          onClick={regenerate}\n          disabled={decomposing}\n          title={\n            regenArmed\n              ? \"再点一次确认回到目标输入（当前画布在保存前保持不变）\"\n              : \"修改目标后重新拆解（当前画布在保存前保持不变）\"\n          }\n        \u003e\n          \u003cRefreshCw size={14} aria-hidden /\u003e {regenArmed ? \"确认重生成？\" : \"重新生成\"}\n        ",
+      "start_line": 518,
+      "end_line": 528,
+      "category": "maintainability"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "regenArmed and its 3s timer leak across navigation. The 新建 button on line 509 just calls setMode(\"hero\"), and the workflow select on line 490's onChange calls openWorkflow/createBlank — none of them clear regenArmed or armedTimerRef. So if the user arms 重新生成 (first click → 确认重生成？), then clicks 新建 or picks a different workflow in the dropdown, the toolbar still shows 确认重生成？ with the original 3s timer running until it fires. Suggested fix: extract a small resetRegenArmed helper (clears timer + setRegenArmed(false)) and call it from openWorkflow, createBlank, and the setMode(\"hero\") click — i.e., every path that leaves the regenerate flow.",
+      "suggestion_code": "        \u003cbutton\n          className={`${toolbarBtn} ${regenArmed ? \"nm-inset text-[var(--t1)]\" : \"\"}`}\n          onClick={regenerate}\n          disabled={decomposing}\n          aria-pressed={regenArmed}\n          title={\n            regenArmed\n              ? \"再点一次确认回到目标输入（当前画布在保存前保持不变）\"\n              : \"修改目标后重新拆解（当前画布在保存前保持不变）\"\n          }\n        \u003e\n          \u003cRefreshCw size={14} aria-hidden /\u003e {regenArmed ? \"确认重生成？\" : \"重新生成\"}",
+      "existing_code": "        \u003cbutton\n          className={`${toolbarBtn} ${regenArmed ? \"nm-inset text-[var(--t1)]\" : \"\"}`}\n          onClick={regenerate}\n          disabled={decomposing}\n          title={\n            regenArmed\n              ? \"再点一次确认回到目标输入（当前画布在保存前保持不变）\"\n              : \"修改目标后重新拆解（当前画布在保存前保持不变）\"\n          }\n        \u003e\n          \u003cRefreshCw size={14} aria-hidden /\u003e {regenArmed ? \"确认重生成？\" : \"重新生成\"}\n        ",
+      "start_line": 518,
+      "end_line": 528,
+      "category": "maintainability",
+      "severity": "medium"
+    }
+  ],
+  "groups": [
+    {
+      "label": "src-tauri/src/lib.rs",
+      "files": [
+        "src-tauri/src/lib.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/workflow_decompose.rs",
+      "files": [
+        "src-tauri/src/workflow_decompose.rs"
+      ]
+    },
+    {
+      "label": "src/components/SettingsPage/SettingsPage.tsx",
+      "files": [
+        "src/components/SettingsPage/SettingsPage.tsx"
+      ]
+    },
+    {
+      "label": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "files": [
+        "src/components/WorkflowCanvas/WorkflowPage.tsx"
+      ]
+    },
+    {
+      "label": "src/components/WorkflowCanvas/graph.ts",
+      "files": [
+        "src/components/WorkflowCanvas/graph.ts"
+      ]
+    },
+    {
+      "label": "src/lib/workflowPrompt.ts",
+      "files": [
+        "src/lib/workflowPrompt.ts"
+      ]
+    }
+  ],
+  "warnings": [
+    {
+      "file": "src-tauri/src/workflow_decompose.rs",
+      "message": "comment filed against tmp/_system_prompt.txt describes code in src-tauri/src/workflow_decompose.rs; re-filed",
+      "type": "comment_refiled"
+    }
+  ],
+  "session_id": "a7a90f40-be00-41b9-95ac-eec6e593740d",
+  "manifest": {
+    "schema_version": "ocr.run-manifest/v1",
+    "run_id": "a7a90f40-be00-41b9-95ac-eec6e593740d",
+    "operation": "review",
+    "terminal_state": "complete",
+    "repository": {
+      "identity_sha256": "7aebc670c3c38e64ae52ffaf12cfa8ba078a29af906f8ef856132cd790dbe48b"
+    },
+    "input": {
+      "mode": "commit",
+      "requested_head": "abe31c5",
+      "resolved_base": "1e99a48387cadcfdaafbb6b31d816250f95ad581",
+      "resolved_head": "abe31c50aea19cbadcb500dcaa47de7137f1ce2d",
+      "exact_range": "1e99a48387cadcfdaafbb6b31d816250f95ad581..abe31c50aea19cbadcb500dcaa47de7137f1ce2d",
+      "source_artifact_sha256": "370fd3525c158092255c4c74daf4dca334681c234009e0e047726ffc1fda0018"
+    },
+    "execution": {
+      "ocr_version": "v1.12.11",
+      "provider": "minimax-cn",
+      "model": "MiniMax-M3",
+      "configured_concurrency": 8,
+      "rule_config_sha256": "d5e28d02ed5cdf85b533907db24b47f1be02847db764a4ded208dbaf54380ae1",
+      "runtime_config_sha256": "f3ac1cdd2a45285ba614e32ab9bd03b86d9911c8deb3bec22fccf7b7bd4e6913"
+    },
+    "coverage": {
+      "selected": [
+        {
+          "item_id": "15c1b4612893b8420ba467cbab17ac8b760801ed7e1721fe6cdbaeadbcbfc7e5",
+          "path": "src/lib/workflowPrompt.ts",
+          "fingerprint": "97efd5a3036d05583b59c7229efc8864661f14dd3d9588b16c5ef1055e66e15c"
+        },
+        {
+          "item_id": "1dbd971cc2fd4f433b08b8c3267c1c890488a94ac49d38f03da48bc67469fb67",
+          "path": "src-tauri/src/workflow_decompose.rs",
+          "fingerprint": "385fee2a07e443b31471127563ddb02e35fce8fed96162ae2be7885e2b0b641f"
+        },
+        {
+          "item_id": "5b553fedbe59d498298a54be24d6e815dba502addab6f59fbc76b25c9c56082e",
+          "path": "src-tauri/src/lib.rs",
+          "fingerprint": "f36bf4185110360be4c4df58ab87c2933938c5f50ccf899509a84f2a9d9514ea"
+        },
+        {
+          "item_id": "7db247f2329d097ea748b5299ed5cb9fcf2c76b4992e4b398daedbdfb323f69e",
+          "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+          "fingerprint": "f7927fefa67cbd311fe1a3949a134979fd2e208ae0462b8fe09cf593a6a531b3"
+        },
+        {
+          "item_id": "85de96e42b83374ff3dacd6b2c8c4a67dd7c42e732331c6b248e1b74734da25f",
+          "path": "src/components/WorkflowCanvas/graph.ts",
+          "fingerprint": "86a5cf6cc33647a5bb0af782bed73341cec52ecd4ed31bcbfc965cf0909cde6d"
+        },
+        {
+          "item_id": "cb7bf5ca1de36eb915bfba1ad2b5015d0ab83f0c80af9abe73151746e895c2ca",
+          "path": "src/components/SettingsPage/SettingsPage.tsx",
+          "fingerprint": "cb0b8cc5f76a3e66d12b83300e18f6b45e704174211922939e8775815f084aaf"
+        }
+      ],
+      "completed": [
+        {
+          "item_id": "15c1b4612893b8420ba467cbab17ac8b760801ed7e1721fe6cdbaeadbcbfc7e5",
+          "path": "src/lib/workflowPrompt.ts",
+          "fingerprint": "97efd5a3036d05583b59c7229efc8864661f14dd3d9588b16c5ef1055e66e15c"
+        },
+        {
+          "item_id": "1dbd971cc2fd4f433b08b8c3267c1c890488a94ac49d38f03da48bc67469fb67",
+          "path": "src-tauri/src/workflow_decompose.rs",
+          "fingerprint": "385fee2a07e443b31471127563ddb02e35fce8fed96162ae2be7885e2b0b641f"
+        },
+        {
+          "item_id": "5b553fedbe59d498298a54be24d6e815dba502addab6f59fbc76b25c9c56082e",
+          "path": "src-tauri/src/lib.rs",
+          "fingerprint": "f36bf4185110360be4c4df58ab87c2933938c5f50ccf899509a84f2a9d9514ea"
+        },
+        {
+          "item_id": "7db247f2329d097ea748b5299ed5cb9fcf2c76b4992e4b398daedbdfb323f69e",
+          "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+          "fingerprint": "f7927fefa67cbd311fe1a3949a134979fd2e208ae0462b8fe09cf593a6a531b3"
+        },
+        {
+          "item_id": "85de96e42b83374ff3dacd6b2c8c4a67dd7c42e732331c6b248e1b74734da25f",
+          "path": "src/components/WorkflowCanvas/graph.ts",
+          "fingerprint": "86a5cf6cc33647a5bb0af782bed73341cec52ecd4ed31bcbfc965cf0909cde6d"
+        },
+        {
+          "item_id": "cb7bf5ca1de36eb915bfba1ad2b5015d0ab83f0c80af9abe73151746e895c2ca",
+          "path": "src/components/SettingsPage/SettingsPage.tsx",
+          "fingerprint": "cb0b8cc5f76a3e66d12b83300e18f6b45e704174211922939e8775815f084aaf"
+        }
+      ],
+      "reused": [],
+      "failed": [],
+      "waived": []
+    },
+    "elapsed_ms": 533145
+  }
+}

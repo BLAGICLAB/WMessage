@@ -1,0 +1,412 @@
+{
+  "status": "complete",
+  "llm": {
+    "provider": "minimax-cn",
+    "model": "MiniMax-M3"
+  },
+  "message": "Review complete: 20 finding(s) across 8 selected item(s).",
+  "summary": {
+    "files_reviewed": 8,
+    "comments": 20,
+    "total_tokens": 4342974,
+    "input_tokens": 4250302,
+    "output_tokens": 92672,
+    "cache_read_tokens": 3909937,
+    "elapsed": "8m22s"
+  },
+  "tool_calls": {
+    "total": 225,
+    "by_tool": {
+      "code_comment": 12,
+      "code_search": 75,
+      "file_find": 3,
+      "file_read": 112,
+      "file_read_diff": 23
+    },
+    "failure": 4,
+    "failure_by_tool": {
+      "file_read": 4
+    },
+    "failure_details": [
+      {
+        "tool_call_number": 10,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/tests/llm_integration.rs",
+        "arguments": "{\"end_line\":30,\"file_path\":\"src-tauri/tests/llm_integration.rs\",\"start_line\":595}",
+        "error": "invalid line range: start_line 595 is greater than end_line 30"
+      },
+      {
+        "tool_call_number": 32,
+        "tool_name": "file_read",
+        "file_path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+        "arguments": "{\"end_line\":420,\"file_path\":\"src/components/SettingsPage/SettingsPage.tsx\",\"start_line\":1800}",
+        "error": "invalid line range: start_line 1800 is greater than end_line 420"
+      },
+      {
+        "tool_call_number": 86,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/workflow_runner.rs",
+        "arguments": "{\"end_line\": 345, \"file_path\": \"src-tauri/src/bot_model_loop.rs\", \"start_line\": 1280}",
+        "error": "invalid line range: start_line 1280 is greater than end_line 345"
+      },
+      {
+        "tool_call_number": 104,
+        "tool_name": "file_read",
+        "file_path": "src-tauri/src/bot_model_loop.rs",
+        "arguments": "{\"end_line\":10,\"file_path\":\"src-tauri/src/bot_model_loop.rs\",\"start_line\":305}",
+        "error": "invalid line range: start_line 305 is greater than end_line 10"
+      }
+    ]
+  },
+  "comments": [
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "The `doneCount` calculation duplicates the `tasks.filter(...)` logic already present in the `rfNodes` useMemo (line 592-594) for the goal card progress. Both compute the same value from the same data. Consider extracting a single source of truth (e.g., a shared `useMemo`) so the two call sites stay in sync and the duplication is removed.",
+      "existing_code": "// 已完成节点数（驱动「继续执行」按钮态，与总目标卡进度同源）\n  const doneCount =\n    activeId !== null\n      ? tasks.filter((t) =\u003e t.workflowId === activeId \u0026\u0026 t.column === \"done\").length\n      : 0;",
+      "start_line": 651,
+      "end_line": 655,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "The new `title` branch overrides `runButtonTitle(dirty, …)` whenever `doneCount \u003e 0`, which loses the \"先保存再执行\" hint that the helper surfaces when `dirty` is true. Result: with unsaved changes (`dirty`) AND completed nodes, the button is disabled but its title still reads \"继续执行：已完成 X 个节点将跳过…\" — misleading because the actual blocker is the dirty state, not anything related to resumption. Recommend gating the \"继续执行\" title on `doneCount \u003e 0 \u0026\u0026 !dirty` (or composing both hints), so the dirty-state warning still wins when applicable.",
+      "existing_code": "title={\n              doneCount \u003e 0\n                ? `继续执行：已完成 ${doneCount} 个节点将跳过（断点续跑），失败/未跑的重新执行`\n                : runButtonTitle(dirty, activeId !== null)\n            }",
+      "start_line": 741,
+      "end_line": 745,
+      "category": "bug",
+      "severity": "high"
+    },
+    {
+      "path": "src-tauri/src/workflow_runner.rs",
+      "content": "Fuse detection relies on `text.contains(\"已熔断\")`, creating an undocumented string-coupling with `bot_model_loop.rs:337` (the `fuse_message` formatter). If the wording there is ever rephrased, i18n-ed, or the emoji `⏹` removed, the workflow controller silently degrades — no ⚠️ note written, but the `ok` flag is still computed from the DB so failure propagation still happens. The user just loses the actionable 「调高上限后重跑」 hint. Consider surfacing fuse as a structured signal (e.g. extend `BotChatResult` with `fused: bool` set inside `bot_model_loop.rs` next to the fuse return) so this contract is type-checked, not string-matched.\n\nAlso worth noting: the same brittle coupling now exists in two places (`workflow_runner.rs` here + `bot_scheduler.rs` ⏰ 摘要), so a structured field would fix both.",
+      "suggestion_code": "                // 熔断识别（W5-FUSE）：见 BotChatResult.fused（结构化字段，由\n                // bot_model_loop.rs 在 should_fuse 命中时一并写入，避免文案耦合）\n                let fused = matches!(\u0026result, Ok(r) if r.result.fused);",
+      "existing_code": "                // 熔断识别（W5-FUSE）：循环优雅返回「⏹ 已熔断」消息且任务未完成\n                let fused = matches!(\u0026result, Ok(r) if r.result.text.contains(\"已熔断\"));",
+      "start_line": 345,
+      "end_line": 346,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/workflow_runner.rs",
+      "content": "`NodeOutcome` now carries three independent booleans (`ok` / `cancelled` / `fused`) whose valid combinations are implicit (e.g. `ok=true, cancelled=true` or `ok=true, fused=true` are representable but meaningless). With fuse added, the cross-product grows again. Consider collapsing to a single `enum Outcome { Ok, Failed, FailedFused, Cancelled }` — `cancelled` already short-circuits at the consumer (line 382) so the fused/failed pair is the only one the receiver needs to distinguish. A typed variant also removes the duplicated `fused: false` writes on the cancellation path.",
+      "suggestion_code": "enum NodeOutcome {\n    /// 成功（解锁下游）\n    Ok,\n    /// 失败（触发跳过传播 + 标准 ⏭ 备注）\n    Failed,\n    /// 熔断（Function 调用超上限）：失败 + ⚠️ 归因备注（W5-FUSE）\n    Fused,\n    /// 取消（在 Gate 排队时被取消）：不计失败，控制器按「已停止」归档\n    Cancelled,\n}",
+      "existing_code": "struct NodeOutcome {\n    id: String,\n    /// true = 成功（解锁下游）；false = 失败（触发跳过传播）\n    ok: bool,\n    /// 取消（在 Gate 排队时被取消）：不计失败，控制器按「已停止」归档\n    cancelled: bool,\n    /// 熔断（Function 调用超上限）：失败的一种，但归因备注不同（W5-FUSE）\n    fused: bool,\n}",
+      "start_line": 179,
+      "end_line": 187,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/SettingsPage/SettingsPage.tsx",
+      "content": "Per-keystroke saveConfig will trigger bot_set_config IPC + disk write on every character typed. The pythonTimeoutSecs pattern (lines 1815-1821) only updates local state and saves on explicit save. Consider the same approach: hold value in local state, debounce or save onBlur, to avoid disk thrash when typing multi-digit values.\n\nThe onChange handler in the input directly calls saveConfig which means typing \"100\" = 3 sequential disk writes (well, debounced by configBusy lock, but still sub-optimal vs local state pattern).",
+      "suggestion_code": "      \u003cWorkflowSettingsCard\n        maxFunctionCalls={config.maxFunctionCalls}\n        onMaxFunctionCallsChange={(v) =\u003e\n          setConfig((c) =\u003e ({ ...c, maxFunctionCalls: v }))\n        }\n      /\u003e",
+      "existing_code": "      \u003cWorkflowSettingsCard\n        maxFunctionCalls={config.maxFunctionCalls}\n        onMaxFunctionCallsChange={(v) =\u003e\n          void saveConfig((c) =\u003e ({ ...c, maxFunctionCalls: v }), {\n            skipReload: true,\n          })\n        }\n      /\u003e",
+      "start_line": 2756,
+      "end_line": 2763,
+      "category": "performance",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/SettingsPage/SettingsPage.tsx",
+      "content": "The label \"(全域熔断)\" and help text emphasize \"全局/所有机器人执行（含普通聊天）\", but the input lives inside the WorkflowSettingsCard which only renders when activeSection === \"workflow\". Users who don't open the workflow section will never see this global setting. The spec explicitly puts it in the workflow section, but consider whether a non-workflow user can ever discover/disable this cap if they hit it in regular chat. Worth confirming intent with PM, or adding a brief hint on the chat side when the cap fires (already handled in the W5-FUSE spec via the note prefix).",
+      "existing_code": "\u003cdiv className=\"nm-card p-5\"\u003e\n        \u003ch2 className=\"text-lg font-semibold text-[var(--t1)]\"\u003e调用工具上限（全域熔断）\u003c/h2\u003e\n        \u003cp className=\"mt-1 text-xs text-[var(--t5)]\"\u003e\n          单次执行累计调用工具达到该次数即熔断停止（默认 100）。工作流节点等长链任务\n          被熔断时，调高后点「继续执行」可从断点接着跑。作用于所有机器人执行（含普通聊天）。\n        \u003c/p\u003e\n        \u003cdiv className=\"mt-3 flex items-center gap-2\"\u003e\n          \u003cinput\n            aria-label=\"调用工具上限\"\n            className=\"h-8 w-28 rounded-[var(--r-sm)] nm-inset px-3 text-sm text-[var(--t1)] outline-none\"\n            inputMode=\"numeric\"\n            placeholder=\"100\"\n            value={maxFunctionCalls}\n            onChange={(e) =\u003e {\n              onMaxFunctionCallsChange(e.target.value.replace(/[^0-9]/g, \"\"));\n            }}\n          /\u003e\n          \u003cspan className=\"text-xs text-[var(--t5)]\"\u003e次（留空 = 默认 100）\u003c/span\u003e\n        \u003c/div\u003e\n      \u003c/div\u003e",
+      "start_line": 2893,
+      "end_line": 2912,
+      "category": "maintainability"
+    },
+    {
+      "path": "src/components/SettingsPage/SettingsPage.tsx",
+      "content": "The label \"(全域熔断)\" and help text emphasize \"全局/所有机器人执行（含普通聊天）\", but the input lives inside the WorkflowSettingsCard which only renders when activeSection === \"workflow\". Users who don't open the workflow section will never see this global setting. The spec explicitly puts it in the workflow section, but consider whether a non-workflow user can ever discover/disable this cap if they hit it in regular chat. Worth confirming intent with PM, or adding a brief hint on the chat side when the cap fires (the W5-FUSE spec already mentions note prefix in workflow execution; consider similar discoverability for chat).",
+      "existing_code": "      \u003cdiv className=\"nm-card p-5\"\u003e\n        \u003ch2 className=\"text-lg font-semibold text-[var(--t1)]\"\u003e调用工具上限（全域熔断）",
+      "start_line": 0,
+      "end_line": 0,
+      "category": "maintainability"
+    },
+    {
+      "path": "src/components/SettingsPage/SettingsPage.tsx",
+      "content": "The label \"(全域熔断)\" and help text emphasize \"全局/所有机器人执行（含普通聊天）\", but the input lives inside the WorkflowSettingsCard which only renders when activeSection === \"workflow\". Users who don't open the workflow section will never see this global setting. The spec explicitly puts it in the workflow section, but consider whether a non-workflow user can ever discover/disable this cap if they hit it in regular chat.",
+      "existing_code": "\u003cdiv className=\"nm-card p-5\"\u003e\n        \u003ch2 className=\"text-lg font-semibold text-[var(--t1)]\"\u003e调用工具上限（全域熔断）\u003c/h2\u003e\n        \u003cp className=\"mt-1 text-xs text-[var(--t5)]\"\u003e\n          单次执行累计调用工具达到该次数即熔断停止（默认 100）。工作流节点等长链任务\n          被熔断时，调高后点「继续执行」可从断点接着跑。作用于所有机器人执行（含普通聊天）。\n        \u003c/p\u003e\n        \u003cdiv className=\"mt-3 flex items-center gap-2\"\u003e\n          \u003cinput\n            aria-label=\"调用工具上限\"\n            className=\"h-8 w-28 rounded-[var(--r-sm)] nm-inset px-3 text-sm text-[var(--t1)] outline-none\"\n            inputMode=\"numeric\"\n            placeholder=\"100\"\n            value={maxFunctionCalls}\n            onChange={(e) =\u003e {\n              onMaxFunctionCallsChange(e.target.value.replace(/[^0-9]/g, \"\"));\n            }}\n          /\u003e\n          \u003cspan className=\"text-xs text-[var(--t5)]\"\u003e次（留空 = 默认 100）\u003c/span\u003e\n        \u003c/div\u003e\n      \u003c/div\u003e",
+      "start_line": 2893,
+      "end_line": 2912,
+      "category": "maintainability"
+    },
+    {
+      "path": "src/components/SettingsPage/SettingsPage.tsx",
+      "content": "Discoverability concern: the label '(全域熔断)' and help text emphasize '全局/所有机器人执行（含普通聊天）', but the input lives inside WorkflowSettingsCard which only renders when activeSection === 'workflow'. Users who never open the workflow section will never see this global setting. The spec puts it here intentionally; consider whether the W5-FUSE熔断归因 message shown on a workflow node card should also nudge users to Settings → Workflow when triggered from regular chat.",
+      "existing_code": "\u003cdiv className=\"nm-card p-5\"\u003e\n        \u003ch2 className=\"text-lg font-semibold text-[var(--t1)]\"\u003e调用工具上限（全域熔断）\u003c/h2\u003e\n        \u003cp className=\"mt-1 text-xs text-[var(--t5)]\"\u003e\n          单次执行累计调用工具达到该次数即熔断停止（默认 100）。工作流节点等长链任务\n          被熔断时，调高后点「继续执行」可从断点接着跑。作用于所有机器人执行（含普通聊天）。\n        \u003c/p\u003e\n        \u003cdiv className=\"mt-3 flex items-center gap-2\"\u003e\n          \u003cinput\n            aria-label=\"调用工具上限\"\n            className=\"h-8 w-28 rounded-[var(--r-sm)] nm-inset px-3 text-sm text-[var(--t1)] outline-none\"\n            inputMode=\"numeric\"\n            placeholder=\"100\"\n            value={maxFunctionCalls}\n            onChange={(e) =\u003e {\n              onMaxFunctionCallsChange(e.target.value.replace(/[^0-9]/g, \"\"));\n            }}\n          /\u003e\n          \u003cspan className=\"text-xs text-[var(--t5)]\"\u003e次（留空 = 默认 100）\u003c/span\u003e\n        \u003c/div\u003e\n      \u003c/div\u003e",
+      "start_line": 2893,
+      "end_line": 2912,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/bot_model_loop.rs",
+      "content": "Stale comment: \"其余 50\" no longer matches the new default of 100. Update to \"其余 100\" to reflect the W5-FUSE default change.",
+      "existing_code": "    // SUBA-2：熔断上限按会话派生——子 agent 预算 max_tool_calls（子会话注册表），\n    // 其余 50。软警阈值 = cap*7/10（cap=50 时即既有 35，行为字节级不变）。\n    // 派生链（W5-FUSE）：子 agent 预算 → bot-config maxFunctionCalls → 默认 100",
+      "start_line": 684,
+      "end_line": 686,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/bot_model_loop.rs",
+      "content": "Stale comment on `should_fuse`: \"其余 = 默认 50\" no longer matches the new default of 100. Update to \"其余 = 默认 100\".",
+      "existing_code": "/// cap 由会话派生（SUBA-2）：子 agent = 预算 max_tool_calls，其余 = 默认 50。\nfn should_fuse(calls_so_far: usize, cap: usize) -\u003e bool {",
+      "start_line": 329,
+      "end_line": 330,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/bot_model_loop.rs",
+      "content": "Dead code: `let mut calls = 0usize;` is declared but never used after this line — the closure `(1..=31).any(|n| should_fuse(n, 30))` does not reference `calls`. Remove this line to keep the test clean (clippy `unused_variables` / `dead_code`).",
+      "existing_code": "        // 配置覆盖：maxFunctionCalls=30 → 第 31 次熔断（派生链第二级）\n        let mut calls = 0usize;\n        let fused = (1..=31).any(|n| should_fuse(n, 30));\n        assert!(fused, \"cap=30 时第 31 次必须熔断\");",
+      "start_line": 2103,
+      "end_line": 2106,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/bot_model_loop.rs",
+      "content": "Construction of `fuse_cap_override` always wraps a `Some(...)`, making the downstream `.unwrap_or(MAX_FUNCTION_CALLS_PER_REQUEST)` dead code in production (only reachable from tests passing `None`). Consider simplifying to `fuse_cap_override: cfg.max_function_calls.map(|v| v.max(1) as usize)` so the fallback to the default lives in exactly one place (the chain in `run_model_loop_core`).",
+      "existing_code": "        // 全域熔断上限（W5-FUSE）：config 有值用之（钳 ≥1），None = 默认 100\n        fuse_cap_override: Some(\n            cfg.max_function_calls\n                .map(|v| v.max(1) as usize)\n                .unwrap_or(MAX_FUNCTION_CALLS_PER_REQUEST),\n        ),",
+      "start_line": 541,
+      "end_line": 546,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/SettingsPage/SettingsPage.tsx",
+      "content": "Per-keystroke saveConfig triggers bot_set_config IPC + disk write on every character typed. The pythonTimeoutSecs input (line 1815-1821) follows the local-state pattern — only updates setConfig and saves on explicit save. Consider mirroring that pattern here: hold the value in local state, then either debounce the save or save onBlur, to avoid disk thrash when typing multi-digit values. The configBusy lock (line 704) prevents concurrent writes but each keystroke still queues an IPC round-trip.",
+      "existing_code": "      \u003cWorkflowSettingsCard\n        maxFunctionCalls={config.maxFunctionCalls}\n        onMaxFunctionCallsChange={(v) =\u003e\n          void saveConfig((c) =\u003e ({ ...c, maxFunctionCalls: v }), {\n            skipReload: true,\n          })\n        }\n      /\u003e",
+      "start_line": 2756,
+      "end_line": 2763,
+      "category": "performance",
+      "severity": "medium"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "The new title ternary partially bypasses the `runButtonTitle()` helper that OCR r1 extracted specifically to avoid inline conditional logic in `title`. Extend `runButtonTitle` to accept `doneCount` (or add a sibling helper) so all tooltip variants live in one named place — e.g. `runButtonTitle(dirty, hasActive, doneCount)` — instead of splitting the logic across the inline expression and the helper.",
+      "suggestion_code": "            title={runButtonTitle(dirty, activeId !== null, doneCount)}",
+      "existing_code": "            title={\n              doneCount \u003e 0\n                ? `继续执行：已完成 ${doneCount} 个节点将跳过（断点续跑），失败/未跑的重新执行`\n                : runButtonTitle(dirty, activeId !== null)\n            }",
+      "start_line": 741,
+      "end_line": 745,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "content": "Parallel to the already-confirmed `dirty` issue: when `nodes.length === 0` but `doneCount \u003e 0` (e.g. all nodes were deleted but done tasks remain), the button is disabled yet the title still reads \"继续执行：已完成 X 个节点将跳过…\" — misleading. The override currently ignores all disabled reasons; the `runButtonTitle`/`dirty` branch handles `dirty` correctly, but `nodes.length === 0` slips through. Fold the nodes-length check (and ideally all disabled reasons) into the central helper.",
+      "suggestion_code": "            title={runButtonTitle(dirty, activeId !== null, doneCount, nodes.length)}",
+      "existing_code": "            title={\n              doneCount \u003e 0\n                ? `继续执行：已完成 ${doneCount} 个节点将跳过（断点续跑），失败/未跑的重新执行`\n                : runButtonTitle(dirty, activeId !== null)\n            }",
+      "start_line": 741,
+      "end_line": 745,
+      "category": "maintainability",
+      "severity": "medium"
+    },
+    {
+      "path": "src-tauri/src/bot_model_loop.rs",
+      "content": "Test name `fuse_trips_on_51st_function_call` is stale after W5-FUSE: the test body now exercises 101 calls (matching the new default 100 cap) and the internal panic message says \"101 次 Function 调用内必须触发熔断\". Rename to `fuse_trips_on_101st_function_call` so the name accurately describes behavior.",
+      "existing_code": "#[test]\n    fn fuse_trips_on_51st_function_call() {\n        // MAX_FUNCTION_CALLS_PER_REQUEST = 50 实际生效：模拟主循环计数，\n        // 构造 101 个 tool_calls → 第 101 次触发熔断（W5-FUSE：默认上限 50→100）",
+      "start_line": 2086,
+      "end_line": 2089,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/bot_model_loop.rs",
+      "content": "Stale comment: \"MAX_FUNCTION_CALLS_PER_REQUEST = 50 实际生效\" no longer matches the constant value (now 100). The two lines directly above have already been updated to reflect 50→100; this intro line should be too.",
+      "existing_code": "// MAX_FUNCTION_CALLS_PER_REQUEST = 50 实际生效：模拟主循环计数，",
+      "start_line": 2088,
+      "end_line": 2088,
+      "category": "documentation",
+      "severity": "low"
+    },
+    {
+      "path": "src-tauri/src/bot_model_loop.rs",
+      "content": "Boundary assertion still uses cap=50 (the old default), not the new default cap=100. With the default raised to 100, the boundary case should also be exercised at the new default to lock in the changed contract: `!should_fuse(100, 100)` and `should_fuse(101, 100)`. The existing cap=50 pair remains useful as an explicit boundary-semantics check, but should be clearly labeled as such (not \"边界\" implying default behavior).",
+      "existing_code": "// 边界：第 50 次放行，第 51 次熔断\n        assert!(!should_fuse(50, 50));\n        assert!(should_fuse(51, 50));",
+      "start_line": 2107,
+      "end_line": 2109,
+      "category": "test",
+      "severity": "low"
+    },
+    {
+      "path": "src/components/SettingsPage/SettingsPage.tsx",
+      "content": "Input has no upper bound (no `max` attr, no JS clamp, backend accepts any `u32`). A user could enter `999999999` and effectively disable the global circuit breaker — defeating the W5-FUSE guard. Inconsistent with `pythonTimeoutSecs` whose comment documents a backend hard cap (\"硬钳 300s\"); here the comment is silent. Suggest either: (1) add a sensible upper bound (frontend `max` + backend clamp) with a brief help-text note, or (2) explicitly state in the help text that there is no enforced cap so users understand the implication.",
+      "suggestion_code": "          \u003cinput\n            aria-label=\"调用工具上限\"\n            className=\"h-8 w-28 rounded-[var(--r-sm)] nm-inset px-3 text-sm text-[var(--t1)] outline-none\"\n            inputMode=\"numeric\"\n            max={10000}\n            placeholder=\"100\"\n            value={maxFunctionCalls}\n            onChange={(e) =\u003e {\n              const stripped = e.target.value.replace(/[^0-9]/g, \"\");\n              // 软上限 10000：防止误输入巨型数废熔断；\u003e10000 时钳制并提示\n              const n = Math.min(parseInt(stripped || \"0\", 10) || 0, 10000);\n              onMaxFunctionCallsChange(n \u003e 0 ? String(n) : stripped);\n            }}\n          /\u003e",
+      "existing_code": "          \u003cinput\n            aria-label=\"调用工具上限\"\n            className=\"h-8 w-28 rounded-[var(--r-sm)] nm-inset px-3 text-sm text-[var(--t1)] outline-none\"\n            inputMode=\"numeric\"\n            placeholder=\"100\"\n            value={maxFunctionCalls}\n            onChange={(e) =\u003e {\n              onMaxFunctionCallsChange(e.target.value.replace(/[^0-9]/g, \"\"));\n            }}\n          /\u003e",
+      "start_line": 2900,
+      "end_line": 2909,
+      "category": "maintainability",
+      "severity": "medium"
+    }
+  ],
+  "groups": [
+    {
+      "label": "src-tauri/src/bot/config/commands.rs",
+      "files": [
+        "src-tauri/src/bot/config/commands.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/bot/config/types.rs",
+      "files": [
+        "src-tauri/src/bot/config/types.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/bot_model_loop.rs",
+      "files": [
+        "src-tauri/src/bot_model_loop.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/src/workflow_runner.rs",
+      "files": [
+        "src-tauri/src/workflow_runner.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/tests/llm_integration.rs",
+      "files": [
+        "src-tauri/tests/llm_integration.rs"
+      ]
+    },
+    {
+      "label": "src-tauri/tests/task_chat_exec.rs",
+      "files": [
+        "src-tauri/tests/task_chat_exec.rs"
+      ]
+    },
+    {
+      "label": "src/components/SettingsPage/SettingsPage.tsx",
+      "files": [
+        "src/components/SettingsPage/SettingsPage.tsx"
+      ]
+    },
+    {
+      "label": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+      "files": [
+        "src/components/WorkflowCanvas/WorkflowPage.tsx"
+      ]
+    }
+  ],
+  "session_id": "f5eac088-d3c5-407d-ad09-997bd1fa1c29",
+  "manifest": {
+    "schema_version": "ocr.run-manifest/v1",
+    "run_id": "f5eac088-d3c5-407d-ad09-997bd1fa1c29",
+    "operation": "review",
+    "terminal_state": "complete",
+    "repository": {
+      "identity_sha256": "7aebc670c3c38e64ae52ffaf12cfa8ba078a29af906f8ef856132cd790dbe48b"
+    },
+    "input": {
+      "mode": "commit",
+      "requested_head": "fcf4aaa",
+      "resolved_base": "369c615cdcf705319345052faa4a6b2dade7a07f",
+      "resolved_head": "fcf4aaaa8e597f2043bae802d9f16cce2b57ac97",
+      "exact_range": "369c615cdcf705319345052faa4a6b2dade7a07f..fcf4aaaa8e597f2043bae802d9f16cce2b57ac97",
+      "source_artifact_sha256": "c7f83ca8aa5ec5a3765e84d622cb74da72c2e1b65d922b27a831e724e43d3410"
+    },
+    "execution": {
+      "ocr_version": "v1.12.11",
+      "provider": "minimax-cn",
+      "model": "MiniMax-M3",
+      "configured_concurrency": 8,
+      "rule_config_sha256": "d5e28d02ed5cdf85b533907db24b47f1be02847db764a4ded208dbaf54380ae1",
+      "runtime_config_sha256": "f3ac1cdd2a45285ba614e32ab9bd03b86d9911c8deb3bec22fccf7b7bd4e6913"
+    },
+    "coverage": {
+      "selected": [
+        {
+          "item_id": "3405d858f60c27c767ba540a902d7cc6acfe06c775948e3bcad981977d89068d",
+          "path": "src-tauri/tests/llm_integration.rs",
+          "fingerprint": "a66f255f3f483ba543b8623c6c175dfee4368cdf8b244d40d93a3249bf1c6ee1"
+        },
+        {
+          "item_id": "61d20bbaef4474e6881979b33ea0534996c6f3b571f98d21ffa442cac9c5bada",
+          "path": "src-tauri/tests/task_chat_exec.rs",
+          "fingerprint": "1c2bb476e73534b5f29ceadf9354378af8faf35e92345a02c2f3d9a8e918b131"
+        },
+        {
+          "item_id": "7db247f2329d097ea748b5299ed5cb9fcf2c76b4992e4b398daedbdfb323f69e",
+          "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+          "fingerprint": "b1801381e28b557fdbad2d5dd9eb844eee83e12c57fc926d955f5fb5f56ebed4"
+        },
+        {
+          "item_id": "a663adaeb79df20a4a7696ae046ae073a284c0626cdcd645dca3db833feccdea",
+          "path": "src-tauri/src/workflow_runner.rs",
+          "fingerprint": "32ce6561b061d8ab4449a041e27c173729a059232174a68ec405c8ac7e0162a6"
+        },
+        {
+          "item_id": "ab42422ae91623b65b7838934850b1b8e83eb9e4e0a742b9c6f8b4a8a24fbc3d",
+          "path": "src-tauri/src/bot/config/commands.rs",
+          "fingerprint": "45ca4cd5d3d70087463096214c2f16c0ebb378492c6624a048a9189587db3b57"
+        },
+        {
+          "item_id": "cb7bf5ca1de36eb915bfba1ad2b5015d0ab83f0c80af9abe73151746e895c2ca",
+          "path": "src/components/SettingsPage/SettingsPage.tsx",
+          "fingerprint": "f492c60a6f65b0cd2d874e6749aa3a082552915f75746c75ef8e53e1748f8d2f"
+        },
+        {
+          "item_id": "cfd0704ec7e04fc5716df93ea6d86a2ea0fe8c8f3fde280fd4b99d48c8dcb982",
+          "path": "src-tauri/src/bot_model_loop.rs",
+          "fingerprint": "245f30bc626fb9eebc033f7e0d9b4eea6481068ec0a7bf688cafe80a4589a4d2"
+        },
+        {
+          "item_id": "d7d7fe268eb8c68e0eb72fa6943d52e6af1395212f373bfbd9cebf16cb8e99bd",
+          "path": "src-tauri/src/bot/config/types.rs",
+          "fingerprint": "f371ba04a0f2cc88359734753babbc9029129b567e2a39de1f5a094af2681b6f"
+        }
+      ],
+      "completed": [
+        {
+          "item_id": "3405d858f60c27c767ba540a902d7cc6acfe06c775948e3bcad981977d89068d",
+          "path": "src-tauri/tests/llm_integration.rs",
+          "fingerprint": "a66f255f3f483ba543b8623c6c175dfee4368cdf8b244d40d93a3249bf1c6ee1"
+        },
+        {
+          "item_id": "61d20bbaef4474e6881979b33ea0534996c6f3b571f98d21ffa442cac9c5bada",
+          "path": "src-tauri/tests/task_chat_exec.rs",
+          "fingerprint": "1c2bb476e73534b5f29ceadf9354378af8faf35e92345a02c2f3d9a8e918b131"
+        },
+        {
+          "item_id": "7db247f2329d097ea748b5299ed5cb9fcf2c76b4992e4b398daedbdfb323f69e",
+          "path": "src/components/WorkflowCanvas/WorkflowPage.tsx",
+          "fingerprint": "b1801381e28b557fdbad2d5dd9eb844eee83e12c57fc926d955f5fb5f56ebed4"
+        },
+        {
+          "item_id": "a663adaeb79df20a4a7696ae046ae073a284c0626cdcd645dca3db833feccdea",
+          "path": "src-tauri/src/workflow_runner.rs",
+          "fingerprint": "32ce6561b061d8ab4449a041e27c173729a059232174a68ec405c8ac7e0162a6"
+        },
+        {
+          "item_id": "ab42422ae91623b65b7838934850b1b8e83eb9e4e0a742b9c6f8b4a8a24fbc3d",
+          "path": "src-tauri/src/bot/config/commands.rs",
+          "fingerprint": "45ca4cd5d3d70087463096214c2f16c0ebb378492c6624a048a9189587db3b57"
+        },
+        {
+          "item_id": "cb7bf5ca1de36eb915bfba1ad2b5015d0ab83f0c80af9abe73151746e895c2ca",
+          "path": "src/components/SettingsPage/SettingsPage.tsx",
+          "fingerprint": "f492c60a6f65b0cd2d874e6749aa3a082552915f75746c75ef8e53e1748f8d2f"
+        },
+        {
+          "item_id": "cfd0704ec7e04fc5716df93ea6d86a2ea0fe8c8f3fde280fd4b99d48c8dcb982",
+          "path": "src-tauri/src/bot_model_loop.rs",
+          "fingerprint": "245f30bc626fb9eebc033f7e0d9b4eea6481068ec0a7bf688cafe80a4589a4d2"
+        },
+        {
+          "item_id": "d7d7fe268eb8c68e0eb72fa6943d52e6af1395212f373bfbd9cebf16cb8e99bd",
+          "path": "src-tauri/src/bot/config/types.rs",
+          "fingerprint": "f371ba04a0f2cc88359734753babbc9029129b567e2a39de1f5a094af2681b6f"
+        }
+      ],
+      "reused": [],
+      "failed": [],
+      "waived": []
+    },
+    "elapsed_ms": 502491
+  }
+}
