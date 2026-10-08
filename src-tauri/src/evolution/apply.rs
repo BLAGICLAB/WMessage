@@ -78,10 +78,8 @@ pub fn apply_one(
         kind: "lesson".to_string(),
         content: p.suggestion.text.clone(),
         tags: vec![key, "evolution".to_string()],
-        // importance 映射已收拢进策略层 trait（批次 B-2，High=4 / 其余=3 原样）
-        importance: i64::from(i64::from(crate::evolution::strategy::importance_for(
-            p.impact,
-        ))),
+        // importance 映射收拢在策略层自由函数（High=4 / 其余=3 原样）
+        importance: i64::from(crate::evolution::strategy::importance_for(p.impact)),
         source: "system".to_string(),
     };
     let (outcome, _merged_ids) = store::insert_item(conn, &item, embedding, now_ms)?;
