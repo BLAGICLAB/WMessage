@@ -8,7 +8,7 @@
 //! bot-config.json 缺文件 / 缺块 / 缺字段 / 非法值 = auto = 现状零变化，
 //! 门禁绝不弄挂 consolidate 主链路；只有「文件存在但 JSON 坏掉」留 stderr 一行
 //! （手改配置改坏了要可诊断，同 read_memory_control_at 口径）。
-//! 写入走 RMW 全程持锁 + atomic_write（同 activation::save_state 形态）：
+//! 写入走 RMW 全程持锁 + atomic_write：
 //! 文件缺失从空对象起（设置页首次点档不要求先存过配置）；解析失败拒绝写
 //!（防整库覆盖——坏文件上 RMW = 丢用户配置）。
 
@@ -58,7 +58,6 @@ pub fn read_apply_policy_at(path: &Path) -> ApplyPolicy {
 }
 
 /// 写互斥：RMW（读→改→写）全程持锁，防并发两次点档后写覆盖先写。
-/// 与 activation::SAVE_STATE_LOCK 同形态（跨写者统一锁 = 既有已登记 follow-up）。
 /// 持锁跨阻塞文件 IO 是有意取舍：这是低频设置写入路径，拆锁会破坏
 /// 「读到的基线在写回时仍有效」的 RMW 不变式。
 static APPLY_POLICY_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
