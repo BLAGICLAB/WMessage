@@ -50,30 +50,18 @@ pub const SCHEDULED_JOB_RUNS_DDL: &str = "CREATE TABLE IF NOT EXISTS scheduled_j
 
 /// 幂等补列：v1 已建表（无状态/重试列）的老库补齐，与 open_db 的 tasks 补列同模式
 pub fn ensure_scheduled_jobs_columns(conn: &rusqlite::Connection) -> Result<(), String> {
-    for (col, ty) in [
-        ("last_status", "TEXT"),
-        ("last_error", "TEXT"),
-        ("pause_on_failure", "INTEGER"),
-        ("retry_max", "INTEGER"),
-        ("retry_at", "INTEGER"),
-        ("retry_count", "INTEGER"),
-    ] {
-        let has: bool = conn
-            .prepare("PRAGMA table_info(scheduled_jobs)")
-            .and_then(|mut stmt| {
-                let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
-                Ok(rows.filter_map(|n| n.ok()).any(|n| n == col))
-            })
-            .map_err(|e| e.to_string())?;
-        if !has {
-            conn.execute(
-                &format!("ALTER TABLE scheduled_jobs ADD COLUMN {col} {ty}"),
-                [],
-            )
-            .map_err(|e| e.to_string())?;
-        }
-    }
-    Ok(())
+    super::ensure_columns(
+        conn,
+        "scheduled_jobs",
+        &[
+            ("last_status", "TEXT"),
+            ("last_error", "TEXT"),
+            ("pause_on_failure", "INTEGER"),
+            ("retry_max", "INTEGER"),
+            ("retry_at", "INTEGER"),
+            ("retry_count", "INTEGER"),
+        ],
+    )
 }
 
 /// 内容长度硬顶（与 workflow goal 同量级：一段「要做什么」的描述）

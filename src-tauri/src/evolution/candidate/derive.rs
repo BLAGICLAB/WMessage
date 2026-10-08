@@ -4,34 +4,13 @@
 
 use super::entry::{ProposalEntry, ProposalStatus};
 use super::ttl::compute_expires_at;
-use crate::evolution::change::EvolutionLayer;
-use crate::evolution::proposal::{EvolutionProposal, ProposalCategory};
+use crate::evolution::change::derive_layer;
+use crate::evolution::proposal::EvolutionProposal;
 
-/// layer 派生（完整 6 层；区别于 ProposalCategory 4 类）
-///
-/// 4/6 类从 category 直接映射；Parameter / Code 两类当前 category 无对应，
-/// R4 仅在 category 能覆盖的 4 层派生；未来扩 category 时再补。
-pub fn derive_layer(category: ProposalCategory) -> EvolutionLayer {
-    match category {
-        ProposalCategory::MemoryHint => EvolutionLayer::Policy,
-        ProposalCategory::PromptHint => EvolutionLayer::PromptHint,
-        ProposalCategory::ToolSchemaHint => EvolutionLayer::ToolSchema,
-        ProposalCategory::SkillHint => EvolutionLayer::Skill,
-    }
-}
-
-/// change_id 派生
-pub fn derive_change_id(proposal_id: &str) -> String {
-    format!("chg-{}", proposal_id)
-}
-
-/// mem_key 派生（与 apply.rs 一致）
-pub fn derive_mem_key(proposal_id: &str) -> String {
-    format!("evo:{}", proposal_id)
-}
-
-/// 从 EvolutionProposal 构造 ProposalEntry（默认状态：Pooled）
+/// 从 EvolutionProposal 构造 ProposalEntry（默认状态：Pooled）。
+/// change_id / mem_key / layer 三件派生单源在 `change::derive`（原逐字重复件已收敛）。
 pub fn from_proposal(p: &EvolutionProposal, now_ms: i64) -> ProposalEntry {
+    use crate::evolution::change::{derive_change_id, derive_mem_key};
     ProposalEntry {
         proposal_id: p.proposal_id.clone(),
         change_id: derive_change_id(&p.proposal_id),
@@ -55,6 +34,7 @@ pub fn from_proposal(p: &EvolutionProposal, now_ms: i64) -> ProposalEntry {
 mod tests {
     use super::*;
     use crate::evolution::candidate::ttl::TTL_MS;
+    use crate::evolution::change::EvolutionLayer;
     use crate::evolution::proposal::{
         Evidence, ImpactLevel, ProposalCategory, ProposalOrigin, ProposalTarget, Suggestion,
     };
@@ -80,32 +60,6 @@ mod tests {
                 structured_patch: None,
             },
         }
-    }
-
-    #[test]
-    fn derive_change_id_and_mem_key_format_locked() {
-        assert_eq!(derive_change_id("abc"), "chg-abc");
-        assert_eq!(derive_mem_key("abc"), "evo:abc");
-    }
-
-    #[test]
-    fn layer_mapping_partial() {
-        assert_eq!(
-            derive_layer(ProposalCategory::MemoryHint),
-            EvolutionLayer::Policy
-        );
-        assert_eq!(
-            derive_layer(ProposalCategory::PromptHint),
-            EvolutionLayer::PromptHint
-        );
-        assert_eq!(
-            derive_layer(ProposalCategory::ToolSchemaHint),
-            EvolutionLayer::ToolSchema
-        );
-        assert_eq!(
-            derive_layer(ProposalCategory::SkillHint),
-            EvolutionLayer::Skill
-        );
     }
 
     #[test]

@@ -1196,6 +1196,16 @@ pub async fn db_delete(app: AppHandle, ids: Vec<String>) -> CommandResult<()> {
 /// （导出低频 + 路径来自用户 save dialog，风险接受口径与 bot_fs.rs:514 一致）。
 /// 写侧由 atomic_write 落盘（临时文件+rename，不写半截）；读侧（import）只读
 /// 自己打开的句柄，最坏读到被换的内容——完整性由 JSON 解析失败兜底，不炸主流程。
+/// 导出/导入目标的路径闸门公共前导：fs 调用进阻塞线程（不占 Tokio worker），
+/// 校验失败转 CommandError。各 *_export / *_import 命令共用。
+pub(crate) async fn check_export_path_gate(path: String) -> Result<(), CommandError> {
+    crate::py::document::spawn_blocking_map(move || {
+        check_export_path(&path).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(CommandError::from)
+}
+
 pub fn check_export_path(path: &str) -> CommandResult<()> {
     use std::path::Path;
     let trimmed = path.trim();
@@ -1437,13 +1447,8 @@ pub fn import_tasks_conn(
 
 #[tauri::command]
 pub async fn tasks_export(app: AppHandle, path: String) -> CommandResult<usize> {
-    // W11 OCR r1 high：路径闸门的 fs 调用进阻塞线程（不占 Tokio worker）
-    let path_gate = path.clone();
-    crate::py::document::spawn_blocking_map(move || {
-        crate::db::tasks::check_export_path(&path_gate).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(CommandError::from)?;
+    // 路径闸门：fs 调用进阻塞线程（口径见 check_export_path_gate）
+    crate::db::tasks::check_export_path_gate(path.clone()).await?;
     async_runtime::spawn_blocking(move || {
         // 导出读全表 + people 表，拿写锁保证快照一致——避免与 task_patch /
         // 调度器并发写产生「半新半旧」的撕裂信封（导出低频，锁竞争可接受）
@@ -1464,13 +1469,8 @@ const MAX_IMPORT_BYTES: u64 = 64 * 1024 * 1024;
 
 #[tauri::command]
 pub async fn tasks_import(app: AppHandle, path: String) -> CommandResult<usize> {
-    // W11 OCR r1 high：路径闸门的 fs 调用进阻塞线程（不占 Tokio worker）
-    let path_gate = path.clone();
-    crate::py::document::spawn_blocking_map(move || {
-        crate::db::tasks::check_export_path(&path_gate).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(CommandError::from)?;
+    // 路径闸门：fs 调用进阻塞线程（口径见 check_export_path_gate）
+    crate::db::tasks::check_export_path_gate(path.clone()).await?;
     async_runtime::spawn_blocking(move || {
         // 上限在读侧强制（bounded reader），不做 metadata 预检——check-then-act 之间
         // 文件可被换大（symlink swap），只有限制实际读入字节数才兜底。

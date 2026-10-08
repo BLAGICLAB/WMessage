@@ -48,76 +48,36 @@ pub const WORKFLOWS_DDL: &str = "CREATE TABLE IF NOT EXISTS workflows (
 
 /// workflows.attachments 幂等 ALTER（W8-ATTACH：老库的 workflows 表无此列）
 pub fn ensure_workflows_attachments(conn: &rusqlite::Connection) -> Result<(), String> {
-    let has: bool = conn
-        .prepare("PRAGMA table_info(workflows)")
-        .and_then(|mut stmt| {
-            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
-            Ok(rows.filter_map(|n| n.ok()).any(|n| n == "attachments"))
-        })
-        .map_err(|e| e.to_string())?;
-    if !has {
-        conn.execute("ALTER TABLE workflows ADD COLUMN attachments TEXT", [])
-            .map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    super::ensure_columns(conn, "workflows", &[("attachments", "TEXT")])
 }
 
 /// workflows.clarify_meta 幂等 ALTER（W9-ASK：澄清答案/粒度，JSON——重拆预填上次回答）
 pub fn ensure_workflows_clarify_meta(conn: &rusqlite::Connection) -> Result<(), String> {
-    let has: bool = conn
-        .prepare("PRAGMA table_info(workflows)")
-        .and_then(|mut stmt| {
-            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
-            Ok(rows.filter_map(|n| n.ok()).any(|n| n == "clarify_meta"))
-        })
-        .map_err(|e| e.to_string())?;
-    if !has {
-        conn.execute("ALTER TABLE workflows ADD COLUMN clarify_meta TEXT", [])
-            .map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    super::ensure_columns(conn, "workflows", &[("clarify_meta", "TEXT")])
 }
 
 /// workflows 定时三列幂等 ALTER（定时任务模块：到点自动执行整张工作流）。
 /// enabled NULL 恒等于启用（与 tasks.enabled 同语义）。
 pub fn ensure_workflows_schedule(conn: &rusqlite::Connection) -> Result<(), String> {
-    for (col, ty) in [
-        ("schedule", "TEXT"),
-        ("sched_last", "INTEGER"),
-        ("enabled", "INTEGER"),
-    ] {
-        let has: bool = conn
-            .prepare("PRAGMA table_info(workflows)")
-            .and_then(|mut stmt| {
-                let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
-                Ok(rows.filter_map(|n| n.ok()).any(|n| n == col))
-            })
-            .map_err(|e| e.to_string())?;
-        if !has {
-            conn.execute(&format!("ALTER TABLE workflows ADD COLUMN {col} {ty}"), [])
-                .map_err(|e| e.to_string())?;
-        }
-    }
-    Ok(())
+    super::ensure_columns(
+        conn,
+        "workflows",
+        &[
+            ("schedule", "TEXT"),
+            ("sched_last", "INTEGER"),
+            ("enabled", "INTEGER"),
+        ],
+    )
 }
 
 /// workflows 收尾审校报告两列幂等 ALTER（W-QA：runner 结算后写入，
 /// 画布 GoalNode 展示；upsert_workflow 的 ON CONFLICT 不更新此二列）
 pub fn ensure_workflows_report(conn: &rusqlite::Connection) -> Result<(), String> {
-    for (col, ty) in [("last_report", "TEXT"), ("last_report_at", "INTEGER")] {
-        let has: bool = conn
-            .prepare("PRAGMA table_info(workflows)")
-            .and_then(|mut stmt| {
-                let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
-                Ok(rows.filter_map(|n| n.ok()).any(|n| n == col))
-            })
-            .map_err(|e| e.to_string())?;
-        if !has {
-            conn.execute(&format!("ALTER TABLE workflows ADD COLUMN {col} {ty}"), [])
-                .map_err(|e| e.to_string())?;
-        }
-    }
-    Ok(())
+    super::ensure_columns(
+        conn,
+        "workflows",
+        &[("last_report", "TEXT"), ("last_report_at", "INTEGER")],
+    )
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -1071,13 +1031,8 @@ pub async fn workflow_export(
     workflow_id: String,
     path: String,
 ) -> CommandResult<usize> {
-    // W11 OCR r1 high：路径闸门的 fs 调用进阻塞线程（不占 Tokio worker）
-    let path_gate = path.clone();
-    crate::py::document::spawn_blocking_map(move || {
-        crate::db::tasks::check_export_path(&path_gate).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(CommandError::from)?;
+    // 路径闸门：fs 调用进阻塞线程（口径见 check_export_path_gate）
+    crate::db::tasks::check_export_path_gate(path.clone()).await?;
     let file = {
         let app = app.clone();
         let wid = workflow_id.clone();
@@ -1119,13 +1074,8 @@ pub async fn workflow_export(
 /// 与 tasks_import 的按 id 合并刻意分离）。图规则全部由 workflow_save_locked 承接。
 #[tauri::command]
 pub async fn workflow_import(app: AppHandle, path: String) -> CommandResult<WorkflowSaveResult> {
-    // W11 OCR r1 high：路径闸门的 fs 调用进阻塞线程（不占 Tokio worker）
-    let path_gate = path.clone();
-    crate::py::document::spawn_blocking_map(move || {
-        crate::db::tasks::check_export_path(&path_gate).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(CommandError::from)?;
+    // 路径闸门：fs 调用进阻塞线程（口径见 check_export_path_gate）
+    crate::db::tasks::check_export_path_gate(path.clone()).await?;
     let path_for_audit = path.clone(); // 审计用；本体 move 进读文件闭包
     let input = {
         async_runtime::spawn_blocking(move || -> CommandResult<WorkflowSaveInput> {

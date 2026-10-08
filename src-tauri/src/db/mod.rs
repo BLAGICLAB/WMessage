@@ -62,6 +62,29 @@ pub fn prepare_for_upsert(t: &mut Task) {
 ///
 /// 回归锁：`db::tests::conn_pragmas_are_applied`
 #[allow(clippy::too_many_lines)]
+/// 幂等补列（schema 演进的共享内核）：查 `PRAGMA table_info(table)`，
+/// 缺列则 `ALTER TABLE ADD COLUMN`。各 `ensure_*` 列补丁统一走这里。
+pub(crate) fn ensure_columns(
+    conn: &rusqlite::Connection,
+    table: &str,
+    cols: &[(&str, &str)],
+) -> Result<(), String> {
+    for (col, ty) in cols {
+        let has: bool = conn
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .and_then(|mut stmt| {
+                let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+                Ok(rows.filter_map(|n| n.ok()).any(|n| n == *col))
+            })
+            .map_err(|e| e.to_string())?;
+        if !has {
+            conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {col} {ty}"), [])
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 pub fn open_db<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<rusqlite::Connection, String> {
