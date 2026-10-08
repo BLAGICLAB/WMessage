@@ -161,7 +161,7 @@ pub fn set_derive_thresholds_at(
     let clamped = t.clamped();
     evo.insert(
         DERIVE_THRESHOLDS_KEY.to_string(),
-        serde_json::to_value(&clamped).map_err(|e| format!("序列化：{e}"))?,
+        serde_json::to_value(clamped).map_err(|e| format!("序列化：{e}"))?,
     );
     crate::db::paths::atomic_write(
         path,
