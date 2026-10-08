@@ -20,7 +20,6 @@
 use rusqlite::Connection;
 
 use super::proposal::EvolutionProposal;
-use crate::evolution::strategy::EvolutionPolicy;
 use crate::memory::store::{self, NewItem};
 
 /// 提案对应的记忆幂等 key（tags[0]）。
@@ -52,7 +51,7 @@ pub struct ApplyReport {
 /// 应用单条提案（纯函数内核，注入连接与向量，内存库可单测）：
 /// 幂等查重 → 写 lesson 记忆。语义去重由 `insert_item` 承担（≥0.92 合并更新）。
 ///
-/// 调用前先过策略层 gate（strategy::EvolutionPolicyPolicy 见 strategy.rs）；本函数不再重复判定类别/门槛。
+/// 调用前先过策略层 gate（strategy::gate_decision 见 strategy.rs）；本函数不再重复判定类别/门槛。
 /// B2-1（P1-EV3）幂等双保险：`find_by_key_tag` 只认 tags[0]，lesson 被 merge
 /// 吸收/挪位后 key 查不到会重复应用——补两层残留复查：
 /// ① key tag 出现在**任意** tag 位（挪位不丢）；② 同 kind=lesson 且内容逐字相同
@@ -80,9 +79,9 @@ pub fn apply_one(
         content: p.suggestion.text.clone(),
         tags: vec![key, "evolution".to_string()],
         // importance 映射已收拢进策略层 trait（批次 B-2，High=4 / 其余=3 原样）
-        importance: i64::from(
-            crate::evolution::strategy::DefaultEvolutionPolicy.importance(p.impact),
-        ),
+        importance: i64::from(i64::from(crate::evolution::strategy::importance_for(
+            p.impact,
+        ))),
         source: "system".to_string(),
     };
     let (outcome, _merged_ids) = store::insert_item(conn, &item, embedding, now_ms)?;
@@ -381,7 +380,7 @@ mod tests {
     use super::*;
     use crate::evolution::proposal::{Evidence, ProposalOrigin, ProposalTarget, Suggestion};
     use crate::evolution::proposal::{ImpactLevel, ProposalCategory};
-    use crate::evolution::strategy::DefaultEvolutionPolicy;
+    use crate::evolution::strategy::gate_decision;
 
     fn mem_conn() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
@@ -418,7 +417,7 @@ mod tests {
 
     fn gate_approved(p: &EvolutionProposal) -> bool {
         use crate::evolution::strategy::GateDecision;
-        matches!(DefaultEvolutionPolicy.gate(p), GateDecision::Approved)
+        matches!(gate_decision(p), GateDecision::Approved)
     }
 
     #[test]

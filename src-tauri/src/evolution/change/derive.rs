@@ -13,7 +13,6 @@
 
 use super::record::{ApprovalSource, ChangeRecord, ChangeStatus, EvolutionLayer};
 use crate::evolution::proposal::{EvolutionProposal, ProposalCategory};
-use crate::evolution::strategy::EvolutionPolicy;
 
 /// change_id 派生函数（DERIVABILITY.md 字段 2）
 pub fn derive_change_id(proposal_id: &str) -> String {
@@ -52,11 +51,9 @@ pub fn derive_layer(category: ProposalCategory) -> EvolutionLayer {
 /// - compliance=true  → Pending（待沙箱或批准）
 /// - compliance=false → Rejected（SystemRejected）
 pub fn from_proposal(p: &EvolutionProposal, now_ms: i64) -> ChangeRecord {
-    // 判定直连策略层 trait（批次 C：旧委托入口已删除），
-    // 生产构造再经它会每次构建报 deprecation warning——旧委托壳仅留给
-    // 存量测试，等其全部改道后删除
+    // 判定直连策略层自由函数
     let compliance = matches!(
-        crate::evolution::strategy::DefaultEvolutionPolicy.gate(p),
+        crate::evolution::strategy::gate_decision(p),
         crate::evolution::strategy::GateDecision::Approved
     );
     let (status, approval_source) = if compliance {
@@ -137,7 +134,6 @@ mod tests {
     use crate::evolution::proposal::{
         Evidence, ImpactLevel, ProposalCategory, ProposalOrigin, ProposalTarget, Suggestion,
     };
-    use crate::evolution::strategy::DefaultEvolutionPolicy;
 
     fn mk_proposal(id: &str, cat: ProposalCategory, impact: ImpactLevel) -> EvolutionProposal {
         EvolutionProposal {
@@ -177,7 +173,7 @@ mod tests {
     fn gate_true_for_memory_high() {
         let p = mk_proposal("p1", ProposalCategory::MemoryHint, ImpactLevel::High);
         assert!(matches!(
-            DefaultEvolutionPolicy.gate(&p),
+            crate::evolution::strategy::gate_decision(&p),
             crate::evolution::strategy::GateDecision::Approved
         ));
     }
@@ -186,7 +182,7 @@ mod tests {
     fn gate_true_for_memory_medium() {
         let p = mk_proposal("p1", ProposalCategory::MemoryHint, ImpactLevel::Medium);
         assert!(matches!(
-            DefaultEvolutionPolicy.gate(&p),
+            crate::evolution::strategy::gate_decision(&p),
             crate::evolution::strategy::GateDecision::Approved
         ));
     }
@@ -195,7 +191,7 @@ mod tests {
     fn gate_false_for_memory_low() {
         let p = mk_proposal("p1", ProposalCategory::MemoryHint, ImpactLevel::Low);
         assert!(!matches!(
-            DefaultEvolutionPolicy.gate(&p),
+            crate::evolution::strategy::gate_decision(&p),
             crate::evolution::strategy::GateDecision::Approved
         ));
     }
@@ -210,7 +206,7 @@ mod tests {
             let p = mk_proposal("p1", cat, ImpactLevel::High);
             assert!(
                 !matches!(
-                    DefaultEvolutionPolicy.gate(&p),
+                    crate::evolution::strategy::gate_decision(&p),
                     crate::evolution::strategy::GateDecision::Approved
                 ),
                 "{cat:?} 不应合规"

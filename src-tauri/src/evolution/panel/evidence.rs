@@ -14,7 +14,7 @@ use tauri::AppHandle;
 
 use crate::evolution::candidate::ProposalEntry;
 use crate::evolution::change::{ChangeRecord, ChangeStatus};
-use crate::evolution::strategy::{DefaultEvolutionPolicy, EvolutionPolicy};
+use crate::evolution::strategy::importance_for;
 
 /// 参与 top-3 模拟的 lesson 快照（现有条目来自 mem_items kind=lesson）
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -152,7 +152,7 @@ pub fn build(
             let candidate = LessonSnapshot {
                 id: p.proposal_id.clone(),
                 content: p.suggestion_text.clone(),
-                importance: i64::from(DefaultEvolutionPolicy.importance(p.impact)),
+                importance: i64::from(importance_for(p.impact)),
             };
             ProposalEvidence {
                 proposal_id: p.proposal_id.clone(),

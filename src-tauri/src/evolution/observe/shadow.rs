@@ -25,12 +25,12 @@ use tauri::AppHandle;
 use crate::audit::AuditLevel;
 use crate::db::paths;
 use crate::evolution::activation::ActivationState;
-use crate::evolution::strategy::{DefaultEvolutionPolicy, EvolutionPolicy};
+use crate::evolution::strategy::gate_decision;
 
-/// gate 谓词（批次 C：auto_apply_gate 委托入口已删除，直连策略层 trait）
+/// gate 谓词（直连策略层自由函数）
 fn gate_approved(p: &crate::evolution::proposal::EvolutionProposal) -> bool {
     matches!(
-        DefaultEvolutionPolicy.gate(p),
+        gate_decision(p),
         crate::evolution::strategy::GateDecision::Approved
     )
 }
