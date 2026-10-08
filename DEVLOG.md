@@ -6,6 +6,25 @@
 > 「为什么换方向」，一事一段。工单号、拍板记录不再进入源码注释（见 SPEC.md
 > 「开发基线」）。以下 2026-10-08 之前的内容为历史批次详录，不再作为格式范例。
 
+## 2026-10-08（周四）基线收敛改造（批 0–7）：单人口径落地 + 过度开发清除
+
+为什么换方向：全仓审计结论——业务模块本身干净，过度开发集中在 evolution
+计划态部件（约 4 千行零调用孤儿）与团队级流程残留（批 spec 门禁/工单号注释/
+中间件注册表）。与「先改基线再清代码」的顺序有关：纪律先行，代码清理才不回潮。
+
+已落：门禁收敛（test-fast/test-all 两条）；SPEC v2 活文档 + AGENTS.md 入口；
+批 1 删孤儿模块（eval harness/observe CLI/sandbox 平行实现/conflict/activation
+死半部/散点 dead_code）；批 1.5 决策板证据（影子判定/冲突标注/回滚预警，借自
+被删内核）；批 2 三项抽象降级（Middleware/EvolutionPolicy/ShadowSink）；批 3
+样板收敛（ensure_columns/路径闸门 helper/derive 单源）；批 4 前端小收敛；
+批 4.5 memoryTuning 设置页；批 5 注释清零（机械批 + grep 验收归零，工单号防线
+全程护航，连执行改造的代理都被它拦过三次）。
+
+教训两条：一、侦察报告也会错——activation 的 S2 评估链被误判死代码，
+编译器与 grep 复核救回（每删一批先全仓引用复核的纪律不可省）；二、
+「等真数据后接线」的注释在立项时诚实，回看就是死亡证明——
+留档用 git log，不用源码。
+
 ## 2026-10-07（周三）W11 OCR 复审：19 条——2 high 全修，3 medium 顺手修，2 WONTFIX（含一次工作区事故记录）
 
 `ocr review --commit 86f981c`（session `4c5c82ca`，8 文件 19 条：high 2 / medium 5 / low 12，

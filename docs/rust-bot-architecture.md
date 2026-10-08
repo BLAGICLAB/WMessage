@@ -467,10 +467,6 @@ flowchart TD
 - `api_handlers/util.rs`
 - `api_handlers/validate.rs`
 
-### `bin/`
-- `bin/eval_run.rs`
-- `bin/observe_run.rs`
-
 ### `bot/`
 - `bot/config/audit.rs`
 - `bot/config/commands.rs`
@@ -514,18 +510,12 @@ flowchart TD
 - `db/workspace.rs`
 
 ### `eval/`
-- `eval/case.rs`
-- `eval/config.rs`
-- `eval/feedback.rs`
 - `eval/metrics.rs`
 - `eval/mod.rs`
-- `eval/runner.rs`
-- `eval/sampler.rs`
 
 ### `evolution/`
 - `evolution/activation.rs`
 - `evolution/apply.rs`
-- `evolution/candidate/conflict.rs`
 - `evolution/candidate/derive.rs`
 - `evolution/candidate/entry.rs`
 - `evolution/candidate/mapping.rs`
@@ -541,18 +531,14 @@ flowchart TD
 - `evolution/observe/metrics.rs`
 - `evolution/observe/mod.rs`
 - `evolution/observe/shadow.rs`
-- `evolution/observe/stop.rs`
-- `evolution/observe/synthetic.rs`
 - `evolution/policy.rs`
 - `evolution/strategy.rs`
 - `evolution/panel/commands.rs`
+- `evolution/panel/evidence.rs`
 - `evolution/panel/mod.rs`
 - `evolution/proposal.rs`
-- `evolution/sandbox/io.rs`
 - `evolution/sandbox/kill_switch.rs`
 - `evolution/sandbox/mod.rs`
-- `evolution/sandbox/routing.rs`
-- `evolution/sandbox/shadow.rs`
 - `evolution/trace.rs`
 
 ### `memory/`
