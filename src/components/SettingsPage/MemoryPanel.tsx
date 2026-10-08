@@ -324,7 +324,9 @@ export function MemoryPanel() {
   };
 
   return (
-    <div className="nm-card p-5">
+    <>
+      <MemoryTuningCard />
+      <div className="nm-card p-5">
       <div className="space-y-2">
         <div className="flex items-center justify-between gap-4">
           <div className="min-w-0">
@@ -611,6 +613,119 @@ export function MemoryPanel() {
             ),
           )}
         </div>
+      </div>
+      </div>
+    </>
+  );
+}
+
+// ───────────────────────── 检索参数卡（memoryTuning，U17 参数化的设置面）─────────────────────────
+
+interface MemoryTuningField {
+  key: string;
+  label: string;
+  def: number;
+  step: number;
+  int: boolean;
+}
+
+/** 8 个可调参数（默认值与后端 MemoryTuning::default / clamped 区间对齐；
+ *  留空 = 该字段回落默认——serde 容器 default 兜底，服务端 clamped 二次钳制） */
+const MEMORY_TUNING_FIELDS: MemoryTuningField[] = [
+  { key: "injectionBudgetChars", label: "注入字符预算", def: 4000, step: 100, int: true },
+  { key: "topN", label: "相关记忆条数", def: 5, step: 1, int: true },
+  { key: "recentN", label: "近期摘要条数", def: 3, step: 1, int: true },
+  { key: "lessonN", label: "经验教训条数", def: 3, step: 1, int: true },
+  { key: "capacity", label: "库容量上限", def: 500, step: 10, int: true },
+  { key: "decayDays", label: "新近衰减天数", def: 30, step: 1, int: false },
+  { key: "dedupMergeCosine", label: "去重合并阈值", def: 0.92, step: 0.01, int: false },
+  { key: "dedupHintCosine", label: "冲突提示阈值", def: 0.75, step: 0.01, int: false },
+];
+
+/** 表单字符串 → 后端 payload：只带非空合法字段；全空 = null（回落默认）。 */
+function parseMemoryTuningInput(
+  raw: Record<string, string>
+): Record<string, number> | null {
+  const out: Record<string, number> = {};
+  for (const f of MEMORY_TUNING_FIELDS) {
+    const v = raw[f.key]?.trim();
+    if (!v) continue;
+    const n = f.int ? parseInt(v, 10) : parseFloat(v);
+    if (Number.isFinite(n)) out[f.key] = n;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+/** 检索参数卡：读 memory_tuning_get / 存 memory_tuning_set（None = 回默认）。 */
+function MemoryTuningCard() {
+  const [tuning, setTuning] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const t = await invoke<Record<string, number>>("memory_tuning_get");
+        const next: Record<string, string> = {};
+        for (const f of MEMORY_TUNING_FIELDS) {
+          next[f.key] = t?.[f.key] != null ? String(t[f.key]) : "";
+        }
+        setTuning(next);
+      } catch {
+        // 读失败保持空表 = 全默认（后端同口径），不打扰面板
+      }
+    })();
+  }, []);
+
+  const save = async () => {
+    setBusy(true);
+    setMsg("");
+    try {
+      const parsed = parseMemoryTuningInput(tuning);
+      await invoke("memory_tuning_set", { tuning: parsed });
+      setMsg("已保存");
+    } catch (e) {
+      setMsg(formatCommandError(e));
+    } finally {
+      setBusy(false);
+      setTimeout(() => setMsg(""), 4000);
+    }
+  };
+
+  return (
+    <div className="nm-card p-5" data-testid="memory-tuning-card">
+      <p className="text-xs font-medium text-[var(--t4)]">检索参数（高级）</p>
+      <p className="mt-1 text-[11px] text-[var(--t6)]">
+        记忆注入的混合打分与容量口径。留空 = 用默认值；保存后下一条消息即生效。
+      </p>
+      <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+        {MEMORY_TUNING_FIELDS.map((f) => (
+          <label key={f.key} className="block">
+            <span className="text-[11px] text-[var(--t5)]">{f.label}</span>
+            <input
+              value={tuning[f.key] ?? ""}
+              placeholder={`默认 ${f.def}`}
+              inputMode={f.int ? "numeric" : "decimal"}
+              step={f.step}
+              onChange={(e) =>
+                setTuning((t) => ({ ...t, [f.key]: e.target.value }))
+              }
+              data-testid={`tuning-${f.key}`}
+              className="nm-inset mt-0.5 w-full px-2 py-1 text-xs text-[var(--t2)]"
+            />
+          </label>
+        ))}
+      </div>
+      <div className="mt-3 flex items-center gap-2">
+        <button
+          className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)] disabled:opacity-50"
+          onClick={() => void save()}
+          disabled={busy}
+          data-testid="btn-tuning-save"
+        >
+          保存检索参数
+        </button>
+        {msg && <span className="text-[11px] text-[var(--t5)]">{msg}</span>}
       </div>
     </div>
   );

@@ -345,4 +345,45 @@ describe("MemoryPanel", () => {
     const call = mocks.invokeMock.mock.calls.find((c) => c[0] === "mem_pending_reject");
     expect(call?.[1]).toEqual({ ids: [1, 2] });
   });
+
+  it("检索参数卡：回填当前值，保存只带非空字段", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "mem_list") return [];
+      if (cmd === "mem_stats") return { total: 0, capacity: 500, withEmbedding: 0 };
+      if (cmd === "memory_tuning_get")
+        return { topN: 7, injectionBudgetChars: 4000, capacity: 500 };
+      return null;
+    });
+    render(<MemoryPanel />);
+    const topN = await screen.findByTestId("tuning-topN");
+    expect(topN).toHaveValue("7");
+    // 改一个字段、清一个字段：只提交非空合法项
+    await user.clear(topN);
+    await user.type(topN, "9");
+    await user.click(screen.getByTestId("btn-tuning-save"));
+    await flush();
+    const call = mocks.invokeMock.mock.calls.find((c) => c[0] === "memory_tuning_set");
+    expect(call?.[1]?.tuning).toMatchObject({
+      topN: 9,
+      injectionBudgetChars: 4000,
+      capacity: 500,
+    });
+  });
+
+  it("检索参数卡：全空保存 = null（回落默认）", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "mem_list") return [];
+      if (cmd === "mem_stats") return { total: 0, capacity: 500, withEmbedding: 0 };
+      if (cmd === "memory_tuning_get") return {};
+      return null;
+    });
+    render(<MemoryPanel />);
+    await screen.findByTestId("memory-tuning-card");
+    await user.click(screen.getByTestId("btn-tuning-save"));
+    await flush();
+    const call = mocks.invokeMock.mock.calls.find((c) => c[0] === "memory_tuning_set");
+    expect(call?.[1]).toEqual({ tuning: null });
+  });
 });

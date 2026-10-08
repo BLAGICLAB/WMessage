@@ -42,11 +42,11 @@ pub use crate::memory::MemoryTuning;
 pub use audit::{audit_log, audit_log_hook, bot_log_read};
 pub use commands::{
     apply_active_model_switch, archive_after_days, bot_clear_api_key, bot_get_config,
-    bot_set_active_model, bot_set_config, perm_mode,
+    bot_set_active_model, bot_set_config, memory_tuning_get, memory_tuning_set, perm_mode,
 };
 pub use io::{
     config_path, migrate_legacy_key, migrate_search_keys, read_bypass_llm_switch,
-    read_memory_control, read_memory_tuning,
+    read_memory_control, read_memory_tuning, write_memory_tuning_at,
 };
 pub use keyring::{
     has_api_key, has_search_key, has_vendor_key, read_api_key, read_llm_key, read_search_key,
@@ -72,9 +72,10 @@ pub(crate) use io::{add_allowed_dir, load_config, update_config_file};
 // #[tauri::command] 函数旁边自动生成；同样 re-export 以让 bot.rs 的 facade 一行不动。
 pub use commands::{
     __cmd__bot_clear_api_key, __cmd__bot_get_config, __cmd__bot_set_active_model,
-    __cmd__bot_set_config, __tauri_command_name_bot_clear_api_key,
-    __tauri_command_name_bot_get_config, __tauri_command_name_bot_set_active_model,
-    __tauri_command_name_bot_set_config,
+    __cmd__bot_set_config, __cmd__memory_tuning_get, __cmd__memory_tuning_set,
+    __tauri_command_name_bot_clear_api_key, __tauri_command_name_bot_get_config,
+    __tauri_command_name_bot_set_active_model, __tauri_command_name_bot_set_config,
+    __tauri_command_name_memory_tuning_get, __tauri_command_name_memory_tuning_set,
 };
 // bot_log_read 是 #[tauri::command] 但住在 audit.rs（同模块同生命周期），
 // 宏生成物也在 audit 里。__cmd__bot_log_read 与 __tauri_command_name_bot_log_read

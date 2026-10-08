@@ -397,6 +397,21 @@ pub fn bot_reload_config(app: AppHandle) -> CommandResult<bool> {
     Ok(shadow_enabled)
 }
 
+/// 记忆检索参数读取（U17 memoryTuning；已过 clamped，前端只见合法值）
+#[tauri::command]
+pub fn memory_tuning_get(app: AppHandle) -> CommandResult<crate::memory::MemoryTuning> {
+    Ok(io::read_memory_tuning(&app))
+}
+
+/// 记忆检索参数写回（None = 移除配置块回落默认；写入前服务端 clamped 兜底）
+#[tauri::command]
+pub fn memory_tuning_set(
+    app: AppHandle,
+    tuning: Option<crate::memory::MemoryTuning>,
+) -> CommandResult<()> {
+    io::write_memory_tuning_at(&io::config_path(&app), tuning).map_err(CommandError::from)
+}
+
 #[cfg(test)]
 mod evolution_preserve_tests {
     use super::*;

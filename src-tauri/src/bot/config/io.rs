@@ -158,6 +158,48 @@ pub fn read_memory_tuning<R: tauri::Runtime>(
     read_memory_tuning_at(&config_path(app))
 }
 
+/// memoryTuning 定向写回（RMW 只改 memoryTuning 块，其余字段原样保留；
+/// 与 set_apply_policy_at 同款）。None = 移除该块（回落内置默认）。
+/// 写入前过 clamped 统一钳制；JSON 损坏拒绝写（防整库覆盖，fail-closed）。
+pub fn write_memory_tuning_at(
+    path: &Path,
+    tuning: Option<crate::memory::MemoryTuning>,
+) -> Result<(), String> {
+    /// bot-config.json 的 tuning RMW 全程锁（本文件内多写者互斥；
+    /// 跨文件写者统一锁 = 既有已登记 follow-up，与 set_apply_policy 同口径）
+    static TUNING_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _g = TUNING_WRITE_LOCK.lock().unwrap_or_else(|e| {
+        eprintln!("[mutex_poisoned] bot::config::io::TUNING_WRITE_LOCK: {e:?}");
+        e.into_inner()
+    });
+    let mut v = match std::fs::read_to_string(path) {
+        Ok(raw) => serde_json::from_str::<serde_json::Value>(&raw)
+            .map_err(|e| format!("{path:?} JSON 解析失败，拒绝写（防覆盖既有配置）：{e}"))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
+        Err(e) => return Err(format!("读 {path:?} 失败：{e}")),
+    };
+    let obj = v
+        .as_object_mut()
+        .ok_or_else(|| format!("{path:?} 顶层非 object，拒绝写"))?;
+    match tuning {
+        Some(t) => {
+            let clamped = t.clamped();
+            let val = serde_json::to_value(&clamped).map_err(|e| format!("序列化：{e}"))?;
+            obj.insert("memoryTuning".to_string(), val);
+        }
+        None => {
+            if let Some(evo) = obj.get_mut("memoryTuning") {
+                let _ = evo;
+            }
+            obj.remove("memoryTuning");
+        }
+    }
+    crate::db::paths::atomic_write(
+        path,
+        &serde_json::to_string_pretty(&v).map_err(|e| format!("序列化：{e}"))?,
+    )
+}
+
 /// 可测内核（纯路径参数）：文件缺失/读失败/JSON 损坏/缺字段 → 默认；
 /// 超界值 → 钳制；解析失败 → stderr 一行告警 + 默认。
 pub(crate) fn read_memory_tuning_at(path: &Path) -> crate::memory::MemoryTuning {
@@ -621,6 +663,46 @@ pub(crate) fn migrate_search_key_slot(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn write_memory_tuning_roundtrip_preserves_and_removes() {
+        let dir = std::env::temp_dir().join(format!(
+            "mem-tuning-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("bot-config.json");
+        std::fs::write(
+            &p,
+            r#"{"baseUrl":"https://x/v1","evolution":{"applyPolicy":"confirm"}}"#,
+        )
+        .unwrap();
+
+        // Some：写入（超界值被钳制），兄弟/顶层字段保留
+        let t = crate::memory::MemoryTuning {
+            top_n: 99,
+            ..Default::default()
+        };
+        write_memory_tuning_at(&p, Some(t)).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v["memoryTuning"]["topN"], 10, "超界钳到上限");
+        assert_eq!(v["baseUrl"], "https://x/v1", "顶层字段保留");
+        assert_eq!(v["evolution"]["applyPolicy"], "confirm", "兄弟块保留");
+
+        // None：整块移除，其余保留
+        write_memory_tuning_at(&p, None).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert!(v.get("memoryTuning").is_none());
+        assert_eq!(v["baseUrl"], "https://x/v1");
+
+        // 坏文件拒绝写
+        std::fs::write(&p, "{ broken").unwrap();
+        assert!(write_memory_tuning_at(&p, None).is_err());
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "{ broken");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
 
     #[test]

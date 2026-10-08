@@ -575,6 +575,8 @@ pub fn run() {
             bot::bot_get_config,
             bot::bot_set_config,
             bot::bot_set_active_model,
+            bot::memory_tuning_get,
+            bot::memory_tuning_set,
             bot::bot_clear_api_key,
             bot::mcp::commands::mcp_server_save,
             bot::mcp::commands::mcp_server_delete,
