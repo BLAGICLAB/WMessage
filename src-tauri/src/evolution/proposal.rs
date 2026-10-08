@@ -185,17 +185,37 @@ pub fn is_reversible(p: &EvolutionProposal) -> bool {
     true
 }
 
-/// 8 字节（16 hex 字符）短 hash。**算法 = 仓内固定 FNV-1a-64**
-/// （`sandbox::routing::fnv1a`）：跨 Rust 版本 / 跨机确定性——
-/// `DefaultHasher` 的算法不在稳定性契约内，toolchain 升级会静默
-/// 打破 dedup 契约，故不用。
+/// 8 字节（16 hex 字符）短 hash。**算法 = 仓内固定 FNV-1a-64**（见 [`fnv1a`]）：
+/// 跨 Rust 版本 / 跨机确定性——`DefaultHasher` 的算法不在稳定性契约内，
+/// toolchain 升级会静默打破 dedup 契约，故不用。
 pub(crate) fn short_hash(s: &str) -> String {
-    format!("{:016x}", crate::evolution::sandbox::routing::fnv1a(s))
+    format!("{:016x}", fnv1a(s))
+}
+
+/// FNV-1a 64-bit hash（确定性、跨进程稳定）。
+/// **非加密哈希**：可逆、易碰撞，仅限分桶/路由/指纹这类非对抗场景，
+/// 禁止用于完整性校验、防篡改、token 比较等安全用途
+fn fnv1a(s: &str) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325; // FNV offset basis
+    for byte in s.bytes() {
+        h ^= byte as u64;
+        h = h.wrapping_mul(0x100000001b3); // FNV prime
+    }
+    h
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fnv1a_deterministic_and_known_value() {
+        // FNV-1a("") = offset basis 本身
+        assert_eq!(fnv1a(""), 0xcbf29ce484222325);
+        // 同输入同输出；不同输入（高度可能）不同输出
+        assert_eq!(fnv1a("session-abc"), fnv1a("session-abc"));
+        assert_ne!(fnv1a("a"), fnv1a("b"));
+    }
 
     fn cat() -> ProposalCategory {
         ProposalCategory::MemoryHint
