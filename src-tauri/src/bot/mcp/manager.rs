@@ -250,6 +250,15 @@ impl McpManager {
                         let reader = BufReader::new(stderr);
                         let mut lines = reader.lines();
                         while let Ok(Some(line)) = lines.next_line().await {
+                            // 行级字节帽：子进程刷超长行时 BufReader::lines 会整行
+                            // 分配，4k 字符截断只影响尾部诊断展示不影响判定
+                            let line = if line.len() > 4000 {
+                                let mut t: String = line.chars().take(4000).collect();
+                                t.push('…');
+                                t
+                            } else {
+                                line
+                            };
                             let mut ring = tail.lock().unwrap_or_else(|e| e.into_inner());
                             if ring.len() >= STDERR_TAIL_LINES {
                                 ring.pop_front();

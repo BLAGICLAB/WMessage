@@ -346,11 +346,13 @@ pub fn apply_active_model_switch(cfg: &mut BotConfig, model_id: &str) -> Command
 /// key 相关路径完全不触碰。返回切换后的 BotConfigView，前端免二次读取。
 #[tauri::command]
 pub fn bot_set_active_model(app: AppHandle, model_id: String) -> CommandResult<BotConfigView> {
+    // 读改写全程持 CONFIG_WRITE_LOCK——与 bot_set_config 同锁，消除并发丢更新
+    let _g = io::lock_config_write();
     let mut cfg = io::load_config(&app);
     schema::migrate_legacy_models(&mut cfg);
     apply_active_model_switch(&mut cfg, &model_id)?;
     schema::derive_legacy_fields_from_active(&mut cfg);
-    io::write_bot_config_file(&crate::db::data_dir(&app), cfg)?;
+    io::write_bot_config_file_locked(&crate::db::data_dir(&app), cfg)?;
     bot_get_config(app)
 }
 

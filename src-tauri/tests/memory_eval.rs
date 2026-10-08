@@ -270,6 +270,12 @@ fn eval_extract_sample() {
     std::fs::write(&tmp_path, format!("{}\n", lines.join("\n")))
         .unwrap_or_else(|e| panic!("写采样临时文件失败：{e}"));
     std::fs::rename(&tmp_path, &out_path).unwrap_or_else(|e| panic!("rename 采样文件失败：{e}"));
+    // 采样含真实用户内容（PII）：Unix 上收紧到 0600（best-effort，Windows 走 ACL 另议）
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&out_path, std::fs::Permissions::from_mode(0o600));
+    }
     println!(
         "已导出 {} 条抽取产物 → {}（human_label 留空，标注口径：good/bad/fix）",
         lines.len(),

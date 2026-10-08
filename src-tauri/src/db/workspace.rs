@@ -247,8 +247,10 @@ fn workspace_import_merge_unchecked(
         // NULL → 整批 Err（tx 未 commit 即返回，drop 回滚，fail-closed）；导入行缺
         // updated_at 维持视 0 = 永不覆盖非 NULL 行。库内去 NULL 化（COALESCE +
         // NOT NULL）属 schema 迁移方向，另批处理。
-        let cur_ua = match cur {
-            None => 0,
+        // 新 id：库里没有可覆盖的对象，直接入库（此前统一视 cur_ua=0，
+        // 导入行缺 updated_at 时 0>0 为假 → 新行被静默丢弃——数据丢失）
+        let take = match cur {
+            None => true,
             Some(None) => {
                 return Err(format!(
                     "导入中止：看板项「{}」在库中的 updated_at 为空（NULL），新旧比较语义未定义。\
@@ -256,9 +258,8 @@ fn workspace_import_merge_unchecked(
                     it.id
                 ));
             }
-            Some(Some(ua)) => ua,
+            Some(Some(ua)) => it.updated_at.unwrap_or(0) > ua,
         };
-        let take = it.updated_at.unwrap_or(0) > cur_ua;
         if take {
             tx.execute(
                 "INSERT INTO workspace_items (id, title, collapsed, links, ord, updated_at)

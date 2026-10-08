@@ -345,10 +345,12 @@ async fn search_brave(key: &str, query: &str, opts: &SearchOpts) -> Result<Strin
     if !resp.status().is_success() {
         return Err(format!("Brave 返回 HTTP {}", resp.status()));
     }
-    let body = resp
-        .text()
-        .await
-        .map_err(|e| format!("Brave 响应读取失败：{e}"))?;
+    let body = String::from_utf8(
+        read_body_capped(resp, 2 * 1024 * 1024)
+            .await
+            .map_err(|e| format!("Brave 响应读取失败：{e}"))?,
+    )
+    .map_err(|_| "Brave 响应不是有效 UTF-8 文本".to_string())?;
     let results = parse_brave_results(&body)?;
     if results.is_empty() {
         return Err("Brave 没有返回结果".into());
@@ -497,10 +499,12 @@ async fn search_bing(query: &str) -> Result<Vec<(String, String, String)>, Comma
             reason: format!("Bing 返回 HTTP {}", resp.status()),
         });
     }
-    let body = resp
-        .text()
-        .await
-        .map_err(|e| format!("读取 Bing 结果失败：{e}"))?;
+    let body = String::from_utf8(
+        read_body_capped(resp, 2 * 1024 * 1024)
+            .await
+            .map_err(|e| format!("读取 Bing 结果失败：{e}"))?,
+    )
+    .map_err(|_| "Bing 响应不是有效 UTF-8 文本".to_string())?;
     let results = parse_bing(&body);
     if results.is_empty() {
         return Err(CommandError::DomainRule {
@@ -530,10 +534,12 @@ async fn search_baidu(query: &str) -> Result<Vec<(String, String, String)>, Comm
             reason: format!("百度返回 HTTP {}", resp.status()),
         });
     }
-    let body = resp
-        .text()
-        .await
-        .map_err(|e| format!("读取百度结果失败：{e}"))?;
+    let body = String::from_utf8(
+        read_body_capped(resp, 2 * 1024 * 1024)
+            .await
+            .map_err(|e| format!("读取百度结果失败：{e}"))?,
+    )
+    .map_err(|_| "百度响应不是有效 UTF-8 文本".to_string())?;
     let results = parse_baidu(&body);
     if results.is_empty() {
         return Err(CommandError::DomainRule {

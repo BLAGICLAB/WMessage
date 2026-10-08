@@ -54,7 +54,8 @@ int NextId() => ++revId;
 
 bool canInPlace = !string.IsNullOrEmpty(originalPath)
     && File.Exists(originalPath)
-    && originalPath.EndsWith(".docx", StringComparison.OrdinalIgnoreCase);
+    && originalPath.EndsWith(".docx", StringComparison.OrdinalIgnoreCase)
+    && !string.Equals(originalPath, outPath, StringComparison.OrdinalIgnoreCase);
 if (canInPlace)
 {
     try

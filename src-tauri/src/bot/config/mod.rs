@@ -94,8 +94,8 @@ mod tests {
     use super::*;
     use crate::bot::config::audit::read_log_tail;
     use crate::bot::config::io::{
-        base_url_is_safe, migrate_search_key_slot, read_bypass_llm_switch_at,
-        read_memory_control_at, read_memory_tuning_at, write_bot_config_file,
+        base_url_is_safe, lock_config_write, migrate_search_key_slot, read_bypass_llm_switch_at,
+        read_memory_control_at, read_memory_tuning_at, write_bot_config_file_locked,
     };
     use crate::bot::config::keyring::{
         backend_for, classify_get_password, classify_has_key, delete_api_key_at, has_api_key_at,
@@ -866,7 +866,8 @@ mod tests {
             brave_key: Some("bsa-plain".into()),
             ..Default::default()
         };
-        write_bot_config_file(tmp.path(), cfg).unwrap();
+        let _g = io::lock_config_write();
+        write_bot_config_file_locked(tmp.path(), cfg).unwrap();
         let raw = std::fs::read_to_string(tmp.path().join("bot-config.json")).unwrap();
         assert!(!raw.contains("***"), "LLM key 不得落盘：{raw}");
         assert!(!raw.contains("tvly-plain"), "Tavily key 不得落盘：{raw}");

@@ -311,7 +311,16 @@ fn write_tmp_0600(tmp: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
             .open(tmp)
             .map_err(|e| format!("降级机密文件写入失败：{e}"))?;
         f.write_all(bytes)
-            .map_err(|e| format!("降级机密文件写入失败：{e}"))
+            .map_err(|e| format!("降级机密文件写入失败：{e}"))?;
+        // mode() 仅新建时生效：tmp 若是上次崩溃残留的 0644 文件，复用 inode 会
+        // 带着旧权限走到 rename——落盘前无条件收紧一次
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(tmp, std::fs::Permissions::from_mode(0o600))
+                .map_err(|e| format!("降级机密文件权限收紧失败：{e}"))?;
+        }
+        Ok(())
     }
     #[cfg(not(unix))]
     {

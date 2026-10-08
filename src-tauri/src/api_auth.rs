@@ -33,7 +33,9 @@ pub fn load_or_create_token(app: &AppHandle) -> Result<String, String> {
         if !s.is_empty() {
             // 存量文件权限可能过宽（历史版本 0644 写入窗口遗留）
             // 永不补 chmod 的话会一直裸奔，读取时顺手收紧（best-effort，失败不挡读）
-            let _ = tighten_token_permissions(&path);
+            if let Err(e) = tighten_token_permissions(&path) {
+                eprintln!("[api_auth] 警告：存量 token 文件权限收紧失败（可能仍可读）：{e}");
+            }
             return Ok(s);
         }
     }
@@ -144,11 +146,15 @@ pub(crate) fn write_token_file(path: &std::path::Path, token: &str) -> Result<()
             .map_err(|e| format!("写入临时文件 {} 失败：{e}", tmp.display()))
     })();
     if let Err(e) = write_result {
-        let _ = std::fs::remove_file(&tmp);
+        if let Err(cleanup_err) = std::fs::remove_file(&tmp) {
+            eprintln!("[api_auth] 警告：临时 token 文件清理失败（内含明文 token，请手动删除）：{}：{cleanup_err}", tmp.display());
+        }
         return Err(e);
     }
     if let Err(e) = std::fs::rename(&tmp, path) {
-        let _ = std::fs::remove_file(&tmp);
+        if let Err(cleanup_err) = std::fs::remove_file(&tmp) {
+            eprintln!("[api_auth] 警告：临时 token 文件清理失败（内含明文 token，请手动删除）：{}：{cleanup_err}", tmp.display());
+        }
         return Err(format!("落盘重命名失败：{e}"));
     }
     // belt & suspenders：tmp 创建即 0600，补 chmod 防极端文件系统 rename 权限继承差异

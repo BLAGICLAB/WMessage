@@ -471,11 +471,6 @@ fn plaintext_strippable(backed: Option<&str>, wrote_now: bool, plaintext: &str) 
 /// （api_key/tavily_key/brave_key 一律 None）后写 bot-config.json。
 /// base_url 非 https 且非回环 → 警告（api_key 明文传输风险）；
 /// 只警告不拒写——本地推理服务是合法场景，且不能破坏存量用户配置。
-pub(crate) fn write_bot_config_file(dir: &Path, config: BotConfig) -> CommandResult<()> {
-    let _g = lock_config_write();
-    write_bot_config_file_locked(dir, config)
-}
-
 /// 无锁内核：调用方必须已持 CONFIG_WRITE_LOCK（update_config_file 的 RMW 段内
 /// 复用——std Mutex 不可重入，经加锁外壳会自锁）。
 pub(crate) fn write_bot_config_file_locked(dir: &Path, config: BotConfig) -> CommandResult<()> {

@@ -455,7 +455,11 @@ pub fn profile_remove_avatar<R: Runtime>(
         let removed = entry.avatar.take();
         save_data(&app, &data)?;
         if let Some(f) = &removed {
-            let _ = std::fs::remove_file(profile_dir(&app).join(f));
+            // 删除前过一遍文件名归一：手改 profile.json 塞路径穿越串时只删
+            // profile_dir 内的归一目标，不跟随穿越（与读取端 avatar_filename_only 同防线）
+            if let Some(name) = avatar_filename_only(f) {
+                let _ = std::fs::remove_file(profile_dir(&app).join(name));
+            }
         }
         (data, removed)
     };

@@ -268,10 +268,20 @@ fn write_fallback_warn(dir: &std::path::Path, event: &str, kv: &[(&str, &str)]) 
         line.push_str(&format!(" | {}={}", k, esc));
     }
     // 创建即 0600（与 audit::open_log_append 一致）；写失败 eprintln 不阻塞
-    let open = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&p);
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let open = opts.open(&p);
+    #[cfg(unix)]
+    if open.is_ok() {
+        use std::os::unix::fs::PermissionsExt;
+        // mode() 只在新建时生效——已存在文件补 chmod（幂等 best-effort）
+        let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600));
+    }
     match open {
         Ok(mut f) => {
             if let Err(e) = writeln!(f, "{line}") {
