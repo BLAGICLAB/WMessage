@@ -394,14 +394,6 @@ pub(crate) fn purge_server_secrets(app: &tauri::AppHandle, id: &str) -> Result<(
 }
 
 /// 迁移前探测：blob 是否已在（幂等短路用）。阶段 3 迁移链路预埋口，暂无调用方。
-#[allow(dead_code)]
-pub(crate) fn has_secret(app: &tauri::AppHandle, id: &str) -> Result<bool, String> {
-    match cache_get(id) {
-        Some(v) => Ok(v.is_some()),
-        None => Ok(read_backend(app, id)?.is_some()),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

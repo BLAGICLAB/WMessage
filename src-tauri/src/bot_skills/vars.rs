@@ -36,7 +36,6 @@ pub struct CompletedStep {
     pub index: usize,
     /// 步骤标题。substitute_vars 不读，仅作为 ctx roundtrip 快照保留
     /// （调试 / 未来审计 / Skill 跨步 context 用）
-    #[allow(dead_code)]
     pub title: String,
     /// 工具返回的原始文本
     pub result: String,

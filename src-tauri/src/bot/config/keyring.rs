@@ -10,8 +10,6 @@
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tauri::AppHandle;
-
 use crate::error::{CommandError, CommandResult};
 
 use super::types::{
@@ -659,8 +657,6 @@ pub fn read_llm_key(
 }
 
 // 抑制 unused 警告：AppHandle 暂未直接用于本模块（迁移走数据目录）
-#[allow(dead_code)]
-fn _app_handle_marker(_a: &AppHandle) {}
 
 #[cfg(test)]
 mod vendor_key_tests {

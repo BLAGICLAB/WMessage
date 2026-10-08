@@ -732,22 +732,6 @@ pub async fn run_model_loop(
 
 /// 流完整性收尾状态：替代旧 `saw_done_or_finish: bool`，区分具体收尾来源。
 /// - Done：SSE 协议终结哨兵（`data: [DONE]`）
-/// - FinishReason：LLM 输出 finish_reason（stop / length / content_filter 等）
-/// - Error：流内 200 但 payload 为错误（如上游网关错误帧）；保留供未来按需 wire
-///   （当前 bot_model_loop 用独立的 `stream_error: Option<String>` 追踪，行为保持等价）
-/// - Incomplete：连接断开，无任何收尾标记（流被截断）
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StreamEnd {
-    #[allow(dead_code)]
-    Done,
-    #[allow(dead_code)]
-    FinishReason,
-    #[allow(dead_code)]
-    Error,
-    #[allow(dead_code)]
-    Incomplete,
-}
-
 /// 模型工具循环核心：流式请求（思考拆分 + 工具折叠事件）、进程内执行工具。
 /// 配置/Key/HTTP 客户端/副作用出口全部注入，不依赖 AppHandle。
 /// msgs 需已含 system 消息；返回 (最终正文, 任务引用)。
@@ -1080,7 +1064,7 @@ where
         let mut think_buf = String::new();
         // 流完整性：对端干净 EOF（无报错、无 [DONE]、无 finish_reason）时
         // 残缺 tool_calls 不得当完整回复执行——跟踪是否见到正常收尾标记
-        let mut stream_end: Option<StreamEnd> = None;
+        let mut stream_end_seen = false;
         let mut last_finish_reason: Option<String> = None;
         let mut stream_error: Option<String> = None;
         let mut tc_index_overflow_logged = false;
@@ -1121,11 +1105,11 @@ where
                     }
                 };
                 if parsed.is_done {
-                    stream_end = Some(StreamEnd::Done);
+                    stream_end_seen = true;
                     return None;
                 }
                 if let Some(reason) = parsed.finish_reason {
-                    stream_end = Some(StreamEnd::FinishReason);
+                    stream_end_seen = true;
                     last_finish_reason = Some(reason);
                 }
                 // reasoning_content 与 <think> 同出口（不进 final_text、不进历史）
@@ -1290,7 +1274,7 @@ where
         // 流完整性检查：未见 [DONE]/finish_reason 的
         // 干净 EOF = 流被截断（中间代理 idle cut 等）。残缺 tool_calls 不得执行
         // （不能靠 parse_args 失败落 Null 侥幸兜底，要有显式防线）。
-        if stream_end.is_none() {
+        if !stream_end_seen {
             let trunc_kv = |tc: usize, text_len: usize| {
                 vec![
                     ("tool_calls", tc.to_string()),

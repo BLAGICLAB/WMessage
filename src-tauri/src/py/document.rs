@@ -4,8 +4,6 @@
 //! 引擎优先 .NET OpenXML（修订版 Word），不可用回退 Python 脚本。
 
 use std::path::Path;
-use std::sync::mpsc;
-use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::AppHandle;
@@ -14,9 +12,9 @@ use tauri_plugin_dialog::DialogExt;
 use crate::bot_slash::StopToken;
 use crate::error::{CommandError, CommandResult};
 use crate::py::audit::py_audit;
-use crate::py::env::{run_dotnet_revisions, PyEnv};
+use crate::py::env::run_dotnet_revisions;
 use crate::py::runtime::{
-    py_gate_acquire, run_python, run_python_ungated, PyRunResult, RunFail, MAX_TIMEOUT_SECS,
+    py_gate_acquire, run_python, run_python_ungated, PyRunResult, MAX_TIMEOUT_SECS,
 };
 
 // ───────────── 固定文档脚本模板 ─────────────
@@ -1329,13 +1327,3 @@ pub async fn py_exec_sync_async(
 }
 
 // 抑制 unused 警告
-#[allow(dead_code)]
-fn _unused_refs(
-    _x: &Path,
-    _y: &mut mpsc::Receiver<(&'static str, Vec<u8>, bool)>,
-    _z: Duration,
-    _w: Instant,
-    _r: Result<PyRunResult, RunFail>,
-    _e: PyEnv,
-) {
-}

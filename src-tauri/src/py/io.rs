@@ -1,6 +1,6 @@
 //! IO 限长读取 + 线程 join + 截断
 
-use std::io::{Read, Write};
+use std::io::Read;
 use std::time::{Duration, Instant};
 
 use crate::bot_slash::StopToken;
@@ -110,5 +110,3 @@ pub fn truncate_output(s: String) -> String {
 }
 
 // 抑制 dead_code 警告
-#[allow(dead_code)]
-fn _write_unused(_w: &mut dyn Write) {}

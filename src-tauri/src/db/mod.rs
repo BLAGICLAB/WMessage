@@ -21,8 +21,6 @@ pub use crate::db::workspace::*;
 use std::time::Duration;
 use tauri::Manager;
 
-use crate::error::CommandError;
-
 pub mod bot_history;
 pub mod bot_sessions;
 pub mod brief;
@@ -466,8 +464,6 @@ pub fn holding_db_write() -> bool {
 }
 
 // 抑制 unused warnings
-#[allow(dead_code)]
-fn _unused(_e: CommandError) {}
 #[cfg(test)]
 mod tests {
     use super::*;

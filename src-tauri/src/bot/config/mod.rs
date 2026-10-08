@@ -84,10 +84,6 @@ pub use audit::{__cmd__bot_log_read, __tauri_command_name_bot_log_read};
 // 抑制 unused 警告：escape_for_log / truncate_for_log 跨模块被外部 bot_chat / bot_model_loop
 // 仍通过 bot.rs 的 `pub use config::{...}` 路径使用，本模块测试不直接覆盖
 // （truncate_for_log 是 escape_for_log 的别名）。
-#[allow(dead_code)]
-fn _unused_marker(_s: &str) -> String {
-    audit::escape_for_log("", 0)
-}
 
 // ───────────────────────── 单元测试 ─────────────────────────
 

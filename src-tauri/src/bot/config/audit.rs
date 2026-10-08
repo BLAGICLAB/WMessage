@@ -133,8 +133,6 @@ pub(crate) fn read_log_tail(path: &Path, limit: Option<usize>) -> CommandResult<
 }
 
 // 抑制 unused 警告：Write / tauri::AppHandle / db 都已通过 trait/参数使用
-#[allow(dead_code)]
-fn _write_marker(_w: &mut dyn Write) {}
 
 #[cfg(test)]
 mod escape_tests {

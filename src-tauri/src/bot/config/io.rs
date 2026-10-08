@@ -618,8 +618,6 @@ pub(crate) fn migrate_search_key_slot(
 }
 
 // 抑制 unused 警告：Write + PathBuf 在本模块通过 std::io::Write / std::path::PathBuf trait 用
-#[allow(dead_code)]
-fn _write_marker(_w: &mut dyn Write) {}
 
 #[cfg(test)]
 mod tests {

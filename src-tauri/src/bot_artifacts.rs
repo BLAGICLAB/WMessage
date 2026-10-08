@@ -59,7 +59,6 @@ pub async fn take_all<R: tauri::Runtime>(
 }
 
 /// 只看不取（调试 / 状态查询用）
-#[allow(dead_code)]
 pub async fn peek<R: tauri::Runtime>(app: &AppHandle<R>, task_id: &str) -> Vec<RegisteredArtifact> {
     let map = artifact_registry(app).lock().await;
     map.get(task_id).cloned().unwrap_or_default()

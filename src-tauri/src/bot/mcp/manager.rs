@@ -49,8 +49,6 @@ type ClientService = RunningService<RoleClient, Box<dyn DynService<RoleClient>>>
 /// fingerprint = 配置指纹：重载时同指纹跳过重连，配置变了才断开重建。
 /// `name` 缓存自配置（连接槽唯一无 AppHandle 也能拿到的东西）：
 /// 阶段 3 工具挂载的 `mcp_{server}_{tool}` 前缀来源。
-// Down 的 fingerprint/name 为阶段 3 重连去重/挂载前缀预埋，暂无读取方
-#[allow(dead_code)]
 enum Slot {
     Connected {
         fingerprint: u64,
@@ -59,8 +57,6 @@ enum Slot {
         service: Arc<ClientService>,
     },
     Down {
-        fingerprint: u64,
-        name: String,
         error: String,
     },
 }
@@ -173,14 +169,8 @@ impl McpManager {
                 Ok(())
             }
             Err(e) => {
-                self.slots().insert(
-                    cfg.id.clone(),
-                    Slot::Down {
-                        fingerprint: fp,
-                        name: cfg.name.clone(),
-                        error: e.clone(),
-                    },
-                );
+                self.slots()
+                    .insert(cfg.id.clone(), Slot::Down { error: e.clone() });
                 Err(e)
             }
         }
@@ -532,14 +522,14 @@ impl McpManager {
         match tokio::time::timeout(timeout, service.call_tool_once(params)).await {
             Err(_) => Err(format!("工具调用超时（{}s）：{tool}", timeout.as_secs())),
             Ok(Err(rmcp::ServiceError::TransportClosed)) => {
-                self.mark_down(&cfg.id, &cfg.name, fingerprint(cfg), "连接已断开".into());
+                self.mark_down(&cfg.id, "连接已断开".into());
                 Err(self.format_with_stderr_tail(
                     &cfg.id,
                     "MCP 服务器连接已断开（已标记，下次调用自动重连）".into(),
                 ))
             }
             Ok(Err(e @ rmcp::ServiceError::TransportSend(_))) => {
-                self.mark_down(&cfg.id, &cfg.name, fingerprint(cfg), e.to_string());
+                self.mark_down(&cfg.id, e.to_string());
                 Err(self.format_with_stderr_tail(
                     &cfg.id,
                     format!("MCP 服务器连接异常（已标记，下次调用自动重连）：{e}"),
@@ -553,15 +543,8 @@ impl McpManager {
         }
     }
 
-    fn mark_down(&self, id: &str, name: &str, fp: u64, error: String) {
-        self.slots().insert(
-            id.to_string(),
-            Slot::Down {
-                fingerprint: fp,
-                name: name.to_string(),
-                error,
-            },
-        );
+    fn mark_down(&self, id: &str, error: String) {
+        self.slots().insert(id.to_string(), Slot::Down { error });
     }
 
     /// 退出清理：取消全部连接令牌并清空槽位。子进程 kill 由

@@ -4,8 +4,6 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 use tauri::AppHandle;
 
-use crate::error::CommandError;
-use crate::error::CommandResult;
 use serde::Serialize;
 
 /// 带超时的版本探测：PATH 里的 python 可能是损坏 shim，
@@ -317,7 +315,3 @@ for m in ["openpyxl", "docx", "pptx", "pypdf", "reportlab"]:
 }
 
 // 保留 CommandError / CommandResult 引用以便未来 env.rs 中错误路径使用
-#[allow(dead_code)]
-fn _unused_imports(err: CommandError) -> CommandResult<()> {
-    Err(err)
-}
