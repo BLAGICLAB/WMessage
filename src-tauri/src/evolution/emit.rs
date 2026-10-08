@@ -3,13 +3,14 @@
 //! ## 设计动机
 //!
 //! `memory::consolidate::run_consolidation` 末尾追加一行 `evolution::post_consolidation(...)`，
-//! 但 post_consolidation 的签名严格限定 `(&[ConsolidateOp], &ConsolidateReport)`，不接收 AppHandle。
+//! 但 post_consolidation 的签名限定 `(&[ConsolidateOp], &ConsolidateReport, Option<&str>)`
+//! （第三参 = 反思产出的行为准则段），不接收 AppHandle。
 //! 而 `audit_event!` 必须有 AppHandle 才能写 `bot.log`。
 //!
 //! 解法：本模块维护一个全局 `OnceLock<AppHandle<tauri::Wry>>`，
 //! 由 `lib.rs::run()` 的 `.setup` 回调里调一次 `register_app_handle` 完成注册。
 //! `emit_proposals` 内部从全局取出 AppHandle，调 `audit_event!` 写 audit。
-//! 这一来 post_consolidation 仍只接 ops + report（caller 无感）；
+//! 这一来 post_consolidation 仍不接 AppHandle（caller 无感）；
 //! 二来 memory 侧不依赖 evolution 任何内部符号。
 //!
 //! ## 去重语义

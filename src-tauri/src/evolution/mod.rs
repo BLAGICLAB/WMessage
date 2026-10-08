@@ -157,16 +157,24 @@ fn notify_evolution_proposals<R: tauri::Runtime>(
 }
 
 /// 反思完成后的桥接入口（`memory::consolidate::run_consolidation` 末尾调用）。
+/// `lesson` = 反思同调用产出的行为准则（可空）——提案内容的升维源。
 ///
 /// 签名严格按 spec：不接收 AppHandle / session_id / 任何反向依赖 memory 内部的状态。
 /// emit 所需的 AppHandle 由 `emit::register_app_handle` 在 App 启动时注册一次，
 /// 本函数通过全局 OnceLock 取出——consolidate 侧 caller 无需关心。
-pub fn post_consolidation(ops: &[ConsolidateOp], report: &ConsolidateReport) {
+pub fn post_consolidation(ops: &[ConsolidateOp], report: &ConsolidateReport, lesson: Option<&str>) {
     // 派生门槛：设置页可调（默认 2/2/1）；读失败/缺配置 = 默认
     let thresholds = emit::app_handle()
         .map(crate::evolution::policy::read_derive_thresholds)
         .unwrap_or_default();
-    let proposals = derive::derive_proposals_with(ops, report, &thresholds);
+    let mut proposals = derive::derive_proposals_with(ops, report, &thresholds);
+    // 行为准则提案（反思同调用产出）：与 ops 派生的复述类提案分层——
+    // lesson 写「以后怎么做」，语义与事实类 reflection 拉开，不撞防劫持闸
+    if let Some(l) = lesson {
+        if let Some(p) = derive::derive_lesson_proposal(l, chrono::Utc::now().timestamp_millis()) {
+            proposals.push(p);
+        }
+    }
     // 治理开关只读一次：下方「通知过滤」与「apply 闸」两处决策共用同一值——
     // 两次独立读盘在并发改档（设置页 toggle）时可能不一致，通知与落库口径分裂
     let auto_allowed = policy::auto_apply_allowed(emit::app_handle());

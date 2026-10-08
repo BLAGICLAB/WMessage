@@ -13,7 +13,7 @@
 //! - 回滚 = `delete_by_key_tag("evo:<proposal_id>")`（见 `rollback_applied`）；
 //! - 应用留痕：`{data_dir}/evolution-applied.jsonl` 每行一条 JSON（提案 id、
 //!   记忆 key、应用时间、impact、summary），审计与人工回滚的依据；
-//! - AppHandle 复用 `emit` 的全局注册（`post_consolidation` 签名不变的约束不变）；
+//! - AppHandle 复用 `emit` 的全局注册（`post_consolidation` 签名随 lesson 参数演进的约束不变）；
 //! - importance 从 impact 派生（High=4 / Medium=3），source="system"——
 //!   可淘汰、非受保护，记忆库满时按既有淘汰分正常出局。
 

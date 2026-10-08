@@ -137,6 +137,22 @@ pub enum ConsolidateOp {
     Distill { ids: Vec<String>, content: String },
 }
 
+/// 解析反思输出中的行为准则段（lesson）：字符串形态或 {content} 形态；
+/// 缺失/空/空白 → None（本轮无行为准则提案）。截 400 字防超长。
+pub fn parse_lesson(text: &str) -> Option<String> {
+    let v = extract_json(text)?;
+    let raw = match v.get("lesson") {
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(serde_json::Value::Object(o)) => o.get("content")?.as_str()?.to_string(),
+        _ => return None,
+    };
+    let t = raw.trim();
+    if t.is_empty() {
+        return None;
+    }
+    Some(t.chars().take(400).collect())
+}
+
 impl ConsolidateOp {
     /// 指令的新内容文本（嵌入预计算遍历用）
     fn content(&self) -> &str {
@@ -148,9 +164,8 @@ impl ConsolidateOp {
     }
 }
 
-/// 解析 LLM 输出为指令列表（纯函数，健壮优先）：/// 剥 ```json 代码围栏 / 截取首个 { 到末个 }；整体解析失败 → 空列表（本轮放弃）；
-/// 单条指令缺字段 / 未知 action → 跳过该条，不影响其它指令。
-pub fn parse_ops(text: &str) -> Vec<ConsolidateOp> {
+/// 剥 ```json 围栏 / 截取首个 { 到末个 } 并解析（健壮优先：失败 → None）。
+fn extract_json(text: &str) -> Option<serde_json::Value> {
     let t = text.trim();
     let t = t
         .strip_prefix("```json")
@@ -159,10 +174,15 @@ pub fn parse_ops(text: &str) -> Vec<ConsolidateOp> {
     let t = t.strip_suffix("```").unwrap_or(t).trim();
     let start = t.find('{');
     let end = t.rfind('}');
-    let Some((s, e)) = start.zip(end).filter(|(s, e)| s < e) else {
-        return Vec::new();
-    };
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(&t[s..=e]) else {
+    let (s, e) = start.zip(end).filter(|(s, e)| s < e)?;
+    serde_json::from_str(&t[s..=e]).ok()
+}
+
+/// 解析 LLM 输出为指令列表（纯函数，健壮优先）：
+/// 整体解析失败 → 空列表（本轮放弃）；
+/// 单条指令缺字段 / 未知 action → 跳过该条，不影响其它指令。
+pub fn parse_ops(text: &str) -> Vec<ConsolidateOp> {
+    let Some(v) = extract_json(text) else {
         return Vec::new();
     };
     let Some(ops) = v["ops"].as_array() else {
@@ -432,6 +452,7 @@ pub async fn run_consolidation(app: &AppHandle) -> CommandResult<ConsolidateRepo
     // LLM 配置不可用（空 key 等）在这里自然报 ApiKeyMissing
     let text = crate::bot_chat::summarize_messages(app, CONSOLIDATE_PROMPT, &msgs).await?;
     let ops = parse_ops(&text);
+    let lesson = parse_lesson(&text);
     if ops.is_empty() {
         return Ok(ConsolidateReport::default());
     }
@@ -475,7 +496,7 @@ pub async fn run_consolidation(app: &AppHandle) -> CommandResult<ConsolidateRepo
         .map_err(CommandError::DbError)?;
     // Phase 1 追加：基于本次反思产出演化提案（仅写 audit；不改反思逻辑、不调二次 LLM）。
     // 见 `crate::evolution::post_consolidation` 的依赖方向约束。
-    crate::evolution::post_consolidation(&ops_for_audit, &report);
+    crate::evolution::post_consolidation(&ops_for_audit, &report, lesson.as_deref());
     Ok(report)
 }
 

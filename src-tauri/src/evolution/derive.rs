@@ -119,6 +119,40 @@ pub fn derive_proposals_with(
     out
 }
 
+/// 行为准则提案：来自反思同调用产出的 `lesson` 段——内容是「机器人以后
+/// 该怎么做」，与 ops 派生的事实类提案刻意分层（前者落 lesson 指导行为，
+/// 后者只是 ops 复述，曾因此被语义查重拒绝）。Medium：可进自动轨；
+/// 稳定 id（内容归一化哈希）——同一准则反复产出时 dedup 幂等。
+pub fn derive_lesson_proposal(lesson: &str, now_ms: i64) -> Option<EvolutionProposal> {
+    let text = truncate_chars(lesson.trim(), SUGGESTION_MAX_CHARS);
+    if text.is_empty() {
+        return None;
+    }
+    let category = ProposalCategory::MemoryHint;
+    let target = ProposalTarget::MemoryPolicy {
+        policy: "behavioral_lesson".into(),
+    };
+    let proposal_id = proposal_id(category, &target, &text);
+    Some(EvolutionProposal {
+        proposal_id,
+        created_at_ms: now_ms,
+        origin: ProposalOrigin::ConsolidationReflection,
+        category,
+        target,
+        impact: ImpactLevel::Medium,
+        evidence: Evidence {
+            summary: text.clone(),
+            occurrence_count: 1,
+            window_hours: 24,
+            related_refs: vec![],
+        },
+        suggestion: Suggestion {
+            text,
+            structured_patch: None,
+        },
+    })
+}
+
 /// 单 op → 0 或 1 条 proposal。不符合门槛返回 `None`。
 fn derive_one(op: &ConsolidateOp, now_ms: i64, t: &DeriveThresholds) -> Option<EvolutionProposal> {
     match op {

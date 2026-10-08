@@ -76,6 +76,36 @@ fn parse_invalid_json_returns_empty() {
 }
 
 #[test]
+fn parse_lesson_string_form() {
+    let text = r#"{"ops":[],"lesson":"遇到重复记录先合并再回答"}"#;
+    assert_eq!(
+        parse_lesson(text).as_deref(),
+        Some("遇到重复记录先合并再回答")
+    );
+}
+
+#[test]
+fn parse_lesson_object_form_with_fence_and_prose() {
+    let text =
+        "整理如下：\n```json\n{\"ops\":[],\"lesson\":{\"content\":\"先去重再总结\"}}\n```\n以上。";
+    assert_eq!(parse_lesson(text).as_deref(), Some("先去重再总结"));
+}
+
+#[test]
+fn parse_lesson_missing_or_empty_is_none() {
+    assert!(parse_lesson(r#"{"ops":[]}"#).is_none(), "缺字段 → None");
+    assert!(
+        parse_lesson(r#"{"ops":[],"lesson":""}"#).is_none(),
+        "空串 → None"
+    );
+    assert!(
+        parse_lesson(r#"{"ops":[],"lesson":{"other":1}}"#).is_none(),
+        "对象缺 content → None"
+    );
+    assert!(parse_lesson("这不是 JSON").is_none(), "整体解析失败 → None");
+}
+
+#[test]
 fn parse_skips_malformed_and_unknown_ops() {
     let text = r#"{"ops":[
       {"action":"unknown_action","ids":["a"]},

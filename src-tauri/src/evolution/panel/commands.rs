@@ -276,7 +276,7 @@ pub fn toggle_inner<R: tauri::Runtime>(
                     "action" => "human_apply_refused_foreign_merge",
                 );
                 return Err(format!(
-                    "落库被拒绝：该建议与既有记忆「{target_key}」语义撞车（防记忆劫持闸）。提案已登记为待决策，可重试、停用或删除。"
+                    "落库被拒绝：与既有记忆「{target_key}」语义相近（防重复入池）。这通常说明该内容已被记忆整理沉淀为规律条目，无需重复生效；若确有新意，先在记忆库整理后重试，或直接停用此提案。"
                 ));
             }
         }
