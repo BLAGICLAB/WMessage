@@ -1691,6 +1691,7 @@ mod tests {
 #[cfg(test)]
 mod ws_tests {
     use super::*;
+    use crate::error::CommandError;
     use std::fs;
 
     /// 折叠状态往返：upsert collapsed=true → load 读回一致
