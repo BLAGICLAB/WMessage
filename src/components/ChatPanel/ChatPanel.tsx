@@ -11,7 +11,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, emit } from "@tauri-apps/api/event";
 import { Pin } from "lucide-react";
-import { useTauriListen } from "../../lib/useTauriListen";
+import { unlistenSafe, useTauriListen } from "../../lib/useTauriListen";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 
@@ -395,7 +395,7 @@ export function ChatPanel({
     reload();
     const un = listen("bot-config-changed", reload);
     return () => {
-      un.then((f) => f());
+      unlistenSafe(un);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -670,14 +670,14 @@ export function ChatPanel({
         else window.clearTimeout(frame);
         frame = null;
       }
-      unlisten.then((f) => f());
-      unThink.then((f) => f());
-      unTool.then((f) => f());
-      unToolName.then((f) => f());
-      unToolDone.then((f) => f());
-      unFileChanged.then((f) => f());
-      unUsage.then((f) => f());
-      unSkillFailed.then((f) => f());
+      unlistenSafe(unlisten);
+      unlistenSafe(unThink);
+      unlistenSafe(unTool);
+      unlistenSafe(unToolName);
+      unlistenSafe(unToolDone);
+      unlistenSafe(unFileChanged);
+      unlistenSafe(unUsage);
+      unlistenSafe(unSkillFailed);
     };
   }, []);
 
@@ -774,7 +774,7 @@ export function ChatPanel({
         });
     });
     return () => {
-      unExec.then((f) => f());
+      unlistenSafe(unExec);
     };
   }, []);
 
@@ -812,7 +812,7 @@ export function ChatPanel({
       openExecSessionRef.current(sid);
     });
     return () => {
-      un.then((f) => f());
+      unlistenSafe(un);
     };
   }, []);
 
@@ -833,7 +833,7 @@ export function ChatPanel({
       }
     );
     return () => {
-      unConfirm.then((f) => f());
+      unlistenSafe(unConfirm);
     };
   }, []);
 
@@ -1209,6 +1209,7 @@ export function ChatPanel({
   // 走窗口级 tauri 事件（onDragDropEvent）；position 为物理像素，需除缩放系数
   // 转成 CSS 像素后与聊天区矩形比对——拖到挂件任务列表区的文件不归聊天管。
   useEffect(() => {
+    let cancelled = false;
     let unlisten: (() => void) | undefined;
     const insideChat = async (pos: { x: number; y: number }) => {
       const rect = rootRef.current?.getBoundingClientRect();
@@ -1238,14 +1239,19 @@ export function ChatPanel({
           }
         })
         .then((f) => {
-          unlisten = f;
+          // 卸载早于 resolve 时自注销，防监听泄漏（同 useTauriListen 的 cancelled 模式）
+          if (cancelled) unlistenSafe(f);
+          else unlisten = f;
         })
         // 非 Tauri 环境（vitest/jsdom）没有窗口对象，静默忽略
         .catch(() => {});
     } catch {
       // 同上：同步抛错（无 __TAURI_INTERNALS__）也静默忽略
     }
-    return () => unlisten?.();
+    return () => {
+      cancelled = true;
+      if (unlisten) unlistenSafe(unlisten);
+    };
   }, []);
 
   // 逐条复制回复内容（按钮反馈在消息下方）；useCallback 固定句柄供 MsgBubble memo

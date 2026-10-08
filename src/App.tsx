@@ -38,6 +38,7 @@ import {
 import ConfirmMap from "./components/ConfirmMap";
 import { deleteTaskRows, diffTaskRows, loadTasksFromDb, taskEq, upsertTasks, exportTasksToFile, importTasksFromFile, exportWorkspaceToFile, importWorkspaceFromFile, STORAGE_KEY, sortByOrder, assignInsertOrder, upsertWorkspaceItems } from "./storage";
 import { handleCommandError } from "./lib/errorHandler";
+import { unlistenSafe } from "./lib/useTauriListen";
 import { isBackendPersisted, KNOWN_SOURCES } from "./lib/mutationOrigin";
 import {
   applyArchiveRule,
@@ -228,7 +229,7 @@ function App() {
     void refresh();
     const un = listen(NOTIFICATIONS_CHANGED_EVENT, refresh);
     return () => {
-      un.then((f) => f());
+      unlistenSafe(un);
     };
   }, []);
   const [theme, setTheme] = useState<ThemeSetting>(getSetting);
@@ -238,7 +239,7 @@ function App() {
   useEffect(() => {
     const un = listen(WORKFLOW_VISIBILITY_EVENT, () => setShowWorkflowTasks(getShowWorkflowTasks()));
     return () => {
-      un.then((f) => f());
+      unlistenSafe(un);
     };
   }, []);
   // 可见任务选择器：工作流卡只画在画布上，看板/归档/回收站/命令面板默认不混入（设计 §3.3）。
@@ -290,6 +291,7 @@ function App() {
   // documentElement[data-font-size]；设置页保存后会发 bot-config-changed，
   // 这里重新拉一次同步点选未保存也会被广播（预防设置页直接改 state 预览）。
   useEffect(() => {
+    let cancelled = false;
     let unlistenCfg: (() => void) | undefined;
     (async () => {
       const applyFromConfig = async () => {
@@ -316,10 +318,19 @@ function App() {
         }
       };
       await applyFromConfig();
-      const u = await listen("bot-config-changed", applyFromConfig);
-      unlistenCfg = u;
+      try {
+        const u = await listen("bot-config-changed", applyFromConfig);
+        // 卸载早于 resolve 时自注销，防监听泄漏（同 useTauriListen 的 cancelled 模式）
+        if (cancelled) unlistenSafe(u);
+        else unlistenCfg = u;
+      } catch {
+        // listen 失败只丢后续广播同步，启动值已套
+      }
     })();
-    return () => unlistenCfg?.();
+    return () => {
+      cancelled = true;
+      if (unlistenCfg) unlistenSafe(unlistenCfg);
+    };
   }, []);
 
   // 系统通知权限（任务卡截止提醒由 Rust 侧 due_notify 经 tauri-plugin-notification 发送）。
@@ -343,7 +354,7 @@ function App() {
   useEffect(() => {
     const unlisten = listen("toggle-theme", () => setTheme(toggleTheme()));
     return () => {
-      unlisten.then((f) => f());
+      unlistenSafe(unlisten);
     };
   }, []);
 
@@ -466,7 +477,7 @@ function App() {
       }
     );
     return () => {
-      unlisten.then((f) => f());
+      unlistenSafe(unlisten);
     };
   }, []);
 
@@ -546,7 +557,7 @@ function App() {
       }
     );
     return () => {
-      unlisten.then((f) => f());
+      unlistenSafe(unlisten);
     };
   }, []);
 
@@ -563,7 +574,7 @@ function App() {
       }
     });
     return () => {
-      unlisten.then((f) => f());
+      unlistenSafe(unlisten);
     };
   }, []);
 
@@ -573,7 +584,7 @@ function App() {
       startNewTaskRef.current();
     });
     return () => {
-      unlisten.then((f) => f());
+      unlistenSafe(unlisten);
     };
   }, []);
 

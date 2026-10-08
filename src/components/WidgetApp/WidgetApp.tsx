@@ -23,6 +23,7 @@ import {
 } from "@dnd-kit/sortable";
 import { LogicalPosition, LogicalSize, getCurrentWindow } from "@tauri-apps/api/window";
 import { listen, emit } from "@tauri-apps/api/event";
+import { unlistenSafe } from "../../lib/useTauriListen";
 import { invoke } from "@tauri-apps/api/core";
 import { openTarget } from "../../lib/openTarget";
 import {
@@ -112,7 +113,7 @@ export default function WidgetApp() {
       );
     const unlisten = listen<boolean>("bot-changed", (e) => setBotOn(!!e.payload));
     return () => {
-      unlisten.then((f) => f());
+      unlistenSafe(unlisten);
     };
   }, []);
 
@@ -131,6 +132,7 @@ export default function WidgetApp() {
   // 需要拉 config 设 data-font-size；设置页保存后广播 bot-config-changed，
   // Tauri emit 全局广播挂件也能收到。失败也套默认 small，避免渲染前空抳。
   useEffect(() => {
+    let cancelled = false;
     let unlistenCfg: (() => void) | undefined;
     (async () => {
       const applyFromConfig = async () => {
@@ -146,10 +148,19 @@ export default function WidgetApp() {
         }
       };
       await applyFromConfig();
-      const u = await listen("bot-config-changed", applyFromConfig);
-      unlistenCfg = u;
+      try {
+        const u = await listen("bot-config-changed", applyFromConfig);
+        // 卸载早于 resolve 时自注销，防监听泄漏（同 useTauriListen 的 cancelled 模式）
+        if (cancelled) unlistenSafe(u);
+        else unlistenCfg = u;
+      } catch {
+        // listen 失败只丢后续广播同步，启动值已套
+      }
     })();
-    return () => unlistenCfg?.();
+    return () => {
+      cancelled = true;
+      if (unlistenCfg) unlistenSafe(unlistenCfg);
+    };
   }, []);
 
   // 主题：启动时应用 + 监听主窗口切换 + 跟随系统模式监听系统外观变化
@@ -201,7 +212,7 @@ export default function WidgetApp() {
       load(true).catch((e) => handleCommandError(e, "widget_poll"));
     }, 5000);
     return () => {
-      unlisten.then((f) => f());
+      unlistenSafe(unlisten);
       clearInterval(id);
     };
   }, []);
@@ -230,7 +241,7 @@ export default function WidgetApp() {
       load().catch(() => {});
     }, 5000);
     return () => {
-      unlisten.then((f) => f());
+      unlistenSafe(unlisten);
       clearInterval(id);
     };
   }, []);
@@ -325,7 +336,7 @@ export default function WidgetApp() {
       }, 500);
     });
     return () => {
-      unlisten.then((f) => f());
+      unlistenSafe(unlisten);
       window.clearTimeout(timer);
     };
   }, []);
@@ -380,7 +391,7 @@ export default function WidgetApp() {
       if (!expandedRef.current) expandFnRef.current().catch(() => {});
     });
     return () => {
-      un.then((f) => f());
+      unlistenSafe(un);
     };
   }, []);
 
@@ -669,7 +680,7 @@ export default function WidgetApp() {
       setWfVisible(getShowWorkflowTasks())
     );
     return () => {
-      un.then((f) => f());
+      unlistenSafe(un);
     };
   }, []);
   // 任务图谱（设计 §1.5）：ownerId 非空 = 导入的外来任务，挂件只显示本人的

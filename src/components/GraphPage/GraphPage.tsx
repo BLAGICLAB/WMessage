@@ -5,6 +5,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { unlistenSafe } from "../../lib/useTauriListen";
 import { Waypoints } from "lucide-react";
 import type { PeopleEntry, Task, Workflow } from "../../types";
 import { loadPeople } from "../../storage";
@@ -97,7 +98,7 @@ export default function GraphPage({
     // 导入/资料变更后成员表会新增，tasks-changed 时顺带刷新（与任务数据同频）
     const un = listen("tasks-changed", refreshPeople);
     return () => {
-      un.then((f) => f());
+      unlistenSafe(un);
     };
   }, []);
 

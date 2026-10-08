@@ -127,10 +127,12 @@ pub fn generate(cfg: &SyntheticConfig, now_ms: i64) -> SyntheticData {
         .unwrap_or_else(|e| panic!("SyntheticConfig 非法: {e}"));
     let mut rng = SimpleRng::new(cfg.seed);
     // now_ms 无下限校验会静默产出负 window_start_ms（污染 created_at/expires/
-    // 各处 clamp），i64::MIN 等极端值更直接减法溢出（debug panic/release 回绕）
-    // ——与入口 validate 同风格的 fail-fast
+    // 各处 clamp）；i64::MIN 等极端值更直接减法溢出（debug panic/release 回绕）
+    // ——注意 checked_sub 只挡溢出、不挡负值（Some(-1) 合法），负窗口须另加
+    // filter 拒掉。与入口 validate 同风格的 fail-fast
     let window_start_ms = now_ms
         .checked_sub(cfg.window_days * MS_PER_DAY)
+        .filter(|s| *s >= 0)
         .unwrap_or_else(|| {
             panic!(
                 "now_ms 非法：{now_ms} 必须不小于 window_days({})×一天的毫秒数",
@@ -402,6 +404,17 @@ mod tests {
             ..Default::default()
         };
         let _ = generate(&cfg, 1_000);
+    }
+
+    #[test]
+    #[should_panic(expected = "now_ms 非法")]
+    fn generate_panics_on_now_ms_below_window() {
+        // M21/M22 回归：now_ms 覆盖不满窗口必须 fail-fast，
+        // 不许静默产出负 window_start_ms（污染 created_at/expires/clamp）
+        let cfg = SyntheticConfig::default();
+        let n = cfg.window_days * MS_PER_DAY - 1;
+        eprintln!("DEBUG now_ms={n} window={}", cfg.window_days * MS_PER_DAY);
+        let _ = generate(&cfg, n);
     }
 
     #[test]

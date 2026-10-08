@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { unlistenSafe } from "../../lib/useTauriListen";
 import { Pencil, Plug, Trash2 } from "lucide-react";
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
 import { IconButton } from "../../ui/IconButton";
@@ -252,7 +253,7 @@ export function McpPanel() {
       refresh();
     });
     return () => {
-      un.then((f) => f());
+      unlistenSafe(un);
     };
   }, [refresh]);
 

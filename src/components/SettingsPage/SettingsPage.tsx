@@ -8,6 +8,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
+import { unlistenSafe } from "../../lib/useTauriListen";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   ArrowLeft,
@@ -3265,7 +3266,7 @@ function WorkflowSettingsCard() {
       setShowTasks(getShowWorkflowTasks())
     );
     return () => {
-      un.then((f) => f());
+      unlistenSafe(un);
     };
   }, []);
   const persistGuidance = (v: string) => {

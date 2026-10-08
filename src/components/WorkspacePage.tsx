@@ -4,6 +4,7 @@ import { emit, listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openTarget } from "../lib/openTarget";
 import { handleCommandError } from "../lib/errorHandler";
+import { unlistenSafe } from "../lib/useTauriListen";
 import {
   DndContext,
   DragEndEvent,
@@ -106,7 +107,7 @@ export function WorkspacePage() {
     // 挂件改工作区（折叠/排序）后同步刷新（此前只加载一次，挂件改动不回显）
     const unlisten = listen("workspace-changed", guardedReload);
     return () => {
-      unlisten.then((f) => f());
+      unlistenSafe(unlisten);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

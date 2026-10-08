@@ -165,7 +165,17 @@ fn main() {
     }
 
     // ─── 默认模式：metrics ───
-    let window_start_ms = now_ms - window_days * 86_400_000;
+    // 与 synthetic::generate 同款 fail-fast：--window-days 是 CLI 任意 i64，
+    // 乘法/减法都可能回绕；checked_sub 只挡溢出不挡负值，负窗口用 filter 拒
+    let window_ms = window_days
+        .checked_mul(86_400_000)
+        .unwrap_or_else(|| panic!("--window-days({window_days}) 非法：×一天的毫秒数溢出 i64"));
+    let window_start_ms = now_ms
+        .checked_sub(window_ms)
+        .filter(|s| *s >= 0)
+        .unwrap_or_else(|| {
+            panic!("--start-ms/now({now_ms}) 必须不小于 window-days({window_days})×一天的毫秒数")
+        });
 
     let proposals: Vec<_>;
     let changes: Vec<_>;

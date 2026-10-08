@@ -178,6 +178,11 @@ connect-src 拦，不可用），输出贴进 §6 槽位，确认**不含 `unsaf
   移除的监听；调用链 `user-script:10` ← bundle `_unlisten`）。与 CSP 无关
   （形态非 securitypolicyviolation，且 user-script 不受页面 CSP 约束），
   不影响本验证判定；double-unlisten 源头待另批排查。
+  **（2026-10-08 收尾批闭环**：根因为上游 tauri 2.11.5 `unlisten_js_script`
+  无洞守卫——`listeners[eventName]` 存在但 `[eventId]` 槽位未填充/已清时
+  直接 TypeError，属 unlisten 与注册表填充的竞态。前端以共享助手
+  `unlistenSafe` 统一静默缓解 + 修复 3 处同族监听泄漏，见 DEVLOG 同日条目
+  与 `src/lib/useTauriListen.ts` 头注释。**）**
 - 执行人 / 日期：＿＿＿＿
 
 ## 7. 通过后的配置改动（单独 commit，复核确认后执行）

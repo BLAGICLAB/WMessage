@@ -5728,3 +5728,43 @@ apply.rs 无 policy 相关引用，**确认未 wire**。
 AI_Gen_Files（便携锚定）；重点验证机器人记忆语义检索（模型/引擎异常会自动降级关键词模式，
 需肉眼确认），并用一张带文字的本地图片让机器人跑 `ocr_image`（缺 pp-ocr-v6/ 时工具会报
 「请运行 scripts/fetch_ocr_models.sh…」）。
+
+**追记（同日，收尾批）**：上述 zip 已交付并移出仓库目录（根目录/桌面/下载均不在），
+`wmessage-portable-2026-10-08.zip` 路径失效；需再交付时按本条流程重新出包。
+
+## 2026-10-08（周四）OCR 审计收尾批：unlisten 竞态缓解 + 3 处监听泄漏 + 负窗口 fail-fast 补全
+
+**背景**：OCR 全量审计的 13 条「需人工拍板」项经逐条核实已全部被后续批次闭环
+（当日核查记录留档于会话）；本批处理排查型遗留 + 审计观察项。
+
+**根因排查（CSP 冒烟 §6 观察项：unregisterListener Unhandled Rejection）**：
+- Tauri 2.11.5 注入脚本 `unlisten_js_script`（上游 src/event/mod.rs:208）无洞守卫：
+  `listeners[eventName]` 数组存在但 `listeners[eventId]` 槽位未写入/已清空时
+  （unlisten 与注册表填充竞态），`listeners[eventId].handlerId` 直接 TypeError。
+  属上游缺陷，升级 tauri 前只能前端侧缓解。
+- 缓解：新增共享助手 `unlistenSafe`（src/lib/useTauriListen.ts）——反注册失败
+  静默（卸载路径无行动点）。全仓 30 处裸 `x.then((f) => f())` 统一换用
+  （App / ChatPanel / WidgetApp / WorkspacePage / GraphPage / SettingsPage /
+  McpPanel），useTauriListen hook 本体同步接入。
+- 顺带修 3 处同族监听泄漏（卸载早于 listen resolve 时监听永久悬挂）：
+  App.tsx 字体/归档同步、WidgetApp.tsx 挂件字体同步、ChatPanel.tsx 窗口拖放，
+  均补 cancelled flag（同 useTauriListen 模式）。
+
+**负窗口 fail-fast 补全（真修复，回归测试当场抓出）**：
+- `synthetic.rs` 的 checked_sub 修复（本日 5adbcfe，M21/M22）**不完整**：
+  checked_sub 只挡 i64 溢出、不挡负值（Some(-1) 合法），now_ms 略小于窗口
+  毫秒数时仍静默产出负 window_start_ms——恰是注释宣称要防的场景。
+  新增 `generate_panics_on_now_ms_below_window` 回归测试当场红，
+  修法 `.filter(|s| *s >= 0)` 后绿。
+- `observe_run.rs` 同款补全：--window-days 为 CLI 任意 i64，原裸减法改
+  checked_mul + checked_sub + filter 三段 fail-fast。
+
+**留档观察（不修）**：batch-verify.py 的 file_set 是 expected_files 精确匹配，
+批次附带文件（如 EVO-MEDIUM-FIX 顺手落库的 DEVLOG）会判 unexpected——
+调整口径需 reviewer 批准，先留档。
+
+**验证**：cargo fmt / cargo check --bins / scripts/test-all.sh（nextest 全量 +
+tests-audit + vitest）/ tsc --noEmit / 批次号红线 全绿。
+
+**踩坑**：`checked_sub` 只管溢出不管负值——「防负数」直觉写成 checked_sub 是
+错的，须 filter 或显式比较；本次靠先写回归测试当场暴露。
