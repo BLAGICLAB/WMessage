@@ -39,16 +39,15 @@ DATA_GLOB = [
 DATA_CONFLICT = EVO / "candidate" / "conflict.rs"  # 登记在案的委托壳
 DATA_CANDIDATE = sorted((EVO / "candidate").glob("*.rs"))
 
-# 委托壳文件（迁移映射登记：conflict.rs + change/derive.rs）。规则 3 对它们
-# 做**行级豁免**：只放行受认可的委托调用形式（trait 方法经 DefaultEvolutionPolicy、
-# 两个 pub(crate) 辅助函数、trait use 导入）；其他任何 strategy 引用照抓。
-DELEGATE_FILES = {DATA_CONFLICT, EVO / "change" / "derive.rs"}
+# 委托壳文件（迁移映射登记：change/derive.rs；conflict.rs 已随死代码删除）。
+# 规则 3 对它做**行级豁免**：只放行受认可的委托调用形式。2026-10-09 策略层
+# 降级为自由函数后，合法形态 = gate_decision() + GateDecision 类型；
+# 旧 trait 形态（DefaultEvolutionPolicy / layer_priority / impact_ord）已随
+# 批 2.2 删除，从白名单移除。其他任何 strategy 引用照抓。
+DELEGATE_FILES = {EVO / "change" / "derive.rs"}
 DELEGATE_ALLOW = re.compile(
-    r"crate::evolution::strategy::DefaultEvolutionPolicy\."
-    r"|crate::evolution::strategy::layer_priority\("
-    r"|crate::evolution::strategy::impact_ord\("
+    r"crate::evolution::strategy::gate_decision\("
     r"|crate::evolution::strategy::GateDecision"
-    r"|use crate::evolution::strategy::EvolutionPolicy;"
 )
 
 # 各规则：文件集合 → 禁止模式（正则，剥注释/字符串后匹配）
