@@ -5835,3 +5835,21 @@ layering/no_eval selftest + 全仓实跑 0 命中；scripts/test-all.sh 全绿�
 
 验证：exec_trace/skill_e2e/mock_llm 36 用例全过；clippy --all-targets 0
 （除 vendor）；scripts/test-all.sh 全绿。
+
+## 2026-10-08（周四）AUDIT-PHASE1A — 删除 AtomicGuardMiddleware 空骨架（外部审计接力阶段 1a）
+
+ Feishu agent 🦊 的整洁度审计（docs/HANDOFF-2026-10-08-zcode.md）阶段 1a 采纳项：
+黑名单 D4d 清空后恒 Allow 的无行为中间件，删除。
+
+- 删 `middleware.rs::AtomicGuardMiddleware`（struct+impl+注册+3 处测试引用）
+- **连带语义修正**：删掉唯一的 pre_execute 中间件后链在生产中永久为空，原「空链
+  记 pre_execute_not_registered ERROR 审计」的漏注册断言不再成立（空是合法态），
+  每次工具调用会刷 ERROR——移除该审计 + 删对应测试；保留空链下原子名单命中的
+  fail-closed 防线（现不可达，名单回填即生效）与 run_pre_execute helper 的
+  registry 缺失口径
+- `tool_guard`（ATOMIC_TOOLS/is_atomic_tool/atomic_block_message）**不动**：
+  仍被空链防线、skill_e2e 钉桩与 tests-audit 引用
+- 文件头「3 个内置中间件」改 2 个；D2 fail 语义描述同步
+
+验证：middleware 14 测试 + skill_e2e 13 + audit_pre_step 24 全过；
+clippy --all-targets 0（除 vendor）；scripts/test-all.sh 全绿。

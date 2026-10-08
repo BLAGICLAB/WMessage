@@ -3,7 +3,7 @@
 //! ## 动机
 //! 「业务 Skill 禁止注册底层中间件钩子」不能只是口头约束，要有编译期隔离。
 //! 引入 `Middleware` trait + `MiddlewareRegistry` 让「中间件注册」成为受控行为：
-//! - `lib.rs` setup 阶段注册 3 个内置中间件（选择任务卡批量执行路由 + 意图路由 + 原子黑名单）
+//! - `lib.rs` setup 阶段注册 2 个内置中间件（选择任务卡批量执行路由 + 意图路由）
 //! - 业务模块（bot_skills.rs）只能通过 helper 函数查询，不能 register
 //!
 //! ## 设计
@@ -13,13 +13,13 @@
 //!
 //! ## fail 语义（D2）
 //! state 未 manage（测试、初始化竞态）时两类中间件区别对待：
-//! - 安全闸门类（pre_execute / AtomicGuard）→ **fail-closed**：原子工具一律拒绝 + ERROR 审计，
-//!   安全闸门缺席时绝不能静默放行原子工具
+//! - pre_execute 闸门（run_pre_execute helper / 空链防线）→ 原子名单命中时 **fail-closed**：
+//!   拒绝 + ERROR 审计（当前黑名单已空、防线随名单回填生效）
 //! - 业务路由类（pre_step / IntentRouter）→ **fail-open**：回退 None（legacy passthrough），
 //!   无锁语义不影响业务，上层照常走模型直接对话
 
 use crate::intent_router::{route_user_input, RouteAction};
-use crate::tool_guard::{atomic_block_message, is_atomic_tool};
+use crate::tool_guard::is_atomic_tool;
 use tauri::Manager; // F-6：泛型 Runtime 以适配 mock_runtime 集成测试
 
 /// pre_execute 的判定结果（自解释语义；替代旧 Option<String>）
@@ -125,11 +125,10 @@ impl MiddlewareRegistry {
         active_skill: bool,
     ) -> ExecutionDecision {
         if self.pre_execute.is_empty() {
-            crate::audit::write_error_audit(app, "pre_execute_not_registered", &[("tool", name)]);
-            // 闸门缺席对原子工具 fail-closed——与「registry 缺失」
-            // 口径一致（run_pre_execute helper 同款语义），不「有声放行」。
-            // 黑名单 D4d 清空后 is_atomic_tool 恒 false，本分支实际不可达；
-            // 保留作防御骨架——名单一旦回填即恢复集中拦截
+            // pre_execute 链可为空（D4d 后黑名单拦截职责移到各工具内部）：
+            // 空链即全放行，是合法态而非漏注册，不记 ERROR 审计。
+            // 唯一防线：原子名单回填时对裸调 fail-closed（is_atomic_tool 现恒
+            // false、本分支不可达），与 run_pre_execute helper 的缺失口径一致
             if is_atomic_tool(name) && !active_skill {
                 return ExecutionDecision::Deny {
                     reason: format!(
@@ -179,7 +178,7 @@ impl MiddlewareRegistry {
     }
 }
 
-/// 构建默认注册表：注册 3 个内置中间件（lib.rs setup 调用）
+/// 构建默认注册表：注册 2 个内置中间件（lib.rs setup 调用）
 pub fn build_default_registry() -> MiddlewareRegistry {
     let mut r = MiddlewareRegistry::default();
     // 选择任务卡批量执行路由：排在 IntentRouter 之前——
@@ -187,7 +186,8 @@ pub fn build_default_registry() -> MiddlewareRegistry {
     // 未命中返回 None，链条继续走到 IntentRouter
     r.register_pre_step(Box::new(ChatExecuteMiddleware));
     r.register_pre_step(Box::new(IntentRouterMiddleware));
-    r.register_pre_execute(Box::new(AtomicGuardMiddleware));
+    // D4d 后 pre_execute 链为空（原子黑名单中间件已删，拦截职责在工具内部；
+    // 空链即放行，原子名单回填时由空链防线 fail-closed）
     // D1：显式断言 IntentRouterMiddleware 是 pre_step 链的最后一个——
     // 它恒返回 Some 短路全链，顺序错了后续中间件静默失效。
     // （register_pre_step 内部已拒绝「在其后追加」，这里再钉一次防未来重排顺序）
@@ -212,9 +212,8 @@ pub fn run_pre_step<R: tauri::Runtime>(
 }
 
 /// helper：通过 Tauri State 调 run_pre_execute
-/// D2：安全闸门类 **fail-closed**——state 未 manage 时原子工具一律拒绝并记 ERROR 审计，
-/// 不能静默放行（registry 缺失 = AtomicGuard 缺席 = 原子工具失去唯一拦截点）。
-/// 非原子工具没有闸门诉求，仍 fail-open 回退 Allow；Skill 活动态与 AtomicGuard 判定口径一致。
+/// D2：闸门口径 **fail-closed**——state 未 manage 时原子名单命中的工具拒绝并记
+/// ERROR 审计（当前黑名单已空，防线随名单回填生效），非原子工具仍 fail-open 回退 Allow。
 pub fn run_pre_execute<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     name: &str,
@@ -244,6 +243,8 @@ pub fn run_pre_execute<R: tauri::Runtime>(
 // ────────────────────────────────────────────────────────────────────
 // 内置中间件：包装现有 intent_router / tool_guard
 // ────────────────────────────────────────────────────────────────────
+// （原子黑名单中间件已于 2026-10-08 移除：黑名单 D4d 清空后恒 Allow 的空骨架，
+// 拦截职责由各工具内部 is_task_execution_flow 承担；原子名单回填时走空链防线）
 
 /// 内置：选择任务卡批量执行路由中间件
 ///
@@ -283,32 +284,11 @@ impl Middleware for IntentRouterMiddleware {
     }
 }
 
-/// 内置：原子黑名单中间件（包装 tool_guard::is_atomic_tool + is_skill_active）
-///
-/// 注意：黑名单已在 D4d 清空（见 tool_guard.rs 顶部说明），`is_atomic_tool`
-/// 恒返回 false，本中间件当前不产生任何拒绝，仅作集中拦截骨架保留。
-/// 拦截职责由各工具内部的 `is_task_execution_flow` 按会话上下文自行承担；
-/// 后续若新增需要裸调拦截的工具，须把工具名加回 `ATOMIC_TOOLS`，
-/// 否则只有工具内自拦、没有集中拦截点。
-pub struct AtomicGuardMiddleware;
-impl Middleware for AtomicGuardMiddleware {
-    fn name(&self) -> &str {
-        "atomic_guard"
-    }
-    fn pre_step(&self, _input: &str) -> Option<RouteAction> {
-        None
-    }
-    fn pre_execute(&self, name: &str, active_skill: bool) -> ExecutionDecision {
-        if is_atomic_tool(name) && !active_skill {
-            ExecutionDecision::Deny {
-                reason: atomic_block_message(name),
-            }
-        } else {
-            ExecutionDecision::Allow
-        }
-    }
-}
-
+// 原子黑名单中间件（已移除）：原包装 tool_guard::is_atomic_tool 的集中拦截
+// 骨架——黑名单 D4d 清空后恒 Allow，属无行为死代码，2026-10-08 整洁度批删除。
+// 拦截职责由各工具内部的 is_task_execution_flow 按会话上下文自行承担；后续若
+// 新增需要裸调拦截的工具，把工具名加回 ATOMIC_TOOLS 后由 run_pre_execute
+// 空链防线 fail-closed。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -406,9 +386,9 @@ mod tests {
     fn registry_introspect_lists_names() {
         let mut r = MiddlewareRegistry::default();
         r.register_pre_step(Box::new(IntentRouterMiddleware));
-        r.register_pre_execute(Box::new(AtomicGuardMiddleware));
+        r.register_pre_execute(Box::new(ChatExecuteMiddleware));
         assert_eq!(r.pre_step_list(), vec!["intent_router"]);
-        assert_eq!(r.pre_execute_list(), vec!["atomic_guard"]);
+        assert_eq!(r.pre_execute_list(), vec!["chat_execute"]);
     }
 
     #[test]
@@ -427,31 +407,12 @@ mod tests {
     }
 
     #[test]
-    fn atomic_guard_no_op_after_blacklist_emptied() {
-        // D4d 后 ATOMIC_TOOLS 已清空，AtomicGuardMiddleware 现在恒放行。
-        // 保留骨架作为防御层（未来新增原子工具不需重写中间件）。
-        let m = AtomicGuardMiddleware;
-        // 所有工具一律放行（含 link_file_to_task 由工具内部 is_task_execution_flow 拦）
-        for (name, active_skill) in [
-            ("link_file_to_task", false),
-            ("link_file_to_task", true),
-            ("create_word_revisions", false),
-            ("run_python", false),
-            ("list_tasks", false),
-        ] {
-            assert!(
-                matches!(m.pre_execute(name, active_skill), ExecutionDecision::Allow),
-                "{name} (active_skill={active_skill}) 现在应被 AtomicGuard 放行（黑名单已空）"
-            );
-        }
-    }
-
-    #[test]
-    fn build_default_registry_has_three_builtins() {
+    fn build_default_registry_has_two_builtins() {
         let r = build_default_registry();
-        // pre_step 链：chat_execute（选择任务卡批量执行）在前、intent_router 殿后
+        // pre_step 链：chat_execute（选择任务卡批量执行）在前、intent_router 殿后；
+        // pre_execute 链为空（D4d 后拦截职责在工具内部，空链即放行）
         assert_eq!(r.pre_step_list(), vec!["chat_execute", "intent_router"]);
-        assert_eq!(r.pre_execute_list().len(), 1);
+        assert!(r.pre_execute_list().is_empty());
     }
 
     #[test]
@@ -507,8 +468,8 @@ mod tests {
 
     #[test]
     fn helper_with_managed_state_runs_registry() {
-        // state 已 manage → helper 走 registry：所有工具都被 AtomicGuard 放行（黑名单已空），
-        // intent_router 路由表为空 → 恒 PassThrough
+        // state 已 manage → helper 走 registry：pre_execute 链为空（拦截职责在
+        // 工具内部）恒 Allow，intent_router 路由表为空 → 恒 PassThrough
         let app = tauri::test::mock_app();
         app.manage(build_default_registry());
         let handle = app.handle().clone();
@@ -535,7 +496,7 @@ mod tests {
         // build_default_registry 已把 intent_router 放在 pre_step 链尾；
         // 任何后续 pre_step 注册都是死代码 → 注册时直接 panic，不容静默死亡
         let mut r = build_default_registry();
-        r.register_pre_step(Box::new(AtomicGuardMiddleware));
+        r.register_pre_step(Box::new(IntentRouterMiddleware));
     }
 
     #[test]
@@ -557,39 +518,6 @@ mod tests {
         r.register_pre_step(Box::new(Custom));
         r.register_pre_step(Box::new(IntentRouterMiddleware));
         assert_eq!(r.pre_step_list(), vec!["custom", "intent_router"]);
-    }
-
-    // ── 只注册 pre_step 的 registry，pre_execute 调用记审计不静默 ──
-
-    #[test]
-    fn pre_execute_empty_side_audits_not_registered() {
-        struct OnlyStep;
-        impl Middleware for OnlyStep {
-            fn name(&self) -> &str {
-                "only_step"
-            }
-            fn pre_step(&self, _input: &str) -> Option<RouteAction> {
-                None
-            }
-            fn pre_execute(&self, _n: &str, _a: bool) -> ExecutionDecision {
-                unreachable!("未注册到 pre_execute 侧，不应被调用")
-            }
-        }
-        let app = tauri::test::mock_app();
-        let handle = app.handle().clone();
-        let mut r = MiddlewareRegistry::default();
-        r.register_pre_step(Box::new(OnlyStep));
-        // pre_execute 侧为空：返回 None（不阻断）+ 记 pre_execute_not_registered 审计
-        assert_eq!(
-            r.run_pre_execute(&handle, "list_tasks", false),
-            ExecutionDecision::Allow
-        );
-        let log = std::fs::read_to_string(crate::paths::probe_log_dir(&handle).join("bot.log"))
-            .unwrap_or_default();
-        assert!(
-            log.contains("pre_execute_not_registered") && log.contains("tool=list_tasks"),
-            "缺 pre_execute_not_registered 审计: {log}"
-        );
     }
 
     // ── 中间件 panic 不得炸掉调用方线程（catch_unwind + ERROR 审计 + None）──
