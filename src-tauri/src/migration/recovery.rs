@@ -154,44 +154,40 @@ pub fn journal_replay_pending(app: &AppHandle) -> Result<(usize, usize), String>
                     journal_cleared_inner(&conn, entry.id).ok();
                 }
             },
-            "delete" => {
-                if !src.exists() {
-                    // delete 成功但 DB 未清 file_path
-                    match recover_delete_db(app, &entry.task_id, &entry.src) {
-                        Ok(true) => {
-                            journal_committed_inner(&conn, entry.id).ok();
-                            recovered += 1;
-                            log_line(
-                                app,
-                                &format!("journal replay: 清除 {} 的 file_path", entry.src),
-                            );
-                        }
-                        Ok(false) => {
-                            // NEW-B-1: 任务 file_path 已变更（用户重绑）→ 跳过，不清空新绑定
-                            journal_cleared_inner(&conn, entry.id).ok();
-                            log_line(
-                                app,
-                                &format!(
-                                    "journal replay: 跳过 {}（任务附件已变更，不覆盖）",
-                                    entry.src
-                                ),
-                            );
-                        }
-                        Err(e) => {
-                            errors += 1;
-                            // 永久性失败（任务卡已删）→ 清行终结对账环；
-                            // 瞬时失败 → 保留 pending，下次启动重试
-                            if is_permanent_replay_error(&e) {
-                                journal_cleared_inner(&conn, entry.id).ok();
-                            }
-                            log_line(
-                                app,
-                                &format!("journal replay: 清除 {} 失败：{}", entry.src, e),
-                            );
-                        }
+            "delete" if !src.exists() => {
+                // delete 成功但 DB 未清 file_path
+                match recover_delete_db(app, &entry.task_id, &entry.src) {
+                    Ok(true) => {
+                        journal_committed_inner(&conn, entry.id).ok();
+                        recovered += 1;
+                        log_line(
+                            app,
+                            &format!("journal replay: 清除 {} 的 file_path", entry.src),
+                        );
                     }
-                } else {
-                    journal_cleared_inner(&conn, entry.id).ok();
+                    Ok(false) => {
+                        // NEW-B-1: 任务 file_path 已变更（用户重绑）→ 跳过，不清空新绑定 audit-ok
+                        journal_cleared_inner(&conn, entry.id).ok();
+                        log_line(
+                            app,
+                            &format!(
+                                "journal replay: 跳过 {}（任务附件已变更，不覆盖）",
+                                entry.src
+                            ),
+                        );
+                    }
+                    Err(e) => {
+                        errors += 1;
+                        // 永久性失败（任务卡已删）→ 清行终结对账环；
+                        // 瞬时失败 → 保留 pending，下次启动重试
+                        if is_permanent_replay_error(&e) {
+                            journal_cleared_inner(&conn, entry.id).ok();
+                        }
+                        log_line(
+                            app,
+                            &format!("journal replay: 清除 {} 失败：{}", entry.src, e),
+                        );
+                    }
                 }
             }
             _ => {

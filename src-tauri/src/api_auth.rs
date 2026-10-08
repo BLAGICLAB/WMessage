@@ -207,6 +207,21 @@ pub fn clear_enabled_flag<R: tauri::Runtime>(app: &AppHandle<R>) {
     }
 }
 
+/// 校验请求 Authorization 头是否为 `Bearer <token>`。
+/// 恒定时间比较，防响应时间侧信道枚举 token 前缀。
+/// scheme 按 RFC 7235 大小写不敏感（`bearer `/`BEARER ` 同样放行），
+/// token 本体仍走精确 ct_eq（token 是小写 hex UUID，大小写变体不接受）。
+pub fn verify_bearer(req: &Request, token: &str) -> bool {
+    req.headers().iter().any(|h| {
+        h.field.equiv("Authorization")
+            && h.value
+                .as_str()
+                .split_once(' ')
+                .map(|(scheme, rest)| scheme.eq_ignore_ascii_case("Bearer") && ct_eq(rest, token))
+                .unwrap_or(false)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -315,19 +330,4 @@ mod tests {
             "成功后不得遗留 tmp 残渣"
         );
     }
-}
-
-/// 校验请求 Authorization 头是否为 `Bearer <token>`。
-/// 恒定时间比较，防响应时间侧信道枚举 token 前缀。
-/// scheme 按 RFC 7235 大小写不敏感（`bearer `/`BEARER ` 同样放行），
-/// token 本体仍走精确 ct_eq（token 是小写 hex UUID，大小写变体不接受）。
-pub fn verify_bearer(req: &Request, token: &str) -> bool {
-    req.headers().iter().any(|h| {
-        h.field.equiv("Authorization")
-            && h.value
-                .as_str()
-                .split_once(' ')
-                .map(|(scheme, rest)| scheme.eq_ignore_ascii_case("Bearer") && ct_eq(rest, token))
-                .unwrap_or(false)
-    })
 }

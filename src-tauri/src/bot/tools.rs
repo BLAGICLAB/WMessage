@@ -1246,7 +1246,7 @@ async fn extract_path_check(
         return Err(format!("路径不存在或不可访问：{path}"));
     };
     // 1) AI_Gen_Files 目录内
-    if let Ok(gen) = crate::db::gen_dir(app).and_then(|d| std::fs::canonicalize(d)) {
+    if let Ok(gen) = crate::db::gen_dir(app).and_then(std::fs::canonicalize) {
         if canon.starts_with(&gen) {
             return Ok(());
         }

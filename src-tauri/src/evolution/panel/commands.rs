@@ -16,7 +16,7 @@
 //!
 //! 全部走 ask_user_confirm 复用 ConfirmMap（spec R0 #1 默认 A）。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tauri::AppHandle;
 
 use crate::audit::AuditLevel;
@@ -57,7 +57,7 @@ fn load_changes<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<Vec<ChangeRecor
 /// 整体重写 jsonl（更新 status / TTL 用）。
 /// 全量序列化后走 tmp+rename 原子落盘——truncate+逐行写在崩溃时留空/半截文件
 ///（jsonl 是提案生命周期唯一持久化）。
-fn rewrite_jsonl<T: serde::Serialize>(path: &PathBuf, entries: &[T]) -> Result<(), String> {
+fn rewrite_jsonl<T: serde::Serialize>(path: &Path, entries: &[T]) -> Result<(), String> {
     use std::fmt::Write as _;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("建目录 {parent:?} 失败：{e}"))?;
@@ -188,7 +188,7 @@ pub fn toggle_inner<R: tauri::Runtime>(
                         | ChangeStatus::Active
                 )
         });
-        let mut cr = match existing {
+        let cr = match existing {
             Some(c) => {
                 crate::audit_event!(
                     app,
@@ -211,8 +211,7 @@ pub fn toggle_inner<R: tauri::Runtime>(
                 cr.change_id = change::unique_change_id_for(&changes, proposal_id);
                 cr.parent_id = changes
                     .iter()
-                    .filter(|c| c.proposal_id == proposal_id)
-                    .last()
+                    .rfind(|c| c.proposal_id == proposal_id)
                     .map(|c| c.change_id.clone());
                 change::append_change(&c_path, &cr)?;
                 crate::audit_event!(
@@ -432,7 +431,7 @@ fn delete_inner(app: &AppHandle, proposal_id: &str, cascade_source: bool) -> Res
             eprintln!("[mutex_poisoned] evolution::panel DB_WRITE_LOCK (cascade): {e:?}");
             e.into_inner()
         });
-        mem_deleted = cascade_delete_mem_items(&conn, &related_refs, &proposal_id)?;
+        mem_deleted = cascade_delete_mem_items(&conn, &related_refs, proposal_id)?;
     }
 
     crate::audit_event!(
@@ -1040,7 +1039,7 @@ mod tests {
         // 第一次：3 条
         rewrite_jsonl(
             &p,
-            &vec![
+            &[
                 mk_entry("a", ProposalStatus::Pooled),
                 mk_entry("b", ProposalStatus::Pooled),
                 mk_entry("c", ProposalStatus::Pooled),
@@ -1049,7 +1048,7 @@ mod tests {
         .unwrap();
         assert_eq!(candidate::read_all(&p).unwrap().len(), 3);
         // 第二次：1 条
-        rewrite_jsonl(&p, &vec![mk_entry("a", ProposalStatus::Promoted)]).unwrap();
+        rewrite_jsonl(&p, &[mk_entry("a", ProposalStatus::Promoted)]).unwrap();
         let read = candidate::read_all(&p).unwrap();
         assert_eq!(read.len(), 1);
         assert_eq!(read[0].status, ProposalStatus::Promoted);

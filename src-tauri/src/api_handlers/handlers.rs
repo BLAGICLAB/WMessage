@@ -289,7 +289,7 @@ fn create_task(
     // 锁内只做 DB 读写，错误经 labeled block 装盒、出锁后再响应（OCR C5-AP-05）——
     // 持锁跨 socket I/O 会让慢客户端串行化全部并发 API 写。
     // create 的 load/upsert 失败原都走 internal_err（500），保持。
-    let task = match 'rmw: {
+    let rmw = 'rmw: {
         let _rmw = API_RMW_LOCK.lock().unwrap_or_else(|e| {
             eprintln!("[mutex_poisoned] api_handlers::handlers API_RMW_LOCK: {e:?}");
             e.into_inner()
@@ -367,7 +367,8 @@ fn create_task(
             break 'rmw Err(e);
         }
         Ok(task)
-    } {
+    };
+    let task = match rmw {
         Ok(t) => t,
         Err(e) => {
             internal_err(req, log, &e);
@@ -441,7 +442,7 @@ fn update_task(
         NotFound,
         Upsert(String),
     }
-    let t = match 'rmw: {
+    let rmw = 'rmw: {
         let _rmw = API_RMW_LOCK.lock().unwrap_or_else(|e| {
             eprintln!("[mutex_poisoned] api_handlers::handlers API_RMW_LOCK: {e:?}");
             e.into_inner()
@@ -531,7 +532,8 @@ fn update_task(
             break 'rmw Err(ErrOut::Upsert(e));
         }
         Ok(t)
-    } {
+    };
+    let t = match rmw {
         Ok(t) => t,
         Err(ErrOut::Load(e)) => {
             internal_err(req, log, &e);
@@ -606,6 +608,8 @@ fn delete_task(
     // load→改→upsert 全程持 API_RMW_LOCK（API 写串行化）。
     // 锁内只做 DB 读写，错误/幂等重删经 labeled block 装盒、出锁后再响应
     // （OCR C5-AP-05）。
+    // AlreadyDeleted 携带整行 Task 仅用于幂等回显，装箱反而绕远；体积差可接受
+    #[allow(clippy::large_enum_variant)]
     enum ErrOut {
         Load(String),
         NotFound,
@@ -613,7 +617,7 @@ fn delete_task(
         /// 幂等重删：已在回收站 → 出锁后 200 当前状态（不 after_change，不变）
         AlreadyDeleted(db::Task),
     }
-    let t = match 'rmw: {
+    let rmw = 'rmw: {
         let _rmw = API_RMW_LOCK.lock().unwrap_or_else(|e| {
             eprintln!("[mutex_poisoned] api_handlers::handlers API_RMW_LOCK: {e:?}");
             e.into_inner()
@@ -639,7 +643,8 @@ fn delete_task(
             break 'rmw Err(ErrOut::Upsert(e));
         }
         Ok(t)
-    } {
+    };
+    let t = match rmw {
         Ok(t) => t,
         Err(ErrOut::Load(e)) => {
             internal_err(req, log, &e);

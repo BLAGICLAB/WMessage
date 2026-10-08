@@ -64,8 +64,7 @@ fn copy_file_with_title(path: String, title: String) -> error::CommandResult<()>
     #[cfg(target_os = "macos")]
     {
         // F2（Phase 6b）：平台 helper 仍为 Result<(), String>，经 From<String> → Internal 转换
-        return platform::copy_file::copy_file_macos(&path, &title)
-            .map_err(error::CommandError::from);
+        platform::copy_file::copy_file_macos(&path, &title).map_err(error::CommandError::from)
     }
     #[cfg(windows)]
     {
@@ -182,6 +181,8 @@ fn cleanup_on_exit_with<R: tauri::Runtime>(
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+// 应用装配主体：插件/状态/命令注册线性铺开，拆分无益
+#[allow(clippy::too_many_lines)]
 pub fn run() {
     // 全局快捷键修饰键：macOS 用 Cmd+Ctrl（避开 Cmd+Shift+N 与 Finder 新建文件夹冲突），
     // Windows/Linux 用 Ctrl+Alt（避开 Ctrl+Shift+N 与浏览器隐身窗口冲突）
@@ -709,7 +710,7 @@ mod capability_tests {
             .expect("permissions 必须是数组");
         let open_path = perms
             .iter()
-            .find_map(|p| (p["identifier"] == "opener:allow-open-path").then_some(p))
+            .find(|p| p["identifier"] == "opener:allow-open-path")
             .expect("必须配置 opener:allow-open-path");
         let allow = open_path["allow"]
             .as_array()

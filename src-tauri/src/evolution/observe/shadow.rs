@@ -204,8 +204,7 @@ pub async fn shadow_apply_for_batch<S: ShadowSink>(
     proposals: Vec<EvolutionProposal>,
     sink: &S,
 ) -> ShadowReport {
-    let gated: Vec<EvolutionProposal> =
-        proposals.into_iter().filter(|p| gate_approved(p)).collect();
+    let gated: Vec<EvolutionProposal> = proposals.into_iter().filter(gate_approved).collect();
 
     let mut written = 0usize;
     let mut failed = 0usize;
@@ -252,7 +251,6 @@ pub async fn shadow_apply_for_batch<S: ShadowSink>(
 /// - ToolSchemaHint：不可逆
 /// - High impact：不可逆
 /// - 其他：可逆
-
 /// Generic 版本（R7→A）：可注入 reversibility 检查（供测试）
 ///
 /// 流程：
@@ -271,7 +269,7 @@ pub async fn shadow_apply_for_batch_with_reversibility<S: ShadowSink>(
 ) -> ShadowReport {
     let gated: Vec<EvolutionProposal> = proposals
         .into_iter()
-        .filter(|p| gate_approved(p))
+        .filter(gate_approved)
         .filter(|p| is_reversible_check(p))
         .collect();
 
@@ -325,8 +323,7 @@ pub async fn shadow_apply_for_batch_with_app(
 ) -> ShadowReport {
     use crate::evolution::activation::{evaluate_s2, S2Decision};
 
-    let gated: Vec<EvolutionProposal> =
-        proposals.into_iter().filter(|p| gate_approved(p)).collect();
+    let gated: Vec<EvolutionProposal> = proposals.into_iter().filter(gate_approved).collect();
     let config_path = paths::data_dir(app).join("bot-config.json");
     let state = crate::evolution::activation::load_state_from_file(&config_path);
     let path = paths::data_dir(app).join("evolution-changes.jsonl");

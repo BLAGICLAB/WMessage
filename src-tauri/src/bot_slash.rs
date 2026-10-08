@@ -144,7 +144,7 @@ pub fn stop_all_executions<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> usiz
         return 0;
     };
     let mut n = 0;
-    for (_, (flag, _, _)) in m.iter() {
+    for (flag, _, _) in m.values() {
         flag.store(true, std::sync::atomic::Ordering::SeqCst);
         n += 1;
     }
@@ -219,7 +219,7 @@ fn flag_session_stopped<R: tauri::Runtime>(
         .lock()
         .map_err(|_| "停止注册表锁中毒：停止标志未能置位".to_string())?;
     let mut n = 0;
-    for (_, (flag, interactive, sid2)) in m.iter() {
+    for (flag, interactive, sid2) in m.values() {
         // 会话隔离：只停本会话的交互实例；session 不匹配的不动
         if *interactive && sid2.as_deref() == session_id {
             flag.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -324,7 +324,7 @@ async fn ask_confirm_inner(
         app,
         &format!(
             "confirm | id: {} | kind: {kind} | {tool} | {}",
-            &id.chars().take(8).collect::<String>(),
+            id.chars().take(8).collect::<String>(),
             crate::bot::truncate_for_log(detail, 120)
         ),
     );
@@ -406,7 +406,7 @@ pub fn bot_confirm_response(
             &app,
             &format!(
                 "confirm_denied | id: {} | 用户拒绝",
-                &request_id.chars().take(8).collect::<String>()
+                request_id.chars().take(8).collect::<String>()
             ),
         );
     }
@@ -434,7 +434,7 @@ fn take_confirm<R: tauri::Runtime>(
         .ok_or_else(|| {
             format!(
                 "确认请求不存在或已超时：{}",
-                &request_id.chars().take(8).collect::<String>()
+                request_id.chars().take(8).collect::<String>()
             )
         })
 }

@@ -37,7 +37,7 @@ pub fn is_expired(entry: &ProposalEntry, now_ms: i64) -> bool {
 }
 
 /// 把过期条目的 status 改为 Expired（in-place）；返回标记数
-pub fn mark_expired(entries: &mut Vec<ProposalEntry>, now_ms: i64) -> usize {
+pub fn mark_expired(entries: &mut [ProposalEntry], now_ms: i64) -> usize {
     let mut count = 0;
     for e in entries.iter_mut() {
         if e.status == ProposalStatus::Pooled && is_expired(e, now_ms) {

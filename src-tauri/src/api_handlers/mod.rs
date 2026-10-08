@@ -143,7 +143,7 @@ mod tests {
         });
         let token = "test-token-123".to_string();
         let port = free_port();
-        let running =
+        let _running =
             ApiGuard(start_api(port, token.clone(), store.clone(), None, None, None).unwrap());
 
         // 健康检查：免鉴权
@@ -293,7 +293,7 @@ mod tests {
         });
         let token = "test-token-123".to_string();
         let port = free_port();
-        let running =
+        let _running =
             ApiGuard(start_api(port, token.clone(), store.clone(), None, None, None).unwrap());
 
         // 建立 SSE 连接
@@ -446,7 +446,7 @@ mod tests {
         });
         let token = "test-token-123".to_string();
         let port = free_port();
-        let running =
+        let _running =
             ApiGuard(start_api(port, token.clone(), store.clone(), None, None, None).unwrap());
 
         let (st, body) = http(
@@ -490,7 +490,7 @@ mod tests {
         });
         let token = "test-token-123".to_string();
         let port = free_port();
-        let running =
+        let _running =
             ApiGuard(start_api(port, token.clone(), store.clone(), None, None, None).unwrap());
 
         let (st, body) = http(
@@ -529,7 +529,7 @@ mod tests {
             assert_eq!(clients.len(), MAX_SSE_CLIENTS);
         }
         let port = free_port();
-        let running =
+        let _running =
             ApiGuard(start_api(port, token.clone(), store.clone(), None, None, None).unwrap());
 
         // 新连接：尸体被收割后应正常接入（200 + connected 首事件），而非 503
@@ -607,7 +607,7 @@ mod tests {
         let store: Arc<dyn TaskStore> = Arc::new(SabotageStore { inner });
         let token = "test-token-123".to_string();
         let port = free_port();
-        let running =
+        let _running =
             ApiGuard(start_api(port, token.clone(), store.clone(), None, None, None).unwrap());
 
         // NULL 老行：行存在性基线 + 插队写 → 409
@@ -656,7 +656,7 @@ mod tests {
         });
         let token = "test-token-123".to_string();
         let port = free_port();
-        let running =
+        let _running =
             ApiGuard(start_api(port, token.clone(), store.clone(), None, None, None).unwrap());
 
         let (st, body) = http(
@@ -681,7 +681,7 @@ mod tests {
         });
         let token = "test-token-123".to_string();
         let port = free_port();
-        let running =
+        let _running =
             ApiGuard(start_api(port, token.clone(), store.clone(), None, None, None).unwrap());
 
         let (st, _) = http(port, "GET", "/api/events?since=abc", Some(&token), None);
@@ -699,7 +699,7 @@ mod tests {
         });
         let token = "test-token-123".to_string();
         let port = free_port();
-        let running =
+        let _running =
             ApiGuard(start_api(port, token.clone(), store.clone(), None, None, None).unwrap());
 
         let long_path = "x".repeat(API_MAX_FILE_PATH + 1);
@@ -743,7 +743,7 @@ mod tests {
         });
         let token = "test-token-123".to_string();
         let port = free_port();
-        let running =
+        let _running =
             ApiGuard(start_api(port, token.clone(), store.clone(), None, None, None).unwrap());
 
         let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();

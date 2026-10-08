@@ -232,7 +232,7 @@ pub fn injection_snapshot_with(
         .filter(|m| (m.kind == "summary" || m.kind == "reflection") && !hit_ids.contains(&m.id))
         .cloned()
         .collect();
-    recent.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
+    recent.sort_by_key(|m| std::cmp::Reverse(m.updated_at_ms));
     recent.truncate(p.recent_n);
     (
         MemInjection {

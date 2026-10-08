@@ -34,7 +34,7 @@ use std::time::Duration;
 use rmcp::model::{CallToolRequestParams, CallToolResponse, CallToolResult, Tool};
 use rmcp::service::{DynService, RoleClient, RunningService, ServiceExt};
 use rmcp::transport::TokioChildProcess;
-use tauri::{Emitter, Manager, Runtime};
+use tauri::{Emitter, Runtime};
 use tokio::process::Command;
 
 use super::config::{McpServerConfig, McpTransport, STDIO_LAUNCH_ALLOWLIST};
@@ -49,6 +49,8 @@ type ClientService = RunningService<RoleClient, Box<dyn DynService<RoleClient>>>
 /// fingerprint = 配置指纹：重载时同指纹跳过重连，配置变了才断开重建。
 /// `name` 缓存自配置（连接槽唯一无 AppHandle 也能拿到的东西）：
 /// 阶段 3 工具挂载的 `mcp_{server}_{tool}` 前缀来源。
+// Down 的 fingerprint/name 为阶段 3 重连去重/挂载前缀预埋，暂无读取方
+#[allow(dead_code)]
 enum Slot {
     Connected {
         fingerprint: u64,
@@ -257,17 +259,12 @@ impl McpManager {
                         use tokio::io::{AsyncBufReadExt, BufReader};
                         let reader = BufReader::new(stderr);
                         let mut lines = reader.lines();
-                        loop {
-                            match lines.next_line().await {
-                                Ok(Some(line)) => {
-                                    let mut ring = tail.lock().unwrap_or_else(|e| e.into_inner());
-                                    if ring.len() >= STDERR_TAIL_LINES {
-                                        ring.pop_front();
-                                    }
-                                    ring.push_back(line);
-                                }
-                                _ => break, // None / Err：流关闭（进程退出）
+                        while let Ok(Some(line)) = lines.next_line().await {
+                            let mut ring = tail.lock().unwrap_or_else(|e| e.into_inner());
+                            if ring.len() >= STDERR_TAIL_LINES {
+                                ring.pop_front();
                             }
+                            ring.push_back(line);
                         }
                     });
                 }
@@ -582,7 +579,7 @@ impl McpManager {
 
 /// 退出清理的同步外壳（cleanup_on_exit 是同步上下文）：清进程级单例全部连接
 pub fn shutdown_all<R: Runtime>(_app: &tauri::AppHandle<R>) {
-    let _ = tauri::async_runtime::block_on(async move { shared().shutdown().await });
+    tauri::async_runtime::block_on(async move { shared().shutdown().await });
 }
 
 #[cfg(test)]

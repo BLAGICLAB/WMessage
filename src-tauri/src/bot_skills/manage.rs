@@ -191,7 +191,7 @@ pub fn scan_skill_dirs(dirs: &[std::path::PathBuf]) -> Vec<SkillInfo> {
         }
         // N7-①：步骤/回滚引用的工具名 vs 内置注册表（MCP 挂载工具运行期可调，
         // 这里按内置名单校验，未知项交设置页标红提示）
-        let unknown = parse_skill_steps(&strip_frontmatter(text))
+        let unknown = parse_skill_steps(strip_frontmatter(text))
             .map(|(steps, rb)| unknown_tool_names(&steps, &rb, &registry_known_tools()))
             .unwrap_or_default();
         Some(SkillInfo {
@@ -364,8 +364,7 @@ pub fn skills_import(app: AppHandle, path: String) -> CommandResult<String> {
             field: "name".into(),
             value: name,
             reason,
-        }
-        .into());
+        });
     }
     let dir = skills_dir(&app);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -627,7 +626,7 @@ mod tests {
         )
         .unwrap();
 
-        let rules = intent_rules_from_dirs(&[temp.0.clone()]);
+        let rules = intent_rules_from_dirs(std::slice::from_ref(&temp.0));
         assert_eq!(rules.len(), 1, "只有 enabled 且声明 intents 的技能产生路由");
         assert_eq!(rules[0].skill_name, "skill-a");
         assert_eq!(rules[0].patterns.len(), 2);

@@ -12,10 +12,7 @@ use std::time::Duration;
 const UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
 const FETCH_MAX_BYTES: usize = 2 * 1024 * 1024;
-const SEARCH_MAX_RESULTS: usize = 8;
 const SEARCH_OUTPUT_CAP: usize = 6000;
-/// count 参数硬上限（Tavily max_results 与 Brave count 的共同钳制）
-const SEARCH_COUNT_CAP: u32 = 10;
 
 /// reqwest 0.12+ 的错误 Display 只剩顶层一句（如「error sending request for url」），
 /// 真正原因（DNS/连接拒绝/TLS InvalidContentType）在 source 链里——逐层展开供
@@ -797,7 +794,7 @@ fn parse_bing(html: &str) -> Vec<(String, String, String)> {
         if title.is_empty() {
             continue;
         }
-        let link = href_from_tag(&a_tag).unwrap_or_default();
+        let link = href_from_tag(a_tag).unwrap_or_default();
         let snip = first_between(block, "<p", "</p>")
             .map(strip_tags)
             .unwrap_or_default();
@@ -821,7 +818,7 @@ fn parse_baidu(html: &str) -> Vec<(String, String, String)> {
             rest = &seg[h3end..];
             continue;
         };
-        let Some(link) = href_from_tag(&a_tag) else {
+        let Some(link) = href_from_tag(a_tag) else {
             rest = &seg[h3end..];
             continue;
         };

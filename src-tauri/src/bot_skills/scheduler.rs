@@ -274,6 +274,7 @@ pub async fn run_skill_scheduler(
 /// - 任一 step 失败 → 顺序跑 `## Rollback` 段工具 → 返回 Err
 /// - 全部成功 → 返回汇总文本
 /// - SkillRun 状态机更新由 execute_tool 内的 `skill_on_step` / `skill_on_step_post` 自动维护
+#[allow(clippy::too_many_lines)]
 pub async fn run_skill_scheduler_core<R: tauri::Runtime, X, XP, P>(
     app: &tauri::AppHandle<R>,
     name: &str,
@@ -281,8 +282,9 @@ pub async fn run_skill_scheduler_core<R: tauri::Runtime, X, XP, P>(
     body: &str,
     session_id: Option<&str>,
     params: &serde_json::Value,
-    allowed_tools: &[String],
-    skill_dir: Option<&std::path::Path>,
+    // 预留参数：DSL 技能的 allowed_tools 白名单/技能目录，阶段 3 接线
+    _allowed_tools: &[String],
+    _skill_dir: Option<&std::path::Path>,
     execute_tool: X,
     persist_outcome: P,
 ) -> Result<DslOutcome, DslFailure>
@@ -894,7 +896,7 @@ mod tests {
         let start = out.find(marker).unwrap() + marker.len();
         let after = &out[start..];
         // preview 部分应当是 200 个 x + "..."
-        let expected_preview: String = std::iter::repeat("x").take(200).collect::<String>() + "...";
+        let expected_preview: String = "x".repeat(200) + "...";
         assert!(
             after.starts_with(&expected_preview),
             "expected preview starts with 200x + '...', got first chars: {}",

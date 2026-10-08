@@ -359,7 +359,7 @@ fn plan_adjudication(
                     .filter(|m| matches!(m.kind.as_str(), "profile" | "preference" | "fact"))
                 {
                     if let Some(c) = store::cosine(Some(e), m.embedding.as_deref()) {
-                        if c >= hint_cosine && best.map_or(true, |(s, _)| c > s) {
+                        if c >= hint_cosine && best.is_none_or(|(s, _)| c > s) {
                             best = Some((c, m));
                         }
                     }

@@ -451,7 +451,7 @@ mod tests {
         let sibling = tmp.path().join("AI_Gen_Files-evil");
         std::fs::create_dir_all(&sibling).unwrap();
         std::fs::write(sibling.join("x.docx"), b"x").unwrap();
-        let sibling_file_canon = std::fs::canonicalize(&sibling.join("x.docx")).unwrap();
+        let sibling_file_canon = std::fs::canonicalize(sibling.join("x.docx")).unwrap();
         assert!(
             !path_openable_in(
                 sibling_file_canon.to_str().unwrap(),

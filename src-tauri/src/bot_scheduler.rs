@@ -52,7 +52,7 @@ fn notify_schedule_missed(app: &AppHandle, target_title: &str) {
     if let Err(e) = app
         .notification()
         .builder()
-        .title(&format!("⏰ 定时已错过：{title_short}"))
+        .title(format!("⏰ 定时已错过：{title_short}"))
         .body("到点已超 2 小时补跑窗口，本次已跳过；下一周期照常执行")
         .show()
     {
@@ -171,7 +171,7 @@ fn occurrence_after(
             return None;
         }
         let (h, m) = parse_hm(rest)?;
-        let weekday = after.weekday().num_days_from_monday() as u32 + 1; // 1=周一
+        let weekday = after.weekday().num_days_from_monday() + 1; // 1=周一
         let diff = (dow + 7 - weekday) % 7;
         let mut occ = resolve_local(
             (after.date_naive() + chrono::Duration::days(diff as i64)).and_hms_opt(h, m, 0)?,
@@ -350,14 +350,11 @@ async fn find_due_tasks(app: &AppHandle) -> Vec<crate::db::Task> {
             if t.deleted_at.is_some() || t.archived == Some(true) || t.column == crate::db::TaskStatus::Done {
                 return None;
             }
-            let Some(sched) = t
+            let sched = t
                 .schedule
                 .as_deref()
                 .map(str::trim)
-                .filter(|s| !s.is_empty())
-            else {
-                return None;
-            };
+                .filter(|s| !s.is_empty())?;
             match classify_due(sched, t.sched_last, now) {
                 DueVerdict::Run => Some(t),
                 DueVerdict::Missed => {
@@ -1038,7 +1035,7 @@ async fn finalize_job_run(
         if let Err(e) = app
             .notification()
             .builder()
-            .title(&format!("⏸ 定时任务已自动暂停：{title_short}"))
+            .title(format!("⏸ 定时任务已自动暂停：{title_short}"))
             .body("执行重试用尽仍失败；已暂停该定时任务，检查后在模块中恢复")
             .show()
         {

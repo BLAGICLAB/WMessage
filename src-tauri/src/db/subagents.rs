@@ -42,6 +42,8 @@ impl SubagentStatus {
         }
     }
 
+    // 有意不实现 std::str::FromStr：解析失败返回 Option 而非 Err
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         Some(match s {
             "queued" => SubagentStatus::Queued,
@@ -83,6 +85,8 @@ impl SubagentProfile {
         }
     }
 
+    // 有意不实现 std::str::FromStr：解析失败返回 Option 而非 Err
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         Some(match s {
             "research" => SubagentProfile::Research,

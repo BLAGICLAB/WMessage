@@ -18,9 +18,7 @@ fn rank_indices<E>(query: &str, descs: &[String], embed: E) -> Option<Vec<usize>
 where
     E: Fn(&str) -> Option<Vec<f32>>,
 {
-    let Some(qv) = embed(query) else {
-        return None;
-    };
+    let qv = embed(query)?;
     let mut scored: Vec<(usize, f32)> = descs
         .iter()
         .enumerate()

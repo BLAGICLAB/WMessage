@@ -12,12 +12,16 @@
 // 显式 re-export 每个子模块的 pub 项（glob `pub use crate::py::*` 只展开
 // py 的顶层项即子模块声明本身，不递归 re-export 子模块内部 pub 项）
 // audit/env/io 三行「看似未用」是有意的 facade：测试模块经 super::X 解析
-// （B5-6 教训：cargo fix 会误删它们，勿让自动 fix 碰本文件 use 区）
+// （B5-6 教训：cargo fix 会误删它们，勿让自动 fix 碰本文件 use 区；
+// allow 显式压制警告，同时保住 re-export）
+#[allow(unused_imports)]
 pub use crate::py::audit::*;
 pub use crate::py::commands::*;
 pub use crate::py::document::*;
+#[allow(unused_imports)]
 pub use crate::py::env::*;
 pub use crate::py::harvest::*;
+#[allow(unused_imports)]
 pub use crate::py::io::*;
 pub use crate::py::runtime::*;
 #[cfg(test)]
@@ -346,7 +350,7 @@ mod tests {
         run_python_at(
             &py,
             Some("run.py"),
-            &dir.to_path_buf(),
+            dir,
             None,
             &[],
             Some(120),

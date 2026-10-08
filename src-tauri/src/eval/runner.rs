@@ -10,7 +10,7 @@
 //!
 //! 不调 LLM；不动 prompt / TOOLS / 命令名 / 事件名 / JSON 字段 / 错误码。
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use rusqlite::Connection;
 
@@ -201,8 +201,7 @@ pub(crate) fn resolve_applied_path(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::eval::metrics::AppliedRecord;
-    use std::collections::HashMap;
+    use std::path::PathBuf;
 
     fn mk_fb(signal: SignalType, value: f64, session: &str, case: Option<&str>) -> FeedbackEntry {
         FeedbackEntry {

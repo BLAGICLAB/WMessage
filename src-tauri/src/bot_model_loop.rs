@@ -29,7 +29,7 @@ pub use crate::bot::registry::mutating_tools as MUTATING_TOOLS;
 // 注入系统提醒并补一轮（每次对话最多补一次），让模型实际调工具或如实说明。
 
 /// 会改动任务卡/文件系统的工具（判定「本轮是否真的动手了」）
-
+///
 /// 变更工具是否真的成功落库/落盘（幻觉守卫 mutation_done 的判定依据）。
 /// 按执行结果判定而非调用前按名字置位：被门禁拦截（⚠️）、用户拒绝、执行失败的
 /// 调用都不算「动过手」，否则之后的幻觉汇报就不再被拦，守卫被架空。
@@ -477,6 +477,7 @@ pub struct LoopTrace {
     pub model: Option<String>,
 }
 
+#[allow(clippy::too_many_lines)]
 pub async fn run_model_loop(
     app: AppHandle,
     msgs: Vec<serde_json::Value>,
@@ -594,7 +595,7 @@ pub async fn run_model_loop(
         // 全域熔断上限（W5-FUSE）：config 有值用之（钳 1..=500），None = 默认 100
         fuse_cap_override: Some(
             cfg.max_function_calls
-                .map(|v| (v.max(1).min(500)) as usize)
+                .map(|v| v.clamp(1, 500) as usize)
                 .unwrap_or(MAX_FUNCTION_CALLS_PER_REQUEST),
         ),
         emit: &emit,
@@ -753,6 +754,7 @@ enum StreamEnd {
 /// 轮数上限由调用方传入：默认 DEFAULT_MAX_ROUNDS（50），多步 Skill 可自报 max_rounds 覆盖。
 /// plan_state（PREVR 第 2 层）：复杂任务的动态计划；工具连续失败时触发
 /// Replan（重规划剩余步骤，≤MAX_REPLANS 次）。None = 无计划自由循环。
+#[allow(clippy::too_many_lines)]
 pub async fn run_model_loop_core<X, XP, R, RP>(
     http: &LlmHttp,
     msgs: Vec<serde_json::Value>,
@@ -1438,11 +1440,11 @@ where
             let refs = &tool_outcome.refs;
             // 按执行结果置位——被门禁拦截/用户拒绝/执行失败的
             // 变更工具不算「动过手」，幻觉守卫对后续虚假汇报保持拦截能力
-            if mutation_succeeded(name, &result) {
+            if mutation_succeeded(name, result) {
                 mutation_done = true;
             }
             // 成败口径与全链路统一（audit::tool_call_failed）——bot-tool-done 的 ok 字段同源
-            let failed = crate::audit::tool_call_failed(name, &result);
+            let failed = crate::audit::tool_call_failed(name, result);
             emit(
                 "bot-tool-done",
                 serde_json::json!({
@@ -1457,7 +1459,7 @@ where
                 // 工具名是模型给的字符串：truncate_for_log = escape_for_log 别名（\n\r| 已转义），不可伪造日志行
                 crate::bot::truncate_for_log(name, 60),
                 crate::bot::truncate_for_log(args, 500),
-                crate::bot::truncate_for_log(&result, 300)
+                crate::bot::truncate_for_log(result, 300)
             ));
             collected_refs.extend(refs.iter().cloned());
             // PREVR 第 1 层：工具失败检测。判定走全链路统一口径
@@ -1471,7 +1473,7 @@ where
                     consec_failures = 1;
                     last_failed_tool = Some(name.clone());
                 }
-                let reason = crate::bot::truncate_for_log(&result, 200);
+                let reason = crate::bot::truncate_for_log(result, 200);
                 last_fail_reason = Some(reason.clone());
                 fail_hint_queued = Some(if consec_failures >= 2 {
                     format!(
@@ -2183,7 +2185,6 @@ mod stream_accumulate_tests {
 
 #[cfg(test)]
 mod tools_schema_tests {
-    use super::*;
     use crate::bot::registry::tools_json as TOOLS;
 
     /// TOOLS 是编译期字符串、运行期解析：语法坏会 panic 杀死聊天（历史 bug）。

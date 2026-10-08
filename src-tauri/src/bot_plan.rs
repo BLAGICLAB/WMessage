@@ -64,10 +64,9 @@ pub fn parse_plan(text: &str) -> Option<Vec<String>> {
     let v: serde_json::Value = serde_json::from_str(json_str).ok()?;
     let arr = if let Some(arr) = v.as_array() {
         arr.clone()
-    } else if let Some(arr) = v["steps"].as_array() {
-        arr.clone()
     } else {
-        return None;
+        let arr = v["steps"].as_array()?;
+        arr.clone()
     };
     let steps: Vec<String> = arr
         .iter()

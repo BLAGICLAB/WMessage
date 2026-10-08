@@ -332,7 +332,7 @@ pub fn insert_item_with(
         for m in &all {
             if let Some(c) = cosine(Some(emb), m.embedding.as_deref()) {
                 if c >= p.dedup_merge {
-                    if best.map_or(true, |(s, _)| c > s) {
+                    if best.is_none_or(|(s, _)| c > s) {
                         best = Some((c, m));
                     }
                 } else if c >= p.dedup_hint {
@@ -353,9 +353,7 @@ pub fn insert_item_with(
                 && target_key != incoming_key.unwrap_or_default()
             {
                 return Ok((
-                    InsertOutcome::RefusedForeignMerge {
-                        target_key: target_key,
-                    },
+                    InsertOutcome::RefusedForeignMerge { target_key },
                     Vec::new(),
                 ));
             }

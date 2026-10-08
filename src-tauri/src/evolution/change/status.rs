@@ -256,7 +256,7 @@ mod tests {
         // 集成验收：spec R2 「完整 status 生命周期」
         use ChangeStatus::*;
         // 合法路径 1：标准 canary 流程
-        let path1 = vec![
+        let path1 = [
             Pending,
             Shadowing,
             ShadowPassed,
@@ -275,7 +275,7 @@ mod tests {
             assert!(transition(window[0], window[1]).is_ok());
         }
         // 合法路径 2：skip-canary
-        let path2 = vec![
+        let path2 = [
             Pending,
             Shadowing,
             ShadowPassed,
@@ -292,7 +292,7 @@ mod tests {
             );
         }
         // 合法路径 3：被拒绝
-        let path3 = vec![Pending, Rejected];
+        let path3 = [Pending, Rejected];
         assert!(can_transition(path3[0], path3[1]));
         // 终态：Active → Expired
         assert!(can_transition(Active, Expired));

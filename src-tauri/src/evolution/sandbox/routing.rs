@@ -41,7 +41,7 @@ pub fn is_canary(session_id: &str) -> bool {
 
 /// A/B 分组（true = A, false = B；独立 hash 50/50，与 canary 正交）
 pub fn is_ab_a(session_id: &str) -> bool {
-    ab_bucket(session_id) % 2 == 0
+    ab_bucket(session_id).is_multiple_of(2)
 }
 
 #[cfg(test)]
@@ -107,7 +107,7 @@ mod tests {
         let count = (0..1000)
             .filter(|i| is_canary(&format!("session-{i}")))
             .count();
-        assert!(count >= 25 && count <= 100, "5% 桶应 ≈ 50，实测 {count}");
+        assert!((25..=100).contains(&count), "5% 桶应 ≈ 50，实测 {count}");
     }
 
     // ─── A/B 50/50 ───
@@ -127,7 +127,7 @@ mod tests {
             .count();
         // 独立加盐 hash ≈ 50/50
         assert!(
-            count_a >= 450 && count_a <= 550,
+            (450..=550).contains(&count_a),
             "A/B 应 ≈ 50/50，A={count_a}"
         );
     }

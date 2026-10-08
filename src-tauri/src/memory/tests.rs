@@ -733,7 +733,7 @@ fn lesson_same_key_replay_still_merges() {
 
 // ───────────────────────── U17 参数化 ─────────────────────────
 
-use crate::memory::{MemoryControl, MemoryTuning};
+use crate::memory::MemoryTuning;
 
 #[test]
 fn memory_tuning_clamps_all_fields() {

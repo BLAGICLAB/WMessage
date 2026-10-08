@@ -125,10 +125,6 @@ mod tests {
     use crate::evolution::change::{ApprovalSource, ChangeRecord, EvolutionLayer};
     use crate::evolution::proposal::{ImpactLevel, ProposalOrigin, ProposalTarget};
 
-    fn mk_change(id: &str, status: ChangeStatus) -> ChangeRecord {
-        mk_change_at(id, status, 1_700_000_000_000)
-    }
-
     /// 指定 `created_at_ms` 的构造（OCR C3-3 后：计数按观察窗过滤，测试须让时间戳落在窗内）。
     fn mk_change_at(id: &str, status: ChangeStatus, created_at_ms: i64) -> ChangeRecord {
         ChangeRecord {

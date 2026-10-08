@@ -143,6 +143,3 @@ pub(crate) struct UpdateReq {
     pub archived: Option<bool>,
     pub deleted: Option<bool>,
 }
-
-// 让本模块 utils 也用 Response<Cursor<Vec<u8>>> 类型别名
-// pub(crate) use crate::api_handlers::body::JsonResponse; // 暂时未用，留作以后扩展

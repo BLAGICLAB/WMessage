@@ -253,6 +253,7 @@ pub(crate) fn migrate_config_value(value: &mut serde_json::Value) -> Option<(u32
 /// **保留**文件里的全部字段——含尚未迁进 keyring 的明文 apiKey；
 /// 明文清除是 migrate_legacy_key / migrate_search_keys 的职责，调用顺序不能反。
 /// 加锁外壳：与其他写路径互斥（C5-BT-03）。
+#[cfg(test)]
 pub(crate) fn migrate_config_file(path: &std::path::Path) -> Result<Option<(u32, u32)>, String> {
     let _g = super::io::lock_config_write();
     migrate_config_file_locked(path)
@@ -336,6 +337,26 @@ pub(crate) fn migrate_bot_config_schema_locked(app: &AppHandle) -> Result<(), St
             Ok(())
         }
         Err(e) => Err(e),
+    }
+}
+
+/// 条目级推理参数（W6-MODEL）：每卡模型覆盖时按覆盖条目计算（原 effective_inference
+/// 只按 active 条目）。global_max_tokens = 全局 max_tokens 兜底。
+pub fn inference_for_entry(
+    entry: &ModelEntry,
+    provider: ApiProvider,
+    global_max_tokens: Option<u32>,
+) -> EffectiveInference {
+    EffectiveInference {
+        max_tokens: resolve_max_tokens(entry.max_tokens.or(global_max_tokens)),
+        temperature: resolve_temperature(entry.temperature, provider),
+        top_p: resolve_top_p(entry.top_p),
+        system_prompt: entry
+            .system_prompt
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
     }
 }
 
@@ -584,25 +605,5 @@ mod inference_tests {
             ),
             ReasoningWire::AnthropicBudget(6_144)
         );
-    }
-}
-
-/// 条目级推理参数（W6-MODEL）：每卡模型覆盖时按覆盖条目计算（原 effective_inference
-/// 只按 active 条目）。global_max_tokens = 全局 max_tokens 兜底。
-pub fn inference_for_entry(
-    entry: &ModelEntry,
-    provider: ApiProvider,
-    global_max_tokens: Option<u32>,
-) -> EffectiveInference {
-    EffectiveInference {
-        max_tokens: resolve_max_tokens(entry.max_tokens.or(global_max_tokens)),
-        temperature: resolve_temperature(entry.temperature, provider),
-        top_p: resolve_top_p(entry.top_p),
-        system_prompt: entry
-            .system_prompt
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string),
     }
 }

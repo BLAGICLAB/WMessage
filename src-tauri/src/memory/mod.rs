@@ -362,7 +362,6 @@ pub async fn injection_block<R: tauri::Runtime>(
         },
     )
     .await;
-    let r = r.map(|res| res.map(|(inj, tuning)| (inj, tuning)));
     match r {
         Ok(Ok((inj, tuning))) => format_memory_block_with(&inj, tuning.injection_budget_chars),
         Ok(Err(e)) => {
@@ -595,7 +594,7 @@ pub async fn tool_recall_facts(app: &AppHandle, args: &str) -> ToolResult {
                 // 「没有找到相关记忆」首字「没」非 error/warn 前缀 → ok
                 return ToolResult::ok("没有找到相关记忆".to_string(), Vec::new());
             }
-            let lines: Vec<String> = hits.iter().map(|m| line_of(m)).collect();
+            let lines: Vec<String> = hits.iter().map(line_of).collect();
             // 「最相关 N 条」首字「最」非 error/warn 前缀 → ok
             return ToolResult::ok(
                 format!("最相关 {} 条：\n{}", lines.len(), lines.join("\n")),
@@ -607,8 +606,8 @@ pub async fn tool_recall_facts(app: &AppHandle, args: &str) -> ToolResult {
             return ToolResult::ok("（还没有任何长期记忆）".to_string(), Vec::new());
         }
         let mut all = items;
-        all.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
-        let lines: Vec<String> = all.iter().map(|m| line_of(m)).collect();
+        all.sort_by_key(|m| std::cmp::Reverse(m.updated_at_ms));
+        let lines: Vec<String> = all.iter().map(line_of).collect();
         // 「已记住 N 条」首字「已」非 error/warn 前缀 → ok
         ToolResult::ok(
             format!("已记住 {} 条：\n{}", lines.len(), lines.join("\n")),

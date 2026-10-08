@@ -45,18 +45,10 @@ pub trait Middleware: Send + Sync {
 
 /// 中间件注册表（F-2 P2）
 /// 注册仅在 setup 阶段（lib.rs）发生；业务模块只能通过 helper 函数查询
+#[derive(Default)]
 pub struct MiddlewareRegistry {
     pre_step: Vec<Box<dyn Middleware>>,
     pre_execute: Vec<Box<dyn Middleware>>,
-}
-
-impl Default for MiddlewareRegistry {
-    fn default() -> Self {
-        Self {
-            pre_step: Vec::new(),
-            pre_execute: Vec::new(),
-        }
-    }
 }
 
 impl MiddlewareRegistry {

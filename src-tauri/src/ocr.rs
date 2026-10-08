@@ -681,8 +681,8 @@ mod tests {
         assert!(prob_to_boxes(&prob, w, h).is_empty(), "过小连通域应被过滤");
         // 阈值边界：== 阈值不算命中（判定是 > THRESH）
         let mut prob = vec![0f32; w * h];
-        for i in 0..12 {
-            prob[i] = 0.3;
+        for p in prob.iter_mut().take(12) {
+            *p = 0.3;
         }
         assert!(prob_to_boxes(&prob, w, h).is_empty(), "等于阈值不应命中");
     }
@@ -800,9 +800,9 @@ mod tests {
             let Some((_, glyph)) = FONT.iter().find(|(k, _)| *k == key) else {
                 continue;
             };
-            for col in 0..5 {
+            for (col, bits) in glyph.iter().enumerate() {
                 for row in 0..7 {
-                    if glyph[col] >> row & 1 == 1 {
+                    if *bits >> row & 1 == 1 {
                         let px = PAD + ci * glyph_w + col * SCALE;
                         let py = PAD + row * SCALE;
                         for dy in 0..SCALE {

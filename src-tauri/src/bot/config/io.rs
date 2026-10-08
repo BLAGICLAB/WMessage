@@ -46,7 +46,7 @@ pub(crate) fn lock_config_write() -> ConfigWriteGuard {
 
 thread_local! {
     /// 同 db::HOLDING_DB_WRITE：try_lock 无法证明「本线程持锁」，用线程本地标记精确判定。
-    static HOLDING_CONFIG_WRITE: std::cell::Cell<bool> = std::cell::Cell::new(false);
+    static HOLDING_CONFIG_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// `CONFIG_WRITE_LOCK` 的守卫：Drop 时无条件清线程本地标记（覆盖正常释放与 unwind）。
@@ -319,8 +319,7 @@ pub(crate) fn migrate_mcp_server_secrets_locked(app: &AppHandle) -> Result<(), S
         }
     }
     let raw_out = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
-    write_config_atomic(&p, &raw_out)
-        .map_err(|e| format!("mcp 机密迁移写回失败：{}", e.to_string()))?;
+    write_config_atomic(&p, &raw_out).map_err(|e| format!("mcp 机密迁移写回失败：{e}"))?;
     crate::audit::write_event(
         app,
         crate::audit::AuditLevel::Info,

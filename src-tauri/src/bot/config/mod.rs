@@ -9,23 +9,23 @@
 //!
 //! 模块分层：
 //! - `types`    核心数据类型（KeySlot/BotConfig/ModelEntry/ModelsByProvider/
-//!              ActiveModelId/ApiProvider/PermMode/BotConfigView）
-//!              + 12 个 MAX_* 常量 + check_len + keyring service 名
+//!  ActiveModelId/ApiProvider/PermMode/BotConfigView）
+//!  + 12 个 MAX_* 常量 + check_len + keyring service 名
 //! - `schema`   双协议模型迁移（migrate_legacy_models/derive_default_label/
-//!              derive_legacy_fields_from_active）+ max_tokens 解析
-//!              + bot-config.json schema 版本号迁移（migrate_config_value/
-//!              migrate_config_file/migrate_bot_config_schema）
+//!  derive_legacy_fields_from_active）+ max_tokens 解析
+//!  + bot-config.json schema 版本号迁移（migrate_config_value/
+//!  migrate_config_file/migrate_bot_config_schema）
 //! - `keyring`  keyring 后端探测（System / PlaintextFile）+ 按后端分发
-//!              read/has/write/delete + 3 个 KeySlot 顶层入口
-//!              + System 后端 v0→v1 service 迁移 + 降级明文回迁
+//!  read/has/write/delete + 3 个 KeySlot 顶层入口
+//!  + System 后端 v0→v1 service 迁移 + 降级明文回迁
 //! - `io`       bot-config.json 读写（load_config/write_bot_config_file/
-//!              add_allowed_dir/update_config_file/read_bypass_llm_switch/
-//!              base_url_is_safe）+ 老版本明文 key 迁移
-//!              （migrate_legacy_key/migrate_search_keys/migrate_search_key_slot）
+//!  add_allowed_dir/update_config_file/read_bypass_llm_switch/
+//!  base_url_is_safe）+ 老版本明文 key 迁移
+//!  （migrate_legacy_key/migrate_search_keys/migrate_search_key_slot）
 //! - `audit`    bot.log 审计写入（audit_log/audit_log_hook/append_bot_log_line）
-//!              + escape_for_log/truncate_for_log + read_log_tail
+//!  + escape_for_log/truncate_for_log + read_log_tail
 //! - `commands` 7 个 tauri command（bot_get_config/bot_set_config/bot_set_active_model/
-//!              bot_clear_api_key/bot_log_read/bot_reload_config/bot_test_connection）+ perm_mode helper
+//!  bot_clear_api_key/bot_log_read/bot_reload_config/bot_test_connection）+ perm_mode helper
 
 pub mod audit;
 pub mod commands;
@@ -81,27 +81,32 @@ pub use commands::{
 // 因此走 audit 子模块 re-export。
 pub use audit::{__cmd__bot_log_read, __tauri_command_name_bot_log_read};
 
+// 抑制 unused 警告：escape_for_log / truncate_for_log 跨模块被外部 bot_chat / bot_model_loop
+// 仍通过 bot.rs 的 `pub use config::{...}` 路径使用，本模块测试不直接覆盖
+// （truncate_for_log 是 escape_for_log 的别名）。
+#[allow(dead_code)]
+fn _unused_marker(_s: &str) -> String {
+    audit::escape_for_log("", 0)
+}
+
 // ───────────────────────── 单元测试 ─────────────────────────
 
 #[cfg(test)]
 mod tests {
     // 跨 6 个子模块的集成测试，super::* 只拿 mod.rs 顶层项，所以这里显式列每个子模块的入口。
     use super::*;
-    use crate::bot::config::audit::{escape_for_log, read_log_tail, truncate_for_log};
+    use crate::bot::config::audit::read_log_tail;
     use crate::bot::config::io::{
-        add_allowed_dir, base_url_is_safe, load_config, migrate_legacy_key,
-        migrate_search_key_slot, read_bypass_llm_switch_at, read_memory_control_at,
-        read_memory_tuning_at, update_config_file, write_bot_config_file,
+        base_url_is_safe, migrate_search_key_slot, read_bypass_llm_switch_at,
+        read_memory_control_at, read_memory_tuning_at, write_bot_config_file,
     };
     use crate::bot::config::keyring::{
-        backend_for, classify_get_password, classify_has_key, delete_api_key_at, has_api_key,
-        has_api_key_at, has_key_of_slot, key_backend, plaintext_key_path_for, read_api_key,
-        read_api_key_at, read_search_key, secret_service_available_with, write_api_key_at,
-        write_key_of_slot, write_search_key, KeyBackend,
+        backend_for, classify_get_password, classify_has_key, delete_api_key_at, has_api_key_at,
+        read_api_key_at, secret_service_available_with, write_api_key_at, KeyBackend,
     };
     use crate::bot::config::schema::{
-        derive_legacy_fields_from_active, migrate_bot_config_schema, migrate_config_file,
-        migrate_legacy_models, resolve_max_tokens, SCHEMA_VERSION_KEY,
+        derive_legacy_fields_from_active, migrate_config_file, resolve_max_tokens,
+        SCHEMA_VERSION_KEY,
     };
     use crate::bot::config::schema::{DEFAULT_MAX_TOKENS, MAX_MAX_TOKENS, MIN_MAX_TOKENS};
 
@@ -240,14 +245,16 @@ mod tests {
 
     #[test]
     fn apply_active_model_switch_sets_active_and_derives_legacy() {
-        let mut cfg = BotConfig::default();
-        cfg.models_by_provider = Some(ModelsByProvider {
-            openai: vec![
-                entry("a", "https://a.example", "m-a"),
-                entry("b", "https://b.example", "m-b"),
-            ],
-            anthropic: vec![],
-        });
+        let mut cfg = BotConfig {
+            models_by_provider: Some(ModelsByProvider {
+                openai: vec![
+                    entry("a", "https://a.example", "m-a"),
+                    entry("b", "https://b.example", "m-b"),
+                ],
+                anthropic: vec![],
+            }),
+            ..Default::default()
+        };
         apply_active_model_switch(&mut cfg, "b").expect("命中应 Ok");
         assert_eq!(
             cfg.active_model_id.as_ref().unwrap().openai.as_deref(),
@@ -261,15 +268,19 @@ mod tests {
 
     #[test]
     fn apply_active_model_switch_rejects_unknown_and_empty_list() {
-        let mut cfg = BotConfig::default();
-        cfg.models_by_provider = Some(ModelsByProvider {
-            openai: vec![entry("a", "u", "m-a")],
-            anthropic: vec![],
-        });
+        let mut cfg = BotConfig {
+            models_by_provider: Some(ModelsByProvider {
+                openai: vec![entry("a", "u", "m-a")],
+                anthropic: vec![],
+            }),
+            ..Default::default()
+        };
         assert!(apply_active_model_switch(&mut cfg, "nope").is_err());
         // 列表为空同样拒绝（不静默回退）
-        let mut empty = BotConfig::default();
-        empty.models_by_provider = Some(ModelsByProvider::default());
+        let mut empty = BotConfig {
+            models_by_provider: Some(ModelsByProvider::default()),
+            ..Default::default()
+        };
         assert!(apply_active_model_switch(&mut empty, "a").is_err());
     }
 
@@ -277,11 +288,13 @@ mod tests {
     fn apply_active_model_switch_cross_protocol_switches_provider() {
         // MP-02 双协议同列：当前协议 openai，点 anthropic 列表里的模型 →
         // 连协议一起切（api_provider + 该协议 active），derive 后老字段跟过去
-        let mut cfg = BotConfig::default();
-        cfg.models_by_provider = Some(ModelsByProvider {
-            openai: vec![entry("a", "https://a.example", "m-a")],
-            anthropic: vec![entry("c", "https://c.example", "m-c")],
-        });
+        let mut cfg = BotConfig {
+            models_by_provider: Some(ModelsByProvider {
+                openai: vec![entry("a", "https://a.example", "m-a")],
+                anthropic: vec![entry("c", "https://c.example", "m-c")],
+            }),
+            ..Default::default()
+        };
         apply_active_model_switch(&mut cfg, "c").expect("跨协议命中应 Ok");
         assert_eq!(cfg.api_provider.as_deref(), Some("anthropic"));
         assert_eq!(
@@ -299,9 +312,8 @@ mod tests {
         assert!(apply_active_model_switch(&mut cfg, "nope").is_err());
     }
     use crate::bot::config::types::{
-        check_len, ActiveModelId, ApiProvider, BotConfig, KeySlot, ModelEntry, ModelsByProvider,
-        PermMode, BOT_CONFIG_SCHEMA_VERSION, KEYRING_SERVICE, LEGACY_KEYRING_SERVICE, MAX_DUE,
-        MAX_KEYWORD, MAX_NOTE, MAX_SUBTASK_TEXT, MAX_TAGS, MAX_TAG_LEN, MAX_TITLE,
+        ApiProvider, BotConfig, KeySlot, ModelEntry, ModelsByProvider, PermMode,
+        BOT_CONFIG_SCHEMA_VERSION, KEYRING_SERVICE, LEGACY_KEYRING_SERVICE,
     };
 
     // ────────── bot_config_tests（基础类型 + 默认 + 老配置） ──────────
@@ -975,12 +987,4 @@ mod tests {
         // 安全：userinfo 不影响连接目标——host 解析后确为回环
         assert!(base_url_is_safe("http://attacker.com@127.0.0.1"));
     }
-}
-
-// 抑制 unused 警告：escape_for_log / truncate_for_log 跨模块被外部 bot_chat / bot_model_loop
-// 仍通过 bot.rs 的 `pub use config::{...}` 路径使用，本模块测试不直接覆盖
-// （truncate_for_log 是 escape_for_log 的别名）。
-#[allow(dead_code)]
-fn _unused_marker(_s: &str) -> String {
-    audit::escape_for_log("", 0)
 }

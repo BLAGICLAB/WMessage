@@ -17,7 +17,7 @@ pub const ATOMIC_TOOLS: &[&str] = &[];
 
 /// 是否在原子黑名单（永远 false，保留为死函数以防编译错误）
 pub fn is_atomic_tool(name: &str) -> bool {
-    ATOMIC_TOOLS.iter().any(|&t| t == name)
+    ATOMIC_TOOLS.contains(&name)
 }
 
 /// 阻断时的错误消息（仅占位，调用方不应再走到这里）

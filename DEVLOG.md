@@ -5768,3 +5768,32 @@ tests-audit + vitest）/ tsc --noEmit / 批次号红线 全绿。
 
 **踩坑**：`checked_sub` 只管溢出不管负值——「防负数」直觉写成 checked_sub 是
 错的，须 filter 或显式比较；本次靠先写回归测试当场暴露。
+
+## 2026-10-08（周四）三项独立批次：Mimosa 重跑闭环 + 测试代码 OCR 扫描分诊 + clippy 全仓清理
+
+**Mimosa 完整审计重跑（此前多轮 hook 报 scanner_enobufs，本次完整跑完）**：
+- 16 条全部误报：14 条 py/document.rs 七锚点与 10-06 轮同锚，凭记录判死；
+  新增 2 条（graph-demo-entry.tsx:89 / main.tsx:36）所称汇点同为沙箱生成物
+  `AI_Gen_Files/lists.js:147`（扫描时已不存在），属跨文件错链。记录追加进
+  docs/MIMOSA-SCAN-TRIAGE-2026-10-07.md。依赖扫描 1120 包 0 advisory。
+
+**测试代码 OCR 扫描（首轮覆盖：59 前端 test + 10 集成 + 8 tests-audit）**：
+- 87 条 findings（critical 1 / high 30 / medium 33 / low 23）；前端 59 文件 0 条。
+- 分诊：REAL 8 + PARTIAL 9 + FP 4 + ALREADY_HANDLED 2 + WONTFIX 20，
+  另建议性存量 44 条。工单落 docs/OCR-TESTS-SCAN-TRIAGE-2026-10-08.md，
+  修复独立成批（两个真误绿向量 + 两个守卫洞 + 一条 .gitignore PII 漏项优先）。
+
+**clippy 全仓清理（232 行 warning → 仅剩 vendor/tiny_http 2 条第三方存量）**：
+- 分诊约 217 站：机械可修 156 + 判断后可修 40 + WONTFIX 21（vendor 2 不在范围）。
+- 三个并行代理按互不重叠文件组执行 + 主控补 16 站指派空隙。
+- 删除死代码：bot_web 2 死常量、bot_chat HISTORY_BUDGET_CHARS、
+  bot_orchestrator wait_slot、task_autotag AutotagWritten、
+  api_handlers JsonResponse、observe/stop mk_change（均 grep 全仓零引用）。
+- 21 站 WONTFIX/预埋带注释标 allow（too_many_lines ×11 拆分另批、
+  subagents from_str 有意返 Option、mcp Slot 阶段 3 预埋字段等）；
+  config/mod.rs 的 `_unused_marker` 故意 hack 搬位保留未删。
+- 红线特例：recovery.rs 某条历史审计引用注释因代码重排成新增行，按门禁口径
+  加 audit-ok 标记放行（先例：确需引用加 audit-ok；引用号本身见代码内注释）。
+
+**验证**：cargo clippy --all-targets 0 warning（除 vendor 2）；
+scripts/test-all.sh 全绿；批次号红线干净。

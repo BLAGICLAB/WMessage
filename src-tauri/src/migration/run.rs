@@ -59,6 +59,7 @@ pub fn run_migration(app: &AppHandle) -> Result<MigrationReport, CommandError> {
     run_migration_inner(app)
 }
 
+#[allow(clippy::too_many_lines)]
 fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError> {
     // B3: db_load/db_upsert 改 async 了；run_migration_inner 在 spawn_polling 的 std::thread
     // 或 spawn_blocking(migration_run) 线程里跑，不在 tokio runtime 上 → 用 block_on 桥接。

@@ -24,7 +24,9 @@ use wmessage_lib::bot::{
 use wmessage_lib::bot_chat::{run_task_in_chat_with, TaskExecOrigin};
 use wmessage_lib::trace_sink::TraceCapture;
 
-static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+// 测试串行化闸：guard 跨 await 持有是刻意为之（整个用例独占共享 deps 库），
+// 用 tokio 的异步锁避免 await_holding_lock，语义与 std 串行等价
+static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
@@ -163,7 +165,7 @@ async fn exec_never(
 /// 成功执行 → exec_traces 落 done 行（origin/task/session 收尾字段齐全）
 #[tokio::test]
 async fn trace_lifecycle_done_row_written() {
-    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let _serial = SERIAL.lock().await;
     let (handle, task_id, _dir) = setup_task("trace 验收任务");
     let guard = TraceCleanupGuard {
         handle: handle.clone(),
@@ -175,7 +177,7 @@ async fn trace_lifecycle_done_row_written() {
     let hook: std::sync::Arc<std::sync::Mutex<TraceCapture>> = Default::default();
     let hook_for_run = hook.clone();
 
-    let runner = move |app: tauri::AppHandle<tauri::test::MockRuntime>,
+    let runner = move |_app: tauri::AppHandle<tauri::test::MockRuntime>,
                        msgs: Vec<serde_json::Value>,
                        stop: StopGuard| {
         let hook = hook_for_run.clone();
@@ -228,11 +230,11 @@ async fn trace_lifecycle_done_row_written() {
 /// 失败执行 → failed 行 + error 留痕（会话即执行记录的 trace 版）
 #[tokio::test]
 async fn trace_lifecycle_failed_row_records_error() {
-    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let _serial = SERIAL.lock().await;
     let (handle, task_id, _dir) = setup_task("trace 失败任务");
     // 失败路径拿不到真实 session_id（trace 行落的是运行期生成的会话 id），
     // guard 的 session 位留空即可——task_id 双路删除负责清 trace 家族
-    let guard = TraceCleanupGuard {
+    let _guard = TraceCleanupGuard {
         handle: handle.clone(),
         task_id: task_id.clone(),
         session_id: std::cell::RefCell::new(String::new()),
@@ -276,7 +278,7 @@ async fn trace_lifecycle_failed_row_records_error() {
 /// 采集管道：record_span / record_file_change → 后台 writer 攒批落库
 #[tokio::test]
 async fn trace_sink_writes_spans_and_file_changes() {
-    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let _serial = SERIAL.lock().await;
     let app = Box::leak(Box::new(tauri::test::mock_app()));
     let handle = app.handle().clone();
     let _ = wmessage_lib::db::open_db(&handle).unwrap();

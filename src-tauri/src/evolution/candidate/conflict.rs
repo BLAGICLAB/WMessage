@@ -13,9 +13,6 @@
 //! 跨层：按层级优先级（Safety > Memory > ToolSchema > Skill > PromptHint > Parameter > Code）
 
 use super::entry::ProposalEntry;
-use crate::evolution::change::EvolutionLayer;
-use crate::evolution::proposal::ImpactLevel;
-use crate::evolution::strategy::EvolutionPolicy;
 
 /// 是否冲突（同 proposal_id 不算自比冲突；同层 + 同 target）
 pub fn is_conflict(a: &ProposalEntry, b: &ProposalEntry) -> bool {
@@ -38,6 +35,8 @@ pub fn find_conflict<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::evolution::change::EvolutionLayer;
+    use crate::evolution::proposal::ImpactLevel;
     use crate::evolution::proposal::{ProposalOrigin, ProposalTarget};
     use crate::evolution::strategy::{DefaultEvolutionPolicy, EvolutionPolicy};
 

@@ -33,3 +33,32 @@
   （`sha256:d575d5b1…` / `sha256:8f396b2f…`），凭本记录直接判误报。
 - 扫描 run status=inconclusive（静态、调用图部分不完整），verdict effect=none，
   与本结论一致。
+
+---
+
+# Mimosa 重跑记录：2026-10-08 — 16 条全部误报（14 凭记录 + 2 新增给据）
+
+- Scan: `scan-2026-10-08T04-19-30.884Z-5d82a2c565c6`（seal `sha256:c807682b…`，
+  depth=deep），**本次完整跑完**——此前多轮 hook 报 `scanner_enobufs` 的问题未复现。
+- 依赖扫描：1120 包全部完成，离线 advisory 0 命中。
+
+## 构成与处置
+
+1. **py/document.rs 七锚点（25/78/142/532/561/617/638）HIGH/MEDIUM 成对 ×7 = 14 条**
+   ——与 10-06 轮完全同锚点，凭上文记录直接判误报（内嵌 Python 字符串被当
+   Rust 源码 + `eval/config.rs::load()` 生产死代码）。
+2. **新增 gui-test-screenshots/graph-demo-entry.tsx:89 MEDIUM — 误报**。
+   `stress` URL 参数仅经 `Number()` 强转后作数量用，本文件无 innerHTML；
+   所称汇点 `AI_Gen_Files/lists.js:147` 是沙箱 AI 生成演示产物（本次扫描时
+   已被清理、路径不存在），且 graph-demo 治具不在生产 bundle（src/ 零引用，
+   仅截图治具用）。
+3. **新增 src/main.tsx:36 MEDIUM — 误报**。该行是
+   `ReactDOM.createRoot(rootEl).render(...)`，无 URL 输入、无 innerHTML；
+   所称汇点同为不存在的 `lists.js:147`——分析器把生产入口与沙箱产物跨文件
+   错链。
+
+## 处置
+
+- 不改代码、不入 triage 基线。后续扫描若复报上述锚点，凭本记录直接判误报。
+- run status=inconclusive（静态 advisory 性质），verdict effect=none，
+  与上轮一致。Mimosa hook 的「尽快重跑完整审计」事项至此闭环。

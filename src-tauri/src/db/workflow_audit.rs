@@ -321,10 +321,7 @@ mod tests {
         assert_eq!(rows[0].kind, KIND_RUN_START); // id 倒序
         assert_eq!(rows[1].payload["attempt"], 2);
         assert_eq!(rows[1].node_task_id.as_deref(), Some("t1"));
-        assert!(
-            wa_list(&conn, "wf1", 0).is_err() == false
-                && wa_list(&conn, "wf1", 1).unwrap().len() == 1
-        );
+        assert!(wa_list(&conn, "wf1", 0).is_ok() && wa_list(&conn, "wf1", 1).unwrap().len() == 1);
         // 空 workflow_id 拒绝
         assert!(wa_insert(
             &conn,

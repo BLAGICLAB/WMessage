@@ -119,15 +119,13 @@ pub(crate) fn node_is_success(t: &Task) -> bool {
     if t.column != TaskStatus::Done {
         return false;
     }
-    match t
-        .result
-        .as_ref()
-        .and_then(|r| r.get("status"))
-        .and_then(|s| s.as_str())
-    {
-        None | Some("success") => true,
-        _ => false,
-    }
+    matches!(
+        t.result
+            .as_ref()
+            .and_then(|r| r.get("status"))
+            .and_then(|s| s.as_str()),
+        None | Some("success")
+    )
 }
 
 /// 失败传播闭包（单测锚点）：failed 的全部传递下游（BFS，不含 failed 自身），
@@ -737,6 +735,8 @@ pub async fn workflow_is_running(workflow_id: String) -> bool {
 
 // ────────────── 控制器 ──────────────
 
+// DAG 控制器主体，拆分反而伤可读性
+#[allow(clippy::too_many_lines)]
 async fn run_controller(
     app: AppHandle,
     workflow_id: String,
@@ -1262,7 +1262,8 @@ async fn run_controller(
             crate::notifications::emit_changed(&app);
         }
     }
-    runs().lock().map(|mut m| m.remove(&workflow_id));
+    // 锁中毒时丢弃即可：run 已结束，map 容忍 Err 不影响收尾审计
+    let _ = runs().lock().map(|mut m| m.remove(&workflow_id));
     let failed_n = failed_names.len();
     let skipped_n = total.saturating_sub(done_count + failed_n);
     crate::audit::write_event(
@@ -1553,7 +1554,9 @@ async fn persist_and_emit_report(app: &AppHandle, workflow_id: &str, report: &se
 /// 结算评审 + 有界返工环（C2/C3）：评审 → needsRework 节点（含传递下游）返工一轮
 /// → 仅返工节点轻量终审更新报告。全程每节点至多返工 1 次、评审调用至多 2 次
 ///（Reflexion 环必须有界——无限返工既烧 token 又可能震荡）。
+// 返工环主体，拆分反而伤可读性
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
 async fn review_and_rework(
     app: &AppHandle,
     workflow_id: &str,

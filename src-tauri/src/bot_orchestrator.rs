@@ -520,12 +520,10 @@ pub(crate) fn extract_last_json_object(text: &str) -> Option<String> {
                 }
                 depth += 1;
             }
-            '}' => {
-                if depth > 0 {
-                    depth -= 1;
-                    if depth == 0 {
-                        spans.push((start, i + 1));
-                    }
+            '}' if depth > 0 => {
+                depth -= 1;
+                if depth == 0 {
+                    spans.push((start, i + 1));
                 }
             }
             _ => {}
@@ -817,14 +815,6 @@ impl Drop for WaitingGuard {
 }
 
 impl SubagentGate {
-    /// 等到槽位。同会话内按等待先后放行（waiting 计数=1 者优先），
-    /// 跨会话近似公平。所有状态变更 RAII 化：future 被 drop 无任何残留。
-    pub(crate) async fn wait_slot(parent_session: Option<String>) -> GateTicket {
-        Self::wait_slot_cancellable(parent_session, || false)
-            .await
-            .expect("不可取消的 wait_slot 不会返回 None")
-    }
-
     /// B3-1：可取消排队——每轮 50ms 退避后调 `should_abort`，true 即退队返回
     /// None（waiting 计数由 WaitingGuard RAII 递减）。取消判定由调用方给
     ///（runner 查 DB 行终态），闸门本身不依赖存储。
@@ -905,12 +895,13 @@ impl SubagentGate {
 /// 但入口/存储/事件与 bot_execute_task 各自独立（设计 §2）。
 /// 具体化 `tauri::AppHandle`（= Wry）：run_model_loop 生产壳即该签名
 /// （mock 链路走 run_model_loop_core，同 llm_integration 分层）。
+#[allow(clippy::too_many_lines)]
 async fn run_subagent(app: AppHandle, subagent_id: String) {
     let sid_for_load = subagent_id.clone();
     let row = match db_locked(&app, move |conn| {
         crate::db::load_subagent(conn, &sid_for_load)
             .map_err(CommandError::DbError)?
-            .ok_or_else(|| CommandError::TaskNotFound(sid_for_load))
+            .ok_or(CommandError::TaskNotFound(sid_for_load))
     })
     .await
     {
@@ -980,7 +971,7 @@ async fn run_subagent(app: AppHandle, subagent_id: String) {
     let mut cancelled_while_queued = move || {
         let n = gate_tick.get();
         gate_tick.set(n.wrapping_add(1));
-        if n % 10 != 0 {
+        if !n.is_multiple_of(10) {
             return false;
         }
         crate::db::open_db(&app_gate_check)
@@ -1255,7 +1246,7 @@ async fn run_subagent(app: AppHandle, subagent_id: String) {
             // 只读轮询：直接开连接，不持 DB_WRITE_LOCK（防多子 agent 写锁互饿——OCR r1 采纳）
             let watcher_app2 = watcher_app.clone();
             let aborted = tauri::async_runtime::spawn_blocking(move || -> Result<bool, String> {
-                let conn = crate::db::open_db(&watcher_app2).map_err(|e| e)?;
+                let conn = crate::db::open_db(&watcher_app2)?;
                 let card_deleted = crate::db::load_task(&conn, &task_id)
                     .ok()
                     .flatten()
@@ -1887,7 +1878,7 @@ mod orchestrator_tests {
         let before_running = gate().state.lock().unwrap().global_running;
         // ① 拿槽 → 计数 +1、per_session 登记、未排队
         {
-            let mut t = Some(GateTicket {
+            let t = Some(GateTicket {
                 parent_session: Some("ps_drop".into()),
             });
             // 手动占槽（wait_slot 锁内路径的等价操作）
@@ -1905,16 +1896,16 @@ mod orchestrator_tests {
             // 否则同线程二次加锁自死锁
             assert_eq!(SubagentGate::queue_position(Some("ps_drop")), None);
             // ② Drop → 释放：计数回基线、归零清键
-            t = None;
+            drop(t);
         }
         {
             let st = gate().state.lock().unwrap();
             assert_eq!(st.global_running, before_running, "Drop 必须释放槽位");
-            assert!(st.per_session.get("ps_drop").is_none(), "计数归零须清键");
+            assert!(!st.per_session.contains_key("ps_drop"), "计数归零须清键");
         }
         // ③ 多持多放对称：两张票据只放一张 → 残 1；全放 → 清键
         {
-            let mut t1 = Some(GateTicket {
+            let t1 = Some(GateTicket {
                 parent_session: Some("ps_rel".into()),
             });
             let t2 = GateTicket {
@@ -1931,12 +1922,12 @@ mod orchestrator_tests {
                 Some(&1),
                 "放一张残 1"
             );
-            t1 = None;
+            drop(t1);
         }
         {
             let st = gate().state.lock().unwrap();
             assert_eq!(st.global_running, before_running, "全放回基线");
-            assert!(st.per_session.get("ps_rel").is_none(), "归零清键");
+            assert!(!st.per_session.contains_key("ps_rel"), "归零清键");
         }
         // ④ queue_position：同会话等待计数语义——前面还有 waiting-1 个
         {

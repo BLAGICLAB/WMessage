@@ -19,7 +19,7 @@
 
 use rusqlite::Connection;
 
-use super::proposal::{EvolutionProposal, ImpactLevel, ProposalCategory};
+use super::proposal::EvolutionProposal;
 use crate::evolution::strategy::EvolutionPolicy;
 use crate::memory::store::{self, NewItem};
 
@@ -380,6 +380,7 @@ pub fn apply_from_consolidation(proposals: Vec<EvolutionProposal>) {
 mod tests {
     use super::*;
     use crate::evolution::proposal::{Evidence, ProposalOrigin, ProposalTarget, Suggestion};
+    use crate::evolution::proposal::{ImpactLevel, ProposalCategory};
     use crate::evolution::strategy::DefaultEvolutionPolicy;
 
     fn mem_conn() -> Connection {

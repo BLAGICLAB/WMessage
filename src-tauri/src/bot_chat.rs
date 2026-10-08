@@ -92,10 +92,6 @@ pub fn merge_task_refs_dedup(refs: Vec<TaskRef>) -> Vec<TaskRef> {
         .collect()
 }
 
-/// 会话历史字符预算：主聊天路径原先全量透传，长会话直接 400。
-/// 按字符估算（中文 ~1 token/字符）；system prompt 与工具循环内增长不在此列。
-pub(crate) const HISTORY_BUDGET_CHARS: usize = 100_000;
-
 /// 截断点计算（纯函数）：返回保留起点下标（=丢弃条数）。最旧的先丢，最后一条永远保留。
 /// 剥出供截断即摘要复用——摘要路径需要「将被丢弃的消息」而不只是丢弃条数。
 fn truncate_split_point(messages: &[ChatMsg], budget: usize) -> usize {
@@ -256,17 +252,13 @@ pub(crate) fn strip_think_blocks(text: &str) -> String {
 /// T5：批量执行的失败策略。显式化一卡失败后是「继续下一张」还是「中止」。
 ///
 /// 默认 `ContinueOnError`（现状不变）；`StopOnFirstError` 可调用方选启用。
+#[derive(Default)]
 pub enum BatchPolicy {
     /// 一卡失败继续下一张（现有默认行为）。汇总报告里仍会列失败清单。
+    #[default]
     ContinueOnError,
     /// 一卡失败即中止后续，报告「已执行 i 张，剩余 N-i-1 张未执行」。
     StopOnFirstError,
-}
-
-impl Default for BatchPolicy {
-    fn default() -> Self {
-        BatchPolicy::ContinueOnError
-    }
 }
 
 /// 聊天模式批量执行：每张卡调一次 run_task_in_chat（每卡独立新会话，
@@ -493,6 +485,8 @@ fn require_bot_enabled(enabled: bool) -> CommandResult<()> {
 }
 
 /// pre-step 路由命中结果（主流程步骤 3 的产物）
+// Skill 变体整体携带 SkillMeta+正文，装箱会牵连构造点，无栈压力场景下保留 #[allow]
+#[allow(clippy::large_enum_variant)]
 enum PreStepRoute {
     /// Skill 路由：start_skill 已加载（meta + body）
     Skill(SkillMeta, String),
@@ -708,6 +702,7 @@ enum SkillRouteOutcome {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_lines)]
 pub async fn bot_chat(
     app: AppHandle,
     messages: Vec<ChatMsg>,
@@ -1086,7 +1081,7 @@ fn require_api_key(api_key: &str) -> CommandResult<()> {
 }
 
 /// 摘要请求的历史字符上限：超长会话只保留最近的消息（最旧的先丢），
-/// 防止压缩请求超 context。截断路径的待摘要消息已被 HISTORY_BUDGET_CHARS 限住，
+/// 防止压缩请求超 context。截断路径的待摘要消息已被 DEFAULT_HISTORY_BUDGET_CHARS 限住，
 /// 此上限对 /compact 的全量历史才实际生效。
 const SUMMARIZE_MAX_CHARS: usize = 200_000;
 
@@ -2033,7 +2028,7 @@ mod image_attach_tests {
         std::fs::write(&png, [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A]).unwrap(); // PNG 魔数
         let content = format!("[附件文件]\n- {}\n\n提取图片里的文字", png.display());
         // 白名单根目录传入（测试用临时目录充当白名单根）
-        let (v, skipped) = attach_images_in(&[dir.clone()], &content);
+        let (v, skipped) = attach_images_in(std::slice::from_ref(&dir), &content);
         assert_eq!(skipped, 0);
         let arr = v.as_array().expect("应返回多模态数组");
         assert_eq!(arr.len(), 2);

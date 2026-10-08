@@ -119,7 +119,7 @@ async fn fetch_models_dev(url: &str) -> Result<String, String> {
         .send()
         .await
         .map_err(|e| format!("models.dev 请求失败：{e}"))?;
-    let mut resp = resp
+    let resp = resp
         .error_for_status()
         .map_err(|e| format!("models.dev HTTP 错误：{e}"))?;
     let mut buf = Vec::new();

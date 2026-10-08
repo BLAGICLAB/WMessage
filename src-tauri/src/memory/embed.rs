@@ -179,9 +179,7 @@ pub fn embed_text(text: &str) -> Option<Vec<f32>> {
     let mut session = eng.session.lock().ok()?;
     let outputs = session.run(ort::inputs![ids_t, attn_t, types_t]).ok()?;
     let mut iter = outputs.iter();
-    let Some((_, value)) = iter.next() else {
-        return None;
-    };
+    let (_, value) = iter.next()?;
     // 取第一个输出（bge 导出版只有 last_hidden_state [1, seq, 512]）
     let Ok((_shape, data)) = value.try_extract_tensor::<f32>() else {
         return None;

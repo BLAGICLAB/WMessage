@@ -44,8 +44,6 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::time::Duration;
 
-    use super::*;
-    use crate::migration::commands::tail_log_lines;
     use crate::migration::journal::{
         db_write_lock, journal_cleared, journal_cleared_inner, journal_committed,
         journal_committed_inner, journal_find_pending_inner, journal_pending,

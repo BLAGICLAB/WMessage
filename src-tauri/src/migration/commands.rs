@@ -22,7 +22,7 @@ pub async fn migration_rules_load(app: AppHandle) -> CommandResult<RulesFile> {
     let loaded = tauri::async_runtime::spawn_blocking(move || load_rules(&app))
         .await
         .map_err(|e| CommandError::Internal(format!("迁移线程 join 失败：{e}")))?;
-    Ok(loaded?)
+    loaded
 }
 
 /// 文件对话框导入规则表（CSV 表格 / 旧 JSON 都支持），返回导入的规则数。

@@ -159,7 +159,7 @@ fn home_dir_from(
 fn expand_tilde(p: &str) -> PathBuf {
     if p == "~" || p.starts_with("~/") || p.starts_with("~\\") {
         if let Some(home) = home_dir() {
-            return PathBuf::from(home).join(p.trim_start_matches(['~', '/', '\\']));
+            return home.join(p.trim_start_matches(['~', '/', '\\']));
         }
     }
     PathBuf::from(p)
@@ -1187,7 +1187,7 @@ async fn read_capped_file(path: &Path, max: usize) -> std::io::Result<(Vec<u8>, 
         read_capped_file_sync(&path, max).map_err(|e| e.to_string())
     })
     .await
-    .map_err(|e| std::io::Error::other(e))
+    .map_err(std::io::Error::other)
 }
 
 /// 【OCR C1b TOCTOU】inode re-check 结果。
@@ -1440,9 +1440,9 @@ fn render_context_hits(path: &str, lines: &[&str], hits: &[usize], context: usiz
         if wi > 0 {
             out.push("--".to_string());
         }
-        for i in *s..=*e {
+        for (i, line) in lines.iter().enumerate().take(*e + 1).skip(*s) {
             let mark = if hits.contains(&i) { ':' } else { '-' };
-            out.push(format!("{path}{mark}{}{mark} {}", i + 1, trunc(lines[i])));
+            out.push(format!("{path}{mark}{}{mark} {}", i + 1, trunc(line)));
         }
     }
     out

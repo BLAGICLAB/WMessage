@@ -1538,7 +1538,7 @@ mod task_set_column_tests {
     #[test]
     fn delete_non_self_filters_owner_hard_deletes() {
         let _g = crate::db::lock_db_write(); // upsert_tasks 锁持有断言要求
-        let mut conn = setup_conn();
+        let conn = setup_conn();
         insert_owned_task(&conn, "mine", Some("self-pid"));
         insert_owned_task(&conn, "null-owner", None); // NULL = 本人（图谱设计 §1.1）
         insert_owned_task(&conn, "other-1", Some("someone-else"));
@@ -1574,7 +1574,7 @@ mod task_set_column_tests {
     #[test]
     fn delete_non_self_noop() {
         let _g = crate::db::lock_db_write();
-        let mut conn = setup_conn();
+        let conn = setup_conn();
         insert_owned_task(&conn, "mine", Some("self-pid"));
         insert_owned_task(&conn, "null-owner", None);
         let (count, ids) = delete_non_self_locked(&conn, "self-pid").unwrap();

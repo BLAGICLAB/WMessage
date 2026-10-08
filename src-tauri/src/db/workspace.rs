@@ -174,7 +174,7 @@ pub async fn workspace_upsert(app: AppHandle, items: Vec<WorkspaceItem>) -> Comm
             e.into_inner()
         });
         let mut conn = super::open_db(&app)?;
-        upsert_workspace(&mut conn, &items).map_err(CommandError::from)
+        upsert_workspace(&mut conn, &items)
     })
     .await
     .map_err(|e| CommandError::from(format!("工作区写入线程 join 失败：{e}")))?
@@ -304,7 +304,7 @@ pub async fn workspace_import(app: AppHandle, path: String) -> CommandResult<usi
             e.into_inner()
         });
         let mut conn = super::open_db(&app)?;
-        workspace_import_merge(&mut conn, &ext).map_err(CommandError::from)
+        workspace_import_merge(&mut conn, &ext)
     })
     .await
     .map_err(|e| CommandError::from(format!("工作区导入线程 join 失败：{e}")))?

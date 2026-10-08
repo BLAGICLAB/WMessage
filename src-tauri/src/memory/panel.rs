@@ -115,7 +115,7 @@ pub(crate) fn list_core(
         ),
         None => {
             let mut v = filtered;
-            v.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
+            v.sort_by_key(|m| std::cmp::Reverse(m.updated_at_ms));
             v
         }
     };
@@ -181,11 +181,12 @@ pub(crate) fn delete_core(conn: &rusqlite::Connection, id: &str) -> Result<bool,
 pub(crate) fn stats_core(conn: &rusqlite::Connection) -> Result<MemStats, String> {
     store::ensure_table(conn)?;
     // capacity 由命令层按 memoryTuning.capacity 覆盖（此处不填，避免误导）
-    let mut stats = MemStats::default();
-
-    stats.total = conn
-        .query_row("SELECT COUNT(*) FROM mem_items", [], |r| r.get(0))
-        .map_err(|e| e.to_string())?;
+    let mut stats = MemStats {
+        total: conn
+            .query_row("SELECT COUNT(*) FROM mem_items", [], |r| r.get(0))
+            .map_err(|e| e.to_string())?,
+        ..Default::default()
+    };
     stats.with_embedding = conn
         .query_row(
             "SELECT COUNT(*) FROM mem_items WHERE embedding IS NOT NULL",
@@ -227,7 +228,7 @@ pub async fn mem_list(
     let r = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<MemItemView>, String> {
         let q = query.as_deref().map(str::trim).filter(|s| !s.is_empty());
         // 检索向量在持锁前算（ONNX 推理不占 DB 写锁临界区）
-        let emb = q.and_then(|s| embed::embed_text(s));
+        let emb = q.and_then(embed::embed_text);
         let _g = lock_db();
         let conn = crate::db::open_db(&app).map_err(|e| e.to_string())?;
         let decay = crate::bot::read_memory_tuning(&app).decay_days;
@@ -449,6 +450,7 @@ pub(crate) fn import_items(
 }
 
 /// 导入便捷入口（单测用）：json → 解析 → 前置校验+预嵌入 → 逐条导入
+#[cfg(test)]
 pub(crate) fn import_core(
     conn: &rusqlite::Connection,
     json: &str,
@@ -958,7 +960,7 @@ mod tests {
         let report = import_core(
             &conn,
             &json,
-            &|c| {
+            &|_c| {
                 let n = {
                     let mut g = reembed_calls.lock().unwrap();
                     let n = *g;

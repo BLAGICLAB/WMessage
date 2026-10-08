@@ -172,7 +172,7 @@ pub(crate) fn parse_rules_csv(text: &str) -> Result<RulesFile, crate::error::Com
         let action = match action_raw.as_str() {
             "移动归档" | "移动" | "move" | "Move" => "move".to_string(),
             "删除文件" | "删除" | "delete" | "Delete" => "delete".to_string(),
-            other if other.is_empty() => {
+            "" => {
                 return Err(crate::error::CommandError::DomainRule {
                     domain: "migration".to_string(),
                     reason: format!("第 {} 行动作为空（应填 移动归档 或 删除文件）", ri + 2),

@@ -30,7 +30,7 @@ pub(crate) fn rate_check() -> bool {
     });
     // 时钟回拨（NTP 步进/手动改时）时 now < g.0，saturating_sub 得 0 会把窗口
     // 冻死（计数只增不清，回环 API 全被拒直到时钟追回）；回拨视同窗口过期直接重开
-    if now.checked_sub(g.0).map_or(true, |d| d > 60_000) {
+    if now.checked_sub(g.0).is_none_or(|d| d > 60_000) {
         *g = (now, 0);
     }
     if g.1 >= RATE_LIMIT_PER_MIN {
@@ -51,7 +51,6 @@ pub(crate) fn log_line(path: &Option<PathBuf>, line: &str) {
     match std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .write(true)
         .open(p)
     {
         Ok(mut f) => {

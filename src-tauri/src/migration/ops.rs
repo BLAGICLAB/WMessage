@@ -339,7 +339,7 @@ pub(crate) fn log_line(app: &AppHandle, line: &str) {
     // rules::log_path（未 canonicalize）、append 走 canonicalize 后的路径，
     // 数据目录穿 symlink 时两者可分裂（rotation 改名一个拼写、写入仍进另一个）。
     let raw = db::data_dir(app);
-    let dir = std::fs::canonicalize(&raw).unwrap_or_else(|_| raw);
+    let dir = std::fs::canonicalize(&raw).unwrap_or(raw);
     let log_path = dir.join(super::rules::LOG_FILE);
     crate::db::rotate_log_if_large(&log_path, 5 * 1024 * 1024);
     let full = format!("[{}] {line}", now_str());

@@ -26,18 +26,13 @@ use crate::evolution::proposal::{is_reversible, EvolutionProposal};
 
 // ───────────────────────── 三态 ─────────────────────────
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ActivationState {
+    #[default]
     S0Observe,
     S1Suggest,
     S2Active,
-}
-
-impl Default for ActivationState {
-    fn default() -> Self {
-        Self::S0Observe
-    }
 }
 
 impl ActivationState {
@@ -452,7 +447,7 @@ mod tests {
         let cfg = load_config_from_file(std::path::Path::new(
             "/tmp/no-such-bot-config-xyz-98765.json",
         ));
-        assert!(cfg.is_calibrating() == false); // 空 mode 不算 calibrating
+        assert!(!cfg.is_calibrating()); // 空 mode 不算 calibrating
         assert_eq!(cfg.min_occurrences, None);
     }
 

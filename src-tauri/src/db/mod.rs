@@ -63,6 +63,7 @@ pub fn prepare_for_upsert(t: &mut Task) {
 /// - `foreign_keys=ON`：SQLite 默认 **OFF**，显式打开
 ///
 /// 回归锁：`db::tests::conn_pragmas_are_applied`
+#[allow(clippy::too_many_lines)]
 pub fn open_db<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<rusqlite::Connection, String> {
@@ -438,7 +439,7 @@ thread_local! {
     /// 当前线程是否持有 DB_WRITE_LOCK（供契约断言用）。
     /// `std::sync::Mutex` **线程无关**：`try_lock` 只能证明「锁被某线程持有」，不能证明
     /// 「被当前线程持有」（且 poisoned 也返回 Err）→ 故用线程本地标记精确判定（OCR C3-1）。
-    static HOLDING_DB_WRITE: std::cell::Cell<bool> = std::cell::Cell::new(false);
+    static HOLDING_DB_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// `DB_WRITE_LOCK` 的守卫：取锁时置位线程本地标记，Drop 时**无条件**清位
@@ -633,7 +634,7 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let legacy = dir.join("wmessage.db");
         // >100 字节垃圾：SQLite 头校验必败（NOTADB）；零长度才会被当空库
-        std::fs::write(&legacy, &[b'x'; 512]).unwrap();
+        std::fs::write(&legacy, [b'x'; 512]).unwrap();
         let dst = dir.join("new").join("wmessage.db");
         fs::create_dir_all(dst.parent().unwrap()).unwrap();
 
@@ -2130,7 +2131,7 @@ mod reset_tests {
             calls.fetch_add(1, Ordering::SeqCst);
             Err("database is locked".into())
         });
-        assert!(matches!(r, Err(_)), "失败应返回 Err");
+        assert!(r.is_err(), "失败应返回 Err");
         assert!(!done.load(Ordering::SeqCst), "失败不得消耗 token");
 
         // 第二次重试成功 → 置位

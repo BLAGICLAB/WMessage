@@ -929,17 +929,21 @@ mod tests {
 
     #[test]
     fn preflight_rejects_disabled() {
-        let mut m = SkillMeta::default();
-        m.name = "x".into();
-        m.enabled = false;
+        let m = SkillMeta {
+            name: "x".into(),
+            enabled: false,
+            ..Default::default()
+        };
         assert!(preflight(&m).is_err());
     }
 
     #[test]
     fn preflight_rejects_blacklist_intent() {
-        let mut m = SkillMeta::default();
-        m.name = "x".into();
-        m.description = "批量删除所有任务".into();
+        let mut m = SkillMeta {
+            name: "x".into(),
+            description: "批量删除所有任务".into(),
+            ..Default::default()
+        };
         assert!(preflight(&m).unwrap_err().contains("黑名单"));
 
         m.description = "全盘遍历文件".into();
@@ -948,9 +952,11 @@ mod tests {
 
     #[test]
     fn preflight_passes_normal() {
-        let mut m = SkillMeta::default();
-        m.name = "ok".into();
-        m.description = "汇总今日任务并归档".into();
+        let m = SkillMeta {
+            name: "ok".into(),
+            description: "汇总今日任务并归档".into(),
+            ..Default::default()
+        };
         assert!(preflight(&m).is_ok());
     }
 

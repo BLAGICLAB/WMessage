@@ -368,7 +368,7 @@ pub fn apply_ops_with(
                 if rows == 0 {
                     continue;
                 }
-                report.contradictions += store::delete_by_ids(&tx, &[drop_id.clone()])?;
+                report.contradictions += store::delete_by_ids(&tx, std::slice::from_ref(drop_id))?;
             }
             ConsolidateOp::Distill { ids, content } => {
                 // 引用的条目全不存在 → 跳过（防 LLM 幻觉 id 凭空造规律）；

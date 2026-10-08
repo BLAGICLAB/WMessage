@@ -246,6 +246,7 @@ async fn tool_rule_gate(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
 async fn execute_tool_impl(
     app: &AppHandle,
     name: &str,
@@ -432,7 +433,7 @@ async fn execute_tool_impl(
     // （原先下方又走 TOOLS_TABLE.iter().find 线性扫，每次调用两次 name 查找）。
     let tool_def = tools_index().get(name).copied();
     let result: crate::bot::registry::ToolResult = match tool_def {
-        Some(t) => (t.call)(&ctx, args).await.into(),
+        Some(t) => (t.call)(&ctx, args).await,
         // 阶段 4（MCP 增量挂载）：查表 miss 先走外部工具兜底路由——
         // 反查挂载表命中则调远端；编造的 mcp_* 名在路由内仍回「未知工具」。
         // 审计（tool.call/tool.return）已在函数出入口统一发出，无需重复。
@@ -537,6 +538,56 @@ pub(crate) fn parse_args(args: &str) -> serde_json::Value {
     }
 }
 
+// ───────────────────────── 工具层 commit template ─────────────────────────
+
+/// 工具层写库收尾：调 `db::db_upsert_for` → `broadcast_after_mutation` → 返回
+/// `ToolResult`。覆盖 7 处原 inline `match db_upsert(...) { Ok => broadcast+ok, Err => ok(fail) }`
+/// 模板(bot/tools.rs: tool_create_task / tool_complete_task / tool_delete_task /
+/// tool_edit_task / tool_add_subtask / tool_toggle_subtask / tool_remove_subtask)。
+///
+/// 调用方负责：
+/// 1. RMW 接线(4 个标准 tool 用 `db::prepare_for_upsert(&mut task)`;
+///    `tool_complete_task` / `tool_delete_task` 复用 `completed_at` / `deleted_at`
+///    时间戳作为 `updated_at`,inline 自戳;`tool_create_task` 是新建,`expected_updated_at = None`)
+/// 2. 构造成功消息(部分工具需要先 `let st_text = ...` 等中间变量,如 toggle_subtask)
+/// 3. 构造 `refs`(一般 `[TaskRef { id, title }]`)
+///
+/// 失败消息模板:`{fail_prefix}：{e}`,与历史 7 处 inline 行为 1:1 等价。
+/// **设计要点**:失败也走 `ToolResult::ok` 而非 `err`,让 LLM pipeline severity
+/// classifier 不把"完成任务失败:DB error"误判为 fatal。
+pub(crate) async fn commit_and_report<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    task: &crate::db::Task,
+    // thunk(impl FnOnce)而非直接 String/Vec:成功路径才求值,
+    // 失败路径(E)直接 drop 闭包,不分配 throw away。
+    success_msg: impl FnOnce() -> String,
+    refs: impl FnOnce() -> Vec<crate::bot_chat::TaskRef>,
+    fail_prefix: &'static str,
+) -> crate::bot::registry::ToolResult {
+    match crate::db::db_upsert_for(app, vec![task.clone()]).await {
+        Ok(()) => {
+            broadcast_after_mutation(app, vec![task.clone()], Vec::new());
+            crate::bot::registry::ToolResult::ok(success_msg(), refs())
+        }
+        Err(e) => {
+            // 对模型仍按原设计返回 ok 文案（防 severity classifier 误判 fatal），
+            // 但落一条 Error 审计：否则「模型以为写成功、库里其实没写进去」
+            // 的静默丢失在 bot.log 里完全不可见
+            crate::audit::write_event(
+                app,
+                crate::audit::AuditLevel::Error,
+                "task.commit_failed",
+                &[
+                    ("tool_prefix", fail_prefix.to_string()),
+                    ("task_id", task.id.clone()),
+                    ("err", e.to_string()),
+                ],
+            );
+            crate::bot::registry::ToolResult::ok(format!("{fail_prefix}：{e}"), Vec::new())
+        }
+    }
+}
+
 #[cfg(test)]
 mod early_return_events_tests {
     use super::*;
@@ -635,55 +686,5 @@ mod early_return_events_tests {
             kv_get(&kv, "tool_call_id").is_none(),
             "空 id 不写（合成 id 前的畸形流不该出现空值行）"
         );
-    }
-}
-
-// ───────────────────────── 工具层 commit template ─────────────────────────
-
-/// 工具层写库收尾：调 `db::db_upsert_for` → `broadcast_after_mutation` → 返回
-/// `ToolResult`。覆盖 7 处原 inline `match db_upsert(...) { Ok => broadcast+ok, Err => ok(fail) }`
-/// 模板(bot/tools.rs: tool_create_task / tool_complete_task / tool_delete_task /
-/// tool_edit_task / tool_add_subtask / tool_toggle_subtask / tool_remove_subtask)。
-///
-/// 调用方负责：
-/// 1. RMW 接线(4 个标准 tool 用 `db::prepare_for_upsert(&mut task)`;
-///    `tool_complete_task` / `tool_delete_task` 复用 `completed_at` / `deleted_at`
-///    时间戳作为 `updated_at`,inline 自戳;`tool_create_task` 是新建,`expected_updated_at = None`)
-/// 2. 构造成功消息(部分工具需要先 `let st_text = ...` 等中间变量,如 toggle_subtask)
-/// 3. 构造 `refs`(一般 `[TaskRef { id, title }]`)
-///
-/// 失败消息模板:`{fail_prefix}：{e}`,与历史 7 处 inline 行为 1:1 等价。
-/// **设计要点**:失败也走 `ToolResult::ok` 而非 `err`,让 LLM pipeline severity
-/// classifier 不把"完成任务失败:DB error"误判为 fatal。
-pub(crate) async fn commit_and_report<R: tauri::Runtime>(
-    app: &AppHandle<R>,
-    task: &crate::db::Task,
-    // thunk(impl FnOnce)而非直接 String/Vec:成功路径才求值,
-    // 失败路径(E)直接 drop 闭包,不分配 throw away。
-    success_msg: impl FnOnce() -> String,
-    refs: impl FnOnce() -> Vec<crate::bot_chat::TaskRef>,
-    fail_prefix: &'static str,
-) -> crate::bot::registry::ToolResult {
-    match crate::db::db_upsert_for(app, vec![task.clone()]).await {
-        Ok(()) => {
-            broadcast_after_mutation(app, vec![task.clone()], Vec::new());
-            crate::bot::registry::ToolResult::ok(success_msg(), refs())
-        }
-        Err(e) => {
-            // 对模型仍按原设计返回 ok 文案（防 severity classifier 误判 fatal），
-            // 但落一条 Error 审计：否则「模型以为写成功、库里其实没写进去」
-            // 的静默丢失在 bot.log 里完全不可见
-            crate::audit::write_event(
-                app,
-                crate::audit::AuditLevel::Error,
-                "task.commit_failed",
-                &[
-                    ("tool_prefix", fail_prefix.to_string()),
-                    ("task_id", task.id.clone()),
-                    ("err", e.to_string()),
-                ],
-            );
-            crate::bot::registry::ToolResult::ok(format!("{fail_prefix}：{e}"), Vec::new())
-        }
     }
 }

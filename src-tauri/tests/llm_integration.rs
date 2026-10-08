@@ -1575,7 +1575,7 @@ fn seed_memory(handle: &tauri::AppHandle<tauri::test::MockRuntime>, content: &st
 #[tokio::test]
 async fn memory_gate_scenarios_injection_and_auto_write() {
     let app = mock_handle();
-    let SEED_CONTENT = SEED_CONTENT_PLACEHOLDER;
+    let seed_content = SEED_CONTENT_PLACEHOLDER;
 
     // 清理前移：先扫掉历史运行留在共享库的种子/漏写条目与共享配置文件——
     // 即使本运行中途 panic，下一次运行开场也会自愈（不依赖收尾路径执行）。
@@ -1583,7 +1583,7 @@ async fn memory_gate_scenarios_injection_and_auto_write() {
 
     // 场景一：注入关 → 记忆保留在库但不产出注入块
     write_config_with_memory_control(&app, false, true);
-    seed_memory(&app, SEED_CONTENT);
+    seed_memory(&app, seed_content);
     assert!(
         wmessage_lib::memory::injection_block(&app, "测试记忆")
             .await
@@ -1597,12 +1597,12 @@ async fn memory_gate_scenarios_injection_and_auto_write() {
         .await
         .expect("注入开启 + 库有记忆应产出记忆块");
     assert!(
-        block.contains("## 记忆") && block.contains(SEED_CONTENT),
+        block.contains("## 记忆") && block.contains(seed_content),
         "{block}"
     );
     // 结构窄化：fact 条目应以标准行格式落在记忆块（kind 行格式契约）
     assert!(
-        block.contains(&format!("- [fact]{SEED_CONTENT}")),
+        block.contains(&format!("- [fact]{seed_content}")),
         "fact 种子应以标准行格式出现：{block}"
     );
 

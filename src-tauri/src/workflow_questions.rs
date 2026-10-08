@@ -12,7 +12,7 @@
 //! - run 已死后才送达的回答：档案仍落（重跑生效），唤醒静默跳过——不自动拉起旧 run
 
 use serde_json::Value;
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 use tauri_plugin_notification::NotificationExt;
 
 use crate::error::{CommandError, CommandResult};
@@ -556,7 +556,7 @@ pub(crate) async fn engine_ask_user(
     let _ = app
         .notification()
         .builder()
-        .title(&format!("❓ 工作流任务「{node_title}」提问"))
+        .title(format!("❓ 工作流任务「{node_title}」提问"))
         .body(&parsed.question)
         .show();
     enum WaitOutcome {

@@ -180,9 +180,7 @@ pub fn validate_server(s: &McpServerConfig) -> Result<(), String> {
                 return Err(format!("URL 过长（上限 {MAX_MCP_URL_LEN} 字节）"));
             }
             // scheme 白名单 + host 安全闸（保存口；发请求前 manager 侧再验一次）
-            if let Err(reason) = http_url_is_public(u) {
-                return Err(reason);
-            }
+            http_url_is_public(u)?;
         }
     }
     if s.env.len() > MAX_MCP_ENV_ENTRIES {

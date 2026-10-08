@@ -393,7 +393,8 @@ pub(crate) fn purge_server_secrets(app: &tauri::AppHandle, id: &str) -> Result<(
     r
 }
 
-/// 迁移前探测：blob 是否已在（幂等短路用）
+/// 迁移前探测：blob 是否已在（幂等短路用）。阶段 3 迁移链路预埋口，暂无调用方。
+#[allow(dead_code)]
 pub(crate) fn has_secret(app: &tauri::AppHandle, id: &str) -> Result<bool, String> {
     match cache_get(id) {
         Some(v) => Ok(v.is_some()),
@@ -404,7 +405,6 @@ pub(crate) fn has_secret(app: &tauri::AppHandle, id: &str) -> Result<bool, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
 
     fn secrets() -> McpSecrets {
         McpSecrets {
@@ -451,13 +451,15 @@ mod tests {
     #[test]
     fn server_serialization_never_emits_secrets() {
         // B4-6 核心不变式：skip_serializing 使任何写路径都不可能把明文写回盘
-        let mut s = crate::bot::mcp::config::McpServerConfig::default();
-        s.id = "srv1".into();
-        s.name = "fs".into();
-        s.transport = "stdio".into();
-        s.command = Some("npx".into());
-        s.env.insert("TOKEN".into(), "secret-value".into());
-        s.headers.insert("Authorization".into(), "Bearer x".into());
+        let s = crate::bot::mcp::config::McpServerConfig {
+            id: "srv1".into(),
+            name: "fs".into(),
+            transport: "stdio".into(),
+            command: Some("npx".into()),
+            env: BTreeMap::from([("TOKEN".into(), "secret-value".into())]),
+            headers: BTreeMap::from([("Authorization".into(), "Bearer x".into())]),
+            ..Default::default()
+        };
         let json = serde_json::to_string(&s).unwrap();
         assert!(
             !json.contains("secret-value"),

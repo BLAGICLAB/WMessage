@@ -194,7 +194,7 @@ fn fallback_state() -> &'static AppState {
 /// 闭包内 `s.inner()` 的寿命绑在闭包局部变量上，Rust 没法把它桥接到 `app`；
 /// `match` 让两条分支返回类型都受 `app` 寿命约束，`&'static` 走子类型
 /// （covariant）自然满足。
-pub(crate) fn ext<'a, R: tauri::Runtime>(app: &'a tauri::AppHandle<R>) -> &'a AppState {
+pub(crate) fn ext<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> &AppState {
     match app.try_state::<AppState>() {
         Some(s) => s.inner(),
         None => fallback_state(),
@@ -214,30 +214,28 @@ pub(crate) fn skill_runs<R: tauri::Runtime>(
 
 /// 产物登记表访问器：优先取注入的 `AppState` 实例，缺失则退回兜底实例。
 /// 该表只在调用期间使用（无 Drop 清理诉求），故返回借用引用。
-pub(crate) fn artifact_registry<'a, R: tauri::Runtime>(
-    app: &'a tauri::AppHandle<R>,
-) -> &'a tokio::sync::Mutex<HashMap<String, Vec<crate::bot_artifacts::RegisteredArtifact>>> {
+pub(crate) fn artifact_registry<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> &tokio::sync::Mutex<HashMap<String, Vec<crate::bot_artifacts::RegisteredArtifact>>> {
     &ext(app).artifact_registry
 }
 
 /// 待确认请求表访问器（`/stop` 收尾、`ask_confirm_inner` 登记/超时回收、`take_confirm` 取走）。
 ///
 /// 无 RAII 守卫（锁只在 insert/remove 期间持有）→ 借用引用，同 `artifact_registry`。
-pub(crate) fn confirms<'a, R: tauri::Runtime>(app: &'a tauri::AppHandle<R>) -> &'a ConfirmMap {
+pub(crate) fn confirms<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> &ConfirmMap {
     &ext(app).confirm_requests
 }
 
 /// 工作流提问等待表访问器（W9-ASK：ask 端注册 / 应答端 take 走；无 RAII 守卫，同 confirms 口径）。
-pub(crate) fn question_waiters<'a, R: tauri::Runtime>(
-    app: &'a tauri::AppHandle<R>,
-) -> &'a QuestionWaiters {
+pub(crate) fn question_waiters<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> &QuestionWaiters {
     &ext(app).question_waiters
 }
 
 /// 工作流提问上下文表访问器（W9-ASK：注册/注销/ask_user 查表共用一把锁）。
-pub(crate) fn ask_contexts<'a, R: tauri::Runtime>(
-    app: &'a tauri::AppHandle<R>,
-) -> &'a Mutex<HashMap<String, crate::workflow_questions::AskRegistration>> {
+pub(crate) fn ask_contexts<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> &Mutex<HashMap<String, crate::workflow_questions::AskRegistration>> {
     &ext(app).ask_contexts
 }
 
@@ -278,9 +276,9 @@ pub(crate) fn exec_running<R: tauri::Runtime>(
 /// 逐步执行挂起表访问器（`has_pending_for` / `park` / `take_pending_for` 用）。
 ///
 /// 无 RAII 守卫（锁只在 park/take 期间持有）→ 借用引用，同 `artifact_registry` / `confirms`。
-pub(crate) fn pending_map<'a, R: tauri::Runtime>(
-    app: &'a tauri::AppHandle<R>,
-) -> &'a Mutex<HashMap<String, crate::exec_steps::PendingExec>> {
+pub(crate) fn pending_map<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> &Mutex<HashMap<String, crate::exec_steps::PendingExec>> {
     &ext(app).pending
 }
 

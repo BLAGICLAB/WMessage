@@ -20,7 +20,6 @@ use crate::bot::tools::{
     tool_link_file_to_task, tool_query_single_task, tool_query_tasks, tool_remove_subtask,
     tool_run_python, tool_toggle_subtask, tool_web_search,
 };
-use crate::bot_desktop::{tool_clipboard_write, tool_open_url, tool_reveal_path, tool_screenshot};
 use crate::bot_skills::tool_use_skill;
 
 pub struct ToolCtx<'a> {
@@ -116,12 +115,12 @@ impl ToolResult {
     }
 }
 
-/// T3 B1 过渡层：B2 工具逐个迁移后删除。已删。
-///
-/// B1 期间用 From impl 将工具返 (String, Vec<TaskRef>) 隐式转 ToolResult::ok；
-/// B2 完成后所有 29 工具已显式返 ToolResult，From 过渡层失去作用，删除。
-/// （若 B1/B2 期间遗留未迁移工具仍存在，该工具会爆「expected ToolResult」编译错——
-/// 这是期望的强制迁移信号，不是回归。）
+// T3 B1 过渡层：B2 工具逐个迁移后删除。已删。
+//
+// B1 期间用 From impl 将工具返 (String, Vec<TaskRef>) 隐式转 ToolResult::ok；
+// B2 完成后所有 29 工具已显式返 ToolResult，From 过渡层失去作用，删除。
+// （若 B1/B2 期间遗留未迁移工具仍存在，该工具会爆「expected ToolResult」编译错——
+// 这是期望的强制迁移信号，不是回归。）
 
 pub struct ToolDef {
     pub name: &'static str,
@@ -1160,7 +1159,7 @@ pub fn tools_json_with_mcp(session_id: Option<&str>) -> std::borrow::Cow<'static
     static CONTRACT_BREAKS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     if !base.ends_with("\n]") {
         let n = CONTRACT_BREAKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-        if n == 1 || n % 100 == 0 {
+        if n == 1 || n.is_multiple_of(100) {
             eprintln!(
                 "[registry] tools_json 格式契约破坏（未以 \\n] 收尾，第 {n} 次），MCP 工具本轮不挂载"
             );
@@ -1663,7 +1662,7 @@ mod registry_tests {
     fn tools_json_with_mcp_without_connections_is_borrowed_static() {
         // blocking_lock 须在 block_on 进入 runtime 上下文之前取（tokio Mutex 语义）
         let _serial = crate::bot::mcp::manager::SHARED_MCP_TEST_LOCK.blocking_lock();
-        let _ = tauri::async_runtime::block_on(crate::bot::mcp::manager::shared().shutdown());
+        tauri::async_runtime::block_on(crate::bot::mcp::manager::shared().shutdown());
         let with = tools_json_with_mcp(None);
         assert!(matches!(with, std::borrow::Cow::Borrowed(_)));
         assert_eq!(with.as_ref(), tools_json());

@@ -5,7 +5,6 @@
 //! 触发方：前端观测「已加载任务从未归档 → 归档」转变后 fire-and-forget 调用；
 //! 首屏加载不触发（防对历史归档批量调用），守卫链保证幂等（已有 tags 直接跳过）。
 
-use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
 use crate::error::CommandResult;
@@ -151,7 +150,7 @@ pub async fn task_autotag(app: AppHandle, id: String) -> CommandResult<Option<Ve
                     ("error", crate::audit::escape_for_log(&e.to_string(), 200)),
                 ],
             );
-            return Err(e.into());
+            return Err(e);
         }
     };
 
@@ -183,16 +182,11 @@ pub async fn task_autotag(app: AppHandle, id: String) -> CommandResult<Option<Ve
     }
 
     // 回写：与 task_patch 同一持久化纪律（锁内重读现值 → 白名单 patch → 打戳 → upsert → 广播）
-    #[derive(Serialize, Clone)]
-    #[serde(rename_all = "camelCase")]
-    struct AutotagWritten {
-        tags: Vec<String>,
-    }
     let row = {
         let app3 = app.clone();
         tauri::async_runtime::spawn_blocking(move || -> Result<crate::db::Task, String> {
             let _g = crate::db::lock_db_write();
-            let mut conn = crate::db::open_db(&app3)?;
+            let conn = crate::db::open_db(&app3)?;
             let Some(mut t) = crate::db::load_task(&conn, &id)? else {
                 return Err("任务已不存在".into());
             };

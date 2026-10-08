@@ -4,7 +4,7 @@
 //! - 总读时长 BODY_READ_DEADLINE 滴注检查，防「每次 read 都按时返回」的 slowloris
 //! - 单次 read 系统调用级超时由 vendor patch 的 tiny_http 提供（30s）
 
-use std::io::{Cursor, Read};
+use std::io::Read;
 use std::time::{Duration, Instant};
 
 use tiny_http::Request;
@@ -93,6 +93,3 @@ pub(crate) fn read_body_limited(req: &mut Request) -> BodyRead {
     }
     BodyRead::Ok(String::from_utf8_lossy(&buf).into_owned())
 }
-
-// 公开 Response 辅助类型让调用方签名简短
-pub type JsonResponse = tiny_http::Response<Cursor<Vec<u8>>>;

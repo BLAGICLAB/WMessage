@@ -562,9 +562,9 @@ pub async fn workflow_decompose(
         );
     }
     let mut attempts: u8 = 0;
-    let mut last_err = String::new();
-    // 失败审计的收口（OCR r2：LLM 调用本身的失败经 `?` 直抛会绕过审计，
-    // 统一走 outcome=failed 出口；错误值走 escape_for_log 管道）
+    let mut last_err; // 循环内两条退出路径均先赋值再读，无需占位初值
+                      // 失败审计的收口（OCR r2：LLM 调用本身的失败经 `?` 直抛会绕过审计，
+                      // 统一走 outcome=failed 出口；错误值走 escape_for_log 管道）
     macro_rules! fail {
         ($err:expr) => {{
             // 表达式只求值一次：调用方传 format! 时避免拼两遍、只留一份

@@ -80,7 +80,7 @@ pub(crate) fn parse_and_validate_clarify(raw: &str) -> CommandResult<Vec<Clarify
             reason: "缺少 questions 数组".into(),
         });
     };
-    let mut questions: Vec<ClarifyQuestion> =
+    let questions: Vec<ClarifyQuestion> =
         serde_json::from_value(arr.clone().into()).map_err(|e| CommandError::InvalidArgument {
             field: "output".into(),
             value: raw.chars().take(120).collect(),
@@ -176,7 +176,7 @@ pub async fn workflow_clarify(
     let system_prompt = format!("{DEFAULT_CLARIFY_GUIDANCE}{CLARIFY_CONTRACT}");
     let mut user_content = format!("总目标：{goal_trimmed}{attach_blocks}");
     let mut attempts: u8 = 0;
-    let mut last_err = String::new();
+    let mut last_err; // 循环内两条退出路径均先赋值再读，无需占位初值
     loop {
         attempts += 1;
         // W11：轻量评审模型覆盖（设置键 review_model；条目缺失运行期降级跟随全局）

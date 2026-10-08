@@ -80,21 +80,21 @@ pub struct ShadowLesson {
 /// 2. 把 candidate 加入，按 importance 模拟排序
 /// 3. 取新 top-3（FNV-1a hash 内容）
 /// 4. 对比：hash_before == hash_after → Fail（无差异）
-///           hash_before != hash_after + candidate 在新 top-3 → Pass
-///           现有 lessons 为空 → Skipped
+///    hash_before != hash_after + candidate 在新 top-3 → Pass
+///    现有 lessons 为空 → Skipped
 pub fn run_shadow(input: ShadowInput) -> ShadowOutcome {
     let candidate = candidate_lesson(input.change);
 
     // 现有 lessons 按 importance 降序取 top-3
     let mut existing = input.existing_lessons.to_vec();
-    existing.sort_by(|a, b| b.importance.cmp(&a.importance));
+    existing.sort_by_key(|l| std::cmp::Reverse(l.importance));
     let before_top3: Vec<&ShadowLesson> = existing.iter().take(3).collect();
     let hash_before = hash_lessons_content(&before_top3);
 
     // 加入 candidate，按 importance 模拟 top-3
     let mut hypothetical = existing.clone();
     hypothetical.push(candidate.clone());
-    hypothetical.sort_by(|a, b| b.importance.cmp(&a.importance));
+    hypothetical.sort_by_key(|l| std::cmp::Reverse(l.importance));
     let after_top3: Vec<&ShadowLesson> = hypothetical.iter().take(3).collect();
     let hash_after = hash_lessons_content(&after_top3);
 
@@ -291,7 +291,7 @@ mod tests {
 
     #[test]
     fn hash_stable_for_same_input() {
-        let lessons = vec![mk_lesson("a", "alpha", 4), mk_lesson("b", "beta", 3)];
+        let lessons = [mk_lesson("a", "alpha", 4), mk_lesson("b", "beta", 3)];
         let h1 = hash_lessons_content(&lessons.iter().collect::<Vec<_>>());
         let h2 = hash_lessons_content(&lessons.iter().collect::<Vec<_>>());
         assert_eq!(h1, h2);
@@ -299,8 +299,8 @@ mod tests {
 
     #[test]
     fn hash_differs_for_different_content() {
-        let l1 = vec![mk_lesson("a", "alpha", 4)];
-        let l2 = vec![mk_lesson("a", "alphabet", 4)];
+        let l1 = [mk_lesson("a", "alpha", 4)];
+        let l2 = [mk_lesson("a", "alphabet", 4)];
         let h1 = hash_lessons_content(&l1.iter().collect::<Vec<_>>());
         let h2 = hash_lessons_content(&l2.iter().collect::<Vec<_>>());
         assert_ne!(h1, h2);
@@ -378,7 +378,7 @@ mod tests {
             }
         }
         assert!(
-            sees_change >= 25 && sees_change <= 100,
+            (25..=100).contains(&sees_change),
             "Canary 5% 应 ≈ 50，实测 {sees_change}"
         );
 
