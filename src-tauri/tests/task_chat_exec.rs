@@ -300,7 +300,16 @@ async fn duplicate_trigger_rejected_by_exec_guard() {
 #[tokio::test]
 async fn failure_persists_error_reply_in_session() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    let (handle, task_id, _dir) = setup_task("注定失败的任务");
+    // 标题带 per-run uuid 后缀：共享库残留的同前缀会话不再污染
+    // 「最新行」断言，清理也按精确标题 scope 到本 run 的会话。
+    // 后缀取 uuid 前 12 位——会话标题落库前按 30 字符截断（bot_chat
+    // create_exec_session），全量 32 位会被截断导致精确标题对不上
+    let base_title = format!(
+        "注定失败的任务-{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..12]
+    );
+    let (handle, task_id, _dir) = setup_task(&base_title);
+    let want_title = format!("⏰ 定时：{base_title}");
     let runner = |_app: tauri::AppHandle<tauri::test::MockRuntime>,
                   _msgs: Vec<serde_json::Value>,
                   _stop: StopGuard| async move {
@@ -328,11 +337,11 @@ async fn failure_persists_error_reply_in_session() {
         .prepare(
             "SELECT m.role, m.content FROM bot_messages m
              JOIN bot_sessions s ON s.id = m.session_id
-             WHERE s.title LIKE '⏰ 定时：%' AND m.role = 'assistant'
+             WHERE s.title = ?1 AND m.role = 'assistant'
              ORDER BY m.id DESC LIMIT 1",
         )
         .unwrap()
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .query_map([&want_title], |r| Ok((r.get(0)?, r.get(1)?)))
         .unwrap()
         .filter_map(|r| r.ok())
         .next();
@@ -341,16 +350,16 @@ async fn failure_persists_error_reply_in_session() {
         content.contains("⚠️ 执行失败") && content.contains("LLM 网关 500"),
         "{content}"
     );
-    // 定时来源标题前缀
+    // 定时来源标题（本 run 会话的精确标题）
     let title: String = conn
         .query_row(
-            "SELECT title FROM bot_sessions WHERE title LIKE '⏰ 定时：%' ORDER BY created_at DESC LIMIT 1",
-            [],
+            "SELECT title FROM bot_sessions WHERE title = ?1",
+            [&want_title],
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(title, "⏰ 定时：注定失败的任务");
-    // 清理（找不到 sid 就按标题删）
+    assert_eq!(title, want_title);
+    // 清理：精确标题已唯一，DELETE 只 scope 到本 run 的会话
     conn.execute("DELETE FROM bot_messages WHERE session_id IN (SELECT id FROM bot_sessions WHERE title = ?1)", [&title]).ok();
     conn.execute("DELETE FROM bot_sessions WHERE title = ?1", [&title])
         .ok();

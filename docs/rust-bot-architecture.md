@@ -511,6 +511,7 @@ flowchart TD
 - `db/people.rs`
 - `db/schedule_jobs.rs`
 - `db/skill_out.rs`
+- `db/subagents.rs`
 - `db/tasks.rs`
 - `db/trace.rs`
 - `db/workflow.rs`

@@ -35,8 +35,15 @@ SRC = REPO_ROOT / "src"
 EVAL = "e" + "v" + "a" + "l"
 EVAL_CALL = EVAL + "("
 EVAL_RE = r"\b" + EVAL + r"\s*\("
-INDIRECT_RE = r"\(0,\s*" + EVAL + r"\)|window\." + EVAL + r"|globalThis\." + EVAL + r"|self\." + EVAL
-ALIAS_RE = r"[:=]\s*Function\b\s*(?!\()"
+INDIRECT_RE = (
+    r"\(0,\s*" + EVAL + r"\)"
+    r"|window\." + EVAL + r"\b"
+    r"|globalThis\." + EVAL + r"\b"
+    r"|self\." + EVAL + r"\b"
+)
+# 只认赋值别名（`\w+ = Function`，后随 `(` 的调用形态归构造器模式管）——
+# 旧写法 `[:=]` 的冒号分支会误伤 `x: Function` 类型注解
+ALIAS_RE = r"\b\w+\s*=\s*Function\b\s*(?!\()"
 
 PATTERNS = [
     (EVAL_RE, "动态求值直接调用"),
@@ -143,6 +150,10 @@ def selftest() -> int:
         "const t = `模板里的 " + EVAL_CALL + " 也不算`;",
         "setTimeout(() => tick(), 10);",
         "await import(\"./mod\");",
+        # ALIAS 收紧后放行：类型注解形态不是别名赋值
+        "function wrap(f: Function): Function { return f; }",
+        # INDIRECT 收紧后放行：同前缀长名不吃 \b 子串命中
+        "window.evaluation.queue.push(task);",
     ])
     # 反例：六类真实形态必须全部抓到
     fail_fixtures = [

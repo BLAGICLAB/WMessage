@@ -66,45 +66,49 @@ fn setup_task(
 
 fn cleanup(handle: &tauri::AppHandle<tauri::test::MockRuntime>, task_id: &str, session_id: &str) {
     if let Ok(conn) = wmessage_lib::db::open_db(handle) {
-        conn.execute("DELETE FROM tasks WHERE id = ?1", [task_id])
-            .ok();
-        conn.execute(
+        // 首个非 OK 的 DELETE 错误浮出（仅诊断，不引入事务；uuid 隔离下
+        // 清理失败意味着共享 deps 库堆积残留，静默吞掉会掩盖根因）
+        let mut first_err: Option<rusqlite::Error> = None;
+        let mut note = |r: rusqlite::Result<usize>| {
+            if let Err(e) = r {
+                if first_err.is_none() {
+                    first_err = Some(e);
+                }
+            }
+        };
+        note(conn.execute("DELETE FROM tasks WHERE id = ?1", [task_id]));
+        note(conn.execute(
             "DELETE FROM bot_messages WHERE session_id = ?1",
             [session_id],
-        )
-        .ok();
-        conn.execute("DELETE FROM bot_sessions WHERE id = ?1", [session_id])
-            .ok();
+        ));
+        note(conn.execute("DELETE FROM bot_sessions WHERE id = ?1", [session_id]));
         // trace 家族双路删除：成功路径按 session_id、失败路径按 task_id——
         // 失败收尾拿不到 TaskChatRun.session_id，trace 行落的是运行期生成的
         // 会话 id（实测残留实锤：deps 库里堆积 et-* failed 行），按 '-' 清不到
-        conn.execute(
+        note(conn.execute(
             "DELETE FROM exec_spans WHERE trace_id IN (SELECT id FROM exec_traces WHERE session_id = ?1)",
             [session_id],
-        )
-        .ok();
-        conn.execute(
+        ));
+        note(conn.execute(
             "DELETE FROM file_changes WHERE trace_id IN (SELECT id FROM exec_traces WHERE session_id = ?1)",
             [session_id],
-        )
-        .ok();
-        conn.execute(
+        ));
+        note(conn.execute(
             "DELETE FROM exec_traces WHERE session_id = ?1",
             [session_id],
-        )
-        .ok();
-        conn.execute(
+        ));
+        note(conn.execute(
             "DELETE FROM exec_spans WHERE trace_id IN (SELECT id FROM exec_traces WHERE task_id = ?1)",
             [task_id],
-        )
-        .ok();
-        conn.execute(
+        ));
+        note(conn.execute(
             "DELETE FROM file_changes WHERE trace_id IN (SELECT id FROM exec_traces WHERE task_id = ?1)",
             [task_id],
-        )
-        .ok();
-        conn.execute("DELETE FROM exec_traces WHERE task_id = ?1", [task_id])
-            .ok();
+        ));
+        note(conn.execute("DELETE FROM exec_traces WHERE task_id = ?1", [task_id]));
+        if let Some(e) = first_err {
+            eprintln!("[exec_trace] cleanup DELETE 失败（共享库残留风险）: {e}");
+        }
     }
     // bot-enabled.flag 刻意**不删**：nextest 下 exec_trace 与 task_chat_exec 两个二进制
     // 并行进程共享 target/debug/deps/runtime/flags/——一方 cleanup 删 flag 会让另一方的
@@ -284,14 +288,28 @@ async fn trace_sink_writes_spans_and_file_changes() {
     let _ = wmessage_lib::db::open_db(&handle).unwrap();
     wmessage_lib::trace_sink::init(handle.clone());
 
+    // 标识带 per-run uuid 后缀：共享 deps 库里上次 panic 的残留行
+    // 不会让本次「根本没写库」也命中断言；会话/任务 id 同样唯一，
+    // guard drop 清理即按精确标识 scope
+    let run = uuid::Uuid::new_v4().simple().to_string();
+    let session_id = format!("et-sink-session-{run}");
+    let task_id = format!("et-sink-task-{run}");
+    let tool_call_id = format!("call_et_1-{run}");
+    let file_path = format!("/a/x-{run}.py");
+    let guard = TraceCleanupGuard {
+        handle: handle.clone(),
+        task_id: task_id.clone(),
+        session_id: std::cell::RefCell::new(session_id.clone()),
+    };
+
     // 种 trace 行（直接走 db 层，取 rowid 作归属）
     let trace_id = {
         let conn = wmessage_lib::db::open_db(&handle).unwrap();
         wmessage_lib::db::trace_start(
             &conn,
             &wmessage_lib::db::NewTrace {
-                session_id: "et-sink-session",
-                task_id: Some("et-sink-task"),
+                session_id: &session_id,
+                task_id: Some(&task_id),
                 origin: "manual",
                 title: Some("sink 管道"),
                 started_at: now_ms(),
@@ -303,7 +321,7 @@ async fn trace_sink_writes_spans_and_file_changes() {
     wmessage_lib::trace_sink::record_span(wmessage_lib::trace_sink::SpanRecord {
         trace_id,
         turn: 2,
-        tool_call_id: Some("call_et_1".into()),
+        tool_call_id: Some(tool_call_id.clone()),
         name: "edit_file".into(),
         args: Some(r#"{"path":"/a/x.py"}"#.into()),
         result: Some("已修改 /a/x.py（+3 行）".into()),
@@ -314,7 +332,7 @@ async fn trace_sink_writes_spans_and_file_changes() {
     });
     wmessage_lib::trace_sink::record_file_change(wmessage_lib::trace_sink::FileChangeRecord {
         trace_id,
-        path: "/a/x.py".into(),
+        path: file_path.clone(),
         kind: "modify",
         added: 3,
         deleted: 1,
@@ -326,22 +344,22 @@ async fn trace_sink_writes_spans_and_file_changes() {
         created_at: now_ms(),
     });
 
-    // 轮询等待后台 writer 落库（最多 ~5s）
+    // 轮询等待后台 writer 落库（最多 ~5s）：断言按本 run 的精确标识
     let mut span_ok = false;
     let mut change_ok = false;
     for _ in 0..100 {
         if let Ok(conn) = wmessage_lib::db::open_db(&handle) {
             let s: i64 = conn
                 .query_row(
-                    "SELECT COUNT(*) FROM exec_spans WHERE tool_call_id = 'call_et_1' AND ok = 1",
-                    [],
+                    "SELECT COUNT(*) FROM exec_spans WHERE tool_call_id = ?1 AND ok = 1",
+                    [&tool_call_id],
                     |r| r.get(0),
                 )
                 .unwrap_or(0);
             let c: i64 = conn
                 .query_row(
-                    "SELECT COUNT(*) FROM file_changes WHERE path = '/a/x.py' AND added = 3",
-                    [],
+                    "SELECT COUNT(*) FROM file_changes WHERE path = ?1 AND added = 3",
+                    [&file_path],
                     |r| r.get(0),
                 )
                 .unwrap_or(0);
@@ -356,13 +374,5 @@ async fn trace_sink_writes_spans_and_file_changes() {
     assert!(span_ok, "span 应经管道落库");
     assert!(change_ok, "file_change 应经管道落库");
 
-    // 清理
-    if let Ok(conn) = wmessage_lib::db::open_db(&handle) {
-        conn.execute("DELETE FROM exec_spans WHERE trace_id = ?1", [trace_id])
-            .ok();
-        conn.execute("DELETE FROM file_changes WHERE trace_id = ?1", [trace_id])
-            .ok();
-        conn.execute("DELETE FROM exec_traces WHERE id = ?1", [trace_id])
-            .ok();
-    }
+    // 清场由 guard drop 兜底（panic 路径同样按精确标识清理）
 }

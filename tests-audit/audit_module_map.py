@@ -83,14 +83,17 @@ def source_files():
 
 
 def declared_modules():
-    """lib.rs 顶层模块 + 子目录 mod.rs 里的子模块（`bot/xxx` 形式）"""
+    """lib.rs 顶层模块 + 全部 mod.rs（动态发现）里的子模块声明"""
     out = set()
-    for rel in ["lib.rs", "bot/mod.rs", "bot_skills/mod.rs", "memory/mod.rs", "prompts/mod.rs"]:
-        p = SRC / rel
+    for p in [SRC / "lib.rs", *sorted(SRC.rglob("mod.rs"))]:
         if not p.exists():
             continue
+        rel = p.relative_to(SRC).as_posix()
+        # lib.rs 的声明就是顶层名；子目录 mod.rs 的声明带目录前缀（a/b/mod.rs
+        # 里的 `mod x;` → a/b/x）。硬编码清单会随目录增长漂移，改 rglob 动态发现
+        prefix = "" if rel == "lib.rs" else rel.rsplit("/", 1)[0] + "/"
         for m in MOD_DECL_RE.findall(p.read_text()):
-            out.add(m if rel == "lib.rs" else f"{rel.split('/')[0]}/{m}")
+            out.add(f"{prefix}{m}" if prefix else m)
     return out
 
 
@@ -116,9 +119,9 @@ def test_tree_entries_point_to_existing_files():
 
 def test_every_source_file_is_mentioned():
     doc = doc_text()
-    unlisted = [
-        str(f) for f in source_files() if str(f) not in doc and f.name not in doc
-    ]
+    # 只认相对路径命中（如 `bot/registry.rs`）：裸 basename 兜底会让 15 组
+    # 同名文件互相顶替，文档漂移可静默漏登记
+    unlisted = [str(f) for f in source_files() if str(f) not in doc]
     assert not unlisted, (
         "以下源码文件在 docs/rust-bot-architecture.md 里找不到"
         "（新增模块请登记进模块树）：\n  " + "\n  ".join(unlisted)

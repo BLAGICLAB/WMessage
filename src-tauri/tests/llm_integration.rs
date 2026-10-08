@@ -177,7 +177,7 @@ async fn reqwest_handles_5_round_chat_loop_with_mock_llm() {
         );
     }
 
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    // mock server 在写回响应前已计数，此处无需 sleep 等待即可断言
     assert_eq!(server.request_count(), 5, "应处理 5 个请求");
 }
 
@@ -832,7 +832,7 @@ async fn core_http_401_wrapped_no_retry() {
         }
         other => panic!("401 应包装为 LlmApiError，got {other:?}"),
     }
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    // mock server 在写回响应前已计数，此处无需 sleep 等待即可断言
     assert_eq!(server.request_count(), 1, "401 不可重试，只发 1 次请求");
 }
 

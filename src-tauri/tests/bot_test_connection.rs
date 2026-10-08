@@ -109,13 +109,10 @@ async fn connection_test_endpoint_suffix_stripped() {
 
 #[tokio::test]
 async fn connection_test_unreachable_reports_error() {
-    // 端口无人监听：bind 拿端口后立即 drop → connect refused
-    let port = {
-        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        l.local_addr().unwrap().port()
-    };
-    let base = format!("http://127.0.0.1:{port}/v1");
-    let r = probe_connection(&reqwest::Client::new(), &base, "openai", "k").await;
+    // 探 127.0.0.1:1（tcpmux 保留端口，无监听由地址本身保证 refused）——
+    // 弃用 bind:0→drop 方案：端口释放后可能被并行测试抢占，TOCTOU 竞口
+    let base = "http://127.0.0.1:1/v1";
+    let r = probe_connection(&reqwest::Client::new(), base, "openai", "k").await;
     assert!(!r.ok, "连不上应 ok:false：{r:?}");
     assert_eq!(r.status, None, "网络错误无 HTTP 状态");
     assert!(

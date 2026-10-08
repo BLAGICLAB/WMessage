@@ -73,7 +73,9 @@ RULES = [
         "上下文层不做业务判定",
         CONTEXT_FILES,
         [
-            (r"impl\s+EvolutionPolicy", "impl EvolutionPolicy（业务判定进上下文层）"),
+            # 放宽到泛型/带注解形态：`impl<T> EvolutionPolicy for X` 同样是
+            # 业务判定进上下文层（\b 左锚定，不吃 xxxEvolutionPolicy 同形名）
+            (r"impl\b[^;{]*?\bEvolutionPolicy\b", "impl EvolutionPolicy（业务判定进上下文层）"),
         ],
     ),
     (
@@ -81,6 +83,9 @@ RULES = [
         [p for p in DATA_GLOB + DATA_CANDIDATE if p != DATA_CONFLICT],
         [
             (r"evolution::strategy", "use evolution::strategy（数据层→策略层）"),
+            # group use 形态：`use crate::evolution::{strategy, store};`
+            # 不含连续的 `evolution::strategy`，单独成模式防漏报
+            (r"evolution::\{[^}]*\bstrategy\b", "use evolution::{…strategy…}（数据层→策略层）"),
         ],
     ),
     (
@@ -168,8 +173,9 @@ def strip_comments_and_strings(text: str) -> str:
 
 def strip_cfg_test_modules(text: str) -> str:
     """删掉 #[cfg(test)] 开头的 mod 块（花括号配对计数；测试内关键词不算违例）。"""
-    # \s*（而非强制 \n）：兼容单行形态 `#[cfg(test)] mod tests {`
-    pattern = re.compile(r"#\[cfg\(test\)\]\s*mod\s+(\w+)\s*\{")
+    # [^{}]*?（而非 \s*）：兼容单行/多行形态与夹层属性
+    # （`#[cfg(test)] #[allow(..)] pub mod tests {`），花括号为界不会跨语句误配
+    pattern = re.compile(r"#\[cfg\(test\)\][^{}]*?mod\s+\w+\s*\{")
     while True:
         m = pattern.search(text)
         if not m:
@@ -182,7 +188,12 @@ def strip_cfg_test_modules(text: str) -> str:
             elif text[i] == "}":
                 depth -= 1
             i += 1
-        text = text[:m.start()] + " " * (i - m.start()) + text[i:]
+        # 剥离体逐字符替换但保留换行——吞换行会让违例行号整体偏移（诊断性）
+        text = (
+            text[:m.start()]
+            + "".join("\n" if ch == "\n" else " " for ch in text[m.start():i])
+            + text[i:]
+        )
 
 
 def check_file(path: Path) -> list[str]:
@@ -242,7 +253,18 @@ SELFTEST_FAIL_SAMPLES = [
     "static L: Mutex<()> = Mutex::new(());",
     "use tauri::AppHandle;",
     "impl EvolutionPolicy for X {}",
+    # 泛型形态（规则 2 放宽后必须抓到）
+    "impl<T> EvolutionPolicy for X {}",
+    # group use 形态（规则 3 补洞后必须抓到）
+    "use crate::evolution::{strategy, store};",
 ]
+
+# 违例样例的抓取判定：与 RULES 里各禁入模式同源（新增模式必须同步进这里）
+CAUGHT_RE = (
+    r"\bstd::fs\b|chrono::Utc::now|thread_rng|\bMutex\b|tauri::"
+    r"|impl\b[^;{]*?\bEvolutionPolicy\b"
+    r"|evolution::strategy|evolution::\{[^}]*\bstrategy\b"
+)
 
 
 def selftest() -> int:
@@ -256,6 +278,15 @@ def selftest() -> int:
         cleaned = strip_cfg_test_modules(strip_comments_and_strings(raw))
         if re.search(r"\bstd::fs\b|thread_rng|\bMutex\b|chrono::Utc::now", cleaned):
             print("✗ selftest：正例被误判违例（注释/字符串/测试模块剥离失效）", file=sys.stderr)
+            ok = False
+        # cfg(test) 剥离保换行：剥离前后行数一致，违例行号不整体偏移
+        line_probe = (
+            "#[cfg(test)]\nmod tests {\n    use std::fs;\n}\n"
+            'let x = std::fs::read_to_string("p");\n'
+        )
+        stripped = strip_cfg_test_modules(strip_comments_and_strings(line_probe))
+        if stripped.count("\n") != line_probe.count("\n"):
+            print("✗ selftest：cfg(test) 剥离吞换行（违例行号会整体偏移）", file=sys.stderr)
             ok = False
         # 委托壳行级豁免：受认可形式放行、非认可 strategy 引用照抓
         delegate_line = "let r = crate::evolution::strategy::DefaultEvolutionPolicy.resolve(a, b);"
@@ -271,7 +302,7 @@ def selftest() -> int:
             probe.write_text(sample, encoding="utf-8")
             raw = probe.read_text(encoding="utf-8")
             cleaned = strip_cfg_test_modules(strip_comments_and_strings(raw))
-            caught = bool(re.search(r"\bstd::fs\b|chrono::Utc::now|thread_rng|\bMutex\b|tauri::|impl\s+EvolutionPolicy", cleaned))
+            caught = bool(re.search(CAUGHT_RE, cleaned))
             if not caught:
                 print(f"✗ selftest：违例样例 {i} 未被抓到：{sample}", file=sys.stderr)
                 ok = False

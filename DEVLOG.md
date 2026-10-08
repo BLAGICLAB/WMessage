@@ -5797,3 +5797,25 @@ tests-audit + vitest）/ tsc --noEmit / 批次号红线 全绿。
 
 **验证**：cargo clippy --all-targets 0 warning（除 vendor 2）；
 scripts/test-all.sh 全绿；批次号红线干净。
+
+## 2026-10-08（周四）OCR-TESTS-FIX — 测试代码扫描工单执行（16 条 REAL/PARTIAL 修复）
+
+按 docs/OCR-TESTS-SCAN-TRIAGE-2026-10-08.md 工单执行（第 16 条 DDL 单源化按
+工单标注跳过，低优先）：
+
+- **两个真误绿向量**：exec_trace sink 测试标识改 per-run uuid + TraceCleanupGuard
+  全体包络（残留行不再能误绿）；task_chat_exec 定时标题加 uuid 后缀（取前 12 位，
+  全量 32 位会被 escape_for_log 30 字符截断——实测踩到后改短），LIKE 前缀查询改
+  精确等值，DELETE 天然 scope 到本 run。
+- **守卫洞**：module_map 删裸 basename 兜底（收紧后当场抓到 db/subagents.rs
+  未登记进架构文档的真实漂移，已补登记——守卫价值实证）；mod.rs 清单改 rglob
+  动态发现（5→18）；layering 补 group use 与 impl<T> 泛型两种漏报模式、cfg(test)
+  剥离透传换行（行号不再偏移）、正则放宽覆盖 pub mod tests；no_eval 收紧
+  ALIAS_RE 类型注解误伤 + 三分支补 \b。两个脚本 selftest 同步补正反例钉桩。
+- **其余**：.gitignore 补 fixtures/*.jsonl.tmp（PII 残留临时文件防入库）；
+  llm_integration 删两处 50ms sleep 死代码；bot_test_connection 改探
+  127.0.0.1:1（tcpmux 保留端口）根除 bind:0 TOCTOU；exec_trace cleanup 首个
+  非 OK 错误 eprintln 浮出。
+
+验证：cargo test 4 个相关 test 文件 90 用例全过；audit_module_map 4 passed；
+layering/no_eval selftest + 全仓实跑 0 命中；scripts/test-all.sh 全绿。
