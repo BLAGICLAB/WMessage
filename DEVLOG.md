@@ -5853,3 +5853,33 @@ layering/no_eval selftest + 全仓实跑 0 命中；scripts/test-all.sh 全绿�
 
 验证：middleware 14 测试 + skill_e2e 13 + audit_pre_step 24 全过；
 clippy --all-targets 0（除 vendor）；scripts/test-all.sh 全绿。
+
+## 2026-10-08（周四）口径变更 — 聊天窗口链接/文件点开不再要求绑定（OPEN-UNBIND）
+
+**口径**（用户拍板）：挂件/主窗聊天窗口里的链接和文件，点开不再要求「任务卡绑定 /
+工作区链接 / AI_Gen_Files」——任意存在的本地路径直接打开。
+
+**限制面排查结论**（全部过一遍）：
+1. `bot_skills/files.rs::open_file_path`（文件路径点击统一入口）——绑集 +
+   AI_Gen_Files 白名单 + TOCTOU 二次校验（OCR C2b 系列）。**本次解除的主体**。
+2. `delete_bound_file`（删除绑定文件）——与 open 共用 helper，但删除是破坏性
+   操作：**保留全部限制**，helper（collect_openable_paths / canonical_if_openable /
+   path_openable_in / recheck_canonical）收窄为 delete 专用（签名去掉 gen_dir，
+   AI_Gen_Files 分支删除）。
+3. 链接（http）走前端 openUrl（opener:default 能力），本无绑定限制，不涉及。
+4. `capabilities/default.json` 的 `opener:allow-open-path`（$APPDATA/**）——
+   SkillsPanel 仍在用，**保留**。
+5. bot 工具侧授权口径（bot_fs allowed_dirs / sanitize_task_files_arg /
+   is_task_execution_flow / link_file_to_task）——那是 LLM 工具调用边界，
+   与聊天窗口点击无关，**不动**。
+
+**实现**：open_file_path 保留存在性检查（UX）与 canonical 归一（Windows verbatim
+剥离，非安全闸），摘除绑集查询/白名单判定/TOCTOU 二次校验；denied/race 审计随
+判定路径一并移除。删除侧签名收窄，TOCTOU 回归测试（raced symlink swap）保留。
+
+**残留风险留档**：原白名单防「前端 XSS → 打开任意文件」；口径放开后该风险由
+用户知情接受（打开 ≠ 读取/删除，且本机单用户场景）。若未来要回收，revert 本
+commit 即可恢复完整白名单 + TOCTOU 防线。
+
+验证：cargo check/test（files 模块 6 用例）+ clippy 0（除 vendor）+
+scripts/test-all.sh 全绿；前端零改动。
