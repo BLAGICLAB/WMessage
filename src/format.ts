@@ -50,36 +50,35 @@ export function formatCompletedAt(ms: number): string {
   )}`;
 }
 
-/** 相对时间（U5 会话栈）：刚刚 / N 分钟前 / N 小时前 / N 天前 / 超过 7 天落日期。
- *  now 可注入（测试）；非法/未来时间戳回「刚刚」。 */
-export function relativeTime(ms: number, now: number = Date.now()): string {
+/** 相对时间共享内核：dir="past" 走「N 分钟前」档（U5 会话栈），
+ *  dir="future" 走「N 分钟后」档（定时任务「下次执行」）。
+ *  past 对未来时间戳、future 对已过期/非法时间戳一律回「刚刚」。now 可注入（测试）。 */
+function relTime(ms: number, dir: "past" | "future", now: number): string {
   const d = new Date(ms);
-  if (isNaN(d.getTime()) || ms > now) return "刚刚";
-  const diffMs = now - ms;
+  const wrongSide = dir === "past" ? ms > now : ms <= now;
+  if (isNaN(d.getTime()) || wrongSide) return "刚刚";
+  const diffMs = dir === "past" ? now - ms : ms - now;
+  const suffix = dir === "past" ? "前" : "后";
   const minutes = Math.floor(diffMs / 60_000);
   if (minutes < 1) return "刚刚";
-  if (minutes < 60) return `${minutes} 分钟前`;
+  if (minutes < 60) return `${minutes} 分钟${suffix}`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} 小时前`;
+  if (hours < 24) return `${hours} 小时${suffix}`;
   const days = Math.floor(hours / 24);
-  if (days < 7) return `${days} 天前`;
+  if (days < 7) return `${days} 天${suffix}`;
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+/** 相对时间（U5 会话栈）：刚刚 / N 分钟前 / N 小时前 / N 天前 / 超过 7 天落日期。
+ *  now 可注入（测试）；非法/未来时间戳回「刚刚」。 */
+export function relativeTime(ms: number, now: number = Date.now()): string {
+  return relTime(ms, "past", now);
+}
+
 /** 未来倒计时（定时任务模块「下次执行」）：刚刚 / N 分钟后 / N 小时后 / N 天后 / 超 7 天落日期。
- *  relativeTime 对未来恒回「刚刚」，此处是反向档；已过期/非法时间戳回「刚刚」。 */
+ *  已过期/非法时间戳回「刚刚」。 */
 export function untilTime(ms: number, now: number = Date.now()): string {
-  const d = new Date(ms);
-  if (isNaN(d.getTime()) || ms <= now) return "刚刚";
-  const diffMs = ms - now;
-  const minutes = Math.floor(diffMs / 60_000);
-  if (minutes < 1) return "刚刚";
-  if (minutes < 60) return `${minutes} 分钟后`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} 小时后`;
-  const days = Math.floor(hours / 24);
-  if (days < 7) return `${days} 天后`;
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  return relTime(ms, "future", now);
 }
 
 // datetime-local 值校验：格式完整 + 时分在界 + Date 往返一致
