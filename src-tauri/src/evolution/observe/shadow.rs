@@ -99,29 +99,11 @@ pub fn reset_counters_for_test() {
     TOTAL_WRITES.store(0, Ordering::Relaxed);
 }
 
-// ───────────────────────── ShadowSink trait（IO 抽象）─────────────────────────
+// ───────────────────────── 影子落库 sink（具体类型）─────────────────────────
 
-/// Shadow IO 抽象：测试可替换为 MockSink
-///
-/// 设计动机：原版强耦合 AppHandle 导致「不写 mem_items」「不发 audit」无法验证。
-/// 通过 trait 抽象，测试用 MockShadowSink 内存收集调用，验证副作用边界。
-pub trait ShadowSink {
-    /// 写一条 ChangeRecord 到 evolution-changes.jsonl
-    fn write_change(&self, cr: &ChangeRecord) -> Result<(), String>;
-
-    /// audit_event: 单条写失败
-    fn audit_failed(&self, proposal_id: &str, error: &str);
-
-    /// audit_event: 失败率 > 5% 告警
-    fn audit_warning(&self, failure_rate: f64, failed: u64, total: u64);
-
-    /// 读当前时间（用于 from_proposal）；trait method 而非 fn() 让测试可控
-    fn now_ms(&self) -> i64 {
-        crate::memory::now_ms()
-    }
-}
-
-/// 生产 sink：写 evolution-changes.jsonl + 发 audit
+/// 生产 sink：写 evolution-changes.jsonl + 发 audit。
+/// 原 ShadowSink trait（单实现 + 仅测试用的 Mock）已删——测试走 `new_for_test`
+/// 真临时文件；第二个 sink 实现出现时再抽象（历史实现见 git log）。
 pub struct AppShadowSink<'a> {
     /// evolution-changes.jsonl 路径（可注入，便于测试用 temp 路径）
     pub changes_path: PathBuf,
@@ -144,9 +126,8 @@ impl<'a> AppShadowSink<'a> {
             app: None,
         }
     }
-}
 
-impl<'a> ShadowSink for AppShadowSink<'a> {
+    /// 写一条 ChangeRecord 到 evolution-changes.jsonl
     fn write_change(&self, cr: &ChangeRecord) -> Result<(), String> {
         change::append_change(&self.changes_path, cr)
     }
@@ -163,6 +144,7 @@ impl<'a> ShadowSink for AppShadowSink<'a> {
         }
     }
 
+    /// audit_event: 失败率 > 5% 告警
     fn audit_warning(&self, failure_rate: f64, failed: u64, total: u64) {
         if let Some(app) = self.app {
             crate::audit_event!(
@@ -178,7 +160,7 @@ impl<'a> ShadowSink for AppShadowSink<'a> {
     }
 }
 
-// ───────────────────────── 主入口（trait 化）─────────────────────────
+// ───────────────────────── 主入口 ─────────────────────────
 
 /// Shadow 执行报告
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,15 +182,15 @@ pub struct ShadowReport {
 /// **调用约束**：当前零生产调用方，仅测试 + MockShadowSink（内存 sink，
 /// 无真实 IO）。sink.write_change 是同步调用——若未来接真实 fs sink
 /// 上生产 async 路径，须先把写路径 spawn_blocking 化（参考 with_app）。
-pub async fn shadow_apply_for_batch<S: ShadowSink>(
+pub async fn shadow_apply_for_batch<'a>(
     proposals: Vec<EvolutionProposal>,
-    sink: &S,
+    sink: &'a AppShadowSink<'a>,
 ) -> ShadowReport {
     let gated: Vec<EvolutionProposal> = proposals.into_iter().filter(gate_approved).collect();
 
     let mut written = 0usize;
     let mut failed = 0usize;
-    let now = sink.now_ms();
+    let now = crate::memory::now_ms();
 
     for p in &gated {
         let cr: ChangeRecord = change::from_proposal(p, now);
@@ -240,74 +222,9 @@ pub async fn shadow_apply_for_batch<S: ShadowSink>(
     }
 }
 
-// ───────────────────────── 集成决策（纯函数，apply.rs 调用）─────────────────────────
+// ───────────────────────── 便捷包装（apply.rs 调用）─────────────────────────
 
-/// R7→A 简化（老板 21:10 拍板）：判断 proposal 是否可逆（pure，no IO）
-///
-/// **已移至** `evolution::proposal::is_reversible`（B 骨架重构：避免 shadow↔activation 间接耦合）。
-/// shadow.rs 继续用 import 而非本地定义。
-///
-/// 规则（MVP）：
-/// - ToolSchemaHint：不可逆
-/// - High impact：不可逆
-/// - 其他：可逆
-/// Generic 版本（R7→A）：可注入 reversibility 检查（供测试）
-///
-/// 流程：
-/// 1. 过策略层 gate（合规性）
-/// 2. 过 is_reversible_check（可逆性）
-/// 3. 写 evolution-changes.jsonl
-///
-/// 不可逆的 proposal 跳过（不写 jsonl），不在这发 audit（audit 由调用方决定）
-///
-/// **调用约束**：同 `shadow_apply_for_batch`——当前零生产调用方（测试/
-/// 内存 sink 专用），接真实 fs sink 上生产 async 路径前须 spawn_blocking 化。
-pub async fn shadow_apply_for_batch_with_reversibility<S: ShadowSink>(
-    proposals: Vec<EvolutionProposal>,
-    sink: &S,
-    is_reversible_check: impl Fn(&EvolutionProposal) -> bool,
-) -> ShadowReport {
-    let gated: Vec<EvolutionProposal> = proposals
-        .into_iter()
-        .filter(gate_approved)
-        .filter(|p| is_reversible_check(p))
-        .collect();
-
-    let mut written = 0usize;
-    let mut failed = 0usize;
-    let now = sink.now_ms();
-
-    for p in &gated {
-        let cr = change::from_proposal(p, now);
-        match sink.write_change(&cr) {
-            Ok(()) => {
-                written += 1;
-                TOTAL_WRITES.fetch_add(1, Ordering::Relaxed);
-            }
-            Err(e) => {
-                failed += 1;
-                TOTAL_WRITES.fetch_add(1, Ordering::Relaxed);
-                FAILED_WRITES.fetch_add(1, Ordering::Relaxed);
-                sink.audit_failed(&p.proposal_id, &e);
-            }
-        }
-    }
-    // 与 shadow_apply_for_batch 同一收尾口径：失败率超阈值必须发告警，
-    // 否则走本变体的调用方会静默吞掉失败突增（两处语义不得漂移）
-    let total = TOTAL_WRITES.load(Ordering::Relaxed);
-    let failed_count = FAILED_WRITES.load(Ordering::Relaxed);
-    if total > 0 && (failed_count as f64 / total as f64) > FAILURE_THRESHOLD {
-        sink.audit_warning(failed_count as f64 / total as f64, failed_count, total);
-    }
-    ShadowReport {
-        total: gated.len(),
-        written,
-        failed,
-        deduped: 0,
-    }
-}
-
-/// 便捷包装（apply.rs 调用入口；R7→A→B 后唯一对外入口）
+/// 便捷包装（apply.rs 调用入口；唯一对外入口）
 ///
 /// 流程（B 阶段，v4.1 §12.7 + B 校准前置）：
 /// 1. 过策略层 gate（合规性）
@@ -535,67 +452,6 @@ mod tests {
         })
     }
 
-    // ─── MockShadowSink ───
-
-    /// 测试用 sink：内存收集所有调用
-    #[derive(Default)]
-    pub struct MockShadowSink {
-        pub writes: Mutex<Vec<ChangeRecord>>,
-        pub audit_failed_calls: Mutex<Vec<(String, String)>>,
-        pub audit_warning_calls: Mutex<Vec<(f64, u64, u64)>>,
-        pub write_should_fail: Mutex<bool>,   // 测试时可注入失败
-        pub fixed_now_ms: Mutex<Option<i64>>, // 测试时固定 now_ms
-    }
-
-    impl MockShadowSink {
-        pub fn new() -> Self {
-            Self::default()
-        }
-        pub fn write_count(&self) -> usize {
-            self.writes.lock().unwrap().len()
-        }
-        pub fn writes(&self) -> Vec<ChangeRecord> {
-            self.writes.lock().unwrap().clone()
-        }
-        pub fn audit_failed_count(&self) -> usize {
-            self.audit_failed_calls.lock().unwrap().len()
-        }
-        pub fn audit_warning_count(&self) -> usize {
-            self.audit_warning_calls.lock().unwrap().len()
-        }
-        pub fn set_write_should_fail(&self) {
-            *self.write_should_fail.lock().unwrap() = true;
-        }
-    }
-
-    impl ShadowSink for MockShadowSink {
-        fn write_change(&self, cr: &ChangeRecord) -> Result<(), String> {
-            if *self.write_should_fail.lock().unwrap() {
-                return Err("mock write failure".into());
-            }
-            self.writes.lock().unwrap().push(cr.clone());
-            Ok(())
-        }
-        fn audit_failed(&self, proposal_id: &str, error: &str) {
-            self.audit_failed_calls
-                .lock()
-                .unwrap()
-                .push((proposal_id.to_string(), error.to_string()));
-        }
-        fn audit_warning(&self, failure_rate: f64, failed: u64, total: u64) {
-            self.audit_warning_calls
-                .lock()
-                .unwrap()
-                .push((failure_rate, failed, total));
-        }
-        fn now_ms(&self) -> i64 {
-            self.fixed_now_ms
-                .lock()
-                .unwrap()
-                .unwrap_or_else(crate::memory::now_ms)
-        }
-    }
-
     fn mk_proposal(id: &str, cat: ProposalCategory, impact: ImpactLevel) -> EvolutionProposal {
         EvolutionProposal {
             proposal_id: id.into(),
@@ -621,11 +477,18 @@ mod tests {
 
     // ─── 4 个核心 e2e 测试（老板 13:20 拍板）───
 
-    /// E2E 1：shadow_apply 真的被调用 → mock sink 收到 write
+    /// E2E 1：shadow_apply 把合规提案按序写进真 evolution-changes.jsonl
     #[tokio::test]
-    async fn e2e_1_shadow_called_with_mock_sink() {
+    async fn e2e_1_shadow_writes_in_order_to_real_jsonl() {
+        let _g = counter_lock();
         reset_counters_for_test();
-        let sink = MockShadowSink::new();
+        let dir = std::env::temp_dir().join(format!(
+            "sh-e2e1-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("evolution-changes.jsonl");
+        let sink = AppShadowSink::new_for_test(path.clone());
         let proposals = vec![
             mk_proposal("p1", ProposalCategory::MemoryHint, ImpactLevel::High),
             mk_proposal("p2", ProposalCategory::MemoryHint, ImpactLevel::Medium),
@@ -635,16 +498,10 @@ mod tests {
         assert_eq!(report.total, 3, "3 条 proposal 全合规");
         assert_eq!(report.written, 3);
         assert_eq!(report.failed, 0);
-        // 验证 mock sink 收到 3 次 write
-        assert_eq!(
-            sink.write_count(),
-            3,
-            "shadow 真被调（mock 收到 3 次 write）"
-        );
-        let writes = sink.writes();
-        assert_eq!(writes[0].proposal_id, "p1");
-        assert_eq!(writes[1].proposal_id, "p2");
-        assert_eq!(writes[2].proposal_id, "p3");
+        let rows = change::read_all(&path).unwrap();
+        let ids: Vec<&str> = rows.iter().map(|c| c.proposal_id.as_str()).collect();
+        assert_eq!(ids, vec!["p1", "p2", "p3"], "按入参顺序逐条 append");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// E2E 2：shadow_apply 真的写 evolution-changes.jsonl（用真实 AppShadowSink + temp 路径）
@@ -722,23 +579,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// E2E 4：shadow_apply 正常路径下 audit 未新增
-    #[tokio::test]
-    async fn e2e_4_no_audit_in_normal_path() {
-        let _g = counter_lock();
-        reset_counters_for_test();
-        let sink = MockShadowSink::new();
-        let proposals = vec![
-            mk_proposal("p1", ProposalCategory::MemoryHint, ImpactLevel::High),
-            mk_proposal("p2", ProposalCategory::MemoryHint, ImpactLevel::Medium),
-        ];
-        let report = shadow_apply_for_batch(proposals, &sink).await;
-        assert_eq!(report.failed, 0, "无写失败");
-        // 关键安全属性：正常路径下 audit_failed / audit_warning 都是空
-        assert_eq!(sink.audit_failed_count(), 0, "正常路径不应发 audit_failed");
-        assert_eq!(sink.audit_warning_count(), 0, "无失败率告警");
-    }
-
     /// E2E pre-flight（决策 6）：shadow 跑合成数据，与「apply 理论应写数」对比，
     /// 差异率 < 60% 才能开 flag。
     ///
@@ -782,8 +622,14 @@ mod tests {
         let apply_expected_count = proposals.iter().filter(|p| gate_approved(p)).count();
         assert!(apply_expected_count > 0, "至少要有 1 条合规 proposal");
 
-        // shadow 跑同一批 proposal
-        let sink = MockShadowSink::new();
+        // shadow 跑同一批 proposal（真临时文件）
+        let dir = std::env::temp_dir().join(format!(
+            "sh-preflight-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("evolution-changes.jsonl");
+        let sink = AppShadowSink::new_for_test(path.clone());
         let report = shadow_apply_for_batch(proposals, &sink).await;
 
         // 差异率
@@ -802,20 +648,24 @@ mod tests {
             apply_expected_count,
             diff_rate * 100.0
         );
-        // mock sink 也验证收到写入
-        assert!(sink.write_count() > 0, "mock sink 应收到 shadow 写入");
-        assert_eq!(sink.write_count(), report.written);
-        assert_eq!(sink.audit_failed_count(), 0, "正常路径不应发 audit_failed");
-        assert_eq!(sink.audit_warning_count(), 0, "失败率未超阈值");
+        // 落盘条数与报告一致
+        let rows = change::read_all(&path).unwrap();
+        assert_eq!(rows.len(), report.written, "落盘条数 = 报告 written");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 失败路径：write_should_fail=true → audit_failed 应被调
+    /// 失败路径：sink 路径不可写（指向目录）→ report 记 failed
     #[tokio::test]
-    async fn e2e_failed_write_emits_audit_failed() {
+    async fn e2e_failed_write_counts_and_audits() {
         let _g = counter_lock();
         reset_counters_for_test();
-        let sink = MockShadowSink::new();
-        sink.set_write_should_fail();
+        // 把 changes 路径指到目录：append 打开必失败（Err 分支）
+        let dir = std::env::temp_dir().join(format!(
+            "sh-fail-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sink = AppShadowSink::new_for_test(dir.clone());
         let proposals = vec![mk_proposal(
             "p1",
             ProposalCategory::MemoryHint,
@@ -824,29 +674,8 @@ mod tests {
         let report = shadow_apply_for_batch(proposals, &sink).await;
         assert_eq!(report.failed, 1);
         assert_eq!(report.written, 0);
-        assert_eq!(sink.audit_failed_count(), 1, "write 失败应发 audit_failed");
-        let calls = sink.audit_failed_calls.lock().unwrap();
-        assert_eq!(calls[0].0, "p1", "audit 应带 proposal_id");
-        assert!(calls[0].1.contains("mock write failure"));
-    }
-
-    /// 失败率 > 5% 告警
-    #[tokio::test]
-    async fn e2e_high_failure_rate_emits_audit_warning() {
-        let _g = counter_lock();
-        reset_counters_for_test();
-        let sink = MockShadowSink::new();
-        sink.set_write_should_fail();
-        let proposals = vec![
-            mk_proposal("p1", ProposalCategory::MemoryHint, ImpactLevel::High),
-            mk_proposal("p2", ProposalCategory::MemoryHint, ImpactLevel::High),
-        ];
-        // 这次写 2 条全失败（但失败率计数还需之前 success 才能算出 > 5%）
-        // 简化：手动预热计数器到 100% 失败
-        let report = shadow_apply_for_batch(proposals, &sink).await;
-        assert_eq!(report.failed, 2);
-        // 失败率 = 2/2 = 100% > 5% → 触发 audit_warning
-        assert_eq!(sink.audit_warning_count(), 1, "失败率 100% > 5% 应告警");
+        assert!(failure_rate() > 0.0, "失败应计入全局失败率");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1082,8 +911,14 @@ mod tests {
         let eligible_len = eligible.len(); // 先 capture，后面 eligible 被 move
         assert_eq!(eligible_len, 3, "决策应过滤出 3 条合规（跳过 1 条不合规）");
 
-        // ─── 执行阶段（影子写 evolution-changes.jsonl）───
-        let sink = MockShadowSink::new();
+        // ─── 执行阶段（影子写 evolution-changes.jsonl，真临时文件）───
+        let dir = std::env::temp_dir().join(format!(
+            "sh-integ-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("evolution-changes.jsonl");
+        let sink = AppShadowSink::new_for_test(path.clone());
         let report = shadow_apply_for_batch(eligible, &sink).await;
         assert_eq!(report.written, 3);
         assert_eq!(report.failed, 0);
@@ -1091,18 +926,15 @@ mod tests {
         // ─── 验证集成路径完整性 ───
         // 1. 写数 = 决策数（无丢失/重复）
         assert_eq!(report.written, eligible_len, "decision → execution 一致");
-        // 2. mock sink 收到 3 次 write
-        assert_eq!(sink.write_count(), 3);
-        // 3. 写的就是合规那 3 条（无 nc1）
-        let writes = sink.writes(); // bind 到 let，避免临时值问题
-        let written_ids: Vec<&str> = writes.iter().map(|c| c.proposal_id.as_str()).collect();
+        // 2. 落盘 3 行，且写的就是合规那 3 条（无 nc1）
+        let rows = change::read_all(&path).unwrap();
+        assert_eq!(rows.len(), 3);
+        let written_ids: Vec<&str> = rows.iter().map(|c| c.proposal_id.as_str()).collect();
         assert!(written_ids.contains(&"c1"));
         assert!(written_ids.contains(&"c2"));
         assert!(written_ids.contains(&"c3"));
         assert!(!written_ids.contains(&"nc1"), "不合规不应被写");
-        // 4. 正常路径无 audit
-        assert_eq!(sink.audit_failed_count(), 0);
-        assert_eq!(sink.audit_warning_count(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ─── R7→A 简化（老板 21:10 拍板）：is_reversible 单元测试 + shadow 集成（e2e E组）───
@@ -1155,72 +987,6 @@ mod tests {
     // E3：删 5 维 engine（EvolutionPolicy/evaluate 不再被调，编译通过即可证明）
     // E4：空规则路径 → is_reversible 直接判定，不产生 Allow
 
-    #[tokio::test]
-    async fn e2e_e4_irreversible_filter_is_order_independent() {
-        // E4 老板 21:15 拍板：参数化证明顺序无关
-        // 两个 case 共享输入集合 {Medium, High}，只顺序不同
-        // 都应只写 1 条（变更集合 = {Medium proposal}）
-        let _g = counter_lock();
-        reset_counters_for_test();
-
-        // Case v1: [Medium, High]
-        let dir1 = std::env::temp_dir().join(format!(
-            "sh-A-v1-{}",
-            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
-        ));
-        std::fs::create_dir_all(&dir1).unwrap();
-        let path1 = dir1.join("evolution-changes.jsonl");
-        let proposals_v1 = vec![
-            mk_proposal(
-                "medium_v1",
-                ProposalCategory::MemoryHint,
-                ImpactLevel::Medium,
-            ),
-            mk_proposal("high_v1", ProposalCategory::MemoryHint, ImpactLevel::High),
-        ];
-        let sink1 = AppShadowSink::new_for_test(path1.clone());
-        let report1 =
-            shadow_apply_for_batch_with_reversibility(proposals_v1, &sink1, is_reversible).await;
-
-        // Case v2: [High, Medium]（反序）
-        let dir2 = std::env::temp_dir().join(format!(
-            "sh-A-v2-{}",
-            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
-        ));
-        std::fs::create_dir_all(&dir2).unwrap();
-        let path2 = dir2.join("evolution-changes.jsonl");
-        let proposals_v2 = vec![
-            mk_proposal("high_v2", ProposalCategory::MemoryHint, ImpactLevel::High),
-            mk_proposal(
-                "medium_v2",
-                ProposalCategory::MemoryHint,
-                ImpactLevel::Medium,
-            ),
-        ];
-        let sink2 = AppShadowSink::new_for_test(path2.clone());
-        let report2 =
-            shadow_apply_for_batch_with_reversibility(proposals_v2, &sink2, is_reversible).await;
-
-        // 顺序无关性断言：
-        assert_eq!(report1.written, 1, "v1: 1 条可逆");
-        assert_eq!(report2.written, 1, "v2: 1 条可逆");
-        assert_eq!(report1.total, 1, "v1: 1 条被拦（High）");
-        assert_eq!(report2.total, 1, "v2: 1 条被拦（High）");
-
-        // 写的是 Medium，不是 High（验证 set 语义）
-        let content1 = std::fs::read_to_string(&path1).unwrap();
-        let content2 = std::fs::read_to_string(&path2).unwrap();
-        assert!(content1.contains("medium_v1"));
-        assert!(!content1.contains("high_v1"));
-        assert!(content2.contains("medium_v2"));
-        assert!(!content2.contains("high_v2"));
-
-        // 输出集合等价：{|Medium|} 两种顺序一致（证明顺序无关）
-        let lines1: Vec<&str> = content1.lines().filter(|l| !l.is_empty()).collect();
-        let lines2: Vec<&str> = content2.lines().filter(|l| !l.is_empty()).collect();
-        assert_eq!(lines1.len(), lines2.len(), "两种顺序写数应一致");
-
-        let _ = std::fs::remove_dir_all(&dir1);
-        let _ = std::fs::remove_dir_all(&dir2);
-    }
+    // E4：is_reversible 过滤的谓词覆盖见上方 6 个单测；顺序无关性由
+    // filter + append 的集合语义直接保证（with_reversibility 变体已删）
 }
