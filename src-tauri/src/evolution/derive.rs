@@ -1,12 +1,16 @@
 //! Phase 1.3：从 consolidate 反思产出派生 `EvolutionProposal`。
 //!
-//! ## 启发式规则（spec Q2=1 锁定，保守阈值）
+//! ## 启发式规则（2026-10-09 调参：原 Merge≥3/Distill≥5 的保守值让常规
+//! 整理永远产不出提案——个人库单轮合并/提炼普遍只有 2 条，候选池长期为空）
 //!
 //! | 输入                  | 阈值           | 产出           | 影响等级 |
 //! |---------------------|--------------|--------------|------|
-//! | `Merge { ids }`     | `ids.len ≥ 3` | 1 条 MemoryHint | Medium |
+//! | `Merge { ids }`     | `ids.len ≥ 2` | 1 条 MemoryHint | Medium |
 //! | `Contradiction`     | 任意（≥1）    | 1 条 MemoryHint | High |
-//! | `Distill { ids }`   | `ids.len ≥ 5` | 1 条 MemoryHint | Low |
+//! | `Distill { ids }`   | `ids.len ≥ 2` | 1 条 MemoryHint | Low |
+//!
+//! Low 产出不进自动轨（gate 拦），但**照常进候选池**等人工决策——
+//! 面板可见、可手动启用。
 //!
 //! 所有 ops 统一映射到 `MemoryHint`：Phase 1 主动放弃分类粒度，好处是风险最低
 //! （MemoryHint 后续不可能触发 prompt/tool 应用）。Phase 2 可根据一周数据决定
@@ -71,7 +75,7 @@ pub fn derive_proposals(
 /// 单 op → 0 或 1 条 proposal。不符合阈值返回 `None`。
 fn derive_one(op: &ConsolidateOp, now_ms: i64) -> Option<EvolutionProposal> {
     match op {
-        ConsolidateOp::Merge { ids, content } if ids.len() >= 3 => {
+        ConsolidateOp::Merge { ids, content } if ids.len() >= 2 => {
             let summary = format!("merge of {} similar memory entries", ids.len());
             let category = ProposalCategory::MemoryHint;
             let target = ProposalTarget::MemoryPolicy {
@@ -146,7 +150,7 @@ fn derive_one(op: &ConsolidateOp, now_ms: i64) -> Option<EvolutionProposal> {
                 },
             })
         }
-        ConsolidateOp::Distill { ids, content } if ids.len() >= 5 => {
+        ConsolidateOp::Distill { ids, content } if ids.len() >= 2 => {
             let summary = format!("distillation of {} entries into a pattern", ids.len());
             let category = ProposalCategory::MemoryHint;
             let target = ProposalTarget::MemoryPolicy {
@@ -181,7 +185,7 @@ fn derive_one(op: &ConsolidateOp, now_ms: i64) -> Option<EvolutionProposal> {
                 },
             })
         }
-        // 阈值不达标的 op（ids.len < 3 merge / ids.len < 5 distill）静默忽略
+        // 阈值不达标的 op（单条 ids 的 merge/distill）静默忽略
         _ => None,
     }
 }
@@ -244,33 +248,37 @@ mod tests {
     }
 
     #[test]
-    fn derive_returns_empty_when_no_op_meets_threshold() {
-        // 2 个 merge（ids.len=2 < 3）+ 1 个 distill（ids.len=4 < 5），
-        // 都不达阈值 → 空 Vec。注意不能放 contradiction（任意都产）
+    fn derive_returns_empty_only_for_single_id_ops() {
+        // 2026-10-09 调参（Merge≥2 / Distill≥2）后：只有单条 ids 的 op 不到阈值。
+        // 注意不能放 contradiction（任意都产）
         let ops = vec![
-            merge_op(&["a", "b"], "low content"),
-            distill_op(&["a", "b", "c", "d"], "low content"),
+            merge_op(&["a"], "single source"),
+            distill_op(&["b"], "single source"),
         ];
         let proposals = derive_proposals(&ops, &empty_report());
         assert!(
             proposals.is_empty(),
-            "都不到阈值时应空，实测 {} 条",
+            "单条 ids 不到阈值时应空，实测 {} 条",
             proposals.len()
         );
     }
 
     #[test]
-    fn merge_with_two_ids_does_not_emit_proposal() {
-        let ops = vec![merge_op(&["a", "b"], "too few")];
+    fn merge_with_two_ids_emits_medium_proposal() {
+        // 常规整理最常见形态：两条同源合并 → Medium 提案进候选池
+        let ops = vec![merge_op(&["a", "b"], "routine merge")];
         let proposals = derive_proposals(&ops, &empty_report());
-        assert!(proposals.is_empty(), "ids.len=2 < 3 阈值，不应产");
+        assert_eq!(proposals.len(), 1, "ids.len=2 应产提案（调参后阈值）");
+        assert_eq!(proposals[0].impact, ImpactLevel::Medium);
     }
 
     #[test]
-    fn distill_with_four_ids_does_not_emit_proposal() {
-        let ops = vec![distill_op(&["a", "b", "c", "d"], "few sources")];
+    fn distill_with_two_ids_emits_low_proposal() {
+        // Distill 产 Low：不进自动轨（gate 拦），但照常进候选池等人工决策
+        let ops = vec![distill_op(&["a", "b"], "pattern from two")];
         let proposals = derive_proposals(&ops, &empty_report());
-        assert!(proposals.is_empty(), "ids.len=4 < 5 阈值，不应产");
+        assert_eq!(proposals.len(), 1, "ids.len=2 应产提案（调参后阈值）");
+        assert_eq!(proposals[0].impact, ImpactLevel::Low);
     }
 
     // 5. 检测规则
