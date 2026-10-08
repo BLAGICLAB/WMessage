@@ -102,7 +102,7 @@ describe("写路径错误传播（E1）", () => {
 
 // 拖拽排序只改 order，不得刷新 updatedAt——
 // 否则多客户端按 updatedAt 合并时排序写互相覆盖，顺序来回乱跳。
-describe("diffTaskRows 纯排序保留 updatedAt（P2-20）", () => {
+describe("diffTaskRows 纯排序保留 updatedAt", () => {
   const base: Task[] = [0, 1, 2, 3].map((i) => ({
     id: `t${i}`,
     title: `任务${i}`,
@@ -182,7 +182,7 @@ describe("diffTaskRows 纯排序保留 updatedAt（P2-20）", () => {
 
 // RMW 写回带基线 expectedUpdatedAt = 快照行 updatedAt——
 // 后端 upsert 写前比对现行行，不一致拒写（防两写者读同一快照后交错整行覆盖）。
-describe("diffTaskRows 携带 RMW 写回基线（T1-1）", () => {
+describe("diffTaskRows 携带 RMW 写回基线", () => {
   const base: Task[] = [
     { id: "t1", title: "甲", column: "todo", order: 0, updatedAt: 1000 },
     { id: "t2", title: "乙", column: "todo", order: 1, updatedAt: 1001 },

@@ -123,7 +123,7 @@ describe("App", () => {
     const callsBefore = mocks.invokeMock.mock.calls.filter(
       (c) => c[0] === "db_upsert"
     ).length;
-    // U2：新建任务按钮迁入左侧导航栏（文案从「+ 新建任务」改为图标 + 「新建任务」）
+    // 新建任务按钮迁入左侧导航栏（文案从「+ 新建任务」改为图标 + 「新建任务」）
     await user.click(screen.getByText("新建任务"));
     // 新建后立即进入编辑态：input value = "新任务"
     const input = await screen.findByDisplayValue("新任务");
@@ -351,7 +351,7 @@ describe("App", () => {
     infoSpy.mockRestore();
   });
 
-  // 迁移失败（拍板 #19=A）：legacy localStorage 迁移抛错 → 保留 legacy 待下次
+  // 迁移失败：legacy localStorage 迁移抛错 → 保留 legacy 待下次
   // 启动重试，跳过 SEED 落库——否则下次启动库非空不再进迁移分支，legacy 永久 orphan
   it("legacy 迁移失败 → 跳过种子落库、legacy 保留", async () => {
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
@@ -386,7 +386,7 @@ describe("App", () => {
     errSpy.mockRestore();
   });
 
-  // delete 失败不阻断合并广播（拍板 #18=B）：失败行暂留 UI，
+  // delete 失败不阻断合并广播：失败行暂留 UI，
   // 后续 tasks-updated/tasks-changed 事件自愈
   it("tasks-updated delete 失败仍合并广播", async () => {
     const handlers: Record<string, (e: unknown) => Promise<void>> = {};
@@ -424,7 +424,7 @@ describe("App", () => {
     errSpy.mockRestore();
   });
 
-  // mutate 路径 delete 失败同治（OCR r2 medium 采纳）：彻底删除走 mutate 的
+  // mutate 路径 delete 失败同治（ 采纳）：彻底删除走 mutate 的
   // deleteTaskRows，失败不阻断 UI 更新与后续链（失败行留库，下次 db_load 自愈回来）
   it("彻底删除 db_delete 失败 → mutate 不阻断，行从 UI 消失 + console 留痕", async () => {
     const user = userEvent.setup();
@@ -557,9 +557,9 @@ describe("App", () => {
       expect(screen.getByText("梳理 WMessage 需求清单")).toBeInTheDocument();
     });
     // 进设置页点「导入」（eefa78f 起有任务导入 + 工作区导入两个，取第一个 = 任务导入；U20B 图标化后 name 为纯文字）
-    // U2：设置入口迁入左侧导航栏（icon + 文字「设置」，旧 ⚙️ 的 title 属性取消）
+    // 设置入口迁入左侧导航栏（icon + 文字「设置」，旧 ⚙️ 的 title 属性取消）
     await user.click(screen.getByText("设置"));
-    // U7 设置壳：任务数据面板在「任务与工作区」分类下（hidden 查不到 role，先导航）
+    //  设置壳：任务数据面板在「任务与工作区」分类下（hidden 查不到 role，先导航）
     await user.click(screen.getByRole("button", { name: "数据管理" }));
     const importBtn = (await screen.findAllByRole("button", { name: "导入" }))[0];
     await user.click(importBtn);
@@ -580,7 +580,7 @@ describe("App", () => {
     expect(mocks.invokeMock.mock.invocationCallOrder[secondLoadIdx]).toBeGreaterThan(
       importOrder
     );
-    // setTasks 收到 fresh 数据：点设置壳「返回」回看板（U7：进入前视图 = 首页），fresh 任务在、种子任务不在
+    // setTasks 收到 fresh 数据：点设置壳「返回」回看板进入前视图 = 首页），fresh 任务在、种子任务不在
     await user.click(screen.getByRole("button", { name: /返回/ }));
     expect(await screen.findByText("导入的 fresh 任务")).toBeInTheDocument();
     expect(screen.queryByText("梳理 WMessage 需求清单")).not.toBeInTheDocument();

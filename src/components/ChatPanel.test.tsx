@@ -419,7 +419,7 @@ describe("ChatPanel", () => {
     });
     render(<ChatPanel {...defaultProps} />);
     // 思考与工具默认折叠：思考 title 含「思考过程」；工具 = mono pill 徽章行
-    // （U3b：名称 + ✓ 状态）+「进程 N/M」折叠详情
+    // 名称 + ✓ 状态）+「进程 N/M」折叠详情
     expect(await screen.findByText(/思考过程/)).toBeInTheDocument();
     expect(await screen.findByText("search")).toBeInTheDocument();
     expect(await screen.findByText(/进程 1\/1/)).toBeInTheDocument();
@@ -523,7 +523,7 @@ describe("ChatPanel", () => {
     expect(screen.queryByText(/b\.pdf/)).not.toBeInTheDocument();
   });
 
-  // ───────── 任务执行聊天化：chat-open-session 跳转/排队 ─────────
+  // 任务执行聊天化：chat-open-session 跳转/排队
 
   it("chat-open-session 非 busy：直接切换到执行会话并加载其历史", async () => {
     // 前面的用例会把 listenMock 恢复成不记录的默认实现，这里显式重设

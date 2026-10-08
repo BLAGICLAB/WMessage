@@ -11,7 +11,7 @@ const ce = (code: string, recoverable: boolean, message = "出错了") => ({
   recoverable,
 });
 
-describe("handleCommandError hint 文案（P0-6B）", () => {
+describe("handleCommandError hint 文案", () => {
   let alertSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
@@ -39,7 +39,7 @@ describe("handleCommandError hint 文案（P0-6B）", () => {
   });
 });
 
-describe("handleCommandError recoverable 驱动重试 UI（P0-6B）", () => {
+describe("handleCommandError recoverable 驱动重试 UI", () => {
   let alertSpy: ReturnType<typeof vi.spyOn>;
   let confirmSpy: ReturnType<typeof vi.spyOn>;
 
@@ -106,7 +106,7 @@ describe("handleCommandError recoverable 驱动重试 UI（P0-6B）", () => {
   });
 });
 
-describe("空 message 兜底（P2-35）", () => {  let alertSpy: ReturnType<typeof vi.spyOn>;
+describe("空 message 兜底", () => {  let alertSpy: ReturnType<typeof vi.spyOn>;
   let confirmSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {

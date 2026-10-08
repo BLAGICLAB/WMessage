@@ -9,8 +9,7 @@ export interface TaskFile {
 /** 绑定文件数量上限：与 Rust db::MAX_TASK_FILES 硬上限同值，改动需两侧同步。 */
 export const MAX_TASK_FILES = 10;
 
-/**
- * 有效绑定文件列表：files 非空优先；否则回退旧单绑定字段 filePath/fileIsDir
+/** * 有效绑定文件列表：files 非空优先；否则回退旧单绑定字段 filePath/fileIsDir
  * （迁移过渡兜底：启动迁移把老 filePath 写进 files，未迁移窗口内旧数据也能显示）
  */
 export function taskFiles(t: Task): TaskFile[] {
@@ -19,8 +18,7 @@ export function taskFiles(t: Task): TaskFile[] {
   return [];
 }
 
-/**
- * 绑定变更的统一 patch：写 files 的同时双写旧 filePath/fileIsDir 首条
+/** * 绑定变更的统一 patch：写 files 的同时双写旧 filePath/fileIsDir 首条
  * （过渡期旧版本/旧调用方仍读老字段）；空列表三字段全清——清空必须显式
  * null（undefined 键被 JSON 序列化丢弃，后端按「未提供」保留旧值，旧路径复活；
  * 后端契约：显式 null = 清空，缺键 = 保留）。

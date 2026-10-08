@@ -40,7 +40,7 @@ vi.mock("../profile", () => ({
 
 // 回收站列表按 updatedAt 倒序（新删的在前）——
 // 修复前不排序，展示顺序依赖任务数组原始 order，删除时间与位置对不上
-describe("TrashPage 按 updatedAt 倒序（P2-22）", () => {
+describe("TrashPage 按 updatedAt 倒序", () => {
   it("3 个回收站任务按 updatedAt 倒序渲染", () => {
     const tasks: Task[] = [
       { id: "a", title: "最老删除", column: "todo", deletedAt: 1, updatedAt: 100, order: 0 },

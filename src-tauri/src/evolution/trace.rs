@@ -86,7 +86,7 @@ pub fn compute_trace_id(session_id: &str, started_at_ms: i64, ended_at_ms: i64) 
     out
 }
 
-// ───────────────────────── 采样 + 记录 ─────────────────────────
+// 采样 + 记录
 
 /// 采样阈值：单次执行时长 > 60s 才记（spec 1.5）。
 pub const DURATION_THRESHOLD_MS: i64 = 60_000;
@@ -107,10 +107,10 @@ pub struct TraceContext<'a> {
     pub outcome: TraceOutcome,
     pub task_refs: Vec<String>,
     /// 工具调用明细（name + success + duration_ms + error_kind 分类）。
-    /// B4-2 已接真实数据：run_model_loop 返回 LoopTrace（薄壳 execute_tool
+    ///  已接真实数据：run_model_loop 返回 LoopTrace（薄壳 execute_tool
     /// 包装器采集）；error_kind 分类器为后续接线（当前 None）
     pub tool_calls: Vec<ToolCallSummary>,
-    // B4-2：turn_count 已接真实数据（llm.request 审计事件计数）；
+    // turn_count 已接真实数据（llm.request 审计事件计数）；
     // skill_used / memory_injected_count 仍为占位（0/None）
     pub turn_count: u32,
     pub skill_used: Option<&'a str>,
@@ -143,7 +143,7 @@ impl<'a> TraceContext<'a> {
         self.tool_calls = calls;
         self
     }
-    /// B4-2：轮数接线（llm.request 审计事件计数）
+    /// 轮数接线（llm.request 审计事件计数）
     pub fn with_turn_count(mut self, n: u32) -> Self {
         self.turn_count = n;
         self
@@ -315,7 +315,7 @@ mod tests {
         }
     }
 
-    // ─── sampling 规则（spec 1.6 之 8）───
+    // sampling 规则（spec 1.6 之 8）
 
     #[test]
     fn sampling_rule_outcome_failure_fires() {
@@ -372,7 +372,7 @@ mod tests {
         assert!(r);
     }
 
-    // ─── maybe_record_trace 集成 ───
+    // maybe_record_trace 集成
 
     #[test]
     fn maybe_record_drops_silent_when_no_rule_fires() {

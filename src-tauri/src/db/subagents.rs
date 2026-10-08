@@ -1,4 +1,4 @@
-//! 子 agent 编排持久化（SUBA-1）
+//! 子 agent 编排持久化
 //!
 //! 设计基准：docs/SUBAGENT-ORCHESTRATION-DESIGN-2026-09-27.md §3（存储）§6（预算默认值）。
 //! 一行 = 一个受管子 agent：orchestrator spawn 时插入（status=queued），runner 推进
@@ -12,7 +12,7 @@
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 
-/// 预算默认值与硬顶（设计 §6 已拍板；钳制实现见 [SubagentBudget::clamped]）。
+/// 预算默认值与硬顶（设计 §6 已；钳制实现见 [SubagentBudget::clamped]）。
 pub const DEFAULT_MAX_TURNS: u32 = 30;
 pub const MAX_TURNS_HARD_CAP: u32 = 50;
 pub const DEFAULT_MAX_TOOL_CALLS: u32 = 100;
@@ -122,7 +122,7 @@ impl Default for SubagentBudget {
 impl SubagentBudget {
     /// 预算钳制：turns 硬顶 50、tool_calls/wall 下限 1。
     /// **所有持久化写口（spawn / task_patch）必须过本函数**——字段是 pub 的，
-    /// 构造侧不受限，钳制契约靠两个写口强制（OCR r1 high 采纳：防 task_patch 旁路）。
+    /// 构造侧不受限，钳制契约靠两个写口强制（防 task_patch 旁路）。
     pub fn clamped(mut self) -> Self {
         self.max_turns = self.max_turns.clamp(1, MAX_TURNS_HARD_CAP);
         self.max_tool_calls = self.max_tool_calls.max(1);
@@ -175,7 +175,7 @@ pub struct SubagentRow {
 }
 
 /// subagents 表 DDL（单源真相：open_db 与各测试建表共用同一份，防 schema 漂移——
-/// OCR r1 采纳）。task_id UNIQUE 钉死「一子 agent 一子卡」不变式（并发 spawn 重试
+/// ）。task_id UNIQUE 钉死「一子 agent 一子卡」不变式（并发 spawn 重试
 /// 也不可能双插）；status / parent_session_id 加索引（按状态扫队列、按主会话串链）。
 pub(crate) const SUBAGENTS_DDL: &str = "CREATE TABLE IF NOT EXISTS subagents (
            id                TEXT PRIMARY KEY,
@@ -293,7 +293,7 @@ pub fn find_subagent_by_task(
         .map_err(|e| e.to_string())
 }
 
-/// 按子 agent 执行会话 id 反查（SUBA-3：前端停止键只持有会话 id——
+/// 按子 agent 执行会话 id 反查前端停止键只持有会话 id——
 /// runner 的 set_subagent_session 回填后即可反查）。
 pub fn find_subagent_by_session(
     conn: &rusqlite::Connection,
@@ -332,7 +332,7 @@ pub fn update_subagent_status(
     error: Option<&str>,
 ) -> Result<SubagentRow, String> {
     let row = load_subagent(conn, id)?.ok_or_else(|| format!("subagent 不存在：{id}"))?;
-    // 空串 reason 视同 None——防 Some("") 经 COALESCE 覆盖既有失败原因（OCR r2 采纳）
+    // 空串 reason 视同 None——防 Some("") 经 COALESCE 覆盖既有失败原因
     let error = error.filter(|s| !s.trim().is_empty());
     if row.status != to && !transition_allowed(row.status, to) {
         return Err(format!(
@@ -345,7 +345,7 @@ pub fn update_subagent_status(
         SubagentStatus::Running if row.started_at.is_none() => Some(now),
         _ => row.started_at,
     };
-    // 同态重入保留原 finished_at——重试不改写首收尾时刻，审计时长口径稳定（OCR r1 采纳）
+    // 同态重入保留原 finished_at——重试不改写首收尾时刻，审计时长口径稳定
     let finished_at = if row.status == to {
         row.finished_at
     } else if to.is_terminal() {
@@ -362,7 +362,7 @@ pub fn update_subagent_status(
 }
 
 /// 回填子 agent 执行会话 id（runner 建会话后调）。目标行不存在 → 响亮失败
-/// （防 runner 拿过期 id 静默 no-op，OCR r1 采纳）。
+/// （防 runner 拿过期 id 静默 no-op。
 pub fn set_subagent_session(
     conn: &rusqlite::Connection,
     id: &str,
@@ -580,7 +580,7 @@ mod subagent_db_tests {
         assert_eq!(got.result_json.as_deref(), Some(r#"{"summary":"ok"}"#));
     }
 
-    /// OCR r1 采纳：回填目标行不存在必须响亮失败（防 runner 拿过期 id 静默 no-op）
+    /// 回填目标行不存在必须响亮失败（防 runner 拿过期 id 静默 no-op）
     #[test]
     fn session_and_result_backfill_missing_id_errors() {
         let conn = test_conn();
@@ -588,7 +588,7 @@ mod subagent_db_tests {
         assert!(set_subagent_result(&conn, "sa_ghost", "{}").is_err());
     }
 
-    /// OCR r1 采纳：同态重入保留原 finished_at（重试不改写首收尾时刻）
+    /// 同态重入保留原 finished_at（重试不改写首收尾时刻）
     #[test]
     fn same_state_terminal_reentry_preserves_finished_at() {
         let conn = test_conn();
@@ -599,7 +599,7 @@ mod subagent_db_tests {
         assert_eq!(retry.finished_at, Some(5_000), "重试不得改写首收尾时刻");
     }
 
-    /// OCR r1 采纳：终态自环在转移表上必须判非法（同态放行只走 update 的幂等短路）
+    /// 终态自环在转移表上必须判非法（同态放行只走 update 的幂等短路）
     #[test]
     fn terminal_self_loops_are_not_legal_transitions() {
         use SubagentStatus::*;
@@ -608,7 +608,7 @@ mod subagent_db_tests {
         }
     }
 
-    /// OCR r1 采纳：task_id UNIQUE 钉死一子 agent 一子卡（并发/重试双插必炸）
+    /// task_id UNIQUE 钉死一子 agent 一子卡（并发/重试双插必炸）
     #[test]
     fn duplicate_task_id_insert_is_rejected() {
         let conn = test_conn();
@@ -621,7 +621,7 @@ mod subagent_db_tests {
         );
     }
 
-    /// OCR r1 采纳：serde 线协议对齐 DB as_str 小写 snake（CheckState.status 给前端）
+    /// serde 线协议对齐 DB as_str 小写 snake（CheckState.status 给前端）
     #[test]
     fn status_serde_wire_is_snake_case() {
         assert_eq!(

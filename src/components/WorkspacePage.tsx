@@ -36,8 +36,7 @@ import { FoldToggle } from "./FoldToggle";
 
 const stop = (e: React.PointerEvent) => e.stopPropagation();
 
-/** 目标地址是否像网址（scheme 至少两字符——
- *  旧正则单字符即匹配，「C:」被当成 URL scheme，Windows 路径被误存成网址链接） */
+/** 目标地址是否像网址（scheme 至少两字符—— *  旧正则单字符即匹配，「C:」被当成 URL scheme，Windows 路径被误存成网址链接） */
 const looksLikeUrl = (s: string) =>
   /^https?:\/\//i.test(s) || /^[a-z][a-z0-9+.-]+:/i.test(s);
 

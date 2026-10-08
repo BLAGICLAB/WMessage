@@ -1,4 +1,4 @@
-//! 治理开关 `evolution.applyPolicy`（U20 治理归一）。
+//! 治理开关 `evolution.applyPolicy`（ 治理归一）。
 //!
 //! 二档：
 //! - `auto`（默认）：consolidate 后达门槛提案自动落库——引入前行为，零变化；
@@ -117,7 +117,7 @@ mod tests {
         dir.join("bot-config.json")
     }
 
-    // ─── 读取矩阵：缺什么都是 auto（默认档零变化）───
+    // 读取矩阵：缺什么都是 auto（默认档零变化）
 
     #[test]
     fn missing_file_reads_auto() {
@@ -182,7 +182,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
     }
 
-    // ─── 分流谓词 ───
+    // 分流谓词
 
     #[test]
     fn auto_apply_allowed_none_handle_is_true() {
@@ -192,7 +192,7 @@ mod tests {
         assert!(auto_apply_allowed::<tauri::Wry>(None));
     }
 
-    // ─── 写入 ───
+    // 写入
 
     #[test]
     fn set_creates_missing_file_with_block() {

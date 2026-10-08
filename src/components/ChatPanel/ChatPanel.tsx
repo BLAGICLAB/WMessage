@@ -1,8 +1,8 @@
 // ChatPanel 主组件（orchestrator）。
 // 1862 → 拆分：SessionList / MessageList / InputArea / useChatUi 到同目录子文件
-// （U3a，行为等价拆分——消息数据流/斜杠命令语义/Tauri 命令调用零改动），
+// 行为等价拆分——消息数据流/斜杠命令语义/Tauri 命令调用零改动），
 // 本文件保留所有 useState / useRef / useEffect / handlers / 数据流监听 / 装配 JSX。
-// MsgBubble 的 React.memo 流式性能边界见 MessageList.tsx 头注释（B5-2）。
+// MsgBubble 的 React.memo 流式性能边界见 MessageList.tsx 头注释。
 //
 // 公开 import 路径保持稳定：外部仍 `import { ChatPanel } from "./components/ChatPanel"`，
 // Vite 解析到 `./ChatPanel/index.tsx` → 透传 `./ChatPanel`。
@@ -52,8 +52,7 @@ type Props = {
   onRemoveSelected: (id: string) => void;
   /** 发送完成：清空选择 + 退出选任务模式 */
   onFinishSelection: () => void;
-  /** 机器人是否开启（WidgetApp 透传 botOn）。
-   *  false 时跳过会话加载/历史恢复与所有对外 invoke，容器仍挂载以保住折叠展开循环里的 messages
+  /** 机器人是否开启（WidgetApp 透传 botOn）。   *  false 时跳过会话加载/历史恢复与所有对外 invoke，容器仍挂载以保住折叠展开循环里的 messages
    *  与 listeners（详见 WidgetApp 折叠不丢聊天回归测试 + 16:30 bot 开关 resize 修法） */
   enabled: boolean;
 };
@@ -90,8 +89,7 @@ export function ChatPanel({
   const [slashIdx, setSlashIdx] = useState(0);
   /** 斜杠命令 picker 被 Esc 关掉后，输入未变化前不再自动浮出 */
   const [slashDismissed, setSlashDismissed] = useState(false);
-  /** PAR-1 并行回复：每个会话独立在途。inflightSids 驱动 UI（按视图会话判定），
-   *  inflightRef 供事件监听同步判断（⚠️ 必须与 setInflightSids 同步更新，
+  /** PAR-1 并行回复：每个会话独立在途。inflightSids 驱动 UI（按视图会话判定），   *  inflightRef 供事件监听同步判断（⚠️ 必须与 setInflightSids 同步更新，
    *  useEffect 镜像在同一帧内连按会有并发窗口） */
   const [inflightSids, setInflightSids] = useState<ReadonlySet<string>>(new Set());
   /** 逐条复制按钮的反馈：记录当前“已复制”的消息下标 */
@@ -144,15 +142,15 @@ export function ChatPanel({
   const [effortMenuOpen, setEffortMenuOpen] = useState(false);
   const effortBtnRef = useRef<HTMLButtonElement>(null);
   const effortDropdownRef = useRef<HTMLDivElement>(null);
-  /** 🛡 授权模式（U3b 只读展示）：bot-config 的 permMode，设置页维护 */
+  /** 🛡 授权模式（ 只读展示）：bot-config 的 permMode，设置页维护 */
   const [permMode, setPermMode] = useState<PermMode>("ask");
-  // P4 上下文水位条：bot-usage-delta 按会话累计（Anthropic 协议回合级 usage）。
+  //  上下文水位条：bot-usage-delta 按会话累计（Anthropic 协议回合级 usage）。
   // lastInput = 最近一轮请求的 input（即当前上下文 prompt 体量）——每轮 input 是
   // 完整重发的 prompt，跨轮累加会随轮数近似平方膨胀，水位百分比必须用最近一轮。
   const [sessionUsage, setSessionUsage] = useState<
     Record<string, { input: number; output: number; lastInput: number }>
   >({});
-  // P2-b 执行过程详细度（verbose 三档）：localStorage 持久化，仅影响 ToolBadges 展示档位
+  //  执行过程详细度（verbose 三档）：localStorage 持久化，仅影响 ToolBadges 展示档位
   const [verboseLevel, setVerboseLevelState] = useState<VerboseLevel>(() => {
     const v = localStorage.getItem("chat-verbose-level");
     return v === "concise" || v === "debug" ? v : "detailed";
@@ -174,8 +172,7 @@ export function ChatPanel({
     // oxlint-disable-next-line react/set-state-in-effect
     setSlashDismissed(false);
   }, [sessionId]);
-  /** PAR-1：每会话流式元数据（thinking/tools/skillFailure 权威副本，按 sid 隔离；
-   *  并行回复各自累积互不串台，收尾并入最终消息后删除条目） */
+  /** PAR-1：每会话流式元数据（thinking/tools/skillFailure 权威副本，按 sid 隔离；   *  并行回复各自累积互不串台，收尾并入最终消息后删除条目） */
   const streamingMetaMapRef = useRef<
     Map<
       string,
@@ -198,8 +195,7 @@ export function ChatPanel({
   };
   /** 在途会话集合（同步镜像，见 inflightSids 注释） */
   const inflightRef = useRef<Set<string>>(new Set());
-  /** 任务执行聊天化：围观流式回复中的会话时，到达的执行会话跳转排队（只留最新一个）；
-   *  执行本身不排队——后端已在新会话开跑 */
+  /** 任务执行聊天化：围观流式回复中的会话时，到达的执行会话跳转排队（只留最新一个）；   *  执行本身不排队——后端已在新会话开跑 */
   const pendingExecRef = useRef<{ sid: string; title: string } | null>(null);
   /** 任务 id → 执行会话 id（chat-open-session 事件建立；invoke 收尾时按它刷新历史） */
   const execSessionByTaskRef = useRef<Map<string, string>>(new Map());
@@ -234,9 +230,9 @@ export function ChatPanel({
     sessionIdRef.current = sessionId;
   }, [sessionId]);
 
-  // SUBA-3：子 agent 收尾事件——派发者主会话里轻提示（围观过滤沿用 PAR-1 的
+  // 子 agent 收尾事件——派发者主会话里轻提示（围观过滤沿用 PAR-1 的
   // sessionId 流式隔离；这里补「后台子任务完成」的可见性）。
-  // 复用 useTauriListen（OCR r1 采纳：与手写 listen 生命周期等价且更稳）。
+  // 复用 useTauriListen（与手写 listen 生命周期等价且更稳）。
   const subagentStatusLabel: Record<string, string> = {
     succeeded: "已完成",
     failed: "失败",
@@ -348,10 +344,9 @@ export function ChatPanel({
         /** 连接测试通过的厂商名单：带 vendor 的模型仅当厂商已验证才进下拉 */
         verifiedVendors?: string[] | null;
         reasoningEffort?: string | null;
-        /** 授权模式（U3b 只读展示）：strict/ask/yolo，None = ask。
-         *  ⚠️ BotConfigView 序列化为 camelCase（rename_all），线字段是 permMode */
+        /** 授权模式（ 只读展示）：strict/ask/yolo，None = ask。         *  ⚠️ BotConfigView 序列化为 camelCase（rename_all），线字段是 permMode */
         permMode?: string | null;
-        /** P4 水位条：模型条目 contextK（千 token）随 modelsByProvider 条目透传 */
+        /**  水位条：模型条目 contextK（千 token）随 modelsByProvider 条目透传 */
       }>("bot_get_config")
         .then((c) => {
           setModelLabel(c.model || "未配置");
@@ -385,7 +380,7 @@ export function ChatPanel({
           setEffortBase(
             raw === "off" || raw === "low" || raw === "high" ? raw : "medium"
           );
-          // 授权模式只读展示（U3b）：非法/缺省回 ask（与后端 PermMode::from_cfg 一致）
+          // 授权模式只读展示：非法/缺省回 ask（与后端 PermMode::from_cfg 一致）
           const pm = c.permMode;
           setPermMode(
             pm === "strict" || pm === "yolo" || pm === "auto" ? pm : "ask"
@@ -573,7 +568,7 @@ export function ChatPanel({
         return copy;
       });
     });
-    // P2-b 结构化文件变更：dispatch 在有 trace 的执行会话里 emit（全窗口）——
+    //  结构化文件变更：dispatch 在有 trace 的执行会话里 emit（全窗口）——
     // 每次落盘修改一条，按会话累积进 meta，收尾并入最终消息给 FileSummary 用。
     // 主聊天（无 trace）不产生事件 → FileSummary 走正则兜底，行为不变。
     const unFileChanged = listen<{
@@ -643,7 +638,7 @@ export function ChatPanel({
         return copy;
       });
     });
-    // P4 水位条数据源：Anthropic 回合级 usage 按会话累计（当前视图 + 在途会话，
+    //  水位条数据源：Anthropic 回合级 usage 按会话累计（当前视图 + 在途会话，
     // 与流式事件同过滤口径——切走的会话继续累计，切回可见）
     const unUsage = listen<{
       inputTokens?: number;
@@ -683,8 +678,7 @@ export function ChatPanel({
 
   // 围观中的执行会话 sid；执行收尾（execute-task 的 history_load 完成）后清除
   const execWatchRef = useRef<string | null>(null);
-  /** 切到执行会话围观：加载已落库历史 + 末尾 streaming 占位气泡承接后续流式增量。
-   * watch=false（收尾后迟到的跳转）：只读查看不挂围观守卫，输入立即可用 */
+  /** 切到执行会话围观：加载已落库历史 + 末尾 streaming 占位气泡承接后续流式增量。   * watch=false（收尾后迟到的跳转）：只读查看不挂围观守卫，输入立即可用 */
   const openExecSession = async (sid: string, watch = true) => {
     setSessionMenuOpen(false);
     setSessionId(sid);
@@ -692,7 +686,7 @@ export function ChatPanel({
     // 否则快响应会被「过期」守卫误丢
     sessionIdRef.current = sid;
     streamingMetaMapRef.current.set(sid, {});
-    // 围观守卫（拍板 #22=B）：记录当前围观的执行会话——执行期间拦 Send
+    // 围观守卫：记录当前围观的执行会话——执行期间拦 Send
     //（防用户输入与执行响应交错 + 被收尾 history_load 冲掉）；切换会话自由。
     // watch=false 的迟到查看不挂守卫：执行已结束，没有需要隔离的响应流
     if (watch) execWatchRef.current = sid;
@@ -798,7 +792,7 @@ export function ChatPanel({
           : [{ id: sid, title: title ?? "执行" }, ...prev]
       );
       // 迟到防复活：execute-task 已收尾的任务不再以围观模式重开（重挂守卫会把
-      // 已结束的会话永久拦输入）。拍板：成功 → 切过去只读查看；失败 → 不自动
+      // 已结束的会话永久拦输入）。成功 → 切过去只读查看；失败 → 不自动
       // 跳转，停下来让用户决定是否重试/查看（从会话列表点入不受拦）
       const outcome = taskId ? finishedExecTasks.get(taskId) : undefined;
       if (outcome) {
@@ -905,7 +899,7 @@ export function ChatPanel({
     }
   };
 
-  // ⌘K 跨窗口跳会话（U2 命令面板）：主窗口发 chat-focus-session，复用 switchSession
+  // ⌘K 跨窗口跳会话（ 命令面板）：主窗口发 chat-focus-session，复用 switchSession
   // 走完整切换（清消息 + bot_history_load + inflight 占位），仅 setSessionId 不会加载历史；
   // 面板展开由 WidgetApp 负责。ref 写放 effect（render 期写 ref 会新增 lint warn）
   const switchSessionRef = useRef<(sid: string) => void>(() => {});
@@ -970,8 +964,7 @@ export function ChatPanel({
     }
   };
 
-  /** 核心执行：发送历史并流式收尾（send / /retry 共用）。
-   *  任务执行聊天化：bot_execute_task 不再走这里（任务卡执行由后端
+  /** 核心执行：发送历史并流式收尾（send / /retry 共用）。   *  任务执行聊天化：bot_execute_task 不再走这里（任务卡执行由后端
    *  建新会话跑，前端收 chat-open-session 切换围观）。
    *  收尾时校验会话未切换才更新 UI；持久化始终按 sid 写（写的是正确会话） */
   const runChat = async (history: Msg[], renameText?: string) => {
@@ -1047,7 +1040,7 @@ export function ChatPanel({
       // PAR-1：/stop 停「当前视图会话」的在途回复（并行回复按会话隔离）
       if (inflightRef.current.has(sessionIdRef.current ?? "")) {
         if (isSubagentSession) {
-          // SUBA-3：子 agent 会话 → cancel_subagent（状态机置 cancelled 并硬停）
+          // 子 agent 会话 → cancel_subagent（状态机置 cancelled 并硬停）
           invoke("cancel_subagent", { key: sessionIdRef.current })
             .catch((e) => handleCommandError(e, "cancel_subagent", { silent: true }))
             .finally(() => invoke("bot_stop", { sessionId: sessionIdRef.current }).catch(() => {}));
@@ -1140,7 +1133,7 @@ export function ChatPanel({
     const text = input.trim();
     // 围观执行会话期拦发送——含 /retry /clean /compact 等斜杠命令（runChat 同样
     // 会往执行中的会话发消息，ChatGuard 只软拒不防交错）；/stop 例外：停执行是
-    // 围观期的合法操作（拍板 #22=B）
+    // 围观期的合法操作
     if (execWatchRef.current !== null && execWatchRef.current === sessionId && text !== "/stop") {
       addHint("⏳ 执行进行中，围观模式暂不能发送");
       return;
@@ -1289,8 +1282,8 @@ export function ChatPanel({
 
   const currentSession = sessions.find((s) => s.id === sessionId);
   const currentTitle = currentSession?.title ?? "新对话";
-  // SUBA-3：视图会话是子 agent 执行会话——runner 建会话时写
-  // bot_sessions.is_subagent 结构化标记（U20D），停止按钮/斜杠 /stop 走
+  // 视图会话是子 agent 执行会话——runner 建会话时写
+  // bot_sessions.is_subagent 结构化标记，停止按钮/斜杠 /stop 走
   // cancel_subagent（与任务卡停止按钮同 API），而非 bot_stop。
   // 数据清空后无旧前缀会话，无需标题兜底（U20D-A）
   const isSubagentSession = currentSession?.isSubagent === true;
@@ -1299,7 +1292,7 @@ export function ChatPanel({
   // 普通会话走 bot_stop——与 /stop 斜杠命令同一套分派
   const stopCurrent = useCallback(() => {
     if (isSubagentSession) {
-      // SUBA-3：子 agent 会话停止键 = cancel_subagent（与任务卡按钮同 API）
+      // 子 agent 会话停止键 = cancel_subagent（与任务卡按钮同 API）
       invoke("cancel_subagent", { key: sessionIdRef.current })
         .catch((e) =>
           handleCommandError(e, "cancel_subagent", { silent: true })
@@ -1340,7 +1333,7 @@ export function ChatPanel({
           <span className="text-xs text-[var(--brand)]">松开以添加文件</span>
         </div>
       )}
-      {/* 危险操作确认弹窗：机器人删任务前等老板拍板；file_access = 文件访问授权（三按钮） */}
+      {/* 危险操作确认弹窗：机器人删任务前等老板；file_access = 文件访问授权（三按钮） */}
       {confirmReq && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/30 rounded-2xl">
           <div className="nm-card p-3 w-64">
@@ -1440,7 +1433,7 @@ export function ChatPanel({
           ))}
         </div>
       )}
-      {/* P4 上下文水位条（Anthropic 协议回合级 usage 累计；contextK 来自 active 模型条目） */}
+      {/*  上下文水位条（Anthropic 协议回合级 usage 累计；contextK 来自 active 模型条目） */}
       <UsageMeter
         input={sessionUsage[sessionId ?? ""]?.input ?? 0}
         output={sessionUsage[sessionId ?? ""]?.output ?? 0}

@@ -26,7 +26,7 @@ pub const DEDUP_HINT_COSINE: f64 = 0.75;
 /// 冲突提示最多带几条相似记忆
 const CONFLICT_HINT_TOP: usize = 3;
 
-/// 存储参数（U17 参数化）：Default = U17 前常量语义，
+/// 存储参数（ 参数化）：Default =  前常量语义，
 /// insert_item 旧签名委托默认值——存量调用与测试零改动。
 #[derive(Clone, Copy, Debug)]
 pub struct StoreParams {
@@ -279,7 +279,7 @@ pub enum InsertOutcome {
     },
     /// 容量满且无可淘汰条目 → 拒写
     RejectedFull(String),
-    /// B2-1（P1-EV3 防记忆劫持）：带 `evo:` key 的 lesson 命中了**异 key** 的
+    /// 带 `evo:` key 的 lesson 命中了**异 key** 的
     /// merge 目标（cosine ≥0.92）——merge-on-write 会把 lesson 内容+tags 覆盖到
     /// 既有记忆行（实证发生过行被劫持），此场景拒写不落库，由 apply 层记
     /// `evolution.apply_conflict` audit。target_key = 被拒绝合并的原行 key。
@@ -309,7 +309,7 @@ pub fn insert_item(
     insert_item_with(conn, item, embedding, now_ms, &StoreParams::default())
 }
 
-/// 带参数变体（U17）：容量与去重阈值由调用方传（读 memoryTuning）
+/// 带参数变体：容量与去重阈值由调用方传（读 memoryTuning）
 pub fn insert_item_with(
     conn: &rusqlite::Connection,
     item: &NewItem,
@@ -341,7 +341,7 @@ pub fn insert_item_with(
             }
         }
         if let Some((_, target)) = best {
-            // B2-1（P1-EV3）：lesson（evo: key）不许 merge 进异 key 既有行——
+            // lesson（evo: key）不许 merge 进异 key 既有行——
             // merge-on-write 是整行覆盖（content+tags 都换成 lesson 的），会把
             // 目标行劫持成 lesson、原记忆丢失。同 key = 本链路自己的重放，放行。
             let incoming_key = item.tags.first().cloned();

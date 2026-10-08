@@ -37,7 +37,7 @@ pub mod workflow_audit;
 pub mod workflow_settings;
 pub mod workspace;
 
-// ──────────────────── RMW helpers ────────────────────
+// RMW helpers
 
 /// 写库前的标准接线：把当前 `updated_at` 作为下次 RMW 读快照基线，
 /// 然后把 `updated_at` 戳成"现在"。任何写库前的 mutate 路径都必须调。
@@ -60,8 +60,6 @@ pub fn prepare_for_upsert(t: &mut Task) {
 /// - `synchronous=NORMAL`：WAL 下的推荐档——掉电最多丢最近若干已提交事务
 /// - `foreign_keys=ON`：SQLite 默认 **OFF**，显式打开
 ///
-/// 回归锁：`db::tests::conn_pragmas_are_applied`
-#[allow(clippy::too_many_lines)]
 /// 幂等补列（schema 演进的共享内核）：查 `PRAGMA table_info(table)`，
 /// 缺列则 `ALTER TABLE ADD COLUMN`。各 `ensure_*` 列补丁统一走这里。
 pub(crate) fn ensure_columns(
@@ -85,6 +83,15 @@ pub(crate) fn ensure_columns(
     Ok(())
 }
 
+/// 打开数据库（泛型 Runtime：mock runtime 测试可直调）
+///
+/// 连接级 PRAGMA（每次建连都要设——PRAGMA 是 **per-connection** 的，漏一处就静默跑默认档）：
+/// - `journal_mode=WAL`：读写不互相阻塞（本应用单写者 + 多读）
+/// - `synchronous=NORMAL`：WAL 下的推荐档——掉电最多丢最近若干已提交事务
+/// - `foreign_keys=ON`：SQLite 默认 **OFF**，显式打开
+///
+/// 回归锁：`db::tests::conn_pragmas_are_applied`
+#[allow(clippy::too_many_lines)]
 pub fn open_db<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<rusqlite::Connection, String> {
@@ -92,7 +99,7 @@ pub fn open_db<R: tauri::Runtime>(
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let db_path = dir.join("wmessage.db");
     if !db_path.exists() {
-        // 进程内锁 + 双检（OCR C5-DB-03）：并发 open_db（首装多线程/多命令并发）
+        // 进程内锁 + 双检：并发 open_db（首装多线程/多命令并发）
         // 可同时过外层 exists 检查并竞态拷贝 → 半成品 db/-wal/-shm 三元组。
         // 锁内复检查让后到者直接跳过；锁仅护首装一次性窗口，常态零代价
         // （外层 exists 不进锁）。照 BOT_ASSIGNED_RESET_DONE / DB_WRITE_LOCK 先例。
@@ -135,7 +142,7 @@ pub fn open_db<R: tauri::Runtime>(
     conn.busy_timeout(Duration::from_secs(2))
         .map_err(|e| e.to_string())?;
     migrations::apply_conn_pragmas(&conn)?;
-    // tasks 表单源 DDL（W1-CANVAS 抽取）：完整 29 列 schema，老库缺列由下方幂等 ALTER 补齐
+    // tasks 表单源 DDL（ 抽取）：完整 29 列 schema，老库缺列由下方幂等 ALTER 补齐
     conn.execute_batch(crate::db::tasks::TASKS_DDL)
         .map_err(|e| e.to_string())?;
     conn.execute_batch(
@@ -188,15 +195,15 @@ pub fn open_db<R: tauri::Runtime>(
     crate::db::schedule_jobs::ensure_scheduled_jobs_columns(&conn).map_err(|e| e.to_string())?;
     conn.execute_batch(crate::db::schedule_jobs::SCHEDULED_JOB_RUNS_DDL)
         .map_err(|e| e.to_string())?;
-    // workflows 表（W1-CANVAS，设计 §3.2）：工作流元数据 + 总目标文本；
+    // workflows 表设计 §3.2）：工作流元数据 + 总目标文本；
     // 节点卡存 tasks 表（origin='workflow' + workflow_id 外联），不在此表
     conn.execute_batch(crate::db::workflow::WORKFLOWS_DDL)
         .map_err(|e| e.to_string())?;
-    // W8-ATTACH：老库的 workflows 表补 attachments 列（拆解附件路径）
+    // 老库的 workflows 表补 attachments 列（拆解附件路径）
     crate::db::workflow::ensure_workflows_attachments(&conn).map_err(|e| e.to_string())?;
-    // W9-ASK：老库的 workflows 表补 clarify_meta 列（澄清答案/粒度，重拆预填）
+    // 老库的 workflows 表补 clarify_meta 列（澄清答案/粒度，重拆预填）
     crate::db::workflow::ensure_workflows_clarify_meta(&conn).map_err(|e| e.to_string())?;
-    // W9-ASK：双层档案表（工作流决策摘要 + 卡片档案，跑偏防护）
+    // 双层档案表（工作流决策摘要 + 卡片档案，跑偏防护）
     crate::db::brief::ensure_brief_entries(&conn).map_err(|e| e.to_string())?;
     // W10：run 级结构化审计 + 工作流偏好设置（验收开关/保留次数），幂等
     crate::db::workflow_audit::ensure_workflow_audit(&conn).map_err(|e| e.to_string())?;
@@ -254,7 +261,7 @@ pub fn open_db<R: tauri::Runtime>(
                 .map_err(|e| e.to_string())?;
         }
     }
-    // 迁移：子 agent 编排三字段（SUBA-1，设计 §4.1——assignee/budget/result 走
+    // 迁移：子 agent 编排三字段设计 §4.1——assignee/budget/result 走
     // task_patch 既有通道；budget/result 存 JSON TEXT）
     for (col, ty) in [("assignee", "TEXT"), ("budget", "TEXT"), ("result", "TEXT")] {
         let has: bool = conn
@@ -269,7 +276,7 @@ pub fn open_db<R: tauri::Runtime>(
                 .map_err(|e| e.to_string())?;
         }
     }
-    // 迁移（W1-CANVAS，设计 §3.1）：工作流四字段 + 画布坐标。
+    // 迁移设计 §3.1）：工作流四字段 + 画布坐标。
     // origin 缺省 NULL 视作 "user"（读路径归一），不加 DEFAULT 避免 ALTER 语义分叉
     for (col, ty) in crate::db::tasks::W1_TASK_COLUMNS {
         let has: bool = conn
@@ -454,12 +461,12 @@ pub static DB_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 thread_local! {
     /// 当前线程是否持有 DB_WRITE_LOCK（供契约断言用）。
     /// `std::sync::Mutex` **线程无关**：`try_lock` 只能证明「锁被某线程持有」，不能证明
-    /// 「被当前线程持有」（且 poisoned 也返回 Err）→ 故用线程本地标记精确判定（OCR C3-1）。
+    /// 「被当前线程持有」（且 poisoned 也返回 Err）→ 故用线程本地标记精确判定。
     static HOLDING_DB_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// `DB_WRITE_LOCK` 的守卫：取锁时置位线程本地标记，Drop 时**无条件**清位
-/// （Drop 同时覆盖正常释放与 unwind，故不写手动清位——OCR C3-1）。
+/// （Drop 同时覆盖正常释放与 unwind，故不写手动清位——）。
 pub struct DbWriteGuard {
     _g: std::sync::MutexGuard<'static, ()>,
 }
@@ -471,7 +478,7 @@ impl Drop for DbWriteGuard {
 }
 
 /// 取 `DB_WRITE_LOCK` 并标记「本线程持锁」。poison 走仓库既有 `[mutex_poisoned]` 约定
-/// （`into_inner` 后照样置位，不让 poisoned 断掉标记语义；OCR C3-1）。
+/// （`into_inner` 后照样置位，不让 poisoned 断掉标记语义。
 pub fn lock_db_write() -> DbWriteGuard {
     let g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
         eprintln!("[mutex_poisoned] db::DB_WRITE_LOCK: {e:?}");
@@ -711,7 +718,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("wm-mig-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         let conn = rusqlite::Connection::open(dir.join("t.db")).unwrap();
-        // 单源 DDL（W1-CANVAS）：migrate_data_json 走 upsert_tasks 写路径，需全列 schema
+        // 单源 DDL：migrate_data_json 走 upsert_tasks 写路径，需全列 schema
         conn.execute_batch(TASKS_DDL).unwrap();
         (dir, conn)
     }
@@ -849,8 +856,8 @@ mod tests {
     // ── 多文件绑定：files 列迁移 + 老数据回填 + 上限 ──
 
     /// 老 schema（无 files 列）建库：files 迁移测试的「中间态」fixture——
-    /// 2026-08-19 前无 files 列 + 已含 SUBA-1 三列（SUBA-1 的 upsert 需要它们）。
-    /// 本组测试只针对 files 列迁移，新增列的存在不影响该前提（OCR r2 澄清）。
+    /// 2026-08-19 前无 files 列 + 已含  三列（ 的 upsert 需要它们）。
+    /// 本组测试只针对 files 列迁移，新增列的存在不影响该前提。
     fn setup_legacy_tasks_db() -> (std::path::PathBuf, rusqlite::Connection) {
         let dir = std::env::temp_dir().join(format!("wm-files-mig-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
@@ -866,7 +873,7 @@ mod tests {
              );",
         )
         .unwrap();
-        // W1-CANVAS 起进程内共有 5 个新列（origin/workflow_id/depends_on/canvas_x/canvas_y）——
+        //  起进程内共有 5 个新列（origin/workflow_id/depends_on/canvas_x/canvas_y）——
         // 与 files 列同为 open_db 幂等 ALTER 的一部分；fixture 保持「仅缺 files 列」的
         // 被测前提不变，把其余列补齐，否则迁移后 load_all 查新列会炸。
         // 列清单单源 = tasks::W1_TASK_COLUMNS + tasks::OWNER_TASK_COLUMNS +
@@ -1785,7 +1792,7 @@ mod ws_tests {
         fs::remove_dir_all(&dir).ok();
     }
 
-    /// OCR C2b #2 簇B：写入侧 fail-closed —— upsert 遇非法 kind 返回可辨识错误
+    ///  #2 簇B：写入侧 fail-closed —— upsert 遇非法 kind 返回可辨识错误
     /// InvalidWorkspaceLinkKind（带 kind / 来源 / 目标），不静默丢、不降级 url。
     /// 白名单内的 kind（url/file/folder）正常落库。
     #[test]
@@ -1846,7 +1853,7 @@ mod ws_tests {
         fs::remove_dir_all(&dir).ok();
     }
 
-    /// OCR C2b #2 簇B：import 路径同样 fail-closed（workspace_import_merge），
+    ///  #2 簇B：import 路径同样 fail-closed（workspace_import_merge），
     /// 且拒绝时不产生任何写入。
     #[test]
     fn import_merge_rejects_invalid_link_kind() {

@@ -80,7 +80,7 @@ const EDITABLE_KINDS: [&str; 7] = [
     "lesson",
 ];
 
-// ───────────────────────── 内核（&Connection，可单测） ─────────────────────────
+// 内核（&Connection，可单测）
 
 /// 列表：无 query 按 updated_at 倒序全量；有 query 走混合检索（纯读不刷访问计数）。
 /// kind 过滤（哨兵 "all" / None = 不过滤；读路径有意宽容未知 kind——新类型不被
@@ -213,7 +213,7 @@ pub(crate) fn stats_core(conn: &rusqlite::Connection) -> Result<MemStats, String
     Ok(stats)
 }
 
-// ───────────────────────── tauri 命令 ─────────────────────────
+// tauri 命令
 
 /// 写闸获取：收敛到 memory::store_lock（毒锁日志前缀统一，排障不分裂）
 use super::store_lock as lock_db;
@@ -281,7 +281,7 @@ pub async fn mem_delete(app: AppHandle, id: String) -> CommandResult<bool> {
         .map_err(CommandError::DbError)
 }
 
-// ───────────────────────── 导出 / 导入（U15） ─────────────────────────
+// 导出 / 导入
 
 /// 导出文件版本（结构变更 +1；导入端兼容 ≤ 当前版本）
 pub const MEM_EXPORT_VERSION: u32 = 1;
@@ -473,7 +473,7 @@ pub async fn mem_stats(app: AppHandle) -> CommandResult<MemStats> {
             let conn = crate::db::open_db(&app).map_err(|e| e.to_string())?;
             stats_core(&conn)?
         };
-        // U17：容量显示跟随 memoryTuning.capacity
+        // 容量显示跟随 memoryTuning.capacity
         stats.capacity = crate::bot::read_memory_tuning(&app).capacity;
         match embed::engine_status() {
             Ok(()) => stats.embed_ok = true,

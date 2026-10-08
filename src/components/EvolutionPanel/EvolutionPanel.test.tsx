@@ -71,7 +71,7 @@ beforeEach(() => {
   invokeMock.mockReset();
 });
 
-// ── B2-4（拍板①）：有回滚历史的提案再点 ON 需二次确认 ──
+// ── ：有回滚历史的提案再点 ON 需二次确认 ──
 
 function renderWithRollbackHistory() {
   const p = mkProposal("p-rb", { status: "promoted" });
@@ -105,7 +105,7 @@ describe("EvolutionPanel", () => {
     });
     expect(screen.getByText(/自进化决策面板/)).toBeTruthy();
     expect(screen.getByText(/自进化提案（0）/)).toBeTruthy();
-    // Rollback 区条件显示：0 active 时不渲染（老板 16:05 拍板）
+    // Rollback 区条件显示：0 active 时不渲染（）
     expect(screen.queryByText(/active ChangeRecord：/)).toBeNull();
   });
 

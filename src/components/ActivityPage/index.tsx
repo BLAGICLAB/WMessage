@@ -1,4 +1,4 @@
-// 执行活动聚合页（P4，Agent 透明化设计 §5.6）：主窗口的「执行活动」——
+// 执行活动聚合页（Agent 透明化设计 §5.6）：主窗口的「执行活动」——
 // 最近全部执行痕迹（手动/定时/批量/工作流/主聊天）列表 + running 实时徽标，
 // 行点击看单次 trace（TracePanel traceId 直查模式）；顶部「唤起挂件」围观执行会话。
 // 数据源 = exec_traces（trace_list 命令）；10s 轻轮询兜底（有 running 行时才转）。
@@ -173,7 +173,7 @@ export function ActivityPage() {
         )}
       </div>
 
-      {/* P4：单次 trace 直查弹层（traceId 模式，无需 taskId 反查） */}
+      {/* ：单次 trace 直查弹层（traceId 模式，无需 taskId 反查） */}
       {openTraceId !== null && (
         <TracePanel traceId={openTraceId} onClose={() => setOpenTraceId(null)} />
       )}

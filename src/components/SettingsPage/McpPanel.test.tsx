@@ -1,4 +1,4 @@
-// McpPanel 测试：列表渲染 / 添加确认流（拍板 3A：确认弹窗展示完整命令）/ 删除 / 启停。
+// McpPanel 测试：列表渲染 / 添加确认流/ 删除 / 启停。
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, act, fireEvent } from "@testing-library/react";
@@ -83,7 +83,7 @@ describe("McpPanel", () => {
     });
     fireEvent.click(screen.getByText("下一步：确认并保存"));
     await flush();
-    // 确认弹窗：完整命令行（命令 + 参数 + env 值）必须全部可见（拍板 3A）
+    // 确认弹窗：完整命令行（命令 + 参数 + env 值）必须全部可见
     expect(
       screen.getByText(/npx -y @modelcontextprotocol\/server-filesystem/)
     ).toBeInTheDocument();

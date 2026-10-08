@@ -4,7 +4,7 @@
 //! 老配置缺字段 → None = 空，struct 级 #[serde(default)] 自动兼容，
 //! 与 models_by_provider 同模式）。
 //!
-//! 敏感边界（B4-6 起，拍板③）：`env`/`headers` 的**值视为机密**——存系统凭据
+//! 敏感边界（ 起，）：`env`/`headers` 的**值视为机密**——存系统凭据
 //! 存储（keyring `mcp:<id>` 条目，Linux 降级单文件 0600），bot-config.json
 //! **永不明文**（字段 `skip_serializing` 收口：任何写路径都不可能把明文写回盘）。
 //! 读写两侧：读 = load_config 时经 secrets.rs 水合；写 = mcp_server_save 落
@@ -18,7 +18,7 @@ use crate::error::{CommandError, CommandResult};
 
 use super::super::BotConfig;
 
-// ───────────────────────── 常量 ─────────────────────────
+// 常量
 
 /// 服务器条目数上限：防配置膨胀拖慢启动全量重连。
 pub const MAX_MCP_SERVERS: usize = 20;
@@ -37,20 +37,20 @@ pub const MCP_TIMEOUT_MAX_SECS: u64 = 600;
 /// LLM function name 硬上限（OpenAI / Anthropic 均为 64）。
 pub const MCP_TOOL_NAME_MAX_BYTES: usize = 64;
 /// 服务器 id 上限（uuid simple = 32 字节，64 留余量；防脏 id 入库后按 id
-/// 查表/删改全受影响——B0 评审）。
+/// 查表/删改全受影响—— 评审）。
 pub const MAX_MCP_ID_LEN: usize = 64;
 
-/// stdio 启动器白名单。原拍板 3A（仅确认弹窗、无白名单）在实现期被 Mimosa
+/// stdio 启动器白名单。原（仅确认弹窗、无白名单）在实现期被 Mimosa
 /// 安全闸强制升级为 3B（白名单硬闸，老板已留「可作为后续硬化项」的口子，
 /// 提前落地，偏差在阶段报告里报备）：配置驱动的进程执行收敛到已知启动器，
 /// 覆盖 npm / pypi / 容器生态的绝大多数 MCP 服务器发行形态。
-/// 单一事实源（B0 评审）：保存校验（contains）、错误文案、manager 进程构造
+/// 单一事实源（ 评审）：保存校验（contains）、错误文案、manager 进程构造
 /// 全查此表——扩展只改这一处，不存在第二份可漂移的清单。
 pub const STDIO_LAUNCH_ALLOWLIST: &[&str] = &[
     "npx", "bunx", "uvx", "pipx", "node", "deno", "python", "python3", "docker", "podman",
 ];
 
-// ───────────────────────── 类型 ─────────────────────────
+// 类型
 
 /// 传输类型（协议字符串归一化）。**存储用 String 不用枚举**：手改配置文件写错值
 /// 时枚举会让整份 BotConfig 反序列化失败（load_config 回退默认 = 视图全丢），
@@ -96,7 +96,7 @@ pub struct McpServerConfig {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
     /// stdio：环境变量（BTreeMap：内存键序稳定）。
-    /// B4-6：**值视为机密**——`skip_serializing` 使任何写路径都写不回盘
+    /// **值视为机密**——`skip_serializing` 使任何写路径都写不回盘
     ///（与 tavily_key 的 fail-closed 同款语义）；读侧仍可反序列化（认老配置）。
     /// 真实值存 keyring/降级文件（secrets.rs），load_config 时水合进内存。
     #[serde(skip_serializing, default)]
@@ -104,7 +104,7 @@ pub struct McpServerConfig {
     /// http：MCP 端点 URL（Streamable HTTP）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
-    /// http：随每个请求发送的自定义头（鉴权头等）。B4-6：值视为机密，策略同
+    /// http：随每个请求发送的自定义头（鉴权头等）。：值视为机密，策略同
     /// `env`（skip_serializing + secrets.rs 存储/水合）——模块头敏感边界。
     #[serde(skip_serializing, default)]
     pub headers: BTreeMap<String, String>,
@@ -128,12 +128,12 @@ impl McpServerConfig {
     }
 }
 
-// ───────────────────────── 校验 ─────────────────────────
+// 校验
 
 /// 单条服务器配置校验（纯逻辑）：字段随 transport 分流必填。
 /// 全列表级校验（名称唯一 / 条目数）在 upsert_in_config。
 pub fn validate_server(s: &McpServerConfig) -> Result<(), String> {
-    // id 基本卫生（B0 评审）：空 id 合法 = 新建（mcp_server_save 在校验前生成
+    // id 基本卫生（ 评审）：空 id 合法 = 新建（mcp_server_save 在校验前生成
     // uuid）；非空时防超长/控制字符——id 是编辑/启停/删除与连接池的定位键
     if !s.id.is_empty() {
         if s.id.len() > MAX_MCP_ID_LEN {
@@ -221,7 +221,7 @@ pub fn clamp_timeout(v: Option<u64>) -> Option<u64> {
     v.map(|n| n.clamp(MCP_TIMEOUT_MIN_SECS, MCP_TIMEOUT_MAX_SECS))
 }
 
-/// B4-6 迁移判据：配置里这台服务器是否还带着内联机密（env/headers 非空）。
+///  迁移判据：配置里这台服务器是否还带着内联机密（env/headers 非空）。
 /// 只用于**迁移前对原始文件内容**判定（水合后的内存值不适用——水合会让所有
 /// 服务器看起来都带机密）。
 pub fn has_inline_secrets(s: &McpServerConfig) -> bool {
@@ -259,7 +259,7 @@ pub fn find_trim_collisions(s: &McpServerConfig) -> Result<(), String> {
 }
 
 pub fn normalize_server(mut s: McpServerConfig) -> McpServerConfig {
-    // id 一并 trim（B0 评审：带空白 id 会被原样入库，后续按 id 定位全歪）
+    // id 一并 trim（ 评审：带空白 id 会被原样入库，后续按 id 定位全歪）
     s.id = s.id.trim().to_string();
     s.name = s.name.trim().to_string();
     if let Some(c) = s.command.as_deref() {
@@ -269,7 +269,7 @@ pub fn normalize_server(mut s: McpServerConfig) -> McpServerConfig {
         s.url = Some(u.trim().to_string()).filter(|u| !u.is_empty());
     }
     s.args = s.args.iter().map(|a| a.trim().to_string()).collect();
-    // 只按键判定丢弃（B0 评审 HIGH）：「空键非空值」若按 `|| 值非空` 保留，
+    // 只按键判定丢弃（ 评审 HIGH）：「空键非空值」若按 `|| 值非空` 保留，
     // 下方 map 会把键 trim 成空串留在表里——与 docstring「丢弃空 env 键」相悖，
     // 且下一次 validate 必因空键报错（能保存但保存即坏）
     s.env.retain(|k, _| !k.trim().is_empty());
@@ -293,7 +293,7 @@ pub fn normalize_server(mut s: McpServerConfig) -> McpServerConfig {
 /// 私有和保留地址（agent 会把上下文发给该端点，内网地址一律不放行防 SSRF）。
 /// 字符串/字面量级校验，不做 DNS 解析（解析结果可变且 TOCTOU；DNS 级校验二期再议）。
 pub fn http_url_is_public(u: &str) -> Result<(), String> {
-    // 解析失败不回显原文（B0 评审：URL 可能内嵌凭据 user:pass@ 或敏感 query）
+    // 解析失败不回显原文（ 评审：URL 可能内嵌凭据 user:pass@ 或敏感 query）
     let parsed = url::Url::parse(u).map_err(|_| {
         format!(
             "URL 无法解析（长度 {} 字符，原文可能含凭据不回显）",
@@ -324,7 +324,7 @@ pub fn http_url_is_public(u: &str) -> Result<(), String> {
             // 精确比较但实际解析到环回——比较前剥掉全部尾点
             let bare = d.to_ascii_lowercase();
             let bare = bare.trim_end_matches('.');
-            // localhost 家族（B0 评审补：/etc/hosts 惯常映射到环回的别名一并拦）
+            // localhost 家族（ 评审补：/etc/hosts 惯常映射到环回的别名一并拦）
             if bare == "localhost"
                 || bare == "localhost.localdomain"
                 || bare == "ip6-localhost"
@@ -333,7 +333,7 @@ pub fn http_url_is_public(u: &str) -> Result<(), String> {
                 || bare.ends_with(".localhost")
             {
                 Err(format!("拒绝 localhost 地址：{d}"))
-            // B0 评审（SSRF 旁路两则）：
+            //  评审（SSRF 旁路两则）：
             // ① 纯数字 / 0x 十六进制形式主机名（http://2130706433/ = 127.0.0.1、
             //    0177.0.0.1、0x7f.0.0.1——inet_aton 宽松解析的 IPv4 变体）被 url
             //    crate 归为 Domain，整条 IP 闸线失效。公网域名不存在全数字标签
@@ -354,7 +354,7 @@ pub fn http_url_is_public(u: &str) -> Result<(), String> {
 
 /// 主机名是否为「数字书写形态」（各段全为十进制数字或 0x 十六进制）：
 /// 实为 inet_aton 宽松解析的 IPv4 变体（2130706433 / 0177.0.0.1 / 0x7f.0.0.1），
-/// 走 Domain 分支绕过 IP 闸——B0 评审新增的判定（B0-2 同批安全闸加固）。
+/// 走 Domain 分支绕过 IP 闸—— 评审新增的判定（ 同批安全闸加固）。
 fn looks_like_numeric_host(bare: &str) -> bool {
     !bare.is_empty()
         && bare.split('.').all(|part| {
@@ -386,7 +386,7 @@ fn is_reserved_ipv4(ip: std::net::Ipv4Addr) -> bool {
 /// IPv6 保留段：未指定、环回、unique-local fc00::/7、link-local fe80::/10。
 /// IPv4-mapped（::ffff:a.b.c.d，评审发现的 SSRF 绕过）先还原成 IPv4 判定；
 /// IPv4-compatible（::/96 已弃用段）整段按保留处理。
-/// 转换前缀（B0 评审 M-10）：6to4 2002::/16、Teredo 2001::/32、NAT64 64:ff9b::/96
+/// 转换前缀（ 评审 M-10）：6to4 2002::/16、Teredo 2001::/32、NAT64 64:ff9b::/96
 /// 都把 IPv4 嵌进地址、经公网中继可达内网（如 [2002:0a00:0001::1] = 10.0.0.1）——
 /// 整组按保留拒绝。
 fn is_reserved_ipv6(ip: std::net::Ipv6Addr) -> bool {
@@ -406,7 +406,7 @@ fn is_reserved_ipv6(ip: std::net::Ipv6Addr) -> bool {
         || (s[0] == 0x2001 && s[1] == 0x0db8) // 文档段 2001:db8::/32（B0 评审：与 v4 侧 is_documentation 对齐）
 }
 
-// ───────────────────────── 工具命名（阶段 3 消费） ─────────────────────────
+// 工具命名（阶段 3 消费）
 
 /// 服务器名 → 工具名前缀段：ASCII 字母数字与 `-` 保留（小写化），其余一律 `_`。
 /// 输出恒为 ASCII，最长 24 字节（可安全按字节截断）。
@@ -464,7 +464,7 @@ pub fn mcp_tool_name(server_name: &str, tool_name: &str) -> String {
     format!("{}_{suffix}", &raw[..keep])
 }
 
-// ───────────────────────── 配置表内核（纯逻辑，供命令 + 单测） ─────────────────────────
+// 配置表内核（纯逻辑，供命令 + 单测）
 
 fn servers_mut(cfg: &mut BotConfig) -> &mut Vec<McpServerConfig> {
     cfg.mcp_servers.get_or_insert_with(Vec::new)
@@ -530,7 +530,7 @@ pub fn set_enabled_in_config(cfg: &mut BotConfig, id: &str, enabled: bool) -> bo
         .is_some()
 }
 
-// ───────────────────────── 单测 ─────────────────────────
+// 单测
 
 #[cfg(test)]
 mod tests {
@@ -634,7 +634,7 @@ mod tests {
         // normalize：trim + 空头名丢弃
         let mut n = s.clone();
         n.headers.insert("  X-A  ".into(), "  v  ".into());
-        // 「空键非空值」变体（B0 评审 HIGH 同款）：必须整条消失而非键改写成空串留下
+        // 「空键非空值」变体（ 评审 HIGH 同款）：必须整条消失而非键改写成空串留下
         n.headers.insert(" ".into(), "leak".into());
         let n = normalize_server(n);
         assert_eq!(n.headers.get("X-A").map(String::as_str), Some("v"));
@@ -669,7 +669,7 @@ mod tests {
         assert!(http_url_is_public("http://[::ffff:192.168.1.1]/mcp").is_err());
         // IPv4-compatible（::/96 弃用段整组拒绝）
         assert!(http_url_is_public("http://[::127.0.0.1]/mcp").is_err());
-        // 转换前缀（B0 评审 M-10）：嵌 IPv4 经中继可达内网，整组拒绝
+        // 转换前缀（ 评审 M-10）：嵌 IPv4 经中继可达内网，整组拒绝
         assert!(http_url_is_public("http://[2002:0a00:0001::1]/mcp").is_err());
         assert!(http_url_is_public("http://[2001:0:8765:1::1]/mcp").is_err());
         assert!(http_url_is_public("http://[64:ff9b::10.0.0.1]/mcp").is_err());
@@ -678,23 +678,23 @@ mod tests {
         assert!(http_url_is_public("http://100.64.0.1/mcp").is_err());
         assert!(http_url_is_public("http://224.0.0.1/mcp").is_err());
         assert!(http_url_is_public("http://240.0.0.1/mcp").is_err());
-        // 数字形式 IPv4 变体（B0 评审：url 归为 Domain，绕过字面量 IP 闸）
+        // 数字形式 IPv4 变体（ 评审：url 归为 Domain，绕过字面量 IP 闸）
         assert!(http_url_is_public("http://2130706433/mcp").is_err());
         assert!(http_url_is_public("http://0177.0.0.1/mcp").is_err());
         assert!(http_url_is_public("http://0x7f.0.0.1/mcp").is_err());
         assert!(http_url_is_public("http://127.1/mcp").is_err());
-        // mDNS .local（B0 评审：链路本地/局域网设备入口）
+        // mDNS .local（ 评审：链路本地/局域网设备入口）
         assert!(http_url_is_public("http://printer.local/mcp").is_err());
         assert!(http_url_is_public("http://local/mcp").is_err());
-        // localhost 家族别名（/etc/hosts 惯常映射，B0 评审补）
+        // localhost 家族别名（/etc/hosts 惯常映射， 评审补）
         assert!(http_url_is_public("http://localhost.localdomain/mcp").is_err());
         assert!(http_url_is_public("http://ip6-localhost/mcp").is_err());
         assert!(http_url_is_public("http://broadcasthost/mcp").is_err());
         // IPv6 zone-id（url crate 不支持 scope-id：要么解析失败要么命中保留段，都须拒）
         assert!(http_url_is_public("http://[fe80::1%25eth0]/mcp").is_err());
-        // 文档段 2001:db8::/32（B0 评审：与 v4 侧 is_documentation 对齐）
+        // 文档段 2001:db8::/32（ 评审：与 v4 侧 is_documentation 对齐）
         assert!(http_url_is_public("http://[2001:db8::1]/mcp").is_err());
-        // 解析失败不回显原文（B0 评审：URL 可能内嵌凭据）
+        // 解析失败不回显原文（ 评审：URL 可能内嵌凭据）
         assert!(http_url_is_public("ht!tp://x").is_err());
         // 非 http(s) scheme
         assert!(http_url_is_public("file:///etc/passwd").is_err());
@@ -727,7 +727,7 @@ mod tests {
         let mut s = stdio_server("fs");
         s.id = String::new();
         assert!(validate_server(&s).is_ok());
-        // 超长 / 控制字符（B0 评审：id 是定位键，脏 id 入库后删改查全受影响）
+        // 超长 / 控制字符（ 评审：id 是定位键，脏 id 入库后删改查全受影响）
         let mut s = stdio_server("fs");
         s.id = "x".repeat(MAX_MCP_ID_LEN + 1);
         assert!(validate_server(&s).unwrap_err().contains("id 过长"));
@@ -748,7 +748,7 @@ mod tests {
         let s = normalize_server(s);
         assert_eq!(s.name, "fs");
         assert_eq!(s.command.as_deref(), Some("npx"));
-        // 「空键非空值」必须整条丢弃（B0 评审 HIGH）：不许被 trim 成空串键留下
+        // 「空键非空值」必须整条丢弃（ 评审 HIGH）：不许被 trim 成空串键留下
         //（旧断言 !contains_key("  ") 是假阳性——键被改写成 "" 仍留在表里也通过）
         assert!(s.env.keys().all(|k| !k.trim().is_empty()));
         assert_eq!(s.env.len(), 1, "只应剩 HOME 一条");

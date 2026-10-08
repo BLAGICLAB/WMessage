@@ -1,4 +1,4 @@
-//! R5 决策面板 · 后端 Tauri commands
+//!  决策面板 · 后端 Tauri commands
 //!
 //! 6 个 commands：
 //! 1. `evolution_list_proposals(status?)` — 候选池列表
@@ -8,13 +8,13 @@
 //! 5. `evolution_list_changes()` — ChangeRecord 列表（回滚 UI）
 //! 6. `evolution_rollback_change(id, interactive, session_id)` — 回滚（删 mem_item + status=RolledBack）
 //!
-//! U20 增量：
+//!  增量：
 //! - W1 人工批准执行器：policy 层（MemoryHint）提案 toggle ON 即 `apply_one`
 //!   落库（幂等），CR pending→Active——此前批准只登记 pending、无执行器生效；
 //! - W2 治理开关：`evolution_get/set_apply_policy`（evolution.applyPolicy 二档）；
 //! - W3 冒烟：`evolution_metrics` 薄壳包 observe::compute_metrics。
 //!
-//! 全部走 ask_user_confirm 复用 ConfirmMap（spec R0 #1 默认 A）。
+//! 全部走 ask_user_confirm 复用 ConfirmMap（spec  #1 默认 A）。
 
 use std::path::{Path, PathBuf};
 use tauri::AppHandle;
@@ -32,7 +32,7 @@ use crate::evolution::proposal::EvolutionProposal;
 
 use super::evidence;
 
-// ───────────────────────── 路径辅助 ─────────────────────────
+// 路径辅助
 
 fn proposals_path<R: tauri::Runtime>(app: &AppHandle<R>) -> PathBuf {
     paths::data_dir(app).join("evolution-proposals.jsonl")
@@ -46,7 +46,7 @@ fn applied_path<R: tauri::Runtime>(app: &AppHandle<R>) -> PathBuf {
     paths::data_dir(app).join("evolution-applied.jsonl")
 }
 
-// ───────────────────────── 读写辅助 ─────────────────────────
+// 读写辅助
 
 fn load_proposals<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<Vec<ProposalEntry>, String> {
     candidate::read_all(&proposals_path(app))
@@ -82,31 +82,31 @@ fn parse_status_filter(s: &str) -> Result<ProposalStatus, String> {
     }
 }
 
-// ───────────────────────── Toggle / Delete（老板 16:05 拍板）─────────────────────────
+// Toggle / Delete（）
 //
-// 老板设计语义：
+// 设计语义：
 // - toggle ON  → 写 ChangeRecord(status=pending)，dedup by proposal_id（已有 pending 不重写）
 // - toggle OFF → 移除 ChangeRecord，proposal.status → Rejected
 // - delete     → 删 proposals.jsonl 行 + 级联删 changes.jsonl 中 status=pending 行
-//                （老板拍板：只允许删 Pending；active/rolled_back 用 Rollback）
+//
 // Promote/Reject 命令保留但语义改成 toggle ON/OFF（兼容老 UI/调用方）
 
 /// ON 返回 Some（锁内新写入或 dedup 命中的既有 ChangeRecord），OFF 返回 None。
 /// promote 直接用返回值——**不要在锁外再 load_changes 找**（TOCTOU：并发
 /// delete 会让锁外 find 落空，错误文案还会误导成「toggle_inner 写失败」）。
 ///
-/// B2-4（拍板①）：已回滚提案允许再次 toggle ON（前端有回滚历史时先弹二次确认，
+/// 已回滚提案允许再次 toggle ON（前端有回滚历史时先弹二次确认，
 /// 见 EvolutionPanel onToggle）——新 CR 拿行级唯一 change_id（next_unique_change_id），
 /// 回滚按 id 定位不再撞旧行。
 ///
-/// U20 W1：policy 层（MemoryHint）提案 ON 即人工批准执行器落库——
+///  W1：policy 层（MemoryHint）提案 ON 即人工批准执行器落库——
 /// `apply_one` 写 lesson（evo:<pid> 持久幂等，重复批零副作用）→ applied.jsonl
 /// 留痕 → CR pending 合法流转到 Active。落库被防劫持闸拒绝（ConflictRefused）
 /// 时 CR 保持 pending + 返回 Err（面板错误提示），可重试或停用。
 /// 非 policy 层（Prompt/ToolSchema/SkillHint）维持原行为：只登记 pending CR。
 /// auto 轨（consolidate 自动应用）不经此处，零改动。
 ///
-/// 锁纪律（三段式，OCR R1 高位采纳：apply 不进 EVOLUTION_STORE_LOCK）：
+/// 锁纪律（三段式，apply 不进 EVOLUTION_STORE_LOCK）：
 /// ① 锁内——dedup/建 CR(pending) + 提案晋升 + rewrite（登记即落盘，此后的
 ///   apply 失败天然留下「待决策」盘面：CR pending 可重试/停用/删除）；
 /// ② 锁外——human_apply_one（open_db + DB_WRITE_LOCK + apply_one）+ applied
@@ -165,9 +165,9 @@ pub fn toggle_inner<R: tauri::Runtime>(
             return Ok(None);
         }
 
-        // B4-4（P3 组）：终态校验——Rejected/Expired 是终态，不允许 toggle ON
+        // 终态校验——Rejected/Expired 是终态，不允许 toggle ON
         // 复活（此检查在 EVOLUTION_STORE_LOCK 内 = promote 段 B 的段间复检）；
-        // RolledBack 复用走前端二次确认（拍板①），此处放行
+        // RolledBack 复用走前端二次确认，此处放行
         if matches!(
             entry.status,
             ProposalStatus::Rejected | ProposalStatus::Expired
@@ -178,7 +178,7 @@ pub fn toggle_inner<R: tauri::Runtime>(
             ));
         }
         // Toggle ON：dedup（已有 pending/shadowing/shadow_passed 不重写）。
-        // U20 W1 口径加 Active：已生效提案重复拨 ON 不再新开 CR 行（重复批准
+        //  W1 口径加 Active：已生效提案重复拨 ON 不再新开 CR 行（重复批准
         // 零副作用），lesson 幂等由 apply_one 的 evo:<pid> 查重兜底。
         let existing = changes.iter().find(|c| {
             c.proposal_id == proposal_id
@@ -205,7 +205,7 @@ pub fn toggle_inner<R: tauri::Runtime>(
                 cr.approval_source = ApprovalSource::HumanApproved;
                 cr.human_approver = Some("boss".into());
                 cr.status = ChangeStatus::Pending;
-                // B2-4（P1-EV5）：复用 toggle（重启用）场景下基础 change_id 已被
+                // 复用 toggle（重启用）场景下基础 change_id 已被
                 // 旧行占用——旧实现直接同 id 再 append，rollback 的 position() 首
                 // 匹配永远命中旧行（二次回滚永久卡死）。改派生行级唯一 id：
                 // chg-<pid> / chg-<pid>-2 / chg-<pid>-3 …（change::unique_change_id_for，
@@ -230,7 +230,7 @@ pub fn toggle_inner<R: tauri::Runtime>(
         proposals[idx] = entry.clone();
         rewrite_jsonl(&p_path, &proposals)?;
 
-        // U20 W1：只有 policy 层（MemoryHint）落 lesson 记忆；落库本身在段 ②
+        //  W1：只有 policy 层（MemoryHint）落 lesson 记忆；落库本身在段 ②
         // （锁外）执行——此处只把待落库提案带出锁。layer→category 双射反推，
         // Parameter/Code 两层（派生侧不产）防御性 Err。
         let apply_target = if entry.layer == EvolutionLayer::Policy {
@@ -262,7 +262,7 @@ pub fn toggle_inner<R: tauri::Runtime>(
             }
             ApplyOutcome::AlreadyPresent => {}
             ApplyOutcome::ConflictRefused { target_key } => {
-                // B2-1 防劫持闸：响亮留痕 + 面板错误提示（CR 保持 pending）
+                //  防劫持闸：响亮留痕 + 面板错误提示（CR 保持 pending）
                 crate::audit_event!(
                     app,
                     AuditLevel::Warn,
@@ -424,8 +424,8 @@ fn delete_inner(app: &AppHandle, proposal_id: &str, cascade_source: bool) -> Res
     let cascaded = before - changes.len();
     rewrite_jsonl(&c_path, &changes)?;
 
-    // 3. 可选 cascade 源记忆（老板 16:35 拍板：默认关，复选框选）
-    //    B4-4（P3 组）：mem_items 删除持 DB_WRITE_LOCK（此前裸连接写绕全局写锁）
+    // 3. 可选 cascade 源记忆（默认关，复选框选）
+    //    mem_items 删除持 DB_WRITE_LOCK（此前裸连接写绕全局写锁）
     let mut mem_deleted = 0usize;
     if cascade_source {
         let conn = crate::db::open_db(app)?;
@@ -448,7 +448,7 @@ fn delete_inner(app: &AppHandle, proposal_id: &str, cascade_source: bool) -> Res
     Ok(())
 }
 
-/// B1-2（P0-EV2 半）：cascade_source 的记忆级联内核（注入连接，内存库可单测）——
+/// cascade_source 的记忆级联内核（注入连接，内存库可单测）——
 /// related_refs 源记忆整删 + apply 落下的 lesson 按 key_tag（evo:<id>）删。
 /// 只删 related_refs 会把废案提案的 lesson 留成孤儿（injection_block 永带出）。
 pub(crate) fn cascade_delete_mem_items(
@@ -467,7 +467,7 @@ pub(crate) fn cascade_delete_mem_items(
     Ok(n)
 }
 
-/// Tauri command：toggle 开关（UI 主入口，老板 16:05 拍板）
+/// Tauri command：toggle 开关（UI 主入口，）
 /// enabled=true  → toggle_inner(true)  写 ChangeRecord（pending）+ 标 promoted
 /// enabled=false → toggle_inner(false) 移除 ChangeRecord + 标 rejected
 /// 不走 ConfirmMap（toggle 是 UI 显式行为，不像 Promote/Reject 高危）
@@ -498,7 +498,7 @@ pub async fn evolution_toggle_proposal(
 }
 
 /// Tauri command：彻底废案（delete emoji 入口）
-/// 行为口径（拍板④ 2026-09-29：维持现行为，注释对齐）：
+/// 行为口径：
 /// - proposals.jsonl 行**无论 status 一律删除**（「只允许删 Pending」的旧说法
 ///   与实现不符；Active 的 CR 仍可走 Rollback，删除不动它）；
 /// - changes.jsonl 仅级联删 status=pending 行（其他状态保留作历史）；
@@ -521,7 +521,7 @@ pub async fn evolution_delete_proposal(
     Ok(())
 }
 
-// ───────────────────────── Commands ─────────────────────────
+// Commands
 
 /// 列出候选池（status 可选过滤）
 #[tauri::command]
@@ -545,7 +545,7 @@ pub async fn evolution_list_proposals(
 ///
 /// 复用 ConfirmMap：弹出 widget 弹窗等用户确认。
 /// 确认通过后：
-/// 老板 16:05 拍板：Promote/Reject 语义 = toggle ON/OFF（兼容老 UI/调用方）
+/// Promote/Reject 语义 = toggle ON/OFF（兼容老 UI/调用方）
 /// 仍走 ConfirmMap（高危操作需显式确认），内部转 toggle_inner
 #[tauri::command]
 pub async fn evolution_promote_proposal(
@@ -602,7 +602,7 @@ pub async fn evolution_promote_proposal(
     Ok(cr)
 }
 
-/// 老板 16:05 拍板：Reject 语义 = toggle OFF（兼容老 API）
+/// Reject 语义 = toggle OFF（兼容老 API）
 /// 仍走 ConfirmMap，警告用户要移除 ChangeRecord
 #[tauri::command]
 pub async fn evolution_reject_proposal(
@@ -732,14 +732,14 @@ pub async fn evolution_metrics(app: AppHandle) -> Result<ObserveMetrics, String>
     .await
 }
 
-/// U20 W2：读应用策略档位（serde 小写序列化 "auto"/"confirm"；缺字段/读失败
-/// = auto = 现状）。返回类型化枚举（OCR R1 采纳），非法值在读取层已归一 auto。
+///  W2：读应用策略档位（serde 小写序列化 "auto"/"confirm"；缺字段/读失败
+/// = auto = 现状）。返回类型化枚举，非法值在读取层已归一 auto。
 #[tauri::command]
 pub async fn evolution_get_apply_policy(app: AppHandle) -> Result<ApplyPolicy, String> {
     crate::py::document::spawn_blocking_map(move || Ok(read_apply_policy(&app))).await
 }
 
-/// U20 W2：点档即时落盘（设置页自进化头部 radiogroup，同记忆三档先例）。
+///  W2：点档即时落盘（设置页自进化头部 radiogroup，同记忆三档先例）。
 #[tauri::command]
 pub async fn evolution_set_apply_policy(app: AppHandle, policy: String) -> Result<(), String> {
     crate::py::document::spawn_blocking_map(move || {
@@ -853,7 +853,7 @@ fn delete_evolution_mem_item(app: &AppHandle, proposal_id: &str) -> Result<(), S
     use crate::db;
     let key = format!("evo:{proposal_id}");
     let conn = db::open_db(app).map_err(|e| format!("打开 DB 失败：{e}"))?;
-    // B4-4（P3 组）：mem_items 删除持 DB_WRITE_LOCK（此前裸连接写绕全局写锁）
+    // mem_items 删除持 DB_WRITE_LOCK（此前裸连接写绕全局写锁）
     let _db_write = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
         eprintln!("[mutex_poisoned] evolution::panel DB_WRITE_LOCK (rollback): {e:?}");
         e.into_inner()
@@ -866,7 +866,7 @@ fn delete_evolution_mem_item(app: &AppHandle, proposal_id: &str) -> Result<(), S
     Ok(())
 }
 
-// ───────────────────────── 单元测试（pure helpers）─────────────────────────
+// 单元测试（pure helpers）
 
 /// 提案决策证据（影子判定 + 冲突标注）——决策板逐卡渲染。
 #[tauri::command]
@@ -938,7 +938,7 @@ mod tests {
 
     #[test]
     fn cascade_mem_items_deletes_refs_and_lesson() {
-        // B1-2（P0-EV2 半）回归：cascade_source 必须连 apply 落下的 lesson
+        // 回归：cascade_source 必须连 apply 落下的 lesson
         // （tags[0]=evo:<id>）一起删——只删 related_refs 会留孤儿 lesson，
         // injection_block 永远带出废案建议。
         let conn = rusqlite::Connection::open_in_memory().unwrap();
@@ -984,7 +984,7 @@ mod tests {
 
     #[test]
     fn unique_change_id_avoids_collision() {
-        // B2-4（P1-EV5）：复用 toggle 时基础 id 被旧行占用 → -2/-3 递增；
+        // 复用 toggle 时基础 id 被旧行占用 → -2/-3 递增；
         // 空闲则直接用基础 id（首次启用行为不变）。实现抽到 change::derive
         // 供 shadow/apply 同用，此处锁行为。
         let rolled = vec![mk_change("chg-p9", ChangeStatus::RolledBack)];
@@ -1098,7 +1098,7 @@ mod tests {
         assert_eq!(key, expected);
     }
 
-    // ─── ApprovalSource / ChangeStatus 锁死 ───
+    // ApprovalSource / ChangeStatus 锁死
 
     #[test]
     fn human_approved_distinguished_from_auto_applied() {

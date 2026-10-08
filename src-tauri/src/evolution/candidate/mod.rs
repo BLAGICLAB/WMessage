@@ -1,4 +1,4 @@
-//! R4 L1 候选层（spec R4）
+//!  L1 候选层（spec ）
 //!
 //! 模块结构：
 //! - `entry`     ProposalEntry + ProposalStatus + jsonl IO
@@ -9,7 +9,7 @@
 //! 冲突消解（同层同 target 留高 impact）零生产调用已删除，
 //! 判定语义由决策板证据模块按需重建。历史实现见 git log。
 //!
-//! 关键设计（接 R0 DERIVABILITY.md 结论）：
+//! 关键设计（接  DERIVABILITY.md 结论）：
 //! - 不动 EvolutionProposal（emit.rs:107 锁死 audit schema）
 //! - 扩展字段（layer / change_id / related_refs / TTL）落独立 evolution-proposals.jsonl
 //! - ProposalEntry 是 superset：含足够信息派生 ChangeRecord
@@ -35,7 +35,7 @@ pub use ttl::compute_expires_at;
 /// 返回实际新写入的条目（被 dedup 跳过的不计）——通知中心按此逐条落消息。
 /// 调用方：evolution::post_consolidation。
 ///
-/// **重要性（老板 12:29 拍板修复）**：R6 A shadow 钩子依赖此文件。补上让整条
+/// **重要性（修复）**： A shadow 钩子依赖此文件。补上让整条
 /// observation pipeline 真正通。
 pub fn write_proposals<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,

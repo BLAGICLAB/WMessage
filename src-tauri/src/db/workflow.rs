@@ -1,4 +1,4 @@
-//! 工作流（W1-CANVAS，设计 docs/WORKFLOW-CANVAS-DESIGN-2026-10-04.md §3.2/§7）：
+//! 工作流设计 docs/WORKFLOW-CANVAS-DESIGN-2026-10-04.md §3.2/§7）：
 //! 元数据 CRUD + 「指纹 diff 保存」——节点卡本身存 tasks 表（origin='workflow'），
 //! 本模块只管 workflows 行与保存时的 id 保留/新建/删除裁决。
 //!
@@ -46,12 +46,12 @@ pub const WORKFLOWS_DDL: &str = "CREATE TABLE IF NOT EXISTS workflows (
    last_report_at INTEGER
  );";
 
-/// workflows.attachments 幂等 ALTER（W8-ATTACH：老库的 workflows 表无此列）
+/// workflows.attachments 幂等 ALTER老库的 workflows 表无此列）
 pub fn ensure_workflows_attachments(conn: &rusqlite::Connection) -> Result<(), String> {
     super::ensure_columns(conn, "workflows", &[("attachments", "TEXT")])
 }
 
-/// workflows.clarify_meta 幂等 ALTER（W9-ASK：澄清答案/粒度，JSON——重拆预填上次回答）
+/// workflows.clarify_meta 幂等 ALTER澄清答案/粒度，JSON——重拆预填上次回答）
 pub fn ensure_workflows_clarify_meta(conn: &rusqlite::Connection) -> Result<(), String> {
     super::ensure_columns(conn, "workflows", &[("clarify_meta", "TEXT")])
 }
@@ -88,9 +88,9 @@ pub struct Workflow {
     pub goal: String,
     pub created_at: Option<i64>,
     pub updated_at: Option<i64>,
-    /// 拆解附件路径清单（W8-ATTACH，JSON 数组；仅本机语义，不进导出文件）
+    /// 拆解附件路径清单JSON 数组；仅本机语义，不进导出文件）
     pub attachments: Option<Vec<String>>,
-    /// 澄清元数据（W9-ASK，JSON 串：{answers:[{question,answer}], askMode}；原样存取，
+    /// 澄清元数据JSON 串：{answers:[{question,answer}], askMode}；原样存取，
     /// 结构由前端定义——重拆预填上次回答 + 执行提问模式；不进导出文件）
     #[serde(default)]
     pub clarify_meta: Option<String>,
@@ -129,10 +129,10 @@ pub struct WorkflowNodeDraft {
     pub depends_on: Vec<String>,
     #[serde(default)]
     pub pos: Option<CanvasPos>,
-    /// 执行模型覆盖（W6-MODEL）：模型库条目 id；None = 跟随全局
+    /// 执行模型覆盖：模型库条目 id；None = 跟随全局
     #[serde(default)]
     pub model: Option<String>,
-    /// 子任务清单（W8-ATTACH）：仅新建卡构建（保留卡保护执行痕迹）
+    /// 子任务清单：仅新建卡构建（保留卡保护执行痕迹）
     #[serde(default)]
     pub subtasks: Option<Vec<String>>,
     /// 每卡验收标准（W-QA 卡即契约）：拆解生成的一行可验证完成标准
@@ -149,10 +149,10 @@ pub struct WorkflowSaveInput {
     pub name: String,
     pub goal: String,
     pub nodes: Vec<WorkflowNodeDraft>,
-    /// 拆解附件路径清单（W8-ATTACH）：随保存落 workflows 行（重新生成可复用）
+    /// 拆解附件路径清单：随保存落 workflows 行（重新生成可复用）
     #[serde(default)]
     pub attachments: Option<Vec<String>>,
-    /// 澄清元数据原样串（W9-ASK）：前端组装的 JSON（answers + askMode），重拆预填用
+    /// 澄清元数据原样串：前端组装的 JSON（answers + askMode），重拆预填用
     #[serde(default)]
     pub clarify_meta: Option<String>,
 }
@@ -185,7 +185,7 @@ pub struct WorkflowDetail {
     pub tasks: Vec<Task>,
 }
 
-// ────────────── workflows 行 CRUD ──────────────
+// workflows 行 CRUD
 
 fn workflow_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Workflow> {
     let attachments: Option<String> = r.get(5)?;
@@ -272,7 +272,7 @@ pub(crate) fn workflow_set_report(
     Ok(())
 }
 
-// ────────────── 校验 ──────────────
+// 校验
 
 fn check_len(v: &str, max: usize, label: &str, field: &str) -> CommandResult<String> {
     let t = v.trim().to_string();
@@ -341,7 +341,7 @@ fn validate_nodes(nodes: &[WorkflowNodeDraft]) -> CommandResult<()> {
                 reason: format!("第 {} 个节点存在空依赖引用", i + 1),
             });
         }
-        // 子任务清单校验（W8-ATTACH，与拆解侧同规则）：≤8 条 × ≤60 字
+        // 子任务清单校验与拆解侧同规则）：≤8 条 × ≤60 字
         if let Some(list) = &n.subtasks {
             if list.len() > 8 {
                 return Err(CommandError::InvalidArgument {
@@ -374,7 +374,7 @@ fn validate_nodes(nodes: &[WorkflowNodeDraft]) -> CommandResult<()> {
     Ok(())
 }
 
-// ────────────── 递归内容指纹 ──────────────
+// 递归内容指纹
 
 const FP_SEP: char = '\u{1}';
 
@@ -507,10 +507,10 @@ fn task_fp_at(
     fp
 }
 
-// ────────────── 指纹 diff 保存（锁内事务，设计 §7） ──────────────
+// 指纹 diff 保存（锁内事务，设计 §7）
 
 /// 保存的完整产出：result 给前端重建绑定；upserts/deleted_ids 由**锁内**写定，
-/// 广播直接携带（OCR r1 high：锁外重读 DB 会与其他写者交错，快照可能与本次保存不一致）
+/// 广播直接携带锁外重读 DB 会与其他写者交错，快照可能与本次保存不一致）
 pub(crate) struct WorkflowSaveOutcome {
     pub result: WorkflowSaveResult,
     pub upserts: Vec<Task>,
@@ -539,7 +539,7 @@ pub(crate) fn workflow_save_locked(
     let draft_fps = draft_fingerprints(&input.nodes, &index)?;
 
     // ② 工作流行 upsert（新建行 created_at=now；既有行保留 created_at）——
-    // 一次 load 同时完成存在性校验与 created_at 读取（OCR r1 low：勿查两遍）
+    // 一次 load 同时完成存在性校验与 created_at 读取勿查两遍）
     let (wf_id, prev_row) = match &input.workflow_id {
         Some(id) => {
             let prev = load_workflow(conn, id)?.ok_or(CommandError::TaskNotFound(id.clone()))?;
@@ -642,7 +642,7 @@ pub(crate) fn workflow_save_locked(
                 file_path: None,
                 file_is_dir: None,
                 column: TaskStatus::Todo,
-                // W8-ATTACH（OCR r1 critical）：草稿子任务清单 → 新卡 Subtask
+                // 草稿子任务清单 → 新卡 Subtask
                 //（uuid + 未勾选）；保留卡不覆盖（执行痕迹保护）
                 subtasks: node
                     .subtasks
@@ -736,7 +736,7 @@ pub(crate) fn workflow_save_locked(
     })
 }
 
-// ────────────── Tauri commands ──────────────
+// Tauri commands
 
 fn audit_event(app: &AppHandle, event: &str, workflow_id: &str, extra: &[(&str, String)]) {
     let mut kvs: Vec<(&str, String)> = vec![("workflowId", workflow_id.to_string())];
@@ -770,7 +770,7 @@ pub async fn workflow_save(
         ],
     );
     // 广播：挂件/主窗收敛（与 task_patch 同款协议）。载荷 = 锁内写定的行，
-    // 不锁外重读（OCR r1 high TOCTOU）
+    // 不锁外重读（ TOCTOU）
     {
         use tauri::Emitter;
         let _ = app_emit.emit("tasks-changed", ());
@@ -787,7 +787,7 @@ pub async fn workflow_save(
     Ok(outcome.result)
 }
 
-// ────────────── 文件格式 v1（W4-TEMPLATE，设计 §4）──────────────
+// 文件格式 v1设计 §4）
 
 pub const WORKFLOW_FILE_VERSION: u32 = 1;
 
@@ -808,10 +808,10 @@ pub struct WorkflowFileNode {
     pub depends_on: Vec<String>,
     #[serde(default)]
     pub pos: Option<CanvasPos>,
-    /// 执行模型覆盖（W6-MODEL）
+    /// 执行模型覆盖
     #[serde(default)]
     pub model: Option<String>,
-    /// 子任务文本清单（W8-ATTACH）
+    /// 子任务文本清单
     #[serde(default)]
     pub subtasks: Option<Vec<String>>,
     /// 每卡验收标准（W-QA 卡即契约；旧模板缺省 = 无）
@@ -840,7 +840,7 @@ pub struct WorkflowFile {
 /// 拓扑导出序（纯逻辑，单测锚点）：多轮扫描就绪节点（依赖已全放置即就绪），
 /// 同轮按输入序稳定输出；悬空/自环依赖不阻塞（导出端防御，导入端另有校验）；
 /// 环内节点按输入序追加在后（不影响本地 id 映射的唯一性）。
-/// 入参是 (id, deps) 视图——topo 只需要这两样，避免整卡深拷贝（OCR r1）。
+/// 入参是 (id, deps) 视图——topo 只需要这两样，避免整卡深拷贝。
 pub(crate) fn topo_export_order(items: &[(String, Vec<String>)]) -> Vec<String> {
     let ids: std::collections::HashSet<&str> = items.iter().map(|(id, _)| id.as_str()).collect();
     let mut placed: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -884,7 +884,7 @@ pub(crate) fn workflow_file_from(wf: &Workflow, tasks: &[Task]) -> WorkflowFile 
             .unwrap_or(std::cmp::Ordering::Equal)
             .then(a.id.cmp(&b.id))
     });
-    // (id, deps) 视图：topo 只需要这两样，避免整卡深拷贝（OCR r1 medium）
+    // (id, deps) 视图：topo 只需要这两样，避免整卡深拷贝（）
     let id_deps: Vec<(String, Vec<String>)> = sorted
         .iter()
         .map(|t| {
@@ -1254,7 +1254,7 @@ pub async fn workflow_delete(app: AppHandle, id: String) -> CommandResult<usize>
                 .map(|t| t.id.clone())
                 .collect();
             delete_tasks(&tx, &ids).map_err(CommandError::from)?;
-            // W9-ASK：工作流档案级联（OCR r1 critical——全局层条目随工作流删除；
+            // 工作流档案级联（ critical——全局层条目随工作流删除；
             // 卡层已由 delete_tasks 清过，此处兜底两层）
             crate::db::brief::brief_delete_workflow(&tx, &id).map_err(CommandError::from)?;
             delete_workflow_row(&tx, &id).map_err(CommandError::from)?;
@@ -1286,7 +1286,7 @@ pub async fn workflow_delete(app: AppHandle, id: String) -> CommandResult<usize>
     Ok(result)
 }
 
-// ────────────── 单测 ──────────────
+// 单测
 
 #[cfg(test)]
 mod tests {
@@ -1589,7 +1589,7 @@ mod tests {
             .is_empty());
     }
 
-    // ────────────── W4-TEMPLATE：文件格式 v1 ──────────────
+    // 文件格式 v1
 
     #[test]
     fn parse_valid_v1_maps_and_dedupes_deps() {

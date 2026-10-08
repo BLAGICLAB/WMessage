@@ -1,4 +1,4 @@
-//! 执行痕迹采集管道（Agent 透明化设计 §4.2，P1-c/d）：
+//! 执行痕迹采集管道（Agent 透明化设计 §4.2，/d）：
 //!
 //! - **采集**：dispatch 每次工具调用产一条 span（含文件变更证据），`record_*` 经
 //!   mpsc fire-and-forget 进后台 writer——观测面失败/满队列一律不阻断工具结果。
@@ -17,7 +17,7 @@ use tokio::sync::mpsc;
 /// 单批落库上限（channel 里就绪多少收多少，最多 64 条/事务）
 const WRITE_BATCH_MAX: usize = 64;
 
-// ───────────────────────── 采集记录（owned，跨 channel 传输） ─────────────────────────
+// 采集记录（owned，跨 channel 传输）
 
 pub struct SpanRecord {
     pub trace_id: i64,
@@ -28,7 +28,7 @@ pub struct SpanRecord {
     pub args: Option<String>,
     pub result: Option<String>,
     pub ok: bool,
-    /// P1 预留（恒 None）；P4 接 evolution error_kind 分类器
+    ///  预留（恒 None）； 接 evolution error_kind 分类器
     pub error_class: Option<String>,
     pub duration_ms: Option<i64>,
     pub created_at: i64,
@@ -125,7 +125,7 @@ pub(crate) fn clamp_span_text<R: tauri::Runtime>(
     Some(crate::db::clamp_text(&s, crate::db::SPAN_TEXT_MAX))
 }
 
-// ───────────────────────── trace 生命周期（P1-d） ─────────────────────────
+// trace 生命周期
 
 /// run_task_in_chat（壳）与 run_task_in_chat_with（内核）之间传递 trace 归属与
 /// LoopTrace 统计的挂钩：壳造槽 → 内核填归属 + 收尾 → 壳的闭包填统计。
@@ -274,7 +274,7 @@ pub(crate) async fn end_trace<R: tauri::Runtime>(
     }
 }
 
-// ───────────────────────── 后台 writer（攒批落库） ─────────────────────────
+// 后台 writer（攒批落库）
 
 async fn writer<R: tauri::Runtime>(app: AppHandle<R>, mut rx: mpsc::Receiver<TraceWrite>) {
     let mut conn: Option<rusqlite::Connection> = None;

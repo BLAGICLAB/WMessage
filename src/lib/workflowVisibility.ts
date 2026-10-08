@@ -1,4 +1,4 @@
-// 工作流任务可见性开关（W1-CANVAS，设计 §3.3/§10）：
+// 工作流任务可见性开关设计 §3.3/§10）：
 // 看板/归档/回收站/挂件/命令面板是否混入 origin="workflow" 的卡，默认隐藏。
 // 纯前端偏好，走 localStorage；跨组件/跨 webview（主窗/挂件/设置页）用 Tauri
 // 全局事件即时同步（emit 广播到所有窗口的 listen——不能用 window CustomEvent，

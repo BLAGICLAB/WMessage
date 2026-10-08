@@ -19,8 +19,7 @@
 // - 空 message 兜底：CommandError.message 为空时回退 code，
 //   再空回退「未知错误」；非结构化空 msg 同样兜底——不弹空窗、不静默跳过
 
-/**
- * CommandError.code 的取值全集——与 Rust 侧 `src-tauri/src/error.rs::CommandErrorCode`
+/** * CommandError.code 的取值全集——与 Rust 侧 `src-tauri/src/error.rs::CommandErrorCode`
  * 一一对应（那里是单一真相：`#[serde(rename = "…")]` 就是线协议字符串）。
  *
  * 漂移防线：
@@ -82,8 +81,7 @@ export const ALL_COMMAND_ERROR_CODES: readonly CommandErrorCode[] = [
   "INTERNAL",
 ];
 
-/** Tauri 拒绝时拿到的反序列化 CommandError JSON 形状。
- *  code 保持 string：Rust 侧可能比前端更早引入新 code，
+/** Tauri 拒绝时拿到的反序列化 CommandError JSON 形状。 *  code 保持 string：Rust 侧可能比前端更早引入新 code，
  *  `hintForCode` 的 default 分支负责这种「未知 code」的兜底。 */
 export interface CommandErrorPayload {
   code: string;
@@ -102,8 +100,7 @@ export function isCommandError(e: unknown): e is CommandErrorPayload {
   );
 }
 
-/**
- * 按 code 给一个短提示（附加在 message 后），让用户知道下一步该做什么。
+/** * 按 code 给一个短提示（附加在 message 后），让用户知道下一步该做什么。
  * 没匹配到时返回 null，调用方只用 message。
  */
 function hintForCode(code: string): string | null {
@@ -157,8 +154,7 @@ function hintForCode(code: string): string | null {
   }
 }
 
-/**
- * 把 invoke 抛出的 unknown 格式化成 user-friendly 文本（任意类型都能转）：
+/** * 把 invoke 抛出的 unknown 格式化成 user-friendly 文本（任意类型都能转）：
  * - CommandError → message
  * - Error → message
  * - 字符串 → 自身
@@ -178,15 +174,13 @@ export function formatCommandError(e: unknown): string {
 }
 
 export interface HandleOptions {
-  /**
-   * 不弹 alert，仅写 console。
+  /**   * 不弹 alert，仅写 console。
    * 用于已有 inline 错误 UI 的位置（如 SettingsPage 面板 setError），
    * 避免双重提示。
    * 默认 false（弹 alert 提示用户）。
    */
   silent?: boolean;
-  /**
-   * 重试回调：仅当错误 recoverable === true 时生效——
+  /**   * 重试回调：仅当错误 recoverable === true 时生效——
    * 弹 confirm 询问「是否重试」，用户确认后调用本回调重新执行失败的操作。
    * recoverable === false（或调用方未传）时走普通 alert，不调用本回调。
    */
@@ -196,8 +190,7 @@ export interface HandleOptions {
 /** 应用内错误弹窗的事件名（ErrorDialogHost 监听；window 按 webview 天然隔离） */
 export const ERROR_DIALOG_EVENT = "wmessage-error-dialog";
 
-/** 弹窗请求载荷：Host 收到事件后渲染 nm 卡片（图标由 Host 提供，不再用 emoji），
- *  结束时必须调用恰好一次 resolve——retry=true 仅在 retryable 且用户点「重试」。 */
+/** 弹窗请求载荷：Host 收到事件后渲染 nm 卡片（图标由 Host 提供，不再用 emoji）， *  结束时必须调用恰好一次 resolve——retry=true 仅在 retryable 且用户点「重试」。 */
 export interface ErrorDialogRequest {
   message: string;
   hint: string | null;
@@ -205,8 +198,7 @@ export interface ErrorDialogRequest {
   resolve: (retry: boolean) => void;
 }
 
-/**
- * 请求应用内错误弹窗。返回值 = 是否已有 ErrorDialogHost 接管
+/** * 请求应用内错误弹窗。返回值 = 是否已有 ErrorDialogHost 接管
  * （Host 对事件 preventDefault 表示接管）：
  * - true：走应用内弹窗（图标化 UI）
  * - false：调用方走原生 alert/confirm 兜底（旧格式；未挂 Host 的窗口 /
@@ -226,8 +218,7 @@ function requestErrorDialog(req: ErrorDialogRequest): boolean {
   }
 }
 
-/**
- * 非 Tauri 宿主（纯浏览器 / 自动化夹具）检测：invoke 全部不可用，
+/** * 非 Tauri 宿主（纯浏览器 / 自动化夹具）检测：invoke 全部不可用，
  * boot 期每个调用都会失败——弹窗只会洪水化（U1 登记的自动化挂死根因），
  * 降级为只留 console。Tauri 宿主行为不变（真实用户必须看到弹窗）。
  */
@@ -235,8 +226,7 @@ function isTauriHost(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
-/**
- * 统一错误处理入口。CommandError → console 打 code + 弹 alert；其他原样。
+/** * 统一错误处理入口。CommandError → console 打 code + 弹 alert；其他原样。
  *
  * @param e    invoke() 抛出的 unknown
  * @param ctx  调用上下文（command 名 / 函数名），用于 console 前缀

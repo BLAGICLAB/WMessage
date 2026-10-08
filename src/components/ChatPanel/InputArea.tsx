@@ -1,4 +1,4 @@
-// ChatPanel 子模块：斜杠命令 picker + 输入卡（U3a 拆分自 ChatPanel.tsx，JSX 逐字搬移）。
+// ChatPanel 子模块：斜杠命令 picker + 输入卡（ 拆分自 ChatPanel.tsx，JSX 逐字搬移）。
 // 上多行输入区（自动增高）、附件 chips（图片悬停缩略图）、下工具栏
 // （＋ 附件 / 🧠 模型下拉 / ⚡ 推理强度 / 发送-停止一体键）。
 // 发送/停止的调用语义由父级闭包提供，本组件不做任何数据流决策。
@@ -41,9 +41,9 @@ type InputAreaProps = {
   viewedBusy: boolean;
   selecting: boolean;
   isSubagentSession: boolean;
-  /** 🛡 授权模式只读展示（U3b）：bot-config 的 permMode，设置页维护 */
+  /** 🛡 授权模式只读展示：bot-config 的 permMode，设置页维护 */
   permMode: PermMode;
-  /** 🔍 执行过程详细度（P2-b verbose 三档）：localStorage 持久化，控制工具徽章展开档位 */
+  /** 🔍 执行过程详细度（ verbose 三档）：localStorage 持久化，控制工具徽章展开档位 */
   verbose: { level: VerboseLevel; setLevel: (l: VerboseLevel) => void };
   // 🧠/⚡ 的按钮与下拉 ref 顶层传（与滚动容器同模式）：ref 与普通值混嵌同一
   // prop 对象会触发 react/refs 的全对象标记

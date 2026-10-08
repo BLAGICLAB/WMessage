@@ -36,13 +36,11 @@ interface Palette {
   edge: string;
   edgeStrong: string;
   danger: string;
-  /** 主题判定（html.dark），标签色阶按主题取专用值——文本 token 是给 UI 的，
-   *  画布标签需要自己的对比度策略（见 LABEL_COLORS 注释） */
+  /** 主题判定（html.dark），标签色阶按主题取专用值——文本 token 是给 UI 的，   *  画布标签需要自己的对比度策略（见 LABEL_COLORS 注释） */
   dark: boolean;
 }
 
-/**
- * 画布标签专用色阶（G3-SIGMA 视觉修订）：
+/** * 画布标签专用色阶（G3-SIGMA 视觉修订）：
  * 旧版直接用 --t1/--t2（近黑/近白文本 token）——亮色下黑字压在彩点上生硬，
  * 暗色下默认 labelColor #000 直接消失。
  * 设计原则：
@@ -121,11 +119,9 @@ export interface GraphCanvasProps {
   looseness: GraphLooseness;
   /** 标签 → 同义组键（G6-SYNONYM；键缺失 = 独立组） */
   tagGroups?: Map<string, string>;
-  /** owner 注入序（单一事实源，GraphPage 基于 chips 全序计算）：
-   *  建图写 ownerKey 与 chips 色点共用，保证图例与节点永远同色 */
+  /** owner 注入序（单一事实源，GraphPage 基于 chips 全序计算）：   *  建图写 ownerKey 与 chips 色点共用，保证图例与节点永远同色 */
   ownerOrder: Map<string, number>;
-  /** 「重新布局」触发信号（G4-G6 r2）：+1 启动一轮 FA2 短跑并自动停。
-   *  默认静态确定性布局——物理动画只作为手动增强，杜绝大图飞散 */
+  /** 「重新布局」触发信号（G4-G6 r2）：+1 启动一轮 FA2 短跑并自动停。   *  默认静态确定性布局——物理动画只作为手动增强，杜绝大图飞散 */
   relayoutSignal: number;
   selectedId: string | null;
   hoverId: string | null;

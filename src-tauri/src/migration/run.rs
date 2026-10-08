@@ -25,7 +25,7 @@ use super::types::MigrationReport;
 pub(crate) const POLL_INTERVAL_SECS: u64 = 600;
 
 /// 核心迁移：返回报告。silent 模式（轮询）不向 UI 抛错。
-/// 迁移取消请求（拍板 #2=A）：migration_cancel command 置位，run_migration 各
+/// 迁移取消请求：migration_cancel command 置位，run_migration 各
 /// 阶段循环边界检查。粒度 = 循环边界（安全停止在事务/staging 边界，已完成操作
 /// 不回滚，未开始的不再开始）；单文件操作中间态不中断。
 static MIGRATION_CANCEL: AtomicBool = AtomicBool::new(false);
@@ -48,7 +48,7 @@ pub fn run_migration(app: &AppHandle) -> Result<MigrationReport, CommandError> {
     let _guard = MigrationGuard::acquire()?;
     // 取消标志不在此清零：无 run 在跑时的取消请求（migration_cancel）必须被下一轮
     // run 尊重——run 结束（成功/取消/出错/panic 展开经 DropGuard）统一清零
-    //（OCR r1 high 采纳；Drop 保证 panic 路径不残留标志，OCR r2 high 采纳）
+    //（ 采纳；Drop 保证 panic 路径不残留标志， 采纳）
     struct CancelGuard;
     impl Drop for CancelGuard {
         fn drop(&mut self) {
@@ -61,7 +61,7 @@ pub fn run_migration(app: &AppHandle) -> Result<MigrationReport, CommandError> {
 
 #[allow(clippy::too_many_lines)]
 fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError> {
-    // B3: db_load/db_upsert 改 async 了；run_migration_inner 在 spawn_polling 的 std::thread
+    // db_load/db_upsert 改 async 了；run_migration_inner 在 spawn_polling 的 std::thread
     // 或 spawn_blocking(migration_run) 线程里跑，不在 tokio runtime 上 → 用 block_on 桥接。
     let mut report = MigrationReport {
         ts: now_ms(),
@@ -76,12 +76,12 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError>
     // 归档阈值随设置走（数据管理 → 任务卡归档时间，默认 7 天钳 1..=365）：
     // 本轮扫描开始时读一次，单轮内一致
     let archive_after_ms = crate::bot::archive_after_days(app) as i64 * 24 * 60 * 60 * 1000;
-    // NEW-B-2: 本轮所有 journal 读写复用同一条连接（原来每次 journal 调用各 open_db 一次，
+    // 本轮所有 journal 读写复用同一条连接（原来每次 journal 调用各 open_db 一次，
     // 迁一个文件付 3 次全套 schema 检查）；journal 写由 journal_* 内部持 DB_WRITE_LOCK 串行。
     let jconn = db::open_db(app).map_err(|e| e.to_string())?;
     let now = now_ms();
     let mut changed: Vec<db::Task> = vec![];
-    // NEW-B-1: 解绑时确认关闭的 pending journal id——在 changed 批量落盘成功后统一提交，
+    // 解绑时确认关闭的 pending journal id——在 changed 批量落盘成功后统一提交，
     // 避免「journal 已提交但解绑未落盘」对账空洞。
     let mut journals_commit_after_batch: Vec<i64> = vec![];
 
@@ -105,7 +105,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError>
         }
     }
     if !due.is_empty() {
-        // 取消检查点（拍板 #2=A）：归档落盘前响应取消
+        // 取消检查点：归档落盘前响应取消
         if migration_cancel_requested() {
             report.cancelled = true;
             let line = "迁移被取消：安全停止（已完成操作不回滚，未开始的不再开始）";
@@ -115,7 +115,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError>
         }
         tauri::async_runtime::block_on(async { db::db_upsert(app.clone(), due.clone()).await })
             .map_err(|e| e.to_string())?;
-        // T1-1：due 已落盘（updated_at=now），changed 末尾统一重写的基线须重武装为
+        // due 已落盘（updated_at=now），changed 末尾统一重写的基线须重武装为
         // 刚写入的值，否则二次 upsert 会被自己的基线比对拒写
         for t in &mut due {
             t.expected_updated_at = t.updated_at;
@@ -130,10 +130,10 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError>
 
     // 阶段二：对已归档任务执行规则迁移。
     // 注意：遍历的是阶段一之前读的旧快照——本轮刚归档的任务不参与本轮迁移，
-    // 要到下一轮（10 分钟后）才会走规则。这是有意行为（审计 P3-5 补注释）：
+    // 要到下一轮（10 分钟后）才会走规则。这是有意行为（审计  补注释）：
     // 避免归档与迁移在同一次扫描里链式触发，用户看到的中间状态更少。
     for t in tasks.iter() {
-        // 取消检查点（拍板 #2=A）：命中即安全停止，已完成操作不回滚
+        // 取消检查点：命中即安全停止，已完成操作不回滚
         if migration_cancel_requested() {
             report.cancelled = true;
             let line = "迁移被取消：安全停止（已完成操作不回滚，未开始的不再开始）";
@@ -194,7 +194,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError>
                     continue;
                 }
                 if !src.exists() {
-                    // NEW-B-1: 源不存在时先对账 journal——「上一轮 move 成功但 db_upsert 失败」
+                    // 源不存在时先对账 journal——「上一轮 move 成功但 db_upsert 失败」
                     // 时 journal 仍 pending 且 dst 存在，此时应就地修复绑定到 dst，而非解绑
                     // （旧逻辑直接解绑 → 附件链接丢失一整个会话周期，要等重启 replay 才恢复）。
                     let pending = journal_find_pending(&jconn, &t.id, &src)?;
@@ -214,7 +214,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError>
                             }) {
                                 Ok(()) => {
                                     journal_committed(&jconn, journal_id).ok();
-                                    // T1-1：nt 已落盘，changed 末尾统一重写前基线重武装为刚写入值
+                                    // nt 已落盘，changed 末尾统一重写前基线重武装为刚写入值
                                     nt.expected_updated_at = nt.updated_at;
                                     changed.push(nt);
                                     report.moved += 1;
@@ -255,14 +255,14 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError>
                         }
                     }
                 }
-                // NEW-B-5: 跨卷 copy 成功但 remove 持续失败（Windows 占用）的 src 永久跳过，
+                // 跨卷 copy 成功但 remove 持续失败（Windows 占用）的 src 永久跳过，
                 // 不再每轮生成新冲突名再 copy（归档目录不累积副本）。首次越阈时已记 ERROR，
                 // 后续轮静默跳过（10min/轮不刷屏）。
                 if move_remove_permanently_failed(src_str) {
                     report.skipped += 1;
                     continue;
                 }
-                // P2-6：选定后落盘前复检（TOCTOU）——并发任务抢占同名时递增后缀重选
+                // 选定后落盘前复检（TOCTOU）——并发任务抢占同名时递增后缀重选
                 let Some(dst) = super::ops::claim_dst_name(&dir, &name) else {
                     report.skipped += 1;
                     let line = format!("跳过「{name}」：目标目录同名冲突过多（不覆盖、不删除）");
@@ -270,7 +270,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError>
                     log_line(app, &line);
                     continue;
                 };
-                // B1: 写 journal pending → move_entry → db_upsert → journal_committed
+                // 写 journal pending → move_entry → db_upsert → journal_committed
                 // 如果中间任一步崩了，启动时 journal_replay_pending 修复 DB
                 let journal_id = match journal_pending(&jconn, "move", &src, Some(&dst), &t.id) {
                     Ok(id) => id,
@@ -285,7 +285,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError>
                 if let Err(e) = move_entry(&src, &dst) {
                     // move 未启动 / 明确失败 → clear journal，下次重试不需要修复
                     journal_cleared(&jconn, journal_id).ok();
-                    // NEW-B-5: dst 已存在且 src 仍在 = copy 成功但 remove 失败
+                    // dst 已存在且 src 仍在 = copy 成功但 remove 失败
                     // （区别于 copy 本身失败：此时 dst 不存在，不计数）。
                     // 失败计数越阈 → 记 ERROR 审计并永久跳过该 src，防止归档副本累积。
                     if src.exists() && dst.exists() {
@@ -322,7 +322,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError>
                     continue;
                 }
                 journal_committed(&jconn, journal_id).ok();
-                // T1-1：nt 已落盘，changed 末尾统一重写前基线重武装为刚写入值
+                // nt 已落盘，changed 末尾统一重写前基线重武装为刚写入值
                 nt.expected_updated_at = nt.updated_at;
                 changed.push(nt);
                 report.moved += 1;
@@ -332,7 +332,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError>
             }
             "delete" => {
                 if !src.exists() {
-                    // NEW-B-1: 同 move 分支——先对账 journal。pending delete 的终态本就是
+                    // 同 move 分支——先对账 journal。pending delete 的终态本就是
                     // 解绑，落盘后提交 journal 关闭环路；pending move 且 dst 在 → 就地修复。
                     let pending = journal_find_pending(&jconn, &t.id, &src)?;
                     let dst_exists = pending
@@ -351,7 +351,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError>
                             }) {
                                 Ok(()) => {
                                     journal_committed(&jconn, journal_id).ok();
-                                    // T1-1：nt 已落盘，changed 末尾统一重写前基线重武装为刚写入值
+                                    // nt 已落盘，changed 末尾统一重写前基线重武装为刚写入值
                                     nt.expected_updated_at = nt.updated_at;
                                     changed.push(nt);
                                     report.moved += 1;
@@ -390,7 +390,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError>
                         }
                     }
                 }
-                // B1: write journal pending → delete → db_upsert → committed
+                // write journal pending → delete → db_upsert → committed
                 let journal_id = match journal_pending(&jconn, "delete", &src, None, &t.id) {
                     Ok(id) => id,
                     Err(e) => {
@@ -435,7 +435,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError>
                     continue;
                 }
                 journal_committed(&jconn, journal_id).ok();
-                // T1-1：nt 已落盘，changed 末尾统一重写前基线重武装为刚写入值
+                // nt 已落盘，changed 末尾统一重写前基线重武装为刚写入值
                 nt.expected_updated_at = nt.updated_at;
                 changed.push(nt);
                 report.deleted += 1;
@@ -452,7 +452,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError>
         tauri::async_runtime::block_on(async { db::db_upsert(app.clone(), changed.clone()).await })
             .map_err(|e| e.to_string())?;
         emit_upserts(app, &changed);
-        // NEW-B-1: 解绑已落盘 → 提交对应 pending journal，关闭对账环路
+        // 解绑已落盘 → 提交对应 pending journal，关闭对账环路
         // （若落盘失败则上面已 return，journal 保持 pending，留待下轮/启动 replay）
         for id in journals_commit_after_batch {
             journal_committed(&jconn, id).ok();
@@ -466,7 +466,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError>
 pub fn spawn_polling(app: AppHandle) {
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_secs(60));
-        // B1: 启动时 replay 上轮未提交的 pending journal 条目，修复 move/delete 成功但
+        // 启动时 replay 上轮未提交的 pending journal 条目，修复 move/delete 成功但
         // db_upsert 失败造成的 DB 不一致。出错只记日志，不影响后续轮询。
         // MI-04b：replay 是 run_migration 之外唯一另一个 journal 写者，不挂守卫时其
         // find+act 会与进行中的迁移 run 在相同 (task_id, src) 上交错。等到拿到
@@ -503,7 +503,7 @@ pub fn spawn_polling(app: AppHandle) {
         }
         loop {
             std::thread::sleep(Duration::from_secs(POLL_INTERVAL_SECS));
-            // 防 panic 杀死轮询线程（审计 P2）：单轮崩溃只废这一轮，后台自动迁移永久可用
+            // 防 panic 杀死轮询线程（审计 ）：单轮崩溃只废这一轮，后台自动迁移永久可用
             let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_migration(&app)));
             if let Err(e) = r {
                 let msg = crate::audit::panic_message(e);
@@ -517,7 +517,7 @@ pub fn spawn_polling(app: AppHandle) {
 mod cancel_tests {
     use super::*;
 
-    /// 取消存取器行为（拍板 #2=A）：request → requested=true；run 侧清零由
+    /// 取消存取器行为：request → requested=true；run 侧清零由
     /// CancelGuard（Drop）承担，run_migration 端到端行为依赖 AppHandle+DB
     /// 不可轻量 mock，由 OCR/代码审查担保（r2 medium 登记）。测试后置清理，
     /// 不向其他测试泄漏取消态。

@@ -17,7 +17,7 @@ use super::types::{
     ActiveModelId, ApiProvider, BotConfig, ModelEntry, ModelsByProvider, BOT_CONFIG_SCHEMA_VERSION,
 };
 
-// ─────────────── 双协议下大模型列表迁移/派生 ───────────────
+// 双协议下大模型列表迁移/派生
 
 /// 老配置 → 新结构一次性迁移：无 models_by_provider、但 base_url 或
 /// model 非空时，在内存里补一份单条 ModelEntry + active_model_id，挂在
@@ -120,7 +120,7 @@ pub(crate) fn derive_legacy_fields_from_active(cfg: &mut BotConfig) {
     // 列表为空或没有新结构：保持 base_url/model 不动（防御性）
 }
 
-// ───────────────────────── 条目级推理参数 ─────────────────────────
+// 条目级推理参数
 
 /// 当前协议 + active_model_id → active 模型条目。
 /// 与 keyring::active_vendor_of 同构的拆参签名（BotConfig 与对外视图
@@ -209,7 +209,7 @@ pub fn effective_inference(
     }
 }
 
-// ───────────────────────── max_tokens ─────────────────────────
+// max_tokens
 
 /// max_tokens 默认值与合法范围（默认 8192；仅 Anthropic 模式发送）
 pub const DEFAULT_MAX_TOKENS: u32 = 8192;
@@ -222,7 +222,7 @@ pub fn resolve_max_tokens(v: Option<u32>) -> u32 {
         .clamp(MIN_MAX_TOKENS, MAX_MAX_TOKENS)
 }
 
-// ───────────────────────── schema 迁移 ─────────────────────────
+// schema 迁移
 
 /// schemaVersion 在 JSON 里的键名（camelCase）。
 pub(crate) const SCHEMA_VERSION_KEY: &str = "schemaVersion";
@@ -340,7 +340,7 @@ pub(crate) fn migrate_bot_config_schema_locked(app: &AppHandle) -> Result<(), St
     }
 }
 
-/// 条目级推理参数（W6-MODEL）：每卡模型覆盖时按覆盖条目计算（原 effective_inference
+/// 条目级推理参数：每卡模型覆盖时按覆盖条目计算（原 effective_inference
 /// 只按 active 条目）。global_max_tokens = 全局 max_tokens 兜底。
 pub fn inference_for_entry(
     entry: &ModelEntry,

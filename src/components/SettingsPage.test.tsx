@@ -38,7 +38,7 @@ mocks.invokeMock.mockImplementation(async (cmd: string) => {
         model: "",
         hasApiKey: false,
         bypassLlmOnPreStepHit: true,
-        // 字体大小：默认 small（老板拍板「目前字号为小」）
+        // 字体大小：默认 small（「目前字号为小」）
         uiFontSize: "small",
       };
     case "py_get_enabled":
@@ -138,9 +138,9 @@ const defaultProps = {
 describe("SettingsPage", () => {
   it("初始渲染：所有主要 section 都出现", async () => {
     render(<SettingsPage {...defaultProps} />);
-    // U8 十分类：逐分类导航断言各面板标题（惰性挂载，未激活不渲染）
+    //  十分类：逐分类导航断言各面板标题（惰性挂载，未激活不渲染）
     expect(screen.getByText("个人资料")).toBeInTheDocument();
-    // U8：侧栏分类名与面板标题同文（「基础设置」两处，2026-10-06 老板拍板由「通用设置」更名），取全量断言
+    // 侧栏分类名与面板标题同文（「基础设置」两处，2026-10-06 由「通用设置」更名），取全量断言
     expect(screen.getAllByText("基础设置").length).toBeGreaterThan(0);
     expect(screen.getByText("浅色")).toBeInTheDocument();
     expect(screen.getByText("深色")).toBeInTheDocument();
@@ -292,7 +292,7 @@ describe("SettingsPage", () => {
       return null;
     });
     render(<SettingsPage {...defaultProps} />);
-    // U7：导航到「机器人」分类
+    // 导航到「机器人」分类
     await user.click(screen.getByRole("button", { name: "机器人" }));
     await waitFor(() => {
       expect(mocks.invokeMock).toHaveBeenCalledWith("bot_get_enabled");
@@ -347,7 +347,7 @@ describe("SettingsPage", () => {
       return null;
     });
     render(<SettingsPage {...defaultProps} />);
-    // U8：导航到「MCP 服务」分类（搜索引擎设置所在）
+    // 导航到「MCP 服务」分类（搜索引擎设置所在）
     await user.click(screen.getByRole("button", { name: "MCP 服务" }));
     // 「Tavily 搜索」行出现（开关初始为关）
     const title = await screen.findByText("Tavily 搜索");
@@ -404,7 +404,7 @@ describe("SettingsPage", () => {
       return null;
     });
     render(<SettingsPage {...defaultProps} />);
-    // U8：导航到「MCP 服务」分类
+    // 导航到「MCP 服务」分类
     fireEvent.click(screen.getByRole("button", { name: "MCP 服务" }));
     expect(
       await screen.findByText(/已开启但未填 key/)
@@ -441,7 +441,7 @@ describe("SettingsPage", () => {
       return null;
     });
     render(<SettingsPage {...defaultProps} />);
-    // U8：导航到「MCP 服务」分类
+    // 导航到「MCP 服务」分类
     await user.click(screen.getByRole("button", { name: "MCP 服务" }));
     // 已存 key：placeholder 提示 + 输入框不回填
     const input = await screen.findByPlaceholderText(/已存入系统凭据存储/);
@@ -475,7 +475,7 @@ describe("SettingsPage", () => {
     const onExportTasks = vi.fn(async () => {});
     const user = userEvent.setup();
     render(<SettingsPage {...defaultProps} onExportTasks={onExportTasks} />);
-    // U8：导航到「数据管理」分类（导出按钮所在面板）
+    // 导航到「数据管理」分类（导出按钮所在面板）
     await user.click(screen.getByRole("button", { name: "数据管理" }));
     // eefa78f 起页面有两个「导出」（任务导出 + 工作区导出），取第一个（任务导出）；U20B 图标化后为纯文字
     await user.click(screen.getAllByText("导出")[0]);
@@ -484,11 +484,11 @@ describe("SettingsPage", () => {
     });
   });
 
-  // ───────── 双协议下的大模型列表（老板拍板改版）─────────
+  // 双协议下的大模型列表（改版）
   // 老「提供商预设」3 个测试 + 1 个「API 协议」测试全部重写：新行为是每协议独立
   // 一份 ModelEntry 列表，点「添加大模型」自己加，切换协议时列表整体切换。
 
-  it("大模型 API 配置：初始无模型（老板要求「不设置默认厂商」）→ 厂商列表空 + 显示引导", async () => {
+  it("大模型 API 配置：初始无模型→ 厂商列表空 + 显示引导", async () => {
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "bot_get_enabled") return true;
       if (cmd === "bot_get_config")
@@ -513,9 +513,9 @@ describe("SettingsPage", () => {
       return null;
     });
     render(<SettingsPage {...defaultProps} />);
-    // U8：导航到「模型设置」分类（hidden section 的元素查不到 role，先导航）
+    // 导航到「模型设置」分类（hidden section 的元素查不到 role，先导航）
     fireEvent.click(screen.getByRole("button", { name: "模型设置" }));
-    // U10 厂商中心：未选厂商显示引导；点「添加厂商」出预设网格
+    //  厂商中心：未选厂商显示引导；点「添加厂商」出预设网格
     expect(await screen.findByText(/从左侧选择一个厂商/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /添加厂商/ }));
     expect(screen.getByText("MiniMax")).toBeInTheDocument();
@@ -547,7 +547,7 @@ describe("SettingsPage", () => {
       return null;
     });
     render(<SettingsPage {...defaultProps} />);
-    // U10：导航到「模型设置」→ 添加厂商 → 选 Anthropic 预设 → 厂商页
+    // 导航到「模型设置」→ 添加厂商 → 选 Anthropic 预设 → 厂商页
     await user.click(screen.getByRole("button", { name: "模型设置" }));
     await user.click(screen.getByRole("button", { name: "添加厂商" }));
     await user.click(screen.getByRole("button", { name: /Anthropic/ }));
@@ -591,7 +591,7 @@ describe("SettingsPage", () => {
       return null;
     });
     render(<SettingsPage {...defaultProps} />);
-    // U8：导航到「模型设置」分类；老条目无 vendor → 按协议名兜底为两个厂商行
+    // 导航到「模型设置」分类；老条目无 vendor → 按协议名兜底为两个厂商行
     await user.click(screen.getByRole("button", { name: "模型设置" }));
     await user.click(screen.getByRole("button", { name: "OpenAI 兼容" }));
     // OpenAI 兼容厂商页：DeepSeek + Kimi 都在（紧凑行显示模型名文本），Claude 不在
@@ -643,7 +643,7 @@ describe("SettingsPage", () => {
       return null;
     });
     render(<SettingsPage {...defaultProps} />);
-    // U8：导航到「模型设置」分类；进 OpenAI 兼容厂商页
+    // 导航到「模型设置」分类；进 OpenAI 兼容厂商页
     await user.click(screen.getByRole("button", { name: "模型设置" }));
     await user.click(screen.getByRole("button", { name: "OpenAI 兼容" }));
     expect(await screen.findByText("DeepSeek")).toBeInTheDocument();
@@ -698,13 +698,13 @@ describe("SettingsPage", () => {
       return null;
     });
     render(<SettingsPage {...defaultProps} />);
-    // U8：导航到「模型设置」分类；添加厂商选「Anthropic」预设（携带 vendor 字段）
+    // 导航到「模型设置」分类；添加厂商选「Anthropic」预设（携带 vendor 字段）
     await user.click(screen.getByRole("button", { name: "模型设置" }));
     await user.click(screen.getByRole("button", { name: "添加厂商" }));
     await user.click(screen.getByRole("button", { name: /Anthropic/ }));
     // 添加大模型（厂商页内）
     await user.click(screen.getByRole("button", { name: /添加模型/ }));
-    // 填 label（U11：新行为紧凑行，点铅笔进编辑态后出现输入框）
+    // 填 label新行为紧凑行，点铅笔进编辑态后出现输入框）
     await user.click(
       screen.getAllByRole("button", { name: "编辑此模型" }).slice(-1)[0],
     );
@@ -733,7 +733,7 @@ describe("SettingsPage", () => {
         tavilyKey: string | null;
         braveKey: string | null;
       };
-      // U10：预设自带 claude 行 + 新加的 Claude Sonnet 行，共两条
+      // 预设自带 claude 行 + 新加的 Claude Sonnet 行，共两条
       expect(arg.config.modelsByProvider.anthropic).toHaveLength(2);
       expect(
         arg.config.modelsByProvider.anthropic[1].label,
@@ -851,7 +851,7 @@ describe("SettingsPage", () => {
     expect(toggle.textContent).toMatch(/已关闭/);
   });
 
-  it("通用设置：字体大小四档 → 点选即套 data-attr + 立即落盘（与外观点选一致，2026-09-08 老板拍板）", async () => {
+  it("通用设置：字体大小四档 → 点选即套 data-attr + 立即落盘（与外观点选一致，2026-09-08 老板）", async () => {
     const user = userEvent.setup();
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "bot_get_enabled") return true;
@@ -873,7 +873,7 @@ describe("SettingsPage", () => {
           bypassLlmOnPreStepHit: true,
           modelsByProvider: { openai: [], anthropic: [] },
           activeModelId: { openai: null, anthropic: null },
-          // 初始 small（老板拍板默认）
+          // 初始 small（默认）
           uiFontSize: "small",
         };
       if (cmd === "bot_set_config") return null;
@@ -957,15 +957,14 @@ describe("SettingsPage", () => {
     expect(css).toMatch(
       /\[data-font-size="xlarge"\]\s+input[\s\S]*?font-size:\s*19px/,
     );
-    // small 档保持不动（老板拍板「目前字号为小」）
+    // small 档保持不动（「目前字号为小」）
     expect(css).not.toMatch(/\[data-font-size="small"\]\s+\.text-xs/);
   });
 
-  // ───────── 厂商详情页复刻改造（厂商头开关/⋯菜单、Key 显隐、获取 Key 外链、
-  // 连接测试、能力徽标、ProviderLogo、updateModel 跨协议修复）─────────
+  // 厂商详情页复刻改造（厂商头开关/⋯菜单、Key 显隐、获取 Key 外链、
+  // 连接测试、能力徽标、ProviderLogo、updateModel 跨协议修复）
 
-  /** 厂商详情页用例的公共 mock：bot 开启 + 指定 bot_get_config 视图；
-   *  extra 可覆盖个别命令（如 bot_test_connection） */
+  /** 厂商详情页用例的公共 mock：bot 开启 + 指定 bot_get_config 视图；   *  extra 可覆盖个别命令（如 bot_test_connection） */
   const mockVendorConfig = (
     config: Record<string, unknown>,
     extra?: (cmd: string) => unknown,
@@ -1477,7 +1476,7 @@ describe("SettingsPage", () => {
     });
   });
 
-  // ───────── 模型库（内置 Rust meta 模块）对接 ─────────
+  // 模型库（内置 Rust meta 模块）对接
   // meta_* 命令走 invokeMock：默认实现返回 null（fetchProviders 降级内置预设），
   // 下列用例用 stubMetaInvoke 按命令覆盖（包一层当前实现，只接管 meta_*）。
 
@@ -1532,8 +1531,7 @@ describe("SettingsPage", () => {
     bypassLlmOnPreStepHit: true,
   };
 
-  /** 按命令路由的模型库 invoke mock；providers 传 null = meta_list_providers 抛错（降级内置预设）。
-   *  包一层当前 invokeMock 实现，只接管 meta_* 命令（其余命令保持调用方已设的实现） */
+  /** 按命令路由的模型库 invoke mock；providers 传 null = meta_list_providers 抛错（降级内置预设）。   *  包一层当前 invokeMock 实现，只接管 meta_* 命令（其余命令保持调用方已设的实现） */
   const stubMetaInvoke = (
     providers: unknown[] | null,
     modelsByKey: Record<string, unknown[]> = {},
@@ -1637,7 +1635,7 @@ describe("SettingsPage", () => {
     expect(arg.config.activeModelId.openai).toBe(list[0].id);
   });
 
-  // ───────── 每模型推理参数接线（U13） ─────────
+  // 每模型推理参数接线
 
   it("推理参数接线：编辑态填四参数 → 保存落盘 bot_set_config；重载后编辑态回显 + Anthropic 说明行", async () => {
     const user = userEvent.setup();

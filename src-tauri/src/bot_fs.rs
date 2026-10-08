@@ -26,12 +26,12 @@ const LIST_MAX_ENTRIES: usize = 200;
 const WALK_MAX_DEPTH: usize = 5;
 /// 遍历时跳过的大而杂目录（另跳过所有 . 开头隐藏目录）
 const SKIP_DIRS: [&str; 4] = ["node_modules", "target", "dist", "build"];
-/// N6：edit_file 可编辑文件上限（对齐 read 的可处理量级，超出提示拆分）
+/// ：edit_file 可编辑文件上限（对齐 read 的可处理量级，超出提示拆分）
 const EDIT_MAX_FILE_BYTES: usize = 1024 * 1024;
-/// N6：write_file 内容上限（对齐 GREP_MAX_FILE_BYTES 量级）
+/// ：write_file 内容上限（对齐 GREP_MAX_FILE_BYTES 量级）
 const WRITE_MAX_BYTES: usize = 2 * 1024 * 1024;
 
-// ───────────────────── P3-c：per-tool 权限规则（Agent 透明化设计 §9.2-1） ─────────────────────
+// per-tool 权限规则（Agent 透明化设计 §9.2-1）
 
 /// 规则评估结果（纯函数可测；评估序 deny > ask > allow，同工具多规则**首中即停**）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -232,7 +232,7 @@ async fn allowed_dirs(app: &AppHandle, session: Option<&str>) -> Vec<PathBuf> {
         .map(|p| p.to_string_lossy().to_string());
     let raw = merge_raw_dirs(&cfg.allowed_dirs, home_dir().as_deref(), task_dirs, gen);
     // canonicalize 循环整体包 spawn_blocking：逐目录同步 syscall 在 async runtime
-    // 上会阻塞全部 Tauri command / event（OCR C5-BT-04 performance）。
+    // 上会阻塞全部 Tauri command / event（ performance）。
     // JoinError → unwrap_or_default 保「拿不到目录 → 空白名单」语义（fail-closed 不变）。
     let mut out = spawn_blocking_io(move || {
         let mut out: Vec<PathBuf> = Vec::new();
@@ -272,7 +272,7 @@ async fn allowed_dirs(app: &AppHandle, session: Option<&str>) -> Vec<PathBuf> {
 /// interactive/session_id（会话隔离）：后台执行（interactive=false）
 /// 不弹授权窗直接拒；弹窗事件带 sessionId 供前端按会话过滤。
 /// 成功返回 canonical 路径（Windows 剥 \\?\ 前缀）。
-/// 包 spawn_blocking 同步 syscall：避免阻塞 Tauri async runtime（OCR C1b performance）。
+/// 包 spawn_blocking 同步 syscall：避免阻塞 Tauri async runtime（ performance）。
 ///
 /// closure 要求：FnOnce() -> Result<T, std::io::Error> + Send + 'static。
 /// 返回：Result<T, String>——内部把 io::Error 转 String（走 spawn_blocking_map 契约，
@@ -287,7 +287,7 @@ where
     crate::py::document::spawn_blocking_map(|| f().map_err(|e| e.to_string())).await
 }
 
-/// async 版 is_dir：单次 metadata syscall 同样移出 runtime 线程（OCR C5-BT-04）。
+/// async 版 is_dir：单次 metadata syscall 同样移出 runtime 线程。
 /// JoinError → false（按「不是目录」处理，后续 open/read_dir 自然失败冒泡）。
 async fn is_dir_async(path: &Path) -> bool {
     let p = path.to_path_buf();
@@ -310,10 +310,10 @@ pub async fn resolve_with_perm(
     // 用户输入原始路径（展开 ~ 后、**canonicalize 前**）——后续 canonical
     // 用于白名单校验，但写入 allowedDirs 必须用「用户输入视角的父目录」，
     // 绝不能用 canonical(parent())，否则 allowlist/sub/link.txt → /etc/passwd
-    // 会把 /etc/ 写进白名单（OCR C1b symlink escape）。
+    // 会把 /etc/ 写进白名单（ symlink escape）。
     let expanded = expand_tilde(p);
     // canonicalize 包 spawn_blocking：同步 syscall 在 async runtime 会阻塞全部
-    // Tauri command / event （OCR C1b performance critical）。
+    // Tauri command / event （ performance critical）。
     // 把 owned clone 先拿出来再 move 进闭包：闭包要求 'static，原 expanded 留给 symlink 修复用。
     let expanded_for_canonical = expanded.clone();
     let canonical =
@@ -322,7 +322,7 @@ pub async fn resolve_with_perm(
     if is_within_allowlist(&canonical, &dirs) {
         return Ok(strip_verbatim(canonical));
     }
-    // P3-c：allow 规则 = 单工具 yolo（白名单外放行+审计；穿越/软链在 canonicalize
+    // allow 规则 = 单工具 yolo（白名单外放行+审计；穿越/软链在 canonicalize
     // 后同样落白名单外——与全局 yolo 档同语义，由规则显式授权兜底）
     if crate::bot_fs::tool_rule_for(app, tool) == Some(crate::bot_fs::ToolRuleAction::Allow) {
         crate::bot::audit_log(
@@ -345,7 +345,7 @@ pub async fn resolve_with_perm(
             );
             Ok(strip_verbatim(canonical))
         }
-        // P3-c auto 档：白名单外降级 ask（弹窗/无人值守拒）——与 Ask 同分支
+        //  auto 档：白名单外降级 ask（弹窗/无人值守拒）——与 Ask 同分支
         crate::bot::PermMode::Ask | crate::bot::PermMode::Auto => {
             match crate::bot_slash::ask_path_confirm(
                 app,
@@ -367,7 +367,7 @@ pub async fn resolve_with_perm(
                     Ok(strip_verbatim(canonical))
                 }
                 crate::bot_slash::ConfirmChoice::Always => {
-                    // 【OCR C1b symlink 修复】授权粒度 = 用户输入原始路径的父目录
+                    // 【 symlink 修复】授权粒度 = 用户输入原始路径的父目录
                     // （文件 → parent、目录 → self），与判定逻辑保持一致。
                     // 绝不能用 canonical(parent())：那个是 symlink 解析后的路径，
                     // 可被攻击者控制指向 allowlist 外。
@@ -431,9 +431,9 @@ fn is_within_allowlist(canonical: &Path, dirs: &[PathBuf]) -> bool {
     dirs.iter().any(|d| canonical.starts_with(d))
 }
 
-// ───────────────────────── N6：文件编辑（edit_file / write_file） ─────────────────────────
+// ：文件编辑（edit_file / write_file）
 //
-// 写白名单 ≠ 读白名单（设计决策，spec N6）：可写根 = AI_Gen_Files + 任务卡绑定文件夹
+// 写白名单 ≠ 读白名单（设计决策，spec ）：可写根 = AI_Gen_Files + 任务卡绑定文件夹
 // + 设置页 allowedDirs；桌面/下载/文档默认项**只读不可写**——用户没显式授权改家目录
 // 文件。白名单外走 perm_mode 三分支：strict 拒 / ask 弹 danger 确认（每次，不持久化）/
 // yolo 放行+审计。
@@ -550,7 +550,7 @@ async fn resolve_writable(
     if is_within_allowlist(&parent_canon, &dirs) {
         return Ok(strip_verbatim(expanded));
     }
-    // P3-c：allow 规则 = 单工具 yolo（写白名单外放行+审计，与读侧同语义）
+    // allow 规则 = 单工具 yolo（写白名单外放行+审计，与读侧同语义）
     if crate::bot_fs::tool_rule_for(app, tool) == Some(crate::bot_fs::ToolRuleAction::Allow) {
         crate::bot::audit_log(
             app,
@@ -572,7 +572,7 @@ async fn resolve_writable(
             );
             Ok(strip_verbatim(expanded))
         }
-        // P3-c auto 档：白名单外降级 ask（写确认每次不持久化；无人值守拒）——与 Ask 同分支
+        //  auto 档：白名单外降级 ask（写确认每次不持久化；无人值守拒）——与 Ask 同分支
         crate::bot::PermMode::Ask | crate::bot::PermMode::Auto => {
             let approved = crate::bot_slash::ask_user_confirm(
                 app,
@@ -643,7 +643,7 @@ pub(crate) enum EditErrorKind {
 ///    唯一 → 应用（重建时保留文件原本的主导换行符）；0 处 → NotFound（带
 ///    reflection 提示：先 read_text_file、注意缩进）；多处 → MultiHit
 /// 返回 (替换后全文, 级别, 行数变化 new-old)。
-/// 不做 Levenshtein 模糊匹配（误替换风险 > 收益，spec N6 留档）。
+/// 不做 Levenshtein 模糊匹配（误替换风险 > 收益，spec  留档）。
 pub(crate) fn try_apply_edit(
     content: &str,
     old: &str,
@@ -738,10 +738,10 @@ pub(crate) fn validate_write_content(content: &str) -> Result<(), String> {
     Ok(())
 }
 
-// ───────────────────── P1-b：文件变更证据（Agent 透明化设计 §4.2） ─────────────────────
+// 文件变更证据（Agent 透明化设计 §4.2）
 
-/// 文件变更证据（P1-b）：文件类工具成功落盘后随 `ToolResult::file_changes` 回传，
-/// dispatch（P1-c）据此落 `file_changes` 表 + emit `bot-file-changed`。
+/// 文件变更证据：文件类工具成功落盘后随 `ToolResult::file_changes` 回传，
+/// dispatch据此落 `file_changes` 表 + emit `bot-file-changed`。
 /// 纯数据结构——trace 归属字段（trace_id/span_id/created_at）由 dispatch 侧补。
 #[derive(Debug, Clone)]
 pub struct FileChangeReceipt {
@@ -801,7 +801,7 @@ pub(crate) fn build_unified_diff(
     (Some(text), added, deleted, truncated)
 }
 
-/// sha256 十六进制（回滚证据链：P2 回滚前比对 after_sha 防文件漂移）
+/// sha256 十六进制（回滚证据链： 回滚前比对 after_sha 防文件漂移）
 pub(crate) fn sha256_hex(s: &str) -> String {
     use sha2::Digest;
     let mut h = sha2::Sha256::new();
@@ -865,7 +865,7 @@ pub(crate) fn build_file_change_receipt(
 
 /// edit 同步内核（spawn_blocking 调用；独立函数便于单测）：
 /// 读文件（≤1MB、UTF-8）→ 三级匹配 → 返回替换结果。
-/// P1-b 起同时带回**修改前全文**（diff 与回滚快照的证据源，避免再读一次盘）。
+///  起同时带回**修改前全文**（diff 与回滚快照的证据源，避免再读一次盘）。
 fn edit_file_sync(
     canonical: PathBuf,
     old: String,
@@ -962,7 +962,7 @@ pub async fn tool_edit_file(
                     }
                 ),
             );
-            // P1-b 变更证据（Agent 透明化设计 §4.2）：unified diff + before 快照。
+            //  变更证据（Agent 透明化设计 §4.2）：unified diff + before 快照。
             // 快照失败降级 before_ref=None（checkpoint.write_fail 审计），不翻转业务结果。
             let mut receipt = build_file_change_receipt(&shown, "modify", Some(&before), &applied);
             receipt.before_ref = write_before_snapshot(app, &before);
@@ -1021,7 +1021,7 @@ pub async fn tool_write_file(
             .unwrap_or(false)
     };
     if existed {
-        // P3-c：auto 档白名单内的覆盖写自动接受（resolve_writable 已过白名单闸；
+        // auto 档白名单内的覆盖写自动接受（resolve_writable 已过白名单闸；
         // acceptEdits 核心语义——白名单内的「文件编辑类操作」不再人工确认）。
         // yolo 档维持既有弹窗行为（默认行为零变更约束）；白名单外写入在
         // resolve_writable 已按 ask 弹过窗，此处不重复确认。
@@ -1043,7 +1043,7 @@ pub async fn tool_write_file(
             );
         }
     }
-    // P1-b 变更证据：modify 需在写盘前取旧文（读不出/超上限/二进制 → 无 diff 降级）。
+    //  变更证据：modify 需在写盘前取旧文（读不出/超上限/二进制 → 无 diff 降级）。
     // 这是观测面读取而非安全判定，不做 inode re-check（TOCTOU 与读闸门同级留档）。
     let before_content: Option<String> = if existed {
         let c = canonical.clone();
@@ -1064,7 +1064,7 @@ pub async fn tool_write_file(
     match out {
         Ok(written) => {
             let action = if existed { "已覆盖" } else { "已创建" };
-            // P1-b 变更证据：create = 全 + 行 diff；modify = before/after diff + 回滚快照。
+            //  变更证据：create = 全 + 行 diff；modify = before/after diff + 回滚快照。
             // 快照失败降级 before_ref=None（checkpoint.write_fail 审计），不翻转业务结果。
             let kind: &'static str = if existed { "modify" } else { "create" };
             let mut receipt = build_file_change_receipt(
@@ -1190,7 +1190,7 @@ async fn read_capped_file(path: &Path, max: usize) -> std::io::Result<(Vec<u8>, 
     .map_err(std::io::Error::other)
 }
 
-/// 【OCR C1b TOCTOU】inode re-check 结果。
+/// 【 TOCTOU】inode re-check 结果。
 #[derive(Debug, PartialEq, Eq)]
 enum InodeCheckOutcome {
     /// inode 不变（或 platform 不支持 / 文件已不存在）→ 放行
@@ -1300,7 +1300,7 @@ async fn is_binary_file_with_ino_check(
     }
 }
 
-// ───────────────────────── 工具实现（bot 分发签名：(String, Vec<TaskRef>)） ─────────────────────────
+// 工具实现（bot 分发签名：(String, Vec<TaskRef>)）
 
 /// read_text_file：读白名单内 UTF-8 文本，offset/limit 行切片（1 起），超 100KB 截断
 pub async fn tool_read_text_file(
@@ -1327,7 +1327,7 @@ pub async fn tool_read_text_file(
             Vec::new(),
         );
     }
-    // 【OCR C1b TOCTOU】保护范围（精确）：
+    // 【 TOCTOU】保护范围（精确）：
     //   canonicalize → capture_pre_ino → is_binary_file_with_ino_check
     //   （内部 open file 拿 fd → stat fd 看 inode → 与 pre_ino 比对 → 顺手判 8KB 二进制）
     //   —— 三步窗口内的 inode swap 被捕获（canonical 与 stat 之间文件被换）。
@@ -1490,7 +1490,7 @@ pub async fn tool_grep_files(
     }
     // walk 整体包 spawn_blocking：内部 read_dir / metadata / read_to_string
     // 都是同步 syscall，全部移到阻塞线程跑，不再阻塞 Tauri async runtime
-    // （OCR C1b performance critical）。
+    // （ performance critical）。
     // closure 内 is_binary_file_sync / read_to_string 仍 sync，但已在 spawn_blocking
     // 线程内 OK。流式优化留 follow-up。
     // 返回（渲染行, 匹配数）二元组：max 按匹配数计、行数随 context 放大，
@@ -1606,7 +1606,7 @@ pub async fn tool_list_files(
         );
     }
     let pattern = v["pattern"].as_str().unwrap_or("").trim().to_string();
-    // walk 整体包 spawn_blocking（OCR C1b performance）：同 grep_files 原因。
+    // walk 整体包 spawn_blocking（ performance）：同 grep_files 原因。
     let canonical_log = canonical.display().to_string();
     let entries: Vec<String> =
         crate::py::document::spawn_blocking_map(move || -> Result<Vec<String>, String> {
@@ -1665,7 +1665,7 @@ pub async fn tool_list_files(
 mod tests {
     use super::*;
 
-    // ───── N3-6：grep 上下文渲染 ─────
+    // N3-6：grep 上下文渲染
 
     #[test]
     fn render_context_zero_matches_old_format() {
@@ -1721,7 +1721,7 @@ mod tests {
         assert_eq!(out, vec!["/t/f.txt:1: only"], "窗口越界应夹到文件边界");
     }
 
-    // ───── N6：edit 三级匹配 / write 校验 / 可写根集合 ─────
+    // ：edit 三级匹配 / write 校验 / 可写根集合
 
     #[test]
     fn apply_edit_exact_unique_and_multi_hit() {
@@ -2009,7 +2009,7 @@ mod tests {
         );
     }
 
-    /// 【OCR C1b】始终允许该目录：授权粒度 = 用户输入原始父目录（不是 canonical.parent）
+    /// 【 C1b】始终允许该目录：授权粒度 = 用户输入原始父目录（不是 canonical.parent）
     ///
     /// 攻击模型：用户输入 ~/allowed/sub/link.txt → link.txt 是软链 → /etc/passwd。
     /// canonical 解析后 = /etc/passwd，canonical.parent() = /etc。
@@ -2067,7 +2067,7 @@ mod tests {
         );
     }
 
-    /// 【OCR C1b TOCTOU】canonicalize 与 read 之间，原路径被替换为同名新 inode 文件 → 必须拒绝。
+    /// 【 TOCTOU】canonicalize 与 read 之间，原路径被替换为同名新 inode 文件 → 必须拒绝。
     ///
     /// 覆盖范围：
     /// - ✅ canonical 出来的 path 不变，但 path 对应的 inode 变了（删 + 同名新建）
@@ -2112,7 +2112,7 @@ mod tests {
     }
 }
 
-// ───────────────────── P1-b：文件变更证据（Agent 透明化设计 §4.2） ─────────────────────
+// 文件变更证据（Agent 透明化设计 §4.2）
 
 #[cfg(test)]
 mod file_change_tests {

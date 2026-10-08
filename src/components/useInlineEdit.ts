@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
-/**
- * 内联文本编辑统一行为：草稿 state + Enter 提交 / Escape 取消 /
+/** * 内联文本编辑统一行为：草稿 state + Enter 提交 / Escape 取消 /
  * Blur 提交。TaskCardContent（挂件）与 TodoCard（主窗口）的标题内联编辑原先各写
  * 一份，行为漂移过 E4 类 bug（Escape 取消后 blur 又把草稿提交）；现统一走本 hook。
  *

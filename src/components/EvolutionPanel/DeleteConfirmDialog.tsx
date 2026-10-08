@@ -1,10 +1,10 @@
-//! DeleteConfirmDialog — 删除提案确认弹窗（老板 16:35 拍板）
+//! DeleteConfirmDialog — 删除提案确认弹窗（）
 //!
 //! 选项：
 //! 1. 默认：只删 proposals.jsonl 行 + 级联删 pending ChangeRecord
 //! 2. 勾选「连同源记忆一起删」：额外删 mem_items（永久阻断 24h 后重生）
 //!
-//! 设计权衡（详见老板 16:35 拍板）：
+//! 设计权衡（详见）：
 //! - 默认关（保护）：mem_items 可能参与其他 proposal，连带删破坏更广
 //! - 勾选后：permanent block，但不可逆
 

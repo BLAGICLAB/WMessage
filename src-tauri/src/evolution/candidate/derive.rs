@@ -1,6 +1,6 @@
-//! R4 L1 候选层 · 从 EvolutionProposal 派生 ProposalEntry
+//!  L1 候选层 · 从 EvolutionProposal 派生 ProposalEntry
 //!
-//! 纯函数；不调 LLM（spec R4 硬约束）；规则化映射。
+//! 纯函数；不调 LLM（spec  硬约束）；规则化映射。
 
 use super::entry::{ProposalEntry, ProposalStatus};
 use super::ttl::compute_expires_at;

@@ -1,6 +1,6 @@
-// 执行痕迹面板（P2-a，Agent 透明化设计 §5.2）：任务卡的「执行详情」。
+// 执行痕迹面板（Agent 透明化设计 §5.2）：任务卡的「执行详情」。
 //
-// 数据源 = P1 的三表（db/trace.rs 查询命令 trace_list/trace_detail）：
+// 数据源 =  的三表（db/trace.rs 查询命令 trace_list/trace_detail）：
 // - 摘要头：状态/耗时/轮数/工具数/改文件数/tokens
 // - 时间线：每次工具调用一行（入参/结果/耗时/成败，<details> 展开）
 // - 文件变更：±行 + unified diff 着色（DiffView）+ 「回滚」按钮（漂移闸拒绝时展示原因）
@@ -218,7 +218,7 @@ export function TracePanel({
   /** 按任务卡查（执行历史列表 → 选一条）；与 traceId 二选一 */
   taskId?: string;
   taskTitle?: string;
-  /** P4 直查模式：活动页按 trace id 直接打开单条 */
+  /**  直查模式：活动页按 trace id 直接打开单条 */
   traceId?: number;
   /** W10：所属工作流（有值才显示「运行审计」页签；看板任务无审计） */
   workflowId?: string;
@@ -231,7 +231,7 @@ export function TracePanel({
   const [detail, setDetail] = useState<Awaited<ReturnType<typeof traceDetail>>>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  // P4：JSONL 导出（按钮态 + 结果路径/错误展示）
+  // JSONL 导出（按钮态 + 结果路径/错误展示）
   const [exportBusy, setExportBusy] = useState(false);
   const [exportMsg, setExportMsg] = useState<string | null>(null);
   // W10：页签（trace=执行痕迹 / audit=运行审计）+ 审计数据

@@ -29,7 +29,7 @@ pub const STATUS_DISMISSED: &str = "dismissed";
 pub const KIND_MEMORY: &str = "memory_proposal";
 pub const KIND_EVOLUTION: &str = "evolution_proposal";
 pub const KIND_ARTIFACT: &str = "artifact_bind";
-/// 工作流执行提问（W9-ASK）：ask 端落队列、应答端 `workflow_question_respond` 处理；
+/// 工作流执行提问：ask 端落队列、应答端 `workflow_question_respond` 处理；
 /// payload = {questionId, workflowId, workflowName, taskId, nodeTitle, question, why, options, assumption, createdAt}
 pub const KIND_WORKFLOW_QUESTION: &str = "workflow_question";
 
@@ -122,7 +122,7 @@ fn row_to_view(r: &rusqlite::Row) -> rusqlite::Result<NotificationView> {
     })
 }
 
-/// 按 id 取单条（W9-ASK：应答端读问题 payload；不存在 → None）
+/// 按 id 取单条应答端读问题 payload；不存在 → None）
 pub fn notif_get(
     conn: &rusqlite::Connection,
     id: &str,
@@ -281,7 +281,7 @@ pub fn emit_changed<R: tauri::Runtime>(app: &AppHandle<R>) {
     let _ = app.emit(EVENT_CHANGED, serde_json::json!({}));
 }
 
-// ───────────────────────── tauri 命令 ─────────────────────────
+// tauri 命令
 
 /// 通知列表（新→旧）；status 传 "pending"/"done"/"dismissed"，缺省全量
 #[tauri::command]

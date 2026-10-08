@@ -1,4 +1,4 @@
-//! 子 Agent 编排提示词（SUBA-2，设计 §8）。
+//! 子 Agent 编排提示词设计 §8）。
 //!
 //! 资产镜像：docs/prompts/subagent/（main_agent / subagent_base / profiles）。
 //! 实现固化为后端常量（编译期内嵌，与 prompts/ 目录口径一致）。
@@ -85,7 +85,7 @@ pub(crate) const RESULT_SCHEMA_HINT: &str = r#"{
   "next_actions": [],
   "confidence": 0.0
 }"#;
-// 注（OCR r2 采纳）：confidence 示例 0.0 容易被模型照抄——包装里随 schema 附一句
+// 注：confidence 示例 0.0 容易被模型照抄——包装里随 schema 附一句
 // 「confidence 取 0.0~1.0，按实际把握给值」的人类可读说明（见 render_task_wrapper）。
 
 #[cfg(test)]
@@ -113,7 +113,7 @@ mod subagent_prompt_tests {
 
     #[test]
     fn profiles_list_their_whitelisted_tools() {
-        // OCR r3 high 采纳：profile 提示必须点名白名单里的**每个**工具——
+        // profile 提示必须点名白名单里的**每个**工具——
         // 漏写的工具模型会以为不可用（schema 允许但 prompt 说没有）。
         use crate::bot::registry::{CODER_TOOLS, GENERAL_TOOLS, RESEARCH_TOOLS};
         for (p, tools) in [

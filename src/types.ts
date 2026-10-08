@@ -72,8 +72,7 @@ export interface Task {
   tags?: string[];
   /** 绑定文件列表（上限 10；isDir=true 为文件夹，文件夹仍单选独占） */
   files?: Array<{ path: string; isDir: boolean }>;
-  /** 旧单绑定字段：迁移过渡保留（启动时若 files 为空自动迁入 files）。
-   * null = 显式清空（task_patch 语义：null 落库清值，缺键 = 未提供保留旧值）；
+  /** 旧单绑定字段：迁移过渡保留（启动时若 files 为空自动迁入 files）。   * null = 显式清空（task_patch 语义：null 落库清值，缺键 = 未提供保留旧值）；
    * 直连 invoke 构造清空 patch 时必须传 null，不要传 undefined（会被 JSON 丢弃） */
   filePath?: string | null;
   /** 绑定的是否为文件夹（旧字段，见 filePath；null 语义同上） */
@@ -94,14 +93,12 @@ export interface Task {
   order?: number;
   /** 最后修改时间（epoch ms），合并导入时同 id 取更新者 */
   updatedAt?: number;
-  /**
-   * RMW 写回基线 = 读快照时该行的 updatedAt。
+  /**   * RMW 写回基线 = 读快照时该行的 updatedAt。
    * 仅随 db_upsert 上行（后端不落库、不在事件/导出中下发）；后端写前比对现行行，
    * 不一致 → 冲突拒写（防整行覆盖 lost-update）。新建/未读快照的写不带此字段。
    */
   expectedUpdatedAt?: number;
-  /** 已交给机器人执行（🤖 点击置真，执行结束无论成败清除）。
-   *  头像规则：botAssigned 或 schedule 任一存在 → 机器人头像；否则用户头像 */
+  /** 已交给机器人执行（🤖 点击置真，执行结束无论成败清除）。   *  头像规则：botAssigned 或 schedule 任一存在 → 机器人头像；否则用户头像 */
   botAssigned?: boolean;
   /** 定时执行规则：daily:HH:MM / weekly:D:HH:MM / at:YYYY-MM-DDTHH:MM（设置期间一直显示机器人头像） */
   schedule?: string | null;
@@ -109,7 +106,7 @@ export interface Task {
   schedLast?: number | null;
   /** 定时启用开关：undefined = 启用（暂停保留配置不丢节奏） */
   enabled?: boolean;
-  /** 子 agent 编排（SUBA-3 投影）：串链键 = 子 agent 执行会话 id（不直接展示） */
+  /** 子 agent 编排（ 投影）：串链键 = 子 agent 执行会话 id（不直接展示） */
   assignee?: string | null;
   /** 预算三硬顶（上卡可见）：轮数 / 工具调用 / 墙钟秒 */
   budget?: { maxTurns: number; maxToolCalls: number; maxWallSeconds: number } | null;
@@ -129,8 +126,7 @@ export interface Task {
     /** W10：本卡耗时（墙钟 ms，引擎写） */
     ms?: number;
   } | null;
-  /** 工作流画布归属（W1-CANVAS，设计 §3.1）：缺省 "user" = 看板任务；
-   *  "workflow" = 工作流节点卡（看板/挂件默认过滤，bot 工具不过滤） */
+  /** 工作流画布归属设计 §3.1）：缺省 "user" = 看板任务；   *  "workflow" = 工作流节点卡（看板/挂件默认过滤，bot 工具不过滤） */
   origin?: "user" | "workflow";
   /** 所属工作流 id（origin="workflow" 时有值） */
   workflowId?: string;
@@ -138,12 +134,11 @@ export interface Task {
   dependsOn?: string[];
   /** 画布坐标（仅工作流卡使用） */
   canvasPos?: CanvasPos;
-  /** 执行用大模型（W6-MODEL）：模型库条目 id；缺省 = 跟随全局 active 模型 */
+  /** 执行用大模型：模型库条目 id；缺省 = 跟随全局 active 模型 */
   model?: string;
   /** 每卡验收标准（W-QA 卡即契约）：拆解生成的一行可验证完成标准；执行时注入并自检 */
   acceptance?: string | null;
-  /**
-   * 归属人 personId（任务图谱设计 §1.1）：undefined = 本人。
+  /**   * 归属人 personId（任务图谱设计 §1.1）：undefined = 本人。
    * 导入多人数据后，外来任务带其原主人的 pid；看板/归档/回收站/⌘K 默认只显示
    * undefined（本人）的卡，图谱/统计看全部。
    */
@@ -175,12 +170,11 @@ export interface Workflow {
   lastReport?: string | null;
   /** 报告写入时间（epoch ms） */
   lastReportAt?: number | null;
-  /** 澄清元数据（W9-ASK，JSON 串：{answers:[{question,answer}], askMode}）；null = 从未澄清 */
+  /** 澄清元数据JSON 串：{answers:[{question,answer}], askMode}）；null = 从未澄清 */
   clarifyMeta?: string | null;
 }
 
-/** 评审裁决四值（Rust 契约）：pass/partial/fail = rubric 裁决；unknown = 评审
- * 调用/解析失败降级。注意后端 ReviewReport.verdict 是 String 直传（模型输出
+/** 评审裁决四值（Rust 契约）：pass/partial/fail = rubric 裁决；unknown = 评审 * 调用/解析失败降级。注意后端 ReviewReport.verdict 是 String 直传（模型输出
  * 契约外字符串现实可达），前端在解析边界归一成这四值后才落入本类型 */
 export type ReviewVerdict = "pass" | "partial" | "fail" | "unknown";
 

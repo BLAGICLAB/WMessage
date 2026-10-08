@@ -3,7 +3,7 @@
 //! 托管形态：进程级 `OnceLock` 单例（`shared()`），lib.rs setup 触发
 //! 启动重载；命令、registry 挂载层、退出清理全部经 `shared()` 访问。
 //!
-//! 隔离模型（拍板 4A）：
+//! 隔离模型：
 //! - stdio 服务器 = 独立子进程，崩溃不伤宿主（传输断开 → 槽位转 Down）；
 //! - 懒重连：Down 不是终点——下次 `ensure_connected`（工具调用前 / 全量重载）
 //!   会重新拉起进程；连接失败把错误写进槽位 + 审计，绝不 panic / 不阻塞其他服务器；
@@ -16,7 +16,7 @@
 //! `STDIO_LAUNCH_ALLOWLIST` 白名单 + 逐臂字面量 match 构造——不存在
 //! 「变量 → 进程名」数据流（Mimosa 命令注入闸），不走 shell、无字符串拼接执行；
 //! 白名单与 match 臂双清单的一致性由单测 `stdio_allowlist_and_spawn_match_stay_in_sync`
-//! 锁死（B0 评审：新增白名单项漏改 match 臂会静默断 stdio 路）。
+//! 锁死（ 评审：新增白名单项漏改 match 臂会静默断 stdio 路）。
 //!
 //! rmcp API 备忘（3.5.0，写死防漂移）：
 //! - 客户端服务：`().into_dyn().serve(transport)` → `RunningService<RoleClient, Box<dyn DynService<RoleClient>>>`
@@ -95,13 +95,13 @@ pub struct McpManager {
 /// 环形缓冲容量（行）
 const STDERR_TAIL_LINES: usize = 20;
 
-/// 单服务器工具快照上限（B0-2，AUDIT-FIX-PLAN-2026-09-29）：外部服务器可返回
+/// 单服务器工具快照上限：外部服务器可返回
 /// 任意多工具，无上限会经挂载层每轮全量拼进 tools JSON 撑爆请求与上下文。
 /// 超限截断连接快照（进程内无 AppHandle，不另发审计——`mcp.connected` 的
 /// tools 计数即截断后口径，设置页「查看工具」同源可见，dev 日志留痕）。
 const MAX_TOOLS_PER_SERVER: usize = 128;
 
-/// 工具数截断（B0-2）：保序截尾，超限时 dev 日志留痕
+/// 工具数截断：保序截尾，超限时 dev 日志留痕
 fn truncate_tools(cfg: &McpServerConfig, tools: Vec<Tool>) -> Vec<Tool> {
     let total = tools.len();
     if total <= MAX_TOOLS_PER_SERVER {
@@ -114,7 +114,7 @@ fn truncate_tools(cfg: &McpServerConfig, tools: Vec<Tool>) -> Vec<Tool> {
     tools.into_iter().take(MAX_TOOLS_PER_SERVER).collect()
 }
 
-/// 串行化触碰进程级 `shared()` 的测试（B0-3）：cargo test 默认多线程并行，
+/// 串行化触碰进程级 `shared()` 的测试：cargo test 默认多线程并行，
 /// e2e 用例的连接存活窗口会让 registry 的
 /// `tools_json_with_mcp_without_connections_is_borrowed_static`（断言全局无连接）
 /// flaky，共享槽位残留也会跨用例污染。registry 侧断言拿同一把锁（sync 测试用
@@ -219,7 +219,7 @@ impl McpManager {
                     "python3" => Command::new("python3"),
                     "docker" => Command::new("docker"),
                     "podman" => Command::new("podman"),
-                    // 与 contains 侧同文案（B0 评审 parity 单测锁双清单；此臂
+                    // 与 contains 侧同文案（ 评审 parity 单测锁双清单；此臂
                     // 实际不可达，防御保留）
                     _ => {
                         return Err(format!(
@@ -496,7 +496,7 @@ impl McpManager {
                 service,
                 ..
             }) if *fingerprint == fp => Ok(service.clone()),
-            // 槽在但指纹过期（B0 评审：与「真没连」分开报，刚改完配置的用户
+            // 槽在但指纹过期（ 评审：与「真没连」分开报，刚改完配置的用户
             // 不再看到误导性的「服务器未连接」；ensure_connected 的懒重连会接手）
             Some(Slot::Connected { .. }) => Err("配置已变更，正在自动重连，请重试".into()),
             Some(Slot::Down { error, .. }) => Err(format!("服务器不可用：{error}")),
@@ -552,7 +552,7 @@ impl McpManager {
     pub async fn shutdown(&self) {
         let slots: Vec<(String, Slot)> = self.slots().drain().collect();
         for (id, slot) in slots {
-            // stderr 尾巴一并清（B0 评审：per-id 路径 disconnect/ensure_connected
+            // stderr 尾巴一并清（ 评审：per-id 路径 disconnect/ensure_connected
             // 都 prune，批量 shutdown 漏了会留残留诊断，下个同 id 服务器错配）
             self.prune_stderr(&id);
             Self::close_old(Some(slot)).await;
@@ -582,7 +582,7 @@ mod send_probe {
         assert_sync::<S>();
     }
 
-    /// B0 评审（HIGH）：spawn_service 的逐臂字面量 match 与白名单是两份清单，
+    ///  评审（HIGH）：spawn_service 的逐臂字面量 match 与白名单是两份清单，
     /// 新增白名单项漏改 match 会「contains 过、match 落 _ 臂」静默断 stdio 路。
     /// 这里锁 parity：表内每项必有构造臂、臂返回的字面量必须等于命令本身。
     /// match 臂保留字面量是有意的（Mimosa 闸：无「变量 → 进程名」数据流）。
@@ -649,7 +649,7 @@ mod e2e_stdio {
             eprintln!("[skip] 无 python3，跳过 MCP stdio e2e");
             return;
         }
-        // B0-3：与 registry 的「无连接」断言互斥（连接存活窗口会让它 flaky），
+        // 与 registry 的「无连接」断言互斥（连接存活窗口会让它 flaky），
         // 并先清一次残留（前序用例 panic 时槽位可能未清）
         let _serial = SHARED_MCP_TEST_LOCK.lock().await;
         shared().shutdown().await;
@@ -679,7 +679,7 @@ mod e2e_stdio {
                 .await;
         assert_eq!(direct.status, crate::bot::registry::ToolStatus::Ok);
         assert_eq!(direct.text, "echo: 路由测试");
-        // 非法参数 JSON：不再透传 Null 到远端（B0 评审）——本地明确回 warn
+        // 非法参数 JSON：不再透传 Null 到远端（ 评审）——本地明确回 warn
         // 文本「参数非法」，模型拿着错误自己重发，省一轮下游类型困惑
         let direct_bad =
             crate::bot::mcp::mount::execute_mcp_direct(&cfg, &mounted, "not-json").await;

@@ -122,7 +122,7 @@ pub struct Suggestion {
     pub structured_patch: Option<String>,
 }
 
-// ───────────────────────── proposal_id 归一化 + 短 hash ─────────────────────────
+// proposal_id 归一化 + 短 hash
 
 /// 归一化（用于 proposal_id 输入）：
 /// - 大写 → 小写
@@ -167,7 +167,7 @@ pub fn proposal_id(category: ProposalCategory, target: &ProposalTarget, summary:
     short_hash(&raw)
 }
 
-/// R7→A 简化（老板 21:10 拍板）：判断 proposal 是否可逆（pure，no IO）
+/// R7→A 简化（）：判断 proposal 是否可逆（pure，no IO）
 ///
 /// 规则（MVP）：
 /// - ToolSchemaHint：不可逆（改 schema 可能破坏现有 tool 调用）
@@ -227,7 +227,7 @@ mod tests {
         }
     }
 
-    // ─── normalize_for_hash ───
+    // normalize_for_hash
 
     #[test]
     fn normalize_lowercases_and_collapses_whitespace() {
@@ -281,7 +281,7 @@ mod tests {
         assert_eq!(normalize_for_hash("工具调用失败"), "工具调用失败");
     }
 
-    // ─── proposal_id 稳定性 ───
+    // proposal_id 稳定性
 
     #[test]
     fn short_hash_fnv1a_known_answer() {
@@ -332,7 +332,7 @@ mod tests {
         assert_eq!(p1, p2);
     }
 
-    // ─── 字段集锁死 ───
+    // 字段集锁死
 
     #[test]
     fn evolution_proposal_carries_minimal_fields() {

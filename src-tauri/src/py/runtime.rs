@@ -303,7 +303,7 @@ pub const PARENT_WATCHDOG: &str = concat!(
     "_wm_th.Thread(target=_wm_watchdog, daemon=True).start()",
 );
 
-/// B3-4：Python 并发闸从互斥锁改**有界并发**（信号量语义）——std Mutex 全程
+/// Python 并发闸从互斥锁改**有界并发**（信号量语义）——std Mutex 全程
 /// 持锁把所有 Python 任务串行化，一个长任务能把后面全部排队堵死。许可数 2：
 /// 并行 run 各自独立子进程 + 独立产物目录，2 是 CPU/内存争用的保守上界。
 pub const PY_RUN_MAX_CONCURRENT: usize = 2;
@@ -410,7 +410,7 @@ pub fn run_python(
     timeout_secs: Option<u64>,
     stop: Option<&StopToken>,
 ) -> Result<PyRunResult, CommandError> {
-    // B3-4：有界并发闸（许可 2）。EXITING 复查在闸门内完成（等待前/唤醒后/
+    // 有界并发闸（许可 2）。EXITING 复查在闸门内完成（等待前/唤醒后/
     // 拿到许可后），排队者过闸即拒——不会 spawn 出无人收割的孤儿进程
     let _gate = py_gate_acquire()?;
     run_python_ungated(app, script, input_json, args, timeout_secs, stop)
@@ -557,7 +557,7 @@ const SETRLIMIT_PROBE_SCRIPT: &str = concat!(
 // 探测值取生产上限（AS 2GB = mem_limit_bytes 封顶 / CPU 310s = timeout 300+10 宽限封顶）：
 // 上限通过 → 单调 ceiling 下全部生产值可用；上限被拒 → 从严判 Unavailable 留痕。
 // 方向性硬约束：宁可误判「不可用」留痕（丢限额但诚实），不可误判「可用」静默（S20 原罪）。
-// 已知残差（OCR r1 采纳）：仅拒中间值、放行两端的非单调沙箱不在覆盖；pre_exec 内仍
+// 已知残差：仅拒中间值、放行两端的非单调沙箱不在覆盖；pre_exec 内仍
 // best-effort 静默，不做二次探测。
 
 /// 从探测 stdout 逐资源提结论；缺项/空值按探测失败算（绝不猜成可用）。

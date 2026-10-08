@@ -3,8 +3,7 @@ import { Handle, Position } from "@xyflow/react";
 import { Play } from "lucide-react";
 import type { WorkflowReport } from "../../types";
 
-/** 总目标卡（W1-CANVAS 设计 §决策4/§5）：绑定 workflows 行元数据（非 Task），
- *  兼作运行入口——▶ 按钮 W1 置灰（执行引擎 W3 上线）。固定尺寸，不参与连线。
+/** 总目标卡（ 设计 §决策4/§5）：绑定 workflows 行元数据（非 Task）， *  兼作运行入口——▶ 按钮 W1 置灰（执行引擎 W3 上线）。固定尺寸，不参与连线。
  *  索引签名：React Flow v12 要求 node data 满足 Record<string, unknown> */
 export interface GoalNodeData extends Record<string, unknown> {
   name: string;
@@ -15,7 +14,7 @@ export interface GoalNodeData extends Record<string, unknown> {
   progress: { done: number; total: number } | null;
   /** W-QA：上轮执行的收尾审校报告（rubric 评审；workflow-report 事件 / lastReport 列） */
   report: WorkflowReport | null;
-  /** W9-ASK：本次拆解的模型假设（decompose 返回；null/空 = 不显示） */
+  /** ：本次拆解的模型假设（decompose 返回；null/空 = 不显示） */
   assumptions: string[] | null;
   onRename: (name: string) => void;
   onGoalChange: (goal: string) => void;
@@ -76,7 +75,7 @@ export const GoalNode = memo(function GoalNode({ data }: { data: GoalNodeData })
           )}
         </div>
       )}
-      {/* W9-ASK：拆解假设（折叠展示——模型拆解时"想当然"的部分摆上台面，
+      {/* 拆解假设（折叠展示——模型拆解时"想当然"的部分摆上台面，
           用户看到错误假设就知道该改哪张卡或用澄清回答重新生成） */}
       {data.assumptions && data.assumptions.length > 0 && (
         <details className="nm-card mt-2 rounded-xl px-2 py-1.5 text-xs">

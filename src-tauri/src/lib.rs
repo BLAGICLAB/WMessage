@@ -87,7 +87,7 @@ fn copy_file_with_title(path: String, title: String) -> error::CommandResult<()>
 /// 需 alwaysOnTop 短暂闪烁 80ms 强制重排后再恢复（不长驻，避免干扰用户正常使用电脑）。
 /// 80ms 等待挪到后台线程 —— 主线程 sleep(80ms) 会冻结 UI（全局快捷键/托盘点击
 /// 处理全在主线程）。
-/// 泛型 Runtime（NEW-D-6 先例）：mock runtime 可直测不阻塞语义。
+/// 泛型 Runtime（ 先例）：mock runtime 可直测不阻塞语义。
 pub fn bring_main_to_front<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
     let _ = window.show();
     let _ = window.unminimize();
@@ -119,7 +119,7 @@ fn focus_main_window(app: tauri::AppHandle) {
 ///（不再接新请求；G1 accept + SSE writer 全 join，保留 api-enabled.flag 供下次
 /// 启动自动恢复）→ 终止活动 Skill → drain 等在途执行收尾（≤2s，不强等）→
 /// 置退出标志并按注册表杀在途 Python 整树 → 结构化审计。
-/// 泛型 Runtime（与 NEW-D-6 同先例）：mock runtime 可直测全链路。
+/// 泛型 Runtime（与  同先例）：mock runtime 可直测全链路。
 fn cleanup_on_exit<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     cleanup_on_exit_with(app, bot_py::kill_all_py_children);
 }
@@ -201,7 +201,7 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        // 剪贴板写入（N4 clipboard_write 工具，Rust 侧 ClipboardExt）
+        // 剪贴板写入（ clipboard_write 工具，Rust 侧 ClipboardExt）
         .plugin(tauri_plugin_clipboard_manager::init())
         // 开机自启动：登录系统时自动拉起 wmessage。macOS 走 LaunchAgent，
         // 不传额外 args（保持纯净启动，不带任何隐藏 flag）
@@ -249,7 +249,7 @@ pub fn run() {
             app.manage(api_server::ApiState::default());
             // 全局可变状态容器（单一入口）；产物登记表已迁入，其余表逐张迁移
             app.manage(app_state::AppState::default());
-            // MCP 宿主（拍板 1B，阶段 2）：进程级连接管理器 + 启动即连启用的服务器
+            // MCP 宿主（阶段 2）：进程级连接管理器 + 启动即连启用的服务器
             {
                 bot::mcp::manager::shared();
                 let handle = app.handle().clone();
@@ -337,7 +337,7 @@ pub fn run() {
                 if let Err(e) = bot::migrate_search_keys(&handle) {
                     eprintln!("[bot] search key migration failed: {e}");
                 }
-                // B4-6：MCP env/headers 明文 → keyring/降级文件（幂等；
+                // MCP env/headers 明文 → keyring/降级文件（幂等；
                 // 无机密 = 短路）。持 CONFIG_WRITE_LOCK（与其他迁移同款互斥）；
                 // 失败只记日志不中止启动——后续任何配置写路径会重试迁移
                 {
@@ -688,7 +688,7 @@ mod capability_tests {
     ///
     /// 历史三段：dcb9275（2026-08-19）裸 `**` → `$APPDATA/** + $HOME/**`（当时主窗
     /// openPath 打开任务绑定文件）；5eb0a27（2026-09-04）任务绑定文件改走 Rust
-    /// `open_file_path`；OCR C2a finding #3 摘除 `$HOME/**`（XSS 后可开 ~/.ssh）。
+    /// `open_file_path`； finding #3 摘除 `$HOME/**`（XSS 后可开 ~/.ssh）。
     /// 2026-10-08 终态：全仓最后一个前端 `openPath()` 调用点（SkillsPanel 打开技能
     /// 目录）也因便携模式（技能目录锚定 exe 旁，不在 $APPDATA 内）被 scope 拒绝，
     /// 改走 Rust 侧 opener 直接打开（`skills_open_dir`，路径由 skills_dir() 决定）。

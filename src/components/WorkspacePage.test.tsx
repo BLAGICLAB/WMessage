@@ -60,7 +60,7 @@ describe("WorkspacePage", () => {
       expect(mocks.invokeMock).toHaveBeenCalledWith("workspace_load");
     });
     expect(screen.getByText("+ 新建工作区")).toBeInTheDocument();
-    // U4：空态改 EmptyState 组件（标题+说明拆两行）
+    // 空态改 EmptyState 组件（标题+说明拆两行）
     expect(screen.getByText(/暂无工作区/)).toBeInTheDocument();
   });
 

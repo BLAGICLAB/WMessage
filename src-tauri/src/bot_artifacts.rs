@@ -1,14 +1,13 @@
-//! 任务卡执行流程产物登记表（D1a 内存 HashMap）
+//! 任务卡执行流程产物登记表（ 内存 HashMap）
 //!
 //! 链路：`tool_link_file_to_task` 登记 → `run_task_in_chat_with` 收尾
-//! 按 `TaskExecOrigin` 分流（D4d）→ `notifications` 表落 `artifact_bind`
+//! 按 `TaskExecOrigin` 分流→ `notifications` 表落 `artifact_bind`
 //! 持久化消息（原挂件 `artifact-batch-ready` 弹窗已下线）→ 通知中心卡片
 //! 勾选 → 用户确认后调 `confirm_artifact_batch` 落 db_upsert。
 //!
 //! 进程重启后登记表清空，但通知消息持久化——paths 随 payload 落库，
 //! 重启后仍可从通知中心完成绑定。
-//! 设计权衡见 workspace 内部讨论 2026-09-11 D1a 拍板。
-
+//! 设计权衡见 workspace 内部讨论 2026-09-11
 use crate::bot_chat::TaskExecOrigin;
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
@@ -64,12 +63,12 @@ pub async fn peek<R: tauri::Runtime>(app: &AppHandle<R>, task_id: &str) -> Vec<R
     map.get(task_id).cloned().unwrap_or_default()
 }
 
-/// D4d 收尾分流：判定是否触发汇总弹窗，返回要弹的最终产物列表。
+///  收尾分流：判定是否触发汇总弹窗，返回要弹的最终产物列表。
 ///
 /// - Manual（🤖 按钮）：必须任务卡 column=done 才弹（用户主动点完成）
 /// - Scheduled（⏰ 定时）：不论 column 都弹（不能让 LLM 误切 status 杀定时）
 /// - Batch（📦 批量）：不论 column 都弹（同 Scheduled）
-/// - Workflow（🔀 工作流节点）：不论 column 都弹（无人值守语义同 Scheduled，W3-RUNNER）
+/// - Workflow（🔀 工作流节点）：不论 column 都弹（无人值守语义同 Scheduled
 ///
 /// intermediate 不参与弹窗（schema 已说明：本会话在 AI_Gen_Files 目录
 /// 没新建过的路径不参与绑定——这是 LLM 自报 kind 时的兜底描述，
@@ -96,7 +95,7 @@ pub async fn should_emit<R: tauri::Runtime>(
                 None
             }
         }
-        // Workflow（W3-RUNNER）：工作流节点无人值守执行，产物登记语义同 Scheduled
+        // Workflow：工作流节点无人值守执行，产物登记语义同 Scheduled
         TaskExecOrigin::Scheduled | TaskExecOrigin::Batch | TaskExecOrigin::Workflow => {
             Some(finals)
         }
@@ -230,7 +229,7 @@ mod tests {
 
     #[tokio::test]
     async fn should_emit_workflow_same_as_scheduled() {
-        // W3-RUNNER：工作流节点无人值守 → 不论 column 都弹（OCR r1：补 Workflow 臂覆盖）
+        // 工作流节点无人值守 → 不论 column 都弹补 Workflow 臂覆盖）
         let app = test_handle();
         register(&app, "tw", "/a/w.txt".into(), ArtifactKind::Final).await;
         assert!(

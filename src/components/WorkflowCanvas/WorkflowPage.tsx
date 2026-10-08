@@ -44,8 +44,7 @@ const NAME_AUTO_LEN = 12;
 
 const KNOWN_VERDICTS: readonly ReviewVerdict[] = ["pass", "partial", "fail", "unknown"];
 
-/** verdict 边界归一：后端 ReviewReport.verdict 是 String 直传，模型输出契约外
- * 字符串现实可达——非四值一律落 unknown（与后端降级语义一致），类型层才能
+/** verdict 边界归一：后端 ReviewReport.verdict 是 String 直传，模型输出契约外 * 字符串现实可达——非四值一律落 unknown（与后端降级语义一致），类型层才能
  * 收紧成字面量 union 供穷尽检查 */
 function normalizeReport(r: WorkflowReport): WorkflowReport {
   return (KNOWN_VERDICTS as readonly string[]).includes(r.verdict)
@@ -53,8 +52,7 @@ function normalizeReport(r: WorkflowReport): WorkflowReport {
     : { ...r, verdict: "unknown" };
 }
 
-/** 开始/继续执行按钮的 title（OCR r1 high：拆掉嵌套三元；W5 r1：dirty 优先级最高，
- *  续跑提示不得吞掉"先保存"警告） */
+/** 开始/继续执行按钮的 title（dirty 优先级最高， *  续跑提示不得吞掉"先保存"警告） */
 function runButtonTitle(
   dirty: boolean,
   hasActive: boolean,
@@ -118,8 +116,7 @@ function WorkflowPageInner({
   const [saving, setSaving] = useState(false);
   /** 两步确认： armed 的 workflowId，第二次点击才真删 */
   const [deleteArmed, setDeleteArmed] = useState(false);
-  /** 最新 props 镜像：useCallback 闭包里读 tasksRef 而非捕获 tasks，防过期（OCR r1 high）。
-   *  经 useEffect 同步（render 期写 ref 会被 lint 拦；回调只在交互后触发，晚一拍无碍） */
+  /** 最新 props 镜像：useCallback 闭包里读 tasksRef 而非捕获 tasks，防过期。   *  经 useEffect 同步（render 期写 ref 会被 lint 拦；回调只在交互后触发，晚一拍无碍） */
   const tasksRef = useRef(tasks);
   const propsRef = useRef({ onSetColumn, onUpdate });
   useEffect(() => {
@@ -132,23 +129,23 @@ function WorkflowPageInner({
   const armedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** 重新生成两步确认 */
   const [regenArmed, setRegenArmed] = useState(false);
-  /** 工作流执行中（W3-RUNNER）：开始执行/停止按钮切换 + 进度显示 */
+  /** 工作流执行中：开始执行/停止按钮切换 + 进度显示 */
   const [running, setRunning] = useState(false);
-  /** 模型库条目（W6-MODEL）：节点执行模型下拉选项 */
+  /** 模型库条目：节点执行模型下拉选项 */
   const [models, setModels] = useState<Array<{ id: string; label: string }>>([]);
-  /** 拆解附件路径（W8-ATTACH）：随工作流持久化（重新生成可复用） */
+  /** 拆解附件路径：随工作流持久化（重新生成可复用） */
   const [attachPaths, setAttachPaths] = useState<string[]>([]);
   /** AI 拆解进行中 + 竞态守卫（取消 = 递增序号丢弃在途响应） */
   const [decomposing, setDecomposing] = useState(false);
   const decomposeSeqRef = useRef(0);
-  /** 拆解前澄清（W9-ASK）：clarify 调用进行中 + 返回的问题卡组（null = 未在澄清态） */
+  /** 拆解前澄清：clarify 调用进行中 + 返回的问题卡组（null = 未在澄清态） */
   const [clarifying, setClarifying] = useState(false);
   const [clarifyState, setClarifyState] = useState<ClarifyQuestion[] | null>(null);
-  /** 上次澄清回答（按问题文本匹配，重拆预填——拍板 3 的内存态部分） */
+  /** 上次澄清回答（按问题文本匹配，重拆预填——的内存态部分） */
   const [lastAnswers, setLastAnswers] = useState<Record<string, string>>({});
-  /** 拆解假设（W9-ASK：decompose 返回，GoalNode 折叠条展示） */
+  /** 拆解假设（：decompose 返回，GoalNode 折叠条展示） */
   const [assumptions, setAssumptions] = useState<string[]>([]);
-  /** 执行提问开关（W9-ASK 拍板 10：默认"关键决策才问"=开；随 clarify_meta 落库） */
+  /** 执行提问开关（ ：默认"关键决策才问"=开；随 clarify_meta 落库） */
   const [asksEnabled, setAsksEnabled] = useState(true);
   /** activeId 镜像：workflow-report 事件订阅只注册一次，闭包里读 ref 防过期 */
   const activeIdRef = useRef<string | null>(null);
@@ -171,7 +168,7 @@ function WorkflowPageInner({
       .then(setWorkflows)
       .catch((e) => handleCommandError(e, "读取工作流列表", { silent: true }));
   }, []);
-  // 模型库条目（W6-MODEL）：每卡执行模型下拉
+  // 模型库条目：每卡执行模型下拉
   useEffect(() => {
     invoke<{
       modelsByProvider?: {
@@ -196,7 +193,7 @@ function WorkflowPageInner({
   );
   const dirty = savedSnapshot !== snapshot();
 
-  // ────────────── 打开/新建 ──────────────
+  // 打开/新建
 
   const openWorkflow = async (id: string) => {
     const seq = ++openSeqRef.current;
@@ -223,11 +220,11 @@ function WorkflowPageInner({
           attachPaths: detail.attachments ?? [],
         })
       );
-      setNameAuto(false); // 打开的是已保存工作流：名称是作者起的，拆解不得覆盖（OCR r2）
+      setNameAuto(false); // 打开的是已保存工作流：名称是作者起的，拆解不得覆盖
       setRunning(false); // 先复位：A 在跑时切到 B，停止按钮不得跨工作流残留（全量对照 high）
       // W-QA：报告从 workflows 行恢复（review 结算写入 lastReport 列）
       setWfReport(detail.lastReport ? safeParseReport(detail.lastReport) : null);
-      // W9-ASK：澄清元数据恢复（重拆预填上次回答 + 执行提问开关）
+      // 澄清元数据恢复（重拆预填上次回答 + 执行提问开关）
       {
         const meta = detail.clarifyMeta ? safeParseClarifyMeta(detail.clarifyMeta) : null;
         setLastAnswers(meta?.answers ?? {});
@@ -237,7 +234,7 @@ function WorkflowPageInner({
       const iseq = openSeqRef.current;
       invoke<boolean>("workflow_is_running", { workflowId: id })
         .then((v) => {
-          // 慢响应不得覆盖后续切换（OCR r1 high）
+          // 慢响应不得覆盖后续切换
           if (iseq === openSeqRef.current) setRunning(v);
         })
         .catch(() => {});
@@ -270,7 +267,7 @@ function WorkflowPageInner({
     setRunning(false);
     setAttachPaths([]);
     setWfReport(null);
-    // W9-ASK：新画布澄清态复位（重拆预填回答保留——lastAnswers 跨工作流无语义也应清）
+    // 新画布澄清态复位（重拆预填回答保留——lastAnswers 跨工作流无语义也应清）
     setLastAnswers({});
     setAssumptions([]);
     setAsksEnabled(true);
@@ -287,7 +284,7 @@ function WorkflowPageInner({
     }
   }
 
-  /** 澄清元数据解析（W9-ASK）：结构坏 → null（当从未澄清，不炸打开链路） */
+  /** 澄清元数据解析：结构坏 → null（当从未澄清，不炸打开链路） */
   function safeParseClarifyMeta(raw: string): {
     answers: Record<string, string>;
     askMode?: string;
@@ -310,7 +307,7 @@ function WorkflowPageInner({
     }
   }
 
-  // ────────────── 模板导入导出（W4-TEMPLATE，设计 §4） ──────────────
+  // 模板导入导出设计 §4）
 
   const doExport = async () => {
     if (!activeId) return;
@@ -357,7 +354,7 @@ function WorkflowPageInner({
       const res = await invoke<WorkflowSaveResult>("workflow_import", {
         path: selected,
       });
-      // 先打开新实例再提示（OCR r1 high：顺序颠倒会在 openWorkflow 失败时
+      // 先打开新实例再提示顺序颠倒会在 openWorkflow 失败时
       // 出现"已成功 + 重试又导入一份"的悖论）；列表刷新失败走既有 silent 弹窗模式
       await openWorkflow(res.workflowId);
       invoke<Workflow[]>("workflow_list")
@@ -369,7 +366,7 @@ function WorkflowPageInner({
     }
   };
 
-  // ────────────── AI 拆解（W2-DECOMPOSE，设计 §6；W9-ASK 澄清前置） ──────────────
+  // AI 拆解设计 §6； 澄清前置）
 
   /** 点「AI 生成」→ 先澄清（快调用，≤3 问）；无问题无缝直拆，有问题出澄清卡组 */
   const startAi = async () => {
@@ -489,7 +486,7 @@ function WorkflowPageInner({
     setMode("hero");
   };
 
-  // ────────────── 节点编辑 ──────────────
+  // 节点编辑
 
   const addNode = () => {
     decomposeSeqRef.current++; // 手动加卡 = 放弃在途拆解结果（OCR r1 medium）
@@ -545,7 +542,7 @@ function WorkflowPageInner({
             ? [...next, c.id]
             : next.filter((s) => s !== c.id);
         } else if (c.type === "remove") {
-          // 节点被键盘/程序删除时同步清理选中态，防悬空 id（OCR r1 medium）
+          // 节点被键盘/程序删除时同步清理选中态，防悬空 id（）
           next = next.filter((s) => s !== c.id);
         }
       }
@@ -603,9 +600,9 @@ function WorkflowPageInner({
     });
   }, []);
 
-  // ────────────── 已保存节点的任务卡操作（同步草稿 + 真实任务） ──────────────
+  // 已保存节点的任务卡操作（同步草稿 + 真实任务）
   // 一律经 ref 读最新 props/tasks，避免闭包过期被 React Flow 的节点 data 缓存
-  // （OCR r1 high：rfNodes useMemo 不依赖回调身份，回调必须自身稳定）
+  // rfNodes useMemo 不依赖回调身份，回调必须自身稳定）
 
   /** 模型切换：草稿与真实任务同写（W6 r1 high：只 patch 不写草稿会在保存时回退） */
   const changeModel = useCallback(
@@ -641,7 +638,7 @@ function WorkflowPageInner({
     });
   }, []);
 
-  // ────────────── 执行（W3-RUNNER，设计 §8） ──────────────
+  // 执行设计 §8）
 
   const startBusyRef = useRef(false);
   const startRun = async () => {
@@ -654,8 +651,8 @@ function WorkflowPageInner({
     startBusyRef.current = true;
     const seq = openSeqRef.current;
     try {
-      // running 置真放在成功后：避免后端尚未登记时轮询提前开跑（OCR r1 medium）；
-      // seq 守卫：执行期间用户新建/切换画布，晚到响应不得置新画布为执行态（OCR r1）
+      // running 置真放在成功后：避免后端尚未登记时轮询提前开跑（）；
+      // seq 守卫：执行期间用户新建/切换画布，晚到响应不得置新画布为执行态
       await invoke("workflow_run", { workflowId: activeId });
       if (seq !== openSeqRef.current) return;
       setRunning(true);
@@ -674,7 +671,7 @@ function WorkflowPageInner({
     stopBusyRef.current = true;
     try {
       await invoke("workflow_stop", { workflowId: wf });
-      // 300ms 后回查复位（OCR r2）：闭包绑定被停的 wf；seq 快照保证用户已
+      // 300ms 后回查复位：闭包绑定被停的 wf；seq 快照保证用户已
       // 切走时本回查不应用（切换路径各有自己的 running 取真/归零）
       const seq = openSeqRef.current;
       setTimeout(() => {
@@ -688,7 +685,7 @@ function WorkflowPageInner({
     } catch (e) {
       handleCommandError(e, "停止工作流");
     } finally {
-      // busy 推迟到回查窗口之后解除，防回查期间重复点击（OCR r2）
+      // busy 推迟到回查窗口之后解除，防回查期间重复点击
       setTimeout(() => {
         stopBusyRef.current = false;
       }, 700);
@@ -706,7 +703,7 @@ function WorkflowPageInner({
           setRunning(v);
         })
         .catch((e) => {
-          // 连续 3 次查询失败 → 复位按钮（持续轮询无意义，OCR r1）
+          // 连续 3 次查询失败 → 复位按钮（持续轮询无意义
           failures += 1;
           if (failures >= 3) {
             console.error("[workflow] 执行态查询连续失败，复位按钮", e);
@@ -717,7 +714,7 @@ function WorkflowPageInner({
     return () => clearInterval(t);
   }, [running, activeId]);
 
-  // P2-c 节点实时状态（Agent 透明化设计 §5.3）：workflow-node-status 事件
+  //  节点实时状态（Agent 透明化设计 §5.3）：workflow-node-status 事件
   // （workflow_runner 节点起跑/收尾/跳过时广播）驱动画布实时高亮与跳转；
   // 5s 轮询保留为兜底（running 布尔与节点级状态互补）
   const [nodeLive, setNodeLive] = useState<
@@ -749,13 +746,13 @@ function WorkflowPageInner({
     setWfReport(normalizeReport(payload.report));
   });
 
-  // ────────────── 保存（指纹 diff 落库，设计 §7） ──────────────
+  // 保存（指纹 diff 落库，设计 §7）
 
   const save = async () => {
     if (saving) return;
     setSaving(true);
     // 后端的 name/goal 会 trim，本地 state 同步成 trim 后的值——
-    // 否则保存后 snapshot 用原值算 dirty 恒为 true（OCR r1 medium）
+    // 否则保存后 snapshot 用原值算 dirty 恒为 true（）
     const effectiveName = name.trim() || "未命名工作流";
     const effectiveGoal = goal.trim() || effectiveName;
     try {
@@ -765,7 +762,7 @@ function WorkflowPageInner({
           name: effectiveName,
           goal: effectiveGoal,
           attachments: attachPaths.length ? attachPaths : null,
-          // W9-ASK：澄清元数据随保存落库（重拆预填 + 执行提问开关）
+          // 澄清元数据随保存落库（重拆预填 + 执行提问开关）
           clarifyMeta: JSON.stringify({
             answers: Object.entries(lastAnswers).map(([question, answer]) => ({
               question,
@@ -848,7 +845,7 @@ function WorkflowPageInner({
     }
   };
 
-  // ────────────── React Flow 数据派生 ──────────────
+  // React Flow 数据派生
 
   // 已完成节点数（W5：驱动「继续执行」按钮态 + 总目标卡进度，单一数据源）
   const doneCount =
@@ -885,7 +882,7 @@ function WorkflowPageInner({
           task,
           models,
           draftTitle: n.title,
-          // P2-c：实时执行状态（事件驱动）——running 高亮 + 痕迹入口
+          // 实时执行状态（事件驱动）——running 高亮 + 痕迹入口
           liveStatus: n.taskId ? nodeLive[n.taskId]?.status : undefined,
           onSelectTrace: n.taskId ? () => setTraceTaskId(n.taskId!) : undefined,
           onDraftTitleCommit: (localId, title) =>
@@ -908,7 +905,7 @@ function WorkflowPageInner({
       }),
     ],
     // 依赖含全部 data 回调（deleteNode/toggle* 均为 useCallback 稳定引用，
-    // 内部经 ref 读最新 tasks/props——此处完整列出是防过期闭包的兜底，OCR r1 high）
+    // 内部经 ref 读最新 tasks/props——此处完整列出是防过期闭包的兜底
     [nodes, tasks, name, goal, savedSnapshot, selectedIds, deleteNode, toggleDone, commitTitle, toggleSubtask, running, activeId, doneCount, models, changeModel, nodeLive, wfReport, assumptions]
   );
 
@@ -928,7 +925,7 @@ function WorkflowPageInner({
     [nodes]
   );
 
-  // ────────────── 渲染 ──────────────
+  // 渲染
 
   const toolbarBtn =
     "flex h-8 items-center gap-1.5 whitespace-nowrap rounded-[var(--r-sm)] px-3 text-sm text-[var(--t3)] nm-outset disabled:cursor-not-allowed disabled:opacity-50";
@@ -961,7 +958,7 @@ function WorkflowPageInner({
         >
           <Plus size={14} aria-hidden /> 新建
         </button>
-        {/* W9-ASK：执行提问开关（拍板 10，默认开）——节点缺关键信息时可向用户提问
+        {/* 执行提问开关——节点缺关键信息时可向用户提问
             （走通知中心，未答按 AI 假设继续）；随保存落 clarify_meta.askMode */}
         <button
           className={toolbarBtn}
@@ -1110,7 +1107,7 @@ function WorkflowPageInner({
           </ReactFlow>
         )}
       </div>
-      {/* P2-c：节点「执行详情」弹层（工作痕迹：工具时间线 + 文件 diff/回滚；W10：+运行审计页签/验收行） */}
+      {/* ：节点「执行详情」弹层（工作痕迹：工具时间线 + 文件 diff/回滚；W10：+运行审计页签/验收行） */}
       {traceTaskId && (
         <TracePanel
           taskId={traceTaskId}
@@ -1128,8 +1125,7 @@ function WorkflowPageInner({
   );
 }
 
-/** 空态引导（设计 §5.1 空态）：一句话目标 → AI 生成（W2 点亮）/ 创建空白 + 已有工作流列表。
- *  重新生成复用本组件：工具栏「重新生成」回到此态，goal 预填原目标 */
+/** 空态引导（设计 §5.1 空态）：一句话目标 → AI 生成（W2 点亮）/ 创建空白 + 已有工作流列表。 *  重新生成复用本组件：工具栏「重新生成」回到此态，goal 预填原目标 */
 function EmptyHero({
   goal,
   onGoalChange,
@@ -1150,14 +1146,14 @@ function EmptyHero({
   workflows: Workflow[];
   onOpen: (id: string) => void;
   decomposing: boolean;
-  /** 澄清调用进行中（W9-ASK：AI 阅读目标 → 出澄清卡组或直拆） */
+  /** 澄清调用进行中（：AI 阅读目标 → 出澄清卡组或直拆） */
   clarifying: boolean;
   onDecompose: () => void;
   onCancelDecompose: () => void;
   onCancelClarify: () => void;
   /** 重新生成流程中（activeId 已存在）——按钮文案区分 */
   isRegenerate: boolean;
-  /** 拆解附件路径（W8-ATTACH）：AI 先读附件内容再拆解 */
+  /** 拆解附件路径：AI 先读附件内容再拆解 */
   attachPaths: string[];
   onAddAttachments: () => void;
   onRemoveAttachment: (path: string) => void;

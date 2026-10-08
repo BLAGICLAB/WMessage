@@ -1,4 +1,4 @@
-//! 工作流问答——应答端与生命周期（W9-ASK，设计 §3.2/§3.3）。
+//! 工作流问答——应答端与生命周期设计 §3.2/§3.3）。
 //!
 //! ask 端（runner，下一片接入）：落 notifications（kind=workflow_question，id=wfq:{qid}）
 //! + 注册 oneshot waiter（AppState.question_waiters）阻塞等待。
@@ -6,7 +6,7 @@
 //! - `workflow_question_respond`：答 → resolve 通知 → 落档案 → 唤醒（存活才发）→ 审计广播
 //! - `invalidate_workflow_questions`：run 收尾/停止/删除时批量失效本工作流的 pending 问题
 //!
-//! 红线（拍板 5/7）：
+//! 红线：
 //! - **忽略问题工作流也能走**：assume/dismiss 恒返回问题自带假设值；通知已消失（超时回收过）
 //!   时静默成功（幂等），不报错不落档案
 //! - run 已死后才送达的回答：档案仍落（重跑生效），唤醒静默跳过——不自动拉起旧 run
@@ -87,7 +87,7 @@ pub(crate) fn respond_core(
         other => return Err(format!("非法应答动作：{other}")),
     };
     crate::notifications::notif_resolve(conn, &notif_id, resolved_status)?;
-    // 档案：卡级（有 taskId 时）+ 全局层各一条——用户在这张卡上的回答，其他卡也要看得见（拍板 6）
+    // 档案：卡级（有 taskId 时）+ 全局层各一条——用户在这张卡上的回答，其他卡也要看得见
     let workflow_id = payload
         .get("workflowId")
         .and_then(Value::as_str)
@@ -266,11 +266,11 @@ pub async fn workflow_question_respond(
     Ok(())
 }
 
-// ────────────── ask 端（W9-ASK §3.2）：注册表 + ask_user 引擎 ──────────────
+// ask 端（ §3.2）：注册表 + ask_user 引擎
 
-/// 每节点提问预算（拍板 5：≤2 问，超预算返回假设——防通知轰炸）
+/// 每节点提问预算（≤2 问，超预算返回假设——防通知轰炸）
 pub(crate) const MAX_ASKS_PER_NODE: u8 = 2;
-/// 提问等待上限（拍板 5 默认 24h；超时/通道关闭一律回落到问题自带假设）
+/// 提问等待上限
 pub(crate) const ASK_TIMEOUT_SECS: u64 = 24 * 3600;
 
 /// 会话级提问上下文（bot_chat 会话建立时注册、收尾注销；ask_user 查表）。
@@ -279,7 +279,7 @@ pub struct AskRegistration {
     pub workflow_id: String,
     pub task_id: String,
     pub node_title: String,
-    /// 提问模式开关（拍板 5；false = 从不提问，工具直接返回假设）
+    /// 提问模式开关
     pub asks_enabled: bool,
     /// W10：run 分组键（审计行归组 + 问题 payload 透传给应答端）
     pub run_started_at: i64,
@@ -390,7 +390,7 @@ pub(crate) fn parse_ask_args(args: &str) -> Result<AskArgs, String> {
 /// ask_user 工具入口（registry TOOLS_TABLE 挂载；timeout 参数化供测试用短值）：
 /// 未注册上下文（非工作流链路）→ warn 引导自行继续；模式关闭/超预算 → 不落队列直接回落假设；
 /// 正常路径：落通知队列（wfq:{qid}）+ 系统通知门铃 → oneshot 等待 → 回答/假设作为工具结果。
-/// stop：/stop 等取消源（OCR r1 high——24h 等待必须可被用户停止打断，否则模型循环
+/// stop：/stop 等取消源（ high——24h 等待必须可被用户停止打断，否则模型循环
 /// 挂到超时；轮询 stopped() 每 500ms，命中即回落假设并清理 waiter）。
 pub(crate) async fn engine_ask_user(
     app: &tauri::AppHandle,
@@ -502,7 +502,7 @@ pub(crate) async fn engine_ask_user(
         }
     }
     // 等待应答；超时/通道关闭/用户停止 → 回落假设（红线：忽略问题工作流也能走）。
-    // waiter 必须先于 audit/emit_changed/OS 门铃注册（OCR r1 high：emit/通知会把
+    // waiter 必须先于 audit/emit_changed/OS 门铃注册emit/通知会把
     // 用户引到通知页应答，若 waiter 未就位，应答端找不到通道 → 档案落了回答而
     // 引擎按假设继续，两层记录不一致）。
     let (tx, rx) = tokio::sync::oneshot::channel::<String>();
@@ -543,7 +543,7 @@ pub(crate) async fn engine_ask_user(
             .map(|_| ())
         })
         .await;
-        // 内外两层都要接：JoinError 与 DB 错误都打日志（OCR r1 high——
+        // 内外两层都要接：JoinError 与 DB 错误都打日志（ high——
         // 只 match 外层会把 open_db/写库失败静默吞掉）
         match r {
             Ok(Ok(())) => {}

@@ -59,8 +59,7 @@ const TAG_ANCHOR_MIN_CARDS = 2;
 /** 锚点节点 id 前缀（事件/渲染层隔离用） */
 export const TAG_ANCHOR_PREFIX = "taggrp:";
 
-/** 节点大小语义（图谱图例可切换）：degree = 连接度（√度数，Obsidian 经典隐喻）；
- *  duration = 耗时（完成−创建天数；doing 用已进行天数——拖得越久越大，钉子户可视化） */
+/** 节点大小语义（图谱图例可切换）：degree = 连接度（√度数，Obsidian 经典隐喻）； *  duration = 耗时（完成−创建天数；doing 用已进行天数——拖得越久越大，钉子户可视化） */
 export type GraphSizeMode = "degree" | "duration";
 
 /** 布局松散度（设置页可切）→ R_MAX 系数 k（面密度恒定公式 R_MAX = k·√N 的 k） */
@@ -85,8 +84,7 @@ export function durationDaysOf(
   return null;
 }
 
-/**
- * 节点半径。duration 模式：3 + 1.5·√天数、15 封顶（平方根压缩——当天≈3、
+/** * 节点半径。duration 模式：3 + 1.5·√天数、15 封顶（平方根压缩——当天≈3、
  * 3 天≈5.6、2 周≈8.6、1 月≈11.2、半年起封顶；天/月/年量纲差异大，线性会失控）。
  * 封顶也护住 FA2 adjustSizes：size 参与质量/碰撞，巨点会把周围推开过远。
  */
@@ -134,8 +132,7 @@ export function resolveStatusColor(
   }
 }
 
-/**
- * 建图结果 → graphology 图（Sigma 直渲染）。
+/** * 建图结果 → graphology 图（Sigma 直渲染）。
  *
  * 初始布局（G4-CLUSTER 分扇区 + G4-G6-r2 空间自适应）：布局外径随任务量
  * **√N 缩放（面密度恒定）**——千级任务小画布、万级任务大画布，节点密度
@@ -343,8 +340,7 @@ export function graphBBox(
   return { x: [minX, maxX], y: [minY, maxY] };
 }
 
-/**
- * 计算「把内容包围盒铺满视口」的相机态（归一化空间）。
+/** * 计算「把内容包围盒铺满视口」的相机态（归一化空间）。
  * 返回 null = 视口退化/输入非有限——调用方不得写相机（写 Infinity/NaN ratio
  * 会把全部节点投影到同一屏幕点）。ratio 下限 0.05 防病态过放大。
  */

@@ -17,7 +17,7 @@ use crate::py::runtime::{
     py_gate_acquire, run_python, run_python_ungated, PyRunResult, MAX_TIMEOUT_SECS,
 };
 
-// ───────────── 固定文档脚本模板 ─────────────
+// 固定文档脚本模板
 
 pub const EXTRACT_SCRIPT: &str = r#"import json, sys, os
 p = json.load(open('params.json', encoding='utf-8'))['path']
@@ -609,7 +609,7 @@ print('已生成：' + out)
 "#;
 
 /// N3-2：扫描版 PDF 页渲染——PyMuPDF（fitz）官方推荐渲染管线，2x zoom ≈144 DPI
-///（OCR 识别率与体积平衡）。exit 2 = 缺 pymupdf（Rust 侧给 pip 指引，优雅降级）；
+///（）。exit 2 = 缺 pymupdf（Rust 侧给 pip 指引，优雅降级）；
 /// 页数钳在前 max_pages 页（防大文档渲染爆内存/超时）。
 pub const PDF_RENDER_SCRIPT: &str = r#"import json, os, sys
 p = json.load(open('params.json', encoding='utf-8'))
@@ -854,7 +854,7 @@ print('已生成：' + out)
 
 "#;
 
-// ───────────────────────── 对外命令 ─────────────────────────
+// 对外命令
 
 /// 执行同步核心（工具链在 async 上下文直接调用）
 /// `stop`：/stop 令牌，在途执行可被中断；UI 直调传 None
@@ -918,7 +918,7 @@ pub fn resolve_doc_path(picked: Option<String>) -> CommandResult<String> {
     picked.ok_or_else(|| CommandError::Internal("用户取消了选择".into()))
 }
 
-/// N3-2：渲染扫描版 PDF 的前 max_pages 页为 PNG（供本地 OCR 逐页识别）。
+/// N3-2：渲染扫描版 PDF 的前 max_pages 页为 PNG（供本地 ）。
 /// Err 前缀 `NEED_PYMUPDF` = 缺 pymupdf（调用方给 pip 指引，优雅降级）。
 pub async fn pdf_render_pages(
     app: AppHandle,
@@ -1169,7 +1169,7 @@ pub fn gen_out_path_in(dir: &Path, filename: Option<&str>, ext: &str) -> Command
     Ok(candidate.to_string_lossy().to_string())
 }
 
-// ─────────── py_exec_sync / spawn_blocking_map / run_doc_* ───────────
+// py_exec_sync / spawn_blocking_map / run_doc_*
 
 pub async fn spawn_blocking_map<F, T>(f: F) -> Result<T, String>
 where
@@ -1216,7 +1216,7 @@ pub async fn run_doc_revisions(
     let handle = app.clone();
     let name_in = name.to_string();
     match spawn_blocking_map(move || {
-        // B3-4：doc 生成流持一个许可跨 dotnet+python 兜底（退出态在此拒发）
+        // doc 生成流持一个许可跨 dotnet+python 兜底（退出态在此拒发）
         let _gate = py_gate_acquire().map_err(|e| e.to_string())?;
         if let Some(r) = run_dotnet_revisions(&handle, &input) {
             match r {

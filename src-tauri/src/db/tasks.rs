@@ -24,7 +24,7 @@ pub struct TaskFile {
 
 pub const MAX_TASK_FILES: usize = 10;
 
-/// tasks 表单源 DDL（W1-CANVAS 抽取）：open_db 建表与 db::workflow 测试共用。
+/// tasks 表单源 DDL（ 抽取）：open_db 建表与 db::workflow 测试共用。
 /// 含全部 30 列——老库缺列由 open_db 的幂等 ALTER 迁移补齐，此处即最新完整 schema。
 pub const TASKS_DDL: &str = "CREATE TABLE IF NOT EXISTS tasks (
    id           TEXT PRIMARY KEY,
@@ -133,7 +133,7 @@ pub struct CanvasPos {
 pub const TASK_ORIGIN_USER: &str = "user";
 pub const TASK_ORIGIN_WORKFLOW: &str = "workflow";
 
-/// W1-CANVAS 新增列清单（open_db 幂等迁移与 legacy 迁移测试 fixture 共用，防两处漂移——OCR r1）
+///  新增列清单（open_db 幂等迁移与 legacy 迁移测试 fixture 共用，防两处漂移——）
 pub(crate) const W1_TASK_COLUMNS: [(&str, &str); 6] = [
     ("origin", "TEXT"),
     ("workflow_id", "TEXT"),
@@ -184,7 +184,7 @@ pub struct Task {
     pub sched_last: Option<i64>,
     #[serde(default)]
     pub bot_assigned: Option<bool>,
-    /// 子 agent 编排（SUBA-1，设计 §4.1）：子卡上 = 派发子 agent 的串链标识；
+    /// 子 agent 编排设计 §4.1）：子卡上 = 派发子 agent 的串链标识；
     /// 普通卡恒为 None。经 task_patch 通道读写（服务端编排写）。
     #[serde(default)]
     pub assignee: Option<String>,
@@ -194,7 +194,7 @@ pub struct Task {
     /// 收尾结构化结果（设计 §7 schema）；存 JSON TEXT，卡片折叠展示
     #[serde(default)]
     pub result: Option<serde_json::Value>,
-    /// 工作流画布归属（W1-CANVAS，设计 §3.1）：None/"user" = 看板任务，"workflow" = 工作流节点卡
+    /// 工作流画布归属设计 §3.1）：None/"user" = 看板任务，"workflow" = 工作流节点卡
     #[serde(default)]
     pub origin: Option<String>,
     /// 所属工作流 id（origin="workflow" 时有值）
@@ -206,7 +206,7 @@ pub struct Task {
     /// 画布坐标（仅工作流卡使用）；DB 拆 canvas_x/canvas_y 两列
     #[serde(default)]
     pub canvas_pos: Option<CanvasPos>,
-    /// 执行用大模型（W6-MODEL）：模型库条目 id；None = 跟随全局 active 模型
+    /// 执行用大模型：模型库条目 id；None = 跟随全局 active 模型
     #[serde(default)]
     pub model: Option<String>,
     /// 每卡验收标准（W-QA 卡即契约）：AI 拆解生成的一行可验证完成标准（≤120 字）；
@@ -280,7 +280,7 @@ pub const CONFLICT_ERR_PREFIX: &str = "写冲突";
 pub const BASELINE_NULL_ROW: i64 = i64::MIN;
 
 pub fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), String> {
-    // 契约断言（OCR C3-1）：调用方必须持 DB_WRITE_LOCK（经 lock_db_write() 的守卫）。
+    // 契约断言：调用方必须持 DB_WRITE_LOCK（经 lock_db_write() 的守卫）。
     // 线程本地标记精确判定「当前线程持锁」—— try_lock 做不到（线程无关 + poisoned 也 Err）。
     // debug_assert：release 编译掉，不给生产路径加开销，同时把契约钉在 debug/CI 上。
     debug_assert!(
@@ -427,7 +427,7 @@ pub fn delete_tasks(conn: &rusqlite::Connection, ids: &[String]) -> Result<(), S
     let params: Vec<&dyn rusqlite::ToSql> = ids.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
     conn.execute(&sql, rusqlite::params_from_iter(params.iter()))
         .map_err(|e| e.to_string())?;
-    // W9-ASK：卡片档案级联（OCR r1 critical——原实现泄漏 brief_entries 卡层行）。
+    // 卡片档案级联（ critical——原实现泄漏 brief_entries 卡层行）。
     // 工作流级条目（task_id NULL）不受影响；非工作流卡本就无档案，DELETE 0 行无害。
     // 尽力而为：测试内建表等无 brief_entries 的连接上不炸主删除（与审计写失败同口径）
     for id in ids {
@@ -515,7 +515,7 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<super::Task> {
         },
         None => None,
     };
-    // SUBA-1：budget/result 存 JSON TEXT；损坏按空读取（同 subtasks/files 契约）
+    // budget/result 存 JSON TEXT；损坏按空读取（同 subtasks/files 契约）
     let budget = match &budget {
         Some(s) => match serde_json::from_str(s) {
             Ok(v) => Some(v),
@@ -536,7 +536,7 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<super::Task> {
         },
         None => None,
     };
-    // W1-CANVAS：depends_on 存 JSON TEXT；损坏按空读取（同 subtasks/files 契约）
+    // depends_on 存 JSON TEXT；损坏按空读取（同 subtasks/files 契约）
     let depends_on = match &depends_on {
         Some(s) => match serde_json::from_str(s) {
             Ok(v) => Some(v),
@@ -607,8 +607,8 @@ pub fn load_all(conn: &rusqlite::Connection) -> Result<Vec<super::Task>, String>
     Ok(tasks)
 }
 
-/// 单卡定点读（SUBA-1：orchestrator 的 check 进度小计用；PK 索引直查，
-/// 不走 load_all 全表扫——OCR r2 采纳）。
+/// 单卡定点读orchestrator 的 check 进度小计用；PK 索引直查，
+/// 不走 load_all 全表扫——）。
 pub fn load_task(conn: &rusqlite::Connection, id: &str) -> Result<Option<super::Task>, String> {
     let sql = format!("{TASK_SELECT_COLS} WHERE id = ?1");
     conn.query_row(&sql, [id], task_from_row)
@@ -616,7 +616,7 @@ pub fn load_task(conn: &rusqlite::Connection, id: &str) -> Result<Option<super::
         .map_err(|e| e.to_string())
 }
 
-/// 工作流的节点卡定点读（W1-CANVAS：指纹 diff 保存用）。
+/// 工作流的节点卡定点读指纹 diff 保存用）。
 /// 只取未软删的行——回收站里的旧节点卡视为已消失，不参与指纹匹配。
 pub fn load_tasks_by_workflow(
     conn: &rusqlite::Connection,
@@ -634,7 +634,7 @@ pub fn load_tasks_by_workflow(
     Ok(tasks)
 }
 
-/// 行存在性定点查（SUBA-1：spawn 的 parent 卡校验用——OCR r2 采纳）。
+/// 行存在性定点查spawn 的 parent 卡校验用——）。
 pub fn task_exists(conn: &rusqlite::Connection, id: &str) -> Result<bool, String> {
     conn.query_row("SELECT 1 FROM tasks WHERE id = ?1", [id], |_| Ok(()))
         .optional()
@@ -674,7 +674,7 @@ pub async fn db_upsert(app: AppHandle, tasks: Vec<super::Task>) -> CommandResult
     db_upsert_for(&app, tasks).await
 }
 
-/// 删除非本人的任务卡（2026-10-06 老板需求，数据管理卡入口；同日拍板简化——
+/// 删除非本人的任务卡（2026-10-06 用户需求，数据管理卡入口；同日简化——
 /// 这些卡是从别人程序导出的统计用数据，**点删除直接硬删**，不放回收站、无二次确认，
 /// 范围含回收站/归档中的非本人卡）：owner_id 非本人且非 NULL 即删
 /// （owner_id NULL = 本人——任务图谱设计 §1.1 读路径归一，NULL 永不命中）。
@@ -892,11 +892,11 @@ pub(crate) fn apply_task_patch(
             "botAssigned" => set_from(&mut task.bot_assigned, v, k)?,
             // 定时启用开关（定时任务模块）：null/缺省 = 启用
             "enabled" => set_from(&mut task.enabled, v, k)?,
-            // SUBA-1（设计 §4.1）：子 agent 编排三字段走 task_patch 既有通道；
+            // 子 agent 编排三字段走 task_patch 既有通道；
             // null = 清空。assignee/budget/result 由服务端编排写，前端仅投影展示。
             // budget 落库前必须过 clamped()——硬顶契约在写口强制，防 task_patch
-            // 旁路 maxTurns（OCR r1 high 采纳）。assignee 拒绝空串（它是串链
-            // subagents 表的 join 键，空串会产生孤儿指向——OCR r2 采纳）。
+            // 旁路 maxTurns（ 采纳）。assignee 拒绝空串（它是串链
+            // subagents 表的 join 键，空串会产生孤儿指向——）。
             "assignee" => {
                 set_from(&mut task.assignee, v, k)?;
                 if task
@@ -916,7 +916,7 @@ pub(crate) fn apply_task_patch(
                 task.budget = task.budget.take().map(|b| b.clamped());
             }
             "result" => set_from(&mut task.result, v, k)?,
-            // W1-CANVAS（设计 §3.1）：工作流四字段走 task_patch 既有通道，null = 清空。
+            // 工作流四字段走 task_patch 既有通道，null = 清空。
             // origin 限枚举值；workflowId 拒空串（它和 workflows 表的 join 键，同 assignee 理由）
             "origin" => {
                 set_from(&mut task.origin, v, k)?;
@@ -1191,7 +1191,7 @@ pub async fn db_delete(app: AppHandle, ids: Vec<String>) -> CommandResult<()> {
 /// → ⑤ 父目录必须存在且为目录（canonicalize 解析软链）→ ⑥ 目标已存在时拒符号链
 /// （symlink_metadata fail-closed，同 bot_fs resolve_writable 口径）。
 ///
-/// TOCTOU 残余窗口（OCR r1 medium 要求显式留档）：本闸门是时点检查，与实际
+/// TOCTOU 残余窗口（ 要求显式留档）：本闸门是时点检查，与实际
 /// 读写之间文件可被替换（软链 swap/父目录改挂）——窗口比 resolve_writable 宽
 /// （导出低频 + 路径来自用户 save dialog，风险接受口径与 bot_fs.rs:514 一致）。
 /// 写侧由 atomic_write 落盘（临时文件+rename，不写半截）；读侧（import）只读
@@ -1718,7 +1718,7 @@ mod task_patch_tests {
         ));
     }
 
-    /// SUBA-1：子 agent 编排三字段（assignee/budget/result）——设值、null 清空、
+    /// 子 agent 编排三字段（assignee/budget/result）——设值、null 清空、
     /// 往返落库一致（JSON TEXT 序列化）。
     #[test]
     fn task_patch_orchestration_fields_set_and_null_clears() {
@@ -1765,7 +1765,7 @@ mod task_patch_tests {
         assert_eq!(cleared.result, None);
     }
 
-    /// OCR r1 high 采纳：budget 走 task_patch 也必须被硬顶钳制（写口强制，防旁路）
+    /// budget 走 task_patch 也必须被硬顶钳制（写口强制，防旁路）
     #[test]
     fn task_patch_budget_is_clamped_to_hard_cap() {
         let mut conn = setup_conn();
@@ -1786,7 +1786,7 @@ mod task_patch_tests {
         assert_eq!(b.max_wall_seconds, 1, "下超钳到下限");
     }
 
-    /// OCR r1 采纳：budget/result 列损坏 → 兜底 None + 行仍可读（同 subtasks/files 契约）
+    /// budget/result 列损坏 → 兜底 None + 行仍可读（同 subtasks/files 契约）
     #[test]
     fn load_all_tolerates_corrupted_budget_result_json() {
         let mut conn = setup_conn();
@@ -1952,7 +1952,7 @@ mod task_status_tests {
     }
 }
 
-// ──────────────── 任务图谱：归属与导入导出信封测试 ────────────────
+// 任务图谱：归属与导入导出信封测试
 
 #[cfg(test)]
 mod owner_graph_tests {

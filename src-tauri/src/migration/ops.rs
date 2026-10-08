@@ -19,7 +19,7 @@ use super::types::MigrationRule;
 pub(crate) static RUNNING: AtomicBool = AtomicBool::new(false);
 
 /// 防重入 RAII 守卫：Drop（含 panic 展开）时自动释放，
-/// 防止 inner panic 后 RUNNING 永久 true 导致迁移永久锁死（审计 P2）
+/// 防止 inner panic 后 RUNNING 永久 true 导致迁移永久锁死（审计 ）
 pub(crate) struct MigrationGuard;
 
 impl MigrationGuard {
@@ -56,7 +56,7 @@ pub(crate) fn now_str() -> String {
     chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
-// ───────────────────────── 匹配与路径 ─────────────────────────
+// 匹配与路径
 
 /// 文件名是否命中规则（大小写不敏感包含；空关键字永不命中）
 pub fn filename_matches(file_name: &str, rule: &MigrationRule) -> bool {
@@ -84,7 +84,7 @@ pub fn resolve_archive_dir(app: &AppHandle, template: &str) -> Result<PathBuf, S
 
 /// 纯函数内核（供单测直调）——三道闸：
 /// 1. `..` 组件拒绝（相对路径逃逸桌面基准；/tmp/../etc 形态表达同被拒，无能力损失）；
-/// 2. 绝对路径拒绝（存量「文档化特性」按拍板收窄：归档位置必须相对基准目录，可审计可随库迁移）；
+/// 2. 绝对路径拒绝（存量「文档化特性」按收窄：归档位置必须相对基准目录，可审计可随库迁移）；
 /// 3. symlink 逃逸校验：沿目标最深已存在祖先 canonicalize，须仍位于 canonical 基准目录内
 ///    （叶子通常尚不存在，只能校到最深已存在祖先——祖先在基准外即拒；新建叶层走
 ///    create_dir_all 常规目录创建，落在 canonical 祖先之下；以符号链接充当新建叶层
@@ -185,7 +185,7 @@ pub(crate) fn conflict_free_name(dir: &Path, file_name: &str) -> Option<PathBuf>
     None
 }
 
-/// P2-6 TOCTOU 防护：conflict_free_name 选定与 move_entry 实际创建之间存在竞态窗口——
+///  TOCTOU 防护：conflict_free_name 选定与 move_entry 实际创建之间存在竞态窗口——
 /// 两个并发迁移任务可能选中同一 dst，后写覆盖前写。实际创建前再 exists 一次；
 /// 窗口内被并发抢占（文件已出现）则递增后缀重选（上限 99 轮防活锁）。
 pub(crate) fn claim_dst_name(dir: &Path, file_name: &str) -> Option<PathBuf> {
@@ -293,9 +293,9 @@ pub(crate) fn move_entry(src: &Path, dst: &Path) -> Result<(), String> {
     Ok(())
 }
 
-// ───────────────────────── NEW-B-5: 跨卷 remove 持续失败防护 ─────────────────────────
+// 跨卷 remove 持续失败防护
 
-/// NEW-B-5: 跨卷回退「copy 成功但 remove 持续失败」（Windows 文件被占用）时，
+/// 跨卷回退「copy 成功但 remove 持续失败」（Windows 文件被占用）时，
 /// 若不加防护，每轮轮询 conflict_free_name 会生成新名再 copy → 归档目录累积副本。
 /// 这里按 src 路径计数：失败超 MAX_MOVE_REMOVE_FAILURES（5 次 × 10min/轮 ≈ 50min
 /// 持续失败）后永久跳过该 src 并记 ERROR 审计。计数进程内有效，重启清零重新尝试
@@ -332,7 +332,7 @@ pub(crate) fn move_remove_permanently_failed(src: &str) -> bool {
     m.get(src).copied().unwrap_or(0) >= MAX_MOVE_REMOVE_FAILURES
 }
 
-// ───────────────────────── 日志 / 事件 ─────────────────────────
+// 日志 / 事件
 
 pub(crate) fn log_line(app: &AppHandle, line: &str) {
     // rotation 与 append 共用同一次 canonicalize 的结果：旧实现 rotation 走
@@ -391,7 +391,7 @@ mod tests {
         std::fs::remove_dir_all(&base).ok();
     }
 
-    /// 绝对路径拒绝（拍板收窄：存量「文档化特性」关闭）。
+    /// 绝对路径拒绝。
     /// temp_dir 两平台都返回根级/驱动器级绝对路径，测试不依赖平台 is_absolute 细节
     #[test]
     fn resolve_checked_rejects_absolute() {

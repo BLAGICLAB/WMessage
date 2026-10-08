@@ -43,8 +43,7 @@ function fmtTokens(n: number): string {
 
 const dayTotal = (d: UsageDay) => d.promptTokens + d.completionTokens;
 
-/** 连续活跃天数（活跃 = 当日 tokens > 0）：
- *  当前 = 从今天（今天不活跃则从昨天）往前连续活跃日数；最长 = 窗口内最长活跃游程 */
+/** 连续活跃天数（活跃 = 当日 tokens > 0）： *  当前 = 从今天（今天不活跃则从昨天）往前连续活跃日数；最长 = 窗口内最长活跃游程 */
 export function streakDays(days: UsageDay[]): [number, number] {
   const active = days.map((d) => dayTotal(d) > 0);
   let cur = 0;
@@ -90,8 +89,7 @@ function heatValues(
   return days.map((d) => (acc += dayTotal(d)));
 }
 
-/** GitHub contributions 式年宽热力图：列 = 周（首列对齐周日），每列 7 行圆角方格，
- *  底部月份标签按周列定位，title 即 tooltip */
+/** GitHub contributions 式年宽热力图：列 = 周（首列对齐周日），每列 7 行圆角方格， *  底部月份标签按周列定位，title 即 tooltip */
 function TokenHeatmap({ days, mode }: { days: UsageDay[]; mode: HeatMode }) {
   const firstDowRaw = days.length ? new Date(`${days[0].day}T00:00:00`).getDay() : 0;
   const firstDow = Number.isNaN(firstDowRaw) ? 0 : firstDowRaw;
@@ -158,8 +156,7 @@ function TokenHeatmap({ days, mode }: { days: UsageDay[]; mode: HeatMode }) {
 
 /* ───────────────────────── 每日趋势平滑曲线（按模型） ───────────────────────── */
 
-/** Catmull-Rom → 三次贝塞尔（相邻控制点取 1/6 差分），点少时退化为折线段。
- *  控制点 y 钳制在绘图区内——尖锐谷底（近零日）差分过冲会把曲线顶出 0 线。 */
+/** Catmull-Rom → 三次贝塞尔（相邻控制点取 1/6 差分），点少时退化为折线段。 *  控制点 y 钳制在绘图区内——尖锐谷底（近零日）差分过冲会把曲线顶出 0 线。 */
 function smoothPath(pts: Array<[number, number]>): string {
   if (pts.length === 0) return "";
   if (pts.length === 1) return `M ${pts[0][0].toFixed(1)} ${pts[0][1].toFixed(1)}`;
@@ -192,8 +189,7 @@ const TREND_TOP_N = 5;
 
 export type TrendSeries = { key: string; name: string; color: string; values: number[] };
 
-/** 稀疏 (day, model) 行 → 按模型分线：以补零日序列为 x 轴（缺日记 0），
- *  按窗口内 tokens 降序取前 TREND_TOP_N 条（NULL 模型 = 「未知模型」参与排序） */
+/** 稀疏 (day, model) 行 → 按模型分线：以补零日序列为 x 轴（缺日记 0）， *  按窗口内 tokens 降序取前 TREND_TOP_N 条（NULL 模型 = 「未知模型」参与排序） */
 export function buildTrendSeries(
   days: UsageDay[],
   rows: UsageDayModelRow[],
@@ -225,8 +221,7 @@ export function buildTrendSeries(
     }));
 }
 
-/** 每模型一条平滑曲线：容器实测宽度渲染（ResizeObserver），jsdom 降级固定宽。
- *  无 y 轴数字（仅虚线网格）；曲线无可见数据点，透明命中区承载逐点 tooltip */
+/** 每模型一条平滑曲线：容器实测宽度渲染（ResizeObserver），jsdom 降级固定宽。 *  无 y 轴数字（仅虚线网格）；曲线无可见数据点，透明命中区承载逐点 tooltip */
 function TokenTrendChart({
   days,
   series,

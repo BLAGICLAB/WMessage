@@ -1,4 +1,4 @@
-//! R3 L3 沙箱层 · kill_switch（spec R3）
+//!  L3 沙箱层 · kill_switch（spec ）
 //!
 //! 三开关：
 //! - all_auto_apply: 全关自动应用（仍可手动/人工批准）

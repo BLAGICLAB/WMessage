@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// B1: 文件迁移操作日志记录（防 lost-update / 孤儿文件）。
+/// 文件迁移操作日志记录（防 lost-update / 孤儿文件）。
 /// 原来 file-move 成功但 db_upsert 失败 → 下一轮"源已消失"逻辑会解绑 file_path，
 /// 附件链接永久丢失。本表记录「正在进行」的操作，启动时 replay 修复 DB。
 #[derive(Debug, Clone)]
@@ -63,7 +63,7 @@ pub struct MigrationReport {
     pub skipped: usize,
     /// 本轮日志行
     pub log: Vec<String>,
-    /// 是否被用户取消而提前停止（拍板 #2=A；仅 Serialize，序列化恒带该字段，
+    /// 是否被用户取消而提前停止（；仅 Serialize，序列化恒带该字段，
     /// 前端类型以可选标记向后兼容）
     pub cancelled: bool,
 }

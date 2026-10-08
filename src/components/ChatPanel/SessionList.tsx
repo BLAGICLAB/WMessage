@@ -1,4 +1,4 @@
-// ChatPanel 子模块：会话切换器 + 顶部行（U3a 拆分；U4 emoji 图标清尾 → lucide）。
+// ChatPanel 子模块：会话切换器 + 顶部行（ 拆分； emoji 图标清尾 → lucide）。
 // 左侧会话切换按钮 + 会话下拉列表（切换/删除/新建），右侧选任务模式钮；
 // 下拉内 Esc 关闭（键盘可达，a11y 基线）。
 
@@ -90,7 +90,7 @@ export function SessionList({
           <Crosshair size={14} aria-hidden />
         </button>
       </div>
-      {/* 会话栈（U3b）：作为 rootRef 直接子元素，absolute 横跨整个 panel 宽度；
+      {/* 会话栈：作为 rootRef 直接子元素，absolute 横跨整个 panel 宽度；
           行 = 活动圆点 + 标题，悬停浮出删除；Esc 关闭挂触发钮 + 下拉容器
           （焦点在 menuitem 上时事件冒泡到容器而非触发钮，两处都得接） */}
       {sessionMenuOpen && (

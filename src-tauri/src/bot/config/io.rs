@@ -3,7 +3,7 @@
 //! - `config_path` / `load_config` / `add_allowed_dir` / `update_config_file`
 //! - `write_bot_config_file` 强制剥离 key 字段（双保险）+ base_url 安全告警
 //! - `read_bypass_llm_switch` 轻量开关读取（bot_chat 入口用）
-//! - `read_memory_control` 记忆可控开关轻量读取（U15，memory 门禁用）
+//! - `read_memory_control` 记忆可控开关轻量读取memory 门禁用）
 //! - `base_url_is_safe` SSRF / 明文传输警告
 //! - `migrate_legacy_key` / `migrate_search_keys` 老配置明文 → keyring
 
@@ -21,7 +21,7 @@ use super::keyring;
 use super::schema;
 use super::types::{BotConfig, KeySlot};
 
-// ───────────────────────── 写互斥 + 原子写 ─────────────────────────
+// 写互斥 + 原子写
 
 /// bot-config.json 写路径全局互斥：RMW（add_allowed_dir / update_config_file /
 /// migrate_*）与纯写（bot_set_config）必须互斥，否则并发双方 load 同一旧值、
@@ -29,7 +29,7 @@ use super::types::{BotConfig, KeySlot};
 /// 锁序：本锁内只再取 BOT_LOG_LOCK（audit_event!），反向不存在，叶锁无环。
 /// std Mutex 不可重入——持锁段内只能调 *_locked 内核（迁移钩子 try_lock 让路）。
 /// 边界：锁内 = migrate_* 的 keyring IO + 全部文件写；migrate_* 的 keyring IO
-/// 不拆出锁（拆则"读→keyring→写"竞态重开，启动期一次性路径可接受——OCR r1）。
+/// 不拆出锁（拆则"读→keyring→写"竞态重开，启动期一次性路径可接受——）。
 /// bot_set_config 的 keyring 写（commands.rs，先于文件写）不在本锁范围——
 /// 该先后半成功问题已转 B 类评估（见 PHASE2-TRIAGE 攒批）。
 pub(crate) static CONFIG_WRITE_LOCK: Mutex<()> = Mutex::new(());
@@ -114,7 +114,7 @@ pub(crate) fn write_config_atomic(path: &Path, raw: &str) -> std::io::Result<()>
     Ok(())
 }
 
-// ───────────────────────── 路径 ─────────────────────────
+// 路径
 
 pub fn config_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> PathBuf {
     db::data_dir(app).join("bot-config.json")
@@ -126,7 +126,7 @@ pub fn read_bypass_llm_switch(app: &AppHandle) -> bool {
     read_bypass_llm_switch_at(&config_path(app))
 }
 
-/// 记忆可控开关读取（U15，运行时泛型——注入路径被泛型任务执行复用；
+/// 记忆可控开关读取运行时泛型——注入路径被泛型任务执行复用；
 /// 同模块 read_bypass_llm_switch 收具体句柄是历史签名，不追改）：
 /// 文件缺失 / 读失败 / 解析失败 / 缺字段 → None = 全开，门禁绝不弄挂聊天。
 /// 比 bot_get_config 轻量（只取 memoryControl 一个字段，同 read_bypass_llm_switch 精神）。
@@ -149,7 +149,7 @@ pub(crate) fn read_memory_control_at(path: &Path) -> Option<crate::memory::Memor
     }
 }
 
-/// 记忆参数读取（U17）：文件缺失 / 读失败 / 解析失败 / 缺字段 / 超界值 →
+/// 记忆参数读取：文件缺失 / 读失败 / 解析失败 / 缺字段 / 超界值 →
 /// 默认或钳制（下游只见合法值）。解析失败时 stderr 告警——与
 /// read_memory_control_at 对称（手改配置改坏了要可诊断）。
 pub fn read_memory_tuning<R: tauri::Runtime>(
@@ -217,7 +217,7 @@ pub(crate) fn read_memory_tuning_at(path: &Path) -> crate::memory::MemoryTuning 
 
 /// 可测内核（纯路径参数）：文件缺失 / 读失败 / JSON 损坏 / 缺字段 → true。
 /// 只有显式 `bypassLlmOnPreStepHit: false` 才关掉 bypass——老配置零迁移语义，
-/// 也是 F-1 拍板的默认行为（默认走 bypass，避免命中 Skill 后还要多烧一次外层 LLM）。
+/// 也是  的默认行为（默认走 bypass，避免命中 Skill 后还要多烧一次外层 LLM）。
 pub(crate) fn read_bypass_llm_switch_at(path: &Path) -> bool {
     let Ok(raw) = std::fs::read_to_string(path) else {
         return true;
@@ -227,7 +227,7 @@ pub(crate) fn read_bypass_llm_switch_at(path: &Path) -> bool {
         .unwrap_or(true)
 }
 
-// ───────────────────────── load_config / add_allowed_dir ─────────────────────────
+// load_config / add_allowed_dir
 
 /// 读 bot-config.json（不存在/解析失败回默认）。内部共用（bot_fs 白名单等）
 pub(crate) fn load_config(app: &AppHandle) -> BotConfig {
@@ -238,7 +238,7 @@ pub(crate) fn load_config(app: &AppHandle) -> BotConfig {
     if p.exists() {
         if let Ok(raw) = std::fs::read_to_string(&p) {
             if let Ok(mut cfg) = serde_json::from_str::<BotConfig>(&raw) {
-                // B4-6：MCP env/headers 机密水合（文件里没有，值在 keyring/
+                // MCP env/headers 机密水合（文件里没有，值在 keyring/
                 // 降级文件；读失败留空 + stderr WARN，不炸配置加载）
                 crate::bot::mcp::secrets::hydrate_mcp_servers(app, &mut cfg);
                 return cfg;
@@ -248,7 +248,7 @@ pub(crate) fn load_config(app: &AppHandle) -> BotConfig {
     BotConfig::default()
 }
 
-/// B4-6：MCP env/headers 明文 → keyring 迁移（设计
+/// MCP env/headers 明文 → keyring 迁移（设计
 /// `docs/MCP-KEYSLOT-MIGRATION-DESIGN-2026-09-29.md` §4）。调用方必须已持
 /// CONFIG_WRITE_LOCK（与 schema 迁移同款契约）。
 ///
@@ -382,7 +382,7 @@ pub(crate) fn add_allowed_dir(app: &AppHandle, dir: &str) -> Result<(), String> 
     // RMW 全程持锁（C5-BT-03）；持锁段内先推 schema 迁移（钩子锁内会 try_lock 让路）
     let _g = lock_config_write();
     let _ = schema::migrate_bot_config_schema_locked(app);
-    // B4-6：MCP 机密迁移（任何配置写都可能剥离明文，必须先迁；
+    // MCP 机密迁移（任何配置写都可能剥离明文，必须先迁；
     // 失败中止本次写 = 明文原样保留，评审 CRITICAL① 采纳）
     migrate_mcp_server_secrets_locked(app)?;
     let mut cfg = load_config(app);
@@ -390,7 +390,7 @@ pub(crate) fn add_allowed_dir(app: &AppHandle, dir: &str) -> Result<(), String> 
         return Ok(());
     }
     cfg.allowed_dirs.push(d);
-    // 密钥防御纵深（拍板 #10=C）：写盘前对残留明文 key 逐槽执行「keyring 写入
+    // 密钥防御纵深：写盘前对残留明文 key 逐槽执行「keyring 写入
     // （仅空槽，不覆盖用户新值）→ 读回验证」，验证通过才剥该槽明文；任一环节
     // 失败保留明文下次再试——keyring 读不回时剥除即丢密钥（零丢失优先）。
     let stripped = strip_verified_keys(&mut cfg);
@@ -413,7 +413,7 @@ pub(crate) fn add_allowed_dir(app: &AppHandle, dir: &str) -> Result<(), String> 
     res
 }
 
-/// 明文 key 剥除前置验证（拍板 #10=C 内核）：对三个槽位独立处理——
+/// 明文 key 剥除前置验证：对三个槽位独立处理——
 /// ① keyring 已有可读值 → 文件副本视为过期残留，可剥（keyring 值优先，
 ///   不覆盖用户新值也不要求等值）；
 /// ② keyring 为空 → 写入明文并读回，读回等值才剥（读回无关值=并发竞争/后端异常，不剥）；
@@ -465,7 +465,7 @@ fn plaintext_strippable(backed: Option<&str>, wrote_now: bool, plaintext: &str) 
     }
 }
 
-// ───────────────────────── write_bot_config_file / update_config_file ─────────────────────────
+// write_bot_config_file / update_config_file
 
 /// bot_set_config 落盘内核（抽出便于单测）：强制剥离三个 key 字段
 /// （api_key/tavily_key/brave_key 一律 None）后写 bot-config.json。
@@ -506,7 +506,7 @@ pub(crate) fn update_config_file(
 ) -> CommandResult<()> {
     let _g = lock_config_write();
     let _ = schema::migrate_bot_config_schema_locked(app); // 同 add_allowed_dir 先推迁移
-                                                           // B4-6：MCP 机密迁移先于本迁移（写回外科手术式只动 mcpServers，
+                                                           // MCP 机密迁移先于本迁移（写回外科手术式只动 mcpServers，
                                                            // 不碰 legacy 明文 key；失败中止本次写，评审 HIGH 采纳）
     migrate_mcp_server_secrets_locked(app)?;
     let mut cfg = load_config(app);
@@ -514,7 +514,7 @@ pub(crate) fn update_config_file(
     write_bot_config_file_locked(&db::data_dir(app), cfg)
 }
 
-// ───────────────────────── base_url 安全判定 ─────────────────────────
+// base_url 安全判定
 
 /// base_url 安全判定：空 / https / 回环 host（localhost、127.0.0.0/8、::1）
 /// 视为安全；其余（http 公网/内网、解析失败、其他 scheme）不安全——调用方打警告，不拒写。
@@ -540,14 +540,14 @@ pub(crate) fn base_url_is_safe(url: &str) -> bool {
     }
 }
 
-// ───────────────────────── 老版本 key 迁移 ─────────────────────────
+// 老版本 key 迁移
 
 /// 旧版本迁移：bot-config.json 里有明文 key → 迁入系统凭据存储并清掉文件里的明文。
 /// App 启动时调用一次（设置页读配置时也会兜底触发）。
 pub fn migrate_legacy_key(app: &AppHandle) -> Result<(), String> {
     let _g = lock_config_write();
     let _ = schema::migrate_bot_config_schema_locked(app); // 同 add_allowed_dir 先推迁移
-                                                           // B4-6：MCP 机密迁移先于本迁移（写回外科手术式只动 mcpServers，
+                                                           // MCP 机密迁移先于本迁移（写回外科手术式只动 mcpServers，
                                                            // 不碰 legacy 明文 key；失败中止本次写，评审 HIGH 采纳）
     migrate_mcp_server_secrets_locked(app)?;
     let p = config_path(app);
@@ -582,7 +582,7 @@ pub fn migrate_legacy_key(app: &AppHandle) -> Result<(), String> {
 pub fn migrate_search_keys(app: &AppHandle) -> Result<(), String> {
     let _g = lock_config_write();
     let _ = schema::migrate_bot_config_schema_locked(app); // 同 add_allowed_dir 先推迁移
-                                                           // B4-6：MCP 机密迁移先于本迁移（写回外科手术式只动 mcpServers，
+                                                           // MCP 机密迁移先于本迁移（写回外科手术式只动 mcpServers，
                                                            // 不碰 legacy 明文 key；失败中止本次写，评审 HIGH 采纳）
     migrate_mcp_server_secrets_locked(app)?;
     let p = config_path(app);
@@ -760,7 +760,7 @@ mod tests {
 
     #[test]
     fn evolution_block_survives_config_rewrite_cycle() {
-        // P0-EV1 回归：三条写路径（bot_set_config 整体替换 / update_config_file
+        //  回归：三条写路径（bot_set_config 整体替换 / update_config_file
         // RMW / persist_last_run 回写）都经 BotConfig serde 落盘——未知字段曾被
         // 静默丢弃，运行时配置的 evolution 块实际被写丢过。此处锁 serde 层保真：
         // 读入带块 → 序列化 → 块原样仍在（三条路径的公共层）。

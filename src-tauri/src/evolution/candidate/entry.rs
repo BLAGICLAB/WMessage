@@ -1,4 +1,4 @@
-//! R4 L1 候选层 · ProposalEntry 数据结构 + jsonl IO
+//!  L1 候选层 · ProposalEntry 数据结构 + jsonl IO
 //!
 //! 文件：`{data_dir}/evolution-proposals.jsonl`，追加写。
 //!
@@ -75,7 +75,7 @@ impl ProposalStatus {
     }
 }
 
-// ───────────────────────── jsonl IO ─────────────────────────
+// jsonl IO
 
 /// 追加一条 ProposalEntry。
 /// 整行（含显式 `\n`）拼成单个 buffer 后**一次 write_all**——POSIX O_APPEND
@@ -236,7 +236,7 @@ mod tests {
         }
     }
 
-    /// 中间坏行：留痕跳过返回好行（拍板 #17=C 折中——单行损坏不拖死全部读取）
+    /// 中间坏行：留痕跳过返回好行
     #[test]
     fn read_all_skips_corrupt_middle_line() {
         let dir = std::env::temp_dir().join(format!("wm-pe-corrupt-{}", uuid::Uuid::new_v4()));
@@ -249,7 +249,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// 首行坏：B4-3 自愈——备份后跳过坏行（不再永久 fail-closed）
+    /// 首行坏： 自愈——备份后跳过坏行（不再永久 fail-closed）
     #[test]
     fn read_all_corrupt_first_line_self_heals_with_backup() {
         let dir = std::env::temp_dir().join(format!("wm-pe-corrupt2-{}", uuid::Uuid::new_v4()));

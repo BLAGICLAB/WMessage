@@ -308,7 +308,7 @@ pub fn parse_meta(text: &str, dir_name: &str) -> SkillMeta {
     m
 }
 
-// ─────────────────────── DSL 解析 + 调度器 ───────────────────────
+// DSL 解析 + 调度器
 
 /// Skill 步骤（DSL 解析后的结构）
 ///
@@ -594,7 +594,7 @@ mod tests {
         assert!(!parse_meta("无 frontmatter", "d").resumable); // 默认 false
     }
 
-    // ── N7：allowed-tools / version / params 解析 ──
+    // ── ：allowed-tools / version / params 解析 ──
 
     #[test]
     fn meta_allowed_tools_single_line_and_multiline() {

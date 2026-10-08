@@ -63,7 +63,7 @@ pub(crate) fn save_rules(app: &AppHandle, rules: &RulesFile) -> Result<(), Strin
     save_rules_to(&rules_path(app), rules)
 }
 
-/// P2-8：原子写（复用 NEW-B-6 db::atomic_write，同 D3 profile 模式）——
+/// 原子写（复用  db::atomic_write，同  profile 模式）——
 /// 崩溃在写中途只留 tmp 残件，rules.json 要么旧完整版要么新完整版，不留半截。
 /// 抽 path 参数便于单测（AppHandle 无法单测构造）。
 pub(crate) fn save_rules_to(path: &Path, rules: &RulesFile) -> Result<(), String> {
@@ -308,7 +308,7 @@ mod tests {
         fs::remove_dir_all(p.parent().unwrap()).ok();
     }
 
-    /// 导入期早错：归档目录绝对路径拒绝（拍板收窄原「文档化特性」）。
+    /// 导入期早错：归档目录绝对路径拒绝。
     /// 用 temp_dir 构造绝对路径：unix 前导 `/` 在 Windows 不算 absolute（驱动器/UNC 才算），
     /// temp_dir 两平台都返回真绝对路径。
     #[test]

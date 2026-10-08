@@ -16,7 +16,7 @@ import {
   STRIP_W,
 } from "./constants";
 
-// ────────────────────────── 尺寸 + 位置类型 ──────────────────────────
+// 尺寸 + 位置类型
 
 export interface WidgetSize {
   w: number;
@@ -33,7 +33,7 @@ export interface Anchor {
   edge: Edge;
 }
 
-// ────────────────────────── 模块级拖动状态 ──────────────────────────
+// 模块级拖动状态
 
 // 拖拽进行中标记:拖动调整期间禁止 mouseleave 触发折叠(防止拖到一半「缩回去」)
 export let widgetDragActive = false;
@@ -41,7 +41,7 @@ export function setWidgetDragActive(v: boolean) {
   widgetDragActive = v;
 }
 
-// ────────────────────────── 尺寸持久化 ──────────────────────────
+// 尺寸持久化
 
 export function loadSize(): WidgetSize | null {
   try {
@@ -85,7 +85,7 @@ export function setTaskH(h: number) {
   document.documentElement.style.setProperty("--task-h", h + "px");
 }
 
-// ────────────────────────── 位置持久化 ──────────────────────────
+// 位置持久化
 
 export function loadAnchor(): Anchor | null {
   try {
@@ -118,7 +118,7 @@ export function saveAnchor(a: Anchor) {
   }
 }
 
-// ────────────────────────── 屏幕尺寸探测 ──────────────────────────
+// 屏幕尺寸探测
 
 export async function screenSize(): Promise<{ w: number; h: number }> {
   try {
@@ -131,7 +131,7 @@ export async function screenSize(): Promise<{ w: number; h: number }> {
   return { w: 1920, h: 1080 };
 }
 
-// ────────────────────────── 贴边检测 ──────────────────────────
+// 贴边检测
 
 // 按窗口当前矩形推算：贴边检测（右/左/顶，24px 容差）+ 触发条锚点
 // 返回扁平 Anchor（与导出接口同形，调用方直接用，不再有 anchor 包装层）

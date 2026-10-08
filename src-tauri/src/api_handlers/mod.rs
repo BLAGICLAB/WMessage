@@ -43,7 +43,7 @@ pub mod validate;
 pub use commands::api_stop_for_exit;
 pub use handlers::handle_request;
 
-// ───────────────────────── 单元测试 ─────────────────────────
+// 单元测试
 
 #[cfg(test)]
 mod tests {
@@ -788,7 +788,7 @@ mod tests {
         }
     }
 
-    /// 退出排空（拍板：30s 超时后强退）：已进入的 handler 必须完成后才返回，
+    /// 退出排空（30s 超时后强退）：已进入的 handler 必须完成后才返回，
     /// 且退出中新连接被拒（accept 线程已停、监听已关）
     #[test]
     fn exit_drains_in_flight_handler_then_refuses_new() {

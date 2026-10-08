@@ -1,4 +1,4 @@
-//! 五个核心指标计算（spec R1）
+//! 五个核心指标计算（spec ）
 //!
 //! 1. 任务成功率 task_success_rate = succeeded / total
 //! 2. 工具调用效率 tool_call_efficiency = successful_tool_calls / total_tool_calls
@@ -18,7 +18,7 @@ pub struct MetricsReport {
     pub case_total: usize,
     /// 评估 case 成功数（基于 expected_behavior 命中）
     pub case_passed: usize,
-    /// B4-1 标注：case_passed 恒等于 case_total（无 case 级判定，100% 占位）——
+    ///  标注：case_passed 恒等于 case_total（无 case 级判定，100% 占位）——
     /// 消费方据此把 task_success_rate 显示为「占位」而非真实指标；
     /// serde default 兼容旧结果 jsonl（缺字段按 false 读）
     #[serde(default)]
@@ -91,7 +91,7 @@ pub fn rollback_rate(applied: &[AppliedRecord], live_keys: &[String]) -> f64 {
     rollback_count(applied, live_keys) as f64 / applied.len() as f64
 }
 
-/// 已回滚条数（**整数真源**，OCR C3-2）。
+/// 已回滚条数（**整数真源**。
 /// `rollback_rate` 与 `rolled_back_total` 共用本函数：后者原先 `(len as f64 * rb_rate) as u64`
 /// 存在 IEEE-754 回程误差（2/3×3 → 1.999… → 截断成 1），与 `rb_rate` 字段自相矛盾。
 pub fn rollback_count(applied: &[AppliedRecord], live_keys: &[String]) -> u64 {
@@ -180,7 +180,7 @@ pub fn compute(
         case_total,
         case_passed,
         task_success_rate,
-        // B4-1：当前无 case 级判定，task_success_rate 是 100% 占位——输出里显式
+        // 当前无 case 级判定，task_success_rate 是 100% 占位——输出里显式
         // 标注，消费方不再把占位值当真实指标
         case_passed_placeholder: true,
         tool_calls_total,

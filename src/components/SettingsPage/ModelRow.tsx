@@ -1,4 +1,4 @@
-// SettingsPage 子模块：模型列表紧凑行（U11，对齐截图）。
+// SettingsPage 子模块：模型列表紧凑行对齐截图）。
 // 非编辑态：模型名（mono）+ 上下文徽标 + 能力徽标（视觉等）+
 // 插头（连接测试）+ 铅笔（编辑）+ 开关（启用）。
 // 编辑态（铅笔切换）：名称 / Base URL / model id 三输入 + 视觉能力 checkbox + 删除
@@ -39,13 +39,11 @@ export function ModelRow({
   apiProvider: ApiProvider;
   /** 厂商总开关关闭：整行变淡、启用开关/连接测试禁用 */
   vendorDisabled?: boolean;
-  /** 厂商已通过连接测试（持久化 verified_vendors）：插头常显绿色；
-   *  本行刚测失败时仍显红（后端已把厂商移出名单，刷新后回到未验证态） */
+  /** 厂商已通过连接测试（持久化 verified_vendors）：插头常显绿色；   *  本行刚测失败时仍显红（后端已把厂商移出名单，刷新后回到未验证态） */
   vendorVerified?: boolean;
   onChange: (patch: Partial<ModelEntry>) => void;
   onDelete: () => void;
-  /** 连接测试完成后回调（后端已把可用性落盘 verified_vendors；
-   *  父级用它 reload 配置刷新左栏绿点，并广播让聊天下拉同步过滤） */
+  /** 连接测试完成后回调（后端已把可用性落盘 verified_vendors；   *  父级用它 reload 配置刷新左栏绿点，并广播让聊天下拉同步过滤） */
   onTested?: () => void;
 }) {
   const [editing, setEditing] = useState(false);
@@ -62,8 +60,7 @@ export function ModelRow({
     setTestMsg("");
   }, [model.baseUrl, apiProvider]);
 
-  /** 插头颜色/文案（映射表替代嵌套三元）：
-   *  刚测失败 > 红；测试中 > 灰；已验证（持久化）或刚测通过 > 绿；否则灰 */
+  /** 插头颜色/文案（映射表替代嵌套三元）：   *  刚测失败 > 红；测试中 > 灰；已验证（持久化）或刚测通过 > 绿；否则灰 */
   const plugClass =
     testState === "fail"
       ? "text-[var(--danger)]"

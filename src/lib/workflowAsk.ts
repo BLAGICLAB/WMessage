@@ -35,7 +35,7 @@ export interface WorkflowQuestionPayload {
   assumption?: string;
 }
 
-/** 拆解前澄清（W9-ASK）：失败时服务端已降级空 questions——增强非闸门 */
+/** 拆解前澄清：失败时服务端已降级空 questions——增强非闸门 */
 export function clarifyWorkflow(goal: string, attachments: string[]): Promise<ClarifyResult> {
   return invoke<ClarifyResult>("workflow_clarify", {
     goal,

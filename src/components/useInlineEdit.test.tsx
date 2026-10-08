@@ -29,7 +29,7 @@ function Harness({
 
 // useInlineEdit 统一 TaskCardContent / TodoCard 的内联编辑行为，
 // 这里锁定全部路径，防两处实现再次 drift（Escape/blur 类 bug 回归）
-describe("useInlineEdit（P2-23）", () => {
+describe("useInlineEdit", () => {
   it("进入编辑态（false→true）草稿重置为当前已提交值", () => {
     const { rerender } = render(
       <Harness value="原标题" editing={false} onCommit={vi.fn()} />

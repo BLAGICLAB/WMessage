@@ -50,7 +50,7 @@ export function TodoCardView({
 
   const [editing, setEditing] = useState(autoEdit && !archived && !trashed);
   const [dueEditing, setDueEditing] = useState(false);
-  // P2-a：执行痕迹弹层（TracePanel 自带 portal，任务卡内点击「执行详情」打开）
+  // 执行痕迹弹层（TracePanel 自带 portal，任务卡内点击「执行详情」打开）
   const [traceOpen, setTraceOpen] = useState(false);
   const [noteEditing, setNoteEditing] = useState(false);
   const [noteDraft, setNoteDraft] = useState("");
@@ -58,7 +58,7 @@ export function TodoCardView({
   const [tagDraft, setTagDraft] = useState("");
   const [addingSubtask, setAddingSubtask] = useState(false);
   const [subtaskDraft, setSubtaskDraft] = useState("");
-  // 回收站彻底删除：绑了本地文件/文件夹时的三选项弹窗（老板定的规则）
+  // 回收站彻底删除：绑了本地文件/文件夹时的三选项弹窗
   const [purgeOpen, setPurgeOpen] = useState(false);
   const [purgeBusy, setPurgeBusy] = useState(false);
 
@@ -123,7 +123,7 @@ export function TodoCardView({
   const pickFile = async () => {
     try {
       const cur = taskFiles(task);
-      // 文件与文件夹不互斥（老板定的规则）：已绑文件夹也可继续添加文件
+      // 文件与文件夹不互斥：已绑文件夹也可继续添加文件
       const selected = await open({ multiple: true, directory: false });
       const paths = Array.isArray(selected)
         ? selected
@@ -144,7 +144,7 @@ export function TodoCardView({
   const pickFolder = async () => {
     try {
       const cur = taskFiles(task);
-      // 文件夹仍单选（最多一个文件夹）；文件与文件夹不互斥（老板定的规则）
+      // 文件夹仍单选（最多一个文件夹）；文件与文件夹不互斥
       if (cur.some((f) => f.isDir)) {
         window.alert("该任务已绑定文件夹，请先移除再重新绑定");
         return;
@@ -599,7 +599,7 @@ export function TodoCardView({
             className="nm-btn px-3 py-1 text-xs text-red-400 flex items-center gap-1 whitespace-nowrap"
             onPointerDown={stop}
             onClick={() => {
-              // 绑本地文件/文件夹时弹三选项（老板定的规则）：
+              // 绑本地文件/文件夹时弹三选项：
               //   全部删除 / 保留文件删除 / 取消
               // 未绑文件时保持原两选项 confirm（无需三选）
               if (boundFiles.length > 0) {
@@ -628,7 +628,7 @@ export function TodoCardView({
         >
           <Bot size={11} aria-hidden /> 交给机器人
         </button>
-        {/* P2-a：执行痕迹入口——时间线看每次工具调用（入参/结果/耗时/成败）+ 文件 diff/回滚 */}
+        {/* ：执行痕迹入口——时间线看每次工具调用（入参/结果/耗时/成败）+ 文件 diff/回滚 */}
         <button
           className="nm-btn px-2 py-0.5 text-[11px] leading-none text-[var(--t3)] flex items-center gap-1 whitespace-nowrap"
           onPointerDown={stop}
@@ -640,7 +640,7 @@ export function TodoCardView({
       </div>
       )}
 
-      {/* 截止时间 + 状态行（两行布局统一，老板拍板）：
+      {/* 截止时间 + 状态行（两行布局统一，老板）：
           第一行：截止时间（带 × 移除）。
           第二行：状态标签（未完成 / 完成 YYYY-MM-DD HH:mm）+ 删除按钮，两态布局一致；
             ml-2.5 空一个字符宽对齐截止时间文字，删除按钮 ml-auto 推到行尾 + text-[14px] 稳定 emoji。 */}
@@ -734,7 +734,7 @@ export function TodoCardView({
         </>
       )}
 
-      {/* 回收站彻底删除·绑文件三选项弹窗（老板定的规则）：全部删除 / 保留文件删除 / 取消
+      {/* 回收站彻底删除·绑文件三选项弹窗：全部删除 / 保留文件删除 / 取消
           ⚠️ 必须用 createPortal 渲染到 document.body —— TodoCard 容器 hover 触发 transform: translateY(-3px) scale(1.01)
           (main.css .nm-card-hover:hover) + dnd-kit useSortable 的 transform style，二者都会创建 CSS 包含块，
           使 position:fixed 子元素不再相对视口定位而被裁缩到卡片边界内。 */}
@@ -779,7 +779,7 @@ export function TodoCardView({
                   setPurgeBusy(true);
                   try {
                     // 多文件绑定：逐个移入废纸篓/回收站
-                    // OCR C2b #4：删 is_dir 参数（trash::delete 内部递归）；Rust IPC 表面只接 path
+                    //  #4：删 is_dir 参数（trash::delete 内部递归）；Rust IPC 表面只接 path
                     for (const f of boundFiles) {
                       // 顺序删除是有意为之（保持失败顺序可观测），不并行
                       // oxlint-disable-next-line eslint/no-await-in-loop
@@ -827,7 +827,7 @@ export function TodoCardView({
         document.body
       )}
 
-      {/* 执行痕迹弹层（P2-a）：TracePanel 自带 portal 到 body——同 purge 弹窗的
+      {/* 执行痕迹弹层：TracePanel 自带 portal 到 body——同 purge 弹窗的
           包含块裁缩问题，必须 portal 渲染 */}
       {traceOpen && (
         <TracePanel taskId={task.id} taskTitle={task.title} onClose={() => setTraceOpen(false)} />

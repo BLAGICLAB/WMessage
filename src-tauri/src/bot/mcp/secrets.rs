@@ -1,4 +1,4 @@
-//! B4-6（拍板③）：MCP env/headers 机密存储——每台服务器一个 blob，存系统凭据
+//! ：MCP env/headers 机密存储——每台服务器一个 blob，存系统凭据
 //! 存储；bot-config.json 永不再落 env/headers 明文（`skip_serializing` 收口）。
 //!
 //! 设计（`docs/MCP-KEYSLOT-MIGRATION-DESIGN-2026-09-29.md` §2）：
@@ -63,7 +63,7 @@ impl McpSecrets {
     }
 }
 
-// ───────────────────────── 进程内缓存 ─────────────────────────
+// 进程内缓存
 
 /// id → 已读结果（None = 读过且无值 / 读失败按空处理）。
 /// 锁中毒按仓库惯例 unwrap_or_else 响亮恢复。
@@ -104,7 +104,7 @@ fn cache_remove(id: &str) {
         .remove(id);
 }
 
-// ───────────────────────── 后端分发 ─────────────────────────
+// 后端分发
 
 /// 降级单文件存储路径（仅 key_backend() == PlaintextFile 时使用）
 fn fallback_file(app: &tauri::AppHandle) -> PathBuf {
@@ -319,7 +319,7 @@ fn write_tmp_0600(tmp: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
     }
 }
 
-// ───────────────────────── 对外 API（hydrate / save / delete / purge）─────────────────────────
+// 对外 API（hydrate / save / delete / purge）
 
 /// 读路径水合：把 keyring 里的机密回填进内存配置（config 文件里没有）。
 /// 读失败 → 该服务器 env/headers 留空 + stderr WARN（连接会失败、状态点红
@@ -442,7 +442,7 @@ mod tests {
 
     #[test]
     fn server_serialization_never_emits_secrets() {
-        // B4-6 核心不变式：skip_serializing 使任何写路径都不可能把明文写回盘
+        //  核心不变式：skip_serializing 使任何写路径都不可能把明文写回盘
         let s = crate::bot::mcp::config::McpServerConfig {
             id: "srv1".into(),
             name: "fs".into(),

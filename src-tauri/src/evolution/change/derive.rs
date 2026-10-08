@@ -1,4 +1,4 @@
-//! R2 L2 版本层 · 从 EvolutionProposal 派生 ChangeRecord
+//!  L2 版本层 · 从 EvolutionProposal 派生 ChangeRecord
 //!
 //! 派生规则（按 DERIVABILITY.md）：
 //! - `change_id`           = `"chg-" + proposal_id`
@@ -35,7 +35,7 @@ pub const DEFAULT_SCHEMA_VERSION: u32 = 1;
 /// layer 从 category 派生（DERIVABILITY.md 字段 1，部分覆盖）
 ///
 /// 4/6 层映射；Parameter / Code 两层当前无 category 对应，
-/// R4/R8 触发后再扩展。
+/// / 触发后再扩展。
 pub fn derive_layer(category: ProposalCategory) -> EvolutionLayer {
     match category {
         ProposalCategory::MemoryHint => EvolutionLayer::Policy,
@@ -84,7 +84,7 @@ pub fn from_proposal(p: &EvolutionProposal, now_ms: i64) -> ChangeRecord {
     }
 }
 
-/// B2-4（P1-EV5）：行级唯一 change_id——基础 `chg-<pid>` 空闲则直接用；被占
+/// 行级唯一 change_id——基础 `chg-<pid>` 空闲则直接用；被占
 /// （上次启用已回滚/已过期）则 `-2`、`-3` 递增。同 id 双行是「二次回滚永久
 /// 卡死」的根因（rollback 按 id position() 首匹配）。三家写者（panel toggle /
 /// shadow / apply CR）落行前统一经此派生。
@@ -104,7 +104,7 @@ pub fn unique_change_id_for(rows: &[ChangeRecord], proposal_id: &str) -> String 
     format!("{base}-{}", chrono::Utc::now().timestamp_millis())
 }
 
-/// B1-3：自动应用路径的 CR 构造（生产 apply 与回归测试共用，锁「Active +
+/// 自动应用路径的 CR 构造（生产 apply 与回归测试共用，锁「Active +
 /// AutoApplied 经合法流转达成」这一不变量）。
 ///
 /// 自动应用（MemoryHint lesson 直写记忆）不经沙箱/影子——那是整改流水线的
@@ -158,7 +158,7 @@ mod tests {
         }
     }
 
-    // ─── change_id 派生 ───
+    // change_id 派生
 
     #[test]
     fn change_id_format_locked() {
@@ -167,7 +167,7 @@ mod tests {
         assert_eq!(derive_mem_key("abc123"), "evo:abc123");
     }
 
-    // ─── 自动应用门槛检查 ───
+    // 自动应用门槛检查
 
     #[test]
     fn gate_true_for_memory_high() {
@@ -214,7 +214,7 @@ mod tests {
         }
     }
 
-    // ─── layer 派生（4/6 层覆盖）───
+    // layer 派生（4/6 层覆盖）
 
     #[test]
     fn layer_mapping_partial() {
@@ -236,7 +236,7 @@ mod tests {
         );
     }
 
-    // ─── from_proposal 集成 ───
+    // from_proposal 集成
 
     #[test]
     fn from_compliant_proposal_starts_pending() {

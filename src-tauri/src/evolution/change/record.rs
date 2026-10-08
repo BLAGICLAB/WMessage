@@ -1,4 +1,4 @@
-//! R2 L2 版本层 · ChangeRecord 数据结构 + jsonl IO（B 方案）
+//!  L2 版本层 · ChangeRecord 数据结构 + jsonl IO（B 方案）
 //!
 //! 文件：`{data_dir}/evolution-changes.jsonl`，追加写。
 //! 字段分组（按 DERIVABILITY.md 派生性）：
@@ -81,13 +81,13 @@ pub struct EvalResult {
 pub enum ChangeStatus {
     /// 候选刚产出（Pending — spec 用词）
     Pending,
-    /// R3 影子测试中
+    ///  影子测试中
     Shadowing,
     /// 影子通过，待批准
     ShadowPassed,
     /// 已批准（待 canary 或 active）
     Approved,
-    /// R3 金丝雀（5%）
+    ///  金丝雀（5%）
     Canary,
     /// 已全量生效
     Active,
@@ -131,11 +131,11 @@ pub enum ApprovalSource {
     Pending,
     /// 系统自动应用（满足策略层 gate 后走 apply 路径）
     AutoApplied,
-    /// 人工批准（R5 决策面板批准后走 apply 路径）
+    /// 人工批准（ 决策面板批准后走 apply 路径）
     HumanApproved,
     /// 系统拒绝（hard_constraint_compliance=false 或 sandbox 失败）
     SystemRejected,
-    /// 人工拒绝（R5 决策面板拒绝）
+    /// 人工拒绝（ 决策面板拒绝）
     HumanRejected,
 }
 
@@ -176,7 +176,7 @@ impl EvolutionLayer {
     }
 }
 
-// ───────────────────────── jsonl IO ─────────────────────────
+// jsonl IO
 
 /// 追加一条 ChangeRecord 到 jsonl；保证父目录存在。
 /// 整行单次 write_all（锁契约与残余风险同 candidate::entry::append 注释）。
@@ -226,7 +226,7 @@ pub fn find_roots(records: &[ChangeRecord]) -> Vec<&ChangeRecord> {
     records.iter().filter(|r| r.parent_id.is_none()).collect()
 }
 
-// ───────────────────────── 单元测试 ─────────────────────────
+// 单元测试
 
 #[cfg(test)]
 mod tests {
@@ -259,7 +259,7 @@ mod tests {
         }
     }
 
-    // ─── 字符串锁死 ───
+    // 字符串锁死
 
     #[test]
     fn status_strings_locked() {
@@ -294,7 +294,7 @@ mod tests {
         assert_eq!(EvolutionLayer::Code.as_str(), "code");
     }
 
-    // ─── jsonl IO ───
+    // jsonl IO
 
     #[test]
     fn append_then_read_roundtrip() {
@@ -322,7 +322,7 @@ mod tests {
         assert!(read.is_empty());
     }
 
-    /// 中间坏行：留痕跳过返回好行（拍板 #17=C 折中——单行损坏不拖死全部读取）
+    /// 中间坏行：留痕跳过返回好行
     #[test]
     fn read_all_skips_corrupt_middle_line() {
         let dir = std::env::temp_dir().join(format!("wm-chg-corrupt-{}", uuid::Uuid::new_v4()));
@@ -335,7 +335,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// 首行坏：B4-3 自愈——整体备份 `.corrupt-<ts>` 后跳过坏行返回好行
+    /// 首行坏： 自愈——整体备份 `.corrupt-<ts>` 后跳过坏行返回好行
     ///（不再永久 fail-closed；备份是取证/手工修复入口）
     #[test]
     fn read_all_corrupt_first_line_self_heals_with_backup() {
@@ -385,7 +385,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // ─── parent_id 链查询 ───
+    // parent_id 链查询
 
     #[test]
     fn find_by_id_returns_match() {
@@ -428,7 +428,7 @@ mod tests {
         assert_eq!(roots[0].change_id, "chg-root");
     }
 
-    // ─── schema_version 默认值 ───
+    // schema_version 默认值
 
     #[test]
     fn schema_version_defaults_to_one() {
@@ -436,7 +436,7 @@ mod tests {
         assert_eq!(r.schema_version, 1);
     }
 
-    // ─── 字段集锁死 ───
+    // 字段集锁死
 
     #[test]
     fn change_record_carries_locked_fields() {

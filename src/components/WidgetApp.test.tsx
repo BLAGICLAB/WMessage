@@ -86,7 +86,7 @@ afterEach(() => {
 
 // 5s 兜底轮询读失败不再永久静默（catch(()=>{})）——
 // 轮询失败弹 alert（widget_poll）；首次加载保持安静，等 tasks-changed / 轮询重试
-describe("WidgetApp 轮询报错（P2-33）", () => {
+describe("WidgetApp 轮询报错", () => {
   it("首次加载失败不弹窗；5s 轮询失败弹错误弹窗（批 4 起为应用内 dialog）", async () => {
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "db_load") throw dbErr;
@@ -167,8 +167,7 @@ describe("挂件折叠不丢聊天（2026-08-19 修复）", () => {
     });
   };
 
-  /** 展开面板（含 ChatPanel 输入框的那个 .nm-sidebar-panel；另一个是触发条）
-   *  （UI-1 后 ChatPanel 输入框是 textarea，不再有 input） */
+  /** 展开面板（含 ChatPanel 输入框的那个 .nm-sidebar-panel；另一个是触发条）   *  （UI-1 后 ChatPanel 输入框是 textarea，不再有 input） */
   const panelOf = (container: HTMLElement) =>
     Array.from(container.querySelectorAll<HTMLElement>(".nm-sidebar-panel")).find(
       (el) => el.querySelector("textarea")

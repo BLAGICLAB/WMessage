@@ -8,7 +8,7 @@
 //!
 //! 模块分层：
 //! - `types`    公共类型（JournalEntry / RulesFile / Rule / Report / Status）
-//! - `journal`  B1 操作 journal：pending → committed / cleared，DB 一致性兜底
+//! - `journal`   操作 journal：pending → committed / cleared，DB 一致性兜底
 //! - `recovery` 启动 replay：journal 仍 pending 时修复 DB 绑定
 //! - `rules`    规则表读写 / CSV 解析 / 路径常量
 //! - `ops`      文件操作 + 日志 + 防重入 RAII
@@ -92,7 +92,7 @@ mod tests {
         assert!(!filename_matches("anything.txt", &r));
     }
 
-    // ── P2-8：save_rules 原子写 ──
+    // ── ：save_rules 原子写 ──
 
     /// tmp 写失败（注入：rules.json.tmp 占成目录）→ 返回 Err，rules.json 保持原状
     #[test]
@@ -141,7 +141,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// B1: journal SQL 基础流。构造临时 DB + 创建 migration_journal 表，
+    /// journal SQL 基础流。构造临时 DB + 创建 migration_journal 表，
     /// 验证 pending → committed/cleared 状态变迁。
     fn setup_journal_db() -> (std::path::PathBuf, rusqlite::Connection) {
         let dir = std::env::temp_dir().join(format!("wm-jrn-{}", uuid::Uuid::new_v4()));
@@ -162,7 +162,7 @@ mod tests {
         (dir, conn)
     }
 
-    /// B1: pending → committed 是 happy path，启动 replay 跳过该行
+    /// pending → committed 是 happy path，启动 replay 跳过该行
     #[test]
     fn journal_pending_to_committed_flow() {
         let (dir, conn) = setup_journal_db();
@@ -211,7 +211,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// B1: pending → cleared（操作未启动 / 已失败），replay 不该修复
+    /// pending → cleared（操作未启动 / 已失败），replay 不该修复
     #[test]
     fn journal_pending_to_cleared_flow() {
         let (dir, conn) = setup_journal_db();
@@ -229,7 +229,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// NEW-B-2: journal 写持 DB_WRITE_LOCK 与 db_upsert 等写串行——锁被占时阻塞等待
+    /// journal 写持 DB_WRITE_LOCK 与 db_upsert 等写串行——锁被占时阻塞等待
     /// 锁释放后再写（不再各起新连接靠 2s busy_timeout 兜底），全程无 busy 失败。
     #[test]
     fn journal_writes_serialize_on_db_write_lock() {
@@ -269,7 +269,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// B1: replay 模拟场景——move 成功但 db_upsert 崩，journal 保持 pending。
+    /// replay 模拟场景——move 成功但 db_upsert 崩，journal 保持 pending。
     /// 重启后 replay 检查 dst 存在 + src 不存在 → 调用 recover_move_db
     /// （这里不测 recover_move_db 本身，只验证检测逻辑的状态断言）。
     #[test]
@@ -304,7 +304,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// NEW-B-1: journal_find_pending_inner happy path——按 (task_id, src) 找到最新 pending。
+    /// journal_find_pending_inner happy path——按 (task_id, src) 找到最新 pending。
     #[test]
     fn journal_find_pending_finds_matching_entry() {
         let (dir, conn) = setup_journal_db();
@@ -327,7 +327,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// NEW-B-1: 失败路径——committed/cleared、别的 task、别的 src 都不得命中。
+    /// 失败路径——committed/cleared、别的 task、别的 src 都不得命中。
     #[test]
     fn journal_find_pending_ignores_non_pending_and_other_keys() {
         let (dir, conn) = setup_journal_db();
@@ -453,7 +453,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// NEW-B-1: decide_src_missing 全分支。
+    /// decide_src_missing 全分支。
     #[test]
     fn decide_src_missing_all_branches() {
         let mk = |op: &str, dst: Option<&str>| JournalEntry {
@@ -498,7 +498,7 @@ mod tests {
         }
     }
 
-    /// NEW-B-1: replay 防覆盖谓词——file_path 仍指向 src 才允许修复。
+    /// replay 防覆盖谓词——file_path 仍指向 src 才允许修复。
     #[test]
     fn file_path_untouched_guard() {
         assert!(
@@ -525,7 +525,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// P2-6 TOCTOU：两个并发任务都选定 "name (1).pdf"——先落盘者占位后，
+    ///  TOCTOU：两个并发任务都选定 "name (1).pdf"——先落盘者占位后，
     /// 后走 claim_dst_name 的必须递增到 "name (2).pdf"，不覆盖前者。
     #[test]
     fn claim_dst_name_bumps_suffix_when_race_claimed() {
@@ -557,7 +557,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// P2-6：无抢占时 claim 与 conflict_free_name 选名一致（直通路径不回归）
+    /// 无抢占时 claim 与 conflict_free_name 选名一致（直通路径不回归）
     #[test]
     fn claim_dst_name_no_race_picks_first_free() {
         let dir = std::env::temp_dir().join(format!("wm-toctou-{}", uuid::Uuid::new_v4()));
@@ -653,7 +653,7 @@ mod tests {
         assert!(validate_rules(&bad).is_ok());
     }
 
-    // ────── 文件移动 / 同名冲突（基于纯 Path API，不依赖 AppHandle） ──────
+    // 文件移动 / 同名冲突（基于纯 Path API，不依赖 AppHandle）
 
     /// move_entry 基本：源文件 → 目标路径（无冲突）。原文件消失，新文件就位。
     #[test]
@@ -772,7 +772,7 @@ mod tests {
         std::fs::remove_dir_all(&base).unwrap();
     }
 
-    // ────── archive_dir year 占位符独立验证（不依赖 AppHandle::desktop_dir） ──────
+    // archive_dir year 占位符独立验证（不依赖 AppHandle::desktop_dir）
 
     /// {year} 在多个上下文路径中都能被替换
     #[test]
@@ -797,7 +797,7 @@ mod tests {
         assert!(!expanded.contains("{year}"));
     }
 
-    // ────── parse_rules_csv 增强测试（CSV 解析逻辑） ──────
+    // parse_rules_csv 增强测试（CSV 解析逻辑）
 
     #[test]
     fn parse_rules_csv_basic_template() {
@@ -998,7 +998,7 @@ mod tests {
         assert!(validate_rules(&rf).is_err());
     }
 
-    /// NEW-B-5: 同一 src 的 remove 失败计数越阈后永久跳过；不同 src 互不影响。
+    /// 同一 src 的 remove 失败计数越阈后永久跳过；不同 src 互不影响。
     #[test]
     fn move_remove_failure_counter_permanent_skip() {
         let key = format!("/tmp/wm-mrf-{}", uuid::Uuid::new_v4());
@@ -1020,7 +1020,7 @@ mod tests {
         );
     }
 
-    /// NEW-B-5: 模拟跨卷 remove 持续失败——每轮 copy 新冲突名都成功但 src 删不掉；
+    /// 模拟跨卷 remove 持续失败——每轮 copy 新冲突名都成功但 src 删不掉；
     /// 计数越阈后永久跳过，之后不再 copy（归档副本数封顶在阈值，不会无限累积）。
     #[test]
     fn move_remove_persistent_failure_stops_duplicate_copies() {

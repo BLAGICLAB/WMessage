@@ -6,8 +6,7 @@ import { getArchiveAfterDays } from "../lib/archiveRule";
 import { TodoCard } from "./TodoCard";
 import { EmptyState } from "./EmptyState";
 
-/**
- * 归档页：搜索 → 标签计数（点击筛选，与搜索 AND 叠加）→ 三列卡片网格。
+/** * 归档页：搜索 → 标签计数（点击筛选，与搜索 AND 叠加）→ 三列卡片网格。
  * 归档任务按 order 从左列到右列依次排布，卡片默认折叠（展开后保持展开）。
  */
 export function ArchivePage({
@@ -50,8 +49,7 @@ export function ArchivePage({
     );
   }, [archived, query, activeTag]);
 
-  /** 归档卡片默认折叠（collapsed 为 false 时说明用户已展开，保持展开）；
-   *  编辑态命中（机器人 📌 跳转）时展开——此前手动折叠过（collapsed === true）
+  /** 归档卡片默认折叠（collapsed 为 false 时说明用户已展开，保持展开）；   *  编辑态命中（机器人 📌 跳转）时展开——此前手动折叠过（collapsed === true）
    *  的跳转目标也要翻开，否则卡片折叠着看不到跳转效果；
    *  仅真正翻转（未定义 → 折叠、折叠 → 跳转展开）才产副本——其余复用引用，保 memo/引用相等 */
   const displayTask = (t: Task): Task =>

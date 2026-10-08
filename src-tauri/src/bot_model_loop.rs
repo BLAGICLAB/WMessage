@@ -22,7 +22,7 @@ use tauri::{AppHandle, Emitter};
 // 原 const 字符串 / 数组现为函数（OnceLock 缓存）——保持向后兼容路径。
 pub use crate::bot::registry::mutating_tools as MUTATING_TOOLS;
 
-// ───────────────────────── 防幻觉汇报守卫 ─────────────────────────
+// 防幻觉汇报守卫
 // 实锤事故：MiniMax-M3 多次不调任何工具就回复「已添加子任务」「已移至回收站」，
 // 数据实际没变，用户以为操作成功。提示词约束（SYSTEM_PROMPT 规则 8）不够，
 // 这里在循环出口做确定性拦截：最终文本声称完成变更、但本轮 0 次变更类工具调用 →
@@ -38,12 +38,12 @@ fn mutation_succeeded(name: &str, result: &str) -> bool {
     MUTATING_TOOLS().iter().any(|t| t == &name) && !crate::audit::tool_call_failed(name, result)
 }
 
-/// T4：从 ToolDef 注册表派生的变更声称检测。
+/// 从 ToolDef 注册表派生的变更声称检测。
 /// 原「14 个动词 + 4 个整段」硬编码迁到 `bot::registry::ToolDef.claims_patterns`，
 /// 加新 mutating 工具只需填自己的 pattern，检测逻辑零修改。
 pub use crate::bot::registry::claims_mutation;
 
-// ───────────────────────── TOOLS schema（编译期字符串，运行期 JSON 解析） ─────────────────────────
+// TOOLS schema（编译期字符串，运行期 JSON 解析）
 
 // TOOLS / MUTATING_TOOLS 已在阶段 2 拆出到 crate::bot::registry：
 // - `crate::bot::registry::tools_json()` → 原 TOOLS JSON（OnceLock 缓存）
@@ -109,13 +109,11 @@ fn tail_prefix_len(s: &str, tag: &str) -> usize {
     k
 }
 
-// ────────────────────────────────────────────────────────────────────
 // SSE chunk 解析
 //
 // 动机：消除 tests/llm_integration.rs 与 run_model_loop 的解析逻辑重复。
 // 提取后：测试调 wmessage_lib::bot::parse_sse_chunk，生产代码同样调之，
 //        OpenAI SSE 格式演化只改这一处。
-// ────────────────────────────────────────────────────────────────────
 
 /// 一次 SSE chunk 解析结果（content / reasoning / tool_calls / finish_reason / 流内错误 / [DONE]）
 #[derive(Debug, Default, Clone)]
@@ -300,16 +298,16 @@ pub fn accumulate_tool_call_delta(
 
 /// 默认对话轮数（聊天 / 任务执行 / 逐步执行统一为 50）；
 /// 多步 Skill 可在 SKILL.md frontmatter 自报 max_rounds 覆盖（见 resolve_max_rounds）；
-/// P3-a 起配置 `maxRounds` 亦可覆盖默认（Skill 仍最优先），常量单源 bot/params.rs。
+///  起配置 `maxRounds` 亦可覆盖默认（Skill 仍最优先），常量单源 bot/params.rs。
 pub(crate) const DEFAULT_MAX_ROUNDS: usize = crate::bot::params::DEFAULT_MAX_ROUNDS as usize;
 
-/// T6：单轮 msgs 总字符软上限（仅 audit，不截断）。
+/// 单轮 msgs 总字符软上限（仅 audit，不截断）。
 /// 默认 200K 字符（中文 ≈ 1 token/字符 ≈ 200K token 上下文）。
 /// 超出走 `loop.msgs.over_budget` 事件供事后分析；不主动压缩、不截断、不触发摘要。
 pub(crate) const MSGS_BUDGET_CHARS: usize = 200_000;
 
 /// 本轮工具循环的轮数上限：Skill 自报 max_rounds 最优先，其次配置 maxRounds，
-/// 都没有 → DEFAULT_MAX_ROUNDS（P3-a 单源 bot/params.rs）。
+/// 都没有 → DEFAULT_MAX_ROUNDS（ 单源 bot/params.rs）。
 pub(crate) fn resolve_max_rounds(
     skill_max_rounds: Option<usize>,
     config_max_rounds: usize,
@@ -320,7 +318,7 @@ pub(crate) fn resolve_max_rounds(
 // Harness 第 5 层：单轮对话 Function 总调用上限（每轮可并行多个 tool_calls，
 // max_rounds 管轮数管不住并行调用数，必须有独立计数熔断）
 //
-// 上限默认 100（W5-FUSE，老板拍板从 50 上调）：工作流节点等长链任务
+// 上限默认 100从 50 上调）：工作流节点等长链任务
 // 50 次不够用；更高上限的失控风险由幻觉守卫（claims_mutation）+ 软警告 +
 // /stop 兜底。可用 bot-config.json `maxFunctionCalls` 覆盖（None = 100）；
 // 子 agent 默认预算同源此值（resolve_subagent_budget），LLM 显式给的预算仍可覆盖。
@@ -342,8 +340,8 @@ fn is_retryable_llm_status(status: u16) -> bool {
 }
 
 /// 熔断判定：第 n 次（1-based 累计）Function 调用是否超上限。
-/// cap 由会话派生（SUBA-2）：子 agent = 预算 max_tool_calls，其余 = 默认 100
-/// （W5-FUSE；bot-config `maxFunctionCalls` 可覆盖，钳 1..=500）。
+/// cap 由会话派生：子 agent = 预算 max_tool_calls，其余 = 默认 100
+/// bot-config `maxFunctionCalls` 可覆盖，钳 1..=500）。
 fn should_fuse(calls_so_far: usize, cap: usize) -> bool {
     calls_so_far > cap
 }
@@ -378,21 +376,21 @@ pub struct LlmHttp {
     pub provider: crate::bot::ApiProvider,
     /// max_tokens（仅 Anthropic 模式发送——Anthropic 必填；OpenAI 兼容模式不发，
     /// 多数兼容网关不认识该字段）。装配时已 resolve_max_tokens 钳制过；
-    /// 条目级覆盖（U13）也在此值里生效，thinking budget 夹紧用同一个值。
+    /// 条目级覆盖也在此值里生效，thinking budget 夹紧用同一个值。
     pub max_tokens: u32,
     /// 推理强度线上参数（RE-1）：按模型族映射好的注入载荷
     /// （bot/reasoning::resolve），None = 不发任何推理字段。
     pub reasoning: crate::bot::reasoning::ReasoningWire,
-    /// 条目级采样参数（U13）：active 模型条目的 temperature/top_p 覆盖，
+    /// 条目级采样参数：active 模型条目的 temperature/top_p 覆盖，
     /// OpenAI 与 Anthropic 请求体都注入；None = 不写字段（用模型服务端默认）。
     pub temperature: Option<f64>,
     pub top_p: Option<f64>,
-    /// 条目级 system prompt（U13）：Some = 追加到消息栈末尾的额外 system 消息
+    /// 条目级 system prompt：Some = 追加到消息栈末尾的额外 system 消息
     ///（内部消息流保持 OpenAI 形状；Anthropic 分支转换时归并进顶层 system）。
     pub system_prompt: Option<String>,
 }
 
-/// 条目级采样参数注入（U13）：temperature/top_p 有值才写请求体（有值才写 =
+/// 条目级采样参数注入：temperature/top_p 有值才写请求体（有值才写 =
 /// 不打扰不认识这些字段或用服务端默认的模型）。OpenAI /chat/completions 与
 /// Anthropic /v1/messages 的顶层字段同名，一处实现两协议共用；
 /// 摘要（summarize_http）与 Planner（call_planner）也走这里。
@@ -414,7 +412,7 @@ pub fn apply_inference_params(
 /// 使核心循环不依赖 AppHandle；异步出口（execute_tool / replan）因 Rust 闭包生命周期
 /// 限制走泛型参数。生产薄壳 run_model_loop 传入 AppHandle 实现，测试传 stub。
 pub struct ModelLoopDeps<'a> {
-    /// 单次请求 Function 调用熔断上限覆盖（W5-FUSE）：薄壳从 bot-config
+    /// 单次请求 Function 调用熔断上限覆盖：薄壳从 bot-config
     /// `maxFunctionCalls` 读入；None = 默认 100。子 agent 预算优先级更高
     /// （core 派生链第一级），测试直驱 core 传 Some(n) 可锚定任意 cap。
     pub fuse_cap_override: Option<usize>,
@@ -439,7 +437,7 @@ pub struct ModelLoopDeps<'a> {
 /// 模型工具循环薄壳：只做 AppHandle 依赖装配——
 /// 读配置/Key、构 HTTP 客户端、把 widget emit / 审计 / skill_finish / execute_tool /
 /// replan 包成回调，实际循环逻辑全在 run_model_loop_core（可注入 mock server 集成测试）。
-/// B3-3：全局共享 LLM HTTP 客户端（OnceLock 连接池复用）——每轮模型循环新建
+/// 全局共享 LLM HTTP 客户端（OnceLock 连接池复用）——每轮模型循环新建
 /// Client 会各建连接池/TLS 握手，且旧 Client drop 后连接粗暴关闭。**无默认总
 /// 超时**：流式路径逐 chunk idle 超时（stream_chunk_idle_timeout），非流式调用方
 /// （摘要/Planner）在 RequestBuilder 上挂 per-request timeout。
@@ -457,11 +455,11 @@ pub fn shared_llm_client() -> &'static reqwest::Client {
 ///（旧实现的 300s **总**超时会掐掉合法长生成——长正文/长工具参数总时长可超 5 分钟）
 pub const STREAM_CHUNK_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
-/// send() 响应头超时（B3-3，ocr HIGH 采纳）：只覆盖连接+发请求+收到响应头，
+/// send() 响应头超时ocr HIGH 采纳）：只覆盖连接+发请求+收到响应头，
 /// 不含流式 body——服务端收下请求却挂起不回时兜底，防永久挂起
 pub const LLM_HEADER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// B4-2：模型循环执行明细（trace 管道接线，trace.rs:110 既定计划的落地）。
+/// 模型循环执行明细（trace 管道接线，trace.rs:110 既定计划的落地）。
 /// 轮数 = `llm.request` 审计事件计数（每轮恰好发一次请求）；工具摘要由薄壳的
 /// execute_tool 包装器采集——真实分发路径零改动。
 #[derive(Debug, Clone, Default)]
@@ -470,7 +468,7 @@ pub struct LoopTrace {
     pub turn_count: u32,
     /// 每次工具调用摘要（name + success + duration_ms）
     pub tool_calls: Vec<crate::evolution::trace::ToolCallSummary>,
-    /// P1-c：llm.usage 审计事件累计（Anthropic 协议现发；OpenAI usage 解析留 P4）
+    /// llm.usage 审计事件累计（Anthropic 协议现发；OpenAI usage 解析留 ）
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     /// 本轮实际使用的模型名（词元统计按模型聚合用；未发请求即失败时为 None）
@@ -488,12 +486,12 @@ pub async fn run_model_loop(
     // None = 任务执行/定时等后台链路，回落 bot-config.json 的全局默认。
     // 抽象档位 → 线上参数的按模型映射在 bot/reasoning.rs。
     reasoning_override: Option<String>,
-    // 每卡模型覆盖（W6-MODEL）：模型库条目 id；None = 跟随全局 active 模型。
+    // 每卡模型覆盖：模型库条目 id；None = 跟随全局 active 模型。
     // 解析失败（条目不存在/禁用/key 缺失）→ 响亮报错，不静默回落
     model_override: Option<String>,
 ) -> Result<(String, Vec<TaskRef>, LoopTrace), CommandError> {
     let cfg = crate::bot::bot_get_config(app.clone())?;
-    // 每卡模型覆盖优先（W6-MODEL）：命中模型库条目则整组替换 base_url/model/协议/key
+    // 每卡模型覆盖优先：命中模型库条目则整组替换 base_url/model/协议/key
     let resolved = match model_override.as_deref() {
         Some(id) => Some(crate::bot::resolve_model_override(
             cfg.api_provider.as_deref(),
@@ -515,12 +513,12 @@ pub async fn run_model_loop(
     if api_key.trim().is_empty() {
         return Err(CommandError::ApiKeyMissing);
     }
-    // B3-3：共享客户端（连接池复用）；总超时取消，流式路径逐 chunk idle 超时兜底
+    // 共享客户端（连接池复用）；总超时取消，流式路径逐 chunk idle 超时兜底
     let client = shared_llm_client().clone();
     let model_for_reasoning = cfg.model.clone();
     // None/非法值 → Openai（旧行为零影响）
     let provider = crate::bot::ApiProvider::from_cfg(cfg.api_provider.as_deref());
-    // 条目级推理参数（U13）：active 条目 > 全局 > 内置默认（解析见 schema::effective_inference；
+    // 条目级推理参数：active 条目 > 全局 > 内置默认（解析见 schema::effective_inference；
     // cfg 是对外视图 BotConfigView，拆参传入与 keyring::read_llm_key 同风格）
     let inference = crate::bot::effective_inference(
         cfg.api_provider.as_deref(),
@@ -548,7 +546,7 @@ pub async fn run_model_loop(
         top_p: inference.top_p,
         system_prompt: inference.system_prompt,
         // 推理强度：覆盖优先于后台默认；抽象档位按模型族映射到线上参数。
-        // budget < max_tokens 夹紧用的就是条目覆盖后的 max_tokens（U13）
+        // budget < max_tokens 夹紧用的就是条目覆盖后的 max_tokens
         reasoning: crate::bot::reasoning::resolve(
             provider,
             &model_for_reasoning,
@@ -577,12 +575,12 @@ pub async fn run_model_loop(
             let _ = app.emit_to("widget", event, payload);
         }
     };
-    // B4-2：执行明细采集（薄壳层，真实分发路径零改动）——
+    // 执行明细采集（薄壳层，真实分发路径零改动）——
     // 轮数：audit 闭包数 llm.request 事件；工具摘要：execute_tool 包装器计时+判定
     // （声明在 deps 之前：deps 的 audit 闭包要引用轮数计数器）
     let round_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let round_for_audit = round_count.clone();
-    // P1-c：llm.usage 审计事件累计（trace token 统计数据源）
+    // llm.usage 审计事件累计（trace token 统计数据源）
     let prompt_tokens = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let completion_tokens = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let usage_pt = prompt_tokens.clone();
@@ -592,7 +590,7 @@ pub async fn run_model_loop(
     > = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let tool_trace_for_exec = tool_trace.clone();
     let deps = ModelLoopDeps {
-        // 全域熔断上限（W5-FUSE）：config 有值用之（钳 1..=500），None = 默认 100
+        // 全域熔断上限：config 有值用之（钳 1..=500），None = 默认 100
         fuse_cap_override: Some(
             cfg.max_function_calls
                 .map(|v| v.clamp(1, 500) as usize)
@@ -600,11 +598,11 @@ pub async fn run_model_loop(
         ),
         emit: &emit,
         audit: &|level, event, kv| {
-            // B4-2：llm.request 事件计数 = 轮数（trace turn_count 的数据源）
+            // llm.request 事件计数 = 轮数（trace turn_count 的数据源）
             if event == "llm.request" {
                 round_for_audit.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
-            // P1-c：llm.usage 累计（trace 汇总的 tokens 数据源）+ P4 水位条事件
+            // llm.usage 累计（trace 汇总的 tokens 数据源）+  水位条事件
             //（仅交互实例推挂件；前端按会话累计配合 contextK 显示水位。
             // OpenAI 兼容网关的流式 usage 需要 stream_options 参数（部分网关
             // 不认识会 400），暂不启用——水位仅 Anthropic 协议有数据，前端注明）
@@ -646,7 +644,7 @@ pub async fn run_model_loop(
     // 上轮遗留的 Completed/Failed/Terminated run 会在第 0 轮被 advance 短路（agent 假死根因）。
     // 位置与原核心内调用等价——都发生在进入轮循环之前。
     crate::bot_skills::clear_terminal_skill_runs(&app, session_id);
-    // P4：配置化工具结果截断（设计 §3.2 maxToolOutputChars）——默认 None = 不截断
+    // 配置化工具结果截断（设计 §3.2 maxToolOutputChars）——默认 None = 不截断
     //（现状零变更）；Some(n>0) 时单条工具结果钳 n 字符再回灌消息栈，防上下文膨胀。
     // 截断只影响回灌文本；trace span（dispatch 内采集）仍存原文。审计留痕。
     let tool_output_cap: Option<usize> = cfg
@@ -660,10 +658,10 @@ pub async fn run_model_loop(
             let t0 = std::time::Instant::now();
             let out = crate::bot::execute_tool_traced(&app, &name, &args, Some(stop), &trace).await;
             // 成败口径与全链路统一（audit::tool_call_failed：门禁拦截/熔断/
-            // 用户拒绝/执行失败都算失败）；error_class 分类器 P4 接线（同源口径）
+            // 用户拒绝/执行失败都算失败）；error_class 分类器  接线（同源口径）
             let failed = crate::audit::tool_call_failed(&name, &out.text);
             let error_class = crate::audit::classify_error_class(&out.text);
-            // P4：配置化截断（截断后文本进回灌/事件；span 存原文，审计留痕）
+            // 配置化截断（截断后文本进回灌/事件；span 存原文，审计留痕）
             let mut text = out.text;
             if let Some(cap) = tool_output_cap {
                 let char_count = text.chars().count();
@@ -718,7 +716,7 @@ pub async fn run_model_loop(
     )
     .await
     .map(|(text, refs)| {
-        // B4-2：组装执行明细随返回值带出（trace 管道消费）
+        // 组装执行明细随返回值带出（trace 管道消费）
         let loop_trace = LoopTrace {
             turn_count: round_count.load(std::sync::atomic::Ordering::Relaxed) as u32,
             tool_calls: tool_trace.lock().map(|m| m.clone()).unwrap_or_default(),
@@ -765,13 +763,13 @@ where
             crate::bot_anthropic::anthropic_messages_url(&http.base_url)
         }
     };
-    // SUBA-2：工具 schema 按会话选取——子 agent 会话给 profile 白名单
+    // 工具 schema 按会话选取——子 agent 会话给 profile 白名单
     //（递归双保险①：清单里无 spawn 等），其他会话默认全量；
     // 阶段 3：主 agent 清单尾部追加外部 MCP 工具（tools_json_with_mcp，
     // 子 agent 分支短路不受影响）。
-    // B0-1（AUDIT-FIX-PLAN-2026-09-29）：拼装结果含外部 MCP description（外部
+    // 拼装结果含外部 MCP description（外部
     // 数据引入面），此处兜底改 fail-soft——解析失败记审计并回退「无 MCP 的
-    // 静态清单」（B0 评审：内置 32 工具不陪 MCP 动态段陪葬；静态 base 恒合法，
+    // 静态清单」（ 评审：内置 32 工具不陪 MCP 动态段陪葬；静态 base 恒合法，
     // 末层空表只为防御到底），不再 panic 打断模型循环。
     let tools: serde_json::Value = {
         let assembled = crate::bot::registry::tools_json_with_mcp(stop.session_id());
@@ -789,9 +787,9 @@ where
         }
     };
 
-    // SUBA-2：熔断上限按会话派生——子 agent 预算 max_tool_calls（子会话注册表），
-    // 其余 = bot-config maxFunctionCalls（缺省 100，W5-FUSE）。软警阈值 = cap*7/10。
-    // 派生链（W5-FUSE）：子 agent 预算（默认与全域 maxFunctionCalls 同源，老板拍板
+    // 熔断上限按会话派生——子 agent 预算 max_tool_calls（子会话注册表），
+    // 其余 = bot-config maxFunctionCalls（缺省 100。软警阈值 = cap*7/10。
+    // 派生链：子 agent 预算（默认与全域 maxFunctionCalls 同源，
     // 两条设置合一；LLM 显式给的仍可覆盖）→ bot-config maxFunctionCalls（钳 1..=500，
     // 防巨值实质关闭熔断）→ 默认 100
     let fuse_cap = stop
@@ -805,7 +803,7 @@ where
     // [1, cap-1]；cap=1 时软警本就无意义（下一次调用即熔断），钳到 1 即可
     let soft_warn_at = (fuse_cap * 7 / 10).clamp(1, fuse_cap.saturating_sub(1).max(1));
     let mut msgs = msgs;
-    // 条目级 system prompt（U13）：追加到消息栈末尾——OpenAI 直接多一条 system
+    // 条目级 system prompt：追加到消息栈末尾——OpenAI 直接多一条 system
     // 消息；Anthropic 分支 openai_msgs_to_anthropic 会把它归并进顶层 system 块。
     if let Some(sp) = &http.system_prompt {
         msgs.push(serde_json::json!({ "role": "system", "content": sp }));
@@ -840,7 +838,7 @@ where
     // AwaitConfirm/Finish/Fail/Terminate 跳出主循环时，返回 user 已看到的文本
     let mut last_streamed = String::new();
     for round in 0..max_rounds {
-        // T6：保守 token 预算——仅 audit，不压缩。超阈值走 `loop.msgs.over_budget` 事件。
+        // 保守 token 预算——仅 audit，不压缩。超阈值走 `loop.msgs.over_budget` 事件。
         // 默认阈 200K 字符（中文 ~1 token/字符；上限 ≈ 200K token 上下文）。
         // 本轮 msgs 总字符超阈值时记个 audit，不截断——便于后续评估是否要加主动压缩。
         let msgs_chars: usize = msgs
@@ -926,7 +924,7 @@ where
                 }
             }
         };
-        // 条目级采样参数注入（U13）：temperature/top_p 有值才写（两协议顶层字段同名）
+        // 条目级采样参数注入：temperature/top_p 有值才写（两协议顶层字段同名）
         apply_inference_params(&mut body, http.temperature, http.top_p);
         // 推理强度注入（RE-1）：OpenAI 兼容分支直接加字段；
         // Anthropic 分支加 thinking 块（budget < max_tokens 约束已在 resolve 时夹紧）。
@@ -973,7 +971,7 @@ where
                     crate::bot_anthropic::apply_anthropic_auth(req, http.api_key.trim())
                 }
             };
-            // B3-3（ocr HIGH 采纳）：send() 单独挂响应头超时——共享客户端无默认
+            // send() 单独挂响应头超时——共享客户端无默认
             // 总超时，等头阶段（服务端收下请求但不回）会永久挂起；per-request
             // total timeout 会连流式 body 一起算，不能用。60s 只覆盖
             // 连接+发请求+收到响应头，body 由下方逐 chunk idle 超时接管
@@ -1166,7 +1164,7 @@ where
                 }
                 parsed.error
             };
-            // B3-3：逐 chunk idle 超时——next() 单次等待超过 STREAM_CHUNK_IDLE_TIMEOUT
+            // 逐 chunk idle 超时——next() 单次等待超过 STREAM_CHUNK_IDLE_TIMEOUT
             // 即判定死连接（总时长不再设限，合法长生成不受 300s 总超时误杀）
             loop {
                 if stop.stopped() {
@@ -1479,7 +1477,7 @@ where
                 "tool_call_id": id,
                 "content": result
             }));
-            // N5：工具随结果附图（screenshot）→ 图作为紧随 tool 消息的 user 消息注入。
+            // ：工具随结果附图（screenshot）→ 图作为紧随 tool 消息的 user 消息注入。
             // OpenAI 协议 tool 消息只收文本，「工具后追加带图 user 消息」是官方视觉
             // 示例同款；Anthropic 转换器会把 [tool, user(图)] 合并成单条 user
             // [tool_result, image]（官方 tool_result 附图形态，满足严格交替）。
@@ -1592,9 +1590,7 @@ where
     Err(err)
 }
 
-// ────────────────────────────────────────────────────────────────────
 // 测试：feed_think / parse_sse_chunk / TOOLS schema
-// ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod inference_param_tests {
@@ -2212,9 +2208,7 @@ mod tools_schema_tests {
         }
     }
 }
-// ────────────────────────────────────────────────────────────────────
 // 测试：max_rounds 解析 / fallback + 单轮 Function 调用熔断
-// ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod rounds_fuse_tests {
@@ -2233,7 +2227,7 @@ mod rounds_fuse_tests {
 
     #[test]
     fn skill_without_max_rounds_falls_back_to_default_50() {
-        // 现有 Skill 未声明 max_rounds → None → fallback（P3-a：fallback = 配置解析值，测试传默认 50）
+        // 现有 Skill 未声明 max_rounds → None → fallback（：fallback = 配置解析值，测试传默认 50）
         let meta = crate::bot_skills::parse_meta("---\nname: x\ndescription: d\n---\nbody\n", "x");
         assert_eq!(meta.max_rounds, None);
         assert_eq!(
@@ -2246,7 +2240,7 @@ mod rounds_fuse_tests {
     #[test]
     fn fuse_trips_at_cap_boundary() {
         // MAX_FUNCTION_CALLS_PER_REQUEST = 50 实际生效：模拟主循环计数，
-        // 构造 101 个 tool_calls → 第 101 次触发熔断（W5-FUSE：默认上限 50→100）
+        // 构造 101 个 tool_calls → 第 101 次触发熔断默认上限 50→100）
         assert_eq!(MAX_FUNCTION_CALLS_PER_REQUEST, 100);
         let mut calls = 0usize;
         let mut fused_msg: Option<String> = None;

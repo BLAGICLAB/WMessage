@@ -1,9 +1,9 @@
-//! B1: 启动时 replay + 任务 DB 修复。
+//! : 启动时 replay + 任务 DB 修复。
 //!
 //! 当 journal 仍 pending 但文件操作已完成（move/delete 成功但 db_upsert 失败），
 //! 启动 replay 检测 dst 存在 + src 不存在 → 重新落 DB 绑定修复一致。
 //!
-//! NEW-B-1: 修复前必须确认任务 file_path 仍指向 src（未被用户重绑 / 已解绑），
+//! : 修复前必须确认任务 file_path 仍指向 src（未被用户重绑 / 已解绑），
 //! 否则跳过修复避免旧 journal 覆盖新绑定。
 
 use std::path::{Path, PathBuf};
@@ -16,7 +16,7 @@ use super::journal::{journal_cleared_inner, journal_committed_inner};
 use super::ops::{log_line, now_ms};
 use super::types::JournalEntry;
 
-/// NEW-B-1: replay 修复前提——任务 file_path 仍指向 journal 记录的 src，
+/// replay 修复前提——任务 file_path 仍指向 journal 记录的 src，
 /// 即 DB 自该文件操作后未被碰过。若用户期间重新绑定了别的文件 / 已解绑，
 /// 必须跳过修复，防止旧 journal 覆盖新绑定。
 pub(crate) fn file_path_untouched(current: Option<&str>, expected_src: &str) -> bool {
@@ -30,7 +30,7 @@ fn is_permanent_replay_error(e: &str) -> bool {
     e.contains("不存在")
 }
 
-/// NEW-B-1: 「源已消失」时的处置决策（纯函数，可单测）。
+/// 「源已消失」时的处置决策（纯函数，可单测）。
 /// pending = 该 (task, src) 最新 pending journal；dst_exists 仅对 move 有意义。
 pub(crate) enum SrcMissingAction {
     /// 上轮 move 成功但 DB 未更新 → 重新绑定到 dst，并提交该 journal
@@ -62,7 +62,7 @@ pub(crate) fn decide_src_missing(
     }
 }
 
-/// B1: 启动时 replay pending 条目。
+/// 启动时 replay pending 条目。
 ///
 /// 语义：
 /// - move + src 不存在 + dst 存在 → 文件已迁但 DB 未更新 → 重跑 db_upsert 改 file_path
@@ -74,7 +74,7 @@ pub(crate) fn decide_src_missing(
 /// 返回（恢复条数, 错误条数）供调用者记日志。
 pub fn journal_replay_pending(app: &AppHandle) -> Result<(usize, usize), String> {
     let conn = db::open_db(app).map_err(|e| e.to_string())?;
-    // 孤儿 pending 清理（拍板 #8=A）：MI-04a 修复前产生的同 (task_id, src) 多条
+    // 孤儿 pending 清理：MI-04a 修复前产生的同 (task_id, src) 多条
     // pending（id DESC 下不可见、仍被 replay 扫描 → 同 key 重复处置）。启动重放前
     // 一次性清理：只留 id 最大（最新尝试），其余删除 + 留痕。
     let purged = purge_orphan_pending(&conn).map_err(|e| e.to_string())?;
@@ -124,7 +124,7 @@ pub fn journal_replay_pending(app: &AppHandle) -> Result<(usize, usize), String>
                             );
                         }
                         Ok(false) => {
-                            // NEW-B-1: 任务 file_path 已不指向 src（用户重绑 / 已解绑）
+                            // 任务 file_path 已不指向 src（用户重绑 / 已解绑）
                             // → 跳过修复，避免旧 journal 覆盖新绑定
                             journal_cleared_inner(&conn, entry.id).ok();
                             log_line(
@@ -166,7 +166,7 @@ pub fn journal_replay_pending(app: &AppHandle) -> Result<(usize, usize), String>
                         );
                     }
                     Ok(false) => {
-                        // NEW-B-1: 任务 file_path 已变更（用户重绑）→ 跳过，不清空新绑定 audit-ok
+                        // 任务 file_path 已变更（用户重绑）→ 跳过，不清空新绑定 audit-ok
                         journal_cleared_inner(&conn, entry.id).ok();
                         log_line(
                             app,
@@ -210,14 +210,14 @@ pub fn journal_replay_pending(app: &AppHandle) -> Result<(usize, usize), String>
 }
 
 /// 返回值：Ok(true)=已修复；Ok(false)=任务 file_path 已不指向 expected_src（用户重绑/已解绑），
-/// 跳过修复防止旧 journal 覆盖新绑定（NEW-B-1）。
+/// 跳过修复防止旧 journal 覆盖新绑定。
 fn recover_move_db(
     app: &AppHandle,
     task_id: &str,
     expected_src: &str,
     dst: &Path,
 ) -> Result<bool, String> {
-    // B3: db_load/db_upsert 改 async 了；recover_* 在 spawn_polling 的 std::thread 里跑，
+    // db_load/db_upsert 改 async 了；recover_* 在 spawn_polling 的 std::thread 里跑，
     // 不在 tokio runtime 上 → 用 block_on 安全桥接（不会死锁）。
     let tasks = tauri::async_runtime::block_on(async { db::db_load(app.clone()).await })
         .map_err(|e| e.to_string())?;

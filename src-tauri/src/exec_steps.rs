@@ -129,7 +129,7 @@ pub fn classify_reply(text: &str) -> StepReply {
     StepReply::Redo(t.to_string())
 }
 
-/// P2-6 审计辅助：检测用户回复是否命中 STEP_STOPS / STEP_REDOS / STEP_CONTINUES 任一关键词
+///  审计辅助：检测用户回复是否命中 STEP_STOPS / STEP_REDOS / STEP_CONTINUES 任一关键词
 /// 与 `classify_reply` 兜底分支互补——返回 `false` 表示该回复会走 Redo(原文) 兜底，
 /// 可作为 `exec_steps.ambiguous_reply` 审计的触发信号（不改分类行为，仅补可观测性）。
 fn has_step_keyword(text: &str) -> bool {
@@ -279,7 +279,7 @@ async fn run_step(
         stop,
         None,
         None, // 执行步骤恢复链路：按 bot-config.json 全局默认（RE-1）
-        None, // 每卡模型覆盖（W6-MODEL）：逐步执行链路不挂
+        None, // 每卡模型覆盖：逐步执行链路不挂
     )
     .await?;
     park(

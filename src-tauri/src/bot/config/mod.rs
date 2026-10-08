@@ -34,7 +34,7 @@ pub mod keyring;
 pub mod schema;
 pub mod types;
 
-// ──────────────────── bot.rs facade re-exports ────────────────────
+// bot.rs facade re-exports
 // bot.rs 的 `pub use config::{...}` 块需要这些符号在 crate::bot::config::* 路径可见。
 // 子模块内符号分别 re-export 到此，供 facade 一一加载，保持外部路径 crate::bot::X 不变。
 
@@ -86,7 +86,7 @@ pub use audit::{__cmd__bot_log_read, __tauri_command_name_bot_log_read};
 // 仍通过 bot.rs 的 `pub use config::{...}` 路径使用，本模块测试不直接覆盖
 // （truncate_for_log 是 escape_for_log 的别名）。
 
-// ───────────────────────── 单元测试 ─────────────────────────
+// 单元测试
 
 #[cfg(test)]
 mod tests {
@@ -126,7 +126,7 @@ mod tests {
         }
     }
 
-    // U10 厂商中心：ModelEntry.vendor 序列化往返 + 老配置缺字段向后兼容
+    //  厂商中心：ModelEntry.vendor 序列化往返 + 老配置缺字段向后兼容
     #[test]
     fn model_entry_vendor_roundtrip_and_legacy_compat() {
         use crate::bot::config::types::ModelEntry;
@@ -313,7 +313,7 @@ mod tests {
         BOT_CONFIG_SCHEMA_VERSION, KEYRING_SERVICE, LEGACY_KEYRING_SERVICE,
     };
 
-    // ────────── bot_config_tests（基础类型 + 默认 + 老配置） ──────────
+    // bot_config_tests（基础类型 + 默认 + 老配置）
 
     #[test]
     fn default_has_bypass_llm_on_pre_step_hit_true() {
@@ -535,7 +535,7 @@ mod tests {
         assert_eq!(LEGACY_KEYRING_SERVICE, "wmessage_bot");
     }
 
-    /// F-1 的 bypass 开关语义：只有显式 false 才关，其余（文件缺失 / 读失败 /
+    ///  的 bypass 开关语义：只有显式 false 才关，其余（文件缺失 / 读失败 /
     /// JSON 损坏 / 缺字段）一律 true——默认走 bypass（命中 Skill 后不再多烧一次
     /// 外层 LLM）。走可测内核（纯路径参数），不碰 mock app 的共享数据目录。
     #[test]
@@ -560,7 +560,7 @@ mod tests {
         );
     }
 
-    /// U15 记忆开关读取语义：文件缺失 / 损坏 / 缺字段 → None（全开，门禁不弄挂聊天）；
+    ///  记忆开关读取语义：文件缺失 / 损坏 / 缺字段 → None（全开，门禁不弄挂聊天）；
     /// 显式关闭的块才生效。走可测内核（纯路径参数），不碰 mock app 的共享数据目录。
     #[test]
     fn read_memory_control_defaults_none_and_honors_explicit_block() {
@@ -606,7 +606,7 @@ mod tests {
         assert_eq!(read_memory_control_at(&p), None, "损坏配置应全开而非 panic");
     }
 
-    /// U17 记忆参数读取：缺字段/缺块/损坏 → 默认；超界值 → 钳制。
+    ///  记忆参数读取：缺字段/缺块/损坏 → 默认；超界值 → 钳制。
     #[test]
     fn read_memory_tuning_defaults_and_clamps() {
         use crate::memory::MemoryTuning;
@@ -631,7 +631,7 @@ mod tests {
         assert_eq!(t.recent_n, 3, "未写的字段补默认");
     }
 
-    // ────────── keyring 错误分类纯函数单测 ──────────
+    // keyring 错误分类纯函数单测
 
     /// 真实 keychain 在测试环境不可用，用构造的 keyring::Error 注入故障。
     fn platform_failure() -> ::keyring::Error {
@@ -677,7 +677,7 @@ mod tests {
         assert!(classify_has_key(Ok("sk-test".into())).unwrap());
     }
 
-    // ────────── Linux secret-service 探测 + 降级明文文件后端 ──────────
+    // Linux secret-service 探测 + 降级明文文件后端
 
     #[test]
     fn backend_for_selects_plaintext_when_secret_service_down() {
@@ -767,7 +767,7 @@ mod tests {
         assert!(log.contains("reason=secret-service 不可用"), "got: {log:?}");
     }
 
-    // ────────── 搜索 key 进 keyring ──────────
+    // 搜索 key 进 keyring
 
     #[test]
     fn key_slot_keyring_user_and_filename_distinct() {
@@ -876,7 +876,7 @@ mod tests {
         assert!(saved.api_key.is_none() && saved.tavily_key.is_none() && saved.brave_key.is_none());
     }
 
-    // ────────── bot_log_read ──────────
+    // bot_log_read
 
     #[test]
     fn read_log_tail_missing_file_returns_placeholder() {
@@ -927,7 +927,7 @@ mod tests {
         let _ = std::fs::remove_file(&log);
     }
 
-    // ────────── audit_log 写盘内核 ──────────
+    // audit_log 写盘内核
 
     /// 不依赖 Tauri AppHandle，验证分页格式化（位置行 + 截断续读提示 + offset 切片）。
     /// audit_log 写盘内核——成功带 [ts] 前缀落行；
@@ -960,7 +960,7 @@ mod tests {
         std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    // ────────── base_url 安全判定 ──────────
+    // base_url 安全判定
 
     #[test]
     fn base_url_safety_classification() {

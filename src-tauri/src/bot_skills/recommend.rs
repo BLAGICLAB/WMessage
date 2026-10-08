@@ -1,7 +1,7 @@
 //! N7-②：语义化技能推荐——把「已安装技能」清单按与当前任务的相关度排序截断。
 //!
 //! 复用 memory/embed 嵌入基建（bge-small-zh，512 维 L2 归一）+ tag_similar 余弦。
-//! 设计边界（spec N7）：**只排序 + 截断 top-K，不接管 IntentRule 路由**——
+//! 设计边界（spec ）：**只排序 + 截断 top-K，不接管 IntentRule 路由**——
 //! pre-step 命中行为保持不变，推荐只影响 SkillCatalog 第一层清单的呈现顺序与数量。
 //! 降级：embed 引擎不可用 / query 为空 → None（调用方回退全清单原样）。
 //! 测试：embed_fn 注入式设计，不依赖 ONNX。

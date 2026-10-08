@@ -7,13 +7,11 @@ export function basename(p: string): string {
   return parts[parts.length - 1] || p;
 }
 
-/** 图片扩展名白名单（与 Rust bot_chat.rs::IMAGE_EXTS 对齐；后端 attach_images
- *  按同一列表判断是否转 base64 image_url）。改动需两侧同步。 */
+/** 图片扩展名白名单（与 Rust bot_chat.rs::IMAGE_EXTS 对齐；后端 attach_images *  按同一列表判断是否转 base64 image_url）。改动需两侧同步。 */
 const IMAGE_EXTS = ["png", "jpg", "jpeg", "webp", "gif", "bmp"] as const;
 const IMAGE_EXT_SET = new Set<string>(IMAGE_EXTS);
 
-/** 路径后缀是否图片类型（大小写不敏感）。无后缀或未知后缀按文件处理。
- *  （U4 自 ChatPanel/UserBubbleContent 归位：纯路径谓词与 basename 同属此处） */
+/** 路径后缀是否图片类型（大小写不敏感）。无后缀或未知后缀按文件处理。 *  （U4 自 ChatPanel/UserBubbleContent 归位：纯路径谓词与 basename 同属此处） */
 export function isImagePath(p: string): boolean {
   const m = p.toLowerCase().match(/\.([a-z0-9]+)$/);
   return m ? IMAGE_EXT_SET.has(m[1]) : false;
@@ -40,7 +38,7 @@ export function isDueToday(due?: string): boolean {
 }
 
 // completedAt(ms) → 「完成 YYYY-MM-DD HH:mm」；无效回空串
-// （老板拍板：加年份，避免跨年任务识别不出是哪一年的完成时间；
+// （老板加年份，避免跨年任务识别不出是哪一年的完成时间；
 // 显示在截止日期下方；取消完成即清除）
 export function formatCompletedAt(ms: number): string {
   const d = new Date(ms);
@@ -50,8 +48,7 @@ export function formatCompletedAt(ms: number): string {
   )}`;
 }
 
-/** 相对时间共享内核：dir="past" 走「N 分钟前」档（U5 会话栈），
- *  dir="future" 走「N 分钟后」档（定时任务「下次执行」）。
+/** 相对时间共享内核：dir="past" 走「N 分钟前」档（ 会话栈）， *  dir="future" 走「N 分钟后」档（定时任务「下次执行」）。
  *  past 对未来时间戳、future 对已过期/非法时间戳一律回「刚刚」。now 可注入（测试）。 */
 function relTime(ms: number, dir: "past" | "future", now: number): string {
   const d = new Date(ms);
@@ -69,14 +66,12 @@ function relTime(ms: number, dir: "past" | "future", now: number): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-/** 相对时间（U5 会话栈）：刚刚 / N 分钟前 / N 小时前 / N 天前 / 超过 7 天落日期。
- *  now 可注入（测试）；非法/未来时间戳回「刚刚」。 */
+/** 相对时间（ 会话栈）：刚刚 / N 分钟前 / N 小时前 / N 天前 / 超过 7 天落日期。 *  now 可注入（测试）；非法/未来时间戳回「刚刚」。 */
 export function relativeTime(ms: number, now: number = Date.now()): string {
   return relTime(ms, "past", now);
 }
 
-/** 未来倒计时（定时任务模块「下次执行」）：刚刚 / N 分钟后 / N 小时后 / N 天后 / 超 7 天落日期。
- *  已过期/非法时间戳回「刚刚」。 */
+/** 未来倒计时（定时任务模块「下次执行」）：刚刚 / N 分钟后 / N 小时后 / N 天后 / 超 7 天落日期。 *  已过期/非法时间戳回「刚刚」。 */
 export function untilTime(ms: number, now: number = Date.now()): string {
   return relTime(ms, "future", now);
 }

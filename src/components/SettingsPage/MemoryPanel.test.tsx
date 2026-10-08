@@ -1,4 +1,4 @@
-// MemoryPanel 测试（U14）：列表渲染 / 统计与降级横幅 / 搜索防抖 /
+// MemoryPanel 测试：列表渲染 / 统计与降级横幅 / 搜索防抖 /
 // 编辑保存 / 删除确认（含自进化条目文案）/ 取消删除。
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -270,7 +270,7 @@ describe("MemoryPanel", () => {
     expect(await screen.findByText(/导入失败：导入文件解析失败/)).toBeInTheDocument();
   });
 
-  // ───────── U16 待确认队列（confirm 档自动抽取） ─────────
+  //  待确认队列（confirm 档自动抽取）
 
   function samplePending(over: Partial<MemPendingView> = {}): MemPendingView {
     return {

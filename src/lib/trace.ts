@@ -1,4 +1,4 @@
-// 执行痕迹（exec_trace）查询封装（P2-a，Agent 透明化设计 §5.2）。
+// 执行痕迹（exec_trace）查询封装（Agent 透明化设计 §5.2）。
 // 类型与 Rust db/trace.rs 的 serde camelCase 输出一一对应；字段增删两端同批同步
 // （Rust 侧 DB 语义见 src-tauri/src/db/trace.rs 模块头）。
 
@@ -74,7 +74,7 @@ export function fileRollback(changeId: number): Promise<string> {
   return invoke<string>("file_rollback", { changeId });
 }
 
-/** P4：导出单次执行痕迹为 JSONL（落 data_dir/exports/，返回绝对路径） */
+/** ：导出单次执行痕迹为 JSONL（落 data_dir/exports/，返回绝对路径） */
 export function traceExport(traceId: number): Promise<string> {
   return invoke<string>("trace_export", { traceId });
 }

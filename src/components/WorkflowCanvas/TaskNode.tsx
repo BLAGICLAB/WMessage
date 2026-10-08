@@ -4,19 +4,18 @@ import { History, Trash2 } from "lucide-react";
 import type { Task } from "../../types";
 import { TaskCardContent } from "../TaskCardContent";
 
-/** 工作流画布任务节点（W1-CANVAS 设计 §5.2）：
- *  内容复用挂件卡 TaskCardContent（nm-card 视觉统一），外面包 React Flow 手柄。
+/** 工作流画布任务节点（ 设计 §5.2）： *  内容复用挂件卡 TaskCardContent（nm-card 视觉统一），外面包 React Flow 手柄。
  *  未保存节点（无真实任务绑定）渲染极简草稿卡：仅标题输入。
  *  索引签名：React Flow v12 要求 node data 满足 Record<string, unknown> */
 export interface TaskNodeData extends Record<string, unknown> {
   task: Task | undefined;
-  /** 模型库条目（W6-MODEL）：每卡执行模型下拉选项 */
+  /** 模型库条目：每卡执行模型下拉选项 */
   models: Array<{ id: string; label: string }>;
   /** 草稿标题（未保存节点用） */
   draftTitle: string;
-  /** P2-c：实时执行状态（workflow-node-status 事件驱动）——running 时高亮脉冲 */
+  /** ：实时执行状态（workflow-node-status 事件驱动）——running 时高亮脉冲 */
   liveStatus?: "running" | "done" | "failed" | "skipped";
-  /** P2-c：点「痕迹」按钮打开该节点的执行详情（TracePanel） */
+  /** ：点「痕迹」按钮打开该节点的执行详情（TracePanel） */
   onSelectTrace?: (taskId: string) => void;
   onDraftTitleCommit: (localId: string, title: string) => void;
   onDelete: (localId: string) => void;
@@ -26,8 +25,7 @@ export interface TaskNodeData extends Record<string, unknown> {
   onToggleSubtask?: (taskId: string, subtaskId: string) => void;
 }
 
-/** 节点描边态：执行中（蓝）/ 完成（绿）/ 失败（红）。
- *  done 无 result = 用户手动完成 → 绿（OCR r2：不得要求 result 才给绿环）；
+/** 节点描边态：执行中（蓝）/ 完成（绿）/ 失败（红）。 *  done 无 result = 用户手动完成 → 绿（无 result 的手动完成也给绿环）；
  *  done 且 result.status 明确非 success（超时/会话异常）→ 红。
  *  P2-c：liveStatus（事件驱动）优先于任务行派生——running 加脉冲、
  *  skipped 灰环（红环 = 真失败，跳过是「上游失败未执行」，两者区分） */
@@ -68,7 +66,7 @@ export const TaskNode = memo(function TaskNode({
       >
         <Trash2 size={12} aria-hidden />
       </button>
-      {/* P2-c：执行痕迹入口（真实任务绑定才有）——时间线/diff/回滚 */}
+      {/* ：执行痕迹入口（真实任务绑定才有）——时间线/diff/回滚 */}
       {task && data.onSelectTrace && (
         <button
           aria-label="执行详情"

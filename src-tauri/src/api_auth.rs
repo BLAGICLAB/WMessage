@@ -38,7 +38,7 @@ pub fn load_or_create_token(app: &AppHandle) -> Result<String, String> {
         }
     }
     let token = uuid::Uuid::new_v4().simple().to_string();
-    // 原子首建（OCR C5-AP-01）：并发首跑（双开应用/后台任务）两进程都可能
+    // 原子首建：并发首跑（双开应用/后台任务）两进程都可能
     // 观测不到 token 各生成 UUID——check-then-act 让后写覆盖先写，输家返回
     // 与磁盘不符的 token。create_new 原子占位：唯一胜者写自己的 token；
     // 输家重读胜者落盘的那份（胜者 create 与 write_all 之间有空窗，短暂重试）。
@@ -241,7 +241,7 @@ mod tests {
         assert!(!ct_eq("", "x"));
     }
 
-    /// OCR C5-AP-01：原子首建——首个调用者占位成功，后续调用者不覆盖。
+    /// 原子首建——首个调用者占位成功，后续调用者不覆盖。
     #[cfg(unix)]
     #[test]
     fn create_token_file_atomic_first_wins() {

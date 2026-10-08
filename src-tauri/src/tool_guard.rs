@@ -1,4 +1,4 @@
-// ───────────────────────── 任务卡执行流程识别（D4d） ─────────────────────────
+// 任务卡执行流程识别
 
 use crate::bot_chat::TaskExecOrigin;
 use std::collections::HashMap;
@@ -38,7 +38,7 @@ pub fn is_task_execution_flow(session_id: Option<&str>) -> bool {
     lock_session_origins().contains_key(sid)
 }
 
-// ───────────────────────── 子 agent 会话注册表（SUBA-2） ─────────────────────────
+// 子 agent 会话注册表
 
 use crate::db::{SubagentBudget, SubagentProfile};
 use std::path::PathBuf;
@@ -53,7 +53,7 @@ pub struct SubagentSessionCtx {
     pub budget: SubagentBudget,
     /// 产物目录 gen_dir/subagents/{subagent_id}/（write_artifact_file 的唯一可写区）
     pub artifact_dir: PathBuf,
-    /// 已执行工具调用累计（SUBA-3 预算强制：dispatch 白名单闸后自增，
+    /// 已执行工具调用累计（ 预算强制：dispatch 白名单闸后自增，
     /// 触顶拒绝新调用——max_tool_calls 的强制点）
     pub used_tool_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
@@ -65,7 +65,7 @@ fn subagent_sessions() -> &'static std::sync::Mutex<HashMap<String, SubagentSess
     SUBAGENT_SESSIONS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
 }
 
-/// 锁中毒按 into_inner 取数据（全仓 mutex 口径，OCR r2/r3 high 采纳）：
+/// 锁中毒按 into_inner 取数据（全仓 mutex 口径， r2/r3 high 采纳）：
 /// 安全闸的锁不能 fail-open（中毒时把子会话当主会话 = 递归闸失守），
 /// 也不能 fail-closed 到吞掉注册/清理（泄漏更难查）——取回数据继续跑 + eprintln 留痕。
 fn lock_subagent_sessions() -> std::sync::MutexGuard<'static, HashMap<String, SubagentSessionCtx>> {
@@ -76,7 +76,7 @@ fn lock_subagent_sessions() -> std::sync::MutexGuard<'static, HashMap<String, Su
 }
 
 /// 注册子 agent 会话上下文。同 id 已存在 = 上一 runner 泄漏或双跑 bug：
-/// warn 留痕后覆盖（OCR r3 high 采纳：不静默）。
+/// warn 留痕后覆盖（不静默）。
 pub fn register_subagent_session(session_id: &str, ctx: SubagentSessionCtx) {
     let mut m = lock_subagent_sessions();
     if m.contains_key(session_id) {
@@ -101,8 +101,8 @@ pub fn is_subagent_session(session_id: Option<&str>) -> bool {
 }
 
 /// RAII 注册守卫：构造即注册、Drop 即反注册——runner 在 register 与 unregister
-/// 之间 panic 也不会泄漏条目（OCR r2 high 采纳）。Drop 仅在条目仍属于本守卫的
-/// subagent 时反注册——同会话被后来的注册覆盖时不误删他人条目（OCR r3 high 采纳）。
+/// 之间 panic 也不会泄漏条目（ 采纳）。Drop 仅在条目仍属于本守卫的
+/// subagent 时反注册——同会话被后来的注册覆盖时不误删他人条目（ 采纳）。
 pub(crate) struct SubagentSessionGuard {
     session_id: String,
     subagent_id: String,
@@ -175,7 +175,7 @@ mod tests {
         assert!(!is_task_execution_flow(Some(sid)));
     }
 
-    // ── SUBA-2：子 agent 会话注册表（OCR r1 要求与 sibling API 同等测试覆盖）──
+    // ── 子 agent 会话注册表（ sibling API 同等测试覆盖）──
 
     fn sample_ctx(subagent_id: &str) -> SubagentSessionCtx {
         SubagentSessionCtx {

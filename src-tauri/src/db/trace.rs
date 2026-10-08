@@ -3,12 +3,12 @@
 //! 每次工具调用 = 一条 `exec_spans`，每次文件落盘修改 = 一条 `file_changes`。
 //!
 //! 定位：**append-only 观测面**——只增与收尾，不参与任何业务判定；写路径全部
-//! 经 `open_db` 幂等建表（`EXEC_TRACE_DDL`），采集侧（P1-b/c/d）按 span/change
+//! 经 `open_db` 幂等建表（`EXEC_TRACE_DDL`），采集侧（/c/d）按 span/change
 //! 逐条 insert，收尾由 `trace_finish` 一次 UPDATE 汇总。
 //!
 //! 钳制纪律（与审计 KV 500 字符同思路：本地库也防膨胀）：
 //! - `SPAN_TEXT_MAX`：args/result 单条 16KB（生成侧钳，本模块 `clamp_text` 单源）
-//! - `MAX_DIFF_LINES`：unified diff 行数上限（P1-b 生成侧引用）
+//! - `MAX_DIFF_LINES`：unified diff 行数上限（ 生成侧引用）
 //! - `TRACE_RETENTION_DAYS`：保留期默认 30 天（`retire_traces_before` 由命令/定时触发）
 
 use rusqlite::OptionalExtension;
@@ -18,7 +18,7 @@ use crate::error::{CommandError, CommandResult};
 
 /// args/result 单条文本钳制（16KB）
 pub const SPAN_TEXT_MAX: usize = 16 * 1024;
-/// unified diff 行数钳制（P1-b 生成侧引用）
+/// unified diff 行数钳制（ 生成侧引用）
 pub const MAX_DIFF_LINES: usize = 2000;
 /// 执行痕迹保留期（天）；对齐 Claude Code checkpointing 的 cleanupPeriodDays 默认
 pub const TRACE_RETENTION_DAYS: i64 = 30;
@@ -164,7 +164,7 @@ pub struct NewSpan<'a> {
     pub created_at: i64,
 }
 
-/// file_change 落盘入参（P1-b 由 FileChangeReceipt 映射而来）
+/// file_change 落盘入参（ 由 FileChangeReceipt 映射而来）
 pub struct NewFileChange<'a> {
     pub trace_id: i64,
     pub span_id: Option<i64>,
@@ -176,7 +176,7 @@ pub struct NewFileChange<'a> {
     pub diff: Option<&'a str>,
     pub truncated: bool,
     /// before 全文快照文件名（uuid 发号，非 DB row id——row id 落库前不可知；
-    /// P2 回滚按此名取 `data_dir/checkpoints/<before_ref>`。设计 §9.2-3 据实现修正）
+    ///  回滚按此名取 `data_dir/checkpoints/<before_ref>`。设计 §9.2-3 据实现修正）
     pub before_ref: Option<&'a str>,
     pub before_sha: Option<&'a str>,
     pub after_sha: Option<&'a str>,
@@ -523,7 +523,7 @@ pub fn retire_traces_before(conn: &rusqlite::Connection, before_ms: i64) -> Resu
     Ok(ids.len())
 }
 
-// ───────────────────────── 前端查询命令（P1-d） ─────────────────────────
+// 前端查询命令
 
 /// 单次执行的完整痕迹（trace 摘要 + 全部 span + 全部文件变更；diff 已按 MAX_DIFF_LINES 钳）
 #[derive(Serialize, Clone, Debug)]
@@ -535,7 +535,7 @@ pub struct TraceDetail {
     pub file_changes: Vec<FileChangeRow>,
 }
 
-/// 词元统计单日聚合（设置页「词元统计」卡数据源，P3 实装消费）。
+/// 词元统计单日聚合（设置页「词元统计」卡数据源， 实装消费）。
 /// 升序返回、窗口内缺日补零（趋势图/热力图 x 轴必须连续）；
 /// 执行次数只计已收尾行（running 僵尸不算一次执行，token 仍计入）。
 #[derive(Serialize, Clone, Debug)]
@@ -806,7 +806,7 @@ pub fn usage_stats_by_model(
     )?)
 }
 
-/// 文件级回滚（P2-a，设计 §9.2-3）：把一次 AI 修改恢复到修改前快照。
+/// 文件级回滚（设计 §9.2-3）：把一次 AI 修改恢复到修改前快照。
 /// 双闸防吞改：
 /// 1. **漂移闸**——当前文件内容 sha 必须等于本变更落盘时的 after_sha，文件被
 ///    （人/其他流程）动过即拒绝（覆盖会吞掉后续修改）；
@@ -904,7 +904,7 @@ pub fn file_rollback(app: tauri::AppHandle, change_id: i64) -> CommandResult<Str
     Ok(format!("已回滚 {}（恢复到本次修改前）", c.path))
 }
 
-/// P4：单次执行痕迹导出 JSONL（Codex rollout 本地文件化思想）——
+/// 单次执行痕迹导出 JSONL（Codex rollout 本地文件化思想）——
 /// 第 1 行 trace 摘要，随后 span 行（`{"type":"span",...}`）与文件变更行
 /// （`{"type":"file_change",...}`）按 id 序混排。落 `data_dir/exports/`，
 /// 返回绝对路径供前端打开/分享。只读导出，不改动痕迹数据。

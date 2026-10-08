@@ -7,8 +7,7 @@ export const API_PROVIDER_OPTIONS = [
 ] as const;
 export type ApiProvider = (typeof API_PROVIDER_OPTIONS)[number]["value"];
 
-/** 界面字体大小四档：顺序 = 从小到大，
- *  索引位置 = SettingsPage 滑块/按钮的档位 */
+/** 界面字体大小四档：顺序 = 从小到大， *  索引位置 = SettingsPage 滑块/按钮的档位 */
 export const UI_FONT_SIZE_OPTIONS = [
   { value: "small", label: "小" },
   { value: "standard", label: "标准" },

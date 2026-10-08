@@ -11,7 +11,7 @@ use tauri::{AppHandle, Emitter};
 use crate::bot::registry::{tools_index, ToolCtx};
 use crate::bot::tools::{broadcast_after_mutation, files_audit_kv};
 
-// ───────────────────────── 工具调度核心（execute_tool dispatch） ─────────────────────────
+// 工具调度核心（execute_tool dispatch）
 
 /// 工具调用审计上下文（模型循环 → dispatch）：一次调用的「可整轮回放」标识。
 ///
@@ -159,7 +159,7 @@ async fn traced_impl(
     execute_tool_impl(app, name, args, stop, interactive, session_id, trace).await
 }
 
-/// P3-c per-tool 规则闸（execute_tool_impl 的 0.5 步，抽离保持入口薄壳——
+///  per-tool 规则闸（execute_tool_impl 的 0.5 步，抽离保持入口薄壳——
 /// 审计结构约束：skill_on_step 熔断检查紧跟工具调用入口）：
 /// deny → 硬拒（配平 tool.return + tool_rule.hit 审计）；
 /// ask → 强制确认（拒绝同样配平）；allow/无命中 → None 放行。
@@ -264,7 +264,7 @@ async fn execute_tool_impl(
     ];
     call_kv.extend(trace_kv(trace, session_id));
     crate::audit::write_event(app, crate::audit::AuditLevel::Info, "tool.call", &call_kv);
-    // 0.5 P3-c per-tool 规则表（Agent 透明化设计 §9.2-1）：deny 硬拒 / ask 强制确认 /
+    // 0.5  per-tool 规则表（Agent 透明化设计 §9.2-1）：deny 硬拒 / ask 强制确认 /
     // allow 到文件工具侧生效（bot_fs 两个 resolve 内接线）。Some = 已早退（配平完成），
     // None = 放行走后续全局档。use_skill 豁免。函数体抽离保持 execute_tool_impl 入口薄壳。
     if name != "use_skill" {
@@ -288,7 +288,7 @@ async fn execute_tool_impl(
             ) {
                 crate::audit::write_event(app, level, event, &kv);
             }
-            // B1：skill_step_failed 路径返回 Warn，与原 classify_text + tool_call_failed 结果一致。
+            // skill_step_failed 路径返回 Warn，与原 classify_text + tool_call_failed 结果一致。
             return crate::bot::registry::ToolResult::warn(e.to_string(), Vec::new());
         }
     }
@@ -329,9 +329,9 @@ async fn execute_tool_impl(
                 Vec::new(),
             );
         }
-        // SUBA-3 预算强制（设计 §6 max_tool_calls）：白名单工具执行前核对——
+        //  预算强制（设计 §6 max_tool_calls）：白名单工具执行前核对——
         // 触顶拒绝新调用（模型收到后自然收尾；墙钟/轮数两顶在 runner 侧）。
-        // 原子 check-and-increment（OCR r2 high 采纳）：load→比较→add 三步在并行
+        // 原子 check-and-increment（ 采纳）：load→比较→add 三步在并行
         // tool_call 下可同时通过——fetch_update 保证「仅 prev<max 时 +1」原子完成。
         let max = ctx.budget.max_tool_calls as usize;
         let acquired = ctx
@@ -397,9 +397,9 @@ async fn execute_tool_impl(
         interactive,
         session_id,
     };
-    // B1：工具仍返 (String, Vec<TaskRef>) 元组；From 过渡层默认 Ok。
-    // B2 cleanup 会删除 From impl，工具届时改为显式 ok/warn/error。
-    // T7：O(n) 线性扫描 → O(1) HashMap 查找；结果存 tool_def 供 post-execute 复用
+    // 工具仍返 (String, Vec<TaskRef>) 元组；From 过渡层默认 Ok。
+    //  cleanup 会删除 From impl，工具届时改为显式 ok/warn/error。
+    // O(n) 线性扫描 → O(1) HashMap 查找；结果存 tool_def 供 post-execute 复用
     // （原先下方又走 TOOLS_TABLE.iter().find 线性扫，每次调用两次 name 查找）。
     let tool_def = tools_index().get(name).copied();
     let result: crate::bot::registry::ToolResult = match tool_def {
@@ -416,7 +416,7 @@ async fn execute_tool_impl(
     //    - 镜像调用 skill_on_step_post：技能步骤结果/失败检测
     let dur_ms = start.elapsed().as_millis() as u64;
     let level = crate::audit::AuditLevel::from_tool_status(result.status);
-    // T6：保守 token 预算——仅 audit，不截断。超阈值的工具输出走 `tool.output.over_budget`
+    // 保守 token 预算——仅 audit，不截断。超阈值的工具输出走 `tool.output.over_budget`
     // 事件供事后分析，默认阈值 8192，read_text_file/fetch_url/list_files 等长输出工具 65536。
     if let Some(t) = tool_def {
         let output_len = result.text.chars().count();
@@ -450,7 +450,7 @@ async fn execute_tool_impl(
     // tool_call_id 可整轮回放一次模型循环里的工具序列
     kv.extend(trace_kv(trace, session_id));
     crate::audit::write_event(app, level, "tool.return", &kv);
-    // P1-c 执行痕迹采集（Agent 透明化设计 §4.2）：会话在跑 trace 时逐调用落 span，
+    //  执行痕迹采集（Agent 透明化设计 §4.2）：会话在跑 trace 时逐调用落 span，
     // 文件类工具附带的变更证据落 file_changes + emit `bot-file-changed`（全窗口）。
     // fire-and-forget：sink 未初始化/满队列不阻断工具结果；registry 无映射（主聊天等）零开销跳过。
     if let Some(trace_id) = crate::app_state::trace_id_for_session(app, session_id) {
@@ -463,7 +463,7 @@ async fn execute_tool_impl(
             args: crate::trace_sink::clamp_span_text(app, name, "args", args.to_string()),
             result: crate::trace_sink::clamp_span_text(app, name, "result", result.text.clone()),
             ok,
-            // P4：error_class 分类器（与 evolution ToolCallSummary 同源口径）
+            // error_class 分类器（与 evolution ToolCallSummary 同源口径）
             error_class: crate::audit::classify_error_class(&result.text).map(str::to_string),
             duration_ms: Some(dur_ms as i64),
             created_at: chrono::Utc::now().timestamp_millis(),
@@ -508,7 +508,7 @@ pub(crate) fn parse_args(args: &str) -> serde_json::Value {
     }
 }
 
-// ───────────────────────── 工具层 commit template ─────────────────────────
+// 工具层 commit template
 
 /// 工具层写库收尾：调 `db::db_upsert_for` → `broadcast_after_mutation` → 返回
 /// `ToolResult`。覆盖 7 处原 inline `match db_upsert(...) { Ok => broadcast+ok, Err => ok(fail) }`

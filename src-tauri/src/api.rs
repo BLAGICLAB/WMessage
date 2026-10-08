@@ -28,7 +28,7 @@ pub const API_PORT: u16 = 4763;
 /// `event_hub()`：返回 store 内嵌的 SSE 中枢引用（SSE 客户端注册 / 广播均通过 store）。
 /// `notify_change()`：写操作完成后调用，store 内部广播 SSE（保证前端看板实时更新）。
 ///
-/// 调用线程约定（OCR C5-AP-07）：sync 方法经 `block_on` 桥接 async db fn，
+/// 调用线程约定：sync 方法经 `block_on` 桥接 async db fn，
 /// **调用方必须不在 tokio runtime 线程上**（编译期无法表达；TauriStore 内有
 /// 运行时检查兜底，违反即 panic 并点名本约定）。handler 全在 tiny_http
 /// per-request std::thread 里跑，满足约定。
@@ -106,7 +106,7 @@ pub struct TauriStore {
     pub hub: Arc<EventHub>,
 }
 
-/// OCR C5-AP-07：sync 桥接约定（见 TaskStore trait doc）的运行时强制。
+/// sync 桥接约定（见 TaskStore trait doc）的运行时强制。
 /// `block_on` 只在非 runtime 线程安全；在 tokio runtime 线程上误调用会
 /// panic/死锁且原生消息不指因——先显式检查，panic 消息直接点名约定。
 fn assert_sync_bridge_caller() {
@@ -120,9 +120,9 @@ fn assert_sync_bridge_caller() {
 
 impl TaskStore for TauriStore {
     fn load(&self) -> Result<Vec<db::Task>, String> {
-        // B3: db_load/db_upsert 改 async 了；TaskStore trait 仍是 sync（handler 在 per-request
+        // db_load/db_upsert 改 async 了；TaskStore trait 仍是 sync（handler 在 per-request
         // std::thread 里跑，不在 tokio runtime 上 → block_on 不会死锁）。
-        // OCR C5-AP-07：该约定已显式化（trait doc）并由 assert_sync_bridge_caller
+        // 该约定已显式化（trait doc）并由 assert_sync_bridge_caller
         // 运行时强制——runtime 线程误调用立即 panic 并点名约定。
         assert_sync_bridge_caller();
         tauri::async_runtime::block_on(async { db::db_load(self.app.clone()).await })

@@ -2,8 +2,7 @@
 
 export type TaskRef = { id: string; title: string };
 
-/** 工具调用行：折叠显示，展开可看入参；P2-b 起 bot-tool-done 携带
- *  result（截 2000 字）/ms/ok（成败口径同后端 tool_call_failed） */
+/** 工具调用行：折叠显示，展开可看入参； 起 bot-tool-done 携带 *  result（截 2000 字）/ms/ok（成败口径同后端 tool_call_failed） */
 export type ToolCall = {
   id: string;
   name: string;
@@ -14,8 +13,7 @@ export type ToolCall = {
   ok?: boolean;
 };
 
-/** 结构化文件变更（P2-b）：bot-file-changed 事件载荷的会话内累积条目，
- *  替代原先从正文正则抽路径的近似（正则保留为兜底） */
+/** 结构化文件变更：bot-file-changed 事件载荷的会话内累积条目， *  替代原先从正文正则抽路径的近似（正则保留为兜底） */
 export type FileChangeLite = {
   path: string;
   kind: "create" | "modify" | "delete";
@@ -23,12 +21,10 @@ export type FileChangeLite = {
   deleted: number;
 };
 
-/** 执行过程详细度（P2-b verbose 三档）：简洁=只看工具名；详细=可展开入参/结果；
- *  调试=默认展开+耗时+轮次。localStorage 持久化，仅影响展示不改数据流 */
+/** 执行过程详细度（ verbose 三档）：简洁=只看工具名；详细=可展开入参/结果； *  调试=默认展开+耗时+轮次。localStorage 持久化，仅影响展示不改数据流 */
 export type VerboseLevel = "concise" | "detailed" | "debug";
 
-/** Skill 失败半成品上下文（仅本会话内存；FailedButRecoverable 兜底）。
- *  后端 run_skill_scheduler 返回 DslOutcome::FailedButRecoverable { reason, completed_summary, rollback_attempted }
+/** Skill 失败半成品上下文（仅本会话内存；FailedButRecoverable 兜底）。 *  后端 run_skill_scheduler 返回 DslOutcome::FailedButRecoverable { reason, completed_summary, rollback_attempted }
  *  时通过 `bot-skill-failed` SSE event 推过来；前端把它存到这条消息上渲染 ⚠️ 折叠行。
  *  - completedSummary: 失败前已成功 step 的摘要（"Step N (tool): output\nStep N (tool): ..."）
  *  - rollbackAttempted: true 表示 rollback 段跑过且无错；false 表示没写或跑挂
@@ -50,18 +46,15 @@ export type Msg = {
   thinking?: string;
   /** 本轮工具调用行（折叠显示） */
   tools?: ToolCall[];
-  /** 本轮结构化文件变更（bot-file-changed 累积；FileSummary 优先用，
-   *  空时回退正文正则抽取） */
+  /** 本轮结构化文件变更（bot-file-changed 累积；FileSummary 优先用，   *  空时回退正文正则抽取） */
   fileChanges?: FileChangeLite[];
   /** Skill 失败半成品上下文（折叠显示 ⚠️ 行；见 SkillFailure 说明） */
   skillFailure?: SkillFailure;
-  /** 「查看执行对话」跳转按钮（任务执行聊天化：busy 时执行跳转排队，
-   *  忙完提示 + 点击切到该执行会话） */
+  /** 「查看执行对话」跳转按钮（任务执行聊天化：busy 时执行跳转排队，   *  忙完提示 + 点击切到该执行会话） */
   actionSessionId?: string;
 };
 
-/** 会话（bot_sessions_load 载荷 = Rust BotSession camelCase）。
- *  时间戳可选：chat-open-session 前端补行的会话不带（按无时间渲染）。
+/** 会话（bot_sessions_load 载荷 = Rust BotSession camelCase）。 *  时间戳可选：chat-open-session 前端补行的会话不带（按无时间渲染）。
  *  isSubagent：子 agent 执行会话标记（U20D 结构化路由的唯一依据，runner
  *  建会话时写入；chat-open-session 补行的执行会话本就不是子 agent，不带） */
 export type Session = {
@@ -72,8 +65,7 @@ export type Session = {
   isSubagent?: boolean;
 };
 
-/** 🧠 模型下拉条目（bot_get_config 的 modelsByProvider 当前协议子列表）。
- *  与设置页 ModelEntry 同形（id/label/model），但独立声明——SettingsPage/types.ts
+/** 🧠 模型下拉条目（bot_get_config 的 modelsByProvider 当前协议子列表）。 *  与设置页 ModelEntry 同形（id/label/model），但独立声明——SettingsPage/types.ts
  *  头部注明「外部不直接引用」，ChatPanel 不跨目录 import。 */
 export type ChatModelEntry = {
   id: string;
@@ -83,7 +75,7 @@ export type ChatModelEntry = {
   vendor?: string;
   /** 启用开关（设置页模型行）：false = 未启用，🧠 下拉不显示；缺省视为启用 */
   enabled?: boolean;
-  /** 上下文窗口（千 token，U11 徽标同源）：P4 水位条分母；缺省 = 不显示百分比 */
+  /** 上下文窗口（千 token， 徽标同源）： 水位条分母；缺省 = 不显示百分比 */
   contextK?: number;
 };
 
@@ -93,6 +85,5 @@ export type ModelItem = ChatModelEntry & { provider: "openai" | "anthropic" };
 /** 推理强度抽象档位（RE-1）：与后端 EffortLevel::from_cfg 的合法值一一对应 */
 export type ReasoningLevel = "off" | "low" | "medium" | "high";
 
-/** 授权模式（只读展示）：与后端 PermMode::from_cfg 的合法值一一对应，None = ask；
- *  auto = 白名单内自动（含覆盖写免确认）、白名单外 ask（P3-c acceptEdits 语义） */
+/** 授权模式（只读展示）：与后端 PermMode::from_cfg 的合法值一一对应，None = ask； *  auto = 白名单内自动（含覆盖写免确认）、白名单外 ask（P3-c acceptEdits 语义） */
 export type PermMode = "ask" | "strict" | "auto" | "yolo";

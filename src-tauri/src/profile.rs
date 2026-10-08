@@ -13,7 +13,7 @@ const MAX_AVATAR_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_NAME_CHARS: usize = 24;
 const AVATAR_EXTS: [&str; 5] = ["png", "jpg", "jpeg", "gif", "webp"];
 
-/// D4：profile read-modify-write 进程内串行锁（同 db::DB_WRITE_LOCK 模式）。
+/// profile read-modify-write 进程内串行锁（同 db::DB_WRITE_LOCK 模式）。
 /// 主窗 + 挂件并发改 profile 时，整条 ProfileData 覆写会让后写者覆盖前写者 → 丢更新；
 /// 所有写路径（set_name / set_avatar / remove_avatar）的 R-M-W 全程持锁。
 /// load_data / profile_get 读路径频繁，不持锁避免阻塞读。
@@ -59,7 +59,7 @@ fn default_name(kind: &str) -> String {
     if kind == "bot" { "机器人" } else { "我" }.to_string()
 }
 
-/// 数据目录：P2-19 起委托 paths::probe_log_dir（原与 db::db_dir 两处拷贝，已合一）。
+/// 数据目录： 起委托 paths::probe_log_dir（原与 db::db_dir 两处拷贝，已合一）。
 /// Runtime 泛型（避免在 profile.rs 里硬编码 Wry，
 /// 这样单元测试可以用 tauri::test::MockRuntime 跑同一条生产代码路径）。
 /// cargo test 下 current_exe().parent() = target/debug/deps/ 可写，直接命中该分支。
@@ -107,7 +107,7 @@ fn load_data<R: Runtime>(app: &AppHandle<R>) -> ProfileData {
     match serde_json::from_str::<ProfileData>(&s) {
         Ok(d) => d,
         Err(e) => {
-            // D3：损坏不再静默吞——备份现场 profile.json.bak-<ts> + ERROR 审计，
+            // 损坏不再静默吞——备份现场 profile.json.bak-<ts> + ERROR 审计，
             // 再回默认值保证程序可启动（原 unwrap_or_default 让用户资料无声消失）
             let ts = chrono::Local::now().format("%Y%m%d-%H%M%S%.3f");
             let bak = path.with_file_name(format!("profile.json.bak-{ts}"));
@@ -128,12 +128,12 @@ fn load_data<R: Runtime>(app: &AppHandle<R>) -> ProfileData {
 
 fn save_data<R: Runtime>(app: &AppHandle<R>, data: &ProfileData) -> Result<(), String> {
     let s = serde_json::to_string_pretty(data).map_err(|e| e.to_string())?;
-    // D3：原子写（tmp + rename，复用 Phase 3 NEW-B-6 的 crate::db::atomic_write）——
+    // 原子写（tmp + rename，复用 Phase 3  的 crate::db::atomic_write）——
     // 崩溃在写中途只留 tmp 残件，profile.json 要么旧完整版要么新完整版，不留半截
     crate::db::atomic_write(&profile_path(app), &s)
 }
 
-/// NEW-D-2：set_avatar 保存失败回滚——仅当新文件不是「在役头像本身」时才删。
+/// set_avatar 保存失败回滚——仅当新文件不是「在役头像本身」时才删。
 /// 同扩展名覆盖场景 dest 就是在役文件（copy 已覆盖其内容），再删会让磁盘 json 悬挂引用、
 /// 在役头像静默丢失。返回是否执行了删除（测试可断言）。
 fn cleanup_set_avatar_failure(old_avatar: Option<&str>, new_dest: &std::path::Path) -> bool {
@@ -154,7 +154,7 @@ fn mime_for(ext: &str) -> &'static str {
     }
 }
 
-/// NEW-D-4：avatar 字段必须是纯文件名，防手改/损坏的 profile.json 路径穿越。
+/// avatar 字段必须是纯文件名，防手改/损坏的 profile.json 路径穿越。
 /// 拒绝：空串、含 `/` / `\` 路径分隔符、含 `..` 父目录跳转。
 /// 合法例：`avatar-user.png`；非法例：`../../wmessage.db`、`/etc/passwd`、`a\b.png`。
 fn avatar_filename_only(f: &str) -> Option<&str> {
@@ -170,14 +170,14 @@ fn entry_view<R: Runtime>(app: &AppHandle<R>, kind: &str, e: &ProfileEntry) -> P
     } else {
         e.name.clone()
     };
-    // NEW-D-4：先过纯文件名校验，非法值当作无头像（None），不拼路径
+    // 先过纯文件名校验，非法值当作无头像（None），不拼路径
     let data_url = e
         .avatar
         .as_deref()
         .and_then(avatar_filename_only)
         .and_then(|f| {
             let path = profile_dir(app).join(f);
-            // P2-17：读取端同样限 5MB——写入端 profile_set_avatar 有大小校验，
+            // 读取端同样限 5MB——写入端 profile_set_avatar 有大小校验，
             // 但手改/损坏的 profile.json 可指向任意大文件，读出 base64 广播会撑爆 IPC
             let meta = std::fs::metadata(&path).ok()?;
             if meta.len() > MAX_AVATAR_BYTES {
@@ -315,7 +315,7 @@ pub fn profile_set_name<R: Runtime>(
             reason: format!("姓名最长 {MAX_NAME_CHARS} 字"),
         });
     }
-    // D4：R-M-W（load → 改 → save）全程持锁，广播与 view 构造放锁外
+    // R-M-W（load → 改 → save）全程持锁，广播与 view 构造放锁外
     let data = {
         let _g = PROFILE_WRITE_LOCK.lock().unwrap_or_else(|e| {
             eprintln!("[mutex_poisoned] profile::PROFILE_WRITE_LOCK: {e:?}");
@@ -369,7 +369,7 @@ pub fn profile_set_avatar<R: Runtime>(
             reason: "头像图片不能超过 5MB".into(),
         });
     }
-    // D4：整个写路径（清旧文件 → 拷贝 → R-M-W json）持锁，防主窗 + 挂件并发丢更新
+    // 整个写路径（清旧文件 → 拷贝 → R-M-W json）持锁，防主窗 + 挂件并发丢更新
     let data = {
         let _g = PROFILE_WRITE_LOCK.lock().unwrap_or_else(|e| {
             eprintln!("[mutex_poisoned] profile::PROFILE_WRITE_LOCK: {e:?}");
@@ -436,7 +436,7 @@ pub fn profile_remove_avatar<R: Runtime>(
             reason: "必须为 user 或 bot".into(),
         });
     }
-    // D4：R-M-W + 删文件全程持锁——删文件也放锁内，
+    // R-M-W + 删文件全程持锁——删文件也放锁内，
     // 否则并发 set_avatar 同扩展名时可能删掉对方刚拷好的新头像
     let (data, removed) = {
         let _g = PROFILE_WRITE_LOCK.lock().unwrap_or_else(|e| {
@@ -449,7 +449,7 @@ pub fn profile_remove_avatar<R: Runtime>(
         } else {
             &mut data.user
         };
-        // NEW-D-3：先 save 把 json 引用清掉，成功后再删文件。
+        // 先 save 把 json 引用清掉，成功后再删文件。
         // 原顺序（先删后 save）在 save 失败时磁盘 json 悬挂引用已删文件。
         // save 失败走 `?` 早退：avatar 文件 + json 引用都保持原状。
         let removed = entry.avatar.take();
@@ -464,7 +464,7 @@ pub fn profile_remove_avatar<R: Runtime>(
     Ok(build_view(&app, &data))
 }
 
-// ───────────────────────── 单元测试 ─────────────────────────
+// 单元测试
 //
 // 测试策略：profile_get / profile_set_name / profile_set_avatar / profile_remove_avatar
 // 都依赖 profile.rs::data_dir(app)。
@@ -488,9 +488,9 @@ mod tests {
         let app = tauri::test::mock_app();
         let data_dir = data_dir(app.handle());
         let _ = std::fs::remove_file(data_dir.join("profile.json"));
-        // D3：失败注入会把 profile.json.tmp 占成目录，残留要清掉
+        // 失败注入会把 profile.json.tmp 占成目录，残留要清掉
         let _ = std::fs::remove_dir_all(data_dir.join("profile.json.tmp"));
-        // D3：损坏 load 会生成 profile.json.bak-<ts> 备份，残留要清掉
+        // 损坏 load 会生成 profile.json.bak-<ts> 备份，残留要清掉
         if let Ok(rd) = std::fs::read_dir(&data_dir) {
             for e in rd.flatten() {
                 if e.file_name()
@@ -508,10 +508,10 @@ mod tests {
         app
     }
 
-    /// D3 失败注入：把 profile.json.tmp 占成目录 → atomic_write 写临时文件必败
+    ///  失败注入：把 profile.json.tmp 占成目录 → atomic_write 写临时文件必败
     /// → save_data 必败；profile.json 本体仍可读——
     /// 模拟「磁盘 json 可读、保存失败」的真实故障窗口。
-    /// （D3 前注入用「profile.json 只读」；atomic_write 走 tmp+rename，
+    /// （ 前注入用「profile.json 只读」；atomic_write 走 tmp+rename，
     /// rename 覆盖不看目标文件权限，旧注入已无法让 save 失败。）
     fn make_save_fail_via_tmp_dir(data_dir: &std::path::Path) {
         std::fs::create_dir_all(data_dir.join("profile.json.tmp")).unwrap();
@@ -540,7 +540,7 @@ mod tests {
         tmp
     }
 
-    // ────── 纯函数测试（无需锁） ──────
+    // 纯函数测试（无需锁）
 
     #[test]
     fn profile_default_names_zh() {
@@ -573,7 +573,7 @@ mod tests {
         assert_eq!(mime_for(""), "application/octet-stream");
     }
 
-    // ────── 共享状态测试（需 ENV_LOCK） ──────
+    // 共享状态测试（需 ENV_LOCK）
 
     #[test]
     fn profile_missing_returns_default_view() {
@@ -906,7 +906,7 @@ mod tests {
             .starts_with("data:image/gif"));
     }
 
-    // ────── NEW-D-2：set_avatar save 失败回滚不得误删在役头像 ──────
+    // set_avatar save 失败回滚不得误删在役头像
 
     #[test]
     fn cleanup_failure_keeps_dest_when_it_is_live_avatar() {
@@ -1006,7 +1006,7 @@ mod tests {
         );
     }
 
-    // ────── NEW-D-3：remove_avatar save 失败不得留下悬挂引用 ──────
+    // remove_avatar save 失败不得留下悬挂引用
 
     #[test]
     fn remove_avatar_save_failure_keeps_avatar_file() {
@@ -1047,7 +1047,7 @@ mod tests {
         );
     }
 
-    // ────── NEW-D-4：avatar 字段纯文件名校验（防路径穿越） ──────
+    // avatar 字段纯文件名校验（防路径穿越）
 
     #[test]
     fn avatar_filename_only_accepts_plain_filename() {
@@ -1159,7 +1159,7 @@ mod tests {
         );
     }
 
-    // ────── D3：原子写 + 损坏备份 ──────
+    // 原子写 + 损坏备份
 
     #[test]
     fn save_data_atomic_leaves_complete_json_and_no_tmp() {
@@ -1219,7 +1219,7 @@ mod tests {
         );
     }
 
-    // ────── D4：并发 read-modify-write 不丢更新 ──────
+    // 并发 read-modify-write 不丢更新
 
     #[test]
     fn profile_concurrent_set_name_no_lost_update() {

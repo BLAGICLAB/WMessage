@@ -1,4 +1,4 @@
-//! R2 L2 版本层（spec 硬约束：依赖方向单向 memory → evolution）
+//!  L2 版本层（spec 硬约束：依赖方向单向 memory → evolution）
 //!
 //! 模块结构：
 //! - `record`  ChangeRecord + 5 个枚举 + jsonl IO

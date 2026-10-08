@@ -31,11 +31,11 @@ pub struct ToolCtx<'a> {
 
 pub type ToolFuture<'a> = Pin<Box<dyn Future<Output = ToolResult> + Send + 'a>>;
 
-/// T3 B1：工具返回的审计级别。代替 audit::classify_text 的字符串匹配。
+///  ：工具返回的审计级别。代替 audit::classify_text 的字符串匹配。
 /// 工具在返回 ToolResult 时显式声明 status，dispatcher 据此写 audit 事件。
 ///
-/// B1 阶段：所有工具仍返 (String, Vec<TaskRef>)，From 过渡层默认 Ok。
-/// B2 阶段：工具逐个改为显式 ok/warn/error；B1 的 From 过渡层在 cleanup 删除。
+///  阶段：所有工具仍返 (String, Vec<TaskRef>)，From 过渡层默认 Ok。
+///  阶段：工具逐个改为显式 ok/warn/error； 的 From 过渡层在 cleanup 删除。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ToolStatus {
     /// 工具成功完成主职责
@@ -46,19 +46,19 @@ pub enum ToolStatus {
     Error,
 }
 
-/// T3 B1：工具返回值。代替原 `(String, Vec<TaskRef>)` 元组。
+///  ：工具返回值。代替原 `(String, Vec<TaskRef>)` 元组。
 #[derive(Debug, Clone)]
 pub struct ToolResult {
     pub text: String,
     pub refs: Vec<crate::bot_chat::TaskRef>,
     pub status: ToolStatus,
-    /// N5：随结果附给模型的图片绝对路径（如 screenshot 产物）。
+    /// ：随结果附给模型的图片绝对路径（如 screenshot 产物）。
     /// 模型循环把图作为紧随 tool 消息的 user 消息（image_url data-URL）注入——
     /// OpenAI 协议 tool 消息只收文本，图走 user 消息（官方视觉示例同款）；
     /// Anthropic 协议转换器自动把 [tool, user(图)] 合并成单条 user
     /// [tool_result, image]（官方 tool_result 附图形态）。默认空 = 无图。
     pub images: Vec<String>,
-    /// P1-b（Agent 透明化设计 §4.2）：文件类工具成功落盘后附的变更证据
+    /// 文件类工具成功落盘后附的变更证据
     /// （path/kind/±行/unified diff/回滚证据链）。dispatch 侧消费：
     /// 落 `file_changes` 表 + emit `bot-file-changed`。默认空 = 本调用无文件修改。
     pub file_changes: Vec<crate::bot_fs::FileChangeReceipt>,
@@ -74,7 +74,7 @@ impl ToolResult {
             file_changes: Vec::new(),
         }
     }
-    /// 带图返回（N5）：images 为绝对路径，模型循环负责读文件转 data-URL 注入。
+    /// 带图返回：images 为绝对路径，模型循环负责读文件转 data-URL 注入。
     /// 读取失败/超限的图会被跳过（循环侧逐图校验），不阻断文本结果。
     pub fn ok_with_images(
         text: impl Into<String>,
@@ -107,7 +107,7 @@ impl ToolResult {
             file_changes: Vec::new(),
         }
     }
-    /// P1-b：附一条文件变更证据（edit_file/write_file 成功路径）。
+    /// 附一条文件变更证据（edit_file/write_file 成功路径）。
     /// 只加字段不改语义——既有 33 工具不受影响（默认空 Vec）。
     pub fn with_file_change(mut self, c: crate::bot_fs::FileChangeReceipt) -> Self {
         self.file_changes.push(c);
@@ -115,11 +115,11 @@ impl ToolResult {
     }
 }
 
-// T3 B1 过渡层：B2 工具逐个迁移后删除。已删。
+//   过渡层： 工具逐个迁移后删除。已删。
 //
-// B1 期间用 From impl 将工具返 (String, Vec<TaskRef>) 隐式转 ToolResult::ok；
-// B2 完成后所有 29 工具已显式返 ToolResult，From 过渡层失去作用，删除。
-// （若 B1/B2 期间遗留未迁移工具仍存在，该工具会爆「expected ToolResult」编译错——
+//  期间用 From impl 将工具返 (String, Vec<TaskRef>) 隐式转 ToolResult::ok；
+//  完成后所有 29 工具已显式返 ToolResult，From 过渡层失去作用，删除。
+// （若 / 期间遗留未迁移工具仍存在，该工具会爆「expected ToolResult」编译错——
 // 这是期望的强制迁移信号，不是回归。）
 
 pub struct ToolDef {
@@ -130,14 +130,14 @@ pub struct ToolDef {
     /// 只在 `mutating == true` 时有意义；非 mutating 填 `&[]`。
     /// `claims_mutation()` 从所有 mutating 工具的 patterns 合并后检索。
     pub claims_patterns: &'static [&'static str],
-    /// T6：工具返回文本的字符软上限（仅 audit，不截断）。
+    /// 工具返回文本的字符软上限（仅 audit，不截断）。
     /// 超阈值仅 audit_event!("tool.output.over_budget")，不丢字符、不压缩。
     /// 默认 8192（8KB）；长输出工具（read_text_file/fetch_url/list_files）自定 65536。
     pub max_output_chars: usize,
     pub call: for<'a> fn(&'a ToolCtx<'a>, &'a str) -> ToolFuture<'a>,
 }
 
-// ─────────────────── schema 常量（baseline 前缀一致）───────────────────
+// schema 常量（baseline 前缀一致）
 pub const SCHEMA_QUERY_TASKS: &str = r##"{"type":"function","function":{"name":"query_tasks","description":"查询任务卡：不传 query=列清单（view 默认 active 未完成）；传 query=按关键词检索（匹配标题/备注/标签/子任务，此时 view 默认 all 全库）。输出行带（工作流：名称）标记，工作流相关问题可按标记汇总回答；定位任务不确定时先调本工具确认","parameters":{"type":"object","properties":{
     "query":{"type":"string","description":"关键词，可选；不传=列清单"},
     "view":{"type":"string","enum":["active","done","archived","trash","all"],"description":"视图范围，可选：active=未完成 / done=已完成未归档 / archived=已归档 / trash=回收站 / all=除回收站外全部；默认随 query 自动定（无 query=active，有 query=all）"},
@@ -301,14 +301,14 @@ pub const SCHEMA_USE_SKILL: &str = r##"{"type":"function","function":{"name":"us
     "name":{"type":"string","description":"技能名（系统提示词「已安装技能」清单里的名称，一次一个，可多次调用）"},
     "params":{"type":"object","description":"技能参数（可选；键=参数名，值=字符串）。技能声明了必填参数时必须提供（缺失会拒绝启动并列出缺什么），声明了默认值的参数可省略","additionalProperties":{"type":"string"}}
   },"required":["name"]}}}"##;
-// ─────────────────── W9-ASK：工作流执行提问（主可见） ───────────────────
+// 工作流执行提问（主可见）
 pub const SCHEMA_ASK_USER: &str = r##"{"type":"function","function":{"name":"ask_user","description":"向用户提一个问题并等待回答（仅工作流节点执行可用；提问会进通知中心，用户可能几小时后才回答）。必须携带 assumption=你的推荐假设：用户不回答时工作流按假设继续，给不出假设的问题不许问。仅当缺关键信息且无法从任务卡/上游产出/附件推断时才用；每张卡最多问 2 次，超预算会被直接按假设继续","parameters":{"type":"object","properties":{
     "question":{"type":"string","description":"要问的问题，≤200 字，具体明确"},
     "why":{"type":"string","description":"一句话说明为什么要问，可选"},
     "options":{"type":"array","items":{"type":"string"},"description":"候选项（可选，≤4 个、每个 ≤40 字），用户可点选也可自由回答"},
     "assumption":{"type":"string","description":"你的推荐假设，必填——用户未回答时按它继续执行"}
   },"required":["question","assumption"]}}}"##;
-// ─────────────────── SUBA-2：子 agent 编排三工具（主 agent 可见） ───────────────────
+// 子 agent 编排三工具（主 agent 可见）
 pub const SCHEMA_SPAWN_SUBAGENT: &str = r##"{"type":"function","function":{"name":"spawn_subagent","description":"派发受管子 agent 执行单一目标长任务（非阻塞，立即返回 subagentId/taskId/status）。适用：预计超 5 轮工具调用、多来源调研、写代码跑脚本、用户要求后台/并行。objective 单一目标；acceptanceCriteria 必填且每条可检验（不要写「调研清楚」，要写「覆盖至少 5 个产品，每个含官网 URL，输出 report.md」）；contextSummary 只给必要背景，不要倒主对话全文。完成后用 check_subagent 轮询结果再汇总","parameters":{"type":"object","properties":{
     "objective":{"type":"string","description":"单一目标（一句话说清做什么）"},
     "profile":{"type":"string","enum":["research","coder","general"],"description":"工具档位：research=联网调研写报告 / coder=读代码跑 Python 写文件 / general=两者并集"},
@@ -328,13 +328,13 @@ pub const SCHEMA_CANCEL_SUBAGENT: &str = r##"{"type":"function","function":{"nam
     "taskId":{"type":"string","description":"子任务卡 id，与 subagentId 二选一"},
     "reason":{"type":"string","description":"取消原因（可选）"}
   },"required":[]}}}"##;
-// ─────────────────── SUBA-2：子 agent 白名单内工具（不进主 agent schema） ───────────────────
+// 子 agent 白名单内工具（不进主 agent schema）
 pub const SCHEMA_WRITE_ARTIFACT_FILE: &str = r##"{"type":"function","function":{"name":"write_artifact_file","description":"把文本内容写进自己的产物目录（gen_dir/subagents/{subagentId}/，报告/中间结果落地用）。filename 为纯文件名（不含路径分隔符），已存在会自动加 (n) 序号不覆盖","parameters":{"type":"object","properties":{
     "filename":{"type":"string","description":"纯文件名（不含路径分隔符 / 与 \\、不允许 .. 路径段与 NUL；Windows 保留设备名如 CON/NUL 拒绝），如 report.md / data.csv；同名自动加 (n) 序号"},
     "content":{"type":"string","description":"完整文本内容"}
   },"required":["filename","content"]}}}"##;
 pub const SCHEMA_READ_OWN_CARD: &str = r##"{"type":"function","function":{"name":"read_own_card","description":"重读自己的任务卡（标题/验收标准 note/子任务清单/预算）：每轮开始建议先调，subtasks/note 有变更则调整计划；deletedAt 非空 = 卡片已被软删，立即停止新探索并收尾","parameters":{"type":"object","properties":{}}}}"##;
-// ─────────────────── N4：电脑辅助 Tier1（只「看」与「打开」，无鼠标键盘） ───────────────────
+// ：电脑辅助 Tier1（只「看」与「打开」，无鼠标键盘）
 pub const SCHEMA_REVEAL_PATH: &str = r##"{"type":"function","function":{"name":"reveal_path","description":"在访达（macOS）/资源管理器（Windows）中定位显示文件或文件夹（只定位，不打开文件本身；仅限白名单目录内路径，与读文件同一权限闸）","parameters":{"type":"object","properties":{
     "path":{"type":"string","description":"文件或目录绝对路径（支持 ~ 开头）"}
   },"required":["path"]}}}"##;
@@ -345,7 +345,7 @@ pub const SCHEMA_CLIPBOARD_WRITE: &str = r##"{"type":"function","function":{"nam
     "text":{"type":"string","description":"要复制的文本"}
   },"required":["text"]}}}"##;
 pub const SCHEMA_SCREENSHOT: &str = r##"{"type":"function","function":{"name":"screenshot","description":"截取主显示器画面。截图会直接作为图片附在工具结果之后，用你的视觉能力读取内容（PNG 同时落 AI_Gen_Files 留档；需要系统屏幕录制权限，macOS 未授权时会得到壁纸/黑图）","parameters":{"type":"object","properties":{}}}}"##;
-// ─────────────────── N6：文件编辑（写白名单 ≠ 读白名单，白名单外逐次确认） ───────────────────
+// ：文件编辑（写白名单 ≠ 读白名单，白名单外逐次确认）
 pub const SCHEMA_EDIT_FILE: &str = r##"{"type":"function","function":{"name":"edit_file","description":"对文本文件做精确字符串替换（小步修改首选；先 read_text_file 确认原文再改）。oldString 必须与文件内容一致且唯一（多处命中报错；行尾空白/CRLF 差异自动容错）。改完建议 read_text_file 复核","parameters":{"type":"object","properties":{
     "path":{"type":"string","description":"文件绝对路径（仅限可写目录：AI_Gen_Files + 任务卡绑定文件夹 + 设置页 allowedDirs；白名单外会弹确认）"},
     "oldString":{"type":"string","description":"要替换的原文（精确匹配，须唯一；含足够上下文）"},
@@ -355,9 +355,9 @@ pub const SCHEMA_WRITE_FILE: &str = r##"{"type":"function","function":{"name":"w
     "path":{"type":"string","description":"目标文件绝对路径（父目录必须已存在）"},
     "content":{"type":"string","description":"完整文件内容（UTF-8 文本；不能含 NUL 字节；上限 2MB）"}
   },"required":["path","content"]}}}"##;
-// ─────────────────── 适配器（统一签名，按需拆 ctx 字段）───────────────────
+// 适配器（统一签名，按需拆 ctx 字段）
 // link_file_to_task 是 async fn，必须 .await——拆出来后已修正。
-// list_tasks/search_tasks 合并为 query_tasks（T1-QUERYTASKS）：收 args。
+// list_tasks/search_tasks 合并为 query_tasks：收 args。
 fn call_query_tasks<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
     Box::pin(async move { tool_query_tasks(ctx.app, args).await })
 }
@@ -492,9 +492,9 @@ fn call_record_lesson<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a>
     Box::pin(async move { crate::memory::tool_record_lesson(ctx.app, args).await })
 }
 
-/// W9-ASK：工作流执行提问——引擎在 workflow_questions（oneshot 等待 + 假设兜底），
+/// 工作流执行提问——引擎在 workflow_questions（oneshot 等待 + 假设兜底），
 /// 超时口径 ASK_TIMEOUT_SECS（默认 24h），测试可传短超时直打引擎。
-/// ctx.stop 透传（OCR r1 high：/stop 必须能打断 24h 等待，不能挂死模型循环）。
+/// ctx.stop 透传/stop 必须能打断 24h 等待，不能挂死模型循环）。
 fn call_ask_user<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
     let app = ctx.app;
     let session_id = ctx.session_id;
@@ -516,7 +516,7 @@ fn call_use_skill<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
     Box::pin(async move { tool_use_skill(ctx.app, args, session_id) })
 }
 
-// ─────────────────── SUBA-2 适配器：编排三工具 + 子 agent 白名单工具 ───────────────────
+//  适配器：编排三工具 + 子 agent 白名单工具
 fn call_spawn_subagent<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
     let app = ctx.app.clone();
     let args = args.to_string();
@@ -556,7 +556,7 @@ fn call_read_own_card<'a>(ctx: &'a ToolCtx<'a>, _args: &'a str) -> ToolFuture<'a
     Box::pin(async move { crate::bot_orchestrator::tool_read_own_card(&app, session_id).await })
 }
 
-// ─────────────────── N4：电脑辅助 Tier1 适配器 ───────────────────
+// ：电脑辅助 Tier1 适配器
 fn call_reveal_path<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
     let interactive = ctx.interactive;
     let session_id = ctx.session_id;
@@ -577,7 +577,7 @@ fn call_screenshot<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
     Box::pin(async move { crate::bot_desktop::tool_screenshot(ctx.app, args).await })
 }
 
-// ─────────────────── N6：文件编辑适配器 ───────────────────
+// ：文件编辑适配器
 fn call_edit_file<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
     let interactive = ctx.interactive;
     let session_id = ctx.session_id;
@@ -594,7 +594,7 @@ fn call_write_file<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
     )
 }
 
-/// T4：合并 TOOLS_TABLE 中所有 mutating 工具的 claims_patterns，
+/// 合并 TOOLS_TABLE 中所有 mutating 工具的 claims_patterns，
 /// 检查 text 是否含任一变更声称表述。
 ///
 /// 原 bot_model_loop.rs::claims_mutation 的「14 个动词 + 4 个整段」硬编码
@@ -639,7 +639,7 @@ pub fn claims_mutation(text: &str) -> bool {
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// T7：TOOLS_TABLE 的 O(1) HashMap 索引。
+/// TOOLS_TABLE 的 O(1) HashMap 索引。
 /// dispatch 的 O(n) `TOOLS_TABLE.iter().find(...)` 改为 O(1) `tools_index().get(name)`。
 /// OnceLock 保证只有一次初始化；索引里全部为 `&'static ToolDef` 引用，零额外分配（除 HashMap 表本身）。
 static TOOLS_INDEX: OnceLock<HashMap<&'static str, &'static ToolDef>> = OnceLock::new();
@@ -648,7 +648,7 @@ pub fn tools_index() -> &'static HashMap<&'static str, &'static ToolDef> {
     TOOLS_INDEX.get_or_init(|| TOOLS_TABLE.iter().map(|t| (t.name, t)).collect())
 }
 
-// ─────────────────── TOOLS_TABLE（33 工具单源真相：31 主可见 + 2 子 agent 专属）───────────────────
+// TOOLS_TABLE（33 工具单源真相：31 主可见 + 2 子 agent 专属）
 pub static TOOLS_TABLE: &[ToolDef] = &[
     ToolDef {
         name: "query_tasks",
@@ -940,7 +940,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         max_output_chars: 8192,
         call: call_use_skill,
     },
-    // ─────────────────── SUBA-2：子 agent 编排（主 agent 可见，追加表尾） ───────────────────
+    // 子 agent 编排（主 agent 可见，追加表尾）
     ToolDef {
         name: "spawn_subagent",
         schema: SCHEMA_SPAWN_SUBAGENT,
@@ -971,7 +971,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         max_output_chars: 8192,
         call: call_cancel_subagent,
     },
-    // ─────────────────── N4：电脑辅助 Tier1（只「看」与「打开」） ───────────────────
+    // ：电脑辅助 Tier1（只「看」与「打开」）
     ToolDef {
         name: "reveal_path",
         schema: SCHEMA_REVEAL_PATH,
@@ -1004,7 +1004,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         max_output_chars: 8192,
         call: call_screenshot,
     },
-    // ─────────────────── N6：文件编辑（写白名单 ≠ 读白名单） ───────────────────
+    // ：文件编辑（写白名单 ≠ 读白名单）
     ToolDef {
         name: "edit_file",
         schema: SCHEMA_EDIT_FILE,
@@ -1021,7 +1021,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         max_output_chars: 8192,
         call: call_write_file,
     },
-    // ─────────────────── SUBA-2：子 agent 白名单工具（不进主 agent 默认 schema） ───────────────────
+    // 子 agent 白名单工具（不进主 agent 默认 schema）
     ToolDef {
         name: "write_artifact_file",
         schema: SCHEMA_WRITE_ARTIFACT_FILE,
@@ -1051,8 +1051,8 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
 /// 少一次运行期解析，也不给「schema 非法 → expect panic 杀聊天」留路径
 /// （合法性 + 与 baseline 的一致性由 registry_tests 锁死）。
 ///
-/// SUBA-2：仅子 agent 可见的工具（write_artifact_file / read_own_card）不出现在
-/// 主 agent 的默认清单里——主可见 = 28 核心 + 编排三 + 电脑辅助四（T1 后 31，N4 后 35）。
+/// 仅子 agent 可见的工具（write_artifact_file / read_own_card）不出现在
+/// 主 agent 的默认清单里——主可见 = 28 核心 + 编排三 + 电脑辅助四（ 后 31， 后 35）。
 pub fn tools_json() -> &'static str {
     static CACHE: OnceLock<String> = OnceLock::new();
     CACHE.get_or_init(|| {
@@ -1130,15 +1130,15 @@ pub fn tools_json_for(session_id: Option<&str>) -> &'static str {
     }
 }
 
-/// 主 agent 的完整工具清单（阶段 3 MCP 挂载点，拍板 2A 机制 A）：
+/// 主 agent 的完整工具清单（阶段 3 MCP 挂载点，机制 A）：
 /// 内置静态 JSON 尾部追加外部 MCP 工具（增量挂载，内置 31 工具 schema 字节不动）。
 /// - 子 agent 会话：短路返回白名单（外部 MCP 工具不进子 agent，§5.1 边界不破）；
 /// - 无 MCP 连接：原样返回静态 &'static str（零分配，热路径不变）；
 /// - 有连接：Owned String = 静态 JSON 摘尾 + `mount::mcp_tools_json_body()` + 收尾。
-/// 消费点 bot_model_loop 对拼装结果 fail-soft（B0-1）：schema 构建层保证 JSON
+/// 消费点 bot_model_loop 对拼装结果 fail-soft：schema 构建层保证 JSON
 /// 合法（mount/registry 单测锁），解析失败记审计走空工具表，不再 panic。
 pub fn tools_json_with_mcp(session_id: Option<&str>) -> std::borrow::Cow<'static, str> {
-    // 子 agent 判定显式化（B0 评审：原 ptr::eq 指针比较对 tools_json_for 的
+    // 子 agent 判定显式化（ 评审：原 ptr::eq 指针比较对 tools_json_for 的
     // 返回形态有隐式契约，重构易碎）——subagent_ctx 是内存查表，重复一次开销可忽略
     let is_subagent = session_id
         .and_then(|sid| crate::tool_guard::subagent_ctx(Some(sid)))
@@ -1154,8 +1154,8 @@ pub fn tools_json_with_mcp(session_id: Option<&str>) -> std::borrow::Cow<'static
     }
     // base 恒以 "\n]" 收尾（tools_json 拼装格式）。契约破坏属"永不发生"态：
     // 每轮模型循环都走这里，告警限频防刷屏——第 1 次 + 之后每 100 次
-    //（B0 评审：OnceLock 只告一次，持续破坏会彻底静默）；回退 base 后
-    // 消费点的 fail-soft 兜底接住（B0-1：release 无 debug_assert，不产出非法 JSON）。
+    //（ 评审：OnceLock 只告一次，持续破坏会彻底静默）；回退 base 后
+    // 消费点的 fail-soft 兜底接住release 无 debug_assert，不产出非法 JSON）。
     static CONTRACT_BREAKS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     if !base.ends_with("\n]") {
         let n = CONTRACT_BREAKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
@@ -1171,7 +1171,7 @@ pub fn tools_json_with_mcp(session_id: Option<&str>) -> std::borrow::Cow<'static
 /// 摘尾拼接内核（纯函数，单测直打）：base 恒以 `"\n]"` 收尾、动态段恒以
 /// `",\n"` 起头（build_tools_json_body 构造保证），摘尾接段再补收尾；
 /// 任一侧契约破坏回退 base 原样返回（宁可本轮少挂 MCP 工具，不产出非法 JSON。
-/// B0-1，AUDIT-FIX-PLAN-2026-09-29；body 侧对偶检查为 B0 评审补充）。
+/// ，；body 侧对偶检查为  评审补充）。
 fn splice_mcp_body<'a>(base: &'a str, body: &str) -> std::borrow::Cow<'a, str> {
     let Some(head) = base.strip_suffix("\n]") else {
         return std::borrow::Cow::Borrowed(base);
@@ -1237,7 +1237,7 @@ mod registry_tests {
         let v: serde_json::Value =
             serde_json::from_str(tools_json()).expect("tools_json() 必须是合法 JSON");
         let arr = v.as_array().expect("TOOLS 顶层必须是数组");
-        // SUBA-2 + T1 + N4 + N6 + W9-ASK：主可见 = 28 核心 + 编排三 + 电脑辅助四 + 文件编辑两 + ask_user；
+        //  +  +  +  + 主可见 = 28 核心 + 编排三 + 电脑辅助四 + 文件编辑两 + ask_user；
         // write_artifact_file / read_own_card 仅子 agent 白名单可见
         assert_eq!(arr.len(), 38, "主 agent 可见工具必须为 38");
         assert_eq!(
@@ -1408,7 +1408,7 @@ mod registry_tests {
     /// 不比字节：tools_json() 用统一的 `,\n  ` 缩进拼装，而原 const 的
     /// link_file_to_task 条目顶格写（无 2 空格），故两者只差这一处空白。
     ///
-    /// T1/N4：核心 28 工具基线（T1 重排为 query_tasks；N4 电脑辅助四工具追加在
+    /// /：核心 28 工具基线（ 重排为 query_tasks； 电脑辅助四工具追加在
     /// 编排三工具之后、子 agent 专属之前——不进 baseline 前缀）。
     /// baseline 必须是 derived 的**前缀**（核心 schema 变更走「显式更新本批 +
     /// 重生成 fixture」流程）。
@@ -1431,7 +1431,7 @@ mod registry_tests {
         assert_eq!(
             der_arr.len(),
             base_arr.len() + 10,
-            "主可见应为 28+3+4+2+1（W9-ASK ask_user）"
+            "主可见应为 28+3+4+2+1（含 ask_user）"
         );
     }
 
@@ -1453,7 +1453,7 @@ mod registry_tests {
         }
     }
 
-    /// T4 验收：每个 mutating 工具至少有一个 claims_pattern 能匹配到一段典型 LLM 回复。
+    ///  验收：每个 mutating 工具至少有一个 claims_pattern 能匹配到一段典型 LLM 回复。
     /// 挑 「+ pattern」作为测试输入（含「已」前缀，触发两阶段检测的第一阶段）。
     /// 非 mutating 工具不做此检查（它们的 claims_patterns 是 &[]）。
     #[test]
@@ -1517,7 +1517,7 @@ mod registry_tests {
         }
     }
 
-    /// T7：TOOLS_TABLE 索引长度等于 TOOLS_TABLE 长度——保证无重复 name。
+    /// TOOLS_TABLE 索引长度等于 TOOLS_TABLE 长度——保证无重复 name。
     #[test]
     fn tools_index_len_matches_table_len() {
         let idx = tools_index();
@@ -1530,7 +1530,7 @@ mod registry_tests {
         );
     }
 
-    /// T7：TOOLS_TABLE 里每个 name 都能在 index 里查到——索引完整覆盖。
+    /// TOOLS_TABLE 里每个 name 都能在 index 里查到——索引完整覆盖。
     /// ToolDef 不 impl PartialEq/Debug，改用 std::ptr::eq 校验指针同一性。
     #[test]
     fn tools_index_covers_all_table_names() {
@@ -1551,7 +1551,7 @@ mod registry_tests {
         }
     }
 
-    // ─────────────────── SUBA-2：子 agent 白名单 schema ───────────────────
+    // 子 agent 白名单 schema
 
     /// 设计 §5/§13：子 agent 工具清单断言无 spawn（递归双保险①——schema 层）；
     /// 三个 profile 都不含任务卡主状态写工具与编排工具。
@@ -1653,10 +1653,10 @@ mod registry_tests {
         assert_eq!(tools_json_for(None), tools_json());
     }
 
-    // ─────────────────── 阶段 3：MCP 动态挂载点 ───────────────────
+    // 阶段 3：MCP 动态挂载点
 
     /// 无 MCP 连接：tools_json_with_mcp 必须原样借用静态 JSON（零分配、零漂移）。
-    /// 与 manager e2e 共用测试锁（B0-3）：e2e 的连接存活窗口会让「无连接」断言
+    /// 与 manager e2e 共用测试锁：e2e 的连接存活窗口会让「无连接」断言
     /// 在 cargo test 并行下 flaky；先清残留（前序用例 panic 可能留下连接槽）。
     #[test]
     fn tools_json_with_mcp_without_connections_is_borrowed_static() {
@@ -1671,7 +1671,7 @@ mod registry_tests {
         assert!(matches!(sub, std::borrow::Cow::Borrowed(_)));
     }
 
-    /// B0-1：摘尾拼接契约——base 正常时摘尾接段补收尾；契约破坏（未以 \n] 收尾）
+    /// 摘尾拼接契约——base 正常时摘尾接段补收尾；契约破坏（未以 \n] 收尾）
     /// 回退 base 原样返回，绝不产出非法 JSON（release 无 debug_assert 保护）。
     #[test]
     fn splice_mcp_body_falls_back_when_base_contract_broken() {
@@ -1685,7 +1685,7 @@ mod registry_tests {
         // 拼装结果恒为合法 JSON 数组
         let v: serde_json::Value = serde_json::from_str(out.as_ref()).expect("拼装结果应合法");
         assert_eq!(v.as_array().map(|a| a.len()), Some(2));
-        // body 侧对偶契约（B0 评审）：动态段不以 ",\n" 起头（mount 层构造破坏）
+        // body 侧对偶契约（ 评审）：动态段不以 ",\n" 起头（mount 层构造破坏）
         // 同样回退 base，不产出非法 JSON
         assert!(matches!(
             super::splice_mcp_body("[\n  {}\n]", "garbage"),
@@ -1714,7 +1714,7 @@ mod registry_tests {
         s.push_str("\n]");
         let v: serde_json::Value = serde_json::from_str(&s).expect("拼装结果必须合法");
         let arr = v.as_array().unwrap();
-        assert_eq!(arr.len(), 39, "38 内置（W9-ASK 起含 ask_user）+ 1 假 MCP");
+        assert_eq!(arr.len(), 39, "38 内置（含 ask_user）+ 1 假 MCP");
         assert_eq!(arr[38]["function"]["name"], "mcp_fake_x");
         // 内置前 38 项顺序不变（增量挂载不漂移）
         let base_arr = serde_json::from_str::<serde_json::Value>(base).unwrap();

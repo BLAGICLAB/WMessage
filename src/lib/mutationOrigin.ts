@@ -1,5 +1,4 @@
-/**
- * tasks-updated 事件的 source 协议（镜像 src-tauri/src/mutation.rs MutationOrigin：
+/** * tasks-updated 事件的 source 协议（镜像 src-tauri/src/mutation.rs MutationOrigin：
  * main / widget / bot / api / migration，改动需两侧同步）。协议值保持字符串不变。
  *
  * 语义：Main/Bot/Api/Migration 已由后端线程落盘，主窗口收到后只合并 UI 不回写；

@@ -1,4 +1,4 @@
-//! R2 L2 版本层 · 9 态状态机（spec R2 硬约束）
+//!  L2 版本层 · 9 态状态机（spec  硬约束）
 //!
 //! 合法流转：
 //!   Pending → Shadowing / Rejected
@@ -78,7 +78,7 @@ mod tests {
     use super::*;
     use ChangeStatus::*;
 
-    // ─── 合法流转 ───
+    // 合法流转
 
     #[test]
     fn pending_to_shadowing_ok() {
@@ -108,7 +108,7 @@ mod tests {
 
     #[test]
     fn approved_to_active_skip_canary_ok() {
-        // R3 配置：可跳 canary 直 active
+        //  配置：可跳 canary 直 active
         assert!(can_transition(Approved, Active));
     }
 
@@ -130,7 +130,7 @@ mod tests {
         }
     }
 
-    // ─── 非法流转（硬约束 ② 禁止绕过沙箱）───
+    // 非法流转（硬约束 ② 禁止绕过沙箱）
 
     #[test]
     fn pending_to_active_blocked() {
@@ -171,7 +171,7 @@ mod tests {
         assert!(!can_transition(Canary, Approved));
     }
 
-    // ─── 终态封锁 ───
+    // 终态封锁
 
     #[test]
     fn rejected_is_terminal() {
@@ -235,7 +235,7 @@ mod tests {
         assert!(can_transition(Active, Expired));
     }
 
-    // ─── transition() 错误信息 ───
+    // transition() 错误信息
 
     #[test]
     fn transition_same_state_errors() {
@@ -249,11 +249,11 @@ mod tests {
         assert!(e.contains("终态"), "终态应报错：{e}");
     }
 
-    // ─── 集成测试：完整生命周期 ───
+    // 集成测试：完整生命周期
 
     #[test]
     fn integration_full_lifecycle_pending_to_rolled_back() {
-        // 集成验收：spec R2 「完整 status 生命周期」
+        // 集成验收：spec  「完整 status 生命周期」
         use ChangeStatus::*;
         // 合法路径 1：标准 canary 流程
         let path1 = [

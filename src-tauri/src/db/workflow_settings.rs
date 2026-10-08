@@ -1,4 +1,4 @@
-//! 工作流偏好设置（W10-QA-AUDIT 设计 §4.3）：`workflow_settings` 键值表。
+//! 工作流偏好设置（设计 §4.3）：`workflow_settings` 键值表。
 //!
 //! 只放 **后端运行期要读** 的开关（验收开关、审计保留次数）——纯前端偏好
 //! （画布偏好、指引段）继续走 localStorage，不进 DB。
@@ -24,7 +24,7 @@ pub const KEY_AUDIT_RETENTION: &str = "audit_retention_runs";
 /// 轻量评审模型（W11）：模型库条目 id；空串/缺行 = 跟随全局 active
 pub const KEY_REVIEW_MODEL: &str = "review_model";
 
-/// 节点级验收默认开（拍板 10）；审计保留默认 20 次 run
+/// 节点级验收默认开；审计保留默认 20 次 run
 pub const DEFAULT_NODE_ACCEPTANCE: bool = true;
 pub const DEFAULT_AUDIT_RETENTION: u32 = 20;
 /// 保留次数钳制范围
@@ -128,7 +128,7 @@ pub fn settings_set(
     Ok(settings_view(conn))
 }
 
-// ────────────── tauri 命令 ──────────────
+// tauri 命令
 
 /// 读工作流设置（设置页 + 前端展示）
 #[tauri::command]

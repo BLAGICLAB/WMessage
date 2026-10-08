@@ -1,4 +1,4 @@
-//! MCP 外部工具挂载层（阶段 3，拍板 2A 机制 A）：连接槽 × 工具快照 → agent 工具清单。
+//! MCP 外部工具挂载层（阶段 3，机制 A）：连接槽 × 工具快照 → agent 工具清单。
 //!
 //! 职责（纯增量，不动内置 32 工具的任何注册路径）：
 //! - `mcp_mounted_tools()`：当前可挂载条目（函数名已消歧、schema 已整形）
@@ -37,7 +37,7 @@ pub struct McpMountedTool {
 /// 工具结果文本总长上限（fetch_url 同口径，防爆上下文）
 const MAX_RESULT_CHARS: usize = 30_000;
 
-/// 单工具 schema 序列化体积上限（字节）。B0-2（AUDIT-FIX-PLAN-2026-09-29）：
+/// 单工具 schema 序列化体积上限（字节）。：
 /// inputSchema 服务器侧原样透传，无上限会每轮全量拼进 tools JSON。超限不丢
 /// 工具（保功能）：参数 schema 降级为宽松空对象，模型按描述调用、服务器侧校验兜底。
 const MAX_SCHEMA_BYTES: usize = 8 * 1024;
@@ -59,7 +59,7 @@ fn shape_description(server_name: &str, t: &Tool) -> String {
 
 /// 构建单条挂载 schema（纯函数）：parameters 用服务器 inputSchema 原样
 /// （类型上恒为 object Map；空 Map 也是合法空 schema）。
-/// B0-2：序列化超 MAX_SCHEMA_BYTES 时降级——宽松空参数 + 描述标注，不丢工具。
+/// 序列化超 MAX_SCHEMA_BYTES 时降级——宽松空参数 + 描述标注，不丢工具。
 fn tool_schema(server_name: &str, func_name: &str, t: &Tool) -> serde_json::Value {
     let desc = shape_description(server_name, t);
     let params = serde_json::Value::Object((*t.input_schema).clone());
@@ -143,7 +143,7 @@ pub fn find_mounted(func_name: &str) -> Option<McpMountedTool> {
         .find(|t| t.func_name == func_name)
 }
 
-// ───────────────────────── 阶段 4：dispatch 路由桥 ─────────────────────────
+// 阶段 4：dispatch 路由桥
 
 /// dispatch 查表 miss 时的 MCP 兜底路由。
 /// 边界（全部由上游保证，此处不重复）：
@@ -159,7 +159,7 @@ pub(crate) async fn execute_mcp_tool(
     let Some(mounted) = find_mounted(name) else {
         return crate::bot::registry::ToolResult::error(format!("未知工具：{name}"), Vec::new());
     };
-    // load_config 是同步文件读（B0 评审 HIGH）：挪 spawn_blocking，不阻塞
+    // load_config 是同步文件读（ 评审 HIGH）：挪 spawn_blocking，不阻塞
     // tokio worker——dispatch 的工具调用全在 runtime 线程上 await 这里
     let app = app.clone();
     let servers = tauri::async_runtime::spawn_blocking(move || {
@@ -195,7 +195,7 @@ pub(crate) async fn execute_mcp_direct(
     mounted: &McpMountedTool,
     args: &str,
 ) -> crate::bot::registry::ToolResult {
-    // 参数解析（B0 评审：不再把 Null 静默透传远端）——非法 JSON 本地明确回
+    // 参数解析（ 评审：不再把 Null 静默透传远端）——非法 JSON 本地明确回
     // warn 文本，模型拿错误自己重发；空串按空对象（无参工具的常见形态）
     let parsed: serde_json::Value = if args.trim().is_empty() {
         serde_json::json!({})
@@ -246,7 +246,7 @@ fn shape_result_text(result: &CallToolResult) -> String {
         }
     }
     if let Some(sc) = &result.structured_content {
-        // B0-2（AUDIT-FIX-PLAN-2026-09-29）：先序列化按上限钳制再入栈（内存优化：
+        // 先序列化按上限钳制再入栈（内存优化：
         // 超大 structuredContent 不先全量入 parts 再 join）；截断标注由下方
         // 整段截断统一给出（sc 钳到上限后加前缀必然再触发总长钳制）
         let mut s = sc.to_string();
@@ -390,7 +390,7 @@ mod tests {
         assert_eq!(v.as_array().unwrap().len(), 2);
     }
 
-    /// B0-2：超大 inputSchema 降级为宽松空参数 + 描述标注，单 schema 不超上限
+    /// 超大 inputSchema 降级为宽松空参数 + 描述标注，单 schema 不超上限
     #[test]
     fn oversized_input_schema_degrades_to_permissive_params() {
         let mut props = serde_json::Map::new();
@@ -426,7 +426,7 @@ mod tests {
         );
     }
 
-    /// B0-2：超大 structuredContent 不再无界拼入结果——总量被钳在上限附近，
+    /// 超大 structuredContent 不再无界拼入结果——总量被钳在上限附近，
     /// 截断标注由整段截断统一给出
     #[test]
     fn overlong_structured_content_is_capped() {

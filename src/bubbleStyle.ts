@@ -1,5 +1,4 @@
-/** 聊天气泡外观：用户气泡颜色 + 机器人气泡材质。
- *  纯前端视觉偏好，模式同 theme.ts：html 内联 CSS 变量 / data 属性即时生效 +
+/** 聊天气泡外观：用户气泡颜色 + 机器人气泡材质。 *  纯前端视觉偏好，模式同 theme.ts：html 内联 CSS 变量 / data 属性即时生效 +
  *  localStorage 持久化，双窗口（主窗/挂件）storage 事件同步，零后端改动。
  *  main.css 消费：--bubble-user-bg/--bubble-user-fg/.user-chip 三变量 + data-bubble-bot。 */
 
@@ -16,8 +15,7 @@ export type BubbleStyle = {
 
 export const BUBBLE_STYLE_DEFAULT: BubbleStyle = { userBg: null, botMaterial: "card" };
 
-/** 用户气泡颜色预设：全部对白字 ≥4.5:1（AA）；
- *  「跟随主题」（null）不在预设里，由设置卡单独渲染成首个色块 */
+/** 用户气泡颜色预设：全部对白字 ≥4.5:1（AA）； *  「跟随主题」（null）不在预设里，由设置卡单独渲染成首个色块 */
 export const BUBBLE_USER_COLOR_PRESETS = [
   { value: "#3563b0", label: "蓝" },
   { value: "#1f7a6d", label: "青绿" },
@@ -59,8 +57,7 @@ export function getBubbleStyle(): BubbleStyle {
   }
 }
 
-/** 依底色相对亮度自动选气泡文字色（Telegram/Discord 式自动反白）：
- *  亮度阈值 0.2 —— 低于它的底色配白字 ≥4.5:1，高于它配深字。 */
+/** 依底色相对亮度自动选气泡文字色（Telegram/Discord 式自动反白）： *  亮度阈值 0.2 —— 低于它的底色配白字 ≥4.5:1，高于它配深字。 */
 export function pickUserFg(bg: string): string {
   if (!HEX_RE.test(bg)) return "#ffffff";
   const lin = (h: string) => {

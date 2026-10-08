@@ -25,12 +25,12 @@ pub mod apply;
 pub mod candidate;
 pub mod change;
 pub mod policy;
-// W11-OCR 事故恢复：本行原属并行 evolution 批次 A 的未提交修改，
+//  事故恢复：本行原属并行 evolution 批次 A 的未提交修改，
 // 被误执行的 git reset --hard 冲掉——strategy.rs（未跟踪）幸存，补回登记
 pub mod strategy;
 
-/// jsonl 读取共享内核（OCR r2 medium 采纳：record/entry 两处 30 行 read_all 收敛
-/// 单点防漂移）。语义（B4-3 自愈化，原拍板 #17=C 的 fail-closed 已按审计修正）：
+/// jsonl 读取共享内核（record/entry 两处 30 行 read_all 收敛
+/// 单点防漂移）。语义（ 自愈化，原的 fail-closed 已按审计修正）：
 /// 文件不存在 → Ok(空)；**任何行损坏 → 先把原文件整体备份为 `<name>.corrupt`
 ///（已存在不覆盖——损坏是持久态时热路径最多拷一次）再跳过坏行**（首行损坏不再
 /// 永久 fail-closed——实证一个坏字节能让面板永久打不开且无自愈出口），stderr
@@ -59,7 +59,7 @@ pub(crate) fn read_jsonl<T: serde::de::DeserializeOwned>(
         match serde_json::from_str::<T>(&line) {
             Ok(v) => out.push(v),
             Err(e) => {
-                // B4-3：首个坏行触发一次整体备份（固定名 `.corrupt`，已存在则
+                // 首个坏行触发一次整体备份（固定名 `.corrupt`，已存在则
                 // 不覆盖——评审 HIGH 采纳：损坏是持久态时热路径每次读都不该
                 // 重拷全文件；首个快照即取证所需），跳过坏行继续（好行不丢）。
                 // 快照与并发 append 之间允许轻微偏移（备份是 best-effort 取证）。
@@ -108,7 +108,7 @@ use crate::memory::consolidate::{ConsolidateOp, ConsolidateReport};
 
 /// evolution 存储（proposals + changes 两个 jsonl）的**进程内单锁**。
 ///
-/// **一把锁覆盖两个文件是有意设计（OCR C3-4）**：toggle/delete 一次操作**同时**改两个文件，
+/// **一把锁覆盖两个文件是有意设计**：toggle/delete 一次操作**同时**改两个文件，
 /// 若按单文件各配一把锁，会出现「需要同时持两把锁」的顺序问题（死锁面）。
 /// **改动时勿「优化」成按文件锁。**
 /// 覆盖所有写路径：panel commands（toggle/delete/keep_shadow/rollback）+
@@ -184,7 +184,7 @@ pub fn post_consolidation(ops: &[ConsolidateOp], report: &ConsolidateReport) {
             .collect()
     };
 
-    // 补 R6 A 漏的连线（老板 12:29 拍板）：落盘候选池，让 shadow 钩子能读到。
+    // 补  A 漏的连线（）：落盘候选池，让 shadow 钩子能读到。
     // dedup by proposal_id：跳过 24h 内已存在的。
     if let Some(app) = emit::app_handle() {
         // write_proposals 内部是 read_all→dedup→append 完整 RMW——必须整体
@@ -232,7 +232,7 @@ pub fn post_consolidation(ops: &[ConsolidateOp], report: &ConsolidateReport) {
     }
 
     emit::emit_proposals(proposals);
-    // U20 治理归一：applyPolicy=confirm 档不再自动落库，达门槛提案全留候选池
+    //  治理归一：applyPolicy=confirm 档不再自动落库，达门槛提案全留候选池
     // 等决策板人工批准（W1 执行器在 toggle ON 时落库）。缺字段/非法值/无句柄
     //（测试环境）= auto = 改前行为（默认档零变化）；confirm 分流留 Info 审计。
     if auto_allowed {

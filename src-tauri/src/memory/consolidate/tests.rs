@@ -133,7 +133,7 @@ fn apply_merge_with_missing_ids_skipped() {
     assert_eq!(store::load_all(&conn).unwrap().len(), 1);
 }
 
-/// B2-1 助手：插一条带 evo: key tag 的 lesson 行（apply 链路同款形态）
+///  助手：插一条带 evo: key tag 的 lesson 行（apply 链路同款形态）
 fn insert_lesson(conn: &rusqlite::Connection, pid: &str, content: &str, now: i64) -> String {
     let item = NewItem {
         kind: "lesson".into(),
@@ -150,7 +150,7 @@ fn insert_lesson(conn: &rusqlite::Connection, pid: &str, content: &str, now: i64
 
 #[test]
 fn apply_merge_excludes_evolution_lesson_rows() {
-    // B2-1（P1-EV3）：lesson 被 merge 吸收 = evo key 消失 = 幂等失效。
+    // lesson 被 merge 吸收 = evo key 消失 = 幂等失效。
     // 引用含 lesson 时 lesson 必须被排除且存活。
     let mut conn = mem_db();
     let now = 1_000_000;
@@ -188,7 +188,7 @@ fn apply_merge_all_lesson_refs_skipped() {
 
 #[test]
 fn apply_contradiction_skips_when_either_side_is_lesson() {
-    // B2-1：contradiction 不碰 lesson——drop 行会被删、keep 行内容被覆盖，
+    // contradiction 不碰 lesson——drop 行会被删、keep 行内容被覆盖，
     // 任一侧是 lesson 都跳过整条
     let mut conn = mem_db();
     let now = 1_000_000;
@@ -385,7 +385,7 @@ fn consolidation_config_serde_roundtrip_and_defaults() {
 
 #[test]
 fn apply_ops_distill_respects_store_params_capacity() {
-    // U17：distill 走 insert_item_with——容量=1 时新 distill 条目会挤掉库中既有条目
+    // distill 走 insert_item_with——容量=1 时新 distill 条目会挤掉库中既有条目
     let mut conn = mem_db();
     let sp = store::StoreParams {
         capacity: 1,

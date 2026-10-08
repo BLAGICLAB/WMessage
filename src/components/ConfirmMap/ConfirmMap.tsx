@@ -6,9 +6,9 @@
 //! 前端这里 listen 这个事件 → 弹 modal + 60s 倒计时 + 确认/拒绝按钮 → 调
 //!   invoke("bot_confirm_response", { request_id, approved, always })
 //!
-//! 老板 14:21 拍板：EvolutionPanel Promote/Reject/Keep Shadow 等走 confirm 流程的
+//! EvolutionPanel Promote/Reject/Keep Shadow 等走 confirm 流程的
 //! 危险操作，60s 无响应 → 后端自动拒绝（spec §12.7 fail-safe）。
-//! ConfirmMap 是 spec R0 #1 「复用 widget 弹窗」的前端实现。
+//! ConfirmMap 是 spec  #1 「复用 widget 弹窗」的前端实现。
 
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -38,7 +38,7 @@ export default function ConfirmMap() {
   // 监听后端 bot-confirm 事件
   useTauriListen<BotConfirmPayload>("bot-confirm", (p) => {
     if (!p || !p.id) return;
-    // 新 confirm 到达前自动拒掉未响应的旧请求（拍板 #21=B）：后端每 confirm 独立
+    // 新 confirm 到达前自动拒掉未响应的旧请求：后端每 confirm 独立
     // uuid + oneshot + 60s 兜底，重复拒收幂等安全；旧 id 不再依赖超时才被拒。
     // busyRef 在途时旧请求已有响应在飞，不补刀；fire-and-forget 不阻塞新 confirm
     // 上屏（失败仅留痕，60s 兜底仍在）。

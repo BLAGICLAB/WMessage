@@ -1,9 +1,8 @@
-// 工作流画布图论工具（W1-CANVAS，设计 §5/§9）：
+// 工作流画布图论工具设计 §5/§9）：
 // 连线校验（环检测）与 dagre 自动布局。纯函数，无 React/Tauri 依赖。
 import dagre from "@dagrejs/dagre";
 
-/** 画布节点（草稿态）：localId 是画布内部拓扑键；
- *  taskId = 已保存真实任务 id（保存后由后端绑定回写，可能因指纹替换而变化） */
+/** 画布节点（草稿态）：localId 是画布内部拓扑键； *  taskId = 已保存真实任务 id（保存后由后端绑定回写，可能因指纹替换而变化） */
 export interface CanvasNode {
   localId: string;
   taskId?: string;
@@ -12,9 +11,9 @@ export interface CanvasNode {
   tags?: string[];
   dependsOn: string[];
   pos: { x: number; y: number };
-  /** 执行模型覆盖（W6-MODEL）：模型库条目 id；undefined = 跟随全局 */
+  /** 执行模型覆盖：模型库条目 id；undefined = 跟随全局 */
   model?: string;
-  /** 子任务文本清单（W8-ATTACH）：保存时构建为卡片 Subtask（新建卡） */
+  /** 子任务文本清单：保存时构建为卡片 Subtask（新建卡） */
   subtasks?: string[];
   /** 每卡验收标准（W-QA 卡即契约）：拆解生成的一行可验证完成标准 */
   acceptance?: string;
@@ -24,8 +23,7 @@ export interface CanvasNode {
 export const NODE_WIDTH = 340;
 export const NODE_HEIGHT = 150;
 
-/**
- * 加边 from→to（to 的 dependsOn 增加/from 为上游）是否会产生环。
+/** * 加边 from→to（to 的 dependsOn 增加/from 为上游）是否会产生环。
  * 环存在 ⇔ 从 to 出发沿已有边可达 from。
  */
 export function wouldCreateCycle(
@@ -84,8 +82,7 @@ export function layoutGraph(
   return out;
 }
 
-/** AI 拆解结果 → 画布草稿（W2-DECOMPOSE，设计 §6）：
- *  模型输出 dependsOn 是数组下标（且服务端已保证 < 自身下标），
+/** AI 拆解结果 → 画布草稿设计 §6）： *  模型输出 dependsOn 是数组下标（且服务端已保证 < 自身下标），
  *  这里映射为本地节点 id 并跑 dagre 分层布局——坐标永远不来自 LLM */
 export function draftFromDecompose(
   subtasks: Array<{
@@ -113,8 +110,7 @@ export function draftFromDecompose(
   return nodes;
 }
 
-/** 从已保存的工作流任务行重建画布节点（localId = 真实任务 id；
- *  dependsOn 里的 id 天然是 localId；缺坐标的行补 dagre 布局） */
+/** 从已保存的工作流任务行重建画布节点（localId = 真实任务 id； *  dependsOn 里的 id 天然是 localId；缺坐标的行补 dagre 布局） */
 export function draftFromTasks(
   tasks: Array<
     Pick<

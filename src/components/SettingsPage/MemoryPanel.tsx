@@ -1,4 +1,4 @@
-// SettingsPage 子模块：记忆库管理面板（U14）。
+// SettingsPage 子模块：记忆库管理面板。
 // 列表 / 搜索（后端混合检索，纯读不刷访问计数）/ 类型筛选 /
 // 编辑（内容 + 重要度 + 类型；tags 与来源不可改）/ 删除；
 // 统计行 + 嵌入引擎状态横幅（降级时显眼提示，界面仍可用 = 关键词模式）。
@@ -36,7 +36,7 @@ export type MemStats = {
   embedError: string | null;
 };
 
-/** U16 待确认条目（confirm 档自动抽取的产物） */
+/**  待确认条目（confirm 档自动抽取的产物） */
 export type MemPendingView = {
   id: number;
   content: string;
@@ -98,15 +98,13 @@ export function MemoryPanel() {
   const [rowError, setRowError] = useState("");
   /** 导出/导入结果提示（4s 自动清除，同 consolidateMsg 的 toast 模式） */
   const [ioMsg, setIoMsg] = useState("");
-  /** U16 待确认队列（confirm 档抽取产物） */
+  /**  待确认队列（confirm 档抽取产物） */
   const [pending, setPending] = useState<MemPendingView[]>([]);
   const [pendingBusy, setPendingBusy] = useState(false);
   const ioMsgTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  /** 对话框期互斥：plugin-dialog 弹原生框期间 busy 仍为 false，state 挡不住
-   *  连点/串台开框——用 ref 在 await save/open 之前同步占住（导出/导入共用） */
+  /** 对话框期互斥：plugin-dialog 弹原生框期间 busy 仍为 false，state 挡不住   *  连点/串台开框——用 ref 在 await save/open 之前同步占住（导出/导入共用） */
   const dialogGateRef = useRef(false);
-  /** 同帧双击闸：state（busy/pendingBusy）要等重渲染提交才生效，同一渲染帧内
-   *  的两次点击都能穿过 disabled 检查——编辑/删除、待确认操作用 ref 在函数入口
+  /** 同帧双击闸：state（busy/pendingBusy）要等重渲染提交才生效，同一渲染帧内   *  的两次点击都能穿过 disabled 检查——编辑/删除、待确认操作用 ref 在函数入口
    *  同步占住（导出/导入已由 dialogGateRef 全程覆盖，不重复加） */
   const busyRef = useRef(false);
   const pendingBusyRef = useRef(false);
@@ -123,8 +121,7 @@ export function MemoryPanel() {
     [],
   );
 
-  /** 导出记忆：plugin-dialog save 取路径 → 后端写 JSON（含向量，跨机不丢语义检索）。
-   *  对话框取消不清上一条提示（清提示时机在拿到 path 之后） */
+  /** 导出记忆：plugin-dialog save 取路径 → 后端写 JSON（含向量，跨机不丢语义检索）。   *  对话框取消不清上一条提示（清提示时机在拿到 path 之后） */
   const exportMemories = async () => {
     if (busy || dialogGateRef.current) return;
     dialogGateRef.current = true;
@@ -212,8 +209,7 @@ export function MemoryPanel() {
     reload(debouncedQuery, kindFilter);
   }, [debouncedQuery, kindFilter, reload]);
 
-  /** U16 待确认队列：加载（静默失败 = 无队列，不打扰）。
-   *  竞态令牌同 reload：approve 在途时的 reloadPending 与挂载期加载并发时，
+  /**  待确认队列：加载（静默失败 = 无队列，不打扰）。   *  竞态令牌同 reload：approve 在途时的 reloadPending 与挂载期加载并发时，
    *  先发的慢响应不得用变更前的旧队列盖掉新结果 */
   const pendingReqIdRef = useRef(0);
   const reloadPending = useCallback(async () => {
@@ -234,8 +230,7 @@ export function MemoryPanel() {
     reloadPending();
   }, [reloadPending]);
 
-  /** 收下 / 忽略待确认条目（支持单条与全批）。
-   *  reject 只动队列（不进库）→ 不刷主列表；approve 才双刷 */
+  /** 收下 / 忽略待确认条目（支持单条与全批）。   *  reject 只动队列（不进库）→ 不刷主列表；approve 才双刷 */
   const actOnPending = useCallback(
     async (ids: number[], action: "approve" | "reject") => {
       if (ids.length === 0 || pendingBusyRef.current) return;
@@ -339,7 +334,7 @@ export function MemoryPanel() {
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-1">
-            {/* 导出/导入（U15）：向量随 JSON 带出，导入走语义去重只增不删；
+            {/* 导出/导入：向量随 JSON 带出，导入走语义去重只增不删；
                 低风险的导出在左，导入紧随，刷新贴列表侧 */}
             <IconButton
               aria-label="导出记忆"
@@ -371,7 +366,7 @@ export function MemoryPanel() {
           </div>
         </div>
         {ioMsg && <p className="text-[11px] text-[var(--t4)]">{ioMsg}</p>}
-        {/* U16 待确认队列（confirm 档抽取的条目在此过目） */}
+        {/*  待确认队列（confirm 档抽取的条目在此过目） */}
         {pending.length > 0 && (
           <div className="rounded-xl nm-inset px-3 py-2">
             <div className="flex items-center gap-2">
@@ -619,7 +614,7 @@ export function MemoryPanel() {
   );
 }
 
-// ───────────────────────── 检索参数卡（memoryTuning，U17 参数化的设置面）─────────────────────────
+// 检索参数卡（memoryTuning， 参数化的设置面）
 
 interface MemoryTuningField {
   key: string;
@@ -629,8 +624,7 @@ interface MemoryTuningField {
   int: boolean;
 }
 
-/** 8 个可调参数（默认值与后端 MemoryTuning::default / clamped 区间对齐；
- *  留空 = 该字段回落默认——serde 容器 default 兜底，服务端 clamped 二次钳制） */
+/** 8 个可调参数（默认值与后端 MemoryTuning::default / clamped 区间对齐； *  留空 = 该字段回落默认——serde 容器 default 兜底，服务端 clamped 二次钳制） */
 const MEMORY_TUNING_FIELDS: MemoryTuningField[] = [
   { key: "injectionBudgetChars", label: "注入字符预算", def: 4000, step: 100, int: true },
   { key: "topN", label: "相关记忆条数", def: 5, step: 1, int: true },

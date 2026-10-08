@@ -127,7 +127,7 @@ impl EventHub {
     /// 每个 client 队列的事件序 = id 序；跨重启单调由 persisted() 的
     /// id_path 落盘保证；hub 换代时旧 writer 全停（api_stop），无跨代复用。
     pub fn broadcast(&self, event: serde_json::Value) {
-        // 单临界区（OCR C5-AP-04）：fetch_add / 落盘 / history / 推送全在
+        // 单临界区：fetch_add / 落盘 / history / 推送全在
         // clients 锁内。若 fetch_add 在锁外，并发广播 A(id5)/B(id6) 可 B 先
         // 入队——writer 端 `id <= last_sent` 去重会静默丢迟到的 id5；同理
         // id 落盘在锁外可致先 6 后 5 落盘，重启后 id 回退复用。
@@ -145,7 +145,7 @@ impl EventHub {
         // A6: 每次广播落盘当前 id（事件频率为人级，开销可忽略），重启后接续递增
         // 用 atomic_write（tmp+rename）落盘——fs::write 直写崩溃会留半截文件，
         // 重启 id 归 0 → 客户端 Last-Event-ID 去重静默丢全部新事件。
-        // 写失败拒推进（拍板 #16=A fail-closed）：归还 id + 本事件不进历史不推送
+        // 写失败拒推进：归还 id + 本事件不进历史不推送
         // ——「要么持久化要么不推进」，重启后 Last-Event-ID 语义不破。归还后下一次
         // 广播重新 fetch_add 取同一 id 重试写盘（本临界区内单写者，无竞争）。
         if let Some(p) = &self.id_path {
@@ -233,7 +233,7 @@ pub fn start_api(
         }
         match server.recv_timeout(Duration::from_millis(400)) {
             Ok(Some(req)) => {
-                // A6: worker 数上限 —— 原子占位（OCR C5-AP-01）：fetch_add 返回值
+                // A6: worker 数上限 —— 原子占位：fetch_add 返回值
                 // 即占位序号，超限立即归还并 503；不再 load+fetch_add 两步竞态
                 // （burst 下两线程可同时观察到 active < MAX 都放行）。
                 // （SeqCst 与文件内其余原子一致——纯占位计数用 Relaxed 也够，此处取一致性）
@@ -314,7 +314,7 @@ impl Drop for ActiveGuard {
 mod tests {
     use super::*;
 
-    /// 落盘写失败 fail-closed（拍板 #16=A）：broadcast 时 id 无法持久化 → 归还 id
+    /// 落盘写失败 fail-closed：broadcast 时 id 无法持久化 → 归还 id
     /// （last_id 不变=下次 broadcast 重取同 id）且事件不进历史不推送。
     /// 恢复段用新 hub 验证独立正常路径（同 hub 写盘恢复需真实目录翻转，不模拟）。
     #[test]
@@ -490,7 +490,7 @@ mod tests {
         assert!(hub.replay(11).is_empty());
     }
 
-    /// 并发广播回归（OCR C5-AP-04）：fetch_add 与推送同临界区后，
+    /// 并发广播回归：fetch_add 与推送同临界区后，
     /// 每个 client 队列的事件序必须 = id 单调序。修复前两者分离，
     /// 并发下 id6 可先于 id5 入队 → writer 端 `id <= last_sent` 去重
     /// 静默丢迟到的 id5。确定性断言（非 timing 概率复现）。

@@ -1,11 +1,11 @@
-//! OCR 原子工具（ocr_image）：本地识别图片文字，逐行返回。
+//!  原子工具（ocr_image）：本地识别图片文字，逐行返回。
 //!
 //! 隐私红线（硬约束）：图片字节只在内存里交给本地引擎，本模块没有任何网络调用，
 //! 识别过程绝不上传外网；网络路径（http/https/data:）在入口处直接拒。
 //!
 //! 平台分支：
 //! - macOS 13+：Apple Vision VNRecognizeTextRequest（系统内置，0 下载）
-//! - Windows：PP-OCRv6 small（det 检测 + rec 识别 + 可选 v5 cls 方向分类）ONNX 本地推理，
+//! - Windows：PP- small（det 检测 + rec 识别 + 可选 v5 cls 方向分类）ONNX 本地推理，
 //!   模型目录 pp-ocr-v6/（scripts/fetch_ocr_models.sh 下载，合计约 31MB）
 //! - 其他平台：显式降级为「不支持」错误
 //!
@@ -72,7 +72,7 @@ pub async fn tool_ocr_image(
                 app,
                 &format!("ocr.done | {} | {} chars", log_path, text.chars().count()),
             );
-            // OCR 识别文本，首字符任意 UTF-8 → ok
+            // ，首字符任意 UTF-8 → ok
             ToolResult::ok(text, Vec::new())
         }
         Ok(Err(e)) => {
@@ -80,7 +80,7 @@ pub async fn tool_ocr_image(
             // 「失败：{e}」以「失败」开头 → error
             ToolResult::error(format!("失败：{e}"), Vec::new())
         }
-        // 「失败：OCR 线程异常：{e}」以「失败」开头 → error
+        // 「失败：：{e}」以「失败」开头 → error
         Err(e) => ToolResult::error(format!("失败：OCR 线程异常：{e}"), Vec::new()),
     }
 }
@@ -109,7 +109,7 @@ pub(crate) fn recognize_bytes(bytes: &[u8]) -> Result<String, String> {
     recognize(bytes)
 }
 
-// ───────────────────────── macOS：Apple Vision ─────────────────────────
+// macOS：Apple Vision
 
 #[cfg(target_os = "macos")]
 mod macos {
@@ -163,7 +163,7 @@ mod macos {
     }
 }
 
-// ───────────── Windows：PP-OCRv6 ONNX（det + rec + 可选 v5 cls） ─────────────
+// Windows：PP- ONNX（det + rec + 可选 v5 cls）
 
 #[cfg(target_os = "windows")]
 mod win {
@@ -181,12 +181,12 @@ mod win {
         "请运行 scripts/fetch_ocr_models.sh 下载 PP-OCRv6 模型到 pp-ocr-v6/ 目录（约 31MB）";
 
     /// det 输入边长：等比缩放到最长边后 pad 成 DET_SIDE×DET_SIDE letterbox
-    ///（det.onnx 的 H/W 实为动态维度，letterbox 只是为了对齐 PaddleOCR 官方推理管线）
+    ///（det.onnx 的 H/W 实为动态维度，letterbox 只是为了对齐 Paddle）
     const DET_SIDE: u32 = 960;
-    /// rec 输入高度 / 宽度上限（PP-OCRv6 与 v5/v4 的 rec 前后处理配置一致：高 48、宽动态）
+    /// rec 输入高度 / 宽度上限（PP- v5/v4 的 rec 前后处理配置一致：高 48、宽动态）
     const REC_H: u32 = 48;
     const REC_MAX_W: u32 = 320;
-    /// cls 输入尺寸 / 旋转置信度阈值（v6 无独立 cls 模型，沿用 PP-OCRv5 文本行方向分类；
+    /// cls 输入尺寸 / 旋转置信度阈值（v6 无独立 cls 模型，沿用 PP-；
     /// 该 onnx 的输入是【固定 80x160】，非动态——喂其他尺寸会被 ort 拒绝，已实测）
     const CLS_H: u32 = 80;
     const CLS_W: u32 = 160;
@@ -486,7 +486,7 @@ mod win {
     }
 }
 
-// ───────────── 纯函数（det 后处理 / CTC 解码，可脱离 ONNX 单测） ─────────────
+// 纯函数（det 后处理 / CTC 解码，可脱离 ONNX 单测）
 
 /// 简化版 DB unclip 外扩比例（Vatti 多边形外扩的矩形近似）
 #[cfg(any(target_os = "windows", test))]
@@ -587,7 +587,7 @@ fn reading_order(boxes: &mut [BoxF]) {
 }
 
 /// CTC greedy 解码：去重复 → 去 blank（索引 0）→ 查字典。
-/// keys[i] 对应索引 i+1；索引 keys.len()+1 按 PaddleOCR 约定是空格；越界索引跳过。
+/// keys[i] 对应索引 i+1；索引 keys.len()+1 按 Paddle；越界索引跳过。
 #[cfg(any(target_os = "windows", test))]
 fn ctc_greedy_decode(indices: &[usize], keys: &[String]) -> String {
     let mut out = String::new();
@@ -766,7 +766,7 @@ mod tests {
     }
 
     /// 真实引擎冒烟（macOS：系统 Vision；需要 macOS 13+）。
-    /// 生成一张白底黑字 PNG（内置 5x7 点阵字体画 "OCR 2026"），跑真实识别。
+    /// 生成一张白底黑字 PNG（内置 5x7 点阵字体画 " 2026"），跑真实识别。
     /// 手动跑：cargo test --lib ocr:: -- --ignored
     #[cfg(target_os = "macos")]
     #[test]

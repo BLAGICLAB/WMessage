@@ -278,9 +278,7 @@ pub fn start_due_notifier(app: AppHandle) {
     });
 }
 
-// ────────────────────────────────────────────────────────────────────
 // 测试：截止时间解析 + 状态合并纯函数（plan_round）
-// ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod due_notify_tests {
@@ -389,7 +387,7 @@ mod due_notify_tests {
 
     #[test]
     fn date_only_task_uses_end_of_day() {
-        // 仅日期任务：当天白天不触发，23:59 前 1h（22:59）发 H1，23:59 发 T0
+        // 仅日期任务：当天白天不触发，23:59 前 1h（22:59）发 H1，23:59 发
         let tasks = vec![active("a", "写报告", "2026-09-05")];
         let mut state = HashMap::new();
         assert!(plan_round(&mut state, &tasks, dt(2026, 9, 5, 10, 0)).is_empty());
@@ -407,7 +405,7 @@ mod due_notify_tests {
     #[test]
     fn due_change_rearms_notifications() {
         let mut state = HashMap::new();
-        // 旧 due 已发过 T0
+        // 旧 due 已发过
         let old = vec![active("a", "写报告", "2026-09-05T18:00")];
         plan_round(&mut state, &old, dt(2026, 9, 5, 18, 0));
         assert!(state["a"].t0);
@@ -444,7 +442,7 @@ mod due_notify_tests {
         // 下一轮同一窗口 → 不再发
         assert!(plan_round(&mut state, &tasks, dt(2026, 9, 5, 17, 0)).is_empty());
         assert!(plan_round(&mut state, &tasks, dt(2026, 9, 5, 17, 30)).is_empty());
-        // 到点 → T0 只发一次
+        // 到点 →  只发一次
         assert_eq!(
             plan_round(&mut state, &tasks, dt(2026, 9, 5, 18, 0)).len(),
             1

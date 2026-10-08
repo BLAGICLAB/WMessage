@@ -1,4 +1,4 @@
-// 工作流 AI 拆解提示词（W2-DECOMPOSE，设计 §6.3/§10）：
+// 工作流 AI 拆解提示词设计 §6.3/§10）：
 // 用户可编辑的是「指引段」，随 workflow_decompose invoke 上行；
 // 「输出契约段」在 Rust workflow_decompose.rs 代码硬拼追加，用户不可见不可改。
 // 纯前端偏好，走 localStorage；DEFAULT 必须与 Rust DEFAULT_DECOMPOSE_GUIDANCE 保持一致。

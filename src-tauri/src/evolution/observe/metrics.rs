@@ -1,4 +1,4 @@
-//! R6 L4 观察层 · 4 个核心指标（spec R6）
+//!  L4 观察层 · 4 个核心指标（spec ）
 //!
 //! 4 个指标：
 //! 1. 候选生成率 candidate_generation_rate = proposals_in_window / days_in_window
@@ -16,7 +16,7 @@ use crate::evolution::candidate::ProposalStatus;
 use crate::evolution::change::ChangeRecord;
 use crate::evolution::change::ChangeStatus;
 
-/// R6 4 个核心指标（一轮观察的输出）
+///  4 个核心指标（一轮观察的输出）
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ObserveMetrics {
     // 主要 4 个指标
@@ -212,7 +212,7 @@ mod tests {
         }
     }
 
-    // ─── 零数据场景 ───
+    // 零数据场景
 
     #[test]
     fn zero_proposals_zero_rates() {
@@ -224,7 +224,7 @@ mod tests {
         assert_eq!(r.proposal_total, 0);
     }
 
-    // ─── 候选生成率 ───
+    // 候选生成率
 
     #[test]
     fn candidate_generation_rate_per_day() {
@@ -262,7 +262,7 @@ mod tests {
         assert!((r.candidate_generation_rate - 50.0 / 50.0).abs() < 1e-9); // 50 条 / 50 天 = 1
     }
 
-    // ─── 通过率 ───
+    // 通过率
 
     #[test]
     fn approval_rate_fraction() {
@@ -286,7 +286,7 @@ mod tests {
         assert!((r.approval_rate - 0.6).abs() < 1e-9);
     }
 
-    // ─── 回滚率 ───
+    // 回滚率
 
     #[test]
     fn rollback_rate_per_promoted() {
@@ -319,7 +319,7 @@ mod tests {
         assert_eq!(r.rollback_rate, 0.0);
     }
 
-    // ─── 污染存活期 ───
+    // 污染存活期
 
     #[test]
     fn pollution_survival_days_avg() {

@@ -43,7 +43,7 @@ const CONSOLIDATE_DEFAULT_WINDOW_MS: i64 = 7 * 86_400_000;
 /// 调度器检查周期（10 分钟扫一次是否到点，同 bot_scheduler 的 30s 扫描模式）
 const SCHED_TICK_SECS: u64 = 600;
 
-// ───────────────────────── 配置 ─────────────────────────
+// 配置
 
 /// 记忆整理配置（存 bot-config.json 的 memoryConsolidation 字段）
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -108,7 +108,7 @@ pub fn classify_due(cfg: &ConsolidationConfig, now_ms: i64) -> DueVerdict {
     }
 }
 
-// ───────────────────────── 整理指令 ─────────────────────────
+// 整理指令
 
 /// 整理报告（前端 toast 与审计共用）
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
@@ -252,7 +252,7 @@ fn format_candidates(items: &[MemItem]) -> String {
 /// - distill：新建 kind=reflection、importance=4、source=system 条目。
 /// 指令引用的 id 不存在/不足以执行 → 跳过该条（计数不增）。
 /// embs 与 ops 平行（embs[i] = ops[i].content 的嵌入；None = 嵌入失败按降级处理）。
-/// 旧签名委托默认参数（U17 契约：旧调用与测试零改动）
+/// 旧签名委托默认参数（ 契约：旧调用与测试零改动）
 pub fn apply_ops(
     conn: &mut rusqlite::Connection,
     ops: &[ConsolidateOp],
@@ -262,7 +262,7 @@ pub fn apply_ops(
     apply_ops_with(conn, ops, embs, now_ms, &store::StoreParams::default())
 }
 
-/// 带参数变体（U17）
+/// 带参数变体
 pub fn apply_ops_with(
     conn: &mut rusqlite::Connection,
     ops: &[ConsolidateOp],
@@ -399,7 +399,7 @@ pub fn apply_ops_with(
     Ok(report)
 }
 
-// ───────────────────────── 编排（LLM 调用 + 调度） ─────────────────────────
+// 编排（LLM 调用 + 调度）
 
 /// 跑一轮整理（手动命令与定时调度共用）：
 /// 候选为空 → 零报告直接成功；LLM 不可用/输出解析失败 → Err（调用方决定记审计还是透传）。
@@ -452,7 +452,7 @@ pub async fn run_consolidation(app: &AppHandle) -> CommandResult<ConsolidateRepo
     // 不改反思逻辑：ops 被应用一次（apply_ops）+ 被审计一次（emit_proposals），结果一致。
     let ops_for_audit = ops.clone();
     let app3 = app.clone();
-    // U17：整理写入也走 memoryTuning（容量/去重阈值统一口径）
+    // 整理写入也走 memoryTuning（容量/去重阈值统一口径）
     let tuning = crate::bot::read_memory_tuning(app);
     let report =
         tauri::async_runtime::spawn_blocking(move || -> Result<ConsolidateReport, String> {

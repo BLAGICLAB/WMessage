@@ -1,6 +1,6 @@
-//! R6 A · Shadow observe —— 与主 apply 并行
+//!  A · Shadow observe —— 与主 apply 并行
 //!
-//! ## 设计修正（老板 13:20 审阅后）
+//! ## 设计修正
 //!
 //! 原版强耦合 `&AppHandle`：核心安全属性（不写 mem_items / 不发 audit）无法测试。
 //! 现引入 `ShadowSink` trait 抽象 IO：
@@ -13,7 +13,7 @@
 //! 3. shadow_apply 后 mem_items 未变 → 用 in-memory SQLite 对照
 //! 4. shadow_apply 后 audit 未新增（正常路径）→ mock sink.audit_failed/warning 验证空
 //!
-//! 老板纪律（2026-09-18 13:13/13:20 拍板）：
+//! 决策纪律（2026-09-18 13:13/13:20 ）：
 //! - feature flag `evolution.shadow.enabled`，默认 false
 //! - 不写 mem_items / 只写 evolution-changes.jsonl / 不发 audit.proposal
 //! - 失败处理：audit_event + 原子计数 + 失败率 > 5% 告警
@@ -99,7 +99,7 @@ pub fn reset_counters_for_test() {
     TOTAL_WRITES.store(0, Ordering::Relaxed);
 }
 
-// ───────────────────────── 影子落库 sink（具体类型）─────────────────────────
+// 影子落库 sink（具体类型）
 
 /// 生产 sink：写 evolution-changes.jsonl + 发 audit。
 /// 原 ShadowSink trait（单实现 + 仅测试用的 Mock）已删——测试走 `new_for_test`
@@ -160,7 +160,7 @@ impl<'a> AppShadowSink<'a> {
     }
 }
 
-// ───────────────────────── 主入口 ─────────────────────────
+// 主入口
 
 /// Shadow 执行报告
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,7 +168,7 @@ pub struct ShadowReport {
     pub total: usize,
     pub written: usize,
     pub failed: usize,
-    /// B2-3：同 proposal_id 已有未终态 CR 而跳过的条数（去重命中）
+    /// 同 proposal_id 已有未终态 CR 而跳过的条数（去重命中）
     pub deduped: usize,
 }
 
@@ -222,7 +222,7 @@ pub async fn shadow_apply_for_batch<'a>(
     }
 }
 
-// ───────────────────────── 便捷包装（apply.rs 调用）─────────────────────────
+// 便捷包装（apply.rs 调用）
 
 /// 便捷包装（apply.rs 调用入口；唯一对外入口）
 ///
@@ -282,9 +282,9 @@ pub async fn shadow_apply_for_batch_with_app(
         // Allow 决策或 S0/S1：写 shadow + audit。
         // append_change 是阻塞 fs IO（open+writeln syscall）——包 spawn_blocking
         // 避免钉住 tokio worker（本 fn 是生产唯一入口，跑在 Tauri async runtime 上）；
-        // B2-2（P1-EV4）：读/判/写整个窗口走 EVOLUTION_STORE_LOCK（锁在阻塞闭包
+        // 读/判/写整个窗口走 EVOLUTION_STORE_LOCK（锁在阻塞闭包
         // 内取，不跨 await）——与 panel RMW/apply 补写同一把单写者锁，不再绕锁
-        // 并发写 changes.jsonl；B2-3 去重与 B2-4 唯一 id 同窗判定（锁内重读，
+        // 并发写 changes.jsonl； 去重与  唯一 id 同窗判定（锁内重读，
         // 无 TOCTOU、读不受半行写干扰）。
         enum ShadowWrite {
             Appended,
@@ -298,7 +298,7 @@ pub async fn shadow_apply_for_batch_with_app(
             match tauri::async_runtime::spawn_blocking(move || {
                 let _store = crate::evolution::lock_evolution_store();
                 let rows = change::read_all(&path)?;
-                // B2-3：同 proposal_id 已有未终态行（Pending/Shadowing/ShadowPassed，
+                // 同 proposal_id 已有未终态行（Pending/Shadowing/ShadowPassed，
                 // 含 panel toggle ON 写的）→ 跳过 append，不重复追加 Pending 行
                 if rows.iter().any(|c| {
                     c.proposal_id == proposal_id
@@ -311,7 +311,7 @@ pub async fn shadow_apply_for_batch_with_app(
                 }) {
                     return Ok(ShadowWrite::Deduped);
                 }
-                // B2-4（P1-EV5）：chg-<pid> 可能被历史行占用（回滚后复用），落行
+                // chg-<pid> 可能被历史行占用（回滚后复用），落行
                 // 前派生行级唯一 id——rollback 按 id 定位不再撞行
                 let mut cr = cr;
                 cr.change_id = change::unique_change_id_for(&rows, &cr.proposal_id);
@@ -380,7 +380,7 @@ pub async fn shadow_apply_for_batch_with_app(
             }
         }
     }
-    // B2-5（P1-EV6）：生产入口补失败率告警，对齐 trait 版（sink.audit_warning）——
+    // 生产入口补失败率告警，对齐 trait 版（sink.audit_warning）——
     // 此前生产流量写失败 >5% 永不告警（只有 trait 路径有）
     let total = TOTAL_WRITES.load(Ordering::Relaxed);
     let failed_count = FAILED_WRITES.load(Ordering::Relaxed);
@@ -403,7 +403,7 @@ pub async fn shadow_apply_for_batch_with_app(
     }
 }
 
-// ───────────────────────── 集成决策（纯函数，apply.rs 调用）─────────────────────────
+// 集成决策（纯函数，apply.rs 调用）
 
 /// apply.rs 的 shadow 决策：返「shadow 应该跑的 proposal」
 ///
@@ -428,11 +428,11 @@ pub fn shadow_eligible_proposals(
         .collect()
 }
 
-// ───────────────────────── 单元测试 + e2e ─────────────────────────
+// 单元测试 + e2e
 
 #[cfg(test)]
 mod tests {
-    // B5-6：await_holding_lock 豁免——测试串行锁（counter_lock 等 std Mutex
+    // await_holding_lock 豁免——测试串行锁（counter_lock 等 std Mutex
     // guard）**故意**持跨 await：#[tokio::test] 独立 current-thread runtime，
     // guard 持有至测试结束正是串行化语义，无真实死锁面
     #![allow(clippy::await_holding_lock)]
@@ -442,7 +442,7 @@ mod tests {
     };
     use std::sync::Mutex;
 
-    // ─── 计数器 lock ───
+    // 计数器 lock
 
     static COUNTER_LOCK: Mutex<()> = Mutex::new(());
     fn counter_lock() -> std::sync::MutexGuard<'static, ()> {
@@ -475,7 +475,7 @@ mod tests {
         }
     }
 
-    // ─── 4 个核心 e2e 测试（老板 13:20 拍板）───
+    // 4 个核心 e2e 测试（）
 
     /// E2E 1：shadow_apply 把合规提案按序写进真 evolution-changes.jsonl
     #[tokio::test]
@@ -582,7 +582,7 @@ mod tests {
     /// E2E pre-flight（决策 6）：shadow 跑合成数据，与「apply 理论应写数」对比，
     /// 差异率 < 60% 才能开 flag。
     ///
-    /// 老板 13:20 拍板：「一致性校验从 post-process 预留改为跑前合成数据校验」。
+    /// 「一致性校验从 post-process 预留改为跑前合成数据校验」。
     /// 即：dev 启用 flag 之前必须先跑这个测试通过，否则禁止开 flag
     /// （shadow 与 apply 行为不一致是设计 bug）。
     #[tokio::test]
@@ -640,7 +640,7 @@ mod tests {
             0.0
         };
 
-        // 验证：差异率 < 60%（决策 d 阈值；老板 13:20 拍板）
+        // 验证：差异率 < 60%（决策 d 阈值；）
         assert!(
             diff_rate < 0.60,
             "shadow.written={} vs apply_expected={} 差异率 {:.1}% ≥ 60%，禁止开 flag",
@@ -680,7 +680,7 @@ mod tests {
 
     #[test]
     fn changes_jsonl_appends_survive_concurrent_writers() {
-        // B2-2（P1-EV4）：changes.jsonl 三写者（shadow/panel/apply）收敛到
+        // changes.jsonl 三写者（shadow/panel/apply）收敛到
         // EVOLUTION_STORE_LOCK——并发 append 一行不少、change_id 无碰撞
         //（此前 shadow 绕锁，与 panel rewrite 并发有丢更新窗口）。
         let dir = tempfile::tempdir().unwrap();
@@ -713,7 +713,7 @@ mod tests {
         assert_eq!(ids.len(), before, "change_id 两两不同（每行独立提案）");
     }
 
-    // ─── 原有 12 个单测保留（外围测试）───
+    // 原有 12 个单测保留（外围测试）
 
     #[test]
     fn default_disabled() {
@@ -842,7 +842,7 @@ mod tests {
         assert!(!gate_approved(&non_compliant));
     }
 
-    // ─── shadow_eligible_proposals 集成决策测试（老板 13:30 拍板）───
+    // shadow_eligible_proposals 集成决策测试（）
 
     #[test]
     fn shadow_disabled_returns_empty() {
@@ -890,7 +890,7 @@ mod tests {
         assert!(r.is_empty());
     }
 
-    /// E2E 集成（老板 13:30 拍板）：apply_from_consolidation 的 shadow 钩子
+    /// E2E 集成（）：apply_from_consolidation 的 shadow 钩子
     /// 端到端走通：decision（shadow_eligible_proposals）→ execution（shadow_apply_for_batch）
     #[tokio::test]
     async fn e2e_apply_to_shadow_integration() {
@@ -905,13 +905,13 @@ mod tests {
             mk_proposal("c3", ProposalCategory::MemoryHint, ImpactLevel::High),
         ];
 
-        // ─── 决策阶段（apply.rs shadow 钩子的逻辑）───
-        // shadow_enabled=true（老板 13:30 已将 bot-config 改为 true）
+        // 决策阶段（apply.rs shadow 钩子的逻辑）
+        // shadow_enabled=true
         let eligible = shadow_eligible_proposals(&proposals, true);
         let eligible_len = eligible.len(); // 先 capture，后面 eligible 被 move
         assert_eq!(eligible_len, 3, "决策应过滤出 3 条合规（跳过 1 条不合规）");
 
-        // ─── 执行阶段（影子写 evolution-changes.jsonl，真临时文件）───
+        // 执行阶段（影子写 evolution-changes.jsonl，真临时文件）
         let dir = std::env::temp_dir().join(format!(
             "sh-integ-{}",
             chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
@@ -923,7 +923,7 @@ mod tests {
         assert_eq!(report.written, 3);
         assert_eq!(report.failed, 0);
 
-        // ─── 验证集成路径完整性 ───
+        // 验证集成路径完整性
         // 1. 写数 = 决策数（无丢失/重复）
         assert_eq!(report.written, eligible_len, "decision → execution 一致");
         // 2. 落盘 3 行，且写的就是合规那 3 条（无 nc1）
@@ -937,7 +937,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // ─── R7→A 简化（老板 21:10 拍板）：is_reversible 单元测试 + shadow 集成（e2e E组）───
+    // R7→A 简化（）：is_reversible 单元测试 + shadow 集成（e2e E组）
 
     #[test]
     fn is_reversible_memory_hint_low_returns_true() {
@@ -982,7 +982,7 @@ mod tests {
         assert!(!is_reversible(&p));
     }
 
-    // ─── E 组 e2e（老板 21:10 e2e 清单 freeze）───
+    // E 组 e2e
     // E2：shadow hook 保留（已由既有的 e2e_1..4 覆盖，无需额外）
     // E3：删 5 维 engine（EvolutionPolicy/evaluate 不再被调，编译通过即可证明）
     // E4：空规则路径 → is_reversible 直接判定，不产生 Allow

@@ -444,7 +444,7 @@ fn validate_fact_kv_rejects_ascii_comma() {
     );
 }
 
-// ───────────────────────── lesson（教训记忆） ─────────────────────────
+// lesson（教训记忆）
 
 #[test]
 fn record_lesson_writes_with_defaults() {
@@ -635,7 +635,7 @@ fn lesson_section_absent_without_lessons() {
     assert!(!block.contains("经验教训"), "无 lesson 不出第四段：{block}");
 }
 
-// ── B2-1（P1-EV3 防记忆劫持）：evo lesson 不许 merge 进异 key 行 ──
+// evo lesson 不许 merge 进异 key 行（防记忆劫持）
 
 #[test]
 fn lesson_insert_refused_foreign_merge_on_high_cosine() {
@@ -731,7 +731,7 @@ fn lesson_same_key_replay_still_merges() {
     assert_eq!(all[0].tags.first().map(String::as_str), Some("evo:rep1"));
 }
 
-// ───────────────────────── U17 参数化 ─────────────────────────
+//  参数化
 
 use crate::memory::MemoryTuning;
 

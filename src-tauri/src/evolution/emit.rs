@@ -150,7 +150,7 @@ pub fn emit_proposals(proposals: Vec<EvolutionProposal>) -> EmitReport {
     report
 }
 
-// ───────────────────────── 单元测试（spec 1.6 之 7）─────────────────────────
+// 单元测试（spec 1.6 之 7）
 
 #[cfg(test)]
 mod tests {

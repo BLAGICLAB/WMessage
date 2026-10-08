@@ -20,7 +20,7 @@ pub const MEMORY_RECENT_N: usize = 3;
 /// 经验教训条数（lesson 类型 top-3）
 pub const MEMORY_LESSON_N: usize = 3;
 
-/// 打分/取数参数（U17 参数化）：Default = U17 前常量语义，
+/// 打分/取数参数（ 参数化）：Default =  前常量语义，
 /// 旧函数全部委托默认值——存量调用与测试零改动。
 /// top_n/recent_n/lesson_n 为注入各段条数（take(n) 截断，0 = 该段为空）；
 /// decay_days 为检索新近度 exp(-age/decay) 的时间常数（天，越大衰减越慢）。
@@ -116,7 +116,7 @@ pub fn hybrid_score(
     hybrid_score_with(query_kws, query_emb, item, now_ms, 30.0)
 }
 
-/// 带衰减参数变体（U17）：decay_days 为检索新近度的时间基准
+/// 带衰减参数变体：decay_days 为检索新近度的时间基准
 pub fn hybrid_score_with(
     query_kws: &[String],
     query_emb: Option<&[f32]>,
@@ -180,7 +180,7 @@ pub fn injection_snapshot(
     injection_snapshot_with(items, query, query_emb, now_ms, &RankParams::default())
 }
 
-/// 带参数变体（U17）
+/// 带参数变体
 pub fn injection_snapshot_with(
     items: &[MemItem],
     query: &str,
@@ -265,7 +265,7 @@ pub fn hybrid_search(
     )
 }
 
-/// 带参数变体（U17）：与 injection_snapshot_with 同一参数风格
+/// 带参数变体：与 injection_snapshot_with 同一参数风格
 pub fn hybrid_search_with(
     items: &[MemItem],
     query: &str,

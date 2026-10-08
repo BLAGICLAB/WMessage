@@ -9,11 +9,10 @@ import { FoldToggle } from "./FoldToggle";
 import { ActorAvatar } from "./ActorAvatar";
 import { useInlineEdit } from "./useInlineEdit";
 
-/**
- * 任务卡展示内容 —— 供挂件（WidgetApp）使用。
+/** * 任务卡展示内容 —— 供挂件（WidgetApp）使用。
  *
- * ⚠️ 字段与顺序必须与 TodoCard 一致（老板要求挂件与主窗口显示一致）：
- * 标题行（标题 + 折叠开关 + 打勾圆圈；折叠时标题单行截断） → 备注 → 标签 → 子任务 → 文件 → 🤖 → 截止时间 → 完成时间（截止永远最底，完成时间在截止时间下一行，老板拍板）。
+ * ⚠️ 字段与顺序必须与 TodoCard 一致：
+ * 标题行（标题 + 折叠开关 + 打勾圆圈；折叠时标题单行截断） → 备注 → 标签 → 子任务 → 文件 → 🤖 → 截止时间 → 完成时间（截止永远最底，完成时间在截止时间下一行，老板）。
  * 标题以下内容可折叠。改动 TodoCard 展示时记得同步这里。
  * 定时设置已迁出卡片 → 「定时任务」模块（SchedulePage）统一管理。
  */
@@ -127,7 +126,7 @@ export function TaskCardContent({
           </h3>
         )}
         {/* 折叠/展开开关：挂件永远显示（包括新建空任务），复用现有 FoldToggle 不重新设计
-            （老板指令） */}
+             */}
         {onToggleCollapsed && (
           <FoldToggle collapsed={!!task.collapsed} onToggle={onToggleCollapsed} />
         )}
@@ -172,7 +171,7 @@ export function TaskCardContent({
             </div>
           )}
 
-          {/* 子 agent 编排（SUBA-3）：预算徽标 + 收尾结果折叠展示。
+          {/* 子 agent 编排：预算徽标 + 收尾结果折叠展示。
               两个字段均可选——普通任务卡无此信息不渲染（undefined 安全） */}
           {(task.budget || task.result) && (
             <div className="mt-2 flex flex-col gap-1.5">
@@ -356,7 +355,7 @@ export function TaskCardContent({
             </div>
           )}
 
-          {/* 截止时间 + 状态行（两行布局，老板拍板与主窗口 TodoCard 一致）；
+          {/* 截止时间 + 状态行（两行布局，老板与主窗口 TodoCard 一致）；
               状态行统一显示「未完成」/「完成 YYYY-MM-DD HH:mm」，未完成时不带时间戳 */}
           {(task.due || task.column === "done") && (
             <div className="mt-2">

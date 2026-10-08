@@ -1,4 +1,4 @@
-//! Agent 运行参数注册表（P3-a，Agent 透明化设计 §3）：
+//! Agent 运行参数注册表（Agent 透明化设计 §3）：
 //!
 //! **单一真相源查表**（仿 bot/registry.rs TOOLS_TABLE 哲学）——每个影响 agent
 //! 行为的参数一条 `ParamDef`，`bot_effective_params` 命令遍历出表，设置页参数卡
@@ -15,7 +15,7 @@
 
 use serde::Serialize;
 
-// ───────────────────────── 内置默认（单一事实源） ─────────────────────────
+// 内置默认（单一事实源）
 
 /// 模型循环默认轮数（原 bot_model_loop::DEFAULT_MAX_ROUNDS 同值；该处引用本常量）
 pub const DEFAULT_MAX_ROUNDS: u32 = 50;
@@ -32,7 +32,7 @@ pub const DEFAULT_SUBAGENT_MAX_WALL_SECS: u64 = 600;
 /// web_search 默认结果条数（原 bot_web SEARCH_MAX_RESULTS 同值）
 pub const DEFAULT_SEARCH_MAX_RESULTS: u32 = 8;
 
-// ───────────────────────── 解析辅助（读取口唯一） ─────────────────────────
+// 解析辅助（读取口唯一）
 
 pub fn resolve_max_rounds_cfg(cfg: &BotConfig) -> u32 {
     cfg.max_rounds
@@ -52,7 +52,7 @@ pub fn resolve_subagent_budget(cfg: &BotConfig) -> crate::db::SubagentBudget {
             .subagent_max_turns
             .unwrap_or(DEFAULT_SUBAGENT_MAX_TURNS)
             .clamp(1, crate::db::MAX_TURNS_HARD_CAP),
-        // 工具调用上限全域统一（老板拍板合并两条设置）：子 agent 与主循环同源
+        // 工具调用上限全域统一（合并两条设置）：子 agent 与主循环同源
         // max_function_calls（缺省 100，钳 1..=500）；LLM 显式给的预算仍可覆盖
         max_tool_calls: cfg
             .max_function_calls
@@ -73,7 +73,7 @@ pub fn resolve_search_max_results(cfg: &BotConfig) -> u32 {
 
 use crate::bot::config::types::BotConfig;
 
-// ───────────────────────── 参数表 ─────────────────────────
+// 参数表
 
 /// 参数定义（编译期常量表；value 的解析在 `bot_effective_params` 内查 cfg 字段）
 pub struct ParamDef {
@@ -185,7 +185,7 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         default: "60",
         editable: true,
     },
-    // ── 可编辑：工具输出截断（P4 落行为，本期仅入表） ──
+    // ── 可编辑：工具输出截断（ 落行为，本期仅入表） ──
     ParamDef {
         key: "tools.max_output_chars",
         label: "工具结果截断字符数",

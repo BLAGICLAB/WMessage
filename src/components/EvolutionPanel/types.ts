@@ -124,7 +124,7 @@ export const IMPACT_LABEL: Record<ImpactLevel, string> = {
   high: "高",
 };
 
-/** U20 W2：自进化应用策略二档（后端缺字段/非法值 = auto = 自动生效） */
+/**  W2：自进化应用策略二档（后端缺字段/非法值 = auto = 自动生效） */
 export type ApplyPolicy = "auto" | "confirm";
 
 /** 档位中文标签（本模块内构建 LABELS 用，外部只消费 APPLY_POLICY_LABELS） */
@@ -138,7 +138,7 @@ export const APPLY_POLICY_LABELS = (
   Object.keys(APPLY_POLICY_LABEL) as ApplyPolicy[]
 ).map((value) => ({ value, label: APPLY_POLICY_LABEL[value] }));
 
-/** U20 W3：observe::compute_metrics 的四指标快照（snake_case 镜像后端 serde） */
+/**  W3：observe::compute_metrics 的四指标快照（snake_case 镜像后端 serde） */
 export interface ObserveMetrics {
   candidate_generation_rate: number;
   approval_rate: number;
@@ -154,7 +154,7 @@ export interface ObserveMetrics {
   evaluated_at_ms: number;
 }
 
-// ───────────────────────── 决策证据（镜像后端 panel/evidence.rs，camelCase） ─────────────────────────
+// 决策证据（镜像后端 panel/evidence.rs，camelCase）
 
 export type ShadowVerdict = "pass" | "fail" | "skipped";
 

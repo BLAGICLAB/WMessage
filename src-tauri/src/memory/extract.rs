@@ -1,4 +1,4 @@
-//! 自动记忆抽取（U16）：交互式会话收尾，异步抽取「值得跨会话记住」的用户
+//! 自动记忆抽取：交互式会话收尾，异步抽取「值得跨会话记住」的用户
 //! 画像/偏好/稳定事实，入库或进待确认队列——记忆生态从「被动等模型调工具」
 //! 走向「主动从对话中学习」。
 //!
@@ -6,16 +6,16 @@
 //! （同步快速门禁 + 限频 check-and-set）→ spawn 异步管线（LLM 抽取 → 解析 →
 //! 入库/入队）。fire-and-forget：任何一步失败只记 WARN 审计，绝不影响主对话。
 //!
-//! 门禁（拍板口径）：
+//! 门禁：
 //! - 仅交互式聊天（任务执行/定时/Skill 会话语料是任务指令，不是用户画像）；
 //! - `memoryControl.autoExtract`：off（默认）/ auto（直接入库）/ confirm（进
 //!   待确认队列 mem_pending，用户过目后入库）；
-//! - `memoryControl.autoWriteEnabled` = false 时抽取整体不跑（U15 总闸优先）。
+//! - `memoryControl.autoWriteEnabled` = false 时抽取整体不跑（ 总闸优先）。
 //!
 //! 限频：每会话 [`EXTRACT_MIN_INTERVAL_SECS`] 内最多抽取一次（进程内
 //! check-and-set，gate 通过即占窗口——抽取失败也等下一窗口，防失败风暴）。
 //!
-//! 写入时冲突裁决（U19 两段式，仅 Auto 档）：抽取解析后逐条与既有记忆比对
+//! 写入时冲突裁决（ 两段式，仅 Auto 档）：抽取解析后逐条与既有记忆比对
 //! 语义相似度，top-1 且 cos ≥ dedupHint 才算冲突候选；有候选才发第二次 LLM
 //! 逐条裁决 new（新信息照插入）/ update（改口 → update_by_id 更新原条目，
 //! 不堆积）/ skip（重复无增量丢弃）；坏输出整体回退全 new（照插入，语义去重
@@ -53,7 +53,7 @@ pub const PENDING_CAP: i64 = 50;
 /// 系统流水线的 kind，不由抽取产生）
 const EXTRACT_KINDS: [&str; 3] = ["profile", "preference", "fact"];
 
-// ───────────────────────── mem_pending 表 ─────────────────────────
+// mem_pending 表
 
 /// 待确认条目（对外视图）
 #[derive(Serialize, Clone, Debug)]
@@ -179,7 +179,7 @@ fn pending_get(conn: &rusqlite::Connection, id: i64) -> Result<Option<PendingRow
     })
 }
 
-// ───────────────────────── 限频（进程内） ─────────────────────────
+// 限频（进程内）
 
 fn last_extract_map() -> std::sync::MutexGuard<'static, std::collections::HashMap<String, i64>> {
     static LAST_EXTRACT_MS: std::sync::OnceLock<
@@ -214,7 +214,7 @@ fn throttle_check_set(session_id: &str, now_ms: i64) -> bool {
     due
 }
 
-// ───────────────────────── 抽取解析 ─────────────────────────
+// 抽取解析
 
 /// 单条抽取结果
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -267,7 +267,7 @@ pub(crate) fn parse_extract(text: &str) -> Vec<ExtractedFact> {
     out
 }
 
-// ───────────────────────── 触发与管线 ─────────────────────────
+// 触发与管线
 
 /// 会话收尾触发入口（fire-and-forget；同步快速门禁 + 限频，过了才 spawn 管线）。
 /// 挂在 bot_chat 最终 return 处；非交互 / 未开档 / 总闸关 / 限频未到 → 直接返回。
@@ -314,7 +314,7 @@ async fn run_extract(app: AppHandle, session_id: String, mode: AutoExtract) -> R
     .await
 }
 
-// ───────────────────────── 写入时冲突裁决（U19） ─────────────────────────
+// 写入时冲突裁决
 
 /// 单条裁决结果（解析后的中间态；应用层据此分流）
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -336,7 +336,7 @@ struct AdjudicationCounts {
     updated: usize,
     /// Skip 丢弃（含容量满拒写/防劫持拒写——数据性拒收）
     skipped: usize,
-    /// 存储故障条数（聚合计数，U16 口径）
+    /// 存储故障条数（聚合计数， 口径）
     failed: usize,
 }
 
@@ -443,7 +443,7 @@ fn parse_adjudication(text: &str, candidates: &[Option<store::MemItem>]) -> Vec<
 /// 目标已消失（裁决在锁外、落库前被删）→ 回退 New；改写存储故障 → 计 failed
 /// 原条目未动（不做插入兜底：新条目带空 tags，语义去重可能 merge 到原行把
 /// key 覆盖掉）；Skip → 丢弃。
-/// 单条存储故障计 failed 聚合（U16 口径），ensure_table 故障才 Err 上抛。
+/// 单条存储故障计 failed 聚合（ 口径），ensure_table 故障才 Err 上抛。
 fn apply_adjudications(
     conn: &rusqlite::Connection,
     facts: &[ExtractedFact],
@@ -525,7 +525,7 @@ fn apply_insert(
 
 /// 抽取管线主体（消息已就位）：LLM 抽取 → 解析 →〔Auto 档〕预嵌入 → 既有记忆
 /// 快照 → 相似候选 →（有候选才）LLM 逐条裁决 new/update/skip → 应用；
-/// 〔Confirm 档〕进待确认队列（不经裁决，语义与 U16 一致）。
+/// 〔Confirm 档〕进待确认队列（不经裁决，语义与  一致）。
 /// LLM 调用方注入（pub 供集成测试直连 mock，同 run_model_loop_core /
 /// summarize_http 先例）：生产闭包 = summarize_messages 配置薄壳，测试闭包 =
 /// summarize_http 直连 mock。锁纪律：嵌入/LLM/解析全在锁外，DB 只在快照与
@@ -678,7 +678,7 @@ async fn load_recent_messages(
         .collect())
 }
 
-// ───────────────────────── 通知中心接入 ─────────────────────────
+// 通知中心接入
 
 /// confirm 档入队后向通知中心落一条持久化消息（幂等 id：memory:{session}:{ts}）。
 /// 失败只影响提醒，不影响队列本身——调用方 audit 留痕。
@@ -713,7 +713,7 @@ fn notify_memory_proposals<R: tauri::Runtime>(
     Ok(())
 }
 
-// ───────────────────────── tauri 命令（待确认队列） ─────────────────────────
+// tauri 命令（待确认队列）
 
 /// 待确认队列列表（新→旧）
 #[tauri::command]
@@ -863,7 +863,7 @@ mod tests {
 
     #[test]
     fn serde_default_fills_auto_extract_off_for_old_blocks() {
-        // U15 时期落盘的 memoryControl 块无 autoExtract 字段 → 反序列化补 off
+        //  时期落盘的 memoryControl 块无 autoExtract 字段 → 反序列化补 off
         let ctrl: MemoryControl =
             serde_json::from_str(r#"{"injectionEnabled":true,"autoWriteEnabled":false}"#).unwrap();
         assert_eq!(ctrl.auto_extract, "off");
@@ -975,7 +975,7 @@ mod tests {
         assert!(pending_get(&conn, 999).unwrap().is_none());
     }
 
-    // ── 写入时冲突裁决（U19）──
+    // ── 写入时冲突裁决──
 
     /// 512 维单热向量（与 memory/tests.rs 同款假向量）
     fn onehot(i: usize) -> Vec<f32> {

@@ -1,5 +1,5 @@
-// ChatPanel 子模块：消息列表（U3a 拆分自 ChatPanel.tsx，JSX 逐字搬移）。
-// MsgBubble 用 React.memo 做流式性能边界（B5-2）：流式增量每帧只替换最后一
+// ChatPanel 子模块：消息列表（ 拆分自 ChatPanel.tsx，JSX 逐字搬移）。
+// MsgBubble 用 React.memo 做流式性能边界：流式增量每帧只替换最后一
 // 条消息的对象引用，历史气泡 props 全等 → memo 跳过重渲染（MarkdownText/
 // RichText 的 markdown 解析是重活，N 条消息 × 每帧一次的全列表重渲染是
 // 长会话掉帧主因）。回调句柄由父级 useCallback 固定，memo 浅比较即可命中。
@@ -33,7 +33,7 @@ type MsgBubbleProps = BubbleCallbacks & {
   isCopied: boolean;
   /** 视图会话是否有在途回复（驱动移除按钮禁用态） */
   busy: boolean;
-  /** P2-b 执行过程详细度：控制工具徽章展开级别（简洁/详细/调试） */
+  /**  执行过程详细度：控制工具徽章展开级别（简洁/详细/调试） */
   verboseLevel: VerboseLevel;
 };
 
@@ -46,8 +46,7 @@ function MsgBubbleBase({ msg: m, idx, isCopied, busy, verboseLevel, onCopy, onRe
     m.role === "assistant" &&
     !m.streaming &&
     (hasContent || (m.refs?.length ?? 0) > 0 || fps.length > 0);
-  /** 气泡正文：用户消息走浅底渲染、流式走轻量富文本、完成走 markdown（拆分前的
-   *  嵌套三元提取成函数，渲染输出逐字不变） */
+  /** 气泡正文：用户消息走浅底渲染、流式走轻量富文本、完成走 markdown（拆分前的   *  嵌套三元提取成函数，渲染输出逐字不变） */
   function bubbleBody(msg: Msg) {
     if (!msg.content) return msg.streaming ? "…" : "";
     if (msg.role === "user") return <UserBubbleContent content={msg.content} />;
@@ -105,7 +104,7 @@ function MsgBubbleBase({ msg: m, idx, isCopied, busy, verboseLevel, onCopy, onRe
             </div>
           </Fold>
         )}
-        {/* 工具调用（U3b 对齐截图）：mono pill 徽章行 + 可折叠「进程 N/M」详情 */}
+        {/* 工具调用（ 对齐截图）：mono pill 徽章行 + 可折叠「进程 N/M」详情 */}
         {(m.tools?.length ?? 0) > 0 && (
           <ToolBadges tools={m.tools!} verboseLevel={verboseLevel} />
         )}
@@ -175,8 +174,7 @@ function MsgBubbleBase({ msg: m, idx, isCopied, busy, verboseLevel, onCopy, onRe
 /** memo 边界：流式更新时历史气泡 props 全等 → 跳过重渲染（见文件头注释） */
 const MsgBubble = memo(MsgBubbleBase);
 
-/** 工具调用（U3b 对齐截图）：mono pill 徽章行（名称 + ✓/✗/… 状态 + 调试档耗时），
- *  折叠「进程 N/M」承载逐工具入参/结果详情。
+/** 工具调用（ 对齐截图）：mono pill 徽章行（名称 + ✓/✗/… 状态 + 调试档耗时）， *  折叠「进程 N/M」承载逐工具入参/结果详情。
  *  P2-b verbose 三档：简洁=隐藏详情折叠；详细=现状；调试=默认展开+耗时。
  *  memo：文本流式 tick 不改 tools 引用，跳过徽章行重渲染 */
 const ToolBadges = memo(function ToolBadges({
@@ -261,8 +259,7 @@ function fmtMs(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-/** 文件变更摘要条（U3b 对齐截图）：≤2 个文件平铺 pill，更多则折叠为
- *  「📄 N 个文件」摘要条（点击展开）。
+/** 文件变更摘要条（ 对齐截图）：≤2 个文件平铺 pill，更多则折叠为 *  「📄 N 个文件」摘要条（点击展开）。
  *  P2-b：优先用结构化 fileChanges（bot-file-changed 事件，带 ±行统计）；
  *  无结构化数据时回退正文正则抽取（主聊天无 trace，行为不变） */
 function FileSummary({ fps, changes }: { fps: string[]; changes?: FileChangeLite[] }) {
@@ -337,7 +334,7 @@ type MessageListProps = BubbleCallbacks & {
   viewedBusy: boolean;
   /** 「已复制」反馈的消息下标 */
   copiedIdx: number | null;
-  /** P2-b 执行过程详细度（透传给 ToolBadges） */
+  /**  执行过程详细度（透传给 ToolBadges） */
   verboseLevel: VerboseLevel;
 };
 

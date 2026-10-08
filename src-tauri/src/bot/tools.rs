@@ -21,7 +21,7 @@ use crate::bot::{
 use crate::db::{prepare_for_upsert, TaskStatus};
 use crate::error::CommandError;
 
-// ───────────────────────── 时间 + 长期记忆工具 ─────────────────────────
+// 时间 + 长期记忆工具
 
 /// get_current_time：返回本地日期时间+星期（模型做「今天/明天/周几」判断的锚点，禁止猜日期）
 pub(crate) fn tool_get_current_time() -> crate::bot::registry::ToolResult {
@@ -78,7 +78,7 @@ async fn sanitize_task_files_arg(
     let (files, truncated) = parse_task_files_arg(v)?;
     // gen_dir + canonicalize 逐文件校验整体包 spawn_blocking：同步 syscall 在
     // async runtime（tool_create_task/tool_edit_task）上会阻塞全部 Tauri
-    // command / event（OCR C5-BT-04 performance）。JoinError → 全丢并记审计
+    // command / event（ performance）。JoinError → 全丢并记审计
     // （dropped = 全部），与 sanitize「拿不到则拒」fail-closed 语义一致。
     let app_for_gen = app.clone();
     let n_files = files.len();
@@ -170,7 +170,7 @@ async fn active_tasks(app: &AppHandle) -> Result<Vec<crate::db::Task>, String> {
         .collect())
 }
 
-// ───────────────────────── 任务查询工具（T1-QUERYTASKS：list+search 合并） ─────────────────────────
+// 任务查询工具（：list+search 合并）
 
 /// query_tasks 视图范围（list_tasks + search_tasks 合并后的唯一查询口径）
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -321,7 +321,7 @@ fn render_task_line(
     format!("- [{col}] {}{arch}{wf}{due}{tags}（id={}）", t.title, t.id)
 }
 
-/// 查询任务（T1-QUERYTASKS：原 list_tasks + search_tasks 合并）：
+/// 查询任务（：原 list_tasks + search_tasks 合并）：
 /// - 无 query：列清单（view 默认 active = 原 list_tasks）
 /// - 有 query：关键词检索（view 默认 all 全库 = 原 search_tasks）
 /// - view/tag/limit 正交过滤；输出行带（工作流：名称）标记，模型可按标记汇总工作流问答
@@ -396,7 +396,7 @@ pub(crate) async fn tool_query_tasks(app: &AppHandle, args: &str) -> ToolResult 
     ToolResult::ok(lines.join("\n"), refs)
 }
 
-// ───────────────────────── 任务管理工具实现（20+ functions） ─────────────────────────
+// 任务管理工具实现（20+ functions）
 
 /// 单卡查询（白名单单点工具）：
 /// 按 id 取单张任务卡的完整详情（区别于 list_tasks 的批量清单 + search_tasks 的关键词检索）。
@@ -448,7 +448,7 @@ pub(crate) async fn tool_query_single_task(
             lines.push(format!("  标签：{}", tags.join(", ")));
         }
     }
-    // T1 只读行：创建时间 / 定时 / 所属工作流 / 依赖（模型可感知新字段，但无写入口——
+    //  只读行：创建时间 / 定时 / 所属工作流 / 依赖（模型可感知新字段，但无写入口——
     // schedule 编辑将来在工作流侧做，dependsOn 由工作流自动生成、普通卡手动维护）
     if let Some(ca) = t.created_at {
         if let Some(dt) = chrono::DateTime::from_timestamp_millis(ca) {
@@ -765,7 +765,7 @@ async fn resolve_task(
 /// 模型名长度上限（edit_task 的 model 参数；模型库名最长约 80，放宽到 200 防御性截断误伤）
 const MAX_MODEL_NAME: usize = 200;
 
-/// owner 参数解析（T1）：personId 精确 → 名字精确 → 「我/本人」→ 名字唯一包含。
+/// owner 参数解析：personId 精确 → 名字精确 → 「我/本人」→ 名字唯一包含。
 /// 歧义/未命中返回候选文案（由调用方走 ok 通道回给模型，让模型向用户消歧）。
 async fn resolve_owner(app: &AppHandle, input: &str) -> Result<String, String> {
     // people_list 是同步 command（people.rs 无 async），直接调
@@ -900,7 +900,7 @@ pub(crate) async fn tool_edit_task(
             changed.push("状态列");
         }
     }
-    // T1：每卡执行模型（W6 model 列的模型写入口；空串=清除恢复跟随全局）
+    // 每卡执行模型（W6 model 列的模型写入口；空串=清除恢复跟随全局）
     if let Some(m) = v["model"].as_str() {
         let m = m.trim();
         if !m.is_empty() {
@@ -913,7 +913,7 @@ pub(crate) async fn tool_edit_task(
         }
         changed.push("执行模型");
     }
-    // T1：归属人（任务图谱 owner 列；空串=归属本人；名字歧义报候选）
+    // 归属人（任务图谱 owner 列；空串=归属本人；名字歧义报候选）
     if let Some(o) = v["owner"].as_str() {
         let o = o.trim();
         if o.is_empty() {
@@ -1000,7 +1000,7 @@ pub(crate) async fn tool_add_subtask(
     .await
 }
 
-/// 子任务定位（T1）：subtaskId 精确优先，回落 text 关键词 contains。
+/// 子任务定位：subtaskId 精确优先，回落 text 关键词 contains。
 /// 返回 index；参数缺失/未命中返回错误文案（调用方走 ok 通道）。
 fn locate_subtask(
     subs: &[crate::db::Subtask],
@@ -1137,7 +1137,7 @@ pub(crate) async fn tool_remove_subtask(
 /// 登记产物到任务卡执行流程的产物清单（不立即绑）
 ///
 /// 设计：bot 流程内调用是「登记」语义——记到内存登记表 `bot_artifacts::REGISTRY`，
-/// 流程结束按 `TaskExecOrigin` 分流（D4d）落「通知中心」待绑定消息让用户勾选。
+/// 流程结束按 `TaskExecOrigin` 分流落「通知中心」待绑定消息让用户勾选。
 /// 普通 chat 场景（无 TaskExecOrigin 上下文）直接拒，避免登记表被反复污染。
 ///
 /// 路径白名单：仅接受 AI_Gen_Files 目录内的文件（产物必经此目录生成），
@@ -1228,7 +1228,7 @@ pub(crate) async fn tool_link_file_to_task(
     )
 }
 
-// ───────────────────────── 文档 / Python 工具（bot_py 桥接） ─────────────────────────
+// 文档 / Python 工具（bot_py 桥接）
 
 /// 提取文档文本：path 给定则直读（任务卡绑定文件），否则弹框选文件；返回路径 + 文本供模型阅读/润色
 /// extract_document path 白名单：任务卡绑定文件 / AI_Gen_Files 目录内文件静默放行。
@@ -1306,7 +1306,7 @@ pub(crate) async fn tool_extract_document(
     match crate::bot_py::doc_extract(app.clone(), path_opt).await {
         Ok(res) => {
             // N3-2：扫描版 PDF 兜底——文本层近空（pypdf 提不出内容）→ PyMuPDF 转图
-            // → 本地 OCR（macOS Vision / PP-OCRv6，字节全本地）。失败/不适用保持原输出。
+            // → 本地 OCR（macOS Vision / PP-，字节全本地）。失败/不适用保持原输出。
             let is_pdf = res.path.to_ascii_lowercase().ends_with(".pdf");
             if is_pdf && pdf_text_looks_empty(&res.text) {
                 match scan_pdf_ocr_text(app, &res.path).await {
@@ -1345,8 +1345,8 @@ fn pdf_text_looks_empty(text: &str) -> bool {
         .all(|l| l.trim().is_empty())
 }
 
-/// N3-2：扫描件兜底编排。Ok(Some)=兜底成功（OCR 全文，带页标记与头部说明）；
-/// Ok(None)=渲染或 OCR 失败（保持原提取输出）；Err(hint)=缺 pymupdf（hint 拼给模型）。
+/// N3-2：扫描件兜底编排。Ok(Some)=兜底成功带页标记与头部说明）；
+/// Ok(None)=渲染或  失败（保持原提取输出）；Err(hint)=缺 pymupdf（hint 拼给模型）。
 /// 隐私红线不变：页面 PNG 只落系统临时目录并在用后删除，识别全程本地。
 async fn scan_pdf_ocr_text(app: &AppHandle, path: &str) -> Result<Option<String>, String> {
     const MAX_SCAN_PAGES: usize = 20;
@@ -1763,7 +1763,7 @@ pub(crate) async fn tool_web_search(
         &format!("web_search | query: {}", escape_for_log(&query, 100)),
     );
     // N3-5：过滤参数（count/timeRange/site），缺省 = 旧行为；
-    // P3-a：count 缺省值走配置解析（config searchMaxResults，钳 1..=10；默认 8）
+    // count 缺省值走配置解析（config searchMaxResults，钳 1..=10；默认 8）
     let cfg_search = crate::bot::load_config(app);
     let opts = crate::bot_web::SearchOpts {
         count: v["count"]
@@ -1888,9 +1888,7 @@ pub(crate) async fn tool_run_python(
     }
 }
 
-// ────────────────────────────────────────────────────────────────────
 // 测试：BotConfig 序列化 + extract_document 输出格式化
-// ────────────────────────────────────────────────────────────────────
 
 /// BotConfig 序列化与默认值单测
 #[cfg(test)]
@@ -2175,7 +2173,7 @@ mod background_dialog_tests {
     }
 }
 
-// ───────────────────────── T1-QUERYTASKS：query 工具族纯函数测试 ─────────────────────────
+// ：query 工具族纯函数测试
 
 #[cfg(test)]
 mod query_tasks_tests {
@@ -2366,7 +2364,7 @@ mod query_tasks_tests {
     }
 }
 
-// ───────────────────────── N3-TOOLPOLISH：六项升级纯函数测试 ─────────────────────────
+// N3-TOOLPOLISH：六项升级纯函数测试
 
 #[cfg(test)]
 mod n3_toolpolish_tests {

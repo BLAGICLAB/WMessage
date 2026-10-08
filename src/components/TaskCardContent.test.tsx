@@ -179,8 +179,8 @@ describe("TaskCardContent 完成时间显示（与主窗口一致）", () => {
   });
 });
 
-// ───────── SUBA-3：子 agent 编排三字段投影 ─────────
-describe("TaskCardContent 子 agent 编排投影（SUBA-3）", () => {
+// 子 agent 编排三字段投影
+describe("TaskCardContent 子 agent 编排投影", () => {
   it("普通任务卡（无 budget/result）不渲染编排区", () => {
     render(<TaskCardContent task={task} />);
     expect(screen.queryByText("收尾结果")).toBeNull();

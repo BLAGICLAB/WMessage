@@ -1,8 +1,7 @@
 import { useEffect } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-/**
- * 反注册统一走这里：Tauri 注入的 unlisten_js_script 无洞守卫
+/** * 反注册统一走这里：Tauri 注入的 unlisten_js_script 无洞守卫
  * （tauri 2.11.5 src/event/mod.rs unlisten_js_script——listeners[eventName]
  * 数组存在但 listeners[eventId] 槽位未写入/已清空时直接 TypeError），
  * unlisten 与注册表填充存在竞态（主窗口冒烟实见一条 Unhandled Promise
@@ -15,8 +14,7 @@ export function unlistenSafe(u: UnlistenFn | Promise<UnlistenFn>): void {
     .catch(() => {});
 }
 
-/**
- * Tauri 事件订阅 hook（组件挂载期单次订阅）。
+/** * Tauri 事件订阅 hook（组件挂载期单次订阅）。
  *
  * cancelled flag 防「卸载早于 listen resolve」泄漏：cleanup 先跑完时，
  * 注册完成后立即自注销，listener 不悬挂；catch 防 unhandled rejection。

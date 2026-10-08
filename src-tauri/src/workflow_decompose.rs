@@ -1,4 +1,4 @@
-//! 工作流 AI 拆解（W2-DECOMPOSE，设计 docs/WORKFLOW-CANVAS-DESIGN-2026-10-04.md §6）：
+//! 工作流 AI 拆解设计 docs/WORKFLOW-CANVAS-DESIGN-2026-10-04.md §6）：
 //! goal（自然语言总目标）→ **一次性** LLM 结构化输出 → 校验链 → 结构化子任务列表。
 //!
 //! 红线（设计 §决策7）：
@@ -56,7 +56,7 @@ pub struct DecomposeSubtask {
     pub acceptance: Option<String>,
     #[serde(default)]
     pub depends_on: Vec<usize>,
-    /// 子任务文本清单（W8-ATTACH）：附件内容拆进卡片子任务
+    /// 子任务文本清单：附件内容拆进卡片子任务
     #[serde(default)]
     pub subtasks: Option<Vec<String>>,
 }
@@ -65,13 +65,13 @@ pub struct DecomposeSubtask {
 #[serde(rename_all = "camelCase")]
 pub struct DecomposeResult {
     pub subtasks: Vec<DecomposeSubtask>,
-    /// 拆解时模型做出的关键假设（W9-ASK：拆解后展示给用户核对；缺失=空）
+    /// 拆解时模型做出的关键假设拆解后展示给用户核对；缺失=空）
     pub assumptions: Vec<String>,
     /// 实际模型调用次数（1 = 一次成功；2 = 重试后成功）——审计与前端提示用
     pub attempts: u8,
 }
 
-/// 澄清问答对（W9-ASK：clarify 环收集的用户回答，随拆解请求回传注入 prompt）
+/// 澄清问答对clarify 环收集的用户回答，随拆解请求回传注入 prompt）
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct Clarification {
@@ -104,7 +104,7 @@ pub(crate) fn validate_clarifications(clarifications: Vec<Clarification>) -> Vec
         .collect()
 }
 
-/// 澄清记录 → prompt 段（拍板 5：用户回答是方向性约定，标注优先级）
+/// 澄清记录 → prompt 段（用户回答是方向性约定，标注优先级）
 fn clarifications_segment(clarifications: &[Clarification]) -> String {
     if clarifications.is_empty() {
         return String::new();
@@ -135,7 +135,7 @@ pub(crate) fn parse_assumptions(raw: &str) -> Vec<String> {
         .collect()
 }
 
-/// 指引段为空 → 用默认（OCR 防御：settings 里清空 textarea 不至于掏空契约前的角色设定）
+/// 指引段为空 → 用默认settings 里清空 textarea 不至于掏空契约前的角色设定）
 fn build_system_prompt(guidance: &str) -> String {
     let g = if guidance.trim().is_empty() {
         DEFAULT_DECOMPOSE_GUIDANCE
@@ -253,7 +253,7 @@ pub(crate) fn validate_decompose(
                 });
             }
         }
-        // 子任务清单校验（W8-ATTACH）：≤8 条 × ≤60 字，trim，空白条剔除
+        // 子任务清单校验：≤8 条 × ≤60 字，trim，空白条剔除
         if let Some(list) = &mut st.subtasks {
             if list.len() > 8 {
                 return Err(CommandError::InvalidArgument {
@@ -282,7 +282,7 @@ pub(crate) fn validate_decompose(
             }
         }
     }
-    // 依赖归一（W7-TOPO）：去重 + 剥自环（自引用无语义——小模型高频手误，
+    // 依赖归一：去重 + 剥自环（自引用无语义——小模型高频手误，
     // 用户实测案例 #4 -> [4] 两次重试不改，整包拒绝体验差）；越界仍拒绝；
     // 环 → Kahn 检测后拒绝（报出环内任务名）；无环 → 拓扑重排 + 重映射，
     // 模型给前向/乱序引用也能正确成图（原"下标 < 自身"硬约束废除）
@@ -374,7 +374,7 @@ pub(crate) fn validate_decompose(
         })
         .collect();
     // 重名加后缀：下游引用按下标，重名只影响可读性，但仍消歧。
-    // 已占用终名集合保证无碰撞（OCR r1：贪心计数会把 "审阅（2）" 撞成两份）
+    // 已占用终名集合保证无碰撞贪心计数会把 "审阅（2）" 撞成两份）
     let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
     for st in subtasks.iter_mut() {
         if used.insert(st.title.clone()) {
@@ -390,7 +390,7 @@ pub(crate) fn validate_decompose(
     Ok(subtasks)
 }
 
-/// 指引段校验（纯逻辑，单测锚点，OCR r2）：trim + 长度上限
+/// 指引段校验（纯逻辑，单测锚点：trim + 长度上限
 fn validate_guidance(g: &str) -> CommandResult<String> {
     let t = g.trim().to_string();
     if t.chars().count() > MAX_GUIDANCE_CHARS {
@@ -427,7 +427,7 @@ fn validate_attach_path(path: &str) -> Result<std::path::PathBuf, String> {
     Ok(canon)
 }
 
-/// 附件抽取块（W8-ATTACH；W9-ASK 起共享给 workflow_clarify，同一封顶与占位口径）：
+/// 附件抽取块 起共享给 workflow_clarify，同一封顶与占位口径）：
 /// 用户在对话框亲手选的文件 = 明确授权，直调 doc_extract 不走工具授权闸；
 /// 抽取失败不炸整包（占位说明）；单文件 12k 字符、总 48k 字符封顶（防上下文撑爆）。
 /// 返回（注入块, 读取成功数）。
@@ -522,11 +522,11 @@ pub async fn workflow_decompose(
             reason: format!("目标超过 {MAX_WORKFLOW_GOAL} 字上限"),
         });
     }
-    // 指引段同样设上限（OCR r1）：settings 的 textarea 有 maxLength，但 invoke
+    // 指引段同样设上限：settings 的 textarea 有 maxLength，但 invoke
     // 参数不可信任——超长指引会稀释契约段权重并放大 token 开销
     let guidance_trimmed = validate_guidance(&guidance.unwrap_or_default())?;
     let system_prompt = build_system_prompt(&guidance_trimmed);
-    // 附件抽取（W8-ATTACH）：用户在对话框亲手选的文件 = 明确授权，
+    // 附件抽取：用户在对话框亲手选的文件 = 明确授权，
     // 直调 doc_extract 不走工具授权闸；抽取失败不炸整包（占位说明）。
     // 单文件 12k 字符、总 48k 字符封顶（防上下文撑爆）。
     let attachment_list = attachments.unwrap_or_default();
@@ -538,7 +538,7 @@ pub async fn workflow_decompose(
         });
     }
     let (attach_blocks, attached_ok) = build_attachment_blocks(&app, &attachment_list).await;
-    // 澄清记录（W9-ASK）：clarify 环收集的用户回答，方向性约定拼进两次尝试的 user 消息
+    // 澄清记录：clarify 环收集的用户回答，方向性约定拼进两次尝试的 user 消息
     let clarifications = validate_clarifications(clarifications.unwrap_or_default());
     let clar_seg = clarifications_segment(&clarifications);
     let mut user_content = format!("总目标：{goal_trimmed}{attach_blocks}{clar_seg}");
@@ -563,7 +563,7 @@ pub async fn workflow_decompose(
     }
     let mut attempts: u8 = 0;
     let mut last_err; // 循环内两条退出路径均先赋值再读，无需占位初值
-                      // 失败审计的收口（OCR r2：LLM 调用本身的失败经 `?` 直抛会绕过审计，
+                      // 失败审计的收口LLM 调用本身的失败经 `?` 直抛会绕过审计，
                       // 统一走 outcome=failed 出口；错误值走 escape_for_log 管道）
     macro_rules! fail {
         ($err:expr) => {{
@@ -635,7 +635,7 @@ pub async fn workflow_decompose(
     )))
 }
 
-// ────────────── 单测 ──────────────
+// 单测
 
 #[cfg(test)]
 mod tests {
@@ -780,7 +780,7 @@ mod tests {
 
     #[test]
     fn validate_normalizes_forward_refs_and_strips_self_loops() {
-        // W7-TOPO：前向引用接受并拓扑重排（被依赖的 A 排前）
+        // 前向引用接受并拓扑重排（被依赖的 A 排前）
         let ok = validate_decompose(vec![
             DecomposeSubtask {
                 acceptance: None,
@@ -939,7 +939,7 @@ mod tests {
 
     #[test]
     fn guidance_boundary_locked() {
-        // 边界锁（OCR r2）：上限处拒绝、上限-1 通过、空白 trim
+        // 边界锁：上限处拒绝、上限-1 通过、空白 trim
         let ok = validate_guidance(&"指".repeat(MAX_GUIDANCE_CHARS - 1)).unwrap();
         assert_eq!(ok.chars().count(), MAX_GUIDANCE_CHARS - 1);
         let err = validate_guidance(&"指".repeat(MAX_GUIDANCE_CHARS + 1)).unwrap_err();
@@ -949,7 +949,7 @@ mod tests {
 
     #[test]
     fn dedupe_collision_safe_with_presuffixed_input() {
-        // 输入本身带 "（2）" 后缀时（OCR r2 边界）：终名仍必须两两不同
+        // 输入本身带 "（2）" 后缀时：终名仍必须两两不同
         let ok = validate_decompose(vec![
             DecomposeSubtask {
                 acceptance: None,

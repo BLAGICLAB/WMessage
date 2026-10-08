@@ -27,7 +27,7 @@ use crate::error::{CommandError, CommandResult};
 use super::sse::{stop_sse_writers, API_HUB_KEY, SSE_STOP_JOIN_TIMEOUT};
 use super::types::{ApiInfo, ApiStatus};
 
-// ───────────────────────── api_start ─────────────────────────
+// api_start
 
 /// 锁外复核用探针:重新抢锁读取「内存里是否仍有服务实例」。
 ///
@@ -59,7 +59,7 @@ pub fn api_start(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandRe
     // 锁外写存在竞态:并发的 api_stop 可能已在 drop(g) 后清空 g 并清掉 flag,
     // 此时再写 flag 会把「内存已无服务」记成「已开启」,下次启动误自动恢复。
     // 写前重新抢锁复核:只有确认服务仍在才写。
-    // 残余窗声明(拍板 #15=C 维持现状):复核≠原子——service_present 与 write 之间
+    // 残余窗声明:复核≠原子——service_present 与 write 之间
     // 仍有理论微窗,后果=flag 与内存态背离一次,下次启动自动恢复状态错一次,
     // 用户手动开关即自愈;锁内 I/O 违反「文件 I/O 不持锁」约定、世代号 CAS 成本高,均未取。
     drop(g);
@@ -147,7 +147,7 @@ fn api_start_locked(
     })
 }
 
-// ───────────────────────── api_stop / api_stop_for_exit ─────────────────────────
+// api_stop / api_stop_for_exit
 
 #[tauri::command]
 pub fn api_stop(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandResult<()> {
@@ -159,7 +159,7 @@ pub fn api_stop(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandRes
 /// (accept 线程 + SSE writer 全部通知并 join),但保留 runtime/flags/api-enabled.flag:
 /// 退出不是用户关开关,下次启动应按 flag 自动恢复服务。
 /// 泛型 Runtime:cleanup_on_exit 的 mock runtime 测试可直调。
-/// 退出排空(拍板):拒新请求后等在飞 handler 归零,默认 30s(环境变量
+/// 退出排空:拒新请求后等在飞 handler 归零,默认 30s(环境变量
 /// WM_API_EXIT_DRAIN_SECS 覆盖),超时记 WARN 后强退。
 pub fn api_stop_for_exit<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
@@ -225,7 +225,7 @@ fn api_stop_impl<R: tauri::Runtime>(
     Ok(drained)
 }
 
-/// 退出排空超时上限（拍板：30s 保守默认，超时后强退并留 WARN 审计）
+/// 退出排空超时上限（30s 保守默认，超时后强退并留 WARN 审计）
 pub const API_EXIT_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// api_stop_impl 的持锁实现:供 api_rotate_token
@@ -258,7 +258,7 @@ fn api_stop_locked<R: tauri::Runtime>(
     Ok(None)
 }
 
-// ───────────────────────── api_status ─────────────────────────
+// api_status
 
 #[tauri::command]
 pub fn api_status(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandResult<ApiStatus> {
@@ -288,7 +288,7 @@ pub fn api_status(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandR
         // 锁外清 flag 同样有竞态:并发的 api_start 可能已在 drop(g) 后重新拉起服务
         // 并写了 flag,此处再清会把用户刚开启的服务记成「已关闭」,下次启动不恢复。
         // 清前复核:确认 g 仍为空(没有并发 start 接手)才清。
-        // 残余窗同 api_start:复核≠原子,误清后果可由用户手动开关自愈(拍板 #15=C)。
+        // 残余窗同 api_start:复核≠原子,误清后果可由用户手动开关自愈。
         if service_present(&state) != Some(true) {
             clear_enabled_flag(&app);
         }
@@ -309,7 +309,7 @@ pub fn api_status(app: AppHandle, state: tauri::State<'_, ApiState>) -> CommandR
     })
 }
 
-// ───────────────────────── api_rotate_token ─────────────────────────
+// api_rotate_token
 
 /// api_rotate_token Phase 2 的结果。
 enum RotateOutcome {
@@ -443,7 +443,7 @@ pub fn api_rotate_token(
     }
 }
 
-// ───────────────────────── use 别名 ─────────────────────────
+// use 别名
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;

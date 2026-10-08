@@ -1,4 +1,4 @@
-// ─────────────────── System prompt slot 顺序与拼接 ───────────────────
+// System prompt slot 顺序与拼接
 //
 // 把 system prompt 的多段拼接从脆弱的 `format!("{}{}", a, b)` 顺序依赖
 // 改成显式的「声明顺序」+「按 slot 排序」模型。

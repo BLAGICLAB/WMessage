@@ -90,8 +90,7 @@ import { Toggle } from "../Toggle/Toggle";
 import { ProviderLogo } from "./ProviderLogo";
 import { ApiProviderSelect } from "./ApiProviderSelect";
 
-/** 供应商预设（U9 添加供应商网格）：点击 = 切协议 + 预填 baseUrl/模型列表，
- *  完全落在现有双协议数据模型内（同一协议仅一份配置，预设会覆盖该协议当前
+/** 供应商预设（ 添加供应商网格）：点击 = 切协议 + 预填 baseUrl/模型列表， *  完全落在现有双协议数据模型内（同一协议仅一份配置，预设会覆盖该协议当前
  *  Base URL/模型列表——网格页注明）。模型名用户可改。
  *  keyUrl = 厂商控制台的 API Key 获取页（详情页「获取 API Key」外链）。 */
 type PresetModel = { id: string; contextK?: number; capabilities?: string[] };
@@ -119,7 +118,7 @@ const API_FORMAT_OPTIONS = [
   { value: "anthropic", label: "Anthropic Messages" },
 ] as const;
 
-/** U16 自动记忆抽取三档（档位唯一事实源：state 默认/校验/UI 映射都从这里派生） */
+/**  自动记忆抽取三档（档位唯一事实源：state 默认/校验/UI 映射都从这里派生） */
 const AUTO_EXTRACT_MODES = [
   { value: "off", label: "关闭", aria: "自动记忆抽取：关闭" },
   { value: "auto", label: "自动入库", aria: "自动记忆抽取：自动入库" },
@@ -128,8 +127,7 @@ const AUTO_EXTRACT_MODES = [
 type AutoExtractMode = (typeof AUTO_EXTRACT_MODES)[number]["value"];
 const isAutoExtractMode = (v: unknown): v is AutoExtractMode =>
   AUTO_EXTRACT_MODES.some((m) => m.value === v);
-/** 已知厂商的双协议 Base URL（key = 归一化厂商名，见 normalizeVendorName）：
- *  API 格式切换时 Base URL 自动跟随的数据源之一（预设/模型库只带单一协议端点，
+/** 已知厂商的双协议 Base URL（key = 归一化厂商名，见 normalizeVendorName）： *  API 格式切换时 Base URL 自动跟随的数据源之一（预设/模型库只带单一协议端点，
  *  这里补「另一协议」的已知端点——目前只有 MiniMax 双协议都有官方端点） */
 const KNOWN_PROTOCOL_URLS: Record<string, { openai?: string; anthropic?: string }> = {
   minimax: {
@@ -138,8 +136,7 @@ const KNOWN_PROTOCOL_URLS: Record<string, { openai?: string; anthropic?: string 
   },
 };
 
-/** 添加厂商网格白名单（models.dev 200+ 家收敛）：中国厂商尽量保留，
- *  外国厂商只留头部（OpenAI/Anthropic/Google/xAI）+ OpenRouter */
+/** 添加厂商网格白名单（models.dev 200+ 家收敛）：中国厂商尽量保留， *  外国厂商只留头部（OpenAI/Anthropic/Google/xAI）+ OpenRouter */
 const CURATED_PROVIDER_KEYS = new Set([
   // 中国厂商
   "302ai", "aihubmix",
@@ -158,8 +155,7 @@ const CURATED_PROVIDER_KEYS = new Set([
   "openai", "anthropic", "google", "xai", "openrouter",
 ]);
 
-/** 模型库模型 → ModelEntry：model 去掉 "provider/" 前缀（API 调用 id 取后段）、
- *  contextK = context_length/1000 四舍五入一位小数；推理参数仅非空才带（不写 undefined 字段） */
+/** 模型库模型 → ModelEntry：model 去掉 "provider/" 前缀（API 调用 id 取后段）、 *  contextK = context_length/1000 四舍五入一位小数；推理参数仅非空才带（不写 undefined 字段） */
 function metaModelToEntry(m: MetaModel, vendor: string, baseUrl: string): ModelEntry {
   const slash = m.model_key.indexOf("/");
   return {
@@ -194,12 +190,11 @@ type Props = {
   /** 可选：未传时按钮置 disabled（App.tsx 已传；测试可选） */
   onExportWorkspace?: () => Promise<void>;
   onImportWorkspace?: () => Promise<void>;
-  /** 返回入口（U7 设置壳）：未传时按钮 disabled（App 恒传；测试可省） */
+  /** 返回入口（ 设置壳）：未传时按钮 disabled（App 恒传；测试可省） */
   onBack?: () => void;
 };
 
-/** 设置分类（U8 十项，老板拍板）：key 顺序 = 侧栏顺序。
- *  「机器人」section 在源码中三段出现（同名同亮）：卡1 开关/Python/日志、
+/** 设置分类（ 十项，老板）：key 顺序 = 侧栏顺序。 *  「机器人」section 在源码中三段出现（同名同亮）：卡1 开关/Python/日志、
  *  卡2 授权/白名单、卡3 技能路由/外部 API；「MCP 服务」两段：Tavily/Brave
  *  搜索引擎卡 + McpPanel。面板惰性挂载同 U7。 */
 type SectionKey =
@@ -230,8 +225,7 @@ const SECTIONS: { key: SectionKey; label: string; icon: LucideIcon }[] = [
   { key: "tokens", label: "词元统计", icon: BarChart3 },
 ];
 
-/** 设置壳（U7 重设计）：左侧分类导航 + 右侧分类内容（大标题 + 卡片流）。
- *  面板惰性挂载（ocr HIGH）：分类首次激活才挂载，挂后保留（hidden 切换）——
+/** 设置壳（ 重设计）：左侧分类导航 + 右侧分类内容（大标题 + 卡片流）。 *  面板惰性挂载（ocr HIGH）：分类首次激活才挂载，挂后保留（hidden 切换）——
  *  首屏不跑未访问面板的加载 invoke，未保存输入跨分类保留。 */
 export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTasks, onExportWorkspace, onImportWorkspace, onBack }: Props) {
   const [activeSection, setActiveSection] = useState<SectionKey>("general");
@@ -252,18 +246,16 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
-  /** 添加供应商网格（U9）：model 分类右栏的子视图 */
+  /** 添加供应商网格：model 分类右栏的子视图 */
   const [showProviderPicker, setShowProviderPicker] = useState(false);
-  /** 模型库（内置 Rust meta 模块）：null = 模块异常/不可用（回退内置预设网格）。
-   *  model 分类首次挂载时拉取一次（fetchProviders 内部 invoke，异常 → null） */
+  /** 模型库（内置 Rust meta 模块）：null = 模块异常/不可用（回退内置预设网格）。   *  model 分类首次挂载时拉取一次（fetchProviders 内部 invoke，异常 → null） */
   const [metaProviders, setMetaProviders] = useState<MetaProvider[] | null>(null);
   /** 模型库网格：搜索过滤词 / 同步 busy / 结果与错误文案 / 点选服务商 busy */
   const [metaSearch, setMetaSearch] = useState("");
   const [metaSyncBusy, setMetaSyncBusy] = useState(false);
   const [metaSyncMsg, setMetaSyncMsg] = useState("");
   const [metaApplyBusy, setMetaApplyBusy] = useState(false);
-  /** 预设/模型库共用的写入逻辑：同协议下替换同名厂商旧条目、首条启用+active、
-   *  其余 enabled:false；覆盖后立即落盘（skipReload 同 toggleTavily 模式）。
+  /** 预设/模型库共用的写入逻辑：同协议下替换同名厂商旧条目、首条启用+active、   *  其余 enabled:false；覆盖后立即落盘（skipReload 同 toggleTavily 模式）。
    *  「同名」判定走 normalizeVendorName（U13 收尾）：预设名与模型库 provider_name
    *  的大小写/命名差异不再造成同厂商两条目并存；合并保留**既有厂商名**——
    *  keyring vendor:{名} 条目与 verified_vendors 都按既有名登记，换成新名即丢 key。 */
@@ -307,7 +299,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     setShowProviderPicker(false);
     setActiveVendor(existingName);
   };
-  /** 应用供应商预设（U9）：预填 baseUrl/模型列表，写入走共用 applyVendorModels */
+  /** 应用供应商预设：预填 baseUrl/模型列表，写入走共用 applyVendorModels */
   const applyProviderPreset = async (p: (typeof PROVIDER_PRESETS)[number]) => {
     const models = p.models.map((m) => ({
       id: genModelId(),
@@ -320,8 +312,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     }));
     await applyVendorModels(p.name, p.protocol, models);
   };
-  /** 点选模型库服务商：拉该服务商模型列表 → 字段映射 → 共用写入。
-   *  协议启发：provider_key === "anthropic" 或 base_url 含 "anthropic" → anthropic，否则 openai；
+  /** 点选模型库服务商：拉该服务商模型列表 → 字段映射 → 共用写入。   *  协议启发：provider_key === "anthropic" 或 base_url 含 "anthropic" → anthropic，否则 openai；
    *  default_base_url 为 null 时用空串（用户手填）。 */
   const applyMetaProvider = async (p: MetaProvider) => {
     if (metaApplyBusy) return;
@@ -397,7 +388,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     // key/URL/格式变更由后端置失效）
     verifiedVendors: [] as string[],
     // 界面字体大小：small/standard/large/xlarge 四档
-    // 默认 small（老板拍板「目前字号为小」）；后端 None 也回退到 small
+    // 默认 small（「目前字号为小」）；后端 None 也回退到 small
     uiFontSize: "small" as UiFontSize,
     hasApiKey: false,
     // 已存 API Key 的厂商名列表（后端按配置里的厂商名逐个探测 keyring）：
@@ -417,14 +408,14 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     braveEnabled: false,
     // run_python 默认超时秒数（空 = 60s 默认；模型 timeoutSecs 参数优先；硬钳 300s）
     pythonTimeoutSecs: "",
-    // Function 调用熔断上限（空 = 100 默认；W5-FUSE 全域，含工作流节点执行）
+    // Function 调用熔断上限（空 = 100 默认； 全域，含工作流节点执行）
     maxFunctionCalls: "",
     // 任务卡归档天数（数据管理卡）：完成满 N 天自动归档；后端 migration 兜底归档同源
     // 显示为字符串输入；"7" = 默认（后端 None 亦回 7）
     archiveAfterDays: String(DEFAULT_ARCHIVE_DAYS),
     // 授权模式：strict=白名单外硬拒 / ask=白名单外弹授权（默认）/ yolo=全放行
     permMode: "ask" as "strict" | "ask" | "auto" | "yolo",
-    // P3-c per-tool 权限规则表（deny/ask/allow 首中即停；空表 = 无规则）
+    //  per-tool 权限规则表（deny/ask/allow 首中即停；空表 = 无规则）
     toolRules: [] as Array<{ tool: string; action: "allow" | "ask" | "deny" }>,
     // max_tokens 兜底层（仅 Anthropic 模式发送）：无设置页 UI 入口（每模型编辑里
     // 都有 max_tokens，页底重复已删）；loadConfig 读到已存值原样透传保存，不丢
@@ -439,17 +430,17 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
       interval: "daily",
       lastRunAt: null as number | null,
     },
-    // U15 记忆可控开关：注入总闸 + 模型主动记忆门禁（后端缺字段 = 全开）；
-    // U16 自动记忆抽取档位（后端缺字段/非法值 = off）
+    //  记忆可控开关：注入总闸 + 模型主动记忆门禁（后端缺字段 = 全开）；
+    //  自动记忆抽取档位（后端缺字段/非法值 = off）
     memoryControl: {
       injectionEnabled: true,
       autoWriteEnabled: true,
       autoExtract: "off" as AutoExtractMode,
     },
-    // U17 记忆参数（手改 bot-config.json 生效，本页无 UI）：
+    //  记忆参数（手改 bot-config.json 生效，本页无 UI）：
     // 原样回传保存，防止设置页整体替换写把手改值冲掉
     memoryTuning: null as Record<string, number> | null,
-    // ── P3-a Agent 运行参数（空串 = 后端内置默认；显示与保存都是字符串输入） ──
+    // ──  Agent 运行参数（空串 = 后端内置默认；显示与保存都是字符串输入） ──
     maxRounds: "",
     historyBudgetChars: "",
     subagentMaxTurns: "",
@@ -460,7 +451,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
   // 「立即整理」按钮状态与结果提示（转圈 → 短暂 toast 式文案，同 configSaved 模式）
   const [consolidateBusy, setConsolidateBusy] = useState(false);
   const [consolidateMsg, setConsolidateMsg] = useState("");
-  // P4：执行痕迹清理（数据管理卡）
+  // 执行痕迹清理（数据管理卡）
   const [traceRetainDays, setTraceRetainDays] = useState("30");
   const [traceClearBusy, setTraceClearBusy] = useState(false);
   const [traceClearMsg, setTraceClearMsg] = useState("");
@@ -482,7 +473,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     }
   };
   // 删除非本人的任务卡（数据管理卡）：点删除直接硬删（这些卡是别人程序导出的
-  // 统计用数据，老板拍板无二次确认不放回收站）；结果在按钮文字上短暂反馈——
+  // 统计用数据，无二次确认不放回收站）；结果在按钮文字上短暂反馈——
   // 不新增提示行，避免布局抖动
   const [deleteNonSelfBusy, setDeleteNonSelfBusy] = useState(false);
   const [deleteNonSelfDone, setDeleteNonSelfDone] = useState<string | null>(null);
@@ -515,8 +506,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
   const [braveKeyInput, setBraveKeyInput] = useState("");
   const [configBusy, setConfigBusy] = useState(false);
   const [configSaved, setConfigSaved] = useState(false);
-  /** 「保存配置」按钮（U8 拆卡后各含 setConfig 字段的卡各配一枚；cls 控制外距）。
-   *  aria-label 恒为「保存配置」：可见文本随状态变（已保存 ✓/保存中…），可访问名不变。 */
+  /** 「保存配置」按钮（ 拆卡后各含 setConfig 字段的卡各配一枚；cls 控制外距）。   *  aria-label 恒为「保存配置」：可见文本随状态变（已保存 ✓/保存中…），可访问名不变。 */
   const renderSaveButton = (cls: string) => (
     <div className={cls}>
       <button
@@ -590,7 +580,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         // 连接测试通过的厂商名列表（老后端版本没返 → 空）
         verifiedVendors?: string[] | null;
         // 界面字体大小（small/standard/large/xlarge）
-        // 老后端版本没返 → 前端按 small 回退（老板拍板默认）
+        // 老后端版本没返 → 前端按 small 回退（默认）
         uiFontSize?: string | null;
         // 定时记忆整理配置（老后端没返 → 默认启用 + 每天）
         memoryConsolidation?: {
@@ -598,22 +588,22 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
           interval?: string;
           lastRunAt?: number | null;
         } | null;
-        // U15 记忆可控开关（老后端没返 → 全开）；U16 抽取档位（缺字段/非法值 → off）
+        //  记忆可控开关（老后端没返 → 全开）； 抽取档位（缺字段/非法值 → off）
         memoryControl?: {
           injectionEnabled?: boolean;
           autoWriteEnabled?: boolean;
           autoExtract?: AutoExtractMode | string | null;
         } | null;
-        // U17 记忆参数（老后端没返 → null；原样回传）
+        //  记忆参数（老后端没返 → null；原样回传）
         memoryTuning?: Record<string, number> | null;
-        // P3-a Agent 运行参数（老后端没返 → null = 内置默认）
+        //  Agent 运行参数（老后端没返 → null = 内置默认）
         maxRounds?: number | null;
         historyBudgetChars?: number | null;
         subagentMaxTurns?: number | null;
         subagentMaxWallSecs?: number | null;
         searchMaxResults?: number | null;
         maxToolOutputChars?: number | null;
-        // P3-c：规则表（老后端没返 → 空）
+        // 规则表（老后端没返 → 空）
         toolRules?: Array<{ tool: string; action: string }> | null;
       }>(
         "bot_get_config"
@@ -675,7 +665,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
             : "daily",
           lastRunAt: c.memoryConsolidation?.lastRunAt ?? null,
         },
-        // U15 记忆可控开关：缺字段/老后端 → 全开；U16 抽取档位缺字段/非法 → off
+        //  记忆可控开关：缺字段/老后端 → 全开； 抽取档位缺字段/非法 → off
         memoryControl: {
           injectionEnabled: c.memoryControl?.injectionEnabled ?? true,
           autoWriteEnabled: c.memoryControl?.autoWriteEnabled ?? true,
@@ -683,9 +673,9 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
             ? c.memoryControl.autoExtract
             : "off",
         },
-        // U17 记忆参数原样回传
+        //  记忆参数原样回传
         memoryTuning: c.memoryTuning ?? null,
-        // P3-c：规则表透传（老后端没返 → 空；非法 action 由后端清洗兜底）
+        // 规则表透传（老后端没返 → 空；非法 action 由后端清洗兜底）
         toolRules: Array.isArray(c.toolRules)
           ? c.toolRules.filter(
               (r): r is { tool: string; action: "allow" | "ask" | "deny" } =>
@@ -693,7 +683,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
                 (r.action === "allow" || r.action === "ask" || r.action === "deny")
             )
           : [],
-        // P3-a Agent 运行参数：后端 None/老版本没返 → 空串（= 内置默认）
+        //  Agent 运行参数：后端 None/老版本没返 → 空串（= 内置默认）
         maxRounds: c.maxRounds != null ? String(c.maxRounds) : "",
         historyBudgetChars: c.historyBudgetChars != null ? String(c.historyBudgetChars) : "",
         subagentMaxTurns: c.subagentMaxTurns != null ? String(c.subagentMaxTurns) : "",
@@ -866,7 +856,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
           })(),
           // 推理强度后台默认（RE-1）：四档抽象档位原样落盘
           reasoningEffort: c.reasoningEffort,
-          // ── P3-a Agent 运行参数：空/非法 = null（后端内置默认）；数值合法即落盘，
+          // ──  Agent 运行参数：空/非法 = null（后端内置默认）；数值合法即落盘，
           //    越界值由后端 bot_set_config 钳制（与 archiveAfterDays 同款）──
           maxRounds: (() => {
             const n = parseInt(c.maxRounds.trim(), 10);
@@ -892,13 +882,13 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
             const n = parseInt(c.maxToolOutputChars.trim(), 10);
             return Number.isFinite(n) && n > 0 ? n : null;
           })(),
-          // P3-c：规则表透传（空 tool 名/非法 action 由后端 sanitize 清洗）
+          // 规则表透传（空 tool 名/非法 action 由后端 sanitize 清洗）
           toolRules: c.toolRules.length > 0 ? c.toolRules : null,
           // 定时记忆整理：原样透传（后端 serde default 兜底缺字段）
           memoryConsolidation: c.memoryConsolidation,
-          // U15 记忆可控开关：原样透传
+          //  记忆可控开关：原样透传
           memoryControl: c.memoryControl,
-          // U17 记忆参数：原样透传（手改 bot-config.json 的值不被整体替换写冲掉）
+          //  记忆参数：原样透传（手改 bot-config.json 的值不被整体替换写冲掉）
           memoryTuning: c.memoryTuning,
         },
         // 厂商页 key 输入框非空且当前在厂商页 → 按厂商名写入凭据存储；
@@ -935,8 +925,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     }
   };
 
-  /** 厂商页保存 + 自动连接测试联动：保存成功后，厂商下有开关为开的模型
-   *  才跑一次厂商级探测（同厂商模型共享 Base URL/key，探一次即代表全部）；
+  /** 厂商页保存 + 自动连接测试联动：保存成功后，厂商下有开关为开的模型   *  才跑一次厂商级探测（同厂商模型共享 Base URL/key，探一次即代表全部）；
    *  结果落盘 verified_vendors（后端），这里 reload 刷绿点并广播给聊天下拉 */
   const [vendorTestBusy, setVendorTestBusy] = useState(false);
   /** null = 未测；true/false = 最近一次自动测试结果 */
@@ -974,12 +963,11 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     emit("bot-config-changed", null).catch(() => {});
   };
 
-  // ───────── 双协议下大模型列表 handlers ─────────
-  // 厂商中心（U10）按厂商分组渲染；老配置可能缺 anthropic/openai 字段，
+  // 双协议下大模型列表 handlers
+  // 厂商中心按厂商分组渲染；老配置可能缺 anthropic/openai 字段，
   // 读取处一律 ?? [] 兜底
 
-  /** 更新大模型条目（label / baseUrl / model 任一字段变化）。
-   *  按条目实际所在的协议列表定位——不能用 config.apiProvider（厂商页可停留在
+  /** 更新大模型条目（label / baseUrl / model 任一字段变化）。   *  按条目实际所在的协议列表定位——不能用 config.apiProvider（厂商页可停留在
    *  另一协议的厂商上，跨协议编辑会漂移到错的列表/写不进去）。 */
   const updateModel = (id: string, patch: Partial<ModelEntry>) => {
     setConfig((c) => {
@@ -1000,8 +988,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     });
   };
 
-  /** 删除大模型条目：确认后移除并立即落盘（同 deleteVendor 语义——
-   *  只改内存刷新会复活）；按条目实际所在协议定位（厂商页可停留在另一协议）；
+  /** 删除大模型条目：确认后移除并立即落盘（同 deleteVendor 语义——   *  只改内存刷新会复活）；按条目实际所在协议定位（厂商页可停留在另一协议）；
    *  若删的是该协议 active → 列表第一个顶替（无则 null） */
   const deleteModel = async (id: string) => {
     const prov = (["openai", "anthropic"] as const).find((p) =>
@@ -1024,7 +1011,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     await saveConfig(next, { skipReload: true });
   };
 
-  // ───────── 厂商中心（U10）：按厂商分组渲染，条目仍存双协议列表 ─────────
+  // 厂商中心：按厂商分组渲染，条目仍存双协议列表
   // 全部 handler 走 setConfig 函数式（updater 内读最新 c.modelsByProvider）——
   // 连续操作（改 URL→切格式→加模型）不得用外层 render 快照互相覆盖（ocr HIGH）。
   /** 选中厂商页（左栏）；null = 未选（显示引导）。值 = 厂商名 */
@@ -1051,14 +1038,12 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     };
   }, [vendorMenuOpen]);
 
-  /** 条目归属厂商名：有 vendor 用 vendor，老条目按所在列表协议名兜底。
-   *  prov 必须传「条目所在列表」的协议——不能用活的 apiProvider（会漂）。
+  /** 条目归属厂商名：有 vendor 用 vendor，老条目按所在列表协议名兜底。   *  prov 必须传「条目所在列表」的协议——不能用活的 apiProvider（会漂）。
    *  已知边界：兜底名与预设厂商名撞名时二者合并展示（概率低，登记）。 */
   const vendorNameOf = (m: ModelEntry, prov: "openai" | "anthropic") =>
     m.vendor ?? (prov === "anthropic" ? "Anthropic 兼容" : "OpenAI 兼容");
 
-  /** 厂商分组：跨双协议列表聚合；isActiveVendor = 该厂商含全局 active 模型（⋯菜单「当前使用」）。
-   *  普通派生而非 useMemo（数据量小；compiler 对含 config 依赖的 memo 化报 warn） */
+  /** 厂商分组：跨双协议列表聚合；isActiveVendor = 该厂商含全局 active 模型（⋯菜单「当前使用」）。   *  普通派生而非 useMemo（数据量小；compiler 对含 config 依赖的 memo 化报 warn） */
   const vendorGroups = (() => {
     const map = new Map<string, { name: string; isActiveVendor: boolean }>();
     (["openai", "anthropic"] as const).forEach((prov) => {
@@ -1074,8 +1059,8 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     return [...map.values()].sort((a, b) => a.name.localeCompare(b.name));
   })();
 
-  // U13 收尾引导：配置里有带 vendor 的条目，但 verifiedVendors 为空——
-  // 可用性改造（U12）后无自动迁移，需逐厂商点一次插头（连接测试）恢复聊天下拉可见
+  //  收尾引导：配置里有带 vendor 的条目，但 verifiedVendors 为空——
+  // 可用性改造后无自动迁移，需逐厂商点一次插头（连接测试）恢复聊天下拉可见
   const needVendorReVerify =
     ((config.modelsByProvider.openai ?? []).some((m) => m.vendor) ||
       (config.modelsByProvider.anthropic ?? []).some((m) => m.vendor)) &&
@@ -1130,8 +1115,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     });
   };
 
-  /** 厂商级 Base URL 记忆（API 格式切换用）：{ 厂商名: { 协议: 上次用的 URL } }，
-   *  切换时先把现值记到旧协议名下，再从目标协议恢复（无记忆走已知端点/预设/模型库） */
+  /** 厂商级 Base URL 记忆（API 格式切换用）：{ 厂商名: { 协议: 上次用的 URL } }，   *  切换时先把现值记到旧协议名下，再从目标协议恢复（无记忆走已知端点/预设/模型库） */
   const [vendorUrlMem, setVendorUrlMem] = useState<
     Record<string, Partial<Record<"openai" | "anthropic", string>>>
   >({});
@@ -1153,8 +1137,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     return null;
   };
 
-  /** 厂商 API 格式切换：整厂商条目搬到另一协议列表（active 指针随条目走）；
-   *  Base URL 自动跟随目标协议（记忆 > 已知端点 > 保持现值） */
+  /** 厂商 API 格式切换：整厂商条目搬到另一协议列表（active 指针随条目走）；   *  Base URL 自动跟随目标协议（记忆 > 已知端点 > 保持现值） */
   const setVendorProtocol = (prov: "openai" | "anthropic") => {
     if (!activeVendor) return;
     const from = protocolOfVendor(activeVendor);
@@ -1217,8 +1200,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     });
   };
 
-  /** 删除厂商：移除其全部条目（active 指针兜底）并立即落盘——
-   *  确认框语义 = 最终操作，不能只改内存 state（否则刷新/重启后厂商复活） */
+  /** 删除厂商：移除其全部条目（active 指针兜底）并立即落盘——   *  确认框语义 = 最终操作，不能只改内存 state（否则刷新/重启后厂商复活） */
   const deleteVendor = async (name: string) => {
     const drop = (list: ModelEntry[], prov: "openai" | "anthropic") =>
       list.filter((m) => vendorNameOf(m, prov) !== name);
@@ -1264,8 +1246,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     });
   };
 
-  /** 厂商总开关：checked = 不在 disabledVendors；切换即落盘（skipReload 同预设应用模式）。
-   *  只影响 UI 过滤与展示，不动 bot_set_active_model 的既有语义。 */
+  /** 厂商总开关：checked = 不在 disabledVendors；切换即落盘（skipReload 同预设应用模式）。   *  只影响 UI 过滤与展示，不动 bot_set_active_model 的既有语义。 */
   const vendorEnabled =
     activeVendor !== null && !config.disabledVendors.includes(activeVendor);
   const toggleVendorEnabled = async (next: boolean) => {
@@ -1297,7 +1278,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     setVendorTestMsg("");
   }, [activeVendor]);
 
-  // ───────── 模型库（内置 Rust meta 模块）对接 ─────────
+  // 模型库（内置 Rust meta 模块）对接
   /** 模型库服务商列表收敛到白名单（中国厂商 + 头部外国 + OpenRouter） */
   const curateProviders = (ps: MetaProvider[]) =>
     ps.filter((p) => CURATED_PROVIDER_KEYS.has(p.provider_key));
@@ -1315,8 +1296,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     };
   }, [modelMounted]);
 
-  /** 厂商名 → 模型库记录：先精确匹配（provider_name / provider_key），
-   *  再归一化匹配——两段式防兄弟厂商误抢（minimax / minimax-cn 归一化后同名）。
+  /** 厂商名 → 模型库记录：先精确匹配（provider_name / provider_key），   *  再归一化匹配——两段式防兄弟厂商误抢（minimax / minimax-cn 归一化后同名）。
    *  左栏列表与厂商头共用——左栏也要靠它拿 providerKey 解析 logo，
    *  纯名字解析顶不住 models.dev 长显示名（"MiniMax Token Plan (minimax.cn)"） */
   const vendorMetaOf = (name: string): MetaProvider | null => {
@@ -1426,7 +1406,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     await saveConfig(next);
   };
 
-  /** U15/U16 记忆可控开关（含抽取档位）：点档即时落盘（同 setConsolidation 模式） */
+  /** / 记忆可控开关（含抽取档位）：点档即时落盘（同 setConsolidation 模式） */
   const setMemoryControl = async (
     patch: Partial<{
       injectionEnabled: boolean;
@@ -1443,7 +1423,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     await saveConfig(next);
   };
 
-  /** 记忆权限开关行（U15）：role=switch + aria-checked（与厂商总开关同一可访问语义） */
+  /** 记忆权限开关行：role=switch + aria-checked（与厂商总开关同一可访问语义） */
   const renderMemoryToggle = (
     label: string,
     description: string,
@@ -1510,8 +1490,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
     }
   };
 
-  /** 开机自启动切换：点击即落盘——macOS 写 LaunchAgent plist,
-   *  Windows 写注册表 Run 项，Linux 写 ~/.config/autostart/*.desktop。
+  /** 开机自启动切换：点击即落盘——macOS 写 LaunchAgent plist,   *  Windows 写注册表 Run 项，Linux 写 ~/.config/autostart/*.desktop。
    *  失败时回滚到后端真实状态（部分成功的情况）。 */
   const toggleAutostart = async () => {
     if (autostartBusy) return;
@@ -1651,7 +1630,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
   const activeMeta = SECTIONS.find((s) => s.key === activeSection) ?? SECTIONS[0];
   return (
     <div className="flex h-full min-h-0 bg-[var(--bg)]">
-      {/* 左侧分类导航（U7 设置壳）：返回 + 分类项（选中 nm-inset 语义） */}
+      {/* 左侧分类导航（ 设置壳）：返回 + 分类项（选中 nm-inset 语义） */}
       <aside className="flex w-52 shrink-0 flex-col gap-1 overflow-y-auto border-r border-[var(--edge)] p-3">
         <button
           type="button"
@@ -1824,7 +1803,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
               {importing ? "导入中…" : (<><Upload size={12} aria-hidden /> 导入</>)}
             </button>
           </div>
-          {/* 删除非本人的任务卡（2026-10-06 老板需求）：导入带来的归属人为他人的统计用卡，
+          {/* 删除非本人的任务卡（2026-10-06 用户需求）：导入带来的归属人为他人的统计用卡，
               一键直接硬删（含回收站中的；本人 = 个人资料 personId，owner_id 为空的卡视为本人不动）。
               后端广播 tasks-updated 三端同步；结果在按钮文字上短暂反馈（不新增行防抖动） */}
           <div className="pt-3 border-t border-[var(--edge)] flex items-center justify-between gap-4">
@@ -1874,7 +1853,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         {renderSaveButton("mt-3 flex justify-end")}
       </div>
 
-      {/* P4：执行痕迹清理（trace 三表 + 回滚快照保留期；trace_clear_before 命令） */}
+      {/* ：执行痕迹清理（trace 三表 + 回滚快照保留期；trace_clear_before 命令） */}
       <div className="nm-card p-5">
         <h2 className="text-lg font-semibold text-[var(--t1)]">执行痕迹</h2>
         <p className="mt-1 text-xs text-[var(--t5)]">
@@ -2062,7 +2041,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
             {logBusy ? "读取中…" : "查看日志"}
           </button>
         </div>
-        {/* U8：Python 超时等 setConfig 字段靠本卡保存钮落盘（bot 关闭时 model 卡按钮不可达） */}
+        {/* ：Python 超时等 setConfig 字段靠本卡保存钮落盘（bot 关闭时 model 卡按钮不可达） */}
         {renderSaveButton("mt-3 flex justify-end")}
       </div>
 
@@ -2237,7 +2216,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
           )}
         </div>
       </div>
-      {/* U15 记忆可控开关：注入总闸 + 模型主动记忆门禁（点档即时落盘） */}
+      {/*  记忆可控开关：注入总闸 + 模型主动记忆门禁（点档即时落盘） */}
       <div className="nm-card p-5">
         <div className="space-y-3">
           <p className="text-xs font-medium text-[var(--t4)]">记忆权限</p>
@@ -2284,7 +2263,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
           </div>
         </div>
       </div>
-      {/* 记忆库管理面板（U14）：列表/搜索/编辑/删除 + 统计与嵌入引擎状态 */}
+      {/* 记忆库管理面板：列表/搜索/编辑/删除 + 统计与嵌入引擎状态 */}
       <MemoryPanel />
       </section>
       )}
@@ -2295,7 +2274,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
       <p className="text-xs text-[var(--t5)]">
         管理模型供应商，配置后可在挂件聊天时选择使用。
       </p>
-      {/* U13 收尾引导：有带 vendor 的条目但 verifiedVendors 为空（可用性状态无自动迁移） */}
+      {/*  收尾引导：有带 vendor 的条目但 verifiedVendors 为空（可用性状态无自动迁移） */}
       {needVendorReVerify && (
         <p
           className="flex items-center gap-1.5 text-xs text-[var(--t3)]"
@@ -2310,7 +2289,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
         {/* 大模型 API 配置（开关开启后显示） */}
         {botEnabled && (
           <div className="space-y-3">
-            {/* U10 厂商中心：左厂商列表 + 右厂商页；高度跟随窗口（视口高 - 页头占用），两视图对齐 */}
+            {/*  厂商中心：左厂商列表 + 右厂商页；高度跟随窗口（视口高 - 页头占用），两视图对齐 */}
             <div className="flex h-[calc(100vh-14rem)] min-h-[320px] gap-4">
               {/* 左栏：厂商列表（绿点 = 该厂商含全局 active 模型） */}
               <div className="w-44 shrink-0 space-y-1 overflow-y-auto border-r border-[var(--edge)] pr-3">
@@ -2831,7 +2810,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
                   "⚠️ 不弹任何授权：机器人可读本机任意文件，且 Python 编程免开关直接执行（以本机用户权限，可联网）。仅在你完全信任所用模型时开启。"}
               </p>
             </div>
-            {/* P3-c：per-tool 权限规则表（deny/ask/allow 首中即停；无命中走授权模式） */}
+            {/* ：per-tool 权限规则表（deny/ask/allow 首中即停；无命中走授权模式） */}
             <div className="space-y-1">
               <div className="flex items-center justify-between">
                 <p className="text-[10px] text-[var(--t5)]">工具权限规则（按工具覆盖授权模式）</p>
@@ -2920,7 +2899,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
                 白名单内静默放行；白名单外按授权模式处理（见上）。授权弹窗点「始终允许该目录」会自动追加到这里。
               </p>
             </div>
-        {/* U8：白名单 textarea 等 setConfig 字段靠本卡保存钮落盘 */}
+        {/* ：白名单 textarea 等 setConfig 字段靠本卡保存钮落盘 */}
         {renderSaveButton("mt-3 flex justify-end")}
       </div>
       </section>
@@ -3025,7 +3004,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
       {mountedSections.has("bot") && (
       <section hidden={activeSection !== "bot"} className="space-y-4 pt-4">
       <div className="nm-card p-5">
-            {/* F-1 bypass_llm_on_pre_step_hit 开关：技能路由新链路 / 旧链路回退闸 */}
+            {/*  bypass_llm_on_pre_step_hit 开关：技能路由新链路 / 旧链路回退闸 */}
             <div className="space-y-1">
               <p className="text-[10px] text-[var(--t5)]">智能技能路由</p>
               <button
@@ -3127,7 +3106,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
             </div>
           </>
         )}
-        {/* U8：技能路由/外部 API 段的保存入口 */}
+        {/* ：技能路由/外部 API 段的保存入口 */}
         {renderSaveButton("mt-4 flex justify-end")}
       </div>
       </section>
@@ -3149,7 +3128,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
       )}
       {mountedSections.has("workflow") && (
       <section hidden={activeSection !== "workflow"} className="space-y-4 pt-4">
-      {/* P3-b 迁移：熔断上限已入「Agent 运行参数」卡，本卡只剩可见开关与拆解提示词 */}
+      {/*  迁移：熔断上限已入「Agent 运行参数」卡，本卡只剩可见开关与拆解提示词 */}
       <WorkflowSettingsCard />
       </section>
       )}
@@ -3165,7 +3144,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
       )}
       {mountedSections.has("tokens") && (
       <section hidden={activeSection !== "tokens"} className="space-y-4 pt-4">
-      {/* P3-b：词元统计实装（原「规划中」占位）——exec_traces 按日聚合，纯本地 */}
+      {/* ：词元统计实装（原「规划中」占位）——exec_traces 按日聚合，纯本地 */}
       <UsageStatsCard />
       </section>
       )}
@@ -3205,8 +3184,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
   );
 }
 
-/** 工作流设置卡（W1-CANVAS §10 + W2-DECOMPOSE §6.3）：可见性开关 + 拆解提示词。
- *  提示词两段式：这里编辑的是「指引段」；「输出契约段」在后端代码硬拼，
+/** 工作流设置卡（ §10 +  §6.3）：可见性开关 + 拆解提示词。 *  提示词两段式：这里编辑的是「指引段」；「输出契约段」在后端代码硬拼，
  *  用户改指引段破坏不了 JSON 契约。 */
 function WorkflowSettingsCard() {
   const [showTasks, setShowTasks] = useState(getShowWorkflowTasks);
@@ -3250,7 +3228,7 @@ function WorkflowSettingsCard() {
       })
       .catch(() => {}); // 模型库读取失败：下拉只剩"跟随全局"，不挡设置页
   }, []);
-  // 卸载时兜底持久化（OCR r1：焦点在 textarea 时切走/关窗，onBlur 可能不触发）
+  // 卸载时兜底持久化焦点在 textarea 时切走/关窗，onBlur 可能不触发）
   useEffect(
     () => () => {
       setDecomposeGuidance(guidanceRef.current);
@@ -3273,7 +3251,7 @@ function WorkflowSettingsCard() {
     const ok = setDecomposeGuidance(v);
     setGuidanceSaved(ok);
     if (ok) {
-      // 已保存提示 2.5s 自动隐藏（OCR r1：不能一旦保存过就常亮）
+      // 已保存提示 2.5s 自动隐藏不能一旦保存过就常亮）
       if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
       savedTimerRef.current = setTimeout(() => setGuidanceSaved(false), 2500);
     }
@@ -3333,7 +3311,7 @@ function WorkflowSettingsCard() {
               nodeAcceptance ? "nm-inset" : "nm-outset"
             }`}
             onClick={async () => {
-              if (acceptBusy) return; // in-flight 保护：连点不并发落盘（OCR r1 high）
+              if (acceptBusy) return; // in-flight 保护：连点不并发落盘
               setAcceptBusy(true);
               const next = !(nodeAcceptance === true);
               try {
@@ -3362,7 +3340,7 @@ function WorkflowSettingsCard() {
             disabled={modelBusy}
             value={reviewModel}
             onChange={async (e) => {
-              if (modelBusy) return; // in-flight 守卫：连改下拉不并发落盘（OCR r1 high）
+              if (modelBusy) return; // in-flight 守卫：连改下拉不并发落盘
               setModelBusy(true);
               const v = e.target.value;
               try {

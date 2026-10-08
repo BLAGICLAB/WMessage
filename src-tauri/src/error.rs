@@ -153,7 +153,7 @@ impl std::fmt::Display for CommandErrorCode {
 /// 命令错误统一枚举。每个变体对应一个稳定 code + 人类可读 message + recoverable 标志。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandError {
-    // ─────  机器人 / 配置  ─────
+    // 机器人 / 配置
     /// 机器人聊天已关闭
     BotDisabled,
     /// API Key 未配置（设置页未填）
@@ -161,7 +161,7 @@ pub enum CommandError {
     /// Keychain / 系统凭据存储访问失败
     KeyringError(String),
 
-    // ─────  HTTP API  ─────
+    // HTTP API
     /// HTTP 服务启动失败（端口/绑定）
     HttpStartFailed { port: u16, reason: String },
     /// 端口已被占用
@@ -173,7 +173,7 @@ pub enum CommandError {
     /// 请求体超限（>1MB）
     PayloadTooLarge,
 
-    // ─────  任务 / 数据库  ─────
+    // 任务 / 数据库
     /// 任务不存在
     TaskNotFound(String),
     /// 业务状态拒绝：任务存在但当前状态不允许该操作
@@ -199,7 +199,7 @@ pub enum CommandError {
     /// IO 错误
     IoError(String),
 
-    // ─────  工具 / Skill  ─────
+    // 工具 / Skill
     /// 未知工具（模型编造的工具名）
     UnknownTool(String),
     /// 原子工具禁止裸调（仅 Skill 内部可用）
@@ -209,24 +209,24 @@ pub enum CommandError {
     /// Skill 未安装
     SkillNotInstalled(String),
 
-    // ─────  LLM  ─────
+    // LLM
     /// 请求大模型失败（网络/超时）
     LlmRequestFailed(String),
     /// 大模型 API 错误（HTTP 非 2xx）
     LlmApiError { status: u16, body_preview: String },
 
-    // ─────  确认流  ─────
+    // 确认流
     /// 用户确认请求超时（60s 默认）
     ConfirmTimeout,
     /// 用户拒绝确认
     ConfirmRejected,
 
-    // ─────  域规则  ─────
+    // 域规则
     /// 域规则违反(业务校验 / 状态机 / 前置条件)
     /// 跟 Internal 的区别:recoverable + domain 分类,前端能按 domain switch
     DomainRule { domain: String, reason: String },
 
-    // ─────  兜底  ─────
+    // 兜底
     /// 内部错误（未分类）
     Internal(String),
 }
@@ -366,7 +366,7 @@ impl Serialize for CommandError {
     }
 }
 
-// ─────  便捷转换（? 操作符支持）  ─────
+// 便捷转换（? 操作符支持）
 
 impl From<std::io::Error> for CommandError {
     fn from(e: std::io::Error) -> Self {
@@ -531,7 +531,7 @@ mod tests {
         }
     }
 
-    /// OCR C2b #2 簇B：新 code 的 code()/recoverable/message/序列化契约。
+    ///  #2 簇B：新 code 的 code()/recoverable/message/序列化契约。
     #[test]
     fn invalid_workspace_link_kind_contract() {
         let e = CommandError::InvalidWorkspaceLinkKind {

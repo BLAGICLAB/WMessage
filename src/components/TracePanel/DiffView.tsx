@@ -1,6 +1,6 @@
 // TracePanel 子组件：unified diff 行着色渲染。
 // 不引第三方 diff 库——后端生成的是 unified diff 文本（similar），前端只做
-// 行级着色（+/−/@@/文件头）。解析逻辑 ~30 行，漂移面极小（P2-b 决策留档）。
+// 行级着色（+/−/@@/文件头）。解析逻辑 ~30 行，漂移面极小（ 决策留档）。
 
 /** 单行着色类名：文件头弱化 / hunk 头高亮 / +/- 红绿 / 上下文原样 */
 function lineClass(line: string): string {

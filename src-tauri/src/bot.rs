@@ -11,7 +11,7 @@
 //! - `bot_model_loop`  — 流式 SSE + 工具循环（run_model_loop / parse_sse_chunk / feed_think / TOOLS）
 //! - `bot_scheduler`   — ⏰ 定时任务卡自动执行（start_scheduler / occurrence_after / sched_tests）
 //! - `bot_slash`       — 旁路基础设施（bot_stop / 确认弹窗 / 机器人开关）
-//! - `bot_artifacts`   — 产物登记表（D4d：bot 流程结束按 TaskExecOrigin 分流触发汇总弹窗）
+//! - `bot_artifacts`   — 产物登记表bot 流程结束按 TaskExecOrigin 分流触发汇总弹窗）
 //!
 //! 安全性（对齐《Harness 安全网关》需求）：
 //! - 工具白名单：固定 TOOLS schema（单一来源 bot/registry.rs 的 TOOLS_TABLE 派生）
@@ -40,7 +40,7 @@ pub use crate::audit::AuditLevel;
 // persist_outcome 注入闭包的落库载荷（临时库文件）。
 pub use crate::db::{load_all_skill_outcomes, upsert_skill_outcome, PersistedSkillOutcome};
 
-// ──────────────────── 子模块声明 ────────────────────
+// 子模块声明
 pub mod config;
 pub mod dispatch;
 pub mod format;
@@ -50,7 +50,7 @@ pub mod reasoning;
 pub mod registry;
 pub mod tools;
 
-// ──────────────────── config re-export ────────────────────
+// config re-export
 pub use config::{
     __cmd__bot_clear_api_key,
     __cmd__bot_get_config,
@@ -136,9 +136,9 @@ pub(crate) use config::{
     update_config_file,
 };
 
-// ──────────────────── dispatch re-export ────────────────────
+// dispatch re-export
 pub(crate) use dispatch::parse_args;
 pub use dispatch::{execute_tool, execute_tool_traced, execute_tool_with_stop, ToolCallTrace};
 
-// ──────────────────── tools re-export ────────────────────
+// tools re-export
 pub use tools::{apply_files_to_task, broadcast_after_mutation};

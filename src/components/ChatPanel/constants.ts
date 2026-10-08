@@ -6,15 +6,13 @@ import type { ModelItem, PermMode, ReasoningLevel, VerboseLevel } from "./types"
 /** execute-task 事件去重窗口（毫秒）：同一 id 窗口内重复触发直接跳过 */
 const EXEC_TASK_DEDUP_MS = 2000;
 
-/** execute-task 事件去重（模块级，跨组件实例/HMR 泄漏监听器共享）：
- *  dev 期间挂件 webview 多次重挂载会累积多个 execute-task 监听器，
+/** execute-task 事件去重（模块级，跨组件实例/HMR 泄漏监听器共享）： *  dev 期间挂件 webview 多次重挂载会累积多个 execute-task 监听器，
  *  一次点击被投递多次 → 同一秒多个 bot_execute_task 并发 → 后端防重入拦截，
  *  每个拒绝都弹「⚠️ 内部错误：该任务卡正在执行中」气泡，用户误以为执行失败。
  *  去重表必须放模块级：放 useEffect 闭包里则每个泄漏监听器各持一份，去重失效。
  *  表本体不导出——只暴露 shouldSkip 单入口，调用顺带 prune 超窗条目防无界增长 */
 const dedupTable = new Map<string, number>();
-/** 任务执行收尾表（chat-open-session 迟到防复活）：taskId → 执行结果。
- * 进程内存活不清理（任务 id 是 UUID 无碰撞，量级百字节级）；拍板：失败任务
+/** 任务执行收尾表（chat-open-session 迟到防复活）：taskId → 执行结果。 * 进程内存活不清理（任务 id 是 UUID 无碰撞，量级百字节级）；：失败任务
  * 的迟到跳转不自动切，停下来让用户决定是否重试/查看 */
 export const finishedExecTasks = new Map<string, "success" | "failed">();
 
@@ -33,8 +31,7 @@ export const execTaskDedup = {
 /** 流式增量合并窗口（约一帧）：同一窗口内到达的 SSE 片段攒起来一次写 state */
 export const DELTA_BATCH_MS = 16;
 
-/** 斜杠命令清单（单一真相：autocomplete picker + runSlashCommand 共享）。
- *  没有 /help：上浮全面板后 /help 还在 LLM 上下文里白白占 token */
+/** 斜杠命令清单（单一真相：autocomplete picker + runSlashCommand 共享）。 *  没有 /help：上浮全面板后 /help 还在 LLM 上下文里白白占 token */
 export const SLASH_COMMANDS = [
   { cmd: "/stop", description: "停止当前回复" },
   { cmd: "/compact", description: "压缩对话上下文" },
@@ -56,7 +53,7 @@ export const PROVIDER_LABELS: Record<ModelItem["provider"], string> = {
   anthropic: "Anthropic 兼容",
 };
 
-/** 授权模式展示文案（U3b 只读 pill）：短标签进 pill，完整语义在 title */
+/** 授权模式展示文案（ 只读 pill）：短标签进 pill，完整语义在 title */
 export const PERM_LABELS: Record<PermMode, string> = {
   ask: "弹授权",
   strict: "硬拒",
@@ -64,7 +61,7 @@ export const PERM_LABELS: Record<PermMode, string> = {
   yolo: "全放行",
 };
 
-/** 执行过程详细度（P2-b verbose 三档）：短标签进 pill，语义见 types.ts */
+/** 执行过程详细度（ verbose 三档）：短标签进 pill，语义见 types.ts */
 export const VERBOSE_LABELS: Record<VerboseLevel, string> = {
   concise: "简洁",
   detailed: "详细",

@@ -101,8 +101,8 @@ impl AuditLevel {
         }
     }
 
-    /// T3 B1：从工具 status 派生 audit 级别，代替原 audit::classify_text 字符串匹配。
-    /// B2 起工具会显式声明 status，本映射是唯一从 status → audit 级别的入口。
+    ///  ：从工具 status 派生 audit 级别，代替原 audit::classify_text 字符串匹配。
+    ///  起工具会显式声明 status，本映射是唯一从 status → audit 级别的入口。
     pub fn from_tool_status(s: crate::bot::registry::ToolStatus) -> Self {
         use crate::bot::registry::ToolStatus;
         match s {
@@ -140,7 +140,7 @@ pub fn tool_call_failed(name: &str, text: &str) -> bool {
         || text.starts_with("ERROR:")
 }
 
-/// P4：错误分类器（与 tool_call_failed 同源口径，供 trace span error_class /
+/// 错误分类器（与 tool_call_failed 同源口径，供 trace span error_class /
 /// evolution ToolCallSummary.error_kind，两处不再各写一份口径）。
 /// 成功文本返回 None；失败按可识别模式归类，未识别失败统一 "exec_error"。
 pub fn classify_error_class(text: &str) -> Option<&'static str> {
@@ -386,7 +386,7 @@ fn append_line(path: &std::path::Path, line: &str) -> bool {
 //   - PROBE_CACHE
 // audit 模块只负责「目录定了之后日志怎么写」。
 
-// ─────────────────────── 写入公共内核（三个写入点共用） ───────────────────────
+// 写入公共内核（三个写入点共用）
 
 /// bot.log rotate 阈值：超过 5 MB 改名为 .old（保留一份历史）。
 /// 三个写入点（write_event / write_error_audit / write_warn_audit_to）共用，

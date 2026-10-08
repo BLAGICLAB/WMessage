@@ -1,6 +1,6 @@
-//! R4 L1 候选层 · ProposalEntry → ChangeRecord 映射
+//!  L1 候选层 · ProposalEntry → ChangeRecord 映射
 //!
-//! spec R4：ProposalStatus ↔ ChangeStatus 映射
+//! spec ：ProposalStatus ↔ ChangeStatus 映射
 //! 映射规则：
 //! - Pooled / Promoted → ChangeStatus::Pending
 //! - Expired → ChangeStatus::Expired
@@ -100,7 +100,7 @@ mod tests {
         }
     }
 
-    // ─── 映射表锁死 ───
+    // 映射表锁死
 
     #[test]
     fn pooled_maps_to_pending() {
@@ -134,7 +134,7 @@ mod tests {
         );
     }
 
-    // ─── to_change_record 字段透传 ───
+    // to_change_record 字段透传
 
     #[test]
     fn to_change_record_carries_entry_fields() {

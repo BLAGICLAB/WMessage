@@ -1,6 +1,6 @@
 //! 自动记忆抽取提示词（memory::extract 会话收尾抽取用）：输出 JSON 数组，
 //! 解析失败/空数组都是合法出口，措辞是「宁缺勿滥」的第一道防线。
-//! U19 起抽取升级两段式：第一段 EXTRACT_PROMPT 抽事实，第二段
+//!  起抽取升级两段式：第一段 EXTRACT_PROMPT 抽事实，第二段
 //! ADJUDICATE_PROMPT 对「与既有记忆语义相近」的条目逐条裁决
 //! new / update(existing_id) / skip——改口更新原条目，不堆积。
 
@@ -14,7 +14,7 @@ pub(crate) const EXTRACT_PROMPT: &str = "\
 kind 口径：profile=用户画像（称呼/职业/背景），preference=偏好（风格/习惯/喜好），\
 fact=其他稳定事实。importance 取 1-5：默认 2-3，只有明确强烈的偏好才给 4-5。";
 
-/// 冲突裁决 prompt（U19 两段式第二段；只对与既有记忆相近的条目发起）
+/// 冲突裁决 prompt（ 两段式第二段；只对与既有记忆相近的条目发起）
 pub(crate) const ADJUDICATE_PROMPT: &str = "\
 你是记忆冲突裁决助手。下面每条「新抽取的事实」都配了一条语义相近的「已有记忆」。\
 请逐条裁决，只输出一个 JSON 数组（不要输出其它任何文字），每项格式：\

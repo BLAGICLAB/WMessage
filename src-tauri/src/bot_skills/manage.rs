@@ -323,7 +323,7 @@ fn render_skill_block(skills: Vec<SkillInfo>, recommended: bool) -> String {
     out
 }
 
-// ───────────────────────── tauri 命令（设置页技能管理） ─────────────────────────
+// tauri 命令（设置页技能管理）
 
 /// 已安装技能列表（设置页展示）
 #[tauri::command]

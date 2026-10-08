@@ -16,7 +16,7 @@ use super::types::{
     ActiveModelId, ApiProvider, KeySlot, ModelsByProvider, KEYRING_SERVICE, LEGACY_KEYRING_SERVICE,
 };
 
-// ───────────────────────── 后端探测 ─────────────────────────
+// 后端探测
 
 /// 凭据后端。Linux 的 keyring 走 secret-service（zbus/dbus）—— headless
 /// 服务器/容器/最小桌面无 dbus 会话时，keyring 调用直接 PlatformFailure，用户 key
@@ -159,7 +159,7 @@ fn read_key_file_from(p: &std::path::Path) -> CommandResult<String> {
 
 /// 降级文件写入：父目录不存在则创建；Unix 创建即 0600（OpenOptionsExt::mode，
 /// 与 api-token.txt 同策略——无「先写后 chmod」的 umask 窗口，chmod 失败问题不存在）。
-/// Windows：无 DACL 等价收紧——权限语义仅在 Unix 承诺（拍板 #13=B wontfix-with-rationale：
+/// Windows：无 DACL 等价收紧——权限语义仅在 Unix 承诺（wontfix-with-rationale：
 /// 本仓无 Windows CI/验证手段，写 ACL 无法保证正确；降级存储本就是 keyring 不可用时的兜底）。
 fn write_key_file_to(p: &std::path::Path, key: &str) -> CommandResult<()> {
     if let Some(dir) = p.parent() {
@@ -207,7 +207,7 @@ fn write_key_file_to(p: &std::path::Path, key: &str) -> CommandResult<()> {
     Ok(())
 }
 
-// ───────────────────────── keyring entry 构造 ─────────────────────────
+// keyring entry 构造
 
 pub(crate) fn key_entry(slot: KeySlot) -> CommandResult<keyring::Entry> {
     key_entry_for_service(KEYRING_SERVICE, slot)
@@ -219,7 +219,7 @@ pub(crate) fn key_entry_for_service(service: &str, slot: KeySlot) -> CommandResu
         .map_err(|e| CommandError::KeyringError(format!("系统凭据存储不可用：{e}")))
 }
 
-// ───────────────────────── 按后端分发 ─────────────────────────
+// 按后端分发
 
 /// 按后端分发读取（可测：PlaintextFile + 注入路径即「mock secret-service 不可用」）；
 /// 带 slot（System 后端按 slot 选 keyring 条目）
@@ -323,7 +323,7 @@ pub(crate) fn classify_has_key(r: Result<String, keyring::Error>) -> CommandResu
     }
 }
 
-// ───────────────────────── slot 顶层入口 ─────────────────────────
+// slot 顶层入口
 
 pub fn read_api_key() -> CommandResult<String> {
     read_key_of_slot(KeySlot::Llm)
@@ -368,7 +368,7 @@ pub(crate) fn write_key_of_slot(slot: KeySlot, key: &str) -> CommandResult<()> {
     write_api_key_at(backend, &plaintext_key_path_for(slot), key, slot)
 }
 
-// ───────────────────────── 搜索 key（Tavily/Brave）───────────────────────
+// 搜索 key（Tavily/Brave）
 
 /// 读搜索 key：未配置返回空串（搜索 key 是可选配置，区别于主 LLM key 的硬错误）；
 /// keyring 真实故障（锁定/权限拒绝）透传 Err，不静默吞成空串（与 has_api_key 同策略）。
@@ -391,7 +391,7 @@ pub fn write_search_key(slot: KeySlot, key: &str) -> CommandResult<()> {
     write_key_of_slot(slot, key)
 }
 
-// ───────────────────────── System 后端迁移 ─────────────────────────
+// System 后端迁移
 
 /// System 后端恢复可用时，把降级明文 key 迁回 keychain
 /// 并删除文件——否则降级文件永久残留（clear 走当前后端，PlaintextFile 分支轮不到），
@@ -491,7 +491,7 @@ fn prepare_system_backend(slot: KeySlot) {
     migrate_plaintext_key_if_system(slot);
 }
 
-// ───────────────────────── 厂商级 LLM key（按厂商名分条目）─────────────────────────
+// 厂商级 LLM key（按厂商名分条目）
 // 设置页厂商页一厂一 key：keyring 条目用户名 `vendor:{厂商名}`，与全局 "api-key"
 // 条目隔离；Linux 降级后端每厂商一个 0600 明文文件。新条目无历史包袱，
 // 不走 v0 service 迁移/明文回迁（prepare_system_backend 只服务三个固定 slot）。

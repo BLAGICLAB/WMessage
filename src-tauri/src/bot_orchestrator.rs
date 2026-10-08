@@ -5,11 +5,11 @@
 //! 审计/子卡绑定）。两者复用 exec 运行基建，但入口、存储、事件各自独立。
 //!
 //! 分批（设计 §11）：
-//! - SUBA-1（本批）：`subagents` 表 + 生命周期状态机 + spawn/check/cancel 内部实现 +
+//! - `subagents` 表 + 生命周期状态机 + spawn/check/cancel 内部实现 +
 //!   子卡创建（一子 agent 一子卡）+ parent_task_id 关联 + acceptance 双写（note 侧）+
 //!   审计 subagent_spawned；预算字段落表。不暴露 LLM 工具、不注册 tauri 命令。
-//! - SUBA-2：三工具进 registry + 递归双保险 + 任务包装渲染 + 提示词 + runner + 收尾 JSON 解析。
-//! - SUBA-3：预算强制（turns/tool_calls/wall）+ 并发排队（per-session 2 / global 3）+ 前端。
+//! - 三工具进 registry + 递归双保险 + 任务包装渲染 + 提示词 + runner + 收尾 JSON 解析。
+//! - 预算强制（turns/tool_calls/wall）+ 并发排队（per-session 2 / global 3）+ 前端。
 //!
 //! 结构约定（同 task_patch / task_patch_locked 先例）：纯 DB 核心 `*_locked` 可在
 //! in-memory conn 上单测；异步包装负责 spawn_blocking + DB_WRITE_LOCK + 审计 + 广播。
@@ -18,7 +18,7 @@ use crate::db::{SubagentBudget, SubagentProfile, SubagentRow, SubagentStatus, Ta
 use crate::error::{CommandError, CommandResult};
 use tauri::AppHandle;
 
-/// 预算默认值与硬顶（设计 §6 已拍板）——常量与钳制实现在 db::SubagentBudget（写口
+/// 预算默认值与硬顶（设计 §6 已）——常量与钳制实现在 db::SubagentBudget（写口
 /// 强制：spawn 与 task_patch 都过 clamped()），此处 re-export 保持原路径可用。
 pub use crate::db::{
     DEFAULT_MAX_TOOL_CALLS, DEFAULT_MAX_TURNS, DEFAULT_MAX_WALL_SECONDS, MAX_TURNS_HARD_CAP,
@@ -217,10 +217,10 @@ pub(crate) fn spawn_subagent_locked(
     ))
 }
 
-/// 按 subagent_id / task_id / 子会话 id 解析行（设计 §5 双键 + SUBA-3 会话键：
+/// 按 subagent_id / task_id / 子会话 id 解析行（设计 §5 双键 +  会话键：
 /// 任务卡停止按钮与子会话停止键只持有会话 id）。
 /// 前缀约定：subagent_id 恒以 `sa_` 开头；task_id 与 session_id 均为裸 uuid——
-/// 先 task_id 后 session_id 双探测（SUBA-3 批勘误）。
+/// 先 task_id 后 session_id 双探测（ 批勘误）。
 fn resolve_row(conn: &rusqlite::Connection, key: &str) -> CommandResult<SubagentRow> {
     let row = if key.starts_with("sa_") {
         crate::db::load_subagent(conn, key).map_err(CommandError::DbError)?
@@ -254,7 +254,7 @@ pub(crate) fn check_subagent_locked(
         .result_json
         .as_deref()
         .and_then(|s| serde_json::from_str(s).ok());
-    // 排队位次（SUBA-3）：queued 状态时给出 FIFO 前面还有几个
+    // 排队位次：queued 状态时给出 FIFO 前面还有几个
     let queue_position = if row.status == SubagentStatus::Queued {
         SubagentGate::queue_position(row.parent_session_id.as_deref())
     } else {
@@ -300,7 +300,7 @@ pub(crate) fn cancel_subagent_locked(
     crate::db::update_subagent_status(conn, &row.id, SubagentStatus::Cancelled, now, Some(reason))
         .map_err(CommandError::DbError)?;
     // 子卡同步回退 doing → todo：取消后卡片不能永远停在「进行中」
-    //（OCR r2 采纳：取消必须让前端可见，否则卡片悬挂在 doing）
+    //（取消必须让前端可见，否则卡片悬挂在 doing）
     let card = crate::db::load_task(conn, &row.task_id).map_err(CommandError::DbError)?;
     let card = match card {
         Some(mut c) if c.column == crate::db::TaskStatus::Doing => {
@@ -325,9 +325,9 @@ pub(crate) fn cancel_subagent_locked(
 }
 
 /// spawn 异步包装：持锁执行核心 → 审计 subagent_spawned → 广播子卡。
-/// SUBA-1 不启动执行（runner 在 SUBA-2 接入）；行停在 queued 由后续批推进。
+///  不启动执行（runner 在  接入）；行停在 queued 由后续批推进。
 pub async fn spawn_subagent(app: &AppHandle, req: SpawnRequest) -> CommandResult<SpawnAck> {
-    // P3-a：LLM 未显式给预算时用配置默认（config subagentMax* 三项，resolve 内钳制）；
+    // LLM 未显式给预算时用配置默认（config subagentMax* 三项，resolve 内钳制）；
     // 显式给了的仍走 clamp_budget 硬顶。Gate 并发数（max_running）保持常量不在本路径。
     let mut req = req;
     if req.budget.is_none() {
@@ -335,7 +335,7 @@ pub async fn spawn_subagent(app: &AppHandle, req: SpawnRequest) -> CommandResult
         req.budget = Some(crate::bot::params::resolve_subagent_budget(&cfg));
     }
     // 审计字段先拷出（闭包要 move req 进 spawn_blocking）；校验只走 locked 核心
-    //（wrapper 侧重复调用已删——OCR r2 采纳）
+    //（wrapper 侧重复调用已删——）
     let audit_parent_session = req.parent_session_id.clone();
     let audit_profile = req.profile;
     let audit_model = req.model_profile.clone();
@@ -406,7 +406,7 @@ pub async fn check_subagent(app: &AppHandle, key: &str, wait_ms: u64) -> Command
 }
 
 /// cancel 异步包装：置 cancelled + 子卡回退 + 审计 + 广播（前端即时感知，
-/// OCR r2 采纳）。SUBA-2 接 runner 后在此叠加 force_stop。
+/// ）。 接 runner 后在此叠加 force_stop。
 pub async fn cancel_subagent_async(
     app: &AppHandle,
     key: &str,
@@ -463,7 +463,7 @@ pub async fn cancel_subagent_async(
     Ok(ack)
 }
 
-// ═══════════════════════ SUBA-2：工具实现 + runner + 收尾解析 ═══════════════════════
+// 工具实现 + runner + 收尾解析
 
 use crate::bot_chat::{ChatGuard, ExecGuard};
 use std::collections::HashMap;
@@ -731,9 +731,9 @@ pub(crate) fn artifact_dir_of(gen_root: &std::path::Path, subagent_id: &str) -> 
     gen_root.join("subagents").join(subagent_id)
 }
 
-// ───────────────────────── 并发闸（SUBA-3：per-session 2 / global 3 FIFO） ─────────────────────────
+// 并发闸per-session 2 / global 3 FIFO）
 
-/// 并发上限（设计 §6 已拍板）：全局 3、每个派发主会话 2。超限排队不失败
+/// 并发上限（设计 §6 已）：全局 3、每个派发主会话 2。超限排队不失败
 ///（status=queued），有槽位唤醒。
 pub const MAX_GLOBAL_RUNNING: usize = 3;
 pub const MAX_PER_SESSION_RUNNING: usize = 2;
@@ -750,7 +750,7 @@ fn gate() -> &'static SubagentGate {
     })
 }
 
-/// 进程级并发闸。FIFO 口径勘误（SUBA-3，OCR r1 high 采纳后的简化）：
+/// 进程级并发闸。FIFO 口径勘误 采纳后的简化）：
 /// 持久队列 + notified().await 在 future 被 drop 时会泄漏队列项（取消不安全），
 /// 改为「RAII 等待计数 + 轮询/唤醒重试」——同会话内先到先得（严格），
 /// 跨会话近似公平（3 槽争用面极小，A 期接受）。
@@ -815,7 +815,7 @@ impl Drop for WaitingGuard {
 }
 
 impl SubagentGate {
-    /// B3-1：可取消排队——每轮 50ms 退避后调 `should_abort`，true 即退队返回
+    /// 可取消排队——每轮 50ms 退避后调 `should_abort`，true 即退队返回
     /// None（waiting 计数由 WaitingGuard RAII 递减）。取消判定由调用方给
     ///（runner 查 DB 行终态），闸门本身不依赖存储。
     pub(crate) async fn wait_slot_cancellable(
@@ -850,7 +850,7 @@ impl SubagentGate {
                     .and_then(|k| st.per_session.get(k).copied())
                     .unwrap_or(0);
                 let sess_ok = sess_running < MAX_PER_SESSION_RUNNING;
-                // OCR r2 high 采纳：不做「等待序数」公平判定（waiting<=1 的判定
+                // 不做「等待序数」公平判定（waiting<=1 的判定
                 // 在两个并发 waiter 同见 waiting=2 时会互相让行 → 集体饿死）。
                 // 改为纯「试占」：有空槽即取，50ms 重试保证无饥饿。
                 // FIFO 降级为 best-effort（waiting 计数仅供 check 展示排队位），
@@ -888,7 +888,7 @@ impl SubagentGate {
     }
 }
 
-// ───────────────────────── runner（执行引擎） ─────────────────────────
+// runner（执行引擎）
 
 /// 子 agent 执行引擎：独立会话 + 工具循环 + 收尾落库。spawn 异步包装末尾派发
 /// （非阻塞）。执行基建复用 exec 家族（ChatGuard/ExecGuard/StopGuard/tool_guard），
@@ -907,7 +907,7 @@ async fn run_subagent(app: AppHandle, subagent_id: String) {
     {
         Ok(r) => r,
         Err(e) => {
-            // OCR r2 high 采纳：加载失败也要落终态，防 ghost queued 行永挂
+            // 加载失败也要落终态，防 ghost queued 行永挂
             let ghost_sid = subagent_id.clone();
             let ghost_err = e.message();
             let _ = db_locked(&app, move |conn| {
@@ -958,10 +958,10 @@ async fn run_subagent(app: AppHandle, subagent_id: String) {
         .await;
         return;
     };
-    // 并发闸（SUBA-3：global 3 / per-session 2，超限等待不失败）。
+    // 并发闸global 3 / per-session 2，超限等待不失败）。
     // 排队时间不计墙钟：max_wall_seconds 的 timeout 从 run_model_loop 起算（下方），
     // 天然满足设计 §6。
-    // B3-1：排队可取消——每轮退避同时查行终态，取消即退队（ExecGuard RAII
+    // 排队可取消——每轮退避同时查行终态，取消即退队（ExecGuard RAII
     // 释放）；Running 改在**拿到槽位并复核后**才写，排队中的行不再假挂运行中。
     let sid_gate_check = row.id.clone();
     let app_gate_check = app.clone();
@@ -1005,7 +1005,7 @@ async fn run_subagent(app: AppHandle, subagent_id: String) {
     };
     {
         // 拿到槽位后复核（cancel-vs-runner 竞态闸）：行已终态 = cancel 先赢 →
-        // 中止；DB 读失败保守中止（执行已取消的任务比不跑更糟，OCR r2 口径保留）
+        // 中止；DB 读失败保守中止（执行已取消的任务比不跑更糟
         let sid_still_queued = row.id.clone();
         let state_now = db_locked(&app, move |conn| {
             Ok(crate::db::load_subagent(conn, &sid_still_queued)
@@ -1031,7 +1031,7 @@ async fn run_subagent(app: AppHandle, subagent_id: String) {
                 return;
             }
         }
-        // B3-1：Running 写库挪到槽位拿到之后（排队窗口内行保持 queued 语义）。
+        // Running 写库挪到槽位拿到之后（排队窗口内行保持 queued 语义）。
         // 写失败必须中止（评审 HIGH 采纳）：recheck 与本写之间 cancel 可抢先写
         // Cancelled，update_subagent_status 因非法状态转移报错——吞错等于在
         // 已取消任务上继续跑
@@ -1090,7 +1090,7 @@ async fn run_subagent(app: AppHandle, subagent_id: String) {
             return;
         }
     };
-    // create + canonicalize（OCR r2 high 采纳：写路径钉死规范化目录）。失败仅审计：
+    // create + canonicalize（写路径钉死规范化目录）。失败仅审计：
     // write_artifact_file 每次调用会再校验，目录坏了只影响产物不影响状态机
     let mk_dir = artifact_dir.clone();
     let mk_res = tauri::async_runtime::spawn_blocking(move || -> Result<PathBuf, String> {
@@ -1127,7 +1127,7 @@ async fn run_subagent(app: AppHandle, subagent_id: String) {
         let row = row.clone();
         let budget = budget.clone();
         db_locked(&app, move |conn| -> CommandResult<(String, Task, String)> {
-            // OCR r1 high 采纳：四写包同一事务，防部分成功留半成品
+            // 四写包同一事务，防部分成功留半成品
             let tx = conn
                 .transaction()
                 .map_err(|e| CommandError::DbError(e.to_string()))?;
@@ -1137,7 +1137,7 @@ async fn run_subagent(app: AppHandle, subagent_id: String) {
                 .map_err(CommandError::DbError)?
                 .ok_or_else(|| CommandError::TaskNotFound(row.task_id.clone()))?;
             // 包装文本仅返回（渲染一次，交 runner 供 LLM 与 finalize 复用）——
-            // 历史落库统一在 finalize 全量覆盖写（OCR r3 high 采纳：setup 的
+            // 历史落库统一在 finalize 全量覆盖写（setup 的
             // bot_history_save_inner 是半截写，会被 finalize DELETE+INSERT 覆盖，
             // 中途崩溃还留「只有任务块没有结论」的误导历史）
             let wrapper = render_task_wrapper(&row, &card, &budget, &artifact_dir);
@@ -1177,7 +1177,7 @@ async fn run_subagent(app: AppHandle, subagent_id: String) {
     };
 
     // 工具守卫注册（白名单闸 + spawn 递归身份校验 + read_own_card/write_artifact 定位）。
-    // RAII 守卫：Drop 反注册——runner 中途 panic 也不泄漏条目（OCR r2 high 采纳）
+    // RAII 守卫：Drop 反注册——runner 中途 panic 也不泄漏条目（ 采纳）
     let _session_guard = crate::tool_guard::SubagentSessionGuard::new(
         &session_id,
         crate::tool_guard::SubagentSessionCtx {
@@ -1193,7 +1193,7 @@ async fn run_subagent(app: AppHandle, subagent_id: String) {
     // 会话锁（用户向围观会话发消息 → 友好拒绝）+ 停止守卫（interactive=围观流式）
     let chat_guard = ChatGuard::acquire(&app, Some(session_id.as_str()));
     if chat_guard.is_err() {
-        // OCR r1 high 采纳：此处行已是 Running——中止必须落终态，不能悬挂
+        // 此处行已是 Running——中止必须落终态，不能悬挂
         let sid_failed = row.id.clone();
         let _ = db_locked(&app, move |conn| {
             crate::db::update_subagent_status(
@@ -1213,7 +1213,7 @@ async fn run_subagent(app: AppHandle, subagent_id: String) {
         return;
     }
     let stop = crate::bot_slash::StopGuard::new(&app, true, Some(session_id.clone()));
-    // 取消令牌登记：cancel_subagent 持句柄远程停止。已知窗口（可接受，OCR r2 留痕）：
+    // 取消令牌登记：cancel_subagent 持句柄远程停止。已知窗口（可接受：
     // ChatGuard 成功到令牌登记之间收到的 cancel 落不到令牌——由 2s watcher 兜底
     // （行已 cancelled → watcher 置 stop）。
     crate::app_state::subagent_stops(&app)
@@ -1243,7 +1243,7 @@ async fn run_subagent(app: AppHandle, subagent_id: String) {
             }
             let task_id = watcher_task_id.clone();
             let sid = watcher_sid.clone();
-            // 只读轮询：直接开连接，不持 DB_WRITE_LOCK（防多子 agent 写锁互饿——OCR r1 采纳）
+            // 只读轮询：直接开连接，不持 DB_WRITE_LOCK（防多子 agent 写锁互饿——）
             let watcher_app2 = watcher_app.clone();
             let aborted = tauri::async_runtime::spawn_blocking(move || -> Result<bool, String> {
                 let conn = crate::db::open_db(&watcher_app2)?;
@@ -1295,7 +1295,7 @@ async fn run_subagent(app: AppHandle, subagent_id: String) {
         &stop,
         None,
         None,
-        // 子 agent 模型走自身预算/派发通道（model_profile），不挂每卡覆盖（W6-MODEL）
+        // 子 agent 模型走自身预算/派发通道（model_profile），不挂每卡覆盖
         None,
     );
     let wall = tokio::time::timeout(
@@ -1304,7 +1304,7 @@ async fn run_subagent(app: AppHandle, subagent_id: String) {
     )
     .await;
 
-    // B3-2：墙钟触达先 stop 后收尾——run future 被 timeout 掐掉时，脱离 runtime
+    // 墙钟触达先 stop 后收尾——run future 被 timeout 掐掉时，脱离 runtime
     // 的在飞 Python/MCP（spawn_blocking 不随 future 取消）靠 StopToken 自行退出；
     // 短 grace 给它们的退出清理/Drop 留时间，不留孤儿进程
     if wall.is_err() {
@@ -1313,7 +1313,7 @@ async fn run_subagent(app: AppHandle, subagent_id: String) {
     }
 
     // 收尾清理：watcher 由 AbortOnDrop Drop 保证中止（含 panic/unwind 路径——
-    // OCR r3 high 采纳：StopGuard::drop 不置位停止标志，单靠手动 abort 会泄漏）
+    // StopGuard::drop 不置位停止标志，单靠手动 abort 会泄漏）
     let _watcher = AbortOnDrop(watcher);
     // tool_guard 注册走 RAII 守卫（_session_guard Drop 反注册）
     crate::app_state::subagent_stops(&app)
@@ -1345,11 +1345,11 @@ async fn run_subagent(app: AppHandle, subagent_id: String) {
     let result_for_db = result.clone();
     let error_for_db = error.clone();
     let final_for_db = final_text.clone();
-    // 返回 (fresh row, card)——下游审计/广播直接用，免二次持锁查询（OCR r1 采纳）
+    // 返回 (fresh row, card)——下游审计/广播直接用，免二次持锁查询
     let finalized: Option<(SubagentRow, Task)> = db_locked(
         &app,
         move |conn| -> CommandResult<Option<(SubagentRow, Task)>> {
-            // OCR r1 high 采纳：多写包同一事务 + cancel-vs-runner 竞态闸——
+            // 多写包同一事务 + cancel-vs-runner 竞态闸——
             // 行已终态（cancel 先赢）时不做任何状态/结果/子卡副作用，只落历史
             let current = crate::db::load_subagent(conn, &row_for_db.id)
                 .map_err(CommandError::DbError)?
@@ -1408,7 +1408,7 @@ async fn run_subagent(app: AppHandle, subagent_id: String) {
     .await
     .unwrap_or_else(|e| {
         let msg = crate::bot::truncate_for_log(&e.message(), 200);
-        // OCR r2 high 采纳：收尾失败行会永挂 Running——best-effort 落 Failed
+        // 收尾失败行会永挂 Running——best-effort 落 Failed
         //（终态判定在收尾闭包内已做；此处只兜住闭包本身失败的情形）。
         // 后台任务持 owned handle（spawn 要求 'static，不能借用 app）。
         let sid_failed = row.id.clone();
@@ -1445,7 +1445,7 @@ async fn run_subagent(app: AppHandle, subagent_id: String) {
         SubagentStatus::Cancelled => "subagent_cancelled",
         _ => "subagent_failed",
     };
-    // fresh/card 直接取自收尾闭包返回值（OCR r1 采纳：不再二次持锁查询）
+    // fresh/card 直接取自收尾闭包返回值（不再二次持锁查询）
     let fresh = finalized.as_ref().map(|(r, _)| r.clone());
     let card = finalized.as_ref().map(|(_, c)| c.clone());
     let summary = fresh
@@ -1517,7 +1517,7 @@ fn gen_dir_rule_for(artifact_dir: &std::path::Path) -> String {
     )
 }
 
-// ───────────────────────── LLM 工具实现（registry 调用） ─────────────────────────
+// LLM 工具实现（registry 调用）
 
 fn parse_tool_args(args: &str) -> serde_json::Value {
     serde_json::from_str(args).unwrap_or(serde_json::Value::Null)
@@ -1674,7 +1674,7 @@ pub async fn tool_write_artifact_file(
     let v = parse_tool_args(args);
     let filename = v["filename"].as_str().unwrap_or_default().trim();
     let content = v["content"].as_str().unwrap_or_default();
-    // content 上限（OCR r3 high 采纳）：失控子 agent 循环写大文件可填满磁盘——
+    // content 上限（ 采纳）：失控子 agent 循环写大文件可填满磁盘——
     // 8MB 与 registry 长输出工具软上限同量级，报告/数据文件足够
     const MAX_ARTIFACT_BYTES: usize = 8 * 1024 * 1024;
     if content.len() > MAX_ARTIFACT_BYTES {
@@ -1688,8 +1688,8 @@ pub async fn tool_write_artifact_file(
         );
     }
     // 纯文件名校验：拒绝路径分隔符、NUL（POSIX 截断/Windows 路径组件）
-    // 与 Windows 保留设备名（OCR r1 采纳）；.. 按组件判定而非子串——
-    // 不误伤 foo..bar / ...txt 这类合法名（OCR r2 采纳）
+    // 与 Windows 保留设备名；.. 按组件判定而非子串——
+    // 不误伤 foo..bar / ...txt 这类合法名
     const WIN_RESERVED: [&str; 22] = [
         "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
         "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
@@ -1713,7 +1713,7 @@ pub async fn tool_write_artifact_file(
             Vec::new(),
         );
     }
-    // 产物目录 canonicalize（OCR r2 high 采纳：写路径钉死规范化目录，防 symlink 语义漂移）
+    // 产物目录 canonicalize（写路径钉死规范化目录，防 symlink 语义漂移）
     let mk_dir = ctx.artifact_dir.clone();
     let canonical = tauri::async_runtime::spawn_blocking(move || -> Result<PathBuf, String> {
         std::fs::create_dir_all(&mk_dir).map_err(|e| e.to_string())?;
@@ -1768,7 +1768,7 @@ pub async fn tool_write_artifact_file(
     }
 }
 
-/// cancel_subagent tauri 命令（SUBA-3：任务卡停止按钮 / 子会话停止键的同 API 入口，
+/// cancel_subagent tauri 命令任务卡停止按钮 / 子会话停止键的同 API 入口，
 /// 设计 §4.3；薄壳转内部 cancel_subagent_async）。
 #[tauri::command]
 pub async fn cancel_subagent(
@@ -1822,7 +1822,7 @@ mod orchestrator_tests {
 
     fn test_conn() -> rusqlite::Connection {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        // tasks 表内联最小 schema（列序与 open_db 一致，含 SUBA-1 新增三列）；
+        // tasks 表内联最小 schema（列序与 open_db 一致，含  新增三列）；
         // subagents 表与生产同源 DDL（单源真相）
         conn.execute_batch(crate::db::tasks::TASKS_DDL).unwrap();
         conn.execute_batch(crate::db::SUBAGENTS_DDL).unwrap();
@@ -1868,7 +1868,7 @@ mod orchestrator_tests {
         "parent-1".into()
     }
 
-    // ─────────────────── SUBA-3：并发闸（FIFO/上限/释放） ───────────────────
+    // 并发闸（FIFO/上限/释放）
 
     /// 并发闸状态机（合并为单测：static GATE 进程级共享，cargo 并行跑两个测试
     /// 会互相踩计数；手动构造票据，不调 wait_slot——它会与其他并行测试竞争
@@ -1967,7 +1967,7 @@ mod orchestrator_tests {
         );
     }
 
-    /// SUBA-3：tool_calls 预算计数器（ctx 侧）——dispatch 累计语义的单测锚点
+    /// tool_calls 预算计数器（ctx 侧）——dispatch 累计语义的单测锚点
     #[test]
     fn tool_call_counter_accumulates() {
         let ctx = crate::tool_guard::SubagentSessionCtx {
@@ -1996,7 +1996,7 @@ mod orchestrator_tests {
         assert!(2 >= ctx.budget.max_tool_calls as usize);
     }
 
-    // ─────────────────── SUBA-2：收尾解析 / 包装渲染 ───────────────────
+    // 收尾解析 / 包装渲染
 
     #[test]
     fn extract_last_json_takes_the_last_object() {
@@ -2184,7 +2184,7 @@ mod orchestrator_tests {
         assert!(c.ok);
         assert!(!c.already_terminal);
         assert_eq!(c.status, SubagentStatus::Cancelled);
-        // OCR r2 采纳：取消必须让子卡离开 doing（前端可见），并返回卡片供广播
+        // 取消必须让子卡离开 doing（前端可见），并返回卡片供广播
         let card = card.expect("取消运行中的子 agent 必须回退其子卡");
         assert_eq!(card.column, crate::db::TaskStatus::Todo);
         let row = crate::db::load_subagent(&conn, &ack.subagent_id)

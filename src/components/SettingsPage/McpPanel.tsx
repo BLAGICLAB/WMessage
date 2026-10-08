@@ -2,7 +2,7 @@
 //
 // 数据流：mcp_status 读「配置 × 连接槽」合并视图；增删改走 mcp_server_save/delete/toggle
 //（后端落盘 + 自动重连，广播 mcp-status-changed 事件，本面板监听后刷新）。
-// 权限模型（拍板 3A）：保存前显式确认弹窗完整展示将运行的命令行/参数/env。
+// 权限模型：保存前显式确认弹窗完整展示将运行的命令行/参数/env。
 // stdio 启动器白名单前后端双重把关（前端下拉只能选白名单内启动器）。
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -81,22 +81,20 @@ const parseEnvLines = (text: string) => parseKeyValueLines(text, "=");
 /** Key: Value 行 → Record（HTTP 头格式） */
 const parseHeaderLines = (text: string) => parseKeyValueLines(text, ":");
 
-/** 命令行展示（B0 评审 HIGH）：含空白的参数加引号，让展示 token 与实际 argv 对齐
- *（argv 是单 token 的 "hello world" 不能被展示成两个 shell 形态的词） */
+/** 命令行展示（ 评审 HIGH）：含空白的参数加引号，让展示 token 与实际 argv 对齐 *（argv 是单 token 的 "hello world" 不能被展示成两个 shell 形态的词） */
 function displayCommandLine(command: string | null | undefined, args: string[]): string {
   return [command ?? "", ...args]
     .map((a) => (/\s/.test(a) ? JSON.stringify(a) : a))
     .join(" ");
 }
 
-/** 头值打码（B0-4）：确认弹窗只露末 4 位，不展示完整鉴权机密 */
+/** 头值打码：确认弹窗只露末 4 位，不展示完整鉴权机密 */
 function maskHeaderValue(v: string): string {
   const t = v.trim();
   return t.length <= 8 ? "••••" : `••••••${t.slice(-4)}`;
 }
 
-/** 超时输入解析（B0-4）：空 = 默认；非法/越界报错（后端 u64 反序列化对
- * 负数/小数会裸抛 serde 错误，前端先钳为 5–600 整数） */
+/** 超时输入解析：空 = 默认；非法/越界报错（后端 u64 反序列化对 * 负数/小数会裸抛 serde 错误，前端先钳为 5–600 整数） */
 function parseTimeoutSecs(raw: string): { value: number | null; error?: string } {
   const t = raw.trim();
   if (!t) return { value: null };
@@ -124,7 +122,7 @@ function errorSummary(err: string | null | undefined): string {
   return oneLine.length > 80 ? `${oneLine.slice(0, 80)}…` : oneLine;
 }
 
-/** 保存确认弹窗内容（拍板 3A）：完整命令行 / URL + env，用户看得见才点得下去 */
+/** 保存确认弹窗内容：完整命令行 / URL + env，用户看得见才点得下去 */
 function SaveConfirmDialog({
   server,
   onCancel,
@@ -230,7 +228,7 @@ export function McpPanel() {
     }
   }, []);
 
-  /** 800ms 延迟刷新（重连异步收敛）：单句柄防抖（B0 评审：数组累积无上界），卸载清理 */
+  /** 800ms 延迟刷新（重连异步收敛）：单句柄防抖（ 评审：数组累积无上界），卸载清理 */
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(
     () => () => {
@@ -257,8 +255,7 @@ export function McpPanel() {
     };
   }, [refresh]);
 
-  /** 编辑回填 in-flight 闸（B0 评审：连点两行会双 invoke 竞态 setForm——按钮的
-   * disabled 要等首个 invoke 落地才生效，ref 闸同步无窗口） */
+  /** 编辑回填 in-flight 闸（ 评审：连点两行会双 invoke 竞态 setForm——按钮的   * disabled 要等首个 invoke 落地才生效，ref 闸同步无窗口） */
   const editLoadingRef = useRef(false);
   const startEdit = async (s: McpServerStatus) => {
     if (editLoadingRef.current || form !== null) return;
@@ -307,7 +304,7 @@ export function McpPanel() {
       return null;
     }
     // stdio 的 command 来自白名单下拉（MCP_STDIO_LAUNCHERS）恒非空，无需守卫
-    //（B0 评审：原 !form.command 分支不可达，删除）
+    //（ 评审：原 !form.command 分支不可达，删除）
     if (form.transport !== "stdio" && !form.url.trim()) {
       setError("http 服务器必须填写端点 URL");
       return null;
@@ -334,7 +331,7 @@ export function McpPanel() {
   const requestSave = () => {
     setError("");
     const payload = buildPayload();
-    if (payload) setPending(payload); // 打开确认弹窗（拍板 3A）
+    if (payload) setPending(payload); // 打开确认弹窗
   };
 
   const confirmSave = async () => {
@@ -391,8 +388,7 @@ export function McpPanel() {
     }
   };
 
-  /** 展开/拉取工具：请求序号防串台（B0 评审：连点两台服务器，慢响应会把
-   * A 的工具渲染进 B 的展开行）；失败在展开行内报错（此前只上顶栏，
+  /** 展开/拉取工具：请求序号防串台（ 评审：连点两台服务器，慢响应会把   * A 的工具渲染进 B 的展开行）；失败在展开行内报错（此前只上顶栏，
    * 展开行一直显示「暂无工具」，分不清没工具还是拉取失败） */
   const toolsReqRef = useRef(0);
   const expandTools = async (s: McpServerStatus) => {
@@ -626,7 +622,7 @@ export function McpPanel() {
         </div>
       )}
 
-      {/* 保存确认弹窗（拍板 3A：完整命令展示后显式确认） */}
+      {/* 保存确认弹窗 */}
       {pending && (
         <SaveConfirmDialog
           server={pending}

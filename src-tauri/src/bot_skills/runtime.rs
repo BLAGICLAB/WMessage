@@ -155,7 +155,7 @@ pub fn start_skill(
 
 /// 工具 use_skill：读取技能文档全文返回给模型。
 /// session_id：透传给 start_skill 记录技能归属会话（会话隔离）。
-/// N7：新增 params 对象透传（参数契约）；返回头部兼容警告（未知工具）+
+/// ：新增 params 对象透传（参数契约）；返回头部兼容警告（未知工具）+
 /// 尾部第三层资料清单（references/*.md）。
 pub fn tool_use_skill(app: &AppHandle, args: &str, session_id: Option<&str>) -> ToolResult {
     let v: serde_json::Value = serde_json::from_str(args).unwrap_or(serde_json::Value::Null);
@@ -282,7 +282,7 @@ fn step_check(run: &mut SkillRun, tool: &str, args: &str, now: i64) -> Result<()
         });
     }
     // 动作记录（回滚清单来源）：只记有副作用的工具，跳过只读查询
-    // （T1-QUERYTASKS：list_tasks/search_tasks 合并为 query_tasks）
+    // （：list_tasks/search_tasks 合并为 query_tasks）
     const READONLY: [&str; 3] = ["query_tasks", "use_skill", "web_search"];
     if !READONLY.contains(&tool) {
         let brief = truncate_skill_args(args, 120);
@@ -966,7 +966,7 @@ mod tests {
     fn step_check_counts_and_records_actions() {
         let mut r = test_run(8, 180);
         r.state = SkillState::Running;
-        // query_tasks 在 READONLY 豁免清单（T1 后），只读不记入回滚清单
+        // query_tasks 在 READONLY 豁免清单（ 后），只读不记入回滚清单
         assert!(step_check(&mut r, "query_tasks", "{}", 2000).is_ok());
         assert_eq!(r.step, 1);
         assert!(r.actions.is_empty()); // 只读不记

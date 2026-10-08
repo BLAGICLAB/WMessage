@@ -23,7 +23,7 @@ use super::util::{
 };
 use super::util::{now_ms, over_limit};
 
-// ───────────────────────── 序列化锁 ─────────────────────────
+// 序列化锁
 
 /// API 写操作 read-modify-write 串行化锁：
 /// create/update/delete 的 load→改→upsert 两段式若无锁，并发 API 请求
@@ -32,7 +32,7 @@ use super::util::{now_ms, over_limit};
 /// lost-update 属已立项的「字段级合并写入」架构项，不在此锁覆盖范围。
 static API_RMW_LOCK: Mutex<()> = Mutex::new(());
 
-// ───────────────────────── 响应辅助 ─────────────────────────
+// 响应辅助
 
 pub(crate) fn json_ok<T: Serialize>(status: StatusCode, v: &T) -> Response<Cursor<Vec<u8>>> {
     // 序列化失败显式 500 + 错误体——静默降级成 2xx + `{}` 会把数据完整性
@@ -75,7 +75,7 @@ fn health(req: Request) {
     ));
 }
 
-// ───────────────────────── 路由 ─────────────────────────
+// 路由
 
 pub fn handle_request(
     req: Request,
@@ -145,7 +145,7 @@ pub(crate) fn query_param(query: &str, key: &str) -> Option<String> {
         .map(|(_, v)| v.into_owned())
 }
 
-// ───────────────────────── 处理器 ─────────────────────────
+// 处理器
 
 fn list_tasks(req: Request, store: &Arc<dyn TaskStore>, query: &str, log: &Option<PathBuf>) {
     // 过滤参数：默认活跃任务（非回收站、非归档）；trash/archived/all 改变范围，status 按列筛
@@ -286,7 +286,7 @@ fn create_task(
 
     // load→max_order→upsert 全程持 API_RMW_LOCK——
     // 两段式无锁会让并发 create 算出相同 order、并发写互相用旧快照整行覆盖。
-    // 锁内只做 DB 读写，错误经 labeled block 装盒、出锁后再响应（OCR C5-AP-05）——
+    // 锁内只做 DB 读写，错误经 labeled block 装盒、出锁后再响应——
     // 持锁跨 socket I/O 会让慢客户端串行化全部并发 API 写。
     // create 的 load/upsert 失败原都走 internal_err（500），保持。
     let rmw = 'rmw: {
@@ -436,7 +436,7 @@ fn update_task(
     // load→改→upsert 全程持 API_RMW_LOCK(API 写串行化)。
     // 作用域块收窄锁:块一结束即释放,after_change(SSE fanout)不持锁
     // (持锁会串行化所有 API 写跨 SSE 网络延迟)。
-    // 锁内只做 DB 读写，错误经 labeled block 装盒、出锁后再响应（OCR C5-AP-05）。
+    // 锁内只做 DB 读写，错误经 labeled block 装盒、出锁后再响应。
     enum ErrOut {
         Load(String),
         NotFound,
@@ -607,7 +607,7 @@ fn delete_task(
 ) {
     // load→改→upsert 全程持 API_RMW_LOCK（API 写串行化）。
     // 锁内只做 DB 读写，错误/幂等重删经 labeled block 装盒、出锁后再响应
-    // （OCR C5-AP-05）。
+    //。
     // AlreadyDeleted 携带整行 Task 仅用于幂等回显，装箱反而绕远；体积差可接受
     #[allow(clippy::large_enum_variant)]
     enum ErrOut {

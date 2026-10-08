@@ -1,7 +1,7 @@
-//! 工作流拆解前澄清（W9-ASK，设计 docs/WORKFLOW-CLARIFY-AUDIT-DESIGN-2026-10-07.md §3.4）：
+//! 工作流拆解前澄清设计 docs/WORKFLOW-CLARIFY-AUDIT-DESIGN-2026-10-07.md §3.4）： audit-ok
 //! goal + 附件 → 一次性 LLM → ≤3 个结构化问题（空 = 信息足够直接拆）。
 //!
-//! 红线（拍板 5/8）：
+//! 红线：
 //! - **每个问题必须自带假设（default）**——"跳过/未答"恒有合理默认，与执行提问同一原则
 //! - 澄清是增强不是闸门：调用失败/校验连续不过 → 返回空 questions（outcome=degraded 审计），
 //!   前端无缝直拆，绝不因澄清环节挡住拆解
@@ -121,11 +121,11 @@ pub(crate) fn validate_clarify(mut questions: Vec<ClarifyQuestion>) -> Vec<Clari
             .filter(|s| !s.is_empty())
             .map(|s| chars_truncate(s, MAX_CLARIFY_DEFAULT_CHARS))
             .or_else(|| q.options.first().cloned());
-        // 双缺：这条问没有假设兜底，未答时没法继续——直接丢弃（拍板 5 红线）
+        // 双缺：这条问没有假设兜底，未答时没法继续——直接丢弃
         if q.default.is_none() {
             continue;
         }
-        // 同文本去重（OCR r1 high：前端答案按问题文本键控，重复文本互相覆盖）
+        // 同文本去重前端答案按问题文本键控，重复文本互相覆盖）
         if kept.iter().any(|k| k.question == q.question) {
             continue;
         }
@@ -226,7 +226,7 @@ pub async fn workflow_clarify(
             }
         }
     }
-    // 降级：空 questions = 前端无缝直拆（拍板 2/8：澄清是增强不是闸门）
+    // 降级：空 questions = 前端无缝直拆（：澄清是增强不是闸门）
     crate::audit::write_event(
         &app,
         crate::audit::AuditLevel::Warn,

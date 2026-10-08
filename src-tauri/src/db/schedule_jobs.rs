@@ -263,7 +263,7 @@ pub fn update_job_run_state(
     Ok(())
 }
 
-// ────────────── 执行历史（XXL-JOB 调度日志借鉴） ──────────────
+// 执行历史（XXL-JOB 调度日志借鉴）
 
 /// 落一条执行历史并裁剪到 JOB_RUNS_KEEP 条（调用方持锁）
 pub fn record_job_run(
@@ -330,7 +330,7 @@ pub fn delete_scheduled_job(conn: &rusqlite::Connection, id: &str) -> Result<boo
     Ok(n > 0)
 }
 
-// ────────────── 老数据迁移：tasks.schedule → scheduled_jobs ──────────────
+// 老数据迁移：tasks.schedule → scheduled_jobs
 
 /// 一次性幂等迁移：把「现有卡定时」搬成内容型作业后清空任务卡调度字段。
 /// 迁移前后行为等价（原卡到点由机器人执行 → 作业到点新建卡并执行，
@@ -380,7 +380,7 @@ pub fn migrate_legacy_task_schedules(conn: &rusqlite::Connection) -> Result<usiz
     Ok(moved)
 }
 
-// ────────────── Tauri commands ──────────────
+// Tauri commands
 
 fn validate_content(content: &str) -> CommandResult<String> {
     let t = content.trim();

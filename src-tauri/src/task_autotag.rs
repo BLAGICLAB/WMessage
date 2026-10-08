@@ -232,7 +232,7 @@ pub async fn task_autotag(app: AppHandle, id: String) -> CommandResult<Option<Ve
     Ok(row.tags)
 }
 
-// ────────────── 单测 ──────────────
+// 单测
 
 #[cfg(test)]
 mod tests {

@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 // 1) 滚动条主题适配：color-scheme（原生控件/滚动条随主题）+ webkit 细滚动条走
 //    主题变量。原先全局没有滚动条样式，深色模式下滚动条仍是浅色原生样式——锁死防回退。
 // 2) nm-card-hover 过渡对称：hover 块改了哪些属性，基类 transition 必须同样声明，
-//    否则鼠标进入平滑、离开瞬间弹回。U1 换扁平材质后 hover 信号 = 背景抬升 +
+//    否则鼠标进入平滑、离开瞬间弹回。 换扁平材质后 hover 信号 = 背景抬升 +
 //    边框提亮，不再有 transform/shadow 跳变；基类 transition 同时覆盖进出场。
 const css = readFileSync("src/ui/main.css", "utf-8");
 

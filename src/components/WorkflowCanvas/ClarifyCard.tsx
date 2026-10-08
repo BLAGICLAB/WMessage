@@ -2,8 +2,7 @@ import { useState } from "react";
 import { Check, Loader2, Pencil, X } from "lucide-react";
 import type { Clarification, ClarifyQuestion } from "../../lib/workflowAsk";
 
-/** 澄清卡组（W9-ASK 设计 §3.4，拍板 5/8）：hero 态内联问答。
- *  红线：**「开始拆解」永远可点**——未答题自动落 AI 假设（q.default），
+/** 澄清卡组（ 设计 §3.4，）：hero 态内联问答。 *  红线：**「开始拆解」永远可点**——未答题自动落 AI 假设（q.default），
  *  忽略问题也能走；已答卡折叠为摘要行可重开编辑。 */
 export function ClarifyCard({
   goal,
@@ -15,7 +14,7 @@ export function ClarifyCard({
 }: {
   goal: string;
   questions: ClarifyQuestion[];
-  /** 重拆预填（拍板 3）：按问题文本匹配上次的回答 */
+  /** 重拆预填：按问题文本匹配上次的回答 */
   previousAnswers?: Record<string, string>;
   busy: boolean;
   /** 提交澄清（已答 + 未答落假设）；clarifications 空 = 跳过，按 AI 假设拆解 */

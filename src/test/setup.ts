@@ -12,7 +12,7 @@ afterEach(() => {
   }
 });
 
-// 模拟 Tauri 宿主（U5）：产品运行环境是 Tauri webview（__TAURI_INTERNALS__ 恒在），
+// 模拟 Tauri 宿主：产品运行环境是 Tauri webview（__TAURI_INTERNALS__ 恒在），
 // errorHandler 的弹窗降级只应在纯浏览器触发——测试环境统一按宿主模拟，
 // 降级分支由 errorHandler.test 显式 delete 后单测（afterEach 统一复位，见上）
 if (typeof window !== "undefined") {

@@ -1,4 +1,4 @@
-//! 工作流执行引擎（W3-RUNNER，设计 docs/WORKFLOW-CANVAS-DESIGN-2026-10-04.md §8）：
+//! 工作流执行引擎设计 docs/WORKFLOW-CANVAS-DESIGN-2026-10-04.md §8）：
 //! 拓扑调度——**就绪即跑**（LLMCompiler 模型：某节点前驱全部完成即刻启动，非整层屏障），
 //! 失败传播 = Airflow `all_success` 默认语义（上游失败 → 传递下游标 ⏭ 跳过，无关节点照跑），
 //! 断点续跑 = 任务卡即节点的架构红利（done+success 的节点直接视为已完成）。
@@ -22,7 +22,7 @@ use crate::bot_chat::{run_task_in_chat_ctx, TaskExecCtx, TaskExecOrigin};
 use crate::db::{Task, TaskStatus};
 use crate::error::{CommandError, CommandResult};
 
-// ────────────── 纯逻辑：建图 / 判定 / 跳过闭包（单测锚点） ──────────────
+// 纯逻辑：建图 / 判定 / 跳过闭包（单测锚点）
 
 /// 拆好的执行图。indegree 只计**未完成**的上游（done+success 节点在启动时已解锁下游）。
 pub(crate) struct Dag {
@@ -145,16 +145,16 @@ pub(crate) fn skip_closure(failed: &str, dependents: &HashMap<String, Vec<String
     out
 }
 
-// ────────────── W-QA：结构化交接 / 证据结果 / 重试决策（纯逻辑，单测锚点） ──────────────
+// W-QA：结构化交接 / 证据结果 / 重试决策（纯逻辑，单测锚点）
 
 /// 上游简报单卡上限（Anthropic 多 agent 实战教训：交接只传压缩摘要，不传全文）
 const UPSTREAM_PER_CAP: usize = 600;
 /// 上游简报总上限
 const UPSTREAM_TOTAL_CAP: usize = 2400;
 
-// ────────────── W10：节点级验收（设计 §4.1，纯逻辑单测锚点） ──────────────
+// W10：节点级验收（设计 §4.1，纯逻辑单测锚点）
 
-/// 验收返工独立预算（不与失败重试 C1 混用；拍板 4：status 与 verdict 分离）
+/// 验收返工独立预算（不与失败重试 C1 混用；status 与 verdict 分离）
 pub(crate) const ACCEPTANCE_REWORK_BUDGET: u32 = 2;
 
 /// 验收裁决四值；unknown = 评审调用/解析失败降级（不阻断、不返工）
@@ -288,7 +288,7 @@ async fn check_acceptance(
     }
 }
 
-// ────────────── W10：run 级审计落库（尽力而为，尽力而为——写失败不阻断执行） ──────────────
+// W10：run 级审计落库（尽力而为，尽力而为——写失败不阻断执行）
 
 /// 审计表写入 helper（spawn_blocking + 失败 eprintln；bot.log 双写由调用方自行决定）
 async fn wa_log(
@@ -480,7 +480,7 @@ const REVIEW_SYSTEM_PROMPT: &str = "\
 verdict：pass=全部达标且整体连贯；partial=有小缺口但不影响整体；fail=整体未达成。\
 issues：只列有问题的节点，没有问题则为 []；needsRework=true 仅当该节点明确不达标需要重做（宁缺毋滥）。";
 
-// ────────────── 运行注册表 / 取消 ──────────────
+// 运行注册表 / 取消
 
 struct RunHandle {
     cancel: Arc<AtomicBool>,
@@ -506,7 +506,7 @@ pub(crate) fn runner_is_running(workflow_id: &str) -> bool {
         .unwrap_or(false)
 }
 
-// ────────────── 节点终态上报 ──────────────
+// 节点终态上报
 
 struct NodeOutcome {
     id: String,
@@ -514,7 +514,7 @@ struct NodeOutcome {
     ok: bool,
     /// 取消（在 Gate 排队时被取消）：不计失败，控制器按「已停止」归档
     cancelled: bool,
-    /// 熔断（Function 调用超上限）：失败的一种，但归因备注不同（W5-FUSE）
+    /// 熔断（Function 调用超上限）：失败的一种，但归因备注不同
     fused: bool,
 }
 
@@ -540,7 +540,7 @@ impl Drop for OutcomeFallback {
     }
 }
 
-// ────────────── 命令 ──────────────
+// 命令
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -619,7 +619,7 @@ pub async fn workflow_run(
         .iter()
         .map(|t| (t.id.clone(), t.title.clone()))
         .collect();
-    // 每卡模型覆盖（W6-MODEL）：task.model = 模型库条目 id
+    // 每卡模型覆盖：task.model = 模型库条目 id
     let model_by_id: HashMap<String, Option<String>> = tasks
         .iter()
         .map(|t| (t.id.clone(), t.model.clone()))
@@ -635,9 +635,9 @@ pub async fn workflow_run(
                 .extend(deps.iter().cloned());
         }
     }
-    // W-QA B1：工作流总目标（此前执行期根本不读，goal 只是画布元数据）
+    // W-QA ：工作流总目标（此前执行期根本不读，goal 只是画布元数据）
     let goal = load_workflow_goal(&app, &workflow_id).await;
-    // W9-ASK：执行提问开关（clarify_meta.askMode，默认开）——run 开始时读一次
+    // 执行提问开关（clarify_meta.askMode，默认开）——run 开始时读一次
     let asks_enabled = load_asks_enabled(&app, &workflow_id).await;
     // W10：节点级验收开关（workflow_settings，默认开）——run 开始时读一次
     let acceptance_enabled = {
@@ -733,7 +733,7 @@ pub async fn workflow_is_running(workflow_id: String) -> bool {
     runner_is_running(&workflow_id)
 }
 
-// ────────────── 控制器 ──────────────
+// 控制器
 
 // DAG 控制器主体，拆分反而伤可读性
 #[allow(clippy::too_many_lines)]
@@ -745,7 +745,7 @@ async fn run_controller(
     model_by_id: HashMap<String, Option<String>>,
     upstream_of: HashMap<String, Vec<String>>,
     goal: Option<String>,
-    // W9-ASK：执行提问开关（workflow_run 开始时按 clarify_meta.askMode 读出）
+    // 执行提问开关（workflow_run 开始时按 clarify_meta.askMode 读出）
     asks_enabled: bool,
     // W10：节点级验收开关（workflow_settings，默认开）
     acceptance_enabled: bool,
@@ -786,7 +786,7 @@ async fn run_controller(
             let model = model_by_id.get(&id).cloned().flatten();
             let ups = upstream_of.get(&id).cloned().unwrap_or_default();
             let goal = goal.clone();
-            // W9-ASK：ask 授权与档案注入需要 workflow_id——async move 块按 move
+            // ask 授权与档案注入需要 workflow_id——async move 块按 move
             // 捕获会吞掉闭包捕获的原本体（Fn 退化 FnOnce），同 goal 先克隆一份
             let workflow_id = workflow_id.clone();
             let attempts = attempts.clone();
@@ -800,7 +800,7 @@ async fn run_controller(
                     id: id.clone(),
                     sent: false,
                 };
-                // P1-d：节点进入执行即广播（Gate 排队视同 running；前端画布实时高亮）。
+                // 节点进入执行即广播（Gate 排队视同 running；前端画布实时高亮）。
                 // 5s 轮询保留为兜底，事件只做低延迟增量。
                 let _ = app.emit(
                     "workflow-node-status",
@@ -823,10 +823,10 @@ async fn run_controller(
                     return;
                 }
                 let _ticket = ticket; // RAII 占槽：任务结束自动释放
-                                      // W-QA B2：spawn 前装配上游产出简报——此时直接上游必已终态且成功
+                                      // W-QA ：spawn 前装配上游产出简报——此时直接上游必已终态且成功
                                       //（失败分支已被跳过传播拦截，轮到本节点的上游全部 ok）
                 let upstream_brief = load_upstream_brief(&app, &ups).await;
-                // W9-ASK：双层档案注入（工作流决策摘要 + 本卡历史）——防跑偏，
+                // 双层档案注入（工作流决策摘要 + 本卡历史）——防跑偏，
                 // 用户在其他卡的纠偏这里看得见；读库失败降级 None 不阻断执行
                 let brief = {
                     let app2 = app.clone();
@@ -847,8 +847,8 @@ async fn run_controller(
                     goal: goal.clone(),
                     upstream_brief,
                     brief,
-                    // 执行提问授权（W9-ASK：clarify_meta.askMode，run 开始时读一次；
-                    // 拍板 5 默认"关键决策才问"=开）
+                    // 执行提问授权clarify_meta.askMode，run 开始时读一次；
+                    // 默认"关键决策才问"=开）
                     ask: Some(crate::bot_chat::AskExecContext {
                         workflow_id: workflow_id.clone(),
                         asks_enabled,
@@ -880,14 +880,14 @@ async fn run_controller(
                         .await;
                 // W10：验收核查环（设计 §4.1）——首轮成功且 acceptance 非空且开关开
                 // 且未被取消才进；fail 带证据返工（独立预算 ≤2），用尽仍 fail 终态 failed。
-                // partial/unknown → status 保持 success 带徽标继续（拍板 4）。
+                // partial/unknown → status 保持 success 带徽标继续。
                 let mut acceptance_final: Option<(AcceptanceVerdict, String)> = None;
                 let mut rework_used = 0u32;
                 loop {
                     if cancel.load(Ordering::SeqCst) {
                         break; // 用户停止：不做验收（豁免口径同收尾评审）
                     }
-                    // 熔断识别（W5-FUSE）：循环优雅返回「⏹ 已熔断」消息且任务未完成
+                    // 熔断识别：循环优雅返回「⏹ 已熔断」消息且任务未完成
                     let fused_now = matches!(&result, Ok(r) if r.result.text.contains(crate::bot_model_loop::FUSE_MARKER));
                     let fresh = crate::db::db_load(app.clone())
                         .await
@@ -990,7 +990,7 @@ async fn run_controller(
                         }
                     }
                 }
-                // 熔断识别（W5-FUSE）：循环优雅返回「⏹ 已熔断」消息且任务未完成
+                // 熔断识别：循环优雅返回「⏹ 已熔断」消息且任务未完成
                 let fused = matches!(&result, Ok(r) if r.result.text.contains(crate::bot_model_loop::FUSE_MARKER));
                 // W-QA A2：引擎写结构化结果（先落证据，再判成败）——
                 // 此前 result 只有子 agent 编排链在写，工作流卡基本恒空
@@ -1023,7 +1023,7 @@ async fn run_controller(
                     node_result["acceptanceEvidence"] = serde_json::json!(evidence);
                     if *verdict == AcceptanceVerdict::Fail {
                         acceptance_failed = true;
-                        // 终态改 failed（拍板 4 下游照现语义跳过）：status/error 覆写
+                        // 终态改 failed：status/error 覆写
                         node_result["status"] = serde_json::json!("failed");
                         node_result["error"] = serde_json::json!(format!(
                             "验收未通过（返工 {rework_used} 次后仍不达标）：{evidence}"
@@ -1087,7 +1087,7 @@ async fn run_controller(
                     );
                 }
                 let ok = column_done && !fused && result.is_ok() && !acceptance_failed;
-                // P1-d：节点收尾状态实时广播（画布描边 + 失败原因/trace 入口的数据源）
+                // 节点收尾状态实时广播（画布描边 + 失败原因/trace 入口的数据源）
                 let _ = app.emit(
                     "workflow-node-status",
                     serde_json::json!({
@@ -1173,7 +1173,7 @@ async fn run_controller(
         } else {
             failed_ids.insert(outcome.id.clone());
             if outcome.fused {
-                // 熔断归因写卡（W5-FUSE）：卡片本身带 ⚠️ 说明，用户知道调上限后可续跑
+                // 熔断归因写卡：卡片本身带 ⚠️ 说明，用户知道调上限后可续跑
                 mark_note_prefix(
                     &app,
                     &outcome.id,
@@ -1196,7 +1196,7 @@ async fn run_controller(
                 }
                 resolved.insert(skipped.clone());
                 skipped_ids.insert(skipped.clone());
-                // P1-d：传递下游被跳过 → 实时广播（画布灰显）
+                // 传递下游被跳过 → 实时广播（画布灰显）
                 let _ = app.emit(
                     "workflow-node-status",
                     serde_json::json!({ "taskId": skipped.clone(), "status": "skipped" }),
@@ -1244,7 +1244,7 @@ async fn run_controller(
         .await;
     }
 
-    // W9-ASK：run 收尾——本 run 的 pending 问题批量失效（半途结果不构成提问对象，
+    // run 收尾——本 run 的 pending 问题批量失效（半途结果不构成提问对象，
     // 重跑会重新注册提问上下文）；有失效才广播，省一次通知页刷新
     {
         let app2 = app.clone();
@@ -1326,9 +1326,9 @@ async fn run_controller(
     notify_workflow_done(&app, total, done_count, failed_n);
 }
 
-// ────────────── W-QA：上下文装配 / 证据落卡 / 评审与返工 ──────────────
+// W-QA：上下文装配 / 证据落卡 / 评审与返工
 
-/// 读工作流总目标（B1：此前 goal 只是画布元数据，执行期根本不读）
+/// 读工作流总目标此前 goal 只是画布元数据，执行期根本不读）
 async fn load_workflow_goal(app: &AppHandle, workflow_id: &str) -> Option<String> {
     let app = app.clone();
     let wid = workflow_id.to_string();
@@ -1344,7 +1344,7 @@ async fn load_workflow_goal(app: &AppHandle, workflow_id: &str) -> Option<String
     .flatten()
 }
 
-/// 执行提问开关（W9-ASK 拍板 10）：读 workflows.clarify_meta.askMode，
+/// 执行提问开关（ ）：读 workflows.clarify_meta.askMode，
 /// "never" = 从不提问；缺列/缺字段/解析失败一律默认开（关键决策才问）。
 async fn load_asks_enabled(app: &AppHandle, workflow_id: &str) -> bool {
     let app = app.clone();
@@ -1370,7 +1370,7 @@ async fn load_asks_enabled(app: &AppHandle, workflow_id: &str) -> bool {
     .unwrap_or(true)
 }
 
-/// 装配直接上游简报（B2）：spawn 前重读上游终态卡（A2 已写结构化 result）
+/// 装配直接上游简报：spawn 前重读上游终态卡（A2 已写结构化 result）
 async fn load_upstream_brief(app: &AppHandle, upstream_ids: &[String]) -> Option<String> {
     if upstream_ids.is_empty() {
         return None;
@@ -1786,7 +1786,7 @@ async fn review_and_rework(
 }
 
 /// note 前置标记（RMW 合并，与调度器 ⏰ 摘要前置同款；基于执行后最新数据合并）。
-/// 调用方：⏭ 跳过 / ⚠️ 熔断归因（W5-FUSE）
+/// 调用方：⏭ 跳过 / ⚠️ 熔断归因
 async fn mark_note_prefix(app: &AppHandle, task_id: &str, reason: &str) {
     if let Ok(cur) = crate::db::db_load(app.clone()).await {
         if let Some(mut fresh) = cur.into_iter().find(|t| t.id == task_id) {
@@ -1825,7 +1825,7 @@ fn notify_workflow_done(app: &AppHandle, total: usize, done: usize, failed: usiz
     }
 }
 
-// ────────────── 单测 ──────────────
+// 单测
 
 #[cfg(test)]
 mod tests {
@@ -1979,7 +1979,7 @@ mod tests {
         assert_eq!(dag.indegree["d"], 1);
     }
 
-    // ────────────── W-QA：证据结果 / 重试决策 / 上游简报 / 评审解析 ──────────────
+    // W-QA：证据结果 / 重试决策 / 上游简报 / 评审解析
 
     #[test]
     fn node_result_statuses() {
@@ -2014,7 +2014,7 @@ mod tests {
         assert!(!should_retry(true, false, false, 1)); // 成功不重试
     }
 
-    // ────────────── W10：验收解析/返工决策（纯逻辑单测锚点） ──────────────
+    // W10：验收解析/返工决策（纯逻辑单测锚点）
 
     #[test]
     fn acceptance_verdict_parses_and_degrades() {
@@ -2061,7 +2061,7 @@ mod tests {
         );
         assert_eq!(acceptance_rework_decision(Fail, 1), Rework);
         assert_eq!(acceptance_rework_decision(Fail, 0), AFail);
-        // partial/unknown/pass → 带结果继续（status 不变，拍板 4）
+        // partial/unknown/pass → 带结果继续（status 不变，）
         assert_eq!(acceptance_rework_decision(Partial, 2), Accept);
         assert_eq!(acceptance_rework_decision(Unknown, 2), Accept);
         assert_eq!(acceptance_rework_decision(Pass, 0), Accept);

@@ -32,12 +32,12 @@ use tauri::AppHandle;
 /// 记忆块注入预算（字符数上限）
 const MEMORY_BUDGET_CHARS: usize = 4_000;
 
-// ───────────────────────── 可控开关（U15/U16） ─────────────────────────
+// 可控开关（/）
 
 /// 记忆可控开关：存 bot-config.json 的 memoryControl 字段。
-/// None（老配置缺字段）= 全开，行为与 U15 之前完全一致。
+/// None（老配置缺字段）= 全开，行为与  之前完全一致。
 /// 范围口径：auto_write_enabled 只门禁**模型主动写入**的两个工具
-///（remember_fact / record_lesson）与 U16 的会话收尾自动抽取（总体闸优先）；
+///（remember_fact / record_lesson）与  的会话收尾自动抽取（总体闸优先）；
 /// 摘要/反思/定时整理等纯系统流水线不受影响。
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
@@ -46,7 +46,7 @@ pub struct MemoryControl {
     pub injection_enabled: bool,
     /// 模型主动记忆开关：false = 两个记忆工具返回「已关闭」提示，且自动抽取不跑
     pub auto_write_enabled: bool,
-    /// U16 自动记忆抽取档位：off（默认）/ auto（抽取直接入库）/ confirm（进待确认队列）
+    ///  自动记忆抽取档位：off（默认）/ auto（抽取直接入库）/ confirm（进待确认队列）
     /// 缺字段/非法值 = off
     pub auto_extract: String,
 }
@@ -121,10 +121,10 @@ pub(crate) fn store_lock() -> std::sync::MutexGuard<'static, ()> {
     })
 }
 
-// ───────────────────────── 参数化（U17） ─────────────────────────
+// 参数化
 
 /// 记忆参数：存 bot-config.json 的 memoryTuning 字段。
-/// None（老配置缺字段）= 全默认，行为与 U17 之前完全一致。
+/// None（老配置缺字段）= 全默认，行为与  之前完全一致。
 /// 读取侧统一过 [`MemoryTuning::clamped`]（超界值收敛到合法区间）。
 /// 本期无设置页 UI——手改 bot-config.json 生效（架构文档有注记）。
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -199,7 +199,7 @@ pub(crate) fn truncate_chars(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
 }
 
-// ───────────────────────── 记忆块拼装（四段式） ─────────────────────────
+// 记忆块拼装（四段式）
 
 /// 「## 记忆」拼装（纯函数）：
 /// pinned（importance≥4 的 profile/preference）→「用户画像与偏好」；
@@ -211,7 +211,7 @@ pub fn format_memory_block(inj: &MemInjection) -> Option<String> {
     format_memory_block_with(inj, MEMORY_BUDGET_CHARS)
 }
 
-/// 带预算变体（U17）：budget 来自 memoryTuning.injectionBudgetChars
+/// 带预算变体：budget 来自 memoryTuning.injectionBudgetChars
 pub fn format_memory_block_with(inj: &MemInjection, budget_chars: usize) -> Option<String> {
     fn inferred(m: &MemItem) -> &'static str {
         if m.source == "model_inferred" {
@@ -324,7 +324,7 @@ pub fn format_memory_block_with(inj: &MemInjection, budget_chars: usize) -> Opti
     Some(out)
 }
 
-// ───────────────────────── 注入（聊天主路径 / 任务卡执行共用） ─────────────────────────
+// 注入（聊天主路径 / 任务卡执行共用）
 
 /// 注入取数薄壳：embed →（持锁）快照 + 命中刷新访问计数 → 拼装。
 /// 任何失败一律 None 静默降级为无记忆块 + WARN 审计。
@@ -332,7 +332,7 @@ pub async fn injection_block<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     query: &str,
 ) -> Option<String> {
-    // 注入总闸（U15）：关 = 记忆保留在库里但不发给模型。判定在装配前短路。
+    // 注入总闸：关 = 记忆保留在库里但不发给模型。判定在装配前短路。
     if !injection_allowed(app) {
         return None;
     }
@@ -377,7 +377,7 @@ pub async fn injection_block<R: tauri::Runtime>(
     }
 }
 
-// ───────────────────────── remember_fact / recall_facts 工具（名称与 schema 不变，内部切新 store） ─────────────────────────
+// remember_fact / recall_facts 工具（名称与 schema 不变，内部切新 store）
 
 /// 入参校验（与旧 validate_fact_kv 同规则同文案：key ≤50、value ≤500，空 value=删除）
 fn validate_fact_kv(key: &str, value: &str) -> Result<(), String> {
@@ -415,7 +415,7 @@ pub async fn tool_remember_fact<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     args: &str,
 ) -> ToolResult {
-    // 模型主动记忆总闸（U15）：ok 而非 error——不是故障，模型拿到提示后自然转述，不会重试刷屏
+    // 模型主动记忆总闸：ok 而非 error——不是故障，模型拿到提示后自然转述，不会重试刷屏
     if !auto_write_allowed(app) {
         return ToolResult::ok("记忆功能已在设置中关闭，无需记录。".to_string(), Vec::new());
     }
@@ -522,7 +522,7 @@ pub async fn tool_remember_fact<R: tauri::Runtime>(
                             ),
                         }
                     }
-                    // B2-1 防劫持闸：evo: key 保留给 evolution 链路；validate_fact_kv
+                    //  防劫持闸：evo: key 保留给 evolution 链路；validate_fact_kv
                     // 不拦 evo: 前缀 key（用户真传会到这里被闸住），防御臂按冲突报错
                     Ok((InsertOutcome::RefusedForeignMerge { target_key }, _)) => {
                         ToolResult::error(
@@ -581,7 +581,7 @@ pub async fn tool_recall_facts(app: &AppHandle, args: &str) -> ToolResult {
             format!("- {key}：{}", m.content)
         };
         if !query.is_empty() {
-            // U17：召回路径衰减/条数同走 memoryTuning（此前 _with 变体无调用方）
+            // 召回路径衰减/条数同走 memoryTuning（此前 _with 变体无调用方）
             let tuning = crate::bot::read_memory_tuning(&app);
             let hits = rank::hybrid_search_with(
                 &items,
@@ -621,7 +621,7 @@ pub async fn tool_recall_facts(app: &AppHandle, args: &str) -> ToolResult {
     })
 }
 
-// ───────────────────────── lesson（教训记忆） ─────────────────────────
+// lesson（教训记忆）
 //
 // kind='lesson'，importance 默认 4，tags[0]='lesson' + 场景标签。写入走正常语义去重
 //（同类失败的教训合并更新而不是堆积）。两个来源：record_lesson 工具（模型主动，
@@ -693,7 +693,7 @@ pub fn record_lesson_core(
                 truncate_chars(lesson, 60)
             )
         }
-        // B2-1 防劫持闸：record_lesson 的 key 是 "lesson" 前缀正常不触发；
+        //  防劫持闸：record_lesson 的 key 是 "lesson" 前缀正常不触发；
         // 保留 exhaustive match 防御臂（与 remember 同口径报错）
         Ok((InsertOutcome::RefusedForeignMerge { target_key }, _)) => {
             format!("失败：与受保护条目「{target_key}」语义冲突，拒写")
@@ -708,7 +708,7 @@ pub async fn tool_record_lesson<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     args: &str,
 ) -> ToolResult {
-    // 模型主动记忆总闸（U15）：同 remember_fact，ok 提示不报错
+    // 模型主动记忆总闸：同 remember_fact，ok 提示不报错
     if !auto_write_allowed(app) {
         return ToolResult::ok("记忆功能已在设置中关闭，无需记录。".to_string(), Vec::new());
     }
@@ -819,7 +819,7 @@ pub async fn auto_lesson_on_task_failure<R: tauri::Runtime>(
     }
 }
 
-// ───────────────────────── 摘要/反思流水线（截断即摘要 → mem_items） ─────────────────────────
+// 摘要/反思流水线（截断即摘要 → mem_items）
 
 /// 摘要落库（v2）：kind=summary, importance=2, source=model_inferred，带嵌入向量。
 /// 返回落库后最旧的 REFLECTION_BATCH 条 summary（id, content），供 Reflection 触发判定。

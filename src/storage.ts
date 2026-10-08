@@ -6,8 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { handleCommandError } from "./lib/errorHandler";
 import type { PeopleEntry, Task } from "./types";
 
-/** 结构相等（用于 diff 行级变更）。expectedUpdatedAt 是写前比对基线（传输元数据，
- *  非内容），不参与比较——否则 state 残留的脏基线会击穿纯排序豁免 / 制造假变更 */
+/** 结构相等（用于 diff 行级变更）。expectedUpdatedAt 是写前比对基线（传输元数据， *  非内容），不参与比较——否则 state 残留的脏基线会击穿纯排序豁免 / 制造假变更 */
 export const taskEq = (a: Task, b: Task) =>
   JSON.stringify({ ...a, expectedUpdatedAt: undefined }) ===
   JSON.stringify({ ...b, expectedUpdatedAt: undefined });
@@ -28,8 +27,7 @@ export async function loadTasksFromDb(): Promise<LoadTasksResult> {
   }
 }
 
-/**
- * 行级增量写入（INSERT OR REPLACE）。
+/** * 行级增量写入（INSERT OR REPLACE）。
  * 写失败不再静默吞错：弹 alert 并把错误抛给调用方——
  * 否则 UI 已更新而磁盘没落，重启后 UI/DB 永久分叉。
  */
@@ -73,8 +71,7 @@ export async function loadPeople(): Promise<PeopleEntry[]> {
 export const sortByOrder = (tasks: Task[]) =>
   [...tasks].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
 
-/**
- * 行级 diff + 打修改时间戳（主窗口 mutate 与挂件 applyAndSync 共用）。
+/** * 行级 diff + 打修改时间戳（主窗口 mutate 与挂件 applyAndSync 共用）。
  * upserts = 新增/变化行，deletes = 消失行 id；变化行打 updatedAt=now。
  * 纯排序变更（除 order 外无字段差异）保留原 updatedAt——
  * 否则拖拽排序把被重排行的 updatedAt 全刷成 now，多客户端按 updatedAt 合并时
@@ -113,7 +110,7 @@ export function diffTaskRows(
   return { upserts, deletes };
 }
 
-// ───────────── 工作区（静态链接） ─────────────
+// 工作区（静态链接）
 import type { WorkspaceItem } from "./types";
 
 /** loadWorkspaceFromDb 结果：区分「读失败」与「空库」（对齐 loadTasksFromDb 的判别式契约） */
@@ -163,8 +160,7 @@ export async function importWorkspaceFromFile(path: string): Promise<number> {
   return await invoke<number>("workspace_import", { path });
 }
 
-/**
- * 给指定条目分配插入位 order：取新位置左右邻居的中点；
+/** * 给指定条目分配插入位 order：取新位置左右邻居的中点；
  * 边界取邻居 ±1；间隙耗尽（浮点精度）时全量整数重排。
  * 只有被拖条目生成新对象，配合 taskEq 只落盘变化行。
  * 任务卡与工作区条目共用（只需 id + order 字段）。

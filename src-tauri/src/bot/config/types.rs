@@ -10,7 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 
-// ───────────────────────── KeySlot ─────────────────────────
+// KeySlot
 
 /// 凭据存储条目：macOS 钥匙串 / Windows 凭据管理器。
 /// service 名带版本后缀——key 存储格式升级时新开 `wmessage.bot.vN`，
@@ -71,7 +71,7 @@ impl KeySlot {
     }
 }
 
-// ───────────────────────── BotConfig ─────────────────────────
+// BotConfig
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase", default)]
@@ -134,7 +134,7 @@ pub struct BotConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
     /// 推理强度后台默认（可选）："off" / "low" / "medium" / "high"。
-    /// None = "medium"（老板拍板默认中）。这是**抽象档位**，发送前按具体模型族
+    /// None = "medium"（默认中）。这是**抽象档位**，发送前按具体模型族
     /// 映射到各 provider 的线上参数（glm 的 reasoning_effort/thinking、
     /// OpenAI 的 reasoning_effort、Anthropic 的 thinking.budget_tokens，
     /// 映射表见 bot/reasoning.rs）。挂件聊天可按会话覆盖此值（不回写）。
@@ -163,7 +163,7 @@ pub struct BotConfig {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub active_model_id: Option<ActiveModelId>,
     /// 界面字体大小：small / standard / large / xlarge
-    /// 老板拍板"目前字号为小"=默认 small。设置页「通用设置 → 外观」调。
+    /// "目前字号为小"=默认 small。设置页「通用设置 → 外观」调。
     /// 全局 css 通过 documentElement[data-font-size] 走缩放。
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub ui_font_size: Option<String>,
@@ -171,19 +171,19 @@ pub struct BotConfig {
     /// None = 默认（启用 + daily；见 ConsolidationConfig::default）。
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub memory_consolidation: Option<crate::memory::consolidate::ConsolidationConfig>,
-    /// 记忆可控开关（U15）：注入总闸 + 模型主动记忆门禁。
+    /// 记忆可控开关：注入总闸 + 模型主动记忆门禁。
     /// None（老配置缺字段）= 全开，行为与开关引入前完全一致。
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub memory_control: Option<crate::memory::MemoryControl>,
-    /// 记忆参数（U17）：注入预算/条数/容量/衰减/去重阈值。
+    /// 记忆参数：注入预算/条数/容量/衰减/去重阈值。
     /// None（老配置缺字段）= 全默认；读取侧 read_memory_tuning 统一钳制。
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub memory_tuning: Option<crate::memory::MemoryTuning>,
-    /// 外部 MCP 服务器配置（MCP 宿主支持，2026-09-28 拍板 1B）：
+    /// 外部 MCP 服务器配置（MCP 宿主支持，2026-09-28 ）：
     /// None = 老配置无此字段 = 未配置任何服务器。结构见 bot::mcp::config。
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub mcp_servers: Option<Vec<crate::bot::mcp::config::McpServerConfig>>,
-    /// 自进化块原样透传（P0-EV1）：evolution/activation 配置由 evolution/ 模块
+    /// 自进化块原样透传：evolution/activation 配置由 evolution/ 模块
     /// 自己的读取器解析（shadow.enabled / activation.mode / activation_state），
     /// BotConfig 不解构只保真——此前未知字段被 serde 静默丢弃，设置页任意一次
     /// 写盘（bot_set_config / update_config_file / persist_last_run）都会把
@@ -206,8 +206,8 @@ pub struct BotConfig {
     /// key」的判定走 raw JSON（见 migrate_config_value），不靠反序列化结果。
     #[serde(default = "default_schema_version")]
     pub schema_version: u32,
-    // ────── Agent 运行参数（P3-a，Agent 透明化设计 §3）：全 Option = 老配置零影响，
-    //      None = 内置默认；生效值/来源经 bot_effective_params 可查 ──────
+    // Agent 运行参数（Agent 透明化设计 §3）：全 Option = 老配置零影响，
+    //      None = 内置默认；生效值/来源经 bot_effective_params 可查
     /// 模型循环最大轮数：None = 50（DEFAULT_MAX_ROUNDS）；钳 5..=200。
     /// Skill frontmatter 自报 max_rounds 仍优先于本值。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -224,11 +224,11 @@ pub struct BotConfig {
     /// web_search 默认结果条数（模型未传 count 时）：None = 8；钳 1..=10（后端硬顶）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub search_max_results: Option<u32>,
-    /// 单条工具结果回填消息栈的截断字符数（P4 落行为）：None/0 = 不截断（现状）。
+    /// 单条工具结果回填消息栈的截断字符数（ 落行为）：None/0 = 不截断（现状）。
     /// 本期仅入 bot_effective_params 参数表可见，行为接线留 P4（设计 §3.2）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tool_output_chars: Option<u32>,
-    /// per-tool 权限规则表（P3-c）：deny/ask/allow 首中即停，无命中走全局 perm_mode。
+    /// per-tool 权限规则表：deny/ask/allow 首中即停，无命中走全局 perm_mode。
     /// None/空 = 无规则（现状）；清洗见 commands::sanitize_tool_rules。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_rules: Option<Vec<ToolRule>>,
@@ -237,10 +237,10 @@ pub struct BotConfig {
 /// 单个模型条目：一个 (label, baseUrl, model) 三元组 + 稳定 id。
 /// id 是前端 crypto.randomUUID() 生成的字符串，仅用于 React key + 标识 active；
 /// 不参与 API 调用。
-/// vendor（U10 厂商中心）：条目所属厂商名，前端按它分组渲染厂商页；
+/// vendor（ 厂商中心）：条目所属厂商名，前端按它分组渲染厂商页；
 /// 老配置缺字段 → None（前端按协议名兜底分组），None 序列化时跳过保持文件干净。
-/// enabled（U11 模型列表开关）：false = 聊天 🧠 下拉不显示该模型；缺字段默认启用。
-/// context_k（U11 徽标）：上下文窗口（千 token），前端显示「204.8K」样式；None 不显示。
+/// enabled（ 模型列表开关）：false = 聊天 🧠 下拉不显示该模型；缺字段默认启用。
+/// context_k（ 徽标）：上下文窗口（千 token），前端显示「204.8K」样式；None 不显示。
 /// capabilities（能力徽标）：如 ["视觉"]；老配置缺字段 → None，None 序列化时跳过。
 /// temperature/top_p/max_tokens/system_prompt（每模型推理参数覆盖）：None = 用全局
 /// 默认（BotConfig.max_tokens / 后端常量），不写入请求；老配置缺字段 → None，
@@ -314,18 +314,18 @@ impl Default for BotConfig {
             max_tokens: None,                 // 未配置 = 8192 默认（仅 Anthropic 模式用）
             models_by_provider: None,         // 未配置 = 设置页空列表（无默认厂商）
             active_model_id: None,            // 未配置 = 两协议都没选 active
-            ui_font_size: None,               // 未配置 = small（老板拍板默认；前端读取时回退）
+            ui_font_size: None,               // 未配置 = small
             memory_consolidation: None, // 未配置 = 启用 + daily（ConsolidationConfig::default）
             memory_control: None,       // 未配置 = 注入/主动记忆全开（U15 前行为）
             memory_tuning: None,        // 未配置 = 参数全默认（U17 前行为）
             mcp_servers: None,          // 未配置 = 无外部 MCP 服务器（老配置零影响）
-            max_function_calls: None,   // 未配置 = 100 默认（W5-FUSE，全域熔断上限）
+            max_function_calls: None,   // 未配置 = 100 默认全域熔断上限）
             archive_after_days: None,   // 未配置 = 7 天默认（前端设置页数据管理可改）
             evolution: None,            // 未配置 = 无自进化块（evolution 模块自管读写）
             disabled_vendors: Vec::new(), // 未配置 = 无厂商被禁用
             verified_vendors: Vec::new(), // 未配置 = 无厂商通过连接测试
             schema_version: BOT_CONFIG_SCHEMA_VERSION, // 新建配置即当前版本
-            // P3-a：Agent 运行参数全默认（None = 各 resolve_* 的内置默认）
+            // Agent 运行参数全默认（None = 各 resolve_* 的内置默认）
             max_rounds: None,
             history_budget_chars: None,
             subagent_max_turns: None,
@@ -337,7 +337,7 @@ impl Default for BotConfig {
     }
 }
 
-// ───────────────────────── ApiProvider / PermMode ─────────────────────────
+// ApiProvider / PermMode
 
 /// API 协议枚举：配置字符串归一化，
 /// 非法值回退 Openai（防御回退，与 PermMode::from_cfg 同风格）。
@@ -363,7 +363,7 @@ impl ApiProvider {
 }
 
 /// 授权模式枚举：配置字符串归一化，非法值回退 Ask（安全默认偏严一侧的可用形态）。
-/// P3-c 增第 4 档 **Auto**（Claude Code acceptEdits 语义）：白名单内的文件操作
+///  增第 4 档 **Auto**（Claude Code acceptEdits 语义）：白名单内的文件操作
 /// 自动放行（含 write_file 覆盖确认的跳过），白名单外降级 Ask（弹窗，后台无人
 /// 值守时照旧拒绝）——解法定时/工作流后台执行「写文件类任务因确认窗无人应答必失败」。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -394,7 +394,7 @@ impl PermMode {
     }
 }
 
-/// per-tool 权限规则（P3-c，Claude Code rules 借鉴，设计 §9.2-1）：
+/// per-tool 权限规则（Claude Code rules 借鉴，设计 §9.2-1）：
 /// 评估序 deny > ask > allow（同工具多规则首中即停），无命中走全局 perm_mode 兜底。
 /// 刻意**不做路径 glob**——路径维度已有白名单（canonicalize + 分量前缀），
 /// 规则表只管「工具级」确认行为，避免 Claude Code 文档自己承认的规则可绕过面。
@@ -409,7 +409,7 @@ pub struct ToolRule {
     pub action: String,
 }
 
-// ───────────────────────── 归档天数解析 ─────────────────────────
+// 归档天数解析
 
 /// 任务卡归档天数默认/上限。设置页「数据管理」卡可改（1..=365 天）。
 pub const DEFAULT_ARCHIVE_DAYS: u32 = 7;
@@ -421,7 +421,7 @@ pub fn resolve_archive_after_days(v: Option<u32>) -> u32 {
     v.unwrap_or(DEFAULT_ARCHIVE_DAYS).clamp(1, MAX_ARCHIVE_DAYS)
 }
 
-// ───────────────────────── BotConfigView ─────────────────────────
+// BotConfigView
 
 /// 返回给前端的配置视图：不含任何 key 本体，只有 has 标志
 ///（Tavily/Brave key 也进系统凭据存储，view 不透传 key 明文）
@@ -446,7 +446,7 @@ pub struct BotConfigView {
     pub brave_enabled: Option<bool>,
     /// run_python 默认超时秒数（None = 60s 默认；设置页可改，硬钳 300s）
     pub python_timeout_secs: Option<u64>,
-    /// 单次请求 Function 调用熔断上限（W5-FUSE 全域统一）：None = 默认 100；
+    /// 单次请求 Function 调用熔断上限（ 全域统一）：None = 默认 100；
     /// 子 agent 默认预算同源此值
     pub max_function_calls: Option<u32>,
     /// 任务卡归档天数原样透传（None = 7 默认；设置页「数据管理」卡编辑）
@@ -488,7 +488,7 @@ pub struct BotConfigView {
     pub vendor_keys: Vec<String>,
     /// 连接测试通过的厂商名单原样透传（空 = 都未验证；聊天下拉过滤用）
     pub verified_vendors: Vec<String>,
-    // ────── Agent 运行参数（P3-a）：原样透传给设置页参数卡 ──────
+    // Agent 运行参数：原样透传给设置页参数卡
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_rounds: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -506,7 +506,7 @@ pub struct BotConfigView {
     pub tool_rules: Option<Vec<ToolRule>>,
 }
 
-// ───────────────────────── 字段上限 + check_len ─────────────────────────
+// 字段上限 + check_len
 
 pub const MAX_TITLE: usize = 200;
 pub const MAX_NOTE: usize = 5000;
@@ -526,7 +526,7 @@ pub fn check_len(value: &str, max: usize, what: &str) -> Result<(), String> {
 
 // keyring entry 构造函数见 keyring.rs（与 secret-service 探测一起管理）
 
-// ────────────── 每卡模型覆盖解析（W6-MODEL） ──────────────
+// 每卡模型覆盖解析
 
 /// 解析结果：执行链用这四元组整组替换全局 http 配置
 #[derive(Debug, Clone)]
@@ -638,7 +638,7 @@ mod model_override_tests {
     }
 
     /// 钥匙串守卫：SecKeychainFindGenericPassword 在锁屏/无人授权时会无限挂起
-    /// （N4 验收实录：两次全量验证被它卡死整轮）。3 秒无响应视为锁屏环境，
+    /// （ 验收实录：两次全量验证被它卡死整轮）。3 秒无响应视为锁屏环境，
     /// 调用方跳过本测。超时后工作线程泄漏为阻塞态——测试进程随 main 退出即回收，
     /// 不影响其余用例。
     fn run_with_keychain_guard<F, R>(f: F) -> Option<R>

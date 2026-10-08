@@ -1,6 +1,6 @@
-// EvolutionPanel — R5 决策面板（前端，老板 16:05 redesign）
+// EvolutionPanel —  决策面板（前端，老板 16:05 redesign）
 //
-// 老板设计（v4.1 + 16:05 拍板）：
+// 设计（v4.1 + 16:05 ）：
 // 1. 单列 list：所有 proposals（不分候选池/回滚区）
 // 2. 每条行内：
 //    - 右侧：Toggle pill switch（视觉主入口，图片风格红/灰）
@@ -8,11 +8,11 @@
 //    - 左侧：proposal_id + status badge
 //    - 底部：[启用] [停用] [Keep Shadow] 中文按钮（兼容旧 Promote/Reject）
 //    - 右下：删除（图标+文字）
-// 3. 后端 toggle=true → 写 ChangeRecord + 人工批准执行器落库（U20 W1：
+// 3. 后端 toggle=true → 写 ChangeRecord + 人工批准执行器落库（ W1：
 //    policy 层提案 ON 即生效，幂等）；toggle=false → 移除 pending ChangeRecord
-// 4. 后端 delete → 仅删 pending ChangeRecord + proposals 行（老板拍板只允许删 pending）
+// 4. 后端 delete → 仅删 pending ChangeRecord + proposals 行（只允许删 pending）
 // 5. Rollback 区条件显示：仅当 active ChangeRecord 存在时折叠展开
-// 6. U20 W2 头部应用策略二档 radiogroup（auto/confirm，点档即时落盘）；
+// 6.  W2 头部应用策略二档 radiogroup（auto/confirm，点档即时落盘）；
 //    W3 空状态「立即反思」接 memory_consolidate_now + 四指标条 + 行内决策徽标
 
 import { useCallback, useEffect, useState } from "react";
@@ -50,17 +50,17 @@ const ACTIVE_STATUSES: ReadonlySet<ChangeRecord["status"]> = new Set([
   "active",
 ]);
 
-/** B2-4（拍板①）：有回滚历史的提案再点 ON 需二次确认 */
+/** ：有回滚历史的提案再点 ON 需二次确认 */
 const ROLLED_BACK_STATUS: ChangeRecord["status"] = "rolled_back";
 
-/** U20 W2 应用策略二档（同记忆三档 radiogroup 先例；档位唯一事实源，aria 前缀从 label 派生防漂移） */
+/**  W2 应用策略二档（同记忆三档 radiogroup 先例；档位唯一事实源，aria 前缀从 label 派生防漂移） */
 const APPLY_POLICY_MODES = APPLY_POLICY_LABELS.map(({ value, label }) => ({
   value,
   label,
   aria: `应用策略：${label}`,
 }))
 
-/** U20 W3：行内决策徽标（优先级：已自动生效 > 你已启用 > 待你决策） */
+/**  W3：行内决策徽标（优先级：已自动生效 > 你已启用 > 待你决策） */
 function decisionBadge(p: ProposalEntry, changes: ChangeRecord[]): string | null {
   const mine = changes.filter((c) => c.proposal_id === p.proposal_id);
   if (mine.some((c) => c.status === "active" && c.approval_source === "auto_applied")) {
@@ -86,17 +86,17 @@ export function EvolutionPanel() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [info, setInfo] = useState("");
-  // 删除确认弹窗状态（老板 16:35 拍板）
+  // 删除确认弹窗状态（）
   const [deleteTarget, setDeleteTarget] = useState<ProposalEntry | null>(null);
-  // U20 W2 应用策略档位（缺字段/读失败 = auto 显示，与后端同口径）
+  //  W2 应用策略档位（缺字段/读失败 = auto 显示，与后端同口径）
   const [applyPolicy, setApplyPolicy] = useState<ApplyPolicy>("auto");
-  // 点档 in-flight guard（OCR R1 高位采纳：防连点 auto→confirm→auto 乱序回滚）
+  // 点档 in-flight guard（防连点 auto→confirm→auto 乱序回滚）
   const [policyBusy, setPolicyBusy] = useState(false);
-  // U20 W3 四指标（读失败 = 不显示，不阻塞面板）
+  //  W3 四指标（读失败 = 不显示，不阻塞面板）
   const [metrics, setMetrics] = useState<ObserveMetrics | null>(null);
   // 决策证据（影子判定 + 冲突标注；读失败 = 空表，面板照常工作）
   const [evidence, setEvidence] = useState<Record<string, ProposalEvidence>>({});
-  // U20 W3 立即反思进行中（LLM 调用秒级，与列表 busy 分开避免整板禁用）
+  //  W3 立即反思进行中（LLM 调用秒级，与列表 busy 分开避免整板禁用）
   const [reflecting, setReflecting] = useState(false);
 
   const refresh = useCallback(async () => {
@@ -126,7 +126,7 @@ export function EvolutionPanel() {
   }, [refresh]);
 
   useEffect(() => {
-    // U20：挂载时拉一次治理开关与四指标（读失败静默降级，开关按 auto 显示）
+    // 挂载时拉一次治理开关与四指标（读失败静默降级，开关按 auto 显示）
     void (async () => {
       try {
         const p = await invoke<ApplyPolicy>("evolution_get_apply_policy");
@@ -143,7 +143,7 @@ export function EvolutionPanel() {
     })();
   }, []);
 
-  // U20 W2：点档即时落盘（同记忆三档先例：先改 state 再落盘，失败回滚+报错；
+  //  W2：点档即时落盘（同记忆三档先例：先改 state 再落盘，失败回滚+报错；
   // in-flight 期间忽略并发点档，防乱序回滚）
   const onApplyPolicyChange = (next: ApplyPolicy) => {
     if (policyBusy || next === applyPolicy) return;
@@ -165,7 +165,7 @@ export function EvolutionPanel() {
     })();
   };
 
-  // U20 W3：空状态「立即反思」——对记忆库跑一轮反思，产出可决策的提案
+  //  W3：空状态「立即反思」——对记忆库跑一轮反思，产出可决策的提案
   const onReflectNow = async () => {
     setReflecting(true);
     setError("");
@@ -211,8 +211,8 @@ export function EvolutionPanel() {
     [refresh]
   );
 
-  // Toggle 入口（老板 16:05 拍板的主操作）
-  // B2-4（拍板①）：有回滚历史的提案再点 ON → 二次确认「上次已回滚」——
+  // Toggle 入口（的主操作）
+  // 有回滚历史的提案再点 ON → 二次确认「上次已回滚」——
   // 禁止会锁死重试路径，静默放行易误点循环，二次确认兼顾。
   const onToggle = (id: string, enabled: boolean) => {
     if (
@@ -321,7 +321,7 @@ export function EvolutionPanel() {
         </p>
       )}
 
-      {/* U20 W2：应用策略二档（头部 radiogroup，同记忆三档样式；点档即时落盘） */}
+      {/*  W2：应用策略二档（头部 radiogroup，同记忆三档样式；点档即时落盘） */}
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div className="space-y-1.5">
           <p className="text-[11px] text-[var(--t3)]">应用策略</p>
@@ -350,7 +350,7 @@ export function EvolutionPanel() {
             })}
           </div>
         </div>
-        {/* U20 W3：四指标条（读失败不显示；窗口天数取后端字段防漂移） */}
+        {/*  W3：四指标条（读失败不显示；窗口天数取后端字段防漂移） */}
         {metrics && (
           <p
             className="text-[11px] text-[var(--t5)]"
@@ -377,7 +377,7 @@ export function EvolutionPanel() {
         )}
       </div>
 
-      {/* 候选池列表（老板 16:05：去掉独立分区，单列表所有提案） */}
+      {/* 候选池列表 */}
       <section>
         <div className="flex items-center justify-between mb-3">
           <h3 className="text-base font-semibold text-[var(--t2)]">
@@ -407,7 +407,7 @@ export function EvolutionPanel() {
             <p className="text-sm text-[var(--t4)]">
               （空 — 当前筛选下没有提案）
             </p>
-            {/* U20 W3：空状态「立即反思」——记忆库没提案时手动跑一轮反思 */}
+            {/*  W3：空状态「立即反思」——记忆库没提案时手动跑一轮反思 */}
             <div className="flex items-center gap-3">
               <button
                 className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)] disabled:opacity-50"
@@ -443,7 +443,7 @@ export function EvolutionPanel() {
         )}
       </section>
 
-      {/* 回滚区（仅当有 active ChangeRecord 时展开，老板 16:05 拍板） */}
+      {/* 回滚区（仅当有 active ChangeRecord 时展开，老板 16:05 ） */}
       {hasActive && (
         <section>
           <h3 className="text-base font-semibold text-[var(--t2)] mb-3">
@@ -462,7 +462,7 @@ export function EvolutionPanel() {
         </section>
       )}
 
-      {/* 删除确认弹窗（老板 16:35 拍板：cascade_source 复选框） */}
+      {/* 删除确认弹窗 */}
       {deleteTarget && (
         <DeleteConfirmDialog
           proposal={deleteTarget}
@@ -511,7 +511,7 @@ function ProposalCard({
   proposal: ProposalEntry;
   busy: boolean;
   toggleOn: boolean;
-  /** U20 W3 行内决策徽标（null = 不显示） */
+  /**  W3 行内决策徽标（null = 不显示） */
   decision: string | null;
   /** 决策证据（影子判定 + 冲突标注；undefined = 后端不可用，不渲染） */
   evidence?: ProposalEvidence;
@@ -536,7 +536,7 @@ function ProposalCard({
             {proposal.suggestion_text}
           </div>
         </div>
-        {/* Toggle pill switch（老板 16:05 拍板） */}
+        {/* Toggle pill switch */}
         <div className="flex flex-col items-end gap-1 shrink-0">
           <Toggle
             checked={toggleOn}

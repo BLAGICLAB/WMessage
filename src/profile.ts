@@ -67,8 +67,7 @@ export function getProfileCache(): ProfileView | null {
   return cache;
 }
 
-/** 写路径通用收尾：递增代际使在飞 force 加载的旧快照失效（不得覆盖刚写入的值），
- *  仅当代际仍是自己时才写缓存/广播（并发两次写时后写者赢，与 loadGen 约定一致） */
+/** 写路径通用收尾：递增代际使在飞 force 加载的旧快照失效（不得覆盖刚写入的值）， *  仅当代际仍是自己时才写缓存/广播（并发两次写时后写者赢，与 loadGen 约定一致） */
 function adoptProfile(gen: number, v: ProfileView): ProfileView {
   if (gen === loadGen) {
     cache = v;

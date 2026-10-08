@@ -34,7 +34,7 @@ pub enum ApplyOutcome {
     Applied,
     /// 同 key 已存在（持久幂等命中），跳过
     AlreadyPresent,
-    /// B2-1（P1-EV3）：merge-on-write 命中异 key 既有行被拒写（防记忆劫持）——
+    /// merge-on-write 命中异 key 既有行被拒写（防记忆劫持）——
     /// 调用方记 evolution.apply_conflict audit（store 层无 AppHandle）
     ConflictRefused { target_key: String },
 }
@@ -44,7 +44,7 @@ pub enum ApplyOutcome {
 pub struct ApplyReport {
     pub applied: usize,
     pub already_present: usize,
-    /// B2-1：拒写（防劫持）条数
+    /// 拒写（防劫持）条数
     pub conflicts_refused: usize,
 }
 
@@ -52,7 +52,7 @@ pub struct ApplyReport {
 /// 幂等查重 → 写 lesson 记忆。语义去重由 `insert_item` 承担（≥0.92 合并更新）。
 ///
 /// 调用前先过策略层 gate（strategy::gate_decision 见 strategy.rs）；本函数不再重复判定类别/门槛。
-/// B2-1（P1-EV3）幂等双保险：`find_by_key_tag` 只认 tags[0]，lesson 被 merge
+/// `find_by_key_tag` 只认 tags[0]，lesson 被 merge
 /// 吸收/挪位后 key 查不到会重复应用——补两层残留复查：
 /// ① key tag 出现在**任意** tag 位（挪位不丢）；② 同 kind=lesson 且内容逐字相同
 /// （吸收后内容残存）。真正的语义相似由 store 层拒写闸兜底（ConflictRefused）。
@@ -150,7 +150,7 @@ pub fn apply_from_consolidation(proposals: Vec<EvolutionProposal>) {
     };
     let app = app.clone();
 
-    // B4-5：kill_switch 真接线（拍板②：本模块方法文档一直声称「apply.rs 入口
+    // kill_switch 真接线（本模块方法文档一直声称「apply.rs 入口
     // 检查」，此前无任何调用方 = 假接线）。判定在 spawn_blocking 内**现读现判**
     //（评审 HIGH 采纳：整文件读取+JSON 解析不占 async worker）：
     // - shadow_only / all_auto_apply=true → 主 apply 空转返回（lesson 不落库）；
@@ -161,7 +161,7 @@ pub fn apply_from_consolidation(proposals: Vec<EvolutionProposal>) {
     // 配置缺 evolution.kill_switch 块 = Err → 全关默认（行为与无开关一致）
     let kill_cfg_path = crate::db::paths::data_dir(&app).join("bot-config.json");
 
-    // [R6 A] shadow 钩子（仅当 evolution.shadow.enabled=true 时）
+    // [ A] shadow 钩子（仅当 evolution.shadow.enabled=true 时）
     // 克隆 proposals 供 shadow spawn（主 apply 仍用原 proposals）
     let shadow_enabled = crate::evolution::observe::shadow::is_enabled(&app);
     let shadow_proposals = if shadow_enabled {
@@ -169,13 +169,13 @@ pub fn apply_from_consolidation(proposals: Vec<EvolutionProposal>) {
     } else {
         None
     };
-    // [R6 A] 先 clone app 供 shadow spawn（主 spawn 会移走 app）
+    // [ A] 先 clone app 供 shadow spawn（主 spawn 会移走 app）
     let app_for_shadow = app.clone();
 
     tauri::async_runtime::spawn(async move {
         let app2 = app.clone();
         let r = tauri::async_runtime::spawn_blocking(move || -> Result<ApplyReport, String> {
-            // 批次 B-4：决策输入收拢进 EvalContext，本轮 apply 一次构造——
+            // 决策输入收拢进 EvalContext，本轮 apply 一次构造——
             // kill 现读现判（spawn_blocking 内，不占 async worker）；
             // applyPolicy 与 kill 同源 bot-config.json 一并读出，频率与现状一致。
             // - shadow_only / all_auto_apply=true → 主 apply 空转返回（lesson 不落库）；
@@ -261,7 +261,7 @@ pub fn apply_from_consolidation(proposals: Vec<EvolutionProposal>) {
                             let _store = super::lock_evolution_store();
                             append_applied_record(&ledger, p, now)?;
                         }
-                        // B1-3（P0-EV2 另半）：补写 ChangeRecord（Active + AutoApplied）
+                        // 补写 ChangeRecord（Active + AutoApplied）
                         // 到 evolution-changes.jsonl——面板回滚只读这个文件，此前自动
                         // 应用只落 applied.jsonl（面板不读它），回滚对自动应用不可达。
                         // 构造走 change::derive::auto_applied_from_proposal（合法流转，
@@ -269,14 +269,14 @@ pub fn apply_from_consolidation(proposals: Vec<EvolutionProposal>) {
                         // 不让留痕问题炸掉整条 apply。
                         let cr_path =
                             crate::db::paths::data_dir(&app2).join("evolution-changes.jsonl");
-                        // B2-2（P1-EV4）：changes.jsonl 收敛单写者锁——apply 与
+                        // changes.jsonl 收敛单写者锁——apply 与
                         // shadow/panel 同锁（EVOLUTION_STORE_LOCK），闭包内同步持锁
                         // 不跨 await。锁序：此处 DB_WRITE_LOCK 已释放才取本锁，
                         // 与 panel（本锁内开 DB 连接）无环。
                         match super::change::derive::auto_applied_from_proposal(p, now) {
                             Ok(mut cr) => {
                                 let _store = super::lock_evolution_store();
-                                // B2-4：chg-<pid> 可能被 toggle/shadow 历史行占用，
+                                // chg-<pid> 可能被 toggle/shadow 历史行占用，
                                 // 锁内读存量派生唯一 id 再落行
                                 let rows = super::change::read_all(&cr_path).unwrap_or_default();
                                 cr.change_id =
@@ -312,7 +312,7 @@ pub fn apply_from_consolidation(proposals: Vec<EvolutionProposal>) {
                     }
                     ApplyOutcome::AlreadyPresent => report.already_present += 1,
                     ApplyOutcome::ConflictRefused { target_key } => {
-                        // B2-1（P1-EV3 防劫持）：拒写响亮留痕，不静默丢 lesson
+                        // 拒写响亮留痕，不静默丢 lesson
                         report.conflicts_refused += 1;
                         crate::audit_event!(
                             &app2,
@@ -325,7 +325,7 @@ pub fn apply_from_consolidation(proposals: Vec<EvolutionProposal>) {
                     }
                 }
             }
-            // B4-5：完成通知按 kill.disable_notification 口径静默
+            // 完成通知按 kill.disable_notification 口径静默
             //（移入闭包内：notify_disabled 在此作用域）
             if report.applied > 0 && !notify_disabled {
                 crate::bot::audit_log_hook(
@@ -353,10 +353,10 @@ pub fn apply_from_consolidation(proposals: Vec<EvolutionProposal>) {
         }
     });
 
-    // [R6 A] fire shadow（fire-and-forget；仅当 flag=true 时执行）
+    // [ A] fire shadow（fire-and-forget；仅当 flag=true 时执行）
     if let Some(proposals_shadow) = shadow_proposals {
         let app_shadow = app_for_shadow;
-        // 并发语义（老板 13:20 拍板后补）：
+        // 并发语义（后补）：
         // - app_for_shadow 是 Arc<Wry> 的克隆，廉价（reference count bump）
         // - 此 spawn 失败（panic）由 tauri::async_runtime 捕获，不传播到主 spawn
         // - 任务生命周期：spawn_blocking 不阻塞此 spawn；fire-and-forget 无超时（依赖外部观察）
@@ -371,7 +371,7 @@ pub fn apply_from_consolidation(proposals: Vec<EvolutionProposal>) {
     }
 }
 
-// ───────────────────────── 单元测试 ─────────────────────────
+// 单元测试
 
 #[cfg(test)]
 mod tests {
@@ -409,7 +409,7 @@ mod tests {
         }
     }
 
-    // ─── 门槛 ───
+    // 门槛
     // （批次 C：auto_apply_gate 委托入口已删除，回归断言直走策略层 trait；
     //   与 strategy.rs 的 12 例等价穷举互为镜像）
 
@@ -440,7 +440,7 @@ mod tests {
         assert!(!gate_approved(&p));
     }
 
-    // ─── 应用与幂等 ───
+    // 应用与幂等
 
     #[test]
     fn apply_one_inserts_lesson_with_evolution_key() {
@@ -481,7 +481,7 @@ mod tests {
         assert_eq!(store::count_by_kind(&conn, "lesson").unwrap(), 1);
     }
 
-    // ─── 回滚 ───
+    // 回滚
 
     #[test]
     fn rollback_deletes_applied_memory() {
@@ -496,7 +496,7 @@ mod tests {
         );
     }
 
-    // ─── 留痕 ───
+    // 留痕
 
     #[test]
     fn applied_ledger_appends_jsonl() {
@@ -522,9 +522,9 @@ mod tests {
 
     #[test]
     fn applied_proposal_records_active_change() {
-        // B1-3（P0-EV2 另半）回归：apply 落 lesson 的同时补写 Active+AutoApplied
+        // 回归：apply 落 lesson 的同时补写 Active+AutoApplied（另一半靠 cascade 断言）
         // 的 ChangeRecord——面板 rollback 只读 changes.jsonl（load_changes →
-        // change::read_all），缺这条则自动应用对回滚不可达（P0-EV2 的另一半）。
+        // change::read_all），缺这条则自动应用对回滚不可达（ 的另一半）。
         // 构造走生产同一入口 auto_applied_from_proposal（合法流转达成 Active，
         // 不裸写 status），锁「写进去读得回、形态是面板回滚接受的样子」。
         let tmp = tempfile::tempdir().unwrap();
@@ -558,7 +558,7 @@ mod tests {
         );
     }
 
-    // ─── B2-1（P1-EV3）幂等双保险 ───
+    //
 
     #[test]
     fn apply_one_rechecks_key_in_any_tag_position() {

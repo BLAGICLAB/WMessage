@@ -57,56 +57,14 @@ pub(crate) fn probe_dir(
 }
 
 /// 进程级定版入口：首次 `probe_log_dir` 调用把结果钉在 `PROBE_CACHE`，后续
-/// 即使探测条件变化也不再翻转——杀软瞬时锁定/UAC 抖动不得把当次数据目录翻到
-/// `~/Library/Application Support/...`，AI_Gen_Files、数据库、日志分裂。
+/// 即使探测条件变化也不再翻转——杀软瞬时锁定/UAC 抖动不得让数据目录分裂。
+/// 兜底分支记 WARN 审计（写清翻到哪、为什么）。
 ///
-/// 兜底分支发生时记一条 WARN 审计（写清翻到哪、为什么），可诊断。
-///
-/// # 测试期的跨进程共享
-///
-/// 留档观察，未下沉到依赖容器。pid 隔离在 profile.json 上有效，
-/// 其余文件暂无实证。详见下方 `probe_log_dir` 整段 doc（三档方案 + 实证 + 代价）。
-///
-/// `cargo nextest run` 是**每测试一进程**，而本函数在测试构建下解析到
-/// `current_exe().parent()` = `target/debug/deps/` —— 于是同一份 `bot.log`（审计追加）、
-/// `wmessage.db`、`api-enabled.flag` / `bot-enabled.flag`、降级 key 文件会被多个测试进程共享。
-///
-/// 现状与证据：
-/// - `profile.json` 已按 pid 隔离（`profile.rs::test_isolated_dir`），这是唯一**被实证打中**的
-///   共享文件（`cargo nextest run` 曾 6 次复现 profile 用例随机挂，修后 5×nextest 全绿）；
-/// - 上列其余文件**5 次 nextest 未出现失败**，故暂不处理（不扩大范围，等实锤）。
-///
-/// 追加实证（**进程内**并行，与 nextest 不同层）：
-/// `cargo test --lib`（同进程多线程）下 `exit_cleanup_tests::cleanup_on_exit_releases_api_and_skill`
-/// 失败 **1 次**：`lib.rs:813`「退出路径不得清 api-enabled.flag」。
-/// - 该用例单跑 3/3 通过；其后连跑 16 轮全套 lib（6 + 10）**全绿**；
-/// - **机制未定位**，已排除：exit 路径自身（`api_stop_for_exit` → `clear_enabled=false`）、
-///   测试直调 `api_stop`/`api_status`（全仓无调用点）、`migration` 测试（各自 temp 目录）、
-///   `profile.rs::fresh_app`（只删 `profile*`）、`paths.rs` 测试（各自 uuid 子目录）；
-///   剩余嫌疑是「某并行用例对共享 data 目录的写/删」，但未找到具体调用点。
-/// - **关键结论**：这类失败发生在**同进程并行**，B1/B2/B3（按 **pid** 隔离）**覆盖不到它**
-///   ——同 pid 的测试本就共享一个目录。要治它需要**按测试**隔离（当前架构没有该能力，
-///   例如给这些文件加测试专用 override hook），或对相关用例加一把窄串行锁（打补丁）。
-///   nextest 是每测试一进程，因此天然避开这一类（这解释了 5×nextest 全绿）。
-///
-/// 若将来要彻底隔离，候选方案（本次评估的价格）：
-/// - **B1**：本函数在 `cfg(test)` 下返回 `.../deps/<pid>/`。代价：
-///   `probe_log_dir_matches_exe_parent_in_cargo_test` 的 `assert_eq!` 须改弱为
-///   「前缀 + pid 后缀」；`profile.rs::test_isolated_dir` 变冗余应删（消掉「profile 数据目录
-///   ≠ 审计目录」这处不一致）；`target/debug/deps` 下目录/文件累积从「十位数/次」升到
-///   「百位数/次」（nextest 每进程一套）。
-/// - **B2**：B1 + 保守清理（首次调用删 mtime > 1h 的同名前缀目录；只删"肯定已死"的，
-///   避免删到在跑进程的目录反而制造更凶的 flake）。
-/// - **B3**：连集成测试一起管（本函数读 `WMESSAGE_TEST_DATA_DIR` env 覆盖 + nextest 配置注入）。
-///   注意：集成测试（`tests/*.rs`）的 lib 按**发布语义**编译，看不到 `cfg(test)` 分支，
-///   所以 B1/B2 只修 lib 单测那一半；且 nextest 配置文件位置依赖 cwd（仓库根 vs `src-tauri/`），
-///   较脆弱。
-///
-/// 触发条件：出现**实证**失败（哪个用例、哪条断言、哪个共享文件）→ 再按上表选档。
-///
-/// 决策：只留档、不盲改 —— 上面那条进程内实证尚未定位到具体
-/// 调用点，无靶点的修改等于猜；下次复现时先定位「哪个调用点删/写了哪个文件」，再按
-/// 进程间走 B1/B2/B3、进程内走「按测试隔离（治本）」或「窄串行锁（打补丁）」选档。
+/// 测试期已知共享面：nextest 每测试一进程，测试构建下数据目录解析到
+/// `target/debug/deps/`，同 pid 的进程内并行测试会共享 bot.log/DB 等——
+/// 曾实证打中 profile.json（已按 pid 隔离），其余文件多轮全绿未处理。
+/// 若再现 flake：先定位具体调用点，再在「按测试隔离（治本）/窄串行锁（补丁）」
+/// 中选档；三档方案与实证记录见 git log（本注释 2026-10-08 压缩）。
 pub(crate) fn probe_log_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> std::path::PathBuf {
     let exe_dir = std::env::current_exe()
         .ok()
@@ -165,7 +123,7 @@ pub(crate) fn cached_probe_dir() -> Option<std::path::PathBuf> {
     None
 }
 
-// ───────────────────────── 运行期文件目录（runtime/flags） ─────────────────────────
+// 运行期文件目录（runtime/flags）
 
 /// 运行期状态根目录名：`{data_dir}/runtime`。
 pub const RUNTIME_SUBDIR: &str = "runtime";
@@ -225,7 +183,7 @@ fn migrate_legacy_runtime_files_in(
     moved
 }
 
-// ───────────────────────── 内部：缓存 + 可测内核 ─────────────────────────
+// 内部：缓存 + 可测内核
 
 /// 探测结果缓存（进程级 OnceLock）：首次 probe_log_dir 调用定版。
 /// 测试构建不缓存——同进程多测试各自探测不同临时目录/模拟 exe 目录，
@@ -261,7 +219,7 @@ fn probe_dir_cached_in(
     cache.get_or_init(|| probe_dir(exe_dir, app_data)).clone()
 }
 
-// ───────────────────────── 内部：判定辅助 ─────────────────────────
+// 内部：判定辅助
 
 /// exe 目录是否在系统临时目录下（zip 直跑场景）：canonicalize 后比较，
 /// macOS /var ↔ /private/var 软链由 canonicalize 归一。
@@ -285,7 +243,7 @@ fn is_macos_app_bundle_dir(dir: &std::path::Path) -> bool {
             .is_some_and(|c| c.as_os_str().to_string_lossy().ends_with(".app"))
 }
 
-// ───────────────────────── 内部：fallback WARN 内联 ─────────────────────────
+// 内部：fallback WARN 内联
 
 /// 探测翻转时内联写一条 WARN 审计（行格式与 audit 模块的 write_at 完全一致）。
 ///

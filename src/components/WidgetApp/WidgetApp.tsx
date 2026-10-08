@@ -96,7 +96,7 @@ export default function WidgetApp() {
   const [edge, setEdge] = useState<Edge>("right");
   const [botOn, setBotOn] = useState(false);
 
-  // 老板拍板：挂件边框尺寸(唯一尺寸源,只控制外框；内部任务/聊天区 flex 自适应)
+  // 老板挂件边框尺寸(唯一尺寸源,只控制外框；内部任务/聊天区 flex 自适应)
   const [size, setSize] = useState<WidgetSize>(() => loadSize() ?? { w: PANEL_W, h: PANEL_H });
   // bot 关时面板 = 任务区 + splitter(不包含聊天区)；bot 开时 = 边框高度
   const panelH = (bot: boolean) => bot ? size.h : getTaskH() + SPLITTER_H;
@@ -128,7 +128,7 @@ export default function WidgetApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [botOn, expanded]);
 
-  // 字体大小同步（老板拍板）：挂件 webview 独立 document
+  // 字体大小同步（）：挂件 webview 独立 document
   // 需要拉 config 设 data-font-size；设置页保存后广播 bot-config-changed，
   // Tauri emit 全局广播挂件也能收到。失败也套默认 small，避免渲染前空抳。
   useEffect(() => {
@@ -673,7 +673,7 @@ export default function WidgetApp() {
   };
 
   // 挂件「待办 / 今日」显示未完成；「完成」显示已完成列。
-  // W1-CANVAS：工作流节点卡默认不在挂件清单混入（设计 §3.3），开关走 localStorage + Tauri 事件
+  // 工作流节点卡默认不在挂件清单混入（设计 §3.3），开关走 localStorage + Tauri 事件
   const [wfVisible, setWfVisible] = useState(getShowWorkflowTasks);
   useEffect(() => {
     const un = listen(WORKFLOW_VISIBILITY_EVENT, () =>

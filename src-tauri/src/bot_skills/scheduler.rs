@@ -35,7 +35,7 @@ fn persist_outcome_quiet(
     let _ = crate::db::upsert_skill_outcome(&conn, &outcome);
 }
 
-// ─────────────────────── DSL Outcome / Failure + LLM 兜底 ───────────────────────
+// DSL Outcome / Failure + LLM 兜底
 
 /// DSL 调度器成功 / 可恢复 / 暂停 输出（LLM 兜底路径）。
 /// - Done：跑完所有 step，返回汇总文本给用户
@@ -231,7 +231,7 @@ pub async fn run_skill_scheduler(
     let (meta, body, dir) = load_skill_meta(app, name).map_err(|e| DslFailure::Terminated {
         reason: e.to_string(),
     })?;
-    // N7：params 与 allowed-tools 从本会话活动 run 取（use_skill 启动时写入；
+    // ：params 与 allowed-tools 从本会话活动 run 取（use_skill 启动时写入；
     // pre-step 路由路径无 run → Null/空 = 不限制、无参数替换源）
     let (params, allowed_tools) = active_skill_run_for(app, session_id)
         .filter(|r| r.name == name)

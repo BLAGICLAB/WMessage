@@ -11,7 +11,7 @@ use tauri::AppHandle;
 use crate::db;
 use crate::error::{CommandError, CommandResult};
 
-// ───────────────────────── 写 ─────────────────────────
+// 写
 
 /// 追加机器人审计日志：用户指令、工具名、入参、结果全部留痕（数据目录 bot.log）
 /// 审计日志外部钩子（bot_skills 调度器用；bot.rs 内部仍用 audit_log）
@@ -53,7 +53,7 @@ pub(crate) fn append_bot_log_line(p: &Path, line: &str) -> bool {
     true
 }
 
-// ───────────────────────── 转义 + 截断 ─────────────────────────
+// 转义 + 截断
 
 /// 审计日志安全转义 + 截断：剥换行/管道符，防伪造「INFO |」前缀与多行撕裂。
 /// 规则：`| ` → `|  `（双空格），剩余裸 `|` → `||`，`\n` → `\\n`，`\r` → `\\r`；
@@ -91,7 +91,7 @@ pub(crate) fn truncate_for_log(s: &str, max: usize) -> String {
     escape_for_log(s, max)
 }
 
-// ───────────────────────── 读 ─────────────────────────
+// 读
 
 /// 读取机器人审计日志（倒序，最新在前；默认 200 行，上限 2000）
 /// 读失败（权限/磁盘/损坏）返回 Err(IoError) + ERROR 审计，

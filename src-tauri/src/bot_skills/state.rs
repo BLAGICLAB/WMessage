@@ -10,7 +10,7 @@ use tauri::AppHandle;
 
 const MAX_SKILL_BODY: usize = 50 * 1024;
 
-// ───────────────────────── Skill 调度器（运行模型 v1.0：状态机 + 步骤循环 + 熔断 + 回滚记录） ─────────────────────────
+// Skill 调度器（运行模型 v1.0：状态机 + 步骤循环 + 熔断 + 回滚记录）
 
 /// Skill 运行状态（生命周期状态机，与 docs/SKILL-RUNTIME.md 对齐）
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -159,7 +159,7 @@ pub fn active_skill_run_for<R: tauri::Runtime>(
 }
 
 /// 清理指定会话的终态 SkillRun（Completed/Failed/Terminated）——只清本会话，
-/// 其他会话刚终态、正待各自调度器感知（/stop、工具失败）的 run 不受影响（拍板 #11=A）。
+/// 其他会话刚终态、正待各自调度器感知（/stop、工具失败）的 run 不受影响。
 /// SKILL_RUNS 只进不出：上轮遗留的终态 run 会被 active_skill_run 当"活动"，
 /// 在新一轮执行的第 0 步被 advance 短路——静默返回空文本、不发 LLM 请求（agent 假死）。
 /// 在每轮执行入口（run_model_loop / run_skill_scheduler）以本会话 id 调用；
@@ -223,7 +223,7 @@ pub(crate) fn load_skill_meta<R: tauri::Runtime>(
     })
 }
 
-// ───────────────────────── 集成测试钩子 ─────────────────────────
+// 集成测试钩子
 // tests/ 集成测试是独立 crate，够不到下面 #[cfg(test)] 的 test_insert_skill_run；
 // 调度器 e2e（tests/skill_e2e.rs）需要插入 Running/Paused/Failed 的 run 来驱动
 // advance_dsl 分支与回滚窗口的真路径。仅测试使用，生产路径不调。
@@ -368,7 +368,7 @@ mod tests {
 
     /// 僵尸终态清理：入口清理后本会话终态 run 不再被当"活动"，
     /// Running/Paused 不受影响（测试用 Paused：活动判定只认 Running，避免与并行测试竞争）；
-    /// 跨会话隔离：其他会话的终态 run 不得被本会话入口清理误删（拍板 #11=A）
+    /// 跨会话隔离：其他会话的终态 run 不得被本会话入口清理误删
     #[test]
     fn clear_terminal_removes_only_terminal_states() {
         let app = test_handle();

@@ -11,8 +11,7 @@ import { TracePanel } from "../TracePanel";
 import { ScheduleEditorPanel } from "./ScheduleEditorPanel";
 import type { ScheduleEntry, ScheduledJobRun, Workflow } from "../../types";
 
-/**
- * 定时任务模块：列表 = 状态面板（不是设置表单的集合）。
+/** * 定时任务模块：列表 = 状态面板（不是设置表单的集合）。
  * 数据单源：schedule_overview（定时作业 + 工作流两源合并，nextRunAt/missed 由 Rust 端
  * 计算——不在前端重写 schedule 解析器，weekly:NaN 双端解析漂移是历史事故）。
  * 两类目标：
@@ -58,7 +57,7 @@ export function SchedulePage() {
     targetId: string;
     draftSchedule: string | null;
   } | null>(null);
-  // P2-c 执行透明：sched-status 事件驱动的「执行中」作业（started 入集，done/failed 出集）
+  //  执行透明：sched-status 事件驱动的「执行中」作业（started 入集，done/failed 出集）
   const [liveJobIds, setLiveJobIds] = useState<Set<string>>(new Set());
   /** job id → 最近一次执行会话（sched-status 携带；「会话」按钮跳挂件围观） */
   const [jobSessions, setJobSessions] = useState<Record<string, string>>({});
@@ -116,7 +115,7 @@ export function SchedulePage() {
     void reload();
   });
 
-  // P2-c 执行透明：sched-status 实时驱动「执行中」徽标 + 会话跳转锚点；
+  //  执行透明：sched-status 实时驱动「执行中」徽标 + 会话跳转锚点；
   // done/failed 时刷新列表（lastStatus/sched_last 已在任务行更新）
   useTauriListen<{
     jobId?: string;
@@ -162,7 +161,7 @@ export function SchedulePage() {
       .catch(() => {});
   };
 
-  // ────────────── 行操作 ──────────────
+  // 行操作
 
   /** 工作流定时落库（新建/修改/取消共用）：schedule=null 即取消 */
   const setWorkflowSchedule = async (targetId: string, schedule: string | null) => {
@@ -253,7 +252,7 @@ export function SchedulePage() {
     })();
   };
 
-  // ────────────── 新建流程 ──────────────
+  // 新建流程
 
   // 已有定时的工作流标「已定时」禁用——防同一目标双配置
   const scheduledWfIds = new Set(
@@ -294,7 +293,7 @@ export function SchedulePage() {
     setCreating(null);
   };
 
-  // ────────────── 渲染 ──────────────
+  // 渲染
 
   const jobEntries = entries.filter((e) => e.kind === "job");
   const wfEntries = entries.filter((e) => e.kind === "workflow");
@@ -334,7 +333,7 @@ export function SchedulePage() {
               执行中
             </span>
           )}
-          {/* P2-c：作业执行中（sched-status started → done/failed 移除） */}
+          {/* ：作业执行中（sched-status started → done/failed 移除） */}
           {e.kind === "job" && liveJobIds.has(e.targetId) && (
             <span className="nm-inset shrink-0 px-1.5 py-0.5 text-[10px] text-[var(--brand)]">
               执行中…
@@ -468,7 +467,7 @@ export function SchedulePage() {
                         {r.summary}
                       </span>
                     )}
-                    {/* P2-c：执行痕迹（本次执行新建的卡）+ 会话跳转（挂件围观 ⏰ 会话） */}
+                    {/* ：执行痕迹（本次执行新建的卡）+ 会话跳转（挂件围观 ⏰ 会话） */}
                     {r.cardId && (
                       <button
                         className="nm-btn shrink-0 px-1.5 py-0.5 text-[10px] text-[var(--t3)]"
@@ -634,7 +633,7 @@ export function SchedulePage() {
           )}
         </>
       )}
-      {/* P2-c：执行痕迹弹层（按本次执行新建的任务卡查 trace；TracePanel 自带 portal） */}
+      {/* ：执行痕迹弹层（按本次执行新建的任务卡查 trace；TracePanel 自带 portal） */}
       {traceCardId && (
         <TracePanel taskId={traceCardId} onClose={() => setTraceCardId(null)} />
       )}
@@ -642,8 +641,7 @@ export function SchedulePage() {
   );
 }
 
-/**
- * 定时作业编辑器（新建/行内修改共用）：内容输入 + 频率面板 + 重试配置 + 预览确认。
+/** * 定时作业编辑器（新建/行内修改共用）：内容输入 + 频率面板 + 重试配置 + 预览确认。
  * 到点语义：后端按内容新建任务卡并交给机器人执行——预览文案必须说清这一点。
  */
 function JobEditor({

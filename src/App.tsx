@@ -62,7 +62,7 @@ import { isDueToday } from "./format";
 import type { ThemeSetting } from "./theme";
 import type { Task, ColumnId, WorkspaceItem } from "./types";
 
-// OCR C4-r1 验证 + 修：mutate 串行化队列必须在**模块作用域**（App() 内会被每
+//  + 修：mutate 串行化队列必须在**模块作用域**（App() 内会被每
 //   次 render 重建 → 跨 render 的并发 mutate 落到不同链 → 串行化失效）。
 //   抬到此处后全 App 实例共享同一链，跨 render 与 unmount/remount 都能衔接。
 const mutating: { chain: Promise<void> } = { chain: Promise.resolve() };
@@ -89,7 +89,7 @@ function localDateStr(): string {
   ).padStart(2, "0")}`;
 }
 
-// 左侧导航栏条目（U2）：视图切换职能自顶部工具条迁入；设置单独走底部入口。
+// 左侧导航栏条目：视图切换职能自顶部工具条迁入；设置单独走底部入口。
 // 分区结构：「任务卡」组（首页/图谱/归档/工作区/回收站）+ 「Agent能力」组（工作流/定时/通知）
 type RailView =
   | "board"
@@ -117,14 +117,13 @@ const AGENT_ITEMS: {
   { key: "workflow", label: "工作流", icon: WorkflowIcon },
   // 定时任务模块：任务卡/工作流到点自动执行的集中管理（列表=状态面板）
   { key: "schedule", label: "定时", icon: AlarmClock },
-  // P4 执行活动聚合页：最近全部执行痕迹列表（Agent 透明化设计 §5.6）
+  //  执行活动聚合页：最近全部执行痕迹列表（Agent 透明化设计 §5.6）
   { key: "activity", label: "活动", icon: ActivityIcon },
   // 通知中心（Agent 通知模块）：badge=true 渲染待处理数角标
   { key: "notifications", label: "通知", icon: Bell, badge: true },
 ];
 
-/** 快捷键提示文案：mac ⌘ / 其他平台 Ctrl（纯前端 keydown，两平台同实现）。
- *  userAgent 而非已废弃的 navigator.platform（后者在现代浏览器可能返回空串） */
+/** 快捷键提示文案：mac ⌘ / 其他平台 Ctrl（纯前端 keydown，两平台同实现）。 *  userAgent 而非已废弃的 navigator.platform（后者在现代浏览器可能返回空串） */
 const IS_MAC =
   typeof navigator !== "undefined" && /Mac|iP(hone|ad|od)/.test(navigator.userAgent);
 const KBD_NEW = IS_MAC ? "⌘N" : "Ctrl+N";
@@ -137,8 +136,7 @@ function viewForTask(t: Pick<Task, "deletedAt" | "archived">): RailView {
   return "board";
 }
 
-/** 导航栏按钮（U2）：action=带边框动作钮（新建/搜索，可挂快捷键提示）；
- *  item=导航项（hover 淡底，选中走 nm-inset 凹陷语义） */
+/** 导航栏按钮：action=带边框动作钮（新建/搜索，可挂快捷键提示）； *  item=导航项（hover 淡底，选中走 nm-inset 凹陷语义） */
 function RailButton({
   icon: Icon,
   label,
@@ -234,7 +232,7 @@ function App() {
   }, []);
   const [theme, setTheme] = useState<ThemeSetting>(getSetting);
   const [paletteOpen, setPaletteOpen] = useState(false);
-  // W1-CANVAS：工作流卡可见性开关（默认隐藏，设置页「工作流」分区控制，事件即时同步）
+  // 工作流卡可见性开关（默认隐藏，设置页「工作流」分区控制，事件即时同步）
   const [showWorkflowTasks, setShowWorkflowTasks] = useState(getShowWorkflowTasks);
   useEffect(() => {
     const un = listen(WORKFLOW_VISIBILITY_EVENT, () => setShowWorkflowTasks(getShowWorkflowTasks()));
@@ -388,7 +386,7 @@ function App() {
               localStorage.removeItem(STORAGE_KEY);
             }
           } catch (e) {
-            // 迁移失败（拍板 #19=A）：保留 legacy 待下次启动重试，并跳过种子落库——
+            // 迁移失败：保留 legacy 待下次启动重试，并跳过种子落库——
             // 若照旧落 SEED，下次启动库非空不再进迁移分支，legacy 数据永久 orphan
             migrateFailed = true;
             console.error("[init] legacy 迁移失败，保留 localStorage 待下次重试", e);
@@ -419,7 +417,7 @@ function App() {
     })();
   }, []);
 
-  // OCR C4-6 + C4-r1-验证修复：mutate 串行化（并发保护）。
+  //  + C4-r1-验证修复：mutate 串行化（并发保护）。
   // 修法（r1 验证）：mutating 链已抬到模块作用域；此处只保留 mutate 闭包，
   //   闭包每 render 新建但读到的 mutating 引用恒为模块同一对象 → 链跨 render 衔接。
   // 验证限于：机制与顺序（并发场景无确定性回归测试）。
@@ -506,7 +504,7 @@ function App() {
           try {
             await deleteTaskRows(deletes);
           } catch (e) {
-            // delete 失败不阻断合并广播（拍板 #18=B）：行已从内存 map 移除（UI 消失）
+            // delete 失败不阻断合并广播：行已从内存 map 移除（UI 消失）
             // 但库中仍在——下次 db_load 会重新出现，后续事件自愈；storage 层已 alert
             console.error("[tasks-updated] deleteTaskRows failed", e);
           }
@@ -617,7 +615,7 @@ function App() {
     };
   });
 
-  // 全局快捷键（U2，纯前端 keydown 实现，不碰 Rust 全局注册）：
+  // 全局快捷键纯前端 keydown 实现，不碰 Rust 全局注册）：
   // ⌘/Ctrl+N 新建任务（切回看板）、⌘/Ctrl+K 命令面板开合。
   // isComposing 跳过：中文输入法组合期不得触发（防选词按到修饰键误新建）
   const addTaskRef = useRef(addTask);
@@ -836,13 +834,13 @@ function App() {
     mutateFire((prev) => prev.filter((t) => t.id !== taskId));
   };
 
-  // 记录进入设置前的视图（U7 设置壳）：「返回」跳回进入前的界面
+  // 记录进入设置前的视图（ 设置壳）：「返回」跳回进入前的界面
   const lastViewRef = useRef<RailView>("board");
   useEffect(() => {
     if (view !== "settings") lastViewRef.current = view;
   }, [view]);
 
-  // 设置视图全屏接管（U7）：替换左导航+主内容，壳内自带返回与分类导航
+  // 设置视图全屏接管：替换左导航+主内容，壳内自带返回与分类导航
   if (view === "settings") {
     return (
       <ErrorBoundary>
@@ -872,7 +870,7 @@ function App() {
   return (
     <ErrorBoundary>
       <div className="flex h-screen overflow-hidden bg-[var(--bg)]">
-        {/* 左侧导航栏（U2）：新建(⌘N)/搜索(⌘K)/视图切换/底部设置——职能自顶部工具条迁入 */}
+        {/* 左侧导航栏：新建(⌘N)/搜索(⌘K)/视图切换/底部设置——职能自顶部工具条迁入 */}
         <nav
           aria-label="主导航"
           className="flex w-52 shrink-0 flex-col gap-1 border-r border-[var(--edge)] p-3"
@@ -983,7 +981,7 @@ function App() {
           ) : view === "notifications" ? (
             <NotificationsPage />
           ) : null}
-          {/* 全局确认弹窗（老板 14:45 拍板：confirm 走主窗口，不走 widget 挂件） */}
+          {/* 全局确认弹窗 */}
           <ConfirmMap />
           {/* 应用内错误弹窗宿主（批 4：接管 errorHandler，替代原生 alert/confirm） */}
           <ErrorDialogHost />

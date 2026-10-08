@@ -139,7 +139,7 @@ fn http_client() -> reqwest::Client {
                 .build()
                 // builder 失败（TLS 后端等）≠ 放弃约束：降级 client 仍钉硬超时 +
                 // 禁自动重定向（无约束 client 会架空 SSRF 逐跳校验与 30s 超时）；
-                // 再失败 = panic loud（OCR 选项 a——无超时 client 比 panic 更危险）
+                // 再失败 = panic loud（ a——无超时 client 比 panic 更危险）
                 .unwrap_or_else(|e| {
                     eprintln!("[bot_web] http_client builder 失败（{e}），降级：60s 硬超时 + 禁自动重定向");
                     reqwest::Client::builder()
@@ -176,7 +176,7 @@ fn http_client_pinned(
         .map_err(|e| format!("构建 HTTP 客户端失败：{e}"))
 }
 
-// ───────────────────────── 搜索（Bing + 百度双引擎） ─────────────────────────
+// 搜索（Bing + 百度双引擎）
 
 /// 双引擎搜索：Bing + 百度并行，结果按标题去重合并，最多 8 条
 /// 同一域名最多保留条数（百度跳转链接除外——host 都是 baidu.com，去重会误杀）
@@ -546,7 +546,7 @@ async fn search_baidu(query: &str) -> Result<Vec<(String, String, String)>, Comm
 
 /// 开标签精确匹配：`<a` 这类前缀 `find` 会误中 `<abbr>`/`<address>`/`<pre>`
 /// 等同前缀标签——开标签后一个字符必须是空白 / `>` / `/` 才算该标签
-///（OCR C5-BT-11：abbr 前置时标题与链接来自不同 DOM 节点）。
+///abbr 前置时标题与链接来自不同 DOM 节点）。
 /// 扫描全部命中取第一个合格位置。
 fn find_tag_open(s: &str, pat: &str) -> Option<usize> {
     let mut from = 0;
@@ -656,7 +656,7 @@ fn decode_entities(s: &str) -> String {
     out
 }
 
-// ───────────────────────── 正文提取 ─────────────────────────
+// 正文提取
 // 先抽正文主块再转换：
 // 去 script/style/nav/footer 等噪声块 → article/main 语义标签 → 语义 class/id 的最大 div → 兜底全文。
 
@@ -874,7 +874,7 @@ fn extract_baidu_snippet(tail: &str) -> String {
     String::new()
 }
 
-// ───────────────────────── 网页抓取 ─────────────────────────
+// 网页抓取
 
 /// 校验 URL 并返回通过校验的解析地址：协议 + 主机名字符串 + DNS 解析出的所有 IP
 /// 均须公网（防 DNS 重绑定/内网域名）。返回的地址由调用方钉给 reqwest
@@ -1062,8 +1062,8 @@ pub async fn fetch_text(raw_url: &str) -> Result<String, CommandError> {
     // 正文仍过短（多半是 JS 渲染的 SPA 页面，静态抓取只能拿到空壳）→
     // 回退 Jina Reader 公共代理（服务端渲染后返回 markdown，免费无需 key）。
     // 隐私边界：目标 URL 会发给 r.jina.ai（公网地址本身，低风险）。
-    // 留痕（拍板 #12=B）：回退属基本审计面——失败/采用/未采用三路 stderr 记录，
-    // 不改 fetch_text 签名（签名改 + 调用链属扩 scope，另行拍板）。
+    // 留痕：回退属基本审计面——失败/采用/未采用三路 stderr 记录，
+    // 不改 fetch_text 签名（签名改 + 调用链属扩 scope，）。
     if plain.chars().count() < 100 {
         match fetch_jina_reader(raw_url).await {
             Ok(jina) => {
@@ -1091,7 +1091,7 @@ fn jina_reader_url(raw_url: &str) -> String {
     format!("https://r.jina.ai/{}", raw_url.trim())
 }
 
-/// N4：open_url 工具的 URL 准入门——parse + 仅 http/https + 与 fetch 同一公网闸
+/// ：open_url 工具的 URL 准入门——parse + 仅 http/https + 与 fetch 同一公网闸
 /// （DNS 解析后拒绝本机/内网/保留地址）。返回校验过的 URL 供打开与日志。
 pub(crate) async fn ensure_public_http_url(raw: &str) -> Result<url::Url, String> {
     let trimmed = raw.trim();
@@ -1468,7 +1468,7 @@ mod tests {
             "::1",
             "fc00::1",
             "fe80::1",
-            // SUBA-2（设计 §10.3 SSRF 保留地址边界补测）：unspecified 段已实现，
+            // unspecified 段已实现，
             // 此处把 0.0.0.0 / :: 钉进回归
             "0.0.0.0",
             "::",
@@ -1548,7 +1548,7 @@ mod tests {
         );
     }
 
-    // ───── N3-5：搜索过滤参数映射 ─────
+    // N3-5：搜索过滤参数映射
 
     #[test]
     fn time_range_parse_and_mappings() {

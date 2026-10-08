@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import type { Task } from "../types";
 
-// ⌘K 命令面板（U2）：任务标题 + 会话标题聚合搜索，键盘上下选择 + 回车跳转。
+// ⌘K 命令面板：任务标题 + 会话标题聚合搜索，键盘上下选择 + 回车跳转。
 // 任务 → 主窗口切视图并进入编辑；会话 → 发 chat-focus-session 事件让挂件
 // 展开并切换（ChatPanel/WidgetApp 各自监听）。数据：tasks 来自 props 快照，
 // 会话在挂载时经 bot_sessions_load 现读（失败静默为空，面板仍可搜任务）。

@@ -1,4 +1,4 @@
-//! run 级结构化审计（W10-QA-AUDIT，设计 §4.2）：`workflow_audit` 表按
+//! run 级结构化审计（设计 §4.2）：`workflow_audit` 表按
 //! `(workflow_id, run_started_at)` 分组——**不建 runs 实体表**，二元组即 run 分组键。
 //!
 //! 红线：
@@ -192,7 +192,7 @@ pub async fn workflow_audit_clear_all(app: AppHandle) -> CommandResult<usize> {
     Ok(n)
 }
 
-// ────────────── tauri 命令 ──────────────
+// tauri 命令
 
 /// 审计列表（新→旧，limit 缺省 200 上限 500）
 #[tauri::command]
@@ -239,7 +239,7 @@ pub async fn workflow_audit_export(
     path: String,
 ) -> CommandResult<usize> {
     use crate::error::CommandResult;
-    // W11 OCR r1 high：路径闸门的 fs 调用进阻塞线程（不占 Tokio worker）
+    // W11 ：路径闸门的 fs 调用进阻塞线程（不占 Tokio worker）
     let path_gate = path.clone();
     crate::py::document::spawn_blocking_map(move || {
         crate::db::tasks::check_export_path(&path_gate).map_err(|e| e.to_string())

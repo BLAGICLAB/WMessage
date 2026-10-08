@@ -14,7 +14,7 @@
 //! | Anthropic 分支（claude*） | 不发 thinking 块 | budget 2048 | 4096 | 6144 |
 //! | 其余（deepseek/qwen/kimi/gpt-4o 等未知族） | 不发字段 | 不发字段（保守：未知模型不发未证实字段，防 400） | 同左 | 同左 |
 //!
-//! Anthropic budget 基准 2048/4096/6144（老板拍板），再按模型收敛：
+//! Anthropic budget 基准 2048/4096/6144（），再按模型收敛：
 //! budget 必须 ≥1024 且 < max_tokens（Anthropic 硬约束），且不超过该模型的
 //! 思维链上限（`anthropic_budget_cap`，未知 claude 型号保守取 8192）。
 //!
@@ -33,7 +33,7 @@ pub enum EffortLevel {
 
 impl EffortLevel {
     /// 配置字符串 → 档位。None / "medium" / 非法值一律回 Medium
-    /// （与 ApiProvider::from_cfg 的防御回退同风格；默认「中」老板拍板）。
+    /// （与 ApiProvider::from_cfg 的防御回退同风格；默认「中」）。
     pub fn from_cfg(v: Option<&str>) -> Self {
         match v.map(|s| s.trim()) {
             Some("off") => EffortLevel::Off,
@@ -115,7 +115,7 @@ fn anthropic_budget_cap(model_lower: &str) -> u32 {
     }
 }
 
-/// Anthropic budget 三档基准（老板拍板）：低 / 中 / 高。
+/// Anthropic budget 三档基准（）：低 / 中 / 高。
 const ANTHROPIC_BUDGET: [u32; 3] = [2_048, 4_096, 6_144];
 
 /// 档位 → Anthropic budget：按基准档取值，再被「模型上限」与「max_tokens-1024」

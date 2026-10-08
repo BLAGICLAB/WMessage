@@ -1,7 +1,7 @@
 use regex::Regex;
 use std::sync::LazyLock;
 
-// ─────────────────────── 变量替换 ───────────────────────
+// 变量替换
 
 /// 任务卡 UUID 提取正则（标准 UUID v4 格式）
 static TASK_ID_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -80,7 +80,7 @@ fn replace_ctx(
         // in_quotes 字节级启发式（设计边界，wontfix 确认）：只看占位符紧邻字节是否
         // 为 `"`，无法解析转义引号/多行结构——占位符模板本身构造上非合法 JSON，
         // 启发式是结构必然；错配时替换后由下游 serde_json 兜底拒绝（可诊断不静默）。
-        // 若未来误判引发安全/权限错误，再转结构化 JSON 处理（另拍板）。
+        // 若未来误判引发安全/权限错误，再转结构化 JSON 处理（另）。
         let in_quotes =
             m.start() > 0 && bytes[m.start() - 1] == b'"' && bytes.get(m.end()) == Some(&b'"');
         if in_quotes {

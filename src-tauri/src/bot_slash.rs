@@ -13,7 +13,7 @@
 use crate::error::CommandResult;
 use tauri::{AppHandle, Emitter, Manager};
 
-// ───────────────────────── /stop 停止标志（按执行实例隔离） ─────────────────────────
+// /stop 停止标志（按执行实例隔离）
 
 /// 活跃执行实例注册表：stop_id → (停止标志, 是否用户交互触发, 归属会话 id)
 /// 注册表带会话：/stop 只停当前会话的实例，别的会话的 Skill/任务卡执行不受影响
@@ -92,7 +92,7 @@ impl StopToken {
         self.0.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// 远程置位停止标志（SUBA-2：cancel_subagent 持令牌停对应 runner）
+    /// 远程置位停止标志cancel_subagent 持令牌停对应 runner）
     pub fn stop(&self) {
         self.0.store(true, std::sync::atomic::Ordering::SeqCst);
     }
@@ -200,7 +200,7 @@ fn flag_session_stopped<R: tauri::Runtime>(
     Ok(n)
 }
 
-// ───────────────────────── 危险操作确认（删除任务弹窗） ─────────────────────────
+// 危险操作确认（删除任务弹窗）
 
 /// 授权弹窗的用户选择：
 /// 删任务等二选一场景只用 Once/Deny；file_access 场景多一个 Always（始终允许该目录）。
@@ -279,7 +279,7 @@ async fn ask_confirm_inner(
             e.into_inner()
         })
         .insert(id.clone(), (tx, session_id.map(|s| s.to_string())));
-    // 老板 14:45 拍板：confirm 弹窗是主窗口的事，不走 widget 挂件
+    // confirm 弹窗是主窗口的事，不走 widget 挂件
     // （挂件窗口是屏幕边缘小条，不适合弹确认框；用户操作 Promote 时在主窗口，期待主窗口弹）
     let _ = app.emit(
         "bot-confirm",
@@ -419,7 +419,7 @@ fn deliver_confirm(
         .map_err(|_| "确认结果送达失败：等待方已退出（可能已超时）".to_string())
 }
 
-// ───────────────────────── 开关持久化 ─────────────────────────
+// 开关持久化
 
 fn bot_flag_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> std::path::PathBuf {
     crate::paths::flags_dir(app).join("bot-enabled.flag")

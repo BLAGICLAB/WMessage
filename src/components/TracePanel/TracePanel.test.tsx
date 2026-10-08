@@ -1,4 +1,4 @@
-// TracePanel 组件测试（P2-a）：mock trace 命令，覆盖摘要头/时间线/diff 着色/回滚。
+// TracePanel 组件测试：mock trace 命令，覆盖摘要头/时间线/diff 着色/回滚。
 // invoke mock 模式对齐 ArchivePage.test.tsx（vi.mock("@tauri-apps/api/core")）。
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vitest";

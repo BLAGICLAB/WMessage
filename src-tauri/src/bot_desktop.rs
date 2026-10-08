@@ -1,8 +1,8 @@
-//! 电脑辅助 Tier1 工具（N4）：reveal_path / open_url / clipboard_write / screenshot。
+//! 电脑辅助 Tier1 工具：reveal_path / open_url / clipboard_write / screenshot。
 //!
 //! 定位：只「看」与「打开」，不做鼠标键盘/UI 自动化（分层决策见
 //! docs/batches/N4-DESKTOP-TIER1.spec.md 出界说明——原生 Computer Use 需要产品
-//! 拍板 + VM 隔离，官方指引明确不建议在主机裸跑）。
+//! + VM 隔离，官方指引明确不建议在主机裸跑）。
 //!
 //! 安全边界（对齐官方 best practice）：
 //! - reveal_path 走 `bot_fs::resolve_with_perm`，与读文件同一白名单闸；
@@ -19,7 +19,7 @@ use crate::bot::registry::ToolResult;
 /// clipboard_write 文本长度上限（字符）
 const CLIPBOARD_MAX_CHARS: usize = 100_000;
 
-// ───────────────────────── reveal_path ─────────────────────────
+// reveal_path
 
 /// 在访达/资源管理器中定位文件（不打开文件本身）。白名单闸与读文件一致。
 pub async fn tool_reveal_path(
@@ -65,7 +65,7 @@ pub async fn tool_reveal_path(
     }
 }
 
-// ───────────────────────── open_url ─────────────────────────
+// open_url
 
 /// 用系统默认浏览器打开网页。URL 准入门与 fetch_text 同一公网闸
 /// （仅 http/https；DNS 解析后拒绝本机/内网/保留地址）。
@@ -105,7 +105,7 @@ pub async fn tool_open_url(app: &AppHandle, args: &str) -> ToolResult {
     }
 }
 
-// ───────────────────────── clipboard_write ─────────────────────────
+// clipboard_write
 
 /// 剪贴板文本校验（纯函数，可测）：空串拒绝、超限拒绝（截断会静默丢内容，
 /// 不如让模型自己分段复制）
@@ -160,7 +160,7 @@ pub async fn tool_clipboard_write(app: &AppHandle, args: &str) -> ToolResult {
     }
 }
 
-// ───────────────────────── screenshot ─────────────────────────
+// screenshot
 
 /// 截图文件名（纯函数，可测）：wm-screen-YYYYMMDD-HHMMSS.png
 fn screenshot_filename(ts_ms: i64) -> String {
@@ -248,7 +248,7 @@ pub async fn tool_screenshot(app: &AppHandle, _args: &str) -> ToolResult {
                 app,
                 &format!("desktop.screenshot | {} | {size} bytes", name),
             );
-            // N5：图随 ToolResult 直接进对话（模型视觉读取），不再引导 OCR 中转。
+            // ：图随 ToolResult 直接进对话（模型视觉读取），不再引导 。
             // 「已截屏」首字「已」非 error/warn 前缀 → ok
             ToolResult::ok_with_images(
                 format!(

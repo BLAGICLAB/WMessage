@@ -4,7 +4,7 @@ import { render } from "@testing-library/react";
 import { MessageList, MessageListUnmemoized } from "./MessageList";
 import type { Msg } from "./types";
 
-// MsgBubble React.memo 流式性能对比（B5-2 验收数据）：
+// MsgBubble React.memo 流式性能对比（ 验收数据）：
 // 长会话（N 气泡）流式回复 = 每帧只替换最后一条消息的对象引用。
 // memo 生效时历史气泡 props 全等被跳过，重渲染工作 = 仅最后一条；
 // 无 memo 时每帧全列表重渲染（MarkdownText 的 markdown 解析是重活）。
@@ -74,7 +74,7 @@ function bench(Comp: typeof MessageList): number[] {
 
 const avg = (a: number[]) => a.reduce((s, x) => s + x, 0) / a.length;
 
-describe("MsgBubble memo 流式性能（B5-2）", () => {
+describe("MsgBubble memo 流式性能", () => {
   it("流式更新只重渲染最后一条：memo 版每帧耗时显著低于无 memo 对照", () => {
     const memoDurations = bench(MessageList);
     const baseDurations = bench(MessageListUnmemoized);

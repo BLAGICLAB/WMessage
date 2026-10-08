@@ -35,7 +35,7 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 
-// ───────────────────────── 聊天 ─────────────────────────
+// 聊天
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -44,7 +44,7 @@ pub struct ChatMsg {
     pub content: String,
 }
 
-// ───────────────────────── 图片附件（多模态） ─────────────────────────
+// 图片附件（多模态）
 
 /// 产物落盘规则（动态注入 AI_Gen_Files / 系统 temp 的绝对路径）。
 /// WM_GEN_DIR / WM_TMP_DIR 由 run_python 注入子进程环境（bot_py::run_python_at），
@@ -249,7 +249,7 @@ pub(crate) fn strip_think_blocks(text: &str) -> String {
     out
 }
 
-/// T5：批量执行的失败策略。显式化一卡失败后是「继续下一张」还是「中止」。
+/// 批量执行的失败策略。显式化一卡失败后是「继续下一张」还是「中止」。
 ///
 /// 默认 `ContinueOnError`（现状不变）；`StopOnFirstError` 可调用方选启用。
 #[derive(Default)]
@@ -269,7 +269,7 @@ pub enum BatchPolicy {
 /// 启动，不中断正在执行的卡。
 /// 汇总报告：每张卡的开头 + 执行结果 + 总数 + 失败清单；task_refs 跨卡去重（merge_task_refs_dedup）。
 ///
-/// T5：接受 `policy` 参数控制失败是否继续。默认 `BatchPolicy::default()`（ContinueOnError）。
+/// 接受 `policy` 参数控制失败是否继续。默认 `BatchPolicy::default()`（ContinueOnError）。
 pub async fn chat_execute_tasks(
     app: &AppHandle,
     task_ids: Vec<(String, String)>,
@@ -309,7 +309,7 @@ pub async fn chat_execute_tasks(
                 all_text.push_str(&format!("❌ 失败：{}\n", err_str));
                 failed += 1;
                 errors.push(format!("{} ({})", label, err_str));
-                // T5：StopOnFirstError —— 第一卡失败即中止后续，附“已完成 i 张”报告
+                // StopOnFirstError —— 第一卡失败即中止后续，附“已完成 i 张”报告
                 if matches!(policy, BatchPolicy::StopOnFirstError) {
                     let done = idx + 1; // 当前卡已计入 idx（0-based），+1 = 已处理数
                     let remaining = total.saturating_sub(done);
@@ -428,7 +428,7 @@ fn attach_images_in(roots: &[std::path::PathBuf], content: &str) -> (serde_json:
     (v, skipped)
 }
 
-/// N5：单个图片文件 → OpenAI image_url content part（data URL）。
+/// ：单个图片文件 → OpenAI image_url content part（data URL）。
 /// 工具图片回传（screenshot）与附件链路共用同上限/同 mime 表；
 /// 不做白名单校验（调用方是工具自身产物，非用户不可信输入）。
 /// 文件缺失/超限/非图片扩展名返回 None（调用方跳过，不阻断）。
@@ -499,7 +499,7 @@ enum PreStepRoute {
 ///
 /// 主流程（五步严格按序、禁止抢跑/前置 return）：
 /// 1. exec_steps::resume（有挂起子任务时本条消息是执行流程的应答，优先于一切聊天路由）
-/// 2. bypass_llm_on_pre_step_hit 开关读取（F-1，任何路由判定之前）
+/// 2. bypass_llm_on_pre_step_hit 开关读取
 /// 3. pre-step 路由（intent_router：ExecuteTasks 批量执行 / Skill / PassThrough）
 /// 4. start_skill（Skill 调度：auto → 调度器执行；interactive → body 注入 system prompt）
 /// 5. run_model_loop（LLM 决策 + 工具循环）
@@ -575,7 +575,7 @@ pub fn chat_guard_is_held<R: tauri::Runtime>(app: &AppHandle<R>, session_id: &st
         .contains(session_id)
 }
 
-/// T2 辅助：start_skill + 审计。成功 log `pre_step.route_skill`；失败 log `pre_step.route_failed`。
+///  辅助：start_skill + 审计。成功 log `pre_step.route_skill`；失败 log `pre_step.route_failed`。
 /// 返回 `Option<(SkillMeta, String)>`：None 表示路由失败 → 放行 LLM（不阻断聊天）。
 fn start_skill_with_audit(
     app: &tauri::AppHandle,
@@ -606,7 +606,7 @@ fn start_skill_with_audit(
     }
 }
 
-/// T2 抽出的「步骤 4」函数：处理 pre_step 命中 Skill 路由后的全部副作用。
+///  抽出的「步骤 4」函数：处理 pre_step 命中 Skill 路由后的全部副作用。
 ///
 /// 返回值契约：
 /// - `Done(BotChatResult)`：auto-mode 调度器返回终态（Done / AwaitUser），调用方应直接 return 该结果
@@ -692,7 +692,7 @@ async fn apply_skill_route(
     }
 }
 
-/// T2：`apply_skill_route` 的返回值。Done 是「路由终态」（chat 直接返回），
+/// `apply_skill_route` 的返回值。Done 是「路由终态」（chat 直接返回），
 /// FallThrough 是「落入步骤 5」（继续走 run_model_loop）。
 enum SkillRouteOutcome {
     /// 直接返回给前端（Done / AwaitUser 两种终态；Terminated 走 Err 不进 Outcome）
@@ -740,7 +740,7 @@ pub async fn bot_chat(
         }
     }
     let stop = StopGuard::new(&app, true, session_id.clone());
-    // 步骤 2：bypass_llm_on_pre_step_hit 开关读取（F-1）：
+    // 步骤 2：bypass_llm_on_pre_step_hit 开关读取：
     // true = 新行为（pre-step 路由生效），false = LEGACY 旧链路（路由命中一律丢弃，LLM 自由决策）。
     // 必须在任何路由判定之前读取——主流程禁止任何步骤抢跑。
     let bypass_llm_on_pre_step_hit = crate::bot::read_bypass_llm_switch(&app);
@@ -757,12 +757,12 @@ pub async fn bot_chat(
     let mut msgs: Vec<serde_json::Value> = Vec::new();
     // 技能清单动态注入：系统提示词 + 已安装技能的「名称+描述」（progressive disclosure 第一层；
     // 全文由 use_skill 工具按需读取，省 token）
-    // T1 改造：用 SystemPromptBuilder 按 PromptSlot 声明顺序排序拼接，替代脆弱的
+    //  改造：用 SystemPromptBuilder 按 PromptSlot 声明顺序排序拼接，替代脆弱的
     // 顺序 format!("{}{}", a, b) 链。Base/GenDir/SkillCatalog 是 system_base 的 3 段，
     // 段间用 \n\n 分隔；后续 SkillBody/Recovery/Plan 拼在尾部，无分隔符。
     let mut prompt = SystemPromptBuilder::new();
     prompt.push(PromptSlot::Base, SYSTEM_PROMPT);
-    // SUBA-2（设计 §8.1）：主 agent 派发子 agent 的职责段——同 Base 槽位按 push
+    // 主 agent 派发子 agent 的职责段——同 Base 槽位按 push
     // 顺序追加在 SYSTEM_PROMPT 之后（同槽多次 push 按顺序拼接，无新 slot）。
     prompt.push(
         PromptSlot::Base,
@@ -803,7 +803,7 @@ pub async fn bot_chat(
     } else {
         None
     };
-    // F-1 开关：bypass=false → LEGACY 旧链路（强制 pre_routed_skill = None，让 LLM 自由决策）。
+    //  开关：bypass=false → LEGACY 旧链路（强制 pre_routed_skill = None，让 LLM 自由决策）。
     // 新行为（bypass=true）→ 保留路由结果让 pre-step 路由继续工作。
     let pre_routed_skill = if bypass_llm_on_pre_step_hit {
         pre_routed_skill
@@ -875,7 +875,7 @@ pub async fn bot_chat(
             }
         }
     }
-    // 轮数三层优先级（P3-a）：Skill frontmatter 自报 > 配置 maxRounds > 默认 50
+    // 轮数三层优先级：Skill frontmatter 自报 > 配置 maxRounds > 默认 50
     let cfg_for_rounds = crate::bot::load_config(&app);
     let max_rounds = crate::bot_model_loop::resolve_max_rounds(
         pre_routed_skill
@@ -926,7 +926,7 @@ pub async fn bot_chat(
     // 生成摘要；摘要单独以 system 消息放在截断后历史开头（不进 messages——下方
     // role 白名单会把非 assistant 降级为 user，防注入语义不动）；
     // LLM 失败静默退回直接丢弃
-    // P3-a：历史预算走配置解析（config historyBudgetChars，钳 20K..=500K；默认 100K）
+    // 历史预算走配置解析（config historyBudgetChars，钳 20K..=500K；默认 100K）
     let budget_used =
         crate::bot::params::resolve_history_budget_chars(&crate::bot::load_config(&app)) as usize;
     let (messages, summary, dropped) =
@@ -975,10 +975,10 @@ pub async fn bot_chat(
             msgs.push(serde_json::json!({"role": role, "content": m.content}));
         }
     }
-    // B4-2：Failure 分支可达——模型循环 Err（LLM 5xx/流断/头超时等）也落 trace
+    // Failure 分支可达——模型循环 Err（LLM 5xx/流断/头超时等）也落 trace
     //（此前只在 Ok 收尾处 hook，失败轨迹全丢，trace 的 Failure 采样规则不可达）。
     // reason 用粗分类，不带原始错误消息（含路径/参数，不入 trace/audit 明细）
-    // U16：收尾自动记忆抽取要用的句柄（run_model_loop 按值消费 app，提前克隆）
+    // 收尾自动记忆抽取要用的句柄（run_model_loop 按值消费 app，提前克隆）
     let extract_app = app.clone();
     // 词元统计（P4+）：主聊天也落 exec_traces——此前只有任务执行链落 trace，
     // 设置页「词元统计」对纯聊天用户恒为空（卡片副标题与事实不符的根因）。
@@ -1002,7 +1002,7 @@ pub async fn bot_chat(
         &stop,
         plan_state.as_mut(),
         reasoning_effort,
-        // 主聊天不挂每卡模型覆盖（W6-MODEL 仅工作流节点使用）
+        // 主聊天不挂每卡模型覆盖（ 仅工作流节点使用）
         None,
     )
     .await;
@@ -1052,11 +1052,11 @@ pub async fn bot_chat(
             TraceOutcome::Success
         })
         .with_task_refs(refs.iter().map(|t| t.id.clone()).collect())
-        // B4-2：turn 数 + 工具明细接真实数据（此前恒 0/空，trace.rs 既定计划）
+        // turn 数 + 工具明细接真实数据（此前恒 0/空，trace.rs 既定计划）
         .with_turn_count(loop_trace.turn_count)
         .with_tool_calls(loop_trace.tool_calls),
     );
-    // U16 自动记忆抽取（fire-and-forget）：交互式会话收尾触发，抽取失败静默
+    //  自动记忆抽取（fire-and-forget）：交互式会话收尾触发，抽取失败静默
     // 降级不冒泡；非交互（任务执行/定时）、/stop 中止的会话、非 off 档的判定
     // 在入口内完成。session_id 此后不再使用，按值转移。
     if !aborted {
@@ -1072,7 +1072,7 @@ pub async fn bot_chat(
     })
 }
 
-// ───────────────────────── /compact 快捷命令 ─────────────────────────
+// /compact 快捷命令
 
 /// 空 API Key → 专用错误 ApiKeyMissing（recoverable=true，引导用户去设置页）。
 /// 抽成纯函数便于单测（keyring 在测试环境不可用，无法覆盖 bot_compact 全链路）。
@@ -1093,7 +1093,7 @@ const SUMMARIZE_MAX_CHARS: usize = 200_000;
 /// pub：tests/llm_integration.rs 直用（与 bot::run_model_loop_core 同先例）。
 /// Anthropic 兼容模式：provider/max_tokens 注入，按协议分支
 /// URL/鉴权头/请求体/响应解析（Anthropic 侧转换走 bot_anthropic 纯函数）。
-/// temperature/top_p（U13 条目级覆盖）有值才写请求体，两协议顶层字段同名。
+/// temperature/top_p（ 条目级覆盖）有值才写请求体，两协议顶层字段同名。
 pub async fn summarize_http(
     client: &reqwest::Client,
     base_url: &str,
@@ -1144,7 +1144,7 @@ pub async fn summarize_http(
             (crate::bot_anthropic::anthropic_messages_url(base_url), body)
         }
     };
-    // 条目级采样参数注入（U13）：temperature/top_p 有值才写（两协议顶层字段同名）
+    // 条目级采样参数注入：temperature/top_p 有值才写（两协议顶层字段同名）
     crate::bot_model_loop::apply_inference_params(&mut body, temperature, top_p);
     let req = client
         .post(&url)
@@ -1263,9 +1263,9 @@ pub(crate) async fn summarize_messages_with_model(
         cfg.models_by_provider.as_ref(),
     )?;
     require_api_key(&api_key)?;
-    // B3-3：共享客户端（连接池复用）；原 60s 总超时改为 per-request 保留
+    // 共享客户端（连接池复用）；原 60s 总超时改为 per-request 保留
     let client = crate::bot_model_loop::shared_llm_client().clone();
-    // 条目级推理参数（U13）：max_tokens 条目值覆盖全局（再钳制）；temperature/top_p
+    // 条目级推理参数：max_tokens 条目值覆盖全局（再钳制）；temperature/top_p
     // 条目有值才发。摘要不追加条目 system_prompt（这里的 system_prompt 是固定任务提示词）
     let inference = crate::bot::effective_inference(
         Some(provider_str),
@@ -1294,7 +1294,7 @@ pub async fn bot_compact(app: AppHandle, messages: Vec<ChatMsg>) -> CommandResul
     summarize_messages(&app, COMPACT_SYSTEM_PROMPT, &messages).await
 }
 
-// ───────────────────────── 任务卡执行 ─────────────────────────
+// 任务卡执行
 
 /// 任务卡交给机器人执行（🤖 按钮 / 选卡说「完成它」）。
 /// 任务执行聊天化：执行永远在**新会话**里（run_task_in_chat 统一入口），
@@ -1408,7 +1408,7 @@ pub enum TaskExecOrigin {
     Scheduled,
     /// 📦 聊天批量执行（每卡一个独立会话）
     Batch,
-    /// 🔀 工作流画布拓扑调度（W3-RUNNER；语义同 Scheduled 无人值守）
+    /// 🔀 工作流画布拓扑调度语义同 Scheduled 无人值守）
     Workflow,
 }
 
@@ -1439,7 +1439,7 @@ pub struct TaskChatRun {
 }
 
 /// 工作流执行上下文（W-QA 结构化交接，handoff = typed-schema 策略）：
-/// 总目标 + 直接上游卡的实际产出简报 + 双层档案注入 + 执行提问授权（W9-ASK）。
+/// 总目标 + 直接上游卡的实际产出简报 + 双层档案注入 + 执行提问授权。
 /// 仅工作流链路传入；手动/定时/批量 = None。
 #[derive(Debug, Clone, Default)]
 pub struct TaskExecCtx {
@@ -1447,21 +1447,21 @@ pub struct TaskExecCtx {
     pub goal: Option<String>,
     /// 直接上游产出简报（runner 装配：标题/状态/summary/验收标准/绑定文件，已裁剪）
     pub upstream_brief: Option<String>,
-    /// 双层档案（W9-ASK，拍板 6）：工作流决策摘要 + 本卡历史记录（runner 装配
+    /// 双层档案）：工作流决策摘要 + 本卡历史记录（runner 装配
     /// brief_for_injection，段头已含在内；防跑偏——用户在其他卡的纠偏这里看得见）
     pub brief: Option<crate::db::brief::BriefContext>,
-    /// 执行提问授权（W9-ASK）：Some = 本节点可调 ask_user（workflow_id 关联档案与通知）
+    /// 执行提问授权：Some = 本节点可调 ask_user（workflow_id 关联档案与通知）
     pub ask: Option<AskExecContext>,
     /// 验收返工证据（W10）：验收 fail 后重跑时带上轮 evidence，注入【验收返工】段
     pub rework_evidence: Option<String>,
 }
 
-/// 执行提问授权上下文（W9-ASK）：bot_chat 在会话建立时凭它注册 ask_contexts，
+/// 执行提问授权上下文：bot_chat 在会话建立时凭它注册 ask_contexts，
 /// ask_user 工具按 session_id 查表；预算与开关在注册表条目上（AppState）。
 #[derive(Debug, Clone)]
 pub struct AskExecContext {
     pub workflow_id: String,
-    /// 提问模式开关（拍板 5：false = 从不提问，工具直接返回假设）
+    /// 提问模式开关（false = 从不提问，工具直接返回假设）
     pub asks_enabled: bool,
     /// W10：run 分组键——问题 payload 带上它，应答端写审计行能归到正确的 run
     pub run_started_at: i64,
@@ -1628,7 +1628,7 @@ pub async fn run_task_in_chat(
     app: &AppHandle,
     task_id: &str,
     origin: TaskExecOrigin,
-    // 每卡模型覆盖（W6-MODEL）：模型库条目 id；None = 跟随全局 active
+    // 每卡模型覆盖：模型库条目 id；None = 跟随全局 active
     model: Option<String>,
 ) -> CommandResult<TaskChatRun> {
     run_task_in_chat_impl(app, task_id, origin, model, None).await
@@ -1649,16 +1649,16 @@ async fn run_task_in_chat_impl(
     app: &AppHandle,
     task_id: &str,
     origin: TaskExecOrigin,
-    // 每卡模型覆盖（W6-MODEL）：模型库条目 id；None = 跟随全局 active
+    // 每卡模型覆盖：模型库条目 id；None = 跟随全局 active
     model: Option<String>,
     // W-QA：工作流上下文（总目标 + 上游简报）；其他来源恒 None
     ctx: Option<TaskExecCtx>,
 ) -> CommandResult<TaskChatRun> {
-    // P1-d（Agent 透明化设计 §4.2）：执行 trace 挂钩——壳造槽，闭包填 LoopTrace 统计，
+    // 执行 trace 挂钩——壳造槽，闭包填 LoopTrace 统计，
     // 内核（run_task_in_chat_with）填归属并收尾。
-    // P3-a：轮数走配置解析（config maxRounds，钳 5..=200；默认 50）
+    // 轮数走配置解析（config maxRounds，钳 5..=200；默认 50）
     let cfg_for_rounds = crate::bot::load_config(app);
-    // P4：evolution 采样接线——任务执行链路（手动/定时/批量/工作流）此前未接
+    // evolution 采样接线——任务执行链路（手动/定时/批量/工作流）此前未接
     // maybe_record_trace（只有主聊天 hook）；LoopTrace 统计在闭包里顺手喂采样判定。
     let exec_started_at = chrono::Utc::now().timestamp_millis();
     let origin_for_evo = origin;
@@ -1689,7 +1689,7 @@ async fn run_task_in_chat_impl(
                     if let Ok(mut c) = hook_for_run.lock() {
                         c.stats = Some(trace.clone());
                     }
-                    // P4：采样上报（Failure/长耗时/多工具命中才落审计，见 should_record_trace）
+                    // 采样上报（Failure/长耗时/多工具命中才落审计，见 should_record_trace）
                     crate::evolution::trace::maybe_record_trace(
                         crate::evolution::trace::TraceContext::new(
                             // 闭包内拿不到执行 sid（内核生成）——用 task_id 作稳定标识
@@ -1736,7 +1736,7 @@ pub async fn run_task_in_chat_with<R: tauri::Runtime, Run, Fut>(
     app: &tauri::AppHandle<R>,
     task_id: &str,
     origin: TaskExecOrigin,
-    // P1-d：执行 trace 挂钩（None = 不采集，测试与遗留路径用）。
+    // 执行 trace 挂钩（None = 不采集，测试与遗留路径用）。
     // 内核负责建 trace（begin）与收尾（end）——成对执行，中途无早退分支。
     trace_hook: Option<std::sync::Arc<std::sync::Mutex<crate::trace_sink::TraceCapture>>>,
     // W-QA：工作流上下文（总目标 + 上游简报），None = 非工作流链路
@@ -1803,12 +1803,12 @@ where
             )));
         }
     };
-    // D4d：登记 session_id → TaskExecOrigin 映射，tool_link_file_to_task 内部查询。
+    // 登记 session_id → TaskExecOrigin 映射，tool_link_file_to_task 内部查询。
     // 末尾无论成败都要 unregister_exec_session 清理。守卫成功后再登记——
     // acquire 失败的早退分支不应泄漏登记（无人 unregister）。
     crate::tool_guard::register_exec_session(&sid, origin);
-    // W9-ASK：工作流节点执行 → 注册提问上下文（ask_user 按 session_id 查表）。
-    // 与 D4d 同生命周期：此后到函数尾无早退分支，unregister 成对执行不泄漏。
+    // 工作流节点执行 → 注册提问上下文（ask_user 按 session_id 查表）。
+    // 与  同生命周期：此后到函数尾无早退分支，unregister 成对执行不泄漏。
     let ask_registered = match ctx.and_then(|c| c.ask.as_ref()) {
         Some(ask) if origin == TaskExecOrigin::Workflow => {
             crate::workflow_questions::register_ask_context(app, &sid, ask, &task.id, &task.title);
@@ -1816,7 +1816,7 @@ where
         }
         _ => false,
     };
-    // P1-d：建执行 trace + 注册 session→trace 映射（span/file_change 采集开关）。
+    // 建执行 trace + 注册 session→trace 映射（span/file_change 采集开关）。
     // 位置保证：此后到函数尾无早退分支，end_trace 必然成对执行。观测面失败降级 None。
     if let Some(hook) = &trace_hook {
         let trace_id = crate::trace_sink::begin_trace(
@@ -1859,7 +1859,7 @@ where
         text,
         task_refs: refs,
     });
-    // P1-d：trace 收尾（无论成败；与 begin 成对）+ 注销 session→trace 映射
+    // trace 收尾（无论成败；与 begin 成对）+ 注销 session→trace 映射
     if let Some(hook) = &trace_hook {
         crate::trace_sink::end_trace(
             app,
@@ -1871,9 +1871,9 @@ where
     }
     // assistant 回复落库（失败也落 ⚠️ 行——会话即执行记录，留证可回看）
     persist_exec_reply(app, &task, &sid, &outcome, ctx).await;
-    // D4d 收尾：解除 session 注册（无论成败），按 TaskExecOrigin 分流落绑定通知。
+    //  收尾：解除 session 注册（无论成败），按 TaskExecOrigin 分流落绑定通知。
     crate::tool_guard::unregister_exec_session(&sid);
-    // W9-ASK：提问上下文成对注销（同 D4d 生命周期）
+    // 提问上下文成对注销（同  生命周期）
     if ask_registered {
         crate::workflow_questions::unregister_ask_context(app, &sid);
     }
@@ -1887,7 +1887,7 @@ where
         crate::bot_artifacts::should_emit(app, task_id, origin, task_column.map(|s| s.as_str()))
             .await
     {
-        // 通知中心落一条持久化消息（原 D4d 挂件 artifact-batch-ready 弹窗已下线：
+        // 通知中心落一条持久化消息（原  挂件 artifact-batch-ready 弹窗已下线：
         // 消息互不覆盖、重启不丢）。失败不阻断执行收尾，stderr 留痕。
         let paths: Vec<String> = artifacts.iter().map(|a| a.path.clone()).collect();
         let origin_label = match origin {
@@ -2015,9 +2015,7 @@ pub(crate) async fn set_bot_assigned<R: tauri::Runtime>(
     }
 }
 
-// ────────────────────────────────────────────────────────────────────
 // 测试：图片附件纯函数 + 主编编排纯函数
-// ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod image_attach_tests {
@@ -2354,9 +2352,7 @@ mod bot_chat_pure_helpers_tests {
     }
 }
 
-// ────────────────────────────────────────────────────────────────────
 // 测试：Err("...".into()) 逃生舱改走专用 CommandError 变体
-// ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod command_error_mapping_tests {

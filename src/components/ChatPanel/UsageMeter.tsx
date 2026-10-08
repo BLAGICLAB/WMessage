@@ -1,4 +1,4 @@
-// 上下文水位条（P4，/context 借鉴，设计 §9.2-9）：当前会话累计 tokens +
+// 上下文水位条（/context 借鉴，设计 §9.2-9）：当前会话累计 tokens +
 // 可选的 contextK 百分比。数据源 = bot-usage-delta 事件（Anthropic 协议回合级
 // usage；OpenAI 兼容网关的流式 usage 需要 stream_options 参数暂未启用——
 // 没有数据时本条隐藏，不显示假数据）。

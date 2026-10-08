@@ -1,8 +1,7 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { RotateCcw, TriangleAlert } from "lucide-react";
 
-/** ErrorBoundary（U5 自 App.tsx 提取共享）：任何子组件抛错时不再 unmount 变白，
- *  捕到错误显示堆栈 + 「重试」按钮重置 state。主窗口与挂件窗口共用（挂件此前
+/** ErrorBoundary（ 自 App.tsx 提取共享）：任何子组件抛错时不再 unmount 变白， *  捕到错误显示堆栈 + 「重试」按钮重置 state。主窗口与挂件窗口共用（挂件此前
  *  无边界，浏览器/异常路径下白屏——U1 登记项）。class component 必需（hooks
  *  写法目前 React 还没稳定 API）。 */
 export class ErrorBoundary extends Component<

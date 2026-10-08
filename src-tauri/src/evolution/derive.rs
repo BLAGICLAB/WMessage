@@ -199,7 +199,7 @@ fn truncate_chars(s: &str, max: usize) -> String {
     }
 }
 
-// ───────────────────────── 单元测试（spec 1.6 之 4/5/6/9）─────────────────────────
+// 单元测试（spec 1.6 之 4/5/6/9）
 
 #[cfg(test)]
 mod tests {
@@ -231,7 +231,7 @@ mod tests {
         }
     }
 
-    // ─── 4. 中性反思 → 空 ───
+    // 4. 中性反思 → 空
 
     #[test]
     fn derive_returns_empty_for_empty_ops() {
@@ -273,7 +273,7 @@ mod tests {
         assert!(proposals.is_empty(), "ids.len=4 < 5 阈值，不应产");
     }
 
-    // ─── 5. 检测规则 ───
+    // 5. 检测规则
 
     #[test]
     fn derive_detects_repeated_merge_pattern() {
@@ -366,7 +366,7 @@ mod tests {
         assert_eq!(p[0].proposal_id, again[0].proposal_id);
     }
 
-    // ─── 6. 上限 ───
+    // 6. 上限
 
     #[test]
     fn derive_caps_at_five() {
@@ -417,7 +417,7 @@ mod tests {
         );
     }
 
-    // ─── 9. 异常输入不 panic ───
+    // 9. 异常输入不 panic
 
     #[test]
     fn derive_does_not_panic_on_empty_content() {
@@ -488,7 +488,7 @@ mod tests {
         assert_eq!(proposals[0].evidence.occurrence_count, 100);
     }
 
-    // ─── 稳定 / 可重入 ───
+    // 稳定 / 可重入
 
     #[test]
     fn derive_is_deterministic_given_same_ops() {

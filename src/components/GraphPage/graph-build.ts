@@ -135,8 +135,7 @@ function passTaskFilters(t: Task, f: GraphFilters): boolean {
   return true;
 }
 
-/**
- * 依赖环检测（G5-DEPEDIT 纯函数锚点）：若把 `depId` 加入 `selfId` 的 dependsOn
+/** * 依赖环检测（G5-DEPEDIT 纯函数锚点）：若把 `depId` 加入 `selfId` 的 dependsOn
  * 是否成环。语义：A.dependsOn 含 B = B 是 A 的上游；因此从 depId 沿 dependsOn
  * 正向可达 selfId ⇒ 成环。含自环（depId === selfId）必拒；悬空 id 无环不拒。
  */
@@ -167,8 +166,7 @@ export function wouldCreateDepCycle(
   return false;
 }
 
-/**
- * 建图（设计 §3.1）：节点 = 任务 + 工作流 hub；边 = dependsOn（有向 dep）+
+/** * 建图（设计 §3.1）：节点 = 任务 + 工作流 hub；边 = dependsOn（有向 dep）+
  * 成员关系（member）。悬空 dependsOn / 被过滤端点 → 丢边；
  * hub 只为「有存活成员」的工作流创建。度数在成边后统计，
  * includeOrphans=false 时剪掉无边任务节点。

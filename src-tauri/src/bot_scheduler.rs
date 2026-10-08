@@ -60,7 +60,7 @@ fn notify_schedule_missed(app: &AppHandle, target_title: &str) {
     }
 }
 
-// ───────────────────────── 定时任务卡（阶段二：⏰ 到点自动执行） ─────────────────────────
+// 定时任务卡（阶段二：⏰ 到点自动执行）
 
 /// 单次定时执行的整体超时：最坏 50 轮 × LLM 300s 可跑
 /// 数小时，无上限会把调度循环堵死。30 分钟对正常任务足够宽松；超时 drop 执行流
@@ -440,7 +440,7 @@ async fn find_due_tasks(app: &AppHandle) -> Vec<crate::db::Task> {
     due
 }
 
-// ───────────────────────── 工作流定时（定时任务模块） ─────────────────────────
+// 工作流定时（定时任务模块）
 
 /// 读取 workflows 行（调度扫描用）。失败按空表处理（同 find_due_tasks 的
 /// db_load unwrap_or_default 容错：扫描轮空转，下轮重试）
@@ -682,7 +682,7 @@ async fn workflows_tick(app: &AppHandle) {
     }
 }
 
-// ───────────────────────── 内容型定时作业（scheduled_jobs） ─────────────────────────
+// 内容型定时作业（scheduled_jobs）
 
 /// 作业标题截断（卡标题取内容首行；超长全文进 note 不丢语义）
 const JOB_TITLE_MAX: usize = 80;
@@ -876,7 +876,7 @@ async fn run_scheduled_job(app: AppHandle, job: crate::db::ScheduledJob) {
     crate::bot::broadcast_after_mutation(&app, vec![card.clone()], vec![]);
 
     // 交机器人执行（TaskExecOrigin::Scheduled：新会话 + ⏰ 前缀 + 结果写卡）
-    // P1-d：执行状态实时广播（SchedulePage 行内「执行中」；补齐「执行中不可见」缺口）
+    // 执行状态实时广播（SchedulePage 行内「执行中」；补齐「执行中不可见」缺口）
     let _ = app.emit(
         "sched-status",
         serde_json::json!({ "taskId": card.id, "jobId": job.id, "phase": "started" }),
@@ -890,7 +890,7 @@ async fn run_scheduled_job(app: AppHandle, job: crate::db::ScheduledJob) {
         None,
     )
     .await;
-    // P1-d：收尾状态广播（sessionId 供前端跳 ⏰ 执行会话）
+    // 收尾状态广播（sessionId 供前端跳 ⏰ 执行会话）
     let _ = app.emit(
         "sched-status",
         serde_json::json!({
@@ -1251,7 +1251,7 @@ async fn run_scheduled(app: AppHandle, task: crate::db::Task) {
     crate::bot::audit_log(&app, &format!("sched_done | id: {}", task.id));
 }
 
-/// 同时执行的定时任务上限（OCR C5-BT-10）：burst 到点卡排队，不打爆 runtime。
+/// 同时执行的定时任务上限：burst 到点卡排队，不打爆 runtime。
 /// 取值 4 = 经验值（定时任务多为 LLM 调用 + 文档生成，重在外部等待不在 CPU；
 /// 4 路并发足够消化每日 burst，又不至于同时打满 LLM 配额）。
 const SCHED_MAX_CONCURRENT: usize = 4;
@@ -1264,7 +1264,7 @@ pub fn start_scheduler(app: AppHandle) {
         let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(SCHED_MAX_CONCURRENT));
         loop {
             ticker.tick().await;
-            // panic recovery（OCR C5-BT-10）：单轮 panic 不杀调度器，审计后续跑。
+            // panic recovery：单轮 panic 不杀调度器，审计后续跑。
             // AssertUnwindSafe 安全依据：scheduler_tick 只读 db + spawn 任务，
             // 不持任何「跨 await 必须保持」的不变量，panic 后无可破坏状态。
             // 关闭信号不加：生命周期 = App，退出时 runtime 整体回收。
@@ -1306,7 +1306,7 @@ async fn scheduler_tick(app: &AppHandle, sem: &std::sync::Arc<tokio::sync::Semap
                 return;
             };
             let id = t.id.clone();
-            // per-task panic 可见性（OCR C5-BT-10 r1）：spawn-and-forget 的 panic
+            // per-task panic 可见性（ r1）：spawn-and-forget 的 panic
             // 只有 JoinError 无人观测——catch_unwind 落审计，不再静默死。
             let body = std::panic::AssertUnwindSafe(async {
                 let timed_out =
@@ -1345,7 +1345,7 @@ async fn scheduler_tick(app: &AppHandle, sem: &std::sync::Arc<tokio::sync::Semap
     jobs_tick(app).await;
 }
 
-// ───────────────────────── 定时任务模块命令 ─────────────────────────
+// 定时任务模块命令
 
 /// 定时任务模块列表条目（schedule_overview 返回）：内容型作业 + 工作流两源合并。
 /// nextRunAt 由 Rust 端 occurrence_after 单源计算（前端不重写解析器——
@@ -1532,9 +1532,7 @@ pub async fn schedule_set_enabled(
     }
 }
 
-// ────────────────────────────────────────────────────────────────────
 // 测试：定时解析纯函数（occurrence_after / at_expired）
-// ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod sched_tests {

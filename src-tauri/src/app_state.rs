@@ -1,86 +1,25 @@
+//! 执行期全局状态单一入口：各表定义集中在此，业务模块 `pub(crate) use` 引入
+//! 原名字；表访问器按 `try_state` 注入（测试用 per-test `manage` 隔离）。
 //!
-//! 背景：执行期注册表原先散落在 6 个模块，「有哪些全局状态」「谁负责清理」只能靠人记，
-//! 测试隔离靠三把串行锁人工约定（`lib.rs:725-728` 的注释就是实锤：无差别全局广播会
-//! 互相删对方的 run / 打断 StopReader 用例）。
+//! 全局状态总表（SKILL_RUNS / STOP_REGISTRY / CONFIRMS / CHAT_RUNNING /
+//! EXEC_RUNNING / SCHED_RUNNING / PENDING / artifact_registry，及刻意留在
+//! 进程级的 NEXT_STOP_ID 与 tool_guard::SESSION_ORIGINS）的类型、生命周期、
+//! 清理责任人盘点：见 git log 本文件头的历史版本（2026-10-08 压缩——
+//! 行号快照注定漂移，盘点型内容不驻留源码）。
 //!
-//! 本模块只做一件事：把**定义**集中到一处，各业务模块用 `pub(crate) use` / `use`
-//! 再引入原名字 —— 常量与类型（如 `NEXT_STOP_ID`、`StopMap`）路径 1:1 不变；
-//! 表访问器自 3.2 起按 `try_state` 注入，故签名上多了 `app`（调用点同步更新）。
-//! **语义零改动**（RAII Drop 清理、fail-open/fail-closed 口径、
-//! `/stop` 只停 interactive 实例等一律未动）。
-//!
-//! 全局状态总表（盘点时的真实位置，改动后会漂）：
-//!
-//! | 状态 | 类型 | 生命周期 | 清理责任人 | 测试隔离现状 |
-//! |---|---|---|---|---|
-//! | `SKILL_RUNS` → `AppState.skill_runs` | `Arc<Mutex<HashMap<String, SkillRun>>>` | 进程 | `skill_terminate_all` / `clear_terminal_skill_runs` / 状态机终态 | per-test `manage` 注入（串行锁已撤） |
-//! | `STOP_REGISTRY` → `AppState.stop_registry` | `Arc<Mutex<HashMap<u64, (Arc<AtomicBool>, bool, Option<String>)>>>` | 单次执行 | `StopGuard::drop`（靠 acquire 时克隆的 Arc 注销） | per-test `manage` 注入（串行锁已撤） |
-//! | `NEXT_STOP_ID`（**刻意留在进程级**） | `AtomicU64` | 进程 | —（单调递增，无清理责任） | 不需要 |
-//! | `CONFIRMS` → `AppState.confirm_requests` | `Mutex<HashMap<String, (oneshot::Sender<ConfirmReply>, Option<String>)>>` | 单次弹窗 | 前端应答 / 60s 超时回收 | per-test `manage` 注入 |
-//! | `CHAT_RUNNING` → `AppState.chat_running` | `Arc<Mutex<HashSet<String>>>` | 单次聊天 | `ChatGuard::drop`（靠 acquire 时克隆的 Arc 清理） | per-test `manage` 注入 |
-//! | `EXEC_RUNNING` → `AppState.exec_running` | `Arc<Mutex<HashSet<String>>>` | 单次任务卡执行 | `ExecGuard::drop`（同上） | per-test `manage` 注入 |
-//! | `SCHED_RUNNING` → `AppState.sched_running` | `Arc<Mutex<HashSet<String>>>` | 单次定时执行 | `SchedGuard::drop`（panic 展开也清；靠 acquire 时克隆的 Arc 清理） | 不需要 |
-//! | `PENDING` → `AppState.pending` | `Mutex<HashMap<String, PendingExec>>` | 单次逐步执行 | 用户应答 / 超时 | 集成测试自带本地锁（`tests/skill_e2e.rs:258`） |
-//! | `REGISTRY`（产物登记）→ `AppState.artifact_registry` | `tokio::sync::Mutex<HashMap<String, Vec<RegisteredArtifact>>>` | 单次任务卡执行流程 | 流程收尾 clear 系列 | per-test `manage` 注入（样板） |
-//! | `SESSION_ORIGINS`（有意留档·情况 1，定义留 `tool_guard.rs:45`） | `Mutex<HashMap<String, TaskExecOrigin>>` | 单次执行 | `unregister_exec_session`（`bot_chat.rs:1415`） | 不需要（详情见下「不收口」条目） |
-//!
-//! 刻意**不收口**的四类（登记在册，避免下次重复盘查；下文文件/行号引用为盘点时快照，会漂）：
-//!
-//! - `SESSION_ORIGINS`（`tool_guard.rs:45`，`HashMap<String, TaskExecOrigin>`）：
-//!   情况 1「session 元数据」——有意留档，不进依赖容器。
-//!   三条测量结论（`rg` 全仓核定）：
-//!   1. **写一次**：生产仅 `bot_chat.rs:1373 register_exec_session` 一处写入、
-//!      `bot_chat.rs:1415 unregister_exec_session` 一处删除，夹在同一函数
-//!      `run_task_in_chat_with` 的一头一尾；
-//!   2. **读一处**：生产仅 `bot/tools.rs:876 is_task_execution_flow(session_id)`
-//!      （`tool_link_file_to_task` 内判定）——不在 tasks-updated / `bot_model_loop` /
-//!      `dispatch` / `api_handlers` 里读；
-//!   3. **随 session 消亡**：key = `session_id`，进出一对，与单次执行同生同死。
-//!   两条附带事实（留给未来的 D 方案）：
-//!   - **值从未被读取**：容器只有 `insert`/`remove`/`contains_key`（`tool_guard.rs:53/59/69`），
-//!     无 `.get(sid)` 或遍历 → 真实语义等价 `HashSet<String>`，`TaskExecOrigin` 是冗余记录；
-//!   → 未来若要删这张表（方案 D）：需把执行上下文透进工具层（`execute_tool` 签名链）
-//!     并触碰停止守卫语义，属独立立项 + 需批准。
-//!   （「搬进 `BotSession`」目前无落点：`db.rs:544 pub struct BotSession` 是磁盘行且
-//!     `bot_sessions` schema 在禁止清单；内存中不存在会话对象。）
-//! - `ROUTES`（`intent_router.rs:139`）：进程级派生表，随技能变更整体重建，无「清理责任人」问题
-//!   （搬它要给私有的 `CompiledRule` 放宽可见性，不值当）；
-//! - API 专属 4 项（`api_handlers.rs:59 API_RMW_LOCK` / `:177 RATE` / `:817 SSE_WRITERS` /
-//!   `:820 API_HUB_KEY`）：随 API server 生命周期，与 bot 执行链无关；
-//! - 不可变 / 幂等缓存：`memory/embed.rs:35`、`ocr.rs:187`、`bot_web.rs:22`、`paths.rs:129`、
-//!   `bot_py.rs:154/200/562/770/779`、`profile.rs:20`、`bot/config.rs:471`、`db.rs:429`、
-//!   `migration.rs:382`、`due_notify.rs:39`、`bot_skills/vars.rs` 的 4 个 Regex。
-//!
-//! 本阶段**不**引入新依赖（DashMap / parking_lot 属禁止清单），锁实现保持
-//! `std::sync::Mutex` —— 这些表的临界区都是极短的（见 `tool_guard.rs:41` 的取舍说明），
-//! 目前没有热点证据支持换锁。
-//!
-//! 测试期的跨进程共享（非全局状态，但同属「进程级假设」，留档观察）：
-//! - 数据目录解析（`paths.rs::probe_log_dir`）在测试构建下 = `target/debug/deps/`，
-//!   而 nextest 是每测试一进程 → `bot.log` / `wmessage.db` / `*.flag` / 降级 key 文件跨进程共享；
-//! - `profile.json` 已按 pid 隔离（`profile.rs::test_isolated_dir`）—— 唯一被实证打中的共享文件
-//!   （曾 6 次复现 profile 用例随机挂，修后 5×nextest 全绿）；
-//! - 其余 5 次 nextest 全绿、暂无实证，按「等实锤再动」留档；下沉到 `probe_log_dir` 的
-//!   三档方案（B1/B2/B3）与各自代价写在 `paths.rs::probe_log_dir` 的 doc 里。
-//! - 追加：`cargo test --lib`（进程内并行）下 `exit_cleanup_tests` 的
-//!   `api-enabled.flag` 断言失败过 1 次；pid 隔离覆盖不到进程内并行
-//!   （同 pid 的测试共享目录，nextest 因每测试一进程才避开它）。实证细节与决策（C1 口径：
-//!   等定位到具体调用点再动）见 `paths.rs::probe_log_dir` 的 doc「追加实证 / 决策」两段。
-//!
-//! 阶段 3.2 已开工：`AppState`（本文件尾部）+ `lib.rs` setup 里 `manage` 注入，
-//! **产物登记表**是样板（见上表最后一行）；其余 7 张逐张迁移。每迁一张，对应测试改用
-//! per-test `manage` 注入（先例：`middleware.rs:471`、`lib.rs:737`），届时上表里
-//! 那两把串行锁可以撤掉。
+//! 刻意不收口的四类（SESSION_ORIGINS / ROUTES / API 专属 4 项 / 不可变缓存）
+//! 与「锁保持 std::sync::Mutex、不引新依赖」的取舍理由同样留档 git log；
+//! 新表入容器的样板：产物登记表。
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
 use tauri::Manager;
 
-// ───────────────────────── 执行期 · Skill 运行表 ─────────────────────────
+// 执行期 · Skill 运行表
 
 // SKILL_RUNS 已迁入 `AppState.skill_runs`（访问器见文件尾）。
 
-// ───────────────────────── 执行期 · /stop 停止注册表 ─────────────────────────
+// 执行期 · /stop 停止注册表
 
 /// /stop 注册表形状：执行实例 id → (停止标志, 是否用户交互触发, 触发会话)
 pub(crate) type StopMap =
@@ -92,7 +31,7 @@ pub(crate) type StopMap =
 /// /stop 实例 id 发号器（单调递增，进程内唯一）
 pub(crate) static NEXT_STOP_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-// ───────────────────────── 执行期 · 危险操作确认 ─────────────────────────
+// 执行期 · 危险操作确认
 
 /// 待确认请求：id → (oneshot 通道, 归属会话 id)
 type ConfirmMap = Mutex<
@@ -107,22 +46,22 @@ type ConfirmMap = Mutex<
 
 // CONFIRMS 已迁入 `AppState.confirm_requests`（访问器 `confirms(app)` 见文件尾）。
 
-/// 工作流提问等待表（W9-ASK）：questionId → oneshot 通道。
+/// 工作流提问等待表：questionId → oneshot 通道。
 /// ask 端（runner）注册、应答端（`workflow_question_respond`）take 后发送。
 /// 与 CONFIRMS 的区别：无 60s 超时默认拒——等待上限由 ask 端按提问超时配置兜底，
 /// 通道关闭/超时一律回落到问题自带的假设值（红线：忽略问题工作流也能走）。
 type QuestionWaiters = Mutex<HashMap<String, tokio::sync::oneshot::Sender<String>>>;
 
-// ───────────────────────── 执行期 · 会话/任务防重入 ─────────────────────────
+// 执行期 · 会话/任务防重入
 
 // CHAT_RUNNING / EXEC_RUNNING / SCHED_RUNNING 三张防重入表均已迁入 `AppState`
 // （字段与访问器见文件尾；访问器一律返回 `Arc` 克隆，供 RAII 守卫在 Drop 里清理）。
 
-// ───────────────────────── 执行期 · 逐步执行挂起表 ─────────────────────────
+// 执行期 · 逐步执行挂起表
 
 // PENDING 已迁入 `AppState.pending`（访问器见文件尾）。
 
-// ────────────────── AppState（阶段 3.2 样板：产物登记表）──────────────────
+// AppState（阶段 3.2 样板：产物登记表）
 
 /// 应用级状态容器：全局可变状态的注入式载体（`tauri::Manager::manage` 注入）。
 ///
@@ -159,15 +98,15 @@ pub(crate) struct AppState {
     pub(crate) pending: Mutex<HashMap<String, crate::exec_steps::PendingExec>>,
     /// 待确认请求（`ConfirmMap`：id → (oneshot 通道, 归属会话 id)）
     pub(crate) confirm_requests: ConfirmMap,
-    /// 工作流提问等待表（W9-ASK：`QuestionWaiters`：questionId → oneshot 通道）
+    /// 工作流提问等待表`QuestionWaiters`：questionId → oneshot 通道）
     pub(crate) question_waiters: QuestionWaiters,
-    /// 工作流提问上下文表（W9-ASK：sessionId → AskRegistration；bot_chat 会话建立时
+    /// 工作流提问上下文表sessionId → AskRegistration；bot_chat 会话建立时
     /// 注册/收尾注销，ask_user 工具按 session_id 查表，预算在条目上）
     pub(crate) ask_contexts: Mutex<HashMap<String, crate::workflow_questions::AskRegistration>>,
-    /// 子 agent 取消令牌表（SUBA-2：subagent_id → StopToken；
+    /// 子 agent 取消令牌表subagent_id → StopToken；
     /// cancel_subagent 持有的句柄，runner 注册 / 收尾删除）
     pub(crate) subagent_stops: Arc<Mutex<HashMap<String, crate::bot_slash::StopToken>>>,
-    /// 执行痕迹注册表（P1-c，Agent 透明化设计 §4.2）：session_id → 运行中 trace_id。
+    /// 执行痕迹注册表（Agent 透明化设计 §4.2）：session_id → 运行中 trace_id。
     /// 生命周期：run_task_in_chat_with 建 trace 时注册、收尾注销（trace_sink::begin/end_trace）。
     /// dispatch 据此判断「本会话在跑 trace」→ 决定 span/file_change 是否落库（无映射 = 零开销旁路）。
     pub(crate) trace_registry: Arc<Mutex<HashMap<String, i64>>>,
@@ -182,7 +121,7 @@ fn fallback_state() -> &'static AppState {
 
 /// 统一 `AppState` 拿取：注入实例优先，否则兜底实例。
 ///
-/// Sprint B1：原 8 个 accessor（`skill_runs` / `artifact_registry` / `confirms` /
+/// Sprint ：原 8 个 accessor（`skill_runs` / `artifact_registry` / `confirms` /
 /// `sched_running` / `stop_registry` / `chat_running` / `exec_running` /
 /// `pending_map`）各自重复 `try_state → map → unwrap_or(fallback)` 三段，
 /// 抽出这一个 helper 收口，行为零变化。
@@ -224,12 +163,12 @@ pub(crate) fn confirms<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> &Confirm
     &ext(app).confirm_requests
 }
 
-/// 工作流提问等待表访问器（W9-ASK：ask 端注册 / 应答端 take 走；无 RAII 守卫，同 confirms 口径）。
+/// 工作流提问等待表访问器ask 端注册 / 应答端 take 走；无 RAII 守卫，同 confirms 口径）。
 pub(crate) fn question_waiters<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> &QuestionWaiters {
     &ext(app).question_waiters
 }
 
-/// 工作流提问上下文表访问器（W9-ASK：注册/注销/ask_user 查表共用一把锁）。
+/// 工作流提问上下文表访问器注册/注销/ask_user 查表共用一把锁）。
 pub(crate) fn ask_contexts<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> &Mutex<HashMap<String, crate::workflow_questions::AskRegistration>> {

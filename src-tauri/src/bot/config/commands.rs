@@ -20,7 +20,7 @@ use super::types::{
     ActiveModelId, ApiProvider, BotConfig, BotConfigView, ModelsByProvider, PermMode,
 };
 
-// ───────────────────────── perm_mode ─────────────────────────
+// perm_mode
 
 /// 当前授权模式（读 bot-config.json；缺文件/缺字段/非法值都回 Ask）
 pub fn perm_mode(app: &AppHandle) -> PermMode {
@@ -34,7 +34,7 @@ pub fn archive_after_days(app: &AppHandle) -> u32 {
     super::types::resolve_archive_after_days(io::load_config(app).archive_after_days)
 }
 
-// ───────────────────────── bot_get_config ─────────────────────────
+// bot_get_config
 
 #[tauri::command]
 pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
@@ -136,7 +136,7 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
     })
 }
 
-/// tool_rules 落盘清洗（P3-c，纯函数单测直打）：tool 名 trim 后非空、action ∈
+/// tool_rules 落盘清洗（纯函数单测直打）：tool 名 trim 后非空、action ∈
 /// {allow, ask, deny}、同 tool 首条保留（评估本就首中即停，存重复无意义）；
 /// 清洗后为空 → None（文件不留空数组）。
 pub(crate) fn sanitize_tool_rules(
@@ -166,9 +166,9 @@ pub(crate) fn sanitize_tool_rules(
     }
 }
 
-// ───────────────────────── bot_set_config ─────────────────────────
+// bot_set_config
 
-/// P0-EV1 回填内核（纯函数，单测直打）：**盘上值权威**。前端视图（BotConfigView）
+///  回填内核（纯函数，单测直打）：**盘上值权威**。前端视图（BotConfigView）
 /// 不含 evolution 块，bot_set_config 是整体替换写——不回填则设置页任意一次保存
 /// 都把自进化块写丢（运行时配置上实际发生过）。即便前端理论上带了值也以盘上
 /// 为准：该块只归 evolution/ 模块读写，设置页没有编辑入口。
@@ -274,7 +274,7 @@ pub fn bot_set_config(
     config.archive_after_days = config
         .archive_after_days
         .map(|n| n.clamp(1, super::types::MAX_ARCHIVE_DAYS));
-    // P3-a：Agent 运行参数落盘前钳制（None = 内置默认不动；与 archive 同款）
+    // Agent 运行参数落盘前钳制（None = 内置默认不动；与 archive 同款）
     config.max_rounds = config
         .max_rounds
         .map(|n| n.clamp(5, crate::bot::params::MAX_ROUNDS_CAP));
@@ -289,9 +289,9 @@ pub fn bot_set_config(
         .map(|n| n.clamp(1, crate::db::MAX_TURNS_HARD_CAP));
     config.subagent_max_wall_secs = config.subagent_max_wall_secs.map(|n| n.clamp(30, 3600));
     config.search_max_results = config.search_max_results.map(|n| n.clamp(1, 10));
-    // P3-c：tool_rules 清洗——空 tool 名/非法 action/重复 tool 剔除；空表归一 None
+    // tool_rules 清洗——空 tool 名/非法 action/重复 tool 剔除；空表归一 None
     config.tool_rules = sanitize_tool_rules(config.tool_rules.take());
-    // P0-EV1：前端整体替换写不丢 evolution 块。读盘回填必须与写**同锁**
+    // 前端整体替换写不丢 evolution 块。读盘回填必须与写**同锁**
     //（评审 HIGH：无锁 load → 有锁 write 之间 persist_last_run 等并发写会被
     // 本写覆盖——丢更新窗口）；write_bot_config_file 自带加锁不可重入，走 _locked 变体
     let _g = super::io::lock_config_write();
@@ -301,7 +301,7 @@ pub fn bot_set_config(
     super::io::write_bot_config_file_locked(&crate::db::data_dir(&app), config)
 }
 
-// ───────────────────────── bot_set_active_model ─────────────────────────
+// bot_set_active_model
 
 /// 纯逻辑（单测锚点）：校验 model_id 存在于**任一协议**的模型列表并置为 active。
 /// 聊天区 🧠 下拉双协议同列展示（MP-02）：命中**另一协议**的模型 → 连协议一起切
@@ -354,7 +354,7 @@ pub fn bot_set_active_model(app: AppHandle, model_id: String) -> CommandResult<B
     bot_get_config(app)
 }
 
-// ───────────────────────── bot_clear_api_key / bot_log_read ─────────────────────────
+// bot_clear_api_key / bot_log_read
 
 /// 清除已保存的 API Key
 #[tauri::command]
@@ -383,7 +383,7 @@ pub fn bot_clear_vendor_key(app: AppHandle, vendor: String) -> CommandResult<()>
 
 pub use super::audit::bot_log_read;
 
-// ───────────────────────── bot_reload_config ─────────────────────────
+// bot_reload_config
 
 /// 显式 reload bot-config.json（决策 c：最小 reload endpoint，避免依赖重启）
 ///
@@ -397,7 +397,7 @@ pub fn bot_reload_config(app: AppHandle) -> CommandResult<bool> {
     Ok(shadow_enabled)
 }
 
-/// 记忆检索参数读取（U17 memoryTuning；已过 clamped，前端只见合法值）
+/// 记忆检索参数读取（ memoryTuning；已过 clamped，前端只见合法值）
 #[tauri::command]
 pub fn memory_tuning_get(app: AppHandle) -> CommandResult<crate::memory::MemoryTuning> {
     Ok(io::read_memory_tuning(&app))
@@ -532,7 +532,7 @@ mod evolution_preserve_tests {
 
     #[test]
     fn preserve_evolution_disk_value_is_authoritative() {
-        // P0-EV1 回归：前端视图不含 evolution 块——盘上有则以盘上回填
+        //  回归：前端视图不含 evolution 块——盘上有则以盘上回填
         let mut incoming: BotConfig = serde_json::from_str("{}").unwrap();
         assert!(incoming.evolution.is_none());
         let disk: BotConfig = serde_json::from_str(
@@ -557,7 +557,7 @@ mod evolution_preserve_tests {
     }
 }
 
-// ───────────────────────── bot_test_connection ─────────────────────────
+// bot_test_connection
 
 /// 连接测试结果（厂商详情页模型行插头按钮）：只判 HTTP 状态，不解析 body。
 /// ok = 2xx；非 2xx（401/403 等）→ ok:false + status；网络错/超时 → ok:false + error。

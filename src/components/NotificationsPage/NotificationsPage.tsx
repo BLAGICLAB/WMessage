@@ -241,8 +241,7 @@ function workflowQuestion(n: NotificationItem): WorkflowQuestionPayload | null {
   return p as unknown as WorkflowQuestionPayload;
 }
 
-/** 工作流提问卡（W9-ASK）：选项 chips + 自由输入 + 按假设继续——
- *  红线：忽略问题工作流也能走（assume 返回问题自带假设） */
+/** 工作流提问卡：选项 chips + 自由输入 + 按假设继续—— *  红线：忽略问题工作流也能走（assume 返回问题自带假设） */
 function WorkflowQuestionCard({ item }: { item: NotificationItem }) {
   const q = workflowQuestion(item);
   const [picked, setPicked] = useState<string | null>(null);

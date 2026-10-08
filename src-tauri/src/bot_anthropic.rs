@@ -17,7 +17,7 @@ use crate::bot_model_loop::{ParsedChunk, ToolCallDelta};
 /// Anthropic API 版本头（messages API 稳定版本）
 pub const ANTHROPIC_VERSION: &str = "2023-06-01";
 
-// ───────────────────────── 消息转换（出站） ─────────────────────────
+// 消息转换（出站）
 
 /// OpenAI 消息数组 → Anthropic (system 文本块数组, messages)。
 ///
@@ -271,7 +271,7 @@ fn tool_result_text(content: Option<&serde_json::Value>) -> String {
     }
 }
 
-// ───────────────────────── 请求体（出站） ─────────────────────────
+// 请求体（出站）
 
 /// OpenAI tools schema → Anthropic tools：
 /// {"type":"function","function":{name,description,parameters}} →
@@ -369,7 +369,7 @@ pub fn apply_anthropic_auth(
         .header("anthropic-version", ANTHROPIC_VERSION)
 }
 
-// ───────────────────────── SSE 解析（入站） ─────────────────────────
+// SSE 解析（入站）
 
 /// 流内捞到的 token 用量（message_start 的 input_tokens / message_delta 的 output_tokens）
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -566,16 +566,14 @@ pub fn parse_anthropic_response(body: &serde_json::Value) -> String {
         .unwrap_or_default()
 }
 
-// ────────────────────────────────────────────────────────────────────
 // 测试：消息转换全矩阵 / 请求体 / URL 归一化 / SSE 解析 / 非流式响应
-// ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
 
-    /// N5：工具附图序列 [assistant(tool_use), tool(文本), user(text+image_url)]
+    /// ：工具附图序列 [assistant(tool_use), tool(文本), user(text+image_url)]
     /// → Anthropic 侧必须合并成单条 user 消息 [tool_result, text, image]
     ///（官方 tool_result 附图形态 + 严格交替约束）。
     #[test]

@@ -1,6 +1,6 @@
 //! Toggle 组件：iOS 风格 pill switch（红色 ON / 灰色 OFF）
 //!
-//! 老板 16:05 拍板：EvolutionPanel 改造，原按钮点击模式 → 图示 toggle 模式。
+//! EvolutionPanel 改造，原按钮点击模式 → 图示 toggle 模式。
 //! 受控组件：父组件管状态，Toggle 只负责显示 + 触发 onChange。
 //! 视觉规则：disabled 时透明度降；aria-pressed 表达语义。
 
