@@ -27,15 +27,6 @@ impl KillSwitch {
         Self::default()
     }
 
-    /// 全开（紧急 kill）
-    pub fn all_on() -> Self {
-        Self {
-            all_auto_apply: true,
-            shadow_only: true,
-            disable_notification: true,
-        }
-    }
-
     /// 是否允许自动应用（apply.rs 入口检查）
     ///
     /// 优先级：
@@ -111,14 +102,6 @@ mod tests {
         assert!(k.should_auto_apply());
         assert!(!k.should_shadow_only());
         assert!(!k.should_disable_notification());
-    }
-
-    #[test]
-    fn all_on_disables_everything() {
-        let k = KillSwitch::all_on();
-        assert!(!k.should_auto_apply());
-        assert!(k.should_shadow_only());
-        assert!(k.should_disable_notification());
     }
 
     #[test]

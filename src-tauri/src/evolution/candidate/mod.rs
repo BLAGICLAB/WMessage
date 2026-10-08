@@ -30,7 +30,7 @@ pub use derive::{
 };
 pub use entry::{append, filter_by_status, find_by_id, read_all, ProposalEntry, ProposalStatus};
 pub use mapping::{map_proposal_status_to_change_status, to_change_record};
-pub use ttl::{compute_expires_at, evict_expired, is_expired, mark_expired, TTL_DAYS, TTL_MS};
+pub use ttl::compute_expires_at;
 
 /// 批量落盘 proposals 到 evolution-proposals.jsonl（dedup by proposal_id）
 ///

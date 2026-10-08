@@ -19,4 +19,4 @@ pub use record::{
     append as append_change, find_by_id, find_children, find_roots, read_all, ApprovalSource,
     ChangeRecord, ChangeStatus, EvalResult, EvolutionLayer,
 };
-pub use status::{can_transition, transition};
+pub use status::transition;
