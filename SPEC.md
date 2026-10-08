@@ -60,7 +60,7 @@ macOS），内置大模型机器人管理任务，向上长出工作流编排、
 - **一次执行 = 一个新会话**：任务卡 🤖、定时任务、工作流节点执行统一走聊天会话
 - 双协议：OpenAI 兼容 + Anthropic 兼容；模型中心：厂商分类、内置模型库、厂商级 key（系统 keyring）、每模型推理参数与推理强度、可用性门禁、聊天内快切模型
 - 工具 30+：任务 CRUD/子任务/绑定、文档生成（Word 修订模式：.NET OpenXML 优先 + Python 兜底；Excel 公式注入过滤；PPT；PDF）、文件编辑（edit_file/write_file，Aider 式三级匹配）、文件读写+grep、本机 Python 沙箱（run_python，独立临时目录+60s 超时+产物回收）、联网（web_search：Tavily/Brave key 可配，未配置降级 Bing+百度抓取；fetch_url 公网白名单）、图片识字 ocr_image、截图直达模型视觉、电脑辅助 Tier1（reveal_path 等原生四件）、时间、记忆工具、use_skill、ask_user（执行中提问）
-- **语义记忆体 v2**：bge-small-zh 本地嵌入+混合打分；事实+教训两类；自动抽取、参数可调、总开关、管理面板、导入导出、写入冲突裁决（改口即更新）、定时整理（consolidation）、黄金集评估器（recall@5 锁死）
+- **语义记忆体 v2**：bge-small-zh 本地嵌入+混合打分；事实+教训两类；自动抽取、参数可调（设置页记忆区「检索参数」卡：注入预算/topN/recentN/lessonN/容量/衰减/去重阈值 8 项，留空=默认）、总开关、管理面板、导入导出、写入冲突裁决（改口即更新）、定时整理（consolidation）、黄金集评估器（recall@5 锁死）
 - **MCP 外部服务器**：stdio/HTTP 接入，env/headers 机密走系统钥匙串
 - **技能系统**：Markdown+YAML frontmatter DSL（对齐 Agent Skills 开放标准），步骤推进状态机 + LLM 兜底，设置页运行结果徽章
 - 产物统一落 `AI_Gen_Files`（启动预建、同名加 `(n)` 永不覆盖），流程结束产物登记表弹窗汇总
@@ -75,7 +75,7 @@ macOS），内置大模型机器人管理任务，向上长出工作流编排、
 
 ### 5. 治理与自进化（观察态）
 
-- 设置页决策板：候选提案 Promote/Reject（即开关语义）、应用策略二档、影子观察（shadow）、执行痕迹与 lesson 落库
+- 设置页决策板：候选提案 Promote/Reject（即开关语义）、应用策略二档、影子观察（shadow）、执行痕迹与 lesson 落库；每张提案卡带**决策证据**——影子判定（采纳后会不会进 lesson top-3）、同目标冲突标注（池内/已生效）、回滚预警（观察窗回滚 ≥5 提示切手动档）
 - 文件治理：授权模式四档 strict 白名单硬拒 / ask 弹授权（默认）/ auto / yolo 全放行 + per-tool 权限规则表；绑定集合精确命中才放行（`..`/软链/前缀相似目录全拒）
 - 密钥纪律：API key、搜索 key、MCP 机密全走系统凭据存储，不落明文配置
 
