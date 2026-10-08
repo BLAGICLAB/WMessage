@@ -11,3 +11,4 @@
 //! - 端到端：用户回滚 → 下轮 injection_block 不再包含（删 mem_item）
 
 pub mod commands;
+pub mod evidence;

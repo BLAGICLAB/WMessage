@@ -632,6 +632,7 @@ pub fn run() {
             evolution::panel::commands::evolution_list_changes,
             evolution::panel::commands::evolution_rollback_change,
             evolution::panel::commands::evolution_metrics,
+            evolution::panel::commands::evolution_proposal_evidence,
             evolution::panel::commands::evolution_get_apply_policy,
             evolution::panel::commands::evolution_set_apply_policy,
             meta::meta_list_providers,

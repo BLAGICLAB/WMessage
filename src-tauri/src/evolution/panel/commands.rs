@@ -30,6 +30,8 @@ use crate::evolution::observe::{self, ObserveMetrics};
 use crate::evolution::policy::{read_apply_policy, set_apply_policy, ApplyPolicy};
 use crate::evolution::proposal::EvolutionProposal;
 
+use super::evidence;
+
 // ───────────────────────── 路径辅助 ─────────────────────────
 
 fn proposals_path<R: tauri::Runtime>(app: &AppHandle<R>) -> PathBuf {
@@ -710,8 +712,8 @@ pub async fn evolution_list_changes(app: AppHandle) -> Result<Vec<ChangeRecord>,
     crate::py::document::spawn_blocking_map(move || load_changes(&app)).await
 }
 
-/// U20 W3：四指标薄壳——读三个 jsonl 走 observe::compute_metrics 纯函数。
-/// 观察窗口 30 天（同 bin/observe_run.rs 默认口径）；空文件 = 纯函数零值。
+/// 四指标薄壳——读三个 jsonl 走 observe::compute_metrics 纯函数。
+/// 观察窗口 30 天；空文件 = 纯函数零值。
 #[tauri::command]
 pub async fn evolution_metrics(app: AppHandle) -> Result<ObserveMetrics, String> {
     // 阻塞 fs IO（三份 jsonl 全量 load）移出 async worker
@@ -865,6 +867,20 @@ fn delete_evolution_mem_item(app: &AppHandle, proposal_id: &str) -> Result<(), S
 }
 
 // ───────────────────────── 单元测试（pure helpers）─────────────────────────
+
+/// 提案决策证据（影子判定 + 冲突标注）——决策板逐卡渲染。
+#[tauri::command]
+pub async fn evolution_proposal_evidence(
+    app: AppHandle,
+) -> Result<Vec<evidence::ProposalEvidence>, String> {
+    crate::py::document::spawn_blocking_map(move || {
+        let proposals = load_proposals(&app)?;
+        let changes = load_changes(&app)?;
+        let lessons = evidence::load_lesson_snapshots(&app)?;
+        Ok(evidence::build(&proposals, &changes, &lessons))
+    })
+    .await
+}
 
 #[cfg(test)]
 mod tests {
