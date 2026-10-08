@@ -5,7 +5,6 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { openPath } from "@tauri-apps/plugin-opener";
 import { FolderInput, FolderOpen, Trash2, Upload } from "lucide-react";
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
 import { EmptyState } from "../EmptyState";
@@ -101,12 +100,9 @@ export function SkillsPanel() {
 
   const openDir = async () => {
     try {
-      const dir = await invoke<string>("skills_open_dir");
-      // 打开目录失败（无文件管理器/权限/路径失效）同样可见，不静默吞掉
-      await openPath(dir).catch((e) => {
-        handleCommandError(e, "skills_open_dir", { silent: true });
-        setError(formatCommandError(e));
-      });
+      // Rust 侧 opener 直接打开（便携模式下技能目录在 exe 旁，不在前端
+      // opener scope 内；与 open_file_path 同方案）。失败同样可见，不静默吞掉
+      await invoke("skills_open_dir");
     } catch (e) {
       handleCommandError(e, "skills_open_dir", { silent: true });
       setError(formatCommandError(e));

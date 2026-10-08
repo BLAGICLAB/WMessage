@@ -18,14 +18,6 @@
     "core:window:allow-primary-monitor",
     "autostart:default",
     "opener:default",
-    {
-      "identifier": "opener:allow-open-path",
-      "allow": [
-        {
-          "path": "$APPDATA/**"
-        }
-      ]
-    },
     "dialog:default",
     "notification:default"
   ]

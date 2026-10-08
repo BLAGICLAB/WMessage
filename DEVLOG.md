@@ -5883,3 +5883,19 @@ commit 即可恢复完整白名单 + TOCTOU 防线。
 
 验证：cargo check/test（files 模块 6 用例）+ clippy 0（除 vendor）+
 scripts/test-all.sh 全绿；前端零改动。
+
+## 2026-10-08（周四）AUDIT-PHASE1A 续 — 技能目录「打开目录」绕过前端 opener scope（A3）
+
+权限清单 A3（与 A1 同款历史包袱）：便携模式下技能目录锚定在 exe 旁
+（paths.rs 三档策略），不在 $APPDATA 内；而 SkillsPanel「打开目录」走前端
+openPath，capability 白名单 $APPDATA/** 盖不住 → 绿色版上点按钮报权限拒绝。
+
+- `skills_open_dir` 从「返回路径、前端 openPath 打开」改为 Rust 侧 opener
+  直接打开（与 open_file_path 同方案）；路径由 Rust skills_dir() 决定，
+  非前端传参，无新增暴露面
+- SkillsPanel 删 openPath 依赖与对应 vi.mock；capabilities 删除已无消费者的
+  `opener:allow-open-path`（$APPDATA/**）scope（收紧），`opener:default`
+  （链接 openUrl）保留
+
+验证：bot_skills 119 测试 + SkillsPanel vitest 2 + tsc + clippy 0（除
+vendor）+ scripts/test-all.sh 全绿。

@@ -13,7 +13,6 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invokeMock }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: mocks.openMock }));
-vi.mock("@tauri-apps/plugin-opener", () => ({ openPath: vi.fn(async () => {}) }));
 
 beforeEach(() => {
   mocks.invokeMock.mockClear();

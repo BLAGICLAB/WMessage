@@ -331,12 +331,18 @@ pub fn skills_list(app: AppHandle) -> Vec<SkillInfo> {
     scan_skills(&app)
 }
 
-/// 技能目录路径（设置页「打开目录」按钮用；目录不存在则先创建）
+/// 打开技能目录（设置页「打开目录」按钮用；目录不存在则先创建）。
+/// Rust 侧 opener 直接打开——前端 openPath 受 capability 白名单（$APPDATA/**）
+/// 约束，便携模式下技能目录锚定在 exe 旁、不在 $APPDATA 内会被拒；
+/// 与 open_file_path 同方案（口径同 2026-10-08）。
 #[tauri::command]
-pub fn skills_open_dir(app: AppHandle) -> CommandResult<String> {
+pub fn skills_open_dir(app: AppHandle) -> CommandResult<()> {
     let dir = skills_dir(&app);
     std::fs::create_dir_all(&dir)?;
-    Ok(dir.to_string_lossy().to_string())
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_path(dir.to_string_lossy().into_owned(), None::<&str>)
+        .map_err(|e| CommandError::IoError(format!("打开技能目录失败：{e}")))
 }
 
 /// 导入技能文件夹：校验含 SKILL.md，拷贝到数据目录 skills/<name>（重名拒绝，需先删）。
