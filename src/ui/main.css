@@ -513,3 +513,135 @@
 [data-font-size="large"]  textarea { font-size: 17px; }
 [data-font-size="xlarge"] input,
 [data-font-size="xlarge"] textarea { font-size: 19px; }
+
+/* ═══════════════════════════════════════════════════════════════
+   长按确认删除按钮（HoldToConfirmDelete）
+   - 圆形 trash 按钮 + 外圈进度环（stroke-dashoffset 推进）
+   - 走满触发左右震动 keyframe，再渲染对勾 + "已删除" 文本
+   - 尺寸/圆角与 nm-* 体系一致；震动不靠 transform 缩放（避免与宽度过渡打架）
+   ═══════════════════════════════════════════════════════════════ */
+.hold-confirm {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  height: 36px;
+  /* 最小宽度 = 圆形；done 态文案出现时自然撑开 */
+  min-width: 36px;
+  padding: 0 10px;
+  border-radius: 9999px;
+  background-color: var(--surface);
+  border: 1px solid var(--edge);
+  color: var(--t4);
+  cursor: pointer;
+  user-select: none;
+  touch-action: none; /* 防止 pointerdown 被浏览器认作滚动 */
+  transition:
+    background-color 0.1s ease,
+    border-color 0.1s ease,
+    color 0.1s ease,
+    min-width 0.18s ease,
+    padding 0.18s ease;
+}
+.hold-confirm:hover:not(:disabled) {
+  color: var(--danger);
+  border-color: var(--edge-strong);
+  background-color: var(--hover-bg);
+}
+.hold-confirm:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  color: var(--t2);
+}
+.hold-confirm:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.hold-confirm.is-active {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+/* 走满 → done：色变绿、宽度因 "已删除" 文案撑开 */
+.hold-confirm.is-done {
+  color: var(--success);
+  border-color: var(--success);
+  background-color: color-mix(in srgb, var(--success) 8%, var(--surface));
+  pointer-events: none; /* done 期间不再接收 pointer，避免重复触发 */
+  min-width: 96px;
+  padding: 0 12px;
+}
+.hold-confirm.is-done:hover:not(:disabled) {
+  background-color: color-mix(in srgb, var(--success) 8%, var(--surface));
+}
+
+/* SVG 进度环：绝对定位铺满按钮 */
+.hold-confirm-ring {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  pointer-events: none;
+  /* 旋转 90° 让起点在 12 点方向，符合「顺时针」的视觉直觉 */
+  transform: rotate(-90deg);
+}
+.hold-confirm-ring-track {
+  fill: none;
+  stroke: var(--edge);
+  stroke-width: 2;
+}
+.hold-confirm-ring-fg {
+  fill: none;
+  stroke: var(--danger);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  /* 关掉 transition：rAF 帧驱动进度，不让 CSS 缓动叠加导致反向时抽搐 */
+  transition: none;
+}
+.hold-confirm.is-done .hold-confirm-ring-fg {
+  stroke: var(--success);
+}
+
+/* 中心图标 / 文字层：相对定位在 ring 之上 */
+.hold-confirm-face {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  line-height: 1;
+}
+.hold-confirm-check {
+  /* 对勾轻微入场缩放：CSS transition 配合 key 重挂 */
+  animation: hold-confirm-pop 220ms ease-out;
+}
+.hold-confirm-label {
+  position: relative;
+  z-index: 1;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  letter-spacing: 0.02em;
+}
+
+/* 走满触发左右震动（一次）：keyframes + 临时类（React 端不直接管） */
+@keyframes hold-confirm-shake {
+  0%   { transform: translateX(0); }
+  20%  { transform: translateX(-3px); }
+  40%  { transform: translateX(3px); }
+  60%  { transform: translateX(-2px); }
+  80%  { transform: translateX(1.5px); }
+  100% { transform: translateX(0); }
+}
+/* 用 :not(.is-done) 配合临时抖动：父组件在「走满那一刻→done」中间
+   用内联动画类触发一次；这里只定义 keyframe。React 端通过
+   style.animation 注入，避免 is-done 的 width 过渡与 transform 冲突 */
+.hold-confirm-shake-once {
+  animation: hold-confirm-shake 360ms ease-in-out;
+}
+@keyframes hold-confirm-pop {
+  0%   { transform: scale(0.6); opacity: 0; }
+  60%  { transform: scale(1.15); opacity: 1; }
+  100% { transform: scale(1); }
+}

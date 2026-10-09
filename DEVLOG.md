@@ -6043,3 +6043,40 @@ apply_edit 240+ 用例）+ clippy 0（除 vendor）+ scripts/test-all.sh 全绿�
 
 验证：word_template 单测 2 + registry 14（基线前缀契约）+ tsc +
 SettingsPage vitest 98 + scripts/test-all.sh 全绿 + clippy 0（除 vendor）。
+
+## 2026-10-09（周四）工作流删除按钮：两步点击 → 长按确认
+
+**为什么换方向**：原删除键是「两步点击」（第一次红字「确认删除？」，
+3s 内再点才真删）。用户反馈两步点击的认知成本高于必要——既要点得准
+又得在 3s 内点，节奏比预期的还严苛；改成「长按 1.5s」一个动作承接
+「防误触 + 进度反馈 + 完成态」三重语义，更直观。
+
+**实现**：
+- 新组件 `WorkflowCanvas/HoldToConfirmDelete.tsx`：圆形 trash 按钮 +
+  外圈 SVG 进度环（stroke-dashoffset 由 rAF 推进，1.5s 走满）；
+  中途松手反向倒退到 0（同 rAF 回路、起始 progress 记录在 ref）；
+  走满 → setShaking(true) 触发 CSS keyframe 360ms 震动 →
+  setPhase("done") + onConfirm。键盘 Enter/Space 单次直接确认
+  （键盘无「持续按住」语义；不做两步以免键盘用户多按一次）
+- 数据属性 `data-phase` / `data-progress` 暴露状态给测试断言，
+  不污染 DOM a11y 语义
+- CSS：`.hold-confirm` 圆形 36×36 + 进度环 SVG 套在外层；
+  `is-active` 红边、`is-done` 绿底 + "已删除" 文案撑开宽度；
+  `@keyframes hold-confirm-shake` + `hold-confirm-pop`
+  给出一次性震动与对勾入场缩放
+- WorkflowPage 清理：`deleteArmed` / `deleteTimerRef` 全删，
+  `deleteWorkflow` 简化为纯执行（无 armed 中间态，确认交互由组件承接），
+  regenerate 内对删除流的 `setDeleteArmed(false)` 同步移除
+- regenArmed 复位仍保留：长按删除完成时清掉重生成 armed 旗标，
+  避免画布残留「确认重生成？」误导文案
+
+**测试**：HoldToConfirmDelete 16 条（基础形态 / 长按流程 / 键盘可达 /
+生命周期）；teardown 走 `act(() => vi.advanceTimersByTimeAsync)` 范式
+（rAF + setTimeout 联动在 jsdom 下 React 19 状态收敛需 act 包裹；
+单次大跳跃偶发丢最终 setState，已拆 3 段 advance 复测稳定）。
+全量 vitest 59 文件 543 用例全绿；tsc 0 错；oxlint 仅 5 pre-existing
+warning（与本次改动无关）。
+
+**待跑**：Windows Tauri 实机验收——macOS 下 `tauri dev` 起的 webview
+对手指 touch / mouse 捕获表现可能与 Win 不同。便携包（10-08 版）未
+含此改动，下一次 `wmessage-portable` 出包时一起携带。

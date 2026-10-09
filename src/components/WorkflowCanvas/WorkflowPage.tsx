@@ -15,7 +15,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { Download, Loader2, Play, Plus, RefreshCw, Save, Square, Trash2, Upload } from "lucide-react";
+import { Download, Loader2, Play, Plus, RefreshCw, Save, Square, Upload } from "lucide-react";
 import { handleCommandError } from "../../lib/errorHandler";
 import { useTauriListen } from "../../lib/useTauriListen";
 import { TracePanel } from "../TracePanel";
@@ -31,6 +31,7 @@ import {
 import { TaskNode, type TaskNodeData } from "./TaskNode";
 import { GoalNode, type GoalNodeData } from "./GoalNode";
 import { ClarifyCard } from "./ClarifyCard";
+import { HoldToConfirmDelete } from "./HoldToConfirmDelete";
 import {
   clarifyWorkflow,
   type Clarification,
@@ -114,8 +115,6 @@ function WorkflowPageInner({
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [savedSnapshot, setSavedSnapshot] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  /** 两步确认： armed 的 workflowId，第二次点击才真删 */
-  const [deleteArmed, setDeleteArmed] = useState(false);
   /** 最新 props 镜像：useCallback 闭包里读 tasksRef 而非捕获 tasks，防过期。   *  经 useEffect 同步（render 期写 ref 会被 lint 拦；回调只在交互后触发，晚一拍无碍） */
   const tasksRef = useRef(tasks);
   const propsRef = useRef({ onSetColumn, onUpdate });
@@ -125,10 +124,8 @@ function WorkflowPageInner({
   });
   /** 打开竞态守卫：慢的旧 workflow_load 响应不得覆盖用户后来的选择（OCR r1 medium） */
   const openSeqRef = useRef(0);
-  /** 删除确认的 3s 复位定时器（卸载/重臂时清理，OCR r1 medium） */
-  const deleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  /** 重新生成的 3s 复位定时器：与删除各自独立——共用一个 ref 时先 arm 的一方
-   *  会被另一方的 clearTimeout 抹掉，armed 旗标永久残留变成「一次点击即执行」 */
+  /** 重新生成的 3s 复位定时器：与删除各自独立——删除按钮已迁出为长按确认组件
+   *  （HoldToConfirmDelete），无 armed 旗标，regenArmed 复位与删除无共用句柄 */
   const regenTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** 重新生成两步确认 */
   const [regenArmed, setRegenArmed] = useState(false);
@@ -160,7 +157,6 @@ function WorkflowPageInner({
   useEffect(
     () => () => {
       decomposeSeqRef.current++; // 卸载时使在途拆解响应失效
-      if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current);
       if (regenTimerRef.current) clearTimeout(regenTimerRef.current);
     },
     []
@@ -243,7 +239,6 @@ function WorkflowPageInner({
         })
         .catch(() => {});
       setMode("edit");
-      setDeleteArmed(false);
       setRegenArmed(false);
     } catch (e) {
       handleCommandError(e, "打开工作流", { onRetry: () => void openWorkflow(id) });
@@ -264,7 +259,6 @@ function WorkflowPageInner({
     setSelectedIds([]);
     setSavedSnapshot(null);
     setMode("edit");
-    setDeleteArmed(false);
     // regenArmed/running 必须随画布销毁复位（W4 r1：regenArmed 残留会让下次
     // 一次点击即触发生成；running 残留会让新画布显示停止按钮）
     setRegenArmed(false);
@@ -477,9 +471,7 @@ function WorkflowPageInner({
     if (decomposing) return;
     if (!regenArmed) {
       setRegenArmed(true);
-      // 进入重生成确认流：复位删除的 armed 旗标与定时器（两流互不抹掉）
-      setDeleteArmed(false);
-      if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current);
+      // 进入重生成确认流：删除按钮已迁为长按确认（无 armed 旗标），无需复位
       if (regenTimerRef.current) clearTimeout(regenTimerRef.current);
       regenTimerRef.current = setTimeout(() => setRegenArmed(false), 3000);
       return;
@@ -832,19 +824,13 @@ function WorkflowPageInner({
     }
   };
 
+  /** 删除工作流：长按确认按钮（HoldToConfirmDelete）走满时触发此回调。
+   *  无 armed 中间态——确认交互完全由按钮组件承担，本函数只负责执行与错误兜底。
+   *  顺带复位 regenArmed：避免删除后画布上残留「确认重生成？」的误导文案 */
   const deleteWorkflow = async () => {
     if (!activeId) return;
-    if (!deleteArmed) {
-      setDeleteArmed(true);
-      // 进入删除确认流：复位重生成的 armed 旗标与定时器（两流互不抹掉）
-      setRegenArmed(false);
-      if (regenTimerRef.current) clearTimeout(regenTimerRef.current);
-      if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current);
-      deleteTimerRef.current = setTimeout(() => setDeleteArmed(false), 3000);
-      return;
-    }
-    if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current);
-    setDeleteArmed(false);
+    setRegenArmed(false);
+    if (regenTimerRef.current) clearTimeout(regenTimerRef.current);
     try {
       await invoke("workflow_delete", { id: activeId });
       setWorkflows((prev) => prev.filter((w) => w.id !== activeId));
@@ -1058,14 +1044,10 @@ function WorkflowPageInner({
           </button>
         )}
         {activeId && (
-          <button
-            className={`${toolbarBtn} ${deleteArmed ? "nm-inset text-[var(--danger,#ef4444)]" : ""}`}
-            aria-pressed={deleteArmed}
-            onClick={() => void deleteWorkflow()}
-            title={deleteArmed ? "再点一次确认删除（连带删除全部节点卡）" : "删除当前工作流"}
-          >
-            <Trash2 size={14} aria-hidden /> {deleteArmed ? "确认删除？" : "删除"}
-          </button>
+          <HoldToConfirmDelete
+            onConfirm={() => void deleteWorkflow()}
+            title="长按删除工作流（按住 1.5 秒，连带删除全部节点卡）"
+          />
         )}
       </div>
       {/* 画布（编辑态）；hero 态显示引导（设计 §5.1） */}
